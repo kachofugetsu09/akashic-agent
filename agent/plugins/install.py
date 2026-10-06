@@ -15,7 +15,7 @@ from uuid import uuid4
 from agent.plugins.python_environment import ENVIRONMENT_FILE, OfflineWheels, PythonEnvironments
 from agent.plugins.reload_journal import ReloadJournal
 from agent.plugins.distribution_sources import distribution_plugin_sources, read_distribution_adoption
-from agent.plugin_composition.archive import sync_directory
+from agent.plugins.files import sync_directory
 
 from agent.plugins.artifacts import (
     ArtifactPointer,

@@ -9,7 +9,7 @@ import os
 from pathlib import Path
 import sqlite3
 
-from agent.plugin_composition.archive import sync_directory
+from agent.plugins.files import sync_directory
 from agent.plugins.manifest import load_plugin_manifest
 from agent.plugins.selection import PluginSelection, SelectionFormatError, SelectionWriteError
 from bootstrap.workspace_lock import PluginPublicationLock, WorkspaceInstanceLock

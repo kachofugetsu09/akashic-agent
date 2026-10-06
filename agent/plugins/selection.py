@@ -1,15 +1,19 @@
-"""唯一 workspace stable 指针；完整组件与历史记录由 PluginArchive 保存。"""
-
+"""原子保存当前插件选择；不保存历史依赖图、代码或配置闭包。"""
 from __future__ import annotations
 
+import hashlib
 import json
 import os
-import re
-import tempfile
 from pathlib import Path
-from typing import Literal
+import re
+import secrets
+import tempfile
+from collections.abc import Mapping
+from typing import Literal, cast
 
-from agent.plugin_composition.archive import PluginArchive, sync_directory
+from agent.plugins.files import sync_directory
+from session.message import freeze_json
+from session.message_codec import json_value
 
 
 class SelectionFormatError(ValueError):
@@ -23,119 +27,133 @@ class SelectionConflictError(RuntimeError):
 class SelectionWriteError(RuntimeError):
     """写入失败；当前可读值不等于已经确认刷盘的提交结果。"""
 
-    def __init__(
-        self, *, operation: str, target_ref: str | None,
-        outcome: Literal["unchanged", "uncertain"], observed_ref: str | None,
-        observation_error: BaseException | None,
-    ) -> None:
+    def __init__(self, *, operation: str, target_ref: str | None,
+                 outcome: Literal["unchanged", "uncertain"], observed_ref: str | None,
+                 observation_error: BaseException | None) -> None:
         super().__init__(f"stable {operation} 写入失败: outcome={outcome}, observed={observed_ref}")
-        self.operation = operation
-        self.target_ref = target_ref
-        self.outcome = outcome
-        self.observed_ref = observed_ref
-        self.observation_error = observation_error
+        self.operation, self.target_ref, self.outcome = operation, target_ref, outcome
+        self.observed_ref, self.observation_error = observed_ref, observation_error
 
 
 class PluginSelection:
-    """调用者持有 workspace 单 writer 锁；此对象不启动或选择候选实例。"""
+    """单 writer 在内存准备输入，提交时替换唯一当前选择文件。"""
 
     def __init__(self, workspace: Path) -> None:
-        self.path = workspace / "runtime" / "plugin-stable.json"
-        self.archive = PluginArchive(workspace / "runtime" / "plugin-archives", create=False)
+        self.path = workspace / "runtime/plugin-stable.json"
+        self._inputs: dict[str, Mapping[str, object]] = {}
+        self._current: Mapping[str, object] | None = None
 
     def initialize(self) -> None:
-        """显式新建空选择；调用者证明是新 workspace 或已批准的升级。"""
+        """显式创建空选择，不扫描业务数据或猜测旧格式。"""
         self._check_path()
         if self.path.exists():
             raise SelectionFormatError("stable 已存在，初始化不得覆盖")
-        # 不扫描业务数据，也不把历史目录猜成可初始化状态。
-        self._write(None, initialize=True)
+        self._write({"version": 2, "root_ref": None, "inputs": {},
+                     "distribution_adoption": None, "transition": None}, initialize=True)
 
     def read(self) -> str | None:
-        """只读当前完整选择；只有明确的 null 表示尚未首次提交。"""
+        """读取当前输入；旧归档指针只允许经过离线显式升级。"""
         self._check_path()
         try:
             raw = json.loads(self.path.read_text(encoding="utf-8"))
         except FileNotFoundError as error:
             raise SelectionFormatError("stable 缺失；需要显式初始化或升级") from error
         except (UnicodeError, json.JSONDecodeError) as error:
-            raise SelectionFormatError("stable 指针无法解析") from error
-        if not isinstance(raw, dict) or set(raw) != {"version", "root_ref"}:
-            raise SelectionFormatError("stable 指针格式无效")
-        if type(raw["version"]) is not int or raw["version"] != 1:
-            raise SelectionFormatError("stable 指针版本不支持；需要显式升级")
+            raise SelectionFormatError("stable 无法解析") from error
+        if not isinstance(raw, dict) or type(raw.get("version")) is not int or raw["version"] != 2:
+            raise SelectionFormatError("stable 版本不支持；请离线执行 upgrade_plugin_selection.py --from-archive")
+        if set(raw) != {"version", "root_ref", "inputs", "distribution_adoption", "transition"}:
+            raise SelectionFormatError("stable 当前选择格式无效")
         ref = _reference(raw["root_ref"], nullable=True)
-        if ref is not None:
-            self._read_record(ref)
+        inputs = raw["inputs"]
+        if not isinstance(inputs, dict):
+            raise SelectionFormatError("stable inputs 必须是对象")
+        seen: set[str] = set()
+        for identity, value in inputs.items():
+            _reference(identity)
+            record = _input(value)
+            plugin_id = cast(str, record["plugin_id"])
+            if plugin_id in seen:
+                raise SelectionFormatError("stable 重复插件身份")
+            seen.add(plugin_id)
+            self._inputs[identity] = record
+        adoption = raw["distribution_adoption"]
+        if adoption is not None and not isinstance(adoption, dict):
+            raise SelectionFormatError("发行版归属凭证必须是对象")
+        transition = raw["transition"]
+        if ref is None:
+            if inputs or transition is not None or adoption is not None:
+                raise SelectionFormatError("null 选择不能包含输入、提交或归属凭证")
+        elif not isinstance(transition, dict) or set(transition) != {"base", "components"}:
+            raise SelectionFormatError("当前选择缺少最后一次提交证据")
+        else:
+            _reference(transition["base"], nullable=True)
+            if transition["components"] != list(inputs):
+                raise SelectionFormatError("最后一次提交与当前输入不一致")
+        self._current = cast(Mapping[str, object], freeze_json(raw))
         return ref
 
-    def commit(
-        self, components: tuple[str, ...], *, expected_ref: str | None,
-        distribution_adoption_ref: str | None = None,
-    ) -> str:
-        """提交构造方保证完整的正式输入；不接受任意 binding 子集充当完整组合。"""
-        # 1. 基线是前次提交记录，而不是可重复出现的组件集合。
-        expected_ref = _reference(expected_ref, nullable=True)
+    def prepare(self, value: Mapping[str, object]) -> str:
+        """候选仅存在于当前 owner 内存；提交失败不产生持久历史副本。"""
+        record = _input(value)
+        payload = json.dumps(json_value(record), sort_keys=True, ensure_ascii=False,
+                             separators=(",", ":"), allow_nan=False).encode()
+        identity = hashlib.sha256(payload).hexdigest()
+        self._inputs[identity] = record
+        return identity
+
+    def read_input(self, identity: str) -> Mapping[str, object]:
+        """读取当前或本次准备的输入，不从历史文件恢复。"""
+        return self._inputs[identity]
+
+    def components(self, expected_ref: str) -> tuple[str, ...]:
+        """完整组合只能从当前选择读取，不能把旧 revision 当历史入口。"""
         if self.read() != expected_ref:
             raise SelectionConflictError("stable 基线已变化")
-        if not isinstance(components, tuple):
-            raise TypeError("components 必须是完整输入引用的 tuple")
-        for ref in components:
-            _reference(ref)
-            self.archive.read_descriptor(ref)
-        if len(set(components)) != len(components):
-            raise SelectionFormatError("完整选择不能重复包含组件引用")
+        assert self._current is not None
+        return tuple(cast(Mapping[str, object], self._current["inputs"]))
 
-        # 历史归属凭证随选择保留；配置或启停提交不产生另一份来源事实。
-        previous_adoption = (self.archive.read_descriptor(expected_ref).get("distribution_adoption_ref")
-                             if expected_ref is not None else None)
-        if distribution_adoption_ref is None:
-            distribution_adoption_ref = _reference(previous_adoption, nullable=True)
-        else:
-            _reference(distribution_adoption_ref)
-            self.archive.read_descriptor(distribution_adoption_ref)
-            if previous_adoption is not None and previous_adoption != distribution_adoption_ref:
-                raise SelectionConflictError("历史归属已经转换，不能覆盖凭证")
+    def adoption(self) -> Mapping[str, object] | None:
+        """归属凭证是历史事实，随当前选择保留，但不加载历史代码。"""
+        self.read()
+        assert self._current is not None
+        return cast(Mapping[str, object] | None, self._current["distribution_adoption"])
 
-        # 2. 只保存引用和前驱，不复制身份、配置或环境路径。
-        try:
-            self.archive = PluginArchive(self.archive.path)
-            record: dict[str, object] = {
-                "version": 1, "components": list(components), "previous": expected_ref,
-            }
-            if distribution_adoption_ref is not None:
-                record.update(version=2, distribution_adoption_ref=distribution_adoption_ref)
-            ref = self.archive.save_descriptor(record)
-        except BaseException as error:
-            raise self._write_error("commit", None, replacing=False) from error
+    def transition_committed(self, base: str | None, components: tuple[str, ...]) -> bool | None:
+        """只凭最后一次原子提交认定恢复结果；更旧的未决事实明确未知。"""
+        current = self.read()
+        if current == base:
+            return False
+        assert self._current is not None
+        transition = self._current["transition"]
+        if isinstance(transition, Mapping) and transition["base"] == base:
+            return transition["components"] == components
+        return None
+
+    def commit(self, components: tuple[str, ...], *, expected_ref: str | None,
+               distribution_adoption: Mapping[str, object] | None = None) -> str:
+        """CAS 提交完整当前组合，旧选择文件由新选择替换。"""
+        # 1. 构造方持有唯一 writer，输入来自实际安装或本次准备。
+        _reference(expected_ref, nullable=True)
         if self.read() != expected_ref:
-            raise SelectionConflictError("保存记录期间 stable 基线已变化")
-        # 3. 记录先耐久，再提交唯一指针；失败不得回写旧选择。
-        self._write(ref, initialize=False)
+            raise SelectionConflictError("stable 基线已变化")
+        if not isinstance(components, tuple) or len(set(components)) != len(components):
+            raise SelectionFormatError("完整选择必须是无重复输入的 tuple")
+        inputs = {ref: self.read_input(ref) for ref in components}
+        if len({value["plugin_id"] for value in inputs.values()}) != len(inputs):
+            raise SelectionFormatError("完整选择不能重复包含插件身份")
+        assert self._current is not None
+        previous = cast(Mapping[str, object] | None, self._current["distribution_adoption"])
+        if distribution_adoption is None:
+            distribution_adoption = previous
+        elif previous is not None and freeze_json(distribution_adoption) != previous:
+            raise SelectionConflictError("历史归属已经转换，不能覆盖凭证")
+        # 2. 仅当前状态和最后一次提交证据原子落盘，不保存前驱链。
+        ref = secrets.token_hex(32)
+        self._write({"version": 2, "root_ref": ref, "inputs": inputs,
+                     "distribution_adoption": distribution_adoption,
+                     "transition": {"base": expected_ref, "components": components}}, initialize=False)
         return ref
-
-    def _read_record(self, ref: str) -> None:
-        try:
-            record = self.archive.read_descriptor(ref)
-        except (ValueError, RuntimeError, FileNotFoundError) as error:
-            raise SelectionFormatError("stable 完整记录缺失或损坏") from error
-        fields = {"version", "components", "previous"}
-        version = record.get("version")
-        if version == 2:
-            fields.add("distribution_adoption_ref")
-            _reference(record.get("distribution_adoption_ref"))
-        if set(record) != fields:
-            raise SelectionFormatError("stable 不是完整选择记录")
-        if type(version) is not int or version not in {1, 2}:
-            raise SelectionFormatError("stable 记录版本不支持")
-        components = record["components"]
-        if not isinstance(components, tuple):
-            raise SelectionFormatError("stable components 格式无效")
-        for component in components:
-            _reference(component)
-        if len(set(components)) != len(components):
-            raise SelectionFormatError("stable components 重复")
-        _reference(record["previous"], nullable=True)
 
     def _check_path(self) -> None:
         if self.path.parent.is_symlink() or self.path.is_symlink():
@@ -143,21 +161,20 @@ class PluginSelection:
         if self.path.exists() and not self.path.is_file():
             raise SelectionFormatError("stable 必须是普通文件")
 
-    def _write(self, ref: str | None, *, initialize: bool) -> None:
-        """同步临时文件后发布；发布尝试之后的异常一律保留不确定结果。"""
+    def _write(self, value: Mapping[str, object], *, initialize: bool) -> None:
+        """同步完整文件后原子发布；发布后的失败不回写旧选择。"""
         replacing = False
+        ref = cast(str | None, value["root_ref"])
         try:
-            # 1. 只有显式初始化创建目录，并同步父目录中的新目录项。
             if initialize:
                 self.path.parent.mkdir(mode=0o700, exist_ok=True)
                 sync_directory(self.path.parent.parent)
             fd, name = tempfile.mkstemp(prefix=".plugin-stable-", dir=self.path.parent)
             temporary = Path(name)
             with os.fdopen(fd, "w", encoding="utf-8") as stream:
-                json.dump({"version": 1, "root_ref": ref}, stream)
+                json.dump(json_value(value), stream, ensure_ascii=False, allow_nan=False)
                 stream.flush()
                 os.fsync(stream.fileno())
-            # 2. 初始化用无覆盖发布；提交在单 writer 锁内原子替换。
             replacing = True
             if initialize:
                 os.link(temporary, self.path)
@@ -166,29 +183,42 @@ class PluginSelection:
                 os.replace(temporary, self.path)
             sync_directory(self.path.parent)
         except BaseException as error:
-            # 失败临时文件保留供诊断；不自动清理或回退已发布选择。
-            raise self._write_error(
-                "initialize" if initialize else "commit", ref, replacing=replacing,
-            ) from error
-
-    def _write_error(self, operation: str, ref: str | None, *, replacing: bool) -> SelectionWriteError:
-        """读取异常后的可见指针；读失败与明确的 null 分开报告。"""
-        observed = None
-        observation_error = None
-        try:
-            observed = self.read()
-        except BaseException as error:
-            observation_error = error
-        return SelectionWriteError(
-            operation=operation, target_ref=ref,
-            outcome="uncertain" if replacing else "unchanged",
-            observed_ref=observed, observation_error=observation_error,
-        )
+            observed, observation_error = None, None
+            try:
+                observed = self.read()
+            except BaseException as failure:
+                observation_error = failure
+            raise SelectionWriteError(operation="initialize" if initialize else "commit", target_ref=ref,
+                                      outcome="uncertain" if replacing else "unchanged",
+                                      observed_ref=observed, observation_error=observation_error) from error
 
 
 def _reference(value: object, *, nullable: bool = False) -> str | None:
     if nullable and value is None:
         return None
     if not isinstance(value, str) or re.fullmatch(r"[0-9a-f]{64}", value) is None:
-        raise SelectionFormatError("选择引用必须是 SHA-256")
+        raise SelectionFormatError("选择身份必须是 64 位十六进制字符串")
     return value
+
+
+def _input(value: object) -> Mapping[str, object]:
+    """在选择文件边界核对安装元数据，不读代码或配置内容。"""
+    fields = {"version", "code", "plugin_id", "source_revision", "config_revision",
+              "python_environments", "source_type", "data_dir", "runtime"}
+    if not isinstance(value, Mapping) or set(value) not in (fields, fields | {"distribution_source"}):
+        raise SelectionFormatError("插件输入结构无效")
+    if value["version"] != 5 or value["source_type"] not in {"builtin", "installed"}:
+        raise SelectionFormatError("插件输入版本或来源类型无效")
+    for key in ("code", "plugin_id", "data_dir"):
+        if not isinstance(value[key], str) or not value[key]:
+            raise SelectionFormatError(f"插件输入缺少 {key}")
+    if not Path(cast(str, value["code"])).is_absolute():
+        raise SelectionFormatError("插件代码路径必须是绝对路径")
+    data = Path(cast(str, value["data_dir"]))
+    if data.is_absolute() or data.parts[:1] != ("plugin-data",) or ".." in data.parts:
+        raise SelectionFormatError("插件数据路径必须位于 workspace/plugin-data")
+    for key in ("source_revision", "config_revision"):
+        _reference(value[key])
+    if not isinstance(value["runtime"], Mapping) or not isinstance(value["python_environments"], Mapping):
+        raise SelectionFormatError("插件运行环境元数据无效")
+    return cast(Mapping[str, object], freeze_json(dict(value)))

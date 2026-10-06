@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import shutil
 import argparse
 import hashlib
 import json
@@ -53,22 +54,27 @@ async def same_commit_environment(previous_python: Path | None) -> None:
     # Without --previous-python this models only the old environment identity.
     # With it, create and later compare real interpreters from two Python minors.
     for name, ref in current_refs.items():
-        record = dict(selection.archive.read_descriptor(ref))
+        owner = PythonEnvironments(workspace)
+        original_root = owner.open(ref)
+        record = json.loads((original_root / 'environment.json').read_text())
+        location = uuid4().hex + uuid4().hex
+        old_root = owner.path / location
         if previous_python is not None:
-            location = uuid4().hex
-            environment = PythonEnvironments(workspace).path / location / name / '.venv'
+            environment = old_root / name / '.venv'
             subprocess.run([str(previous_python), '-m', 'venv', '--without-pip', '--copies', str(environment)],
                            check=True)
-            record['location'] = location
+        else:
+            shutil.copytree(original_root, old_root, symlinks=True)
         record['input'] = {**record['input'], 'base': {'executable': str(previous_python or '/previous/python3.11')}}
-        old_refs[name] = selection.archive.save_descriptor(record)
+        (old_root / 'environment.json').write_text(json.dumps(record))
+        old_refs[name] = location
     old_environment_bytes = json.dumps(old_refs).encode()
     (artifact / ENVIRONMENT_FILE).write_bytes(old_environment_bytes)
     old_descriptor = dict(descriptor)
     old_descriptor['python_environments'] = old_refs
     old_descriptor['runtime'] = {**descriptor['runtime'], 'python_tag': old_tag}
-    old_input = selection.archive.save_descriptor(old_descriptor)
-    components = selection.archive.read_descriptor(original)['components']
+    old_input = selection.prepare(old_descriptor)
+    components = selection.components(original)
     baseline = selection.commit(tuple(old_input if ref == original_input else ref for ref in components),
                                 expected_ref=original)
     bundle = root / 'external.bundle'
@@ -117,8 +123,8 @@ async def main() -> None:
     # Represent an input from the preceding Python minor without running it here.
     old_descriptor = dict(descriptor)
     old_descriptor['runtime'] = {**descriptor['runtime'], 'python_tag': 'cpython-311'}
-    old_input = selection.archive.save_descriptor(old_descriptor)
-    components = selection.archive.read_descriptor(original)['components']
+    old_input = selection.prepare(old_descriptor)
+    components = selection.components(original)
     baseline = selection.commit(tuple(old_input if ref == original_input else ref for ref in components),
                                 expected_ref=original)
     data_before = snapshot(workspace / 'plugin-data')
@@ -161,7 +167,7 @@ async def main() -> None:
     assert result['new_root_ref'] != baseline
     assert snapshot(workspace / 'plugin-data') == data_before
     assert receipt.read_bytes() == receipt_before
-    assert selection.archive.read_descriptor(original_input) == descriptor
+    assert selection.read_input(original_input) == descriptor
     assert selected(workspace)['outside@thirdparty'][1]['runtime']['python_tag'] == sys.implementation.cache_tag
     runtime = await manager(workspace, home, distribution)
     assert runtime.generation('outside@thirdparty').instance.version == '2'

@@ -30,7 +30,7 @@ from agent.migrations.runner import MigrationRunner
 from agent.plugins.source_resolver import ResolvedPluginSource
 from agent.plugins.source_resolver import scan_plugin_sources
 from agent.plugins.distribution_sources import distribution_sources, distribution_migration_sources, DistributionSources, is_distribution_input, check_distribution_adoption_format
-from agent.plugin_composition.archive import encode_tree, sync_directory, tree_entries
+from agent.plugins.files import encode_tree, sync_directory, tree_entries
 from agent.plugin_composition.config_input import CONFIG_INPUT, load_config, save_config
 from agent.migrations.runner import initialize_empty_workspace
 from agent.plugins.artifacts import read_pointers, resolve_pointer
@@ -886,8 +886,7 @@ def _validate_current_plugins(
 
 def _selected_components(selection: PluginSelection, root_ref: str) -> tuple[tuple[str, ...], dict[str, tuple[str, Mapping[str, object], Path]]]:
     """Check every selected code closure before changing an install pointer."""
-    root = selection.archive.read_descriptor(root_ref)
-    components = root["components"]
+    components = selection.components(root_ref)
     if not isinstance(components, tuple):
         raise ValueError("stable 完整记录格式无效")
     found: dict[str, tuple[str, Mapping[str, object], Path]] = {}
@@ -895,7 +894,7 @@ def _selected_components(selection: PluginSelection, root_ref: str) -> tuple[tup
     for ref in components:
         if not isinstance(ref, str):
             raise ValueError("stable component ref 无效")
-        record = selection.archive.read_descriptor(ref)
+        record = selection.read_input(ref)
         plugin_id, code_ref = record["plugin_id"], record["code"]
         if record["version"] != 5 or not isinstance(plugin_id, str) or not isinstance(code_ref, str):
             raise ValueError(f"selected descriptor 格式无效: {ref}")
@@ -1041,7 +1040,7 @@ def _prepare_distribution_inputs(
                  "plugin_root": str(code), "module_path": str(code / "plugin.py"),
                  "manifest_digest": identity.identity_digest, "source_type": "builtin",
                  "distribution_source": source_commit, "wheel_tree_sha256": source.wheel_tree_sha256},
-                workspace=workspace, archive=selection.archive, initial=old is None,
+                workspace=workspace, selection=selection, initial=old is None,
             )
             timing.update(reused=False, ref=result.input_ref)
         # 停止期已结算配置 owner；读取迁移后的持久输入，也支持迁移成功后的发布重试。
@@ -1206,22 +1205,21 @@ def publish_distribution(
                     prepared = prepare_plugin_input(
                         {"name": name, "plugin_root": str(artifact), "module_path": str(artifact / "plugin.py"),
                          "manifest_digest": identity.identity_digest, "marketplace": marketplace, "source_type": "installed"},
-                        workspace=workspace, archive=selection.archive,
+                        workspace=workspace, selection=selection,
                     )
                     if prepared.plugin_id != plugin_id:
                         raise RuntimeError(f"安装输入身份不符: {plugin_id}")
                     ReloadJournal(workspace).set_input_ref(update_id, prepared.input_ref)
                     prepared_selected[plugin_id] = (
-                        prepared.input_ref, selection.archive.read_descriptor(prepared.input_ref), prepared.code_dir,
+                        prepared.input_ref, selection.read_input(prepared.input_ref), prepared.code_dir,
                     )
                 new_components = _prepare_distribution_inputs(
                     available=available, candidate=candidate, selected=prepared_selected,
                     distribution=distribution, workspace=workspace, plugins_home=plugins_home, selection=selection,
                 )
-                adoption_ref = selection.archive.save_descriptor(adoption) if adoption is not None else None
                 new_root = (selection.commit(new_components, expected_ref=expected_root,
-                                             distribution_adoption_ref=adoption_ref)
-                            if new_components != components or adoption_ref is not None else expected_root)
+                                             distribution_adoption=adoption)
+                            if new_components != components or adoption is not None else expected_root)
                 return {**result, "status": "selected_not_started", "new_root_ref": new_root,
                         "ordered_components": list(new_components)}
         finally:

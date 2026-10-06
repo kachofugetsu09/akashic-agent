@@ -12,7 +12,7 @@ from pathlib import Path
 from typing import Literal, cast
 
 from agent.plugin_composition.config_input import load_config, config_bytes, CONFIG_INPUT
-from agent.plugin_composition.archive import PluginArchive
+from agent.plugins.selection import PluginSelection
 from agent.plugins.manifest import (
     validate_workspace_plugin_data_path,
     workspace_plugin_data_dir,
@@ -51,7 +51,7 @@ class PreparedPluginInput:
 
 
 def prepare_plugin_input(
-    mod: Mapping[str, str], *, workspace: Path, archive: PluginArchive, initial: bool = False,
+    mod: Mapping[str, str], *, workspace: Path, selection: PluginSelection, initial: bool = False,
 ) -> PreparedPluginInput:
     """校验并编译已安装源码，不提前导入模块。"""
 
@@ -79,8 +79,6 @@ def prepare_plugin_input(
             raise ValueError("初始配置必须是映射")
         config_revision = hashlib.sha256(config_bytes(config)).hexdigest()
 
-    # 环境准备不再顺带创建归档根；本层仍写归档，由输入 owner 明确创建。
-    archive.path.mkdir(mode=0o700, parents=True, exist_ok=True)
     # 2. 直接编译安装目录；外部环境变化不会被另一个代码快照隐藏。
     code_dir = plugin_dir.resolve(strict=True)
     for source_path in sorted(code_dir.rglob("*.py")):
@@ -110,7 +108,7 @@ def prepare_plugin_input(
                     if (plugin_dir / runtime.requirements).read_text().strip() else "",
                 ) for runtime in identity.python
             }
-    ref = archive.save_descriptor({
+    ref = selection.prepare({
         "version": 5, "code": str(code_dir), "python_environments": environments,
         "plugin_id": plugin_id, "source_revision": revision,
         "config_revision": config_revision,

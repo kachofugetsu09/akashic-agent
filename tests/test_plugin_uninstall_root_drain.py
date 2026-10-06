@@ -92,7 +92,7 @@ async def test_uninstall_accepts_before_target_owner_drains_and_preserves_peer(
         assert input_ref is not None
         installed_source = target.code_dir / "plugin.py"
         installed_source_before = installed_source.read_bytes()
-        archive_descriptor_before = host._archive.read_descriptor(input_ref)
+        input_before = host._selection.read_input(input_ref)
 
         async def hold_peer_scope():
             async with peer_context.runtime_scope():
@@ -147,7 +147,7 @@ async def test_uninstall_accepts_before_target_owner_drains_and_preserves_peer(
         assert consumer.fiber.state is FiberState.PENDING
         assert consumer.fiber.dependency_store == {}
         assert not installed_source.exists()
-        assert host._archive.read_descriptor(input_ref) == archive_descriptor_before
+        assert host._selection.read_input(input_ref) == input_before
 
         target_status = status_for(host, "target@lab")
         assert target_status["installed"] is False

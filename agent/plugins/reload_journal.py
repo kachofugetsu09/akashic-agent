@@ -279,7 +279,7 @@ class ReloadJournal:
             return update_rollback.read(conn, update_id)
 
     def set_input_ref(self, update_id: str, input_ref: str) -> None:
-        """Persist the fixed archive input before selection CAS."""
+        """选择提交前保存本次安装的输入身份。"""
         with self._connect() as conn:
             _ = conn.execute("BEGIN IMMEDIATE")
             update_rollback.set_input_ref(conn, update_id=update_id, input_ref=input_ref)
@@ -1312,7 +1312,7 @@ def check_pending_publication(workspace: Path) -> None:
     """迁移与离线发布不得覆盖安装或配置 owner 尚未结算的事实。"""
     selection = PluginSelection(workspace)
     root = selection.read()
-    components = () if root is None else cast(tuple[str, ...], selection.archive.read_descriptor(root)["components"])
+    components = () if root is None else selection.components(root)
     with ReloadJournal.inspect_existing(workspace) as journal:
         if journal.pending_recovery or journal.armed_updates:
             raise PendingPublicationError("reload/install owner 尚未结算；不得覆盖未决事实")

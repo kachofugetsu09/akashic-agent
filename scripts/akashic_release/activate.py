@@ -199,7 +199,7 @@ def _publish(
 ) -> dict[str, object]:
     """让目标镜像检查或执行同一份固定部署清单。"""
 
-    # 1. Online preparation can write only rebuildable archive/environment caches.
+    # 1. 在线准备只写可重建的依赖环境，不创建代码或配置归档。
     if hashlib.sha256(plan.read_bytes()).hexdigest() != digest:
         raise RuntimeError("部署清单在预检后改变")
     command = ["docker", "run", "--rm", "--network", "none", "--read-only",
@@ -210,7 +210,7 @@ def _publish(
     if preflight:
         workspace = Path(candidate["AKASHIC_WORKSPACE"])
         owner = workspace.stat()
-        for name in ("plugin-archives", "plugin-python-environments"):
+        for name in ("plugin-python-environments",):
             cache = workspace / "runtime" / name
             current = paths.state
             for part in cache.relative_to(paths.state).parts:
@@ -259,7 +259,7 @@ def _read_selection(*, paths: ReleasePaths, candidate: Mapping[str, str], run: R
         "import json,sys; from pathlib import Path; "
         "from agent.plugins.selection import PluginSelection; "
         "s=PluginSelection(Path(sys.argv[1])); r=s.read(); "
-        "print(json.dumps({'root_ref':r,'components':list(s.archive.read_descriptor(r)['components']) if r else []}))"
+        "print(json.dumps({'root_ref':r,'components':list(s.components(r)) if r else []}))"
     )
     result = run([
         "docker", "run", "--rm", "--network", "none", "--read-only",

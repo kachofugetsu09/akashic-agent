@@ -8,7 +8,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Literal, cast
 
-from agent.plugin_composition.archive import sync_directory
+from agent.plugins.files import sync_directory
 from agent.plugins.artifacts import ArtifactPointer, ArtifactPointers, pointer_state_path, write_pointers
 from agent.plugins.manifest import load_plugin_manifest, write_plugin_manifest
 from infra.persistence.json_store import load_json
@@ -156,7 +156,7 @@ def arm(
 
 
 def set_input_ref(conn: sqlite3.Connection, *, update_id: str, input_ref: str) -> None:
-    """Fill the immutable runtime archive reference once, or reject drift."""
+    """只填充本次安装的输入身份一次，拒绝同一请求漂移。"""
     if not input_ref:
         raise ValueError("插件更新 input_ref 不能为空")
     if not check_schema(conn):
