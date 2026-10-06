@@ -125,6 +125,9 @@ def analyze(
         failed = marks.get("transport.failed", {}).get("mono_ns")
         disconnected = marks.get("client.disconnected", {}).get("mono_ns")
         failed = failed if failed is not None else disconnected
+        http_status = marks.get("upstream.headers", {}).get("status")
+        if failed is None and http_status is not None and http_status >= 400:
+            failed = marks.get("response.closed", marks["upstream.headers"])["mono_ns"]
         output = next((t for t in output_times if t >= start and (stop is None or t <= stop)), None)
         batch = [(a, b) for a, b in tools if a >= start and (stop is None or b <= stop)]
         last_commit = max((t for t in committed if t >= start and (stop is None or t <= stop)), default=None)
@@ -134,6 +137,7 @@ def analyze(
             "round": logical_round,
             "input_bytes": request["bytes"],
             "reasoning_rows": request["reasoning_rows"],
+            "http_status": http_status,
             "status": "output" if output is not None else "disconnected" if disconnected else "failed" if failed else "incomplete",
         }
         segments: list[tuple[str, int | None, int | None]] = [
