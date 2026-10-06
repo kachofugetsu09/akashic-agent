@@ -770,8 +770,9 @@ class MessageCatalog:
         """单条查询取得同一数据库快照，不逐会话读取可能变化的 head。"""
         with self._log._read():
             rows = self._log._connection.execute(
-                "SELECT s.key, COALESCE((SELECT MAX(m.seq) FROM messages m "
-                "WHERE m.session_key=s.key), -1) AS head FROM sessions s ORDER BY s.key"
+                "SELECT s.key, COALESCE((SELECT m.seq FROM messages m "
+                "WHERE m.session_key=s.key ORDER BY m.seq DESC LIMIT 1), -1) AS head "
+                "FROM sessions s ORDER BY s.key"
             ).fetchall()
         return MappingProxyType({row["key"]: row["head"] for row in rows})
 
@@ -873,7 +874,8 @@ class MessageCatalog:
                 if heads != previous:
                     previous = heads
                     yield heads
-                elif poll_interval is None:
+                # 消费期间的提交仍会置位；无需先重查一次空变化再等待。
+                if poll_interval is None:
                     _ = await event.wait()
                 else:
                     try:
@@ -1225,8 +1227,7 @@ class MessageReader:
                 if head > previous:
                     previous = head
                     yield head
-                else:
-                    await event.wait()
+                await event.wait()
         finally:
             with self._log._listener_lock:
                 self._log._listeners.pop(event, None)
@@ -1246,18 +1247,16 @@ class MessageReader:
                 if self._log._closed:
                     return
                 messages = self.read(after_seq=after_seq)
-                if not messages:
-                    if poll_interval is None:
-                        _ = await event.wait()
-                    else:
-                        try:
-                            _ = await asyncio.wait_for(event.wait(), poll_interval)
-                        except TimeoutError:
-                            pass
-                    continue
                 for message in messages:
                     after_seq = message.seq
                     yield message
+                if poll_interval is None:
+                    _ = await event.wait()
+                else:
+                    try:
+                        _ = await asyncio.wait_for(event.wait(), poll_interval)
+                    except TimeoutError:
+                        pass
         finally:
             with self._log._listener_lock:
                 self._log._listeners.pop(event, None)
