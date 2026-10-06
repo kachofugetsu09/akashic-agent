@@ -5,10 +5,12 @@ import logging
 from collections.abc import AsyncGenerator, Awaitable, Callable, Iterable, Mapping, Sequence
 from contextlib import AbstractContextManager, ExitStack, asynccontextmanager
 from dataclasses import replace
+from functools import partial
 from typing import Any, cast
 from uuid import uuid4
 
 from core.common.file_io import run_file_io
+from core.common.diagnostic_log import log_timing
 from agent.plugin_composition import Context, RuntimeScope
 from agent.plugin_composition.messages import (
     MessageConflict,
@@ -428,17 +430,23 @@ async def _complete(
     resumed: Mapping[int, tuple[ModelRequest, Materials]] | None = None,
     start_at: int = 0,
     resume_rejected: bool = False,
+    operation_id: str = "",
 ) -> AsyncGenerator[tuple[LLMResponse, Materials, str, ModelRequest]]:
     """缩减只更新已取得材料中的摘要；provider 容量拒绝最多重试一次。
 
     每个 attempt 的请求与材料都经 freeze 耐久保存；恢复时按原字节精确重放，
     ContextLength 缩减后的第二次请求同样不重建不漂移。
     """
+    mark = partial(log_timing, session_id=snapshot[-1].session_id if snapshot else "",
+                   source=source, operation_id=operation_id)
     # 1. 本地容量与软水位先交给同一摘要 owner，其他材料不重新获取。
     def build(mats: Materials) -> tuple[ModelRequest, str | None]:
-        return context.build_attempt(snapshot, materials=mats, model=projection,
+        mark("context.build.begin")
+        result = context.build_attempt(snapshot, materials=mats, model=projection,
                                      tools=tools.schemas, max_output_tokens=max_output_tokens,
                                      current_reminder_input_id=reminder_input_id)
+        mark("context.build.end")
+        return result
 
     prepared_attempt = prepared
     async def reduce_request(mats: Materials, request: ModelRequest, *, force: bool) -> tuple[Materials, Mapping[str, object] | None]:
@@ -454,8 +462,10 @@ async def _complete(
                 if callback is not None:
                     await callback({"retry_status": text})
 
+            mark("context.reduce.begin")
             summary = await reduce(snapshot, mats, request, model, projection,
                                    source=source, force=force, on_status=report)
+            mark("context.reduce.end")
         return ({**mats, "notices": tuple(notices)} if notices else mats), summary
 
     if resumed is not None and start_at in resumed:
@@ -474,7 +484,9 @@ async def _complete(
                 raise ContextLengthError(rejection)
     if freeze is not None:
         # 生成准备把当前真实请求与材料一并冻结；恢复后不再重建或漂移。
+        mark("request.freeze.begin")
         request, prepared_attempt = await freeze(start_at, request, prepared_attempt)
+        mark("request.freeze.end")
     prepared = prepared_attempt
     # 2. 每次 provider 调用使用生成准备中已耐久固定的 Output ID 与请求 key。
     with ExitStack() as previews:
@@ -488,6 +500,7 @@ async def _complete(
             else:
                 message_id, request_key = await claim(attempt)
             callback = None if preview is None else previews.enter_context(preview(message_id))
+            mark("request.claimed", request_id=request_key or "")
             return message_id, request_key, callback
 
         attempt = start_at
@@ -499,7 +512,9 @@ async def _complete(
                 rejected = ContextLengthError("provider 容量拒绝已耐久结算")
                 rejected.send_evidence = "rejected"
                 raise rejected
+            mark("model.begin", request_id=request_key or "")
             response = await model.complete(replace(request, on_delta=callback, request_key=request_key))
+            mark("model.end", request_id=request_key or "")
         except ContextLengthError as error:
             previews.close()
             # 强制缩减重试每代至多一次，且只适用于可证明的容量拒绝——
@@ -523,7 +538,9 @@ async def _complete(
                     # 缩减后的第二请求与材料同样耐久冻结，恢复时精确重放。
                     request, prepared = await freeze(attempt, request, prepared)
             message_id, request_key, callback = await begin(attempt)
+            mark("model.begin", request_id=request_key or "")
             response = await model.complete(replace(request, on_delta=callback, request_key=request_key))
+            mark("model.end", request_id=request_key or "")
         # 3. 草稿持续到调用者完成解码与 CAS；异常和取消也会释放预览。
         yield response, prepared, message_id, request
 
@@ -556,6 +573,9 @@ async def react(
     if reader.session_id != writer.session_id:
         raise ValueError("ReAct reader 与 writer 必须属于同一 Session")
     while True:
+        operation_id = uuid4().hex
+        mark = partial(log_timing, session_id=reader.session_id, source=writer.source, operation_id=operation_id)
+        mark("react.begin")
         # 1. 放弃区保持串行结算；未闭段里连续的 parallel 调用才重叠。
         _, abandoned = await run_file_io(lambda: reader.scan(
             lambda rows: _open_calls(rows, writer.source), source=writer.source,
@@ -566,7 +586,9 @@ async def react(
         await _settle_pending(
             reader, tools, writer.source, max_parallel_calls, capture_scope,
         )
+        mark("tools.settled")
         snapshot = await reader.snapshot_async(through_seq=reader.head())
+        mark("history.loaded", counts={"messages": len(snapshot)})
         head = max((m.seq for m in snapshot if m.source == writer.source), default=-1)
         # 本代准备的固定身份：最近一条同来源 Input 或 abandon Control。
         # pause/failure/resume 是对同一业务项的操作，不是新边界：resume 必须
@@ -649,6 +671,7 @@ async def react(
         resumed: dict[int, tuple[ModelRequest, Materials]] | None = None
         start_at = 0
         resume_rejection = False
+        mark("preparation.begin")
         if state is not None:
             # 输出前驱位置用该来源已有 Output 计数；与边界身份共同固定本代。
             prep_base = (
@@ -808,6 +831,7 @@ async def react(
         else:
             # 3. 取得材料与组装请求分开，Context 不获得模型调用或检索权。
             prepared = await materials(frozen)
+        mark("preparation.end")
         async with _complete(
             frozen, prepared, source=writer.source, context=context, model=model,
             projection=projection, tools=tools, max_output_tokens=max_output_tokens, reduce=reduce, preview=preview,
@@ -817,6 +841,7 @@ async def react(
             resumed=resumed,
             start_at=start_at,
             resume_rejected=resume_rejection,
+            operation_id=operation_id,
             fallback_key=(
                 f"reply:{reader.session_id}:{writer.source}"
                 f":{boundary_id}:{_steps(snapshot, writer.source)}"
@@ -869,6 +894,7 @@ async def react(
                 parts.append(ContentPart("context.summary", {"reference": summary["reference"]}))
             parts.extend(ContentPart("context.notice", notice)
                          for notice in cast(Sequence[str], prepared.get("notices", ())))
+            mark("output.decoded", counts={"tool_calls": len(indices)})
             # 4. 内容完成后在窄事务内核对前提并提交；失败的草稿绝不触发工具。
             try:
                 message = await commit(
@@ -878,6 +904,7 @@ async def react(
                 )
             except _Superseded:
                 raise asyncio.CancelledError from None
+            mark("output.committed", request_id=response.call_record_id or "", parent_operation_id=message.message_id, counts={"seq": message.seq, "tool_calls": len(indices)})
             if not indices:
                 return message
         # 下一轮工具可能长时间等待；上一轮历史和准备材料不再有消费者。

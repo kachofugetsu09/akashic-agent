@@ -14,6 +14,7 @@ from contextvars import ContextVar
 from dataclasses import asdict, dataclass, field, replace
 from functools import partial
 from time import monotonic_ns
+from core.common.diagnostic_log import log_timing
 from types import MappingProxyType
 from typing import (
     Any,
@@ -385,6 +386,7 @@ class _BoundChat:
                             f"可以取消等待。上次失败：{last['failure']}"
                         )})
                     # 等待可取消；已结算的失败与允许时间保留，恢复按剩余额度继续。
+                    log_timing("model.retry.wait", request_id=request_key, counts={"attempt": len(records) + 1})
                     await asyncio.sleep(delay)
             # 2. 先原子登记新的物理尝试，再调用单次 driver。
             owner_id = (
@@ -418,6 +420,7 @@ class _BoundChat:
                     return replayed
                 raise
             assert call_id is not None
+            log_timing("model.attempt.recorded", operation_id=call_id, request_id=request_key, counts={"attempt": len(records) + 1})
             started_call_id = call_id
             _LIVE_CALLS.add(call_id)
             started: int | None = None
@@ -444,6 +447,7 @@ class _BoundChat:
                         started_call_id, (monotonic_ns() - started) / 1_000_000
                     ))
                     first_token = True
+                    log_timing("model.first_delta", operation_id=started_call_id, request_id=request_key)
                 await publish(value)
 
             try:
@@ -456,13 +460,16 @@ class _BoundChat:
                     if request.on_delta is not None:
                         await publish({"call_record_id": call_id, "retry_status": ""})
                     started = monotonic_ns()
+                    log_timing("model.driver.begin", operation_id=call_id, request_id=request_key)
                     response = await self._driver.complete(driver_request)
+                    log_timing("model.driver.end", operation_id=call_id, request_id=request_key)
                     # 空生成没有可交付输出；使用同一请求恢复，不能把它提交为 quiet。
                     if (response.finish_reason != "length"
                             and not (response.content and response.content.strip())
                             and not response.tool_calls):
                         raise EmptyResponseError("模型没有产生正文或工具调用，正在重新生成")
                 except BaseException as failure:
+                    log_timing("model.driver.failed", operation_id=call_id, request_id=request_key)
                     # 3. 失败先结算发送事实、usage 和下次允许时间，再决定是否继续。
                     # 模型生成与本地工具效果分开：暂时故障允许重发生成，
                     # 保留真实发送证据和未知 usage，不声称第一次请求没有计费。
@@ -534,6 +541,7 @@ class _BoundChat:
                     duration_ms=(monotonic_ns() - started) / 1_000_000,
                     response=response,
                 ))
+                log_timing("model.response.committed", operation_id=call_id, request_id=request_key)
                 response.call_record_id = call_id
                 return response
             finally:

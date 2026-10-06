@@ -5,6 +5,8 @@ from typing import Any, cast
 from contextlib import AbstractAsyncContextManager
 
 from core.common.file_io import run_file_io
+from core.common.diagnostic_log import log_timing
+from functools import partial
 from agent.plugin_composition import Context
 from agent.plugin_composition.artifacts import ArtifactRead
 from agent.plugin_composition.messages import MessageReader, MessageWriters, OwnerState, OwnerTransaction
@@ -68,6 +70,8 @@ async def run_reply(
     presentation: ToolPresentation | None = None,
 ) -> Message:
     """普通组合拥有本次程序资源，Source 不必同步签发模型或内容 writer。"""
+    mark = partial(log_timing, session_id=reader.session_id, source=source)
+    mark("reply.begin")
     if tool_names is not None:
         if tool_view is not None or fixed_bindings is None:
             raise ValueError("旧工具名称只可核对原固定 binding")
@@ -106,6 +110,7 @@ async def run_reply(
     from_seq = min((message.seq for message in opened), default=source_head + 1)
     keep_input_ids = tuple(item.message_id for item in opened if isinstance(item.body, Input))
     del opened
+    mark("reply.selection.end")
     async with (
         cleanup(reader, source, from_seq, task=task, drain=tools.drain_calls),
         content.bind() as view,
@@ -116,6 +121,7 @@ async def run_reply(
         # 推理与正文共用输出额度；在冻结请求前确定预算，Context 同样预留它。
         if max_output_tokens is None:
             max_output_tokens = model.descriptor.capabilities.max_output_tokens or 32768
+        mark("tools.menu.begin")
         menu = await tool_program.create_menu(
             reader, source, content=view.checks,
             check_start=check,
@@ -123,6 +129,7 @@ async def run_reply(
             fixed_bindings=fixed_bindings, presentation=presentation,
             child_permit=task.child_permit if task.has_external_permit else None,
         )
+        mark("tools.menu.end", counts={"tools": len(menu.names)})
         if terminal_tools - menu.names:
             raise ValueError("终结工具必须属于本次允许目录")
         output = writers.bind(
@@ -143,6 +150,7 @@ async def run_reply(
         # 2. 内容协议提示与解码来自同一 view；Context 仍只接收已取得的材料。
         async def build_materials(messages: tuple[Message, ...]) -> Materials:
             nonlocal artifacts
+            mark("materials.begin")
             result = await material_view.prepare(
                 messages, source, caller=ctx, reminders=tuple(reminders),
             )
@@ -162,6 +170,7 @@ async def run_reply(
                         ),
                     )
             check()
+            mark("materials.end")
             return {**result, "system_prompt": "\n\n".join(
                 part for part in (cast(str, result["system_prompt"]), *view.prompts, *prompt_hints, menu.system_prompt) if part
             )}

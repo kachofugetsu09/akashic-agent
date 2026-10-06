@@ -22,6 +22,8 @@ from agent.plugin_contracts import (
 from agent.plugin_contracts import json_value
 from agent.plugin_contracts.tools import CallSource, CommitAfter
 from core.common.file_io import run_file_io
+from core.common.diagnostic_log import log_timing
+from functools import partial
 
 from .api import (
     Authorize, Denied, InvalidArguments, MessageReply, OpenTool, Outcome, Result,
@@ -184,11 +186,19 @@ class ToolExecution:
         commit_after: CommitAfter | None = None,
     ) -> Result:
         """恢复先查回执；最终授权后先落盘 start，再进入真实工具。"""
+        mark = partial(log_timing, operation_id=key,
+                       session_id="" if reply is None else reply.reader.session_id,
+                       parent_operation_id="" if reply is None else reply.call_ref.message_id)
+        mark("tool.task.begin")
         # 同批重叠调用只并发执行；结果提交仍等前驱完成。
         async def commit(record: OwnerRecord | None, result: Result) -> Result:
+            mark("tool.commit.wait")
             if commit_after is not None:
                 await commit_after.wait()
-            return await finish(self._state, key, record, result, reply)
+            mark("tool.commit.begin")
+            finished = await finish(self._state, key, record, result, reply)
+            mark("tool.committed")
+            return finished
 
         record = self._record(key, fingerprint)
         if record is not None:
@@ -215,7 +225,9 @@ class ToolExecution:
                 if record.value["phase"] == "requested":
                     source = None if reply is None else reply.source()
                     try:
+                        mark("tool.prepare.begin")
                         prepared = await tool.prepare(arguments, source)
+                        mark("tool.prepare.end")
                         if isinstance(prepared, str):
                             return await commit(
                                 record, Result("error", (ContentPart("text", prepared),)),
@@ -295,8 +307,11 @@ class ToolExecution:
                         (ContentPart("text", str(error)),),
                     ))
                 try:
+                    mark("tool.invoke.begin")
                     result = await tool.invoke(key, final_arguments)
+                    mark("tool.invoke.end")
                 except BaseException as failure:
+                    mark("tool.invoke.failed")
                     # start intent 已耐久；内部异常或取消都不能证明远端没有效果。
                     try:
                         _ = await commit(

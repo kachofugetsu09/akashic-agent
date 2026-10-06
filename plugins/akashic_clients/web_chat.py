@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+from core.common.diagnostic_log import log_timing
 import logging
 import mimetypes
 import os
@@ -501,6 +502,8 @@ class WebChatChannel:
                         if not isinstance(payload, dict):
                             await self._send_error(websocket, "", "消息格式必须是 JSON object")
                             continue
+                        if payload.get("type") == "message.send":
+                            log_timing("web.input.received")
                         _ = await self._handle_client_frame(websocket, cast(dict[str, Any], payload), tasks)
                 except WebSocketDisconnect as error:
                     logger.info("[web_chat] websocket disconnect id=%s code=%s reason=%s",
@@ -1101,6 +1104,7 @@ class WebChatChannel:
         try:
             connection_added = await self._add_connection(session_key, websocket)
             await adapter.admit_captured(runtime, raw)
+            log_timing("web.input.admitted", session_id=session_key, request_id=client_message_id)
         except BaseException as error:
             if previous_session is None:
                 self._client_sessions.pop(client_message_id, None)
