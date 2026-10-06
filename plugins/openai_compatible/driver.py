@@ -473,8 +473,8 @@ def _chat_body(
     if request.max_output_tokens > 0:
         body["max_tokens"] = request.max_output_tokens
     if request.tools:
-        body["tools"] = [_thaw_mapping(item) for item in request.tools]
-        body["tool_choice"] = _thaw(request.tool_choice)
+        body["tools"] = request.tools
+        body["tool_choice"] = request.tool_choice
     if descriptor.reasoning_effort and not request.disable_reasoning:
         body["reasoning_effort"] = descriptor.reasoning_effort
     if request.disable_reasoning:
@@ -1316,12 +1316,13 @@ def _normalize_messages(
     images: list[dict[str, Any]] = []
     pending_calls: set[str] = set()
     for message in messages:
-        item = _thaw_mapping(message)
+        # ModelRequest 已深冻结；只复制需要改写字段的消息外层。
+        item = dict(message)
         role = str(item.get("role") or "")
         content = item.get("content")
         # Chat Completions 的 assistant/tool content 不接受 image_url。
         # 只在请求视图中将图片放到配对完成后的 user 数据消息，保持 call/result 邻接。
-        if role in {"assistant", "tool"} and isinstance(content, list):
+        if role in {"assistant", "tool"} and isinstance(content, (list, tuple)):
             pictures = [block for block in content if block.get("type") == "image_url"]
             if pictures:
                 label = (
@@ -1343,7 +1344,7 @@ def _normalize_messages(
         if role == "assistant" and item.get("tool_calls"):
             if content is None or (isinstance(content, str) and not content.strip()):
                 calls = item.get("tool_calls")
-                first = calls[0] if isinstance(calls, list) and calls else {}
+                first = calls[0] if isinstance(calls, (list, tuple)) and calls else {}
                 function = first.get("function") if isinstance(first, dict) else {}
                 tool_name = (
                     str(function.get("name") or "")
@@ -1419,20 +1420,6 @@ def _estimate_message_tokens(messages: Sequence[Mapping[str, Any]]) -> int:
     if not messages:
         return 0
     return max(1, text_chars // 3 + image_tokens)
-
-
-def _thaw_mapping(value: Mapping[str, Any]) -> dict[str, Any]:
-    return {key: _thaw(item) for key, item in value.items()}
-
-
-def _thaw(value: Any) -> Any:
-    if value is None or isinstance(value, (str, int, float, bool)):
-        return value
-    if isinstance(value, Mapping):
-        return {str(key): _thaw(item) for key, item in value.items()}
-    if isinstance(value, Sequence) and not isinstance(value, (str, bytes, bytearray)):
-        return [_thaw(item) for item in value]
-    return value
 
 
 def _required_string(value: object, name: str) -> str:
