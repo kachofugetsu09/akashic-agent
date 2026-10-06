@@ -105,6 +105,9 @@ async def forward(request):
                 await downstream.write(chunk)
             await downstream.write_eof()
             record("response.closed", label, n, done=done)
+    except asyncio.CancelledError:
+        record("transport.closed" if done else "client.disconnected", label, n, done=done)
+        raise
     except (ConnectionError, ClientError, asyncio.TimeoutError) as error:
         record(
             "transport.closed" if done else "transport.failed",
@@ -135,4 +138,4 @@ async def life(app):
 app = web.Application(client_max_size=30 * 1024**2)
 app.cleanup_ctx.append(life)
 app.router.add_post(r"/{label:[a-zA-Z0-9_-]+}/v1/chat/completions", forward)
-web.run_app(app, host="127.0.0.1", port=args.port, print=None)
+web.run_app(app, host="127.0.0.1", port=args.port, print=None, handler_cancellation=True)

@@ -38,6 +38,7 @@ python scripts/react-performance/proxy.py \
 两边的 Base URL 分别设为 `http://127.0.0.1:2311/akashic-r1/v1` 和
 `http://127.0.0.1:2311/pi-r1/v1`，认证用占位值；真实凭据只由代理读取。
 代理不改变请求正文和响应字节。原始请求/响应仅保存在私有目录，不能直接上传到 PR。
+客户端断开会取消代理的上游等待，记录 `client.disconnected`；不能让已放弃请求与重试重叠。
 首次模型配置探测必须在 benchmark 输入时刻之前完成。
 
 客户端逐行记录 `{"mono_ns": <time.monotonic_ns()>, "event": <原生事件>}`。

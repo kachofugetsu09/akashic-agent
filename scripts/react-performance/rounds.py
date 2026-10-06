@@ -116,6 +116,8 @@ def analyze(
         first = marks.get("provider.first_delta", {}).get("mono_ns")
         done = marks.get("provider.done", {}).get("mono_ns")
         failed = marks.get("transport.failed", {}).get("mono_ns")
+        disconnected = marks.get("client.disconnected", {}).get("mono_ns")
+        failed = failed if failed is not None else disconnected
         output = next((t for t in output_times if t >= start and (stop is None or t <= stop)), None)
         batch = [(a, b) for a, b in tools if a >= start and (stop is None or b <= stop)]
         last_commit = max((t for t in committed if t >= start and (stop is None or t <= stop)), default=None)
@@ -125,7 +127,7 @@ def analyze(
             "round": logical_round,
             "input_bytes": request["bytes"],
             "reasoning_rows": request["reasoning_rows"],
-            "status": "output" if output is not None else "failed" if failed else "incomplete",
+            "status": "output" if output is not None else "disconnected" if disconnected else "failed" if failed else "incomplete",
         }
         segments: list[tuple[str, int | None, int | None]] = [
             ("wait_first_delta_ms", start, first),
