@@ -6,6 +6,8 @@ Long history reads use a private read-only SQLite transaction and connection. Ne
 
 同一 MessageLog 的连接共享弱引用解码缓存，只在完整数据库行相同时复用仍被调用者持有的不可变 Message。每次读取仍执行原 SQL，先由该连接的事务确定可见行；外部修改、撤销和回滚不能通过缓存隐藏。缓存使用独立短锁，不持有 writer 锁，也不延长 Message 的生命周期。
 
+OwnerRecord 也只在实际读取的版本和 JSON 正文完全相同时复用解码结果。弱引用不保留无人使用的大请求；SQL 读取、版本 CAS、固定快照与损坏记录报错保持不变。
+
 普通 `MessageReader.snapshot_async` 与 `OwnerStore.snapshot` 的只读准入不等待另一个线程
 持有的 writer 锁。当前线程能重入的写事务仍使用原连接，读取自己的未提交行；其他读取
 直接打开独立只读事务。准入与 close 使用短锁：close 拒绝后来读者，已取得的只读连接

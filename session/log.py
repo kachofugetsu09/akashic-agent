@@ -356,6 +356,7 @@ class MessageLog:
         self._listener_lock = threading.Lock()
         self._decode_lock = threading.RLock()
         self._decoded: WeakValueDictionary[tuple[object, ...], Message] = WeakValueDictionary()
+        self._decoded_owners: WeakValueDictionary[tuple[object, ...], OwnerRecord] = WeakValueDictionary()
         self._reads = _ReadLocal()
         self._path = Path(path).resolve()
         self._closed = False
@@ -1725,7 +1726,7 @@ class MessageWriter:
             raise MessageConflict("该工具调用已经有结果消息")
 
 
-@dataclass(frozen=True, slots=True)
+@dataclass(frozen=True, slots=True, weakref_slot=True)
 class OwnerRecord:
     version: int
     value: Mapping[str, object]
@@ -1749,7 +1750,18 @@ class OwnerStore:
                 "SELECT version,value FROM owner_records WHERE owner=? AND key=?",
                 (self._owner, key),
             ).fetchone()
-        return None if row is None else _owner_record(row)
+        return None if row is None else self._decode(row)
+
+    def _decode(self, row: sqlite3.Row) -> OwnerRecord:
+        """只复用当前 SQL 行相同且仍被调用者持有的不可变记录。"""
+        key = (row["version"], row["value"])
+        with self._log._decode_lock:
+            record = self._log._decoded_owners.get(key)
+        if record is None:
+            record = _owner_record(row)
+            with self._log._decode_lock:
+                self._log._decoded_owners[key] = record
+        return record
 
     def list(self) -> tuple[tuple[str, OwnerRecord], ...]:
         with self._log._read():
@@ -1757,7 +1769,7 @@ class OwnerStore:
                 "SELECT key,version,value FROM owner_records WHERE owner=? ORDER BY key",
                 (self._owner,),
             ).fetchall()
-        return tuple((row["key"], _owner_record(row)) for row in rows)
+        return tuple((row["key"], self._decode(row)) for row in rows)
 
     def scan(self, *, start: str, stop: str, limit: int = 100) -> tuple[tuple[str, OwnerRecord], ...]:
         """按 key 倒序读取有界区间 [start, stop)，供 owner 分页读取自身索引。"""
@@ -1771,7 +1783,7 @@ class OwnerStore:
                 "WHERE owner=? AND key>=? AND key<? ORDER BY key DESC LIMIT ?",
                 (self._owner, start, stop, limit),
             ).fetchall()
-        return tuple((row["key"], _owner_record(row)) for row in rows)
+        return tuple((row["key"], self._decode(row)) for row in rows)
 
     def snapshot(self, callback: Callable[[], _T]) -> _T:
         """在同一只读快照内完成同步分页，不授予 SQL 或新的写入权限。"""
