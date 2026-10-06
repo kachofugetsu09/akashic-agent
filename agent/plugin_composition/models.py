@@ -137,10 +137,10 @@ class ModelRequest:
     def __post_init__(self) -> None:
         """在唯一调用边界冻结请求，adapter 和并行调用不能改写彼此输入。"""
         object.__setattr__(
-            self, "messages", tuple(_freeze_json_mapping(row) for row in self.messages)
+            self, "messages", _freeze_json_rows(self.messages)
         )
         object.__setattr__(
-            self, "tools", tuple(_freeze_json_mapping(row) for row in self.tools)
+            self, "tools", _freeze_json_rows(self.tools)
         )
         object.__setattr__(self, "content_refs", read_content_refs(self.content_refs))
         if type(self.content_transformed) is not bool:
@@ -613,6 +613,12 @@ class ModelUnavailableError(ModelError): ...
 
 
 class RevisionConflictError(ModelError): ...
+
+
+def _freeze_json_rows(value: Sequence[Mapping[str, Any]]) -> tuple[Mapping[str, Any], ...]:
+    """接纳普通 Sequence；内部深冻结数组不再逐行遍历。"""
+    rows = value if isinstance(value, (list, tuple)) else tuple(value)
+    return cast(tuple[Mapping[str, Any], ...], freeze_json(rows))
 
 
 def _freeze_json_mapping(value: Mapping[str, Any]) -> Mapping[str, Any]:

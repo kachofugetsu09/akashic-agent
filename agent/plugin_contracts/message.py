@@ -66,14 +66,20 @@ class _FrozenJson(dict[str, object]):
     update = _immutable
 
 
+class _FrozenJsonArray(tuple[object, ...]):
+    """标记已经深冻结的 JSON 数组，边界间直接复用。"""
+
+    __slots__ = ()
+
+
 def freeze_json(value: object) -> object:
     """复制外部 JSON；已经冻结的对象不重复校验或复制。"""
-    if isinstance(value, _FrozenJson):
+    if isinstance(value, (_FrozenJson, _FrozenJsonArray)):
         return value
     active: set[int] = set()
 
     def freeze(item: object) -> object:
-        if item is None or isinstance(item, (str, bool, int, _FrozenJson)):
+        if item is None or isinstance(item, (str, bool, int, _FrozenJson, _FrozenJsonArray)):
             return item
         if isinstance(item, float):
             if not math.isfinite(item):
@@ -93,7 +99,7 @@ def freeze_json(value: object) -> object:
                             raise TypeError("消息 JSON 对象的 key 必须是字符串")
                         frozen[key] = freeze(nested)
                     return _FrozenJson(frozen)
-                return tuple(freeze(nested) for nested in cast(list[object] | tuple[object, ...], item))
+                return _FrozenJsonArray(freeze(nested) for nested in cast(list[object] | tuple[object, ...], item))
             finally:
                 active.remove(identity)
         raise TypeError(f"消息内容必须是 JSON 值，实际为 {type(item).__name__}")
