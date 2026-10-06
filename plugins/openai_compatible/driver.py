@@ -1305,14 +1305,13 @@ def _estimate_context_tokens(
 def _normalize_messages(
     messages: Sequence[Mapping[str, Any]],
 ) -> list[dict[str, Any]]:
-    """Match the established generic Chat Completions message contract."""
+    """转换消息内容，同时保留模型继续工具推理所需的 reasoning_content。"""
 
     normalized: list[dict[str, Any]] = []
     images: list[dict[str, Any]] = []
     pending_calls: set[str] = set()
     for message in messages:
         item = _thaw_mapping(message)
-        item.pop("reasoning_content", None)
         role = str(item.get("role") or "")
         content = item.get("content")
         # Chat Completions 的 assistant/tool content 不接受 image_url。
