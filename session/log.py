@@ -1904,7 +1904,8 @@ class OwnerTransaction:
             raise MessageConflict("owner 记录版本已变化")
         version = 0 if current is None else current.version + 1
         payload = json.dumps(
-            json_value(cast(Mapping[str, object], frozen)),
+            frozen,
+            default=dict,
             ensure_ascii=False,
             sort_keys=True,
             allow_nan=False,

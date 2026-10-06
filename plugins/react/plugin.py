@@ -142,33 +142,25 @@ def _competing(message: Message, source: str, related: frozenset[CallRef]) -> bo
     return isinstance(body, ToolResult) and body.call_ref in related
 
 
-def _plain_json(value: object) -> object:
-    if isinstance(value, Mapping):
-        return {str(key): _plain_json(item) for key, item in value.items()}
-    if isinstance(value, (tuple, list)):
-        return [_plain_json(item) for item in value]
-    return value
-
-
 def _encode_request(request: ModelRequest) -> Mapping[str, object]:
     """生成准备只冻结模型可见字段；on_delta/request_key 是执行细节。"""
     continuation = request.continuation
     return {
-        "messages": _plain_json(request.messages),
-        "tools": _plain_json(request.tools),
+        "messages": request.messages,
+        "tools": request.tools,
         "max_output_tokens": request.max_output_tokens,
         "system_prompt": request.system_prompt,
-        "tool_choice": _plain_json(request.tool_choice),
+        "tool_choice": request.tool_choice,
         "prompt_cache_key": request.prompt_cache_key,
         "disable_reasoning": request.disable_reasoning,
-        "content_refs": _plain_json(request.content_refs),
+        "content_refs": request.content_refs,
         "content_transformed": request.content_transformed,
         "continuation": (
             None
             if continuation is None
             else {
                 "binding_id": continuation.binding_id,
-                "payload": _plain_json(continuation.payload),
+                "payload": continuation.payload,
             }
         ),
     }
@@ -768,7 +760,7 @@ async def react(
             async def freeze_request(
                 attempt: int, request: ModelRequest, built: Materials
             ) -> tuple[ModelRequest, Materials]:
-                # Context 与模型句柄只在当前 scope 读取，worker 接收固定普通数据。
+                # Context 与模型句柄只在当前 scope 读取，worker 接收已冻结的请求字段。
                 binding_id = model.descriptor.binding_id
                 encoded_request = _encode_request(request)
                 fixed_materials = dict(built)
