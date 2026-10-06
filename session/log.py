@@ -1899,10 +1899,7 @@ class OwnerTransaction:
         frozen = freeze_json(value)
         if not isinstance(frozen, Mapping):
             raise TypeError("owner 状态必须是 JSON 对象")
-        current = self.read(key)
-        if (None if current is None else current.version) != expected_version:
-            raise MessageConflict("owner 记录版本已变化")
-        version = 0 if current is None else current.version + 1
+        version = 0 if expected_version is None else expected_version + 1
         payload = json.dumps(
             frozen,
             default=dict,
@@ -1910,10 +1907,21 @@ class OwnerTransaction:
             sort_keys=True,
             allow_nan=False,
         )
-        _ = self._store._log._connection.execute(
-            "INSERT INTO owner_records VALUES (?,?,?,?) ON CONFLICT(owner,key) DO UPDATE SET version=excluded.version,value=excluded.value",
-            (self._store._owner, key, version, payload),
-        )
+        # SQL 直接比较版本；保存新值不需要读取或解码旧正文。
+        if expected_version is None:
+            cursor = self._store._log._connection.execute(
+                "INSERT INTO owner_records VALUES (?,?,?,?) "
+                "ON CONFLICT(owner,key) DO NOTHING",
+                (self._store._owner, key, version, payload),
+            )
+        else:
+            cursor = self._store._log._connection.execute(
+                "UPDATE owner_records SET version=?,value=? "
+                "WHERE owner=? AND key=? AND version=?",
+                (version, payload, self._store._owner, key, expected_version),
+            )
+        if cursor.rowcount != 1:
+            raise MessageConflict("owner 记录版本已变化")
         return OwnerRecord(version, cast(Mapping[str, object], frozen))
 
     def append(
