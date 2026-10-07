@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
-from collections.abc import AsyncGenerator, Awaitable, Callable, Iterable, Mapping, Sequence
+from collections.abc import AsyncGenerator, Awaitable, Callable, Mapping, Sequence
 from contextlib import AbstractContextManager, ExitStack, asynccontextmanager
 from dataclasses import replace
 from functools import partial
@@ -84,49 +84,92 @@ class _Superseded(Exception):
     """提交前提检查发现同来源新事实；被替代的旧草稿不写 failure。"""
 
 
-def _open_calls(messages: Iterable[Message], source: str) -> tuple[tuple[CallRef, ...], tuple[CallRef, ...]]:
-    """按持久边界拆分未回执调用：未闭段继续排空，abandon 区幂等结算。"""
-    boundary = -1
-    abandoned_upto = -1
-    calls: dict[CallRef, int] = {}
-    results: set[CallRef] = set()
-    for message in messages:
-        if message.source != source:
-            continue
-        body = message.body
-        if isinstance(body, Output):
-            if body.finish != "continue":
-                boundary = message.seq
-            calls.update(
-                (CallRef(message.message_id, index), message.seq)
-                for index, part in enumerate(body.parts) if isinstance(part, ToolCall)
-            )
-        elif isinstance(body, Control) and body.action == "abandon":
-            boundary = max(boundary, body.through_seq)
-            abandoned_upto = max(abandoned_upto, body.through_seq)
-        elif isinstance(body, ToolResult):
-            results.add(body.call_ref)
-    pending: list[CallRef] = []
-    abandoned: list[CallRef] = []
-    for ref, seq in calls.items():
-        if ref in results:
-            continue
-        if seq <= abandoned_upto:
-            abandoned.append(ref)
-        elif seq > boundary:
-            pending.append(ref)
-    return tuple(pending), tuple(abandoned)
+class _History:
+    """按新消息推进本来源的执行视图；旧前缀变化时从事实重建。"""
 
+    def __init__(self, source: str) -> None:
+        self.source = source
+        self.messages: tuple[Message, ...] = ()
+        self.head = -1
+        self.boundary_id = "initial"
+        self.reminder_input_id: str | None = None
+        self._boundary = -1
+        self._abandoned_upto = -1
+        self._calls: dict[CallRef, int] = {}
+        self._results: set[CallRef] = set()
+        self._succeeded: set[CallRef] = set()
+        self._terminal_calls: list[tuple[CallRef, int, str]] = []
+        self._outputs: list[int] = []
 
-def _pending_calls(messages: Iterable[Message], source: str) -> tuple[CallRef, ...]:
-    """只恢复本来源尚未关闭的请求；abandon 的晚到结果不唤醒新决策。"""
-    return _open_calls(messages, source)[0]
+    def update(self, messages: tuple[Message, ...]) -> None:
+        """只解释新增尾部；比较实际 Message 身份，不以相同 id 猜测内容未变。"""
+        previous = self.messages
+        if len(messages) < len(previous) or any(
+            old is not new for old, new in zip(previous, messages)
+        ):
+            self.__init__(self.source)
+            previous = ()
+        for message in messages[len(previous):]:
+            if message.source != self.source:
+                continue
+            self.head = message.seq
+            body = message.body
+            if isinstance(body, Input):
+                self.boundary_id = self.reminder_input_id = message.message_id
+            elif isinstance(body, Output):
+                if body.finish != "continue":
+                    self._boundary = message.seq
+                    self._outputs.clear()
+                elif any(isinstance(part, ContentPart) and part.kind == "model.facts"
+                         for part in body.parts):
+                    self._outputs.append(message.seq)
+                for index, part in enumerate(body.parts):
+                    if isinstance(part, ToolCall):
+                        ref = CallRef(message.message_id, index)
+                        if ref not in self._results:
+                            self._calls[ref] = message.seq
+                        if body.finish == "continue":
+                            self._terminal_calls.append((ref, message.seq, part.binding_id))
+            elif isinstance(body, Control) and body.action == "abandon":
+                self.boundary_id = message.message_id
+                self._boundary = max(self._boundary, body.through_seq)
+                self._abandoned_upto = max(self._abandoned_upto, body.through_seq)
+                self._outputs = [seq for seq in self._outputs if seq > body.through_seq]
+            elif isinstance(body, ToolResult):
+                self._results.add(body.call_ref)
+                self._calls.pop(body.call_ref, None)
+                if body.outcome == "success":
+                    self._succeeded.add(body.call_ref)
+        self.messages = messages
 
+    @property
+    def steps(self) -> int:
+        return len(self._outputs)
 
-def _related_results(messages: Sequence[Message], source: str) -> frozenset[CallRef]:
-    """冻结前缀内缺回执的调用：其结算结果属于本代请求的读集。"""
-    pending, abandoned = _open_calls(messages, source)
-    return frozenset((*pending, *abandoned))
+    def open_calls(self) -> tuple[tuple[CallRef, ...], tuple[CallRef, ...]]:
+        """保留调用顺序；已关闭但未结算的旧调用仍可由之后的 abandon 结算。"""
+        pending: list[CallRef] = []
+        abandoned: list[CallRef] = []
+        for ref, seq in self._calls.items():
+            if seq <= self._abandoned_upto:
+                abandoned.append(ref)
+            elif seq > self._boundary:
+                pending.append(ref)
+        return tuple(pending), tuple(abandoned)
+
+    def related(self, messages: tuple[Message, ...]) -> frozenset[CallRef]:
+        """正常提交复用当前视图；恢复旧冻结请求时只读取其原有前缀。"""
+        history = self
+        if messages is not self.messages:
+            history = _History(self.source)
+            history.update(messages)
+        pending, abandoned = history.open_calls()
+        return frozenset((*pending, *abandoned))
+
+    def terminal(self, tools: ToolMenu, names: frozenset[str]) -> bool:
+        calls = [(ref, seq) for ref, seq, binding in self._terminal_calls
+                 if tools.name(binding) in names]
+        return any(seq > self._boundary and ref in self._succeeded for ref, seq in calls)
 
 
 def _competing(message: Message, source: str, related: frozenset[CallRef]) -> bool:
@@ -190,47 +233,6 @@ def _decode_request(value: object) -> ModelRequest:
             )
         ),
     )
-
-
-def _steps(messages: Sequence[Message], source: str) -> int:
-    """完成步数来自本来源未闭段的模型 Output，中断或进程重启不会重置。"""
-    outputs: list[Message] = []
-    for message in messages:
-        if message.source != source:
-            continue
-        body = message.body
-        if isinstance(body, Output):
-            if body.finish != "continue":
-                outputs.clear()
-            elif any(isinstance(part, ContentPart) and part.kind == "model.facts" for part in body.parts):
-                outputs.append(message)
-        elif isinstance(body, Control) and body.action == "abandon":
-            outputs = [item for item in outputs if item.seq > body.through_seq]
-    return len(outputs)
-
-
-def _terminal_result(messages: Sequence[Message], source: str, tools: ToolMenu,
-                     names: frozenset[str]) -> bool:
-    """终结规则只读取本来源未闭段的成功回执，不把调用意图当作效果。"""
-    boundary = -1
-    calls: dict[CallRef, int] = {}
-    succeeded: set[CallRef] = set()
-    for message in messages:
-        if message.source != source:
-            continue
-        body = message.body
-        if isinstance(body, Output):
-            if body.finish != "continue":
-                boundary = message.seq
-            else:
-                calls.update((CallRef(message.message_id, index), message.seq)
-                             for index, part in enumerate(body.parts)
-                             if isinstance(part, ToolCall) and tools.name(part.binding_id) in names)
-        elif isinstance(body, Control) and body.action == "abandon":
-            boundary = max(boundary, body.through_seq)
-        elif isinstance(body, ToolResult) and body.outcome == "success":
-            succeeded.add(body.call_ref)
-    return any(seq > boundary and ref in succeeded for ref, seq in calls.items())
 
 
 class _OrderGate:
@@ -558,61 +560,36 @@ async def react(
         raise ValueError("并行工具上限必须是正整数")
     if reader.session_id != writer.session_id:
         raise ValueError("ReAct reader 与 writer 必须属于同一 Session")
+    history = _History(writer.source)
     while True:
         operation_id = uuid4().hex
         mark = partial(log_timing, session_id=reader.session_id, source=writer.source, operation_id=operation_id)
         mark("react.begin")
         # 1. 放弃区保持串行结算；未闭段里连续的 parallel 调用才重叠。
-        pending, abandoned = await run_file_io(lambda: reader.scan(
-            lambda rows: _open_calls(rows, writer.source), source=writer.source,
-        ))
+        history.update(await reader.snapshot_async(through_seq=reader.head()))
+        pending, abandoned = history.open_calls()
         for call in abandoned:
             # 已放弃调用的结算故障必须先阻断本来源：缺回执的调用不能带着未知效果进入新请求。
             await tools.settle_abandoned(call)
         if abandoned:
             # 放弃结算已追加事实，重新读取；普通路径复用同一次扫描的待执行调用。
-            pending = await run_file_io(lambda: reader.scan(
-                lambda rows: _pending_calls(rows, writer.source), source=writer.source,
-            ))
+            history.update(await reader.snapshot_async(through_seq=reader.head()))
+            pending, _ = history.open_calls()
         await _settle_pending(
             reader, tools, pending, max_parallel_calls, capture_scope,
         )
         mark("tools.settled")
         snapshot = await reader.snapshot_async(through_seq=reader.head())
         mark("history.loaded", counts={"messages": len(snapshot)})
-        head = max((m.seq for m in snapshot if m.source == writer.source), default=-1)
-        # 本代准备的固定身份：最近一条同来源 Input 或 abandon Control。
-        # pause/failure/resume 是对同一业务项的操作，不是新边界：resume 必须
-        # 回到原准备核对旧回执，不得借 prep_base 变化绕过 started/孤儿/
-        # 终结检查。无关事实抬高 head 不产生新准备、不重复付费。
-        boundary_id = next(
-            (
-                message.message_id
-                for message in reversed(snapshot)
-                if message.source == writer.source
-                and (
-                    isinstance(message.body, Input)
-                    or (
-                        isinstance(message.body, Control)
-                        and message.body.action == "abandon"
-                    )
-                )
-            ),
-            "initial",
-        )
-        reminder_input_id = next(
-            (
-                message.message_id
-                for message in reversed(snapshot)
-                if message.source == writer.source and isinstance(message.body, Input)
-            ),
-            None,
-        )
+        history.update(snapshot)
+        head = history.head
+        boundary_id = history.boundary_id
+        reminder_input_id = history.reminder_input_id
         frozen = snapshot
 
         async def commit(message_id: str, body: Output, metadata: Mapping[str, object] | None = None) -> Message:
             """检查与追加同事务；竞争 Output、新边界或读集内结果都取代旧草稿。"""
-            related = _related_results(frozen, writer.source)
+            related = history.related(frozen)
             if state is None:
                 current_head = head
                 for _ in range(4):
@@ -649,11 +626,11 @@ async def react(
             return await state.transact_async(narrow)
 
         try:
-            if terminal_tools and _terminal_result(snapshot, writer.source, tools, terminal_tools):
+            if terminal_tools and history.terminal(tools, terminal_tools):
                 return await commit(uuid4().hex, Output((), "quiet"))
         except _Superseded:
             raise asyncio.CancelledError from None
-        if max_steps > 0 and _steps(snapshot, writer.source) >= max_steps:
+        if max_steps > 0 and history.steps >= max_steps:
             raise StepLimit(f"本来源未完成工作已达到 {max_steps} 个模型输出")
 
         # 2. 生成准备冻结请求、材料、binding 与 Output 身份；恢复不重建不漂移。
@@ -666,7 +643,7 @@ async def react(
             # 输出前驱位置用该来源已有 Output 计数；与边界身份共同固定本代。
             prep_base = (
                 f"reply:{reader.session_id}:{writer.source}"
-                f":{boundary_id}:{_steps(snapshot, writer.source)}"
+                f":{boundary_id}:{history.steps}"
             )
             base_seq = reader.head()
 
@@ -825,7 +802,7 @@ async def react(
             operation_id=operation_id,
             fallback_key=(
                 f"reply:{reader.session_id}:{writer.source}"
-                f":{boundary_id}:{_steps(snapshot, writer.source)}"
+                f":{boundary_id}:{history.steps}"
             ),
         ) as (response, prepared, message_id, request):
             # 先检查完整性：即使截断参数恰好是合法 JSON，也不能执行该批工具。
