@@ -221,6 +221,8 @@ class MessageProjection:
         self._prepare_content = prepare_content
         self._tool_names = tool_names
         self._last_rows: tuple[Mapping[str, Any], ...] = ()
+        self._facts: dict[str, tuple[Message, Mapping[str, Any] | None]] = {}
+        self._arguments: dict[int, tuple[Mapping[str, Any], str]] = {}
 
     @property
     def context_window(self) -> int | None:
@@ -348,18 +350,28 @@ class MessageProjection:
         continuation_seq = -1
         continuation_transformed = False
         results: dict[CallRef, Message] = {}
+        # 只复用同一不可变 Message 的静态检查；调用账和内容贡献者仍每轮读取。
+        current_facts: dict[str, tuple[Message, Mapping[str, Any] | None]] = {}
         recorded_facts: dict[str, Mapping[str, Any]] = {}
         response_metadata: dict[str, Mapping[str, Any]] = {}
         for message in messages:
             if not isinstance(message.body, Output):
                 continue
-            recorded = [part for part in message.body.parts
-                        if isinstance(part, ContentPart) and part.kind == "model.facts"]
-            if len(recorded) > 1:
-                raise ValueError("同一 Output 出现多个 model.facts")
-            if recorded:
-                _ = check_facts(recorded[0])
-                recorded_facts[message.message_id] = cast(Mapping[str, Any], recorded[0].value)
+            previous = self._facts.get(message.message_id)
+            if previous is not None and previous[0] is message:
+                value = previous[1]
+            else:
+                recorded = [part for part in message.body.parts
+                            if isinstance(part, ContentPart) and part.kind == "model.facts"]
+                if len(recorded) > 1:
+                    raise ValueError("同一 Output 出现多个 model.facts")
+                value = None
+                if recorded:
+                    _ = check_facts(recorded[0])
+                    value = cast(Mapping[str, Any], recorded[0].value)
+            current_facts[message.message_id] = (message, value)
+            if value is not None:
+                recorded_facts[message.message_id] = value
         # 调用账 owner 批量读取窄字段；插件自带 reader 保持原调用合同。
         read_call = self._read_call
         if isinstance(read_call, ModelCallReader):
@@ -386,13 +398,15 @@ class MessageProjection:
                 metadata = receipt.get("provider_metadata")
                 if metadata is not None and not value.get("content_transformed", False):
                     response_metadata[message.message_id] = metadata
-            indices = {
-                str(index)
-                for index, part in enumerate(body.parts)
-                if isinstance(part, ToolCall) or (isinstance(part, ContentPart) and part.kind == "model.tool_rejection")
-            }
-            if set(value["tool_ids"]) != indices:
-                raise ValueError("模型工具 ID 不匹配实际 Output 调用位置")
+            previous = self._facts.get(message.message_id)
+            if previous is None or previous[0] is not message:
+                indices = {
+                    str(index)
+                    for index, part in enumerate(body.parts)
+                    if isinstance(part, ToolCall) or (isinstance(part, ContentPart) and part.kind == "model.tool_rejection")
+                }
+                if set(value["tool_ids"]) != indices:
+                    raise ValueError("模型工具 ID 不匹配实际 Output 调用位置")
             state = value["continuation"]
             message_continuation = (
                 None
@@ -460,6 +474,16 @@ class MessageProjection:
                 seen.add(ref)
             return rendered.blocks
 
+        current_arguments: dict[int, tuple[Mapping[str, Any], str]] = {}
+
+        def encode_arguments(arguments: Mapping[str, Any]) -> str:
+            """参数来自深冻结的消息，只保留当前窗口实际使用的编码。"""
+            previous = self._arguments.get(id(arguments))
+            encoded = (previous[1] if previous is not None and previous[0] is arguments else
+                       json.dumps(json_value(arguments), ensure_ascii=False, separators=(",", ":")))
+            current_arguments[id(arguments)] = (arguments, encoded)
+            return encoded
+
         # 3. 只在请求中调整 call/result 邻接顺序，不产生新消息或伪造观察。
         rows: list[Mapping[str, Any]] = []
         used_results: set[str] = set()
@@ -503,9 +527,7 @@ class MessageProjection:
                         rejected = cast(Mapping[str, Any], part.value)
                         calls.append({
                             "id": identity, "type": "function",
-                            "function": {"name": rejected["name"], "arguments": json.dumps(
-                                json_value(rejected["arguments"]), ensure_ascii=False, separators=(",", ":"),
-                            )},
+                            "function": {"name": rejected["name"], "arguments": encode_arguments(rejected["arguments"])},
                         })
                         observations.append({"role": "tool", "tool_call_id": identity, "content": [
                             {"type": "text", "text": "调用未执行：" + rejected["error"]},
@@ -565,14 +587,8 @@ class MessageProjection:
                             if raw_call is None
                             else raw_call["name"]
                         ),
-                        "arguments": json.dumps(
-                            json_value(
-                                part.arguments
-                                if raw_call is None
-                                else raw_call["arguments"]
-                            ),
-                            ensure_ascii=False,
-                            separators=(",", ":"),
+                        "arguments": encode_arguments(
+                            part.arguments if raw_call is None else raw_call["arguments"],
                         ),
                     },
                 })
@@ -632,6 +648,8 @@ class MessageProjection:
         request = ModelRequest(messages=rows, continuation=None if changed_content else continuation,
                                content_refs=tuple(content_refs), content_transformed=changed_content)
         self._last_rows = tuple(request.messages)
+        self._facts = current_facts
+        self._arguments = current_arguments
         return request
 
 
