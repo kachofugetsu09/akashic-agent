@@ -620,8 +620,8 @@ class MessageLog:
                     _logger.warning("日志 listener 通知失败，保留订阅待周期核对: %r", error)
 
     @contextmanager
-    def _read(self) -> Generator[sqlite3.Connection]:
-        """Pin a private read connection; nested writer reads keep their transaction."""
+    def _read(self, *, snapshot: bool = True) -> Generator[sqlite3.Connection]:
+        """借用只读连接；组合读取固定快照，单条查询使用 SQLite 自身的快照。"""
         if self._reads.current is not None:
             yield self._reads.current.connection
             return
@@ -639,15 +639,22 @@ class MessageLog:
         with self._read_admission:
             if self._closed:
                 raise RuntimeError("MessageLog is closed")
-            read = self._idle_reads.pop() if self._idle_reads else _ReadConnection(
-                sqlite3.connect(self._path.as_uri() + "?mode=ro", uri=True, check_same_thread=False),
-                threading.RLock(),
-            )
+            if self._idle_reads:
+                read = self._idle_reads.pop()
+            else:
+                connection = sqlite3.connect(
+                    self._path.as_uri() + "?mode=ro", uri=True, check_same_thread=False)
+                try:
+                    connection.row_factory = sqlite3.Row
+                    _ = connection.execute("PRAGMA query_only=ON")
+                except BaseException:
+                    connection.close()
+                    raise
+                read = _ReadConnection(connection, threading.RLock())
             connection = read.connection
             try:
-                connection.row_factory = sqlite3.Row
-                _ = connection.execute("PRAGMA query_only=ON")
-                _ = connection.execute("BEGIN")
+                if snapshot:
+                    _ = connection.execute("BEGIN")
             except BaseException:
                 connection.close()
                 raise
@@ -659,7 +666,8 @@ class MessageLog:
             self._reads.current = None
             try:
                 # 归还前结束快照；下次借用必须观察新的已提交状态。
-                connection.rollback()
+                if snapshot:
+                    connection.rollback()
             except BaseException:
                 connection.close()
                 raise
@@ -965,7 +973,7 @@ class MessageReader:
 
     def metadata(self) -> Mapping[str, object] | None:
         """读取不可变元数据副本；未知 Session 返回 None，不创建会话。"""
-        with self._log._read():
+        with self._log._read(snapshot=False):
             row = self._log._connection.execute(
                 "SELECT metadata FROM sessions WHERE key=?", (self._session_id,),
             ).fetchone()
@@ -975,7 +983,7 @@ class MessageReader:
 
     @property
     def attributes(self) -> SessionAttributes:
-        with self._log._read():
+        with self._log._read(snapshot=False):
             row = self._log._connection.execute("SELECT attributes FROM sessions WHERE key=?", (self._session_id,)).fetchone()
         if row is None:
             raise ValueError("Session 尚未接纳")
@@ -985,7 +993,7 @@ class MessageReader:
     def deleted(self) -> bool:
         """软删只是目录与导航的呈现状态；直接读取仍返回原消息。"""
         column = "deleted_at" if self._log._has_deleted else "NULL AS deleted_at"
-        with self._log._read():
+        with self._log._read(snapshot=False):
             row = self._log._connection.execute(
                 f"SELECT {column} FROM sessions WHERE key=?", (self._session_id,),
             ).fetchone()
@@ -997,7 +1005,7 @@ class MessageReader:
     def title(self) -> str | None:
         """显式标题覆盖；None 表示沿用首条消息推导。"""
         column = "title" if self._log._has_title else "NULL AS title"
-        with self._log._read():
+        with self._log._read(snapshot=False):
             row = self._log._connection.execute(
                 f"SELECT {column} FROM sessions WHERE key=?", (self._session_id,),
             ).fetchone()
@@ -1026,13 +1034,13 @@ class MessageReader:
             values.append(source)
         sql += " ORDER BY seq LIMIT ?"
         values.append(limit)
-        with self._log._read():
+        with self._log._read(snapshot=False):
             rows = self._log._connection.execute(sql, values).fetchall()
             return tuple(self._log._decode(row) for row in rows)
 
     def source_names(self) -> frozenset[str]:
         """只读取本 Session 中出现过的来源，不解码消息正文。"""
-        with self._log._read():
+        with self._log._read(snapshot=False):
             rows = self._log._connection.execute(
                 "SELECT DISTINCT source FROM messages WHERE session_key=?", (self._session_id,),
             ).fetchall()
@@ -1040,7 +1048,7 @@ class MessageReader:
 
     def latest_input(self, source: str, *, through_seq: int) -> Message | None:
         """读取指定前缀中最后一条同来源 Input，后来输入不改变旧回复的目的地。"""
-        with self._log._read():
+        with self._log._read(snapshot=False):
             row = self._log._connection.execute(
                 "SELECT * FROM messages WHERE session_key=? AND source=? AND seq<=? "
                 "AND json_extract(body,'$.kind')='input' ORDER BY seq DESC LIMIT 1",
@@ -1050,7 +1058,7 @@ class MessageReader:
 
     def latest_input_seq(self, source: str, *, through_seq: int) -> int | None:
         """Read the last Input position without loading its content or metadata."""
-        with self._log._read():
+        with self._log._read(snapshot=False):
             row = self._log._connection.execute(
                 "SELECT seq FROM messages WHERE session_key=? AND source=? AND seq<=? "
                 "AND json_extract(body,'$.kind')='input' ORDER BY seq DESC LIMIT 1",
@@ -1062,7 +1070,7 @@ class MessageReader:
         self, source: str, *, after_seq: int, through_seq: int,
     ) -> int | None:
         """Read the last terminal Output position in a fixed source range."""
-        with self._log._read():
+        with self._log._read(snapshot=False):
             row = self._log._connection.execute(
                 "SELECT seq FROM messages WHERE session_key=? AND source=? AND seq>? AND seq<=? "
                 "AND json_extract(body,'$.kind')='output' "
@@ -1188,7 +1196,7 @@ class MessageReader:
 
     def get(self, message_id: str) -> Message | None:
         """按不可变身份读取消息，不能跨 reader 获授的 Session。"""
-        with self._log._read():
+        with self._log._read(snapshot=False):
             row = self._log._connection.execute(
                 "SELECT * FROM messages WHERE id=? AND session_key=?",
                 (message_id, self._session_id),
@@ -1228,7 +1236,7 @@ class MessageReader:
         if source is not None:
             sql += " AND source=?"
             values.append(source)
-        with self._log._read():
+        with self._log._read(snapshot=False):
             return self._log._connection.execute(sql, values).fetchone()[0]
 
     async def follow_heads(self) -> AsyncGenerator[int, None]:
@@ -1757,7 +1765,7 @@ class OwnerStore:
             raise ValueError("原子提交不能跨存储 authority")
 
     def read(self, key: str) -> OwnerRecord | None:
-        with self._log._read():
+        with self._log._read(snapshot=False):
             row = self._log._connection.execute(
                 "SELECT version,value FROM owner_records WHERE owner=? AND key=?",
                 (self._owner, key),
@@ -1776,7 +1784,7 @@ class OwnerStore:
         return record
 
     def list(self) -> tuple[tuple[str, OwnerRecord], ...]:
-        with self._log._read():
+        with self._log._read(snapshot=False):
             rows = self._log._connection.execute(
                 "SELECT key,version,value FROM owner_records WHERE owner=? ORDER BY key",
                 (self._owner,),
@@ -1789,7 +1797,7 @@ class OwnerStore:
             raise ValueError("状态扫描需要递增的 key 区间")
         if type(limit) is not int or not 1 <= limit <= 1000:
             raise ValueError("状态扫描 limit 必须介于 1 和 1000")
-        with self._log._read():
+        with self._log._read(snapshot=False):
             rows = self._log._connection.execute(
                 "SELECT key,version,value FROM owner_records "
                 "WHERE owner=? AND key>=? AND key<? ORDER BY key DESC LIMIT ?",
