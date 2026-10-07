@@ -1139,6 +1139,7 @@ class ModelsStore:
         with self._write_lock:
             if self._write_connection is None:
                 connection = sqlite3.connect(self.path, check_same_thread=False)
+                connection.execute("PRAGMA synchronous=NORMAL")  # WAL 下提交不落 fsync；应用崩溃不丢已提交事务，仅机器断电可能丢尾部
                 connection.execute("PRAGMA foreign_keys = ON")
                 connection.row_factory = sqlite3.Row
                 self._write_connection = connection

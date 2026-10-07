@@ -370,6 +370,7 @@ class MessageLog:
             _check_schema(self._connection)
             # WAL lets a pinned history read coexist with short committed writes.
             mode = self._connection.execute("PRAGMA journal_mode=WAL").fetchone()[0]
+            self._connection.execute("PRAGMA synchronous=NORMAL")  # WAL 下提交不落 fsync；应用崩溃不丢已提交事务，仅机器断电可能丢尾部
             if mode != "wal":
                 raise RuntimeError("MessageLog requires a file-backed WAL database")
             fresh = (
