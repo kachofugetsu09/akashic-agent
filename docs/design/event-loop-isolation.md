@@ -31,11 +31,20 @@ MessageLog 最多保留四个空闲只读连接。一次读取独占借用的连
 
 短 Reader/OwnerStore/Catalog/binding 读取使用同一 private RO 准入，自己的写事务内读取仍重入原连接。
 listener 登记和释放只持有其现有注册表的短锁，不等待 writer 的磁盘工作。
-增量 reader 的同步 snapshot、剩余 Core 写入和关闭仍有各自的同步路径；不能据此声称全部 I/O 已异步化。
+增量 reader 的同步调用、剩余 Core 写入和关闭仍有同步路径；不能据此声称全部 I/O 已异步化。
 
 MessageLog uses file-backed WAL mode so a pinned read does not delay a writer's commit. This changes the runtime journal mode, not the schema. Backups must use SQLite backup or include the SQLite sidecars; copying only the live main database file is not a snapshot. Existing databases keep their schema and data; an unsupported journal mode is rejected explicitly. Short synchronous writes can still wait on SQLite file-level contention; this change does not claim that all storage I/O is asynchronous.
 
-回复准备在等待历史前固定来源 head 和完整消息 head。增量异步快照的解码、原连接 data_version 核对和缓存大小 SQL 都在同一个文件 worker 完成，取消等待 worker 实际退出。writer 忙时跳过可选缓存预热，private RO 仍可读取已提交前缀；只有原连接版本未变且 writer 空闲时才发布原有有界缓存。外部编辑使缓存不能复用，不重跑或推翻本次固定快照。后续追加仍按尾部补读，外部编辑仍在下次同步读取时使旧缓存失效。已准入的 private reader 可跨 close 完成，关闭后跳过缓存发布。
+回复准备在等待历史前固定来源 head 和完整消息 head。回复范围内的增量 reader 持有
+已提交消息前缀，生命周期与当前回复一致；同步 scan/snapshot 和异步 snapshot 共用同一读取路径。
+正常追加只补读尾部，来源筛选与旧前缀查询不覆盖完整视图。没有全局永久历史缓存。
+
+每次先非阻塞检查原 writer 连接的 SQLite data_version，再以独立只读事务固定实际 head。
+原 writer 只追加消息；其他连接的编辑、删除或恢复改变该版本，使旧前缀失效。
+补读后再检查版本；若外部变更夹在检查与快照之间，在同一个已固定的 RO 快照内完整重读，
+不交付旧前缀与新尾部混合的视图。已有事务直接读取原事务，不借用缓存或发布可能回滚的消息。
+writer 忙时完整读取独立 RO 快照，不等待 writer。异步取消排空已准入的物理读取。
+所有路径保持消息只追加和原始身份、正文、顺序；缓存不拥有修改或删除消息的能力。
 
 Interest scoring keeps model selection and candidate embedding in the original async owner. Historical sample and prototype construction run in a drained worker without changing the formula, sample order or cutoff.
 

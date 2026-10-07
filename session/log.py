@@ -10,7 +10,6 @@ import logging
 import re
 import sqlite3
 import threading
-from bisect import bisect_right
 from collections.abc import AsyncGenerator, Callable, Generator, Iterable, Mapping
 from contextlib import closing, contextmanager
 from datetime import UTC, datetime
@@ -1285,85 +1284,76 @@ class MessageReader:
 
 
 class _IncrementalMessageReader(MessageReader):
-    """仅缓存小前缀；大历史只由当前请求持有，消息事实仍归数据库。"""
-
-    _CACHE_ROWS = 256
-    _CACHE_BYTES = 4 * 1024 * 1024
+    """回复范围内复用已提交前缀；外部修改使整份派生视图失效。"""
 
     def __init__(self, log: MessageLog, session_id: str):
         super().__init__(log, session_id)
-        self._messages: tuple[Message, ...] = ()
-        self._data_version: int | None = None
-
-    def _cache(self, messages: tuple[Message, ...], version: int) -> None:
-        """按行数和持久表示字节限制复用，不声称这是 Python 堆的精确大小。"""
-        if len(messages) > self._CACHE_ROWS:
-            self._messages = ()
-        else:
-            through = messages[-1].seq if messages else -1
-            metadata_size = " + length(CAST(metadata AS BLOB))" if self._log._has_metadata else ""
-            size = self._log._connection.execute(
-                "SELECT COALESCE(SUM(length(CAST(body AS BLOB))" + metadata_size + "), 0) FROM messages "
-                "WHERE session_key=? AND seq<=?", (self._session_id, through),
-            ).fetchone()[0]
-            self._messages = messages if size <= self._CACHE_BYTES else ()
-        self._data_version = version
+        self._prefix: tuple[int, tuple[Message, ...]] | None = None
 
     def incremental(self) -> MessageReader:
         return self
 
+    def _external_version(self) -> int | None:
+        """只检查原 writer 连接的外部版本；writer 忙时不等待或复用前缀。"""
+        log = self._log
+        if not log._writer_lock.acquire(blocking=False):
+            return None
+        try:
+            if log._closed or log._writer_connection.in_transaction:
+                return None
+            return log._writer_connection.execute("PRAGMA data_version").fetchone()[0]
+        finally:
+            log._writer_lock.release()
+
     async def snapshot_async(self, *, through_seq: int) -> tuple[Message, ...]:
-        """固定前缀及可选缓存预热都在 worker 完成，取消等待物理结束。"""
+        """同步和异步共用增量读取；取消等待实际 worker 结束。"""
         self._check_async_snapshot()
-        return await run_file_io(lambda: self._snapshot_with_cache(through_seq))
+        return await run_file_io(lambda: self.snapshot(through_seq=through_seq))
 
-    def _snapshot_with_cache(self, through_seq: int) -> tuple[Message, ...]:
-        """只在原连接版本未变且 writer 空闲时发布有界解码缓存。"""
-        # 1. 缓存是可选优化；writer 忙时不等待它，也不比较新连接的版本。
-        lock = self._log._lock
-        before: int | None = None
-        if lock.acquire(blocking=False):
-            try:
-                before = self._log._connection.execute("PRAGMA data_version").fetchone()[0]
-            finally:
-                lock.release()
-        messages = MessageReader(self._log, self._session_id).snapshot(through_seq=through_seq)
-        # 2. 外部编辑只使缓存不能复用，不推翻已完成的 private RO 快照。
-        if before is not None and lock.acquire(blocking=False):
-            try:
-                # 已准入的 private reader 可跨 close 完成，关闭后不再预热缓存。
-                if not self._log._closed:
-                    after = self._log._connection.execute("PRAGMA data_version").fetchone()[0]
-                    if before == after:
-                        self._cache(messages, after)
-            finally:
-                lock.release()
-        return messages
-
-    def snapshot(self, *, after_seq: int = -1, through_seq: int | None = None) -> tuple[Message, ...]:
-        """同一读事务内核对外部变化并补读尾部；不把未提交行留到下次读取。"""
-        with self._log._lock:
-            # 1. 调用方事务可能回滚，直接读取它的视图，不复用或推进解码前缀。
-            if self._log._connection.in_transaction:
-                return super().snapshot(after_seq=after_seq, through_seq=through_seq)
-            with self._log._connection as connection:
-                _ = connection.execute("BEGIN")
-                head = self.head()
-                version = connection.execute("PRAGMA data_version").fetchone()[0]
-                # MessageLog 正常只追加；其他连接的编辑、删除或恢复使旧前缀失效。
-                messages = self._messages if version == self._data_version else ()
-                previous = messages[-1].seq if messages else -1
-                through = head if through_seq is None else min(head, through_seq)
-                if after_seq > previous:
-                    return super().snapshot(after_seq=after_seq, through_seq=through)
-                if through > previous:
-                    added = super().snapshot(after_seq=previous, through_seq=through)
-                    messages += added
-            # 2. 只在读取事务成功结束后发布进度，稀疏 seq 和旧前缀请求均按原序号切片。
-            self._cache(messages, version)
-            start = bisect_right(messages, after_seq, key=lambda message: message.seq)
-            stop = bisect_right(messages, through, key=lambda message: message.seq)
-            return messages[start:stop]
+    def scan(
+        self, consume: Callable[[Iterable[Message]], _T], *,
+        after_seq: int = -1, through_seq: int | None = None, source: str | None = None,
+    ) -> _T:
+        """在同一只读快照内复用前缀并补读尾部，回调不能跨 await。"""
+        if after_seq < -1:
+            raise ValueError("读取需要正 limit 和不小于 -1 的 after_seq")
+        # 1. 已有事务可能更早或尚未提交，必须读取其实际视图。
+        if self._log._reads.current is not None:
+            return super().scan(consume, after_seq=after_seq, through_seq=through_seq, source=source)
+        prefix = self._prefix
+        before = self._external_version()
+        cached = () if prefix is None or before != prefix[0] else prefix[1]
+        with self._log._read() as connection:
+            if connection is self._log._writer_connection:
+                return super().scan(consume, after_seq=after_seq, through_seq=through_seq, source=source)
+            # 固定 RO 快照之后，原 writer 的正常追加不会改写已缓存的前缀。
+            head = self.head()
+            if through_seq is not None:
+                head = min(head, through_seq)
+            previous = cached[-1].seq if cached else -1
+            messages = tuple(message for message in cached
+                             if after_seq < message.seq <= head
+                             and (source is None or message.source == source))
+            if head > max(previous, after_seq):
+                messages += super().scan(tuple, after_seq=max(previous, after_seq),
+                                         through_seq=head, source=source)
+            # 2. 外部修改可能夹在版本检查与 RO 快照之间；只在原快照内重读，
+            # 不重启快照，也不向调用者交付旧前缀与新尾部的混合结果。
+            after = self._external_version()
+            stable = before is not None and before == after
+            if not stable and cached:
+                messages = super().scan(tuple, after_seq=after_seq, through_seq=head, source=source)
+            with closing(message for message in messages) as rows:
+                result = consume(rows)
+                if inspect.isawaitable(result):
+                    if inspect.iscoroutine(result):
+                        result.close()
+                    raise TypeError("消息扫描回调必须同步，不能跨 await")
+        # 3. 发布完整已提交前缀；来源筛选或增量查询不覆盖完整视图。
+        if stable and source is None and after_seq == -1:
+            assert before is not None
+            self._prefix = (before, messages)
+        return result
 
 
 async def _run_commit(
