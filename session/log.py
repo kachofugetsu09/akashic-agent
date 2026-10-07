@@ -441,14 +441,17 @@ class MessageLog:
         """组合只向 owner 授予自身的记录空间，不授予 SQL 或其他空间。"""
         if not isinstance(name, str) or not name:
             raise ValueError("状态 owner 不能为空")
-        with self._read():
-            if (
-                self._connection.execute(
-                    "SELECT 1 FROM sqlite_master WHERE name='owner_records'"
-                ).fetchone()
-                is None
-            ):
-                raise RuntimeError("owner_records 缺失，请先运行对应 yoyo 迁移")
+        if not getattr(self, "_has_owner_records", False):
+            with self._read(snapshot=False):
+                if (
+                    self._connection.execute(
+                        "SELECT 1 FROM sqlite_master WHERE name='owner_records'"
+                    ).fetchone()
+                    is None
+                ):
+                    raise RuntimeError("owner_records 缺失，请先运行对应 yoyo 迁移")
+            # 表只在迁移中创建，从不删除；首次确认后不再重复查询。
+            self._has_owner_records = True
         return OwnerStore(self, name)
 
     def ensure_session(
