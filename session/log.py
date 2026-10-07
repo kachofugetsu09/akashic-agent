@@ -787,8 +787,12 @@ class MessageCatalog:
         return self._storage
 
     def snapshot_heads(self) -> Mapping[str, int]:
-        """单条查询取得同一数据库快照，不逐会话读取可能变化的 head。"""
-        with self._log._read() as connection:
+        """单条查询取得同一数据库快照，不逐会话读取可能变化的 head。
+
+        autocommit 下 data_version 总是反映其他连接的最近提交；查询结果若赶上
+        更晚的提交只会按旧版本号标记，后续比较保守失效重新查询，不会把旧目录当新。
+        """
+        with self._log._read(snapshot=False) as connection:
             # 1. data_version 只可在同一连接上比较；writer 未提交视图不能复用。
             read = self._log._reads.current
             version = None if read is None else connection.execute("PRAGMA data_version").fetchone()[0]
@@ -960,7 +964,7 @@ class MessageReader:
 
     def source_changed(self, source: str, through_seq: int) -> bool:
         """只判断后续 Input/Control，不解码无关历史。"""
-        with self._log._read() as connection:
+        with self._log._read(snapshot=False) as connection:
             return connection.execute(
                 "SELECT 1 FROM messages WHERE session_key=? AND source=? AND seq>? "
                 "AND json_extract(body, '$.kind') IN ('input','control') LIMIT 1",
