@@ -38,8 +38,9 @@ PrepareContent = Callable[[tuple[Message, ...], str, frozenset[str], frozenset[t
 class ContentViews(Protocol):
     """纯内容投影注册；不授予消息、模型调用或工具执行权限。"""
 
-    async def register(self, ctx: Context, *, name: str, prepare: PrepareContent) -> Effect: ...
-    def bind(self) -> AbstractAsyncContextManager[PrepareContent]: ...
+    async def register(self, ctx: Context, *, name: str, prepare: PrepareContent,
+                       dynamic_kinds: frozenset[str] = frozenset()) -> Effect: ...
+    def bind(self) -> AbstractAsyncContextManager[Any]: ...
 
 
 CONTENT_VIEWS = ServiceKey[ContentViews]("models.content-views.v1")
@@ -138,6 +139,7 @@ class ModelProjections(Protocol):
         keep_input_ids: tuple[str, ...] = (),
         prepare_content: PrepareContent | None = None,
         tool_names: frozenset[str] = frozenset(),
+        dynamic_content_kinds: frozenset[str] = frozenset(),
     ) -> MessageProjection: ...
 
 

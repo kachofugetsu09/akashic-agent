@@ -210,6 +210,7 @@ class MessageProjection:
         keep_input_ids: tuple[str, ...] = (),
         prepare_content: PrepareContent | None = None,
         tool_names: frozenset[str] = frozenset(),
+        dynamic_content_kinds: frozenset[str] = frozenset(),
     ):
         self._model = model
         self._source = source
@@ -220,6 +221,7 @@ class MessageProjection:
         self._keep_input_ids = keep_input_ids
         self._prepare_content = prepare_content
         self._tool_names = tool_names
+        self._dynamic_content_kinds = dynamic_content_kinds
         self._last_rows: tuple[Mapping[str, Any], ...] = ()
         self._facts: dict[str, tuple[Message, Mapping[str, Any] | None]] = {}
         self._arguments: dict[int, tuple[Mapping[str, Any], str]] = {}
@@ -453,18 +455,20 @@ class MessageProjection:
         }
         content_refs: list[tuple[str, int]] = []
         changed_content = False
+        msg_dynamic = False
         transform = (None if self._prepare_content is None else
                      self._prepare_content(messages, self._source, self._tool_names, frozenset(seen)))
 
         def render(message: Message, index: int,
                    out_refs: list[tuple[str, int]]) -> tuple[Mapping[str, Any], ...]:
-            nonlocal changed_content
+            nonlocal changed_content, msg_dynamic
             assert not isinstance(message.body, Control)
             part = message.body.parts[index]
             assert isinstance(part, ContentPart)
             rendered = None if transform is None else transform(message, index)
             if rendered is not None:
                 changed_content = True
+                msg_dynamic = True
             if rendered is None:
                 blocks = tuple(self._render_content(part))
                 rendered = RenderedContent(blocks, complete=(
@@ -491,12 +495,15 @@ class MessageProjection:
         used_results: set[str] = set()
         replayed_reminders: set[tuple[str, str]] = set()
         context_added = False
-        # 静态内容下按消息缓存渲染分段：不可变前缀既不重建也不深比较。
+        # 按消息缓存渲染分段：不可变前缀既不重建也不深比较。
+        # 命中条件：无动态视图，或贡献者声明了动态 kind 且本消息与其观察都不含；
         # 动态视图、artifact/reply 引用、当前输入相关的消息仍每轮重建。
-        static_content = transform is None
-        cached_segments = self._segments if static_content else {}
+        cache_ok = transform is None or bool(self._dynamic_content_kinds)
+        cached_segments = self._segments if cache_ok else {}
         new_segments: dict[str, _Segment] = {}
+        dynamic_kinds = self._dynamic_content_kinds
         for message in messages:
+            msg_dynamic = False
             if message.seq <= after_seq and message.message_id not in keep:
                 continue
             body = message.body
@@ -686,11 +693,12 @@ class MessageProjection:
             rows.extend(msg_rows)
             content_refs.extend(msg_refs)
             if (
-                static_content
+                cache_ok
                 and not current_touched
-                and _static_parts(message)
+                and not msg_dynamic
+                and _static_parts(message, dynamic_kinds)
                 and all(
-                    _static_parts(observation)
+                    _static_parts(observation, dynamic_kinds)
                     for ref in call_refs
                     if (observation := results.get(ref)) is not None
                 )
@@ -731,6 +739,9 @@ class MessageProjection:
         return request
 
 
+_EXTERNAL_PART_KINDS = frozenset({"artifact_ref", "reply_ref"})
+
+
 class _Segment:
     """一条消息在静态内容下渲染出的 wire 行分段；deps 未命中即整体重建。"""
 
@@ -761,10 +772,12 @@ class _Segment:
         self.reminders = reminders
 
 
-def _static_parts(message: Message) -> bool:
-    """artifact/reply 引用按渲染时的外部状态解析，不参与分段缓存。"""
+def _static_parts(message: Message, dynamic_kinds: frozenset[str] = frozenset()) -> bool:
+    """artifact/reply 引用按渲染时的外部状态解析，动态声明 kind 由视图逐轮展开；
+    两类都不参与分段缓存。"""
+    excluded = dynamic_kinds | _EXTERNAL_PART_KINDS
     return all(
-        not isinstance(part, ContentPart) or part.kind not in ("artifact_ref", "reply_ref")
+        not isinstance(part, ContentPart) or part.kind not in excluded
         for part in message.body.parts
     )
 

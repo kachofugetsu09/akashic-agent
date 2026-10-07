@@ -55,6 +55,7 @@ async def run_reply(
     turn_projection: TurnProjection,
     render_content: ContentRenderer | None = None,
     prepare_content: PrepareContent | None = None,
+    dynamic_content_kinds: frozenset[str] = frozenset(),
     read_call: CallReader,
     authorize: Authorize,
     max_output_tokens: int | None,
@@ -144,6 +145,7 @@ async def run_reply(
         projection = model_projection.create(
             model, source=source, render_content=render if render_content is None else render_content,
             tool_name=menu.name, read_call=read_call, check_summary=context.check_summary, keep_input_ids=keep_input_ids,
+            dynamic_content_kinds=dynamic_content_kinds,
             **({"prepare_content": prepare_content, "tool_names": menu.names} if prepare_content is not None else {}),
         )
 
