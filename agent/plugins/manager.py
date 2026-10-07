@@ -2503,21 +2503,22 @@ def _source_failure_key_for_mod(mod: Mapping[str, str]) -> str:
 
 
 def _source_metadata_revision(plugin_dir: Path) -> bytes:
+    """按原顺序读取当前文件元数据，不为每个条目构造 Path。"""
     digest = hashlib.sha256()
     excluded = SOURCE_EXCLUDED_NAMES
     for current, directories, filenames in os.walk(plugin_dir, followlinks=False):
         directories[:] = sorted(name for name in directories if name not in excluded)
-        current_path = Path(current)
+        relative_dir = os.path.relpath(current, plugin_dir)
         for name in [*directories, *sorted(filenames)]:
             if name in excluded:
                 continue
-            path = current_path / name
-            relative = path.relative_to(plugin_dir)
+            path = os.path.join(current, name)
+            relative = name if relative_dir == "." else os.path.join(relative_dir, name)
             try:
-                metadata = path.lstat()
+                metadata = os.lstat(path)
             except FileNotFoundError:
                 continue
-            digest.update(str(relative).encode())
+            digest.update(relative.encode())
             digest.update(str(metadata.st_mtime_ns).encode())
             digest.update(str(metadata.st_size).encode())
             if stat.S_ISLNK(metadata.st_mode):
