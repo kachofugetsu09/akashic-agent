@@ -461,6 +461,7 @@ class ModelsStore:
         next_attempt_at: float | None = None,
         partial_response: bool | None = None,
         send_evidence: str | None = None,
+        first_token_ms: float | None = None,
     ) -> None:
         """只结算同一 started 记录；成功先耐久保存响应，未知 usage 不记成零。"""
         if not self.writable:
@@ -477,7 +478,8 @@ class ModelsStore:
         has_evidence = "send_evidence" in columns
         update = (
             "UPDATE model_calls SET state=?,usage_json=?,failure=?,"
-            "finished_at=CURRENT_TIMESTAMP,duration_ms=?"
+            "finished_at=CURRENT_TIMESTAMP,duration_ms=?,"
+            "first_token_ms=COALESCE(first_token_ms,?)"
             + (",response_json=?" if has_response else "")
             + (",next_attempt_at=?" if has_next else "")
             + (",partial_response=?" if has_partial else "")
@@ -493,7 +495,7 @@ class ModelsStore:
             )
             + ([send_evidence] if has_evidence else [])
         )
-        values = (state, encoded, failure, duration_ms, *extras, call_id)
+        values = (state, encoded, failure, duration_ms, first_token_ms, *extras, call_id)
         commit_error: Exception | None = None
         try:
             with self._connect() as connection, connection:

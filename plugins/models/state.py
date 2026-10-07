@@ -429,6 +429,7 @@ class _BoundChat:
             _LIVE_CALLS.add(call_id)
             started: int | None = None
             first_token = False
+            first_token_ms: float | None = None
             response: LLMResponse | None = None
             callback_failed = False
 
@@ -442,14 +443,13 @@ class _BoundChat:
                         raise
 
             async def delta(value: dict[str, str]) -> None:
-                nonlocal first_token
+                nonlocal first_token, first_token_ms
                 assert started is not None
                 if not first_token and (
                     value.get("content_delta") or value.get("thinking_delta")
                 ):
-                    await run_file_io(partial(self._store.record_first_token,
-                        started_call_id, (monotonic_ns() - started) / 1_000_000
-                    ))
+                    # 首字耗时随结算同事务落盘，不再单独提交一次。
+                    first_token_ms = (monotonic_ns() - started) / 1_000_000
                     first_token = True
                     log_timing("model.first_delta", operation_id=started_call_id, request_id=request_key)
                 await publish(value)
@@ -521,6 +521,7 @@ class _BoundChat:
                             next_attempt_at=retry_at,
                             partial_response=partial_response,
                             send_evidence=evidence,
+                            first_token_ms=first_token_ms,
                         ), failure if isinstance(failure, asyncio.CancelledError) else None)
                     except (asyncio.CancelledError, BaseExceptionGroup) as record_failure:
                         if isinstance(failure, asyncio.CancelledError):
@@ -544,6 +545,7 @@ class _BoundChat:
                     call_id, usage=response.usage, failure=None,
                     duration_ms=(monotonic_ns() - started) / 1_000_000,
                     response=response,
+                    first_token_ms=first_token_ms,
                 ))
                 log_timing("model.response.committed", operation_id=call_id, request_id=request_key)
                 response.call_record_id = call_id

@@ -135,9 +135,6 @@ class LockedStore(ModelsStore):
     def resume_call(self, *values, **options):
         return self.blocked('begin', partial(super().resume_call, *values, **options))
 
-    def record_first_token(self, *values, **options):
-        return self.blocked('first-token', partial(super().record_first_token, *values, **options))
-
     def finish_call(self, *values, **options):
         return self.blocked('finish', partial(super().finish_call, *values, **options))
 
@@ -167,10 +164,6 @@ class BarrierStore(ModelsStore):
         self.pause('begin-after')
         return identity
 
-    def record_first_token(self, *values, **options):
-        self.pause('first-token')
-        return super().record_first_token(*values, **options)
-
     def finish_call(self, *values, **options):
         self.pause('finish-before')
         result = super().finish_call(*values, **options)
@@ -190,7 +183,7 @@ async def cancellation_checks(directory, server, descriptor, physical):
     observations = []
     async def delta(_value):
         pass
-    for phase in ['begin-before', 'begin-after', 'first-token', 'finish-before', 'finish-after']:
+    for phase in ['begin-before', 'begin-after', 'finish-before', 'finish-after']:
         store = BarrierStore(directory / ('cancel-' + phase + '.db'), directory / 'backups', phase)
         store.initialize()
         request = ModelRequest([{'role': 'user', 'content': 'fixture'}], request_key='cancel-' + phase, on_delta=delta)
@@ -660,7 +653,7 @@ async def check(directory, server, endpoint):
     physical = driver._BoundChat(driver._ConnectionConfig(endpoint, 3, 3, 0, False),
                                 Credential(), descriptor, driver._ModelConfig(None, 16), http)
     observations = []
-    for phase in ['begin', 'first-token', 'finish']:
+    for phase in ['begin', 'finish']:
         store = LockedStore(directory / (phase + '.db'), directory / 'backups', phase)
         store.initialize()
         received = []
