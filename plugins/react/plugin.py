@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+from collections import OrderedDict
 from collections.abc import AsyncGenerator, Awaitable, Callable, Mapping, Sequence
 from contextlib import AbstractContextManager, ExitStack, asynccontextmanager
 from dataclasses import dataclass, replace
@@ -245,6 +246,11 @@ class _RequestBase:
     depth: int
     request: Mapping[str, object]
     materials: Materials
+
+
+_REQUEST_BASE_CACHE_SIZE = 64
+# 进程内跨轮增量基线：崩溃或换代后回退完整保存，与现状一致。
+_request_base_cache: OrderedDict[tuple[str, str], _RequestBase] = OrderedDict()
 
 
 def _prepare_entry(
@@ -648,7 +654,12 @@ async def react(
     if reader.session_id != writer.session_id:
         raise ValueError("ReAct reader 与 writer 必须属于同一 Session")
     history = _History(writer.source)
-    previous_request: _RequestBase | None = None
+    base_cache_key = (reader.session_id, writer.source)
+    previous_request: _RequestBase | None = (
+        _request_base_cache.get(base_cache_key) if state is not None else None
+    )
+    if previous_request is not None:
+        _request_base_cache.move_to_end(base_cache_key)
     while True:
         operation_id = uuid4().hex
         mark = partial(log_timing, session_id=reader.session_id, source=writer.source, operation_id=operation_id)
@@ -874,9 +885,15 @@ async def react(
                 # 刚提交的请求已不可变；只有恢复旧记录时才重新解码。
                 if created:
                     previous_request = _RequestBase(prep_key, attempt, depth, encoded_request, fixed_materials)
+                    _request_base_cache[base_cache_key] = previous_request
+                    _request_base_cache.move_to_end(base_cache_key)
+                    while len(_request_base_cache) > _REQUEST_BASE_CACHE_SIZE:
+                        _request_base_cache.popitem(last=False)
                     saved_request, saved_materials = replace(request, on_delta=None, request_key=None), fixed_materials
                 else:
+                    # 恢复的持久链与本进程缓存不一定一致，下一代重新存完整请求。
                     previous_request = None
+                    _request_base_cache.pop(base_cache_key, None)
                     saved_request, saved_materials = _load_entry(entry, state)
                 return saved_request, saved_materials, output_id, request_key
 
