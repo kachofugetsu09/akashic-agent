@@ -639,22 +639,28 @@ def _same_json(value: Any, saved: Any) -> bool:
     """与已冻结 JSON 比较；数组忽略容器形式，标量保留准确类型。"""
     if value is saved:
         return True
-    if isinstance(saved, Mapping):
-        if not isinstance(value, Mapping):
+    # 冻结行只含 JSON 值；常见标量不需要执行容器的 ABC 查询。
+    saved_type = type(saved)
+    if saved_type in (str, int, float, bool, type(None)):
+        return type(value) is saved_type and value == saved
+    if isinstance(saved, dict):
+        if not isinstance(value, dict) and not isinstance(value, Mapping):
             return False
-        current = cast(Mapping[object, Any], value)
-        previous = cast(Mapping[str, Any], saved)
-        return (len(current) == len(previous)
-                and all(isinstance(key, str) and key in previous and _same_json(item, previous[key])
-                        for key, item in current.items()))
+        if len(value) != len(saved):
+            return False
+        for key, item in value.items():
+            if not isinstance(key, str) or key not in saved or not _same_json(item, saved[key]):
+                return False
+        return True
     if isinstance(saved, tuple):
-        if not isinstance(value, (list, tuple)):
+        if not isinstance(value, (list, tuple)) or len(value) != len(saved):
             return False
-        items = cast(Sequence[Any], value)
-        old_items = cast(tuple[Any, ...], saved)
-        return len(items) == len(old_items) and all(
-            _same_json(item, old) for item, old in zip(items, old_items))
-    return type(value) is type(saved) and value == saved
+        for item, old in zip(value, saved):
+            if not _same_json(item, old):
+                return False
+        return True
+    return type(value) is saved_type and value == saved
+
 
 
 class ProjectionOwner:
