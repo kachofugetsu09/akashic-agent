@@ -99,6 +99,8 @@ from agent.plugins.selection import PluginSelection, SelectionConflictError
 from agent.plugins.source_resolver import (
     PluginSourceFailure,
     ResolvedPluginSource,
+    _iter_declared_plugin_roots,
+    _iter_installed_plugin_roots,
     scan_plugin_sources,
 )
 from agent.plugins.static_manifest import (
@@ -200,6 +202,10 @@ class PluginManager:
             | None
         ) = None
         self._cleanup_failures: list[CleanupFailure] = []
+        # watch_revision 的廉价指纹门控：只有磁盘元数据指纹变化才重做完整发现。
+        self._watch_fingerprint: bytes | None = None
+        self._watch_result: dict[str, str] = {}
+        self._watch_root_map: dict[str, str] = {}
         # Failed Root builds retain their module and data owners until cleanup succeeds.
         self._building_roots: dict[CompositionRoot, tuple[PluginGeneration, ...]] = {}
         self._operation: ManagerOperation | None = None
@@ -426,13 +432,18 @@ class PluginManager:
         """分别记录每个输入的磁盘变化，不把一次选择变更扩成全量更新。"""
         home = _plugins_home(self._installed_cache_root)
         manifest = load_plugin_manifest(home)
+        probe = self._watch_probe(manifest)
+        if probe is not None and probe == self._watch_fingerprint:
+            return dict(self._watch_result)
         revisions: dict[str, bytes] = {}
+        root_map: dict[str, str] = {}
         mods, failures = self._discover_modules(
             record_source_failures=False,
         )
         for failure in failures:
             identity = failure.plugin_id or f"source:{failure.source_type}:{failure.source_root}"
             revisions[identity] = _source_metadata_revision(failure.source_root)
+            root_map[str(failure.source_root.resolve(strict=False))] = ""
         for mod in mods:
             plugin_id = _resolve_plugin_id(mod)
             plugin_dir = Path(mod["plugin_root"])
@@ -445,13 +456,61 @@ class PluginManager:
                 _source_metadata_revision(plugin_dir)
                 + _path_metadata(data_dir / CONFIG_INPUT)
             )
-        return {
+            root_map[str(plugin_dir.resolve(strict=False))] = str(data_dir)
+        result = {
             plugin_id: hashlib.sha256(
                 revisions.get(plugin_id, b"source:missing")
                 + str(manifest.get(plugin_id, True)).encode()
             ).hexdigest()
             for plugin_id in revisions.keys() | manifest.keys()
         }
+        if probe is not None:
+            self._watch_root_map = root_map
+            probe = self._watch_probe(manifest)
+            self._watch_fingerprint = probe
+            self._watch_result = result
+        else:
+            self._watch_fingerprint = None
+            self._watch_result = {}
+            self._watch_root_map = {}
+        return result
+
+    def _watch_probe(self, manifest: Mapping[str, object]) -> bytes | None:
+        """枚举源码根并按元数据指纹判定是否必须重做完整发现。
+
+        指纹与结果摘要使用同一套检测输入（目录枚举 + 逐文件元数据 +
+        data_dir 配置 + 已安装 manifest），未变化时完整发现的结果必然相同；
+        遇到未知源码根时返回 None，先走完整发现建立 root→data_dir 映射。
+        """
+        roots: set[str] = set()
+        if self._installed_cache_root is not None:
+            for source in _iter_installed_plugin_roots(
+                self._installed_cache_root,
+                load_manifests=False,
+            ):
+                if source.plugin_root in self._ignored_installed_roots:
+                    continue
+                roots.add(str(source.plugin_root.resolve(strict=False)))
+        for source in self._distribution_sources:
+            roots.add(str(source.plugin_root.resolve(strict=False)))
+        for plugin_dirs_root in self._dirs:
+            for plugin_root in _iter_declared_plugin_roots(plugin_dirs_root):
+                roots.add(str(plugin_root.resolve(strict=False)))
+        digest = hashlib.sha256()
+        digest.update(repr(sorted(manifest.items())).encode())
+        digest.update(repr(sorted(self._disabled_builtin_plugins)).encode())
+        digest.update(
+            repr(sorted(str(path) for path in self._ignored_installed_roots)).encode()
+        )
+        for root in sorted(roots):
+            digest.update(root.encode())
+            digest.update(_source_metadata_revision(Path(root)))
+            data_dir = self._watch_root_map.get(root)
+            if data_dir is None:
+                return None
+            if data_dir:
+                digest.update(_path_metadata(Path(data_dir) / CONFIG_INPUT))
+        return digest.digest()
 
     # 扫描所有 plugin_dirs，返回可加载的插件描述列表
     def discover(
