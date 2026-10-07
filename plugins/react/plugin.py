@@ -4,7 +4,7 @@ import asyncio
 import logging
 from collections.abc import AsyncGenerator, Awaitable, Callable, Mapping, Sequence
 from contextlib import AbstractContextManager, ExitStack, asynccontextmanager
-from dataclasses import replace
+from dataclasses import dataclass, replace
 from functools import partial
 from typing import Any, cast
 from uuid import uuid4
@@ -41,6 +41,7 @@ from agent.plugin_contracts import (
     Part,
     ToolCall,
     ToolResult,
+    freeze_json,
 )
 from agent.plugin_contracts.content import (
     ContentView as ContentView,
@@ -233,6 +234,92 @@ def _decode_request(value: object) -> ModelRequest:
             )
         ),
     )
+
+
+@dataclass(frozen=True)
+class _RequestBase:
+    """只保留最后一次成功提交的请求，供下一次保存增量。"""
+
+    key: str
+    attempt: int
+    depth: int
+    request: Mapping[str, object]
+    materials: Materials
+
+
+def _prepare_entry(
+    request: Mapping[str, object], materials: Materials, previous: _RequestBase | None,
+) -> tuple[Mapping[str, object], int]:
+    """复用前一请求的数组前缀；定期保存完整值以限制恢复读取长度。"""
+    if previous is None or previous.depth >= 15:
+        return {"request": request, "materials": materials}, 0
+    fields = dict(request)
+    for name in ("messages", "tools", "content_refs"):
+        old = cast(Sequence[object], previous.request[name])
+        current = cast(Sequence[object], request[name])
+        prefix = 0
+        for left, right in zip(old, current):
+            if left is not right and left != right:
+                break
+            prefix += 1
+        fields[name] = {"prefix": prefix, "tail": current[prefix:]}
+    return {
+        "encoding": "request-delta-v1", "base_key": previous.key,
+        "base_attempt": previous.attempt, "request": fields,
+        "materials": None if materials == previous.materials else materials,
+    }, previous.depth + 1
+
+
+def _load_entry(entry: Mapping[str, object], state: OwnerStore) -> tuple[ModelRequest, Materials]:
+    """在同一快照内恢复准确请求；引用缺失或损坏不能改用当前材料。"""
+    def load() -> tuple[ModelRequest, Materials]:
+        # 1. 沿原 owner 的冻结记录读取，旧版内联格式仍作为完整起点。
+        current = entry
+        deltas: list[Mapping[str, object]] = []
+        while "encoding" in current:
+            if (current.get("encoding") != "request-delta-v1" or len(deltas) >= 15
+                    or set(current) != {"encoding", "base_key", "base_attempt", "request", "materials"}):
+                raise ValueError("冻结请求的增量格式或引用长度无效")
+            key, attempt = current["base_key"], current["base_attempt"]
+            if not isinstance(key, str) or not key or type(attempt) is not int or attempt < 0:
+                raise ValueError("冻结请求的前驱身份无效")
+            record = state.read(key)
+            if record is None:
+                raise ValueError("冻结请求的前驱记录缺失")
+            attempts = record.value.get("attempts")
+            if not isinstance(attempts, tuple) or attempt >= len(attempts):
+                raise ValueError("冻结请求的前驱 attempt 缺失")
+            parent = attempts[attempt]
+            if not isinstance(parent, Mapping):
+                raise ValueError("冻结请求的前驱内容损坏")
+            deltas.append(current)
+            current = cast(Mapping[str, object], parent)
+        request, materials = current["request"], current["materials"]
+        if not isinstance(request, Mapping) or not isinstance(materials, Mapping):
+            raise ValueError("冻结请求的完整起点损坏")
+        # 2. 从完整起点按原顺序应用差异；数组长度和尾部都来自持久事实。
+        for delta in reversed(deltas):
+            changed = delta["request"]
+            if not isinstance(changed, Mapping):
+                raise ValueError("冻结请求的增量内容损坏")
+            fields = dict(changed)
+            for name in ("messages", "tools", "content_refs"):
+                part, old = fields[name], request[name]
+                if not isinstance(part, Mapping) or set(part) != {"prefix", "tail"}:
+                    raise ValueError("冻结请求的数组增量损坏")
+                prefix, tail = part["prefix"], part["tail"]
+                if (not isinstance(old, tuple) or type(prefix) is not int
+                        or not 0 <= prefix <= len(old) or not isinstance(tail, tuple)):
+                    raise ValueError("冻结请求的数组范围损坏")
+                fields[name] = old[:prefix] + tail
+            request = fields
+            if delta["materials"] is not None:
+                materials = delta["materials"]
+                if not isinstance(materials, Mapping):
+                    raise ValueError("冻结请求的材料损坏")
+        return _decode_request(request), cast(Materials, materials)
+
+    return state.snapshot(load)
 
 
 class _OrderGate:
@@ -561,6 +648,7 @@ async def react(
     if reader.session_id != writer.session_id:
         raise ValueError("ReAct reader 与 writer 必须属于同一 Session")
     history = _History(writer.source)
+    previous_request: _RequestBase | None = None
     while True:
         operation_id = uuid4().hex
         mark = partial(log_timing, session_id=reader.session_id, source=writer.source, operation_id=operation_id)
@@ -711,10 +799,7 @@ async def react(
                 frozen = await reader.snapshot_async(through_seq=cast(int, prep["base_seq"]))
                 attempts = prep_attempts(prep)
                 resumed = {
-                    index: (
-                        _decode_request(entry["request"]),
-                        cast(Materials, entry["materials"]),
-                    )
+                    index: _load_entry(entry, state)
                     for index, entry in enumerate(attempts)
                     if entry is not None
                 }
@@ -732,10 +817,12 @@ async def react(
                 attempt: int, request: ModelRequest, built: Materials
             ) -> tuple[ModelRequest, Materials, str, str]:
                 """在同一来源检查下提交请求、材料和稳定启动身份。"""
+                nonlocal previous_request
                 # Context 与模型句柄只在当前 scope 读取，worker 接收已冻结的请求字段。
                 binding_id = model.descriptor.binding_id
-                encoded_request = _encode_request(request)
-                fixed_materials = dict(built)
+                encoded_request = cast(Mapping[str, object], freeze_json(_encode_request(request)))
+                fixed_materials = cast(Materials, freeze_json(built))
+                new_entry, depth = _prepare_entry(encoded_request, fixed_materials, previous_request)
 
                 def open_prep(transaction: OwnerTransaction) -> tuple[Mapping[str, object], bool, str, str]:
                     """新准备只保存一次；旧准备复用原请求并补齐尚未领取的身份。"""
@@ -760,10 +847,7 @@ async def react(
                         entries.append(None)
                     created = entries[attempt] is None
                     if created:
-                        entries[attempt] = {
-                            "request": encoded_request,
-                            "materials": fixed_materials,
-                        }
+                        entries[attempt] = new_entry
                     keys = tuple(cast(Sequence[str], value["request_keys"]))
                     while len(keys) <= attempt:
                         keys += (uuid4().hex,)
@@ -782,9 +866,13 @@ async def react(
 
                 entry, created, output_id, request_key = await state.transact_async(open_prep)
                 # 刚提交的请求已不可变；只有恢复旧记录时才重新解码。
-                saved_request = (replace(request, on_delta=None, request_key=None)
-                                 if created else _decode_request(entry["request"]))
-                return saved_request, cast(Materials, entry["materials"]), output_id, request_key
+                if created:
+                    previous_request = _RequestBase(prep_key, attempt, depth, encoded_request, fixed_materials)
+                    saved_request, saved_materials = replace(request, on_delta=None, request_key=None), fixed_materials
+                else:
+                    previous_request = None
+                    saved_request, saved_materials = _load_entry(entry, state)
+                return saved_request, saved_materials, output_id, request_key
 
             prepare = prepare_request
         else:
