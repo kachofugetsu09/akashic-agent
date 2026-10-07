@@ -59,6 +59,7 @@ async def forward(request):
     pending = b""
     first = True
     effective = False
+    response_id = None
     done = False
     try:
         async with request.app["client"].post(
@@ -91,6 +92,9 @@ async def forward(request):
                     except json.JSONDecodeError:
                         record("provider.invalid_json", label, n)
                         continue
+                    if response_id is None and isinstance(item.get("id"), str) and item["id"]:
+                        response_id = item["id"]
+                        record("provider.response_id", label, n, response_id=response_id)
                     if item.get("usage"):
                         record("provider.usage", label, n, usage=item["usage"])
                     if not effective and any(
