@@ -4,6 +4,8 @@ import asyncio
 import logging
 from collections.abc import Awaitable, Callable
 
+from agent.plugins.fs_watch import InotifyTreeWatcher
+from agent.plugins.input_preparation import SOURCE_EXCLUDED_NAMES
 from agent.plugins.manager import PluginManager
 
 logger = logging.getLogger(__name__)
@@ -18,14 +20,22 @@ class PluginWatcher:
         *,
         baseline_revision: dict[str, str] | None = None,
         interval_seconds: float = 1.0,
+        backstop_seconds: float = 60.0,
+        debounce_seconds: float = 0.25,
         after_reconcile: Callable[[], Awaitable[None]] | None = None,
         accepting: Callable[[], bool] = lambda: True,
+        fs_events: bool = True,
     ) -> None:
         self._manager = manager
         self._baseline_revision = baseline_revision
         self._interval_seconds = interval_seconds
+        self._backstop_seconds = backstop_seconds
+        self._debounce_seconds = debounce_seconds
         self._after_reconcile = after_reconcile
         self._accepting = accepting
+        self._fs_events = fs_events
+        self._events: InotifyTreeWatcher | None = None
+        self._debounce_handle: asyncio.TimerHandle | None = None
         self._wake = asyncio.Event()
         self._forced = False
         self._manual_wake_pending = False
@@ -35,8 +45,15 @@ class PluginWatcher:
         self._run_started = False
         self._stopped = asyncio.Event()
 
+    def _on_fs_event(self) -> None:
+        """文件系统事件只做写稳定合并；变化判定仍由指纹探测完成。"""
+        loop = asyncio.get_running_loop()
+        if self._debounce_handle is not None:
+            self._debounce_handle.cancel()
+        self._debounce_handle = loop.call_later(self._debounce_seconds, self._wake.set)
+
     async def run(self) -> None:
-        """轮询插件文件状态，并在变化后执行一次热重载。"""
+        """事件驱动监听插件文件状态，慢速兜底探测兜住事件缺口，变化后热重载。"""
 
         revision = self._baseline_revision
         failed_revision: dict[str, str] | None = None
@@ -44,7 +61,20 @@ class PluginWatcher:
         blocked_revision: dict[str, str] | None = None
         pending_ids: frozenset[str] = frozenset()
         full_pending = False
+        if self._fs_events:
+            events = InotifyTreeWatcher(
+                self._on_fs_event,
+                exclude=lambda name: name in SOURCE_EXCLUDED_NAMES,
+            )
+            # 平台不支持或监听预算耗尽时回退到纯轮询。
+            self._events = events if events.start() else None
+            if self._events is not None:
+                # 首次扫描前先用源码树目标武装事件来源；配置文件目标在扫描后补齐。
+                trees, files = self._manager.watch_targets()
+                self._events.set_targets(trees, files)
         self._run_started = True
+        # 首个扫描不等兜底间隔：无基线时立即建立基线，有基线时立即验证一次指纹。
+        self._wake.set()
         try:
             # 1. 启动前已停止时，不再触碰 manager
             if not self._running:
@@ -53,11 +83,13 @@ class PluginWatcher:
                 if not self._accepting():
                     await asyncio.sleep(self._interval_seconds)
                     continue
-                # 2. 等待定时轮询或外部唤醒
+                # 2. 事件来源存活时只留慢速兜底；事件唤醒或兜底超时都走同一扫描。
+                events_live = self._events is not None and self._events.active
+                timeout = self._interval_seconds if not events_live else self._backstop_seconds
                 try:
                     _ = await asyncio.wait_for(
                         self._wake.wait(),
-                        timeout=self._interval_seconds,
+                        timeout=timeout,
                     )
                 except TimeoutError:
                     pass
@@ -78,6 +110,10 @@ class PluginWatcher:
                     self._manual_wake_pending = self._manual_wake_pending or manual_wake
                     logger.exception("插件热重载状态扫描失败")
                     continue
+                if self._events is not None:
+                    # 扫描后刷新监听目标：安装/卸载改变根集合与 data_dir 配置。
+                    trees, files = self._manager.watch_targets()
+                    self._events.set_targets(trees, files)
                 # 启动只记下磁盘基线，不把关机期间留下的候选重新当成更新。
                 # 明确的手动唤醒仍可请求处理当前输入。
                 if revision is None:
@@ -164,6 +200,12 @@ class PluginWatcher:
                     else:
                         self._notification_pending = False
         finally:
+            if self._events is not None:
+                self._events.close()
+                self._events = None
+            if self._debounce_handle is not None:
+                self._debounce_handle.cancel()
+                self._debounce_handle = None
             self._stopped.set()
 
     def wake(self) -> None:

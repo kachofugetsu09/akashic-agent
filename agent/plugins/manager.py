@@ -513,6 +513,25 @@ class PluginManager:
                 digest.update(_path_metadata(Path(data_dir) / CONFIG_INPUT))
         return digest.digest()
 
+    def watch_targets(self) -> tuple[tuple[Path, ...], tuple[Path, ...]]:
+        """事件监听目标：（递归监听的源码树与容器，单独监听的选择/配置文件）。
+
+        容器目录覆盖已安装插件与其指针的增删；配置文件按文件目标监听，
+        数据目录内的运行时写入不产生事件。
+        """
+        trees: list[Path] = []
+        if self._installed_cache_root is not None:
+            trees.append(self._installed_cache_root)
+        trees.extend(source.plugin_root for source in self._distribution_sources)
+        trees.extend(self._dirs)
+        files = [
+            Path(data_dir) / CONFIG_INPUT
+            for data_dir in self._watch_root_map.values()
+            if data_dir
+        ]
+        files.append(manifest_path(_plugins_home(self._installed_cache_root)))
+        return tuple(trees), tuple(files)
+
     # 扫描所有 plugin_dirs，返回可加载的插件描述列表
     def discover(
         self,
