@@ -531,8 +531,15 @@ class ModelsStore:
         logger.info("Model 调用 %s 结算回执已在库中，视为已提交", call_id)
 
     def _attempt_columns(self) -> set[str]:
+        """列清单复用 schema 校验缓存；写连接空闲时不再另开连接。"""
+        if self._write_lock.acquire(blocking=False):
+            try:
+                if self._write_connection is not None:
+                    return set(require_model_calls_schema(self._write_connection))
+            finally:
+                self._write_lock.release()
         with self._connect(read_only=True) as connection:
-            return _columns(connection, "model_calls")
+            return set(require_model_calls_schema(connection))
 
     def read_calls(self, after_id: str, limit: int) -> tuple[Mapping[str, Any], ...]:
         """按身份分页读取调用快照；每轮从头扫描，started 记录仍可能结算。"""
