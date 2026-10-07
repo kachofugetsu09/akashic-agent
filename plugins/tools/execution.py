@@ -93,8 +93,6 @@ class ToolExecution:
                 committed.set_result(result)
 
         async def run(task: Task) -> Result:
-            # 正常结果由提交 owner 直接交回；撤权后才沿日志等待竞争的终态。
-            task.on_close(lambda: publish(None))
             return await self._run(
                 task, key, binding_id, arguments, fingerprint, reply, commit_after,
                 on_commit=publish,
@@ -123,6 +121,9 @@ class ToolExecution:
                 if permit is not None:
                     permit.release()
                 raise
+            # 撤权和入口失败都能唤醒调用者；普通结果只由提交 owner 交付。
+            started.on_close(lambda: publish(None))
+            started.on_done(lambda: publish(None))
             if permit is not None:
                 started.on_done(permit.release)
             return started, True
@@ -155,11 +156,15 @@ class ToolExecution:
         committed: asyncio.Future[Result | None] | None = None,
     ) -> Result:
         """持久终态提交即释放等待者；物理清理由原 Task 独立排空。"""
+        if committed is not None:
+            result = await committed
+            if result is not None:
+                # 原始异常不能被先提交的 error 回执盖住；已结束的任务也先取其异常。
+                if result.outcome == "error" or task.done:
+                    return cast(Result, await task.join())
+                return result
+
         async def recorded() -> Result:
-            if committed is not None:
-                result = await committed
-                if result is not None:
-                    return result
             call = reply.reader.get(reply.call_ref.message_id)
             if call is None:
                 raise ValueError("工具调用消息缺失")
