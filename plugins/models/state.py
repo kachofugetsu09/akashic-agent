@@ -171,6 +171,7 @@ class _BoundChat:
         self._store = store
         self._root_instance = root_instance
         self._max_attempts = None if max_attempts is None else max(1, max_attempts)
+        self._request_encodings: dict[int, tuple[object, bytes]] = {}
 
     @property
     def descriptor(self) -> BoundModelDescriptor:
@@ -184,7 +185,7 @@ class _BoundChat:
             and continuation.binding_id != self._descriptor.binding_id
         ):
             raise ModelUnavailableError("continuation 不属于当前 model binding")
-        digest = _request_digest(request)
+        digest = _request_digest(request, self._request_encodings)
         if request.request_key is None:
             # 无 key 调用是独立效果身份：单次尝试记账，不共享回执也不占用重试预算。
             return await self._attempts(

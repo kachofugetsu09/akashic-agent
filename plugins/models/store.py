@@ -1745,7 +1745,10 @@ def _freeze_json(value: Any) -> Any:
     return value
 
 
-def _request_digest(request: ModelRequest) -> str:
+def _request_digest(
+    request: ModelRequest, encodings: dict[int, tuple[object, bytes]] | None = None,
+) -> str:
+    """保持原 JSON 摘要；绑定模型只复用当前请求中深冻结值的编码。"""
     payload: dict[str, Any] = {
         "messages": request.messages,
         "tools": request.tools,
@@ -1763,11 +1766,35 @@ def _request_digest(request: ModelRequest) -> str:
             }
         ),
     }
-    return hashlib.sha256(
-        # ModelRequest 已在构造边界深冻结；编码不再逐层重复校验。
-        json.dumps(payload, ensure_ascii=False, separators=(",", ":"),
-                   sort_keys=True, allow_nan=False, default=dict).encode()
-    ).hexdigest()
+    if encodings is None:
+        return hashlib.sha256(
+            json.dumps(payload, ensure_ascii=False, separators=(",", ":"),
+                       sort_keys=True, allow_nan=False, default=dict).encode()
+        ).hexdigest()
+
+    # 1. 请求边界已深冻结；必须同时持有原对象，不能只靠可复用的 id。
+    current: dict[int, tuple[object, bytes]] = {}
+
+    def encode(value: object) -> bytes:
+        previous = encodings.get(id(value))
+        encoded = previous[1] if previous is not None and previous[0] is value else json.dumps(
+            value, ensure_ascii=False, separators=(",", ":"),
+            sort_keys=True, allow_nan=False, default=dict,
+        ).encode()
+        current[id(value)] = (value, encoded)
+        return encoded
+
+    # 2. 与原 sorted JSON 的字段、数组次序和分隔符完全相同。
+    fields: list[bytes] = []
+    for name, value in sorted(payload.items()):
+        encoded = (b"[" + b",".join(encode(row) for row in value) + b"]"
+                   if name in {"messages", "tools"} else encode(value))
+        fields.append(('"' + name + '":').encode() + encoded)
+    digest = hashlib.sha256(b"{" + b",".join(fields) + b"}").hexdigest()
+    # 缩短或替换请求后，不保留已经离开本次输入的消息。
+    encodings.clear()
+    encodings.update(current)
+    return digest
 
 
 def _response_payload(response: LLMResponse) -> dict[str, Any]:
