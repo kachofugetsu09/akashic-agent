@@ -86,10 +86,18 @@ class ToolExecution:
             raise TypeError("工具参数必须是对象")
         arguments = cast(Mapping[str, object], freeze_json(arguments))
         fingerprint = _fingerprint(binding_id, arguments, reply)
+        committed: asyncio.Future[Result | None] = asyncio.get_running_loop().create_future()
+
+        def publish(result: Result | None) -> None:
+            if not committed.done():
+                committed.set_result(result)
 
         async def run(task: Task) -> Result:
+            # 正常结果由提交 owner 直接交回；撤权后才沿日志等待竞争的终态。
+            task.on_close(lambda: publish(None))
             return await self._run(
                 task, key, binding_id, arguments, fingerprint, reply, commit_after,
+                on_commit=publish,
             )
 
         # 1. 不同插件 scope 共用获授的 Task key，热更不能把活调用当成崩溃。
@@ -123,7 +131,8 @@ class ToolExecution:
         try:
             result = (
                 cast(Result, await task.join()) if reply is None
-                else await self._wait_result(task, key, fingerprint, reply)
+                else await self._wait_result(task, key, fingerprint, reply,
+                                             committed=committed if owned else None)
             )
         except asyncio.CancelledError:
             if owned:
@@ -141,9 +150,16 @@ class ToolExecution:
 
         return await abandon_call(self._state, self._tasks, reply, task_key=self._task_key)
 
-    async def _wait_result(self, task: Task, key: str, fingerprint: str, reply: MessageReply) -> Result:
+    async def _wait_result(
+        self, task: Task, key: str, fingerprint: str, reply: MessageReply, *,
+        committed: asyncio.Future[Result | None] | None = None,
+    ) -> Result:
         """持久终态提交即释放等待者；物理清理由原 Task 独立排空。"""
         async def recorded() -> Result:
+            if committed is not None:
+                result = await committed
+                if result is not None:
+                    return result
             call = reply.reader.get(reply.call_ref.message_id)
             if call is None:
                 raise ValueError("工具调用消息缺失")
@@ -186,6 +202,8 @@ class ToolExecution:
         fingerprint: str,
         reply: MessageReply | None,
         commit_after: CommitAfter | None = None,
+        *,
+        on_commit: Callable[[Result], None] | None = None,
     ) -> Result:
         """恢复先查回执；最终授权后先落盘 start，再进入真实工具。"""
         mark = partial(log_timing, operation_id=key,
@@ -202,7 +220,7 @@ class ToolExecution:
                 "version": 1, "request": fingerprint, "binding": binding_id,
                 "reply_id": None if reply is None else reply.message_id,
                 "arguments": arguments,
-            })
+            }, on_commit=on_commit)
             mark("tool.committed")
             return finished
 
