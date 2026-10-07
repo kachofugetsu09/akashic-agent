@@ -582,3 +582,6 @@ Models 在一次 `complete` 内计算一次固定请求摘要，活调用合并�
 MessageLog 的单条查询使用 SQLite 隐式读取快照；查询在归还连接前取完全部结果。
 分页、组合读取、显式 `read_snapshot` 和嵌套 writer 读取仍使用原事务，不能跨查询混读。
 只读连接创建时固定 row factory 和 query-only 配置，借用时不重复设置。
+
+文件 I/O 入口直接等待线程 Future，并在提交时复制调用者的 ContextVar；不再创建转发用的 asyncio Task。
+四个磁盘名额、排队取消、已启动工作排空以及取消与物理失败的联合传播保持不变。
