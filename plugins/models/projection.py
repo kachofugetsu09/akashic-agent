@@ -223,6 +223,7 @@ class MessageProjection:
         self._last_rows: tuple[Mapping[str, Any], ...] = ()
         self._facts: dict[str, tuple[Message, Mapping[str, Any] | None]] = {}
         self._arguments: dict[int, tuple[Mapping[str, Any], str]] = {}
+        self._segments: dict[str, _Segment] = {}
 
     @property
     def context_window(self) -> int | None:
@@ -455,7 +456,8 @@ class MessageProjection:
         transform = (None if self._prepare_content is None else
                      self._prepare_content(messages, self._source, self._tool_names, frozenset(seen)))
 
-        def render(message: Message, index: int) -> tuple[Mapping[str, Any], ...]:
+        def render(message: Message, index: int,
+                   out_refs: list[tuple[str, int]]) -> tuple[Mapping[str, Any], ...]:
             nonlocal changed_content
             assert not isinstance(message.body, Control)
             part = message.body.parts[index]
@@ -470,7 +472,7 @@ class MessageProjection:
                 ))
             ref = (message.message_id, index)
             if rendered.blocks and rendered.complete and ref not in seen:
-                content_refs.append(ref)
+                out_refs.append(ref)
                 seen.add(ref)
             return rendered.blocks
 
@@ -489,33 +491,84 @@ class MessageProjection:
         used_results: set[str] = set()
         replayed_reminders: set[tuple[str, str]] = set()
         context_added = False
+        # 静态内容下按消息缓存渲染分段：不可变前缀既不重建也不深比较。
+        # 动态视图、artifact/reply 引用、当前输入相关的消息仍每轮重建。
+        static_content = transform is None
+        cached_segments = self._segments if static_content else {}
+        new_segments: dict[str, _Segment] = {}
         for message in messages:
             if message.seq <= after_seq and message.message_id not in keep:
                 continue
             body = message.body
             if isinstance(body, (Control, ToolResult)):
                 continue
-            blocks: list[Mapping[str, Any]] = []
-            calls: list[dict[str, Any]] = []
-            observations: list[Mapping[str, Any]] = []
             model_facts = facts.get(message.message_id)
-            if model_facts is not None and model_facts.get("reminder") is not None:
-                reminder_identity = (
+            reminder_identity = (
+                (
                     (cast(str, model_facts["reminder_input_id"]),
                      cast(str, model_facts["reminder_sha256"]))
                     if "reminder_input_id" in model_facts
                     else None
                 )
+                if model_facts is not None and model_facts.get("reminder") is not None
+                else None
+            )
+            current_touched = (
+                message.message_id == latest_input
+                or (
+                    reminder_identity is not None
+                    and current_reminder_identity is not None
+                    and reminder_identity == current_reminder_identity
+                    and current_context is not None
+                )
+            )
+            call_refs = tuple(
+                CallRef(message.message_id, index)
+                for index, part in enumerate(body.parts)
+                if isinstance(part, ToolCall)
+            )
+            call_deps = tuple(
+                (ref, id(results.get(ref)), ref in abandoned_calls)
+                for ref in call_refs
+            )
+            entry = None if current_touched else cached_segments.get(message.message_id)
+            if (
+                entry is not None
+                and entry.message is message
+                and entry.facts is model_facts
+                and entry.has_metadata == (message.message_id in response_metadata)
+                and entry.call_deps == call_deps
+            ):
+                rows.extend(entry.rows)
+                for ref in entry.new_refs:
+                    if ref not in seen:
+                        content_refs.append(ref)
+                        seen.add(ref)
+                used_results.update(entry.used)
+                replayed_reminders.update(entry.reminders)
+                new_segments[message.message_id] = entry
+                continue
+            msg_rows: list[Mapping[str, Any]] = []
+            msg_refs: list[tuple[str, int]] = []
+            msg_used: list[str] = []
+            msg_reminders: list[tuple[str, str]] = []
+            blocks: list[Mapping[str, Any]] = []
+            calls: list[dict[str, Any]] = []
+            observations: list[Mapping[str, Any]] = []
+            if reminder_identity is not None or (
+                model_facts is not None and model_facts.get("reminder") is not None
+            ):
                 if (
                     reminder_identity is None
                     or reminder_identity not in replayed_reminders
                 ):
-                    rows.append({"role": "user", "content": model_facts["reminder"]})
+                    msg_rows.append({"role": "user", "content": model_facts["reminder"]})
                     if reminder_identity is not None:
                         replayed_reminders.add(reminder_identity)
+                        msg_reminders.append(reminder_identity)
                     if (current_reminder_identity is not None
                             and reminder_identity == current_reminder_identity and current_context is not None):
-                        rows.append({"role": "user", "content": current_context})
+                        msg_rows.append({"role": "user", "content": current_context})
                         context_added = True
             for index, part in enumerate(body.parts):
                 if isinstance(part, ContentPart):
@@ -533,7 +586,7 @@ class MessageProjection:
                             {"type": "text", "text": "调用未执行：" + rejected["error"]},
                         ]})
                     elif part.kind != "model.facts":
-                        blocks.extend(render(message, index))
+                        blocks.extend(render(message, index, msg_refs))
                     continue
                 ref = CallRef(message.message_id, index)
                 if ref in abandoned_calls:
@@ -542,6 +595,7 @@ class MessageProjection:
                     observation = results.get(ref)
                     if observation is not None:
                         used_results.add(observation.message_id)
+                        msg_used.append(observation.message_id)
                         settled = cast(ToolResult, observation.body)
                         if settled.outcome == "denied":
                             blocks.append({"type": "text", "text": (
@@ -554,14 +608,14 @@ class MessageProjection:
                                 "外部效果已经发生。"
                             )})
                             for item_index, _item in enumerate(settled.parts):
-                                blocks.extend(render(observation, item_index))
+                                blocks.extend(render(observation, item_index, msg_refs))
                         else:
                             blocks.append({"type": "text", "text": (
                                 f"一次工具调用随来源前缀放弃，结算为 {settled.outcome}："
                                 "外部效果可能已经发生，不能据此重跑。"
                             )})
                             for item_index, _item in enumerate(settled.parts):
-                                blocks.extend(render(observation, item_index))
+                                blocks.extend(render(observation, item_index, msg_refs))
                     else:
                         blocks.append({"type": "text", "text": (
                             "一次工具调用随来源前缀放弃而中断；外部效果未结算，状态未知，"
@@ -605,11 +659,12 @@ class MessageProjection:
                         status += "。原调用可能已经产生效果；先检查当前状态，再决定下一步，不要直接重复执行原操作。"
                     result_blocks.append({"type": "text", "text": status})
                 for item_index, _item in enumerate(result.parts):
-                    result_blocks.extend(render(observation, item_index))
+                    result_blocks.extend(render(observation, item_index, msg_refs))
                 observations.append(
                     {"role": "tool", "tool_call_id": identity, "content": result_blocks}
                 )
                 used_results.add(observation.message_id)
+                msg_used.append(observation.message_id)
             if blocks or calls:
                 row: dict[str, Any] = {
                     "role": "user" if isinstance(body, Input) else "assistant",
@@ -622,12 +677,35 @@ class MessageProjection:
                     row["provider_metadata"] = response_metadata[message.message_id]
                 if model_facts is not None and model_facts["thinking"] is not None:
                     row["reasoning_content"] = model_facts["thinking"]
-                rows.append(row)
-                rows.extend(observations)
+                msg_rows.append(row)
+                msg_rows.extend(observations)
             if (current_reminder is None and current_context is not None
                     and message.message_id == latest_input):
-                rows.append({"role": "user", "content": current_context})
+                msg_rows.append({"role": "user", "content": current_context})
                 context_added = True
+            rows.extend(msg_rows)
+            content_refs.extend(msg_refs)
+            if (
+                static_content
+                and not current_touched
+                and _static_parts(message)
+                and all(
+                    _static_parts(observation)
+                    for ref in call_refs
+                    if (observation := results.get(ref)) is not None
+                )
+            ):
+                new_segments[message.message_id] = _Segment(
+                    message=message,
+                    facts=model_facts,
+                    has_metadata=message.message_id in response_metadata,
+                    call_deps=call_deps,
+                    rows=tuple(msg_rows),
+                    new_refs=tuple(msg_refs),
+                    used=tuple(msg_used),
+                    reminders=tuple(msg_reminders),
+                )
+        self._segments = new_segments
         # 首次使用和变化后的材料追加；成功 Output 的既有事实固定后续回放位置。
         if current_reminder is not None and current_reminder_identity not in replayed_reminders:
             rows.append({"role": "user", "content": current_reminder})
@@ -651,6 +729,44 @@ class MessageProjection:
         self._facts = current_facts
         self._arguments = current_arguments
         return request
+
+
+class _Segment:
+    """一条消息在静态内容下渲染出的 wire 行分段；deps 未命中即整体重建。"""
+
+    __slots__ = (
+        "message", "facts", "has_metadata", "call_deps",
+        "rows", "new_refs", "used", "reminders",
+    )
+
+    def __init__(
+        self,
+        *,
+        message: Message,
+        facts: Mapping[str, Any] | None,
+        has_metadata: bool,
+        call_deps: tuple[tuple[CallRef, int, bool], ...],
+        rows: tuple[Mapping[str, Any], ...],
+        new_refs: tuple[tuple[str, int], ...],
+        used: tuple[str, ...],
+        reminders: tuple[tuple[str, str], ...],
+    ) -> None:
+        self.message = message
+        self.facts = facts
+        self.has_metadata = has_metadata
+        self.call_deps = call_deps
+        self.rows = rows
+        self.new_refs = new_refs
+        self.used = used
+        self.reminders = reminders
+
+
+def _static_parts(message: Message) -> bool:
+    """artifact/reply 引用按渲染时的外部状态解析，不参与分段缓存。"""
+    return all(
+        not isinstance(part, ContentPart) or part.kind not in ("artifact_ref", "reply_ref")
+        for part in message.body.parts
+    )
 
 
 def _same_json(value: Any, saved: Any) -> bool:
