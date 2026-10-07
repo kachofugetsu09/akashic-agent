@@ -18,6 +18,8 @@ import httpx
 
 from core.net.http import HttpClient, StreamProgress, describe_transport_error, finish_response, retry_after_time
 
+from agent.plugin_contracts import freeze_json
+
 from agent.plugin_composition import (
     AuthenticationError,
     BoundModelDescriptor,
@@ -103,6 +105,8 @@ class _BoundChat:
         self._descriptor = descriptor
         self._config = config
         self._http = http
+        self._message_sizes: dict[int, tuple[Mapping[str, Any], int, int]] = {}
+        self._tool_size: tuple[object, int] | None = None
 
     @property
     def max_tool_schemas(self) -> int | None:
@@ -147,13 +151,35 @@ class _BoundChat:
         messages: Sequence[Mapping[str, Any]],
         tools: Sequence[Mapping[str, Any]] = (),
     ) -> int:
-        return _estimate_context_tokens("", messages, tools)
+        """固定 schema 只编码一次；消息仍按原公式合计后取整。"""
+        frozen_tools = freeze_json(tools)
+        saved = self._tool_size
+        if saved is not None and saved[0] is frozen_tools:
+            chars = saved[1]
+        else:
+            chars = len(json.dumps(frozen_tools, ensure_ascii=False, separators=(",", ":"), default=dict))
+            self._tool_size = (frozen_tools, chars)
+        return max(1, chars // 3 + self.estimate_appended_message_tokens(messages))
 
     def estimate_appended_message_tokens(
         self,
         messages: Sequence[Mapping[str, Any]],
     ) -> int:
-        return _estimate_message_tokens(messages)
+        """仅复用同一个深冻结消息的长度；动态内容和普通可变输入重新计算。"""
+        sizes: dict[int, tuple[Mapping[str, Any], int, int]] = {}
+        text_chars = image_tokens = 0
+        for message in messages:
+            frozen = cast(Mapping[str, Any], freeze_json(message))
+            saved = self._message_sizes.get(id(frozen))
+            if saved is None or saved[0] is not frozen:
+                chars, images = _message_size(frozen)
+                saved = (frozen, chars, images)
+            sizes[id(frozen)] = saved
+            text_chars += saved[1]
+            image_tokens += saved[2]
+        # 只保留本次输入，切窗或结束 scope 后不保留被排除的历史。
+        self._message_sizes = sizes
+        return max(1, text_chars // 3 + image_tokens) if messages else 0
 
 
 class _BoundEmbedding:
@@ -1293,20 +1319,6 @@ def _normalize_base_url(value: str) -> str:
     return urlunsplit((parsed.scheme, parsed.netloc, path, "", ""))
 
 
-def _estimate_context_tokens(
-    system_prompt: str,
-    messages: Sequence[Mapping[str, Any]],
-    tools: Sequence[Mapping[str, Any]],
-) -> int:
-    complete = list(messages)
-    if system_prompt and not (complete and complete[0].get("role") == "system"):
-        complete.insert(0, {"role": "system", "content": system_prompt})
-    fixed_chars = len(
-        json.dumps(tools, ensure_ascii=False, separators=(",", ":"), default=dict)
-    )
-    return max(1, fixed_chars // 3 + _estimate_message_tokens(complete))
-
-
 def _normalize_messages(
     messages: Sequence[Mapping[str, Any]],
 ) -> list[dict[str, Any]]:
@@ -1383,43 +1395,40 @@ def _merge_leading_system_messages(
     return result if result else messages
 
 
-def _estimate_message_tokens(messages: Sequence[Mapping[str, Any]]) -> int:
-    text_chars = 0
-    image_tokens = 0
-    for message in messages:
-        content = message.get("content")
-        if isinstance(content, Sequence) and not isinstance(content, (str, bytes)):
-            for block in content:
-                if isinstance(block, Mapping) and block.get("type") in {
-                    "image_url",
-                    "input_image",
-                }:
-                    detail = block.get("detail")
-                    image = block.get("image_url")
-                    if isinstance(image, Mapping):
-                        detail = image.get("detail", detail)
-                    image_tokens += 1024 if detail == "low" else 8192
-                    continue
-                text_chars += len(
-                    json.dumps(block, ensure_ascii=False, separators=(",", ":"), default=dict)
-                )
-        elif content is not None:
-            text_chars += len(str(content))
-        text_chars += len(
-            json.dumps(
-                {
-                    key: value
-                    for key, value in message.items()
-                    if key != "content"
-                },
-                ensure_ascii=False,
-                separators=(",", ":"),
-                default=dict,
+def _message_size(message: Mapping[str, Any]) -> tuple[int, int]:
+    """统计一条消息的字符与图片成本；调用方统一取整，保持容量边界。"""
+    text_chars = image_tokens = 0
+    content = message.get("content")
+    if isinstance(content, Sequence) and not isinstance(content, (str, bytes)):
+        for block in content:
+            if isinstance(block, Mapping) and block.get("type") in {
+                "image_url",
+                "input_image",
+            }:
+                detail = block.get("detail")
+                image = block.get("image_url")
+                if isinstance(image, Mapping):
+                    detail = image.get("detail", detail)
+                image_tokens += 1024 if detail == "low" else 8192
+                continue
+            text_chars += len(
+                json.dumps(block, ensure_ascii=False, separators=(",", ":"), default=dict)
             )
+    elif content is not None:
+        text_chars += len(str(content))
+    text_chars += len(
+        json.dumps(
+            {
+                key: value
+                for key, value in message.items()
+                if key != "content"
+            },
+            ensure_ascii=False,
+            separators=(",", ":"),
+            default=dict,
         )
-    if not messages:
-        return 0
-    return max(1, text_chars // 3 + image_tokens)
+    )
+    return text_chars, image_tokens
 
 
 def _required_string(value: object, name: str) -> str:

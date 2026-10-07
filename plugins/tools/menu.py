@@ -7,7 +7,7 @@ from typing import Any, cast
 
 from agent.plugin_composition.bindings import Bindings
 from agent.plugin_composition.models import ToolCall as ModelToolCall
-from agent.plugin_contracts import CallRef, ToolCall
+from agent.plugin_contracts import CallRef, ToolCall, freeze_json
 from agent.plugin_contracts.tools import CommitAfter as CommitAfter
 from agent.plugin_contracts.tools import ToolPresentation as ToolPresentation
 
@@ -48,10 +48,15 @@ class NativePresentation:
 
     def __init__(self, descriptions: Mapping[str, Mapping[str, object]]):
         self._descriptions = dict(descriptions)
+        self._schemas: tuple[Mapping[str, Any], ...] | None = None
 
     @property
     def schemas(self) -> tuple[Mapping[str, Any], ...]:
-        return tuple(tool_schema(self._descriptions[name]) for name in self._descriptions)
+        if self._schemas is None:
+            self._schemas = cast(tuple[Mapping[str, Any], ...], freeze_json(
+                tuple(tool_schema(description) for description in self._descriptions.values())
+            ))
+        return self._schemas
 
     @property
     def system_prompt(self) -> str:
