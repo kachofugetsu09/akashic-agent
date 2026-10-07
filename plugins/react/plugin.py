@@ -654,7 +654,9 @@ async def react(
         mark = partial(log_timing, session_id=reader.session_id, source=writer.source, operation_id=operation_id)
         mark("react.begin")
         # 1. 放弃区保持串行结算；未闭段里连续的 parallel 调用才重叠。
-        history.update(await reader.snapshot_async(through_seq=reader.head()))
+        head_before = reader.head()
+        initial = await reader.snapshot_async(through_seq=head_before)
+        history.update(initial)
         pending, abandoned = history.open_calls()
         for call in abandoned:
             # 已放弃调用的结算故障必须先阻断本来源：缺回执的调用不能带着未知效果进入新请求。
@@ -667,7 +669,11 @@ async def react(
             reader, tools, pending, max_parallel_calls, capture_scope,
         )
         mark("tools.settled")
-        snapshot = await reader.snapshot_async(through_seq=reader.head())
+        if pending or abandoned or reader.head() != head_before:
+            snapshot = await reader.snapshot_async(through_seq=reader.head())
+        else:
+            # 无结算写入且 head 未动：进入结算前的固定前缀仍然有效。
+            snapshot = initial
         mark("history.loaded", counts={"messages": len(snapshot)})
         history.update(snapshot)
         head = history.head
