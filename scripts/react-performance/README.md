@@ -19,6 +19,10 @@ Pi 使用独立 agent directory，关闭扩展、MCP、技能和额外上下文�
 - 末轮截止到最终输出被客户端观察；首轮另列输入到 Q1。总计、前 10 次输出与每轮间隔都保留。
 - Akashic 使用落库 API 返回和日志订阅中的最早观测；订阅可能早于 await 返回。Pi 使用原生
   `message_end`、`tool_execution_*` 事件。工具边界有此差异，不能把它们的微小差值全归因于存储。
+- Pi 输出优先按代理记录的 provider response ID 配对；客户端可能在下次请求到达后才读到
+  上次输出。`output_alignment` 说明配对依据，`output_observation_after_next_request_ms`
+  记录这一观测延迟。跨越请求边界的客户端阶段保持 null，不倒推不存在的提交时刻。
+  旧 trace 没有 response ID 时仍使用时间区间，其配对结果可能受客户端读取延迟影响。
 - 并行工具的时间用区间并集和整个 batch 的 wall time，不能直接相加。缺边界保留 null，
   无法解释的时间列入 `unattributed_ms`；缺失、取消、截断或未完成不视为成功。
 - 最终输出不等于任务完成。另查真实 diff、目标行为与针对性验证，记录首次修改、重复读取和失败。

@@ -65,6 +65,7 @@ def analyze(
     ]
     requests = [row for row in wire if row["event"] == "request.received"]
     output_times: list[int] = []
+    response_outputs: dict[str, list[int]] = {}
     final_received: int | None = None
     tools: list[tuple[int, int]] = []
     committed: list[int] = []
@@ -111,6 +112,9 @@ def analyze(
             if kind == "message_end" and event.get("message", {}).get("role") == "assistant":
                 if event["message"].get("stopReason") not in {"error", "aborted"}:
                     output_times.append(at)
+                    response_id = event["message"].get("responseId")
+                    if isinstance(response_id, str) and response_id:
+                        response_outputs.setdefault(response_id, []).append(at)
             elif kind == "tool_execution_start":
                 tool_starts[key] = at
             elif kind == "tool_execution_end" and key in tool_starts:
@@ -139,7 +143,16 @@ def analyze(
         http_status = marks.get("upstream.headers", {}).get("status")
         if failed is None and http_status is not None and http_status >= 400:
             failed = marks.get("response.closed", marks["upstream.headers"])["mono_ns"]
-        output = next((t for t in output_times if t >= start and (stop is None or t <= stop)), None)
+        response_id = (marks.get("provider.response_id", {}).get("response_id", request.get("response_id"))
+                       if harness == "pi" else None)
+        # 客户端可能迟于下一次 HTTP 请求才读到输出；身份配对不依赖接收时刻。
+        if response_id is not None:
+            matched = response_outputs.get(response_id, [])
+            if len(matched) > 1:
+                raise ValueError("供应商 response ID 对应多条客户端输出，不能唯一配对")
+            output = matched[0] if matched else None
+        else:
+            output = next((t for t in output_times if t >= start and (stop is None or t <= stop)), None)
         batch = [(a, b) for a, b in tools if a >= start and (stop is None or b <= stop)]
         last_commit = max((t for t in committed if t >= start and (stop is None or t <= stop)), default=None)
         first_tool = min((a for a, _b in batch), default=None)
@@ -149,6 +162,10 @@ def analyze(
             "input_bytes": request["bytes"],
             "reasoning_rows": request["reasoning_rows"],
             "http_status": http_status,
+            "output_alignment": "response_id" if response_id is not None else "timestamp",
+            "output_observation_after_next_request_ms": (
+                None if output is None or stop is None else round(max(0, output - stop) / 1e6, 3)
+            ),
             "status": "output" if output is not None else "disconnected" if disconnected else "failed" if failed else "incomplete",
         }
         segments: list[tuple[str, int | None, int | None]] = [
