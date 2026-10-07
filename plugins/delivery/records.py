@@ -73,6 +73,9 @@ class DeliveryRecords:
     def __init__(self, state: OwnerStore, recovery_owner: str):
         self._state = state
         self.recovery_owner = recovery_owner
+        # cursor 只由本 owner 的消费事务单调推进；缓存只可能滞后，滞后由消费路径的
+        # 已消费分支兼容（读回既有选择，不重复发送）。
+        self._cursor_cache: dict[str, int] = {}
 
     def selection(self, message_id: str) -> Selection | None:
         row = self._state.read("selection:" + message_id)
@@ -94,8 +97,13 @@ class DeliveryRecords:
         return selection
 
     def cursor(self, session_id: str) -> int:
+        cached = self._cursor_cache.get(session_id)
+        if cached is not None:
+            return cached
         row = self._state.read(self._cursor_key(session_id))
-        return -1 if row is None else Cursor.model_validate(dict(row.value)).through_seq
+        through = -1 if row is None else Cursor.model_validate(dict(row.value)).through_seq
+        self._cursor_cache[session_id] = through
+        return through
 
     def read(self, message_id: str, sink: str) -> tuple[OwnerRecord, Delivery]:
         _ = self.check_owner(message_id)
@@ -181,10 +189,11 @@ class DeliveryRecords:
         for message, sinks in items:
             self._check_message(reader, message, () if sinks is None else sinks)
 
+        committed_through: list[int] = []
+
         def commit(tx: OwnerTransaction) -> tuple[Selection | None, ...]:
             through = self.cursor(reader.session_id)
             selections: list[Selection | None] = []
-            dirty = False
             for message, sinks in items:
                 if message.seq <= through:
                     existing = self.selection(message.message_id)
@@ -198,16 +207,19 @@ class DeliveryRecords:
                 selection = (self.selection(message.message_id) if sinks is None else
                              self._prepare(tx, message, sinks, passive=passive))
                 through = message.seq
-                dirty = True
                 selections.append(selection)
             # 所属目的地已 prepared 后才推进 cursor；其他来源保留自己的选路权。
-            if dirty:
+            if through > self.cursor(reader.session_id):
                 key = self._cursor_key(reader.session_id)
                 previous = tx.read(key)
                 _ = tx.save(key, {"through_seq": through}, expected_version=None if previous is None else previous.version)
+                committed_through.append(through)
             return tuple(selections)
 
-        return self._state.transact(commit)
+        selections = self._state.transact(commit)
+        if committed_through:
+            self._cursor_cache[reader.session_id] = committed_through[-1]
+        return selections
 
     def _prepare(self, tx: OwnerTransaction, message: Message, sinks: tuple[Sink, ...], *, passive: bool = False) -> Selection:
         """同一消息的首次选路不可变；重复策略计算只采用原集合。"""
