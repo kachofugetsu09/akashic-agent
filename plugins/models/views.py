@@ -40,8 +40,12 @@ class ContentViews:
         return tuple(dict.fromkeys(ctx for ctx, _ in self._sources.values()))
 
     @asynccontextmanager
-    async def bind(self) -> AsyncIterator[PrepareContent]:
-        """一次回复固定实际 ACTIVE 贡献者，排空前不释放其代码作用域。"""
+    async def bind(self) -> AsyncIterator[PrepareContent | None]:
+        """一次回复固定实际 ACTIVE 贡献者，排空前不释放其代码作用域。
+
+        没有 ACTIVE 贡献者时返回 None：调用方走基础渲染路径，
+        不为空组合逐消息调用恒空的 transform。
+        """
         async with self._ctx.runtime_scope(), AsyncExitStack() as stack:
             sources = tuple(value for _, value in sorted(self._sources.items())
                             if value[0].fiber.state is FiberState.ACTIVE)
@@ -70,6 +74,6 @@ class ContentViews:
                 return render
 
             try:
-                yield prepare
+                yield prepare if sources else None
             finally:
                 active = False
