@@ -98,12 +98,15 @@ async def follow(
                         messages = reader.read(after_seq=delivery.cursor(session_id), limit=100)
                     if not messages:
                         break
-                    for message in messages:
-                        async with ctx.runtime_scope():
-                            delivery = execution()
-                            existing = delivery.selection(message.message_id)
-                            sinks = select(reader, message) if existing is None else ()
-                            selected = await delivery.consume_async(reader, message, sinks, passive=True)
+                    async with ctx.runtime_scope():
+                        delivery = execution()
+                        # 整批选择一次事务提交；选路事实仍按消息逐条固定。
+                        batch = tuple(
+                            (message, select(reader, message) if delivery.selection(message.message_id) is None else ())
+                            for message in messages
+                        )
+                        selected_batch = await delivery.consume_batch_async(reader, batch, passive=True)
+                    for message, selected in zip(messages, selected_batch):
                         if selected is not None:
                             for sink in selected.sinks:
                                 wake_destination(session_id, sink, selected.recovery_owner, message.seq - 1)

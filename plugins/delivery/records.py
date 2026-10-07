@@ -151,6 +151,13 @@ class DeliveryRecords:
         fixed = None if sinks is None else _normalize_sinks(sinks)
         return await run_file_io(lambda: self._consume_message(reader, message, fixed, passive=passive))
 
+    async def consume_batch_async(self, reader: MessageReader,
+                                  items: tuple[tuple[Message, tuple[Sink | Mapping[str, object], ...] | None], ...],
+                                  *, passive: bool = False) -> tuple[Selection | None, ...]:
+        """同一批消息的消费与 cursor 推进一次事务提交；顺序与冲突语义与逐条 consume 一致。"""
+        fixed = tuple((message, None if sinks is None else _normalize_sinks(sinks)) for message, sinks in items)
+        return await run_file_io(lambda: self._consume_batch(reader, fixed, passive=passive))
+
     async def add_async(self, message_id: str, sink: Sink | Mapping[str, object]) -> None:
         fixed = _normalize_sink(sink)
         await run_file_io(lambda: self._add_destination(message_id, fixed))
@@ -165,27 +172,40 @@ class DeliveryRecords:
     def _consume_message(self, reader: MessageReader, message: Message, sinks: tuple[Sink | Mapping[str, object], ...] | None,
                 *, passive: bool = False) -> Selection | None:
         """按序消费；None 表示不拥有选路权，空集合是明确的零目标选择。"""
-        if sinks is not None:
-            sinks = _normalize_sinks(sinks)
-        self._check_message(reader, message, () if sinks is None else sinks)
+        fixed = None if sinks is None else _normalize_sinks(sinks)
+        return self._consume_batch(reader, ((message, fixed),), passive=passive)[0]
 
-        def commit(tx: OwnerTransaction) -> Selection | None:
-            cursor = self.cursor(reader.session_id)
-            if message.seq <= cursor:
-                existing = self.selection(message.message_id)
-                if existing is None and sinks is not None:
-                    raise ValueError("已消费消息没有本次要求的发送选择")
-                return existing
-            following = reader.read(after_seq=cursor, limit=1)
-            if not following or following[0] != message:
-                raise MessageConflict("发送消费不能跳过消息")
-            selection = (self.selection(message.message_id) if sinks is None else
-                         self._prepare(tx, message, sinks, passive=passive))
+    def _consume_batch(self, reader: MessageReader,
+                       items: tuple[tuple[Message, tuple[Sink, ...] | None], ...],
+                       *, passive: bool = False) -> tuple[Selection | None, ...]:
+        for message, sinks in items:
+            self._check_message(reader, message, () if sinks is None else sinks)
+
+        def commit(tx: OwnerTransaction) -> tuple[Selection | None, ...]:
+            through = self.cursor(reader.session_id)
+            selections: list[Selection | None] = []
+            dirty = False
+            for message, sinks in items:
+                if message.seq <= through:
+                    existing = self.selection(message.message_id)
+                    if existing is None and sinks is not None:
+                        raise ValueError("已消费消息没有本次要求的发送选择")
+                    selections.append(existing)
+                    continue
+                following = reader.read(after_seq=through, limit=1)
+                if not following or following[0] != message:
+                    raise MessageConflict("发送消费不能跳过消息")
+                selection = (self.selection(message.message_id) if sinks is None else
+                             self._prepare(tx, message, sinks, passive=passive))
+                through = message.seq
+                dirty = True
+                selections.append(selection)
             # 所属目的地已 prepared 后才推进 cursor；其他来源保留自己的选路权。
-            key = self._cursor_key(reader.session_id)
-            previous = tx.read(key)
-            _ = tx.save(key, {"through_seq": message.seq}, expected_version=None if previous is None else previous.version)
-            return selection
+            if dirty:
+                key = self._cursor_key(reader.session_id)
+                previous = tx.read(key)
+                _ = tx.save(key, {"through_seq": through}, expected_version=None if previous is None else previous.version)
+            return tuple(selections)
 
         return self._state.transact(commit)
 
