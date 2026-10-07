@@ -1514,21 +1514,24 @@ class MessageWriter:
         old = connection.execute(
             "SELECT * FROM messages WHERE id=?", (message_id,)
         ).fetchone()
-        payload = encode_body(body, allow_legacy=old is not None)
-        if old is not None:
-            if (old["session_key"], old["author"], old["source"], old["body"]) != (
-                self._session_id,
-                self._author,
-                self._source,
-                payload,
-            ):
-                raise MessageConflict("message_id 已用于不同的不可变内容")
-            previous = _message(old)
-            if (json.dumps(json_value(previous.metadata), sort_keys=True)
-                    != json.dumps(json_value(message_metadata), sort_keys=True)):
-                raise MessageConflict("message_id 已用于不同的不可变 metadata")
-            return previous
-        return None
+        if old is None:
+            if isinstance(body, ToolResult) and body._legacy_unknown:
+                # 旧 unknown 仍只能重放；普通新正文留到实际 INSERT 时编码。
+                encode_body(body, allow_legacy=False)
+            return None
+        payload = encode_body(body)
+        if (old["session_key"], old["author"], old["source"], old["body"]) != (
+            self._session_id,
+            self._author,
+            self._source,
+            payload,
+        ):
+            raise MessageConflict("message_id 已用于不同的不可变内容")
+        previous = _message(old)
+        if (json.dumps(json_value(previous.metadata), sort_keys=True)
+                != json.dumps(json_value(message_metadata), sort_keys=True)):
+            raise MessageConflict("message_id 已用于不同的不可变 metadata")
+        return previous
 
     def _prepare(self, body: Body, metadata: Mapping[str, object]) -> _PreparedMessage:
         """在调用者 scope 内计算纯投影和内容引用，线程不得调用 Context。"""
