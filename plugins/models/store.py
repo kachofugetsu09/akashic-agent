@@ -1986,8 +1986,21 @@ MODEL_CALLS_SCHEMA = """CREATE TABLE model_calls (
 )"""
 
 
-def require_model_calls_schema(connection: sqlite3.Connection) -> set[str]:
-    """缺列、类型不符、主键异构或多出未知列都必须在 provider I/O 前明确失败。"""
+_schema_check_cache: dict[tuple[str, int], frozenset[str]] = {}
+
+
+def require_model_calls_schema(connection: sqlite3.Connection) -> frozenset[str]:
+    """缺列、类型不符、主键异构或多出未知列都必须在 provider I/O 前明确失败。
+
+    schema_version 在任何连接修改 schema 时递增，校验结果按 (文件, 版本) 缓存。
+    """
+    database_list = connection.execute("PRAGMA database_list").fetchall()
+    file = next((str(item[2]) for item in database_list if item[1] == "main"), "")
+    version = int(connection.execute("PRAGMA schema_version").fetchone()[0])
+    key = (file if file else f"memory:{id(connection)}", version)
+    cached = _schema_check_cache.get(key)
+    if cached is not None:
+        return cached
     info = {
         str(item[1]): item
         for item in connection.execute("PRAGMA table_info(model_calls)")
@@ -2009,7 +2022,9 @@ def require_model_calls_schema(connection: sqlite3.Connection) -> set[str]:
     unknown = set(info) - set(_MODEL_CALLS_BASE_COLUMNS) - attempt_columns
     if unknown:
         raise RuntimeError(f"model_calls 存在未知列 {sorted(unknown)}，schema 不被本实现接受")
-    return set(info)
+    columns = frozenset(info)
+    _schema_check_cache[key] = columns
+    return columns
 
 
 def require_attempt_schema(connection: sqlite3.Connection) -> None:
