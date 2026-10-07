@@ -172,11 +172,11 @@ class ModelCallReader:
         if not call_ids:
             return {}
         with self._connect() as connection:
-            require_model_calls_schema(connection)
+            columns = require_model_calls_schema(connection)
             # 旧账本没有响应正文，无法提供尚未保存的协议扩展。
             response_metadata = (
                 "json_extract(response_json,'$.provider_metadata')"
-                if "response_json" in _columns(connection, "model_calls") else "NULL"
+                if "response_json" in columns else "NULL"
             )
             rows = connection.execute(
                 "SELECT id,state,json_extract(binding_json,'$.binding_id') AS binding_id, "
@@ -404,8 +404,8 @@ class ModelsStore:
         with self._connect() as connection, connection:
             # 1. 读取与追加共用写事务；线程等待期间其他 Root 可能已结算。
             connection.execute("BEGIN IMMEDIATE")
-            require_model_calls_schema(connection)
             if request_key is None:
+                require_model_calls_schema(connection)
                 _ = connection.execute(
                     "INSERT INTO model_calls (id,binding_json,request_digest,state) VALUES (?,?,?,'started')",
                     (call_id, binding, digest),
@@ -1984,7 +1984,7 @@ MODEL_CALLS_SCHEMA = """CREATE TABLE model_calls (
 )"""
 
 
-def require_model_calls_schema(connection: sqlite3.Connection) -> None:
+def require_model_calls_schema(connection: sqlite3.Connection) -> set[str]:
     """缺列、类型不符、主键异构或多出未知列都必须在 provider I/O 前明确失败。"""
     info = {
         str(item[1]): item
@@ -2007,14 +2007,12 @@ def require_model_calls_schema(connection: sqlite3.Connection) -> None:
     unknown = set(info) - set(_MODEL_CALLS_BASE_COLUMNS) - attempt_columns
     if unknown:
         raise RuntimeError(f"model_calls 存在未知列 {sorted(unknown)}，schema 不被本实现接受")
+    return set(info)
 
 
 def require_attempt_schema(connection: sqlite3.Connection) -> None:
     """request key 记账需要扩展列；旧库先由 additive 迁移接纳。"""
-    require_model_calls_schema(connection)
-    columns = {
-        str(item[1]) for item in connection.execute("PRAGMA table_info(model_calls)")
-    }
+    columns = require_model_calls_schema(connection)
     if not set(_MODEL_CALLS_ATTEMPT_COLUMNS) <= columns:
         raise RuntimeError("model_calls 缺少 attempt 记账列，请先运行对应 yoyo 迁移")
 
