@@ -85,6 +85,27 @@ async def test_new_subdirectory_is_watched(tmp_path: Path) -> None:
         watcher.close()
 
 
+async def test_moved_in_directory_is_watched(tmp_path: Path) -> None:
+    root = tmp_path / "plugin"
+    root.mkdir()
+    outside = tmp_path / "outside"
+    (outside / "inner").mkdir(parents=True)
+    (outside / "inner" / "plugin.py").write_text("x = 1")
+    flag = asyncio.Event()
+    watcher = await _make_watcher(flag, trees=[root], files=[])
+    try:
+        moved = root / "inner"
+        (outside / "inner").rename(moved)
+        assert await _wait_for(flag)
+        flag.clear()
+        # 移入目录纳入监听后，其中的后续修改也触发回调（评审 #1119）。
+        await asyncio.sleep(0.1)
+        (moved / "plugin.py").write_text("x = 2")
+        assert await _wait_for(flag)
+    finally:
+        watcher.close()
+
+
 async def test_file_target_filters_sibling_writes(tmp_path: Path) -> None:
     data = tmp_path / "data"
     data.mkdir()

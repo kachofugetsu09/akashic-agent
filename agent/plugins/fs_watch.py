@@ -255,7 +255,9 @@ class InotifyTreeWatcher:
                 continue
             if self._exclude(name):
                 continue
-            if mask & _IN_CREATE and mask & _IN_ISDIR:
+            if mask & (_IN_CREATE | _IN_MOVED_TO) and mask & _IN_ISDIR:
+                # 新建与移入的目录都要递归纳入监听，否则目录内部后续修改静默丢失
+                # （评审 #1119）。
                 self._add_tree(Path(directory) / name)
             changed = True
         if changed:
