@@ -408,6 +408,8 @@ class MessageProjection:
         cache_ok = transform is None or bool(self._dynamic_content_kinds)
         cached_segments = self._segments if cache_ok else {}
         new_segments: dict[str, _Segment] = {}
+        # 本次进入请求的分段行区间；组装后把冻结行写回分段，下轮身份命中。
+        spans: list[tuple[_Segment, int]] = []
         dynamic_kinds = self._dynamic_content_kinds
         for message in messages:
             msg_dynamic = False
@@ -466,6 +468,7 @@ class MessageProjection:
                 and entry.call_deps == call_deps
                 and entry.replay == replay
             ):
+                spans.append((entry, len(rows)))
                 rows.extend(entry.rows)
                 for ref in entry.new_refs:
                     if ref not in seen:
@@ -610,6 +613,7 @@ class MessageProjection:
                     and message.message_id == latest_input):
                 msg_rows.append({"role": "user", "content": current_context})
                 context_added = True
+            row_start = len(rows)
             rows.extend(msg_rows)
             content_refs.extend(msg_refs)
             if (
@@ -623,7 +627,7 @@ class MessageProjection:
                     if (observation := results.get(ref)) is not None
                 )
             ):
-                new_segments[message.message_id] = _Segment(
+                entry = _Segment(
                     message=message,
                     facts=model_facts,
                     has_metadata=message.message_id in response_metadata,
@@ -634,6 +638,8 @@ class MessageProjection:
                     used=tuple(msg_used),
                     reminders=tuple(msg_reminders),
                 )
+                new_segments[message.message_id] = entry
+                spans.append((entry, row_start))
         self._segments = new_segments
         # 首次使用和变化后的材料追加；成功 Output 的既有事实固定后续回放位置。
         if current_reminder is not None and current_reminder_identity not in replayed_reminders:
@@ -655,6 +661,10 @@ class MessageProjection:
         request = ModelRequest(messages=rows, continuation=None if changed_content else continuation,
                                content_refs=tuple(content_refs), content_transformed=changed_content)
         self._last_rows = tuple(request.messages)
+        # 冻结行写回分段：下轮 rows.extend 得到同一冻结对象，_same_json 身份短路。
+        final_rows = request.messages
+        for segment, start in spans:
+            segment.rows = tuple(final_rows[start:start + len(segment.rows)])
         self._facts = fold.facts
         self._arguments = current_arguments
         return request
