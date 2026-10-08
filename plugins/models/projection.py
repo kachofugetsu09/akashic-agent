@@ -226,6 +226,7 @@ class MessageProjection:
         self._facts: dict[str, tuple[Message, Mapping[str, Any] | None]] = {}
         self._arguments: dict[int, tuple[Mapping[str, Any], str]] = {}
         self._segments: dict[str, _Segment] = {}
+        self._fold: _Fold | None = None
 
     @property
     def context_window(self) -> int | None:
@@ -299,21 +300,32 @@ class MessageProjection:
         current_context: str | None = None,
     ) -> ModelRequest:
         """按日志重建协议；交错输入保留，工具观察只在请求视图中与调用成组。"""
-        # 当前工作输入由 Turn owner 选定；摘要只替换历史，不吞掉本次要求。
         keep = set(self._keep_input_ids)
-        if len(keep) != len(self._keep_input_ids) or keep != {
-            message.message_id for message in messages
-            if message.message_id in keep and isinstance(message.body, Input)
-            and message.source == self._source
-        }:
-            raise ValueError("保留输入必须是当前来源的真实 Input，且不能重复")
         if (current_reminder is None) != (current_reminder_input_id is None):
             raise ValueError("当前 reminder 与 Input 身份必须同时提供")
-        latest_input = next(
-            (message.message_id for message in reversed(messages)
-             if message.source == self._source and isinstance(message.body, Input)),
-            None,
-        )
+        # 编排折叠：不可变前缀的预扫描（abandon、facts、调用账与 continuation）
+        # 只在追加尾部增量 apply；前缀身份变化或 abandon 进入尾部时整折叠重建，
+        # 重建路径与原逐轮全量扫描逐行等价。参数（after_seq/keep/reminder/summary）
+        # 不进折叠——它们只作用于折叠输出之上的每轮后处理。
+        inherited = self._facts
+        fold = self._fold
+        if fold is not None and not _fold_compatible(fold, messages):
+            fold = None
+        if fold is None:
+            fold = _Fold()
+            self._fold_rebuild(fold, messages, inherited)
+        else:
+            try:
+                for message in messages[fold.count:]:
+                    self._fold_apply(fold, message, inherited)
+            except _FoldStale:
+                fold = _Fold()
+                self._fold_rebuild(fold, messages, inherited)
+        self._fold = fold
+        # 当前工作输入由 Turn owner 选定；摘要只替换历史，不吞掉本次要求。
+        if len(keep) != len(self._keep_input_ids) or not keep <= fold.inputs:
+            raise ValueError("保留输入必须是当前来源的真实 Input，且不能重复")
+        latest_input = fold.latest_input
         current_reminder_identity: tuple[str, str] | None = None
         if current_reminder_input_id is not None:
             if current_reminder_input_id != latest_input:
@@ -323,118 +335,14 @@ class MessageProjection:
                 current_reminder_input_id,
                 hashlib.sha256(current_reminder.encode("utf-8")).hexdigest(),
             )
-        # 放弃只撤销未结束前缀的执行协议；可读正文仍属于聊天历史。
-        pending: dict[str, list[Message]] = {}
-        abandoned: set[str] = set()
-        abandoned_calls: set[CallRef] = set()
-        for message in messages:
-            body = message.body
-            if isinstance(body, Output):
-                if body.finish == "continue":
-                    pending.setdefault(message.source, []).append(message)
-                else:
-                    pending[message.source] = []
-            elif isinstance(body, Control) and body.action == "abandon":
-                outputs = pending.get(message.source, [])
-                for output in outputs:
-                    if output.seq <= body.through_seq:
-                        abandoned.add(output.message_id)
-                        assert isinstance(output.body, Output)
-                        abandoned_calls.update(
-                            CallRef(output.message_id, index)
-                            for index, part in enumerate(output.body.parts)
-                            if isinstance(part, ToolCall)
-                        )
-                pending[message.source] = [output for output in outputs if output.seq > body.through_seq]
-        # 1. 读取完整前缀的 replay facts，摘要不能删除 provider 仍需要的状态。
-        facts: dict[str, Mapping[str, Any]] = {}
-        continuation: ModelContinuation | None = None
-        continuation_summary: str | None = None
-        continuation_seq = -1
-        continuation_transformed = False
-        results: dict[CallRef, Message] = {}
-        # 只复用同一不可变 Message 的静态检查；调用账和内容贡献者仍每轮读取。
-        current_facts: dict[str, tuple[Message, Mapping[str, Any] | None]] = {}
-        recorded_facts: dict[str, Mapping[str, Any]] = {}
-        response_metadata: dict[str, Mapping[str, Any]] = {}
-        for message in messages:
-            if not isinstance(message.body, Output):
-                continue
-            previous = self._facts.get(message.message_id)
-            if previous is not None and previous[0] is message:
-                value = previous[1]
-            else:
-                recorded = [part for part in message.body.parts
-                            if isinstance(part, ContentPart) and part.kind == "model.facts"]
-                if len(recorded) > 1:
-                    raise ValueError("同一 Output 出现多个 model.facts")
-                value = None
-                if recorded:
-                    _ = check_facts(recorded[0])
-                    value = cast(Mapping[str, Any], recorded[0].value)
-            current_facts[message.message_id] = (message, value)
-            if value is not None:
-                recorded_facts[message.message_id] = value
-        # 调用账 owner 批量读取窄字段；插件自带 reader 保持原调用合同。
-        read_call = self._read_call
-        if isinstance(read_call, ModelCallReader):
-            receipts = read_call.replay(tuple(value["call_record_id"] for value in recorded_facts.values()))
-            read_call = receipts.__getitem__
-        for message in messages:
-            body = message.body
-            if isinstance(body, Control) and body.action == "abandon" and message.source == self._source:
-                continuation = None
-            if isinstance(body, ToolResult):
-                # 已放弃调用的结算回执仍要配对渲染；call/result 邻接关系不能断。
-                if body.call_ref in results:
-                    raise ValueError("同一工具调用出现多个结果")
-                results[body.call_ref] = message
-            if not isinstance(body, Output):
-                continue
-            value = recorded_facts.get(message.message_id)
-            if value is None:
-                continue
-            receipt = read_call(value["call_record_id"])
-            if receipt["state"] != "success":
-                raise ValueError("已提交模型事实必须引用成功结算的真实调用")
-            if receipt["binding"]["binding_id"] == self._model.descriptor.binding_id:
-                metadata = receipt.get("provider_metadata")
-                if metadata is not None and not value.get("content_transformed", False):
-                    response_metadata[message.message_id] = metadata
-            previous = self._facts.get(message.message_id)
-            if previous is None or previous[0] is not message:
-                indices = {
-                    str(index)
-                    for index, part in enumerate(body.parts)
-                    if isinstance(part, ToolCall) or (isinstance(part, ContentPart) and part.kind == "model.tool_rejection")
-                }
-                if set(value["tool_ids"]) != indices:
-                    raise ValueError("模型工具 ID 不匹配实际 Output 调用位置")
-            state = value["continuation"]
-            message_continuation = (
-                None
-                if state is None
-                else ModelContinuation(state["binding_id"], state["payload"])
-            )
-            if (
-                message_continuation is not None
-                and message_continuation.binding_id != receipt["binding"]["binding_id"]
-            ):
-                raise ValueError("continuation 不属于记录中的模型")
-            if message.source == self._source and message.message_id not in abandoned:
-                continuation = message_continuation
-                continuation_transformed = value.get("content_transformed", False)
-                continuation_seq = message.seq
-                summaries = [
-                    part for part in body.parts
-                    if isinstance(part, ContentPart) and part.kind == "context.summary"
-                ]
-                if len(summaries) > 1:
-                    raise ValueError("同一模型 Output 只能使用一份摘要")
-                continuation_summary = (
-                    self._check_summary(summaries[0]).binding_ids[0] if summaries else None
-                )
-            facts[message.message_id] = value
+        facts = fold.recorded
+        results = fold.results
+        abandoned_calls = fold.abandoned_calls
+        response_metadata = fold.response_metadata
+        continuation = fold.continuation
+        continuation_summary = fold.cont_summary
+        continuation_seq = fold.cont_seq
+        continuation_transformed = fold.cont_transformed
         # 摘要明确开启新请求；原 opaque 保存在日志，只续接同一摘要后的响应。
         if fresh or continuation_transformed or summary_reference is not None and (
             continuation_summary != summary_reference or continuation_seq <= after_seq
@@ -449,10 +357,7 @@ class MessageProjection:
                 )
 
         # 2. 只投影实际进入请求的块；首次完整展示证据跟随请求，而非 render 调用。
-        seen = {
-            tuple(ref) for message in messages if message.source == self._source
-            for ref in recorded_facts.get(message.message_id, {}).get("content_refs", ())
-        }
+        seen = set(fold.content_refs)
         content_refs: list[tuple[str, int]] = []
         changed_content = False
         msg_dynamic = False
@@ -536,15 +441,22 @@ class MessageProjection:
                     and replay
                 )
             )
-            call_refs = tuple(
-                CallRef(message.message_id, index)
-                for index, part in enumerate(body.parts)
-                if isinstance(part, ToolCall)
-            )
-            call_deps = tuple(
-                (ref, id(results.get(ref)), ref in abandoned_calls)
-                for ref in call_refs
-            )
+            dep = fold.deps.get(message.message_id)
+            if dep is None:
+                call_refs = tuple(
+                    CallRef(message.message_id, index)
+                    for index, part in enumerate(body.parts)
+                    if isinstance(part, ToolCall)
+                )
+                dep = (
+                    call_refs,
+                    tuple(
+                        (ref, id(results.get(ref)), ref in abandoned_calls)
+                        for ref in call_refs
+                    ),
+                )
+                fold.deps[message.message_id] = dep
+            call_refs, call_deps = dep
             entry = None if current_touched else cached_segments.get(message.message_id)
             if (
                 entry is not None
@@ -743,12 +655,222 @@ class MessageProjection:
         request = ModelRequest(messages=rows, continuation=None if changed_content else continuation,
                                content_refs=tuple(content_refs), content_transformed=changed_content)
         self._last_rows = tuple(request.messages)
-        self._facts = current_facts
+        self._facts = fold.facts
         self._arguments = current_arguments
         return request
 
+    def _fold_rebuild(
+        self,
+        fold: _Fold,
+        messages: tuple[Message, ...],
+        inherited: Mapping[str, tuple[Message, Mapping[str, Any] | None]],
+    ) -> None:
+        """预扫描的全量形式；与原逐轮三趟扫描逐行等价。"""
+        # 放弃只撤销未结束前缀的执行协议；可读正文仍属于聊天历史。
+        pending: dict[str, list[Message]] = {}
+        for message in messages:
+            body = message.body
+            if isinstance(body, Output):
+                if body.finish == "continue":
+                    pending.setdefault(message.source, []).append(message)
+                else:
+                    pending[message.source] = []
+            elif isinstance(body, Control) and body.action == "abandon":
+                outputs = pending.get(message.source, [])
+                for output in outputs:
+                    if output.seq <= body.through_seq:
+                        fold.abandoned.add(output.message_id)
+                        assert isinstance(output.body, Output)
+                        fold.abandoned_calls.update(
+                            CallRef(output.message_id, index)
+                            for index, part in enumerate(output.body.parts)
+                            if isinstance(part, ToolCall)
+                        )
+                pending[message.source] = [output for output in outputs if output.seq > body.through_seq]
+        for message in messages:
+            self._fold_meta(fold, message)
+            self._fold_facts(fold, message, inherited)
+        # 调用账 owner 批量读取窄字段；插件自带 reader 保持原调用合同。
+        read_call = self._read_call
+        if isinstance(read_call, ModelCallReader):
+            fold.receipts.update(read_call.replay(
+                tuple(value["call_record_id"] for value in fold.recorded.values())
+            ))
+        for message in messages:
+            self._fold_main(fold, message, inherited)
+        fold.count = len(messages)
+        fold.first = messages[0] if messages else None
+        fold.last = messages[-1] if messages else None
+
+    def _fold_apply(
+        self,
+        fold: _Fold,
+        message: Message,
+        inherited: Mapping[str, tuple[Message, Mapping[str, Any] | None]],
+    ) -> None:
+        """把一条追加消息折进编排状态；abandon 影响已折前缀，整体失效重建。"""
+        if isinstance(message.body, Control) and message.body.action == "abandon":
+            raise _FoldStale
+        self._fold_meta(fold, message)
+        self._fold_facts(fold, message, inherited)
+        self._fold_main(fold, message, inherited)
+        fold.count += 1
+        fold.last = message
+
+    def _fold_meta(self, fold: _Fold, message: Message) -> None:
+        if isinstance(message.body, Input) and message.source == self._source:
+            fold.inputs.add(message.message_id)
+            fold.latest_input = message.message_id
+
+    def _fold_facts(
+        self,
+        fold: _Fold,
+        message: Message,
+        inherited: Mapping[str, tuple[Message, Mapping[str, Any] | None]],
+    ) -> None:
+        """只复用同一不可变 Message 的静态检查；内容贡献者随 facts 一次取齐。"""
+        if not isinstance(message.body, Output):
+            return
+        previous = inherited.get(message.message_id)
+        if previous is not None and previous[0] is message:
+            value = previous[1]
+        else:
+            recorded = [part for part in message.body.parts
+                        if isinstance(part, ContentPart) and part.kind == "model.facts"]
+            if len(recorded) > 1:
+                raise ValueError("同一 Output 出现多个 model.facts")
+            value = None
+            if recorded:
+                _ = check_facts(recorded[0])
+                value = cast(Mapping[str, Any], recorded[0].value)
+        fold.facts[message.message_id] = (message, value)
+        if value is not None:
+            fold.recorded[message.message_id] = value
+            if message.source == self._source:
+                for ref in value.get("content_refs", ()):
+                    fold.content_refs.add(tuple(ref))
+
+    def _fold_receipt(self, fold: _Fold, call_id: str) -> Mapping[str, Any]:
+        """成功结算的回执不可变，每条记录在折叠生命周期内只读一次。"""
+        receipt = fold.receipts.get(call_id)
+        if receipt is None:
+            read_call = self._read_call
+            if isinstance(read_call, ModelCallReader):
+                receipt = read_call.replay((call_id,))[call_id]
+            else:
+                receipt = read_call(call_id)
+            fold.receipts[call_id] = receipt
+        return receipt
+
+    def _fold_main(
+        self,
+        fold: _Fold,
+        message: Message,
+        inherited: Mapping[str, tuple[Message, Mapping[str, Any] | None]],
+    ) -> None:
+        body = message.body
+        if isinstance(body, Control) and body.action == "abandon" and message.source == self._source:
+            fold.continuation = None
+        if isinstance(body, ToolResult):
+            # 已放弃调用的结算回执仍要配对渲染；call/result 邻接关系不能断。
+            if body.call_ref in fold.results:
+                raise ValueError("同一工具调用出现多个结果")
+            fold.results[body.call_ref] = message
+            fold.deps.pop(body.call_ref.message_id, None)
+        if not isinstance(body, Output):
+            return
+        value = fold.recorded.get(message.message_id)
+        if value is None:
+            return
+        receipt = self._fold_receipt(fold, value["call_record_id"])
+        if receipt["state"] != "success":
+            raise ValueError("已提交模型事实必须引用成功结算的真实调用")
+        if receipt["binding"]["binding_id"] == self._model.descriptor.binding_id:
+            metadata = receipt.get("provider_metadata")
+            if metadata is not None and not value.get("content_transformed", False):
+                fold.response_metadata[message.message_id] = metadata
+        previous = inherited.get(message.message_id)
+        if previous is None or previous[0] is not message:
+            indices = {
+                str(index)
+                for index, part in enumerate(body.parts)
+                if isinstance(part, ToolCall) or (isinstance(part, ContentPart) and part.kind == "model.tool_rejection")
+            }
+            if set(value["tool_ids"]) != indices:
+                raise ValueError("模型工具 ID 不匹配实际 Output 调用位置")
+        state = value["continuation"]
+        message_continuation = (
+            None
+            if state is None
+            else ModelContinuation(state["binding_id"], state["payload"])
+        )
+        if (
+            message_continuation is not None
+            and message_continuation.binding_id != receipt["binding"]["binding_id"]
+        ):
+            raise ValueError("continuation 不属于记录中的模型")
+        if message.source == self._source and message.message_id not in fold.abandoned:
+            fold.continuation = message_continuation
+            fold.cont_transformed = value.get("content_transformed", False)
+            fold.cont_seq = message.seq
+            summaries = [
+                part for part in body.parts
+                if isinstance(part, ContentPart) and part.kind == "context.summary"
+            ]
+            if len(summaries) > 1:
+                raise ValueError("同一模型 Output 只能使用一份摘要")
+            fold.cont_summary = (
+                self._check_summary(summaries[0]).binding_ids[0] if summaries else None
+            )
+
 
 _EXTERNAL_PART_KINDS = frozenset({"artifact_ref", "reply_ref"})
+
+
+class _FoldStale(Exception):
+    """追加尾部出现 abandon：编排折叠失效，回退全量重建。"""
+
+
+class _Fold:
+    """render 编排层的不可变前缀折叠；字段即原三趟预扫描的终态。"""
+
+    __slots__ = (
+        "count", "first", "last", "inputs", "latest_input",
+        "abandoned", "abandoned_calls", "facts", "recorded", "results",
+        "receipts", "deps", "response_metadata", "content_refs",
+        "continuation", "cont_summary", "cont_seq", "cont_transformed",
+    )
+
+    def __init__(self) -> None:
+        self.count = 0
+        self.first: Message | None = None
+        self.last: Message | None = None
+        self.inputs: set[str] = set()
+        self.latest_input: str | None = None
+        self.abandoned: set[str] = set()
+        self.abandoned_calls: set[CallRef] = set()
+        self.facts: dict[str, tuple[Message, Mapping[str, Any] | None]] = {}
+        self.recorded: dict[str, Mapping[str, Any]] = {}
+        self.results: dict[CallRef, Message] = {}
+        self.receipts: dict[str, Mapping[str, Any]] = {}
+        self.deps: dict[
+            str, tuple[tuple[CallRef, ...], tuple[tuple[CallRef, int, bool], ...]]
+        ] = {}
+        self.response_metadata: dict[str, Mapping[str, Any]] = {}
+        self.content_refs: set[tuple[str, int]] = set()
+        self.continuation: ModelContinuation | None = None
+        self.cont_summary: str | None = None
+        self.cont_seq = -1
+        self.cont_transformed = False
+
+
+def _fold_compatible(fold: _Fold, messages: tuple[Message, ...]) -> bool:
+    """前缀端点身份匹配即兼容；消息不可变且日志只追加，中段不可能被替换。"""
+    return (
+        fold.count <= len(messages)
+        and (not fold.count or messages[fold.count - 1] is fold.last)
+        and (not messages or messages[0] is fold.first)
+    )
 
 
 class _Segment:
