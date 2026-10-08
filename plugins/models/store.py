@@ -218,6 +218,8 @@ class ModelsStore:
         # 同进程活 attempt 登记属于账本身份：同一 store 的同 key 调用才合并。
         self.live_runs: dict[object, object] = {}
         self._host_lock_file: object | None = None
+        # descriptor 冻结且整个绑定周期不变；binding JSON 只随 descriptor 变化。
+        self._binding_cache: dict[BoundModelDescriptor, str] = {}
 
     @property
     def host_epoch(self) -> int | None:
@@ -399,7 +401,10 @@ class ModelsStore:
         """在同一事务内核对 keyed 准入并记账，过时的读取不能再次发送。"""
         if not self.writable:
             raise RuntimeError("只读 Model store 不能开始外部调用")
-        binding = _strict_json(asdict(descriptor), "model binding")
+        binding = self._binding_cache.get(descriptor)
+        if binding is None:
+            binding = _strict_json(asdict(descriptor), "model binding")
+            self._binding_cache[descriptor] = binding
         call_id = uuid.uuid4().hex
         with self._connect() as connection, connection:
             # 1. 读取与追加共用写事务；线程等待期间其他 Root 可能已结算。
