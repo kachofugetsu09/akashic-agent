@@ -46,6 +46,7 @@ MESSAGE_SOURCE_INDEX_SCHEMA = """CREATE INDEX IF NOT EXISTS message_source_seq
 # 小行强缓存：每轮重复读取的近期消息不再依赖调用者持有引用；上界约 512×8KB。
 _DECODE_STRONG_LIMIT = 512
 _DECODE_STRONG_BODY = 8192
+_ATTACHMENT_MEMO_SIZE = 8192
 MESSAGE_BODY_KIND_INDEX_SCHEMA = """CREATE INDEX IF NOT EXISTS message_source_kind_seq
     ON messages (session_key, source, json_extract(body, '$.kind'), seq,
                  json_extract(body, '$.finish'));"""
@@ -479,6 +480,9 @@ class MessageLog:
         self._decoded_strong: dict[tuple[object, ...], Message] = {}
         self._decoded_owners: dict[tuple[object, ...], OwnerRecord] = {}
         self._decoded_attributes: dict[str, SessionAttributes] = {}
+        # 已提交消息的附件绑定只随消息同事务写入、本层不再变更；按 message_id
+        # 备忘查询结果，每轮材料准备只读取新增消息，由 _decode_lock 保护。
+        self._attachment_memo: dict[str, tuple[AttachmentRef, ...]] = {}
         # 消息订阅相关提交递增 _heads_revision；与 writer data_version 双键共享 heads 目录。
         self._heads_revision = 0
         self._heads_shared: tuple[int, int, Mapping[str, int]] | None = None
@@ -1381,24 +1385,35 @@ class MessageReader:
         """批量读取已获授消息的附件，按输入顺序保留重复引用。"""
         if not message_ids:
             return ()
-        with self._log._read():
-            rows = self._log._connection.execute(
-                "SELECT m.id,ma.ordinal,a.* FROM messages m "
-                "LEFT JOIN message_attachments ma ON ma.message_id=m.id "
-                "LEFT JOIN attachments a ON a.artifact_id=ma.artifact_id "
-                "WHERE m.session_key=? AND m.id IN (SELECT value FROM json_each(?)) "
-                "ORDER BY m.seq,ma.ordinal", (self._session_id, json.dumps(message_ids)),
-            ).fetchall()
-        refs: dict[str, list[AttachmentRef]] = {}
-        for row in rows:
-            items = refs.setdefault(row["id"], [])
-            if row["ordinal"] is not None:
-                if row["ordinal"] != len(items) or row["artifact_id"] is None:
-                    raise ValueError(f"Message {row['id']} 附件引用损坏")
-                items.append(_artifact_ref(row))
-        if refs.keys() != set(message_ids):
-            raise LookupError("消息不在 reader 获授的 Session 中")
-        return tuple(ref for identity in message_ids for ref in refs[identity])
+        log = self._log
+        memo = log._attachment_memo
+        with log._decode_lock:
+            missing = tuple(dict.fromkeys(mid for mid in message_ids if mid not in memo))
+        if missing:
+            with log._read():
+                rows = log._connection.execute(
+                    "SELECT m.id,ma.ordinal,a.* FROM messages m "
+                    "LEFT JOIN message_attachments ma ON ma.message_id=m.id "
+                    "LEFT JOIN attachments a ON a.artifact_id=ma.artifact_id "
+                    "WHERE m.session_key=? AND m.id IN (SELECT value FROM json_each(?)) "
+                    "ORDER BY m.seq,ma.ordinal", (self._session_id, json.dumps(missing)),
+                ).fetchall()
+            refs: dict[str, list[AttachmentRef]] = {}
+            for row in rows:
+                items = refs.setdefault(row["id"], [])
+                if row["ordinal"] is not None:
+                    if row["ordinal"] != len(items) or row["artifact_id"] is None:
+                        raise ValueError(f"Message {row['id']} 附件引用损坏")
+                    items.append(_artifact_ref(row))
+            if refs.keys() != set(missing):
+                raise LookupError("消息不在 reader 获授的 Session 中")
+            with log._decode_lock:
+                for identity in missing:
+                    memo[identity] = tuple(refs[identity])
+                while len(memo) > _ATTACHMENT_MEMO_SIZE:
+                    _ = memo.pop(next(iter(memo)))
+        with log._decode_lock:
+            return tuple(ref for identity in message_ids for ref in memo[identity])
 
     def head(self, *, source: str | None = None) -> int:
         sql = "SELECT COALESCE(MAX(seq), -1) FROM messages WHERE session_key=?"
