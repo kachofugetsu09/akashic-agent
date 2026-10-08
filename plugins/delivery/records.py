@@ -192,7 +192,13 @@ class DeliveryRecords:
         committed_through: list[int] = []
 
         def commit(tx: OwnerTransaction) -> tuple[Selection | None, ...]:
-            through = self.cursor(reader.session_id)
+            # cursor 写回只由本事务内的持久值决定：内存缓存只服务读路径，
+            # 不得参与决定写回什么（单调性由 expected_version 冲突重试保证）。
+            key = self._cursor_key(reader.session_id)
+            persisted = tx.read(key)
+            persisted_through = (-1 if persisted is None else
+                                 Cursor.model_validate(dict(persisted.value)).through_seq)
+            through = persisted_through
             selections: list[Selection | None] = []
             for message, sinks in items:
                 if message.seq <= through:
@@ -209,10 +215,8 @@ class DeliveryRecords:
                 through = message.seq
                 selections.append(selection)
             # 所属目的地已 prepared 后才推进 cursor；其他来源保留自己的选路权。
-            if through > self.cursor(reader.session_id):
-                key = self._cursor_key(reader.session_id)
-                previous = tx.read(key)
-                _ = tx.save(key, {"through_seq": through}, expected_version=None if previous is None else previous.version)
+            if through > persisted_through:
+                _ = tx.save(key, {"through_seq": through}, expected_version=None if persisted is None else persisted.version)
                 committed_through.append(through)
             return tuple(selections)
 

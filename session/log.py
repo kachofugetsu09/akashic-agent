@@ -482,13 +482,9 @@ class MessageLog:
         self._decoded_attributes: dict[str, SessionAttributes] = {}
         # 已提交消息的附件绑定只随消息同事务写入、本层不再变更；按 message_id
         # 备忘查询结果，每轮材料准备只读取新增消息，由 _decode_lock 保护。
+        # 命名数据管理操作（撤销/删除 Session）经另一连接物理删除后，必须经
+        # invalidate_attachment_memo 显式失效对应项。
         self._attachment_memo: dict[str, tuple[AttachmentRef, ...]] = {}
-        # 消息订阅相关提交递增 _heads_revision；与 writer data_version 双键共享 heads 目录。
-        self._heads_revision = 0
-        self._heads_shared: tuple[int, int, Mapping[str, int]] | None = None
-        # 每次写提交递增 _commit_revision；与 writer data_version 双键共享 owner 记录读取。
-        self._commit_revision = 0
-        self._owner_shared: dict[tuple[str, str], tuple[tuple[int, int], OwnerRecord | None]] = {}
         self._reads = _ReadLocal()
         self._path = Path(path).resolve()
         self._closed = False
@@ -748,10 +744,8 @@ class MessageLog:
                     if inspect.iscoroutine(result):
                         result.close()
                     raise TypeError("存储事务回调必须同步，不能跨 await")
-            self._commit_revision += 1
             # owner 账本或 embedding 的单独提交不会改变消息订阅结果。
             if self._notify_pending:
-                self._heads_revision += 1
                 if getattr(self._defer_notify, "active", False):
                     # 异步提交路径：唤醒投递让给提交者恢复后再做，
                     # listener 的追赶读不再排在提交者延续之前。
@@ -819,6 +813,12 @@ class MessageLog:
 
     def reader(self, session_id: str) -> MessageReader:
         return MessageReader(self, session_id)
+
+    def invalidate_attachment_memo(self, message_ids: Iterable[str]) -> None:
+        """权威删除路径提交后失效对应附件备忘；未备忘的 id 忽略。"""
+        with self._decode_lock:
+            for message_id in message_ids:
+                self._attachment_memo.pop(message_id, None)
 
     def writer(
         self,
@@ -935,25 +935,12 @@ class MessageCatalog:
     def snapshot_heads(self) -> Mapping[str, int]:
         """单条查询取得同一数据库快照，不逐会话读取可能变化的 head。
 
-        autocommit 下 data_version 总是反映其他连接的最近提交；查询结果若赶上
-        更晚的提交只会按旧版本号标记，后续比较保守失效重新查询，不会把旧目录当新。
-        进程内提交以 _heads_revision 标记；双键命中时多个 follower 共享一份目录。
+        只在同一只读连接内按该连接自己的 data_version 复用目录：版本与数据来自
+        同一快照。跨连接共享（旧版 _heads_shared）曾把旧快照的查询结果挂到
+        writer 的新版本键下（评审 #1127），已撤除；follower 减少查询的正确手段
+        是复用连接与同版本命中，不是跨连接共享结果。
         """
         log = self._log
-        revision = None
-        version = None
-        if log._writer_lock.acquire(blocking=False):
-            try:
-                if not log._closed and not log._writer_connection.in_transaction:
-                    # 与缓存同源捕获：声明的新旧不超过这一刻的已提交状态。
-                    revision = log._heads_revision
-                    version = log._writer_connection.execute("PRAGMA data_version").fetchone()[0]
-                    shared = log._heads_shared
-                    if (shared is not None and shared[0] == revision
-                            and shared[1] == version):
-                        return shared[2]
-            finally:
-                log._writer_lock.release()
         with log._read(snapshot=False) as connection:
             # 1. data_version 只可在同一连接上比较；writer 未提交视图不能复用。
             read = log._reads.current
@@ -969,8 +956,6 @@ class MessageCatalog:
             heads = MappingProxyType({row["key"]: row["head"] for row in rows})
             if read is not None:
                 read.heads_version, read.heads = current, heads
-            if revision is not None and version is not None:
-                log._heads_shared = (revision, version, heads)
             return heads
 
     def reader(self, session_id: str) -> MessageReader:
@@ -1999,39 +1984,19 @@ class OwnerStore:
             raise ValueError("原子提交不能跨存储 authority")
 
     def read(self, key: str) -> OwnerRecord | None:
-        """同一提交版本内复用已核对记录；任何连接提交后第一读重新查询。
+        """每次读取都以当前快照的 SQL 事实为准；行内容解码复用由 _decode 承担。
 
-        双键与 snapshot_heads 同源：进程内提交递增 _commit_revision，其他连接
-        （含其他进程）的提交推进 writer 的 data_version；写事务在途时无法捕获
-        一致版本，直接走原 SQL 读取。读取若赶上更晚提交只会按旧版本号标记，
-        下一次比较保守失效重新查询，不会把旧值当新。
+        收敛说明：旧版曾按 (提交序号, writer data_version) 双键共享查询结果，
+        但版本号捕获自 writer 连接、数据来自只读连接的旧快照，旧结果会被挂在
+        新版本键下持续返回（评审 #1140）。版本与数据必须来自同一快照，该机制
+        撤除；减少读取的正确手段是调用方合并查询，不是跨连接共享结果。
         """
-        log = self._log
-        revision: tuple[int, int] | None = None
-        if log._writer_lock.acquire(blocking=False):
-            try:
-                if not log._closed and not log._writer_connection.in_transaction:
-                    revision = (
-                        log._commit_revision,
-                        log._writer_connection.execute("PRAGMA data_version").fetchone()[0],
-                    )
-                    cached = log._owner_shared.get((self._owner, key))
-                    if cached is not None and cached[0] == revision:
-                        return cached[1]
-            finally:
-                log._writer_lock.release()
-        with log._read(snapshot=False):
-            row = log._connection.execute(
+        with self._log._read(snapshot=False):
+            row = self._log._connection.execute(
                 "SELECT version,value FROM owner_records WHERE owner=? AND key=?",
                 (self._owner, key),
             ).fetchone()
-        record = None if row is None else self._decode(row)
-        if revision is not None:
-            shared = log._owner_shared
-            if len(shared) >= 256:
-                shared.pop(next(iter(shared)))
-            shared[(self._owner, key)] = (revision, record)
-        return record
+        return None if row is None else self._decode(row)
 
     def _decode(self, row: sqlite3.Row) -> OwnerRecord:
         """复用当前 SQL 行相同的不可变记录；有界强缓存不受调用者引用周期影响。"""
