@@ -10,11 +10,12 @@ import re
 import shlex
 import shutil
 import signal
+import sys
 import tempfile
 import time
 from contextlib import asynccontextmanager
 from dataclasses import dataclass, field
-from functools import wraps
+from functools import partial, wraps
 from pathlib import Path
 from typing import Any, AsyncGenerator, Awaitable, Callable, cast
 
@@ -23,9 +24,9 @@ from google.protobuf.message import Message
 import grpc
 
 from agent.host_bridge import host_bridge_pb2 as pb
-from agent.host_bridge import host_bridge_pb2_grpc as rpc
+from agent.host_bridge import transport
 from agent.host_bridge.protocol import (
-    CHANNEL_OPTIONS,
+    EXECUTION_ENV_NAMES,
     encode_execution,
     encode_cleanup,
     encode_file_result,
@@ -48,11 +49,18 @@ from agent.host_bridge.filesystem import (
 )
 from core.common.diagnostic_log import configure_logging
 from core.common.diagnostic_log import diagnostic_context
-from core.common.diagnostic_log import log_event
+from core.common.diagnostic_log import log_event as _log_event
 
 _COMMIT_PATTERN = re.compile(r"[0-9a-f]{40}")
 _SHA256_PATTERN = re.compile(r"[0-9a-f]{64}")
 logger = logging.getLogger(__name__)
+
+
+def log_event(*args: Any, **kwargs: Any) -> None:
+    """保留当前诊断上下文和事件顺序，让响应先写入 socket。"""
+    if kwargs.get("exc_info") is True:
+        kwargs["exc_info"] = sys.exc_info()
+    asyncio.get_running_loop().call_soon(partial(_log_event, *args, **kwargs))
 
 
 @dataclass
@@ -79,13 +87,13 @@ class _ManagerNotFound(Exception):
 def _rpc[Request: Message, Reply: Message](
     handler: Callable[["HostBridgeService", Request], Awaitable[Reply]],
 ) -> Callable[
-    ["HostBridgeService", Request, grpc.aio.ServicerContext], Awaitable[Reply]
+    ["HostBridgeService", Request, transport.RpcContext], Awaitable[Reply]
 ]:
     """在唯一 RPC 边界校验身份并记录诊断，取消始终向上传播。"""
 
     @wraps(handler)
     async def run(
-        self: "HostBridgeService", request: Request, context: grpc.aio.ServicerContext
+        self: "HostBridgeService", request: Request, context: transport.RpcContext
     ) -> Reply:
         started = time.perf_counter()
         method = handler.__name__
@@ -164,12 +172,12 @@ def _rpc[Request: Message, Reply: Message](
                 "internal",
             )
             await context.abort(grpc.StatusCode.INTERNAL, str(exc))
-        raise AssertionError("gRPC abort returned")
+        raise AssertionError("RPC abort returned")
 
     return run
 
 
-class HostBridgeService(rpc.HostBridgeServicer):
+class HostBridgeService:
     """Own host shell managers and reap them when their Core lease expires."""
 
     def __init__(
@@ -203,6 +211,12 @@ class HostBridgeService(rpc.HostBridgeServicer):
             bridge_python.absolute(),
             release_commit,
         )
+        # 宿主环境属于此服务进程；每次执行只复制模板并覆盖执行级字段。
+        self._execution_env = os.environ.copy()
+        self._execution_env["AKASHIC_RUNTIME_CLI"] = str(self._runtime_cli)
+        self._execution_env["PATH"] = f"{self._runtime_cli.parent}:{self._execution_env.get('PATH', '')}"
+        for name in EXECUTION_ENV_NAMES:
+            self._execution_env.pop(name, None)
         self._managers: dict[tuple[str, str], _ManagerLease] = {}
         self._lock = asyncio.Lock()
         self._claim_lock = asyncio.Lock()
@@ -394,7 +408,7 @@ class HostBridgeService(rpc.HostBridgeServicer):
                 argv=list(request.argv),
                 cwd=Path(request.cwd) if request.HasField("cwd") else None,
                 env=_host_environment(
-                    dict(request.env), request.context.boot_id, self._runtime_cli
+                    dict(request.env), request.context.boot_id, self._execution_env
                 ),
                 tty=request.tty,
                 yield_time_ms=request.yield_time_ms,
@@ -655,19 +669,11 @@ class HostBridgeService(rpc.HostBridgeServicer):
             )
 
     def _authenticate(
-        self, identity: pb.RequestContext, context: grpc.aio.ServicerContext
+        self, identity: pb.RequestContext, context: transport.RpcContext
     ) -> None:
         """只在 RPC 入口认证 token 和固定身份，不获取 boot ownership。"""
-        metadata = context.invocation_metadata()
-        if metadata is None:
-            raise PermissionError("Host Bridge token 缺失")
-        tokens = [value for key, value in metadata if key == "authorization"]
-        if (
-            len(tokens) != 1
-            or not isinstance(tokens[0], str)
-            or not hmac.compare_digest(
-                tokens[0].encode("utf-8"), f"Bearer {self._token}".encode("utf-8")
-            )
+        if not hmac.compare_digest(
+            context.authorization.encode("utf-8"), f"Bearer {self._token}".encode("utf-8")
         ):
             raise PermissionError("Host Bridge token 无效")
         for name, value in (
@@ -717,11 +723,8 @@ async def serve(
         runtime_checkout=runtime_checkout,
         bridge_python=bridge_python,
     )
-    server = grpc.aio.server(options=CHANNEL_OPTIONS)
-    rpc.add_HostBridgeServicer_to_server(service, server)
-    if server.add_insecure_port(f"unix:{socket_path}") != 1:
-        raise RuntimeError(f"无法监听 Host Bridge socket: {socket_path}")
-    await server.start()
+    server = transport.Server(service)
+    await server.start(socket_path)
     os.chmod(socket_path, 0o600)
     log_event(
         logger,
@@ -742,34 +745,21 @@ async def serve(
         watchdog.cancel()
         await asyncio.gather(watchdog, return_exceptions=True)
         await service.shutdown()
-        await server.stop(grace=2)
+        await server.stop()
         socket_path.unlink(missing_ok=True)
         log_event(logger, logging.INFO, "host_bridge.stopped", outcome="completed")
 
 
 def _host_environment(
-    requested: dict[str, str], boot_id: str, runtime_cli: Path
+    requested: dict[str, str], boot_id: str, base: dict[str, str]
 ) -> dict[str, str]:
     """Keep host identity and import only execution-scoped presentation fields."""
 
-    env = os.environ.copy()
+    env = base.copy()
     env["AKASHIC_BOOT_ID"] = boot_id
-    for name in (
-        "AKASHIC_PLUGIN_ROLLOUT_OWNER_TURN",
-        "AKASHIC_CALL_CONTEXT",
-        "NO_COLOR",
-        "TERM",
-        "COLORTERM",
-        "PAGER",
-        "GIT_PAGER",
-        "GH_PAGER",
-    ):
+    for name in EXECUTION_ENV_NAMES:
         if name in requested:
             env[name] = requested[name]
-        else:
-            env.pop(name, None)
-    env["AKASHIC_RUNTIME_CLI"] = str(runtime_cli)
-    env["PATH"] = f"{runtime_cli.parent}:{env.get('PATH', '')}"
     return env
 
 

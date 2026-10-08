@@ -1,3 +1,5 @@
+"""真实 Local/Bridge 延迟对照，核对完整输出并保存逐次等待与续接时长。"""
+
 from __future__ import annotations
 
 import argparse
@@ -55,8 +57,14 @@ async def measure(args: argparse.Namespace, root: Path) -> dict[str, Any]:
         "execution_source_sha256": source_hash.hexdigest(),
         "python": platform.python_version(),
         "grpc": grpc.__version__,
+        "platform": platform.platform(),
+        "cpu_affinity": sorted(os.sched_getaffinity(0)),
+        "benchmark_sha256": hashlib.sha256(Path(__file__).read_bytes()).hexdigest(),
         "shell": "/bin/sh -c",
         "login": False,
+        "yield_time_ms": args.yield_ms,
+        "environment": "inherited",
+        "work_bytes": args.work_bytes,
         "results": [],
     }
     try:
@@ -68,6 +76,9 @@ async def measure(args: argparse.Namespace, root: Path) -> dict[str, Any]:
             bridge = await asyncio.create_subprocess_exec(
                 sys.executable,
                 "-B",
+                *([] if args.profile_server is None else [
+                    "-m", "cProfile", "-o", str(args.profile_server),
+                ]),
                 "-m",
                 "agent.host_bridge.server",
                 "--socket",
@@ -91,8 +102,15 @@ async def measure(args: argparse.Namespace, root: Path) -> dict[str, Any]:
                 stdout=log,
                 stderr=log,
             )
-            async with grpc.aio.insecure_channel(f"unix:{socket}") as readiness:
-                await asyncio.wait_for(readiness.channel_ready(), 15)
+            if (args.source / "agent/host_bridge/transport.py").exists():
+                async with asyncio.timeout(15):
+                    while not socket.exists():
+                        if bridge.returncode is not None:
+                            raise RuntimeError((root / "bridge.log").read_text())
+                        await asyncio.sleep(0.01)
+            else:
+                async with grpc.aio.insecure_channel(f"unix:{socket}") as readiness:
+                    await asyncio.wait_for(readiness.channel_ready(), 15)
             manager = client.HostBridgeShellProcessManager(
                 socket, "benchmark-boot", "benchmark-token", commit, "b" * 64
             )
@@ -120,51 +138,78 @@ async def measure(args: argparse.Namespace, root: Path) -> dict[str, Any]:
             manager = unified.ShellProcessManager(output_dir=root / "local-output")
 
         # 2. 固定输出、等待和预算。每个并发批次完全回收后再开始下一批。
-        async def one(size: int, index: int, tty: bool = False) -> float:
+        digest = hashlib.sha256()
+        for offset in range(0, args.work_bytes, 1024 * 1024):
+            digest.update(bytes(min(1024 * 1024, args.work_bytes - offset)))
+
+        async def one(size: int, index: int, tty: bool = False, delay: int = 0) -> dict[str, Any]:
+            """执行完整命令并核对每次续接拼出的原始输出。"""
             command = ":" if size == 0 else f"head -c {size} /dev/zero"
+            expected = b"\0" * size
+            if args.work_bytes and not tty:
+                command = f"head -c {args.work_bytes} /dev/zero | sha256sum"
+                expected = f"{digest.hexdigest()}  -\n".encode()
+            if delay:
+                command = f"sleep {delay / 1000}; {command}"
             start = time.perf_counter()
             result = await manager.exec_command(
                 command=command,
                 argv=["/bin/sh", "-c", command],
                 cwd=root,
-                env={},
+                env=os.environ.copy(),
                 tty=tty,
-                yield_time_ms=10000,
+                yield_time_ms=args.yield_ms,
                 max_output_tokens=300000,
                 hard_timeout_s=30,
                 owner_session_key=f"benchmark:{index}",
             )
+            first_ms = (time.perf_counter() - start) * 1000
+            output = result.output
+            omitted = result.output_omitted_bytes
+            polls = 0
+            while result.execution_id is not None:
+                result = await manager.write_stdin(
+                    execution_id=result.execution_id, chars="",
+                    yield_time_ms=args.yield_ms, max_output_tokens=300000,
+                    owner_session_key=f"benchmark:{index}",
+                )
+                output += result.output
+                omitted += result.output_omitted_bytes
+                polls += 1
             elapsed = (time.perf_counter() - start) * 1000
             if (
                 result.exit_code != 0
                 or result.execution_id is not None
-                or result.output != b"\0" * size
-                or result.output_omitted_bytes
+                or output != expected
+                or omitted
             ):
                 raise RuntimeError(
                     f"benchmark command result mismatch: size={size}, exit={result.exit_code}, actual={len(result.output)}"
                 )
-            return elapsed
+            return {"total_ms": elapsed, "first_ms": first_ms, "polls": polls}
 
-        for size in args.sizes:
-            for concurrency in args.concurrency:
-                await one(size, 0)
-                samples = []
-                for _ in range(math.ceil(args.samples / concurrency)):
-                    samples.extend(
-                        await asyncio.gather(
-                            *(one(size, i) for i in range(concurrency))
+        for delay in args.delays:
+            for size in args.sizes:
+                for concurrency in args.concurrency:
+                    await one(size, 0, delay=delay)
+                    samples = []
+                    for _ in range(math.ceil(args.samples / concurrency)):
+                        samples.extend(
+                            await asyncio.gather(
+                                *(one(size, i, delay=delay) for i in range(concurrency))
+                            )
                         )
+                    report["results"].append(
+                        {
+                            "delay_ms": delay,
+                            "output_bytes": 68 if args.work_bytes else size,
+                            "concurrency": concurrency,
+                            **summarize([sample["total_ms"] for sample in samples]),
+                            "raw": samples,
+                        }
                     )
-                report["results"].append(
-                    {
-                        "output_bytes": size,
-                        "concurrency": concurrency,
-                        **summarize(samples),
-                    }
-                )
         pty = [await one(0, 0, tty=True) for _ in range(args.samples)]
-        report["pty_empty_command"] = summarize(pty)
+        report["pty_empty_command"] = summarize([sample["total_ms"] for sample in pty])
         active = await manager.active_execution_ids()
         if active:
             raise RuntimeError(f"benchmark leaked executions: {active}")
@@ -262,6 +307,10 @@ def main() -> None:
     parser.add_argument("--mode", choices=("local", "bridge", "codec"), required=True)
     parser.add_argument("--wire-version", choices=("v1", "v2"))
     parser.add_argument("--samples", type=int, default=32)
+    parser.add_argument("--delays", type=int, nargs="+", default=[0], help="命令等待毫秒数，0..10000")
+    parser.add_argument("--work-bytes", type=int, default=0, help="对零字节流执行 SHA-256；只配合 --sizes 0")
+    parser.add_argument("--yield-ms", type=int, default=10000, help="首轮等待窗口；运行态自动通过 write_stdin 续接")
+    parser.add_argument("--profile-server", type=Path, help="诊断用 cProfile 输出；不用于最终性能比较")
     parser.add_argument(
         "--sizes", type=int, nargs="+", default=[0, 4096, 40000, 1048576]
     )
@@ -270,10 +319,13 @@ def main() -> None:
     args.source = args.source.resolve(strict=True)
     if (
         args.samples <= 0
+        or any(delay < 0 or delay > 10000 for delay in args.delays)
+        or not 0 <= args.work_bytes <= 1024 * 1024 * 1024
+        or (args.work_bytes > 0 and args.sizes != [0])
         or any(c < 1 or c > 32 for c in args.concurrency)
         or any(s < 0 or s > 1048576 for s in args.sizes)
     ):
-        parser.error("samples 必须为正，concurrency 为1..32，size 为0..1MiB")
+        parser.error("samples 必须为正；concurrency 为1..32；size 为0..1MiB；delay 为0..10000；work-bytes 为0..1GiB且 sizes 必须为[0]")
     if args.mode == "codec":
         if args.wire_version is None:
             parser.error("codec 模式必须指定 --wire-version")

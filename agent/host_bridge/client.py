@@ -12,9 +12,9 @@ import grpc
 from google.protobuf.message import Message
 
 from agent.host_bridge import host_bridge_pb2 as pb
-from agent.host_bridge import host_bridge_pb2_grpc as rpc
+from agent.host_bridge import transport
 from agent.host_bridge.protocol import (
-    CHANNEL_OPTIONS,
+    EXECUTION_ENV_NAMES,
     decode_cleanup,
     decode_execution,
     decode_file_result,
@@ -86,20 +86,10 @@ class HostBridgeRequirementsChecker:
         # V2 传输保留旧方法名；本原子只认识可执行文件和环境变量名称。
         request = pb.SkillRequirementsRequest(context=self._context, bins=bins, env=env)
         request.context.request_id = uuid.uuid4().hex
-        with grpc.insecure_channel(
-            f"unix:{self._socket_path}", options=CHANNEL_OPTIONS
-        ) as channel:
-            stub = rpc.HostBridgeStub(channel)
-            try:
-                response: pb.SkillRequirementsReply = stub.SkillRequirements(
-                    request,
-                    timeout=5,
-                    metadata=(("authorization", f"Bearer {self._token}"),),
-                )
-            except grpc.RpcError as exc:
-                raise RuntimeError(
-                    f"Host Bridge SkillRequirements 失败: {exc.code().name}: {exc.details()}"
-                ) from exc
+        try:
+            response = transport.call_sync(self._socket_path, self._token, "SkillRequirements", request, 5)
+        except transport.RpcError as exc:
+            raise RuntimeError(f"Host Bridge SkillRequirements 失败: {exc.code.name}: {exc.detail}") from exc
         require_fields(response, "available", "missing")
         for names in (response.available, response.missing):
             require_names(names.bins, "bins")
@@ -119,7 +109,7 @@ class HostBridgeRequirementsChecker:
 
 
 class HostBridgeShellProcessManager:
-    """在 gRPC UDS 上保留 ShellProcessManager 的可观察语义。"""
+    """在 Protobuf UDS 上保留 ShellProcessManager 的可观察语义。"""
 
     def __init__(
         self,
@@ -136,10 +126,7 @@ class HostBridgeShellProcessManager:
         self._manager_id = uuid.uuid4().hex
         self._expected_release_commit = expected_release_commit
         self._expected_toolchain_digest = expected_toolchain_digest
-        self._channel = grpc.aio.insecure_channel(
-            f"unix:{socket_path}", options=CHANNEL_OPTIONS
-        )
-        self._stub = rpc.HostBridgeStub(self._channel)
+        self._channel = transport.Channel(socket_path, token)
         self._heartbeat_task: asyncio.Task[None] | None = None
         self._lease_error: Exception | None = None
         self._opened = False
@@ -161,7 +148,6 @@ class HostBridgeShellProcessManager:
 
     async def probe(self) -> dict[str, Any]:
         reply: pb.IdentityReply = await self._call(
-            self._stub.Probe,
             pb.ContextRequest(context=self._request_context()),
             method="Probe",
             timeout=5,
@@ -171,7 +157,6 @@ class HostBridgeShellProcessManager:
 
     async def inspect(self) -> dict[str, Any]:
         reply: pb.IdentityReply = await self._call(
-            self._stub.Inspect,
             pb.ContextRequest(context=self._request_context()),
             method="Inspect",
             timeout=5,
@@ -197,7 +182,6 @@ class HostBridgeShellProcessManager:
 
     async def claim_boot(self) -> dict[str, Any]:
         reply: pb.ClaimBootReply = await self._call(
-            self._stub.ClaimBoot,
             pb.ContextRequest(context=self._request_context()),
             method="ClaimBoot",
             lease=False,
@@ -239,7 +223,7 @@ class HostBridgeShellProcessManager:
             command=command,
             argv=argv,
             cwd=None if cwd is None else str(cwd),
-            env=env,
+            env={name: env[name] for name in EXECUTION_ENV_NAMES if name in env},
             tty=tty,
             yield_time_ms=yield_time_ms,
             max_output_tokens=max_output_tokens,
@@ -247,7 +231,7 @@ class HostBridgeShellProcessManager:
             owner_session_key=owner_session_key,
         )
         return decode_execution(
-            await self._call(self._stub.Exec, request, method="Exec")
+            await self._call(request, method="Exec")
         )
 
     async def write_stdin(
@@ -268,7 +252,7 @@ class HostBridgeShellProcessManager:
             owner_session_key=owner_session_key,
         )
         return decode_execution(
-            await self._call(self._stub.WriteStdin, request, method="WriteStdin")
+            await self._call(request, method="WriteStdin")
         )
 
     async def terminate_execution(
@@ -279,7 +263,7 @@ class HostBridgeShellProcessManager:
             execution_id=execution_id,
             owner_session_key=owner_session_key,
         )
-        reply: pb.StopReply = await self._call(self._stub.Stop, request, method="Stop")
+        reply: pb.StopReply = await self._call(request, method="Stop")
         require_fields(reply, "stopped")
         return reply.stopped
 
@@ -294,7 +278,7 @@ class HostBridgeShellProcessManager:
             )
             report = decode_cleanup(
                 await self._call(
-                    self._stub.TerminateOwner, request, method="TerminateOwner"
+                    request, method="TerminateOwner"
                 )
             )
         except (Exception, asyncio.CancelledError) as error:
@@ -318,7 +302,6 @@ class HostBridgeShellProcessManager:
             return ExecutionCleanupReport((), (), ())
         await self._stop_heartbeat()
         reply: pb.CleanupReply = await self._call(
-            self._stub.ShutdownManager,
             pb.ContextRequest(context=self._request_context()),
             method="ShutdownManager",
             lease=False,
@@ -343,7 +326,6 @@ class HostBridgeShellProcessManager:
 
     async def active_execution_ids(self) -> list[int]:
         reply: pb.ActiveExecutionsReply = await self._call(
-            self._stub.ActiveExecutions,
             pb.ContextRequest(context=self._request_context()),
             method="ActiveExecutions",
         )
@@ -380,12 +362,11 @@ class HostBridgeShellProcessManager:
             case _:
                 raise ValueError(f"Host Bridge 不支持文件操作: {operation}")
         return decode_file_result(
-            await self._call(self._stub.FileTool, request, method="FileTool")
+            await self._call(request, method="FileTool")
         )
 
     async def _call(
         self,
-        call: Any,
         request: Message,
         *,
         method: str,
@@ -400,13 +381,9 @@ class HostBridgeShellProcessManager:
         if lease:
             await self._open_manager()
         try:
-            return await call(
-                request,
-                timeout=timeout,
-                metadata=(("authorization", f"Bearer {self._token}"),),
-            )
-        except grpc.aio.AioRpcError as exc:
-            error = HostBridgeRpcError(method, exc.code(), exc.details())
+            return await self._channel.call(method, request, timeout=timeout)
+        except transport.RpcError as exc:
+            error = HostBridgeRpcError(method, exc.code, exc.detail)
             if self._opened and error.code in {
                 grpc.StatusCode.NOT_FOUND, grpc.StatusCode.PERMISSION_DENIED,
                 grpc.StatusCode.UNAUTHENTICATED, grpc.StatusCode.FAILED_PRECONDITION,
@@ -420,7 +397,6 @@ class HostBridgeShellProcessManager:
             if self._opened:
                 return
             reply: pb.HeartbeatReply = await self._call(
-                self._stub.OpenManager,
                 pb.ContextRequest(context=self._request_context()),
                 method="OpenManager",
                 lease=False,
@@ -446,7 +422,6 @@ class HostBridgeShellProcessManager:
                 await asyncio.sleep(min(_HEARTBEAT_INTERVAL_S * (2 ** min(failures, 3)), 10))
                 try:
                     reply: pb.HeartbeatReply = await self._call(
-                        self._stub.Heartbeat,
                         pb.ContextRequest(context=self._request_context()),
                         method="Heartbeat",
                         lease=False,

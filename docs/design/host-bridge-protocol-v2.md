@@ -1,6 +1,6 @@
 # Host Bridge Protocol V2
 
-- 状态：accepted / implementation
+- 状态：V2 字段合同 accepted；本分支的 UDS 传输候选见 [0097](../decisions/0097-host-bridge-reuses-protobuf-socket.md)，待维护者评审采用。
 - 决策：[0055](../decisions/0055-host-bridge-uses-typed-protobuf.md)
 - 关联：RUN-013～RUN-015、SH-001～SH-003、[持久化状态地图](persistence-state-map.md)
 
@@ -15,10 +15,10 @@
 │ Core 工具 / Bridge client    │
 │ 既有工具合同 → typed request │
 └──────────────┬───────────────┘
-               │ grpc.aio UDS · Protobuf bytes
+               │ 复用 UDS · Protobuf bytes
 ┌──────────────▼───────────────┐
 │ Bridge RPC 边界              │
-│ metadata 认证 / 字段校验     │
+│ 连接凭据认证 / 字段校验     │
 └──────────────┬───────────────┘
                ▼
 ┌──────────────────────────────┐
@@ -36,7 +36,7 @@ Bridge service 拥有 boot admission 和 manager lease；ShellProcessManager 拥
 源文件：`agent/host_bridge/host_bridge.proto`。所有请求包含必需的 `RequestContext`：
 `boot_id`、`manager_id`、`request_id`、`expected_release_commit`、`expected_toolchain_digest`
 为非空字符串；`session_ref`、`turn_id` 可省略，设置时必须非空。非空字段的缺省空字符串直接拒绝；
-允许零/空的必需标量使用 explicit presence。认证只接受一项 `authorization: Bearer <token>` metadata。
+允许零/空的必需标量使用 explicit presence。认证使用连接握手中的 `Bearer <token>`，每个 RPC 入口仍检查凭据。
 
 下表的“必需”代表缺失时 INVALID_ARGUMENT；repeated/map 无存在性，空集合按表内合同解释。
 
@@ -92,7 +92,7 @@ Python client 在 protobuf 构造前拒绝布尔 limit（ValueError），避免 
 客户端在远端响应边界校验 presence、值域和 oneof，不用默认值伪造成功。
 文件图片只接受现有单个 image_url/high/data URI 结果。未知 block、额外 metadata、坏 data URI
 都 fail-loud；不丢字段、不转空结果。客户端重建已有 ToolResult，模型能力投影仍在 Core。
-单条 gRPC 消息的收发限制维持 16 MiB，Shell 输出预算与有界缓冲沿用原 manager。
+单条 Protobuf 消息的收发限制维持 16 MiB，Shell 输出预算与有界缓冲沿用原 manager。
 
 ## 4. 错误、取消和并发
 
@@ -103,10 +103,10 @@ manager 不存在为 NOT_FOUND；正在回收或 cleanup 未确认为 FAILED_PRE
 
 取消显式传播 CancelledError，不改为 INTERNAL，不终止已登记的 execution。Exec 响应丢失、
 UNAVAILABLE、deadline 或 caller 取消后，执行状态可能未知；WriteStdin 的输入也可能已经写入。
-客户端不自动重发，不开启 retry/hedging，channel 显式关闭 gRPC retries。request_id 只用于诊断，
+客户端不自动重发，不实现 retry/hedging。request_id 只用于诊断，
 不承诺幂等、exactly-once 输出或跨 boot 恢复。ActiveExecutions/Stop 继续由同 manager 管理现存句柄。
 
-不同 session 并发不新增全局执行锁。Shell manager 持续复用 async channel/stub；同步 Skill checker
+不同 session 并发不新增全局执行锁。Shell manager 持续复用 async channel；同步 Skill checker
 仍每次 with 创建并关闭短 channel，不新增生命周期 owner。RPC 取消不等于外部效果已经撤销。
 
 现有实现没有 PTY resize 入口；本次只保持现有 PTY 输入、输出、stop，不能宣称 SH-003 的 resize
@@ -114,8 +114,8 @@ UNAVAILABLE、deadline 或 caller 取消后，执行状态可能未知；WriteSt
 
 ## 5. 生成、发布与恢复
 
-固定生成器为 `grpcio-tools==1.78.0`。提交原始 `host_bridge_pb2.py`、`host_bridge_pb2.pyi`、
-`host_bridge_pb2_grpc.py`，不手工编辑生成物。开发命令：
+固定生成器为 `grpcio-tools==1.78.0`。提交原始 `host_bridge_pb2.py`、`host_bridge_pb2.pyi`，
+不手工编辑生成物；候选传输不再生成 gRPC stub。开发命令：
 
 ```bash
 uv run --isolated --no-project --with grpcio-tools==1.78.0 python scripts/generate_host_bridge_protocol.py
@@ -123,10 +123,10 @@ uv run --isolated --no-project --with grpcio-tools==1.78.0 python scripts/genera
 ```
 
 CI 在独立临时 venv 安装同一生成器后运行同一脚本的 `--check`。运行环境不依赖生成器。
-最低 grpcio 1.78.0 / protobuf 6.33.0 和正式锁定版本均须通过 import 与 UDS smoke。
+最低 protobuf 6.33.0 和正式锁定版本均须通过 import 与 UDS smoke；状态枚举继续沿用 grpc.StatusCode。
 
-service package 是唯一协议 major owner：`akashic.host.v2`。V1 route 返回 UNIMPLEMENTED，
-没有 V1 adapter、自动协商或 fallback。按 RUN-015 在维护窗口内成对切换同 commit Core/Bridge；
+service package 是字段合同的唯一 major owner：`akashic.host.v2`。候选传输只接收第 7 节的帧，
+不接受旧 gRPC route，不提供 V1 adapter、自动协商或 fallback。按 RUN-015 在维护窗口内成对切换同 commit Core/Bridge；
 软件恢复使用上一套成对 release，保留原清理、预检和 readiness 事务。本任务不部署。
 
 本任务不修改正式持久状态。执行诊断日志正常追加；其原位更新、终态移除、省略保留和清理 owner
@@ -156,3 +156,17 @@ service package 是唯一协议 major owner：`akashic.host.v2`。V1 route 返�
 - 同一 release 的 Core/Bridge 必须成对发布；不能用混合版本运行 OpenManager 新合同。
 
 文件线程排空、状态消费者和本地实验见[运行期可靠性](host-bridge-reliability.md)。
+
+## 7. UDS 传输候选
+
+采用条件与理由由 [0097](../decisions/0097-host-bridge-reuses-protobuf-socket.md) 拥有。
+固定网络字节序帧头为 `uint32 payload_length, uint8 kind, uint8 code, uint64 call_id`。
+kind 为 HELLO=0、REQUEST=1、REPLY=2、CANCEL=3；业务消息体仍是原 typed Protobuf。
+HELLO 的 code/call_id 为零，载荷为 UTF-8 Bearer 凭据。REQUEST 的 code 是 proto service
+中从一开始的方法序号。REPLY 的 code 沿用 gRPC 数字状态码，成功时载荷为声明的响应类型，
+失败时为 UTF-8 错误信息。CANCEL 没有载荷。调用编号只关联本连接内的等待，不用于重放。
+
+每个 channel 最多接纳 128 个并行业务请求；控制、心跳和停止绕过业务排队。收到响应、取消、
+超时或断线后移除该等待。尚未分配的响应编号、非法类型和超限长度使连接失败；畸形 Protobuf 返回
+INVALID_ARGUMENT。断线使全部在途调用失败，后续新调用可以新建连接，原请求不会重发。
+新传输与旧 gRPC wire 不兼容，仍要求同 commit 的 Core/Bridge 成对升级和恢复。

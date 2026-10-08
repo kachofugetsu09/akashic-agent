@@ -109,7 +109,8 @@ async def run(args: argparse.Namespace) -> dict:
         assert isinstance(utf8_page, str) and len(utf8_page.encode()) <= 10_000
         assert page(utf8_page)[1] is not None
         for limit in (0, -1, 501, True, 1.5):
-            result = await operation.execute(str(small), limit=limit)
+            # 故意越过类型提示，核对真实输入边界拒绝浮点数和布尔值。
+            result = await operation.execute(str(small), limit=limit)  # pyright: ignore[reportArgumentType]
             assert isinstance(result, ToolResult) and result.is_error
         missing = await operation.execute(str(root / "absent"))
         assert isinstance(missing, ToolResult) and missing.is_error
@@ -148,9 +149,9 @@ async def run(args: argparse.Namespace) -> dict:
                 raise AssertionError("取消未传播")
         report["checks"].append("cancel_drains_physical_enumeration")
 
-        # 4. 真实 gRPC UDS、认证与 manager admission，不替换 RPC 或业务 handler。
+        # 4. 真实 Protobuf UDS、认证与 manager admission，不替换 RPC 或业务 handler。
         import grpc
-        from agent.host_bridge import host_bridge_pb2_grpc as rpc
+        from agent.host_bridge import transport
         from agent.host_bridge.client import HostBridgeRpcError, HostBridgeShellProcessManager
         from agent.host_bridge.server import HostBridgeService
 
@@ -178,10 +179,8 @@ async def run(args: argparse.Namespace) -> dict:
             toolchain_digest=digest, runtime_checkout=args.source,
             bridge_python=Path(sys.executable),
         )
-        server = grpc.aio.server()
-        rpc.add_HostBridgeServicer_to_server(service, server)
-        assert server.add_insecure_port(f"unix:{socket}")
-        await server.start()
+        server = transport.Server(service)
+        await server.start(socket)
         client = HostBridgeShellProcessManager(
             socket, "scenario-boot", "scenario-token", commit, digest
         )
@@ -238,7 +237,7 @@ async def run(args: argparse.Namespace) -> dict:
                     await service.shutdown()
                     assert not service._managers
                 finally:
-                    await server.stop(0)
+                    await server.stop()
     return report
 
 
