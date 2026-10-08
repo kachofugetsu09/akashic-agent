@@ -103,17 +103,26 @@ class ToolExecution:
             current = slot.current
             if current is not None:
                 return current, False
-            record = await run_file_io(lambda: self._record(key, fingerprint))
-            if record is None:
-                if reply is not None:
-                    reply.check(self._state)
-                # 独立请求或自定义结果身份才有 ToolCall 之外的待保存事实。
-                if reply is None or reply.message_id != result_message_id(reply.call_ref):
-                    await self._save(key, None, {
-                        "version": 1, "request": fingerprint, "binding": binding_id,
-                        "reply_id": None if reply is None else reply.message_id,
-                        "phase": "requested", "arguments": arguments,
-                    })
+
+            def ensure_requested() -> None:
+                """回执读取与首存 requested 同一次 worker 往返；核对与 CAS 语义不变。"""
+                record = self._record(key, fingerprint)
+                if record is None:
+                    if reply is not None:
+                        reply.check(self._state)
+                    # 独立请求或自定义结果身份才有 ToolCall 之外的待保存事实。
+                    if reply is None or reply.message_id != result_message_id(reply.call_ref):
+                        _ = self._state.transact(lambda transaction: transaction.save(
+                            key,
+                            {
+                                "version": 1, "request": fingerprint, "binding": binding_id,
+                                "reply_id": None if reply is None else reply.message_id,
+                                "phase": "requested", "arguments": arguments,
+                            },
+                            expected_version=None,
+                        ))
+
+            await run_file_io(ensure_requested)
             permit = None if self._child_permit is None else self._child_permit()
             try:
                 started = slot.start(run)
@@ -423,21 +432,7 @@ async def finish(
     # 不再先做快照预读：首次完成的热路径上它是纯重复——commit 事务内对
     # 「已 done」与「请求不一致」的核对相同；重放路径由 prepare 冲突或
     # 事务内核对接管，结果与回执回调完全一致。
-    prepared = None
-    if reply is not None:
-        try:
-            prepared = await reply.writer.prepare_async(
-                reply.message_id, ToolResult(reply.call_ref, result.outcome, result.parts),
-            )
-        except MessageConflict:
-            # 放弃与真实结果竞争同一身份；只采用已经完成的权威回执。
-            previous = await run_file_io(lambda: state.snapshot(completed))
-            if previous is None:
-                raise
-            if on_commit is not None:
-                on_commit(previous)
-            return previous
-
+    # 准备也并入提交事务：replay 冲突核对与追加同一连接，少一次 worker 往返。
     def commit(transaction: OwnerTransaction) -> Result:
         current = transaction.read(key)
         if current is not None and current.value["phase"] == "done":
@@ -449,7 +444,9 @@ async def finish(
         if reply is None:
             saved = _result_value(result)
         else:
-            assert prepared is not None
+            prepared = reply.writer.prepare_now(
+                reply.message_id, ToolResult(reply.call_ref, result.outcome, result.parts),
+            )
             message = transaction.append_prepared(prepared)
             saved = {"message_id": message.message_id, "seq": message.seq}
         if current is not None and current.value["request"] != value["request"]:
@@ -460,7 +457,18 @@ async def finish(
         )
         return result
 
-    return await state.transact_async(commit, on_commit=on_commit)
+    try:
+        return await state.transact_async(commit, on_commit=on_commit)
+    except MessageConflict:
+        # 放弃与真实结果竞争同一身份；只采用已经完成的权威回执。
+        if reply is None:
+            raise
+        previous = await run_file_io(lambda: state.snapshot(completed))
+        if previous is None:
+            raise
+        if on_commit is not None:
+            on_commit(previous)
+        return previous
 
 
 async def _drain(task: Task) -> None:

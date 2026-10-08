@@ -1586,6 +1586,11 @@ class PreparedAppend:
             self._message_id, self._prepared, expected_source_head,
         ), True
 
+    @property
+    def existing(self) -> Message | None:
+        """准备时核对到的既有一致消息；None 表示将真实追加。"""
+        return self._existing
+
 
 class MessageWriter:
     def __init__(
@@ -1747,6 +1752,27 @@ class MessageWriter:
             write, None if on_commit is None else lambda result: on_commit(*result),
         )
         return message
+
+    def prepare_now(
+        self, message_id: str, body: Body, *, metadata: Mapping[str, object] | None = None,
+    ) -> PreparedAppend:
+        """事务内同步准备：grant、重放、metadata 与内容引用核对在同一连接完成。
+
+        与 prepare_async 的分工：后者把固定工作放在提交前的独立 worker 往返；
+        调用者已经把追加放进某个 OwnerTransaction 时，准备直接并入该事务，
+        少一次 worker 往返，重放核对也随事务获得更强的同一连接一致性。
+        核对顺序与 prepare_async 一致：重放先于 writer 失效检查。
+        """
+        message_metadata = self._metadata(body, metadata)
+        existing = self._replay(message_id, body, message_metadata)
+        if existing is not None:
+            return PreparedAppend(self, message_id, body, message_metadata, None, existing)
+        if not self._active:
+            raise WriterExpired("writer 已失效")
+        return PreparedAppend(
+            self, message_id, body, message_metadata,
+            self._prepare(body, message_metadata), None,
+        )
 
     def _append(
         self, message_id: str, body: Body, *, expected_source_head: int | None = None,
