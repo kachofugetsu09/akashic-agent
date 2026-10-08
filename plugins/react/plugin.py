@@ -216,6 +216,57 @@ def _encode_request(request: ModelRequest) -> Mapping[str, object]:
     }
 
 
+def _same_json(left: object, right: object) -> bool:
+    """证明冻结 JSON 值可复用；整数、布尔和浮点以及正负零不能混同。"""
+    if left is right:
+        return True
+    if type(left) is not type(right):
+        return False
+    if isinstance(left, Mapping):
+        other = cast(Mapping[str, object], right)
+        return left.keys() == other.keys() and all(_same_json(value, other[key]) for key, value in left.items())
+    if isinstance(left, tuple):
+        other_items = cast(tuple[object, ...], right)
+        return len(left) == len(other_items) and all(_same_json(a, b) for a, b in zip(left, other_items))
+    if isinstance(left, float):
+        return float.__repr__(left) == float.__repr__(cast(float, right))
+    if isinstance(left, str):
+        return str.__eq__(left, right) is True
+    if isinstance(left, int):
+        return int.__eq__(left, right) is True
+    if left is None:
+        return True
+    raise TypeError("请求增量比较只接受已经冻结的 JSON")
+
+
+@dataclass(frozen=True, slots=True)
+class _PreparedRequest:
+    """本次 ReAct 已提交的请求；结束或取消时与该执行一起释放。"""
+
+    key: str
+    attempt: int
+    request: Mapping[str, object]
+    depth: int
+
+    def entry(self, request: Mapping[str, object], materials: Materials) -> tuple[Mapping[str, object], int]:
+        """复用已提交请求的相同前缀；每十五个增量后保存完整起点。"""
+        if self.depth >= 15:
+            return {"request": request, "materials": materials}, 0
+        changed = dict(request)
+        # 标量和材料始终完整保存；只有数组前缀需要证明。
+        for name in ("messages", "tools", "content_refs"):
+            old = cast(Sequence[object], self.request[name])
+            current = cast(Sequence[object], request[name])
+            prefix = 0
+            for before, after in zip(old, current):
+                if not _same_json(before, after):
+                    break
+                prefix += 1
+            changed[name] = {"prefix": prefix, "tail": current[prefix:]}
+        return {"encoding": "request-delta-v1", "base_key": self.key,
+                "base_attempt": self.attempt, "request": changed, "materials": materials}, self.depth + 1
+
+
 def _decode_request(value: object) -> ModelRequest:
     """恢复冻结请求；损坏记录在边界明确失败。"""
     if not isinstance(value, Mapping):
@@ -620,6 +671,7 @@ async def react(
     if reader.session_id != writer.session_id:
         raise ValueError("ReAct reader 与 writer 必须属于同一 Session")
     history = _History(writer.source)
+    previous_request: _PreparedRequest | None = None
     while True:
         operation_id = uuid4().hex
         mark = partial(log_timing, session_id=reader.session_id, source=writer.source, operation_id=operation_id)
@@ -799,13 +851,15 @@ async def react(
                 attempt: int, request: ModelRequest, built: Materials
             ) -> tuple[ModelRequest, Materials, str, str]:
                 """在同一来源检查下提交请求、材料和稳定启动身份。"""
-                # Context 与模型句柄只在当前 scope 读取，worker 接收已冻结的请求字段。
-                # 冻结请求恒完整保存：增量基线曾按 (session, source) 进程级缓存且用
-                # 普通相等比较前缀（评审 #1122/#1123），准确重放合同优先于写入压缩。
+                nonlocal previous_request
+                # 基线只属于本次执行与固定 state；跨库、恢复或新执行都从完整请求开始。
                 binding_id = model.descriptor.binding_id
                 encoded_request = cast(Mapping[str, object], freeze_json(_encode_request(request)))
                 fixed_materials = cast(Materials, freeze_json(built))
                 new_entry: Mapping[str, object] = {"request": encoded_request, "materials": fixed_materials}
+                depth = 0
+                if previous_request is not None:
+                    new_entry, depth = previous_request.entry(encoded_request, fixed_materials)
 
                 def open_prep(transaction: OwnerTransaction) -> tuple[Mapping[str, object], bool, str, str]:
                     """新准备只保存一次；旧准备复用原请求并补齐尚未领取的身份。"""
@@ -830,6 +884,7 @@ async def react(
                         entries.append(None)
                     created = entries[attempt] is None
                     if created:
+                        # 后续请求可引用此条目；已有 attempt 必须保持写一次语义。
                         entries[attempt] = new_entry
                     keys = tuple(cast(Sequence[str], value["request_keys"]))
                     while len(keys) <= attempt:
@@ -850,6 +905,8 @@ async def react(
                 entry, created, output_id, request_key = await state.transact_async(open_prep)
                 # 刚提交的请求已不可变；只有恢复旧记录时才重新解码。
                 if created:
+                    # 只有耐久提交成功才推进基线；回滚或取消不会发布未提交引用。
+                    previous_request = _PreparedRequest(prep_key, attempt, encoded_request, depth)
                     saved_request, saved_materials = replace(request, on_delta=None, request_key=None), fixed_materials
                 else:
                     # 恢复读取支持旧版增量格式；损坏引用报错，不重新生成请求。

@@ -23,7 +23,7 @@ from session.message import CallRef, Control, Input, Output, ToolCall, ToolResul
 @asynccontextmanager
 async def runtime(tmp_path, complete, invoke, *, max_steps=4, authorize_hook=None,
                   reducer=None, material_source=None, estimate=None, preview_state=None, terminal_tools=frozenset(),
-                  state_owner=None, model_max_attempts=1, parallel_ids=frozenset(), max_parallel_calls=1):
+                  state_owner=None, model_max_attempts=1, parallel_ids=frozenset(), max_parallel_calls=1, tool_schemas=None):
     log = MessageLog(tmp_path / "sessions.db")
     store = ModelsStore(tmp_path / "models.db", tmp_path / "backups")
     store.initialize()
@@ -76,6 +76,8 @@ async def runtime(tmp_path, complete, invoke, *, max_steps=4, authorize_hook=Non
 
         @property
         def schemas(self) -> tuple[Mapping[str, Any], ...]:
+            if tool_schemas is not None:
+                return tool_schemas()
             return ({"type": "function", "function": {
                 "name": "example", "parameters": {"type": "object"},
             }},)
