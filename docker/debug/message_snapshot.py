@@ -6,9 +6,11 @@ import json
 import sqlite3
 import threading
 import weakref
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from tempfile import TemporaryDirectory
 
+from plugins.react.plugin import _History
 from session.log import MessageLog, OwnerTransaction
 from session.message import ContentPart, ContentReferences, Input
 from session.message_codec import encode_body
@@ -112,6 +114,23 @@ async def exercise(path: Path) -> None:
         final = read.committed_snapshot()
         assert final[-1].message_id == 'cancelled-waiter'
         assert tuple(final) == read.snapshot()
+        # 5. 两线程同时签发仍来自同一前缀；撤销后执行投影回到真实输入。
+        gate = threading.Barrier(2)
+        def concurrent_read():
+            gate.wait(timeout=5)
+            return read.committed_snapshot()
+        with ThreadPoolExecutor(max_workers=2) as pool:
+            jobs = [pool.submit(concurrent_read) for _ in range(2)]
+            left, right = [job.result(timeout=5) for job in jobs]
+        assert left.extends(right) and right.extends(left)
+        history = _History('source')
+        append.append('undo-input', body('undo me'))
+        history.update(read.committed_snapshot())
+        assert history.boundary_id == 'undo-input'
+        with sqlite3.connect(path) as db:
+            db.execute('DELETE FROM messages WHERE id=?', ('undo-input',))
+        history.update(read.committed_snapshot())
+        assert history.boundary_id == 'cancelled-waiter'
         before_restart = digest(path)
     finally:
         other.close()
@@ -120,7 +139,7 @@ async def exercise(path: Path) -> None:
     try:
         assert tuple(reopened.reader('session').committed_snapshot()) == tuple(final)
         assert digest(path) == before_restart
-        # 5. 大消息随最后一个消费者释放，不由日志永久保留。
+        # 6. 大消息随最后一个消费者释放，不由日志永久保留。
         large = reopened.writer('large', author='user', source='source', body_types=(Input,),
                                 content={'text': lambda _: ContentReferences()})
         large.append('large', body('x' * 262144))
@@ -133,7 +152,7 @@ async def exercise(path: Path) -> None:
         reopened.close()
     with sqlite3.connect(path) as db:
         assert db.execute('PRAGMA quick_check').fetchone()[0] == 'ok'
-    print('PASS: append, external writes, fixed prefix, pinned RO, rollback, cancellation, restart, release, integrity')
+    print('PASS: append, external writes, fixed prefix, pinned RO, rollback, cancellation, restart, concurrent reads, undo projection, release, integrity')
 
 
 if __name__ == '__main__':

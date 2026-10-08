@@ -651,6 +651,7 @@ async def react(
         boundary_id = history.boundary_id
         reminder_input_id = history.reminder_input_id
         frozen: Sequence[Message] = snapshot
+        frozen_tuple = tuple(snapshot)
 
         async def commit(message_id: str, body: Output, metadata: Mapping[str, object] | None = None) -> Message:
             """检查与追加同事务；竞争 Output、新边界或读集内结果都取代旧草稿。"""
@@ -777,6 +778,7 @@ async def react(
                 if prep.get("binding_id") != model.descriptor.binding_id:
                     raise ModelUnavailableError("生成准备记录的 binding 已失效")
                 frozen = await reader.snapshot_async(through_seq=cast(int, prep["base_seq"]))
+                frozen_tuple = frozen
                 attempts = prep_attempts(prep)
                 resumed = {
                     index: _load_entry(entry, state)
@@ -788,10 +790,10 @@ async def react(
                 prepared = (
                     cast(Materials, resumed[start_at][1])
                     if resumed
-                    else await materials(tuple(frozen))
+                    else await materials(frozen_tuple)
                 )
             else:
-                prepared = await materials(tuple(frozen))
+                prepared = await materials(frozen_tuple)
 
             async def prepare_request(
                 attempt: int, request: ModelRequest, built: Materials
@@ -857,10 +859,10 @@ async def react(
             prepare = prepare_request
         else:
             # 3. 取得材料与组装请求分开，Context 不获得模型调用或检索权。
-            prepared = await materials(tuple(frozen))
+            prepared = await materials(frozen_tuple)
         mark("preparation.end")
         async with _complete(
-            tuple(frozen), prepared, source=writer.source, context=context, model=model,
+            frozen_tuple, prepared, source=writer.source, context=context, model=model,
             projection=projection, tools=tools, max_output_tokens=max_output_tokens, reduce=reduce, preview=preview,
             reminder_input_id=reminder_input_id,
             prepare=prepare,
