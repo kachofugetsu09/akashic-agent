@@ -178,6 +178,30 @@ _SESSION_TITLE_MAX = 200
 
 _MESSAGE_METADATA_COLUMN = "metadata TEXT NOT NULL DEFAULT '{}'"
 
+_MESSAGE_PREFIX_SCHEMA = {
+    "message_prefix_revision": """CREATE TABLE IF NOT EXISTS message_prefix_revision (
+        singleton INTEGER PRIMARY KEY CHECK (singleton=1),
+        revision INTEGER NOT NULL CHECK (typeof(revision)='integer' AND revision>=0)
+    );""",
+    "message_prefix_update": """CREATE TRIGGER IF NOT EXISTS message_prefix_update
+        AFTER UPDATE ON messages BEGIN
+            UPDATE message_prefix_revision SET revision=revision+1 WHERE singleton=1;
+        END;""",
+    "message_prefix_delete": """CREATE TRIGGER IF NOT EXISTS message_prefix_delete
+        AFTER DELETE ON messages BEGIN
+            UPDATE message_prefix_revision SET revision=revision+1 WHERE singleton=1;
+        END;""",
+    # REPLACE 的隐式删除不保证触发 DELETE；插入前也检查被替换的身份。
+    "message_prefix_insert": """CREATE TRIGGER IF NOT EXISTS message_prefix_insert
+        BEFORE INSERT ON messages
+        WHEN NEW.seq <= (SELECT MAX(seq) FROM messages WHERE session_key=NEW.session_key)
+            OR EXISTS (SELECT 1 FROM messages WHERE id=NEW.id)
+        BEGIN
+            UPDATE message_prefix_revision SET revision=revision+1 WHERE singleton=1;
+        END;""",
+}
+
+
 _SCHEMA = {
     "attachments": ARTIFACT_SCHEMA["attachments"],
     "message_attachments": """CREATE TABLE IF NOT EXISTS message_attachments (
@@ -237,6 +261,7 @@ _SCHEMA = {
                         json_extract(body, '$.call_ref.message_id'),
                         json_extract(body, '$.call_ref.part_index')
                     ) WHERE json_extract(body, '$.kind')='tool_result';""",
+    **_MESSAGE_PREFIX_SCHEMA,
 }
 
 _OLD_MESSAGE_SCHEMA = _SCHEMA["messages"].replace(
@@ -322,6 +347,17 @@ def create_message_body_kind_index(connection: sqlite3.Connection) -> None:
     """Index body kinds so Input and Control lookups skip unrelated bodies."""
     _check_schema(connection)
     _ = connection.execute(MESSAGE_BODY_KIND_INDEX_SCHEMA)
+    _check_schema(connection)
+
+
+def create_message_prefix_revision(connection: sqlite3.Connection) -> None:
+    """增加前缀失效标记；只由消息变更的同一事务推进，不改写消息。"""
+    _check_schema(connection)
+    for statement in _MESSAGE_PREFIX_SCHEMA.values():
+        connection.execute(statement)
+    connection.execute(
+        "INSERT INTO message_prefix_revision VALUES (1,0) ON CONFLICT DO NOTHING"
+    )
     _check_schema(connection)
 
 
@@ -469,10 +505,26 @@ class MessageLog:
             with self._connection:
                 for name, statement in _SCHEMA.items():
                     # 新库由 owner 初始化；已有库的新持久能力只能由 yoyo 接纳。
-                    if name in {"owner_records", "message_embeddings", "ix_message_embeddings_hash", "message_source_seq", "message_source_kind_seq",
-                                "attachments", "message_attachments", "idx_message_attachments_artifact"} and not fresh:
+                    if not fresh and (name in _MESSAGE_PREFIX_SCHEMA or name in {
+                        "owner_records", "message_embeddings", "ix_message_embeddings_hash", "message_source_seq", "message_source_kind_seq",
+                        "attachments", "message_attachments", "idx_message_attachments_artifact",
+                    }):
                         continue
                     _ = self._connection.execute(statement)
+                if fresh:
+                    self._connection.execute("INSERT INTO message_prefix_revision VALUES (1,0)")
+            prefix_schema = {
+                row[0] for row in self._connection.execute(
+                    "SELECT name FROM sqlite_master WHERE name IN (?,?,?,?)", tuple(_MESSAGE_PREFIX_SCHEMA),
+                )
+            }
+            if prefix_schema and prefix_schema != _MESSAGE_PREFIX_SCHEMA.keys():
+                raise RuntimeError("消息前缀标记迁移不完整")
+            self._has_prefix_revision = bool(prefix_schema)
+            if self._has_prefix_revision and self._connection.execute(
+                "SELECT revision FROM message_prefix_revision WHERE singleton=1"
+            ).fetchone() is None:
+                raise RuntimeError("消息前缀标记缺少初始行")
             self._has_metadata = "metadata" in {
                 row["name"] for row in self._connection.execute("PRAGMA table_info(messages)")
             }
@@ -1410,11 +1462,17 @@ class _IncrementalMessageReader(MessageReader):
         if self._log._reads.current is not None:
             return super().scan(consume, after_seq=after_seq, through_seq=through_seq, source=source)
         prefix = self._prefix
-        before = self._external_version()
-        cached = () if prefix is None or before != prefix[0] else prefix[1]
+        has_revision = self._log._has_prefix_revision
+        before = None if has_revision else self._external_version()
         with self._log._read() as connection:
             if connection is self._log._writer_connection:
                 return super().scan(consume, after_seq=after_seq, through_seq=through_seq, source=source)
+            if has_revision:
+                # 标记和消息共享当前 RO 快照，不受另一个线程的正常写入影响。
+                before = connection.execute(
+                    "SELECT revision FROM message_prefix_revision WHERE singleton=1"
+                ).fetchone()[0]
+            cached = () if prefix is None or before != prefix[0] else prefix[1]
             # 固定 RO 快照之后，原 writer 的正常追加不会改写已缓存的前缀。
             head = self.head()
             if through_seq is not None:
@@ -1428,8 +1486,7 @@ class _IncrementalMessageReader(MessageReader):
                                          through_seq=head, source=source)
             # 2. 外部修改可能夹在版本检查与 RO 快照之间；只在原快照内重读，
             # 不重启快照，也不向调用者交付旧前缀与新尾部的混合结果。
-            after = self._external_version()
-            stable = before is not None and before == after
+            stable = has_revision or before is not None and before == self._external_version()
             if not stable and cached:
                 messages = super().scan(tuple, after_seq=after_seq, through_seq=head, source=source)
             with closing(message for message in messages) as rows:

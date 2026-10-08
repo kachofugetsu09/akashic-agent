@@ -39,12 +39,24 @@ MessageLog uses file-backed WAL mode so a pinned read does not delay a writer's 
 已提交消息前缀，生命周期与当前回复一致；同步 scan/snapshot 和异步 snapshot 共用同一读取路径。
 正常追加只补读尾部，来源筛选与旧前缀查询不覆盖完整视图。没有全局永久历史缓存。
 
-每次先非阻塞检查原 writer 连接的 SQLite data_version，再以独立只读事务固定实际 head。
-原 writer 只追加消息；其他连接的编辑、删除或恢复改变该版本，使旧前缀失效。
-补读后再检查版本；若外部变更夹在检查与快照之间，在同一个已固定的 RO 快照内完整重读，
-不交付旧前缀与新尾部混合的视图。已有事务直接读取原事务，不借用缓存或发布可能回滚的消息。
-writer 忙时完整读取独立 RO 快照，不等待 writer。异步取消排空已准入的物理读取。
-所有路径保持消息只追加和原始身份、正文、顺序；缓存不拥有修改或删除消息的能力。
+已迁移的库在同一只读事务中读取 `message_prefix_revision`、实际 head 和新增消息。
+正常追加不改变旧前缀；消息 UPDATE、DELETE、旧位置的 INSERT 和 REPLACE 由 SQLite
+触发器在原事务推进标记，包括其他连接的写入。标记不同就完整重读；回滚也回滚标记。
+因此内部 writer 忙于正常提交时，reader 仍可复用本次快照中有效的旧前缀。
+已有事务直接读取原事务，不借用缓存或发布可能回滚的消息。异步取消仍排空物理读取。
+
+```text
+┌───────────────────┐    ┌─────────────────────────────┐
+│ 当前只读事务       │───▶│ 前缀标记 → head → 新增消息   │
+└───────────────────┘    └─────────────────────────────┘
+                         标记相同：复用旧前缀
+                         标记不同：重读当前快照
+```
+
+标记只帮助判断内存视图是否有效，不是消息事实，也不授予编辑或删除权。
+新库由 MessageLog 初始化；旧库通过 Yoyo 只增加表、初始行和触发器，不改写原消息。
+迁移不完整或初始行缺失时启动失败。尚未迁移的已知旧库仍使用 writer 的
+`data_version` 检查；无法检查时完整重读，不降低原读取保证。
 
 Interest scoring keeps model selection and candidate embedding in the original async owner. Historical sample and prototype construction run in a drained worker without changing the formula, sample order or cutoff.
 
