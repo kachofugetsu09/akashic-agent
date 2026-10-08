@@ -482,6 +482,9 @@ class MessageLog:
         # 消息订阅相关提交递增 _heads_revision；与 writer data_version 双键共享 heads 目录。
         self._heads_revision = 0
         self._heads_shared: tuple[int, int, Mapping[str, int]] | None = None
+        # 每次写提交递增 _commit_revision；与 writer data_version 双键共享 owner 记录读取。
+        self._commit_revision = 0
+        self._owner_shared: dict[tuple[str, str], tuple[tuple[int, int], OwnerRecord | None]] = {}
         self._reads = _ReadLocal()
         self._path = Path(path).resolve()
         self._closed = False
@@ -738,6 +741,7 @@ class MessageLog:
                     if inspect.iscoroutine(result):
                         result.close()
                     raise TypeError("存储事务回调必须同步，不能跨 await")
+            self._commit_revision += 1
             # owner 账本或 embedding 的单独提交不会改变消息订阅结果。
             if self._notify_pending:
                 self._heads_revision += 1
@@ -1906,12 +1910,39 @@ class OwnerStore:
             raise ValueError("原子提交不能跨存储 authority")
 
     def read(self, key: str) -> OwnerRecord | None:
-        with self._log._read(snapshot=False):
-            row = self._log._connection.execute(
+        """同一提交版本内复用已核对记录；任何连接提交后第一读重新查询。
+
+        双键与 snapshot_heads 同源：进程内提交递增 _commit_revision，其他连接
+        （含其他进程）的提交推进 writer 的 data_version；写事务在途时无法捕获
+        一致版本，直接走原 SQL 读取。读取若赶上更晚提交只会按旧版本号标记，
+        下一次比较保守失效重新查询，不会把旧值当新。
+        """
+        log = self._log
+        revision: tuple[int, int] | None = None
+        if log._writer_lock.acquire(blocking=False):
+            try:
+                if not log._closed and not log._writer_connection.in_transaction:
+                    revision = (
+                        log._commit_revision,
+                        log._writer_connection.execute("PRAGMA data_version").fetchone()[0],
+                    )
+                    cached = log._owner_shared.get((self._owner, key))
+                    if cached is not None and cached[0] == revision:
+                        return cached[1]
+            finally:
+                log._writer_lock.release()
+        with log._read(snapshot=False):
+            row = log._connection.execute(
                 "SELECT version,value FROM owner_records WHERE owner=? AND key=?",
                 (self._owner, key),
             ).fetchone()
-        return None if row is None else self._decode(row)
+        record = None if row is None else self._decode(row)
+        if revision is not None:
+            shared = log._owner_shared
+            if len(shared) >= 256:
+                shared.pop(next(iter(shared)))
+            shared[(self._owner, key)] = (revision, record)
+        return record
 
     def _decode(self, row: sqlite3.Row) -> OwnerRecord:
         """复用当前 SQL 行相同的不可变记录；有界强缓存不受调用者引用周期影响。"""
