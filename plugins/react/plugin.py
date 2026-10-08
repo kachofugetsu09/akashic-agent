@@ -669,11 +669,13 @@ async def react(
                         current_head = max(m.seq for m in newer)
                 raise MessageConflict("来源 head 持续变化，提交前提无法稳定")
 
+            # 准备留在调用方 scope：内容引用与 metadata owner 回调属于插件
+            # owner 的原执行上下文，不能随事务带进 worker 线程（评审 #1146）；
+            # worker 只接收准备好的不可变 PreparedAppend。
+            prepared_append = await writer.prepare_async(message_id, body, metadata=metadata)
+
             def narrow(transaction: OwnerTransaction) -> Message:
-                # 准备并入提交事务：重放核对与追加同一连接，少一次 worker 往返；
-                # 核对顺序不变——既有身份先于来源前提与竞争扫描。
-                prepared_append = writer.prepare_now(message_id, body, metadata=metadata)
-                existing = prepared_append.existing
+                existing = reader.get(message_id)
                 if existing is not None:
                     return existing
                 if check_start is not None:

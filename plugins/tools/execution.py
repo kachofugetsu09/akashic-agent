@@ -432,7 +432,23 @@ async def finish(
     # 不再先做快照预读：首次完成的热路径上它是纯重复——commit 事务内对
     # 「已 done」与「请求不一致」的核对相同；重放路径由 prepare 冲突或
     # 事务内核对接管，结果与回执回调完全一致。
-    # 准备也并入提交事务：replay 冲突核对与追加同一连接，少一次 worker 往返。
+    # 准备留在调用方 scope（评审 #1146）：ToolResult 的内容引用与 metadata
+    # owner 回调属于工具 owner 的原执行上下文，worker 只接收不可变结果。
+    prepared = None
+    if reply is not None:
+        try:
+            prepared = await reply.writer.prepare_async(
+                reply.message_id, ToolResult(reply.call_ref, result.outcome, result.parts),
+            )
+        except MessageConflict:
+            # 放弃与真实结果竞争同一身份；只采用已经完成的权威回执。
+            previous = await run_file_io(lambda: state.snapshot(completed))
+            if previous is None:
+                raise
+            if on_commit is not None:
+                on_commit(previous)
+            return previous
+
     def commit(transaction: OwnerTransaction) -> Result:
         current = transaction.read(key)
         if current is not None and current.value["phase"] == "done":
@@ -444,9 +460,7 @@ async def finish(
         if reply is None:
             saved = _result_value(result)
         else:
-            prepared = reply.writer.prepare_now(
-                reply.message_id, ToolResult(reply.call_ref, result.outcome, result.parts),
-            )
+            assert prepared is not None
             message = transaction.append_prepared(prepared)
             saved = {"message_id": message.message_id, "seq": message.seq}
         if current is not None and current.value["request"] != value["request"]:
@@ -460,7 +474,7 @@ async def finish(
     try:
         return await state.transact_async(commit, on_commit=on_commit)
     except MessageConflict:
-        # 放弃与真实结果竞争同一身份；只采用已经完成的权威回执。
+        # 准备到提交之间身份被他人占用：放弃竞争，只采用已经完成的权威回执。
         if reply is None:
             raise
         previous = await run_file_io(lambda: state.snapshot(completed))
