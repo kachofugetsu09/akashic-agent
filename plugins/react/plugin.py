@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import asyncio
 import logging
-from collections import OrderedDict
 from collections.abc import AsyncGenerator, Awaitable, Callable, Mapping, Sequence
 from contextlib import AbstractContextManager, ExitStack, asynccontextmanager
 from dataclasses import dataclass, replace
@@ -235,45 +234,6 @@ def _decode_request(value: object) -> ModelRequest:
             )
         ),
     )
-
-
-@dataclass(frozen=True)
-class _RequestBase:
-    """只保留最后一次成功提交的请求，供下一次保存增量。"""
-
-    key: str
-    attempt: int
-    depth: int
-    request: Mapping[str, object]
-    materials: Materials
-
-
-_REQUEST_BASE_CACHE_SIZE = 64
-# 进程内跨轮增量基线：崩溃或换代后回退完整保存，与现状一致。
-_request_base_cache: OrderedDict[tuple[str, str], _RequestBase] = OrderedDict()
-
-
-def _prepare_entry(
-    request: Mapping[str, object], materials: Materials, previous: _RequestBase | None,
-) -> tuple[Mapping[str, object], int]:
-    """复用前一请求的数组前缀；定期保存完整值以限制恢复读取长度。"""
-    if previous is None or previous.depth >= 15:
-        return {"request": request, "materials": materials}, 0
-    fields = dict(request)
-    for name in ("messages", "tools", "content_refs"):
-        old = cast(Sequence[object], previous.request[name])
-        current = cast(Sequence[object], request[name])
-        prefix = 0
-        for left, right in zip(old, current):
-            if left is not right and left != right:
-                break
-            prefix += 1
-        fields[name] = {"prefix": prefix, "tail": current[prefix:]}
-    return {
-        "encoding": "request-delta-v1", "base_key": previous.key,
-        "base_attempt": previous.attempt, "request": fields,
-        "materials": None if materials == previous.materials else materials,
-    }, previous.depth + 1
 
 
 def _load_entry(entry: Mapping[str, object], state: OwnerStore) -> tuple[ModelRequest, Materials]:
@@ -654,12 +614,6 @@ async def react(
     if reader.session_id != writer.session_id:
         raise ValueError("ReAct reader 与 writer 必须属于同一 Session")
     history = _History(writer.source)
-    base_cache_key = (reader.session_id, writer.source)
-    previous_request: _RequestBase | None = (
-        _request_base_cache.get(base_cache_key) if state is not None else None
-    )
-    if previous_request is not None:
-        _request_base_cache.move_to_end(base_cache_key)
     while True:
         operation_id = uuid4().hex
         mark = partial(log_timing, session_id=reader.session_id, source=writer.source, operation_id=operation_id)
@@ -835,12 +789,13 @@ async def react(
                 attempt: int, request: ModelRequest, built: Materials
             ) -> tuple[ModelRequest, Materials, str, str]:
                 """在同一来源检查下提交请求、材料和稳定启动身份。"""
-                nonlocal previous_request
                 # Context 与模型句柄只在当前 scope 读取，worker 接收已冻结的请求字段。
+                # 冻结请求恒完整保存：增量基线曾按 (session, source) 进程级缓存且用
+                # 普通相等比较前缀（评审 #1122/#1123），准确重放合同优先于写入压缩。
                 binding_id = model.descriptor.binding_id
                 encoded_request = cast(Mapping[str, object], freeze_json(_encode_request(request)))
                 fixed_materials = cast(Materials, freeze_json(built))
-                new_entry, depth = _prepare_entry(encoded_request, fixed_materials, previous_request)
+                new_entry: Mapping[str, object] = {"request": encoded_request, "materials": fixed_materials}
 
                 def open_prep(transaction: OwnerTransaction) -> tuple[Mapping[str, object], bool, str, str]:
                     """新准备只保存一次；旧准备复用原请求并补齐尚未领取的身份。"""
@@ -885,16 +840,9 @@ async def react(
                 entry, created, output_id, request_key = await state.transact_async(open_prep)
                 # 刚提交的请求已不可变；只有恢复旧记录时才重新解码。
                 if created:
-                    previous_request = _RequestBase(prep_key, attempt, depth, encoded_request, fixed_materials)
-                    _request_base_cache[base_cache_key] = previous_request
-                    _request_base_cache.move_to_end(base_cache_key)
-                    while len(_request_base_cache) > _REQUEST_BASE_CACHE_SIZE:
-                        _request_base_cache.popitem(last=False)
                     saved_request, saved_materials = replace(request, on_delta=None, request_key=None), fixed_materials
                 else:
-                    # 恢复的持久链与本进程缓存不一定一致，下一代重新存完整请求。
-                    previous_request = None
-                    _request_base_cache.pop(base_cache_key, None)
+                    # 恢复读取支持旧版增量格式；损坏引用报错，不重新生成请求。
                     saved_request, saved_materials = _load_entry(entry, state)
                 return saved_request, saved_materials, output_id, request_key
 
