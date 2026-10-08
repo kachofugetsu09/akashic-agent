@@ -223,6 +223,7 @@ class MessageProjection:
         self._tool_names = tool_names
         self._dynamic_content_kinds = dynamic_content_kinds
         self._last_rows: tuple[Mapping[str, Any], ...] = ()
+        self._last_estimate: tuple[ModelRequest, int] | None = None
         self._facts: dict[str, tuple[Message, Mapping[str, Any] | None]] = {}
         self._arguments: dict[int, tuple[Mapping[str, Any], str]] = {}
         self._segments: dict[str, _Segment] = {}
@@ -237,7 +238,13 @@ class MessageProjection:
         return self._model.max_tool_schemas
 
     def estimate(self, request: ModelRequest) -> int:
-        return self._model.estimate_context_tokens(request.messages, request.tools)
+        # 估算是不可变请求的纯函数；构建链会对同一请求对象重复估算。
+        saved = self._last_estimate
+        if saved is not None and saved[0] is request:
+            return saved[1]
+        value = self._model.estimate_context_tokens(request.messages, request.tools)
+        self._last_estimate = (request, value)
+        return value
 
     def facts(
         self,

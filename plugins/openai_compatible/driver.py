@@ -489,9 +489,12 @@ def _chat_body(
     messages = _merge_leading_system_messages(messages)
     if connection.thinking_format == "deepseek" and not request.disable_reasoning:
         # DeepSeek 的工具续接要求此字段，即使此前响应没有返回思考正文。
-        for message in messages:
-            if message.get("role") == "assistant":
-                message.setdefault("reasoning_content", "")
+        # 未改写的行是冻结映射：缺字段时复制外层再补，不就地改冻结行。
+        for index, message in enumerate(messages):
+            if message.get("role") == "assistant" and "reasoning_content" not in message:
+                updated = dict(message)
+                updated["reasoning_content"] = ""
+                messages[index] = updated
     body: dict[str, Any] = {
         "model": descriptor.model,
         "messages": messages,
@@ -1321,24 +1324,25 @@ def _normalize_base_url(value: str) -> str:
 
 def _normalize_messages(
     messages: Sequence[Mapping[str, Any]],
-) -> list[dict[str, Any]]:
+) -> list[Mapping[str, Any]]:
     """转换消息内容，同时保留模型继续工具推理所需的 reasoning_content。"""
 
-    normalized: list[dict[str, Any]] = []
+    normalized: list[Mapping[str, Any]] = []
     images: list[dict[str, Any]] = []
     pending_calls: set[str] = set()
     for message in messages:
-        # ModelRequest 已深冻结；只复制需要改写字段的消息外层。
-        item = dict(message)
-        role = str(item.get("role") or "")
-        content = item.get("content")
+        # ModelRequest 已深冻结；只在确实改写字段时才复制消息外层，
+        # 未改写的行直接复用原冻结映射，调用方不得就地修改返回行。
+        role = str(message.get("role") or "")
+        content = message.get("content")
+        item: dict[str, Any] | None = None
         # Chat Completions 的 assistant/tool content 不接受 image_url。
         # 只在请求视图中将图片放到配对完成后的 user 数据消息，保持 call/result 邻接。
         if role in {"assistant", "tool"} and isinstance(content, (list, tuple)):
             pictures = [block for block in content if block.get("type") == "image_url"]
             if pictures:
                 label = (
-                    f"工具结果 {item['tool_call_id']} 的图片"
+                    f"工具结果 {message['tool_call_id']} 的图片"
                     if role == "tool" else "Agent 输出消息中的图片"
                 )
                 images.append({"type": "text", "text": label})
@@ -1346,16 +1350,17 @@ def _normalize_messages(
                 content = [block for block in content if block.get("type") != "image_url"]
                 if not content:
                     content = [{"type": "text", "text": "图片见本组消息后的图像内容。"}]
+                item = dict(message)
                 item["content"] = content
-        if role == "assistant" and item.get("tool_calls"):
+        if role == "assistant" and message.get("tool_calls"):
             if images and pending_calls:
                 raise InvalidRequestError("图片所在工具请求尚未完成配对")
-            pending_calls = {call["id"] for call in item["tool_calls"]}
+            pending_calls = {call["id"] for call in message["tool_calls"]}
         elif role == "tool":
-            pending_calls.discard(item["tool_call_id"])
-        if role == "assistant" and item.get("tool_calls"):
+            pending_calls.discard(message["tool_call_id"])
+        if role == "assistant" and message.get("tool_calls"):
             if content is None or (isinstance(content, str) and not content.strip()):
-                calls = item.get("tool_calls")
+                calls = message.get("tool_calls")
                 first = calls[0] if isinstance(calls, (list, tuple)) and calls else {}
                 function = first.get("function") if isinstance(first, dict) else {}
                 tool_name = (
@@ -1363,10 +1368,14 @@ def _normalize_messages(
                     if isinstance(function, dict)
                     else ""
                 )
+                if item is None:
+                    item = dict(message)
                 item["content"] = f"调用工具 {tool_name}" if tool_name else "调用工具"
         elif role in {"user", "assistant", "tool"} and content is None:
+            if item is None:
+                item = dict(message)
             item["content"] = ""
-        normalized.append(item)
+        normalized.append(message if item is None else item)
         if images and not pending_calls:
             normalized.append({"role": "user", "content": images})
             images = []
@@ -1376,8 +1385,8 @@ def _normalize_messages(
 
 
 def _merge_leading_system_messages(
-    messages: list[dict[str, Any]],
-) -> list[dict[str, Any]]:
+    messages: list[Mapping[str, Any]],
+) -> list[Mapping[str, Any]]:
     system_contents: list[str] = []
     index = 0
     while index < len(messages) and messages[index].get("role") == "system":
@@ -1385,12 +1394,12 @@ def _merge_leading_system_messages(
         if isinstance(content, str) and content:
             system_contents.append(content)
         index += 1
-    result = (
+    result: list[Mapping[str, Any]] = (
         [{"role": "system", "content": "\n\n".join(system_contents)}]
         if system_contents
         else []
     )
-    # 这些行由 _normalize_messages 新建；合并头部无需再次复制整份正文。
+    # 未改写的行复用原冻结映射；合并头部无需再次复制整份正文。
     result.extend(messages[index:])
     return result if result else messages
 
