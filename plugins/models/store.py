@@ -2037,21 +2037,30 @@ MODEL_CALLS_SCHEMA = """CREATE TABLE model_calls (
 )"""
 
 
-_schema_check_cache: dict[tuple[str, int], frozenset[str]] = {}
+_schema_check_cache: dict[tuple[int, int, int], frozenset[str]] = {}
 
 
 def require_model_calls_schema(connection: sqlite3.Connection) -> frozenset[str]:
     """缺列、类型不符、主键异构或多出未知列都必须在 provider I/O 前明确失败。
 
-    schema_version 在任何连接修改 schema 时递增，校验结果按 (文件, 版本) 缓存。
+    校验结果按实际数据库实例缓存：文件身份取 (st_dev, st_ino) 而非路径——
+    同路径换成另一个同 schema_version 的数据库会命中新 inode 重新校验；
+    schema_version 在任何连接修改 schema 时递增。内存库不跨连接缓存。
     """
     database_list = connection.execute("PRAGMA database_list").fetchall()
     file = next((str(item[2]) for item in database_list if item[1] == "main"), "")
     version = int(connection.execute("PRAGMA schema_version").fetchone()[0])
-    key = (file if file else f"memory:{id(connection)}", version)
-    cached = _schema_check_cache.get(key)
-    if cached is not None:
-        return cached
+    key: tuple[int, int, int] | None = None
+    if file:
+        try:
+            identity = os.stat(file)
+            key = (identity.st_dev, identity.st_ino, version)
+        except OSError:
+            key = None
+    if key is not None:
+        cached = _schema_check_cache.get(key)
+        if cached is not None:
+            return cached
     info = {
         str(item[1]): item
         for item in connection.execute("PRAGMA table_info(model_calls)")
@@ -2074,7 +2083,10 @@ def require_model_calls_schema(connection: sqlite3.Connection) -> frozenset[str]
     if unknown:
         raise RuntimeError(f"model_calls 存在未知列 {sorted(unknown)}，schema 不被本实现接受")
     columns = frozenset(info)
-    _schema_check_cache[key] = columns
+    if key is not None:
+        if len(_schema_check_cache) >= 64:
+            _schema_check_cache.pop(next(iter(_schema_check_cache)))
+        _schema_check_cache[key] = columns
     return columns
 
 
