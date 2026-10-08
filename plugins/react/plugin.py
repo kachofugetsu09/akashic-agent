@@ -108,7 +108,7 @@ class _History:
         previous = self.messages
         compatible = (
             messages.extends(previous)
-            if isinstance(messages, MessageSnapshot) and isinstance(previous, MessageSnapshot)
+            if type(messages) is MessageSnapshot and type(previous) is MessageSnapshot
             else len(messages) >= len(previous) and all(
                 old is new for old, new in zip(previous, messages)
             )
@@ -471,7 +471,7 @@ async def _settle_pending(
 
 @asynccontextmanager
 async def _complete(
-    snapshot: tuple[Message, ...], prepared: Materials, *, source: str,
+    snapshot: Sequence[Message], prepared: Materials, *, source: str,
     context: ContextBuilder, model: BoundChatModel, projection: MessageProjection,
     tools: ToolMenu, max_output_tokens: int, reduce: SummaryReducer | None,
     preview: Preview | None,
@@ -514,7 +514,7 @@ async def _complete(
                     await callback({"retry_status": text})
 
             mark("context.reduce.begin")
-            summary = await reduce(snapshot, mats, request, model, projection,
+            summary = await reduce(tuple(snapshot), mats, request, model, projection,
                                    source=source, force=force, on_status=report)
             mark("context.reduce.end")
         return ({**mats, "notices": tuple(notices)} if notices else mats), summary
@@ -862,7 +862,7 @@ async def react(
             prepared = await materials(frozen_tuple)
         mark("preparation.end")
         async with _complete(
-            frozen_tuple, prepared, source=writer.source, context=context, model=model,
+            frozen, prepared, source=writer.source, context=context, model=model,
             projection=projection, tools=tools, max_output_tokens=max_output_tokens, reduce=reduce, preview=preview,
             reminder_input_id=reminder_input_id,
             prepare=prepare,

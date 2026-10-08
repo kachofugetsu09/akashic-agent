@@ -6,6 +6,7 @@ from collections.abc import Callable, Mapping, Sequence
 from typing import Any, cast
 
 from agent.plugin_composition import ServiceKey
+from agent.plugin_composition.messages import MessageSnapshot
 from agent.plugin_composition.models import (
     BoundChatModel,
     LLMResponse,
@@ -297,7 +298,7 @@ class MessageProjection:
 
     def render(
         self,
-        messages: tuple[Message, ...],
+        messages: Sequence[Message],
         *,
         after_seq: int,
         summary_reference: str | None = None,
@@ -329,7 +330,7 @@ class MessageProjection:
                 fold = _Fold()
                 self._fold_rebuild(fold, messages, inherited)
             else:
-                fold.prefix = messages[: fold.count]
+                fold.prefix = messages
         self._fold = fold
         # 当前工作输入由 Turn owner 选定；摘要只替换历史，不吞掉本次要求。
         if len(keep) != len(self._keep_input_ids) or not keep <= fold.inputs:
@@ -371,7 +372,7 @@ class MessageProjection:
         changed_content = False
         msg_dynamic = False
         transform = (None if self._prepare_content is None else
-                     self._prepare_content(messages, self._source, self._tool_names, frozenset(seen)))
+                     self._prepare_content(tuple(messages), self._source, self._tool_names, frozenset(seen)))
 
         def render(message: Message, index: int,
                    out_refs: list[tuple[str, int]]) -> tuple[Mapping[str, Any], ...]:
@@ -682,7 +683,7 @@ class MessageProjection:
     def _fold_rebuild(
         self,
         fold: _Fold,
-        messages: tuple[Message, ...],
+        messages: Sequence[Message],
         inherited: Mapping[str, tuple[Message, Mapping[str, Any] | None]],
     ) -> None:
         """预扫描的全量形式；与原逐轮三趟扫描逐行等价。"""
@@ -861,7 +862,7 @@ class _Fold:
 
     def __init__(self) -> None:
         self.count = 0
-        self.prefix: tuple[Message, ...] = ()
+        self.prefix: Sequence[Message] = ()
         self.inputs: set[str] = set()
         self.latest_input: str | None = None
         self.abandoned: set[str] = set()
@@ -881,15 +882,11 @@ class _Fold:
         self.cont_transformed = False
 
 
-def _fold_compatible(fold: _Fold, messages: tuple[Message, ...]) -> bool:
-    """已折前缀逐条对象身份匹配才兼容。
-
-    首尾端点身份不足以判定：行内容键解码缓存会让未变化的首尾行返回同一
-    对象，中段被 UPDATE/DELETE 的行才是新对象（评审 #1131）。逐条 is 比较
-    是纯指针核对，远轻于折叠替代掉的三趟内容扫描；Message 的值相等不能
-    用于此判定（不同对象同内容视为前缀变化，重建即可，不失正确性）。
-    """
+def _fold_compatible(fold: _Fold, messages: Sequence[Message]) -> bool:
+    """存储读面证明前缀；普通序列仍逐条核对，不能只比较首尾身份。"""
     prefix = fold.prefix
+    if type(messages) is MessageSnapshot and type(prefix) is MessageSnapshot:
+        return messages.extends(prefix)
     if fold.count > len(messages):
         return False
     for index in range(fold.count):

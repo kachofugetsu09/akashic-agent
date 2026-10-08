@@ -56,7 +56,7 @@ class ContextModel(Protocol):
     def estimate(self, request: ModelRequest) -> int: ...
     def render(
         self,
-        messages: tuple[Message, ...],
+        messages: Sequence[Message],
         *,
         after_seq: int,
         summary_reference: str | None = None,
@@ -66,6 +66,8 @@ class ContextModel(Protocol):
         current_context: str | None = None,
     ) -> ModelRequest:
         """接收完整事实；after_seq 是摘要覆盖末尾，-1 表示没有覆盖。
+
+        实现方接受任意 Sequence，包括存储签发的 MessageSnapshot；不得修改输入。
 
         fresh 明确从选定近期窗口开始新请求，不接续旧 opaque 状态。
         summary_reference 明确要求从这份摘要开始新请求；只有同一摘要下的

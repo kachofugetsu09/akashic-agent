@@ -9,6 +9,7 @@ from typing import Any
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 from agent.plugin_composition import Context
+from agent.plugin_composition.messages import MessageSnapshot
 from agent.plugin_composition.models import ModelRequest
 from agent.plugin_contracts import (
     Message,
@@ -60,10 +61,10 @@ class Config(BaseModel):
         return value
 
 
-def _summary_cutoff(snapshot: tuple[Message, ...], summary: Summary | None) -> int:
+def _summary_cutoff(snapshot: Sequence[Message], summary: Summary | None) -> int:
     """摘要代替已选择窗口的旧区间，窗口外更早历史不进入请求。"""
     # 1. 在快照输入边界拒绝混合 Session、重排与重复身份。
-    if snapshot:
+    if snapshot and type(snapshot) is not MessageSnapshot:
         session = snapshot[0].session_id
         if any(item.session_id != session for item in snapshot):
             raise ValueError("Context 快照只能属于一个 Session")
@@ -121,7 +122,9 @@ class ContextBuilder:
             raise ValueError("输出预算必须是非负整数")
         decoded_materials = decode_material(materials)
         # 1. Model owner 保留自身的 call IDs 与 opaque replay，Context 不重造它们。
-        snapshot = tuple(snapshot)
+        # 存储已证明 Session、身份和顺序；普通调用输入仍在本边界固定并校验。
+        if type(snapshot) is not MessageSnapshot:
+            snapshot = tuple(snapshot)
         cutoff = _summary_cutoff(snapshot, decoded_materials.summary)
         reminder = self._reminder_content(decoded_materials)
         if reminder is None:
