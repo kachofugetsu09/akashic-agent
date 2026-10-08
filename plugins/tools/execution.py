@@ -420,11 +420,9 @@ async def finish(
         return (_read_result(current.value["result"]) if reply is None
                 else reply.read(current.value["result"]))
 
-    previous = await run_file_io(lambda: state.snapshot(completed))
-    if previous is not None:
-        if on_commit is not None:
-            on_commit(previous)
-        return previous
+    # 不再先做快照预读：首次完成的热路径上它是纯重复——commit 事务内对
+    # 「已 done」与「请求不一致」的核对相同；重放路径由 prepare 冲突或
+    # 事务内核对接管，结果与回执回调完全一致。
     prepared = None
     if reply is not None:
         try:
