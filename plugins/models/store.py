@@ -1227,6 +1227,8 @@ class ModelsStore:
             ) from None
         _PROCESS_HOST_LOCKS[lock_path] = (descriptor, 1)
         self._host_lock_file = descriptor
+        # 打开边界收紧一次：宿主锁既已存在也要归正，普通读写不再逐次巡检。
+        os.chmod(lock_path, 0o600)
         return True
 
     @property
@@ -1256,6 +1258,8 @@ class ModelsStore:
 
     def _create_database_file(self) -> bool:
         if self.path.exists():
+            # 打开边界收紧一次：既有账本权限不符时在初始化处归正（评审 #1082）。
+            os.chmod(self.path, 0o600)
             return False
         descriptor = os.open(self.path, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600)
         os.close(descriptor)
