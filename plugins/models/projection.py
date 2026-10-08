@@ -498,6 +498,8 @@ class MessageProjection:
         # 按消息缓存渲染分段：不可变前缀既不重建也不深比较。
         # 命中条件：无动态视图，或贡献者声明了动态 kind 且本消息与其观察都不含；
         # 动态视图、artifact/reply 引用、当前输入相关的消息仍每轮重建。
+        # reminder 回放状态进入分段键：同一身份的后续载体行不再随轮次重建，
+        # 只有实际追加当前 context 的首个可见载体保持每轮渲染。
         cache_ok = transform is None or bool(self._dynamic_content_kinds)
         cached_segments = self._segments if cache_ok else {}
         new_segments: dict[str, _Segment] = {}
@@ -520,6 +522,10 @@ class MessageProjection:
                 if model_facts is not None and model_facts.get("reminder") is not None
                 else None
             )
+            replay = (
+                None if reminder_identity is None
+                else reminder_identity not in replayed_reminders
+            )
             current_touched = (
                 message.message_id == latest_input
                 or (
@@ -527,6 +533,7 @@ class MessageProjection:
                     and current_reminder_identity is not None
                     and reminder_identity == current_reminder_identity
                     and current_context is not None
+                    and replay
                 )
             )
             call_refs = tuple(
@@ -545,6 +552,7 @@ class MessageProjection:
                 and entry.facts is model_facts
                 and entry.has_metadata == (message.message_id in response_metadata)
                 and entry.call_deps == call_deps
+                and entry.replay == replay
             ):
                 rows.extend(entry.rows)
                 for ref in entry.new_refs:
@@ -708,6 +716,7 @@ class MessageProjection:
                     facts=model_facts,
                     has_metadata=message.message_id in response_metadata,
                     call_deps=call_deps,
+                    replay=replay,
                     rows=tuple(msg_rows),
                     new_refs=tuple(msg_refs),
                     used=tuple(msg_used),
@@ -747,7 +756,7 @@ class _Segment:
 
     __slots__ = (
         "message", "facts", "has_metadata", "call_deps",
-        "rows", "new_refs", "used", "reminders",
+        "replay", "rows", "new_refs", "used", "reminders",
     )
 
     def __init__(
@@ -757,6 +766,7 @@ class _Segment:
         facts: Mapping[str, Any] | None,
         has_metadata: bool,
         call_deps: tuple[tuple[CallRef, int, bool], ...],
+        replay: bool | None,
         rows: tuple[Mapping[str, Any], ...],
         new_refs: tuple[tuple[str, int], ...],
         used: tuple[str, ...],
@@ -766,6 +776,7 @@ class _Segment:
         self.facts = facts
         self.has_metadata = has_metadata
         self.call_deps = call_deps
+        self.replay = replay
         self.rows = rows
         self.new_refs = new_refs
         self.used = used
