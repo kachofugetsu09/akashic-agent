@@ -55,7 +55,7 @@ async def run_reply(
     turn_projection: TurnProjection,
     render_content: ContentRenderer | None = None,
     prepare_content: PrepareContent | None = None,
-    dynamic_content_kinds: frozenset[str] = frozenset(),
+    dynamic_content_kinds: frozenset[str] | None = frozenset(),
     read_call: CallReader,
     authorize: Authorize,
     max_output_tokens: int | None,
