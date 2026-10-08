@@ -441,7 +441,7 @@ class MessageLog:
         self._decode_lock = threading.RLock()
         self._decoded: WeakValueDictionary[tuple[object, ...], Message] = WeakValueDictionary()
         self._decoded_strong: dict[tuple[object, ...], Message] = {}
-        self._decoded_owners: WeakValueDictionary[tuple[object, ...], OwnerRecord] = WeakValueDictionary()
+        self._decoded_owners: dict[tuple[object, ...], OwnerRecord] = {}
         self._decoded_attributes: dict[str, SessionAttributes] = {}
         # 消息订阅相关提交递增 _heads_revision；与 writer data_version 双键共享 heads 目录。
         self._heads_revision = 0
@@ -1857,14 +1857,17 @@ class OwnerStore:
         return None if row is None else self._decode(row)
 
     def _decode(self, row: sqlite3.Row) -> OwnerRecord:
-        """只复用当前 SQL 行相同且仍被调用者持有的不可变记录。"""
+        """复用当前 SQL 行相同的不可变记录；有界强缓存不受调用者引用周期影响。"""
         key = (row["version"], row["value"])
         with self._log._decode_lock:
             record = self._log._decoded_owners.get(key)
         if record is None:
             record = _owner_record(row)
-            with self._log._decode_lock:
-                self._log._decoded_owners[key] = record
+            if len(row["value"]) <= _DECODE_STRONG_BODY:
+                with self._log._decode_lock:
+                    if len(self._log._decoded_owners) >= _DECODE_STRONG_LIMIT:
+                        self._log._decoded_owners.pop(next(iter(self._log._decoded_owners)))
+                    self._log._decoded_owners[key] = record
         return record
 
     def list(self) -> tuple[tuple[str, OwnerRecord], ...]:
@@ -2004,7 +2007,15 @@ class OwnerTransaction:
             )
         if cursor.rowcount != 1:
             raise MessageConflict("owner 记录版本已变化")
-        return OwnerRecord(version, cast(Mapping[str, object], frozen))
+        record = OwnerRecord(version, cast(Mapping[str, object], frozen))
+        # 同轮读回不再重复解码：写入方已持有冻结值与编码原文。
+        if len(payload) <= _DECODE_STRONG_BODY:
+            with self._store._log._decode_lock:
+                owners = self._store._log._decoded_owners
+                if len(owners) >= _DECODE_STRONG_LIMIT:
+                    owners.pop(next(iter(owners)))
+                owners[(version, payload)] = record
+        return record
 
     def append(
         self,
