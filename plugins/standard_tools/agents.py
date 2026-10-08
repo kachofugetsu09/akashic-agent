@@ -2,56 +2,49 @@
 
 from __future__ import annotations
 
-from pathlib import Path
 from typing import cast
 
-from .path_access import PathAccess, check_directory
+from .path_access import PathAccess
 
 _MAX_BYTES = 32768
 
 
 async def read_agents(path: str | None) -> dict[str, object]:
-    """Discover rules on the execution backend and report any incomplete read."""
+    """Discover rules on the execution backend and report any incomplete read.
+
+    整链探测在执行端一次完成（agents_chain）；返回的 directory_status 同时
+    承载原目录 inspect 结论，调用方不必再单独探测目录。
+    """
     if path is None:
-        return {"status": "unset", "sources": [], "files": []}
-    files: list[dict[str, object]] = []
+        return {"status": "unset", "directory_status": "unset", "sources": [], "files": []}
     async with PathAccess() as access:
-        info = await access.read("inspect", path)
-        try:
-            current = Path(check_directory(info))
-        except ValueError as error:
-            return {"status": "unavailable", "sources": [], "files": [], "error": str(error)}
-        # 1. A .git directory or worktree file defines the nearest root.
-        root = current
-        for parent in (current, *current.parents):
-            marker = await access.read("inspect", str(parent / ".git"))
-            if marker.status == "available":
-                root = parent
-                break
-            if marker.status != "not_found":
-                return {"status": "unavailable", "sources": [], "files": [],
-                        "error": f"Git root probe failed ({marker.status}): {marker.path}"}
-        layers = [root]
-        for part in current.relative_to(root).parts:
-            layers.append(layers[-1] / part)
-        # 2. An override replaces its sibling. Errors never masquerade as absence.
-        used = 0
-        for layer in layers:
-            for name in ("AGENTS.override.md", "AGENTS.md"):
-                rule = await access.read("read_text", str(layer / name), max_bytes=max(1, _MAX_BYTES - used))
-                if rule.status == "not_found":
-                    continue
-                if rule.status != "available":
-                    return {"status": "unavailable", "sources": [row["path"] for row in files], "files": [],
-                            "error": f"AGENTS read failed ({rule.status}): {rule.path}; {rule.error or ''}"}
-                assert rule.text is not None and rule.bytes is not None
-                used += rule.bytes
-                if used > _MAX_BYTES:
-                    return {"status": "unavailable", "sources": [row["path"] for row in files], "files": [],
-                            "error": "AGENTS total exceeds 32 KiB"}
-                files.append({"path": rule.path, "text": rule.text})
-                break
-    return {"status": "ready", "root": str(root), "sources": [row["path"] for row in files], "files": files}
+        info = await access.read("agents_chain", path, max_bytes=_MAX_BYTES)
+    directory_status = info.status
+    if info.status == "available" and info.kind != "directory":
+        directory_status = "not_directory"
+    if info.chain is None:
+        if info.status != "available":
+            error = f"目录不可用 ({info.status}): {info.path}; {info.error or ''}"
+        else:
+            error = f"路径不是目录: {info.path}"
+        return {"status": "unavailable", "directory_status": directory_status,
+                "sources": [], "files": [], "error": error}
+    chain = info.chain
+    sources = [row.path for row in chain.files]
+    if chain.failure is not None:
+        failure = chain.failure
+        if failure.kind == "probe":
+            error = f"Git root probe failed ({failure.status}): {failure.path}"
+        elif failure.kind == "read":
+            error = f"AGENTS read failed ({failure.status}): {failure.path}; {failure.error or ''}"
+        else:
+            error = "AGENTS total exceeds 32 KiB"
+        return {"status": "unavailable", "directory_status": directory_status,
+                "sources": sources, "files": [], "error": error}
+    assert chain.root is not None
+    return {"status": "ready", "directory_status": directory_status, "root": chain.root,
+            "sources": sources,
+            "files": [{"path": row.path, "text": row.text} for row in chain.files]}
 
 
 def directory_material(path: str | None, status: str, rules: dict[str, object]) -> str:
