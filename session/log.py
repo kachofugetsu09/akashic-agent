@@ -358,6 +358,10 @@ class MessageLog:
         self._decode_lock = threading.RLock()
         self._decoded: WeakValueDictionary[tuple[object, ...], Message] = WeakValueDictionary()
         self._decoded_owners: WeakValueDictionary[tuple[object, ...], OwnerRecord] = WeakValueDictionary()
+        self._decoded_attributes: dict[str, SessionAttributes] = {}
+        # 消息订阅相关提交递增 _heads_revision；与 writer data_version 双键共享 heads 目录。
+        self._heads_revision = 0
+        self._heads_shared: tuple[int, int, Mapping[str, int]] | None = None
         self._reads = _ReadLocal()
         self._path = Path(path).resolve()
         self._closed = False
@@ -593,6 +597,7 @@ class MessageLog:
                     raise TypeError("存储事务回调必须同步，不能跨 await")
             # owner 账本或 embedding 的单独提交不会改变消息订阅结果。
             if self._notify_pending:
+                self._heads_revision += 1
                 self._notify()
             return result
 
@@ -803,12 +808,28 @@ class MessageCatalog:
 
         autocommit 下 data_version 总是反映其他连接的最近提交；查询结果若赶上
         更晚的提交只会按旧版本号标记，后续比较保守失效重新查询，不会把旧目录当新。
+        进程内提交以 _heads_revision 标记；双键命中时多个 follower 共享一份目录。
         """
-        with self._log._read(snapshot=False) as connection:
+        log = self._log
+        revision = None
+        version = None
+        if log._writer_lock.acquire(blocking=False):
+            try:
+                if not log._closed and not log._writer_connection.in_transaction:
+                    # 与缓存同源捕获：声明的新旧不超过这一刻的已提交状态。
+                    revision = log._heads_revision
+                    version = log._writer_connection.execute("PRAGMA data_version").fetchone()[0]
+                    shared = log._heads_shared
+                    if (shared is not None and shared[0] == revision
+                            and shared[1] == version):
+                        return shared[2]
+            finally:
+                log._writer_lock.release()
+        with log._read(snapshot=False) as connection:
             # 1. data_version 只可在同一连接上比较；writer 未提交视图不能复用。
-            read = self._log._reads.current
-            version = None if read is None else connection.execute("PRAGMA data_version").fetchone()[0]
-            if read is not None and read.heads is not None and read.heads_version == version:
+            read = log._reads.current
+            current = None if read is None else connection.execute("PRAGMA data_version").fetchone()[0]
+            if read is not None and read.heads is not None and read.heads_version == current:
                 return read.heads
             # 2. 每个只读连接只保留最近一份目录，其他连接提交后重新查询。
             rows = connection.execute(
@@ -818,7 +839,9 @@ class MessageCatalog:
             ).fetchall()
             heads = MappingProxyType({row["key"]: row["head"] for row in rows})
             if read is not None:
-                read.heads_version, read.heads = version, heads
+                read.heads_version, read.heads = current, heads
+            if revision is not None and version is not None:
+                log._heads_shared = (revision, version, heads)
             return heads
 
     def reader(self, session_id: str) -> MessageReader:
@@ -1003,7 +1026,12 @@ class MessageReader:
             row = self._log._connection.execute("SELECT attributes FROM sessions WHERE key=?", (self._session_id,)).fetchone()
         if row is None:
             raise ValueError("Session 尚未接纳")
-        return decode_attributes(row["attributes"])
+        raw = row["attributes"]
+        cached = self._log._decoded_attributes.get(raw)
+        if cached is None:
+            cached = decode_attributes(raw)
+            self._log._decoded_attributes[raw] = cached
+        return cached
 
     @property
     def deleted(self) -> bool:
