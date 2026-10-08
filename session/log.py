@@ -489,6 +489,8 @@ class MessageLog:
         self._path = Path(path).resolve()
         self._closed = False
         self._notify_pending = False
+        self._notify_owed = False
+        self._defer_notify = threading.local()
         self._notify_in_flight: set[asyncio.Event] = set()
         self._listeners: dict[asyncio.Event, asyncio.AbstractEventLoop] = {}
         self._writer_connection = sqlite3.connect(str(path), check_same_thread=False)
@@ -647,7 +649,7 @@ class MessageLog:
     ) -> SessionAttributes:
         """完整 create-once 事务离开 loop；取消仍排空已开始的写入。"""
         self._check_async_operation()
-        return await _run_commit(lambda: self.ensure_session(
+        return await _run_commit(self, lambda: self.ensure_session(
             session_id, attributes, initializers=initializers,
         ), None)
 
@@ -746,8 +748,20 @@ class MessageLog:
             # owner 账本或 embedding 的单独提交不会改变消息订阅结果。
             if self._notify_pending:
                 self._heads_revision += 1
-                self._notify()
+                if getattr(self._defer_notify, "active", False):
+                    # 异步提交路径：唤醒投递让给提交者恢复后再做，
+                    # listener 的追赶读不再排在提交者延续之前。
+                    self._notify_owed = True
+                else:
+                    self._notify()
             return result
+
+    def flush_notify(self) -> None:
+        """交付异步提交欠下的 listener 唤醒；提交者恢复后由 `_run_commit` 调用。"""
+        if not self._notify_owed:
+            return
+        self._notify_owed = False
+        self._notify()
 
     def _notify(self) -> None:
         """逐个通知已注册读者；提交已经成立，observer 失败不污染返回结果。
@@ -1528,27 +1542,39 @@ class _IncrementalMessageReader(MessageReader):
 
 
 async def _run_commit(
-    operation: Callable[[], _T], on_commit: Callable[[_T], None] | None,
+    log: "MessageLog", operation: Callable[[], _T], on_commit: Callable[[_T], None] | None,
 ) -> _T:
-    """排空纯存储操作；取消也先在原 loop 交付已提交收据。"""
+    """排空纯存储操作；取消也先在原 loop 交付已提交收据。
+
+    listener 唤醒不在 worker 线程内联投递：worker 内联的 call_soon_threadsafe
+    排在 executor 完成回调之前，follower 的追赶读会插队到提交者延续前面。
+    改为提交者恢复后在 loop 上交付（flush_notify），唤醒语义不变。
+    """
     committed: list[_T] = []
 
     def write() -> _T:
-        result = operation()
+        log._defer_notify.active = True
+        try:
+            result = operation()
+        finally:
+            log._defer_notify.active = False
         committed.append(result)
         return result
 
     try:
         result = await run_file_io(write)
     except asyncio.CancelledError as cancellation:
-        if committed and on_commit is not None:
-            try:
-                on_commit(committed[0])
-            except BaseException as failure:
-                raise BaseExceptionGroup(
-                    "提交已完成，但通知失败且调用者取消", [cancellation, failure],
-                ) from None
+        if committed:
+            log.flush_notify()
+            if on_commit is not None:
+                try:
+                    on_commit(committed[0])
+                except BaseException as failure:
+                    raise BaseExceptionGroup(
+                        "提交已完成，但通知失败且调用者取消", [cancellation, failure],
+                    ) from None
         raise
+    log.flush_notify()
     if on_commit is not None:
         on_commit(result)
     return result
@@ -1749,7 +1775,7 @@ class MessageWriter:
                 return self._log._write(lambda: prepared._append(expected_source_head))
 
         message, _ = await _run_commit(
-            write, None if on_commit is None else lambda result: on_commit(*result),
+            self._log, write, None if on_commit is None else lambda result: on_commit(*result),
         )
         return message
 
@@ -2058,7 +2084,7 @@ class OwnerStore:
     ) -> _T:
         """纯 SQL owner 工作离开 loop；Context 校验应在调用者 scope 内完成。"""
         self._log._check_async_operation()
-        return await _run_commit(lambda: self.transact(callback), on_commit)
+        return await _run_commit(self._log, lambda: self.transact(callback), on_commit)
 
 
 class OwnerTransaction:

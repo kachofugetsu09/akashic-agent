@@ -99,17 +99,18 @@ async def test_source_commit_drains_before_cancel_and_rejects_late_start(tmp_pat
         assert task is not None
         await started.wait()
         gate = WorkerGate()
-        notify = log._notify
+        original_write = log._write
         stopped = False
 
-        def committed():
+        def committed(callback):
             nonlocal stopped
-            notify()
+            result = original_write(callback)
             if not stopped and log.reader("s").get("second") is not None:
                 stopped = True
                 gate.stop()
+            return result
 
-        monkeypatch.setattr(log, "_notify", committed)
+        monkeypatch.setattr(log, "_write", committed)
         job = asyncio.create_task(conversation.accept("second", Input(())))
         state = log.owner("first-effect")
         close_job = None
