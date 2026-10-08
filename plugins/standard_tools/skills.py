@@ -113,8 +113,10 @@ async def register_skills(ctx: Context) -> ToolRef:
     async def prepare(snapshot: tuple[Message, ...], source: str) -> Mapping[str, object]:
         """常驻技能与工具读取均使用当前目录。"""
         async with io_lock, read_assets.open(ctx, category="skills") as assets:
-            catalog = await read_catalog(assets)
-            return await run_file_io(lambda: build_prompt(catalog.records))
+            workspace_dir = ctx.runtime.workspace
+            return await run_file_io(lambda: build_prompt(
+                parser.parse(assets, workspace_dir=workspace_dir).records,
+            ))
 
     def build_prompt(records: tuple[SkillRecord, ...]) -> Mapping[str, object]:
         """在文件线程构造本次提示，不生成资源副本。"""
