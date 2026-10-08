@@ -43,6 +43,9 @@ _logger = logging.getLogger(__name__)
 
 MESSAGE_SOURCE_INDEX_SCHEMA = """CREATE INDEX IF NOT EXISTS message_source_seq
     ON messages (session_key, source, seq);"""
+# 小行强缓存：每轮重复读取的近期消息不再依赖调用者持有引用；上界约 512×8KB。
+_DECODE_STRONG_LIMIT = 512
+_DECODE_STRONG_BODY = 8192
 MESSAGE_BODY_KIND_INDEX_SCHEMA = """CREATE INDEX IF NOT EXISTS message_source_kind_seq
     ON messages (session_key, source, json_extract(body, '$.kind'), seq,
                  json_extract(body, '$.finish'));"""
@@ -357,6 +360,7 @@ class MessageLog:
         self._listener_lock = threading.Lock()
         self._decode_lock = threading.RLock()
         self._decoded: WeakValueDictionary[tuple[object, ...], Message] = WeakValueDictionary()
+        self._decoded_strong: dict[tuple[object, ...], Message] = {}
         self._decoded_owners: WeakValueDictionary[tuple[object, ...], OwnerRecord] = WeakValueDictionary()
         self._decoded_attributes: dict[str, SessionAttributes] = {}
         # 消息订阅相关提交递增 _heads_revision；与 writer data_version 双键共享 heads 目录。
@@ -413,15 +417,22 @@ class MessageLog:
         return self._writer_lock if read is None else read.lock
 
     def _decode(self, row: sqlite3.Row) -> Message:
-        """查询仍读真实行；只复用完整行相同且仍被调用者持有的不可变消息。"""
+        """查询仍读真实行；小行另有有界强缓存，大行只复用仍被持有的不可变消息。"""
         key = tuple(row)
         # 独立只读连接共享解码结果；此短锁不等待 writer 的事务或磁盘操作。
         with self._decode_lock:
             message = self._decoded.get(key)
+            if message is None:
+                message = self._decoded_strong.get(key)
         if message is None:
             message = _message(row)
             with self._decode_lock:
-                self._decoded[key] = message
+                if len(row["body"]) <= _DECODE_STRONG_BODY:
+                    if len(self._decoded_strong) >= _DECODE_STRONG_LIMIT:
+                        self._decoded_strong.pop(next(iter(self._decoded_strong)))
+                    self._decoded_strong[key] = message
+                else:
+                    self._decoded[key] = message
         return message
 
     def backup(self, destination: Path) -> None:

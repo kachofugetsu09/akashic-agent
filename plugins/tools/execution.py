@@ -243,8 +243,11 @@ class ToolExecution:
                 reply.check(self._state)
             if record is None and reply is None:
                 raise RuntimeError("独立工具调用缺少 requested 回执")
+            # source() 的前缀以调用消息序号为上界、不可变，同一调用内只取一次。
+            source = None
             if reply is not None and self._check_batch is not None:
-                refusal = self._check_batch(reply.source())
+                source = reply.source()
+                refusal = self._check_batch(source)
                 if refusal is not None:
                     return await commit(record, Result("denied", (ContentPart("text", refusal),)))
             async with self._open_tool(binding_id) as tool:
@@ -252,7 +255,8 @@ class ToolExecution:
                     raise asyncio.CancelledError
                 # 2. prepare 的最终参数只固定一次，恢复不重新随机化或改写。
                 if record is None or record.value["phase"] == "requested":
-                    source = None if reply is None else reply.source()
+                    if reply is not None and source is None:
+                        source = reply.source()
                     try:
                         mark("tool.prepare.begin")
                         prepared = await tool.prepare(arguments, source)
