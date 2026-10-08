@@ -748,21 +748,21 @@ class MessageLog:
     def read_binding(self, binding_id: str) -> Mapping[str, object]:
         """读取不可变绑定；缺失引用不能用当前实现补齐。
 
-        binding_id 是内容的 sha256，descriptor 不可变，原始 JSON 可永久缓存。
+        binding_id 是内容的 sha256，descriptor 不可变，解码结果可永久缓存。
         """
         cached = getattr(self, "_binding_cache", None)
         if cached is None:
             cached = self._binding_cache = {}
-        payload = cached.get(binding_id)
-        if payload is None:
+        value = cached.get(binding_id)
+        if value is None:
             with self._read(snapshot=False):
                 row = self._connection.execute(
                     "SELECT descriptor FROM bindings WHERE binding_id=?", (binding_id,)
                 ).fetchone()
             if row is None:
                 raise KeyError(binding_id)
-            payload = cached[binding_id] = row[0]
-        return _json_object(payload, f"binding {binding_id}")
+            value = cached[binding_id] = _json_object(row[0], f"binding {binding_id}")
+        return value
 
     def close(self) -> None:
         """释放数据库并唤醒所有追赶者，让它们正常退出。"""
