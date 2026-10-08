@@ -489,6 +489,7 @@ class MessageLog:
         self._path = Path(path).resolve()
         self._closed = False
         self._notify_pending = False
+        self._notify_in_flight: set[asyncio.Event] = set()
         self._listeners: dict[asyncio.Event, asyncio.AbstractEventLoop] = {}
         self._writer_connection = sqlite3.connect(str(path), check_same_thread=False)
         self._connection.row_factory = sqlite3.Row
@@ -751,15 +752,26 @@ class MessageLog:
     def _notify(self) -> None:
         """逐个通知已注册读者；提交已经成立，observer 失败不污染返回结果。
 
+        唤醒按 Event 合并：唤醒在途或 Event 已置位时，读者 clear 后的重读
+        必然观察到本提交（通知先于提交之后的任何重读到达），重复投递
+        call_soon 只会挤占循环。在途标记在投递回调内清除，清除与置位之间
+        的提交重新排队，不会丢唤醒。
         只有 loop 确认已关闭的 listener 才移除；无法确认死亡的订阅保留，
         告警如实记录，由 follow 周期核对兜底恢复持久事实。
         """
         with self._listener_lock:
             listeners = tuple(self._listeners.items())
-        for event, loop in listeners:
+            pending = [
+                (event, loop) for event, loop in listeners
+                if not event.is_set() and event not in self._notify_in_flight
+            ]
+            self._notify_in_flight.update(event for event, _ in pending)
+        for event, loop in pending:
             try:
-                _ = loop.call_soon_threadsafe(event.set)
+                _ = loop.call_soon_threadsafe(self._deliver, event)
             except BaseException as error:
+                with self._listener_lock:
+                    self._notify_in_flight.discard(event)
                 is_closed = getattr(loop, "is_closed", None)
                 try:
                     dead = bool(is_closed()) if callable(is_closed) else False
@@ -773,6 +785,12 @@ class MessageLog:
                 else:
                     # 无法确认死亡的订阅保留；持久事实由 level 触发轮询兜底。
                     _logger.warning("日志 listener 通知失败，保留订阅待周期核对: %r", error)
+
+    def _deliver(self, event: asyncio.Event) -> None:
+        """在读者 loop 上完成一次合并唤醒：先清在途标记再置位，间隙提交重新排队。"""
+        with self._listener_lock:
+            self._notify_in_flight.discard(event)
+        event.set()
 
     def _read(self, *, snapshot: bool = True) -> _BorrowedRead:
         """借用只读连接；组合读取固定快照，单条查询使用 SQLite 自身的快照。"""
@@ -1046,6 +1064,7 @@ class MessageCatalog:
         finally:
             with self._log._listener_lock:
                 self._log._listeners.pop(event, None)
+                self._log._notify_in_flight.discard(event)
 
 
 class MessageReader:
@@ -1397,6 +1416,7 @@ class MessageReader:
         finally:
             with self._log._listener_lock:
                 self._log._listeners.pop(event, None)
+                self._log._notify_in_flight.discard(event)
 
     async def follow(
         self, *, after_seq: int = -1, poll_interval: float | None = None
@@ -1426,6 +1446,7 @@ class MessageReader:
         finally:
             with self._log._listener_lock:
                 self._log._listeners.pop(event, None)
+                self._log._notify_in_flight.discard(event)
 
 
 class _IncrementalMessageReader(MessageReader):
