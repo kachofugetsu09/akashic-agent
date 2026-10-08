@@ -142,10 +142,16 @@ class StoredSnapshot:
 
 
 class ModelCallReader:
-    """只读调用账；每个显式读取范围独占连接，不保存查询结果。"""
+    """只读调用账；同一账本版本内复用已经成功的协议事实。"""
 
-    def __init__(self, connect: Callable[[], AbstractContextManager[sqlite3.Connection]]) -> None:
+    def __init__(
+        self,
+        connect: Callable[[], AbstractContextManager[sqlite3.Connection]],
+        replay_connection: Callable[[], AbstractContextManager[tuple[sqlite3.Connection, object]]],
+    ) -> None:
         self._connect = connect
+        self._replay_connection = replay_connection
+        self._replay_cache: tuple[object, Mapping[str, Mapping[str, Any]]] = (None, {})
 
     def __call__(self, call_id: str) -> Mapping[str, Any]:
         with self.open() as read:
@@ -170,9 +176,14 @@ class ModelCallReader:
     def replay(self, call_ids: tuple[str, ...]) -> Mapping[str, Mapping[str, Any]]:
         """读取结算、binding 和调用协议扩展，不向投影提供完整响应。"""
         if not call_ids:
+            self._replay_cache = (None, {})
             return {}
-        with self._connect() as connection:
+        with self._replay_connection() as (connection, revision):
             columns = require_model_calls_schema(connection)
+            previous_revision, previous = self._replay_cache
+            known = previous if revision == previous_revision else {}
+            records = {identity: known[identity] for identity in call_ids if identity in known}
+            missing = tuple(identity for identity in call_ids if identity not in records)
             # 旧账本没有响应正文，无法提供尚未保存的协议扩展。
             response_metadata = (
                 "json_extract(response_json,'$.provider_metadata')"
@@ -182,20 +193,23 @@ class ModelCallReader:
                 "SELECT id,state,json_extract(binding_json,'$.binding_id') AS binding_id, "
                 f"{response_metadata} AS provider_metadata "
                 "FROM model_calls WHERE id IN (SELECT value FROM json_each(?))",
-                (json.dumps(call_ids),),
-            ).fetchall()
-        records: dict[str, Mapping[str, Any]] = {}
+                (json.dumps(missing),),
+            ).fetchall() if missing else ()
         for row in rows:
-            records[row["id"]] = {
+            records[row["id"]] = _freeze_json({
                 "state": row["state"], "binding": {"binding_id": row["binding_id"]},
                 "provider_metadata": (
                     None if row["provider_metadata"] is None
-                    else _freeze_json(json.loads(row["provider_metadata"]))
+                    else json.loads(row["provider_metadata"])
                 ),
-            }
+            })
         for identity in call_ids:
             if identity not in records:
                 raise KeyError(identity)
+        # 只保留当前窗口的成功回执；在途状态仍需重读，外部写入使整个缓存失效。
+        self._replay_cache = (revision, {
+            identity: record for identity, record in records.items() if record["state"] == "success"
+        })
         return records
 
 
@@ -211,7 +225,7 @@ class ModelsStore:
         self.path = path
         self.backup_dir = backup_dir
         self.writable = writable
-        self.read_call = ModelCallReader(lambda: self._connect(read_only=True))
+        self.read_call = ModelCallReader(lambda: self._connect(read_only=True), self._replay_connection)
         self._host_epoch: int | None = None
         self._write_connection: sqlite3.Connection | None = None
         self._write_lock = threading.Lock()
@@ -1138,6 +1152,31 @@ class ModelsStore:
         except BaseException:
             target.unlink(missing_ok=True)
             raise
+
+    @contextmanager
+    def _replay_connection(self) -> Iterator[tuple[sqlite3.Connection, object]]:
+        """空闲写连接只读快照；本连接的正常结算不使旧成功回执失效。"""
+        # 1. 不等待在途写事务。data_version 只在同一连接内比较，并捕捉外部修改。
+        if self._write_lock.acquire(blocking=False):
+            try:
+                connection = self._write_connection
+                if connection is not None:
+                    connection.execute("BEGIN")
+                    try:
+                        version = connection.execute("PRAGMA data_version").fetchone()[0]
+                        yield connection, (connection, version)
+                    finally:
+                        connection.rollback()
+                    return
+            finally:
+                self._write_lock.release()
+        # 2. 只读 store 或繁忙 writer 使用原独立读路径，不复用其他快照的结果。
+        with self._connect(read_only=True) as connection:
+            connection.execute("BEGIN")
+            try:
+                yield connection, object()
+            finally:
+                connection.rollback()
 
     @contextmanager
     def _connect(self, *, read_only: bool = False) -> Iterator[sqlite3.Connection]:
