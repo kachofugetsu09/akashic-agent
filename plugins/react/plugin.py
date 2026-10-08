@@ -15,6 +15,7 @@ from agent.plugin_composition import Context, RuntimeScope
 from agent.plugin_composition.messages import (
     MessageConflict,
     MessageReader,
+    MessageSnapshot,
     MessageWriter,
     OwnerStore,
     OwnerTransaction,
@@ -90,7 +91,7 @@ class _History:
 
     def __init__(self, source: str) -> None:
         self.source = source
-        self.messages: tuple[Message, ...] = ()
+        self.messages: Sequence[Message] = ()
         self.head = -1
         self.boundary_id = "initial"
         self.reminder_input_id: str | None = None
@@ -102,12 +103,17 @@ class _History:
         self._terminal_calls: list[tuple[CallRef, int, str]] = []
         self._outputs: list[int] = []
 
-    def update(self, messages: tuple[Message, ...]) -> None:
-        """只解释新增尾部；比较实际 Message 身份，不以相同 id 猜测内容未变。"""
+    def update(self, messages: Sequence[Message]) -> None:
+        """已提交读面证明前缀；普通序列仍逐条核对真实 Message 身份。"""
         previous = self.messages
-        if len(messages) < len(previous) or any(
-            old is not new for old, new in zip(previous, messages)
-        ):
+        compatible = (
+            messages.extends(previous)
+            if isinstance(messages, MessageSnapshot) and isinstance(previous, MessageSnapshot)
+            else len(messages) >= len(previous) and all(
+                old is new for old, new in zip(previous, messages)
+            )
+        )
+        if not compatible:
             self.__init__(self.source)
             previous = ()
         for message in messages[len(previous):]:
@@ -158,7 +164,7 @@ class _History:
                 pending.append(ref)
         return tuple(pending), tuple(abandoned)
 
-    def related(self, messages: tuple[Message, ...]) -> frozenset[CallRef]:
+    def related(self, messages: Sequence[Message]) -> frozenset[CallRef]:
         """正常提交复用当前视图；恢复旧冻结请求时只读取其原有前缀。"""
         history = self
         if messages is not self.messages:
@@ -619,8 +625,8 @@ async def react(
         mark = partial(log_timing, session_id=reader.session_id, source=writer.source, operation_id=operation_id)
         mark("react.begin")
         # 1. 放弃区保持串行结算；未闭段里连续的 parallel 调用才重叠。
-        head_before = reader.head()
-        initial = await reader.snapshot_async(through_seq=head_before)
+        initial = await reader.committed_snapshot_async()
+        head_before = initial.through_seq
         history.update(initial)
         pending, abandoned = history.open_calls()
         for call in abandoned:
@@ -628,14 +634,14 @@ async def react(
             await tools.settle_abandoned(call)
         if abandoned:
             # 放弃结算已追加事实，重新读取；普通路径复用同一次扫描的待执行调用。
-            history.update(await reader.snapshot_async(through_seq=reader.head()))
+            history.update(await reader.committed_snapshot_async())
             pending, _ = history.open_calls()
         await _settle_pending(
             reader, tools, pending, max_parallel_calls, capture_scope,
         )
         mark("tools.settled")
         if pending or abandoned or reader.head() != head_before:
-            snapshot = await reader.snapshot_async(through_seq=reader.head())
+            snapshot = await reader.committed_snapshot_async()
         else:
             # 无结算写入且 head 未动：进入结算前的固定前缀仍然有效。
             snapshot = initial
@@ -644,7 +650,7 @@ async def react(
         head = history.head
         boundary_id = history.boundary_id
         reminder_input_id = history.reminder_input_id
-        frozen = snapshot
+        frozen: Sequence[Message] = snapshot
 
         async def commit(message_id: str, body: Output, metadata: Mapping[str, object] | None = None) -> Message:
             """检查与追加同事务；竞争 Output、新边界或读集内结果都取代旧草稿。"""
@@ -782,10 +788,10 @@ async def react(
                 prepared = (
                     cast(Materials, resumed[start_at][1])
                     if resumed
-                    else await materials(frozen)
+                    else await materials(tuple(frozen))
                 )
             else:
-                prepared = await materials(frozen)
+                prepared = await materials(tuple(frozen))
 
             async def prepare_request(
                 attempt: int, request: ModelRequest, built: Materials
@@ -851,10 +857,10 @@ async def react(
             prepare = prepare_request
         else:
             # 3. 取得材料与组装请求分开，Context 不获得模型调用或检索权。
-            prepared = await materials(frozen)
+            prepared = await materials(tuple(frozen))
         mark("preparation.end")
         async with _complete(
-            frozen, prepared, source=writer.source, context=context, model=model,
+            tuple(frozen), prepared, source=writer.source, context=context, model=model,
             projection=projection, tools=tools, max_output_tokens=max_output_tokens, reduce=reduce, preview=preview,
             reminder_input_id=reminder_input_id,
             prepare=prepare,

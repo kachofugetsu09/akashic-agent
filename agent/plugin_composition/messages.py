@@ -18,6 +18,7 @@ from session.embedding_store import (
 from session.log import (
     MessageLog as _MessageLog,
     MessageReader as MessageReader,
+    MessageSnapshot as MessageSnapshot,
     MessageCatalog as MessageCatalog,
     MessageWriter as MessageWriter,
     OwnerStore as OwnerStore,
@@ -287,6 +288,7 @@ __all__ = [
     "MessageEmbeddingStore",
     "MessageEmbeddings",
     "MessageReader",
+    "MessageSnapshot",
     "MessageWriter",
     "MessageWriters",
     "OWNER_STATE",

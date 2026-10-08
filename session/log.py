@@ -10,11 +10,13 @@ import logging
 import re
 import sqlite3
 import threading
-from collections.abc import AsyncGenerator, Callable, Generator, Iterable, Mapping
+from collections.abc import AsyncGenerator, Callable, Generator, Iterable, Iterator, Mapping, Sequence
+from bisect import bisect_right
 from contextlib import closing, contextmanager
 from datetime import UTC, datetime
 from dataclasses import dataclass
-from typing import Literal, TypeVar, cast
+from typing import Literal, TypeVar, cast, overload
+from itertools import islice
 from pathlib import Path
 from types import MappingProxyType
 from weakref import WeakValueDictionary
@@ -476,6 +478,8 @@ class MessageLog:
         self._idle_reads: list[_ReadConnection] = []
         self._listener_lock = threading.Lock()
         self._decode_lock = threading.RLock()
+        self._view_lock = threading.Lock()
+        self._message_views: WeakValueDictionary[str, _MessagePrefix] = WeakValueDictionary()
         self._decoded: WeakValueDictionary[tuple[object, ...], Message] = WeakValueDictionary()
         self._decoded_strong: dict[tuple[object, ...], Message] = {}
         self._decoded_owners: dict[tuple[object, ...], OwnerRecord] = {}
@@ -1070,6 +1074,57 @@ class MessageCatalog:
                 self._log._notify_in_flight.discard(event)
 
 
+class _MessagePrefix:
+    """一个日志实例内可追加的已提交前缀；旧快照用固定长度隔离后续追加。"""
+
+    def __init__(self, session_id: str, revision: int | None):
+        self.session_id = session_id
+        self.revision = revision
+        self.messages: list[Message] = []
+        self.seqs: list[int] = []
+
+
+@dataclass(frozen=True, slots=True)
+class MessageSnapshot(Sequence[Message]):
+    """固定消息读面；只提供消息和前缀关系，不持有数据库或写入能力。"""
+
+    _prefix: _MessagePrefix
+    _count: int
+    through_seq: int
+
+    @property
+    def session_id(self) -> str:
+        return self._prefix.session_id
+
+    @property
+    def prefix_revision(self) -> int | None:
+        return self._prefix.revision
+
+    def extends(self, previous: MessageSnapshot) -> bool:
+        """相同存储读面只追加；截短或前缀变化不能复用旧投影。"""
+        return self._prefix is previous._prefix and self._count >= previous._count
+
+    def __len__(self) -> int:
+        return self._count
+
+    def __iter__(self) -> Iterator[Message]:
+        return islice(self._prefix.messages, self._count)
+
+    @overload
+    def __getitem__(self, index: int) -> Message: ...
+
+    @overload
+    def __getitem__(self, index: slice) -> tuple[Message, ...]: ...
+
+    def __getitem__(self, index: int | slice) -> Message | tuple[Message, ...]:
+        if isinstance(index, slice):
+            return tuple(self._prefix.messages[i] for i in range(*index.indices(self._count)))
+        position = index + self._count if index < 0 else index
+        if not 0 <= position < self._count:
+            raise IndexError(index)
+        return self._prefix.messages[position]
+
+
 class MessageReader:
     def __init__(self, log: MessageLog, session_id: str):
         self._log = log
@@ -1078,6 +1133,50 @@ class MessageReader:
     def incremental(self) -> MessageReader:
         """创建本次程序的只读视图，旧前缀复用解码结果，后续读取追赶新增消息。"""
         return _IncrementalMessageReader(self._log, self._session_id)
+
+    def committed_snapshot(self, *, through_seq: int | None = None) -> MessageSnapshot:
+        """从同一 SQL 快照核对上界与前缀版本，只加载新尾部。
+
+        已有读写事务使用自己的真实 SQL 视图，不发布或复用共享前缀。
+        旧快照保持固定内容；最后一个消费者释放后，日志不保留该会话正文。
+        """
+        log = self._log
+        # 1. 显式事务保留原读面，包括调用者尚未提交的写入。
+        if log._reads.current is not None:
+            return self._transaction_snapshot(through_seq)
+        with log._view_lock, log._read() as connection:
+            if connection is log._writer_connection:
+                return self._transaction_snapshot(through_seq)
+            # 2. 两项事实来自同一 RO 事务，外部追加和前缀改写都可见。
+            revision = None if not log._has_prefix_revision else connection.execute(
+                "SELECT revision FROM message_prefix_revision WHERE singleton=1"
+            ).fetchone()[0]
+            head = self.head()
+            upper = head if through_seq is None else min(head, through_seq)
+            prefix = log._message_views.get(self._session_id)
+            if prefix is None or revision is None or prefix.revision != revision:
+                prefix = _MessagePrefix(self._session_id, revision)
+            previous = prefix.seqs[-1] if prefix.seqs else -1
+            if upper > previous:
+                tail = MessageReader.scan(self, tuple, after_seq=previous, through_seq=upper)
+                prefix.messages.extend(tail)
+                prefix.seqs.extend(message.seq for message in tail)
+            # 3. 只有真实提交后的读取进入共享读面，不依赖 observer 唤醒。
+            log._message_views[self._session_id] = prefix
+            return MessageSnapshot(prefix, bisect_right(prefix.seqs, upper), upper)
+
+    def _transaction_snapshot(self, through_seq: int | None) -> MessageSnapshot:
+        """事务内快照独占前缀，不能为之后的已提交读取签发复用证明。"""
+        messages = MessageReader.scan(self, tuple, through_seq=through_seq)
+        prefix = _MessagePrefix(self._session_id, None)
+        prefix.messages.extend(messages)
+        prefix.seqs.extend(message.seq for message in messages)
+        return MessageSnapshot(prefix, len(messages), messages[-1].seq if messages else -1)
+
+    async def committed_snapshot_async(self, *, through_seq: int | None = None) -> MessageSnapshot:
+        """在线程内签发一次固定读面；取消先排空实际读取。"""
+        self._check_async_snapshot()
+        return await run_file_io(lambda: self.committed_snapshot(through_seq=through_seq))
 
     def _check_async_snapshot(self) -> None:
         """异步读取不得离开调用线程自己的未提交事务。"""
