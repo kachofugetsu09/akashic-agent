@@ -126,7 +126,9 @@ async def apply(ctx: Context) -> None:
             head_cache[session_id] = (version, record)
             return record
 
-        record = await run_file_io(load)
+        # 读 head 是单条 owner 记录核对（命中即零 SQL），与 working-directory
+        # 材料同级：同步在循环线程完成，不再为一次缓存核对支付 executor 往返。
+        record = load()
         if record is None:
             return {}
         return {"summary": material(record)}

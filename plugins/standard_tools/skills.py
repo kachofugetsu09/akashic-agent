@@ -110,13 +110,24 @@ async def register_skills(ctx: Context) -> ToolRef:
         SkillState.model_validate(json_value(state))
         yield SkillTool(read_inspection_catalog)
 
+    # 目录签名命中时 parse 返回同一个 SkillCatalog 对象；提示文本只依赖
+    # 该对象与 workspace，整份复用，每轮不再重复拼接相同文本。
+    prompt_memo: list[tuple[SkillCatalog, object, Mapping[str, object]]] = []
+
     async def prepare(snapshot: tuple[Message, ...], source: str) -> Mapping[str, object]:
         """常驻技能与工具读取均使用当前目录。"""
         async with io_lock, read_assets.open(ctx, category="skills") as assets:
             workspace_dir = ctx.runtime.workspace
-            return await run_file_io(lambda: build_prompt(
-                parser.parse(assets, workspace_dir=workspace_dir).records,
-            ))
+
+            def prepare_prompt() -> Mapping[str, object]:
+                catalog = parser.parse(assets, workspace_dir=workspace_dir)
+                if prompt_memo and prompt_memo[0][0] is catalog and prompt_memo[0][1] == workspace_dir:
+                    return prompt_memo[0][2]
+                prompt = build_prompt(catalog.records)
+                prompt_memo[:] = [(catalog, workspace_dir, prompt)]
+                return prompt
+
+            return await run_file_io(prepare_prompt)
 
     def build_prompt(records: tuple[SkillRecord, ...]) -> Mapping[str, object]:
         """在文件线程构造本次提示，不生成资源副本。"""

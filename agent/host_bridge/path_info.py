@@ -80,7 +80,7 @@ class PathInfoOperation:
                 result.update(text=raw.decode("utf-8-sig"), bytes=len(raw))
             # 4. AGENTS 规则链在一次磁盘工作内完成全部探测，避免逐层往返。
             if action == "agents_chain" and kind == "directory":
-                result["chain"] = _agents_chain(target, max_bytes)
+                result["chain"] = _agents_chain_memoized(target, max_bytes)
         except FileNotFoundError as error:
             result = {"path": path, "status": "not_found", "error": str(error)}
         except NotADirectoryError as error:
@@ -112,6 +112,35 @@ def _probe_marker(path: Path) -> tuple[str, str | None]:
         return "io_error", str(error)
 
 
+def _file_stamp(path: Path) -> tuple[int, int, int] | None:
+    """规则文件内容身份：mtime+size+mode 不变即视为同一文本（与技能目录签名同标准）。"""
+    try:
+        info = path.stat()
+    except OSError:
+        return None
+    return (info.st_mtime_ns, info.st_size, info.st_mode)
+
+
+# agents_chain 签名备忘：逐层 .git 探测与规则文件 stat 不变时复用上次读取，
+# 每轮材料准备不再重读相同规则文本；签名变化（含 .git 增删）即失效。
+_agents_chain_memo: tuple[tuple[object, ...], dict[str, object]] | None = None
+
+
+def _agents_signature(current: Path) -> tuple[object, ...]:
+    """沿目录链收集探测签名；走到第一个有 .git 的层为止，与 _agents_chain 同链。"""
+    layers: list[tuple[object, ...]] = []
+    for parent in (current, *current.parents):
+        layers.append((
+            str(parent),
+            _file_stamp(parent / ".git"),
+            _file_stamp(parent / "AGENTS.override.md"),
+            _file_stamp(parent / "AGENTS.md"),
+        ))
+        if layers[-1][1] is not None:
+            break
+    return tuple(layers)
+
+
 def _read_rule(path: Path, budget: int) -> dict[str, object]:
     """与 read_text 相同的有界读取；not_found 表示本层没有该规则文件。"""
     try:
@@ -138,6 +167,17 @@ def _read_rule(path: Path, budget: int) -> dict[str, object]:
         return {"path": str(path), "status": "invalid_text", "error": str(error)}
     except OSError as error:
         return {"path": str(path), "status": "io_error", "error": str(error)}
+
+
+def _agents_chain_memoized(current: Path, max_bytes: int) -> dict[str, object]:
+    """签名未变复用上次的链读取；memo 只覆盖 chain，路径与目录状态仍逐次实测。"""
+    global _agents_chain_memo
+    signature = (str(current), max_bytes, _agents_signature(current))
+    if _agents_chain_memo is not None and _agents_chain_memo[0] == signature:
+        return _agents_chain_memo[1]
+    chain = _agents_chain(current, max_bytes)
+    _agents_chain_memo = (signature, chain)
+    return chain
 
 
 def _agents_chain(current: Path, max_bytes: int) -> dict[str, object]:
