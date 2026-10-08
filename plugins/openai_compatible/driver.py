@@ -107,6 +107,10 @@ class _BoundChat:
         self._http = http
         self._message_sizes: dict[int, tuple[Mapping[str, Any], int, int]] = {}
         self._tool_size: tuple[object, int] | None = None
+        # 请求体行级字节缓存：投影分段缓存让冻结行跨轮身份稳定，逐轮只序列化新增行。
+        self._reasoning_memo: dict[int, tuple[Mapping[str, Any], Mapping[str, Any]]] = {}
+        self._row_json: dict[int, tuple[Mapping[str, Any], bytes]] = {}
+        self._tools_json: tuple[object, bytes] | None = None
 
     @property
     def max_tool_schemas(self) -> int | None:
@@ -124,14 +128,17 @@ class _BoundChat:
         # 未带 request_key 的直调同样不得隐式重发（§6.3）。max_retries
         # 连接配置只留给 embeddings/discovery 等非生成路径。
         connection = replace(self._connection, max_retries=0)
-        body = _chat_body(self._descriptor, connection, self._config, request)
+        body = _chat_body(
+            self._descriptor, connection, self._config, request,
+            reasoning_memo=self._reasoning_memo,
+        )
         if request.on_delta is None and connection.thinking_format != "deepseek":
             payload = await _request_json(
                 connection,
                 self._credential,
                 "POST",
                 "/chat/completions",
-                body=body,
+                body_bytes=self._encode_body(body),
                 http=self._http,
             )
             return _parse_chat_response(payload)
@@ -141,10 +148,46 @@ class _BoundChat:
         return await _stream_chat(
             connection,
             self._credential,
-            body,
+            self._encode_body(body),
             request.on_delta,
             self._http,
         )
+
+    def _encode_body(self, body: Mapping[str, Any]) -> bytes:
+        """逐字段复用身份缓存字节；与 httpx encode_json 的字节格式一致。"""
+        frags: list[bytes] = []
+        for key, value in body.items():
+            if key == "messages":
+                encoded = self._encode_rows(value)
+            elif key == "tools":
+                encoded = self._encode_tools(value)
+            else:
+                encoded = _json_dumps_bytes(value)
+            frags.append(b'"' + key.encode("utf-8") + b'":' + encoded)
+        return b"{" + b",".join(frags) + b"}"
+
+    def _encode_rows(self, messages: Sequence[Mapping[str, Any]]) -> bytes:
+        """每轮只保留本轮行的缓存项；命中零序列化，未命中只编码新行。"""
+        saved = self._row_json
+        cache: dict[int, tuple[Mapping[str, Any], bytes]] = {}
+        parts: list[bytes] = []
+        for row in messages:
+            identity = id(row)
+            hit = saved.get(identity)
+            if hit is None or hit[0] is not row:
+                hit = (row, _json_dumps_bytes(row))
+            cache[identity] = hit
+            parts.append(hit[1])
+        self._row_json = cache
+        return b"[" + b",".join(parts) + b"]"
+
+    def _encode_tools(self, tools: Sequence[Mapping[str, Any]]) -> bytes:
+        saved = self._tools_json
+        if saved is not None and saved[0] is tools:
+            return saved[1]
+        encoded = _json_dumps_bytes(tools)
+        self._tools_json = (tools, encoded)
+        return encoded
 
     def estimate_context_tokens(
         self,
@@ -477,11 +520,20 @@ def _model_config(config: Mapping[str, Any]) -> _ModelConfig:
     )
 
 
+def _json_dumps_bytes(value: object) -> bytes:
+    """与 httpx encode_json 相同的字节格式，供请求体增量拼装复用。"""
+    return json.dumps(
+        value, ensure_ascii=False, separators=(",", ":"), allow_nan=False
+    ).encode("utf-8")
+
+
 def _chat_body(
     descriptor: BoundModelDescriptor,
     connection: _ConnectionConfig,
     model: _ModelConfig,
     request: ModelRequest,
+    *,
+    reasoning_memo: dict[int, tuple[Mapping[str, Any], Mapping[str, Any]]] | None = None,
 ) -> dict[str, Any]:
     messages = _normalize_messages(request.messages)
     if request.system_prompt and not (messages and messages[0].get("role") == "system"):
@@ -490,11 +542,20 @@ def _chat_body(
     if connection.thinking_format == "deepseek" and not request.disable_reasoning:
         # DeepSeek 的工具续接要求此字段，即使此前响应没有返回思考正文。
         # 未改写的行是冻结映射：缺字段时复制外层再补，不就地改冻结行。
+        # 补齐结果按输入行身份备忘，跨轮复用同一冻结副本。
+        memo = reasoning_memo if reasoning_memo is not None else {}
+        if len(memo) > 4096:
+            memo.clear()
         for index, message in enumerate(messages):
             if message.get("role") == "assistant" and "reasoning_content" not in message:
-                updated = dict(message)
-                updated["reasoning_content"] = ""
-                messages[index] = updated
+                identity = id(message)
+                hit = memo.get(identity)
+                if hit is None or hit[0] is not message:
+                    updated = dict(message)
+                    updated["reasoning_content"] = ""
+                    hit = (message, updated)
+                    memo[identity] = hit
+                messages[index] = hit[1]
     body: dict[str, Any] = {
         "model": descriptor.model,
         "messages": messages,
@@ -521,6 +582,7 @@ async def _request_json(
     path: str,
     *,
     body: Mapping[str, Any] | None = None,
+    body_bytes: bytes | None = None,
     http: HttpClient,
 ) -> dict[str, Any]:
     last_error: Exception | None = None
@@ -530,9 +592,18 @@ async def _request_json(
             client = http.client()
             # 只复用传输连接，不继承旧凭据请求产生的 Cookie。
             client.cookies.clear()
-            response = await client.request(
-                method, path, json=body, headers={"Authorization": f"Bearer {token}"}
-            )
+            if body_bytes is not None:
+                response = await client.request(
+                    method, path, content=body_bytes,
+                    headers={
+                        "Authorization": f"Bearer {token}",
+                        "Content-Type": "application/json",
+                    },
+                )
+            else:
+                response = await client.request(
+                    method, path, json=body, headers={"Authorization": f"Bearer {token}"}
+                )
             _raise_status(response, secret=token)
             return _json_object(response)
         except asyncio.CancelledError:
@@ -650,7 +721,7 @@ async def _read_limited_response(
 async def _stream_chat(
     connection: _ConnectionConfig,
     credential: CredentialHandle,
-    body: Mapping[str, Any],
+    body_bytes: bytes,
     on_delta: Callable[[dict[str, str]], Awaitable[None]] | None,
     http: HttpClient,
 ) -> LLMResponse:
@@ -663,8 +734,11 @@ async def _stream_chat(
             # 只复用传输连接，不继承旧凭据请求产生的 Cookie。
             client.cookies.clear()
             async with client.stream(
-                "POST", "/chat/completions", json=body,
-                headers={"Authorization": f"Bearer {token}"},
+                "POST", "/chat/completions", content=body_bytes,
+                headers={
+                    "Authorization": f"Bearer {token}",
+                    "Content-Type": "application/json",
+                },
             ) as response:
                 if response.status_code >= 400:
                     _ = await response.aread()
