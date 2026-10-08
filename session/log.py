@@ -1886,21 +1886,22 @@ class MessageWriter:
     def _check_call_result(self, body: ToolResult) -> None:
         """在提交事务内校验调用地址与唯一结果，结果 writer 不得跨来源写入。"""
         connection = self._log._connection
+        index = body.call_ref.part_index
+        # 调用消息在写入时已通过完整解码校验；这里只核对地址归属与目标 part
+        # 类型，定向提取替代整行物化，不把完整 body 拉回 Python 重新解码。
         call = connection.execute(
-            "SELECT * FROM messages WHERE id=?", (body.call_ref.message_id,)
+            "SELECT session_key, source,"
+            " json_extract(body, '$.kind') AS body_kind,"
+            " json_extract(body, ?) AS part_kind"
+            " FROM messages WHERE id=?",
+            (f"$.parts[{index}].kind", body.call_ref.message_id),
         ).fetchone()
         if call is None or (call["session_key"], call["source"]) != (
             self._session_id,
             self._source,
         ):
             raise ValueError("调用不在 writer 获授的 Session/source 内")
-        request = decode_body(call["body"])
-        index = body.call_ref.part_index
-        if (
-            not isinstance(request, Output)
-            or index >= len(request.parts)
-            or not isinstance(request.parts[index], ToolCall)
-        ):
+        if call["body_kind"] != "output" or call["part_kind"] != "tool_call":
             raise ValueError("call_ref 未指向真实工具调用")
         previous = connection.execute(
             "SELECT id FROM messages WHERE json_extract(body, '$.kind')='tool_result' "
