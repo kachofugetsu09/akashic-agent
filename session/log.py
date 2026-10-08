@@ -350,6 +350,86 @@ class _ReadLocal(threading.local):
         self.current: _ReadConnection | None = None
 
 
+class _BorrowedRead:
+    """_read 的类实现：每轮百余次借用不再支付生成器 contextmanager 的开关成本。"""
+
+    __slots__ = ("_log", "_snapshot", "_read_conn", "_connection", "_reentrant")
+
+    def __init__(self, log: MessageLog, snapshot: bool) -> None:
+        self._log = log
+        self._snapshot = snapshot
+        self._read_conn: _ReadConnection | None = None
+        self._connection: sqlite3.Connection | None = None
+        self._reentrant = False
+
+    def __enter__(self) -> sqlite3.Connection:
+        log = self._log
+        current = log._reads.current
+        if current is not None:
+            self._reentrant = True
+            return current.connection
+        # 1. 重入当前线程的写事务；另一个线程持有 writer 时直接读已提交快照。
+        if log._writer_lock.acquire(blocking=False):
+            try:
+                if log._closed:
+                    raise RuntimeError("MessageLog is closed")
+                if log._writer_connection.in_transaction:
+                    self._reentrant = True
+                    return log._writer_connection
+            finally:
+                log._writer_lock.release()
+        # 2. 只读准入与 close 共享短锁，不等待写事务的磁盘或内容校验。
+        with log._read_admission:
+            if log._closed:
+                raise RuntimeError("MessageLog is closed")
+            if log._idle_reads:
+                read = log._idle_reads.pop()
+            else:
+                connection = sqlite3.connect(
+                    log._path.as_uri() + "?mode=ro", uri=True, check_same_thread=False)
+                try:
+                    connection.row_factory = sqlite3.Row
+                    _ = connection.execute("PRAGMA query_only=ON")
+                except BaseException:
+                    connection.close()
+                    raise
+                read = _ReadConnection(connection, threading.RLock())
+            connection = read.connection
+            try:
+                if self._snapshot:
+                    _ = connection.execute("BEGIN")
+            except BaseException:
+                connection.close()
+                raise
+        # Callbacks may use other readers of this same log; all see this snapshot.
+        self._read_conn = read
+        self._connection = connection
+        log._reads.current = read
+        return connection
+
+    def __exit__(self, exc_type: object, exc: object, tb: object) -> Literal[False]:
+        if self._reentrant:
+            return False
+        log = self._log
+        connection = self._connection
+        read = self._read_conn
+        assert connection is not None and read is not None
+        log._reads.current = None
+        try:
+            # 归还前结束快照；下次借用必须观察新的已提交状态。
+            if self._snapshot:
+                connection.rollback()
+        except BaseException:
+            connection.close()
+            raise
+        with log._read_admission:
+            if not log._closed and len(log._idle_reads) < 4:
+                log._idle_reads.append(read)
+            else:
+                connection.close()
+        return False
+
+
 class MessageLog:
     """SQLite 消息权威存储；只向消费者分配窄 reader/writer。"""
 
@@ -638,63 +718,9 @@ class MessageLog:
                     # 无法确认死亡的订阅保留；持久事实由 level 触发轮询兜底。
                     _logger.warning("日志 listener 通知失败，保留订阅待周期核对: %r", error)
 
-    @contextmanager
-    def _read(self, *, snapshot: bool = True) -> Generator[sqlite3.Connection]:
+    def _read(self, *, snapshot: bool = True) -> _BorrowedRead:
         """借用只读连接；组合读取固定快照，单条查询使用 SQLite 自身的快照。"""
-        if self._reads.current is not None:
-            yield self._reads.current.connection
-            return
-        # 1. 重入当前线程的写事务；另一个线程持有 writer 时直接读已提交快照。
-        if self._writer_lock.acquire(blocking=False):
-            try:
-                if self._closed:
-                    raise RuntimeError("MessageLog is closed")
-                if self._writer_connection.in_transaction:
-                    yield self._writer_connection
-                    return
-            finally:
-                self._writer_lock.release()
-        # 2. 只读准入与 close 共享短锁，不等待写事务的磁盘或内容校验。
-        with self._read_admission:
-            if self._closed:
-                raise RuntimeError("MessageLog is closed")
-            if self._idle_reads:
-                read = self._idle_reads.pop()
-            else:
-                connection = sqlite3.connect(
-                    self._path.as_uri() + "?mode=ro", uri=True, check_same_thread=False)
-                try:
-                    connection.row_factory = sqlite3.Row
-                    _ = connection.execute("PRAGMA query_only=ON")
-                except BaseException:
-                    connection.close()
-                    raise
-                read = _ReadConnection(connection, threading.RLock())
-            connection = read.connection
-            try:
-                if snapshot:
-                    _ = connection.execute("BEGIN")
-            except BaseException:
-                connection.close()
-                raise
-        # Callbacks may use other readers of this same log; all see this snapshot.
-        self._reads.current = read
-        try:
-            yield connection
-        finally:
-            self._reads.current = None
-            try:
-                # 归还前结束快照；下次借用必须观察新的已提交状态。
-                if snapshot:
-                    connection.rollback()
-            except BaseException:
-                connection.close()
-                raise
-            with self._read_admission:
-                if not self._closed and len(self._idle_reads) < 4:
-                    self._idle_reads.append(read)
-                else:
-                    connection.close()
+        return _BorrowedRead(self, snapshot)
 
     def catalog(self) -> MessageCatalog:
         return MessageCatalog(self)
