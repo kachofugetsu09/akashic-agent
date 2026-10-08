@@ -210,7 +210,7 @@ class MessageProjection:
         keep_input_ids: tuple[str, ...] = (),
         prepare_content: PrepareContent | None = None,
         tool_names: frozenset[str] = frozenset(),
-        dynamic_content_kinds: frozenset[str] = frozenset(),
+        dynamic_content_kinds: frozenset[str] | None = frozenset(),
     ):
         self._model = model
         self._source = source
@@ -328,6 +328,8 @@ class MessageProjection:
             except _FoldStale:
                 fold = _Fold()
                 self._fold_rebuild(fold, messages, inherited)
+            else:
+                fold.prefix = messages[: fold.count]
         self._fold = fold
         # 当前工作输入由 Turn owner 选定；摘要只替换历史，不吞掉本次要求。
         if len(keep) != len(self._keep_input_ids) or not keep <= fold.inputs:
@@ -408,7 +410,8 @@ class MessageProjection:
         replayed_reminders: set[tuple[str, str]] = set()
         context_added = False
         # 按消息缓存渲染分段：不可变前缀既不重建也不深比较。
-        # 命中条件：无动态视图，或贡献者声明了动态 kind 且本消息与其观察都不含；
+        # 命中条件：无动态视图，或全部贡献者完整声明了动态 kind 且本消息与其
+        # 观察都不含；任一贡献者范围未知（None）即整段关闭缓存（评审 #1110）。
         # 动态视图、artifact/reply 引用、当前输入相关的消息仍每轮重建。
         # reminder 回放状态进入分段键：同一身份的后续载体行不再随轮次重建，
         # 只有实际追加当前 context 的首个可见载体保持每轮渲染。
@@ -716,8 +719,7 @@ class MessageProjection:
         for message in messages:
             self._fold_main(fold, message, inherited)
         fold.count = len(messages)
-        fold.first = messages[0] if messages else None
-        fold.last = messages[-1] if messages else None
+        fold.prefix = messages
 
     def _fold_apply(
         self,
@@ -732,7 +734,6 @@ class MessageProjection:
         self._fold_facts(fold, message, inherited)
         self._fold_main(fold, message, inherited)
         fold.count += 1
-        fold.last = message
 
     def _fold_meta(self, fold: _Fold, message: Message) -> None:
         if isinstance(message.body, Input) and message.source == self._source:
@@ -852,7 +853,7 @@ class _Fold:
     """render 编排层的不可变前缀折叠；字段即原三趟预扫描的终态。"""
 
     __slots__ = (
-        "count", "first", "last", "inputs", "latest_input",
+        "count", "prefix", "inputs", "latest_input",
         "abandoned", "abandoned_calls", "facts", "recorded", "results",
         "receipts", "deps", "response_metadata", "content_refs",
         "continuation", "cont_summary", "cont_seq", "cont_transformed",
@@ -860,8 +861,7 @@ class _Fold:
 
     def __init__(self) -> None:
         self.count = 0
-        self.first: Message | None = None
-        self.last: Message | None = None
+        self.prefix: tuple[Message, ...] = ()
         self.inputs: set[str] = set()
         self.latest_input: str | None = None
         self.abandoned: set[str] = set()
@@ -882,12 +882,20 @@ class _Fold:
 
 
 def _fold_compatible(fold: _Fold, messages: tuple[Message, ...]) -> bool:
-    """前缀端点身份匹配即兼容；消息不可变且日志只追加，中段不可能被替换。"""
-    return (
-        fold.count <= len(messages)
-        and (not fold.count or messages[fold.count - 1] is fold.last)
-        and (not messages or messages[0] is fold.first)
-    )
+    """已折前缀逐条对象身份匹配才兼容。
+
+    首尾端点身份不足以判定：行内容键解码缓存会让未变化的首尾行返回同一
+    对象，中段被 UPDATE/DELETE 的行才是新对象（评审 #1131）。逐条 is 比较
+    是纯指针核对，远轻于折叠替代掉的三趟内容扫描；Message 的值相等不能
+    用于此判定（不同对象同内容视为前缀变化，重建即可，不失正确性）。
+    """
+    prefix = fold.prefix
+    if fold.count > len(messages):
+        return False
+    for index in range(fold.count):
+        if messages[index] is not prefix[index]:
+            return False
+    return True
 
 
 class _Segment:
@@ -922,10 +930,10 @@ class _Segment:
         self.reminders = reminders
 
 
-def _static_parts(message: Message, dynamic_kinds: frozenset[str] = frozenset()) -> bool:
+def _static_parts(message: Message, dynamic_kinds: frozenset[str] | None = None) -> bool:
     """artifact/reply 引用按渲染时的外部状态解析，动态声明 kind 由视图逐轮展开；
-    两类都不参与分段缓存。"""
-    excluded = dynamic_kinds | _EXTERNAL_PART_KINDS
+    两类都不参与分段缓存。None 表示范围未知，调用方在 cache_ok 处已拦截。"""
+    excluded = (dynamic_kinds or frozenset()) | _EXTERNAL_PART_KINDS
     return all(
         not isinstance(part, ContentPart) or part.kind not in excluded
         for part in message.body.parts
