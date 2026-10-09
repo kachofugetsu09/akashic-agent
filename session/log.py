@@ -1163,23 +1163,29 @@ class MessageReader:
         with log._view_lock, log._read() as connection:
             if connection is log._writer_connection:
                 return self._transaction_snapshot(through_seq)
-            # 2. 两项事实来自同一 RO 事务，外部追加和前缀改写都可见。
-            revision = None if not log._has_prefix_revision else connection.execute(
-                "SELECT revision FROM message_prefix_revision WHERE singleton=1"
-            ).fetchone()[0]
-            head = self.head()
-            upper = head if through_seq is None else min(head, through_seq)
-            prefix = log._message_views.get(self._session_id)
-            if prefix is None or revision is None or prefix.revision != revision:
-                prefix = _MessagePrefix(self._session_id, revision)
-            previous = prefix.seqs[-1] if prefix.seqs else -1
-            if upper > previous:
-                tail = MessageReader.scan(self, tuple, after_seq=previous, through_seq=upper)
-                prefix.messages.extend(tail)
-                prefix.seqs.extend(message.seq for message in tail)
-            # 3. 只有真实提交后的读取进入共享读面，不依赖 observer 唤醒。
-            log._message_views[self._session_id] = prefix
-            return MessageSnapshot(prefix, bisect_right(prefix.seqs, upper), upper)
+            return self._load_committed_snapshot(through_seq)
+
+    def _load_committed_snapshot(self, through_seq: int | None) -> MessageSnapshot:
+        """在新开的 RO 快照和 view 锁内加载共享前缀；调用者负责两个作用域。"""
+        log = self._log
+        connection = log._connection
+        # 1. 两项事实来自同一 RO 事务，外部追加和前缀改写都可见。
+        revision = None if not log._has_prefix_revision else connection.execute(
+            "SELECT revision FROM message_prefix_revision WHERE singleton=1"
+        ).fetchone()[0]
+        head = self.head()
+        upper = head if through_seq is None else min(head, through_seq)
+        prefix = log._message_views.get(self._session_id)
+        if prefix is None or revision is None or prefix.revision != revision:
+            prefix = _MessagePrefix(self._session_id, revision)
+        previous = prefix.seqs[-1] if prefix.seqs else -1
+        if upper > previous:
+            tail = MessageReader.scan(self, tuple, after_seq=previous, through_seq=upper)
+            prefix.messages.extend(tail)
+            prefix.seqs.extend(message.seq for message in tail)
+        # 2. 只有真实提交后的读取进入共享读面，不依赖 observer 唤醒。
+        log._message_views[self._session_id] = prefix
+        return MessageSnapshot(prefix, bisect_right(prefix.seqs, upper), upper)
 
     def _transaction_snapshot(self, through_seq: int | None) -> MessageSnapshot:
         """事务内快照独占前缀，不能为之后的已提交读取签发复用证明。"""
@@ -1579,26 +1585,14 @@ class MessageReader:
 
 
 class _IncrementalMessageReader(MessageReader):
-    """回复范围内复用已提交前缀；外部修改使整份派生视图失效。"""
+    """扫描与 ReAct 共用已提交前缀；reader 只延长当前读面的生命周期。"""
 
     def __init__(self, log: MessageLog, session_id: str):
         super().__init__(log, session_id)
-        self._prefix: tuple[int, tuple[Message, ...]] | None = None
+        self._snapshot: MessageSnapshot | None = None
 
     def incremental(self) -> MessageReader:
         return self
-
-    def _external_version(self) -> int | None:
-        """只检查原 writer 连接的外部版本；writer 忙时不等待或复用前缀。"""
-        log = self._log
-        if not log._writer_lock.acquire(blocking=False):
-            return None
-        try:
-            if log._closed or log._writer_connection.in_transaction:
-                return None
-            return log._writer_connection.execute("PRAGMA data_version").fetchone()[0]
-        finally:
-            log._writer_lock.release()
 
     async def snapshot_async(self, *, through_seq: int) -> tuple[Message, ...]:
         """同步和异步共用增量读取；取消等待实际 worker 结束。"""
@@ -1609,51 +1603,30 @@ class _IncrementalMessageReader(MessageReader):
         self, consume: Callable[[Iterable[Message]], _T], *,
         after_seq: int = -1, through_seq: int | None = None, source: str | None = None,
     ) -> _T:
-        """在同一只读快照内复用前缀并补读尾部，回调不能跨 await。"""
+        """共享正文前缀，但让扫描回调及嵌套读取留在同一 SQL 快照。"""
         if after_seq < -1:
             raise ValueError("读取需要正 limit 和不小于 -1 的 after_seq")
         # 1. 已有事务可能更早或尚未提交，必须读取其实际视图。
-        if self._log._reads.current is not None:
+        log = self._log
+        if log._reads.current is not None:
             return super().scan(consume, after_seq=after_seq, through_seq=through_seq, source=source)
-        prefix = self._prefix
-        has_revision = self._log._has_prefix_revision
-        before = None if has_revision else self._external_version()
-        with self._log._read() as connection:
-            if connection is self._log._writer_connection:
+        with log._read() as connection:
+            if connection is log._writer_connection:
                 return super().scan(consume, after_seq=after_seq, through_seq=through_seq, source=source)
-            if has_revision:
-                # 标记和消息共享当前 RO 快照，不受另一个线程的正常写入影响。
-                before = connection.execute(
-                    "SELECT revision FROM message_prefix_revision WHERE singleton=1"
-                ).fetchone()[0]
-            cached = () if prefix is None or before != prefix[0] else prefix[1]
-            # 固定 RO 快照之后，原 writer 的正常追加不会改写已缓存的前缀。
-            head = self.head()
-            if through_seq is not None:
-                head = min(head, through_seq)
-            previous = cached[-1].seq if cached else -1
-            messages = tuple(message for message in cached
-                             if after_seq < message.seq <= head
-                             and (source is None or message.source == source))
-            if head > max(previous, after_seq):
-                messages += super().scan(tuple, after_seq=max(previous, after_seq),
-                                         through_seq=head, source=source)
-            # 2. 外部修改可能夹在版本检查与 RO 快照之间；只在原快照内重读，
-            # 不重启快照，也不向调用者交付旧前缀与新尾部的混合结果。
-            stable = has_revision or before is not None and before == self._external_version()
-            if not stable and cached:
-                messages = super().scan(tuple, after_seq=after_seq, through_seq=head, source=source)
-            with closing(message for message in messages) as rows:
+            # 2. 只由共享前缀 owner 核对版本并加载尾部，不再另存 tuple 与版本号。
+            with log._view_lock:
+                snapshot = self._load_committed_snapshot(through_seq)
+            self._snapshot = snapshot
+            messages = (message for message in snapshot
+                        if message.seq > after_seq and (source is None or message.source == source))
+            # 回调内可能读取别的 reader；不能提前结束上面的 RO 事务。
+            with closing(messages) as rows:
                 result = consume(rows)
                 if inspect.isawaitable(result):
                     if inspect.iscoroutine(result):
                         result.close()
                     raise TypeError("消息扫描回调必须同步，不能跨 await")
-        # 3. 发布完整已提交前缀；来源筛选或增量查询不覆盖完整视图。
-        if stable and source is None and after_seq == -1:
-            assert before is not None
-            self._prefix = (before, messages)
-        return result
+                return result
 
 
 async def _run_commit(
