@@ -91,6 +91,14 @@ class _ModelConfig:
     embedding_batch_size: int
 
 
+@dataclass(frozen=True, slots=True)
+class _ChatRow:
+    source: Mapping[str, Any]
+    fill_reasoning: bool
+    encoded: bytes
+    images: tuple[bytes, ...]
+
+
 class _BoundChat:
     def __init__(
         self,
@@ -107,9 +115,8 @@ class _BoundChat:
         self._http = http
         self._message_sizes: dict[int, tuple[Mapping[str, Any], int, int]] = {}
         self._tool_size: tuple[object, int] | None = None
-        # 请求体行级字节缓存：投影分段缓存让冻结行跨轮身份稳定，逐轮只序列化新增行。
-        self._reasoning_memo: dict[int, tuple[Mapping[str, Any], Mapping[str, Any]]] = {}
-        self._row_json: dict[int, tuple[Mapping[str, Any], bytes]] = {}
+        # 原冻结行只编译一次；图片发射位置仍由本轮工具配对决定。
+        self._chat_rows: dict[int, _ChatRow] = {}
         self._tools_json: tuple[object, bytes] | None = None
 
     @property
@@ -129,8 +136,7 @@ class _BoundChat:
         # 连接配置只留给 embeddings/discovery 等非生成路径。
         connection = replace(self._connection, max_retries=0)
         body = _chat_body(
-            self._descriptor, connection, self._config, request,
-            reasoning_memo=self._reasoning_memo,
+            self._descriptor, connection, request,
         )
         if request.on_delta is None and connection.thinking_format != "deepseek":
             payload = await _request_json(
@@ -138,7 +144,7 @@ class _BoundChat:
                 self._credential,
                 "POST",
                 "/chat/completions",
-                body_bytes=self._encode_body(body),
+                body_bytes=self._encode_body(body, request),
                 http=self._http,
             )
             return _parse_chat_response(payload)
@@ -148,17 +154,20 @@ class _BoundChat:
         return await _stream_chat(
             connection,
             self._credential,
-            self._encode_body(body),
+            self._encode_body(body, request),
             request.on_delta,
             self._http,
         )
 
-    def _encode_body(self, body: Mapping[str, Any]) -> bytes:
+    def _encode_body(self, body: Mapping[str, Any], request: ModelRequest) -> bytes:
         """逐字段复用身份缓存字节；与 httpx encode_json 的字节格式一致。"""
         frags: list[bytes] = []
         for key, value in body.items():
             if key == "messages":
-                encoded = self._encode_rows(value)
+                encoded = self._encode_rows(
+                    value, request.system_prompt,
+                    self._connection.thinking_format == "deepseek" and not request.disable_reasoning,
+                )
             elif key == "tools":
                 encoded = self._encode_tools(value)
             else:
@@ -166,19 +175,52 @@ class _BoundChat:
             frags.append(b'"' + key.encode("utf-8") + b'":' + encoded)
         return b"{" + b",".join(frags) + b"}"
 
-    def _encode_rows(self, messages: Sequence[Mapping[str, Any]]) -> bytes:
-        """每轮只保留本轮行的缓存项；命中零序列化，未命中只编码新行。"""
-        saved = self._row_json
-        cache: dict[int, tuple[Mapping[str, Any], bytes]] = {}
+    def _encode_rows(
+        self, messages: Sequence[Mapping[str, Any]], system_prompt: str,
+        fill_reasoning: bool,
+    ) -> bytes:
+        """复用逐行协议字节，并在工具组闭合处发射图片。"""
+        # 1. 连续 system 只合并非空文本；全空且没有后续行时保留原行。
         parts: list[bytes] = []
-        for row in messages:
+        index = 0
+        system_contents: list[str] = []
+        while index < len(messages) and messages[index].get("role") == "system":
+            content = messages[index].get("content")
+            if isinstance(content, str) and content:
+                system_contents.append(content)
+            index += 1
+        if index == 0 and system_prompt:
+            system_contents.append(system_prompt)
+        if system_contents:
+            parts.append(_json_dumps_bytes({"role": "system", "content": "\n\n".join(system_contents)}))
+        elif index == len(messages):
+            index = 0
+
+        # 2. 缓存只拥有单行变换；跨行配对状态每次从当前窗口重建。
+        cache: dict[int, _ChatRow] = {}
+        images: list[bytes] = []
+        pending_calls: set[str] = set()
+        for row in messages[index:]:
             identity = id(row)
-            hit = saved.get(identity)
-            if hit is None or hit[0] is not row:
-                hit = (row, _json_dumps_bytes(row))
-            cache[identity] = hit
-            parts.append(hit[1])
-        self._row_json = cache
+            entry = self._chat_rows.get(identity)
+            if entry is None or entry.source is not row or entry.fill_reasoning != fill_reasoning:
+                entry = _compile_chat_row(row, fill_reasoning)
+            cache[identity] = entry
+            images.extend(entry.images)
+            role = str(row.get("role") or "")
+            if role == "assistant" and row.get("tool_calls"):
+                if images and pending_calls:
+                    raise InvalidRequestError("图片所在工具请求尚未完成配对")
+                pending_calls = {call["id"] for call in row["tool_calls"]}
+            elif role == "tool":
+                pending_calls.discard(row["tool_call_id"])
+            parts.append(entry.encoded)
+            if images and not pending_calls:
+                parts.append(b'{"role":"user","content":[' + b",".join(images) + b"]}")
+                images = []
+        if images:
+            raise InvalidRequestError("图片所在工具请求缺少结果，不能重排为有效历史")
+        self._chat_rows = cache
         return b"[" + b",".join(parts) + b"]"
 
     def _encode_tools(self, tools: Sequence[Mapping[str, Any]]) -> bytes:
@@ -530,35 +572,11 @@ def _json_dumps_bytes(value: object) -> bytes:
 def _chat_body(
     descriptor: BoundModelDescriptor,
     connection: _ConnectionConfig,
-    model: _ModelConfig,
     request: ModelRequest,
-    *,
-    reasoning_memo: dict[int, tuple[Mapping[str, Any], Mapping[str, Any]]] | None = None,
 ) -> dict[str, Any]:
-    messages = _normalize_messages(request.messages)
-    if request.system_prompt and not (messages and messages[0].get("role") == "system"):
-        messages.insert(0, {"role": "system", "content": request.system_prompt})
-    messages = _merge_leading_system_messages(messages)
-    if connection.thinking_format == "deepseek" and not request.disable_reasoning:
-        # DeepSeek 的工具续接要求此字段，即使此前响应没有返回思考正文。
-        # 未改写的行是冻结映射：缺字段时复制外层再补，不就地改冻结行。
-        # 补齐结果按输入行身份备忘，跨轮复用同一冻结副本。
-        memo = reasoning_memo if reasoning_memo is not None else {}
-        if len(memo) > 4096:
-            memo.clear()
-        for index, message in enumerate(messages):
-            if message.get("role") == "assistant" and "reasoning_content" not in message:
-                identity = id(message)
-                hit = memo.get(identity)
-                if hit is None or hit[0] is not message:
-                    updated = dict(message)
-                    updated["reasoning_content"] = ""
-                    hit = (message, updated)
-                    memo[identity] = hit
-                messages[index] = hit[1]
     body: dict[str, Any] = {
         "model": descriptor.model,
-        "messages": messages,
+        "messages": request.messages,
     }
     if request.max_output_tokens > 0:
         body["max_tokens"] = request.max_output_tokens
@@ -1396,86 +1414,47 @@ def _normalize_base_url(value: str) -> str:
     return urlunsplit((parsed.scheme, parsed.netloc, path, "", ""))
 
 
-def _normalize_messages(
-    messages: Sequence[Mapping[str, Any]],
-) -> list[Mapping[str, Any]]:
-    """转换消息内容，同时保留模型继续工具推理所需的 reasoning_content。"""
-
-    normalized: list[Mapping[str, Any]] = []
-    images: list[dict[str, Any]] = []
-    pending_calls: set[str] = set()
-    for message in messages:
-        # ModelRequest 已深冻结；只在确实改写字段时才复制消息外层，
-        # 未改写的行直接复用原冻结映射，调用方不得就地修改返回行。
-        role = str(message.get("role") or "")
-        content = message.get("content")
-        item: dict[str, Any] | None = None
-        # Chat Completions 的 assistant/tool content 不接受 image_url。
-        # 只在请求视图中将图片放到配对完成后的 user 数据消息，保持 call/result 邻接。
-        if role in {"assistant", "tool"} and isinstance(content, (list, tuple)):
-            pictures = [block for block in content if block.get("type") == "image_url"]
-            if pictures:
-                label = (
-                    f"工具结果 {message['tool_call_id']} 的图片"
-                    if role == "tool" else "Agent 输出消息中的图片"
-                )
-                images.append({"type": "text", "text": label})
-                images.extend(pictures)
-                content = [block for block in content if block.get("type") != "image_url"]
-                if not content:
-                    content = [{"type": "text", "text": "图片见本组消息后的图像内容。"}]
-                item = dict(message)
-                item["content"] = content
-        if role == "assistant" and message.get("tool_calls"):
-            if images and pending_calls:
-                raise InvalidRequestError("图片所在工具请求尚未完成配对")
-            pending_calls = {call["id"] for call in message["tool_calls"]}
-        elif role == "tool":
-            pending_calls.discard(message["tool_call_id"])
-        if role == "assistant" and message.get("tool_calls"):
-            if content is None or (isinstance(content, str) and not content.strip()):
-                calls = message.get("tool_calls")
-                first = calls[0] if isinstance(calls, (list, tuple)) and calls else {}
-                function = first.get("function") if isinstance(first, dict) else {}
-                tool_name = (
-                    str(function.get("name") or "")
-                    if isinstance(function, dict)
-                    else ""
-                )
-                if item is None:
-                    item = dict(message)
-                item["content"] = f"调用工具 {tool_name}" if tool_name else "调用工具"
-        elif role in {"user", "assistant", "tool"} and content is None:
+def _compile_chat_row(message: Mapping[str, Any], fill_reasoning: bool) -> _ChatRow:
+    """将冻结行编译成协议正文与待发射图片，只在字段改变时复制。"""
+    role = str(message.get("role") or "")
+    content = message.get("content")
+    item: dict[str, Any] | None = None
+    images: tuple[bytes, ...] = ()
+    # 1. assistant/tool 图片只能移到 user 行；每个来源行保留一个标签。
+    if role in {"assistant", "tool"} and isinstance(content, (list, tuple)):
+        pictures = [block for block in content if block.get("type") == "image_url"]
+        if pictures:
+            label = (
+                f"工具结果 {message['tool_call_id']} 的图片"
+                if role == "tool" else "Agent 输出消息中的图片"
+            )
+            images = tuple(_json_dumps_bytes(block) for block in (
+                {"type": "text", "text": label}, *pictures,
+            ))
+            content = [block for block in content if block.get("type") != "image_url"]
+            if not content:
+                content = [{"type": "text", "text": "图片见本组消息后的图像内容。"}]
+            item = dict(message)
+            item["content"] = content
+    # 2. 空正文兜底与 DeepSeek 补齐共享同一次外层复制。
+    if role == "assistant" and message.get("tool_calls"):
+        if content is None or (isinstance(content, str) and not content.strip()):
+            calls = message.get("tool_calls")
+            first = calls[0] if isinstance(calls, (list, tuple)) and calls else {}
+            function = first.get("function") if isinstance(first, dict) else {}
+            tool_name = str(function.get("name") or "") if isinstance(function, dict) else ""
             if item is None:
                 item = dict(message)
-            item["content"] = ""
-        normalized.append(message if item is None else item)
-        if images and not pending_calls:
-            normalized.append({"role": "user", "content": images})
-            images = []
-    if images:
-        raise InvalidRequestError("图片所在工具请求缺少结果，不能重排为有效历史")
-    return normalized
-
-
-def _merge_leading_system_messages(
-    messages: list[Mapping[str, Any]],
-) -> list[Mapping[str, Any]]:
-    system_contents: list[str] = []
-    index = 0
-    while index < len(messages) and messages[index].get("role") == "system":
-        content = messages[index].get("content")
-        if isinstance(content, str) and content:
-            system_contents.append(content)
-        index += 1
-    result: list[Mapping[str, Any]] = (
-        [{"role": "system", "content": "\n\n".join(system_contents)}]
-        if system_contents
-        else []
-    )
-    # 未改写的行复用原冻结映射；合并头部无需再次复制整份正文。
-    result.extend(messages[index:])
-    return result if result else messages
+            item["content"] = f"调用工具 {tool_name}" if tool_name else "调用工具"
+    elif role in {"user", "assistant", "tool"} and content is None:
+        if item is None:
+            item = dict(message)
+        item["content"] = ""
+    if fill_reasoning and message.get("role") == "assistant" and "reasoning_content" not in message:
+        if item is None:
+            item = dict(message)
+        item["reasoning_content"] = ""
+    return _ChatRow(message, fill_reasoning, _json_dumps_bytes(message if item is None else item), images)
 
 
 def _message_size(message: Mapping[str, Any]) -> tuple[int, int]:
