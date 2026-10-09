@@ -92,6 +92,8 @@ class Programmatic:
         self.ctx = ctx
         self.call = ctx.entrypoint(self.call)
         self._frames = ctx.require(CONTROL_FRAMES)
+        # Session -> (已检查到的来源 head, 当时的 active input 集合)
+        self._settled: dict[str, tuple[int, frozenset[str]]] = {}
 
     def _resolver(self, session_id: str, input_id: str) -> FrameResolver:
         """Capture only the reader, pure projection and Input identity."""
@@ -105,6 +107,9 @@ class Programmatic:
             return
         input_ids = self._frames.active_input_ids(reader.session_id)
         if not input_ids:
+            _ = self._settled.pop(reader.session_id, None)
+            return
+        if not self._may_end(reader, source, frozenset(input_ids)):
             return
         projection = self.ctx.require(TURN_PROJECTION)
         # 1. 纯只读快照只解释已经提交的 Input，不消费连接状态。
@@ -129,9 +134,27 @@ class Programmatic:
         head, ended = await reader.read_async(read)
         if reader.head(source=source) != head:
             return
+        self._settled[reader.session_id] = (head, frozenset(input_ids))
         for input_id, status in ended:
             error = None if status == "complete" else RuntimeError(f"programmatic input 已结束: {status}")
             self._frames.settle_input(reader.session_id, input_id, error)
+
+    # Turn 只会因终态 Output 或 Control 结束；水位之后没有这两类消息时无需重读整个 Session。
+    def _may_end(self, reader: MessageReader, source: str, input_ids: frozenset[str]) -> bool:
+        head = reader.head(source=source)
+        previous = self._settled.get(reader.session_id)
+        if previous is None or previous[1] != input_ids:
+            return True
+        checked = previous[0]
+        if head <= checked:
+            return False
+        if reader.latest_finished_output_seq(source, after_seq=checked, through_seq=head) is not None:
+            return True
+        control = reader.latest_control(source, through_seq=head)
+        if control is not None and control.seq > checked:
+            return True
+        self._settled[reader.session_id] = (head, input_ids)
+        return False
 
     def _reserve_before_accept(
         self, session_id: str, input_id: str, transport: RequestTransport | None,

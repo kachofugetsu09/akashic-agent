@@ -29,7 +29,7 @@ from agent.plugin_composition.models import BoundChatModel, ChatModels, ContextL
 from agent.plugin_contracts.json_store import atomic_write_text
 from core.common.file_io import run_file_io
 from agent.plugin_composition.messages import MessageCatalog
-from agent.plugin_contracts import ContentPart, Input, Message, Output, ToolResult
+from agent.plugin_contracts import ContentPart, Control, Input, Message, Output, ToolResult
 from ._boundaries import (
     COMPACTION_READER, COMPACTION_SUMMARIES, CONTENT, CONTEXT, MATERIALS,
     CompactionReader, ContentFacts, ContextBuilder, PartitionedSummary, StoredSummary, SummaryLookup,
@@ -606,6 +606,18 @@ def _validate_self(content: str) -> None:
             raise _InvalidDraft(f"SELF.md section 为空: {_SELF_HEADINGS[index]}")
 
 
+_Signature = tuple[tuple[int, int, int] | None, ...]
+
+
+# 档案文件的变更签名；缺失文件记为 None。
+def _stat_signature(path: Path) -> tuple[int, int, int] | None:
+    try:
+        stat = path.stat()
+    except FileNotFoundError:
+        return None
+    return (stat.st_mtime_ns, stat.st_size, stat.st_ino)
+
+
 @asynccontextmanager
 async def profile_lock(path: Path, *, create: bool = True) -> AsyncGenerator[None]:
     """按文件名提供跨 Session 和 generation 的排他锁；取消等待不会遗留持锁线程。"""
@@ -798,30 +810,37 @@ async def apply(ctx: Context) -> None:
     _ = await ctx.provide(MEMORY_WRITES, read_writes)
     await ctx.inject((DOCUMENTS,), publish_documents, name="documents")
 
+    # 路径在组合边界解析一次；每步只比较 stat 签名，文件未变时复用上次材料。
+    state_files = tuple(ctx.workspace_file(name) for name in workspace_files
+                        if not name.endswith(".lock"))
+    self_path = ctx.workspace_file("memory/SELF.md")
+    memory_path = ctx.workspace_file("memory/MEMORY.md")
+    location = f"## 档案位置\n- 长期记忆：{memory_path}\n- 自我认知：{self_path}"
+    cached: dict[_Signature, MaterialData] = {}
+
     async def prepare(snapshot: tuple[Message, ...], source: str) -> MaterialData:
-        # 完整初始态只投影 Store 的同一默认值；不创建文件或消费旧队列。
-        state_files = tuple(ctx.workspace_file(name) for name in workspace_files
-                            if not name.endswith(".lock"))
-        if not await run_file_io(lambda: any(path.exists() for path in state_files)):
+        # 1. 完整初始态只投影 Store 的同一默认值；不创建文件或消费旧队列。
+        signature = await run_file_io(lambda: tuple(_stat_signature(path) for path in state_files))
+        if (hit := cached.get(signature)) is not None:
+            return hit
+        # 2. 签名变化时按原锁协议重读：两份档案由同一次更新写入，锁保证读到同一版本。
+        if all(item is None for item in signature):
             self_profile, memory = DEFAULT_SELF_MD.strip(), ""
         else:
             async with profile_lock(lock_path, create=False):
-                self_path = ctx.workspace_file("memory/SELF.md")
-                memory_path = ctx.workspace_file("memory/MEMORY.md")
                 self_profile, memory = await run_file_io(lambda: (
                     self_path.read_text(encoding="utf-8").strip(),
                     memory_path.read_text(encoding="utf-8").strip(),
                 ))
-        parts: list[str] = [
-            "## 档案位置\n"
-            f"- 长期记忆：{ctx.workspace_file('memory/MEMORY.md')}\n"
-            f"- 自我认知：{ctx.workspace_file('memory/SELF.md')}"
-        ]
+        parts: list[str] = [location]
         if self_profile:
             parts.append("## Akashic 自我认知\n\n" + self_profile)
         if memory:
             parts.append("## Long-term Memory\n" + memory)
-        return {"system_prompt": "\n\n".join(parts)}
+        material: MaterialData = {"system_prompt": "\n\n".join(parts)}
+        cached.clear()
+        cached[signature] = material
+        return material
 
     async def follow(catalog: MessageCatalog) -> None:
         """模型暂时失败时保留原游标，关闭订阅后延时重读，其他会话继续处理。"""
@@ -829,7 +848,8 @@ async def apply(ctx: Context) -> None:
         while True:
             retry = False
             # 1. 每次重新订阅都先读完整 heads，不依赖失败后恰好出现新消息。
-            async with aclosing(catalog.follow()) as updates:
+            # 投影按游标读取；只在 Output 或 Control 可能结束 turn 时唤醒。
+            async with aclosing(catalog.follow(wake_on=(Output, Control))) as updates:
                 async for heads in updates:
                     for session, head in heads.items():
                         if head <= cursor.get(session, -1):

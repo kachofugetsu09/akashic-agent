@@ -51,5 +51,24 @@ def read_result_snapshot(
 
 def read_result(reader: MessageReader, input_id: str, projection: TurnProjection) -> dict[str, object]:
     """从同一日志快照定位原 Input 的结果，不把空闲或晚到工具当作成功。"""
+    # 1. Input 之后没有终态 Output 和 Control 时 Turn 必然 open，只走索引查询。
+    target = reader.get(input_id)
+    if target is not None and target.source == "programmatic" and isinstance(target.body, Input):
+        head = reader.head()
+        source_head = reader.head(source=target.source)
+        if (
+            reader.latest_finished_output_seq(target.source, after_seq=target.seq, through_seq=source_head) is None
+            and not _has_control_after(reader, target.source, target.seq, source_head)
+        ):
+            return {
+                "version": 2, "session_id": reader.session_id, "input_id": input_id,
+                "status": "open", "ending_message_id": None, "through_seq": head,
+            }
+    # 2. 可能已结束时用完整快照投影，语义与之前一致。
     messages = reader.snapshot()
     return read_result_snapshot(reader, input_id, projection, messages)
+
+
+def _has_control_after(reader: MessageReader, source: str, after_seq: int, through_seq: int) -> bool:
+    control = reader.latest_control(source, through_seq=through_seq)
+    return control is not None and control.seq > after_seq
