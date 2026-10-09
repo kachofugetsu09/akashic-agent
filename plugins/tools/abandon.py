@@ -61,18 +61,17 @@ async def abandon_call(
                 return target.read(record.value["result"])
             if record.value["phase"] not in {"requested", "prepared", "started"}:
                 raise ValueError("工具回执阶段无效")
-        # 消息调用不写阶段回执；进程内仍有执行 Task 即视为已启动。
-        started = (record is not None and record.value["phase"] == "started") or (
-            record is None and slot.current is not None)
+        # 无阶段回执不能证明未执行；重启后内存 Task 已丢失，仍须保留效果不确定性。
+        may_have_started = record is None or record.value["phase"] == "started"
         def cancel_after_commit(_result: Result) -> None:
             if slot.current is not None:
                 slot.current.cancel()
 
         result = await finish(
             state, key, record,
-            Result("interrupted" if started else "denied", (ContentPart(
-                "text", "用户已放弃此工作；调用已中断，外部效果可能已经发生，不能据此重跑。"
-                if started else "用户已放弃此工作，工具未启动。",
+            Result("interrupted" if may_have_started else "denied", (ContentPart(
+                "text", "用户已放弃此工作；工具可能已部分执行。请先检查当前状态，再决定是否重试。"
+                if may_have_started else "用户已放弃此工作，工具未启动。",
             ),)), target,
             initial={"version": 1, "request": fingerprint, "binding": call.binding_id,
                      "reply_id": target.message_id, "arguments": call.arguments},
@@ -181,5 +180,5 @@ def abandoned_calls(messages: tuple[Message, ...], control: Message) -> tuple[Ca
     return tuple(calls)
 
 
-def reject_start(_transaction: OwnerTransaction) -> None:
+def reject_start(_transaction: OwnerTransaction | None) -> None:
     raise Denied("放弃消费者没有启动工具的权限")

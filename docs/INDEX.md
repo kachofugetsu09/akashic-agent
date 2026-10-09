@@ -61,6 +61,7 @@
 | 新产品方向 | [路线草案](design/akashic-future-roadmap-issue-drafts.md) → 对应现行需求；草案不是实现授权 | 按已批准范围定位 |
 
 Session 与 Models 提交的故障保证见 [0099 WAL NORMAL](decisions/0099-ledger-commits-use-wal-normal.md)；工具与送达恢复仍沿原 owner 协议。
+默认消息工具调用与 ReAct 重启恢复按 [0100](decisions/0100-message-tool-calls-recover-at-turn-granularity.md)：未结工具报告未知，模型使用当前材料发新请求。
 
 ## 4. 数据任务的额外入口
 

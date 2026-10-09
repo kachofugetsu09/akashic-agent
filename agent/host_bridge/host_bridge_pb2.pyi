@@ -59,7 +59,7 @@ class HeartbeatReply(_message.Message):
     def __init__(self, alive: bool = ...) -> None: ...
 
 class ExecRequest(_message.Message):
-    __slots__ = ("context", "command", "argv", "cwd", "env", "tty", "yield_time_ms", "max_output_tokens", "hard_timeout_s", "owner_session_key")
+    __slots__ = ("context", "command", "argv", "cwd", "env", "tty", "yield_time_ms", "max_output_tokens", "hard_timeout_s", "owner_session_key", "shell_snapshot")
     class EnvEntry(_message.Message):
         __slots__ = ("key", "value")
         KEY_FIELD_NUMBER: _ClassVar[int]
@@ -77,6 +77,7 @@ class ExecRequest(_message.Message):
     MAX_OUTPUT_TOKENS_FIELD_NUMBER: _ClassVar[int]
     HARD_TIMEOUT_S_FIELD_NUMBER: _ClassVar[int]
     OWNER_SESSION_KEY_FIELD_NUMBER: _ClassVar[int]
+    SHELL_SNAPSHOT_FIELD_NUMBER: _ClassVar[int]
     context: RequestContext
     command: str
     argv: _containers.RepeatedScalarFieldContainer[str]
@@ -87,7 +88,8 @@ class ExecRequest(_message.Message):
     max_output_tokens: int
     hard_timeout_s: int
     owner_session_key: str
-    def __init__(self, context: _Optional[_Union[RequestContext, _Mapping]] = ..., command: _Optional[str] = ..., argv: _Optional[_Iterable[str]] = ..., cwd: _Optional[str] = ..., env: _Optional[_Mapping[str, str]] = ..., tty: bool = ..., yield_time_ms: _Optional[int] = ..., max_output_tokens: _Optional[int] = ..., hard_timeout_s: _Optional[int] = ..., owner_session_key: _Optional[str] = ...) -> None: ...
+    shell_snapshot: bool
+    def __init__(self, context: _Optional[_Union[RequestContext, _Mapping]] = ..., command: _Optional[str] = ..., argv: _Optional[_Iterable[str]] = ..., cwd: _Optional[str] = ..., env: _Optional[_Mapping[str, str]] = ..., tty: bool = ..., yield_time_ms: _Optional[int] = ..., max_output_tokens: _Optional[int] = ..., hard_timeout_s: _Optional[int] = ..., owner_session_key: _Optional[str] = ..., shell_snapshot: bool = ...) -> None: ...
 
 class WriteStdinRequest(_message.Message):
     __slots__ = ("context", "execution_id", "chars", "yield_time_ms", "max_output_tokens", "owner_session_key")
