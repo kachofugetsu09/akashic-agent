@@ -17,16 +17,16 @@ export function activate(ctx) {
     render(host, _view, rawProps) {
       const props = requireProps(rawProps);
       const existing = props.state.connection;
-      host.innerHTML = `<header class="settings-dialog-header"><div class="settings-dialog-heading"><h2 class="settings-dialog-title">${existing ? `编辑 ${escapeHtml(existing.name)}` : "连接 OpenCode Go"}</h2><p class="settings-dialog-description">使用本机 OpenCode 登录或单独的 API Key，连接后探测目录，再选择要使用的模型。</p></div>
+      host.innerHTML = `<header class="settings-dialog-header"><div class="settings-dialog-heading"><h2 class="settings-dialog-title">${existing ? `编辑 ${escapeHtml(existing.name)}` : "连接 OpenCode Go"}</h2><p class="settings-dialog-description">使用本机已登录的 OpenCode 凭据或独立 API Key，连接后探测可用模型。</p></div>
         <button type="button" class="settings-icon-button" aria-label="关闭" data-close>${CLOSE_ICON}</button></header>
         <form class="settings-dialog-form"><div class="settings-dialog-body"><div class="settings-form-grid">
           <label class="is-wide"><span>连接名称</span><input name="name" aria-label="连接名称" required autocomplete="organization"></label>
-          <label class="is-wide"><span>Base URL</span><input name="endpoint" aria-label="Base URL" ${existing ? "" : "required"} type="url" placeholder="${existing ? "留空则保持原地址" : "https://api.example.com/v1"}"></label>
-          <label class="settings-secret is-wide"><span>API Key（${existing ? "留空保留现有密钥" : "可留空使用本机登录"}）</span><input name="apiKey" aria-label="API Key" type="password" autocomplete="off" placeholder="sk-…"><button type="button" data-show-key aria-label="显示 API Key">${EYE_ICON}</button></label>
+          <label class="is-wide"><span>Base URL</span><input name="endpoint" aria-label="Base URL" ${existing ? "" : "required"} type="url" placeholder="${existing ? "留空则保持原地址" : "https://opencode.ai/zen/go/v1"}"></label>
+          <label class="settings-secret is-wide"><span>API Key（${existing ? "留空保留现有密钥" : "可留空直接使用本机登录态"}）</span><input name="apiKey" aria-label="API Key" type="password" autocomplete="off" placeholder="sk-…"><button type="button" data-show-key aria-label="显示 API Key">${EYE_ICON}</button></label>
         </div>
-        <section class="settings-model-discovery settings-model-discovery--automatic"><header><div><h3>选择模型</h3><p>探测结果只作为候选；勾选确认后保存模型和已知能力。</p></div></header></section>
+        <section class="settings-model-discovery settings-model-discovery--automatic"><header><div><h3>选择模型</h3><p>探测到的模型仅作为候选，保存后即可用于日常对话与任务。</p></div></header></section>
         <p class="settings-inline-error" data-error role="alert" hidden></p></div>
-        <footer class="settings-dialog-footer"><span class="settings-dialog-footer-note">${SHIELD_ICON}凭据保存后不会显示在页面中</span><span class="settings-dialog-actions">${existing ? '<button type="button" class="settings-secondary-button" data-resync>刷新已选能力</button>' : ""}<button type="submit" class="settings-primary-button">${existing ? "保存连接并选择模型" : "连接并选择模型"}</button></span></footer></form>`;
+        <footer class="settings-dialog-footer"><span class="settings-dialog-footer-note">${SHIELD_ICON}凭据保存后不会在页面中明文回显</span><span class="settings-dialog-actions">${existing ? '<button type="button" class="settings-secondary-button" data-resync>刷新模型能力</button>' : ""}<button type="submit" class="settings-primary-button">${existing ? "保存连接并选择模型" : "连接并选择模型"}</button></span></footer></form>`;
       const form = host.querySelector("form");
       const changed = () => props.dirty(true);
       form.addEventListener("input", changed);

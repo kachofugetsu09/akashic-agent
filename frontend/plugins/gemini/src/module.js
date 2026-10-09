@@ -20,25 +20,25 @@ export function activate(ctx) {
       const defaults = props.state.template?.defaults ?? {};
       let closed = false;
       host.innerHTML = `<header class="settings-dialog-header"><div class="settings-dialog-heading">
-        <h2 class="settings-dialog-title">${existing ? "编辑 Gemini 连接" : "连接 Gemini 原生 API"}</h2>
+        <h2 class="settings-dialog-title">${existing ? "编辑 Gemini 连接" : "连接 Google Gemini"}</h2>
         <p class="settings-dialog-description">${existing
-          ? "更新地址或密钥前会验证已启用模型；失败保留原配置。仅改名称不调用模型。"
-          : "填写连接信息，探测目录后勾选要开放的模型。"}</p>
+          ? "更新地址或密钥前会向已启用模型发送测试验证；若验证失败保留原配置。仅修改名称时不调用模型。"
+          : "输入 Google API Key 或兼容网关地址，探测可用模型后选择启用。"}</p>
         </div><button type="button" class="settings-icon-button" data-close aria-label="关闭">${CLOSE_ICON}</button></header>
         <form class="settings-dialog-form"><div class="settings-dialog-body"><div class="settings-form-grid">
           <label class="is-wide"><span>连接名称</span><input name="name" aria-label="连接名称" required autocomplete="organization"></label>
-          <label class="is-wide"><span>Base URL${existing ? "（留空保持不变）" : ""}</span><input name="endpoint" aria-label="Base URL" type="url" ${existing ? "" : "required"} placeholder="https://your-gateway.example/antigravity"></label>
-          <label class="settings-secret is-wide"><span>API Key</span><input name="apiKey" aria-label="API Key" type="password" ${existing ? "" : "required"} autocomplete="off" placeholder="${existing ? "留空保留现有密钥" : "API Key"}"><button type="button" data-show-key aria-label="显示 API Key">${EYE_ICON}</button></label>
-        </div><p>Base URL 可填网关根路径，或以 /v1、/v1beta 结尾的地址。</p>
-        <p class="settings-credential-note">${SHIELD_ICON}<span>API Key 保存后不会显示在页面中</span></p>
-        ${existing ? "" : `<section class="settings-model-discovery"><header><div><h3>模型</h3><p>目录只提供型号；勾选的型号在保存时逐个验证对话用途。</p></div></header>
-          <div class="settings-discovery-empty" data-discovery-empty><button type="button" class="settings-primary-button" data-discover>探测可用模型</button><button type="button" class="settings-text-button" data-manual>手动填写型号</button></div>
+          <label class="is-wide"><span>Base URL${existing ? "（留空保持不变）" : ""}</span><input name="endpoint" aria-label="Base URL" type="url" ${existing ? "" : "required"} placeholder="https://generativelanguage.googleapis.com/v1beta"></label>
+          <label class="settings-secret is-wide"><span>API Key</span><input name="apiKey" aria-label="API Key" type="password" ${existing ? "" : "required"} autocomplete="off" placeholder="${existing ? "留空保留现有密钥" : "AIzaSy…"}"><button type="button" data-show-key aria-label="显示 API Key">${EYE_ICON}</button></label>
+        </div><p>支持官方地址或自定义代理网关（以 /v1 或 /v1beta 结尾）。</p>
+        <p class="settings-credential-note">${SHIELD_ICON}<span>API Key 保存后不会在页面中明文回显</span></p>
+        ${existing ? "" : `<section class="settings-model-discovery"><header><div><h3>可用模型</h3><p>探测结果仅供选择；勾选的模型将在保存前发送测试请求验证可用性。</p></div></header>
+          <div class="settings-discovery-empty" data-discovery-empty><button type="button" class="settings-primary-button" data-discover>自动探测模型</button><button type="button" class="settings-text-button" data-manual>手动输入模型名</button></div>
           <p class="settings-discovery-status" data-picked role="status" hidden></p>
-          <div class="settings-discovery-manual" data-discovery-manual hidden><label><span>模型名称</span><input name="manualModel" aria-label="模型名称" placeholder="例如：gemini-3-flash-preview"></label><p>目录不可用时可手动添加；保存前仍会验证对话用途。</p><label class="settings-manual-confirm"><input type="checkbox" name="manualConfirm"><span>我选择将此型号用于对话，保存前实际验证。</span></label></div>
+          <div class="settings-discovery-manual" data-discovery-manual hidden><label><span>模型名称</span><input name="manualModel" aria-label="模型名称" placeholder="例如：gemini-2.5-flash"></label><p>若网关暂不支持目录探测，可手动输入模型名称。</p><label class="settings-manual-confirm"><input type="checkbox" name="manualConfirm"><span>我确认将此模型用于对话，并在保存前发送测试请求。</span></label></div>
           <p class="settings-discovery-status" data-status role="status" aria-live="polite" hidden></p>
         </section>`}
         <p class="settings-inline-error" data-error role="alert" hidden></p></div>
-        <footer class="settings-dialog-footer" data-footer ${existing ? "" : "hidden"}><span class="settings-dialog-footer-note" data-footer-note>${SHIELD_ICON}保存前会向所选模型发送一条短消息，验证对话用途</span><div class="settings-dialog-actions">${existing ? "" : '<button type="button" class="settings-secondary-button" data-rescan>重新探测</button>'}<button type="submit" class="settings-primary-button">保存连接</button></div></footer></form>`;
+        <footer class="settings-dialog-footer" data-footer ${existing ? "" : "hidden"}><span class="settings-dialog-footer-note" data-footer-note>${SHIELD_ICON}保存前会向所选模型发送一条测试消息以验证可用性</span><div class="settings-dialog-actions">${existing ? "" : '<button type="button" class="settings-secondary-button" data-rescan>重新探测</button>'}<button type="submit" class="settings-primary-button">保存连接</button></div></footer></form>`;
       const form = host.querySelector("form");
       form.elements.name.value = existing?.name ?? defaults.name ?? "Gemini";
       form.elements.endpoint.value = existing ? "" : defaults.endpoint ?? "";

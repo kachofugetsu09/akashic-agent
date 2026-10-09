@@ -254,12 +254,12 @@ interface LedgerOverview {
 let ledgerOverview: LedgerOverview | null = null;
 
 function ledgerSummary(): string {
-  if (!ledgerOverview) return "已学习的逻辑 turn；图是学习事实的唯一权威。";
+  if (!ledgerOverview) return "记忆学习记录；图结构是记忆沉淀的唯一基准。";
   const reasons = Object.entries(ledgerOverview.skipped_reasons)
     .map(([reason, count]) => `${reason} ${count}`)
     .join("、");
   const skipped = ledgerOverview.skipped ? `；未学习 ${ledgerOverview.skipped} 条（${reasons}）` : "";
-  return `已学习 ${ledgerOverview.learned} 个逻辑 turn，覆盖 ${ledgerOverview.sessions} 个会话${skipped}。`;
+  return `已累计学习 ${ledgerOverview.learned} 轮对话，覆盖 ${ledgerOverview.sessions} 个会话${skipped}。`;
 }
 
 function renderLedger(container: HTMLElement, dispatch: PluginDispatch): WebUiDisposer | void {
@@ -269,7 +269,7 @@ function renderLedger(container: HTMLElement, dispatch: PluginDispatch): WebUiDi
     if (document.activeElement !== existing && existing.value !== value) existing.value = value;
     return;
   }
-  container.innerHTML = `<div class="akasha-filter"><label><span>按会话过滤学习账本</span><input type="search" value="${escapeHtml(value)}" placeholder="例如 akashic: 或 telegram:" data-akasha-session /></label><md-text-button data-akasha-clear-session ${value ? "" : "disabled"}>清空</md-text-button></div>`;
+  container.innerHTML = `<div class="akasha-filter"><label><span>按会话筛选记录</span><input type="search" value="${escapeHtml(value)}" placeholder="例如 akashic: 或 telegram:" data-akasha-session /></label><md-text-button data-akasha-clear-session ${value ? "" : "disabled"}>清空</md-text-button></div>`;
   const input = container.querySelector<HTMLInputElement>("[data-akasha-session]")!;
   const clear = container.querySelector<HTMLElement>("[data-akasha-clear-session]")!;
   let timer = 0;
@@ -288,7 +288,7 @@ function renderLedger(container: HTMLElement, dispatch: PluginDispatch): WebUiDi
 
 function renderLedgerDetail(item: LedgerRow | null): string {
   if (!item) {
-    return `<div class="akasha-detail-empty"><div class="akasha-detail-empty__title">Akasha 记忆</div><div class="akasha-detail-empty__text">${escapeHtml(ledgerSummary())}</div></div>`;
+    return `<div class="akasha-detail-empty"><div class="akasha-detail-empty__title">情景记忆记录</div><div class="akasha-detail-empty__text">${escapeHtml(ledgerSummary())}</div></div>`;
   }
   const messages = item.messages;
   return `
@@ -301,10 +301,10 @@ function renderLedgerDetail(item: LedgerRow | null): string {
         ${metric("扩散", item.pushes ?? 0, "该轮学习时的扩散次数")}
         ${metric("残余质量", fixed(item.residual_l1), "该轮学习时的 residual_l1")}
       </dl></section>
-      <section class="akasha-evidence-group"><div class="akasha-section-heading"><h3>学习材料</h3><small>正文来自 canonical Message，不在插件里复制</small></div>
+      <section class="akasha-evidence-group"><div class="akasha-section-heading"><h3>对话素材</h3><small>原文来自消息记录，不在此处冗余存储</small></div>
         <ol class="akasha-evidence-list">
-          <li class="akasha-evidence"><div class="akasha-evidence-main"><p>${escapeHtml(messages?.user_message_id ? "用户输入" : "用户输入缺失")}</p><p>${escapeHtml(messages?.user_message_id ?? "")}</p></div></li>
-          <li class="akasha-evidence"><div class="akasha-evidence-main"><p>助手回答</p><p>${escapeHtml(messages?.assistant_message_id ?? "")}</p></div></li>
+          <li class="akasha-evidence"><div class="akasha-evidence-main"><p>${escapeHtml(messages?.user_message_id ? "用户发言" : "用户发言缺失")}</p><p>${escapeHtml(messages?.user_message_id ?? "")}</p></div></li>
+          <li class="akasha-evidence"><div class="akasha-evidence-main"><p>回复内容</p><p>${escapeHtml(messages?.assistant_message_id ?? "")}</p></div></li>
         </ol>
       </section>
     </article>
@@ -313,15 +313,15 @@ function renderLedgerDetail(item: LedgerRow | null): string {
 
 const ledgerPanel = {
   id: "akasha-ledger",
-  label: "Akasha 记忆",
-  viewLabel: "Akasha 记忆",
+  label: "情景记忆记录",
+  viewLabel: "情景记忆记录",
   pageSize: 25,
   rowKey: "node_id",
-  countTitle(total: number): string { return `${total} 个逻辑 turn`; },
+  countTitle(total: number): string { return `${total} 轮记录`; },
   columns: [
     { key: "session_key", label: "会话", width: 130, fmt: "mono-session", cellClass: "mono cell-session", rawTitle: true },
-    { key: "user_seq", label: "Seq", width: 64, fmt: "metric", cellClass: "mono cell-metric", align: "right" },
-    { key: "started_at", label: "学习时间", width: 108, fmt: "mono-time", cellClass: "mono cell-time" },
+    { key: "user_seq", label: "序号", width: 64, fmt: "metric", cellClass: "mono cell-metric", align: "right" },
+    { key: "started_at", label: "记录时间", width: 108, fmt: "mono-time", cellClass: "mono cell-time" },
     { key: "candidate_count", label: "候选", width: 66, fmt: "metric", cellClass: "mono cell-metric", align: "right" },
     { key: "active_basin_count", label: "情景簇", width: 78, fmt: "metric", cellClass: "mono cell-metric", align: "right" },
     { key: "basin_completion_count", label: "补全", width: 66, fmt: "metric", cellClass: "mono cell-metric", align: "right" },
@@ -348,7 +348,7 @@ const ledgerPanel = {
 
 export function activate(ctx: WebHostContextV1): WebUiDisposer {
   dashboardRequest = ctx.http.request;
-  const releaseSettings = registerForm(ctx, {id: "akasha", title: "Akasha 情景记忆", description: "从对话中学习情景记忆；关闭后已有记忆仍保留。"});
+  const releaseSettings = registerForm(ctx, {id: "akasha", title: "长期情景记忆", description: "在对话互动中沉淀情景记忆与关联；关闭后已有记忆仍保留，但暂停学习。"});
   const releaseRecall = ctx.ui.inject("workbench.panels.v2", (mount) => mount.register(panel));
   const releaseLedger = ctx.ui.inject("workbench.panels.v2", (mount) => mount.register(ledgerPanel));
   return () => { releaseSettings(); releaseRecall(); releaseLedger(); dashboardRequest = null; };

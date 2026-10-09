@@ -5,10 +5,10 @@ const CLOSE_ICON = `<svg xmlns="http://www.w3.org/2000/svg" width="20" height="2
 const SPINNER_ICON = `<svg xmlns="http://www.w3.org/2000/svg" width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="is-spinning" aria-hidden="true"><path d="M21 12a9 9 0 1 1-6.219-8.56"></path></svg>`;
 
 const ROLE_LABELS = [
-  ["default", "默认模型", "普通模型调用与系统默认"],
-  ["agent", "Agent 模型", "被动对话与计划任务 ReAct"],
-  ["fast", "轻量模型", "压缩、标签与后台提取"],
-  ["vision", "视觉模型", "看图与包含图片的对话"],
+  ["default", "全局默认模型", "用于普通对话交互与未单独指定场景"],
+  ["agent", "智能体主模型", "用于复杂工具调用、代码编写与多步规划"],
+  ["fast", "轻量快速模型", "用于总结提炼、分类打标与后台小任务"],
+  ["vision", "多模态视觉模型", "用于图像理解与带图对话"],
 ];
 
 export async function readJsonResponse(response) {
@@ -49,10 +49,10 @@ export function activate(ctx) {
       page.className = `settings-page ${props.embedded ? "settings-page--embedded" : ""}`;
       page.innerHTML = `<div class="settings-shell">
         <header class="settings-header">
-          <div><h1 data-title>模型连接</h1><p data-description>每套账号或 API Key 都是独立连接；未知模型能力不会被猜测。</p></div>
+          <div><h1 data-title>模型连接</h1><p data-description>管理各模型服务商连接与密钥；未探测到的能力不会被默认开启。</p></div>
           <div class="settings-header-actions"></div>
         </header>
-        <label class="settings-search" data-search>${SEARCH_ICON}<span class="sr-only">搜索模型连接</span><input placeholder="搜索连接或模型"></label>
+        <label class="settings-search" data-search>${SEARCH_ICON}<span class="sr-only">搜索模型连接</span><input placeholder="搜索服务商连接或模型名称"></label>
         <p class="settings-inline-error" data-error role="alert" hidden></p>
         <ul class="settings-provider-list" data-connections></ul>
         <div class="settings-add-provider">
@@ -63,7 +63,7 @@ export function activate(ctx) {
           </div>
         </div>
         <section class="settings-section settings-roles" data-roles>
-          <header><div><h2>系统模型</h2><p>修改后无需重启；移除的模型引用自动跟随默认模型。</p></div></header>
+          <header><div><h2>各场景指定模型</h2><p>切换立即生效；若某一场景未单独配置，自动使用全局默认模型。</p></div></header>
           <div class="settings-role-grid" data-bindings></div>
         </section>
       </div>
@@ -186,14 +186,14 @@ export function activate(ctx) {
         const chatConnections = catalog.connections;
         const hasConnections = chatConnections.length > 0;
 
-        title.textContent = "模型连接";
+        title.textContent = "模型服务";
         description.textContent = hasConnections
-          ? "每套账号或 API Key 都是独立连接；展开卡片管理其中的模型。"
-          : "选择登录方式或 API 服务，探测目录后勾选开放的模型。";
+          ? "已配置的服务商连接如下；点击展开卡片可管理可用模型。"
+          : "请先添加模型连接，支持 ChatGPT 订阅、DeepSeek、Gemini 及兼容 API。";
         search.hidden = !hasConnections;
         roles.hidden = false;
         addToggle.disabled = false;
-        addToggle.textContent = hasConnections ? "添加连接" : "选择连接方式";
+        addToggle.textContent = hasConnections ? "+ 添加新服务商连接" : "选择服务商开始连接";
         // 首次配置没有连接时直接展开连接方式列表；编辑器打开期间不抢面板状态。
         if (!hasConnections && !activeEditor) setAddPanel(true);
         renderConnections(chatConnections);
@@ -285,7 +285,7 @@ export function activate(ctx) {
           : `${entry?.label ?? connection.driverId} · ${openCount}/${models.length} 开放`;
         const status = head.querySelector("[data-status]");
         status.classList.toggle("is-unavailable", connection.availability !== "available");
-        const AVAILABILITY_LABELS = { available: "已连接", disabled: "已停用", driver_unavailable: "驱动不可用" };
+        const AVAILABILITY_LABELS = { available: "正常可用", disabled: "已停用", driver_unavailable: "驱动异常" };
         status.querySelector("span").textContent = AVAILABILITY_LABELS[connection.availability] ?? connection.availability;
       }
 
@@ -331,8 +331,8 @@ export function activate(ctx) {
         const embeddingModels = catalog.models.filter((model) =>
           model.kind === "embedding" && (model.availability === "available" || model.id === embeddingBound));
         bindings.appendChild(bindingRow({
-          label: "向量模型",
-          detail: "记忆检索与向量化",
+          label: "知识库嵌入向量模型",
+          detail: "用于情景记忆检索与文本向量化",
           models: embeddingModels,
           value: embeddingBound,
           change(modelId) {
@@ -342,7 +342,7 @@ export function activate(ctx) {
         const addEmbedding = document.createElement("button");
         addEmbedding.type = "button";
         addEmbedding.className = "settings-add-embedding";
-        addEmbedding.textContent = "添加向量模型";
+        addEmbedding.textContent = "+ 添加向量模型";
         addEmbedding.addEventListener("click", () => openEmbedding(addEmbedding));
         bindings.appendChild(addEmbedding);
       }
@@ -355,22 +355,22 @@ export function activate(ctx) {
         dialog.className = "settings-scrim";
         dialog.setAttribute("aria-label", "添加向量模型");
         dialog.innerHTML = `<form class="settings-dialog settings-dialog-form embedding-form">
-          <header class="settings-dialog-header"><div><h2>添加向量模型</h2><p>用于情景记忆。读取型号，再用两段固定测试文本测量实际维度；不需要先配置聊天模型。</p></div></header>
+          <header class="settings-dialog-header"><div><h2>添加向量模型</h2><p>用于情景记忆检索。读取模型列表或手动指定，通过测试文本自动测量实际维度。</p></div></header>
           <div class="settings-dialog-body"><div class="settings-form-grid">
-          <label class="is-wide"><span>使用连接</span><select name="connection" aria-label="使用连接" required></select></label>
+          <label class="is-wide"><span>所属服务连接</span><select name="connection" aria-label="所属服务连接" required></select></label>
           <div class="is-wide settings-form-grid" data-new-connection>
             <label class="is-wide"><span>连接名称</span><input name="name" aria-label="向量连接名称" value="向量服务" maxlength="128"></label>
             <label class="is-wide"><span>Base URL</span><input name="endpoint" aria-label="向量 Base URL" type="url" placeholder="https://api.example.com/v1"></label>
             <label class="is-wide"><span>API Key</span><input name="key" aria-label="向量 API Key" type="password" autocomplete="off"></label>
           </div>
-          <button type="button" class="settings-secondary-button is-wide" data-directory>读取模型目录</button>
-          <label class="is-wide" data-candidates hidden><span>模型型号（用途由试算核对）</span><select name="candidate" aria-label="向量模型型号"></select></label>
-          <button type="button" class="settings-text-button is-wide" data-manual hidden>目录没有所需型号？手动填写</button>
-          <label class="is-wide" data-manual-field><span>模型名称</span><input name="model" aria-label="向量模型名称" required maxlength="256" placeholder="从目录选择；目录不可用时填写服务提供的型号"></label>
-          <button type="button" class="settings-secondary-button is-wide" data-probe>试算实际维度</button>
-          <p class="is-wide" role="status" data-result>还未试算。目录中的型号不代表已经支持向量。</p>
+          <button type="button" class="settings-secondary-button is-wide" data-directory>探测模型列表</button>
+          <label class="is-wide" data-candidates hidden><span>选择模型</span><select name="candidate" aria-label="向量模型型号"></select></label>
+          <button type="button" class="settings-text-button is-wide" data-manual hidden>列表中没有所需模型？手动填写</button>
+          <label class="is-wide" data-manual-field><span>模型名称</span><input name="model" aria-label="向量模型名称" required maxlength="256" placeholder="例如：text-embedding-3-small"></label>
+          <button type="button" class="settings-secondary-button is-wide" data-probe>测试并获取维度</button>
+          <p class="is-wide" role="status" data-result>尚未测试。建议先完成测试以确保模型可用。</p>
           </div><p class="settings-inline-error" role="alert" hidden></p>
-          <p>保存并设为默认只更改模型设置；记忆仍由你决定开启或关闭。已有记忆空间不匹配时会明确阻塞，不删除或自动重建。</p></div>
+          <p>保存后将设为默认向量模型；已有记忆库若维度不匹配将暂停迁移，不会破坏历史数据。</p></div>
           <footer class="settings-dialog-footer"><button type="button" class="settings-secondary-button" data-cancel>取消</button><button type="submit" class="settings-primary-button" disabled>保存并设为默认</button></footer>
         </form>`;
         const form = dialog.querySelector("form"), select = form.elements.connection;

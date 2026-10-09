@@ -42,10 +42,10 @@ export function activate(ctx) {
       const defaults = props.state.template?.defaults ?? {};
       const provider = defaults.provider ?? "openai";
       const isDeepSeek = !existing && provider === "deepseek";
-      const title = existing ? `编辑 ${existing.name}` : isDeepSeek ? "连接 DeepSeek" : "连接自定义 API";
+      const title = existing ? `编辑 ${existing.name}` : isDeepSeek ? "连接 DeepSeek" : "添加 OpenAI 兼容服务";
       const description = existing
-        ? "更新地址、密钥或协议前会逐个验证已启用模型（最多16个，总计一分钟）；会产生真实服务调用，失败保留原配置。仅改名称不调用模型。"
-        : "填写连接信息，探测目录后勾选要开放的模型。";
+        ? "更新服务地址或密钥时会向已启用模型发送测试验证；若验证失败将保留原配置。仅修改名称时不调用模型。"
+        : "输入接口地址与密钥，探测可用模型后选择启用。";
       host.innerHTML = `<header class="settings-dialog-header"><div class="settings-dialog-heading"><h2 class="settings-dialog-title">${escapeHtml(title)}</h2><p class="settings-dialog-description">${description}</p></div>
         <button type="button" class="settings-icon-button" aria-label="关闭" data-close>${CLOSE_ICON}</button></header>
         <form class="settings-dialog-form"><div class="settings-dialog-body"><div class="settings-form-grid">
@@ -53,15 +53,15 @@ export function activate(ctx) {
           <label class="is-wide"><span>Base URL${existing ? "（留空则保持不变）" : ""}</span><input name="endpoint" aria-label="Base URL" ${existing ? "" : "required"} type="url" placeholder="https://api.example.com/v1"></label>
           <label class="settings-secret is-wide"><span>API Key</span><input name="apiKey" aria-label="API Key" type="password" ${existing ? "" : "required"} autocomplete="off" placeholder="${existing ? "留空保留现有密钥" : "sk-…"}"><button type="button" data-show-key aria-label="显示 API Key">${EYE_ICON}</button></label>
         </div>
-        ${existing ? "" : `<details class="settings-advanced"><summary>高级设置</summary><p>Provider ID 仅用于补充模型能力；思考格式仅在服务明确支持时选择。</p><div class="settings-form-grid"><label class="is-wide"><span>Provider ID</span><input name="provider" aria-label="Provider ID" required placeholder="例如：openai"></label><label class="is-wide"><span>思考开关格式</span><select name="thinkingFormat" aria-label="思考开关格式"><option value="none">标准兼容格式</option><option value="deepseek">DeepSeek 格式</option></select></label></div></details>`}
-        <p class="settings-credential-note">${SHIELD_ICON}<span>API Key 保存后不会显示在页面中</span></p>
-        ${existing ? "" : `<section class="settings-model-discovery"><header><div><h3>模型</h3><p>目录只提供型号；勾选的型号在保存时逐个验证对话用途。</p></div></header>
+        ${existing ? "" : `<details class="settings-advanced"><summary>高级设置</summary><p>Provider ID 用于辅助识别模型功能；思考参数格式通常保持默认即可。</p><div class="settings-form-grid"><label class="is-wide"><span>Provider ID</span><input name="provider" aria-label="Provider ID" required placeholder="例如：openai"></label><label class="is-wide"><span>思考参数格式</span><select name="thinkingFormat" aria-label="思考参数格式"><option value="none">标准兼容格式（默认）</option><option value="deepseek">DeepSeek 格式</option></select></label></div></details>`}
+        <p class="settings-credential-note">${SHIELD_ICON}<span>API Key 保存后不会在页面中明文回显</span></p>
+        ${existing ? "" : `<section class="settings-model-discovery"><header><div><h3>可用模型</h3><p>探测结果仅供选择；勾选的模型将在保存时实际测试对话可用性。</p></div></header>
           <div class="settings-discovery-empty" data-discovery-empty>
-            <button type="button" class="settings-primary-button" data-discover>探测可用模型</button>
-            <button type="button" class="settings-text-button" data-manual>手动填写型号</button>
+            <button type="button" class="settings-primary-button" data-discover>自动探测模型</button>
+            <button type="button" class="settings-text-button" data-manual>手动输入模型名</button>
           </div>
           <p class="settings-discovery-status" data-picked role="status" hidden></p>
-          <div class="settings-discovery-manual" data-discovery-manual hidden><label><span>模型名称</span><input name="manualModel" aria-label="模型名称" placeholder="${isDeepSeek ? "例如：deepseek-chat" : "例如：your-model-name"}"></label><p>手动添加时图片等能力保持待识别，保存后仍可重新探测。</p><label class="settings-manual-confirm"><input type="checkbox" name="manualConfirm"><span>我选择将此型号用于对话，保存前实际验证。</span></label></div>
+          <div class="settings-discovery-manual" data-discovery-manual hidden><label><span>模型名称</span><input name="manualModel" aria-label="模型名称" placeholder="${isDeepSeek ? "例如：deepseek-chat" : "例如：gpt-4o"}"></label><p>手动添加的模型将先作为通用对话模型，保存后可随时重新探测能力。</p><label class="settings-manual-confirm"><input type="checkbox" name="manualConfirm"><span>我确认将此模型用于对话，并在保存前发送测试请求。</span></label></div>
           <p class="settings-discovery-status" data-status role="status" aria-live="polite" hidden></p>
         </section>`}
         <p class="settings-inline-error" data-error role="alert" hidden></p></div>

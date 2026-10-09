@@ -53,7 +53,7 @@ try {
   };
   await page.goto(base);
   await page.getByRole("button", {name: /^Codex/}).click();
-  await page.getByRole("button", {name: "开始登录"}).click();
+  await page.getByRole("button", {name: baseline ? "开始登录" : "前往授权"}).click();
   if (baseline) {
     // 2. 原始源码必须真实触发严格驱动拒绝，证明场景覆盖报告的回归。
     await page.getByRole("alert").filter({hasText: "unsupported Codex auth input: auth_identity"}).waitFor();
@@ -75,7 +75,7 @@ try {
 
     // 4. 重新登录保留连接身份；取消下一次登录不改变已保存连接。
     await page.getByRole("button", {name: "编辑连接 Codex", exact: true}).click();
-    await page.getByRole("button", {name: "重新登录"}).click();
+    await page.getByRole("button", {name: "重新授权"}).click();
     await page.getByText("LOCAL-CODE", {exact: true}).waitFor();
     await page.getByRole("dialog").getByRole("button", {name: "取消", exact: true}).click();
     catalog = await get("/api/dashboard/models/catalog");
@@ -83,7 +83,7 @@ try {
     assert.equal(catalog.connections[0].id, connectionId);
     checks.push("已有 Codex 连接重新登录成功且身份不变");
     await page.getByRole("button", {name: "编辑连接 Codex", exact: true}).click();
-    await page.getByRole("button", {name: "重新登录"}).click();
+    await page.getByRole("button", {name: "重新授权"}).click();
     await page.getByText("LOCAL-CODE", {exact: true}).waitFor();
     const cancelled = page.waitForResponse(response => response.url().endsWith("/command")
       && response.request().postDataJSON().type === "cancel_auth");
@@ -93,7 +93,7 @@ try {
     checks.push("取消登录不改变已有连接");
 
     // 5. OpenCode 使用驱动自身默认身份，API Key 路径不依赖表单注入。
-    await page.getByRole("button", {name: "添加连接", exact: true}).click();
+    await page.getByRole("button", {name: "+ 添加新服务商连接", exact: true}).click();
     await page.getByRole("button", {name: /^OpenCode Go/}).click();
     await page.locator('input[name="endpoint"]').fill(base + "/upstream/opencode/v1");
     await page.getByLabel("API Key", {exact: true}).fill("local-fixture-key");

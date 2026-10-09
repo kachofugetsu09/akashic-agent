@@ -16,15 +16,15 @@ export function activate(ctx) {
       const props = requireProps(rawProps);
       const existing = props.state.connection;
       const title = existing ? `编辑 ${escapeHtml(existing.name)}` : "连接 Codex";
-      host.innerHTML = `<header class="settings-dialog-header"><div class="settings-dialog-heading"><h2 class="settings-dialog-title">${title}</h2><p class="settings-dialog-description">授权 ChatGPT 订阅账号，登录后探测目录，再选择要使用的模型。</p></div>
+      host.innerHTML = `<header class="settings-dialog-header"><div class="settings-dialog-heading"><h2 class="settings-dialog-title">${title}</h2><p class="settings-dialog-description">授权 ChatGPT 订阅账号，登录完成后自动探测并选择要启用的模型。</p></div>
         <button type="button" class="settings-icon-button" aria-label="关闭" data-close>${CLOSE_ICON}</button></header>
         <form class="settings-dialog-form"><div class="settings-dialog-body"><div class="settings-form-grid">
           <label class="is-wide"><span>连接名称</span><input name="name" aria-label="连接名称" disabled value="Codex"></label>
-          <div class="settings-login-card is-wide">${SHIELD_ICON(20)}<span><strong>${existing ? "Codex 已登录" : "使用 ChatGPT 订阅登录"}</strong><small>授权凭据保存在当前 workspace，不会显示在页面中。</small></span><button type="button" data-start>${existing ? "重新登录" : "开始登录"}</button></div>
+          <div class="settings-login-card is-wide">${SHIELD_ICON(20)}<span><strong>${existing ? "Codex 已授权连接" : "使用 ChatGPT 订阅授权登录"}</strong><small>授权凭据保存在本地运行环境中，不会在页面中明文回显。</small></span><button type="button" data-start>${existing ? "重新授权" : "前往授权"}</button></div>
         </div><div class="settings-device-login" data-challenge role="status" hidden></div>
-        <section class="settings-model-discovery settings-model-discovery--automatic"><header><div><h3>选择模型</h3><p>只有勾选确认的型号才会保存；之后可以重新探测与选择。</p></div></header></section>
+        <section class="settings-model-discovery settings-model-discovery--automatic"><header><div><h3>可用模型列表</h3><p>勾选需要开启的模型；后续可随时重新探测与增减。</p></div></header></section>
         <p class="settings-inline-error" data-error role="alert" hidden></p></div>
-        <footer class="settings-dialog-footer"><span class="settings-dialog-footer-note">${SHIELD_ICON(15)}凭据保存后不会显示在页面中</span><button type="submit" class="settings-primary-button">探测并选择模型</button></footer></form>`;
+        <footer class="settings-dialog-footer"><span class="settings-dialog-footer-note">${SHIELD_ICON(15)}授权凭据保存后不会在页面中明文回显</span><button type="submit" class="settings-primary-button">探测并选择模型</button></footer></form>`;
       let timer = 0;
       let attemptId = "";
       let disposed = false;
