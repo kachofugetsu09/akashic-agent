@@ -30,7 +30,7 @@ export function activate(ctx) {
           <label class="is-wide"><span>Base URL${existing ? "（留空保持不变）" : ""}</span><input name="endpoint" aria-label="Base URL" type="url" ${existing ? "" : "required"} placeholder="https://generativelanguage.googleapis.com/v1beta"></label>
           <label class="settings-secret is-wide"><span>API Key</span><input name="apiKey" aria-label="API Key" type="password" ${existing ? "" : "required"} autocomplete="off" placeholder="${existing ? "留空保留现有密钥" : "AIzaSy…"}"><button type="button" data-show-key aria-label="显示 API Key">${EYE_ICON}</button></label>
         </div><p>支持官方地址或自定义代理网关（以 /v1 或 /v1beta 结尾）。</p>
-        <p class="settings-credential-note">${SHIELD_ICON}<span>API Key 已加密保存，不会在页面中明文回显</span></p>
+        <p class="settings-credential-note">${SHIELD_ICON}<span>API Key 保存后不会在页面中明文回显</span></p>
         ${existing ? "" : `<section class="settings-model-discovery"><header><div><h3>可用模型</h3><p>探测结果仅供选择；勾选的模型将在保存前发送测试请求验证可用性。</p></div></header>
           <div class="settings-discovery-empty" data-discovery-empty><button type="button" class="settings-primary-button" data-discover>自动探测模型</button><button type="button" class="settings-text-button" data-manual>手动输入模型名</button></div>
           <p class="settings-discovery-status" data-picked role="status" hidden></p>

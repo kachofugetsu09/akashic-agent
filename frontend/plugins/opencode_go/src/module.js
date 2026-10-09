@@ -26,7 +26,7 @@ export function activate(ctx) {
         </div>
         <section class="settings-model-discovery settings-model-discovery--automatic"><header><div><h3>选择模型</h3><p>探测到的模型仅作为候选，保存后即可用于日常对话与任务。</p></div></header></section>
         <p class="settings-inline-error" data-error role="alert" hidden></p></div>
-        <footer class="settings-dialog-footer"><span class="settings-dialog-footer-note">${SHIELD_ICON}密钥已加密保存，不会在页面中明文回显</span><span class="settings-dialog-actions">${existing ? '<button type="button" class="settings-secondary-button" data-resync>刷新模型能力</button>' : ""}<button type="submit" class="settings-primary-button">${existing ? "保存连接并选择模型" : "连接并选择模型"}</button></span></footer></form>`;
+        <footer class="settings-dialog-footer"><span class="settings-dialog-footer-note">${SHIELD_ICON}凭据保存后不会在页面中明文回显</span><span class="settings-dialog-actions">${existing ? '<button type="button" class="settings-secondary-button" data-resync>刷新模型能力</button>' : ""}<button type="submit" class="settings-primary-button">${existing ? "保存连接并选择模型" : "连接并选择模型"}</button></span></footer></form>`;
       const form = host.querySelector("form");
       const changed = () => props.dirty(true);
       form.addEventListener("input", changed);

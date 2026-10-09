@@ -54,7 +54,7 @@ export function activate(ctx) {
           <label class="settings-secret is-wide"><span>API Key</span><input name="apiKey" aria-label="API Key" type="password" ${existing ? "" : "required"} autocomplete="off" placeholder="${existing ? "留空保留现有密钥" : "sk-…"}"><button type="button" data-show-key aria-label="显示 API Key">${EYE_ICON}</button></label>
         </div>
         ${existing ? "" : `<details class="settings-advanced"><summary>高级设置</summary><p>Provider ID 用于辅助识别模型功能；思考参数格式通常保持默认即可。</p><div class="settings-form-grid"><label class="is-wide"><span>Provider ID</span><input name="provider" aria-label="Provider ID" required placeholder="例如：openai"></label><label class="is-wide"><span>思考参数格式</span><select name="thinkingFormat" aria-label="思考参数格式"><option value="none">标准兼容格式（默认）</option><option value="deepseek">DeepSeek 格式</option></select></label></div></details>`}
-        <p class="settings-credential-note">${SHIELD_ICON}<span>API Key 保存后已做加密保护，不会明文回显</span></p>
+        <p class="settings-credential-note">${SHIELD_ICON}<span>API Key 保存后不会在页面中明文回显</span></p>
         ${existing ? "" : `<section class="settings-model-discovery"><header><div><h3>可用模型</h3><p>探测结果仅供选择；勾选的模型将在保存时实际测试对话可用性。</p></div></header>
           <div class="settings-discovery-empty" data-discovery-empty>
             <button type="button" class="settings-primary-button" data-discover>自动探测模型</button>
