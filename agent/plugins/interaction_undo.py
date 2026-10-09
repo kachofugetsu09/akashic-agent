@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+from collections.abc import Callable, Iterable
 from typing import Protocol, TypeVar, cast
 
 from agent.plugin_composition.interaction_undo import (
@@ -32,8 +33,13 @@ class _SessionManager(Protocol):
 class InteractionUndoCoordinator:
     """串行删除 Session interaction，并委托可选派生插件封住一致性窗口。"""
 
-    def __init__(self, session_manager: _SessionManager) -> None:
+    def __init__(
+        self,
+        session_manager: _SessionManager,
+        invalidate_attachments: Callable[[Iterable[str]], None] | None = None,
+    ) -> None:
         self._sessions = session_manager
+        self._invalidate_attachments = invalidate_attachments
         self._lock = asyncio.Lock()
 
     async def undo_latest(
@@ -83,7 +89,10 @@ class InteractionUndoCoordinator:
             if deletion is None:
                 return None
 
-            # 3. Session cache 只由它自己的 owner 失效。
+            # 3. 附件备忘与 Session cache 只由各自的 owner 失效；MessageLog 的
+            # 附件备忘不知道另一连接的物理删除，必须在这里显式失效。
+            if self._invalidate_attachments is not None:
+                self._invalidate_attachments(deletion.message_ids)
             sessions.invalidate(deletion.session_key)
             return _public_result(deletion)
 

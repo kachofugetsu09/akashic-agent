@@ -16,9 +16,13 @@ from agent.plugin_contracts.models import (
 
 
 class BoundViews:
-    """一次回复固定的 ACTIVE 内容贡献者及其动态范围声明。"""
+    """一次回复固定的 ACTIVE 内容贡献者及其动态范围声明。
 
-    def __init__(self, prepare: PrepareContent | None, dynamic_kinds: frozenset[str]) -> None:
+    dynamic_kinds 为 None 表示存在未声明范围的贡献者：下游不能据此
+    断定任何消息是静态的（评审 #1110——未知不能合并成已完整声明）。
+    """
+
+    def __init__(self, prepare: PrepareContent | None, dynamic_kinds: frozenset[str] | None) -> None:
         self.prepare = prepare
         self.dynamic_kinds = dynamic_kinds
 
@@ -26,14 +30,15 @@ class BoundViews:
 class ContentViews:
     def __init__(self, ctx: Context):
         self._ctx = ctx
-        self._sources: dict[tuple[str, str], tuple[Context, PrepareContent, frozenset[str]]] = {}
+        self._sources: dict[tuple[str, str], tuple[Context, PrepareContent, frozenset[str] | None]] = {}
 
     async def register(self, ctx: Context, *, name: str, prepare: PrepareContent,
-                       dynamic_kinds: frozenset[str] = frozenset()) -> Effect:
+                       dynamic_kinds: frozenset[str] | None = None) -> Effect:
         """贡献者只能注册纯投影；同一内容位置出现两个处理者时明确拒绝。
 
         dynamic_kinds 声明该投影可能返回非 None 的内容 kind；对不含这些
         kind 的消息必须恒返回 None，且同一路径的消息内容不变时结果不变。
+        不传入（None）表示未声明：范围未知，下游按全动态处理。
         """
         if ctx.root_instance_token is not self._ctx.root_instance_token:
             raise ValueError("内容投影不能跨 Root 注册")
@@ -44,7 +49,8 @@ class ContentViews:
         def setup():
             if key in self._sources:
                 raise ValueError(f"内容投影重复: {key}")
-            self._sources[key] = (ctx, prepare, frozenset(dynamic_kinds))
+            declared = None if dynamic_kinds is None else frozenset(dynamic_kinds)
+            self._sources[key] = (ctx, prepare, declared)
             return lambda: self._sources.pop(key)
 
         return await ctx.effect(setup, label=f"content-view:{name}")
@@ -87,9 +93,15 @@ class ContentViews:
                 return render
 
             try:
-                yield BoundViews(
-                    prepare if sources else None,
-                    frozenset().union(*(kinds for _, _, kinds in sources)) if sources else frozenset(),
+                if not sources:
+                    yield BoundViews(None, frozenset())
+                    return
+                # 任一贡献者未声明范围，组合范围即未知，向下游传 None。
+                combined: frozenset[str] | None = (
+                    None
+                    if any(kinds is None for _, _, kinds in sources)
+                    else frozenset().union(*(kinds for _, _, kinds in sources if kinds is not None))
                 )
+                yield BoundViews(prepare, combined)
             finally:
                 active = False

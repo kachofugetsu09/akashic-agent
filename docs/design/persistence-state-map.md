@@ -11,6 +11,13 @@
 - 目标读者：维护者、coding agent、迁移与备份实现者、评审者
 - 关联条款：STA-001～STA-003、CTX-001、SES-001～SES-006、MEM-001～MEM-009、PLG-001～PLG-013、WSP-001～WSP-004、SCH-001～SCH-002、PRO-001～PRO-002、BAK-001
 
+## 2026-10-09：Session 与 Models 提交的故障边界
+
+[0099](../decisions/0099-ledger-commits-use-wal-normal.md) 采用 WAL NORMAL。
+普通进程崩溃保留已提交消息、owner 状态和模型账目；宿主断电或系统崩溃允许丢失最新提交。
+已有增、改、失效与物理减少权限不变，不新增自动删除。工具 start 或结果丢失不能证明
+外部效果未发生；宿主故障后的重复执行风险由维护者明确接受，恢复仍依赖实际保留的记录。
+
 ## 2026-10-06：取消强快照的授权边界
 
 [0094](../decisions/0094-plugin-runtime-uses-installed-files.md) 取代下文普通运行所需的代码、
@@ -32,6 +39,18 @@
 
 外置安装代码仅由原安装 owner 在实际调用、文件线程与资源排空后移除；plugin-data、
 配置、消息和回执不级联减少。离线选择升级的写入范围与恢复步骤见 [操作手册](operator-deployment.md#从旧归档指针升级)。
+
+## 2026-10-07：消息前缀失效标记
+
+`sessions.db/message_prefix_revision` 由 MessageLog 拥有，只保存一行可重建的派生版本。
+新库初始化或显式 Yoyo 迁移增加表、初始行和三个触发器；不改写任何原 Message。
+正常追加不更新版本。消息修改、删除、替换或在旧位置插入时，SQLite 触发器在同一事务递增版本，
+使下一次增量读取重新取得完整快照；事务回滚同时撤回版本变化。
+它不授予新的消息修改权，也不新增消息裁切、清理或删除路径。
+
+普通运行不重置或删除标记；缺失行或部分 schema 会在启动时明确失败。
+备份仍包含整个 SQLite 数据库及一致的 WAL 状态。恢复旧备份后，由原迁移入口重建标记；
+标记不代替消息恢复证据。其读取合同见[执行边界](event-loop-isolation.md)。
 
 ## 2026-09-12：插件资产归属修订
 
@@ -237,7 +256,7 @@ H4 后 Core 配置、Setup、Prompt、Dashboard 与 Mobile Runtime Inspection �
 任意空或非空 `[proactive]` 在打开 workspace-backed Model Registry 前失败；这只删除代码入口，
 不授权修改上述旧数据库、Markdown、quota 或 plugin-data。
 | `migrations.sqlite3` | Yoyo 在 migration step 成功后记录唯一 migration ID | 已应用回执保持不变；新增迁移只追加新的成功回执 | runtime 没有删除或回滚回执权限；只随用户明确删除整个 workspace 而减少，恢复依赖 workspace 备份与 SQLite 完整性检查 |
-| `model-registry.sqlite3` | onboarding 或设置事务增加含 credential payload 的 connection、model 和 role binding，并增加单调 revision；`model_definitions.context_window`/`max_output_tokens` 与各自 source 保存模型 capability snapshot | connection 的 key/token、Base URL、模型字段和角色绑定可原位更新；Codex token refresh 不增加模型 revision，其余成功模型事务增加 revision，旧 execution generation 只在 lease 归零后失效。预算 owner 只读取当前 generation 的 `context_window`、`max_output_tokens` 及字段来源；遗留 `effective_context_percent`/`compaction_trigger_percent` 列仅为 v1 schema identity 保留，完全惰性，不是配置或 capability source | 用户显式取消模型选择时，由 Models 在备份和 revision CAS 后删除该配置，清除其角色绑定；旧聊天会话引用回到当前 default，删除 default 则按 ID 选择仍可用的已选模型，没有候选时明确未配置。向量模型不跨空间回退；Message、Session metadata、调用账、凭据和向量数据不减少，普通模型切换不得 cascade；新数据库和备份创建时使用 `0600`；普通读写不检查或修复文件权限，WAL/SHM 由 SQLite 管理 |
+| `model-registry.sqlite3` | onboarding 或设置事务增加含 credential payload 的 connection、model 和 role binding，并增加单调 revision；`model_definitions.context_window`/`max_output_tokens` 与各自 source 保存模型 capability snapshot | connection 的 key/token、Base URL、模型字段和角色绑定可原位更新；Codex token refresh 不增加模型 revision，其余成功模型事务增加 revision，旧 execution generation 只在 lease 归零后失效。预算 owner 只读取当前 generation 的 `context_window`、`max_output_tokens` 及字段来源；遗留 `effective_context_percent`/`compaction_trigger_percent` 列仅为 v1 schema identity 保留，完全惰性，不是配置或 capability source | 用户显式取消模型选择时，由 Models 在备份和 revision CAS 后删除该配置，清除其角色绑定；旧聊天会话引用回到当前 default，删除 default 则按 ID 选择仍可用的已选模型，没有候选时明确未配置。向量模型不跨空间回退；Message、Session metadata、调用账、凭据和向量数据不减少，普通模型切换不得 cascade；新数据库和备份创建时使用 `0600`，打开既有数据库与创建宿主锁时在初始化边界收紧一次；普通读写不再逐次检查或修复文件权限，WAL/SHM 由 SQLite 管理 |
 | `model-registry.sqlite3/model_calls` | Models owner 在 driver I/O 前追加一次 `started`，保存 binding 与请求摘要；不保存请求正文、原始输出或 credential | `_BoundChat.complete` 在调用 ID 通知完成后开始单调计时；首个非空文本/思考片段只更新一次 `first_token_ms`，driver 返回/抛错时与真实 usage/error 状态一起更新 `duration_ms`。无流式首段、通知失败和旧行对应耗时保持 NULL；新结算的 `failure` 保存错误类型前缀与脱敏诊断，旧失败行不改写；`next_attempt_at` 在该次失败结算时固定，恢复沿原 key 和 attempt；重开不刷新允许时间或显式次数上限。配置 revision 不变，重连只读，无自动重放或逻辑失效 | 当前不得自动减少。yoyo `20260906_06_model_call_timing` 在锁内核对已知 schema，先备份再原子加两列，并逐项核对旧字段。恢复证据为 `backups/model-call-timing/<id>/model-registry.sqlite3` 及 manifest；本轮只在一次性测试库演练，正式库未迁移 |
 | 旧 `data/mobile/master-keys.json` | 已退役；当前代码不初始化、轮换或导入。既有文件可能仍用于旧数据恢复 | 无当前 writer；不能以源码删除推断密钥已无引用 | 无自动删除协议；名称明确的旧数据清理须先备份、扫描引用并验证恢复；原 keyset manifest 是恢复证据 |
 | `sessions.metadata.model_selection` | conversation 从真实 Input 的显式 model ref/effort 增加版本化对象，与新 Message 同事务提交；原 schema1/字符串继续只读 | 用户显式切换时更新该对象，并移除旧字符串 override；无选择输入与同 ID 重放不改 metadata。MessageWriters 按实际 Context 登记独占键，MessageLog 是新链唯一 SQL writer | 用户选择“跟随默认”时只移除 model_selection 与旧 override；无变化 clear 保留 SQL NULL，其他 metadata 不变。卸载不删保存值，原 Message 不改写或减少；SQLite 事务失败整体回滚，数据库备份和跨重开读取证明恢复 |

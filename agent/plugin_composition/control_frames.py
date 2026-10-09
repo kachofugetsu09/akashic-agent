@@ -269,6 +269,13 @@ class FrameBook:
         if route is not None and not route.claims:
             self._release_route(key)
 
+    def active_session_ids(self) -> frozenset[str]:
+        """返回已登记或暂存 route 所属的 Session，与 active_input_ids 保持同一范围。"""
+        return frozenset(
+            [route.key.session_id for route in self._routes.values()]
+            + [stage._route.key.session_id for stage in self._stages]
+        )
+
     def active_input_ids(self, session_id: str) -> tuple[str, ...]:
         """Return active Input identities for one Session, including staged routes."""
         return tuple(

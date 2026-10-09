@@ -81,6 +81,7 @@ from agent.plugins.install import (
 from agent.plugins.manifest import (
     ensure_workspace_plugin_data_dir,
     load_plugin_manifest,
+    manifest_path,
     plugins_root,
     validate_workspace_plugin_data_path,
     workspace_plugin_data_dir,
@@ -464,24 +465,18 @@ class PluginManager:
             ).hexdigest()
             for plugin_id in revisions.keys() | manifest.keys()
         }
-        if probe is not None:
-            self._watch_root_map = root_map
-            probe = self._watch_probe(manifest)
-            self._watch_fingerprint = probe
-            self._watch_result = result
-        else:
-            self._watch_fingerprint = None
-            self._watch_result = {}
-            self._watch_root_map = {}
+        # 发现会跳过禁用与重名的 builtin 源，不把它们写进 root_map；
+        # 把它们记为无数据目录，后续探测才能稳定命中指纹。
+        # 这类源的启用变化经 manifest 与禁用集合指纹覆盖，不依赖 data_dir。
+        for root in self._watch_roots():
+            root_map.setdefault(root, "")
+        self._watch_root_map = root_map
+        self._watch_fingerprint = self._watch_probe(manifest)
+        self._watch_result = result
         return result
 
-    def _watch_probe(self, manifest: Mapping[str, object]) -> bytes | None:
-        """枚举源码根并按元数据指纹判定是否必须重做完整发现。
-
-        指纹与结果摘要使用同一套检测输入（目录枚举 + 逐文件元数据 +
-        data_dir 配置 + 已安装 manifest），未变化时完整发现的结果必然相同；
-        遇到未知源码根时返回 None，先走完整发现建立 root→data_dir 映射。
-        """
+    def _watch_roots(self) -> set[str]:
+        """探测枚举的源码根：已安装缓存、分发源与声明目录，与完整发现同源。"""
         roots: set[str] = set()
         if self._installed_cache_root is not None:
             for source in _iter_installed_plugin_roots(
@@ -496,21 +491,46 @@ class PluginManager:
         for plugin_dirs_root in self._dirs:
             for plugin_root in _iter_declared_plugin_roots(plugin_dirs_root):
                 roots.add(str(plugin_root.resolve(strict=False)))
+        return roots
+
+    def _watch_probe(self, manifest: Mapping[str, object]) -> bytes:
+        """枚举源码根并按元数据指纹判定是否必须重做完整发现。
+
+        指纹与结果摘要使用同一套检测输入（目录枚举 + 逐文件元数据 +
+        data_dir 配置 + 已安装 manifest），未变化时完整发现的结果必然相同。
+        """
         digest = hashlib.sha256()
         digest.update(repr(sorted(manifest.items())).encode())
         digest.update(repr(sorted(self._disabled_builtin_plugins)).encode())
         digest.update(
             repr(sorted(str(path) for path in self._ignored_installed_roots)).encode()
         )
-        for root in sorted(roots):
+        for root in sorted(self._watch_roots()):
             digest.update(root.encode())
             digest.update(_source_metadata_revision(Path(root)))
-            data_dir = self._watch_root_map.get(root)
-            if data_dir is None:
-                return None
+            data_dir = self._watch_root_map.get(root, "")
             if data_dir:
                 digest.update(_path_metadata(Path(data_dir) / CONFIG_INPUT))
         return digest.digest()
+
+    def watch_targets(self) -> tuple[tuple[Path, ...], tuple[Path, ...]]:
+        """事件监听目标：（递归监听的源码树与容器，单独监听的选择/配置文件）。
+
+        容器目录覆盖已安装插件与其指针的增删；配置文件按文件目标监听，
+        数据目录内的运行时写入不产生事件。
+        """
+        trees: list[Path] = []
+        if self._installed_cache_root is not None:
+            trees.append(self._installed_cache_root)
+        trees.extend(source.plugin_root for source in self._distribution_sources)
+        trees.extend(self._dirs)
+        files = [
+            Path(data_dir) / CONFIG_INPUT
+            for data_dir in self._watch_root_map.values()
+            if data_dir
+        ]
+        files.append(manifest_path(_plugins_home(self._installed_cache_root)))
+        return tuple(trees), tuple(files)
 
     # 扫描所有 plugin_dirs，返回可加载的插件描述列表
     def discover(
