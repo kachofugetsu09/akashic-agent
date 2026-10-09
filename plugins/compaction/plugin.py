@@ -107,11 +107,28 @@ async def apply(ctx: Context) -> None:
             "content": record.content,
         }
 
+    # prepare 的只读缓存：head 行版本不变时复用已核对的完整 lineage；
+    # 发布走 records().head/publish 原路径，缓存只服务材料读取。
+    head_cache: dict[str, tuple[int, StoredSummary]] = {}
+
     async def prepare(snapshot: tuple[Message, ...], source: str) -> MaterialData:
         if not snapshot:
             return {}
+        session_id = snapshot[0].session_id
         state = records()
-        record = await run_file_io(lambda: state.head(snapshot[0].session_id))
+
+        def load() -> StoredSummary | None:
+            head = state.read_head(session_id, known=head_cache.get(session_id))
+            if head is None:
+                head_cache.pop(session_id, None)
+                return None
+            version, record = head
+            head_cache[session_id] = (version, record)
+            return record
+
+        # 命中与未命中都要读 head 行版本（SQL），恢复在文件线程完成；
+        # 只有纯内存命中才值得省 executor 往返，这里不是（评审 #1142）。
+        record = await run_file_io(load)
         if record is None:
             return {}
         return {"summary": material(record)}

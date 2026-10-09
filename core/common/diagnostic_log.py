@@ -4,6 +4,7 @@ import logging
 import os
 import re
 import sys
+import time
 from contextlib import contextmanager
 from contextvars import ContextVar
 from types import TracebackType
@@ -222,6 +223,18 @@ def log_event(
         extra={"akashic_fields": {"event": event, **fields}},
         exc_info=exc_info,
     )
+
+
+def log_timing(phase: str, *, session_id: str = "", source: str = "",
+               operation_id: str = "", request_id: str = "", parent_operation_id: str = "",
+               counts: Mapping[str, int] | None = None) -> None:
+    """按需记录无正文的链路时刻；同主机单调时钟用于跨进程耗时对账。"""
+    if os.environ.get("AKASHIC_TIMING") != "1":
+        return
+    log_event(logging.getLogger("akashic.timing"), logging.INFO, "runtime.timing",
+              phase=phase, session_id=session_id, source=source,
+              operation_id=operation_id, request_id=request_id, parent_operation_id=parent_operation_id,
+              counts=dict(counts or {}), measurement_unit="monotonic_ns", measurement_value=time.monotonic_ns())
 
 
 def diagnostic_line(method: str, **fields: object) -> str:

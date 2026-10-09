@@ -57,8 +57,11 @@ async def apply(ctx: Context) -> None:
                       **options: Any) -> Message:
         """固定可选内容贡献者；无贡献服务的组合保留基础模型投影。"""
         with ctx.borrow(CONTENT_VIEWS) as views:
-            async with (nullcontext(None) if views is None else views.bind()) as prepare:
-                return await run(caller, task, reader, source, prepare_content=prepare, **options)
+            async with (nullcontext(None) if views is None else views.bind()) as bound:
+                prepare = None if bound is None else bound.prepare
+                kinds = frozenset() if bound is None else bound.dynamic_kinds
+                return await run(caller, task, reader, source, prepare_content=prepare,
+                                 dynamic_content_kinds=kinds, **options)
 
     materials = ctx.require(MATERIALS)
 

@@ -15,10 +15,14 @@ from plugins.models.settings import (
 from plugins.models.store import ModelsStore
 
 
-def _store(tmp_path):
+@pytest.fixture
+def store(tmp_path):
     store = ModelsStore(tmp_path / "models.db", tmp_path / "backups")
     store.initialize()
-    return store
+    try:
+        yield store
+    finally:
+        store.close()
 
 
 def _seed(store: ModelsStore, *, capabilities=None, sources=None) -> int:
@@ -57,8 +61,7 @@ def _seed(store: ModelsStore, *, capabilities=None, sources=None) -> int:
     )
 
 
-def test_update_model_rewrites_three_fields_and_marks_sources_user(tmp_path):
-    store = _store(tmp_path)
+def test_update_model_rewrites_three_fields_and_marks_sources_user(store):
     revision = _seed(store)
 
     revision = store.update_model(
@@ -74,8 +77,7 @@ def test_update_model_rewrites_three_fields_and_marks_sources_user(tmp_path):
     assert model.capability_sources.input_modalities == "user"
 
 
-def test_update_model_preserves_unrelated_capability_fields(tmp_path):
-    store = _store(tmp_path)
+def test_update_model_preserves_unrelated_capability_fields(store):
     revision = _seed(store)
 
     store.update_model(UpdateModel(revision, "c1__m1", 64000, 4096, False))
@@ -87,8 +89,7 @@ def test_update_model_preserves_unrelated_capability_fields(tmp_path):
     assert model.capability_sources.tool_calls == "litellm"
 
 
-def test_update_model_none_clears_numeric_capability(tmp_path):
-    store = _store(tmp_path)
+def test_update_model_none_clears_numeric_capability(store):
     revision = _seed(store)
 
     store.update_model(UpdateModel(revision, "c1__m1", None, None, True))
@@ -99,8 +100,7 @@ def test_update_model_none_clears_numeric_capability(tmp_path):
     assert model.capabilities.input_modalities == ("text", "image")
 
 
-def test_update_model_image_off_keeps_text_modality(tmp_path):
-    store = _store(tmp_path)
+def test_update_model_image_off_keeps_text_modality(store):
     revision = _seed(store)
     revision = store.update_model(
         UpdateModel(revision, "c1__m1", 200000, 8192, True)
@@ -112,8 +112,7 @@ def test_update_model_image_off_keeps_text_modality(tmp_path):
     assert model.capabilities.input_modalities == ("text",)
 
 
-def test_update_model_synthesizes_payload_for_legacy_row(tmp_path):
-    store = _store(tmp_path)
+def test_update_model_synthesizes_payload_for_legacy_row(store):
     revision = _seed(store)
     with store._connect() as connection:
         connection.execute(
@@ -130,8 +129,7 @@ def test_update_model_synthesizes_payload_for_legacy_row(tmp_path):
     assert model.capabilities.supported_reasoning_efforts == ("low", "high")
 
 
-def test_update_model_rejects_embedding_model(tmp_path):
-    store = _store(tmp_path)
+def test_update_model_rejects_embedding_model(store):
     revision = _seed(store)
     revision = store.add_model(
         AddModel(
@@ -149,8 +147,7 @@ def test_update_model_rejects_embedding_model(tmp_path):
         store.update_model(UpdateModel(revision, "c1__emb", 128000, 8192, True))
 
 
-def test_update_model_rejects_non_positive_and_missing_model(tmp_path):
-    store = _store(tmp_path)
+def test_update_model_rejects_non_positive_and_missing_model(store):
     revision = _seed(store)
 
     with pytest.raises(ValueError, match="positive"):
@@ -161,8 +158,7 @@ def test_update_model_rejects_non_positive_and_missing_model(tmp_path):
         store.update_model(UpdateModel(revision, "missing", 128000, 8192, True))
 
 
-def test_update_model_requires_current_revision(tmp_path):
-    store = _store(tmp_path)
+def test_update_model_requires_current_revision(store):
     _seed(store)
 
     with pytest.raises(Exception, match="revision"):

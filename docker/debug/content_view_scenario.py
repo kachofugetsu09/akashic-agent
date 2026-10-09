@@ -330,7 +330,9 @@ async def check_lifecycle(directory: Path) -> None:
         views = root.context.require(CONTENT_VIEWS)
         probe = Message(message_id='probe', session_id='session', seq=0, recorded_at=datetime.now(UTC),
                         author='user', source='source', body=Input((ContentPart('text','body'),)))
-        async with views.bind() as prepare:
+        async with views.bind() as bound:
+            prepare = bound.prepare
+            assert prepare is not None
             render = prepare((probe,), 'source', frozenset(), frozenset())
             assert render(probe, 0).blocks[0]['text'] == 'one'
             disposing = asyncio.create_task(plugin.dispose())
@@ -347,7 +349,9 @@ async def check_lifecycle(directory: Path) -> None:
             raise AssertionError('closed view remained usable')
         for name in ('two', 'three'):
             await root.mount(contributor(name), name=name, runtime=runtime(name), inject=(CONTENT_VIEWS,))
-        async with views.bind() as prepare:
+        async with views.bind() as bound:
+            prepare = bound.prepare
+            assert prepare is not None
             try:
                 prepare((probe,), 'source', frozenset(), frozenset())(probe, 0)
             except ValueError as error:

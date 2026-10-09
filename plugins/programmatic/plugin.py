@@ -105,6 +105,7 @@ async def apply(ctx: Context) -> None:
     for method, operation in rpc_methods(programmatic).items():
         _ = await ctx.provide(rpc_method_key(method), operation)
     catalog = ctx.require(MESSAGE_CATALOG)
+    frames = ctx.require(CONTROL_FRAMES)
     watcher: asyncio.Task[None] | None = None
 
     async def settle_committed_frames() -> None:
@@ -112,8 +113,9 @@ async def apply(ctx: Context) -> None:
         stream = cast(AsyncGenerator[Mapping[str, int], None], catalog.follow())
         async with aclosing(stream):
             async for heads in stream:
-                for session_id in heads:
-                    await programmatic.settle_changed(catalog.reader(session_id), "programmatic")
+                for session_id in frames.active_session_ids():
+                    if session_id in heads:
+                        await programmatic.settle_changed(catalog.reader(session_id), "programmatic")
 
     async def start(_event: object) -> None:
         nonlocal watcher
