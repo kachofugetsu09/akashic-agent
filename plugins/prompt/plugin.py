@@ -31,12 +31,26 @@ async def apply(ctx: Context) -> None:
     initialize_veda_if_missing(ctx.runtime.workspace)
     await ctx.inject((DOCUMENTS,), publish_documents, name="documents")
 
+    # 路径与固定段落在本 generation 内解析一次；人格文本按文件签名缓存，热更新随 apply 重建。
+    veda_path = ctx.workspace_file("memory/VEDA.md")
+    fixed = (build_identity(workspace=ctx.runtime.workspace), build_behavior_rules())
+    cached: list[tuple[tuple[int, int, int] | None, str]] = []
+
+    def persona() -> str:
+        try:
+            stat = veda_path.stat()
+            signature: tuple[int, int, int] | None = (stat.st_mtime_ns, stat.st_size, stat.st_ino)
+        except FileNotFoundError:
+            signature = None
+        if cached and cached[0][0] == signature and signature is not None:
+            return cached[0][1]
+        text = "\n\n".join((read_veda_file(veda_path), *fixed))
+        cached[:] = [(signature, text)]
+        return text
+
     async def prepare(snapshot: tuple[Message, ...], source: str) -> Mapping[str, object]:
-        # 1. 文件是人格唯一真源；已返回字符串在本次请求中保持不变。
-        prompt = "\n\n".join((
-            read_veda_file(ctx.workspace_file("memory/VEDA.md")),
-            build_identity(workspace=ctx.runtime.workspace), build_behavior_rules(),
-        ))
+        # 1. 文件是人格唯一真源；签名变化时重读，已返回字符串在本次请求中保持不变。
+        prompt = persona()
         values: dict[str, object] = {"architecture": platform.machine()}
         latest = next((item for item in reversed(snapshot)
                        if item.source == source and isinstance(item.body, Input)), None)

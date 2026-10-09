@@ -75,7 +75,8 @@ class MessageReply:
         message = self.reader.get(self.call_ref.message_id)
         if message is None:
             raise ValueError("工具调用消息缺失")
-        return CallSource(self.call_ref, self.reader.snapshot(through_seq=message.seq))
+        # 已提交前缀按 revision 核对并复用共享读面，不再整段重新解码。
+        return CallSource(self.call_ref, tuple(self.reader.committed_snapshot(through_seq=message.seq)))
 
     def check(self, state: OwnerStore) -> None:
         state.check_access(self.reader, self.writer)

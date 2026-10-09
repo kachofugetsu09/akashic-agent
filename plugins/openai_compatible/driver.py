@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from core.common.diagnostic_log import log_timing
+
 # External JSON is validated field by field below; pyright cannot preserve the
 # narrowed key/value types of arbitrary Mapping and list payloads.
 # pyright: reportUnknownVariableType=false, reportUnknownMemberType=false, reportUnknownArgumentType=false
@@ -607,6 +609,7 @@ async def _request_json(
     for attempt in range(connection.max_retries + 1):
         try:
             token = _credential_token(await credential.read())
+            log_timing("model.http.credential")
             client = http.client()
             # 只复用传输连接，不继承旧凭据请求产生的 Cookie。
             client.cookies.clear()
@@ -748,6 +751,7 @@ async def _stream_chat(
         response_delta_seen = False
         try:
             token = _credential_token(await credential.read())
+            log_timing("model.http.credential")
             client = http.client()
             # 只复用传输连接，不继承旧凭据请求产生的 Cookie。
             client.cookies.clear()
@@ -758,6 +762,7 @@ async def _stream_chat(
                     "Content-Type": "application/json",
                 },
             ) as response:
+                log_timing("model.http.headers")
                 if response.status_code >= 400:
                     _ = await response.aread()
                 _raise_status(response, secret=token)
