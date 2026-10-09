@@ -494,9 +494,13 @@ class MessageLog:
         self._closed = False
         self._notify_pending: set[type[Body]] | None = set()
         self._notify_owed: set[type[Body]] | None = set()
+        # 写入方维护的已提交 heads：提交成功后合并，follower 不再各自扫描全部会话。
+        self._heads: dict[str, int] | None = None
+        self._heads_epoch = 0
+        self._pending_heads: dict[str, int] = {}
         self._defer_notify = threading.local()
         self._notify_in_flight: set[asyncio.Event] = set()
-        self._listeners: dict[asyncio.Event, tuple[asyncio.AbstractEventLoop, type[Body] | None]] = {}
+        self._listeners: dict[asyncio.Event, tuple[asyncio.AbstractEventLoop, tuple[type[Body], ...] | None]] = {}
         self._writer_connection = sqlite3.connect(str(path), check_same_thread=False)
         self._connection.row_factory = sqlite3.Row
         _ = self._connection.execute("PRAGMA foreign_keys=ON")
@@ -745,11 +749,13 @@ class MessageLog:
             with self._connection:
                 _ = self._connection.execute("BEGIN IMMEDIATE")
                 self._notify_pending = set()
+                self._pending_heads = {}
                 result = callback()
                 if inspect.isawaitable(result):
                     if inspect.iscoroutine(result):
                         result.close()
                     raise TypeError("存储事务回调必须同步，不能跨 await")
+            self._merge_heads()
             # owner 账本或 embedding 的单独提交不会改变消息订阅结果。
             if self._notify_pending is None or self._notify_pending:
                 if getattr(self._defer_notify, "active", False):
@@ -764,12 +770,38 @@ class MessageLog:
                     self._notify(self._notify_pending)
             return result
 
-    def _changed(self, body_type: type[Body] | None = None) -> None:
+    def _changed(self, body_type: type[Body] | None = None, head: tuple[str, int] | None = None) -> None:
         """事务中只收集消息类型，提交后再选订阅者，避免漏掉并发新订阅。"""
         if body_type is None:
             self._notify_pending = None
         elif self._notify_pending is not None:
             self._notify_pending.add(body_type)
+        if head is not None:
+            self._pending_heads[head[0]] = head[1]
+
+    # 提交成功后合并本事务的 heads；会话管理变化使缓存失效，下次从 SQL 重建。
+    def _merge_heads(self) -> None:
+        with self._listener_lock:
+            self._heads_epoch += 1
+            if self._notify_pending is None:
+                self._heads = None
+            elif self._heads is not None:
+                for session_id, seq in self._pending_heads.items():
+                    if seq > self._heads.get(session_id, -1):
+                        self._heads[session_id] = seq
+            self._pending_heads = {}
+
+    def committed_heads(self, load: Callable[[], Mapping[str, int]]) -> Mapping[str, int]:
+        """返回进程内已提交 heads；缓存缺失时用 load 查询，期间无新提交才采用结果。"""
+        with self._listener_lock:
+            if self._heads is not None:
+                return dict(self._heads)
+            epoch = self._heads_epoch
+        heads = load()
+        with self._listener_lock:
+            if self._heads is None and self._heads_epoch == epoch:
+                self._heads = dict(heads)
+        return heads
 
     def flush_notify(self) -> None:
         """交付异步提交欠下的唤醒；不同提交的消息类型在同一锁内合并。"""
@@ -792,7 +824,7 @@ class MessageLog:
         with self._listener_lock:
             pending = [
                 (event, loop) for event, (loop, wake_on) in self._listeners.items()
-                if (changed is None or wake_on is None or wake_on in changed)
+                if (changed is None or wake_on is None or not changed.isdisjoint(wake_on))
                 and not event.is_set() and event not in self._notify_in_flight
             ]
             self._notify_in_flight.update(event for event, _ in pending)
@@ -1054,7 +1086,7 @@ class MessageCatalog:
         return MappingProxyType({row["key"]: decode_attributes(row["attributes"]) for row in rows})
 
     async def follow(
-        self, *, poll_interval: float | None = None, wake_on: type[Body] | None = None,
+        self, *, poll_interval: float | None = None, wake_on: type[Body] | tuple[type[Body], ...] | None = None,
     ) -> AsyncGenerator[Mapping[str, int]]:
         """先订阅再取 heads；通知只降低延迟，消费者始终按快照重读事实。
 
@@ -1067,25 +1099,31 @@ class MessageCatalog:
         with self._log._listener_lock:
             if self._log._closed:
                 return
-            self._log._listeners[event] = (asyncio.get_running_loop(), wake_on)
+            self._log._listeners[event] = (
+                asyncio.get_running_loop(),
+                None if wake_on is None else (wake_on if isinstance(wake_on, tuple) else (wake_on,)),
+            )
         previous: Mapping[str, int] | None = None
+        polled = False
         try:
             while True:
                 event.clear()
                 if self._log._closed:
                     return
-                heads = self.snapshot_heads()
+                # 进程内唤醒读写入方维护的 heads；周期核对仍查 SQL，兜住进程外写入。
+                heads = self.snapshot_heads() if polled else self._log.committed_heads(self.snapshot_heads)
                 if heads != previous:
                     previous = heads
                     yield heads
                 # 消费期间的提交仍会置位；无需先重查一次空变化再等待。
+                polled = False
                 if poll_interval is None:
                     _ = await event.wait()
                 else:
                     try:
                         _ = await asyncio.wait_for(event.wait(), poll_interval)
                     except TimeoutError:
-                        pass
+                        polled = True
         finally:
             with self._log._listener_lock:
                 self._log._listeners.pop(event, None)
@@ -1979,7 +2017,7 @@ class MessageWriter:
                     "UPDATE sessions SET metadata=? WHERE key=?", (payload, self._session_id),
                 )
 
-        self._log._changed(type(body))
+        self._log._changed(type(body), (self._session_id, message.seq))
         return message
 
     def _check_parts(self, body: Body) -> tuple[set[str], tuple[str, ...]]:

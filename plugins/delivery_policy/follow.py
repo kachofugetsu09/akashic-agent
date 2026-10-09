@@ -7,7 +7,7 @@ from dataclasses import dataclass, field
 
 from agent.plugin_composition import Context
 from agent.plugin_composition.messages import MessageCatalog, MessageReader
-from agent.plugin_contracts import Message
+from agent.plugin_contracts import Message, Output
 
 from .boundary import DeliveryExecution, SinkInput
 
@@ -120,7 +120,8 @@ async def follow(
     previous: dict[str, int] = {}
     first = True
     async with asyncio.TaskGroup() as group:
-        async for heads in catalog.follow():
+        # 只有 Output 可能被选路；其他消息在下一次 Output 唤醒时按游标顺序一并消费。
+        async for heads in catalog.follow(wake_on=Output):
             # 先建立日志订阅再取耐久 pending；恢复后不用扫描当前策略重选旧路由。
             if first:
                 async with ctx.runtime_scope():

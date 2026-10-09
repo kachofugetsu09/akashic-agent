@@ -26,6 +26,7 @@ from agent.plugin_contracts import (
     ContentReferences,
     Control,
     Input,
+    Output,
 )
 from agent.plugin_contracts.models import MODEL_SELECTION
 from agent.plugin_contracts.content import (
@@ -110,7 +111,8 @@ async def apply(ctx: Context) -> None:
 
     async def settle_committed_frames() -> None:
         """Follow committed heads so ordinary Output commits release idle routes."""
-        stream = cast(AsyncGenerator[Mapping[str, int], None], catalog.follow())
+        # Turn 只会因 Output 或 Control 结束；其他提交不改变结果。
+        stream = cast(AsyncGenerator[Mapping[str, int], None], catalog.follow(wake_on=(Output, Control)))
         async with aclosing(stream):
             async for heads in stream:
                 for session_id in frames.active_session_ids():
