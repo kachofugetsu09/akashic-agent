@@ -71,6 +71,14 @@ function followSession(socket: WebSocket | null, sessionId: string, afterSeq: nu
   }));
 }
 
+/** 切换会话只清理一次性路由参数，保留嵌入模式和其他页面选项。 */
+function clearChatRoute() {
+  const url = new URL(window.location.href);
+  url.searchParams.delete("session");
+  url.searchParams.delete("surface");
+  window.history.replaceState(null, "", url);
+}
+
 export function useDesktopChatController() {
   const [surface, setSurface] = useState<"chat" | "runtime">(
     () => new URLSearchParams(window.location.search).get("surface") === "runtime" ? "runtime" : "chat",
@@ -762,7 +770,7 @@ export function useDesktopChatController() {
 
   const startNewChat = useCallback(() => {
     setSurface("chat");
-    window.history.replaceState(null, "", window.location.pathname);
+    clearChatRoute();
     activeSessionRef.current = "";
     modelsSnapshotSessionRef.current = null;
     setModelState(null);
@@ -846,7 +854,7 @@ export function useDesktopChatController() {
     newChatScopeRef.current = null;
     setNewChatProjectId("");
     setSurface("chat");
-    window.history.replaceState(null, "", window.location.pathname);
+    clearChatRoute();
     activeSessionRef.current = sessionId;
     sendRequestRef.current?.abort();
     stopRequestRef.current?.abort();

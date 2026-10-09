@@ -1245,7 +1245,7 @@ export function activate(ctx) {
               type: "start_auth",
               driver_id: entry.id,
               connection_id: connectionId,
-              input: {...input, auth_identity: connection?.authIdentity ?? connectionId},
+              input,
             });
             if (!receipt.attemptId) throw new Error(`${entry.label} 登录没有返回 attempt ID`);
             await auth.add(receipt.attemptId);
