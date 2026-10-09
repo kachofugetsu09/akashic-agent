@@ -498,6 +498,7 @@ class MessageLog:
         self._heads: dict[str, int] | None = None
         self._heads_epoch = 0
         self._pending_heads: dict[str, int] = {}
+        self._pending_messages: list[Message] = []
         self._defer_notify = threading.local()
         self._notify_in_flight: set[asyncio.Event] = set()
         self._listeners: dict[asyncio.Event, tuple[asyncio.AbstractEventLoop, tuple[type[Body], ...] | None]] = {}
@@ -750,6 +751,7 @@ class MessageLog:
                 _ = self._connection.execute("BEGIN IMMEDIATE")
                 self._notify_pending = set()
                 self._pending_heads = {}
+                self._pending_messages = []
                 result = callback()
                 if inspect.isawaitable(result):
                     if inspect.iscoroutine(result):
@@ -770,14 +772,15 @@ class MessageLog:
                     self._notify(self._notify_pending)
             return result
 
-    def _changed(self, body_type: type[Body] | None = None, head: tuple[str, int] | None = None) -> None:
+    def _changed(self, body_type: type[Body] | None = None, head: Message | None = None) -> None:
         """事务中只收集消息类型，提交后再选订阅者，避免漏掉并发新订阅。"""
         if body_type is None:
             self._notify_pending = None
         elif self._notify_pending is not None:
             self._notify_pending.add(body_type)
         if head is not None:
-            self._pending_heads[head[0]] = head[1]
+            self._pending_heads[head.session_id] = head.seq
+            self._pending_messages.append(head)
 
     # 提交成功后合并本事务的 heads；会话管理变化使缓存失效，下次从 SQL 重建。
     def _merge_heads(self) -> None:
@@ -790,6 +793,27 @@ class MessageLog:
                     if seq > self._heads.get(session_id, -1):
                         self._heads[session_id] = seq
             self._pending_heads = {}
+        # 本进程追加的消息直接接到共享前缀末尾；读取时仍按 revision 核对，外部改写使前缀整体重建。
+        with self._view_lock:
+            for message in self._pending_messages:
+                prefix = self._message_views.get(message.session_id)
+                if prefix is None:
+                    continue
+                expected = prefix.seqs[-1] + 1 if prefix.seqs else 0
+                if message.seq == expected:
+                    prefix.messages.append(message)
+                    prefix.seqs.append(message.seq)
+        self._pending_messages = []
+
+    # 前缀已在内存且距最新提交只差少量消息时，同步读取的 SQL 只核对 revision 与 head。
+    def warm_prefix(self, session_id: str, *, max_tail: int = 8) -> bool:
+        with self._listener_lock:
+            heads = self._heads
+            head = None if heads is None else heads.get(session_id)
+        prefix = self._message_views.get(session_id)
+        if head is None or prefix is None or not prefix.seqs:
+            return False
+        return head - prefix.seqs[-1] <= max_tail
 
     def committed_heads(self, load: Callable[[], Mapping[str, int]]) -> Mapping[str, int]:
         """返回进程内已提交 heads；缓存缺失时用 load 查询，期间无新提交才采用结果。"""
@@ -1232,6 +1256,9 @@ class MessageReader:
     async def committed_snapshot_async(self, *, through_seq: int | None = None) -> MessageSnapshot:
         """在线程内签发一次固定读面；取消先排空实际读取。"""
         self._check_async_snapshot()
+        # 热前缀只差几条尾部时，WAL 只读查询不等待 writer，直接在调用线程完成，省掉线程往返。
+        if self._log.warm_prefix(self._session_id):
+            return self.committed_snapshot(through_seq=through_seq)
         return await run_file_io(lambda: self.committed_snapshot(through_seq=through_seq))
 
     def _check_async_snapshot(self) -> None:
@@ -2017,7 +2044,7 @@ class MessageWriter:
                     "UPDATE sessions SET metadata=? WHERE key=?", (payload, self._session_id),
                 )
 
-        self._log._changed(type(body), (self._session_id, message.seq))
+        self._log._changed(type(body), message)
         return message
 
     def _check_parts(self, body: Body) -> tuple[set[str], tuple[str, ...]]:
