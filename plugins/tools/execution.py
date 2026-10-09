@@ -115,31 +115,18 @@ class ToolExecution:
                     if reply is not None:
                         reply.check(self._state)
                     # 独立请求或自定义结果身份才有 ToolCall 之外的待保存事实。
-                    if reply is None or reply.message_id != result_message_id(reply.call_ref):
-                        _ = self._state.transact(lambda transaction: transaction.save(
-                            key,
-                            {
-                                "version": 1, "request": fingerprint, "binding": binding_id,
-                                "reply_id": None if reply is None else reply.message_id,
-                                "phase": "requested", "arguments": arguments,
-                            },
-                            expected_version=None,
-                        ))
+                    _ = self._state.transact(lambda transaction: transaction.save(
+                        key,
+                        {
+                            "version": 1, "request": fingerprint, "binding": binding_id,
+                            "reply_id": None if reply is None else reply.message_id,
+                            "phase": "requested", "arguments": arguments,
+                        },
+                        expected_version=None,
+                    ))
 
             await run_file_io(ensure_requested)
-            permit = None if self._child_permit is None else self._child_permit()
-            try:
-                started = slot.start(run)
-            except BaseException:
-                if permit is not None:
-                    permit.release()
-                raise
-            # 撤权和入口失败都能唤醒调用者；普通结果只由提交 owner 交付。
-            started.on_close(lambda: publish(None))
-            started.on_done(lambda: publish(None))
-            if permit is not None:
-                started.on_done(permit.release)
-            return started, True
+            return self._start_task(slot, run, publish), True
 
         task, owned = await self._tasks.admit_async((self._task_key, key), admit)
         try:
@@ -158,6 +145,27 @@ class ToolExecution:
             raise ValueError("同一工具 key 的 binding 或参数不一致")
         return result
 
+    def _start_task(
+        self,
+        slot: TaskSlot,
+        run: Callable[[Task], Awaitable[Result]],
+        publish: Callable[[Result | None], None],
+    ) -> Task:
+        """在已获授的空 slot 启动工作，许可随真实 Task 排空释放。"""
+        permit = None if self._child_permit is None else self._child_permit()
+        try:
+            started = slot.start(run)
+        except BaseException:
+            if permit is not None:
+                permit.release()
+            raise
+        # 撤权和入口失败都能唤醒调用者；普通结果只由提交 owner 交付。
+        started.on_close(lambda: publish(None))
+        started.on_done(lambda: publish(None))
+        if permit is not None:
+            started.on_done(permit.release)
+        return started
+
     # 消息调用的准入与等待：同一 key 只有一个进程内 Task，结果由提交者交付。
     async def _execute_message(
         self, key: str, binding_id: str, arguments: Mapping[str, object],
@@ -175,18 +183,7 @@ class ToolExecution:
         async def admit(slot: TaskSlot) -> tuple[Task, bool]:
             if slot.current is not None:
                 return slot.current, False
-            permit = None if self._child_permit is None else self._child_permit()
-            try:
-                started = slot.start(run)
-            except BaseException:
-                if permit is not None:
-                    permit.release()
-                raise
-            started.on_close(lambda: publish(None))
-            started.on_done(lambda: publish(None))
-            if permit is not None:
-                started.on_done(permit.release)
-            return started, True
+            return self._start_task(slot, run, publish), True
 
         task, owned = await self._tasks.admit_async((self._task_key, key), admit)
         try:
@@ -300,11 +297,7 @@ class ToolExecution:
                 return result
             except BaseException as failure:
                 mark("tool.invoke.failed")
-                cancelled = isinstance(failure, asyncio.CancelledError)
-                text = ("工具调用取消，已执行的效果不会撤销。" if cancelled
-                        else f"工具执行失败: {type(failure).__name__}；已执行的效果不会撤销。")
-                raise _Failed(Result("interrupted" if cancelled else "error", (ContentPart("text", text),)),
-                              failure) from failure
+                raise _Failed(_invocation_failure(failure), failure) from failure
 
     async def settle_abandoned(self, reply: MessageReply) -> Result:
         """放弃调用的窄幂等结算入口；ReAct 与后台 watcher 共用同一回执。"""
@@ -509,13 +502,7 @@ class ToolExecution:
                     # start intent 已提交；内部异常或取消都不能证明远端没有效果。
                     # 普通进程崩溃保留提交，宿主故障可能丢失 intent，保证边界见 ADR-0099。
                     try:
-                        _ = await commit(
-                            record,
-                            Result(
-                                "interrupted" if isinstance(failure, asyncio.CancelledError) else "error",
-                                (ContentPart("text", "工具调用取消，已执行的效果不会撤销。" if isinstance(failure, asyncio.CancelledError) else f"工具执行失败: {type(failure).__name__}；已执行的效果不会撤销。"),),
-                            ),
-                        )
+                        _ = await commit(record, _invocation_failure(failure))
                     except Exception as record_failure:
                         raise failure from record_failure
                     raise
@@ -588,19 +575,6 @@ async def finish(
     # 准备留在调用方 scope（评审 #1146）：ToolResult 的内容引用与 metadata
     # owner 回调属于工具 owner 的原执行上下文，worker 只接收不可变结果。
     prepared = None
-    if reply is not None:
-        try:
-            prepared = await reply.writer.prepare_async(
-                reply.message_id, ToolResult(reply.call_ref, result.outcome, result.parts),
-            )
-        except MessageConflict:
-            # 放弃与真实结果竞争同一身份；只采用已经完成的权威回执。
-            previous = await run_file_io(lambda: state.snapshot(completed))
-            if previous is None:
-                raise
-            if on_commit is not None:
-                on_commit(previous)
-            return previous
 
     def commit(transaction: OwnerTransaction) -> Result:
         current = transaction.read(key)
@@ -625,9 +599,13 @@ async def finish(
         return result
 
     try:
+        if reply is not None:
+            prepared = await reply.writer.prepare_async(
+                reply.message_id, ToolResult(reply.call_ref, result.outcome, result.parts),
+            )
         return await state.transact_async(commit, on_commit=on_commit)
     except MessageConflict:
-        # 准备到提交之间身份被他人占用：放弃竞争，只采用已经完成的权威回执。
+        # 准备或提交时发生竞争，都只采用已经完成的权威回执。
         if reply is None:
             raise
         previous = await run_file_io(lambda: state.snapshot(completed))
@@ -651,6 +629,14 @@ class _Failed(Exception):
         super().__init__(str(original))
         self.result = result
         self.original = original
+
+
+def _invocation_failure(failure: BaseException) -> Result:
+    """两种执行协议共用失败描述；提交与重抛仍由各自 owner 完成。"""
+    cancelled = isinstance(failure, asyncio.CancelledError)
+    text = ("工具调用取消，已执行的效果不会撤销。" if cancelled
+            else f"工具执行失败: {type(failure).__name__}；已执行的效果不会撤销。")
+    return Result("interrupted" if cancelled else "error", (ContentPart("text", text),))
 
 
 def existing_result(reply: MessageReply) -> Result | None:
