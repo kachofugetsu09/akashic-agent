@@ -7,9 +7,12 @@ import shutil
 import subprocess
 import sys
 import tempfile
+from collections.abc import Mapping
 from dataclasses import dataclass
 from enum import Enum
 from pathlib import Path
+
+from core.common.file_io import run_file_io
 
 
 class ShellKind(str, Enum):
@@ -30,7 +33,7 @@ class ResolvedShell:
         if self.kind in {ShellKind.ZSH, ShellKind.BASH, ShellKind.SH}:
             # 用户环境优先取快照：非交互 shell 只 source 一次性导出的 rc 结果。
             if login and snapshot is not None:
-                script = f". {shlex.quote(str(snapshot))} 2>/dev/null; eval {shlex.quote(command)}"
+                script = f". {shlex.quote(str(snapshot))} || exit $?; eval {shlex.quote(command)}"
                 return [str(self.path), "-c", script]
             return [str(self.path), "-lc" if login else "-c", command]
         if self.kind is ShellKind.POWERSHELL:
@@ -184,19 +187,21 @@ _ZSH_SKIP_OPTIONS = frozenset({
     "interactive", "zle", "monitor", "shinstdin", "singlecommand", "login", "privileged",
     "restricted", "interactivecomments",
 })
-_snapshots: dict[tuple[str, tuple[tuple[str, int, int] | None, ...]], Path | None] = {}
+_RcSignature = tuple[tuple[str, int, int] | None, ...]
+_SnapshotKey = tuple[str, _RcSignature, tuple[tuple[str, str], ...]]
+_snapshots: dict[_SnapshotKey, Path | None] = {}
 
 
 # rc 文件的变更签名；任何一个变化都让快照失效。
-def _rc_signature(shell: ResolvedShell) -> tuple[tuple[str, int, int] | None, ...]:
-    home = Path(os.environ.get("HOME") or Path.home())
+def _rc_signature(shell: ResolvedShell, env: Mapping[str, str]) -> _RcSignature:
+    home = Path(env.get("HOME") or Path.home())
     if shell.kind is ShellKind.ZSH:
-        zdot = Path(os.environ.get("ZDOTDIR") or home)
+        zdot = Path(env.get("ZDOTDIR") or home)
         names = [zdot / ".zshenv", zdot / ".zprofile", zdot / ".zshrc", zdot / ".zlogin",
-                 Path("/etc/zsh/zshenv"), Path("/etc/zsh/zprofile"), Path("/etc/zsh/zshrc"),
-                 Path("/etc/zshenv"), Path("/etc/zprofile"), Path("/etc/zshrc")]
+                 Path("/etc/zsh/zshenv"), Path("/etc/zsh/zprofile"), Path("/etc/zsh/zshrc"), Path("/etc/zsh/zlogin"),
+                 Path("/etc/zshenv"), Path("/etc/zprofile"), Path("/etc/zshrc"), Path("/etc/zlogin")]
     else:
-        names = [home / ".bashrc", home / ".bash_profile", home / ".profile",
+        names = [home / ".bashrc", home / ".bash_profile", home / ".bash_login", home / ".profile",
                  Path("/etc/bash.bashrc"), Path("/etc/profile")]
     signature: list[tuple[str, int, int] | None] = []
     for path in names:
@@ -209,53 +214,74 @@ def _rc_signature(shell: ResolvedShell) -> tuple[tuple[str, int, int] | None, ..
     return tuple(signature)
 
 
-def cached_shell_snapshot(shell: ResolvedShell) -> tuple[bool, Path | None]:
+def _snapshot_key(shell: ResolvedShell, env: Mapping[str, str]) -> _SnapshotKey:
+    return (str(shell.path), _rc_signature(shell, env), tuple(sorted(
+        (name, value) for name, value in env.items()
+        if name not in _VOLATILE_ENV and not name.startswith("AKASHIC_")
+    )))
+
+
+def cached_shell_snapshot(shell: ResolvedShell, env: Mapping[str, str] | None = None) -> tuple[bool, Path | None]:
     """返回 (是否已有结论, 快照路径)；只做 stat，可在事件循环内调用。"""
     if shell.kind not in {ShellKind.ZSH, ShellKind.BASH}:
         return True, None
-    key = (str(shell.path), _rc_signature(shell))
+    key = _snapshot_key(shell, os.environ if env is None else env)
     if key in _snapshots:
         return True, _snapshots[key]
     return False, None
 
 
-def build_shell_snapshot(shell: ResolvedShell) -> Path | None:
+def build_shell_snapshot(shell: ResolvedShell, env: Mapping[str, str] | None = None) -> Path | None:
     """在线程中构建快照；失败时记为 None，调用方退回 login shell。"""
-    key = (str(shell.path), _rc_signature(shell))
+    environment = dict(os.environ if env is None else env)
+    key = _snapshot_key(shell, environment)
     if key in _snapshots:
         return _snapshots[key]
     try:
-        path = _write_snapshot(shell, key)
+        path = _write_snapshot(shell, key, environment)
     except (OSError, subprocess.SubprocessError, ValueError):
         path = None
     _snapshots[key] = path
     return path
 
 
-def _write_snapshot(shell: ResolvedShell, key: object) -> Path:
-    # 1. 交互式 shell 加载用户 rc，把各部分写进临时目录（不依赖 stdout，rc 可以随意输出）。
+async def snapshot_shell_argv(argv: list[str], command: str, env: Mapping[str, str]) -> list[str]:
+    """只在实际进程 owner 所在主机创建并复用 login shell 快照。"""
+    if not argv:
+        raise ValueError("shell 快照缺少执行路径")
+    shell = resolve_shell(argv[0])
+    if shell.kind not in {ShellKind.BASH, ShellKind.ZSH} or argv != shell.derive_argv(command, login=True):
+        raise ValueError("shell 快照只支持完整的 Bash 或 Zsh login 命令")
+    known, snapshot = cached_shell_snapshot(shell, env)
+    if not known:
+        snapshot = await run_file_io(lambda: build_shell_snapshot(shell, env))
+    return shell.derive_argv(command, login=True, snapshot=snapshot)
+
+
+def _write_snapshot(shell: ResolvedShell, key: _SnapshotKey, env: dict[str, str]) -> Path:
+    # 1. 只在缓存创建时加载 login 与交互配置；后续命令 source 快照，不重新 login。
     root = Path(tempfile.gettempdir()) / f"akashic-shell-{os.getuid()}"
     root.mkdir(mode=0o700, exist_ok=True)
     os.chmod(root, 0o700)
     with tempfile.TemporaryDirectory(dir=root) as work:
         q = shlex.quote(work)
         if shell.kind is ShellKind.ZSH:
-            # 补全函数（_ 开头）只服务交互补全，非交互命令用不到。
-            dump = ("for f in ${(k)functions}; do [[ $f == _* ]] || typeset -f -- $f; done "
+            # 下划线开头也可能是普通命令的依赖，不能按名字删函数。
+            dump = ("builtin typeset -f "
                     f">{q}/functions 2>/dev/null; alias -L >{q}/aliases 2>/dev/null; "
                     f"setopt >{q}/options 2>/dev/null; env -0 >{q}/env")
         else:
             dump = (f"declare -f >{q}/functions 2>/dev/null; alias -p >{q}/aliases 2>/dev/null; "
                     f"shopt -p >{q}/options 2>/dev/null; env -0 >{q}/env")
         _ = subprocess.run(
-            [str(shell.path), "-ic", dump], stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
-            stderr=subprocess.DEVNULL, timeout=_SNAPSHOT_TIMEOUT_S, cwd=os.environ.get("HOME") or None,
+            [str(shell.path), "-lic", dump], stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL, timeout=_SNAPSHOT_TIMEOUT_S, cwd=env.get("HOME") or None, env=env,
             check=False, start_new_session=True,
         )
         parts = {name: (Path(work) / name) for name in ("functions", "aliases", "options", "env")}
         if not parts["env"].is_file():
             raise ValueError("shell 快照未生成环境")
-        body = _assemble_snapshot(shell, {name: path.read_bytes() for name, path in parts.items() if path.is_file()})
+        body = _assemble_snapshot(shell, {name: path.read_bytes() for name, path in parts.items() if path.is_file()}, env)
     # 2. 快照可能含用户导出的密钥：仅本用户可读，原子发布。
     digest = hashlib.sha256(repr(key).encode()).hexdigest()[:16]
     target = root / f"{shell.kind.value}-{digest}.sh"
@@ -272,7 +298,7 @@ def _write_snapshot(shell: ResolvedShell, key: object) -> Path:
     return target
 
 
-def _assemble_snapshot(shell: ResolvedShell, parts: dict[str, bytes]) -> str:
+def _assemble_snapshot(shell: ResolvedShell, parts: dict[str, bytes], env: Mapping[str, str]) -> str:
     lines = ["# akashic shell snapshot"]
     if shell.kind is ShellKind.BASH:
         lines.append("shopt -s expand_aliases")
@@ -288,7 +314,7 @@ def _assemble_snapshot(shell: ResolvedShell, parts: dict[str, bytes]) -> str:
         name, sep, value = entry.decode("utf-8", "replace").partition("=")
         if not sep or not name.isidentifier() or name in _VOLATILE_ENV or name.startswith("AKASHIC_"):
             continue
-        if os.environ.get(name) == value:
+        if env.get(name) == value:
             continue
         lines.append(f"export {name}={shlex.quote(value)}")
     return "\n".join(lines) + "\n"

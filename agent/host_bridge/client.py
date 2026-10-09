@@ -212,6 +212,7 @@ class HostBridgeShellProcessManager:
         max_output_tokens: int,
         hard_timeout_s: int,
         owner_session_key: str,
+        shell_snapshot: bool = False,
     ) -> ExecutionResult:
         if owner_session_key in self._unconfirmed_owners:
             raise RuntimeError(
@@ -229,6 +230,7 @@ class HostBridgeShellProcessManager:
             max_output_tokens=max_output_tokens,
             hard_timeout_s=hard_timeout_s,
             owner_session_key=owner_session_key,
+            shell_snapshot=shell_snapshot,
         )
         return decode_execution(
             await self._call(request, method="Exec")

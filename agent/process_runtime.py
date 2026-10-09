@@ -60,6 +60,7 @@ class ShellProcessManagerProtocol(Protocol):
         max_output_tokens: int,
         hard_timeout_s: int,
         owner_session_key: str,
+        shell_snapshot: bool = False,
     ) -> "ExecutionResult": ...
 
     async def write_stdin(
@@ -297,12 +298,18 @@ class ShellProcessManager:
         max_output_tokens: int,
         hard_timeout_s: int,
         owner_session_key: str,
+        shell_snapshot: bool = False,
     ) -> ExecutionResult:
         """注册一次执行，等待首个窗口，并返回完成态或续接句柄。"""
 
         # 1. 串行容量回收和 spawn，保证新进程在开始等待前已注册。
         async with self._owner_access(owner_session_key), self._spawn_lock:
             await self._ensure_owner_admitted(owner_session_key)
+            if shell_snapshot:
+                # 在实际执行主机准备文件；延迟导入避免 composition 的公开入口循环依赖。
+                from agent.plugin_composition.shell_runtime import snapshot_shell_argv
+
+                argv = await snapshot_shell_argv(argv, command, env)
             await self._prune_if_needed()
             execution_id = await self._allocate_execution_id()
             execution = await self._spawn(
