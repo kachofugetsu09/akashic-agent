@@ -107,6 +107,8 @@
 | [0097](0097-request-deltas-belong-to-one-react-run.md) | proposed | 冻结请求增量只引用本次执行的已提交记录，保持 JSON 类型与准确重放 | CTX-001、STA-002、SES-005 |
 | [0098](0098-host-bridge-reuses-protobuf-socket.md) | accepted | Host Bridge 在复用的 Unix socket 上传输 Protobuf | RUN-013～RUN-015、SH-001～SH-003 |
 
+| [0099](0099-ledger-commits-use-wal-normal.md) | accepted | Session 与 Models 账本采用进程崩溃级保证，接受宿主故障丢失尾部提交 | STA-001～STA-003、CAP-002、SES-001～SES-002 |
+
 ## 新增规则
 
 1. 使用四位递增编号和短英文文件名。

@@ -354,7 +354,8 @@ class ToolExecution:
                     mark("tool.invoke.end")
                 except BaseException as failure:
                     mark("tool.invoke.failed")
-                    # start intent 已耐久；内部异常或取消都不能证明远端没有效果。
+                    # start intent 已提交；内部异常或取消都不能证明远端没有效果。
+                    # 普通进程崩溃保留提交，宿主故障可能丢失 intent，保证边界见 ADR-0099。
                     try:
                         _ = await commit(
                             record,

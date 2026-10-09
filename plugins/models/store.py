@@ -1191,6 +1191,8 @@ class ModelsStore:
             if self._write_connection is None:
                 connection = sqlite3.connect(self.path, check_same_thread=False)
                 connection.execute("PRAGMA foreign_keys = ON")
+                # 与 MessageLog 使用相同的进程崩溃保证；宿主故障边界见 ADR-0099。
+                connection.execute("PRAGMA synchronous = NORMAL")
                 # 小账目更早复用 WAL 空间，避免长期逐提交扩展文件；长读可越过此被动 checkpoint 目标。
                 connection.execute("PRAGMA wal_autocheckpoint = 256")
                 connection.row_factory = sqlite3.Row

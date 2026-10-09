@@ -506,6 +506,8 @@ class MessageLog:
             mode = self._connection.execute("PRAGMA journal_mode=WAL").fetchone()[0]
             if mode != "wal":
                 raise RuntimeError("MessageLog requires a file-backed WAL database")
+            # 普通进程崩溃保留提交；宿主故障可能丢失尾部事务，保证边界见 ADR-0099。
+            self._connection.execute("PRAGMA synchronous=NORMAL")
             fresh = (
                 self._connection.execute(
                     "SELECT 1 FROM sqlite_master WHERE name='messages'"

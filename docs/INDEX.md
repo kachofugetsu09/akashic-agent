@@ -60,6 +60,8 @@
 | 安全边界、benchmark | SEC、TST → [安全设计](design/security-scan-edge-cases.md)、[benchmark 诊断](spark/2026-07-30-agent-benchmark-diagnostic-loop-design.md) | 对应真实边界与隔离场景 |
 | 新产品方向 | [路线草案](design/akashic-future-roadmap-issue-drafts.md) → 对应现行需求；草案不是实现授权 | 按已批准范围定位 |
 
+Session 与 Models 提交的故障保证见 [0099 WAL NORMAL](decisions/0099-ledger-commits-use-wal-normal.md)；工具与送达恢复仍沿原 owner 协议。
+
 ## 4. 数据任务的额外入口
 
 涉及消息、记忆、附件、配置、凭据、调度、plugin-data，或裁切、压缩、重建、同步、迁移、覆盖、卸载、删除时，先读 [持久化状态地图](design/persistence-state-map.md) 的相关对象及其勘误，再按 STA-003 核对本次增、改、减与恢复方式。地图中的推断和未知不能充当删除依据。

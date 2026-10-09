@@ -11,6 +11,13 @@
 - 目标读者：维护者、coding agent、迁移与备份实现者、评审者
 - 关联条款：STA-001～STA-003、CTX-001、SES-001～SES-006、MEM-001～MEM-009、PLG-001～PLG-013、WSP-001～WSP-004、SCH-001～SCH-002、PRO-001～PRO-002、BAK-001
 
+## 2026-10-09：Session 与 Models 提交的故障边界
+
+[0099](../decisions/0099-ledger-commits-use-wal-normal.md) 采用 WAL NORMAL。
+普通进程崩溃保留已提交消息、owner 状态和模型账目；宿主断电或系统崩溃允许丢失最新提交。
+已有增、改、失效与物理减少权限不变，不新增自动删除。工具 start 或结果丢失不能证明
+外部效果未发生；宿主故障后的重复执行风险由维护者明确接受，恢复仍依赖实际保留的记录。
+
 ## 2026-10-06：取消强快照的授权边界
 
 [0094](../decisions/0094-plugin-runtime-uses-installed-files.md) 取代下文普通运行所需的代码、

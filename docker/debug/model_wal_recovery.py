@@ -75,7 +75,7 @@ def check(root: Path) -> None:
     child.close()
     try:
         pages, page_size, synchronous = receive(parent, process)
-        assert synchronous == 2, "场景必须保留 FULL 提交耐久性"
+        assert synchronous == 1, "场景必须使用 NORMAL 进程崩溃保证"
         reader = sqlite3.connect(path.as_uri() + "?mode=ro", uri=True)
         try:
             reader.execute("BEGIN")
