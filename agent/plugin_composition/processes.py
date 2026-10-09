@@ -67,13 +67,13 @@ class PluginProcesses:
     async def exec_command(
         self, ctx: Context, owner_key: str, *, command: str, argv: list[str],
         cwd: Path | None, env: dict[str, str], tty: bool, yield_time_ms: int,
-        max_output_tokens: int, hard_timeout_s: int,
+        max_output_tokens: int, hard_timeout_s: int, shell_snapshot: bool = False,
     ) -> ExecutionResult:
         with self._operation(ctx, owner_key) as owner:
             return await self._backend().exec_command(
                 command=command, argv=argv, cwd=cwd, env=env, tty=tty,
                 yield_time_ms=yield_time_ms, max_output_tokens=max_output_tokens,
-                hard_timeout_s=hard_timeout_s, owner_session_key=owner,
+                hard_timeout_s=hard_timeout_s, owner_session_key=owner, shell_snapshot=shell_snapshot,
             )
 
     async def write_stdin(

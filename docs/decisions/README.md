@@ -109,6 +109,8 @@
 
 | [0099](0099-ledger-commits-use-wal-normal.md) | accepted | Session 与 Models 账本采用进程崩溃级保证，接受宿主故障丢失尾部提交 | STA-001～STA-003、CAP-002、SES-001～SES-002 |
 
+| [0100](0100-message-tool-calls-recover-at-turn-granularity.md) | accepted | 默认消息工具未结调用报告未知，ReAct 恢复与显式重试使用当前材料发新请求 | ERR-001、CAP-002、SES-001 |
+
 ## 新增规则
 
 1. 使用四位递增编号和短英文文件名。

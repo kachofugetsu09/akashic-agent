@@ -354,6 +354,21 @@ async def _request_plugin_uninstall(
         return cast(dict[str, object], result)
 
 
+# 只有终态 Output 或 Control 可能结束原 Input；其他追加不必回查结果。
+def _may_end_input(event: dict[str, object]) -> bool:
+    items = event.get("items")
+    if not isinstance(items, list):
+        return True
+    for row in cast(list[object], items):
+        body = cast(dict[str, object], row).get("body") if isinstance(row, dict) else None
+        if not isinstance(body, dict):
+            return True
+        kind = cast(dict[str, object], body).get("kind")
+        if kind == "control" or (kind == "output" and cast(dict[str, object], body).get("finish") != "continue"):
+            return True
+    return False
+
+
 async def _wait_exec_result(client: ControlClient, session_id: str, input_id: str,
                             *, json_events: bool) -> dict[str, object]:
     """从当前结果的 seq 继续跟随；订阅建立期间的新消息仍能补读。"""
@@ -365,7 +380,7 @@ async def _wait_exec_result(client: ControlClient, session_id: str, input_id: st
         async for event in feed.events():
             if json_events:
                 print(json.dumps(event, ensure_ascii=False, separators=(",", ":")), flush=True)
-            if event["type"] == "messages.appended":
+            if event["type"] == "messages.appended" and _may_end_input(event):
                 result = cast(dict[str, object], await client.request("programmatic/message/result", query))
                 if result["status"] != "open":
                     return result

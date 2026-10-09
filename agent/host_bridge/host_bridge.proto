@@ -54,6 +54,7 @@ message ExecRequest {
   optional int64 max_output_tokens = 8;
   optional int64 hard_timeout_s = 9;
   string owner_session_key = 10;
+  optional bool shell_snapshot = 11;
 }
 message WriteStdinRequest {
   RequestContext context = 1;

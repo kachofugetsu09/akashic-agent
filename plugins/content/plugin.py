@@ -57,6 +57,9 @@ def check_text(part: ContentPart) -> ContentReferences:
     return ContentReferences()
 
 
+_MARKDOWN = MarkdownIt("commonmark")
+
+
 def _literal_ranges(text: str) -> tuple[tuple[int, int], ...]:
     """保留 Markdown 代码与引用的原始区间，不把示例当成输出协议。"""
     # 1. Block token 的行范围覆盖 fenced/indented code 和 lazy blockquote。
@@ -65,7 +68,7 @@ def _literal_ranges(text: str) -> tuple[tuple[int, int], ...]:
     if offsets[-1] < len(text):
         offsets.append(len(text))
     protected: list[tuple[int, int]] = []
-    tokens = MarkdownIt("commonmark").parse(text)
+    tokens = _MARKDOWN.parse(text)
     for token in tokens:
         if token.type in {"fence", "code_block", "blockquote_open"}:
             assert token.map is not None
@@ -115,6 +118,9 @@ async def _decode_text(
     validated_references: tuple[Reference, ...] = tuple(
         decode_reference(value) for value in references
     )
+    if not protocols:
+        # 没有文本协议时不存在需要保护的区间，原文就是唯一的 text part。
+        return ((ContentPart("text", text),) if text else ()), freeze_metadata({})
     protected = _literal_ranges(text)
     source = TextSource(text, protected)
     spans: list[tuple[str, Span]] = []

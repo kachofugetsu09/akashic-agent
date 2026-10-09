@@ -187,6 +187,9 @@ class FrameBook:
             for row in checked_rows
             if _complete_output(row)
         }
+        # 本页没有完成态 Output 时任何 route 都不可能解析，不必调用 resolver。
+        if not complete:
+            return ()
         tracked: list[_Route] = []
         routes = tuple(self._routes.values()) + tuple(stage._route for stage in self._stages)
         for route in routes:

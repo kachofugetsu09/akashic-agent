@@ -8,7 +8,7 @@ from typing import Annotated, Literal, Protocol, Self, cast, runtime_checkable
 from pydantic import AwareDatetime, BaseModel, ConfigDict, Field, model_validator
 
 from agent.plugin_composition.messages import MessageConflict, MessageReader, MessageWriter, OwnerRecord, OwnerStore, OwnerTransaction
-from agent.plugin_contracts import Body, Message
+from agent.plugin_contracts import Body, Message, Output
 from agent.plugin_contracts import json_value
 from core.common.file_io import run_file_io
 
@@ -186,6 +186,9 @@ class DeliveryRecords:
     def _consume_batch(self, reader: MessageReader,
                        items: tuple[tuple[Message, tuple[Sink, ...] | None], ...],
                        *, passive: bool = False) -> tuple[Selection | None, ...]:
+        # 1. 不可能选路的消息只推进进程内游标；下一次持久提交一并写入。
+        if self._advance_unroutable(reader, items):
+            return (None,) * len(items)
         for message, sinks in items:
             self._check_message(reader, message, () if sinks is None else sinks)
 
@@ -198,7 +201,8 @@ class DeliveryRecords:
             persisted = tx.read(key)
             persisted_through = (-1 if persisted is None else
                                  Cursor.model_validate(dict(persisted.value)).through_seq)
-            through = persisted_through
+            # 进程内游标只会越过不可选路消息，可作为本事务的起点。
+            through = max(persisted_through, self._cursor_cache.get(reader.session_id, -1))
             selections: list[Selection | None] = []
             for message, sinks in items:
                 if message.seq <= through:
@@ -224,6 +228,21 @@ class DeliveryRecords:
         if committed_through:
             self._cursor_cache[reader.session_id] = committed_through[-1]
         return selections
+
+    # 只有 complete Output 可能被选路；其余消息在不拥有选路权时无需持久化消费事实。
+    def _advance_unroutable(self, reader: MessageReader,
+                            items: tuple[tuple[Message, tuple[Sink, ...] | None], ...]) -> bool:
+        if not items or any(sinks is not None or (isinstance(message.body, Output) and message.body.finish == "complete")
+                            for message, sinks in items):
+            return False
+        through = self.cursor(reader.session_id)
+        if items[0][0].seq <= through:
+            return False
+        following = reader.read(after_seq=through, limit=1)
+        if not following or following[0].message_id != items[0][0].message_id:
+            raise MessageConflict("发送消费不能跳过消息")
+        self._cursor_cache[reader.session_id] = items[-1][0].seq
+        return True
 
     def _prepare(self, tx: OwnerTransaction, message: Message, sinks: tuple[Sink, ...], *, passive: bool = False) -> Selection:
         """同一消息的首次选路不可变；重复策略计算只采用原集合。"""

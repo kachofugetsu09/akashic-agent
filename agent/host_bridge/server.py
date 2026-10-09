@@ -415,6 +415,7 @@ class HostBridgeService:
                 max_output_tokens=request.max_output_tokens,
                 hard_timeout_s=request.hard_timeout_s,
                 owner_session_key=request.owner_session_key,
+                shell_snapshot=request.shell_snapshot,
             )
         log_event(
             logger,

@@ -26,7 +26,9 @@ from agent.process_runtime import (
     clamp_write_stdin_yield_time,
     format_execution_result,
 )
-from agent.plugin_composition.shell_runtime import resolve_shell
+from agent.plugin_composition.shell_runtime import (
+    resolve_shell,
+)
 from agent.plugin_composition.tasks import TASKS, Task, TaskAdmission, TaskSlot
 from agent.plugin_contracts import (
     CallRef,
@@ -266,6 +268,7 @@ class ShellTool:
                 cwd=None if command.cwd is None else Path(command.cwd), env=env, tty=command.tty,
                 yield_time_ms=command.yield_time_ms, max_output_tokens=command.max_output_tokens,
                 hard_timeout_s=command.timeout,
+                shell_snapshot=command.login and command.shell_kind in {"bash", "zsh"},
             )
             log("shell.execution_result", result=result)
         outcome = "success" if result.execution_id is not None or result.exit_code == 0 else "error"

@@ -303,6 +303,8 @@ D 类效果只能由拥有 prepared、committed、failed 和必要补偿语义�
 
 工具结果使用 `success / denied / error / interrupted`。error 和 interrupted 不证明外部效果为零；模型获得原错误与先检查现场的提示，不能自动重复原操作。Tools/Delivery 仅在原 key 查询或 provider 幂等合同下恢复；后台发送失败必须关闭本次业务等待，不保留 unknown 未决状态。数据库、binding 和内部契约异常仍向上传播。完整自愈、跳过、重试和中断规则见 [0063](decisions/0063-execution-failures-have-terminal-results.md)。
 
+默认消息工具调用按 [0100](decisions/0100-message-tool-calls-recover-at-turn-granularity.md) 使用 ToolCall/ToolResult 表达意图与终态；重启后未结调用不执行，补充结果未知的 error。ReAct 重启与用户显式重试使用当前材料发起新模型请求，不恢复旧请求，接受旧请求可能已处理所带来的重复付费。原消息、旧请求记录和工具回执保留。
+
 ## 7. 上下文和会话
 
 ### CTX-001 上下文裁切是非破坏性投影
