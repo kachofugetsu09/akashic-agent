@@ -13,6 +13,14 @@ export function renderStaticMarkdown(markdown: string) {
   template.innerHTML = html;
   const root = template.content;
 
+  // 与流式正文一致，网页链接在新标签页打开，避免替换对话 iframe。
+  for (const link of root.querySelectorAll<HTMLAnchorElement>("a[href]")) {
+    const href = link.getAttribute("href")!;
+    if (!href || href.startsWith("#") || /^(?:mailto|tel):/iu.test(href)) continue;
+    link.target = "_blank";
+    link.rel = "noopener noreferrer";
+  }
+
   for (const paragraph of root.querySelectorAll("p")) {
     const content = Array.from(paragraph.childNodes).filter((child) => child.nodeType !== Node.TEXT_NODE || child.textContent?.trim());
     if (content.length !== 1 || !(content[0] instanceof HTMLElement) || content[0].tagName !== "STRONG") continue;
