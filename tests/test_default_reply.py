@@ -97,6 +97,7 @@ async def apply(ctx):
     calls = []
     store = ModelsStore(ctx.data_root / "models.db", ctx.data_root / "backups")
     store.initialize()
+    await ctx.effect(lambda: store.close, label="model-store")
     settings = ModelsState(store, context=ctx)
     await ctx.provide(MODEL_SETTINGS, settings.settings)
     class Driver:

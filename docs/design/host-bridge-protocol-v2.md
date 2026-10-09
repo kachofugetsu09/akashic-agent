@@ -1,6 +1,6 @@
 # Host Bridge Protocol V2
 
-- 状态：V2 字段合同 accepted；本分支的 UDS 传输候选见 [0097](../decisions/0097-host-bridge-reuses-protobuf-socket.md)，待维护者评审采用。
+- 状态：V2 字段合同 accepted；UDS 传输选择见 [0098](../decisions/0098-host-bridge-reuses-protobuf-socket.md)。
 - 决策：[0055](../decisions/0055-host-bridge-uses-typed-protobuf.md)
 - 关联：RUN-013～RUN-015、SH-001～SH-003、[持久化状态地图](persistence-state-map.md)
 
@@ -159,7 +159,7 @@ service package 是字段合同的唯一 major owner：`akashic.host.v2`。候�
 
 ## 7. UDS 传输候选
 
-采用条件与理由由 [0097](../decisions/0097-host-bridge-reuses-protobuf-socket.md) 拥有。
+采用条件与理由由 [0098](../decisions/0098-host-bridge-reuses-protobuf-socket.md) 拥有。
 固定网络字节序帧头为 `uint32 payload_length, uint8 kind, uint8 code, uint64 call_id`。
 kind 为 HELLO=0、REQUEST=1、REPLY=2、CANCEL=3；业务消息体仍是原 typed Protobuf。
 HELLO 的 code/call_id 为零，载荷为 UTF-8 Bearer 凭据。REQUEST 的 code 是 proto service

@@ -124,7 +124,12 @@ async def provide_host_services(
         )
     )
     interaction_undo = (
-        None if session_manager is None else InteractionUndoCoordinator(session_manager)
+        None if session_manager is None else InteractionUndoCoordinator(
+            session_manager,
+            invalidate_attachments=(
+                None if message_log is None else message_log.invalidate_attachment_memo
+            ),
+        )
     )
 
     def resolve_identity(channel: str, provider_identity: str) -> str | None:

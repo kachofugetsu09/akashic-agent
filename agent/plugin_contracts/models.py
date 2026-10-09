@@ -38,8 +38,9 @@ PrepareContent = Callable[[tuple[Message, ...], str, frozenset[str], frozenset[t
 class ContentViews(Protocol):
     """纯内容投影注册；不授予消息、模型调用或工具执行权限。"""
 
-    async def register(self, ctx: Context, *, name: str, prepare: PrepareContent) -> Effect: ...
-    def bind(self) -> AbstractAsyncContextManager[PrepareContent]: ...
+    async def register(self, ctx: Context, *, name: str, prepare: PrepareContent,
+                       dynamic_kinds: frozenset[str] | None = None) -> Effect: ...
+    def bind(self) -> AbstractAsyncContextManager[Any]: ...
 
 
 CONTENT_VIEWS = ServiceKey[ContentViews]("models.content-views.v1")
@@ -55,21 +56,26 @@ class ContextModel(Protocol):
     def estimate(self, request: ModelRequest) -> int: ...
     def render(
         self,
-        messages: tuple[Message, ...],
+        messages: Sequence[Message],
         *,
         after_seq: int,
         summary_reference: str | None = None,
         fresh: bool = False,
         current_reminder: str | None = None,
         current_reminder_input_id: str | None = None,
+        current_context: str | None = None,
     ) -> ModelRequest:
         """接收完整事实；after_seq 是摘要覆盖末尾，-1 表示没有覆盖。
+
+        实现方接受任意 Sequence，包括存储签发的 MessageSnapshot；不得修改输入。
 
         fresh 明确从选定近期窗口开始新请求，不接续旧 opaque 状态。
         summary_reference 明确要求从这份摘要开始新请求；只有同一摘要下的
         后续成功响应才接续 opaque state。只给 after_seq 不授权丢弃 replay。
-        current_reminder 与 current_reminder_input_id 成对声明本次尾部材料；投影
-        只折叠同一 Input、同一材料身份的已保存 reminder，其他历史事实照常重放。
+        current_reminder 与 current_reminder_input_id 成对声明本次材料；同一 Input
+        的相同材料保留首次使用位置，新材料追加到本次请求末尾。
+        current_context 是不进入历史的实时材料，随当前 reminder 放置；没有 reminder
+        时放在本来源最新 Input 后。每次使用当前值，不从旧 Output 恢复。
         """
         ...
 
@@ -134,6 +140,7 @@ class ModelProjections(Protocol):
         keep_input_ids: tuple[str, ...] = (),
         prepare_content: PrepareContent | None = None,
         tool_names: frozenset[str] = frozenset(),
+        dynamic_content_kinds: frozenset[str] | None = frozenset(),
     ) -> MessageProjection: ...
 
 

@@ -73,6 +73,9 @@ class DeliveryRecords:
     def __init__(self, state: OwnerStore, recovery_owner: str):
         self._state = state
         self.recovery_owner = recovery_owner
+        # cursor 只由本 owner 的消费事务单调推进；缓存只可能滞后，滞后由消费路径的
+        # 已消费分支兼容（读回既有选择，不重复发送）。
+        self._cursor_cache: dict[str, int] = {}
 
     def selection(self, message_id: str) -> Selection | None:
         row = self._state.read("selection:" + message_id)
@@ -94,8 +97,13 @@ class DeliveryRecords:
         return selection
 
     def cursor(self, session_id: str) -> int:
+        cached = self._cursor_cache.get(session_id)
+        if cached is not None:
+            return cached
         row = self._state.read(self._cursor_key(session_id))
-        return -1 if row is None else Cursor.model_validate(dict(row.value)).through_seq
+        through = -1 if row is None else Cursor.model_validate(dict(row.value)).through_seq
+        self._cursor_cache[session_id] = through
+        return through
 
     def read(self, message_id: str, sink: str) -> tuple[OwnerRecord, Delivery]:
         _ = self.check_owner(message_id)
@@ -151,6 +159,13 @@ class DeliveryRecords:
         fixed = None if sinks is None else _normalize_sinks(sinks)
         return await run_file_io(lambda: self._consume_message(reader, message, fixed, passive=passive))
 
+    async def consume_batch_async(self, reader: MessageReader,
+                                  items: tuple[tuple[Message, tuple[Sink | Mapping[str, object], ...] | None], ...],
+                                  *, passive: bool = False) -> tuple[Selection | None, ...]:
+        """同一批消息的消费与 cursor 推进一次事务提交；顺序与冲突语义与逐条 consume 一致。"""
+        fixed = tuple((message, None if sinks is None else _normalize_sinks(sinks)) for message, sinks in items)
+        return await run_file_io(lambda: self._consume_batch(reader, fixed, passive=passive))
+
     async def add_async(self, message_id: str, sink: Sink | Mapping[str, object]) -> None:
         fixed = _normalize_sink(sink)
         await run_file_io(lambda: self._add_destination(message_id, fixed))
@@ -165,29 +180,50 @@ class DeliveryRecords:
     def _consume_message(self, reader: MessageReader, message: Message, sinks: tuple[Sink | Mapping[str, object], ...] | None,
                 *, passive: bool = False) -> Selection | None:
         """按序消费；None 表示不拥有选路权，空集合是明确的零目标选择。"""
-        if sinks is not None:
-            sinks = _normalize_sinks(sinks)
-        self._check_message(reader, message, () if sinks is None else sinks)
+        fixed = None if sinks is None else _normalize_sinks(sinks)
+        return self._consume_batch(reader, ((message, fixed),), passive=passive)[0]
 
-        def commit(tx: OwnerTransaction) -> Selection | None:
-            cursor = self.cursor(reader.session_id)
-            if message.seq <= cursor:
-                existing = self.selection(message.message_id)
-                if existing is None and sinks is not None:
-                    raise ValueError("已消费消息没有本次要求的发送选择")
-                return existing
-            following = reader.read(after_seq=cursor, limit=1)
-            if not following or following[0] != message:
-                raise MessageConflict("发送消费不能跳过消息")
-            selection = (self.selection(message.message_id) if sinks is None else
-                         self._prepare(tx, message, sinks, passive=passive))
-            # 所属目的地已 prepared 后才推进 cursor；其他来源保留自己的选路权。
+    def _consume_batch(self, reader: MessageReader,
+                       items: tuple[tuple[Message, tuple[Sink, ...] | None], ...],
+                       *, passive: bool = False) -> tuple[Selection | None, ...]:
+        for message, sinks in items:
+            self._check_message(reader, message, () if sinks is None else sinks)
+
+        committed_through: list[int] = []
+
+        def commit(tx: OwnerTransaction) -> tuple[Selection | None, ...]:
+            # cursor 写回只由本事务内的持久值决定：内存缓存只服务读路径，
+            # 不得参与决定写回什么（单调性由 expected_version 冲突重试保证）。
             key = self._cursor_key(reader.session_id)
-            previous = tx.read(key)
-            _ = tx.save(key, {"through_seq": message.seq}, expected_version=None if previous is None else previous.version)
-            return selection
+            persisted = tx.read(key)
+            persisted_through = (-1 if persisted is None else
+                                 Cursor.model_validate(dict(persisted.value)).through_seq)
+            through = persisted_through
+            selections: list[Selection | None] = []
+            for message, sinks in items:
+                if message.seq <= through:
+                    existing = self.selection(message.message_id)
+                    if existing is None and sinks is not None:
+                        raise ValueError("已消费消息没有本次要求的发送选择")
+                    selections.append(existing)
+                    continue
+                following = reader.read(after_seq=through, limit=1)
+                if not following or following[0] != message:
+                    raise MessageConflict("发送消费不能跳过消息")
+                selection = (self.selection(message.message_id) if sinks is None else
+                             self._prepare(tx, message, sinks, passive=passive))
+                through = message.seq
+                selections.append(selection)
+            # 所属目的地已 prepared 后才推进 cursor；其他来源保留自己的选路权。
+            if through > persisted_through:
+                _ = tx.save(key, {"through_seq": through}, expected_version=None if persisted is None else persisted.version)
+                committed_through.append(through)
+            return tuple(selections)
 
-        return self._state.transact(commit)
+        selections = self._state.transact(commit)
+        if committed_through:
+            self._cursor_cache[reader.session_id] = committed_through[-1]
+        return selections
 
     def _prepare(self, tx: OwnerTransaction, message: Message, sinks: tuple[Sink, ...], *, passive: bool = False) -> Selection:
         """同一消息的首次选路不可变；重复策略计算只采用原集合。"""

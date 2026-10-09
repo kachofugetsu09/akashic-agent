@@ -118,7 +118,7 @@ async def run(args: argparse.Namespace) -> dict:
     )
     from core.net.http import HttpClient
     from plugins.models.state import _BoundChat, _retry_budget
-    from plugins.models.store import ModelsStore
+    from plugins.models.store import ModelsStore, _request_digest
     from plugins.openai_compatible import driver
     from agent.plugin_composition import CHAT_MODELS, MODEL_DRIVERS, CompositionRoot, ModelKind
     from plugins.models.settings import (
@@ -475,7 +475,7 @@ async def run(args: argparse.Namespace) -> dict:
             store = ModelsStore(path, root / "backups")
             store.initialize()
             request = ModelRequest([], request_key="orphan")
-            store.resume_call(descriptor, request, request_key="orphan",
+            store.resume_call(descriptor, _request_digest(request), request_key="orphan",
                               owner_id=f"{store.host_epoch}:old-process:old-root:old-attempt", max_attempts=6)
             before = store.calls_for_key("orphan")[0]
             store.close()
@@ -491,7 +491,7 @@ async def run(args: argparse.Namespace) -> dict:
                 assert records[0]["usage"] is None and records[0]["response"] is None
                 assert all(records[0][key] == before[key] for key in ("id", "request_digest", "binding", "attempt", "started_at", "owner_id"))
                 unknown = ModelRequest([], request_key="unknown-owner")
-                reopened.resume_call(descriptor, unknown, request_key="unknown-owner",
+                reopened.resume_call(descriptor, _request_digest(unknown), request_key="unknown-owner",
                     owner_id=f"{reopened.host_epoch}:another-process:another-root:attempt", max_attempts=6)
                 try:
                     await bound.complete(unknown)
@@ -691,7 +691,7 @@ async def run(args: argparse.Namespace) -> dict:
             store = ModelsStore(root / "expired.db", root / "backups")
             store.initialize()
             request = ModelRequest([], request_key="expired")
-            call_id = store.resume_call(descriptor, request, request_key="expired",
+            call_id = store.resume_call(descriptor, _request_digest(request), request_key="expired",
                                         owner_id="fixture", max_attempts=6)
             store.finish_call(call_id, usage=None, failure="TransportError: old connection failure",
                               send_evidence="unsent", next_attempt_at=time.time() - 1)

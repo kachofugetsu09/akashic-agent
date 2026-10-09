@@ -91,7 +91,7 @@ async def check(directory: Path, stage: str, control: bool, *, boundary_source: 
         binding_id="local-model", plugin_snapshot_id="scenario", model_revision=0,
         model_id="local-model", connection_id="local", driver_id="local",
         driver_contract_version="1", auth_identity="none", model="local", role="agent",
-        reasoning_effort=None, capabilities=fixture.ModelCapabilities(context_window=10000),
+        reasoning_effort=None, capabilities=fixture.ModelCapabilities(context_window=10000, max_output_tokens=100),
         capability_sources=fixture.CapabilitySources(), capability_digest="scenario",
     )
     bound = fixture._BoundChat(descriptor, Driver(), models)
@@ -244,7 +244,7 @@ async def check(directory: Path, stage: str, control: bool, *, boundary_source: 
 
     async def transact(store, callback, **kwargs):
         # Pause before the real generation-claim transaction acquires SQL ownership.
-        if stage == "claim" and callback.__name__ == "advance":
+        if stage == "claim" and callback.__name__ == "open_prep":
             await hold()
         return await original_transact(store, callback, **kwargs)
 

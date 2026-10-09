@@ -43,6 +43,13 @@ class Deliveries:
         selected = await self._records.consume_async(reader, message, sinks, passive=passive)
         return selected if selected is not None and selected.recovery_owner == self._records.recovery_owner else None
 
+    async def consume_batch_async(self, reader: MessageReader,
+                                  items: tuple[tuple[Message, tuple[Sink | Mapping[str, object], ...] | None], ...],
+                                  *, passive: bool = False) -> tuple[Selection | None, ...]:
+        selected = await self._records.consume_batch_async(reader, items, passive=passive)
+        owner = self._records.recovery_owner
+        return tuple(item if item is not None and item.recovery_owner == owner else None for item in selected)
+
     async def add_async(self, message_id: str, sink: Sink | Mapping[str, object]) -> None:
         await self._records.add_async(message_id, sink)
 

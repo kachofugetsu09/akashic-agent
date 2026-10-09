@@ -2,12 +2,25 @@
 
 Related issues: #827 (stack), #828 (storage), #829 (interest), #836 (materials).
 
-Long history reads use a private read-only SQLite transaction and connection. Nested readers of the same MessageLog in that synchronous call share its read snapshot; they do not acquire the writer's connection or decoded-message cache. Reads inside an existing write transaction still see that transaction's uncommitted rows. Owner transaction callbacks remain synchronous and atomic, including when pure SQL runs in a drained worker. Listeners wake only after commit.
+Long history reads use a private read-only SQLite transaction and connection. Nested readers of the same MessageLog in that synchronous call share its read snapshot; they do not acquire the writer's connection or transaction lock. Reads inside an existing write transaction still see that transaction's uncommitted rows. Owner transaction callbacks remain synchronous and atomic, including when pure SQL runs in a drained worker. Listeners wake only after commit.
+
+同一 MessageLog 的连接共享弱引用解码缓存，只在完整数据库行相同时复用仍被调用者持有的不可变 Message。每次读取仍执行原 SQL，先由该连接的事务确定可见行；外部修改、撤销和回滚不能通过缓存隐藏。缓存使用独立短锁，不持有 writer 锁，也不延长 Message 的生命周期。
+活跃 ReAct Loop 持有当前历史直到下一份真实快照替换；不在轮间主动丢弃仍供下一轮使用的事实。
+这使超过 reader 有界缓存的长循环也能复用仍存活的 Message。每次读取继续查询原 SQL，
+按完整行区分外部修改；没有扩大全局缓存或跳过失效检查。Loop 结束、取消或失败后释放历史。
+
+OwnerRecord 也只在实际读取的版本和 JSON 正文完全相同时复用解码结果。弱引用不保留无人使用的大请求；SQL 读取、版本 CAS、固定快照与损坏记录报错保持不变。
+
+会话目录的 heads 快照只在同一只读连接的 SQLite `data_version` 未变时复用；不同连接的版本不能相互比较。每个连接只保留最近一份目录，外部或本地 writer 提交后重新读取；当前 writer 的未提交事务不使用此缓存。固定只读事务仍观察原快照，归还连接后下一次读取再观察新提交。
+
+消息订阅只在事务实际新增消息、接纳会话或修改会话管理属性后唤醒。单独更新 owner 记录或 embedding 不产生消息变化，不广播空唤醒；同事务追加消息仍在提交后通知，失败回滚不通知。关闭唤醒与显式轮询保持不变，通知本身不替代数据库事实。
 
 普通 `MessageReader.snapshot_async` 与 `OwnerStore.snapshot` 的只读准入不等待另一个线程
 持有的 writer 锁。当前线程能重入的写事务仍使用原连接，读取自己的未提交行；其他读取
 直接打开独立只读事务。准入与 close 使用短锁：close 拒绝后来读者，已取得的只读连接
 仍由原同步读取关闭。来源提交和首次效果的异步顺序见下面的 #879 说明；权威消息仍只追加。
+
+MessageLog 最多保留四个空闲只读连接。一次读取独占借用的连接，嵌套读取沿用该快照；归还前结束事务，下次借用重新开始事务。连接仍为 `mode=ro` 和 `query_only`，不能升级为 writer。close 拒绝新读取并关闭空闲连接，已经准入的读取完成后关闭自己的连接。复用连接不复用事务，也不延长旧快照。
 
 ```text
 ┌───────────────────────┐       ┌────────────────────────┐
@@ -18,11 +31,32 @@ Long history reads use a private read-only SQLite transaction and connection. Ne
 
 短 Reader/OwnerStore/Catalog/binding 读取使用同一 private RO 准入，自己的写事务内读取仍重入原连接。
 listener 登记和释放只持有其现有注册表的短锁，不等待 writer 的磁盘工作。
-增量 reader 的同步 snapshot、剩余 Core 写入和关闭仍有各自的同步路径；不能据此声称全部 I/O 已异步化。
+增量 reader 的同步调用、剩余 Core 写入和关闭仍有同步路径；不能据此声称全部 I/O 已异步化。
 
 MessageLog uses file-backed WAL mode so a pinned read does not delay a writer's commit. This changes the runtime journal mode, not the schema. Backups must use SQLite backup or include the SQLite sidecars; copying only the live main database file is not a snapshot. Existing databases keep their schema and data; an unsupported journal mode is rejected explicitly. Short synchronous writes can still wait on SQLite file-level contention; this change does not claim that all storage I/O is asynchronous.
 
-回复准备在等待历史前固定来源 head 和完整消息 head。增量异步快照的解码、原连接 data_version 核对和缓存大小 SQL 都在同一个文件 worker 完成，取消等待 worker 实际退出。writer 忙时跳过可选缓存预热，private RO 仍可读取已提交前缀；只有原连接版本未变且 writer 空闲时才发布原有有界缓存。外部编辑使缓存不能复用，不重跑或推翻本次固定快照。后续追加仍按尾部补读，外部编辑仍在下次同步读取时使旧缓存失效。已准入的 private reader 可跨 close 完成，关闭后跳过缓存发布。
+回复准备在等待历史前固定来源 head 和完整消息 head。回复范围内的增量 reader 持有
+已提交消息前缀，生命周期与当前回复一致；同步 scan/snapshot 和异步 snapshot 共用同一读取路径。
+正常追加只补读尾部，来源筛选与旧前缀查询不覆盖完整视图。没有全局永久历史缓存。
+
+已迁移的库在同一只读事务中读取 `message_prefix_revision`、实际 head 和新增消息。
+正常追加不改变旧前缀；消息 UPDATE、DELETE、旧位置的 INSERT 和 REPLACE 由 SQLite
+触发器在原事务推进标记，包括其他连接的写入。标记不同就完整重读；回滚也回滚标记。
+因此内部 writer 忙于正常提交时，reader 仍可复用本次快照中有效的旧前缀。
+已有事务直接读取原事务，不借用缓存或发布可能回滚的消息。异步取消仍排空物理读取。
+
+```text
+┌───────────────────┐    ┌─────────────────────────────┐
+│ 当前只读事务       │───▶│ 前缀标记 → head → 新增消息   │
+└───────────────────┘    └─────────────────────────────┘
+                         标记相同：复用旧前缀
+                         标记不同：重读当前快照
+```
+
+标记只帮助判断内存视图是否有效，不是消息事实，也不授予编辑或删除权。
+新库由 MessageLog 初始化；旧库通过 Yoyo 只增加表、初始行和触发器，不改写原消息。
+迁移不完整或初始行缺失时启动失败。尚未迁移的已知旧库仍使用 writer 的
+`data_version` 检查；无法检查时完整重读，不降低原读取保证。
 
 Interest scoring keeps model selection and candidate embedding in the original async owner. Historical sample and prototype construction run in a drained worker without changing the formula, sample order or cutoff.
 
@@ -271,7 +305,9 @@ Tool started、command intent 和 generation claim 把 Source 前提检查放进
 若新 Input/Control 先提交，旧首次 intent 回滚；若 started 先提交，原 owner 如实结算已开始效果，
 取消不伪称效果回滚。ToolResult 与 done 仍在原事务共同提交。
 
-生成请求继续使用既有准备记录和稳定 request key。`started_attempts` 只记录该准备已通过首次启动检查，
+生成请求的正文、材料与启动身份在同一次 owner transaction 内保存，来源检查在该事务内完成。
+不再先写冻结请求，再读写整份记录领取生成。模型 I/O 仍在提交之后；旧的已冻结但未领取记录
+在恢复时复用原内容，并通过来源检查补齐启动身份。`started_attempts` 只记录该准备已通过首次启动检查，
 不复制 Models 的调用事实。Models 仍拥有独立数据库和发送状态，按同 key 前向恢复；
 Core claim 不能证明远端有或没有效果。旧 v2/v3 准备和消息表示保留，不做 schema 迁移或历史改写。
 准备的纯 SQL 也离开 loop；Context 和模型句柄的读取保持在原 scope。
@@ -534,3 +570,43 @@ Session iterator → four owned workers → fixed source read → head CAS → p
 ```
 
 `reply.prepare.timing` records outer wall time, Session/check/retry counts, and head-read, awaited-predicate and changed-callback time. Awaited phase totals overlap across workers and must not be added to outer wall time. Records contain no message content or Session IDs. Parallelism changes scheduling of independent Sessions; source admission, predicate rules and per-source CAS remain unchanged.
+
+## Models 调用账本连接
+
+ModelsStore 持有一条串行写连接，初始化时使用 WAL，关闭时先等待当前事务结束，
+再关闭连接和释放宿主锁。普通读范围使用独立只读连接。
+调用方显式提交；退出写范围时回滚剩余事务。FULL 同步、请求准入、首段记账、
+响应结算、配置 CAS 与写前备份保持原顺序。连接复用不增加消息或调用记录的删除路径。
+
+Models 在一次 `complete` 内计算一次固定请求摘要，活调用合并与持久准入共用该值。
+同 key 的恢复检查与退避判断共用一次账本读取；只有结算孤儿改变了记录时才重读。
+写事务仍重新核对真实状态、binding、预算和允许时间，因此并发准入不依赖旧快照。
+
+历史投影只在当前账本版本内复用成功回执的窄协议事实。正常写接口只结算 started，
+不改变已有 success；闲置写连接上的只读快照用 `PRAGMA data_version` 检测其他连接的修改。
+版本变化后重读整个窗口；新回执和非成功状态始终读取当前 SQL。写连接繁忙或 store 只读时，
+直接使用独立读连接，不等待写锁，也不复用旧快照。缓存只保留本次窗口，记录本身深冻结；
+上下文仍只获得调用账的窄 reader，不能取得连接或写接口。数据库、回执和请求内容不改写。
+
+
+## 固定模型输入的派生计算
+
+原生工具菜单首次读取 schema 时深冻结固定 binding 的描述，后续请求复用相同值；
+自定义 presentation 仍按原接口读取，不替插件缓存动态 schema。OpenAI-compatible driver
+只复用同一个深冻结消息对象的字符和图片成本，普通可变输入先取得独立冻结值。
+历史缩短后只保留本次输入的计数，driver scope 结束后释放。字符先合计再除以三，
+图片成本、空输入、工具 schema 成本与原容量公式一致；不改变压缩水位或请求正文。
+
+MessageLog 的单条查询使用 SQLite 隐式读取快照；查询在归还连接前取完全部结果。
+分页、组合读取、显式 `read_snapshot` 和嵌套 writer 读取仍使用原事务，不能跨查询混读。
+只读连接创建时固定 row factory 和 query-only 配置，借用时不重复设置。
+
+文件 I/O 入口直接等待线程 Future，并在提交时复制调用者的 ContextVar；不再创建转发用的 asyncio Task。
+四个磁盘名额、排队取消、已启动工作排空以及取消与物理失败的联合传播保持不变。
+
+消息重放先查询实际身份。没有旧行时，普通新正文只在 INSERT 时编码；
+已有身份仍比较原编码和 metadata，旧 unknown 工具结果仍禁止作为新消息写入。
+
+绑定模型复用当前深冻结消息和工具 schema 的 JSON 编码来计算请求摘要。
+摘要仍使用原字段、排序、UTF-8 和分隔符；同 key 的内容冲突与恢复判断不变。
+每次只保留当前请求引用的编码，历史缩短、模型 scope 结束后释放旧引用。

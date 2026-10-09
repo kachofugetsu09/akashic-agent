@@ -8,6 +8,7 @@ import importlib.util
 import logging
 import os
 import secrets
+import stat
 import sys
 from collections.abc import AsyncGenerator, Awaitable, Callable, Mapping
 from contextvars import Context as TaskContext
@@ -80,6 +81,7 @@ from agent.plugins.install import (
 from agent.plugins.manifest import (
     ensure_workspace_plugin_data_dir,
     load_plugin_manifest,
+    manifest_path,
     plugins_root,
     validate_workspace_plugin_data_path,
     workspace_plugin_data_dir,
@@ -98,6 +100,8 @@ from agent.plugins.selection import PluginSelection, SelectionConflictError
 from agent.plugins.source_resolver import (
     PluginSourceFailure,
     ResolvedPluginSource,
+    _iter_declared_plugin_roots,
+    _iter_installed_plugin_roots,
     scan_plugin_sources,
 )
 from agent.plugins.static_manifest import (
@@ -199,6 +203,10 @@ class PluginManager:
             | None
         ) = None
         self._cleanup_failures: list[CleanupFailure] = []
+        # watch_revision 的廉价指纹门控：只有磁盘元数据指纹变化才重做完整发现。
+        self._watch_fingerprint: bytes | None = None
+        self._watch_result: dict[str, str] = {}
+        self._watch_root_map: dict[str, str] = {}
         # Failed Root builds retain their module and data owners until cleanup succeeds.
         self._building_roots: dict[CompositionRoot, tuple[PluginGeneration, ...]] = {}
         self._operation: ManagerOperation | None = None
@@ -425,13 +433,18 @@ class PluginManager:
         """分别记录每个输入的磁盘变化，不把一次选择变更扩成全量更新。"""
         home = _plugins_home(self._installed_cache_root)
         manifest = load_plugin_manifest(home)
+        probe = self._watch_probe(manifest)
+        if probe is not None and probe == self._watch_fingerprint:
+            return dict(self._watch_result)
         revisions: dict[str, bytes] = {}
+        root_map: dict[str, str] = {}
         mods, failures = self._discover_modules(
             record_source_failures=False,
         )
         for failure in failures:
             identity = failure.plugin_id or f"source:{failure.source_type}:{failure.source_root}"
             revisions[identity] = _source_metadata_revision(failure.source_root)
+            root_map[str(failure.source_root.resolve(strict=False))] = ""
         for mod in mods:
             plugin_id = _resolve_plugin_id(mod)
             plugin_dir = Path(mod["plugin_root"])
@@ -444,13 +457,80 @@ class PluginManager:
                 _source_metadata_revision(plugin_dir)
                 + _path_metadata(data_dir / CONFIG_INPUT)
             )
-        return {
+            root_map[str(plugin_dir.resolve(strict=False))] = str(data_dir)
+        result = {
             plugin_id: hashlib.sha256(
                 revisions.get(plugin_id, b"source:missing")
                 + str(manifest.get(plugin_id, True)).encode()
             ).hexdigest()
             for plugin_id in revisions.keys() | manifest.keys()
         }
+        # 发现会跳过禁用与重名的 builtin 源，不把它们写进 root_map；
+        # 把它们记为无数据目录，后续探测才能稳定命中指纹。
+        # 这类源的启用变化经 manifest 与禁用集合指纹覆盖，不依赖 data_dir。
+        for root in self._watch_roots():
+            root_map.setdefault(root, "")
+        self._watch_root_map = root_map
+        self._watch_fingerprint = self._watch_probe(manifest)
+        self._watch_result = result
+        return result
+
+    def _watch_roots(self) -> set[str]:
+        """探测枚举的源码根：已安装缓存、分发源与声明目录，与完整发现同源。"""
+        roots: set[str] = set()
+        if self._installed_cache_root is not None:
+            for source in _iter_installed_plugin_roots(
+                self._installed_cache_root,
+                load_manifests=False,
+            ):
+                if source.plugin_root in self._ignored_installed_roots:
+                    continue
+                roots.add(str(source.plugin_root.resolve(strict=False)))
+        for source in self._distribution_sources:
+            roots.add(str(source.plugin_root.resolve(strict=False)))
+        for plugin_dirs_root in self._dirs:
+            for plugin_root in _iter_declared_plugin_roots(plugin_dirs_root):
+                roots.add(str(plugin_root.resolve(strict=False)))
+        return roots
+
+    def _watch_probe(self, manifest: Mapping[str, object]) -> bytes:
+        """枚举源码根并按元数据指纹判定是否必须重做完整发现。
+
+        指纹与结果摘要使用同一套检测输入（目录枚举 + 逐文件元数据 +
+        data_dir 配置 + 已安装 manifest），未变化时完整发现的结果必然相同。
+        """
+        digest = hashlib.sha256()
+        digest.update(repr(sorted(manifest.items())).encode())
+        digest.update(repr(sorted(self._disabled_builtin_plugins)).encode())
+        digest.update(
+            repr(sorted(str(path) for path in self._ignored_installed_roots)).encode()
+        )
+        for root in sorted(self._watch_roots()):
+            digest.update(root.encode())
+            digest.update(_source_metadata_revision(Path(root)))
+            data_dir = self._watch_root_map.get(root, "")
+            if data_dir:
+                digest.update(_path_metadata(Path(data_dir) / CONFIG_INPUT))
+        return digest.digest()
+
+    def watch_targets(self) -> tuple[tuple[Path, ...], tuple[Path, ...]]:
+        """事件监听目标：（递归监听的源码树与容器，单独监听的选择/配置文件）。
+
+        容器目录覆盖已安装插件与其指针的增删；配置文件按文件目标监听，
+        数据目录内的运行时写入不产生事件。
+        """
+        trees: list[Path] = []
+        if self._installed_cache_root is not None:
+            trees.append(self._installed_cache_root)
+        trees.extend(source.plugin_root for source in self._distribution_sources)
+        trees.extend(self._dirs)
+        files = [
+            Path(data_dir) / CONFIG_INPUT
+            for data_dir in self._watch_root_map.values()
+            if data_dir
+        ]
+        files.append(manifest_path(_plugins_home(self._installed_cache_root)))
+        return tuple(trees), tuple(files)
 
     # 扫描所有 plugin_dirs，返回可加载的插件描述列表
     def discover(
@@ -2502,24 +2582,25 @@ def _source_failure_key_for_mod(mod: Mapping[str, str]) -> str:
 
 
 def _source_metadata_revision(plugin_dir: Path) -> bytes:
+    """按原顺序读取当前文件元数据，不为每个条目构造 Path。"""
     digest = hashlib.sha256()
     excluded = SOURCE_EXCLUDED_NAMES
     for current, directories, filenames in os.walk(plugin_dir, followlinks=False):
         directories[:] = sorted(name for name in directories if name not in excluded)
-        current_path = Path(current)
+        relative_dir = os.path.relpath(current, plugin_dir)
         for name in [*directories, *sorted(filenames)]:
             if name in excluded:
                 continue
-            path = current_path / name
-            relative = path.relative_to(plugin_dir)
+            path = os.path.join(current, name)
+            relative = name if relative_dir == "." else os.path.join(relative_dir, name)
             try:
-                stat = path.lstat()
+                metadata = os.lstat(path)
             except FileNotFoundError:
                 continue
-            digest.update(str(relative).encode())
-            digest.update(str(stat.st_mtime_ns).encode())
-            digest.update(str(stat.st_size).encode())
-            if path.is_symlink():
+            digest.update(relative.encode())
+            digest.update(str(metadata.st_mtime_ns).encode())
+            digest.update(str(metadata.st_size).encode())
+            if stat.S_ISLNK(metadata.st_mode):
                 digest.update(os.readlink(path).encode())
     return digest.digest()
 

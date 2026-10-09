@@ -1,6 +1,7 @@
 from collections.abc import Awaitable, Callable, Mapping
 from typing import cast
 from core.common.file_io import run_file_io
+from core.common.diagnostic_log import log_timing
 
 from agent.plugin_composition import Context
 from agent.plugin_composition.artifacts import ARTIFACT_READ
@@ -112,6 +113,7 @@ async def apply(ctx: Context) -> None:
         )
 
     async def accept(session_id: str, message_id: str, message: ChannelInboundMessage) -> Message:
+        log_timing("input.received", session_id=session_id, request_id=message_id)
         command = message.content.strip().split(maxsplit=1)
         if command and command[0].split("@", 1)[0].lower() == "/stop":
             return await open(session_id).pause(message_id)
@@ -157,7 +159,9 @@ async def apply(ctx: Context) -> None:
                 "model_id": model_id.strip() or None, "reasoning_effort": effort.strip() or None,
             }),)
         # 3. Input 与全部引用原子提交；传输时间、handoff 和重复 ID 不进入正文。
-        return await open(session_id).accept(message_id, Input(parts))
+        accepted = await open(session_id).accept(message_id, Input(parts))
+        log_timing("input.committed", session_id=session_id, request_id=message_id, counts={"seq": accepted.seq})
+        return accepted
 
     @ctx.entrypoint
     async def command(task: Task, reader: MessageReader, source: str) -> Message | None:

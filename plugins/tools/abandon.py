@@ -90,7 +90,7 @@ async def follow_abandon(
     """只消费持久 abandon；坏 item 只影响本 Session 的保守 cursor，其余继续推进。"""
     seen: dict[str, int] = {}
     failed: set[str] = set()
-    stream = catalog.follow().__aiter__()
+    stream = catalog.follow(wake_on=Control).__aiter__()
     pending_next: asyncio.Task[Mapping[str, int]] | None = None
     try:
         while True:

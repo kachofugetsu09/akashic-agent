@@ -310,6 +310,22 @@ class SummaryRecords:
             raise ValueError("摘要 head 没有对应 Session 的已发布记录")
         return record
 
+    def read_head(
+        self, session_id: str, *, known: tuple[int, StoredSummary] | None = None,
+    ) -> tuple[int, StoredSummary] | None:
+        """读取 head 行版本；known 版本一致时复用已核对记录，跳过完整父链核对。
+
+        摘要记录只增且不可变，head 行版本随发布单调递增，版本一致即内容一致。
+        """
+        row = self._state.read("head:" + session_id)
+        if row is None:
+            return None
+        if known is not None and known[0] == row.version:
+            return known
+        record = self.head(session_id)
+        assert record is not None
+        return (row.version, record)
+
     async def publish(
         self, record: SummaryRecord, reader: MessageReader, *, parent: StoredSummary | None,
         summary_range: Callable[[tuple[Message, ...], tuple[str, ...]], range],

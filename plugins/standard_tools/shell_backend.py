@@ -101,17 +101,31 @@ def _shell_env() -> dict[str, str]:
     return env
 
 
+_user_path_cache: tuple[tuple[str, str, str | None, int | None], tuple[Path, ...]] | None = None
+
+
 def _discover_user_path_entries(env: dict[str, str]) -> list[Path]:
+    """nvm 版本目录枚举按 (HOME, NVM_DIR, NVM_BIN, node_root mtime) 缓存；安装新版本后 mtime 变化自动失效。"""
     home_text = env.get("HOME")
     if not home_text:
         return []
     home = Path(home_text).expanduser()
     nvm_dir = Path(env.get("NVM_DIR") or home / ".nvm").expanduser()
-    entries = [home / ".local" / "bin"]
     nvm_bin = env.get("NVM_BIN")
+    node_root = nvm_dir / "versions" / "node"
+    try:
+        stamp: int | None = node_root.stat().st_mtime_ns
+    except OSError:
+        stamp = None
+    key = (home_text, str(nvm_dir), nvm_bin, stamp)
+    global _user_path_cache
+    if _user_path_cache is not None and _user_path_cache[0] == key:
+        return list(_user_path_cache[1])
+    entries = [home / ".local" / "bin"]
     if nvm_bin:
         entries.append(Path(nvm_bin).expanduser())
     entries.extend(_discover_nvm_node_bins(nvm_dir))
+    _user_path_cache = (key, tuple(entries))
     return entries
 
 

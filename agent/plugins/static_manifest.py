@@ -9,6 +9,7 @@ import os
 import re
 from collections.abc import Mapping
 from dataclasses import dataclass
+from functools import lru_cache
 from pathlib import Path, PurePosixPath
 
 _NAME = re.compile(r"^[a-z][a-z0-9_-]{0,63}$")
@@ -107,6 +108,12 @@ def load_plugin_identity(plugin_root: Path) -> tuple[str, str, int]:
         source = path.read_text(encoding="utf-8")
     except UnicodeError as error:
         raise PluginSourceContentError(f"插件身份源码无法解码: {path}") from error
+    return _parse_plugin_identity(path, source)
+
+
+@lru_cache(maxsize=128)
+def _parse_plugin_identity(path: Path, source: str) -> tuple[str, str, int]:
+    """只复用内容完全相同的解析结果；磁盘读取和路径检查仍逐次执行。"""
     try:
         tree = ast.parse(source, filename=str(path))
     except SyntaxError as error:
@@ -202,15 +209,18 @@ def _python_runtimes(root: Path) -> tuple[StaticPythonRuntime, ...]:
 
     def visit(directory: Path) -> None:
         # 1. 不进入依赖和缓存；其余目录链接可能隐藏 runtime，直接拒绝。
-        for path in sorted(directory.iterdir()):
-            if path.name in excluded:
+        with os.scandir(directory) as entries:
+            children = sorted(entries, key=lambda entry: entry.name)
+        for entry in children:
+            if entry.name in excluded:
                 continue
-            if path.is_symlink():
-                if path.name == "requirements.txt" or path.is_dir() or not path.exists():
+            path = directory / entry.name
+            if entry.is_symlink():
+                if entry.name == "requirements.txt" or entry.is_dir() or not path.exists():
                     raise ValueError(f"插件 Python runtime 不能经过符号链接: {path}")
                 continue
-            if path.is_dir():
-                if path.name == "requirements.txt":
+            if entry.is_dir():
+                if entry.name == "requirements.txt":
                     raise ValueError(f"插件 requirements.txt 必须是文件: {path}")
                 visit(path)
             elif path.name == "requirements.txt":

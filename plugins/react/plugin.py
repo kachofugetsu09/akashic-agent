@@ -2,17 +2,20 @@ from __future__ import annotations
 
 import asyncio
 import logging
-from collections.abc import AsyncGenerator, Awaitable, Callable, Iterable, Mapping, Sequence
+from collections.abc import AsyncGenerator, Awaitable, Callable, Mapping, Sequence
 from contextlib import AbstractContextManager, ExitStack, asynccontextmanager
-from dataclasses import replace
+from dataclasses import dataclass, replace
+from functools import partial
 from typing import Any, cast
 from uuid import uuid4
 
 from core.common.file_io import run_file_io
+from core.common.diagnostic_log import log_timing
 from agent.plugin_composition import Context, RuntimeScope
 from agent.plugin_composition.messages import (
     MessageConflict,
     MessageReader,
+    MessageSnapshot,
     MessageWriter,
     OwnerStore,
     OwnerTransaction,
@@ -39,6 +42,7 @@ from agent.plugin_contracts import (
     Part,
     ToolCall,
     ToolResult,
+    freeze_json,
 )
 from agent.plugin_contracts.content import (
     ContentView as ContentView,
@@ -82,49 +86,97 @@ class _Superseded(Exception):
     """提交前提检查发现同来源新事实；被替代的旧草稿不写 failure。"""
 
 
-def _open_calls(messages: Iterable[Message], source: str) -> tuple[tuple[CallRef, ...], tuple[CallRef, ...]]:
-    """按持久边界拆分未回执调用：未闭段继续排空，abandon 区幂等结算。"""
-    boundary = -1
-    abandoned_upto = -1
-    calls: dict[CallRef, int] = {}
-    results: set[CallRef] = set()
-    for message in messages:
-        if message.source != source:
-            continue
-        body = message.body
-        if isinstance(body, Output):
-            if body.finish != "continue":
-                boundary = message.seq
-            calls.update(
-                (CallRef(message.message_id, index), message.seq)
-                for index, part in enumerate(body.parts) if isinstance(part, ToolCall)
+class _History:
+    """按新消息推进本来源的执行视图；旧前缀变化时从事实重建。"""
+
+    def __init__(self, source: str) -> None:
+        self.source = source
+        self.messages: Sequence[Message] = ()
+        self.head = -1
+        self.boundary_id = "initial"
+        self.reminder_input_id: str | None = None
+        self._boundary = -1
+        self._abandoned_upto = -1
+        self._calls: dict[CallRef, int] = {}
+        self._results: set[CallRef] = set()
+        self._succeeded: set[CallRef] = set()
+        self._terminal_calls: list[tuple[CallRef, int, str]] = []
+        self._outputs: list[int] = []
+
+    def update(self, messages: Sequence[Message]) -> None:
+        """已提交读面证明前缀；普通序列仍逐条核对真实 Message 身份。"""
+        previous = self.messages
+        compatible = (
+            messages.extends(previous)
+            if type(messages) is MessageSnapshot and type(previous) is MessageSnapshot
+            else len(messages) >= len(previous) and all(
+                old is new for old, new in zip(previous, messages)
             )
-        elif isinstance(body, Control) and body.action == "abandon":
-            boundary = max(boundary, body.through_seq)
-            abandoned_upto = max(abandoned_upto, body.through_seq)
-        elif isinstance(body, ToolResult):
-            results.add(body.call_ref)
-    pending: list[CallRef] = []
-    abandoned: list[CallRef] = []
-    for ref, seq in calls.items():
-        if ref in results:
-            continue
-        if seq <= abandoned_upto:
-            abandoned.append(ref)
-        elif seq > boundary:
-            pending.append(ref)
-    return tuple(pending), tuple(abandoned)
+        )
+        if not compatible:
+            self.__init__(self.source)
+            previous = ()
+        for message in messages[len(previous):]:
+            if message.source != self.source:
+                continue
+            self.head = message.seq
+            body = message.body
+            if isinstance(body, Input):
+                self.boundary_id = self.reminder_input_id = message.message_id
+            elif isinstance(body, Output):
+                if body.finish != "continue":
+                    self._boundary = message.seq
+                    self._outputs.clear()
+                elif any(isinstance(part, ContentPart) and part.kind == "model.facts"
+                         for part in body.parts):
+                    self._outputs.append(message.seq)
+                for index, part in enumerate(body.parts):
+                    if isinstance(part, ToolCall):
+                        ref = CallRef(message.message_id, index)
+                        if ref not in self._results:
+                            self._calls[ref] = message.seq
+                        if body.finish == "continue":
+                            self._terminal_calls.append((ref, message.seq, part.binding_id))
+            elif isinstance(body, Control) and body.action == "abandon":
+                self.boundary_id = message.message_id
+                self._boundary = max(self._boundary, body.through_seq)
+                self._abandoned_upto = max(self._abandoned_upto, body.through_seq)
+                self._outputs = [seq for seq in self._outputs if seq > body.through_seq]
+            elif isinstance(body, ToolResult):
+                self._results.add(body.call_ref)
+                self._calls.pop(body.call_ref, None)
+                if body.outcome == "success":
+                    self._succeeded.add(body.call_ref)
+        self.messages = messages
 
+    @property
+    def steps(self) -> int:
+        return len(self._outputs)
 
-def _pending_calls(messages: Iterable[Message], source: str) -> tuple[CallRef, ...]:
-    """只恢复本来源尚未关闭的请求；abandon 的晚到结果不唤醒新决策。"""
-    return _open_calls(messages, source)[0]
+    def open_calls(self) -> tuple[tuple[CallRef, ...], tuple[CallRef, ...]]:
+        """保留调用顺序；已关闭但未结算的旧调用仍可由之后的 abandon 结算。"""
+        pending: list[CallRef] = []
+        abandoned: list[CallRef] = []
+        for ref, seq in self._calls.items():
+            if seq <= self._abandoned_upto:
+                abandoned.append(ref)
+            elif seq > self._boundary:
+                pending.append(ref)
+        return tuple(pending), tuple(abandoned)
 
+    def related(self, messages: Sequence[Message]) -> frozenset[CallRef]:
+        """正常提交复用当前视图；恢复旧冻结请求时只读取其原有前缀。"""
+        history = self
+        if messages is not self.messages:
+            history = _History(self.source)
+            history.update(messages)
+        pending, abandoned = history.open_calls()
+        return frozenset((*pending, *abandoned))
 
-def _related_results(messages: Sequence[Message], source: str) -> frozenset[CallRef]:
-    """冻结前缀内缺回执的调用：其结算结果属于本代请求的读集。"""
-    pending, abandoned = _open_calls(messages, source)
-    return frozenset((*pending, *abandoned))
+    def terminal(self, tools: ToolMenu, names: frozenset[str]) -> bool:
+        calls = [(ref, seq) for ref, seq, binding in self._terminal_calls
+                 if tools.name(binding) in names]
+        return any(seq > self._boundary and ref in self._succeeded for ref, seq in calls)
 
 
 def _competing(message: Message, source: str, related: frozenset[CallRef]) -> bool:
@@ -140,36 +192,79 @@ def _competing(message: Message, source: str, related: frozenset[CallRef]) -> bo
     return isinstance(body, ToolResult) and body.call_ref in related
 
 
-def _plain_json(value: object) -> object:
-    if isinstance(value, Mapping):
-        return {str(key): _plain_json(item) for key, item in value.items()}
-    if isinstance(value, (tuple, list)):
-        return [_plain_json(item) for item in value]
-    return value
-
-
 def _encode_request(request: ModelRequest) -> Mapping[str, object]:
     """生成准备只冻结模型可见字段；on_delta/request_key 是执行细节。"""
     continuation = request.continuation
     return {
-        "messages": _plain_json(request.messages),
-        "tools": _plain_json(request.tools),
+        "messages": request.messages,
+        "tools": request.tools,
         "max_output_tokens": request.max_output_tokens,
         "system_prompt": request.system_prompt,
-        "tool_choice": _plain_json(request.tool_choice),
+        "tool_choice": request.tool_choice,
         "prompt_cache_key": request.prompt_cache_key,
         "disable_reasoning": request.disable_reasoning,
-        "content_refs": _plain_json(request.content_refs),
+        "content_refs": request.content_refs,
         "content_transformed": request.content_transformed,
         "continuation": (
             None
             if continuation is None
             else {
                 "binding_id": continuation.binding_id,
-                "payload": _plain_json(continuation.payload),
+                "payload": continuation.payload,
             }
         ),
     }
+
+
+def _same_json(left: object, right: object) -> bool:
+    """证明冻结 JSON 值可复用；整数、布尔和浮点以及正负零不能混同。"""
+    if left is right:
+        return True
+    if type(left) is not type(right):
+        return False
+    if isinstance(left, Mapping):
+        other = cast(Mapping[str, object], right)
+        return left.keys() == other.keys() and all(_same_json(value, other[key]) for key, value in left.items())
+    if isinstance(left, tuple):
+        other_items = cast(tuple[object, ...], right)
+        return len(left) == len(other_items) and all(_same_json(a, b) for a, b in zip(left, other_items))
+    if isinstance(left, float):
+        return float.__repr__(left) == float.__repr__(cast(float, right))
+    if isinstance(left, str):
+        return str.__eq__(left, right) is True
+    if isinstance(left, int):
+        return int.__eq__(left, right) is True
+    if left is None:
+        return True
+    raise TypeError("请求增量比较只接受已经冻结的 JSON")
+
+
+@dataclass(frozen=True, slots=True)
+class _PreparedRequest:
+    """本次 ReAct 已提交的请求；结束或取消时与该执行一起释放。"""
+
+    key: str
+    attempt: int
+    request: Mapping[str, object]
+    depth: int
+
+    def entry(self, request: Mapping[str, object], materials: Materials) -> tuple[Mapping[str, object], int]:
+        """复用已提交请求的相同前缀；每十五个增量后保存完整起点。"""
+        if self.depth >= 15:
+            return {"request": request, "materials": materials}, 0
+        changed = dict(request)
+        # 标量和材料始终完整保存；只有数组前缀需要证明。
+        for name in ("messages", "tools", "content_refs"):
+            old = cast(Sequence[object], self.request[name])
+            current = cast(Sequence[object], request[name])
+            prefix = 0
+            for before, after in zip(old, current):
+                if not _same_json(before, after):
+                    break
+                prefix += 1
+            changed[name] = {"prefix": prefix, "tail": current[prefix:]}
+        return {"encoding": "request-delta-v1", "base_key": self.key,
+                "base_attempt": self.attempt, "request": changed, "materials": materials}, self.depth + 1
 
 
 def _decode_request(value: object) -> ModelRequest:
@@ -198,45 +293,56 @@ def _decode_request(value: object) -> ModelRequest:
     )
 
 
-def _steps(messages: Sequence[Message], source: str) -> int:
-    """完成步数来自本来源未闭段的模型 Output，中断或进程重启不会重置。"""
-    outputs: list[Message] = []
-    for message in messages:
-        if message.source != source:
-            continue
-        body = message.body
-        if isinstance(body, Output):
-            if body.finish != "continue":
-                outputs.clear()
-            elif any(isinstance(part, ContentPart) and part.kind == "model.facts" for part in body.parts):
-                outputs.append(message)
-        elif isinstance(body, Control) and body.action == "abandon":
-            outputs = [item for item in outputs if item.seq > body.through_seq]
-    return len(outputs)
+def _load_entry(entry: Mapping[str, object], state: OwnerStore) -> tuple[ModelRequest, Materials]:
+    """在同一快照内恢复准确请求；引用缺失或损坏不能改用当前材料。"""
+    def load() -> tuple[ModelRequest, Materials]:
+        # 1. 沿原 owner 的冻结记录读取，旧版内联格式仍作为完整起点。
+        current = entry
+        deltas: list[Mapping[str, object]] = []
+        while "encoding" in current:
+            if (current.get("encoding") != "request-delta-v1" or len(deltas) >= 15
+                    or set(current) != {"encoding", "base_key", "base_attempt", "request", "materials"}):
+                raise ValueError("冻结请求的增量格式或引用长度无效")
+            key, attempt = current["base_key"], current["base_attempt"]
+            if not isinstance(key, str) or not key or type(attempt) is not int or attempt < 0:
+                raise ValueError("冻结请求的前驱身份无效")
+            record = state.read(key)
+            if record is None:
+                raise ValueError("冻结请求的前驱记录缺失")
+            attempts = record.value.get("attempts")
+            if not isinstance(attempts, tuple) or attempt >= len(attempts):
+                raise ValueError("冻结请求的前驱 attempt 缺失")
+            parent = attempts[attempt]
+            if not isinstance(parent, Mapping):
+                raise ValueError("冻结请求的前驱内容损坏")
+            deltas.append(current)
+            current = cast(Mapping[str, object], parent)
+        request, materials = current["request"], current["materials"]
+        if not isinstance(request, Mapping) or not isinstance(materials, Mapping):
+            raise ValueError("冻结请求的完整起点损坏")
+        # 2. 从完整起点按原顺序应用差异；数组长度和尾部都来自持久事实。
+        for delta in reversed(deltas):
+            changed = delta["request"]
+            if not isinstance(changed, Mapping):
+                raise ValueError("冻结请求的增量内容损坏")
+            fields = dict(changed)
+            for name in ("messages", "tools", "content_refs"):
+                part, old = fields[name], request[name]
+                if not isinstance(part, Mapping) or set(part) != {"prefix", "tail"}:
+                    raise ValueError("冻结请求的数组增量损坏")
+                prefix, tail = part["prefix"], part["tail"]
+                if (not isinstance(old, tuple) or type(prefix) is not int
+                        or not 0 <= prefix <= len(old) or not isinstance(tail, tuple)):
+                    raise ValueError("冻结请求的数组范围损坏")
+                fields[name] = old[:prefix] + tail
+            request = fields
+            if delta["materials"] is not None:
+                materials = delta["materials"]
+                if not isinstance(materials, Mapping):
+                    raise ValueError("冻结请求的材料损坏")
+        return _decode_request(request), cast(Materials, materials)
 
-
-def _terminal_result(messages: Sequence[Message], source: str, tools: ToolMenu,
-                     names: frozenset[str]) -> bool:
-    """终结规则只读取本来源未闭段的成功回执，不把调用意图当作效果。"""
-    boundary = -1
-    calls: dict[CallRef, int] = {}
-    succeeded: set[CallRef] = set()
-    for message in messages:
-        if message.source != source:
-            continue
-        body = message.body
-        if isinstance(body, Output):
-            if body.finish != "continue":
-                boundary = message.seq
-            else:
-                calls.update((CallRef(message.message_id, index), message.seq)
-                             for index, part in enumerate(body.parts)
-                             if isinstance(part, ToolCall) and tools.name(part.binding_id) in names)
-        elif isinstance(body, Control) and body.action == "abandon":
-            boundary = max(boundary, body.through_seq)
-        elif isinstance(body, ToolResult) and body.outcome == "success":
-            succeeded.add(body.call_ref)
-    return any(seq > boundary and ref in succeeded for ref, seq in calls.items())
+    return state.snapshot(load)
 
 
 class _OrderGate:
@@ -396,12 +502,11 @@ async def _settle_group(
 async def _settle_pending(
     reader: MessageReader,
     tools: ToolMenu,
-    source: str,
+    calls: tuple[CallRef, ...],
     limit: int,
     capture_scope: Callable[[], RuntimeScope] | None,
 ) -> None:
     """结算未闭段调用：exclusive 调用是屏障，连续 parallel 调用走有界池。"""
-    calls = await run_file_io(lambda: reader.scan(lambda rows: _pending_calls(rows, source), source=source))
     index = 0
     while index < len(calls):
         if not _parallel(reader, tools, calls[index]):
@@ -417,28 +522,33 @@ async def _settle_pending(
 
 @asynccontextmanager
 async def _complete(
-    snapshot: tuple[Message, ...], prepared: Materials, *, source: str,
+    snapshot: Sequence[Message], prepared: Materials, *, source: str,
     context: ContextBuilder, model: BoundChatModel, projection: MessageProjection,
     tools: ToolMenu, max_output_tokens: int, reduce: SummaryReducer | None,
     preview: Preview | None,
     reminder_input_id: str | None,
-    claim: Callable[[int], Awaitable[tuple[str, str | None]]] | None = None,
     fallback_key: str | None = None,
-    freeze: Callable[[int, ModelRequest, Materials], Awaitable[tuple[ModelRequest, Materials]]] | None = None,
+    prepare: Callable[[int, ModelRequest, Materials], Awaitable[tuple[ModelRequest, Materials, str, str]]] | None = None,
     resumed: Mapping[int, tuple[ModelRequest, Materials]] | None = None,
     start_at: int = 0,
     resume_rejected: bool = False,
+    operation_id: str = "",
 ) -> AsyncGenerator[tuple[LLMResponse, Materials, str, ModelRequest]]:
     """缩减只更新已取得材料中的摘要；provider 容量拒绝最多重试一次。
 
-    每个 attempt 的请求与材料都经 freeze 耐久保存；恢复时按原字节精确重放，
+    每个 attempt 的请求、材料和启动身份一次提交；恢复时按原字节精确重放，
     ContextLength 缩减后的第二次请求同样不重建不漂移。
     """
+    mark = partial(log_timing, session_id=snapshot[-1].session_id if snapshot else "",
+                   source=source, operation_id=operation_id)
     # 1. 本地容量与软水位先交给同一摘要 owner，其他材料不重新获取。
     def build(mats: Materials) -> tuple[ModelRequest, str | None]:
-        return context.build_attempt(snapshot, materials=mats, model=projection,
+        mark("context.build.begin")
+        result = context.build_attempt(snapshot, materials=mats, model=projection,
                                      tools=tools.schemas, max_output_tokens=max_output_tokens,
                                      current_reminder_input_id=reminder_input_id)
+        mark("context.build.end")
+        return result
 
     prepared_attempt = prepared
     async def reduce_request(mats: Materials, request: ModelRequest, *, force: bool) -> tuple[Materials, Mapping[str, object] | None]:
@@ -454,8 +564,10 @@ async def _complete(
                 if callback is not None:
                     await callback({"retry_status": text})
 
-            summary = await reduce(snapshot, mats, request, model, projection,
+            mark("context.reduce.begin")
+            summary = await reduce(tuple(snapshot), mats, request, model, projection,
                                    source=source, force=force, on_status=report)
+            mark("context.reduce.end")
         return ({**mats, "notices": tuple(notices)} if notices else mats), summary
 
     if resumed is not None and start_at in resumed:
@@ -472,26 +584,28 @@ async def _complete(
                 request, rejection = build(prepared_attempt)
             if rejection is not None:
                 raise ContextLengthError(rejection)
-    if freeze is not None:
-        # 生成准备把当前真实请求与材料一并冻结；恢复后不再重建或漂移。
-        request, prepared_attempt = await freeze(start_at, request, prepared_attempt)
     prepared = prepared_attempt
-    # 2. 每次 provider 调用使用生成准备中已耐久固定的 Output ID 与请求 key。
+    # 2. 请求与启动身份由同一 owner 原子提交，再打开流式预览并调用模型。
     with ExitStack() as previews:
-        async def begin(attempt: int) -> tuple[str, str | None, StreamCallback | None]:
-            if claim is None:
-                # 无准备记录时仍以持久前提界定同一请求，避免跨代重放相同字节。
+        async def begin(
+            attempt: int, request: ModelRequest, mats: Materials,
+        ) -> tuple[ModelRequest, Materials, str, str | None, StreamCallback | None]:
+            """固定本次请求与启动身份，再签发本地预览。"""
+            if prepare is None:
                 message_id = uuid4().hex
                 request_key = (
                     None if fallback_key is None else f"{fallback_key}:{attempt}"
                 )
             else:
-                message_id, request_key = await claim(attempt)
+                mark("request.freeze.begin")
+                request, mats, message_id, request_key = await prepare(attempt, request, mats)
+                mark("request.freeze.end")
             callback = None if preview is None else previews.enter_context(preview(message_id))
-            return message_id, request_key, callback
+            mark("request.claimed", request_id=request_key or "")
+            return request, mats, message_id, request_key, callback
 
         attempt = start_at
-        message_id, request_key, callback = await begin(attempt)
+        request, prepared, message_id, request_key, callback = await begin(attempt, request, prepared)
         try:
             if resume_rejected:
                 # 该 attempt 的 key 已有耐久的 provider 容量拒绝结算：
@@ -499,7 +613,9 @@ async def _complete(
                 rejected = ContextLengthError("provider 容量拒绝已耐久结算")
                 rejected.send_evidence = "rejected"
                 raise rejected
+            mark("model.begin", request_id=request_key or "")
             response = await model.complete(replace(request, on_delta=callback, request_key=request_key))
+            mark("model.end", request_id=request_key or "")
         except ContextLengthError as error:
             previews.close()
             # 强制缩减重试每代至多一次，且只适用于可证明的容量拒绝——
@@ -519,11 +635,10 @@ async def _complete(
                 request, rejection = build(prepared)
                 if rejection is not None:
                     raise ContextLengthError(rejection)
-                if freeze is not None:
-                    # 缩减后的第二请求与材料同样耐久冻结，恢复时精确重放。
-                    request, prepared = await freeze(attempt, request, prepared)
-            message_id, request_key, callback = await begin(attempt)
+            request, prepared, message_id, request_key, callback = await begin(attempt, request, prepared)
+            mark("model.begin", request_id=request_key or "")
             response = await model.complete(replace(request, on_delta=callback, request_key=request_key))
+            mark("model.end", request_id=request_key or "")
         # 3. 草稿持续到调用者完成解码与 CAS；异常和取消也会释放预览。
         yield response, prepared, message_id, request
 
@@ -555,51 +670,44 @@ async def react(
         raise ValueError("并行工具上限必须是正整数")
     if reader.session_id != writer.session_id:
         raise ValueError("ReAct reader 与 writer 必须属于同一 Session")
+    history = _History(writer.source)
+    previous_request: _PreparedRequest | None = None
     while True:
+        operation_id = uuid4().hex
+        mark = partial(log_timing, session_id=reader.session_id, source=writer.source, operation_id=operation_id)
+        mark("react.begin")
         # 1. 放弃区保持串行结算；未闭段里连续的 parallel 调用才重叠。
-        _, abandoned = await run_file_io(lambda: reader.scan(
-            lambda rows: _open_calls(rows, writer.source), source=writer.source,
-        ))
+        initial = await reader.committed_snapshot_async()
+        head_before = initial.through_seq
+        history.update(initial)
+        pending, abandoned = history.open_calls()
         for call in abandoned:
             # 已放弃调用的结算故障必须先阻断本来源：缺回执的调用不能带着未知效果进入新请求。
             await tools.settle_abandoned(call)
+        if abandoned:
+            # 放弃结算已追加事实，重新读取；普通路径复用同一次扫描的待执行调用。
+            history.update(await reader.committed_snapshot_async())
+            pending, _ = history.open_calls()
         await _settle_pending(
-            reader, tools, writer.source, max_parallel_calls, capture_scope,
+            reader, tools, pending, max_parallel_calls, capture_scope,
         )
-        snapshot = await reader.snapshot_async(through_seq=reader.head())
-        head = max((m.seq for m in snapshot if m.source == writer.source), default=-1)
-        # 本代准备的固定身份：最近一条同来源 Input 或 abandon Control。
-        # pause/failure/resume 是对同一业务项的操作，不是新边界：resume 必须
-        # 回到原准备核对旧回执，不得借 prep_base 变化绕过 started/孤儿/
-        # 终结检查。无关事实抬高 head 不产生新准备、不重复付费。
-        boundary_id = next(
-            (
-                message.message_id
-                for message in reversed(snapshot)
-                if message.source == writer.source
-                and (
-                    isinstance(message.body, Input)
-                    or (
-                        isinstance(message.body, Control)
-                        and message.body.action == "abandon"
-                    )
-                )
-            ),
-            "initial",
-        )
-        reminder_input_id = next(
-            (
-                message.message_id
-                for message in reversed(snapshot)
-                if message.source == writer.source and isinstance(message.body, Input)
-            ),
-            None,
-        )
-        frozen = snapshot
+        mark("tools.settled")
+        if pending or abandoned or reader.head() != head_before:
+            snapshot = await reader.committed_snapshot_async()
+        else:
+            # 无结算写入且 head 未动：进入结算前的固定前缀仍然有效。
+            snapshot = initial
+        mark("history.loaded", counts={"messages": len(snapshot)})
+        history.update(snapshot)
+        head = history.head
+        boundary_id = history.boundary_id
+        reminder_input_id = history.reminder_input_id
+        frozen: Sequence[Message] = snapshot
+        frozen_tuple = tuple(snapshot)
 
         async def commit(message_id: str, body: Output, metadata: Mapping[str, object] | None = None) -> Message:
             """检查与追加同事务；竞争 Output、新边界或读集内结果都取代旧草稿。"""
-            related = _related_results(frozen, writer.source)
+            related = history.related(frozen)
             if state is None:
                 current_head = head
                 for _ in range(4):
@@ -620,6 +728,9 @@ async def react(
                         current_head = max(m.seq for m in newer)
                 raise MessageConflict("来源 head 持续变化，提交前提无法稳定")
 
+            # 准备留在调用方 scope：内容引用与 metadata owner 回调属于插件
+            # owner 的原执行上下文，不能随事务带进 worker 线程（评审 #1146）；
+            # worker 只接收准备好的不可变 PreparedAppend。
             prepared_append = await writer.prepare_async(message_id, body, metadata=metadata)
 
             def narrow(transaction: OwnerTransaction) -> Message:
@@ -636,24 +747,24 @@ async def react(
             return await state.transact_async(narrow)
 
         try:
-            if terminal_tools and _terminal_result(snapshot, writer.source, tools, terminal_tools):
+            if terminal_tools and history.terminal(tools, terminal_tools):
                 return await commit(uuid4().hex, Output((), "quiet"))
         except _Superseded:
             raise asyncio.CancelledError from None
-        if max_steps > 0 and _steps(snapshot, writer.source) >= max_steps:
+        if max_steps > 0 and history.steps >= max_steps:
             raise StepLimit(f"本来源未完成工作已达到 {max_steps} 个模型输出")
 
         # 2. 生成准备冻结请求、材料、binding 与 Output 身份；恢复不重建不漂移。
-        claim: Callable[[int], Awaitable[tuple[str, str | None]]] | None = None
-        freeze: Callable[[int, ModelRequest, Materials], Awaitable[tuple[ModelRequest, Materials]]] | None = None
+        prepare: Callable[[int, ModelRequest, Materials], Awaitable[tuple[ModelRequest, Materials, str, str]]] | None = None
         resumed: dict[int, tuple[ModelRequest, Materials]] | None = None
         start_at = 0
         resume_rejection = False
+        mark("preparation.begin")
         if state is not None:
             # 输出前驱位置用该来源已有 Output 计数；与边界身份共同固定本代。
             prep_base = (
                 f"reply:{reader.session_id}:{writer.source}"
-                f":{boundary_id}:{_steps(snapshot, writer.source)}"
+                f":{boundary_id}:{history.steps}"
             )
             base_seq = reader.head()
 
@@ -719,12 +830,10 @@ async def react(
                 if prep.get("binding_id") != model.descriptor.binding_id:
                     raise ModelUnavailableError("生成准备记录的 binding 已失效")
                 frozen = await reader.snapshot_async(through_seq=cast(int, prep["base_seq"]))
+                frozen_tuple = frozen
                 attempts = prep_attempts(prep)
                 resumed = {
-                    index: (
-                        _decode_request(entry["request"]),
-                        cast(Materials, entry["materials"]),
-                    )
+                    index: _load_entry(entry, state)
                     for index, entry in enumerate(attempts)
                     if entry is not None
                 }
@@ -733,29 +842,39 @@ async def react(
                 prepared = (
                     cast(Materials, resumed[start_at][1])
                     if resumed
-                    else await materials(frozen)
+                    else await materials(frozen_tuple)
                 )
             else:
-                prepared = await materials(frozen)
+                prepared = await materials(frozen_tuple)
 
-            async def freeze_request(
+            async def prepare_request(
                 attempt: int, request: ModelRequest, built: Materials
-            ) -> tuple[ModelRequest, Materials]:
-                # Context 与模型句柄只在当前 scope 读取，worker 接收固定普通数据。
+            ) -> tuple[ModelRequest, Materials, str, str]:
+                """在同一来源检查下提交请求、材料和稳定启动身份。"""
+                nonlocal previous_request
+                # 基线只属于本次执行与固定 state；跨库、恢复或新执行都从完整请求开始。
                 binding_id = model.descriptor.binding_id
-                encoded_request = _encode_request(request)
-                fixed_materials = dict(built)
+                encoded_request = cast(Mapping[str, object], freeze_json(_encode_request(request)))
+                fixed_materials = cast(Materials, freeze_json(built))
+                new_entry: Mapping[str, object] = {"request": encoded_request, "materials": fixed_materials}
+                depth = 0
+                if previous_request is not None:
+                    new_entry, depth = previous_request.entry(encoded_request, fixed_materials)
 
-                def open_prep(transaction: OwnerTransaction) -> Mapping[str, object]:
+                def open_prep(transaction: OwnerTransaction) -> tuple[Mapping[str, object], bool, str, str]:
+                    """新准备只保存一次；旧准备复用原请求并补齐尚未领取的身份。"""
+                    if check_start is not None:
+                        check_start(transaction)
                     record = transaction.read(prep_key)
                     if record is None:
-                        record = transaction.save(prep_key, {
+                        value: dict[str, object] = {
                             "version": 3, "output_id": uuid4().hex,
                             "request_keys": [uuid4().hex], "base_seq": base_seq,
                             "binding_id": binding_id,
                             "attempts": [],
-                        }, expected_version=None)
-                    value = dict(record.value)
+                        }
+                    else:
+                        value = dict(record.value)
                     entries: list[Mapping[str, object] | None] = list(
                         cast(Sequence[Mapping[str, object] | None], value.get("attempts") or ())
                     )
@@ -763,63 +882,54 @@ async def react(
                         entries = [{"request": value["request"], "materials": value["materials"]}]
                     while len(entries) <= attempt:
                         entries.append(None)
-                    if entries[attempt] is None:
-                        entries[attempt] = {
-                            "request": encoded_request,
-                            "materials": fixed_materials,
-                        }
+                    created = entries[attempt] is None
+                    if created:
+                        # 后续请求可引用此条目；已有 attempt 必须保持写一次语义。
+                        entries[attempt] = new_entry
+                    keys = tuple(cast(Sequence[str], value["request_keys"]))
+                    while len(keys) <= attempt:
+                        keys += (uuid4().hex,)
+                    started = tuple(cast(Sequence[int], value.get("started_attempts", ())))
+                    needs_start = attempt not in started
+                    if created or needs_start or keys != tuple(cast(Sequence[str], value["request_keys"])):
                         record = transaction.save(
-                            prep_key, {**value, "attempts": entries},
-                            expected_version=record.version,
+                            prep_key, {**value, "attempts": entries, "request_keys": keys,
+                                       "started_attempts": (*started, attempt) if needs_start else started},
+                            expected_version=None if record is None else record.version,
                         )
                         value = dict(record.value)
                         entries = list(cast(Sequence[Mapping[str, object]], value["attempts"]))
-                    return cast(Mapping[str, object], entries[attempt])
+                    return (cast(Mapping[str, object], entries[attempt]), created,
+                            cast(str, value["output_id"]), keys[attempt])
 
-                entry = await state.transact_async(open_prep)
-                return _decode_request(entry["request"]), cast(Materials, entry["materials"])
+                entry, created, output_id, request_key = await state.transact_async(open_prep)
+                # 刚提交的请求已不可变；只有恢复旧记录时才重新解码。
+                if created:
+                    # 只有耐久提交成功才推进基线；回滚或取消不会发布未提交引用。
+                    previous_request = _PreparedRequest(prep_key, attempt, encoded_request, depth)
+                    saved_request, saved_materials = replace(request, on_delta=None, request_key=None), fixed_materials
+                else:
+                    # 恢复读取支持旧版增量格式；损坏引用报错，不重新生成请求。
+                    saved_request, saved_materials = _load_entry(entry, state)
+                return saved_request, saved_materials, output_id, request_key
 
-            async def claim_attempt(attempt: int) -> tuple[str, str | None]:
-                def advance(transaction: OwnerTransaction) -> tuple[str, str]:
-                    if check_start is not None:
-                        check_start(transaction)
-                    record = transaction.read(prep_key)
-                    if record is None:
-                        raise RuntimeError("生成准备记录缺失")
-                    value = dict(record.value)
-                    keys = list(cast(Sequence[str], value["request_keys"]))
-                    while len(keys) <= attempt:
-                        keys.append(uuid4().hex)
-                    started = list(cast(Sequence[int], value.get("started_attempts", ())))
-                    if attempt not in started:
-                        started.append(attempt)
-                    if keys != value["request_keys"] or started != value.get("started_attempts", ()):
-                        record = transaction.save(
-                            prep_key, {**value, "request_keys": keys, "started_attempts": started},
-                            expected_version=record.version,
-                        )
-                        value = record.value
-                    return cast(str, value["output_id"]), keys[attempt]
-
-                return await state.transact_async(advance)
-
-            freeze = freeze_request
-            claim = claim_attempt
+            prepare = prepare_request
         else:
             # 3. 取得材料与组装请求分开，Context 不获得模型调用或检索权。
-            prepared = await materials(frozen)
+            prepared = await materials(frozen_tuple)
+        mark("preparation.end")
         async with _complete(
             frozen, prepared, source=writer.source, context=context, model=model,
             projection=projection, tools=tools, max_output_tokens=max_output_tokens, reduce=reduce, preview=preview,
             reminder_input_id=reminder_input_id,
-            claim=claim,
-            freeze=freeze,
+            prepare=prepare,
             resumed=resumed,
             start_at=start_at,
             resume_rejected=resume_rejection,
+            operation_id=operation_id,
             fallback_key=(
                 f"reply:{reader.session_id}:{writer.source}"
-                f":{boundary_id}:{_steps(snapshot, writer.source)}"
+                f":{boundary_id}:{history.steps}"
             ),
         ) as (response, prepared, message_id, request):
             # 先检查完整性：即使截断参数恰好是合法 JSON，也不能执行该批工具。
@@ -869,6 +979,7 @@ async def react(
                 parts.append(ContentPart("context.summary", {"reference": summary["reference"]}))
             parts.extend(ContentPart("context.notice", notice)
                          for notice in cast(Sequence[str], prepared.get("notices", ())))
+            mark("output.decoded", counts={"tool_calls": len(indices)})
             # 4. 内容完成后在窄事务内核对前提并提交；失败的草稿绝不触发工具。
             try:
                 message = await commit(
@@ -878,10 +989,12 @@ async def react(
                 )
             except _Superseded:
                 raise asyncio.CancelledError from None
+            mark("output.committed", request_id=response.call_record_id or "", parent_operation_id=message.message_id, counts={"seq": message.seq, "tool_calls": len(indices)})
             if not indices:
                 return message
-        # 下一轮工具可能长时间等待；上一轮历史和准备材料不再有消费者。
-        del snapshot, frozen, commit, prepared, resumed, freeze, claim
+        # Loop 保留当前历史，直到下轮真实快照替换它；弱解码缓存才能复用旧消息。
+        # 不再使用的准备材料与提交闭包立即释放，结束或取消时释放整个 Loop。
+        del commit, prepared, resumed, prepare
 
 
 async def apply(ctx: Context) -> None:

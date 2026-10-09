@@ -47,10 +47,9 @@ async def apply(ctx: Context) -> None:
         current = directories.snapshot(snapshot[-1].session_id)
         if current.path is None:
             return {}
-        info = await directories.inspect(current.path)
         rules = await read_agents(current.path)
         return {"reminders": ({"name": "working-directory", "priority": 400, "replay": False,
-                               "text": directory_material(current.path, str(info["status"]), rules)},)}
+                               "text": directory_material(current.path, str(rules["directory_status"]), rules)},)}
 
     _ = await ctx.require(MATERIALS).register(
         ctx, name="working-directory", kind="context", prepare=materials,

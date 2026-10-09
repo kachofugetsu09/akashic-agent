@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+from contextvars import copy_context
 from collections.abc import Callable
 from dataclasses import dataclass, field
 from typing import TypeVar
@@ -23,11 +24,13 @@ async def run_file_io(fn: Callable[[], T]) -> T:
     """最多四个磁盘操作并行；取消后仍等物理工作结束才归还锁与 owner。"""
     # 1. 等待名额时可以取消；线程启动后不能把取消当作工作已结束。
     loop = asyncio.get_running_loop()
-    state = _FILE_IO_SLOTS.setdefault(loop, _FileIoState())
+    state = _FILE_IO_SLOTS.get(loop)
+    if state is None:
+        state = _FILE_IO_SLOTS[loop] = _FileIoState()
     state.users += 1
     try:
         async with state.slots:
-            work = asyncio.create_task(asyncio.to_thread(fn))
+            work = loop.run_in_executor(None, copy_context().run, fn)
             cancelled: asyncio.CancelledError | None = None
             while not work.done():
                 try:

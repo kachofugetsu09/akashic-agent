@@ -25,7 +25,7 @@ MaterialData = Mapping[str, object]
 SummaryData = Mapping[str, object]
 
 
-def settled_prefixes(messages: tuple[Message, ...]) -> tuple[int, ...]:
+def settled_prefixes(messages: Sequence[Message]) -> tuple[int, ...]:
     """返回工具已结算或被明确放弃的前缀长度；不伪造任何工具结果。"""
     pending: dict[CallRef, Message] = {}
     ends: list[int] = []
@@ -62,7 +62,7 @@ def check_notice(part: ContentPart) -> ContentReferences:
     return ContentReferences()
 
 
-def summary_range(snapshot: tuple[Message, ...], source_message_ids: tuple[str, ...]) -> range:
+def summary_range(snapshot: Sequence[Message], source_message_ids: tuple[str, ...]) -> range:
     """按真实身份定位摘要的连续区间；窗口外旧消息不冒充摘要来源。"""
     identities = tuple(message.message_id for message in snapshot)
     if not source_message_ids or source_message_ids[0] not in identities:

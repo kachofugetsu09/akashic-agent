@@ -170,4 +170,6 @@ async def apply(ctx: Context) -> None:
     )
     await ctx.require(CONTENT_VIEWS).register(
         ctx, name="tool_results", prepare=prepare_view,
+        # 只展开 READ_KIND 回读块；其他消息恒返回 None，投影可缓存其分段。
+        dynamic_kinds=frozenset({READ_KIND}),
     )

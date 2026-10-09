@@ -14,6 +14,7 @@ from contextvars import ContextVar
 from dataclasses import asdict, dataclass, field, replace
 from functools import partial
 from time import monotonic_ns
+from core.common.diagnostic_log import log_timing
 from types import MappingProxyType
 from typing import (
     Any,
@@ -170,6 +171,7 @@ class _BoundChat:
         self._store = store
         self._root_instance = root_instance
         self._max_attempts = None if max_attempts is None else max(1, max_attempts)
+        self._request_encodings: dict[int, tuple[object, bytes]] = {}
 
     @property
     def descriptor(self) -> BoundModelDescriptor:
@@ -183,7 +185,7 @@ class _BoundChat:
             and continuation.binding_id != self._descriptor.binding_id
         ):
             raise ModelUnavailableError("continuation 不属于当前 model binding")
-        digest = _request_digest(request)
+        digest = _request_digest(request, self._request_encodings)
         if request.request_key is None:
             # 无 key 调用是独立效果身份：单次尝试记账，不共享回执也不占用重试预算。
             return await self._attempts(
@@ -265,9 +267,10 @@ class _BoundChat:
 
     async def _scan(
         self, request_key: str, digest: str, *, budget: int | None,
-    ) -> LLMResponse | None:
+    ) -> tuple[LLMResponse | None, tuple[Mapping[str, Any], ...]]:
         """同 key 账目核对：成功重放；孤儿结算；存活或身份不明的 attempt 阻断。"""
         records = await run_file_io(partial(self._store.calls_for_key, request_key))
+        settled = False
         for record in records:
             if record["request_digest"] != digest:
                 raise ValueError("同一模型请求 key 的请求内容不一致")
@@ -282,7 +285,7 @@ class _BoundChat:
                 replayed.usage = (
                     None if record.get("usage") is None else ModelUsage(**record["usage"])
                 )
-                return replayed
+                return replayed, records
             if record["state"] != "started":
                 continue
             call_id = cast(str, record["id"])
@@ -296,7 +299,10 @@ class _BoundChat:
                 failure="orphaned: 原模型生成 owner 已退出，响应及 usage 未知",
                 next_attempt_at=(time.time() if budget is None or len(records) < budget else None),
             ))
-        return None
+            settled = True
+        if settled:
+            records = await run_file_io(partial(self._store.calls_for_key, request_key))
+        return None, records
 
     def _owner_dead(self, record: Mapping[str, Any]) -> bool:
         """owner 身份为 epoch:进程:Root:attempt；只凭真实死亡证据结算。
@@ -354,10 +360,9 @@ class _BoundChat:
         budget = self._max_attempts if budget is None else max(1, budget)
         while True:
             # 1. 读取原请求回执和退避；成功只回放，终态不重新领取额度。
-            replayed = await self._scan(request_key, digest, budget=budget)
+            replayed, records = await self._scan(request_key, digest, budget=budget)
             if replayed is not None:
                 return replayed
-            records = await run_file_io(partial(self._store.calls_for_key, request_key))
             # 预算是耐久事实：连续 complete、关闭重开、进程重启都不刷新；
             # 同 key 读取原退避和尝试序号；显式上限耗尽后不另领额度。
             if budget is not None and len(records) >= budget:
@@ -385,6 +390,7 @@ class _BoundChat:
                             f"可以取消等待。上次失败：{last['failure']}"
                         )})
                     # 等待可取消；已结算的失败与允许时间保留，恢复按剩余额度继续。
+                    log_timing("model.retry.wait", request_id=request_key, counts={"attempt": len(records) + 1})
                     await asyncio.sleep(delay)
             # 2. 先原子登记新的物理尝试，再调用单次 driver。
             owner_id = (
@@ -397,7 +403,7 @@ class _BoundChat:
             def start_call() -> None:
                 nonlocal call_id
                 call_id = store.resume_call(
-                    descriptor, request, request_key=request_key,
+                    descriptor, digest, request_key=request_key,
                     owner_id=owner_id, max_attempts=budget,
                 )
 
@@ -413,15 +419,17 @@ class _BoundChat:
                 raise
             except ModelUnavailableError:
                 # 写事务发现读取后已完成的调用时，只回放原成功，不新开 attempt。
-                replayed = await self._scan(request_key, digest, budget=budget)
+                replayed, _ = await self._scan(request_key, digest, budget=budget)
                 if replayed is not None:
                     return replayed
                 raise
             assert call_id is not None
+            log_timing("model.attempt.recorded", operation_id=call_id, request_id=request_key, counts={"attempt": len(records) + 1})
             started_call_id = call_id
             _LIVE_CALLS.add(call_id)
             started: int | None = None
             first_token = False
+            first_token_ms: float | None = None
             response: LLMResponse | None = None
             callback_failed = False
 
@@ -435,15 +443,15 @@ class _BoundChat:
                         raise
 
             async def delta(value: dict[str, str]) -> None:
-                nonlocal first_token
+                nonlocal first_token, first_token_ms
                 assert started is not None
                 if not first_token and (
                     value.get("content_delta") or value.get("thinking_delta")
                 ):
-                    await run_file_io(partial(self._store.record_first_token,
-                        started_call_id, (monotonic_ns() - started) / 1_000_000
-                    ))
+                    # 首字耗时随结算同事务落盘，不再单独提交一次。
+                    first_token_ms = (monotonic_ns() - started) / 1_000_000
                     first_token = True
+                    log_timing("model.first_delta", operation_id=started_call_id, request_id=request_key)
                 await publish(value)
 
             try:
@@ -456,13 +464,16 @@ class _BoundChat:
                     if request.on_delta is not None:
                         await publish({"call_record_id": call_id, "retry_status": ""})
                     started = monotonic_ns()
+                    log_timing("model.driver.begin", operation_id=call_id, request_id=request_key)
                     response = await self._driver.complete(driver_request)
+                    log_timing("model.driver.end", operation_id=call_id, request_id=request_key)
                     # 空生成没有可交付输出；使用同一请求恢复，不能把它提交为 quiet。
                     if (response.finish_reason != "length"
                             and not (response.content and response.content.strip())
                             and not response.tool_calls):
                         raise EmptyResponseError("模型没有产生正文或工具调用，正在重新生成")
                 except BaseException as failure:
+                    log_timing("model.driver.failed", operation_id=call_id, request_id=request_key)
                     # 3. 失败先结算发送事实、usage 和下次允许时间，再决定是否继续。
                     # 模型生成与本地工具效果分开：暂时故障允许重发生成，
                     # 保留真实发送证据和未知 usage，不声称第一次请求没有计费。
@@ -510,6 +521,7 @@ class _BoundChat:
                             next_attempt_at=retry_at,
                             partial_response=partial_response,
                             send_evidence=evidence,
+                            first_token_ms=first_token_ms,
                         ), failure if isinstance(failure, asyncio.CancelledError) else None)
                     except (asyncio.CancelledError, BaseExceptionGroup) as record_failure:
                         if isinstance(failure, asyncio.CancelledError):
@@ -533,7 +545,9 @@ class _BoundChat:
                     call_id, usage=response.usage, failure=None,
                     duration_ms=(monotonic_ns() - started) / 1_000_000,
                     response=response,
+                    first_token_ms=first_token_ms,
                 ))
+                log_timing("model.response.committed", operation_id=call_id, request_id=request_key)
                 response.call_record_id = call_id
                 return response
             finally:

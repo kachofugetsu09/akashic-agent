@@ -325,15 +325,20 @@ Turn 是按 source 过滤的 Message 日志上的无状态读投影：`Output.fi
 
 skills、长期记忆和检索结果必须带来源和信任级别，作为 system context 或独立数据块进入请求。当前 user message 始终独立；工具授权不能由提示词内容决定。
 
-请求使用“system → 已保存消息的模型投影（含当前输入与摘要）→ 一个末尾 user-role `<system-reminder>`”。
+请求使用 system 与已保存消息的模型投影（含当前输入与摘要）；派生材料使用独立的
+user-role `<system-reminder>`，不并入用户原话。同一 Input 的相同材料保留首次使用位置；
+新材料在本次请求末尾加入，不为每次工具续接移动已有材料。理由见 [0096](decisions/0096-context-reminders-keep-their-first-position.md)。
 VEDA、SELF/MEMORY、技能目录与常驻指令、渠道规则、固定工具目录留在 system；时间、Akasha 召回和本次后台结果进入提醒。
 提醒不另写独立 Message、不制造用户 Input。每次模型请求固定一份材料，超出完整请求预算明确报错，不能按优先级静默丢弃。
 提醒块身份为实际贡献插件 ID 与局部名称，同一身份重复时报错；priority 升序，仅决定排列，同优先级按插件 ID、名称的 UTF-8 字节升序。
 SELF/MEMORY 低频更新不要求迁出 system，也不承诺其异步发布与 compaction 只产生一次 provider 缓存失效。
 成功的模型 Output 在 `model.facts` 中保存当次 reminder、其真实 Input 身份与 SHA-256 摘要，以及 wire tool
 call replay；恢复旧请求时使用该已提交事实重建原 provider 前缀。同一 Input 的同一 reminder 只在
-prompt history 重放一次，当前请求的同一材料仍作为末尾 reminder 出现；同一 Input 后续材料改变、
+prompt history 重放一次，当前请求复用该位置；同一 Input 后续材料改变、
 不同 Input 的材料和未带身份的旧事实都照实保留。它不新增 Input、授权或持久上下文副本，失败和取消也不伪造 replay。
+不进入历史的实时材料随当前 reminder 放置；没有可回放 reminder 时放在本来源最新 Input 后。
+其正文每次读取当前贡献，撤下后不得从旧 Output 恢复。材料实际变化、裁切窗口或切换模型
+可以改变请求前缀；不得为保留缓存使用过期材料。
 
 用户提交的图片在当前模型声明支持图片输入时，须以真实图片内容进入请求。附件名称与
 文字占位不能代替原图。Model 内容 owner 通过窄 Artifact 只读租约取得有界字节，构造请求图；
