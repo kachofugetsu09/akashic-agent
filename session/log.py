@@ -492,11 +492,11 @@ class MessageLog:
         self._reads = _ReadLocal()
         self._path = Path(path).resolve()
         self._closed = False
-        self._notify_pending = False
-        self._notify_owed = False
+        self._notify_pending: set[type[Body]] | None = set()
+        self._notify_owed: set[type[Body]] | None = set()
         self._defer_notify = threading.local()
         self._notify_in_flight: set[asyncio.Event] = set()
-        self._listeners: dict[asyncio.Event, asyncio.AbstractEventLoop] = {}
+        self._listeners: dict[asyncio.Event, tuple[asyncio.AbstractEventLoop, type[Body] | None]] = {}
         self._writer_connection = sqlite3.connect(str(path), check_same_thread=False)
         self._connection.row_factory = sqlite3.Row
         _ = self._connection.execute("PRAGMA foreign_keys=ON")
@@ -630,7 +630,7 @@ class MessageLog:
                 raise MessageConflict("同一 Session 的固定属性不能改变")
             # Only the new row admits initial owner state, in this same transaction.
             if inserted.rowcount == 1:
-                self._notify_pending = True
+                self._changed()
                 for store, initialize in initializers:
                     if store._log is not self:
                         raise ValueError("Session 初始化不能跨存储 authority")
@@ -680,7 +680,7 @@ class MessageLog:
                 self._connection.execute(
                     "UPDATE sessions SET deleted_at=NULL WHERE key=?", (session_id,),
                 )
-                self._notify_pending = True
+                self._changed()
                 return None
             if current is not None:
                 return current
@@ -688,7 +688,7 @@ class MessageLog:
             self._connection.execute(
                 "UPDATE sessions SET deleted_at=? WHERE key=?", (stamp, session_id),
             )
-            self._notify_pending = True
+            self._changed()
             return stamp
 
         return self._write(change)
@@ -720,7 +720,7 @@ class MessageLog:
             self._connection.execute(
                 "UPDATE sessions SET title=? WHERE key=?", (normalized, session_id),
             )
-            self._notify_pending = True
+            self._changed()
             return normalized
 
         return self._write(change)
@@ -742,30 +742,40 @@ class MessageLog:
                 raise RuntimeError("事务内写入必须使用当前 transaction 接口")
             with self._connection:
                 _ = self._connection.execute("BEGIN IMMEDIATE")
-                self._notify_pending = False
+                self._notify_pending = set()
                 result = callback()
                 if inspect.isawaitable(result):
                     if inspect.iscoroutine(result):
                         result.close()
                     raise TypeError("存储事务回调必须同步，不能跨 await")
             # owner 账本或 embedding 的单独提交不会改变消息订阅结果。
-            if self._notify_pending:
+            if self._notify_pending is None or self._notify_pending:
                 if getattr(self._defer_notify, "active", False):
                     # 异步提交路径：唤醒投递让给提交者恢复后再做，
                     # listener 的追赶读不再排在提交者延续之前。
-                    self._notify_owed = True
+                    with self._listener_lock:
+                        if self._notify_pending is None:
+                            self._notify_owed = None
+                        elif self._notify_owed is not None:
+                            self._notify_owed.update(self._notify_pending)
                 else:
-                    self._notify()
+                    self._notify(self._notify_pending)
             return result
 
-    def flush_notify(self) -> None:
-        """交付异步提交欠下的 listener 唤醒；提交者恢复后由 `_run_commit` 调用。"""
-        if not self._notify_owed:
-            return
-        self._notify_owed = False
-        self._notify()
+    def _changed(self, body_type: type[Body] | None = None) -> None:
+        """事务中只收集消息类型，提交后再选订阅者，避免漏掉并发新订阅。"""
+        if body_type is None:
+            self._notify_pending = None
+        elif self._notify_pending is not None:
+            self._notify_pending.add(body_type)
 
-    def _notify(self) -> None:
+    def flush_notify(self) -> None:
+        """交付异步提交欠下的唤醒；不同提交的消息类型在同一锁内合并。"""
+        with self._listener_lock:
+            pending, self._notify_owed = self._notify_owed, set()
+        self._notify(pending)
+
+    def _notify(self, changed: set[type[Body]] | None) -> None:
         """逐个通知已注册读者；提交已经成立，observer 失败不污染返回结果。
 
         唤醒按 Event 合并：唤醒在途或 Event 已置位时，读者 clear 后的重读
@@ -775,11 +785,13 @@ class MessageLog:
         只有 loop 确认已关闭的 listener 才移除；无法确认死亡的订阅保留，
         告警如实记录，由 follow 周期核对兜底恢复持久事实。
         """
+        if changed is not None and not changed:
+            return
         with self._listener_lock:
-            listeners = tuple(self._listeners.items())
             pending = [
-                (event, loop) for event, loop in listeners
-                if not event.is_set() and event not in self._notify_in_flight
+                (event, loop) for event, (loop, wake_on) in self._listeners.items()
+                if (changed is None or wake_on is None or wake_on in changed)
+                and not event.is_set() and event not in self._notify_in_flight
             ]
             self._notify_in_flight.update(event for event, _ in pending)
         for event, loop in pending:
@@ -915,7 +927,7 @@ class MessageLog:
             self._writer_connection.close()
             with self._listener_lock:
                 listeners = tuple(self._listeners.items())
-            for event, loop in listeners:
+            for event, (loop, _) in listeners:
                 try:
                     _ = loop.call_soon_threadsafe(event.set)
                 except BaseException as error:
@@ -1039,9 +1051,13 @@ class MessageCatalog:
             rows = self._log._connection.execute("SELECT key, attributes FROM sessions ORDER BY key").fetchall()
         return MappingProxyType({row["key"]: decode_attributes(row["attributes"]) for row in rows})
 
-    async def follow(self, *, poll_interval: float | None = None) -> AsyncGenerator[Mapping[str, int]]:
+    async def follow(
+        self, *, poll_interval: float | None = None, wake_on: type[Body] | None = None,
+    ) -> AsyncGenerator[Mapping[str, int]]:
         """先订阅再取 heads；通知只降低延迟，消费者始终按快照重读事实。
 
+        wake_on 只限制进程内消息唤醒，初始追赶与返回的 heads 仍包含全部消息；
+        会话管理变化和关闭仍通知所有订阅。
         poll_interval 给出有界重扫节奏：进程内唤醒丢失时，已提交的持久变化
         最多在一个周期后被重新发现。
         """
@@ -1049,7 +1065,7 @@ class MessageCatalog:
         with self._log._listener_lock:
             if self._log._closed:
                 return
-            self._log._listeners[event] = asyncio.get_running_loop()
+            self._log._listeners[event] = (asyncio.get_running_loop(), wake_on)
         previous: Mapping[str, int] | None = None
         try:
             while True:
@@ -1514,7 +1530,7 @@ class MessageReader:
         with self._log._listener_lock:
             if self._log._closed:
                 return
-            self._log._listeners[event] = asyncio.get_running_loop()
+            self._log._listeners[event] = (asyncio.get_running_loop(), None)
         previous = -1
         try:
             while True:
@@ -1539,7 +1555,7 @@ class MessageReader:
         with self._log._listener_lock:
             if self._log._closed:
                 return
-            self._log._listeners[event] = asyncio.get_running_loop()
+            self._log._listeners[event] = (asyncio.get_running_loop(), None)
         try:
             while True:
                 event.clear()
@@ -1961,7 +1977,7 @@ class MessageWriter:
                     "UPDATE sessions SET metadata=? WHERE key=?", (payload, self._session_id),
                 )
 
-        self._log._notify_pending = True
+        self._log._changed(type(body))
         return message
 
     def _check_parts(self, body: Body) -> tuple[set[str], tuple[str, ...]]:
