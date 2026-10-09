@@ -9,7 +9,7 @@ import tempfile
 
 ROOT = Path(__file__).resolve().parents[1]
 PROTO = Path("agent/host_bridge/host_bridge.proto")
-OUTPUTS = ("host_bridge_pb2.py", "host_bridge_pb2.pyi", "host_bridge_pb2_grpc.py")
+OUTPUTS = ("host_bridge_pb2.py", "host_bridge_pb2.pyi")
 GENERATOR_VERSION = "1.78.0"
 
 
@@ -32,7 +32,6 @@ def main() -> int:
                 f"-I{ROOT}",
                 f"--python_out={output}",
                 f"--pyi_out={output}",
-                f"--grpc_python_out={output}",
                 str(PROTO),
             ],
             cwd=ROOT,

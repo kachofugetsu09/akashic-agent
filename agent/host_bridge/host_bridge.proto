@@ -2,7 +2,7 @@ syntax = "proto3";
 
 package akashic.host.v2;
 
-// 单一 release 内的私有主机协议；认证 token 只通过 metadata 传输。
+// 单一 release 内的私有主机协议；认证 token 由连接握手提供，不进入业务消息。
 service HostBridge {
   rpc Inspect(ContextRequest) returns (IdentityReply);
   rpc ClaimBoot(ContextRequest) returns (ClaimBootReply);

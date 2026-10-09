@@ -105,6 +105,7 @@
 | [0096](0096-context-reminders-keep-their-first-position.md) | proposed | 不变提醒保留首次位置，变化材料追加，实时材料不回放 | CTX-004、CTX-009 |
 
 | [0097](0097-request-deltas-belong-to-one-react-run.md) | proposed | 冻结请求增量只引用本次执行的已提交记录，保持 JSON 类型与准确重放 | CTX-001、STA-002、SES-005 |
+| [0098](0098-host-bridge-reuses-protobuf-socket.md) | accepted | Host Bridge 在复用的 Unix socket 上传输 Protobuf | RUN-013～RUN-015、SH-001～SH-003 |
 
 ## 新增规则
 

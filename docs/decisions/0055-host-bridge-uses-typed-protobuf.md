@@ -5,6 +5,7 @@
 - Supersedes：[0032](0032-host-bridge-preserves-host-equivalent-execution.md) 的第 3 项 V1 wire 选择；其他决定不变。
 - 关联条款：RUN-013～RUN-015、SH-001～SH-003
 - 设计：[Host Bridge Protocol V2](../design/host-bridge-protocol-v2.md)
+- 传输实现 superseded by：[0098](0098-host-bridge-reuses-protobuf-socket.md)；字段、执行与恢复语义继续沿用本决定。
 
 ## 背景
 

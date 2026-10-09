@@ -14,11 +14,10 @@ from agent.process_runtime import (
     ExecutionResult,
 )
 
-# UDS 已有访问控制；关闭重试，避免重放可能已执行的命令或输入。
-CHANNEL_OPTIONS = (
-    ("grpc.max_receive_message_length", 16 * 1024 * 1024),
-    ("grpc.max_send_message_length", 16 * 1024 * 1024),
-    ("grpc.enable_retries", 0),
+# 宿主只接纳执行级展示与诊断字段；Core 的其余环境不会改变宿主身份。
+EXECUTION_ENV_NAMES = (
+    "AKASHIC_PLUGIN_ROLLOUT_OWNER_TURN", "AKASHIC_CALL_CONTEXT", "NO_COLOR",
+    "TERM", "COLORTERM", "PAGER", "GIT_PAGER", "GH_PAGER",
 )
 
 

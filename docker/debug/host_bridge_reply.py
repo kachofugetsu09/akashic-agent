@@ -18,7 +18,6 @@ from unittest.mock import patch
 ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT))
 
-import grpc
 from agent.host_bridge.client import HostBridgeShellProcessManager
 from agent.host_bridge.monitor import HostBridgeStatus, _monitor
 from agent.plugin_composition.bindings import BINDINGS
@@ -169,8 +168,11 @@ async def run(base: Path, *, files: int, always: bool, max_lag: float) -> None:
               "changed_source_sha256": source_hashes, "cases": [], "passed": False}
     try:
         # 1. 只向本次创建的 UDS 声明 boot；不读取正式 token 或服务配置。
-        async with grpc.aio.insecure_channel(f"unix:{socket}") as channel:
-            await asyncio.wait_for(channel.channel_ready(), 15)
+        async with asyncio.timeout(15):
+            while not socket.exists():
+                if bridge.returncode is not None:
+                    raise RuntimeError((base / "bridge.log").read_text())
+                await asyncio.sleep(0.01)
         await client.claim_boot()
         environment = dict(AKASHIC_EXECUTION_MODE="host-bridge", AKASHIC_HOST_BRIDGE_SOCKET=str(socket),
                            AKASHIC_HOST_BRIDGE_TOKEN="local-only", AKASHIC_BOOT_ID="local-boot",
@@ -178,7 +180,9 @@ async def run(base: Path, *, files: int, always: bool, max_lag: float) -> None:
         with patch.dict(os.environ, environment):
             async with application(base / "app", replying=True,
                                    extra_sources=lambda path: add_skills(path, files=files, always=always)) as (log, host):
-                assert all(item["fiber_state"] == "active" for item in host.plugin_status()["plugins"])
+                plugins = host.plugin_status()["plugins"]
+                assert isinstance(plugins, list)
+                assert all(item["fiber_state"] == "active" for item in plugins)
                 status = HostBridgeStatus(state="checking")
                 tasks.append(asyncio.create_task(_monitor(socket, "local-boot", "local-only", commit, digest, status=status)))
                 lags = []
