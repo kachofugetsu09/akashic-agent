@@ -24,6 +24,7 @@ from agent.plugin_contracts import (
     Output,
     ToolCall,
     ToolResult,
+    freeze_json,
     json_value,
 )
 from agent.plugin_contracts.models import (
@@ -223,7 +224,6 @@ class MessageProjection:
         self._prepare_content = prepare_content
         self._tool_names = tool_names
         self._dynamic_content_kinds = dynamic_content_kinds
-        self._last_rows: tuple[Mapping[str, Any], ...] = ()
         self._last_estimate: tuple[ModelRequest, int] | None = None
         self._facts: dict[str, tuple[Message, Mapping[str, Any] | None]] = {}
         self._arguments: dict[int, tuple[Mapping[str, Any], str]] = {}
@@ -409,18 +409,15 @@ class MessageProjection:
         rows: list[Mapping[str, Any]] = []
         used_results: set[str] = set()
         replayed_reminders: set[tuple[str, str]] = set()
-        context_added = False
+        context_index: int | None = None
         # 按消息缓存渲染分段：不可变前缀既不重建也不深比较。
         # 命中条件：无动态视图，或全部贡献者完整声明了动态 kind 且本消息与其
         # 观察都不含；任一贡献者范围未知（None）即整段关闭缓存（评审 #1110）。
-        # 动态视图、artifact/reply 引用、当前输入相关的消息仍每轮重建。
-        # reminder 回放状态进入分段键：同一身份的后续载体行不再随轮次重建，
-        # 只有实际追加当前 context 的首个可见载体保持每轮渲染。
+        # 动态视图和 artifact/reply 引用仍每轮重建。实时正文只在装配期插入，
+        # 不属于分段；reminder 回放状态仍进入分段键。
         cache_ok = transform is None or bool(self._dynamic_content_kinds)
         cached_segments = self._segments if cache_ok else {}
         new_segments: dict[str, _Segment] = {}
-        # 本次进入请求的分段行区间；组装后把冻结行写回分段，下轮身份命中。
-        spans: list[tuple[_Segment, int]] = []
         dynamic_kinds = self._dynamic_content_kinds
         for message in messages:
             msg_dynamic = False
@@ -444,16 +441,10 @@ class MessageProjection:
                 None if reminder_identity is None
                 else reminder_identity not in replayed_reminders
             )
-            current_touched = (
-                message.message_id == latest_input
-                or (
-                    reminder_identity is not None
-                    and current_reminder_identity is not None
-                    and reminder_identity == current_reminder_identity
-                    and current_context is not None
-                    and replay
-                )
-            )
+            if (current_context is not None and replay
+                    and reminder_identity == current_reminder_identity):
+                # 首个可见载体：实时正文位于回放 reminder 后、载体正文前。
+                context_index = len(rows) + 1
             dep = fold.deps.get(message.message_id)
             if dep is None:
                 call_refs = tuple(
@@ -470,7 +461,7 @@ class MessageProjection:
                 )
                 fold.deps[message.message_id] = dep
             call_refs, call_deps = dep
-            entry = None if current_touched else cached_segments.get(message.message_id)
+            entry = cached_segments.get(message.message_id)
             if (
                 entry is not None
                 and entry.message is message
@@ -479,8 +470,9 @@ class MessageProjection:
                 and entry.call_deps == call_deps
                 and entry.replay == replay
             ):
-                spans.append((entry, len(rows)))
                 rows.extend(entry.rows)
+                if current_reminder is None and message.message_id == latest_input:
+                    context_index = len(rows)
                 for ref in entry.new_refs:
                     if ref not in seen:
                         content_refs.append(ref)
@@ -507,10 +499,6 @@ class MessageProjection:
                     if reminder_identity is not None:
                         replayed_reminders.add(reminder_identity)
                         msg_reminders.append(reminder_identity)
-                    if (current_reminder_identity is not None
-                            and reminder_identity == current_reminder_identity and current_context is not None):
-                        msg_rows.append({"role": "user", "content": current_context})
-                        context_added = True
             for index, part in enumerate(body.parts):
                 if isinstance(part, ContentPart):
                     if part.kind == "model.tool_rejection":
@@ -620,16 +608,9 @@ class MessageProjection:
                     row["reasoning_content"] = model_facts["thinking"]
                 msg_rows.append(row)
                 msg_rows.extend(observations)
-            if (current_reminder is None and current_context is not None
-                    and message.message_id == latest_input):
-                msg_rows.append({"role": "user", "content": current_context})
-                context_added = True
-            row_start = len(rows)
-            rows.extend(msg_rows)
             content_refs.extend(msg_refs)
             if (
                 cache_ok
-                and not current_touched
                 and not msg_dynamic
                 and _static_parts(message, dynamic_kinds)
                 and all(
@@ -644,19 +625,24 @@ class MessageProjection:
                     has_metadata=message.message_id in response_metadata,
                     call_deps=call_deps,
                     replay=replay,
-                    rows=tuple(msg_rows),
+                    rows=cast(tuple[Mapping[str, Any], ...], freeze_json(msg_rows)),
                     new_refs=tuple(msg_refs),
                     used=tuple(msg_used),
                     reminders=tuple(msg_reminders),
                 )
                 new_segments[message.message_id] = entry
-                spans.append((entry, row_start))
+                rows.extend(entry.rows)
+            else:
+                rows.extend(msg_rows)
+            if current_reminder is None and message.message_id == latest_input:
+                context_index = len(rows)
         self._segments = new_segments
         # 首次使用和变化后的材料追加；成功 Output 的既有事实固定后续回放位置。
         if current_reminder is not None and current_reminder_identity not in replayed_reminders:
             rows.append({"role": "user", "content": current_reminder})
-        if current_context is not None and not context_added:
-            rows.append({"role": "user", "content": current_context})
+        if current_context is not None:
+            rows.insert(len(rows) if context_index is None else context_index,
+                        {"role": "user", "content": current_context})
         if any(
             message.seq > after_seq
             and message.message_id not in used_results
@@ -664,18 +650,9 @@ class MessageProjection:
             for message in results.values()
         ):
             raise ValueError("工具结果缺少本次视图中的真实调用")
-        # 本轮仍重读账本和渲染动态内容；值未变的行复用已冻结表示。
-        prior = self._last_rows
-        rows = [prior[index] if index < len(prior) and _same_json(row, prior[index]) else row
-                for index, row in enumerate(rows)]
         # 内容视图变化后从完整投影开始，不混用仍保留旧正文的 opaque 会话。
         request = ModelRequest(messages=rows, continuation=None if changed_content else continuation,
                                content_refs=tuple(content_refs), content_transformed=changed_content)
-        self._last_rows = tuple(request.messages)
-        # 冻结行写回分段：下轮 rows.extend 得到同一冻结对象，_same_json 身份短路。
-        final_rows = request.messages
-        for segment, start in spans:
-            segment.rows = tuple(final_rows[start:start + len(segment.rows)])
         self._facts = fold.facts
         self._arguments = current_arguments
         return request
@@ -935,34 +912,6 @@ def _static_parts(message: Message, dynamic_kinds: frozenset[str] | None = None)
         not isinstance(part, ContentPart) or part.kind not in excluded
         for part in message.body.parts
     )
-
-
-def _same_json(value: Any, saved: Any) -> bool:
-    """与已冻结 JSON 比较；数组忽略容器形式，标量保留准确类型。"""
-    if value is saved:
-        return True
-    # 冻结行只含 JSON 值；常见标量不需要执行容器的 ABC 查询。
-    saved_type = type(saved)
-    if saved_type in (str, int, float, bool, type(None)):
-        return type(value) is saved_type and value == saved
-    if isinstance(saved, dict):
-        if not isinstance(value, dict) and not isinstance(value, Mapping):
-            return False
-        if len(value) != len(saved):
-            return False
-        for key, item in value.items():
-            if not isinstance(key, str) or key not in saved or not _same_json(item, saved[key]):
-                return False
-        return True
-    if isinstance(saved, tuple):
-        if not isinstance(value, (list, tuple)) or len(value) != len(saved):
-            return False
-        for item, old in zip(value, saved):
-            if not _same_json(item, old):
-                return False
-        return True
-    return type(value) is saved_type and value == saved
-
 
 
 class ProjectionOwner:
