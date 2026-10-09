@@ -89,7 +89,6 @@ class _History:
         self.source = source
         self.messages: Sequence[Message] = ()
         self.head = -1
-        self.boundary_id = "initial"
         self.reminder_input_id: str | None = None
         self._boundary = -1
         self._abandoned_upto = -1
@@ -118,7 +117,7 @@ class _History:
             self.head = message.seq
             body = message.body
             if isinstance(body, Input):
-                self.boundary_id = self.reminder_input_id = message.message_id
+                self.reminder_input_id = message.message_id
             elif isinstance(body, Output):
                 if body.finish != "continue":
                     self._boundary = message.seq
@@ -134,7 +133,6 @@ class _History:
                         if body.finish == "continue":
                             self._terminal_calls.append((ref, message.seq, part.binding_id))
             elif isinstance(body, Control) and body.action == "abandon":
-                self.boundary_id = message.message_id
                 self._boundary = max(self._boundary, body.through_seq)
                 self._abandoned_upto = max(self._abandoned_upto, body.through_seq)
                 self._outputs = [seq for seq in self._outputs if seq > body.through_seq]
@@ -370,7 +368,6 @@ async def _complete(
     tools: ToolMenu, max_output_tokens: int, reduce: SummaryReducer | None,
     preview: Preview | None,
     reminder_input_id: str | None,
-    fallback_key: str | None = None,
     operation_id: str = "",
 ) -> AsyncGenerator[tuple[LLMResponse, Materials, str, ModelRequest]]:
     """缩减只更新已取得材料中的摘要；provider 容量拒绝最多重试一次。"""
@@ -416,20 +413,20 @@ async def _complete(
         if rejection is not None:
             raise ContextLengthError(rejection)
     prepared = prepared_attempt
-    # 2. 请求 key 由来源边界确定，重启后同一步复用同一 key；再打开流式预览并调用模型。
+    # 2. 每份新组装的请求拥有新身份；本次调用内的网络重试仍由 Models 复用该 key。
     with ExitStack() as previews:
         async def begin(
-            attempt: int, request: ModelRequest, mats: Materials,
+            request: ModelRequest, mats: Materials,
         ) -> tuple[ModelRequest, Materials, str, str | None, StreamCallback | None]:
             """固定本次启动身份，再签发本地预览。"""
             message_id = uuid4().hex
-            request_key = None if fallback_key is None else f"{fallback_key}:{attempt}"
+            request_key = uuid4().hex
             callback = None if preview is None else previews.enter_context(preview(message_id))
             mark("request.claimed", request_id=request_key or "")
             return request, mats, message_id, request_key, callback
 
         attempt = 0
-        request, prepared, message_id, request_key, callback = await begin(attempt, request, prepared)
+        request, prepared, message_id, request_key, callback = await begin(request, prepared)
         try:
             mark("model.begin", request_id=request_key or "")
             response = await model.complete(replace(request, on_delta=callback, request_key=request_key))
@@ -450,7 +447,7 @@ async def _complete(
             request, rejection = build(prepared)
             if rejection is not None:
                 raise ContextLengthError(rejection)
-            request, prepared, message_id, request_key, callback = await begin(attempt, request, prepared)
+            request, prepared, message_id, request_key, callback = await begin(request, prepared)
             mark("model.begin", request_id=request_key or "")
             response = await model.complete(replace(request, on_delta=callback, request_key=request_key))
             mark("model.end", request_id=request_key or "")
@@ -514,7 +511,6 @@ async def react(
         mark("history.loaded", counts={"messages": len(snapshot)})
         history.update(snapshot)
         head = history.head
-        boundary_id = history.boundary_id
         reminder_input_id = history.reminder_input_id
         frozen: Sequence[Message] = snapshot
         frozen_tuple = tuple(snapshot)
@@ -568,9 +564,8 @@ async def react(
         if max_steps > 0 and history.steps >= max_steps:
             raise StepLimit(f"本来源未完成工作已达到 {max_steps} 个模型输出")
 
-        # 2. 生成准备冻结请求、材料、binding 与 Output 身份；恢复不重建不漂移。
+        # 2. 重启和显式重试都用当前材料发新请求，不恢复旧请求身份。
         mark("preparation.begin")
-        # 3. 材料按当前日志实时取得；重启后按当前状态重建请求，不保存冻结请求（ADR-0100）。
         prepared = await materials(frozen_tuple)
         mark("preparation.end")
         async with _complete(
@@ -578,10 +573,6 @@ async def react(
             projection=projection, tools=tools, max_output_tokens=max_output_tokens, reduce=reduce, preview=preview,
             reminder_input_id=reminder_input_id,
             operation_id=operation_id,
-            fallback_key=(
-                f"reply:{reader.session_id}:{writer.source}"
-                f":{boundary_id}:{history.steps}"
-            ),
         ) as (response, prepared, message_id, request):
             # 先检查完整性：即使截断参数恰好是合法 JSON，也不能执行该批工具。
             if response.finish_reason == "length":

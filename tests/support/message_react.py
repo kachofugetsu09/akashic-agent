@@ -114,10 +114,11 @@ async def runtime(tmp_path, complete, invoke, *, max_steps=4, authorize_hook=Non
             finally:
                 reply.writer.expire()
 
-        def check_start(self, transaction: OwnerTransaction) -> None:
-            if not self.task.active or transaction.source_changed(
-                log.reader("s"), "conversation", self.task.boundary_hint,
-            ):
+        def check_start(self, transaction: OwnerTransaction | None) -> None:
+            reader = log.reader("s")
+            changed = (reader.source_changed("conversation", self.task.boundary_hint) if transaction is None
+                       else transaction.source_changed(reader, "conversation", self.task.boundary_hint))
+            if not self.task.active or changed:
                 raise asyncio.CancelledError
 
         def check_call(self, call: ToolCall) -> None:

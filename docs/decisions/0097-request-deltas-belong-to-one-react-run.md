@@ -1,6 +1,7 @@
 # 0097：冻结请求增量属于一次 ReAct 执行
 
-- 状态：proposed
+- 状态：superseded
+- 替代：[0100](0100-message-tool-calls-recover-at-turn-granularity.md)；ReAct 不再保存冻结请求，恢复时使用当前材料发新请求。
 - 日期：2026-10-09
 - 关联：CTX-001、SES-005、STA-002；[0092](0092-model-generation-recovers-until-output.md)
 
