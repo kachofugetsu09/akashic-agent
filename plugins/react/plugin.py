@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import asyncio
-import logging
 from collections.abc import AsyncGenerator, Awaitable, Callable, Mapping, Sequence
 from contextlib import AbstractContextManager, ExitStack, asynccontextmanager
 from dataclasses import replace
@@ -61,8 +60,6 @@ from agent.plugin_contracts.tools import (
 
 Materials = Mapping[str, object]
 
-
-logger = logging.getLogger(__name__)
 
 api_version = 3
 name = "react"
@@ -158,13 +155,9 @@ class _History:
                 pending.append(ref)
         return tuple(pending), tuple(abandoned)
 
-    def related(self, messages: Sequence[Message]) -> frozenset[CallRef]:
-        """正常提交复用当前视图；恢复旧冻结请求时只读取其原有前缀。"""
-        history = self
-        if messages is not self.messages:
-            history = _History(self.source)
-            history.update(messages)
-        pending, abandoned = history.open_calls()
+    def related(self) -> frozenset[CallRef]:
+        """提交只关联本次已固定的日志前缀，不恢复旧冻结请求。"""
+        pending, abandoned = self.open_calls()
         return frozenset((*pending, *abandoned))
 
     def terminal(self, tools: ToolMenu, names: frozenset[str]) -> bool:
@@ -178,9 +171,7 @@ def _competing(message: Message, source: str, related: frozenset[CallRef]) -> bo
     if message.source != source:
         return False
     body = message.body
-    if isinstance(body, (Input, Control)):
-        return True
-    if isinstance(body, Output):
+    if isinstance(body, (Input, Control, Output)):
         # 任何同来源 Output 都占据输出前驱位置；本代草稿的前提已被取代。
         return True
     return isinstance(body, ToolResult) and body.call_ref in related
@@ -382,7 +373,6 @@ async def _complete(
         mark("context.build.end")
         return result
 
-    prepared_attempt = prepared
     async def reduce_request(mats: Materials, request: ModelRequest, *, force: bool) -> tuple[Materials, Mapping[str, object] | None]:
         """压缩预览只显示状态；可见诊断随冻结材料进入最终 Output。"""
         assert reduce is not None
@@ -402,55 +392,55 @@ async def _complete(
             mark("context.reduce.end")
         return ({**mats, "notices": tuple(notices)} if notices else mats), summary
 
-    request, rejection = build(prepared_attempt)
+    request, rejection = build(prepared)
     if rejection is not None and reduce is None:
         raise ContextLengthError(rejection)
     if reduce is not None:
-        prepared_attempt, summary = await reduce_request(prepared_attempt, request, force=rejection is not None)
-        if summary is not None and summary != prepared_attempt.get("summary"):
-            prepared_attempt = {**prepared_attempt, "summary": summary}
-            request, rejection = build(prepared_attempt)
+        prepared, summary = await reduce_request(prepared, request, force=rejection is not None)
+        if summary is not None and summary != prepared.get("summary"):
+            prepared = {**prepared, "summary": summary}
+            request, rejection = build(prepared)
         if rejection is not None:
             raise ContextLengthError(rejection)
-    prepared = prepared_attempt
     # 2. 每份新组装的请求拥有新身份；本次调用内的网络重试仍由 Models 复用该 key。
     with ExitStack() as previews:
-        async def begin(
-            request: ModelRequest, mats: Materials,
-        ) -> tuple[ModelRequest, Materials, str, str | None, StreamCallback | None]:
+        def begin() -> tuple[str, str, StreamCallback | None]:
             """固定本次启动身份，再签发本地预览。"""
             message_id = uuid4().hex
             request_key = uuid4().hex
             callback = None if preview is None else previews.enter_context(preview(message_id))
-            mark("request.claimed", request_id=request_key or "")
-            return request, mats, message_id, request_key, callback
+            mark("request.claimed", request_id=request_key)
+            return message_id, request_key, callback
 
-        attempt = 0
-        request, prepared, message_id, request_key, callback = await begin(request, prepared)
-        try:
-            mark("model.begin", request_id=request_key or "")
+        async def generate(
+            request: ModelRequest, request_key: str, callback: StreamCallback | None,
+        ) -> LLMResponse:
+            mark("model.begin", request_id=request_key)
             response = await model.complete(replace(request, on_delta=callback, request_key=request_key))
-            mark("model.end", request_id=request_key or "")
+            mark("model.end", request_id=request_key)
+            return response
+
+        message_id, request_key, callback = begin()
+        try:
+            response = await generate(request, request_key, callback)
         except ContextLengthError as error:
             previews.close()
             # 强制缩减重试每代至多一次，且只适用于可证明的容量拒绝——
             # send_evidence="rejected" 是 provider HTTP 拒绝应答的正面证据；
             # HTTP 200 流内失败无论是否观察到 delta 都不得缩减后重发同一
             # 请求。
-            if reduce is None or attempt != 0 or getattr(error, "send_evidence", None) != "rejected":
+            if reduce is None or getattr(error, "send_evidence", None) != "rejected":
                 raise
             prepared, summary = await reduce_request(prepared, request, force=True)
             if summary is None or summary == prepared.get("summary"):
                 raise
-            attempt += 1
             prepared = {**prepared, "summary": summary}
             request, rejection = build(prepared)
             if rejection is not None:
                 raise ContextLengthError(rejection)
-            request, prepared, message_id, request_key, callback = await begin(request, prepared)
-            mark("model.begin", request_id=request_key or "")
-            response = await model.complete(replace(request, on_delta=callback, request_key=request_key))
-            mark("model.end", request_id=request_key or "")
+            message_id, request_key, callback = begin()
+            # 第二次调用在 except 内；再次拒绝直接上抛，不产生第三次请求。
+            response = await generate(request, request_key, callback)
         # 3. 草稿持续到调用者完成解码与 CAS；异常和取消也会释放预览。
         yield response, prepared, message_id, request
 
@@ -512,12 +502,10 @@ async def react(
         history.update(snapshot)
         head = history.head
         reminder_input_id = history.reminder_input_id
-        frozen: Sequence[Message] = snapshot
-        frozen_tuple = tuple(snapshot)
 
         async def commit(message_id: str, body: Output, metadata: Mapping[str, object] | None = None) -> Message:
             """检查与追加同事务；竞争 Output、新边界或读集内结果都取代旧草稿。"""
-            related = history.related(frozen)
+            related = history.related()
             if state is None:
                 current_head = head
                 for _ in range(4):
@@ -566,10 +554,10 @@ async def react(
 
         # 2. 重启和显式重试都用当前材料发新请求，不恢复旧请求身份。
         mark("preparation.begin")
-        prepared = await materials(frozen_tuple)
+        prepared = await materials(tuple(snapshot))
         mark("preparation.end")
         async with _complete(
-            frozen, prepared, source=writer.source, context=context, model=model,
+            snapshot, prepared, source=writer.source, context=context, model=model,
             projection=projection, tools=tools, max_output_tokens=max_output_tokens, reduce=reduce, preview=preview,
             reminder_input_id=reminder_input_id,
             operation_id=operation_id,
@@ -643,7 +631,7 @@ async def apply(ctx: Context) -> None:
     async def owned_react(
         *args: Any, check_start: StartCheck, state: OwnerStore, **kwargs: Any,
     ) -> Message:
-        """来源前提和首次生成 intent 共同提交，再交给 Models 的固定 key。"""
+        """在来源 scope 中运行；消息提交核对前提，模型请求使用新 key。"""
         async with ctx.runtime_scope():
             return await react(
                 *args, check_start=check_start, state=state,
