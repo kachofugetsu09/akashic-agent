@@ -26,7 +26,13 @@ from agent.process_runtime import (
     clamp_write_stdin_yield_time,
     format_execution_result,
 )
-from agent.plugin_composition.shell_runtime import resolve_shell
+from agent.plugin_composition.shell_runtime import (
+    ResolvedShell,
+    build_shell_snapshot,
+    cached_shell_snapshot,
+    resolve_shell,
+)
+from core.common.file_io import run_file_io
 from agent.plugin_composition.tasks import TASKS, Task, TaskAdmission, TaskSlot
 from agent.plugin_contracts import (
     CallRef,
@@ -213,9 +219,10 @@ class ShellTool:
         )
         if denied:
             return denied
+        snapshot = await _user_snapshot(shell) if command.login else None
         return PreparedCommand(
             owner_key=owner, command=text, description=command.description,
-            argv=shell.derive_argv(text, login=command.login), shell_kind=shell.kind.value,
+            argv=shell.derive_argv(text, login=command.login, snapshot=snapshot), shell_kind=shell.kind.value,
             login=command.login, cwd=None if directory is None else str(directory), tty=command.tty,
             yield_time_ms=clamp_initial_yield_time(command.yield_time_ms),
             max_output_tokens=command.max_output_tokens, timeout=command.timeout,
@@ -273,6 +280,14 @@ class ShellTool:
 
     async def query(self, key: str) -> ToolResultValue | None:
         return None
+
+
+# 用户 rc 快照：命中缓存只做 stat；首次或 rc 变化时在线程中构建。
+async def _user_snapshot(shell: ResolvedShell) -> Path | None:
+    known, snapshot = cached_shell_snapshot(shell)
+    if known:
+        return snapshot
+    return await run_file_io(lambda: build_shell_snapshot(shell))
 
 
 async def register_shell(ctx: Context, directories: WorkingDirectories | None = None) -> tuple[ToolRef, ...]:
