@@ -6,6 +6,7 @@ import json
 from collections.abc import Awaitable, Callable, Mapping
 from contextlib import AbstractAsyncContextManager
 from dataclasses import dataclass
+from datetime import datetime, timezone
 from typing import Any, Literal, Protocol, runtime_checkable
 
 from agent.plugin_composition.bindings import Bindings
@@ -273,9 +274,14 @@ class ToolMenu(Protocol):
     async def settle_abandoned(self, call: CallRef) -> Result: ...
 
 
+# 本 gateway 进程的启动时刻；早于它提交的未结工具调用属于上一个进程（ADR-0100）。
+# 位于 Core 契约模块，插件热更新不会重新导入它。
+PROCESS_STARTED_AT = datetime.now(timezone.utc)
+
+
 class StartCheck(Protocol):
-    def __call__(self, transaction: OwnerTransaction, /) -> None:
-        """核对执行前提，与首次效果或新 Output 在同一 Core SQL 事务内提交。"""
+    def __call__(self, transaction: OwnerTransaction | None, /) -> None:
+        """核对执行前提；新 Output 在同一事务内核对，工具启动前可在事务外核对。"""
         ...
 
 

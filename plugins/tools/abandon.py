@@ -61,7 +61,9 @@ async def abandon_call(
                 return target.read(record.value["result"])
             if record.value["phase"] not in {"requested", "prepared", "started"}:
                 raise ValueError("工具回执阶段无效")
-        started = record is not None and record.value["phase"] == "started"
+        # 消息调用不写阶段回执；进程内仍有执行 Task 即视为已启动。
+        started = (record is not None and record.value["phase"] == "started") or (
+            record is None and slot.current is not None)
         def cancel_after_commit(_result: Result) -> None:
             if slot.current is not None:
                 slot.current.cancel()
