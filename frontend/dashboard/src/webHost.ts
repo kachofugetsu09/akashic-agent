@@ -114,7 +114,7 @@ class BrowserCatalogSession implements WebHostSession {
       const notice = document.createElement("div");
       notice.className = "web-host-stale";
       notice.setAttribute("role", "status");
-      notice.textContent = "设置界面正在更新，已提交的操作会继续核对。";
+      notice.textContent = "界面配置已更新，稍后将自动刷新。进行中的操作不受影响。";
       document.body.prepend(notice);
       this.staleNotice = notice;
     }

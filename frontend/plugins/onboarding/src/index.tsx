@@ -19,20 +19,20 @@ function canAdvance(status?: StepStatus): boolean {
   return !!status && !status.fault && (status.ready === true || status.enabled === false || status.blocked === true);
 }
 function label(status?: StepStatus): string {
-  if (!status) return "读取中";
+  if (!status) return "检查中...";
   if (status.fault) return hasDecision(status)
-    ? `读取失败 · 上次确认${status.enabled ? "已开启" : "已关闭"}` : "读取失败 · 选择未知";
-  const choice = status.enabled === false ? "已关闭" : status.enabled === true ? "已开启" : "尚未决定";
-  if (status.blocked) return `${choice} · 前置不可用`;
+    ? `检查失败 · 当前状态：${status.enabled ? "已启用" : "已停用"}` : "检查失败";
+  const choice = status.enabled === false ? "已停用" : status.enabled === true ? "已启用" : "待配置";
+  if (status.blocked) return `${choice} · 依赖项未就绪`;
   if (status.enabled === false) return choice;
   if (status.ready) return choice;
-  return status.enabled === true ? "已开启 · 尚未就绪" : "待决定";
+  return status.enabled === true ? "已启用 · 待完善配置" : "待配置";
 }
 
 export function activate(ctx: WebHostContextV1): WebUiDisposer {
   return ctx.ui.inject("shell.settings.v1", mount => mount.register({
     // 初始配置不是常驻目的地：收进功能设置目录，由首跑邀请和深链接进入。
-    id: "onboarding", label: "初始配置", route: "onboarding", iconSvg: onboardingIcon, order: -10,
+    id: "onboarding", label: "新手引导", route: "onboarding", iconSvg: onboardingIcon, order: -10,
     render(host, _view, props) {
       const { pages, renderRoute } = (props ?? {}) as ShellSettingsRenderProps;
       // 页面隐藏时首跑邀请仍需显示；独立容器复用本 entry 的样式归属。
@@ -157,26 +157,26 @@ function Onboarding({ctx, renderRoute, invitationHost}: {ctx: WebHostContextV1; 
   return <main className="onboarding-page">
     <header className="onboarding-header">
       <div>
-        <span className="config-kicker">开始使用 AKASHIC</span>
-        <h1>让它按你的方式工作</h1>
-        <p>逐项决定开启或关闭。配置由各功能保存，之后也能随时修改。</p>
+        <span className="config-kicker">欢迎使用 AKASHIC</span>
+        <h1>快速配置向导</h1>
+        <p>按步骤设置关键模块。每个选项随时可在设置面板中单独调整。</p>
       </div>
       <button type="button" disabled={loading || dirty} onClick={() => void refresh()}>刷新状态</button>
     </header>
     {error && <div className="config-error" role="alert">{error}</div>}
-    {withdrawn && <p role="status" className="config-hint">刚才的配置项已不在新的安装组合中。未保存的修改需先确认是否放弃，之后转到可用步骤；已有配置和数据会保留。</p>}
-    {loading ? <p role="status">正在读取已安装的功能…</p> : !steps.length && !error ? <div className="config-hint">当前没有需要配置的插件。你仍可使用功能设置。</div> : finished && allCanAdvance ?
+    {withdrawn && <p role="status" className="config-hint">检测到插件组合已发生变动。请保存或放弃当前草稿以更新引导流程。</p>}
+    {loading ? <p role="status">正在检查已安装功能...</p> : !steps.length && !error ? <div className="config-hint">当前无需配置的步骤，您可直接前往各个设置面板单独调整。</div> : finished && allCanAdvance ?
       <section className="onboarding-complete">
         <div className="onboarding-complete-badge" aria-hidden="true">{decidedCount === steps.length ? "✓" : "—"}</div>
-        <h2 tabIndex={-1}>配置检查已结束</h2>
-        <p>已保存 {decidedCount} / {steps.length} 项选择。前置不可用的未决定项没有被自动关闭，之后仍可配置；已有数据会保留。</p>
+        <h2 tabIndex={-1}>配置已完成</h2>
+        <p>已确认 {decidedCount} / {steps.length} 项配置。未就绪的依赖项保持原有安全状态，数据与历史记录完好无损。</p>
         <ul>{steps.map(step => <li key={step.id}><span>{step.title}</span><strong>{label(states[step.id])}</strong></li>)}</ul>
-        <div className="onboarding-complete-actions"><a className="onboarding-chat" href="#">开始对话</a><button type="button" onClick={() => setFinished(false)}>查看配置</button></div>
+        <div className="onboarding-complete-actions"><a className="onboarding-chat" href="#">进入工作台开始对话</a><button type="button" onClick={() => setFinished(false)}>返回查看配置</button></div>
       </section> :
       <div className="onboarding-layout">
         <nav aria-label="配置步骤" className="onboarding-steps">
           <div className="onboarding-progress" role="status">
-            <span>已决定 {decidedCount} / {steps.length}</span>
+            <span>配置进度 {decidedCount} / {steps.length}</span>
             <div className="onboarding-progress-track" aria-hidden="true">
               <div className="onboarding-progress-fill" style={{inlineSize: `${steps.length ? (decidedCount / steps.length) * 100 : 0}%`}} />
             </div>
@@ -196,27 +196,27 @@ function Onboarding({ctx, renderRoute, invitationHost}: {ctx: WebHostContextV1; 
         </nav>
         <section className="onboarding-content" aria-labelledby="onboarding-step-title" key={current?.id ?? "empty"}>
           <header>
-            <span className="config-kicker">{index + 1} / {steps.length} · {current?.group_title}</span>
+            <span className="config-kicker">第 {index + 1} 步 / 共 {steps.length} 步 · {current?.group_title}</span>
             <h2 id="onboarding-step-title" ref={heading} tabIndex={-1}>{current?.title}</h2>
           </header>
-          {state?.fault && <div role="alert" className="config-error">{state.fault}<button type="button" onClick={() => void refresh()}>重试读取</button></div>}
-          {state?.blocked && !state.fault && <p className="config-hint">{state.reason}。此项目前不可开启，可以继续下一步；不会记录为你主动关闭。</p>}
+          {state?.fault && <div role="alert" className="config-error">{state.fault}<button type="button" onClick={() => void refresh()}>重试</button></div>}
+          {state?.blocked && !state.fault && <p className="config-hint">{state.reason}。当前依赖未就绪，可先跳过此步；不会默认关闭。</p>}
           <div ref={formHost} />
           <footer className="onboarding-footer">
             <button type="button" disabled={index <= 0} onClick={() => choose(steps[index - 1])}>上一步</button>
-            <span>{dirty ? "请先保存本页选择" : label(state)}</span>
-            <button className="config-primary" type="button" disabled={!!error || !canAdvance(state) || dirty} onClick={() => void next()}>{index === steps.length - 1 ? "查看完成情况" : "下一步"}</button>
+            <span>{dirty ? "存在未保存的修改" : label(state)}</span>
+            <button className="config-primary" type="button" disabled={!!error || !canAdvance(state) || dirty} onClick={() => void next()}>{index === steps.length - 1 ? "完成引导" : "下一步"}</button>
           </footer>
         </section>
       </div>}
-    {leave && <Confirm title="离开前要放弃修改吗？" busy={checkingRemoval} accept={() => {
+    {leave && <Confirm title="未保存的修改将会丢失，确定离开吗？" busy={checkingRemoval} accept={() => {
       if (confirmRead.current) return;
       const pending = leave;
       if (pending.kind === "catalog") {
         confirmRead.current = true; setCheckingRemoval(true);
         void refresh(true).finally(() => { confirmRead.current = false; if (alive.current) { setCheckingRemoval(false); setLeave(null); } });
       } else { setLeave(null); markDirty(false); pending.go(); }
-    }} cancel={() => setLeave(null)}>{checkingRemoval ? "正在核对当前安装组合，请稍等。原草稿保留，核对完成前不能继续编辑；读取失败后可继续填写。" : "本页尚有未保存的修改。离开不会改变已保存的配置。"}</Confirm>}
-    {createPortal(<dialog ref={invitation} className="config-dialog onboarding-invite" aria-labelledby="onboarding-welcome"><h2 id="onboarding-welcome">欢迎使用 Akashic</h2><p>先连接模型，再选择渠道、情景记忆和主动联系。每一项由你决定是否开启。</p><footer><button type="button" onClick={() => invitation.current?.close()}>稍后再说</button><button autoFocus className="config-primary" type="button" onClick={() => { invitation.current?.close(); window.location.hash = "onboarding"; }}>开始配置</button></footer></dialog>, invitationHost)}
+    }} cancel={() => setLeave(null)}>{checkingRemoval ? "正在核对配置，请稍等..." : "当前页包含未保存的内容，离开后修改将不会生效。"}</Confirm>}
+    {createPortal(<dialog ref={invitation} className="config-dialog onboarding-invite" aria-labelledby="onboarding-welcome"><h2 id="onboarding-welcome">欢迎使用 Akashic</h2><p>仅需几步即可完成基础模型配置、通讯渠道对接与情景记忆设置。</p><footer><button type="button" onClick={() => invitation.current?.close()}>稍后再说</button><button autoFocus className="config-primary" type="button" onClick={() => { invitation.current?.close(); window.location.hash = "onboarding"; }}>立即配置</button></footer></dialog>, invitationHost)}
   </main>;
 }

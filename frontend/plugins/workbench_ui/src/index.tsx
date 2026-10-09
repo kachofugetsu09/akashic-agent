@@ -549,7 +549,7 @@ function Panel(props: { plugin: PluginConfig } & NavigationProps): React.ReactEl
                     onClick={() => dispatch.setSort(column.key)} />
                 : <div key={column.key}>{column.label}</div>)}
             </div>
-            <div className="table-body" aria-busy={loading}>{loading ? <div className="empty-state" role="status">正在读取记录…</div> : state.items.length ? state.items.map((item) => {
+            <div className="table-body" aria-busy={loading}>{loading ? <div className="empty-state" role="status">正在加载记录...</div> : state.items.length ? state.items.map((item) => {
               const key = String(item[plugin.rowKey] ?? "");
               const selected = state.selectedIds.has(key);
               return <div className="table-row-wrap" key={key}>
@@ -570,7 +570,7 @@ function Panel(props: { plugin: PluginConfig } & NavigationProps): React.ReactEl
                         {formatPluginCell(plugin, column, item)}</span>)}
                 </button>
               </div>;
-            }) : <div className="empty-state">{plugin.emptyMessage ?? "暂无记录。"}</div>}</div>
+            }) : <div className="empty-state">{plugin.emptyMessage ?? "暂无数据"}</div>}</div>
             <footer className="table-foot"><div>{plugin.countTitle?.(state.total) ?? `共 ${state.total} 条`}</div>
               <div className="pager"><MaterialIconButton variant="standard" label="上一页" disabled={state.page <= 1}
                 onClick={() => void load(state.page - 1).catch(report)}><ChevronLeft size={18} aria-hidden="true" /></MaterialIconButton>
@@ -578,18 +578,18 @@ function Panel(props: { plugin: PluginConfig } & NavigationProps): React.ReactEl
                 <MaterialIconButton variant="standard" label="下一页" disabled={state.page >= pageCount}
                   onClick={() => void load(state.page + 1).catch(report)}><ChevronRight size={18} aria-hidden="true" /></MaterialIconButton></div></footer>
           </section>
-          <aside className={`detail-pane ${state.activeRowKey ? "is-open" : ""}`} aria-label="详情">
+          <aside className={`detail-pane ${state.activeRowKey ? "is-open" : ""}`} aria-label="详情面板">
             {state.activeRowKey && <div className="mobile-detail-toolbar"><button ref={detailBack} className="mobile-back" type="button" onClick={closeDetail}>
               <ChevronLeft size={18} aria-hidden="true" />返回列表
             </button></div>}
-            {state.activeRowKey && <button className="detail-close-btn" type="button" aria-label="关闭详情" onClick={closeDetail}>
+            {state.activeRowKey && <button className="detail-close-btn" type="button" aria-label="关闭详情面板" onClick={closeDetail}>
               <X size={18} aria-hidden="true" />
             </button>}
             {detailLoading ? <DetailLoading /> : state.activeRowKey
               ? plugin.renderDetail ? <PluginDetail plugin={plugin} item={state.activeDetail} dispatch={dispatch} />
-                : <div className="detail-wrap"><div className="detail-toolbar"><div className="detail-title">详情</div></div>
+                : <div className="detail-wrap"><div className="detail-toolbar"><div className="detail-title">数据详情</div></div>
                     <JsonView value={state.activeDetail} /></div>
-              : <div className="detail-empty"><div className="detail-empty-title">详情</div><div className="detail-empty-text">点开一条记录后，这里会显示完整字段。</div></div>}
+              : <div className="detail-empty"><div className="detail-empty-title">详情面板</div><div className="detail-empty-text">点击左侧列表中的记录即可在此查看详细数据。</div></div>}
           </aside>
         </>}
       </main>

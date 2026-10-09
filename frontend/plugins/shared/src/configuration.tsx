@@ -33,7 +33,7 @@ export function Confirm({ title, children, accept, cancel, busy = false }: {titl
   useEffect(() => { const dialog = ref.current!; dialog.showModal(); return () => dialog.close(); }, []);
   return <dialog ref={ref} className="config-dialog" aria-labelledby="config-confirm-title" onCancel={event => { event.preventDefault(); if (!busy) cancel(); }}>
     <h2 id="config-confirm-title">{title}</h2><p>{children}</p>
-    <footer><button type="button" autoFocus disabled={busy} className="config-primary" onClick={cancel}>继续填写</button><button type="button" disabled={busy} onClick={accept}>放弃修改并离开</button></footer>
+    <footer><button type="button" autoFocus disabled={busy} className="config-primary" onClick={cancel}>继续编辑</button><button type="button" disabled={busy} onClick={accept}>放弃并离开</button></footer>
   </dialog>;
 }
 
@@ -103,7 +103,7 @@ function Configuration({ctx, definition, embed}: {ctx: WebHostContextV1; definit
           if (wasPending) verifyRequired.current = id;
           sessionStorage.setItem(lastKey, id);
           if (sessionStorage.getItem(pendingKey) === id) sessionStorage.removeItem(pendingKey);
-          setNotice(receipt.state === "active" ? "已确认配置生效，正在核对设置界面…" : "原操作已被较新的配置替代，正在核对最新界面…");
+          setNotice(receipt.state === "active" ? "配置已生效，正在更新界面…" : "已有更新的配置生效，正在同步最新状态…");
           if (wasPending) setBusy(true);
           if (sentEdit.current !== null && sentEdit.current === edits.current) { markDirty(false); embed.dirty?.(false); }
           let refreshed = false;
@@ -120,7 +120,7 @@ function Configuration({ctx, definition, embed}: {ctx: WebHostContextV1; definit
           }
           if (!current()) return;
           setBusy((verifyRequired.current === id && !refreshed) || (needsRebind.current && !draftEditing.current));
-          setNotice(draftEditing.current ? "原操作结果已确认，本页修改尚未保存；请先重新读取核对最新配置。" : needsRebind.current ? "配置结果已确认，正在更新设置界面…" : receipt.state === "active" ? "配置已生效" : "原操作已被较新的配置替代，当前显示最新状态");
+          setNotice(draftEditing.current ? "上一操作已生效，当前修改尚未保存；建议重新加载以核对最新配置。" : needsRebind.current ? "配置已生效，正在刷新设置…" : receipt.state === "active" ? "配置已生效" : "已有更新的配置生效，已显示最新状态");
           if (settled.current !== id) { settled.current = id; embed.changed?.(); }
           return;
         }
@@ -134,7 +134,7 @@ function Configuration({ctx, definition, embed}: {ctx: WebHostContextV1; definit
             markDirty(!receipt.selected); embed.dirty?.(!receipt.selected);
           }
           setNotice("");
-          setError(`${receipt.selected ? "配置已保存，但原操作报告应用失败" : "原配置操作失败"}：${receipt.error || "请检查后重试"}`);
+          setError(`${receipt.selected ? "配置已保存，但生效失败" : "配置保存失败"}：${receipt.error || "请检查后重试"}`);
           sessionStorage.removeItem(pendingKey);
           let refreshed = false;
           try {
@@ -157,10 +157,10 @@ function Configuration({ctx, definition, embed}: {ctx: WebHostContextV1; definit
           setBusy(inFlightRequest.current !== null || verifyRequired.current === id); setError(`原操作回执无法读取：${reason.message}`); return;
         }
         if (reason instanceof RequestError && reason.status === 404) {
-          setNotice("尚未找到原操作回执，结果未确认。请重新核对后再决定是否提交。");
+          setNotice("未找到操作记录，结果待确认。建议刷新后再试。");
           setBusy(inFlightRequest.current !== null || verifyRequired.current === id); return;
         }
-        setNotice("原操作结果仍在核对，设置服务可能正在更新…");
+        setNotice("正在确认配置状态…");
       }
       await new Promise<void>(resolve => {
         const finish = (): void => { window.clearTimeout(timer); controller.signal.removeEventListener("abort", finish); resolve(); };
@@ -168,7 +168,7 @@ function Configuration({ctx, definition, embed}: {ctx: WebHostContextV1; definit
         controller.signal.addEventListener("abort", finish, {once: true});
       });
     }
-    if (current()) { setBusy(inFlightRequest.current !== null || verifyRequired.current === id); setNotice("原操作尚未确认；请重新读取以核对回执，不会自动重复提交。"); }
+    if (current()) { setBusy(inFlightRequest.current !== null || verifyRequired.current === id); setNotice("配置应用结果待确认，请刷新页面核对，系统不会重复提交。"); }
   };
   const load = async (preserveDraft = false): Promise<void> => {
     const sequence = ++loads.current;
@@ -200,7 +200,7 @@ function Configuration({ctx, definition, embed}: {ctx: WebHostContextV1; definit
     const navigate = (event: Event) => {
       const detail = (event as CustomEvent<{go: () => void; reason?: string}>).detail;
       if (detail.reason === "catalog" && needsRebind.current && !draftEditing.current && sessionStorage.getItem(lastKey)) return;
-      event.preventDefault(); if (detail.reason === "catalog") return; if (busy) { setNotice("原操作正在核对，请等待结果；离开不会撤销已提交配置。"); return; } setLeave(() => (event as CustomEvent<{go: () => void}>).detail.go); };
+      event.preventDefault(); if (detail.reason === "catalog") return; if (busy) { setNotice("配置正在生效中，请稍候；离开不会取消提交。"); return; } setLeave(() => (event as CustomEvent<{go: () => void}>).detail.go); };
     window.addEventListener("beforeunload", unload); window.addEventListener("akashic:before-navigate", navigate);
     return () => { window.removeEventListener("beforeunload", unload); window.removeEventListener("akashic:before-navigate", navigate); };
   }, [dirty, busy]);
@@ -225,7 +225,7 @@ function Configuration({ctx, definition, embed}: {ctx: WebHostContextV1; definit
       if (receipt.request_id !== id) throw new Error("配置回执身份不一致");
       inFlightRequest.current = null;
       markDirty(false); embed.dirty?.(false);
-      setNotice("配置已受理，正在等待新配置生效…");
+      setNotice("配置已提交，正在生效…");
       await poll(id);
     } catch (reason) {
       if (!alive.current || inFlightRequest.current !== id) return;
@@ -233,30 +233,30 @@ function Configuration({ctx, definition, embed}: {ctx: WebHostContextV1; definit
       if (reason instanceof RequestError && [401, 403, 404, 409, 422].includes(reason.status)) {
         if (reusedPendingId) {
           sentEdit.current = null;
-          setNotice("本次提交未获接纳；请核对原操作回执，不会自动再次提交。");
+          setNotice("本次提交未被接受，请检查配置后重试。");
         } else { sessionStorage.removeItem(pendingKey); setNotice(""); }
         setError(reason.message); setBusy(false);
       } else {
-        setNotice("提交响应未确认，正在查询原操作回执；不会自动重复提交。");
+        setNotice("正在确认配置生效状态，请稍候…");
         await poll(id);
       }
     } finally { if (inFlightRequest.current === id) inFlightRequest.current = null; }
   };
   return <article ref={article} className={`config-form ${embed.embedded ? "is-embedded" : ""}`} aria-busy={busy}>
     {!embed.embedded && <header><span className="config-kicker">功能设置</span><h1>{definition.title}</h1><p>{definition.description}</p></header>}
-    {error && <div className="config-error" role="alert"><p>{error}</p><button type="button" disabled={busy && !sessionStorage.getItem(pendingKey) && !sessionStorage.getItem(lastKey)} onClick={() => { const id = sessionStorage.getItem(pendingKey) ?? sessionStorage.getItem(lastKey); if (busy && id) { void poll(id); return; } if (dirty) setLeave(() => () => { void load(); }); else void load(); }}>重新读取</button></div>}
+    {error && <div className="config-error" role="alert"><p>{error}</p><button type="button" disabled={busy && !sessionStorage.getItem(pendingKey) && !sessionStorage.getItem(lastKey)} onClick={() => { const id = sessionStorage.getItem(pendingKey) ?? sessionStorage.getItem(lastKey); if (busy && id) { void poll(id); return; } if (dirty) setLeave(() => () => { void load(); }); else void load(); }}>重新加载</button></div>}
     {!status ? !error && <p role="status">正在读取配置…</p> : <form onSubmit={event => void save(event)}>
       {status.reason && !(embed.embedded && status.blocked) && <p className="config-hint" role="status">{status.reason}</p>}
       {!(embed.embedded && status.blocked) && <>
         <fieldset className="config-choices" disabled={busy}><legend>是否开启{definition.title}？</legend>
-          <label className={enabled === true ? "is-selected" : ""}><input type="radio" name="enabled" checked={enabled === true} disabled={status.can_enable === false} onChange={() => { edits.current += 1; setEnabled(true); markDirty(true); }} /><strong>开启</strong><span>配置并使用此功能</span></label>
-          <label className={enabled === false ? "is-selected" : ""}><input type="radio" name="enabled" checked={enabled === false} onChange={() => { edits.current += 1; setEnabled(false); markDirty(true); }} /><strong>关闭</strong><span>保留已有配置和数据</span></label>
+          <label className={enabled === true ? "is-selected" : ""}><input type="radio" name="enabled" checked={enabled === true} disabled={status.can_enable === false} onChange={() => { edits.current += 1; setEnabled(true); markDirty(true); }} /><strong>开启</strong><span>启用此功能</span></label>
+          <label className={enabled === false ? "is-selected" : ""}><input type="radio" name="enabled" checked={enabled === false} onChange={() => { edits.current += 1; setEnabled(false); markDirty(true); }} /><strong>关闭</strong><span>停用但保留数据</span></label>
         </fieldset>
         {enabled === true && definition.fields && <fieldset disabled={busy} className="config-fields"><legend className="sr-only">连接配置</legend>{definition.fields({values, change, status})}</fieldset>}
-        <footer className="config-actions"><span>{!dirty && (status.enabled === false ? "已关闭" : status.ready ? "已开启" : "尚未完成配置")}</span><button className="config-primary" type="submit" disabled={busy || enabled === null || !dirty}>{busy ? "正在应用…" : "保存配置"}</button></footer>
+        <footer className="config-actions"><span>{!dirty && (status.enabled === false ? "已关闭" : status.ready ? "已开启" : "未完成配置")}</span><button className="config-primary" type="submit" disabled={busy || enabled === null || !dirty}>{busy ? "正在保存…" : "保存配置"}</button></footer>
       </>}
-      {notice && <div role="status" className="config-hint">{notice}{sessionStorage.getItem(pendingKey) && <button type="button" onClick={() => { const id = sessionStorage.getItem(pendingKey); if (id) void poll(id); }}>核对原操作</button>}</div>}
+      {notice && <div role="status" className="config-hint">{notice}{sessionStorage.getItem(pendingKey) && <button type="button" onClick={() => { const id = sessionStorage.getItem(pendingKey); if (id) void poll(id); }}>查看状态</button>}</div>}
     </form>}
-    {leave && <Confirm title="放弃尚未保存的修改？" accept={() => { markDirty(false); const go = leave; setLeave(null); go(); }} cancel={() => setLeave(null)}>本页修改还没有保存，已有配置保持不变。</Confirm>}
+    {leave && <Confirm title="未保存的修改将丢失" accept={() => { markDirty(false); const go = leave; setLeave(null); go(); }} cancel={() => setLeave(null)}>当前页面的修改尚未保存，离开后将恢复为原有设置。</Confirm>}
   </article>;
 }

@@ -19,10 +19,10 @@ async function open(): Promise<void> {
     const notice = document.createElement("p");
     notice.className = "web-host-entry-error";
     notice.setAttribute("role", "alert");
-    notice.textContent = "设置界面暂不可用，请重新加载。已提交操作的结果请在恢复后查看。";
+    notice.textContent = "控制面板加载失败，请重试。如果后台正在重启，请稍候再试。";
     const retry = document.createElement("button");
     retry.type = "button";
-    retry.textContent = "重新加载界面";
+    retry.textContent = "重新加载";
     retry.onclick = () => { retry.disabled = true; void open(); };
     root.replaceChildren(notice, retry);
   }
