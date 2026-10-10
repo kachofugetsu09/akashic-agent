@@ -92,9 +92,13 @@ workspace selection，不因此启用任何业务实现。`plugin-install`、`pl
 彻底独立的管理通道留在边界②讨论。
 
 持久 binding 中的 service 名属于原选择证据，不能随 key 改名原位改写。
-存储读取边界解释实际存在的旧 Commands service 名，继续打开当前领域 provider；
+提供方在自己的 `ServiceKey.binding_names` 声明可读取的历史名称；Core 只按合同匹配，
+继续打开当前领域 provider。Commands 合同承认旧 `core.commands`，Core 不保留业务名分支；
 这不注册旧运行 key，也不改变 descriptor、hash、binding 身份或原消息。未知版本、
 服务不匹配和缺少领域恢复回执仍明确失败，禁止借改名重跑未知外部效果。
+
+Gateway 的 `from_legacy` 只属于其迁移私有模块。删除条件是旧配置升级入口已停止支持，
+且仍保留的复制、退休迁移都不再引用它；不能因运行时已改用新配置就提前删除。
 
 ```text
 ┌──────────────────────────┐   ┌──────────────────────────┐

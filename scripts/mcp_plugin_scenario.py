@@ -51,12 +51,21 @@ async def run(directory: Path) -> dict[str, object]:
     from agent.plugins.install import install_git_plugin
     from agent.plugins.manager import PluginManager
     from agent.plugins.selection import PluginSelection
+    from agent.plugins.manifest import set_plugin_enabled
 
     workspace = directory / "workspace"
     workspace.mkdir()
     PluginSelection(workspace).initialize()
     home = directory / "home"
     os.environ.update(HOME=str(home), AKASHIC_PLUGIN_HOME=str(home), AKASHIC_PLUGIN_DISTRIBUTION="")
+    # 合同依赖使用真实安装制品；stdio 场景不启用容器或后台进程实现。
+    for name in ("workloads", "managed_processes"):
+        source = directory / name
+        shutil.copytree(ROOT / "plugins" / name, source, ignore=shutil.ignore_patterns("__pycache__"))
+        subprocess.run(["git", "init", "-q", "--initial-branch=source", str(source)], check=True)
+        commit(source)
+        install_git_plugin(workspace=workspace, source=str(source), marketplace="lab", plugins_home=home)
+        set_plugin_enabled(name + "@lab", enabled=False, plugins_home=home)
     provider = directory / "mcp"
     shutil.copytree(ROOT / "plugins/mcp", provider, ignore=shutil.ignore_patterns("__pycache__"))
     subprocess.run(["git", "init", "-q", "--initial-branch=source", str(provider)], check=True)
@@ -102,9 +111,12 @@ async def apply(ctx):
     subprocess.run(["git", "init", "-q", "--initial-branch=source", str(target)], check=True)
     commit(target)
     install_git_plugin(workspace=workspace, source=str(target), marketplace="lab", plugins_home=home)
+    subprocess.run(["git", "init", "-q", "--initial-branch=source", str(reader)], check=True)
+    commit(reader)
+    install_git_plugin(workspace=workspace, source=str(reader), marketplace="lab", plugins_home=home)
 
     def build():
-        return PluginManager([sources], workspace=workspace, installed_cache_root=home / "cache")
+        return PluginManager([], workspace=workspace, installed_cache_root=home / "cache")
 
     def check_exit():
         pid = int((workspace / "plugin-data/target-lab/server.pid").read_text())
@@ -127,7 +139,7 @@ async def apply(ctx):
     try:
         await host.load_all()
         await read(host)
-        peer = host._active_generations["reader"].fiber
+        peer = host._active_generations["reader@lab"].fiber
         # 实现变化沿真实安装事务换代；可选诊断消费者保持 activation。
         with (provider / "plugin.py").open("a") as file:
             file.write("\n# scenario implementation update\n")
@@ -136,7 +148,7 @@ async def apply(ctx):
         assert host._operation is not None
         await host._operation.task
         assert host.read_update("mcp-update").state == "active"
-        assert host._active_generations["reader"].fiber is peer
+        assert host._active_generations["reader@lab"].fiber is peer
         await read(host)
     finally:
         await host.terminate_all()
@@ -144,14 +156,14 @@ async def apply(ctx):
     try:
         await host.load_all()
         await read(host)
-        peer = host._active_generations["reader"].fiber
+        peer = host._active_generations["reader@lab"].fiber
         await host.uninstall("mcp@lab")
         assert host._operation is not None
         await host._operation.task
         root = host.live_root
         assert root is not None
         assert await root.context.require(ServiceKey("scenario.detail"))() == {"unavailable": "mcp_provider_unavailable"}
-        assert host._active_generations["reader"].fiber is peer
+        assert host._active_generations["reader@lab"].fiber is peer
         assert peer.state == "active"
     finally:
         await host.terminate_all()

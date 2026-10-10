@@ -85,4 +85,4 @@ class Commands(Protocol):
     def freeze(self) -> CommandCatalog: ...
 
 
-COMMANDS = ServiceKey[Commands]("commands.v1")
+COMMANDS = ServiceKey[Commands]("commands.v1", binding_names=("core.commands",))

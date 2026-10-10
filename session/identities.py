@@ -3,7 +3,7 @@ from __future__ import annotations
 import re
 import sqlite3
 import threading
-from collections.abc import Mapping, Sequence
+from collections.abc import Mapping
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
@@ -38,15 +38,6 @@ def init_channel_identities(connection: sqlite3.Connection) -> None:
     # 2. 由调用方的同一事务提交 DDL。
     for statement in _SCHEMA.values():
         _ = connection.execute(statement)
-
-
-def delete_session_identities(connection: sqlite3.Connection, keys: Sequence[str]) -> None:
-    """由旧 Session 删除 owner 在已备份的审计事务内减少对应路由。"""
-    placeholders = ",".join("?" for _ in keys)
-    _ = connection.execute(
-        f"DELETE FROM channel_identities WHERE (channel || ':' || chat_id) IN ({placeholders})",
-        keys,
-    )
 
 
 def seed_channel_identities(

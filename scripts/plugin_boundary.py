@@ -13,6 +13,9 @@ R4  Core 文件中的字面 ServiceKey 必须在 `plugin_boundary.toml` 登记�
 R5  已记录为「文档承诺、代码未实现」的名字必须保持不存在。
 R6  同名 ServiceKey 只允许一处声明；公共合同必须明确值类型。
 
+比较 Git 基线时，公开模块清单与 Core 字面 key 声明只允许减少；
+不能通过扩大允许清单或登记新角色来绕过已有边界。
+
 R1～R3 的既有欠账记在 `plugin_boundary_baseline.toml` 中，只允许减少。
 R4、R5 没有基线；本门不证明角色归属、原子性或运行时隔离。
 
@@ -71,7 +74,6 @@ PLUGIN_ALLOWED_MODULES = frozenset({
     "agent.plugin_composition.config_input",
     "agent.plugin_composition.context",
     "agent.plugin_composition.credentials",
-    "agent.plugin_composition.dashboard",
     "agent.plugin_composition.deliveries",
     "agent.plugin_composition.diagnostics",
     "agent.plugin_composition.durable_deliveries",
@@ -108,7 +110,6 @@ PLUGIN_ALLOWED_MODULES = frozenset({
     # 有界文件工作与取消排空；公开合同见 plugin-v3-capabilities.md。
     "core.common.file_io",
     "core.common.unix_socket",
-    "core.error_context",
     "core.net.http",
     "core.common.timekit",
     "core.common.frozen_json",
@@ -157,6 +158,9 @@ def source_python_files() -> list[str]:
         if not raw or not raw.endswith(SCAN_SUFFIX):
             continue
         if raw.startswith(SKIP_PREFIXES):
+            continue
+        # 未暂存删除仍在索引中；扫描实际工作树，和未跟踪新增使用同一口径。
+        if not (REPO_ROOT / raw).is_file():
             continue
         files.append(raw)
     return sorted(files)
@@ -352,15 +356,15 @@ def _is_service_key_call(node: ast.AST, names: set[str], modules: set[str]) -> a
     return None
 
 
-def discover_service_keys() -> dict[str, str]:
+def discover_service_keys(sources: dict[str, str] | None = None) -> dict[str, str]:
     """扫描字面 ServiceKey 声明（含别名和小写变量），不推断动态 key。"""
 
     found: dict[str, str] = {}
-    for rel in source_python_files():
+    for rel in sorted(sources) if sources is not None else source_python_files():
         if not is_core_file(rel):
             continue
-        path = REPO_ROOT / rel
-        tree = ast.parse(path.read_text(encoding="utf-8"), filename=rel)
+        source = sources[rel] if sources is not None else (REPO_ROOT / rel).read_text(encoding="utf-8")
+        tree = ast.parse(source, filename=rel)
         names = {"ServiceKey"}
         modules: set[str] = set()
         for node in ast.walk(tree):
@@ -508,7 +512,7 @@ def import_findings(imports: list[Import]) -> dict[str, list[Import]]:
     }
 
 
-def base_findings(base: str) -> dict[str, list[Import]]:
+def base_sources(base: str) -> dict[str, str]:
     """只读 Git 快照；不 checkout、不执行基线源码、不接触运行数据。"""
 
     commit = subprocess.run(
@@ -528,7 +532,26 @@ def base_findings(base: str) -> dict[str, list[Import]]:
             handle = snapshot.extractfile(member)
             assert handle is not None
             sources[member.name] = handle.read().decode("utf-8")
-    return import_findings(collect_imports(sorted(sources), sources))
+    return sources
+
+
+def public_modules(source: str) -> frozenset[str]:
+    """静态读取基线公开清单，不执行基线脚本或猜测动态表达式。"""
+    for node in ast.parse(source).body:
+        if not isinstance(node, ast.Assign) or not any(
+            isinstance(target, ast.Name) and target.id == "PLUGIN_ALLOWED_MODULES"
+            for target in node.targets
+        ):
+            continue
+        value = node.value
+        if not (isinstance(value, ast.Call) and isinstance(value.func, ast.Name)
+                and value.func.id == "frozenset" and len(value.args) == 1):
+            raise SystemExit("PLUGIN_ALLOWED_MODULES 必须是字面 frozenset 清单")
+        modules = ast.literal_eval(value.args[0])
+        if not isinstance(modules, set) or not all(isinstance(item, str) for item in modules):
+            raise SystemExit("PLUGIN_ALLOWED_MODULES 必须只包含模块名字符串")
+        return frozenset(modules)
+    raise SystemExit("基线缺少 PLUGIN_ALLOWED_MODULES，不能核对公开边界")
 
 
 def run_check(base: str | None = None) -> int:
@@ -537,9 +560,15 @@ def run_check(base: str | None = None) -> int:
     imports = collect_imports(source_python_files())
 
     findings = import_findings(imports)
-    previous = base_findings(base) if base else None
+    sources = base_sources(base) if base else None
+    previous = import_findings(collect_imports(sorted(sources), sources)) if sources is not None else None
 
     errors: list[str] = []
+    if sources is not None:
+        for added in sorted(PLUGIN_ALLOWED_MODULES - public_modules(sources["scripts/plugin_boundary.py"])):
+            errors.append(f"R2: 相对 {base} 新增 Core 公开模块: {added}")
+        for added in sorted(discover_service_keys().keys() - discover_service_keys(sources).keys()):
+            errors.append(f"R4: 相对 {base} 新增 Core ServiceKey 声明: {added}")
     for rule, items in findings.items():
         known = set(baseline.get(rule, []))
         for item in items:
@@ -678,7 +707,7 @@ def print_catalog() -> int:
 def main() -> int:
     parser = argparse.ArgumentParser(description="Akashic 插件边界门")
     parser.add_argument("command", choices=("check", "baseline", "catalog"))
-    parser.add_argument("--base", help="按当前规则比较 Git 基线源码，禁止账本接纳新增依赖")
+    parser.add_argument("--base", help="比较 Git 基线，禁止新增依赖、公开模块或 Core key 声明")
     args = parser.parse_args()
     if args.command == "catalog":
         return print_catalog()

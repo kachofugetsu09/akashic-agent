@@ -12,8 +12,7 @@ from contextlib import AbstractAsyncContextManager
 from pathlib import Path
 from enum import StrEnum
 from types import MappingProxyType
-from typing import Any, Literal, Protocol, TypeAlias, cast
-from contextvars import ContextVar, Token
+from typing import Any, Literal, Protocol, TypeAlias
 
 from session.message import Message
 from session.artifacts import (
@@ -194,51 +193,6 @@ class ChannelBindingLease(Protocol):
     async def deliver(self, envelope: OutboundEnvelope) -> ChannelDeliveryReceipt: ...
 
     async def aclose(self) -> None: ...
-
-
-@dataclass(frozen=True, slots=True)
-class _ChannelTurnBinding:
-    lease: ChannelBindingLease
-    owner_task: asyncio.Task[object] | None
-
-
-_current_channel_binding: ContextVar[_ChannelTurnBinding | None] = ContextVar(
-    "current_channel_binding",
-    default=None,
-)
-
-
-def bind_channel_turn_binding(
-    binding: object,
-) -> Token[_ChannelTurnBinding | None]:
-    """Bind the exact inbound Channel owner for one ConversationRuntime task."""
-
-    active = getattr(binding, "active", None)
-    if active is not True:
-        raise RuntimeError("turn Channel binding 必须是当前 Host 的 active lease")
-    return _current_channel_binding.set(
-        _ChannelTurnBinding(
-            cast(ChannelBindingLease, binding),
-            asyncio.current_task(),
-        )
-    )
-
-
-def reset_channel_turn_binding(
-    token: Token[_ChannelTurnBinding | None],
-) -> None:
-    _current_channel_binding.reset(token)
-
-
-def get_current_channel_turn_binding() -> ChannelBindingLease | None:
-    binding = _current_channel_binding.get()
-    if (
-        binding is None
-        or binding.owner_task is not asyncio.current_task()
-        or not binding.lease.active
-    ):
-        return None
-    return binding.lease
 
 
 class ChannelIngressPort(Protocol):

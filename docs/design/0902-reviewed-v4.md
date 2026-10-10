@@ -1332,7 +1332,7 @@ MessageReader 的前向页和倒向页在同一 SQLite 读事务固定 through_s
 
 ### 共享历史展示与 Web 查询（第 10 层部分接线）
 
-`infra/channels/message_view.py` 只消费固定 MessagePage，按原 seq 返回 input/output/tool_result/control、author/source、时间和有序附件引用。模型 owner 只公开调用记录 ID 与思考，工具 owner 只公开原 binding 名称；provider continuation、tool id 和恢复配置不进入页面。已批准迁移产生的四种 history 内容在原 Message 内作为 archive 保存，未知类型明确标为不可展示，不能按任意类型名前缀公开载荷。
+`agent/plugin_composition/message_view.py` 只消费固定 MessagePage，按原 seq 返回 input/output/tool_result/control、author/source、时间和有序附件引用。模型 owner 只公开调用记录 ID 与思考，工具 owner 只公开原 binding 名称；provider continuation、tool id 和恢复配置不进入页面。已批准迁移产生的四种 history 内容在原 Message 内作为 archive 保存，未知类型明确标为不可展示，不能按任意类型名前缀公开载荷。
 
 Web 历史接口显式返回 version 2、through_seq、before_seq 与 has_more；目录使用时间和 Session ID cursor，保留空文字会话。请求范围错误返回 422，未知 Session 返回 404，损坏持久记录保持服务端失败。两处接口不再使用 SessionManager，也不从旧 Turn 或 tool_chain 重造执行事实。
 

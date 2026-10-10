@@ -184,6 +184,10 @@ async def apply(ctx: Context) -> None:
 `ServiceKey` 的值类型不变型，提供者必须符合明确的合同。`scripts/plugin_boundary.py check` 拒绝重复声明；
 `python scripts/plugin_boundary.py catalog` 输出能力、提供与消费的静态位置，动态激活以运行时组合图为准。
 
+服务改名后需要读取已有 binding 时，提供方在合同 key 的 `binding_names` 中声明历史名称。
+消费者使用该合同 key 打开或描述原选择；新 binding 只保存当前 `name`。历史名称不参与
+key 的相等比较和哈希，不成为可注入别名，也不改写既有 descriptor 或身份。
+
 服务若依赖动态注册者，使用 `await ctx.provide(KEY, value, binding_contributors=read_contexts)`
 声明归档依赖。`read_contexts()` 同步返回当前实际注册者的 `tuple[Context, ...]`，只读原注册状态；
 固定 binding 时，这些 Context 与静态 `inject` 一起进入同一依赖闭包。伪造或其他 Root 的 Context

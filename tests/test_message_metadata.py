@@ -2,7 +2,7 @@
 from contextlib import aclosing, closing
 from typing import Any, cast
 import pytest
-from infra.channels.message_view import follow_messages, message_rows
+from agent.plugin_composition.message_view import follow_messages, message_rows
 from session.log import MessageLog
 from session.message import ContentPart, Output
 from plugins.content.plugin import check_text

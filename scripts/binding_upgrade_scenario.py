@@ -63,7 +63,10 @@ async def run(directory: Path, *, old: bool) -> None:
     else:
         host = PluginManager([directory / "providers"], workspace=workspace,
                              installed_cache_root=directory / "home/cache", message_log=log)
-    service = ServiceKey("core.commands" if old else "commands.v1")
+    if old:
+        service = ServiceKey("core.commands")
+    else:
+        from plugins.commands.contract import COMMANDS as service
     try:
         await host.load_all()
         root = host.live_root
@@ -119,6 +122,7 @@ def main() -> None:
         sys.path.insert(0, str(directory / "old" if old else ROOT))
         asyncio.run(run(directory, old=old))
         return
+    sys.path.insert(0, str(ROOT))
     with tempfile.TemporaryDirectory(prefix="akashic-binding-upgrade-") as temporary:
         directory = Path(temporary)
         # 1. 归档准确旧基线，旧进程无法从当前 checkout 导入 Core。
@@ -143,6 +147,11 @@ def main() -> None:
                        cwd=directory, env=environment, check=True)
         database = directory / "workspace/sessions.db"
         before = snapshot(database)
+        # 栈内 journal schema 也已升级；走实际迁移入口，不绕过校验或删除旧账本。
+        from agent.migrations.runner import MigrationRunner
+        MigrationRunner(repo_root=ROOT, config_path=directory / "config.toml",
+                        workspace=directory / "workspace").run()
+        assert snapshot(database) == before
         # 2. 同一 workspace 只升级源码，原绑定和消息没有数据管理写入。
         shutil.rmtree(providers / "commands")
         shutil.copytree(ROOT / "plugins/commands", providers / "commands", ignore=shutil.ignore_patterns("__pycache__"))

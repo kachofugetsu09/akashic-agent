@@ -38,16 +38,15 @@ class Session:
         self._closed = False
         self._failure = None
         self._reason = None
-        self._effect = None
-        health, ctx = registration.health, registration.ctx
+        ctx = registration.ctx
         self._host = McpGenerationHost(
             registration.grant,
             on_health=self._health,
-            on_incident=lambda _id, _name, kind, reason: ctx.report_incident(kind, reason))
+            on_incident=lambda generation_id, server_name, kind, message: ctx.report_incident(kind, message))
 
-    def _health(self, _identity, _name, ready, reason):
+    def _health(self, generation_id: str, server_name: str, healthy: bool, reason: str) -> None:
         # 正常按调用退出不会使注册目标失效；并发失败会话仍保持降级。
-        self._reason = None if ready or reason == "stopped" else reason
+        self._reason = None if healthy or reason == "stopped" else reason
         self._provider.refresh_health(self._entry)
 
     async def start(self):
@@ -149,7 +148,6 @@ class McpServers:
                 self._sessions[owner.identity] = owner
                 return owner.aclose
             effect = await ctx.effect(setup, label="mcp-session:" + owner.identity)
-            owner._effect = effect
             try:
                 yield await owner.start()
             finally:
@@ -169,16 +167,6 @@ class McpServers:
         return tuple(McpSessionFailure(owner.identity, owner._entry.definition.name,
             str(owner._failure) or type(owner._failure).__name__)
             for owner in self._sessions.values() if owner._failure is not None)
-
-    async def retry_cleanup(self, ctx: Context, identity: str):
-        """只重试本 Context 的保留句柄，不重开会话或重放工具。"""
-        self.check(ctx)
-        owner = self._sessions[identity]
-        if owner._entry.ctx is not ctx:
-            raise PermissionError("MCP 清理句柄不属于当前 Context")
-        if owner._failure is None:
-            raise RuntimeError("MCP 会话没有失败的清理责任")
-        await owner._effect.aclose()
 
     def catalog(self):
         """List registered targets without claiming a live tool directory."""
