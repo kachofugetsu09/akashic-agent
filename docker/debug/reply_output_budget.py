@@ -152,11 +152,15 @@ async def check(directory: Path, *, mode: str, cap: int | None = None,
                 "SELECT state,response_json,usage_json FROM model_calls ORDER BY started_at,id"
             ).fetchall()
             assert len(receipts) == len(server.requests)
-            assert all(state == "success" for state, _, _ in receipts)
             assert all(json.loads(usage)["output_tokens"] is not None for _, _, usage in receipts)
-            if expected_error is not None:
-                reasons = [json.loads(response)["finish_reason"] for _, response, _ in receipts]
-                assert ("stop" if mode == "empty" else "length") in reasons
+            if mode == "empty":
+                # 空生成按 0092 记为可恢复失败：不保存响应，但保留真实 usage。
+                assert all(state == "error" and response is None for state, response, _ in receipts)
+            else:
+                assert all(state == "success" for state, _, _ in receipts)
+                if expected_error is not None:
+                    reasons = [json.loads(response)["finish_reason"] for _, response, _ in receipts]
+                    assert "length" in reasons
         with sqlite3.connect(directory / "sessions.db") as connection:
             assert connection.execute("PRAGMA integrity_check").fetchone()[0] == "ok"
             assert connection.execute("SELECT id FROM messages ORDER BY seq LIMIT 1").fetchone()[0] == original.message_id
@@ -180,7 +184,7 @@ async def main(directory: Path):
         dict(mode="text-length", expected_budget=32768, expected_error="长度限制"),
         dict(mode="tool-length", expected_budget=32768, expected_error="长度限制"),
         dict(mode="after-tool-length", expected_budget=32768, expected_error="长度限制"),
-        dict(mode="empty", expected_budget=32768, expected_error="空响应不是 quiet"),
+        dict(mode="empty", expected_budget=32768, expected_error="没有产生正文或工具调用"),
     ]
     for index, case in enumerate(cases):
         results.append(await check(directory / str(index), **case))

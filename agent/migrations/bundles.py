@@ -32,7 +32,6 @@ _MIGRATION_KEYS = {"id", "path", "depends", "transactional", "sha256"}
 _PACKAGE_NAME = re.compile(r"^[a-z_][a-z0-9_]{0,63}$")
 _REJECTED_IMPORT_PREFIXES = (
     "plugins",
-    "agent.model_runtime",
     "agent.plugins",
     "bootstrap",
 )

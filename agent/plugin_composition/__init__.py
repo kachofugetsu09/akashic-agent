@@ -8,7 +8,6 @@ from agent.plugin_composition.context import (
     OwnerCall,
     RuntimeScope,
 )
-from agent.control.models import TurnItem, TurnItemKind, TurnStatus
 from agent.control.scoped_turn import TurnAcceptedReceipt
 from agent.control.timer import TimerHandle, TimerStatus
 from agent.plugin_contracts.turn_effects import PostCommitEffect
@@ -23,9 +22,6 @@ from agent.plugin_composition.commands import (
     CommandCatalog,
     CommandResult,
     Commands,
-)
-from agent.plugin_composition.access import (
-    CompositionAudit,
 )
 from agent.plugin_composition.effect import Effect
 from agent.plugin_composition.diagnostics import (
@@ -48,7 +44,6 @@ from agent.plugin_composition.executor import (
 from agent.plugin_composition.model import (
     CompositionError,
     CompositionReceipt,
-    ExternalEffectObservation,
     FiberState,
     FiberView,
     HealthView,
@@ -57,7 +52,6 @@ from agent.plugin_composition.model import (
     ServiceKey,
     TopologyFiberView,
     TopologyView,
-    WriteObservation,
 )
 from agent.plugin_composition.durable_deliveries import (
     DurableBindingAttempt,
@@ -275,7 +269,6 @@ __all__ = [
     "CompositionError",
     "CompositionReceipt",
     "CompositionRoot",
-    "CompositionAudit",
     "Context",
     "COMMANDS",
     "CommandDefinition",
@@ -316,7 +309,6 @@ __all__ = [
     "DeliveryStatus",
     "EmitEventKey",
     "Effect",
-    "ExternalEffectObservation",
     "EXECUTOR_SERVICE",
     "ExecutorService",
     "Fiber",
@@ -400,10 +392,6 @@ __all__ = [
     "TopologyFiberView",
     "TopologyView",
     "TurnAcceptedReceipt",
-    "TurnItem",
-    "TurnItemKind",
-    "TurnStatus",
     "TransformEventKey",
     "UI_SLOTS",
-    "WriteObservation",
 ]

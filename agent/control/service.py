@@ -24,7 +24,7 @@ from agent.plugin_composition.message_view import (
 from session.artifacts import AttachmentRef
 from session.log import MessageCatalog
 from session.message import Message
-from agent.control.frame_book import FrameBook
+from agent.plugin_composition.control_frames import FrameBook
 
 logger = logging.getLogger(__name__)
 Accept = Callable[[str, str, ChannelInboundMessage], Awaitable[Message]]

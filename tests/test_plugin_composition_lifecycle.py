@@ -1,8 +1,16 @@
 from __future__ import annotations
+from dataclasses import dataclass
+
 import pytest
 from agent.plugin_composition import CompositionRoot, EmitEventKey
 from bus.event_bus import EventBus
-from core.memory.events import MemoryWritten
+
+
+@dataclass(frozen=True)
+class MemoryWritten:
+    session_key: str
+    source_ref: str
+
 
 _MEMORY_WRITTEN_EVENT = EmitEventKey[MemoryWritten]("test.memory.written")
 
@@ -81,14 +89,7 @@ async def test_event_bus_does_not_bridge_into_plugin_composition() -> None:
     assert observed == []
 
 def _memory_written_event() -> MemoryWritten:
-    return MemoryWritten(
-        session_key="session",
-        channel="test",
-        chat_id="chat",
-        action="supersede",
-        source_ref="session@post_response",
-        superseded_ids=["memory-1"],
-    )
+    return MemoryWritten(session_key="session", source_ref="session@post_response")
 
 @pytest.mark.asyncio
 async def test_pending_initial_dependency_resolves_then_frozen_teardown_closes_consumers_first():

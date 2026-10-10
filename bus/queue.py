@@ -5,7 +5,6 @@ from collections.abc import Awaitable, Callable, Mapping
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import Protocol, TypeVar, cast
-from uuid import uuid4
 
 from agent.plugin_contracts import json_value
 from agent.plugin_composition.channels import (
@@ -22,7 +21,7 @@ from agent.plugin_composition.channels import (
     JsonValue,
     RawInbound,
 )
-from bus.events import InboundItem, InboundMessage
+from bus.events import InboundMessage
 from session.inbound_store import (
     add_handoff_provider_identity,
     read_handoff_provider_identity,
@@ -46,9 +45,6 @@ def _has_durable_handoff(value: object) -> bool:
     return bool(
         isinstance(metadata, Mapping)
         and metadata.get(DURABLE_INBOUND_MARKER) is True
-    ) or (
-        isinstance(value, InboundMessage)
-        and value.handoff_id is not None
     )
 
 
@@ -114,13 +110,6 @@ class _DurableAdmission:
     recoverable: bool = False
 
 
-def _durable_dedupe_key(message: InboundMessage) -> str | None:
-    provider_message_id = _provider_message_id(message.metadata)
-    if provider_message_id is None:
-        return None
-    return f"{message.channel}:{message.session_key}:{provider_message_id}"
-
-
 def _provider_message_id(metadata: Mapping[str, object]) -> str | None:
     """Read the provider identity at the durable boundary."""
 
@@ -128,22 +117,6 @@ def _provider_message_id(metadata: Mapping[str, object]) -> str | None:
     if not isinstance(value, str) or not value:
         return None
     return value
-
-
-def _serialize_handoff(message: InboundMessage) -> tuple[str, str]:
-    media_json = json.dumps(
-        message.media,
-        ensure_ascii=False,
-        separators=(",", ":"),
-        allow_nan=False,
-    )
-    metadata_json = json.dumps(
-        message.metadata,
-        ensure_ascii=False,
-        separators=(",", ":"),
-        allow_nan=False,
-    )
-    return media_json, metadata_json
 
 
 def _inbound_from_handoff(row: dict[str, str | None]) -> InboundMessage:
@@ -256,78 +229,10 @@ def _raw_durable_from_handoff(row: dict[str, str | None]) -> RawInbound | None:
     )
 
 
-@dataclass
-class _ChatLaneState:
-    condition: asyncio.Condition
-    active_users: int = 0
-    passive_turns: int = 0
-
-
-@dataclass
-class _InboundOwner:
-    """在 durable cleanup 确认前保持 durable handoff 的强引用。"""
-
-    item: InboundItem
-    cleanup_pending: bool = False
-
-
-class ChatLane:
-    def __init__(self) -> None:
-        self._states: dict[tuple[str, str], _ChatLaneState] = {}
-
-    def _acquire_state(
-        self,
-        channel: str,
-        chat_id: str,
-    ) -> tuple[tuple[str, str], _ChatLaneState]:
-        key = (str(channel), str(chat_id))
-        state = self._states.get(key)
-        if state is None:
-            state = _ChatLaneState(condition=asyncio.Condition())
-            self._states[key] = state
-        state.active_users += 1
-        return key, state
-
-    def _release_state(
-        self,
-        key: tuple[str, str],
-        state: _ChatLaneState,
-    ) -> None:
-        state.active_users -= 1
-        if (
-            state.active_users
-            or state.passive_turns
-        ):
-            return
-        if self._states.get(key) is state:
-            del self._states[key]
-
-    async def mark_passive_pending(self, channel: str, chat_id: str) -> None:
-        key, state = self._acquire_state(channel, chat_id)
-        try:
-            async with state.condition:
-                state.passive_turns += 1
-                state.condition.notify_all()
-        finally:
-            self._release_state(key, state)
-
-    async def mark_passive_done(self, channel: str, chat_id: str) -> None:
-        key, state = self._acquire_state(channel, chat_id)
-        try:
-            async with state.condition:
-                if state.passive_turns > 0:
-                    state.passive_turns -= 1
-                state.condition.notify_all()
-        finally:
-            self._release_state(key, state)
-
-
 class MessageBus:
     """在单用户 Companion 内传递消息，并持有 durable handoff 的删除责任。"""
 
-    def __init__(self, chat_lane: ChatLane | None = None) -> None:
-        self._inbound: asyncio.Queue[InboundItem | InboundEnvelope] = asyncio.Queue()
-        self._inbound_accepted: dict[int, _InboundOwner] = {}
+    def __init__(self) -> None:
         self._inbound_cleanup_tasks: dict[int, asyncio.Task[None]] = {}
         self._inbound_cleanup_error: BaseException | None = None
         self._recovery_claimed: set[str] = set()
@@ -336,7 +241,6 @@ class MessageBus:
         self._session_admission_owner: SessionAdmissionOwner | None = None
         self._durable_inbound_recoverer: DurableInboundRecoverer | None = None
         self._durable_handoff_lock = asyncio.Lock()
-        self._chat_lane = chat_lane or ChatLane()
         self._closed = False
         self._close_task: asyncio.Task[None] | None = None
         self._durable_inbound_store: DurableInboundStore | None = None
@@ -373,9 +277,8 @@ class MessageBus:
     async def recover_durable_inbounds(self) -> None:
         """分页重放尚未完成的 durable handoff，不以 bus 容量拒绝消息。
 
-        整页读取与 live publish 在同一 durable lock 内串行：live reserve 落库
-        与 accepted owner 登记之间不存在可被恢复页观察到的窗口，同一 handoff
-        不会被复制成第二个 owner。
+        整页读取与 live reserve 在同一 durable lock 内串行，同一 handoff 不会被
+        复制成第二个 owner。没有 durable marker 的旧格式行保留在库中但不重放。
         """
 
         if self._closed:
@@ -387,7 +290,6 @@ class MessageBus:
         after: tuple[str, str] | None = None
         while not self._closed:
             exact_rows: list[tuple[str, RawInbound]] = []
-            legacy_page = bool(self._inbound_accepted)
             try:
                 async with self._durable_handoff_lock:
                     # 1. 只读取有限页，避免启动时把整个 durable backlog 搬入内存。
@@ -395,12 +297,7 @@ class MessageBus:
                         limit=_DURABLE_INBOUND_RECOVERY_PAGE_SIZE, after=after,
                     )
                     # 2. 仍在处理中的 live owner 不得被分页重放复制成第二个 owner。
-                    in_flight: set[str] = set()
-                    for owner in self._inbound_accepted.values():
-                        item = owner.item
-                        if isinstance(item, InboundMessage) and item.handoff_id is not None:
-                            in_flight.add(item.handoff_id)
-                    in_flight.update(self._durable_handoffs.values())
+                    in_flight = set(self._durable_handoffs.values())
                     in_flight.update(
                         handoff_id
                         for handoff_id, admission in self._durable_admissions.items()
@@ -414,20 +311,15 @@ class MessageBus:
                             or handoff_id in in_flight
                         ):
                             continue
-                        item = _inbound_from_handoff(row)
                         raw = _raw_durable_from_handoff(row)
-                        self._recovery_claimed.add(handoff_id)
-                        if raw is not None:
-                            exact_rows.append((handoff_id, raw))
-                            continue
-                        legacy_page = True
-                        try:
-                            await self._reserve_and_queue_durable(
-                                item, allow_existing_handoff=True
+                        if raw is None:
+                            logger.warning(
+                                "message_bus skip legacy durable handoff without marker handoff=%s",
+                                handoff_id,
                             )
-                        except BaseException:
-                            self._recovery_claimed.discard(handoff_id)
-                            raise
+                            continue
+                        self._recovery_claimed.add(handoff_id)
+                        exact_rows.append((handoff_id, raw))
                 if not rows:
                     return
                 last = rows[-1]
@@ -445,9 +337,6 @@ class MessageBus:
                         # leave the durable row for the generation that owns
                         # its persisted channel; other channels can proceed.
                         self._recovery_claimed.discard(handoff_id)
-                if legacy_page:
-                    # 旧 worker 删除前维持原本逐次完成再 pump 一页的容量边界。
-                    return
             finally:
                 # 失败后的未执行行必须允许重试；已接纳行由 exact admission 去重。
                 self._recovery_claimed.difference_update(row_id for row_id, _ in exact_rows)
@@ -584,11 +473,6 @@ class MessageBus:
         if raw is None:
             raise RuntimeError("pending handoff 不是 durable exact handoff")
         return raw.message.attachments
-
-    async def publish_inbound(self, msg: InboundItem) -> None:
-        """将渠道输入交给 Agent 消费。"""
-        self._raise_inbound_cleanup_error()
-        await self._publish_inbound(msg, allow_existing_handoff=False)
 
     async def prepare_channel_input(self, envelope: InboundEnvelope) -> None:
         """接管耐久 durable handoff；普通输入不排队，也不占用回复 lane。"""
@@ -790,116 +674,6 @@ class MessageBus:
             raise RuntimeError("durable session admission owner 未绑定")
         owner.release_admission(admission.admission_id)
 
-    async def _publish_inbound(
-        self,
-        msg: InboundItem,
-        *,
-        allow_existing_handoff: bool,
-    ) -> None:
-        """将消息入队；durable 先持久化并由本类负责删除确认。"""
-
-        if not _has_durable_handoff(msg):
-            await self._chat_lane.mark_passive_pending(msg.channel, msg.chat_id)
-            try:
-                self._inbound.put_nowait(msg)
-            except BaseException:
-                await self._chat_lane.mark_passive_done(msg.channel, msg.chat_id)
-                raise
-            return
-
-        async with self._durable_handoff_lock:
-            await self._reserve_and_queue_durable(
-                msg, allow_existing_handoff=allow_existing_handoff
-            )
-
-    async def _reserve_and_queue_durable(
-        self,
-        msg: InboundMessage,
-        *,
-        allow_existing_handoff: bool,
-    ) -> None:
-        """在 durable lock 内完成 reserve + queue + owner 的唯一登记。
-
-        调用方必须已持有 _durable_handoff_lock：live publish 与整页恢复共享
-        这一个登记点，保证同一 handoff 至多产生一个 queue item 和一个
-        accepted owner。
-        """
-
-        if id(msg) in self._inbound_accepted:
-            raise RuntimeError("同一 durable inbound 对象被重复接受")
-        store = self._durable_inbound_store
-        if store is None:
-            raise RuntimeError("durable inbound store 未绑定")
-        requested_handoff_id = msg.handoff_id
-        media_json, metadata_json = _serialize_handoff(msg)
-        handoff_id, created = store.reserve_inbound_handoff(
-            handoff_id=msg.handoff_id or uuid4().hex,
-            dedupe_key=_durable_dedupe_key(msg),
-            channel=msg.channel,
-            sender=msg.sender,
-            chat_id=msg.chat_id,
-            session_key=msg.session_key,
-            content=msg.content,
-            timestamp=msg.timestamp.astimezone(timezone.utc).isoformat(),
-            media_json=media_json,
-            metadata_json=metadata_json,
-            created_at=datetime.now(timezone.utc).isoformat(),
-        )
-        msg.handoff_id = handoff_id
-        if not created and not (
-            allow_existing_handoff and requested_handoff_id == handoff_id
-        ):
-            return
-        await self._chat_lane.mark_passive_pending(msg.channel, msg.chat_id)
-        try:
-            self._inbound.put_nowait(msg)
-        except BaseException:
-            await self._chat_lane.mark_passive_done(msg.channel, msg.chat_id)
-            raise
-        self._inbound_accepted[id(msg)] = _InboundOwner(item=msg)
-
-    async def complete_inbound(self, msg: InboundItem | InboundEnvelope) -> None:
-        self._raise_inbound_cleanup_error()
-        if isinstance(msg, InboundEnvelope):
-            handoff_id = self._durable_handoffs.get(id(msg))
-            if handoff_id is not None:
-                task = asyncio.create_task(
-                    self._complete_durable_inbound(msg, handoff_id),
-                    name=f"durable-inbound-complete:{handoff_id}",
-                )
-                await _await_cleanup_after_cancellation(task)
-                return
-            await self.release_channel_inbound(msg, InboundOwner.LOOP)
-            return
-        owner = self._inbound_accepted.get(id(msg))
-        if owner is None:
-            await self._chat_lane.mark_passive_done(msg.channel, msg.chat_id)
-            return
-        if owner.item is not msg:
-            raise RuntimeError("durable inbound ownership changed")
-        if owner.cleanup_pending:
-            raise RuntimeError("inbound cleanup 已在重试中")
-        if isinstance(msg, InboundMessage) and msg.handoff_id is not None:
-            store = self._durable_inbound_store
-            if store is None:
-                raise RuntimeError("durable inbound durable handoff store 未绑定")
-            try:
-                store.complete_inbound_handoff(msg.handoff_id)
-            except OSError as error:
-                logger.error(
-                    "message_bus cleanup_degraded: retained inbound owner "
-                    "handoff=%s error=%s",
-                    msg.handoff_id,
-                    error,
-                )
-                owner.cleanup_pending = True
-                self._schedule_inbound_cleanup_retry(id(msg))
-                raise
-            except Exception as error:
-                self._record_inbound_cleanup_fatal(error, id(msg))
-                raise
-        await self._finalize_inbound_owner(id(msg), owner)
-
     async def _complete_durable_inbound(
         self,
         envelope: InboundEnvelope,
@@ -937,19 +711,6 @@ class MessageBus:
                 admission,
             )
 
-    async def retain_durable_inbound(
-        self,
-        envelope: InboundEnvelope,
-        expected_owner: InboundOwner,
-    ) -> None:
-        """Release a failed exact binding while retaining durable Session recovery owner."""
-
-        task = asyncio.create_task(
-            self._retain_durable_inbound(envelope, expected_owner),
-            name=f"durable-inbound-retain:{envelope.message_id}",
-        )
-        await _await_cleanup_after_cancellation(task)
-
     async def _retain_durable_inbound(
         self,
         envelope: InboundEnvelope,
@@ -968,30 +729,6 @@ class MessageBus:
             admission.recoverable = True
             self._durable_handoffs.pop(id(envelope), None)
             self._recovery_claimed.discard(handoff_id)
-
-    async def release_channel_inbound(
-        self,
-        envelope: InboundEnvelope,
-        expected_owner: InboundOwner,
-    ) -> None:
-        """Close one exact inbound lease and release its lane admission."""
-
-        task = asyncio.create_task(
-            self._release_channel_inbound(envelope, expected_owner),
-            name=f"channel-inbound-release:{envelope.message_id}",
-        )
-        await _await_cleanup_after_cancellation(task)
-
-    async def _release_channel_inbound(
-        self,
-        envelope: InboundEnvelope,
-        expected_owner: InboundOwner,
-    ) -> None:
-        await envelope.close(expected_owner)
-        await self._chat_lane.mark_passive_done(
-            envelope.channel,
-            envelope.chat_id,
-        )
 
     def _raise_inbound_cleanup_error(self) -> None:
         error = self._inbound_cleanup_error
@@ -1024,7 +761,7 @@ class MessageBus:
         )
 
     async def _retry_inbound_cleanup(self, owner_key: int) -> None:
-        """只重试 durable handoff 删除，成功后释放原 accepted owner。"""
+        """只重试 durable handoff 删除，成功后释放原 exact owner。"""
 
         delay = _INBOUND_CLEANUP_RETRY_INITIAL_DELAY
         attempt = 0
@@ -1032,79 +769,31 @@ class MessageBus:
             while True:
                 await asyncio.sleep(delay)
                 async with self._durable_handoff_lock:
-                    exact_handoff_id = self._durable_handoffs.get(owner_key)
-                    if exact_handoff_id is not None:
-                        exact = self._durable_admissions.get(exact_handoff_id)
-                        if exact is None or exact.envelope is None:
-                            raise RuntimeError(
-                                f"durable exact cleanup owner 丢失: {owner_key}"
-                            )
-                        if not exact.cleanup_pending:
-                            raise RuntimeError(
-                                f"durable exact cleanup owner 状态非法: {owner_key}"
-                            )
-                        store = self._durable_inbound_store
-                        if store is None:
-                            raise RuntimeError(
-                                "durable inbound durable handoff store 未绑定"
-                            )
-                        try:
-                            store.complete_inbound_handoff(exact_handoff_id)
-                        except OSError as error:
-                            attempt += 1
-                            delay = min(
-                                _INBOUND_CLEANUP_RETRY_MAX_DELAY,
-                                delay * 2,
-                            )
-                            logger.error(
-                                "message_bus cleanup_degraded: retry failed "
-                                "handoff=%s attempt=%s next_delay=%.3f error=%s",
-                                exact_handoff_id,
-                                attempt,
-                                delay,
-                                error,
-                            )
-                            continue
-                        await self._finalize_durable_owner_locked(
-                            exact.envelope,
-                            exact_handoff_id,
-                            exact,
+                    handoff_id = self._durable_handoffs.get(owner_key)
+                    exact = None if handoff_id is None else self._durable_admissions.get(handoff_id)
+                    if handoff_id is None or exact is None or exact.envelope is None:
+                        raise RuntimeError(f"durable exact cleanup owner 丢失: {owner_key}")
+                    if not exact.cleanup_pending:
+                        raise RuntimeError(f"durable exact cleanup owner 状态非法: {owner_key}")
+                    store = self._durable_inbound_store
+                    if store is None:
+                        raise RuntimeError("durable inbound durable handoff store 未绑定")
+                    try:
+                        store.complete_inbound_handoff(handoff_id)
+                    except OSError as error:
+                        attempt += 1
+                        delay = min(_INBOUND_CLEANUP_RETRY_MAX_DELAY, delay * 2)
+                        logger.error(
+                            "message_bus cleanup_degraded: retry failed "
+                            "handoff=%s attempt=%s next_delay=%.3f error=%s",
+                            handoff_id,
+                            attempt,
+                            delay,
+                            error,
                         )
-                        return
-                owner = self._inbound_accepted.get(owner_key)
-                if owner is None:
-                    raise RuntimeError(f"inbound cleanup owner 丢失: {owner_key}")
-                if not owner.cleanup_pending:
-                    raise RuntimeError(f"inbound cleanup owner 状态非法: {owner_key}")
-                item = owner.item
-                if not isinstance(item, InboundMessage) or item.handoff_id is None:
-                    raise RuntimeError(
-                        f"cleanup owner 缺少 durable handoff: {owner_key}"
-                    )
-                store = self._durable_inbound_store
-                if store is None:
-                    raise RuntimeError("durable inbound durable handoff store 未绑定")
-                try:
-                    store.complete_inbound_handoff(item.handoff_id)
-                except OSError as error:
-                    attempt += 1
-                    delay = min(_INBOUND_CLEANUP_RETRY_MAX_DELAY, delay * 2)
-                    logger.error(
-                        "message_bus cleanup_degraded: retry failed "
-                        "handoff=%s attempt=%s next_delay=%.3f error=%s",
-                        item.handoff_id,
-                        attempt,
-                        delay,
-                        error,
-                    )
-                    continue
-                try:
-                    await self._finalize_inbound_owner(owner_key, owner)
-                except asyncio.CancelledError:
-                    raise
-                except Exception as error:
-                    self._record_inbound_cleanup_fatal(error, owner_key)
-                return
+                        continue
+                    await self._finalize_durable_owner_locked(exact.envelope, handoff_id, exact)
+                    return
         except asyncio.CancelledError:
             raise
         except Exception as error:
@@ -1135,23 +824,6 @@ class MessageBus:
         self._durable_admissions.pop(handoff_id)
         self._recovery_claimed.discard(handoff_id)
 
-    async def _finalize_inbound_owner(
-        self,
-        owner_key: int,
-        owner: _InboundOwner,
-    ) -> None:
-        """确认 lane 完成后释放 durable handoff owner，并继续分页 pump。"""
-
-        item = owner.item
-        await self._chat_lane.mark_passive_done(item.channel, item.chat_id)
-        async with self._durable_handoff_lock:
-            current = self._inbound_accepted.pop(owner_key, None)
-            if current is not owner:
-                raise RuntimeError("inbound ownership changed during completion")
-        if isinstance(item, InboundMessage) and item.handoff_id is not None:
-            self._recovery_claimed.discard(item.handoff_id)
-        await self.recover_durable_inbounds()
-
     async def aclose(self) -> None:
         """关闭 Bus 接纳，排空入站 owner 并收束 cleanup-only retry task。"""
 
@@ -1166,7 +838,6 @@ class MessageBus:
     async def _close_all(self) -> None:
         """Complete all terminal Bus cleanup after admission is closed."""
 
-        await self._drain_channel_inbound_queue()
         tasks = tuple(self._inbound_cleanup_tasks.values())
         for task in tasks:
             task.cancel()
@@ -1175,28 +846,6 @@ class MessageBus:
         self._inbound_cleanup_tasks.clear()
         await self._release_durable_admissions_for_shutdown()
         self._raise_inbound_cleanup_error()
-
-    async def _drain_channel_inbound_queue(self) -> None:
-        """Close only Bus-owned v3 envelopes without rewriting legacy recovery."""
-
-        retained: list[InboundItem] = []
-        while True:
-            try:
-                item = self._inbound.get_nowait()
-            except asyncio.QueueEmpty:
-                break
-            if isinstance(item, InboundEnvelope):
-                if id(item) in self._durable_handoffs:
-                    await self.retain_durable_inbound(
-                        item,
-                        InboundOwner.BUS,
-                    )
-                else:
-                    await self.release_channel_inbound(item, InboundOwner.BUS)
-            else:
-                retained.append(item)
-        for item in retained:
-            self._inbound.put_nowait(item)
 
     async def _release_durable_admissions_for_shutdown(self) -> None:
         """Drop process-local owners while leaving durable rows for the next boot."""

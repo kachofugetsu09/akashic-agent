@@ -19,7 +19,6 @@ if str(SOURCE_ROOT) not in sys.path:
     sys.path.insert(0, str(SOURCE_ROOT))
 
 from agent.plugin_composition import (  # noqa: E402
-    CompositionAudit,
     CompositionReceipt,
     CompositionRoot,
     PluginRuntime,
@@ -100,8 +99,7 @@ async def _run(workspace: Path) -> dict[str, object]:
         json.dumps(marker, ensure_ascii=False, indent=2) + "\n",
         domain="plugin_composition_experiment",
     )
-    audit = CompositionAudit()
-    root = CompositionRoot(f"experiment:{run_id}", audit=audit)
+    root = CompositionRoot(f"experiment:{run_id}")
     trace = ProbeTrace()
     receipts: dict[str, CompositionReceipt] = {}
     current_signal = None
@@ -185,9 +183,6 @@ async def _run(workspace: Path) -> dict[str, object]:
     if disposed_receipt.fibers or disposed_receipt.effects:
         raise RuntimeError("实验 Root 关闭后仍有 Fiber 或 Effect")
     receipts["disposed"] = disposed_receipt
-    external_effect_count = len(audit.external_effects)
-    if external_effect_count:
-        raise RuntimeError("实验发生外部效果")
 
     return {
         "run_id": run_id,
@@ -195,7 +190,6 @@ async def _run(workspace: Path) -> dict[str, object]:
         "current_signal_after_replacement": current_signal.value,
         "trace": trace.events,
         "receipts": receipts,
-        "external_effect_count": external_effect_count,
         "workspace_files_before_result": _workspace_files(workspace),
     }
 
@@ -219,7 +213,7 @@ def _validate_behavior(
     for name, receipt in (("ready", ready_receipt), ("replaced", replaced_receipt)):
         if not receipt.ready:
             raise RuntimeError(f"实验拓扑未恢复 ready: {name}")
-    if not optional_receipt.ready or optional_receipt.optional_pending != ("probe-formatter-consumer",):
+    if not optional_receipt.ready or optional_receipt.optional_pending != ("probe-consumer/probe-formatter-consumer",):
         raise RuntimeError("实验未观察到 optional child pending")
 
 

@@ -12,7 +12,7 @@ from typing import TYPE_CHECKING
 from uuid import uuid4
 
 from agent.restart import RestartGate
-from agent.control.frame_book import FrameBook
+from agent.plugin_composition.control_frames import FrameBook
 
 if TYPE_CHECKING:
     from agent.plugins.manager import PluginManager

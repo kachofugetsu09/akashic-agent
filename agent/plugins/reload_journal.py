@@ -89,30 +89,6 @@ class ReloadTransactionRecord:
     recovery_target: RecoveryTarget | None = None
 
     @property
-    def old_snapshot_id(self) -> str | None:
-        """Return the stable snapshot that the attempt started from."""
-
-        return self.base_snapshot_id
-
-    @property
-    def new_snapshot_id(self) -> str | None:
-        """Return the candidate snapshot produced by the attempt."""
-
-        return self.candidate_snapshot_id
-
-    @property
-    def old_generation_id(self) -> str | None:
-        """Return the stable generation that the attempt started from."""
-
-        return self.base_generation_id
-
-    @property
-    def attempt_generation_id(self) -> str:
-        """Return the generation being prepared by this attempt."""
-
-        return self.generation_id
-
-    @property
     def resource(self) -> str | None:
         """Return the retained failed resource owner, if any."""
 
@@ -283,14 +259,6 @@ class ReloadJournal:
         with self._connect() as conn:
             _ = conn.execute("BEGIN IMMEDIATE")
             update_rollback.set_input_ref(conn, update_id=update_id, input_ref=input_ref)
-
-    def update_for_reload(self, tx_id: str) -> update_rollback.UpdateRollback | None:
-        """有更新恢复点时，完整旧指针对只由该记录恢复。"""
-        with self._connect() as conn:
-            if not update_rollback.check_schema(conn):
-                return None
-            row = conn.execute("SELECT update_id FROM plugin_updates WHERE reload_tx_id=?", (tx_id,)).fetchone()
-            return None if row is None else update_rollback.read(conn, row[0])
 
     def record_update_error(self, update_id: str, error: str) -> None:
         """保存实际失败原因，不把诊断写入伪装成发布或回退。"""
@@ -724,21 +692,6 @@ class ReloadJournal:
             )
             for row in rows
         )
-
-    def runtime_generation_ids(self, tx_id: str) -> tuple[str, ...]:
-        """从实际取得资源的事件读取身份，候选 ID 不代替正式 owner。"""
-        record = self.get(tx_id)
-        identities = {record.generation_id}
-        if record.base_generation_id is not None:
-            identities.add(record.base_generation_id)
-        for event in self.events(tx_id):
-            owner = event.details.get("runtime_generation_id")
-            if isinstance(owner, str):
-                identities.add(owner)
-            owners = event.details.get("runtime_generations")
-            if isinstance(owners, dict):
-                identities.update(cast(dict[str, str], owners).values())
-        return tuple(sorted(identities))
 
     def annotate(self, tx_id: str, details: dict[str, object]) -> None:
         """Append evidence without inventing another public rollout phase."""

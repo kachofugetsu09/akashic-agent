@@ -9,7 +9,7 @@ from uuid import uuid4
 from agent.control.protocol.router import ConnectionRouter
 from agent.control.service import ControlService
 from agent.control.protocol.method import RequestTransport
-from agent.control.frame_book import FrameBook
+from agent.plugin_composition.control_frames import FrameBook
 
 
 class StdioAppServer(RequestTransport):

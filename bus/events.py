@@ -2,32 +2,9 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
-from enum import StrEnum
 from typing import Any
 
-from agent.plugin_composition.channels import AttachmentKind as AttachmentKind, AttachmentRef
-
-class TurnDisposition(StrEnum):
-    """标识无需进入完整提交阶段的合法 turn 结果。"""
-
-    SHORT_CIRCUITED = "short_circuited"
-
-
-class DeliveryStatus(StrEnum):
-    """表示一次完整逻辑消息的渠道提交终态。"""
-
-    SUCCESS = "success"
-    PARTIAL = "partial"
-    FAILED = "failed"
-
-
-class TurnTerminalStatus(StrEnum):
-    """标识 OutboundMessage 投影的权威 turn 终态。"""
-
-    COMPLETED = "completed"
-    FAILED = "failed"
-    INTERRUPTED = "interrupted"
-    CANCELLED = "cancelled"
+from agent.plugin_composition.channels import AttachmentKind
 
 
 @dataclass(frozen=True, slots=True)
@@ -37,41 +14,6 @@ class ChannelAttachment:
     kind: AttachmentKind
     source: str
     filename: str | None = None
-
-
-@dataclass(frozen=True, slots=True)
-class ChannelMessage:
-    """提交给渠道 adapter 的完整逻辑消息。"""
-
-    channel: str
-    chat_id: str
-    content: str
-    attachments: tuple[ChannelAttachment, ...] = ()
-    attachment_refs: tuple[AttachmentRef, ...] = ()
-    thinking: str | None = None
-    reply_to: str | None = None
-    metadata: dict[str, object] = field(default_factory=dict[str, object])
-    session_message_id: str | None = None
-    control_turn_id: str | None = None
-    execution_attempt_id: str | None = field(
-        default=None,
-        repr=False,
-        compare=False,
-    )
-    terminal_status: TurnTerminalStatus | None = None
-
-
-@dataclass(frozen=True, slots=True)
-class DeliveryReceipt:
-    """记录渠道对完整逻辑消息的结构化提交结果。"""
-
-    status: DeliveryStatus
-    canonical_media: tuple[str, ...] = ()
-    detail: str | None = None
-
-    @property
-    def succeeded(self) -> bool:
-        return self.status is DeliveryStatus.SUCCESS
 
 
 @dataclass
@@ -95,45 +37,3 @@ class InboundMessage:
         if override:
             return override
         return f"{self.channel}:{self.chat_id}"
-
-    @property
-    def context_channel(self) -> str:
-        return str(self.metadata.get("context_channel") or self.channel).strip()
-
-    @property
-    def context_chat_id(self) -> str:
-        return str(self.metadata.get("context_chat_id") or self.chat_id).strip()
-
-
-@dataclass
-class OutboundMessage:
-    """agent 发出的消息"""
-
-    channel: str  # 目标渠道
-    chat_id: str  # 目标会话 ID
-    content: str
-    thinking: str | None = None
-    reply_to: str | None = None
-    media: list[str] = field(default_factory=list[str])
-    attachment_refs: tuple[AttachmentRef, ...] = ()
-    metadata: dict[str, Any] = field(default_factory=dict[str, Any])
-    control_turn_id: str | None = field(default=None, repr=False, compare=False)
-    execution_attempt_id: str | None = field(
-        default=None,
-        repr=False,
-        compare=False,
-    )
-    session_message_id: str | None = field(default=None, repr=False, compare=False)
-    terminal_status: TurnTerminalStatus | None = field(
-        default=None,
-        repr=False,
-        compare=False,
-    )
-    turn_disposition: TurnDisposition | None = field(
-        default=None,
-        repr=False,
-        compare=False,
-    )
-
-
-InboundItem = InboundMessage

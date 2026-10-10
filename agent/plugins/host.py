@@ -5,7 +5,7 @@ from __future__ import annotations
 from collections.abc import Callable, Mapping
 from typing import Any, cast
 
-from agent.control.frame_book import CONTROL_FRAMES, FrameBook
+from agent.plugin_composition.control_frames import CONTROL_FRAMES, FrameBook
 from agent.control.timer import AsyncioOneShotTimer
 from agent.host_bridge.plugin_execution import (
     CodeOwner,
