@@ -54,7 +54,8 @@
 
 栈顶 Core 与本次相关 Models、Tools、ReplyProgram、四种 driver Pyright 零错误。
 插件边界 R1/R2/R3 零债务，Yoyo 与 diff 检查通过。
-保留验证集实际运行 40 项通过；没有新增单元测试。
+[保留清单](../refactor/orthogonality-test-baseline.md)中仍存在的节点实际运行
+40 项通过；已退役 EventBus 等代码的既有删除按对应 PR 审查，没有新增单元测试。
 
 | 行为 | 可复跑入口 | 验证内容 |
 |---|---|---|
