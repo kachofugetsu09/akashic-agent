@@ -1,21 +1,10 @@
 """任务与技能目录的只读合同。"""
 
-from collections.abc import Callable, Mapping
+from collections.abc import Callable
 from dataclasses import dataclass
 from typing import Protocol
 
 from agent.plugin_composition import Context, Effect, ServiceKey
-
-
-class SchedulerReader(Protocol):
-    """异步读取调度快照；取消退出前完成实际读取。"""
-
-    async def list_jobs(self) -> tuple[Mapping[str, object], ...]: ...
-
-    async def get_job(self, job_id: str) -> Mapping[str, object] | None: ...
-
-
-SCHEDULER_INSPECTION_V3 = ServiceKey[SchedulerReader]("scheduler.inspection.v3")
 
 
 @dataclass(frozen=True, slots=True)
