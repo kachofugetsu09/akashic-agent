@@ -43,6 +43,11 @@
       "reason": "拥有实际 Channel 连接、接纳、发送回执与输入恢复。"
     },
     {
+      "name": "gateway",
+      "depends_on": [],
+      "reason": "提供本地控制入口与运行状态查询；默认仅监听 workspace Unix socket。"
+    },
+    {
       "name": "host_execution",
       "depends_on": [],
       "reason": "提供宿主进程与容器控制；代码与 generation 授权由内核核对。"
