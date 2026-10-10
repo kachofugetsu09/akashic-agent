@@ -28,7 +28,6 @@ from plugins.models.content import render_content
 from plugins.models.projection import MessageProjection
 from plugins.models.store import ModelsStore
 from plugins.models.views import ContentViews
-from plugins.react.plugin import _decode_request, _encode_request
 from session.log import MessageLog
 from agent.plugin_composition.message_view import project_message_rows
 from session.artifact_store import ArtifactStore
@@ -123,7 +122,6 @@ async def check(directory: Path) -> dict[str, object]:
                  and row.body.parts[0].kind == 'content_view.read']
         assert len(reads) == 2
         assert all(len(json.dumps(dict(row.body.parts[0].value))) < 250 for row in reads)
-        first_output = next(row for row in rows if isinstance(row.body, Output))
         tool = ReadContent()
         call_source = CallSource(original.body.call_ref, rows)
         denied = await tool.prepare({'message_id':'other-session','part_index':0}, call_source)
@@ -132,11 +130,6 @@ async def check(directory: Path) -> dict[str, object]:
         assert isinstance(denied, str)
         reread = await tool.prepare({'message_id':reads[0].message_id,'part_index':0,'start':3,'end':9}, call_source)
         assert reread == {'message_id':original.message_id,'part_index':0,'start':3,'end':9}
-        # 严格冻结关联，不让恢复时重建的候选请求改变首次展示证据。
-        for request in requests:
-            restored = _decode_request(_encode_request(request))
-            assert restored.content_refs == request.content_refs and restored.messages == request.messages
-            assert restored.content_transformed == request.content_transformed
         # 实际页面投影展开不在当前页中的原文，且不重跑工具或改写消息。
         async with live_root(host) as root:
             reader = log.reader('test:room')

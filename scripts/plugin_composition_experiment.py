@@ -213,7 +213,7 @@ def _validate_behavior(
     for name, receipt in (("ready", ready_receipt), ("replaced", replaced_receipt)):
         if not receipt.ready:
             raise RuntimeError(f"实验拓扑未恢复 ready: {name}")
-    if not optional_receipt.ready or optional_receipt.optional_pending != ("probe-formatter-consumer",):
+    if not optional_receipt.ready or optional_receipt.optional_pending != ("probe-consumer/probe-formatter-consumer",):
         raise RuntimeError("实验未观察到 optional child pending")
 
 

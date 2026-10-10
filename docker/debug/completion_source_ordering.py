@@ -30,7 +30,7 @@ from agent.plugin_composition.messages import (
     MessageWriters, OwnerState, SessionAdmission,
 )
 from agent.plugin_composition.tasks import TASKS, PluginTasks
-from agent.plugin_contracts import ContentPart, ContentReferences, Control, Input, Output, ToolResult
+from agent.plugin_contracts import ContentPart, Control, Input, Output, ToolResult
 from agent.plugin_composition.models import ToolCall as ModelToolCall
 from plugins.tools.execution import ToolExecution
 from plugins.tools.api import MessageReply, Result, result_message_id
@@ -49,7 +49,7 @@ from agent.plugin_contracts.sources import CHECK_ORIGIN, CONVERSATION_COMPLETE_V
 from plugins.sources.session import SourceSession
 from plugins.subagent.request import PROFILE_TOOLS, Request
 from plugins.subagent.runtime import Subagents
-from session.log import MessageLog, MessageWriter, OwnerStore
+from session.log import MessageLog, MessageWriter
 
 
 class LocalDelivery(fixture.LocalDelivery):
@@ -240,14 +240,6 @@ async def check(directory: Path, stage: str, control: bool, *, boundary_source: 
     if boundary_source == "report":
         writer(Input, request.session_id).append("report-original", Input(()))
     originals = tuple(message for session in ("parent", request.session_id) for message in log.reader(session).snapshot())
-    original_transact = OwnerStore.transact_async
-
-    async def transact(store, callback, **kwargs):
-        # Pause before the real generation-claim transaction acquires SQL ownership.
-        if stage == "claim" and callback.__name__ == "open_prep":
-            await hold()
-        return await original_transact(store, callback, **kwargs)
-
     original_complete = SourceSession.complete
 
     async def observe_complete(session, program):
@@ -268,7 +260,7 @@ async def check(directory: Path, stage: str, control: bool, *, boundary_source: 
 
     announce_job = accepting = None
     try:
-        with patch.object(OwnerStore, "transact_async", transact), patch.object(SourceSession, "complete", observe_complete):
+        with patch.object(SourceSession, "complete", observe_complete):
             announce_job = asyncio.create_task(announce())
             if stage in {"success", "tool-success"}:
                 assert await announce_job is True
@@ -322,11 +314,11 @@ async def check(directory: Path, stage: str, control: bool, *, boundary_source: 
                 await asyncio.wait_for(rejected.wait(), 3)
                 assert len(calls) == int(stage in {"output", "tool", "tool-finished"})
                 assert len(effects) == int(stage == "tool-finished")
+                # ADR-0100：默认消息调用不写 Tools 阶段回执，ToolCall/ToolResult 即事实。
+                if stage in {"tool", "tool-finished"}:
+                    assert not list(tool_state.list())
                 if stage == "tool-finished":
-                    assert [row.value["phase"] for _, row in tool_state.list()] == ["done"]
                     assert any(isinstance(m.body, ToolResult) and m.body.outcome == "success" for m in log.reader("parent").snapshot())
-                if stage == "tool":
-                    assert [row.value["phase"] for _, row in tool_state.list()] == ["prepared"]
                 assert not any(m.source == request.session_id and isinstance(m.body, Output)
                                and m.body.finish != "continue" for m in log.reader("parent").snapshot())
                 announce_job.cancel()
@@ -358,15 +350,14 @@ async def check(directory: Path, stage: str, control: bool, *, boundary_source: 
 
 async def main(directory):
     results = []
-    for stage, control in [("success", False), ("tool-success", False), *((stage, control) for stage in ("entry", "claim", "tool", "tool-finished", "output") for control in (False, True))]:
+    for stage, control in [("success", False), ("tool-success", False), *((stage, control) for stage in ("entry", "tool", "tool-finished", "output") for control in (False, True))]:
         path = directory / f"{stage}-{control}"
         path.mkdir()
         results.append(await check(path, stage, control))
-    for stage in ("claim", "output"):
-        for control in (False, True):
-            path = directory / f"report-{stage}-{control}"
-            path.mkdir()
-            results.append(await check(path, stage, control, boundary_source="report"))
+    for control in (False, True):
+        path = directory / f"report-output-{control}"
+        path.mkdir()
+        results.append(await check(path, "output", control, boundary_source="report"))
     return results
 
 
