@@ -12,7 +12,7 @@ from agent.plugin_composition import CHAT_MODELS, RUNTIME_STARTED, RUNTIME_STOPP
 from agent.plugin_composition.models import (
     BoundChatModel, ContextLengthError, ModelRequest, ModelTimeoutError, RateLimitError, TransportError,
 )
-from agent.plugin_contracts.context import ReductionStatus
+from plugins.context.contract import ReductionStatus
 from agent.plugin_composition.bindings import BINDINGS
 from agent.plugin_composition.messages import MESSAGE_CATALOG, OWNER_STATE
 from agent.plugin_contracts import Input, Message

@@ -12,7 +12,7 @@ from agent.plugin_composition.artifacts import ArtifactRead
 from agent.plugin_composition.messages import MessageReader, MessageWriters, OwnerState, OwnerTransaction
 from agent.plugin_composition.models import BoundChatModel, ChatModels, ModelRequest
 from agent.plugin_composition.tasks import Task
-from agent.plugin_contracts.context import MaterialView, ReductionStatus
+from plugins.context.contract import MaterialView, ReductionStatus
 from agent.plugin_contracts.models import PrepareContent
 from agent.plugin_contracts import ContentPart, Input, Message, Output
 

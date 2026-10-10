@@ -4,7 +4,7 @@ from typing import Any
 
 from agent.plugin_contracts import Message
 from agent.plugin_contracts.models import CONTENT_VIEWS
-from agent.plugin_contracts.context import MaterialKind
+from plugins.context.contract import MaterialKind
 from agent.plugin_composition.messages import MessageReader
 from agent.plugin_composition.tasks import Task
 

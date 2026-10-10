@@ -88,7 +88,7 @@ def source_changes(path, reverse):
     provider = path / 'test_provider/plugin.py'
     text = provider.read_text()
     text = text.replace('from contextlib import asynccontextmanager',
-                        'from agent.plugin_contracts.context import MATERIALS\nfrom contextlib import asynccontextmanager')
+                        'from plugins.context.contract import MATERIALS\nfrom contextlib import asynccontextmanager')
     text = text.replace('inject = (TOOLS, TASKS, BINDINGS)', 'inject = (TOOLS, TASKS, BINDINGS, MATERIALS)')
     text = text.replace('    calls = []', f'''    calls = []
     async def material(messages, source):

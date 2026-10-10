@@ -193,18 +193,6 @@ note = "独立公共合同；实现由普通插件提供，来源见 Issue 766 �
 role = "seam"
 note = "独立公共合同；实现由普通插件提供，来源见 Issue 766 设计"
 
-[capabilities."content.v2"]
-role = "seam"
-note = "公共结构合同；实际状态与生命周期由提供方插件拥有"
-
-[capabilities."context.v2"]
-role = "seam"
-note = "公共结构合同；实际状态与生命周期由提供方插件拥有"
-
-[capabilities."message.display:context.notice"]
-role = "seam"
-note = "Context 公开执行诊断正文，不进入模型材料"
-
 [capabilities."conversation.check_origin.v1"]
 role = "seam"
 note = "公共结构合同；实际状态与生命周期由提供方插件拥有"
@@ -241,17 +229,9 @@ note = "公共结构合同；实际状态与生命周期由提供方插件拥有
 role = "seam"
 note = "公共结构合同；实际状态与生命周期由提供方插件拥有"
 
-[capabilities."turn.projection.v1"]
-role = "seam"
-note = "公共结构合同；实际状态与生命周期由提供方插件拥有"
-
 [capabilities."core.plugin_config.v1"]
 role = "core"
 note = "按实际 Context 应用自身固定输入；沿 selection CAS 与局部换代，不解释业务字段"
-
-[capabilities."context.materials.v4"]
-role = "seam"
-note = "材料声明用途；选择不依赖 provider 名称"
 
 [capabilities."models.content-views.v1"]
 role = "seam"

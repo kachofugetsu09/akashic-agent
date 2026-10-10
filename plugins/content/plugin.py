@@ -23,7 +23,7 @@ from agent.plugin_contracts import (
     freeze_metadata,
     json_value,
 )
-from agent.plugin_contracts.content import (
+from plugins.content.contract import (
     CONTENT as CONTENT,
     ContentView as ContentView,
 )

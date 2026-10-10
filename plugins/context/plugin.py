@@ -14,7 +14,7 @@ from agent.plugin_composition.models import ModelRequest
 from agent.plugin_contracts import (
     Message,
 )
-from agent.plugin_contracts.context import (
+from plugins.context.contract import (
     CONTEXT as CONTEXT,
     CONTEXT_NOTICE_DISPLAY,
     MATERIALS_V4,

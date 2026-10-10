@@ -11,7 +11,7 @@ from agent.plugin_composition.model import FiberState
 from agent.plugin_composition.models import BoundChatModel, ModelRequest
 from agent.plugin_composition.tasks import child_task_context
 from agent.plugin_contracts import Message
-from agent.plugin_contracts.context import (
+from plugins.context.contract import (
     MaterialKind,
     ReductionStatus,
 )

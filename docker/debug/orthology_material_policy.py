@@ -8,7 +8,7 @@ from tempfile import TemporaryDirectory
 from agent.plugin_composition import CompositionRoot, ServiceKey
 from agent.plugin_composition.channel_io import unavailable
 from agent.plugin_composition.model import PluginRuntime
-from agent.plugin_contracts.context import MATERIALS_V4
+from plugins.context.contract import MATERIALS_V4
 from plugins.context import plugin as context
 from plugins.context.materials import ContextMaterials
 from plugins.reply_program import plugin as reply

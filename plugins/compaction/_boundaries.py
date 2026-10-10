@@ -10,13 +10,13 @@ from plugins.compaction.contract import (
     StoredSummary as StoredSummary,
     SummaryLookup as SummaryLookup,
 )
-from agent.plugin_contracts.context import (
+from plugins.context.contract import (
     CONTEXT as CONTEXT,
     MATERIALS_V4 as MATERIALS,
     ContextBuilder as ContextBuilder,
 )
 from agent.plugin_contracts.models import ContextModel as ContextModel
-from agent.plugin_contracts.turns import (
+from plugins.turn_projection.contract import (
     TURN_PROJECTION as TURN_PROJECTION,
     Turn as Turn,
     TurnProjection as TurnProjection,

@@ -9,7 +9,7 @@ from .protocol.models import StrictModel
 from agent.plugin_composition.messages import MESSAGE_CATALOG
 from agent.plugin_contracts import CallRef, Input, Output, ToolCall, ToolResult
 from agent.plugin_contracts.delivery import FINAL_OUTPUT_DELIVERY, FinalOutputDelivery
-from agent.plugin_contracts.turns import TURN_PROJECTION, TurnProjection
+from plugins.turn_projection.contract import TURN_PROJECTION, TurnProjection
 from agent.plugin_composition import Context
 from .contract import CONTROL_FRAMES
 from agent.plugin_composition.plugin_updates import PLUGIN_UPDATES

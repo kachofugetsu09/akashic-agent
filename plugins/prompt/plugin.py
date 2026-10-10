@@ -7,7 +7,7 @@ from typing import cast
 
 from agent.plugin_composition import Context
 from agent.plugin_contracts import Input, Message, json_value
-from agent.plugin_contracts.context import (
+from plugins.context.contract import (
     MATERIALS_V4 as MATERIALS,
 )
 

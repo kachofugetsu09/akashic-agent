@@ -39,10 +39,10 @@ from agent.plugin_contracts import (
     ToolCall,
     ToolResult,
 )
-from agent.plugin_contracts.content import (
+from plugins.content.contract import (
     ContentView as ContentView,
 )
-from agent.plugin_contracts.context import (
+from plugins.context.contract import (
     ContextBuilder as ContextBuilder,
     SummaryReducer as SummaryReducer,
 )

@@ -10,7 +10,7 @@ from agent.plugin_composition.channel_io import unavailable
 from agent.plugin_composition.messages import MESSAGE_CATALOG
 from session.log import MessageCatalog, MessageLog
 from agent.plugin_composition.model import FiberState, PluginRuntime
-from agent.plugin_contracts.context import CONTEXT, MATERIALS_V4 as MATERIALS
+from plugins.context.contract import CONTEXT, MATERIALS_V4 as MATERIALS
 from plugins.runtime_inspection.contract import DOCUMENTS, Document
 from plugins.context import plugin as context
 from plugins.markdown_memory import plugin as memory
