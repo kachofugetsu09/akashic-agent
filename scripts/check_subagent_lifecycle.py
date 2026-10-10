@@ -19,7 +19,8 @@ args = parser.parse_args()
 sys.path.insert(0, str(args.source.resolve()))
 
 from agent.plugin_composition import CompositionRoot, PluginRuntime
-from agent.plugin_composition.bindings import BINDINGS, Bindings
+from agent.plugin_composition.bindings import BINDINGS
+from session.bindings import Bindings
 from session.services import MessageWriters, OwnerState, SessionAdmission
 from agent.plugin_composition.messages import (
     MESSAGE_CATALOG,

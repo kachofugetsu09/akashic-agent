@@ -11,7 +11,8 @@ from tempfile import TemporaryDirectory
 from unittest.mock import patch
 
 from agent.plugin_composition import CompositionRoot, PluginRuntime
-from agent.plugin_composition.bindings import BINDINGS, Bindings
+from agent.plugin_composition.bindings import BINDINGS
+from session.bindings import Bindings
 from agent.plugin_composition.messages import MESSAGE_CATALOG, OWNER_STATE, OwnerState
 from agent.plugin_composition.tasks import TASKS, PluginTasks
 from plugins.delivery.contract import (
@@ -37,7 +38,7 @@ async def check(directory: Path, action: str, cancel: bool) -> dict:
 
     async def storage(ctx):
         for key, value in ((MESSAGE_CATALOG, log.catalog()), (OWNER_STATE, OwnerState(log)),
-                           (TASKS, tasks), (BINDINGS, Bindings(log, root))):
+                           (TASKS, tasks), (BINDINGS, Bindings(log, root.context))):
             await ctx.provide(key, value)
 
     async def consumer(ctx):
