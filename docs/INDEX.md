@@ -64,6 +64,8 @@
 Session 与 Models 提交的故障保证见 [0099 WAL NORMAL](decisions/0099-ledger-commits-use-wal-normal.md)；工具与送达恢复仍沿原 owner 协议。
 默认消息工具调用与 ReAct 重启恢复按 [0100](decisions/0100-message-tool-calls-recover-at-turn-granularity.md)：未结工具报告未知，模型使用当前材料发新请求。
 
+Issue 1179 的分阶段审查与剩余范围见 [边界①审查入口](design/plugin-core-boundary1-review.md)。
+
 ## 4. 数据任务的额外入口
 
 涉及消息、记忆、附件、配置、凭据、调度、plugin-data，或裁切、压缩、重建、同步、迁移、覆盖、卸载、删除时，先读 [持久化状态地图](design/persistence-state-map.md) 的相关对象及其勘误，再按 STA-003 核对本次增、改、减与恢复方式。地图中的推断和未知不能充当删除依据。
