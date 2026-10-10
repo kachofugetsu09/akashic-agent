@@ -14,7 +14,7 @@ import {
   Message,
   MessageContent,
 } from "@/components/ai-elements/message";
-import { detectMessageRenderingFeatures, messageNeedsMarkdown, readToolData, toolDataText } from "@/message-rendering-policy";
+import { detectMessageRenderingFeatures, messageNeedsMarkdown, toolDataText } from "@/message-rendering-policy";
 import {
   Reasoning,
   ReasoningTrigger,
@@ -49,6 +49,7 @@ import type { ReplyActivity, TimelineAttachment, TimelineMessage, TimelinePart }
 import { timelineReply, timelineToolOutput, historyTranscript, isTimelinePartVisible, needsBeforeReasoningFallback } from "./message-timeline";
 import { MessageReplyReference } from "./message-actions";
 import { StaticMessageResponse } from "./static-message-response";
+import { Disclosure, formatToolDuration, ToolResultContent, useStickyDisclosure } from "./tool-result-view";
 
 const LazyMessageResponse = lazy(() =>
   import("@/components/ai-elements/message-response").then(({ MessageResponse }) => ({ default: MessageResponse })),
@@ -303,26 +304,35 @@ function CollapsedToolGroup({ count, durationMs, children }: {
   durationMs?: number;
   children: ReactNode;
 }) {
-  const [open, setOpen] = useState(false);
+  const { open, instant, rowRef, toggle } = useStickyDisclosure();
+  // 成员首次展开后保持挂载，收起时才有高度过渡可走。
+  const [mounted, setMounted] = useState(false);
   return (
-    <div className="tool-group">
-      <button
-        type="button"
-        className="tool-step-summary tool-group-summary"
-        aria-expanded={open}
-        onClick={() => setOpen((current) => !current)}
-      >
-        <span className="tool-step-heading">
-          <span className="tool-step-title">
-            <Wrench className="tool-step-icon" size={13} aria-hidden="true" />
-            <span>已执行 {count} 个工具</span>
+    <div className={`tool-group${open ? " is-open" : ""}`}>
+      <div ref={rowRef} className={`tool-step-sticky${open ? " is-open" : ""}`}>
+        <button
+          type="button"
+          className="tool-step-summary tool-group-summary"
+          aria-expanded={open}
+          onClick={() => { setMounted(true); toggle(); }}
+        >
+          <span className="tool-step-heading">
+            <span className="tool-step-title">
+              <Wrench className="tool-step-icon" size={13} aria-hidden="true" />
+              <span>已执行 {count} 个工具</span>
+            </span>
+            <span className="tool-step-description" />
+            <span className="tool-step-state">
+              {durationMs !== undefined ? formatToolDuration(durationMs) : ""}
+              <CollapseHint open={open} lead={durationMs !== undefined} />
+            </span>
+            <ChevronDown className={`tool-step-chevron ${open ? "open" : ""}`} size={13} aria-hidden="true" />
           </span>
-          <span className="tool-step-description" />
-          <span className="tool-step-state">{durationMs !== undefined ? formatToolDuration(durationMs) : ""}</span>
-          <ChevronDown className={`tool-step-chevron ${open ? "open" : ""}`} size={13} aria-hidden="true" />
-        </span>
-      </button>
-      {open ? <div className="tool-group-items">{children}</div> : null}
+        </button>
+      </div>
+      <Disclosure open={open} instant={instant}>
+        {mounted ? <div className="tool-group-items">{children}</div> : null}
+      </Disclosure>
     </div>
   );
 }
@@ -695,7 +705,7 @@ const ToolStep = memo(function ToolStep({
   const description = toolDescription(block.input);
   const resultValue = block.output === undefined ? block.errorText : block.output;
   const hasDetails = toolHasParameters(block.input) || toolHasValue(resultValue);
-  const [open, setOpen] = useState(false);
+  const { open, instant, rowRef, toggle } = useStickyDisclosure(block.status === "output-error");
   const parameters = useMemo(
     () => open ? toolParameters(block.input) : [],
     [block.input, open],
@@ -735,20 +745,22 @@ const ToolStep = memo(function ToolStep({
     >
       <div className="tool-step-body">
         {hasDetails ? (
-          <button
-            className="tool-step-summary"
-            type="button"
-            aria-expanded={open}
-            onClick={() => setOpen((current) => !current)}
-          >
-            <ToolStepSummary
-              block={block}
-              description={description}
-              stateLabel={stateLabel}
-              expandable
-              open={open}
-            />
-          </button>
+          <div ref={rowRef} className={`tool-step-sticky${open ? " is-open" : ""}`}>
+            <button
+              className="tool-step-summary"
+              type="button"
+              aria-expanded={open}
+              onClick={toggle}
+            >
+              <ToolStepSummary
+                block={block}
+                description={description}
+                stateLabel={stateLabel}
+                expandable
+                open={open}
+              />
+            </button>
+          </div>
         ) : (
           <div className="tool-step-summary tool-step-summary-static">
             <ToolStepSummary
@@ -761,13 +773,8 @@ const ToolStep = memo(function ToolStep({
           </div>
         )}
         {hasDetails ? (
-          <div
-            className={`tool-step-disclosure ${open ? "open" : ""}`}
-            aria-hidden={!open}
-            inert={!open ? true : undefined}
-          >
-            <div className="tool-step-disclosure-inner">
-              <div className="tool-detail-surface">
+          <Disclosure open={open} instant={instant}>
+            <div className="tool-detail-surface">
                 {parameters.length > 0 ? (
                   <section className="tool-detail-section" aria-label="工具参数">
                     <ToolDetailHeading
@@ -795,35 +802,13 @@ const ToolStep = memo(function ToolStep({
                     <ToolResultContent value={resultValue} error={block.status === "output-error"} />
                   </section>
                 ) : null}
-              </div>
             </div>
-          </div>
+          </Disclosure>
         ) : null}
       </div>
     </div>
   );
 });
-
-/** 所有工具共用字面文本和数据展示；复制仍使用原始值。 */
-function ToolResultContent({ value, error = false }: { value: unknown; error?: boolean }) {
-  const parsed = useMemo(() => readToolData(value), [value]);
-  return <div className={`tool-result-data${error ? " error" : ""}`}><ToolDataValue value={parsed} /></div>;
-}
-
-/** 结构可以展开；标量始终保留原始文字，不解释 Markdown 或 HTML。 */
-function ToolDataValue({ value }: { value: unknown }) {
-  if (value !== null && typeof value === "object") {
-    const entries = Object.entries(value);
-    if (!entries.length) return <pre className="tool-result">{Array.isArray(value) ? "[]" : "{}"}</pre>;
-    return <dl className="tool-result-fields">{entries.map(([name, item]) => <div key={name}>
-      <dt>{name}</dt>
-      <dd>{Array.isArray(value) ? <ToolResultContent value={item} /> : item !== null && typeof item === "object"
-        ? <details><summary>展开数据</summary><ToolDataValue value={item} /></details>
-        : <pre className="tool-result">{item === null ? "null" : String(item)}</pre>}</dd>
-    </div>)}</dl>;
-  }
-  return <pre className="tool-result">{value === null ? "null" : String(value)}</pre>;
-}
 
 function ToolDetailHeading({
   label,
@@ -852,6 +837,11 @@ function ToolDetailHeading({
   );
 }
 
+// 展开后行尾提示可收起；吸顶时这一行就是随时可点的收起入口。
+function CollapseHint({ open, lead = true }: { open: boolean; lead?: boolean }) {
+  return open ? <span className="tool-step-collapse-hint">{lead ? " · 收起" : "收起"}</span> : null;
+}
+
 function ToolStepSummary({
   block,
   description,
@@ -872,7 +862,7 @@ function ToolStepSummary({
         <span>{block.name}</span>
       </span>
       <span className="tool-step-description">{description}</span>
-      <span className="tool-step-state">{stateLabel}</span>
+      <span className="tool-step-state">{stateLabel}<CollapseHint open={open} /></span>
       {expandable ? <ChevronDown className={`tool-step-chevron ${open ? "open" : ""}`} size={13} /> : null}
     </span>
   );
@@ -921,7 +911,3 @@ function toolValue(value: unknown): string {
   return JSON.stringify(value, null, 2) ?? String(value);
 }
 
-function formatToolDuration(durationMs: number): string {
-  if (durationMs < 1_000) return `${Math.max(1, Math.round(durationMs))}ms`;
-  return `${(durationMs / 1_000).toFixed(durationMs < 10_000 ? 1 : 0).replace(/\.0$/, "")}s`;
-}
