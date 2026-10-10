@@ -12,7 +12,9 @@ from agent.plugin_composition import (
 from agent.plugin_composition.channels import CHANNEL_INPUT_V2 as CHANNEL_INPUT, RawInbound
 from agent.plugin_composition.credentials import CREDENTIALS
 from agent.plugin_composition.messages import MESSAGE_CATALOG
-from agent.plugin_contracts.sources import SOURCE_INTERRUPT_V2 as SOURCE_INTERRUPT
+from plugins.sources.contract import (
+    SOURCE_INTERRUPT_V2 as SOURCE_INTERRUPT,
+)
 
 from .channel import TelegramChannelAdapter, build_telegram_channel
 from .config import TelegramChannelConfig

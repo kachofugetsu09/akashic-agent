@@ -10,8 +10,6 @@ from agent.plugin_composition.events import EmitEventKey
 from agent.plugin_composition.messages import MessageReader, MessageWriter, OwnerTransaction
 from agent.plugin_composition.tasks import RestartGate, Task, TaskAdmission
 from agent.plugin_contracts import (
-    ContentPart,
-    ContentReferences,
     Control,
     Input,
     Message,
@@ -57,12 +55,6 @@ class GuardedSourceSession(Protocol):
 
 
 Accept = Callable[[str, str, ChannelInboundMessage], Awaitable[Message]]
-
-
-class ConversationCompleteV2(Protocol):
-    async def __call__(
-        self, session_id: str, program: CompletionProgram,
-    ) -> Message: ...
 
 
 class SourceCheck(Protocol):
@@ -115,15 +107,3 @@ class SourcesV5(Protocol):
 
 SOURCES_V5 = ServiceKey[SourcesV5]("sources.v5")
 SOURCE_SESSION_V4 = ServiceKey[SessionFactoryV4]("source.session.v4")
-
-CONVERSATION_COMPLETE_V2 = ServiceKey[ConversationCompleteV2]("conversation.complete.v2")
-CONVERSATION_COMMANDS = ServiceKey[
-    Callable[[Task, MessageReader, str], Awaitable[Message | None]]
-]("conversation.commands.v1")
-
-
-class OriginCheck(Protocol):
-    def __call__(self, part: ContentPart) -> ContentReferences: ...
-
-
-CHECK_ORIGIN = ServiceKey[OriginCheck]("conversation.check_origin.v1")

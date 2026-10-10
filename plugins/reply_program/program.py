@@ -16,7 +16,9 @@ from plugins.context.contract import MaterialView, ReductionStatus
 from agent.plugin_contracts.models import PrepareContent
 from agent.plugin_contracts import ContentPart, Input, Message, Output
 
-from agent.plugin_contracts.sources import SourceGuard
+from plugins.sources.contract import (
+    SourceGuard,
+)
 
 from .inputs import (
     Authorize,

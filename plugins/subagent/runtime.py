@@ -21,7 +21,9 @@ from .inputs import REPLY_PROGRAM
 from agent.plugin_composition.messages import MessageConflict, MessageReader, OwnerRecord, OwnerTransaction, SessionAttributes
 from agent.plugin_contracts import ContentPart, Control, Input, Message, Output
 from agent.plugin_contracts import json_value
-from agent.plugin_contracts.sources import SourceGuard
+from plugins.sources.contract import (
+    SourceGuard,
+)
 
 from .request import Request, check_request
 

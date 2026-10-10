@@ -193,14 +193,6 @@ note = "独立公共合同；实现由普通插件提供，来源见 Issue 766 �
 role = "seam"
 note = "独立公共合同；实现由普通插件提供，来源见 Issue 766 设计"
 
-[capabilities."conversation.check_origin.v1"]
-role = "seam"
-note = "公共结构合同；实际状态与生命周期由提供方插件拥有"
-
-[capabilities."conversation.commands.v1"]
-role = "seam"
-note = "公共结构合同；实际状态与生命周期由提供方插件拥有"
-
 [capabilities."delivery.final_output.v1"]
 role = "seam"
 note = "公共结构合同；实际状态与生命周期由提供方插件拥有"
@@ -241,26 +233,6 @@ note = "模型内容纯投影贡献；不授予消息写入或执行权"
 role = "seam"
 note = "Channel 入站入口；由 CHANNELS 的注册者提供"
 
-[capabilities."source.check.v2"]
-role = "seam"
-note = "公共结构合同；实际状态与生命周期由提供方插件拥有"
-
-[capabilities."source.interrupt.v2"]
-role = "seam"
-note = "Sources 拥有输入与停止的共同路由；渠道声明停止能力依赖"
-
-[capabilities."source.session.v4"]
-role = "seam"
-note = "Source 拥有异步只读判定和同步提交通知；Core 只承载公共合同"
-
-[capabilities."sources.v5"]
-role = "seam"
-note = "异步待回复读取由来源提供，注册与路由生命周期由 Sources 拥有"
-
 [capabilities."tools.program.v2"]
 role = "seam"
 note = "公共结构合同；实际状态与生命周期由提供方插件拥有"
-
-[capabilities."conversation.complete.v2"]
-role = "seam"
-note = "来源固定控制前提，交给完成程序；输出来源不能代替控制来源"

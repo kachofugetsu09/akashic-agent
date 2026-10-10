@@ -37,8 +37,10 @@ from agent.plugin_contracts.delivery import (
     FinalOutputDelivery as FinalOutputDelivery,
     FinalOutputWaiter as FinalOutputWaiter,
 )
-from agent.plugin_contracts.sources import (
+from plugins.conversation.contract import (
     CHECK_ORIGIN as CHECK_ORIGIN,
+)
+from plugins.sources.contract import (
     SOURCE_CHANGED_V3 as SOURCE_CHANGED,
     SOURCE_SESSION_V4 as SOURCE_SESSION,
     SOURCES_V5 as SOURCES,

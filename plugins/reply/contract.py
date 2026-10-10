@@ -10,7 +10,9 @@ from agent.plugin_composition.messages import MessageReader
 from agent.plugin_composition.model import ServiceKey
 from agent.plugin_composition.tasks import ExternalRootPermit, Task
 from agent.plugin_contracts import Message
-from agent.plugin_contracts.sources import SourceGuard
+from plugins.sources.contract import (
+    SourceGuard,
+)
 
 
 class Completion(Protocol):

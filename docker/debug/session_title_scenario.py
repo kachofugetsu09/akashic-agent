@@ -16,7 +16,10 @@ from agent.plugin_composition import CHAT_MODELS, CompositionRoot, PluginRuntime
 from agent.plugin_composition.messages import SESSION_ADMIN, SessionAdmin
 from agent.plugin_composition.models import LLMResponse, TransportError
 from agent.plugin_contracts import ContentPart, ContentReferences, Input
-from agent.plugin_contracts.sources import SOURCE_CHANGED_V3, SourceChangedV3
+from plugins.sources.contract import (
+    SOURCE_CHANGED_V3,
+    SourceChangedV3,
+)
 from plugins.session_title import plugin
 from scripts.install_plugin_distribution import _load_profile
 from session.log import MessageLog, SessionAttributes

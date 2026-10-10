@@ -10,7 +10,10 @@ from agent.plugin_composition import CHAT_MODELS, Context
 from agent.plugin_composition.messages import SESSION_ADMIN, MessageReader
 from agent.plugin_composition.models import ModelError, ModelRequest
 from agent.plugin_contracts import Input
-from agent.plugin_contracts.sources import SOURCE_CHANGED_V3, SourceChangedV3
+from plugins.sources.contract import (
+    SOURCE_CHANGED_V3,
+    SourceChangedV3,
+)
 
 logger = logging.getLogger(__name__)
 api_version = 3

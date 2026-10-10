@@ -20,8 +20,8 @@ from plugins.reply.contract import (
     REPLY_COMPLETION as REPLY_COMPLETION,
     Completion as Completion,
 )
-from agent.plugin_contracts.sources import (
-    CHECK_ORIGIN as ORIGIN_CHECK,  # noqa: F401 - 显式再导出给本插件消费者。
+from plugins.conversation.contract import (
+    CHECK_ORIGIN as ORIGIN_CHECK,
     OriginCheck as OriginCheck,
 )
 

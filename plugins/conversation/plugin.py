@@ -36,13 +36,15 @@ from agent.plugin_contracts.models import (
     MODEL_SELECTION as MODEL_SELECTION,
     ModelSelection as ModelSelection,
 )
-from agent.plugin_contracts.sources import (
+from plugins.conversation.contract import (
     CHECK_ORIGIN as CHECK_ORIGIN,
     CONVERSATION_COMPLETE_V2 as CONVERSATION_COMPLETE,
+    ConversationCompleteV2 as ConversationComplete,
+)
+from plugins.sources.contract import (
     SOURCE_CHANGED_V3 as SOURCE_CHANGED,
     SOURCE_SESSION_V4 as SOURCE_SESSION,
     SOURCES_V5 as SOURCES,
-    ConversationCompleteV2 as ConversationComplete,
     CompletionProgram,
     SessionFactoryV4 as SessionFactory,
     SourceChangedV3 as SourceChanged,

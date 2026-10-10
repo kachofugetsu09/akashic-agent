@@ -12,7 +12,7 @@ from agent.plugin_composition.messages import MessageCatalog, MessageReader
 from agent.plugin_composition.model import CompositionError
 from agent.plugin_composition.tasks import RestartGate, Task, TaskServiceClosed
 from agent.plugin_contracts import Control, Input, Output
-from agent.plugin_contracts.sources import (
+from plugins.sources.contract import (
     AsyncSource as Source,
     SourcesV5 as Sources,
     GuardedSourceSession as SourceSession,
