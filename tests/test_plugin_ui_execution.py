@@ -7,23 +7,26 @@ import pytest
 
 from agent.plugin_composition import CompositionRoot, PluginRuntime, PluginUiDefinition, UI_SLOTS
 from agent.plugin_composition.ui_slots import PluginUiQueryTimeout
-from agent.plugins.plugin_ui import LivePluginUiProvider
+from agent.plugin_contracts.ui import PLUGIN_UI
+from plugins.ui.queries import LivePluginUiProvider
 from plugins.ui.plugin_ui import PluginUiSlots
 
 
 @pytest.mark.asyncio
 async def test_slow_ui_owner_leaves_capacity_and_queued_timeout_never_runs(tmp_path, monkeypatch):
     root = CompositionRoot("ui-isolation")
-    provider = LivePluginUiProvider(root)
     entered, release = asyncio.Event(), threading.Event()
     loop = asyncio.get_running_loop()
     lock = threading.Lock()
     calls = []
 
     async def slots(ctx):
-        await ctx.provide(UI_SLOTS, PluginUiSlots(ctx))
+        directory = PluginUiSlots(ctx)
+        await ctx.provide(UI_SLOTS, directory)
+        await ctx.provide(PLUGIN_UI, LivePluginUiProvider(ctx, directory))
 
     await root.mount(slots, name="ui")
+    provider = cast(LivePluginUiProvider, root.context.require(PLUGIN_UI))
     (tmp_path / "panel.js").write_text("export default {};\n")
 
     async def slow(ctx):
@@ -59,7 +62,7 @@ async def test_slow_ui_owner_leaves_capacity_and_queued_timeout_never_runs(tmp_p
         jobs[0].cancel()
         with pytest.raises(asyncio.CancelledError):
             await jobs[0]
-        monkeypatch.setattr("agent.plugins.plugin_ui.PLUGIN_UI_QUERY_TIMEOUT_SECONDS", 0.05)
+        monkeypatch.setattr("plugins.ui.queries.PLUGIN_UI_QUERY_TIMEOUT_SECONDS", 0.05)
         with pytest.raises(PluginUiQueryTimeout):
             await query("slow", "withdrawn")
         closing = asyncio.create_task(provider.aclose())

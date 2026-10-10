@@ -65,7 +65,7 @@ from agent.plugin_composition.runtime_catalog import (
 )
 from agent.plugin_composition.tasks import TASKS, PluginTasks
 from agent.plugin_composition.ui import DASHBOARD_ROUTES
-from agent.plugin_contracts.ui import MESSAGE_DISPLAY, PLUGIN_UI
+from agent.plugin_contracts.ui import MESSAGE_DISPLAY
 from agent.plugins.channel_credentials import CoreProviderClientFactory
 from agent.plugins.composable import ComposablePlugin
 from agent.plugins.generation import PluginGeneration
@@ -198,7 +198,6 @@ async def provide_host_services(
             CONTROL_FRAMES,
             PROCESSES,
             MESSAGE_DISPLAY,
-            PLUGIN_UI,
         }
     )
     if artifact_import is not None:
@@ -286,19 +285,7 @@ async def provide_host_services(
     if ARTIFACT_IMPORT in requested and artifact_import is not None:
         _ = await root.context.provide(ARTIFACT_IMPORT, artifact_import)
 
-    # Client UI and message display are neutral projections.  The host
-    # publishes stable names; each display request opens only its provider
-    # Context scope while retaining the same live Root.
-    host_ui_requested = {
-        key.name
-        for key in requested
-        if key.name
-        in {
-            "core.message_display.v1",
-            "core.plugin_ui.v1",
-        }
-    }
-    if "core.message_display.v1" in host_ui_requested:
+    if MESSAGE_DISPLAY in requested:
         from agent.plugin_composition.message_view import project_message_rows
 
         async def display_message_page(
@@ -315,18 +302,6 @@ async def provide_host_services(
         _ = await root.context.provide(
             MESSAGE_DISPLAY,
             display_message_page,
-        )
-    if "core.plugin_ui.v1" in host_ui_requested:
-        from agent.plugins.plugin_ui import LivePluginUiProvider
-
-        plugin_ui = LivePluginUiProvider(root)
-        _ = await root.context.provide(
-            PLUGIN_UI,
-            plugin_ui,
-        )
-        root._defer_internal_cleanup(  # pyright: ignore[reportPrivateUsage]
-            "plugin_ui_provider.close",
-            plugin_ui.aclose,
         )
     return execution, clients
 
@@ -362,7 +337,6 @@ def check_host_dependencies(
         ARTIFACT_READ,
         ARTIFACT_IMPORT,
         MESSAGE_DISPLAY,
-        PLUGIN_UI,
     }
     for generation in generations:
         plugin = cast(ComposablePlugin, generation.instance)

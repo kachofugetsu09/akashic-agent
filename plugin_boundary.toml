@@ -102,9 +102,9 @@ note = "普通 UI provider 拥有插件页面、查询与导航注册及当前�
 role = "core"
 note = "按当前 live Root 组合 message.display:* 的只读页面投影"
 
-[capabilities."core.plugin_ui.v1"]
-role = "core"
-note = "按当前 live Root 提供中立插件 UI registry 投影"
+[capabilities."ui.plugin.v1"]
+role = "seam"
+note = "UI 插件拥有登记投影、查询准入和物理线程排空"
 
 [capabilities."core.web_ui.v1"]
 role = "seam"

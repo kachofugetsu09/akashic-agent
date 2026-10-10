@@ -47,4 +47,4 @@ class PluginUiProvider(Protocol):
 
 
 MESSAGE_DISPLAY = ServiceKey[MessageDisplayReader]("core.message_display.v1")
-PLUGIN_UI = ServiceKey[PluginUiProvider]("core.plugin_ui.v1")
+PLUGIN_UI = ServiceKey[PluginUiProvider]("ui.plugin.v1")
