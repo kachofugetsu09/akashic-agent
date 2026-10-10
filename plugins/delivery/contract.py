@@ -4,7 +4,9 @@ from __future__ import annotations
 
 from collections.abc import Callable, Mapping
 from contextlib import AbstractAsyncContextManager, AbstractContextManager
+from dataclasses import dataclass
 from datetime import datetime
+import re
 from typing import Literal, Protocol
 
 from agent.plugin_composition import Context, Effect, ServiceKey
@@ -154,18 +156,17 @@ DELIVERY_READ = ServiceKey[DeliveryHistory]("delivery.read.v1")
 FINAL_OUTPUT_DELIVERY = ServiceKey[FinalOutputDelivery]("delivery.final_output.v1")
 
 
-class InputOrigin(Protocol):
-    def __call__(
-        self, reader: MessageReader, source: str, *, through_seq: int
-    ) -> tuple[str, str] | None: ...
+@dataclass(frozen=True, slots=True)
+class SenderDefinition:
+    """固定 sender 的 owner 与幂等协议；归档后不重新选择目标。"""
 
+    name: str
+    owner: str
+    idempotent: bool
 
-INPUT_ORIGIN = ServiceKey[InputOrigin]("delivery.input-origin.v1")
-
-
-def sender_key(name: str) -> ServiceKey[object]:
-    """具名发送能力与实际 sender 注册同寿命。"""
-    import re
-    if re.fullmatch(r"[a-z][a-z0-9_-]{0,63}", name) is None:
-        raise ValueError("发送 adapter 名称无效")
-    return ServiceKey[object](f"delivery.sender.{name}.v1")
+    @staticmethod
+    def key(name: str) -> ServiceKey[SenderDefinition]:
+        """Wake 从已选渠道名声明依赖；sender 注册在同一寿命发布此事实。"""
+        if re.fullmatch(r"[a-z][a-z0-9_-]{0,63}", name) is None:
+            raise ValueError("发送 adapter 名称无效")
+        return ServiceKey[SenderDefinition](f"delivery.sender.{name}.v1")

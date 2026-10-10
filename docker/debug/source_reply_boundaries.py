@@ -42,7 +42,10 @@ from agent.plugin_composition.models import (
 from agent.plugin_composition.tasks import TASKS, PluginTasks
 from agent.plugin_contracts import ContentPart, ContentReferences, Control, Input, Output
 from plugins.content.contract import CONTENT
-from agent.plugin_contracts.delivery import DELIVERY_GUARDED_START as DELIVERY, DELIVERY_SENDERS
+from plugins.delivery.contract import (
+    DELIVERY_GUARDED_START as DELIVERY,
+    DELIVERY_SENDERS,
+)
 from agent.plugin_contracts.models import MODEL_SELECTION
 from plugins.conversation.contract import (
     CHECK_ORIGIN,

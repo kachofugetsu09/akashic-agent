@@ -14,7 +14,9 @@ from agent.plugin_composition import CompositionRoot, PluginRuntime
 from agent.plugin_composition.bindings import BINDINGS, Bindings
 from agent.plugin_composition.messages import MESSAGE_CATALOG, OWNER_STATE, OwnerState
 from agent.plugin_composition.tasks import TASKS, PluginTasks
-from agent.plugin_contracts.delivery import DELIVERY_GUARDED_START as DELIVERY
+from plugins.delivery.contract import (
+    DELIVERY_GUARDED_START as DELIVERY,
+)
 from plugins.delivery import plugin
 from session.log import MessageLog, OwnerTransaction
 from session.message import ContentPart, ContentReferences, Output

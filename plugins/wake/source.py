@@ -34,7 +34,9 @@ from agent.plugin_contracts.models import (
 )
 
 from ._boundary import CONTENT, DELIVERY
-from agent.plugin_contracts.delivery import StartGuard
+from plugins.delivery.contract import (
+    StartGuard,
+)
 
 from .api import DRIFT_DELIVERY, DRIFT_WAKE, EVENTMAIL_DELIVERY, EVENTMAIL_WAKE
 from .content import (

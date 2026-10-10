@@ -42,7 +42,7 @@ async def run(base: Path, listen: str) -> dict[str, bool]:
     config.write_text('[runtime]\n')
     init_workspace(config_path=config, workspace=workspace)
     sources = base / "sources"
-    api_sources = ("reply", "onboarding", "workloads")
+    api_sources = ("reply", "onboarding", "workloads", "delivery")
     for name in ("gateway", "sources", "models", "content", "commands", "conversation", "programmatic", "turn_projection", "ui", *api_sources):
         path = sources / name
         shutil.copytree(ROOT / "plugins" / name, path, ignore=shutil.ignore_patterns("__pycache__"))

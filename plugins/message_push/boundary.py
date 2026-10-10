@@ -17,14 +17,14 @@ from plugins.content.contract import (
     CONTENT as CONTENT,
     ContentView as ContentView,
 )
-from agent.plugin_contracts.delivery import (
+from plugins.delivery.contract import (
     DELIVERY_GUARDED_START as DELIVERY,
     DELIVERY_SENDERS as DELIVERY_SENDERS,
     FINAL_OUTPUT_DELIVERY as FINAL_OUTPUT_DELIVERY,
     FinalOutputDelivery as FinalOutputDelivery,
     FinalOutputTurn as FinalOutputTurn,
     FinalOutputWaiter as FinalOutputWaiter,
-    Receipt as ReceiptView,  # noqa: F401 - 显式再导出给本插件消费者。
+    Receipt as ReceiptView,
 )
 from agent.plugin_contracts.tools import (
     TOOLS as TOOLS,

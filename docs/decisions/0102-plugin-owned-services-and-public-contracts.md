@@ -52,6 +52,12 @@ Core 不再构造、提供或关闭它。关闭自动 socket 配置不关闭帧�
 缺失或结束的 route 使用标准 LookupError；Programmatic 将该等待错误转换为连接失败，
 重启 claim 等待转换为显式拒绝，不把未写出的最终 Output 当成送达成功。
 
+Delivery 的发送、回执与历史合同归实际 Delivery owner；默认输入目的地查询
+归 DeliveryPolicy。具名 sender 使用冻结 SenderDefinition 发布 owner 与幂等事实，
+Wake 按选中渠道名取得动态 key；不公开无类型 object key 或中央 helper。
+归档仍保存 name、owner、idempotent 三个原字段，读取边界严格验证后构造该值；
+不改写既有 binding，不重新选择旧消息的发送目标。
+
 独立命令由插件用字面 `entrypoints = {"command": "module.function"}` 声明。
 安装输入 v6 将该声明纳入唯一 selection；v5 原记录仍原样读取，不改身份，
 没有凭空补出的命令入口。Core 只按当前选择分发唯一 provider，不执行包入口或

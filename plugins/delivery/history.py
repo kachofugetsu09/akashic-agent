@@ -10,7 +10,7 @@ from pydantic import AwareDatetime, BaseModel, ConfigDict
 
 from agent.plugin_composition.messages import MessageCatalog, OwnerStore
 from agent.plugin_contracts import Message, json_value
-from agent.plugin_contracts.delivery import (
+from plugins.delivery.contract import (
     DELIVERY_READ as DELIVERY_READ,
 )
 

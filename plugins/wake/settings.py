@@ -12,7 +12,10 @@ from agent.plugin_composition.plugin_config import PLUGIN_CONFIG
 from agent.plugin_composition.runtime_catalog import RUNTIME_CATALOG
 from agent.plugin_contracts.configuration import Configuration
 from plugins.onboarding.contract import ONBOARDING, Step
-from agent.plugin_contracts.delivery import DELIVERY_SENDERS, sender_key
+from plugins.delivery.contract import (
+    DELIVERY_SENDERS,
+    SenderDefinition,
+)
 from plugins.akasha.contract import SEMANTIC_INTEREST
 from agent.plugin_contracts import Input
 
@@ -54,7 +57,7 @@ class Settings:
             fiber = next(item for item in own["composition"]["fibers"] if item["fiber_id"] == self.function.fiber_id)
             # 当前目标离线不阻止在设置中改选另一个可用目标。
             selected = config["delivery"]
-            selected_key = None if selected is None else sender_key(selected["channel"]).name
+            selected_key = None if selected is None else SenderDefinition.key(selected["channel"]).name
             missing = [key for key in fiber["missing_services"] if key != selected_key]
             selected_missing = selected_key in fiber["missing_services"]
             model = None if self.models is None else self.models()

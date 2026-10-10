@@ -4,7 +4,7 @@ from agent.plugin_composition import Context
 from agent.plugin_composition.bindings import BINDINGS
 from agent.plugin_composition.messages import MESSAGE_CATALOG, OWNER_STATE, OwnerStore
 from agent.plugin_composition.tasks import TASKS, TaskAdmission
-from agent.plugin_contracts.delivery import (
+from plugins.delivery.contract import (
     DELIVERY_GUARDED_START,
 )
 

@@ -193,26 +193,6 @@ note = "独立公共合同；实现由普通插件提供，来源见 Issue 766 �
 role = "seam"
 note = "独立公共合同；实现由普通插件提供，来源见 Issue 766 设计"
 
-[capabilities."delivery.final_output.v1"]
-role = "seam"
-note = "公共结构合同；实际状态与生命周期由提供方插件拥有"
-
-[capabilities."delivery.input-origin.v1"]
-role = "seam"
-note = "公共结构合同；实际状态与生命周期由提供方插件拥有"
-
-[capabilities."delivery.read.v1"]
-role = "seam"
-note = "公共结构合同；实际状态与生命周期由提供方插件拥有"
-
-[capabilities."delivery.senders.v1"]
-role = "seam"
-note = "公共结构合同；实际状态与生命周期由提供方插件拥有"
-
-[capabilities."delivery.guarded-start.v1"]
-role = "seam"
-note = "公共结构合同；实际状态与生命周期由提供方插件拥有"
-
 [capabilities."tools.bind-saved.v1"]
 role = "seam"
 note = "公共结构合同；实际状态与生命周期由提供方插件拥有"

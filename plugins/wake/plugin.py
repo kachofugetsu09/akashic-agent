@@ -178,7 +178,9 @@ async def _register_ui(ctx: Context) -> None:
 
 from agent.plugin_composition.plugin_config import PLUGIN_CONFIG
 from agent.plugin_composition.runtime_catalog import RUNTIME_CATALOG
-from agent.plugin_contracts.delivery import sender_key
+from plugins.delivery.contract import (
+    SenderDefinition,
+)
 
 inject = (PLUGIN_CONFIG, RUNTIME_CATALOG, MESSAGE_CATALOG, OWNER_STATE)
 
@@ -208,7 +210,7 @@ async def apply(ctx: Context) -> None:
     dashboard = DashboardView(state.read_only(), ctx.entrypoint(source.read),
         ctx.entrypoint(lambda session, message: catalog.reader(session).get(message)), delivery_status)
     await ctx.provide(WAKE_DASHBOARD, lambda: dashboard)
-    dependencies = function_inject + (() if config.delivery is None else (sender_key(config.delivery.channel),))
+    dependencies = function_inject + (() if config.delivery is None else (SenderDefinition.key(config.delivery.channel),))
     async def worker(child: Context):
         await start_function(child)
     function = await ctx.inject(dependencies, worker, name="function")
