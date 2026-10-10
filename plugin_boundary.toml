@@ -309,10 +309,6 @@ note = "公共结构合同；实际状态与生命周期由提供方插件拥有
 role = "core"
 note = "按实际 Context 应用自身固定输入；沿 selection CAS 与局部换代，不解释业务字段"
 
-[capabilities."inspection.documents.v1"]
-role = "seam"
-note = "文档 owner 发布有界只读入口；检查插件仅拥有贡献目录"
-
 [capabilities."context.materials.v4"]
 role = "seam"
 note = "材料声明用途；选择不依赖 provider 名称"
