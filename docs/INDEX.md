@@ -65,6 +65,8 @@ Session 与 Models 提交的故障保证见 [0099 WAL NORMAL](decisions/0099-led
 默认消息工具调用与 ReAct 重启恢复按 [0100](decisions/0100-message-tool-calls-recover-at-turn-granularity.md)：未结工具报告未知，模型使用当前材料发新请求。
 
 Issue 1179 的分阶段审查与剩余范围见 [边界①审查入口](design/plugin-core-boundary1-review.md)。
+兼容读取退役前先看 [hua-home 数据盘点与截止方案](design/compatibility-cutoff-inventory.md)，
+按实际状态区分结构转换、不可变历史读取与当前恢复协议。
 
 ## 4. 数据任务的额外入口
 
