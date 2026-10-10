@@ -56,9 +56,9 @@ from plugins.react.contract import (
 )
 from agent.plugin_contracts.tools import (
     DecodedCall as DecodedCall,
-    ToolMenu as ToolMenu,
     StartCheck,
 )
+from plugins.tools.contract import ToolMenu as ToolMenu
 
 Materials = Mapping[str, object]
 

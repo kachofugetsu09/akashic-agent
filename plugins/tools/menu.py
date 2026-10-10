@@ -10,7 +10,7 @@ from agent.plugin_composition.models import ToolCall as ModelToolCall
 from agent.plugin_contracts import CallRef, ToolCall
 from core.common.frozen_json import freeze_json
 from agent.plugin_contracts.tools import CommitAfter as CommitAfter
-from agent.plugin_contracts.tools import ToolPresentation as ToolPresentation
+from plugins.tools.contract import ToolPresentation as ToolPresentation
 
 from .execution import MessageReply, Result, ToolExecution
 from .plugin import TOOLS

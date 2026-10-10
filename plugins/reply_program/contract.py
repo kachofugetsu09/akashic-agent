@@ -14,7 +14,8 @@ from agent.plugin_composition.tasks import Task
 from agent.plugin_contracts import Message
 from plugins.models.contract import ContentRenderer
 from plugins.context.contract import MaterialKind
-from agent.plugin_contracts.tools import ToolPresentation, ToolView
+from agent.plugin_contracts.tools import ToolView
+from plugins.tools.contract import ToolPresentation
 from plugins.sources.contract import (
     SourceGuard,
 )
