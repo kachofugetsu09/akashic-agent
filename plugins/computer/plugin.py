@@ -24,7 +24,7 @@ from agent.plugin_composition import (
 from plugins.mcp.contract import MCP_SERVERS, McpServerDefinition, WorkloadEnv
 from core.common.file_io import run_file_io
 
-from agent.plugin_composition.assets import INSTALLED_ASSETS
+from plugins.assets.contract import INSTALLED_ASSETS
 from agent.plugin_composition.bindings import BINDINGS
 from agent.plugin_composition.messages import MESSAGE_CATALOG, OWNER_STATE
 from .inputs import CallSource, Result, TOOLS, TURN_PROJECTION, TurnProjection

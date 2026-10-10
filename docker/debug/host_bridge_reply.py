@@ -40,7 +40,7 @@ def add_skills(sources: Path, *, files: int, always: bool) -> None:
     for source_name, target in (("assets", "assets"), ("standard_tools", "skill_probe")):
         shutil.copytree(ROOT / "plugins" / source_name, sources / target,
                         ignore=shutil.ignore_patterns("__pycache__"))
-    (sources / "skill_probe/plugin.py").write_text('''from agent.plugin_composition.assets import INSTALLED_ASSETS
+    (sources / "skill_probe/plugin.py").write_text('''from plugins.assets.contract import INSTALLED_ASSETS
 from ._materials_boundary import MATERIALS
 from ._tool_boundary import TOOLS
 from .skills import register_skills
@@ -56,7 +56,7 @@ async def apply(ctx):
     bundle = sources / "skill_bundle"
     skill = bundle / "skills/local"
     skill.mkdir(parents=True)
-    (bundle / "plugin.py").write_text('''from agent.plugin_composition.assets import INSTALLED_ASSETS
+    (bundle / "plugin.py").write_text('''from plugins.assets.contract import INSTALLED_ASSETS
 api_version = 3
 name = "skill_bundle"
 version = "1.0.0"

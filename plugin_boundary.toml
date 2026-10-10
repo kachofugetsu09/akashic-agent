@@ -69,10 +69,6 @@ note = "Channel 附件有界读取端口；与 artifact_read 同一租约边界"
 role = "core"
 note = "Channel 身份权威事实读取"
 
-[capabilities."core.installed_assets.v1"]
-role = "seam"
-note = "普通 assets provider 注册贡献方代码目录，并按 exact Root scope 提供只读资产；不解释内容"
-
 [capabilities."core.credentials"]
 role = "seam"
 note = "按插件 owner 打开短凭据租约；来源可替换"

@@ -7,7 +7,7 @@ from contextlib import asynccontextmanager
 from typing import cast
 
 from agent.plugin_composition import Context, RUNTIME_STARTED, RUNTIME_STOPPING
-from agent.plugin_composition.assets import INSTALLED_ASSETS
+from plugins.assets.contract import INSTALLED_ASSETS
 from agent.plugin_composition.bindings import BINDINGS
 from agent.plugin_composition.messages import MESSAGE_CATALOG, MESSAGE_WRITERS, OWNER_STATE
 from agent.plugin_composition.plugin_updates import PLUGIN_UPDATES, UpdateStatus

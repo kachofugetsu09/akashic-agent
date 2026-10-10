@@ -46,7 +46,7 @@ class InstalledAssets(Protocol):
     ) -> Effect: ...
 
 
-INSTALLED_ASSETS = ServiceKey[InstalledAssets]("core.installed_assets.v1")
+INSTALLED_ASSETS = ServiceKey[InstalledAssets]("assets.installed.v1")
 
 
 __all__ = ["INSTALLED_ASSETS", "InstalledAsset", "InstalledAssets"]

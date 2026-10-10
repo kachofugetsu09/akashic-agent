@@ -1,6 +1,6 @@
 from agent.plugin_composition import PROCESSES, UI_SLOTS, Context, PluginUiDefinition, PluginUiRpcInvalidRequest
 from agent.plugin_composition.artifacts import ARTIFACT_IMPORT
-from agent.plugin_composition.assets import INSTALLED_ASSETS
+from plugins.assets.contract import INSTALLED_ASSETS
 from agent.plugin_composition.bindings import BINDINGS
 from agent.plugin_composition.tasks import TASKS
 from agent.plugin_composition.messages import OWNER_STATE, SESSION_ADMISSION

@@ -5,7 +5,7 @@ from contextlib import AsyncExitStack, asynccontextmanager
 from pathlib import PurePosixPath
 
 from agent.plugin_composition import Context, Effect
-from agent.plugin_composition.assets import INSTALLED_ASSETS, InstalledAsset
+from plugins.assets.contract import INSTALLED_ASSETS, InstalledAsset
 
 api_version = 3
 name = "assets"

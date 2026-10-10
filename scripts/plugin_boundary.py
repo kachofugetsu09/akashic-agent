@@ -64,7 +64,6 @@ PLUGIN_ALLOWED_MODULES = frozenset({
     "agent.plugin_composition",
     "agent.plugin_composition.admission",
     "agent.plugin_composition.artifacts",
-    "agent.plugin_composition.assets",
     "agent.plugin_composition.bindings",
     "agent.plugin_composition.channel_io",
     "agent.plugin_composition.channels",
