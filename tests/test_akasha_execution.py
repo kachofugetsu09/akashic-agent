@@ -10,7 +10,7 @@ import threading
 import pytest
 
 from agent.plugin_composition import CompositionRoot, Context
-from agent.plugin_composition.bindings import Bindings
+from session.bindings import Bindings
 from plugins.akasha.application.consumer import MessageConsumer
 from plugins.akasha.domain.model import MemoryConfig
 from plugins.akasha.infrastructure.consumption import Consumption

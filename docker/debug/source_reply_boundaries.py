@@ -31,7 +31,8 @@ if args.slow_writes and args.case not in {None, "fresh", "two-phases"}:
 sys.path.insert(0, str(args.source))
 
 from agent.plugin_composition import CompositionRoot, PluginRuntime
-from agent.plugin_composition.bindings import BINDINGS, Bindings
+from agent.plugin_composition.bindings import BINDINGS
+from session.bindings import Bindings
 from agent.plugin_composition.messages import (
     MESSAGE_CATALOG, MESSAGE_WRITERS, OWNER_STATE, SESSION_ADMISSION,
     MessageWriters, OwnerState, SessionAdmission,
@@ -177,7 +178,7 @@ async def check(directory: Path, kind: str, mode: str):
     root = CompositionRoot("source-boundary-scenario")
     tasks = PluginTasks()
     writers, state = MessageWriters(log), OwnerState(log)
-    bindings = Bindings(log, root)
+    bindings = Bindings(log, root.context)
     calls = []
     receipts = []
     inputs = []

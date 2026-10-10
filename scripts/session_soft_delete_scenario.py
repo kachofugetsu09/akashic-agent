@@ -71,7 +71,7 @@ def run_real_migration(workspace: Path) -> None:
 async def akasha_participation(root: Path, deleted_session: str) -> None:
     """软删会话仍被在线学习与全量重建消费：同一 MessageConsumer、同一输入。"""
     from agent.plugin_composition import CompositionRoot, Context
-    from agent.plugin_composition.bindings import Bindings
+    from session.bindings import Bindings
     from plugins.akasha.application.rebuild import rebuild_from_catalog
     from plugins.akasha.application.consumer import MessageConsumer
     from plugins.akasha.domain.model import MemoryConfig

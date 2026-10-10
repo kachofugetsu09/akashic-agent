@@ -26,7 +26,8 @@ from agent.plugin_composition import (
 )
 from plugins.models.contract import CHAT_MODELS
 from agent.plugin_composition.artifacts import ARTIFACT_READ
-from agent.plugin_composition.bindings import BINDINGS, Bindings
+from agent.plugin_composition.bindings import BINDINGS
+from session.bindings import Bindings
 from agent.plugin_composition.channels import ChannelInboundMessage
 from agent.restart import RESTART_GATE, RestartGate
 from agent.plugin_composition.messages import (
@@ -88,7 +89,7 @@ async def check(directory: Path, stage: str, control: bool, *, boundary_source: 
     reached, proceed = asyncio.Event(), asyncio.Event()
     committed, notify = asyncio.Event(), asyncio.Event()
     rejected = asyncio.Event()
-    bindings = Bindings(log, root)
+    bindings = Bindings(log, root.context)
 
     async def hold():
         reached.set()

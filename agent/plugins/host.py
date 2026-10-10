@@ -14,13 +14,10 @@ from agent.plugin_composition import (
     CompositionRoot,
     ServiceKey,
 )
-from agent.plugin_composition.artifacts import (
-    ARTIFACT_IMPORT,
-    ARTIFACT_READ,
-    ArtifactImport,
-    ArtifactRead,
-)
-from agent.plugin_composition.bindings import BINDINGS, Bindings
+from agent.plugin_composition.artifacts import ARTIFACT_IMPORT, ARTIFACT_READ
+from session.artifact_services import ArtifactImport, ArtifactRead
+from agent.plugin_composition.bindings import BINDINGS
+from session.bindings import Bindings
 from agent.plugin_composition.channel_io import (
     CHANNEL_ATTACHMENT_IMPORT,
     CHANNEL_ATTACHMENT_READ,

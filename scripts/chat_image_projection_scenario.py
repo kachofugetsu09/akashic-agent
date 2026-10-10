@@ -12,7 +12,7 @@ import tempfile
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from PIL import Image
 from agent.plugin_composition import ServiceKey
-from agent.plugin_composition.artifacts import ArtifactRead
+from session.artifact_services import ArtifactRead
 from agent.plugin_composition.channels import CHANNEL_INPUT_V2 as CHANNEL_INPUT, ChannelInboundMessage
 from agent.plugin_contracts import ContentPart, Control
 from infra.channels.artifacts import ChannelAttachmentArtifactStore

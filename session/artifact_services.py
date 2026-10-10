@@ -1,0 +1,53 @@
+from __future__ import annotations
+
+from collections.abc import Awaitable, Callable
+
+from session.artifacts import (
+    AttachmentKind as AttachmentKind, AttachmentReadLease, AttachmentRef as AttachmentRef,
+    check_artifact_id as check_artifact_id,
+)
+
+
+class _ReadLease:
+    """只交付有界字节读取与关闭权，不暴露旧模型路径或附件 repository。"""
+
+    def __init__(self, lease: AttachmentReadLease):
+        self._ref = lease.ref
+        self._read = lease.read_bytes
+        self._read_chunk = lease.read_chunk
+        self._close = lease.aclose
+
+    @property
+    def ref(self) -> AttachmentRef:
+        return self._ref
+
+    async def read_bytes(self, *, max_bytes: int) -> bytes:
+        return await self._read(max_bytes=max_bytes)
+
+    async def read_chunk(self, *, offset: int, max_bytes: int) -> bytes:
+        return await self._read_chunk(offset=offset, max_bytes=max_bytes)
+
+    async def aclose(self) -> None:
+        await self._close()
+
+
+class ArtifactRead:
+    """所有来源共用的窄读取能力；引用由消息或资源 owner 提供。"""
+
+    def __init__(self, acquire: Callable[[AttachmentRef], Awaitable[AttachmentReadLease]]):
+        self._acquire = acquire
+
+    async def acquire(self, ref: AttachmentRef) -> AttachmentReadLease:
+        return _ReadLease(await self._acquire(ref))
+
+
+
+
+class ArtifactImport:
+    """只授予来源导入与不可变引用；不附带消息、读取、删除或任意数据库权限。"""
+
+    def __init__(self, import_source: Callable[[str, AttachmentKind], Awaitable[AttachmentRef]]):
+        self._import_source = import_source
+
+    async def import_source(self, source: str, kind: AttachmentKind) -> AttachmentRef:
+        return await self._import_source(source, kind)
