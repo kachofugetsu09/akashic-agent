@@ -109,14 +109,17 @@ export function useSessionActivity(
   const liveHeads = useMemo(() => heads.map((head) => ({ ...head,
     headSeq: data.heads[head.key] === undefined ? head.headSeq
       : Math.max(data.heads[head.key], head.headSeq ?? -1) })), [heads, data.heads]);
-  const seen = useSeenHeads(liveHeads, activeSessionId, shownHead, visible && readingChat);
+  const reading = visible && readingChat;
+  const seen = useSeenHeads(liveHeads, activeSessionId, shownHead, reading);
   const statuses = useMemo(() => {
     const result = new Map<string, SessionStatus>();
     for (const { key, headSeq } of liveHeads) {
       if (data.available && data.running.has(key)) result.set(key, "running");
-      else if (headSeq !== undefined && seen[key] !== undefined && headSeq > seen[key]) result.set(key, "unread");
+      // 正在阅读的会话不亮未读：水位帧可能先于消息帧到达，避免在当前行上闪一下。
+      else if (!(reading && key === activeSessionId) && headSeq !== undefined
+        && seen[key] !== undefined && headSeq > seen[key]) result.set(key, "unread");
     }
     return result;
-  }, [liveHeads, data.available, data.running, seen]);
+  }, [liveHeads, data.available, data.running, seen, reading, activeSessionId]);
   return { statuses, receive, disconnect };
 }

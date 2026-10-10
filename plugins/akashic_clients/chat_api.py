@@ -23,7 +23,6 @@ from .session_activity import follow_session_activity
 from .services import AttachmentStorePort as AttachmentStore
 from .services import (
     ActiveSessionsFollowPort,
-    ActiveSessionsPort,
     InvalidPage,
     MessageCatalogPort as MessageCatalog,
     MessageDisplayReader,
@@ -103,7 +102,6 @@ def create_chat_app(
     ] | None = None,
     messages: MessageCatalog | None = None,
     reply_status: Callable[[str], AsyncGenerator[dict[str, object], None]] | None = None,
-    active_sessions: ActiveSessionsPort | None = None,
     follow_active_sessions: ActiveSessionsFollowPort | None = None,
     message_scope: Callable[[], Any] | None = None,
     session_admin_scope: Callable[[], Any] | None = None,
@@ -252,17 +250,6 @@ def create_chat_app(
         return {"items": [session_row(cast(Any, entry)) for entry in page.items], "total": page.total,
                 "next_cursor": None if page.next_cursor is None else {
                     "updated_at": page.next_cursor[0], "session_id": page.next_cursor[1]}}
-
-    @app.get("/api/chat/sessions/activity")
-    async def session_activity() -> JSONResponse:
-        """一次性读取活动集合；纯内存读取，回复插件缺席时 available=false。"""
-        active = None if active_sessions is None else await active_sessions()
-        prefix = f"{channel.name}:"
-        return JSONResponse(
-            {"version": 1, "available": active is not None,
-             "active": sorted(key for key in active or () if key.startswith(prefix))},
-            headers={"Cache-Control": "no-store"},
-        )
 
     async def _set_session_deleted(session_key: str, *, deleted: bool) -> dict[str, object]:
         if not session_key.startswith(f"{channel.name}:"):
@@ -642,7 +629,6 @@ def build_chat_server(
     ] | None = None,
     messages: MessageCatalog | None = None,
     reply_status: Callable[[str], AsyncGenerator[dict[str, object], None]] | None = None,
-    active_sessions: ActiveSessionsPort | None = None,
     follow_active_sessions: ActiveSessionsFollowPort | None = None,
     message_scope: Callable[[], Any] | None = None,
     session_admin_scope: Callable[[], Any] | None = None,
@@ -665,7 +651,6 @@ def build_chat_server(
             model_selection_reader=model_selection_reader,
             messages=messages,
             reply_status=reply_status,
-            active_sessions=active_sessions,
             follow_active_sessions=follow_active_sessions,
             message_scope=message_scope,
             session_admin_scope=session_admin_scope,

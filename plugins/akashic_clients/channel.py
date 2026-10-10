@@ -43,7 +43,6 @@ from .chat_api import build_chat_server
 from .runtime_inspection import ScopedRpcRuntimeInspection
 from .services import (
     ActiveSessionsFollowPort,
-    ActiveSessionsPort,
     MessageCatalogPort,
     ModelCatalogReader,
     ModelSelectionReader,
@@ -226,7 +225,6 @@ class _GenerationAkashicAdapter:
         self._config = state.config
         self._workspace = state.workspace
         self._reply_status: ReplyStatusPort | None = None
-        self._active_sessions: ActiveSessionsPort | None = None
         self._follow_active_sessions: ActiveSessionsFollowPort = self._follow_session_activity
         self._model_catalog_reader: ModelCatalogReader | None = None
         self._model_selection_reader: ModelSelectionReader | None = None
@@ -263,7 +261,6 @@ class _GenerationAkashicAdapter:
         if open_scope is None:
             raise RuntimeError("akashic channel 缺少 host request scope")
         self._reply_status = self._follow_reply_status
-        self._active_sessions = self._read_active_sessions
         self._model_catalog_reader = self._read_model_catalog
         self._model_selection_reader = self._read_model_selection
         self._runtime_inspection = ScopedRpcRuntimeInspection(open_scope)
@@ -321,15 +318,6 @@ class _GenerationAkashicAdapter:
 
         async with self._open_request_scope() as scope:
             yield cast(PluginUiProvider, scope.require(PLUGIN_UI))
-
-    async def _read_active_sessions(self) -> frozenset[str] | None:
-        """Borrow the reply reader for one read; None means the reply plugin is absent."""
-
-        async with self._open_request_scope() as scope:
-            with scope.borrow(REPLY_STATUS) as service:
-                if service is None:
-                    return None
-                return frozenset(service.active_sessions())
 
     async def _follow_session_activity(self) -> AsyncGenerator[frozenset[str] | None, None]:
         """短借当代 reader，订阅自己拥有生命周期；缺席明确返回不可用。"""
@@ -456,7 +444,6 @@ class _GenerationAkashicAdapter:
             attachment_store=self._upload_store,
             artifact_store=artifact_store,
             reply_status=self._reply_status,
-            active_sessions=self._active_sessions,
             follow_active_sessions=self._follow_active_sessions,
             message_scope=self._message_scope,
             session_admin_scope=self._session_admin_scope,

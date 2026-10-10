@@ -526,9 +526,19 @@ class WebChatChannel:
     async def _send_session_activity(self, websocket: WebSocket) -> None:
         """只发送变化的摘要；连接断开后由连接 scope 取消并排空。"""
         assert self._session_activity is not None
-        async with aclosing(self._session_activity()) as frames:
-            async for frame in frames:
-                await websocket.send_json({"type": "sessions.activity", **frame})
+        # 1. 侧栏状态只是辅助信息：订阅失败只让它停止更新，不能拖垮收发消息的连接。
+        try:
+            async with aclosing(self._session_activity()) as frames:
+                async for frame in frames:
+                    await websocket.send_json({"type": "sessions.activity", **frame})
+        except Exception:
+            logger.exception("[web_chat] 会话活动订阅失败，侧栏状态停止更新")
+            # 2. 尽力通知客户端清掉可能残留的运行中标记；连接已断开时发送失败可忽略。
+            with suppress(Exception):
+                await websocket.send_json({
+                    "type": "sessions.activity", "version": 1, "snapshot": False,
+                    "available": False, "active": [], "heads": {}, "removed": [],
+                })
 
     async def save_upload_stream(
         self,

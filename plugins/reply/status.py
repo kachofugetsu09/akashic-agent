@@ -25,9 +25,6 @@ class ReplyRead:
     def snapshot(self, session_id: str) -> tuple[ReplyActivity, ...]:
         return self._state.snapshot(session_id)
 
-    def active_sessions(self) -> frozenset[str]:
-        return self._state.active_sessions()
-
     async def follow_active_sessions(self) -> AsyncGenerator[frozenset[str], None]:
         """只跟随活动集合；草稿 token 不唤醒侧栏订阅。"""
         previous: frozenset[str] | None = None
