@@ -5,7 +5,11 @@ from pathlib import Path
 
 import pytest
 
-from agent.plugin_composition.models import LLMResponse, ModelContinuation, ToolCall as ModelToolCall
+from plugins.models.contract import (
+    LLMResponse,
+    ModelContinuation,
+    ToolCall as ModelToolCall,
+)
 from plugins.content.plugin import check_text
 from plugins.context.api import Materials, Reminder, material_data
 from plugins.models.projection import check_facts

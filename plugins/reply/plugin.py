@@ -23,7 +23,7 @@ from agent.plugin_composition.messages import (
     MessageReader,
     OwnerTransaction,
 )
-from agent.plugin_composition.models import StreamCallback
+from plugins.models.contract import StreamCallback
 from agent.plugin_composition.tasks import RESTART_GATE, Task
 from agent.plugin_contracts import Message
 from plugins.reply_program.contract import (

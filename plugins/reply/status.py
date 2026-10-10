@@ -5,7 +5,7 @@ from collections.abc import AsyncGenerator, Callable, Generator
 from contextlib import AbstractContextManager, contextmanager
 from dataclasses import asdict, replace
 
-from agent.plugin_composition.models import StreamCallback
+from plugins.models.contract import StreamCallback
 from agent.plugin_composition.tasks import Task
 from plugins.reply.contract import (
     REPLY_STATUS as REPLY_STATUS,

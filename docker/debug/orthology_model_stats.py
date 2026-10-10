@@ -16,7 +16,7 @@ from docker.debug.orthology_optional_requests import install_ports
 from plugins.akashic_clients import plugin as clients
 from plugins.channels import plugin as channels
 
-from agent.plugin_composition.models import ModelRequest
+from plugins.models.contract import ModelRequest
 from plugins.models.contract import (
     BoundModelDescriptor,
     CapabilitySources,

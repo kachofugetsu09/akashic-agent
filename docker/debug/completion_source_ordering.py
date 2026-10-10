@@ -35,7 +35,7 @@ from agent.plugin_composition.messages import (
 )
 from agent.plugin_composition.tasks import TASKS, PluginTasks
 from agent.plugin_contracts import ContentPart, Control, Input, Output, ToolResult
-from agent.plugin_composition.models import ToolCall as ModelToolCall
+from plugins.models.contract import ToolCall as ModelToolCall
 from plugins.tools.execution import ToolExecution
 from plugins.tools.api import MessageReply, Result, result_message_id
 from plugins.tools.menu import ToolCallDecode

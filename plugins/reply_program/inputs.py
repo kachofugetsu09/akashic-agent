@@ -4,9 +4,7 @@ from collections.abc import Awaitable, Callable, Mapping, Sequence
 from contextlib import AbstractContextManager
 from typing import Any
 
-from agent.plugin_composition.models import (
-    StreamCallback,
-)
+from plugins.models.contract import StreamCallback
 from agent.plugin_contracts import ContentPart
 from plugins.content.contract import (
     CONTENT as CONTENT,

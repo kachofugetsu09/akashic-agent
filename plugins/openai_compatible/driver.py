@@ -22,7 +22,7 @@ from core.net.http import HttpClient, StreamProgress, describe_transport_error, 
 
 from core.common.frozen_json import freeze_json
 
-from agent.plugin_composition import (
+from plugins.models.contract import (
     EmbeddingResult,
     LLMResponse,
     ModelRequest,

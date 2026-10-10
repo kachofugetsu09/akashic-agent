@@ -9,11 +9,10 @@ from typing import Any, cast
 
 from agent.plugin_composition import ServiceKey
 from agent.plugin_composition.messages import MessageSnapshot
-from agent.plugin_composition.models import (
+from plugins.models.contract import (
     LLMResponse,
     ModelContinuation,
     ModelRequest,
-    read_content_refs,
 )
 from plugins.models.contract import BoundChatModel
 from agent.plugin_contracts import (
@@ -128,7 +127,7 @@ def check_facts(part: ContentPart) -> ContentReferences:
     if not isinstance(value["call_record_id"], str) or not value["call_record_id"]:
         raise ValueError("model.facts 缺少调用记录")
     if "content_refs" in value:
-        _ = read_content_refs(value["content_refs"])
+        _ = ModelRequest.read_content_refs(value["content_refs"])
     if "content_transformed" in value and type(value["content_transformed"]) is not bool:
         raise ValueError("内容投影标记必须是 bool")
     ids = value["tool_ids"]

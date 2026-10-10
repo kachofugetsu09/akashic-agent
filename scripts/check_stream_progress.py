@@ -15,7 +15,7 @@ import httpx
 
 sys.path.insert(0, str(Path.cwd()))
 
-from agent.plugin_composition import ModelRequest
+from plugins.models.contract import ModelRequest
 from plugins.models.contract import (
     BoundModelDescriptor,
     CapabilitySources,

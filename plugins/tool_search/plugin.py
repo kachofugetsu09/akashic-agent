@@ -8,7 +8,7 @@ from typing import Any, cast
 from pydantic import BaseModel, ConfigDict, Field, ValidationError
 
 from agent.plugin_composition import Context
-from agent.plugin_composition.models import ToolCall as ModelToolCall
+from plugins.models.contract import ToolCall as ModelToolCall
 from agent.plugin_contracts import ContentPart, json_value
 from core.common.frozen_json import freeze_json
 from plugins.tools.contract import TOOL_LOADING_PRESENTATION as TOOL_LOADING_PRESENTATION

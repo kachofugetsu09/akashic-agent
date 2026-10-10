@@ -15,7 +15,7 @@ from agent.plugin_composition import (
     Context,
 )
 from plugins.models.contract import CHAT_MODELS
-from agent.plugin_composition.models import ModelRequest
+from plugins.models.contract import ModelRequest
 from plugins.models.contract import (
     ContextLengthError,
     ModelTimeoutError,

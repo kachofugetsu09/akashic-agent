@@ -20,12 +20,12 @@ from agent.plugin_composition import (
     Context,
     CompositionError,
     FiberState,
-    ModelRequest,
 )
+from plugins.models.contract import ModelRequest
 from plugins.models.contract import CHAT_MODELS
 from agent.plugin_composition.bindings import BINDINGS, Bindings
 from agent.plugin_composition.messages import MESSAGE_CATALOG
-from agent.plugin_composition.models import LLMResponse
+from plugins.models.contract import LLMResponse
 from plugins.models.contract import (
     ContextLengthError,
     ModelError,

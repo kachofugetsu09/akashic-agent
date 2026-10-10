@@ -5,7 +5,7 @@ from dataclasses import dataclass
 from types import MappingProxyType
 from typing import cast
 
-from agent.plugin_composition.models import ModelRequest
+from plugins.models.contract import ModelRequest
 from agent.plugin_contracts import (
     CallRef,
     ContentPart,

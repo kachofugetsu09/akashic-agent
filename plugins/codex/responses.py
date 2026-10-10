@@ -13,7 +13,7 @@ import httpx
 
 from core.net.http import HttpClient, StreamProgress, describe_transport_error, finish_response, retry_after_time
 
-from agent.plugin_composition import (
+from plugins.models.contract import (
     LLMResponse,
     ModelContinuation,
     ModelRequest,

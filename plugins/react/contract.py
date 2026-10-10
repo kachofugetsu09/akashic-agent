@@ -8,7 +8,7 @@ from typing import Protocol
 
 from agent.plugin_composition import RuntimeScope, ServiceKey
 from agent.plugin_composition.messages import MessageReader, MessageWriter, OwnerStore
-from agent.plugin_composition.models import StreamCallback
+from plugins.models.contract import StreamCallback
 from plugins.models.contract import BoundChatModel
 from agent.plugin_contracts import Message
 from plugins.content.contract import ContentView

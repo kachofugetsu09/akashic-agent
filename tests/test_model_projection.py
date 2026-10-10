@@ -1,6 +1,6 @@
 """MessageProjection.estimate 对同一不可变请求对象只估算一次。"""
 
-from agent.plugin_composition.models import (
+from plugins.models.contract import (
     LLMResponse,
     ModelRequest,
 )

@@ -32,11 +32,13 @@ from uuid import uuid4
 from agent.plugin_composition import (
     Context,
     Effect,
-    EmbeddingResult,
     FiberState,
+    ServiceKey,
+)
+from plugins.models.contract import (
+    EmbeddingResult,
     LLMResponse,
     ModelRequest,
-    ServiceKey,
 )
 from plugins.models.contract import (
     BoundModelDescriptor,
@@ -72,7 +74,7 @@ from plugins.models.contract import (
     ModelExecution,
 )
 from agent.plugin_composition.bindings import Bindings
-from agent.plugin_composition.models import (
+from plugins.models.contract import (
     ModelContinuation,
     ModelUsage,
     ToolCall,

@@ -5,7 +5,7 @@ from collections.abc import Awaitable, Callable, Mapping
 from typing import Any, Protocol
 from agent.plugin_composition.messages import MessageReader
 from agent.plugin_composition.model import ServiceKey
-from agent.plugin_composition.models import ToolCall as ModelToolCall
+from plugins.models.contract import ToolCall as ModelToolCall
 from agent.plugin_composition.tasks import ExternalRootPermit
 from agent.plugin_contracts import CallRef, ContentPart, ContentReferences, ToolCall
 from agent.plugin_contracts.tools import (

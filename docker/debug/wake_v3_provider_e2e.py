@@ -24,7 +24,7 @@ if str(_SOURCE_ROOT) not in sys.path:
 import agent.plugins.manager as plugin_manager_module
 import plugins.wake.plugin as wake_plugin_module
 from agent.control.timer import TimerReceipt, TimerStatus
-from agent.plugin_composition import (
+from plugins.models.contract import (
     LLMResponse,
     ToolCall,
 )

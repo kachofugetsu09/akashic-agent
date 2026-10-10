@@ -133,7 +133,7 @@ def seed(log, count, model_store=None, model_descriptor: BoundModelDescriptor | 
             assert model_descriptor is not None
             from dataclasses import asdict
             from plugins.models.projection import response_facts
-            from agent.plugin_composition.models import LLMResponse
+            from plugins.models.contract import LLMResponse
 
             identity = f"history-call:{index}"
             facts = response_facts(LLMResponse("history", call_record_id=identity), ())
