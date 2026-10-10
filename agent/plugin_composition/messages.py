@@ -152,7 +152,7 @@ class SessionTitleResult:
 
 
 class SessionAdmin:
-    """用户显式的会话数据管理操作：软删/恢复与标题覆盖，不授予消息减少或其他 owner 权限。"""
+    """会话软删/恢复、标题覆盖与空标题条件写入，不授予消息减少权限。"""
 
     def __init__(self, log: _MessageLog | None):
         self._log = log
@@ -172,6 +172,12 @@ class SessionAdmin:
             lambda: self._log.set_session_title(session_key, title)
         )
         return SessionTitleResult(session_key, stored)
+
+    async def set_title_if_unset(self, session_key: str, title: str) -> bool:
+        """仅在未命名且未软删时写入；竞争失败返回 False，不重试。"""
+        if self._log is None:
+            raise RuntimeError("candidate 验证期禁止管理正式 Session")
+        return await run_file_io(lambda: self._log.set_session_title_if_unset(session_key, title))
 
 
 class SessionAdmission:

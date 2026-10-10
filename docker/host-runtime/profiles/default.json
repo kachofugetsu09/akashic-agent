@@ -90,6 +90,11 @@
       "reason": "提供模型目录、连接设置和一次执行所需的冻结选择。"
     },
     {
+      "name": "session_title",
+      "depends_on": ["models"],
+      "reason": "新会话自动生成简明标题，用户手动重命名优先。"
+    },
+    {
       "name": "openai-compatible",
       "depends_on": [
         "models",
