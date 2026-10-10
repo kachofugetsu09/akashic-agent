@@ -56,4 +56,6 @@ export interface ShellSettingsRenderProps {
   railActions: readonly ShellRailAction[];
   embedded?: boolean;
   renderRoute?: RenderSettingsRoute;
+  /** 关闭整个设置工作区；未保存草稿的守卫与 Shell 自己的关闭按钮一致。 */
+  close?: () => void;
 }

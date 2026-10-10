@@ -10,7 +10,8 @@ export interface Status {
 }
 export interface FormProps { values: Record<string, unknown>; change: (key: string, value: unknown) => void; status: Status; }
 export interface FormDefinition { id: string; title: string; description: string; family?: string; familyLabel?: string; fields?: (props: FormProps) => ReactNode; }
-export interface EmbedProps { embedded?: boolean; changed?: () => void; dirty?: (value: boolean) => void; }
+// intent="enable"：嵌入方已替用户决定开启（如引导的能力卡），表单预选开启并收起开关。
+export interface EmbedProps { embedded?: boolean; changed?: () => void; dirty?: (value: boolean) => void; intent?: "enable"; }
 
 export class RequestError extends Error {
   constructor(message: string, readonly status: number) { super(message); }
@@ -62,6 +63,8 @@ function Configuration({ctx, definition, embed}: {ctx: WebHostContextV1; definit
   const [enabled, setEnabled] = useState<boolean | null>(null);
   const [values, setValues] = useState<Record<string, unknown>>({});
   const [dirty, setDirty] = useState(false);
+  // 嵌入方预选“开启”产生的草稿只让保存可点，不算用户改动，不触发离开守卫。
+  const [preset, setPreset] = useState(false);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
   const [notice, setNotice] = useState("");
@@ -175,7 +178,8 @@ function Configuration({ctx, definition, embed}: {ctx: WebHostContextV1; definit
     try {
       const next = await read<Status>(path);
       if (!alive.current || sequence !== loads.current || (preserveDraft && editing.current)) return;
-      setStatus(next); setEnabled(next.enabled); setValues(next.values); markDirty(false); setError("");
+      const preset = embed.intent === "enable" && next.enabled !== true && next.can_enable !== false;
+      setStatus(next); setEnabled(preset ? true : next.enabled); setValues(next.values); markDirty(preset); setPreset(preset); setError("");
       const pending = sessionStorage.getItem(pendingKey) ?? sessionStorage.getItem(lastKey);
       if (pending) void poll(pending);
     } catch (reason) { if (alive.current && sequence === loads.current) setError(reason instanceof Error ? reason.message : String(reason)); }
@@ -193,9 +197,10 @@ function Configuration({ctx, definition, embed}: {ctx: WebHostContextV1; definit
     window.addEventListener("focus", refresh);
     return () => { alive.current = false; polling.current?.abort(); loads.current += 1; observer.disconnect(); window.removeEventListener("focus", refresh); };
   }, [ctx, path]);
-  useEffect(() => { embed.dirty?.(dirty); return () => embed.dirty?.(false); }, [dirty, embed.dirty]);
+  const edited = dirty && !preset;
+  useEffect(() => { embed.dirty?.(edited); return () => embed.dirty?.(false); }, [edited, embed.dirty]);
   useEffect(() => {
-    if (!dirty && !busy) return;
+    if (!edited && !busy) return;
     const unload = (event: BeforeUnloadEvent) => { event.preventDefault(); };
     const navigate = (event: Event) => {
       const detail = (event as CustomEvent<{go: () => void; reason?: string}>).detail;
@@ -203,8 +208,8 @@ function Configuration({ctx, definition, embed}: {ctx: WebHostContextV1; definit
       event.preventDefault(); if (detail.reason === "catalog") return; if (busy) { setNotice("配置正在生效中，请稍候；离开不会取消提交。"); return; } setLeave(() => (event as CustomEvent<{go: () => void}>).detail.go); };
     window.addEventListener("beforeunload", unload); window.addEventListener("akashic:before-navigate", navigate);
     return () => { window.removeEventListener("beforeunload", unload); window.removeEventListener("akashic:before-navigate", navigate); };
-  }, [dirty, busy]);
-  const change = (key: string, value: unknown) => { edits.current += 1; setValues(previous => ({...previous, [key]: value})); markDirty(true); setNotice(""); };
+  }, [edited, busy]);
+  const change = (key: string, value: unknown) => { edits.current += 1; setValues(previous => ({...previous, [key]: value})); markDirty(true); setPreset(false); setNotice(""); };
   const save = async (event: React.FormEvent): Promise<void> => {
     event.preventDefault(); if (!status || enabled === null || inFlightRequest.current !== null || busy) return;
     sentEdit.current = edits.current;
@@ -248,10 +253,10 @@ function Configuration({ctx, definition, embed}: {ctx: WebHostContextV1; definit
     {!status ? !error && <p role="status">正在读取配置…</p> : <form onSubmit={event => void save(event)}>
       {status.reason && !(embed.embedded && status.blocked) && <p className="config-hint" role="status">{status.reason}</p>}
       {!(embed.embedded && status.blocked) && <>
-        <fieldset className="config-choices" disabled={busy}><legend>是否开启{definition.title}？</legend>
+        {!(embed.intent === "enable" && status.can_enable !== false) && <fieldset className="config-choices" disabled={busy}><legend>是否开启{definition.title}？</legend>
           <label className={enabled === true ? "is-selected" : ""}><input type="radio" name="enabled" checked={enabled === true} disabled={status.can_enable === false} onChange={() => { edits.current += 1; setEnabled(true); markDirty(true); }} /><strong>开启</strong><span>启用此功能</span></label>
           <label className={enabled === false ? "is-selected" : ""}><input type="radio" name="enabled" checked={enabled === false} onChange={() => { edits.current += 1; setEnabled(false); markDirty(true); }} /><strong>关闭</strong><span>停用但保留数据</span></label>
-        </fieldset>
+        </fieldset>}
         {enabled === true && definition.fields && <fieldset disabled={busy} className="config-fields"><legend className="sr-only">连接配置</legend>{definition.fields({values, change, status})}</fieldset>}
         <footer className="config-actions"><span>{!dirty && (status.enabled === false ? "已关闭" : status.ready ? "已开启" : "未完成配置")}</span><button className="config-primary" type="submit" disabled={busy || enabled === null || !dirty}>{busy ? "正在保存…" : "保存配置"}</button></footer>
       </>}

@@ -11,7 +11,7 @@ from agent.plugin_composition.messages import MESSAGE_CATALOG
 from agent.plugin_composition.plugin_config import PLUGIN_CONFIG
 from agent.plugin_composition.runtime_catalog import RUNTIME_CATALOG
 from agent.plugin_contracts.configuration import Configuration
-from agent.plugin_contracts.onboarding import ONBOARDING, Step
+from agent.plugin_contracts.onboarding import ONBOARDING, Ability, PreviewLine, Step
 from agent.plugin_contracts.delivery import DELIVERY_SENDERS, sender_key
 from agent.plugin_contracts.proactive import SEMANTIC_INTEREST
 from agent.plugin_contracts import Input
@@ -114,7 +114,11 @@ async def mount(ctx: Context, model: type[BaseModel], function: FiberHandle) -> 
         await child.effect(attach, label="model-readiness")
     await ctx.inject((MODEL_CATALOG,), models, name="model-status")
     async def contribute(child: Context):
-        await child.require(ONBOARDING).group(child, "proactive", "主动联系")
+        await child.require(ONBOARDING).group(child, "proactive", "Wake 主动联系", Ability(
+            pitch="在合适的时候主动找你",
+            benefit="有具体理由时它会先开口，比如你提过的事有了进展。消息发到你选择的聊天渠道。",
+            preview=(PreviewLine("Akashic · 主动消息", "你周三说想等那本书降价，现在电子版打五折了。"),),
+        ))
         await child.require(ONBOARDING).register(child, Step("configure", "Wake 主动联系", "proactive", "wake-settings", settings.read, (function.fiber_id,)))
     await ctx.inject((ONBOARDING,), contribute, name="onboarding")
     async def senders(child: Context):

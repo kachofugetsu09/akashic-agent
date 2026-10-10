@@ -305,6 +305,11 @@
 }
 
 .settings-role-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 0.625rem; }
+/* 场景网格按自身容器宽度换列：嵌入引导等窄容器时，不因视口很宽而挤成单字换行。 */
+.settings-roles { container-type: inline-size; }
+@container (max-width: 40rem) {
+  .settings-role-grid { grid-template-columns: minmax(0, 1fr); }
+}
 .settings-binding {
   display: grid;
   grid-template-columns: minmax(0, 1fr) minmax(10rem, 46%);

@@ -122,7 +122,7 @@ async function measure(page, label) {
         .filter((e) => {
           if (
             e.closest(
-              ".product-band__nav,.onboarding-step-list,.meme-dashboard__sidebar,.model-capsule__rails",
+              ".product-band__nav,.onboarding-progress,.meme-dashboard__sidebar,.model-capsule__rails",
             )
           )
             return false;
@@ -195,12 +195,8 @@ async function hit(locator) {
 
 /** 通过 Shell 的原生入口切换页面。 */
 async function main(page, label, selector) {
-  // 全新 workspace 首跑时 onboarding 邀请弹窗会遮住导航；像用户一样关掉它。
-  const invite = page.locator(".onboarding-invite[open]");
-  if (await invite.count())
-    await invite
-      .getByRole("button", { name: "稍后再说", exact: true })
-      .click();
+  // 全新 workspace 首跑时整屏引导会遮住导航；像用户一样关掉它。
+  await dismissOnboarding(page);
   // 只有一个页面时 Shell 不渲染顶栏，默认页面已经是当前页。
   const band = page.locator(".product-band__nav");
   if (await band.count())
@@ -208,6 +204,17 @@ async function main(page, label, selector) {
   await page
     .locator(`.shell-view.is-active ${selector}`)
     .waitFor({ state: "visible" });
+}
+
+/** 整屏引导打开时像用户一样离开：欢迎页选“直接聊天”，其余步骤选“稍后再说”。 */
+async function dismissOnboarding(page) {
+  const surface = page.locator("dialog.onboarding-surface[open]");
+  if (!(await surface.count())) return;
+  await surface
+    .getByRole("button", { name: /^(稍后再说|我已经配好了，直接聊天)$/ })
+    .first()
+    .click();
+  await surface.waitFor({ state: "detached" });
 }
 
 /** 遍历实际配置目录，只作本地编辑并放弃。 */
@@ -228,8 +235,11 @@ async function settings(page, prefix) {
     await page.waitForTimeout(300);
     await measure(page, `${prefix}-settings-${names.indexOf(name)}`);
     const view = page.locator(".shell-view.is-active");
-    await view.locator(".config-form form,.onboarding-page").first().waitFor();
-    if (await view.locator(".onboarding-page").count()) {
+    await page
+      .locator(".shell-view.is-active .config-form form,dialog.onboarding-surface[open]")
+      .first()
+      .waitFor();
+    if (await page.locator("dialog.onboarding-surface[open]").count()) {
       await onboarding(page, prefix);
       continue;
     }
@@ -275,36 +285,22 @@ async function settings(page, prefix) {
   }
 }
 
-/** 进入可用步骤，检查嵌入页面和翻页动作。 */
+/** 走整屏引导的欢迎页与首个配置步骤，检查动作可达后用“稍后再说”离开。 */
 async function onboarding(page, prefix) {
-  const view = page.locator(".shell-view.is-active");
-  const steps = view.locator(".onboarding-step-list button");
-  await steps.first().waitFor();
-  for (let i = 0; i < (await steps.count()); i++) {
-    if (!(await steps.nth(i).isEnabled())) continue;
-    await steps.nth(i).click();
-    await view
-      .locator(
-        ".onboarding-content .settings-connection-card,.onboarding-content .config-form form",
-      )
-      .first()
-      .waitFor();
-    await measure(page, `${prefix}-onboarding-${i}`);
-    for (const button of await view
-      .locator(".onboarding-footer button:not(:disabled)")
-      .all())
-      assert(await hit(button), `配置步骤 ${i}: 翻页不可达`);
-  }
-  const finish = view.getByRole("button", {
-    name: "查看完成情况",
-    exact: true,
-  });
-  if ((await finish.count()) && (await finish.isEnabled())) {
-    await finish.click();
-    await view.locator(".onboarding-complete").waitFor();
-    await measure(page, `${prefix}-onboarding-complete`);
-    await view.getByRole("button", { name: "查看配置", exact: true }).click();
-  }
+  const surface = page.locator("dialog.onboarding-surface[open]");
+  await surface.getByRole("button", { name: "开始", exact: true }).waitFor();
+  await measure(page, `${prefix}-onboarding-welcome`);
+  await surface.getByRole("button", { name: "开始", exact: true }).click();
+  await surface
+    .locator(".onboarding-column .settings-connection-card,.onboarding-column .config-form form")
+    .first()
+    .waitFor();
+  await measure(page, `${prefix}-onboarding-step`);
+  for (const button of await surface
+    .locator(".onboarding-footer button:not(:disabled):not([hidden]),.onboarding-top button")
+    .all())
+    assert(await hit(button), "引导动作不可达");
+  await dismissOnboarding(page);
 }
 
 /** 检查插件自己拥有的阅读路径，不触发删除或发送。 */
@@ -616,18 +612,16 @@ try {
     );
     try {
       await page.goto(values.url, { waitUntil: "domcontentloaded" });
-      // 全新 workspace 首跑时 onboarding 邀请弹窗会异步弹出并遮住导航；
-      // 给它一个出现窗口，像用户一样关掉；同一 context 内不再复现。
-      const firstInvite = page.locator(".onboarding-invite[open]");
+      // 全新 workspace 首跑时整屏引导会异步弹出并遮住导航；
+      // 给它一个出现窗口，像用户一样关掉；看过后同一 context 内不再复现。
       if (
-        await firstInvite
+        await page
+          .locator("dialog.onboarding-surface[open]")
           .waitFor({ timeout: 5000 })
           .then(() => true)
           .catch(() => false)
       )
-        await firstInvite
-          .getByRole("button", { name: "稍后再说", exact: true })
-          .click();
+        await dismissOnboarding(page);
       if (values.large || values.rtl)
         await page.evaluate(
           ({ large, rtl }) => {

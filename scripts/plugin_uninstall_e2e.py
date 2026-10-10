@@ -138,7 +138,7 @@ async def apply(ctx):
     from . import dashboard
     await ctx.require(UI).register(ctx, web='web_module.js', dashboard=lambda: dashboard,
                                    requires=('shell.settings.v1',),
-                                   contract_digests={'shell.settings.v1': 'a5040165b28b8126a1d55c1a80c8cc707ad55dd0e53cb337fce8c4c721272736'})
+                                   contract_digests={'shell.settings.v1': '1f4dd2eaee9118c799590a36745975150c46979a3f62b431f73aa29e949ce189'})
 """
 NOTES_WEB = """export function activate(ctx) {
   return ctx.ui.inject('shell.settings.v1', mount => mount.register({

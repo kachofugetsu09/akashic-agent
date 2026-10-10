@@ -1,328 +1,517 @@
-/* Onboarding 页面：步骤导航、进度与完成页。表单基础样式来自共享 configuration.css。 */
+/* 新手引导：整屏单列纸面。顶栏（标识 / 进度 / 稍后再说）、可滚动正文、底部动作栏三段。
+   嵌入的设置表单沿用共享 configuration.css；这里只拥有引导自己的骨架与能力卡。 */
 
-.onboarding-page {
-  max-width: 1100px;
+.onboarding-placeholder {
+  padding: 32px;
+  color: var(--ak-ink-secondary);
 }
 
-.onboarding-header {
-  display: flex;
-  align-items: flex-start;
-  justify-content: space-between;
-  gap: 20px;
-  margin-bottom: 28px;
+.onboarding-placeholder h1 {
+  margin: 0 0 8px;
+  font-size: 1.25rem;
+  color: var(--ak-ink-primary);
 }
 
-.onboarding-header p {
-  margin: 8px 0 0;
-  color: var(--md-sys-color-on-surface-variant, #666);
+.onboarding-surface {
+  display: none;
+  width: 100vw;
+  max-width: none;
+  height: 100dvh;
+  max-height: none;
+  margin: 0;
+  padding: 0;
+  border: 0;
+  background: var(--ak-paper-canvas);
+  color: var(--ak-ink-primary);
+  font-family: var(--md-ref-typeface-plain, inherit);
 }
 
-.onboarding-layout {
-  display: grid;
-  grid-template-columns: 240px minmax(0, 1fr);
-  gap: 44px;
-  align-items: start;
-}
-
-/* 进度：已决定 / 总数，填充条随决定数增长。 */
-.onboarding-progress {
-  display: grid;
-  gap: 8px;
-  padding: 0 10px 14px;
-  font-size: 12px;
-  color: var(--md-sys-color-on-surface-variant, #595c52);
-}
-
-.onboarding-progress-track {
-  block-size: 4px;
-  border-radius: 999px;
-  background: var(--md-sys-color-surface-container-low, #eff0e9);
-  overflow: hidden;
-}
-
-.onboarding-progress-fill {
-  block-size: 100%;
-  border-radius: inherit;
-  background: var(--md-sys-color-on-surface, #30372d);
-  transition: inline-size 320ms var(--ease-out, cubic-bezier(0.2, 0, 0, 1));
-}
-
-.onboarding-steps {
-  position: sticky;
-  top: 0;
-}
-
-.onboarding-step-list {
+.onboarding-surface[open] {
   display: flex;
   flex-direction: column;
-  gap: 7px;
+}
+
+.onboarding-surface::backdrop {
+  background: var(--ak-paper-canvas);
+}
+
+.onboarding-surface :focus-visible {
+  outline: 2px solid var(--ak-rule-focus);
+  outline-offset: 2px;
+}
+
+/* —— 顶栏 —— */
+.onboarding-top {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 260px) minmax(0, 1fr);
+  align-items: center;
+  gap: 16px;
+  min-height: 56px;
+  padding-block: env(safe-area-inset-top, 0px) 0;
+  padding-inline: max(20px, env(safe-area-inset-left, 0px)) max(20px, env(safe-area-inset-right, 0px));
+}
+
+.onboarding-top > :last-child {
+  justify-self: end;
+}
+
+.onboarding-brand {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 0.9375rem;
+  font-weight: 650;
+  letter-spacing: 0.01em;
+}
+
+.onboarding-mark {
+  display: block;
+  width: 20px;
+  height: 20px;
+  flex: 0 0 auto;
+  background: currentColor;
+  mask-size: contain;
+  mask-repeat: no-repeat;
+  mask-position: center;
+  -webkit-mask-size: contain;
+  -webkit-mask-repeat: no-repeat;
+  -webkit-mask-position: center;
+}
+
+.onboarding-mark.is-large {
+  width: 64px;
+  height: 64px;
+}
+
+.onboarding-progress {
+  display: flex;
+  gap: 4px;
+}
+
+.onboarding-progress i {
+  height: 3px;
+  flex: 1 1 0;
+  border-radius: 2px;
+  background: var(--ak-rule-strong);
+  transition: flex-grow var(--ak-sys-duration-short, 200ms) ease, background-color var(--ak-sys-duration-short, 200ms) ease;
+}
+
+.onboarding-progress i.is-done {
+  background: var(--ak-ink-secondary);
+}
+
+.onboarding-progress i.is-now {
+  flex-grow: 2.2;
+  background: var(--ak-color-action-primary);
+}
+
+.onboarding-text-button {
+  min-height: 44px;
+  padding-inline: 10px;
+  border: 0;
+  border-radius: 8px;
+  background: transparent;
+  color: var(--ak-ink-muted);
+  font: inherit;
+  font-size: 0.875rem;
+  cursor: pointer;
+}
+
+.onboarding-text-button:hover {
+  background: color-mix(in oklch, var(--ak-ink-primary) 6%, transparent);
+  color: var(--ak-ink-primary);
+}
+
+/* —— 正文 —— */
+.onboarding-scroll {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+}
+
+.onboarding-column {
+  box-sizing: border-box;
+  width: min(100%, 38rem);
+  margin-inline: auto;
+  padding-block: 28px 40px;
+  padding-inline: 24px;
+}
+
+.onboarding-heading h2 {
+  margin: 10px 0 8px;
+  font-size: clamp(1.625rem, 3.2vw, 2.125rem);
+  font-weight: 650;
+  line-height: 1.2;
+  text-wrap: balance;
+}
+
+.onboarding-heading h2:focus {
+  outline: none;
+}
+
+.onboarding-eyebrow {
+  font-family: var(--ak-type-technical, monospace);
+  font-size: 0.6875rem;
+  letter-spacing: 0.06em;
+  color: var(--ak-ink-muted);
+}
+
+.onboarding-lead {
+  max-width: 32em;
+  margin: 0 0 24px;
+  color: var(--ak-ink-secondary);
+  font-size: 1rem;
+  line-height: 1.6;
+  text-wrap: pretty;
+}
+
+.onboarding-primary {
+  min-height: 46px;
+  min-width: 132px;
+  padding-inline: 22px;
+  border: 0;
+  border-radius: 10px;
+  background: var(--ak-color-action-primary);
+  color: var(--ak-paper-editing);
+  font: inherit;
+  font-size: 0.9375rem;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.onboarding-primary:disabled {
+  opacity: 0.38;
+  cursor: not-allowed;
+}
+
+/* —— 欢迎 —— */
+.onboarding-welcome {
+  display: grid;
+  justify-items: center;
+  padding-block: 7vh 16px;
+  text-align: center;
+}
+
+.onboarding-welcome h2 {
+  margin: 22px 0 10px;
+  font-size: clamp(1.875rem, 4.6vw, 2.75rem);
+  font-weight: 650;
+  line-height: 1.15;
+}
+
+.onboarding-welcome h2:focus {
+  outline: none;
+}
+
+.onboarding-welcome .onboarding-lead {
+  margin-inline: auto;
+}
+
+.onboarding-welcome .onboarding-primary {
+  min-width: 220px;
+}
+
+.onboarding-promise {
+  display: grid;
+  width: 100%;
+  max-width: 26rem;
+  margin: 8px 0 28px;
+  padding: 0;
+  list-style: none;
+  text-align: start;
+}
+
+.onboarding-promise li,
+.onboarding-summary li {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 12px;
+  padding-block: 12px;
+  border-block-end: 1px solid var(--ak-rule-subtle);
+}
+
+.onboarding-promise li:first-child,
+.onboarding-summary li:first-child {
+  border-block-start: 1px solid var(--ak-rule-subtle);
+}
+
+.onboarding-promise em,
+.onboarding-summary em {
+  flex: 0 0 auto;
+  font-family: var(--ak-type-technical, monospace);
+  font-size: 0.75rem;
+  font-style: normal;
+  color: var(--ak-ink-muted);
+}
+
+.onboarding-quiet {
+  min-height: 44px;
+  margin-top: 12px;
+  border: 0;
+  background: none;
+  color: var(--ak-ink-muted);
+  font: inherit;
+  font-size: 0.875rem;
+  text-decoration: underline;
+  text-underline-offset: 3px;
+  cursor: pointer;
+}
+
+/* —— 能力卡 —— */
+.onboarding-abilities {
+  display: grid;
+  gap: 12px;
+}
+
+.onboarding-ability {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 4px 16px;
+  padding: 16px 18px;
+  border: 1px solid var(--ak-rule-default);
+  border-radius: 12px;
+  background: var(--ak-paper-editing);
+  transition: border-color 160ms ease, background-color 160ms ease;
+}
+
+.onboarding-ability.is-on {
+  border-color: var(--ak-color-action-primary);
+  background: color-mix(in oklch, var(--ak-color-action-primary) 5%, var(--ak-paper-editing));
+}
+
+.onboarding-ability h3 {
+  margin: 0;
+  font-size: 1.0625rem;
+  font-weight: 600;
+}
+
+.onboarding-ability > p {
+  grid-column: 1;
+  margin: 0;
+  color: var(--ak-ink-secondary);
+  font-size: 0.875rem;
+}
+
+.onboarding-source {
+  display: flex;
+  flex-wrap: wrap;
+  grid-column: 1 / -1;
+  gap: 4px 12px;
+  margin-top: 6px;
+  font-family: var(--ak-type-technical, monospace);
+  font-size: 0.6875rem;
+  color: var(--ak-ink-muted);
+}
+
+.onboarding-source .is-warning {
+  color: rgb(var(--ak-color-status-warning-rgb));
+}
+
+.onboarding-switch {
+  position: relative;
+  grid-column: 2;
+  grid-row: 1 / span 2;
+  align-self: start;
+  width: 48px;
+  height: 28px;
+  margin-top: 2px;
+  padding: 0;
+  border: 0;
+  border-radius: 999px;
+  background: var(--ak-rule-strong);
+  cursor: pointer;
+  transition: background-color 180ms ease;
+}
+
+/* 可点区域外扩到 44px，视觉仍是 28px 的开关。 */
+.onboarding-switch::before {
+  content: "";
+  position: absolute;
+  inset: -8px;
+}
+
+.onboarding-switch::after {
+  content: "";
+  position: absolute;
+  inset-block-start: 3px;
+  inset-inline-start: 3px;
+  width: 22px;
+  height: 22px;
+  border-radius: 50%;
+  background: var(--ak-paper-editing);
+  box-shadow: 0 1px 2px rgb(0 0 0 / 0.25);
+  transition: transform 200ms cubic-bezier(0.22, 1, 0.36, 1);
+}
+
+.onboarding-switch[aria-checked="true"] {
+  background: var(--ak-color-action-primary);
+}
+
+.onboarding-switch[aria-checked="true"]::after {
+  transform: translateX(20px);
+}
+
+.onboarding-chip {
+  grid-column: 2;
+  grid-row: 1;
+  align-self: start;
+  padding: 2px 10px;
+  border-radius: 999px;
+  background: color-mix(in oklch, var(--ak-color-status-success) 12%, transparent);
+  color: var(--ak-color-status-success);
+  font-size: 0.75rem;
+}
+
+.onboarding-preview {
+  display: grid;
+  grid-column: 1 / -1;
+  gap: 8px;
+  margin-top: 12px;
+  padding: 12px 14px;
+  border: 1px dashed var(--ak-rule-strong);
+  border-radius: 8px;
+  background: var(--ak-paper-canvas);
+  font-size: 0.875rem;
+}
+
+.onboarding-preview span {
+  font-family: var(--ak-type-technical, monospace);
+  font-size: 0.6875rem;
+  color: var(--ak-ink-muted);
+}
+
+.onboarding-preview p {
+  margin: 2px 0 0;
+}
+
+.onboarding-note {
+  margin: 18px 0 0;
+  color: var(--ak-ink-muted);
+  font-size: 0.8125rem;
+}
+
+/* —— 分组设置 —— */
+.onboarding-form + .onboarding-form {
+  margin-top: 24px;
+  padding-top: 20px;
+  border-top: 1px solid var(--ak-rule-subtle);
+}
+
+.onboarding-form h3 {
+  margin: 0 0 12px;
+  font-size: 0.9375rem;
+  font-weight: 600;
+  color: var(--ak-ink-secondary);
+}
+
+.onboarding-blocked {
+  display: grid;
+  gap: 4px;
+  margin: 0;
+  padding: 14px 16px;
+  border-inline-start: 3px solid rgb(var(--ak-color-status-warning-rgb));
+  border-radius: 4px 10px 10px 4px;
+  background: rgb(var(--ak-color-status-warning-rgb) / 0.08);
+  color: var(--ak-ink-secondary);
+  font-size: 0.9375rem;
+}
+
+.onboarding-blocked strong {
+  color: var(--ak-ink-primary);
+}
+
+/* —— 完成 —— */
+.onboarding-summary {
+  display: grid;
   margin: 0;
   padding: 0;
   list-style: none;
 }
 
-.onboarding-step-list button {
-  display: flex;
-  width: 100%;
-  gap: 12px;
-  text-align: left;
-  border: 1px solid transparent;
-  background: transparent;
-  padding: 13px 10px;
-  border-radius: 10px;
-  transition: background-color 160ms ease, border-color 160ms ease, opacity 160ms ease;
+.onboarding-summary li {
+  justify-content: flex-start;
 }
 
-.onboarding-step-list button:not(:disabled):hover {
-  background: var(--md-sys-color-surface-container-low, #f0f1ea);
+.onboarding-summary li > span:first-child {
+  width: 18px;
+  flex: 0 0 auto;
+  font-family: var(--ak-type-technical, monospace);
+  color: var(--ak-ink-muted);
 }
 
-.onboarding-step-list button[aria-current] {
-  background: var(--md-sys-color-surface-container-low, #f0f1ea);
-  border-color: var(--md-sys-color-outline, #8a8d82);
-}
-
-.onboarding-step-list button[data-state="locked"] {
-  opacity: 0.45;
-}
-
-.onboarding-step-text {
+.onboarding-summary li > span:nth-child(2) {
+  flex: 1 1 auto;
   min-width: 0;
 }
 
-.onboarding-steps strong,
-.onboarding-steps small {
-  display: block;
+.onboarding-summary li.is-on > span:first-child {
+  color: var(--ak-color-status-success);
 }
 
-.onboarding-steps strong {
-  font-weight: 550;
+.onboarding-summary li.is-missing > span:first-child,
+.onboarding-summary li.is-missing em {
+  color: rgb(var(--ak-color-status-warning-rgb));
 }
 
-.onboarding-steps small {
-  font-size: 12px;
-  color: var(--md-sys-color-on-surface-variant, #666);
-  margin-top: 3px;
-}
-
-.onboarding-number {
-  width: 26px;
-  height: 26px;
-  display: grid;
-  place-items: center;
-  font-size: 13px;
-  border: 1px solid var(--md-sys-color-outline-variant, #d6d8d0);
-  border-radius: 50%;
-  flex-shrink: 0;
-  transition: background-color 200ms ease, color 200ms ease, border-color 200ms ease;
-}
-
-.onboarding-step-list button[data-state="done"] .onboarding-number {
-  background: var(--md-sys-color-on-surface, #30372d);
-  border-color: transparent;
-  color: var(--md-sys-color-surface, #fff);
-}
-
-.onboarding-step-list button[data-state="current"] .onboarding-number {
-  border-color: var(--md-sys-color-on-surface, #30372d);
-}
-
-.onboarding-content {
-  min-width: 0;
-  border: 1px solid var(--md-sys-color-outline-variant, #ddd);
-  border-radius: 16px;
-  padding: 28px;
-  background: var(--md-sys-color-surface, #fff);
-}
-
-@media (prefers-reduced-motion: no-preference) {
-  .onboarding-content {
-    transition: opacity 240ms ease, transform 240ms ease;
-  }
-}
-
-@media (prefers-reduced-motion: no-preference) {
-  @starting-style {
-    .onboarding-content,
-    .onboarding-complete,
-    .onboarding-invite[open] {
-      opacity: 0;
-      transform: translateY(8px);
-    }
-  }
-}
-
-.onboarding-content h2 {
-  font-size: 25px;
-  letter-spacing: -0.02em;
-  margin: 5px 0 24px;
-}
-
+/* —— 底部动作栏 —— */
 .onboarding-footer {
   display: flex;
   align-items: center;
+  justify-content: space-between;
   gap: 12px;
-  margin-top: 32px;
-  padding-top: 20px;
-  border-top: 1px solid var(--md-sys-color-outline-variant, #ddd);
+  padding-block: 12px max(12px, env(safe-area-inset-bottom, 0px));
+  padding-inline: max(20px, env(safe-area-inset-left, 0px)) max(20px, env(safe-area-inset-right, 0px));
+  border-top: 1px solid var(--ak-rule-subtle);
+  background: var(--ak-paper-canvas);
 }
 
-.onboarding-footer > span {
-  flex: 1;
-  font-size: 12px;
-  color: var(--md-sys-color-on-surface-variant, #666);
+.onboarding-footer > button[hidden] {
+  display: inline-block;
+  visibility: hidden;
 }
 
-/* 完成页：居中卡片，先给结论，再给入口。 */
-.onboarding-complete {
-  max-width: 620px;
-  margin: 20px auto;
+.onboarding-hint {
+  flex: 1 1 auto;
+  min-width: 0;
+  color: var(--ak-ink-muted);
+  font-size: 0.8125rem;
   text-align: center;
 }
 
-@media (prefers-reduced-motion: no-preference) {
-  .onboarding-complete {
-    transition: opacity 280ms ease, transform 280ms ease;
-  }
-}
-
-.onboarding-complete-badge {
-  width: 44px;
-  height: 44px;
-  margin: 0 auto 14px;
-  display: grid;
-  place-items: center;
-  border-radius: 50%;
-  background: var(--md-sys-color-on-surface, #30372d);
-  color: var(--md-sys-color-surface, #fff);
-  font-size: 20px;
-}
-
-.onboarding-complete h2 {
-  margin: 0 0 8px;
-}
-
-.onboarding-complete > p {
-  color: var(--md-sys-color-on-surface-variant, #666);
-}
-
-.onboarding-complete ul {
-  padding: 0;
-  margin: 24px 0;
-  list-style: none;
-  text-align: left;
-}
-
-.onboarding-complete li {
-  display: flex;
-  justify-content: space-between;
-  gap: 12px;
-  border-bottom: 1px solid var(--md-sys-color-outline-variant, #ddd);
-  padding: 13px 0;
-}
-
-.onboarding-complete strong {
-  font-size: 14px;
-  font-weight: 500;
-}
-
-.onboarding-complete-actions {
-  display: flex;
-  justify-content: center;
-  gap: 12px;
-}
-
-.onboarding-chat {
-  display: inline-flex;
-  align-items: center;
-  min-height: 44px;
-  padding: 0 20px;
-  background: var(--md-sys-color-on-surface, #30372d);
-  color: var(--md-sys-color-surface, #fff);
-  border-radius: 9px;
-  text-decoration: none;
-}
-
-/* 首跑邀请：在共享对话框基础上加模糊遮罩和上浮进入。 */
-.onboarding-invite::backdrop {
-  background: color-mix(in oklch, var(--ak-ink-primary, #222) 22%, transparent);
-  backdrop-filter: blur(3px);
-}
-
-@media (prefers-reduced-motion: no-preference) {
-  .onboarding-invite[open] {
-    transition: opacity 240ms ease, transform 240ms ease;
-  }
-}
-
-@media (max-width: 760px) {
-  .onboarding-layout {
-    grid-template-columns: minmax(0, 1fr);
-    gap: 16px;
+@media (max-width: 640px) {
+  .onboarding-top {
+    grid-template-columns: auto minmax(0, 1fr) auto;
+    gap: 10px;
+    padding-inline: max(12px, env(safe-area-inset-left, 0px)) max(8px, env(safe-area-inset-right, 0px));
   }
 
-  .onboarding-header {
-    flex-direction: column;
-    margin-bottom: 20px;
-  }
-
-  /* 窄屏步骤变成横向刻度条：吸附滚动，当前步骤可见。 */
-  .onboarding-steps {
-    position: static;
-  }
-
-  .onboarding-progress {
-    padding-inline: 0;
-  }
-
-  .onboarding-step-list {
-    flex-direction: row;
-    overflow-x: auto;
-    scroll-snap-type: x proximity;
-    padding-bottom: 6px;
-    scrollbar-width: none;
-  }
-
-  .onboarding-step-list::-webkit-scrollbar {
+  .onboarding-brand > span {
     display: none;
   }
 
-  .onboarding-step-list li {
-    flex: 0 0 auto;
-    scroll-snap-align: start;
-  }
-
-  .onboarding-step-list button {
-    width: auto;
-    padding: 9px 12px 9px 9px;
-  }
-
-  .onboarding-steps small {
-    display: none;
-  }
-
-  .onboarding-steps strong {
-    font-size: 13px;
-  }
-
-  .onboarding-content {
-    padding: 20px;
+  .onboarding-column {
+    padding-block: 12px 28px;
+    padding-inline: 20px;
   }
 
   .onboarding-footer {
-    flex-wrap: wrap;
+    padding-inline: max(12px, env(safe-area-inset-left, 0px)) max(12px, env(safe-area-inset-right, 0px));
   }
 
-  .onboarding-footer > span {
-    display: none;
+  .onboarding-footer .onboarding-primary {
+    min-width: 0;
+    flex: 0 1 50%;
   }
+}
 
-  .onboarding-footer > button {
-    flex: 1;
-  }
-
-  .onboarding-complete-actions {
-    flex-direction: column;
-    align-items: stretch;
+@media (prefers-reduced-motion: reduce) {
+  .onboarding-progress i,
+  .onboarding-switch,
+  .onboarding-switch::after,
+  .onboarding-ability {
+    animation: none;
+    transition: none;
   }
 }

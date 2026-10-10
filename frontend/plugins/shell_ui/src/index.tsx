@@ -248,6 +248,10 @@ function Shell({ pages, railActions, settings, settingsPlugins }: {
     if (window.dispatchEvent(new CustomEvent("akashic:before-navigate", { cancelable: true, detail: { go } }))) go();
   }, [bandRoute]);
 
+  // 分节拿到的 close 保持同一身份，Shell 路由变化不应重挂载正在编辑的分节。
+  const closeSettingsRef = useRef(closeSettings);
+  closeSettingsRef.current = closeSettings;
+
   useLayoutEffect(() => {
     if (withdrawn) {
       const entry = bandEntries.find(item => item.id === activeId);
@@ -311,7 +315,7 @@ function Shell({ pages, railActions, settings, settingsPlugins }: {
       host.className = "shell-settings-entry";
       container.replaceChildren(host);
       const dispose = settings.render(currentTarget.id, host, {
-        pages: settings, railActions: railActionEntries, embedded: true, renderRoute: renderSettingsRoute,
+        pages: settings, railActions: railActionEntries, embedded: true, renderRoute: renderSettingsRoute, close: () => closeSettingsRef.current(),
       });
       return () => queueMicrotask(() => { dispose(); host.remove(); });
     }

@@ -15,9 +15,14 @@ inject = (HOST_INFO, INPUT_CUSTODY, CHANNEL_IDENTITY, CHANNEL_ATTACHMENT_IMPORT,
 
 
 async def apply(ctx: Context) -> None:
-    from agent.plugin_contracts.onboarding import ONBOARDING
+    from agent.plugin_contracts.onboarding import ONBOARDING, Ability, PreviewLine
     async def contribute(child: Context):
-        await child.require(ONBOARDING).group(child, "channels", "渠道")
+        await child.require(ONBOARDING).group(child, "channels", "聊天渠道", Ability(
+            pitch="在聊天软件里找到它",
+            benefit="在手机上直接给 Akashic 发消息，不用打开网页；主动消息也会发到这里。",
+            preview=(PreviewLine("你 · Telegram", "帮我记一下，周五下午三点看牙。"),
+                     PreviewLine("Akashic", "记下了：周五 15:00 看牙。前一天晚上提醒你？")),
+        ))
     await ctx.inject((ONBOARDING,), contribute, name="onboarding")
 
     """目录和连接生命周期由普通 provider 实例拥有。"""
