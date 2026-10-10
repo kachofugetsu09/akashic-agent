@@ -43,6 +43,34 @@ async def apply(ctx):
 '''
 
 
+MANAGEMENT = '''from agent.plugin_composition import ServiceKey
+from agent.plugin_composition.plugin_updates import PLUGIN_UPDATES
+api_version = 3
+name = "public_control"
+version = "1.0.0"
+inject = (PLUGIN_UPDATES,)
+MANAGE = ServiceKey[object]("scenario.public-control")
+async def apply(ctx):
+    async def manage(action, **values):
+        updates = ctx.require(PLUGIN_UPDATES)
+        if action == "install":
+            return await updates.install(ctx, "public-types-update", source=values["source"], marketplace="lab")
+        if action == "uninstall":
+            return await updates.uninstall(ctx, "public_values@lab")
+        if action == "drain":
+            await updates.drain(ctx, "public_values@lab")
+        elif action == "idle":
+            await updates.wait_idle(ctx)
+        elif action == "status":
+            return updates.status(ctx)
+        elif action == "read":
+            return updates.read(ctx, "public-types-update")
+        else:
+            raise ValueError(action)
+    await ctx.provide(MANAGE, ctx.entrypoint(manage))
+'''
+
+
 def prepare(directory: Path) -> None:
     """复制真实 Core 与最小插件源码，子进程没有原仓库的导入路径。"""
     # 1. Core 产物中不包含 plugins，也没有源码 checkout 的 symlink。
@@ -56,6 +84,9 @@ def prepare(directory: Path) -> None:
     consumer = plugins / "public_reader"
     provider.mkdir(parents=True)
     consumer.mkdir()
+    control = plugins / "public_control"
+    control.mkdir()
+    (control / "plugin.py").write_text(MANAGEMENT)
     (provider / "contract.py").write_text(CONTRACT)
     (provider / "plugin.py").write_text(PROVIDER)
     (consumer / "plugin.py").write_text(CONSUMER)
@@ -81,7 +112,7 @@ async def exercise(directory: Path) -> dict[str, object]:
         subprocess.run(["git", "-C", str(path), "-c", "user.name=Scenario",
                         "-c", "user.email=scenario@example.invalid", "commit", "-qm", "scenario"], check=True)
 
-    for name in ("public_values", "public_reader"):
+    for name in ("public_values", "public_reader", "public_control"):
         path = source / name
         subprocess.run(["git", "init", "-q", "--initial-branch=source", str(path)], check=True)
         commit(path)
@@ -100,18 +131,19 @@ async def exercise(directory: Path) -> dict[str, object]:
         root = host.live_root
         assert root is not None
         assert root.context.require(ServiceKey("scenario.public-read")) == "first"
+        manage = root.context.require(ServiceKey("scenario.public-control"))
+        status = await manage("status")
+        assert isinstance(status, dict) and status["selection_ref"] is not None
         module = sys.modules["plugins.public_values.contract"]
         assert Path(module.__file__).is_relative_to(home / "cache")
         assert not (directory / "core/plugins").exists()
         # 2. 换代只改变实现，公共值类型与合同模块身份不变。
         (source / "public_values/plugin.py").write_text(PROVIDER.replace('Value("first")', 'Value("second")'))
         commit(source / "public_values")
-        await host.install(source=str(source / "public_values"), marketplace="lab",
-                           ref_name="", sparse_paths=[], update_id="public-types-update")
-        operation = host._operation
-        assert operation is not None
-        await operation.task
-        assert host.read_update("public-types-update").state == "active"
+        accepted = await manage("install", source=str(source / "public_values"))
+        assert accepted.selection == "selected"
+        await manage("idle")
+        assert (await manage("read")).state == "active"
         assert root.context.require(ServiceKey("scenario.public-read")) == "second"
         assert sys.modules["plugins.public_values.contract"] is module
     finally:
@@ -124,16 +156,18 @@ async def exercise(directory: Path) -> dict[str, object]:
         assert root is not None
         assert root.context.require(ServiceKey("scenario.public-read")) == "second"
         # 4. 停用 provider 只撤下其硬依赖分支；合同仍可供缺依赖诊断读取。
-        await host.uninstall("public_values@lab")
-        operation = host._operation
-        assert operation is not None
-        await operation.task
+        manage = root.context.require(ServiceKey("scenario.public-control"))
+        accepted = await manage("uninstall")
+        assert accepted["state"] == "accepted"
+        await manage("idle")
+        await manage("drain")
         assert root.context.get(ServiceKey("scenario.public-read")) is None
         assert sys.modules["plugins.public_values.contract"] is module
     finally:
         await host.terminate_all()
     return {"source_less_core": True, "public_type_shared": True,
-            "package_entry_not_run": True, "generation": True, "restart": True, "disable": True}
+            "package_entry_not_run": True, "generation": True, "restart": True, "disable": True,
+            "management_from_plugin": True, "accepted_then_drained": True}
 
 
 def main() -> None:
