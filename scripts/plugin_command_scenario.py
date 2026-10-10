@@ -7,6 +7,7 @@ import os
 from pathlib import Path
 import subprocess
 import shutil
+import socket
 import sys
 import tempfile
 
@@ -165,6 +166,99 @@ async def run(directory: Path) -> dict[str, object]:
             "image_command_ignores_old_selection": True}
 
 
+async def check_command_classes(directory: Path) -> dict[str, bool]:
+    """空选择实际启动发行版命令；业务与管理命令保留明确失败。"""
+    directory.mkdir()
+    workspace, config = directory / "workspace", directory / "config.toml"
+    environment = {**os.environ, "HOME": str(directory / "home"), "PYTHONPATH": str(ROOT),
+                   "AKASHIC_PLUGIN_HOME": str(directory / "home"), "AKASHIC_PLUGIN_DISTRIBUTION": ""}
+
+    async def command(name: str, *arguments: str, env=environment):
+        return await asyncio.create_subprocess_exec(sys.executable, str(ROOT / "main.py"), name,
+            "--workspace", str(workspace), "--config", str(config), *arguments,
+            cwd=directory, env=env, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE)
+
+    process = await command("init")
+    output, error = await process.communicate()
+    assert process.returncode == 0, (output, error)
+    kept = (workspace / "runtime/plugin-stable.json", config)
+    assert not (workspace / "sessions.db").exists()
+    before = tuple(path.read_bytes() for path in kept)
+    # 1. 首次 runtime 前 dashboard 实际监听，缺少构建资产仍有明确 HTTP 503。
+    with socket.socket() as reservation:
+        reservation.bind(("127.0.0.1", 0))
+        port = reservation.getsockname()[1]
+    process = await command("dashboard", "--host", "127.0.0.1", "--port", str(port))
+    try:
+        async with asyncio.timeout(15):
+            while True:
+                assert process.returncode is None
+                try:
+                    reader, writer = await asyncio.open_connection("127.0.0.1", port)
+                    break
+                except ConnectionRefusedError:
+                    await asyncio.sleep(0.02)
+            writer.write(b"GET / HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n")
+            await writer.drain()
+            response = await reader.read()
+            writer.close()
+            await writer.wait_closed()
+            assert b"200 OK" in response or (b"503 Service Unavailable" in response and b"npm run build" in response)
+    finally:
+        if process.returncode is None:
+            process.terminate()
+        output, error = await process.communicate()
+        assert process.returncode == 0, (output, error)
+    # 2. workload-controller 固定使用镜像源码，workspace 来自 Core 命令上下文。
+    image = directory / "image"
+    (image / "profiles").mkdir(parents=True)
+    (image / "profiles/default.json").write_text(json.dumps({"marketplace": "release"}))
+    (image / "distribution.json").write_text(json.dumps({"source_commit": "a" * 40,
+        "plugins": [{"name": "host_execution"}]}))
+    shutil.copytree(ROOT / "plugins/host_execution", image / "sources/host_execution",
+                    ignore=shutil.ignore_patterns("__pycache__"))
+    for relative in ("plugin-data", "runtime/plugin-validation"):
+        (workspace / relative).mkdir(parents=True, exist_ok=True)
+    address = directory / "controller.sock"
+    process = await command("workload-controller", "--socket", str(address), "--state", str(directory / "leases.json"),
+        "--network", "scenario", "--allowed-uid", str(os.getuid()), "--socket-uid", str(os.getuid()),
+        "--socket-gid", str(os.getgid()), "--workload-uid", str(os.getuid()), "--workload-gid", str(os.getgid()),
+        env={**environment, "AKASHIC_PLUGIN_DISTRIBUTION": str(image)})
+    try:
+        async with asyncio.timeout(15):
+            while True:
+                assert process.returncode is None
+                try:
+                    reader, writer = await asyncio.open_unix_connection(address)
+                    break
+                except (FileNotFoundError, ConnectionRefusedError):
+                    await asyncio.sleep(0.02)
+            writer.write(b'{"version":1,"action":"status","body":{}}\n')
+            await writer.drain()
+            result = json.loads(await reader.readline())
+            writer.close()
+            await writer.wait_closed()
+            assert result["ok"] and result["body"]["controller_id"] and result["body"]["leases"] == 0
+    finally:
+        if process.returncode is None:
+            process.terminate()
+        output, error = await process.communicate()
+        assert process.returncode == 0, (output, error)
+    # 3. 管理缺席提示恢复；业务命令不能偷偷采用发行版 provider。
+    for name in ("plugin-status", "plugin-uninstall", "plugin-install", "exec", "app-server"):
+        process = await command(name)
+        output, error = await process.communicate()
+        assert process.returncode == 2 and b"provider" in error, (output, error)
+        if name.startswith("plugin-"):
+            assert b"plugin-enable gateway@" in error
+    assert before == tuple(path.read_bytes() for path in kept)
+    assert not (workspace / "sessions.db").exists()
+    return {"fresh_dashboard_listener": True, "image_controller_listener": True,
+            "empty_selection_preserved": True, "management_recovery_hint": True,
+            "business_no_fallback": True}
+
+
 if __name__ == "__main__":
     with tempfile.TemporaryDirectory(prefix="pc-") as temporary:
         print(json.dumps(asyncio.run(run(Path(temporary)))))
+        print(json.dumps(asyncio.run(check_command_classes(Path(temporary) / "classes"))))

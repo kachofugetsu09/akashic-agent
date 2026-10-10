@@ -220,7 +220,12 @@ async def management(arguments: tuple[str, ...], *, workspace: Path, config_path
         method, params = "plugin/uninstall", {"plugin_id": options.identity}
     try:
         result = await request(workspace, method, params)
-    except (ValueError, RuntimeError, ConnectionError, OSError, RemoteError) as error:
+    except (ConnectionError, OSError) as error:
+        print(str(error), file=sys.stderr)
+        print("Gateway 无可连接端点。用 plugin-doctor 查看实际 ID，运行 "
+              "plugin-enable gateway@<marketplace> 后重启实例。", file=sys.stderr)
+        return 1
+    except (ValueError, RuntimeError, RemoteError) as error:
         print(str(error), file=sys.stderr)
         return 1
     print(json.dumps(result, ensure_ascii=False, separators=(",", ":")))
