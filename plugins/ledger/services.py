@@ -18,12 +18,38 @@ from plugins.ledger.contract import Body, CallRef, ContentPart, ContentReference
 
 from plugins.ledger.contract import (
     OwnerStore, OwnerTransaction,
-    MESSAGE_WRITERS,
+    MESSAGE_WRITERS, APPEND_CHECKS, Message, MessageReader,
     OWNER_STATE,
     SESSION_ADMISSION,
     SessionDeleteResult,
     SessionTitleResult,
 )
+
+
+class AppendChecks:
+    """检查注册随消费者 Effect 撤回；检查者不取得 writer 或 SQL。"""
+
+    def __init__(self, log: _MessageLog):
+        self._log = log
+
+    async def register(self, ctx: Context, check: Callable[[Message, MessageReader], None]) -> Effect:
+        ctx.require_runtime_identity(APPEND_CHECKS, self)
+        async def setup():
+            registered: list[Callable[[], None]] = []
+            def add() -> None:
+                registered.append(self._log.check_appends(check))
+            try:
+                await run_file_io(add)
+            except BaseException:
+                # 取消可能晚于实际登记；Effect 尚未取得 cleanup，必须先撤回。
+                if registered:
+                    await run_file_io(registered[0])
+                raise
+            remove = registered[0]
+            async def cleanup():
+                await run_file_io(remove)
+            return cleanup
+        return await ctx.effect(setup, label="ledger.append-check")
 
 
 class MessageWriters:

@@ -5,7 +5,7 @@ from contextlib import ExitStack
 
 from agent.plugin_composition import Context
 from plugins.ledger.contract import (
-    ARTIFACT_IMPORT, ARTIFACT_READ, BINDINGS, CHANNEL_ATTACHMENT_IMPORT,
+    APPEND_CHECKS, ARTIFACT_IMPORT, ARTIFACT_READ, BINDINGS, CHANNEL_ATTACHMENT_IMPORT,
     CHANNEL_ATTACHMENT_READ, CHANNEL_IDENTITY, INPUT_CUSTODY, MESSAGE_CATALOG,
     MESSAGE_EMBEDDINGS, MESSAGE_WRITERS, OWNER_STATE, SESSION_ADMIN, SESSION_ADMISSION,
     ChannelAttachmentImport, ChannelAttachmentRead, ChannelIdentity, InputCustody,
@@ -21,7 +21,7 @@ from .identities import ChannelIdentities, ChannelIdentityWriteReceipt
 from .inbound_store import InboundHandoffStore
 from .log import MessageCatalog, MessageLog
 from .custody import InboundCustody
-from .services import MessageWriters, OwnerState, SessionAdmin, SessionAdmission
+from .services import AppendChecks, MessageWriters, OwnerState, SessionAdmin, SessionAdmission
 
 api_version = 3
 name = "ledger"
@@ -83,6 +83,7 @@ async def apply(ctx: Context) -> None:
     ))
     await ctx.provide(MESSAGE_CATALOG, MessageCatalog(log))
     await ctx.provide(MESSAGE_EMBEDDINGS, embeddings)
+    await ctx.provide(APPEND_CHECKS, AppendChecks(log))
     await ctx.provide(MESSAGE_WRITERS, MessageWriters(log))
     await ctx.provide(OWNER_STATE, OwnerState(log))
     await ctx.provide(SESSION_ADMIN, SessionAdmin(log))

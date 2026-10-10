@@ -440,6 +440,14 @@ class SessionTitleResult:
     title: str | None
 
 
+class AppendChecks(Protocol):
+    async def register(
+        self, ctx: Context, check: Callable[[Message, MessageReader], None],
+    ) -> Effect:
+        """在提交事务中同步检查新消息；异常回滚。reader 只读，回调不得保留它或执行外部效果。"""
+        ...
+
+
 class MessageWriters(Protocol):
     async def register_metadata(
         self, ctx: Context, *, keys: frozenset[str],
@@ -937,3 +945,5 @@ INPUT_CUSTODY = ServiceKey[InputCustody]("ledger.input_custody.v1")
 CHANNEL_IDENTITY = ServiceKey[ChannelIdentity]("ledger.channel_identity.v1")
 CHANNEL_ATTACHMENT_IMPORT = ServiceKey[ChannelAttachmentImport]("ledger.channel_attachment_import.v1")
 CHANNEL_ATTACHMENT_READ = ServiceKey[ChannelAttachmentRead]("ledger.channel_attachment_read.v1")
+
+APPEND_CHECKS = ServiceKey[AppendChecks]("ledger.append_checks.v1")

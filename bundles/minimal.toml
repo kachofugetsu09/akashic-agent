@@ -192,3 +192,7 @@ disabled = true
 [rows."opencode-go"]
 plugin = "opencode-go@release"
 disabled = true
+
+[rows."ledger_invariants"]
+plugin = "ledger_invariants@release"
+disabled = true

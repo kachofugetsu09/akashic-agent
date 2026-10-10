@@ -393,8 +393,19 @@ class _BorrowedRead:
 class MessageLog:
     """SQLite 消息权威存储；只向消费者分配窄 reader/writer。"""
 
+    def check_appends(self, check: Callable[[Message, Reader], None]) -> Callable[[], None]:
+        """登记同步提交检查；撤回等待已开始检查结束，不持有写入权。"""
+        with self._check_lock:
+            self._append_checks.append(check)
+        def remove() -> None:
+            with self._check_lock:
+                self._append_checks.remove(check)
+        return remove
+
     def __init__(self, path: str | Path):
         self._writer_lock = threading.RLock()
+        self._check_lock = threading.RLock()
+        self._append_checks: list[Callable[[Message, Reader], None]] = []
         self._read_admission = threading.Lock()
         self._idle_reads: list[_ReadConnection] = []
         self._listener_lock = threading.Lock()
@@ -1907,7 +1918,7 @@ class MessageWriter:
     def _insert(
         self, message_id: str, prepared: _PreparedMessage, expected_source_head: int | None,
     ) -> Message:
-        """只读取固定数据与 SQL 权威事实；不调用内容、metadata 或 Context owner。"""
+        """读取固定数据与事务事实，并调用纯同步追加检查；不调用 Context 或外部效果。"""
         # grant 的短临界区决定本次写入是否已开始；撤权不等待磁盘提交。
         with self._grant_lock:
             if not self._active:
@@ -1940,6 +1951,9 @@ class MessageWriter:
         message = Message(
             message_id, self._session_id, seq, now, self._author, self._source, body, message_metadata
         )
+        with self._log._check_lock:
+            for check in self._log._append_checks:
+                check(message, self._log.reader(self._session_id))
         columns = "id,session_key,seq,ts,author,source,body"
         values = (message_id, self._session_id, seq, stamp, self._author, self._source, payload)
         if self._log._has_metadata:
