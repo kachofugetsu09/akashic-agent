@@ -163,7 +163,8 @@ async def test_subagent_outcome_read_keeps_control_responsive_and_prefix_fixed(t
 async def test_subagent_cancel_rechecks_completion_committed_during_read(tmp_path, monkeypatch):
     """C3: 真实来源在异步读取期间完成，旧取消检查不能改写其终态。"""
     from agent.plugin_composition import CompositionRoot, PluginRuntime
-    from agent.plugin_composition.messages import MESSAGE_CATALOG, MESSAGE_WRITERS, OWNER_STATE, MessageWriters, OwnerState
+    from session.services import MessageWriters, OwnerState
+    from agent.plugin_composition.messages import MESSAGE_CATALOG, MESSAGE_WRITERS, OWNER_STATE
     from agent.plugin_composition.tasks import TASKS, PluginTasks
     from plugins.subagent.request import PROFILE_TOOLS, Request
     from plugins.subagent.runtime import Subagents

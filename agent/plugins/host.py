@@ -37,6 +37,7 @@ from agent.plugin_composition.context import Context
 from agent.plugin_composition.credentials import CREDENTIALS, CredentialClients
 from agent.plugin_composition.execution import EXECUTION
 from agent.plugin_composition.host import HOST_INFO, HostInfo
+from session.services import MessageWriters, OwnerState, SessionAdmin, SessionAdmission
 from agent.plugin_composition.messages import (
     MESSAGE_CATALOG,
     MESSAGE_EMBEDDINGS,
@@ -44,10 +45,6 @@ from agent.plugin_composition.messages import (
     OWNER_STATE,
     SESSION_ADMIN,
     SESSION_ADMISSION,
-    MessageWriters,
-    OwnerState,
-    SessionAdmin,
-    SessionAdmission,
 )
 from agent.plugin_composition.plugin_config import PLUGIN_CONFIG, PluginConfig
 from agent.plugin_composition.plugin_updates import (

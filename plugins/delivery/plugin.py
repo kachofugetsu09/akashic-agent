@@ -24,7 +24,7 @@ class DeliveryAdmission:
     """按实际消费者签发恢复范围，发送记录和 Task 仍由 Delivery 独占。"""
 
     def __init__(
-        self, ctx: Context, state: OwnerStore | None, tasks: TaskAdmission | None,
+        self, ctx: Context, state: OwnerStore, tasks: TaskAdmission,
     ):
         self._ctx = ctx
         self._state = state
@@ -32,8 +32,6 @@ class DeliveryAdmission:
 
     def open(self, consumer: Context) -> Deliveries:
         owner = consumer.require_runtime_identity(DELIVERY_GUARDED_START, self).plugin_id
-        if self._state is None or self._tasks is None:
-            raise RuntimeError("candidate 验证期禁止打开正式 Delivery")
         ctx = self._ctx
         bindings = ctx.require(BINDINGS)
         return Deliveries(
@@ -46,13 +44,12 @@ class DeliveryAdmission:
 async def apply(ctx: Context) -> None:
     """Bind Delivery's state and Task once under its own lifecycle owner."""
     state_service = ctx.require(OWNER_STATE)
-    state = state_service.open(ctx) if state_service.available else None
-    tasks = ctx.require(TASKS).open(ctx) if state is not None else None
+    state = state_service.open(ctx)
+    tasks = ctx.require(TASKS).open(ctx)
     _ = await ctx.provide(DELIVERY_SENDERS, Senders(ctx))
     _ = await ctx.provide(DELIVERY_GUARDED_START, DeliveryAdmission(ctx, state, tasks))
     _ = await ctx.provide(FINAL_OUTPUT_DELIVERY, FinalOutputDelivery())
-    # 状态能力在正式生命周期中才打开，候选加载期不触碰运行库。
     _ = await ctx.provide(DELIVERY_READ, DeliveryHistory(
-        lambda: state if state is not None else state_service.open(ctx),
+        lambda: state,
         ctx.require(MESSAGE_CATALOG),
     ))

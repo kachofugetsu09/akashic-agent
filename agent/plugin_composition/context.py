@@ -163,7 +163,7 @@ class Context:
         return RuntimeScope(call)
 
     @contextmanager
-    def _call_scope(self) -> Iterator[None]:
+    def call_scope(self) -> Iterator[None]:
         """统一保护同步和异步入口。"""
         scope = self._reserve_scope()
         with scope if scope is not None else nullcontext():
@@ -172,7 +172,7 @@ class Context:
     @asynccontextmanager
     async def runtime_scope(self) -> AsyncGenerator[None]:
         """为需要显式延长资源寿命的业务边界保留同一次 activation。"""
-        with self._call_scope():
+        with self.call_scope():
             yield
 
     def entrypoint(self, operation: F) -> F:
@@ -183,13 +183,13 @@ class Context:
         if inspect.iscoroutinefunction(operation):
             @wraps(operation)
             async def run_async(*args: Any, **kwargs: Any) -> object:
-                with self._call_scope():
+                with self.call_scope():
                     return await operation(*args, **kwargs)
             return cast(F, run_async)
 
         @wraps(operation)
         def run_sync(*args: Any, **kwargs: Any) -> object:
-            with self._call_scope():
+            with self.call_scope():
                 result = operation(*args, **kwargs)
                 if inspect.isawaitable(result):
                     if inspect.iscoroutine(result):
@@ -209,7 +209,7 @@ class Context:
         if provider is None:
             yield None
             return
-        with provider.owner.context._call_scope():
+        with provider.owner.context.call_scope():
             yield cast(T, provider.value)
 
     def require_runtime_identity(self, key: ServiceKey[Any], service: object) -> CallerIdentity:
@@ -679,7 +679,7 @@ class Context:
 
             async def run_owned_task() -> T:
                 await ready.wait()
-                with self._call_scope():
+                with self.call_scope():
                     if runtime is None:
                         return await run_user()
                     with plugin_entrypoint(
