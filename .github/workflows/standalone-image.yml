@@ -3,7 +3,6 @@ on:
   workflow_dispatch:
   push:
     tags: ['v*']
-  pull_request:
 permissions:
   contents: read
 jobs:
@@ -22,7 +21,7 @@ jobs:
       contents: read
       packages: write
     env:
-      SOURCE_REVISION: ${{ github.event.pull_request.head.sha || github.sha }}
+      SOURCE_REVISION: ${{ github.sha }}
       IMAGE: ghcr.io/${{ github.repository }}
     steps:
       - uses: actions/checkout@v4
@@ -52,13 +51,11 @@ jobs:
           path: ${{ runner.temp }}/standalone-smoke
           if-no-files-found: ignore
       - uses: docker/login-action@v3
-        if: github.event_name != 'pull_request'
         with:
           registry: ghcr.io
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
       - name: Publish the tested image
-        if: github.event_name != 'pull_request'
         env:
           ARCH: ${{ matrix.arch }}
         run: |
@@ -66,7 +63,6 @@ jobs:
           docker push "$IMAGE:$SOURCE_REVISION-$ARCH"
   release:
     needs: image
-    if: github.event_name != 'pull_request'
     runs-on: ubuntu-latest
     timeout-minutes: 20
     permissions:
