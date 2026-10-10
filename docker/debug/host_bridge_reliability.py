@@ -48,6 +48,9 @@ class FaultService(HostBridgeService):
         self.drop_exec_reply = False
         self.calls: dict[str, int] = {}
         self.changed = asyncio.Condition()
+        self.hold_open_reply = False
+        self.open_reply_ready = asyncio.Event()
+        self.open_reply_cancelled = asyncio.Event()
 
     async def record(self, method):
         async with self.changed:
@@ -73,7 +76,14 @@ class FaultService(HostBridgeService):
 
     async def OpenManager(self, request, context):
         await self.record("open")
-        return await super().OpenManager(request, context)
+        reply = await super().OpenManager(request, context)
+        if self.hold_open_reply:
+            self.open_reply_ready.set()
+            try:
+                await asyncio.Event().wait()
+            finally:
+                self.open_reply_cancelled.set()
+        return reply
 
     async def Exec(self, request, context):
         await self.record("exec")
@@ -136,6 +146,55 @@ async def run() -> None:
             bridge_client._HEARTBEAT_INTERVAL_S = 0.01
             control = client()
             await control.claim_boot()
+
+            # 超时或取消后立即关闭，不能靠下一次发送带走取消帧的空尾段。
+            for outcome in ("deadline", "cancel"):
+                closing = client()
+                service.hold_open_reply = True
+                service.open_reply_ready.clear()
+                service.open_reply_cancelled.clear()
+                before = service.calls.get("open", 0)
+                call = asyncio.create_task(closing._channel.call(
+                    "OpenManager", pb.ContextRequest(context=closing._request_context()),
+                    timeout=0.2 if outcome == "deadline" else None,
+                ))
+                tasks.append(call)
+                await asyncio.wait_for(service.open_reply_ready.wait(), 2)
+                if outcome == "cancel":
+                    call.cancel()
+                    try:
+                        await call
+                    except asyncio.CancelledError:
+                        pass
+                    else:
+                        raise AssertionError("取消必须结束本次 RPC 等待")
+                else:
+                    try:
+                        await call
+                    except transport.RpcError as error:
+                        assert error.code is grpc.StatusCode.DEADLINE_EXCEEDED
+                    else:
+                        raise AssertionError("延迟响应必须超过 deadline")
+                await asyncio.wait_for(service.open_reply_cancelled.wait(), 2)
+                await asyncio.wait_for(closing.close_transport(), 2)
+                identity = (closing._boot_id, closing._manager_id)
+                assert identity in service._managers, "关闭连接不能删除已登记的 manager"
+                assert service.calls["open"] == before + 1, "超时或取消不得重放请求"
+                service.hold_open_reply = False
+                await control._channel.call(
+                    "ShutdownManager", pb.ContextRequest(context=closing._request_context()),
+                )
+                results.append(f"{outcome}_then_immediate_close_without_replay")
+
+            # 空 manager 的清理响应没有 Protobuf 载荷；服务端也必须能排空关闭。
+            empty = client()
+            assert not await empty.active_execution_ids()
+            assert not (await asyncio.wait_for(empty.shutdown(), 2)).failures
+            await asyncio.wait_for(server.stop(), 2)
+            server = transport.Server(service)
+            await server.start(socket)
+            results.append("empty_reply_then_client_and_server_close")
+
             status = monitor.HostBridgeStatus(state="checking")
             service.probe_error = grpc.StatusCode.DEADLINE_EXCEEDED
             monitoring = asyncio.create_task(monitor._monitor(socket, "experiment", TOKEN, COMMIT, DIGEST, status=status))
