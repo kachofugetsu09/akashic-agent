@@ -10,7 +10,6 @@ import httpx
 from core.net.http import HttpClient
 
 from agent.plugin_composition import (
-    AuthenticationError,
     BoundModelDescriptor,
     CredentialHandle,
     DiscoveredModel,
@@ -18,6 +17,9 @@ from agent.plugin_composition import (
     DriverConnectionDescriptor,
     DriverEmbeddingModel,
     EmbeddingSpaceDescriptor,
+)
+from plugins.models.contract import (
+    AuthenticationError,
     ModelUnavailableError,
 )
 from plugins.models.contract import ModelDriverDefinition

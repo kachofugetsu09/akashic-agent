@@ -1,7 +1,7 @@
 """从消息学习；模型未配置时保持可见的记忆不可用状态。"""
 from __future__ import annotations
 
-from agent.plugin_composition.models import ModelError
+from plugins.models.contract import ModelError
 import asyncio
 import json
 import logging
@@ -17,12 +17,12 @@ from pydantic import BaseModel, ConfigDict, Field, ValidationError, model_valida
 
 from agent.plugin_composition import (
     EMBEDDING_MEMORY_PLUGIN,
-    EMBEDDINGS,
     RUNTIME_STARTED,
     RUNTIME_STOPPING,
     Context,
     ServiceKey,
 )
+from plugins.models.contract import EMBEDDINGS
 from plugins.ui.contract import (
     UI_SLOTS,
     PluginUiDefinition,
@@ -41,11 +41,10 @@ from agent.plugin_composition.messages import (
     MESSAGE_EMBEDDINGS,
     OWNER_STATE,
 )
-from agent.plugin_composition.models import (
+from plugins.models.contract import (
     DriverUnavailableError,
     ModelUnavailableError,
-    open_embedding as open_saved_embedding,
-    read_embedding_binding,
+    SavedEmbedding,
 )
 from plugins.ui.contract import UI
 from agent.plugin_contracts import Message
@@ -519,7 +518,7 @@ async def run(ctx: Context, interest: Interest) -> None:
             if selected.embedding_binding is None:
                 assert selected.unavailable is not None
                 raise ModelUnavailableError(selected.unavailable).exception()
-            saved = read_embedding_binding(bindings, selected.embedding_binding)
+            saved = SavedEmbedding.read(bindings, selected.embedding_binding)
             rule = LearningConfig(embedding_model=saved.space_identity, dimension=saved.dimensions,
                                   sources=config.sources)
             identity = bindings.bind(AKASHA_LEARNING, rule.model_dump())
@@ -528,7 +527,7 @@ async def run(ctx: Context, interest: Interest) -> None:
             memory=read_path, config=settings.memory_config(),
             catalog=ctx.require(MESSAGE_CATALOG), embeddings=ctx.require(MESSAGE_EMBEDDINGS),
             bindings=bindings, select_learning=select, records=records(),
-            open_embedding=partial(open_saved_embedding, bindings), max_chars=settings.inject_max_chars,
+            open_embedding=partial(SavedEmbedding.open, bindings), max_chars=settings.inject_max_chars,
         )
 
     await catalog.register(

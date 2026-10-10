@@ -18,7 +18,8 @@ from agent.plugin_composition import (
 )
 from plugins.models.contract import CHAT_MODELS
 from agent.plugin_composition.messages import SESSION_ADMIN, SessionAdmin
-from agent.plugin_composition.models import LLMResponse, TransportError
+from agent.plugin_composition.models import LLMResponse
+from plugins.models.contract import TransportError
 from agent.plugin_contracts import ContentPart, ContentReferences, Input
 from plugins.sources.contract import (
     SOURCE_CHANGED_V3,

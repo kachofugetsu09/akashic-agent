@@ -23,11 +23,8 @@ from core.net.http import HttpClient, StreamProgress, describe_transport_error, 
 from agent.plugin_contracts import freeze_json
 
 from agent.plugin_composition import (
-    AuthenticationError,
     BoundModelDescriptor,
     CapabilitySources,
-    ContentSafetyError,
-    ContextLengthError,
     CredentialHandle,
     DiscoveredModel,
     DriverConnection,
@@ -35,15 +32,20 @@ from agent.plugin_composition import (
     EmbeddingResult,
     EmbeddingSpaceDescriptor,
     LLMResponse,
-    InvalidRequestError,
     ModelCapabilities,
-    ModelError,
     ModelRequest,
-    ModelTimeoutError,
     ModelUsage,
+    ToolCall,
+)
+from plugins.models.contract import (
+    AuthenticationError,
+    ContentSafetyError,
+    ContextLengthError,
+    InvalidRequestError,
+    ModelError,
+    ModelTimeoutError,
     QuotaError,
     RateLimitError,
-    ToolCall,
     TransportError,
 )
 from plugins.models.contract import ModelDriverDefinition

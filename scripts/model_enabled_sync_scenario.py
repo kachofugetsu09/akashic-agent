@@ -4,7 +4,7 @@
 """
 from __future__ import annotations
 
-from agent.plugin_composition.models import ModelError
+from plugins.models.contract import ModelError
 import asyncio
 import sqlite3
 import tempfile

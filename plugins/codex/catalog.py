@@ -8,12 +8,14 @@ from typing import Any
 import httpx
 
 from agent.plugin_composition import (
-    AuthenticationError,
     CapabilitySources,
     CredentialHandle,
     DiscoveredModel,
     DriverConnectionDescriptor,
     ModelCapabilities,
+)
+from plugins.models.contract import (
+    AuthenticationError,
     TransportError,
 )
 

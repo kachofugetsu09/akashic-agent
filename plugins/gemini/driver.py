@@ -14,25 +14,27 @@ import httpx
 from core.net.http import retry_after_time
 
 from agent.plugin_composition.models import (
-    AuthenticationError,
     BoundModelDescriptor,
     CapabilitySources,
-    ContentSafetyError,
-    ContextLengthError,
     CredentialHandle,
     DiscoveredModel,
     DriverConnection,
     DriverConnectionDescriptor,
     EmbeddingSpaceDescriptor,
-    InvalidRequestError,
     LLMResponse,
     ModelCapabilities,
-    ModelError,
     ModelRequest,
-    ModelTimeoutError,
     ModelUsage,
-    RateLimitError,
     ToolCall,
+)
+from plugins.models.contract import (
+    AuthenticationError,
+    ContentSafetyError,
+    ContextLengthError,
+    InvalidRequestError,
+    ModelError,
+    ModelTimeoutError,
+    RateLimitError,
     TransportError,
 )
 from plugins.models.contract import ModelDriverDefinition

@@ -15,15 +15,17 @@ from pydantic import (
     model_validator,
 )
 
-from agent.plugin_composition.models import ModelControlUnavailable
+from plugins.models.contract import ModelControlUnavailable
 from agent.plugin_composition.models import (
-    AuthenticationError,
     ChatModelSelection,
     CapabilitySources,
-    DriverUnavailableError,
     DiscoveredModel,
     ModelCapabilities,
     ModelCatalogSnapshot,
+)
+from plugins.models.contract import (
+    AuthenticationError,
+    DriverUnavailableError,
     ModelError,
     ModelTimeoutError,
     ModelUnavailableError,
