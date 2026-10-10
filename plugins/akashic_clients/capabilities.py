@@ -14,8 +14,8 @@ from agent.plugin_composition.messages import MESSAGE_CATALOG, SESSION_ADMIN
 from agent.plugin_composition.rpc import rpc_method_key
 from agent.plugin_composition.runtime_catalog import (
     RUNTIME_CATALOG as RUNTIME_CATALOG,
-    RUNTIME_MCP_DETAIL as RUNTIME_MCP_DETAIL,
 )
+from plugins.mcp.contract import MCP_DETAIL, MCP_SERVERS
 from agent.plugin_composition.ui import (
     WEB_UI as WEB_UI,
 )
@@ -58,7 +58,6 @@ INSPECTION_RPC_KEYS = (
 # 聊天启动只等待基础能力；诊断 RPC 在请求中借用，未接线的旧模型 RPC 不阻塞启动。
 CLIENT_CAPABILITIES = (
     RUNTIME_CATALOG,
-    RUNTIME_MCP_DETAIL,
     MESSAGE_CATALOG,
     MESSAGE_DISPLAY,
     PLUGIN_UI,
@@ -87,5 +86,6 @@ __all__ = [
     "ModelSelectionReader",
     "REPLY_STATUS",
     "RUNTIME_CATALOG",
-    "RUNTIME_MCP_DETAIL",
+    "MCP_DETAIL",
+    "MCP_SERVERS",
 ]

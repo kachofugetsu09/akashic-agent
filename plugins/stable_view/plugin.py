@@ -11,6 +11,7 @@ from agent.plugin_composition.commands import (
     CommandResult,
 )
 from agent.plugin_composition.runtime_catalog import RUNTIME_CATALOG
+from plugins.mcp.contract import MCP_SERVERS
 
 api_version = 3
 name = "stable_view"
@@ -134,6 +135,9 @@ async def apply(ctx: Context) -> None:
             async with ctx.runtime_scope():
                 reader = ctx.require(RUNTIME_CATALOG)
                 catalog = reader(ctx)
+                with ctx.borrow(MCP_SERVERS) as servers:
+                    if servers is not None:
+                        catalog["mcp_servers"] = servers.catalog()
             return CommandResult("success", format_stable_catalog(catalog))
         except Exception as error:  # live owner 失败也必须如实回报
             return CommandResult("error", f"读取 stable 组合失败: {error}")

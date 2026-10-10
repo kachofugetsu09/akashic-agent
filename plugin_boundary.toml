@@ -86,10 +86,6 @@ note = "宿主统一保留的进程集合与清理核对"
 role = "core"
 note = "受 Core 监督的进程声明注册表"
 
-[capabilities."core.mcp_servers"]
-role = "core"
-note = "generation-bound MCP server 声明注册表"
-
 [capabilities."core.workloads"]
 role = "core"
 note = "窄 Controller 管理的容器 workload 注册表"
@@ -141,11 +137,7 @@ note = "普通 UI provider 拥有贡献注册、活动目录和 Dashboard 资源
 
 [capabilities."core.runtime_catalog.v1"]
 role = "core"
-note = "按当前 live Root 提供中立插件与 MCP 只读目录投影"
-
-[capabilities."core.runtime_mcp_detail.v1"]
-role = "core"
-note = "已声明的调用方在当前 live Root 按需读取单一 MCP 目标详情"
+note = "按当前 live Root 提供中立插件、Fiber 与健康只读投影"
 
 [capabilities."plugin.channels"]
 role = "seam"

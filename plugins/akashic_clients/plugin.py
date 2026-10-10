@@ -8,7 +8,7 @@ from agent.plugin_composition import (
     InboundIdentity,
 )
 
-from .capabilities import CLIENT_CAPABILITIES, INSPECTION_RPC_KEYS, REPLY_STATUS
+from .capabilities import CLIENT_CAPABILITIES, INSPECTION_RPC_KEYS, REPLY_STATUS, MCP_DETAIL, MCP_SERVERS
 from agent.plugin_composition.models import MODEL_CALL_STATS
 from .channel import build_akashic_channel_factory
 from agent.plugin_composition.channels import CHANNEL_INPUT_V2 as CHANNEL_INPUT
@@ -51,7 +51,7 @@ async def apply(ctx: Context) -> None:
                 NavigationPreferences(lambda: ctx.require(OWNER_STATE).open(ctx)),
             ),
             inbound_identity=InboundIdentity.PROVIDER_MESSAGE_ID,
-            optional_services=frozenset((*INSPECTION_RPC_KEYS, MODEL_CALL_STATS, REPLY_STATUS)),
+            optional_services=frozenset((*INSPECTION_RPC_KEYS, MODEL_CALL_STATS, REPLY_STATUS, MCP_DETAIL, MCP_SERVERS)),
         ),
     )
 

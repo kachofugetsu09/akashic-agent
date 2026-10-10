@@ -11,7 +11,7 @@ import json
 from typing import cast
 
 from agent.plugin_composition.rpc import RpcMethod
-from agent.plugin_composition.runtime_catalog import RuntimeCatalogUnavailable
+from plugins.mcp.contract import MCP_DETAIL, MCP_SERVERS, McpDetailUnavailable
 from .capabilities import (
     INSPECTION_DOCUMENTS_GET,
     INSPECTION_DOCUMENTS_LIST,
@@ -19,7 +19,6 @@ from .capabilities import (
     INSPECTION_JOBS_LIST,
     INSPECTION_SKILLS_LIST,
     RUNTIME_CATALOG,
-    RUNTIME_MCP_DETAIL,
 )
 from .services import RuntimeInspectionError, RuntimeInspectionService
 
@@ -85,12 +84,12 @@ class ScopedRpcRuntimeInspection:
                     "runtime inspection skills 响应缺少 items",
                 )
             payload["skills"] = items
-            expected = {"snapshot_id", "plugins", "skills", "mcp_servers"}
-            if payload.keys() != expected:
-                raise RuntimeInspectionError(
-                    "invalid_response",
-                    "runtime catalog 返回字段与客户端合同不一致",
-                )
+            # MCP 是可选诊断部分，缺席仍返回其它实际能力。
+            with scope.borrow(MCP_SERVERS) as servers:
+                if servers is None:
+                    payload["mcp_unavailable"] = {"code": "mcp_provider_unavailable", "message": "MCP provider 不可用"}
+                else:
+                    payload["mcp_servers"] = servers.catalog()
             return payload
 
     async def get_mcp(self, owner_id: str, server_name: str) -> dict[str, object]:
@@ -98,8 +97,11 @@ class ScopedRpcRuntimeInspection:
 
         async with self._open_scope() as scope:
             try:
-                tools = await scope.require(RUNTIME_MCP_DETAIL)(scope, owner_id, server_name)
-            except RuntimeCatalogUnavailable as error:
+                with scope.borrow(MCP_DETAIL) as detail:
+                    if detail is None:
+                        raise RuntimeInspectionError("mcp_provider_unavailable", "MCP provider 不可用")
+                    tools = await detail(owner_id, server_name)
+            except McpDetailUnavailable as error:
                 raise RuntimeInspectionError(error.code, str(error)) from error
         if not isinstance(tools, list):
             raise RuntimeInspectionError("invalid_response", "runtime MCP detail tools 无效")
@@ -116,10 +118,6 @@ def _raise_unavailable(payload: Mapping[str, object]) -> None:
     """Translate a neutral inspection failure at the client boundary."""
 
     unavailable = payload.get("unavailable")
-    if unavailable is None:
-        # The live catalog keeps the plugin tree when only MCP is absent;
-        # this adapter preserves the existing client error contract.
-        unavailable = payload.get("mcp_unavailable")
     if unavailable is None:
         return
     if not isinstance(unavailable, Mapping):
