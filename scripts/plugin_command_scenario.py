@@ -6,6 +6,7 @@ import json
 import os
 from pathlib import Path
 import subprocess
+import shutil
 import sys
 import tempfile
 
@@ -135,12 +136,33 @@ async def run(directory: Path) -> dict[str, object]:
         assert marker.read_text().splitlines() == ["entry", "entry"]
         status, _, error = await invoke("absent")
         assert status != 0 and "需要唯一 provider" in error
+        # 4. 宿主服务启动只选当前镜像资产，不执行 workspace 中的旧命令。
+        distribution = directory / "image"
+        (distribution / "sources").mkdir(parents=True)
+        (distribution / "profiles").mkdir()
+        shutil.copytree(source, distribution / "sources/command_probe", ignore=shutil.ignore_patterns(".git", "__pycache__"))
+        image_cli = distribution / "sources/command_probe/cli.py"
+        image_cli.write_text(CLI.replace('"reply"', '"image_reply"').replace("return 0", "return 7"))
+        (distribution / "distribution.json").write_text(json.dumps({"source_commit": "a" * 40,
+            "plugins": [{"name": "command_probe"}]}))
+        (distribution / "profiles/default.json").write_text(json.dumps({"marketplace": "release"}))
+        before = selection.read_bytes(), plan.read_bytes(), marker.read_bytes()
+        process = await asyncio.create_subprocess_exec(sys.executable, "-m", "agent.plugins.entrypoints",
+            "--distribution", str(distribution), "--workspace", str(workspace),
+            "--config", str(workspace / "config.toml"), "probe", "input",
+            cwd=directory, env={**os.environ, "PYTHONPATH": str(ROOT)},
+            stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE)
+        output, error = await process.communicate()
+        assert process.returncode == 7, error.decode()
+        assert json.loads(output) == {"image_reply": "second:input"}
+        assert before == (selection.read_bytes(), plan.read_bytes(), marker.read_bytes())
         assert not (workspace / "sessions.db").exists()
     finally:
         await host.terminate_all()
         lock.release()
     return {"separate_process_connected": True, "no_second_root": True, "selection_unchanged": True,
-            "unrelated_damage_isolated": True, "current_command_generation": True, "missing_command_fails": True}
+            "unrelated_damage_isolated": True, "current_command_generation": True, "missing_command_fails": True,
+            "image_command_ignores_old_selection": True}
 
 
 if __name__ == "__main__":
