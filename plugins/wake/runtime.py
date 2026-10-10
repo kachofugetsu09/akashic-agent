@@ -1,6 +1,8 @@
 from __future__ import annotations
 
-from agent.plugin_composition.models import MODEL_CATALOG, ModelAvailability
+from agent.plugin_composition.models import (
+    MODEL_CATALOG,
+)
 
 import asyncio
 import hashlib
@@ -227,7 +229,7 @@ class Runtime:
                 return reason
         catalog = self.ctx.require(MODEL_CATALOG).snapshot()
         model_id = catalog.role_bindings.get("default")
-        if model_id is None or catalog.model(model_id).availability != ModelAvailability.AVAILABLE:
+        if model_id is None or catalog.model(model_id).availability != 'available':
             return "默认聊天模型不可用"
         return None
 

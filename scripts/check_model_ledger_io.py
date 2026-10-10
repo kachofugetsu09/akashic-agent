@@ -5,7 +5,7 @@ import argparse
 import asyncio
 from collections.abc import AsyncIterator, Mapping, Sequence
 from contextlib import asynccontextmanager
-from dataclasses import replace
+from dataclasses import FrozenInstanceError, replace
 from functools import partial
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 import json
@@ -32,7 +32,11 @@ from plugins.openai_compatible import driver
 from core.common.file_io import run_file_io
 from agent.plugin_composition import InvalidRequestError, ModelUnavailableError
 from agent.plugin_composition.models import DriverChatModel, LLMResponse
-from agent.plugin_composition import CHAT_MODELS, MODEL_DRIVERS, CompositionRoot, ModelKind
+from agent.plugin_composition import (
+    CHAT_MODELS,
+    MODEL_DRIVERS,
+    CompositionRoot,
+)
 from plugins.models.settings import MODEL_SETTINGS, AddConnection, AddModel, CreateConnectionWithModel, SetDefaultModel
 from plugins.models.state import ModelsState
 
@@ -262,7 +266,18 @@ async def shared_checks(directory, server, descriptor, physical):
                 assert await follower is response
             assert response.content == 'local-result' and server.posts == before + 1
             assert len(store.calls_for_key(name)) == 1
-            observations.append({'case': name, 'posts': 1, 'call_rows': 1})
+            # 同 key 的两个等待者共享已结算响应；任一调用者不能改变另一个的事实。
+            try:
+                setattr(response, 'content', 'caller edit')
+            except FrozenInstanceError:
+                pass
+            else:
+                raise AssertionError('shared response accepted a caller edit')
+            replayed = await bound.complete(request)
+            assert replayed.content == response.content == 'local-result'
+            assert replayed.call_record_id == response.call_record_id
+            assert server.posts == before + 1
+            observations.append({'case': name, 'posts': 1, 'call_rows': 1, 'shared_response_frozen': True})
         finally:
             store.release.set()
             await asyncio.gather(owner, *((follower,) if follower is not None else ()), return_exceptions=True)
@@ -596,7 +611,7 @@ async def scope_checks(directory, server, endpoint):
             receipt = await state.settings.apply(CreateConnectionWithModel(
                 AddConnection(0, name, name, driver.definition().driver_id,
                               endpoint, name, {'api_key': 'local-fixture'}),
-                AddModel(0, name, name, ModelKind.CHAT, 'scenario',
+                AddModel(0, name, name, 'chat', 'scenario',
                          ModelCapabilities(context_window=8192, supports_tool_calls=True),
                          CapabilitySources(context_window='fixture')),
             ))

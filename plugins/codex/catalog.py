@@ -14,7 +14,6 @@ from agent.plugin_composition import (
     DiscoveredModel,
     DriverConnectionDescriptor,
     ModelCapabilities,
-    ModelKind,
     TransportError,
 )
 
@@ -164,7 +163,7 @@ def _parse_model(raw: Mapping[str, Any]) -> DiscoveredModel:
     if not isinstance(parallel, bool):
         raise TransportError(f"模型 {slug} 的 parallel tools 标记无效")
     return DiscoveredModel(
-        kind=ModelKind.CHAT,
+        kind='chat',
         model=slug,
         capabilities=ModelCapabilities(
             context_window=context_window,

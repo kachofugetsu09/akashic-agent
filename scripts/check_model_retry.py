@@ -126,7 +126,11 @@ async def run(args: argparse.Namespace) -> dict:
     from plugins.models.state import _BoundChat, _retry_budget
     from plugins.models.store import ModelsStore, _request_digest
     from plugins.openai_compatible import driver
-    from agent.plugin_composition import CHAT_MODELS, MODEL_DRIVERS, CompositionRoot, ModelKind
+    from agent.plugin_composition import (
+        CHAT_MODELS,
+        MODEL_DRIVERS,
+        CompositionRoot,
+    )
     from plugins.models.settings import (
         MODEL_SETTINGS, AddConnection, AddModel, CreateConnectionWithModel, SetDefaultModel,
     )
@@ -272,7 +276,7 @@ async def run(args: argparse.Namespace) -> dict:
                     ),
                     AddModel(
                         expected_revision=0, model_id="public", connection_id="public",
-                        kind=ModelKind.CHAT, model="scenario",
+                        kind='chat', model="scenario",
                         capabilities=ModelCapabilities(context_window=8192, supports_tool_calls=True),
                         capability_sources=CapabilitySources(context_window="fixture"),
                     ),

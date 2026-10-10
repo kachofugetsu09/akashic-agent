@@ -30,7 +30,6 @@ from agent.plugin_composition import (
     RateLimitError,
     ToolCall,
     TransportError,
-    UsageCoverage,
 )
 
 from .auth import CODEX_CLIENT_VERSION, headers
@@ -602,11 +601,11 @@ def _parse_usage(raw: object) -> ModelUsage | None:
     )
     covered = int(input_tokens is not None and output_tokens is not None)
     coverage = (
-        UsageCoverage.EXACT
+        'exact'
         if covered
-        else UsageCoverage.PARTIAL
+        else 'partial'
         if input_tokens is not None or output_tokens is not None
-        else UsageCoverage.UNAVAILABLE
+        else 'unavailable'
     )
     return ModelUsage(
         input_tokens=input_tokens,

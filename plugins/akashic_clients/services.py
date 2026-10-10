@@ -166,10 +166,10 @@ def project_unavailable_chat_runtimes(snapshot: ModelCatalogSnapshot) -> list[di
             "id": model.model_id,
             "model": model.model,
             "sourceName": connections[model.connection_id].name,
-            "availability": model.availability.value,
+            "availability": model.availability,
         }
         for model in snapshot.models
-        if model.kind.value == "chat" and model.availability.value != "available"
+        if model.kind == "chat" and model.availability != "available"
     ]
 
 
@@ -181,7 +181,7 @@ def project_chat_runtimes(snapshot: ModelCatalogSnapshot) -> list[dict[str, obje
     connections = {item.connection_id: item for item in snapshot.connections}
     result: list[dict[str, object]] = []
     for model in snapshot.models:
-        if model.kind.value != "chat" or model.availability.value != "available":
+        if model.kind != "chat" or model.availability != "available":
             continue
         connection = connections[model.connection_id]
         capabilities = model.capabilities

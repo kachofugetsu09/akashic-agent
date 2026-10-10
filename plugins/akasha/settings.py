@@ -6,7 +6,10 @@ from typing import Any, cast
 from pydantic import BaseModel
 from agent.plugin_composition import Context, ServiceKey
 from agent.plugin_composition.context import FiberHandle
-from agent.plugin_composition.models import MODEL_CATALOG, ModelCatalogSnapshot, ModelAvailability
+from agent.plugin_composition.models import (
+    MODEL_CATALOG,
+    ModelCatalogSnapshot,
+)
 from agent.plugin_composition.plugin_config import PLUGIN_CONFIG
 from agent.plugin_composition.runtime_catalog import RUNTIME_CATALOG
 from agent.plugin_contracts.configuration import Configuration
@@ -32,7 +35,7 @@ class Settings:
             blocked = bool(missing)
             if missing:
                 reason = "缺少前置能力：" + "、".join(missing)
-            elif model is None or not model.default_embedding_model_id or model.model(model.default_embedding_model_id).availability != ModelAvailability.AVAILABLE:
+            elif model is None or not model.default_embedding_model_id or model.model(model.default_embedding_model_id).availability != 'available':
                 reason = "请先在模型设置中选择向量模型"
             enabled = config["enabled"]
             return {**self.ctx.require(PLUGIN_CONFIG).read(self.ctx), "enabled": enabled,
