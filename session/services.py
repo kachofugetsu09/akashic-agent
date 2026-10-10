@@ -10,8 +10,6 @@ from agent.plugin_composition.effect import Effect
 from session.log import (
     MessageLog as _MessageLog,
     MessageWriter as MessageWriter,
-    OwnerStore as OwnerStore,
-    OwnerTransaction as OwnerTransaction,
     SessionAttributes as SessionAttributes,
     WriterExpired as WriterExpired,
 )
@@ -19,6 +17,7 @@ from session.message import Body, CallRef, ContentPart, ContentReferences, Contr
 
 
 from agent.plugin_composition.messages import (
+    OwnerStore, OwnerTransaction,
     MESSAGE_WRITERS,
     OWNER_STATE,
     SESSION_ADMISSION,

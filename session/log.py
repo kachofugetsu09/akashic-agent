@@ -22,6 +22,20 @@ from types import MappingProxyType
 from weakref import WeakValueDictionary
 
 from core.common.file_io import run_file_io
+from agent.plugin_composition.messages import (
+    MessageReader as Reader, MessageWriter as Writer, OwnerStore as Store,
+    OwnerTransaction as Transaction, PreparedAppend as Append,
+    InvalidPage,
+    MessageConflict,
+    MessagePage,
+    MessageSnapshot,
+    OwnerRecord,
+    SessionAttributes,
+    SessionEntry,
+    SessionPage,
+    SourceHeadConflict,
+    WriterExpired,
+)
 from session.artifacts import AttachmentKind, AttachmentRef
 from session.artifact_store import ARTIFACT_SCHEMA
 from session.message import (
@@ -52,87 +66,6 @@ _ATTACHMENT_MEMO_SIZE = 8192
 MESSAGE_BODY_KIND_INDEX_SCHEMA = """CREATE INDEX IF NOT EXISTS message_source_kind_seq
     ON messages (session_key, source, json_extract(body, '$.kind'), seq,
                  json_extract(body, '$.finish'));"""
-
-
-_SCOPE_DIMENSION = re.compile(r"[a-z][a-z0-9_]{0,31}")
-_SCOPE_VALUE_LIMIT = 128
-
-
-@dataclass(frozen=True, slots=True)
-class SessionAttributes:
-    """会话接纳时固定的独立事实；存储不替展示或学习消费者作决定。
-
-    scope 是宽键中已声明的维度；缺失维度即 default，Core 不解释维度含义。
-    """
-
-    visibility: Literal["listed", "internal"] = "listed"
-    learning: Literal["eligible", "excluded"] = "eligible"
-    scope: tuple[tuple[str, str], ...] = ()
-
-    def __post_init__(self) -> None:
-        if self.visibility not in ("listed", "internal") or self.learning not in ("eligible", "excluded"):
-            raise ValueError("Session 属性无效")
-        names = [name for name, _ in self.scope]
-        if names != sorted(set(names)):
-            raise ValueError("Session scope 维度必须唯一且有序")
-        for name, value in self.scope:
-            if not isinstance(name, str) or _SCOPE_DIMENSION.fullmatch(name) is None:
-                raise ValueError(f"Session scope 维度名无效: {name!r}")
-            if (
-                not isinstance(value, str) or not value or value == "default"
-                or len(value) > _SCOPE_VALUE_LIMIT or value != value.strip()
-            ):
-                raise ValueError(f"Session scope 维度值无效: {name}")
-
-    @classmethod
-    def scoped(
-        cls, dimensions: Mapping[str, str], *,
-        visibility: Literal["listed", "internal"] = "listed",
-        learning: Literal["eligible", "excluded"] = "eligible",
-    ) -> SessionAttributes:
-        return cls(visibility, learning, tuple(sorted(dimensions.items())))
-
-    def dimension(self, name: str) -> str:
-        """缺失维度按 default 解析；新增维度不需要迁移旧 Session。"""
-        return dict(self.scope).get(name, "default")
-
-
-@dataclass(frozen=True, slots=True)
-class SessionEntry:
-    """目录中的只读事实；不持有执行状态，也不替 UI 生成标题。"""
-
-    session_id: str
-    created_at: datetime
-    updated_at: datetime
-    attributes: SessionAttributes
-    metadata: Mapping[str, object] | None
-    head_seq: int
-    message_count: int
-    first_message: Message | None
-    """显式标题覆盖；None 表示由表示边界按首条消息推导。"""
-    title: str | None = None
-
-
-@dataclass(frozen=True, slots=True)
-class SessionPage:
-    items: tuple[SessionEntry, ...]
-    total: int
-    next_cursor: tuple[str, str] | None
-
-
-@dataclass(frozen=True, slots=True)
-class MessagePage:
-    """同一读取快照中的有序消息、引用和固定上界，不保存副本或消费进度。"""
-
-    messages: tuple[Message, ...]
-    attachments: Mapping[str, tuple[AttachmentRef, ...]]
-    bindings: Mapping[str, Mapping[str, object]]
-    through_seq: int
-    has_more: bool
-
-
-class InvalidPage(ValueError):
-    """调用者的分页范围或游标无效；与持久记录损坏区分。"""
 
 
 def encode_attributes(attributes: SessionAttributes) -> str:
@@ -369,18 +302,6 @@ def create_message_prefix_revision(connection: sqlite3.Connection) -> None:
         "INSERT INTO message_prefix_revision VALUES (1,0) ON CONFLICT DO NOTHING"
     )
     _check_schema(connection)
-
-
-class MessageConflict(ValueError):
-    """消息身份、引用或来源前缀发生冲突。"""
-
-
-class SourceHeadConflict(MessageConflict):
-    """来源 head 的 CAS 失败，事务未提交；调用者可重新选择前缀。"""
-
-
-class WriterExpired(RuntimeError):
-    """任务已释放写入权，不能再提交新的输出。"""
 
 
 @dataclass
@@ -626,7 +547,7 @@ class MessageLog:
 
     def ensure_session(
         self, session_id: str, attributes: SessionAttributes, *,
-        initializers: tuple[tuple[OwnerStore, Callable[[str, SessionAttributes, OwnerTransaction], None]], ...] = (),
+        initializers: tuple[tuple[Store, Callable[[str, SessionAttributes, Transaction], None]], ...] = (),
     ) -> SessionAttributes:
         """原子接纳固定属性；同 ID 重试不能修改已有会话的事实。"""
         if not isinstance(session_id, str) or not session_id:
@@ -645,7 +566,7 @@ class MessageLog:
             if inserted.rowcount == 1:
                 self._changed()
                 for store, initialize in initializers:
-                    if store._log is not self:
+                    if not isinstance(store, OwnerStore) or store._log is not self:
                         raise ValueError("Session 初始化不能跨存储 authority")
                     transaction = OwnerTransaction(store)
                     try:
@@ -662,7 +583,7 @@ class MessageLog:
 
     async def ensure_session_async(
         self, session_id: str, attributes: SessionAttributes, *,
-        initializers: tuple[tuple[OwnerStore, Callable[[str, SessionAttributes, OwnerTransaction], None]], ...] = (),
+        initializers: tuple[tuple[Store, Callable[[str, SessionAttributes, Transaction], None]], ...] = (),
     ) -> SessionAttributes:
         """完整 create-once 事务离开 loop；取消仍排空已开始的写入。"""
         self._check_async_operation()
@@ -1227,47 +1148,6 @@ class _MessagePrefix:
         self.revision = revision
         self.messages: list[Message] = []
         self.seqs: list[int] = []
-
-
-@dataclass(frozen=True, slots=True)
-class MessageSnapshot(Sequence[Message]):
-    """固定消息读面；只提供消息和前缀关系，不持有数据库或写入能力。"""
-
-    _prefix: _MessagePrefix
-    _count: int
-    through_seq: int
-
-    @property
-    def session_id(self) -> str:
-        return self._prefix.session_id
-
-    @property
-    def prefix_revision(self) -> int | None:
-        return self._prefix.revision
-
-    def extends(self, previous: MessageSnapshot) -> bool:
-        """相同存储读面只追加；截短或前缀变化不能复用旧投影。"""
-        return self._prefix is previous._prefix and self._count >= previous._count
-
-    def __len__(self) -> int:
-        return self._count
-
-    def __iter__(self) -> Iterator[Message]:
-        return islice(self._prefix.messages, self._count)
-
-    @overload
-    def __getitem__(self, index: int) -> Message: ...
-
-    @overload
-    def __getitem__(self, index: slice) -> tuple[Message, ...]: ...
-
-    def __getitem__(self, index: int | slice) -> Message | tuple[Message, ...]:
-        if isinstance(index, slice):
-            return tuple(self._prefix.messages[i] for i in range(*index.indices(self._count)))
-        position = index + self._count if index < 0 else index
-        if not 0 <= position < self._count:
-            raise IndexError(index)
-        return self._prefix.messages[position]
 
 
 class MessageReader:
@@ -1849,6 +1729,10 @@ class PreparedAppend:
     _prepared: _PreparedMessage | None
     _existing: Message | None
 
+    @property
+    def session_id(self) -> str:
+        return self._writer.session_id
+
     def _append(self, expected_source_head: int | None) -> tuple[Message, bool]:
         previous = self._writer._replay(self._message_id, self._body, self._metadata)
         if previous is not None:
@@ -2186,12 +2070,6 @@ class MessageWriter:
             raise MessageConflict("该工具调用已经有结果消息")
 
 
-@dataclass(frozen=True, slots=True, weakref_slot=True)
-class OwnerRecord:
-    version: int
-    value: Mapping[str, object]
-
-
 class OwnerStore:
     """一个 owner 的窄持久接口；结果正文仍由 Message 独占。"""
 
@@ -2199,9 +2077,10 @@ class OwnerStore:
         self._log = log
         self._owner = owner
 
-    def check_access(self, *capabilities: MessageReader | MessageWriter) -> None:
+    def check_access(self, *capabilities: Reader | Writer) -> None:
         """在产生外部效果前确认获授能力可参与同一 authority 的事务。"""
-        if any(capability._log is not self._log for capability in capabilities):
+        if any(not isinstance(capability, (MessageReader, MessageWriter)) or capability._log is not self._log
+               for capability in capabilities):
             raise ValueError("原子提交不能跨存储 authority")
 
     def read(self, key: str) -> OwnerRecord | None:
@@ -2265,7 +2144,7 @@ class OwnerStore:
                 raise TypeError("存储快照回调必须同步，不能跨 await")
             return result
 
-    def transact(self, callback: Callable[[OwnerTransaction], _T]) -> _T:
+    def transact(self, callback: Callable[[Transaction], _T]) -> _T:
         """把自身状态与已获授的 Message 写入放在一个同步事务内。"""
         transaction = OwnerTransaction(self)
 
@@ -2280,7 +2159,7 @@ class OwnerStore:
             transaction._active = False
 
     async def transact_async(
-        self, callback: Callable[[OwnerTransaction], _T], *,
+        self, callback: Callable[[Transaction], _T], *,
         on_commit: Callable[[_T], None] | None = None,
     ) -> _T:
         """纯 SQL owner 工作离开 loop；Context 校验应在调用者 scope 内完成。"""
@@ -2295,11 +2174,11 @@ class OwnerTransaction:
         self._failed = False
 
     def source_changed(
-        self, reader: MessageReader, source: str, through_seq: int,
+        self, reader: Reader, source: str, through_seq: int,
     ) -> bool:
         """同一 Core 事务内读来源前提；不借出 SQL 或复制来源状态。"""
         self._check_active()
-        if reader._log is not self._store._log:
+        if not isinstance(reader, MessageReader) or reader._log is not self._store._log:
             raise ValueError("来源前提与 owner transaction 不属于同一 authority")
         return self._perform(lambda: self._store._log._connection.execute(
             "SELECT 1 FROM messages WHERE session_key=? AND source=? AND seq>? "
@@ -2382,7 +2261,7 @@ class OwnerTransaction:
 
     def append(
         self,
-        writer: MessageWriter,
+        writer: Writer,
         message_id: str,
         body: Body,
         *,
@@ -2390,7 +2269,7 @@ class OwnerTransaction:
         metadata: Mapping[str, object] | None = None,
     ) -> Message:
         self._check_active()
-        if writer._log is not self._store._log:
+        if not isinstance(writer, MessageWriter) or writer._log is not self._store._log:
             raise ValueError("原子提交不能跨存储 authority")
         return self._perform(
             lambda: writer._append(
@@ -2399,10 +2278,12 @@ class OwnerTransaction:
         )
 
     def append_prepared(
-        self, prepared: PreparedAppend, *, expected_source_head: int | None = None,
+        self, prepared: Append, *, expected_source_head: int | None = None,
     ) -> Message:
         """在同一事务核对已准备消息的 grant、引用、身份和来源 head。"""
         self._check_active()
+        if not isinstance(prepared, PreparedAppend):
+            raise ValueError("预备追加不属于本存储 authority")
         writer = prepared._writer
         if writer._log is not self._store._log:
             raise ValueError("原子提交不能跨存储 authority")
