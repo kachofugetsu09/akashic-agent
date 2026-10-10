@@ -8,6 +8,8 @@ export interface SessionRow {
   /** 服务端 session_row 提供；置顶解析补齐的目录外会话可能缺失。 */
   created_at?: string;
   message_count?: number;
+  /** 日志当前最大 seq；用于判断某会话相对上次查看有无新消息。 */
+  head_seq?: number;
   first_message_content?: string;
   /** 显式标题覆盖；null/缺失时按 first_message_content 推导。 */
   title?: string | null;
@@ -96,6 +98,7 @@ export function sessionPage(payload: unknown): { items: SessionRow[]; nextCursor
     || (item.updated_at !== undefined && typeof item.updated_at !== "string")
     || (item.created_at !== undefined && typeof item.created_at !== "string")
     || (item.message_count !== undefined && (typeof item.message_count !== "number" || !Number.isFinite(item.message_count)))
+    || (item.head_seq !== undefined && !Number.isSafeInteger(item.head_seq))
     || (item.scope !== undefined && !isStringRecord(item.scope))
   ))) {
     throw new Error("/api/chat/sessions 返回了无效 session 行");

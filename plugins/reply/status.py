@@ -25,6 +25,9 @@ class ReplyRead:
     def snapshot(self, session_id: str) -> tuple[ReplyActivity, ...]:
         return self._state.snapshot(session_id)
 
+    def active_sessions(self) -> frozenset[str]:
+        return self._state.active_sessions()
+
     async def follow(self, session_id: str) -> AsyncGenerator[tuple[dict[str, object], ...], None]:
         """订阅当前快照；慢读者合并通知，重连不重放旧 token。"""
         previous: tuple[ReplyActivity, ...] | None = None
@@ -50,6 +53,10 @@ class ReplyState:
 
     def snapshot(self, session_id: str) -> tuple[ReplyActivity, ...]:
         return tuple(item for item in self._items.values() if item.session_id == session_id)
+
+    def active_sessions(self) -> frozenset[str]:
+        """正在回复的会话集合；已撤权但尚在排空的活动不算运行中。"""
+        return frozenset(item.session_id for item in self._items.values() if item.active)
 
     def close(self) -> None:
         """卸载只能在真实工作排空后结束只读订阅，不抹去仍运行的状态。"""

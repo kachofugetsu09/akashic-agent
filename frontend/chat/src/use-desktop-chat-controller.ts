@@ -20,6 +20,7 @@ import {
   type PendingProjectRow,
 } from "./web-projects";
 import { useNavigationPins } from "./use-navigation-pins";
+import { useSessionActivity, type SessionHead } from "./use-session-activity";
 import { StreamProjectionStore } from "./stream-projection";
 import { canProjectWebStreamWithoutRoot, publishWebStreamChanges } from "./web-stream-projection";
 import { replyChatStatus, type ChatStatus } from "./web-chat-status";
@@ -971,6 +972,9 @@ export function useDesktopChatController() {
     setCopiedMessageId(messageId);
     window.setTimeout(() => setCopiedMessageId(""), 1200);
   }, []);
+  const sessionHeads = useMemo<SessionHead[]>(
+    () => sessions.map((session) => ({ key: session.key, headSeq: session.head_seq })), [sessions]);
+  const sessionStatuses = useSessionActivity(sessionHeads, activeSessionId, loadSessionsSafely);
   const sidebarSessions = useMemo(() => {
     const known = new Set(sessions.map((session) => session.key));
     // 补齐已解析置顶的标题/身份，不改变现有最近目录的自然顺序。
@@ -981,10 +985,11 @@ export function useDesktopChatController() {
       updatedAt: session.updated_at,
       createdAt: session.created_at,
       active: activeSessionId === session.key,
+      status: sessionStatuses.get(session.key),
       projectId: session.scope?.[PROJECT_DIMENSION] ?? "",
       projectScoped: Object.hasOwn(session.scope ?? {}, PROJECT_DIMENSION),
     }));
-  }, [activeSessionId, sessions, navigationPins.sessions]);
+  }, [activeSessionId, sessions, navigationPins.sessions, sessionStatuses]);
   // 新对话在首条消息进入目录前沿用发起时选定的项目。
   const activeRow = activeSessionId ? sessions.find((session) => session.key === activeSessionId)
     ?? navigationPins.sessions.find((session) => session.key === activeSessionId) : undefined;

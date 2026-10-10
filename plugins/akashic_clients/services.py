@@ -128,6 +128,8 @@ class MessageCatalogPort(Protocol):
 
 
 ReplyStatusPort = Callable[[str], AsyncGenerator[dict[str, object], None]]
+# 返回 None 表示回复插件未加载，无法判断哪些会话在运行。
+ActiveSessionsPort = Callable[[], Awaitable[frozenset[str] | None]]
 ModelCatalogReader = Callable[[], Awaitable[ModelCatalogSnapshot]]
 ModelSelectionReader = Callable[[Mapping[str, object]], Awaitable[ChatModelSelection]]
 
