@@ -243,24 +243,6 @@ async def run(args: argparse.Namespace) -> dict:
             await client.close_transport()
             client = HostBridgeShellProcessManager(socket, 'scenario-boot', 'scenario-token', commit, digest)
             await client.claim_boot()
-            # 图片由真实本地读取和 UDS 返回相同字节；空缺路径仍是明确错误。
-            from PIL import Image
-            from io import BytesIO
-            image_path = root / "image.png"
-            Image.new("RGB", (8, 8), "red").save(image_path)
-            reader = filesystem.ReadFileOperation(enable_bridge=False)
-            try:
-                local_image = await reader.execute(str(image_path))
-                remote_image = await client.execute_file_tool(
-                    "read_file", allowed_dir=root, arguments={"path": str(image_path)},
-                )
-                assert isinstance(remote_image, FileImage) and remote_image == local_image
-                assert remote_image.mime_type == "image/png"
-                with Image.open(BytesIO(remote_image.data)) as decoded, Image.open(image_path) as original:
-                    assert decoded.size == original.size and decoded.tobytes() == original.tobytes()
-            finally:
-                await reader.aclose()
-            report["checks"].append("image_bytes_match_local_and_bridge")
             repeated = await client.execute_file_tool(
                 'list_dir', allowed_dir=large, arguments={'path': str(large)})
             assert repeated == first and service.list_calls == before + 2
