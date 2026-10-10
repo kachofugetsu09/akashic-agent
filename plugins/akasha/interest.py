@@ -7,9 +7,7 @@ import numpy as np
 
 from agent.plugin_composition.messages import MessageCatalog, MessageEmbeddings
 from agent.plugin_contracts import Input, Output
-from agent.plugin_contracts.proactive import (
-    SEMANTIC_INTEREST as SEMANTIC_INTEREST,
-)
+from plugins.akasha.contract import SEMANTIC_INTEREST as SEMANTIC_INTEREST
 
 from .application.consumer import run_memory_job
 from .learning import Learning, LearningConfig

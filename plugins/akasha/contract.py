@@ -1,10 +1,8 @@
-"""Wake 读取和结算普通来源的合同；来源继续拥有持久状态。"""
+"""akasha 发布的只读查询与结算合同。"""
 
 from __future__ import annotations
 
-from collections.abc import Callable, Mapping, Sequence
-from contextlib import AbstractAsyncContextManager
-from datetime import datetime
+from collections.abc import Sequence
 from typing import Protocol
 
 from agent.plugin_composition import ServiceKey

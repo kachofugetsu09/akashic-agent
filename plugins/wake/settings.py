@@ -13,7 +13,7 @@ from agent.plugin_composition.runtime_catalog import RUNTIME_CATALOG
 from agent.plugin_contracts.configuration import Configuration
 from plugins.onboarding.contract import ONBOARDING, Step
 from agent.plugin_contracts.delivery import DELIVERY_SENDERS, sender_key
-from agent.plugin_contracts.proactive import SEMANTIC_INTEREST
+from plugins.akasha.contract import SEMANTIC_INTEREST
 from agent.plugin_contracts import Input
 
 SETTINGS = ServiceKey[Configuration]("wake.settings.v1")
