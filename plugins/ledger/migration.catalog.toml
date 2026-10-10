@@ -74,3 +74,14 @@ sha256 = "1e6c7a71d2d019f02b557eaec924ddf363c75374a69bcdcc3a430ade8bd77d44"
 [[files]]
 path = "helpers/__init__.py"
 sha256 = "542aa7176b1639448f88b991d823f24d7a0b54afa7643663ef9f362101c2d317"
+
+[[migrations]]
+id = "20261011_01_derived_storage"
+path = "20261011_01_derived_storage.py"
+depends = ["20261007_01_message_prefix_revision"]
+transactional = true
+sha256 = "a5e97a90633242a9c05284428b30c3e9bef9287d475ec18b96abe834bb05c790"
+
+[[files]]
+path = "20261011_01_derived_storage.py"
+sha256 = "a5e97a90633242a9c05284428b30c3e9bef9287d475ec18b96abe834bb05c790"

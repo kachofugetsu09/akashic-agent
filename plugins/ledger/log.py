@@ -155,14 +155,6 @@ _SCHEMA = {
     );""",
     "idx_message_attachments_artifact": """CREATE INDEX IF NOT EXISTS idx_message_attachments_artifact
         ON message_attachments(artifact_id, message_id, ordinal);""",
-    "message_embeddings": """CREATE TABLE IF NOT EXISTS message_embeddings (
-        message_id TEXT NOT NULL, content_hash TEXT NOT NULL,
-        model TEXT NOT NULL, embedding BLOB NOT NULL, dim INTEGER NOT NULL,
-        created_at TEXT NOT NULL, updated_at TEXT NOT NULL,
-        PRIMARY KEY (message_id, model)
-    );""",
-    "ix_message_embeddings_hash": """CREATE INDEX IF NOT EXISTS ix_message_embeddings_hash
-        ON message_embeddings (content_hash, model);""",
     "owner_records": """CREATE TABLE IF NOT EXISTS owner_records (
         owner TEXT NOT NULL, key TEXT NOT NULL, version INTEGER NOT NULL,
         value TEXT NOT NULL, PRIMARY KEY(owner, key)
@@ -450,7 +442,7 @@ class MessageLog:
                 for name, statement in _SCHEMA.items():
                     # 新库由 owner 初始化；已有库的新持久能力只能由 yoyo 接纳。
                     if not fresh and (name in _MESSAGE_PREFIX_SCHEMA or name in {
-                        "owner_records", "message_embeddings", "ix_message_embeddings_hash", "message_source_seq", "message_source_kind_seq",
+                        "owner_records", "message_source_seq", "message_source_kind_seq",
                         "attachments", "message_attachments", "idx_message_attachments_artifact",
                     }):
                         continue

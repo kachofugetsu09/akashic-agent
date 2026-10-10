@@ -68,7 +68,7 @@ async def memory_fixture(path: Path) -> AsyncIterator[tuple[MessageMemory, Messa
     """使用真实消息、固定向量、provider scope、学习器和磁盘 writer。"""
     log = MessageLog(path / "sessions.db")
     log.ensure_session("conversation", SessionAttributes())
-    embeddings = MessageEmbeddings(log)
+    embeddings = MessageEmbeddings(log, log._path.with_name("sessions-derived.db"))
     root = CompositionRoot("akasha-execution")
     learning = Learning(TurnProjection(), owner="akasha", post_commit_effect=legacy_post_commit_effect)
     bindings = Bindings(log, root.context)
@@ -97,6 +97,7 @@ async def memory_fixture(path: Path) -> AsyncIterator[tuple[MessageMemory, Messa
     finally:
         await memory.close()
         await root.dispose()
+        embeddings.close()
         log.close()
 
 

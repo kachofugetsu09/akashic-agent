@@ -13,7 +13,7 @@ from plugins.models.contract import (
 from plugins.content.plugin import check_text
 from plugins.context.api import Materials, Reminder, material_data
 from plugins.models.projection import check_facts
-from plugins.ledger.embedding_store import MessageEmbeddingStore
+from plugins.ledger.embedding_store import MessageEmbeddings, EmbeddingRecords
 from plugins.ledger.log import MessageLog
 from plugins.ledger.contract import ContentPart, Input, Output
 from tests.support.message_react import runtime
@@ -80,15 +80,11 @@ def _text(message) -> str:
     return part.value
 
 
-def _vector_snapshot(store: MessageEmbeddingStore, messages) -> dict[str, list[float]]:
+def _vector_snapshot(store: EmbeddingRecords, messages) -> dict[str, tuple[float, ...]]:
     """通过 embedding owner 读取指定历史消息的向量。"""
-    values: dict[str, list[float]] = {}
+    values: dict[str, tuple[float, ...]] = {}
     for message in messages:
-        vector = store.get(
-            message_id=message.message_id,
-            content=_text(message),
-            model="gate-model",
-        )
+        vector = store.read(message, model="gate-model", dimension=2)
         assert vector is not None
         values[message.message_id] = vector
     return values
@@ -102,7 +98,7 @@ def _message_rows(messages) -> tuple[tuple[object, ...], ...]:
     )
 
 
-def _embedding_rows(vectors: dict[str, list[float]]) -> tuple[tuple[object, ...], ...]:
+def _embedding_rows(vectors: dict[str, tuple[float, ...]]) -> tuple[tuple[object, ...], ...]:
     return tuple((message_id, tuple(vector)) for message_id, vector in sorted(vectors.items()))
 
 
@@ -123,11 +119,11 @@ async def test_real_message_reply_preserves_history_embeddings_and_restart_seq(t
     async with with_runtime as (conversation, log, _models, _run):
         before = _seed_history(log)
         before_metadata = log.reader("s").metadata()
-        embeddings = MessageEmbeddingStore(db_path)
+        embedding_store = MessageEmbeddings(log, tmp_path / "sessions-derived.db")
+        embeddings = embedding_store.bind(_text)
         for message in before:
-            embeddings.upsert(
-                message_id=message.message_id,
-                content=_text(message),
+            embeddings.save(
+                message,
                 model="gate-model",
                 embedding=[float(message.seq), 1.0],
             )
@@ -163,7 +159,7 @@ async def test_real_message_reply_preserves_history_embeddings_and_restart_seq(t
             _embedding_rows(after_vectors),
             state_name="message_embeddings",
         )
-        embeddings.close()
+        embedding_store.close()
         highwater = after[-1].seq
 
     reopened = MessageLog(db_path)

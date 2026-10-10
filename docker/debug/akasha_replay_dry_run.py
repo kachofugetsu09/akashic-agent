@@ -82,10 +82,11 @@ async def run(arguments: argparse.Namespace) -> dict[str, object]:
     sessions_db = arguments.workspace / "sessions.db"
     if not sessions_db.is_file():
         raise SystemExit(f"副本缺少 sessions.db: {sessions_db}")
-    memory_model, dimension = _embedding_space(sessions_db)
+    memory_model, dimension = _embedding_space(sessions_db.with_name("sessions-derived.db"))
     sources = tuple(arguments.sources) if arguments.sources else DEFAULT_SOURCES
     rule = LearningConfig(embedding_model=memory_model, dimension=dimension, sources=sources)
     log = MessageLog(sessions_db)
+    embeddings = MessageEmbeddings(log, sessions_db.with_name("sessions-derived.db"))
     try:
         learning = Learning(
             TurnProjection(),
@@ -99,7 +100,7 @@ async def run(arguments: argparse.Namespace) -> dict[str, object]:
 
         report = await rebuild_from_catalog(
             catalog=MessageCatalog(log),
-            embeddings=MessageEmbeddings(log),
+            embeddings=embeddings,
             bindings=bindings,
             config=MemoryConfig(),
             learning_binding=_dry_run_identity(rule),
@@ -109,6 +110,7 @@ async def run(arguments: argparse.Namespace) -> dict[str, object]:
             skip_missing_embeddings=True,
         )
     finally:
+        embeddings.close()
         log.close()
     payload = asdict(report)
     payload["embedding_model"] = memory_model
