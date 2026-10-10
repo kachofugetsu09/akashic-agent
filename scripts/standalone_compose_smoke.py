@@ -15,7 +15,7 @@ import uuid
 
 ROOT = Path(__file__).resolve().parents[1]
 SNAPSHOT = """
-import hashlib, json, os
+import hashlib, json, os, subprocess
 from pathlib import Path
 
 assert os.getuid() != 0, '运行进程必须使用普通用户'
@@ -30,6 +30,12 @@ for plugin in report['plugins']:
     json.loads((source / '.akashic-source.json').read_text())
     assert not os.access(source, os.W_OK), source
 state = Path('/data')
+status = json.loads(subprocess.check_output([
+    'python', '/opt/core/main.py', 'plugin-status',
+    '--config', '/data/config.toml', '--workspace', '/data/workspace',
+], text=True))
+assert any(plugin['plugin_id'] == 'gateway@release' and plugin['state'] == 'active'
+           for plugin in status['plugins']), '本地控制入口没有加载 Gateway'
 paths = ('startup.json', 'config.toml', 'plugin-home/manifest.toml',
          'workspace/runtime/distribution-install.json',
          'workspace/runtime/plugin-stable.json')

@@ -473,12 +473,11 @@ def build(repository: Path, revision: str, output: Path) -> dict[str, object]:
         asset_root, generated_plugins_root, web = _build_web_assets(
             repository, commit, Path(directory)
         )
-        runtime_metadata = {**runtime_dependencies, "web": web}
         core = _append_bytes(
             core,
             "runtime-dependencies.json",
             (
-                json.dumps(runtime_metadata, ensure_ascii=False, indent=2, sort_keys=True)
+                json.dumps(runtime_dependencies, ensure_ascii=False, indent=2, sort_keys=True)
                 + "\n"
             ).encode(),
             mtime=commit_epoch,
@@ -511,8 +510,8 @@ def build(repository: Path, revision: str, output: Path) -> dict[str, object]:
             "sha256": hashlib.sha256(core).hexdigest(),
             "source_paths": core_paths,
             "config_example": "config.example.toml" in core_paths,
-            "web": web,
         },
+        "web": web,
         "runtime_dependencies": runtime_dependencies,
         "plugins": rows,
     }
