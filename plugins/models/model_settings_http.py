@@ -15,7 +15,7 @@ from pydantic import (
     model_validator,
 )
 
-from agent.plugin_composition.model_settings_http import ModelControlUnavailable
+from agent.plugin_composition.models import ModelControlUnavailable
 from agent.plugin_composition.models import (
     MODEL_CATALOG,
     MODEL_CALL_STATS,
@@ -60,7 +60,7 @@ from .selection import MODEL_SELECTION
 
 # 模型失败值由标准异常承载；未知程序错误由映射入口原样抛出。
 # Only discover/command accept an HTTPException as an RPC error envelope.
-_MODEL_ERRORS = (ModelControlUnavailable, RuntimeError, TimeoutError, ValueError)
+_MODEL_ERRORS = (RuntimeError, TimeoutError, ValueError)
 _HTTP_MODEL_ERRORS = (HTTPException, *_MODEL_ERRORS)
 
 
@@ -350,8 +350,12 @@ def _http_error(error: Exception, *, operation: str) -> HTTPException:
 
     if isinstance(error, HTTPException):
         return error
-    if operation == "call_stats" and isinstance(error, KeyError):
-        return HTTPException(status_code=404, detail="模型调用不存在")
+    if operation in {"call_stats", "catalog"}:
+        if operation == "call_stats" and isinstance(error, KeyError):
+            return HTTPException(status_code=404, detail="模型调用不存在")
+        if ModelError.matches(error, ModelControlUnavailable):
+            return HTTPException(status_code=503, detail=str(error))
+        raise error
     if ModelError.matches(error, RevisionConflictError):
         return HTTPException(status_code=409, detail=str(error))
     if ModelError.matches(error, AuthenticationError):
@@ -360,7 +364,7 @@ def _http_error(error: Exception, *, operation: str) -> HTTPException:
         return HTTPException(status_code=429, detail=str(error))
     if ModelError.matches(error, QuotaError):
         return HTTPException(status_code=402, detail=str(error))
-    if (ModelError.matches(error, DriverUnavailableError) or isinstance(error, ModelControlUnavailable)):
+    if ModelError.matches(error, DriverUnavailableError, ModelControlUnavailable):
         return HTTPException(status_code=503, detail=str(error))
     if ModelError.matches(error, ModelUnavailableError):
         return HTTPException(status_code=409, detail=str(error))
@@ -417,14 +421,14 @@ def create_model_settings_router(
     async def call_stats(call_id: str) -> dict[str, object]:
         try:
             return await _call_stats_body(control, call_id)
-        except (KeyError, ModelControlUnavailable) as error:
+        except (KeyError, RuntimeError) as error:
             raise _http_error(error, operation="call_stats") from error
 
     @router.get("/catalog")
     async def catalog() -> dict[str, object]:
         try:
             return await _catalog_body(control)
-        except ModelControlUnavailable as error:
+        except RuntimeError as error:
             raise _http_error(error, operation="catalog") from error
 
     @router.post("/discover")
@@ -485,11 +489,11 @@ def rpc_methods(control: ModelControl) -> dict[str, RpcMethod]:
     return {
         "models/call_stats": _rpc_method(
             CallStatsParams, lambda params: _call_stats_body(control, params.call_id),
-            errors=(KeyError, ModelControlUnavailable), operation="call_stats",
+            errors=(KeyError, RuntimeError), operation="call_stats",
         ),
         "models/catalog": _rpc_method(
             EmptyParams, lambda params: _catalog_body(control),
-            errors=(ModelControlUnavailable,), operation="catalog",
+            errors=(RuntimeError,), operation="catalog",
         ),
         "models/discover": _rpc_method(
             ConnectionInput, lambda params: _discover_body(control, params),

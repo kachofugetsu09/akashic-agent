@@ -151,7 +151,7 @@ async def run(path):
         models.block = False
 
         # 3. 预期故障和空输出使用有界首句；不把内部错误伪装成功。
-        models.failure = TransportError("本地模型连接失败")
+        models.failure = TransportError("本地模型连接失败").exception()
         fallback = append("fallback", "   首句  " * 40)
         await drain()
         assert fallback.title == (" ".join(("   首句  " * 40).split())[:24]).rstrip()

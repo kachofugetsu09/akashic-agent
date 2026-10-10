@@ -442,15 +442,15 @@ class ModelsStore:
             if any(json.loads(row["binding_json"])["binding_id"] != descriptor.binding_id for row in rows):
                 raise ValueError("同一模型请求 key 的 binding 不一致")
             if any(row["state"] != "error" for row in rows):
-                raise ModelUnavailableError("同一请求已有成功或正在结算的调用")
+                raise ModelUnavailableError("同一请求已有成功或正在结算的调用").exception()
             if max_attempts is not None and len(rows) >= max_attempts:
-                raise ModelUnavailableError("模型调用重试预算耗尽")
+                raise ModelUnavailableError("模型调用重试预算耗尽").exception()
             if rows:
                 next_at = rows[-1]["next_attempt_at"]
                 if next_at is None:
-                    raise ModelUnavailableError("该请求 key 已终结失败，同 key 不得重新付费")
+                    raise ModelUnavailableError("该请求 key 已终结失败，同 key 不得重新付费").exception()
                 if next_at > time.time():
-                    raise ModelUnavailableError("同一请求仍在耐久退避，请稍后显式重试")
+                    raise ModelUnavailableError("同一请求仍在耐久退避，请稍后显式重试").exception()
             # 2. 只有此次提交仍获准，才创建一次真实外部调用的记录。
             attempt = max((row["attempt"] for row in rows), default=-1) + 1
             _ = connection.execute(
@@ -1115,7 +1115,7 @@ class ModelsStore:
                 raise RevisionConflictError(
                     "model registry revision changed: "
                     f"expected {expected_revision}, actual {current}"
-                )
+                ).exception()
             changed = write(connection)
             if changed is False:
                 connection.rollback()

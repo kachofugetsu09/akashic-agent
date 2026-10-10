@@ -19,7 +19,6 @@ from agent.plugin_composition.messages import (
     SessionDeleteResult,
     SessionTitleResult,
 )
-from agent.plugin_composition.model_settings_http import ModelControlUnavailable
 from agent.plugin_composition.models import (
     ChatModelSelection,
     ModelCatalogSnapshot,
@@ -214,7 +213,7 @@ __all__ = [
     "InvalidPage", "MessageCatalogPort", "MessageConflict", "MessageDisplayReader",
     "MessagePagePort", "MessageReaderPort", "SessionAdminPort",
     "SessionEntryPort", "SessionPagePort", "Message",
-    "ModelCatalogReader", "ModelCatalogSnapshot", "ModelControlUnavailable",
+    "ModelCatalogReader", "ModelCatalogSnapshot",
     "ModelSelectionReader", "RuntimeInspectionError", "RuntimeInspectionService",
     "default_chat_model_id", "project_chat_runtimes",
 ]
