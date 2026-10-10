@@ -28,7 +28,7 @@ name = "ledger"
 version = "1.0.0"
 desc = "消息、同库事务、附件与入站交接的持久 owner"
 inject = ()
-workspace_files = ("sessions.db",)
+workspace_files = ("sessions.db", "sessions-derived.db")
 workspace_roots = ("uploads",)
 
 
@@ -39,6 +39,8 @@ async def apply(ctx: Context) -> None:
     with ExitStack() as cleanup:
         log = MessageLog(path)
         cleanup.callback(log.close)
+        embeddings = MessageEmbeddings(log, ctx.runtime.workspace / "sessions-derived.db")
+        cleanup.callback(embeddings.close)
         metadata = ArtifactStore(path)
         cleanup.callback(metadata.close)
         admissions = SessionAdmissions(path)
@@ -80,7 +82,7 @@ async def apply(ctx: Context) -> None:
         custody.recover_durable_inbounds,
     ))
     await ctx.provide(MESSAGE_CATALOG, MessageCatalog(log))
-    await ctx.provide(MESSAGE_EMBEDDINGS, MessageEmbeddings(log))
+    await ctx.provide(MESSAGE_EMBEDDINGS, embeddings)
     await ctx.provide(MESSAGE_WRITERS, MessageWriters(log))
     await ctx.provide(OWNER_STATE, OwnerState(log))
     await ctx.provide(SESSION_ADMIN, SessionAdmin(log))

@@ -11,6 +11,14 @@
 - 目标读者：维护者、coding agent、迁移与备份实现者、评审者
 - 关联条款：STA-001～STA-003、CTX-001、SES-001～SES-006、MEM-001～MEM-009、PLG-001～PLG-013、WSP-001～WSP-004、SCH-001～SCH-002、PRO-001～PRO-002、BAK-001
 
+## 2026-10-11：Ledger 派生向量（存储层待评审）
+
+[0106](../decisions/0106-derived-vectors-use-separate-storage.md) 分离 `sessions-derived.db`。
+Ledger 正常增加固定消息/模型向量，同键不同值拒绝覆盖；迁移只复制旧向量及导入标记，
+不减少源表。卸载不删派生文件。只有显式清除派生库后才按缺失处理，重新计算不得修改
+源消息、owner 或原库向量。派生库迁移前后完整行与源库字节比较是本层恢复证据；
+Akasha 丢库恢复还在后续层，不能把存储可重建性直接当作应用召回已通过。
+
 ## 2026-10-11：Ledger 持久化 owner 移交（待评审）
 
 [0105](../decisions/0105-ledger-owns-business-storage.md) 将业务存储生命周期移入 Ledger 插件。

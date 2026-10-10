@@ -82,7 +82,7 @@ async def akasha_participation(root: Path, deleted_session: str) -> None:
     from plugins.ledger.embedding_store import MessageEmbeddings
 
     log = MessageLog(root / "sessions.db")
-    embeddings = MessageEmbeddings(log)
+    embeddings = MessageEmbeddings(log, log._path.with_name("sessions-derived.db"))
     learning = Learning(TurnProjection(), owner="akasha", post_commit_effect=legacy_post_commit_effect)
     rule = LearningConfig(embedding_model="fixed", dimension=3, sources=("conversation",))
     bodies = (("user", Input, lambda s: Input((ContentPart("text", f"episode of {s}"),))),
@@ -128,6 +128,7 @@ async def akasha_participation(root: Path, deleted_session: str) -> None:
     check(report.turns == 2 and report.sessions == 2 and report.embedded_messages == 0,
           "全量重建重放仍包含软删会话且复用已存向量")
     await root_cm.dispose()
+    embeddings.close()
     log.close()
 
 

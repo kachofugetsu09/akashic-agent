@@ -64,6 +64,7 @@
 Session 与 Models 提交的故障保证见 [0099 WAL NORMAL](decisions/0099-ledger-commits-use-wal-normal.md)；工具与送达恢复仍沿原 owner 协议。
 默认消息工具调用与 ReAct 重启恢复按 [0100](decisions/0100-message-tool-calls-recover-at-turn-granularity.md)：未结工具报告未知，模型使用当前材料发新请求。
 
+派生向量拆分见 [0106](decisions/0106-derived-vectors-use-separate-storage.md)。
 Ledger 的存储、交接和历史迁移归属见 [0105](decisions/0105-ledger-owns-business-storage.md)。
 
 Issue 1179 的分阶段审查与剩余范围见 [边界①审查入口](design/plugin-core-boundary1-review.md)。

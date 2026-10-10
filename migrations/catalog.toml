@@ -29,3 +29,9 @@ id = "20261007_01_message_prefix_revision"
 bundle = "ledger"
 depends = ["20261004_02_message_body_kind_index"]
 transactional = true
+
+[[migrations]]
+id = "20261011_01_derived_storage"
+bundle = "ledger"
+depends = ["20261007_01_message_prefix_revision"]
+transactional = true
