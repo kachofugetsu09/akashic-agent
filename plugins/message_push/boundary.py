@@ -13,7 +13,7 @@ from typing import Literal, Protocol
 from agent.plugin_contracts import (
     ContentPart,
 )
-from agent.plugin_contracts.content import (
+from plugins.content.contract import (
     CONTENT as CONTENT,
     ContentView as ContentView,
 )
@@ -32,7 +32,7 @@ from agent.plugin_contracts.tools import (
     ToolCatalog as ToolCatalog,
     ToolRef as ToolRef,
 )
-from agent.plugin_contracts.turns import (
+from plugins.turn_projection.contract import (
     TURN_PROJECTION as TURN_PROJECTION,
     Turn as ProjectedTurn,  # noqa: F401 - 显式再导出给本插件消费者。
     TurnProjection as TurnProjection,

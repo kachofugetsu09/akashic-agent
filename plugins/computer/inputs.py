@@ -3,7 +3,7 @@ from agent.plugin_contracts.tools import (
     CallSource as CallSource,
     ToolCatalog as ToolCatalog,
 )
-from agent.plugin_contracts.turns import (
+from plugins.turn_projection.contract import (
     TURN_PROJECTION as TURN_PROJECTION,
     Turn as Turn,
     TurnProjection as TurnProjection,

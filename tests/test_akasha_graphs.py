@@ -11,7 +11,7 @@ import pytest
 from agent.plugin_composition import ServiceKey
 from agent.plugin_composition.bindings import BINDINGS
 from agent.plugin_contracts.tools import ALL_TOOLS, TOOLS, CallSource
-from agent.plugin_contracts.context import MATERIALS_V4 as MATERIALS
+from plugins.context.contract import MATERIALS_V4 as MATERIALS
 from plugins.akasha.infrastructure.persistence import load_consumption
 from plugins.akasha.scopes import ScopePolicies, graph_key, graph_path
 from plugins.content.plugin import check_text

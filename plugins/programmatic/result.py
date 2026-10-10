@@ -4,7 +4,7 @@ from collections.abc import Sequence
 
 from agent.plugin_composition.messages import MessageReader
 from agent.plugin_contracts import Control, Input, Message
-from agent.plugin_contracts.turns import (
+from plugins.turn_projection.contract import (
     TURN_PROJECTION as TURN_PROJECTION,
     Turn as Turn,
     TurnProjection as TurnProjection,

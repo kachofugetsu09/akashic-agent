@@ -10,8 +10,8 @@ from agent.plugin_composition import RuntimeScope, ServiceKey
 from agent.plugin_composition.messages import MessageReader, MessageWriter, OwnerStore
 from agent.plugin_composition.models import BoundChatModel, StreamCallback
 from agent.plugin_contracts import Message
-from agent.plugin_contracts.content import ContentView
-from agent.plugin_contracts.context import ContextBuilder, SummaryReducer
+from plugins.content.contract import ContentView
+from plugins.context.contract import ContextBuilder, SummaryReducer
 from agent.plugin_contracts.models import MessageProjection
 from agent.plugin_contracts.tools import ToolMenu, StartCheck
 

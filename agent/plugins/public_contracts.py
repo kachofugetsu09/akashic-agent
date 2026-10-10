@@ -63,9 +63,7 @@ class PublicContracts(importlib.abc.MetaPathFinder):
         if fullname == "plugins" or fullname in self._files:
             spec = importlib.machinery.ModuleSpec(fullname, None, is_package=True)
             if fullname == "plugins":
-                found = importlib.machinery.PathFinder.find_spec(fullname)
-                paths = set(() if found is None else found.submodule_search_locations or ())
-                paths.update(str(item.path.parent.parent) for item in self._files.values())
+                paths = {str(item.path.parent.parent) for item in self._files.values()}
                 spec.submodule_search_locations = sorted(paths)
             else:
                 spec.submodule_search_locations = [str(self._files[fullname].path.parent)]

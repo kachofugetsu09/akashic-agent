@@ -6,7 +6,7 @@ from typing import Literal
 
 from agent.plugin_composition import Context
 from agent.plugin_contracts import CallRef, Input, Message, Output, ToolCall, ToolResult
-from agent.plugin_contracts.turns import (
+from plugins.turn_projection.contract import (
     TURN_PROJECTION as TURN_PROJECTION,
     Turn as Turn,
 )

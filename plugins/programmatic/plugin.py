@@ -29,7 +29,7 @@ from agent.plugin_contracts import (
     Output,
 )
 from agent.plugin_contracts.models import MODEL_SELECTION
-from agent.plugin_contracts.content import (
+from plugins.content.contract import (
     CONTENT as CONTENT,
 )
 from agent.plugin_contracts.delivery import (

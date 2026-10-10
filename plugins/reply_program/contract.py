@@ -13,7 +13,7 @@ from agent.plugin_composition.models import StreamCallback
 from agent.plugin_composition.tasks import Task
 from agent.plugin_contracts import Message
 from agent.plugin_contracts.models import ContentRenderer
-from agent.plugin_contracts.context import MaterialKind
+from plugins.context.contract import MaterialKind
 from agent.plugin_contracts.tools import ToolPresentation, ToolView
 from agent.plugin_contracts.sources import SourceGuard
 

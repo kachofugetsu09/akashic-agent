@@ -32,7 +32,7 @@ async def run(base: Path, listen: str) -> dict[str, bool]:
     from bootstrap.app import AppRuntime
     from bootstrap.init_workspace import init_workspace
     from session.message import ContentPart, Input, Output
-    from agent.plugin_contracts.content import CONTENT
+    from plugins.content.contract import CONTENT
 
     base.mkdir()
     home, workspace, config = base / "home", base / "workspace", base / "config.toml"

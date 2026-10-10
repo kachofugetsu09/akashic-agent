@@ -2,6 +2,6 @@
 
 from __future__ import annotations
 
-from agent.plugin_contracts.context import (
+from plugins.context.contract import (
     MATERIALS_V4 as MATERIALS,
 )

@@ -21,9 +21,9 @@ from plugins.compaction.message_summary import HEADINGS
 from plugins.content.plugin import check_text
 from plugins.context.api import check_notice
 from plugins.compaction.contract import COMPACTION_READER, COMPACTION_SUMMARIES
-from agent.plugin_contracts.content import CONTENT
-from agent.plugin_contracts.context import CONTEXT
-from agent.plugin_contracts.turns import TURN_PROJECTION
+from plugins.content.contract import CONTENT
+from plugins.context.contract import CONTEXT
+from plugins.turn_projection.contract import TURN_PROJECTION
 from plugins.markdown_memory.plugin import _unapplied_groups
 from plugins.markdown_memory.store import MarkdownProfileStore
 from agent.plugin_contracts.tools import ALL_TOOLS, TOOLS

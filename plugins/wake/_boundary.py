@@ -13,7 +13,7 @@ from agent.plugin_composition import EmitEventKey, ServiceKey
 from agent.plugin_contracts import (
     ContentPart,
 )
-from agent.plugin_contracts.content import (
+from plugins.content.contract import (
     CONTENT as CONTENT,
 )
 from agent.plugin_contracts.delivery import (

@@ -48,7 +48,7 @@ from agent.plugin_composition.models import (
 )
 from plugins.ui.contract import UI
 from agent.plugin_contracts import Message
-from agent.plugin_contracts.context import (
+from plugins.context.contract import (
     MATERIALS_V4 as MATERIALS,
 )
 

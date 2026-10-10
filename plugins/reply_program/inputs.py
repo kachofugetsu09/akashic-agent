@@ -8,12 +8,12 @@ from agent.plugin_composition.models import (
     StreamCallback,
 )
 from agent.plugin_contracts import ContentPart
-from agent.plugin_contracts.content import (
+from plugins.content.contract import (
     CONTENT as CONTENT,
     Content as Content,
     ContentView as ContentView,
 )
-from agent.plugin_contracts.context import (
+from plugins.context.contract import (
     CONTEXT as CONTEXT,
     MATERIALS_V4 as MATERIALS,
     ContextBuilder as ContextBuilder,
@@ -46,7 +46,7 @@ from agent.plugin_contracts.tools import (
     OrderedToolProgram as ToolProgram,
     ToolView as ToolView,
 )
-from agent.plugin_contracts.turns import (
+from plugins.turn_projection.contract import (
     TURN_PROJECTION as TURN_PROJECTION,
     TurnProjection as TurnProjection,
 )

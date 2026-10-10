@@ -5,7 +5,7 @@ from dataclasses import dataclass
 from typing import Literal
 
 from agent.plugin_contracts import ContentPart
-from agent.plugin_contracts.content import (
+from plugins.content.contract import (
     CONTENT as CONTENT,
 )
 from agent.plugin_contracts.delivery import (

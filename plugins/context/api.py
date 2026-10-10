@@ -16,7 +16,7 @@ from agent.plugin_contracts import (
     ToolCall,
     ToolResult,
 )
-from agent.plugin_contracts.context import (
+from plugins.context.contract import (
     SummaryReducer as SummaryReducer,
 )
 from agent.plugin_contracts.models import ContextModel as ContextModel

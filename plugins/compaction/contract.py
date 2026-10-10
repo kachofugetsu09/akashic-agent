@@ -7,7 +7,7 @@ from typing import Literal, Protocol
 
 from agent.plugin_composition import ServiceKey
 from agent.plugin_contracts import Message
-from agent.plugin_contracts.turns import TurnProjection
+from plugins.turn_projection.contract import TurnProjection
 
 
 class StoredSummary(Protocol):

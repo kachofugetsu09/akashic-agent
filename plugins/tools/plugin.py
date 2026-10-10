@@ -31,7 +31,7 @@ from agent.plugin_contracts import (
     ToolCall,
     freeze_json,
 )
-from agent.plugin_contracts.content import (
+from plugins.content.contract import (
     CONTENT as CONTENT,
 )
 from agent.plugin_contracts.tools import (
