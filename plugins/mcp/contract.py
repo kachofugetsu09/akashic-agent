@@ -4,7 +4,7 @@ from dataclasses import dataclass, field
 from collections.abc import Awaitable, Callable, Mapping
 from contextlib import AbstractAsyncContextManager
 from agent.plugin_composition.workload_slots import WorkloadHandle
-from agent.plugin_composition.process_slots import ManagedProcessHandle
+from plugins.managed_processes.contract import ManagedProcessHandle
 from typing import Any, Literal, Protocol
 from agent.plugin_composition.context import Context
 from agent.plugin_composition.model import ServiceKey

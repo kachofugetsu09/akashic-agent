@@ -7,7 +7,7 @@ from contextlib import asynccontextmanager
 from agent.plugin_composition import Context
 from agent.plugin_composition.model import FiberState
 from agent.plugin_composition.execution import EXECUTION
-from agent.plugin_composition.process_slots import MANAGED_PROCESSES, ManagedProcessDefinition
+from plugins.managed_processes.contract import MANAGED_PROCESSES, ManagedProcessDefinition
 from .definitions import _normalize_definition
 from .host import ManagedProcessGenerationHost
 
@@ -30,8 +30,8 @@ class ManagedProcessHandle:
         self._drained.set()
         self._host = ManagedProcessGenerationHost(
             grant,
-            on_health=lambda _id, _name, ready, reason: health.recover() if ready else health.degrade(reason),
-            on_incident=lambda _id, _name, kind, reason: ctx.report_incident(kind, reason))
+            on_health=lambda generation_id, process_name, healthy, reason: health.recover() if healthy else health.degrade(reason),
+            on_incident=lambda generation_id, process_name, kind, message: ctx.report_incident(kind, message))
 
     async def start(self):
         async with self._lock:

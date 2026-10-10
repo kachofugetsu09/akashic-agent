@@ -73,10 +73,6 @@ note = "按插件 owner 打开短凭据租约；来源可替换"
 role = "core"
 note = "宿主统一保留的进程集合与清理核对"
 
-[capabilities."core.managed_processes"]
-role = "core"
-note = "受 Core 监督的进程声明注册表"
-
 [capabilities."core.workloads"]
 role = "core"
 note = "窄 Controller 管理的容器 workload 注册表"

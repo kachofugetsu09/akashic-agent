@@ -31,4 +31,4 @@ class ManagedProcesses(Protocol):
     async def register(self, ctx: Context, definition: ManagedProcessDefinition) -> ManagedProcessHandle: ...
 
 
-MANAGED_PROCESSES = ServiceKey[ManagedProcesses]("core.managed_processes")
+MANAGED_PROCESSES = ServiceKey[ManagedProcesses]("processes.managed.v1")

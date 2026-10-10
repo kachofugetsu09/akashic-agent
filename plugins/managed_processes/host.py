@@ -17,7 +17,7 @@ from typing import Any, Literal, Protocol, cast
 from urllib.error import HTTPError, URLError
 from urllib.request import HTTPRedirectHandler, ProxyHandler, Request, build_opener
 
-from .definitions import ManagedProcessDefinition
+from plugins.managed_processes.contract import ManagedProcessDefinition
 from agent.plugin_composition.execution import ChildProcess, ProcessSpawner
 
 logger = logging.getLogger(__name__)
