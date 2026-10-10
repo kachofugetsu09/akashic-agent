@@ -12,7 +12,7 @@ from agent.plugin_composition.bindings import Bindings
 from agent.plugin_composition.context import Context
 from agent.plugin_composition.diagnostics import plugin_entrypoint
 from agent.plugin_composition.model import CompositionError
-from agent.plugin_composition.commands import (
+from plugins.commands.contract import (
     COMMANDS, CommandDefinition, CommandDescriptor, CommandExecution,
     CommandInvocation, CommandRecoveryRequired, CommandResult,
 )

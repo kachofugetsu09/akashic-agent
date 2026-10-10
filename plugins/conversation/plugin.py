@@ -7,7 +7,7 @@ from agent.plugin_composition import Context
 from agent.plugin_composition.artifacts import ARTIFACT_READ
 from agent.plugin_composition.bindings import BINDINGS
 from agent.plugin_composition.channels import ChannelInboundMessage
-from agent.plugin_composition.commands import COMMANDS
+from plugins.commands.contract import COMMANDS
 from agent.plugin_composition.messages import (
     MESSAGE_CATALOG,
     MESSAGE_WRITERS,

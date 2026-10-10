@@ -4,7 +4,7 @@ from __future__ import annotations
 from collections.abc import Mapping, Sequence
 
 from agent.plugin_composition import Context
-from agent.plugin_composition.commands import (
+from plugins.commands.contract import (
     COMMANDS,
     CommandDefinition,
     CommandInvocation,

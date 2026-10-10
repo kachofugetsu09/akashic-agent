@@ -1,9 +1,25 @@
 from __future__ import annotations
+import asyncio
+from concurrent.futures import ProcessPoolExecutor
+from functools import partial
+from multiprocessing import get_context
 import shutil
 import subprocess
 from pathlib import Path
 import pytest
-from docker.debug.plugin_external_acceptance import _exercise_business_composition
+from docker.debug.plugin_external_acceptance import _exercise_business_composition as _run_business_composition
+
+
+def _business_composition(arguments):
+    return asyncio.run(_run_business_composition(**arguments))
+
+
+async def _exercise_business_composition(**arguments):
+    """源码隔离会清空模块缓存，必须在独立进程执行真实安装验收。"""
+    with ProcessPoolExecutor(max_workers=1, mp_context=get_context("spawn")) as process:
+        return await asyncio.get_running_loop().run_in_executor(
+            process, partial(_business_composition, arguments),
+        )
 
 def _git_commit(source: Path, message: str = "fixture") -> None:
     subprocess.run(["git", "init", "--quiet", str(source)], check=True)

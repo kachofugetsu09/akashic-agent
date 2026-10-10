@@ -69,7 +69,6 @@ PLUGIN_ALLOWED_MODULES = frozenset({
     "agent.plugin_composition.channel_io",
     "agent.plugin_composition.channels",
     "agent.plugin_composition.claims",
-    "agent.plugin_composition.commands",
     "agent.plugin_composition.config_input",
     "agent.plugin_composition.context",
     "agent.plugin_composition.control_frames",

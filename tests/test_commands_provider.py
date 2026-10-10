@@ -4,7 +4,7 @@ from pathlib import Path
 import shutil
 import pytest
 from agent.plugin_composition.bindings import BINDINGS
-from agent.plugin_composition.commands import COMMANDS, CommandResult
+from plugins.commands.contract import COMMANDS, CommandResult
 from agent.plugins.manager import PluginManager
 from session.log import MessageLog
 from tests.fixtures.plugin_workspace import initialize_plugin_workspace
@@ -52,7 +52,7 @@ async def apply(ctx):
     owner.mkdir()
     _write_source(owner / "plugin.py", '''
 from agent.plugin_composition import ServiceKey
-from agent.plugin_composition.commands import COMMANDS, CommandDefinition, CommandResult
+from plugins.commands.contract import COMMANDS, CommandDefinition, CommandResult
 api_version = 3
 name = "command_owner"
 version = "1.0.0"

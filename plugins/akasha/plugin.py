@@ -27,7 +27,7 @@ from agent.plugin_composition import (
     ServiceKey,
 )
 from agent.plugin_composition.bindings import BINDINGS
-from agent.plugin_composition.commands import (
+from plugins.commands.contract import (
     COMMANDS,
     CommandDefinition,
     CommandInvocation,

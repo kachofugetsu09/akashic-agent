@@ -12,16 +12,6 @@ from agent.control.scoped_turn import TurnAcceptedReceipt
 from agent.plugin_contracts.turn_effects import PostCommitEffect
 from agent.plugin_composition.dashboard import DashboardContext
 from agent.plugin_composition.requests import RequestContext
-from agent.plugin_composition.commands import (
-    COMMANDS,
-    CommandDefinition,
-    CommandDescriptor,
-    CommandExecution,
-    CommandInvocation,
-    CommandCatalog,
-    CommandResult,
-    Commands,
-)
 from agent.plugin_composition.effect import Effect
 from agent.plugin_composition.diagnostics import (
     PluginDiagnosticContext,
@@ -257,13 +247,6 @@ __all__ = [
     "CompositionReceipt",
     "CompositionRoot",
     "Context",
-    "COMMANDS",
-    "CommandDefinition",
-    "CommandDescriptor",
-    "CommandExecution",
-    "CommandInvocation",
-    "CommandCatalog",
-    "CommandResult",
     "DashboardContext",
     "RequestContext",
     "Bail",
@@ -334,7 +317,6 @@ __all__ = [
     "PluginUiQueryOverloaded",
     "PluginUiRpcExecutionError",
     "ObserveEventKey",
-    "Commands",
     "UiSlots",
     "PluginUiAsset",
     "PluginRuntime",
