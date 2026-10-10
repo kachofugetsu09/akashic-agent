@@ -13,9 +13,9 @@ from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
-from agent.plugin_contracts.json_store import atomic_save_json
+from infra.persistence.json_store import atomic_save_json
 from core.common.file_io import run_file_io
-from agent.plugin_contracts.timekit import parse_iso as _parse_iso
+from core.common.timekit import parse_iso as _parse_iso
 from .schedule import ScheduledJob, SCHEDULE_MAX_ACTIVE_JOBS, is_cron_expr, next_cron_fire
 
 _T = TypeVar("_T")

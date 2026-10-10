@@ -26,7 +26,7 @@ from agent.plugin_composition import (
 from agent.plugin_composition.bindings import BINDINGS, Bindings
 from agent.plugin_composition.messages import MESSAGE_CATALOG
 from agent.plugin_composition.models import BoundChatModel, ChatModels, ContextLengthError, LLMResponse, ModelError
-from agent.plugin_contracts.json_store import atomic_write_text
+from infra.persistence.json_store import atomic_write_text
 from core.common.file_io import run_file_io
 from agent.plugin_composition.messages import MessageCatalog
 from agent.plugin_contracts import ContentPart, Control, Input, Message, Output, ToolResult
