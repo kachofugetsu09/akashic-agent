@@ -20,7 +20,7 @@ from agent.plugin_contracts import CallRef, ContentPart, Control, Input, Output,
 from plugins.compaction.message_summary import HEADINGS
 from plugins.content.plugin import check_text
 from plugins.context.api import check_notice
-from agent.plugin_contracts.compaction import COMPACTION_READER, COMPACTION_SUMMARIES
+from plugins.compaction.contract import COMPACTION_READER, COMPACTION_SUMMARIES
 from agent.plugin_contracts.content import CONTENT
 from agent.plugin_contracts.context import CONTEXT
 from agent.plugin_contracts.turns import TURN_PROJECTION
