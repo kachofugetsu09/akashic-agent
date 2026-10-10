@@ -77,10 +77,6 @@ note = "宿主统一保留的进程集合与清理核对"
 role = "seam"
 note = "宿主执行端口；由 managed_processes host 提供，不授予任意 Core 访问"
 
-[capabilities."host.workload_controller.v1"]
-role = "seam"
-note = "宿主 workload 控制端口；由 workloads host 提供"
-
 [capabilities.executor]
 role = "core"
 note = "有界纯同步 worker 池"

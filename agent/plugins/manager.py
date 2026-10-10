@@ -21,10 +21,9 @@ from core.common.diagnostic_log import log_event
 from core.common.file_io import run_file_io
 
 from agent.plugin_composition.control_frames import FrameBook
-from agent.host_bridge.plugin_execution import (
+from agent.plugins.execution import (
     CodeOwner,
     ExecutionAccess,
-    cleanup_workloads_for_boot,
 )
 from agent.plugin_composition import (
     CompositionRoot,
@@ -115,7 +114,6 @@ from agent.plugins.static_manifest import (
     source_error_details,
 )
 from agent.restart import RestartGate
-from agent.workloads.client import UnixWorkloadController, WorkloadController
 from infra.channels.artifacts import ChannelAttachmentArtifactStore
 from session.identities import ChannelIdentities
 from session.log import MessageLog
@@ -167,7 +165,6 @@ class PluginManager:
         source_failures: tuple[PluginSourceFailure, ...] = (),
         distribution_sources: tuple[ResolvedPluginSource, ...] = (),
         ignored_installed_roots: frozenset[Path] = frozenset(),
-        workload_controller: WorkloadController | None = None,
         restart_gate: RestartGate | None = None,
         control_frames: FrameBook | None = None,
     ) -> None:
@@ -214,20 +211,12 @@ class PluginManager:
         self._live_execution_access: ExecutionAccess | None = None
         self._live_credentials: CredentialClients | None = None
         self._fresh_importer = FreshPluginImporter()
-        if workload_controller is None:
-            workload_socket = os.environ.get("AKASHIC_WORKLOAD_SOCKET", "").strip()
-            if workload_socket:
-                workload_controller = UnixWorkloadController(Path(workload_socket))
-        self._workload_controller = workload_controller
         # PluginManager 也可以由嵌入式/测试 host 直接构造；该 host 仍需一
         # 次性的 boot identity，不能退回固定的 unmanaged marker。
         self._host_boot_id = restart_gate.boot_id if restart_gate is not None else uuid4().hex
         self._restart_gate = restart_gate or RestartGate(boot_id=self._host_boot_id, supervised=False)
         self._owns_control_frames = control_frames is None
         self._control_frames = FrameBook() if control_frames is None else control_frames
-        self._workload_workspace_id = hashlib.sha256(
-            str(workspace.resolve(strict=False)).encode("utf-8")
-        ).hexdigest()[:16]
         self._runtime_started_roots: set[object] = set()
         self._runtime_lifecycle_lock = asyncio.Lock()
         self._reload_journal = ReloadJournal(workspace)
@@ -685,9 +674,6 @@ class PluginManager:
         selection_ref = self._selection.read()
         if self._live_root is not None:
             raise RuntimeError("load_all 不能重复启动正式 Root")
-        self._check_operation_commit()
-        await cleanup_workloads_for_boot(self._workload_controller, self._workload_workspace_id)
-        # 宿主可能延迟返回或吞掉取消；撤销许可后不得继续执行任何 apply。
         self._check_operation_commit()
         self._plugin_tasks.start()
         self._plugin_processes.start()
@@ -2271,7 +2257,6 @@ class PluginManager:
             dashboard_routes=self._dashboard_routes, input_custody=self._input_custody,
             channel_identities=self._channel_identities, attachments=self._channel_attachment_store,
             resolve_command=self._resolve_runtime_command,
-            workload_controller=self._workload_controller, workspace_id=self._workload_workspace_id,
             message_log=self._message_log,
             generation_for_context=self._generation_for_context,
             runtime_generations=lambda: (self._active_generations, self._draining_generations),

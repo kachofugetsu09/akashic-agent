@@ -350,7 +350,7 @@ def main():
         ignore=shutil.ignore_patterns("node_modules", "target", "evidence"),
     )
     (source / "start.sh").chmod(0o755)  # 与 Computer Dockerfile 的安装模式一致。
-    shutil.copy2(args.source / "agent/workloads/userns-seccomp.json", source)
+    shutil.copy2(args.source / "plugins/host_execution/userns-seccomp.json", source)
     harness = args.output / "harness"
     harness.mkdir()
     for name in (

@@ -145,7 +145,7 @@ async def _prepare_stop(
     from akashic_sdk import AsyncAkashic
     from agent.config import resolve_app_server_endpoint
     from agent.config_models import Config
-    from agent.workloads.client import UnixWorkloadController
+    from plugins.host_execution.controller_client import UnixWorkloadController
 
     workspace = Path(current["AKASHIC_WORKSPACE"])
     config = Config.load(current["AKASHIC_CONFIG"], workspace=workspace)
