@@ -4,8 +4,7 @@ import asyncio
 from collections.abc import AsyncGenerator, Awaitable, Callable, Mapping, Sequence
 from contextlib import asynccontextmanager
 from pydantic import BaseModel, ConfigDict, Field
-from dataclasses import dataclass, field
-from copy import copy
+from dataclasses import dataclass, field, replace
 from agent.plugin_contracts.message import freeze_json
 from types import MappingProxyType
 from typing import TYPE_CHECKING, Any, AsyncContextManager, Literal, Protocol, TypeAlias, cast
@@ -334,11 +333,11 @@ async def open_embedding(bindings: Bindings, identity: str) -> AsyncGenerator[Bo
         # 1. driver.open 可能联网，先拒绝已经变化的 endpoint、身份或空间。
         descriptor = embeddings.describe(model_id=saved.model_id)
         if (descriptor.identity, descriptor.dimensions) != (saved.space_identity, saved.dimensions):
-            raise ModelUnavailableError("已保存 embedding 配置已变化，不能替换原调用")
+            raise ModelUnavailableError("已保存 embedding 配置已变化，不能替换原调用").exception()
         async with embeddings.bind(model_id=saved.model_id) as model:
             # 2. open 的 await 期间设置仍可能变化；以真正取得的模型再核对一次。
             if (model.descriptor.identity, model.descriptor.dimensions) != (saved.space_identity, saved.dimensions):
-                raise ModelUnavailableError("打开期间 embedding 配置已变化，不能替换原调用")
+                raise ModelUnavailableError("打开期间 embedding 配置已变化，不能替换原调用").exception()
             yield model
 
 
@@ -550,26 +549,33 @@ MODEL_CATALOG = ServiceKey[ModelCatalog]("models.catalog.v1")
 MODEL_DRIVERS = ServiceKey[ModelDrivers]("models.drivers.v1")
 
 
-class ModelError(RuntimeError):
-    retryable = False
-    # driver 在收到响应时固定服务端等待期限，Models 不重新起算。
+@dataclass(frozen=True, slots=True)
+class ModelError:
+    """模型失败的冻结事实；普通异常只负责把它传过调用栈。"""
+
+    message: str
+    retryable: bool = False
     retry_at: float | None = None
-    # 发送边界证据，driver 在产生错误处显式置位：
-    # "rejected" = provider 以 HTTP 错误应答明确拒绝了请求（未进入流处理）；
-    # "unsent"   = 连接建立失败或发送前本地校验失败，可证明请求未发出；
-    # None       = 无任何可证明事实（HTTP 200 流内失败、读/写错误、超时、
-    #              取消等），保留未知事实；模型自动恢复另由 retryable 决定。
+    # rejected 和 unsent 是发送边界的正面证据；None 保留远端效果未知。
     send_evidence: str | None = None
-
-
     response_delta_seen: bool = False
     retry_safe: bool = False
     retry_after: float | None = None
 
+    def __str__(self) -> str:
+        return self.message
+
+    def exception(self) -> Exception:
+        """用标准异常传递冻结值，超时仍保留标准 TimeoutError 语义。"""
+        return TimeoutError(self) if isinstance(self, ModelTimeoutError) else RuntimeError(self)
+
     @classmethod
     def read(cls, error: BaseException, *kinds: type[ModelError]) -> ModelError | None:
-        """只读取显式模型失败；未知程序错误不能取得模型恢复语义。"""
-        return error if isinstance(error, cls) and (not kinds or isinstance(error, kinds)) else None
+        """只读取明确的模型失败载荷；未知程序错误不能取得恢复语义。"""
+        if not isinstance(error, (RuntimeError, TimeoutError)) or len(error.args) != 1:
+            return None
+        value = error.args[0]
+        return value if isinstance(value, cls) and (not kinds or isinstance(value, kinds)) else None
 
     @classmethod
     def matches(cls, error: BaseException, *kinds: type[ModelError]) -> bool:
@@ -577,66 +583,74 @@ class ModelError(RuntimeError):
 
     @classmethod
     def change(cls, error: BaseException, **changes: Any) -> Exception:
-        """复制一次失败再补充边界事实，不改其他捕获者持有的原错误。"""
+        """构造补充边界事实的新失败，不改变原错误与已结算值。"""
         value = cls.read(error)
         if value is None:
             raise TypeError("异常不是模型失败")
-        # 1. 分类沿原对象；这里只允许改变已有的失败事实。
-        changed = copy(value)
-        for name, item in changes.items():
-            if name == "message":
-                changed.args = (item,)
-            elif name in {"retryable", "retry_at", "send_evidence", "response_delta_seen", "retry_safe", "retry_after"}:
-                setattr(changed, name, item)
-            else:
-                raise TypeError(f"未知模型失败字段: {name}")
-        # 2. 外层附加诊断不会改变 driver 的原异常和已结算事实。
-        return changed
+        return replace(value, **changes).exception()
 
 
+@dataclass(frozen=True, slots=True)
 class AuthenticationError(ModelError): ...
 
 
+@dataclass(frozen=True, slots=True)
 class RateLimitError(ModelError):
-    retryable = True
+    retryable: bool = True
 
 
+@dataclass(frozen=True, slots=True)
 class QuotaError(ModelError): ...
 
 
+@dataclass(frozen=True, slots=True)
 class InvalidRequestError(ModelError): ...
 
 
+@dataclass(frozen=True, slots=True)
 class ContextLengthError(ModelError): ...
 
 
+@dataclass(frozen=True, slots=True)
 class ContentSafetyError(ModelError): ...
 
 
-class ModelTimeoutError(ModelError, TimeoutError):
-    retryable = True
+@dataclass(frozen=True, slots=True)
+class ModelTimeoutError(ModelError):
+    retryable: bool = True
 
 
+@dataclass(frozen=True, slots=True)
 class TransportError(ModelError):
-    retryable = True
+    retryable: bool = True
 
 
+@dataclass(frozen=True, slots=True)
 class EmptyResponseError(ModelError):
     """模型调用成功，但没有可提交的正文或工具调用。"""
 
-    retryable = True
+    retryable: bool = True
 
 
+@dataclass(frozen=True, slots=True)
 class OutputLengthError(ModelError):
     """模型达到生成长度限制；正文或工具参数可能不完整。"""
 
 
+@dataclass(frozen=True, slots=True)
 class DriverUnavailableError(ModelError): ...
 
 
+@dataclass(frozen=True, slots=True)
 class ModelUnavailableError(ModelError): ...
 
 
+@dataclass(frozen=True, slots=True)
+class ModelControlUnavailable(ModelError):
+    """本次服务作用域没有模型管理能力。"""
+
+
+@dataclass(frozen=True, slots=True)
 class RevisionConflictError(ModelError): ...
 
 

@@ -544,7 +544,7 @@ async def run(args: argparse.Namespace) -> dict:
             store.initialize()
             async def rejected_preview(value):
                 if value.get("thinking_delta"):
-                    raise ModelTimeoutError("preview callback failed")
+                    raise ModelTimeoutError("preview callback failed").exception()
             try:
                 bound = _BoundChat(descriptor, physical, store, max_attempts=None)
                 try:

@@ -56,9 +56,9 @@ async def _open(
 ) -> DriverConnection:
     config = _connection_config(descriptor)
     if credential.connection_id != descriptor.connection_id:
-        raise AuthenticationError("credential connection scope does not match")
+        raise AuthenticationError("credential connection scope does not match").exception()
     if credential.auth_identity != descriptor.auth_identity:
-        raise AuthenticationError("credential auth identity does not match")
+        raise AuthenticationError("credential auth identity does not match").exception()
 
     http = HttpClient(lambda: httpx.AsyncClient(
         base_url=config.endpoint,
@@ -72,7 +72,7 @@ async def _open(
         raw_config: Mapping[str, Any],
     ) -> CodexResponses:
         if model.driver_id != "codex" or model.connection_id != descriptor.connection_id:
-            raise ModelUnavailableError("model does not belong to this Codex connection")
+            raise ModelUnavailableError("model does not belong to this Codex connection").exception()
         return CodexResponses(
             http=http,
             credential=credential,
@@ -86,7 +86,7 @@ async def _open(
         raw_config: Mapping[str, Any],
     ) -> DriverEmbeddingModel:
         _ = model, raw_config
-        raise ModelUnavailableError("Codex driver does not provide embeddings")
+        raise ModelUnavailableError("Codex driver does not provide embeddings").exception()
 
     return DriverConnection(bind_chat=bind_chat, bind_embedding=bind_embedding, close=http.aclose)
 

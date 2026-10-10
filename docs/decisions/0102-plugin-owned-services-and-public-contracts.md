@@ -58,6 +58,12 @@ Wake 按选中渠道名取得动态 key；不公开无类型 object key 或中�
 归档仍保存 name、owner、idempotent 三个原字段，读取边界严格验证后构造该值；
 不改写既有 binding，不重新选择旧消息的发送目标。
 
+模型失败使用冻结值保存分类、服务端等待期限、流进展和发送证据，标准
+RuntimeError / TimeoutError 只传递该值。消费者显式读取模型失败；普通程序错误
+不能取得重试语义，asyncio 取消保留原类型。外层增加诊断或结算事实时构造新值，
+不改变 driver 原错误、其他等待者的响应或耐久调用回执。模型控制缺席也由这套
+合同表达，HTTP 与 RPC 保留原状态码；不再由 Core 单独定义其异常类型。
+
 独立命令由插件用字面 `entrypoints = {"command": "module.function"}` 声明。
 安装输入 v6 将该声明纳入唯一 selection；v5 原记录仍原样读取，不改身份，
 没有凭空补出的命令入口。Core 只按当前选择分发唯一 provider，不执行包入口或

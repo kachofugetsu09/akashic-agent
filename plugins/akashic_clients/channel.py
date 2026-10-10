@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from agent.plugin_composition.models import ModelError
 from agent.plugin_composition.models import MODEL_CALL_STATS, ModelCallStats, ModelUnavailableError
-from agent.plugin_composition.model_settings_http import ModelControlUnavailable
+from agent.plugin_composition.models import ModelControlUnavailable
 
 import asyncio
 from collections.abc import AsyncIterator, Mapping, Sequence
@@ -354,7 +354,7 @@ class _GenerationAkashicAdapter:
         async with self._open_request_scope() as scope:
             with scope.borrow(MODEL_CALL_STATS) as reader:
                 if reader is None:
-                    raise ModelControlUnavailable("模型调用统计不可用")
+                    raise ModelControlUnavailable("模型调用统计不可用").exception()
                 return reader(call_id)
 
     async def _read_model_catalog(self) -> Any:

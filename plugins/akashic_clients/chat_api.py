@@ -15,6 +15,8 @@ from fastapi import FastAPI, HTTPException, Query, Request, WebSocket
 from fastapi.responses import FileResponse, JSONResponse, Response, StreamingResponse
 from pydantic import BaseModel, ConfigDict, Field
 
+from agent.plugin_composition.models import ModelControlUnavailable, ModelError
+
 from .static import register_chat_assets
 from agent.plugin_composition.message_view import read_message_rows, session_row
 from .navigation import NavigationPreferences, PinUpdate, check_project_pin, session_pin_row
@@ -26,7 +28,6 @@ from .services import (
     MessageDisplayReader,
     ModelCatalogSnapshot,
     ChatModelSelection,
-    ModelControlUnavailable,
     ModelCatalogUnavailable,
     PluginUiPluginUnavailable,
     PluginUiProvider,
@@ -331,7 +332,9 @@ def create_chat_app(
                 selection = await model_selection_reader(
                     metadata if metadata is not None else {}
                 )
-            except ModelControlUnavailable as error:
+            except RuntimeError as error:
+                if not ModelError.matches(error, ModelControlUnavailable):
+                    raise
                 raise HTTPException(
                     status_code=503,
                     detail="模型选择服务不可用",
@@ -445,7 +448,9 @@ def create_chat_app(
             return asdict(await model_call_stats_reader(call_id))
         except KeyError as error:
             raise HTTPException(status_code=404, detail="模型调用记录不存在") from error
-        except ModelControlUnavailable as error:
+        except RuntimeError as error:
+            if not ModelError.matches(error, ModelControlUnavailable):
+                raise
             raise HTTPException(status_code=503, detail=str(error)) from error
 
     @app.get("/api/chat/runtime/documents")

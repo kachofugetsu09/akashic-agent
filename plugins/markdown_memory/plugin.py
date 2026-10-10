@@ -133,7 +133,7 @@ def _profile_batch_size(rows: tuple[tuple[str, ...], ...], memory: str, self_pro
         return provider.estimate_context_tokens([{"role": "user", "content": prompt}])
 
     if tokens(1) > hard_limit:
-        raise ContextLengthError("Markdown 完整 Turn 和现有档案超出模型窗口，未减少原文")
+        raise ContextLengthError("Markdown 完整 Turn 和现有档案超出模型窗口，未减少原文").exception()
     low, high = 1, len(rows)
     while low < high:
         middle = (low + high + 1) // 2
@@ -207,7 +207,7 @@ async def _prepare_profile_batch(messages: tuple[Message, ...], source: str,
             )
         except _InvalidDraft as error:
             if repaired:
-                raise ProfileDraftError(str(error)) from error
+                raise ProfileDraftError(str(error)).exception() from error
             # 原草稿没有提交；只反馈合同错误，不补写模型猜错的证据或消息 ID。
             logger.warning("Markdown 模型草稿不合格，本批修正一次: %s", error)
             prompt = "上次草稿没有提交，校验失败：" + str(error)

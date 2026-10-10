@@ -420,6 +420,7 @@ async def queued_settlement_check(directory, server, descriptor, physical: Drive
         assert release.wait(5)
 
     workers = []
+    driver_failures: list[tuple[BaseException, ModelError, str]] = []
 
     class QueuedDriver:
         def estimate_context_tokens(
@@ -440,6 +441,11 @@ async def queued_settlement_check(directory, server, descriptor, physical: Drive
         async def complete(self, request: ModelRequest) -> LLMResponse:
             try:
                 return await physical.complete(request)
+            except (RuntimeError, TimeoutError) as error:
+                failure = ModelError.read(error)
+                assert failure is not None
+                driver_failures.append((error, failure, failure.message))
+                raise
             finally:
                 workers.extend(asyncio.create_task(run_file_io(occupy)) for _ in range(4))
                 await occupied.wait()
@@ -479,6 +485,10 @@ async def queued_settlement_check(directory, server, descriptor, physical: Drive
                 provider_error, settlement_error = failures.exceptions
                 assert ModelError.matches(provider_error, InvalidRequestError)
                 assert (failure := ModelError.read(provider_error)) is not None and failure.send_evidence == 'rejected'
+                original_error, original_value, original_message = driver_failures[0]
+                assert ModelError.read(original_error) is original_value
+                assert original_value.message == original_message
+                assert failure is not original_value and '已尝试' not in original_message
                 assert 'fixture provider rejection' in str(provider_error)
                 if not reject:
                     assert isinstance(settlement_error, asyncio.CancelledError)
@@ -518,6 +528,7 @@ async def queued_settlement_check(directory, server, descriptor, physical: Drive
         return {'case': name, 'occupied_slots': count, 'posts': posts,
                 'state': record['state'], 'send_evidence': record['send_evidence'],
                 'provider_failure_reported': phase == 'failure',
+                'provider_failure_preserved': phase != 'failure' or bool(driver_failures),
                 'settlement_failure_reported': reject}
     finally:
         store.release.set()

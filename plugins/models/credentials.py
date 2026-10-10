@@ -60,7 +60,7 @@ class StoredCredentialHandle:
         if row is None or not str(row[1]):
             raise CredentialError(
                 f"credential is unavailable for connection {self._connection_id}"
-            )
+            ).exception()
         return MappingProxyType(_decode_payload(str(row[0]), str(row[1])))
 
     async def refresh(self, payload: Mapping[str, str]) -> None:
@@ -84,7 +84,7 @@ class StoredCredentialHandle:
             if row is None:
                 raise CredentialError(
                     f"credential scope no longer exists: {self._connection_id}"
-                )
+                ).exception()
             auth_kind = _auth_kind(payload, fallback=str(row[0]))
             self._before_write(connection, "refresh-credential")
             cursor = connection.execute(
@@ -103,7 +103,7 @@ class StoredCredentialHandle:
             if cursor.rowcount != 1:
                 raise CredentialError(
                     f"credential scope changed during refresh: {self._connection_id}"
-                )
+                ).exception()
             connection.commit()
         _secure_database_files(self._path)
 
@@ -163,17 +163,17 @@ def _decode_payload(auth_kind: str, encoded: str) -> dict[str, str]:
     try:
         raw: Any = json.loads(encoded)
     except json.JSONDecodeError as exc:
-        raise CredentialError("credential payload is not valid JSON") from exc
+        raise CredentialError("credential payload is not valid JSON").exception() from exc
     if not isinstance(raw, dict) or not raw:
-        raise CredentialError("credential payload must be a non-empty object")
+        raise CredentialError("credential payload must be a non-empty object").exception()
     result: dict[str, str] = {}
     for key, value in cast(dict[object, object], raw).items():
         if not isinstance(key, str) or not isinstance(value, str):
-            raise CredentialError("credential payload must contain only strings")
+            raise CredentialError("credential payload must contain only strings").exception()
         result[key] = value
     declared_kind = result.get("driver") or result.get("kind")
     if declared_kind is not None and declared_kind != auth_kind:
-        raise CredentialError("credential kind does not match its stored metadata")
+        raise CredentialError("credential kind does not match its stored metadata").exception()
     return result
 
 
@@ -186,9 +186,9 @@ def _required(value: str, name: str) -> str:
 
 def _check_private_file(path: Path) -> None:
     if not path.is_file():
-        raise CredentialError(f"model registry does not exist: {path}")
+        raise CredentialError(f"model registry does not exist: {path}").exception()
     if path.stat().st_mode & 0o077:
-        raise CredentialError("model registry permissions must be 0600")
+        raise CredentialError("model registry permissions must be 0600").exception()
 
 
 def _secure_database_files(path: Path) -> None:

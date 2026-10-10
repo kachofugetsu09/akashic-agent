@@ -39,9 +39,9 @@ async def start_auth(input: Mapping[str, Any]) -> Mapping[str, Any]:
     except asyncio.CancelledError:
         raise
     except httpx.TimeoutException as exc:
-        raise TransportError("连接 Codex 登录服务超时") from exc
+        raise TransportError("连接 Codex 登录服务超时").exception() from exc
     except httpx.TransportError as exc:
-        raise TransportError("连接 Codex 登录服务失败") from exc
+        raise TransportError("连接 Codex 登录服务失败").exception() from exc
     _require_auth_response(response, "获取 Codex device code 失败")
     data = _json_object(response)
     user_code = _required(data.get("user_code"), "user_code")
@@ -80,9 +80,9 @@ async def finish_auth(state: Mapping[str, Any]) -> Mapping[str, Any]:
     except asyncio.CancelledError:
         raise
     except httpx.TimeoutException as exc:
-        raise TransportError("连接 Codex 登录服务超时") from exc
+        raise TransportError("连接 Codex 登录服务超时").exception() from exc
     except httpx.TransportError as exc:
-        raise TransportError("连接 Codex 登录服务失败") from exc
+        raise TransportError("连接 Codex 登录服务失败").exception() from exc
     if response.status_code in {403, 404}:
         return {
             "status": "pending",
@@ -159,9 +159,9 @@ async def _exchange_code(
     except asyncio.CancelledError:
         raise
     except httpx.TimeoutException as exc:
-        raise TransportError("连接 Codex token 服务超时") from exc
+        raise TransportError("连接 Codex token 服务超时").exception() from exc
     except httpx.TransportError as exc:
-        raise TransportError("连接 Codex token 服务失败") from exc
+        raise TransportError("连接 Codex token 服务失败").exception() from exc
     _require_auth_response(response, "Codex token 交换失败")
     return _credential_from_token(
         _json_object(response),
@@ -173,7 +173,7 @@ async def _exchange_code(
 async def _refresh(current: Mapping[str, str]) -> dict[str, str]:
     refresh_token = current.get("refresh_token", "")
     if not refresh_token:
-        raise AuthenticationError("Codex refresh token 缺失，请重新登录")
+        raise AuthenticationError("Codex refresh token 缺失，请重新登录").exception()
     auth_base = current.get("auth_base") or CODEX_AUTH_BASE
     api_base = current.get("api_base") or CODEX_API_BASE
     try:
@@ -189,9 +189,9 @@ async def _refresh(current: Mapping[str, str]) -> dict[str, str]:
     except asyncio.CancelledError:
         raise
     except httpx.TimeoutException as exc:
-        raise TransportError("连接 Codex token 服务超时") from exc
+        raise TransportError("连接 Codex token 服务超时").exception() from exc
     except httpx.TransportError as exc:
-        raise TransportError("连接 Codex token 服务失败") from exc
+        raise TransportError("连接 Codex token 服务失败").exception() from exc
     _require_auth_response(response, "Codex token 刷新失败，请重新登录")
     return _credential_from_token(
         _json_object(response),
@@ -213,11 +213,11 @@ def _credential_from_token(
     access_token = _string(data.get("access_token"))
     refresh_token = _string(data.get("refresh_token")) or fallback_refresh_token
     if not access_token or not refresh_token:
-        raise AuthenticationError("Codex token 响应缺少必要字段")
+        raise AuthenticationError("Codex token 响应缺少必要字段").exception()
     id_token = _string(data.get("id_token"))
     account_id = _account_id_from_jwt(id_token) if id_token else fallback_account_id
     if not account_id:
-        raise AuthenticationError("Codex token 响应缺少账号标识")
+        raise AuthenticationError("Codex token 响应缺少账号标识").exception()
     expires_in = _integer(data.get("expires_in"), default=3600)
     now = datetime.now(timezone.utc)
     return {
@@ -235,9 +235,9 @@ def _credential_from_token(
 def _credential(raw: Mapping[str, str]) -> dict[str, str]:
     result = dict(raw)
     if result.get("driver") != "codex":
-        raise AuthenticationError("Codex 引用了非 Codex 凭据")
+        raise AuthenticationError("Codex 引用了非 Codex 凭据").exception()
     if not result.get("access_token") or not result.get("account_id"):
-        raise AuthenticationError("Codex 凭据缺少 access_token 或 account_id")
+        raise AuthenticationError("Codex 凭据缺少 access_token 或 account_id").exception()
     return result
 
 
@@ -248,7 +248,7 @@ def _expires_soon(credential: Mapping[str, str]) -> bool:
     try:
         expires = datetime.fromisoformat(encoded.replace("Z", "+00:00"))
     except ValueError as exc:
-        raise AuthenticationError("Codex expires_at 无效") from exc
+        raise AuthenticationError("Codex expires_at 无效").exception() from exc
     return expires <= datetime.now(timezone.utc) + timedelta(seconds=_REFRESH_SKEW_SECONDS)
 
 
@@ -260,33 +260,33 @@ def _account_id_from_jwt(token: str) -> str:
         auth = claims["https://api.openai.com/auth"]
         account_id = auth["chatgpt_account_id"]
     except (IndexError, KeyError, TypeError, ValueError, json.JSONDecodeError) as exc:
-        raise AuthenticationError("Codex token 缺少 chatgpt_account_id") from exc
+        raise AuthenticationError("Codex token 缺少 chatgpt_account_id").exception() from exc
     return _required(account_id, "chatgpt_account_id")
 
 
 def _require_auth_response(response: httpx.Response, message: str) -> None:
     if response.status_code == 429:
-        raise RateLimitError(message)
+        raise RateLimitError(message).exception()
     if response.status_code >= 500:
-        raise TransportError(f"{message} (HTTP {response.status_code})")
+        raise TransportError(f"{message} (HTTP {response.status_code})").exception()
     if response.status_code >= 400:
-        raise AuthenticationError(f"{message} (HTTP {response.status_code})")
+        raise AuthenticationError(f"{message} (HTTP {response.status_code})").exception()
 
 
 def _json_object(response: httpx.Response) -> Mapping[str, Any]:
     try:
         value: Any = response.json()
     except json.JSONDecodeError as exc:
-        raise TransportError("Codex 返回了无效 JSON") from exc
+        raise TransportError("Codex 返回了无效 JSON").exception() from exc
     if not isinstance(value, dict):
-        raise TransportError("Codex JSON 响应必须是对象")
+        raise TransportError("Codex JSON 响应必须是对象").exception()
     return value
 
 
 def _required(value: object, name: str) -> str:
     result = _string(value)
     if not result:
-        raise AuthenticationError(f"Codex 响应缺少 {name}")
+        raise AuthenticationError(f"Codex 响应缺少 {name}").exception()
     return result
 
 
@@ -298,5 +298,5 @@ def _integer(value: object, *, default: int) -> int:
     if value is None:
         return default
     if isinstance(value, bool) or not isinstance(value, int):
-        raise AuthenticationError("Codex 响应包含无效整数")
+        raise AuthenticationError("Codex 响应包含无效整数").exception()
     return value

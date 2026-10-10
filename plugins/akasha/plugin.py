@@ -518,7 +518,7 @@ async def run(ctx: Context, interest: Interest) -> None:
         def select() -> tuple[str, str]:
             if selected.embedding_binding is None:
                 assert selected.unavailable is not None
-                raise ModelUnavailableError(selected.unavailable)
+                raise ModelUnavailableError(selected.unavailable).exception()
             saved = read_embedding_binding(bindings, selected.embedding_binding)
             rule = LearningConfig(embedding_model=saved.space_identity, dimension=saved.dimensions,
                                   sources=config.sources)

@@ -3,7 +3,7 @@ from __future__ import annotations
 import asyncio
 from collections.abc import AsyncGenerator, Awaitable, Callable, Mapping, Sequence
 from contextlib import AbstractContextManager, ExitStack, asynccontextmanager
-from dataclasses import replace
+from dataclasses import dataclass, replace
 from functools import partial
 from typing import Any, cast
 from uuid import uuid4
@@ -71,6 +71,7 @@ inject = ()
 Preview = Callable[[str], AbstractContextManager[StreamCallback]]
 
 
+@dataclass(frozen=True, slots=True)
 class StepLimit(ModelError):
     """本次程序达到明确的模型请求上限，保留日志供来源继续控制。"""
 
@@ -394,14 +395,14 @@ async def _complete(
 
     request, rejection = build(prepared)
     if rejection is not None and reduce is None:
-        raise ContextLengthError(rejection)
+        raise ContextLengthError(rejection).exception()
     if reduce is not None:
         prepared, summary = await reduce_request(prepared, request, force=rejection is not None)
         if summary is not None and summary != prepared.get("summary"):
             prepared = {**prepared, "summary": summary}
             request, rejection = build(prepared)
         if rejection is not None:
-            raise ContextLengthError(rejection)
+            raise ContextLengthError(rejection).exception()
     # 2. 每份新组装的请求拥有新身份；本次调用内的网络重试仍由 Models 复用该 key。
     with ExitStack() as previews:
         def begin() -> tuple[str, str, StreamCallback | None]:
@@ -439,7 +440,7 @@ async def _complete(
             prepared = {**prepared, "summary": summary}
             request, rejection = build(prepared)
             if rejection is not None:
-                raise ContextLengthError(rejection)
+                raise ContextLengthError(rejection).exception()
             message_id, request_key, callback = begin()
             # 第二次调用在 except 内；再次拒绝直接上抛，不产生第三次请求。
             response = await generate(request, request_key, callback)
@@ -552,7 +553,7 @@ async def react(
         except _Superseded:
             raise asyncio.CancelledError from None
         if max_steps > 0 and history.steps >= max_steps:
-            raise StepLimit(f"本来源未完成工作已达到 {max_steps} 个模型输出")
+            raise StepLimit(f"本来源未完成工作已达到 {max_steps} 个模型输出").exception()
 
         # 2. 重启和显式重试都用当前材料发新请求，不恢复旧请求身份。
         mark("preparation.begin")
@@ -569,7 +570,7 @@ async def react(
                 raise OutputLengthError(
                     f"模型生成达到长度限制（输出预算 {request.max_output_tokens} tokens，含推理）；"
                     "回复未完成，本次返回的工具调用未执行。请检查输出预算与模型上下文容量后，用新输入继续。"
-                )
+                ).exception()
             decoded, metadata = await content.decode(response.content or "", cast(tuple[Mapping[str, object], ...], prepared.get("references", ())))
             parts: list[Part] = list(decoded)
             indices: list[int] = []
@@ -594,7 +595,7 @@ async def react(
                 actual_calls.append(actual)
                 parts.append(actual)
             if not parts:
-                raise EmptyResponseError("模型没有产生内容或工具调用；空响应不是 quiet")
+                raise EmptyResponseError("模型没有产生内容或工具调用；空响应不是 quiet").exception()
             reminder = context.reminder_content(prepared)
             parts.append(projection.facts(
                 response,
