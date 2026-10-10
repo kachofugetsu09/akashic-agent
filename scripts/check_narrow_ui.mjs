@@ -23,7 +23,7 @@ const { values } = parseArgs({
     candidate: { type: "boolean", default: false },
     plugins: {
       type: "string",
-      default: "shell-ui,workbench-ui,onboarding,akasha,models,computer",
+      default: "shell-ui,conversation-ui,onboarding,akasha,models,computer",
     },
     bundles: { type: "string", default: "" },
   },
@@ -201,100 +201,13 @@ async function main(page, label, selector) {
     await invite
       .getByRole("button", { name: "稍后再说", exact: true })
       .click();
-  await page
-    .locator(".product-band__nav")
-    .getByRole("button", { name: label, exact: true })
-    .click();
+  // 只有一个页面时 Shell 不渲染顶栏，默认页面已经是当前页。
+  const band = page.locator(".product-band__nav");
+  if (await band.count())
+    await band.getByRole("button", { name: label, exact: true }).click();
   await page
     .locator(`.shell-view.is-active ${selector}`)
     .waitFor({ state: "visible" });
-}
-
-/** 遍历实际面板，检查目录、列表、详情与返回。 */
-async function workbench(page, prefix, narrow) {
-  await main(page, "工作台", ".workbench-root");
-  const view = page.locator(".shell-view.is-active");
-  const modules = view.getByRole("combobox", {
-    name: "工作台模块",
-    exact: true,
-  });
-  await modules.selectOption("");
-  await view.locator(".session-item").first().waitFor();
-  if (narrow)
-    assert.equal(
-      await view.locator(".content-shell").isVisible(),
-      false,
-      "空消息区不应挤占会话列表",
-    );
-  await measure(page, `${prefix}-sessions`);
-  const selected = view.locator(".session-item").first();
-  await selected.click();
-  await view.locator(".message-row").first().waitFor();
-  if (narrow)
-    assert.equal(
-      await view.locator(".sessions-pane").isVisible(),
-      false,
-      "选中会话后目录应让出阅读区",
-    );
-  await measure(page, `${prefix}-messages`);
-  await view.locator(".message-row").first().click();
-  await view.locator(".detail-pane.is-open").waitFor();
-  await measure(page, `${prefix}-message-detail`);
-  const back = view.getByRole("button", { name: "消息列表", exact: true });
-  assert(await hit(back), "消息返回动作被遮挡");
-  await back.click();
-  if (narrow) {
-    const list = view.getByRole("button", { name: "会话列表", exact: true });
-    assert(await hit(list));
-    await list.click();
-  } else
-    await view
-      .getByRole("button", { name: "清除 Session 筛选", exact: true })
-      .click();
-  const options = await modules
-    .locator("option")
-    .evaluateAll((nodes) =>
-      nodes.map((e) => ({ id: e.value, label: e.textContent })),
-    );
-  report.pages = options;
-  for (const option of options.filter((o) => o.id)) {
-    await modules.selectOption(option.id);
-    await view.locator(".plugin-shell").waitFor();
-    const table = view.locator(".table-body[aria-busy]");
-    if (await table.count())
-      await view.locator('.table-body[aria-busy="false"]').waitFor();
-    else await page.waitForTimeout(700);
-    await measure(
-      page,
-      `${prefix}-${option.id.replaceAll(/[^a-zA-Z0-9_-]/g, "-")}`,
-    );
-    await customPanel(page, prefix, option.id);
-    const row = view.locator(".table-row-wrap .wb-table-row").first();
-    if (await row.count()) {
-      await row.click();
-      await view.locator(".detail-pane.is-open").waitFor();
-      await page.waitForTimeout(300);
-      if (narrow) {
-        assert.equal(await view.locator(".sessions-pane").isVisible(), false);
-        assert.equal(await view.locator(".messages-pane").isVisible(), false);
-      }
-      await measure(page, `${prefix}-${option.id}-detail`);
-      const close = narrow
-        ? view.getByRole("button", { name: "返回列表", exact: true })
-        : view.locator(".detail-close-btn");
-      assert(await hit(close), `${option.id}: 返回动作被遮挡`);
-      await close.click();
-      assert.equal(await view.locator(".detail-pane.is-open").count(), 0);
-    }
-    const nav = view.getByRole("button", { name: "筛选与分类", exact: true });
-    if (narrow && (await nav.count())) {
-      await nav.click();
-      await measure(page, `${prefix}-${option.id}-navigation`);
-      await view
-        .getByRole("button", { name: "收起筛选与分类", exact: true })
-        .click();
-    }
-  }
 }
 
 /** 遍历实际配置目录，只作本地编辑并放弃。 */
@@ -724,7 +637,6 @@ try {
           { large: values.large, rtl: values.rtl },
         );
       if (values.page === "all") {
-        await workbench(page, String(width), width <= 760);
         await settings(page, String(width));
       }
       await models(page, String(width));

@@ -336,8 +336,6 @@ async function measureDesktopAccessibility(browserInstance, origin) {
   // 以下为套件恢复运行时确认的存量设计债，逐项签名登记：命中仍报告但不判失败，
   // 新增违规照常 fail。债务清理由独立的可访问性任务完成，不在性能分支内改主题 token。
   const knownDebt = [
-    "a[data-band-id=\"workbench\"] > span", // 主导航禁用态 3.43:1，--chat-muted + is-disabled 透明度
-    "a[data-band-id=\"models\"] > span", // 主导航预览态 2.26:1
     "markstream-react", // markstream vitesse-light 语法 token 对比度，库内主题
   ];
   const isDebt = (violation) => violation.id === "color-contrast" && violation.nodes.every(

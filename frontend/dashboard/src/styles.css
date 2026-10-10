@@ -117,6 +117,13 @@ body {
   font-weight: 500;
 }
 
+/* 触控输入下开关可点区域不小于 44px（design.md 3.5）。 */
+@media (pointer: coarse) {
+  .unified-shell .conversation-page.has-tools .conversation-tools-toggle {
+    min-block-size: 44px;
+  }
+}
+
 .unified-shell .conversation-tools {
   box-sizing: border-box;
   border-inline-start: 1px solid var(--ak-rule-subtle);

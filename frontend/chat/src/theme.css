@@ -1,7 +1,6 @@
 @import "../../theme/src/material-tokens.css";
 @import "../../theme/src/brand-tokens.css";
 @import "../../theme/src/paper-surface.css";
-@import "../../theme/src/product-band.css";
 
 :root {
   font-family: var(--ak-type-reading);

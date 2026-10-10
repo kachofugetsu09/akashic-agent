@@ -1,8 +1,9 @@
 import { Menu } from "lucide-react";
-import { useCallback, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { Dialog, DialogContent, DialogTitle } from "./components/ui/dialog";
 import { DesktopSidebar, type DesktopSidebarProps } from "./desktop-sidebar";
 import { NewProjectDialog } from "./project-navigation";
+import { reportShellOverlay } from "./shell-rail-actions";
 
 /** Expose the desktop navigation contract as a modal drawer on narrow viewports. */
 export function CompactNavigation(props: DesktopSidebarProps) {
@@ -17,6 +18,12 @@ export function CompactNavigation(props: DesktopSidebarProps) {
     setOpen(false);
     action();
   }, []);
+  const overlayOpen = open || projectDialogOpen;
+  useEffect(() => {
+    if (!overlayOpen) return;
+    reportShellOverlay(true);
+    return () => reportShellOverlay(false);
+  }, [overlayOpen]);
 
   return <>
     <button ref={triggerRef} className="compact-navigation-trigger" type="button" aria-label="打开导航" onClick={() => setOpen(true)}>

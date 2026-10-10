@@ -4,6 +4,7 @@ import {
   Pin,
   PinOff,
   ArrowUpDown,
+  Settings,
   SunMoon,
   X,
 } from "lucide-react";
@@ -14,6 +15,7 @@ import {
 } from "@/components/ui/dropdown-menu";
 import { ConversationNavigation, ConversationSessionRow, type ConversationRowDrag, type ConversationSession } from "./conversation-navigation";
 import { PluginUiSlot } from "./plugin-ui-runtime";
+import { akashicBrandIcon } from "./akashic-brand";
 import { activateShellRailAction, useShellRailActions } from "./shell-rail-actions";
 import { ProjectNavigation, ProjectNavigationRow, type ProjectSessionItem } from "./project-navigation";
 import { sessionLabel } from "./web-chat-message-data";
@@ -133,6 +135,9 @@ export interface DesktopSidebarProps {
 }
 
 /** 会话导航竖栏；底部动作由宿主 Shell 经 shell.rail-actions.v1 桥下发，主题行是 chat 域原生。 */
+// 品牌图形以 mask 着色，跟随主题墨色。
+const brandMask = { WebkitMaskImage: `url(${akashicBrandIcon})`, maskImage: `url(${akashicBrandIcon})` };
+
 export const DesktopSidebar = memo(function DesktopSidebar({
   embeddedShell,
   surface,
@@ -293,10 +298,15 @@ export const DesktopSidebar = memo(function DesktopSidebar({
   return (
     <aside ref={sidebarRef} className="chat-sidebar chat-sidebar--entry">
       <div className="chat-sidebar__toolbar">
-        <button type="button" className="chat-sidebar__new" onClick={() => onNewChat()}>
-          <MessageSquarePlus size={18} strokeWidth={1.75} aria-hidden="true" />
-          <span>新会话</span>
-        </button>
+        <div className="chat-sidebar__brand-row">
+          <span className="chat-sidebar__brand">
+            <span className="chat-sidebar__mark" style={brandMask} aria-hidden="true" />
+            <strong>Akashic</strong>
+          </span>
+          <button type="button" className="chat-sidebar__new" aria-label="新会话" title="新会话" onClick={() => onNewChat()}>
+            <MessageSquarePlus size={18} strokeWidth={1.75} aria-hidden="true" />
+          </button>
+        </div>
         <label className="chat-sidebar__search">
           <Search size={14} aria-hidden="true" />
           <input
@@ -399,7 +409,7 @@ export const DesktopSidebar = memo(function DesktopSidebar({
         ) : undefined}
       />
       </div>
-      {railActions.length || embeddedShell ? <div className="chat-sidebar__footer">
+      <div className="chat-sidebar__footer">
         {railActions.map((action) => (
           <button key={action.id} type="button" className="chat-sidebar__action"
             onClick={() => activateShellRailAction(action.id)}>
@@ -408,14 +418,19 @@ export const DesktopSidebar = memo(function DesktopSidebar({
             <span>{action.label}</span>
           </button>
         ))}
-        {embeddedShell ? <button type="button" className="chat-sidebar__action"
+        {/* 独立打开时没有宿主 Shell 下发动作：设置是 Shell 的对话框，经深链回到完整界面打开。 */}
+        {embeddedShell ? null : <a className="chat-sidebar__action" href="/#models">
+          <Settings size={18} aria-hidden="true" />
+          <span>功能设置</span>
+        </a>}
+        <button type="button" className="chat-sidebar__action"
           onClick={() => onCycleTheme()}
           title={`切换主题，当前为${themeLabel}`}
           aria-label={`切换主题，当前为${themeLabel}`}>
           <SunMoon size={18} aria-hidden="true" />
           <span>主题 · {themeLabel}</span>
-        </button> : null}
-      </div> : null}
+        </button>
+      </div>
       {rail ? <SidebarRailResizer rail={rail} sidebarRef={sidebarRef} /> : null}
       {directoryProject && projects ? <ProjectDirectoryDialog project={directoryProject}
         onClose={() => setDirectoryProjectId("")} onChoose={(path) => projects.onBindDirectory(directoryProject.id, path)}
