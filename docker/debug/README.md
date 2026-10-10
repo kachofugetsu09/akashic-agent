@@ -415,7 +415,21 @@ AKASHIC_DEBUG_PROFILE=multimodal docker compose -f docker/debug/docker-compose.y
 docker compose -f docker/debug/docker-compose.yml run --rm akashic-debug exec --new "测试消息"
 ```
 
-app-server socket 固定为 `/sandbox/akashic.sock`，不会连接正式实例。
+调试 Gateway 的新输入使用 `/sandbox/akashic.sock`，已有插件设置保持原值。
+入口只在实际 Gateway owner 的 `plugin-data/<id>/config.input.json` 缺席时初始化，
+不向 Core `config.toml` 写 `[app_server]`，不因初始化配置启用插件。
+旧表由 Gateway 的显式迁移复制并退休，回滚/再升级见
+[边界①恢复说明](../../docs/design/plugin-core-boundary1-review.md#状态与恢复)。
+
+修改启动配置归属后，必须完整运行一次调试入口，不能只验证 Core 配置解析：
+
+```bash
+docker build -f docker/debug/Dockerfile -t akashic-agent-debug:entrypoint .
+python docker/debug/entrypoint_scenario.py --image akashic-agent-debug:entrypoint
+```
+
+场景只挂载一次性 sandbox 与只读候选源码，验证 init/run、真实 RPC、exec、
+重启及 stdio EOF，同时核对 Core/Gateway 配置和原消息完整内容。
 
 ## 打开调试 Dashboard
 

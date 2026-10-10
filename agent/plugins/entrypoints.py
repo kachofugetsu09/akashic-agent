@@ -47,7 +47,9 @@ async def invoke_plugin_command(
                 matches.append((code, declarations[command]))
     if len(matches) != 1:
         raise LookupError(f"命令 {command} 需要唯一 provider，当前有 {len(matches)} 个")
-    public_contracts.register(sources)
+    changed = public_contracts.register(sources)
+    if changed:
+        raise RuntimeError("命令公共合同已变化，须重启进程: " + ", ".join(sorted(changed)))
     code, target = matches[0]
     return await _invoke(command, arguments, code, target, workspace=workspace, config_path=config_path)
 
@@ -68,7 +70,9 @@ async def invoke_distribution_command(
             matches.append((source.plugin_root, declarations[command]))
     if len(matches) != 1:
         raise LookupError(f"镜像命令 {command} 需要唯一 provider，当前有 {len(matches)} 个")
-    public_contracts.register(sources)
+    changed = public_contracts.register(sources)
+    if changed:
+        raise RuntimeError("命令公共合同已变化，须重启进程: " + ", ".join(sorted(changed)))
     code, target = matches[0]
     return await _invoke(command, arguments, code, target, workspace=workspace, config_path=config_path)
 

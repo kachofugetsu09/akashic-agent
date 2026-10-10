@@ -4538,25 +4538,18 @@ def _write_config(
 
     config = f"""[agent.plugins]
 disabled_builtin = ["subagent"]
-
-[app_server]
-enabled = true
-listen = "/sandbox/akashic.sock"
-max_connections = 8
-ingress_queue_size = 32
-outbound_queue_size = {outbound_queue_size}
-
-[channels.chat]
-enabled = true
-
-[channels.telegram]
-enabled = false
-token = ""
-
 """
     (sandbox / "config.toml").write_text(config, encoding="utf-8")
     from agent.plugin_composition.config_input import save_config
 
+    save_config(sandbox / "workspace/plugin-data/akashic_clients-builtin", {
+        "enabled": True, "web": {"enabled": True},
+    })
+    save_config(sandbox / "workspace/plugin-data/telegram_channel-builtin", {"enabled": False})
+    save_config(sandbox / "workspace/plugin-data/gateway-builtin", {
+        "enabled": True, "listen": "/sandbox/akashic.sock", "max_connections": 8,
+        "ingress_queue_size": 32, "outbound_queue_size": outbound_queue_size,
+    })
     save_config(sandbox / "workspace/plugin-data/reply-builtin", {"max_steps": max_iterations})
     save_config(sandbox / "workspace/plugin-data/compaction-builtin", {"keep_recent_tokens": 20000})
 

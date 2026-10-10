@@ -56,13 +56,6 @@ _SAFE_CAPABILITY_ENTRYPOINTS = {
 # keeping the acceptance run free of network credentials and external sends.
 _BOOTSTRAP_CONFIG = """[runtime]
 workspace = {workspace!r}
-
-[app_server]
-enabled = true
-listen = ""
-max_connections = 32
-ingress_queue_size = 128
-outbound_queue_size = 512
 """
 
 
@@ -498,6 +491,10 @@ def _write_bootstrap_config(
     })
     save_config(workspace / "plugin-data" / f"akashic_clients-{marketplace}", {
         "enabled": True, "web": {"enabled": True, "socket_path": ""},
+    })
+    save_config(workspace / "plugin-data" / f"gateway-{marketplace}", {
+        "enabled": True, "listen": "", "max_connections": 32,
+        "ingress_queue_size": 128, "outbound_queue_size": 512,
     })
     path.write_text(
         _BOOTSTRAP_CONFIG.format(workspace=repr(str(workspace))),

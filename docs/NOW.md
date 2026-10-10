@@ -8,7 +8,7 @@
 [审查入口](design/plugin-core-boundary1-review.md) 评审后继续。
 剩余：边界②完整 HostExecution、Onboarding、非账本合同与声明式组合；
 边界③ Ledger、派生库、可信调用者身份、禁用/替换矩阵与最终门验收。
-前端 slot 化独立推进。本次仅交付 Draft PR，不代表已合并或部署。
+前端 slot 化独立推进。
 
 ## P1 · Akasha 学习图一次性重放
 
