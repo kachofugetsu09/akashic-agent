@@ -22,7 +22,10 @@ from agent.plugin_composition.messages import MessageReader
 from plugins.reply.contract import (
     REPLY_COMPLETION,
 )
-from agent.plugin_contracts.sources import SOURCES_V5, SOURCE_CHANGED_V3
+from plugins.sources.contract import (
+    SOURCES_V5,
+    SOURCE_CHANGED_V3,
+)
 from plugins.programmatic.control import PROGRAMMATIC, AdmitParams, SendParams, PauseParams, ResumeParams, ResultParams
 from plugins.programmatic.result import TURN_PROJECTION, read_result
 from session.message import Input, Output, ToolResult

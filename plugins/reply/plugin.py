@@ -29,8 +29,10 @@ from agent.plugin_contracts import Message
 from plugins.reply_program.contract import (
     REPLY_EXECUTE_V4 as REPLY_EXECUTE,
 )
-from agent.plugin_contracts.sources import (
+from plugins.conversation.contract import (
     CONVERSATION_COMMANDS as CONVERSATION_COMMANDS,
+)
+from plugins.sources.contract import (
     SOURCES_V5 as SOURCES,
     SOURCE_CHECK_V2 as SOURCE_CHECK,
     SourceGuard,
@@ -47,7 +49,9 @@ from .status import REPLY_STATUS, ReplyState
 Reminder = Mapping[str, object]
 Preview = Callable[[str], AbstractContextManager[StreamCallback]]
 
-from agent.plugin_contracts.sources import SOURCE_CHANGED_V3 as SOURCE_CHANGED
+from plugins.sources.contract import (
+    SOURCE_CHANGED_V3 as SOURCE_CHANGED,
+)
 
 api_version = 3
 name = "reply"

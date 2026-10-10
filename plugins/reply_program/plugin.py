@@ -14,7 +14,9 @@ from agent.plugin_composition.messages import MESSAGE_WRITERS, OWNER_STATE
 from plugins.reply_program.contract import (
     REPLY_EXECUTE_V4,
 )
-from agent.plugin_contracts.sources import SourceGuard
+from plugins.sources.contract import (
+    SourceGuard,
+)
 
 from .inputs import (
     CONTENT,

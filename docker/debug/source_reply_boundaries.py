@@ -44,7 +44,9 @@ from agent.plugin_contracts import ContentPart, ContentReferences, Control, Inpu
 from plugins.content.contract import CONTENT
 from agent.plugin_contracts.delivery import DELIVERY_GUARDED_START as DELIVERY, DELIVERY_SENDERS
 from agent.plugin_contracts.models import MODEL_SELECTION
-from agent.plugin_contracts.sources import CHECK_ORIGIN
+from plugins.conversation.contract import (
+    CHECK_ORIGIN,
+)
 from plugins.content.plugin import _decode_text, check_text
 from plugins.content.api import check_artifact
 from plugins.context.api import Materials, material_data

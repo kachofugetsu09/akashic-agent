@@ -27,7 +27,7 @@ async def run(base: Path, listen: str) -> dict[str, bool]:
     """只写一次性 workspace；命令走正式选择和独立进程。"""
     from agent.config import Config
     from agent.plugins.install import install_git_plugin
-    from agent.plugins.manifest import workspace_plugin_data_dir
+    from agent.plugins.manifest import set_plugin_enabled, workspace_plugin_data_dir
     from agent.plugin_composition.config_input import save_config
     from bootstrap.app import AppRuntime
     from bootstrap.init_workspace import init_workspace
@@ -42,12 +42,15 @@ async def run(base: Path, listen: str) -> dict[str, bool]:
     config.write_text('[runtime]\n')
     init_workspace(config_path=config, workspace=workspace)
     sources = base / "sources"
-    for name in ("gateway", "sources", "models", "content", "commands", "conversation", "programmatic", "turn_projection", "ui"):
+    api_sources = ("reply", "onboarding", "workloads")
+    for name in ("gateway", "sources", "models", "content", "commands", "conversation", "programmatic", "turn_projection", "ui", *api_sources):
         path = sources / name
         shutil.copytree(ROOT / "plugins" / name, path, ignore=shutil.ignore_patterns("__pycache__"))
         subprocess.run(["git", "init", "-q", "--initial-branch=source", str(path)], check=True)
         commit(path)
         install_git_plugin(workspace=workspace, source=str(path), marketplace="lab", plugins_home=home)
+        if name in api_sources:
+            set_plugin_enabled(name + "@lab", enabled=False, plugins_home=home)
     save_config(workspace_plugin_data_dir(workspace, "gateway", "lab"), {"listen": listen})
     observer = sources / "observer"
     observer.mkdir()
@@ -90,6 +93,7 @@ async def apply(ctx):
         manager = core.plugin_manager
         root = manager.live_root
         assert root is not None
+        assert all(manager.generation(name + "@lab") is None for name in api_sources)
         observer_generation = manager.generation("observer@lab")
         assert observer_generation is not None and observer_generation.fiber is not None
         observer_fiber = observer_generation.fiber
@@ -172,7 +176,7 @@ async def apply(ctx):
     save_config(workspace_plugin_data_dir(workspace, "gateway", "lab"),
                 {"enabled": False, "listen": "192.0.2.1:9"})
     await stdio(config, workspace, env, sources / "gateway")
-    return {"stdio_eof_and_failure_cleanup": True, "published_native_endpoint": True, "remote_commands_under_lock": True,
+    return {"inactive_api_sources": True, "stdio_eof_and_failure_cleanup": True, "published_native_endpoint": True, "remote_commands_under_lock": True,
             "input_and_output_rpc": True, "sigint_commits_pause": True, "command_generation_update": True,
             "missing_command_explicit": True, "observer_and_history_preserved": True,
             "stop_withdraws_endpoint": True}
@@ -197,7 +201,11 @@ async def stdio(config: Path, workspace: Path, env: dict[str, str], source: Path
                     process.stdin.write((json.dumps({"jsonrpc": "2.0", "id": identity,
                         "method": method, "params": params}) + "\n").encode())
                     await process.stdin.drain()
-                    line = await asyncio.wait_for(process.stdout.readline(), 20)
+                    try:
+                        line = await asyncio.wait_for(process.stdout.readline(), 20)
+                    except TimeoutError as error:
+                        logs.seek(0)
+                        raise TimeoutError(f"stdio {method} 未响应：{logs.read().decode()}") from error
                     if not line:
                         logs.seek(0)
                         raise AssertionError(logs.read().decode())

@@ -29,8 +29,10 @@ from agent.plugin_contracts import (
 from plugins.content.contract import (
     CONTENT as CONTENT,
 )
-from agent.plugin_contracts.sources import (
+from plugins.conversation.contract import (
     CONVERSATION_COMMANDS as CONVERSATION_COMMANDS,
+)
+from plugins.sources.contract import (
     SOURCE_CHECK_V2 as SOURCE_CHECK,
 )
 

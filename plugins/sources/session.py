@@ -19,7 +19,9 @@ from agent.plugin_composition.messages import (
 )
 from agent.plugin_composition.tasks import RestartGate, Task, TaskAdmission, TaskSlot
 from agent.plugin_contracts import Control, Input, Message, Output
-from agent.plugin_contracts.sources import CompletionProgram
+from plugins.sources.contract import (
+    CompletionProgram,
+)
 
 logger = logging.getLogger(__name__)
 Changed = Callable[[MessageReader, str, bool], None]

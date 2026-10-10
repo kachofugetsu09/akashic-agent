@@ -105,7 +105,6 @@ PLUGIN_ALLOWED_MODULES = frozenset({
 
     "infra.persistence.json_store",
     "agent.plugin_contracts.message",
-    "agent.plugin_contracts.sources",
     "agent.plugin_contracts.tools",
     "agent.plugin_contracts.models",
     "agent.plugin_composition.message_view",

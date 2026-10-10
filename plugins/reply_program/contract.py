@@ -15,7 +15,9 @@ from agent.plugin_contracts import Message
 from agent.plugin_contracts.models import ContentRenderer
 from plugins.context.contract import MaterialKind
 from agent.plugin_contracts.tools import ToolPresentation, ToolView
-from agent.plugin_contracts.sources import SourceGuard
+from plugins.sources.contract import (
+    SourceGuard,
+)
 
 
 class ReplyExecuteV4(Protocol):
