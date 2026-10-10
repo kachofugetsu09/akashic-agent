@@ -22,10 +22,7 @@ from agent.plugin_contracts.delivery import (
     DELIVERY_SENDERS as DELIVERY_SENDERS,
     DeliveryHistory as DeliveryHistory,
 )
-from agent.plugin_contracts.proactive import (
-    SEMANTIC_INTEREST as SEMANTIC_INTEREST,
-    SemanticInterest as SemanticInterest,
-)
+from plugins.akasha.contract import SEMANTIC_INTEREST as SEMANTIC_INTEREST, SemanticInterest as SemanticInterest
 from agent.plugin_contracts.tools import (
     ALL_TOOLS as ALL_TOOLS,
     TOOLS as TOOLS,
