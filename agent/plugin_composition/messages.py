@@ -16,6 +16,8 @@ from session.embedding_store import (
     MessageEmbeddingStore,
 )
 from session.log import (
+    MessagePage as MessagePage,
+    SessionEntry as SessionEntry,
     MessageLog as _MessageLog,
     MessageReader as MessageReader,
     MessageSnapshot as MessageSnapshot,

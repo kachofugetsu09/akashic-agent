@@ -21,7 +21,7 @@ from plugins.models.contract import (
 )
 
 from .static import register_chat_assets
-from agent.plugin_composition.message_view import read_message_rows, session_row
+from plugins.ui.contract import read_message_rows, session_row
 from .navigation import NavigationPreferences, PinUpdate, check_project_pin, session_pin_row
 from .notifications import NotificationFeed, NotificationRequest, notification_events
 from .session_activity import follow_session_activity

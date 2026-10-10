@@ -27,17 +27,22 @@ async def run(directory: Path) -> dict[str, object]:
     from agent.plugins.install import install_git_plugin
     from agent.plugins.manager import PluginManager
     from agent.plugins.selection import PluginSelection
+    from agent.plugins.manifest import set_plugin_enabled
 
     workspace = directory / "workspace"
     workspace.mkdir()
     PluginSelection(workspace).initialize()
     home = directory / "home"
     os.environ.update(HOME=str(home), AKASHIC_PLUGIN_HOME=str(home), AKASHIC_PLUGIN_DISTRIBUTION="")
+    for name in ("ui", "workloads", "tools", "models"):
+        source = directory / name
+        shutil.copytree(ROOT / "plugins" / name, source, ignore=shutil.ignore_patterns("__pycache__"))
+        subprocess.run(["git", "init", "-q", "--initial-branch=source", str(source)], check=True)
+        commit(source)
+        install_git_plugin(workspace=workspace, source=str(source), marketplace="lab", plugins_home=home)
+        if name != "ui":
+            set_plugin_enabled(name + "@lab", enabled=False, plugins_home=home)
     provider = directory / "ui"
-    shutil.copytree(ROOT / "plugins/ui", provider, ignore=shutil.ignore_patterns("__pycache__"))
-    subprocess.run(["git", "init", "-q", "--initial-branch=source", str(provider)], check=True)
-    commit(provider)
-    install_git_plugin(workspace=workspace, source=str(provider), marketplace="lab", plugins_home=home)
     sources = directory / "plugins"
     panel, reader = sources / "panel", sources / "reader"
     panel.mkdir(parents=True)
@@ -60,7 +65,7 @@ async def apply(ctx):
     await ctx.require(UI_SLOTS).register_plugin_ui(ctx, PluginUiDefinition("panel.js"), query=query)
 ''')
     (reader / "plugin.py").write_text('''from agent.plugin_composition import ServiceKey
-from agent.plugin_contracts.ui import PLUGIN_UI
+from plugins.ui.contract import PLUGIN_UI
 api_version = 3
 name = "reader"
 version = "1.0.0"
@@ -86,6 +91,7 @@ async def apply(ctx):
         root = host.live_root
         assert root is not None
         result = await root.context.require(ServiceKey("scenario.ui.read"))()
+        assert "value" in result, (result, [(name, str(item.load_error)) for name, item in host._active_generations.items()])
         assert result["value"]["text"] == "stored panel value"
         assert result["value"]["worker"].startswith("plugin-ui")
         assert result["module"] == "export default {};\n"

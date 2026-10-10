@@ -44,7 +44,7 @@ from starlette.websockets import WebSocketDisconnect, WebSocketState
 
 from .services import AttachmentStorePort as AttachmentStore
 from .services import ArtifactStorePort as ChannelAttachmentArtifactStore
-from agent.plugin_composition.message_view import MessageDisplayReader, follow_messages
+from plugins.ui.contract import MessageDisplayReader, follow_messages
 from .services import (
     MessageCatalogPort as MessageCatalog,
     MessageConflict,

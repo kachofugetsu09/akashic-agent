@@ -15,7 +15,7 @@ from .protocol.errors import JsonRpcError, UNAUTHORIZED
 from .protocol.models import InitializeParams, MessageSendParams
 from .contract import RpcMethod
 from agent.plugin_composition.channels import ChannelInboundMessage
-from agent.plugin_composition.message_view import (
+from plugins.ui.contract import (
     MessageDisplayReader,
     follow_messages,
     read_message_rows,

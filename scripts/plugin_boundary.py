@@ -92,12 +92,10 @@ PLUGIN_ALLOWED_MODULES = frozenset({
     "agent.plugin_composition.runtime_lifecycle",
     "agent.plugin_composition.tasks",
     "agent.plugin_contracts",
-    "agent.plugin_contracts.ui",
     # ADR-0084: directory snapshot and default registration, with no Core business owner.
 
     "infra.persistence.json_store",
     "agent.plugin_contracts.message",
-    "agent.plugin_composition.message_view",
     "core.common.diagnostic_log",
     # 有界文件工作与取消排空；公开合同见 plugin-v3-capabilities.md。
     "core.common.file_io",

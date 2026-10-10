@@ -59,7 +59,7 @@ from .services import (
     SessionAdminPort,
 )
 from .services import ArtifactReadLeasePort, PluginUiProvider, WebUiProvider
-from agent.plugin_composition.message_view import MessageDisplayReader
+from plugins.ui.contract import MessageDisplayReader
 from .scoped_capabilities import (
     ScopedMessageDisplay,
     ScopedPluginUiProvider,

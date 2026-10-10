@@ -78,13 +78,7 @@ role = "core"
 note = "有界纯同步 worker 池"
 
 # ── 人类与模型入口 ───────────────────────────────────────────
-[capabilities."ui.messages.v1"]
-role = "seam"
-note = "UI owner 在本次实际 provider 的调用作用域投影消息，不改写事实"
 
-[capabilities."ui.plugin.v1"]
-role = "seam"
-note = "UI 插件拥有登记投影、查询准入和物理线程排空"
 
 [capabilities."core.host_info"]
 role = "core"

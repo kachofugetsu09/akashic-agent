@@ -39,7 +39,7 @@ from .dashboard_server import start_dashboard_server
 from .dashboard_host import LiveDashboardMiddleware
 from .plugin_ui import PluginUiSlots
 from .queries import LivePluginUiProvider
-from agent.plugin_contracts.ui import PLUGIN_UI, MESSAGE_DISPLAY
+from plugins.ui.contract import PLUGIN_UI, MESSAGE_DISPLAY
 from .message_display import project_message_rows
 from .web import build_web_ui_catalog, encode_web_ui_bootstrap, resolve_web_module
 

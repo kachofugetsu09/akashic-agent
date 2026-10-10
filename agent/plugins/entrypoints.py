@@ -13,11 +13,12 @@ import secrets
 import sys
 from typing import Literal, cast
 
-from agent.plugins.distribution_sources import distribution_plugin_sources
+from agent.plugins.distribution_sources import distribution_plugin_sources, distribution_sources
 from agent.plugins.importer import FreshPluginImporter
+from agent.plugins.manifest import plugins_root
 from agent.plugins.public_contracts import public_contracts
 from agent.plugins.selection import PluginSelection
-from agent.plugins.source_resolver import ResolvedPluginSource, resolve_plugin_sources
+from agent.plugins.source_resolver import ResolvedPluginSource, resolve_plugin_sources, scan_plugin_sources
 from agent.plugins.static_manifest import load_static_plugin_manifest
 
 
@@ -47,6 +48,18 @@ async def invoke_plugin_command(
                 matches.append((code, declarations[command]))
     if len(matches) != 1:
         raise LookupError(f"命令 {command} 需要唯一 provider，当前有 {len(matches)} 个")
+    # API 可来自已安装但停用的 provider；命令目标仍只取上面的唯一选择。
+    home = plugins_root()
+    distribution = distribution_sources(workspace, home)
+    scan = scan_plugin_sources(
+        installed_cache_root=home / "cache", fixed_sources=distribution.sources,
+        ignored_installed_roots=distribution.ignored_installed_roots,
+    )
+    selected_names = {source.plugin_name for source in sources}
+    for source in scan.sources:
+        if source.plugin_name not in selected_names:
+            sources.append(source)
+            selected_names.add(source.plugin_name)
     changed = public_contracts.register(sources)
     if changed:
         raise RuntimeError("命令公共合同已变化，须重启进程: " + ", ".join(sorted(changed)))
