@@ -8,11 +8,7 @@ from datetime import datetime
 from typing import Protocol, TypeVar, cast
 
 from agent.plugin_composition import Context, EmitEventKey, ServiceKey
-from agent.plugin_contracts.proactive import (
-    EVENTMAIL_DELIVERY_V2 as EVENTMAIL_DELIVERY,
-    EVENTMAIL_WAKE_V2 as EVENTMAIL_WAKE,
-    ContentWakeServicesV2 as ContentWakeServices,
-)
+from plugins.eventmail.contract import EVENTMAIL_DELIVERY_V2 as EVENTMAIL_DELIVERY, EVENTMAIL_WAKE_V2 as EVENTMAIL_WAKE, ContentWakeServicesV2 as ContentWakeServices
 
 from core.common.file_io import run_file_io
 

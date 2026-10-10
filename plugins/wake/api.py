@@ -5,15 +5,8 @@ from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 from pydantic import BaseModel, ConfigDict, field_validator
 
 from agent.plugin_composition import EmitEventKey
-from agent.plugin_contracts.proactive import (
-    DRIFT_DELIVERY_V2 as DRIFT_DELIVERY,
-    DRIFT_WAKE_V2 as DRIFT_WAKE,
-    EVENTMAIL_DELIVERY_V2 as EVENTMAIL_DELIVERY,
-    EVENTMAIL_WAKE_V2 as EVENTMAIL_WAKE,
-    ContentWakeServicesV2 as ContentWakeServices,
-    EventMailDeliveryServicesV2 as DeliveryServices,
-    DriftWakeServicesV2 as DriftWakeServices,
-)
+from plugins.eventmail.contract import EVENTMAIL_DELIVERY_V2 as EVENTMAIL_DELIVERY, EVENTMAIL_WAKE_V2 as EVENTMAIL_WAKE, ContentWakeServicesV2 as ContentWakeServices, EventMailDeliveryServicesV2 as DeliveryServices
+from agent.plugin_contracts.proactive import DRIFT_DELIVERY_V2 as DRIFT_DELIVERY, DRIFT_WAKE_V2 as DRIFT_WAKE, DriftWakeServicesV2 as DriftWakeServices
 
 
 class DeliveryTarget(BaseModel):
