@@ -1,0 +1,28 @@
+schema_version = 1
+bundle_id = "gateway_config"
+version = "1.0.0"
+migration_root = "migrations/gateway_migrations"
+package_name = "gateway_migrations"
+
+[[files]]
+path = "20261010_01_gateway_config_copy.py"
+sha256 = "efa7c0523616d6c8948ba30ac405dc393b9626e958fc0e564173c32f509a91af"
+
+[[files]]
+path = "__init__.py"
+sha256 = "60daeacad29aba615fc1edca5c97e4b286542ccc039ea07ccc71e16ee76bd00f"
+
+[[files]]
+path = "helpers/__init__.py"
+sha256 = "be3bf2c8b57b606de5f9ca5e3f7c14abdcc886da7cc949f50f7004118191d6e6"
+
+[[files]]
+path = "helpers/settings.py"
+sha256 = "2fadbe5b0acf1e110861488b1aea4ce11296584e0b4a65d7b7c78f2228915c98"
+
+[[migrations]]
+id = "20261010_01_gateway_config_copy"
+path = "20261010_01_gateway_config_copy.py"
+depends = []
+transactional = false
+sha256 = "efa7c0523616d6c8948ba30ac405dc393b9626e958fc0e564173c32f509a91af"

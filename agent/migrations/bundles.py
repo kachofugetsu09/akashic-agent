@@ -38,6 +38,7 @@ _REJECTED_IMPORT_PREFIXES = (
 _ALLOWED_CORE_MIGRATION_MODULES = frozenset({
     "agent.migrations.context",
     "agent.plugin_composition",
+    "agent.plugin_composition.config_input",
     "agent.plugin_composition.artifacts",
     "agent.plugin_composition.messages",
     "agent.plugin_contracts",

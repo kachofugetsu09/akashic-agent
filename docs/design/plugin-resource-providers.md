@@ -205,3 +205,11 @@ JSON-RPC listener 就绪后发布实际绑定地址，停止时撤下；当前 l
 命令 generation 换代不重新 apply 无关插件；卸载命令 provider 后通用分派明确报缺席。
 本层只新增可重建的 JSON-RPC 端点投影，既有消息、表和 secret 的写入规则不变。
 实际验证见 [gateway_cli_scenario.py](../../scripts/gateway_cli_scenario.py)。
+
+Gateway 的离线 bundle 先把旧 `[app_server]` 完整复制到自身 `config.input.json`。
+复制保留旧 Core 的数值转换规则，固定输入之后使用严格 schema；默认值与自定义上限均保留。
+这一阶段源配置仍由旧 listener 使用，原字节、注释和表保持不变，作为恢复依据。
+目标缺席时只增加 Gateway 配置；已有目标等价则不写，不同或损坏则失败且不记成功。
+共享 schema 属于 Gateway 的 migration helper，运行入口与离线迁移使用同一份定义。
+本阶段无自动删除、覆盖或减少协议；实际复制、冲突恢复和两次 boot 见
+[gateway_config_scenario.py](../../scripts/gateway_config_scenario.py)。
