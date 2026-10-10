@@ -5,7 +5,6 @@ import pytest
 from agent.plugin_composition import FiberState
 from agent.plugins.install import install_git_plugin
 from agent.plugins.manager import PluginManager
-from bus.event_bus import EventBus
 from tests.fixtures.plugin_workspace import initialize_plugin_workspace
 from tests.test_plugin_fresh_root import module
 from tests.test_plugin_install import _commit, _write_v3_plugin
@@ -50,7 +49,7 @@ def installed_host(tmp_path, *, fail_close=False):
         )
     initialize_plugin_workspace(workspace)
     host = PluginManager(
-        [], event_bus=EventBus(), workspace=workspace,
+        [], workspace=workspace,
         installed_cache_root=home / "cache",
     )
     return host, home / "cache/lab/target", workspace

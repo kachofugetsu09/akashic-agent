@@ -8,7 +8,6 @@ from tests.fixtures.plugin_workspace import initialize_plugin_workspace
 from agent.plugin_composition.config_input import save_config
 from agent.plugin_composition.channels import CHANNEL_INPUT_V2 as CHANNEL_INPUT, ChannelInboundMessage
 from agent.plugins.manager import PluginManager
-from bus.event_bus import EventBus
 from session.log import MessageLog
 from session.message import Input, Output, ToolResult
 
@@ -181,10 +180,8 @@ async def apply(ctx):
     artifacts = ChannelAttachmentArtifactStore(
         workspace=workspace, metadata_store=artifact_store
     )
-    event_bus = EventBus()
     host = PluginManager(
         [sources],
-        event_bus=event_bus,
         workspace=workspace,
         installed_cache_root=tmp_path / "home/cache",
         message_log=log,
@@ -207,10 +204,6 @@ async def apply(ctx):
                 cleanup()
             except BaseException as error:
                 cleanup_errors.append(error)
-        try:
-            await event_bus.aclose()
-        except BaseException as error:
-            cleanup_errors.append(error)
         if termination_error is not None:
             if cleanup_errors:
                 raise BaseExceptionGroup(

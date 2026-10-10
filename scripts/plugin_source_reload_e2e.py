@@ -16,7 +16,6 @@ sys.path[:0] = [str(ROOT), str(ROOT / "sdk/python/src")]
 from agent.plugin_composition import ServiceKey
 from agent.plugins.manager import PluginManager
 from agent.plugins.watcher import PluginWatcher
-from bus.event_bus import EventBus
 
 VALUE = ServiceKey[str]("reload.value")
 
@@ -43,7 +42,7 @@ async def run(output: Path) -> None:
     plugin.mkdir(parents=True)
     entry = plugin / "plugin.py"
     entry.write_text(source("a"))
-    manager = PluginManager([plugin.parent], event_bus=EventBus(), workspace=workspace,
+    manager = PluginManager([plugin.parent], workspace=workspace,
                             installed_cache_root=output / "plugin-home/cache")
     watcher = None
     task = None

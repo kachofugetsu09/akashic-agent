@@ -8,7 +8,6 @@ import pytest
 from tests.fixtures.plugin_workspace import initialize_plugin_workspace
 from agent.plugin_composition import FiberState
 from agent.plugins.manager import PluginManager
-from bus.event_bus import EventBus
 from agent.plugins import manager as manager_module
 
 def _v3_source(
@@ -49,7 +48,6 @@ def _manager(
 ) -> PluginManager:
     return PluginManager(
         plugin_dirs=[tmp_path / "plugins"],
-        event_bus=EventBus(),
         workspace=workspace or tmp_path / "workspace",
         installed_cache_root=tmp_path / "home" / "cache",
     )

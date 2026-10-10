@@ -1489,14 +1489,11 @@ async def _exercise_business_composition(
     PluginSelection(workspace).initialize()
     from agent.plugins.install import install_git_plugin
     from agent.plugins.manager import PluginManager
-    from bus.event_bus import EventBus
     from session.log import MessageLog, SessionAttributes
 
     log = MessageLog(workspace / "sessions.db")
-    bus = EventBus()
     manager = PluginManager(
         [],
-        event_bus=bus,
         workspace=workspace,
         installed_cache_root=plugins_home / "cache",
         message_log=log,
@@ -1824,7 +1821,6 @@ async def _exercise_business_composition(
         finally:
             try:
                 log.close()
-                await bus.aclose()
             finally:
                 if source_restore is not None:
                     original, backup = source_restore
@@ -1835,7 +1831,6 @@ async def _exercise_business_composition(
     resource_close = {
         "live_root_closed": manager.live_root is None,
         "message_log_closed": log._closed,
-        "event_bus_closed": bus._closed,
     }
     for row in reports:
         row.pop("artifact", None)

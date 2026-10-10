@@ -24,7 +24,6 @@ from bootstrap.runtime_readiness import RuntimeReadiness
 from bootstrap.tools import CoreRuntime, build_core_runtime
 from bootstrap.workspace_lock import WorkspaceInstanceLock
 from bootstrap.workspace_token import ensure_workspace_token
-from bus.event_bus import EventBus
 from bus.queue import MessageBus
 from agent.plugins.watcher import PluginWatcher
 from core.net.http import (
@@ -197,7 +196,6 @@ class AppRuntime:
         self.control_service: ControlService | None = None
         self.core: CoreRuntime | None = None
         self.bus = None
-        self.event_bus: EventBus | None = None
         self.dashboard_server: uvicorn.Server | None = None
         self.dashboard_task: asyncio.Task[None] | None = None
         self.web_shell: uvicorn.Server | None = None
@@ -232,8 +230,6 @@ class AppRuntime:
                 clear_stale_session_admissions=True,
             )
             self.bus = self.core.bus
-            event_bus = self.core.event_bus
-            self.event_bus = event_bus
             manager = self.core.plugin_manager
             manager.bind_endpoint_switcher(self._swap_plugin_endpoints)
             self.dashboard_server = build_dashboard_server(
