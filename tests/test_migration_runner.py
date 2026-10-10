@@ -61,4 +61,5 @@ def test_core_only_cli_restarts_after_creating_runtime_data(
         "20261004_04_session_title",
         "20261006_01_config_update_receipts",
         "20261007_01_message_prefix_revision",
+        "20261011_01_plugin_contract_restart",
     }

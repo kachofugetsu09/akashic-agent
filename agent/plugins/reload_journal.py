@@ -270,6 +270,17 @@ class ReloadJournal:
             if changed.rowcount != 1:
                 raise KeyError(f"插件更新不存在: {update_id}")
 
+    def require_contract_restart(self, update_id: str) -> None:
+        """安装已提交且输入固定后记录重启要求，不改变安装恢复 phase。"""
+        with self._connect() as conn:
+            changed = conn.execute(
+                "INSERT INTO plugin_contract_restarts(update_id) SELECT update_id FROM plugin_updates "
+                "WHERE update_id=? AND phase='committed' AND input_ref IS NOT NULL",
+                (update_id,),
+            )
+            if changed.rowcount != 1:
+                raise RuntimeError("合同重启要求需要已提交的安装与固定输入")
+
     def commit_update(self, update_id: str) -> None:
         """离线安装没有 runtime reload；安装 owner 核验完成后提交恢复点。"""
         with self._connect() as conn:
@@ -970,6 +981,7 @@ class ReloadJournal:
             conn.execute(config_updates.SCHEMA)
             for statement in update_rollback.SCHEMA.values():
                 _ = conn.execute(statement)
+            conn.execute(update_rollback.CONTRACT_RESTART_SCHEMA)
 
     def _check_existing_schema(self) -> None:
         """Read an existing journal without creating or altering any object."""
@@ -997,6 +1009,7 @@ class ReloadJournal:
                 "runtime/plugin-reloads.sqlite3 缺少 plugin_updates；"
                 "不会由普通启动补造历史表"
             )
+        update_rollback.check_contract_restart_schema(conn)
         config_updates.check_current_schema(conn)
         required = {
             "reload_transactions": {

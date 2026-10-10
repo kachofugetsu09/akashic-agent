@@ -61,6 +61,18 @@ SCHEMA = {
 }
 
 
+CONTRACT_RESTART_SCHEMA = """CREATE TABLE plugin_contract_restarts (
+    update_id TEXT PRIMARY KEY REFERENCES plugin_updates(update_id)
+)"""
+
+
+def check_contract_restart_schema(conn: sqlite3.Connection) -> None:
+    """合同重启事实只按更新 ID 追加，不保存第二份输入或安装 phase。"""
+    row = conn.execute("SELECT sql FROM sqlite_master WHERE type='table' AND name='plugin_contract_restarts'").fetchone()
+    if row is None or " ".join(str(row[0]).split()) != " ".join(CONTRACT_RESTART_SCHEMA.split()):
+        raise RuntimeError("合同重启 journal schema 缺失或未知；请先执行 Core migration")
+
+
 @dataclass(frozen=True)
 class UpdateRollback:
     update_id: str
@@ -73,6 +85,7 @@ class UpdateRollback:
     phase: Literal['armed', 'committed', 'rolled_back']
     reload_tx_id: str | None
     error: str
+    restart_required: bool
 
 
 def plugin_update_schema_state(conn: sqlite3.Connection) -> Literal["missing", "old", "new"]:
@@ -114,7 +127,8 @@ def pointer_value(pointers: ArtifactPointers | None) -> dict[str, str | None] | 
 def read(conn: sqlite3.Connection, update_id: str) -> UpdateRollback:
     row = conn.execute(
         "SELECT input_ref,plugin_id,plugin_base,previous_pointers_json,candidate_pointer,previous_enabled,"
-        "phase,reload_tx_id,error FROM plugin_updates WHERE update_id=?", (update_id,),
+        "phase,reload_tx_id,error,EXISTS(SELECT 1 FROM plugin_contract_restarts AS restart "
+        "WHERE restart.update_id=plugin_updates.update_id) FROM plugin_updates WHERE update_id=?", (update_id,),
     ).fetchone()
     if row is None:
         raise KeyError(f"插件更新不存在: {update_id}")
@@ -131,7 +145,7 @@ def read(conn: sqlite3.Connection, update_id: str) -> UpdateRollback:
         previous = ArtifactPointers(ArtifactPointer(cast(str | None, raw['stable'])), ArtifactPointer(cast(str | None, raw['latest'])))
     return UpdateRollback(
         update_id, row[0], row[1], Path(row[2]), previous, ArtifactPointer(row[4]),
-        None if row[5] is None else bool(row[5]), row[6], row[7], row[8],
+        None if row[5] is None else bool(row[5]), row[6], row[7], row[8], bool(row[9]),
     )
 
 

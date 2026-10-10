@@ -19,7 +19,7 @@ class UpdateStatus:
     generation_id: str | None
     active_input_ref: str | None
     fiber_state: str | None
-    state: Literal["accepted", "active", "failed", "unknown"]
+    state: Literal["accepted", "active", "failed", "unknown", "restart_required"]
     error: str
 
 

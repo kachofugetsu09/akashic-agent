@@ -27,35 +27,45 @@ class PublicContracts(importlib.abc.MetaPathFinder):
     def __init__(self) -> None:
         self._files: dict[str, _Contract] = {}
 
-    def register(self, sources: Iterable[ResolvedPluginSource]) -> None:
+    def register(self, sources: Iterable[ResolvedPluginSource]) -> frozenset[str]:
         """登记实际源码中的公共模块；同进程改动合同必须明确重启。"""
+        pending: dict[str, _Contract] = {}
+        changed: set[str] = set()
         # 1. 发行版与外置安装均以已校验的 plugin identity 确定模块名。
         for source in sources:
+            name = source.plugin_name.replace("-", "_")
             path = source.plugin_root / "contract.py"
             if not path.exists():
+                if f"plugins.{name}" in self._files:
+                    changed.add(source.plugin_name)
                 continue
             if path.is_symlink() or not path.is_file():
                 raise ValueError(f"插件合同必须是普通文件: {path}")
-            name = source.plugin_name.replace("-", "_")
             if not name.isidentifier():
                 raise ValueError(f"插件名不能作为公共模块: {source.plugin_name}")
             module = f"plugins.{name}"
             digest = hashlib.sha256(path.read_bytes()).digest()
+            candidate = pending.get(module)
+            if candidate is not None and (candidate.owner != source.plugin_name or candidate.digest != digest):
+                raise ValueError(f"同名安装源码的公共合同不同: {module}.contract")
             previous = self._files.get(module)
             if previous is not None:
                 if previous.owner != source.plugin_name:
                     raise ValueError(f"公共模块名冲突: {module}")
                 if previous.digest != digest:
-                    raise RuntimeError(f"公共合同已变化，须重启进程: {module}.contract")
+                    changed.add(source.plugin_name)
+                    continue
             loaded = sys.modules.get(f"{module}.contract")
             if previous is None and loaded is not None:
                 loaded_path = loaded.__file__
                 if loaded_path is None or hashlib.sha256(Path(loaded_path).read_bytes()).digest() != digest:
                     raise RuntimeError(f"已导入的公共合同与安装源码不同: {module}.contract")
-            self._files[module] = _Contract(source.plugin_name, path, digest)
+            pending[module] = _Contract(source.plugin_name, path, digest)
+        self._files.update(pending)
         # 2. namespace 包只服务于合同导入，不执行 __init__.py。
         if self._files and self not in sys.meta_path:
             sys.meta_path.insert(0, self)
+        return frozenset(changed)
 
     def find_spec(
         self, fullname: str, path: object = None, target: object = None,
