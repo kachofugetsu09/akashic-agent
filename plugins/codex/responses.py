@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from plugins.models.contract import describe_transport_error
+
 # Provider JSON is validated at this boundary. Pyright cannot retain all narrowing.
 # pyright: reportUnknownVariableType=false, reportUnknownMemberType=false, reportUnknownArgumentType=false
 
@@ -11,7 +13,7 @@ from typing import Any, cast
 
 import httpx
 
-from core.net.http import HttpClient, StreamProgress, describe_transport_error, finish_response, retry_after_time
+from core.net.http import HttpClient, StreamProgress, finish_response, retry_after_time
 
 from plugins.models.contract import (
     LLMResponse,

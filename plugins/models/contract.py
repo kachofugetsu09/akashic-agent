@@ -2,6 +2,14 @@
 from __future__ import annotations
 
 import asyncio
+import base64
+import io
+import socket
+import ssl
+
+import httpx
+from PIL import Image, ImageOps
+from plugins.ledger.contract import detect_supported_image_mime
 from core.common.frozen_json import freeze_json
 from dataclasses import (
     field,
@@ -857,3 +865,142 @@ class ModelControlUnavailable(ModelError):
 
 @dataclass(frozen=True, slots=True)
 class RevisionConflictError(ModelError): ...
+
+MAX_IMAGE_FILE_BYTES = 20 * 1024 * 1024
+MAX_IMAGE_TOTAL_BYTES = 40 * 1024 * 1024
+MAX_IMAGE_DATA_URI_BYTES = 8 * 1024 * 1024
+MAX_IMAGE_DATA_URI_TOTAL_BYTES = 16 * 1024 * 1024
+MAX_IMAGE_EDGE = 4096
+MAX_IMAGE_PIXELS = 40_000_000
+
+
+def validate_image_attachment_budget(sizes: list[int]) -> None:
+    """Bound raw image bytes across a model request, including retained history."""
+
+    oversized = next((size for size in sizes if size > MAX_IMAGE_FILE_BYTES), None)
+    if oversized is not None:
+        raise ValueError(
+            f"单张图片不能超过 {MAX_IMAGE_FILE_BYTES // 1024 // 1024}MB"
+            f"（当前 {oversized / 1024 / 1024:.1f}MB）。"
+        )
+    total = sum(sizes)
+    if total > MAX_IMAGE_TOTAL_BYTES:
+        raise ValueError(
+            f"模型请求中的图片（含历史消息）合计不能超过 "
+            f"{MAX_IMAGE_TOTAL_BYTES // 1024 // 1024}MB"
+            f"（当前 {total / 1024 / 1024:.1f}MB）。"
+        )
+
+
+def encode_image_bytes(raw: bytes) -> str:
+    """从 Artifact 的已核验只读 bytes 构造有界请求图，不重新打开来源路径。"""
+    validate_image_attachment_budget([len(raw)])
+    mime = detect_supported_image_mime(raw[:4096])
+    if mime is None:
+        raise ValueError("不支持的图片格式。仅支持 PNG、JPEG、GIF、BMP、WebP。")
+
+    try:
+        with Image.open(io.BytesIO(raw)) as image:
+            _validate_image_pixels(image.width, image.height)
+            image.verify()
+
+        with Image.open(io.BytesIO(raw)) as image:
+            _validate_image_pixels(image.width, image.height)
+            image = ImageOps.exif_transpose(image)
+            if image.mode not in ("RGB", "L"):
+                canvas = Image.new("RGB", image.size, (255, 255, 255))
+                alpha = image.getchannel("A") if "A" in image.getbands() else None
+                canvas.paste(image.convert("RGB"), mask=alpha)
+                image = canvas
+            elif image.mode == "L":
+                image = image.convert("RGB")
+
+            raw_b64_len = _base64_encoded_size(len(raw))
+            if max(image.size) > MAX_IMAGE_EDGE or raw_b64_len > MAX_IMAGE_DATA_URI_BYTES:
+                image.thumbnail((MAX_IMAGE_EDGE, MAX_IMAGE_EDGE))
+
+            if raw_b64_len <= MAX_IMAGE_DATA_URI_BYTES and max(image.size) <= MAX_IMAGE_EDGE:
+                buf = io.BytesIO()
+                if mime == "image/jpeg":
+                    image.save(buf, format="JPEG", quality=95, optimize=True)
+                    clean_mime = "image/jpeg"
+                else:
+                    image.save(buf, format="PNG", optimize=True)
+                    clean_mime = "image/png"
+                clean_bytes = buf.getvalue()
+                if _base64_encoded_size(len(clean_bytes)) <= MAX_IMAGE_DATA_URI_BYTES:
+                    clean_b64 = base64.b64encode(clean_bytes).decode()
+                    return f"data:{clean_mime};base64,{clean_b64}"
+
+            compressed_b64_len = 0
+            for quality in (85, 75, 65, 55, 45):
+                buf = io.BytesIO()
+                image.save(buf, format="JPEG", quality=quality, optimize=True)
+                candidate_bytes = buf.getvalue()
+                compressed_b64_len = _base64_encoded_size(len(candidate_bytes))
+                if compressed_b64_len <= MAX_IMAGE_DATA_URI_BYTES:
+                    candidate_b64 = base64.b64encode(candidate_bytes).decode()
+                    return f"data:image/jpeg;base64,{candidate_b64}"
+    except (OSError, Image.DecompressionBombError) as exc:
+        raise ValueError("图片文件无法解码或已损坏。请确认这是有效图片。") from exc
+
+    raise ValueError(
+        f"图片压缩后仍然过大（{compressed_b64_len / 1024 / 1024:.1f}MB base64），"
+        f"上限为 {MAX_IMAGE_DATA_URI_BYTES / 1024 / 1024:.0f}MB。"
+        "请继续压缩图片或裁剪到只包含需要分析的区域。"
+    )
+
+
+def _base64_encoded_size(size: int) -> int:
+    """每 3 个输入字节编码为 4 个字符，末组不足时补齐。"""
+    return ((size + 2) // 3) * 4
+
+
+def _validate_image_pixels(width: int, height: int) -> None:
+    """在像素解码前拒绝会显著放大内存的图片。"""
+
+    pixels = width * height
+    if pixels > MAX_IMAGE_PIXELS:
+        raise ValueError(
+            f"图片像素过多（{width}×{height}），"
+            f"上限为 {MAX_IMAGE_PIXELS // 1_000_000} 百万像素。"
+            "请缩小图片或裁剪后重试。"
+        )
+
+def describe_transport_error(error: Exception) -> str:
+    """展示网络阶段与已知底层原因；不包含请求正文、URL 路径或凭据。"""
+    # 1. 异常类型说明失败阶段，未发送证据仍由 driver 单独给出。
+    if isinstance(error, httpx.ConnectTimeout):
+        reason = "连接模型服务超时，请检查网络、代理或节点"
+    elif isinstance(error, httpx.ConnectError):
+        reason = "无法连接模型服务，请检查网络、代理或节点"
+    elif isinstance(error, httpx.ReadTimeout):
+        reason = "等待模型服务响应超时"
+    elif isinstance(error, httpx.RemoteProtocolError):
+        reason = "模型服务提前关闭连接或返回了无效 HTTP 响应"
+    elif isinstance(error, httpx.ReadError):
+        reason = "读取模型响应失败，连接已中断"
+    elif isinstance(error, httpx.WriteError):
+        reason = "发送模型请求失败，连接已中断"
+    elif isinstance(error, httpx.WriteTimeout):
+        reason = "向模型服务发送请求超时"
+    elif isinstance(error, httpx.PoolTimeout):
+        reason = "等待可用 HTTP 连接超时"
+    elif isinstance(error, (httpx.TimeoutException, TimeoutError)):
+        reason = "模型请求超时"
+    else:
+        reason = "与模型服务的传输中断"
+    # 2. 只透传系统网络诊断，不直接打印可能含 token 的异常文本。
+    details = [type(error).__name__]
+    cause: BaseException | None = error
+    seen: set[int] = set()
+    while cause is not None and id(cause) not in seen:
+        seen.add(id(cause))
+        if isinstance(cause, ssl.SSLCertVerificationError):
+            details.append(f"TLS 证书校验失败：{cause.verify_message}")
+        elif isinstance(cause, socket.gaierror):
+            details.append(f"DNS 解析失败：{cause.strerror}")
+        elif isinstance(cause, OSError) and cause.strerror:
+            details.append(f"{type(cause).__name__}: {cause.strerror}")
+        cause = cause.__cause__ or cause.__context__
+    return f"{reason}（{'；'.join(dict.fromkeys(details))}）"

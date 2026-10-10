@@ -20,7 +20,8 @@ from plugins.host_execution.contract import LIST_DIR_MAX_ENTRIES, LIST_DIR_MAX_B
 
 from core.common.file_io import run_file_io as _run_file_io
 
-from agent.media import detect_supported_image_mime, encode_image_data_uri
+from plugins.ledger.contract import detect_supported_image_mime
+from plugins.models.contract import encode_image_bytes, validate_image_attachment_budget
 from plugins.host_execution.contract import FileError, FileImage, FileResult
 from infra.persistence.json_store import atomic_write_text
 
@@ -144,7 +145,8 @@ _READ_PROBE_BYTES = 4096
 
 
 def _read_image(file_path: Path) -> FileImage:
-    data_uri = encode_image_data_uri(file_path)
+    validate_image_attachment_budget([file_path.stat().st_size])
+    data_uri = encode_image_bytes(file_path.read_bytes())
     header, encoded = data_uri.split(";base64,", 1)
     return FileImage(
         text=f"[已读取图片文件 {file_path.name}，图片内容已提供给多模态模型]",

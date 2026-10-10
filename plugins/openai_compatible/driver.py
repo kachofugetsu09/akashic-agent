@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from plugins.models.contract import describe_transport_error
+
 from core.common.diagnostic_log import log_timing
 
 # External JSON is validated field by field below; pyright cannot preserve the
@@ -18,7 +20,7 @@ from urllib.parse import urlsplit, urlunsplit
 
 import httpx
 
-from core.net.http import HttpClient, StreamProgress, describe_transport_error, finish_response, retry_after_time
+from core.net.http import HttpClient, StreamProgress, finish_response, retry_after_time
 
 from core.common.frozen_json import freeze_json
 
