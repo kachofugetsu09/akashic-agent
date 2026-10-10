@@ -18,9 +18,25 @@ class Step:
     function_fibers: tuple[int, ...] = ()
 
 
+# 能力卡上的一段示例：说话人与一行文字，纯文本。
+@dataclass(frozen=True)
+class PreviewLine:
+    speaker: str
+    text: str
+
+
+# 分组面向用户的说明：引导按分组展示能力卡，插件名只作来源小字。
+@dataclass(frozen=True)
+class Ability:
+    pitch: str
+    benefit: str
+    preview: tuple[PreviewLine, ...] = ()
+    required: bool = False
+
+
 class Onboarding(Protocol):
     async def register(self, ctx: Context, step: Step) -> Effect: ...
-    async def group(self, ctx: Context, key: str, title: str) -> Effect: ...
+    async def group(self, ctx: Context, key: str, title: str, ability: Ability | None = None) -> Effect: ...
     async def catalog(self) -> dict[str, object]: ...
     async def status(self, key: str) -> dict[str, object]: ...
 

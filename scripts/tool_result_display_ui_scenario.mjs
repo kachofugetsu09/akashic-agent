@@ -78,8 +78,10 @@ try {
   const row = JSON.parse(JSON.stringify(sample.tail[0]));
   row.body.parts = [{ kind: "text", value: JSON.stringify({ output: "first\n**second**", command: "echo one\necho two" }) }];
   render([row]);
+  // 命令结果走命令块：输出在 pre.tool-result，命令在 $ 行，两者都保留真实换行。
   const texts = [...host.querySelectorAll("pre.tool-result")].map((node) => node.textContent);
-  check(texts.includes("first\n**second**") && texts.includes("echo one\necho two"), "JSON string fields preserve real newlines");
+  const commands = [...host.querySelectorAll(".tool-shell-command > span:last-child")].map((node) => node.textContent);
+  check(texts.includes("first\n**second**") && commands.includes("echo one\necho two"), "JSON string fields preserve real newlines");
   check(!host.querySelector("em, strong:not(.timeline-result-heading strong)"), "terminal JSON does not become Markdown");
   // 实时进度读取与历史相同的真实消息，不能再次丢失结构化结果。
   const data = sample.data.map(timeline.readTimelineMessage);

@@ -170,7 +170,7 @@ async def _register_ui(ctx: Context) -> None:
         requires=("shell.settings-plugins.v1",),
         provides=(),
         contract_digests={
-            "shell.settings-plugins.v1": "a1762d8d7286d3f221181e2e427c0da062d63800179afe2788430268456de14b",
+            "shell.settings-plugins.v1": "1823b19c778297893495ca9193d688e24c99d079effbaf5ecf0d1148ae0a1aa2",
         },
     )
 

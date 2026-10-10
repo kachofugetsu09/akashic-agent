@@ -26,48 +26,54 @@ const RAIL_ACTIONS_MOUNT = "shell.rail-actions.v1";
 const SETTINGS_MOUNT = "shell.settings.v1";
 const SETTINGS_PLUGINS_MOUNT = "shell.settings-plugins.v1";
 
-/** “插件”是设置工作区的内置配置区：条目来自 settings-plugins 目录，导航位置固定在初始配置（-10）与模型（30）之间。 */
-const SETTINGS_PLUGINS_ORDER = 20;
-const SETTINGS_PLUGINS_LABEL = "插件配置";
+/** “插件”是设置工作区的内置分节：条目来自 settings-plugins 目录，导航位置固定在模型（30）之后。 */
+const SETTINGS_PLUGINS_ORDER = 40;
+const SETTINGS_PLUGINS_LABEL = "插件";
+const SETTINGS_PLUGINS_ROUTE = "plugins";
+const SETTINGS_PLUGINS_INTRO = "已安装插件提供的能力。点开一项查看说明、开关和详细设置。";
+const CHEVRON_ICON = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m9 18 6-6-6-6"/></svg>';
+const BACK_ICON = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m15 18-6-6 6-6"/></svg>';
+const CLOSE_ICON = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M18 6 6 18"/><path d="m6 6 12 12"/></svg>';
+/** 窄屏时设置是两级页面：先选分节，再进分节内容；与 Shell 顶栏的窄屏断点一致。 */
+const SETTINGS_NARROW = "(max-width: 760px)";
 const SETTINGS_PLUGINS_ICON = '<svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M19.439 7.85c-.049.322.059.648.289.878l1.568 1.568c.47.47.706 1.087.706 1.704s-.235 1.233-.706 1.704l-1.611 1.611a.98.98 0 0 1-.837.276c-.47-.07-.802-.48-.968-.925a2.501 2.501 0 1 0-3.214 3.214c.446.166.855.497.925.968a.979.979 0 0 1-.276.837l-1.61 1.61a2.404 2.404 0 0 1-1.705.707 2.402 2.402 0 0 1-1.704-.706l-1.568-1.568a1.026 1.026 0 0 0-.877-.29c-.493.074-.84.504-1.02.968a2.5 2.5 0 1 1-3.237-3.237c.464-.18.894-.527.967-1.02a1.026 1.026 0 0 0-.289-.877l-1.568-1.568A2.402 2.402 0 0 1 1.998 12c0-.617.236-1.234.706-1.704L4.23 8.77c.24-.24.581-.353.917-.303.515.077.877.528 1.073 1.01a2.5 2.5 0 1 0 3.259-3.259c-.482-.196-.933-.558-1.01-1.073-.05-.336.062-.676.303-.917l1.525-1.525A2.402 2.402 0 0 1 12 1.998c.617 0 1.234.236 1.704.706l1.568 1.568c.23.23.556.338.877.29.493-.074.84-.504 1.02-.968a2.5 2.5 0 1 1 3.237 3.237c-.464.18-.894.527-.967 1.02Z"/></svg>';
 
 const SETTINGS_ICON = '<svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12.22 2h-.44a2 2 0 0 0-2 2v.18a2 2 0 0 1-1 1.73l-.43.25a2 2 0 0 1-2 0l-.15-.08a2 2 0 0 0-2.73.73l-.22.38a2 2 0 0 0 .73 2.73l.15.1a2 2 0 0 1 1 1.72v.51a2 2 0 0 1-1 1.74l-.15.09a2 2 0 0 0-.73 2.73l.22.38a2 2 0 0 0 2.73.73l.15-.08a2 2 0 0 1 2 0l.43.25a2 2 0 0 1 1 1.73V20a2 2 0 0 0 2 2h.44a2 2 0 0 0 2-2v-.18a2 2 0 0 1 1-1.73l.43-.25a2 2 0 0 1 2 0l.15.08a2 2 0 0 0 2.73-.73l.22-.39a2 2 0 0 0-.73-2.73l-.15-.08a2 2 0 0 1-1-1.74v-.5a2 2 0 0 1 1-1.74l.15-.09a2 2 0 0 0 .73-2.73l-.22-.38a2 2 0 0 0-2.73-.73l-.15.08a2 2 0 0 1-2 0l-.43-.25a2 2 0 0 1-1-1.73V4a2 2 0 0 0-2-2z"/><circle cx="12" cy="12" r="3"/></svg>';
 
-/** 设置工作区的当前位置：要么停在某个顶层分节，要么停在插件配置区的某个成员。 */
+/** 设置工作区的当前位置：顶层分节、插件列表（memberId 为 null），或某个插件的详情页。 */
 type SettingsTarget =
   | { kind: "section"; id: string }
-  | { kind: "plugins"; memberId: string };
+  | { kind: "plugins"; memberId: string | null };
 
 type SettingsNavItem =
   | { kind: "section"; entry: ShellSettingsSection }
   | { kind: "plugins" };
 
-type SettingsTab =
-  | { kind: "entry"; entry: ShellSettingsPlugin }
-  | { kind: "family"; id: string; label: string; entries: ShellSettingsPlugin[] };
+/** 插件列表里的一张卡片：单个成员，或 ≥2 个成员声明同一 family 合成的组合卡。 */
+type PluginCard = { id: string; label: string; description: string; entries: ShellSettingsPlugin[] };
 
-/** 插件配置区分节折叠成 tab：≥2 个成员的 family 合成一个组合 tab，标签取自成员自带的 familyLabel。 */
-function buildSettingsTabs(entries: ShellSettingsPlugin[]): SettingsTab[] {
+/** 插件配置区成员折叠成卡片：≥2 个成员的 family 合成一张组合卡，标签取自成员自带的 familyLabel。 */
+function buildPluginCards(entries: ShellSettingsPlugin[]): PluginCard[] {
   const familyCount = new Map<string, number>();
   for (const entry of entries) {
     if (entry.family) familyCount.set(entry.family, (familyCount.get(entry.family) ?? 0) + 1);
   }
-  const tabs: SettingsTab[] = [];
+  const cards: PluginCard[] = [];
   const familyAt = new Map<string, number>();
   for (const entry of entries) {
     if (entry.family && (familyCount.get(entry.family) ?? 0) > 1) {
       const at = familyAt.get(entry.family);
       if (at === undefined) {
-        familyAt.set(entry.family, tabs.length);
-        tabs.push({ kind: "family", id: entry.family, label: entry.familyLabel ?? entry.family, entries: [entry] });
+        familyAt.set(entry.family, cards.length);
+        cards.push({ id: `family:${entry.family}`, label: entry.familyLabel ?? entry.family, description: entry.description ?? "", entries: [entry] });
       } else {
-        (tabs[at] as { kind: "family"; entries: ShellSettingsPlugin[] }).entries.push(entry);
+        cards[at].entries.push(entry);
       }
     } else {
-      tabs.push({ kind: "entry", entry });
+      cards.push({ id: entry.id, label: entry.label, description: entry.description ?? "", entries: [entry] });
     }
   }
-  return tabs;
+  return cards;
 }
 
 function settingsTargetForRoute(
@@ -79,6 +85,7 @@ function settingsTargetForRoute(
   if (section) return { kind: "section", id: section.id };
   const member = plugins.find((entry) => entry.route === route);
   if (member) return { kind: "plugins", memberId: member.id };
+  if (route === SETTINGS_PLUGINS_ROUTE && plugins.length > 0) return { kind: "plugins", memberId: null };
   return undefined;
 }
 
@@ -132,7 +139,7 @@ function Shell({ pages, railActions, settings, settingsPlugins }: {
   const pluginEntries = useMemo(() => checkSettingsPlugins(settingsPlugins.entries), [settingsPlugins.entries]);
   // 三个目录共用同一个 hash 路由命名空间，跨目录撞 route 是合同错误。
   useMemo(() => {
-    const routes = [...bandEntries, ...sectionEntries, ...pluginEntries].map((entry) => entry.route);
+    const routes = [...bandEntries, ...sectionEntries, ...pluginEntries].map((entry) => entry.route).concat(SETTINGS_PLUGINS_ROUTE);
     if (new Set(routes).size !== routes.length) throw new Error("Shell 页面与设置分节的 route 不能重复");
   }, [bandEntries, sectionEntries, pluginEntries]);
 
@@ -145,7 +152,7 @@ function Shell({ pages, railActions, settings, settingsPlugins }: {
     if (pluginEntries.length > 0) items.push({ order: SETTINGS_PLUGINS_ORDER, item: { kind: "plugins" } });
     return items.sort((left, right) => left.order - right.order).map(({ item }) => item);
   }, [sectionEntries, pluginEntries]);
-  const settingsTabs = useMemo(() => buildSettingsTabs(pluginEntries), [pluginEntries]);
+  const pluginCards = useMemo(() => buildPluginCards(pluginEntries), [pluginEntries]);
 
   const defaultPage = bandEntries.find((entry) => entry.route === "") ?? bandEntries[0];
   const requestedRoute = window.location.hash.slice(1);
@@ -188,23 +195,22 @@ function Shell({ pages, railActions, settings, settingsPlugins }: {
     if (!first) return undefined;
     return first.kind === "section"
       ? { kind: "section", id: first.entry.id }
-      : { kind: "plugins", memberId: pluginEntries[0].id };
-  }, [settingsNav, pluginEntries]);
+      : { kind: "plugins", memberId: null };
+  }, [settingsNav]);
   const currentTarget = useMemo<SettingsTarget | undefined>(() => {
     if (settingsTarget?.kind === "section" && sectionEntries.some((entry) => entry.id === settingsTarget.id)) return settingsTarget;
-    if (settingsTarget?.kind === "plugins" && pluginEntries.some((entry) => entry.id === settingsTarget.memberId)) return settingsTarget;
+    if (settingsTarget?.kind === "plugins" && pluginEntries.length > 0
+      && (settingsTarget.memberId === null || pluginEntries.some((entry) => entry.id === settingsTarget.memberId))) return settingsTarget;
     return firstTarget;
   }, [settingsTarget, sectionEntries, pluginEntries, firstTarget]);
 
-  const activeSettingsTab = currentTarget?.kind === "plugins"
-    ? settingsTabs.find((tab) =>
-      tab.kind === "entry" ? tab.entry.id === currentTarget.memberId : tab.entries.some((entry) => entry.id === currentTarget.memberId))
+  const activeCard = currentTarget?.kind === "plugins" && currentTarget.memberId !== null
+    ? pluginCards.find((card) => card.entries.some((entry) => entry.id === currentTarget.memberId))
     : undefined;
-  // 组合 tab 渲染全部成员，普通 tab 只渲染当前分节。
-  const settingsMembers = useMemo(
-    () => activeSettingsTab ? (activeSettingsTab.kind === "family" ? activeSettingsTab.entries : [activeSettingsTab.entry]) : [],
-    [activeSettingsTab],
-  );
+  // 详情页渲染卡片的全部成员；插件列表本身不挂载成员表单。
+  const settingsMembers = useMemo(() => activeCard?.entries ?? [], [activeCard]);
+  // 窄屏两级页面：nav 是分节列表，content 是分节内容；宽屏两栏同时可见，这个状态不起作用。
+  const [settingsPane, setSettingsPane] = useState<"nav" | "content">("content");
 
   const openPage = useCallback((entry: ShellPage): void => {
     if (entry.id === activeId) { setWithdrawn(false); setSettingsOpen(false); return; }
@@ -230,15 +236,17 @@ function Shell({ pages, railActions, settings, settingsPlugins }: {
     if (!next) return;
     const route = next.kind === "section"
       ? sectionEntries.find((entry) => entry.id === next.id)?.route
-      : pluginEntries.find((entry) => entry.id === next.memberId)?.route;
+      : next.memberId === null ? SETTINGS_PLUGINS_ROUTE : pluginEntries.find((entry) => entry.id === next.memberId)?.route;
     const go = () => {
       setSettingsTarget(next);
+      // 窄屏从入口打开先给分节列表；点了具体分节或深链接时直接进内容。
+      setSettingsPane(!target && !settingsOpen && window.matchMedia(SETTINGS_NARROW).matches ? "nav" : "content");
       setSettingsOpen(true);
       const base = `${window.location.pathname}${window.location.search}`;
       window.history.replaceState(null, "", route ? `${base}#${route}` : base);
     };
     if (window.dispatchEvent(new CustomEvent("akashic:before-navigate", { cancelable: true, detail: { go } }))) go();
-  }, [currentTarget, sectionEntries, pluginEntries]);
+  }, [currentTarget, sectionEntries, pluginEntries, settingsOpen]);
 
   const closeSettings = useCallback((): void => {
     const go = () => {
@@ -247,6 +255,10 @@ function Shell({ pages, railActions, settings, settingsPlugins }: {
     };
     if (window.dispatchEvent(new CustomEvent("akashic:before-navigate", { cancelable: true, detail: { go } }))) go();
   }, [bandRoute]);
+
+  // 分节拿到的 close 保持同一身份，Shell 路由变化不应重挂载正在编辑的分节。
+  const closeSettingsRef = useRef(closeSettings);
+  closeSettingsRef.current = closeSettings;
 
   useLayoutEffect(() => {
     if (withdrawn) {
@@ -285,7 +297,8 @@ function Shell({ pages, railActions, settings, settingsPlugins }: {
   useEffect(() => {
     const dialog = settingsDialog.current;
     if (!dialog) return;
-    if (settingsOpen && !dialog.open) dialog.showModal();
+    // 打开后焦点落在面板本身而非首个导航项：Tab 仍从导航开始，但不在打开瞬间画出焦点环。
+    if (settingsOpen && !dialog.open) { dialog.showModal(); dialog.focus(); }
     else if (!settingsOpen && dialog.open) dialog.close();
   }, [settingsOpen]);
 
@@ -311,7 +324,7 @@ function Shell({ pages, railActions, settings, settingsPlugins }: {
       host.className = "shell-settings-entry";
       container.replaceChildren(host);
       const dispose = settings.render(currentTarget.id, host, {
-        pages: settings, railActions: railActionEntries, embedded: true, renderRoute: renderSettingsRoute,
+        pages: settings, railActions: railActionEntries, embedded: true, renderRoute: renderSettingsRoute, close: () => closeSettingsRef.current(),
       });
       return () => queueMicrotask(() => { dispose(); host.remove(); });
     }
@@ -346,9 +359,10 @@ function Shell({ pages, railActions, settings, settingsPlugins }: {
   // 必须等 showModal 的被动 effect 之后执行：对话框未 open 时没有可滚动的布局。
   // 成员表单异步加载后才撑开高度，首帧滚动会被钳制；内容稳定后再对齐一次。
   useEffect(() => {
-    if (!settingsOpen || currentTarget?.kind !== "plugins" || settingsMembers.length < 2) return;
+    if (!settingsOpen || currentTarget?.kind !== "plugins" || currentTarget.memberId === null || settingsMembers.length < 2) return;
+    const memberId = currentTarget.memberId;
     const scroll = () => {
-      const target = settingsContent.current?.querySelector(`[data-settings-member="${CSS.escape(currentTarget.memberId)}"]`);
+      const target = settingsContent.current?.querySelector(`[data-settings-member="${CSS.escape(memberId)}"]`);
       target?.scrollIntoView({ block: "start" });
     };
     scroll();
@@ -424,17 +438,6 @@ function Shell({ pages, railActions, settings, settingsPlugins }: {
     buttons[next].focus();
   };
 
-  // 插件配置区 tab 条与顶栏同一套方向键漫游；tab 只是导航钮，不持有分节状态。
-  const onTabsKeyDown = (event: KeyboardEvent<HTMLElement>): void => {
-    if (event.key !== "ArrowRight" && event.key !== "ArrowLeft") return;
-    const buttons = [...event.currentTarget.querySelectorAll<HTMLButtonElement>("button")];
-    const current = buttons.indexOf(event.target as HTMLButtonElement);
-    if (current < 0) return;
-    event.preventDefault();
-    const next = (current + (event.key === "ArrowRight" ? 1 : -1) + buttons.length) % buttons.length;
-    buttons[next].focus();
-  };
-
   // 只有一个页面时没有可去的地方：顶栏整条不渲染，页面占满视口；设置入口由底栏动作与 Ctrl/Cmd+, 承担。
   const showBand = bandEntries.length > 1;
   return <div className={`unified-shell${showBand ? " has-band" : ""}`}>
@@ -483,60 +486,55 @@ function Shell({ pages, railActions, settings, settingsPlugins }: {
       ref={settingsDialog}
       className="shell-settings-dialog"
       aria-label="功能设置"
+      tabIndex={-1}
+      data-pane={settingsPane}
       onCancel={(event) => { event.preventDefault(); closeSettings(); }}
       onClose={() => setSettingsOpen(false)}
     >
       <nav className="shell-settings-nav" aria-label="设置分节">
         <h2>功能设置</h2>
         {settingsNav.map((item) => {
-          if (item.kind === "plugins") {
-            return <button
-              key="plugins"
-              type="button"
-              aria-current={currentTarget?.kind === "plugins" ? "true" : undefined}
-              onClick={() => openSettings({ kind: "plugins", memberId: pluginEntries[0].id })}
-            >
-              <span className="shell-page-icon" aria-hidden="true" dangerouslySetInnerHTML={{ __html: SETTINGS_PLUGINS_ICON }} />
-              <span>{SETTINGS_PLUGINS_LABEL}</span>
-            </button>;
-          }
-          const entry = item.entry;
+          const plugins = item.kind === "plugins";
+          const current = plugins ? currentTarget?.kind === "plugins" : currentTarget?.kind === "section" && currentTarget.id === item.entry.id;
           return <button
-            key={entry.id}
+            key={plugins ? "plugins" : item.entry.id}
             type="button"
-            aria-current={currentTarget?.kind === "section" && currentTarget.id === entry.id ? "true" : undefined}
-            onClick={() => openSettings({ kind: "section", id: entry.id })}
+            aria-current={current ? "true" : undefined}
+            onClick={() => openSettings(plugins ? { kind: "plugins", memberId: null } : { kind: "section", id: item.entry.id })}
           >
-            <span className="shell-page-icon" aria-hidden="true" dangerouslySetInnerHTML={{ __html: entry.iconSvg }} />
-            <span>{entry.label}</span>
+            <span className="shell-page-icon" aria-hidden="true" dangerouslySetInnerHTML={{ __html: plugins ? SETTINGS_PLUGINS_ICON : item.entry.iconSvg }} />
+            <span className="shell-settings-nav-label">{plugins ? SETTINGS_PLUGINS_LABEL : item.entry.label}</span>
+            <span className="shell-settings-nav-chevron" aria-hidden="true" dangerouslySetInnerHTML={{ __html: CHEVRON_ICON }} />
           </button>;
         })}
       </nav>
+      <button type="button" className="shell-settings-close" onClick={closeSettings} aria-label="关闭设置" title="关闭 (Esc)">
+        <span aria-hidden="true" dangerouslySetInnerHTML={{ __html: CLOSE_ICON }} />
+      </button>
       <div className="shell-settings-body">
-        <header>
-          <button type="button" onClick={closeSettings} aria-label="关闭设置">关闭</button>
-        </header>
-        {currentTarget?.kind === "plugins" && settingsTabs.length > 1 && (
-          <div className="shell-settings-tabs" role="group" aria-label={SETTINGS_PLUGINS_LABEL} onKeyDown={onTabsKeyDown}>
-            {settingsTabs.map((tab) => {
-              if (tab.kind === "entry") {
-                return <button
-                  key={tab.entry.id}
-                  type="button"
-                  aria-current={currentTarget.memberId === tab.entry.id ? "true" : undefined}
-                  onClick={() => openSettings({ kind: "plugins", memberId: tab.entry.id })}
-                >{tab.entry.label}</button>;
-              }
-              return <button
-                key={`family:${tab.id}`}
-                type="button"
-                aria-current={tab.entries.some((entry) => entry.id === currentTarget.memberId) ? "true" : undefined}
-                onClick={() => openSettings({ kind: "plugins", memberId: tab.entries[0].id })}
-              >{tab.label}</button>;
-            })}
-          </div>
-        )}
-        <div ref={settingsContent} className="shell-settings-page" />
+        {/* 窄屏左上返回：插件详情回到插件列表，其余回到分节列表。 */}
+        {activeCard
+          ? <button type="button" className="shell-settings-back" onClick={() => openSettings({ kind: "plugins", memberId: null })}>
+            <span aria-hidden="true" dangerouslySetInnerHTML={{ __html: BACK_ICON }} />{SETTINGS_PLUGINS_LABEL}
+          </button>
+          : <button type="button" className="shell-settings-back" onClick={() => setSettingsPane("nav")}>
+            <span aria-hidden="true" dangerouslySetInnerHTML={{ __html: BACK_ICON }} />功能设置
+          </button>}
+        <div className="shell-settings-page">
+          <SettingsHeading
+            target={currentTarget}
+            sections={sectionEntries}
+            card={activeCard}
+            back={() => openSettings({ kind: "plugins", memberId: null })}
+          />
+          {currentTarget?.kind === "plugins" && currentTarget.memberId === null && <PluginCardList
+            cards={pluginCards}
+            view={settingsPlugins}
+            railActions={railActionEntries}
+            open={(card) => openSettings({ kind: "plugins", memberId: card.entries[0].id })}
+          />}
+          <div ref={settingsContent} className="shell-settings-mount" />
+        </div>
       </div>
     </dialog>
     <div className="shell-view-stack">
@@ -551,6 +549,73 @@ function Shell({ pages, railActions, settings, settingsPlugins }: {
       />)}
     </div>
   </div>;
+}
+
+// 分节标题：顶层分节用导航名；插件详情页带回到插件列表的面包屑与一句话说明。
+function SettingsHeading({ target, sections, card, back }: {
+  target: SettingsTarget | undefined;
+  sections: readonly ShellSettingsSection[];
+  card: PluginCard | undefined;
+  back: () => void;
+}): React.ReactElement | null {
+  if (!target) return null;
+  if (target.kind === "section") {
+    const entry = sections.find((item) => item.id === target.id);
+    return <header className="shell-settings-heading"><h3>{entry?.label}</h3></header>;
+  }
+  if (!card) return <header className="shell-settings-heading">
+    <h3>{SETTINGS_PLUGINS_LABEL}</h3>
+    <p>{SETTINGS_PLUGINS_INTRO}</p>
+  </header>;
+  return <header className="shell-settings-heading">
+    <button type="button" className="shell-settings-crumb" onClick={back}>
+      <span aria-hidden="true" dangerouslySetInnerHTML={{ __html: BACK_ICON }} />{SETTINGS_PLUGINS_LABEL}
+    </button>
+    <div className="shell-settings-detail-head">
+      <span className="shell-plugin-mark" aria-hidden="true" dangerouslySetInnerHTML={{ __html: SETTINGS_PLUGINS_ICON }} />
+      <h3>{card.label}</h3>
+    </div>
+    {card.description && <p>{card.description}</p>}
+  </header>;
+}
+
+// 插件列表：每张卡片是标题、一句话说明和成员自己渲染的一行状态，点开进详情页。
+function PluginCardList({ cards, view, railActions, open }: {
+  cards: readonly PluginCard[];
+  view: WebMountView;
+  railActions: readonly ShellRailAction[];
+  open: (card: PluginCard) => void;
+}): React.ReactElement {
+  const hosts = useRef(new Map<string, HTMLElement>());
+  // 状态行由成员在 summary 模式下渲染；子 root 的销毁延后到 microtask，避免与本次提交竞争。
+  useLayoutEffect(() => {
+    const disposers: WebUiDisposer[] = [];
+    for (const card of cards) {
+      for (const entry of card.entries) {
+        const host = hosts.current.get(entry.id);
+        if (host) disposers.push(view.render(entry.id, host, { pages: view, railActions, embedded: true, mode: "summary" }));
+      }
+    }
+    return () => queueMicrotask(() => { for (const dispose of disposers) dispose(); });
+  }, [cards, view, railActions]);
+  return <ul className="shell-plugin-cards">
+    {cards.map((card) => <li key={card.id}>
+      <button type="button" className="shell-plugin-card" onClick={() => open(card)}>
+        <span className="shell-plugin-mark" aria-hidden="true" dangerouslySetInnerHTML={{ __html: SETTINGS_PLUGINS_ICON }} />
+        <span className="shell-plugin-main">
+          <strong>{card.label}</strong>
+          {card.description && <span className="shell-plugin-desc">{card.description}</span>}
+          <span className="shell-plugin-states">
+            {card.entries.map((entry) => <span key={entry.id} className="shell-plugin-state">
+              {card.entries.length > 1 && <span>{entry.label}</span>}
+              <span ref={(node) => { if (node) hosts.current.set(entry.id, node); else hosts.current.delete(entry.id); }} />
+            </span>)}
+          </span>
+        </span>
+        <span className="shell-plugin-chevron" aria-hidden="true" dangerouslySetInnerHTML={{ __html: CHEVRON_ICON }} />
+      </button>
+    </li>)}
+  </ul>;
 }
 
 function checkPages(entries: readonly WebEntry[]): ShellPage[] {
