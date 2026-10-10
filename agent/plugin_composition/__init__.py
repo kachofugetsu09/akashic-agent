@@ -1,3 +1,4 @@
+from agent.plugin_composition.endpoints import load_endpoint_plan
 from agent.plugin_composition.credentials import CREDENTIALS, CredentialClients
 from agent.plugin_composition.context import (
     CompositionRoot,
@@ -158,6 +159,7 @@ from agent.plugin_composition.claims import EMBEDDING_MEMORY_PLUGIN
 from agent.plugin_composition.processes import PROCESSES, PluginProcesses, ProcessCleanupError
 
 __all__ = [
+    "load_endpoint_plan",
     "PROCESSES",
     "PluginProcesses",
     "ProcessCleanupError",
