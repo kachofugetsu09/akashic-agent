@@ -122,10 +122,9 @@ class PluginWatcher:
                         continue
                 if manual_wake:
                     full_pending = True
-                    failed_revision = None
-                    failed_attempts = 0
-                    blocked_revision = None
-                elif failed_revision is not None and current_revision != failed_revision:
+                if manual_wake or (
+                    failed_revision is not None and current_revision != failed_revision
+                ):
                     failed_revision = None
                     failed_attempts = 0
                     blocked_revision = None
@@ -139,7 +138,6 @@ class PluginWatcher:
                 if not changed and not self._notification_pending:
                     continue
                 # 4. 同 revision 失败有界重试；通知失败只重试通知，不重复 reconcile
-                confirming = self._confirmation_pending
                 needs_confirmation = False
                 if changed:
                     if failed_revision != current_revision:
@@ -177,11 +175,8 @@ class PluginWatcher:
                             pending_ids = changed_ids
                             self._confirmation_pending = True
                             self._forced = True
-                        elif confirming:
-                            self._confirmation_pending = False
-                            pending_ids = frozenset()
-                            full_pending = False
                         else:
+                            self._confirmation_pending = False
                             pending_ids = frozenset()
                             full_pending = False
                         revision = current_revision

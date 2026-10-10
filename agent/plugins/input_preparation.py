@@ -20,7 +20,6 @@ from agent.plugins.manifest import (
 from agent.plugins.python_environment import ENVIRONMENT_FILE, PythonEnvironments, read_environment_refs
 from agent.plugins.static_manifest import (
     PluginSourceCompileError,
-    PluginSourceContentError,
     StaticPluginManifest,
     load_static_plugin_manifest,
 )

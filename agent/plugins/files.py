@@ -17,14 +17,14 @@ def tree_entries(
     if root.is_symlink() or not root.is_dir():
         raise ValueError("插件文件树输入必须是实际目录")
     resolved_root = root.resolve()
+    excluded = _CACHE_NAMES | exclude
     entries: list[tuple[str, str, str]] = []
     for current, directories, files in os.walk(root, followlinks=False):
-        directories[:] = [
-            name for name in directories if name not in _CACHE_NAMES | exclude
-        ]
-        files = [name for name in files if name not in _CACHE_NAMES | exclude]
+        directories[:] = [name for name in directories if name not in excluded]
+        files = [name for name in files if name not in excluded]
+        current_path = Path(current)
         for name in sorted([*directories, *files]):
-            item = Path(current) / name
+            item = current_path / name
             relative = item.relative_to(root).as_posix()
             mode = item.lstat().st_mode
             if stat.S_ISLNK(mode):

@@ -227,7 +227,7 @@ def _python_runtimes(root: Path) -> tuple[StaticPythonRuntime, ...]:
                 # 2. 精确文件名是 runtime 标记，其他 requirements 文件不独立安装。
                 requirements = _relative_artifact_path(
                     root, path.relative_to(root).as_posix(),
-                    label="requirements", must_exist=True, require_file=True,
+                    label="requirements",
                 )
                 result.append(StaticPythonRuntime(
                     requirements=requirements,
@@ -286,9 +286,8 @@ def _relative_artifact_path(
     raw: object,
     *,
     label: str,
-    must_exist: bool,
-    require_file: bool,
 ) -> str:
+    """Validate an existing artifact file without optional directory/missing modes."""
     if not isinstance(raw, str) or not raw or raw != raw.strip():
         raise ValueError(f"{label} 必须是非空相对路径")
     path = PurePosixPath(raw.replace("\\", "/"))
@@ -296,13 +295,10 @@ def _relative_artifact_path(
         raise ValueError(f"{label} 必须是 artifact 内的相对路径")
     resolved = root.joinpath(*path.parts)
     _reject_symlink_ancestors(root, resolved, label)
-    if must_exist:
-        if not resolved.exists():
-            raise ValueError(f"{label} 不存在: {raw}")
-        if require_file and not resolved.is_file():
-            raise ValueError(f"{label} 必须是文件: {raw}")
-        if not require_file and not resolved.is_dir():
-            raise ValueError(f"{label} 必须是目录: {raw}")
+    if not resolved.exists():
+        raise ValueError(f"{label} 不存在: {raw}")
+    if not resolved.is_file():
+        raise ValueError(f"{label} 必须是文件: {raw}")
     return "/".join(path.parts) or "."
 
 

@@ -80,7 +80,7 @@ def encode_image_bytes(raw: bytes) -> str:
             elif image.mode == "L":
                 image = image.convert("RGB")
 
-            raw_b64_len = len(base64.b64encode(raw))
+            raw_b64_len = _base64_encoded_size(len(raw))
             if max(image.size) > MAX_IMAGE_EDGE or raw_b64_len > MAX_IMAGE_DATA_URI_BYTES:
                 image.thumbnail((MAX_IMAGE_EDGE, MAX_IMAGE_EDGE))
 
@@ -92,18 +92,20 @@ def encode_image_bytes(raw: bytes) -> str:
                 else:
                     image.save(buf, format="PNG", optimize=True)
                     clean_mime = "image/png"
-                clean_b64 = base64.b64encode(buf.getvalue())
-                if len(clean_b64) <= MAX_IMAGE_DATA_URI_BYTES:
-                    return f"data:{clean_mime};base64,{clean_b64.decode()}"
+                clean_bytes = buf.getvalue()
+                if _base64_encoded_size(len(clean_bytes)) <= MAX_IMAGE_DATA_URI_BYTES:
+                    clean_b64 = base64.b64encode(clean_bytes).decode()
+                    return f"data:{clean_mime};base64,{clean_b64}"
 
             compressed_b64_len = 0
             for quality in (85, 75, 65, 55, 45):
                 buf = io.BytesIO()
                 image.save(buf, format="JPEG", quality=quality, optimize=True)
-                candidate_b64 = base64.b64encode(buf.getvalue())
-                compressed_b64_len = len(candidate_b64)
+                candidate_bytes = buf.getvalue()
+                compressed_b64_len = _base64_encoded_size(len(candidate_bytes))
                 if compressed_b64_len <= MAX_IMAGE_DATA_URI_BYTES:
-                    return f"data:image/jpeg;base64,{candidate_b64.decode()}"
+                    candidate_b64 = base64.b64encode(candidate_bytes).decode()
+                    return f"data:image/jpeg;base64,{candidate_b64}"
     except (OSError, Image.DecompressionBombError) as exc:
         raise ValueError("图片文件无法解码或已损坏。请确认这是有效图片。") from exc
 
@@ -112,6 +114,11 @@ def encode_image_bytes(raw: bytes) -> str:
         f"上限为 {MAX_IMAGE_DATA_URI_BYTES / 1024 / 1024:.0f}MB。"
         "请继续压缩图片或裁剪到只包含需要分析的区域。"
     )
+
+
+def _base64_encoded_size(size: int) -> int:
+    """每 3 个输入字节编码为 4 个字符，末组不足时补齐。"""
+    return ((size + 2) // 3) * 4
 
 
 def _validate_image_pixels(width: int, height: int) -> None:
