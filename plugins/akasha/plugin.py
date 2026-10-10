@@ -19,12 +19,14 @@ from agent.plugin_composition import (
     EMBEDDINGS,
     RUNTIME_STARTED,
     RUNTIME_STOPPING,
-    UI_SLOTS,
     Context,
+    ServiceKey,
+)
+from plugins.ui.contract import (
+    UI_SLOTS,
     PluginUiDefinition,
     PluginUiNavigation,
     PluginUiRpcInvalidRequest,
-    ServiceKey,
 )
 from agent.plugin_composition.bindings import BINDINGS
 from plugins.commands.contract import (
@@ -44,7 +46,7 @@ from agent.plugin_composition.models import (
     open_embedding as open_saved_embedding,
     read_embedding_binding,
 )
-from agent.plugin_composition.ui import UI
+from plugins.ui.contract import UI
 from agent.plugin_contracts import Message
 from agent.plugin_contracts.context import (
     MATERIALS_V4 as MATERIALS,

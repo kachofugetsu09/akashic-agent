@@ -9,7 +9,7 @@ from datetime import datetime
 from threading import Lock
 from typing import cast
 
-from agent.plugin_composition import PluginUiRpcInvalidRequest
+from plugins.ui.contract import PluginUiRpcInvalidRequest
 from agent.plugin_composition.messages import MessageCatalog
 from agent.plugin_contracts import CallRef, ContentPart, Input, Message, Output, ToolCall, ToolResult, json_value
 from agent.plugin_contracts.tools import durable_call_key

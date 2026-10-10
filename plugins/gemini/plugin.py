@@ -1,5 +1,5 @@
 from agent.plugin_composition import MODEL_DRIVERS, Context
-from agent.plugin_composition.ui import UI
+from plugins.ui.contract import UI
 
 from .driver import definition
 

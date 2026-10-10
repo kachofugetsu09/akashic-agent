@@ -149,3 +149,12 @@ UI 关闭只清理其原 socket，节点被替换时明确拒绝删除；监听�
 旧 WebSocket 在所属 owner 撤下时关闭为 1012；旧 catalog 身份返回明确 stale 拒绝。
 `dashboard` 独立命令由所选 UI 插件声明，命令不启动 Root 或打开业务数据库。
 真实 listener 验证见 [ui_listener_scenario.py](../../scripts/ui_listener_scenario.py)。
+
+## UI 注册合同归属
+
+`plugins/ui/contract.py` 拥有 Web/Dashboard 注册、Plugin UI slot、目录和失败类型。
+消费插件直接导入该模块；Core 的聚合入口和旧 UI 模块不再再导出。
+`core.web_ui.v1`、`core.ui_slots` 原子改名为 `ui.web.v1`、`ui.slots.v1`，没有旧 key 别名。
+Web 目录编码和 route matching 留在 UI 实现，公开数据保持 frozen。
+这层只改变源码合同和 key；资产、query、请求作用域和持久状态行为不变。
+消息展示合同和投影仍有 App Server 消费者，随 Gateway owner 迁移一并移走。

@@ -28,7 +28,7 @@ from agent.plugin_composition.model import (
     resolve_declared_workspace_file,
     resolve_declared_workspace_root,
 )
-from agent.plugin_composition.ui import UI, DashboardBinding, DashboardRoute
+from plugins.ui.contract import UI, DashboardBinding, DashboardRoute
 
 
 class DashboardImportError(RuntimeError):

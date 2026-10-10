@@ -12,7 +12,7 @@ from core.common.file_io import run_file_io
 from infra.persistence.json_store import load_json, atomic_save_json
 from plugins.host_execution.contract import HOST_STATUS, WORKLOAD_CONTROLLER
 from agent.host_bridge.factory import HostBridgeRpcError, build_file_bridge
-from agent.plugin_composition.ui import UI
+from plugins.ui.contract import UI
 from .monitor import HostBridgeStatus, _monitor
 from . import dashboard
 from .controller_access import ControllerAccess, cleanup_workloads_for_boot

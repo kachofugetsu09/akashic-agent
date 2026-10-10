@@ -24,10 +24,10 @@ from agent.plugin_composition.models import (
     ChatModelSelection,
     ModelCatalogSnapshot,
 )
-from agent.plugin_composition.ui import (
+from plugins.ui.contract import (
     WebUiProvider as WebUiProvider,
 )
-from agent.plugin_composition.ui_slots import (
+from plugins.ui.contract import (
     PluginUiPluginUnavailable,  # noqa: F401 - 显式再导出给本插件消费者。
     PluginUiQueryOverloaded,  # noqa: F401 - 显式再导出给本插件消费者。
     PluginUiQueryTimeout,  # noqa: F401 - 显式再导出给本插件消费者。

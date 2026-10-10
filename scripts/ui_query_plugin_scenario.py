@@ -44,7 +44,7 @@ async def run(directory: Path) -> dict[str, object]:
     reader.mkdir()
     (panel / "panel.js").write_text("export default {};\n")
     (panel / "plugin.py").write_text('''import threading
-from agent.plugin_composition import UI_SLOTS, PluginUiDefinition
+from plugins.ui.contract import UI_SLOTS, PluginUiDefinition
 api_version = 3
 name = "panel"
 version = "1.0.0"

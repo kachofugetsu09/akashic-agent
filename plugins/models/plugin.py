@@ -11,7 +11,7 @@ from agent.plugin_composition import (
 )
 from agent.plugin_composition.models import MODEL_CALL_STATS
 from agent.plugin_composition.rpc import rpc_method_key
-from agent.plugin_composition.ui import UI
+from plugins.ui.contract import UI
 
 from .content import MODEL_CONTENT, ContentOwner
 from .views import CONTENT_VIEWS, ContentViews
