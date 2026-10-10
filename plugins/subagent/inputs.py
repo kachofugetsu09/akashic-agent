@@ -4,7 +4,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Literal
 
-from agent.plugin_contracts import (
+from plugins.ledger.contract import (
     ContentPart,
 )
 from plugins.content.contract import (

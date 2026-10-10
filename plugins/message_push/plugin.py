@@ -3,9 +3,9 @@ from contextlib import asynccontextmanager
 from typing import cast
 
 from agent.plugin_composition import Context
-from agent.plugin_composition.artifacts import ARTIFACT_IMPORT
-from agent.plugin_composition.bindings import BINDINGS
-from agent.plugin_composition.messages import MESSAGE_CATALOG, MESSAGE_WRITERS
+from plugins.ledger.contract import ARTIFACT_IMPORT
+from plugins.ledger.contract import BINDINGS
+from plugins.ledger.contract import MESSAGE_CATALOG, MESSAGE_WRITERS
 from plugins.gateway.contract import CONTROL_FRAMES
 from agent.plugin_composition.tasks import RESTART_GATE
 

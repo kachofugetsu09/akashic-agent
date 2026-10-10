@@ -5,11 +5,11 @@ from dataclasses import dataclass
 from typing import Protocol
 
 from agent.plugin_composition import Context, Effect, ServiceKey
-from agent.plugin_composition.channels import ChannelInboundMessage
+from plugins.channels.contract import ChannelInboundMessage
 from agent.plugin_composition.events import EmitEventKey
-from agent.plugin_composition.messages import MessageReader, MessageWriter, OwnerTransaction
+from plugins.ledger.contract import MessageReader, MessageWriter, OwnerTransaction
 from agent.plugin_composition.tasks import RestartGate, Task, TaskAdmission
-from agent.plugin_contracts import (
+from plugins.ledger.contract import (
     Control,
     Input,
     Message,

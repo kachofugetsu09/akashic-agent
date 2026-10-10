@@ -12,8 +12,8 @@ from agent.plugin_composition import (
     Context,
     ServiceKey,
 )
-from agent.plugin_composition.bindings import BINDINGS
-from agent.plugin_composition.messages import (
+from plugins.ledger.contract import BINDINGS
+from plugins.ledger.contract import (
     MESSAGE_CATALOG,
     MESSAGE_WRITERS,
     OWNER_STATE,

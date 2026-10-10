@@ -5,9 +5,9 @@ from collections.abc import Awaitable, Callable
 from typing import Protocol
 
 from agent.plugin_composition import ServiceKey
-from agent.plugin_composition.messages import MessageReader
+from plugins.ledger.contract import MessageReader
 from agent.plugin_composition.tasks import Task
-from agent.plugin_contracts import ContentPart, ContentReferences, Message
+from plugins.ledger.contract import ContentPart, ContentReferences, Message
 from plugins.sources.contract import CompletionProgram
 
 

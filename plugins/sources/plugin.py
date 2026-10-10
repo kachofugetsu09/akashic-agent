@@ -5,9 +5,9 @@ from collections.abc import AsyncGenerator, Awaitable, Callable
 from dataclasses import dataclass
 
 from agent.plugin_composition import Context, Effect
-from agent.plugin_composition.channels import CHANNEL_INPUT_V2 as CHANNEL_INPUT, ChannelInboundMessage
-from agent.plugin_composition.messages import MessageReader
-from agent.plugin_contracts import Message
+from plugins.channels.contract import CHANNEL_INPUT_V2 as CHANNEL_INPUT, ChannelInboundMessage
+from plugins.ledger.contract import MessageReader
+from plugins.ledger.contract import Message
 from plugins.sources.contract import (
     SOURCE_CHECK_V2 as SOURCE_CHECK,
     SOURCE_INTERRUPT_V2 as SOURCE_INTERRUPT,

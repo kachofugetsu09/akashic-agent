@@ -1,8 +1,8 @@
 from functools import partial
 
 from agent.plugin_composition import Context
-from agent.plugin_composition.bindings import BINDINGS
-from agent.plugin_composition.messages import MESSAGE_CATALOG, OWNER_STATE, OwnerStore
+from plugins.ledger.contract import BINDINGS
+from plugins.ledger.contract import MESSAGE_CATALOG, OWNER_STATE, OwnerStore
 from agent.plugin_composition.tasks import TASKS, TaskAdmission
 from plugins.delivery.contract import (
     DELIVERY_GUARDED_START,

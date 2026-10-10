@@ -15,8 +15,8 @@ os.chdir(ROOT)
 
 from scripts.build_plugin_distribution import _bundle_plugin
 from scripts.distribution_runtime import prepare_wheels
-from session.log import MessageLog
-from session.message import Input
+from plugins.ledger.log import MessageLog
+from plugins.ledger.contract import Input
 from scripts.install_plugin_distribution import (
     install_profile,
     ensure_profile,

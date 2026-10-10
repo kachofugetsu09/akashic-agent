@@ -13,9 +13,9 @@ from plugins.models.contract import (
 from plugins.content.plugin import check_text
 from plugins.context.api import Materials, Reminder, material_data
 from plugins.models.projection import check_facts
-from session.embedding_store import MessageEmbeddingStore
-from session.log import MessageLog
-from session.message import ContentPart, Input, Output
+from plugins.ledger.embedding_store import MessageEmbeddingStore
+from plugins.ledger.log import MessageLog
+from plugins.ledger.contract import ContentPart, Input, Output
 from tests.support.message_react import runtime
 from plugins.tools.execution import Result
 

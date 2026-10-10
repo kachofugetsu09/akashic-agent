@@ -14,14 +14,14 @@ from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_valida
 
 from plugins.host_execution.contract import PROCESSES
 from agent.plugin_composition import Context, ServiceKey
-from agent.plugin_composition.bindings import BINDINGS
-from agent.plugin_composition.messages import MessageReader
+from plugins.ledger.contract import BINDINGS
+from plugins.ledger.contract import MessageReader
 from plugins.host_execution.contract import (
     DEFAULT_HARD_TIMEOUT_S, DEFAULT_INITIAL_YIELD_TIME_MS, DEFAULT_MAX_OUTPUT_TOKENS, MAX_HARD_TIMEOUT_S, ExecutionCleanupReport, UnknownExecutionError, clamp_initial_yield_time, clamp_write_stdin_yield_time
 )
 from .shell_backend import format_execution_result
 from agent.plugin_composition.tasks import TASKS, Task, TaskAdmission, TaskSlot
-from agent.plugin_contracts import (
+from plugins.ledger.contract import (
     CallRef,
     ContentPart,
     Control,

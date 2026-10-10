@@ -5,7 +5,7 @@ from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from typing import Literal, Protocol
 
-from agent.plugin_composition.bindings import Bindings
+from plugins.ledger.contract import Bindings
 from agent.plugin_composition.context import Context
 from agent.plugin_composition.model import ServiceKey
 

@@ -7,8 +7,8 @@ from typing import cast
 
 import pytest
 
-from agent.plugin_composition.bindings import Bindings
-from session.message import CallRef, ContentPart, Input, Message, Output, ToolCall, ToolResult
+from plugins.ledger.contract import Bindings
+from plugins.ledger.contract import CallRef, ContentPart, Input, Message, Output, ToolCall, ToolResult
 from plugins.akasha._boundaries import TOOLS
 from plugins.akasha import learning as learning_module
 from plugins.akasha.domain.model import Turn, TurnFeedback

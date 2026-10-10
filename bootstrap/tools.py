@@ -1,7 +1,5 @@
 from __future__ import annotations
 
-from agent.plugin_composition.channel_io import InputCustody
-from agent.plugin_composition.channels import CHANNELS
 
 import logging
 import os
@@ -15,7 +13,6 @@ from agent.restart import RestartGate
 
 if TYPE_CHECKING:
     from agent.plugins.manager import PluginManager
-    from infra.channels.artifacts import ChannelAttachmentArtifactStore
 
 logger = logging.getLogger(__name__)
 
@@ -25,29 +22,16 @@ from agent.plugins.source_resolver import PluginSourceFailure
 from agent.plugins.distribution_sources import distribution_sources
 from bootstrap.cleanup import run_cleanup_steps
 from bootstrap.workspace_lock import PluginPublicationLock
-from bus.queue import MessageBus
 from core.net.http import SharedHttpResources
-from session.artifact_store import ArtifactStore
-from session.log import MessageLog
-from session.admissions import SessionAdmissions
-from session.identities import ChannelIdentities
-from session.inbound_store import InboundHandoffStore
 
 
 @dataclass
 class CoreRuntime:
-    """只装配消息、资源与插件；回复和来源由普通插件运行。"""
+    """装配宿主资源与插件；业务资源由各 provider 拥有。"""
 
     config: Config
     workspace: Path
     http_resources: SharedHttpResources
-    bus: MessageBus
-    message_log: MessageLog
-    admissions: SessionAdmissions
-    identities: ChannelIdentities
-    inbound_store: InboundHandoffStore
-    artifact_metadata: ArtifactStore
-    channel_attachment_store: ChannelAttachmentArtifactStore
     plugin_manager: PluginManager
     plugin_publication_lock: PluginPublicationLock
     restart_gate: "RestartGate"
@@ -79,24 +63,11 @@ class CoreRuntime:
         return "\n".join(parts)
 
     async def stop(self) -> None:
-        """先排空插件资源，再关闭各自拥有的数据库连接。"""
-        async def close_storage() -> None:
-            # 每个连接都尝试关闭；前一项失败不能泄漏后续 owner。
-            errors: list[Exception] = []
-            for store in (self.inbound_store, self.identities, self.admissions,
-                          self.artifact_metadata, self.message_log):
-                try:
-                    store.close()
-                except Exception as error:
-                    errors.append(error)
-            if errors:
-                raise ExceptionGroup("Core storage close 失败", errors)
-
+        """排空插件资源后释放发布锁。"""
         # 插件仍持有资源时不能释放 provider、发布锁或数据库。
         await self.plugin_manager.terminate_all()
         await run_cleanup_steps(
             ("plugin_publication_lock.release", self._release_plugin_publication),
-            ("storage.close", close_storage),
         )
 
     async def _release_plugin_publication(self) -> None:
@@ -111,88 +82,33 @@ def build_core_runtime(
     http_resources: SharedHttpResources,
     restart_gate: RestartGate | None = None,
     *,
-    clear_stale_session_admissions: bool = False,
     plugin_dirs: Iterable[Path] | None = None,
     host_ready: Callable[[], bool] | None = None,
 ) -> CoreRuntime:
-    """从已迁移消息库装配窄 owner；构造失败关闭此前取得的连接。"""
-    from contextlib import ExitStack
+    """装配插件宿主，不创建业务数据库。"""
     from agent.plugins.manager import PluginManager
-    from infra.channels.artifacts import ChannelAttachmentArtifactStore
 
     # 插件子进程只能使用宿主明确绑定的 Core；不能让普通插件从自身路径猜测。
     os.environ["AKASHIC_CORE_ROOT"] = str(Path(__file__).resolve().parents[1])
 
-    # 1. MessageLog 先核对 schema，旧库不能借普通启动绕过 yoyo。
-    bus = MessageBus()
-    with ExitStack() as cleanup:
-        message_log = MessageLog(workspace / "sessions.db")
-        _ = cleanup.callback(message_log.close)
-        artifact_metadata = ArtifactStore(workspace / "sessions.db")
-        _ = cleanup.callback(artifact_metadata.close)
-        admissions = SessionAdmissions(workspace / "sessions.db")
-        _ = cleanup.callback(admissions.close)
-        identities = ChannelIdentities(workspace / "sessions.db")
-        _ = cleanup.callback(identities.close)
-        inbound_store = InboundHandoffStore(workspace / "sessions.db")
-        _ = cleanup.callback(inbound_store.close)
-        if clear_stale_session_admissions:
-            admissions.clear_stale()
-        bus.bind_session_admission_owner(admissions)
-        bus.bind_durable_inbound_store(inbound_store)
-        attachments = ChannelAttachmentArtifactStore(
-            workspace=workspace, metadata_store=artifact_metadata,
-        )
-        # 2. PluginManager 分配日志、归档和资源能力，不持有旧 SessionManager。
-        if restart_gate is None:
-            # 每次真实 Core host 启动都必须有新的 transport identity；不能用
-            # 固定字符串，否则相邻 unmanaged 进程会被客户端误认为同一次启动。
-            restart_gate = RestartGate(boot_id=uuid4().hex, supervised=False)
-        resolved_plugin_dirs = (
-            _resolve_plugin_dirs(workspace)
-            if plugin_dirs is None
-            else _resolve_plugin_dirs(workspace, plugin_dirs=plugin_dirs)
-        )
-        disabled_builtin_plugins, source_failures = _disabled_builtin_plugins_for_runtime(
-            config, resolved_plugin_dirs
-        )
-        distribution = distribution_sources(workspace, plugins_root())
-        manager = PluginManager(
-            plugin_dirs=resolved_plugin_dirs,
-            workspace=workspace, message_log=message_log, channel_identities=identities,
-            input_custody=InputCustody(
-                bus.prepare_channel_input, bus.complete_channel_input, bus.retain_channel_input,
-                bus.reserve_durable_inbound, bus.defer_durable_inbound,
-                bus.settle_rejected_inbound, bus.has_pending_durable_inbound,
-                bus.pending_durable_attachment_refs, bus.recover_durable_inbounds,
-            ),
-            installed_cache_root=plugins_root() / "cache",
-            channel_attachment_store=attachments,
-            disabled_builtin_plugins=disabled_builtin_plugins,
-            source_failures=source_failures,
-            distribution_sources=distribution.sources,
-            ignored_installed_roots=distribution.ignored_installed_roots,
-            restart_gate=restart_gate,
-            host_ready=host_ready,
-        )
-        async def recover_input(raw):
-            root = manager.live_root
-            if root is None:
-                return False
-            channels = root.context.get(CHANNELS)
-            return False if channels is None else await channels.recover_inbound(raw)
-
-        bus.bind_durable_inbound_recoverer(recover_input)
-        runtime = CoreRuntime(
-            config=config, workspace=workspace, http_resources=http_resources,
-            bus=bus, message_log=message_log,
-            admissions=admissions, identities=identities, inbound_store=inbound_store,
-            artifact_metadata=artifact_metadata, channel_attachment_store=attachments,
-            plugin_manager=manager, plugin_publication_lock=PluginPublicationLock(plugins_root()),
-            restart_gate=restart_gate,
-        )
-        _ = cleanup.pop_all()
-        return runtime
+    if restart_gate is None:
+        restart_gate = RestartGate(boot_id=uuid4().hex, supervised=False)
+    resolved_plugin_dirs = _resolve_plugin_dirs(workspace, plugin_dirs=plugin_dirs or ())
+    disabled, source_failures = _disabled_builtin_plugins_for_runtime(config, resolved_plugin_dirs)
+    distribution = distribution_sources(workspace, plugins_root())
+    manager = PluginManager(
+        plugin_dirs=resolved_plugin_dirs, workspace=workspace,
+        installed_cache_root=plugins_root() / "cache",
+        disabled_builtin_plugins=disabled, source_failures=source_failures,
+        distribution_sources=distribution.sources,
+        ignored_installed_roots=distribution.ignored_installed_roots,
+        restart_gate=restart_gate, host_ready=host_ready,
+    )
+    return CoreRuntime(
+        config=config, workspace=workspace, http_resources=http_resources,
+        plugin_manager=manager, plugin_publication_lock=PluginPublicationLock(plugins_root()),
+        restart_gate=restart_gate,
+    )
 
 
 def _resolve_plugin_dirs(

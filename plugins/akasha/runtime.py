@@ -6,9 +6,9 @@ from collections.abc import Awaitable, Callable, Mapping
 from datetime import UTC, datetime
 from typing import cast
 
-from agent.plugin_composition.bindings import Bindings
-from agent.plugin_composition.messages import MessageCatalog, MessageEmbeddings
-from agent.plugin_contracts import Input, Message
+from plugins.ledger.contract import Bindings
+from plugins.ledger.contract import MessageCatalog, MessageEmbeddings
+from plugins.ledger.contract import Input, Message
 
 from .application.consumer import MessageConsumer, run_memory_job
 from .learning import AKASHA_LEARNING, Learning, LearningConfig

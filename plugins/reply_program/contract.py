@@ -7,11 +7,11 @@ from contextlib import AbstractContextManager
 from typing import Protocol
 
 from agent.plugin_composition.context import Context
-from agent.plugin_composition.messages import MessageReader
+from plugins.ledger.contract import MessageReader
 from agent.plugin_composition.model import ServiceKey
 from plugins.models.contract import StreamCallback
 from agent.plugin_composition.tasks import Task
-from agent.plugin_contracts import Message
+from plugins.ledger.contract import Message
 from plugins.models.contract import ContentRenderer
 from plugins.context.contract import MaterialKind
 from plugins.tools.contract import ToolView

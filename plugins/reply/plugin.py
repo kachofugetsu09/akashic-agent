@@ -15,7 +15,7 @@ from agent.plugin_composition import (
     RUNTIME_STOPPING,
     Context,
 )
-from agent.plugin_composition.messages import (
+from plugins.ledger.contract import (
     MESSAGE_CATALOG,
     MessageCatalog,
     MESSAGE_WRITERS,
@@ -25,7 +25,7 @@ from agent.plugin_composition.messages import (
 )
 from plugins.models.contract import StreamCallback
 from agent.plugin_composition.tasks import RESTART_GATE, Task
-from agent.plugin_contracts import Message
+from plugins.ledger.contract import Message
 from plugins.reply_program.contract import (
     REPLY_EXECUTE_V4 as REPLY_EXECUTE,
 )

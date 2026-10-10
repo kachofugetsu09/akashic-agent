@@ -5,7 +5,7 @@ from collections.abc import Callable
 from dataclasses import dataclass
 from typing import Literal
 
-from agent.plugin_contracts import ContentPart, Message
+from plugins.ledger.contract import ContentPart, Message
 from plugins.content.contract import (
     CONTENT as CONTENT,
     Content as ContentCapability,  # noqa: F401 - 显式再导出给本插件消费者。

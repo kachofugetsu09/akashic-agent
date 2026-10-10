@@ -5,7 +5,7 @@ from plugins.models.contract import (
     ModelRequest,
 )
 from plugins.models.contract import BoundModelDescriptor
-from session.message import ContentReferences
+from plugins.ledger.contract import ContentReferences
 from plugins.models.projection import MessageProjection
 
 

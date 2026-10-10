@@ -33,7 +33,7 @@ async def run(base: Path) -> dict[str, bool]:
     from bootstrap.tools import build_core_runtime
     from bootstrap.web_shell import create_web_shell_server
     from core.net.http import SharedHttpResources
-    from session.message import Input
+    from plugins.ledger.contract import Input
 
     home, workspace, config = base / "home", base / "workspace", base / "config.toml"
     os.environ.update(HOME=str(home), AKASHIC_PLUGIN_HOME=str(home),
@@ -42,7 +42,7 @@ async def run(base: Path) -> dict[str, bool]:
     config.write_text('[runtime]\n')
     init_workspace(config_path=config, workspace=workspace)
     sources = base / "sources"
-    for name in ("channels", "sources", "models", "ui", "shell_ui", "onboarding", "akashic_clients"):
+    for name in ("ledger", "channels", "sources", "models", "ui", "shell_ui", "onboarding", "akashic_clients"):
         path = sources / name
         shutil.copytree(ROOT / "plugins" / name, path, ignore=shutil.ignore_patterns("__pycache__"))
         if name in {"ui", "akashic_clients"}:
@@ -64,22 +64,24 @@ async def apply(ctx):
 ''')
     http = SharedHttpResources()
     core = build_core_runtime(Config.load(config, workspace=workspace), workspace, http, plugin_dirs=[observer])
-    core.message_log.writer("akashic:read-only", author="user", source="conversation",
-                            body_types=(Input,), content={}).append("saved-input", Input(()))
-    with sqlite3.connect(workspace / "sessions.db") as database:
-        original_rows = database.execute("SELECT * FROM messages ORDER BY rowid").fetchall()
-    assert len(original_rows) == 1
     shell = create_web_shell_server(workspace, host="127.0.0.1", port=0)
     shell_task = None
     stopped = False
     try:
         await core.start()
+        from plugins.ledger.contract import MESSAGE_CATALOG
+        log = core.plugin_manager.live_root.context.require(MESSAGE_CATALOG)._log
+        log.writer("akashic:read-only", author="user", source="conversation",
+                                body_types=(Input,), content={}).append("saved-input", Input(()))
+        with sqlite3.connect(workspace / "sessions.db") as database:
+            original_rows = database.execute("SELECT * FROM messages ORDER BY rowid").fetchall()
+        assert len(original_rows) == 1
         root = core.plugin_manager.live_root
         assert root is not None
         observer_fiber = next(item for item in root.fibers() if item.name == "observer")
         observer_context = observer_fiber.context
         assert sorted(endpoint.name for endpoint in root.endpoints()) == ["client", "dashboard"]
-        before = core.message_log.reader("akashic:read-only").snapshot()
+        before = log.reader("akashic:read-only").snapshot()
         shell_task = asyncio.create_task(shell.serve(), name="scenario-public-shell")
         await asyncio.to_thread(shell.startup_event.wait, 10)
         assert shell.started
@@ -107,15 +109,17 @@ async def apply(ctx):
                 await core.plugin_manager.wait_idle()
                 assert core.plugin_manager.read_update("client-assets-update").state == "active"
                 try:
-                    await asyncio.wait_for(ws.recv(), 10)
+                    async with asyncio.timeout(10):
+                        while True:
+                            # 已排入 socket 的状态通知可以先于重启关闭帧到达。
+                            event = json.loads(await ws.recv())
+                            assert event["type"] in {"sessions.changed", "sessions.activity"}, event
                 except ConnectionClosed as error:
                     assert error.rcvd is not None and error.rcvd.code == 1012
-                else:
-                    raise AssertionError("旧客户端 WebSocket 未关闭")
             assert (await client.get("/chat")).text == "<!doctype html><title>new client</title>"
             assert observer_fiber.context is observer_context
             assert (observer_context.data_root / "applies").read_text() == "apply\n"
-            assert core.message_log.reader("akashic:read-only").snapshot() == before
+            assert log.reader("akashic:read-only").snapshot() == before
             plan = workspace / "runtime/endpoints.json"
             saved = plan.read_bytes()
             plan.write_text('{"invalid": true}')

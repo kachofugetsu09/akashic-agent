@@ -6,8 +6,8 @@ import threading
 
 import pytest
 
-from session.log import MessageLog
-from session.message import Input
+from plugins.ledger.log import MessageLog
+from plugins.ledger.contract import Input
 from tests.test_message_log import writer
 from tests.test_akasha_execution import WorkerGate
 
@@ -43,7 +43,7 @@ async def test_read_snapshot_does_not_hold_unrelated_writer(tmp_path):
 
 @pytest.mark.asyncio
 async def test_async_prefix_is_fixed_and_external_changes_invalidate_cache(tmp_path, monkeypatch):
-    import session.log as storage
+    import plugins.ledger.log as storage
 
     log = MessageLog(tmp_path / "sessions.db")
     writer(log).append("first", Input(()))
@@ -90,7 +90,7 @@ def test_close_inside_read_scope_closes_the_actual_writer(tmp_path):
 @pytest.mark.asyncio
 async def test_external_edit_during_async_read_does_not_restart_snapshot(tmp_path, monkeypatch):
     """O/C4: one pinned read finishes; an external edit only invalidates its cache."""
-    import session.log as storage
+    import plugins.ledger.log as storage
 
     log = MessageLog(tmp_path / "sessions.db")
     writer(log).append("first", Input(()))
@@ -122,9 +122,9 @@ async def test_external_edit_during_async_read_does_not_restart_snapshot(tmp_pat
 @pytest.mark.asyncio
 async def test_subagent_outcome_read_keeps_control_responsive_and_prefix_fixed(tmp_path, monkeypatch):
     """O/C3/C4: 子任务终态查询不阻塞控制，也不把后来控制塞进旧快照。"""
-    import session.log as storage
+    import plugins.ledger.log as storage
     from plugins.subagent.runtime import Subagents
-    from session.message import Control
+    from plugins.ledger.contract import Control
 
     log = MessageLog(tmp_path / "sessions.db")
     writer(log, source="subagent").append("job-input", Input(()))
@@ -163,13 +163,13 @@ async def test_subagent_outcome_read_keeps_control_responsive_and_prefix_fixed(t
 async def test_subagent_cancel_rechecks_completion_committed_during_read(tmp_path, monkeypatch):
     """C3: 真实来源在异步读取期间完成，旧取消检查不能改写其终态。"""
     from agent.plugin_composition import CompositionRoot, PluginRuntime
-    from session.services import MessageWriters, OwnerState
-    from agent.plugin_composition.messages import MESSAGE_CATALOG, MESSAGE_WRITERS, OWNER_STATE
+    from plugins.ledger.services import MessageWriters, OwnerState
+    from plugins.ledger.contract import MESSAGE_CATALOG, MESSAGE_WRITERS, OWNER_STATE
     from agent.plugin_composition.tasks import TASKS, PluginTasks
     from plugins.subagent.request import PROFILE_TOOLS, Request
     from plugins.subagent.runtime import Subagents
-    from session.log import MessageReader
-    from session.message import ContentPart, ContentReferences, Output
+    from plugins.ledger.log import MessageReader
+    from plugins.ledger.contract import ContentPart, ContentReferences, Output
 
     log = MessageLog(tmp_path / "sessions.db")
     root = CompositionRoot("subagent-cancel-read")
@@ -230,8 +230,8 @@ async def test_subagent_cancel_rechecks_completion_committed_during_read(tmp_pat
 @pytest.mark.asyncio
 async def test_resume_reads_only_current_source_work_and_replays_fixed_prefix(tmp_path, monkeypatch):
     """O/C3/C4：重试不读取关闭正文，重放仍归属原来的 Input 前缀。"""
-    import session.log as storage
-    from session.message import ContentPart, Control, Output
+    import plugins.ledger.log as storage
+    from plugins.ledger.contract import ContentPart, Control, Output
     from tests.test_conversation_source import source
 
     async def unused(*_):
@@ -270,7 +270,7 @@ async def test_resume_reads_only_current_source_work_and_replays_fixed_prefix(tm
 @pytest.mark.parametrize("read_kind", ["async-prefix", "owner-snapshot", "incremental-prefix"])
 async def test_committed_read_does_not_wait_for_another_threads_write(tmp_path, read_kind):
     """O/C4：已提交快照不等待另一个线程的写事务，正文前缀保持不变。"""
-    from session.message import ContentPart, ContentReferences
+    from plugins.ledger.contract import ContentPart, ContentReferences
 
     log = MessageLog(tmp_path / "sessions.db")
     original = writer(log).append("first", Input(()))

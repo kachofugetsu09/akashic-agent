@@ -15,9 +15,9 @@ from typing import cast
 from markdown_it import MarkdownIt
 
 from agent.plugin_composition import Context, Effect
-from agent.plugin_composition.bindings import Bindings
+from plugins.ledger.contract import Bindings
 from agent.plugin_composition.model import FiberState
-from agent.plugin_contracts import (
+from plugins.ledger.contract import (
     ContentPart,
     ContentReferences,
     freeze_metadata,

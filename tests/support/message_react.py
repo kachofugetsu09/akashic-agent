@@ -22,9 +22,9 @@ from plugins.react.plugin import react
 from plugins.tools.execution import ToolExecution, MessageReply, Result
 from plugins.tools.abandon import follow_abandon, reject_start
 from plugins.tools.menu import NativePresentation, ToolMenu, ToolCallDecode
-from session.log import MessageLog
-from agent.plugin_composition.messages import OwnerTransaction
-from session.message import CallRef, Control, Input, Output, ToolCall, ToolResult
+from plugins.ledger.log import MessageLog
+from plugins.ledger.contract import OwnerTransaction
+from plugins.ledger.contract import CallRef, Control, Input, Output, ToolCall, ToolResult
 
 @asynccontextmanager
 async def runtime(tmp_path, complete, invoke, *, max_steps=4, authorize_hook=None,

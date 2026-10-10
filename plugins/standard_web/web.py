@@ -15,8 +15,8 @@ from plugins.tools.contract import (
 from .fetch import WebFetchTool
 from .search import WebSearchTool
 from core.net.http import HttpRequester, RequestBudget, RetryPolicy
-from agent.plugin_contracts import ContentPart
-from agent.plugin_contracts import json_value
+from plugins.ledger.contract import ContentPart
+from plugins.ledger.contract import json_value
 
 from ._tool_boundary import CallSource, TOOLS, ToolRef, ToolResultValue
 

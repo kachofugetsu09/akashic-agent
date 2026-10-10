@@ -10,7 +10,7 @@ from typing import cast
 from functools import partial
 from uuid import uuid4
 
-from agent.plugin_composition.messages import (
+from plugins.ledger.contract import (
     MessageConflict,
     SourceHeadConflict,
     MessageReader,
@@ -18,7 +18,7 @@ from agent.plugin_composition.messages import (
     OwnerTransaction,
 )
 from agent.plugin_composition.tasks import RestartGate, Task, TaskAdmission, TaskSlot
-from agent.plugin_contracts import Control, Input, Message, Output
+from plugins.ledger.contract import Control, Input, Message, Output
 from plugins.sources.contract import (
     CompletionProgram,
 )

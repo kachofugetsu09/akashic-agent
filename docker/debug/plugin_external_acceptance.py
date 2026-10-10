@@ -615,7 +615,7 @@ async def _start_app_runtime(
         }
     )
     checks = evidence["checks"]
-    from agent.plugin_composition.channels import CHANNELS
+    from plugins.channels.contract import CHANNELS
     channel_provider = None if live_root is None else live_root.context.get(CHANNELS)
     evidence["channel_host_present"] = channel_provider is not None
     checks.update(
@@ -866,7 +866,7 @@ async def _invoke_capability(
                 or not isinstance(input_value["value"], dict)
             ):
                 raise ValueError("model.facts oracle input 必须是 {kind,value} ContentPart")
-            from session.message import ContentPart
+            from plugins.ledger.contract import ContentPart
 
             actual = value(ContentPart(input_value["kind"], input_value["value"]))
         elif service in {
@@ -902,7 +902,7 @@ async def _invoke_capability(
             raise ValueError("Message roundtrip 结果缺少 session_id")
         if not isinstance(message_id, str) or not message_id:
             raise ValueError("Message roundtrip 结果缺少 message_id")
-        from agent.plugin_composition.messages import MESSAGE_CATALOG
+        from plugins.ledger.contract import MESSAGE_CATALOG
 
         catalog = root.context.require(MESSAGE_CATALOG)
         message = catalog.reader(session_id).get(message_id)
@@ -1438,6 +1438,7 @@ async def _exercise_business_composition(
     marketplace: str,
     workspace: Path,
     plugins_home: Path,
+    api_sources: tuple[Path, ...] = (),
     core_root: Path | None = None,
     replacement: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
@@ -1486,14 +1487,11 @@ async def _exercise_business_composition(
     PluginSelection(workspace).initialize()
     from agent.plugins.install import install_git_plugin
     from agent.plugins.manager import PluginManager
-    from session.log import MessageLog, SessionAttributes
-
-    log = MessageLog(workspace / "sessions.db")
+    log = None
     manager = PluginManager(
         [],
         workspace=workspace,
         installed_cache_root=plugins_home / "cache",
-        message_log=log,
     )
     reports: list[dict[str, Any]] = []
     installed_by_id: dict[str, dict[str, Any]] = {}
@@ -1533,6 +1531,11 @@ async def _exercise_business_composition(
         return evidence
 
     try:
+        from agent.plugins.manifest import set_plugin_enabled
+        for source in api_sources:
+            installed = install_git_plugin(workspace=workspace, source=str(source),
+                marketplace=marketplace, plugins_home=plugins_home)
+            set_plugin_enabled(_plugin_id_from_manifest(installed.installed_path, marketplace), enabled=False, plugins_home=plugins_home)
         # 1. Install every declared provider and consumer before loading the
         # composition.  A single package is never treated as an isolated pass.
         for job in jobs:
@@ -1587,9 +1590,11 @@ async def _exercise_business_composition(
             reports.append(row)
 
         await manager.load_all()
+        from plugins.ledger.contract import MESSAGE_CATALOG, SessionAttributes
         initial_root = manager.live_root
         if initial_root is None:
             raise RuntimeError("business composition 未形成 live Root")
+        log = initial_root.context.require(MESSAGE_CATALOG)._log
         initial_generations = {
             plugin_id: manager.generation(plugin_id)
             for plugin_id in installed_by_id
@@ -1610,10 +1615,14 @@ async def _exercise_business_composition(
             if not isinstance(plugin_id, str):
                 continue
             generation = initial_generations.get(plugin_id)
-            row["checks"]["apply"] = generation is not None
+            from agent.plugin_composition import FiberState
+            row["checks"]["apply"] = (generation is not None and generation.fiber is not None
+                                      and generation.fiber.state is FiberState.ACTIVE)
             if generation is None:
                 row["error"] = row.get("error", "apply 后缺少 live generation")
                 continue
+            if generation.fiber is not None and generation.fiber.error is not None:
+                row["error"] = str(generation.fiber.error)
             source_checkout = _source_checkout(str(row["source"]), repo_root)
             row["generation"] = _generation_evidence(
                 generation=generation,
@@ -1816,18 +1825,15 @@ async def _exercise_business_composition(
         try:
             await manager.terminate_all()
         finally:
-            try:
-                log.close()
-            finally:
-                if source_restore is not None:
-                    original, backup = source_restore
-                    if original.exists():
-                        raise RuntimeError(f"原源码路径被重新占用，备份保留在 {backup}")
-                    backup.rename(original)
+            if source_restore is not None:
+                original, backup = source_restore
+                if original.exists():
+                    raise RuntimeError(f"原源码路径被重新占用，备份保留在 {backup}")
+                backup.rename(original)
 
     resource_close = {
         "live_root_closed": manager.live_root is None,
-        "message_log_closed": log._closed,
+        "message_log_closed": log is not None and log._closed,
     }
     for row in reports:
         row.pop("artifact", None)

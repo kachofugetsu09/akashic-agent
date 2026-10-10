@@ -8,13 +8,13 @@ from typing import Annotated, Literal, Self, TypeAlias, cast
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
-from agent.plugin_composition.messages import (
+from plugins.ledger.contract import (
     MessageConflict,
     MessageReader,
     OwnerStore,
     OwnerTransaction,
 )
-from agent.plugin_contracts import Message, json_value
+from plugins.ledger.contract import Message, json_value
 from plugins.compaction.contract import (
     COMPACTION_SUMMARIES as COMPACTION_SUMMARIES,
 )

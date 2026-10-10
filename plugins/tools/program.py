@@ -6,14 +6,14 @@ from collections.abc import Awaitable, Callable, Mapping
 from typing import TYPE_CHECKING
 
 from agent.plugin_composition import Context
-from agent.plugin_composition.bindings import BINDINGS
-from agent.plugin_composition.messages import (
+from plugins.ledger.contract import BINDINGS
+from plugins.ledger.contract import (
     MESSAGE_WRITERS,
     MessageReader,
     MessageWriter,
 )
 from agent.plugin_composition.tasks import ExternalRootPermit
-from agent.plugin_contracts import CallRef, ContentPart, ContentReferences, ToolResult
+from plugins.ledger.contract import CallRef, ContentPart, ContentReferences, ToolResult
 from plugins.tools.contract import StartCheck
 from plugins.tools.contract import TOOL_PROGRAM_V2 as TOOL_PROGRAM
 

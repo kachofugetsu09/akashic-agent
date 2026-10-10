@@ -14,16 +14,16 @@ from uuid import uuid4
 from .protocol.errors import JsonRpcError, UNAUTHORIZED
 from .protocol.models import InitializeParams, MessageSendParams
 from .contract import RpcMethod
-from agent.plugin_composition.channels import ChannelInboundMessage
+from plugins.channels.contract import ChannelInboundMessage
 from plugins.ui.contract import (
     MessageDisplayReader,
     follow_messages,
     read_message_rows,
     session_row,
 )
-from agent.plugin_composition import AttachmentRef
-from agent.plugin_composition.messages import MessageCatalog
-from agent.plugin_contracts import Message
+from plugins.channels.contract import AttachmentRef
+from plugins.ledger.contract import MessageCatalog
+from plugins.ledger.contract import Message
 from .contract import ControlFrames
 
 logger = logging.getLogger(__name__)

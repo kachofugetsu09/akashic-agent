@@ -7,7 +7,7 @@ from pathlib import Path
 from typing import cast
 
 from agent.plugin_composition import Context, Effect
-from agent.plugin_composition.messages import OwnerStore, OwnerTransaction, SessionAttributes, MessageConflict
+from plugins.ledger.contract import OwnerStore, OwnerTransaction, SessionAttributes, MessageConflict
 from plugins.standard_tools.contract import DirectorySnapshot
 
 from .path_access import check_directory

@@ -8,10 +8,10 @@ from dataclasses import dataclass, field
 from typing import Any
 
 from agent.plugin_composition import Context, RuntimeScope
-from agent.plugin_composition.messages import MessageCatalog, MessageReader
+from plugins.ledger.contract import MessageCatalog, MessageReader
 from agent.plugin_composition.model import CompositionError
 from agent.plugin_composition.tasks import RestartGate, Task, TaskServiceClosed
-from agent.plugin_contracts import Control, Input, Output
+from plugins.ledger.contract import Control, Input, Output
 from plugins.sources.contract import (
     AsyncSource as Source,
     SourcesV5 as Sources,

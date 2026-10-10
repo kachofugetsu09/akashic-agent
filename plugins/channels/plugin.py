@@ -1,8 +1,8 @@
 """显式选择的 Channel provider。"""
 from agent.plugin_composition import Context
 from agent.plugin_composition.host import HOST_INFO
-from agent.plugin_composition.channels import CHANNELS
-from agent.plugin_composition.channel_io import (
+from plugins.channels.contract import CHANNELS
+from plugins.ledger.contract import (
     INPUT_CUSTODY, CHANNEL_IDENTITY, CHANNEL_ATTACHMENT_IMPORT, CHANNEL_ATTACHMENT_READ,
 )
 from .provider import PluginChannels

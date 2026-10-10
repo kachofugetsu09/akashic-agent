@@ -25,8 +25,8 @@ async def run(base: Path) -> dict[str, bool]:
     from bootstrap.init_workspace import init_workspace
     from bootstrap.tools import build_core_runtime
     from core.net.http import SharedHttpResources
-    from session.log import MessageLog
-    from session.message import Input
+    from plugins.ledger.log import MessageLog
+    from plugins.ledger.contract import Input
 
     home, source = base / "home", base / "source"
     os.environ.update(HOME=str(home), AKASHIC_PLUGIN_HOME=str(home),

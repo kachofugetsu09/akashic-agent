@@ -73,7 +73,7 @@ from plugins.models.contract import (
     ModelDriverDefinition,
     ModelExecution,
 )
-from agent.plugin_composition.bindings import Bindings
+from plugins.ledger.contract import Bindings
 from plugins.models.contract import (
     ModelContinuation,
     ModelUsage,

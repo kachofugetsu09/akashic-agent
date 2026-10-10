@@ -7,8 +7,8 @@ from dataclasses import asdict, dataclass
 from pydantic import BaseModel, ConfigDict
 
 from agent.plugin_composition import Context, Effect
-from agent.plugin_composition.bindings import Bindings
-from agent.plugin_contracts import Message
+from plugins.ledger.contract import Bindings
+from plugins.ledger.contract import Message
 from plugins.delivery.contract import (
     DELIVERY_SENDERS as DELIVERY_SENDERS,
     SenderDefinition,

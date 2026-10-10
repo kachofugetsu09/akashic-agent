@@ -12,14 +12,14 @@ import tempfile
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from PIL import Image
 from agent.plugin_composition import ServiceKey
-from session.artifact_services import ArtifactRead
-from agent.plugin_composition.channels import CHANNEL_INPUT_V2 as CHANNEL_INPUT, ChannelInboundMessage
-from agent.plugin_contracts import ContentPart, Control
-from infra.channels.artifacts import ChannelAttachmentArtifactStore
+from plugins.ledger.artifact_services import ArtifactRead
+from plugins.channels.contract import CHANNEL_INPUT_V2 as CHANNEL_INPUT, ChannelInboundMessage
+from plugins.ledger.contract import ContentPart, Control
+from plugins.ledger.attachments import ChannelAttachmentArtifactStore
 from plugins.models.content import ContentOwner, load_artifacts
-from session.artifact_store import ArtifactStore
-from session.artifacts import AttachmentKind
-from session.message import Output
+from plugins.ledger.artifact_store import ArtifactStore
+from plugins.ledger.contract import AttachmentKind
+from plugins.ledger.contract import Output
 from plugins.content.plugin import check_artifact, check_text
 from tests.test_default_reply import application, live_root
 

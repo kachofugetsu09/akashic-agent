@@ -12,8 +12,7 @@ from collections.abc import Mapping
 from typing import Literal, cast
 
 from agent.plugins.files import sync_directory
-from session.message import freeze_json
-from session.message_codec import json_value
+from core.common.frozen_json import freeze_json, json_value
 from agent.plugins.static_manifest import check_entrypoints
 
 

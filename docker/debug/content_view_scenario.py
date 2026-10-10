@@ -15,21 +15,21 @@ from types import SimpleNamespace
 
 from agent.plugin_composition import CompositionRoot, ServiceKey
 from agent.plugin_composition.model import PluginRuntime
-from agent.plugin_composition.channels import CHANNEL_INPUT_V2 as CHANNEL_INPUT, ChannelInboundMessage
-from agent.plugin_contracts import CallRef, ContentPart, ContentReferences, Control, Input, Message, Output, ToolCall, ToolResult, json_value
+from plugins.channels.contract import CHANNEL_INPUT_V2 as CHANNEL_INPUT, ChannelInboundMessage
+from plugins.ledger.contract import CallRef, ContentPart, ContentReferences, Control, Input, Message, Output, ToolCall, ToolResult, json_value
 from plugins.models.contract import CONTENT_VIEWS, MODEL_CALLS, RenderedContent
 from plugins.tools.contract import CallSource
 from plugins.host_execution.bridge.filesystem import ListDirOperation
 from agent.plugins.manager import PluginManager
-from infra.channels.artifacts import ChannelAttachmentArtifactStore
+from plugins.ledger.attachments import ChannelAttachmentArtifactStore
 from plugins.content_view.plugin import ReadContent, check_read, prepare_view
 from plugins.models.content import render_content
 from plugins.models.projection import MessageProjection
 from plugins.models.store import ModelsStore
 from plugins.models.views import ContentViews
-from session.log import MessageLog
+from plugins.ledger.log import MessageLog
 from plugins.ui.contract import MESSAGE_DISPLAY
-from session.artifact_store import ArtifactStore
+from plugins.ledger.artifact_store import ArtifactStore
 from tests.test_default_reply import application, live_root
 
 DISPLAY_SAMPLE: Path | None = None
@@ -149,7 +149,7 @@ async def check(directory: Path) -> dict[str, object]:
     assert not any('messages' in statement.lower() and statement.lstrip().lower().startswith(
         ('update ', 'delete ', 'replace ')) for statement in statements)
     # 所有 runtime 已关闭；新读者从原数据库恢复，插件没有独立 seen 或归档状态。
-    log = MessageLog(directory / 'sessions.db')
+    log = MessageLog(directory / 'workspace/sessions.db')
     store_path = next((directory / 'workspace').rglob('models.db'))
     store = ModelsStore(store_path, directory / 'reopen-backups')
     store.initialize()
@@ -198,7 +198,6 @@ async def check(directory: Path) -> dict[str, object]:
         assert projection().render(opaque_rows, after_seq=-1).continuation is None
         assert log.reader('test:room').snapshot() == rows
     finally:
-        log.close()
         store.close()
     return {'requests':len(requests), 'messages':len(saved_rows), 'original_characters':len(LONG),
             'checks':['renamed installed plugin', 'first full exposure', 'full text after successful outputs', 'full readback',
@@ -382,19 +381,17 @@ async def run(directory: Path) -> dict[str, object]:
 async def restart(directory: Path, *, failed: bool) -> dict[str, object]:
     """重开原场景并重放同 ID；完成和失败都不能自动重跑已结算工具。"""
     # 1. 只重开 run 创建的场景，绝不初始化一套替代消息或手工修复旧正文。
-    if not (directory / 'sessions.db').is_file() or not (directory / 'effect.txt').is_file():
+    if not (directory / 'workspace/sessions.db').is_file() or not (directory / 'effect.txt').is_file():
         raise ValueError('缺少已完成的场景状态')
-    with sqlite3.connect(directory / 'sessions.db') as connection:
+    with sqlite3.connect(directory / 'workspace/sessions.db') as connection:
         before = connection.execute('SELECT * FROM messages ORDER BY session_key, seq').fetchall()
     effect = (directory / 'effect.txt').read_bytes()
-    log = MessageLog(directory / 'sessions.db')
-    artifacts = ArtifactStore(directory / 'sessions.db')
     host = PluginManager([directory / 'plugins'], workspace=directory / 'workspace',
-                         installed_cache_root=directory / 'home/cache', message_log=log,
-                         channel_attachment_store=ChannelAttachmentArtifactStore(
-                             workspace=directory / 'workspace', metadata_store=artifacts))
+                         installed_cache_root=directory / 'home/cache')
     try:
         await host.load_all()
+        from plugins.ledger.contract import MESSAGE_CATALOG
+        log = host.live_root.context.require(MESSAGE_CATALOG)._log
         await host.start_runtime()
         root = host.live_root
         assert root is not None
@@ -410,7 +407,7 @@ async def restart(directory: Path, *, failed: bool) -> dict[str, object]:
         await host.terminate_all()
         assert calls == []
         assert (directory / 'effect.txt').read_bytes() == effect
-        with sqlite3.connect(directory / 'sessions.db') as connection:
+        with sqlite3.connect(directory / 'workspace/sessions.db') as connection:
             assert connection.execute('SELECT * FROM messages ORDER BY session_key, seq').fetchall() == before
             assert connection.execute('PRAGMA integrity_check').fetchone()[0] == 'ok'
             assert connection.execute('PRAGMA foreign_key_check').fetchall() == []
@@ -418,13 +415,7 @@ async def restart(directory: Path, *, failed: bool) -> dict[str, object]:
                 'original_rows_equal': True, 'tool_effect_equal': True,
                 'failed': failed, 'fresh_process': True, 'integrity': 'ok', 'foreign_keys': []}
     finally:
-        try:
-            await host.terminate_all()
-        finally:
-            try:
-                log.close()
-            finally:
-                artifacts.close()
+        await host.terminate_all()
 
 
 async def check_directory(directory: Path) -> dict[str, object]:

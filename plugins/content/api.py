@@ -8,9 +8,9 @@ from dataclasses import dataclass
 from types import MappingProxyType
 from typing import cast
 
-from agent.plugin_contracts.turn_effects import PostCommitEffect, post_commit_effect
-from agent.plugin_composition.artifacts import check_artifact_id
-from agent.plugin_contracts import ContentPart, ContentReferences, Control, Input, Message
+from plugins.turn_projection.contract import PostCommitEffect, post_commit_effect
+from plugins.ledger.contract import check_artifact_id
+from plugins.ledger.contract import ContentPart, ContentReferences, Control, Input, Message
 
 
 def _history_object(pairs: list[tuple[str, object]]) -> dict[str, object]:

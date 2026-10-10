@@ -19,7 +19,7 @@ from fastapi import FastAPI, WebSocket
 from agent.plugin_composition.endpoints import Endpoint, save_endpoint_plan
 from bootstrap.web_shell import create_web_shell_app
 from docker.debug.session_metadata_scenario import append, fixture
-from session.log import MessageLog
+from plugins.ledger.log import MessageLog
 
 
 @asynccontextmanager

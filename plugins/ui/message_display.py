@@ -5,11 +5,11 @@ from collections.abc import Awaitable, Callable
 from contextlib import ExitStack
 
 from agent.plugin_composition import Context, ServiceKey
-from agent.plugin_composition.messages import MESSAGE_CATALOG, MessageReader
+from plugins.ledger.contract import MESSAGE_CATALOG, MessageReader
 from plugins.ui.contract import MessageDisplayProviders, PartDisplayProvider, message_rows
 from plugins.tools.contract import TOOL_DISPLAY_NAME
 from plugins.ui.contract import ToolResultDisplayProvider, MessagePage
-from agent.plugin_contracts import ContentPart, Control, Message, ToolCall, ToolResult
+from plugins.ledger.contract import ContentPart, Control, Message, ToolCall, ToolResult
 
 
 async def project_message_rows(

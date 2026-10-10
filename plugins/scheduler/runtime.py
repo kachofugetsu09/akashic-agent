@@ -7,13 +7,13 @@ from collections.abc import Awaitable, Callable
 from datetime import UTC, datetime, timedelta
 
 from agent.plugin_composition import Context
-from agent.plugin_composition.messages import MESSAGE_CATALOG, MESSAGE_WRITERS, SESSION_ADMISSION
+from plugins.ledger.contract import MESSAGE_CATALOG, MESSAGE_WRITERS, SESSION_ADMISSION
 from agent.plugin_composition.tasks import TASKS, Task, TaskSlot
 from plugins.timer.contract import TIMERS
 from .inputs import CONTENT, DELIVERY, DELIVERY_SENDERS
-from agent.plugin_composition.bindings import BINDINGS
-from agent.plugin_composition.messages import MessageReader, SessionAttributes
-from agent.plugin_contracts import ContentPart, Input, Message, Output
+from plugins.ledger.contract import BINDINGS
+from plugins.ledger.contract import MessageReader, SessionAttributes
+from plugins.ledger.contract import ContentPart, Input, Message, Output
 
 from .schedule import LatencyTracker, compute_actual_trigger
 from .store import Fire, JobStore, aware, fire_key

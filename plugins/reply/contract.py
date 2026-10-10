@@ -6,10 +6,10 @@ from contextlib import AbstractAsyncContextManager, AbstractContextManager
 from dataclasses import dataclass
 from typing import Protocol
 
-from agent.plugin_composition.messages import MessageReader
+from plugins.ledger.contract import MessageReader
 from agent.plugin_composition.model import ServiceKey
 from agent.plugin_composition.tasks import ExternalRootPermit, Task
-from agent.plugin_contracts import Message
+from plugins.ledger.contract import Message
 from plugins.sources.contract import (
     SourceGuard,
 )

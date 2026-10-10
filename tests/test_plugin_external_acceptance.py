@@ -16,6 +16,14 @@ def _business_composition(arguments):
 
 async def _exercise_business_composition(**arguments):
     """源码隔离会清空模块缓存，必须在独立进程执行真实安装验收。"""
+    sources = arguments["workspace"].parent / (arguments["workspace"].name + "-ledger-sources")
+    for name in ("ledger", "channels", "turn_projection"):
+        path = sources / name
+        shutil.copytree(Path(__file__).parents[1] / "plugins" / name, path,
+                        ignore=shutil.ignore_patterns("__pycache__"))
+        _git_commit(path)
+    arguments["jobs"] = [{"label": "ledger", "source": str(sources / "ledger")}, *arguments["jobs"]]
+    arguments["api_sources"] = (sources / "channels", sources / "turn_projection")
     with ProcessPoolExecutor(max_workers=1, mp_context=get_context("spawn")) as process:
         return await asyncio.get_running_loop().run_in_executor(
             process, partial(_business_composition, arguments),
@@ -63,11 +71,11 @@ def _copy_content_source(root: Path) -> Path:
 
 _MESSAGE_ROUNDTRIP_PLUGIN = '''
 from agent.plugin_composition import Context, ServiceKey
-from agent.plugin_composition.messages import (
+from plugins.ledger.contract import (
     MESSAGE_CATALOG,
     MESSAGE_WRITERS,
 )
-from agent.plugin_contracts import ContentPart, Input
+from plugins.ledger.contract import ContentPart, Input
 
 CONTENT = ServiceKey("content.v2")
 ROUNDTRIP = ServiceKey("acceptance.messages.roundtrip.v1")
@@ -137,11 +145,11 @@ async def apply(ctx: Context) -> None:
 
 _CONSUMER_PLUGIN = '''
 from agent.plugin_composition import Context, ServiceKey
-from agent.plugin_composition.messages import (
+from plugins.ledger.contract import (
     MESSAGE_CATALOG,
     MESSAGE_WRITERS,
 )
-from agent.plugin_contracts import ContentPart, Input
+from plugins.ledger.contract import ContentPart, Input
 
 CONTENT = ServiceKey("content.v2")
 PROVIDER = ServiceKey("acceptance.provider.v1")
@@ -361,7 +369,7 @@ async def test_legal_subsets_run_separately_and_accept_differently_named_provide
     )
     assert first["status"] == "passed", first
     assert {row["plugin_id"] for row in first["reports"]} == {
-        "content@acceptance", "message_roundtrip@acceptance",
+        "ledger@acceptance", "content@acceptance", "message_roundtrip@acceptance",
     }
 
     alternate = _write_plugin_source(
@@ -385,7 +393,7 @@ async def test_legal_subsets_run_separately_and_accept_differently_named_provide
     )
     assert second["status"] == "passed", second
     assert {row["plugin_id"] for row in second["reports"]} == {
-        "content@acceptance", "alternate@acceptance", "consumer@acceptance",
+        "ledger@acceptance", "content@acceptance", "alternate@acceptance", "consumer@acceptance",
     }
     call = next(row["capability_call"] for row in second["reports"] if row["plugin_id"] == "consumer@acceptance")
     assert call["message_readback"]["text_parts"] == ("independent:same-consumer",)

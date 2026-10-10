@@ -7,9 +7,9 @@ from pathlib import Path
 from tempfile import TemporaryDirectory
 
 from agent.plugin_composition import CompositionRoot, CredentialRef, ServiceKey
-from agent.plugin_composition.channels import CHANNEL_INPUT_V2 as CHANNEL_INPUT, CHANNELS, ChannelInboundMessage, RawInbound
+from plugins.channels.contract import CHANNEL_INPUT_V2 as CHANNEL_INPUT, CHANNELS, ChannelInboundMessage, RawInbound
 from agent.plugin_composition.credentials import CREDENTIALS
-from agent.plugin_composition.messages import MESSAGE_CATALOG
+from plugins.ledger.contract import MESSAGE_CATALOG
 from agent.plugin_composition.model import FiberState, PluginRuntime
 from agent.plugin_composition.tasks import Tasks
 from plugins.sources.contract import (
@@ -19,8 +19,8 @@ from plugins.sources.contract import (
 from plugins.sources import plugin as sources
 from plugins.sources.session import SourceSession
 from plugins.telegram_channel import plugin as telegram
-from session.log import MessageCatalog, MessageLog
-from session.message import ContentPart, ContentReferences, Control, Input
+from plugins.ledger.log import MessageCatalog, MessageLog
+from plugins.ledger.contract import ContentPart, ContentReferences, Control, Input
 
 
 # 故意声明已退役的请求，验证组合不会把旧消费者接到当前合同。

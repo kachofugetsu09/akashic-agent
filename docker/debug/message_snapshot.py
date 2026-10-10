@@ -11,9 +11,9 @@ from pathlib import Path
 from tempfile import TemporaryDirectory
 
 from plugins.react.plugin import _History
-from session.log import MessageLog, OwnerTransaction
-from session.message import ContentPart, ContentReferences, Input
-from session.message_codec import encode_body
+from plugins.ledger.log import MessageLog, OwnerTransaction
+from plugins.ledger.contract import ContentPart, ContentReferences, Input
+from plugins.ledger.contract import encode_body
 
 
 def body(text: str) -> Input:

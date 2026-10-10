@@ -1,2 +1,31 @@
 schema_version = 1
-migrations = []
+
+[[migrations]]
+id = "20261004_01_message_source_index"
+bundle = "ledger"
+depends = ["20260928_01_plugin_config_updates"]
+transactional = true
+
+[[migrations]]
+id = "20261004_02_message_body_kind_index"
+bundle = "ledger"
+depends = ["20261004_01_message_source_index"]
+transactional = true
+
+[[migrations]]
+id = "20261004_03_session_soft_delete"
+bundle = "ledger"
+depends = ["20261004_02_message_body_kind_index"]
+transactional = true
+
+[[migrations]]
+id = "20261004_04_session_title"
+bundle = "ledger"
+depends = ["20261004_03_session_soft_delete"]
+transactional = true
+
+[[migrations]]
+id = "20261007_01_message_prefix_revision"
+bundle = "ledger"
+depends = ["20261004_02_message_body_kind_index"]
+transactional = true

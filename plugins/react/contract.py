@@ -7,10 +7,10 @@ from contextlib import AbstractContextManager
 from typing import Protocol
 
 from agent.plugin_composition import RuntimeScope, ServiceKey
-from agent.plugin_composition.messages import MessageReader, MessageWriter, OwnerStore
+from plugins.ledger.contract import MessageReader, MessageWriter, OwnerStore
 from plugins.models.contract import StreamCallback
 from plugins.models.contract import BoundChatModel
-from agent.plugin_contracts import Message
+from plugins.ledger.contract import Message
 from plugins.content.contract import ContentView
 from plugins.context.contract import ContextBuilder, SummaryReducer
 from plugins.models.contract import MessageProjection

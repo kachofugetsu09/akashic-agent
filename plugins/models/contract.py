@@ -29,15 +29,15 @@ from typing import (
     Any,
     Protocol,
 )
-from agent.plugin_composition.bindings import Bindings
+from plugins.ledger.contract import Bindings
 from agent.plugin_composition import (
     Context,
     Effect,
 )
-from agent.plugin_composition.artifacts import ArtifactRead
-from agent.plugin_composition.channels import AttachmentRef
+from plugins.ledger.contract import ArtifactRead
+from plugins.channels.contract import AttachmentRef
 from agent.plugin_composition.model import ServiceKey
-from agent.plugin_contracts import (
+from plugins.ledger.contract import (
     ContentPart,
     ContentReferences,
     Message,

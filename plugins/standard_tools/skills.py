@@ -13,7 +13,7 @@ from core.common.file_io import run_file_io
 from plugins.host_execution.contract import PROCESSES
 from agent.plugin_composition import Context
 from plugins.assets.contract import INSTALLED_ASSETS, InstalledAsset
-from agent.plugin_contracts import ContentPart, Message, json_value
+from plugins.ledger.contract import ContentPart, Message, json_value
 
 from ._materials_boundary import MATERIALS
 from ._tool_boundary import TOOLS, CallSource, ToolRef, ToolResultValue

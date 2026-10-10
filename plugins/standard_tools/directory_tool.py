@@ -10,8 +10,8 @@ from pathlib import Path
 from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_validator
 
 from agent.plugin_composition import Context
-from agent.plugin_composition.messages import MessageConflict
-from agent.plugin_contracts import ContentPart, json_value
+from plugins.ledger.contract import MessageConflict
+from plugins.ledger.contract import ContentPart, json_value
 
 from ._tool_boundary import TOOLS, CallSource, ToolResultValue
 from .working_directory import WorkingDirectories

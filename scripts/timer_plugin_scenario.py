@@ -74,15 +74,15 @@ async def run(directory: Path) -> dict[str, object]:
     from core.net.http import SharedHttpResources
     from plugins.scheduler.schedule import ScheduledJob
     from plugins.scheduler.store import JobStore, fire_key
-    from session.message import Output
+    from plugins.ledger.contract import Output
 
     workspace = directory / "workspace"
     workspace.mkdir()
     PluginSelection(workspace).initialize()
     home = directory / "home"
-    os.environ.update(HOME=str(home), AKASHIC_PLUGIN_HOME=str(home), AKASHIC_PLUGIN_DISTRIBUTION="")
+    os.environ.update(HOME=str(home), AKASHIC_PLUGIN_HOME=str(home), AKASHIC_PLUGIN_DISTRIBUTION="", AKASHIC_EXECUTION_MODE="local")
     sources = directory / "plugins"
-    for name in ("commands", "sources", "content", "context", "tools", "react", "models",
+    for name in ("ledger", "host_execution", "commands", "sources", "content", "context", "tools", "react", "models",
                  "turn_projection", "reply_program", "conversation", "delivery", "akashic_sender",
                  "standard_tools", "assets", "scheduler", "tool_search"):
         shutil.copytree(ROOT / "plugins" / name, sources / name,
@@ -116,11 +116,11 @@ async def apply(ctx):
                            message=identity, id=identity)
         await store.add(identity, job, identity)
         # 真实持久订阅是完成屏障；轮询只负责跨连接事实追赶。
-        stream = runtime.message_log.catalog().follow(poll_interval=0.01)
+        stream = log.catalog().follow(poll_interval=0.01)
         try:
             async with asyncio.timeout(10):
                 async for _ in stream:
-                    final = runtime.message_log.reader("akashic:scenario").get("scheduler-notification:" + fire_key(job))
+                    final = log.reader("akashic:scenario").get("scheduler-notification:" + fire_key(job))
                     if final is not None:
                         assert isinstance(final.body, Output)
                         assert final.body.parts[0].value == identity
@@ -141,6 +141,8 @@ async def apply(ctx):
     runtime = build()
     try:
         await runtime.start()
+        from plugins.ledger.contract import MESSAGE_CATALOG
+        log = runtime.plugin_manager.live_root.context.require(MESSAGE_CATALOG)._log
         host = runtime.plugin_manager
         await host.start_runtime()
         root = host.live_root
@@ -177,6 +179,7 @@ async def apply(ctx):
     runtime = build()
     try:
         await runtime.start()
+        log = runtime.plugin_manager.live_root.context.require(MESSAGE_CATALOG)._log
         host = runtime.plugin_manager
         await host.start_runtime()
         await notice(runtime, "third")
@@ -190,7 +193,7 @@ async def apply(ctx):
         assert root.context.get(TIMERS) is None
         assert host._active_generations["scheduler"].fiber.state != "active"
         assert host._active_generations["content"].fiber.state == "active"
-        messages = runtime.message_log.reader("akashic:scenario").snapshot()
+        messages = log.reader("akashic:scenario").snapshot()
         assert len(messages) == 3
     finally:
         await runtime.stop()

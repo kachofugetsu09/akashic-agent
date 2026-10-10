@@ -5,8 +5,8 @@ from typing import Self
 
 from pydantic import BaseModel, ConfigDict, Field, ValidationError, model_validator
 
-from agent.plugin_contracts import ContentPart, Output, ToolCall
-from agent.plugin_contracts import json_value
+from plugins.ledger.contract import ContentPart, Output, ToolCall
+from plugins.ledger.contract import json_value
 
 from ._boundary import CallSource, ToolResultValue
 from .request import STAGE_TOOLS, read_phase, read_request

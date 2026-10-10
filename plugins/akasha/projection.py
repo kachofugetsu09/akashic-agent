@@ -7,8 +7,8 @@ import hashlib
 import json
 from typing import Protocol
 
-from agent.plugin_composition.messages import MessageCatalog
-from agent.plugin_contracts import Input, Message, Output, encode_body
+from plugins.ledger.contract import MessageCatalog
+from plugins.ledger.contract import Input, Message, Output, encode_body
 import numpy as np
 
 from .domain.model import Turn, TurnFeedback

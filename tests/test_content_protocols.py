@@ -8,7 +8,7 @@ import pytest
 from agent.plugin_composition import CompositionRoot
 from agent.plugin_composition.model import FiberState, PluginRuntime
 from plugins.content.plugin import CONTENT, Span, TextProtocol, apply
-from session.message import ContentPart
+from plugins.ledger.contract import ContentPart
 
 @asynccontextmanager
 async def bound_content(definitions):

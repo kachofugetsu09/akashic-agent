@@ -6,7 +6,7 @@ from pathlib import Path
 from tempfile import TemporaryDirectory
 
 from agent.plugin_composition import CompositionRoot, ServiceKey
-from agent.plugin_composition.channel_io import unavailable
+from plugins.ledger.contract import unavailable
 from agent.plugin_composition.model import PluginRuntime
 from plugins.context.contract import MATERIALS_V4
 from plugins.context import plugin as context

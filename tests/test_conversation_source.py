@@ -1,4 +1,4 @@
-from session.message import ContentReferences
+from plugins.ledger.contract import ContentReferences
 import asyncio
 from collections.abc import Awaitable
 from typing import cast
@@ -6,8 +6,8 @@ from contextlib import asynccontextmanager
 import pytest
 from agent.plugin_composition.tasks import Tasks
 from plugins.sources.session import SourceSession as Conversation
-from session.log import MessageLog, WriterExpired
-from session.message import ContentPart, Control, Input, Output
+from plugins.ledger.log import MessageLog, WriterExpired
+from plugins.ledger.contract import ContentPart, Control, Input, Output
 
 @asynccontextmanager
 async def source(tmp_path, run, *, changed=None):
@@ -170,7 +170,7 @@ async def test_source_commit_drains_before_cancel_and_rejects_late_start(tmp_pat
 @pytest.mark.parametrize("automatic", [False, True])
 async def test_stop_waiting_for_storage_preserves_reply_and_explicit_head(tmp_path, monkeypatch, automatic):
     """C3/C4：内部停止重选前缀，显式 head 不得被自动放宽，原回复保持完整。"""
-    from session.log import MessageWriter, SourceHeadConflict
+    from plugins.ledger.log import MessageWriter, SourceHeadConflict
     waiting = asyncio.Event()
     release = asyncio.Event()
     answer_ready = asyncio.Event()

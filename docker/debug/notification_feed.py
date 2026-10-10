@@ -14,8 +14,8 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
 from plugins.akashic_clients.notifications import NotificationFeed, notification_events
 from plugins.akashic_clients.services import MessageCatalogPort
-from session.log import MessageLog
-from session.message import ContentPart, ContentReferences, Output
+from plugins.ledger.log import MessageLog
+from plugins.ledger.contract import ContentPart, ContentReferences, Output
 
 
 def append(log: MessageLog, session: str, name: str, finish: str = "complete") -> None:

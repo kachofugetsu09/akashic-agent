@@ -12,7 +12,7 @@ from contextlib import aclosing, asynccontextmanager, suppress
 from typing import Any, cast
 from uuid import uuid4
 
-from agent.plugin_composition.channels import (
+from plugins.channels.contract import (
     AttachmentKind as V3AttachmentKind,
     AttachmentReadLease,
     AttachmentRef,

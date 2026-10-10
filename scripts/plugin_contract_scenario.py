@@ -78,7 +78,7 @@ def prepare(directory: Path) -> None:
     # 1. Core 产物中不包含 plugins，也没有源码 checkout 的 symlink。
     core = directory / "core"
     core.mkdir()
-    for name in ("agent", "bootstrap", "bus", "core", "infra", "session", "utils"):
+    for name in ("agent", "bootstrap", "core", "infra", "utils"):
         shutil.copytree(ROOT / name, core / name, ignore=shutil.ignore_patterns("__pycache__"))
     # 2. 公共模块与实现仍处于提供方自己的安装目录。
     plugins = directory / "installed"

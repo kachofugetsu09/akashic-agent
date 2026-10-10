@@ -8,12 +8,12 @@ from typing import Self
 from pydantic import BaseModel, ConfigDict, Field, ValidationError, model_validator
 
 from agent.plugin_composition import Context
-from agent.plugin_composition.artifacts import ARTIFACT_IMPORT
-from agent.plugin_composition.messages import MESSAGE_WRITERS
-from agent.plugin_composition.artifacts import AttachmentKind
-from agent.plugin_contracts import ContentPart, Output
-from agent.plugin_contracts import decode_body, encode_body
-from agent.plugin_contracts import json_value
+from plugins.ledger.contract import ARTIFACT_IMPORT
+from plugins.ledger.contract import MESSAGE_WRITERS
+from plugins.ledger.contract import AttachmentKind
+from plugins.ledger.contract import ContentPart, Output
+from plugins.ledger.contract import decode_body, encode_body
+from plugins.ledger.contract import json_value
 
 from .boundary import CONTENT, DELIVERY, CallSource, ReceiptView, ToolResult
 

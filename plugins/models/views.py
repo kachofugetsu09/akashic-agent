@@ -6,7 +6,7 @@ from contextlib import AsyncExitStack, asynccontextmanager
 
 from agent.plugin_composition import Context, Effect
 from agent.plugin_composition.model import FiberState
-from agent.plugin_contracts import Message
+from plugins.ledger.contract import Message
 from plugins.models.contract import (
     CONTENT_VIEWS as CONTENT_VIEWS,
     ContentTransform,

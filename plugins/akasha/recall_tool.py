@@ -11,11 +11,11 @@ from typing import cast
 import numpy as np
 from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_validator
 
-from agent.plugin_composition.bindings import Bindings
+from plugins.ledger.contract import Bindings
 from plugins.models.contract import BoundEmbeddingModel
-from agent.plugin_composition.messages import MessageCatalog, MessageEmbeddings
-from agent.plugin_contracts import ContentPart, ContentReferences, Message, Output, ToolCall, ToolResult
-from agent.plugin_contracts import json_value
+from plugins.ledger.contract import MessageCatalog, MessageEmbeddings
+from plugins.ledger.contract import ContentPart, ContentReferences, Message, Output, ToolCall, ToolResult
+from plugins.ledger.contract import json_value
 from ._boundaries import CallSource, Result, TOOLS
 
 from .application.consumer import run_memory_job

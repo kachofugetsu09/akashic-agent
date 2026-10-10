@@ -4,10 +4,10 @@ from pathlib import Path
 import shutil
 import pytest
 from tests.fixtures.plugin_workspace import initialize_plugin_workspace
-from agent.plugin_composition.bindings import BINDINGS
+from plugins.ledger.contract import BINDINGS
 from agent.plugin_composition import ServiceKey
 from agent.plugins.manager import PluginManager
-from infra.channels.artifacts import ChannelAttachmentArtifactStore
+from plugins.ledger.attachments import ChannelAttachmentArtifactStore
 from plugins.delivery.records import DeliveryRecords
 from plugins.message_push.tool import message_id
 from plugins.turn_projection.plugin import TurnProjection
@@ -16,9 +16,9 @@ from plugins.content.plugin import check_text
 from plugins.tools.execution import ToolExecution
 from plugins.tools.plugin import ALL_TOOLS, TOOLS, open_tool
 from agent.plugin_composition.tasks import Tasks
-from session.log import MessageLog, SessionAttributes
-from session.artifact_store import ArtifactStore
-from session.message import ContentPart, Control, Input, Output
+from plugins.ledger.log import MessageLog, SessionAttributes
+from plugins.ledger.artifact_store import ArtifactStore
+from plugins.ledger.contract import ContentPart, Control, Input, Output
 from tests.support.delivery_sources import sources
 
 def storage(workspace):
@@ -33,21 +33,22 @@ async def test_push_completes_while_target_turn_is_active_and_appends_one_output
     """A caller push finishes while a real source Task holds its original prompt."""
     source = tmp_path / "plugins"
     sources(source)
-    for name in ("content", "tools", "message_push"):
+    for name in ("ledger", "content", "tools", "message_push"):
         shutil.copytree(Path(__file__).parents[1] / "plugins" / name, source / name,
                         ignore=shutil.ignore_patterns("__pycache__"))
     workspace = tmp_path / "workspace"
     store, log = storage(workspace)
     initialize_plugin_workspace(workspace)
-    artifacts = ChannelAttachmentArtifactStore(workspace=workspace, metadata_store=store)
     host = PluginManager([source], workspace=workspace,
-                         installed_cache_root=tmp_path / "home", message_log=log,
-                         channel_attachment_store=artifacts)
+                         installed_cache_root=tmp_path / "home")
     target_tasks, caller_tasks = Tasks(), Tasks()
     release = asyncio.Event()
     target_task = None
     try:
         await host.load_all()
+        log.close()
+        from plugins.ledger.contract import MESSAGE_CATALOG
+        log = host.live_root.context.require(MESSAGE_CATALOG)._log
         await host.start_runtime()
         root = host.live_root
         sender = host.generation("test_sender")
@@ -89,8 +90,14 @@ async def test_push_completes_while_target_turn_is_active_and_appends_one_output
         async def authorize(_binding, _arguments):
             return {"approved": True}
 
+        from contextlib import asynccontextmanager
+        @asynccontextmanager
+        async def open_bound_tool(identity):
+            async with root.context.open_service(TOOLS), open_tool(bindings, identity) as tool:
+                yield tool
+
         execution = ToolExecution(log.owner("plugin:tools"), caller_tasks,
-                                  lambda key: open_tool(bindings, key), authorize, task_key="effects")
+                                  open_bound_tool, authorize, task_key="effects")
         # 2. The caller's tool and Delivery finish before the target is released.
         async with sender.fiber.context.runtime_scope():
             activity = sender.fiber.context.require(ServiceKey("fixture.delivery"))().activity("test", "room")

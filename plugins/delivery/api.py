@@ -6,7 +6,7 @@ from typing import Annotated, Literal
 
 from pydantic import BaseModel, ConfigDict, Field
 
-from agent.plugin_composition.messages import MessageReader
+from plugins.ledger.contract import MessageReader
 from plugins.delivery.contract import (
     FINAL_OUTPUT_DELIVERY as FINAL_OUTPUT_DELIVERY,
     FinalOutputTurn as FinalOutputTurn,

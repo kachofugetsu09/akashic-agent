@@ -3,10 +3,10 @@ import ast
 from pathlib import Path
 import shutil
 import pytest
-from agent.plugin_composition.bindings import BINDINGS
+from plugins.ledger.contract import BINDINGS
 from plugins.commands.contract import COMMANDS, CommandResult
 from agent.plugins.manager import PluginManager
-from session.log import MessageLog
+from plugins.ledger.log import MessageLog
 from tests.fixtures.plugin_workspace import initialize_plugin_workspace
 
 def _write_source(path, source):
@@ -63,11 +63,13 @@ async def apply(ctx):
     await ctx.require(COMMANDS).register(ctx, CommandDefinition(
         "probe", "show dependency", lambda call: CommandResult("success", value), read_only=True))
 ''')
-    log = MessageLog(tmp_path / "sessions.db")
+    shutil.copytree(Path(__file__).parents[1] / "plugins/ledger", source / "ledger",
+                    ignore=shutil.ignore_patterns("__pycache__"))
     workspace = tmp_path / "workspace"
     initialize_plugin_workspace(workspace)
+    log = MessageLog(workspace / "sessions.db")
     host = PluginManager([source], workspace=workspace,
-                         installed_cache_root=tmp_path / "home", message_log=log)
+                         installed_cache_root=tmp_path / "home")
     try:
         await host.load_all()
         root = host.live_root
@@ -86,7 +88,7 @@ async def apply(ctx):
             assert generation is not None
             expected[name] = generation.generation_id
         assert descriptor["origins"] == expected
-        async with bindings.open(identity, COMMANDS) as (selected, metadata):
+        async with commands_context.runtime_scope(), bindings.open(identity, COMMANDS) as (selected, metadata):
             assert selected is root.context.require(COMMANDS)
             assert metadata == {"name": "probe"}
             result = await selected.freeze().execute(

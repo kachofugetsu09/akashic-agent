@@ -7,8 +7,8 @@ import pytest
 from plugins.akashic_clients.session_activity import follow_session_activity
 from plugins.akashic_clients.web_chat import WebChatChannel
 from plugins.reply.status import ReplyState
-from session.log import MessageLog, SessionAttributes
-from session.message import Input
+from plugins.ledger.log import MessageLog, SessionAttributes
+from plugins.ledger.contract import Input
 from tests.test_message_log import text_schema
 
 

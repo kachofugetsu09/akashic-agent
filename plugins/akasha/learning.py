@@ -7,9 +7,9 @@ from typing import Annotated, Literal, cast
 from pydantic import BaseModel, ConfigDict, Field
 
 from agent.plugin_composition import ServiceKey
-from agent.plugin_composition.bindings import Bindings
-from agent.plugin_composition.messages import MessageCatalog, MessageEmbeddings
-from agent.plugin_contracts import ContentPart, Input, Message, Output, ToolCall, ToolResult
+from plugins.ledger.contract import Bindings
+from plugins.ledger.contract import MessageCatalog, MessageEmbeddings
+from plugins.ledger.contract import ContentPart, Input, Message, Output, ToolCall, ToolResult
 from ._boundaries import PostCommitReader, TOOLS, TurnProjection
 from .domain.model import Turn, TurnFeedback
 from .infrastructure.consumption import Applied, Consumption, message_nodes

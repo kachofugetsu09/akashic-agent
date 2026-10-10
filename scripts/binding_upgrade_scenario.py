@@ -44,11 +44,15 @@ def snapshot(database: Path) -> dict[str, list[tuple[object, ...]]]:
 async def run(directory: Path, *, old: bool) -> None:
     """在独立进程中使用实际 provider、SQLite 与 OwnerCall。"""
     from agent.plugin_composition import ServiceKey
-    from agent.plugin_composition.bindings import BINDINGS
     from agent.plugins.manager import PluginManager
     from agent.plugins.selection import PluginSelection
-    from session.log import MessageLog, SessionAttributes
-    from session.message import ContentPart, ContentReferences, Input
+    if old:
+        from agent.plugin_composition.bindings import BINDINGS
+        from session.log import MessageLog, SessionAttributes
+        from session.message import ContentPart, ContentReferences, Input
+    else:
+        from plugins.ledger.contract import BINDINGS, SessionAttributes, ContentPart, ContentReferences, Input
+        from plugins.ledger.log import MessageLog
 
     workspace = directory / "workspace"
     if old:
@@ -62,13 +66,17 @@ async def run(directory: Path, *, old: bool) -> None:
                              event_bus=EventBus())
     else:
         host = PluginManager([directory / "providers"], workspace=workspace,
-                             installed_cache_root=directory / "home/cache", message_log=log)
+                             installed_cache_root=directory / "home/cache")
     if old:
         service = ServiceKey("core.commands")
     else:
         from plugins.commands.contract import COMMANDS as service
     try:
         await host.load_all()
+        if not old:
+            await host.install(source=str(directory / "providers/ledger"), marketplace="lab",
+                               ref_name="", sparse_paths=[], update_id="add-ledger")
+            await host._operation.task
         root = host.live_root
         assert root is not None
         assert root.context.require(ServiceKey("scenario.command.ready")) is True
@@ -96,7 +104,7 @@ async def run(directory: Path, *, old: bool) -> None:
             # 2. 当前 provider 接管恢复，旧运行 key 没有重新登记。
             assert root.context.get(ServiceKey("core.commands")) is None
             identity = (directory / "binding-id").read_text()
-            async with bindings.open(identity, service) as (selected, metadata):
+            async with root.context.open_service(service), bindings.open(identity, service) as (selected, metadata):
                 assert metadata == {"name": "probe"}
                 result = await selected.freeze().execute(
                     "/probe", session_key="saved", channel="scenario", chat_id="room",
@@ -150,12 +158,20 @@ def main() -> None:
         # 栈内 journal schema 也已升级；走实际迁移入口，不绕过校验或删除旧账本。
         from agent.migrations.runner import MigrationRunner
         MigrationRunner(repo_root=ROOT, config_path=directory / "config.toml",
-                        workspace=directory / "workspace").run()
+                        workspace=directory / "workspace", plugin_dirs=[ROOT / "plugins/ledger"]).run()
         assert snapshot(database) == before
         # 2. 同一 workspace 只升级源码，原绑定和消息没有数据管理写入。
         shutil.rmtree(providers / "commands")
         shutil.copytree(ROOT / "plugins/commands", providers / "commands", ignore=shutil.ignore_patterns("__pycache__"))
         (owner / "plugin.py").write_text(OWNER.replace("COMMAND_CONTRACT", "plugins.commands.contract"))
+        for name in ("ledger", "channels"):
+            shutil.copytree(ROOT / "plugins" / name, providers / name,
+                            ignore=shutil.ignore_patterns("__pycache__"))
+        ledger = providers / "ledger"
+        subprocess.run(["git", "init", "-q", str(ledger)], check=True)
+        subprocess.run(["git", "-C", str(ledger), "add", "."], check=True)
+        subprocess.run(["git", "-C", str(ledger), "-c", "user.name=Scenario", "-c",
+                        "user.email=scenario@example.invalid", "commit", "-qm", "ledger"], check=True)
         environment["PYTHONPATH"] = str(ROOT)
         subprocess.run([sys.executable, str(script), "--child", str(directory), "new"],
                        cwd=directory, env=environment, check=True)

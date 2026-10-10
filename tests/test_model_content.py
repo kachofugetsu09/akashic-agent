@@ -2,10 +2,10 @@
 
 import json
 import pytest
-from session.artifact_services import ArtifactRead
+from plugins.ledger.artifact_services import ArtifactRead
 
 from plugins.models.content import load_artifacts
-from session.artifacts import AttachmentKind, AttachmentRef, AttachmentReadLease
+from plugins.ledger.contract import AttachmentKind, AttachmentRef, AttachmentReadLease
 
 
 async def reject_read(ref: AttachmentRef) -> AttachmentReadLease:

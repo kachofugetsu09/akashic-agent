@@ -145,8 +145,8 @@ async def run(args: argparse.Namespace) -> dict:
     from plugins.reply.status import ReplyState
     from plugins.sources.session import SourceSession
     from plugins.content.plugin import check_text
-    from agent.plugin_contracts import ContentPart, Control, Input
-    from session.log import MessageLog, SessionAttributes
+    from plugins.ledger.contract import ContentPart, Control, Input
+    from plugins.ledger.log import MessageLog, SessionAttributes
     from plugins.ui.contract import read_message_rows
 
     descriptor = BoundModelDescriptor(

@@ -11,8 +11,8 @@ import threading
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-from session.log import MessageLog
-from session.message import Control, Input
+from plugins.ledger.log import MessageLog
+from plugins.ledger.contract import Control, Input
 
 
 async def turn() -> None:

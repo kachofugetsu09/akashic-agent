@@ -22,7 +22,7 @@ from agent.plugin_composition import (
     Effect,
 )
 from plugins.models.contract import MODEL_CATALOG
-from agent.plugin_composition.channels import (
+from plugins.channels.contract import (
     AttachmentKind,
     AttachmentReadLease,
     AttachmentRef,
@@ -35,7 +35,7 @@ from agent.plugin_composition.channels import (
     ProviderDeliveryRequest,
     StopReceipt,
 )
-from agent.plugin_composition.messages import MESSAGE_CATALOG, SESSION_ADMIN
+from plugins.ledger.contract import MESSAGE_CATALOG, SESSION_ADMIN
 
 from .capabilities import (
     MESSAGE_DISPLAY,

@@ -36,9 +36,9 @@ from plugins.gateway.contract import RpcMethod
 from agent.plugins.manager import PluginManager
 from agent.plugins.reload_journal import ReloadJournal
 from agent.plugins.selection import PluginSelection
-from infra.channels.artifacts import ChannelAttachmentArtifactStore
-from session.artifact_store import ArtifactStore
-from session.log import MessageLog
+from plugins.ledger.attachments import ChannelAttachmentArtifactStore
+from plugins.ledger.artifact_store import ArtifactStore
+from plugins.ledger.log import MessageLog
 from plugins.wake.request import Request, read_request
 from plugins.wake.source import Pointer
 from plugins.wake.state import WakeState
@@ -346,6 +346,9 @@ class RuntimeStack:
         selection = PluginSelection(self.workspace)
         stable = selection.read()
         await self.manager.load_all()
+        from plugins.ledger.contract import MESSAGE_CATALOG
+        self.message_log.close()
+        self.message_log = self.manager.live_root.context.require(MESSAGE_CATALOG)._log
         if stable is not None and selection.read() != stable:
             raise GateFailure("RESTART_CHANGED_STABLE_SELECTION")
         if self.after_load is not None:
@@ -651,6 +654,7 @@ def _build_stack(
     plugin_dirs = [
         Path(__file__).resolve().parents[2] / "plugins" / name
         for name in (
+            "ledger",
             "assets",
             "content",
             "context",
@@ -688,8 +692,6 @@ def _build_stack(
     manager = PluginManager(
         plugin_dirs=plugin_dirs,
         workspace=workspace,
-        message_log=message_log,
-        channel_attachment_store=artifacts,
         installed_cache_root=root / "plugin-home" / "cache",
     )
     if not model_plugin_dirs:
@@ -799,8 +801,8 @@ from plugins.delivery.senders import DELIVERY_SENDERS
 from plugins.standard_web.plugin import STANDARD_WEB_TOOLS
 from plugins.tools.api import Result
 from plugins.tools.plugin import TOOLS
-from session.message import ContentPart
-from session.message_codec import encode_body
+from plugins.ledger.contract import ContentPart
+from plugins.ledger.contract import encode_body
 {models}
 api_version = 3
 name = "wake_e2e_{"models" if include_models else "support"}"

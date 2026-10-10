@@ -6,8 +6,8 @@ from collections.abc import Callable
 from dataclasses import dataclass, field
 
 from agent.plugin_composition import Context
-from agent.plugin_composition.messages import MessageCatalog, MessageReader
-from agent.plugin_contracts import Message, Output
+from plugins.ledger.contract import MessageCatalog, MessageReader
+from plugins.ledger.contract import Message, Output
 
 from .boundary import DeliveryExecution, SinkInput
 

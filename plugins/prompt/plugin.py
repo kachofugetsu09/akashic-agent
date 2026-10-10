@@ -6,7 +6,7 @@ from datetime import timedelta
 from typing import cast
 
 from agent.plugin_composition import Context
-from agent.plugin_contracts import Input, Message, json_value
+from plugins.ledger.contract import Input, Message, json_value
 from plugins.context.contract import (
     MATERIALS_V4 as MATERIALS,
 )

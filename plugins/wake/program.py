@@ -6,10 +6,10 @@ import asyncio
 from collections.abc import Mapping
 
 from agent.plugin_composition import Context
-from agent.plugin_composition.messages import MESSAGE_WRITERS, MessageReader
+from plugins.ledger.contract import MESSAGE_WRITERS, MessageReader
 from plugins.models.contract import ModelError
 from agent.plugin_composition.tasks import Task
-from agent.plugin_contracts import Control, Message
+from plugins.ledger.contract import Control, Message
 from plugins.models.contract import (
     MODEL_CONTENT as MODEL_CONTENT,
     ModelContent as ModelContent,

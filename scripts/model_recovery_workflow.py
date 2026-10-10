@@ -17,7 +17,7 @@ from plugins.models.contract import (
     ModelCapabilities,
 )
 from agent.plugin_composition.tasks import Tasks
-from agent.plugin_contracts import ContentPart, Control, Input, Output, ToolResult
+from plugins.ledger.contract import ContentPart, Control, Input, Output, ToolResult
 from plugins.host_execution.contract import FileError
 from core.net.http import HttpClient
 from plugins.content.plugin import _decode_text, check_text
@@ -36,7 +36,7 @@ from plugins.standard_tools.filesystem import WriteFileTool
 from plugins.tools.execution import MessageReply, Result, ToolExecution
 from plugins.tools.menu import ToolCallDecode
 from scripts.check_model_retry import Credential, GeminiCredential
-from session.log import MessageLog, SessionAttributes
+from plugins.ledger.log import MessageLog, SessionAttributes
 
 
 async def run(folder: Path, *, cancel: bool = False, gemini: bool = False) -> dict:

@@ -14,12 +14,12 @@ from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.testclient import TestClient
 
-from agent.plugin_composition.messages import SessionAdmin
+from plugins.ledger.contract import SessionAdmin
 from plugins.akashic_clients.chat_api import create_chat_app
 from plugins.akashic_clients.navigation import NavigationPreferences
 from plugins.akashic_clients.web_chat import WebChatChannel
-from session.log import MessageLog, SessionAttributes
-from session.message import ContentPart, ContentReferences, Input, Output
+from plugins.ledger.log import MessageLog, SessionAttributes
+from plugins.ledger.contract import ContentPart, ContentReferences, Input, Output
 
 
 def append(log, key, text, *, output=False):

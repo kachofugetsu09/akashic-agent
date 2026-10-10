@@ -22,7 +22,7 @@ from plugins.models.contract import (
 )
 from plugins.context.api import Materials, Reminder, material_data
 from plugins.tools.execution import Result
-from session.message import ContentPart, Input, Output
+from plugins.ledger.contract import ContentPart, Input, Output
 from tests.support.message_react import runtime
 
 

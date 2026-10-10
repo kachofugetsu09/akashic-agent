@@ -17,3 +17,12 @@ class SemanticInterest(Protocol):
 
 
 SEMANTIC_INTEREST = ServiceKey[SemanticInterest]("akasha.semantic-interest.v1")
+
+
+
+from typing import Any
+
+from agent.plugin_composition.model import ServiceKey
+
+# Marker only: vector-backed providers declare a mutually exclusive role.
+EMBEDDING_MEMORY_PLUGIN = ServiceKey[Any]("plugin.claim.embedding_memory")

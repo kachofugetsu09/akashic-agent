@@ -29,9 +29,6 @@ from agent.plugin_composition import (
     FiberState,
     PluginRuntime,
 )
-from agent.plugin_composition.channel_io import (
-    InputCustody,
-)
 from agent.plugin_composition.config_input import CONFIG_INPUT, load_config, save_config, config_bytes, config_refs, _credential_path
 from agent.plugin_composition.context import Fiber
 from agent.plugin_composition.endpoints import save_endpoint_plan
@@ -112,9 +109,6 @@ from agent.plugins.static_manifest import (
     source_error_details,
 )
 from agent.restart import RestartGate
-from infra.channels.artifacts import ChannelAttachmentArtifactStore
-from session.identities import ChannelIdentities
-from session.log import MessageLog
 
 logger = logging.getLogger(__name__)
 U = TypeVar("U")
@@ -154,11 +148,7 @@ class PluginManager:
         plugin_dirs: list[Path],
         *,
         workspace: Path,
-        message_log: MessageLog | None = None,
-        channel_identities: ChannelIdentities | None = None,
-        input_custody: InputCustody | None = None,
         installed_cache_root: Path | None = None,
-        channel_attachment_store: ChannelAttachmentArtifactStore | None = None,
         disabled_builtin_plugins: frozenset[str] = frozenset(),
         source_failures: tuple[PluginSourceFailure, ...] = (),
         distribution_sources: tuple[ResolvedPluginSource, ...] = (),
@@ -173,7 +163,6 @@ class PluginManager:
         self._selection = PluginSelection(workspace)
         self._python_environments = PythonEnvironments(workspace)
         self._update_watchers: set[asyncio.Event] = set()
-        self._message_log = message_log
         self._plugin_tasks = PluginTasks()
         self._installed_cache_root = installed_cache_root
         self._disabled_builtin_plugins = disabled_builtin_plugins
@@ -215,9 +204,6 @@ class PluginManager:
         self._runtime_started_roots: set[object] = set()
         self._runtime_lifecycle_lock = asyncio.Lock()
         self._reload_journal = ReloadJournal(workspace)
-        self._channel_identities = channel_identities
-        self._input_custody = input_custody
-        self._channel_attachment_store = channel_attachment_store
 
     def _require_operation_idle(self) -> None:
         if self._stopping:
@@ -2240,10 +2226,7 @@ class PluginManager:
         """把固定安装事实和宿主输入交给装配层，不解释产品 Service。"""
         self._live_execution_access, self._live_credentials = await provide_host_services(
             root, mount_order, boot_id=self._host_boot_id,
-            input_custody=self._input_custody,
-            channel_identities=self._channel_identities, attachments=self._channel_attachment_store,
             resolve_command=self._resolve_runtime_command,
-            message_log=self._message_log,
             runtime_generations=lambda: (self._active_generations, self._draining_generations),
             runtime_updating=lambda: self._operation is not None and not self._operation.task.done(),
             live_root=lambda: self._live_root, installer=self,

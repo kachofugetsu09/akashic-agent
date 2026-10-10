@@ -8,10 +8,10 @@ from pydantic import BaseModel, ConfigDict, Field
 
 from agent.plugin_composition import Context
 from plugins.models.contract import CHAT_MODELS
-from agent.plugin_composition.messages import SESSION_ADMIN, MessageReader
+from plugins.ledger.contract import SESSION_ADMIN, MessageReader
 from plugins.models.contract import ModelRequest
 from plugins.models.contract import ModelError
-from agent.plugin_contracts import Input
+from plugins.ledger.contract import Input
 from plugins.sources.contract import (
     SOURCE_CHANGED_V3,
     SourceChangedV3,

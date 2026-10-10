@@ -7,8 +7,8 @@ from typing_extensions import TypedDict
 
 from pydantic import BaseModel, ConfigDict, Field
 
-from agent.plugin_contracts import ContentPart, ContentReferences
-from agent.plugin_contracts import json_value
+from plugins.ledger.contract import ContentPart, ContentReferences
+from plugins.ledger.contract import json_value
 
 
 PROFILE_TOOLS: dict[str, tuple[str, ...]] = {

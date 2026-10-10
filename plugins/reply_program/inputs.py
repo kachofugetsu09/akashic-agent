@@ -5,7 +5,7 @@ from contextlib import AbstractContextManager
 from typing import Any
 
 from plugins.models.contract import StreamCallback
-from agent.plugin_contracts import ContentPart
+from plugins.ledger.contract import ContentPart
 from plugins.content.contract import (
     CONTENT as CONTENT,
     Content as Content,

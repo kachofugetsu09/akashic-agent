@@ -12,7 +12,7 @@ from types import SimpleNamespace
 from unittest.mock import patch
 
 from agent.plugin_composition import CompositionRoot, PluginRuntime
-from agent.plugin_composition.messages import (
+from plugins.ledger.contract import (
     MESSAGE_CATALOG, MESSAGE_WRITERS, OWNER_STATE, SESSION_ADMISSION,
     MessageWriters, OwnerState, SessionAdmission,
 )
@@ -21,8 +21,8 @@ from plugins.content.plugin import check_text
 from plugins.subagent.inputs import CONTENT, CHECK_ORIGIN
 from plugins.subagent.request import PROFILE_TOOLS, Request
 from plugins.subagent.runtime import Subagents, SubagentBusy, drain
-from session.log import MessageLog, OwnerTransaction
-from session.message import ContentReferences, Control, Message
+from plugins.ledger.log import MessageLog, OwnerTransaction
+from plugins.ledger.contract import ContentReferences, Control, Message
 
 
 def request(number):

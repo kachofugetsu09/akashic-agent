@@ -14,13 +14,13 @@ from agent.plugin_composition import (
     RUNTIME_STARTING,
     RUNTIME_STOPPING,
 )
-from agent.plugin_composition.bindings import BINDINGS
-from agent.plugin_composition.messages import MESSAGE_CATALOG
+from plugins.ledger.contract import BINDINGS
+from plugins.ledger.contract import MESSAGE_CATALOG
 from plugins.gateway.contract import CONTROL_FRAMES, ControlFrames, FrameClaim
 from agent.plugin_composition.tasks import RESTART_GATE, RestartGate, RestartRejectedError
-from agent.plugin_contracts import ContentPart, Message
-from agent.plugin_composition.messages import MessageCatalog, MessageReader
-from agent.plugin_contracts import CallRef, Input, Output, ToolCall, ToolResult as ToolMessageResult
+from plugins.ledger.contract import ContentPart, Message
+from plugins.ledger.contract import MessageCatalog, MessageReader
+from plugins.ledger.contract import CallRef, Input, Output, ToolCall, ToolResult as ToolMessageResult
 from core.common.frozen_json import freeze_json
 
 from .boundary import (

@@ -31,7 +31,7 @@ async def run(base: Path, listen: str) -> dict[str, bool]:
     from agent.plugin_composition.config_input import save_config
     from bootstrap.app import AppRuntime
     from bootstrap.init_workspace import init_workspace
-    from session.message import ContentPart, Input, Output
+    from plugins.ledger.contract import ContentPart, Input, Output
     from plugins.content.contract import CONTENT
 
     base.mkdir()
@@ -42,8 +42,8 @@ async def run(base: Path, listen: str) -> dict[str, bool]:
     config.write_text('[runtime]\n')
     init_workspace(config_path=config, workspace=workspace)
     sources = base / "sources"
-    api_sources = ("reply", "onboarding", "workloads", "delivery", "ui")
-    for name in ("gateway", "sources", "models", "content", "commands", "conversation", "programmatic", "turn_projection", *api_sources):
+    api_sources = ("channels", "reply", "onboarding", "workloads", "delivery", "ui")
+    for name in ("ledger", "gateway", "sources", "models", "content", "commands", "conversation", "programmatic", "turn_projection", *api_sources):
         path = sources / name
         shutil.copytree(ROOT / "plugins" / name, path, ignore=shutil.ignore_patterns("__pycache__"))
         subprocess.run(["git", "init", "-q", "--initial-branch=source", str(path)], check=True)
@@ -90,6 +90,8 @@ async def apply(ctx):
         await app.start()
         core = app.core
         assert core is not None
+        from plugins.ledger.contract import MESSAGE_CATALOG
+        log = core.plugin_manager.live_root.context.require(MESSAGE_CATALOG)._log
         manager = core.plugin_manager
         root = manager.live_root
         assert root is not None
@@ -98,8 +100,8 @@ async def apply(ctx):
         assert observer_generation is not None and observer_generation.fiber is not None
         observer_fiber = observer_generation.fiber
         context = observer_fiber.context
-        core.message_log.writer("kept", author="user", source="saved", body_types=(Input,), content={}).append("saved-input", Input(()))
-        before = core.message_log.reader("kept").snapshot()
+        log.writer("kept", author="user", source="saved", body_types=(Input,), content={}).append("saved-input", Input(()))
+        before = log.reader("kept").snapshot()
         with sqlite3.connect(workspace / "sessions.db") as db:
             saved_rows = db.execute("SELECT * FROM messages WHERE session_key = 'kept'").fetchall()
         code, output, error = await command("plugin-status")
@@ -113,9 +115,9 @@ async def apply(ctx):
         # 2. 真实程序来源提交 Input；原 Message writer 追加终态，CLI 从 RPC 读取结果。
         code, output, error = await command("exec", "--new", "--session", "programmatic:cli", "--message-id", "input-one", "--detach", "hello")
         assert code == 0, (output, error)
-        reader = core.message_log.reader("programmatic:cli")
+        reader = log.reader("programmatic:cli")
         assert next(part.value for part in reader.get("input-one").body.parts if part.kind == "text") == "hello"
-        core.message_log.writer("programmatic:cli", author="assistant", source="programmatic", body_types=(Output,),
+        log.writer("programmatic:cli", author="assistant", source="programmatic", body_types=(Output,),
                                 content={"text": root.service_value(CONTENT).check_text}).append(
             "output-one", Output((ContentPart("text", "native answer"),), finish="complete"))
         code, output, error = await command("exec", "--session", "programmatic:cli", "--message-id", "input-one", "hello", "--final-only")
@@ -134,7 +136,7 @@ async def apply(ctx):
             process.send_signal(signal.SIGINT)
             output_bytes, error_bytes = await asyncio.wait_for(process.communicate(), 15)
             assert process.returncode == 130, (output_bytes, error_bytes)
-            assert core.message_log.reader("programmatic:paused").snapshot()[-1].body.action == "pause"
+            assert log.reader("programmatic:paused").snapshot()[-1].body.action == "pause"
         finally:
             if process.returncode is None:
                 process.kill()
@@ -160,7 +162,7 @@ async def apply(ctx):
         assert code != 0 and "唯一 provider" in error and "plugin-enable gateway@" in error, (output, error)
         assert observer_fiber.context is context
         assert (context.data_root / "applies").read_text() == "apply\n"
-        assert core.message_log.reader("kept").snapshot() == before
+        assert log.reader("kept").snapshot() == before
         if token_before is not None:
             assert (workspace / ".app-server-token").read_bytes() == token_before
         await manager.install(source=str(path), marketplace="lab", ref_name="", sparse_paths=[], update_id="gateway-reinstall")

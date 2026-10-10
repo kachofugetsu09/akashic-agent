@@ -10,8 +10,8 @@ from threading import Lock
 from typing import cast
 
 from plugins.ui.contract import PluginUiRpcInvalidRequest
-from agent.plugin_composition.messages import MessageCatalog
-from agent.plugin_contracts import CallRef, ContentPart, Input, Message, Output, ToolCall, ToolResult, json_value
+from plugins.ledger.contract import MessageCatalog
+from plugins.ledger.contract import CallRef, ContentPart, Input, Message, Output, ToolCall, ToolResult, json_value
 from plugins.tools.contract import durable_call_key
 from ._boundaries import Turn, TurnProjection
 from .recalls import ContextSource, ProgramSource, Recall, ToolSource, context_identity

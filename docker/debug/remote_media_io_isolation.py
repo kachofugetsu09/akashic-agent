@@ -9,7 +9,7 @@ from unittest.mock import patch
 
 import httpcore
 
-from infra.channels.base import AttachmentStore
+from plugins.ledger.base import AttachmentStore
 from infra.channels import remote_media
 
 

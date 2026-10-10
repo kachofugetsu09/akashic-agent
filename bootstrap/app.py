@@ -16,7 +16,6 @@ from bootstrap.cleanup import run_cleanup_steps
 from bootstrap.runtime_readiness import RuntimeReadiness
 from bootstrap.tools import CoreRuntime, build_core_runtime
 from bootstrap.workspace_lock import WorkspaceInstanceLock
-from bus.queue import MessageBus
 from agent.plugins.watcher import PluginWatcher
 from core.net.http import (
     SharedHttpResources,
@@ -50,14 +49,6 @@ def _clear_readiness(
             readiness.clear()
 
     return clear
-
-
-def _close_message_bus(bus: object | None) -> Callable[[], Awaitable[None]]:
-    """返回已初始化 MessageBus 的异步关闭动作。"""
-
-    if isinstance(bus, MessageBus):
-        return bus.aclose
-    return _noop_async
 
 
 def _raise_unexpected_task_errors(name: str, results: list[object]) -> None:
@@ -152,7 +143,6 @@ class AppRuntime:
         self.readiness = readiness
         self.http_resources = SharedHttpResources()
         self.core: CoreRuntime | None = None
-        self.bus = None
         self.web_shell: WebShellServer | None = None
         self.web_shell_task: asyncio.Task[None] | None = None
         self.plugin_watcher: PluginWatcher | None = None
@@ -179,10 +169,8 @@ class AppRuntime:
                 self.workspace,
                 self.http_resources,
                 restart_gate=self.restart_gate,
-                clear_stale_session_admissions=True,
                 host_ready=(lambda: self.readiness.ready) if self.readiness else None,
             )
-            self.bus = self.core.bus
             manager = self.core.plugin_manager
             manager.bind_endpoint_switcher(self._swap_plugin_endpoints)
             await self.core.start()
@@ -192,10 +180,6 @@ class AppRuntime:
             if self.readiness is not None:
                 self.readiness.mark_stage("services.ready")
 
-            # provider 已开放实际 binding；这里只触发传输 owner 的 pending 恢复。
-            await self.bus.recover_durable_inbounds()
-            if self.readiness is not None:
-                self.readiness.mark_stage("channels.ready")
             if plugin_manager is None:
                 raise RuntimeError("插件 Runtime 不可用")
             self.tasks = []
@@ -386,7 +370,6 @@ class AppRuntime:
                 ("runtime_tasks.cancel", self._cancel_runtime_tasks),
                 ("servers.request_shutdown", self._request_server_shutdown),
                 ("web_shell.wait", _wait_server_task(self.web_shell_task)),
-                ("message_bus.aclose", _close_message_bus(self.bus)),
                 (
                     "plugin_watcher.stop",
                     _stop_plugin_watcher(

@@ -8,8 +8,8 @@ from typing import Literal
 
 from pydantic import AwareDatetime, BaseModel, ConfigDict
 
-from agent.plugin_composition.messages import MessageCatalog, OwnerStore
-from agent.plugin_contracts import Message, json_value
+from plugins.ledger.contract import MessageCatalog, OwnerStore
+from plugins.ledger.contract import Message, json_value
 from plugins.delivery.contract import (
     DELIVERY_READ as DELIVERY_READ,
 )

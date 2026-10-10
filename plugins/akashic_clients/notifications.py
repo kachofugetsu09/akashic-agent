@@ -8,7 +8,7 @@ from typing import Annotated
 
 from pydantic import BaseModel, ConfigDict, Field, StrictInt
 
-from agent.plugin_contracts.message import ContentPart, Input, Message, Output
+from plugins.ledger.contract import ContentPart, Input, Message, Output
 
 from .services import MessageCatalogPort, MessagePagePort, SessionEntryPort
 

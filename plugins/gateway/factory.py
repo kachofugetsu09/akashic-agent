@@ -8,17 +8,17 @@ from typing import cast
 from pydantic import BaseModel
 
 from agent.plugin_composition import Context
-from agent.plugin_composition.channels import CHANNEL_INPUT_V2, ChannelInboundMessage
-from agent.plugin_composition.channel_io import CHANNEL_ATTACHMENT_READ
+from plugins.channels.contract import CHANNEL_INPUT_V2, ChannelInboundMessage
+from plugins.ledger.contract import CHANNEL_ATTACHMENT_READ
 from .contract import CONTROL_FRAMES
 from agent.plugin_composition.host import HOST_INFO
-from agent.plugin_composition.messages import MESSAGE_CATALOG
+from plugins.ledger.contract import MESSAGE_CATALOG
 from agent.plugin_composition.plugin_updates import PLUGIN_UPDATES
-from agent.plugin_contracts import CallRef
+from plugins.ledger.contract import CallRef
 from plugins.ui.contract import MESSAGE_DISPLAY, message_rows
 from agent.plugin_composition.tasks import RESTART_GATE
 from plugins.ui.contract import MessagePage
-from agent.plugin_contracts import Message
+from plugins.ledger.contract import Message
 from .contract import RpcMethod
 from .errors import RuntimeClosedError
 from .protocol.errors import JsonRpcError, SERVER_OVERLOADED

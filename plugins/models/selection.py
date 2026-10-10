@@ -2,7 +2,7 @@ from collections.abc import Mapping, MutableMapping, Sequence
 from typing import cast
 
 from plugins.models.contract import ChatModelSelection
-from agent.plugin_contracts import ContentPart, ContentReferences, Input, Message
+from plugins.ledger.contract import ContentPart, ContentReferences, Input, Message
 from plugins.models.contract import MODEL_SELECTION as MODEL_SELECTION
 
 SESSION_MODEL_SELECTION_KEY = "model_selection"

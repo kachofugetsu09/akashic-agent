@@ -11,7 +11,7 @@ from plugins.standard_tools.contract import WORKING_DIRECTORY
 
 from agent.plugin_composition import Context
 from plugins.ui.contract import UI_SLOTS, PluginUiDefinition, PluginUiRpcInvalidRequest
-from agent.plugin_composition.messages import (
+from plugins.ledger.contract import (
     OWNER_STATE,
     SESSION_ADMISSION,
     MessageConflict,

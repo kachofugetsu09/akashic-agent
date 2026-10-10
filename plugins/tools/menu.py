@@ -5,9 +5,9 @@ from collections.abc import Awaitable, Callable, Mapping
 from dataclasses import dataclass
 from typing import Any, cast
 
-from agent.plugin_composition.bindings import Bindings
+from plugins.ledger.contract import Bindings
 from plugins.models.contract import ToolCall as ModelToolCall
-from agent.plugin_contracts import CallRef, ToolCall
+from plugins.ledger.contract import CallRef, ToolCall
 from core.common.frozen_json import freeze_json
 from plugins.tools.contract import CommitAfter as CommitAfter
 from plugins.tools.contract import ToolPresentation as ToolPresentation

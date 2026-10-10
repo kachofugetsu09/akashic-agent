@@ -10,7 +10,7 @@ from __future__ import annotations
 from typing import TYPE_CHECKING
 
 from plugins.models.contract import MODEL_CATALOG
-from agent.plugin_composition.messages import MESSAGE_CATALOG, SESSION_ADMIN
+from plugins.ledger.contract import MESSAGE_CATALOG, SESSION_ADMIN
 from plugins.gateway.contract import RpcMethod
 from agent.plugin_composition.runtime_catalog import (
     RUNTIME_CATALOG as RUNTIME_CATALOG,

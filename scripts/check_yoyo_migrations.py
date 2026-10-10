@@ -393,12 +393,43 @@ def _retired_path_reintroductions(base: str) -> list[str]:
     return problems
 
 
+def _ledger_moves(base: str) -> dict[str, str]:
+    """核对本次 Ledger 搬迁的固定字节清单，不开放任意历史改写。"""
+    metadata = "migrations/ledger-moves.toml"
+    raw = _toml_bytes((ROOT / metadata).read_bytes(), metadata)
+    if raw.get("schema_version") != 1:
+        raise ValueError("Ledger 搬迁清单版本无效")
+    records = raw["moves"]
+    paths = _git("ls-tree", "-r", "--name-only", base, "--", metadata).splitlines()
+    if paths and _source_bytes(base, metadata) != (ROOT / metadata).read_bytes():
+        raise ValueError("已发布 Ledger 搬迁清单不得改写")
+    moves: dict[str, str] = {}
+    for record in records:
+        old = _safe_relative(record["from"], "旧迁移")
+        new = _safe_relative(record["to"], "新迁移")
+        if (not old.startswith(CORE_PREFIX) or not new.startswith("plugins/ledger/migrations/ledger_migrations/")
+            or PurePosixPath(old).name != PurePosixPath(new).name or old in moves):
+            raise ValueError("Ledger 搬迁必须保留迁移 ID 和唯一目标")
+        if (ROOT / old).exists() or (ROOT / old).is_symlink():
+            raise ValueError(f"Ledger 旧迁移入口仍存在: {old}")
+        if hashlib.sha256((ROOT / new).read_bytes()).hexdigest() != record["after"]:
+            raise ValueError(f"Ledger 迁移字节变化: {new}")
+        original = _git("ls-tree", "-r", "--name-only", base, "--", old).splitlines()
+        if original and hashlib.sha256(_source_bytes(base, old)).hexdigest() != record["before"]:
+            raise ValueError(f"Ledger 原迁移与恢复清单不符: {old}")
+        moves[old] = new
+    return moves
+
+
 def violations(base: str) -> list[str]:
     """Reject historical migration edits and permit one exact retirement cutover."""
 
     retirement_paths, problems = _retirement_paths(str(base))
+    moves = _ledger_moves(str(base))
     base_paths = _registered_paths(str(base))
     for old_path in sorted(base_paths):
+        if old_path in moves:
+            continue
         current = ROOT / old_path
         if old_path in retirement_paths:
             if current.exists() or current.is_symlink():

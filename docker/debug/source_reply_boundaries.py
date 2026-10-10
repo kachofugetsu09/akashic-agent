@@ -31,9 +31,9 @@ if args.slow_writes and args.case not in {None, "fresh", "two-phases"}:
 sys.path.insert(0, str(args.source))
 
 from agent.plugin_composition import CompositionRoot, PluginRuntime
-from agent.plugin_composition.bindings import BINDINGS
-from session.bindings import Bindings
-from agent.plugin_composition.messages import (
+from plugins.ledger.contract import BINDINGS
+from plugins.ledger.bindings import Bindings
+from plugins.ledger.contract import (
     MESSAGE_CATALOG, MESSAGE_WRITERS, OWNER_STATE, SESSION_ADMISSION,
     MessageWriters, OwnerState, SessionAdmission,
 )
@@ -44,7 +44,7 @@ from plugins.models.contract import (
     ModelCapabilities,
 )
 from agent.plugin_composition.tasks import TASKS, PluginTasks
-from agent.plugin_contracts import ContentPart, ContentReferences, Control, Input, Output
+from plugins.ledger.contract import ContentPart, ContentReferences, Control, Input, Output
 from plugins.content.contract import CONTENT
 from plugins.delivery.contract import (
     DELIVERY_GUARDED_START as DELIVERY,
@@ -76,7 +76,7 @@ from plugins.wake.api import DeliveryTarget
 from plugins.wake.request import Request as WakeRequest, WAKE_PROGRAM
 from plugins.wake.source import Source as WakeSource
 from plugins.wake.state import WakeState
-from session.log import MessageLog, SessionAttributes
+from plugins.ledger.log import MessageLog, SessionAttributes
 
 
 class TextContent:

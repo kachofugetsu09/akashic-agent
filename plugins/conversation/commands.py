@@ -8,16 +8,16 @@ from typing import Annotated, Literal, cast
 from pydantic import BaseModel, ConfigDict, Field
 
 from agent.plugin_composition import Context
-from agent.plugin_composition.bindings import BINDINGS
+from plugins.ledger.contract import BINDINGS
 from plugins.commands.contract import COMMANDS, CommandCatalog, CommandExecution
-from agent.plugin_composition.messages import (
+from plugins.ledger.contract import (
     MESSAGE_WRITERS,
     OWNER_STATE,
     MessageReader,
     OwnerTransaction,
 )
 from agent.plugin_composition.tasks import Task
-from agent.plugin_contracts import (
+from plugins.ledger.contract import (
     ContentPart,
     ContentReferences,
     Control,

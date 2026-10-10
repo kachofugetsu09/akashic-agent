@@ -20,11 +20,11 @@ sys.path.insert(0, str(ROOT))
 
 from plugins.host_execution.bridge.client import HostBridgeShellProcessManager
 from plugins.host_execution.monitor import HostBridgeStatus, _monitor
-from agent.plugin_composition.bindings import BINDINGS
-from agent.plugin_composition.channels import CHANNEL_INPUT_V2 as CHANNEL_INPUT, ChannelInboundMessage
+from plugins.ledger.contract import BINDINGS
+from plugins.channels.contract import CHANNEL_INPUT_V2 as CHANNEL_INPUT, ChannelInboundMessage
 from agent.plugin_composition.config_input import save_config
 from plugins.tools.contract import ALL_TOOLS, TOOLS
-from session.message import Output
+from plugins.ledger.contract import Output
 from tests.test_default_reply import application
 
 

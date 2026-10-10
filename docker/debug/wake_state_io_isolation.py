@@ -18,7 +18,7 @@ from unittest.mock import patch
 from agent.control.timer import AsyncioOneShotTimer, TimerHandle
 from agent.plugin_composition import CompositionRoot, Context
 from agent.plugin_composition.model import FiberState, PluginRuntime
-from agent.plugin_composition.messages import MESSAGE_CATALOG, MESSAGE_WRITERS, OWNER_STATE, MessageWriters, OwnerState
+from plugins.ledger.contract import MESSAGE_CATALOG, MESSAGE_WRITERS, OWNER_STATE, MessageWriters, OwnerState
 from agent.plugin_composition.tasks import TASKS, PluginTasks
 from agent.plugin_composition.timers import TIMERS, PluginTimers
 from plugins.drift.plugin import _AsyncWakeServices as DriftServices
@@ -32,8 +32,8 @@ from plugins.wake.request import Request, TOOLS
 from plugins.wake.source import Pointer
 from plugins.wake.runtime import Runtime
 from plugins.wake.state import ContentScore, WakeState
-from session.log import MessageLog
-from session.message import ContentPart, ContentReferences, Input
+from plugins.ledger.log import MessageLog
+from plugins.ledger.contract import ContentPart, ContentReferences, Input
 
 
 def leaves(error: BaseException) -> list[BaseException]:

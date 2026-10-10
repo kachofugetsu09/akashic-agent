@@ -2,7 +2,7 @@ from contextlib import asynccontextmanager
 from types import SimpleNamespace
 from typing import cast
 import pytest
-from agent.plugin_composition.bindings import Bindings
+from plugins.ledger.contract import Bindings
 from agent.plugin_composition import CompositionRoot, RUNTIME_STARTED, RUNTIME_STARTING, RUNTIME_STOPPING
 from agent.plugin_composition.model import PluginRuntime, ServiceKey
 from agent.plugin_composition.tasks import TASKS, PluginTasks

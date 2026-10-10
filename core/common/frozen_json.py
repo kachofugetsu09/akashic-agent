@@ -72,3 +72,15 @@ def freeze_json(value: object) -> object:
         raise TypeError(f"值必须是 JSON 值，实际为 {type(item).__name__}")
 
     return freeze(value)
+
+
+def json_value(value: object) -> object:
+    """把已校验的不可变 JSON 转回可序列化容器。"""
+    if isinstance(value, Mapping):
+        return {
+            key: json_value(item)
+            for key, item in cast(Mapping[str, object], value).items()
+        }
+    if isinstance(value, tuple):
+        return [json_value(item) for item in cast(tuple[object, ...], value)]
+    return value

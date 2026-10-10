@@ -16,8 +16,8 @@ from plugins.models.contract import (
     ToolCall as ModelToolCall,
 )
 from plugins.tools.api import Result
-from session.log import OwnerTransaction
-from session.message import ContentPart, Control, Input, ToolResult
+from plugins.ledger.log import OwnerTransaction
+from plugins.ledger.contract import ContentPart, Control, Input, ToolResult
 from tests.support.message_react import runtime
 
 

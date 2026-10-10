@@ -27,14 +27,14 @@ from plugins.models.contract import (
     CapabilitySources,
     ModelCapabilities,
 )
-from agent.plugin_composition.channels import CHANNEL_INPUT_V2 as CHANNEL_INPUT, ChannelInboundMessage
+from plugins.channels.contract import CHANNEL_INPUT_V2 as CHANNEL_INPUT, ChannelInboundMessage
 from core.net.http import HttpClient
 from plugins.codex.responses import CodexResponses
 from plugins.models.state import _BoundChat
 from plugins.models.store import ModelsStore
 from plugins.openai_compatible import driver as compatible
 from plugins.opencode_go import driver as opencode
-from session.message import Output
+from plugins.ledger.contract import Output
 from tests.test_default_reply import application, live_root
 
 ENCODING = tiktoken.get_encoding('cl100k_base')

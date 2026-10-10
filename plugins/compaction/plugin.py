@@ -24,9 +24,9 @@ from plugins.models.contract import (
 )
 from plugins.models.contract import BoundChatModel
 from plugins.context.contract import ReductionStatus
-from agent.plugin_composition.bindings import BINDINGS
-from agent.plugin_composition.messages import MESSAGE_CATALOG, OWNER_STATE
-from agent.plugin_contracts import Input, Message
+from plugins.ledger.contract import BINDINGS
+from plugins.ledger.contract import MESSAGE_CATALOG, OWNER_STATE
+from plugins.ledger.contract import Input, Message
 
 from .records import StoredSummary, SummaryLookup, SummaryRecord, SummaryRecords
 from .message_summary import SummaryError, closed_groups, source_text, summarize, summary_groups, window_starts

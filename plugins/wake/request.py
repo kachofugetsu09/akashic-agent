@@ -7,9 +7,9 @@ from typing import Literal, Self
 from pydantic import AwareDatetime, BaseModel, ConfigDict, Field, model_validator
 
 from agent.plugin_composition import ServiceKey
-from agent.plugin_composition.messages import MessageReader
+from plugins.ledger.contract import MessageReader
 from agent.plugin_composition.tasks import Task
-from agent.plugin_contracts import (
+from plugins.ledger.contract import (
     ContentPart,
     ContentReferences,
     Control,

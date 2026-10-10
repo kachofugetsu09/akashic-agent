@@ -9,8 +9,8 @@ from plugins.models.contract import (
 )
 from plugins.react.plugin import _encode_request, _load_entry
 from plugins.tools.execution import Result
-from session.message import Input, ContentPart
-from session.log import MessageLog
+from plugins.ledger.contract import Input, ContentPart
+from plugins.ledger.log import MessageLog
 from tests.support.message_react import runtime
 
 

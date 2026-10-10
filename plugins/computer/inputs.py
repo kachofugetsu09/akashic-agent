@@ -13,7 +13,7 @@ from plugins.turn_projection.contract import (
 from dataclasses import dataclass
 from typing import Literal
 
-from agent.plugin_contracts import ContentPart
+from plugins.ledger.contract import ContentPart
 
 
 @dataclass(frozen=True)

@@ -4,8 +4,8 @@ from pathlib import Path
 import sqlite3
 from tempfile import TemporaryDirectory
 
-from session.log import MessageLog
-from session.message import ContentPart, ContentReferences, Input
+from plugins.ledger.log import MessageLog
+from plugins.ledger.contract import ContentPart, ContentReferences, Input
 
 
 def records(path: Path) -> tuple[list[tuple], list[tuple]]:
