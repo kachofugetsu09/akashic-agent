@@ -321,10 +321,6 @@ note = "来源固定控制前提，交给完成程序；输出来源不能代替
 role = "seam"
 note = "回传程序显式携带来源控制前提，不另存执行权威状态"
 
-[capabilities."react.ordered-start.v2"]
-role = "seam"
-note = "首次效果和新 Output 在各自原事务核对同一来源控制前提"
-
 [capabilities."reply.execute.v4"]
 role = "seam"
 note = "来源入口提供必填执行前提；回复程序不重建或推断来源权限"

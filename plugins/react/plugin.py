@@ -49,7 +49,7 @@ from agent.plugin_contracts.context import (
 from agent.plugin_contracts.models import (
     MessageProjection as MessageProjection,
 )
-from agent.plugin_contracts.react import (
+from plugins.react.contract import (
     REACT_ORDERED_V2 as REACT,
 )
 from agent.plugin_contracts.tools import (
