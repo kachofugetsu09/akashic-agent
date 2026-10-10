@@ -64,6 +64,7 @@ from agent.plugins.host import (
     provide_host_services as provide_host_services,
 )
 from agent.plugins.importer import FreshPluginImporter
+from agent.plugins.public_contracts import public_contracts
 from agent.plugins.input_preparation import (
     PLUGIN_INPUT_API,
     SOURCE_EXCLUDED_NAMES,
@@ -541,6 +542,7 @@ class PluginManager:
             fixed_sources=self._distribution_sources,
             ignored_installed_roots=self._ignored_installed_roots,
         )
+        public_contracts.register(scan.sources)
         if record_source_failures:
             self._remember_source_failures(scan.failures)
         for source in scan.sources:
@@ -673,6 +675,7 @@ class PluginManager:
 
     async def _load_all(self) -> None:
         """从唯一完整选择启动；null 只允许首次固定安装输入。"""
+        discovered = self.discover()
         self._recover_config_updates()
         orphaned = self._reload_journal.orphaned_armed_updates()
         if orphaned:
@@ -704,7 +707,7 @@ class PluginManager:
             return
         enabled = load_plugin_manifest(self.installed_plugins_home)
         selected = tuple(
-            mod for mod in self.discover()
+            mod for mod in discovered
             if enabled.get(_resolve_plugin_id(mod), True)
         )
         inputs: list[PluginGeneration] = []
@@ -876,6 +879,10 @@ class PluginManager:
         if generation.fiber is not None:
             raise RuntimeError("generation 已有 Fiber，不能重新执行 pre-Fiber load")
         if generation.instance is None:
+            public_contracts.register((ResolvedPluginSource(
+                generation.code_dir, generation.source_type,
+                plugin_name=generation.plugin_id.split("@", 1)[0],
+            ),))
             self._import_plugin(generation.module_path, generation.code_dir)
             manifest = generation.static_manifest
             if manifest is None:

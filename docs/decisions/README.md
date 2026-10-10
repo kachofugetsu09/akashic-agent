@@ -113,6 +113,8 @@
 
 | [0101](0101-first-message-session-title.md) | accepted | 首条输入自动命名，复用 title 并以当前空值条件写入 | SES-012 |
 
+| [0102](0102-plugin-owned-services-and-public-contracts.md) | accepted target / implementation | 服务与公共合同归提供方，Core 只保留组合与宿主机制 | PLG、CAP、STA |
+
 ## 新增规则
 
 1. 使用四位递增编号和短英文文件名。

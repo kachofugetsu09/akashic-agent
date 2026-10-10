@@ -7,7 +7,7 @@
 ----
 R1  Core 不得 import `plugins.*`，历史迁移也计入精确欠账。
 R2  插件导入 Core 只能使用冻结的公开模块清单；目录不自动授予公开资格。
-R3  不得导入兄弟插件实现或经自身绝对路径绕过 generation。
+R3  只允许兄弟插件的 contract.py；实现不可跨插件或绕过 generation 导入。
 R4  Core 文件中的字面 ServiceKey 必须在 `plugin_boundary.toml` 登记角色；
     表中登记的 key 也必须真实存在。
 R5  已记录为「文档承诺、代码未实现」的名字必须保持不存在。
@@ -349,6 +349,8 @@ def check_cross_plugin(imports: list[Import]) -> list[Import]:
         own = plugin_package(item.importer)
         target = module_plugin_package(item.module)
         if own is None or item.module.split(".")[0] != PLUGIN_ROOT:
+            continue
+        if item.module == f"{target}.contract":
             continue
         if own == target and not item.absolute:
             continue
