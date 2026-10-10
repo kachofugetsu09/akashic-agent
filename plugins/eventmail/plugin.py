@@ -5,9 +5,11 @@ from collections.abc import AsyncIterator, Callable, Mapping, Sequence
 from contextlib import asynccontextmanager
 from copy import deepcopy
 from datetime import datetime
-from typing import Protocol, TypeVar, cast
+from typing import TypeVar, cast
 
 from agent.plugin_composition import Context, EmitEventKey, ServiceKey
+from plugins.eventmail.contract import (BoundContentSource, ContentSourceServices, BoundAlertSource, AlertSourceServices,
+    BoundContextSource, ContextSourceServices, EVENTMAIL_CONTENT_SOURCE, EVENTMAIL_ALERT_SOURCE, EVENTMAIL_CONTEXT_SOURCE)
 from plugins.eventmail.contract import EVENTMAIL_DELIVERY_V2 as EVENTMAIL_DELIVERY, EVENTMAIL_WAKE_V2 as EVENTMAIL_WAKE, ContentWakeServicesV2 as ContentWakeServices
 
 from core.common.file_io import run_file_io
@@ -22,71 +24,6 @@ author = "Akashic Core"
 inject = ()
 workspace_roots = ()
 workspace_files = ()
-
-
-class BoundContentSource(Protocol):
-    def close(self) -> None: ...
-
-    async def submit(
-        self, batch_id: str, items: Sequence[Mapping[str, object]]
-    ) -> Mapping[str, object]: ...
-
-    async def read_submission(self, batch_id: str) -> Mapping[str, object] | None:
-        """Read a checkpointed receipt during offline handoff verification."""
-        ...
-
-    async def read_revision(self, item_id: str, revision: str) -> Mapping[str, object] | None:
-        """Read a checkpointed revision during offline handoff verification."""
-        ...
-
-    async def unsettled(self, limit: int = 100) -> tuple[Mapping[str, object], ...]: ...
-
-    async def ack(self, settlement_ref: str) -> Mapping[str, object]: ...
-
-
-class ContentSourceServices(Protocol):
-    def bind(self, source_id: str) -> BoundContentSource: ...
-
-
-class BoundAlertSource(Protocol):
-    def close(self) -> None: ...
-
-    async def report(
-        self,
-        *,
-        event_id: str,
-        payload: Mapping[str, object],
-        observed_at: datetime,
-        expires_at: datetime | None = None,
-    ) -> Mapping[str, object]: ...
-
-    async def status(self, *, event_id: str) -> str | None: ...
-
-
-class AlertSourceServices(Protocol):
-    def bind(self, source_id: str) -> BoundAlertSource: ...
-
-
-class BoundContextSource(Protocol):
-    def close(self) -> None: ...
-
-    async def report(
-        self,
-        *,
-        event_id: str,
-        payload: Mapping[str, object],
-        observed_at: datetime,
-        expires_at: datetime | None = None,
-    ) -> Mapping[str, object]: ...
-
-
-class ContextSourceServices(Protocol):
-    def bind(self, source_id: str) -> BoundContextSource: ...
-
-
-EVENTMAIL_CONTENT_SOURCE = ServiceKey[ContentSourceServices]("eventmail.content_source.v2")
-EVENTMAIL_ALERT_SOURCE = ServiceKey[AlertSourceServices]("eventmail.alert_source.v2")
-EVENTMAIL_CONTEXT_SOURCE = ServiceKey[ContextSourceServices]("eventmail.context_source.v2")
 
 
 EVENTMAIL_CHANGED = EmitEventKey[None]("eventmail.changed")
