@@ -36,6 +36,7 @@ from agent.plugin_composition.channel_io import (
 )
 from agent.plugin_composition.config_input import CONFIG_INPUT, load_config, save_config, config_bytes, config_refs, _credential_path
 from agent.plugin_composition.context import Fiber
+from agent.plugin_composition.endpoints import save_endpoint_plan
 from agent.plugin_composition.credentials import CredentialClients
 from agent.plugin_composition.model import (
     resolve_declared_workspace_file,
@@ -795,7 +796,9 @@ class PluginManager:
         prepared: tuple[PluginGeneration, ...] = (),
     ) -> None:
         """Build the single formal Root without compiling a snapshot or fallback Root."""
-        root = CompositionRoot("plugins-live:" + secrets.token_hex(16))
+        generation_id = "plugins-live:" + secrets.token_hex(16)
+        root = CompositionRoot(generation_id, endpoint_publisher=lambda endpoints: save_endpoint_plan(
+            self._workspace / "runtime/endpoints.json", generation_id, endpoints))
         generations: tuple[PluginGeneration, ...] = prepared
         cleanup_generations: tuple[PluginGeneration, ...] = generations
         runnable: tuple[PluginGeneration, ...] = ()
