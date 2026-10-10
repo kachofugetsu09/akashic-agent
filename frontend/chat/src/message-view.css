@@ -865,10 +865,12 @@ button.tool-step-summary:active {
   color: var(--ak-color-status-error);
 }
 
+/* 展开区：grid 行过渡高度，内层淡入并下移 4px；收起淡出更快。
+   内层只能用 overflow: clip，hidden 会建立滚动容器，让嵌套行的 sticky 失效。 */
 .tool-step-disclosure {
   display: grid;
   grid-template-rows: 0fr;
-  transition: grid-template-rows 200ms cubic-bezier(0.2, 0, 0, 1);
+  transition: grid-template-rows 280ms cubic-bezier(0.2, 0, 0, 1);
 }
 
 .tool-step-disclosure.open {
@@ -877,7 +879,59 @@ button.tool-step-summary:active {
 
 .tool-step-disclosure-inner {
   min-height: 0;
-  overflow: hidden;
+  overflow: clip;
+  opacity: 0;
+  translate: 0 -4px;
+  transition-property: opacity, translate;
+  transition-duration: 180ms, 280ms;
+  transition-timing-function: ease-out, cubic-bezier(0.2, 0, 0, 1);
+}
+
+.tool-step-disclosure.open > .tool-step-disclosure-inner {
+  opacity: 1;
+  translate: 0 0;
+  transition-duration: 240ms, 280ms;
+}
+
+/* 吸顶状态下的收起瞬间完成，由脚本把行放回原位后再淡入下方内容。 */
+.tool-step-disclosure.is-instant,
+.tool-step-disclosure.is-instant > .tool-step-disclosure-inner {
+  transition: none;
+}
+
+/* 展开的工具行吸在消息列表顶部，读到哪都能收起；嵌在工具组里的行让出一行组标题的高度。
+   行高在展开时固定，嵌套偏移才能直接用变量计算。button 上 sticky 在部分内核不生效，吸附放在外包 div。 */
+.process-trace {
+  --tool-sticky-h: 28px;
+}
+
+.tool-step-sticky.is-open {
+  position: sticky;
+  top: 0;
+  z-index: 3;
+  display: flex;
+  height: var(--tool-sticky-h);
+  align-items: center;
+  background: var(--ak-color-bg-canvas);
+  box-shadow: inset 0 -1px 0 color-mix(in oklch, var(--ak-color-text-primary) 7%, transparent);
+}
+
+.tool-group.is-open .tool-group-items .tool-step-sticky.is-open {
+  top: var(--tool-sticky-h);
+  z-index: 2;
+}
+
+.tool-step-collapse-hint {
+  color: var(--ak-color-text-secondary);
+  font-family: var(--ak-type-reading, inherit);
+  font-size: 0.6875rem;
+  font-weight: 400;
+}
+
+@media (pointer: coarse) {
+  .process-trace {
+    --tool-sticky-h: 44px;
+  }
 }
 
 .tool-detail-surface {
@@ -964,10 +1018,104 @@ button.tool-step-summary:active {
   user-select: text;
 }
 
+/* 结果不在框内滚动：长文本先给预览，“显示全部”原地铺开。clip 供展开时的高度动画裁切。 */
 .tool-result {
-  max-height: 11rem;
-  overflow: auto;
-  overscroll-behavior: contain;
+  overflow: clip;
+}
+
+.tool-result.is-clipped-head {
+  mask-image: linear-gradient(to bottom, transparent 0, #000 2.2rem);
+}
+
+.tool-result.is-clipped-tail {
+  mask-image: linear-gradient(to top, transparent 0, #000 2.2rem);
+}
+
+.tool-result-preview {
+  display: grid;
+  min-width: 0;
+}
+
+.tool-result-more {
+  width: fit-content;
+  min-height: 32px;
+  border: 0;
+  border-radius: 6px;
+  padding: 0 8px;
+  margin-inline-start: -8px;
+  color: var(--ak-color-action-primary);
+  background: transparent;
+  font-size: 0.75rem;
+  transition: background-color 150ms cubic-bezier(0.2, 0, 0, 1);
+}
+
+.tool-result-more:hover {
+  background: color-mix(in oklch, var(--ak-ink-primary) 5%, transparent);
+}
+
+/* 命令块：$ 命令 → 输出 → 底栏结果与耗时；内部字段收进原始数据。 */
+.tool-shell {
+  display: grid;
+  gap: 4px;
+  min-width: 0;
+  border-radius: 8px;
+  padding: 8px 10px 4px;
+  background: color-mix(in oklch, var(--ak-ink-primary) 4%, transparent);
+}
+
+.tool-shell-command {
+  display: flex;
+  gap: 1ch;
+  overflow-wrap: anywhere;
+  color: var(--ak-color-text-primary);
+  font-family: var(--ak-type-technical, ui-monospace, SFMono-Regular, Menlo, Consolas, monospace);
+  font-size: 0.75rem;
+  line-height: 1.5;
+}
+
+.tool-shell-command > span:first-child {
+  color: var(--ak-color-text-secondary);
+  user-select: none;
+}
+
+.tool-shell-empty {
+  margin: 0;
+  color: var(--ak-color-text-secondary);
+  font-size: 0.75rem;
+}
+
+.tool-shell-foot {
+  display: flex;
+  min-height: 28px;
+  align-items: center;
+  gap: 10px;
+  border-top: 1px solid var(--ak-rule-subtle);
+  color: var(--ak-color-text-secondary);
+  font-size: 0.75rem;
+}
+
+.tool-shell-exit {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  color: var(--ak-sys-color-success);
+}
+
+.tool-shell-exit.is-failed {
+  color: var(--ak-color-status-error);
+}
+
+.tool-result-raw {
+  margin-top: 6px;
+  color: var(--ak-color-text-secondary);
+  font-size: 0.75rem;
+}
+
+.tool-result-raw > summary {
+  width: fit-content;
+  min-height: 28px;
+  padding-block: 4px;
+  cursor: pointer;
 }
 
 .tool-result.error {
@@ -1277,6 +1425,8 @@ button.tool-step-summary:active {
   .tool-step-summary,
   .tool-step-chevron,
   .tool-step-disclosure,
+  .tool-step-disclosure-inner,
+  .tool-result-more,
   .tool-detail-copy,
   .message-reply-reference,
   .composer-reply > button,
@@ -1341,7 +1491,7 @@ button.tool-step-summary:active {
 .timeline-details summary { cursor: pointer; padding-block: 0.5rem; overflow-wrap: anywhere; }
 .timeline-details summary:focus-visible,
 .timeline-result-heading button:focus-visible { outline: 2px solid var(--ak-rule-focus); outline-offset: 3px; }
-.timeline-details pre { white-space: pre-wrap; overflow-wrap: anywhere; font-size: 0.8125rem; max-height: 32rem; overflow-y: auto; }
+.timeline-details pre { white-space: pre-wrap; overflow-wrap: anywhere; font-size: 0.8125rem; }
 .timeline-details p { overflow-wrap: anywhere; }
 .timeline-control-summary, .timeline-result-heading { border-inline-start: 2px solid var(--ak-color-border-default); padding-inline-start: 0.875rem; }
 .reply-activity { padding-block: 0.75rem; overflow-wrap: anywhere; }

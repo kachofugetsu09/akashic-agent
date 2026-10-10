@@ -39,6 +39,19 @@ export interface ShellSettingsPlugin extends WebEntry {
   route: string;
   family?: string;
   familyLabel?: string;
+  /** 一句话说明这个插件做什么；插件列表卡片与详情页标题下展示。 */
+  description?: string;
+}
+
+/**
+ * Shell 渲染插件配置成员时传入的 props。mode="summary" 时只渲染列表卡片上的一行状态，
+ * 缺省渲染完整配置表单。
+ */
+export interface ShellSettingsPluginRenderProps {
+  pages: WebMountView;
+  railActions: readonly ShellRailAction[];
+  embedded: true;
+  mode?: "summary";
 }
 
 /**
@@ -56,4 +69,6 @@ export interface ShellSettingsRenderProps {
   railActions: readonly ShellRailAction[];
   embedded?: boolean;
   renderRoute?: RenderSettingsRoute;
+  /** 关闭整个设置工作区；未保存草稿的守卫与 Shell 自己的关闭按钮一致。 */
+  close?: () => void;
 }

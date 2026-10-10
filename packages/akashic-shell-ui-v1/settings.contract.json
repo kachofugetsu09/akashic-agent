@@ -9,10 +9,14 @@
     }
   },
   "props": {
-    "required": ["pages", "railActions", "embedded", "renderRoute"],
+    "required": ["pages", "railActions", "embedded", "renderRoute", "close"],
     "renderRoute": {
       "arguments": ["route", "host", "props"],
       "returns": "dispose | null"
+    },
+    "close": {
+      "arguments": [],
+      "returns": "void"
     }
   }
 }

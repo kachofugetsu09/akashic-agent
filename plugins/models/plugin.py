@@ -78,7 +78,7 @@ async def apply(ctx: Context) -> None:
     views = ContentViews(ctx)
     _ = await ctx.provide(CONTENT_VIEWS, views, binding_contributors=views.binding_contributors)
     _ = await ctx.provide(MODEL_SELECTION, SelectionOwner())
-    from plugins.onboarding.contract import ONBOARDING, Step
+    from plugins.onboarding.contract import ONBOARDING, Ability, Step
     async def status():
         async with ctx.runtime_scope():
             catalog = state.catalog.snapshot()
@@ -87,7 +87,11 @@ async def apply(ctx: Context) -> None:
             return {"ready": ready, "enabled": True if ready else None, "blocked": False,
                     "reason": "" if ready else "请选择连接方式并设置默认模型"}
     async def contribute(child: Context):
-        await child.require(ONBOARDING).group(child, "models", "模型连接")
+        await child.require(ONBOARDING).group(child, "models", "模型连接", Ability(
+            pitch="连接一个对话模型",
+            benefit="Akashic 本身不带模型。选一个你已经有账号的服务，连上之后它就能回答你。",
+            required=True,
+        ))
         await child.require(ONBOARDING).register(child, Step("connect", "模型连接", "models", "models", status))
     await ctx.inject((ONBOARDING,), contribute, name="onboarding")
     for method, operation in rpc_methods(BoundModelControl(ctx)).items():
@@ -105,6 +109,6 @@ async def _register_ui(ctx: Context) -> None:
         provides=("models.connection-types.v1",),
         contract_digests={
             "models.connection-types.v1": "8c304d85090a65a4a66cd777a5c2a88e6908de147964dc91e7f84336979ea561",
-            "shell.settings.v1": "a5040165b28b8126a1d55c1a80c8cc707ad55dd0e53cb337fce8c4c721272736",
+            "shell.settings.v1": "1f4dd2eaee9118c799590a36745975150c46979a3f62b431f73aa29e949ce189",
         },
     )
