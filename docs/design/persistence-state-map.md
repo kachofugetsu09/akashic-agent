@@ -466,7 +466,7 @@ workspace 之外还有两组明确的全局状态：
 
 | 表 | 写入 owner | 上层使用者 | 代码事实 |
 |---|---|---|---|
-| `sessions` | `session.store.SessionStore`，由 `SessionManager` 协调 | channel、AgentLoop、`session.activity.PresenceStore`、dashboard | session metadata、时间、高水位和当前 compaction generation |
+| `sessions` | `session.store.SessionStore`，由 `SessionManager` 协调 | channel、AgentLoop、dashboard | session metadata、时间、高水位和当前 compaction generation |
 | `channel_identities` | `session.identities.ChannelIdentities`；旧 Session 审计删除调用同模块事务函数 | Core Channel 接纳与只读 recipient resolve；Telegram 地址解析 | 唯一 durable recipient；失败接纳仅 CAS 回滚路由，Session/messages 不参与。旧删除保持同一审计事务和备份；新 Message 删除合同仍待批准 |
 | `channel_identity_migrations` | `session.identities`；显式 yoyo 只接收已知旧来源规则 | 迁移与 Channel identity 写入 | 每个 channel 的永久标记；运行时不扫描 metadata，未知来源不因通用迁移而被写入空标记 |
 | `session_compactions` | `session.store.SessionStore`，由 Core checkpoint owner 请求 | prompt replay、Markdown reconciliation、删除恢复 | append-only generation lineage、source provenance、retained tail、summary、usage 和失效状态 |
