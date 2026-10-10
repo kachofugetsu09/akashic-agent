@@ -8,7 +8,7 @@ from typing import cast
 
 from agent.plugin_composition import Context, Effect
 from agent.plugin_composition.messages import OwnerStore, OwnerTransaction, SessionAttributes, MessageConflict
-from agent.plugin_contracts.directories import DirectorySnapshot
+from plugins.standard_tools.contract import DirectorySnapshot
 
 from .path_access import PathAccess, check_directory
 from .agents import read_agents

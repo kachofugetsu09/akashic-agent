@@ -7,11 +7,10 @@ from dataclasses import replace
 
 from agent.plugin_composition import Context, Effect
 
+from plugins.standard_tools.contract import SKILL_INSPECTION, SkillReader
 from agent.plugin_contracts.inspection import (
     Document,
     SCHEDULER_INSPECTION_V3 as SCHEDULER_INSPECTION,
-    SKILL_INSPECTION as SKILL_INSPECTION,
-    SkillReader as SkillReader,
 )
 
 _MAX_DOCUMENT_BYTES = 192 * 1024

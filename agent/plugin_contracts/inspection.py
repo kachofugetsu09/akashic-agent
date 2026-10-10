@@ -15,16 +15,7 @@ class SchedulerReader(Protocol):
     async def get_job(self, job_id: str) -> Mapping[str, object] | None: ...
 
 
-class SkillReader(Protocol):
-    """技能目录只读投影的窄输入。"""
-
-    async def list_skills(self) -> tuple[Mapping[str, object], ...]: ...
-
-    async def list_sources(self) -> tuple[Mapping[str, object], ...]: ...
-
-
 SCHEDULER_INSPECTION_V3 = ServiceKey[SchedulerReader]("scheduler.inspection.v3")
-SKILL_INSPECTION = ServiceKey[SkillReader]("standard_tools.skill_inspection.v1")
 
 
 @dataclass(frozen=True, slots=True)
