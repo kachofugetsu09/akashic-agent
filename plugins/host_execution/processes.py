@@ -6,7 +6,10 @@ from contextlib import contextmanager
 import json
 from pathlib import Path
 
-from agent.host_bridge.factory import build_shell_process_manager
+from agent.host_bridge.factory import build_shell_process_manager, build_requirements_checker
+from agent.plugin_composition.shell_runtime import resolve_shell
+from agent.plugin_composition.shell_runtime import ResolvedShell
+from plugins.host_execution.contract import RequirementsChecker
 from plugins.host_execution.contract import (
     PROCESSES,
 )
@@ -28,6 +31,12 @@ class PluginProcesses:
         self._operations = 0
         self._drained = asyncio.Event()
         self._drained.set()
+
+    def resolve_shell(self, requested: str | None = None) -> ResolvedShell:
+        return resolve_shell(requested)
+
+    def requirements_checker(self) -> RequirementsChecker | None:
+        return build_requirements_checker()
 
     @contextmanager
     def _operation(self, ctx: Context, key: str) -> Generator[str]:

@@ -1,4 +1,4 @@
-from plugins.host_execution.contract import PROCESSES
+from plugins.host_execution.contract import PROCESSES, FILES
 from agent.plugin_composition import Context
 from plugins.ui.contract import UI_SLOTS, PluginUiDefinition, PluginUiRpcInvalidRequest
 from agent.plugin_composition.artifacts import ARTIFACT_IMPORT
@@ -28,7 +28,7 @@ api_version = 3
 name = "standard_tools"
 version = "1.0.0"
 desc = "提供文件、命令与技能读取工具"
-inject = (BINDINGS, TASKS, TOOLS, PROCESSES, ARTIFACT_IMPORT, MATERIALS, INSTALLED_ASSETS,
+inject = (BINDINGS, TASKS, TOOLS, PROCESSES, FILES, ARTIFACT_IMPORT, MATERIALS, INSTALLED_ASSETS,
           OWNER_STATE, SESSION_ADMISSION)
 
 
@@ -37,7 +37,7 @@ async def apply(ctx: Context) -> None:
     """注册既有工具的普通入口；安装和归档装配不访问文件、进程或网络。"""
     _ = await ctx.require(INSTALLED_ASSETS).register(ctx, "skills", "skills")
     catalog = ctx.require(TOOLS)
-    directories = WorkingDirectories(ctx.require(OWNER_STATE).open(ctx))
+    directories = WorkingDirectories(ctx.require(OWNER_STATE).open(ctx), ctx.require(FILES))
     _ = await ctx.provide(WORKING_DIRECTORY, directories)
     _ = await ctx.require(SESSION_ADMISSION).register_initializer(
         ctx, name="working-directory", initialize=directories.initialize,
@@ -49,7 +49,7 @@ async def apply(ctx: Context) -> None:
         current = directories.snapshot(snapshot[-1].session_id)
         if current.path is None:
             return {}
-        rules = await read_agents(current.path)
+        rules = await read_agents(ctx.require(FILES), current.path)
         return {"reminders": ({"name": "working-directory", "priority": 400, "replay": False,
                                "text": directory_material(current.path, str(rules["directory_status"]), rules)},)}
 

@@ -530,7 +530,7 @@ class HostBridgeService:
                 async with self._manager_operation(request.context):
                     result = await ReadFileOperation(
                         allowed_dir=allowed_dir, enable_bridge=False
-                    ).read_raw(
+                    ).execute(
                         read.path,
                         offset=read.offset,
                         limit=read.limit if read.HasField("limit") else None,

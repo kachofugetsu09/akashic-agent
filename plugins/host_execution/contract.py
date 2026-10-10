@@ -4,7 +4,11 @@ from __future__ import annotations
 import hashlib
 import json
 from dataclasses import asdict, dataclass
-from typing import Literal, Protocol
+from typing import Any, Literal, Protocol
+from contextlib import AbstractAsyncContextManager
+from agent.tool_catalog import ToolResult
+from agent.host_bridge.filesystem import PathInfo
+from agent.plugin_composition.shell_runtime import ResolvedShell
 from pathlib import Path
 from agent.process_runtime import ExecutionResult, ExecutionCleanupReport
 from agent.plugin_composition.context import Context
@@ -108,6 +112,8 @@ HOST_STATUS = ServiceKey[HostStatus]("host.status.v1")
 
 
 class Processes(Protocol):
+    def resolve_shell(self, requested: str | None = None) -> ResolvedShell: ...
+    def requirements_checker(self) -> RequirementsChecker | None: ...
     async def exec_command(
         self, ctx: Context, owner_key: str, *, command: str, argv: list[str],
         cwd: Path | None, env: dict[str, str], tty: bool, yield_time_ms: int,
@@ -122,3 +128,36 @@ class Processes(Protocol):
 
 
 PROCESSES = ServiceKey[Processes]("host.processes.v1")
+
+
+class RequirementsAvailability(Protocol):
+    @property
+    def missing_bins(self) -> tuple[str, ...]: ...
+    @property
+    def missing_env(self) -> tuple[str, ...]: ...
+
+
+class RequirementsChecker(Protocol):
+    def check_requirements(self, bins: list[str], env: list[str]) -> RequirementsAvailability: ...
+
+
+class FileOperation(Protocol):
+    async def execute(self, **arguments: Any) -> str | ToolResult: ...
+    async def aclose(self) -> None: ...
+
+
+class PathReader(Protocol):
+    async def read(
+        self, action: str, path: str, *, base_dir: str | None = None,
+        after: str | None = None, limit: int = 100, max_bytes: int = 32768,
+    ) -> PathInfo: ...
+
+
+class Files(Protocol):
+    def open(self, name: str, allowed_dir: Path | None = None) -> FileOperation: ...
+    def paths(self) -> AbstractAsyncContextManager[PathReader]: ...
+
+
+FILES = ServiceKey[Files]("host.files.v1")
+LIST_DIR_MAX_ENTRIES = 500
+LIST_DIR_MAX_BYTES = 10_000

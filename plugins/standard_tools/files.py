@@ -10,6 +10,7 @@ from typing import Any, Protocol, cast
 from pydantic import BaseModel, ConfigDict, field_validator
 
 from agent.plugin_composition import Context
+from plugins.host_execution.contract import FILES
 from agent.plugin_composition.artifacts import ARTIFACT_IMPORT
 from agent.plugin_composition.artifacts import AttachmentKind
 from agent.tool_catalog import (
@@ -101,7 +102,7 @@ class FileTool:
         backend = self._backend
         if "_allowed_dir" in raw:
             allowed = raw.pop("_allowed_dir")
-            backend = type(self._backend)(allowed_dir=None if allowed is None else Path(allowed))
+            backend = type(self._backend)(self._ctx.require(FILES), allowed_dir=None if allowed is None else Path(allowed))
         try:
             value = (
                 await backend.read_raw(**raw) if isinstance(backend, ReadFileTool)
@@ -148,7 +149,7 @@ async def register_file(
     directories: WorkingDirectories | None = None,
 ) -> ToolRef:
     """注册 schema 和配置；实际文件/Bridge 只在已打开工具中访问。"""
-    prototype = backend_type(enable_bridge=False)
+    prototype = backend_type(ctx.require(FILES))
 
     def capture(configuration: Mapping[str, object]) -> Mapping[str, object]:
         return FileSettings.model_validate({
@@ -159,7 +160,7 @@ async def register_file(
     @asynccontextmanager
     async def open_tool(state: Mapping[str, object]) -> AsyncGenerator[FileTool]:
         settings = FileSettings.model_validate(json_value(state))
-        backend = backend_type(allowed_dir=None if settings.allowed_dir is None else Path(settings.allowed_dir))
+        backend = backend_type(ctx.require(FILES), allowed_dir=None if settings.allowed_dir is None else Path(settings.allowed_dir))
         try:
             yield FileTool(ctx, backend, directories=directories, settings=settings)
         finally:

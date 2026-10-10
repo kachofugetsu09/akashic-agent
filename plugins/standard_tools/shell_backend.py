@@ -1,6 +1,9 @@
 from __future__ import annotations
 
 import logging
+import json
+import random
+from typing import Any
 import os
 from pathlib import Path
 
@@ -164,3 +167,41 @@ def _prepend_existing_path_entries(env: dict[str, str], entries: list[Path]) -> 
         prepend.append(text)
         seen.add(text)
     env["PATH"] = os.pathsep.join([*prepend, *current])
+
+
+def format_execution_result(
+    result: ExecutionResult,
+    *,
+    command: str | None = None,
+) -> str:
+    """把内部结果转换成稳定的工具 JSON。"""
+
+    payload: dict[str, Any] = {
+        "chunk_id": f"{random.randrange(16 ** 6):06x}",
+        "wall_time_ms": result.wall_time_ms,
+        "output": result.output.decode(errors="replace"),
+        "original_token_count": result.original_token_count,
+        "process_status": _process_status(result),
+        "exit_code": result.exit_code,
+    }
+    if command is not None:
+        payload["command"] = command
+    if result.execution_id is not None:
+        payload["execution_id"] = result.execution_id
+    if result.output_path is not None:
+        payload["output_path"] = result.output_path
+    if result.output_omitted_bytes:
+        payload["output_omitted_bytes"] = result.output_omitted_bytes
+    if result.finish_reason != "natural":
+        payload["finish_reason"] = result.finish_reason
+    return json.dumps(payload, ensure_ascii=False)
+
+
+def _process_status(result: ExecutionResult) -> str:
+    if result.execution_id is not None:
+        return "running"
+    if result.finish_reason == "timeout":
+        return "timed_out"
+    if result.exit_code == 0:
+        return "succeeded"
+    return "failed"

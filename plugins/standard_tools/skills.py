@@ -10,6 +10,7 @@ from pydantic import BaseModel, ConfigDict, Field
 
 from core.common.file_io import run_file_io
 
+from plugins.host_execution.contract import PROCESSES
 from agent.plugin_composition import Context
 from plugins.assets.contract import INSTALLED_ASSETS, InstalledAsset
 from agent.plugin_contracts import ContentPart, Message, json_value
@@ -83,7 +84,7 @@ class SkillTool:
 async def register_skills(ctx: Context) -> ToolRef:
     """从当前来源热读取 Skill，不复制目录或保留历史资源树。"""
     read_assets = ctx.require(INSTALLED_ASSETS)
-    parser = SkillCatalogParser()
+    parser = SkillCatalogParser(ctx.require(PROCESSES))
     io_lock = asyncio.Lock()
 
     async def read_catalog(assets: tuple[InstalledAsset, ...]) -> SkillCatalog:

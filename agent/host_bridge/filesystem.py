@@ -268,7 +268,7 @@ class _FileOperation:
 class ReadFileOperation(_FileOperation):
     """读取文件内容，支持按行分页，超大文件自动截断。"""
 
-    async def read_raw(self, path: str, **kwargs: Any) -> str | ToolResult:
+    async def execute(self, path: str, **kwargs: Any) -> str | ToolResult:
         """读取原始文件结果；实际模型投影由调用者决定。"""
         bridge = self._get_bridge()
         if bridge is not None:

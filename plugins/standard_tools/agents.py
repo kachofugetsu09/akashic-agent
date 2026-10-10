@@ -4,12 +4,12 @@ from __future__ import annotations
 
 from typing import cast
 
-from .path_access import PathAccess
+from plugins.host_execution.contract import Files
 
 _MAX_BYTES = 32768
 
 
-async def read_agents(path: str | None) -> dict[str, object]:
+async def read_agents(files: Files, path: str | None) -> dict[str, object]:
     """Discover rules on the execution backend and report any incomplete read.
 
     整链探测在执行端一次完成（agents_chain）；返回的 directory_status 同时
@@ -17,7 +17,7 @@ async def read_agents(path: str | None) -> dict[str, object]:
     """
     if path is None:
         return {"status": "unset", "directory_status": "unset", "sources": [], "files": []}
-    async with PathAccess() as access:
+    async with files.paths() as access:
         info = await access.read("agents_chain", path, max_bytes=_MAX_BYTES)
     directory_status = info.status
     if info.status == "available" and info.kind != "directory":
