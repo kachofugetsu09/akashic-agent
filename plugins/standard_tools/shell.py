@@ -41,7 +41,7 @@ from agent.plugin_contracts import (
     ToolCall,
     json_value,
 )
-from agent.plugin_contracts.tools import (
+from plugins.tools.contract import (
     TOOL_CLEANUP as TOOL_CLEANUP,
 )
 

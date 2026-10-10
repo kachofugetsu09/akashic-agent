@@ -7,7 +7,7 @@ from dataclasses import dataclass
 from typing import Literal, Protocol
 
 from agent.plugin_contracts import ContentPart
-from agent.plugin_contracts.tools import (
+from plugins.tools.contract import (
     TOOLS as TOOLS,
     CallSource as CallSource,
     ToolCatalog as ToolCatalog,

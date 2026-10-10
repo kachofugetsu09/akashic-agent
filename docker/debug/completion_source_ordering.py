@@ -49,7 +49,7 @@ from plugins.reply.contract import (
 from plugins.reply_program.contract import (
     REPLY_EXECUTE_V4,
 )
-from agent.plugin_contracts.tools import ALL_TOOLS
+from plugins.tools.contract import ALL_TOOLS
 from plugins.commands import plugin as commands_plugin
 from plugins.conversation import plugin as conversation_plugin
 from plugins.reply import plugin as reply_plugin

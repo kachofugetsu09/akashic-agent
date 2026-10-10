@@ -23,7 +23,7 @@ from plugins.delivery_policy.contract import (
     INPUT_ORIGIN as INPUT_ORIGIN,
     InputOrigin as InputOrigin,
 )
-from agent.plugin_contracts.tools import (
+from plugins.tools.contract import (
     ALL_TOOLS as ALL_TOOLS,
     TOOLS as TOOLS,
     CallSource as CallSource,

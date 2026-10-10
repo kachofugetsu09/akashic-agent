@@ -11,7 +11,7 @@ from agent.plugin_composition import Context
 from agent.plugin_contracts import ContentPart, ContentReferences, Message, ToolResult, json_value
 from plugins.content.contract import CONTENT
 from plugins.models.contract import CONTENT_VIEWS, ContentTransform, RenderedContent
-from agent.plugin_contracts.tools import TOOLS, CallSource, ProviderBoundTool, Result
+from plugins.tools.contract import TOOLS, CallSource, ProviderBoundTool, Result
 from agent.plugin_contracts.ui import ToolResultDisplayProvider
 from agent.plugin_composition import ServiceKey
 

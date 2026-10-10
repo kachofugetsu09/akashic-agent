@@ -26,7 +26,7 @@ from plugins.delivery.contract import (
     FinalOutputWaiter as FinalOutputWaiter,
     Receipt as ReceiptView,
 )
-from agent.plugin_contracts.tools import (
+from plugins.tools.contract import (
     TOOLS as TOOLS,
     CallSource as CallSource,
     ToolCatalog as ToolCatalog,

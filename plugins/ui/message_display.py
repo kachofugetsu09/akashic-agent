@@ -7,7 +7,7 @@ from contextlib import ExitStack
 from agent.plugin_composition import Context, ServiceKey
 from agent.plugin_composition.messages import MESSAGE_CATALOG, MessageReader
 from agent.plugin_composition.message_view import MessageDisplayProviders, PartDisplayProvider, message_rows
-from agent.plugin_contracts.tools import TOOL_DISPLAY_NAME
+from plugins.tools.contract import TOOL_DISPLAY_NAME
 from agent.plugin_contracts.ui import ToolResultDisplayProvider, MessagePage
 from agent.plugin_contracts import ContentPart, Control, Message, ToolCall, ToolResult
 

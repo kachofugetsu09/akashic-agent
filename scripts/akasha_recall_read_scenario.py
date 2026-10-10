@@ -30,7 +30,7 @@ if args.output.exists():
 sys.path.insert(0, str(args.source))
 from plugins.ui.contract import PluginUiRpcInvalidRequest
 from agent.plugin_contracts import CallRef, ContentPart, ContentReferences, Control, Input, Output, ToolCall, ToolResult
-from agent.plugin_contracts.tools import durable_call_key
+from plugins.tools.contract import durable_call_key
 import session.log as storage
 from session.log import MessageLog
 from plugins.akasha.inspector import RecallInspector

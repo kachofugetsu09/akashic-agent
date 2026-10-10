@@ -13,7 +13,7 @@ from agent.plugin_contracts import (
     ToolCall,
     ToolResult,
 )
-from agent.plugin_contracts.tools import (
+from plugins.tools.contract import (
     BoundTool as BoundTool,
     CallSource as CallSource,
     ProviderBoundTool as ProviderBoundTool,

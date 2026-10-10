@@ -23,7 +23,7 @@ from plugins.delivery.contract import (
     DeliveryHistory as DeliveryHistory,
 )
 from plugins.akasha.contract import SEMANTIC_INTEREST as SEMANTIC_INTEREST, SemanticInterest as SemanticInterest
-from agent.plugin_contracts.tools import (
+from plugins.tools.contract import (
     ALL_TOOLS as ALL_TOOLS,
     TOOLS as TOOLS,
     CallSource as CallSource,

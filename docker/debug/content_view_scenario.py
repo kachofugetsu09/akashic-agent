@@ -18,7 +18,7 @@ from agent.plugin_composition.model import PluginRuntime
 from agent.plugin_composition.channels import CHANNEL_INPUT_V2 as CHANNEL_INPUT, ChannelInboundMessage
 from agent.plugin_contracts import CallRef, ContentPart, ContentReferences, Control, Input, Message, Output, ToolCall, ToolResult, json_value
 from plugins.models.contract import CONTENT_VIEWS, MODEL_CALLS, RenderedContent
-from agent.plugin_contracts.tools import CallSource
+from plugins.tools.contract import CallSource
 from agent.host_bridge.filesystem import ListDirOperation
 from agent.plugins.manager import PluginManager
 from infra.channels.artifacts import ChannelAttachmentArtifactStore

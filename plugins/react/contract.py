@@ -14,7 +14,7 @@ from agent.plugin_contracts import Message
 from plugins.content.contract import ContentView
 from plugins.context.contract import ContextBuilder, SummaryReducer
 from plugins.models.contract import MessageProjection
-from agent.plugin_contracts.tools import StartCheck
+from plugins.tools.contract import StartCheck
 from plugins.tools.contract import ToolMenu
 
 Materials = Mapping[str, object]

@@ -26,7 +26,7 @@ from plugins.context.contract import CONTEXT
 from plugins.turn_projection.contract import TURN_PROJECTION
 from plugins.markdown_memory.plugin import _unapplied_groups
 from plugins.markdown_memory.store import MarkdownProfileStore
-from agent.plugin_contracts.tools import ALL_TOOLS, TOOLS
+from plugins.tools.contract import ALL_TOOLS, TOOLS
 from tests.test_default_reply import application
 
 

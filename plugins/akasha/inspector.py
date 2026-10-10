@@ -12,7 +12,7 @@ from typing import cast
 from plugins.ui.contract import PluginUiRpcInvalidRequest
 from agent.plugin_composition.messages import MessageCatalog
 from agent.plugin_contracts import CallRef, ContentPart, Input, Message, Output, ToolCall, ToolResult, json_value
-from agent.plugin_contracts.tools import durable_call_key
+from plugins.tools.contract import durable_call_key
 from ._boundaries import Turn, TurnProjection
 from .recalls import ContextSource, ProgramSource, Recall, ToolSource, context_identity
 from .recall_tool import RecallReference
