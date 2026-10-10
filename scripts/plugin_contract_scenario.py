@@ -26,6 +26,7 @@ PROVIDER = '''from plugins.public_values.contract import VALUE, Value
 api_version = 3
 name = "public_values"
 version = "1.0.0"
+entrypoints = {"public-probe": "cli.main"}
 async def apply(ctx):
     await ctx.provide(VALUE, Value("first"))
 '''
@@ -90,6 +91,9 @@ def prepare(directory: Path) -> None:
     (control / "plugin.py").write_text(MANAGEMENT)
     (provider / "contract.py").write_text(CONTRACT)
     (provider / "plugin.py").write_text(PROVIDER)
+    (provider / "cli.py").write_text('from plugins.public_values.contract import Value\n'
+        'async def main(arguments, *, workspace, config_path):\n'
+        '    value = Value("command")\n    print(value.text)\n    return 0\n')
     (consumer / "plugin.py").write_text(CONSUMER)
     # 包入口不能是隐含的业务加载路径。
     builtin = directory / "builtin/public_values"
@@ -170,6 +174,8 @@ async def exercise(directory: Path) -> dict[str, object]:
         manage = root.context.require(ServiceKey("scenario.public-control"))
         (source / "public_values/contract.py").write_text(
             CONTRACT.replace("text: str", "text: str\n    revision: int = 2"))
+        cli = source / "public_values/cli.py"
+        cli.write_text(cli.read_text().replace("print(value.text)", "print(value.text, value.revision)"))
         commit(source / "public_values")
         pending = await manage("install", source=str(source / "public_values"), update_id="contract-change")
         await manage("idle")
@@ -180,6 +186,14 @@ async def exercise(directory: Path) -> dict[str, object]:
         assert root.context.require(ServiceKey("scenario.public-read")) == "second"
         assert sys.modules["plugins.public_values.contract"] is module
         assert isinstance(await manage("status"), dict)
+        from agent.plugins.entrypoints import invoke_plugin_command
+        try:
+            await invoke_plugin_command("public-probe", (), workspace=workspace,
+                                        config_path=workspace / "config.toml")
+        except RuntimeError as error:
+            assert "须重启进程" in str(error)
+        else:
+            raise AssertionError("command mixed old public types with new selected source")
         # 4. pending 更新不锁死禁用和卸载；普通卸载保留制品与 journal。
         set_plugin_enabled("public_values@lab", enabled=False, plugins_home=home)
         await manage("drain")
@@ -201,7 +215,7 @@ async def exercise(directory: Path) -> dict[str, object]:
             "management_from_plugin": True, "accepted_then_drained": True,
             "installed_overrides_builtin": True, "disabled_installed_api": True,
             "restart_required_persisted": True,
-            "pending_update_manageable": True, "new_process_contract": True}
+            "pending_update_manageable": True, "new_process_contract": True, "same_process_command_requires_restart": True}
 
 
 async def check_restart(directory: Path) -> None:

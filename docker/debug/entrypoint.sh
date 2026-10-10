@@ -28,34 +28,67 @@ ensure_sandbox_path() {
     esac
 }
 
-ensure_app_server_config() {
+init_gateway_config() {
     if [ ! -f "$CONFIG" ]; then
         return
     fi
-    as_host python - "$CONFIG" "$SOCKET" <<'PY'
+    as_host python - "$CONFIG" "$WORKSPACE" "$SOCKET" <<'PY_CONFIG'
 from pathlib import Path
+import os
 import sys
-import toml
 import tomllib
+from agent.plugin_composition.config_input import CONFIG_INPUT, save_config
+from agent.plugins.distribution_sources import distribution_sources
+from agent.plugins.manifest import plugins_root, workspace_plugin_data_dir
+from agent.plugins.selection import PluginSelection
+from agent.plugins.source_resolver import scan_plugin_sources
 
-path = Path(sys.argv[1])
-socket = sys.argv[2]
-data = tomllib.loads(path.read_text(encoding="utf-8"))
-app_server = data.setdefault("app_server", {})
-app_server["listen"] = socket
-path.write_text(toml.dumps(data), encoding="utf-8")
-PY
+config, workspace, socket = Path(sys.argv[1]), Path(sys.argv[2]), sys.argv[3]
+# 旧 app_server 由 Gateway 迁移完整复制；调试入口不抢先建立另一份值。
+if "app_server" in tomllib.loads(config.read_text(encoding="utf-8")):
+    print("旧控制配置等待 Gateway 迁移；调试入口不改写 Core 配置。")
+    raise SystemExit(0)
+selection = PluginSelection(workspace)
+reference = selection.read() if selection.path.exists() else None
+if reference is not None:
+    records = [selection.read_input(ref) for ref in selection.components(reference)]
+    targets = [(str(record["plugin_id"]), workspace / str(record["data_dir"])) for record in records
+               if str(record["plugin_id"]).partition("@")[0] == "gateway"]
+else:
+    home = plugins_root()
+    distribution = distribution_sources(workspace, home)
+    roots = [Path(value) for value in os.environ.get("AKASHIC_EXTRA_PLUGIN_DIRS", "").split(os.pathsep) if value]
+    scan = scan_plugin_sources(roots, installed_cache_root=home / "cache",
+                               fixed_sources=distribution.sources,
+                               ignored_installed_roots=distribution.ignored_installed_roots)
+    matches = [source for source in scan.sources if source.plugin_name == "gateway"]
+    installed = [source for source in matches if source.source_type == "installed"]
+    targets = [("gateway" + (f"@{source.marketplace}" if source.marketplace else ""),
+                workspace_plugin_data_dir(workspace, "gateway", source.marketplace or "builtin"))
+               for source in installed or matches[:1]]
+if not targets:
+    print("未选择 Gateway；调试入口不创建或启用业务配置。")
+    raise SystemExit(0)
+if len(targets) != 1:
+    raise ValueError("调试 Gateway 配置需要唯一 provider: " + ", ".join(identity for identity, _ in targets))
+_, data = targets[0]
+# 只初始化缺席输入；保留现有 enabled、监听选择和其他插件设置。
+if not (data / CONFIG_INPUT).exists():
+    save_config(data, {"listen": socket})
+PY_CONFIG
 }
 
 ensure_sandbox_path "$CONFIG"
 ensure_sandbox_path "$WORKSPACE"
 ensure_sandbox_path "$SOCKET"
-mkdir -p /sandbox "$WORKSPACE" /sandbox/home/.akashic-plugin
+mkdir -p /sandbox /sandbox/home/.akashic-plugin
 chown "$HOST_UID:$HOST_GID" \
     /sandbox \
     /sandbox/home \
     /sandbox/home/.akashic-plugin
-chown -R "$HOST_UID:$HOST_GID" "$WORKSPACE"
+if [ -d "$WORKSPACE" ]; then
+    chown -R "$HOST_UID:$HOST_GID" "$WORKSPACE"
+fi
 if [ -f "$WORKSPACE/replay/clock.json" ]; then
     export AKASHIC_REPLAY_CLOCK_FILE="$WORKSPACE/replay/clock.json"
     export AKASHIC_REPLAY_EVENTS_FILE="$WORKSPACE/replay/events.jsonl"
@@ -69,23 +102,23 @@ shift || true
 case "$cmd" in
     setup)
         as_host python main.py setup --config "$CONFIG" --workspace "$WORKSPACE" "$@"
-        ensure_app_server_config
+        init_gateway_config
         ;;
     init)
         as_host python main.py init --config "$CONFIG" --workspace "$WORKSPACE" "$@"
-        ensure_app_server_config
+        init_gateway_config
         ;;
     reset-workspace)
         as_host rm -rf "$WORKSPACE"
         as_host python main.py init --config "$CONFIG" --workspace "$WORKSPACE" "$@"
-        ensure_app_server_config
+        init_gateway_config
         ;;
     run|serve)
         if [ ! -f "$CONFIG" ]; then
             echo "未找到调试配置，正在初始化空白本地实例：$CONFIG"
             as_host python main.py init --config "$CONFIG" --workspace "$WORKSPACE"
         fi
-        ensure_app_server_config
+        init_gateway_config
         exec_as_host python main.py --config "$CONFIG" --workspace "$WORKSPACE" "$@"
         ;;
     gateway)
@@ -109,7 +142,7 @@ case "$cmd" in
             "$@"
         ;;
     exec)
-        ensure_app_server_config
+        init_gateway_config
         exec_as_host python main.py exec --config "$CONFIG" --workspace "$WORKSPACE" "$@"
         ;;
     dashboard)

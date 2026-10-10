@@ -1237,20 +1237,26 @@ def _resource_check(
     )
 
 
+def _save_probe_configs(workspace: Path, endpoint: Path) -> None:
+    """复制 Gateway 设置，并明确关闭新 workspace 的 Web 客户端。"""
+    from agent.plugin_composition.config_input import CONFIG_INPUT, load_config, save_config
+    base = WORKSPACE / "plugin-data/gateway-builtin"
+    if not (base / CONFIG_INPUT).is_file():
+        raise FileNotFoundError("隔离 Gateway 基线配置缺失")
+    values, _ = load_config(base)
+    values["listen"] = str(endpoint)
+    save_config(workspace / "plugin-data/gateway-builtin", values)
+    save_config(workspace / "plugin-data/akashic_clients-builtin", {"enabled": False, "web": {"enabled": False}})
+
+
 def _unsupervised_tool_absence_check(report_dir: Path) -> CheckResult:
     config = Path("/sandbox/restart-config-template.toml").read_text(encoding="utf-8")
-    config = config.replace(
-        'listen = "/sandbox/akashic.sock"',
-        'listen = "/sandbox/unsupervised.sock"',
-    ).replace(
-        "[channels.chat]\nenabled = true",
-        "[channels.chat]\nenabled = false",
-    )
     config_path = Path("/sandbox/unsupervised.toml")
     workspace = Path("/sandbox/unsupervised-workspace")
     endpoint = Path("/sandbox/unsupervised.sock")
     config_path.write_text(config, encoding="utf-8")
     _initialize_current_workspace(workspace, Path("/app"))
+    _save_probe_configs(workspace, endpoint)
     # Initialize this disposable workspace through the real migration owner.
     _ = MigrationRunner(
         repo_root=Path("/app"), config_path=config_path, workspace=workspace,
@@ -1526,17 +1532,11 @@ def _inside_unsupervised(report_dir: Path) -> int:
 def _isolated_config(name: str) -> tuple[Path, Path, Path]:
     source = Path("/sandbox/restart-config-template.toml").read_text(encoding="utf-8")
     endpoint = Path(f"/sandbox/{name}.sock")
-    source = source.replace(
-        'listen = "/sandbox/akashic.sock"',
-        f'listen = "{endpoint}"',
-    ).replace(
-        "[channels.chat]\nenabled = true",
-        "[channels.chat]\nenabled = false",
-    )
     config = Path(f"/sandbox/{name}.toml")
     workspace = Path(f"/sandbox/{name}-workspace")
     config.write_text(source, encoding="utf-8")
     _initialize_current_workspace(workspace, Path("/app"))
+    _save_probe_configs(workspace, endpoint)
     return config, workspace, endpoint
 
 
