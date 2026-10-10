@@ -82,15 +82,17 @@ generation、权限继承或领域状态。服务端 API 仍由原领域 owner �
 - 迁移以插件化前页面为视觉和交互金标准；只有旧模型页的 Akasha 独立配置块按产品决定移除。
 - Onboarding 以后可以作为普通页面或临时流程注入，不是本次实现前置条件。
 
-## 修订（2026-10-10）：工作台退役为对话工具区标签
+## 修订（2026-10-10）：退役工作台
 
-`workbench-ui` 不再注入 `shell.pages.v1`，改为注入 `conversation-ui` 声明的 `conversation.tools.v1`，
-作为对话页右侧工具区的一个标签；它继续声明 `workbench.panels.v2`，面板合同与摘要不变，Akasha、Wake
-与外置面板插件无需迁移。这只改了一条 inject，子树整体移位，验证了递归组合的可替换性。
+删除 `workbench-ui` 插件与 `workbench.panels.v2` 合同；Akasha、Wake 的 Web 入口只保留设置分节，
+后端只读观测接口不变。默认分发清单移除 `workbench-ui`，安装器按退役处理已选插件，不删除数据。
 
-Shell 在 `shell.pages.v1` 只有一个页面时不渲染顶栏，页面占满视口；功能设置与主题由
-`shell.rail-actions.v1` 投影到对话侧栏底部，窄屏导航抽屉复用同一侧栏。`/chat` 独立模式删除硬编码顶栏。
-工作台断点改为容器查询，触控尺寸跟随输入方式；chat 模态层打开时经 `akashic.chat-overlay` 通知宿主收起浮动开关。
+扩展点保留在挂载树上：`shell.pages.v1`（顶层页面）、`conversation.tools.v1`（对话右侧工具区）、
+`shell.rail-actions.v1` 与两个设置挂载点。没有贡献者时界面不出现对应入口：只有一个页面时 Shell
+不渲染顶栏，没有工具标签时对话页不出现工具区开关，chat 标题带也不为它预留位置。
+
+品牌标识移到对话侧栏顶部，新会话改为品牌行尾的图标按钮；窄屏标题行另有新会话入口，
+功能设置与主题位于侧栏底部，窄屏抽屉复用同一侧栏。触控尺寸不小于 44px。
 
 ## 验收
 
