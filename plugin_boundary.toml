@@ -121,11 +121,6 @@ note = "插件 install/uninstall/revert 状态"
 
 # ── 模型协作入口：声明位置不等于提供者归属 ──────────────────
 
-[capabilities."models.embeddings.v1"]
-role = "seam"
-note = "统一 embedding space"
-
-
 
 [capabilities."plugin.claim.embedding_memory"]
 role = "claim"

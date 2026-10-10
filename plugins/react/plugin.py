@@ -19,13 +19,15 @@ from agent.plugin_composition.messages import (
     OwnerTransaction,
 )
 from agent.plugin_composition.models import (
+    LLMResponse,
+    ModelRequest,
+    StreamCallback,
+)
+from plugins.models.contract import (
     ContextLengthError,
     EmptyResponseError,
     OutputLengthError,
-    LLMResponse,
     ModelError,
-    ModelRequest,
-    StreamCallback,
 )
 from plugins.models.contract import BoundChatModel
 from agent.plugin_contracts import (

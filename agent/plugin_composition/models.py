@@ -3,7 +3,6 @@ from __future__ import annotations
 import asyncio
 from collections.abc import AsyncGenerator, Awaitable, Callable, Mapping, Sequence
 from contextlib import asynccontextmanager
-from pydantic import BaseModel, ConfigDict, Field
 from dataclasses import dataclass, field, replace
 from agent.plugin_contracts.message import freeze_json
 from types import MappingProxyType
@@ -32,12 +31,6 @@ class ModelUsage:
     request_count: int = 1
     covered_request_count: int = 0
     coverage: UsageCoverage = "unavailable"
-
-
-
-
-
-
 
 
 @dataclass(frozen=True, slots=True)
@@ -216,16 +209,6 @@ class EmbeddingResult:
     usage: ModelUsage | None = None
 
 
-
-
-
-class BoundEmbeddingModel(Protocol):
-    @property
-    def descriptor(self) -> EmbeddingSpaceDescriptor: ...
-
-    async def embed(self, texts: Sequence[str]) -> EmbeddingResult: ...
-
-
 class DriverChatModel(Protocol):
     async def complete(self, request: ModelRequest) -> LLMResponse: ...
 
@@ -246,60 +229,6 @@ class DriverChatModel(Protocol):
 
 class DriverEmbeddingModel(Protocol):
     async def embed(self, texts: Sequence[str]) -> EmbeddingResult: ...
-
-
-
-
-
-
-
-
-class SavedEmbedding(BaseModel):
-    model_config = ConfigDict(extra="forbid", strict=True, frozen=True)
-    model_id: str = Field(min_length=1)
-    space_identity: str = Field(min_length=1)
-    dimensions: int = Field(gt=0)
-
-
-def read_embedding_binding(bindings: Bindings, identity: str) -> SavedEmbedding:
-    return SavedEmbedding.model_validate(dict(bindings.describe(identity, EMBEDDINGS)))
-
-
-@asynccontextmanager
-async def open_embedding(bindings: Bindings, identity: str) -> AsyncGenerator[BoundEmbeddingModel]:
-    """在归档 Root 核对当前同名模型，配置漂移时在远程调用前拒绝。"""
-    saved = read_embedding_binding(bindings, identity)
-    async with bindings.open(identity, EMBEDDINGS) as (embeddings, _metadata):
-        # 1. driver.open 可能联网，先拒绝已经变化的 endpoint、身份或空间。
-        descriptor = embeddings.describe(model_id=saved.model_id)
-        if (descriptor.identity, descriptor.dimensions) != (saved.space_identity, saved.dimensions):
-            raise ModelUnavailableError("已保存 embedding 配置已变化，不能替换原调用").exception()
-        async with embeddings.bind(model_id=saved.model_id) as model:
-            # 2. open 的 await 期间设置仍可能变化；以真正取得的模型再核对一次。
-            if (model.descriptor.identity, model.descriptor.dimensions) != (saved.space_identity, saved.dimensions):
-                raise ModelUnavailableError("打开期间 embedding 配置已变化，不能替换原调用").exception()
-            yield model
-
-
-class Embeddings(Protocol):
-    def save_binding(self, bindings: Bindings, *, model_id: str | None = None) -> str:
-        """固定所选模型、空间与实际 driver 代码，不归档凭据。"""
-        ...
-
-    def describe(
-        self,
-        *,
-        model_id: str | None = None,
-    ) -> EmbeddingSpaceDescriptor:
-        """描述一个稳定向量空间，不打开远程连接。"""
-
-        ...
-
-    def bind(
-        self,
-        *,
-        model_id: str | None = None,
-    ) -> AsyncContextManager[BoundEmbeddingModel]: ...
 
 
 @dataclass(frozen=True, slots=True)
@@ -378,9 +307,6 @@ class ModelCatalogSnapshot:
         raise KeyError(model_id)
 
 
-
-
-
 class CredentialHandle(Protocol):
     @property
     def connection_id(self) -> str: ...
@@ -438,129 +364,6 @@ class DriverConnection:
                 raise asyncio.CancelledError
 
 
-
-
-
-
-
-
-
-
-
-
-
-
-
-EMBEDDINGS = ServiceKey[Embeddings]("models.embeddings.v1")
-
-
-
-
-@dataclass(frozen=True, slots=True)
-class ModelError:
-    """模型失败的冻结事实；普通异常只负责把它传过调用栈。"""
-
-    message: str
-    retryable: bool = False
-    retry_at: float | None = None
-    # rejected 和 unsent 是发送边界的正面证据；None 保留远端效果未知。
-    send_evidence: str | None = None
-    response_delta_seen: bool = False
-    retry_safe: bool = False
-    retry_after: float | None = None
-
-    def __str__(self) -> str:
-        return self.message
-
-    def exception(self) -> Exception:
-        """用标准异常传递冻结值，超时仍保留标准 TimeoutError 语义。"""
-        return TimeoutError(self) if isinstance(self, ModelTimeoutError) else RuntimeError(self)
-
-    @classmethod
-    def read(cls, error: BaseException, *kinds: type[ModelError]) -> ModelError | None:
-        """只读取明确的模型失败载荷；未知程序错误不能取得恢复语义。"""
-        if not isinstance(error, (RuntimeError, TimeoutError)) or len(error.args) != 1:
-            return None
-        value = error.args[0]
-        return value if isinstance(value, cls) and (not kinds or isinstance(value, kinds)) else None
-
-    @classmethod
-    def matches(cls, error: BaseException, *kinds: type[ModelError]) -> bool:
-        return cls.read(error, *kinds) is not None
-
-    @classmethod
-    def change(cls, error: BaseException, **changes: Any) -> Exception:
-        """构造补充边界事实的新失败，不改变原错误与已结算值。"""
-        value = cls.read(error)
-        if value is None:
-            raise TypeError("异常不是模型失败")
-        return replace(value, **changes).exception()
-
-
-@dataclass(frozen=True, slots=True)
-class AuthenticationError(ModelError): ...
-
-
-@dataclass(frozen=True, slots=True)
-class RateLimitError(ModelError):
-    retryable: bool = True
-
-
-@dataclass(frozen=True, slots=True)
-class QuotaError(ModelError): ...
-
-
-@dataclass(frozen=True, slots=True)
-class InvalidRequestError(ModelError): ...
-
-
-@dataclass(frozen=True, slots=True)
-class ContextLengthError(ModelError): ...
-
-
-@dataclass(frozen=True, slots=True)
-class ContentSafetyError(ModelError): ...
-
-
-@dataclass(frozen=True, slots=True)
-class ModelTimeoutError(ModelError):
-    retryable: bool = True
-
-
-@dataclass(frozen=True, slots=True)
-class TransportError(ModelError):
-    retryable: bool = True
-
-
-@dataclass(frozen=True, slots=True)
-class EmptyResponseError(ModelError):
-    """模型调用成功，但没有可提交的正文或工具调用。"""
-
-    retryable: bool = True
-
-
-@dataclass(frozen=True, slots=True)
-class OutputLengthError(ModelError):
-    """模型达到生成长度限制；正文或工具参数可能不完整。"""
-
-
-@dataclass(frozen=True, slots=True)
-class DriverUnavailableError(ModelError): ...
-
-
-@dataclass(frozen=True, slots=True)
-class ModelUnavailableError(ModelError): ...
-
-
-@dataclass(frozen=True, slots=True)
-class ModelControlUnavailable(ModelError):
-    """本次服务作用域没有模型管理能力。"""
-
-
-@dataclass(frozen=True, slots=True)
-class RevisionConflictError(ModelError): ...
-
-
 def _freeze_json_rows(value: Sequence[Mapping[str, Any]]) -> tuple[Mapping[str, Any], ...]:
     """接纳普通 Sequence；内部深冻结数组不再逐行遍历。"""
     rows = value if isinstance(value, (list, tuple)) else tuple(value)
@@ -573,27 +376,17 @@ def _freeze_json_mapping(value: Mapping[str, Any]) -> Mapping[str, Any]:
 
 
 __all__ = [
-    "AuthenticationError",
-    "BoundEmbeddingModel",
     "BoundModelDescriptor",
     "CapabilitySources",
     "ChatModelSelection",
     "ConnectionDescriptor",
-    "ContentSafetyError",
-    "ContextLengthError",
     "CredentialHandle",
     "DiscoveredModel",
     "DriverConnection",
     "DriverConnectionDescriptor",
     "DriverChatModel",
     "DriverEmbeddingModel",
-    "DriverUnavailableError",
-    "EMBEDDINGS",
     "EmbeddingResult",
-    "SavedEmbedding",
-    "read_embedding_binding",
-    "open_embedding",
-    "Embeddings",
     "EmbeddingSpaceDescriptor",
     "LLMResponse",
     "ModelAvailability",
@@ -601,18 +394,10 @@ __all__ = [
     "ModelCatalogSnapshot",
     "ModelContinuation",
     "ModelDescriptor",
-    "ModelError",
     "ModelKind",
     "ModelRequest",
-    "ModelTimeoutError",
-    "ModelUnavailableError",
     "ModelUsage",
-    "InvalidRequestError",
-    "QuotaError",
-    "RateLimitError",
-    "RevisionConflictError",
     "StreamCallback",
     "ToolCall",
-    "TransportError",
     "UsageCoverage",
 ]

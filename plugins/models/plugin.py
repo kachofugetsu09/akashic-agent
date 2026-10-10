@@ -2,10 +2,8 @@ from __future__ import annotations
 
 from importlib import import_module
 
-from agent.plugin_composition import (
-    EMBEDDINGS,
-    Context,
-)
+from agent.plugin_composition import Context
+from plugins.models.contract import EMBEDDINGS
 from plugins.models.contract import (
     CHAT_MODELS,
     MODEL_CATALOG,

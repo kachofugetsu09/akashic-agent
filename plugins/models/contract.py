@@ -2,6 +2,17 @@
 
 from __future__ import annotations
 
+from collections.abc import AsyncGenerator
+from contextlib import asynccontextmanager
+from dataclasses import replace
+from typing import cast
+from agent.plugin_composition.bindings import Bindings
+
+from agent.plugin_composition.models import (
+    EmbeddingResult,
+    EmbeddingSpaceDescriptor,
+)
+
 from collections.abc import Awaitable
 from typing import (
     AsyncContextManager,
@@ -303,3 +314,181 @@ MODEL_CATALOG = ServiceKey[ModelCatalog]("models.catalog.v1")
 
 
 MODEL_DRIVERS = ServiceKey[ModelDrivers]("models.drivers.v1")
+
+
+class BoundEmbeddingModel(Protocol):
+    @property
+    def descriptor(self) -> EmbeddingSpaceDescriptor: ...
+
+    async def embed(self, texts: Sequence[str]) -> EmbeddingResult: ...
+
+
+@dataclass(frozen=True, slots=True)
+class SavedEmbedding:
+    """已归档的模型与空间；恢复不能重新选择另一个空间。"""
+
+    model_id: str
+    space_identity: str
+    dimensions: int
+
+    def __post_init__(self) -> None:
+        if (not isinstance(self.model_id, str) or not self.model_id
+                or not isinstance(self.space_identity, str) or not self.space_identity
+                or type(self.dimensions) is not int or self.dimensions <= 0):
+            raise ValueError("保存的 embedding 需要模型、空间与正整数维度")
+
+    @classmethod
+    def read(cls, bindings: Bindings, identity: str) -> SavedEmbedding:
+        """在持久表示边界校验原三个字段，返回同一种冻结值。"""
+        saved = bindings.describe(identity, EMBEDDINGS)
+        if set(saved) != {"model_id", "space_identity", "dimensions"}:
+            raise ValueError("保存的 embedding 字段不完整或包含未知字段")
+        return cls(cast(str, saved["model_id"]), cast(str, saved["space_identity"]),
+                   cast(int, saved["dimensions"]))
+
+    @classmethod
+    @asynccontextmanager
+    async def open(cls, bindings: Bindings, identity: str) -> AsyncGenerator[BoundEmbeddingModel]:
+        """先核对归档空间，再借用实际 driver；打开期间漂移也明确拒绝。"""
+        saved = cls.read(bindings, identity)
+        async with bindings.open(identity, EMBEDDINGS) as (embeddings, _metadata):
+            # 1. driver.open 可能联网，先拒绝已经变化的 endpoint、身份或空间。
+            descriptor = embeddings.describe(model_id=saved.model_id)
+            if (descriptor.identity, descriptor.dimensions) != (saved.space_identity, saved.dimensions):
+                raise ModelUnavailableError("已保存 embedding 配置已变化，不能替换原调用").exception()
+            async with embeddings.bind(model_id=saved.model_id) as model:
+                # 2. open 的 await 期间设置仍可能变化；以真正取得的模型再核对一次。
+                if (model.descriptor.identity, model.descriptor.dimensions) != (saved.space_identity, saved.dimensions):
+                    raise ModelUnavailableError("打开期间 embedding 配置已变化，不能替换原调用").exception()
+                yield model
+
+
+class Embeddings(Protocol):
+    def save_binding(self, bindings: Bindings, *, model_id: str | None = None) -> str:
+        """固定所选模型、空间与实际 driver 代码，不归档凭据。"""
+        ...
+
+    def describe(
+        self,
+        *,
+        model_id: str | None = None,
+    ) -> EmbeddingSpaceDescriptor:
+        """描述一个稳定向量空间，不打开远程连接。"""
+
+        ...
+
+    def bind(
+        self,
+        *,
+        model_id: str | None = None,
+    ) -> AsyncContextManager[BoundEmbeddingModel]: ...
+
+
+EMBEDDINGS = ServiceKey[Embeddings]("models.embeddings.v1")
+
+
+@dataclass(frozen=True, slots=True)
+class ModelError:
+    """模型失败的冻结事实；普通异常只负责把它传过调用栈。"""
+
+    message: str
+    retryable: bool = False
+    retry_at: float | None = None
+    # rejected 和 unsent 是发送边界的正面证据；None 保留远端效果未知。
+    send_evidence: str | None = None
+    response_delta_seen: bool = False
+    retry_safe: bool = False
+    retry_after: float | None = None
+
+    def __str__(self) -> str:
+        return self.message
+
+    def exception(self) -> Exception:
+        """用标准异常传递冻结值，超时仍保留标准 TimeoutError 语义。"""
+        return TimeoutError(self) if isinstance(self, ModelTimeoutError) else RuntimeError(self)
+
+    @classmethod
+    def read(cls, error: BaseException, *kinds: type[ModelError]) -> ModelError | None:
+        """只读取明确的模型失败载荷；未知程序错误不能取得恢复语义。"""
+        if not isinstance(error, (RuntimeError, TimeoutError)) or len(error.args) != 1:
+            return None
+        value = error.args[0]
+        return value if isinstance(value, cls) and (not kinds or isinstance(value, kinds)) else None
+
+    @classmethod
+    def matches(cls, error: BaseException, *kinds: type[ModelError]) -> bool:
+        return cls.read(error, *kinds) is not None
+
+    @classmethod
+    def change(cls, error: BaseException, **changes: Any) -> Exception:
+        """构造补充边界事实的新失败，不改变原错误与已结算值。"""
+        value = cls.read(error)
+        if value is None:
+            raise TypeError("异常不是模型失败")
+        return replace(value, **changes).exception()
+
+
+@dataclass(frozen=True, slots=True)
+class AuthenticationError(ModelError): ...
+
+
+@dataclass(frozen=True, slots=True)
+class RateLimitError(ModelError):
+    retryable: bool = True
+
+
+@dataclass(frozen=True, slots=True)
+class QuotaError(ModelError): ...
+
+
+@dataclass(frozen=True, slots=True)
+class InvalidRequestError(ModelError): ...
+
+
+@dataclass(frozen=True, slots=True)
+class ContextLengthError(ModelError): ...
+
+
+@dataclass(frozen=True, slots=True)
+class ContentSafetyError(ModelError): ...
+
+
+@dataclass(frozen=True, slots=True)
+class ModelTimeoutError(ModelError):
+    retryable: bool = True
+
+
+@dataclass(frozen=True, slots=True)
+class TransportError(ModelError):
+    retryable: bool = True
+
+
+@dataclass(frozen=True, slots=True)
+class EmptyResponseError(ModelError):
+    """模型调用成功，但没有可提交的正文或工具调用。"""
+
+    retryable: bool = True
+
+
+@dataclass(frozen=True, slots=True)
+class OutputLengthError(ModelError):
+    """模型达到生成长度限制；正文或工具参数可能不完整。"""
+
+
+
+@dataclass(frozen=True, slots=True)
+class DriverUnavailableError(ModelError): ...
+
+
+@dataclass(frozen=True, slots=True)
+class ModelUnavailableError(ModelError): ...
+
+
+@dataclass(frozen=True, slots=True)
+class ModelControlUnavailable(ModelError):
+    """本次服务作用域没有模型管理能力。"""
+
+
+
+@dataclass(frozen=True, slots=True)
+class RevisionConflictError(ModelError): ...

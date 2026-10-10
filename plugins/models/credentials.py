@@ -11,7 +11,7 @@ from pathlib import Path
 from types import MappingProxyType
 from typing import Any, AsyncIterator, Callable, cast
 
-from agent.plugin_composition import AuthenticationError
+from plugins.models.contract import AuthenticationError
 
 
 class CredentialError(AuthenticationError):

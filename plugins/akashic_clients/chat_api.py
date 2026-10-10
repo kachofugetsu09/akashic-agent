@@ -15,7 +15,10 @@ from fastapi import FastAPI, HTTPException, Query, Request, WebSocket
 from fastapi.responses import FileResponse, JSONResponse, Response, StreamingResponse
 from pydantic import BaseModel, ConfigDict, Field
 
-from agent.plugin_composition.models import ModelControlUnavailable, ModelError
+from plugins.models.contract import (
+    ModelControlUnavailable,
+    ModelError,
+)
 
 from .static import register_chat_assets
 from agent.plugin_composition.message_view import read_message_rows, session_row

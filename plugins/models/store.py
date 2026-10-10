@@ -23,6 +23,8 @@ from agent.plugin_composition import (
     DiscoveredModel,
     ModelCapabilities,
     ModelKind,
+)
+from plugins.models.contract import (
     ModelUnavailableError,
     RevisionConflictError,
 )

@@ -1,7 +1,7 @@
 """候选 Message 摘要入口；正式 manifest 在完整迁移验收后切换。"""
 from __future__ import annotations
 
-from agent.plugin_composition.models import ModelError
+from plugins.models.contract import ModelError
 from collections.abc import Callable, Mapping, Sequence
 from uuid import uuid4
 
@@ -15,9 +15,9 @@ from agent.plugin_composition import (
     Context,
 )
 from plugins.models.contract import CHAT_MODELS
-from agent.plugin_composition.models import (
+from agent.plugin_composition.models import ModelRequest
+from plugins.models.contract import (
     ContextLengthError,
-    ModelRequest,
     ModelTimeoutError,
     RateLimitError,
     TransportError,

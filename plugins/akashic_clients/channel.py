@@ -1,12 +1,12 @@
 from __future__ import annotations
 
-from agent.plugin_composition.models import ModelError
-from agent.plugin_composition.models import ModelUnavailableError
+from plugins.models.contract import ModelError
+from plugins.models.contract import ModelUnavailableError
 from plugins.models.contract import (
     MODEL_CALL_STATS,
     ModelCallStats,
 )
-from agent.plugin_composition.models import ModelControlUnavailable
+from plugins.models.contract import ModelControlUnavailable
 
 import asyncio
 from collections.abc import AsyncIterator, Mapping, Sequence

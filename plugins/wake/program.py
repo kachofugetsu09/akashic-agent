@@ -7,7 +7,7 @@ from collections.abc import Mapping
 
 from agent.plugin_composition import Context
 from agent.plugin_composition.messages import MESSAGE_WRITERS, MessageReader
-from agent.plugin_composition.models import ModelError
+from plugins.models.contract import ModelError
 from agent.plugin_composition.tasks import Task
 from agent.plugin_contracts import Control, Message
 from plugins.models.contract import (

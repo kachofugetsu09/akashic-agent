@@ -30,7 +30,11 @@ from plugins.models.state import _BoundChat
 from plugins.models.store import ModelsStore
 from plugins.openai_compatible import driver
 from core.common.file_io import run_file_io
-from agent.plugin_composition import InvalidRequestError, ModelUnavailableError, ModelError
+from plugins.models.contract import (
+    InvalidRequestError,
+    ModelUnavailableError,
+    ModelError,
+)
 from agent.plugin_composition.models import DriverChatModel, LLMResponse
 from agent.plugin_composition import CompositionRoot
 from plugins.models.contract import (

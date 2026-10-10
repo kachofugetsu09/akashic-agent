@@ -34,7 +34,7 @@ def add_memory(sources: Path) -> None:
 original_apply = apply
 async def apply(ctx):
     import asyncio
-    from agent.plugin_composition import EMBEDDINGS
+    from plugins.models.contract import EMBEDDINGS
     from agent.plugin_composition.models import EmbeddingSpaceDescriptor, EmbeddingResult
     await original_apply(ctx)
     ready = asyncio.Event()
@@ -68,7 +68,7 @@ def add_gated_memory(sources: Path) -> None:
 memory_apply = apply
 async def apply(ctx):
     import asyncio
-    from agent.plugin_composition import EMBEDDINGS
+    from plugins.models.contract import EMBEDDINGS
     await memory_apply(ctx)
     entered, release = asyncio.Event(), asyncio.Event()
     fast, slow_second = asyncio.Event(), asyncio.Event()

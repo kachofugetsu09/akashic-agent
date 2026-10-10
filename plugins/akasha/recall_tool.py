@@ -12,7 +12,7 @@ import numpy as np
 from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_validator
 
 from agent.plugin_composition.bindings import Bindings
-from agent.plugin_composition.models import BoundEmbeddingModel
+from plugins.models.contract import BoundEmbeddingModel
 from agent.plugin_composition.messages import MessageCatalog, MessageEmbeddings
 from agent.plugin_contracts import ContentPart, ContentReferences, Message, Output, ToolCall, ToolResult
 from agent.plugin_contracts import json_value

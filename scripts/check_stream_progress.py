@@ -16,8 +16,15 @@ import httpx
 sys.path.insert(0, str(Path.cwd()))
 
 from agent.plugin_composition import (
-    BoundModelDescriptor, CapabilitySources, ModelCapabilities, ModelRequest,
-    ModelTimeoutError, ModelUnavailableError, ModelError,
+    BoundModelDescriptor,
+    CapabilitySources,
+    ModelCapabilities,
+    ModelRequest,
+)
+from plugins.models.contract import (
+    ModelTimeoutError,
+    ModelUnavailableError,
+    ModelError,
 )
 from core.net.http import HttpClient
 from plugins.codex import responses as codex

@@ -1,15 +1,15 @@
 """只摘要已结算的完整消息前缀；原始事实和 provider 调用账保持各自的 owner。"""
 from __future__ import annotations
 
-from agent.plugin_composition.models import ModelError
+from plugins.models.contract import ModelError
 import json
 import logging
 from dataclasses import replace
 from collections.abc import Awaitable, Callable, Sequence
 
-from agent.plugin_composition.models import (
+from agent.plugin_composition.models import ModelRequest
+from plugins.models.contract import (
     ContextLengthError,
-    ModelRequest,
     ModelTimeoutError,
     RateLimitError,
     TransportError,

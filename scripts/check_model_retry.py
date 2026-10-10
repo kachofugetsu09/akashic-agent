@@ -119,9 +119,15 @@ async def run(args: argparse.Namespace) -> dict:
     sys.path.insert(0, str(args.source))
     import httpx
     from agent.plugin_composition import (
-        BoundModelDescriptor, CapabilitySources, ModelCapabilities, ModelError,
-        ModelRequest, ModelUnavailableError,
-    )
+    BoundModelDescriptor,
+    CapabilitySources,
+    ModelCapabilities,
+    ModelRequest,
+)
+    from plugins.models.contract import (
+    ModelError,
+    ModelUnavailableError,
+)
     from core.net.http import HttpClient
     from plugins.models.state import _BoundChat, _retry_budget
     from plugins.models.store import ModelsStore, _request_digest
@@ -537,7 +543,7 @@ async def run(args: argparse.Namespace) -> dict:
             report["checks"].append({"case": "empty-generation-recovered", "posts": 2})
 
             # 回调即使抛出 ModelTimeoutError，也不是 provider 故障，不能自动重复请求。
-            from agent.plugin_composition.models import ModelTimeoutError
+            from plugins.models.contract import ModelTimeoutError
             server.replies = deque([(200, None), (200, None)])
             server.received = []
             store = ModelsStore(root / "callback.db", root / "backups")

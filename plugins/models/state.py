@@ -30,8 +30,6 @@ from typing import (
 from uuid import uuid4
 
 from agent.plugin_composition import (
-    EMBEDDINGS,
-    BoundEmbeddingModel,
     BoundModelDescriptor,
     ChatModelSelection,
     ConnectionDescriptor,
@@ -42,7 +40,6 @@ from agent.plugin_composition import (
     DriverConnection,
     DriverConnectionDescriptor,
     DriverEmbeddingModel,
-    DriverUnavailableError,
     Effect,
     EmbeddingResult,
     EmbeddingSpaceDescriptor,
@@ -51,13 +48,18 @@ from agent.plugin_composition import (
     ModelAvailability,
     ModelCatalogSnapshot,
     ModelDescriptor,
+    ModelRequest,
+    ServiceKey,
+)
+from plugins.models.contract import (
+    EMBEDDINGS,
+    BoundEmbeddingModel,
+    DriverUnavailableError,
     ModelError,
     RevisionConflictError,
-    ModelRequest,
     ModelUnavailableError,
     ModelTimeoutError,
     SavedEmbedding,
-    ServiceKey,
 )
 from plugins.models.contract import (
     CHAT_MODELS,
@@ -68,7 +70,12 @@ from plugins.models.contract import (
     ModelExecution,
 )
 from agent.plugin_composition.bindings import Bindings
-from agent.plugin_composition.models import EmptyResponseError, ModelContinuation, ModelUsage, ToolCall
+from agent.plugin_composition.models import (
+    ModelContinuation,
+    ModelUsage,
+    ToolCall,
+)
+from plugins.models.contract import EmptyResponseError
 from agent.plugin_composition.tasks import register_task_bound_context
 from core.common.file_io import run_file_io
 
@@ -1304,7 +1311,7 @@ class ModelsState:
         saved = SavedEmbedding(model_id=descriptor.model_id, space_identity=descriptor.identity,
                                dimensions=descriptor.dimensions)
         registration = self._registration_required(descriptor.driver_id)
-        return bindings.bind(EMBEDDINGS, saved.model_dump(),
+        return bindings.bind(EMBEDDINGS, asdict(saved),
             contributors=(registration.context,))
 
     def describe_embedding(self, model_id: str | None) -> EmbeddingSpaceDescriptor:
