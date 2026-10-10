@@ -192,6 +192,7 @@ class AppRuntime:
                 self.http_resources,
                 restart_gate=self.restart_gate,
                 clear_stale_session_admissions=True,
+                host_ready=(lambda: self.readiness.ready) if self.readiness else None,
             )
             self.bus = self.core.bus
             manager = self.core.plugin_manager

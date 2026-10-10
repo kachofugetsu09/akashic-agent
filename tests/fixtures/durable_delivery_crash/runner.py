@@ -6,7 +6,7 @@ import signal
 import sys
 from pathlib import Path
 
-from agent.control.scoped_turn import TurnAcceptedReceipt
+from agent.plugin_composition.durable_deliveries import TurnAcceptedReceipt
 from agent.plugin_composition.channels import (
     ChannelDeliveryReceipt,
     DeliveryStatus,

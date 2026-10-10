@@ -9,7 +9,7 @@ from agent.plugin_composition.context import (
     OwnerCall,
     RuntimeScope,
 )
-from agent.control.scoped_turn import TurnAcceptedReceipt
+from agent.plugin_composition.durable_deliveries import TurnAcceptedReceipt
 from agent.plugin_contracts.turn_effects import PostCommitEffect
 from agent.plugin_composition.dashboard import DashboardContext
 from agent.plugin_composition.requests import RequestContext

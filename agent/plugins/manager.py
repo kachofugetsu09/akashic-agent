@@ -167,6 +167,7 @@ class PluginManager:
         ignored_installed_roots: frozenset[Path] = frozenset(),
         restart_gate: RestartGate | None = None,
         control_frames: FrameBook | None = None,
+        host_ready: Callable[[], bool] | None = None,
     ) -> None:
         self._dirs = plugin_dirs
         self._distribution_sources = distribution_sources
@@ -212,6 +213,7 @@ class PluginManager:
         self._fresh_importer = FreshPluginImporter()
         # PluginManager 也可以由嵌入式/测试 host 直接构造；该 host 仍需一
         # 次性的 boot identity，不能退回固定的 unmanaged marker。
+        self._host_ready = host_ready
         self._host_boot_id = restart_gate.boot_id if restart_gate is not None else uuid4().hex
         self._restart_gate = restart_gate or RestartGate(boot_id=self._host_boot_id, supervised=False)
         self._owns_control_frames = control_frames is None
@@ -2252,6 +2254,7 @@ class PluginManager:
             live_root=lambda: self._live_root, installer=self,
             tasks=self._plugin_tasks, processes=self._plugin_processes,
             restart_gate=self._restart_gate, control_frames=self._control_frames,
+            host_ready=self._host_ready,
         )
 
 
