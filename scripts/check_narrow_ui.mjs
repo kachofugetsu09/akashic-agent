@@ -201,19 +201,33 @@ async function main(page, label, selector) {
     await invite
       .getByRole("button", { name: "稍后再说", exact: true })
       .click();
-  await page
-    .locator(".product-band__nav")
-    .getByRole("button", { name: label, exact: true })
-    .click();
+  // 只有一个页面时 Shell 不渲染顶栏，默认页面已经是当前页。
+  const band = page.locator(".product-band__nav");
+  if (await band.count())
+    await band.getByRole("button", { name: label, exact: true }).click();
   await page
     .locator(`.shell-view.is-active ${selector}`)
     .waitFor({ state: "visible" });
 }
 
+/** 工作台是对话工具区的标签：经右上角开关打开工具区并切到该标签。 */
+async function openWorkbench(page) {
+  await main(page, "对话", "iframe");
+  const tools = page.locator(".shell-view.is-active .conversation-tools");
+  if (!(await tools.isVisible()))
+    await page.locator(".shell-view.is-active .conversation-tools-toggle").click();
+  await tools.getByRole("tab", { name: "工作台", exact: true }).click();
+  await tools.locator(".workbench-root").waitFor({ state: "visible" });
+  return tools;
+}
+
 /** 遍历实际面板，检查目录、列表、详情与返回。 */
-async function workbench(page, prefix, narrow) {
-  await main(page, "工作台", ".workbench-root");
-  const view = page.locator(".shell-view.is-active");
+async function workbench(page, prefix) {
+  const view = await openWorkbench(page);
+  // 断点是容器查询：按工作台实际宽度判断布局，而不是视口宽度。
+  const narrow = await view
+    .locator(".workbench-root")
+    .evaluate((root) => root.clientWidth <= 760);
   const modules = view.getByRole("combobox", {
     name: "工作台模块",
     exact: true,
@@ -724,7 +738,7 @@ try {
           { large: values.large, rtl: values.rtl },
         );
       if (values.page === "all") {
-        await workbench(page, String(width), width <= 760);
+        await workbench(page, String(width));
         await settings(page, String(width));
       }
       await models(page, String(width));
