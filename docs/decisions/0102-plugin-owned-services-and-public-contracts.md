@@ -28,6 +28,12 @@ Core 不根据业务路径推断 owner。计划文件完整写入并替换成功
 撤下失败保留 Effect 和监听器，成功撤下后按资源取得的逆序关闭监听器。
 该文件不承诺掉电持久或替代外部效果回执，启动从当前选择重建。
 
+独立命令由插件用字面 `entrypoints = {"command": "module.function"}` 声明。
+安装输入 v6 将该声明纳入唯一 selection；v5 原记录仍原样读取，不改身份，
+没有凭空补出的命令入口。Core 只按当前选择分发唯一 provider，不执行包入口或
+`apply`，不启动 Root、不争抢运行锁、不打开业务数据库。无关实现损坏不阻断
+所选命令，命令实现负责自己的连接、进程与失败回执；模块作用域在退出后释放。
+
 持久 binding 中的 service 名属于原选择证据，不能随 key 改名原位改写。
 存储读取边界解释实际存在的旧 Commands service 名，继续打开当前领域 provider；
 这不注册旧运行 key，也不改变 descriptor、hash、binding 身份或原消息。未知版本、

@@ -896,7 +896,7 @@ def _selected_components(selection: PluginSelection, root_ref: str, *, replacing
             raise ValueError("stable component ref 无效")
         record = selection.read_input(ref)
         plugin_id, code_ref = record["plugin_id"], record["code"]
-        if record["version"] != 5 or not isinstance(plugin_id, str) or not isinstance(code_ref, str):
+        if record["version"] not in {5, 6} or not isinstance(plugin_id, str) or not isinstance(code_ref, str):
             raise ValueError(f"selected descriptor 格式无效: {ref}")
         if plugin_id in found:
             raise ValueError(f"stable 重复插件身份: {plugin_id}")

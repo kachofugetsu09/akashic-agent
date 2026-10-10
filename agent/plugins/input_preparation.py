@@ -108,7 +108,8 @@ def prepare_plugin_input(
                 ) for runtime in identity.python
             }
     ref = selection.prepare({
-        "version": 5, "code": str(code_dir), "python_environments": environments,
+        "version": 6, "code": str(code_dir), "python_environments": environments,
+        "entrypoints": dict(identity.entrypoints),
         "plugin_id": plugin_id, "source_revision": revision,
         "config_revision": config_revision,
         "source_type": mod["source_type"],

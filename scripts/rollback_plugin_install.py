@@ -86,7 +86,7 @@ def _selected_code(selection: PluginSelection, root_ref: str | None, plugin_id: 
         name = descriptor.get("plugin_id")
         code_ref = descriptor.get("code")
         revision = descriptor.get("source_revision")
-        if descriptor.get("version") != 5 or not isinstance(name, str) or not isinstance(code_ref, str) or not isinstance(revision, str):
+        if descriptor.get("version") not in {5, 6} or not isinstance(name, str) or not isinstance(code_ref, str) or not isinstance(revision, str):
             raise ValueError("selected descriptor 无效")
         if name in found:
             raise ValueError(f"stable 重复插件: {name}")
