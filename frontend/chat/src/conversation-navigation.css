@@ -182,13 +182,13 @@
   display: grid;
   width: 100%;
   min-height: 64px;
-  grid-template-columns: minmax(0, 1fr) auto;
+  grid-template-columns: 16px minmax(0, 1fr) auto;
   align-items: center;
-  gap: 10px;
+  gap: 8px;
   border: 0;
   border-radius: 6px;
   padding-block: 8px;
-  padding-inline: 14px 12px;
+  padding-inline: 10px 12px;
   color: inherit;
   background: transparent;
   font: inherit;
@@ -358,4 +358,10 @@
   .conversation-navigation__action {
     transition-duration: 0.01ms;
   }
+}
+
+/* 两行会话：状态槽位对齐标题行，而不是落在标题与预览之间。 */
+.conversation-session > .session-status-slot {
+  align-self: start;
+  margin-block-start: 2px;
 }

@@ -9,6 +9,7 @@ import {
   DialogHeader,
   DialogTitle,
 } from "@/components/ui/dialog";
+import { SessionStatusMark, summarizeStatus, type SessionStatus } from "./session-status-mark";
 import { ProjectDirectoryDialog } from "./project-directory-dialog";
 import { Input } from "@/components/ui/input";
 import {
@@ -27,6 +28,7 @@ export interface ProjectSessionItem {
   id: string;
   title: string;
   active: boolean;
+  status?: SessionStatus;
 }
 
 /** 侧栏项目分组：只按 Session 的 project 维度归类，不另存对话与项目的关系。 */
@@ -172,6 +174,8 @@ export function ProjectNavigationRow({
   actions?: NavigationRowAction[];
   searching?: boolean;
 }) {
+  // 折叠时项目行汇总会话状态，展开后状态回到各自的会话前。
+  const collapsedStatus = open ? undefined : summarizeStatus(items.map((item) => item.status));
   return <div className={`project-group ${active ? "active" : ""}`} data-project-id={project.id}>
     <NavigationRowMenu title={project.name} className="project-group__row" actions={[
       { label: "新建对话", icon: <Plus size={18} aria-hidden="true" />, onSelect: onNewChat },
@@ -185,7 +189,9 @@ export function ProjectNavigationRow({
       <button type="button" className="project-group__open" onClick={onToggle}
         aria-expanded={open} disabled={searching}
         title={`${open ? "收起" : "展开"} ${project.name}${project.directory ? ` · ${project.directory}` : ""}`}>
-        <Folder size={18} strokeWidth={1.75} aria-hidden="true" />
+        {collapsedStatus
+          ? <span className="project-group__icon"><SessionStatusMark status={collapsedStatus} /></span>
+          : <Folder size={18} strokeWidth={1.75} aria-hidden="true" />}
         <span className="project-group__name">{project.name}</span>
         {project.memory && project.memory !== "global" ? (
           <small className="project-group__memory">{projectMemoryLabel(project.memory)}</small>
@@ -196,7 +202,6 @@ export function ProjectNavigationRow({
         <Plus size={14} aria-hidden="true" />
       </button>
     </NavigationRowMenu>
-    {open && active && project.directory ? <p className="project-directory-path" title={project.directory}>{project.directory}</p> : null}
     {open ? <nav className="project-group__sessions" aria-label={`${project.name} 的对话`}>
       {items.length === 0 ? <small className="project-group__hint">{searching ? "没有匹配的对话" : "还没有对话"}</small> : null}
       {items.map((session) => <button key={session.id} type="button"
@@ -207,6 +212,7 @@ export function ProjectNavigationRow({
         onClick={() => onSelectSession(session.id)}
         onPointerEnter={() => onPrefetchSession?.(session.id)}
         onFocus={() => onPrefetchSession?.(session.id)}>
+        <SessionStatusMark status={session.status} />
         <span>{session.title}</span>
       </button>)}
     </nav> : null}

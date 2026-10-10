@@ -239,6 +239,9 @@ export const DesktopSidebar = memo(function DesktopSidebar({
     },
   });
   // 目录未解析/归档不改变 Session.scope；回退到最近会话也不获得置顶资格。
+  const { expandProject } = navigationPins;
+  const activeProjectId = projects?.activeProjectId ?? "";
+  useEffect(() => { if (activeProjectId) expandProject(activeProjectId); }, [activeProjectId, expandProject]);
   const knownProjects = useMemo(() => new Map(projects?.items.map((project) => [project.id, project])), [projects?.items]);
   const sessionsByProject = useMemo(() => {
     const groups = new Map<string, ProjectSessionItem[]>();
@@ -248,6 +251,7 @@ export const DesktopSidebar = memo(function DesktopSidebar({
       group.push({
         id: session.id, title: session.title,
         active: surface === "chat" && session.active,
+        status: session.status,
       });
       groups.set(session.projectId, group);
     }

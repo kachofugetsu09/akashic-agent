@@ -20,6 +20,7 @@ import {
   type PendingProjectRow,
 } from "./web-projects";
 import { useNavigationPins } from "./use-navigation-pins";
+import { readSessionActivityFrame, useSessionActivity, type SessionHead } from "./use-session-activity";
 import { StreamProjectionStore } from "./stream-projection";
 import { canProjectWebStreamWithoutRoot, publishWebStreamChanges } from "./web-stream-projection";
 import { replyChatStatus, type ChatStatus } from "./web-chat-status";
@@ -114,6 +115,11 @@ export function useDesktopChatController() {
     setTimelineState(next);
   }, []);
   const followAfterRef = useRef<number | null>(null);
+  const [followAfter, setFollowAfterState] = useState<number | null>(null);
+  const setFollowAfter = useCallback((next: number | null) => {
+    followAfterRef.current = next;
+    setFollowAfterState(next);
+  }, []);
   const [replyActivities, setReplyActivities] = useState<ReplyActivity[]>([]);
   const replyActivitiesRef = useRef<ReplyActivity[]>([]);
   const [replyAvailable, setReplyAvailableState] = useState<boolean | null>(null);
@@ -314,7 +320,7 @@ export function useDesktopChatController() {
       setTimelineRefresh((revision) => revision + 1);
       if (statusLiveRef.current !== "uploading") setStatusLive(replyChatStatus(replyActivitiesRef.current, messagesRef.current.length,
         page.items, replyAvailableRef.current));
-      followAfterRef.current = page.throughSeq;
+      setFollowAfter(page.throughSeq);
       setHistoryThroughSeq(page.throughSeq);
       setHistoryBeforeSeq(page.beforeSeq);
       setHistoryHasMore(page.hasMore);
@@ -327,7 +333,7 @@ export function useDesktopChatController() {
         setHistoryLoading(false);
       }
     }
-  }, [readSessionTail, setMessages, setStatusLive, setTimelineMessages, streamStore]);
+  }, [readSessionTail, setFollowAfter, setMessages, setStatusLive, setTimelineMessages, streamStore]);
 
   const loadOlderMessages = useCallback(async () => {
     const sessionId = activeSessionRef.current;
@@ -370,6 +376,14 @@ export function useDesktopChatController() {
   useEffect(() => () => streamStore.clear(), [streamStore]);
 
   const loadSessionsSafely = useCallback(() => loadSessions().catch((error: unknown) => reportError(error)), [loadSessions, reportError]);
+  const sessionHeads = useMemo<SessionHead[]>(() => {
+    const rows = new Map([...navigationPins.sessions, ...sessions].map((session) => [session.key, session]));
+    return [...rows.values()].map((session) => ({ key: session.key, headSeq: session.head_seq }));
+  }, [sessions, navigationPins.sessions]);
+  const { statuses: sessionStatuses, receive: receiveSessionActivity, disconnect: disconnectSessionActivity } = useSessionActivity(
+    sessionHeads, activeSessionId, historyLoading ? null : followAfter,
+    surface === "chat", loadSessionsSafely,
+  );
   const loadMessagesSafely = useCallback((sessionId: string) => loadMessages(sessionId).catch((error: unknown) => reportError(error)), [loadMessages, reportError]);
 
   /** 同会话读取合并；设置变更须废弃变更前的读取，迟到结果不能覆盖新事实。 */
@@ -456,7 +470,8 @@ export function useDesktopChatController() {
     socketRef.current = null;
     if (connectionTaskRef.current) Effect.runFork(Fiber.interrupt(connectionTaskRef.current));
     connectionTaskRef.current = null;
-  }, []);
+    disconnectSessionActivity();
+  }, [disconnectSessionActivity]);
 
   /** 复用当前连接，或启动一个可整体中断的重连任务。 */
   const connect = useCallback(() => {
@@ -478,6 +493,11 @@ export function useDesktopChatController() {
             console.debug("[chat-ui] ws message", typeof event.data);
             try {
               const value: unknown = JSON.parse(String(event.data));
+              const activity = readSessionActivityFrame(value);
+              if (activity) {
+                receiveSessionActivity(activity);
+                return;
+              }
               const frame = readMessageLogFrame(value);
               if (frame) {
                 if (frame.session_id !== activeSessionRef.current) return;
@@ -489,7 +509,7 @@ export function useDesktopChatController() {
                   setTimelineMessages(merged);
                   const cached = tailCacheRef.current.get(frame.session_id);
                   if (cached) cacheSessionTail(frame.session_id, { ...cached, items: merged, throughSeq: frame.next_after_seq, fetchedAt: Date.now() });
-                  followAfterRef.current = frame.next_after_seq;
+                  setFollowAfter(frame.next_after_seq);
                   const saved = new Set(frame.items.map((item) => item.id));
                   setMessages((currentMessages) => currentMessages.filter((item) => !saved.has(item.id)));
                   if (statusLiveRef.current !== "uploading") setStatusLive(replyChatStatus(replyActivitiesRef.current, messagesRef.current.length + Number(sendRequestRef.current !== null), timelineRef.current, replyAvailableRef.current));
@@ -540,6 +560,7 @@ export function useDesktopChatController() {
         })));
         console.warn("[chat-ui] ws close", { code: event.code, reason: event.reason });
         replyActivitiesRef.current = [];
+        disconnectSessionActivity();
         setReplyActivities([]);
         setReplyAvailable(null);
         setStatusLive(replyChatStatus([], messagesRef.current.length, [], false));
@@ -550,7 +571,8 @@ export function useDesktopChatController() {
       }
     }).pipe(Effect.catchAll(() => Effect.sync(() => setConnectionError("暂时无法连接，请重试")))));
     return first;
-  }, [cacheSessionTail, closeConnection, loadMessagesSafely, loadSessionsSafely, reconnect, reloadPins, reportError, setMessages, setReplyAvailable, setStatusLive, setTimelineMessages]);
+  }, [cacheSessionTail, closeConnection, disconnectSessionActivity, loadMessagesSafely, loadSessionsSafely,
+    receiveSessionActivity, reconnect, reloadPins, reportError, setFollowAfter, setMessages, setReplyAvailable, setStatusLive, setTimelineMessages]);
 
   useEffect(() => {
     // 只等待首次启动就绪；此后的断线与恢复由聊天连接负责。
@@ -570,9 +592,10 @@ export function useDesktopChatController() {
   }, [connect]);
 
   useEffect(() => {
+    // 插件目录换代后重新连接，让摘要订阅取得当代的回复 reader。
     connect();
     return closeConnection;
-  }, [closeConnection, connect]);
+  }, [closeConnection, connect, pluginCatalog.version]);
 
   // 就绪后继续等待在途请求；只有旧请求失败才补发一次，成功结果直接复用。
   const startupRequestsRef = useRef<Partial<Record<"sessions", Promise<void>>>>({});
@@ -666,11 +689,11 @@ export function useDesktopChatController() {
     // 首次发送沿用同一草稿的模型事实，不是切换到另一条已有会话。
     if (modelsSnapshotSessionRef.current === "") modelsSnapshotSessionRef.current = sessionId;
     activeSessionRef.current = sessionId;
-    followAfterRef.current = -1;
+    setFollowAfter(-1);
     followSession(socketRef.current, sessionId, -1);
     // 发送前只准备路由；上传失败时编辑器仍留在原草稿位置。
     return sessionId;
-  }, [loadMessages]);
+  }, [loadMessages, setFollowAfter]);
 
   const sendMessage = useCallback(async (text: string, files: ComposerFile[]) => {
     const cleanText = text.trim();
@@ -792,7 +815,7 @@ export function useDesktopChatController() {
     setMessages([]);
     setTimelineMessages([]);
     setActiveSessionDeleted(false);
-    followAfterRef.current = null;
+    setFollowAfter(null);
     replyActivitiesRef.current = [];
     setReplyActivities([]);
     setReplyAvailable(null);
@@ -811,7 +834,7 @@ export function useDesktopChatController() {
     newChatScopeRef.current = null;
     setNewChatProjectId("");
     void loadModels("").catch((error: unknown) => reportError(error));
-  }, [closeConnection, loadModels, reportError, setMessages, setReplyAvailable, setTimelineMessages]);
+  }, [closeConnection, loadModels, reportError, setFollowAfter, setMessages, setReplyAvailable, setTimelineMessages]);
 
   const startProjectChat = useCallback((projectId: string) => {
     startNewChat();
@@ -871,7 +894,7 @@ export function useDesktopChatController() {
     setHistoryLoadingOlder(false);
     const cached = tailCacheRef.current.get(sessionId);
     const cachedFresh = cached !== undefined && Date.now() - cached.fetchedAt < SESSION_TAIL_FRESH_MS;
-    followAfterRef.current = cached?.throughSeq ?? null;
+    setFollowAfter(cached?.throughSeq ?? null);
     replyActivitiesRef.current = [];
     setReplyActivities([]);
     setReplyAvailable(null);
@@ -900,7 +923,7 @@ export function useDesktopChatController() {
       });
     // 新鲜快照跳过了分页拉取，仍需恢复 WebSocket 增量跟随。
     if (cachedFresh) connectRef.current?.();
-  }, [closeConnection, loadMessages, loadModels, reportError, setMessages, setTimelineMessages, setReplyAvailable, setStatusLive, surface, sessions, navigationPins.sessions]);
+  }, [closeConnection, loadMessages, loadModels, reportError, setFollowAfter, setMessages, setTimelineMessages, setReplyAvailable, setStatusLive, surface, sessions, navigationPins.sessions]);
 
   useEffect(() => {
     if (!chatReady || !requestedSessionId) return;
@@ -985,10 +1008,11 @@ export function useDesktopChatController() {
       updatedAt: session.updated_at,
       createdAt: session.created_at,
       active: activeSessionId === session.key,
+      status: sessionStatuses.get(session.key),
       projectId: session.scope?.[PROJECT_DIMENSION] ?? "",
       projectScoped: Object.hasOwn(session.scope ?? {}, PROJECT_DIMENSION),
     }));
-  }, [activeSessionId, sessions, navigationPins.sessions]);
+  }, [activeSessionId, sessions, navigationPins.sessions, sessionStatuses]);
   // 新对话在首条消息进入目录前沿用发起时选定的项目。
   const activeRow = activeSessionId ? sessions.find((session) => session.key === activeSessionId)
     ?? navigationPins.sessions.find((session) => session.key === activeSessionId) : undefined;

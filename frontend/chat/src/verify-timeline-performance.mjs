@@ -81,9 +81,9 @@ try {
       await cdp.send('Performance.enable');
       await page.goto(origin + '/?session=' + encodeURIComponent(session));
       await page.locator('[data-message-id="message-199"]').waitFor();
-      while (await page.getByRole('button', { name: '加载更早消息' }).count()) {
+      while (await page.getByRole('button', { name: '更早的消息' }).count()) {
         const before = await page.locator('[data-message-seq]').count();
-        await page.getByRole('button', { name: '加载更早消息' }).click();
+        await page.getByRole('button', { name: '更早的消息' }).click();
         await page.waitForFunction(n => document.querySelectorAll('[data-message-seq]').length > n, before);
       }
       assert.equal(await page.locator('[data-message-seq]').count(), count);

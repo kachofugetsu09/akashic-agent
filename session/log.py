@@ -14,7 +14,7 @@ from collections.abc import AsyncGenerator, Callable, Generator, Iterable, Itera
 from bisect import bisect_right
 from contextlib import closing, contextmanager
 from datetime import UTC, datetime
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Literal, TypeVar, cast, overload
 from itertools import islice
 from pathlib import Path
@@ -388,7 +388,8 @@ class _ReadConnection:
     connection: sqlite3.Connection
     lock: threading.RLock
     heads_version: int | None = None
-    heads: Mapping[str, int] | None = None
+    # 按 (prefix, visibility) 缓存；data_version 前进时整体作废。
+    heads: dict[tuple[str, str | None], Mapping[str, int]] = field(default_factory=dict)
 
 
 class _ReadLocal(threading.local):
@@ -1025,7 +1026,9 @@ class MessageCatalog:
             raise RuntimeError("candidate 验证期禁止读取正式会话目录")
         return self._storage
 
-    def snapshot_heads(self) -> Mapping[str, int]:
+    def snapshot_heads(
+        self, *, prefix: str = "", visibility: Literal["listed", "internal"] | None = None,
+    ) -> Mapping[str, int]:
         """单条查询取得同一数据库快照，不逐会话读取可能变化的 head。
 
         只在同一只读连接内按该连接自己的 data_version 复用目录：版本与数据来自
@@ -1034,21 +1037,39 @@ class MessageCatalog:
         是复用连接与同版本命中，不是跨连接共享结果。
         """
         log = self._log
+        if visibility not in (None, "listed", "internal"):
+            raise InvalidPage("目录 visibility 无效")
+        # 过滤读取与 sessions() 同语义：软删会话一律排除；无过滤时保持全量目录。
+        filtered = bool(prefix) or visibility is not None
+        key = (prefix, visibility)
         with log._read(snapshot=False) as connection:
             # 1. data_version 只可在同一连接上比较；writer 未提交视图不能复用。
             read = log._reads.current
             current = None if read is None else connection.execute("PRAGMA data_version").fetchone()[0]
-            if read is not None and read.heads is not None and read.heads_version == current:
-                return read.heads
-            # 2. 每个只读连接只保留最近一份目录，其他连接提交后重新查询。
+            if read is not None:
+                if read.heads_version != current:
+                    read.heads_version, read.heads = current, {}
+                cached = read.heads.get(key)
+                if cached is not None:
+                    return cached
+            # 2. 每个只读连接按过滤条件各留一份，版本前进后重新查询。
+            where = ["substr(s.key,1,?)=?"]
+            values: list[object] = [len(prefix), prefix]
+            if filtered and log._has_deleted:
+                where.append("s.deleted_at IS NULL")
+            if visibility is not None:
+                where.append("json_extract(s.attributes,'$.visibility')=?")
+                values.append(visibility)
             rows = connection.execute(
                 "SELECT s.key, COALESCE((SELECT m.seq FROM messages m "
                 "WHERE m.session_key=s.key ORDER BY m.seq DESC LIMIT 1), -1) AS head "
-                "FROM sessions s ORDER BY s.key"
+                "FROM sessions s WHERE " + " AND ".join(where) + " ORDER BY s.key", values,
             ).fetchall()
             heads = MappingProxyType({row["key"]: row["head"] for row in rows})
             if read is not None:
-                read.heads_version, read.heads = current, heads
+                if len(read.heads) >= 8:
+                    read.heads.clear()
+                read.heads[key] = heads
             return heads
 
     def reader(self, session_id: str) -> MessageReader:
@@ -1151,6 +1172,7 @@ class MessageCatalog:
 
     async def follow(
         self, *, poll_interval: float | None = None, wake_on: type[Body] | tuple[type[Body], ...] | None = None,
+        prefix: str = "", visibility: Literal["listed", "internal"] | None = None,
     ) -> AsyncGenerator[Mapping[str, int]]:
         """先订阅再取 heads；通知只降低延迟，消费者始终按快照重读事实。
 
@@ -1158,6 +1180,7 @@ class MessageCatalog:
         会话管理变化和关闭仍通知所有订阅。
         poll_interval 给出有界重扫节奏：进程内唤醒丢失时，已提交的持久变化
         最多在一个周期后被重新发现。
+        prefix 与 visibility 限定只读目录；任一指定时排除软删会话，与 sessions() 一致。
         """
         event = asyncio.Event()
         with self._log._listener_lock:
@@ -1174,8 +1197,10 @@ class MessageCatalog:
                 event.clear()
                 if self._log._closed:
                     return
-                # 进程内唤醒读写入方维护的 heads；周期核对仍查 SQL，兜住进程外写入。
-                heads = self.snapshot_heads() if polled else self._log.committed_heads(self.snapshot_heads)
+                # 无筛选订阅复用已提交水位；目录筛选与周期核对读取当前 SQL。
+                heads = (self.snapshot_heads(prefix=prefix, visibility=visibility)
+                         if polled or prefix or visibility is not None
+                         else self._log.committed_heads(self.snapshot_heads))
                 if heads != previous:
                     previous = heads
                     yield heads
