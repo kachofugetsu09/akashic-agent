@@ -158,6 +158,7 @@ async def manager(workspace, home, dist=None):
         workspace=workspace,
         installed_cache_root=home / "cache",
         distribution_sources=ds.sources if ds else (),
+        disabled_plugins=ds.disabled_ids if ds else frozenset(),
         ignored_installed_roots=ds.ignored_installed_roots if ds else frozenset(),
     )
     await m.load_all()

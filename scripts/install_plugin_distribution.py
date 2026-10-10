@@ -24,7 +24,7 @@ _SOURCE_ROOT = Path(__file__).resolve().parents[1]
 if str(_SOURCE_ROOT) not in sys.path:
     sys.path.insert(0, str(_SOURCE_ROOT))
 
-from agent.plugins.bundles import load_bundles
+from agent.plugins.bundles import distribution_bundle
 from agent.plugins.install import install_git_plugin
 from agent.migrations.release_backup import backup_release_state
 from agent.migrations.runner import MigrationRunner
@@ -561,18 +561,18 @@ def install_bundle(
 
     distribution_root = distribution.expanduser().resolve(strict=True)
     report = verify_distribution(distribution_root)
-    profile_path = bundle_file.expanduser().resolve(strict=True)
-    if bundle_file.stem != "base":
-        raise ValueError("发行安装入口当前只接受 base bundle")
-    profile_rows = report.get("bundles", [])
+    bundle_path = bundle_file.expanduser().resolve(strict=True)
+    if bundle_file.stem != os.environ.get("AKASHIC_PLUGIN_BUNDLE", "base"):
+        raise ValueError("bundle 与 AKASHIC_PLUGIN_BUNDLE 不一致")
+    bundle_rows = report.get("bundles", [])
     if not any(
         isinstance(item, dict)
-        and _distribution_file(distribution_root, item.get("path"), "bundle") == profile_path
-        for item in profile_rows
+        and _distribution_file(distribution_root, item.get("path"), "bundle") == bundle_path
+        for item in bundle_rows
     ):
         raise ValueError("bundle 不属于已验证的 distribution artifact")
-    profile_name, marketplace = bundle_file.stem, report["marketplace"]
-    declarations = load_bundles(bundle_file.parent, mode=bundle_file.stem)
+    bundle_name, marketplace = bundle_file.stem, report["marketplace"]
+    declarations = distribution_bundle(bundle_file.parent)
     entries = tuple(row for row in declarations if not row.disabled)
     initialization = {"plugin_configs": [
         {"owner": row.plugin.split("@")[0], "config": dict(row.config)}
@@ -615,6 +615,8 @@ def install_bundle(
         )
     plugins_home.mkdir(parents=True, exist_ok=True)
 
+    # 宿主 journal 的初始化不依赖至少安装一个插件。
+    ReloadJournal(workspace)
     installed: list[dict[str, Any]] = []
     for entry, (row, bundle) in zip(entries, selected_rows, strict=True):
         name = entry.plugin.split("@")[0]
@@ -657,7 +659,7 @@ def install_bundle(
         "schema_version": 1,
         "distribution_source_commit": report["source_commit"],
         "distribution_source_tree": report["source_tree"],
-        "profile": profile_name,
+        "profile": bundle_name,
         "marketplace": marketplace,
         "workspace": str(workspace),
         "plugins_home": str(plugins_home),
@@ -930,7 +932,7 @@ def _distribution_candidate(
     for source in available.sources:
         plugin_id = f"{source.plugin_name}@{source.marketplace}"
         # Match existing discovery precedence, including a disabled installed override.
-        if source.plugin_name in external_names or not choices.get(plugin_id, True):
+        if source.plugin_name in external_names or plugin_id in available.disabled_ids:
             continue
         if plugin_id in candidate:
             raise SelectionConflictError(f"distribution identity already selected from another source: {plugin_id}")
@@ -948,7 +950,7 @@ def _prepare_distribution_inputs(
     marketplace = _read_json(distribution / "distribution.json")["marketplace"]
     _write_plugin_configs(workspace, marketplace=marketplace, declarations=[
         {"owner": row.plugin.split("@")[0], "config": dict(row.config)}
-        for row in load_bundles(distribution / "bundles")
+        for row in distribution_bundle(distribution / "bundles")
         if row.config and not row.disabled and row.plugin not in choices and row.plugin in candidate
     ])
     environments = _prepare_distribution_environments(available, distribution, workspace, selected)
@@ -994,7 +996,7 @@ def _prepare_distribution_inputs(
     # This is a user choice ledger, not another version pointer. Existing values never change.
     for source in available.sources:
         plugin_id = f"{source.plugin_name}@{source.marketplace}"
-        if plugin_id not in choices:
+        if plugin_id not in choices and plugin_id in candidate:
             upsert_plugin_manifest(plugin_id, enabled=True, plugins_home=plugins_home)
     ordered = [prepared.pop(plugin_id) for plugin_id in selected if plugin_id in prepared]
     return tuple(ordered + [prepared[plugin_id] for plugin_id in sorted(prepared)])
@@ -1247,9 +1249,9 @@ def ensure_bundle(
                 available=available, candidate=candidate, selected=selected,
                 distribution=distribution, workspace=workspace, plugins_home=plugins_home, selection=selection,
             )
-            # A fresh selection remains the existing explicit first-boot initialization path.
+            # 空组合也必须提交，首次启动不能重新发现并启用全部制品。
             new_root = expected
-            if expected is not None and new_components != components:
+            if expected is None or new_components != components:
                 new_root = selection.commit(new_components, expected_ref=expected)
             return {**receipt, "status": "existing", "new_root_ref": new_root}
         finally:

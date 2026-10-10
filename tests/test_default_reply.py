@@ -187,7 +187,7 @@ async def apply(ctx):
         workspace=workspace,
         installed_cache_root=tmp_path / "home/cache",
         # 制品供接口与真实组件组装；fixture 独占模型、工具与清理的提供。
-        disabled_builtin_plugins=frozenset({"models", "standard_tools", *(() if replying else ("reply",))}),
+        disabled_plugins=frozenset({"models", "standard_tools", *(() if replying else ("reply",))}),
     )
     try:
         await host.load_all()

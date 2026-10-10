@@ -1,6 +1,6 @@
 # 0108 · Bundle 是显式组合输入
 
-- 状态：proposed / base artifact implemented, mode activation pending
+- 状态：proposed / modes implemented, user choice migration pending
 - 日期：2026-10-11
 - 依据：#1179 P4；用户授权自主决定并单独提交重大选择。
 
@@ -25,8 +25,19 @@ UI、客户端页面及 Channel 连接，保留 Gateway/CLI 和后端能力；mi
 
 发行制品 schema 3 携带三个 TOML bundle 及各自摘要；namespace 由制品 marketplace
 字段确定。旧 JSON profile 和解析器已删除，安装命令使用 `--bundle`、`--ensure-bundle`。
-目前发行安装只接纳 base，headless/minimal 的实际选择在启停来源迁移后开放，不能把
-静态声明当作启动验收。历史首次安装 receipt 的 profile 标签继续只读，仍是旧来源证据。
-回退需要同一历史发行版的 Core、制品与安装器，不能混用旧制品和新安装器。
-接入层还须迁移旧启停选择、删除旧字段，并验证三个 mode 的实际启动/关闭及 CLI 回复。
-本次场景没有写正式 config 或 manifest。
+`AKASHIC_PLUGIN_BUNDLE` 选择 mode，缺省为 base；安装路径必须与该值一致。部署和
+runtime 使用同一进程配置，Docker 与本地启动器把它传到两侧。修改 mode 必须走正式
+发行安装/发布入口，提交新选择之后启动；不能只换环境变量而直接启动旧选择。
+空组合同样提交非 null Root，宿主 journal 独立于插件数量初始化。全部制品的公共 API
+仍可登记，但只有选中的实现挂载；停用 UI 不会使 Gateway 的协议编码失去类型定义。
+
+本层开放三个 mode；用户 patch 接入、旧 Config/manifest 启停迁移继续下一层。
+在完成迁移前，已有 manifest 的禁用选择仍保留，mode 可以进一步禁用，不能覆盖它。
+历史首次安装 receipt 的 profile 标签继续只读，仍是旧来源证据。回退需要同一历史
+发行版的 Core、制品与安装器，不能混用旧制品和新安装器。
+
+`scripts/bundle_modes_scenario.py` 使用真实发行制品和 AppRuntime，核对完整选择、
+启停与退出后的端点撤回；headless 通过当前 `main.py exec` 命令完成完整回复。
+旧 issue 中的 `main.py cli` 已被原生命令入口替代，不恢复别名。模型请求发给隔离
+HTTP 服务，经过真实 OpenAI-compatible driver、Models、Reply、Ledger 和 Gateway。
+它证明本地协议和组合链路，不能替代远程模型服务或浏览器验收。

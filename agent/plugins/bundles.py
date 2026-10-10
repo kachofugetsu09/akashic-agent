@@ -4,6 +4,7 @@ from __future__ import annotations
 from collections.abc import Mapping
 from dataclasses import dataclass
 from pathlib import Path
+import os
 import re
 import tomllib
 from typing import cast
@@ -63,3 +64,8 @@ def load_bundles(directory: Path, *, mode: str = "base", patch: Path | None = No
             raise ValueError(f"多个 bundle row 指向同一插件: {row.plugin}")
         plugins.add(row.plugin)
     return tuple(selected.values())
+
+
+def distribution_bundle(directory: Path) -> tuple[BundleRow, ...]:
+    """读取进程显式选择的 mode，不修改运行选择。"""
+    return load_bundles(directory, mode=os.environ.get("AKASHIC_PLUGIN_BUNDLE", "base"))
