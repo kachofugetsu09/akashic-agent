@@ -13,11 +13,11 @@ from agent.media import (
     MAX_IMAGE_TOTAL_BYTES,
     encode_image_bytes,
 )
-from agent.plugin_composition.channels import (
+from plugins.channels.contract import (
     AttachmentKind,
     AttachmentRef,
 )
-from agent.plugin_contracts import (
+from plugins.ledger.contract import (
     ContentPart,
     Control,
     Message,
@@ -25,7 +25,7 @@ from agent.plugin_contracts import (
     json_value,
 )
 from core.common.frozen_json import freeze_json
-from agent.plugin_composition.artifacts import ArtifactRead
+from plugins.ledger.contract import ArtifactRead
 from plugins.models.contract import MODEL_CONTENT as MODEL_CONTENT
 
 

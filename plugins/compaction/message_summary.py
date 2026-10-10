@@ -15,8 +15,8 @@ from plugins.models.contract import (
     TransportError,
 )
 from plugins.models.contract import BoundChatModel
-from agent.plugin_contracts import CallRef, ContentPart, Control, Message, Output, ToolCall, ToolResult
-from agent.plugin_contracts import body_to_dict
+from plugins.ledger.contract import CallRef, ContentPart, Control, Message, Output, ToolCall, ToolResult
+from plugins.ledger.contract import body_to_dict
 from ._boundaries import TurnProjection
 
 logger = logging.getLogger(__name__)

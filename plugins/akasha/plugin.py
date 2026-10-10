@@ -15,13 +15,8 @@ from typing import Literal, Self, cast
 
 from pydantic import BaseModel, ConfigDict, Field, ValidationError, model_validator
 
-from agent.plugin_composition import (
-    EMBEDDING_MEMORY_PLUGIN,
-    RUNTIME_STARTED,
-    RUNTIME_STOPPING,
-    Context,
-    ServiceKey,
-)
+from agent.plugin_composition import RUNTIME_STARTED, RUNTIME_STOPPING, Context, ServiceKey
+from plugins.akasha.contract import EMBEDDING_MEMORY_PLUGIN
 from plugins.models.contract import EMBEDDINGS
 from plugins.ui.contract import (
     UI_SLOTS,
@@ -29,14 +24,14 @@ from plugins.ui.contract import (
     PluginUiNavigation,
     PluginUiRpcInvalidRequest,
 )
-from agent.plugin_composition.bindings import BINDINGS
+from plugins.ledger.contract import BINDINGS
 from plugins.commands.contract import (
     COMMANDS,
     CommandDefinition,
     CommandInvocation,
     CommandResult,
 )
-from agent.plugin_composition.messages import (
+from plugins.ledger.contract import (
     MESSAGE_CATALOG,
     MESSAGE_EMBEDDINGS,
     OWNER_STATE,
@@ -47,7 +42,7 @@ from plugins.models.contract import (
     SavedEmbedding,
 )
 from plugins.ui.contract import UI
-from agent.plugin_contracts import Message
+from plugins.ledger.contract import Message
 from plugins.context.contract import (
     MATERIALS_V4 as MATERIALS,
 )

@@ -10,10 +10,10 @@ import re
 from typing import Literal, Protocol
 
 from agent.plugin_composition import Context, Effect, ServiceKey
-from agent.plugin_composition.bindings import Bindings
-from agent.plugin_composition.messages import MessageReader, MessageWriter
+from plugins.ledger.contract import Bindings
+from plugins.ledger.contract import MessageReader, MessageWriter
 from agent.plugin_composition.tasks import Task
-from agent.plugin_contracts import Body, Message
+from plugins.ledger.contract import Body, Message
 
 Status = Literal["delivered", "rejected", "failed"]
 

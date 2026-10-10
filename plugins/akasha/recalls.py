@@ -14,9 +14,9 @@ from .application.cycle import MemoryCycle, RetrievalTicket
 from .domain.model import Turn
 from .infrastructure.consumption import Consumption
 from .infrastructure.lexical import tokenize
-from agent.plugin_composition.messages import MessageCatalog, OwnerStore
-from agent.plugin_contracts import CallRef
-from agent.plugin_contracts import json_value
+from plugins.ledger.contract import MessageCatalog, OwnerStore
+from plugins.ledger.contract import CallRef
+from plugins.ledger.contract import json_value
 
 MaterialData = Mapping[str, object]
 

@@ -5,7 +5,7 @@ from __future__ import annotations
 from typing import Protocol
 
 from agent.plugin_composition import ServiceKey
-from agent.plugin_composition.messages import MessageReader
+from plugins.ledger.contract import MessageReader
 
 
 class InputOrigin(Protocol):

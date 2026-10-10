@@ -10,8 +10,8 @@ from functools import partial
 from pathlib import Path
 from typing import TYPE_CHECKING
 
-from agent.plugin_composition.bindings import Bindings
-from agent.plugin_composition.messages import MessageCatalog, MessageEmbeddings
+from plugins.ledger.contract import Bindings
+from plugins.ledger.contract import MessageCatalog, MessageEmbeddings
 
 from ..domain.features import BurstAwareFeaturePool
 from ..domain.model import (
@@ -175,7 +175,7 @@ class MessageConsumer:
 
         member 选出路由到本图的 Session；每张图只消费自己的成员。
         """
-        from agent.plugin_contracts import Input, Output
+        from plugins.ledger.contract import Input, Output
         from ..projection import Sample, applied_source
 
         from ..learning import AKASHA_LEARNING, LearningConfig

@@ -8,10 +8,9 @@
     "main.py",
     "agent",
     "bootstrap",
-    "bus",
     "core",
     "infra",
-    "session"
+    "plugins/ledger"
   ],
   "exclude": [
     ".venv",

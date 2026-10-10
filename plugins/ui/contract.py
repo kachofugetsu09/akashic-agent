@@ -19,8 +19,8 @@ from agent.plugin_composition.requests import RequestContext
 from agent.plugin_composition.effect import Effect
 from agent.plugin_composition.model import ServiceKey
 
-from agent.plugin_composition.messages import MessagePage, MessageReader, SessionEntry
-from agent.plugin_contracts import ContentPart, Control, Input, Message, Output, ToolCall, ToolResult, json_value
+from plugins.ledger.contract import MessagePage, MessageReader, SessionEntry
+from plugins.ledger.contract import ContentPart, Control, Input, Message, Output, ToolCall, ToolResult, json_value
 
 DashboardRoute = APIRoute | WebSocketRoute
 

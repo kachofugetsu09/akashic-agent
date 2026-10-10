@@ -6,7 +6,7 @@ from collections.abc import Mapping, Sequence
 from typing import Literal, Protocol
 
 from agent.plugin_composition import ServiceKey
-from agent.plugin_contracts import Message
+from plugins.ledger.contract import Message
 from plugins.turn_projection.contract import TurnProjection
 
 

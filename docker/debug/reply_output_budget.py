@@ -14,9 +14,9 @@ from threading import Thread
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
-from agent.plugin_composition.channels import CHANNEL_INPUT_V2, ChannelInboundMessage
+from plugins.channels.contract import CHANNEL_INPUT_V2, ChannelInboundMessage
 from agent.plugin_composition.config_input import save_config
-from session.message import Control, Output, ToolResult
+from plugins.ledger.contract import Control, Output, ToolResult
 from tests.test_default_reply import application, live_root
 
 

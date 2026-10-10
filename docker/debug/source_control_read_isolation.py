@@ -29,8 +29,8 @@ sys.path.insert(0, str(SOURCE))
 from agent.plugin_composition.tasks import RestartGate, Task, TaskSlot, Tasks
 from agent.restart import RestartPendingError
 from plugins.sources.session import SourceSession
-import session.log as storage
-from session.message import ContentPart, ContentReferences, Control, Input, Output
+import plugins.ledger.log as storage
+from plugins.ledger.contract import ContentPart, ContentReferences, Control, Input, Output
 
 
 LOOP_THREAD = threading.get_ident()

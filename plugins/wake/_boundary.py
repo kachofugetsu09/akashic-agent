@@ -10,7 +10,7 @@ from dataclasses import dataclass
 from typing import Literal, TypedDict
 
 from agent.plugin_composition import EmitEventKey, ServiceKey
-from agent.plugin_contracts import (
+from plugins.ledger.contract import (
     ContentPart,
 )
 from plugins.content.contract import (

@@ -14,11 +14,11 @@ from dataclasses import dataclass
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
 from agent.plugin_composition import CompositionError, ServiceKey
-from agent.plugin_composition.channels import CHANNEL_INPUT_V2, ChannelInboundMessage
+from plugins.channels.contract import CHANNEL_INPUT_V2, ChannelInboundMessage
 from agent.plugin_composition.model import FiberState
 from plugins.gateway.contract import CONTROL_FRAMES
 
-from agent.plugin_composition.messages import MessageReader
+from plugins.ledger.contract import MessageReader
 from plugins.reply.contract import (
     REPLY_COMPLETION,
 )
@@ -28,7 +28,7 @@ from plugins.sources.contract import (
 )
 from plugins.programmatic.control import PROGRAMMATIC, AdmitParams, SendParams, PauseParams, ResumeParams, ResultParams
 from plugins.programmatic.result import TURN_PROJECTION, read_result
-from session.message import Input, Output, ToolResult
+from plugins.ledger.contract import Input, Output, ToolResult
 from tests.test_default_reply import application
 
 

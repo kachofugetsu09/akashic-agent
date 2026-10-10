@@ -4221,8 +4221,8 @@ def _inside_soak(report_dir: Path) -> int:
     from datetime import datetime
 
     from plugins.turn_projection.plugin import TurnProjection
-    from session.message import Message
-    from session.message_codec import decode_body
+    from plugins.ledger.contract import Message
+    from plugins.ledger.contract import decode_body
 
     database = Path("/sandbox/workspace/sessions.db")
     raw_rows: list[sqlite3.Row] = []

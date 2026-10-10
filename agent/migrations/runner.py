@@ -183,11 +183,21 @@ class MigrationRunner:
                 migration_import_paths(bundles),
             ):
                 migrations = _read_migrations(
-                    str(self.migrations_root), bundles
+                    str(self.migrations_root), bundles, (*applied_ids, *(baseline or ()))
                 )
+                selected_ids = set(core_ids) if core_only else {item.id for item in migrations}
+                if core_only:
+                    # Core 迁移的依赖可能已经移交插件；先执行真实依赖，不越过它落账。
+                    available = {item.id: item for item in migrations}
+                    pending = list(selected_ids)
+                    while pending:
+                        for dependency in available[pending.pop()].depends:
+                            if dependency.id in available and dependency.id not in selected_ids:
+                                selected_ids.add(dependency.id)
+                                pending.append(dependency.id)
                 selected = type(migrations)(
-                    (item for item in migrations if item.id not in (baseline or ())
-                     and (not core_only or item.id in core_ids)),
+                    (item for item in migrations if item.id in selected_ids
+                     and item.id not in (baseline or ())),
                     migrations.post_apply,
                 )
                 pending = backend.to_apply(selected)

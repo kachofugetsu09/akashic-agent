@@ -14,15 +14,15 @@ from agent.plugin_composition import (
     Context,
     Effect,
 )
-from agent.plugin_composition.bindings import BINDINGS, Bindings
-from agent.plugin_composition.messages import (
+from plugins.ledger.contract import BINDINGS, Bindings
+from plugins.ledger.contract import (
     MESSAGE_CATALOG,
     MESSAGE_WRITERS,
     OWNER_STATE,
     MessageReader,
 )
 from agent.plugin_composition.tasks import TASKS, ExternalRootPermit, TaskAdmission
-from agent.plugin_contracts import (
+from plugins.ledger.contract import (
     CallRef,
     ContentPart,
     ContentReferences,

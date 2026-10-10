@@ -5,8 +5,8 @@ from tempfile import TemporaryDirectory
 import weakref
 import sqlite3
 
-from session.log import MessageLog
-from session.message import ContentPart, ContentReferences, Input
+from plugins.ledger.log import MessageLog
+from plugins.ledger.contract import ContentPart, ContentReferences, Input
 
 
 async def check(path: Path) -> None:

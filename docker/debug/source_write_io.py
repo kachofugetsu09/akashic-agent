@@ -12,7 +12,7 @@ from tempfile import TemporaryDirectory
 from unittest.mock import patch
 
 from agent.plugin_composition import CompositionRoot, PluginRuntime
-from agent.plugin_composition.messages import (
+from plugins.ledger.contract import (
     MESSAGE_CATALOG, MESSAGE_WRITERS, OWNER_STATE, SESSION_ADMISSION,
     MessageWriters, OwnerState, SessionAdmission,
 )
@@ -20,8 +20,8 @@ from plugins.wake.api import DeliveryTarget
 from plugins.wake.request import Request, TOOLS
 from plugins.wake.source import Source
 from plugins.wake.state import WakeState
-from session.log import MessageLog, SessionAttributes
-from session.message import Message, Output
+from plugins.ledger.log import MessageLog, SessionAttributes
+from plugins.ledger.contract import Message, Output
 
 
 async def check(directory: Path, phase: str, cancel: bool):

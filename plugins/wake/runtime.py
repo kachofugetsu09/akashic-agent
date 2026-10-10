@@ -11,14 +11,14 @@ from typing import cast
 from core.common.file_io import run_file_io
 
 from agent.plugin_composition import Context
-from agent.plugin_composition.bindings import BINDINGS
-from agent.plugin_composition.messages import (
+from plugins.ledger.contract import BINDINGS
+from plugins.ledger.contract import (
     MESSAGE_CATALOG,
     MessageReader,
     OwnerRecord,
 )
 from plugins.timer.contract import TIMERS, TimerReceipt, TimerStatus
-from agent.plugin_contracts import Message, body_to_dict
+from plugins.ledger.contract import Message, body_to_dict
 from plugins.models.contract import (
     MODEL_SELECTION as MODEL_SELECTION,
     ModelSelection as ModelSelection,

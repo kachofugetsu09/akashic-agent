@@ -25,7 +25,7 @@ from agent.plugins.input_preparation import prepare_plugin_input
 from agent.plugins.manifest import set_plugin_enabled
 from agent.plugins.selection import PluginSelection, SelectionConflictError
 from agent.plugins.static_manifest import load_static_plugin_manifest
-from session.message_codec import json_value
+from plugins.ledger.contract import json_value
 
 
 async def run():

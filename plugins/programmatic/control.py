@@ -10,14 +10,14 @@ from plugins.gateway.contract import (
     FrameResolver,
     FrameRouteStage,
 )
-from agent.plugin_composition.messages import (
+from plugins.ledger.contract import (
     MESSAGE_CATALOG,
     SESSION_ADMISSION,
     MessageReader,
     SessionAttributes,
 )
 from plugins.gateway.contract import RequestTransport, RpcMethod
-from agent.plugin_contracts import ContentPart, Input
+from plugins.ledger.contract import ContentPart, Input
 from plugins.delivery.contract import (
     FinalOutputTurn as FinalOutputTurn,
 )

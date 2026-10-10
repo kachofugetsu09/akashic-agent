@@ -28,12 +28,12 @@ sys.path.insert(0, str(args.source))
 from yoyo import get_backend, read_migrations
 
 from agent.migrations.context import bind_migration_context
-from session.services import SessionAdmin
+from plugins.ledger.services import SessionAdmin
 from plugins.akashic_clients.chat_api import create_chat_app
 from plugins.akashic_clients.navigation import NavigationPreferences, PinReference
 from plugins.akashic_clients.web_chat import WebChatChannel
-from session.log import MessageLog, SessionAttributes
-from session.message import ContentPart, ContentReferences, Input, Output
+from plugins.ledger.log import MessageLog, SessionAttributes
+from plugins.ledger.contract import ContentPart, ContentReferences, Input, Output
 
 checks: list[str] = []
 http_log: list[dict[str, object]] = []
@@ -71,7 +71,7 @@ def run_real_migration(workspace: Path) -> None:
 async def akasha_participation(root: Path, deleted_session: str) -> None:
     """软删会话仍被在线学习与全量重建消费：同一 MessageConsumer、同一输入。"""
     from agent.plugin_composition import CompositionRoot, Context
-    from session.bindings import Bindings
+    from plugins.ledger.bindings import Bindings
     from plugins.akasha.application.rebuild import rebuild_from_catalog
     from plugins.akasha.application.consumer import MessageConsumer
     from plugins.akasha.domain.model import MemoryConfig
@@ -79,7 +79,7 @@ async def akasha_participation(root: Path, deleted_session: str) -> None:
     from plugins.content.api import legacy_post_commit_effect
     from plugins.content.plugin import check_text
     from plugins.turn_projection.plugin import TurnProjection
-    from session.embedding_store import MessageEmbeddings
+    from plugins.ledger.embedding_store import MessageEmbeddings
 
     log = MessageLog(root / "sessions.db")
     embeddings = MessageEmbeddings(log)

@@ -2,16 +2,11 @@ from __future__ import annotations
 
 from functools import partial
 
-from agent.plugin_composition import (
-    CHANNELS,
-    ChannelCapability,
-    ChannelDefinition,
-    Context,
-    InboundIdentity,
-)
-from agent.plugin_composition.channels import CHANNEL_INPUT_V2 as CHANNEL_INPUT, RawInbound
+from agent.plugin_composition import Context
+from plugins.channels.contract import CHANNELS, ChannelCapability, ChannelDefinition, InboundIdentity
+from plugins.channels.contract import CHANNEL_INPUT_V2 as CHANNEL_INPUT, RawInbound
 from agent.plugin_composition.credentials import CREDENTIALS
-from agent.plugin_composition.messages import MESSAGE_CATALOG
+from plugins.ledger.contract import MESSAGE_CATALOG
 from plugins.sources.contract import (
     SOURCE_INTERRUPT_V2 as SOURCE_INTERRUPT,
 )

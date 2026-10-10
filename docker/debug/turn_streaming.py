@@ -4,10 +4,10 @@ from pathlib import Path
 from tempfile import TemporaryDirectory
 import weakref
 
-from agent.plugin_contracts import CallRef, ContentPart, Control, Input, Message, Output, ToolCall, ToolResult
+from plugins.ledger.contract import CallRef, ContentPart, Control, Input, Message, Output, ToolCall, ToolResult
 from plugins.turn_projection.plugin import TurnProjection
-from session.log import MessageLog
-from session.message import ContentReferences
+from plugins.ledger.log import MessageLog
+from plugins.ledger.contract import ContentReferences
 
 
 def check() -> None:

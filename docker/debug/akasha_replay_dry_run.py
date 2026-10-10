@@ -25,14 +25,14 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
 from agent.plugin_composition import ServiceKey
-from agent.plugin_contracts import Message
-from agent.plugin_contracts.turn_effects import post_commit_effect
+from plugins.ledger.contract import Message
+from plugins.turn_projection.contract import post_commit_effect
 from plugins.akasha.application.rebuild import rebuild_from_catalog
 from plugins.akasha.domain.model import MemoryConfig
 from plugins.akasha.learning import AKASHA_LEARNING, Learning, LearningConfig
 from plugins.turn_projection.plugin import TurnProjection
-from session.embedding_store import MessageEmbeddings
-from session.log import MessageCatalog, MessageLog
+from plugins.ledger.embedding_store import MessageEmbeddings
+from plugins.ledger.log import MessageCatalog, MessageLog
 
 DEFAULT_SOURCES = ("conversation", "programmatic", "legacy-unattributed")
 

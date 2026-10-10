@@ -6,7 +6,7 @@ from types import MappingProxyType
 from typing import cast
 
 from plugins.models.contract import ModelRequest
-from agent.plugin_contracts import (
+from plugins.ledger.contract import (
     CallRef,
     ContentPart,
     ContentReferences,

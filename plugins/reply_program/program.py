@@ -8,8 +8,8 @@ from core.common.file_io import run_file_io
 from core.common.diagnostic_log import log_timing
 from functools import partial
 from agent.plugin_composition import Context
-from agent.plugin_composition.artifacts import ArtifactRead
-from agent.plugin_composition.messages import MessageReader, MessageWriters, OwnerState, OwnerTransaction
+from plugins.ledger.contract import ArtifactRead
+from plugins.ledger.contract import MessageReader, MessageWriters, OwnerState, OwnerTransaction
 from plugins.models.contract import ModelRequest
 from plugins.models.contract import (
     BoundChatModel,
@@ -18,7 +18,7 @@ from plugins.models.contract import (
 from agent.plugin_composition.tasks import Task
 from plugins.context.contract import MaterialView, ReductionStatus
 from plugins.models.contract import PrepareContent
-from agent.plugin_contracts import ContentPart, Input, Message, Output
+from plugins.ledger.contract import ContentPart, Input, Message, Output
 
 from plugins.sources.contract import (
     SourceGuard,

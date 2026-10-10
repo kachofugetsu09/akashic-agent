@@ -1,11 +1,11 @@
 from plugins.host_execution.contract import PROCESSES, FILES
 from agent.plugin_composition import Context
 from plugins.ui.contract import UI_SLOTS, PluginUiDefinition, PluginUiRpcInvalidRequest
-from agent.plugin_composition.artifacts import ARTIFACT_IMPORT
+from plugins.ledger.contract import ARTIFACT_IMPORT
 from plugins.assets.contract import INSTALLED_ASSETS
-from agent.plugin_composition.bindings import BINDINGS
+from plugins.ledger.contract import BINDINGS
 from agent.plugin_composition.tasks import TASKS
-from agent.plugin_composition.messages import OWNER_STATE, SESSION_ADMISSION
+from plugins.ledger.contract import OWNER_STATE, SESSION_ADMISSION
 from plugins.standard_tools.contract import WORKING_DIRECTORY
 
 from ._materials_boundary import MATERIALS
@@ -22,7 +22,7 @@ from .skills import register_skills
 from .working_directory import WorkingDirectories
 from .directory_tool import register_directory
 from .agents import read_agents, directory_material
-from agent.plugin_contracts import Message
+from plugins.ledger.contract import Message
 
 api_version = 3
 name = "standard_tools"

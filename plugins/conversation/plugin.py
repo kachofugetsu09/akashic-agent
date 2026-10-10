@@ -4,11 +4,11 @@ from core.common.file_io import run_file_io
 from core.common.diagnostic_log import log_timing
 
 from agent.plugin_composition import Context
-from agent.plugin_composition.artifacts import ARTIFACT_READ
-from agent.plugin_composition.bindings import BINDINGS
-from agent.plugin_composition.channels import ChannelInboundMessage
+from plugins.ledger.contract import ARTIFACT_READ
+from plugins.ledger.contract import BINDINGS
+from plugins.channels.contract import ChannelInboundMessage
 from plugins.commands.contract import COMMANDS
-from agent.plugin_composition.messages import (
+from plugins.ledger.contract import (
     MESSAGE_CATALOG,
     MESSAGE_WRITERS,
     OWNER_STATE,
@@ -24,7 +24,7 @@ from agent.plugin_composition.tasks import (
     TASKS,
     Task,
 )
-from agent.plugin_contracts import (
+from plugins.ledger.contract import (
     Body,
     ContentPart,
     ContentReferences,

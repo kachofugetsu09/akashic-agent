@@ -9,7 +9,7 @@ from agent.plugin_composition import (
     Context,
 )
 from plugins.gateway.contract import CONTROL_FRAMES
-from agent.plugin_composition.messages import (
+from plugins.ledger.contract import (
     MESSAGE_CATALOG,
     MESSAGE_WRITERS,
     SESSION_ADMISSION,
@@ -22,7 +22,7 @@ from agent.plugin_composition.tasks import (
     RESTART_GATE,
     TASKS,
 )
-from agent.plugin_contracts import (
+from plugins.ledger.contract import (
     ContentPart,
     ContentReferences,
     Control,

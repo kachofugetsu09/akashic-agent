@@ -22,23 +22,9 @@ from telegram.ext import (
 from telegramify_markdown.converter import convert_with_segments
 from telegramify_markdown.entity import split_entities
 
-from agent.plugin_composition import (
-    AttachmentKind,
-    AttachmentRef,
-    ChannelAdapter,
-    ChannelCleanupFailure,
-    ChannelFactoryContext,
-    ChannelInboundMessage,
-    ChannelReady,
-    DeliveryStatus,
-    InboundIdentity,
-    ProviderDeliveryReceipt,
-    ProviderDeliveryRequest,
-    RawInbound,
-    StopReceipt,
-)
+from plugins.channels.contract import AttachmentKind, AttachmentRef, ChannelAdapter, ChannelCleanupFailure, ChannelFactoryContext, ChannelInboundMessage, ChannelReady, DeliveryStatus, InboundIdentity, ProviderDeliveryReceipt, ProviderDeliveryRequest, RawInbound, StopReceipt
 from agent.plugin_composition.credentials import CredentialRef, ProviderClient
-from agent.plugin_composition.channels import (
+from plugins.channels.contract import (
     ChannelPresentationPorts,
     ChannelRuntimePorts,
     ControlResponseBodies,

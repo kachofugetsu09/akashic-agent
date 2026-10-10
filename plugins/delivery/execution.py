@@ -7,12 +7,12 @@ from contextlib import AbstractContextManager, AsyncExitStack, nullcontext
 from typing import cast
 
 from agent.plugin_composition.tasks import Task, TaskAdmission, TaskSlot
-from agent.plugin_composition.messages import MessageCatalog, MessageReader, MessageWriter, OwnerRecord
+from plugins.ledger.contract import MessageCatalog, MessageReader, MessageWriter, OwnerRecord
 from plugins.delivery.contract import (
     StartGuard,
 )
 from core.common.file_io import run_file_io
-from agent.plugin_contracts import Body, Message
+from plugins.ledger.contract import Body, Message
 
 from .api import OpenSender, Receipt, Sink
 from .records import Delivery, DeliveryRecords, Selection, delivery_key

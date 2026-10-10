@@ -22,8 +22,6 @@ from agent.plugin_composition.model import ServiceKey
 from agent.plugins.manager import PluginManager
 from agent.plugins.python_environment import PythonEnvironments
 from agent.plugins.selection import PluginSelection, SelectionFormatError
-from session.log import MessageLog
-
 SEED = '''import asyncio,sys
 from pathlib import Path
 from agent.plugins.manager import PluginManager
@@ -67,9 +65,8 @@ def messages(workspace: Path) -> list[tuple[object, ...]]:
 
 async def verify(workspace: Path, home: Path, source: Path, installed: Path) -> dict[str, object]:
     """真实 runtime 加载当前资源，保留数据后卸载并重装。"""
-    log = MessageLog(workspace / "sessions.db")
     host = PluginManager([], workspace=workspace,
-                         installed_cache_root=home / "cache", message_log=log)
+                         installed_cache_root=home / "cache")
     data = workspace / "plugin-data/archive_probe-lab"
     try:
         await host.load_all()
@@ -100,7 +97,6 @@ async def verify(workspace: Path, home: Path, source: Path, installed: Path) -> 
                 "uninstall_reinstall": "passed", "private_data_preserved": True}
     finally:
         await host.terminate_all()
-        log.close()
 
 
 def main() -> None:

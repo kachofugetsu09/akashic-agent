@@ -7,9 +7,9 @@ from typing import Annotated, Literal, cast
 
 from pydantic import BaseModel, ConfigDict, Field, ValidationError
 
-from agent.plugin_composition.bindings import Bindings
-from agent.plugin_contracts import ContentPart, ContentReferences, Input, Output, ToolCall
-from agent.plugin_contracts import json_value
+from plugins.ledger.contract import Bindings
+from plugins.ledger.contract import ContentPart, ContentReferences, Input, Output, ToolCall
+from plugins.ledger.contract import json_value
 from ._boundaries import CallSource, Result, TOOLS
 from .learning import Feedback, Learning, resolve_feedback
 from .scopes import MemoryDisabled

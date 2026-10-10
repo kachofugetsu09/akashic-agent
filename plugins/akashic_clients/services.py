@@ -10,9 +10,9 @@ from collections.abc import AsyncGenerator, Awaitable, Callable, Mapping
 from pathlib import Path
 from typing import Literal, Protocol, runtime_checkable
 
-from agent.plugin_composition.channels import AttachmentRef
+from plugins.channels.contract import AttachmentRef
 from plugins.ui.contract import MessageDisplayReader
-from agent.plugin_composition.messages import (
+from plugins.ledger.contract import (
     InvalidPage,
     MessageConflict,
     SessionAttributes,
@@ -34,7 +34,7 @@ from plugins.ui.contract import (
     PluginUiRpcInvalidRequest,  # noqa: F401 - 显式再导出给本插件消费者。
     PluginUiStaleRevision,  # noqa: F401 - 显式再导出给本插件消费者。
 )
-from agent.plugin_contracts.message import Message
+from plugins.ledger.contract import Message
 from plugins.ui.contract import (
     PluginUiProvider as PluginUiProvider,
 )

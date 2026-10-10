@@ -11,6 +11,17 @@
 - 目标读者：维护者、coding agent、迁移与备份实现者、评审者
 - 关联条款：STA-001～STA-003、CTX-001、SES-001～SES-006、MEM-001～MEM-009、PLG-001～PLG-013、WSP-001～WSP-004、SCH-001～SCH-002、PRO-001～PRO-002、BAK-001
 
+## 2026-10-11：Ledger 持久化 owner 移交（待评审）
+
+[0105](../decisions/0105-ledger-owns-business-storage.md) 将业务存储生命周期移入 Ledger 插件。
+消息正常追加；正文的物理减少仍只由既有显式撤销/删除合同授权。owner 记录由原业务
+owner 在同库事务内更新，附件和身份沿原导入/映射合同增加或更新，不新增自动清理。
+入站 handoff 只有原成功结算路径物理移除；崩溃后保留并以原消息 ID 恢复。
+瞬时 session admission 在旧依赖图收束后清除，卸载不删除持久数据和附件。
+五项历史 Yoyo 步骤仅改变代码所在 bundle，保留 ID 和 SQL 行为；完整旧消息/绑定/
+owner 行及提交后崩溃恢复是隔离验收证据，正式 workspace 未执行任何迁移。
+下文旧 `session/`、`bus/` 和 `infra/channels/` 路径对应当前 `plugins/ledger/` 实现。
+
 ## 2026-10-11：Gateway 配置与控制端点归属
 
 Gateway 的固定输入与 Core 主配置分开。Core 不再解析 `app_server`；旧表由 Gateway

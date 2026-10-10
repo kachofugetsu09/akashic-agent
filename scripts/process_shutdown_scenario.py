@@ -46,8 +46,8 @@ async def run(base: Path) -> dict[str, bool]:
     """启动真实 main.py 子进程；管道协调三次 boot，不使用 sleep。"""
     from agent.plugins.install import install_git_plugin
     from bootstrap.init_workspace import init_workspace
-    from session.log import MessageLog
-    from session.message import Input
+    from plugins.ledger.log import MessageLog
+    from plugins.ledger.contract import Input
 
     home, workspace, config = base / "home", base / "workspace", base / "config.toml"
     env = {**os.environ, "HOME": str(home), "AKASHIC_PLUGIN_HOME": str(home),

@@ -8,18 +8,18 @@ from typing import cast
 
 from agent.plugin_composition.tasks import Task, TaskAdmission, TaskSlot
 from agent.plugin_composition.tasks import ExternalRootPermit
-from agent.plugin_composition.messages import (
+from plugins.ledger.contract import (
     MessageConflict,
     OwnerRecord,
     OwnerStore,
     OwnerTransaction,
 )
-from agent.plugin_contracts import (
+from plugins.ledger.contract import (
     ContentPart,
     ToolResult,
 )
 from core.common.frozen_json import freeze_json
-from agent.plugin_contracts import json_value
+from plugins.ledger.contract import json_value
 from plugins.tools.contract import CallSource, CommitAfter
 from core.common.file_io import run_file_io
 from core.common.diagnostic_log import log_timing

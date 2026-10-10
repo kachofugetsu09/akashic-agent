@@ -10,7 +10,7 @@ from collections.abc import Mapping
 from dataclasses import dataclass
 from typing import Literal, Protocol
 
-from agent.plugin_contracts import (
+from plugins.ledger.contract import (
     ContentPart,
 )
 from plugins.content.contract import (

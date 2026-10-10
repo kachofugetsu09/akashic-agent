@@ -15,7 +15,7 @@ from plugins.models.contract import (
     ToolCall as ModelToolCall,
 )
 from plugins.tools.execution import Result
-from session.message import ContentPart, Input, ToolResult
+from plugins.ledger.contract import ContentPart, Input, ToolResult
 from tests.support.message_react import runtime
 
 

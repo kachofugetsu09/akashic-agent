@@ -6,9 +6,9 @@ from pathlib import Path
 from tempfile import TemporaryDirectory
 
 from agent.plugin_composition import CompositionRoot
-from agent.plugin_composition.channel_io import unavailable
-from agent.plugin_composition.messages import MESSAGE_CATALOG
-from session.log import MessageCatalog, MessageLog
+from plugins.ledger.contract import unavailable
+from plugins.ledger.contract import MESSAGE_CATALOG
+from plugins.ledger.log import MessageCatalog, MessageLog
 from agent.plugin_composition.model import FiberState, PluginRuntime
 from plugins.context.contract import CONTEXT, MATERIALS_V4 as MATERIALS
 from plugins.runtime_inspection.contract import DOCUMENTS, Document

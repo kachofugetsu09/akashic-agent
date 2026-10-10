@@ -15,13 +15,13 @@ from types import SimpleNamespace
 from unittest.mock import patch
 
 from agent.plugin_composition import CompositionRoot, MCP_SERVERS, PluginRuntime
-from agent.plugin_composition.messages import OWNER_STATE, OwnerState
+from plugins.ledger.contract import OWNER_STATE, OwnerState
 from plugins.compaction.records import SummaryRecord, SummaryRecords
 from plugins.computer.control import endpoint_name
 from plugins.computer.plugin import ComputerControl, _fail_group
 from plugins.context.api import summary_range
-from session.log import MessageConflict, MessageLog, OwnerTransaction
-from session.message import Input
+from plugins.ledger.log import MessageConflict, MessageLog, OwnerTransaction
+from plugins.ledger.contract import Input
 
 
 async def check(directory: Path, phase: str, cancel: bool):

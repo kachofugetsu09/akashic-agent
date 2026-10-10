@@ -5,8 +5,8 @@ from contextlib import AbstractAsyncContextManager
 from dataclasses import dataclass
 from typing import Literal, cast
 
-from agent.plugin_composition.messages import MessageReader, MessageWriter, OwnerStore
-from agent.plugin_contracts import (
+from plugins.ledger.contract import MessageReader, MessageWriter, OwnerStore
+from plugins.ledger.contract import (
     CallRef,
     Control,
     Output,

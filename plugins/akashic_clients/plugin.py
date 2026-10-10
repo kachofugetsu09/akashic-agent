@@ -1,20 +1,15 @@
 from __future__ import annotations
 
-from agent.plugin_composition import (
-    CHANNELS,
-    ChannelCapability,
-    ChannelDefinition,
-    Context,
-    InboundIdentity,
-)
+from agent.plugin_composition import Context
+from plugins.channels.contract import CHANNELS, ChannelCapability, ChannelDefinition, InboundIdentity
 
 from .capabilities import CLIENT_CAPABILITIES, INSPECTION_RPC_KEYS, REPLY_STATUS, MCP_DETAIL, MCP_SERVERS
 from plugins.models.contract import MODEL_CALL_STATS
 from .channel import build_akashic_channel_factory
-from agent.plugin_composition.channels import CHANNEL_INPUT_V2 as CHANNEL_INPUT
+from plugins.channels.contract import CHANNEL_INPUT_V2 as CHANNEL_INPUT
 from .config import AkashicClientsConfig
 from .navigation import NavigationPreferences
-from agent.plugin_composition.messages import OWNER_STATE
+from plugins.ledger.contract import OWNER_STATE
 
 api_version = 3
 name = "akashic_clients"

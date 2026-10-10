@@ -10,7 +10,7 @@ from uuid import uuid4
 
 from core.common.diagnostic_log import log_timing
 from agent.plugin_composition import Context, RuntimeScope
-from agent.plugin_composition.messages import (
+from plugins.ledger.contract import (
     MessageConflict,
     MessageReader,
     MessageSnapshot,
@@ -30,7 +30,7 @@ from plugins.models.contract import (
     ModelError,
 )
 from plugins.models.contract import BoundChatModel
-from agent.plugin_contracts import (
+from plugins.ledger.contract import (
     CallRef,
     ContentPart,
     Control,

@@ -14,8 +14,8 @@ from agent.plugin_composition import (
     RUNTIME_STOPPING,
     Context,
 )
-from agent.plugin_composition.bindings import BINDINGS
-from agent.plugin_composition.messages import (
+from plugins.ledger.contract import BINDINGS
+from plugins.ledger.contract import (
     MESSAGE_CATALOG,
     MESSAGE_WRITERS,
     OWNER_STATE,
@@ -23,7 +23,7 @@ from agent.plugin_composition.messages import (
     MessageReader,
 )
 from agent.plugin_composition.tasks import TASKS, Task
-from agent.plugin_contracts import Message
+from plugins.ledger.contract import Message
 from plugins.sources.contract import (
     SOURCE_CHECK_V2 as SOURCE_CHECK,
 )

@@ -15,10 +15,10 @@ from agent.plugin_composition import (
     RUNTIME_STOPPING,
     Context,
 )
-from agent.plugin_composition.bindings import BINDINGS
-from agent.plugin_composition.messages import MESSAGE_CATALOG, MessageReader
+from plugins.ledger.contract import BINDINGS
+from plugins.ledger.contract import MESSAGE_CATALOG, MessageReader
 from agent.plugin_composition.tasks import ExternalRootPermit, RestartRejectedError
-from agent.plugin_contracts import ContentPart, Input, Message, Output, ToolCall
+from plugins.ledger.contract import ContentPart, Input, Message, Output, ToolCall
 from plugins.delivery_policy.contract import (
     INPUT_ORIGIN as INPUT_ORIGIN,
 )

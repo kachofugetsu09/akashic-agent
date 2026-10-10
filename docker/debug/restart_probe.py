@@ -43,8 +43,8 @@ from docker.debug.programmatic_control_probe import (
 )
 from infra.persistence.json_store import atomic_write_text
 from plugins.turn_projection.plugin import TurnProjection
-from session.message import Message
-from session.message_codec import decode_body
+from plugins.ledger.contract import Message
+from plugins.ledger.contract import decode_body
 
 READINESS_DEADLINE_S = 30.0
 SCENARIO_DEADLINE_S = 15.0

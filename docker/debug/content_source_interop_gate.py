@@ -27,7 +27,7 @@ if str(ROOT) not in sys.path:
 from agent.plugins.manager import PluginManager
 from agent.plugins.selection import PluginSelection
 from plugins.eventmail.store import EventMailStore
-from session.log import MessageLog
+from plugins.ledger.log import MessageLog
 
 DEFAULT_LOCK = Path(__file__).with_name("content-source-interop.lock.json")
 DEFAULT_REPORT = (
@@ -43,6 +43,7 @@ FORBIDDEN_PROACTIVE_MARKERS = (
     "take_proactive_events",
 )
 COEXISTENCE_BUILTINS = (
+    "ledger",
     "commands", "content", "conversation", "eventmail", "models",
     "programmatic", "sources", "tools", "turn_projection", "ui",
 )
@@ -499,12 +500,11 @@ async def _run_coexistence_probe(
 
         save_config(data_root, tomllib.loads(config_toml))
         content_path = workspace / "plugin-data" / "eventmail-builtin" / "eventmail.sqlite3"
-        message_log = MessageLog(workspace / "sessions.db")
+        message_log = None
         manager = PluginManager(
             plugin_dirs=[plugin_dir],
             workspace=workspace,
             installed_cache_root=root / "cache",
-            message_log=message_log,
         )
         row_count = -1
         content_before: dict[str, object] = {}
@@ -514,6 +514,8 @@ async def _run_coexistence_probe(
             live_root = manager.live_root
             if live_root is None:
                 raise GateError("Content baseline 未建立 live Root")
+            from plugins.ledger.contract import MESSAGE_CATALOG
+            message_log = live_root.context.require(MESSAGE_CATALOG)._log
             content_before = _content_logical_state(content_path)
             root_identity = live_root.generation_id
             update_id = f"content-interop-{plugin_id}"
@@ -547,13 +549,10 @@ async def _run_coexistence_probe(
                     f"expected={expected_rows} actual={row_count}"
                 )
         finally:
-            try:
-                await manager.terminate_all()
-            finally:
-                message_log.close()
+            await manager.terminate_all()
         resource_close = {
             "live_root_closed": manager.live_root is None,
-            "message_log_closed": message_log._closed,
+            "message_log_closed": message_log is not None and message_log._closed,
         }
         if not all(resource_close.values()):
             raise GateError(f"coexistence owner 未全部关闭: {resource_close}")

@@ -13,10 +13,10 @@ from typing import Any, cast
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-from agent.plugin_composition.channels import CHANNEL_INPUT_V2, ChannelInboundMessage
-from agent.plugin_composition.bindings import BINDINGS
+from plugins.channels.contract import CHANNEL_INPUT_V2, ChannelInboundMessage
+from plugins.ledger.contract import BINDINGS
 from plugins.ui.contract import MESSAGE_DISPLAY
-from agent.plugin_contracts import CallRef, ContentPart, Control, Input, Output, ToolCall, ToolResult
+from plugins.ledger.contract import CallRef, ContentPart, Control, Input, Output, ToolCall, ToolResult
 from plugins.compaction.message_summary import HEADINGS
 from plugins.content.plugin import check_text
 from plugins.context.api import check_notice
@@ -72,7 +72,7 @@ async def run(folder: Path, case: str) -> dict[str, object]:
             return len(str(messages)) // 4
         async def complete(self, request):
             import httpx
-            from agent.plugin_contracts import json_value
+            from plugins.ledger.contract import json_value
             async with httpx.AsyncClient(trust_env=False) as client:
                 result = await client.post({url!r}, json={{"messages": json_value(request.messages)}})
                 result.raise_for_status()

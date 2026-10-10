@@ -7,10 +7,10 @@ from typing import Literal, cast
 import aiohttp
 from telegramify_markdown.converter import convert_with_segments
 from telegramify_markdown.entity import MessageEntity, split_entities
-from agent.plugin_composition.artifacts import ArtifactRead
-from agent.plugin_composition.channels import AttachmentKind, AttachmentRef
-from agent.plugin_composition.messages import MessageCatalog
-from agent.plugin_contracts import ContentPart, Control, Message
+from plugins.ledger.contract import ArtifactRead
+from plugins.channels.contract import AttachmentKind, AttachmentRef
+from plugins.ledger.contract import MessageCatalog
+from plugins.ledger.contract import ContentPart, Control, Message
 
 
 Status = Literal["delivered", "rejected", "failed"]

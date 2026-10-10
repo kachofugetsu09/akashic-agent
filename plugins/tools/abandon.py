@@ -9,8 +9,8 @@ from typing import cast
 from agent.plugin_composition.tasks import TaskAdmission, TaskSlot
 from .api import Denied, MessageReply, Result, durable_call_key
 from .execution import _fingerprint, finish
-from agent.plugin_composition.messages import MessageCatalog, MessageReader, OwnerStore, OwnerTransaction
-from agent.plugin_contracts import CallRef, ContentPart, Control, Message, Output, ToolCall, ToolResult
+from plugins.ledger.contract import MessageCatalog, MessageReader, OwnerStore, OwnerTransaction
+from plugins.ledger.contract import CallRef, ContentPart, Control, Message, Output, ToolCall, ToolResult
 
 
 class LegacyReplyIdentityUnavailable(ValueError):

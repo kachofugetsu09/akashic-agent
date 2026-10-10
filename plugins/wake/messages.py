@@ -6,9 +6,9 @@ from datetime import datetime, timedelta
 from typing import cast
 from zoneinfo import ZoneInfo
 
-from agent.plugin_composition.messages import MessageCatalog, MessageReader
-from agent.plugin_contracts import ContentPart, Control, Input, Message, Output, ToolCall, ToolResult
-from agent.plugin_contracts import json_value
+from plugins.ledger.contract import MessageCatalog, MessageReader
+from plugins.ledger.contract import ContentPart, Control, Input, Message, Output, ToolCall, ToolResult
+from plugins.ledger.contract import json_value
 
 from .content import _candidate_payloads, _string
 from ._boundary import DeliveryHistory

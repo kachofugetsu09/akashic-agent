@@ -1,0 +1,76 @@
+schema_version = 1
+bundle_id = "ledger"
+version = "1.0.0"
+migration_root = "migrations/ledger_migrations"
+package_name = "ledger_migrations"
+
+[[migrations]]
+id = "20261004_01_message_source_index"
+path = "20261004_01_message_source_index.py"
+depends = ["20260928_01_plugin_config_updates"]
+transactional = true
+sha256 = "25209b1d18fee714ae7e41db181c5fbbb4e22660f8f7216574b5d3a182f72b90"
+
+[[migrations]]
+id = "20261004_02_message_body_kind_index"
+path = "20261004_02_message_body_kind_index.py"
+depends = ["20261004_01_message_source_index"]
+transactional = true
+sha256 = "480a3e3772bc208248f26f753329267f16e461d16c638539fb7c4ec47851a0fe"
+
+[[migrations]]
+id = "20261004_03_session_soft_delete"
+path = "20261004_03_session_soft_delete.py"
+depends = ["20261004_02_message_body_kind_index"]
+transactional = true
+sha256 = "cd3a3d9a622bb62dd305fc7ec0663c30506c217f7d5642eea19d3e70c5ffffd2"
+
+[[migrations]]
+id = "20261004_04_session_title"
+path = "20261004_04_session_title.py"
+depends = ["20261004_03_session_soft_delete"]
+transactional = true
+sha256 = "51d48f7ea7d6adc31f589ecba8761272a151098cfa1c389b280d2f3aebb4b35b"
+
+[[migrations]]
+id = "20261007_01_message_prefix_revision"
+path = "20261007_01_message_prefix_revision.py"
+depends = ["20261004_02_message_body_kind_index"]
+transactional = true
+sha256 = "8c395b3b3775318059bdb1fdbeafff884117168aae1e532e1c3590036a5f5a09"
+
+[[files]]
+path = "20261004_01_message_source_index.py"
+sha256 = "25209b1d18fee714ae7e41db181c5fbbb4e22660f8f7216574b5d3a182f72b90"
+
+[[files]]
+path = "20261004_02_message_body_kind_index.py"
+sha256 = "480a3e3772bc208248f26f753329267f16e461d16c638539fb7c4ec47851a0fe"
+
+[[files]]
+path = "20261004_03_session_soft_delete.py"
+sha256 = "cd3a3d9a622bb62dd305fc7ec0663c30506c217f7d5642eea19d3e70c5ffffd2"
+
+[[files]]
+path = "20261004_04_session_title.py"
+sha256 = "51d48f7ea7d6adc31f589ecba8761272a151098cfa1c389b280d2f3aebb4b35b"
+
+[[files]]
+path = "20261007_01_message_prefix_revision.py"
+sha256 = "8c395b3b3775318059bdb1fdbeafff884117168aae1e532e1c3590036a5f5a09"
+
+[[files]]
+path = "__init__.py"
+sha256 = "3734ae11a08813dafa88858746f69536f0b75bd1f1cfe8bee75fc0c85983c7ad"
+
+[[files]]
+path = "helpers/schema.py"
+sha256 = "403f8d1bffeae767bdcad996182f63cebeb9d43c77b8ca9532799f2b526141a1"
+
+[[files]]
+path = "helpers/timing.py"
+sha256 = "1e6c7a71d2d019f02b557eaec924ddf363c75374a69bcdcc3a430ade8bd77d44"
+
+[[files]]
+path = "helpers/__init__.py"
+sha256 = "542aa7176b1639448f88b991d823f24d7a0b54afa7643663ef9f362101c2d317"

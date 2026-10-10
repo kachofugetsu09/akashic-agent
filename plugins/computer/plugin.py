@@ -27,11 +27,11 @@ from plugins.mcp.contract import MCP_SERVERS, McpServerDefinition, WorkloadEnv
 from core.common.file_io import run_file_io
 
 from plugins.assets.contract import INSTALLED_ASSETS
-from agent.plugin_composition.bindings import BINDINGS
-from agent.plugin_composition.messages import MESSAGE_CATALOG, OWNER_STATE
+from plugins.ledger.contract import BINDINGS
+from plugins.ledger.contract import MESSAGE_CATALOG, OWNER_STATE
 from .inputs import CallSource, Result, TOOLS, TURN_PROJECTION, TurnProjection
-from agent.plugin_composition.messages import MessageCatalog, OwnerRecord, OwnerStore
-from agent.plugin_contracts import ContentPart, Input, Message, Output, ToolCall
+from plugins.ledger.contract import MessageCatalog, OwnerRecord, OwnerStore
+from plugins.ledger.contract import ContentPart, Input, Message, Output, ToolCall
 
 from .control import ComputerDriverError, endpoint_name, request
 

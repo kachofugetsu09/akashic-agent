@@ -14,7 +14,7 @@ from pathlib import Path
 import tempfile
 from typing import Literal, cast, get_args
 
-from agent.plugin_composition.messages import (
+from plugins.ledger.contract import (
     MessageCatalog,
     MessageConflict,
     OwnerStore,

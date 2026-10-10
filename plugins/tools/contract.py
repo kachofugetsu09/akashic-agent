@@ -11,13 +11,13 @@ from datetime import datetime, timezone
 from typing import Any, Literal, Protocol, runtime_checkable, cast
 from plugins.models.contract import ToolCall as ModelToolCall
 
-from agent.plugin_composition.bindings import Bindings
+from plugins.ledger.contract import Bindings
 from agent.plugin_composition.context import Context
 from agent.plugin_composition.effect import Effect
-from agent.plugin_composition.messages import MessageReader, OwnerTransaction
+from plugins.ledger.contract import MessageReader, OwnerTransaction
 from agent.plugin_composition.model import ServiceKey
 from agent.plugin_composition.tasks import ExternalRootPermit, Task
-from agent.plugin_contracts import (
+from plugins.ledger.contract import (
     CallRef,
     ContentPart,
     ContentReferences,

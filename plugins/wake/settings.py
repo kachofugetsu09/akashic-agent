@@ -8,7 +8,7 @@ from agent.plugin_composition import Context, ServiceKey
 from agent.plugin_composition.context import FiberHandle
 from plugins.models.contract import ModelCatalogSnapshot
 from plugins.models.contract import MODEL_CATALOG
-from agent.plugin_composition.messages import MESSAGE_CATALOG
+from plugins.ledger.contract import MESSAGE_CATALOG
 from agent.plugin_composition.plugin_config import PLUGIN_CONFIG
 from agent.plugin_composition.runtime_catalog import RUNTIME_CATALOG
 from plugins.ui.contract import Configuration
@@ -18,7 +18,7 @@ from plugins.delivery.contract import (
     SenderDefinition,
 )
 from plugins.akasha.contract import SEMANTIC_INTEREST
-from agent.plugin_contracts import Input
+from plugins.ledger.contract import Input
 
 SETTINGS = ServiceKey[Configuration]("wake.settings.v1")
 

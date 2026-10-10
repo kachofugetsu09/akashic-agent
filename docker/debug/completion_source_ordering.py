@@ -25,17 +25,17 @@ from agent.plugin_composition import (
     PluginRuntime,
 )
 from plugins.models.contract import CHAT_MODELS
-from agent.plugin_composition.artifacts import ARTIFACT_READ
-from agent.plugin_composition.bindings import BINDINGS
-from session.bindings import Bindings
-from agent.plugin_composition.channels import ChannelInboundMessage
+from plugins.ledger.contract import ARTIFACT_READ
+from plugins.ledger.contract import BINDINGS
+from plugins.ledger.bindings import Bindings
+from plugins.channels.contract import ChannelInboundMessage
 from agent.restart import RESTART_GATE, RestartGate
-from agent.plugin_composition.messages import (
+from plugins.ledger.contract import (
     MESSAGE_CATALOG, MESSAGE_WRITERS, OWNER_STATE, SESSION_ADMISSION,
     MessageWriters, OwnerState, SessionAdmission,
 )
 from agent.plugin_composition.tasks import TASKS, PluginTasks
-from agent.plugin_contracts import ContentPart, Control, Input, Output, ToolResult
+from plugins.ledger.contract import ContentPart, Control, Input, Output, ToolResult
 from plugins.models.contract import ToolCall as ModelToolCall
 from plugins.tools.execution import ToolExecution
 from plugins.tools.api import MessageReply, Result, result_message_id
@@ -67,7 +67,7 @@ from plugins.sources.contract import (
 from plugins.sources.session import SourceSession
 from plugins.subagent.request import PROFILE_TOOLS, Request
 from plugins.subagent.runtime import Subagents
-from session.log import MessageLog, MessageWriter
+from plugins.ledger.log import MessageLog, MessageWriter
 
 
 class LocalDelivery(fixture.LocalDelivery):

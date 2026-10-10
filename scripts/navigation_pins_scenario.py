@@ -27,13 +27,13 @@ if args.output.exists():
 sys.path.insert(0, str(args.source))
 
 import httpx
-from agent.plugin_contracts.message import ContentPart, ContentReferences, Input
+from plugins.ledger.contract import ContentPart, ContentReferences, Input
 from plugins.akashic_clients.chat_api import create_chat_app
 from plugins.akashic_clients.navigation import NavigationPreferences, PinReference
 from plugins.akashic_clients.web_chat import WebChatChannel
 from plugins.ui.contract import PluginUiStaleRevision, PluginUiRpcExecutionError
 from plugins.projects.plugin import Projects
-from session.log import MessageLog, SessionAttributes
+from plugins.ledger.log import MessageLog, SessionAttributes
 
 checks: list[str] = []
 def check(condition: bool, description: str) -> None:
@@ -182,11 +182,12 @@ async def run(root: Path):
 
 
 async def composition(root_path: Path):
-    from agent.plugin_composition import CompositionRoot, PluginRuntime, CHANNELS
+    from agent.plugin_composition import CompositionRoot, PluginRuntime
+    from plugins.channels.contract import CHANNELS
     from plugins.ui.contract import UI_SLOTS
-    from agent.plugin_composition.channels import ChannelFactoryContext
-    from session.services import OwnerState, SessionAdmission
-    from agent.plugin_composition.messages import MESSAGE_CATALOG, OWNER_STATE, SESSION_ADMISSION
+    from plugins.channels.contract import ChannelFactoryContext
+    from plugins.ledger.services import OwnerState, SessionAdmission
+    from plugins.ledger.contract import MESSAGE_CATALOG, OWNER_STATE, SESSION_ADMISSION
     from plugins.ui.contract import PLUGIN_UI
     from plugins.ui.queries import LivePluginUiProvider
     from plugins.akashic_clients import plugin

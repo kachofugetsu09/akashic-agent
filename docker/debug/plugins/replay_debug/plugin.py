@@ -7,19 +7,8 @@ from typing import Any
 
 from pydantic import BaseModel
 
-from agent.plugin_composition import (
-    CHANNELS,
-    ChannelCapability,
-    ChannelDefinition,
-    ChannelFactoryContext,
-    ChannelReady,
-    Context,
-    CredentialRef,
-    DeliveryStatus,
-    ProviderDeliveryReceipt,
-    ProviderDeliveryRequest,
-    StopReceipt,
-)
+from agent.plugin_composition import Context, CredentialRef
+from plugins.channels.contract import CHANNELS, ChannelCapability, ChannelDefinition, ChannelFactoryContext, ChannelReady, DeliveryStatus, ProviderDeliveryReceipt, ProviderDeliveryRequest, StopReceipt
 from core.clock import clock_from_env
 
 api_version = 3

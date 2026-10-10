@@ -19,17 +19,17 @@ args = parser.parse_args()
 sys.path.insert(0, str(args.source.resolve()))
 
 from agent.plugin_composition import CompositionRoot, PluginRuntime
-from agent.plugin_composition.bindings import BINDINGS
-from session.bindings import Bindings
-from session.services import MessageWriters, OwnerState, SessionAdmission
-from agent.plugin_composition.messages import (
+from plugins.ledger.contract import BINDINGS
+from plugins.ledger.bindings import Bindings
+from plugins.ledger.services import MessageWriters, OwnerState, SessionAdmission
+from plugins.ledger.contract import (
     MESSAGE_CATALOG,
     MESSAGE_WRITERS,
     OWNER_STATE,
     SESSION_ADMISSION,
 )
 from agent.plugin_composition.tasks import TASKS, PluginTasks, TaskServiceClosed
-from agent.plugin_contracts import ContentPart, Control, Input, Output
+from plugins.ledger.contract import ContentPart, Control, Input, Output
 from plugins.content.plugin import Content
 from plugins.conversation.plugin import check_origin
 from plugins.subagent.inputs import CONTENT, CHECK_ORIGIN
@@ -37,7 +37,7 @@ from plugins.subagent.request import PROFILE_TOOLS, Request
 from plugins.subagent.runtime import SUBAGENT_PROGRAM
 from plugins.subagent.tools import Prepared, Spawn
 from plugins.tools.execution import Result, ToolExecution
-from session.log import MessageLog
+from plugins.ledger.log import MessageLog
 
 
 class Fixture:

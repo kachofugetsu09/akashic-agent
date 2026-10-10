@@ -15,55 +15,6 @@
 
 [capabilities]
 
-[capabilities."core.message_catalog"]
-role = "core"
-note = "读取已提交 Message；不授予写入"
-
-[capabilities."core.message_writers"]
-role = "core"
-note = "按绑定权限追加 Input/Output/ToolResult/Control"
-
-[capabilities."core.message_embeddings"]
-role = "core"
-note = "读取和追加 Message embedding"
-
-[capabilities."core.session_admission"]
-role = "core"
-note = "create-once 建立带固定属性的 Session"
-
-[capabilities."core.session_admin"]
-role = "core"
-note = "Session 软删/恢复、标题覆盖与空标题条件写入；不授予消息减少或物理删除权限"
-
-[capabilities."core.owner_state"]
-role = "core"
-note = "按插件 owner 隔离的同库事务空间"
-
-[capabilities."core.bindings"]
-role = "core"
-note = "exact Root 的工具 binding 归档与解析"
-
-# ── 外部效果与投递 ───────────────────────────────────────────
-[capabilities."core.artifact_read"]
-role = "core"
-note = "有界字节读取租约"
-
-[capabilities."core.artifact_import"]
-role = "core"
-note = "来源导入与不可变引用"
-
-[capabilities."core.channel_attachment_import"]
-role = "core"
-note = "Channel 附件导入端口；宿主绑定传输与数据，不借用正式数据"
-
-[capabilities."core.channel_attachment_read"]
-role = "core"
-note = "Channel 附件有界读取端口；与 artifact_read 同一租约边界"
-
-[capabilities."core.channel_identity"]
-role = "core"
-note = "Channel 身份权威事实读取"
-
 [capabilities."core.credentials"]
 role = "seam"
 note = "按插件 owner 打开短凭据租约；来源可替换"
@@ -88,15 +39,6 @@ note = "宿主装配固定提供 boot identity 与 validation marker 的只读�
 role = "core"
 note = "按当前 live Root 提供中立插件、Fiber 与健康只读投影"
 
-[capabilities."plugin.channels"]
-role = "seam"
-note = "inbound/outbound Channel 适配注册表；由普通 channels provider 提供，多实现可替换"
-
-[capabilities."core.input_custody"]
-role = "core"
-note = "durable inbound 的 reserve/defer/recover 托管事实；关闭后幂等结算"
-
-# ── 调度、生命周期与发布 ─────────────────────────────────────
 [capabilities."core.tasks"]
 role = "core"
 note = "按通用 key 串行准入的短命工作与资源"
@@ -112,13 +54,7 @@ note = "插件 install/uninstall/revert 状态"
 # ── 模型协作入口：声明位置不等于提供者归属 ──────────────────
 
 
-[capabilities."plugin.claim.embedding_memory"]
-role = "claim"
-note = "embedding-memory 单 owner 占用；同一 Root 只允许一个"
-
-# 已记录为「文档承诺、代码未实现」的名字。
-# 本清单断言这些名字在 Python 代码中不存在（R5）：一旦有人实现，
-# 门会失败，强制同时更新文档与 [capabilities] 登记，避免文档漂移。
+# 尚未实现的文档名称不能重新作为隐式合同出现。
 [phantom.SCOPED_TURNS]
 note = "多份设计文档称其为已具备的 Turn 原子；实际由 plugins/reply 的 run_reply 顶替"
 
@@ -131,7 +67,3 @@ note = "插件手册与 skill 文档仍在教学使用；代码中无此 Service
 [capabilities."core.plugin_config.v1"]
 role = "core"
 note = "按实际 Context 应用自身固定输入；沿 selection CAS 与局部换代，不解释业务字段"
-
-[capabilities."channel.input.v2"]
-role = "seam"
-note = "Channel 入站入口；由 CHANNELS 的注册者提供"

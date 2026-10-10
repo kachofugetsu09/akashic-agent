@@ -6,17 +6,17 @@ import signal
 import sys
 from pathlib import Path
 
-from agent.plugin_composition.durable_deliveries import TurnAcceptedReceipt
-from agent.plugin_composition.channels import (
+from plugins.ledger.durable_deliveries import TurnAcceptedReceipt
+from plugins.channels.contract import (
     ChannelDeliveryReceipt,
     DeliveryStatus,
 )
-from agent.plugin_composition.durable_deliveries import (
+from plugins.ledger.durable_deliveries import (
     DurableBindingAttempt,
     DurableDeliveryRequest,
     PluginDurableDeliveries,
 )
-from agent.plugin_composition.durable_delivery_store import DurableDeliveryStore
+from plugins.ledger.durable_delivery_store import DurableDeliveryStore
 
 
 class _Binding:

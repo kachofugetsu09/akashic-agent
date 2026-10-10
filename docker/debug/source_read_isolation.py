@@ -19,9 +19,9 @@ sys.path.insert(0, str(args.source.resolve()))
 
 from agent.plugin_composition.tasks import Tasks
 from plugins.sources.session import SourceSession
-import session.log as storage
-from session.log import SourceHeadConflict
-from session.message import CallRef, ContentPart, ContentReferences, Control, Input, Output, ToolCall, ToolResult
+import plugins.ledger.log as storage
+from plugins.ledger.log import SourceHeadConflict
+from plugins.ledger.contract import CallRef, ContentPart, ContentReferences, Control, Input, Output, ToolCall, ToolResult
 
 
 async def run(directory: Path) -> dict:

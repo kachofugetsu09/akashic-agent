@@ -39,13 +39,8 @@ _ALLOWED_CORE_MIGRATION_MODULES = frozenset({
     "agent.migrations.context",
     "agent.plugin_composition",
     "agent.plugin_composition.config_input",
-    "agent.plugin_composition.artifacts",
-    "agent.plugin_composition.messages",
-    "agent.plugin_contracts",
     "infra.persistence.json_store",
-    "agent.plugin_contracts.message",
     "core.common.timekit",
-    "agent.plugin_contracts.turn_effects",
     "core.net.http",
 })
 
@@ -587,11 +582,19 @@ class _BundleMigration(Migration):
         self.steps = collector.create_steps(self.use_transactions)
 
 
+class _RecordedMigration(Migration):
+    """只用于解析已有落账或空库基线的依赖，永远不能执行。"""
+
+    def load(self) -> None:
+        raise RuntimeError(f"migration receipt 不是可执行实现: {self.id}")
+
+
 def _read_migrations(
     core_source: str,
     bundles: Sequence[MigrationBundle] = (),
+    recorded_ids: Sequence[str] = (),
 ) -> MigrationList:
-    """Load Core and external files without changing Yoyo/importlib globals."""
+    """加载实际实现，并把已落账依赖登记为不可执行的 receipt。"""
 
     core = read_migrations(core_source)
     migrations = list(core)
@@ -607,6 +610,10 @@ def _read_migrations(
             for migration in source
             if migration.id != "__init__"
         )
+    loaded = {migration.id for migration in migrations}
+    for identity in recorded_ids:
+        if identity not in loaded:
+            _RecordedMigration(identity, "<recorded>", "")
     return MigrationList(migrations)
 
 

@@ -2,8 +2,8 @@ from __future__ import annotations
 
 from collections.abc import Sequence
 
-from agent.plugin_composition.messages import MessageReader
-from agent.plugin_contracts import Control, Input, Message
+from plugins.ledger.contract import MessageReader
+from plugins.ledger.contract import Control, Input, Message
 from plugins.turn_projection.contract import (
     TURN_PROJECTION as TURN_PROJECTION,
     Turn as Turn,

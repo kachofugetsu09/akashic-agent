@@ -10,12 +10,12 @@ from typing_extensions import TypedDict
 from pydantic import BaseModel, ConfigDict, Field, ValidationError
 
 from agent.plugin_composition import Context
-from agent.plugin_composition.messages import MESSAGE_CATALOG, OWNER_STATE
+from plugins.ledger.contract import MESSAGE_CATALOG, OWNER_STATE
 from agent.plugin_composition.plugin_updates import PLUGIN_UPDATES, UpdateStatus
 from .inputs import INPUT_ORIGIN
 from .inputs import CallSource, Result
-from agent.plugin_contracts import ContentPart
-from agent.plugin_contracts import json_value
+from plugins.ledger.contract import ContentPart
+from plugins.ledger.contract import json_value
 
 
 class SinkInput(TypedDict):

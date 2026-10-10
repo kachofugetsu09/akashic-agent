@@ -4,11 +4,11 @@ from __future__ import annotations
 import asyncio
 import os
 from agent.plugin_composition import CompositionError, Context
-from agent.plugin_composition.channel_io import CHANNEL_ATTACHMENT_READ
-from agent.plugin_composition.channels import CHANNEL_INPUT_V2
+from plugins.ledger.contract import CHANNEL_ATTACHMENT_READ
+from plugins.channels.contract import CHANNEL_INPUT_V2
 from .contract import CONTROL_FRAMES
 from agent.plugin_composition.host import HOST_INFO
-from agent.plugin_composition.messages import MESSAGE_CATALOG
+from plugins.ledger.contract import MESSAGE_CATALOG
 from agent.plugin_composition.plugin_updates import PLUGIN_UPDATES
 from agent.plugin_composition.tasks import RESTART_GATE
 from .factory import build_control_service

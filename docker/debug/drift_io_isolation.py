@@ -15,7 +15,7 @@ from typing import Any, cast
 from unittest.mock import patch
 
 from agent.plugin_composition import CompositionRoot, PluginRuntime
-from agent.plugin_composition.messages import (
+from plugins.ledger.contract import (
     MESSAGE_CATALOG, MESSAGE_WRITERS, OWNER_STATE, SESSION_ADMISSION,
     MessageWriters, OwnerState, SessionAdmission,
 )
@@ -26,7 +26,7 @@ from plugins.wake.api import DRIFT_WAKE as ASYNC_WAKE, DRIFT_DELIVERY as ASYNC_D
 from plugins.wake.request import Request, TOOLS
 from plugins.wake.source import Source
 from plugins.wake.state import WakeState
-from session.log import MessageLog
+from plugins.ledger.log import MessageLog
 
 
 async def loop_turn() -> None:

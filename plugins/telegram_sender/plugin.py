@@ -12,8 +12,8 @@ from agent.plugin_composition import (
     Context,
     CredentialRef,
 )
-from agent.plugin_composition.artifacts import ARTIFACT_READ
-from agent.plugin_composition.messages import MESSAGE_CATALOG
+from plugins.ledger.contract import ARTIFACT_READ
+from plugins.ledger.contract import MESSAGE_CATALOG
 from plugins.delivery.contract import (
     DELIVERY_SENDERS as DELIVERY_SENDERS,
 )

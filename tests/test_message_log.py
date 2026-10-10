@@ -1,11 +1,11 @@
-from session.message import ContentReferences
+from plugins.ledger.contract import ContentReferences
 import sqlite3
 from contextlib import closing
 from concurrent.futures import ThreadPoolExecutor
 from threading import Barrier
 import pytest
-from session.log import MessageConflict, MessageLog, SessionAttributes
-from session.message import CallRef, ContentPart, Input, Output, ToolCall, ToolResult
+from plugins.ledger.log import MessageConflict, MessageLog, SessionAttributes
+from plugins.ledger.contract import CallRef, ContentPart, Input, Output, ToolCall, ToolResult
 
 def text_schema(part):
     if not isinstance(part.value, str):

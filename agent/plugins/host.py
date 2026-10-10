@@ -14,35 +14,10 @@ from agent.plugin_composition import (
     CompositionRoot,
     ServiceKey,
 )
-from agent.plugin_composition.artifacts import ARTIFACT_IMPORT, ARTIFACT_READ
-from session.artifact_services import ArtifactImport, ArtifactRead
-from agent.plugin_composition.bindings import BINDINGS
-from session.bindings import Bindings
-from agent.plugin_composition.channel_io import (
-    CHANNEL_ATTACHMENT_IMPORT,
-    CHANNEL_ATTACHMENT_READ,
-    CHANNEL_IDENTITY,
-    INPUT_CUSTODY,
-    ChannelAttachmentImport,
-    ChannelAttachmentRead,
-    ChannelIdentity,
-    InputCustody,
-    unavailable,
-    unavailable_input_custody,
-)
 from agent.plugin_composition.context import Context
 from agent.plugin_composition.credentials import CREDENTIALS, CredentialClients
 from agent.plugin_composition.execution import EXECUTION
 from agent.plugin_composition.host import HOST_INFO, HostInfo
-from session.services import MessageWriters, OwnerState, SessionAdmin, SessionAdmission
-from agent.plugin_composition.messages import (
-    MESSAGE_CATALOG,
-    MESSAGE_EMBEDDINGS,
-    MESSAGE_WRITERS,
-    OWNER_STATE,
-    SESSION_ADMIN,
-    SESSION_ADMISSION,
-)
 from agent.plugin_composition.plugin_config import PLUGIN_CONFIG, PluginConfig
 from agent.plugin_composition.plugin_updates import (
     PLUGIN_UPDATES,
@@ -59,11 +34,6 @@ from agent.plugins.channel_credentials import CoreProviderClientFactory
 from agent.plugins.composable import ComposablePlugin
 from agent.plugins.generation import PluginGeneration
 from agent.restart import RESTART_GATE, RestartGate
-from infra.channels.artifacts import ChannelAttachmentArtifactStore
-from infra.channels.attachment_import import ChannelOutboundAttachmentImporter
-from session.embedding_store import MessageEmbeddings
-from session.identities import ChannelIdentities, ChannelIdentityWriteReceipt
-from session.log import MessageCatalog, MessageLog
 
 
 async def provide_host_services(
@@ -71,13 +41,9 @@ async def provide_host_services(
     mount_order: tuple[PluginGeneration, ...],
     *,
     boot_id: str,
-    input_custody: InputCustody | None,
-    channel_identities: ChannelIdentities | None,
-    attachments: ChannelAttachmentArtifactStore | None,
     resolve_command: Callable[
         [PluginGeneration, tuple[str, ...], str], tuple[str, ...]
     ],
-    message_log: MessageLog | None,
     runtime_generations: Callable[
         [], tuple[Mapping[str, PluginGeneration], Mapping[str, list[PluginGeneration]]]
     ],
@@ -89,62 +55,9 @@ async def provide_host_services(
     host_ready: Callable[[], bool] | None,
 ) -> tuple[ExecutionAccess, CredentialClients]:
     """组装真实宿主端口与只读投影；不拥有安装选择或第二份运行状态。"""
-    artifact_read = None if attachments is None else ArtifactRead(attachments.acquire)
-    artifact_import = (
-        None
-        if attachments is None
-        else ArtifactImport(
-            ChannelOutboundAttachmentImporter(attachments).import_source
-        )
-    )
-    def resolve_identity(channel: str, provider_identity: str) -> str | None:
-        if channel_identities is None:
-            raise RuntimeError("Channel identities 未绑定")
-        return channel_identities.resolve(channel, provider_identity)
-
-    async def remember_identity(
-        channel: str, provider_identity: str, recipient: str
-    ) -> ChannelIdentityWriteReceipt:
-        if channel_identities is None:
-            raise RuntimeError("Channel identities 未绑定")
-        return channel_identities.remember(channel, provider_identity, recipient)
-
-    async def rollback_identity(receipt: object) -> bool:
-        if not isinstance(receipt, ChannelIdentityWriteReceipt):
-            raise TypeError("channel identity rollback receipt 类型无效")
-        if channel_identities is None:
-            raise RuntimeError("Channel identities 未绑定")
-        return channel_identities.rollback(receipt)
-
     await root.context.provide(
         HOST_INFO,
         HostInfo(boot_id=boot_id, validation=False, ready=host_ready or (lambda: True)),
-    )
-    custody = input_custody
-    await root.context.provide(
-        INPUT_CUSTODY, unavailable_input_custody() if custody is None else custody
-    )
-    if channel_identities is None:
-        identity = ChannelIdentity(unavailable, unavailable, unavailable)
-    else:
-        identity = ChannelIdentity(
-            resolve_identity,
-            remember_identity,
-            rollback_identity,
-        )
-    await root.context.provide(CHANNEL_IDENTITY, identity)
-    await root.context.provide(
-        CHANNEL_ATTACHMENT_IMPORT,
-        ChannelAttachmentImport(
-            unavailable if attachments is None else attachments.import_bytes,
-        ),
-    )
-    await root.context.provide(
-        CHANNEL_ATTACHMENT_READ,
-        ChannelAttachmentRead(
-            unavailable if attachments is None else attachments.resolve_refs,
-            unavailable if attachments is None else attachments.acquire,
-        ),
     )
     execution = ExecutionAccess(
         root.instance_token,
@@ -172,8 +85,6 @@ async def provide_host_services(
             RESTART_GATE,
         }
     )
-    if artifact_import is not None:
-        requested.add(ARTIFACT_IMPORT)
     if RUNTIME_CATALOG in requested:
         if root is not live_root():
             raise RuntimeError("runtime catalog 只在当前 live Root 提供")
@@ -221,37 +132,8 @@ async def provide_host_services(
             PLUGIN_UPDATES,
             PluginUpdates(installer),
         )
-    message_services: set[ServiceKey[Any]] = {
-        MESSAGE_CATALOG,
-        MESSAGE_EMBEDDINGS,
-        MESSAGE_WRITERS,
-        OWNER_STATE,
-        SESSION_ADMIN,
-        SESSION_ADMISSION,
-        BINDINGS,
-    }
-    if RESTART_GATE in requested:
-        _ = await root.context.provide(RESTART_GATE, restart_gate)
-    # Host capabilities are owned by the live process, outside plugin dependencies.
-    if requested & message_services and message_log is None:
-        raise RuntimeError("消息能力需要 bootstrap 提供已迁移的 MessageLog")
-    if message_log is not None:
-        log = message_log
-        _ = await root.context.provide(MESSAGE_CATALOG, MessageCatalog(log))
-        _ = await root.context.provide(MESSAGE_EMBEDDINGS, MessageEmbeddings(log))
-        _ = await root.context.provide(MESSAGE_WRITERS, MessageWriters(log))
-        _ = await root.context.provide(OWNER_STATE, OwnerState(log))
-        _ = await root.context.provide(SESSION_ADMISSION, SessionAdmission(log))
-        _ = await root.context.provide(SESSION_ADMIN, SessionAdmin(log))
-        _ = await root.context.provide(
-            BINDINGS, Bindings(log, root.context)
-        )
-    if TASKS in requested or message_log is not None:
-        _ = await root.context.provide(TASKS, tasks)
-    if artifact_read is not None:
-        _ = await root.context.provide(ARTIFACT_READ, artifact_read)
-    if ARTIFACT_IMPORT in requested and artifact_import is not None:
-        _ = await root.context.provide(ARTIFACT_IMPORT, artifact_import)
+    _ = await root.context.provide(RESTART_GATE, restart_gate)
+    _ = await root.context.provide(TASKS, tasks)
 
     return execution, clients
 
@@ -261,27 +143,8 @@ def check_host_dependencies(
 ) -> None:
     """只对实际请求且缺席的宿主能力失败，插件依赖由组合图负责。"""
     host_keys: set[ServiceKey[Any]] = {
-        HOST_INFO,
-        INPUT_CUSTODY,
-        CHANNEL_IDENTITY,
-        CHANNEL_ATTACHMENT_IMPORT,
-        CHANNEL_ATTACHMENT_READ,
-        EXECUTION,
-        RUNTIME_CATALOG,
-        CREDENTIALS,
-        PLUGIN_UPDATES,
-        PLUGIN_CONFIG,
-        RESTART_GATE,
-        MESSAGE_CATALOG,
-        MESSAGE_EMBEDDINGS,
-        MESSAGE_WRITERS,
-        OWNER_STATE,
-        SESSION_ADMIN,
-        SESSION_ADMISSION,
-        BINDINGS,
-        TASKS,
-        ARTIFACT_READ,
-        ARTIFACT_IMPORT,
+        HOST_INFO, EXECUTION, RUNTIME_CATALOG, CREDENTIALS,
+        PLUGIN_UPDATES, PLUGIN_CONFIG, RESTART_GATE, TASKS,
     }
     for generation in generations:
         plugin = cast(ComposablePlugin, generation.instance)

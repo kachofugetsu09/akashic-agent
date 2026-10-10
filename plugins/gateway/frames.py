@@ -5,7 +5,7 @@ from collections.abc import Mapping
 from dataclasses import dataclass, field
 from typing import cast
 
-from agent.plugin_contracts import CallRef
+from plugins.ledger.contract import CallRef
 from .contract import FrameResolver
 
 

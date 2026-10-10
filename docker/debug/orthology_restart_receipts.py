@@ -13,8 +13,8 @@ from plugins.delivery.api import FinalOutputDelivery
 from plugins.message_push.restart import RestartRequest, RestartWatcher
 from plugins.programmatic.control import Programmatic
 from plugins.turn_projection.plugin import TurnProjection
-from session.log import MessageLog
-from session.message import CallRef, ContentPart, ContentReferences, Input, Output, ToolCall
+from plugins.ledger.log import MessageLog
+from plugins.ledger.contract import CallRef, ContentPart, ContentReferences, Input, Output, ToolCall
 
 
 async def check(workspace: Path) -> None:

@@ -4,7 +4,7 @@ from collections.abc import Awaitable, Callable, Mapping
 from dataclasses import astuple, dataclass
 from typing import Protocol
 from asyncio import Future
-from agent.plugin_contracts import CallRef
+from plugins.ledger.contract import CallRef
 
 from pydantic import BaseModel
 from agent.plugin_composition import ServiceKey

@@ -17,17 +17,17 @@ from agent.plugin_composition import (
     PluginRuntime,
 )
 from plugins.models.contract import CHAT_MODELS
-from agent.plugin_composition.messages import SESSION_ADMIN, SessionAdmin
+from plugins.ledger.contract import SESSION_ADMIN, SessionAdmin
 from plugins.models.contract import LLMResponse
 from plugins.models.contract import TransportError
-from agent.plugin_contracts import ContentPart, ContentReferences, Input
+from plugins.ledger.contract import ContentPart, ContentReferences, Input
 from plugins.sources.contract import (
     SOURCE_CHANGED_V3,
     SourceChangedV3,
 )
 from plugins.session_title import plugin
 from scripts.install_plugin_distribution import _load_profile
-from session.log import MessageLog, SessionAttributes
+from plugins.ledger.log import MessageLog, SessionAttributes
 
 
 class LocalModels:

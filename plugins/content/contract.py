@@ -7,8 +7,8 @@ from contextlib import AbstractAsyncContextManager
 from typing import Protocol
 
 from agent.plugin_composition import Context, Effect, ServiceKey
-from agent.plugin_composition.bindings import Bindings
-from agent.plugin_contracts import ContentPart, ContentReferences, Message
+from plugins.ledger.contract import Bindings
+from plugins.ledger.contract import ContentPart, ContentReferences, Message
 
 ContentCheck = Callable[[ContentPart], ContentReferences]
 

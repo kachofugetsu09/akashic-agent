@@ -3,10 +3,10 @@ from datetime import UTC, datetime
 from pathlib import Path
 import shutil
 import pytest
-from agent.plugin_composition.channels import CHANNEL_INPUT_V2 as CHANNEL_INPUT, ChannelInboundMessage
+from plugins.channels.contract import CHANNEL_INPUT_V2 as CHANNEL_INPUT, ChannelInboundMessage
 from plugins.delivery.records import DeliveryRecords
-from session.log import OwnerRecord, OwnerStore
-from session.message import Output
+from plugins.ledger.contract import OwnerRecord
+from plugins.ledger.contract import Output
 from tests.test_default_reply import application, live_root
 from tests.support.delivery_sources import sources
 
@@ -16,16 +16,17 @@ async def test_real_input_reply_and_archived_delivery_are_independent_consumers(
     shutil.copytree(Path(__file__).parents[1] / "plugins/delivery_policy", tmp_path / "plugins/delivery_policy",
                     ignore=shutil.ignore_patterns("__pycache__"))
     delivered = asyncio.Event()
-    original = OwnerStore.transact_async
-
-    async def observe(self, callback, **kwargs):
-        result = await original(self, callback, **kwargs)
-        if isinstance(result, OwnerRecord) and result.value.get("phase") == "delivered":
-            delivered.set()
-        return result
-
-    monkeypatch.setattr(OwnerStore, "transact_async", observe)
     async with application(tmp_path, replying=True) as (log, host):
+        store_type = type(log.owner("plugin:delivery"))
+        original = store_type.transact_async
+
+        async def observe(self, callback, **kwargs):
+            result = await original(self, callback, **kwargs)
+            if isinstance(result, OwnerRecord) and result.value.get("phase") == "delivered":
+                delivered.set()
+            return result
+
+        monkeypatch.setattr(store_type, "transact_async", observe)
         async with live_root(host) as root:
             accepted = await root.context.require(CHANNEL_INPUT)(
                 "test:room", "u1", ChannelInboundMessage(
@@ -56,7 +57,7 @@ async def test_slow_destination_does_not_delay_next_fast_receipt(tmp_path):
     from plugins.delivery.api import Receipt
     from plugins.delivery.execution import Deliveries
     from plugins.delivery_policy.follow import follow
-    from session.log import MessageLog
+    from plugins.ledger.log import MessageLog
     from tests.test_message_log import writer
 
     log = MessageLog(tmp_path / "sessions.db")

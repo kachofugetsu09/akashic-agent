@@ -8,14 +8,14 @@ from typing import cast
 
 from agent.plugin_composition import Context, RUNTIME_STARTED, RUNTIME_STOPPING
 from plugins.assets.contract import INSTALLED_ASSETS
-from agent.plugin_composition.bindings import BINDINGS
-from agent.plugin_composition.messages import MESSAGE_CATALOG, MESSAGE_WRITERS, OWNER_STATE
+from plugins.ledger.contract import BINDINGS
+from plugins.ledger.contract import MESSAGE_CATALOG, MESSAGE_WRITERS, OWNER_STATE
 from agent.plugin_composition.plugin_updates import PLUGIN_UPDATES, UpdateStatus
 from .inputs import CONTENT
 from .inputs import DELIVERY, INPUT_ORIGIN
 from .inputs import DELIVERY_SENDERS
 from .inputs import TOOLS
-from agent.plugin_contracts import ContentPart, Output
+from plugins.ledger.contract import ContentPart, Output
 
 from .tool import InstallPlugin, InstallInput, Request, decode_request
 

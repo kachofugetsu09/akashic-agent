@@ -13,8 +13,8 @@ from datetime import UTC, datetime
 from pathlib import Path
 from uuid import uuid4
 
-from agent.plugin_composition.bindings import Bindings
-from agent.plugin_composition.messages import MessageCatalog, MessageEmbeddings
+from plugins.ledger.contract import Bindings
+from plugins.ledger.contract import MessageCatalog, MessageEmbeddings
 
 from ..domain.model import MemoryConfig
 from ..infrastructure.consumption import Consumption

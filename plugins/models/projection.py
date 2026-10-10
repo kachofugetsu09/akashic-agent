@@ -8,14 +8,14 @@ from itertools import chain
 from typing import Any, cast
 
 from agent.plugin_composition import ServiceKey
-from agent.plugin_composition.messages import MessageSnapshot
+from plugins.ledger.contract import MessageSnapshot
 from plugins.models.contract import (
     LLMResponse,
     ModelContinuation,
     ModelRequest,
 )
 from plugins.models.contract import BoundChatModel
-from agent.plugin_contracts import (
+from plugins.ledger.contract import (
     CallRef,
     ContentPart,
     ContentReferences,

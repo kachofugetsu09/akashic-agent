@@ -12,14 +12,14 @@ from contextlib import asynccontextmanager, contextmanager
 from dataclasses import dataclass, field
 from typing import Any, ContextManager, Literal, TypeVar, cast
 
-from agent.plugin_composition.channel_io import (
+from plugins.ledger.contract import (
     CHANNEL_ATTACHMENT_IMPORT,
     CHANNEL_ATTACHMENT_READ,
     CHANNEL_IDENTITY,
     INPUT_CUSTODY,
     InputCustody,
 )
-from agent.plugin_composition.channels import (
+from plugins.channels.contract import (
     CHANNEL_INPUT_V2 as CHANNEL_INPUT,
     CHANNELS,
     DURABLE_HANDOFF_ID,
@@ -1022,15 +1022,17 @@ class PluginChannels:
             )
             await self._start_binding(key)
 
+            started_key = key
             async def open_when_ready() -> None:
                 try:
                     async with ctx.runtime_scope():
-                        state = self._binding(key)
+                        state = self._binding(started_key)
                         if state.plugin_context is not ctx or state.activation_token is not ctx.fiber.activation_token:
                             raise RuntimeError("Channel ready 属于已替换 activation")
-                        self._open_admission(key)
+                        self._open_admission(started_key)
+                        await self._input_custody.recover_durable_inbounds(self.recover_inbound)
                 except BaseException as error:
-                    state = self._bindings.get(key)
+                    state = self._bindings.get(started_key)
                     if state is not None and state.plugin_context is ctx:
                         ctx.report_incident("CHANNEL_OPEN_FAILED", str(error) or type(error).__name__)
                     raise

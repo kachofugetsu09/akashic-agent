@@ -64,25 +64,17 @@ PLUGIN_ALLOWED_MODULES = frozenset({
     "agent.migrations.context",
     "agent.plugin_composition",
     "agent.plugin_composition.admission",
-    "agent.plugin_composition.artifacts",
-    "agent.plugin_composition.bindings",
-    "agent.plugin_composition.channel_io",
-    "agent.plugin_composition.channels",
-    "agent.plugin_composition.claims",
     "agent.plugin_composition.config_input",
     "agent.plugin_composition.context",
     "agent.plugin_composition.credentials",
     "agent.plugin_composition.deliveries",
     "agent.plugin_composition.diagnostics",
-    "agent.plugin_composition.durable_deliveries",
-    "agent.plugin_composition.durable_delivery_store",
     "agent.plugin_composition.effect",
     "agent.plugin_composition.events",
     "agent.plugin_composition.execution",
     "agent.plugin_composition.executor",
     # Reviewed narrow host fact: docs/design/plugin-boundary-foundation.md §9.37.
     "agent.plugin_composition.host",
-    "agent.plugin_composition.messages",
     "agent.plugin_composition.model",
     # Self-config and optional onboarding contracts: plugin-onboarding-projection.md.
     "agent.plugin_composition.plugin_config",
@@ -91,11 +83,9 @@ PLUGIN_ALLOWED_MODULES = frozenset({
     "agent.plugin_composition.runtime_catalog",
     "agent.plugin_composition.runtime_lifecycle",
     "agent.plugin_composition.tasks",
-    "agent.plugin_contracts",
     # ADR-0084: directory snapshot and default registration, with no Core business owner.
 
     "infra.persistence.json_store",
-    "agent.plugin_contracts.message",
     "core.common.diagnostic_log",
     # 有界文件工作与取消排空；公开合同见 plugin-v3-capabilities.md。
     "core.common.file_io",
@@ -103,7 +93,6 @@ PLUGIN_ALLOWED_MODULES = frozenset({
     "core.net.http",
     "core.common.timekit",
     "core.common.frozen_json",
-    "agent.plugin_contracts.turn_effects",
 })
 
 # 插件不得 import 的 core 顶层包（用于 R2 的归属判定）。

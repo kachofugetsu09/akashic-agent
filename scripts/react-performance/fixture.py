@@ -24,10 +24,10 @@ sys.path.insert(0, str(ROOT))
 from tests.test_default_reply import application
 from tests.support.delivery_sources import sources as delivery_sources
 from agent.plugin_composition import ServiceKey
-from agent.plugin_composition.channels import CHANNEL_INPUT_V2 as CHANNEL_INPUT, ChannelInboundMessage
+from plugins.channels.contract import CHANNEL_INPUT_V2 as CHANNEL_INPUT, ChannelInboundMessage
 from plugins.models.contract import BoundModelDescriptor
-from session.log import MessageCatalog, MessageLog, MessageReader, MessageWriter
-from session.message import (
+from plugins.ledger.log import MessageCatalog, MessageLog, MessageReader, MessageWriter
+from plugins.ledger.contract import (
     ContentPart,
     ContentReferences,
     Input,
@@ -35,7 +35,7 @@ from session.message import (
     Output,
     ToolResult,
 )
-from session.message_codec import encode_body
+from plugins.ledger.contract import encode_body
 
 TRACE = []
 READS = defaultdict(lambda: [0, 0, 0.0])
@@ -182,7 +182,7 @@ async def run(mode, count, full_history=False):
     READS.clear()
     DONE = asyncio.Event()
     decoded_messages = [0]
-    import session.log as message_log
+    import plugins.ledger.log as message_log
 
     original_decode = message_log._message
 
@@ -354,7 +354,7 @@ async def run(mode, count, full_history=False):
                     [(m["role"], len(str(m.get("content", "")))) for m in call.messages]
                     for call in calls
                 ]
-                from session.message_codec import json_value
+                from plugins.ledger.contract import json_value
 
                 normalized = json.dumps(
                     [json_value(call.messages) for call in calls],

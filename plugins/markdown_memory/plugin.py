@@ -23,8 +23,8 @@ from agent.plugin_composition import (
 )
 from plugins.models.contract import ModelRequest
 from plugins.models.contract import CHAT_MODELS
-from agent.plugin_composition.bindings import BINDINGS, Bindings
-from agent.plugin_composition.messages import MESSAGE_CATALOG
+from plugins.ledger.contract import BINDINGS, Bindings
+from plugins.ledger.contract import MESSAGE_CATALOG
 from plugins.models.contract import LLMResponse
 from plugins.models.contract import (
     ContextLengthError,
@@ -36,8 +36,8 @@ from plugins.models.contract import (
 )
 from infra.persistence.json_store import atomic_write_text
 from core.common.file_io import run_file_io
-from agent.plugin_composition.messages import MessageCatalog
-from agent.plugin_contracts import ContentPart, Control, Input, Message, Output, ToolResult
+from plugins.ledger.contract import MessageCatalog
+from plugins.ledger.contract import ContentPart, Control, Input, Message, Output, ToolResult
 from ._boundaries import (
     COMPACTION_READER, COMPACTION_SUMMARIES, CONTENT, CONTEXT, MATERIALS,
     CompactionReader, ContentFacts, ContextBuilder, PartitionedSummary, StoredSummary, SummaryLookup,
@@ -46,7 +46,7 @@ from ._boundaries import (
 from .llm_json import load_json_object_loose
 
 if TYPE_CHECKING:
-    from agent.plugin_composition.messages import MessageReader
+    from plugins.ledger.contract import MessageReader
 
 from plugins.runtime_inspection.contract import DOCUMENTS, Document
 

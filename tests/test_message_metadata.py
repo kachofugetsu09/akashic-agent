@@ -3,8 +3,8 @@ from contextlib import aclosing, closing
 from typing import Any, cast
 import pytest
 from plugins.ui.contract import follow_messages, message_rows
-from session.log import MessageLog
-from session.message import ContentPart, Output
+from plugins.ledger.log import MessageLog
+from plugins.ledger.contract import ContentPart, Output
 from plugins.content.plugin import check_text
 
 def writer(log, namespaces=frozenset({"citation", "meme"})):

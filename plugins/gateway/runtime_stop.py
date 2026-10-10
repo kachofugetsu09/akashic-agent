@@ -6,8 +6,8 @@ import asyncio
 from pydantic import Field
 
 from .protocol.models import StrictModel
-from agent.plugin_composition.messages import MESSAGE_CATALOG
-from agent.plugin_contracts import CallRef, Input, Output, ToolCall, ToolResult
+from plugins.ledger.contract import MESSAGE_CATALOG
+from plugins.ledger.contract import CallRef, Input, Output, ToolCall, ToolResult
 from plugins.delivery.contract import (
     FINAL_OUTPUT_DELIVERY,
     FinalOutputDelivery,

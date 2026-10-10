@@ -9,9 +9,9 @@ from typing import Any
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 from agent.plugin_composition import Context
-from agent.plugin_composition.messages import MessageSnapshot
+from plugins.ledger.contract import MessageSnapshot
 from plugins.models.contract import ModelRequest
-from agent.plugin_contracts import (
+from plugins.ledger.contract import (
     Message,
 )
 from plugins.context.contract import (

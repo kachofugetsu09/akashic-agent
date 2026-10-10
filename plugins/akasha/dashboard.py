@@ -8,8 +8,8 @@ from pathlib import Path
 from fastapi import FastAPI, HTTPException, Query
 
 from agent.plugin_composition import DashboardContext
-from agent.plugin_composition.messages import MESSAGE_CATALOG
-from agent.plugin_contracts import ContentPart, Message
+from plugins.ledger.contract import MESSAGE_CATALOG
+from plugins.ledger.contract import ContentPart, Message
 
 from . import ledger
 from .plugin import AKASHA_MEMORY_PATH, AKASHA_RECORDS_VIEW

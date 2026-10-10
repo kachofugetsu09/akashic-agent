@@ -33,6 +33,11 @@
   },
   "plugins": [
     {
+      "name": "ledger",
+      "depends_on": [],
+      "reason": "持有消息、同库事务、附件与入站交接，停用时不打开 sessions.db。"
+    },
+    {
       "name": "timer",
       "depends_on": [],
       "reason": "持有单次等待与 Effect 清理，不包含周期或调度事实。"
@@ -54,7 +59,9 @@
     },
     {
       "name": "workloads",
-      "depends_on": ["host_execution"],
+      "depends_on": [
+        "host_execution"
+      ],
       "reason": "普通 provider 持有 Workload；无贡献时不调用 Controller。"
     },
     {
@@ -79,17 +86,24 @@
     },
     {
       "name": "shell-ui",
-      "depends_on": ["ui"],
+      "depends_on": [
+        "ui"
+      ],
       "reason": "组合 Web 根页面与普通功能设置入口。"
     },
     {
       "name": "conversation-ui",
-      "depends_on": ["ui", "shell-ui"],
+      "depends_on": [
+        "ui",
+        "shell-ui"
+      ],
       "reason": "提供 Web 对话页面和可撤销的工具区。"
     },
     {
       "name": "projects",
-      "depends_on": ["conversation-ui"],
+      "depends_on": [
+        "conversation-ui"
+      ],
       "reason": "拥有项目记录与会话归属，提供侧栏项目分组和工作目录绑定。"
     },
     {
@@ -101,7 +115,9 @@
     },
     {
       "name": "session_title",
-      "depends_on": ["models"],
+      "depends_on": [
+        "models"
+      ],
       "reason": "新会话自动生成简明标题，用户手动重命名优先。"
     },
     {
@@ -114,7 +130,10 @@
     },
     {
       "name": "gemini",
-      "depends_on": ["models", "ui"],
+      "depends_on": [
+        "models",
+        "ui"
+      ],
       "reason": "提供原生 Gemini GenerateContent 驱动和连接设置；不包含凭据。"
     },
     {

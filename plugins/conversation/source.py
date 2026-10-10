@@ -4,7 +4,7 @@ from collections.abc import Callable, Mapping, MutableMapping
 from typing import cast
 
 from plugins.models.contract import ChatModelSelection
-from agent.plugin_contracts import Body, Input
+from plugins.ledger.contract import Body, Input
 
 
 SavedSelectionWriter = Callable[[MutableMapping[str, object], ChatModelSelection], None]

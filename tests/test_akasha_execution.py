@@ -10,7 +10,7 @@ import threading
 import pytest
 
 from agent.plugin_composition import CompositionRoot, Context
-from session.bindings import Bindings
+from plugins.ledger.bindings import Bindings
 from plugins.akasha.application.consumer import MessageConsumer
 from plugins.akasha.domain.model import MemoryConfig
 from plugins.akasha.infrastructure.consumption import Consumption
@@ -22,9 +22,9 @@ from plugins.akasha.runtime import MessageMemory
 from plugins.content.api import legacy_post_commit_effect
 from plugins.content.plugin import check_text
 from plugins.turn_projection.plugin import TurnProjection
-from session.embedding_store import MessageEmbeddings
-from session.log import MessageLog, SessionAttributes
-from session.message import ContentPart, Input, Output
+from plugins.ledger.embedding_store import MessageEmbeddings
+from plugins.ledger.log import MessageLog, SessionAttributes
+from plugins.ledger.contract import ContentPart, Input, Output
 
 
 class WorkerGate:

@@ -9,14 +9,14 @@ import httpx
 from pydantic import BaseModel
 
 from agent.plugin_composition import CompositionError, CompositionRoot
-from agent.plugin_composition.channel_io import (
+from plugins.ledger.contract import (
     CHANNEL_ATTACHMENT_IMPORT, CHANNEL_ATTACHMENT_READ, CHANNEL_IDENTITY, INPUT_CUSTODY,
     ChannelAttachmentImport, ChannelAttachmentRead, ChannelIdentity,
     unavailable, unavailable_input_custody,
 )
-from agent.plugin_composition.channels import CHANNEL_INPUT_V2 as CHANNEL_INPUT, CHANNELS
+from plugins.channels.contract import CHANNEL_INPUT_V2 as CHANNEL_INPUT, CHANNELS
 from agent.plugin_composition.host import HOST_INFO, HostInfo
-from agent.plugin_composition.messages import OWNER_STATE, OwnerState
+from plugins.ledger.contract import OWNER_STATE, OwnerState
 from agent.plugin_composition.model import FiberState, PluginRuntime, ServiceKey
 from plugins.gateway.contract import RpcMethod
 from plugins.akashic_clients import plugin as clients
@@ -25,7 +25,7 @@ from plugins.akashic_clients.capabilities import (
 )
 from plugins.channels import plugin as channels
 from plugins.runtime_inspection import plugin as inspection
-from session.log import MessageLog
+from plugins.ledger.log import MessageLog
 
 
 class EmptyParams(BaseModel):

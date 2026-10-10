@@ -14,8 +14,8 @@ SOURCE = parser.parse_args().source
 sys.path.insert(0, str(SOURCE))
 from agent.plugin_composition.tasks import Tasks
 from plugins.sources.session import SourceSession
-import session.log as storage
-from session.message import ContentPart, ContentReferences, Control, Input, Output
+import plugins.ledger.log as storage
+from plugins.ledger.contract import ContentPart, ContentReferences, Control, Input, Output
 from plugins.subagent.runtime import Subagents
 
 

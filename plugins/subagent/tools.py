@@ -9,10 +9,10 @@ from uuid import uuid4
 from pydantic import BaseModel, ConfigDict, Field, ValidationError
 
 from agent.plugin_composition import Context
-from agent.plugin_composition.bindings import BINDINGS
+from plugins.ledger.contract import BINDINGS
 from .inputs import CallSource, Result, TOOL_BIND_SAVED
-from agent.plugin_contracts import ContentPart, Input
-from agent.plugin_contracts import json_value
+from plugins.ledger.contract import ContentPart, Input
+from plugins.ledger.contract import json_value
 
 from .request import PROFILE_TOOLS, Request, SpawnInput, SinkInput
 from .runtime import SUBAGENT_PROGRAM, SubagentBusy, Subagents, completion

@@ -8,7 +8,7 @@ from dataclasses import dataclass
 from types import MappingProxyType
 from typing import cast
 
-from agent.plugin_composition.bindings import Bindings
+from plugins.ledger.contract import Bindings
 from agent.plugin_composition.context import Context
 from agent.plugin_composition.diagnostics import plugin_entrypoint
 from agent.plugin_composition.model import CompositionError

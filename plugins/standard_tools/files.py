@@ -10,8 +10,8 @@ from pydantic import BaseModel, ConfigDict, field_validator
 
 from agent.plugin_composition import Context
 from plugins.host_execution.contract import FILES, FileError, FileImage
-from agent.plugin_composition.artifacts import ARTIFACT_IMPORT
-from agent.plugin_composition.artifacts import AttachmentKind
+from plugins.ledger.contract import ARTIFACT_IMPORT
+from plugins.ledger.contract import AttachmentKind
 from plugins.tools.contract import (
     normalize_tool_parameters,
     validate_tool_parameters,
@@ -22,8 +22,8 @@ from .filesystem import (
     ReadFileTool,
     WriteFileTool,
 )
-from agent.plugin_contracts import ContentPart
-from agent.plugin_contracts import json_value
+from plugins.ledger.contract import ContentPart
+from plugins.ledger.contract import json_value
 
 from ._tool_boundary import CallSource, TOOLS, ToolRef, ToolResultValue
 from .working_directory import WorkingDirectories

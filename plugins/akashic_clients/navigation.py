@@ -7,8 +7,8 @@ from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
-from agent.plugin_composition.messages import OwnerStore, OwnerTransaction
-from agent.plugin_contracts.message import ContentPart, Control
+from plugins.ledger.contract import OwnerStore, OwnerTransaction
+from plugins.ledger.contract import ContentPart, Control
 from .services import MessageCatalogPort, PluginUiProvider
 
 _KEY = "navigation:pins"

@@ -397,8 +397,8 @@ asyncio.run(run())
     from agent.plugin_composition import FiberState, ServiceKey
     from agent.plugins.watcher import PluginWatcher
     from bootstrap.app import AppRuntime
-    from session.log import MessageLog
-    from session.message import Input
+    from plugins.ledger.log import MessageLog
+    from plugins.ledger.contract import Input
     # 一条真实 Message 作为受保护的历史事实。
     log = MessageLog(workspace / 'sessions.db')
     log.writer('e2e-session', author='user', source='e2e', body_types=(Input,), content={}).append(

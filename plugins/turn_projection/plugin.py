@@ -5,7 +5,7 @@ from dataclasses import dataclass
 from typing import Literal
 
 from agent.plugin_composition import Context
-from agent.plugin_contracts import CallRef, Input, Message, Output, ToolCall, ToolResult
+from plugins.ledger.contract import CallRef, Input, Message, Output, ToolCall, ToolResult
 from plugins.turn_projection.contract import (
     TURN_PROJECTION as TURN_PROJECTION,
     Turn as Turn,
