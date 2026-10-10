@@ -134,8 +134,8 @@ try {
     assert.equal(standaloneUrl.searchParams.has("session"), false);
     assert.equal(standaloneUrl.searchParams.has("surface"), false);
     assert.equal(standaloneUrl.searchParams.get("keep"), "1");
-    assert.equal(await standalone.locator(".product-band").count(), 1);
-    checks.push("独立对话仍显示一个顶栏；新会话清理 session/surface 路由参数");
+    assert.equal(await standalone.locator(".product-band").count(), 0);
+    checks.push("独立对话不显示顶栏；新会话清理 session/surface 路由参数");
     assert.deepEqual(errors, [], "对话不得产生未处理的页面错误");
   }
   await writeFile(resolve(output, "report.json"), JSON.stringify({ checks, errors }, null, 2));

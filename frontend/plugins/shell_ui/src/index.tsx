@@ -435,9 +435,11 @@ function Shell({ pages, railActions, settings, settingsPlugins }: {
     buttons[next].focus();
   };
 
-  return <div className="unified-shell">
+  // 只有一个页面时没有可去的地方：顶栏整条不渲染，页面占满视口；设置入口由底栏动作与 Ctrl/Cmd+, 承担。
+  const showBand = bandEntries.length > 1;
+  return <div className={`unified-shell${showBand ? " has-band" : ""}`}>
     {withdrawn && <p role="status" className="config-hint">所选页面暂不可用，已自动切换至默认页面。可在功能设置中查看已安装功能。</p>}
-    <header className="product-band" aria-label="Akashic 主导航">
+    {showBand && <header className="product-band" aria-label="Akashic 主导航">
       <div className="product-band__brand" title="Akashic">
         <img src={akashicBrandIcon} alt="" />
         <strong>Akashic</strong>
@@ -476,7 +478,7 @@ function Shell({ pages, railActions, settings, settingsPlugins }: {
       >
         <span className="shell-page-icon" aria-hidden="true" dangerouslySetInnerHTML={{ __html: SETTINGS_ICON }} />
       </button>}
-    </header>
+    </header>}
     <dialog
       ref={settingsDialog}
       className="shell-settings-dialog"

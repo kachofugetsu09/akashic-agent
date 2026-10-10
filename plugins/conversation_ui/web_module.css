@@ -214,6 +214,25 @@
   }
 }
 
+/* 触控输入下开关、关闭与标签的可点区域不小于 44px；指针输入保持紧凑尺寸。 */
+@media (pointer: coarse) {
+  .conversation-tools-toggle {
+    min-width: 44px;
+    min-height: 44px;
+    justify-content: center;
+  }
+
+  .conversation-tools-close {
+    flex-basis: 44px;
+    width: 44px;
+    height: 44px;
+  }
+
+  .conversation-tools-tab {
+    min-height: 44px;
+  }
+}
+
 @media (prefers-reduced-motion: reduce) {
   .conversation-tools-toggle {
     transition: none;

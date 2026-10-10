@@ -10,13 +10,13 @@ import {
   ConversationScrollButton,
 } from "@/components/ai-elements/conversation";
 import { HostBridgeNotice } from "./host-bridge-notice";
-import { ChatProductBand } from "./chat-product-band";
 import { DesktopAutoScroll } from "./desktop-auto-scroll";
 import { ComposerStatsLine } from "./composer-stats-line";
 import { ThinkingPlaceholder } from "./thinking-placeholder";
 import { DesktopComposer, type ComposerApi } from "./desktop-composer";
 import { DesktopConversationMessages, DesktopTimelineMessages, messageDayKey } from "./desktop-conversation";
 import { ReplyActivityView } from "./message-view";
+import { MessageSquarePlus } from "lucide-react";
 import { CompactNavigation } from "./compact-navigation";
 import { DesktopSidebar } from "./desktop-sidebar";
 import { useSidebarRail } from "./use-sidebar-rail";
@@ -60,21 +60,10 @@ export function DesktopChatView({ embeddedShell, controller }: DesktopChatViewPr
   const committed = new Set(timelineMessages.map((message) => message.id));
   const hasMessages = messages.length + timelineMessages.length + replyActivities.length > 0;
 
-  const shellClass = [
-    "chat-shell",
-    embeddedShell ? "is-embedded" : "is-standalone-l",
-  ].filter(Boolean).join(" ");
+  const shellClass = embeddedShell ? "chat-shell is-embedded" : "chat-shell";
 
   return (
     <main className={shellClass}>
-      {!embeddedShell ? (
-        <ChatProductBand
-          chatReady={chatReady}
-          themeLabel={theme.label}
-          onCycleTheme={cycleTheme}
-        />
-      ) : null}
-
       <div className="chat-shell-body" style={rail.style}>
         <DesktopSidebar
             embeddedShell={embeddedShell} surface={surface} sessions={sidebarSessions}
@@ -103,6 +92,11 @@ export function DesktopChatView({ embeddedShell, controller }: DesktopChatViewPr
             onRename={activeSessionId && !activeSessionDeleted ? (title) => renameSession(activeSessionId, title) : undefined} />
           {activeSessionId ? <SessionDirectory key={activeSessionId} sessionId={activeSessionId}
             refreshKey={Array.from(toolResults.keys()).join("|")} /> : null}
+          {/* 窄屏没有常驻侧栏：新会话留在拇指可达的标题行，不必先打开抽屉。 */}
+          {hasMessages ? <button type="button" className="conversation-heading__new" aria-label="新会话" title="新会话"
+            onClick={() => startNewChat()}>
+            <MessageSquarePlus size={20} strokeWidth={1.75} aria-hidden="true" />
+          </button> : null}
         </header>
         <Conversation className="conversation" resize="instant">
           <ConversationContent className={hasMessages ? "conversation-content" : "conversation-content empty"}>

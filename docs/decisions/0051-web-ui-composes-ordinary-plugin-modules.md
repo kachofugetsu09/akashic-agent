@@ -82,6 +82,18 @@ generation、权限继承或领域状态。服务端 API 仍由原领域 owner �
 - 迁移以插件化前页面为视觉和交互金标准；只有旧模型页的 Akasha 独立配置块按产品决定移除。
 - Onboarding 以后可以作为普通页面或临时流程注入，不是本次实现前置条件。
 
+## 修订（2026-10-10）：退役工作台
+
+删除 `workbench-ui` 插件与 `workbench.panels.v2` 合同；Akasha、Wake 的 Web 入口只保留设置分节，
+后端只读观测接口不变。默认分发清单移除 `workbench-ui`，安装器按退役处理已选插件，不删除数据。
+
+扩展点保留在挂载树上：`shell.pages.v1`（顶层页面）、`conversation.tools.v1`（对话右侧工具区）、
+`shell.rail-actions.v1` 与两个设置挂载点。没有贡献者时界面不出现对应入口：只有一个页面时 Shell
+不渲染顶栏，没有工具标签时对话页不出现工具区开关，chat 标题带也不为它预留位置。
+
+品牌标识移到对话侧栏顶部，新会话改为品牌行尾的图标按钮；窄屏标题行另有新会话入口，
+功能设置与主题位于侧栏底部，窄屏抽屉复用同一侧栏。触控尺寸不小于 44px。
+
 ## 验收
 
 - [x] Core production path 不包含 conversation、workbench、models、Provider 或面板插件名称。

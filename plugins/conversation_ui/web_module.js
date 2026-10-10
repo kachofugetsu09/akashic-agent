@@ -110,6 +110,15 @@ function toolIcon() {
   return icon;
 }
 
+// 告知 chat 宿主右上角有工具区开关，标题带据此让出开关所占的位置。
+function announceTools(frame) {
+  const send = () => frame.contentWindow?.postMessage(
+    { type: "akashic.chat-tools", present: true }, window.location.origin,
+  );
+  frame.addEventListener("load", send);
+  return () => frame.removeEventListener("load", send);
+}
+
 // 通知入口的 ?session= 只消费一次，避免刷新后反复跳回同一会话。
 function takeRequestedSession() {
   const url = new URL(window.location.href);
@@ -183,6 +192,8 @@ function renderConversation(host, view, props) {
     width: savedWidth ?? 0,
     preferredWidth: savedWidth ?? 0,
     useDefaultWidth: savedWidth === null,
+    // chat 的模态层（窄屏导航抽屉等）在 iframe 内，盖不住宿主的浮动开关；打开期间收起开关。
+    chatOverlay: false,
   };
   const handled = new Set();
   const attention = new Set();
@@ -217,7 +228,7 @@ function renderConversation(host, view, props) {
     root.classList.toggle("tools-open", state.open);
     panel.hidden = !state.open;
     splitter.hidden = !state.open;
-    toggle.hidden = state.open;
+    toggle.hidden = state.open || state.chatOverlay;
     toggle.setAttribute("aria-expanded", String(state.open));
     const activeEntry = entries.find((entry) => entry.id === state.activeId) ?? entries[0];
     const toggleLabel = `打开 ${activeEntry.label}${attention.size ? ' · 有新活动' : ''}`;
@@ -261,6 +272,21 @@ function renderConversation(host, view, props) {
   }
 
   root.addEventListener("keydown", closePanelFromChrome);
+
+  function followChatOverlay(event) {
+    if (event.source !== frame.contentWindow || event.origin !== window.location.origin) return;
+    const message = event.data;
+    if (!message || typeof message !== "object" || message.type !== "akashic.chat-overlay") return;
+    state.chatOverlay = message.open === true;
+    update();
+  }
+  window.addEventListener("message", followChatOverlay);
+  // iframe 重载时旧的打开状态作废。
+  const resetChatOverlay = () => {
+    state.chatOverlay = false;
+    update();
+  };
+  frame.addEventListener("load", resetChatOverlay);
 
   for (const [entryIndex, entry] of entries.entries()) {
     const button = document.createElement("button");
@@ -366,13 +392,17 @@ function renderConversation(host, view, props) {
   window.addEventListener("resize", resize);
   const stopThemeSync = syncFrameTheme(frame);
   const stopRailActions = connectRailActions(frame, railActions);
+  const stopToolsNotice = announceTools(frame);
   resize();
   update();
   return () => {
     root.removeEventListener("keydown", closePanelFromChrome);
+    window.removeEventListener("message", followChatOverlay);
+    frame.removeEventListener("load", resetChatOverlay);
     window.removeEventListener("resize", resize);
     activeListeners.clear();
     for (const dispose of disposers.reverse()) dispose();
+    stopToolsNotice();
     stopRailActions();
     stopThemeSync();
     host.replaceChildren();
