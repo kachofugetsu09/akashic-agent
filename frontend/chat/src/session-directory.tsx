@@ -1,6 +1,8 @@
-import { useEffect, useState } from "react";
+import { Folder } from "lucide-react";
+import { useEffect, useRef, useState } from "react";
+import { copyText } from "./copy-text";
 import { queryHostPlugin, usePluginUiCatalogVersion } from "./plugin-ui-runtime";
-import { directoryState, directoryStatus, type DirectoryState } from "./directory-data";
+import { directoryName, directoryState, directoryStatus, type DirectoryState } from "./directory-data";
 
 interface CurrentDirectory extends DirectoryState {
   agents: { status: string; sources: string[]; error?: string };
@@ -53,20 +55,65 @@ export function SessionDirectory({ sessionId, refreshKey }: { sessionId: string;
     };
   }, [catalog.version, installed, refreshKey, retry, sessionId]);
   if (!installed) return null;
-  return <div className="session-directory">
-    <details>
-      <summary><span className="session-directory__arrow" aria-hidden="true">▾</span><span>工作目录</span><span className="directory-path" title={current?.path ?? undefined}>{current?.path ?? (current ? "未设置" : "正在读取…")}</span>
-        <small>{error ? "状态未能刷新" : current && current.status !== "unset" ? directoryStatus(current.status) : ""}</small></summary>
-      <div className="session-directory__details">
-        {current?.path ? <p>当前对话独立使用此目录。Agent 可通过工具切换，项目默认目录保持固定。</p>
-          : <p>当前对话未指定目录，Shell 和文件保持既有默认目录。之后绑定项目不会改变这个对话。</p>}
-        {current?.agents.status === "ready" && current.agents.sources.length ? <>
-          <strong>AGENTS 来源</strong>
-          <ul>{current.agents.sources.map((path) => <li className="directory-path" key={path}>{path}</li>)}</ul>
-        </> : current?.path && current?.agents.status !== "ready" ? <p role="status">仓库规则不可用：{current?.agents.error}</p> : null}
-        {error ? <p className="directory-error" role="status">{error}</p> : null}
-        <button type="button" onClick={() => setRetry((value) => value + 1)}>刷新状态</button>
+  return <DirectoryMarker current={current} error={error} onRefresh={() => setRetry((value) => value + 1)} />;
+}
+
+// 顶栏右侧的安静标记：平时只是"文件夹 + 目录名"，异常时才变色；点开看完整路径。
+function DirectoryMarker({ current, error, onRefresh }: {
+  current: CurrentDirectory | null;
+  error: string;
+  onRefresh: () => void;
+}) {
+  const [open, setOpen] = useState(false);
+  const [copied, setCopied] = useState(false);
+  const rootRef = useRef<HTMLDivElement>(null);
+  const triggerRef = useRef<HTMLButtonElement>(null);
+  const abnormal = current && !["available", "unset"].includes(current.status);
+  // 1. 点击面板外或按 Esc 收起，Esc 把焦点还给触发按钮。
+  useEffect(() => {
+    if (!open) return;
+    const onPointer = (event: PointerEvent) => {
+      if (!rootRef.current?.contains(event.target as Node)) setOpen(false);
+    };
+    const onKey = (event: KeyboardEvent) => {
+      if (event.key !== "Escape") return;
+      setOpen(false);
+      triggerRef.current?.focus();
+    };
+    document.addEventListener("pointerdown", onPointer);
+    document.addEventListener("keydown", onKey);
+    return () => {
+      document.removeEventListener("pointerdown", onPointer);
+      document.removeEventListener("keydown", onKey);
+    };
+  }, [open]);
+  // 2. 目录未设置属于常态，不占位置；已设置或出现异常才显示标记。
+  if (!current?.path) return null;
+  const label = abnormal ? directoryStatus(current.status) : directoryName(current.path);
+  const copy = () => {
+    void copyText(current.path ?? "").then(() => {
+      setCopied(true);
+      window.setTimeout(() => setCopied(false), 1500);
+    });
+  };
+  return <div className="directory-marker" ref={rootRef}>
+    <button ref={triggerRef} type="button" className="directory-marker__trigger" data-alert={abnormal || undefined}
+      aria-expanded={open} aria-label={`工作目录：${current.path}${abnormal ? `，${label}` : ""}`}
+      onClick={() => setOpen((value) => !value)}>
+      <Folder size={14} aria-hidden="true" />
+      <span>{label}</span>
+    </button>
+    {open ? <div className="directory-marker__panel" role="group" aria-label="工作目录">
+      <code className="directory-path">{current.path}</code>
+      <p>{abnormal ? `${directoryStatus(current.status)}${current.error ? `：${current.error}` : ""}` : "此对话独立使用这个目录，不影响项目默认目录。"}</p>
+      {current.agents.status === "ready" && current.agents.sources.length ? <p>
+        仓库规则：{current.agents.sources.map((path) => directoryName(path)).join("、")}
+      </p> : current.agents.status !== "ready" ? <p role="status">仓库规则不可用：{current.agents.error}</p> : null}
+      {error ? <p className="directory-error" role="status">{error}</p> : null}
+      <div className="directory-marker__actions">
+        <button type="button" onClick={copy}>{copied ? "已复制" : "复制路径"}</button>
+        <button type="button" onClick={onRefresh}>刷新</button>
       </div>
-    </details>
+    </div> : null}
   </div>;
 }

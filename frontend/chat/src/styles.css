@@ -783,8 +783,11 @@ input {
   display: grid;
   min-width: 0;
   gap: 1px;
-  padding-inline-start: 36px;
+  /* 与项目行的展开箭头同宽：状态槽位落在文件夹图标正下方，会话标题与项目名左对齐。 */
+  padding-inline-start: var(--project-toggle-width, 28px);
 }
+
+.project-group__icon { display: grid; width: 18px; height: 18px; flex: 0 0 18px; place-items: center; }
 
 .project-group__hint {
   padding-block: 4px;
@@ -793,12 +796,17 @@ input {
   font-size: 0.75rem;
 }
 
-.project-session span {
+.project-session > span:not(.session-status-slot) {
   min-width: 0;
   flex: 1;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+
+.project-session {
+  gap: 10px;
+  padding-inline: 4px 10px;
 }
 
 .project-session.active {
@@ -807,6 +815,7 @@ input {
 
 @media (max-width: 820px), (hover: none) {
   .project-group__new-chat { display: none; }
+  .project-group { --project-toggle-width: 44px; }
   .project-group__toggle { width: 44px; }
   .project-group__row,
   .project-group__open,
@@ -1134,22 +1143,47 @@ input {
   padding-inline: var(--chat-dock-inset);
 }
 
-.desktop-history-loader {
+.desktop-history-loader,
+.desktop-history-start {
   align-self: center;
-  min-height: 2.5rem;
-  padding: 0.5rem 1rem;
-  border: 1px solid var(--md-sys-color-outline-variant);
-  border-radius: 999px;
-  background: var(--md-sys-color-surface-container-low);
-  color: var(--md-sys-color-on-surface-variant);
+  display: flex;
+  min-height: 2rem;
+  align-items: center;
+  justify-content: center;
+  margin: 0;
+  color: var(--chat-faint);
+  font-size: var(--chat-type-caption, 0.75rem);
+}
+
+.desktop-history-loader button {
+  min-height: 2rem;
+  padding: 0 0.75rem;
+  border: 0;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--chat-muted);
   font: inherit;
   cursor: pointer;
 }
 
-.desktop-history-loader:disabled {
-  cursor: progress;
-  opacity: 0.65;
+.desktop-history-loader button:hover { background: var(--chat-chip); color: var(--chat-ink); }
+.desktop-history-loader button:focus-visible { outline: 2px solid var(--ak-rule-focus); outline-offset: 2px; }
+
+.desktop-history-loader [role="status"] { display: inline-flex; align-items: center; gap: 0.5rem; color: var(--chat-muted); }
+
+.desktop-history-loader__spinner {
+  width: 0.75rem;
+  height: 0.75rem;
+  border: 1.5px solid var(--chat-chip);
+  border-top-color: var(--chat-muted);
+  border-radius: 50%;
 }
+
+@media (prefers-reduced-motion: no-preference) {
+  .desktop-history-loader__spinner { animation: history-spin 0.8s linear infinite; }
+}
+
+@keyframes history-spin { to { rotate: 360deg; } }
 
 .conversation-content.empty {
   /* 空态簇对内容区几何居中（不沿用阅读列左偏置）；margin 保持 0，
@@ -2509,8 +2543,7 @@ form.composer:focus-within [data-slot="input-group"] {
 /* Execution paths wrap fully; only the directory list owns scrolling. */
 .directory-dialog { min-width: 0; color: var(--ak-ink-primary); background: var(--ak-paper-canvas); }
 .directory-dialog__header { padding-inline-end: 44px; text-align: start; }
-.directory-path, .project-directory-path { overflow-wrap: anywhere; font-family: var(--ak-type-technical); font-size: var(--chat-type-control); }
-.project-directory-path { margin: 0; padding-block: 2px; padding-inline: var(--chat-rail-inline); overflow: hidden; color: var(--ak-ink-secondary); font-size: var(--chat-type-caption, 0.75rem); text-overflow: ellipsis; white-space: nowrap; }
+.directory-path { overflow-wrap: anywhere; font-family: var(--ak-type-technical); font-size: var(--chat-type-control); }
 .directory-open { display: grid; gap: 8px; }
 .directory-open > div { display: flex; gap: 8px; min-width: 0; }
 .directory-open input { min-width: 0; flex: 1; }
@@ -2522,22 +2555,20 @@ form.composer:focus-within [data-slot="input-group"] {
 .directory-notice { color: var(--ak-ink-secondary); }
 .directory-notice strong { display: block; color: var(--ak-ink-primary); }
 .directory-actions { display: flex; flex-flow: row wrap; gap: 8px; }
-.session-directory { flex: 0 0 auto; min-width: 0; padding-inline: max(var(--chat-dock-inset), env(safe-area-inset-left, 0px)) max(var(--chat-dock-inset), env(safe-area-inset-right, 0px)); color: var(--ak-ink-secondary); font-size: var(--chat-type-control); }
-.session-directory summary { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 12px; min-height: 40px; cursor: pointer; }
-.session-directory summary:focus-visible { border-radius: 4px; outline: 2px solid var(--ak-rule-focus); outline-offset: 2px; }
-.session-directory__arrow { display: inline-block; }
-@media (prefers-reduced-motion: no-preference) {
-  .session-directory__arrow { transition: transform 180ms cubic-bezier(0.2, 0, 0, 1); }
-}
-.session-directory details[open] .session-directory__arrow { transform: rotate(180deg); }
-.session-directory summary .directory-path { min-width: 0; flex: 1 1 12rem; display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 2; overflow: hidden; }
-.session-directory__details { display: grid; gap: 4px; max-height: min(12rem, 25dvh); overflow-y: auto; padding-block: 4px 8px; border-block-start: 1px solid var(--ak-rule-subtle); }
-.session-directory__details p { margin: 0; }
-.session-directory__details ul { margin: 0; padding-inline-start: 20px; }
-.session-directory__details strong { display: block; color: var(--ak-ink-primary); }
-.session-directory__details button { justify-self: start; min-height: 32px; padding: 4px 10px; border: 1px solid var(--ak-rule-default); border-radius: 6px; background: transparent; color: var(--ak-ink-secondary); font-size: var(--chat-type-caption, 0.75rem); cursor: pointer; }
-.session-directory__details button:hover { border-color: var(--ak-rule-strong); color: var(--ak-ink-primary); }
-.session-directory__details button:focus-visible { outline: 2px solid var(--ak-rule-focus); outline-offset: 2px; }
+.directory-marker { position: relative; flex: 0 0 auto; margin-inline-start: auto; padding-inline-start: 12px; font-size: var(--chat-type-caption, 0.75rem); }
+.directory-marker__trigger { display: inline-flex; max-width: 14rem; min-height: 32px; align-items: center; gap: 6px; padding-inline: 8px; border: 0; border-radius: 6px; background: transparent; color: var(--chat-faint); font: inherit; cursor: pointer; transition: color 120ms; }
+.directory-marker__trigger span { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.directory-marker__trigger svg { flex: 0 0 auto; }
+.directory-marker__trigger:hover, .directory-marker__trigger[aria-expanded="true"] { color: var(--chat-ink); }
+.directory-marker__trigger[data-alert] { color: var(--ak-color-status-error); }
+.directory-marker__trigger:focus-visible { outline: 2px solid var(--ak-rule-focus); outline-offset: 2px; }
+.directory-marker__panel { position: absolute; z-index: 20; inset-block-start: calc(100% + 4px); inset-inline-end: 0; display: grid; gap: 8px; inline-size: min(26rem, calc(100vw - 32px)); padding: 12px; border: 1px solid var(--chat-line); border-radius: 10px; background: var(--ak-paper-canvas); box-shadow: 0 8px 24px color-mix(in oklch, var(--ak-ink-primary) 12%, transparent); color: var(--chat-muted); line-height: 1.5; }
+.directory-marker__panel p { margin: 0; text-wrap: pretty; }
+.directory-marker__panel code.directory-path { display: block; padding: 6px 8px; border-radius: 6px; background: var(--chat-chip); color: var(--chat-ink); }
+.directory-marker__actions { display: flex; gap: 4px; margin-inline-start: -8px; }
+.directory-marker__actions button { min-height: 32px; padding-inline: 8px; border: 0; border-radius: 6px; background: transparent; color: var(--chat-muted); font: inherit; cursor: pointer; }
+.directory-marker__actions button:hover { background: var(--chat-chip); color: var(--chat-ink); }
+.directory-marker__actions button:focus-visible { outline: 2px solid var(--ak-rule-focus); outline-offset: 2px; }
 
 /* Creation keeps the selected path readable at narrow widths and large text. */
 .project-dialog__directory { display: grid; gap: 8px; margin-block: 16px; }

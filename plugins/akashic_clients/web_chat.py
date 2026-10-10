@@ -213,6 +213,7 @@ class WebChatChannel:
         self._messages: MessageCatalog | None = None
         self._message_scope: Callable[[], Any] | None = None
         self._reply_status: Callable[[str], AsyncGenerator[dict[str, object], None]] | None = None
+        self._session_activity: Callable[[], AsyncGenerator[dict[str, object], None]] | None = None
         self._message_display: MessageDisplayReader | None = None
         self._followers: dict[WebSocket, tuple[str, asyncio.Task[None]]] = {}
         self._stopping = False
@@ -220,6 +221,10 @@ class WebChatChannel:
         self._client_sessions: dict[str, str] = {}
         self._turn_sessions: dict[str, str] = {}
         self._turn_contents: dict[str, str] = {}
+
+    def bind_session_activity(self, follow: Callable[[], AsyncGenerator[dict[str, object], None]]) -> None:
+        """每条连接只拥有一个通道级摘要订阅，与当前会话的正文跟随独立。"""
+        self._session_activity = follow
 
     def bind_message_readers(
         self, messages: MessageCatalog,
@@ -497,6 +502,8 @@ class WebChatChannel:
         try:
             async with asyncio.TaskGroup() as tasks:
                 metadata_task = tasks.create_task(self._follow_metadata(websocket)) if watch_sessions else None
+                activity = None if self._session_activity is None else tasks.create_task(
+                    self._send_session_activity(websocket))
                 try:
                     while True:
                         payload = await websocket.receive_json()
@@ -513,6 +520,8 @@ class WebChatChannel:
                     if metadata_task is not None:
                         metadata_task.cancel()
                     await self._cancel_follow(websocket)
+                    if activity is not None:
+                        activity.cancel()
         finally:
             await self._remove_connection(websocket)
             logger.info("[web_chat] websocket closed id=%s", socket_id)
@@ -524,6 +533,22 @@ class WebChatChannel:
         async with aclosing(changes):
             async for _ in changes:
                 await websocket.send_json({"type": "sessions.changed", "version": 2})
+    async def _send_session_activity(self, websocket: WebSocket) -> None:
+        """只发送变化的摘要；连接断开后由连接 scope 取消并排空。"""
+        assert self._session_activity is not None
+        # 1. 侧栏状态只是辅助信息：订阅失败只让它停止更新，不能拖垮收发消息的连接。
+        try:
+            async with aclosing(self._session_activity()) as frames:
+                async for frame in frames:
+                    await websocket.send_json({"type": "sessions.activity", **frame})
+        except Exception:
+            logger.exception("[web_chat] 会话活动订阅失败，侧栏状态停止更新")
+            # 2. 尽力通知客户端清掉可能残留的运行中标记；连接已断开时发送失败可忽略。
+            with suppress(Exception):
+                await websocket.send_json({
+                    "type": "sessions.activity", "version": 1, "snapshot": False,
+                    "available": False, "active": [], "heads": {}, "removed": [],
+                })
 
     async def save_upload_stream(
         self,

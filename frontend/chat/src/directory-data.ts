@@ -36,3 +36,9 @@ export function directoryStatus(status: string): string {
     not_directory: "不是目录", permission_denied: "没有访问权限", offline: "执行主机离线", io_error: "读取失败" };
   return labels[status] ?? status;
 }
+
+/** 顶栏只露出目录名；完整路径留给点开的面板。 */
+export function directoryName(path: string): string {
+  const trimmed = path.length > 1 ? path.replace(/\/+$/, "") : path;
+  return trimmed.slice(trimmed.lastIndexOf("/") + 1) || trimmed;
+}

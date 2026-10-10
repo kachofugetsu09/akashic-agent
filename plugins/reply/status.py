@@ -25,6 +25,19 @@ class ReplyRead:
     def snapshot(self, session_id: str) -> tuple[ReplyActivity, ...]:
         return self._state.snapshot(session_id)
 
+    async def follow_active_sessions(self) -> AsyncGenerator[frozenset[str], None]:
+        """只跟随活动集合；草稿 token 不唤醒侧栏订阅。"""
+        previous: frozenset[str] | None = None
+        while True:
+            changed = self._state.activity_changed
+            current = self._state.active_sessions()
+            if current != previous:
+                previous = current
+                yield current
+            if self._state.closed:
+                return
+            await changed.wait()
+
     async def follow(self, session_id: str) -> AsyncGenerator[tuple[dict[str, object], ...], None]:
         """订阅当前快照；慢读者合并通知，重连不重放旧 token。"""
         previous: tuple[ReplyActivity, ...] | None = None
@@ -45,23 +58,32 @@ class ReplyState:
     def __init__(self):
         self._items: dict[str, ReplyActivity] = {}
         self.changed = asyncio.Event()
+        self.activity_changed = asyncio.Event()
         self.closed = False
         self.read = ReplyRead(self)
 
     def snapshot(self, session_id: str) -> tuple[ReplyActivity, ...]:
         return tuple(item for item in self._items.values() if item.session_id == session_id)
 
+    def active_sessions(self) -> frozenset[str]:
+        """正在回复的会话集合；已撤权但尚在排空的活动不算运行中。"""
+        return frozenset(item.session_id for item in self._items.values() if item.active)
+
     def close(self) -> None:
         """卸载只能在真实工作排空后结束只读订阅，不抹去仍运行的状态。"""
         if self._items:
             raise RuntimeError("回复尚未排空，不能关闭状态读取")
         self.closed = True
-        self._notify()
+        self._notify(activity=True)
 
-    def _notify(self) -> None:
+    def _notify(self, *, activity: bool = False) -> None:
         changed = self.changed
         self.changed = asyncio.Event()
         changed.set()
+        if activity:
+            changed = self.activity_changed
+            self.activity_changed = asyncio.Event()
+            changed.set()
 
     @contextmanager
     def open(self, task: Task, session_id: str, source: str) -> Generator[Preview]:
@@ -76,10 +98,10 @@ class ReplyState:
             item = self._items.get(task.handle)
             if item is not None:
                 self._items[task.handle] = replace(item, active=False, preview=None)
-                self._notify()
+                self._notify(activity=True)
 
         task.on_close(revoked)
-        self._notify()
+        self._notify(activity=True)
 
         @contextmanager
         def preview(message_id: str) -> Generator[StreamCallback]:
@@ -122,4 +144,4 @@ class ReplyState:
             yield preview
         finally:
             del self._items[task.handle]
-            self._notify()
+            self._notify(activity=True)

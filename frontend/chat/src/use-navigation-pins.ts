@@ -90,6 +90,11 @@ export function useNavigationPins(enabled: boolean) {
     });
   }, []);
 
+  // 切换到某项目的对话时自动展开它，其余项目保持用户上次的折叠状态。
+  const expandProject = useCallback((projectId: string) => {
+    setExpandedProjects((current) => current.has(projectId) ? current : new Set(current).add(projectId));
+  }, []);
+
   const setPinned = useCallback(async (pin: NavigationPin, pinned: boolean) => {
     if (!enabled || !ready || pendingRef.current) return;
     pendingRef.current = true;
@@ -114,7 +119,7 @@ export function useNavigationPins(enabled: boolean) {
     }
   }, [enabled, ready]);
 
-  return { ...data, ready: ready && enabled, pending, error, reload, setPinned, expandedProjects, toggleProject };
+  return { ...data, ready: ready && enabled, pending, error, reload, setPinned, expandedProjects, toggleProject, expandProject };
 }
 
 export type NavigationPinsState = ReturnType<typeof useNavigationPins>;

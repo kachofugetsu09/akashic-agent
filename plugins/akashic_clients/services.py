@@ -8,7 +8,7 @@ from __future__ import annotations
 
 from collections.abc import AsyncGenerator, Awaitable, Callable, Mapping
 from pathlib import Path
-from typing import Protocol, runtime_checkable
+from typing import Literal, Protocol, runtime_checkable
 
 from agent.plugin_composition.channels import AttachmentRef
 from agent.plugin_composition.message_view import MessageDisplayReader
@@ -125,9 +125,14 @@ class MessageCatalogPort(Protocol):
     def reader(self, session_id: str) -> MessageReaderPort: ...
     def sessions(self, *, prefix: str, visibility: str, after: tuple[str, str] | None, limit: int) -> SessionPagePort: ...
     def follow_metadata(self) -> AsyncGenerator[None, None]: ...
+    def follow(self, *, poll_interval: float | None = None,
+               prefix: str = "", visibility: Literal["listed", "internal"] | None = None,
+               ) -> AsyncGenerator[Mapping[str, int], None]: ...
 
 
 ReplyStatusPort = Callable[[str], AsyncGenerator[dict[str, object], None]]
+# 产出 None 表示回复插件未加载，无法判断哪些会话在运行。
+ActiveSessionsFollowPort = Callable[[], AsyncGenerator[frozenset[str] | None, None]]
 ModelCatalogReader = Callable[[], Awaitable[ModelCatalogSnapshot]]
 ModelSelectionReader = Callable[[Mapping[str, object]], Awaitable[ChatModelSelection]]
 

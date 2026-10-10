@@ -1,6 +1,7 @@
 import { ChevronRight, PenLine, Trash2 } from "lucide-react";
 import { useEffect, useRef, useState, type ReactNode } from "react";
 import "./conversation-navigation.css";
+import { SessionStatusMark, type SessionStatus } from "./session-status-mark";
 import { NavigationRowMenu, type NavigationRowAction } from "./navigation-row-menu";
 
 export interface ConversationDestination {
@@ -21,6 +22,7 @@ export interface ConversationSession {
   title: string;
   preview: string;
   active: boolean;
+  status?: SessionStatus;
   unavailable?: boolean;
 }
 
@@ -269,6 +271,7 @@ export function ConversationSessionRow({ session, pendingSessionId, onActivate, 
   const body = renaming ? <div
     className={`conversation-session editing ${session.active ? "active" : ""}`}
     onClick={(event) => event.stopPropagation()}>
+    <SessionStatusMark status={session.status} />
     <span className="conversation-session__copy">
       <span className="conversation-session__title">
         <input
@@ -322,6 +325,7 @@ export function ConversationSessionRow({ session, pendingSessionId, onActivate, 
       onPointerEnter={() => { if (!session.unavailable) onPrefetch?.(session.id); }}
       onFocus={() => { if (!session.unavailable) onPrefetch?.(session.id); }}
       onDoubleClick={startRename}>
+      <SessionStatusMark status={session.status} />
       <span className="conversation-session__copy">
         <span className="conversation-session__title">
           <strong>{session.title}</strong>

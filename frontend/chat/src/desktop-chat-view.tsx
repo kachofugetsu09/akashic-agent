@@ -1,5 +1,5 @@
 import { timelineReplyGroups, timelineToolResults, timelineInputStarts, timelineSourceKey, timelineSourceRefreshTokens } from "./message-timeline";
-import React, { useMemo, useRef, useState } from "react";
+import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useStickToBottomContext } from "use-stick-to-bottom";
 import { cycleTheme, useTheme } from "../../theme/src/theme-runtime";
 import { MaterialButton } from "../../theme/src/material-react";
@@ -101,9 +101,9 @@ export function DesktopChatView({ embeddedShell, controller }: DesktopChatViewPr
           />
           <SessionHeadingTitle key={activeSessionId} heading={headingTitle} value={activeTitle}
             onRename={activeSessionId && !activeSessionDeleted ? (title) => renameSession(activeSessionId, title) : undefined} />
+          {activeSessionId ? <SessionDirectory key={activeSessionId} sessionId={activeSessionId}
+            refreshKey={Array.from(toolResults.keys()).join("|")} /> : null}
         </header>
-        {activeSessionId ? <SessionDirectory key={activeSessionId} sessionId={activeSessionId}
-          refreshKey={Array.from(toolResults.keys()).join("|")} /> : null}
         <Conversation className="conversation" resize="instant">
           <ConversationContent className={hasMessages ? "conversation-content" : "conversation-content empty"}>
             {!hasMessages ? <DesktopEmptyState shellStatus={shellState?.status ?? null} loadingSession={historyLoading} modelProblem={modelProblem} /> : (
@@ -171,6 +171,7 @@ export function DesktopChatView({ embeddedShell, controller }: DesktopChatViewPr
   );
 }
 
+// 滚动到顶部附近时自动补载更早消息；文字按钮保留给键盘与不触发滚动的场景。
 function DesktopHistoryLoader({
   firstMessageId,
   hasMore,
@@ -183,28 +184,52 @@ function DesktopHistoryLoader({
   onLoadOlder: () => Promise<void>;
 }) {
   const { scrollRef } = useStickToBottomContext();
-  if (!hasMore) return null;
+  const rowRef = useRef<HTMLDivElement>(null);
+  const busyRef = useRef(false);
+  const latest = useRef({ firstMessageId, onLoadOlder });
+  latest.current = { firstMessageId, onLoadOlder };
 
-  const load = async () => {
-    const scrollElement = scrollRef.current;
-    const escapedId = firstMessageId ? CSS.escape(firstMessageId) : "";
-    const anchor = escapedId
-      ? scrollElement?.querySelector<HTMLElement>(`[data-message-id="${escapedId}"]`)
-      : null;
-    const anchorTop = anchor?.getBoundingClientRect().top;
-    await onLoadOlder();
-    if (!scrollElement || anchorTop === undefined || !escapedId) return;
-    await new Promise<void>((resolve) => window.requestAnimationFrame(() => resolve()));
-    const restoredAnchor = scrollElement.querySelector<HTMLElement>(`[data-message-id="${escapedId}"]`);
-    if (restoredAnchor) scrollElement.scrollTop += restoredAnchor.getBoundingClientRect().top - anchorTop;
-  };
+  // 1. 记录首条消息位置，加载完成后把它放回原处，避免视图跳动。
+  const load = useCallback(async () => {
+    if (busyRef.current) return;
+    busyRef.current = true;
+    try {
+      const scrollElement = scrollRef.current;
+      const { firstMessageId: id, onLoadOlder: loadOlder } = latest.current;
+      const escapedId = id ? CSS.escape(id) : "";
+      const anchor = escapedId
+        ? scrollElement?.querySelector<HTMLElement>(`[data-message-id="${escapedId}"]`)
+        : null;
+      const anchorTop = anchor?.getBoundingClientRect().top;
+      await loadOlder();
+      if (!scrollElement || anchorTop === undefined || !escapedId) return;
+      await new Promise<void>((resolve) => window.requestAnimationFrame(() => resolve()));
+      const restoredAnchor = scrollElement.querySelector<HTMLElement>(`[data-message-id="${escapedId}"]`);
+      if (restoredAnchor) scrollElement.scrollTop += restoredAnchor.getBoundingClientRect().top - anchorTop;
+    } finally {
+      busyRef.current = false;
+    }
+  }, [scrollRef]);
 
-  return <button
-    type="button"
-    className="desktop-history-loader"
-    disabled={loading}
-    onClick={() => void load()}
-  >{loading ? "正在加载更早消息…" : "加载更早消息"}</button>;
+  // 2. 行进入顶部 240px 预读范围时自动加载；只在相交状态变化时触发，失败不会循环重试。
+  useEffect(() => {
+    const row = rowRef.current;
+    const root = scrollRef.current;
+    if (!hasMore || !row || !root || typeof IntersectionObserver === "undefined") return;
+    const observer = new IntersectionObserver((entries) => {
+      if (entries.some((entry) => entry.isIntersecting)) void load();
+    }, { root, rootMargin: "240px 0px 0px 0px" });
+    observer.observe(row);
+    return () => observer.disconnect();
+  }, [hasMore, load, scrollRef]);
+
+  // 3. 已到对话开头时给出安静的终点标记，而不是让入口凭空消失。
+  if (!hasMore) return <p className="desktop-history-start">对话开头</p>;
+  return <div ref={rowRef} className="desktop-history-loader" data-loading={loading || undefined}>
+    {loading
+      ? <span role="status"><i className="desktop-history-loader__spinner" aria-hidden="true" />正在加载更早消息</span>
+      : <button type="button" onClick={() => void load()}>↑ 更早的消息</button>}
+  </div>;
 }
 
 /** 时段问候只做一行小字；主标题保持"布置下一件事"的任务口吻。 */
