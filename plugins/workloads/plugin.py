@@ -7,7 +7,7 @@ from contextlib import asynccontextmanager
 from agent.plugin_composition import Context
 from agent.plugin_composition.execution import WORKLOAD_CONTROLLER
 from agent.plugin_composition.model import FiberState
-from agent.plugin_composition.workload_slots import WORKLOADS, Workload
+from plugins.workloads.contract import WORKLOADS, Workload
 
 from .definitions import WorkloadBinding, _descriptor, _normalize_workload
 from .host import WorkloadGenerationHost

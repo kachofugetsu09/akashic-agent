@@ -26,7 +26,7 @@ from agent.plugin_composition.ui import (
     WebUiCatalog,
 )
 from agent.plugin_composition.ui_slots import UI_SLOTS
-from agent.plugin_composition.workload_slots import WORKLOADS
+from plugins.workloads.contract import WORKLOADS
 
 from .dashboard import DashboardResources, _core_routes, _require_routes_available
 from .plugin_ui import PluginUiSlots

@@ -3,7 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from collections.abc import Awaitable, Callable, Mapping
 from contextlib import AbstractAsyncContextManager
-from agent.plugin_composition.workload_slots import WorkloadHandle
+from plugins.workloads.contract import WorkloadHandle
 from plugins.managed_processes.contract import ManagedProcessHandle
 from typing import Any, Literal, Protocol
 from agent.plugin_composition.context import Context
