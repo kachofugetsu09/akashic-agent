@@ -150,9 +150,6 @@ note = "独立公共合同；实现由普通插件提供，来源见 Issue 766 �
 role = "seam"
 note = "独立公共合同；实现由普通插件提供，来源见 Issue 766 设计"
 
-[capabilities."tools.loading.presentation.v1"]
-role = "seam"
-note = "独立公共合同；按插件加载的展示由普通插件提供，来源见 Issue 766 设计"
 
 [capabilities."tools.bind-saved.v1"]
 role = "seam"
@@ -169,7 +166,3 @@ note = "按实际 Context 应用自身固定输入；沿 selection CAS 与局部
 [capabilities."channel.input.v2"]
 role = "seam"
 note = "Channel 入站入口；由 CHANNELS 的注册者提供"
-
-[capabilities."tools.program.v2"]
-role = "seam"
-note = "公共结构合同；实际状态与生命周期由提供方插件拥有"
