@@ -20,7 +20,7 @@ if str(_SOURCE_ROOT) not in sys.path:
 from agent.plugins.files import encode_tree, sync_directory, tree_entries
 from agent.plugins.artifacts import ArtifactPointer, ArtifactPointers, pointer_state_path, read_pointers, resolve_pointer
 from agent.plugins.input_preparation import _source_revision
-from agent.plugins.manifest import load_plugin_manifest, manifest_path
+from agent.plugins.bundles import patch_rows
 from agent.plugins.python_environment import ENVIRONMENT_FILE
 from agent.plugins.reload_journal import JournalPreflight, ReloadJournal
 from agent.plugins.selection import PluginSelection, SelectionConflictError
@@ -162,12 +162,12 @@ def _current_inputs(
     allowed = (previous,) if terminal else (previous, staged, collapsed)
     if pointers not in allowed:
         raise RuntimeError("插件指针已被其他操作改变，不能覆盖")
-    _file_bytes(manifest_path(plugins_home))
-    entries = load_plugin_manifest(plugins_home)
+    _file_bytes(selection.path.parent.parent / "bundle.patch.toml")
+    entries = {row.plugin: not row.disabled for row in patch_rows(selection.path.parent.parent)}
     enabled = entries.get(update.plugin_id)
     if terminal:
         if enabled != update.previous_enabled:
-            raise RuntimeError("已回退记录的 manifest 后置状态已漂移")
+            raise RuntimeError("已回退记录的 bundle patch 后置状态已漂移")
     elif enabled not in (update.previous_enabled, True):
         raise RuntimeError("插件启用状态已被其他操作改变，不能覆盖")
     return pointers, entries, previous_identity
@@ -190,7 +190,7 @@ def _sources(workspace: Path, plugins_home: Path, pointer: Path, selection: Plug
     journal = workspace / "runtime/plugin-reloads.sqlite3"
     return {
         selection.path: "workspace/runtime/plugin-stable.json",
-        manifest_path(plugins_home): "plugins/manifest.toml",
+        workspace / "bundle.patch.toml": "workspace/bundle.patch.toml",
         pointer: "plugins/target/.pointers.json",
         journal: "workspace/runtime/plugin-reloads.sqlite3.raw",
         Path(f"{journal}-wal"): "workspace/runtime/plugin-reloads.sqlite3-wal.raw",
@@ -344,7 +344,7 @@ def rollback_plugin_install(
                 if {key: value for key, value in manifest_after.items() if key != update.plugin_id} != {
                     key: value for key, value in before_manifest.items() if key != update.plugin_id
                 }:
-                    raise RuntimeError("其他插件 manifest 条目改变")
+                    raise RuntimeError("其他插件 bundle patch 条目改变")
             return {"status": "rolled_back", "update_id": update_id,
                     "plugin_id": update.plugin_id, "root_ref": root_ref,
                     "backup_dir": str(backup_dir), "remaining_armed": remaining,

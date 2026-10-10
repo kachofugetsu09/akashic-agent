@@ -14,9 +14,8 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import cast
 
-from agent.plugins.bundles import distribution_bundle
 from agent.plugins.artifacts import read_pointers, resolve_pointer
-from agent.plugins.manifest import load_plugin_manifest, workspace_plugin_data_dir
+from agent.plugins.manifest import workspace_plugin_data_dir
 from agent.plugins.source_resolver import ResolvedPluginSource
 from agent.plugins.selection import PluginSelection, SelectionConflictError
 from agent.plugins.static_manifest import load_static_plugin_manifest
@@ -41,7 +40,7 @@ class DistributionSources:
     sources: tuple[ResolvedPluginSource, ...] = ()
     ignored_installed_roots: frozenset[Path] = frozenset()
     legacy_ids: frozenset[str] = frozenset()
-    disabled_ids: frozenset[str] = frozenset()
+    root: Path | None = None
 
 
 def is_distribution_owned(record: Mapping[str, object]) -> bool:
@@ -202,13 +201,9 @@ def distribution_sources(
             return DistributionSources()
         distribution = Path(configured)
     distribution = distribution.resolve(strict=True)
-    marketplace = json.loads((distribution / "distribution.json").read_text())["marketplace"]
-    declarations = {row.plugin: row for row in distribution_bundle(distribution / "bundles")}
-    choices = load_plugin_manifest(plugins_home)
     receipt_path = workspace / "runtime/distribution-install.json"
     receipt = json.loads(receipt_path.read_text()) if receipt_path.exists() else {}
     ignored: set[Path] = set()
-    historical: set[str] = set()
     legacy: set[str] = set()
     committed_adoption = read_distribution_adoption(workspace)
     if adoption is not None and committed_adoption is not None:
@@ -220,11 +215,9 @@ def distribution_sources(
             replacing_distribution=replacing_distribution,
         )
         ignored.update(adopted_roots)
-        historical.update(adopted_ids)
         legacy.update(adopted_ids)
     for row in receipt.get("installed", []):
         plugin_id = f'{row["name"]}@{row["marketplace"]}'
-        historical.add(plugin_id)
         base = plugins_home / "cache" / row["marketplace"] / row["name"]
         pointers = read_pointers(base)
         if pointers is None or pointers.stable.path is None:
@@ -250,16 +243,7 @@ def distribution_sources(
             ignored.add(artifact)
             legacy.add(plugin_id)
     sources = distribution_plugin_sources(distribution)
-    disabled = set()
-    for source in sources:
-        plugin_id = f"{source.plugin_name}@{marketplace}"
-        row = declarations.get(plugin_id)
-        enabled = choices.get(plugin_id, row is not None and plugin_id not in historical)
-        if row is not None and row.disabled:
-            enabled = not row.disabled
-        if not enabled:
-            disabled.add(plugin_id)
-    return DistributionSources(sources, frozenset(ignored), frozenset(legacy), frozenset(disabled))
+    return DistributionSources(sources, frozenset(ignored), frozenset(legacy), distribution)
 
 
 def distribution_plugin_sources(distribution: Path) -> tuple[ResolvedPluginSource, ...]:

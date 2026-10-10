@@ -6,7 +6,7 @@
 
 | ID | 状态 | 主题 | 关联条款 |
 |---|---|---|---|
-| [0108](0108-bundles-are-composition-inputs.md) | proposed / modes implemented, user choice migration pending | Bundle 分层整行替换，选择仍唯一 | PLG、RUN、MIG |
+| [0108](0108-bundles-are-composition-inputs.md) | proposed / implemented for review | Bundle 分层整行替换，选择仍唯一 | PLG、RUN、MIG |
 | [0107](0107-restore-missing-vectors-before-reading-memory.md) | proposed / implemented for review | 按原模型空间补齐丢失的派生向量 | STA、MEM、MIG |
 | [0106](0106-derived-vectors-use-separate-storage.md) | proposed / implemented for review | 派生向量独立存储，复制保留原表 | STA、MIG、MEM |
 | [0105](0105-ledger-owns-business-storage.md) | proposed / implemented for review | Ledger 插件拥有业务持久化与入站交接 | PLG、STA、SES、MIG |
@@ -137,4 +137,4 @@
 
 | [0104](0104-public-codecs-without-ui-runtime.md) | proposed / implemented for review | 公共只读编码与类型同寿命，headless 不要求 UI runtime | PLG、CAP |
 
-| [0109](0109-workspace-owns-plugin-choices.md) | proposed / patch API implemented, activation pending | 启停归 workspace patch，库存取实际制品，配置保留单一 owner | PLG、MIG、STA |
+| [0109](0109-workspace-owns-plugin-choices.md) | proposed / implemented for review | 启停归 workspace patch，库存取实际制品，配置保留单一 owner | PLG、MIG、STA |

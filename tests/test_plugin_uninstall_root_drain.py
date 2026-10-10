@@ -150,7 +150,7 @@ async def test_uninstall_accepts_before_target_owner_drains_and_preserves_peer(
 
         target_status = status_for(host, "target@lab")
         assert target_status["installed"] is False
-        assert target_status["enabled"] is None
+        assert target_status["enabled"] is False
         assert target_status["cache_exists"] is False
         assert operation_status(host)["state"] == "done"
     finally:

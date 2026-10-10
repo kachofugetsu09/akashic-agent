@@ -1,6 +1,6 @@
 # 0108 · Bundle 是显式组合输入
 
-- 状态：proposed / modes implemented, user choice migration pending
+- 状态：proposed / implemented for review
 - 日期：2026-10-11
 - 依据：#1179 P4；用户授权自主决定并单独提交重大选择。
 
@@ -31,8 +31,8 @@ runtime 使用同一进程配置，Docker 与本地启动器把它传到两侧�
 空组合同样提交非 null Root，宿主 journal 独立于插件数量初始化。全部制品的公共 API
 仍可登记，但只有选中的实现挂载；停用 UI 不会使 Gateway 的协议编码失去类型定义。
 
-本层开放三个 mode；用户 patch 接入、旧 Config/manifest 启停迁移继续下一层。
-在完成迁移前，已有 manifest 的禁用选择仍保留，mode 可以进一步禁用，不能覆盖它。
+三个 mode 与用户 patch 已接入。旧 Config/manifest 的一次性迁移见 ADR-0109；
+迁入选择属于最末的用户 patch，因此显式旧选择也高于 mode。
 历史首次安装 receipt 的 profile 标签继续只读，仍是旧来源证据。回退需要同一历史
 发行版的 Core、制品与安装器，不能混用旧制品和新安装器。
 

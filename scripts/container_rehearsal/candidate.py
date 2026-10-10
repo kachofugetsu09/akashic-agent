@@ -69,39 +69,20 @@ def write_candidate_config(source: Path, destination: Path, workspace: Path) -> 
     destination.chmod(0o600)
 
 
-def copy_plugin_manifest(
-    source_home: Path, destination_home: Path
-) -> tuple[CopyRecord, list[str]]:
-    """Copy the plugin declaration with marketplace plugins disabled."""
+def disable_plugin_choices(source_home: Path, workspace: Path) -> tuple[CopyRecord, list[str]]:
+    """演练只改副本的 patch，不让外置制品在重装前恢复启用。"""
+    from agent.plugins.bundles import set_plugin_choice
+    from agent.plugins.manifest import installed_plugin_ids
 
-    source = source_home / "manifest.toml"
-    if not source.is_file():
-        raise FileNotFoundError(f"插件 manifest 不存在: {source}")
-    source_content = source.read_text(encoding="utf-8")
-    document = tomllib.loads(source_content)
-    plugin_table = cast(dict[str, object], document.get("plugins", {}))
-    disabled = sorted(plugin_id for plugin_id in plugin_table if "@" in plugin_id)
-    candidate = source_content
+    disabled = sorted(installed_plugin_ids(source_home))
     for plugin_id in disabled:
-        candidate = _set_toml_value(candidate, f'plugins."{plugin_id}"', "enabled", False)
-
-    destination_home.mkdir(mode=0o700)
-    destination = destination_home / "manifest.toml"
-    _ = destination.write_text(candidate, encoding="utf-8")
-    destination.chmod(0o600)
-    candidate_document = tomllib.loads(candidate)
-    for plugin_id in disabled:
-        if candidate_document["plugins"][plugin_id]["enabled"] is not False:
-            raise RuntimeError(f"候选插件未禁用: {plugin_id}")
-    return (
-        CopyRecord(
-            path="plugin-home/manifest.toml",
-            kind="rehearsal_plugin_manifest",
-            size=destination.stat().st_size,
-            sha256=sha256(destination),
-        ),
-        disabled,
-    )
+        set_plugin_choice(workspace, plugin_id, enabled=False)
+    destination = workspace / "bundle.patch.toml"
+    if not destination.exists():
+        destination.write_text("schema_version = 1\n[rows]\n")
+        destination.chmod(0o600)
+    return (CopyRecord(path="workspace/bundle.patch.toml", kind="rehearsal_bundle_patch",
+                       size=destination.stat().st_size, sha256=sha256(destination)), disabled)
 
 
 def isolate_schedules(

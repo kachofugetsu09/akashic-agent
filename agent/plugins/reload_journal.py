@@ -303,7 +303,7 @@ class ReloadJournal:
                 query += " AND update_id=?"
                 values = (update_id,)
             for row in conn.execute(query, values).fetchall():
-                update_rollback.rollback(conn, update_rollback.read(conn, row[0]), plugins_home, now=_now(), error=error)
+                update_rollback.rollback(conn, update_rollback.read(conn, row[0]), plugins_home, workspace=self.path.parent.parent, now=_now(), error=error)
 
     def rollback_install_update(
         self, plugins_home: Path, *, expected: update_rollback.UpdateRollback, error: str,
@@ -316,7 +316,7 @@ class ReloadJournal:
                 raise RuntimeError("插件安装恢复点在预检后改变")
             if current.phase != "armed" or current.reload_tx_id is not None or current.input_ref is not None:
                 raise RuntimeError("指定记录不是孤立 armed 安装")
-            update_rollback.rollback(conn, current, plugins_home, now=_now(), error=error)
+            update_rollback.rollback(conn, current, plugins_home, workspace=self.path.parent.parent, now=_now(), error=error)
 
     def create_config_update(self, request_id: str, plugin_id: str, previous_input: str, input_ref: str,
                              config_revision: str, pending_config: str) -> None:

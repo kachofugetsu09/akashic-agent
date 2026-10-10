@@ -32,6 +32,8 @@ from bootstrap.workspace_lock import WorkspaceInstanceLock, WorkspaceMaintenance
 
 
 _PROJECT_ROOT = Path(__file__).resolve().parents[2]
+# 新建 workspace 不继承旧全局启停；起点记录适用范围，不伪造 Yoyo 成功回执。
+_NEW_WORKSPACE_BASELINE = ("20261011_02_bundle_choices",)
 _USERNAME_ENV_KEYS = ("LOGNAME", "USER", "LNAME", "USERNAME")
 
 
@@ -51,6 +53,8 @@ class MigrationRunner:
         config_path: Path,
         workspace: Path,
         plugin_dirs: Sequence[Path] = (),
+        plugins_home: Path | None = None,
+        bundle_directory: Path | None = None,
         migration_catalog: Path | None = None,
         fixed_sources: Sequence[ResolvedPluginSource] | None = None,
         startup_selection: bool = False,
@@ -58,6 +62,9 @@ class MigrationRunner:
         self.repo_root = repo_root.resolve()
         self.config_path = config_path.expanduser().resolve()
         self.workspace = workspace.expanduser().resolve()
+        self.plugins_home = plugins_root(plugins_home).resolve()
+        distribution = os.environ.get("AKASHIC_PLUGIN_DISTRIBUTION")
+        self.bundle_directory = bundle_directory or (Path(distribution) / "bundles" if distribution else None)
         # The Core source is intentionally a separate, implementation-free root;
         # silently falling back to a checkout's retired business migrations would
         # defeat the external bundle boundary.
@@ -134,8 +141,8 @@ class MigrationRunner:
                 for migration_id in bundle.migration_ids
             )
             if baseline is None and fresh:
-                baseline = tuple(item.migration_id for item in requirements
-                                 if item.migration_id not in core_ids + bundle_ids)
+                baseline = (*_NEW_WORKSPACE_BASELINE, *(item.migration_id for item in requirements
+                                 if item.migration_id not in core_ids + bundle_ids))
             applicable = tuple(item for item in requirements
                                if item.migration_id not in (baseline or ()))
             validate_bundle_dependencies(
@@ -178,6 +185,7 @@ class MigrationRunner:
                 bind_migration_context(
                     config_path=self.config_path,
                     workspace=self.workspace,
+                    plugins_home=self.plugins_home, bundle_directory=self.bundle_directory,
                     bundle_data_roots=bundle_data_roots,
                 ),
                 migration_import_paths(bundles),
@@ -302,9 +310,9 @@ def initialize_empty_workspace(*, repo_root: Path, workspace: Path, config_path:
     try:
         if _workspace_is_empty(workspace, config_path):
             requirements = load_migration_requirements(repo_root / "migrations/catalog.toml")
-            _save_baseline(workspace / "migrations.sqlite3", tuple(
+            _save_baseline(workspace / "migrations.sqlite3", (*_NEW_WORKSPACE_BASELINE, *(
                 item.migration_id for item in requirements if item.bundle_id is not None
-            ))
+            )))
     finally:
         lock.release()
 

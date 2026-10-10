@@ -27,14 +27,12 @@ from agent.plugins.artifacts import (
 )
 from agent.plugins.manifest import (
     ensure_workspace_plugin_data_dir,
-    load_plugin_manifest,
-    remove_plugin_manifest_entry,
-    set_plugin_enabled,
-    upsert_plugin_manifest,
+    installed_plugin_ids,
     validate_workspace_plugin_data_path,
     plugins_root,
     workspace_plugin_data_dir,
 )
+from agent.plugins.bundles import patch_rows, set_plugin_choice
 from agent.plugins.static_manifest import (
     StaticPluginManifest,
     load_static_plugin_manifest,
@@ -87,15 +85,19 @@ def set_installed_plugin_enabled(
     plugin_id: str,
     *,
     enabled: bool,
+    workspace: Path,
     plugins_home: Path | None = None,
 ) -> Path:
     home = plugins_home or plugins_root()
     _ = _split_installed_plugin_id(plugin_id)
-    return set_plugin_enabled(
-        plugin_id,
-        enabled=enabled,
-        plugins_home=home,
-    )
+    installed = set(installed_plugin_ids(home))
+    distribution = os.environ.get("AKASHIC_PLUGIN_DISTRIBUTION")
+    if distribution:
+        installed.update(f"{source.plugin_name}@{source.marketplace}"
+                         for source in distribution_plugin_sources(Path(distribution)))
+    if plugin_id not in installed:
+        raise ValueError(f"插件未安装: {plugin_id}")
+    return set_plugin_choice(workspace, plugin_id, enabled=enabled)
 
 
 def finalize_uninstall_plugin(
@@ -103,9 +105,8 @@ def finalize_uninstall_plugin(
     *,
     workspace: Path,
     plugins_home: Path | None = None,
-    keep_disabled_choice: bool = False,
 ) -> tuple[Path, Path]:
-    """删除已禁用插件的代码和清单，并保留 workspace plugin-data。"""
+    """删除已禁用插件的 cache；保留停用选择和 workspace plugin-data。"""
 
     home = plugins_home or plugins_root()
     plugin_name, marketplace = _split_installed_plugin_id(plugin_id)
@@ -113,8 +114,6 @@ def finalize_uninstall_plugin(
     data_path = workspace_plugin_data_dir(workspace, plugin_name, marketplace)
     if cache_path.exists():
         shutil.rmtree(cache_path)
-    if not keep_disabled_choice:
-        _ = remove_plugin_manifest_entry(plugin_id, plugins_home=home)
     return cache_path, data_path
 
 
@@ -178,8 +177,8 @@ def install_git_plugin(
     _ensure_directory_tree(home, marketplace_root)
     _ensure_directory_tree(home, cache_root)
 
-    # 1. 在任何 cache 改动前校验 manifest，避免坏配置把安装事务推到半路
-    _ = load_plugin_manifest(home)
+    # 1. 写 cache 前校验用户选择，避免坏配置把安装事务推到半路。
+    choices = {row.plugin: not row.disabled for row in patch_rows(workspace)}
     with tempfile.TemporaryDirectory(
         dir=marketplace_root, prefix="clone-"
     ) as clone_dir:
@@ -204,7 +203,8 @@ def install_git_plugin(
         receipt_path = workspace / "runtime/distribution-install.json"
         if receipt_path.exists():
             receipt = json.loads(receipt_path.read_text())
-            reserved.update(f'{row["name"]}@{row["marketplace"]}' for row in receipt["installed"])
+            if marketplace == receipt["marketplace"]:
+                raise ValueError(f"外置插件不能接管内置数据身份: {plugin_name}@{marketplace}; 请使用独立 marketplace")
             configured = os.environ.get("AKASHIC_PLUGIN_DISTRIBUTION")
             if configured:
                 reserved.update(f"{item.plugin_name}@{item.marketplace}" for item in
@@ -215,7 +215,7 @@ def install_git_plugin(
             static_manifest.version,
             "插件 version",
         )
-        previous_enabled = load_plugin_manifest(home).get(f"{plugin_name}@{marketplace}")
+        previous_enabled = choices.get(f"{plugin_name}@{marketplace}")
         activation = _activate_plugin_version(
             plugin_name=plugin_name,
             plugin_version=plugin_version,
@@ -233,12 +233,8 @@ def install_git_plugin(
         )
         plugin_id = f"{plugin_name}@{marketplace}"
         try:
-            # 2. manifest 原子写入成功后，cache 才算完成安装
-            _ = upsert_plugin_manifest(
-                plugin_id,
-                enabled=True,
-                plugins_home=home,
-            )
+            # 2. 安装在当前 workspace 显式启用，其他 workspace 的选择不变。
+            _ = set_plugin_choice(workspace, plugin_id, enabled=True)
         except BaseException:
             activation.rollback()
             raise

@@ -11,7 +11,8 @@ import tempfile
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from scripts.deployment_composition_scenario import ROOT, plugin, git, commit, distribution, ensure_bundle, manager, migration, selected, snapshot
-from agent.plugins.manifest import workspace_plugin_data_dir, set_plugin_enabled
+from agent.plugins.manifest import workspace_plugin_data_dir
+from agent.plugins.bundles import set_plugin_choice
 from agent.plugin_composition.config_input import config_bytes, load_config
 from agent.plugins.selection import PluginSelection
 from agent.plugins.install import install_git_plugin
@@ -73,7 +74,7 @@ async def main():
     migration(repo, 'alpha', 'review_builtin_upgrade', "from agent.migrations.context import current_migration_context\ndef run(connection):\n    root=current_migration_context().bundle_data_roots['alpha']\n    (root/'external-owned').write_text('wrong builtin write')\nstep(run)\n")
     new = distribution(repo, root / 'new', ['alpha'], ['alpha'])
     for disabled in [False, True]:
-        set_plugin_enabled('alpha@release', enabled=not disabled, plugins_home=home)
+        set_plugin_choice(work, 'alpha@release', enabled=not disabled)
         before = PluginSelection(work).read()
         for startup in [False, True]:
             os.environ['AKASHIC_PLUGIN_DISTRIBUTION'] = str(new)

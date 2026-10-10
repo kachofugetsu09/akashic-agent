@@ -51,7 +51,7 @@ async def run(directory: Path) -> dict[str, object]:
     from agent.plugins.install import install_git_plugin
     from agent.plugins.manager import PluginManager
     from agent.plugins.selection import PluginSelection
-    from agent.plugins.manifest import set_plugin_enabled
+    from agent.plugins.bundles import set_plugin_choice
 
     workspace = directory / "workspace"
     workspace.mkdir()
@@ -65,7 +65,7 @@ async def run(directory: Path) -> dict[str, object]:
         subprocess.run(["git", "init", "-q", "--initial-branch=source", str(source)], check=True)
         commit(source)
         install_git_plugin(workspace=workspace, source=str(source), marketplace="lab", plugins_home=home)
-        set_plugin_enabled(name + "@lab", enabled=False, plugins_home=home)
+        set_plugin_choice(workspace, name + "@lab", enabled=False)
     provider = directory / "mcp"
     shutil.copytree(ROOT / "plugins/mcp", provider, ignore=shutil.ignore_patterns("__pycache__"))
     subprocess.run(["git", "init", "-q", "--initial-branch=source", str(provider)], check=True)

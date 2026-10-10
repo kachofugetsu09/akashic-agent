@@ -24,7 +24,7 @@ _SOURCE_ROOT = Path(__file__).resolve().parents[1]
 if str(_SOURCE_ROOT) not in sys.path:
     sys.path.insert(0, str(_SOURCE_ROOT))
 
-from agent.plugins.bundles import distribution_bundle
+from agent.plugins.bundles import composition_rows, plugin_choices
 from agent.plugins.install import install_git_plugin
 from agent.migrations.release_backup import backup_release_state
 from agent.migrations.runner import MigrationRunner
@@ -35,7 +35,7 @@ from agent.plugins.files import encode_tree, sync_directory, tree_entries
 from agent.plugin_composition.config_input import CONFIG_INPUT, load_config, save_config
 from agent.migrations.runner import initialize_empty_workspace
 from agent.plugins.artifacts import read_pointers, resolve_pointer
-from agent.plugins.manifest import load_plugin_manifest, workspace_plugin_data_dir, upsert_plugin_manifest, ensure_workspace_plugin_data_dir
+from agent.plugins.manifest import workspace_plugin_data_dir, ensure_workspace_plugin_data_dir
 from agent.plugins.static_manifest import load_static_plugin_manifest
 from agent.plugins.python_environment import ENVIRONMENT_FILE, PythonEnvironments
 from agent.plugins.python_environment import OfflineWheels, preflight_offline_runtime, wheel_tree_sha256
@@ -160,7 +160,7 @@ def _stage_deployment_targets(
     report = verify_distribution(distribution)
     bundled = {row["name"]: row for row in report["plugins"]}
     _, selected = _selected_components(selection, expected_root_ref, replacing_distribution=True)
-    manifest = load_plugin_manifest(plugins_home)
+    manifest = plugin_choices(workspace, distribution)
     result: list[dict[str, Any]] = []
     for index, target in enumerate(targets):
         plugin_id = target["plugin_id"]
@@ -413,51 +413,6 @@ def extract_core(
     return target
 
 
-def _preflight_bundle(
-    bundle: Path,
-    *,
-    row: dict[str, Any],
-    source_commit: str,
-    code_identity: bool = False,
-) -> str | None:
-    """在正式安装前验证 bundle revision 与不可变来源记录。"""
-
-    with tempfile.TemporaryDirectory(prefix="akashic-plugin-preflight-") as directory:
-        # `git bundle verify` needs a repository for prerequisite checks.  The
-        # Core artifact has no checkout, so use a fresh empty bare repository
-        # instead of inheriting whatever directory launched the installer.
-        verify_repository = Path(directory) / "verify.git"
-        _ = _git("init", "--bare", str(verify_repository))
-        _ = _git(
-            "-C", str(verify_repository), "bundle", "verify", str(bundle)
-        )
-        clone = Path(directory) / "source"
-        _ = _git("clone", "--no-local", "--no-checkout", str(bundle), str(clone))
-        revision = str(row["source_revision"])
-        actual = _git(
-            "-C", str(clone), "rev-parse", "--verify", f"{revision}^{{commit}}"
-        )
-        if actual != revision:
-            raise ValueError(
-                f"插件 {row['name']} bundle source_revision 不可解析: {revision}"
-            )
-        provenance = json.loads(
-            _git("-C", str(clone), "show", f"{revision}:.akashic-source.json")
-        )
-        expected = {"commit": source_commit, "path": row["source_path"]}
-        if provenance != expected:
-            raise ValueError(f"插件 {row['name']} bundle provenance 不一致")
-        if not code_identity:
-            return None
-        _ = _git("-C", str(clone), "checkout", "--detach", revision)
-        if _provenance(clone) != expected:
-            raise ValueError(f"插件 {row['name']} bundle provenance 路径无效")
-        identity = load_static_plugin_manifest(clone)
-        if identity.name != row["name"]:
-            raise ValueError(f"插件 {row['name']} bundle 静态身份不一致")
-        return _code_identity(clone)
-
-
 def _code_identity(root: Path) -> str:
     """Use the archive owner's tree identity without writing an archive."""
     entries = tree_entries(root, exclude=frozenset({".venv", "node_modules", ENVIRONMENT_FILE}))
@@ -470,13 +425,6 @@ def _distribution_code_identity(root: Path) -> str:
         ".venv", "node_modules", ENVIRONMENT_FILE, ".akashic-source.json",
     }))
     return hashlib.sha256(encode_tree(entries)).hexdigest()
-
-
-def _distribution_input_source(
-    source: ResolvedPluginSource, old: tuple[str, Mapping[str, object], Path] | None,
-) -> tuple[Path, str]:
-    """发行版更新始终使用当前镜像路径，不保留旧版本的运行目录。"""
-    return source.plugin_root, source.distribution_source
 
 
 def _provenance(root: Path) -> dict[str, str] | None:
@@ -557,7 +505,7 @@ def install_bundle(
     config_path: Path,
     initialize_workspace: bool = True,
 ) -> dict[str, Any]:
-    """按 bundle 顺序调用正式 install_git_plugin，不扫描 checkout。"""
+    """记录发行组合的首次安装，不复制制品到全局 cache。"""
 
     distribution_root = distribution.expanduser().resolve(strict=True)
     report = verify_distribution(distribution_root)
@@ -572,35 +520,12 @@ def install_bundle(
     ):
         raise ValueError("bundle 不属于已验证的 distribution artifact")
     bundle_name, marketplace = bundle_file.stem, report["marketplace"]
-    declarations = distribution_bundle(bundle_file.parent)
-    entries = tuple(row for row in declarations if not row.disabled)
+    declarations = composition_rows(workspace, distribution_root)
+    entries = tuple(row for row in declarations if not row.disabled and row.plugin.rpartition("@")[2] == marketplace)
     initialization = {"plugin_configs": [
         {"owner": row.plugin.split("@")[0], "config": dict(row.config)}
         for row in entries if row.config
     ]}
-    if any(row.plugin.rpartition("@")[2] != marketplace for row in entries):
-        raise ValueError("发行 bundle 只能声明本制品 marketplace；外部插件使用独立安装入口")
-    rows = {
-        item["name"]: item
-        for item in report["plugins"]
-        if isinstance(item, dict) and isinstance(item.get("name"), str)
-    }
-    selected_rows: list[tuple[dict[str, Any], Path]] = []
-    for entry in entries:
-        name = entry.plugin.split("@")[0]
-        row = rows.get(name)
-        if row is None:
-            raise ValueError(f"bundle 需要的插件 bundle 不存在: {name}")
-        bundle = _distribution_file(
-            distribution_root, row["file"], f"插件 {name} bundle"
-        )
-        _check_sha256(bundle, row["sha256"], f"插件 {name} bundle")
-        _preflight_bundle(
-            bundle,
-            row=row,
-            source_commit=str(report["source_commit"]),
-        )
-        selected_rows.append((row, bundle))
     workspace = workspace.expanduser().resolve(strict=False)
     plugins_home = plugins_home.expanduser().resolve(strict=False)
     config_path = config_path.expanduser().resolve(strict=True)
@@ -617,37 +542,6 @@ def install_bundle(
 
     # 宿主 journal 的初始化不依赖至少安装一个插件。
     ReloadJournal(workspace)
-    installed: list[dict[str, Any]] = []
-    for entry, (row, bundle) in zip(entries, selected_rows, strict=True):
-        name = entry.plugin.split("@")[0]
-        try:
-            result = install_git_plugin(
-                workspace=workspace,
-                source=str(bundle),
-                marketplace=marketplace,
-                ref_name=str(row["source_revision"]),
-                plugins_home=plugins_home,
-            )
-        except Exception as error:
-            error.add_note(f"正式安装插件失败: {name}")
-            raise
-        provenance_path = result.installed_path / ".akashic-source.json"
-        provenance = json.loads(provenance_path.read_text(encoding="utf-8"))
-        expected_provenance = {
-            "commit": report["source_commit"],
-            "path": row["source_path"],
-        }
-        if provenance != expected_provenance:
-            raise RuntimeError(f"插件 {name} provenance 不一致")
-        installed.append(
-            {
-                "name": result.plugin_name,
-                "marketplace": result.marketplace,
-                "source_revision": result.source_revision,
-                "installed_path": str(result.installed_path),
-                "data_path": str(result.data_path),
-            }
-        )
     plugin_configs = initialization.get("plugin_configs", [])
     assert isinstance(plugin_configs, list)
     config_results = _write_plugin_configs(
@@ -656,17 +550,17 @@ def install_bundle(
         declarations=plugin_configs,
     )
     return {
-        "schema_version": 1,
+        "schema_version": 2,
         "distribution_source_commit": report["source_commit"],
         "distribution_source_tree": report["source_tree"],
-        "profile": bundle_name,
+        "bundle": bundle_name,
         "marketplace": marketplace,
         "workspace": str(workspace),
         "plugins_home": str(plugins_home),
         "initialization": initialization,
         "plugin_configs": config_results,
-        "formal_installer": _FORMAL_INSTALLER,
-        "installed": installed,
+        "formal_installer": "scripts.install_plugin_distribution.install_bundle",
+        "installed": [],
     }
 
 
@@ -678,13 +572,14 @@ def _validate_receipt_state(
 ) -> None:
     """Validate one historical receipt without treating it as current composition."""
 
-    if receipt.get("schema_version") != 1:
-        raise ValueError("distribution receipt schema_version 必须为 1")
+    version = receipt.get("schema_version")
+    if type(version) is not int or version not in (1, 2):
+        raise ValueError("distribution receipt schema_version 无效")
     for key in ("distribution_source_commit", "distribution_source_tree"):
         value = receipt.get(key)
         if not isinstance(value, str) or _REVISION.fullmatch(value) is None:
             raise ValueError(f"distribution receipt {key} 无效")
-    profile_name = receipt.get("profile")
+    profile_name = receipt.get("profile" if version == 1 else "bundle")
     marketplace = receipt.get("marketplace")
     if (
         not isinstance(profile_name, str)
@@ -699,11 +594,12 @@ def _validate_receipt_state(
         raise ValueError("distribution receipt workspace 与当前运行不一致")
     if receipt.get("plugins_home") != expected_plugins_home:
         raise ValueError("distribution receipt plugins_home 与当前运行不一致")
-    if receipt.get("formal_installer") != _FORMAL_INSTALLER:
+    installer = _FORMAL_INSTALLER if version == 1 else "scripts.install_plugin_distribution.install_bundle"
+    if receipt.get("formal_installer") != installer:
         raise ValueError("distribution receipt 缺少正式安装器身份")
 
     installed = receipt.get("installed")
-    if not isinstance(installed, list):
+    if not isinstance(installed, list) or (version == 2 and installed):
         raise ValueError("distribution receipt installed 必须是 array")
     historical_ids: set[str] = set()
     for item in installed:
@@ -758,7 +654,7 @@ def _validate_receipt_state(
         if (
             not isinstance(owner, str)
             or _PATH_SEGMENT.fullmatch(owner) is None
-            or owner not in historical_names
+            or (version == 1 and owner not in historical_names)
             or owner in config_owners
             or not isinstance(config, dict)
         ):
@@ -792,40 +688,6 @@ def _validate_receipt_state(
         ):
             raise ValueError(f"distribution receipt plugin_configs[{index}] 无效")
         result_owners.add(owner)
-
-
-def _validate_current_plugins(
-    *,
-    workspace: Path,
-    plugins_home: Path,
-) -> None:
-    """Validate current manifest/artifacts independently of historical receipt rows."""
-
-    manifest = load_plugin_manifest(plugins_home)
-    for plugin_id, enabled in manifest.items():
-        name, separator, item_marketplace = plugin_id.rpartition("@")
-        if (
-            not separator
-            or _PATH_SEGMENT.fullmatch(name) is None
-            or _PATH_SEGMENT.fullmatch(item_marketplace) is None
-            or not isinstance(enabled, bool)
-        ):
-            raise ValueError(f"当前 plugin manifest 身份无效: {plugin_id}")
-        plugin_base = plugins_home / "cache" / item_marketplace / name
-        pointers = read_pointers(plugin_base)
-        if pointers is None or pointers.stable.path is None:
-            raise ValueError(f"当前插件缺少 stable artifact: {plugin_id}")
-        artifact = resolve_pointer(plugin_base, pointers.stable)
-        if artifact is None:
-            raise ValueError(f"当前插件 stable artifact 为空: {plugin_id}")
-        static_manifest = load_static_plugin_manifest(artifact)
-        if static_manifest.name != name:
-            raise ValueError(
-                f"当前 artifact 身份不一致: {plugin_id} -> {static_manifest.name}"
-            )
-        data_path = workspace_plugin_data_dir(workspace, name, item_marketplace)
-        if data_path.is_symlink() or not data_path.is_dir():
-            raise ValueError(f"当前插件数据目录缺失: {data_path}")
 
 
 def _selected_components(selection: PluginSelection, root_ref: str, *, replacing_distribution: bool = False) -> tuple[tuple[str, ...], dict[str, tuple[str, Mapping[str, object], Path]]]:
@@ -899,7 +761,7 @@ def _distribution_candidate(
         raise RuntimeError(f"installed source is unavailable: {scan.failures}")
     installed = {f"{source.plugin_name}@{source.marketplace}": source for source in scan.sources}
     external_names = {source.plugin_name for source in scan.sources}
-    choices = load_plugin_manifest(plugins_home)
+    choices = plugin_choices(workspace, distribution)
     candidate: dict[str, ResolvedPluginSource] = {}
     for plugin_id, (_, descriptor, code) in selected.items():
         name, separator, marketplace = plugin_id.rpartition("@")
@@ -926,13 +788,16 @@ def _distribution_candidate(
         if (plugin_id not in replacement_ids and
             descriptor["runtime"] != {"python_tag": sys.implementation.cache_tag, "binding_api": PLUGIN_INPUT_API}):
             raise RuntimeError(f"preserved plugin runtime is incompatible with this Core: {plugin_id}; explicit reinstall required")
-        if choices.get(plugin_id, True):
+        if choices.get(plugin_id, False):
             candidate[plugin_id] = ResolvedPluginSource(code, cast(Literal["builtin", "installed"], descriptor["source_type"]), marketplace, name,
                                                        load_static_plugin_manifest(code))
+    for plugin_id, source in installed.items():
+        if plugin_id not in selected and choices.get(plugin_id, False):
+            candidate[plugin_id] = source
     for source in available.sources:
         plugin_id = f"{source.plugin_name}@{source.marketplace}"
         # Match existing discovery precedence, including a disabled installed override.
-        if source.plugin_name in external_names or plugin_id in available.disabled_ids:
+        if source.plugin_name in external_names or not choices.get(plugin_id, False):
             continue
         if plugin_id in candidate:
             raise SelectionConflictError(f"distribution identity already selected from another source: {plugin_id}")
@@ -946,13 +811,11 @@ def _prepare_distribution_inputs(
     distribution: Path, workspace: Path, plugins_home: Path, selection: PluginSelection,
 ) -> tuple[str, ...]:
     """Prepare immutable inputs, then let the caller publish one complete selection."""
-    choices = load_plugin_manifest(plugins_home)
-    marketplace = _read_json(distribution / "distribution.json")["marketplace"]
-    _write_plugin_configs(workspace, marketplace=marketplace, declarations=[
-        {"owner": row.plugin.split("@")[0], "config": dict(row.config)}
-        for row in distribution_bundle(distribution / "bundles")
-        if row.config and not row.disabled and row.plugin not in choices and row.plugin in candidate
-    ])
+    for row in composition_rows(workspace, distribution):
+        if row.config and not row.disabled and row.plugin in candidate:
+            name, marketplace = row.plugin.rsplit("@", 1)
+            _write_plugin_configs(workspace, marketplace=marketplace,
+                                  declarations=[{"owner": name, "config": dict(row.config)}])
     environments = _prepare_distribution_environments(available, distribution, workspace, selected)
     prepared: dict[str, str] = {}
     for plugin_id, source in candidate.items():
@@ -964,7 +827,7 @@ def _prepare_distribution_inputs(
         ensure_workspace_plugin_data_dir(data_dir, workspace)
         identity = source.static_manifest
         assert identity is not None
-        code, source_commit = _distribution_input_source(source, old)
+        code, source_commit = source.plugin_root, source.distribution_source
         if old is not None and old[1]["data_dir"] != data_dir.relative_to(workspace).as_posix():
             raise SelectionConflictError(f"distribution data identity changed: {plugin_id}")
         # The old immutable input already passed compilation. Reuse only when
@@ -986,18 +849,14 @@ def _prepare_distribution_inputs(
             result = prepare_plugin_input(
                 {"name": source.plugin_name, "marketplace": source.marketplace,
                  "plugin_root": str(code), "module_path": str(code / "plugin.py"),
-                 "manifest_digest": identity.identity_digest, "source_type": "builtin",
-                 "distribution_source": source_commit, "wheel_tree_sha256": source.wheel_tree_sha256},
+                 "manifest_digest": identity.identity_digest, "source_type": source.source_type,
+                 **({"distribution_source": source_commit, "wheel_tree_sha256": source.wheel_tree_sha256}
+                    if source.distribution_source else {})},
                 workspace=workspace, selection=selection, initial=old is None,
             )
             timing.update(reused=False, ref=result.input_ref)
         # 停止期已结算配置 owner；读取迁移后的持久输入，也支持迁移成功后的发布重试。
         prepared[plugin_id] = result.input_ref
-    # This is a user choice ledger, not another version pointer. Existing values never change.
-    for source in available.sources:
-        plugin_id = f"{source.plugin_name}@{source.marketplace}"
-        if plugin_id not in choices and plugin_id in candidate:
-            upsert_plugin_manifest(plugin_id, enabled=True, plugins_home=plugins_home)
     ordered = [prepared.pop(plugin_id) for plugin_id in selected if plugin_id in prepared]
     return tuple(ordered + [prepared[plugin_id] for plugin_id in sorted(prepared)])
 
@@ -1050,7 +909,7 @@ def _prepare_distribution_environments(
         identity = source.static_manifest
         assert identity is not None
         plugin_id = f"{source.plugin_name}@{source.marketplace}"
-        code, _ = _distribution_input_source(source, selected.get(plugin_id))
+        code = source.plugin_root
         refs: dict[str, str] = {}
         for runtime in identity.python:
             wheels = None
@@ -1117,6 +976,7 @@ def publish_distribution(
                     candidate[plugin_id] = ResolvedPluginSource(code, "installed", marketplace, name,
                                                                load_static_plugin_manifest(code))
                 runner = MigrationRunner(repo_root=_SOURCE_ROOT, config_path=config_path,
+                                     plugins_home=plugins_home, bundle_directory=distribution / "bundles",
                                          workspace=workspace, fixed_sources=migration_sources)
                 pending = runner.check()
                 result: dict[str, Any] = {
@@ -1138,6 +998,18 @@ def publish_distribution(
                 runner.run_under_maintenance(maintenance, core_only=True)
                 check_pending_publication(workspace)
                 runner.run_under_maintenance(maintenance)
+                # 迁移可能改变声明输入；只按迁移后的选择提交，显式外置目标重新核对启停。
+                available, candidate = _distribution_candidate(
+                    distribution=distribution, workspace=workspace, plugins_home=plugins_home, selected=selected,
+                    replacement_ids=frozenset(replacements), adoption=adoption,
+                )
+                choices = plugin_choices(workspace, distribution)
+                for plugin_id, code in replacements.items():
+                    if not choices.get(plugin_id, False):
+                        raise SelectionConflictError(f"迁移后的外置目标未启用: {plugin_id}")
+                    name, marketplace = plugin_id.rsplit("@", 1)
+                    candidate[plugin_id] = ResolvedPluginSource(code, "installed", marketplace, name,
+                                                               load_static_plugin_manifest(code))
                 prepared_selected = dict(selected)
                 for target in targets:
                     plugin_id = target["plugin_id"]
@@ -1227,13 +1099,14 @@ def ensure_bundle(
             selection = PluginSelection(workspace)
             expected = selection.read()
             components, selected = ((), {}) if expected is None else _selected_components(selection, expected)
-            available, candidate = _distribution_candidate(
-                distribution=distribution, workspace=workspace, plugins_home=plugins_home, selected=selected,
-            )
-            runner = MigrationRunner(repo_root=_SOURCE_ROOT, config_path=config_path, workspace=workspace,
+            runner = MigrationRunner(repo_root=_SOURCE_ROOT, config_path=config_path,
+                                     plugins_home=plugins_home, bundle_directory=distribution / "bundles", workspace=workspace,
                                      fixed_sources=distribution_migration_sources(workspace, plugins_home, distribution))
             pending = runner.check()
             runner.run_under_maintenance(maintenance, core_only=True)
+            available, candidate = _distribution_candidate(
+                distribution=distribution, workspace=workspace, plugins_home=plugins_home, selected=selected,
+            )
             try:
                 check_pending_publication(workspace)
             except PendingPublicationError:

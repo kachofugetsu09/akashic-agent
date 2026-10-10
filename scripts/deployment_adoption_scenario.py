@@ -15,14 +15,14 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 
 from scripts.deployment_composition_scenario import (
-    commit, distribution, git, manager, plugin, selected, snapshot,
+    commit, distribution, git, manager, plugin, selected, snapshot, install_legacy_cache,
 )
 from scripts.install_plugin_distribution import install_bundle, ensure_bundle, publish_distribution, _write_receipt, _code_identity
 from agent.plugins.artifacts import read_pointers, resolve_pointer
 from agent.plugins.distribution_sources import distribution_sources, distribution_migration_sources
 from agent.plugins.install import install_git_plugin
 from agent.plugins.input_preparation import prepare_plugin_input
-from agent.plugins.manifest import set_plugin_enabled
+from agent.plugins.bundles import set_plugin_choice
 from agent.plugins.selection import PluginSelection, SelectionConflictError
 from agent.plugins.static_manifest import load_static_plugin_manifest
 from plugins.ledger.contract import json_value
@@ -49,7 +49,7 @@ async def run():
     os.environ.pop("AKASHIC_PLUGIN_DISTRIBUTION", None)
     subprocess.run([sys.executable, str(ROOT / "main.py"), "init", "--config", str(config),
                     "--workspace", str(work)], check=True, stdout=subprocess.DEVNULL)
-    first_receipt = install_bundle(first, first / "bundles/base.toml", workspace=work,
+    first_receipt = install_legacy_cache(first, first / "bundles/base.toml", workspace=work,
                                     plugins_home=home, config_path=config)
     m = await manager(work, home)
     await m.terminate_all()
@@ -59,7 +59,7 @@ async def run():
     (repo / "plugins/alpha").rename(repo / "plugins/alpha_legacy")
     (repo / "plugins/retired").rename(repo / "plugins/retired_source")
     historical = distribution(repo, root / "historical", ["alpha_legacy", "retired_source", "disabled"], names)
-    install_bundle(historical, historical / "bundles/base.toml", workspace=work,
+    install_legacy_cache(historical, historical / "bundles/base.toml", workspace=work,
                     plugins_home=home, config_path=config)
     selection = PluginSelection(work)
     prepared = []
@@ -86,7 +86,7 @@ async def run():
     await m.install(source=str(external), marketplace="thirdparty", ref_name="", sparse_paths=[], update_id="outside")
     await m._operation.task
     await m.terminate_all()
-    set_plugin_enabled("disabled@release", enabled=False, plugins_home=home)
+    set_plugin_choice(work, "disabled@release", enabled=False)
     selection = PluginSelection(work)
     baseline = selection.read()
     old = selected(work)

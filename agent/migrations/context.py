@@ -12,6 +12,8 @@ from typing import Iterator, Mapping
 class MigrationContext:
     config_path: Path
     workspace: Path
+    plugins_home: Path
+    bundle_directory: Path | None
     # Each artifact migration receives only its own declared data root.  The
     # mapping is keyed by the immutable bundle owner, so a migration cannot
     # guess another plugin's marketplace directory.
@@ -29,6 +31,8 @@ def bind_migration_context(
     *,
     config_path: Path,
     workspace: Path,
+    plugins_home: Path,
+    bundle_directory: Path | None = None,
     bundle_data_roots: Mapping[str, Path] | None = None,
 ) -> Iterator[MigrationContext]:
     """在 Yoyo 调用迁移回调期间暴露当前安装上下文。"""
@@ -36,6 +40,7 @@ def bind_migration_context(
     context = MigrationContext(
         config_path=config_path,
         workspace=workspace,
+        plugins_home=plugins_home, bundle_directory=bundle_directory,
         bundle_data_roots=MappingProxyType(dict(bundle_data_roots or {})),
     )
     token = _CURRENT_CONTEXT.set(context)

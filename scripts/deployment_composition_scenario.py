@@ -28,11 +28,10 @@ from agent.migrations.runner import MigrationRunner
 from agent.plugins.manager import PluginManager
 from agent.plugin_composition.config_input import load_config
 from agent.plugins.manifest import (
-    load_plugin_manifest,
-    set_plugin_enabled,
     workspace_plugin_data_dir,
 )
-from agent.plugins.distribution_sources import distribution_sources
+from agent.plugins.bundles import set_plugin_choice, plugin_choices, load_bundle
+from agent.plugins.distribution_sources import distribution_sources, DistributionSources
 from agent.plugins.selection import PluginSelection
 
 
@@ -134,6 +133,34 @@ def distribution(repo, out, names, defaults):
     return out
 
 
+def install_legacy_cache(dist, bundle, *, workspace, plugins_home, config_path):
+    """真实安装旧 cache 布局，保留逐个 Git 安装产生的来源事实。"""
+    receipt = install_bundle(dist, bundle, workspace=workspace, plugins_home=plugins_home, config_path=config_path)
+    report = json.loads((dist / "distribution.json").read_text())
+    artifacts = {row["name"]: row for row in report["plugins"]}
+    previous = os.environ.get("AKASHIC_PLUGIN_DISTRIBUTION")
+    os.environ["AKASHIC_PLUGIN_DISTRIBUTION"] = str(dist)
+    try:
+        for row in load_bundle(bundle):
+            if row.disabled:
+                continue
+            artifact = artifacts[row.plugin.split("@")[0]]
+            result = install_git_plugin(workspace=workspace, source=str(dist / artifact["file"]),
+                marketplace=report["marketplace"], ref_name=artifact["source_revision"], plugins_home=plugins_home)
+            receipt["installed"].append({"name": result.plugin_name, "marketplace": result.marketplace,
+                "source_revision": result.source_revision, "installed_path": str(result.installed_path),
+                "data_path": str(result.data_path)})
+    finally:
+        if previous is None:
+            os.environ.pop("AKASHIC_PLUGIN_DISTRIBUTION")
+        else:
+            os.environ["AKASHIC_PLUGIN_DISTRIBUTION"] = previous
+    receipt["schema_version"] = 1
+    receipt["formal_installer"] = "agent.plugins.install.install_git_plugin"
+    receipt["profile"] = receipt.pop("bundle")
+    return receipt
+
+
 def snapshot(path):
     return {
         str(p.relative_to(path)): p.read_bytes()
@@ -152,14 +179,12 @@ def selected(workspace):
 
 
 async def manager(workspace, home, dist=None):
-    ds = distribution_sources(workspace, home, dist) if dist else None
+    ds = distribution_sources(workspace, home, dist) if dist else DistributionSources()
     m = PluginManager(
         [],
         workspace=workspace,
         installed_cache_root=home / "cache",
-        distribution_sources=ds.sources if ds else (),
-        disabled_plugins=ds.disabled_ids if ds else frozenset(),
-        ignored_installed_roots=ds.ignored_installed_roots if ds else frozenset(),
+        distribution=ds,
     )
     await m.load_all()
     return m
@@ -256,7 +281,7 @@ async def run(args):
         check=True,
         stdout=subprocess.DEVNULL,
     )
-    r = install_bundle(
+    r = install_legacy_cache(
         old,
         old / "bundles/base.toml",
         workspace=work,
@@ -281,7 +306,7 @@ async def run(args):
     )
     await m._operation.task
     await m.terminate_all()
-    set_plugin_enabled("disabled@release", enabled=False, plugins_home=home)
+    set_plugin_choice(work, "disabled@release", enabled=False)
     # Preserve bytes for all business state, cache and first receipt.
     for n in oldnames:
         (workspace_plugin_data_dir(work, n, "release") / "sentinel.bin").write_bytes(
@@ -392,7 +417,7 @@ async def run(args):
     }
     assert m.generation("optional@release").instance.version == "2"
     # Existing enable is a durable choice applied by normal deployment/startup.
-    set_plugin_enabled("disabled@release", enabled=True, plugins_home=home)
+    set_plugin_choice(work, "disabled@release", enabled=True)
     await m.terminate_all()
     ensure_bundle(
         new,
@@ -404,10 +429,10 @@ async def run(args):
     )
     m = await manager(work, home, new)
     assert m.generation("disabled@release").instance.version == "2"
-    set_plugin_enabled("alpha@release", enabled=False, plugins_home=home)
+    set_plugin_choice(work, "alpha@release", enabled=False)
     await m.reconcile_changed()
     assert m.generation("alpha@release") is None
-    set_plugin_enabled("alpha@release", enabled=True, plugins_home=home)
+    set_plugin_choice(work, "alpha@release", enabled=True)
     await m.terminate_all()
     ensure_bundle(
         new,
@@ -445,7 +470,7 @@ async def run(args):
     assert m._selection.read_input(ref)["python_environments"]
     await m.uninstall("newcomer@release")
     await m._operation.task
-    assert load_plugin_manifest(home)["newcomer@release"] is False
+    assert plugin_choices(work)["newcomer@release"] is False
     await m.terminate_all()
     ensure_bundle(
         new,
@@ -549,7 +574,7 @@ async def run(args):
         work / "opaque-business.db"
     ).read_bytes() == b"not-a-database: do not inspect or rewrite"
     # 新发行版自动先迁移；显式停用不影响内置数据升级。
-    set_plugin_enabled("disabled@release", enabled=False, plugins_home=home)
+    set_plugin_choice(work, "disabled@release", enabled=False)
     expected_bytes = PluginSelection(work).path.read_bytes()
     migration(repo, "alpha", "scenario_alpha_upgrade", f"""
 import json
