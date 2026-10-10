@@ -94,4 +94,3 @@ class PluginProcesses:
             if report.failures:
                 raise RuntimeError(f"进程清理未确认: {report.failures}")
             self._manager = None
-
