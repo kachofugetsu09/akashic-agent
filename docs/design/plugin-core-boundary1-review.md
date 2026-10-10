@@ -56,6 +56,15 @@
 
 ## 验证入口与实际边界
 
+收口清理移除了旧 EventBus/SessionStore 的无调用残留、Gateway 未接入方法表的参数模型、
+Delivery/MCP 的无消费者接口和两个纯再导出模块。`DashboardContext` 仍是同一个
+`RequestContext` 类型；MCP 关闭失败仍保留原 Effect，由所属 Fiber/Root 重试排空。
+历史 binding 名由 Commands 的合同声明，读取不改原 descriptor、hash 或消息。
+
+边界门的 `--base` 现在同时拒绝公开模块清单和 Core 字面 key 声明的增长，
+不能靠扩大清单或登记角色放行。工具库仍计入 Core 源码；模块内部新增 API 仍需 owner
+评审。这是当前边界的防回退检查，不代表最终 R7～R11 或九项 Core provider 验收已完成。
+
 栈顶 Core 与本次相关 Models、Tools、ReplyProgram、四种 driver Pyright 零错误。
 插件边界 R1/R2/R3 零债务，Yoyo 与 diff 检查通过。
 [保留清单](../refactor/orthogonality-test-baseline.md)中仍存在的节点实际运行
@@ -64,6 +73,8 @@
 | 行为 | 可复跑入口 | 验证内容 |
 |---|---|---|
 | 模型记账与取消 | `scripts/check_model_ledger_io.py` | 真实 SQLite/HTTP；22 场景、18 POST；共享 key、发送前取消、结算失败、丢失提交 ACK、Root 排空 |
+| 历史命令 binding | `scripts/binding_upgrade_scenario.py` | 原 Core 生成选择、真实 journal 迁移、当前合同恢复一次；完整原 Message/binding/owner 记录不变，无旧运行 key |
+| MCP 资源生命周期 | `scripts/mcp_plugin_scenario.py` | 合同依赖显式安装且实现停用；真实 stdio 握手/调用、换代、重启、可选消费者保持与子进程排空 |
 | driver 流进展 | `scripts/check_stream_progress.py` | 44 场景；原取消类型、进展与失败证据 |
 | 原生 Gateway | `scripts/gateway_cli_scenario.py` | 默认与自定义 Unix/TCP、stdio 冷启动/EOF/超长输入、安装更新、卸载、历史保存、禁用实现的 API 制品 |
 | 公共合同与重启 | `scripts/plugin_contract_scenario.py` | 同名已安装覆盖、停用 API、持久 restart_required、继续管理与新 OS 进程加载；14 项 |

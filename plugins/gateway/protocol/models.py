@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from typing import Any, Literal
+from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field
 from ..contract import NAMES
@@ -24,49 +24,6 @@ class InitializeParams(StrictModel):
     clientInfo: ClientInfo
     capabilities: ClientCapabilities = Field(default_factory=ClientCapabilities)
     workspaceToken: str | None = None
-
-
-class ThreadStartParams(StrictModel):
-    metadata: dict[str, Any] = Field(default_factory=dict)
-    runtime: Literal["stable", "latest"] = "stable"
-    pluginRolloutCapability: str = Field(default="", max_length=256)
-
-
-class ThreadIdParams(StrictModel):
-    threadId: str = Field(min_length=1, max_length=512)
-
-
-class ThreadReadParams(ThreadIdParams):
-    includeTurns: bool = False
-
-
-class ThreadListParams(StrictModel):
-    cursor: str | None = None
-    limit: int = Field(default=50, ge=1, le=200)
-
-
-class TurnStartParams(ThreadIdParams):
-    input: str = Field(min_length=1, max_length=1_048_576)
-    metadata: dict[str, Any] = Field(default_factory=dict)
-    runtime: Literal["stable", "latest"] | None = None
-    detached: bool = False
-
-
-class TurnIdParams(ThreadIdParams):
-    turnId: str = Field(min_length=1, max_length=128)
-
-
-class PluginDrainParams(StrictModel):
-    pluginId: str = Field(min_length=1, max_length=256)
-    ownerTurnId: str = Field(default="", max_length=128)
-
-
-class PluginInstallParams(StrictModel):
-    source: str = Field(min_length=1, max_length=4096)
-    marketplace: str = Field(default="local", min_length=1, max_length=128)
-    ref: str = Field(default="", max_length=1024)
-    sparse: list[str] = Field(default_factory=list, max_length=128)
-    ownerTurnId: str = Field(default="", max_length=128)
 
 
 class SessionIdParams(StrictModel):

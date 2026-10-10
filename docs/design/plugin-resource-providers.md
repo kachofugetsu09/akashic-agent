@@ -34,8 +34,8 @@
 - `MCP_SERVERS.register(ctx, definition)` 固定按调用打开的目标，并立即检查资源引用。
   `open(ctx, name)` 保留原有每调用独立会话语义：先把会话关闭责任登记到贡献 Context，
   再取得借用并等待进程/协议握手。退出后 route 失效；不会自动重放工具调用。
-  `failures()` 和 `retry_cleanup(ctx, identity)` 只操作该 provider 保留的真实会话。
-  Root 关闭也重试同一 Effect，而非创建新的会话。
+  `failures()` 只读该 provider 保留的真实会话；清理失败保留同一 Effect，
+  随所属 Fiber 或 Root 再次排空而重试，不创建新会话或重放工具调用。
 
 三个 provider 的注册限于 `apply`。MCP 的 `open` 是运行期操作，取得 exact Root scope。
 Runtime catalog 只列已注册的 MCP 目标并标记 `declared`，不把定义当成已发现的工具。

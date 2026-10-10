@@ -11,7 +11,7 @@ from agent.plugin_composition.context import (
 )
 from agent.plugin_composition.durable_deliveries import TurnAcceptedReceipt
 from agent.plugin_contracts.turn_effects import PostCommitEffect
-from agent.plugin_composition.dashboard import DashboardContext
+from agent.plugin_composition.requests import RequestContext as DashboardContext
 from agent.plugin_composition.requests import RequestContext
 from agent.plugin_composition.effect import Effect
 from agent.plugin_composition.diagnostics import (

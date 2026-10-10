@@ -130,10 +130,6 @@ class Senders:
                           "route": route, **status(), "available": name in self._registrations}
         return tuple(rows[name] for name in sorted(rows))
 
-    def registered_names(self) -> tuple[str, ...]:
-        """只读当前可用名称，不创建绑定或打开任何 provider 资源。"""
-        return tuple(sorted(self._registrations))
-
     def bind(self, name: str, bindings: Bindings) -> str:
         registration = self._registrations[name]
         return bindings.bind(

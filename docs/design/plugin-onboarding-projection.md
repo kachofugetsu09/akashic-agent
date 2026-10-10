@@ -192,7 +192,7 @@ provider 缺席的边返回 unresolved key/reason，不能猜测卸载插件的 
 参考已有 tool_key(name)，delivery 在同一 sender 注册时发布具名能力，撤销时一并回收。
 Wake 配置目标后，其运行分支依赖选中的能力；原 Bindings、身份和发送回执不变。
 
-现有 registered_names() 只含正在注册的 sender，不能用它发现尚未配置的候选。
+正在注册的 sender 不能用于发现尚未配置的候选。
 delivery 的发送目录增加 candidate 注册：sender 的常驻设置分支用 Effect 贡献名称、owner、
 状态入口、设置路由与拟提供的具名 key，不打开网络连接，不授予发送权。
 实际 sender 和具名能力仍由功能分支共同注册/回收；候选记录不冒充可运行能力。

@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from collections.abc import Mapping
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from enum import Enum
 from pathlib import Path
 from typing import Generic, TypeVar
@@ -27,11 +27,18 @@ class FiberState(str, Enum):
 
 @dataclass(frozen=True, slots=True)
 class ServiceKey(Generic[Service]):
+    """服务名决定注入身份；历史 binding 名只用于读取原选择。"""
+
     name: str
+    binding_names: tuple[str, ...] = field(default=(), compare=False)
 
     def __post_init__(self) -> None:
         if not self.name or self.name.strip() != self.name:
             raise ValueError("ServiceKey.name 必须是非空且无首尾空白的字符串")
+        if any(not name or name.strip() != name for name in self.binding_names):
+            raise ValueError("ServiceKey.binding_names 必须是非空且无首尾空白的字符串")
+        if len(set((self.name, *self.binding_names))) != 1 + len(self.binding_names):
+            raise ValueError("ServiceKey.binding_names 不能重复或包含当前服务名")
 
 
 @dataclass(frozen=True, slots=True)

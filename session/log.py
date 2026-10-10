@@ -493,8 +493,6 @@ class MessageLog:
         self._decoded_attributes: dict[str, SessionAttributes] = {}
         # 已提交消息的附件绑定只随消息同事务写入、本层不再变更；按 message_id
         # 备忘查询结果，每轮材料准备只读取新增消息，由 _decode_lock 保护。
-        # 命名数据管理操作（撤销/删除 Session）经另一连接物理删除后，必须经
-        # invalidate_attachment_memo 显式失效对应项。
         self._attachment_memo: dict[str, tuple[AttachmentRef, ...]] = {}
         self._reads = _ReadLocal()
         self._path = Path(path).resolve()
@@ -914,12 +912,6 @@ class MessageLog:
 
     def reader(self, session_id: str) -> MessageReader:
         return MessageReader(self, session_id)
-
-    def invalidate_attachment_memo(self, message_ids: Iterable[str]) -> None:
-        """权威删除路径提交后失效对应附件备忘；未备忘的 id 忽略。"""
-        with self._decode_lock:
-            for message_id in message_ids:
-                self._attachment_memo.pop(message_id, None)
 
     def writer(
         self,
