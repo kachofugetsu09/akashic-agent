@@ -117,3 +117,68 @@ EVENTMAIL_WAKE_V2 = ServiceKey[ContentWakeServicesV2]("eventmail.wake.v2")
 
 
 EVENTMAIL_DELIVERY_V2 = ServiceKey[EventMailDeliveryServicesV2]("eventmail.delivery.v2")
+
+# Fleet 的 Calendar/Feed/Fitbit/Steam 从这些来源端口提交；不是零消费者能力。
+class BoundContentSource(Protocol):
+    def close(self) -> None: ...
+
+    async def submit(
+        self, batch_id: str, items: Sequence[Mapping[str, object]]
+    ) -> Mapping[str, object]: ...
+
+    async def read_submission(self, batch_id: str) -> Mapping[str, object] | None:
+        """Read a checkpointed receipt during offline handoff verification."""
+        ...
+
+    async def read_revision(self, item_id: str, revision: str) -> Mapping[str, object] | None:
+        """Read a checkpointed revision during offline handoff verification."""
+        ...
+
+    async def unsettled(self, limit: int = 100) -> tuple[Mapping[str, object], ...]: ...
+
+    async def ack(self, settlement_ref: str) -> Mapping[str, object]: ...
+
+
+class ContentSourceServices(Protocol):
+    def bind(self, source_id: str) -> BoundContentSource: ...
+
+
+class BoundAlertSource(Protocol):
+    def close(self) -> None: ...
+
+    async def report(
+        self,
+        *,
+        event_id: str,
+        payload: Mapping[str, object],
+        observed_at: datetime,
+        expires_at: datetime | None = None,
+    ) -> Mapping[str, object]: ...
+
+    async def status(self, *, event_id: str) -> str | None: ...
+
+
+class AlertSourceServices(Protocol):
+    def bind(self, source_id: str) -> BoundAlertSource: ...
+
+
+class BoundContextSource(Protocol):
+    def close(self) -> None: ...
+
+    async def report(
+        self,
+        *,
+        event_id: str,
+        payload: Mapping[str, object],
+        observed_at: datetime,
+        expires_at: datetime | None = None,
+    ) -> Mapping[str, object]: ...
+
+
+class ContextSourceServices(Protocol):
+    def bind(self, source_id: str) -> BoundContextSource: ...
+
+
+EVENTMAIL_CONTENT_SOURCE = ServiceKey[ContentSourceServices]("eventmail.content_source.v2")
+EVENTMAIL_ALERT_SOURCE = ServiceKey[AlertSourceServices]("eventmail.alert_source.v2")
+EVENTMAIL_CONTEXT_SOURCE = ServiceKey[ContextSourceServices]("eventmail.context_source.v2")
