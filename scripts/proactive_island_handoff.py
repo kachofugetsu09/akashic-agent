@@ -12,12 +12,12 @@ SOURCE_ROOT = Path(__file__).resolve().parents[1]
 if str(SOURCE_ROOT) not in sys.path:
     sys.path.insert(0, str(SOURCE_ROOT))
 
-from agent.migrations.proactive_island.cli import apply, plan, report_payload, retire
-from agent.migrations.proactive_island.inventory import (
+from scripts.proactive_island.cli import apply, plan, report_payload, retire
+from scripts.proactive_island.inventory import (
     inventory_digest,
     inventory_workspace,
 )
-from agent.migrations.proactive_island.history import LegacyProactiveHistory
+from scripts.proactive_island.history import LegacyProactiveHistory
 
 
 def main() -> int:

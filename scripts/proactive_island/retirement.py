@@ -9,7 +9,7 @@ from pathlib import Path
 from typing import cast
 from uuid import uuid4
 
-from agent.migrations.proactive_island.inventory import Inventory
+from scripts.proactive_island.inventory import Inventory
 
 RETIREMENT_REASON = "operator_approved_pre_cutover_supersession"
 _APPROVABLE_REASONS = frozenset(

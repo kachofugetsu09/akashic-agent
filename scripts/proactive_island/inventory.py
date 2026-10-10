@@ -10,7 +10,7 @@ from enum import StrEnum
 from pathlib import Path
 from typing import Any
 
-from agent.migrations.proactive_island.reader import open_legacy_sqlite
+from scripts.proactive_island.reader import open_legacy_sqlite
 
 
 class LegacyFactKind(StrEnum):

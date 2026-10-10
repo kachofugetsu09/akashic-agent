@@ -14,7 +14,7 @@ from pathlib import Path
 from typing import Protocol
 from uuid import uuid4
 
-from agent.migrations.proactive_island.inventory import Inventory, LegacyFact
+from scripts.proactive_island.inventory import Inventory, LegacyFact
 
 
 class HandoffStatus(StrEnum):

@@ -78,7 +78,7 @@
 - `session/manager.py` 与 `agent/prompting/`：保留的 durable delivery 概念测试仍使用它们；不能按“零 importer”删除。
 - `core/memory/events.py`、`infra/channels/message_view.py`：仍有保留测试消费者。
 - `agent/mcp/`、`agent/workloads/model.py` 和 `agent/tools/`：存在明确归档桥、类型或动态脚本消费者；`scripts/benchmark_host_bridge.py` 仍动态导入旧 unified_exec 路径。
-- `agent/migrations/proactive_island/`：`scripts/proactive_island_handoff.py` 是真实 CLI 入口；是否退役这项操作能力不属于本次行为不变清理。
+- `scripts/proactive_island/`：`scripts/proactive_island_handoff.py` 是真实 CLI 入口；是否退役这项操作能力不属于本次行为不变清理。
 - `agent/runtime_identity.py`：有独立模块 CLI。`agent/looping/`、`session/activity.py`、`bus/events_lifecycle.py`、`core/memory/plugin.py` 与反馈事件保留待核对的外部/历史兼容面；本地外部源码确有旧路径引用，不能把本仓库无消费者等同于全局无消费者。
 - `last_proactive_at` 等 schema、业务 ServiceKey、路由、source 字符串和 `bus/events.py` 不变。删除已有列或改变合同归属需要独立决定。
 - 失效的本地 `private_runtime` checkout 不足以证明可删除 Git submodule；双包管理文件、未提交插件和文档、历史手册及实验数据均未删除。
