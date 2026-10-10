@@ -15,7 +15,6 @@ from pathlib import Path
 from types import ModuleType
 from typing import Any, AsyncGenerator, TypeVar, cast
 
-from agent.plugin_composition.access import CompositionAudit
 from agent.plugin_composition.diagnostics import (
     CorePluginDiagnostics,
     PluginDiagnostics,
@@ -1368,8 +1367,6 @@ class CompositionRoot:
     def __init__(
         self,
         generation_id: str,
-        *,
-        audit: CompositionAudit | None = None,
     ) -> None:
         if not generation_id:
             raise ValueError("generation_id 不能为空")
@@ -1384,7 +1381,6 @@ class CompositionRoot:
         self._incident_sequence = 0
         self._incident_counts: dict[tuple[int, str], int] = {}
         self._recent_incidents: deque[IncidentView] = deque(maxlen=self.RECENT_INCIDENT_LIMIT)
-        self._audit = audit or CompositionAudit()
         self._events = EventRegistry(
             self._bump_composition_revision,
             self._record_listener_failure,
@@ -1492,7 +1488,6 @@ class CompositionRoot:
         incident_counts: dict[str, int] = {}
         for (_fiber_id, owner), count in self._incident_counts.items():
             incident_counts[owner] = incident_counts.get(owner, 0) + count
-        external_effects = self._audit.external_effects
         required_pending = tuple(
             view.name
             for view in fibers
@@ -1520,7 +1515,6 @@ class CompositionRoot:
                 self.root_fiber.state == FiberState.ACTIVE
                 and not required_pending
                 and not required_degraded
-                and not external_effects
             ),
             fibers=fibers,
             services=tuple(sorted(key.name for key in self._providers)),
@@ -1533,8 +1527,6 @@ class CompositionRoot:
             incident_sequence=self._incident_sequence,
             incident_counts=tuple(sorted(incident_counts.items())),
             incident_overflowed=False,
-            writes=self._audit.writes,
-            external_effects=external_effects,
         )
 
     def topology_view(

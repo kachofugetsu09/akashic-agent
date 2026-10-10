@@ -62,7 +62,6 @@ PLUGIN_ALLOWED_MODULES = frozenset({
     # the host; it is not a business implementation or plugin-name exception.
     "agent.migrations.context",
     "agent.plugin_composition",
-    "agent.plugin_composition.access",
     "agent.plugin_composition.admission",
     "agent.plugin_composition.artifacts",
     "agent.plugin_composition.assets",

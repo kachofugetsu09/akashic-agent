@@ -179,21 +179,6 @@ def resolve_declared_workspace_file(workspace: Path, name: str) -> Path:
 
 
 @dataclass(frozen=True, slots=True)
-class WriteObservation:
-    plugin_id: str
-    operation: str
-    relative_path: str
-    sha256: str
-
-
-@dataclass(frozen=True, slots=True)
-class ExternalEffectObservation:
-    kind: str
-    target: str
-    outcome: str
-
-
-@dataclass(frozen=True, slots=True)
 class CompositionReceipt:
     generation_id: str
     ready: bool
@@ -208,5 +193,3 @@ class CompositionReceipt:
     incident_sequence: int
     incident_counts: tuple[tuple[str, int], ...]
     incident_overflowed: bool
-    writes: tuple[WriteObservation, ...]
-    external_effects: tuple[ExternalEffectObservation, ...]

@@ -23,9 +23,6 @@ from agent.plugin_composition.commands import (
     CommandResult,
     Commands,
 )
-from agent.plugin_composition.access import (
-    CompositionAudit,
-)
 from agent.plugin_composition.effect import Effect
 from agent.plugin_composition.diagnostics import (
     PluginDiagnosticContext,
@@ -47,7 +44,6 @@ from agent.plugin_composition.executor import (
 from agent.plugin_composition.model import (
     CompositionError,
     CompositionReceipt,
-    ExternalEffectObservation,
     FiberState,
     FiberView,
     HealthView,
@@ -56,7 +52,6 @@ from agent.plugin_composition.model import (
     ServiceKey,
     TopologyFiberView,
     TopologyView,
-    WriteObservation,
 )
 from agent.plugin_composition.durable_deliveries import (
     DurableBindingAttempt,
@@ -274,7 +269,6 @@ __all__ = [
     "CompositionError",
     "CompositionReceipt",
     "CompositionRoot",
-    "CompositionAudit",
     "Context",
     "COMMANDS",
     "CommandDefinition",
@@ -315,7 +309,6 @@ __all__ = [
     "DeliveryStatus",
     "EmitEventKey",
     "Effect",
-    "ExternalEffectObservation",
     "EXECUTOR_SERVICE",
     "ExecutorService",
     "Fiber",
@@ -401,5 +394,4 @@ __all__ = [
     "TurnAcceptedReceipt",
     "TransformEventKey",
     "UI_SLOTS",
-    "WriteObservation",
 ]
