@@ -5,11 +5,12 @@ import ipaddress
 import logging
 import os
 import stat
+import zlib
 from pathlib import Path
 
-from agent.control.protocol.limits import DEFAULT_CONTROL_FRAME_BYTES
-from agent.control.service import ControlService
-from infra.control.connection import NdjsonConnection
+from .protocol.limits import DEFAULT_CONTROL_FRAME_BYTES
+from .service import ControlService
+from .connection import NdjsonConnection
 
 logger = logging.getLogger(__name__)
 
@@ -168,3 +169,20 @@ def _parse_loopback_tcp(endpoint: str) -> tuple[str, int] | None:
 
 def is_tcp_endpoint(endpoint: str) -> bool:
     return _parse_loopback_tcp(endpoint) is not None
+
+
+def resolve_endpoint(value: str, workspace: Path) -> str:
+    """保留显式端点；Windows 按原路径稳定派生 loopback 端口。"""
+    text = value.strip()
+    if os.name != "nt":
+        return text or str(workspace / "akashic.sock")
+    host, separator, port = text.rpartition(":")
+    if separator and host:
+        try:
+            int(port)
+        except ValueError:
+            pass
+        else:
+            return text
+    seed = zlib.crc32((text or str(workspace)).encode("utf-8")) % 20000
+    return f"127.0.0.1:{20000 + seed}"

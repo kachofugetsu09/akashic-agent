@@ -3,6 +3,7 @@ from __future__ import annotations
 from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field
+from ..contract import NAMES
 
 
 class StrictModel(BaseModel):
@@ -118,17 +119,17 @@ class InstallParams(UpdateIdParams):
 
 
 METHOD_PARAMS: dict[str, type[StrictModel]] = {
-    "initialize": InitializeParams,
-    "server/status": StrictModel,
-    "session/create": StrictModel,
-    "session/list": SessionListParams,
-    "message/read": MessageReadParams,
-    "message/send": MessageSendParams,
-    "session/follow": SessionFollowParams,
-    "session/unfollow": SessionUnfollowParams,
-    "plugin/install": InstallParams,
-    "plugin/status": StrictModel,
-    "plugin/update": UpdateIdParams,
-    "plugin/disable-and-drain": PluginIdParams,
-    "plugin/uninstall": PluginIdParams,
+    NAMES.initialize: InitializeParams,
+    NAMES.server_status: StrictModel,
+    NAMES.session_create: StrictModel,
+    NAMES.session_list: SessionListParams,
+    NAMES.message_read: MessageReadParams,
+    NAMES.message_send: MessageSendParams,
+    NAMES.session_follow: SessionFollowParams,
+    NAMES.session_unfollow: SessionUnfollowParams,
+    NAMES.plugin_install: InstallParams,
+    NAMES.plugin_status: StrictModel,
+    NAMES.plugin_update: UpdateIdParams,
+    NAMES.plugin_drain: PluginIdParams,
+    NAMES.plugin_uninstall: PluginIdParams,
 }

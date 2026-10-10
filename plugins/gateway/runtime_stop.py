@@ -5,12 +5,15 @@ from __future__ import annotations
 import asyncio
 from pydantic import Field
 
-from agent.control.protocol.models import StrictModel
+from .protocol.models import StrictModel
 from agent.plugin_composition.messages import MESSAGE_CATALOG
 from agent.plugin_contracts import CallRef, Input, Output, ToolCall, ToolResult
-from agent.plugin_contracts.delivery import FINAL_OUTPUT_DELIVERY
-from agent.plugin_contracts.turns import TURN_PROJECTION
-from bootstrap.tools import CoreRuntime
+from agent.plugin_contracts.delivery import FINAL_OUTPUT_DELIVERY, FinalOutputDelivery
+from agent.plugin_contracts.turns import TURN_PROJECTION, TurnProjection
+from agent.plugin_composition import Context
+from agent.plugin_composition.control_frames import CONTROL_FRAMES
+from agent.plugin_composition.plugin_updates import PLUGIN_UPDATES
+from agent.plugin_composition.tasks import RESTART_GATE
 
 
 class StopParams(StrictModel):
@@ -27,16 +30,13 @@ class CancelStopParams(StopParams):
     pass
 
 
-async def prepare_stop(core: CoreRuntime, params: StopParams) -> dict[str, object]:
+async def prepare_stop(ctx: Context, params: StopParams) -> dict[str, object]:
     """固定原 boot/Root，等待真实结束；失败时恢复尚未开始关闭的准入。"""
-    gate = core.restart_gate
-    if gate is None or gate.boot_id != params.boot_id:
+    gate = ctx.require(RESTART_GATE)
+    if gate.boot_id != params.boot_id:
         raise ValueError("停止请求不属于当前 boot")
-    root = core.plugin_manager.live_root
-    if root is None:
-        raise RuntimeError("停止请求没有 live Root")
     ref = CallRef(params.call_message_id, params.call_part_index)
-    reader = root.service_value(MESSAGE_CATALOG).reader(params.session_id)
+    reader = ctx.require(MESSAGE_CATALOG).reader(params.session_id)
     call = await reader.read_async(lambda snapshot: snapshot.get(ref.message_id))
     if (
         call is None
@@ -46,7 +46,7 @@ async def prepare_stop(core: CoreRuntime, params: StopParams) -> dict[str, objec
         raise ValueError("停止请求没有原 ToolCall")
     if not isinstance(call.body.parts[ref.part_index], ToolCall):
         raise ValueError("停止请求引用的不是 ToolCall")
-    claim = core.control_frames.claim_for(params.session_id, ref)
+    claim = ctx.require(CONTROL_FRAMES).claim_for(params.session_id, ref)
     if params.arm_only:
         if call.source == "programmatic" and claim is None:
             messages = await reader.read_async(lambda snapshot: snapshot.snapshot())
@@ -55,18 +55,16 @@ async def prepare_stop(core: CoreRuntime, params: StopParams) -> dict[str, objec
                 for message in reversed(messages[: messages.index(call)])
                 if message.source == call.source and isinstance(message.body, Input)
             )
-            claim = core.control_frames.arm_claim(
+            claim = ctx.require(CONTROL_FRAMES).arm_claim(
                 params.session_id, origin.message_id, ref
             )
             asyncio.get_running_loop().call_later(params.timeout_s, claim.abort)
         return {"bootId": gate.boot_id, "state": "armed"}
-    projection = root.service_value(TURN_PROJECTION)
-    delivery_context, delivery = root._service_provider(FINAL_OUTPUT_DELIVERY)
     # 同一停止只允许一个 waiter；重放接单由宿主任务记录处理。
     gate.check_open()
     gate.prepare_stop(params.request_id)
-    try:
-        async with asyncio.timeout(params.timeout_s), delivery_context.runtime_scope():
+    async def wait_completed(projection: TurnProjection, delivery: FinalOutputDelivery) -> dict[str, object]:
+        async with asyncio.timeout(params.timeout_s):
             # 1. follow 包含当前快照，不需要下一条消息来唤醒已完成的回合。
             async for _ in reader.follow():
                 messages = await reader.read_async(lambda snapshot: snapshot.snapshot())
@@ -104,21 +102,25 @@ async def prepare_stop(core: CoreRuntime, params: StopParams) -> dict[str, objec
                     await delivery.wait(reader, turn)
                 # 3. 当前控制请求不持有业务许可，不会等待自己。
                 await gate.wait_drained(params.timeout_s)
-                await core.plugin_manager.wait_idle()
-                if core.plugin_manager.live_root is not root:
-                    raise RuntimeError("停止准备期间 Root 已被替换")
+                await ctx.require(PLUGIN_UPDATES).wait_idle(ctx)
+                ctx.require(RESTART_GATE)
                 gate.check_stop(params.request_id)
                 return {
                     "bootId": gate.boot_id,
-                    "rootIdentity": root.generation_id,
+                    "rootIdentity": ctx.generation_id,
                     "endingMessageId": turn.ending_message_id,
                     "state": "drained",
                 }
             raise RuntimeError("消息读取在停止准备期间结束")
+    try:
+        with ctx.borrow(TURN_PROJECTION) as projection, ctx.borrow(FINAL_OUTPUT_DELIVERY) as delivery:
+            if projection is None or delivery is None:
+                raise RuntimeError("停止准备需要 Turn 与最终送达 provider")
+            return await wait_completed(projection, delivery)
+
     except BaseException:
         gate.abort(params.request_id)
         raise
-
     finally:
         if claim is not None:
             claim.consume()

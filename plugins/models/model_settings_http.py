@@ -37,7 +37,7 @@ from agent.plugin_composition.models import (
     TransportError,
 )
 from agent.plugin_composition.model import ServiceKey
-from agent.plugin_composition.rpc import RpcMethod
+from plugins.gateway.contract import RpcMethod
 
 from .settings import (
     AddConnection,

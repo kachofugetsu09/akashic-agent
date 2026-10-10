@@ -30,7 +30,7 @@ from agent.plugin_composition import (
     MODEL_CATALOG,
     ToolCall,
 )
-from agent.plugin_composition.rpc import rpc_method_key
+from plugins.gateway.contract import RpcMethod
 from agent.plugins.manager import PluginManager
 from agent.plugins.reload_journal import ReloadJournal
 from agent.plugins.selection import PluginSelection
@@ -892,7 +892,7 @@ async def _configure_selected_model(manager: PluginManager) -> None:
     if root is None:
         raise RuntimeError("正式 live Root 不可用")
     provider_context, operation = root._service_provider(
-        rpc_method_key("models/command")
+        RpcMethod.key("models/command")
     )
 
     async def command(payload: dict[str, object]) -> dict[str, object]:

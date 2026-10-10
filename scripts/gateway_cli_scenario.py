@@ -26,6 +26,8 @@ async def run(base: Path, listen: str) -> dict[str, bool]:
     """只写一次性 workspace；命令走正式选择和独立进程。"""
     from agent.config import Config
     from agent.plugins.install import install_git_plugin
+    from agent.plugins.manifest import workspace_plugin_data_dir
+    from agent.plugin_composition.config_input import save_config
     from bootstrap.app import AppRuntime
     from bootstrap.init_workspace import init_workspace
     from session.message import ContentPart, Input, Output
@@ -36,7 +38,7 @@ async def run(base: Path, listen: str) -> dict[str, bool]:
     os.environ.update(HOME=str(home), AKASHIC_PLUGIN_HOME=str(home),
                       AKASHIC_PLUGIN_DISTRIBUTION="", AKASHIC_EXTRA_PLUGIN_DIRS="",
                       AKASHIC_EXECUTION_MODE="local")
-    config.write_text('[runtime]\n[app_server]\nlisten = ' + json.dumps(listen) + '\n')
+    config.write_text('[runtime]\n')
     init_workspace(config_path=config, workspace=workspace)
     sources = base / "sources"
     for name in ("gateway", "sources", "models", "content", "commands", "conversation", "programmatic", "turn_projection", "ui"):
@@ -45,6 +47,7 @@ async def run(base: Path, listen: str) -> dict[str, bool]:
         subprocess.run(["git", "init", "-q", "--initial-branch=source", str(path)], check=True)
         commit(path)
         install_git_plugin(workspace=workspace, source=str(path), marketplace="lab", plugins_home=home)
+    save_config(workspace_plugin_data_dir(workspace, "gateway", "lab"), {"listen": listen})
     observer = sources / "observer"
     observer.mkdir()
     (observer / "plugin.py").write_text('''api_version = 3
@@ -95,7 +98,7 @@ async def apply(ctx):
         assert json.loads(output)["operation"]["state"] == "done"
         plan = json.loads((workspace / "runtime/endpoints.json").read_text())
         endpoint = next(item for item in plan["endpoints"] if item["name"] == "gateway")
-        assert endpoint["address"] == str(app.app_server.endpoint)
+        assert endpoint["address"] == listen if not listen.startswith("127.") else endpoint["address"].startswith("127.0.0.1:"), endpoint
         token_before = (workspace / ".app-server-token").read_bytes() if listen.startswith("127.") else None
 
         # 2. 真实程序来源提交 Input；原 Message writer 追加终态，CLI 从 RPC 读取结果。
@@ -151,6 +154,8 @@ async def apply(ctx):
         assert core.message_log.reader("kept").snapshot() == before
         if token_before is not None:
             assert (workspace / ".app-server-token").read_bytes() == token_before
+        await manager.install(source=str(path), marketplace="lab", ref_name="", sparse_paths=[], update_id="gateway-reinstall")
+        await manager.wait_idle()
         await app.shutdown()
         stopped = True
         assert json.loads((workspace / "runtime/endpoints.json").read_text())["endpoints"] == []
@@ -159,11 +164,68 @@ async def apply(ctx):
     finally:
         if not stopped:
             await app.shutdown()
-    return {"published_native_endpoint": True, "remote_commands_under_lock": True,
+    await stdio(config, workspace, env, sources / "gateway")
+    return {"stdio_eof_and_failure_cleanup": True, "published_native_endpoint": True, "remote_commands_under_lock": True,
             "input_and_output_rpc": True, "sigint_commits_pause": True, "command_generation_update": True,
             "missing_command_explicit": True, "observer_and_history_preserved": True,
             "stop_withdraws_endpoint": True}
 
+
+async def stdio(config: Path, workspace: Path, env: dict[str, str], source: Path) -> None:
+    """真实插件命令启动正式宿主，EOF 和超长 frame 都必须结算锁与历史。"""
+    with sqlite3.connect(workspace / "sessions.db") as db:
+        rows = db.execute("SELECT * FROM messages WHERE session_key = 'kept'").fetchall()
+    with (source / "cli.py").open("a") as file:
+        file.write("\n# stdio source update\n")
+    commit(source)
+    for oversized in (False, True):
+        with tempfile.TemporaryFile() as logs:
+            process = await asyncio.create_subprocess_exec(sys.executable, str(ROOT / "main.py"),
+                "app-server", "--stdio", "--config", str(config), "--workspace", str(workspace),
+                env=env, stdin=asyncio.subprocess.PIPE, stdout=asyncio.subprocess.PIPE,
+                stderr=logs)
+            assert process.stdin is not None and process.stdout is not None
+            try:
+                async def request(identity: int, method: str, params: dict[str, object]) -> dict:
+                    process.stdin.write((json.dumps({"jsonrpc": "2.0", "id": identity,
+                        "method": method, "params": params}) + "\n").encode())
+                    await process.stdin.drain()
+                    line = await asyncio.wait_for(process.stdout.readline(), 20)
+                    if not line:
+                        logs.seek(0)
+                        raise AssertionError(logs.read().decode())
+                    frame = json.loads(line)
+                    assert frame["id"] == identity and "error" not in frame, frame
+                    return frame["result"]
+                result = await request(1, "initialize", {"protocolVersion": "2.0",
+                    "clientInfo": {"name": "scenario", "version": "1"}})
+                assert result["workspace"] == str(workspace)
+                process.stdin.write(b'{"jsonrpc":"2.0","method":"initialized"}\n')
+                result = await request(2, "server/status", {})
+                assert result["bootId"] and result["protocolVersion"] == "2.0"
+                result = await request(3, "message/read", {"session_id": "kept"})
+                assert len(result["items"]) == len(rows)
+                if not oversized:
+                    result = await request(4, "plugin/install", {"source": str(source),
+                        "marketplace": "lab", "update_id": "gateway-stdio-update"})
+                    assert result["selection"] == "selected"
+                output, _ = await asyncio.wait_for(process.communicate(
+                    b"x" * (3 * 1024 * 1024) + b"\n" if oversized else
+                    b'{"jsonrpc":"2.0","id":5,"method":"server/status","params":{}}\n'), 20)
+                logs.seek(0)
+                error = logs.read()
+                for line in output.splitlines():
+                    assert json.loads(line)["jsonrpc"] == "2.0", output
+                assert (process.returncode != 0) if oversized else (process.returncode == 0), error
+                if oversized:
+                    assert b"separator" in error or b"limit" in error, error
+            finally:
+                if process.returncode is None:
+                    process.kill()
+                    await process.communicate()
+            assert json.loads((workspace / "runtime/endpoints.json").read_text())["endpoints"] == []
+            with sqlite3.connect(workspace / "sessions.db") as db:
+                assert db.execute("SELECT * FROM messages WHERE session_key = 'kept'").fetchall() == rows
 
 if __name__ == "__main__":
     with tempfile.TemporaryDirectory(prefix="gateway-cli-") as folder:

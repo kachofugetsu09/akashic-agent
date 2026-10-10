@@ -15,7 +15,7 @@ from agent.plugin_composition.messages import (
     SESSION_ADMISSION,
     MessageReader,
 )
-from agent.plugin_composition.rpc import rpc_method_key
+from plugins.gateway.contract import RpcMethod
 from agent.plugin_composition.models import MODEL_CATALOG, ChatModelSelection
 from agent.plugin_composition.tasks import (
     RESTART_GATE,
@@ -104,7 +104,7 @@ async def apply(ctx: Context) -> None:
     programmatic = Programmatic(ctx)
     _ = await ctx.provide(PROGRAMMATIC, programmatic)
     for method, operation in rpc_methods(programmatic).items():
-        _ = await ctx.provide(rpc_method_key(method), operation)
+        _ = await ctx.provide(RpcMethod.key(method), operation)
     catalog = ctx.require(MESSAGE_CATALOG)
     frames = ctx.require(CONTROL_FRAMES)
     watcher: asyncio.Task[None] | None = None

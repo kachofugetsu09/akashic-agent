@@ -4,11 +4,9 @@ from __future__ import annotations
 import argparse
 import asyncio
 import json
-import ipaddress
 import os
 from pathlib import Path
 import signal
-import stat
 import sys
 from typing import cast
 from uuid import uuid4
@@ -16,6 +14,8 @@ from uuid import uuid4
 from akashic_sdk import AsyncAkashic, RemoteError
 from agent.plugin_composition import load_endpoint_plan
 from core.common.file_io import run_file_io
+from .socket import is_tcp_endpoint
+from .token import read_workspace_token
 
 
 def find_endpoint(workspace: Path) -> str:
@@ -29,19 +29,7 @@ def find_endpoint(workspace: Path) -> str:
 
 def read_token(workspace: Path, endpoint: str) -> str | None:
     """Unix 不用 token；TCP 边界只允许 loopback 并只读原 secret。"""
-    if endpoint.startswith("/") or endpoint.count(":") != 1:
-        return None
-    host, raw_port = endpoint.rsplit(":", 1)
-    address, port = ipaddress.ip_address(host), int(raw_port)
-    if not address.is_loopback or not 0 <= port <= 65535:
-        raise ValueError(f"app-server TCP 只允许有效 loopback endpoint: {endpoint}")
-    path = workspace / ".app-server-token"
-    if os.name != "nt" and stat.S_IMODE(path.stat().st_mode) != 0o600:
-        raise PermissionError(f"workspace token 权限必须为 0600: {path}")
-    token = path.read_text(encoding="utf-8").strip()
-    if not token:
-        raise ValueError(f"workspace token 文件为空: {path}")
-    return token
+    return read_workspace_token(workspace) if is_tcp_endpoint(endpoint) else None
 
 
 # 只有终态 Output 或 Control 可能结束原 Input；其他追加不必回查结果。
@@ -249,3 +237,17 @@ async def status_main(arguments: tuple[str, ...], *, workspace: Path, config_pat
 
 async def uninstall_main(arguments: tuple[str, ...], *, workspace: Path, config_path: Path) -> int:
     return await management(arguments, workspace=workspace, config_path=config_path, command="plugin-uninstall")
+
+
+async def app_server_main(arguments: tuple[str, ...], *, workspace: Path, config_path: Path) -> int:
+    """标准协议输出与宿主日志分流，正式宿主仍拥有启动、锁和停止。"""
+    parser = argparse.ArgumentParser(prog="app-server")
+    parser.add_argument("--stdio", action="store_true", required=True)
+    parser.parse_args(arguments)
+    core_root = Path(os.environ["AKASHIC_CORE_ROOT"])
+    output_fd = os.dup(sys.stdout.fileno())
+    os.set_inheritable(output_fd, True)
+    os.environ["AKASHIC_GATEWAY_STDIO"] = str(output_fd)
+    os.dup2(sys.stderr.fileno(), sys.stdout.fileno())
+    os.execv(sys.executable, [sys.executable, str(core_root / "main.py"), "gateway",
+        "--workspace", str(workspace), "--config", str(config_path)])

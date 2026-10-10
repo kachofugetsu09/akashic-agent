@@ -10,9 +10,6 @@ from typing import Any, Awaitable, Callable
 
 from bootstrap.web_shell import WebShellServer
 
-from agent.plugin_composition import Effect
-from agent.config import resolve_app_server_endpoint
-from agent.control.service import ControlService
 from agent.host_bridge.boot import claim_host_bridge_boot
 from agent.restart import RestartGate
 from agent.config_models import Config
@@ -20,7 +17,6 @@ from bootstrap.cleanup import run_cleanup_steps
 from bootstrap.runtime_readiness import RuntimeReadiness
 from bootstrap.tools import CoreRuntime, build_core_runtime
 from bootstrap.workspace_lock import WorkspaceInstanceLock
-from bootstrap.workspace_token import ensure_workspace_token
 from bus.queue import MessageBus
 from agent.plugins.watcher import PluginWatcher
 from core.net.http import (
@@ -29,7 +25,6 @@ from core.net.http import (
     configure_default_shared_http_resources,
 )
 from core.common.diagnostic_log import configure_logging
-from infra.control.socket import SocketAppServer, is_tcp_endpoint
 
 configure_logging()
 logging.getLogger("agent.plugins.manager").setLevel(
@@ -157,9 +152,6 @@ class AppRuntime:
         self.restart_gate = restart_gate
         self.readiness = readiness
         self.http_resources = SharedHttpResources()
-        self.app_server_endpoint: Effect | None = None
-        self.app_server: SocketAppServer | None = None
-        self.control_service: ControlService | None = None
         self.core: CoreRuntime | None = None
         self.bus = None
         self.web_shell: WebShellServer | None = None
@@ -200,36 +192,6 @@ class AppRuntime:
             await self.core.start()
             if self.readiness is not None:
                 self.readiness.mark_stage("core.ready")
-            app_server_endpoint: str | None = None
-            workspace_token: str | None = None
-            if self.config.app_server.enabled:
-                app_server_endpoint = resolve_app_server_endpoint(self.config.app_server.listen, self.workspace)
-                if is_tcp_endpoint(app_server_endpoint):
-                    workspace_token = ensure_workspace_token(self.workspace)
-            from bootstrap.app_server import build_control_service
-
-            self.control_service = build_control_service(
-                self.core, workspace_token=workspace_token,
-                boot_id=self.readiness.boot_id if self.readiness else None,
-                ready=(lambda: self.readiness.ready) if self.readiness else None,
-            )
-            if self.config.app_server.enabled:
-                assert app_server_endpoint is not None
-                self.app_server = SocketAppServer(
-                    app_server_endpoint,
-                    self.control_service,
-                    max_connections=self.config.app_server.max_connections,
-                    max_pending_requests=self.config.app_server.ingress_queue_size,
-                    max_message_bytes=self.config.app_server.max_message_bytes,
-                    outbound_queue_size=self.config.app_server.outbound_queue_size,
-                )
-                await self.app_server.start()
-                root = manager.live_root
-                assert root is not None
-                self.app_server_endpoint = await root.context.endpoint("gateway",
-                    protocol="jsonrpc+tcp" if is_tcp_endpoint(str(self.app_server.endpoint)) else "jsonrpc+unix",
-                    address=str(self.app_server.endpoint))
-
             plugin_manager = getattr(self.core, "plugin_manager", None)
             if self.readiness is not None:
                 self.readiness.mark_stage("services.ready")
@@ -434,22 +396,6 @@ class AppRuntime:
                     _stop_plugin_watcher(
                         self.plugin_watcher,
                         self.plugin_watcher_task,
-                    ),
-                ),
-                (
-                    "app_server_endpoint.withdraw",
-                    self.app_server_endpoint.aclose if self.app_server_endpoint else _noop_async,
-                ),
-                (
-                    "app_server.stop",
-                    self.app_server.stop if self.app_server else _noop_async,
-                ),
-                (
-                    "control_service.shutdown",
-                    (
-                        self.control_service.shutdown
-                        if self.control_service
-                        else _noop_async
                     ),
                 ),
             )

@@ -96,7 +96,6 @@ PLUGIN_ALLOWED_MODULES = frozenset({
     "agent.plugin_composition.requests",
     "agent.plugin_composition.runtime_catalog",
     "agent.plugin_composition.runtime_lifecycle",
-    "agent.plugin_composition.rpc",
     "agent.plugin_composition.shell_runtime",
     "agent.plugin_composition.tasks",
     "agent.tool_catalog",

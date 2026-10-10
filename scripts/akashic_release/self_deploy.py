@@ -32,7 +32,7 @@ def _user_environment() -> dict[str, str]:
 
 def submit(args: argparse.Namespace) -> dict[str, object]:
     """持久接纳原调用，并确认独立 worker 的 exec；不等待更新。"""
-    from bootstrap.runtime_stop import StopParams
+    from plugins.gateway.runtime_stop import StopParams
 
     if re.fullmatch(r"[0-9a-f]{40}", args.commit) is None:
         raise ValueError("--commit 必须是完整 40 位 SHA")
@@ -300,7 +300,7 @@ def _exec_target(path: Path, request: dict[str, Any]) -> None:
 def worker(args: argparse.Namespace) -> dict[str, object]:
     """保留任务错误，调用既有发布器；不合并 PR、不发送新模型消息。"""
     from scripts.akashic_release.cli import install
-    from bootstrap.runtime_stop import StopParams
+    from plugins.gateway.runtime_stop import StopParams
 
     path = args.request.resolve(strict=True)
     with release_lock(path.with_suffix(".lock"), wait=True):

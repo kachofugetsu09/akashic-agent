@@ -10,7 +10,7 @@ from collections.abc import Mapping
 import json
 from typing import cast
 
-from agent.plugin_composition.rpc import RpcMethod
+from plugins.gateway.contract import RpcMethod
 from plugins.mcp.contract import MCP_DETAIL, MCP_SERVERS, McpDetailUnavailable
 from .capabilities import (
     INSPECTION_DOCUMENTS_GET,

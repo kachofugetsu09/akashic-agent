@@ -6,9 +6,9 @@ from collections.abc import Mapping
 from dataclasses import dataclass
 from uuid import uuid4
 
-from agent.control.protocol.router import ConnectionRouter
-from agent.control.protocol.method import RequestTransport
-from agent.control.service import ControlService
+from .protocol.router import ConnectionRouter
+from .contract import RequestTransport
+from .service import ControlService
 from agent.plugin_composition.control_frames import FrameBook
 
 
@@ -63,8 +63,9 @@ class NdjsonConnection(RequestTransport):
     ) -> None:
         encoded = (json.dumps(message, ensure_ascii=False, separators=(",", ":")) + "\n").encode("utf-8")
         tracked = () if page is None else self._frames.resolve_page(self.connection_id, page)
-        written = asyncio.get_running_loop().create_future() if tracked else None
-        if written is not None:
+        written = asyncio.get_running_loop().create_future() if tracked or "id" in message else None
+        if tracked:
+            assert written is not None
             self._frames.attach_page(tracked, written)
         try:
             self._queue.put_nowait(_PendingFrame(encoded, written))
@@ -73,6 +74,10 @@ class NdjsonConnection(RequestTransport):
                 written.set_exception(exc)
             self._writer.close()
             raise ConnectionError("client outbound queue is full") from exc
+        if written is not None:
+            # 卡住的客户端不能无限保留旧 Gateway activation。
+            async with asyncio.timeout(10):
+                await written
 
     async def run(self) -> None:
         writer_task = asyncio.create_task(self._write_loop(), name="control-writer")

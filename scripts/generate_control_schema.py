@@ -10,7 +10,7 @@ from pydantic import TypeAdapter
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
 
-from agent.control.protocol.models import METHOD_PARAMS
+from plugins.gateway.protocol.models import METHOD_PARAMS
 from plugins.programmatic.control import PARAMS as PROGRAMMATIC_PARAMS
 
 
