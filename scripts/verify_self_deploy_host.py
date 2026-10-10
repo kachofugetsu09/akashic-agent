@@ -13,8 +13,7 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path[:0] = [str(ROOT), str(ROOT / "sdk/python/src")]
 
 from akashic_sdk import AsyncAkashic
-from agent.config import resolve_app_server_endpoint
-from agent.config_models import Config
+from plugins.gateway.cli import find_endpoint, read_token
 from scripts.akashic_release.doctor import read_environment
 from scripts.verify_self_deploy_runtime import start_model_server, configure_model
 
@@ -117,13 +116,12 @@ async def verify(args: argparse.Namespace) -> None:
     runner, port = await start_model_server(
         args.evidence, command=command, host="0.0.0.0", port=args.fixture_port
     )
-    config = Config.load(environment["AKASHIC_CONFIG"], workspace=work)
-    endpoint = resolve_app_server_endpoint(config.app_server.listen, work)
+    endpoint = find_endpoint(work)
     session = "programmatic:host-self-deploy-e2e:" + args.evidence.name
     client = None
     try:
         # 1. 真正的 Docker Core → Host Bridge Shell → 独立用户 systemd worker。
-        client = await AsyncAkashic.connect(endpoint)
+        client = await AsyncAkashic.connect(endpoint, workspace_token=read_token(work, endpoint))
         if not args.reuse_model:
             await configure_model(client, port, host=args.fixture_host)
         await client.request(
@@ -158,7 +156,7 @@ async def verify(args: argparse.Namespace) -> None:
         assert "agent_restart" not in requests, "Docker runtime 暴露了旧重启工具"
 
         # 3. 新 boot 读取原消息，再执行下一回合；原正文、身份和顺序不减少。
-        async with await AsyncAkashic.connect(endpoint) as after_client:
+        async with await AsyncAkashic.connect(endpoint, workspace_token=read_token(work, endpoint)) as after_client:
             reloaded = await after_client.message_read(session, limit=100)
             assert reloaded["items"] == first["items"], "停止/迁移改写了原消息"
             second = await wait_reply(after_client, session, session + ":after-update-input")

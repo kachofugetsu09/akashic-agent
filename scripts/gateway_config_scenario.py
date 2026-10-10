@@ -1,4 +1,4 @@
-"""正式 Yoyo 复制 Gateway 配置；原配置与消息始终完整保留。"""
+"""正式 Yoyo 转交 Gateway 配置；原始配置恢复点与消息完整保留。"""
 from __future__ import annotations
 
 import asyncio
@@ -7,6 +7,7 @@ import os
 from pathlib import Path
 import shutil
 import sqlite3
+import subprocess
 import sys
 import tempfile
 
@@ -33,13 +34,14 @@ async def run(base: Path) -> dict[str, bool]:
                       AKASHIC_EXECUTION_MODE="local")
     shutil.copytree(ROOT / "plugins/gateway", source, ignore=shutil.ignore_patterns("__pycache__"))
     bundle = ResolvedPluginSource(source, "builtin", plugin_name="gateway")
-    for conflict in (False, True):
-        directory = base / ("conflict" if conflict else "copy")
+    for conflict in ("none", "fixed_input", "recovery_point"):
+        directory = base / conflict
         directory.mkdir()
         workspace, config = directory / "workspace", directory / "config.toml"
-        config.write_text('# source comment\n[runtime]\n[app_server]\nenabled = false\nlisten = "custom.sock"\n'
-                          'max_connections = "7"\ningress_queue_size = 19\noutbound_queue_size = 29\nmax_message_bytes = 10101\n')
+        config.write_text('[runtime]\n')
         init_workspace(config_path=config, workspace=workspace)
+        config.write_text('# source comment\n[runtime]\nworkspace = "kept-path"\n[app_server]\nenabled = false\nlisten = "custom.sock"\n'
+                          'max_connections = "7"\ningress_queue_size = 19\noutbound_queue_size = 29\nmax_message_bytes = 10101\n')
         before_config = config.read_bytes()
         log = MessageLog(workspace / "sessions.db")
         log.writer("saved", author="user", source="saved", body_types=(Input,), content={}).append("kept", Input(()))
@@ -47,8 +49,15 @@ async def run(base: Path) -> dict[str, bool]:
         with sqlite3.connect(workspace / "sessions.db") as database:
             before_rows = database.execute("SELECT * FROM messages ORDER BY rowid").fetchall()
         data = builtin_plugin_data_dir("gateway", workspace)
+        if conflict == "none":
+            environment = {**os.environ, "PYTHONPATH": os.pathsep.join([str(ROOT), str(ROOT / "sdk/python/src")])}
+            failed = subprocess.run([sys.executable, str(ROOT / "main.py"), "gateway",
+                "--config", str(config), "--workspace", str(workspace)], env=environment,
+                capture_output=True, timeout=30)
+            assert failed.returncode != 0 and b"app_server" in failed.stderr, failed.stderr
+            assert config.read_bytes() == before_config
         runner = MigrationRunner(repo_root=ROOT, config_path=config, workspace=workspace, fixed_sources=(bundle,))
-        if conflict:
+        if conflict == "fixed_input":
             save_config(data, {"listen": "unrelated.sock"})
             original = (data / CONFIG_INPUT).read_bytes()
             try:
@@ -64,21 +73,48 @@ async def run(base: Path) -> dict[str, bool]:
                     ("20261010_01_gateway_config_copy",)).fetchone()[0] == 0
             # 用户在隔离场景中明确选择旧 Core 设置；原目标保存在名称清楚的恢复点。
             (data / CONFIG_INPUT).rename(data / "before-source-choice.json")
+        backup = config.with_name(config.name + ".before-gateway-config-migration.bak")
+        if conflict == "recovery_point":
+            backup.write_bytes(b"unrelated recovery point")
+            try:
+                runner.run()
+            except RuntimeError as error:
+                assert "恢复点不同" in str(error)
+            else:
+                raise AssertionError("迁移覆盖了已有恢复点")
+            assert config.read_bytes() == before_config
+            assert backup.read_bytes() == b"unrelated recovery point"
+            copied, _ = load_config(data)
+            save_config(data, {**copied, "listen": "new-user-choice.sock"})
+            try:
+                runner.run()
+            except RuntimeError as error:
+                assert "固定输入与旧 app_server 不同" in str(error)
+            else:
+                raise AssertionError("复制后修改的输入被当成源表已保存")
+            assert config.read_bytes() == before_config
+            with sqlite3.connect(workspace / "migrations.sqlite3") as database:
+                assert database.execute("SELECT COUNT(*) FROM _yoyo_migration WHERE migration_id = ?",
+                    ("20261011_01_retire_gateway_config",)).fetchone()[0] == 0
+            # 隔离场景明确选择原设置，另存冲突恢复点后才重试。
+            save_config(data, copied)
+            backup.rename(config.with_name(config.name + ".before-source-choice.bak"))
         outcome = runner.run()
-        assert "20261010_01_gateway_config_copy" in outcome.migrations
+        assert "20261011_01_retire_gateway_config" in outcome.migrations
         copied, _ = load_config(data)
         assert copied == {"enabled": False, "listen": "custom.sock", "max_connections": 7,
                           "ingress_queue_size": 19, "outbound_queue_size": 29, "max_message_bytes": 10101}
         copied_bytes = (data / CONFIG_INPUT).read_bytes()
         assert runner.run().state == "current"
         assert (data / CONFIG_INPUT).read_bytes() == copied_bytes
-        assert config.read_bytes() == before_config
-        legacy = Config.load(config, workspace=workspace)
-        assert legacy.app_server.listen == "custom.sock" and legacy.app_server.max_connections == 7
-        # 两次实际 boot 从固定输入加载同一个 schema；没有 source table 或配置减少。
+        assert backup.read_bytes() == before_config
+        assert config.read_text() == '# source comment\n[runtime]\nworkspace = "kept-path"\n'
+        source_after = config.read_bytes()
+        loaded = Config.load(config, workspace=workspace)
+        # 两次真实 boot 使用固定输入；原表只减少一次，恢复点不变。
         for _ in range(2):
             http = SharedHttpResources()
-            core = build_core_runtime(legacy, workspace, http, plugin_dirs=[source])
+            core = build_core_runtime(loaded, workspace, http, plugin_dirs=[source])
             try:
                 await core.start()
                 generation = core.plugin_manager.generation("gateway")
@@ -87,12 +123,13 @@ async def run(base: Path) -> dict[str, bool]:
             finally:
                 await core.stop()
                 await http.aclose()
-        assert config.read_bytes() == before_config and (data / CONFIG_INPUT).read_bytes() == copied_bytes
+        assert config.read_bytes() == source_after and backup.read_bytes() == before_config
+        assert (data / CONFIG_INPUT).read_bytes() == copied_bytes
         with sqlite3.connect(workspace / "sessions.db") as database:
             assert database.execute("SELECT * FROM messages ORDER BY rowid").fetchall() == before_rows
-    return {"native_yoyo_copy": True, "legacy_values_preserved": True,
+    return {"native_yoyo_copy_and_retire": True, "legacy_values_preserved": True,
             "conflict_not_applied": True, "retry_after_explicit_choice": True,
-            "fixed_input_two_boots": True, "source_and_messages_unchanged": True}
+            "fixed_input_two_boots": True, "source_backup_and_messages_preserved": True, "copy_then_retire_conflicts_visible": True}
 
 
 if __name__ == "__main__":

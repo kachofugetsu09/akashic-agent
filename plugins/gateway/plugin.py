@@ -15,7 +15,7 @@ from .factory import build_control_service
 from .migrations.gateway_migrations.helpers.settings import GatewayConfig
 from .socket import SocketAppServer, is_tcp_endpoint, resolve_endpoint
 from .stdio import StdioAppServer
-from .token import ensure_workspace_token
+from .token import ensure_token
 
 api_version = 3
 name = "gateway"
@@ -23,7 +23,7 @@ version = "1.0.0"
 desc = "JSON-RPC 控制面与远程命令"
 Config = GatewayConfig
 inject = (HOST_INFO,)
-workspace_files = ("akashic.sock", ".app-server-token")
+workspace_files = (".app-server-token",)
 entrypoints = {"exec": "cli.exec_main", "plugin-install": "cli.install_main",
                "plugin-status": "cli.status_main", "plugin-uninstall": "cli.uninstall_main",
                "app-server": "cli.app_server_main"}
@@ -32,14 +32,17 @@ entrypoints = {"exec": "cli.exec_main", "plugin-install": "cli.install_main",
 async def apply(ctx: Context) -> None:
     """端口缺席只挂起监听子 Fiber，不阻塞 Gateway 命令声明。"""
     config = Config.model_validate(ctx.config)
-    if not config.enabled or ctx.require(HOST_INFO).validation:
+    output_fd = os.environ.get("AKASHIC_GATEWAY_STDIO")
+    if not config.enabled and output_fd is None:
+        return
+    workspace = ctx.runtime.workspace
+    endpoint = resolve_endpoint(config.listen, workspace)
+    tcp = output_fd is None and is_tcp_endpoint(endpoint)
+    if ctx.require(HOST_INFO).validation:
         return
 
     async def listen(context: Context) -> None:
-        workspace = context.workspace_file("akashic.sock").parent
-        output_fd = os.environ.get("AKASHIC_GATEWAY_STDIO")
-        endpoint = resolve_endpoint(config.listen, workspace)
-        token = ensure_workspace_token(workspace) if output_fd is None and is_tcp_endpoint(endpoint) else None
+        token = ensure_token(context.workspace_file(".app-server-token")) if tcp else None
         service = build_control_service(context, workspace_token=token)
         await context.effect(lambda: service.shutdown, label="control-service")
         if output_fd is not None:

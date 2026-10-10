@@ -15,7 +15,7 @@ from akashic_sdk import AsyncAkashic, RemoteError
 from agent.plugin_composition import load_endpoint_plan
 from core.common.file_io import run_file_io
 from .socket import is_tcp_endpoint
-from .token import read_workspace_token
+from .token import read_secret
 
 
 def find_endpoint(workspace: Path) -> str:
@@ -29,7 +29,7 @@ def find_endpoint(workspace: Path) -> str:
 
 def read_token(workspace: Path, endpoint: str) -> str | None:
     """Unix 不用 token；TCP 边界只允许 loopback 并只读原 secret。"""
-    return read_workspace_token(workspace) if is_tcp_endpoint(endpoint) else None
+    return read_secret(workspace / ".app-server-token") if is_tcp_endpoint(endpoint) else None
 
 
 # 只有终态 Output 或 Control 可能结束原 Input；其他追加不必回查结果。

@@ -7,6 +7,7 @@ import os
 from pathlib import Path
 import shutil
 import signal
+import socket
 import sqlite3
 import subprocess
 import sys
@@ -75,6 +76,10 @@ async def apply(ctx):
         assert process.returncode is not None
         return process.returncode, output.decode(), error.decode()
 
+    if not listen:
+        stale = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+        stale.bind(str(workspace / "akashic.sock"))
+        stale.close()
     app = AppRuntime(Config.load(config, workspace=workspace), workspace)
     stopped = False
     try:
@@ -98,7 +103,7 @@ async def apply(ctx):
         assert json.loads(output)["operation"]["state"] == "done"
         plan = json.loads((workspace / "runtime/endpoints.json").read_text())
         endpoint = next(item for item in plan["endpoints"] if item["name"] == "gateway")
-        assert endpoint["address"] == listen if not listen.startswith("127.") else endpoint["address"].startswith("127.0.0.1:"), endpoint
+        assert endpoint["address"] == (listen or str(workspace / "akashic.sock")) if not listen.startswith("127.") else endpoint["address"].startswith("127.0.0.1:"), endpoint
         token_before = (workspace / ".app-server-token").read_bytes() if listen.startswith("127.") else None
 
         # 2. 真实程序来源提交 Input；原 Message writer 追加终态，CLI 从 RPC 读取结果。
@@ -164,6 +169,8 @@ async def apply(ctx):
     finally:
         if not stopped:
             await app.shutdown()
+    save_config(workspace_plugin_data_dir(workspace, "gateway", "lab"),
+                {"enabled": False, "listen": "192.0.2.1:9"})
     await stdio(config, workspace, env, sources / "gateway")
     return {"stdio_eof_and_failure_cleanup": True, "published_native_endpoint": True, "remote_commands_under_lock": True,
             "input_and_output_rpc": True, "sigint_commits_pause": True, "command_generation_update": True,
@@ -230,5 +237,6 @@ async def stdio(config: Path, workspace: Path, env: dict[str, str], source: Path
 if __name__ == "__main__":
     with tempfile.TemporaryDirectory(prefix="gateway-cli-") as folder:
         base = Path(folder)
+        print(json.dumps(asyncio.run(run(base / "default", ""))))
         print(json.dumps(asyncio.run(run(base / "unix", str(base / "private.sock")))))
         print(json.dumps(asyncio.run(run(base / "tcp", "127.0.0.1:0"))))

@@ -11,6 +11,21 @@
 - 目标读者：维护者、coding agent、迁移与备份实现者、评审者
 - 关联条款：STA-001～STA-003、CTX-001、SES-001～SES-006、MEM-001～MEM-009、PLG-001～PLG-013、WSP-001～WSP-004、SCH-001～SCH-002、PRO-001～PRO-002、BAK-001
 
+## 2026-10-11：Gateway 配置与控制端点归属
+
+Gateway 的固定输入与 Core 主配置分开。Core 不再解析 `app_server`；旧表由 Gateway
+bundle 的复制、退休步骤转交，缺少 bundle 时保留源表并明确拒绝启动。
+
+| 对象与 owner | 正常增加与原位更新 | 失效、物理减少与恢复证据 |
+|---|---|---|
+| Gateway `config.input.json` / Gateway 配置 owner | 默认值或用户配置请求保存当前输入；复制迁移只创建缺席输入或核对已有值，不覆盖冲突 | 普通卸载不减少。旧表退休前核对实际目标文件、完整值与 schema；原输入冲突必须先由用户明确选择 |
+| Core `config.toml/app_server` / Gateway 迁移 bundle | 正常启动不再写此表 | 只有 `20261011_01_retire_gateway_config` 在完整复制且目标一致后移除该表；其余表、注释和权限保留。完整原始字节先以 0600 保存到 `<config>.before-gateway-config-migration.bak`，已有不同恢复点拒绝覆盖；文件替换后失败不能伪称已回滚 |
+| `.app-server-token` / Gateway | loopback TCP 启用且文件缺席时以 0600 创建；已有 secret 只读 | 更新、停止与卸载不删除或重置 token；恢复须保留原字节与权限 |
+| `akashic.sock` 或显式 Unix 端点 / Gateway 监听 effect | 当前监听建立 socket，并收紧到 0600 | effect 撤回发布端点并关闭连接，只移除本次监听 inode；保留被替换到同一路径的文件。socket 不是业务恢复事实 |
+
+配置迁移不修改消息、身份、顺序或业务数据库；步骤失败保留已提交的复制结果，重试只执行
+尚未完成的退休步骤。完整原配置恢复点、固定输入与 Yoyo 成功 receipt 共同说明执行结果。
+
 ## 2026-10-09：Session 与 Models 提交的故障边界
 
 [0099](../decisions/0099-ledger-commits-use-wal-normal.md) 采用 WAL NORMAL。

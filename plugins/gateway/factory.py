@@ -91,7 +91,7 @@ def build_control_service(ctx: Context, *, workspace_token: str | None) -> Contr
         return {"accepting": gate.accepting}
 
     return ControlService(
-        ctx.require(MESSAGE_CATALOG), ctx.workspace_file("akashic.sock").parent, accept=accept,
+        ctx.require(MESSAGE_CATALOG), ctx.runtime.workspace, accept=accept,
         attachments=ctx.require(CHANNEL_ATTACHMENT_READ).resolve_refs,
         reply_status=reply_status, message_display=message_display,
         plugin_install=install, plugin_status=lambda: updates.status(ctx),
