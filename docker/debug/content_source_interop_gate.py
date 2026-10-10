@@ -26,7 +26,6 @@ if str(ROOT) not in sys.path:
 
 from agent.plugins.manager import PluginManager
 from agent.plugins.selection import PluginSelection
-from bus.event_bus import EventBus
 from plugins.eventmail.store import EventMailStore
 from session.log import MessageLog
 
@@ -500,11 +499,9 @@ async def _run_coexistence_probe(
 
         save_config(data_root, tomllib.loads(config_toml))
         content_path = workspace / "plugin-data" / "eventmail-builtin" / "eventmail.sqlite3"
-        event_bus = EventBus()
         message_log = MessageLog(workspace / "sessions.db")
         manager = PluginManager(
             plugin_dirs=[plugin_dir],
-            event_bus=event_bus,
             workspace=workspace,
             installed_cache_root=root / "cache",
             message_log=message_log,
@@ -553,14 +550,10 @@ async def _run_coexistence_probe(
             try:
                 await manager.terminate_all()
             finally:
-                try:
-                    message_log.close()
-                finally:
-                    await event_bus.aclose()
+                message_log.close()
         resource_close = {
             "live_root_closed": manager.live_root is None,
             "message_log_closed": message_log._closed,
-            "event_bus_closed": event_bus._closed,
         }
         if not all(resource_close.values()):
             raise GateError(f"coexistence owner 未全部关闭: {resource_close}")

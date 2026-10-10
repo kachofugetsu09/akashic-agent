@@ -22,20 +22,18 @@ from agent.plugin_composition.model import ServiceKey
 from agent.plugins.manager import PluginManager
 from agent.plugins.python_environment import PythonEnvironments
 from agent.plugins.selection import PluginSelection, SelectionFormatError
-from bus.event_bus import EventBus
 from session.log import MessageLog
 
 SEED = '''import asyncio,sys
 from pathlib import Path
 from agent.plugins.manager import PluginManager
-from bus.event_bus import EventBus
 from session.log import MessageLog
 from session.message import Input,ContentPart,ContentReferences
 workspace,home,source=map(Path,sys.argv[1:])
 async def run():
     log=MessageLog(workspace/'sessions.db')
     log.writer(session_id='preserved',author='user',source='archive-e2e',body_types=(Input,),content={'text':lambda part:ContentReferences()}).append('original',Input((ContentPart('text','完整保留的原消息'),)))
-    host=PluginManager([],event_bus=EventBus(),workspace=workspace,installed_cache_root=home/'cache',message_log=log)
+    host=PluginManager([],workspace=workspace,installed_cache_root=home/'cache',message_log=log)
     try:
         await host.load_all()
         await host.install(source=str(source),marketplace='lab',ref_name='',sparse_paths=[],update_id='old-install')
@@ -70,7 +68,7 @@ def messages(workspace: Path) -> list[tuple[object, ...]]:
 async def verify(workspace: Path, home: Path, source: Path, installed: Path) -> dict[str, object]:
     """真实 runtime 加载当前资源，保留数据后卸载并重装。"""
     log = MessageLog(workspace / "sessions.db")
-    host = PluginManager([], event_bus=EventBus(), workspace=workspace,
+    host = PluginManager([], workspace=workspace,
                          installed_cache_root=home / "cache", message_log=log)
     data = workspace / "plugin-data/archive_probe-lab"
     try:

@@ -6,7 +6,6 @@ import pytest
 from agent.plugin_composition.bindings import BINDINGS
 from agent.plugin_composition.commands import COMMANDS, CommandResult
 from agent.plugins.manager import PluginManager
-from bus.event_bus import EventBus
 from session.log import MessageLog
 from tests.fixtures.plugin_workspace import initialize_plugin_workspace
 
@@ -19,7 +18,7 @@ def _write_source(path, source):
 @pytest.mark.asyncio
 async def test_core_only_manager_does_not_supply_commands(tmp_path):
     initialize_plugin_workspace(tmp_path / "workspace")
-    host = PluginManager([], event_bus=EventBus(), workspace=tmp_path / "workspace",
+    host = PluginManager([], workspace=tmp_path / "workspace",
                          installed_cache_root=tmp_path / "home")
     try:
         await host.load_all()
@@ -67,7 +66,7 @@ async def apply(ctx):
     log = MessageLog(tmp_path / "sessions.db")
     workspace = tmp_path / "workspace"
     initialize_plugin_workspace(workspace)
-    host = PluginManager([source], event_bus=EventBus(), workspace=workspace,
+    host = PluginManager([source], workspace=workspace,
                          installed_cache_root=tmp_path / "home", message_log=log)
     try:
         await host.load_all()

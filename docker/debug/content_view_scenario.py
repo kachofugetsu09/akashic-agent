@@ -21,7 +21,6 @@ from agent.plugin_contracts.models import CONTENT_VIEWS, MODEL_CALLS, RenderedCo
 from agent.plugin_contracts.tools import CallSource
 from agent.host_bridge.filesystem import ListDirOperation
 from agent.plugins.manager import PluginManager
-from bus.event_bus import EventBus
 from infra.channels.artifacts import ChannelAttachmentArtifactStore
 from plugins.content_view.plugin import ReadContent, check_read, prepare_view
 from plugins.models.content import render_content
@@ -388,8 +387,7 @@ async def restart(directory: Path, *, failed: bool) -> dict[str, object]:
     effect = (directory / 'effect.txt').read_bytes()
     log = MessageLog(directory / 'sessions.db')
     artifacts = ArtifactStore(directory / 'sessions.db')
-    bus = EventBus()
-    host = PluginManager([directory / 'plugins'], event_bus=bus, workspace=directory / 'workspace',
+    host = PluginManager([directory / 'plugins'], workspace=directory / 'workspace',
                          installed_cache_root=directory / 'home/cache', message_log=log,
                          channel_attachment_store=ChannelAttachmentArtifactStore(
                              workspace=directory / 'workspace', metadata_store=artifacts))
@@ -424,10 +422,7 @@ async def restart(directory: Path, *, failed: bool) -> dict[str, object]:
             try:
                 log.close()
             finally:
-                try:
-                    artifacts.close()
-                finally:
-                    await bus.aclose()
+                artifacts.close()
 
 
 async def check_directory(directory: Path) -> dict[str, object]:

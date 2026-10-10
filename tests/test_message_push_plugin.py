@@ -7,7 +7,6 @@ from tests.fixtures.plugin_workspace import initialize_plugin_workspace
 from agent.plugin_composition.bindings import BINDINGS
 from agent.plugin_composition import ServiceKey
 from agent.plugins.manager import PluginManager
-from bus.event_bus import EventBus
 from infra.channels.artifacts import ChannelAttachmentArtifactStore
 from plugins.delivery.records import DeliveryRecords
 from plugins.message_push.tool import message_id
@@ -41,8 +40,7 @@ async def test_push_completes_while_target_turn_is_active_and_appends_one_output
     store, log = storage(workspace)
     initialize_plugin_workspace(workspace)
     artifacts = ChannelAttachmentArtifactStore(workspace=workspace, metadata_store=store)
-    bus = EventBus()
-    host = PluginManager([source], event_bus=bus, workspace=workspace,
+    host = PluginManager([source], workspace=workspace,
                          installed_cache_root=tmp_path / "home", message_log=log,
                          channel_attachment_store=artifacts)
     target_tasks, caller_tasks = Tasks(), Tasks()
@@ -128,4 +126,3 @@ async def test_push_completes_while_target_turn_is_active_and_appends_one_output
         await host.terminate_all()
         log.close()
         store.close()
-        await bus.aclose()

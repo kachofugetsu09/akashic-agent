@@ -34,7 +34,6 @@ from agent.plugins.manifest import (
 )
 from agent.plugins.distribution_sources import distribution_sources
 from agent.plugins.selection import PluginSelection
-from bus.event_bus import EventBus
 
 
 def git(repo, *args):
@@ -163,7 +162,6 @@ async def manager(workspace, home, dist=None):
     ds = distribution_sources(workspace, home, dist) if dist else None
     m = PluginManager(
         [],
-        event_bus=EventBus(),
         workspace=workspace,
         installed_cache_root=home / "cache",
         distribution_sources=ds.sources if ds else (),
@@ -178,9 +176,8 @@ def seed_and_check_preflight(core, root, distribution, work, home, config):
     seed = """import asyncio, sys
 from pathlib import Path
 from agent.plugins.manager import PluginManager
-from bus.event_bus import EventBus
 async def run():
-    m = PluginManager([], event_bus=EventBus(), workspace=Path(sys.argv[1]),
+    m = PluginManager([], workspace=Path(sys.argv[1]),
                       installed_cache_root=Path(sys.argv[2]) / 'cache')
     await m.load_all()
     await m.terminate_all()

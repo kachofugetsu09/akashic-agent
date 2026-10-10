@@ -26,7 +26,6 @@ from agent.plugins.source_resolver import PluginSourceFailure
 from agent.plugins.distribution_sources import distribution_sources
 from bootstrap.cleanup import run_cleanup_steps
 from bootstrap.workspace_lock import PluginPublicationLock
-from bus.event_bus import EventBus
 from bus.queue import MessageBus
 from core.net.http import SharedHttpResources
 from session.artifact_store import ArtifactStore
@@ -44,7 +43,6 @@ class CoreRuntime:
     workspace: Path
     http_resources: SharedHttpResources
     bus: MessageBus
-    event_bus: EventBus
     message_log: MessageLog
     admissions: SessionAdmissions
     identities: ChannelIdentities
@@ -103,7 +101,6 @@ class CoreRuntime:
         await self.plugin_manager.terminate_all()
         await run_cleanup_steps(
             ("control_frames.close", close_control_frames),
-            ("event_bus.aclose", self.event_bus.aclose),
             ("plugin_publication_lock.release", self._release_plugin_publication),
             ("storage.close", close_storage),
         )
@@ -133,7 +130,6 @@ def build_core_runtime(
 
     # 1. MessageLog 先核对 schema，旧库不能借普通启动绕过 yoyo。
     bus = MessageBus()
-    event_bus = EventBus()
     with ExitStack() as cleanup:
         message_log = MessageLog(workspace / "sessions.db")
         _ = cleanup.callback(message_log.close)
@@ -168,7 +164,7 @@ def build_core_runtime(
         )
         distribution = distribution_sources(workspace, plugins_root())
         manager = PluginManager(
-            plugin_dirs=resolved_plugin_dirs, event_bus=event_bus,
+            plugin_dirs=resolved_plugin_dirs,
             workspace=workspace, message_log=message_log, channel_identities=identities,
             input_custody=InputCustody(
                 bus.prepare_channel_input, bus.complete_channel_input, bus.retain_channel_input,
@@ -195,7 +191,7 @@ def build_core_runtime(
         bus.bind_durable_inbound_recoverer(recover_input)
         runtime = CoreRuntime(
             config=config, workspace=workspace, http_resources=http_resources,
-            bus=bus, event_bus=event_bus, message_log=message_log,
+            bus=bus, message_log=message_log,
             admissions=admissions, identities=identities, inbound_store=inbound_store,
             artifact_metadata=artifact_metadata, channel_attachment_store=attachments,
             plugin_manager=manager, plugin_publication_lock=PluginPublicationLock(plugins_root()),

@@ -1,18 +1,8 @@
 from __future__ import annotations
-from dataclasses import dataclass
 
 import pytest
 from agent.plugin_composition import CompositionRoot, EmitEventKey
-from bus.event_bus import EventBus
 
-
-@dataclass(frozen=True)
-class MemoryWritten:
-    session_key: str
-    source_ref: str
-
-
-_MEMORY_WRITTEN_EVENT = EmitEventKey[MemoryWritten]("test.memory.written")
 
 @pytest.mark.asyncio
 async def test_failed_consumer_cleanup_keeps_provider_until_explicit_retry():
@@ -67,29 +57,6 @@ async def test_emit_event_listener_failure_is_fail_loud() -> None:
             root.context.emit(EmitEventKey[object]("test.emit.failure"), object())
     finally:
         await root.dispose()
-
-@pytest.mark.asyncio
-async def test_event_bus_does_not_bridge_into_plugin_composition() -> None:
-    observed: list[MemoryWritten] = []
-    root = CompositionRoot("event-bus-is-core-only")
-
-    async def plugin(ctx) -> None:
-        await ctx.on(_MEMORY_WRITTEN_EVENT, observed.append)
-
-    await root.mount(plugin, name="composition-observer")
-    bus = EventBus()
-    try:
-        await bus.fanout(_memory_written_event())
-    finally:
-        try:
-            await bus.aclose()
-        finally:
-            await root.dispose()
-
-    assert observed == []
-
-def _memory_written_event() -> MemoryWritten:
-    return MemoryWritten(session_key="session", source_ref="session@post_response")
 
 @pytest.mark.asyncio
 async def test_pending_initial_dependency_resolves_then_frozen_teardown_closes_consumers_first():

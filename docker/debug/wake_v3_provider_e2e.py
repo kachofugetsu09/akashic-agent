@@ -34,7 +34,6 @@ from agent.plugin_composition.rpc import rpc_method_key
 from agent.plugins.manager import PluginManager
 from agent.plugins.reload_journal import ReloadJournal
 from agent.plugins.selection import PluginSelection
-from bus.event_bus import EventBus
 from infra.channels.artifacts import ChannelAttachmentArtifactStore
 from session.artifact_store import ArtifactStore
 from session.log import MessageLog
@@ -335,7 +334,6 @@ class RuntimeStack:
     workspace: Path
     timer: ControlledTimer
     provider: CountingProvider
-    event_bus: EventBus
     message_log: MessageLog
     manager: PluginManager
     artifact_metadata: ArtifactStore
@@ -356,7 +354,6 @@ class RuntimeStack:
         """Close every isolated runtime owner while preserving its durable workspace."""
 
         await self.manager.terminate_all()
-        await self.event_bus.aclose()
         self.message_log.close()
         self.artifact_metadata.close()
         if self.uses_test_model:
@@ -643,7 +640,6 @@ def _build_stack(
 ) -> RuntimeStack:
     """Assemble the formal MessageLog, Wake, Models, and Delivery chain."""
 
-    event_bus = EventBus()
     message_log = MessageLog(workspace / "sessions.db")
     artifact_metadata = ArtifactStore(workspace / "sessions.db")
     artifacts = ChannelAttachmentArtifactStore(
@@ -689,7 +685,6 @@ def _build_stack(
     plugin_dirs.extend(model_plugin_dirs)
     manager = PluginManager(
         plugin_dirs=plugin_dirs,
-        event_bus=event_bus,
         workspace=workspace,
         message_log=message_log,
         channel_attachment_store=artifacts,
@@ -702,7 +697,6 @@ def _build_stack(
         workspace,
         timer,
         provider,
-        event_bus,
         message_log,
         manager,
         artifact_metadata,

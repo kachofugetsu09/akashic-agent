@@ -114,7 +114,6 @@ from agent.plugins.static_manifest import (
 )
 from agent.restart import RestartGate
 from agent.workloads.client import UnixWorkloadController, WorkloadController
-from bus.event_bus import EventBus
 from infra.channels.artifacts import ChannelAttachmentArtifactStore
 from session.identities import ChannelIdentities
 from session.log import MessageLog
@@ -156,7 +155,6 @@ class PluginManager:
         self,
         plugin_dirs: list[Path],
         *,
-        event_bus: EventBus,
         workspace: Path,
         session_manager: Any = None,
         message_log: MessageLog | None = None,
