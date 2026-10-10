@@ -9,7 +9,7 @@ from pydantic import BaseModel, ConfigDict, Field
 
 from agent.plugin_composition import Context
 from agent.plugin_composition.bindings import BINDINGS
-from agent.plugin_composition.commands import COMMANDS, CommandCatalog, CommandExecution
+from plugins.commands.contract import COMMANDS, CommandCatalog, CommandExecution
 from agent.plugin_composition.messages import (
     MESSAGE_WRITERS,
     OWNER_STATE,

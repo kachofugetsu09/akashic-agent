@@ -1,6 +1,6 @@
 """显式选择的 Commands 服务入口。"""
 from agent.plugin_composition import Context
-from agent.plugin_composition.commands import COMMANDS
+from plugins.commands.contract import COMMANDS
 
 from .registry import PluginCommands
 
