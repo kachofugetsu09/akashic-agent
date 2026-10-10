@@ -183,3 +183,25 @@ Web Shell 只按 `runtime/endpoints.json` 的最长完整路径前缀转发 HTTP
 Dashboard/Chat 的构建产物只进入各自插件 bundle，不再进入 Core tar。
 当前聊天区域实现仍在 frontend/chat；区域 slot 化由独立的前端阶段处理。
 端点计划和监听器都是可重建状态，本层无权减少消息或插件数据。
+
+## Gateway 远程命令
+
+Gateway 的命令声明提供 `exec`、`plugin-install`、`plugin-status` 和 `plugin-uninstall`。
+Core 的通用分派只读取当前选择并调用唯一 provider；命令不取得 workspace lock，
+不启动第二个 Runtime，不从配置或固定 socket 路径猜测监听地址。
+
+```text
+┌────────────────┐   ┌──────────────────┐   ┌──────────────────┐
+│ 所选 Gateway CLI │ → │ 只读 endpoint plan │ → │ 实际 JSON-RPC listener │
+└────────────────┘   └──────────────────┘   └──────────────────┘
+```
+
+JSON-RPC listener 就绪后发布实际绑定地址，停止时撤下；当前 listener 由 AppRuntime 拥有。
+命令只接受唯一 `jsonrpc+unix` / `jsonrpc+tcp` 端点，计划缺席、损坏或冲突明确失败。
+`exec --endpoint` 仍允许显式选择连接地址。TCP 命令只读现有 `.app-server-token`，
+不创建、重置或自动修复 secret。安装、卸载和消息提交都由运行实例的原 owner 执行。
+
+`exec` 的 SIGINT 提交原程序来源的 pause；普通断连只关闭本地读取。
+命令 generation 换代不重新 apply 无关插件；卸载命令 provider 后通用分派明确报缺席。
+本层只新增可重建的 JSON-RPC 端点投影，既有消息、表和 secret 的写入规则不变。
+实际验证见 [gateway_cli_scenario.py](../../scripts/gateway_cli_scenario.py)。

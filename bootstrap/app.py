@@ -10,6 +10,7 @@ from typing import Any, Awaitable, Callable
 
 from bootstrap.web_shell import WebShellServer
 
+from agent.plugin_composition import Effect
 from agent.config import resolve_app_server_endpoint
 from agent.control.service import ControlService
 from agent.host_bridge.boot import claim_host_bridge_boot
@@ -156,6 +157,7 @@ class AppRuntime:
         self.restart_gate = restart_gate
         self.readiness = readiness
         self.http_resources = SharedHttpResources()
+        self.app_server_endpoint: Effect | None = None
         self.app_server: SocketAppServer | None = None
         self.control_service: ControlService | None = None
         self.core: CoreRuntime | None = None
@@ -221,6 +223,11 @@ class AppRuntime:
                     outbound_queue_size=self.config.app_server.outbound_queue_size,
                 )
                 await self.app_server.start()
+                root = manager.live_root
+                assert root is not None
+                self.app_server_endpoint = await root.context.endpoint("gateway",
+                    protocol="jsonrpc+tcp" if is_tcp_endpoint(str(self.app_server.endpoint)) else "jsonrpc+unix",
+                    address=str(self.app_server.endpoint))
 
             plugin_manager = getattr(self.core, "plugin_manager", None)
             if self.readiness is not None:
@@ -418,6 +425,10 @@ class AppRuntime:
                         self.plugin_watcher,
                         self.plugin_watcher_task,
                     ),
+                ),
+                (
+                    "app_server_endpoint.withdraw",
+                    self.app_server_endpoint.aclose if self.app_server_endpoint else _noop_async,
                 ),
                 (
                     "app_server.stop",
