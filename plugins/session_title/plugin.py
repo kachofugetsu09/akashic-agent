@@ -76,7 +76,9 @@ async def apply(ctx: Context) -> None:
                         disable_reasoning=True,
                     ))
                     title = " ".join(response.content.strip().strip('"\'`“”‘’').split())
-            except (ModelError, TimeoutError) as error:
+            except (RuntimeError, TimeoutError) as error:
+                if not (ModelError.matches(error) or isinstance(error, TimeoutError)):
+                    raise
                 logger.warning("会话 %s 标题生成失败，使用首句: %s", reader.session_id, error)
             title = " ".join((title or text).split())[:config.max_title_chars].rstrip()
             # 3. 不锁住生成过程；存储内一次条件更新保护已经提交的手动改名。

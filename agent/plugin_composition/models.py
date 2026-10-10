@@ -5,6 +5,7 @@ from collections.abc import AsyncGenerator, Awaitable, Callable, Mapping, Sequen
 from contextlib import asynccontextmanager
 from pydantic import BaseModel, ConfigDict, Field
 from dataclasses import dataclass, field
+from copy import copy
 from agent.plugin_contracts.message import freeze_json
 from types import MappingProxyType
 from typing import TYPE_CHECKING, Any, AsyncContextManager, Literal, Protocol, TypeAlias, cast
@@ -559,6 +560,38 @@ class ModelError(RuntimeError):
     # None       = 无任何可证明事实（HTTP 200 流内失败、读/写错误、超时、
     #              取消等），保留未知事实；模型自动恢复另由 retryable 决定。
     send_evidence: str | None = None
+
+
+    response_delta_seen: bool = False
+    retry_safe: bool = False
+    retry_after: float | None = None
+
+    @classmethod
+    def read(cls, error: BaseException, *kinds: type[ModelError]) -> ModelError | None:
+        """只读取显式模型失败；未知程序错误不能取得模型恢复语义。"""
+        return error if isinstance(error, cls) and (not kinds or isinstance(error, kinds)) else None
+
+    @classmethod
+    def matches(cls, error: BaseException, *kinds: type[ModelError]) -> bool:
+        return cls.read(error, *kinds) is not None
+
+    @classmethod
+    def change(cls, error: BaseException, **changes: Any) -> Exception:
+        """复制一次失败再补充边界事实，不改其他捕获者持有的原错误。"""
+        value = cls.read(error)
+        if value is None:
+            raise TypeError("异常不是模型失败")
+        # 1. 分类沿原对象；这里只允许改变已有的失败事实。
+        changed = copy(value)
+        for name, item in changes.items():
+            if name == "message":
+                changed.args = (item,)
+            elif name in {"retryable", "retry_at", "send_evidence", "response_delta_seen", "retry_safe", "retry_after"}:
+                setattr(changed, name, item)
+            else:
+                raise TypeError(f"未知模型失败字段: {name}")
+        # 2. 外层附加诊断不会改变 driver 的原异常和已结算事实。
+        return changed
 
 
 class AuthenticationError(ModelError): ...

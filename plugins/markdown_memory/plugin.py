@@ -873,8 +873,9 @@ async def apply(ctx: Context) -> None:
                                         content=ctx.require(CONTENT), context=context,
                                         summaries=ctx.require(COMPACTION_SUMMARIES),
                                         compaction=compaction)
-                                    except ModelError as error:
-                                        if not error.retryable:
+                                    except (RuntimeError, TimeoutError) as error:
+                                        failure = ModelError.read(error)
+                                        if failure is None or not failure.retryable:
                                             raise
                                         logger.warning(
                                             "Markdown 模型暂时失败，将重试原消息: session=%s message=%s error=%s",

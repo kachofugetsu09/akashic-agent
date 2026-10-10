@@ -177,6 +177,7 @@ async def run(args: argparse.Namespace) -> dict:
                         draft = status.snapshot("scenario")[0].preview
                         snapshots.append(draft)
                         if value.get("retry_status"):
+                            assert draft is not None
                             assert draft.retry_status == value["retry_status"]
                             assert "local-scenario" not in draft.retry_status
                             report["retry_previews"].append(asdict(draft))
@@ -294,7 +295,9 @@ async def run(args: argparse.Namespace) -> dict:
                         response = await execution.chat("default").complete(ModelRequest(
                             [{"role": "user", "content": "scenario"}], request_key="public",
                         ))
-                    except ModelError:
+                    except (RuntimeError, TimeoutError) as _model_error:
+                        if not (ModelError.matches(_model_error)):
+                            raise
                         assert args.baseline
                     else:
                         assert not args.baseline and response.content == "local-result"
@@ -324,8 +327,11 @@ async def run(args: argparse.Namespace) -> dict:
                         request = ModelRequest([{"role": "user", "content": "scenario"}], request_key=name)
                         try:
                             response = await asyncio.wait_for(complete_with_preview(bound, request), 10)
-                        except ModelError as error:
-                            assert name == "gemini-invalid" and not error.retryable
+                        except (RuntimeError, TimeoutError) as error:
+                            if not (ModelError.matches(error)):
+                                raise
+                            failure = ModelError.read(error)
+                            assert failure is not None and name == "gemini-invalid" and not failure.retryable
                         else:
                             assert name != "gemini-invalid"
                             assert response.finish_reason == ("length" if name == "gemini-length" else "stop")
@@ -377,9 +383,12 @@ async def run(args: argparse.Namespace) -> dict:
                                 response = await bound.complete(request)
                         except asyncio.CancelledError:
                             assert cancel
-                        except ModelError as error:
+                        except (RuntimeError, TimeoutError) as error:
+                            if not (ModelError.matches(error)):
+                                raise
                             assert not recovering and not cancel
-                            assert error.retryable == (reason == "MALFORMED_FUNCTION_CALL")
+                            failure = ModelError.read(error)
+                            assert failure is not None and failure.retryable == (reason == "MALFORMED_FUNCTION_CALL")
                             if budget is not None:
                                 assert "自动重试次数已用完" in str(error)
                         else:
@@ -403,7 +412,7 @@ async def run(args: argparse.Namespace) -> dict:
                     finally:
                         store.close()
 
-        async def case(name, config, statuses, count, success, retry_after=0):
+        async def case(name, config, statuses, count, success, retry_after: int | str = 0):
             """真实 HTTP 结果进入生产 driver，再观察 Models 的账本和回放。"""
             server.replies = deque((status, retry_after) for status in statuses)
             server.received = []
@@ -414,7 +423,9 @@ async def run(args: argparse.Namespace) -> dict:
             try:
                 try:
                     response = await complete_with_preview(bound, request)
-                except ModelError as error:
+                except (RuntimeError, TimeoutError) as error:
+                    if not (ModelError.matches(error)):
+                        raise
                     assert not success, name
                     assert "scenario failure" in str(error)
                     if statuses[0] not in (400, 502):
@@ -451,7 +462,9 @@ async def run(args: argparse.Namespace) -> dict:
                 replay = _BoundChat(descriptor, physical, reopened, max_attempts=_retry_budget(config))
                 try:
                     result = await replay.complete(request)
-                except ModelUnavailableError:
+                except (RuntimeError, TimeoutError) as _model_error:
+                    if not (ModelError.matches(_model_error, ModelUnavailableError)):
+                        raise
                     assert not success, name
                 else:
                     assert success and result.content == "local-result", name
@@ -536,7 +549,9 @@ async def run(args: argparse.Namespace) -> dict:
                 bound = _BoundChat(descriptor, physical, store, max_attempts=None)
                 try:
                     await bound.complete(ModelRequest([], request_key="callback", on_delta=rejected_preview))
-                except ModelTimeoutError as error:
+                except (RuntimeError, TimeoutError) as error:
+                    if not (ModelError.matches(error, ModelTimeoutError)):
+                        raise
                     assert "preview callback failed" in str(error)
                 else:
                     raise AssertionError("回调失败被伪装成功")
@@ -571,7 +586,9 @@ async def run(args: argparse.Namespace) -> dict:
                     owner_id=f"{reopened.host_epoch}:another-process:another-root:attempt", max_attempts=6)
                 try:
                     await bound.complete(unknown)
-                except ModelUnavailableError as error:
+                except (RuntimeError, TimeoutError) as error:
+                    if not (ModelError.matches(error, ModelUnavailableError)):
+                        raise
                     assert "无法确认" in str(error)
                 else:
                     raise AssertionError("身份不明的 owner 被接管")
@@ -631,7 +648,9 @@ async def run(args: argparse.Namespace) -> dict:
                 bound = _BoundChat(descriptor, physical, store, max_attempts=_retry_budget({}))
                 try:
                     await bound.complete(ModelRequest([{"role": "user", "content": "scenario"}]))
-                except ModelError:
+                except (RuntimeError, TimeoutError) as _model_error:
+                    if not (ModelError.matches(_model_error)):
+                        raise
                     pass
                 else:
                     raise AssertionError("无 key 的调用自动重试")
@@ -659,7 +678,9 @@ async def run(args: argparse.Namespace) -> dict:
                     bound = _BoundChat(descriptor, refused_driver, store, max_attempts=6)
                     try:
                         await bound.complete(ModelRequest([], request_key="unsent"))
-                    except ModelError as error:
+                    except (RuntimeError, TimeoutError) as error:
+                        if not (ModelError.matches(error)):
+                            raise
                         assert "ConnectError" in str(error) and "已尝试 6/6" in str(error)
                         assert "自动重试次数已用完" in str(error)
                         report["errors"].append({"case": "real-connect-refused", "message": str(error)})
@@ -725,7 +746,9 @@ async def run(args: argparse.Namespace) -> dict:
                 bound = _BoundChat(descriptor, physical, store, max_attempts=6)
                 try:
                     await bound.complete(ModelRequest([], request_key="receipt-failure"))
-                except ModelError as error:
+                except (RuntimeError, TimeoutError) as error:
+                    if not (ModelError.matches(error)):
+                        raise
                     assert "HTTP 429" in str(error) and "回执保存失败" in str(error)
                     assert "自动重试已停止" in str(error)
                     await save_visible_failure("receipt-failure", error)

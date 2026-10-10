@@ -1,6 +1,7 @@
 """候选 Message 摘要入口；正式 manifest 在完整迁移验收后切换。"""
 from __future__ import annotations
 
+from agent.plugin_composition.models import ModelError
 from collections.abc import Callable, Mapping, Sequence
 from uuid import uuid4
 
@@ -290,7 +291,9 @@ async def apply(ctx: Context) -> None:
         try:
             return await compact(snapshot, materials, request, model, projection,
                                  source=source, force=force, on_status=report)
-        except (SummaryError, ContextLengthError, ModelTimeoutError, RateLimitError, TransportError) as error:
+        except (RuntimeError, TimeoutError, SummaryError) as error:
+            if not (ModelError.matches(error, ContextLengthError, ModelTimeoutError, RateLimitError, TransportError) or isinstance(error, SummaryError)):
+                raise
             detail = f"上下文压缩失败：{type(error).__name__}: {error}。{budget}。"
             if force or before + request.max_output_tokens > window:
                 raise SummaryError("\n".join((*notices, detail + "本次请求被阻断，未继续业务生成。"))) from error
