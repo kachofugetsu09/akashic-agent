@@ -1,14 +1,35 @@
 from __future__ import annotations
 
 import os
+import grpc
+from typing import TYPE_CHECKING
 from pathlib import Path
 
-from agent.host_bridge.client import HostBridgeShellProcessManager
-from agent.host_bridge.client import HostBridgeRequirementsChecker
+if TYPE_CHECKING:
+    from agent.host_bridge.client import HostBridgeShellProcessManager, HostBridgeRequirementsChecker
 from agent.process_runtime import (
     ShellProcessManager,
     ShellProcessManagerProtocol,
 )
+
+class HostBridgeRpcError(RuntimeError):
+    """保留传输状态；只有明确的暂时失联允许恢复探测和心跳。"""
+
+    def __init__(self, method: str, code: grpc.StatusCode, detail: str | None) -> None:
+        self.method = method
+        self.code = code
+        uncertainty = (
+            "；操作可能已生效，不得自动重发"
+            if method in {"Exec", "WriteStdin", "FileTool"}
+            else ""
+        )
+        super().__init__(f"Host Bridge {method} 失败: {code.name}: {detail}{uncertainty}")
+
+    @property
+    def transient(self) -> bool:
+        return self.code in {grpc.StatusCode.UNAVAILABLE, grpc.StatusCode.DEADLINE_EXCEEDED}
+
+
 
 _SOCKET_ENV = "AKASHIC_HOST_BRIDGE_SOCKET"
 _TOKEN_ENV = "AKASHIC_HOST_BRIDGE_TOKEN"
@@ -27,6 +48,8 @@ def build_shell_process_manager() -> ShellProcessManagerProtocol:
     if mode != "host-bridge":
         raise RuntimeError(f"{_MODE_ENV} 只能是 local 或 host-bridge")
     socket_path, boot_id, token, release_commit, toolchain_digest = _bridge_identity()
+    # 客户端消费本边界的错误类型；构造时导入避免双向模块初始化。
+    from agent.host_bridge.client import HostBridgeShellProcessManager
     return HostBridgeShellProcessManager(
         socket_path,
         boot_id,
@@ -59,6 +82,7 @@ def _bridge_identity() -> tuple[Path, str, str, str, str]:
 def build_file_bridge() -> HostBridgeShellProcessManager | None:
     """Build a file RPC client only in explicit host-bridge mode."""
 
+    from agent.host_bridge.client import HostBridgeShellProcessManager
     manager = build_shell_process_manager()
     if isinstance(manager, HostBridgeShellProcessManager):
         return manager
@@ -74,6 +98,7 @@ def build_requirements_checker() -> HostBridgeRequirementsChecker | None:
     if mode != "host-bridge":
         raise RuntimeError(f"{_MODE_ENV} 只能是 local 或 host-bridge")
     socket_path, boot_id, token, release_commit, toolchain_digest = _bridge_identity()
+    from agent.host_bridge.client import HostBridgeRequirementsChecker
     return HostBridgeRequirementsChecker(
         socket_path, boot_id, token, release_commit, toolchain_digest
     )

@@ -9,7 +9,7 @@ from pathlib import Path
 import stat
 from typing import Literal, cast
 from pydantic import BaseModel, ConfigDict
-from agent.host_bridge.client import HostBridgeRpcError
+from agent.host_bridge.factory import HostBridgeRpcError
 from agent.host_bridge.factory import build_file_bridge
 
 from core.common.file_io import run_file_io

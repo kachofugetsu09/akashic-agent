@@ -25,29 +25,11 @@ from agent.host_bridge.protocol import (
 )
 from agent.tool_catalog import ToolResult
 from agent.process_runtime import ExecutionCleanupReport, ExecutionResult
+from agent.host_bridge.factory import HostBridgeRpcError
 from core.common.diagnostic_log import current_diagnostic_context
 
 _HEARTBEAT_INTERVAL_S = 2.0
 logger = logging.getLogger(__name__)
-
-
-class HostBridgeRpcError(RuntimeError):
-    """保留传输状态；只有明确的暂时失联允许恢复探测和心跳。"""
-
-    def __init__(self, method: str, code: grpc.StatusCode, detail: str | None) -> None:
-        self.method = method
-        self.code = code
-        uncertainty = (
-            "；操作可能已生效，不得自动重发"
-            if method in {"Exec", "WriteStdin", "FileTool"}
-            else ""
-        )
-        super().__init__(f"Host Bridge {method} 失败: {code.name}: {detail}{uncertainty}")
-
-    @property
-    def transient(self) -> bool:
-        return self.code in {grpc.StatusCode.UNAVAILABLE, grpc.StatusCode.DEADLINE_EXCEEDED}
-
 
 
 @dataclass(frozen=True)

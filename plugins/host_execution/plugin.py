@@ -1,6 +1,7 @@
 """宿主执行插件拥有实际 Controller 客户端与启动清理。"""
 from __future__ import annotations
 
+import asyncio
 import hashlib
 import os
 from pathlib import Path
@@ -9,7 +10,11 @@ from agent.plugin_composition.execution import EXECUTION
 from agent.plugin_composition.host import HOST_INFO
 from core.common.file_io import run_file_io
 from infra.persistence.json_store import load_json, atomic_save_json
-from plugins.host_execution.contract import WORKLOAD_CONTROLLER
+from plugins.host_execution.contract import HOST_STATUS, WORKLOAD_CONTROLLER
+from agent.host_bridge.factory import HostBridgeRpcError, build_file_bridge
+from agent.plugin_composition.ui import UI
+from .monitor import HostBridgeStatus, _monitor
+from . import dashboard
 from .controller_access import ControllerAccess, cleanup_workloads_for_boot
 from .controller_client import UnixWorkloadController
 
@@ -23,6 +28,7 @@ entrypoints = {"workload-controller": "controller.main"}
 
 async def apply(ctx: Context) -> None:
     """先核对旧候选清理回执，再发布实际 Context 的控制授权。"""
+    await start_monitor(ctx)
     socket = os.environ.get("AKASHIC_WORKLOAD_SOCKET", "").strip()
     controller = None if not socket else UnixWorkloadController(Path(socket))
     workspace_id = hashlib.sha256(str(ctx.runtime.workspace.resolve()).encode()).hexdigest()[:16]
@@ -38,3 +44,42 @@ async def apply(ctx: Context) -> None:
             await cleanup_workloads_for_boot(controller, workspace_id)
             await run_file_io(lambda: atomic_save_json(marker, boot_id))
     await ctx.provide(WORKLOAD_CONTROLLER, ControllerAccess(ctx, controller, workspace_id))
+
+
+async def start_monitor(ctx: Context) -> None:
+    """先登记监控的关闭责任，再启动实际探测；关闭等待原任务退出。"""
+    # 1. 状态只属于本 generation；候选不连接正式 Bridge。
+    status = HostBridgeStatus()
+    await ctx.provide(HOST_STATUS, status)
+    manager = None if ctx.require(HOST_INFO).validation else build_file_bridge()
+    if manager is not None:
+        status.state = "checking"
+        health = await ctx.health("bridge", required=False)
+        health.degrade("checking")
+
+        async def monitor() -> None:
+            try:
+                await _monitor(manager, status=status, health=health)
+            except HostBridgeRpcError as error:
+                status.state = "degraded"
+                health.degrade(str(error) or type(error).__name__)
+                ctx.report_incident("bridge.monitor.failed", str(error) or type(error).__name__)
+                # 已关闭探测连接；显式 degraded/Incident 保留拒绝，换代可重新取得连接。
+
+        # 2. Effect 登记完成后，监控任务才有机会等待真实 RPC。
+        def setup():
+            task = asyncio.create_task(monitor(), name="host-bridge-monitor")
+            async def close() -> None:
+                task.cancel()
+                try:
+                    await task
+                except asyncio.CancelledError:
+                    pass
+            return close
+        await ctx.effect(setup, label="bridge.monitor")
+
+    # 3. UI 缺席只影响这一可选路由，不阻止执行服务。
+    async def register_status(child: Context) -> None:
+        await child.require(UI).register(child, dashboard=lambda: dashboard)
+
+    await ctx.inject((UI, HOST_STATUS), register_status, name="host-status-ui")

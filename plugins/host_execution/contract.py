@@ -96,3 +96,10 @@ class ControllerAccess(Protocol):
 
 
 WORKLOAD_CONTROLLER = ServiceKey[ControllerAccess]("host.workloads.v1")
+
+
+class HostStatus(Protocol):
+    def snapshot(self) -> dict[str, object]: ...
+
+
+HOST_STATUS = ServiceKey[HostStatus]("host.status.v1")

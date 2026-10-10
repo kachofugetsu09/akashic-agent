@@ -19,7 +19,7 @@ ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT))
 
 from agent.host_bridge.client import HostBridgeShellProcessManager
-from agent.host_bridge.monitor import HostBridgeStatus, _monitor
+from plugins.host_execution.monitor import HostBridgeStatus, _monitor
 from agent.plugin_composition.bindings import BINDINGS
 from agent.plugin_composition.channels import CHANNEL_INPUT_V2 as CHANNEL_INPUT, ChannelInboundMessage
 from agent.plugin_composition.config_input import save_config
@@ -184,7 +184,7 @@ async def run(base: Path, *, files: int, always: bool, max_lag: float) -> None:
                 assert isinstance(plugins, list)
                 assert all(item["fiber_state"] == "active" for item in plugins)
                 status = HostBridgeStatus(state="checking")
-                tasks.append(asyncio.create_task(_monitor(socket, "local-boot", "local-only", commit, digest, status=status)))
+                tasks.append(asyncio.create_task(_monitor(HostBridgeShellProcessManager(socket, "local-boot", "local-only", commit, digest), status=status)))
                 lags = []
                 states = []
 
