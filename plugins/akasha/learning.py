@@ -124,12 +124,8 @@ class Learning:
             feedback=self.feedback(sample, previous, state, bindings),
         )
 
-    def restore(
-        self, catalog: MessageCatalog, embeddings: MessageEmbeddings,
-        config: LearningConfig, entry: Applied, *, previous: Sequence[Turn],
-        state: Consumption, bindings: Bindings,
-    ) -> Turn:
-        """只还原已学习材料，不打开模型、写图或重放学习事件。"""
+    def load_sample(self, catalog: MessageCatalog, config: LearningConfig, entry: Applied) -> Sample:
+        """在补算派生向量之前核对原消息出处和学习准入。"""
         if catalog.attributes(entry.session_id).learning != "eligible":
             raise ValueError("已学习样本属于禁止学习的 Session")
         sample = restore_sample(catalog, entry)
@@ -137,6 +133,14 @@ class Learning:
             raise ValueError("已学习样本包含禁止沉淀的历史成员")
         if sample.ending.source not in config.sources:
             raise ValueError("已学习来源不属于原学习绑定")
+        return sample
+
+    def restore(
+        self, sample: Sample, embeddings: MessageEmbeddings,
+        config: LearningConfig, *, previous: Sequence[Turn],
+        state: Consumption, bindings: Bindings,
+    ) -> Turn:
+        """用已验证的样本还原材料，不写图或重放学习事件。"""
         turn = self.make_turn(sample, config, embeddings, previous=previous, state=state, bindings=bindings)
         if turn is None:
             raise ValueError("原学习规则不再接纳已经学习的样本")

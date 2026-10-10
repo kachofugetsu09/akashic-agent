@@ -12,7 +12,7 @@ from plugins.ledger.contract import MessageCatalog, MessageEmbeddings
 
 from ..domain.model import MemoryConfig
 from ..infrastructure.consumption import Consumption
-from .consumer import MessageConsumer, run_memory_job
+from .consumer import MessageConsumer, RestoreEmbeddings, run_memory_job
 from .cycle import MemoryCycle
 
 
@@ -31,6 +31,7 @@ async def read_memory(
     embeddings: MessageEmbeddings, bindings: Bindings, config: MemoryConfig,
     embedding_space: tuple[str, int] | None = None,
     allow_initial: bool = False,
+    restore_embeddings: RestoreEmbeddings | None = None,
 ) -> AsyncGenerator[tuple[MemoryCycle, Consumption]]:
     """只从一致副本恢复图，重用原 binding 校验；不给调用者提交或正式文件权限。"""
     # 1. 默认只读已发布图；材料可显式沿原初次启用算法在临时目录建立空图。
@@ -42,6 +43,7 @@ async def read_memory(
         restored = await MessageConsumer.load(
             snapshot, catalog=catalog,
             embeddings=embeddings, bindings=bindings, config=config,
+            restore_embeddings=restore_embeddings,
         )
         try:
             if embedding_space is not None:

@@ -6,7 +6,8 @@
 
 | ID | 状态 | 主题 | 关联条款 |
 |---|---|---|---|
-| [0106](0106-derived-vectors-use-separate-storage.md) | proposed / storage implemented, recovery pending | 派生向量独立存储，复制保留原表 | STA、MIG、MEM |
+| [0107](0107-restore-missing-vectors-before-reading-memory.md) | proposed / implemented for review | 按原模型空间补齐丢失的派生向量 | STA、MEM、MIG |
+| [0106](0106-derived-vectors-use-separate-storage.md) | proposed / implemented for review | 派生向量独立存储，复制保留原表 | STA、MIG、MEM |
 | [0105](0105-ledger-owns-business-storage.md) | proposed / implemented for review | Ledger 插件拥有业务持久化与入站交接 | PLG、STA、SES、MIG |
 | [0092](0092-model-generation-recovers-until-output.md) | accepted | 模型生成持续恢复，工具效果按原回执处理 | OBJ-005、ERR-001、RUN-012 |
 | [0091](0091-skill-sources-are-layered-providers.md) | proposed | Skill 来源是分层 Provider，本地目录不必打包成插件 | PLG-009、PLG-014、PLG-016、CTX-004 |

@@ -11,7 +11,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING
 
 from plugins.ledger.contract import Bindings
-from plugins.ledger.contract import MessageCatalog, MessageEmbeddings
+from plugins.ledger.contract import MessageCatalog, MessageEmbeddings, Message, Input
 
 from ..domain.features import BurstAwareFeaturePool
 from ..domain.model import (
@@ -28,6 +28,10 @@ from .cycle import MemoryCycle
 
 if TYPE_CHECKING:
     from ..projection import Sample
+    from ..learning import LearningConfig
+
+
+type RestoreEmbeddings = Callable[["LearningConfig", list[str]], Awaitable[list[list[float]]]]
 
 
 class MessageConsumer:
@@ -104,6 +108,7 @@ class MessageConsumer:
         cls, path: Path, *, catalog: MessageCatalog,
         embeddings: MessageEmbeddings, bindings: Bindings,
         config: MemoryConfig, cutover: bool = True,
+        restore_embeddings: RestoreEmbeddings | None = None,
     ) -> MessageConsumer:
         """先按原绑定还原材料，再取得唯一 writer 装载图；缺失来源不自动重学。"""
         from ..learning import AKASHA_LEARNING, LearningConfig
@@ -117,19 +122,42 @@ class MessageConsumer:
         state = await run_memory_job(partial(load_consumption, path))
         if state is None:
             raise MemoryRebuildRequiredError("学习图缺少当前消费出处，需要显式重建")
-        # 2. 逐项打开原算法闭包；不开模型、不嵌入，也不调用 commit。
+        # 2. 按原算法验证出处，缺失向量由明确的模型端口补算；不调用学习 commit。
         turns: list[Turn] = []
         space: str | None = None
         for identity, grouped in groupby(state.applied, key=lambda entry: entry.learning_binding):
             entries = tuple(grouped)
             async with bindings.open(identity, AKASHA_LEARNING) as (learning, metadata):
                 rule = LearningConfig.model_validate(dict(metadata))
+                await run_memory_job(lambda: _check_embedding_space(
+                    rule.embedding_model, rule.dimension, space, turns,
+                ))
+                samples = await run_memory_job(lambda: tuple(
+                    learning.load_sample(catalog, rule, entry) for entry in entries
+                ))
+                records = embeddings.bind(learning.text)
+                def missing_vectors() -> list[Message]:
+                    messages = {message.message_id: message for sample in samples
+                                for message in sample.messages
+                                if isinstance(message.body, Input) or message == sample.ending}
+                    return [message for message in messages.values() if learning.text(message).strip()
+                            and records.read(message, model=rule.embedding_model, dimension=rule.dimension) is None]
+                missing = await run_memory_job(missing_vectors)
+                if missing:
+                    if restore_embeddings is None:
+                        raise MemoryRebuildRequiredError("派生向量缺失；当前只读调用没有模型补算权限")
+                    vectors = await restore_embeddings(rule, [learning.text(message) for message in missing])
+                    if len(vectors) != len(missing) or any(len(vector) != rule.dimension for vector in vectors):
+                        raise ValueError("补算向量数量或维度不匹配原学习空间")
+                    def save_vectors() -> None:
+                        for message, vector in zip(missing, vectors, strict=True):
+                            records.save(message, model=rule.embedding_model, embedding=vector)
+                    await run_memory_job(save_vectors)
                 def restore_entries() -> None:
                     """按原前缀逐条恢复；后一条只能读取已完成的 previous。"""
-                    _check_embedding_space(rule.embedding_model, rule.dimension, space, turns)
-                    for entry in entries:
+                    for sample in samples:
                         turns.append(learning.restore(
-                            catalog, embeddings, rule, entry, previous=turns, state=state, bindings=bindings,
+                            sample, embeddings, rule, previous=turns, state=state, bindings=bindings,
                         ))
 
                 await run_memory_job(restore_entries)

@@ -153,11 +153,17 @@ class RecallTool:
         # 1. 打开工具实际固定的学习规则；读副本也校验图的 embedding 空间。
         async with self._bindings.open(request.learning_binding, AKASHA_LEARNING) as (learning, metadata):
             rule = LearningConfig.model_validate(dict(metadata))
+            async def restore_embeddings(original: LearningConfig, texts: list[str]) -> list[list[float]]:
+                async with self._open_embedding(request.embedding_binding) as model:
+                    if (model.descriptor.identity, model.descriptor.dimensions) != (original.embedding_model, original.dimension):
+                        raise ValueError("补算向量不属于原学习模型空间")
+                    return [list(vector) for vector in (await model.embed(texts)).vectors]
             # 调用所在 Session 决定读取哪张图；显式程序没有 Session 时读 default 图。
             async with read_memory(
                 self._memory(None if request.source is None else request.source.session_id), catalog=self._catalog,
                 embeddings=self._embeddings, bindings=self._bindings, config=self._config,
                 embedding_space=(rule.embedding_model, rule.dimension),
+                restore_embeddings=restore_embeddings,
             ) as (cycle, state):
                 async with self._open_embedding(request.embedding_binding) as model:
                     if model.descriptor.identity != rule.embedding_model:

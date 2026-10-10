@@ -1,6 +1,6 @@
 # 0106 · 消息向量使用独立派生库
 
-- 状态：proposed / storage implemented, recovery pending
+- 状态：proposed / implemented for review
 - 日期：2026-10-11
 - 依据：#1179 D1'、P2f；用户授权自主决定并单独提交重大选择。
 
@@ -23,7 +23,7 @@ Yoyo `20261011_01_derived_storage` 用只读源连接复制 `message_embeddings`
 不删除文件。运行时不重复从旧表复制，避免复活迁移后被显式清除的缓存。
 取消和换代先排空消费者，再由 Ledger Effect 关闭派生连接和权威连接。
 
-这是 P2f 的存储层。Akasha 已学习图还原仍要求其固定向量；下一层必须补齐按原模型空间
-恢复缺失向量的行为及真实召回验收，不能以本层缓存缺失检查代替“丢库后召回可用”。
+这是 P2f 的存储层；[0107](0107-restore-missing-vectors-before-reading-memory.md) 补齐按原模型
+空间恢复缺失向量的行为及真实召回验收。存储缺失检查本身不证明应用召回可用。
 正式 workspace 未迁移。旧版本实际生成的数据通过新 Yoyo 迁移后，两张表完整行相同，
 重复迁移无操作，源库字节保持；删除派生副本后的缺失和重新写入也不改动源库字节。
