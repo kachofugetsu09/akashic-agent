@@ -15,7 +15,7 @@ from typing import Any, cast
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
-from agent.control.client import ControlClient
+from akashic_sdk import AsyncAkashic
 from contextlib import closing
 
 
@@ -167,7 +167,7 @@ def _load_scenario(path: Path | None) -> Scenario:
 
 
 async def _send_and_read(
-    client: ControlClient,
+    client: AsyncAkashic,
     thread_id: str,
     text: str,
     timeout: int,
@@ -396,7 +396,7 @@ async def _run_probe(args: argparse.Namespace) -> None:
         scenario = _load_scenario(args.messages)
         records: list[dict[str, str]] = []
         session_key = ""
-        client = await ControlClient.connect(str(paths.socket))
+        client = await AsyncAkashic.connect(str(paths.socket))
         try:
             thread = await client.start_thread(
                 {"probe": "context", "scenario": scenario.name}

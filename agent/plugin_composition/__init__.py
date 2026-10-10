@@ -8,7 +8,6 @@ from agent.plugin_composition.context import (
     OwnerCall,
     RuntimeScope,
 )
-from agent.control.models import TurnItem, TurnItemKind, TurnStatus
 from agent.control.scoped_turn import TurnAcceptedReceipt
 from agent.control.timer import TimerHandle, TimerStatus
 from agent.plugin_contracts.turn_effects import PostCommitEffect
@@ -400,9 +399,6 @@ __all__ = [
     "TopologyFiberView",
     "TopologyView",
     "TurnAcceptedReceipt",
-    "TurnItem",
-    "TurnItemKind",
-    "TurnStatus",
     "TransformEventKey",
     "UI_SLOTS",
     "WriteObservation",

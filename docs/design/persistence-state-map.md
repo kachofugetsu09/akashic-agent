@@ -377,7 +377,7 @@ workspace 之外还有两组明确的全局状态：
 | `config.toml:[runtime].workspace` | CLI 和环境变量都为空时使用 | `main.py`、`agent.config` | 默认 workspace 选择 |
 | 显式 `--config` | 可把主配置放在任意路径 | `main.py`、setup | 运行配置根，不保证位于 workspace |
 | `AKASHIC_PLUGIN_HOME` | 未设置时回退 `~/.akashic-plugin` | `agent.plugins.manifest` | 全局插件安装根 |
-| `~/.akashic/auth.json` | 旧配置或显式 JSON store 使用；已迁移模型不再回退读取 | `agent.model_runtime.auth` 兼容边界 | 迁移输入、恢复证据与非模型兼容凭据 |
+| `~/.akashic/auth.json` | 旧配置或显式 JSON store 使用；已迁移模型不再回退读取 | 当前无代码读取方（原 `agent.model_runtime.auth` 已删除）；文件本身仍不自动删除 | 迁移输入、恢复证据与非模型兼容凭据 |
 
 **F-001：** runtime 的大部分可写状态已经从显式 workspace 派生。模型 credential 属于 workspace connection；旧或非模型全局凭据与插件安装状态是有意保留的例外，而不是 workspace 内的隐式目录。
 

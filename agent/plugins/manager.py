@@ -20,7 +20,7 @@ from uuid import uuid4
 from core.common.diagnostic_log import log_event
 from core.common.file_io import run_file_io
 
-from agent.control.frame_book import FrameBook
+from agent.plugin_composition.control_frames import FrameBook
 from agent.host_bridge.plugin_execution import (
     CodeOwner,
     ExecutionAccess,

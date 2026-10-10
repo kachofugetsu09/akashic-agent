@@ -191,7 +191,7 @@ if __name__ == "__main__" and _run_lightweight_command():
 
 
 from agent.config import Config, resolve_app_server_endpoint
-from agent.control.client import ControlClient, RemoteControlError
+from akashic_sdk import AsyncAkashic, RemoteError
 from agent.migrations import (
     MigrationOutcome,
     migrate_installation,
@@ -320,7 +320,7 @@ async def _request_runtime_control(
     config = Config.load(config_path, workspace=workspace)
     endpoint = resolve_app_server_endpoint(config.app_server.listen, workspace)
     token = read_workspace_token(workspace) if is_tcp_endpoint(endpoint) else None
-    async with await ControlClient.connect(endpoint, workspace_token=token) as client:
+    async with await AsyncAkashic.connect(endpoint, workspace_token=token) as client:
         result = await client.request(method, params)
     if not isinstance(result, dict):
         raise RuntimeError(f"{method} 响应无效")
@@ -347,7 +347,7 @@ async def _request_plugin_uninstall(
 ) -> dict[str, object]:
     """由应用 owner 停用、排空并卸载，控制连接只等待结果。"""
     token = read_workspace_token(workspace) if is_tcp_endpoint(endpoint) else None
-    async with await ControlClient.connect(endpoint, workspace_token=token) as client:
+    async with await AsyncAkashic.connect(endpoint, workspace_token=token) as client:
         result = await client.request("plugin/uninstall", {"plugin_id": plugin_id})
         if not isinstance(result, dict):
             raise RuntimeError("插件卸载响应无效")
@@ -369,7 +369,7 @@ def _may_end_input(event: dict[str, object]) -> bool:
     return False
 
 
-async def _wait_exec_result(client: ControlClient, session_id: str, input_id: str,
+async def _wait_exec_result(client: AsyncAkashic, session_id: str, input_id: str,
                             *, json_events: bool) -> dict[str, object]:
     """从当前结果的 seq 继续跟随；订阅建立期间的新消息仍能补读。"""
     query: dict[str, object] = {"session_id": session_id, "input_id": input_id}
@@ -387,7 +387,7 @@ async def _wait_exec_result(client: ControlClient, session_id: str, input_id: st
     raise ConnectionError("消息订阅已关闭；使用原 Session 和 Input 身份恢复查询")
 
 
-async def _exec_until_stop(client: ControlClient, session_id: str, input_id: str,
+async def _exec_until_stop(client: AsyncAkashic, session_id: str, input_id: str,
                            *, json_events: bool) -> tuple[dict[str, object], bool]:
     """显式 SIGINT 提交 pause；普通连接关闭只停止本地读取。"""
     interrupt = asyncio.Event()
@@ -463,7 +463,7 @@ async def run_exec(args: list[str], config_path: str, workspace: Path) -> int:
           file=sys.stdout if options.json else sys.stderr, flush=True)
 
     # 2. 先固定 Session 属性，再提交输入；ACK 不等默认回复。
-    async with await ControlClient.connect(endpoint, workspace_token=token) as client:
+    async with await AsyncAkashic.connect(endpoint, workspace_token=token) as client:
         if options.new:
             _ = await client.request("programmatic/session/admit", {
                 "session_id": session_id, "persist_memory": options.persist_memory,
@@ -982,7 +982,7 @@ if __name__ == "__main__":
     if args and args[0] == "exec":
         try:
             exit_code = asyncio.run(run_exec(args, config_path, workspace))
-        except (ValueError, ConnectionError, OSError, RemoteControlError) as exc:
+        except (ValueError, ConnectionError, OSError, RemoteError) as exc:
             print(str(exc), file=sys.stderr)
             sys.exit(2)
         sys.exit(exit_code)
