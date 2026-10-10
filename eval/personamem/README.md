@@ -1,53 +1,6 @@
-# PersonaMem Benchmark
+# PersonaMem 数据与评分
 
-PersonaMem 的数据、导入、运行时和评分代码位于 `eval/personamem`：
+旧运行入口已退役：它依赖已删除的 SessionManager 与 AgentLoop，不能用于当前插件组合。
+保留 `dataset.py`、`metrics.py`、示例配置与题目说明，供后续基于真实 Message/Turn 入口的评测使用。
 
-```text
-┌────────────────────┐
-│ PersonaMem 数据适配 │
-├────────────────────┤
-│ ingest 回放         │
-├────────────────────┤
-│ consolidation       │
-├────────────────────┤
-│ QA 真实 AgentLoop   │
-├────────────────────┤
-│ 选项解析 / accuracy │
-└────────────────────┘
-```
-
-当前实现是 MVP：
-
-- 直接读取 `questions_*.csv`
-- 直接读取 `shared_contexts_*.jsonl`
-- 每个 benchmark 样本独立 workspace
-- 共享向量记忆只在该样本内部生效，不会串题
-- 回答格式固定为选项标签，如 `(a)`
-
-现有 ingest/QA 入口仍调用旧 `CoreRuntime.session_manager` 和 `CoreRuntime.loop`；当前
-`CoreRuntime` 已不提供这些属性。本次只解除对退役 LongMemEval 包的代码依赖，尚未
-完成 PersonaMem 的运行链迁移，下方命令不代表已通过端到端验收。
-
-## 运行
-
-```bash
-python -m eval.personamem.run \
-  --config eval/personamem/config.toml \
-  --questions /path/to/questions_32k.csv \
-  --contexts /path/to/shared_contexts_32k.jsonl \
-  --workspace /tmp/personamem_bench \
-  --workers 4 \
-  --resume-auto
-```
-
-只跑某一类：
-
-```bash
-python -m eval.personamem.run \
-  --config eval/personamem/config.toml \
-  --questions /path/to/questions_32k.csv \
-  --contexts /path/to/shared_contexts_32k.jsonl \
-  --workspace /tmp/personamem_recall \
-  --type recall_user_shared_facts \
-  --workers 2
-```
+本次只删除失效的源码，没有操作 benchmark workspace、消息或历史结果。原运行源码可从 Git 历史恢复。

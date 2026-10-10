@@ -156,7 +156,6 @@ class PluginManager:
         plugin_dirs: list[Path],
         *,
         workspace: Path,
-        session_manager: Any = None,
         message_log: MessageLog | None = None,
         channel_identities: ChannelIdentities | None = None,
         input_custody: InputCustody | None = None,
@@ -177,7 +176,6 @@ class PluginManager:
         self._selection = PluginSelection(workspace)
         self._python_environments = PythonEnvironments(workspace)
         self._update_watchers: set[asyncio.Event] = set()
-        self._session_manager = session_manager
         self._message_log = message_log
         self._plugin_tasks = PluginTasks()
         self._plugin_processes = PluginProcesses()
@@ -2271,7 +2269,6 @@ class PluginManager:
             live_root=lambda: self._live_root, installer=self,
             tasks=self._plugin_tasks, processes=self._plugin_processes,
             restart_gate=self._restart_gate, control_frames=self._control_frames,
-            session_manager=self._session_manager,
         )
 
 

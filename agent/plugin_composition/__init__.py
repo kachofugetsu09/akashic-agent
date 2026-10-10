@@ -123,12 +123,7 @@ from agent.plugin_composition.models import (
     TransportError,
     UsageCoverage,
 )
-from agent.plugin_composition.interaction_undo import (
-    INTERACTION_UNDO,
-    InteractionUndoResult,
-    InteractionUndoService,
-    SourceMutationFence,
-)
+
 from agent.plugin_composition.mcp_slots import (
     MCP_SERVERS,
     EndpointEnv,
@@ -323,9 +318,6 @@ __all__ = [
     "InboundOwner",
     "InboundState",
     "OwnerCall",
-    "INTERACTION_UNDO",
-    "InteractionUndoResult",
-    "InteractionUndoService",
     "SourceMutationFence",
     "JsonValue",
     "MANAGED_PROCESSES",
