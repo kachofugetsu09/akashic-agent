@@ -20,7 +20,7 @@ from agent.plugin_composition.messages import (
     SESSION_ADMISSION,
 )
 from agent.plugin_composition.tasks import TASKS
-from agent.plugin_composition.timers import TIMERS
+from plugins.timer.contract import TIMERS
 from agent.plugin_composition.ui import UI
 from agent.plugin_contracts.models import MODEL_CONTENT, MODEL_SELECTION
 from agent.plugin_composition.models import MODEL_CATALOG

@@ -156,10 +156,6 @@ role = "core"
 note = "durable inbound 的 reserve/defer/recover 托管事实；关闭后幂等结算"
 
 # ── 调度、生命周期与发布 ─────────────────────────────────────
-[capabilities."core.timers"]
-role = "seam"
-note = "one-shot deadline wait；不拥有 recurrence 或 job 语义"
-
 [capabilities."core.tasks"]
 role = "core"
 note = "按通用 key 串行准入的短命工作与资源"
