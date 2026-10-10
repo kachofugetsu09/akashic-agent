@@ -6,10 +6,7 @@ from copy import deepcopy
 from typing import Protocol
 
 from agent.plugin_composition import Context, EmitEventKey, ServiceKey
-from agent.plugin_contracts.proactive import (
-    DRIFT_DELIVERY_V2,
-    DRIFT_WAKE_V2,
-)
+from plugins.drift.contract import DRIFT_DELIVERY_V2, DRIFT_WAKE_V2
 
 from core.common.file_io import run_file_io
 
