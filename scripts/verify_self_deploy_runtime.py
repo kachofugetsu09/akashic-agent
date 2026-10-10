@@ -14,7 +14,7 @@ from typing import Any, cast
 ROOT = Path(__file__).resolve().parents[1]
 sys.path[:0] = [str(ROOT), str(ROOT / "sdk/python/src")]
 from agent.config_models import Config
-from agent.config import resolve_app_server_endpoint
+from plugins.gateway.cli import find_endpoint
 from agent.plugin_composition.config_input import save_config
 from bootstrap.app import build_app_runtime
 from bootstrap.runtime_readiness import RuntimeReadiness
@@ -28,7 +28,7 @@ def prepare_workspace() -> tuple[Path, Path, Path]:
     sources = sandbox / "plugins"
     work = sandbox / "state/workspace"
     config = sandbox / "state/config.toml"
-    names = "channels commands sources content context tools conversation react turn_projection reply_program reply tool_search assets standard_tools models openai_compatible delivery delivery_policy programmatic message_push".split()
+    names = "gateway ui channels commands sources content context tools conversation react turn_projection reply_program reply tool_search assets standard_tools models openai_compatible delivery delivery_policy programmatic message_push".split()
     for name in names:
         shutil.copytree(
             ROOT / "plugins" / name,
@@ -218,13 +218,13 @@ async def main() -> None:
     runtime = build_app_runtime(
         loaded, work, readiness=RuntimeReadiness(work, "local-e2e")
     )
-    endpoint = resolve_app_server_endpoint(loaded.app_server.listen, work)
-    (sandbox / "arm.py").write_text(
-        f"""import asyncio,json,os,sys\nsys.path[:0]={repr([str(ROOT),str(ROOT/'sdk/python/src')])}\nfrom akashic_sdk import AsyncAkashic\nfrom pathlib import Path\nasync def main():\n p={{**json.loads(os.environ['AKASHIC_CALL_CONTEXT']), 'request_id':'local-request','timeout_s':60}}\n Path({str(sandbox/'stop.json')!r}).write_text(json.dumps(p))\n async with await AsyncAkashic.connect({endpoint!r}) as c:\n  print(json.dumps(await c.request('runtime/prepare-stop', {{**p,'arm_only':True}})))\nasyncio.run(main())\n"""
-    )
     try:
         # 2. 通过真实模型配置和消息接口驱动 Shell。
         await runtime.start()
+        endpoint = find_endpoint(work)
+        (sandbox / "arm.py").write_text(
+            f"""import asyncio,json,os,sys\nsys.path[:0]={repr([str(ROOT),str(ROOT/'sdk/python/src')])}\nfrom akashic_sdk import AsyncAkashic\nfrom pathlib import Path\nasync def main():\n p={{**json.loads(os.environ['AKASHIC_CALL_CONTEXT']), 'request_id':'local-request','timeout_s':60}}\n Path({str(sandbox/'stop.json')!r}).write_text(json.dumps(p))\n async with await AsyncAkashic.connect({endpoint!r}) as c:\n  print(json.dumps(await c.request('runtime/prepare-stop', {{**p,'arm_only':True}})))\nasyncio.run(main())\n"""
+        )
         print("ROOT", runtime.core.plugin_manager.live_root.generation_id, flush=True)
         async with await AsyncAkashic.connect(endpoint) as client:
             await configure_model(client, port)

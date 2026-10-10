@@ -126,13 +126,11 @@ def submit(args: argparse.Namespace) -> dict[str, object]:
 async def _arm_stop(request: dict[str, Any], current: dict[str, str]) -> None:
     """返回接单前保留同一调用的最终送达凭据。"""
     from akashic_sdk import AsyncAkashic
-    from agent.config import resolve_app_server_endpoint
-    from agent.config_models import Config
+    from plugins.gateway.cli import find_endpoint, read_token
 
     workspace = Path(current["AKASHIC_WORKSPACE"])
-    config = Config.load(current["AKASHIC_CONFIG"], workspace=workspace)
-    endpoint = resolve_app_server_endpoint(config.app_server.listen, workspace)
-    async with await AsyncAkashic.connect(endpoint) as client:
+    endpoint = find_endpoint(workspace)
+    async with await AsyncAkashic.connect(endpoint, workspace_token=read_token(workspace, endpoint)) as client:
         await client.request(
             "runtime/prepare-stop", {**request["stop"], "arm_only": True}
         )
@@ -143,14 +141,12 @@ async def _prepare_stop(
 ) -> dict[str, object]:
     """通过正式私有控制入口等待原回合与全局排空。"""
     from akashic_sdk import AsyncAkashic
-    from agent.config import resolve_app_server_endpoint
-    from agent.config_models import Config
+    from plugins.gateway.cli import find_endpoint, read_token
     from plugins.host_execution.controller_client import UnixWorkloadController
 
     workspace = Path(current["AKASHIC_WORKSPACE"])
-    config = Config.load(current["AKASHIC_CONFIG"], workspace=workspace)
-    endpoint = resolve_app_server_endpoint(config.app_server.listen, workspace)
-    async with await AsyncAkashic.connect(endpoint) as client:
+    endpoint = find_endpoint(workspace)
+    async with await AsyncAkashic.connect(endpoint, workspace_token=read_token(workspace, endpoint)) as client:
         result = await client.request("runtime/prepare-stop", request["stop"])
         try:
             if not isinstance(result, dict) or result.get("state") != "drained":

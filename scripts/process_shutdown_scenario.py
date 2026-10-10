@@ -55,7 +55,7 @@ async def run(base: Path) -> dict[str, bool]:
            "AKASHIC_EXECUTION_MODE": "local", "AKASHIC_SUPERVISED": "0",
            "PYTHONPATH": os.pathsep.join([str(ROOT), str(ROOT / "sdk/python/src")])}
     os.environ.update({key: env[key] for key in ("HOME", "AKASHIC_PLUGIN_HOME", "AKASHIC_PLUGIN_DISTRIBUTION")})
-    config.write_text('[runtime]\n[app_server]\nenabled = false\n')
+    config.write_text('[runtime]\n')
     init_workspace(config_path=config, workspace=workspace)
     source = base / "source"
     source.mkdir()

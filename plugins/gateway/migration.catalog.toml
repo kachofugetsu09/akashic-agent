@@ -1,6 +1,6 @@
 schema_version = 1
 bundle_id = "gateway_config"
-version = "1.0.0"
+version = "1.0.1"
 migration_root = "migrations/gateway_migrations"
 package_name = "gateway_migrations"
 
@@ -26,3 +26,14 @@ path = "20261010_01_gateway_config_copy.py"
 depends = []
 transactional = false
 sha256 = "efa7c0523616d6c8948ba30ac405dc393b9626e958fc0e564173c32f509a91af"
+
+[[files]]
+path = "20261011_01_retire_gateway_config.py"
+sha256 = "dfec97aaddf8dabe7ffe36cd00f60d5890075345cfbf7e4cfad56e5da139f19b"
+
+[[migrations]]
+id = "20261011_01_retire_gateway_config"
+path = "20261011_01_retire_gateway_config.py"
+depends = ["20261010_01_gateway_config_copy"]
+transactional = false
+sha256 = "dfec97aaddf8dabe7ffe36cd00f60d5890075345cfbf7e4cfad56e5da139f19b"
