@@ -29,7 +29,6 @@ logging.getLogger("agent.plugins.manager").setLevel(
     os.environ.get("AKASHIC_PLUGIN_LOG_LEVEL", "INFO").upper()
 )
 logging.getLogger("httpx").setLevel(logging.WARNING)
-logging.getLogger("apscheduler").setLevel(logging.WARNING)
 
 logger = logging.getLogger(__name__)
 
@@ -414,7 +413,7 @@ class AppRuntime:
         if manager is None or self._shutdown or (self.restart_gate is not None and not self.restart_gate.accepting):
             return
         if self.plugin_watcher is not None:
-            self.plugin_watcher.wake()
+            self.plugin_watcher.request_scan()
             return
         task = asyncio.create_task(
             manager.reconcile_changed(),

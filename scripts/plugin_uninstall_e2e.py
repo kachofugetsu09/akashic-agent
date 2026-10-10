@@ -266,7 +266,7 @@ async def check_provenance(app, manager, plugins, workspace):
     app.plugin_watcher = PluginWatcher(manager, baseline_revision=manager.watch_revision(), interval_seconds=1)
     app.plugin_watcher_task = asyncio.create_task(app.plugin_watcher.run())
     previous = manager._operation
-    app.plugin_watcher.wake()
+    app.plugin_watcher.request_scan()
     await wait_for(lambda: manager._operation is not previous and manager._operation.task.done(), 'manual full check')
     app.plugin_watcher.stop()
     await app.plugin_watcher_task

@@ -69,6 +69,8 @@ Ledger 的存储、交接和历史迁移归属见 [0105](decisions/0105-ledger-o
 
 声明式组合输入见 [0108](decisions/0108-bundles-are-composition-inputs.md)。
 
+Core 静态边界与 SQLite/HTTP 例外见 [R7～R11](design/plugin-core-static-boundary.md)。
+
 Issue 1179 的分阶段审查与剩余范围见 [边界①审查入口](design/plugin-core-boundary1-review.md)。
 兼容读取退役前先看 [hua-home 数据盘点与截止方案](design/compatibility-cutoff-inventory.md)，
 按实际状态区分结构转换、不可变历史读取与当前恢复协议。

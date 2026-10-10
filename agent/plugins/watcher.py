@@ -36,9 +36,9 @@ class PluginWatcher:
         self._fs_events = fs_events
         self._events: InotifyTreeWatcher | None = None
         self._debounce_handle: asyncio.TimerHandle | None = None
-        self._wake = asyncio.Event()
+        self._changed = asyncio.Event()
         self._forced = False
-        self._manual_wake_pending = False
+        self._manual_scan_pending = False
         self._confirmation_pending = False
         self._notification_pending = False
         self._running = True
@@ -50,7 +50,7 @@ class PluginWatcher:
         loop = asyncio.get_running_loop()
         if self._debounce_handle is not None:
             self._debounce_handle.cancel()
-        self._debounce_handle = loop.call_later(self._debounce_seconds, self._wake.set)
+        self._debounce_handle = loop.call_later(self._debounce_seconds, self._changed.set)
 
     async def run(self) -> None:
         """事件驱动监听插件文件状态，慢速兜底探测兜住事件缺口，变化后热重载。"""
@@ -74,7 +74,7 @@ class PluginWatcher:
                 self._events.set_targets(trees, files)
         self._run_started = True
         # 首个扫描不等兜底间隔：无基线时立即建立基线，有基线时立即验证一次指纹。
-        self._wake.set()
+        self._changed.set()
         try:
             # 1. 启动前已停止时，不再触碰 manager
             if not self._running:
@@ -88,26 +88,26 @@ class PluginWatcher:
                 timeout = self._interval_seconds if not events_live else self._backstop_seconds
                 try:
                     _ = await asyncio.wait_for(
-                        self._wake.wait(),
+                        self._changed.wait(),
                         timeout=timeout,
                     )
                 except TimeoutError:
                     pass
-                self._wake.clear()
+                self._changed.clear()
                 if not self._running:
                     break
                 forced = self._forced
-                manual_wake = self._manual_wake_pending
+                manual_scan = self._manual_scan_pending
                 self._forced = False
-                self._manual_wake_pending = False
+                self._manual_scan_pending = False
                 # 3. 读取最新状态；单次文件竞争交给下一轮恢复
                 try:
                     current_revision = await asyncio.to_thread(
                         self._manager.watch_revision
                     )
                 except (OSError, ValueError, RuntimeError):
-                    self._forced = self._forced or forced or manual_wake
-                    self._manual_wake_pending = self._manual_wake_pending or manual_wake
+                    self._forced = self._forced or forced or manual_scan
+                    self._manual_scan_pending = self._manual_scan_pending or manual_scan
                     logger.exception("插件热重载状态扫描失败")
                     continue
                 if self._events is not None:
@@ -120,9 +120,9 @@ class PluginWatcher:
                     revision = current_revision
                     if not forced:
                         continue
-                if manual_wake:
+                if manual_scan:
                     full_pending = True
-                if manual_wake or (
+                if manual_scan or (
                     failed_revision is not None and current_revision != failed_revision
                 ):
                     failed_revision = None
@@ -133,7 +133,7 @@ class PluginWatcher:
                     plugin_id for plugin_id in current_revision.keys() | revision.keys()
                     if current_revision.get(plugin_id) != revision.get(plugin_id)
                 ) | pending_ids
-                if blocked_revision == current_revision and not manual_wake:
+                if blocked_revision == current_revision and not manual_scan:
                     changed = False
                 if not changed and not self._notification_pending:
                     continue
@@ -203,14 +203,14 @@ class PluginWatcher:
                 self._debounce_handle = None
             self._stopped.set()
 
-    def wake(self) -> None:
+    def request_scan(self) -> None:
         self._forced = True
-        self._manual_wake_pending = True
-        self._wake.set()
+        self._manual_scan_pending = True
+        self._changed.set()
 
     def stop(self) -> None:
         self._running = False
-        self._wake.set()
+        self._changed.set()
         if not self._run_started:
             self._stopped.set()
 
