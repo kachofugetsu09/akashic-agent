@@ -1,0 +1,30 @@
+# 此层按 row id 整行替换；plugin-stable.json 仍是运行选择。
+schema_version = 1
+
+[rows."channels"]
+plugin = "channels@release"
+disabled = true
+
+[rows."ui"]
+plugin = "ui@release"
+disabled = true
+
+[rows."shell-ui"]
+plugin = "shell-ui@release"
+disabled = true
+
+[rows."conversation-ui"]
+plugin = "conversation-ui@release"
+disabled = true
+
+[rows."akashic_clients"]
+plugin = "akashic_clients@release"
+disabled = true
+
+[rows."telegram_channel"]
+plugin = "telegram_channel@release"
+disabled = true
+
+[rows."telegram_sender"]
+plugin = "telegram_sender@release"
+disabled = true

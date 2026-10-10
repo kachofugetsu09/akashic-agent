@@ -1,0 +1,194 @@
+# 此层按 row id 整行替换；plugin-stable.json 仍是运行选择。
+schema_version = 1
+
+[rows."ledger"]
+plugin = "ledger@release"
+disabled = true
+
+[rows."timer"]
+plugin = "timer@release"
+disabled = true
+
+[rows."channels"]
+plugin = "channels@release"
+disabled = true
+
+[rows."gateway"]
+plugin = "gateway@release"
+disabled = true
+
+[rows."host_execution"]
+plugin = "host_execution@release"
+disabled = true
+
+[rows."workloads"]
+plugin = "workloads@release"
+disabled = true
+
+[rows."managed_processes"]
+plugin = "managed_processes@release"
+disabled = true
+
+[rows."mcp"]
+plugin = "mcp@release"
+disabled = true
+
+[rows."commands"]
+plugin = "commands@release"
+disabled = true
+
+[rows."ui"]
+plugin = "ui@release"
+disabled = true
+
+[rows."shell-ui"]
+plugin = "shell-ui@release"
+disabled = true
+
+[rows."conversation-ui"]
+plugin = "conversation-ui@release"
+disabled = true
+
+[rows."projects"]
+plugin = "projects@release"
+disabled = true
+
+[rows."models"]
+plugin = "models@release"
+disabled = true
+
+[rows."session_title"]
+plugin = "session_title@release"
+disabled = true
+
+[rows."openai-compatible"]
+plugin = "openai-compatible@release"
+disabled = true
+
+[rows."gemini"]
+plugin = "gemini@release"
+disabled = true
+
+[rows."content"]
+plugin = "content@release"
+disabled = true
+
+[rows."context"]
+plugin = "context@release"
+disabled = true
+
+[rows."turn_projection"]
+plugin = "turn_projection@release"
+disabled = true
+
+[rows."sources"]
+plugin = "sources@release"
+disabled = true
+
+[rows."tools"]
+plugin = "tools@release"
+disabled = true
+
+[rows."tool_search"]
+plugin = "tool_search@release"
+disabled = true
+
+[rows."assets"]
+plugin = "assets@release"
+disabled = true
+
+[rows."standard_tools"]
+plugin = "standard_tools@release"
+disabled = true
+
+[rows."runtime_inspection"]
+plugin = "runtime_inspection@release"
+disabled = true
+
+[rows."prompt"]
+plugin = "prompt@release"
+disabled = true
+
+[rows."compaction"]
+plugin = "compaction@release"
+disabled = true
+
+[rows."markdown_memory"]
+plugin = "markdown_memory@release"
+disabled = true
+
+[rows."react"]
+plugin = "react@release"
+disabled = true
+
+[rows."conversation"]
+plugin = "conversation@release"
+disabled = true
+
+[rows."reply_program"]
+plugin = "reply_program@release"
+disabled = true
+
+[rows."reply"]
+plugin = "reply@release"
+disabled = true
+
+[rows."akashic_clients"]
+plugin = "akashic_clients@release"
+disabled = true
+
+[rows."eventmail"]
+plugin = "eventmail@release"
+disabled = true
+
+[rows."delivery"]
+plugin = "delivery@release"
+disabled = true
+
+[rows."akashic_sender"]
+plugin = "akashic_sender@release"
+disabled = true
+
+[rows."delivery_policy"]
+plugin = "delivery_policy@release"
+disabled = true
+
+[rows."message_push"]
+plugin = "message_push@release"
+disabled = true
+
+[rows."programmatic"]
+plugin = "programmatic@release"
+disabled = true
+
+[rows."onboarding"]
+plugin = "onboarding@release"
+disabled = true
+
+[rows."telegram_channel"]
+plugin = "telegram_channel@release"
+disabled = true
+
+[rows."telegram_sender"]
+plugin = "telegram_sender@release"
+disabled = true
+
+[rows."akasha"]
+plugin = "akasha@release"
+disabled = true
+
+[rows."drift"]
+plugin = "drift@release"
+disabled = true
+
+[rows."wake"]
+plugin = "wake@release"
+disabled = true
+
+[rows."codex"]
+plugin = "codex@release"
+disabled = true
+
+[rows."opencode-go"]
+plugin = "opencode-go@release"
+disabled = true

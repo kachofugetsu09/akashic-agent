@@ -1,0 +1,148 @@
+# 发行版默认组合；运行选择仍由 plugin-stable.json 拥有。
+schema_version = 1
+
+[rows."ledger"]
+plugin = "ledger@release"
+
+[rows."timer"]
+plugin = "timer@release"
+
+[rows."channels"]
+plugin = "channels@release"
+
+[rows."gateway"]
+plugin = "gateway@release"
+
+[rows."host_execution"]
+plugin = "host_execution@release"
+
+[rows."workloads"]
+plugin = "workloads@release"
+
+[rows."managed_processes"]
+plugin = "managed_processes@release"
+
+[rows."mcp"]
+plugin = "mcp@release"
+
+[rows."commands"]
+plugin = "commands@release"
+
+[rows."ui"]
+plugin = "ui@release"
+
+[rows."shell-ui"]
+plugin = "shell-ui@release"
+
+[rows."conversation-ui"]
+plugin = "conversation-ui@release"
+
+[rows."projects"]
+plugin = "projects@release"
+
+[rows."models"]
+plugin = "models@release"
+
+[rows."session_title"]
+plugin = "session_title@release"
+
+[rows."openai-compatible"]
+plugin = "openai-compatible@release"
+
+[rows."gemini"]
+plugin = "gemini@release"
+
+[rows."content"]
+plugin = "content@release"
+
+[rows."context"]
+plugin = "context@release"
+config = { "prompt_sources" = { "default_prompt" = "prompt@release", "markdown_memory" = "markdown_memory@release", "skills" = "standard_tools@release" }, "summary_source" = ["compaction", "compaction@release"] }
+
+[rows."turn_projection"]
+plugin = "turn_projection@release"
+
+[rows."sources"]
+plugin = "sources@release"
+
+[rows."tools"]
+plugin = "tools@release"
+
+[rows."tool_search"]
+plugin = "tool_search@release"
+
+[rows."assets"]
+plugin = "assets@release"
+
+[rows."standard_tools"]
+plugin = "standard_tools@release"
+
+[rows."runtime_inspection"]
+plugin = "runtime_inspection@release"
+
+[rows."prompt"]
+plugin = "prompt@release"
+
+[rows."compaction"]
+plugin = "compaction@release"
+
+[rows."markdown_memory"]
+plugin = "markdown_memory@release"
+
+[rows."react"]
+plugin = "react@release"
+
+[rows."conversation"]
+plugin = "conversation@release"
+
+[rows."reply_program"]
+plugin = "reply_program@release"
+
+[rows."reply"]
+plugin = "reply@release"
+
+[rows."akashic_clients"]
+plugin = "akashic_clients@release"
+config = { "enabled" = true, "web" = { "enabled" = true, "socket_path" = "" } }
+
+[rows."eventmail"]
+plugin = "eventmail@release"
+
+[rows."delivery"]
+plugin = "delivery@release"
+
+[rows."akashic_sender"]
+plugin = "akashic_sender@release"
+
+[rows."delivery_policy"]
+plugin = "delivery_policy@release"
+
+[rows."message_push"]
+plugin = "message_push@release"
+
+[rows."programmatic"]
+plugin = "programmatic@release"
+
+[rows."onboarding"]
+plugin = "onboarding@release"
+
+[rows."telegram_channel"]
+plugin = "telegram_channel@release"
+
+[rows."telegram_sender"]
+plugin = "telegram_sender@release"
+
+[rows."akasha"]
+plugin = "akasha@release"
+
+[rows."drift"]
+plugin = "drift@release"
+
+[rows."wake"]
+plugin = "wake@release"
+
+[rows."codex"]
+plugin = "codex@release"
+
+[rows."opencode-go"]
+plugin = "opencode-go@release"
