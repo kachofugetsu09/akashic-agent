@@ -3,7 +3,10 @@
 from fastapi import FastAPI
 
 from agent.plugin_composition import DashboardContext
-from agent.plugin_composition.models import MODEL_CATALOG, MODEL_CALL_STATS
+from plugins.models.contract import (
+    MODEL_CATALOG,
+    MODEL_CALL_STATS,
+)
 
 from .model_settings_http import BoundModelControl, create_model_settings_router
 from .selection import MODEL_SELECTION

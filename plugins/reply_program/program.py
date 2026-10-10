@@ -10,7 +10,11 @@ from functools import partial
 from agent.plugin_composition import Context
 from agent.plugin_composition.artifacts import ArtifactRead
 from agent.plugin_composition.messages import MessageReader, MessageWriters, OwnerState, OwnerTransaction
-from agent.plugin_composition.models import BoundChatModel, ChatModels, ModelRequest
+from agent.plugin_composition.models import ModelRequest
+from plugins.models.contract import (
+    BoundChatModel,
+    ChatModels,
+)
 from agent.plugin_composition.tasks import Task
 from plugins.context.contract import MaterialView, ReductionStatus
 from plugins.models.contract import PrepareContent

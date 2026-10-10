@@ -18,7 +18,11 @@ from fastapi.staticfiles import StaticFiles
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 
-from agent.plugin_composition import CompositionRoot, MODEL_CATALOG, MODEL_DRIVERS
+from agent.plugin_composition import CompositionRoot
+from plugins.models.contract import (
+    MODEL_CATALOG,
+    MODEL_DRIVERS,
+)
 from plugins.codex import auth as codex_auth
 from plugins.codex.driver import definition as codex_definition
 from plugins.models.model_settings_http import BoundModelControl, create_model_settings_router

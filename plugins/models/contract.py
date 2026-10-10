@@ -2,6 +2,23 @@
 
 from __future__ import annotations
 
+from collections.abc import Awaitable
+from typing import (
+    AsyncContextManager,
+    Literal,
+    TypeAlias,
+)
+
+from agent.plugin_composition.models import (
+    BoundModelDescriptor,
+    CredentialHandle,
+    DiscoveredModel,
+    DriverConnection,
+    DriverConnectionDescriptor,
+    ModelCatalogSnapshot,
+    ModelUsage,
+)
+
 from collections.abc import Callable, Mapping, MutableMapping, Sequence
 from contextlib import AbstractAsyncContextManager
 from dataclasses import dataclass
@@ -12,7 +29,6 @@ from agent.plugin_composition.artifacts import ArtifactRead
 from agent.plugin_composition.channels import AttachmentRef
 from agent.plugin_composition.model import ServiceKey
 from agent.plugin_composition.models import (
-    BoundChatModel,
     ChatModelSelection,
     LLMResponse,
     ModelRequest,
@@ -149,3 +165,141 @@ MODEL_CONTENT = ServiceKey[ModelContent]("models.content.v3")
 MODEL_CHECKS = ServiceKey[ModelChecks]("models.message-checks.v1")
 MODEL_PROJECTION = ServiceKey[ModelProjections]("models.projection.v1")
 MODEL_CALLS = ServiceKey[CallReader]("models.calls.v1")
+
+
+@dataclass(frozen=True, slots=True)
+class ModelCallStats:
+    """调用的公开统计；不含凭据、请求正文或 provider continuation。"""
+
+    call_record_id: str
+    model: str
+    state: Literal["started", "success", "error"]
+    first_token_ms: float | None
+    duration_ms: float | None
+    usage: ModelUsage | None
+
+
+MODEL_CALL_STATS = ServiceKey[Callable[[str], ModelCallStats]]("models.call-stats.v1")
+
+
+class BoundChatModel(Protocol):
+    @property
+    def descriptor(self) -> BoundModelDescriptor: ...
+
+    async def complete(self, request: ModelRequest) -> LLMResponse:
+        """Reject a mismatched continuation before starting external I/O."""
+
+        ...
+
+    def estimate_context_tokens(
+        self,
+        messages: Sequence[Mapping[str, Any]],
+        tools: Sequence[Mapping[str, Any]] = (),
+    ) -> int: ...
+
+    def estimate_appended_message_tokens(
+        self,
+        messages: Sequence[Mapping[str, Any]],
+    ) -> int: ...
+
+    @property
+    def max_tool_schemas(self) -> int | None: ...
+
+    def key_recovery(self, request_key: str) -> str:
+        """该 request key 最近耐久记录的恢复裁决（Models 独占分类）：
+
+        - "open"：无终结结算（无记录、成功、在途或仍有耐久退避额度）；
+        - "rejected"：provider 明确容量拒绝——本代可续跑有界缩减，
+          真实 resume 也可开新准备；
+        - "answered"：其他可证明失败——真实 resume 后允许新准备如实付费；
+        - "uncertain"：旧记录或没有恢复安排的未知失败；自动重入不重发，
+          新 Input 或显式 resume 可授权新的模型准备，工具效果仍按原回执恢复。
+
+        非 "open" 即终结：终结 key 不因重启/重调获得新预算。"""
+        ...
+
+
+class ModelExecution(Protocol):
+    def chat(self, role: str) -> BoundChatModel: ...
+
+
+class ChatModels(Protocol):
+    def execution(
+        self,
+        *,
+        model_id: str | None = None,
+        reasoning_effort: str | None = None,
+    ) -> AsyncContextManager[ModelExecution]: ...
+
+    def independent_execution(
+        self,
+        *,
+        model_id: str | None = None,
+        reasoning_effort: str | None = None,
+    ) -> AsyncContextManager[ModelExecution]:
+        """Open a model execution without a parent task's model binding."""
+
+        ...
+
+
+class ModelCatalog(Protocol):
+    def snapshot(self) -> ModelCatalogSnapshot: ...
+
+    def validate_chat_selection(
+        self,
+        selection: ChatModelSelection,
+    ) -> ChatModelSelection: ...
+
+
+DriverOpen: TypeAlias = Callable[
+    [DriverConnectionDescriptor, CredentialHandle],
+    Awaitable[DriverConnection],
+]
+
+
+DriverDiscover: TypeAlias = Callable[
+    [DriverConnectionDescriptor, CredentialHandle],
+    Awaitable[tuple[DiscoveredModel, ...]],
+]
+
+
+DriverProbe: TypeAlias = Callable[
+    [DriverConnectionDescriptor, CredentialHandle],
+    Awaitable[None],
+]
+
+
+DriverAuthHandler: TypeAlias = Callable[
+    [Mapping[str, Any]],
+    Awaitable[Mapping[str, Any]],
+]
+
+
+@dataclass(frozen=True, slots=True)
+class ModelDriverDefinition:
+    driver_id: str
+    contract_version: str
+    open: DriverOpen
+    discover: DriverDiscover | None = None
+    probe: DriverProbe | None = None
+    probe_embedding: Callable[[DriverConnectionDescriptor, CredentialHandle, str], Awaitable[DiscoveredModel]] | None = None
+    start_auth: DriverAuthHandler | None = None
+    finish_auth: DriverAuthHandler | None = None
+    cancel_auth: DriverAuthHandler | None = None
+
+
+class ModelDrivers(Protocol):
+    async def register(
+        self,
+        ctx: Context,
+        definition: ModelDriverDefinition,
+    ) -> Effect: ...
+
+
+CHAT_MODELS = ServiceKey[ChatModels]("models.chat.v1")
+
+
+MODEL_CATALOG = ServiceKey[ModelCatalog]("models.catalog.v1")
+
+
+MODEL_DRIVERS = ServiceKey[ModelDrivers]("models.drivers.v1")

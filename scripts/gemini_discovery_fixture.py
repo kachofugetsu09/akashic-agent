@@ -13,7 +13,11 @@ from fastapi import FastAPI, Request
 from fastapi.responses import HTMLResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 
-from agent.plugin_composition import CompositionRoot, MODEL_CATALOG, MODEL_DRIVERS
+from agent.plugin_composition import CompositionRoot
+from plugins.models.contract import (
+    MODEL_CATALOG,
+    MODEL_DRIVERS,
+)
 from plugins.gemini.driver import definition
 from plugins.models.model_settings_http import BoundModelControl, create_model_settings_router
 from plugins.models.settings import MODEL_SETTINGS

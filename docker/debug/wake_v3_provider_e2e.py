@@ -25,10 +25,12 @@ import agent.plugins.manager as plugin_manager_module
 import plugins.wake.plugin as wake_plugin_module
 from agent.control.timer import TimerReceipt, TimerStatus
 from agent.plugin_composition import (
-    CHAT_MODELS,
     LLMResponse,
-    MODEL_CATALOG,
     ToolCall,
+)
+from plugins.models.contract import (
+    CHAT_MODELS,
+    MODEL_CATALOG,
 )
 from plugins.gateway.contract import RpcMethod
 from agent.plugins.manager import PluginManager
@@ -722,7 +724,7 @@ def _write_e2e_fixture_plugin(root: Path, *, include_models: bool) -> Path:
 from contextlib import asynccontextmanager
 from pathlib import Path
 from types import SimpleNamespace
-from agent.plugin_composition import CHAT_MODELS
+from plugins.models.contract import CHAT_MODELS
 from agent.plugin_composition.models import BoundModelDescriptor, CapabilitySources, ModelCapabilities
 from plugins.models.content import MODEL_CONTENT, ContentOwner
 from plugins.models.projection import (

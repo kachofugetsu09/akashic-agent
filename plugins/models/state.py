@@ -30,11 +30,7 @@ from typing import (
 from uuid import uuid4
 
 from agent.plugin_composition import (
-    CHAT_MODELS,
     EMBEDDINGS,
-    MODEL_CATALOG,
-    MODEL_DRIVERS,
-    BoundChatModel,
     BoundEmbeddingModel,
     BoundModelDescriptor,
     ChatModelSelection,
@@ -55,8 +51,6 @@ from agent.plugin_composition import (
     ModelAvailability,
     ModelCatalogSnapshot,
     ModelDescriptor,
-    ModelDriverDefinition,
-    ModelExecution,
     ModelError,
     RevisionConflictError,
     ModelRequest,
@@ -64,6 +58,14 @@ from agent.plugin_composition import (
     ModelTimeoutError,
     SavedEmbedding,
     ServiceKey,
+)
+from plugins.models.contract import (
+    CHAT_MODELS,
+    MODEL_CATALOG,
+    MODEL_DRIVERS,
+    BoundChatModel,
+    ModelDriverDefinition,
+    ModelExecution,
 )
 from agent.plugin_composition.bindings import Bindings
 from agent.plugin_composition.models import EmptyResponseError, ModelContinuation, ModelUsage, ToolCall

@@ -1,7 +1,11 @@
 from __future__ import annotations
 
 from agent.plugin_composition.models import ModelError
-from agent.plugin_composition.models import MODEL_CALL_STATS, ModelCallStats, ModelUnavailableError
+from agent.plugin_composition.models import ModelUnavailableError
+from plugins.models.contract import (
+    MODEL_CALL_STATS,
+    ModelCallStats,
+)
 from agent.plugin_composition.models import ModelControlUnavailable
 
 import asyncio
@@ -13,7 +17,11 @@ from typing import Any, cast
 
 import uvicorn
 
-from agent.plugin_composition import MODEL_CATALOG, Context, Effect
+from agent.plugin_composition import (
+    Context,
+    Effect,
+)
+from plugins.models.contract import MODEL_CATALOG
 from agent.plugin_composition.channels import (
     AttachmentKind,
     AttachmentReadLease,

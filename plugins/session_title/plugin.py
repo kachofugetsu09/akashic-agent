@@ -6,7 +6,8 @@ import logging
 
 from pydantic import BaseModel, ConfigDict, Field
 
-from agent.plugin_composition import CHAT_MODELS, Context
+from agent.plugin_composition import Context
+from plugins.models.contract import CHAT_MODELS
 from agent.plugin_composition.messages import SESSION_ADMIN, MessageReader
 from agent.plugin_composition.models import ModelError, ModelRequest
 from agent.plugin_contracts import Input

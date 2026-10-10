@@ -9,7 +9,7 @@ from agent.plugin_composition import (
 )
 
 from .capabilities import CLIENT_CAPABILITIES, INSPECTION_RPC_KEYS, REPLY_STATUS, MCP_DETAIL, MCP_SERVERS
-from agent.plugin_composition.models import MODEL_CALL_STATS
+from plugins.models.contract import MODEL_CALL_STATS
 from .channel import build_akashic_channel_factory
 from agent.plugin_composition.channels import CHANNEL_INPUT_V2 as CHANNEL_INPUT
 from .config import AkashicClientsConfig

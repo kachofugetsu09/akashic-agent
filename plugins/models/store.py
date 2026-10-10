@@ -41,13 +41,13 @@ from .settings import (
 from agent.plugin_composition.models import (
     BoundModelDescriptor,
     LLMResponse,
-    ModelCallStats,
     ModelContinuation,
     ModelRequest,
     ModelUsage,
     ToolCall,
     UsageCoverage,
 )
+from plugins.models.contract import ModelCallStats
 
 MODEL_ROLES = ("default", "fast", "agent", "vision")
 _LEGACY_OPENAI_DRIVER_IDS = ("openai", "deepseek", "qwen")

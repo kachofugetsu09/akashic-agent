@@ -9,7 +9,7 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING
 
-from agent.plugin_composition import MODEL_CATALOG
+from plugins.models.contract import MODEL_CATALOG
 from agent.plugin_composition.messages import MESSAGE_CATALOG, SESSION_ADMIN
 from plugins.gateway.contract import RpcMethod
 from agent.plugin_composition.runtime_catalog import (

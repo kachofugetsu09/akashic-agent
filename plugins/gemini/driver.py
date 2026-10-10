@@ -27,7 +27,6 @@ from agent.plugin_composition.models import (
     InvalidRequestError,
     LLMResponse,
     ModelCapabilities,
-    ModelDriverDefinition,
     ModelError,
     ModelRequest,
     ModelTimeoutError,
@@ -36,6 +35,7 @@ from agent.plugin_composition.models import (
     ToolCall,
     TransportError,
 )
+from plugins.models.contract import ModelDriverDefinition
 
 
 def definition() -> ModelDriverDefinition:

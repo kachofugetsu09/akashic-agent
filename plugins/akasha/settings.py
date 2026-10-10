@@ -6,10 +6,8 @@ from typing import Any, cast
 from pydantic import BaseModel
 from agent.plugin_composition import Context, ServiceKey
 from agent.plugin_composition.context import FiberHandle
-from agent.plugin_composition.models import (
-    MODEL_CATALOG,
-    ModelCatalogSnapshot,
-)
+from agent.plugin_composition.models import ModelCatalogSnapshot
+from plugins.models.contract import MODEL_CATALOG
 from agent.plugin_composition.plugin_config import PLUGIN_CONFIG
 from agent.plugin_composition.runtime_catalog import RUNTIME_CATALOG
 from agent.plugin_contracts.configuration import Configuration

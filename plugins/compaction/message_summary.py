@@ -8,9 +8,13 @@ from dataclasses import replace
 from collections.abc import Awaitable, Callable, Sequence
 
 from agent.plugin_composition.models import (
-    BoundChatModel, ContextLengthError, ModelRequest, ModelTimeoutError,
-    RateLimitError, TransportError,
+    ContextLengthError,
+    ModelRequest,
+    ModelTimeoutError,
+    RateLimitError,
+    TransportError,
 )
+from plugins.models.contract import BoundChatModel
 from agent.plugin_contracts import CallRef, ContentPart, Control, Message, Output, ToolCall, ToolResult
 from agent.plugin_contracts import body_to_dict
 from ._boundaries import TurnProjection

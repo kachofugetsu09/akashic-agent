@@ -8,7 +8,8 @@ from dataclasses import dataclass
 
 from agent.plugin_composition import Context, Effect
 from agent.plugin_composition.model import FiberState
-from agent.plugin_composition.models import BoundChatModel, ModelRequest
+from agent.plugin_composition.models import ModelRequest
+from plugins.models.contract import BoundChatModel
 from agent.plugin_composition.tasks import child_task_context
 from agent.plugin_contracts import Message
 from plugins.context.contract import (
