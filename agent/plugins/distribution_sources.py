@@ -14,6 +14,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import cast
 
+from agent.plugins.bundles import load_bundles
 from agent.plugins.artifacts import read_pointers, resolve_pointer
 from agent.plugins.manifest import load_plugin_manifest, workspace_plugin_data_dir
 from agent.plugins.source_resolver import ResolvedPluginSource
@@ -200,9 +201,8 @@ def distribution_sources(
             return DistributionSources()
         distribution = Path(configured)
     distribution = distribution.resolve(strict=True)
-    profile = json.loads((distribution / "profiles/default.json").read_text())
-    marketplace = profile["marketplace"]
-    defaults = {row["name"] for row in profile["plugins"]}
+    marketplace = json.loads((distribution / "distribution.json").read_text())["marketplace"]
+    defaults = {row.plugin for row in load_bundles(distribution / "bundles") if not row.disabled}
     choices = load_plugin_manifest(plugins_home)
     receipt_path = workspace / "runtime/distribution-install.json"
     receipt = json.loads(receipt_path.read_text()) if receipt_path.exists() else {}
@@ -250,7 +250,7 @@ def distribution_sources(
             legacy.add(plugin_id)
     sources = tuple(source for source in distribution_plugin_sources(distribution)
                     if (f"{source.plugin_name}@{marketplace}" in choices
-                        or (source.plugin_name in defaults
+                        or (f"{source.plugin_name}@{marketplace}" in defaults
                             and f"{source.plugin_name}@{marketplace}" not in historical)))
     return DistributionSources(sources, frozenset(ignored), frozenset(legacy))
 
@@ -258,8 +258,7 @@ def distribution_sources(
 def distribution_plugin_sources(distribution: Path) -> tuple[ResolvedPluginSource, ...]:
     """读取发行版全部内置来源；迁移范围不受启停选择影响。"""
     report = json.loads((distribution / "distribution.json").read_text())
-    profile = json.loads((distribution / "profiles/default.json").read_text())
-    marketplace = profile["marketplace"]
+    marketplace = report["marketplace"]
     sources = []
     for row in report["plugins"]:
         name = row["name"]

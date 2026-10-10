@@ -65,9 +65,9 @@ async def exercise(directory: Path, network: str, image: str) -> dict[str, objec
     (distribution / "sources").mkdir(parents=True)
     shutil.copytree(sources / "host_execution", distribution / "sources/host_execution",
                     ignore=shutil.ignore_patterns(".git"))
-    (distribution / "profiles").mkdir()
-    (distribution / "profiles/default.json").write_text(json.dumps({"marketplace": "release"}))
-    (distribution / "distribution.json").write_text(json.dumps({"source_commit": "a" * 40,
+    (distribution / "bundles").mkdir()
+    (distribution / "bundles/base.toml").write_text("schema_version = 1\n[rows]\n")
+    (distribution / "distribution.json").write_text(json.dumps({"source_commit": "a" * 40, "marketplace": "release",
         "plugins": [{"name": "host_execution"}]}))
     state = directory / "leases.json"
     with (directory / "controller.log").open("wb") as output:

@@ -26,7 +26,7 @@ from plugins.sources.contract import (
     SourceChangedV3,
 )
 from plugins.session_title import plugin
-from scripts.install_plugin_distribution import _load_profile
+from agent.plugins.bundles import load_bundle
 from plugins.ledger.log import MessageLog, SessionAttributes
 
 
@@ -238,6 +238,6 @@ async def run(path):
 
 
 if __name__ == "__main__":
-    _load_profile(Path(__file__).resolve().parents[2] / "docker/host-runtime/profiles/default.json")
+    load_bundle(Path(__file__).resolve().parents[2] / "bundles/base.toml")
     with TemporaryDirectory() as temporary:
         asyncio.run(run(Path(temporary)))

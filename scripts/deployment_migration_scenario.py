@@ -1,5 +1,6 @@
 """在全新临时安装中验证迁移的数据归属、配置恢复和旧账本升级。"""
 import asyncio
+import hashlib
 import json
 import os
 from pathlib import Path
@@ -9,9 +10,9 @@ import sys
 import tempfile
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
-from scripts.deployment_composition_scenario import ROOT, plugin, git, commit, distribution, ensure_profile, manager, migration, selected, snapshot
+from scripts.deployment_composition_scenario import ROOT, plugin, git, commit, distribution, ensure_bundle, manager, migration, selected, snapshot
 from agent.plugins.manifest import workspace_plugin_data_dir, set_plugin_enabled
-from agent.plugin_composition.config_input import decode_config
+from agent.plugin_composition.config_input import config_bytes, load_config
 from agent.plugins.selection import PluginSelection
 from agent.plugins.install import install_git_plugin
 from agent.migrations.runner import MigrationRunner
@@ -32,7 +33,7 @@ async def setup(tag):
     os.environ['AKASHIC_PLUGIN_HOME'] = str(home)
     os.environ.pop('AKASHIC_PLUGIN_DISTRIBUTION', None)
     subprocess.run([sys.executable, str(ROOT / 'main.py'), 'init', '--config', str(config), '--workspace', str(work)], check=True, stdout=subprocess.DEVNULL)
-    ensure_profile(old, old / 'profiles/default.json', workspace=work, plugins_home=home, config_path=config, receipt_path=receipt)
+    ensure_bundle(old, old / 'bundles/base.toml', workspace=work, plugins_home=home, config_path=config, receipt_path=receipt)
     return root, repo, old, work, home, config, receipt
 
 async def main():
@@ -80,7 +81,7 @@ async def main():
                 if startup:
                     MigrationRunner(repo_root=ROOT, config_path=config, workspace=work, startup_selection=True).run()
                 else:
-                    ensure_profile(new, new / 'profiles/default.json', workspace=work, plugins_home=home, config_path=config, receipt_path=receipt)
+                    ensure_bundle(new, new / 'bundles/base.toml', workspace=work, plugins_home=home, config_path=config, receipt_path=receipt)
             except RuntimeError as error:
                 assert '数据身份' in str(error), error
             else:
@@ -93,22 +94,22 @@ async def main():
     m = await manager(work, home, old)
     def fail(ref):
         raise RuntimeError('injected file publish failure')
-    m._publish_config_input = fail
+    m._publish_config_update = fail
     await m.apply_config_input('alpha@release', 'failed-file-publish', m.read_config_input('alpha@release')['input_ref'], {'user': 'committed-new'})
     try:
         await m._operation.task
     except Exception:
         pass
     await m.terminate_all()
-    assert decode_config(selected(work)['alpha@release'][1]['config']) == {'user': 'committed-new'}
+    assert selected(work)['alpha@release'][1]['config_revision'] == hashlib.sha256(config_bytes({'user': 'committed-new'})).hexdigest()
     before = PluginSelection(work).read()
     before_data = snapshot(work / 'plugin-data')
     # Every product launcher uses this installer before starting the recovery owner.
     restarted = subprocess.run([
         sys.executable, str(ROOT / 'scripts/install_plugin_distribution.py'),
-        '--distribution', str(old), '--profile', str(old / 'profiles/default.json'),
+        '--distribution', str(old), '--bundle', str(old / 'bundles/base.toml'),
         '--workspace', str(work), '--plugins-home', str(home), '--config', str(config),
-        '--ensure-profile', '--receipt', str(receipt),
+        '--ensure-bundle', '--receipt', str(receipt),
     ], check=True, capture_output=True, text=True)
     assert json.loads(restarted.stdout)['recovery_pending'] is True
     assert PluginSelection(work).read() == before
@@ -116,7 +117,7 @@ async def main():
     plugin(repo, 'alpha', '2')
     changed = distribution(repo, root / 'changed-without-migrations', ['alpha'], ['alpha'])
     try:
-        ensure_profile(changed, changed / 'profiles/default.json', workspace=work, plugins_home=home,
+        ensure_bundle(changed, changed / 'bundles/base.toml', workspace=work, plugins_home=home,
                        config_path=config, receipt_path=receipt)
     except RuntimeError as error:
         assert '配置提交尚待原 runtime 恢复' in str(error), error
@@ -127,7 +128,7 @@ async def main():
     migration(repo, 'alpha', 'review_config_upgrade', 'step("CREATE TABLE review_config_done (value INTEGER)")\n')
     new = distribution(repo, root / 'new', ['alpha'], ['alpha'])
     try:
-        ensure_profile(new, new / 'profiles/default.json', workspace=work, plugins_home=home,
+        ensure_bundle(new, new / 'bundles/base.toml', workspace=work, plugins_home=home,
                        config_path=config, receipt_path=receipt)
     except RuntimeError as error:
         assert '配置提交尚待原 runtime 恢复' in str(error), error
@@ -145,8 +146,9 @@ async def main():
     m = await manager(work, home, old)
     assert m.read_config_update('alpha@release', 'failed-file-publish')['state'] == 'active'
     await m.terminate_all()
-    ensure_profile(new, new / 'profiles/default.json', workspace=work, plugins_home=home, config_path=config, receipt_path=receipt)
-    assert decode_config(selected(work)['alpha@release'][1]['config']) == {'user': 'committed-new'}
+    ensure_bundle(new, new / 'bundles/base.toml', workspace=work, plugins_home=home, config_path=config, receipt_path=receipt)
+    assert selected(work)['alpha@release'][1]['config_revision'] == hashlib.sha256(config_bytes({'user': 'committed-new'})).hexdigest()
+    assert load_config(work / 'plugin-data/alpha-release')[0] == {'user': 'committed-new'}
     print('PASS config failure blocked/recovered/settled/migrated', flush=True)
 
     root, repo, old, work, home, config, receipt = await setup('review-old-journal-')
@@ -156,7 +158,7 @@ async def main():
         connection.execute('DROP TABLE config_updates')
     with sqlite3.connect(work / 'migrations.sqlite3') as connection:
         connection.execute("DELETE FROM _yoyo_migration WHERE migration_id='20260928_01_plugin_config_updates'")
-    ensure_profile(old, old / 'profiles/default.json', workspace=work, plugins_home=home,
+    ensure_bundle(old, old / 'bundles/base.toml', workspace=work, plugins_home=home,
                    config_path=config, receipt_path=receipt)
     with sqlite3.connect(work / 'runtime/plugin-reloads.sqlite3') as connection:
         assert connection.execute("SELECT name FROM sqlite_master WHERE name='config_updates'").fetchone()

@@ -17,7 +17,7 @@ sys.path.insert(0, str(ROOT))
 from scripts.deployment_composition_scenario import (
     commit, distribution, git, manager, plugin, selected, snapshot,
 )
-from scripts.install_plugin_distribution import install_profile, ensure_profile, publish_distribution, _write_receipt, _code_identity
+from scripts.install_plugin_distribution import install_bundle, ensure_bundle, publish_distribution, _write_receipt, _code_identity
 from agent.plugins.artifacts import read_pointers, resolve_pointer
 from agent.plugins.distribution_sources import distribution_sources, distribution_migration_sources
 from agent.plugins.install import install_git_plugin
@@ -49,7 +49,7 @@ async def run():
     os.environ.pop("AKASHIC_PLUGIN_DISTRIBUTION", None)
     subprocess.run([sys.executable, str(ROOT / "main.py"), "init", "--config", str(config),
                     "--workspace", str(work)], check=True, stdout=subprocess.DEVNULL)
-    first_receipt = install_profile(first, first / "profiles/default.json", workspace=work,
+    first_receipt = install_bundle(first, first / "bundles/base.toml", workspace=work,
                                     plugins_home=home, config_path=config)
     m = await manager(work, home)
     await m.terminate_all()
@@ -59,7 +59,7 @@ async def run():
     (repo / "plugins/alpha").rename(repo / "plugins/alpha_legacy")
     (repo / "plugins/retired").rename(repo / "plugins/retired_source")
     historical = distribution(repo, root / "historical", ["alpha_legacy", "retired_source", "disabled"], names)
-    install_profile(historical, historical / "profiles/default.json", workspace=work,
+    install_bundle(historical, historical / "bundles/base.toml", workspace=work,
                     plugins_home=home, config_path=config)
     selection = PluginSelection(work)
     prepared = []
@@ -158,7 +158,7 @@ async def run():
     assert "retired@release" not in selected(work) and "disabled@release" not in selected(work)
     # 3. 普通第二次启动、配置提交与停用均保留同一凭证及退役归属。
     for _ in range(2):
-        ensure_profile(target, target / "profiles/default.json", workspace=work, plugins_home=home,
+        ensure_bundle(target, target / "bundles/base.toml", workspace=work, plugins_home=home,
                        config_path=config, receipt_path=receipt)
         assert len(distribution_migration_sources(work, home, target)) == 2
         m = await manager(work, home, target)
@@ -199,7 +199,7 @@ async def run():
     assert updated != inherited and result["new_root_ref"] == updated
     assert selected(work)["alpha@release"][1]["distribution_source"] == next_commit
     assert selected(work)["outside@thirdparty"][0] == old["outside@thirdparty"][0]
-    ensure_profile(target, target / "profiles/default.json", workspace=work, plugins_home=home,
+    ensure_bundle(target, target / "bundles/base.toml", workspace=work, plugins_home=home,
                    config_path=config, receipt_path=receipt)
     m = await manager(work, home, target)
     assert m.generation("alpha@release").instance.version == "4"

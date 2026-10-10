@@ -18,8 +18,8 @@ from scripts.distribution_runtime import prepare_wheels
 from plugins.ledger.log import MessageLog
 from plugins.ledger.contract import Input
 from scripts.install_plugin_distribution import (
-    install_profile,
-    ensure_profile,
+    install_bundle,
+    ensure_bundle,
     _write_receipt,
     publish_distribution,
 )
@@ -104,23 +104,15 @@ def distribution(repo, out, names, defaults):
     stamp = git(repo, "show", "-s", "--format=%cI", sha)
     rows = [_bundle_plugin(repo, sha, stamp, "plugins/" + n, out, set()) for n in names]
     (out / "core.tar").write_bytes(b"isolated fixture core identity")
-    profile = {
-        "schema_version": 1,
-        "name": "scenario",
-        "marketplace": "release",
-        "description": "isolated",
-        "initialization": {
-            "plugin_configs": ([{"owner": "alpha", "config": {"user": "initial"}}]
-                               if "alpha" in defaults else [])
-        },
-        "plugins": [
-            {"name": n, "depends_on": [], "reason": "isolated"} for n in defaults
-        ],
-    }
-    (out / "profiles").mkdir()
-    (out / "profiles/default.json").write_text(json.dumps(profile))
+    bundle = ['schema_version = 1', '[rows]']
+    for name in defaults:
+        bundle.extend([f'[rows."{name}"]', f'plugin = "{name}@release"'])
+        if name == "alpha":
+            bundle.append('config = {user = "initial"}')
+    (out / "bundles").mkdir()
+    (out / "bundles/base.toml").write_text("\n".join(bundle))
     report = {
-        "schema_version": 2,
+        "schema_version": 3,
         "source_commit": sha,
         "source_tree": git(repo, "rev-parse", "HEAD^{tree}"),
         "core": {
@@ -128,11 +120,12 @@ def distribution(repo, out, names, defaults):
             "sha256": hashlib.sha256((out / "core.tar").read_bytes()).hexdigest(),
         },
         "plugins": rows,
-        "profiles": [
+        "marketplace": "release",
+        "bundles": [
             {
-                "path": "profiles/default.json",
+                "path": "bundles/base.toml",
                 "sha256": hashlib.sha256(
-                    (out / "profiles/default.json").read_bytes()
+                    (out / "bundles/base.toml").read_bytes()
                 ).hexdigest(),
             }
         ],
@@ -192,7 +185,7 @@ asyncio.run(run())
                                "expected_root_ref": PluginSelection(work).read(), "targets": []}))
     command = [sys.executable, str(ROOT / "scripts/install_plugin_distribution.py"),
                "--publish", "--preflight-only", "--distribution", str(distribution),
-               "--profile", str(distribution / "profiles/default.json"),
+               "--bundle", str(distribution / "bundles/base.toml"),
                "--workspace", str(work), "--plugins-home", str(home),
                "--config", str(config), "--plan", str(plan), "--inputs", str(root)]
     env = {**os.environ, "PYTHONPATH": os.pathsep.join((str(ROOT), str(ROOT / "sdk/python/src")))}
@@ -262,9 +255,9 @@ async def run(args):
         check=True,
         stdout=subprocess.DEVNULL,
     )
-    r = install_profile(
+    r = install_bundle(
         old,
-        old / "profiles/default.json",
+        old / "bundles/base.toml",
         workspace=work,
         plugins_home=home,
         config_path=config,
@@ -346,9 +339,9 @@ async def run(args):
     )
     if args.with_wheels:
         prepare_wheels(new)
-    result = ensure_profile(
+    result = ensure_bundle(
         new,
-        new / "profiles/default.json",
+        new / "bundles/base.toml",
         workspace=work,
         plugins_home=home,
         config_path=config,
@@ -380,9 +373,9 @@ async def run(args):
         == json.loads((new / "distribution.json").read_text())["source_commit"]
     )
     stable = PluginSelection(work).read()
-    ensure_profile(
+    ensure_bundle(
         new,
-        new / "profiles/default.json",
+        new / "bundles/base.toml",
         workspace=work,
         plugins_home=home,
         config_path=config,
@@ -400,9 +393,9 @@ async def run(args):
     # Existing enable is a durable choice applied by normal deployment/startup.
     set_plugin_enabled("disabled@release", enabled=True, plugins_home=home)
     await m.terminate_all()
-    ensure_profile(
+    ensure_bundle(
         new,
-        new / "profiles/default.json",
+        new / "bundles/base.toml",
         workspace=work,
         plugins_home=home,
         config_path=config,
@@ -415,9 +408,9 @@ async def run(args):
     assert m.generation("alpha@release") is None
     set_plugin_enabled("alpha@release", enabled=True, plugins_home=home)
     await m.terminate_all()
-    ensure_profile(
+    ensure_bundle(
         new,
-        new / "profiles/default.json",
+        new / "bundles/base.toml",
         workspace=work,
         plugins_home=home,
         config_path=config,
@@ -453,9 +446,9 @@ async def run(args):
     await m._operation.task
     assert load_plugin_manifest(home)["newcomer@release"] is False
     await m.terminate_all()
-    ensure_profile(
+    ensure_bundle(
         new,
-        new / "profiles/default.json",
+        new / "bundles/base.toml",
         workspace=work,
         plugins_home=home,
         config_path=config,
@@ -502,7 +495,7 @@ async def run(args):
                              ["alpha", "disabled", "newcomer"])
     if args.with_wheels:
         prepare_wheels(core_only)
-    ensure_profile(core_only, core_only / "profiles/default.json", workspace=work, plugins_home=home,
+    ensure_bundle(core_only, core_only / "bundles/base.toml", workspace=work, plugins_home=home,
                    config_path=config, receipt_path=receipt)
     current_inputs = selected(work)
     assert current_inputs["outside@thirdparty"] == refs_before["outside@thirdparty"]
@@ -520,7 +513,7 @@ async def run(args):
                                 ["alpha", "disabled", "newcomer"])
     if args.with_wheels:
         prepare_wheels(code_changed)
-    ensure_profile(code_changed, code_changed / "profiles/default.json", workspace=work, plugins_home=home,
+    ensure_bundle(code_changed, code_changed / "bundles/base.toml", workspace=work, plugins_home=home,
                    config_path=config, receipt_path=receipt)
     changed = selected(work)
     assert changed["alpha@release"][0] != refs_before["alpha@release"][0]
@@ -534,9 +527,9 @@ async def run(args):
     original = entry.read_bytes()
     entry.write_text("def invalid(:\n")
     try:
-        ensure_profile(
+        ensure_bundle(
             new,
-            new / "profiles/default.json",
+            new / "bundles/base.toml",
             workspace=work,
             plugins_home=home,
             config_path=config,
@@ -577,7 +570,7 @@ step(upgrade)
                             ["alpha", "disabled", "newcomer"])
     if args.with_wheels:
         prepare_wheels(migrated)
-    ensure_profile(migrated, migrated / "profiles/default.json", workspace=work, plugins_home=home,
+    ensure_bundle(migrated, migrated / "bundles/base.toml", workspace=work, plugins_home=home,
                    config_path=config, receipt_path=receipt)
     assert "disabled@release" not in selected(work)
     assert selected(work)["outside@thirdparty"][0] == external_before
@@ -588,7 +581,7 @@ step(upgrade)
         assert ledger.execute("SELECT COUNT(*) FROM scenario_disabled_done").fetchone() == (0,)
     # 模拟迁移已成功而组合尚未提交；重试仍收录已迁移配置，不重跑 step。
     PluginSelection(work).path.write_bytes(expected_bytes)
-    ensure_profile(migrated, migrated / "profiles/default.json", workspace=work, plugins_home=home,
+    ensure_bundle(migrated, migrated / "bundles/base.toml", workspace=work, plugins_home=home,
                    config_path=config, receipt_path=receipt)
     assert load_config(work / "plugin-data/alpha-release")[0]["upgraded"] is True
     # 正常 runtime 启动也只检查当前发行版，不解析外置 catalog。
@@ -630,7 +623,7 @@ step(upgrade)
         prepare_wheels(failed)
     before_failure = PluginSelection(work).read()
     try:
-        ensure_profile(failed, failed / "profiles/default.json", workspace=work, plugins_home=home,
+        ensure_bundle(failed, failed / "bundles/base.toml", workspace=work, plugins_home=home,
                        config_path=config, receipt_path=receipt)
     except RuntimeError as error:
         assert "expected migration failure" in str(error)
