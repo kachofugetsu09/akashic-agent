@@ -59,6 +59,7 @@ from agent.plugin_composition.runtime_lifecycle import (
 )
 
 
+from agent.plugin_composition.credentials import CredentialRef, ProviderClient, ProviderClientFactory
 from agent.plugin_composition.channels import (
     CHANNELS,
     ChannelAdapter,
@@ -83,7 +84,6 @@ from agent.plugin_composition.channels import (
     AttachmentKind,
     AttachmentReadLease,
     AttachmentRef,
-    CredentialRef,
     DeliveryStatus,
     InboundEnvelope,
     InboundIdentity,
@@ -91,8 +91,6 @@ from agent.plugin_composition.channels import (
     InboundState,
     JsonValue,
     OutboundEnvelope,
-    ProviderClient,
-    ProviderClientFactory,
     ProviderDeliveryReceipt,
     ProviderDeliveryRequest,
     PushToolRequest,

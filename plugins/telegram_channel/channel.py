@@ -37,8 +37,8 @@ from agent.plugin_composition import (
     RawInbound,
     StopReceipt,
 )
+from agent.plugin_composition.credentials import CredentialRef, ProviderClient
 from agent.plugin_composition.channels import (
-    CredentialRef, ProviderClient,
     ChannelPresentationPorts,
     ChannelRuntimePorts,
     ControlResponseBodies,

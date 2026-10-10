@@ -22,6 +22,7 @@ from session.artifacts import (
 
 from agent.plugin_composition.context import Context
 from agent.plugin_composition.requests import RequestContext
+from agent.plugin_composition.credentials import CredentialRef, ProviderClient, ProviderClientFactory
 from agent.plugin_composition.model import CompositionError, ServiceKey
 
 
@@ -738,43 +739,6 @@ class PushToolRequest:
         )
 
 
-@dataclass(frozen=True, slots=True)
-class CredentialRef:
-    """Opaque credential path; it never contains or resolves secret bytes."""
-
-    path: tuple[str, ...]
-
-    def __post_init__(self) -> None:
-        if not isinstance(self.path, tuple) or not self.path:
-            raise ValueError("CredentialRef.path 必须是非空 tuple")
-        for segment in self.path:
-            if (
-                not isinstance(segment, str)
-                or not segment
-                or segment.strip() != segment
-                or segment in {".", ".."}
-                or "/" in segment
-                or "\\" in segment
-                or "\x00" in segment
-            ):
-                raise ValueError("CredentialRef.path 包含非法段")
-
-
-class ProviderClient(Protocol):
-    def credential(self, ref: CredentialRef) -> str: ...
-
-    async def aclose(self) -> None: ...
-
-
-class ProviderClientFactory(Protocol):
-    async def create(
-        self,
-        credentials: Mapping[str, CredentialRef],
-    ) -> ProviderClient: ...
-
-    async def aclose(self) -> None: ...
-
-
 class ChannelTaskSpawner(Protocol):
     """仅在 adapter.start 内登记所属 Fiber 的后台任务。"""
 
@@ -1242,7 +1206,6 @@ __all__ = [
     "AttachmentKind",
     "AttachmentReadLease",
     "AttachmentRef",
-    "CredentialRef",
     "DeliveryStatus",
     "ControlReceipt",
     "ControlResponseBodies",
@@ -1253,8 +1216,6 @@ __all__ = [
     "InboundState",
     "JsonValue",
     "OutboundEnvelope",
-    "ProviderClient",
-    "ProviderClientFactory",
     "ProviderDeliveryReceipt",
     "ProviderDeliveryRequest",
     "PushToolRequest",
