@@ -146,3 +146,6 @@ plugin = "codex@release"
 
 [rows."opencode-go"]
 plugin = "opencode-go@release"
+
+[rows."ledger_invariants"]
+plugin = "ledger_invariants@release"

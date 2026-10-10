@@ -126,7 +126,7 @@ async def parent(folder):
     workspace.mkdir()
     PluginSelection(workspace).initialize()
     os.environ.update(HOME=str(folder / 'home'), AKASHIC_PLUGIN_HOME=str(folder / 'home'), AKASHIC_PLUGIN_DISTRIBUTION='')
-    for name in ('channels', 'onboarding'):
+    for name in ('channels', 'onboarding', 'ledger_invariants'):
         shutil.copytree(ROOT / 'plugins' / name, folder / 'sources' / name, ignore=shutil.ignore_patterns('__pycache__'))
     ledger = folder / 'ledger'
     shutil.copytree(ROOT / 'plugins/ledger', ledger, ignore=shutil.ignore_patterns('__pycache__'))

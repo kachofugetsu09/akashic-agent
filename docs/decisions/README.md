@@ -138,3 +138,5 @@
 | [0104](0104-public-codecs-without-ui-runtime.md) | proposed / implemented for review | 公共只读编码与类型同寿命，headless 不要求 UI runtime | PLG、CAP |
 
 | [0109](0109-workspace-owns-plugin-choices.md) | proposed / implemented for review | 启停归 workspace patch，库存取实际制品，配置保留单一 owner | PLG、MIG、STA |
+
+| [0110](0110-ledger-checks-use-existing-message-semantics.md) | proposed / implemented for review | 追加检查复用现有 Turn 与未知效果合同 | PLG、SES、OUT |
