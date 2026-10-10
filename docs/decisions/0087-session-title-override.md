@@ -2,6 +2,8 @@
 
 Status: proposed
 
+自动标题写入例外与当前值竞争策略由 [0101](0101-first-message-session-title.md) 补充。
+
 ## 背景
 
 会话目录标题一直由首条消息正文截断推导。用户需要给会话起一个可辨识的名字（行内重命名），但标题不是消息事实，不能写进 `attributes`——后者在 admission 时固定，任何原位改写都会破坏 create-once 合同。

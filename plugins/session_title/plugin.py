@@ -1,233 +1,102 @@
-"""会话开始时自动推导并生成可辨识标题；用户覆盖优先。
-
-遵循 Decision 0087（docs/decisions/0087-session-title-override.md）：
-- 标题写入 sessions.title，通过 SESSION_ADMIN.set_title 管理。
-- 仅在会话标题尚未设置（None）时触发自动生成。
-- 若已有标题（用户显式设置或先前已生成），则跳过并取消 pending，防止覆盖用户输入。
-- 若模型调用失败或不可用，回退到首条有效用户消息的截断文本，确保可靠降级。
-"""
+"""首条用户输入生成短标题；后台生成，空标题条件写入。"""
 from __future__ import annotations
 
 import asyncio
 import logging
-from collections.abc import Sequence
-from typing import cast
 
 from pydantic import BaseModel, ConfigDict, Field
 
-from agent.plugin_composition import (
-    CHAT_MODELS,
-    RUNTIME_STARTED,
-    RUNTIME_STOPPING,
-    Context,
-)
-from agent.plugin_composition.messages import (
-    MESSAGE_CATALOG,
-    SESSION_ADMIN,
-    MessageReader,
-)
-from agent.plugin_composition.models import (
-    BoundChatModel,
-    ContextLengthError,
-    ModelRequest,
-    ModelTimeoutError,
-    RateLimitError,
-    TransportError,
-)
-from agent.plugin_contracts import ContentPart, Input, Message
-from agent.plugin_contracts.sources import (
-    SOURCE_CHANGED_V3 as SOURCE_CHANGED,
-    SourceChangedV3 as SourceChanged,
-)
+from agent.plugin_composition import CHAT_MODELS, Context
+from agent.plugin_composition.messages import SESSION_ADMIN, MessageReader
+from agent.plugin_composition.models import ModelError, ModelRequest
+from agent.plugin_contracts import Input
+from agent.plugin_contracts.sources import SOURCE_CHANGED_V3, SourceChangedV3
 
-logger = logging.getLogger("plugins.session_title")
-
+logger = logging.getLogger(__name__)
 api_version = 3
 name = "session_title"
 version = "1.0.0"
-desc = "新会话自动生成简明标题，用户手动重命名优先"
-inject = (MESSAGE_CATALOG, SESSION_ADMIN, CHAT_MODELS)
-
-MAX_TITLE_CHARS = 36
-FALLBACK_CHARS = 24
+desc = "首条用户消息自动生成短标题，保留用户改名"
+inject = (SESSION_ADMIN, CHAT_MODELS)
 
 
 class Config(BaseModel):
     model_config = ConfigDict(extra="forbid")
-    sources: tuple[str, ...] = Field(
-        default=("conversation",),
-        min_length=1,
-        description="监听并为其生成标题的消息来源",
-    )
-    max_title_chars: int = Field(
-        default=MAX_TITLE_CHARS,
-        gt=0,
-        le=200,
-        description="自动生成标题的最大字符数",
-    )
+    sources: tuple[str, ...] = Field(default=("conversation",), min_length=1)
+    max_title_chars: int = Field(default=24, gt=0, le=200)
 
 
-TITLE_SYSTEM_PROMPT = """你是一个会话标题提炼专家。
-请根据用户的初始消息，生成一个极其简明、精炼的会话标题。
-规则要求：
-1. 语言与用户消息一致（中文优先使用中文，英文使用英文）。
-2. 只输出标题本身，不要加任何标点、前缀、引号、解释或 Markdown 格式。
-3. 严格控制在 4 到 15 个字以内，最长不得超过 24 个字。
-4. 概括会话核心主题或意图，禁止废话（例如禁止“关于...的讨论”）。
-"""
+TITLE_PROMPT = (
+    "根据用户的第一条消息拟一个简短会话标题，使用用户的语言。"
+    "只输出标题，不要引号、前缀、解释或 Markdown。中文以 4 到 15 字为宜。"
+)
 
 
-def extract_user_text(message: Message) -> str:
-    """提取 Input 消息中的纯文本内容。"""
-    body = message.body
-    if not isinstance(body, Input):
+def _first_text(reader: MessageReader, source: str) -> str:
+    """只读取首条正文；已有标题或已删除的会话不调用模型。"""
+    if reader.title is not None or reader.deleted:
         return ""
-    texts: list[str] = []
-    for part in body.parts:
-        if isinstance(part, ContentPart) and part.kind == "text":
-            if isinstance(part.value, str):
-                text = part.value.strip()
-                if text:
-                    texts.append(text)
-    return "\n".join(texts).strip()
-
-
-def derive_fallback_title(text: str, max_chars: int = FALLBACK_CHARS) -> str:
-    """当模型不可用或生成失败时的纯文本截断回退标题。"""
-    cleaned = " ".join(text.split()).strip()
-    if not cleaned:
-        return "新会话"
-    if len(cleaned) <= max_chars:
-        return cleaned
-    return cleaned[:max_chars].rstrip() + "..."
-
-
-async def generate_title_with_model(
-    model: BoundChatModel,
-    user_prompt: str,
-    max_chars: int,
-) -> str | None:
-    """调用辅助模型生成标题，失败返回 None。"""
-    request = ModelRequest(
-        messages=(
-            {"role": "system", "content": TITLE_SYSTEM_PROMPT},
-            {"role": "user", "content": user_prompt},
-        ),
-        max_output_tokens=64,
-        disable_reasoning=True,
-    )
-    try:
-        response = await model.complete(request)
-        title = response.content.strip()
-        # 去除可能包裹的引号或反引号
-        title = title.strip('"\'`“”‘’«»')
-        title = " ".join(title.split()).strip()
-        if not title:
-            return None
-        if len(title) > max_chars:
-            title = title[:max_chars].rstrip()
-        return title
-    except (
-        ContextLengthError,
-        ModelTimeoutError,
-        RateLimitError,
-        TransportError,
-        Exception,
-    ) as error:
-        logger.warning("模型自动生成会话标题失败，将使用回退标题: %s", error)
-        return None
+    messages = reader.read(through_seq=0, limit=1, source=source)
+    if not messages or not isinstance(messages[0].body, Input):
+        return ""
+    return " ".join(
+        part.value.strip() for part in messages[0].body.parts
+        if part.kind == "text" and isinstance(part.value, str)
+    ).strip()
 
 
 async def apply(ctx: Context) -> None:
+    """同步通知只筛选首条输入，Fiber 拥有并排空全部后台生成。"""
     config = Config.model_validate(ctx.config)
-    session_admin = ctx.require(SESSION_ADMIN)
-    catalog = ctx.require(MESSAGE_CATALOG)
-    chat_models = ctx.require(CHAT_MODELS)
+    admin = ctx.require(SESSION_ADMIN)
+    models = ctx.require(CHAT_MODELS)
+    queue: asyncio.Queue[tuple[MessageReader, str]] = asyncio.Queue()
+    pending: set[str] = set()
 
-    # 记录正在生成的 session，避免重复排队
-    pending_tasks: dict[str, asyncio.Task[None]] = {}
-
-    async def generate_for_session(session_id: str, prompt_text: str) -> None:
+    async def generate(reader: MessageReader, source: str) -> None:
+        """模型预期失败时截断首句；写入竞争只放弃，不重试。"""
         try:
-            # 1. 再次确认标题是否仍未设置（可能在排队期间已被用户改名）
-            reader = catalog.reader(session_id)
-            if reader.title is not None:
+            # 1. 消息不可变，异步读取固定首条；后续输入不改变命名材料。
+            text = await reader.read_async(lambda current: _first_text(current, source))
+            if not text:
                 return
-
-            generated: str | None = None
+            title = ""
             try:
-                async with chat_models.independent_execution() as execution:
-                    model = execution.chat("default")
-                    generated = await generate_title_with_model(
-                        model, prompt_text, config.max_title_chars
-                    )
-            except Exception as error:
-                logger.warning("无法取得模型 execution，准备使用回退标题: %s", error)
-
-            final_title = generated or derive_fallback_title(
-                prompt_text, max_chars=min(config.max_title_chars, FALLBACK_CHARS)
-            )
-
-            # 2. 最终写入前再次核验 reader.title
-            if reader.title is not None:
-                return
-
-            _ = await session_admin.set_title(session_id, final_title)
-            logger.info("已为会话 %s 自动设置标题: %s", session_id, final_title)
-        except Exception as error:
-            logger.warning("为会话 %s 自动设置标题异常终止: %s", session_id, error)
+                # 2. 小任务使用 fast 角色和局部预算，不占用会话的模型执行。
+                async with asyncio.timeout(15), models.independent_execution() as execution:
+                    response = await execution.chat("fast").complete(ModelRequest(
+                        messages=(
+                            {"role": "system", "content": TITLE_PROMPT},
+                            {"role": "user", "content": text[:2000]},
+                        ),
+                        max_output_tokens=64,
+                        disable_reasoning=True,
+                    ))
+                    title = " ".join(response.content.strip().strip('"\'`“”‘’').split())
+            except (ModelError, TimeoutError) as error:
+                logger.warning("会话 %s 标题生成失败，使用首句: %s", reader.session_id, error)
+            title = " ".join((title or text).split())[:config.max_title_chars].rstrip()
+            # 3. 不锁住生成过程；存储内一次条件更新保护已经提交的手动改名。
+            await admin.set_title_if_unset(reader.session_id, title)
         finally:
-            pending_tasks.pop(session_id, None)
+            pending.remove(reader.session_id)
 
-    async def on_source_changed(event: SourceChanged) -> None:
-        # 只处理配置关注的来源
-        if event.source not in config.sources:
+    async def run() -> None:
+        """结构化管理并行小任务，卸载时取消并等待所有子任务完成。"""
+        async with asyncio.TaskGroup() as tasks:
+            while True:
+                reader, source = await queue.get()
+                tasks.create_task(generate(reader, source), name=f"session-title:{reader.session_id}")
+
+    def changed(event: SourceChangedV3) -> None:
+        if not event.pending or event.source not in config.sources:
             return
-
         reader = event.reader
-        session_id = reader.session_id
-
-        # 若会话已经显式设置过标题，或者正在生成，直接跳过
-        if reader.title is not None:
-            # 若之前有 pending 的任务，取消之（用户显式重命名优先）
-            task = pending_tasks.pop(session_id, None)
-            if task is not None and not task.done():
-                task.cancel()
+        # 序号从零开始且不复用；普通消息只做索引头查询，不重读历史或标题。
+        if reader.session_id in pending or reader.head() != 0:
             return
+        pending.add(reader.session_id)
+        queue.put_nowait((reader, event.source))
 
-        if session_id in pending_tasks:
-            return
-
-        # 检查是否为新会话的首条用户消息
-        messages = reader.read(limit=10, source=event.source)
-        user_messages = [m for m in messages if isinstance(m.body, Input)]
-        if not user_messages:
-            return
-
-        first_user_text = extract_user_text(user_messages[0])
-        if not first_user_text:
-            return
-
-        # 仅针对第一条有效输入触发标题生成
-        # 异步后台执行，不阻塞当前消息循环
-        task = asyncio.create_task(
-            generate_for_session(session_id, first_user_text),
-            name=f"session_title_{session_id}",
-        )
-        pending_tasks[session_id] = task
-
-    def cancel_all_pending() -> None:
-        for task in pending_tasks.values():
-            if not task.done():
-                task.cancel()
-        pending_tasks.clear()
-
-    async def start(_event: object) -> None:
-        logger.info("session_title 插件已启动")
-
-    async def stop(_event: object) -> None:
-        cancel_all_pending()
-
-    _ = await ctx.on(SOURCE_CHANGED, on_source_changed)
-    _ = await ctx.on(RUNTIME_STARTED, start)
-    _ = await ctx.on(RUNTIME_STOPPING, stop)
+    await ctx.spawn(run(), name="session-title")
+    await ctx.on(SOURCE_CHANGED_V3, changed)

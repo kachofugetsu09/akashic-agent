@@ -178,8 +178,15 @@ _SESSION_DELETED_COLUMN = "deleted_at TEXT"
 # 标题覆盖：NULL 表示沿用首条消息推导，非空为显式管理状态；由 yoyo 只增加列接纳。
 _SESSION_TITLE_COLUMN = "title TEXT"
 _SESSION_TITLE_MAX = 200
-
 _MESSAGE_METADATA_COLUMN = "metadata TEXT NOT NULL DEFAULT '{}'"
+
+
+def _normalize_session_title(title: str | None) -> str | None:
+    normalized = None if title is None else title.strip() or None
+    if normalized is not None and len(normalized) > _SESSION_TITLE_MAX:
+        raise ValueError(f"会话标题不能超过 {_SESSION_TITLE_MAX} 个字符")
+    return normalized
+
 
 _MESSAGE_PREFIX_SCHEMA = {
     "message_prefix_revision": """CREATE TABLE IF NOT EXISTS message_prefix_revision (
@@ -707,9 +714,7 @@ class MessageLog:
         `_SESSION_TITLE_MAX`；`updated_at` 不变——重命名不改变目录排序事实。
         幂等：与当前值相同不产生写操作。返回落库后的覆盖值或 None。
         """
-        normalized = None if title is None else title.strip() or None
-        if normalized is not None and len(normalized) > _SESSION_TITLE_MAX:
-            raise ValueError(f"会话标题不能超过 {_SESSION_TITLE_MAX} 个字符")
+        normalized = _normalize_session_title(title)
 
         def change() -> str | None:
             column = "title" if self._has_title else "NULL AS title"
@@ -729,6 +734,28 @@ class MessageLog:
             )
             self._changed()
             return normalized
+
+        return self._write(change)
+
+    def set_session_title_if_unset(self, session_id: str, title: str) -> bool:
+        """空标题才写入；改名或软删竞争返回 False，不改变消息与排序。"""
+        normalized = _normalize_session_title(title)
+        if normalized is None:
+            raise ValueError("自动标题不能为空")
+        if not self._has_title or not self._has_deleted:
+            raise RuntimeError("sessions 缺少 title 或 deleted_at，请先完成 yoyo 迁移")
+
+        def change() -> bool:
+            cursor = self._connection.execute(
+                "UPDATE sessions SET title=? WHERE key=? AND title IS NULL AND deleted_at IS NULL",
+                (normalized, session_id),
+            )
+            if cursor.rowcount:
+                self._changed()
+                return True
+            if self._connection.execute("SELECT 1 FROM sessions WHERE key=?", (session_id,)).fetchone() is None:
+                raise KeyError(session_id)
+            return False
 
         return self._write(change)
 

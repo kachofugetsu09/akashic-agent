@@ -111,6 +111,8 @@
 
 | [0100](0100-message-tool-calls-recover-at-turn-granularity.md) | accepted | 默认消息工具未结调用报告未知，ReAct 恢复与显式重试使用当前材料发新请求 | ERR-001、CAP-002、SES-001 |
 
+| [0101](0101-first-message-session-title.md) | accepted | 首条输入自动命名，复用 title 并以当前空值条件写入 | SES-012 |
+
 ## 新增规则
 
 1. 使用四位递增编号和短英文文件名。

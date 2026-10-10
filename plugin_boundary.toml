@@ -38,7 +38,7 @@ note = "create-once 建立带固定属性的 Session"
 
 [capabilities."core.session_admin"]
 role = "core"
-note = "用户显式的 Session 软删/恢复与标题覆盖数据管理操作；不授予消息减少或物理删除权限"
+note = "Session 软删/恢复、标题覆盖与空标题条件写入；不授予消息减少或物理删除权限"
 
 [capabilities."core.owner_state"]
 role = "core"

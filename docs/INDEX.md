@@ -38,6 +38,7 @@
 | 工具结果全文、旧回读 | CTX-008 → [0090](decisions/0090-tool-results-stay-visible.md) | `plugins/content_view/`、`plugins/models/` |
 | Message、Turn、来源、回复和送达 | SES、OUT → [消息设计](design/0902-reviewed-v4.md)、[故障恢复](design/interrupt-and-fault-model.md)、[生成持续恢复](decisions/0092-model-generation-recovers-until-output.md)、[0097 请求增量](decisions/0097-request-deltas-belong-to-one-react-run.md)、[回复预算与截断](decisions/0089-reply-output-budget-includes-reasoning.md) | `session/`、`plugins/sources/`、`plugins/reply/`、`plugins/delivery/` |
 | 同 Turn 输入、打断、撤销 | SES、CTRL → [0025](decisions/0025-codex-style-same-turn-input.md)、[同 Turn 设计](design/codex-style-same-turn-input.md) | `plugins/conversation/`、`plugins/turn_projection/` |
+| 会话标题、自动命名和手动改名 | SES-012 → [0087](decisions/0087-session-title-override.md)、[0101](decisions/0101-first-message-session-title.md) | `plugins/session_title/`、`session/log.py` |
 | 元数据与旧执行恢复 | SES-009 → [0060](decisions/0060-message-plugin-metadata.md)、[0061](decisions/0061-archive-stopped-legacy-executions.md) | `session/message.py`、`agent/migrations/` |
 | Akasha、Project scope、学习与重建 | MEM、SES-010 → [0073](decisions/0073-session-scope-routes-akasha-graphs.md)、[在线与重放](design/akasha-v2-runtime-migration.md)、[成本优化](design/akasha-memory-cost.md) | `plugins/akasha/`、`plugins/projects/` |
 | Markdown 记忆与 consolidation | MEM → [0052](decisions/0052-compaction-and-markdown-memory-are-ordinary-plugins.md)、[插件化设计](design/compaction-markdown-memory-plugin-task-contract.md) | `plugins/markdown_memory/`、`plugins/compaction/` |
