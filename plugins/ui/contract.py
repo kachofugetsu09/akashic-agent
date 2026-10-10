@@ -13,6 +13,7 @@ from fastapi.routing import APIRoute
 from starlette.routing import WebSocketRoute
 
 from agent.plugin_composition.context import Context
+from agent.plugin_composition.requests import RequestContext
 from agent.plugin_composition.effect import Effect
 from agent.plugin_composition.model import ServiceKey
 
@@ -66,6 +67,11 @@ class UiRegistry(Protocol):
         requires: tuple[str, ...] = (), provides: tuple[str, ...] = (),
         contract_digests: Mapping[str, str] | None = None,
     ) -> Effect: ...
+
+    def register_configuration(
+        self, app: FastAPI, context: RequestContext,
+        key: ServiceKey[Configuration], prefix: str,
+    ) -> None: ...
 
     def catalog(self) -> WebUiCatalog: ...
 
@@ -190,3 +196,9 @@ class UiSlots(Protocol):
 
 
 UI_SLOTS = ServiceKey[UiSlots]("ui.slots.v1")
+
+
+class Configuration(Protocol):
+    async def read(self) -> dict[str, object]: ...
+    async def save(self, request_id: str, expected_input: str, values: dict[str, object]) -> dict[str, object]: ...
+    def receipt(self, request_id: str) -> dict[str, object]: ...

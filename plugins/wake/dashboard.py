@@ -12,10 +12,10 @@ from .plugin import WAKE_DASHBOARD
 from .runtime import DashboardView
 
 
-from agent.plugin_contracts.configuration import register_routes
+from plugins.ui.contract import UI
 from .settings import SETTINGS
 
-inject = (SETTINGS, WAKE_DASHBOARD,)
+inject = (UI, SETTINGS, WAKE_DASHBOARD,)
 
 
 def _view(context: DashboardContext) -> DashboardView:
@@ -27,7 +27,7 @@ def _view(context: DashboardContext) -> DashboardView:
 
 def register(app: FastAPI, context: DashboardContext) -> None:
     """Register read-only routes owned by the live Wake runtime."""
-    register_routes(app, context, SETTINGS, "/api/dashboard/wake/config")
+    context.require(UI).register_configuration(app, context, SETTINGS, "/api/dashboard/wake/config")
 
     @app.get("/api/dashboard/wake/attempts")
     async def list_attempts(
