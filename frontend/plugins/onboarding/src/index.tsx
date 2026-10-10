@@ -43,19 +43,22 @@ async function readCatalog(ctx: WebHostContextV1): Promise<{catalog: Catalog; st
   return {catalog, statuses: Object.fromEntries(entries)};
 }
 
+/** 首跑自动打开时置位：本分节下一次渲染直接进入整屏流程，结束后连同设置一起关闭。 */
+const firstRun = { pending: false };
+
 // 首次打开且必需能力未就绪时，经 hash 深链接让 Shell 打开本分节；不抢已有的深链接。
 async function openOnFirstRun(ctx: WebHostContextV1): Promise<void> {
   if (readSeen() || window.location.hash) return;
   const {catalog, statuses} = await readCatalog(ctx);
   const required = new Set(catalog.groups.filter(group => group.required).map(group => group.key));
   const missing = catalog.steps.some(step => required.has(step.group) && !ready(statuses[step.id]) && !statuses[step.id]?.fault);
-  if (missing && !window.location.hash) window.location.hash = "onboarding";
+  if (missing && !window.location.hash) { firstRun.pending = true; window.location.hash = "onboarding"; }
 }
 
 export function activate(ctx: WebHostContextV1): WebUiDisposer {
   void openOnFirstRun(ctx).catch(() => { /* 首跑探测失败只是不自动弹出，入口仍在设置里 */ });
   return ctx.ui.inject("shell.settings.v1", mount => mount.register({
-    id: "onboarding", label: "新手引导", route: "onboarding", iconSvg: onboardingIcon, order: -10,
+    id: "onboarding", label: "新手引导", route: "onboarding", iconSvg: onboardingIcon, order: 90,
     render(host, _view, props) {
       const { pages, renderRoute, close } = (props ?? {}) as ShellSettingsRenderProps;
       // 引导是整屏图层，放进独立容器；容器复用本 entry 的样式归属。
@@ -63,7 +66,9 @@ export function activate(ctx: WebHostContextV1): WebUiDisposer {
       const releaseStyle = pages.style("onboarding", surfaceHost);
       document.body.appendChild(surfaceHost);
       const root = createRoot(host);
-      root.render(<Onboarding ctx={ctx} renderRoute={renderRoute} close={close} surfaceHost={surfaceHost} />);
+      const auto = firstRun.pending;
+      firstRun.pending = false;
+      root.render(<OnboardingSection ctx={ctx} renderRoute={renderRoute} close={close} surfaceHost={surfaceHost} auto={auto} />);
       return () => { root.unmount(); releaseStyle(); surfaceHost.remove(); };
     },
   }));
@@ -115,8 +120,37 @@ function useCatalog(ctx: WebHostContextV1) {
   return {catalog, statuses, chosen, setChosen, error, refresh};
 }
 
-function Onboarding({ctx, renderRoute, close, surfaceHost}: {
-  ctx: WebHostContextV1; renderRoute?: RenderSettingsRoute; close?: () => void; surfaceHost: HTMLElement;
+// 设置里的“新手引导”分节：平时是能力概览，可从这里重走整屏流程；首跑自动进入流程。
+function OnboardingSection({ctx, renderRoute, close, surfaceHost, auto}: {
+  ctx: WebHostContextV1; renderRoute?: RenderSettingsRoute; close?: () => void; surfaceHost: HTMLElement; auto: boolean;
+}) {
+  const [running, setRunning] = useState(auto);
+  const {catalog, statuses, refresh} = useCatalog(ctx);
+  // 1. 首跑流程结束连同设置一起关闭，回到对话；2. 从设置里重走的流程结束后回到概览。
+  const exit = useCallback(() => { markSeen(); if (auto) close?.(); else { setRunning(false); void refresh(); } }, [auto, close, refresh]);
+  return <>
+    <div className="onboarding-overview">
+      <p className="onboarding-overview-intro">首次使用时的引导。这里能看到每项能力的状态，也可以重新走一遍。</p>
+      <button type="button" className="onboarding-primary" onClick={() => setRunning(true)}>重新走一遍引导</button>
+      {catalog && <ul className="onboarding-overview-list">
+        {catalog.groups.map(group => {
+          const on = groupReady(catalog, statuses, group.key);
+          const step = catalog.steps.find(item => item.group === group.key);
+          return <li key={group.key}>
+            <a href={step ? `#${step.route}` : undefined}>
+              <span><strong>{group.pitch || group.title}</strong><small>{group.title}</small></span>
+              <em className={on ? "is-on" : group.required ? "is-missing" : ""}>{on ? "已开启" : group.required ? "未连接" : "未开启"}</em>
+            </a>
+          </li>;
+        })}
+      </ul>}
+    </div>
+    {running && <Onboarding ctx={ctx} renderRoute={renderRoute} exit={exit} surfaceHost={surfaceHost} />}
+  </>;
+}
+
+function Onboarding({ctx, renderRoute, exit, surfaceHost}: {
+  ctx: WebHostContextV1; renderRoute?: RenderSettingsRoute; exit: () => void; surfaceHost: HTMLElement;
 }) {
   const {catalog, statuses, chosen, setChosen, error, refresh} = useCatalog(ctx);
   const [planned, setPlanned] = useState<Set<string> | null>(null);
@@ -141,17 +175,12 @@ function Onboarding({ctx, renderRoute, close, surfaceHost}: {
     if (phases[target]?.kind === "abilities") setPlanned(null);
     setIndex(target);
   });
-  const finish = () => guard(() => { markSeen(); close?.(); });
+  const finish = () => guard(exit);
   const markDirty = useCallback((route: string, value: boolean) => setDirty(current => current[route] === value ? current : {...current, [route]: value}), []);
   const toggle = (key: string) => setChosen(current => {
     const next = new Set(current); if (next.has(key)) next.delete(key); else next.add(key); return next;
   });
-  return <>
-    <section className="onboarding-placeholder">
-      <h1>新手引导</h1>
-      <p>引导已在全屏打开。完成或关闭后会回到对话。</p>
-    </section>
-    {createPortal(<Surface onCancel={finish}>
+  return createPortal(<Surface onCancel={finish}>
       <TopBar phases={phases} at={at} onLater={phase.kind === "welcome" || phase.kind === "done" ? undefined : finish} />
       <div className="onboarding-scroll">
         <div className="onboarding-column" ref={enterStep} key={`${phase.kind}:${phase.kind === "group" ? phase.key : ""}`}>
@@ -165,8 +194,7 @@ function Onboarding({ctx, renderRoute, close, surfaceHost}: {
         editing={editing} back={() => move(-1)} next={() => phase.kind === "done" ? finish() : move(1)} />}
       {leave && <Confirm title="未保存的修改将会丢失，确定离开吗？" accept={() => { const go = leave; setLeave(null); setDirty({}); go(); }}
         cancel={() => setLeave(null)}>当前页包含未保存的内容，离开后修改将不会生效。</Confirm>}
-    </Surface>, surfaceHost)}
-  </>;
+    </Surface>, surfaceHost);
 }
 
 // 换步时正文从可见态出发做一次短位移；样式表不能声明 @keyframes，动效走 Web Animations。

@@ -2,14 +2,20 @@
   "contract": "shell.settings-plugins.v1",
   "entry": {
     "required": ["id", "label", "route"],
-    "optional": ["order", "family", "familyLabel", "children"],
+    "optional": ["order", "family", "familyLabel", "description", "children"],
     "render": {
       "arguments": ["host", "view", "props"],
       "returns": "dispose"
     },
-    "family": "≥2 个成员声明同一 family 时折叠为一个组合页；familyLabel 由成员自带且同一 family 必须一致"
+    "family": "≥2 个成员声明同一 family 时折叠为一个组合页；familyLabel 由成员自带且同一 family 必须一致",
+    "description": "一句话说明这个插件做什么；插件列表卡片与详情页标题下展示"
   },
   "props": {
-    "required": ["pages", "railActions", "embedded"]
+    "required": ["pages", "railActions", "embedded"],
+    "optional": ["mode"],
+    "mode": {
+      "values": ["summary"],
+      "summary": "插件列表卡片上的一行状态（如已开启、需要设置）；缺省为完整配置表单"
+    }
   }
 }

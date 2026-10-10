@@ -1,15 +1,76 @@
 /* 新手引导：整屏单列纸面。顶栏（标识 / 进度 / 稍后再说）、可滚动正文、底部动作栏三段。
    嵌入的设置表单沿用共享 configuration.css；这里只拥有引导自己的骨架与能力卡。 */
 
-.onboarding-placeholder {
-  padding: 32px;
-  color: var(--ak-ink-secondary);
+/* 设置里的“新手引导”分节：一句说明、重走按钮、各能力状态行；行可点，跳到对应设置。 */
+.onboarding-overview {
+  display: grid;
+  gap: 16px;
+  justify-items: start;
 }
 
-.onboarding-placeholder h1 {
-  margin: 0 0 8px;
-  font-size: 1.25rem;
-  color: var(--ak-ink-primary);
+.onboarding-overview-intro {
+  margin: 0;
+  color: var(--ak-ink-secondary);
+  font-size: 0.875rem;
+}
+
+.onboarding-overview-list {
+  display: grid;
+  width: 100%;
+  margin: 8px 0 0;
+  padding: 0;
+  list-style: none;
+}
+
+.onboarding-overview-list a {
+  display: flex;
+  min-height: 56px;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  padding: 10px 4px;
+  border-block-end: 1px solid var(--ak-rule-subtle);
+  color: inherit;
+  text-decoration: none;
+}
+
+.onboarding-overview-list li:first-child a {
+  border-block-start: 1px solid var(--ak-rule-subtle);
+}
+
+.onboarding-overview-list a:hover strong {
+  text-decoration: underline;
+  text-underline-offset: 3px;
+}
+
+.onboarding-overview-list span {
+  display: grid;
+  gap: 2px;
+  min-width: 0;
+}
+
+.onboarding-overview-list strong {
+  font-weight: 600;
+}
+
+.onboarding-overview-list small {
+  color: var(--ak-ink-muted);
+  font-size: 0.75rem;
+}
+
+.onboarding-overview-list em {
+  flex: 0 0 auto;
+  color: var(--ak-ink-muted);
+  font-size: 0.75rem;
+  font-style: normal;
+}
+
+.onboarding-overview-list em.is-on {
+  color: var(--ak-color-status-success);
+}
+
+.onboarding-overview-list em.is-missing {
+  color: rgb(var(--ak-color-status-warning-rgb));
 }
 
 .onboarding-surface {

@@ -11,7 +11,7 @@ export interface Status {
 export interface FormProps { values: Record<string, unknown>; change: (key: string, value: unknown) => void; status: Status; }
 export interface FormDefinition { id: string; title: string; description: string; family?: string; familyLabel?: string; fields?: (props: FormProps) => ReactNode; }
 // intent="enable"：嵌入方已替用户决定开启（如引导的能力卡），表单预选开启并收起开关。
-export interface EmbedProps { embedded?: boolean; changed?: () => void; dirty?: (value: boolean) => void; intent?: "enable"; }
+export interface EmbedProps { embedded?: boolean; changed?: () => void; dirty?: (value: boolean) => void; intent?: "enable"; mode?: "summary"; }
 
 export class RequestError extends Error {
   constructor(message: string, readonly status: number) { super(message); }
@@ -50,12 +50,36 @@ export function Field({label, name, value, change, type = "text", hint, required
 export function registerForm(ctx: WebHostContextV1, definition: FormDefinition): WebUiDisposer {
   return ctx.ui.inject("shell.settings-plugins.v1", mount => mount.register({
     id: `${definition.id.replaceAll("_", "-")}-settings`, label: definition.title, route: `${definition.id}-settings`, family: definition.family, familyLabel: definition.familyLabel,
+    description: definition.description,
     render(host, _view, props) {
       const root = createRoot(host);
-      root.render(<Configuration ctx={ctx} definition={definition} embed={(props ?? {}) as EmbedProps} />);
+      const embed = (props ?? {}) as EmbedProps;
+      root.render(embed.mode === "summary" ? <Summary ctx={ctx} definition={definition} /> : <Configuration ctx={ctx} definition={definition} embed={embed} />);
       return () => root.unmount();
     },
   }));
+}
+
+/** 设置状态的一行说法；列表卡片与表单页脚共用，避免两处措辞分叉。 */
+export function statusLabel(status: Status): {text: string; tone: "on" | "off" | "attention"} {
+  if (status.blocked) return {text: "暂不可用", tone: "off"};
+  if (status.enabled === true) return status.ready ? {text: "已开启", tone: "on"} : {text: "需要设置", tone: "attention"};
+  return {text: status.enabled === false ? "已关闭" : "未开启", tone: "off"};
+}
+
+// 插件列表卡片上的一行状态：只读当前配置，点进卡片才进入完整表单。
+function Summary({ctx, definition}: {ctx: WebHostContextV1; definition: FormDefinition}) {
+  const [label, setLabel] = useState<ReturnType<typeof statusLabel> | null>(null);
+  useEffect(() => {
+    let alive = true;
+    const load = () => { void request<Status>(ctx, `/api/dashboard/${definition.id}/config`)
+      .then(next => { if (alive) setLabel(statusLabel(next)); })
+      .catch(() => { if (alive) setLabel({text: "状态读取失败", tone: "attention"}); }); };
+    load();
+    window.addEventListener("focus", load);
+    return () => { alive = false; window.removeEventListener("focus", load); };
+  }, [ctx, definition.id]);
+  return <span className={`config-status is-${label?.tone ?? "off"}`}>{label?.text ?? "…"}</span>;
 }
 
 function Configuration({ctx, definition, embed}: {ctx: WebHostContextV1; definition: FormDefinition; embed: EmbedProps}) {
@@ -251,14 +275,16 @@ function Configuration({ctx, definition, embed}: {ctx: WebHostContextV1; definit
     {!embed.embedded && <header><span className="config-kicker">功能设置</span><h1>{definition.title}</h1><p>{definition.description}</p></header>}
     {error && <div className="config-error" role="alert"><p>{error}</p><button type="button" disabled={busy && !sessionStorage.getItem(pendingKey) && !sessionStorage.getItem(lastKey)} onClick={() => { const id = sessionStorage.getItem(pendingKey) ?? sessionStorage.getItem(lastKey); if (busy && id) { void poll(id); return; } if (dirty) setLeave(() => () => { void load(); }); else void load(); }}>重新加载</button></div>}
     {!status ? !error && <p role="status">正在读取配置…</p> : <form onSubmit={event => void save(event)}>
-      {status.reason && !(embed.embedded && status.blocked) && <p className="config-hint" role="status">{status.reason}</p>}
-      {!(embed.embedded && status.blocked) && <>
-        {!(embed.intent === "enable" && status.can_enable !== false) && <fieldset className="config-choices" disabled={busy}><legend>是否开启{definition.title}？</legend>
-          <label className={enabled === true ? "is-selected" : ""}><input type="radio" name="enabled" checked={enabled === true} disabled={status.can_enable === false} onChange={() => { edits.current += 1; setEnabled(true); markDirty(true); }} /><strong>开启</strong><span>启用此功能</span></label>
-          <label className={enabled === false ? "is-selected" : ""}><input type="radio" name="enabled" checked={enabled === false} onChange={() => { edits.current += 1; setEnabled(false); markDirty(true); }} /><strong>关闭</strong><span>停用但保留数据</span></label>
-        </fieldset>}
+      {/* 引导（intent="enable"）自己说明阻塞原因；设置详情页照常显示原因与禁用的开关。 */}
+      {status.reason && !(embed.intent === "enable" && status.blocked) && <p className="config-hint" role="status">{status.reason}</p>}
+      {!(embed.intent === "enable" && status.blocked) && <>
+        {!(embed.intent === "enable" && status.can_enable !== false) && <label className="config-toggle">
+          <span><strong>启用{/^[A-Za-z0-9]/.test(definition.title) ? " " : ""}{definition.title}</strong><small>{status.can_enable === false ? "前置条件满足后才能开启" : "关闭后停用，已有数据保留"}</small></span>
+          <input type="checkbox" role="switch" checked={enabled === true} disabled={busy || (enabled !== true && status.can_enable === false)}
+            onChange={event => { edits.current += 1; setEnabled(event.target.checked); markDirty(true); setPreset(false); }} />
+        </label>}
         {enabled === true && definition.fields && <fieldset disabled={busy} className="config-fields"><legend className="sr-only">连接配置</legend>{definition.fields({values, change, status})}</fieldset>}
-        <footer className="config-actions"><span>{!dirty && (status.enabled === false ? "已关闭" : status.ready ? "已开启" : "未完成配置")}</span><button className="config-primary" type="submit" disabled={busy || enabled === null || !dirty}>{busy ? "正在保存…" : "保存配置"}</button></footer>
+        <footer className="config-actions"><span>{dirty ? "有未保存的修改" : statusLabel(status).text}</span><button className="config-primary" type="submit" disabled={busy || enabled === null || !dirty}>{busy ? "正在保存…" : "保存配置"}</button></footer>
       </>}
       {notice && <div role="status" className="config-hint">{notice}{sessionStorage.getItem(pendingKey) && <button type="button" onClick={() => { const id = sessionStorage.getItem(pendingKey); if (id) void poll(id); }}>查看状态</button>}</div>}
     </form>}

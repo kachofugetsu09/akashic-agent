@@ -64,42 +64,56 @@
     overscroll-behavior: contain;
   }
 
-  /* 功能设置工作区：模糊遮罩 + 上浮进入；左栏分节导航、右栏就地渲染分节页面，
-     层级参考 DSH 设置面板。窄屏贴底成动作面板，分节导航转为顶部横排。 */
+  /* 功能设置：居中面板，左栏分节导航与右栏内容同一张纸，不另铺底色；
+     右上角图标关闭，内容区独立滚动。布局与使用方式对齐 DSH 设置面板。
+     窄屏改为整屏两级页面：先选分节，再进内容。 */
   .shell-settings-dialog {
-    width: min(1040px, calc(100vw - 48px));
-    height: min(680px, calc(100dvh - 48px));
+    width: min(820px, calc(100vw - 48px));
+    height: min(760px, calc(100dvh - 48px));
+    max-width: none;
+    max-height: none;
     padding: 0;
     border: 1px solid var(--ak-rule-default);
-    border-radius: 14px;
+    border-radius: 16px;
     background: var(--ak-paper-sheet);
     color: var(--ak-ink-primary);
+    box-shadow: 0 24px 80px color-mix(in oklch, var(--ak-ink-primary) 16%, transparent);
     overflow: hidden;
   }
 
   .shell-settings-dialog[open] {
     display: grid;
-    grid-template-columns: 220px minmax(0, 1fr);
+    grid-template-columns: 196px minmax(0, 1fr);
   }
 
   .shell-settings-dialog::backdrop {
-    background: color-mix(in oklch, var(--ak-ink-primary) 22%, transparent);
+    background: color-mix(in oklch, var(--ak-ink-primary) 24%, transparent);
     backdrop-filter: blur(3px);
+  }
+
+  .shell-settings-dialog:focus {
+    outline: none;
+  }
+
+  .shell-settings-dialog :focus-visible {
+    outline: 2px solid var(--ak-rule-focus);
+    outline-offset: 2px;
   }
 
   .shell-settings-nav {
     display: flex;
     flex-direction: column;
-    gap: 2px;
-    padding: 20px 12px;
-    border-inline-end: 1px solid var(--ak-rule-subtle);
+    gap: 4px;
+    padding: 22px 12px;
     overflow-y: auto;
   }
 
   .shell-settings-nav h2 {
-    margin: 0 0 12px;
-    padding-inline: 10px;
-    font-size: 15px;
+    margin: 0 0 14px;
+    padding-inline: 12px;
+    font-size: 16px;
+    font-weight: 600;
+    line-height: 24px;
   }
 
   .shell-settings-nav button {
@@ -107,13 +121,14 @@
     min-height: 40px;
     align-items: center;
     gap: 10px;
-    padding: 6px 10px;
+    padding: 8px 12px;
     font: inherit;
+    font-size: 14px;
     border: 0;
-    border-radius: 8px;
+    border-radius: 10px;
     background: transparent;
     color: inherit;
-    text-align: left;
+    text-align: start;
     cursor: pointer;
     transition: background-color var(--ak-sys-duration-short) var(--ak-sys-motion-standard);
   }
@@ -124,93 +139,222 @@
 
   .shell-settings-nav button[aria-current="true"] {
     background: color-mix(in oklch, var(--ak-ink-primary) 8%, transparent);
+    font-weight: 600;
   }
 
-  .shell-settings-nav svg {
+  .shell-settings-nav svg,
+  .shell-settings-close svg,
+  .shell-settings-back svg,
+  .shell-settings-crumb svg,
+  .shell-plugin-chevron svg {
     width: 16px;
     height: 16px;
     stroke-width: 1.75;
     flex: 0 0 auto;
   }
 
-  .shell-settings-body {
-    display: grid;
-    grid-template-rows: auto auto minmax(0, 1fr);
+  .shell-settings-nav-label {
+    flex: 1 1 auto;
     min-width: 0;
-    min-height: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
   }
 
-  .shell-settings-body > header {
-    display: flex;
-    justify-content: flex-end;
-    padding: 8px 12px;
-    border-block-end: 1px solid var(--ak-rule-subtle);
+  .shell-settings-nav-chevron {
+    display: none;
+    color: var(--ak-ink-muted);
   }
 
-  .shell-settings-body > header button {
-    min-height: 32px;
-    padding: 4px 12px;
-    font: inherit;
+  .shell-settings-close {
+    position: absolute;
+    z-index: 1;
+    inset-block-start: 14px;
+    inset-inline-end: 14px;
+    display: grid;
+    width: 32px;
+    height: 32px;
+    place-items: center;
+    padding: 0;
     border: 0;
     border-radius: 8px;
     background: transparent;
-    color: inherit;
+    color: var(--ak-ink-secondary);
     cursor: pointer;
-    transition: background-color var(--ak-sys-duration-short) var(--ak-sys-motion-standard);
   }
 
-  .shell-settings-body > header button:hover {
-    background: color-mix(in oklch, var(--ak-ink-primary) 5%, transparent);
+  .shell-settings-close:hover {
+    background: color-mix(in oklch, var(--ak-ink-primary) 6%, transparent);
+    color: var(--ak-ink-primary);
+  }
+
+  .shell-settings-body {
+    display: flex;
+    min-width: 0;
+    min-height: 0;
+    flex-direction: column;
+  }
+
+  .shell-settings-back {
+    display: none;
   }
 
   .shell-settings-page {
+    flex: 1 1 auto;
     min-height: 0;
     overflow-y: auto;
     overscroll-behavior: contain;
-    padding: 20px 24px 32px;
+    padding: 22px 28px 32px;
+  }
+
+  .shell-settings-heading {
+    display: grid;
+    gap: 6px;
+    margin-block-end: 18px;
+    padding-inline-end: 36px;
+  }
+
+  .shell-settings-heading h3 {
+    margin: 0;
+    font-size: 18px;
+    font-weight: 600;
+    line-height: 26px;
+  }
+
+  .shell-settings-heading p {
+    margin: 0;
+    max-width: 40em;
+    font-size: 13px;
+    line-height: 20px;
+    color: var(--ak-ink-muted);
+  }
+
+  .shell-settings-crumb {
+    display: inline-flex;
+    width: fit-content;
+    min-height: 32px;
+    align-items: center;
+    gap: 4px;
+    margin-inline-start: -8px;
+    padding: 4px 10px 4px 6px;
+    font: inherit;
+    font-size: 13px;
+    border: 0;
+    border-radius: 8px;
+    background: transparent;
+    color: var(--ak-ink-secondary);
+    cursor: pointer;
+  }
+
+  .shell-settings-crumb:hover {
+    background: color-mix(in oklch, var(--ak-ink-primary) 5%, transparent);
+    color: var(--ak-ink-primary);
+  }
+
+  .shell-settings-detail-head {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    margin-block-start: 4px;
   }
 
   .shell-settings-entry {
     display: contents;
   }
 
-  /* 分组分节（如「插件」）在内容区顶部以 tab 呈现；只导航，不持有分节状态。 */
-  .shell-settings-tabs {
+  /* 插件列表：与 DSH 一样是无边框的行，悬停才出底色；行的悬停面向两侧外扩 8px，
+     内容仍与分节标题对齐。左侧是统一的插件图标格，插件不需要自带图标。 */
+  .shell-plugin-cards {
+    display: grid;
+    gap: 2px;
+    margin: 0 -8px;
+    padding: 0;
+    list-style: none;
+  }
+
+  .shell-plugin-card {
     display: flex;
-    gap: 4px;
-    padding: 4px 24px 0;
-    border-block-end: 1px solid var(--ak-rule-subtle);
-    overflow-x: auto;
-    scrollbar-width: none;
-  }
-
-  .shell-settings-tabs button {
-    flex: 0 0 auto;
-    min-height: 36px;
-    padding: 6px 10px;
+    width: 100%;
+    align-items: center;
+    gap: 14px;
+    padding: 8px;
     font: inherit;
-    font-size: 13px;
+    text-align: start;
     border: 0;
-    border-block-end: 2px solid transparent;
+    border-radius: 18px;
     background: transparent;
-    color: var(--ak-ink-secondary);
+    color: inherit;
     cursor: pointer;
-    transition: color var(--ak-sys-duration-short) var(--ak-sys-motion-standard),
-      border-color var(--ak-sys-duration-short) var(--ak-sys-motion-standard);
+    transition-property: background-color;
+    transition-duration: 150ms;
+    transition-timing-function: cubic-bezier(0.2, 0, 0, 1);
   }
 
-  .shell-settings-tabs button:hover {
-    color: inherit;
+  .shell-plugin-card:hover {
+    background: color-mix(in oklch, var(--ak-ink-primary) 5%, transparent);
   }
 
-  .shell-settings-tabs button:focus-visible {
-    outline: 2px solid var(--ak-rule-focus);
-    outline-offset: -2px;
+  /* 图标格：发丝线方框 + 次级墨色线性图标；行圆角 18 = 方框圆角 10 + 行内边距 8，保持同心。 */
+  .shell-plugin-mark {
+    display: grid;
+    width: 48px;
+    height: 48px;
+    flex: 0 0 auto;
+    place-items: center;
+    box-sizing: border-box;
+    border: 0.5px solid color-mix(in oklch, var(--ak-ink-primary) 22%, transparent);
+    border-radius: 10px;
+    color: var(--ak-ink-secondary);
   }
 
-  .shell-settings-tabs button[aria-current="true"] {
-    color: inherit;
-    border-block-end-color: var(--ak-ink-primary);
+  .shell-plugin-mark svg {
+    width: 22px;
+    height: 22px;
+    stroke-width: 1.5;
+  }
+
+  .shell-plugin-main {
+    display: grid;
+    flex: 1 1 auto;
+    min-width: 0;
+    gap: 2px;
+  }
+
+  .shell-plugin-main strong {
+    font-size: 14px;
+    font-weight: 600;
+    line-height: 20px;
+  }
+
+  .shell-plugin-desc {
+    display: -webkit-box;
+    overflow: hidden;
+    font-size: 13px;
+    line-height: 18px;
+    color: var(--ak-ink-muted);
+    -webkit-box-orient: vertical;
+    -webkit-line-clamp: 1;
+  }
+
+  .shell-plugin-states {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 2px 14px;
+    margin-block-start: 2px;
+  }
+
+  .shell-plugin-state {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    font-size: 12px;
+    color: var(--ak-ink-muted);
+  }
+
+  .shell-plugin-chevron {
+    display: none;
+    flex: 0 0 auto;
+    color: var(--ak-ink-muted);
   }
 
   /* family 组合页：成员表单上下排进同一滚动页，小标题标示成员，发丝线分隔。 */
@@ -281,43 +425,98 @@
       border-radius: 0;
       font-size: 1rem;
     }
+    /* 窄屏：整屏两级页面。nav 面是分节列表（行尾带箭头），content 面是分节内容（左上返回）。 */
     .shell-settings-dialog {
-      width: 100%;
-      max-width: none;
-      height: calc(100dvh - 24px);
-      margin: auto 0 0;
-      border-radius: 16px 16px 0 0;
-      border-inline: 0;
-      border-block-end: 0;
+      width: 100vw;
+      height: 100dvh;
+      margin: 0;
+      border: 0;
+      border-radius: 0;
+      box-shadow: none;
     }
     .shell-settings-dialog[open] {
-      grid-template-columns: none;
-      grid-template-rows: auto minmax(0, 1fr);
+      grid-template-columns: minmax(0, 1fr);
+    }
+    .shell-settings-dialog[data-pane="nav"] .shell-settings-body,
+    .shell-settings-dialog[data-pane="content"] .shell-settings-nav {
+      display: none;
     }
     .shell-settings-nav {
-      flex-direction: row;
-      align-items: center;
-      gap: 4px;
-      padding: 12px 12px 8px;
-      border-inline-end: 0;
-      border-block-end: 1px solid var(--ak-rule-subtle);
-      overflow-x: auto;
-      overflow-y: hidden;
+      gap: 0;
+      padding: max(14px, env(safe-area-inset-top, 0px)) 16px max(24px, env(safe-area-inset-bottom, 0px));
     }
     .shell-settings-nav h2 {
-      flex: 0 0 auto;
-      margin: 0 8px 0 0;
-      padding-inline: 0;
+      margin: 0 0 12px;
+      padding: 6px 4px;
+      font-size: 22px;
+      line-height: 30px;
     }
     .shell-settings-nav button {
+      min-height: 52px;
+      padding-inline: 4px;
+      border-radius: 0;
+      border-block-end: 1px solid var(--ak-rule-subtle);
+      font-size: 16px;
+    }
+    .shell-settings-nav button[aria-current="true"] {
+      background: transparent;
+      font-weight: inherit;
+    }
+    .shell-settings-nav svg {
+      width: 20px;
+      height: 20px;
+    }
+    .shell-settings-nav-chevron {
+      display: inline-flex;
+    }
+    .shell-settings-close {
+      inset-block-start: max(10px, env(safe-area-inset-top, 0px));
+      inset-inline-end: 8px;
+      width: 44px;
+      height: 44px;
+    }
+    .shell-settings-back {
+      display: inline-flex;
       flex: 0 0 auto;
+      width: fit-content;
       min-height: 44px;
+      align-items: center;
+      gap: 2px;
+      margin: max(10px, env(safe-area-inset-top, 0px)) 0 0 8px;
+      padding: 0 12px 0 6px;
+      font: inherit;
+      font-size: 15px;
+      border: 0;
+      border-radius: 10px;
+      background: transparent;
+      color: var(--ak-ink-secondary);
+      cursor: pointer;
+    }
+    .shell-settings-back svg {
+      width: 20px;
+      height: 20px;
     }
     .shell-settings-page {
-      padding-bottom: max(32px, env(safe-area-inset-bottom, 0px));
+      padding: 8px 20px max(32px, env(safe-area-inset-bottom, 0px));
     }
-    .shell-settings-tabs {
-      flex-wrap: wrap;
+    .shell-settings-heading {
+      padding-inline-end: 0;
+    }
+    .shell-settings-heading h3 {
+      font-size: 22px;
+      line-height: 30px;
+    }
+    .shell-settings-crumb {
+      display: none;
+    }
+    .shell-plugin-card {
+      min-height: 64px;
+    }
+    .shell-plugin-chevron {
+      display: inline-flex;
+    }
+    .shell-plugin-desc {
+      -webkit-line-clamp: 2;
     }
 }
 
