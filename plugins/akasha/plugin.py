@@ -376,6 +376,12 @@ async def run(ctx: Context, interest: Interest) -> None:
                 return [list(vector) for vector in result.vectors]
         return embed
 
+    async def restore_embeddings(rule: LearningConfig, texts: list[str]) -> list[list[float]]:
+        descriptor = ctx.require(EMBEDDINGS).describe()
+        if (descriptor.identity, descriptor.dimensions) != (rule.embedding_model, rule.dimension):
+            raise EmbeddingSpaceMismatchError("补算向量必须使用原学习模型空间")
+        return await embedder(rule, descriptor.model_id)(texts)
+
     async def select_interest() -> tuple[LearningConfig, Embed]:
         async with ctx.runtime_scope():
             _identity, rule, model_id = select_learning()
@@ -444,7 +450,7 @@ async def run(ctx: Context, interest: Interest) -> None:
                     graph_path(memory_path, key), catalog=ctx.require(MESSAGE_CATALOG),
                     embeddings=ctx.require(MESSAGE_EMBEDDINGS), bindings=bindings,
                     config=settings.memory_config(), embedding_space=(rule.embedding_model, rule.dimension),
-                    allow_initial=True,
+                    allow_initial=True, restore_embeddings=restore_embeddings,
                 ) as (cycle, state):
                     result = await prepare_materials(
                         snapshot, source, cycle=cycle, state=state,
@@ -562,6 +568,7 @@ async def run(ctx: Context, interest: Interest) -> None:
                     ensure_graph_directory(memory_path, key), catalog=ctx.require(MESSAGE_CATALOG),
                     embeddings=ctx.require(MESSAGE_EMBEDDINGS), bindings=ctx.require(BINDINGS),
                     config=settings.memory_config(), cutover=key == DEFAULT_GRAPH,
+                    restore_embeddings=restore_embeddings,
                 )
             except (EmbeddingSpaceMismatchError, MemoryRebuildRequiredError) as error:
                 set_graph_error(key, str(error))

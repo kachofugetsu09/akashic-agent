@@ -25,7 +25,8 @@ if args.output.exists():
     parser.error("output must be a new file")
 sys.path.insert(0, str(args.source))
 
-from yoyo import get_backend, read_migrations
+from yoyo import get_backend
+from agent.migrations.bundles import _read_migrations, discover_migration_bundles, migration_import_paths
 
 from agent.migrations.context import bind_migration_context
 from plugins.ledger.services import SessionAdmin
@@ -60,8 +61,9 @@ def table_snapshot(path: Path, table: str) -> list[tuple[object, ...]]:
 def run_real_migration(workspace: Path) -> None:
     """用真实 yoyo 账本只应用软删迁移，证明加列路径可重放。"""
     backend = get_backend(f"sqlite:///{workspace / 'migrations.sqlite3'}")
-    with backend, bind_migration_context(config_path=workspace / "config.toml", workspace=workspace):
-        loaded = read_migrations(str(args.source / "migrations" / "core"))
+    bundles = discover_migration_bundles(plugin_dirs=[args.source / "plugins"])
+    with backend, bind_migration_context(config_path=workspace / "config.toml", workspace=workspace), migration_import_paths(bundles):
+        loaded = _read_migrations(str(args.source / "migrations" / "core"), bundles)
         selected = [m for m in loaded
                     if m.id in {"20261004_03_session_soft_delete", "20261004_04_session_title"}]
         assert len(selected) == 2, "migration not found"
