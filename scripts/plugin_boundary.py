@@ -12,6 +12,10 @@ R4  Core 文件中的字面 ServiceKey 必须在 `plugin_boundary.toml` 登记�
     表中登记的 key 也必须真实存在。
 R5  已记录为「文档承诺、代码未实现」的名字必须保持不存在。
 R6  同名 ServiceKey 只允许一处声明；公共合同必须明确值类型。
+R7～R8 Core key 只能由 Core 提供；Core 不导入插件合同。
+R9  Core 装配/宿主没有领域标识符或运行时字面量。
+R10 Core 固定为九个中立 key，均由 Core 独占。
+R11 SQLite 只由中立宿主/迁移函数打开；Web 框架只在 web_shell。
 
 比较 Git 基线时，公开模块清单与 Core 字面 key 声明只允许减少；
 不能通过扩大允许清单或登记新角色来绕过已有边界。
@@ -543,6 +547,115 @@ def public_modules(source: str) -> frozenset[str]:
     raise SystemExit("基线缺少 PLUGIN_ALLOWED_MODULES，不能核对公开边界")
 
 
+CORE_KEYS = frozenset({
+    "core.host_info", "core.restart_gate.v1", "core.runtime_catalog.v1",
+    "core.plugin_config.v1", "core.plugin_updates", "core.credentials",
+    "host.execution.v1", "core.tasks", "executor",
+})
+# 这里只允许宿主 journal、迁移回执、完整 release 备份；不授予业务表写入权。
+SQLITE_OWNERS = {
+    "agent/plugins/reload_journal.py": {"backup_to", "inspect_existing", "_check_existing_schema", "_connect"},
+    "agent/migrations/runner.py": {"_read_baseline", "_save_baseline", "_read_applied_ids"},
+    "agent/migrations/release_backup.py": {"_copy_db"},
+    "migrations/core/20260921_01_plugin_update_input_ref.py": {"_copy_database", "_upgrade"},
+    "migrations/core/20260928_01_plugin_config_updates.py": {"upgrade"},
+    "migrations/core/20261006_01_config_update_receipts.py": {"upgrade"},
+    "migrations/core/20261011_01_plugin_contract_restart.py": {"upgrade"},
+    "migrations/core/20261011_02_bundle_choices.py": {"upgrade"},
+}
+DOMAIN_WORDS = re.compile(
+    r"(?i)(?<![a-z0-9])(?:passive|wake|drift|eventmail|akasha|scheduler|subagent|"
+    r"proactive|markdown_memory|telegram|qq|feishu|compaction|persona)(?![a-z0-9])"
+)
+
+
+def core_domain_findings(sources: dict[str, str]) -> set[str]:
+    """只读标识符和运行时字符串；注释、docstring 不构成业务依赖。"""
+    findings: set[str] = set()
+    for rel, source in sources.items():
+        if not (rel.startswith(("agent/plugin_composition/", "agent/plugins/", "bootstrap/")) or rel == "main.py"):
+            continue
+        tree = ast.parse(source, filename=rel)
+        docs = {id(node.body[0].value) for node in ast.walk(tree)
+                if isinstance(node, (ast.Module, ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef))
+                and node.body and isinstance(node.body[0], ast.Expr)
+                and isinstance(node.body[0].value, ast.Constant)}
+        for node in ast.walk(tree):
+            value = None
+            if isinstance(node, ast.Name):
+                value = node.id
+            elif isinstance(node, ast.Attribute):
+                value = node.attr
+            elif isinstance(node, (ast.arg, ast.keyword)):
+                value = node.arg
+            elif isinstance(node, ast.alias):
+                value = node.name + " " + (node.asname or "")
+            elif isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
+                value = node.name
+            elif isinstance(node, ast.Constant) and isinstance(node.value, str) and id(node) not in docs:
+                value = node.value
+            if value is not None and DOMAIN_WORDS.search(value):
+                findings.add(f"{rel}|{value}")
+    return findings
+
+
+def check_core_ownership(imports: list[Import], sources: dict[str, str], previous: dict[str, str] | None) -> list[str]:
+    """所有权、业务词、数据库与 Web 入口都用可失败的静态约束固定。"""
+    errors: list[str] = []
+    _, providers, _, _ = capability_catalog()
+    core_keys = discover_service_keys()
+    for key in sorted(core_keys):
+        locations = providers.get(key, set())
+        if not locations or any(not is_core_file(place.rsplit(":", 1)[0]) for place in locations):
+            errors.append(f"R7: Core key {key} 必须由 Core 提供: {sorted(locations)}")
+    for key, locations in providers.items():
+        if key not in CORE_KEYS and any(is_core_file(place.rsplit(":", 1)[0]) for place in locations):
+            errors.append(f"R7: Core 不得提供插件 key {key}")
+    for item in imports:
+        if is_core_file(item.importer) and item.module.startswith("plugins.") and ".contract" in item.module:
+            errors.append(f"R8: Core 不得导入插件公共合同: {item.key}")
+        if (is_core_file(item.importer) and item.module.split(".")[0] in {"fastapi", "starlette", "uvicorn"}
+            and item.importer != "bootstrap/web_shell.py"):
+            errors.append(f"R11: Core Web 框架只能由 web_shell 导入: {item.key}")
+    findings = core_domain_findings(sources)
+    baseline = set(load_baseline().get("R9", []))
+    errors.extend(f"R9: Core 含领域标识符或字符串: {item}" for item in sorted(findings - baseline))
+    errors.extend(f"baseline-R9: 删除已消除的条目: {item}" for item in sorted(baseline - findings))
+    if previous is not None:
+        errors.extend(f"R9: 相对基线新增领域依赖: {item}"
+                      for item in sorted(findings - core_domain_findings(previous)))
+    if set(core_keys) != CORE_KEYS:
+        errors.append(f"R10: Core 必须恰好声明 9 个 key; 多余={sorted(set(core_keys) - CORE_KEYS)}, 缺少={sorted(CORE_KEYS - set(core_keys))}")
+    capabilities = load_policy().get("capabilities", {})
+    for key in core_keys:
+        if capabilities.get(key, {}).get("role") != "core":
+            errors.append(f"R10: Core key 必须标记唯一 core owner: {key}")
+    # 只允许明确函数打开 SQLite；import alias 与 from-import 使用同一判定。
+    for rel, source in sources.items():
+        if not is_core_file(rel):
+            continue
+        tree = ast.parse(source, filename=rel)
+        modules = {alias.asname or alias.name for node in ast.walk(tree) if isinstance(node, ast.Import)
+                   for alias in node.names if alias.name == "sqlite3"}
+        calls = {alias.asname or alias.name for node in ast.walk(tree) if isinstance(node, ast.ImportFrom)
+                 and node.module == "sqlite3" for alias in node.names if alias.name == "connect"}
+        owners = {}
+        for node in ast.walk(tree):
+            if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                for part in ast.walk(node):
+                    owners[id(part)] = node.name
+        for node in ast.walk(tree):
+            if not isinstance(node, ast.Call):
+                continue
+            func = node.func
+            sqlite_call = (isinstance(func, ast.Name) and func.id in calls) or (
+                isinstance(func, ast.Attribute) and func.attr == "connect"
+                and isinstance(func.value, ast.Name) and func.value.id in modules)
+            if sqlite_call and owners.get(id(node)) not in SQLITE_OWNERS.get(rel, set()):
+                errors.append(f"R11: 未登记的 Core SQLite owner: {rel}:{node.lineno}")
+    return errors
+
+
 def run_check(base: str | None = None) -> int:
     policy = load_policy()
     baseline = load_baseline()
@@ -577,6 +690,8 @@ def run_check(base: str | None = None) -> int:
     errors.extend(check_capability_table(policy))
     errors.extend(check_shared_contracts())
     errors.extend(check_phantom_names(policy))
+    current_sources = {rel: (REPO_ROOT / rel).read_text(encoding="utf-8") for rel in source_python_files()}
+    errors.extend(check_core_ownership(imports, current_sources, sources))
 
     if errors:
         print("插件边界门未通过：", file=sys.stderr)
@@ -590,7 +705,8 @@ def run_check(base: str | None = None) -> int:
         f"R1={counts['R1']}/{len(baseline.get('R1', []))} "
         f"R2={counts['R2']}/{len(baseline.get('R2', []))} "
         f"R3={counts['R3']}/{len(baseline.get('R3', []))} "
-        "（当前/债务基线；不代表插件可独立安装或替换）"
+        f"R7=0 R8=0 R9={len(core_domain_findings(current_sources))}/{len(baseline.get('R9', []))} "
+        "R10=9 R11=0（静态约束；不替代运行验收）"
     )
     return 0
 
@@ -611,11 +727,15 @@ def print_baseline() -> int:
         lines.append(f"{rule} = [")
         lines.extend(f"    {json.dumps(key, ensure_ascii=False)}," for key in keys)
         lines.append("]")
+    current = {rel: (REPO_ROOT / rel).read_text(encoding="utf-8") for rel in source_python_files()}
+    lines.append("R9 = [")
+    lines.extend(f"    {json.dumps(item, ensure_ascii=False)}," for item in sorted(core_domain_findings(current)))
+    lines.append("]")
     print("\n".join(lines))
     return 0
 
 
-def print_catalog() -> int:
+def capability_catalog() -> tuple[dict[str, str], dict[str, set[str]], dict[str, set[str]], set[str]]:
     """输出静态能力声明和调用位置；不导入插件，也不推断运行时激活状态。"""
     # 1. 收集字面 key、导入和简单别名，支持公共包的再导出。
     trees = {
@@ -681,6 +801,11 @@ def print_catalog() -> int:
                     table.setdefault(name, set()).add(location)
                 if not names and table is providers:
                     unresolved.add(location)
+    return declarations, providers, consumers, unresolved
+
+
+def print_catalog() -> int:
+    declarations, providers, consumers, unresolved = capability_catalog()
     print("能力目录（静态位置；不代表已激活，动态选择以运行时组合图为准）。\n")
     print("| 能力 | 声明 | Provider | Consumer（声明/读取/借用） |")
     print("|---|---|---|---|")

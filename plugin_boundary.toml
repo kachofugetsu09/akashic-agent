@@ -4,32 +4,23 @@
 # 由 `python scripts/plugin_boundary.py check` 强制（R4）。
 # 新增声明必须登记 role，否则静态门失败；登记不授予运行时权限。
 #
-# role 是待逐项复核的现状分类，不是目标 Core 白名单：
-#   core  —— 当前由 Core 提供；仍须证明其事实或通用机制归属。
-#   seam  —— 协作入口；可替换性必须另外用独立实现验证。
-#   bundle—— 默认装配；不得赋予第一方实现特殊入口。
-#   claim —— 单 owner 占用声明，不是可注入服务。
-#
-# Runtime 不读取本表。表不证明消费者权限、原子性或独立安装成功。
-# 业务合同可以由普通插件生态拥有；不要求所有共享类型迁入 Core。
+# 九个中立 key 由 Core 独占；R7、R10 同时核对声明和 provider。
+# Runtime 不读取本表。表不证明原子性、消费者权限或独立替换成功。
+# 业务合同由提供方插件公开，不在 Core 中登记第二份归属。
 
 [capabilities]
 
 [capabilities."core.credentials"]
-role = "seam"
-note = "按插件 owner 打开短凭据租约；来源可替换"
+role = "core"
+note = "Core 按可信插件 owner 打开短凭据租约"
 
-# ── 外部运行：进程、MCP、容器 ────────────────────────────────
 [capabilities."host.execution.v1"]
-role = "seam"
-note = "宿主执行端口；由 managed_processes host 提供，不授予任意 Core 访问"
+role = "core"
+note = "Core 只拥有执行身份与 generation 作用域；实际进程和文件由插件提供"
 
 [capabilities.executor]
 role = "core"
 note = "有界纯同步 worker 池"
-
-# ── 人类与模型入口 ───────────────────────────────────────────
-
 
 [capabilities."core.host_info"]
 role = "core"
@@ -50,9 +41,6 @@ note = "重启提交权与外部效果 permit"
 [capabilities."core.plugin_updates"]
 role = "core"
 note = "插件 install/uninstall/revert 状态"
-
-# ── 模型协作入口：声明位置不等于提供者归属 ──────────────────
-
 
 # 尚未实现的文档名称不能重新作为隐式合同出现。
 [phantom.SCOPED_TURNS]

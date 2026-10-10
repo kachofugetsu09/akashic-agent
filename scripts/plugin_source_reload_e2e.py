@@ -63,7 +63,7 @@ async def run(output: Path) -> None:
         task = asyncio.create_task(watcher.run())
         # 2. 同一路径修改必须换代；只改来源标签不能替换实际 owner。
         entry.write_text(source("b"))
-        watcher.wake()
+        watcher.request_scan()
         await asyncio.wait_for(changed.wait(), 10)
         current = manager.generation("reload_probe")
         assert current is not None and current is not original and original.scope.closed
@@ -76,13 +76,13 @@ async def run(output: Path) -> None:
         # 3. 坏源码保留当前服务；修复后同一 watcher 能继续换代。
         changed.clear()
         entry.write_text("def invalid(:\n")
-        watcher.wake()
+        watcher.request_scan()
         await asyncio.wait_for(changed.wait(), 10)
         assert manager.generation("reload_probe") is current
         assert manager.live_root.context.require(VALUE) == "b"
         changed.clear()
         entry.write_text(source("c"))
-        watcher.wake()
+        watcher.request_scan()
         await asyncio.wait_for(changed.wait(), 10)
         assert manager.live_root.context.require(VALUE) == "c"
         assert manager.generation("reload_probe") is not current and current.scope.closed
