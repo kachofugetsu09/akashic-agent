@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import asyncio
+import importlib
 import json
 import os
 from pathlib import Path
@@ -54,7 +55,7 @@ async def apply(ctx):
     async def manage(action, **values):
         updates = ctx.require(PLUGIN_UPDATES)
         if action == "install":
-            return await updates.install(ctx, "public-types-update", source=values["source"], marketplace="lab")
+            return await updates.install(ctx, values.get("update_id", "public-types-update"), source=values["source"], marketplace="lab")
         if action == "uninstall":
             return await updates.uninstall(ctx, "public_values@lab")
         if action == "drain":
@@ -64,7 +65,7 @@ async def apply(ctx):
         elif action == "status":
             return updates.status(ctx)
         elif action == "read":
-            return updates.read(ctx, "public-types-update")
+            return updates.read(ctx, values.get("update_id", "public-types-update"))
         else:
             raise ValueError(action)
     await ctx.provide(MANAGE, ctx.entrypoint(manage))
@@ -91,6 +92,10 @@ def prepare(directory: Path) -> None:
     (provider / "plugin.py").write_text(PROVIDER)
     (consumer / "plugin.py").write_text(CONSUMER)
     # 包入口不能是隐含的业务加载路径。
+    builtin = directory / "builtin/public_values"
+    builtin.mkdir(parents=True)
+    (builtin / "plugin.py").write_text(PROVIDER)
+    (builtin / "contract.py").write_text(CONTRACT.replace("text: str", "text: str\n    builtin_only: bool = True"))
     (provider / "__init__.py").write_text('raise RuntimeError("package entry ran")\n')
 
 
@@ -100,6 +105,8 @@ async def exercise(directory: Path) -> dict[str, object]:
     from agent.plugins.manager import PluginManager
     from agent.plugins.install import install_git_plugin
     from agent.plugins.selection import PluginSelection
+    from agent.plugins.manifest import set_plugin_enabled
+    from agent.plugins.reload_journal import ReloadJournal
 
     workspace = directory / "workspace"
     workspace.mkdir()
@@ -120,13 +127,18 @@ async def exercise(directory: Path) -> dict[str, object]:
 
     def manager() -> PluginManager:
         return PluginManager(
-            [], workspace=workspace,
+            [directory / "builtin"], workspace=workspace,
             installed_cache_root=directory / "home/cache",
         )
 
     host = manager()
     try:
-        # 1. 实际插件导入共享同一 frozen dataclass；没有执行包入口。
+        # 1. 停用的已安装 API 仍优先于同名内置合同，不执行包入口。
+        set_plugin_enabled("public_values@lab", enabled=False, plugins_home=home)
+        host.discover()
+        disabled_api = importlib.import_module("plugins.public_values.contract")
+        assert "builtin_only" not in disabled_api.Value.__dataclass_fields__
+        set_plugin_enabled("public_values@lab", enabled=True, plugins_home=home)
         await host.load_all()
         root = host.live_root
         assert root is not None
@@ -135,6 +147,7 @@ async def exercise(directory: Path) -> dict[str, object]:
         status = await manage("status")
         assert isinstance(status, dict) and status["selection_ref"] is not None
         module = sys.modules["plugins.public_values.contract"]
+        assert module.__file__ is not None
         assert Path(module.__file__).is_relative_to(home / "cache")
         assert not (directory / "core/plugins").exists()
         # 2. 换代只改变实现，公共值类型与合同模块身份不变。
@@ -148,29 +161,74 @@ async def exercise(directory: Path) -> dict[str, object]:
         assert sys.modules["plugins.public_values.contract"] is module
     finally:
         await host.terminate_all()
-    # 3. 原 workspace 重新启动，实际选择和公共类型照常加载。
+    # 3. 合同变更保留旧实例；更新状态属于真实 journal，不是发现异常。
     host = manager()
     try:
         await host.load_all()
         root = host.live_root
         assert root is not None
-        assert root.context.require(ServiceKey("scenario.public-read")) == "second"
-        # 4. 停用 provider 只撤下其硬依赖分支；合同仍可供缺依赖诊断读取。
         manage = root.context.require(ServiceKey("scenario.public-control"))
-        accepted = await manage("uninstall")
-        assert accepted["state"] == "accepted"
+        (source / "public_values/contract.py").write_text(
+            CONTRACT.replace("text: str", "text: str\n    revision: int = 2"))
+        commit(source / "public_values")
+        pending = await manage("install", source=str(source / "public_values"), update_id="contract-change")
         await manage("idle")
+        assert pending.state == "restart_required" and not pending.error
+        assert pending.active_input_ref != pending.input_ref and pending.fiber_state == "active"
+        assert ReloadJournal(workspace).update("contract-change").restart_required
+        assert (await manage("read", update_id="contract-change")).state == "restart_required"
+        assert root.context.require(ServiceKey("scenario.public-read")) == "second"
+        assert sys.modules["plugins.public_values.contract"] is module
+        assert isinstance(await manage("status"), dict)
+        # 4. pending 更新不锁死禁用和卸载；普通卸载保留制品与 journal。
+        set_plugin_enabled("public_values@lab", enabled=False, plugins_home=home)
         await manage("drain")
         assert root.context.get(ServiceKey("scenario.public-read")) is None
-        assert sys.modules["plugins.public_values.contract"] is module
+        removed = await manage("uninstall")
+        assert removed["state"] == "accepted"
+        await manage("idle")
+        assert ReloadJournal(workspace).update("contract-change").restart_required
+        # 重新安装同一新合同，固定下一次启动的实际输入。
+        pending = await manage("install", source=str(source / "public_values"), update_id="contract-reinstall")
+        await manage("idle")
+        assert pending.state == "restart_required"
     finally:
         await host.terminate_all()
+    # 新 OS 进程不能继承 sys.modules 或 PublicContracts 的旧类型身份。
+    subprocess.run([sys.executable, __file__, "--restart", str(directory)], check=True)
     return {"source_less_core": True, "public_type_shared": True,
             "package_entry_not_run": True, "generation": True, "restart": True, "disable": True,
-            "management_from_plugin": True, "accepted_then_drained": True}
+            "management_from_plugin": True, "accepted_then_drained": True,
+            "installed_overrides_builtin": True, "disabled_installed_api": True,
+            "restart_required_persisted": True,
+            "pending_update_manageable": True, "new_process_contract": True}
+
+
+async def check_restart(directory: Path) -> None:
+    """新进程加载已提交的新合同和输入，不重新安装或猜测旧记录。"""
+    from agent.plugin_composition.model import ServiceKey
+    from agent.plugins.manager import PluginManager
+    host = PluginManager([directory / "builtin"], workspace=directory / "workspace",
+                         installed_cache_root=directory / "home/cache")
+    try:
+        await host.load_all()
+        module = sys.modules["plugins.public_values.contract"]
+        assert module.Value("new").revision == 2
+        root = host.live_root
+        assert root is not None
+        assert root.context.require(ServiceKey("scenario.public-read")) == "second"
+        assert host.read_update("contract-reinstall").state == "active"
+    finally:
+        await host.terminate_all()
+
 
 
 def main() -> None:
+    if len(sys.argv) == 3 and sys.argv[1] == "--restart":
+        directory = Path(sys.argv[2])
+        sys.path.insert(0, str(directory / "core"))
+        asyncio.run(check_restart(directory))
+        return
     if len(sys.argv) == 3 and sys.argv[1] == "--child":
         directory = Path(sys.argv[2])
         sys.path.insert(0, str(directory / "core"))

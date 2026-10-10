@@ -518,24 +518,29 @@ class PluginManager:
             fixed_sources=self._distribution_sources,
             ignored_installed_roots=self._ignored_installed_roots,
         )
-        public_contracts.register(scan.sources)
         if record_source_failures:
             self._remember_source_failures(scan.failures)
+        sources: list[ResolvedPluginSource] = []
         for source in scan.sources:
             name = source.plugin_name
             if not name:
                 raise RuntimeError(
                     f"source scan 未提供已验证 plugin id: {source.plugin_root}"
                 )
+            if name in seen_names and source.source_type == "builtin":
+                logger.warning("插件名重复，跳过: %s (%s)", name, source.plugin_root)
+                continue
+            seen_names.add(name)
+            sources.append(source)
+        # 已安装 API 包括停用实现；同名未采用的内置源码不参与登记。
+        public_contracts.register(sources)
+        for source in sources:
+            name = source.plugin_name
             if (
                 source.source_type == "builtin"
                 and name in self._disabled_builtin_plugins
             ):
                 continue
-            if name in seen_names and source.source_type == "builtin":
-                logger.warning("插件名重复，跳过: %s (%s)", name, source.plugin_root)
-                continue
-            seen_names.add(name)
             module_path = source.plugin_root / "plugin.py"
             mods.append(
                 {
@@ -854,10 +859,12 @@ class PluginManager:
         if generation.fiber is not None:
             raise RuntimeError("generation 已有 Fiber，不能重新执行 pre-Fiber load")
         if generation.instance is None:
-            public_contracts.register((ResolvedPluginSource(
+            changed = public_contracts.register((ResolvedPluginSource(
                 generation.code_dir, generation.source_type,
                 plugin_name=generation.plugin_id.split("@", 1)[0],
             ),))
+            if changed:
+                raise RuntimeError("公共合同已变化，须重启进程: " + ", ".join(sorted(changed)))
             self._import_plugin(generation.module_path, generation.code_dir)
             manifest = generation.static_manifest
             if manifest is None:
@@ -1427,6 +1434,20 @@ class PluginManager:
             self._reload_journal.set_input_ref(result.update_id, generation.input_ref)
             expected_ref = self._selection.read()
             previous = self._active_generations.get(generation.plugin_id)
+            changed = public_contracts.register((ResolvedPluginSource(
+                generation.code_dir, generation.source_type, plugin_name=result.plugin_name,
+            ),))
+            if changed:
+                # 提交下次启动的输入；当前 Root 保留旧类型与所有 live owner。
+                operation = self._check_operation_commit()
+                components = self._selection_for_plugin(expected_ref, generation.plugin_id, generation.input_ref)
+                self._reload_journal.require_contract_restart(result.update_id)
+                operation.committed = self._selection.commit(components, expected_ref=expected_ref)
+                await self._dispose_generation(generation, state="discarded")
+                status = self.read_update(result.update_id)
+                if not accepted.done():
+                    accepted.set_result(status)
+                return status
             await self._update_live_generation(
                 generation, previous, expected_ref=expected_ref,
                 update_id=result.update_id, accepted=accepted,
@@ -1457,7 +1478,7 @@ class PluginManager:
         fiber_state = None if generation is None or generation.fiber is None else generation.fiber.state.value
         generation_id = None if generation is None else generation.generation_id
         active_input_ref = None if generation is None else generation.input_ref
-        state: Literal["accepted", "active", "failed", "unknown"] = "unknown"
+        state: Literal["accepted", "active", "failed", "unknown", "restart_required"] = "unknown"
         readiness_error: str | None = None
         exact_generation = (
             input_ref is not None
@@ -1484,6 +1505,8 @@ class PluginManager:
                 readiness_error = str(error) or type(error).__name__
             else:
                 state = "active"
+        if state == "unknown" and update.restart_required and selected:
+            state = "restart_required"
         if state == "unknown":
             operation = self._operation
             if (
@@ -1660,6 +1683,13 @@ class PluginManager:
             if same_input and not had_source_failure:
                 if active.fiber.state is FiberState.PENDING:
                     readiness_ids.add(plugin_id)
+                continue
+            if public_contracts.register((ResolvedPluginSource(
+                Path(mod["plugin_root"]), cast(Literal["builtin", "installed"], mod["source_type"]),
+                plugin_name=mod["name"],
+            ),)):
+                results.append({"plugin_id": plugin_id, "publication_state": "restart_required",
+                                "selection_ref": selection_ref})
                 continue
             generation = await self._prepare_one_with_source_diagnostics(
                 mod,

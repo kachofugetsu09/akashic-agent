@@ -164,5 +164,38 @@ async def main():
     print('PASS old journal migration', flush=True)
 
 
+async def check_contract_restart():
+    """实际安装中升级旧 journal，并核对备份和原记录保留。"""
+    root, repo, old, work, home, config, receipt = await setup('review-contract-journal-')
+    m = await manager(work, home, old)
+    await m.terminate_all()
+    path = work / 'runtime/plugin-reloads.sqlite3'
+    # 构造前一发行版的真实形状；现有 journal、输入和安装记录均保留。
+    with sqlite3.connect(path) as connection:
+        columns = [row[1] for row in connection.execute('PRAGMA table_info(plugin_updates)')]
+        fields = ','.join(columns)
+        before = connection.execute('SELECT rowid,' + fields + ' FROM plugin_updates ORDER BY rowid').fetchall()
+        assert before
+        other = {table: connection.execute('SELECT * FROM ' + table).fetchall()
+                 for table in ('reload_transactions', 'reload_events', 'config_updates')}
+        connection.execute('DROP TABLE plugin_contract_restarts')
+    with sqlite3.connect(work / 'migrations.sqlite3') as connection:
+        connection.execute("DELETE FROM _yoyo_migration WHERE migration_id='20261011_01_plugin_contract_restart'")
+    outcome = MigrationRunner(repo_root=ROOT, config_path=config, workspace=work, startup_selection=True).run()
+    assert '20261011_01_plugin_contract_restart' in outcome.migrations
+    backups = list(path.parent.glob(path.name + '.before-contract-restart.*.bak'))
+    assert len(backups) == 1
+    for checked in (path, backups[0]):
+        with sqlite3.connect(checked) as connection:
+            assert connection.execute('SELECT rowid,' + fields + ' FROM plugin_updates ORDER BY rowid').fetchall() == before
+            for table, rows in other.items():
+                assert connection.execute('SELECT * FROM ' + table).fetchall() == rows
+            assert connection.execute('PRAGMA integrity_check').fetchone() == ('ok',)
+    with sqlite3.connect(path) as connection:
+        assert not connection.execute('SELECT 1 FROM plugin_contract_restarts').fetchall()
+    assert MigrationRunner(repo_root=ROOT, config_path=config, workspace=work, startup_selection=True).run().state == 'current'
+    print('PASS contract restart migration retained rows/backup/reapply', flush=True)
+
+
 if __name__ == '__main__':
-    asyncio.run(main())
+    asyncio.run(check_contract_restart() if sys.argv[1:] == ["--contract-restart"] else main())
