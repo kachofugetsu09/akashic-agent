@@ -68,11 +68,6 @@
       "reason": "组合 Web 根页面与普通功能设置入口。"
     },
     {
-      "name": "workbench-ui",
-      "depends_on": ["ui", "shell-ui"],
-      "reason": "提供工作台页面并挂载普通插件面板。"
-    },
-    {
       "name": "conversation-ui",
       "depends_on": ["ui", "shell-ui"],
       "reason": "提供 Web 对话页面和可撤销的工具区。"

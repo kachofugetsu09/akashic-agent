@@ -25,6 +25,10 @@ if (embeddedShell) {
       setShellRailActions(message.actions);
       return;
     }
+    if (message.type === "akashic.chat-tools") {
+      document.documentElement.dataset.shellTools = message.present === true ? "true" : "false";
+      return;
+    }
     if (message.type !== "akashic.theme" || typeof message.themeId !== "string") return;
     setTheme(message.themeId, false);
   });

@@ -178,46 +178,93 @@ input {
   padding-inline: var(--chat-rail-inline);
 }
 
-.chat-sidebar__new {
-  display: inline-flex;
+/* 品牌行：标识与名字落在行图标的同一条左竖线，新会话是行尾的图标按钮。 */
+.chat-sidebar__brand-row {
+  display: flex;
   min-height: 36px;
-  width: 100%;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding-inline-start: 10px;
+}
+
+.chat-sidebar__brand {
+  display: inline-flex;
+  min-width: 0;
   align-items: center;
   gap: 10px;
+  color: var(--chat-ink);
+}
+
+.chat-sidebar__brand strong {
+  font-size: 0.9375rem;
+  font-weight: 650;
+  letter-spacing: 0.01em;
+}
+
+.chat-sidebar__mark {
+  display: block;
+  width: 20px;
+  height: 20px;
+  flex: 0 0 auto;
+  background: currentColor;
+  mask-size: contain;
+  mask-repeat: no-repeat;
+  mask-position: center;
+  -webkit-mask-size: contain;
+  -webkit-mask-repeat: no-repeat;
+  -webkit-mask-position: center;
+}
+
+.chat-sidebar__new,
+.conversation-heading__new {
+  display: inline-grid;
+  width: 36px;
+  height: 36px;
+  flex: 0 0 auto;
+  place-items: center;
   border: 0;
   border-radius: 8px;
-  padding-block: 0;
-  padding-inline: 10px;
+  padding: 0;
   color: var(--chat-ink);
   background: transparent;
-  font: inherit;
-  font-size: 0.875rem;
-  font-weight: 550;
-  text-align: start;
   cursor: pointer;
 }
 
-.chat-sidebar__new svg {
+/* 桌面由侧栏承担新会话；标题行的入口只在窄屏出现。 */
+.conversation-heading__new {
+  display: none;
+  margin-inline-start: auto;
+}
+
+.chat-sidebar__new svg,
+.conversation-heading__new svg {
   flex: 0 0 auto;
   color: var(--chat-muted);
 }
 
 .chat-sidebar__new:hover,
-.chat-sidebar__new:focus-visible {
+.chat-sidebar__new:focus-visible,
+.conversation-heading__new:hover,
+.conversation-heading__new:focus-visible {
   background: color-mix(in oklch, var(--md-sys-color-on-surface) 6%, transparent);
 }
 
 .chat-sidebar__new:hover svg,
-.chat-sidebar__new:focus-visible svg {
+.chat-sidebar__new:focus-visible svg,
+.conversation-heading__new:hover svg,
+.conversation-heading__new:focus-visible svg {
   color: var(--chat-ink);
 }
 
-.chat-sidebar__new:focus-visible {
+.chat-sidebar__new:focus-visible,
+.conversation-heading__new:focus-visible {
   outline: 2px solid var(--md-sys-color-primary);
   outline-offset: 2px;
 }
 
-.chat-sidebar__new:active {
+.chat-sidebar__new:active,
+.conversation-heading__new:active {
   background: color-mix(in oklch, var(--md-sys-color-on-surface) 8%, transparent);
 }
 
@@ -514,6 +561,11 @@ input {
 
 @media (max-width: 820px), (hover: none) {
   .navigation-menu-trigger { width: 44px; height: 44px; }
+  .chat-sidebar__brand-row,
+  .chat-sidebar__search,
+  .chat-sidebar__action { min-height: 44px; }
+  .chat-sidebar__new,
+  .conversation-heading__new { width: 44px; height: 44px; }
 }
 
 .navigation-row-menu__item--danger { color: var(--ak-color-status-error); }
@@ -1053,8 +1105,8 @@ input {
   white-space: nowrap;
 }
 
-:root[data-embedded-shell="true"] .conversation-heading {
-  /* 外层对话插件的工具入口位于同一条标题带。 */
+:root[data-shell-tools="true"] .conversation-heading {
+  /* 外层对话插件的工具入口位于同一条标题带；没有工具时不预留。 */
   padding-inline-end: 10rem;
 }
 
@@ -1756,11 +1808,15 @@ form.composer:focus-within [data-slot="input-group"] {
     padding-inline: max(8px, env(safe-area-inset-left, 0px)) max(16px, env(safe-area-inset-right, 0px));
   }
 
+  .conversation-heading__new {
+    display: inline-grid;
+  }
+
   .compact-navigation-trigger {
     position: static;
     display: grid;
-    width: 40px;
-    height: 40px;
+    width: 44px;
+    height: 44px;
     flex: 0 0 auto;
     place-items: center;
     border: 0;
@@ -2187,6 +2243,13 @@ form.composer:focus-within [data-slot="input-group"] {
   .model-picker__trigger,
   .model-picker__star,
   .model-effort__trigger { transition-duration: 0.01ms; }
+}
+
+/* 手机宽度下工具区开关只剩 44px 图标，标题带只需让出图标与右侧边距。 */
+@media (max-width: 32rem) {
+  :root[data-shell-tools="true"] .conversation-heading {
+    padding-inline-end: 4.5rem;
+  }
 }
 
 /* —— 桌面 WebUI：非对称 Lucide 光学对齐 —— */

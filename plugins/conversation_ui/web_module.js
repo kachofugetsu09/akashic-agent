@@ -110,6 +110,15 @@ function toolIcon() {
   return icon;
 }
 
+// 告知 chat 宿主右上角有工具区开关，标题带据此让出开关所占的位置。
+function announceTools(frame) {
+  const send = () => frame.contentWindow?.postMessage(
+    { type: "akashic.chat-tools", present: true }, window.location.origin,
+  );
+  frame.addEventListener("load", send);
+  return () => frame.removeEventListener("load", send);
+}
+
 // 通知入口的 ?session= 只消费一次，避免刷新后反复跳回同一会话。
 function takeRequestedSession() {
   const url = new URL(window.location.href);
@@ -383,6 +392,7 @@ function renderConversation(host, view, props) {
   window.addEventListener("resize", resize);
   const stopThemeSync = syncFrameTheme(frame);
   const stopRailActions = connectRailActions(frame, railActions);
+  const stopToolsNotice = announceTools(frame);
   resize();
   update();
   return () => {
@@ -392,6 +402,7 @@ function renderConversation(host, view, props) {
     window.removeEventListener("resize", resize);
     activeListeners.clear();
     for (const dispose of disposers.reverse()) dispose();
+    stopToolsNotice();
     stopRailActions();
     stopThemeSync();
     host.replaceChildren();

@@ -16,6 +16,7 @@ import { ThinkingPlaceholder } from "./thinking-placeholder";
 import { DesktopComposer, type ComposerApi } from "./desktop-composer";
 import { DesktopConversationMessages, DesktopTimelineMessages, messageDayKey } from "./desktop-conversation";
 import { ReplyActivityView } from "./message-view";
+import { MessageSquarePlus } from "lucide-react";
 import { CompactNavigation } from "./compact-navigation";
 import { DesktopSidebar } from "./desktop-sidebar";
 import { useSidebarRail } from "./use-sidebar-rail";
@@ -89,6 +90,11 @@ export function DesktopChatView({ embeddedShell, controller }: DesktopChatViewPr
           />
           <SessionHeadingTitle key={activeSessionId} heading={headingTitle} value={activeTitle}
             onRename={activeSessionId && !activeSessionDeleted ? (title) => renameSession(activeSessionId, title) : undefined} />
+          {/* 窄屏没有常驻侧栏：新会话留在拇指可达的标题行，不必先打开抽屉。 */}
+          {hasMessages ? <button type="button" className="conversation-heading__new" aria-label="新会话" title="新会话"
+            onClick={() => startNewChat()}>
+            <MessageSquarePlus size={20} strokeWidth={1.75} aria-hidden="true" />
+          </button> : null}
         </header>
         {activeSessionId ? <SessionDirectory key={activeSessionId} sessionId={activeSessionId}
           refreshKey={Array.from(toolResults.keys()).join("|")} /> : null}
