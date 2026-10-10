@@ -15,7 +15,7 @@ from agent.plugin_composition.messages import (
     OwnerTransaction,
 )
 from agent.plugin_contracts import Message, json_value
-from agent.plugin_contracts.compaction import (
+from plugins.compaction.contract import (
     COMPACTION_SUMMARIES as COMPACTION_SUMMARIES,
 )
 

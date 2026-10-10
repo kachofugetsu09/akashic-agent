@@ -3,7 +3,7 @@ from __future__ import annotations
 
 from collections.abc import Mapping
 
-from agent.plugin_contracts.compaction import (
+from plugins.compaction.contract import (
     COMPACTION_READER as COMPACTION_READER,
     COMPACTION_SUMMARIES as COMPACTION_SUMMARIES,
     CompactionReader as CompactionReader,
