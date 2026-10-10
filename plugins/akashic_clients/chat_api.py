@@ -531,8 +531,8 @@ def create_chat_app(
                 "before_seq": page.messages[0].seq if page.has_more else None}
 
     @app.websocket("/ws")
-    async def chat_ws(websocket: WebSocket) -> None:
-        await channel.handle_websocket(websocket)
+    async def chat_ws(websocket: WebSocket, watch_sessions: bool = False) -> None:
+        await channel.handle_websocket(websocket, watch_sessions=watch_sessions)
 
     @app.post("/api/chat/uploads")
     async def upload_file(

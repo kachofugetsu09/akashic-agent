@@ -490,12 +490,13 @@ class WebChatChannel:
             if socket.application_state == WebSocketState.CONNECTED:
                 await socket.close()
 
-    async def handle_websocket(self, websocket: WebSocket) -> None:
+    async def handle_websocket(self, websocket: WebSocket, *, watch_sessions: bool = False) -> None:
         socket_id = self._socket_id(websocket)
         logger.info("[web_chat] websocket opened id=%s", socket_id)
         await websocket.accept()
         try:
             async with asyncio.TaskGroup() as tasks:
+                metadata_task = tasks.create_task(self._follow_metadata(websocket)) if watch_sessions else None
                 try:
                     while True:
                         payload = await websocket.receive_json()
@@ -509,10 +510,20 @@ class WebChatChannel:
                     logger.info("[web_chat] websocket disconnect id=%s code=%s reason=%s",
                                 socket_id, error.code, error.reason)
                 finally:
+                    if metadata_task is not None:
+                        metadata_task.cancel()
                     await self._cancel_follow(websocket)
         finally:
             await self._remove_connection(websocket)
             logger.info("[web_chat] websocket closed id=%s", socket_id)
+
+    async def _follow_metadata(self, websocket: WebSocket) -> None:
+        """连接拥有目录订阅；通知只要求重读，不复制标题或绑定当前会话。"""
+        async with self._open_message_catalog() as messages:
+            changes = messages.follow_metadata()
+        async with aclosing(changes):
+            async for _ in changes:
+                await websocket.send_json({"type": "sessions.changed", "version": 2})
 
     async def save_upload_stream(
         self,

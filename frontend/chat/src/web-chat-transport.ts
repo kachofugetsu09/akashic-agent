@@ -5,6 +5,7 @@ import { blocksWithFinalThinking, mediaToAttachments, mergeAttachments } from ".
 import type { WebTurnTraceKind } from "./web-turn-trace";
 
 export type ChatFrame =
+  | { type: "sessions.changed"; version: 2 }
   | { type: "session.created"; request_id: string; session_id: string }
   | { type: "turn.started"; session_id: string; turn_id: string; control_turn_id: string; client_message_id: string; content: string }
   | { type: "react.thinking.delta"; session_id: string; turn_id: string; delta: string }
@@ -57,6 +58,9 @@ export function parseChatFrame(value: unknown): ChatFrame {
   const frame = recordValue(value);
   if (!frame || typeof frame.type !== "string") throw new Error("WebSocket 返回了无效消息");
   switch (frame.type) {
+    case "sessions.changed":
+      if (frame.version !== 2) throw new Error("会话目录通知版本无效");
+      break;
     case "session.created":
       requireStrings(frame, ["request_id", "session_id"]);
       break;
