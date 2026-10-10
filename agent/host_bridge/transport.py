@@ -34,10 +34,12 @@ class RpcError(RuntimeError):
         self.detail = detail
 
 
-def _frame(kind: int, code: int, call_id: int, payload: bytes = b"") -> tuple[bytes, bytes]:
+def _frame(kind: int, code: int, call_id: int, payload: bytes = b"") -> tuple[bytes, ...]:
     if len(payload) > _MAX_BYTES:
         raise RpcError(grpc.StatusCode.RESOURCE_EXHAUSTED, "Host Bridge 消息超过 16 MiB")
-    return _HEADER.pack(len(payload), kind, code, call_id), payload
+    header = _HEADER.pack(len(payload), kind, code, call_id)
+    # 空尾段会让旧版 asyncio.writelines 的发送队列无法排空（CPython #155888）。
+    return (header, payload) if payload else (header,)
 
 
 def _header(data: bytes) -> tuple[int, int, int, int]:
