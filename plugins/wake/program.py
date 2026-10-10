@@ -10,7 +10,7 @@ from agent.plugin_composition.messages import MESSAGE_WRITERS, MessageReader
 from agent.plugin_composition.models import ModelError
 from agent.plugin_composition.tasks import Task
 from agent.plugin_contracts import Control, Message
-from agent.plugin_contracts.models import (
+from plugins.models.contract import (
     MODEL_CONTENT as MODEL_CONTENT,
     ModelContent as ModelContent,
 )

@@ -19,7 +19,7 @@ from agent.plugin_contracts import (
 from plugins.context.contract import (
     SummaryReducer as SummaryReducer,
 )
-from agent.plugin_contracts.models import ContextModel as ContextModel
+from plugins.models.contract import ContextModel as ContextModel
 
 MaterialData = Mapping[str, object]
 SummaryData = Mapping[str, object]

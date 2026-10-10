@@ -26,7 +26,7 @@ from agent.plugin_contracts import (
     json_value,
 )
 from agent.plugin_composition.artifacts import ArtifactRead
-from agent.plugin_contracts.models import MODEL_CONTENT as MODEL_CONTENT
+from plugins.models.contract import MODEL_CONTENT as MODEL_CONTENT
 
 
 async def load_artifacts(

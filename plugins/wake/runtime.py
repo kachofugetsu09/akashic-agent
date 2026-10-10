@@ -19,7 +19,7 @@ from agent.plugin_composition.messages import (
 )
 from plugins.timer.contract import TIMERS, TimerReceipt, TimerStatus
 from agent.plugin_contracts import Message, body_to_dict
-from agent.plugin_contracts.models import (
+from plugins.models.contract import (
     MODEL_SELECTION as MODEL_SELECTION,
     ModelSelection as ModelSelection,
 )

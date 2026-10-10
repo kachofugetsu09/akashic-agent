@@ -20,7 +20,7 @@ from plugins.context.contract import (
     ContextMaterialsV4 as ContextMaterials,
     MaterialView as MaterialView,
 )
-from agent.plugin_contracts.models import (
+from plugins.models.contract import (
     MODEL_CALLS as MODEL_CALLS,
     MODEL_CHECKS as MODEL_CHECKS,
     MODEL_CONTENT as MODEL_CONTENT,

@@ -105,7 +105,6 @@ PLUGIN_ALLOWED_MODULES = frozenset({
     "infra.persistence.json_store",
     "agent.plugin_contracts.message",
     "agent.plugin_contracts.tools",
-    "agent.plugin_contracts.models",
     "agent.plugin_composition.message_view",
     "core.common.diagnostic_log",
     # 有界文件工作与取消排空；公开合同见 plugin-v3-capabilities.md。

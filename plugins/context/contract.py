@@ -9,7 +9,7 @@ from typing import Any, Literal, Protocol
 from agent.plugin_composition import Context, Effect, ServiceKey
 from agent.plugin_composition.models import BoundChatModel, ModelRequest
 from agent.plugin_contracts import ContentPart, ContentReferences, Message
-from agent.plugin_contracts.models import ContextModel
+from plugins.models.contract import ContextModel
 
 MaterialKind = Literal["context", "recall", "profile"]
 MaterialData = Mapping[str, object]
