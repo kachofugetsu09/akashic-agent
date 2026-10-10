@@ -190,8 +190,6 @@ class PluginManager:
             for failure in source_failures
         }
         self._dashboard_routes: tuple[object, ...] | None = None
-        self._endpoint_quiescer: Callable[[], Awaitable[None]] | None = None
-        self._endpoint_resumer: Callable[[], Awaitable[None]] | None = None
         self._endpoint_switcher: (
             Callable[
                 [
@@ -394,15 +392,6 @@ class PluginManager:
         if self._dashboard_routes is not None:
             raise RuntimeError("Dashboard host routes 不能重复配置")
         self._dashboard_routes = routes
-
-    def bind_endpoint_admission(
-        self,
-        *,
-        quiesce: Callable[[], Awaitable[None]],
-        resume: Callable[[], Awaitable[None]],
-    ) -> None:
-        self._endpoint_quiescer = quiesce
-        self._endpoint_resumer = resume
 
     def bind_endpoint_switcher(
         self,
@@ -1564,11 +1553,6 @@ class PluginManager:
             self._update_watchers.remove(event)
 
 
-    def annotate_reload(self, tx_id: str, details: dict[str, object]) -> None:
-        """Append turn lineage evidence to an existing reload transaction."""
-
-        self._reload_journal.annotate(tx_id, details)
-
     def require_installed_plugin(self, plugin_id: str) -> None:
         """Fail before registering uninstall when the plugin has no installed owner."""
 
@@ -2508,8 +2492,6 @@ class PluginManager:
     async def _terminate_all(self) -> None:
         """Close the one live Root and each retained resource owner."""
 
-        if self._endpoint_quiescer is not None:
-            await self._endpoint_quiescer()
         # The shutdown task owns all resources after the previous operation exits.
         externally_cancelled = False
         live_root = self._live_root

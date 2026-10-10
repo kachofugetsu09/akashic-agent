@@ -35,8 +35,8 @@ Channel 迁移写入拒绝。本层不产生新的持久写入或数据减少协
 
 无调用者的 `_record_drained_root_failure` 删除。实际进程内关闭失败仍由
 Store `_drain_failures` 与对应 snapshot/Root 持有，未改 journal 历史记录。
-`runtime_generation_ids` 的唯一现有调用位于 `test_plugin_fresh_root.py`；
-本轮未扩写该测试，暂留此查询方法。
+`runtime_generation_ids` 曾只由 `test_plugin_fresh_root.py` 调用；该测试不再使用后
+已删除此查询方法。
 
 ## 示例和行为边界
 
