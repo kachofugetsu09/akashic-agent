@@ -23,7 +23,7 @@ from agent.plugin_contracts.models import (
     MODEL_SELECTION as MODEL_SELECTION,
     ModelSelection as ModelSelectionReader,
 )
-from agent.plugin_contracts.reply import (
+from plugins.reply.contract import (
     REPLY_STATUS as REPLY_STATUS,
     ReplyStatus as ReplyStatusReader,
 )

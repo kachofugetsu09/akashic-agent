@@ -8,7 +8,7 @@ from typing import Any, cast
 from uuid import uuid4
 
 from agent.plugin_composition import Context, FiberState, ServiceKey
-from agent.plugin_contracts.reply import (
+from plugins.reply.contract import (
     REPLY_STATUS as REPLY_STATUS,
 )
 

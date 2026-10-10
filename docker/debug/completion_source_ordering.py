@@ -37,7 +37,12 @@ from plugins.tools.api import MessageReply, Result, result_message_id
 from plugins.tools.menu import ToolCallDecode
 from agent.plugin_contracts.content import CONTENT
 from agent.plugin_contracts.delivery import DELIVERY_GUARDED_START as DELIVERY
-from agent.plugin_contracts.reply import REPLY_PROGRAM_V3, REPLY_EXECUTE_V4
+from plugins.reply.contract import (
+    REPLY_PROGRAM_V3,
+)
+from plugins.reply_program.contract import (
+    REPLY_EXECUTE_V4,
+)
 from agent.plugin_contracts.tools import ALL_TOOLS
 from plugins.commands import plugin as commands_plugin
 from plugins.conversation import plugin as conversation_plugin
