@@ -16,6 +16,8 @@ contracts 包。消费者只依赖公共值类型、Protocol 与 ServiceKey，�
 清理。宿主从已解析的实际源码登记 `plugins.<name>.contract`，不执行包入口，
 不复制文件到 Core，不恢复历史接口，不根据插件是否 active 推断类型可用性。
 公共 namespace 的搜索目录只来自这些源码，不混入 checkout 的同名 plugins 目录。
+消费公共合同需要安装其真实 owner 的源码制品，安装 API 不要求启用该实现；
+合法子组合显式准备这些制品，不从 checkout 补接口或自动选择 provider。
 源实现可以热换代；公共合同源码改变时明确要求重启，不在同进程混用两套类型。
 这是 API 版本边界，不是插件沙箱；静态门仍禁止兄弟实现依赖。
 
