@@ -2,9 +2,9 @@ from __future__ import annotations
 
 from typing import cast
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel
 
-from agent.plugin_composition import Context, ServiceKey
+from agent.plugin_composition import Context
 from plugins.gateway.contract import (
     CONTROL_FRAMES,
     FrameResolver,
@@ -22,36 +22,8 @@ from plugins.delivery.contract import (
     FinalOutputTurn as FinalOutputTurn,
 )
 
+from .contract import (PROGRAMMATIC, SessionIdParams, AdmitParams, SendParams, PauseParams, ResumeParams, ResultParams)
 from .result import TURN_PROJECTION, TurnProjection, read_result, read_result_snapshot
-
-
-class SessionIdParams(BaseModel):
-    """程序调用在自己的 RPC 输入边界校验参数。"""
-    model_config = ConfigDict(extra="forbid", strict=True)
-    session_id: str = Field(min_length=1, max_length=512)
-
-
-class AdmitParams(SessionIdParams):
-    persist_memory: bool = False
-
-
-class SendParams(SessionIdParams):
-    message_id: str = Field(min_length=1, max_length=256)
-    text: str = Field(min_length=1, max_length=1_048_576)
-    model_id: str | None = Field(default=None, min_length=1, max_length=512)
-    reasoning_effort: str | None = Field(default=None, min_length=1, max_length=64)
-
-
-class PauseParams(SessionIdParams):
-    message_id: str = Field(min_length=1, max_length=256)
-
-
-class ResumeParams(PauseParams):
-    input_id: str = Field(min_length=1, max_length=256)
-
-
-class ResultParams(SessionIdParams):
-    input_id: str = Field(min_length=1, max_length=256)
 
 
 PARAMS: dict[str, type[BaseModel]] = {
@@ -267,9 +239,6 @@ class Programmatic:
             raise AssertionError("未声明的程序调用方法: " + method)
         return {"version": 2, "session_id": message.session_id,
                 "message_id": message.message_id, "seq": message.seq}
-
-
-PROGRAMMATIC = ServiceKey[Programmatic]("programmatic.v1")
 
 
 def rpc_methods(programmatic: Programmatic) -> dict[str, RpcMethod]:
