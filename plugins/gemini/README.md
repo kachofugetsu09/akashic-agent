@@ -45,3 +45,11 @@ Gemini 模型停止内部思考。参见 [Google 思考文档](https://ai.google
 驱动每次生成只发送一次 HTTP，明确报告授权、限流、协议和传输错误；
 不会自动切到 Chat Completions。发送给网关的签名完整，并不能证明网关继续
 完整转发给其后端；这一点需独立验证网关行为。
+
+`MALFORMED_FUNCTION_CALL` 表示上游生成的工具调用无法解析，整次候选均不提交
+或执行。Models 按[现有恢复规则](../../docs/decisions/0092-model-generation-recovers-until-output.md)
+用原请求退避重试，保留已完成工具结果、重试进度、取消和显式次数上限；
+未配置次数上限时持续恢复，不保证下一次生成成功，也可能产生重复生成费用。
+失败调用的 usage 仍记为未知。`UNEXPECTED_TOOL_CALL`、无效请求、鉴权与安全拒绝
+不因此获得恢复资格。不会强制工具调用或把无法解析的内容修补成可执行调用。
+参见 [Google 完成原因定义](https://cloud.google.com/vertex-ai/generative-ai/docs/reference/rest/v1/GenerateContentResponse#FinishReason)。

@@ -37,7 +37,7 @@ class Handler(BaseHTTPRequestHandler):
         request = json.loads(self.rfile.read(int(self.headers["Content-Length"])))
         status, delay = self.server.replies.popleft()
         self.server.received.append(status)
-        if ':streamGenerateContent' in self.path:
+        if ':streamGenerateContent' in self.path or ':generateContent' in self.path:
             part = {"text": "local-result"}
             if delay == "gemini-invalid":
                 part = {"text": 123}
@@ -46,9 +46,15 @@ class Handler(BaseHTTPRequestHandler):
             if delay == "gemini-length":
                 value["candidates"][0]["content"]["parts"] = []
                 value["candidates"][0]["finishReason"] = "MAX_TOKENS"
-            body = ("data: " + json.dumps(value) + "\n\n").encode()
+            if delay in {"MALFORMED_FUNCTION_CALL", "UNEXPECTED_TOOL_CALL", "SAFETY"}:
+                value["candidates"][0]["finishReason"] = delay
+                # 即使候选含看似完整的工具参数，失败也不能交出可执行响应。
+                value["candidates"][0]["content"]["parts"] = [{"functionCall": {
+                    "name": "write_file", "args": {"path": "must-not-exist", "content": "unsafe"}}}]
+            streaming = ':streamGenerateContent' in self.path
+            body = (("data: " + json.dumps(value) + "\n\n") if streaming else json.dumps(value)).encode()
             self.send_response(status)
-            self.send_header("Content-Type", "text/event-stream")
+            self.send_header("Content-Type", "text/event-stream" if streaming else "application/json")
             self.send_header("Content-Length", str(len(body)))
             if status in (429, 503):
                 self.send_header("Retry-After", "0")
@@ -332,6 +338,67 @@ async def run(args: argparse.Namespace) -> dict:
                     finally:
                         store.close()
 
+        async def gemini_malformed():
+            """真实原生 HTTP 与账本覆盖两种响应、次数耗尽、取消和永久拒绝。"""
+            from plugins.gemini.driver import _Chat
+            native = replace(descriptor, driver_id="gemini")
+            async with httpx.AsyncClient(base_url=endpoint + '/', trust_env=False) as client:
+                physical = _Chat(client, GeminiCredential(), native)
+                for name, reason, streaming, budget, cancel in (
+                    ("malformed-json", "MALFORMED_FUNCTION_CALL", False, None, False),
+                    ("malformed-sse", "MALFORMED_FUNCTION_CALL", True, None, False),
+                    ("malformed-budget", "MALFORMED_FUNCTION_CALL", True, 2, False),
+                    ("malformed-cancel", "MALFORMED_FUNCTION_CALL", True, None, True),
+                    ("unexpected", "UNEXPECTED_TOOL_CALL", True, None, False),
+                    ("safety", "SAFETY", True, None, False),
+                    ("invalid-request", None, True, None, False),
+                ):
+                    server.replies = deque([(400 if reason is None else 200, reason)] * (budget or 1) + [(200, None)])
+                    server.received = []
+                    path = root / f"{name}.db"
+                    store = ModelsStore(path, root / "backups")
+                    store.initialize()
+                    bound = _BoundChat(native, physical, store, max_attempts=budget)
+                    request = ModelRequest([{"role": "user", "content": "scenario"}], request_key=name)
+                    recovering = reason == "MALFORMED_FUNCTION_CALL" and budget is None and not cancel
+                    try:
+                        try:
+                            if streaming:
+                                def stop():
+                                    task = asyncio.current_task()
+                                    assert task is not None
+                                    task.cancel()
+                                response = await complete_with_preview(bound, request, on_retry=stop if cancel else None)
+                            else:
+                                response = await bound.complete(request)
+                        except asyncio.CancelledError:
+                            assert cancel
+                        except ModelError as error:
+                            assert not recovering and not cancel
+                            assert error.retryable == (reason == "MALFORMED_FUNCTION_CALL")
+                            if budget is not None:
+                                assert "自动重试次数已用完" in str(error)
+                        else:
+                            assert recovering and response.content == "local-result" and not response.tool_calls
+                            assert (await bound.complete(request)).content == response.content
+                        records = store.calls_for_key(name)
+                        expected = 2 if recovering else budget or 1
+                        assert len(records) == len(server.received) == expected
+                        first = records[0]
+                        assert first["state"] == "error" and first["response"] is None
+                        assert (first["next_attempt_at"] is not None) == (recovering or cancel or budget == 2)
+                        if budget is not None:
+                            assert records[-1]["next_attempt_at"] is None
+                        assert first["send_evidence"] == ("rejected" if reason is None else None)
+                        assert first["usage"] is None
+                        store.close()
+                        store = ModelsStore(path, root / "backups")
+                        store.initialize()
+                        assert store.calls_for_key(name) == records
+                        report["checks"].append({"case": name, "posts": expected})
+                    finally:
+                        store.close()
+
         async def case(name, config, statuses, count, success, retry_after=0):
             """真实 HTTP 结果进入生产 driver，再观察 Models 的账本和回放。"""
             server.replies = deque((status, retry_after) for status in statuses)
@@ -392,10 +459,15 @@ async def run(args: argparse.Namespace) -> dict:
             report["checks"].append({"case": name, "posts": count})
 
         try:
+            if args.gemini_only:
+                await gemini_protocol()
+                await gemini_malformed()
+                return report
             # 1. 同一场景先在主线复现默认单次失败，再在候选核对失败后成功。
             await public_configuration()
             if not args.baseline:
                 await gemini_protocol()
+                await gemini_malformed()
             await case("default", {}, [429, 200], 1 if args.baseline else 2, not args.baseline)
             if args.baseline:
                 return report
@@ -724,7 +796,9 @@ async def run(args: argparse.Namespace) -> dict:
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--source", type=Path, default=Path(__file__).resolve().parents[1])
-    parser.add_argument("--baseline", action="store_true")
+    mode = parser.add_mutually_exclusive_group()
+    mode.add_argument("--baseline", action="store_true")
+    mode.add_argument("--gemini-only", action="store_true", help="仅验证 Gemini HTTP 与恢复边界")
     parser.add_argument("--output", type=Path, help="保存真实错误与预览供浏览器重放")
     args = parser.parse_args()
     args.source = args.source.resolve()
