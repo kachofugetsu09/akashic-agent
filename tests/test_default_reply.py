@@ -182,12 +182,13 @@ async def apply(ctx):
             if len(business) == 1:''').replace("Preserved facts.", "Preserved facts." + "z" * summary_padding))
     if extra_sources is not None:
         extra_sources(sources)
+    from agent.plugins.bundles import set_plugin_choice
+    for name in {"models", "standard_tools", *(() if replying else ("reply",))}:
+        set_plugin_choice(workspace, name, enabled=False)
     host = PluginManager(
         [sources],
         workspace=workspace,
         installed_cache_root=tmp_path / "home/cache",
-        # 制品供接口与真实组件组装；fixture 独占模型、工具与清理的提供。
-        disabled_plugins=frozenset({"models", "standard_tools", *(() if replying else ("reply",))}),
     )
     try:
         await host.load_all()

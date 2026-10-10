@@ -72,16 +72,16 @@ from agent.plugins.install import (
     _split_installed_plugin_id,
     finalize_uninstall_plugin,
     install_git_plugin,
-    set_installed_plugin_enabled,
 )
 from agent.plugins.manifest import (
     ensure_workspace_plugin_data_dir,
-    load_plugin_manifest,
-    manifest_path,
+    installed_plugin_ids,
     plugins_root,
     validate_workspace_plugin_data_path,
     workspace_plugin_data_dir,
 )
+from agent.plugins.bundles import plugin_choices, set_plugin_choice
+from agent.plugins.distribution_sources import DistributionSources
 from agent.plugins.python_environment import PythonEnvironments
 from agent.plugins.reload_journal import (
     RecoveryActionName,
@@ -149,23 +149,19 @@ class PluginManager:
         *,
         workspace: Path,
         installed_cache_root: Path | None = None,
-        disabled_plugins: frozenset[str] = frozenset(),
         source_failures: tuple[PluginSourceFailure, ...] = (),
-        distribution_sources: tuple[ResolvedPluginSource, ...] = (),
-        ignored_installed_roots: frozenset[Path] = frozenset(),
+        distribution: DistributionSources = DistributionSources(),
         restart_gate: RestartGate | None = None,
         host_ready: Callable[[], bool] | None = None,
     ) -> None:
         self._dirs = plugin_dirs
-        self._distribution_sources = distribution_sources
-        self._ignored_installed_roots = ignored_installed_roots
+        self._distribution = distribution
         self._workspace = workspace
         self._selection = PluginSelection(workspace)
         self._python_environments = PythonEnvironments(workspace)
         self._update_watchers: set[asyncio.Event] = set()
         self._plugin_tasks = PluginTasks()
         self._installed_cache_root = installed_cache_root
-        self._disabled_plugins = disabled_plugins
         self._source_failures: dict[str, PluginSourceFailure] = {
             _source_failure_key(failure): failure
             for failure in source_failures
@@ -377,8 +373,7 @@ class PluginManager:
 
     def watch_revision(self) -> dict[str, str]:
         """分别记录每个输入的磁盘变化，不把一次选择变更扩成全量更新。"""
-        home = _plugins_home(self._installed_cache_root)
-        manifest = load_plugin_manifest(home)
+        manifest = plugin_choices(self._workspace, self._distribution.root)
         probe = self._watch_probe(manifest)
         if probe is not None and probe == self._watch_fingerprint:
             return dict(self._watch_result)
@@ -407,7 +402,7 @@ class PluginManager:
         result = {
             plugin_id: hashlib.sha256(
                 revisions.get(plugin_id, b"source:missing")
-                + str(manifest.get(plugin_id, True)).encode()
+                + str(manifest.get(plugin_id, "@" not in plugin_id)).encode()
             ).hexdigest()
             for plugin_id in revisions.keys() | manifest.keys()
         }
@@ -429,10 +424,10 @@ class PluginManager:
                 self._installed_cache_root,
                 load_manifests=False,
             ):
-                if source.plugin_root in self._ignored_installed_roots:
+                if source.plugin_root in self._distribution.ignored_installed_roots:
                     continue
                 roots.add(str(source.plugin_root.resolve(strict=False)))
-        for source in self._distribution_sources:
+        for source in self._distribution.sources:
             roots.add(str(source.plugin_root.resolve(strict=False)))
         for plugin_dirs_root in self._dirs:
             for plugin_root in _iter_declared_plugin_roots(plugin_dirs_root):
@@ -443,13 +438,12 @@ class PluginManager:
         """枚举源码根并按元数据指纹判定是否必须重做完整发现。
 
         指纹与结果摘要使用同一套检测输入（目录枚举 + 逐文件元数据 +
-        data_dir 配置 + 已安装 manifest），未变化时完整发现的结果必然相同。
+        data_dir 配置 + bundle patch），未变化时完整发现的结果必然相同。
         """
         digest = hashlib.sha256()
         digest.update(repr(sorted(manifest.items())).encode())
-        digest.update(repr(sorted(self._disabled_plugins)).encode())
         digest.update(
-            repr(sorted(str(path) for path in self._ignored_installed_roots)).encode()
+            repr(sorted(str(path) for path in self._distribution.ignored_installed_roots)).encode()
         )
         for root in sorted(self._watch_roots()):
             digest.update(root.encode())
@@ -468,14 +462,14 @@ class PluginManager:
         trees: list[Path] = []
         if self._installed_cache_root is not None:
             trees.append(self._installed_cache_root)
-        trees.extend(source.plugin_root for source in self._distribution_sources)
+        trees.extend(source.plugin_root for source in self._distribution.sources)
         trees.extend(self._dirs)
         files = [
             Path(data_dir) / CONFIG_INPUT
             for data_dir in self._watch_root_map.values()
             if data_dir
         ]
-        files.append(manifest_path(_plugins_home(self._installed_cache_root)))
+        files.append(self._workspace / "bundle.patch.toml")
         return tuple(trees), tuple(files)
 
     # 扫描所有 plugin_dirs，返回可加载的插件描述列表
@@ -499,8 +493,8 @@ class PluginManager:
         scan = scan_plugin_sources(
             self._dirs,
             installed_cache_root=self._installed_cache_root,
-            fixed_sources=self._distribution_sources,
-            ignored_installed_roots=self._ignored_installed_roots,
+            fixed_sources=self._distribution.sources,
+            ignored_installed_roots=self._distribution.ignored_installed_roots,
         )
         if record_source_failures:
             self._remember_source_failures(scan.failures)
@@ -520,11 +514,6 @@ class PluginManager:
         public_contracts.register(sources)
         for source in sources:
             name = source.plugin_name
-            if (
-                name in self._disabled_plugins
-                or f"{name}@{source.marketplace}" in self._disabled_plugins
-            ):
-                continue
             module_path = source.plugin_root / "plugin.py"
             mods.append(
                 {
@@ -539,7 +528,7 @@ class PluginManager:
                     "marketplace": source.marketplace,
                     "source_type": source.source_type,
                     **({"distribution_source": source.distribution_source, "wheel_tree_sha256": source.wheel_tree_sha256}
-                       if source in self._distribution_sources else {}),
+                       if source in self._distribution.sources else {}),
                 }
             )
         return mods, scan.failures
@@ -666,10 +655,10 @@ class PluginManager:
             components = self._selection_components(selection_ref)
             await self._load_live_initial(components, expected_ref=selection_ref)
             return
-        enabled = load_plugin_manifest(self.installed_plugins_home)
+        enabled = plugin_choices(self._workspace, self._distribution.root)
         selected = tuple(
             mod for mod in discovered
-            if enabled.get(_resolve_plugin_id(mod), True)
+            if enabled.get(_resolve_plugin_id(mod), "@" not in _resolve_plugin_id(mod))
         )
         inputs: list[PluginGeneration] = []
         try:
@@ -1292,14 +1281,8 @@ class PluginManager:
         self._check_operation_commit()
         self.require_installed_plugin(plugin_id)
         distribution_owned = any(
-            _resolve_plugin_id(mod) == plugin_id and mod.get("distribution_source")
-            for mod in self.discover()
-        )
-        _ = set_installed_plugin_enabled(
-            plugin_id,
-            enabled=False,
-            plugins_home=self.installed_plugins_home,
-        )
+            f"{source.plugin_name}@{source.marketplace}" == plugin_id for source in self._distribution.sources)
+        _ = set_plugin_choice(self._workspace, plugin_id, enabled=False, distribution=self._distribution.root)
         expected_ref = self._selection.read()
         result = await self._deactivate_plugin(
             plugin_id,
@@ -1321,8 +1304,6 @@ class PluginManager:
                 plugin_id,
                 workspace=self._workspace,
                 plugins_home=self.installed_plugins_home,
-                keep_disabled_choice=any(f"{source.plugin_name}@{source.marketplace}" == plugin_id
-                                         for source in self._distribution_sources),
             )
         )
         if finalize_cancelled:
@@ -1366,7 +1347,7 @@ class PluginManager:
                     plugins_home=self.installed_plugins_home,
                     update_id=update_id,
                     reserved_ids=frozenset(f"{item.plugin_name}@{item.marketplace}"
-                                           for item in self._distribution_sources),
+                                           for item in self._distribution.sources),
                 )
             )
             if install_cancelled:
@@ -1513,9 +1494,12 @@ class PluginManager:
     def require_installed_plugin(self, plugin_id: str) -> None:
         """Fail before registering uninstall when the plugin has no installed owner."""
 
-        manifest = load_plugin_manifest(_plugins_home(self._installed_cache_root))
-        if plugin_id not in manifest:
+        if plugin_id not in self._installed_ids():
             raise RuntimeError(f"插件未安装: {plugin_id}")
+
+    def _installed_ids(self) -> frozenset[str]:
+        return installed_plugin_ids(self.installed_plugins_home) | frozenset(
+            f"{source.plugin_name}@{source.marketplace}" for source in self._distribution.sources)
 
     async def _reconcile_changed(
         self, plugin_ids: frozenset[str] | None = None,
@@ -1532,11 +1516,11 @@ class PluginManager:
         discovered = {
             _resolve_plugin_id(mod): mod for mod in discovered_mods
         }
-        manifest = load_plugin_manifest(_plugins_home(self._installed_cache_root))
+        manifest = plugin_choices(self._workspace, self._distribution.root)
         desired = {
             plugin_id
             for plugin_id, mod in discovered.items()
-            if manifest.get(plugin_id, True)
+            if manifest.get(plugin_id, "@" not in plugin_id)
         }
         selection_ref = self._selection.read()
         selected_ids = set()
@@ -1550,8 +1534,7 @@ class PluginManager:
         explicitly_disabled = {
             plugin_id
             for plugin_id in selected_ids
-            if manifest.get(plugin_id, True) is False
-            or plugin_id in self._disabled_plugins
+            if manifest.get(plugin_id, "@" not in plugin_id) is False
         }
         # 1. 已提交但失去实例的输入先全部挂回同一图；PENDING 消费者不能
         # 阻止后面缺失的 provider 挂载。恢复读取已选归档，不另选当前源码。
@@ -1802,7 +1785,7 @@ class PluginManager:
         await self._run_operation(lambda: self._reconcile_disabled_and_drain(plugin_id))
 
     async def _reconcile_disabled_and_drain(self, plugin_id: str) -> None:
-        manifest = load_plugin_manifest(_plugins_home(self._installed_cache_root))
+        manifest = plugin_choices(self._workspace, self._distribution.root)
         if manifest.get(plugin_id, False):
             raise RuntimeError(f"插件尚未禁用: {plugin_id}")
         for generation in tuple(self._draining_generations.get(plugin_id, ())):
@@ -1903,8 +1886,8 @@ class PluginManager:
 
 
     def plugin_status(self) -> dict[str, object]:
-        """Project manifest, selection, owner generations, and the current operation."""
-        manifest = load_plugin_manifest(self.installed_plugins_home)
+        """展示制品库存、bundle 选择、generation 与当前操作。"""
+        manifest = plugin_choices(self._workspace, self._distribution.root)
         selection_ref = self._selection.read()
         selected_refs: dict[str, str] = {}
         if selection_ref is not None:
@@ -2022,8 +2005,9 @@ class PluginManager:
                 "accepted": accepted_view,
             }
 
+        installed = self._installed_ids()
         plugin_ids = (
-            set(manifest)
+            set(installed) | set(manifest)
             | set(selected_refs)
             | set(self._active_generations)
             | set(self._draining_generations)
@@ -2043,7 +2027,7 @@ class PluginManager:
                 ).exists()
             plugins.append({
                 "plugin_id": plugin_id,
-                "installed": plugin_id in manifest,
+                "installed": plugin_id in installed,
                 "enabled": manifest.get(plugin_id),
                 "selected_ref": selected_refs.get(plugin_id),
                 "selected_distribution_source": (
@@ -2052,7 +2036,7 @@ class PluginManager:
                 ),
                 "distribution_available": any(
                     f"{source.plugin_name}@{source.marketplace}" == plugin_id
-                    for source in self._distribution_sources
+                    for source in self._distribution.sources
                 ),
                 "cache_exists": cache_exists,
                 "draining_generations": [generation_status(item) for item in draining],
@@ -2098,7 +2082,7 @@ class PluginManager:
     ) -> PluginGeneration | None:
         """准备当前安装输入，不导入或挂载插件代码。"""
         plugin_id = _resolve_plugin_id(mod)
-        if load_plugin_manifest(_plugins_home(self._installed_cache_root)).get(plugin_id, True) is False:
+        if plugin_choices(self._workspace, self._distribution.root).get(plugin_id, "@" not in plugin_id) is False:
             return None
         selection_ref = self._selection.read()
         selected_ids = set() if selection_ref is None else {

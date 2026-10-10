@@ -99,7 +99,8 @@ def plugin_choices(workspace: Path, distribution: Path | None = None) -> dict[st
     return {row.plugin: not row.disabled for row in composition_rows(workspace, distribution)}
 
 
-def set_plugin_choice(workspace: Path, plugin_id: str, *, enabled: bool | None) -> Path:
+def set_plugin_choice(workspace: Path, plugin_id: str, *, enabled: bool | None,
+                      distribution: Path | None = None) -> Path:
     """替换一条启停选择并保留其 config；None 只用于撤销新增的 patch。"""
     if _PLUGIN.fullmatch(plugin_id) is None:
         raise ValueError(f"插件身份无效: {plugin_id}")
@@ -112,7 +113,7 @@ def set_plugin_choice(workspace: Path, plugin_id: str, *, enabled: bool | None) 
         if current is not None:
             del table[current.id]
     else:
-        source = current or next((row for row in composition_rows(workspace) if row.plugin == plugin_id), None)
+        source = current or next((row for row in composition_rows(workspace, distribution) if row.plugin == plugin_id), None)
         identity = source.id if source is not None else plugin_id
         value = {"plugin": plugin_id, "disabled": not enabled}
         if source is not None and source.config:

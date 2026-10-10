@@ -28,7 +28,7 @@ from agent.plugins.artifacts import (  # noqa: E402
     read_pointers,
     write_pointers,
 )
-from agent.plugins.manifest import write_plugin_manifest  # noqa: E402
+from agent.plugins.bundles import set_plugin_choice  # noqa: E402
 from docker.debug import (
     plugin_passive_composition_v3_gate as composition_gate,
 )  # noqa: E402
@@ -423,7 +423,8 @@ def _install_exact_plugins(
                 "artifact_inventory_before": _artifact_inventory(plugin_base),
             }
         )
-    _ = write_plugin_manifest(manifest, plugins_home=sandbox / "home/.akashic-plugin")
+    for plugin_id, enabled in manifest.items():
+        set_plugin_choice(sandbox / "workspace", plugin_id, enabled=enabled)
     return installed
 
 

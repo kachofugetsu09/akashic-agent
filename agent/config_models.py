@@ -6,7 +6,6 @@ from pathlib import Path
 
 @dataclass
 class Config:
-    disabled_builtin_plugins: frozenset[str] = frozenset()
     config_path: Path = Path("config.toml")
     workspace_path: Path = Path(".")
 

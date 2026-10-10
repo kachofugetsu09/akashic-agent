@@ -27,7 +27,8 @@ async def run(base: Path, listen: str) -> dict[str, bool]:
     """只写一次性 workspace；命令走正式选择和独立进程。"""
     from agent.config import Config
     from agent.plugins.install import install_git_plugin
-    from agent.plugins.manifest import set_plugin_enabled, workspace_plugin_data_dir
+    from agent.plugins.manifest import workspace_plugin_data_dir
+    from agent.plugins.bundles import set_plugin_choice
     from agent.plugin_composition.config_input import save_config
     from bootstrap.app import AppRuntime
     from bootstrap.init_workspace import init_workspace
@@ -50,7 +51,7 @@ async def run(base: Path, listen: str) -> dict[str, bool]:
         commit(path)
         install_git_plugin(workspace=workspace, source=str(path), marketplace="lab", plugins_home=home)
         if name in api_sources:
-            set_plugin_enabled(name + "@lab", enabled=False, plugins_home=home)
+            set_plugin_choice(workspace, name + "@lab", enabled=False)
     save_config(workspace_plugin_data_dir(workspace, "gateway", "lab"), {"listen": listen})
     observer = sources / "observer"
     observer.mkdir()

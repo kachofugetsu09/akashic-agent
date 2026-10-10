@@ -11,7 +11,7 @@ from pathlib import Path
 from typing import Any
 
 from scripts.container_rehearsal.candidate import (
-    copy_plugin_manifest,
+    disable_plugin_choices,
     isolate_schedules,
     write_candidate_config,
 )
@@ -55,9 +55,11 @@ def prepare_rehearsal(
             size=(stage / "config.toml").stat().st_size,
             sha256=sha256(stage / "config.toml"),
         )
-        plugin_record, disabled_plugins = copy_plugin_manifest(
-            plugin_home, stage / "plugin-home"
+        plugin_record, disabled_plugins = disable_plugin_choices(
+            plugin_home, stage / "workspace"
         )
+        (stage / "plugin-home").mkdir(mode=0o700)
+        records = [record for record in records if record.path != plugin_record.path]
 
         # 2. Record evidence and cleanup boundaries without serializing secrets.
         manifest: dict[str, Any] = {
@@ -73,10 +75,10 @@ def prepare_rehearsal(
             "candidate": {
                 "workspace": "workspace",
                 "config": "config.toml",
-                "plugin_manifest": "plugin-home/manifest.toml",
+                "bundle_patch": "workspace/bundle.patch.toml",
                 "config_channels": ["web"],
                 "model_registry_preserved": True,
-                "plugin_manifest_copied_unmodified": False,
+                "bundle_patch_copied_unmodified": False,
                 "plugins_disabled_until_rebuilt": disabled_plugins,
                 "plugin_data_source": "workspace/plugin-data",
                 "plugin_cache_copied": False,

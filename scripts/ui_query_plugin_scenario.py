@@ -27,7 +27,7 @@ async def run(directory: Path) -> dict[str, object]:
     from agent.plugins.install import install_git_plugin
     from agent.plugins.manager import PluginManager
     from agent.plugins.selection import PluginSelection
-    from agent.plugins.manifest import set_plugin_enabled
+    from agent.plugins.bundles import set_plugin_choice
 
     workspace = directory / "workspace"
     workspace.mkdir()
@@ -41,7 +41,7 @@ async def run(directory: Path) -> dict[str, object]:
         commit(source)
         install_git_plugin(workspace=workspace, source=str(source), marketplace="lab", plugins_home=home)
         if name != "ui":
-            set_plugin_enabled(name + "@lab", enabled=False, plugins_home=home)
+            set_plugin_choice(workspace, name + "@lab", enabled=False)
     provider = directory / "ui"
     sources = directory / "plugins"
     panel, reader = sources / "panel", sources / "reader"

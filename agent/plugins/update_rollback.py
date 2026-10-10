@@ -10,7 +10,7 @@ from typing import Literal, cast
 
 from agent.plugins.files import sync_directory
 from agent.plugins.artifacts import ArtifactPointer, ArtifactPointers, pointer_state_path, write_pointers
-from agent.plugins.manifest import load_plugin_manifest, write_plugin_manifest
+from agent.plugins.bundles import patch_rows, set_plugin_choice
 from infra.persistence.json_store import load_json
 
 _LEGACY_PLUGIN_UPDATES = """CREATE TABLE plugin_updates (
@@ -253,7 +253,7 @@ def commit(conn: sqlite3.Connection, tx_id: str, now: str) -> None:
     )
 
 
-def rollback(conn: sqlite3.Connection, update: UpdateRollback, plugins_home: Path, *, now: str, error: str) -> None:
+def rollback(conn: sqlite3.Connection, update: UpdateRollback, plugins_home: Path, *, workspace: Path, now: str, error: str) -> None:
     """核对旧/新状态后先恢复文件，再记录回退完成；中途死亡可再次执行。"""
     if update.phase != 'armed':
         raise RuntimeError("只有尚未提交的插件更新可以回退")
@@ -280,7 +280,7 @@ def rollback(conn: sqlite3.Connection, update: UpdateRollback, plugins_home: Pat
                 {'stable': update.candidate.path, 'latest': update.candidate.path})
     if current not in accepted:
         raise RuntimeError("插件指针已被其他操作改变，不能覆盖")
-    entries = load_plugin_manifest(plugins_home)
+    entries = {row.plugin: not row.disabled for row in patch_rows(workspace)}
     if entries.get(update.plugin_id) not in (update.previous_enabled, True):
         raise RuntimeError("插件启用状态已被其他操作改变，不能覆盖")
     # 1. 写回旧目标时由原 pointer owner 核验旧 artifact 仍然可用。
@@ -289,11 +289,7 @@ def rollback(conn: sqlite3.Connection, update: UpdateRollback, plugins_home: Pat
         sync_directory(expected_base)
     else:
         _ = write_pointers(expected_base, stable=update.previous.stable, latest=update.previous.latest)
-    if update.previous_enabled is None:
-        _ = entries.pop(update.plugin_id, None)
-    else:
-        entries[update.plugin_id] = update.previous_enabled
-    _ = write_plugin_manifest(entries, plugins_home=plugins_home)
+    set_plugin_choice(workspace, update.plugin_id, enabled=update.previous_enabled)
     # 2. 保留新 artifact 与全部 plugin-data；只更新本恢复点的完成事实。
     _ = conn.execute(
         "UPDATE plugin_updates SET phase='rolled_back',updated_at=?,error=? WHERE update_id=? AND phase='armed'",

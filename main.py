@@ -199,7 +199,7 @@ from agent.migrations import (
 from agent.restart import RestartGate, SupervisorCommitChannel
 from agent.supervisor import RESTART_EXIT_CODE, run_supervisor
 from agent.plugins.doctor import format_plugin_doctor_report, run_plugin_doctor
-from agent.plugins.manifest import set_plugin_enabled
+from agent.plugins.install import set_installed_plugin_enabled
 from bootstrap.app import build_app_runtime
 from agent.plugins.entrypoints import invoke_plugin_command, invoke_distribution_command
 from bootstrap.init_workspace import InitSummary, init_workspace
@@ -647,12 +647,12 @@ if __name__ == "__main__":
         plugin_id = args[1]
         enabled = args[0] == "plugin-enable"
         try:
-            manifest = set_plugin_enabled(plugin_id, enabled=enabled)
+            manifest = set_installed_plugin_enabled(plugin_id, enabled=enabled, workspace=workspace)
         except ValueError as exc:
             print(str(exc))
             sys.exit(1)
         print(f"插件已{'启用' if enabled else '禁用'}: {plugin_id}")
-        print(f"清单: {manifest}")
+        print(f"组合 patch: {manifest}")
         sys.exit(0)
 
     if args and args[0] == "plugin-doctor":

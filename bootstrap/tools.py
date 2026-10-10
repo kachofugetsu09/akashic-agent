@@ -18,7 +18,6 @@ logger = logging.getLogger(__name__)
 
 from agent.config_models import Config
 from agent.plugins.manifest import plugins_root
-from agent.plugins.source_resolver import PluginSourceFailure
 from agent.plugins.distribution_sources import distribution_sources
 from bootstrap.cleanup import run_cleanup_steps
 from bootstrap.workspace_lock import PluginPublicationLock
@@ -94,14 +93,11 @@ def build_core_runtime(
     if restart_gate is None:
         restart_gate = RestartGate(boot_id=uuid4().hex, supervised=False)
     resolved_plugin_dirs = _resolve_plugin_dirs(workspace, plugin_dirs=plugin_dirs or ())
-    disabled, source_failures = _disabled_builtin_plugins_for_runtime(config, resolved_plugin_dirs)
     distribution = distribution_sources(workspace, plugins_root())
     manager = PluginManager(
         plugin_dirs=resolved_plugin_dirs, workspace=workspace,
         installed_cache_root=plugins_root() / "cache",
-        disabled_plugins=disabled | distribution.disabled_ids, source_failures=source_failures,
-        distribution_sources=distribution.sources,
-        ignored_installed_roots=distribution.ignored_installed_roots,
+        distribution=distribution,
         restart_gate=restart_gate, host_ready=host_ready,
     )
     return CoreRuntime(
@@ -133,29 +129,3 @@ def _resolve_plugin_dirs(
         seen.add(normalized)
         result.append(root)
     return result
-
-
-def _disabled_builtin_plugins_for_runtime(
-    config: Config,
-    plugin_dirs: Iterable[Path] = (),
-) -> tuple[frozenset[str], tuple[PluginSourceFailure, ...]]:
-    """校验显式禁用的插件，不根据运行能力改写用户选择。"""
-
-    disabled = set(config.disabled_builtin_plugins)
-    roots = tuple(plugin_dirs)
-    if not roots:
-        return frozenset(disabled), ()
-
-    from agent.plugins.source_resolver import scan_plugin_sources
-
-    scan = scan_plugin_sources(list(roots))
-    known = {
-        source.plugin_name
-        for source in scan.sources
-    }
-    unknown = sorted(disabled - known)
-    if unknown:
-        raise ValueError(
-            "agent.plugins.disabled_builtin 包含未知内置插件: " + ", ".join(unknown)
-        )
-    return frozenset(disabled), scan.failures

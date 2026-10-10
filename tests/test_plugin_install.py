@@ -3,7 +3,8 @@ import os
 import subprocess
 import tomllib
 from pathlib import Path
-from agent.plugins.install import finalize_uninstall_plugin, set_installed_plugin_enabled
+from agent.plugins.install import finalize_uninstall_plugin
+from agent.plugins.bundles import set_plugin_choice, plugin_choices
 
 def test_plugin_enable_disable_and_uninstall_preserve_data(tmp_path: Path) -> None:
     home = tmp_path / "plugins-home"
@@ -14,46 +15,37 @@ def test_plugin_enable_disable_and_uninstall_preserve_data(tmp_path: Path) -> No
     data.mkdir(parents=True)
     state = data / "sleep-model.bin"
     state.write_bytes(b"model")
-    (home / "manifest.toml").write_text(
-        '[plugins."fitbit@github"]\nenabled = true\n',
-        encoding="utf-8",
-    )
-
-    set_installed_plugin_enabled(
+    set_plugin_choice(workspace,
         "fitbit@github",
         enabled=False,
-        plugins_home=home,
     )
-    manifest = tomllib.loads((home / "manifest.toml").read_text(encoding="utf-8"))
-    assert manifest["plugins"]["fitbit@github"]["enabled"] is False
+    manifest = plugin_choices(workspace)
+    assert manifest["fitbit@github"] is False
 
-    set_installed_plugin_enabled(
+    set_plugin_choice(workspace,
         "fitbit@github",
         enabled=True,
-        plugins_home=home,
     )
     disabled_before_removal = False
 
     def wait_until_disabled(plugin_id: str) -> None:
         nonlocal disabled_before_removal
-        current = tomllib.loads((home / "manifest.toml").read_text(encoding="utf-8"))
+        current = plugin_choices(workspace)
         disabled_before_removal = (
             plugin_id == "fitbit@github"
-            and current["plugins"][plugin_id]["enabled"] is False
+            and current[plugin_id] is False
             and cache.parent.exists()
             and state.exists()
         )
 
-    set_installed_plugin_enabled(
+    set_plugin_choice(workspace,
         "fitbit@github",
         enabled=False,
-        plugins_home=home,
     )
     wait_until_disabled("fitbit@github")
     removed_cache, retained_data = finalize_uninstall_plugin(
         "fitbit@github",
-        workspace=workspace,
-        plugins_home=home,
+        workspace=workspace, plugins_home=home,
     )
 
     assert disabled_before_removal
@@ -61,9 +53,7 @@ def test_plugin_enable_disable_and_uninstall_preserve_data(tmp_path: Path) -> No
     assert not removed_cache.exists()
     assert retained_data == data
     assert state.read_bytes() == b"model"
-    assert tomllib.loads((home / "manifest.toml").read_text(encoding="utf-8")) == {
-        "plugins": {}
-    }
+    assert plugin_choices(workspace) == {"fitbit@github": False}
 
 def _write_v3_plugin(
     root: Path,

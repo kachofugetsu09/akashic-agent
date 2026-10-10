@@ -109,7 +109,7 @@ async def exercise(directory: Path) -> dict[str, object]:
     from agent.plugins.manager import PluginManager
     from agent.plugins.install import install_git_plugin
     from agent.plugins.selection import PluginSelection
-    from agent.plugins.manifest import set_plugin_enabled
+    from agent.plugins.bundles import set_plugin_choice
     from agent.plugins.reload_journal import ReloadJournal
 
     workspace = directory / "workspace"
@@ -138,11 +138,11 @@ async def exercise(directory: Path) -> dict[str, object]:
     host = manager()
     try:
         # 1. 停用的已安装 API 仍优先于同名内置合同，不执行包入口。
-        set_plugin_enabled("public_values@lab", enabled=False, plugins_home=home)
+        set_plugin_choice(workspace, "public_values@lab", enabled=False)
         host.discover()
         disabled_api = importlib.import_module("plugins.public_values.contract")
         assert "builtin_only" not in disabled_api.Value.__dataclass_fields__
-        set_plugin_enabled("public_values@lab", enabled=True, plugins_home=home)
+        set_plugin_choice(workspace, "public_values@lab", enabled=True)
         await host.load_all()
         root = host.live_root
         assert root is not None
@@ -195,7 +195,7 @@ async def exercise(directory: Path) -> dict[str, object]:
         else:
             raise AssertionError("command mixed old public types with new selected source")
         # 4. pending 更新不锁死禁用和卸载；普通卸载保留制品与 journal。
-        set_plugin_enabled("public_values@lab", enabled=False, plugins_home=home)
+        set_plugin_choice(workspace, "public_values@lab", enabled=False)
         await manage("drain")
         assert root.context.get(ServiceKey("scenario.public-read")) is None
         removed = await manage("uninstall")

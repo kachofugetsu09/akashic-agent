@@ -1,6 +1,6 @@
 # 0109 · Workspace 拥有插件选择
 
-- 状态：proposed / patch API implemented, activation pending
+- 状态：proposed / implemented for review
 - 日期：2026-10-11
 - 依据：#1179 P4、ADR-0108；用户授权自主决定并把重大选择单列 PR。
 
@@ -36,14 +36,17 @@
 
 **发行选择：** 新发行版直接提交已验证 sources，不再先复制到全局 cache、再用首次
 receipt 排除这些副本。旧 receipt 继续只读证明历史 cache 归属，不能作为当前选择。
-新 receipt 应明确记录新入口和空的历史 cache 集合。
+新 receipt 记录新入口和空的历史 cache 集合。首次 receipt 的 marketplace 保留给发行版，
+外置安装必须使用独立 marketplace，避免退役内置插件的数据身份被其他来源接管。
 
 切换必须原子交付：Yoyo 先保存旧 config、旧全局清单、旧 patch 与完整目标的恢复计划，
 复制启停选择，再移除 Core 旧字段；停机重试只接受原值或计划目标值。旧全局文件不再
 由运行时读写，保留给尚未迁移的共享 workspace 及旧版本恢复。已有用户 patch 高于
 迁入开关；既有配置、消息、附件和 plugin-data 保持原值。未结算安装须先由旧 owner 结算。
 
-本 PR 提供 patch API；下一层接通所有写入、一次性迁移和恢复验收后删除旧读取。
-验收须覆盖旧版本生成数据、故障后重试、两个 workspace 共享 cache、卸载后不复活，
+所有启停写入已切换，运行时旧读取已删除。新 workspace 将迁移列入 origin baseline，
+不继承留给旧 workspace 的全局开关。共享 config 的原文另存为同目录
+`<config文件名>.before-bundle-choices.toml`，让后续 workspace 仍能取得原来的禁用项。
+真实验收覆盖旧版本生成数据、写入失败后重试、共享 cache/config、卸载后不复活，
 以及 base/headless/minimal、实际 CLI 回复和已有部署迁移场景。恢复时须使用旧 Core，
 并按 `runtime/before-bundle-choices.json` 恢复原 config/patch；旧全局清单原文留在计划中。

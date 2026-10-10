@@ -1531,11 +1531,11 @@ async def _exercise_business_composition(
         return evidence
 
     try:
-        from agent.plugins.manifest import set_plugin_enabled
+        from agent.plugins.bundles import set_plugin_choice
         for source in api_sources:
             installed = install_git_plugin(workspace=workspace, source=str(source),
                 marketplace=marketplace, plugins_home=plugins_home)
-            set_plugin_enabled(_plugin_id_from_manifest(installed.installed_path, marketplace), enabled=False, plugins_home=plugins_home)
+            set_plugin_choice(workspace, _plugin_id_from_manifest(installed.installed_path, marketplace), enabled=False)
         # 1. Install every declared provider and consumer before loading the
         # composition.  A single package is never treated as an isolated pass.
         for job in jobs:

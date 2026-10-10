@@ -62,7 +62,7 @@ def run_real_migration(workspace: Path) -> None:
     """用真实 yoyo 账本只应用软删迁移，证明加列路径可重放。"""
     backend = get_backend(f"sqlite:///{workspace / 'migrations.sqlite3'}")
     bundles = discover_migration_bundles(plugin_dirs=[args.source / "plugins"])
-    with backend, bind_migration_context(config_path=workspace / "config.toml", workspace=workspace), migration_import_paths(bundles):
+    with backend, bind_migration_context(config_path=workspace / "config.toml", workspace=workspace, plugins_home=workspace / "plugin-home"), migration_import_paths(bundles):
         loaded = _read_migrations(str(args.source / "migrations" / "core"), bundles)
         selected = [m for m in loaded
                     if m.id in {"20261004_03_session_soft_delete", "20261004_04_session_title"}]

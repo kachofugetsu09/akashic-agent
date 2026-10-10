@@ -4,8 +4,9 @@ from pathlib import Path
 from typing import Any, cast
 
 from agent.plugins.artifacts import read_pointers, resolve_pointer
-from agent.plugins.manifest import load_plugin_manifest, plugins_root
+from agent.plugins.manifest import installed_plugin_ids, plugins_root
 from agent.plugins.reload_journal import ReloadJournal
+from agent.plugins.bundles import plugin_choices
 from agent.plugins.static_manifest import (
     load_static_plugin_manifest,
 )
@@ -19,14 +20,15 @@ def run_plugin_doctor(
 ) -> dict[str, Any]:
     """只读安装制品；实际入口、依赖和资源检查留给完整 Root 装配。"""
     resolved_workspace = workspace
-    manifest = load_plugin_manifest(plugins_home)
+    manifest = installed_plugin_ids(plugins_home)
+    choices = plugin_choices(workspace)
     selected = [plugin_id] if plugin_id else sorted(manifest)
     if plugin_id and plugin_id not in manifest:
         return {"status": "broken", "plugins": [], "error": f"插件不存在: {plugin_id}"}
     plugins = [
         _inspect_plugin(
             current_id,
-            manifest[current_id],
+            choices.get(current_id, False),
             plugins_home,
         )
         for current_id in selected

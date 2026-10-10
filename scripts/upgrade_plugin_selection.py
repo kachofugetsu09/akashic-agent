@@ -16,7 +16,7 @@ from typing import cast
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from agent.plugins.files import sync_directory
-from agent.plugins.manifest import load_plugin_manifest, validate_workspace_plugin_data_path
+from agent.plugins.manifest import validate_workspace_plugin_data_path
 from agent.plugins.distribution_sources import distribution_plugin_sources
 from agent.plugins.source_resolver import scan_plugin_sources
 from agent.plugins.input_preparation import _source_revision
@@ -108,7 +108,6 @@ def initialize_selection(*, workspace: Path, plugins_home: Path, backup_dir: Pat
                             value is not None and not isinstance(value, str) for value in raw.values()
                         ):
                             raise ValueError(f"安装指针格式无效: {source}")
-            load_plugin_manifest(home)
             backup_dir.mkdir(mode=0o700)
             sync_directory(backup_dir.parent)
 
