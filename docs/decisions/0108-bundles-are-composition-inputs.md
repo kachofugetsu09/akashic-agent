@@ -1,6 +1,6 @@
 # 0108 · Bundle 是显式组合输入
 
-- 状态：proposed / input format implemented, activation pending
+- 状态：proposed / base artifact implemented, mode activation pending
 - 日期：2026-10-11
 - 依据：#1179 P4；用户授权自主决定并单独提交重大选择。
 
@@ -23,6 +23,10 @@ Bundle 不发现 provider、不补依赖、不决定服务优先级，也不保�
 UI、客户端页面及 Channel 连接，保留 Gateway/CLI 和后端能力；minimal 禁用全部 row。
 用户 patch 可以在 mode 之后明确重新启用插件，所以“零插件”指没有额外启用 patch 的 minimal。
 
-本层只加入输入格式和三个声明文件，尚未替代发行安装器及旧启停来源，不能宣称三个
-mode 已从正式启动链验收。接入层须迁移旧启停选择、删除旧字段和 JSON profile，并验证
-实际启动/关闭及 CLI 回复。旧 config 文件与 manifest 没有被本层写入。
+发行制品 schema 3 携带三个 TOML bundle 及各自摘要；namespace 由制品 marketplace
+字段确定。旧 JSON profile 和解析器已删除，安装命令使用 `--bundle`、`--ensure-bundle`。
+目前发行安装只接纳 base，headless/minimal 的实际选择在启停来源迁移后开放，不能把
+静态声明当作启动验收。历史首次安装 receipt 的 profile 标签继续只读，仍是旧来源证据。
+回退需要同一历史发行版的 Core、制品与安装器，不能混用旧制品和新安装器。
+接入层还须迁移旧启停选择、删除旧字段，并验证三个 mode 的实际启动/关闭及 CLI 回复。
+本次场景没有写正式 config 或 manifest。

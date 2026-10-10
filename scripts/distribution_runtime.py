@@ -86,10 +86,9 @@ def write_runtime_info(
     core = report.get("core")
     if not isinstance(core, dict) or core.get("sha256") != core_sha256:
         raise ValueError("distribution Core sha256 与 Docker build args 不一致")
-    profile_path = distribution / "profiles" / "default.json"
-    profile = json.loads(profile_path.read_text(encoding="utf-8"))
-    if not isinstance(profile, dict) or not isinstance(profile.get("name"), str):
-        raise ValueError("default profile 缺少 name")
+    profile_path = distribution / "bundles" / "base.toml"
+    if not profile_path.is_file():
+        raise ValueError("发行版缺少 base bundle")
     lock_path = Path("/opt/akashic/source/docker/host-runtime/requirements.lock")
     runtime: dict[str, object] = {
         "schemaVersion": 3,
@@ -97,8 +96,8 @@ def write_runtime_info(
         "sourceTree": source_tree,
         "coreSha256": core_sha256,
         "distributionReportSha256": _sha256(report_path),
-        "defaultProfile": profile["name"],
-        "defaultProfileSha256": _sha256(profile_path),
+        "defaultBundle": "base",
+        "defaultBundleSha256": _sha256(profile_path),
         "baseImage": base_image,
         "archSnapshot": arch_snapshot,
         "pypiIndexUrl": pypi_index_url,

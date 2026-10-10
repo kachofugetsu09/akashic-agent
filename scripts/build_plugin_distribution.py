@@ -31,12 +31,9 @@ from utils.timing import measure
 CORE_PATHS = (
     "agent",
     "bootstrap",
-    "bus",
     "core",
     "infra",
-    "session",
     "utils",
-    "host_bridge",
     "migrations",
     "main.py",
     "config.example.toml",
@@ -50,7 +47,7 @@ CORE_PATHS = (
     "docker/host-runtime",
 )
 
-_DEFAULT_PROFILE_PATH = Path("docker/host-runtime/profiles/default.json")
+_BUNDLE_PATHS = tuple(Path("bundles") / (mode + ".toml") for mode in ("base", "headless", "minimal"))
 _RUNTIME_WIRING = (
     ("docker/host-runtime/Dockerfile.distribution", "Dockerfile.distribution"),
     ("docker/host-runtime/distribution-entrypoint.sh", "distribution-entrypoint.sh"),
@@ -334,14 +331,18 @@ def _append_tree(
     return result
 
 
-def _copy_profile(repository: Path, commit: str, output: Path) -> dict[str, str] | None:
-    content = _git_file(repository, commit, _DEFAULT_PROFILE_PATH.as_posix())
-    if content is None:
-        return None
-    profile = output / "profiles" / "default.json"
-    profile.parent.mkdir(parents=True, exist_ok=True)
-    profile.write_bytes(content)
-    return {"path": "profiles/default.json", "sha256": _hash_bytes(content)}
+def _copy_bundles(repository: Path, commit: str, output: Path) -> list[dict[str, str]]:
+    """发布固定提交的完整声明文件，不在构建时替用户选择 mode。"""
+    records = []
+    for path in _BUNDLE_PATHS:
+        content = _git_file(repository, commit, path.as_posix())
+        if content is None:
+            raise ValueError(f"固定提交缺少 bundle: {path}")
+        target = output / path
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_bytes(content)
+        records.append({"path": path.as_posix(), "sha256": _hash_bytes(content)})
+    return records
 
 
 def _copy_runtime_wiring(
@@ -437,7 +438,7 @@ def _bundle_plugin(
 
 
 def build(repository: Path, revision: str, output: Path) -> dict[str, object]:
-    """固定源提交生成 Core、插件 bundle、profile 和身份报告。"""
+    """固定源提交生成 Core、插件制品、组合 bundle 和身份报告。"""
 
     # 1. 固定源提交；输出必须新建，失败产物保留供检查，不覆盖旧恢复材料。
     commit = git(
@@ -502,7 +503,7 @@ def build(repository: Path, revision: str, output: Path) -> dict[str, object]:
         git(repository, "show", f"{commit}:docker/host-runtime/requirements.lock")
     )
     report: dict[str, object] = {
-        "schema_version": 2,
+        "schema_version": 3,
         "source_commit": commit,
         "source_tree": tree,
         "core": {
@@ -517,12 +518,8 @@ def build(repository: Path, revision: str, output: Path) -> dict[str, object]:
     }
 
     # 4. 独立 Git 源保留来源证明；安装仍走原有 clone、校验及 artifact 发布链。
-    profile = _copy_profile(repository, commit, output)
-    if profile is None:
-        raise ValueError(
-            f"固定提交缺少正式产品 profile: {_DEFAULT_PROFILE_PATH.as_posix()}"
-        )
-    report["profiles"] = [profile]
+    report["bundles"] = _copy_bundles(repository, commit, output)
+    report["marketplace"] = "release"
     report["runtime_wiring"] = _copy_runtime_wiring(repository, commit, output)
     (output / "distribution.json").write_text(
         json.dumps(report, ensure_ascii=False, indent=2, sort_keys=True) + "\n",

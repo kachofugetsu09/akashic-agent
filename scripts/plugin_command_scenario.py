@@ -140,13 +140,13 @@ async def run(directory: Path) -> dict[str, object]:
         # 4. 宿主服务启动只选当前镜像资产，不执行 workspace 中的旧命令。
         distribution = directory / "image"
         (distribution / "sources").mkdir(parents=True)
-        (distribution / "profiles").mkdir()
+        (distribution / "bundles").mkdir()
         shutil.copytree(source, distribution / "sources/command_probe", ignore=shutil.ignore_patterns(".git", "__pycache__"))
         image_cli = distribution / "sources/command_probe/cli.py"
         image_cli.write_text(CLI.replace('"reply"', '"image_reply"').replace("return 0", "return 7"))
-        (distribution / "distribution.json").write_text(json.dumps({"source_commit": "a" * 40,
+        (distribution / "distribution.json").write_text(json.dumps({"source_commit": "a" * 40, "marketplace": "release",
             "plugins": [{"name": "command_probe"}]}))
-        (distribution / "profiles/default.json").write_text(json.dumps({"marketplace": "release"}))
+        (distribution / "bundles/base.toml").write_text("schema_version = 1\n[rows]\n")
         before = selection.read_bytes(), plan.read_bytes(), marker.read_bytes()
         process = await asyncio.create_subprocess_exec(sys.executable, "-m", "agent.plugins.entrypoints",
             "--distribution", str(distribution), "--workspace", str(workspace),
@@ -211,9 +211,9 @@ async def check_command_classes(directory: Path) -> dict[str, bool]:
         assert process.returncode == 0, (output, error)
     # 2. workload-controller 固定使用镜像源码，workspace 来自 Core 命令上下文。
     image = directory / "image"
-    (image / "profiles").mkdir(parents=True)
-    (image / "profiles/default.json").write_text(json.dumps({"marketplace": "release"}))
-    (image / "distribution.json").write_text(json.dumps({"source_commit": "a" * 40,
+    (image / "bundles").mkdir(parents=True)
+    (image / "bundles/base.toml").write_text("schema_version = 1\n[rows]\n")
+    (image / "distribution.json").write_text(json.dumps({"source_commit": "a" * 40, "marketplace": "release",
         "plugins": [{"name": "host_execution"}]}))
     shutil.copytree(ROOT / "plugins/host_execution", image / "sources/host_execution",
                     ignore=shutil.ignore_patterns("__pycache__"))

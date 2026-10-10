@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""验证 Core/插件发布身份，并按显式 profile 走正式 Git 插件安装链。"""
+"""验证 Core/插件发布身份，并按显式 bundle 走正式 Git 插件安装链。"""
 
 from __future__ import annotations
 
@@ -24,6 +24,7 @@ _SOURCE_ROOT = Path(__file__).resolve().parents[1]
 if str(_SOURCE_ROOT) not in sys.path:
     sys.path.insert(0, str(_SOURCE_ROOT))
 
+from agent.plugins.bundles import load_bundles
 from agent.plugins.install import install_git_plugin
 from agent.migrations.release_backup import backup_release_state
 from agent.migrations.runner import MigrationRunner
@@ -299,6 +300,11 @@ def _verify_distribution(distribution: Path) -> dict[str, Any]:
         raise ValueError(f"distribution 不是目录: {root}")
     report_path = _distribution_file(root, "distribution.json", "distribution report")
     report = _read_json(report_path)
+    if type(report.get("schema_version")) is not int or report["schema_version"] != 3:
+        raise ValueError("需要包含 TOML bundle 的 distribution schema 3")
+    marketplace = report.get("marketplace")
+    if not isinstance(marketplace, str) or _PATH_SEGMENT.fullmatch(marketplace) is None:
+        raise ValueError("distribution marketplace 无效")
     commit = report.get("source_commit")
     tree = report.get("source_tree")
     if not isinstance(commit, str) or _REVISION.fullmatch(commit) is None:
@@ -335,16 +341,16 @@ def _verify_distribution(distribution: Path) -> dict[str, Any]:
         _check_sha256(bundle, raw.get("sha256"), f"plugins[{index}] bundle")
         names.add(name)
 
-    profiles = report.get("profiles", [])
-    if not isinstance(profiles, list):
-        raise ValueError("distribution profiles 必须是 array")
-    for index, raw in enumerate(profiles):
+    bundles = report.get("bundles", [])
+    if not isinstance(bundles, list):
+        raise ValueError("distribution bundles 必须是 array")
+    for index, raw in enumerate(bundles):
         if not isinstance(raw, dict):
-            raise ValueError(f"profiles[{index}] 必须是 object")
+            raise ValueError(f"bundles[{index}] 必须是 object")
         profile_path = _distribution_file(
-            root, raw.get("path"), f"profiles[{index}]"
+            root, raw.get("path"), f"bundles[{index}]"
         )
-        _check_sha256(profile_path, raw.get("sha256"), f"profiles[{index}]")
+        _check_sha256(profile_path, raw.get("sha256"), f"bundles[{index}]")
     wiring = report.get("runtime_wiring", [])
     if not isinstance(wiring, list):
         raise ValueError("distribution runtime_wiring 必须是 array")
@@ -517,80 +523,6 @@ def _validate_toml_value(value: object, *, location: str, depth: int = 0) -> Non
     raise ValueError(f"{location} 含不支持的 TOML 值: {type(value).__name__}")
 
 
-def _load_profile(path: Path) -> tuple[str, str, list[dict[str, Any]], dict[str, Any]]:
-    document = _read_json(path.expanduser().resolve(strict=True))
-    if document.get("schema_version") != 1:
-        raise ValueError("profile schema_version 必须为 1")
-    profile_name = document.get("name")
-    marketplace = document.get("marketplace")
-    entries = document.get("plugins")
-    initialization = document.get("initialization", {})
-    if (
-        not isinstance(profile_name, str)
-        or not profile_name
-        or not isinstance(marketplace, str)
-        or _PATH_SEGMENT.fullmatch(marketplace) is None
-        or not isinstance(entries, list)
-        or not isinstance(initialization, dict)
-    ):
-        raise ValueError("profile 缺少合法 name/marketplace/plugins/initialization")
-
-    normalized: list[dict[str, Any]] = []
-    selected: set[str] = set()
-    for index, raw in enumerate(entries):
-        if not isinstance(raw, dict):
-            raise ValueError(f"profile.plugins[{index}] 必须是 object")
-        name = raw.get("name")
-        depends_on = raw.get("depends_on", [])
-        reason = raw.get("reason")
-        if (
-            not isinstance(name, str)
-            or _PATH_SEGMENT.fullmatch(name) is None
-            or name in selected
-            or not isinstance(depends_on, list)
-            or any(not isinstance(item, str) for item in depends_on)
-            or not isinstance(reason, str)
-            or not reason.strip()
-        ):
-            raise ValueError(f"profile.plugins[{index}] 字段无效或重复")
-        if any(item not in selected for item in depends_on):
-            raise ValueError(
-                f"profile.plugins[{index}] 依赖必须先在 profile 中声明: {name}"
-            )
-        normalized.append({"name": name, "depends_on": list(depends_on), "reason": reason})
-        selected.add(name)
-
-    unknown_initialization = set(initialization) - {"plugin_configs"}
-    if unknown_initialization:
-        raise ValueError(
-            "profile initialization 只接受通用 plugin_configs: "
-            f"{sorted(unknown_initialization)}"
-        )
-    raw_configs = initialization.get("plugin_configs", [])
-    if not isinstance(raw_configs, list):
-        raise ValueError("profile initialization.plugin_configs 必须是 array")
-    plugin_configs: list[dict[str, Any]] = []
-    config_owners: set[str] = set()
-    for index, raw in enumerate(raw_configs):
-        if not isinstance(raw, dict):
-            raise ValueError(f"profile initialization.plugin_configs[{index}] 必须是 object")
-        owner = raw.get("owner")
-        config = raw.get("config")
-        if (
-            not isinstance(owner, str)
-            or _PATH_SEGMENT.fullmatch(owner) is None
-            or owner not in selected
-            or owner in config_owners
-            or not isinstance(config, dict)
-        ):
-            raise ValueError(
-                f"profile initialization.plugin_configs[{index}] owner/config 无效或重复"
-            )
-        _validate_toml_value(config, location=f"plugin_configs[{index}].config")
-        plugin_configs.append({"owner": owner, "config": config})
-        config_owners.add(owner)
-    initialization = {"plugin_configs": plugin_configs}
-    return profile_name, marketplace, normalized, initialization
 
 
 def _write_plugin_configs(
@@ -616,28 +548,38 @@ def _write_plugin_configs(
     return results
 
 
-def install_profile(
+def install_bundle(
     distribution: Path,
-    profile: Path,
+    bundle_file: Path,
     *,
     workspace: Path,
     plugins_home: Path,
     config_path: Path,
     initialize_workspace: bool = True,
 ) -> dict[str, Any]:
-    """按 profile 顺序调用正式 install_git_plugin，不扫描 checkout。"""
+    """按 bundle 顺序调用正式 install_git_plugin，不扫描 checkout。"""
 
     distribution_root = distribution.expanduser().resolve(strict=True)
     report = verify_distribution(distribution_root)
-    profile_path = profile.expanduser().resolve(strict=True)
-    profile_rows = report.get("profiles", [])
+    profile_path = bundle_file.expanduser().resolve(strict=True)
+    if bundle_file.stem != "base":
+        raise ValueError("发行安装入口当前只接受 base bundle")
+    profile_rows = report.get("bundles", [])
     if not any(
         isinstance(item, dict)
-        and _distribution_file(distribution_root, item.get("path"), "profile") == profile_path
+        and _distribution_file(distribution_root, item.get("path"), "bundle") == profile_path
         for item in profile_rows
     ):
-        raise ValueError("profile 不属于已验证的 distribution artifact")
-    profile_name, marketplace, entries, initialization = _load_profile(profile)
+        raise ValueError("bundle 不属于已验证的 distribution artifact")
+    profile_name, marketplace = bundle_file.stem, report["marketplace"]
+    declarations = load_bundles(bundle_file.parent, mode=bundle_file.stem)
+    entries = tuple(row for row in declarations if not row.disabled)
+    initialization = {"plugin_configs": [
+        {"owner": row.plugin.split("@")[0], "config": dict(row.config)}
+        for row in entries if row.config
+    ]}
+    if any(row.plugin.rpartition("@")[2] != marketplace for row in entries):
+        raise ValueError("发行 bundle 只能声明本制品 marketplace；外部插件使用独立安装入口")
     rows = {
         item["name"]: item
         for item in report["plugins"]
@@ -645,10 +587,10 @@ def install_profile(
     }
     selected_rows: list[tuple[dict[str, Any], Path]] = []
     for entry in entries:
-        name = str(entry["name"])
+        name = entry.plugin.split("@")[0]
         row = rows.get(name)
         if row is None:
-            raise ValueError(f"profile 需要的插件 bundle 不存在: {name}")
+            raise ValueError(f"bundle 需要的插件 bundle 不存在: {name}")
         bundle = _distribution_file(
             distribution_root, row["file"], f"插件 {name} bundle"
         )
@@ -675,7 +617,7 @@ def install_profile(
 
     installed: list[dict[str, Any]] = []
     for entry, (row, bundle) in zip(entries, selected_rows, strict=True):
-        name = str(entry["name"])
+        name = entry.plugin.split("@")[0]
         try:
             result = install_git_plugin(
                 workspace=workspace,
@@ -1003,11 +945,11 @@ def _prepare_distribution_inputs(
 ) -> tuple[str, ...]:
     """Prepare immutable inputs, then let the caller publish one complete selection."""
     choices = load_plugin_manifest(plugins_home)
-    _, marketplace, _, initialization = _load_profile(distribution / "profiles/default.json")
+    marketplace = _read_json(distribution / "distribution.json")["marketplace"]
     _write_plugin_configs(workspace, marketplace=marketplace, declarations=[
-        row for row in initialization["plugin_configs"]
-        if f'{row["owner"]}@{marketplace}' not in choices
-        and f'{row["owner"]}@{marketplace}' in candidate
+        {"owner": row.plugin.split("@")[0], "config": dict(row.config)}
+        for row in load_bundles(distribution / "bundles")
+        if row.config and not row.disabled and row.plugin not in choices and row.plugin in candidate
     ])
     environments = _prepare_distribution_environments(available, distribution, workspace, selected)
     prepared: dict[str, str] = {}
@@ -1236,9 +1178,9 @@ def publish_distribution(
             maintenance.release()
 
 
-def ensure_profile(
+def ensure_bundle(
     distribution: Path,
-    profile: Path,
+    bundle_file: Path,
     *,
     workspace: Path,
     plugins_home: Path,
@@ -1273,7 +1215,7 @@ def ensure_profile(
                 current = PluginSelection(workspace)
                 if current.path.exists() and current.read() is not None:
                     raise RuntimeError("取得维护锁后 selection 已变化；缺少首次分发 receipt，停止初始化")
-                receipt = install_profile(distribution, profile, workspace=workspace,
+                receipt = install_bundle(distribution, bundle_file, workspace=workspace,
                                           plugins_home=plugins_home, config_path=config_path,
                                           initialize_workspace=False)
                 # Keep the first receipt unchanged, including retired bootstrap sources.
@@ -1343,14 +1285,14 @@ def _write_receipt(path: Path, result: dict[str, Any]) -> None:
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--distribution", type=Path, required=True)
-    parser.add_argument("--profile", type=Path, required=True)
+    parser.add_argument("--bundle", type=Path, required=True)
     parser.add_argument("--workspace", type=Path, required=True)
     parser.add_argument("--plugins-home", type=Path, required=True)
     parser.add_argument("--config", type=Path)
     parser.add_argument("--core-root", type=Path)
     parser.add_argument("--receipt", type=Path)
     parser.add_argument("--verify-only", action="store_true")
-    parser.add_argument("--ensure-profile", action="store_true")
+    parser.add_argument("--ensure-bundle", action="store_true")
     parser.add_argument("--publish", action="store_true")
     parser.add_argument("--backup-dir", type=Path)
     parser.add_argument("--plan", type=Path)
@@ -1358,8 +1300,8 @@ def main() -> None:
     parser.add_argument("--preflight-only", action="store_true")
     args = parser.parse_args()
 
-    if sum((args.verify_only, args.ensure_profile, args.publish)) > 1:
-        parser.error("--verify-only、--ensure-profile、--publish 互斥")
+    if sum((args.verify_only, args.ensure_bundle, args.publish)) > 1:
+        parser.error("--verify-only、--ensure-bundle、--publish 互斥")
     if args.publish:
         if args.config is None or args.plan is None or args.inputs is None:
             parser.error("--publish 需要 --config、--plan、--inputs")
@@ -1380,31 +1322,31 @@ def main() -> None:
         }
     else:
         if args.config is None:
-            parser.error("安装 profile 必须提供 --config")
+            parser.error("安装 bundle 必须提供 --config")
         if args.core_root is not None:
             extract_core(args.distribution, args.core_root)
-        if args.ensure_profile:
+        if args.ensure_bundle:
             if args.receipt is None:
-                parser.error("--ensure-profile 必须提供 --receipt")
+                parser.error("--ensure-bundle 必须提供 --receipt")
             with measure("runtime.inputs"):
-                result = ensure_profile(
+                result = ensure_bundle(
                     args.distribution,
-                    args.profile,
+                    args.bundle,
                     workspace=args.workspace,
                     plugins_home=args.plugins_home,
                     config_path=args.config,
                     receipt_path=args.receipt,
                 )
         else:
-            result = install_profile(
+            result = install_bundle(
                 args.distribution,
-                args.profile,
+                args.bundle,
                 workspace=args.workspace,
                 plugins_home=args.plugins_home,
                 config_path=args.config,
             )
     if args.receipt is not None:
-        if not (args.ensure_profile and result.get("status") == "existing"):
+        if not (args.ensure_bundle and result.get("status") == "existing"):
             _write_receipt(args.receipt, result)
     print(json.dumps(result, ensure_ascii=False))
 

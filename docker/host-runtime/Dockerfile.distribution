@@ -58,7 +58,7 @@ ARG AKASHIC_CORE_SHA256
 # The only source material copied into this image is the generated Core tar.
 COPY core.tar /opt/akashic/distribution/core.tar
 COPY distribution.json /opt/akashic/distribution/distribution.json
-COPY profiles /opt/akashic/distribution/profiles
+COPY bundles /opt/akashic/distribution/bundles
 COPY sources /opt/akashic/distribution/sources
 COPY *.bundle /opt/akashic/distribution/
 COPY Dockerfile.distribution /opt/akashic/distribution/Dockerfile.distribution
@@ -83,7 +83,7 @@ RUN --mount=type=cache,target=/root/.cache/pip \
         --distribution /opt/akashic/distribution \
     && /opt/venv/bin/python /opt/akashic/source/scripts/install_plugin_distribution.py \
         --distribution /opt/akashic/distribution \
-        --profile /opt/akashic/distribution/profiles/default.json \
+        --bundle /opt/akashic/distribution/bundles/base.toml \
         --workspace /tmp/akashic-distribution-workspace \
         --plugins-home /tmp/akashic-distribution-plugins \
         --verify-only \
