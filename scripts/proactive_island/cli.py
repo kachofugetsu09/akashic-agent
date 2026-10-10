@@ -9,7 +9,7 @@ import shutil
 from pathlib import Path
 from typing import Sequence
 
-from agent.migrations.proactive_island.handoff import (
+from scripts.proactive_island.handoff import (
     HandoffAdapter,
     HandoffItem,
     HandoffReport,
@@ -17,18 +17,18 @@ from agent.migrations.proactive_island.handoff import (
     apply_handoff,
     preflight_handoff,
 )
-from agent.migrations.proactive_island.inventory import (
+from scripts.proactive_island.inventory import (
     Inventory,
     inventory_digest,
     inventory_workspace,
 )
-from agent.migrations.proactive_island.retirement import (
+from scripts.proactive_island.retirement import (
     validate_retirement_blocks,
     without_retired_blocks,
     write_retirement_receipt,
 )
-from agent.migrations.session_db_backup import backup_sqlite_database
-from agent.migrations.proactive_island.wake_rules import WakeRulesArchiveAdapter
+from scripts.proactive_island.database_backup import backup_sqlite_database
+from scripts.proactive_island.wake_rules import WakeRulesArchiveAdapter
 
 
 def plan(workspace: Path, adapters: Sequence[HandoffAdapter] = ()) -> HandoffReport:

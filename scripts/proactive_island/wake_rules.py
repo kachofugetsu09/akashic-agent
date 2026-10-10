@@ -9,14 +9,14 @@ from pathlib import Path
 from typing import cast
 from uuid import uuid4
 
-from agent.migrations.proactive_island.handoff import (
+from scripts.proactive_island.handoff import (
     AdapterPlan,
     HandoffAdapter,
     HandoffBlocked,
     TargetReceipt,
     receipt_digest,
 )
-from agent.migrations.proactive_island.inventory import LegacyFact, LegacyFactKind
+from scripts.proactive_island.inventory import LegacyFact, LegacyFactKind
 from agent.plugins.manifest import builtin_plugin_data_dir
 RULES_DIRECTORY = "legacy-rules"
 RULES_ARCHIVE = "PROACTIVE_CONTEXT.md"

@@ -1,6 +1,6 @@
 """Read-only inventory and explicit handoff for the retired proactive island."""
 
-from agent.migrations.proactive_island.handoff import (
+from scripts.proactive_island.handoff import (
     AdapterPlan,
     HandoffAdapter,
     HandoffBlocked,
@@ -10,7 +10,7 @@ from agent.migrations.proactive_island.handoff import (
     apply_handoff,
     preflight_handoff,
 )
-from agent.migrations.proactive_island.inventory import (
+from scripts.proactive_island.inventory import (
     Inventory,
     InventoryBlock,
     LegacyFact,
