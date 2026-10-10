@@ -200,6 +200,7 @@ export function useDesktopChatController() {
   const tailRequestsRef = useRef(new Map<string, { controller: AbortController; promise: Promise<SessionTail> }>());
   const chatReady = shellState?.chatReady === true;
   const navigationPins = useNavigationPins(chatReady);
+  const reloadPins = navigationPins.reload;
 
   useEffect(() => {
     activeSessionRef.current = activeSessionId;
@@ -463,7 +464,7 @@ export function useDesktopChatController() {
     closeConnection();
     Effect.runSync(reconnect.reset);
     const protocol = window.location.protocol === "https:" ? "wss" : "ws";
-    const url = `${protocol}://${window.location.host}/ws`;
+    const url = `${protocol}://${window.location.host}/ws?watch_sessions=true`;
     const first = new WebSocket(url);
     socketRef.current = first;
     connectionTaskRef.current = Effect.runFork(Effect.gen(function*() {
@@ -502,7 +503,10 @@ export function useDesktopChatController() {
                 return;
               }
               const other = parseChatFrame(value);
-              if (other.type === "error") {
+              if (other.type === "sessions.changed") {
+                void loadSessionsSafely();
+                void reloadPins();
+              } else if (other.type === "error") {
                 setMessages((currentMessages) => currentMessages.filter((item) => item.id !== other.request_id));
                 reportError(new Error(other.message), "error");
               }
@@ -546,7 +550,7 @@ export function useDesktopChatController() {
       }
     }).pipe(Effect.catchAll(() => Effect.sync(() => setConnectionError("暂时无法连接，请重试")))));
     return first;
-  }, [cacheSessionTail, closeConnection, loadMessagesSafely, loadSessionsSafely, reconnect, reportError, setMessages, setReplyAvailable, setStatusLive, setTimelineMessages]);
+  }, [cacheSessionTail, closeConnection, loadMessagesSafely, loadSessionsSafely, reconnect, reloadPins, reportError, setMessages, setReplyAvailable, setStatusLive, setTimelineMessages]);
 
   useEffect(() => {
     // 只等待首次启动就绪；此后的断线与恢复由聊天连接负责。

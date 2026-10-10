@@ -1136,6 +1136,27 @@ class MessageCatalog:
             rows = self._log._connection.execute("SELECT key, attributes FROM sessions ORDER BY key").fetchall()
         return MappingProxyType({row["key"]: decode_attributes(row["attributes"]) for row in rows})
 
+    async def follow_metadata(self) -> AsyncGenerator[None, None]:
+        """订阅目录元数据失效；先登记再通知首次重读，后续仅响应本实例管理提交。
+
+        通知可以合并，消费者必须重读当前目录；不携带事实副本或写入权限。
+        普通消息追加不唤醒，关闭日志结束订阅。进程外改动在重新订阅时读取。
+        """
+        event = asyncio.Event()
+        with self._log._listener_lock:
+            if self._log._closed:
+                return
+            self._log._listeners[event] = (asyncio.get_running_loop(), ())
+        try:
+            while not self._log._closed:
+                event.clear()
+                yield None
+                await event.wait()
+        finally:
+            with self._log._listener_lock:
+                self._log._listeners.pop(event, None)
+                self._log._notify_in_flight.discard(event)
+
     async def follow(
         self, *, poll_interval: float | None = None, wake_on: type[Body] | tuple[type[Body], ...] | None = None,
     ) -> AsyncGenerator[Mapping[str, int]]:
