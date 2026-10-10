@@ -20,7 +20,11 @@ from types import SimpleNamespace
 from unittest.mock import patch
 
 from docker.debug import source_reply_boundaries as fixture
-from agent.plugin_composition import CHAT_MODELS, CompositionRoot, PluginRuntime
+from agent.plugin_composition import (
+    CompositionRoot,
+    PluginRuntime,
+)
+from plugins.models.contract import CHAT_MODELS
 from agent.plugin_composition.artifacts import ARTIFACT_READ
 from agent.plugin_composition.bindings import BINDINGS, Bindings
 from agent.plugin_composition.channels import ChannelInboundMessage

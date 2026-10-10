@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import asdict
-from agent.plugin_composition.models import ModelCallStats
+from plugins.models.contract import ModelCallStats
 
 import hashlib
 import json

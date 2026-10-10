@@ -17,7 +17,8 @@ from agent.plugin_composition.messages import (
     MessageReader,
     SessionAttributes,
 )
-from agent.plugin_composition.models import MODEL_CATALOG, ChatModelSelection
+from agent.plugin_composition.models import ChatModelSelection
+from plugins.models.contract import MODEL_CATALOG
 from agent.plugin_composition.tasks import (
     RESTART_GATE,
     TASKS,

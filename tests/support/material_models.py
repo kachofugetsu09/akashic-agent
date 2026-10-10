@@ -10,9 +10,7 @@ from pathlib import Path
 from typing import Any
 
 from agent.plugin_composition import (
-    CHAT_MODELS,
     EMBEDDINGS,
-    MODEL_DRIVERS,
     BoundModelDescriptor,
     CapabilitySources,
     CompositionRoot,
@@ -22,8 +20,12 @@ from agent.plugin_composition import (
     EmbeddingSpaceDescriptor,
     LLMResponse,
     ModelCapabilities,
-    ModelDriverDefinition,
     ModelRequest,
+)
+from plugins.models.contract import (
+    CHAT_MODELS,
+    MODEL_DRIVERS,
+    ModelDriverDefinition,
 )
 from plugins.models.settings import (
     AddConnection,

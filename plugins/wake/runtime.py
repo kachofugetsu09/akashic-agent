@@ -1,8 +1,6 @@
 from __future__ import annotations
 
-from agent.plugin_composition.models import (
-    MODEL_CATALOG,
-)
+from plugins.models.contract import MODEL_CATALOG
 
 import asyncio
 import hashlib

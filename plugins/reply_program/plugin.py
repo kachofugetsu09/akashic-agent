@@ -8,7 +8,8 @@ from plugins.context.contract import MaterialKind
 from agent.plugin_composition.messages import MessageReader
 from agent.plugin_composition.tasks import Task
 
-from agent.plugin_composition import CHAT_MODELS, Context
+from agent.plugin_composition import Context
+from plugins.models.contract import CHAT_MODELS
 from agent.plugin_composition.artifacts import ARTIFACT_READ
 from agent.plugin_composition.messages import MESSAGE_WRITERS, OWNER_STATE
 from plugins.reply_program.contract import (

@@ -3,13 +3,15 @@ from __future__ import annotations
 from importlib import import_module
 
 from agent.plugin_composition import (
-    CHAT_MODELS,
     EMBEDDINGS,
-    MODEL_CATALOG,
-    MODEL_DRIVERS,
     Context,
 )
-from agent.plugin_composition.models import MODEL_CALL_STATS
+from plugins.models.contract import (
+    CHAT_MODELS,
+    MODEL_CATALOG,
+    MODEL_DRIVERS,
+)
+from plugins.models.contract import MODEL_CALL_STATS
 from plugins.gateway.contract import RpcMethod
 from plugins.ui.contract import UI
 

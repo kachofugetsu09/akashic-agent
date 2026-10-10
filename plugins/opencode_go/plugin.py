@@ -1,6 +1,7 @@
 from __future__ import annotations
 
-from agent.plugin_composition import MODEL_DRIVERS, Context
+from agent.plugin_composition import Context
+from plugins.models.contract import MODEL_DRIVERS
 from plugins.ui.contract import UI
 
 from .driver import definition

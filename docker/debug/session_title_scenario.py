@@ -12,7 +12,11 @@ from tempfile import TemporaryDirectory
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
-from agent.plugin_composition import CHAT_MODELS, CompositionRoot, PluginRuntime
+from agent.plugin_composition import (
+    CompositionRoot,
+    PluginRuntime,
+)
+from plugins.models.contract import CHAT_MODELS
 from agent.plugin_composition.messages import SESSION_ADMIN, SessionAdmin
 from agent.plugin_composition.models import LLMResponse, TransportError
 from agent.plugin_contracts import ContentPart, ContentReferences, Input

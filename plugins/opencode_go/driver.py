@@ -32,7 +32,6 @@ from agent.plugin_composition import (
     LLMResponse,
     InvalidRequestError,
     ModelCapabilities,
-    ModelDriverDefinition,
     ModelError,
     ModelRequest,
     ModelTimeoutError,
@@ -43,6 +42,7 @@ from agent.plugin_composition import (
     ToolCall,
     TransportError,
 )
+from plugins.models.contract import ModelDriverDefinition
 
 
 _DRIVER_ID = "opencode-go"

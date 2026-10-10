@@ -19,7 +19,6 @@ from agent.plugin_composition.messages import (
     OwnerTransaction,
 )
 from agent.plugin_composition.models import (
-    BoundChatModel,
     ContextLengthError,
     EmptyResponseError,
     OutputLengthError,
@@ -28,6 +27,7 @@ from agent.plugin_composition.models import (
     ModelRequest,
     StreamCallback,
 )
+from plugins.models.contract import BoundChatModel
 from agent.plugin_contracts import (
     CallRef,
     ContentPart,

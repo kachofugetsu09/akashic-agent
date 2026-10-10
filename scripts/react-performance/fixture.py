@@ -276,7 +276,7 @@ async def run(mode, count, full_history=False):
         ) as (log, host):
             model_store = model_descriptor = None
             if full_history:
-                from agent.plugin_composition import CHAT_MODELS
+                from plugins.models.contract import CHAT_MODELS
 
                 root = host.live_root
                 if root is None:

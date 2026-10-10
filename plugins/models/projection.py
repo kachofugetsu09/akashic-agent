@@ -10,12 +10,12 @@ from typing import Any, cast
 from agent.plugin_composition import ServiceKey
 from agent.plugin_composition.messages import MessageSnapshot
 from agent.plugin_composition.models import (
-    BoundChatModel,
     LLMResponse,
     ModelContinuation,
     ModelRequest,
     read_content_refs,
 )
+from plugins.models.contract import BoundChatModel
 from agent.plugin_contracts import (
     CallRef,
     ContentPart,

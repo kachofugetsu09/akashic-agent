@@ -16,7 +16,13 @@ from docker.debug.orthology_optional_requests import install_ports
 from plugins.akashic_clients import plugin as clients
 from plugins.channels import plugin as channels
 
-from agent.plugin_composition.models import MODEL_CALL_STATS, BoundModelDescriptor, CapabilitySources, ModelCapabilities, ModelRequest
+from agent.plugin_composition.models import (
+    BoundModelDescriptor,
+    CapabilitySources,
+    ModelCapabilities,
+    ModelRequest,
+)
+from plugins.models.contract import MODEL_CALL_STATS
 from bootstrap.web_shell import create_web_shell_app
 from plugins.models.store import ModelsStore
 

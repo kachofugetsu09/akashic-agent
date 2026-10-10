@@ -32,10 +32,10 @@ from plugins.openai_compatible import driver
 from core.common.file_io import run_file_io
 from agent.plugin_composition import InvalidRequestError, ModelUnavailableError, ModelError
 from agent.plugin_composition.models import DriverChatModel, LLMResponse
-from agent.plugin_composition import (
+from agent.plugin_composition import CompositionRoot
+from plugins.models.contract import (
     CHAT_MODELS,
     MODEL_DRIVERS,
-    CompositionRoot,
 )
 from plugins.models.settings import MODEL_SETTINGS, AddConnection, AddModel, CreateConnectionWithModel, SetDefaultModel
 from plugins.models.state import ModelsState

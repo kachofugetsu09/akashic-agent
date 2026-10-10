@@ -9,10 +9,20 @@ from core.common.file_io import run_file_io
 
 from pydantic import BaseModel, ConfigDict, Field
 
-from agent.plugin_composition import CHAT_MODELS, RUNTIME_STARTED, RUNTIME_STOPPING, Context
-from agent.plugin_composition.models import (
-    BoundChatModel, ContextLengthError, ModelRequest, ModelTimeoutError, RateLimitError, TransportError,
+from agent.plugin_composition import (
+    RUNTIME_STARTED,
+    RUNTIME_STOPPING,
+    Context,
 )
+from plugins.models.contract import CHAT_MODELS
+from agent.plugin_composition.models import (
+    ContextLengthError,
+    ModelRequest,
+    ModelTimeoutError,
+    RateLimitError,
+    TransportError,
+)
+from plugins.models.contract import BoundChatModel
 from plugins.context.contract import ReductionStatus
 from agent.plugin_composition.bindings import BINDINGS
 from agent.plugin_composition.messages import MESSAGE_CATALOG, OWNER_STATE

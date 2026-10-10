@@ -17,14 +17,11 @@ from pydantic import (
 
 from agent.plugin_composition.models import ModelControlUnavailable
 from agent.plugin_composition.models import (
-    MODEL_CATALOG,
-    MODEL_CALL_STATS,
     AuthenticationError,
     ChatModelSelection,
     CapabilitySources,
     DriverUnavailableError,
     DiscoveredModel,
-    ModelCallStats,
     ModelCapabilities,
     ModelCatalogSnapshot,
     ModelError,
@@ -34,6 +31,11 @@ from agent.plugin_composition.models import (
     RateLimitError,
     RevisionConflictError,
     TransportError,
+)
+from plugins.models.contract import (
+    MODEL_CATALOG,
+    MODEL_CALL_STATS,
+    ModelCallStats,
 )
 from agent.plugin_composition.model import ServiceKey
 from plugins.gateway.contract import RpcMethod

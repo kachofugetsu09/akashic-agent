@@ -37,7 +37,10 @@ async def application(tmp_path, *, replying, start=True, missing_tool=False, dis
         "react",
         "turn_projection",
         "reply_program",
-        *(("reply", "tool_search") if replying else ()),
+        "models",
+        "reply",
+        "standard_tools",
+        *(("tool_search",) if replying else ()),
     ):
         shutil.copytree(
             Path(__file__).parents[1] / "plugins" / name,
@@ -74,7 +77,8 @@ from contextlib import asynccontextmanager
 from functools import partial
 from types import SimpleNamespace
 from pathlib import Path
-from agent.plugin_composition import CHAT_MODELS, ServiceKey
+from agent.plugin_composition import ServiceKey
+from plugins.models.contract import CHAT_MODELS
 from agent.plugin_composition.models import BoundModelDescriptor, CapabilitySources, LLMResponse, ModelCapabilities, ToolCall
 from plugins.models.projection import MODEL_CALLS, MODEL_PROJECTION, ProjectionOwner, MODEL_MESSAGE_CHECKS, MessageChecksOwner
 from plugins.models.content import MODEL_CONTENT, ContentOwner
@@ -186,6 +190,8 @@ async def apply(ctx):
         installed_cache_root=tmp_path / "home/cache",
         message_log=log,
         channel_attachment_store=artifacts,
+        # 制品供接口与真实组件组装；fixture 独占模型、工具与清理的提供。
+        disabled_builtin_plugins=frozenset({"models", "standard_tools", *(() if replying else ("reply",))}),
     )
     try:
         await host.load_all()

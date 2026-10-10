@@ -15,7 +15,6 @@ from collections.abc import Callable, Mapping
 from pydantic import BaseModel, ConfigDict, Field
 
 from agent.plugin_composition import (
-    CHAT_MODELS,
     RUNTIME_STARTED,
     RUNTIME_STOPPING,
     Context,
@@ -23,9 +22,18 @@ from agent.plugin_composition import (
     FiberState,
     ModelRequest,
 )
+from plugins.models.contract import CHAT_MODELS
 from agent.plugin_composition.bindings import BINDINGS, Bindings
 from agent.plugin_composition.messages import MESSAGE_CATALOG
-from agent.plugin_composition.models import BoundChatModel, ChatModels, ContextLengthError, LLMResponse, ModelError
+from agent.plugin_composition.models import (
+    ContextLengthError,
+    LLMResponse,
+    ModelError,
+)
+from plugins.models.contract import (
+    BoundChatModel,
+    ChatModels,
+)
 from infra.persistence.json_store import atomic_write_text
 from core.common.file_io import run_file_io
 from agent.plugin_composition.messages import MessageCatalog

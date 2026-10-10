@@ -18,9 +18,9 @@ from agent.plugin_composition import (
     DriverConnectionDescriptor,
     DriverEmbeddingModel,
     EmbeddingSpaceDescriptor,
-    ModelDriverDefinition,
     ModelUnavailableError,
 )
+from plugins.models.contract import ModelDriverDefinition
 
 from .auth import finish_auth, start_auth
 from .catalog import discover as discover_catalog

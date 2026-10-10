@@ -126,11 +126,11 @@ async def run(args: argparse.Namespace) -> dict:
     from plugins.models.state import _BoundChat, _retry_budget
     from plugins.models.store import ModelsStore, _request_digest
     from plugins.openai_compatible import driver
-    from agent.plugin_composition import (
-        CHAT_MODELS,
-        MODEL_DRIVERS,
-        CompositionRoot,
-    )
+    from agent.plugin_composition import CompositionRoot
+    from plugins.models.contract import (
+    CHAT_MODELS,
+    MODEL_DRIVERS,
+)
     from plugins.models.settings import (
         MODEL_SETTINGS, AddConnection, AddModel, CreateConnectionWithModel, SetDefaultModel,
     )
