@@ -46,7 +46,7 @@ from plugins.delivery.contract import (
     DELIVERY_GUARDED_START as DELIVERY,
     DELIVERY_SENDERS,
 )
-from agent.plugin_contracts.models import MODEL_SELECTION
+from plugins.models.contract import MODEL_SELECTION
 from plugins.conversation.contract import (
     CHECK_ORIGIN,
 )

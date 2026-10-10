@@ -12,7 +12,7 @@ from agent.plugin_composition.models import BoundChatModel, StreamCallback
 from agent.plugin_contracts import Message
 from plugins.content.contract import ContentView
 from plugins.context.contract import ContextBuilder, SummaryReducer
-from agent.plugin_contracts.models import MessageProjection
+from plugins.models.contract import MessageProjection
 from agent.plugin_contracts.tools import ToolMenu, StartCheck
 
 Materials = Mapping[str, object]

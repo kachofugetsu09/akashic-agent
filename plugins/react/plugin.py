@@ -46,7 +46,7 @@ from plugins.context.contract import (
     ContextBuilder as ContextBuilder,
     SummaryReducer as SummaryReducer,
 )
-from agent.plugin_contracts.models import (
+from plugins.models.contract import (
     MessageProjection as MessageProjection,
 )
 from plugins.react.contract import (

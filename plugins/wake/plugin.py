@@ -22,7 +22,7 @@ from agent.plugin_composition.messages import (
 from agent.plugin_composition.tasks import TASKS
 from plugins.timer.contract import TIMERS
 from plugins.ui.contract import UI
-from agent.plugin_contracts.models import MODEL_CONTENT, MODEL_SELECTION
+from plugins.models.contract import MODEL_CONTENT, MODEL_SELECTION
 from agent.plugin_composition.models import MODEL_CATALOG
 
 from ._boundary import (

@@ -28,7 +28,7 @@ from agent.plugin_contracts import (
     ToolResult,
     json_value,
 )
-from agent.plugin_contracts.models import (
+from plugins.models.contract import (
     ContentTransform,
     PrepareContent,
     RenderedContent,

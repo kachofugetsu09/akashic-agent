@@ -32,7 +32,7 @@ from agent.plugin_contracts import (
     Message,
     Output,
 )
-from agent.plugin_contracts.models import (
+from plugins.models.contract import (
     MODEL_SELECTION as MODEL_SELECTION,
     ModelSelection as ModelSelection,
 )

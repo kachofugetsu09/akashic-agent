@@ -19,7 +19,7 @@ from plugins.mcp.contract import MCP_DETAIL, MCP_SERVERS
 from plugins.ui.contract import (
     WEB_UI as WEB_UI,
 )
-from agent.plugin_contracts.models import (
+from plugins.models.contract import (
     MODEL_SELECTION as MODEL_SELECTION,
     ModelSelection as ModelSelectionReader,
 )

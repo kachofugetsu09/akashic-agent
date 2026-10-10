@@ -13,7 +13,7 @@ from agent.plugin_composition.messages import MessageReader, MessageWriters, Own
 from agent.plugin_composition.models import BoundChatModel, ChatModels, ModelRequest
 from agent.plugin_composition.tasks import Task
 from plugins.context.contract import MaterialView, ReductionStatus
-from agent.plugin_contracts.models import PrepareContent
+from plugins.models.contract import PrepareContent
 from agent.plugin_contracts import ContentPart, Input, Message, Output
 
 from plugins.sources.contract import (

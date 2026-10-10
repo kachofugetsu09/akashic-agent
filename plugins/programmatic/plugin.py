@@ -28,7 +28,7 @@ from agent.plugin_contracts import (
     Input,
     Output,
 )
-from agent.plugin_contracts.models import MODEL_SELECTION
+from plugins.models.contract import MODEL_SELECTION
 from plugins.content.contract import (
     CONTENT as CONTENT,
 )
