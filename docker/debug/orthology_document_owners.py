@@ -11,7 +11,7 @@ from agent.plugin_composition.messages import MESSAGE_CATALOG
 from session.log import MessageCatalog, MessageLog
 from agent.plugin_composition.model import FiberState, PluginRuntime
 from agent.plugin_contracts.context import CONTEXT, MATERIALS_V4 as MATERIALS
-from agent.plugin_contracts.inspection import DOCUMENTS, Document
+from plugins.runtime_inspection.contract import DOCUMENTS, Document
 from plugins.context import plugin as context
 from plugins.markdown_memory import plugin as memory
 from plugins.prompt import plugin as prompt

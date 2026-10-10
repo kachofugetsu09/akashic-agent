@@ -4,7 +4,7 @@ from plugins.assets.contract import INSTALLED_ASSETS
 from agent.plugin_composition.bindings import BINDINGS
 from agent.plugin_composition.tasks import TASKS
 from agent.plugin_composition.messages import OWNER_STATE, SESSION_ADMISSION
-from agent.plugin_contracts.directories import WORKING_DIRECTORY
+from plugins.standard_tools.contract import WORKING_DIRECTORY
 
 from ._materials_boundary import MATERIALS
 from ._tool_boundary import TOOLS

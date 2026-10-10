@@ -18,9 +18,6 @@ import yaml
 from agent.host_bridge.factory import build_requirements_checker
 from plugins.assets.contract import InstalledAsset
 from agent.plugin_composition.shell_runtime import resolve_shell
-from agent.plugin_contracts.inspection import (
-    SKILL_INSPECTION as SKILL_INSPECTION,
-)
 
 SkillSource = Literal["plugin", "workspace", "user"]
 
@@ -467,7 +464,6 @@ class SkillInspectionProvider:
 
 
 __all__ = [
-    "SKILL_INSPECTION",
     "SkillCatalog",
     "SkillCatalogParser",
     "SkillInspectionProvider",

@@ -16,8 +16,8 @@ from agent.plugin_contracts import ContentPart, Message, json_value
 
 from ._materials_boundary import MATERIALS
 from ._tool_boundary import TOOLS, CallSource, ToolRef, ToolResultValue
+from .contract import SKILL_INSPECTION
 from .skill_catalog import (
-    SKILL_INSPECTION,
     SkillCatalog,
     SkillCatalogParser,
     SkillInspectionProvider,
