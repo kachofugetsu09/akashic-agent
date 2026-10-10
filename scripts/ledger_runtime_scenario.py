@@ -8,6 +8,7 @@ import sqlite3
 import subprocess
 import sys
 import tempfile
+import threading
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
@@ -72,6 +73,16 @@ async def apply(ctx):
             "provider_message_id": identity, "session_key_override": "probe:room"}), "sender", "room")
         assert await ports.durable_inbound.reserve(raw)
         assert await ports.ingress.admit(raw)
+    async def hold(entered, release):
+        write = writer("probe:room")
+        def commit(tx):
+            result = tx.append(write, "concurrent", Input(()))
+            entered.set()
+            if not release.wait(20):
+                raise TimeoutError("Ledger 换代没有释放并发写入")
+            return result
+        return await owner.transact_async(commit)
+    await ctx.provide(ServiceKey("scenario.hold"), hold)
     await ctx.provide(ServiceKey("scenario.receive"), receive)
 '''
 
@@ -105,12 +116,23 @@ async def child(folder, phase):
             before = catalog.reader('probe:room').snapshot()
             observer = host._active_generations['observer'].fiber
             # 安装同一真实 Ledger 的新 generation；数据和无关 Fiber 必须保持。
-            await host.install(source=str(folder / 'ledger'), marketplace='lab', ref_name='',
-                               sparse_paths=[], update_id='ledger-replace')
+            entered, release = threading.Event(), threading.Event()
+            async def writing():
+                async with root.context.open_service(ServiceKey('scenario.hold')) as port:
+                    return await port(entered, release)
+            pending = asyncio.create_task(writing())
+            try:
+                assert await asyncio.to_thread(entered.wait, 10)
+                await host.install(source=str(folder / 'ledger'), marketplace='lab', ref_name='',
+                                   sparse_paths=[], update_id='ledger-replace')
+                assert not pending.done()
+            finally:
+                release.set()
+            committed = await pending
             await host.wait_idle()
             assert host.read_update('ledger-replace').state == 'active'
             assert host._active_generations['observer'].fiber is observer
-            assert root.context.require(MESSAGE_CATALOG).reader('probe:room').snapshot() == before
+            assert root.context.require(MESSAGE_CATALOG).reader('probe:room').snapshot() == (*before, committed)
             await receive('fourth')
             await host.uninstall('ledger@lab')
             await host.wait_idle()
@@ -163,9 +185,9 @@ async def parent(folder):
     with sqlite3.connect(workspace / 'sessions.db') as db:
         assert db.execute('PRAGMA integrity_check').fetchone() == ('ok',)
         after = db.execute('SELECT * FROM messages ORDER BY seq').fetchall()
-        assert after[:4] == before and len(after) == 8
+        assert after[:4] == before and len(after) == 9
     print(json.dumps({'commit_before_kill': True, 'recovery_no_duplicate': True, 'four_rounds': True,
-                      'ledger_replaced_and_removed': True, 'observer_unchanged': True, 'rows_preserved': True}))
+                      'ledger_replaced_and_removed': True, 'observer_unchanged': True, 'rows_preserved': True, 'write_during_drain': True}))
 
 if len(sys.argv) > 1:
     asyncio.run(child(Path(sys.argv[1]), sys.argv[2]))
