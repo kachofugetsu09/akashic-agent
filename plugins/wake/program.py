@@ -15,7 +15,9 @@ from agent.plugin_contracts.models import (
     ModelContent as ModelContent,
 )
 from agent.plugin_contracts.sources import SOURCE_CHECK_V2 as SOURCE_CHECK
-from agent.plugin_contracts.reply import REPLY_EXECUTE_V4 as REPLY_EXECUTE
+from plugins.reply_program.contract import (
+    REPLY_EXECUTE_V4 as REPLY_EXECUTE,
+)
 
 from .messages import HINTS, render
 from .request import STAGE_TOOLS, Request, WakeFailure, read_phase

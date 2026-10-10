@@ -11,7 +11,9 @@ from agent.plugin_composition.tasks import Task
 from agent.plugin_composition import CHAT_MODELS, Context
 from agent.plugin_composition.artifacts import ARTIFACT_READ
 from agent.plugin_composition.messages import MESSAGE_WRITERS, OWNER_STATE
-from agent.plugin_contracts.reply import REPLY_EXECUTE_V4
+from plugins.reply_program.contract import (
+    REPLY_EXECUTE_V4,
+)
 from agent.plugin_contracts.sources import SourceGuard
 
 from .inputs import (

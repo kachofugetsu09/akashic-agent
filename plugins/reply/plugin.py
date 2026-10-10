@@ -26,7 +26,9 @@ from agent.plugin_composition.messages import (
 from agent.plugin_composition.models import StreamCallback
 from agent.plugin_composition.tasks import RESTART_GATE, Task
 from agent.plugin_contracts import Message
-from agent.plugin_contracts.reply import REPLY_EXECUTE_V4 as REPLY_EXECUTE
+from plugins.reply_program.contract import (
+    REPLY_EXECUTE_V4 as REPLY_EXECUTE,
+)
 from agent.plugin_contracts.sources import (
     CONVERSATION_COMMANDS as CONVERSATION_COMMANDS,
     SOURCES_V5 as SOURCES,
@@ -37,8 +39,8 @@ from agent.plugin_contracts.sources import (
 from core.common.diagnostic_log import log_event
 from agent.plugin_contracts.tools import ALL_TOOLS, TOOL_LOADING_PRESENTATION
 
-from .api import REPLY_PROGRAM
-from .completion import REPLY_COMPLETION
+from .contract import REPLY_PROGRAM_V3 as REPLY_PROGRAM
+from .contract import REPLY_COMPLETION
 from .follow import follow
 from .status import REPLY_STATUS, ReplyState
 

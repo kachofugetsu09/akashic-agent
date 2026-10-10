@@ -19,7 +19,7 @@ from agent.plugin_contracts.delivery import (
     Selection as Selection,
     Senders as Senders,
 )
-from agent.plugin_contracts.reply import (
+from plugins.reply.contract import (
     REPLY_PROGRAM_V3 as REPLY_PROGRAM,
 )
 from agent.plugin_contracts.sources import (

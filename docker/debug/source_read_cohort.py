@@ -19,7 +19,9 @@ from agent.plugin_composition.model import FiberState
 from plugins.gateway.contract import CONTROL_FRAMES
 
 from agent.plugin_composition.messages import MessageReader
-from agent.plugin_contracts.reply import REPLY_COMPLETION
+from plugins.reply.contract import (
+    REPLY_COMPLETION,
+)
 from agent.plugin_contracts.sources import SOURCES_V5, SOURCE_CHANGED_V3
 from plugins.programmatic.control import PROGRAMMATIC, AdmitParams, SendParams, PauseParams, ResumeParams, ResultParams
 from plugins.programmatic.result import TURN_PROJECTION, read_result

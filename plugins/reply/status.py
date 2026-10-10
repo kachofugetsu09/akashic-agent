@@ -7,7 +7,7 @@ from dataclasses import asdict, replace
 
 from agent.plugin_composition.models import StreamCallback
 from agent.plugin_composition.tasks import Task
-from agent.plugin_contracts.reply import (
+from plugins.reply.contract import (
     REPLY_STATUS as REPLY_STATUS,
     ReplyActivity as ReplyActivity,
     ReplyPreview as ReplyPreview,

@@ -111,7 +111,6 @@ PLUGIN_ALLOWED_MODULES = frozenset({
     "agent.plugin_contracts.sources",
     "agent.plugin_contracts.tools",
     "agent.plugin_contracts.models",
-    "agent.plugin_contracts.reply",
     "agent.plugin_composition.message_view",
     "core.common.diagnostic_log",
     # 有界文件工作与取消排空；公开合同见 plugin-v3-capabilities.md。

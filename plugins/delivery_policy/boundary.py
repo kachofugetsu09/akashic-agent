@@ -16,7 +16,7 @@ from agent.plugin_contracts.delivery import (
     FinalOutputTurn as FinalOutputTurn,
     FinalOutputWaiter as FinalOutputWaiter,
 )
-from agent.plugin_contracts.reply import (
+from plugins.reply.contract import (
     REPLY_COMPLETION as REPLY_COMPLETION,
     Completion as Completion,
 )
