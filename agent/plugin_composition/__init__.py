@@ -102,13 +102,9 @@ from agent.plugin_composition.channels import (
 )
 from agent.plugin_composition.claims import EMBEDDING_MEMORY_PLUGIN
 
-from agent.plugin_composition.processes import PROCESSES, PluginProcesses, ProcessCleanupError
 
 __all__ = [
     "load_endpoint_plan",
-    "PROCESSES",
-    "PluginProcesses",
-    "ProcessCleanupError",
     "CompositionError",
     "CompositionReceipt",
     "CompositionRoot",

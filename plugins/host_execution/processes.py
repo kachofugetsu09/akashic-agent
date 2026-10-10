@@ -7,23 +7,15 @@ import json
 from pathlib import Path
 
 from agent.host_bridge.factory import build_shell_process_manager
-from agent.process_runtime import (
-    ExecutionCleanupReport,
-    ExecutionResult,
-    ShellProcessManagerProtocol,
+from plugins.host_execution.contract import (
+    PROCESSES,
 )
+from agent.process_runtime import ExecutionCleanupReport, ExecutionResult, ShellProcessManagerProtocol
 from agent.plugin_composition.context import Context
-from agent.plugin_composition.model import ServiceKey
-
-
-class ProcessCleanupError(RuntimeError):
-    def __init__(self, report: ExecutionCleanupReport):
-        self.report = report
-        super().__init__(f"进程清理未确认: {report.failures}")
 
 
 class PluginProcesses:
-    """实际进程由宿主统一保留；插件只操作自己命名的进程集合。"""
+    """实际进程由本 generation 保留；插件只操作自己命名的进程集合。"""
 
     def __init__(
         self, *, formal: bool = True,
@@ -36,11 +28,6 @@ class PluginProcesses:
         self._operations = 0
         self._drained = asyncio.Event()
         self._drained.set()
-
-    def start(self) -> None:
-        if self._closed and (self._manager is not None or self._operations):
-            raise RuntimeError("旧进程资源尚未确认清理")
-        self._closed = False
 
     @contextmanager
     def _operation(self, ctx: Context, key: str) -> Generator[str]:
@@ -105,8 +92,5 @@ class PluginProcesses:
         if self._manager is not None:
             report = await self._manager.shutdown()
             if report.failures:
-                raise ProcessCleanupError(report)
+                raise RuntimeError(f"进程清理未确认: {report.failures}")
             self._manager = None
-
-
-PROCESSES = ServiceKey[PluginProcesses]("core.processes")

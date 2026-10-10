@@ -10,9 +10,10 @@ from agent.plugin_composition.execution import EXECUTION
 from agent.plugin_composition.host import HOST_INFO
 from core.common.file_io import run_file_io
 from infra.persistence.json_store import load_json, atomic_save_json
-from plugins.host_execution.contract import HOST_STATUS, WORKLOAD_CONTROLLER
+from plugins.host_execution.contract import HOST_STATUS, WORKLOAD_CONTROLLER, PROCESSES
 from agent.host_bridge.factory import HostBridgeRpcError, build_file_bridge
 from plugins.ui.contract import UI
+from .processes import PluginProcesses
 from .monitor import HostBridgeStatus, _monitor
 from . import dashboard
 from .controller_access import ControllerAccess, cleanup_workloads_for_boot
@@ -28,6 +29,9 @@ entrypoints = {"workload-controller": "controller.main"}
 
 async def apply(ctx: Context) -> None:
     """先核对旧候选清理回执，再发布实际 Context 的控制授权。"""
+    processes = PluginProcesses(formal=not ctx.require(HOST_INFO).validation)
+    await ctx.effect(lambda: processes.close, label="host.processes")
+    await ctx.provide(PROCESSES, processes)
     await start_monitor(ctx)
     socket = os.environ.get("AKASHIC_WORKLOAD_SOCKET", "").strip()
     controller = None if not socket else UnixWorkloadController(Path(socket))

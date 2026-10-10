@@ -12,7 +12,8 @@ from typing import Literal, cast
 
 from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_validator
 
-from agent.plugin_composition import PROCESSES, Context, ServiceKey
+from plugins.host_execution.contract import PROCESSES
+from agent.plugin_composition import Context, ServiceKey
 from agent.plugin_composition.bindings import BINDINGS
 from agent.plugin_composition.messages import MessageReader
 from agent.process_runtime import (
