@@ -293,6 +293,10 @@ note = "公共结构合同；实际状态与生命周期由提供方插件拥有
 role = "seam"
 note = "公共结构合同；实际状态与生命周期由提供方插件拥有"
 
+[capabilities."scheduler.inspection.v3"]
+role = "seam"
+note = "Scheduler 异步只读快照；查询取消排空由提供方插件拥有"
+
 [capabilities."tools.bind-saved.v1"]
 role = "seam"
 note = "公共结构合同；实际状态与生命周期由提供方插件拥有"
@@ -308,6 +312,10 @@ note = "公共结构合同；实际状态与生命周期由提供方插件拥有
 [capabilities."core.plugin_config.v1"]
 role = "core"
 note = "按实际 Context 应用自身固定输入；沿 selection CAS 与局部换代，不解释业务字段"
+
+[capabilities."inspection.documents.v1"]
+role = "seam"
+note = "文档 owner 发布有界只读入口；检查插件仅拥有贡献目录"
 
 [capabilities."context.materials.v4"]
 role = "seam"

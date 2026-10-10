@@ -29,8 +29,7 @@ from agent.plugin_contracts.sources import SOURCE_CHECK_V2 as SOURCE_CHECK
 from agent.plugin_contracts.reply import REPLY_EXECUTE_V4 as REPLY_EXECUTE
 
 from .inputs import ALL_TOOLS, CONTENT, DELIVERY, DELIVERY_SENDERS, TOOLS
-from .contract import SCHEDULER_INSPECTION
-from .inspection import SchedulerInspectionProvider
+from .inspection import SCHEDULER_INSPECTION, SchedulerInspectionProvider
 from .runtime import SchedulerRuntime
 from .store import JobStore
 from .tools import CancelInput, ListSchedules, ScheduleInput, ScheduleTool

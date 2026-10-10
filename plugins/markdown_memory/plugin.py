@@ -40,7 +40,7 @@ from .llm_json import load_json_object_loose
 if TYPE_CHECKING:
     from agent.plugin_composition.messages import MessageReader
 
-from plugins.runtime_inspection.contract import DOCUMENTS, Document
+from agent.plugin_contracts.inspection import DOCUMENTS, Document
 
 from .store import DEFAULT_SELF_MD, MEMORY_WRITES, MarkdownProfileStore, content_digest
 

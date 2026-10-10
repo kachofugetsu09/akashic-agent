@@ -112,6 +112,7 @@ PLUGIN_ALLOWED_MODULES = frozenset({
     "agent.plugin_contracts.turns",
     "agent.plugin_contracts.delivery",
     "agent.plugin_contracts.compaction",
+    "agent.plugin_contracts.inspection",
     "agent.plugin_contracts.proactive",
     "agent.plugin_contracts.react",
 
