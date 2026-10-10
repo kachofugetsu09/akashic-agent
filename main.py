@@ -22,6 +22,8 @@ from pathlib import Path
 from typing import Any, cast
 from uuid import uuid4
 
+_DISTRIBUTION_COMMANDS = frozenset({"dashboard", "workload-controller"})
+_MANAGEMENT_COMMANDS = frozenset({"plugin-install", "plugin-status", "plugin-uninstall"})
 _DEFAULT_WORKSPACE = "~/.akashic/workspace"
 _PLUGIN_ROLLOUT_OWNER_TURN_ENV = "AKASHIC_PLUGIN_ROLLOUT_OWNER_TURN"
 _AGENT_INTERNAL_PLUGIN_COMMANDS = frozenset(
@@ -199,7 +201,7 @@ from agent.supervisor import RESTART_EXIT_CODE, run_supervisor
 from agent.plugins.doctor import format_plugin_doctor_report, run_plugin_doctor
 from agent.plugins.manifest import set_plugin_enabled
 from bootstrap.app import build_app_runtime
-from agent.plugins.entrypoints import invoke_plugin_command
+from agent.plugins.entrypoints import invoke_plugin_command, invoke_distribution_command
 from bootstrap.init_workspace import InitSummary, init_workspace
 from bootstrap.runtime_readiness import RuntimeReadiness
 from core.net.http import SharedHttpResources
@@ -693,10 +695,20 @@ if __name__ == "__main__":
                 index = command_args.index(flag)
                 del command_args[index:index + 2]
         try:
-            sys.exit(asyncio.run(invoke_plugin_command(args[0], tuple(command_args),
-                workspace=workspace, config_path=Path(config_path))))
+            if args[0] in _DISTRIBUTION_COMMANDS:
+                configured = os.environ.get("AKASHIC_PLUGIN_DISTRIBUTION")
+                result = invoke_distribution_command(args[0], tuple(command_args),
+                    distribution=Path(configured) if configured else None,
+                    workspace=workspace, config_path=Path(config_path))
+            else:
+                result = invoke_plugin_command(args[0], tuple(command_args),
+                    workspace=workspace, config_path=Path(config_path))
+            sys.exit(asyncio.run(result))
         except (LookupError, ValueError) as exc:
             print(str(exc), file=sys.stderr)
+            if isinstance(exc, LookupError) and args[0] in _MANAGEMENT_COMMANDS:
+                print("管理命令需要运行中的 Gateway。用 plugin-doctor 查看实际 ID，运行 "
+                      "plugin-enable gateway@<marketplace> 后重启实例。", file=sys.stderr)
             sys.exit(2)
 
     if "--inspect-modules" in args:

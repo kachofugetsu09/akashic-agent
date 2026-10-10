@@ -17,7 +17,7 @@ from agent.plugins.distribution_sources import distribution_plugin_sources
 from agent.plugins.importer import FreshPluginImporter
 from agent.plugins.public_contracts import public_contracts
 from agent.plugins.selection import PluginSelection
-from agent.plugins.source_resolver import ResolvedPluginSource
+from agent.plugins.source_resolver import ResolvedPluginSource, resolve_plugin_sources
 from agent.plugins.static_manifest import load_static_plugin_manifest
 
 
@@ -53,10 +53,12 @@ async def invoke_plugin_command(
 
 
 async def invoke_distribution_command(
-    command: str, arguments: tuple[str, ...], *, distribution: Path, workspace: Path, config_path: Path,
+    command: str, arguments: tuple[str, ...], *, distribution: Path | None, workspace: Path, config_path: Path,
 ) -> int:
     """独立宿主命令固定使用镜像来源，不受 workspace 的旧选择影响。"""
-    sources = distribution_plugin_sources(distribution)
+    # 显式镜像路径不合法时直接失败；开发 checkout 固定使用随 Core 的插件源码。
+    sources = (distribution_plugin_sources(distribution) if distribution is not None else
+               resolve_plugin_sources((Path(__file__).resolve().parents[2] / "plugins",)))
     matches: list[tuple[Path, str]] = []
     for source in sources:
         manifest = source.static_manifest

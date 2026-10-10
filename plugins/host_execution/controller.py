@@ -1415,7 +1415,7 @@ def _safe_segment(value: str, label: str) -> str:
 
 async def main(arguments: tuple[str, ...], *, workspace: Path, config_path: Path) -> int:
     parser = argparse.ArgumentParser(description="Akashic Workload Controller")
-    parser.add_argument("--workspace", type=Path, required=True)
+    parser.add_argument("--workspace", type=Path, default=workspace)
     parser.add_argument("--socket", type=Path, required=True)
     parser.add_argument(
         "--docker-socket", type=Path, default=Path("/var/run/docker.sock")

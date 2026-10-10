@@ -157,7 +157,7 @@ async def apply(ctx):
         assert code == 0, (output, error)
         await manager.wait_idle()
         code, output, error = await command("plugin-status")
-        assert code != 0 and "唯一 provider" in error, (output, error)
+        assert code != 0 and "唯一 provider" in error and "plugin-enable gateway@" in error, (output, error)
         assert observer_fiber.context is context
         assert (context.data_root / "applies").read_text() == "apply\n"
         assert core.message_log.reader("kept").snapshot() == before
@@ -173,12 +173,14 @@ async def apply(ctx):
     finally:
         if not stopped:
             await app.shutdown()
+    code, output, error = await command("plugin-status")
+    assert code != 0 and "plugin-enable gateway@" in error, (output, error)
     save_config(workspace_plugin_data_dir(workspace, "gateway", "lab"),
                 {"enabled": False, "listen": "192.0.2.1:9"})
     await stdio(config, workspace, env, sources / "gateway")
     return {"inactive_api_sources": True, "stdio_eof_and_failure_cleanup": True, "published_native_endpoint": True, "remote_commands_under_lock": True,
             "input_and_output_rpc": True, "sigint_commits_pause": True, "command_generation_update": True,
-            "missing_command_explicit": True, "observer_and_history_preserved": True,
+            "missing_command_explicit": True, "management_endpoint_recovery": True, "observer_and_history_preserved": True,
             "stop_withdraws_endpoint": True}
 
 

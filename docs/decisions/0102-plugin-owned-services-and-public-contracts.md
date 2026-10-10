@@ -81,6 +81,16 @@ Models 公共合同真实拥有请求、响应、失败、usage、continuation�
 `apply`，不启动 Root、不争抢运行锁、不打开业务数据库。无关实现损坏不阻断
 所选命令，命令实现负责自己的连接、进程与失败回执；模块作用域在退出后释放。
 
+命令来源事先分类，不在缺席时自动回退：`dashboard`、`workload-controller` 固定
+使用当前发行版/镜像源码（开发 checkout 使用随 Core 的 `plugins/`）；不依赖
+workspace selection，不因此启用任何业务实现。`plugin-install`、`plugin-status`、
+`plugin-uninstall` 仍是当前选择中的 Gateway RPC 客户端；`exec`、`app-server`
+只从选择记录分发。管理 provider 或已发布端点缺席时，错误给出恢复路径：
+用 `plugin-doctor` 查看 Gateway 的完整 ID，执行 `plugin-enable gateway@<marketplace>`，
+然后重启实例。裸 `gateway` 不是已安装身份；例如实际 ID 为 `gateway@release` 时
+使用 `plugin-enable gateway@release`。Core 不新增管理端口，不静默启用 provider；
+彻底独立的管理通道留在边界②讨论。
+
 持久 binding 中的 service 名属于原选择证据，不能随 key 改名原位改写。
 存储读取边界解释实际存在的旧 Commands service 名，继续打开当前领域 provider；
 这不注册旧运行 key，也不改变 descriptor、hash、binding 身份或原消息。未知版本、
