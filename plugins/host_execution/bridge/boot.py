@@ -2,7 +2,7 @@
 from __future__ import annotations
 
 from typing import Any
-from agent.host_bridge.factory import build_file_bridge
+from .factory import build_file_bridge
 
 
 async def claim_host_bridge_boot() -> dict[str, Any] | None:

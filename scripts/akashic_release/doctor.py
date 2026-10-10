@@ -103,7 +103,7 @@ def verify_release(environment_file: Path) -> None:
 async def _inspect_bridge(environment: Mapping[str, str]) -> dict[str, object]:
     """Inspect the Bridge inside the generation-owned Python environment."""
 
-    from agent.host_bridge.client import HostBridgeShellProcessManager
+    from plugins.host_execution.bridge.client import HostBridgeShellProcessManager
 
     manager = HostBridgeShellProcessManager(
         Path(environment["AKASHIC_HOST_BRIDGE_SOCKET"]),

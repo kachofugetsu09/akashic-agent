@@ -291,7 +291,7 @@ async def check_runtime_cli(root, core):
     env.update(HOME=str(root), PYTHONPATH=str(core))
     with (root / 'bridge.log').open('wb') as output:
         bridge = await asyncio.create_subprocess_exec(
-            sys.executable, '-m', 'agent.host_bridge.server', '--socket', str(socket),
+            sys.executable, '-m', 'plugins.host_execution.bridge.server', '--socket', str(socket),
             '--token-file', str(token), '--artifact-root', str(artifacts),
             '--release-commit', commit, '--runtime-checkout', str(core),
             '--bridge-python', sys.executable, '--toolchain-digest',
@@ -550,7 +550,7 @@ def main() -> None:
         raise
     result['core'] = git(args.core_root.resolve(), 'rev-parse', 'HEAD')
     result['source_sha256'] = {name: hashlib.sha256((args.core_root / name).read_bytes()).hexdigest()
-                               for name in ['agent/host_bridge/server.py', 'agent/plugins/manager.py', 'agent/plugins/input_preparation.py', 'agent/plugins/watcher.py',
+                               for name in ['plugins/host_execution/bridge/server.py', 'agent/plugins/manager.py', 'agent/plugins/input_preparation.py', 'agent/plugins/watcher.py',
                                             'plugins/ui/plugin.py', 'plugins/akashic_clients/plugin.py',
                                             'plugins/akashic_clients/capabilities.py', 'plugins/akashic_clients/channel.py',
                                             'frontend/dashboard/src/webHost.ts', 'frontend/dashboard/src/main.tsx']}

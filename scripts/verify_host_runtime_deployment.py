@@ -72,7 +72,7 @@ def verify_host_toolchain_deployment(
         [
             str(bridge_python),
             "-c",
-            "from pathlib import Path; import agent.host_bridge.server as m; "
+            "from pathlib import Path; import plugins.host_execution.bridge.server as m; "
             "print(Path(m.__file__).resolve())",
         ],
         cwd=runtime_checkout,
@@ -82,7 +82,7 @@ def verify_host_toolchain_deployment(
         text=True,
     ).stdout.strip()
     expected_module = str(
-        (runtime_checkout / "agent" / "host_bridge" / "server.py").resolve(strict=True)
+        (runtime_checkout / "plugins" / "host_execution" / "bridge" / "server.py").resolve(strict=True)
     )
     if module_path != expected_module:
         raise RuntimeError("Host Bridge module 未从 release checkout 加载")

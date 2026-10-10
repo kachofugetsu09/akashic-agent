@@ -1,5 +1,9 @@
 from __future__ import annotations
 
+from plugins.host_execution.contract import (
+    DEFAULT_HARD_TIMEOUT_S, DEFAULT_INITIAL_YIELD_TIME_MS, DEFAULT_MAX_OUTPUT_TOKENS, ExecutionCleanupFailure, ExecutionCleanupReport, ExecutionResult, MAX_HARD_TIMEOUT_S, MAX_WRITE_STDIN_YIELD_TIME_MS, MAX_YIELD_TIME_MS, MIN_EMPTY_YIELD_TIME_MS, MIN_YIELD_TIME_MS, ShellProcessManagerProtocol, UnknownExecutionError, clamp_initial_yield_time, clamp_write_stdin_yield_time
+)
+
 import asyncio
 import errno
 import json
@@ -15,58 +19,12 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, BinaryIO, Protocol
 
-from utils.process_group import process_group_exists
+from agent.plugin_composition.execution import process_group_exists
 
 
-class ShellProcessManagerProtocol(Protocol):
-    """Host-backed or local process owner used by a shell provider."""
-
-    async def exec_command(
-        self,
-        *,
-        command: str,
-        argv: list[str],
-        cwd: Path | None,
-        env: dict[str, str],
-        tty: bool,
-        yield_time_ms: int,
-        max_output_tokens: int,
-        hard_timeout_s: int,
-        owner_session_key: str,
-        shell_snapshot: bool = False,
-    ) -> "ExecutionResult": ...
-
-    async def write_stdin(
-        self,
-        *,
-        execution_id: int,
-        chars: str,
-        yield_time_ms: int,
-        max_output_tokens: int,
-        owner_session_key: str,
-    ) -> "ExecutionResult": ...
-
-    async def terminate_execution(
-        self, execution_id: int, *, owner_session_key: str
-    ) -> bool: ...
-
-    async def terminate_owner(self, owner_session_key: str) -> "ExecutionCleanupReport": ...
-
-    async def shutdown(self) -> "ExecutionCleanupReport": ...
-
-    async def active_execution_ids(self) -> list[int]: ...
-
-MIN_YIELD_TIME_MS = 250
-MIN_EMPTY_YIELD_TIME_MS = 5_000
-MAX_YIELD_TIME_MS = 30_000
-MAX_WRITE_STDIN_YIELD_TIME_MS = 300_000
-DEFAULT_INITIAL_YIELD_TIME_MS = 10_000
-DEFAULT_MAX_OUTPUT_TOKENS = 10_000
 OUTPUT_MAX_BYTES = 1024 * 1024
 MAX_EXECUTIONS = 64
 PROTECTED_RECENT_EXECUTIONS = 8
-DEFAULT_HARD_TIMEOUT_S = 4 * 3600
-MAX_HARD_TIMEOUT_S = 4 * 3600
 POST_EXIT_DRAIN_GRACE_S = 0.2
 TERMINATION_CONFIRM_TIMEOUT_S = 5.0
 INTERRUPT = "\x03"
@@ -74,10 +32,6 @@ INTERRUPT = "\x03"
 _IS_WINDOWS = os.name == "nt"
 _ID_MIN = 1_000
 _ID_MAX = 99_999
-
-
-class UnknownExecutionError(RuntimeError):
-    pass
 
 
 class HeadTailBuffer:
@@ -159,36 +113,6 @@ class HeadTailBuffer:
         for _ in range(excess):
             self.tail.popleft()
         self.omitted_bytes += excess
-
-
-@dataclass
-class ExecutionResult:
-    output: bytes
-    wall_time_ms: int
-    original_token_count: int
-    output_omitted_bytes: int
-    execution_id: int | None
-    exit_code: int | None
-    output_path: str | None
-    finish_reason: str
-
-
-@dataclass(frozen=True)
-class ExecutionCleanupFailure:
-    execution_id: int
-    error_type: str
-    message: str
-
-
-@dataclass(frozen=True)
-class ExecutionCleanupReport:
-    attempted_execution_ids: tuple[int, ...]
-    cleaned_execution_ids: tuple[int, ...]
-    failures: tuple[ExecutionCleanupFailure, ...]
-
-    @property
-    def failed_execution_ids(self) -> tuple[int, ...]:
-        return tuple(failure.execution_id for failure in self.failures)
 
 
 @dataclass
@@ -280,7 +204,7 @@ class ShellProcessManager:
             await self._ensure_owner_admitted(owner_session_key)
             if shell_snapshot:
                 # 在实际执行主机准备文件；延迟导入避免 composition 的公开入口循环依赖。
-                from agent.plugin_composition.shell_runtime import snapshot_shell_argv
+                from .shell_runtime import snapshot_shell_argv
 
                 argv = await snapshot_shell_argv(argv, command, env)
             await self._prune_if_needed()
@@ -842,22 +766,6 @@ class ShellProcessManager:
             process.send_signal(signal.CTRL_BREAK_EVENT)
         else:
             os.killpg(process.pid, signal.SIGINT)
-
-
-def clamp_initial_yield_time(yield_time_ms: int) -> int:
-    return min(max(yield_time_ms, MIN_YIELD_TIME_MS), MAX_YIELD_TIME_MS)
-
-
-def clamp_write_stdin_yield_time(
-    yield_time_ms: int,
-    *,
-    has_input: bool,
-    max_empty_ms: int = MAX_WRITE_STDIN_YIELD_TIME_MS,
-) -> int:
-    value = max(yield_time_ms, MIN_YIELD_TIME_MS)
-    if has_input:
-        return min(value, MAX_YIELD_TIME_MS)
-    return min(max(value, MIN_EMPTY_YIELD_TIME_MS), max_empty_ms)
 
 
 def _limit_output(buffer: HeadTailBuffer, max_output_tokens: int) -> HeadTailBuffer:

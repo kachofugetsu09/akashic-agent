@@ -6,12 +6,10 @@ from collections.abc import Iterable
 
 from google.protobuf.message import Message
 
-from agent.host_bridge import host_bridge_pb2 as pb
+from . import host_bridge_pb2 as pb
 from agent.tool_catalog import ToolResult
-from agent.process_runtime import (
-    ExecutionCleanupFailure,
-    ExecutionCleanupReport,
-    ExecutionResult,
+from plugins.host_execution.contract import (
+    ExecutionCleanupFailure, ExecutionCleanupReport, ExecutionResult
 )
 
 # 宿主只接纳执行级展示与诊断字段；Core 的其余环境不会改变宿主身份。

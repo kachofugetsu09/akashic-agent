@@ -8,7 +8,7 @@ import sys
 import tempfile
 
 ROOT = Path(__file__).resolve().parents[1]
-PROTO = Path("agent/host_bridge/host_bridge.proto")
+PROTO = Path("plugins/host_execution/bridge/host_bridge.proto")
 OUTPUTS = ("host_bridge_pb2.py", "host_bridge_pb2.pyi")
 GENERATOR_VERSION = "1.78.0"
 

@@ -15,7 +15,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, TypeVar
 
-from agent.host_bridge.path_info import PathAccess as PathAccess, PathInfo as PathInfo
+from plugins.host_execution.contract import LIST_DIR_MAX_ENTRIES, LIST_DIR_MAX_BYTES
 
 from core.common.file_io import run_file_io as _run_file_io
 
@@ -24,7 +24,7 @@ from agent.tool_catalog import ToolResult
 from infra.persistence.json_store import atomic_write_text
 
 if TYPE_CHECKING:
-    from agent.host_bridge.client import HostBridgeShellProcessManager
+    from .client import HostBridgeShellProcessManager
 
 logger = logging.getLogger(__name__)
 T = TypeVar("T")
@@ -490,8 +490,6 @@ class EditFileOperation(_FileOperation):
             return ToolResult(text=f"编辑文件失败：{e}", is_error=True)
 
 
-LIST_DIR_MAX_ENTRIES = 500
-LIST_DIR_MAX_BYTES = 10_000
 
 
 def _list_dir_next_page(after: str) -> str:
@@ -579,6 +577,6 @@ class ListDirOperation(_FileOperation):
 def _build_file_bridge(enable_bridge: bool) -> HostBridgeShellProcessManager | None:
     if not enable_bridge:
         return None
-    from agent.host_bridge.factory import build_file_bridge
+    from .factory import build_file_bridge
 
     return build_file_bridge()

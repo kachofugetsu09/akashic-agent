@@ -2,10 +2,11 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import sys
 import uuid
 from pathlib import Path
 
-from agent.host_bridge.client import HostBridgeShellProcessManager
+from .client import HostBridgeShellProcessManager
 
 
 async def _probe(
@@ -42,22 +43,21 @@ async def _probe(
         await manager.close_transport()
 
 
-def main() -> None:
+async def main(arguments: tuple[str, ...], *, workspace: Path, config_path: Path) -> int:
     parser = argparse.ArgumentParser(description="Probe the Akashic Host Bridge")
     parser.add_argument("--socket", type=Path, required=True)
     parser.add_argument("--token", required=True)
     parser.add_argument("--expected-release-commit", required=True)
     parser.add_argument("--expected-toolchain-digest", required=True)
-    args = parser.parse_args()
-    asyncio.run(
-        _probe(
-            args.socket,
-            args.token,
-            args.expected_release_commit,
-            args.expected_toolchain_digest,
-        )
+    args = parser.parse_args(arguments)
+    await _probe(
+        args.socket,
+        args.token,
+        args.expected_release_commit,
+        args.expected_toolchain_digest,
     )
+    return 0
 
 
 if __name__ == "__main__":
-    main()
+    raise SystemExit(asyncio.run(main(tuple(sys.argv[1:]), workspace=Path.cwd(), config_path=Path("config.toml"))))

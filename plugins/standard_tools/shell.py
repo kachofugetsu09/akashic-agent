@@ -16,7 +16,7 @@ from plugins.host_execution.contract import PROCESSES
 from agent.plugin_composition import Context, ServiceKey
 from agent.plugin_composition.bindings import BINDINGS
 from agent.plugin_composition.messages import MessageReader
-from agent.process_runtime import (
+from plugins.host_execution.contract import (
     DEFAULT_HARD_TIMEOUT_S, DEFAULT_INITIAL_YIELD_TIME_MS, DEFAULT_MAX_OUTPUT_TOKENS, MAX_HARD_TIMEOUT_S, ExecutionCleanupReport, UnknownExecutionError, clamp_initial_yield_time, clamp_write_stdin_yield_time
 )
 from .shell_backend import format_execution_result

@@ -1,5 +1,9 @@
 from __future__ import annotations
 
+from plugins.host_execution.contract import (
+    ResolvedShell, ShellKind
+)
+
 import hashlib
 import os
 import shlex
@@ -13,33 +17,6 @@ from enum import Enum
 from pathlib import Path
 
 from core.common.file_io import run_file_io
-
-
-class ShellKind(str, Enum):
-    ZSH = "zsh"
-    BASH = "bash"
-    POWERSHELL = "powershell"
-    SH = "sh"
-    CMD = "cmd"
-
-
-@dataclass(frozen=True)
-class ResolvedShell:
-    kind: ShellKind
-    path: Path
-
-    def derive_argv(self, command: str, *, login: bool, snapshot: Path | None = None) -> list[str]:
-        """Build the direct process argv for one shell command."""
-        if self.kind in {ShellKind.ZSH, ShellKind.BASH, ShellKind.SH}:
-            # 用户环境优先取快照：非交互 shell 只 source 一次性导出的 rc 结果。
-            if login and snapshot is not None:
-                script = f". {shlex.quote(str(snapshot))} || exit $?; eval {shlex.quote(command)}"
-                return [str(self.path), "-c", script]
-            return [str(self.path), "-lc" if login else "-c", command]
-        if self.kind is ShellKind.POWERSHELL:
-            profile_args = [] if login else ["-NoProfile"]
-            return [str(self.path), *profile_args, "-Command", command]
-        return [str(self.path), "/c", command]
 
 
 def detect_shell_kind(shell_path: str | Path) -> ShellKind | None:

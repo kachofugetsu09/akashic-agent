@@ -1,8 +1,8 @@
 """物理文件操作由 HostExecution 创建，调用作用域持有并关闭资源。"""
 from pathlib import Path
 from plugins.host_execution.contract import FileOperation
-from agent.host_bridge.filesystem import ReadFileOperation, WriteFileOperation, EditFileOperation, ListDirOperation
-from agent.host_bridge.filesystem import PathAccess
+from .bridge.filesystem import ReadFileOperation, WriteFileOperation, EditFileOperation, ListDirOperation
+from .bridge.path_info import PathAccess
 
 
 class Files:
