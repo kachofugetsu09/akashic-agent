@@ -322,10 +322,6 @@ note = "公共结构合同；实际状态与生命周期由提供方插件拥有
 role = "core"
 note = "按实际 Context 应用自身固定输入；沿 selection CAS 与局部换代，不解释业务字段"
 
-[capabilities."onboarding.steps.v1"]
-role = "seam"
-note = "普通 onboarding provider 持有 Effect 步骤目录；贡献者保留配置 writer"
-
 [capabilities."inspection.documents.v1"]
 role = "seam"
 note = "文档 owner 发布有界只读入口；检查插件仅拥有贡献目录"

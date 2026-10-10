@@ -6,7 +6,7 @@ from typing import Any, cast
 
 from agent.plugin_composition import Context, Effect
 from agent.plugin_composition.runtime_catalog import RUNTIME_CATALOG
-from agent.plugin_contracts.onboarding import Step
+from plugins.onboarding.contract import Step
 
 
 @dataclass(frozen=True)

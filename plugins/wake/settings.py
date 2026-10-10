@@ -11,7 +11,7 @@ from agent.plugin_composition.messages import MESSAGE_CATALOG
 from agent.plugin_composition.plugin_config import PLUGIN_CONFIG
 from agent.plugin_composition.runtime_catalog import RUNTIME_CATALOG
 from agent.plugin_contracts.configuration import Configuration
-from agent.plugin_contracts.onboarding import ONBOARDING, Step
+from plugins.onboarding.contract import ONBOARDING, Step
 from agent.plugin_contracts.delivery import DELIVERY_SENDERS, sender_key
 from agent.plugin_contracts.proactive import SEMANTIC_INTEREST
 from agent.plugin_contracts import Input

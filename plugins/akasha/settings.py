@@ -10,7 +10,7 @@ from agent.plugin_composition.models import MODEL_CATALOG, ModelCatalogSnapshot,
 from agent.plugin_composition.plugin_config import PLUGIN_CONFIG
 from agent.plugin_composition.runtime_catalog import RUNTIME_CATALOG
 from agent.plugin_contracts.configuration import Configuration
-from agent.plugin_contracts.onboarding import ONBOARDING, Step
+from plugins.onboarding.contract import ONBOARDING, Step
 
 SETTINGS = ServiceKey[Configuration]("akasha.settings.v1")
 

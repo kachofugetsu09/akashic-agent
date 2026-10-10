@@ -11,7 +11,7 @@ from agent.plugin_composition.runtime_catalog import RUNTIME_CATALOG
 from agent.plugin_composition.config_input import save_credential
 from agent.plugin_composition.ui import UI
 from agent.plugin_contracts.configuration import Configuration
-from agent.plugin_contracts.onboarding import ONBOARDING, Step
+from plugins.onboarding.contract import ONBOARDING, Step
 
 SETTINGS = ServiceKey[Configuration]("telegram_channel.settings.v1")
 FIELDS = ('allow_from', 'timeout_seconds')

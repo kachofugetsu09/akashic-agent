@@ -5,7 +5,7 @@ from importlib import import_module
 from agent.plugin_composition import Context
 from agent.plugin_composition.runtime_catalog import RUNTIME_CATALOG
 from agent.plugin_composition.ui import UI
-from agent.plugin_contracts.onboarding import ONBOARDING
+from plugins.onboarding.contract import ONBOARDING
 from .projection import Registry
 
 api_version = 3

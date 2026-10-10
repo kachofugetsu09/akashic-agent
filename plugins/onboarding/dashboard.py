@@ -1,6 +1,6 @@
 from fastapi import FastAPI, HTTPException
 from agent.plugin_composition import DashboardContext
-from agent.plugin_contracts.onboarding import ONBOARDING
+from plugins.onboarding.contract import ONBOARDING
 
 inject = (ONBOARDING,)
 
