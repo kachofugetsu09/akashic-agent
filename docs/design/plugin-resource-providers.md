@@ -110,3 +110,21 @@ Controller 的真实验证入口是 [host_controller_scenario.py](../../scripts/
 更新服务与执行 provider，再重启、卸载；核对租约排空、数据保留、Controller 关闭回执
 与每个 boot 的清理请求次数。MCP、managed process 和 UI 的验收分别由其真实场景负责；
 这一场景不代替整发行版或生产部署验收。
+
+
+## Bridge 状态 owner
+
+`host_execution` 的 Effect 拥有实际探测任务与连接，并提供 `host.status.v1`。
+探测不创建 execution manager；瞬时断连明确降级，恢复后重置故障计数。
+身份等永久拒绝保留错误码、degraded health 与 Incident，停止本次探测；
+不会用诊断失败结束无关插件，新的 generation 可重新取得连接。
+Effect 关闭先取消并等待原任务及连接退出，不留下旧 generation 的探测任务。
+
+执行插件通过可选 UI child 注册 `/api/runtime/host-bridge`。路由只读取该 generation
+的状态，不把监控任务或宿主内存状态交给 UI；没有 UI 时执行服务仍可激活。
+禁用执行插件只撤下其路由与监控，不关闭 UI 或重新 apply 无关观察者。
+状态和 health 均为内存事实，本步没有增加文件写入或修改业务数据。
+
+`claim_host_bridge_boot` 目前仍在进程启动、业务数据库构造之前执行。
+这一外部认领不由状态探测代替；完整后台迁移要保留认领先于持久 owner 开放的顺序。
+实际验证见 [host_monitor_scenario.py](../../scripts/host_monitor_scenario.py)。

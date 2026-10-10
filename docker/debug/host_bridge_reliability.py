@@ -21,10 +21,12 @@ import uvicorn
 ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT))
 
-from agent.host_bridge import client as bridge_client, filesystem, monitor
+from agent.host_bridge import client as bridge_client, filesystem
+from plugins.host_execution import monitor
 from agent.host_bridge import transport
 from agent.host_bridge import host_bridge_pb2 as pb
-from agent.host_bridge.client import HostBridgeRpcError, HostBridgeShellProcessManager
+from agent.host_bridge.factory import HostBridgeRpcError
+from agent.host_bridge.client import HostBridgeShellProcessManager
 from agent.host_bridge.server import HostBridgeService
 from bootstrap.app import _run_primary_tasks
 from bootstrap.dashboard_api import create_dashboard_app
@@ -197,7 +199,7 @@ async def run() -> None:
 
             status = monitor.HostBridgeStatus(state="checking")
             service.probe_error = grpc.StatusCode.DEADLINE_EXCEEDED
-            monitoring = asyncio.create_task(monitor._monitor(socket, "experiment", TOKEN, COMMIT, DIGEST, status=status))
+            monitoring = asyncio.create_task(monitor._monitor(client(), status=status))
             sibling = asyncio.create_task(asyncio.Event().wait())
             primary = asyncio.create_task(_run_primary_tasks([monitoring, sibling]))
             tasks.append(primary)
@@ -206,7 +208,10 @@ async def run() -> None:
             assert status.state == "degraded" and status.code == "DEADLINE_EXCEEDED"
             assert not service._managers, "健康探测不能创建 execution manager"
             workspace = root / "dashboard"
-            app = create_dashboard_app(workspace, host_bridge_status=status.snapshot)
+            app = create_dashboard_app(workspace)
+            @app.get("/api/runtime/host-bridge")
+            async def read_status():
+                return status.snapshot()
             dashboard_socket = dashboard_socket_path(workspace)
             dashboard_socket.parent.mkdir(parents=True, exist_ok=True)
             dashboard = uvicorn.Server(uvicorn.Config(app, uds=str(dashboard_socket), log_level="error"))

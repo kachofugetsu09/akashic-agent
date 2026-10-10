@@ -152,7 +152,8 @@ async def run(args: argparse.Namespace) -> dict:
         # 4. 真实 Protobuf UDS、认证与 manager admission，不替换 RPC 或业务 handler。
         import grpc
         from agent.host_bridge import transport
-        from agent.host_bridge.client import HostBridgeRpcError, HostBridgeShellProcessManager
+        from agent.host_bridge.factory import HostBridgeRpcError
+        from agent.host_bridge.client import HostBridgeShellProcessManager
         from agent.host_bridge.server import HostBridgeService
 
         class ReplyLossService(HostBridgeService):

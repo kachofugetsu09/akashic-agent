@@ -13,8 +13,7 @@ import uvicorn
 
 from agent.config import resolve_app_server_endpoint
 from agent.control.service import ControlService
-from agent.host_bridge.monitor import HostBridgeStatus, build_host_bridge_monitor
-from agent.host_bridge.monitor import claim_host_bridge_boot
+from agent.host_bridge.boot import claim_host_bridge_boot
 from agent.restart import RestartGate
 from agent.config_models import Config
 from bootstrap.cleanup import run_cleanup_steps
@@ -190,7 +189,6 @@ class AppRuntime:
             )
         self.restart_gate = restart_gate
         self.readiness = readiness
-        self.host_bridge_status = HostBridgeStatus()
         self.http_resources = SharedHttpResources()
         self.app_server: SocketAppServer | None = None
         self.control_service: ControlService | None = None
@@ -235,7 +233,6 @@ class AppRuntime:
             self.dashboard_server = build_dashboard_server(
                 workspace=self.workspace,
                 plugin_manager=manager,
-                host_bridge_status=self.host_bridge_status.snapshot,
             )
             await self.core.start()
             if self.readiness is not None:
@@ -275,10 +272,7 @@ class AppRuntime:
                 self.readiness.mark_stage("channels.ready")
             if plugin_manager is None:
                 raise RuntimeError("插件 Runtime 不可用")
-            host_bridge_monitor = build_host_bridge_monitor(self.host_bridge_status)
             self.tasks = []
-            if host_bridge_monitor is not None:
-                self.tasks.append(host_bridge_monitor)
             self.dashboard_server.config.uds = prepare_runtime_socket(
                 dashboard_socket_path(self.workspace)
             )
