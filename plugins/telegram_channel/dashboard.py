@@ -1,8 +1,8 @@
-from agent.plugin_contracts.configuration import register_routes
+from plugins.ui.contract import UI
 from .settings import SETTINGS
 
-inject = (SETTINGS,)
+inject = (UI, SETTINGS,)
 
 
 def register(app, context):
-    register_routes(app, context, SETTINGS, "/api/dashboard/telegram_channel/config")
+    context.require(UI).register_configuration(app, context, SETTINGS, "/api/dashboard/telegram_channel/config")

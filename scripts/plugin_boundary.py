@@ -86,7 +86,6 @@ PLUGIN_ALLOWED_MODULES = frozenset({
     "agent.plugin_composition.model",
     # Self-config and optional onboarding contracts: plugin-onboarding-projection.md.
     "agent.plugin_composition.plugin_config",
-    "agent.plugin_contracts.configuration",
     "agent.plugin_composition.plugin_updates",
     "agent.plugin_composition.requests",
     "agent.plugin_composition.runtime_catalog",

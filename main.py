@@ -625,12 +625,10 @@ if __name__ == "__main__":
         sys.exit(1)
 
     if args and args[0] == "setup":
-        from bootstrap.setup_wizard import run_setup_wizard
-
-        run_setup_wizard(
-            config_path=Path(config_path),
-            workspace=workspace,
-        )
+        summary = init_workspace(config_path=Path(config_path), workspace=workspace)
+        for note in summary.notes:
+            print(note)
+        print("初始化完成。安装插件组合并启动后，在 Web 页面完成初始配置。")
         sys.exit(0)
 
     if args and args[0] == "init":

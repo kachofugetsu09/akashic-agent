@@ -9,17 +9,23 @@ from pathlib import Path, PurePosixPath
 from types import FunctionType, ModuleType
 from uuid import uuid4
 
+from fastapi import FastAPI, HTTPException
+from pydantic import BaseModel, ConfigDict, Field, ValidationError
+
 from agent.plugin_composition import (
     RUNTIME_STARTING,
     Context,
     Effect,
     FiberState,
+    ServiceKey,
 )
+from agent.plugin_composition.requests import RequestContext
 from agent.plugin_composition.host import HOST_INFO
 from agent.plugin_composition.runtime_catalog import RUNTIME_CATALOG
 from plugins.ui.contract import (
     UI,
     WEB_UI,
+    Configuration,
     DashboardBinding,
     WebModuleDescriptor,
     WebUiCatalog,
@@ -56,6 +62,13 @@ class Registration:
     initialized: bool = False
 
 
+class ConfigRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid", strict=True)
+    request_id: str = Field(min_length=1, max_length=128)
+    expected_input: str = Field(pattern=r"^[0-9a-f]{64}$")
+    values: dict[str, object]
+
+
 class Ui:
     """一个 Root 的唯一 UI 注册表；关闭不删除代码或插件数据。"""
 
@@ -63,6 +76,31 @@ class Ui:
         self._ctx = ctx
         self._routes = routes
         self._entries: dict[str, Registration] = {}
+
+    def register_configuration(
+        self, app: FastAPI, context: RequestContext,
+        key: ServiceKey[Configuration], prefix: str,
+    ) -> None:
+        """HTTP 边界只校验请求信封；插件解释字段、处理业务错误。"""
+        @app.get(prefix)
+        async def read():
+            return await context.require(key).read()
+
+        @app.post(prefix)
+        async def save(request: ConfigRequest):
+            try:
+                return await context.require(key).save(request.request_id, request.expected_input, request.values)
+            except ValidationError as error:
+                raise HTTPException(422, error.errors(include_input=False, include_url=False, include_context=False)) from error
+            except ValueError as error:
+                raise HTTPException(422, str(error)) from error
+
+        @app.get(prefix + "/receipts/{request_id}")
+        async def receipt(request_id: str):
+            try:
+                return context.require(key).receipt(request_id)
+            except KeyError as error:
+                raise HTTPException(404, "配置回执不存在") from error
 
     @property
     def root_instance_token(self) -> object:

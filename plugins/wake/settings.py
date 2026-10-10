@@ -11,7 +11,7 @@ from plugins.models.contract import MODEL_CATALOG
 from agent.plugin_composition.messages import MESSAGE_CATALOG
 from agent.plugin_composition.plugin_config import PLUGIN_CONFIG
 from agent.plugin_composition.runtime_catalog import RUNTIME_CATALOG
-from agent.plugin_contracts.configuration import Configuration
+from plugins.ui.contract import Configuration
 from plugins.onboarding.contract import ONBOARDING, Ability, PreviewLine, Step
 from plugins.delivery.contract import (
     DELIVERY_SENDERS,
