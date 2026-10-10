@@ -91,7 +91,6 @@ PLUGIN_ALLOWED_MODULES = frozenset({
     "agent.plugin_composition.runtime_catalog",
     "agent.plugin_composition.runtime_lifecycle",
     "agent.plugin_composition.tasks",
-    "agent.tool_catalog",
     "agent.plugin_contracts",
     "agent.plugin_contracts.ui",
     # ADR-0084: directory snapshot and default registration, with no Core business owner.

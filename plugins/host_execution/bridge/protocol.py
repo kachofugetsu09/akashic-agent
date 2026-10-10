@@ -1,13 +1,11 @@
 from __future__ import annotations
 
-import base64
-import binascii
 from collections.abc import Iterable
 
 from google.protobuf.message import Message
 
 from . import host_bridge_pb2 as pb
-from agent.tool_catalog import ToolResult
+from plugins.host_execution.contract import FileError, FileImage, FileResult
 from plugins.host_execution.contract import (
     ExecutionCleanupFailure, ExecutionCleanupReport, ExecutionResult
 )
@@ -129,53 +127,19 @@ def decode_cleanup(reply: pb.CleanupReply) -> ExecutionCleanupReport:
     )
 
 
-def encode_file_result(result: str | ToolResult) -> pb.FileReply:
-    """把文件工具的文本、业务错误或单张图片转换为固定 oneof。"""
-    # 1. 文本包括工具业务错误，保持其原有返回语义。
+def encode_file_result(result: FileResult) -> pb.FileReply:
+    """协议直接携带物理结果；模型内容块由工具消费方构造。"""
     if isinstance(result, str):
         return pb.FileReply(text=result)
-    if result.is_error and not result.content_blocks:
+    if isinstance(result, FileError):
         return pb.FileReply(error=pb.FileError(text=result.text, is_error=True))
-    if (
-        result.runtime_provenance
-        or len(result.content_blocks) != 1
-    ):
-        raise RuntimeError("Host Bridge 文件结果不是单张图片")
-    block = result.content_blocks[0]
-    if set(block) != {"type", "image_url"} or block["type"] != "image_url":
-        raise RuntimeError("Host Bridge 文件结果不是 image_url")
-    image = block["image_url"]
-    if (
-        not isinstance(image, dict)
-        or set(image) != {"url", "detail"}
-        or image["detail"] != "high"
-    ):
-        raise RuntimeError("Host Bridge 文件图片字段不符合合同")
-    url = image["url"]
-    if (
-        not isinstance(url, str)
-        or not url.startswith("data:image/")
-        or ";base64," not in url
-    ):
-        raise RuntimeError("Host Bridge 文件图片必须是 data URI")
-    # 2. 去掉展示层的 Base64；协议只携带原字节和 MIME。
-    header, encoded = url.split(";base64,", 1)
-    mime = header[5:]
-    if mime not in {"image/png", "image/jpeg", "image/gif", "image/webp"}:
-        raise RuntimeError("Host Bridge 文件图片 MIME 不受支持")
-    try:
-        data = base64.b64decode(encoded, validate=True)
-    except (binascii.Error, ValueError) as exc:
-        raise RuntimeError("Host Bridge 文件图片 Base64 损坏") from exc
-    if not data:
-        raise RuntimeError("Host Bridge 文件图片为空")
-    return pb.FileReply(
-        image=pb.FileImage(text=result.text, mime_type=mime, data=data, detail="high")
-    )
+    return pb.FileReply(image=pb.FileImage(
+        text=result.text, mime_type=result.mime_type, data=result.data, detail="high",
+    ))
 
 
-def decode_file_result(reply: pb.FileReply) -> str | ToolResult:
-    """在 Core 重建文件工具结果，模型图片能力仍由原工具判断。"""
+def decode_file_result(reply: pb.FileReply) -> FileResult:
+    """在 RPC 边界校验文件结果，不构造模型内容块。"""
     kind = reply.WhichOneof("result")
     if kind == "text":
         return reply.text
@@ -184,7 +148,7 @@ def decode_file_result(reply: pb.FileReply) -> str | ToolResult:
         require_fields(error, "text", "is_error")
         if not error.is_error:
             raise ValueError("Host Bridge 文件错误结果必须标记 is_error")
-        return ToolResult(text=error.text, is_error=True)
+        return FileError(error.text)
     if kind != "image":
         raise ValueError("Host Bridge 文件响应缺少结果")
     image = reply.image
@@ -195,12 +159,4 @@ def decode_file_result(reply: pb.FileReply) -> str | ToolResult:
         or not image.data
     ):
         raise ValueError("Host Bridge 文件图片响应不符合合同")
-    uri = (
-        f"data:{image.mime_type};base64,{base64.b64encode(image.data).decode('ascii')}"
-    )
-    return ToolResult(
-        text=image.text,
-        content_blocks=[
-            {"type": "image_url", "image_url": {"url": uri, "detail": image.detail}}
-        ],
-    )
+    return FileImage(image.text, image.mime_type, image.data)
