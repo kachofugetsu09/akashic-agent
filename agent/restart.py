@@ -70,10 +70,26 @@ class RestartGate:
         self._drained.set()
         self._open_changed = asyncio.Event()
         self._committed = False
+        self._shutdown_requested = asyncio.Event()
+        self._shutdown_error: BaseException | None = None
+
+    def request_shutdown(self, error: BaseException | None = None) -> None:
+        """请求当前进程排空并结束；首次意图的失败原因传回外壳。"""
+        if not self.execution_enabled:
+            raise RestartRejectedError("当前 runtime 不允许停止效果")
+        if not self._shutdown_requested.is_set():
+            self._shutdown_error = error
+            self._shutdown_requested.set()
+
+    async def wait_shutdown(self) -> None:
+        """外壳等待停止意图；业务插件不持有外壳、Root 或退出回调。"""
+        await self._shutdown_requested.wait()
+        if self._shutdown_error is not None:
+            raise self._shutdown_error
 
     @property
     def accepting(self) -> bool:
-        return self._accepting
+        return self._accepting and not self._shutdown_requested.is_set()
 
     @property
     def permit_count(self) -> int:
@@ -81,12 +97,12 @@ class RestartGate:
 
     def check_open(self) -> None:
         """在持久接纳新 work 前核对 Core 的 admission 状态。"""
-        if not self._accepting:
+        if not self.accepting:
             raise RestartPendingError("runtime 正在等待重启，暂不接纳新 Root")
 
     async def wait_until_open(self) -> None:
         """等待一次 abort/reopen 通知，不保存任何来源或 Session 状态。"""
-        while not self._accepting:
+        while not self.accepting:
             changed = self._open_changed
             await changed.wait()
 
