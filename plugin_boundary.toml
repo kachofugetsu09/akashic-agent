@@ -98,9 +98,9 @@ note = "有界纯同步 worker 池"
 role = "seam"
 note = "普通 UI provider 拥有插件页面、查询与导航注册及当前活动目录"
 
-[capabilities."core.message_display.v1"]
-role = "core"
-note = "按当前 live Root 组合 message.display:* 的只读页面投影"
+[capabilities."ui.messages.v1"]
+role = "seam"
+note = "UI owner 在本次实际 provider 的调用作用域投影消息，不改写事实"
 
 [capabilities."ui.plugin.v1"]
 role = "seam"

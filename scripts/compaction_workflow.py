@@ -6,6 +6,7 @@ from datetime import UTC, datetime
 import json
 from pathlib import Path
 import sqlite3
+import shutil
 import sys
 import tempfile
 from typing import Any, cast
@@ -14,7 +15,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from agent.plugin_composition.channels import CHANNEL_INPUT_V2, ChannelInboundMessage
 from agent.plugin_composition.bindings import BINDINGS
-from agent.plugin_composition.message_view import project_message_rows
+from agent.plugin_contracts.ui import MESSAGE_DISPLAY
 from agent.plugin_contracts import CallRef, ContentPart, Control, Input, Output, ToolCall, ToolResult
 from plugins.compaction.message_summary import HEADINGS
 from plugins.content.plugin import check_text
@@ -60,6 +61,8 @@ async def run(folder: Path, case: str) -> dict[str, object]:
     url = f"http://127.0.0.1:{server.sockets[0].getsockname()[1]}/complete"
 
     def configure(sources: Path) -> None:
+        shutil.copytree(Path(__file__).resolve().parents[1] / "plugins/ui", sources / "ui",
+                        ignore=shutil.ignore_patterns("__pycache__"))
         entry = sources / "test_provider/plugin.py"
         source = entry.read_text()
         start, end = source.index("    class Driver:"), source.index("    descriptor =")
@@ -161,7 +164,7 @@ async def run(folder: Path, case: str) -> dict[str, object]:
                             pending.remove(message["tool_call_id"])
                     assert not pending
                 page = log.reader("test:room").read_page(limit=200)
-                display = cast(list[dict[str, Any]], await project_message_rows(root, page, display_only=True))
+                display = cast(list[dict[str, Any]], await root.context.require(MESSAGE_DISPLAY)(page, display_only=True))
                 shown = [part["value"]["text"] for row in display if row["body"]["kind"] == "output"
                          for part in row["body"]["parts"] if part["kind"] == "context.notice"]
                 assert shown == notices

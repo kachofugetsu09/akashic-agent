@@ -65,7 +65,6 @@ from agent.plugin_composition.runtime_catalog import (
 )
 from agent.plugin_composition.tasks import TASKS, PluginTasks
 from agent.plugin_composition.ui import DASHBOARD_ROUTES
-from agent.plugin_contracts.ui import MESSAGE_DISPLAY
 from agent.plugins.channel_credentials import CoreProviderClientFactory
 from agent.plugins.composable import ComposablePlugin
 from agent.plugins.generation import PluginGeneration
@@ -75,7 +74,7 @@ from infra.channels.artifacts import ChannelAttachmentArtifactStore
 from infra.channels.attachment_import import ChannelOutboundAttachmentImporter
 from session.embedding_store import MessageEmbeddings
 from session.identities import ChannelIdentities, ChannelIdentityWriteReceipt
-from session.log import MessageCatalog, MessageLog, MessagePage
+from session.log import MessageCatalog, MessageLog
 
 
 async def provide_host_services(
@@ -197,7 +196,6 @@ async def provide_host_services(
             RESTART_GATE,
             CONTROL_FRAMES,
             PROCESSES,
-            MESSAGE_DISPLAY,
         }
     )
     if artifact_import is not None:
@@ -285,24 +283,6 @@ async def provide_host_services(
     if ARTIFACT_IMPORT in requested and artifact_import is not None:
         _ = await root.context.provide(ARTIFACT_IMPORT, artifact_import)
 
-    if MESSAGE_DISPLAY in requested:
-        from agent.plugin_composition.message_view import project_message_rows
-
-        async def display_message_page(
-            page: MessagePage,
-            *,
-            display_only: bool,
-        ) -> list[dict[str, object]]:
-            return await project_message_rows(
-                root,
-                page,
-                display_only=display_only,
-            )
-
-        _ = await root.context.provide(
-            MESSAGE_DISPLAY,
-            display_message_page,
-        )
     return execution, clients
 
 
@@ -336,7 +316,6 @@ def check_host_dependencies(
         PROCESSES,
         ARTIFACT_READ,
         ARTIFACT_IMPORT,
-        MESSAGE_DISPLAY,
     }
     for generation in generations:
         plugin = cast(ComposablePlugin, generation.instance)

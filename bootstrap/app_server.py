@@ -13,7 +13,7 @@ from agent.control.errors import RuntimeClosedError
 from agent.control.service import ControlService
 from agent.plugin_composition.rpc import RpcMethod, rpc_method_key
 from agent.plugin_composition.channels import CHANNEL_INPUT_V2, ChannelInboundMessage
-from agent.plugin_composition.message_view import project_message_rows
+from agent.plugin_contracts.ui import MESSAGE_DISPLAY
 from bootstrap.cleanup import run_cleanup_steps
 from bootstrap.reply_status import RuntimeReplyStatus
 from bootstrap.tools import CoreRuntime, build_core_runtime
@@ -73,7 +73,10 @@ def build_control_service(
         root = manager.live_root
         if root is None:
             raise RuntimeClosedError("正式 live Root 不可用")
-        return await project_message_rows(root, page, display_only=display_only)
+        provider = root.service_value(MESSAGE_DISPLAY)
+        if provider is None:
+            raise RuntimeClosedError("UI 消息展示服务不可用")
+        return await provider(page, display_only=display_only)
 
     def reply_status(session_id: str) -> AsyncGenerator[dict[str, object], None]:
         root = manager.live_root
