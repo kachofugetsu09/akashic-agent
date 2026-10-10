@@ -5,6 +5,8 @@ import hashlib
 import json
 from dataclasses import asdict, dataclass
 from typing import Literal, Protocol
+from pathlib import Path
+from agent.process_runtime import ExecutionResult, ExecutionCleanupReport
 from agent.plugin_composition.context import Context
 from agent.plugin_composition.model import ServiceKey
 
@@ -103,3 +105,20 @@ class HostStatus(Protocol):
 
 
 HOST_STATUS = ServiceKey[HostStatus]("host.status.v1")
+
+
+class Processes(Protocol):
+    async def exec_command(
+        self, ctx: Context, owner_key: str, *, command: str, argv: list[str],
+        cwd: Path | None, env: dict[str, str], tty: bool, yield_time_ms: int,
+        max_output_tokens: int, hard_timeout_s: int, shell_snapshot: bool = False,
+    ) -> ExecutionResult: ...
+    async def write_stdin(
+        self, ctx: Context, owner_key: str, *, execution_id: int, chars: str,
+        yield_time_ms: int, max_output_tokens: int,
+    ) -> ExecutionResult: ...
+    async def terminate_execution(self, ctx: Context, owner_key: str, execution_id: int) -> bool: ...
+    async def terminate_owner(self, ctx: Context, owner_key: str) -> ExecutionCleanupReport: ...
+
+
+PROCESSES = ServiceKey[Processes]("host.processes.v1")

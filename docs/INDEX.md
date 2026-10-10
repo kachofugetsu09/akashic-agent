@@ -57,7 +57,7 @@
 | 容器、Host Bridge、Computer | RUN-013～RUN-016、PLG-017 → [0084](decisions/0084-computer-keeps-identity-without-an-idle-desktop.md)、[0088](decisions/0088-computer-streams-h264-over-dashboard-websocket.md) → [0092](decisions/0092-computer-viewing-and-control.md) → [显示验收](design/computer-h264-display.md)、[0075](decisions/0075-host-bridge-runtime-recovery.md)、[Bridge 协议](design/host-bridge-protocol-v2.md)、[低延迟传输](decisions/0098-host-bridge-reuses-protobuf-socket.md)、[Computer 合同](design/computer-plugin-workload-task-contract.md) | `docker/`、`agent/plugin_composition/`、正式 Controller |
 | 部署、升级、备份、恢复 | MIG、BAK → [0082](decisions/0082-distribution-owned-plugin-composition.md)、[0091](decisions/0091-shell-self-deployment.md)、[部署手册](design/operator-deployment.md)、[hua-home 事实入口](design/hua-home-plugin-runtime-source-of-truth.md) | `scripts/install-akashic.sh`、`scripts/akashic_release/` |
 | Workspace、配置、迁移与数据清理 | STA、WSP、MIG → [状态地图](design/persistence-state-map.md)、[0066](decisions/0066-yoyo-current-baseline.md)、[Yoyo 手册](design/git-migration-authoring.md) | 相应状态 owner、`migrations/`、`bootstrap/init_workspace.py` |
-| 事件循环、执行资源与阻塞 | ERR、RUN → [执行边界](design/event-loop-isolation.md) | 实际 owner 的调用路径与运行证据 |
+| 事件循环、执行资源与阻塞 | ERR、RUN → [执行边界](design/event-loop-isolation.md)、[0103 进程生命周期](decisions/0103-processes-follow-provider-lifetime.md) | 实际 owner 的调用路径与运行证据 |
 | 安全边界、benchmark | SEC、TST → [安全设计](design/security-scan-edge-cases.md)、[benchmark 诊断](spark/2026-07-30-agent-benchmark-diagnostic-loop-design.md) | 对应真实边界与隔离场景 |
 | 新产品方向 | [路线草案](design/akashic-future-roadmap-issue-drafts.md) → 对应现行需求；草案不是实现授权 | 按已批准范围定位 |
 

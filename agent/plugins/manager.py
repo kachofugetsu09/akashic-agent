@@ -43,7 +43,6 @@ from agent.plugin_composition.model import (
 from agent.plugin_composition.plugin_updates import (
     UpdateStatus,
 )
-from agent.plugin_composition.processes import PluginProcesses
 from agent.plugin_composition.tasks import PluginTasks
 from agent.plugins._operation import (
     ManagerOperation,
@@ -176,7 +175,6 @@ class PluginManager:
         self._update_watchers: set[asyncio.Event] = set()
         self._message_log = message_log
         self._plugin_tasks = PluginTasks()
-        self._plugin_processes = PluginProcesses()
         self._installed_cache_root = installed_cache_root
         self._disabled_builtin_plugins = disabled_builtin_plugins
         self._source_failures: dict[str, PluginSourceFailure] = {
@@ -667,7 +665,6 @@ class PluginManager:
             raise RuntimeError("load_all 不能重复启动正式 Root")
         self._check_operation_commit()
         self._plugin_tasks.start()
-        self._plugin_processes.start()
         recovery = self._reload_journal.pending_recovery()
         receipts = await self._prepare_boot_runtime_recovery(tuple(
             action for action in recovery
@@ -2278,7 +2275,7 @@ class PluginManager:
             runtime_generations=lambda: (self._active_generations, self._draining_generations),
             runtime_updating=lambda: self._operation is not None and not self._operation.task.done(),
             live_root=lambda: self._live_root, installer=self,
-            tasks=self._plugin_tasks, processes=self._plugin_processes,
+            tasks=self._plugin_tasks,
             restart_gate=self._restart_gate,
             host_ready=self._host_ready,
         )
@@ -2506,8 +2503,6 @@ class PluginManager:
             _, externally_cancelled = await _complete_critical(
                 self._stop_runtime_root(live_root)
             )
-        _, cancelled = await _complete_critical(self._plugin_processes.close())
-        externally_cancelled = externally_cancelled or cancelled
         for generation in tuple(reversed(tuple(self._active_generations.values()))):
             _, cancelled = await _complete_critical(
                 self._dispose_generation(generation, state="retired")

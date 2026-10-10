@@ -259,11 +259,9 @@ class _FileOperation:
 
     async def aclose(self) -> None:
         if self._bridge is not None:
-            from agent.plugin_composition.processes import ProcessCleanupError
-
             report = await self._bridge.shutdown()
             if report.failures:
-                raise ProcessCleanupError(report)
+                raise RuntimeError(f"文件 Bridge 清理未确认: {report.failures}")
             self._bridge = None
 
 

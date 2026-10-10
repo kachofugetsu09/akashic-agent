@@ -55,7 +55,6 @@ from agent.plugin_composition.plugin_updates import (
     PluginInstallPort,
     PluginUpdates,
 )
-from agent.plugin_composition.processes import PROCESSES, PluginProcesses
 from agent.plugin_composition.requests import RequestContext
 from agent.plugin_composition.runtime_catalog import (
     RUNTIME_CATALOG,
@@ -93,7 +92,6 @@ async def provide_host_services(
     live_root: Callable[[], CompositionRoot | None],
     installer: PluginInstallPort,
     tasks: PluginTasks,
-    processes: PluginProcesses,
     restart_gate: RestartGate,
     host_ready: Callable[[], bool] | None,
 ) -> tuple[ExecutionAccess, CredentialClients]:
@@ -179,7 +177,6 @@ async def provide_host_services(
             RUNTIME_CATALOG,
             PLUGIN_UPDATES,
             RESTART_GATE,
-            PROCESSES,
         }
     )
     if artifact_import is not None:
@@ -258,8 +255,6 @@ async def provide_host_services(
         )
     if TASKS in requested or message_log is not None:
         _ = await root.context.provide(TASKS, tasks)
-    if PROCESSES in requested:
-        _ = await root.context.provide(PROCESSES, processes)
     if artifact_read is not None:
         _ = await root.context.provide(ARTIFACT_READ, artifact_read)
     if ARTIFACT_IMPORT in requested and artifact_import is not None:
@@ -292,7 +287,6 @@ def check_host_dependencies(
         SESSION_ADMISSION,
         BINDINGS,
         TASKS,
-        PROCESSES,
         ARTIFACT_READ,
         ARTIFACT_IMPORT,
     }
