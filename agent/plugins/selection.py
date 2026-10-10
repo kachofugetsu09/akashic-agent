@@ -14,6 +14,7 @@ from typing import Literal, cast
 from agent.plugins.files import sync_directory
 from session.message import freeze_json
 from session.message_codec import json_value
+from agent.plugins.static_manifest import check_entrypoints
 
 
 class SelectionFormatError(ValueError):
@@ -205,10 +206,22 @@ def _input(value: object) -> Mapping[str, object]:
     """在选择文件边界核对安装元数据，不读代码或配置内容。"""
     fields = {"version", "code", "plugin_id", "source_revision", "config_revision",
               "python_environments", "source_type", "data_dir", "runtime"}
-    if not isinstance(value, Mapping) or set(value) not in (fields, fields | {"distribution_source"}):
+    if not isinstance(value, Mapping):
         raise SelectionFormatError("插件输入结构无效")
-    if type(value["version"]) is not int or value["version"] != 5 or value["source_type"] not in {"builtin", "installed"}:
+    version = value.get("version")
+    if type(version) is not int or version not in {5, 6}:
+        raise SelectionFormatError("插件输入版本无效")
+    if version == 6:
+        fields.add("entrypoints")
+    if set(value) not in (fields, fields | {"distribution_source"}):
+        raise SelectionFormatError("插件输入结构无效")
+    if value["source_type"] not in {"builtin", "installed"}:
         raise SelectionFormatError("插件输入版本或来源类型无效")
+    if version == 6:
+        try:
+            check_entrypoints(value["entrypoints"])
+        except ValueError as error:
+            raise SelectionFormatError("插件命令输入无效") from error
     for key in ("code", "plugin_id", "data_dir"):
         if not isinstance(value[key], str) or not value[key]:
             raise SelectionFormatError(f"插件输入缺少 {key}")

@@ -51,6 +51,7 @@ class StaticPluginManifest:
     api_version: int
     python: tuple[StaticPythonRuntime, ...]
     identity_digest: str
+    entrypoints: tuple[tuple[str, str], ...] = ()
 
     @property
     def requirements(self) -> tuple[str, ...]:
@@ -69,6 +70,7 @@ def load_static_plugin_manifest(plugin_root: Path) -> StaticPluginManifest:
     # 2. 身份与 requirements 都来自固定代码制品，不读取数据复制策略。
     name, version, api_version = load_plugin_identity(root)
     python = _python_runtimes(root)
+    entrypoints = _plugin_entrypoints(root / "plugin.py")
     identity: dict[str, object] = {
         "name": name,
         "version": version,
@@ -81,6 +83,8 @@ def load_static_plugin_manifest(plugin_root: Path) -> StaticPluginManifest:
             for item in python
         ],
     }
+    if entrypoints:
+        identity["entrypoints"] = dict(entrypoints)
     identity_digest = hashlib.sha256(
         json.dumps(
             identity,
@@ -95,7 +99,54 @@ def load_static_plugin_manifest(plugin_root: Path) -> StaticPluginManifest:
         api_version=api_version,
         python=python,
         identity_digest=identity_digest,
+        entrypoints=entrypoints,
     )
+
+
+def _plugin_entrypoints(path: Path) -> tuple[tuple[str, str], ...]:
+    """只接受字面命令到模块函数的映射，发现阶段不执行插件入口。"""
+    tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
+    declarations: list[ast.expr | None] = []
+    for statement in tree.body:
+        if isinstance(statement, ast.Assign):
+            if not any(isinstance(target, ast.Name) and target.id == "entrypoints" for target in statement.targets):
+                continue
+            if len(statement.targets) != 1:
+                raise PluginSourceContentError("entrypoints 必须单独声明")
+            declarations.append(statement.value)
+        elif isinstance(statement, ast.AnnAssign) and isinstance(statement.target, ast.Name) and statement.target.id == "entrypoints":
+            declarations.append(statement.value)
+    if not declarations:
+        return ()
+    if len(declarations) != 1 or not isinstance(declarations[0], ast.Dict):
+        raise PluginSourceContentError("entrypoints 必须是单次字面 dict 声明")
+    declaration = declarations[0]
+    entries: dict[str, str] = {}
+    for key, target in zip(declaration.keys, declaration.values):
+        if (not isinstance(key, ast.Constant) or not isinstance(key.value, str)
+                or not isinstance(target, ast.Constant) or not isinstance(target.value, str)):
+            raise PluginSourceContentError("entrypoint 必须映射命令名到 module.function")
+        if key.value in entries:
+            raise PluginSourceContentError(f"entrypoint 重复命令: {key.value}")
+        entries[key.value] = target.value
+    try:
+        return check_entrypoints(entries)
+    except ValueError as error:
+        raise PluginSourceContentError(f"插件命令声明无效: {path}") from error
+
+
+def check_entrypoints(value: object) -> tuple[tuple[str, str], ...]:
+    """在源码与选择输入边界校验同一命令声明表示。"""
+    if not isinstance(value, Mapping):
+        raise ValueError("entrypoints 必须是 dict")
+    entries: list[tuple[str, str]] = []
+    for key, target in value.items():
+        if (not isinstance(key, str) or re.fullmatch(r"[a-z][a-z0-9-]*", key) is None
+                or not isinstance(target, str)
+                or re.fullmatch(r"[A-Za-z_]\w*(?:\.[A-Za-z_]\w*)+", target) is None):
+            raise ValueError("entrypoint 必须映射命令名到 module.function")
+        entries.append((key, target))
+    return tuple(sorted(entries))
 
 
 def load_plugin_identity(plugin_root: Path) -> tuple[str, str, int]:

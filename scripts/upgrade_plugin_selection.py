@@ -286,7 +286,11 @@ def _plan_archive_upgrade(workspace: Path, home: Path, plugin_dirs: tuple[Path, 
         _, revision = load_config(data_dir)
         # 当前配置文件拥有配置；旧 config 正文既不执行，也不复制。
         value = {key: item for key, item in record.items() if key != "config"}
-        value.update(version=5, code=str(source.plugin_root.resolve()), source_revision=_source_revision(source.plugin_root),
+        manifest = source.static_manifest
+        if manifest is None:
+            raise RuntimeError("已扫描来源缺少 static manifest")
+        value.update(version=6, code=str(source.plugin_root.resolve()), source_revision=_source_revision(source.plugin_root),
+                     entrypoints=dict(manifest.entrypoints),
                      config_revision=revision,
                      python_environments={key: environment(cast(str, item))
                                           for key, item in cast(Mapping[str, object], record["python_environments"]).items()})

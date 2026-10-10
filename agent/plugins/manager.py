@@ -2181,7 +2181,7 @@ class PluginManager:
 
         records = tuple(self._selection.read_input(ref) for ref in components)
         for record in records:
-            if record["version"] != 5 or record["runtime"] != {
+            if record["version"] not in {5, 6} or record["runtime"] != {
                 "python_tag": sys.implementation.cache_tag,
                 "binding_api": PLUGIN_INPUT_API,
             }:
