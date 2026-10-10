@@ -10,7 +10,7 @@ from plugins.content.contract import (
     CONTENT as CONTENT,
     Content as ContentCapability,  # noqa: F401 - 显式再导出给本插件消费者。
 )
-from agent.plugin_contracts.tools import (
+from plugins.tools.contract import (
     TOOLS as TOOLS,
     CallSource as CallSource,
     ToolCatalog as ToolCatalog,

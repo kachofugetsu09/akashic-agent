@@ -39,7 +39,7 @@ from plugins.sources.contract import (
     SourcesV5,
 )
 from core.common.diagnostic_log import log_event
-from agent.plugin_contracts.tools import ALL_TOOLS
+from plugins.tools.contract import ALL_TOOLS
 from plugins.tools.contract import TOOL_LOADING_PRESENTATION
 
 from .contract import REPLY_PROGRAM_V3 as REPLY_PROGRAM

@@ -20,7 +20,7 @@ from agent.plugin_contracts import (
 )
 from core.common.frozen_json import freeze_json
 from agent.plugin_contracts import json_value
-from agent.plugin_contracts.tools import CallSource, CommitAfter
+from plugins.tools.contract import CallSource, CommitAfter
 from core.common.file_io import run_file_io
 from core.common.diagnostic_log import log_timing
 from functools import partial
@@ -29,7 +29,7 @@ from .api import (
     Authorize, Denied, InvalidArguments, MessageReply, OpenTool, Outcome, Result,
     coerce_result, durable_call_key, result_message_id,
 )
-from agent.plugin_contracts.tools import PROCESS_STARTED_AT
+from plugins.tools.contract import PROCESS_STARTED_AT
 
 
 class ToolExecution:

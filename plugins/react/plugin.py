@@ -54,7 +54,7 @@ from plugins.models.contract import (
 from plugins.react.contract import (
     REACT_ORDERED_V2 as REACT,
 )
-from agent.plugin_contracts.tools import (
+from plugins.tools.contract import (
     DecodedCall as DecodedCall,
     StartCheck,
 )

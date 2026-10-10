@@ -34,7 +34,7 @@ from core.common.frozen_json import freeze_json
 from plugins.content.contract import (
     CONTENT as CONTENT,
 )
-from agent.plugin_contracts.tools import (
+from plugins.tools.contract import (
     ALL_TOOLS as ALL_TOOLS,
     TOOL_BIND_SAVED as TOOL_BIND_SAVED,
     TOOL_DISPLAY_NAME as TOOL_DISPLAY_NAME,

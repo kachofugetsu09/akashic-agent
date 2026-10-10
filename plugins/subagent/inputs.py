@@ -27,7 +27,7 @@ from plugins.conversation.contract import (
     CONVERSATION_COMPLETE_V2 as CONVERSATION_COMPLETE,
     ConversationCompleteV2 as ConversationComplete,
 )
-from agent.plugin_contracts.tools import (
+from plugins.tools.contract import (
     ALL_TOOLS as ALL_TOOLS,
     TOOL_BIND_SAVED as TOOL_BIND_SAVED,
     TOOLS as TOOLS,

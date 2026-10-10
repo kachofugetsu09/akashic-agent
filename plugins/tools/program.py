@@ -14,7 +14,7 @@ from agent.plugin_composition.messages import (
 )
 from agent.plugin_composition.tasks import ExternalRootPermit
 from agent.plugin_contracts import CallRef, ContentPart, ContentReferences, ToolResult
-from agent.plugin_contracts.tools import StartCheck
+from plugins.tools.contract import StartCheck
 from plugins.tools.contract import TOOL_PROGRAM_V2 as TOOL_PROGRAM
 
 from .api import Authorize, MessageReply, result_message_id

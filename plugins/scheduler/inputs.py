@@ -17,7 +17,7 @@ from plugins.delivery.contract import (
     Selection as Selection,
     Senders as Senders,
 )
-from agent.plugin_contracts.tools import (
+from plugins.tools.contract import (
     ALL_TOOLS as ALL_TOOLS,
     TOOLS as TOOLS,
     ToolCatalog as ToolCatalog,

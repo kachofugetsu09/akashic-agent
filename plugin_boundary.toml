@@ -134,27 +134,6 @@ note = "content-wake 设计列为现有原子；代码中无此 ServiceKey"
 [phantom.BACKGROUND_JOBS]
 note = "插件手册与 skill 文档仍在教学使用；代码中无此 ServiceKey"
 
-[capabilities."tools.display-name.v1"]
-role = "seam"
-note = "客户端只读历史 binding 名称；工具插件拥有描述解释，不允许打开或执行工具"
-
-[capabilities."tools.v1"]
-role = "seam"
-note = "独立公共合同；实现由普通插件提供，来源见 Issue 766 设计"
-
-[capabilities."tools.all.v1"]
-role = "seam"
-note = "独立公共合同；实现由普通插件提供，来源见 Issue 766 设计"
-
-
-[capabilities."tools.bind-saved.v1"]
-role = "seam"
-note = "公共结构合同；实际状态与生命周期由提供方插件拥有"
-
-[capabilities."tools.cleanup.v1"]
-role = "seam"
-note = "公共结构合同；实际状态与生命周期由提供方插件拥有"
-
 [capabilities."core.plugin_config.v1"]
 role = "core"
 note = "按实际 Context 应用自身固定输入；沿 selection CAS 与局部换代，不解释业务字段"
