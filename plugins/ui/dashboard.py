@@ -240,7 +240,7 @@ def _plugin_routes(routes: Sequence[object]) -> tuple[DashboardRoute, ...]:
     return typed
 
 
-def _core_routes(routes: tuple[object, ...]) -> tuple[DashboardRoute, ...]:
+def _server_routes(routes: tuple[object, ...]) -> tuple[DashboardRoute, ...]:
     return tuple(
         route for route in routes if isinstance(route, (APIRoute, WebSocketRoute))
     )

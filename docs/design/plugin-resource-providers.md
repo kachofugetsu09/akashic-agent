@@ -128,3 +128,24 @@ Effect 关闭先取消并等待原任务及连接退出，不留下旧 generatio
 `claim_host_bridge_boot` 目前仍在进程启动、业务数据库构造之前执行。
 这一外部认领不由状态探测代替；完整后台迁移要保留认领先于持久 owner 开放的顺序。
 实际验证见 [host_monitor_scenario.py](../../scripts/host_monitor_scenario.py)。
+
+## Dashboard listener 的 owner
+
+UI 插件持有 Dashboard 的静态资产、中间件、请求许可和实际 Unix listener。
+资产来自所选 UI 代码制品的 `static/dashboard`；缺少构建入口返回 503，
+启动不创建或修改代码目录。构建分发把同次生成的 Dashboard 资产放进 UI 插件 bundle。
+
+```text
+┌─────────────────────┐   ┌─────────────────────┐   ┌──────────────────────┐
+│ UI Effect 保留关闭责任 │ → │ 实际 listener 完成启动 │ → │ 发布 Context endpoint │
+└─────────────────────┘   └─────────────────────┘   └──────────────────────┘
+          关闭时：先撤下 endpoint，再排空连接、停止 listener、核对并移除原 socket
+```
+
+`runtime/dashboard.sock` 保持原节点位置；短 Unix 别名由共享 OS helper 计算。
+派生端点计划增加本 listener 的记录，正常关闭减少这一条记录；它不改写权威状态。
+UI 关闭只清理其原 socket，节点被替换时明确拒绝删除；监听器未停止时不报告释放成功。
+中间件只持有 UI 的实际 Context 与 registry，不取得 Manager、Root 或内部 provider 查找。
+旧 WebSocket 在所属 owner 撤下时关闭为 1012；旧 catalog 身份返回明确 stale 拒绝。
+`dashboard` 独立命令由所选 UI 插件声明，命令不启动 Root 或打开业务数据库。
+真实 listener 验证见 [ui_listener_scenario.py](../../scripts/ui_listener_scenario.py)。

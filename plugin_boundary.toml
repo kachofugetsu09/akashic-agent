@@ -98,10 +98,6 @@ note = "UI 插件拥有登记投影、查询准入和物理线程排空"
 role = "seam"
 note = "普通 UI provider 提供当前 Root 的 Web bootstrap 与身份投影"
 
-[capabilities."core.dashboard_routes.v1"]
-role = "core"
-note = "宿主装配从实际端口固定 Dashboard route 列表，UI 插件只读"
-
 [capabilities."core.host_info"]
 role = "core"
 note = "宿主装配固定提供 boot identity 与 validation marker 的只读值"

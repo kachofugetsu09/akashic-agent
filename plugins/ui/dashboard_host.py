@@ -3,58 +3,25 @@ from __future__ import annotations
 import asyncio
 import logging
 from collections.abc import MutableMapping
-from typing import Any, Protocol
+from typing import Any
 from urllib.parse import parse_qs, urlsplit
 
 from starlette.datastructures import Headers
 from starlette.responses import JSONResponse
 from starlette.routing import Match
 
-from agent.plugin_composition import CompositionError, CompositionRoot, Context, FiberState
+from agent.plugin_composition import CompositionError, Context, FiberState
 from agent.plugin_composition.diagnostics import plugin_entrypoint
 from agent.plugin_composition.ui import UI, DashboardBinding, UiRegistry, WebUiCatalog
 
 logger = logging.getLogger(__name__)
 
 
-class LiveRootHost(Protocol):
-    @property
-    def live_root(self) -> CompositionRoot | None: ...
-
-
-class PluginDashboardHost:
-    """Read the actual live Root provider and its current UI projection."""
-
-    def __init__(self, plugin_manager: LiveRootHost) -> None:
-        self._plugin_manager = plugin_manager
-
-    def current(self) -> tuple[CompositionRoot, Context, UiRegistry] | None:
-        """Return the live Root and exact UI provider relation."""
-
-        root = self._plugin_manager.live_root
-        if root is None:
-            return None
-        if not isinstance(root, CompositionRoot):
-            raise TypeError("PluginManager.live_root 必须是 CompositionRoot")
-        registry = root.service_value(UI)
-        if registry is None:
-            return None
-        provider_context, registered = root._service_provider(UI)  # pyright: ignore[reportPrivateUsage]
-        if registered is not registry:
-            raise RuntimeError("UI provider 不是当前 live Root 的 active provider")
-        if provider_context.fiber.state is not FiberState.ACTIVE:
-            return None
-        if registry.root_instance_token is not root.instance_token:
-            raise RuntimeError("UI provider 不属于正式 live Root")
-        return root, provider_context, registry
-
-
 class LiveDashboardMiddleware:
-    """Route each request through the live Root and original owner Context."""
+    """Route each request through the listener and original owner Context."""
 
-    def __init__(self, app: object, plugin_manager: LiveRootHost) -> None:
-        self._app = app
-        self._host = PluginDashboardHost(plugin_manager)
+    def __init__(self, app: object, context: Context, registry: UiRegistry) -> None:
+        self._app, self._context, self._registry = app, context, registry
 
     async def __call__(self, scope: dict[str, Any], receive: Any, send: Any) -> None:
         scope_type = scope.get("type")
@@ -96,24 +63,24 @@ class LiveDashboardMiddleware:
             await _reject_web_request(403, "forbidden_contract", scope, receive, send)
             return
 
-        current = self._host.current()
-        if current is None:
+        ui_context, registry = self._context, self._registry
+        if ui_context.fiber.state is not FiberState.ACTIVE:
             if identity is not None:
                 await _reject_web_request(409, "stale_catalog", scope, receive, send)
                 return
-            await self._app(scope, receive, send)  # type: ignore[operator]
+            await _reject_web_request(503, "ui_unavailable", scope, receive, send)
             return
 
-        root, ui_context, registry = current
         captured = None
         binding = None
         route = None
-        core_passthrough = False
+        ui_passthrough = False
         rejection: tuple[int, str] | None = None
         try:
             async with ui_context.runtime_scope():
+                ui_context.require_runtime_owner(UI, registry)
                 catalog = registry.catalog()
-                if identity is not None and not _web_request_matches(root, catalog, identity):
+                if identity is not None and not _web_request_matches(ui_context.generation_id, catalog, identity):
                     rejection = (409, "stale_catalog")
                 else:
                     binding = _matching_binding(registry.bindings(), scope)
@@ -121,7 +88,7 @@ class LiveDashboardMiddleware:
                         if identity is not None:
                             rejection = (403, "forbidden_contract")
                         else:
-                            core_passthrough = True
+                            ui_passthrough = True
                     elif binding.has_web and identity is None:
                         rejection = (403, "forbidden_contract")
                     elif identity is not None and binding.plugin_id != identity[2]:
@@ -142,8 +109,9 @@ class LiveDashboardMiddleware:
         if rejection is not None:
             await _reject_web_request(*rejection, scope, receive, send)
             return
-        if core_passthrough:
-            await self._app(scope, receive, send)  # type: ignore[operator]
+        if ui_passthrough:
+            async with ui_context.runtime_scope():
+                await self._app(scope, receive, send)  # type: ignore[operator]
             return
         if scope_type == "websocket":
             assert captured is not None
@@ -394,13 +362,13 @@ def _same_origin_websocket(headers: Headers) -> bool:
 
 
 def _web_request_matches(
-    root: object,
+    snapshot: str,
     catalog: WebUiCatalog,
     identity: tuple[str, str, str, str],
 ) -> bool:
     snapshot_id, catalog_id, plugin_id, generation_id = identity
     return (
-        root.generation_id == snapshot_id
+        snapshot == snapshot_id
         and catalog.identity == catalog_id
         and any(
             item.plugin_id == plugin_id and item.generation_id == generation_id

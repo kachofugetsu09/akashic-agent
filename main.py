@@ -201,7 +201,7 @@ from agent.supervisor import RESTART_EXIT_CODE, run_supervisor
 from agent.plugins.doctor import format_plugin_doctor_report, run_plugin_doctor
 from agent.plugins.manifest import set_plugin_enabled
 from bootstrap.app import build_app_runtime
-from bootstrap.dashboard_api import run_dashboard_api
+from agent.plugins.entrypoints import invoke_plugin_command
 from bootstrap.init_workspace import InitSummary, init_workspace
 from bootstrap.runtime_readiness import RuntimeReadiness
 from bootstrap.workspace_token import read_workspace_token
@@ -285,7 +285,6 @@ def _prepare_startup_migrations(
         "supervise",
         "gateway",
         "app-server",
-        "dashboard",
     }:
         return None
     if command in {"", "supervise"} and (not config_path.exists() or not workspace.exists()):
@@ -787,8 +786,6 @@ if __name__ == "__main__":
     config_path = "config.toml"
     workspace: Path
     force = "--force" in args
-    dashboard_host = "0.0.0.0"
-    dashboard_port = 2236
 
     try:
         config_value = _get_flag_value(args, "--config")
@@ -801,8 +798,6 @@ if __name__ == "__main__":
             Path(config_path),
             allow_default=bootstrap_command or supervisor_command,
         )
-        host_value = _get_flag_value(args, "--host")
-        port_value = _get_flag_value(args, "--port")
         source_value = _get_flag_value(args, "--source")
         marketplace_value = _get_flag_value(args, "--marketplace")
         ref_value = _get_flag_value(args, "--ref")
@@ -820,10 +815,6 @@ if __name__ == "__main__":
     if args and args[0] == "supervise" and not _supervisor_supported():
         print("supervise 仅支持 Linux 和 macOS", file=sys.stderr)
         sys.exit(2)
-    if host_value is not None:
-        dashboard_host = host_value
-    if port_value is not None:
-        dashboard_port = int(port_value)
 
     try:
         migration_outcome = _prepare_startup_migrations(
@@ -987,13 +978,18 @@ if __name__ == "__main__":
             sys.exit(2)
         sys.exit(exit_code)
 
-    if args and args[0] == "dashboard":
-        run_dashboard_api(
-            workspace=workspace,
-            host=dashboard_host,
-            port=dashboard_port,
-        )
-        sys.exit(0)
+    if args and not args[0].startswith("--") and args[0] != "gateway":
+        command_args = list(args[1:])
+        for flag in ("--config", "--workspace"):
+            while flag in command_args:
+                index = command_args.index(flag)
+                del command_args[index:index + 2]
+        try:
+            sys.exit(asyncio.run(invoke_plugin_command(args[0], tuple(command_args),
+                workspace=workspace, config_path=Path(config_path))))
+        except (LookupError, ValueError) as exc:
+            print(str(exc), file=sys.stderr)
+            sys.exit(2)
 
     if "--inspect-modules" in args:
         asyncio.run(inspect_modules(config_path, workspace))

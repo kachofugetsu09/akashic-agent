@@ -120,4 +120,3 @@ class WebUiProvider(Protocol):
 
 UI = ServiceKey[UiRegistry]("ui.v1")
 WEB_UI = ServiceKey[WebUiProvider]("core.web_ui.v1")
-DASHBOARD_ROUTES = ServiceKey[tuple[object, ...]]("core.dashboard_routes.v1")
