@@ -28,7 +28,7 @@ from plugins.models.projection import MessageProjection
 from plugins.models.store import ModelsStore
 from plugins.models.views import ContentViews
 from session.log import MessageLog
-from agent.plugin_composition.message_view import project_message_rows
+from agent.plugin_contracts.ui import MESSAGE_DISPLAY
 from session.artifact_store import ArtifactStore
 from tests.test_default_reply import application, live_root
 
@@ -67,6 +67,8 @@ DRIVER = '''        async def complete(self, request):
 
 def sources(directory: Path) -> None:
     """复用真实安装夹具，仅替换模型响应序列与工具正文。"""
+    shutil.copytree(Path(__file__).resolve().parents[2] / "plugins/ui", directory / "ui",
+                    ignore=shutil.ignore_patterns("__pycache__"))
     plugin = directory / 'reference_reader'
     shutil.copytree(Path(__file__).resolve().parents[2] / 'plugins/content_view', plugin,
                     ignore=shutil.ignore_patterns('__pycache__'))
@@ -132,11 +134,11 @@ async def check(directory: Path) -> dict[str, object]:
         # 实际页面投影展开不在当前页中的原文，且不重跑工具或改写消息。
         async with live_root(host) as root:
             reader = log.reader('test:room')
-            display_rows = await project_message_rows(root, reader.read_page(limit=50), display_only=True)
+            display_rows = await root.context.require(MESSAGE_DISPLAY)(reader.read_page(limit=50), display_only=True)
             tails = []
             for message, expected in zip(reads, (LONG, LONG[2:27])):
                 page = reader.read_page(after_seq=message.seq - 1, through_seq=message.seq, limit=1)
-                tail = await project_message_rows(root, page, display_only=True)
+                tail = await root.context.require(MESSAGE_DISPLAY)(page, display_only=True)
                 assert tail[0]['body']['parts'][0]['rendered'] == expected
                 tails.extend(tail)
             assert reader.snapshot() == rows
@@ -233,7 +235,7 @@ async def check_data_display(directory: Path) -> list[dict[str, object]]:
         before = log.reader('test:room').snapshot()
         async with live_root(host) as root:
             page = log.reader('test:room').read_page(after_seq=request.seq - 1, limit=50)
-            displayed = await project_message_rows(root, page, display_only=True)
+            displayed = await root.context.require(MESSAGE_DISPLAY)(page, display_only=True)
         assert displayed[-1]['body']['outcome'] == 'error'
         assert displayed[-1]['body']['parts'][0]['value'] == value
         assert log.reader('test:room').snapshot() == before
@@ -261,7 +263,7 @@ async def check_data_display(directory: Path) -> list[dict[str, object]]:
         before = log.reader('test:room').snapshot()
         async with live_root(host) as root:
             page = log.reader('test:room').read_page(after_seq=result.seq, limit=50)
-            references = await project_message_rows(root, page, display_only=True)
+            references = await root.context.require(MESSAGE_DISPLAY)(page, display_only=True)
         failures = [row for row in references if row['id'].startswith('reference-result-')]
         assert len(failures) == 3
         assert all(row['body']['parts'][0]['rendered']['error'] == '引用的原始内容不可用' for row in failures)

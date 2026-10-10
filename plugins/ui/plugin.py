@@ -31,7 +31,8 @@ from agent.plugin_composition.workload_slots import WORKLOADS
 from .dashboard import DashboardResources, _core_routes, _require_routes_available
 from .plugin_ui import PluginUiSlots
 from .queries import LivePluginUiProvider
-from agent.plugin_contracts.ui import PLUGIN_UI
+from agent.plugin_contracts.ui import PLUGIN_UI, MESSAGE_DISPLAY
+from .message_display import project_message_rows
 from .web import build_web_ui_catalog, resolve_web_module
 
 api_version = 3
@@ -222,3 +223,8 @@ async def apply(ctx: Context) -> None:
     queries = LivePluginUiProvider(ctx, slots)
     await ctx.effect(lambda: queries.aclose, label="ui.queries")
     await ctx.provide(PLUGIN_UI, queries)
+
+    async def display(page, *, display_only: bool):
+        return await project_message_rows(ctx, page, display_only=display_only)
+
+    await ctx.provide(MESSAGE_DISPLAY, ctx.entrypoint(display))

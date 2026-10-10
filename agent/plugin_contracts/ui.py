@@ -46,5 +46,5 @@ class PluginUiProvider(Protocol):
     ) -> dict[str, object]: ...
 
 
-MESSAGE_DISPLAY = ServiceKey[MessageDisplayReader]("core.message_display.v1")
+MESSAGE_DISPLAY = ServiceKey[MessageDisplayReader]("ui.messages.v1")
 PLUGIN_UI = ServiceKey[PluginUiProvider]("ui.plugin.v1")
