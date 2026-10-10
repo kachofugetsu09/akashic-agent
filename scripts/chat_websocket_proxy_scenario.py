@@ -16,7 +16,7 @@ import uvicorn
 import websockets
 from fastapi import FastAPI, WebSocket
 
-from bootstrap.web_runtime import chat_socket_path, dashboard_socket_path
+from agent.plugin_composition.endpoints import Endpoint, save_endpoint_plan
 from bootstrap.web_shell import create_web_shell_app
 from docker.debug.session_metadata_scenario import append, fixture
 from session.log import MessageLog
@@ -58,9 +58,15 @@ async def run(workspace: Path):
             await ws.send_text(ws.scope['query_string'].decode('ascii'))
             await ws.close()
 
-        shell = create_web_shell_app(workspace / 'config.toml', workspace)
-        async with serve(fixture(log, workspace), uds=chat_socket_path(workspace)), \
-                serve(dashboard, uds=dashboard_socket_path(workspace)), serve(shell) as address:
+        chat_socket = workspace / "chat.sock"
+        dashboard_socket = workspace / "dashboard.sock"
+        shell = create_web_shell_app(workspace)
+        async with serve(fixture(log, workspace), uds=chat_socket), \
+                serve(dashboard, uds=dashboard_socket), serve(shell) as address:
+            save_endpoint_plan(workspace / "runtime/endpoints.json", "fixture", (
+                Endpoint("client", "http+unix", str(chat_socket), ("/api/chat", "/ws"), "client", "fixture"),
+                Endpoint("dashboard", "http+unix", str(dashboard_socket), ("/",), "ui", "fixture"),
+            ))
             origin = f'127.0.0.1:{address[1]}'
             async with httpx.AsyncClient(base_url=f'http://{origin}') as client:
                 async with websockets.connect(f'ws://{origin}/ws?watch_sessions=true', proxy=None) as ws:

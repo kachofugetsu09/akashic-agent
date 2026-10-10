@@ -12,7 +12,7 @@ from typing import Any, cast
 
 import uvicorn
 
-from agent.plugin_composition import MODEL_CATALOG
+from agent.plugin_composition import MODEL_CATALOG, Context, Effect
 from agent.plugin_composition.channels import (
     AttachmentKind,
     AttachmentReadLease,
@@ -196,14 +196,14 @@ class _ClientGeneration:
         self.adapters = {}
 
 
-def build_akashic_channel_factory(config: AkashicClientsConfig, workspace: Any, navigation: NavigationPreferences | None = None):
+def build_akashic_channel_factory(owner: Context, config: AkashicClientsConfig, workspace: Any, navigation: NavigationPreferences | None = None):
     """为本次 apply 保留固定输入，实际 binding 由贡献 Scope 关闭。"""
     state = _ClientGeneration(config, workspace, navigation)
 
     def build(context: ChannelFactoryContext) -> _GenerationAkashicAdapter:
         if state.adapters:
             raise RuntimeError("本次 apply 的 Channel binding 尚未释放")
-        adapter = _GenerationAkashicAdapter(state, context)
+        adapter = _GenerationAkashicAdapter(state, context, owner=owner)
         state.adapters[context.binding_token] = adapter
         return adapter
 
@@ -217,9 +217,12 @@ class _GenerationAkashicAdapter:
         self,
         state: _ClientGeneration,
         context: ChannelFactoryContext,
+        *, owner: Context,
     ) -> None:
         self._state = state
         self._context = context
+        self._owner = owner
+        self._endpoint: Effect | None = None
         self._binding_token = context.binding_token
         self._config = state.config
         self._workspace = state.workspace
@@ -443,6 +446,9 @@ class _GenerationAkashicAdapter:
             node = public_path.lstat()
             self._socket_nodes.append((public_path, node.st_dev, node.st_ino))
 
+        self._endpoint = await self._owner.endpoint("client", protocol="http+unix",
+            address=str(socket_path), routes=("/chat", "/settings", "/assets", "/api/chat", "/api/shell/state", "/ws"))
+
     def _close_socket_nodes(self) -> None:
         """listener 排空后只移除本次创建且身份未变的临时节点。"""
         while self._socket_nodes:
@@ -552,6 +558,13 @@ class _GenerationAkashicAdapter:
         if self._stopped:
             return StopReceipt(self._binding_token, resources_closed=True)
         self._stopping = True
+        if self._endpoint is not None:
+            try:
+                await self._endpoint.aclose()
+            except BaseException:
+                self._stopping = False
+                raise
+            self._endpoint = None
         errors: list[BaseException] = []
         remaining_servers: list[tuple[uvicorn.Server, asyncio.Task[None]]] = []
         for server, task in reversed(self._servers):

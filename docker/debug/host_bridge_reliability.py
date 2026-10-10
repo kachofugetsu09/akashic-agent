@@ -31,7 +31,8 @@ from agent.host_bridge.server import HostBridgeService
 from bootstrap.app import _run_primary_tasks
 from fastapi import FastAPI
 from bootstrap.web_shell import create_web_shell_app
-from bootstrap.web_runtime import dashboard_socket_path
+from agent.plugin_composition.endpoints import Endpoint, save_endpoint_plan
+from core.common.unix_socket import socket_alias_path
 from core.common import file_io
 from core.common.diagnostic_log import AkashicJsonFormatter, diagnostic_context
 
@@ -212,13 +213,16 @@ async def run() -> None:
             @app.get("/api/runtime/host-bridge")
             async def read_status():
                 return status.snapshot()
-            dashboard_socket = dashboard_socket_path(workspace)
+            dashboard_socket = socket_alias_path(workspace / "runtime", "dashboard.sock")
             dashboard_socket.parent.mkdir(parents=True, exist_ok=True)
             dashboard = uvicorn.Server(uvicorn.Config(app, uds=str(dashboard_socket), log_level="error"))
             dashboard_task = asyncio.create_task(dashboard.serve())
             tasks.append(dashboard_task)
             await until(lambda: dashboard.started)
-            shell = create_web_shell_app(root / "config.json", workspace)
+            save_endpoint_plan(workspace / "runtime/endpoints.json", "fixture", (
+                Endpoint("diagnostic", "http+unix", str(dashboard_socket), ("/",), "diagnostic", "fixture"),
+            ))
+            shell = create_web_shell_app(workspace)
             async with httpx.AsyncClient(transport=httpx.ASGITransport(app=shell), base_url="http://local",
                                          headers={"sec-fetch-site": "same-origin"}) as web:
                 response = await web.get("/api/runtime/host-bridge")

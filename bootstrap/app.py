@@ -8,7 +8,7 @@ import signal
 from pathlib import Path
 from typing import Any, Awaitable, Callable
 
-import uvicorn
+from bootstrap.web_shell import WebShellServer
 
 from agent.config import resolve_app_server_endpoint
 from agent.control.service import ControlService
@@ -160,7 +160,7 @@ class AppRuntime:
         self.control_service: ControlService | None = None
         self.core: CoreRuntime | None = None
         self.bus = None
-        self.web_shell: uvicorn.Server | None = None
+        self.web_shell: WebShellServer | None = None
         self.web_shell_task: asyncio.Task[None] | None = None
         self.plugin_watcher: PluginWatcher | None = None
         self.plugin_watcher_task: asyncio.Task[None] | None = None
@@ -241,7 +241,7 @@ class AppRuntime:
                 port = int(os.environ["AKASHIC_WEB_PORT"])
                 if not 1 <= port <= 65535:
                     raise ValueError("AKASHIC_WEB_PORT 必须是 1 到 65535")
-                shell = create_web_shell_server(self.config.config_path, self.workspace, host=host, port=port)
+                shell = create_web_shell_server(self.workspace, host=host, port=port)
                 self.web_shell = shell
                 self.web_shell_task = asyncio.create_task(shell.serve(), name="web_shell")
                 await asyncio.to_thread(shell.startup_event.wait, 5)

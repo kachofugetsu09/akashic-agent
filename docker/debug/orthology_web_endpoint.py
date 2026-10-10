@@ -11,6 +11,7 @@ import uvicorn
 from websockets.asyncio.client import unix_connect
 
 from agent.plugin_composition import CompositionRoot
+from agent.plugin_composition.endpoints import save_endpoint_plan
 from agent.plugin_composition.model import FiberState, PluginRuntime
 from bootstrap.web_shell import create_web_shell_app
 from docker.debug.orthology_optional_requests import install_ports
@@ -19,10 +20,11 @@ from plugins.channels import plugin as channels
 
 
 async def check(workspace: Path) -> None:
-    root = CompositionRoot("web-endpoint-scenario")
+    root = CompositionRoot("web-endpoint-scenario", endpoint_publisher=lambda endpoints: save_endpoint_plan(
+        workspace / "runtime/endpoints.json", "web-endpoint-scenario", endpoints))
     runtime = await install_ports(root, workspace)
     config = workspace / "config.toml"
-    app = create_web_shell_app(config, workspace)
+    app = create_web_shell_app(workspace)
     public = workspace / "runtime/web-chat.sock"
     shell_socket = workspace / "shell.sock"
     server = uvicorn.Server(uvicorn.Config(app, uds=str(shell_socket), log_level="critical"))
@@ -35,9 +37,9 @@ async def check(workspace: Path) -> None:
             await asyncio.sleep(0)
     async with httpx.AsyncClient(transport=httpx.ASGITransport(app), base_url="http://shell") as shell:
         try:
-            assert (await shell.get("/api/shell/state")).json()["status"] == "needs_setup"
+            assert (await shell.get("/api/shell/state")).status_code == 503
             config.write_text("# temporary scenario\n")
-            assert (await shell.get("/api/shell/state")).json()["status"] == "unavailable"
+            assert (await shell.get("/api/shell/state")).status_code == 503
             await root.mount(channels.apply, name="channels", inject=channels.inject, runtime=runtime("channels"))
             for name, target in (("custom", workspace / "custom.sock"), ("default", public)):
                 plugin_runtime = PluginRuntime("clients", name, workspace, workspace / "clients", workspace,
@@ -53,7 +55,7 @@ async def check(workspace: Path) -> None:
                 await chat.dispose()
                 assert not public.exists() and not public.is_symlink()
                 assert not target.exists()
-                assert (await shell.get("/api/shell/state")).json()["status"] == "unavailable"
+                assert (await shell.get("/api/shell/state")).status_code == 503
 
             # 外来节点阻止发布，不被启动回滚删除。
             public.write_text("foreign")

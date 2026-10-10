@@ -180,7 +180,7 @@ async def web_browser_checks(core, root, workspace, config):
     listener = socket.socket()
     listener.bind(('127.0.0.1', 0))
     url = f'http://127.0.0.1:{listener.getsockname()[1]}'
-    shell = uvicorn.Server(uvicorn.Config(create_web_shell_app(config, workspace), log_level='error'))
+    shell = uvicorn.Server(uvicorn.Config(create_web_shell_app(workspace), log_level='error'))
     task = asyncio.create_task(shell.serve(sockets=[listener]))
     try:
         await wait_for(lambda: shell.started or task.done(), 'Web Shell startup')

@@ -48,3 +48,30 @@ def save_endpoint_plan(path: Path, generation_id: str, endpoints: tuple[Endpoint
     except OSError:
         temporary.unlink(missing_ok=True)
         raise
+
+
+def load_endpoint_plan(path: Path) -> tuple[Endpoint, ...]:
+    """在进程外读取已发布计划；缺席可恢复，损坏必须显式报错。"""
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except FileNotFoundError:
+        return ()
+    if (not isinstance(payload, dict) or set(payload) != {"generation_id", "endpoints"}
+            or not isinstance(payload["generation_id"], str) or not payload["generation_id"]
+            or not isinstance(payload["endpoints"], list)):
+        raise ValueError("endpoint plan 结构无效")
+    fields = {"name", "protocol", "address", "routes", "owner", "generation_id"}
+    endpoints: list[Endpoint] = []
+    prefixes: set[str] = set()
+    for item in payload["endpoints"]:
+        if (not isinstance(item, dict) or set(item) != fields
+                or any(not isinstance(item[key], str) or not item[key] for key in fields - {"routes"})
+                or not isinstance(item["routes"], list)):
+            raise ValueError("endpoint plan 登记无效")
+        endpoint = Endpoint(item["name"], item["protocol"], item["address"],
+                            tuple(item["routes"]), item["owner"], item["generation_id"])
+        if prefixes.intersection(endpoint.routes):
+            raise ValueError("endpoint plan 路由前缀重复")
+        prefixes.update(endpoint.routes)
+        endpoints.append(endpoint)
+    return tuple(endpoints)

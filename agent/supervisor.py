@@ -655,7 +655,6 @@ def _start_settings_server(
     if not 1 <= port <= 65_535:
         raise RuntimeError("AKASHIC_WEB_PORT 必须是 1 到 65535 的整数")
     server = create_web_shell_server(
-        config_path,
         workspace,
         host=host,
         port=port,
