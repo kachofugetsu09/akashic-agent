@@ -6,17 +6,14 @@ from collections.abc import Callable, Mapping
 from typing import Any, cast
 
 from agent.plugin_composition.control_frames import CONTROL_FRAMES, FrameBook
-from agent.control.timer import AsyncioOneShotTimer
 from agent.host_bridge.plugin_execution import (
     CodeOwner,
     ControllerAccess,
     ExecutionAccess,
 )
 from agent.plugin_composition import (
-    TIMERS,
     CompositionError,
     CompositionRoot,
-    PluginTimers,
     ServiceKey,
 )
 from agent.plugin_composition.artifacts import (
@@ -203,7 +200,6 @@ async def provide_host_services(
             RESTART_GATE,
             CONTROL_FRAMES,
             PROCESSES,
-            TIMERS,
             MESSAGE_DISPLAY,
             PLUGIN_UI,
         }
@@ -328,8 +324,6 @@ async def provide_host_services(
         _ = await root.context.provide(ARTIFACT_READ, artifact_read)
     if ARTIFACT_IMPORT in requested and artifact_import is not None:
         _ = await root.context.provide(ARTIFACT_IMPORT, artifact_import)
-    if TIMERS in requested:
-        _ = await root.context.provide(TIMERS, PluginTimers(AsyncioOneShotTimer()))
 
     # Client UI and message display are neutral projections.  The host
     # publishes stable names; each display request opens only its provider
@@ -407,8 +401,7 @@ def check_host_dependencies(
         PROCESSES,
         ARTIFACT_READ,
         ARTIFACT_IMPORT,
-        TIMERS,
-            MESSAGE_DISPLAY,
+        MESSAGE_DISPLAY,
         PLUGIN_UI,
     }
     for generation in generations:

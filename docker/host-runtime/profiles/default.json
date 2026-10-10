@@ -33,6 +33,11 @@
   },
   "plugins": [
     {
+      "name": "timer",
+      "depends_on": [],
+      "reason": "持有单次等待与 Effect 清理，不包含周期或调度事实。"
+    },
+    {
       "name": "channels",
       "depends_on": [],
       "reason": "拥有实际 Channel 连接、接纳、发送回执与输入恢复。"
@@ -332,7 +337,8 @@
         "eventmail",
         "drift",
         "tools",
-        "content"
+        "content",
+        "timer"
       ],
       "reason": "提供独立设置与可选业务功能；未决定时不启动功能。"
     },

@@ -9,7 +9,7 @@ from datetime import UTC, datetime, timedelta
 from agent.plugin_composition import Context
 from agent.plugin_composition.messages import MESSAGE_CATALOG, MESSAGE_WRITERS, SESSION_ADMISSION
 from agent.plugin_composition.tasks import TASKS, Task, TaskSlot
-from agent.plugin_composition.timers import TIMERS
+from plugins.timer.contract import TIMERS
 from .inputs import CONTENT, DELIVERY, DELIVERY_SENDERS
 from agent.plugin_composition.bindings import BINDINGS
 from agent.plugin_composition.messages import MessageReader, SessionAttributes

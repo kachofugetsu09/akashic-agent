@@ -9,7 +9,6 @@ from agent.plugin_composition.context import (
     RuntimeScope,
 )
 from agent.control.scoped_turn import TurnAcceptedReceipt
-from agent.control.timer import TimerHandle, TimerStatus
 from agent.plugin_contracts.turn_effects import PostCommitEffect
 from agent.plugin_composition.dashboard import DashboardContext
 from agent.plugin_composition.requests import RequestContext
@@ -59,7 +58,6 @@ from agent.plugin_composition.durable_deliveries import (
     DurableDeliveryView,
     PluginDurableDeliveries,
 )
-from agent.plugin_composition.timers import TIMERS, PluginTimers
 from agent.plugin_composition.runtime_lifecycle import (
     RUNTIME_STARTING,
     RUNTIME_STARTED,
@@ -367,10 +365,6 @@ __all__ = [
     "DurableDeliveryView",
     "PluginDurableDeliveries",
     "PostCommitEffect",
-    "TIMERS",
-    "TimerHandle",
-    "TimerStatus",
-    "PluginTimers",
     "RUNTIME_STARTING",
     "RUNTIME_STARTED",
     "RUNTIME_STOPPING",

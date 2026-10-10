@@ -17,7 +17,7 @@ from agent.plugin_composition.messages import (
     MessageReader,
     OwnerRecord,
 )
-from agent.plugin_composition.timers import TIMERS, TimerReceipt, TimerStatus
+from plugins.timer.contract import TIMERS, TimerReceipt, TimerStatus
 from agent.plugin_contracts import Message, body_to_dict
 from agent.plugin_contracts.models import (
     MODEL_SELECTION as MODEL_SELECTION,
