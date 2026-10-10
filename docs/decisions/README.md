@@ -136,3 +136,5 @@
 | [0093](0093-computer-reuses-anonymous-browsers.md) | proposed | 匿名实例稳定 ID、错误保留进度与闲置回收 | PLG-017 |
 
 | [0104](0104-public-codecs-without-ui-runtime.md) | proposed / implemented for review | 公共只读编码与类型同寿命，headless 不要求 UI runtime | PLG、CAP |
+
+| [0109](0109-workspace-owns-plugin-choices.md) | proposed / patch API implemented, activation pending | 启停归 workspace patch，库存取实际制品，配置保留单一 owner | PLG、MIG、STA |
