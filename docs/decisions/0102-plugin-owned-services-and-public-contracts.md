@@ -64,6 +64,12 @@ RuntimeError / TimeoutError 只传递该值。消费者显式读取模型失败�
 不改变 driver 原错误、其他等待者的响应或耐久调用回执。模型控制缺席也由这套
 合同表达，HTTP 与 RPC 保留原状态码；不再由 Core 单独定义其异常类型。
 
+Models 公共合同真实拥有请求、响应、失败、usage、continuation、目录、
+能力与 driver 协议；Core 不保留模型模块或再导出。消息与模型共用中立 JSON
+冻结算法。Models 的 ToolCall 是 provider 返回的请求值；消息 ToolCall 是已提交
+调用事实，两者保持独立类型，投影边界显式转换。Tools 自己拥有模型调用的呈现、
+菜单与程序消费接口，Core 不为这些消费接口反向依赖 Models。
+
 独立命令由插件用字面 `entrypoints = {"command": "module.function"}` 声明。
 安装输入 v6 将该声明纳入唯一 selection；v5 原记录仍原样读取，不改身份，
 没有凭空补出的命令入口。Core 只按当前选择分发唯一 provider，不执行包入口或
