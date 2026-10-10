@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from plugins.models.contract import describe_transport_error
+
 # External JSON is validated field by field below; pyright cannot preserve the
 # narrowed key/value types of arbitrary Mapping and list payloads.
 # pyright: reportUnknownVariableType=false, reportUnknownMemberType=false, reportUnknownArgumentType=false
@@ -14,7 +16,7 @@ from pathlib import Path
 from typing import Any, cast
 from urllib.parse import urlsplit, urlunsplit
 
-from core.net.http import HttpClient, StreamProgress, describe_transport_error, finish_response, retry_after_time
+from core.net.http import HttpClient, StreamProgress, finish_response, retry_after_time
 
 import httpx
 

@@ -58,7 +58,6 @@ PLUGIN_ROOT = "plugins"
 # 与评审出处见 docs/design/plugin-boundary-foundation.md §9.37。
 PLUGIN_ALLOWED_MODULES = frozenset({
     "core.error_context",
-    "agent.media",
     # Migration callbacks receive this source-neutral execution context from
     # the host; it is not a business implementation or plugin-name exception.
     "agent.migrations.context",

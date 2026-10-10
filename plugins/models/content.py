@@ -7,7 +7,7 @@ from collections.abc import Callable, Mapping, Sequence
 from dataclasses import asdict
 from typing import Any, cast
 
-from agent.media import (
+from plugins.models.contract import (
     MAX_IMAGE_DATA_URI_TOTAL_BYTES,
     MAX_IMAGE_FILE_BYTES,
     MAX_IMAGE_TOTAL_BYTES,
