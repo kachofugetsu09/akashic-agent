@@ -91,7 +91,6 @@ PLUGIN_ALLOWED_MODULES = frozenset({
     "agent.plugin_composition.plugin_config",
     "agent.plugin_contracts.configuration",
     "agent.plugin_composition.plugin_updates",
-    "agent.plugin_composition.process_slots",
     "agent.plugin_composition.processes",
     "agent.process_runtime",
     "agent.plugin_composition.requests",

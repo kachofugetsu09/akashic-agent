@@ -112,10 +112,6 @@ from agent.plugin_composition.models import (
     UsageCoverage,
 )
 
-from agent.plugin_composition.process_slots import (
-    MANAGED_PROCESSES,
-    ManagedProcessDefinition,
-)
 from agent.plugin_composition.workload_slots import (
     WORKLOADS,
     Workloads,
@@ -295,10 +291,8 @@ __all__ = [
     "OwnerCall",
     "SourceMutationFence",
     "JsonValue",
-    "MANAGED_PROCESSES",
     "WORKLOADS",
     "EMBEDDING_MEMORY_PLUGIN",
-    "ManagedProcessDefinition",
     "Workloads",
     "Workload",
     "WorkloadData",

@@ -6,7 +6,7 @@ from collections.abc import Mapping
 from pathlib import Path
 from types import MappingProxyType
 from urllib.parse import urlsplit
-from agent.plugin_composition.process_slots import ManagedProcessDefinition
+from plugins.managed_processes.contract import ManagedProcessDefinition
 
 _NAME = re.compile(r"^[a-z][a-z0-9_-]{0,63}$")
 _ENV_NAME = re.compile(r"^[A-Z_][A-Z0-9_]{0,127}$")
