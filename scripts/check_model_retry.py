@@ -118,7 +118,7 @@ async def run(args: argparse.Namespace) -> dict:
     """逐项检查 provider 发送次数、耐久结算和重新打开账本后的行为。"""
     sys.path.insert(0, str(args.source))
     import httpx
-    from agent.plugin_composition import ModelRequest
+    from plugins.models.contract import ModelRequest
     from plugins.models.contract import (
     BoundModelDescriptor,
     CapabilitySources,

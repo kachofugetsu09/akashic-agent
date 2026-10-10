@@ -14,7 +14,7 @@ from agent.plugin_composition.context import Context
 from agent.plugin_composition.effect import Effect
 from agent.plugin_composition.messages import MessageReader, OwnerTransaction
 from agent.plugin_composition.model import ServiceKey
-from agent.plugin_composition.models import ToolCall as ModelToolCall
+from plugins.models.contract import ToolCall as ModelToolCall
 from agent.plugin_composition.tasks import ExternalRootPermit, Task
 from agent.plugin_contracts import (
     CallRef,

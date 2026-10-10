@@ -18,7 +18,7 @@ from core.net.http import HttpClient, StreamProgress, describe_transport_error, 
 
 import httpx
 
-from agent.plugin_composition import (
+from plugins.models.contract import (
     LLMResponse,
     ModelRequest,
     ModelUsage,

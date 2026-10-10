@@ -1,46 +1,168 @@
-"""模型选择、内容和投影的公共合同；不绑定默认模型插件。"""
-
+"""Models 的请求、响应、失败、选择、投影和 driver 公共合同。"""
 from __future__ import annotations
 
 import asyncio
-
 from core.common.frozen_json import freeze_json
-
-from dataclasses import field
+from dataclasses import (
+    field,
+    replace,
+    dataclass,
+)
 from types import MappingProxyType
-
-
-from collections.abc import AsyncGenerator
-from contextlib import asynccontextmanager
-from dataclasses import replace
-from typing import cast
-from agent.plugin_composition.bindings import Bindings
-
-from agent.plugin_composition.models import EmbeddingResult
-
-from collections.abc import Awaitable
+from collections.abc import (
+    AsyncGenerator,
+    Awaitable,
+    Callable,
+    Mapping,
+    MutableMapping,
+    Sequence,
+)
+from contextlib import (
+    asynccontextmanager,
+    AbstractAsyncContextManager,
+)
 from typing import (
+    cast,
     AsyncContextManager,
     Literal,
     TypeAlias,
+    Any,
+    Protocol,
 )
-
-from agent.plugin_composition.models import ModelUsage
-
-from collections.abc import Callable, Mapping, MutableMapping, Sequence
-from contextlib import AbstractAsyncContextManager
-from dataclasses import dataclass
-from typing import Any, Protocol
-
-from agent.plugin_composition import Context, Effect
+from agent.plugin_composition.bindings import Bindings
+from agent.plugin_composition import (
+    Context,
+    Effect,
+)
 from agent.plugin_composition.artifacts import ArtifactRead
 from agent.plugin_composition.channels import AttachmentRef
 from agent.plugin_composition.model import ServiceKey
-from agent.plugin_composition.models import (
-    LLMResponse,
-    ModelRequest,
+from agent.plugin_contracts import (
+    ContentPart,
+    ContentReferences,
+    Message,
+    ToolCall as MessageToolCall,
 )
-from agent.plugin_contracts import ContentPart, ContentReferences, Message, ToolCall
+
+
+UsageCoverage: TypeAlias = Literal["exact", "partial", "unavailable"]
+
+
+@dataclass(frozen=True, slots=True)
+class ModelUsage:
+    input_tokens: int | None = None
+    cache_write_input_tokens: int | None = None
+    cached_input_tokens: int | None = None
+    output_tokens: int | None = None
+    reasoning_output_tokens: int | None = None
+    request_count: int = 1
+    covered_request_count: int = 0
+    coverage: UsageCoverage = "unavailable"
+
+
+@dataclass(frozen=True, slots=True)
+class ToolCall:
+    id: str
+    name: str
+    arguments: Mapping[str, Any]
+
+    def __post_init__(self) -> None:
+        object.__setattr__(self, "arguments", cast(Mapping[str, Any], freeze_json(self.arguments)))
+
+
+@dataclass(frozen=True, slots=True)
+class ModelContinuation:
+    """Opaque driver state bound to one exact BoundModelDescriptor.binding_id."""
+
+    binding_id: str
+    payload: Mapping[str, Any]
+
+    def __post_init__(self) -> None:
+        object.__setattr__(self, "payload", cast(Mapping[str, Any], freeze_json(self.payload)))
+
+
+@dataclass(frozen=True, slots=True)
+class LLMResponse:
+    content: str | None
+    tool_calls: Sequence[ToolCall] = ()
+    thinking: str | None = None
+    finish_reason: str | None = None
+    continuation: ModelContinuation | None = None
+    usage: ModelUsage | None = None
+    call_record_id: str | None = None
+    # 原生响应部件由调用账本保存，随同一 binding 的消息重放。
+    provider_metadata: Mapping[str, Any] | None = None
+
+    def __post_init__(self) -> None:
+        """冻结一次响应，多个请求等待者不能相互改变已结算事实。"""
+        object.__setattr__(self, "tool_calls", tuple(self.tool_calls))
+        if self.provider_metadata is not None:
+            if not isinstance(self.provider_metadata, Mapping):
+                raise TypeError("响应协议 metadata 必须是 JSON 对象")
+            object.__setattr__(self, "provider_metadata", cast(Mapping[str, Any], freeze_json(self.provider_metadata)))
+
+
+StreamCallback: TypeAlias = Callable[[dict[str, str]], Awaitable[None]]
+
+
+@dataclass(frozen=True, slots=True)
+class ModelRequest:
+    messages: Sequence[Mapping[str, Any]]
+    tools: Sequence[Mapping[str, Any]] = ()
+    max_output_tokens: int = 0
+    system_prompt: str = ""
+    tool_choice: str | Mapping[str, Any] = "auto"
+    prompt_cache_key: str | None = None
+    on_delta: StreamCallback | None = None
+    continuation: ModelContinuation | None = None
+    disable_reasoning: bool = False
+    request_key: str | None = None
+    # 本次完整展示、尚无成功展示回执的消息内容位置；不发送给 provider。
+    content_refs: tuple[tuple[str, int], ...] = ()
+    content_transformed: bool = False
+
+    @staticmethod
+    def read_content_refs(value: object) -> tuple[tuple[str, int], ...]:
+        """在请求与持久记录边界校验同一种消息内容位置编码。"""
+        if not isinstance(value, (tuple, list)):
+            raise ValueError("内容位置必须是数组")
+        refs: list[tuple[str, int]] = []
+        for ref in value:
+            if (not isinstance(ref, (tuple, list)) or len(ref) != 2
+                    or not isinstance(ref[0], str) or not ref[0]
+                    or type(ref[1]) is not int or ref[1] < 0):
+                raise ValueError("内容位置需要消息 ID 和非负整数索引")
+            refs.append((ref[0], ref[1]))
+        if len(set(refs)) != len(refs):
+            raise ValueError("请求内容位置不能重复")
+        return tuple(refs)
+
+    def __post_init__(self) -> None:
+        """在唯一调用边界冻结请求，adapter 和并行调用不能改写彼此输入。"""
+        object.__setattr__(
+            self, "messages", cast(tuple[Mapping[str, Any], ...], freeze_json(
+                self.messages if isinstance(self.messages, (list, tuple)) else tuple(self.messages)
+            ))
+        )
+        object.__setattr__(
+            self, "tools", cast(tuple[Mapping[str, Any], ...], freeze_json(
+                self.tools if isinstance(self.tools, (list, tuple)) else tuple(self.tools)
+            ))
+        )
+        object.__setattr__(self, "content_refs", self.read_content_refs(self.content_refs))
+        if type(self.content_transformed) is not bool:
+            raise ValueError("内容投影标记必须是 bool")
+        if isinstance(self.tool_choice, Mapping):
+            object.__setattr__(
+                self, "tool_choice", cast(Mapping[str, Any], freeze_json(self.tool_choice))
+            )
+
+
+@dataclass(frozen=True, slots=True)
+class EmbeddingResult:
+    vectors: tuple[tuple[float, ...], ...]
+    usage: ModelUsage | None = None
+
 
 ModelKind: TypeAlias = Literal["chat", "embedding"]
 
@@ -280,6 +402,8 @@ class DriverConnection:
 
 
 ContentRenderer = Callable[[ContentPart], Sequence[Mapping[str, Any]]]
+
+
 CallReader = Callable[[str], Mapping[str, Any]]
 
 
@@ -292,6 +416,8 @@ class RenderedContent:
 
 
 ContentTransform = Callable[[Message, int], RenderedContent | None]
+
+
 PrepareContent = Callable[[tuple[Message, ...], str, frozenset[str], frozenset[tuple[str, int]]], ContentTransform]
 
 
@@ -348,7 +474,7 @@ class MessageProjection(ContextModel, Protocol):
         *,
         reminder: str | None = None,
         reminder_input_id: str | None = None,
-        actual_calls: Sequence[ToolCall | ContentPart] | None = None,
+        actual_calls: Sequence[MessageToolCall | ContentPart] | None = None,
         content_refs: tuple[tuple[str, int], ...] = (),
         content_transformed: bool = False,
     ) -> ContentPart: ...
@@ -405,9 +531,17 @@ class ModelProjections(Protocol):
 
 
 MODEL_SELECTION = ServiceKey[ModelSelection]("models.selection.v1")
+
+
 MODEL_CONTENT = ServiceKey[ModelContent]("models.content.v3")
+
+
 MODEL_CHECKS = ServiceKey[ModelChecks]("models.message-checks.v1")
+
+
 MODEL_PROJECTION = ServiceKey[ModelProjections]("models.projection.v1")
+
+
 MODEL_CALLS = ServiceKey[CallReader]("models.calls.v1")
 
 
@@ -708,7 +842,6 @@ class OutputLengthError(ModelError):
     """模型达到生成长度限制；正文或工具参数可能不完整。"""
 
 
-
 @dataclass(frozen=True, slots=True)
 class DriverUnavailableError(ModelError): ...
 
@@ -720,7 +853,6 @@ class ModelUnavailableError(ModelError): ...
 @dataclass(frozen=True, slots=True)
 class ModelControlUnavailable(ModelError):
     """本次服务作用域没有模型管理能力。"""
-
 
 
 @dataclass(frozen=True, slots=True)

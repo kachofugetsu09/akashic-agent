@@ -3,7 +3,10 @@
 from __future__ import annotations
 import asyncio, json, sqlite3, tempfile
 from pathlib import Path
-from agent.plugin_composition.models import LLMResponse, ToolCall
+from plugins.models.contract import (
+    LLMResponse,
+    ToolCall,
+)
 from plugins.react.plugin import _encode_request, _load_entry
 from plugins.tools.execution import Result
 from session.message import Input, ContentPart

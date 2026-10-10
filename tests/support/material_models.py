@@ -9,8 +9,8 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
-from agent.plugin_composition import (
-    CompositionRoot,
+from agent.plugin_composition import CompositionRoot
+from plugins.models.contract import (
     EmbeddingResult,
     LLMResponse,
     ModelRequest,

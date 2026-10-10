@@ -7,7 +7,7 @@ import logging
 from dataclasses import replace
 from collections.abc import Awaitable, Callable, Sequence
 
-from agent.plugin_composition.models import ModelRequest
+from plugins.models.contract import ModelRequest
 from plugins.models.contract import (
     ContextLengthError,
     ModelTimeoutError,

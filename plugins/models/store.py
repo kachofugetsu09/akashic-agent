@@ -40,7 +40,7 @@ from .settings import (
     UpdateConnection,
     UpdateModel,
 )
-from agent.plugin_composition.models import (
+from plugins.models.contract import (
     LLMResponse,
     ModelContinuation,
     ModelRequest,

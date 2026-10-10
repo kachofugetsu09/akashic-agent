@@ -10,7 +10,10 @@ from typing import cast
 
 import pytest
 
-from agent.plugin_composition.models import LLMResponse, ToolCall as ModelToolCall
+from plugins.models.contract import (
+    LLMResponse,
+    ToolCall as ModelToolCall,
+)
 from plugins.tools.execution import Result
 from session.message import ContentPart, Input, ToolResult
 from tests.support.message_react import runtime

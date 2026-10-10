@@ -79,7 +79,7 @@ from types import SimpleNamespace
 from pathlib import Path
 from agent.plugin_composition import ServiceKey
 from plugins.models.contract import CHAT_MODELS
-from agent.plugin_composition.models import LLMResponse, ToolCall
+from plugins.models.contract import LLMResponse, ToolCall
 from plugins.models.contract import (
     BoundModelDescriptor,
     CapabilitySources,

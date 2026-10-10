@@ -7,7 +7,7 @@ from contextlib import AbstractAsyncContextManager
 from typing import Any, Literal, Protocol
 
 from agent.plugin_composition import Context, Effect, ServiceKey
-from agent.plugin_composition.models import ModelRequest
+from plugins.models.contract import ModelRequest
 from plugins.models.contract import BoundChatModel
 from agent.plugin_contracts import ContentPart, ContentReferences, Message
 from plugins.models.contract import ContextModel

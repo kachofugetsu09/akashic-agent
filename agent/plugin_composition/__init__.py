@@ -57,16 +57,7 @@ from agent.plugin_composition.runtime_lifecycle import (
     RuntimeStarted,
     RuntimeStopping,
 )
-from agent.plugin_composition.models import (
-    EmbeddingResult,
-    LLMResponse,
-    ModelContinuation,
-    ModelRequest,
-    ModelUsage,
-    StreamCallback,
-    ToolCall,
-    UsageCoverage,
-)
+
 
 from agent.plugin_composition.channels import (
     CHANNELS,
@@ -118,14 +109,6 @@ __all__ = [
     "PROCESSES",
     "PluginProcesses",
     "ProcessCleanupError",
-    "EmbeddingResult",
-    "LLMResponse",
-    "ModelContinuation",
-    "ModelRequest",
-    "ModelUsage",
-    "StreamCallback",
-    "ToolCall",
-    "UsageCoverage",
     "CompositionError",
     "CompositionReceipt",
     "CompositionRoot",

@@ -14,7 +14,12 @@ from typing import cast
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-from agent.plugin_composition.models import LLMResponse, ModelContinuation, ModelRequest, ToolCall
+from plugins.models.contract import (
+    LLMResponse,
+    ModelContinuation,
+    ModelRequest,
+    ToolCall,
+)
 from plugins.context.api import Materials, Reminder, material_data
 from plugins.tools.execution import Result
 from session.message import ContentPart, Input, Output

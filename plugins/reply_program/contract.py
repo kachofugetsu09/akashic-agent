@@ -9,7 +9,7 @@ from typing import Protocol
 from agent.plugin_composition.context import Context
 from agent.plugin_composition.messages import MessageReader
 from agent.plugin_composition.model import ServiceKey
-from agent.plugin_composition.models import StreamCallback
+from plugins.models.contract import StreamCallback
 from agent.plugin_composition.tasks import Task
 from agent.plugin_contracts import Message
 from plugins.models.contract import ContentRenderer

@@ -10,7 +10,7 @@ from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 from agent.plugin_composition import Context
 from agent.plugin_composition.messages import MessageSnapshot
-from agent.plugin_composition.models import ModelRequest
+from plugins.models.contract import ModelRequest
 from agent.plugin_contracts import (
     Message,
 )

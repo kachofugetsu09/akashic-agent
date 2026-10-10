@@ -36,7 +36,7 @@ from agent.plugin_composition.messages import (
     MESSAGE_CATALOG, MESSAGE_WRITERS, OWNER_STATE, SESSION_ADMISSION,
     MessageWriters, OwnerState, SessionAdmission,
 )
-from agent.plugin_composition.models import LLMResponse
+from plugins.models.contract import LLMResponse
 from plugins.models.contract import (
     BoundModelDescriptor,
     CapabilitySources,

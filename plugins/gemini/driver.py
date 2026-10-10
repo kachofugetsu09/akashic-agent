@@ -13,7 +13,7 @@ from urllib.parse import quote, urlsplit
 import httpx
 from core.net.http import retry_after_time
 
-from agent.plugin_composition.models import (
+from plugins.models.contract import (
     LLMResponse,
     ModelRequest,
     ModelUsage,

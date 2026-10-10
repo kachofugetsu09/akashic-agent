@@ -8,7 +8,7 @@ from contextlib import closing
 from pathlib import Path
 from tempfile import TemporaryDirectory
 
-from agent.plugin_composition.models import (
+from plugins.models.contract import (
     LLMResponse,
     ModelRequest,
 )

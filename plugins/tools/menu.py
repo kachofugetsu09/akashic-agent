@@ -6,7 +6,7 @@ from dataclasses import dataclass
 from typing import Any, cast
 
 from agent.plugin_composition.bindings import Bindings
-from agent.plugin_composition.models import ToolCall as ModelToolCall
+from plugins.models.contract import ToolCall as ModelToolCall
 from agent.plugin_contracts import CallRef, ToolCall
 from core.common.frozen_json import freeze_json
 from agent.plugin_contracts.tools import CommitAfter as CommitAfter

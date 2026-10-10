@@ -24,7 +24,7 @@ args = parser.parse_args()
 sys.path.insert(0, str(args.source.resolve()))
 
 import httpx
-from agent.plugin_composition import ModelRequest
+from plugins.models.contract import ModelRequest
 from plugins.models.contract import (
     BoundModelDescriptor,
     CapabilitySources,
@@ -40,7 +40,7 @@ from plugins.models.contract import (
     ModelUnavailableError,
     ModelError,
 )
-from agent.plugin_composition.models import LLMResponse
+from plugins.models.contract import LLMResponse
 from plugins.models.contract import DriverChatModel
 from agent.plugin_composition import CompositionRoot
 from plugins.models.contract import (

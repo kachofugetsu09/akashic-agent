@@ -18,7 +18,7 @@ from agent.plugin_composition.messages import (
     OwnerStore,
     OwnerTransaction,
 )
-from agent.plugin_composition.models import (
+from plugins.models.contract import (
     LLMResponse,
     ModelRequest,
     StreamCallback,

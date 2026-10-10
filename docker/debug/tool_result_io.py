@@ -11,7 +11,10 @@ import time
 from tempfile import TemporaryDirectory
 from unittest.mock import patch
 
-from agent.plugin_composition.models import LLMResponse, ToolCall as ModelToolCall
+from plugins.models.contract import (
+    LLMResponse,
+    ToolCall as ModelToolCall,
+)
 from plugins.tools.api import Result
 from session.log import OwnerTransaction
 from session.message import ContentPart, Control, Input, ToolResult

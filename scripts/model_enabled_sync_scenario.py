@@ -13,7 +13,7 @@ from dataclasses import replace
 from pathlib import Path
 from unittest.mock import patch
 
-from agent.plugin_composition import ModelRequest
+from plugins.models.contract import ModelRequest
 from plugins.models.contract import (
     CapabilitySources,
     ChatModelSelection,
