@@ -11,7 +11,7 @@ from pydantic import BaseModel, ConfigDict, Field
 from core.common.file_io import run_file_io
 
 from agent.plugin_composition import Context
-from agent.plugin_composition.assets import INSTALLED_ASSETS, InstalledAsset
+from plugins.assets.contract import INSTALLED_ASSETS, InstalledAsset
 from agent.plugin_contracts import ContentPart, Message, json_value
 
 from ._materials_boundary import MATERIALS

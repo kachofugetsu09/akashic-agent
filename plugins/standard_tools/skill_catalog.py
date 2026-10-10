@@ -16,7 +16,7 @@ from typing import Any, Literal, Protocol, cast
 import yaml
 
 from agent.host_bridge.factory import build_requirements_checker
-from agent.plugin_composition.assets import InstalledAsset
+from plugins.assets.contract import InstalledAsset
 from agent.plugin_composition.shell_runtime import resolve_shell
 from agent.plugin_contracts.inspection import (
     SKILL_INSPECTION as SKILL_INSPECTION,
