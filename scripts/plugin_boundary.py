@@ -112,6 +112,7 @@ PLUGIN_ALLOWED_MODULES = frozenset({
     "core.error_context",
     "core.net.http",
     "core.common.timekit",
+    "core.common.frozen_json",
     "agent.plugin_contracts.turn_effects",
 })
 

@@ -9,7 +9,8 @@ from pydantic import BaseModel, ConfigDict, Field, ValidationError
 
 from agent.plugin_composition import Context
 from agent.plugin_composition.models import ToolCall as ModelToolCall
-from agent.plugin_contracts import ContentPart, freeze_json, json_value
+from agent.plugin_contracts import ContentPart, json_value
+from core.common.frozen_json import freeze_json
 from agent.plugin_contracts.tools import (
     TOOL_LOADING_PRESENTATION as TOOL_LOADING_PRESENTATION,
 )

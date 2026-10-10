@@ -20,7 +20,8 @@ from plugins.gateway.contract import CONTROL_FRAMES, ControlFrames, FrameClaim
 from agent.plugin_composition.tasks import RESTART_GATE, RestartGate, RestartRejectedError
 from agent.plugin_contracts import ContentPart, Message
 from agent.plugin_composition.messages import MessageCatalog, MessageReader
-from agent.plugin_contracts import CallRef, Input, Output, ToolCall, ToolResult as ToolMessageResult, freeze_json
+from agent.plugin_contracts import CallRef, Input, Output, ToolCall, ToolResult as ToolMessageResult
+from core.common.frozen_json import freeze_json
 
 from .boundary import (
     FINAL_OUTPUT_DELIVERY,

@@ -29,8 +29,8 @@ from agent.plugin_contracts import (
     ToolResult,
     Output,
     ToolCall,
-    freeze_json,
 )
+from core.common.frozen_json import freeze_json
 from plugins.content.contract import (
     CONTENT as CONTENT,
 )

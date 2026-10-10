@@ -17,8 +17,8 @@ from agent.plugin_composition.messages import (
 from agent.plugin_contracts import (
     ContentPart,
     ToolResult,
-    freeze_json,
 )
+from core.common.frozen_json import freeze_json
 from agent.plugin_contracts import json_value
 from agent.plugin_contracts.tools import CallSource, CommitAfter
 from core.common.file_io import run_file_io
