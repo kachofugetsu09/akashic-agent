@@ -7,6 +7,7 @@ import importlib
 import importlib.machinery
 import importlib.util
 import inspect
+import os
 from pathlib import Path
 import secrets
 import sys
@@ -75,6 +76,7 @@ async def _invoke(
 ) -> int:
     """只导入已核对的命令目标，返回后释放独立的实现模块。"""
     # 1. 命令作用域不执行 plugin.py 的 apply 和包入口。
+    os.environ["AKASHIC_CORE_ROOT"] = str(Path(__file__).resolve().parents[2])
     prefix = "_plugin_command_" + secrets.token_hex(16)
     importer = FreshPluginImporter()
     importer.register(prefix, code)

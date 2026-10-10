@@ -288,11 +288,15 @@ class AppRuntime:
             else:
                 self._primary_task = None
             self._runtime_tasks.clear()
+            assert self.core is not None
+            shutdown_task = asyncio.create_task(self.core.restart_gate.wait_shutdown(), name="process_shutdown")
+            self._runtime_tasks.add(shutdown_task)
             watched_tasks = {
                 task
                 for task in (
                     self.web_shell_task,
                     self.plugin_watcher_task,
+                    shutdown_task,
                 )
                 if task is not None
             }
@@ -311,7 +315,12 @@ class AppRuntime:
                     supervised_tasks,
                     return_when=asyncio.FIRST_COMPLETED,
                 )
-            if self._primary_task is not None and self._primary_task in done:
+            if shutdown_task in done:
+                try:
+                    await shutdown_task
+                finally:
+                    self._runtime_tasks.discard(shutdown_task)
+            elif self._primary_task is not None and self._primary_task in done:
                 await self._primary_task
             else:
                 if self.web_shell_task is not None and self.web_shell_task in done:

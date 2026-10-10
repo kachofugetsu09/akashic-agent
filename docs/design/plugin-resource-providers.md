@@ -213,3 +213,13 @@ Gateway 的离线 bundle 先把旧 `[app_server]` 完整复制到自身 `config.
 共享 schema 属于 Gateway 的 migration helper，运行入口与离线迁移使用同一份定义。
 本阶段无自动删除、覆盖或减少协议；实际复制、冲突恢复和两次 boot 见
 [gateway_config_scenario.py](../../scripts/gateway_config_scenario.py)。
+
+## 进程停止意图
+
+进程外壳通过现有 RestartGate 等待插件的 `request_shutdown`，不新增 ServiceKey。
+首次意图立即关闭新 work 准入；外壳按正常路径排空 Fiber、监听器和存储后结束。
+正常 EOF 返回 0；带错误的意图在清理后重新抛出原原因，进程返回非零。
+取消或清理失败沿原错误链返回，不把停止请求当作物理资源已经释放。
+验证见 [process_shutdown_scenario.py](../../scripts/process_shutdown_scenario.py)：真实命令、
+失败、EOF 和失败后的新 boot 都核对原 Message 全行；管道作为协调边界。
+通用命令分派同时固定实际 `AKASHIC_CORE_ROOT`，命令不根据自身插件路径猜测 Core。
