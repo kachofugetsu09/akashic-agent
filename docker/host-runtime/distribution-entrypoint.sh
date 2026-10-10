@@ -32,7 +32,7 @@ if [[ "${1:-}" == "publish" ]]; then
     shift
     exec /opt/venv/bin/python /opt/akashic/source/scripts/install_plugin_distribution.py \
         --distribution /opt/akashic/distribution \
-        --bundle /opt/akashic/distribution/bundles/base.toml \
+        --bundle /opt/akashic/distribution/bundles/"${AKASHIC_PLUGIN_BUNDLE:-base}".toml \
         --workspace "$WORKSPACE" --plugins-home "$PLUGIN_HOME" --config "$CONFIG" \
         --publish "$@"
 fi
@@ -41,7 +41,7 @@ mkdir -p "$WORKSPACE" "$PLUGIN_HOME"
 
 /opt/venv/bin/python /opt/akashic/source/scripts/install_plugin_distribution.py \
     --distribution /opt/akashic/distribution \
-    --bundle /opt/akashic/distribution/bundles/base.toml \
+    --bundle /opt/akashic/distribution/bundles/"${AKASHIC_PLUGIN_BUNDLE:-base}".toml \
     --workspace "$WORKSPACE" \
     --plugins-home "$PLUGIN_HOME" \
     --config "$CONFIG" \

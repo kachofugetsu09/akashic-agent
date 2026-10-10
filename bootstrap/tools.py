@@ -99,7 +99,7 @@ def build_core_runtime(
     manager = PluginManager(
         plugin_dirs=resolved_plugin_dirs, workspace=workspace,
         installed_cache_root=plugins_root() / "cache",
-        disabled_builtin_plugins=disabled, source_failures=source_failures,
+        disabled_plugins=disabled | distribution.disabled_ids, source_failures=source_failures,
         distribution_sources=distribution.sources,
         ignored_installed_roots=distribution.ignored_installed_roots,
         restart_gate=restart_gate, host_ready=host_ready,

@@ -149,7 +149,7 @@ class PluginManager:
         *,
         workspace: Path,
         installed_cache_root: Path | None = None,
-        disabled_builtin_plugins: frozenset[str] = frozenset(),
+        disabled_plugins: frozenset[str] = frozenset(),
         source_failures: tuple[PluginSourceFailure, ...] = (),
         distribution_sources: tuple[ResolvedPluginSource, ...] = (),
         ignored_installed_roots: frozenset[Path] = frozenset(),
@@ -165,7 +165,7 @@ class PluginManager:
         self._update_watchers: set[asyncio.Event] = set()
         self._plugin_tasks = PluginTasks()
         self._installed_cache_root = installed_cache_root
-        self._disabled_builtin_plugins = disabled_builtin_plugins
+        self._disabled_plugins = disabled_plugins
         self._source_failures: dict[str, PluginSourceFailure] = {
             _source_failure_key(failure): failure
             for failure in source_failures
@@ -447,7 +447,7 @@ class PluginManager:
         """
         digest = hashlib.sha256()
         digest.update(repr(sorted(manifest.items())).encode())
-        digest.update(repr(sorted(self._disabled_builtin_plugins)).encode())
+        digest.update(repr(sorted(self._disabled_plugins)).encode())
         digest.update(
             repr(sorted(str(path) for path in self._ignored_installed_roots)).encode()
         )
@@ -521,8 +521,8 @@ class PluginManager:
         for source in sources:
             name = source.plugin_name
             if (
-                source.source_type == "builtin"
-                and name in self._disabled_builtin_plugins
+                name in self._disabled_plugins
+                or f"{name}@{source.marketplace}" in self._disabled_plugins
             ):
                 continue
             module_path = source.plugin_root / "plugin.py"
@@ -1551,7 +1551,7 @@ class PluginManager:
             plugin_id
             for plugin_id in selected_ids
             if manifest.get(plugin_id, True) is False
-            or plugin_id in self._disabled_builtin_plugins
+            or plugin_id in self._disabled_plugins
         }
         # 1. 已提交但失去实例的输入先全部挂回同一图；PENDING 消费者不能
         # 阻止后面缺失的 provider 挂载。恢复读取已选归档，不另选当前源码。

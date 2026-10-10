@@ -14,7 +14,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import cast
 
-from agent.plugins.bundles import load_bundles
+from agent.plugins.bundles import distribution_bundle
 from agent.plugins.artifacts import read_pointers, resolve_pointer
 from agent.plugins.manifest import load_plugin_manifest, workspace_plugin_data_dir
 from agent.plugins.source_resolver import ResolvedPluginSource
@@ -41,6 +41,7 @@ class DistributionSources:
     sources: tuple[ResolvedPluginSource, ...] = ()
     ignored_installed_roots: frozenset[Path] = frozenset()
     legacy_ids: frozenset[str] = frozenset()
+    disabled_ids: frozenset[str] = frozenset()
 
 
 def is_distribution_owned(record: Mapping[str, object]) -> bool:
@@ -202,7 +203,7 @@ def distribution_sources(
         distribution = Path(configured)
     distribution = distribution.resolve(strict=True)
     marketplace = json.loads((distribution / "distribution.json").read_text())["marketplace"]
-    defaults = {row.plugin for row in load_bundles(distribution / "bundles") if not row.disabled}
+    declarations = {row.plugin: row for row in distribution_bundle(distribution / "bundles")}
     choices = load_plugin_manifest(plugins_home)
     receipt_path = workspace / "runtime/distribution-install.json"
     receipt = json.loads(receipt_path.read_text()) if receipt_path.exists() else {}
@@ -248,11 +249,17 @@ def distribution_sources(
             and _matches_receipt_tree(artifact, revision)):
             ignored.add(artifact)
             legacy.add(plugin_id)
-    sources = tuple(source for source in distribution_plugin_sources(distribution)
-                    if (f"{source.plugin_name}@{marketplace}" in choices
-                        or (f"{source.plugin_name}@{marketplace}" in defaults
-                            and f"{source.plugin_name}@{marketplace}" not in historical)))
-    return DistributionSources(sources, frozenset(ignored), frozenset(legacy))
+    sources = distribution_plugin_sources(distribution)
+    disabled = set()
+    for source in sources:
+        plugin_id = f"{source.plugin_name}@{marketplace}"
+        row = declarations.get(plugin_id)
+        enabled = choices.get(plugin_id, row is not None and plugin_id not in historical)
+        if row is not None and row.disabled:
+            enabled = not row.disabled
+        if not enabled:
+            disabled.add(plugin_id)
+    return DistributionSources(sources, frozenset(ignored), frozenset(legacy), frozenset(disabled))
 
 
 def distribution_plugin_sources(distribution: Path) -> tuple[ResolvedPluginSource, ...]:

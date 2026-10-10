@@ -177,7 +177,7 @@ def prepare_install(preparation: Preparation, core: Path, distribution: Path,
     # 2. The formal installer is the only owner of profile installation and receipts.
     preparation.step("检查已安装功能" if receipt.exists() else "安装默认功能")
     preparation.run([str(python), str(core / "scripts/install_plugin_distribution.py"),
-                     "--distribution", str(distribution), "--bundle", str(distribution / "bundles/base.toml"),
+                     "--distribution", str(distribution), "--bundle", str(distribution / "bundles" / (os.environ.get("AKASHIC_PLUGIN_BUNDLE", "base") + ".toml")),
                      "--workspace", str(workspace), "--plugins-home", str(plugin_home), "--config", str(config),
                      "--ensure-bundle", "--receipt", str(receipt)], cwd=core)
 
