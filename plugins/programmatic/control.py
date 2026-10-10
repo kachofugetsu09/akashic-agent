@@ -5,7 +5,7 @@ from typing import cast
 from pydantic import BaseModel, ConfigDict, Field
 
 from agent.plugin_composition import Context, ServiceKey
-from agent.plugin_composition.control_frames import (
+from plugins.gateway.contract import (
     CONTROL_FRAMES,
     FrameResolver,
     FrameRouteStage,
@@ -190,7 +190,10 @@ class Programmatic:
                     return identity
             raise ValueError("程序最终 Output 没有同连接 Input reservation")
         input_id = await reader.read_async(read)
-        await self._frames.wait_input(reader.session_id, input_id, ending)
+        try:
+            await self._frames.wait_input(reader.session_id, input_id, ending)
+        except LookupError as error:
+            raise ConnectionError("程序调用的最终 Output 连接已结束") from error
 
     async def call(
         self, method: str, params: BaseModel,

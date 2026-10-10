@@ -10,7 +10,7 @@ from pydantic import BaseModel
 from agent.plugin_composition import Context
 from agent.plugin_composition.channels import CHANNEL_INPUT_V2, ChannelInboundMessage
 from agent.plugin_composition.channel_io import CHANNEL_ATTACHMENT_READ
-from agent.plugin_composition.control_frames import CONTROL_FRAMES
+from .contract import CONTROL_FRAMES
 from agent.plugin_composition.host import HOST_INFO
 from agent.plugin_composition.messages import MESSAGE_CATALOG
 from agent.plugin_composition.plugin_updates import PLUGIN_UPDATES

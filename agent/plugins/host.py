@@ -5,7 +5,6 @@ from __future__ import annotations
 from collections.abc import Callable, Mapping
 from typing import Any, cast
 
-from agent.plugin_composition.control_frames import CONTROL_FRAMES, FrameBook
 from agent.plugins.execution import (
     CodeOwner,
     ExecutionAccess,
@@ -96,7 +95,6 @@ async def provide_host_services(
     tasks: PluginTasks,
     processes: PluginProcesses,
     restart_gate: RestartGate,
-    control_frames: FrameBook,
     host_ready: Callable[[], bool] | None,
 ) -> tuple[ExecutionAccess, CredentialClients]:
     """组装真实宿主端口与只读投影；不拥有安装选择或第二份运行状态。"""
@@ -181,7 +179,6 @@ async def provide_host_services(
             RUNTIME_CATALOG,
             PLUGIN_UPDATES,
             RESTART_GATE,
-            CONTROL_FRAMES,
             PROCESSES,
         }
     )
@@ -245,8 +242,6 @@ async def provide_host_services(
     }
     if RESTART_GATE in requested:
         _ = await root.context.provide(RESTART_GATE, restart_gate)
-    if CONTROL_FRAMES in requested:
-        _ = await root.context.provide(CONTROL_FRAMES, control_frames)
     # Host capabilities are owned by the live process, outside plugin dependencies.
     if requested & message_services and message_log is None:
         raise RuntimeError("消息能力需要 bootstrap 提供已迁移的 MessageLog")
@@ -289,7 +284,6 @@ def check_host_dependencies(
         PLUGIN_UPDATES,
         PLUGIN_CONFIG,
         RESTART_GATE,
-        CONTROL_FRAMES,
         MESSAGE_CATALOG,
         MESSAGE_EMBEDDINGS,
         MESSAGE_WRITERS,

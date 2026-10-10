@@ -28,6 +28,27 @@ Core 不根据业务路径推断 owner。计划文件完整写入并替换成功
 撤下失败保留 Effect 和监听器，成功撤下后按资源取得的逆序关闭监听器。
 该文件不承诺掉电持久或替代外部效果回执，启动从当前选择重建。
 
+Gateway 独占控制帧 route、暂存替代 route 和 ToolCall claim。父 Fiber 发布
+`gateway.frames.v1`，其 Effect 在依赖消费者和监听子 Fiber 排空后关闭唯一 FrameBook；
+Core 不再构造、提供或关闭它。关闭自动 socket 配置不关闭帧端口；卸载 Gateway
+只挂起真实依赖消费者，普通 MessagePush 工具不依赖该端口，重启子 Fiber 才依赖。
+公共 Protocol 只给出回执与动作，不返回内部可变 route，不开放 FrameBook 的关闭权。
+
+```text
+┌────────────────┐  页面 + writer future  ┌─────────────────────┐
+│ Gateway 连接   ├──────────────────────►│ Gateway FrameBook   │
+└────────────────┘                       └──────────┬──────────┘
+                                                   │ 实际 drain 回执
+                             ┌─────────────────────▼───────────┐
+                             │ Programmatic / 重启与停止等待   │
+                             └─────────────────────────────────┘
+```
+
+帧 route 是进程内事实，不写 SQLite，不存入 workspace，不承诺跨 generation 恢复。
+断连、卸载和操作取消使等待明确失败；消息正文、身份、顺序与持久 pause 不变。
+缺失或结束的 route 使用标准 LookupError；Programmatic 将该等待错误转换为连接失败，
+重启 claim 等待转换为显式拒绝，不把未写出的最终 Output 当成送达成功。
+
 独立命令由插件用字面 `entrypoints = {"command": "module.function"}` 声明。
 安装输入 v6 将该声明纳入唯一 selection；v5 原记录仍原样读取，不改身份，
 没有凭空补出的命令入口。Core 只按当前选择分发唯一 provider，不执行包入口或

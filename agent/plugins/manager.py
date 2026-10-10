@@ -20,7 +20,6 @@ from uuid import uuid4
 from core.common.diagnostic_log import log_event
 from core.common.file_io import run_file_io
 
-from agent.plugin_composition.control_frames import FrameBook
 from agent.plugins.execution import (
     CodeOwner,
     ExecutionAccess,
@@ -166,7 +165,6 @@ class PluginManager:
         distribution_sources: tuple[ResolvedPluginSource, ...] = (),
         ignored_installed_roots: frozenset[Path] = frozenset(),
         restart_gate: RestartGate | None = None,
-        control_frames: FrameBook | None = None,
         host_ready: Callable[[], bool] | None = None,
     ) -> None:
         self._dirs = plugin_dirs
@@ -216,8 +214,6 @@ class PluginManager:
         self._host_ready = host_ready
         self._host_boot_id = restart_gate.boot_id if restart_gate is not None else uuid4().hex
         self._restart_gate = restart_gate or RestartGate(boot_id=self._host_boot_id, supervised=False)
-        self._owns_control_frames = control_frames is None
-        self._control_frames = FrameBook() if control_frames is None else control_frames
         self._runtime_started_roots: set[object] = set()
         self._runtime_lifecycle_lock = asyncio.Lock()
         self._reload_journal = ReloadJournal(workspace)
@@ -2253,7 +2249,7 @@ class PluginManager:
             runtime_updating=lambda: self._operation is not None and not self._operation.task.done(),
             live_root=lambda: self._live_root, installer=self,
             tasks=self._plugin_tasks, processes=self._plugin_processes,
-            restart_gate=self._restart_gate, control_frames=self._control_frames,
+            restart_gate=self._restart_gate,
             host_ready=self._host_ready,
         )
 
@@ -2511,8 +2507,6 @@ class PluginManager:
                     self._dispose_generation(generation, state="retired")
                 )
                 externally_cancelled = externally_cancelled or cancelled
-        if self._owns_control_frames:
-            self._control_frames.close()
         if externally_cancelled:
             raise asyncio.CancelledError
 

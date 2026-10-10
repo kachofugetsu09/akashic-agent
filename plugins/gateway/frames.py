@@ -3,20 +3,10 @@ from __future__ import annotations
 import asyncio
 from collections.abc import Mapping
 from dataclasses import dataclass, field
-from typing import Protocol, cast
+from typing import cast
 
-from agent.plugin_composition.model import ServiceKey
-from session.message import CallRef
-
-
-class FrameResolver(Protocol):
-    """Resolve the one completed Output belonging to one Input."""
-
-    def __call__(self) -> str | None: ...
-
-
-class FrameRouteReleased(RuntimeError):
-    """The short-lived route no longer accepts a delivery wait."""
+from agent.plugin_contracts import CallRef
+from .contract import FrameResolver
 
 
 @dataclass(frozen=True, slots=True)
@@ -48,7 +38,7 @@ class FrameClaim:
 
     async def wait_output(self) -> None:
         if self._closed:
-            raise FrameRouteReleased("frame claim 已结束")
+            raise LookupError("frame claim 已结束")
         await self._book.wait_claim(self)
 
     def consume(self) -> None:
@@ -92,7 +82,7 @@ class FrameRouteStage:
 
     def commit(self) -> FrameReservation:
         if self._closed:
-            raise FrameRouteReleased("frame route stage 已结束")
+            raise LookupError("frame route stage 已结束")
         self._closed = True
         return self._book._commit_stage(self)  # pyright: ignore[reportPrivateUsage]
 
@@ -170,7 +160,15 @@ class FrameBook:
         self._stages.add(stage)
         return stage
 
-    def resolve_page(
+    def track_page(
+        self, connection_id: str, page: Mapping[str, object], written: asyncio.Future[None],
+    ) -> bool:
+        """将页面中的最终 Output 绑定到实际 writer drain，不暴露内部 route。"""
+        tracked = self._resolve_page(connection_id, page)
+        self._attach_page(tracked, written)
+        return bool(tracked)
+
+    def _resolve_page(
         self, connection_id: str, page: Mapping[str, object]
     ) -> tuple[_Route, ...]:
         """Resolve exact endings synchronously before a writer future is made."""
@@ -208,7 +206,7 @@ class FrameBook:
             tracked.append(route)
         return tuple(tracked)
 
-    def attach_page(
+    def _attach_page(
         self, tracked: tuple[_Route, ...], written: asyncio.Future[None]
     ) -> None:
         """Attach one real writer drain to the routes selected by resolve_page."""
@@ -238,7 +236,7 @@ class FrameBook:
             if route.error is not None:
                 raise route.error
             if claim.ending_message_id is None and route.drained:
-                raise FrameRouteReleased("frame claim 未解析到最终 Output")
+                raise LookupError("frame claim 未解析到最终 Output")
         if route.error is not None:
             raise route.error
 
@@ -262,7 +260,7 @@ class FrameBook:
         """Wait on one route without exposing its internal key type."""
         route = self._routes.get(_RouteKey(session_id, input_id))
         if route is None:
-            raise FrameRouteReleased("frame route 已释放")
+            raise LookupError("frame route 已释放")
         await self.wait_output(route, ending)
 
     def release_input(self, session_id: str, input_id: str) -> None:
@@ -305,7 +303,7 @@ class FrameBook:
         """登记一个 ToolCall claim；最终 Output 由同一 resolver 绑定。"""
         route = self._routes.get(_RouteKey(session_id, input_id))
         if route is None:
-            raise FrameRouteReleased("frame route 已释放")
+            raise LookupError("frame route 已释放")
         key = (session_id, call_ref)
         existing = self._claims.get(key)
         if existing is not None and not existing._closed:  # pyright: ignore[reportPrivateUsage]
@@ -362,7 +360,7 @@ class FrameBook:
         self._stages.discard(stage)
         old = self._routes.get(stage._route.key)  # pyright: ignore[reportPrivateUsage]
         if old is not None:
-            self._fail_route(old.key, FrameRouteReleased("resume replaced old route"), exact_route=old)
+            self._fail_route(old.key, LookupError("resume replaced old route"), exact_route=old)
         route = stage._route  # pyright: ignore[reportPrivateUsage]
         route.staged = False
         self._routes[route.key] = route
@@ -371,7 +369,7 @@ class FrameBook:
 
     def _abort_stage(self, stage: FrameRouteStage) -> None:
         self._stages.discard(stage)
-        self._fail_route(stage._route.key, FrameRouteReleased("resume route aborted"),
+        self._fail_route(stage._route.key, LookupError("resume route aborted"),
                         exact_route=stage._route)
 
     def _release_route(self, key: _RouteKey, *, exact_route: _Route | None = None) -> None:
@@ -380,10 +378,10 @@ class FrameBook:
             return
         self._routes.pop(key)
         if route.error is None and not route.drained:
-            route.error = FrameRouteReleased("frame route 已结束但没有最终 Output")
+            route.error = LookupError("frame route 已结束但没有最终 Output")
         for waiter in route.waiters:
             if not waiter.done():
-                waiter.set_exception(route.error or FrameRouteReleased("frame route 已释放"))
+                waiter.set_exception(route.error or LookupError("frame route 已释放"))
         route.waiters.clear()
 
     def _fail_route(
@@ -422,6 +420,3 @@ def _complete_output(row: Mapping[str, object]) -> bool:
         and cast(Mapping[str, object], body).get("finish") == "complete"
         and isinstance(cast(Mapping[str, object], body).get("parts"), list)
     )
-
-
-CONTROL_FRAMES = ServiceKey[FrameBook]("core.control_frames.v1")

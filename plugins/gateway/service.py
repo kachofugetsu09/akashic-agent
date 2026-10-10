@@ -24,7 +24,7 @@ from agent.plugin_composition.message_view import (
 from agent.plugin_composition import AttachmentRef
 from agent.plugin_composition.messages import MessageCatalog
 from agent.plugin_contracts import Message
-from agent.plugin_composition.control_frames import FrameBook
+from .contract import ControlFrames
 
 logger = logging.getLogger(__name__)
 Accept = Callable[[str, str, ChannelInboundMessage], Awaitable[Message]]
@@ -50,7 +50,7 @@ class ControlService:
         message_display: MessageDisplayReader | None = None,
         methods: Mapping[str, RpcMethod] | None = None,
         resolve_method: Callable[[str], AbstractAsyncContextManager[RpcMethod | None]] | None = None,
-        control_frames: FrameBook | None = None,
+        control_frames: ControlFrames,
         request_scope: Callable[[], AbstractAsyncContextManager[None]] = nullcontext,
     ) -> None:
         self._message_display = message_display
@@ -69,8 +69,7 @@ class ControlService:
         self._ready = ready
         self._operations: set[asyncio.Task[object]] = set()
         self._closed = False
-        self._owns_control_frames = control_frames is None
-        self.control_frames = FrameBook() if control_frames is None else control_frames
+        self.control_frames = control_frames
         self.methods = MappingProxyType(dict(methods or {}))
         self.resolve_method = resolve_method
         self.request_scope = request_scope
@@ -236,5 +235,3 @@ class ControlService:
             _ = task.cancel()
         if tasks:
             _ = await asyncio.gather(*tasks, return_exceptions=True)
-        if self._owns_control_frames:
-            self.control_frames.close()

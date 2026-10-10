@@ -115,10 +115,6 @@ note = "按通用 key 串行准入的短命工作与资源"
 role = "core"
 note = "重启提交权与外部效果 permit"
 
-[capabilities."core.control_frames.v1"]
-role = "core"
-note = "控制帧路由与声明"
-
 [capabilities."core.plugin_updates"]
 role = "core"
 note = "插件 install/uninstall/revert 状态"

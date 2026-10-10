@@ -6,12 +6,13 @@ import os
 from agent.plugin_composition import CompositionError, Context
 from agent.plugin_composition.channel_io import CHANNEL_ATTACHMENT_READ
 from agent.plugin_composition.channels import CHANNEL_INPUT_V2
-from agent.plugin_composition.control_frames import CONTROL_FRAMES
+from .contract import CONTROL_FRAMES
 from agent.plugin_composition.host import HOST_INFO
 from agent.plugin_composition.messages import MESSAGE_CATALOG
 from agent.plugin_composition.plugin_updates import PLUGIN_UPDATES
 from agent.plugin_composition.tasks import RESTART_GATE
 from .factory import build_control_service
+from .frames import FrameBook
 from .migrations.gateway_migrations.helpers.settings import GatewayConfig
 from .socket import SocketAppServer, is_tcp_endpoint, resolve_endpoint
 from .stdio import StdioAppServer
@@ -32,6 +33,9 @@ entrypoints = {"exec": "cli.exec_main", "plugin-install": "cli.install_main",
 async def apply(ctx: Context) -> None:
     """端口缺席只挂起监听子 Fiber，不阻塞 Gateway 命令声明。"""
     config = Config.model_validate(ctx.config)
+    frames = FrameBook()
+    await ctx.effect(lambda: frames.close, label="control-frames")
+    await ctx.provide(CONTROL_FRAMES, frames)
     output_fd = os.environ.get("AKASHIC_GATEWAY_STDIO")
     if not config.enabled and output_fd is None:
         return
