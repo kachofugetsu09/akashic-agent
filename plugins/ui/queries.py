@@ -15,7 +15,6 @@ from agent.control.context import running_turn_id
 from agent.plugin_composition import (
     UI_SLOTS,
     CompositionError,
-    CompositionRoot,
     Context,
     FiberState,
     PluginUiAsset,
@@ -33,7 +32,6 @@ from agent.plugin_composition.diagnostics import plugin_entrypoint
 from agent.plugin_contracts.ui import (
     PluginUiProvider as PluginUiProvider,
 )
-from agent.plugins._operation import complete_critical
 from core.error_context import current_session_key
 
 PLUGIN_UI_QUERY_TIMEOUT_SECONDS = 20.0
@@ -45,10 +43,13 @@ logger = logging.getLogger(__name__)
 
 
 class LivePluginUiProvider:
-    """Project live plugin UI registrations from one CompositionRoot."""
+    """在 UI owner 的作用域内投影登记并排空物理查询。"""
 
-    def __init__(self, root: CompositionRoot) -> None:
-        self._root = root
+    def __init__(self, ctx: Context, slots: UiSlots) -> None:
+        if ctx.require(UI_SLOTS) is not slots or slots.root_instance_token is not ctx.root_instance_token:
+            raise ValueError("查询目录必须属于当前 UI owner")
+        self._ctx = ctx
+        self._slots = slots
         self._executor = ThreadPoolExecutor(
             max_workers=PLUGIN_UI_QUERY_WORKERS,
             thread_name_prefix="plugin-ui",
@@ -69,11 +70,11 @@ class LivePluginUiProvider:
         async with self._admission_lock:
             self._accepting = False
         cancelled = False
-        _result, phase_cancelled = await complete_critical(self._wait_for_queries())
+        _result, phase_cancelled = await _finish_work(self._wait_for_queries())
         cancelled |= phase_cancelled
         if not self._executor_closed:
             try:
-                _result, phase_cancelled = await complete_critical(
+                _result, phase_cancelled = await _finish_work(
                     asyncio.to_thread(
                         self._executor.shutdown,
                         wait=True,
@@ -99,7 +100,7 @@ class LivePluginUiProvider:
         """Read each current ACTIVE registration inside its exact Context scope."""
 
         items: list[dict[str, object]] = []
-        ui_context, slots = self._ui_slots()
+        ui_context, slots = self._ctx, self._slots
         ui_scope = ui_context.runtime_scope()
         try:
             await ui_scope.__aenter__()
@@ -227,9 +228,8 @@ class LivePluginUiProvider:
                 raise
         except BaseException:
             if task is None:
-                if captured_scope is not None and not captured_scope._closed:  # pyright: ignore[reportPrivateUsage]
-                    if captured_scope._entered_task is None:  # pyright: ignore[reportPrivateUsage]
-                        captured_scope._close()  # pyright: ignore[reportPrivateUsage]
+                if captured_scope is not None:
+                    captured_scope.discard()
                 await self._release_query_slot(plugin_id)
             raise
 
@@ -309,8 +309,7 @@ class LivePluginUiProvider:
         """Settle one child, including a child cancelled before its first line."""
 
         self._draining_queries.discard(completed)
-        if not captured_scope._closed and captured_scope._entered_task is None:  # pyright: ignore[reportPrivateUsage]
-            captured_scope._close()  # pyright: ignore[reportPrivateUsage]
+        captured_scope.discard()
         self._settle_query_slot(plugin_id)
         if not completed.cancelled():
             _ = completed.exception()
@@ -322,7 +321,7 @@ class LivePluginUiProvider:
     ) -> tuple[PluginUiBinding, RuntimeScope]:
         """Freeze one binding and capture its permit before creating a child."""
 
-        ui_context, slots = self._ui_slots()
+        ui_context, slots = self._ctx, self._slots
         ui_scope = ui_context.runtime_scope()
         try:
             await ui_scope.__aenter__()
@@ -363,7 +362,7 @@ class LivePluginUiProvider:
     ) -> PluginUiBinding:
         """Select one active binding without consulting a later generation."""
 
-        ui_context, slots = self._ui_slots()
+        ui_context, slots = self._ctx, self._slots
         ui_scope = ui_context.runtime_scope()
         try:
             await ui_scope.__aenter__()
@@ -378,20 +377,6 @@ class LivePluginUiProvider:
         finally:
             await ui_scope.__aexit__(None, None, None)
 
-    def _ui_slots(self) -> tuple[Context, UiSlots]:
-        """Resolve the current UI provider from this Root, not from a snapshot."""
-
-        try:
-            context, slots = self._root._service_provider(UI_SLOTS)  # pyright: ignore[reportPrivateUsage]
-        except (CompositionError, RuntimeError) as error:
-            raise PluginUiPluginUnavailable("当前 Root 没有 Plugin UI provider") from error
-        if (
-            context.root_instance_token is not self._root.instance_token
-            or slots.root_instance_token is not self._root.instance_token
-        ):
-            raise PluginUiPluginUnavailable("Plugin UI provider 不属于当前 Root")
-        return context, slots
-
     @staticmethod
     def _find_binding(slots: UiSlots, plugin_id: str) -> PluginUiBinding:
         for binding in slots.bindings():
@@ -400,7 +385,7 @@ class LivePluginUiProvider:
         raise PluginUiPluginUnavailable(plugin_id)
 
     def _binding_is_active(self, binding: PluginUiBinding) -> bool:
-        if binding.context.root_instance_token is not self._root.instance_token:
+        if binding.context.root_instance_token is not self._ctx.root_instance_token:
             raise PluginUiPluginUnavailable("Plugin UI registration 不属于当前 Root")
         return binding.context.fiber.state is FiberState.ACTIVE
 
@@ -412,7 +397,7 @@ class LivePluginUiProvider:
         encoded = json.dumps(
             (
                 "plugin-ui",
-                self._root.generation_id,
+                self._ctx.generation_id,
                 binding.descriptor.owner,
                 binding.registration_uuid,
             ),
@@ -487,7 +472,7 @@ class LivePluginUiProvider:
                         except asyncio.CancelledError:
                             # Running threads keep scope and quota until completion.
                             job.cancel()
-                            await complete_critical(future)
+                            await _finish_work(future)
                             raise
                     failure = "返回无效"
                     normalized = _normalize_rpc_result(
@@ -607,3 +592,20 @@ def _validate_json_value(
             )
     finally:
         active_containers.remove(container_id)
+
+
+async def _finish_work(work: Awaitable[Any]) -> tuple[Any, bool]:
+    """取消观察者仍等待物理工作，并保留清理错误。"""
+    task = asyncio.ensure_future(work)
+    cancelled = False
+    while not task.done():
+        try:
+            await asyncio.wait((task,))
+        except asyncio.CancelledError:
+            cancelled = True
+    try:
+        return task.result(), cancelled
+    except Exception as error:
+        if cancelled:
+            raise BaseExceptionGroup("查询取消且物理工作失败", [asyncio.CancelledError(), error]) from None
+        raise

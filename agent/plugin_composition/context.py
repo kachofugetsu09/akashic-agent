@@ -877,6 +877,14 @@ class RuntimeScope:
                 self._binding_token = None
         self._call.release()
 
+    def discard(self) -> None:
+        """释放尚未进入的许可；已进入的 scope 必须沿其退出路径关闭。"""
+        if self._closed:
+            return
+        if self._entered_task is not None:
+            raise CompositionError("OWNER_CALL_CONTEXT", "不能丢弃已经进入的 call scope")
+        self._close()
+
     async def close(self) -> None:
         """幂等；已 enter 的 scope 只能由 entered_task 关闭。"""
 
