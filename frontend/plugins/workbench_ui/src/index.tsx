@@ -140,6 +140,10 @@ function checkedPluginPage(plugin: PluginConfig, result: FetchPageResult): Fetch
   return result;
 }
 
+function errorText(error: unknown): string {
+  return error instanceof Error ? error.message : String(error);
+}
+
 function isAbortError(error: unknown): boolean {
   return error instanceof Error && error.name === "AbortError";
 }
@@ -631,7 +635,8 @@ function DashboardWorkspace({ initialPlugins }: { initialPlugins: PluginConfig[]
   const [session, setSession] = useState<string | null>(null);
   const [sessionCount, setSessionCount] = useState(0);
   const [counts, setCounts] = useState<Record<string, number | null>>({});
-  const [error, setError] = useState<string | null>(null);
+  // 读取失败只影响出错的那一处：面板从模块列表移除，原因以行内提示留在工作台顶部，不遮挡对话。
+  const [problems, setProblems] = useState<Record<string, string>>({});
   useEffect(() => {
     const controller = new AbortController();
     for (const plugin of initialPlugins) {
@@ -639,13 +644,15 @@ function DashboardWorkspace({ initialPlugins }: { initialPlugins: PluginConfig[]
         if (count !== null && (!Number.isFinite(count) || count < 0)) throw new Error(`${plugin.id} 返回无效计数`);
         if (!controller.signal.aborted) setCounts((counts) => ({ ...counts, [plugin.id]: count }));
       }).catch((error: unknown) => {
-        if (!controller.signal.aborted && !isAbortError(error)) setError(error instanceof Error ? error.message : String(error));
+        if (controller.signal.aborted || isAbortError(error)) return;
+        setCounts((counts) => ({ ...counts, [plugin.id]: null }));
+        setProblems((problems) => ({ ...problems, [plugin.label]: errorText(error) }));
       });
     }
     void api<SessionPage>("/api/dashboard/sessions?limit=1", { signal: controller.signal }).then((result) => {
       if (!controller.signal.aborted) setSessionCount(result.total);
     }).catch((error: unknown) => {
-      if (!controller.signal.aborted && !isAbortError(error)) setError(error instanceof Error ? error.message : String(error));
+      if (!controller.signal.aborted && !isAbortError(error)) setProblems((problems) => ({ ...problems, 会话: errorText(error) }));
     });
     const jump = (event: Event) => {
       const key = (event as CustomEvent<unknown>).detail;
@@ -662,13 +669,18 @@ function DashboardWorkspace({ initialPlugins }: { initialPlugins: PluginConfig[]
   const plugins = initialPlugins.filter((plugin) => counts[plugin.id] !== null);
   const current = plugins.find((plugin) => plugin.id === pluginId) ?? null;
   const navigation = { currentPluginId: pluginId, sessionsCount: sessionCount, plugins, counts, onSelect: setPluginId };
+  const notices = Object.entries(problems);
   return <div className="workbench-root">
-    {current ? <Panel key={current.id} plugin={current} {...navigation} />
-      : <Messages {...navigation} selected={session} select={setSession} />}
-    {error && <div className="workbench-modal-backdrop"><div className="workbench-modal" role="alert">
-      <div className="workbench-modal-title">工作台加载失败</div><div className="workbench-modal-sub">{error}</div>
-      <div className="workbench-modal-actions"><Btn onClick={() => setError(null)}>关闭</Btn></div>
-    </div></div>}
+    {notices.length > 0 && <div className="workbench-notices" role="status">
+      {notices.map(([label, text]) => <p key={label}><strong>{label}暂不可用</strong><span>{text}</span></p>)}
+      <button type="button" className="workbench-notices__dismiss" aria-label="关闭提示" onClick={() => setProblems({})}>
+        <X size={16} aria-hidden="true" />
+      </button>
+    </div>}
+    <div className="workbench-stage">
+      {current ? <Panel key={current.id} plugin={current} {...navigation} />
+        : <Messages {...navigation} selected={session} select={setSession} />}
+    </div>
   </div>;
 }
 

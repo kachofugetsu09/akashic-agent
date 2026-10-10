@@ -6,6 +6,8 @@
 @scope (.workbench-root) {
 
 :scope {
+  display: flex;
+  flex-direction: column;
   width: 100%;
   height: 100%;
   /* 工作台住在对话工具区里，宽度由分栏决定而不是视口：断点一律查询这个容器。 */
@@ -115,6 +117,69 @@
   /* mono / data cells use tabular figures for column alignment */
   .mono {
     @apply font-mono tabular-nums;
+  }
+
+  .workbench-stage {
+    min-height: 0;
+    flex: 1 1 0;
+  }
+
+  /* 面板读取失败的行内提示：贴在工作台顶部，一条规则线 + 左侧状态竖线，不遮挡任何内容。 */
+  .workbench-notices {
+    position: relative;
+    display: flex;
+    flex: 0 0 auto;
+    flex-direction: column;
+    gap: 2px;
+    padding-block: 8px;
+    padding-inline: 12px 48px;
+    border-block-end: 1px solid var(--ak-rule-subtle);
+    border-inline-start: 2px solid rgb(var(--ak-color-status-warning-rgb));
+    font-size: 0.8125rem;
+    line-height: 1.5;
+  }
+
+  .workbench-notices p {
+    display: flex;
+    min-width: 0;
+    flex-wrap: wrap;
+    gap: 0 0.5rem;
+    margin: 0;
+  }
+
+  .workbench-notices strong {
+    color: var(--ak-ink-primary);
+    font-weight: 600;
+  }
+
+  .workbench-notices span {
+    min-width: 0;
+    color: var(--ak-ink-secondary);
+    overflow-wrap: anywhere;
+  }
+
+  .workbench-notices__dismiss {
+    position: absolute;
+    inset-block-start: 2px;
+    inset-inline-end: 2px;
+    display: inline-grid;
+    width: 44px;
+    height: 44px;
+    place-items: center;
+    border: 0;
+    border-radius: 8px;
+    color: var(--ak-ink-secondary);
+    background: transparent;
+    cursor: pointer;
+  }
+
+  .workbench-notices__dismiss:hover {
+    color: var(--ak-ink-primary);
+  }
+
+  .workbench-notices__dismiss:focus-visible {
+    outline: 2px solid var(--ak-rule-focus);
+    outline-offset: -2px;
   }
 
   .shell {
@@ -1134,38 +1199,12 @@
 
   /* ── Modal ── */
 
-  .workbench-modal-backdrop {
-    @apply fixed inset-0 z-[400];
-    background: rgb(var(--ak-color-shadow-rgb) / 0.4);
-  }
-
-  .workbench-modal {
-    @apply fixed left-1/2 top-1/2 z-[500] max-h-[calc(100vh-40px)] -translate-x-1/2 -translate-y-1/2 overflow-y-auto rounded-lg border border-border-strong bg-surface-2 p-6 shadow-lift-md;
-    width: min(500px, calc(100vw - 24px));
-  }
-
-  .workbench-modal:focus-visible {
-    outline: none;
-  }
-
-  .workbench-modal-title {
-    @apply text-[26px] font-semibold leading-tight tracking-tight text-fg;
-  }
-
-  .workbench-modal-sub {
-    @apply mt-2 text-[13px] text-muted;
-  }
-
   .form-grid {
     @apply mt-5 grid gap-4;
   }
 
   .form-label {
     @apply grid gap-1.5 text-xs text-muted;
-  }
-
-  .workbench-modal-actions {
-    @apply mt-5 flex justify-end gap-2;
   }
 
   /* ── States ── */
@@ -1205,8 +1244,7 @@
   .detail-pane::-webkit-scrollbar,
   .explorer-body::-webkit-scrollbar,
   .explorer-nav::-webkit-scrollbar,
-  .table-body::-webkit-scrollbar,
-  .workbench-modal::-webkit-scrollbar {
+  .table-body::-webkit-scrollbar {
     width: 6px;
     height: 6px;
   }
@@ -1214,16 +1252,14 @@
   .detail-pane::-webkit-scrollbar-track,
   .explorer-body::-webkit-scrollbar-track,
   .explorer-nav::-webkit-scrollbar-track,
-  .table-body::-webkit-scrollbar-track,
-  .workbench-modal::-webkit-scrollbar-track {
+  .table-body::-webkit-scrollbar-track {
     background: transparent;
   }
 
   .detail-pane::-webkit-scrollbar-thumb,
   .explorer-body::-webkit-scrollbar-thumb,
   .explorer-nav::-webkit-scrollbar-thumb,
-  .table-body::-webkit-scrollbar-thumb,
-  .workbench-modal::-webkit-scrollbar-thumb {
+  .table-body::-webkit-scrollbar-thumb {
     background: rgb(var(--ak-color-text-muted-rgb) / 0.3);
     border-radius: 999px;
   }
@@ -1231,8 +1267,7 @@
   .detail-pane::-webkit-scrollbar-thumb:hover,
   .explorer-body::-webkit-scrollbar-thumb:hover,
   .explorer-nav::-webkit-scrollbar-thumb:hover,
-  .table-body::-webkit-scrollbar-thumb:hover,
-  .workbench-modal::-webkit-scrollbar-thumb:hover {
+  .table-body::-webkit-scrollbar-thumb:hover {
     background: rgb(var(--ak-color-text-muted-rgb) / 0.5);
   }
 
@@ -1240,8 +1275,7 @@
   .plugin-workbench-pane,
   .explorer-body,
   .explorer-nav,
-  .table-body,
-  .workbench-modal {
+  .table-body {
     scrollbar-width: thin;
     scrollbar-color: rgb(var(--ak-color-text-muted-rgb) / 0.3) transparent;
     scroll-behavior: smooth;
@@ -1263,8 +1297,7 @@
     .plugin-workbench-pane,
     .explorer-body,
     .explorer-nav,
-    .table-body,
-    .workbench-modal {
+    .table-body {
       scroll-behavior: auto;
     }
   }
@@ -1364,22 +1397,12 @@
     .active-session-chip button { display: none; }
     .sessions-shell .content-filters { flex: 1; width: auto; }
     .sessions-shell .content-toolbar-actions { width: 100%; }
-    .ak-material-button--sm {
-      --md-filled-button-container-height: 44px;
-      --md-outlined-button-container-height: 44px;
-      --md-text-button-container-height: 44px;
-      --md-filled-tonal-button-container-height: 44px;
-    }
-    .session-filters input,
-    .session-filters select { min-height: 44px; font-size: 1rem; }
-    .session-item { padding: 0.875rem 0.75rem; }
-    .nav-item-name { font-size: 1rem; }
 
     /* 同一行数据改为带字段名的纵向摘要；排序按钮仍可用。 */
     .table-head { display: flex; flex-wrap: wrap; gap: 0.5rem; padding: 0.5rem 0.75rem; }
     .table-head:not(:has(button)),
     .table-head > div { display: none; }
-    .table-sort-btn { width: auto; min-height: 44px; padding: 0 0.5rem; }
+    .table-sort-btn { width: auto; padding: 0 0.5rem; }
     .wb-table-row {
       grid-template-columns: repeat(2, minmax(0, 1fr));
       align-items: start;
@@ -1464,6 +1487,23 @@
       .workspace { flex: none; }
       .detail-pane.is-open { overflow: visible; }
     }
+}
+
+
+/* 触控尺寸跟随输入方式而不是容器宽度：桌面工具区里的窄工作台仍用指针尺寸，
+   手机视口或粗指针才放大到 44px 与 16px（避免 iOS 聚焦缩放）。 */
+@media (pointer: coarse), (max-width: 760px) {
+    .ak-material-button--sm {
+      --md-filled-button-container-height: 44px;
+      --md-outlined-button-container-height: 44px;
+      --md-text-button-container-height: 44px;
+      --md-filled-tonal-button-container-height: 44px;
+    }
+    .session-filters input,
+    .session-filters select { min-height: 44px; font-size: 1rem; }
+    .session-item { padding: 0.875rem 0.75rem; }
+    .nav-item-name { font-size: 1rem; }
+    .table-sort-btn { min-height: 44px; }
 }
 
 }
