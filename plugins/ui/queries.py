@@ -31,7 +31,7 @@ from plugins.ui.contract import (
     UiSlots,
 )
 from agent.plugin_composition.diagnostics import plugin_entrypoint
-from agent.plugin_contracts.ui import (
+from plugins.ui.contract import (
     PluginUiProvider as PluginUiProvider,
 )
 from core.error_context import current_session_key

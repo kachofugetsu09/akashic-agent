@@ -15,9 +15,9 @@ from agent.plugin_composition.host import HOST_INFO
 from agent.plugin_composition.messages import MESSAGE_CATALOG
 from agent.plugin_composition.plugin_updates import PLUGIN_UPDATES
 from agent.plugin_contracts import CallRef
-from agent.plugin_contracts.ui import MESSAGE_DISPLAY
+from plugins.ui.contract import MESSAGE_DISPLAY, message_rows
 from agent.plugin_composition.tasks import RESTART_GATE
-from agent.plugin_contracts.ui import MessagePage
+from plugins.ui.contract import MessagePage
 from agent.plugin_contracts import Message
 from .contract import RpcMethod
 from .errors import RuntimeClosedError
@@ -66,7 +66,7 @@ def build_control_service(ctx: Context, *, workspace_token: str | None) -> Contr
     async def message_display(page: MessagePage, *, display_only: bool) -> list[dict[str, object]]:
         with ctx.borrow(MESSAGE_DISPLAY) as display:
             if display is None:
-                raise RuntimeClosedError("UI 消息展示服务不可用")
+                return message_rows(page, display_only=display_only)
             return await display(page, display_only=display_only)
 
     def reply_status(session_id: str) -> AsyncGenerator[dict[str, object], None]:

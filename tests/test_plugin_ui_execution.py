@@ -8,7 +8,7 @@ import pytest
 from agent.plugin_composition import CompositionRoot, PluginRuntime
 from plugins.ui.contract import PluginUiDefinition, UI_SLOTS
 from plugins.ui.contract import PluginUiQueryTimeout
-from agent.plugin_contracts.ui import PLUGIN_UI
+from plugins.ui.contract import PLUGIN_UI
 from plugins.ui.queries import LivePluginUiProvider
 from plugins.ui.plugin_ui import PluginUiSlots
 

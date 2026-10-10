@@ -15,7 +15,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from agent.plugin_composition.channels import CHANNEL_INPUT_V2, ChannelInboundMessage
 from agent.plugin_composition.bindings import BINDINGS
-from agent.plugin_contracts.ui import MESSAGE_DISPLAY
+from plugins.ui.contract import MESSAGE_DISPLAY
 from agent.plugin_contracts import CallRef, ContentPart, Control, Input, Output, ToolCall, ToolResult
 from plugins.compaction.message_summary import HEADINGS
 from plugins.content.plugin import check_text

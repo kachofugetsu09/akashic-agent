@@ -27,7 +27,7 @@ from plugins.reply.contract import (
     REPLY_STATUS as REPLY_STATUS,
     ReplyStatus as ReplyStatusReader,
 )
-from agent.plugin_contracts.ui import (
+from plugins.ui.contract import (
     MESSAGE_DISPLAY as MESSAGE_DISPLAY,
     PLUGIN_UI as PLUGIN_UI,
 )

@@ -28,7 +28,7 @@ from plugins.models.projection import MessageProjection
 from plugins.models.store import ModelsStore
 from plugins.models.views import ContentViews
 from session.log import MessageLog
-from agent.plugin_contracts.ui import MESSAGE_DISPLAY
+from plugins.ui.contract import MESSAGE_DISPLAY
 from session.artifact_store import ArtifactStore
 from tests.test_default_reply import application, live_root
 

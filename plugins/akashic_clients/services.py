@@ -11,7 +11,7 @@ from pathlib import Path
 from typing import Literal, Protocol, runtime_checkable
 
 from agent.plugin_composition.channels import AttachmentRef
-from agent.plugin_composition.message_view import MessageDisplayReader
+from plugins.ui.contract import MessageDisplayReader
 from agent.plugin_composition.messages import (
     InvalidPage,
     MessageConflict,
@@ -35,7 +35,7 @@ from plugins.ui.contract import (
     PluginUiStaleRevision,  # noqa: F401 - 显式再导出给本插件消费者。
 )
 from agent.plugin_contracts.message import Message
-from agent.plugin_contracts.ui import (
+from plugins.ui.contract import (
     PluginUiProvider as PluginUiProvider,
 )
 

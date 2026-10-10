@@ -13,7 +13,7 @@ from contextlib import AbstractAsyncContextManager, asynccontextmanager
 from contextvars import ContextVar
 from typing import Any, cast
 
-from agent.plugin_composition.message_view import MessageDisplayReader
+from plugins.ui.contract import MessageDisplayReader
 
 from .capabilities import MESSAGE_DISPLAY, PLUGIN_UI, WEB_UI
 from .services import PluginUiProvider, WebUiProvider
