@@ -122,7 +122,7 @@ PLUGIN_ALLOWED_MODULES = frozenset({
     "agent.plugin_contracts.proactive",
     "agent.plugin_contracts.react",
 
-    "agent.plugin_contracts.json_store",
+    "infra.persistence.json_store",
     "agent.plugin_contracts.message",
     "agent.plugin_contracts.sources",
     "agent.plugin_contracts.tools",
@@ -134,7 +134,7 @@ PLUGIN_ALLOWED_MODULES = frozenset({
     "core.common.file_io",
     "core.error_context",
     "core.net.http",
-    "agent.plugin_contracts.timekit",
+    "core.common.timekit",
     "agent.plugin_contracts.turn_effects",
 })
 
