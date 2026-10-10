@@ -1,4 +1,4 @@
-"""任务与技能目录的只读合同。"""
+"""文档 owner 发布有界读取口的合同。"""
 
 from collections.abc import Callable
 from dataclasses import dataclass

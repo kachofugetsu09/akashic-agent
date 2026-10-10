@@ -11,7 +11,7 @@ from agent.plugin_contracts.context import (
     MATERIALS_V4 as MATERIALS,
 )
 
-from agent.plugin_contracts.inspection import DOCUMENTS, Document
+from plugins.runtime_inspection.contract import DOCUMENTS, Document
 
 from .persona import read_veda_file, initialize_veda_if_missing
 from .text import build_behavior_rules, build_identity, build_telegram_rendering_prompt
