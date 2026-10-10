@@ -6,7 +6,8 @@ from pathlib import Path
 from tempfile import TemporaryDirectory
 
 from agent.plugin_composition import CompositionRoot
-from agent.plugin_composition.control_frames import CONTROL_FRAMES, FrameBook
+from plugins.gateway.contract import CONTROL_FRAMES
+from plugins.gateway.frames import FrameBook
 from agent.restart import RestartGate, RestartRejectedError
 from plugins.delivery.api import FinalOutputDelivery
 from plugins.message_push.restart import RestartRequest, RestartWatcher
@@ -48,8 +49,8 @@ async def check(workspace: Path) -> None:
             entered, release = asyncio.Event(), asyncio.Event()
             if mode == "provider":
                 class Receipt:
-                    async def wait(self, selected_reader, turn):
-                        assert selected_reader.session_id == session and turn.ending_message_id == ending.message_id
+                    async def wait(self, reader, turn):
+                        assert reader.session_id == session and turn.ending_message_id == ending.message_id
                         entered.set()
                         await release.wait()
                 delivery.register(source, Receipt())
@@ -57,19 +58,18 @@ async def check(workspace: Path) -> None:
                 delivery.register(source, Programmatic(root.context))
             else:
                 expected = "different-output" if mode == "wrong-ending" else ending.message_id
-                frames.route_input(session, input_id, mode, lambda expected=expected: expected)
+                frames.route_input_with_owner(session, input_id, mode, lambda expected=expected: expected)
                 frames.arm_claim(session, input_id, request.call_ref)
-                tracked = frames.resolve_page(mode, {"items": [{"id": expected, "session_id": session,
-                    "body": {"kind": "output", "finish": "complete", "parts": []}}]})
                 written = asyncio.get_running_loop().create_future()
-                frames.attach_page(tracked, written)
+                assert frames.track_page(mode, {"items": [{"id": expected, "session_id": session,
+                    "body": {"kind": "output", "finish": "complete", "parts": []}}]}, written)
             pending = asyncio.create_task(watcher._wait_for_request(request, reader, TurnProjection(), delivery))
             await barrier()
             if mode == "missing":
                 try:
                     await pending
                     raise AssertionError("无 route/claim 仍允许重启")
-                except RestartRejectedError:
+                except (RestartRejectedError, ConnectionError):
                     pass
             else:
                 assert not pending.done() and not commits and not gate.accepting

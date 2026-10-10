@@ -11,7 +11,7 @@ from agent.plugin_contracts import CallRef, Input, Output, ToolCall, ToolResult
 from agent.plugin_contracts.delivery import FINAL_OUTPUT_DELIVERY, FinalOutputDelivery
 from agent.plugin_contracts.turns import TURN_PROJECTION, TurnProjection
 from agent.plugin_composition import Context
-from agent.plugin_composition.control_frames import CONTROL_FRAMES
+from .contract import CONTROL_FRAMES
 from agent.plugin_composition.plugin_updates import PLUGIN_UPDATES
 from agent.plugin_composition.tasks import RESTART_GATE
 
@@ -55,9 +55,12 @@ async def prepare_stop(ctx: Context, params: StopParams) -> dict[str, object]:
                 for message in reversed(messages[: messages.index(call)])
                 if message.source == call.source and isinstance(message.body, Input)
             )
-            claim = ctx.require(CONTROL_FRAMES).arm_claim(
-                params.session_id, origin.message_id, ref
-            )
+            try:
+                claim = ctx.require(CONTROL_FRAMES).arm_claim(
+                    params.session_id, origin.message_id, ref
+                )
+            except LookupError as error:
+                raise ValueError("停止请求的控制连接已结束") from error
             asyncio.get_running_loop().call_later(params.timeout_s, claim.abort)
         return {"bootId": gate.boot_id, "state": "armed"}
     # 同一停止只允许一个 waiter；重放接单由宿主任务记录处理。

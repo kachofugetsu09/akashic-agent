@@ -10,21 +10,20 @@ from uuid import uuid4
 from .protocol.router import ConnectionRouter
 from .service import ControlService
 from .contract import RequestTransport
-from agent.plugin_composition.control_frames import FrameBook
 
 
 class StdioAppServer(RequestTransport):
     """在 stdin/stdout 上运行单连接 NDJSON app-server。"""
 
     def __init__(self, service: ControlService, *, max_message_bytes: int = 2 * 1024 * 1024,
-                 control_frames: FrameBook | None = None, output_fd: int = 1) -> None:
+                 output_fd: int = 1) -> None:
         self._service = service
         self._output_fd = output_fd
         self._writer: asyncio.StreamWriter | None = None
         self._max_message_bytes = max_message_bytes
         self._write_lock = asyncio.Lock()
         self.connection_id = f"stdio:{uuid4().hex}"
-        self._frames = control_frames or service.control_frames
+        self._frames = service.control_frames
 
     async def _send(self, message: dict[str, object]) -> None:
         await self._send_frame(message, page=None)
@@ -39,10 +38,9 @@ class StdioAppServer(RequestTransport):
         self, message: dict[str, object], *, page: Mapping[str, object] | None
     ) -> None:
         payload = json.dumps(message, ensure_ascii=False, separators=(",", ":")) + "\n"
-        tracked = () if page is None else self._frames.resolve_page(self.connection_id, page)
-        written = asyncio.get_running_loop().create_future() if tracked else None
-        if written is not None:
-            self._frames.attach_page(tracked, written)
+        written = asyncio.get_running_loop().create_future() if page is not None else None
+        if page is not None and written is not None and not self._frames.track_page(self.connection_id, page, written):
+            written = None
         async with self._write_lock:
             try:
                 writer = self._writer

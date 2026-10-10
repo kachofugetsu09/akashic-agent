@@ -16,7 +16,7 @@ from agent.plugin_composition import (
 )
 from agent.plugin_composition.bindings import BINDINGS
 from agent.plugin_composition.messages import MESSAGE_CATALOG
-from agent.plugin_composition.control_frames import CONTROL_FRAMES, FrameBook, FrameClaim, FrameRouteReleased
+from plugins.gateway.contract import CONTROL_FRAMES, ControlFrames, FrameClaim
 from agent.plugin_composition.tasks import RESTART_GATE, RestartGate, RestartRejectedError
 from agent.plugin_contracts import ContentPart, Message
 from agent.plugin_composition.messages import MessageCatalog, MessageReader
@@ -62,7 +62,7 @@ class RestartTool(BoundTool):
     def idempotent(self) -> bool:
         return False
 
-    def __init__(self, gate: RestartGate, frames: FrameBook) -> None:
+    def __init__(self, gate: RestartGate, frames: ControlFrames) -> None:
         self._gate = gate
         self._frames = frames
         self._prepared: PendingRestart | None = None
@@ -122,7 +122,7 @@ class RestartTool(BoundTool):
                     input_message.session_id, input_message.message_id, pending.call_ref,
                 )
                 self._claim_session_id = input_message.session_id
-            except FrameRouteReleased:
+            except LookupError:
                 # Channel sources and internal calls have no control frame route.
                 self._claim = None
                 self._claim_session_id = None
@@ -324,7 +324,10 @@ class RestartWatcher:
                     if turn.status != "complete" or turn.ending_message_id is None:
                         raise RestartRejectedError("restart ToolCall 所属 Turn 未正常完成")
                     if claim is not None:
-                        await claim.wait_output()
+                        try:
+                            await claim.wait_output()
+                        except LookupError as error:
+                            raise RestartRejectedError(str(error)) from error
                         if claim.ending_message_id != turn.ending_message_id:
                             raise RestartRejectedError("frame claim 不属于当前 Turn 的最终 Output")
                     else:
@@ -334,11 +337,6 @@ class RestartWatcher:
                         claim.consume()
                     return
             raise RestartRejectedError("等待最终 Output 超时")
-        except FrameRouteReleased as error:
-            if claim is not None:
-                claim.abort()
-            gate.abort(request.request_id)
-            raise RestartRejectedError(str(error)) from error
         except BaseException:
             if claim is not None:
                 claim.abort()

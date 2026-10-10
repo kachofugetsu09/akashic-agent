@@ -9,14 +9,15 @@ from pathlib import Path
 import shutil
 import sys
 import tempfile
-from types import SimpleNamespace
+from dataclasses import dataclass
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
 from agent.plugin_composition import CompositionError, ServiceKey
 from agent.plugin_composition.channels import CHANNEL_INPUT_V2, ChannelInboundMessage
 from agent.plugin_composition.model import FiberState
-from agent.plugin_composition.control_frames import CONTROL_FRAMES
+from plugins.gateway.contract import CONTROL_FRAMES
+
 from agent.plugin_composition.messages import MessageReader
 from agent.plugin_contracts.reply import REPLY_COMPLETION
 from agent.plugin_contracts.sources import SOURCES_V5, SOURCE_CHANGED_V3
@@ -24,6 +25,11 @@ from plugins.programmatic.control import PROGRAMMATIC, AdmitParams, SendParams, 
 from plugins.programmatic.result import TURN_PROJECTION, read_result
 from session.message import Input, Output, ToolResult
 from tests.test_default_reply import application
+
+
+@dataclass
+class Transport:
+    connection_id: str
 
 
 async def versions(path):
@@ -62,7 +68,7 @@ async def notifications(path):
 
         class CompletionTrace:
             @contextmanager
-            def activity(self, _reader, _source):
+            def activity(self, reader, source):
                 nonlocal holds
                 holds += 1
                 try:
@@ -104,8 +110,9 @@ async def notifications(path):
 async def programmatic_routes(path):
     """真实 Programmatic 的旧读取不清理恢复通道，也不误判尚未提交的 Input。"""
     def add_programmatic(destination):
-        shutil.copytree(Path(__file__).resolve().parents[2] / "plugins/programmatic",
-                        destination / "programmatic", ignore=shutil.ignore_patterns("__pycache__"))
+        for name in ("programmatic", "gateway"):
+            shutil.copytree(Path(__file__).resolve().parents[2] / "plugins" / name,
+                            destination / name, ignore=shutil.ignore_patterns("__pycache__"))
 
     results = []
     for mode in ("uncommitted", "settlement", "result"):
@@ -157,7 +164,7 @@ async def programmatic_routes(path):
                 send = SendParams(session_id=session_id, message_id="input", text="work")
                 if mode == "uncommitted":
                     operation = asyncio.create_task(service.call("programmatic/message/send", send,
-                                                    SimpleNamespace(connection_id="new")))
+                                                    Transport(connection_id="new")))
                     await asyncio.wait_for(entered.wait(), 5)
                     assert reader.get("input") is None
                     assert frames.active_input_ids(session_id) == ("input",)
@@ -167,7 +174,7 @@ async def programmatic_routes(path):
                     await operation
                     before = reader.snapshot()
                 else:
-                    await service.call("programmatic/message/send", send, SimpleNamespace(connection_id="old"))
+                    await service.call("programmatic/message/send", send, Transport(connection_id="old"))
                     await service.call("programmatic/message/pause", PauseParams(
                         session_id=session_id, message_id="pause"))
                     before = reader.snapshot()
@@ -178,7 +185,7 @@ async def programmatic_routes(path):
                     # 2. 真实 resume 提交 Control 并切换连接；旧读取仍停在屏障。
                     await service.call("programmatic/message/resume", ResumeParams(
                         session_id=session_id, message_id="resume", input_id="input"),
-                        SimpleNamespace(connection_id="new"))
+                        Transport(connection_id="new"))
                     release.set()
                     result = await operation
                     if mode == "result":
@@ -196,18 +203,16 @@ async def programmatic_routes(path):
                 asyncio.get_running_loop().call_soon(ready.set_result, None)
                 await ready
                 assert not waiter.done()
-                tracked = frames.resolve_page("new", {"items": [{"id": output.message_id,
-                    "session_id": session_id, "body": {"kind": "output", "finish": "complete", "parts": []}}]})
-                assert len(tracked) == 1
                 written = asyncio.get_running_loop().create_future()
-                frames.attach_page(tracked, written)
+                assert frames.track_page("new", {"items": [{"id": output.message_id,
+                    "session_id": session_id, "body": {"kind": "output", "finish": "complete", "parts": []}}]}, written)
                 assert not waiter.done()
                 written.set_result(None)
                 await asyncio.wait_for(waiter, 5)
                 assert frames.active_input_ids(session_id) == ()
 
                 # 4. 稳定终态仍回收通道，原消息保持；没有请求真实模型或传输。
-                frames.route_input(session_id, "input", "late", lambda: output.message_id)
+                frames.route_input_with_owner(session_id, "input", "late", lambda: output.message_id)
                 await settle()
                 assert frames.active_input_ids(session_id) == ()
                 assert reader.snapshot()[:len(before)] == before

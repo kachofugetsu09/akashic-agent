@@ -12,7 +12,6 @@ from typing import TYPE_CHECKING
 from uuid import uuid4
 
 from agent.restart import RestartGate
-from agent.plugin_composition.control_frames import FrameBook
 
 if TYPE_CHECKING:
     from agent.plugins.manager import PluginManager
@@ -52,7 +51,6 @@ class CoreRuntime:
     plugin_manager: PluginManager
     plugin_publication_lock: PluginPublicationLock
     restart_gate: "RestartGate"
-    control_frames: FrameBook
     _plugin_publication_locked: bool = False
 
     def _lock_plugin_publication(self) -> None:
@@ -82,9 +80,6 @@ class CoreRuntime:
 
     async def stop(self) -> None:
         """先排空插件资源，再关闭各自拥有的数据库连接。"""
-        async def close_control_frames() -> None:
-            self.control_frames.close()
-
         async def close_storage() -> None:
             # 每个连接都尝试关闭；前一项失败不能泄漏后续 owner。
             errors: list[Exception] = []
@@ -100,7 +95,6 @@ class CoreRuntime:
         # 插件仍持有资源时不能释放 provider、发布锁或数据库。
         await self.plugin_manager.terminate_all()
         await run_cleanup_steps(
-            ("control_frames.close", close_control_frames),
             ("plugin_publication_lock.release", self._release_plugin_publication),
             ("storage.close", close_storage),
         )
@@ -154,7 +148,6 @@ def build_core_runtime(
             # 每次真实 Core host 启动都必须有新的 transport identity；不能用
             # 固定字符串，否则相邻 unmanaged 进程会被客户端误认为同一次启动。
             restart_gate = RestartGate(boot_id=uuid4().hex, supervised=False)
-        control_frames = FrameBook()
         resolved_plugin_dirs = (
             _resolve_plugin_dirs(workspace)
             if plugin_dirs is None
@@ -180,7 +173,6 @@ def build_core_runtime(
             distribution_sources=distribution.sources,
             ignored_installed_roots=distribution.ignored_installed_roots,
             restart_gate=restart_gate,
-            control_frames=control_frames,
             host_ready=host_ready,
         )
         async def recover_input(raw):
@@ -198,7 +190,6 @@ def build_core_runtime(
             artifact_metadata=artifact_metadata, channel_attachment_store=attachments,
             plugin_manager=manager, plugin_publication_lock=PluginPublicationLock(plugins_root()),
             restart_gate=restart_gate,
-            control_frames=control_frames,
         )
         _ = cleanup.pop_all()
         return runtime

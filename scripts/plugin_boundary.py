@@ -70,7 +70,6 @@ PLUGIN_ALLOWED_MODULES = frozenset({
     "agent.plugin_composition.claims",
     "agent.plugin_composition.config_input",
     "agent.plugin_composition.context",
-    "agent.plugin_composition.control_frames",
     "agent.plugin_composition.credentials",
     "agent.plugin_composition.dashboard",
     "agent.plugin_composition.deliveries",

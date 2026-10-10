@@ -8,7 +8,7 @@ from agent.plugin_composition import (
     RUNTIME_STOPPING,
     Context,
 )
-from agent.plugin_composition.control_frames import CONTROL_FRAMES
+from plugins.gateway.contract import CONTROL_FRAMES
 from agent.plugin_composition.messages import (
     MESSAGE_CATALOG,
     MESSAGE_WRITERS,
