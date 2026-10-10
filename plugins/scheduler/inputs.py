@@ -8,7 +8,7 @@ from agent.plugin_contracts import ContentPart
 from plugins.content.contract import (
     CONTENT as CONTENT,
 )
-from agent.plugin_contracts.delivery import (
+from plugins.delivery.contract import (
     DELIVERY_GUARDED_START as DELIVERY,
     DELIVERY_SENDERS as DELIVERY_SENDERS,
     GuardedDeliveries as Deliveries,

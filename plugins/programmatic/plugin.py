@@ -32,7 +32,7 @@ from agent.plugin_contracts.models import MODEL_SELECTION
 from plugins.content.contract import (
     CONTENT as CONTENT,
 )
-from agent.plugin_contracts.delivery import (
+from plugins.delivery.contract import (
     FINAL_OUTPUT_DELIVERY as FINAL_OUTPUT_DELIVERY,
     FinalOutputDelivery as FinalOutputDelivery,
     FinalOutputWaiter as FinalOutputWaiter,

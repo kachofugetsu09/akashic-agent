@@ -7,11 +7,11 @@ from typing import Annotated, Literal
 from pydantic import BaseModel, ConfigDict, Field
 
 from agent.plugin_composition.messages import MessageReader
-from agent.plugin_contracts.delivery import (
+from plugins.delivery.contract import (
     FINAL_OUTPUT_DELIVERY as FINAL_OUTPUT_DELIVERY,
     FinalOutputTurn as FinalOutputTurn,
     FinalOutputWaiter as FinalOutputWaiter,
-    Receipt as SenderResult,  # noqa: F401 - 显式再导出给本插件消费者。
+    Receipt as SenderResult,
     Sender as Sender,
 )
 

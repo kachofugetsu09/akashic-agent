@@ -1,17 +1,17 @@
 from __future__ import annotations
 
-import re
 from collections.abc import AsyncGenerator, Callable, Mapping
 from contextlib import AbstractAsyncContextManager, asynccontextmanager
-from dataclasses import dataclass
+from dataclasses import asdict, dataclass
 
 from pydantic import BaseModel, ConfigDict
 
 from agent.plugin_composition import Context, Effect
 from agent.plugin_composition.bindings import Bindings
 from agent.plugin_contracts import Message
-from agent.plugin_contracts.delivery import (
-    DELIVERY_SENDERS as DELIVERY_SENDERS, sender_key,
+from plugins.delivery.contract import (
+    DELIVERY_SENDERS as DELIVERY_SENDERS,
+    SenderDefinition,
 )
 
 from .api import Receipt, Sender, SenderResult, Text
@@ -19,7 +19,7 @@ from .api import Receipt, Sender, SenderResult, Text
 Open = Callable[[], AbstractAsyncContextManager[Sender]]
 
 
-class Adapter(BaseModel):
+class _SavedSender(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True, strict=True)
     name: Text
     owner: Text
@@ -29,7 +29,7 @@ class Adapter(BaseModel):
 @dataclass(frozen=True, slots=True)
 class _Registration:
     context: Context
-    descriptor: Adapter
+    descriptor: SenderDefinition
     open: Open
 
 
@@ -83,9 +83,8 @@ class Senders:
         """open 只取得发送资源，不得发送正文或启动收件；配置随真实 owner 归档。"""
         if ctx.root_instance_token is not self._ctx.root_instance_token:
             raise ValueError("发送注册不能跨 composition Root")
-        if re.fullmatch(r"[a-z][a-z0-9_-]{0,63}", name) is None:
-            raise ValueError("发送 adapter 名称无效")
-        descriptor = Adapter(name=name, owner=ctx.runtime.plugin_id, idempotent=idempotent)
+        key = SenderDefinition.key(name)
+        descriptor = SenderDefinition(name=name, owner=ctx.runtime.plugin_id, idempotent=idempotent)
 
         def setup() -> Callable[[], None]:
             if name in self._registrations:
@@ -99,7 +98,7 @@ class Senders:
         async def start():
             cleanup = setup()
             try:
-                presence = await ctx.provide(sender_key(name), descriptor)
+                presence = await ctx.provide(key, descriptor)
             except BaseException:
                 cleanup()
                 raise
@@ -112,7 +111,7 @@ class Senders:
     async def candidate(self, ctx: Context, *, name: str, title: str, route: str,
                         status: Callable[[], Mapping[str, object]]) -> Effect:
         """只登记可配置候选，不创建传输或发送权限。"""
-        sender_key(name)
+        SenderDefinition.key(name)
         if ctx.root_instance_token is not self._ctx.root_instance_token:
             raise ValueError("发送候选不能跨运行图")
         def start():
@@ -138,7 +137,7 @@ class Senders:
     def bind(self, name: str, bindings: Bindings) -> str:
         registration = self._registrations[name]
         return bindings.bind(
-            DELIVERY_SENDERS, registration.descriptor.model_dump(),
+            DELIVERY_SENDERS, asdict(registration.descriptor),
             contributors=(registration.context,),
         )
 
@@ -149,7 +148,8 @@ class Senders:
     @asynccontextmanager
     async def open(self, metadata: Mapping[str, object]) -> AsyncGenerator[Sender]:
         """核对归档目标并在 Senders 与目标 owner scope 中打开 sender。"""
-        descriptor = Adapter.model_validate(dict(metadata))
+        saved = _SavedSender.model_validate(dict(metadata))
+        descriptor = SenderDefinition(saved.name, saved.owner, saved.idempotent)
         registration = self._registrations[descriptor.name]
         if registration.descriptor != descriptor:
             raise ValueError("发送 binding 与归档注册不一致")

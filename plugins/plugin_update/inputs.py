@@ -10,16 +10,18 @@ from agent.plugin_contracts import (
 from plugins.content.contract import (
     CONTENT as CONTENT,
 )
-from agent.plugin_contracts.delivery import (
+from plugins.delivery.contract import (
     DELIVERY_GUARDED_START as DELIVERY,
     DELIVERY_SENDERS as DELIVERY_SENDERS,
-    INPUT_ORIGIN as INPUT_ORIGIN,
     GuardedDeliveries as Deliveries,
     GuardedDelivery as Delivery,
-    InputOrigin as InputOrigin,
     Receipt as Receipt,
     Selection as Selection,
     Senders as Senders,
+)
+from plugins.delivery_policy.contract import (
+    INPUT_ORIGIN as INPUT_ORIGIN,
+    InputOrigin as InputOrigin,
 )
 from agent.plugin_contracts.tools import (
     ALL_TOOLS as ALL_TOOLS,

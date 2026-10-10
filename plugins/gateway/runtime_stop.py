@@ -8,7 +8,10 @@ from pydantic import Field
 from .protocol.models import StrictModel
 from agent.plugin_composition.messages import MESSAGE_CATALOG
 from agent.plugin_contracts import CallRef, Input, Output, ToolCall, ToolResult
-from agent.plugin_contracts.delivery import FINAL_OUTPUT_DELIVERY, FinalOutputDelivery
+from plugins.delivery.contract import (
+    FINAL_OUTPUT_DELIVERY,
+    FinalOutputDelivery,
+)
 from plugins.turn_projection.contract import TURN_PROJECTION, TurnProjection
 from agent.plugin_composition import Context
 from .contract import CONTROL_FRAMES

@@ -8,7 +8,9 @@ from typing import cast
 
 from agent.plugin_composition.tasks import Task, TaskAdmission, TaskSlot
 from agent.plugin_composition.messages import MessageCatalog, MessageReader, MessageWriter, OwnerRecord
-from agent.plugin_contracts.delivery import StartGuard
+from plugins.delivery.contract import (
+    StartGuard,
+)
 from core.common.file_io import run_file_io
 from agent.plugin_contracts import Body, Message
 

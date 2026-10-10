@@ -5,7 +5,7 @@ from typing import Literal, Protocol
 
 from agent.plugin_composition import Context
 from agent.plugin_contracts import Message
-from agent.plugin_contracts.delivery import (
+from plugins.delivery.contract import (
     DELIVERY_SENDERS as DELIVERY_SENDERS,
 )
 

@@ -18,7 +18,7 @@ from agent.plugin_composition.messages import (
 )
 from plugins.gateway.contract import RequestTransport, RpcMethod
 from agent.plugin_contracts import ContentPart, Input
-from agent.plugin_contracts.delivery import (
+from plugins.delivery.contract import (
     FinalOutputTurn as FinalOutputTurn,
 )
 

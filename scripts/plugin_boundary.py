@@ -101,7 +101,6 @@ PLUGIN_ALLOWED_MODULES = frozenset({
     "agent.plugin_contracts",
     "agent.plugin_contracts.ui",
     # ADR-0084: directory snapshot and default registration, with no Core business owner.
-    "agent.plugin_contracts.delivery",
 
     "infra.persistence.json_store",
     "agent.plugin_contracts.message",

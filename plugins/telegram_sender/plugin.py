@@ -14,7 +14,7 @@ from agent.plugin_composition import (
 )
 from agent.plugin_composition.artifacts import ARTIFACT_READ
 from agent.plugin_composition.messages import MESSAGE_CATALOG
-from agent.plugin_contracts.delivery import (
+from plugins.delivery.contract import (
     DELIVERY_SENDERS as DELIVERY_SENDERS,
 )
 
