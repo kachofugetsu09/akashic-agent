@@ -18,7 +18,7 @@ from agent.plugin_composition.channels import CHANNEL_INPUT_V2 as CHANNEL_INPUT,
 from agent.plugin_composition.host import HOST_INFO, HostInfo
 from agent.plugin_composition.messages import OWNER_STATE, OwnerState
 from agent.plugin_composition.model import FiberState, PluginRuntime, ServiceKey
-from agent.plugin_composition.rpc import RpcMethod
+from plugins.gateway.contract import RpcMethod
 from plugins.akashic_clients import plugin as clients
 from plugins.akashic_clients.capabilities import (
     CLIENT_CAPABILITIES, INSPECTION_DOCUMENTS_LIST,

@@ -11,7 +11,7 @@ from concurrent.futures import ThreadPoolExecutor
 from contextvars import copy_context
 from typing import Any, cast
 
-from agent.control.context import running_turn_id
+from core.error_context import running_turn_id
 from agent.plugin_composition import (
     CompositionError,
     Context,

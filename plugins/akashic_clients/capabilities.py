@@ -11,7 +11,7 @@ from typing import TYPE_CHECKING
 
 from agent.plugin_composition import MODEL_CATALOG
 from agent.plugin_composition.messages import MESSAGE_CATALOG, SESSION_ADMIN
-from agent.plugin_composition.rpc import rpc_method_key
+from plugins.gateway.contract import RpcMethod
 from agent.plugin_composition.runtime_catalog import (
     RUNTIME_CATALOG as RUNTIME_CATALOG,
 )
@@ -41,11 +41,11 @@ if TYPE_CHECKING:
 # name, so this module remains independent from the provider plugin package.
 
 
-INSPECTION_DOCUMENTS_LIST = rpc_method_key("inspection/documents.list")
-INSPECTION_DOCUMENTS_GET = rpc_method_key("inspection/documents.get")
-INSPECTION_JOBS_LIST = rpc_method_key("inspection/jobs.list")
-INSPECTION_JOBS_GET = rpc_method_key("inspection/jobs.get")
-INSPECTION_SKILLS_LIST = rpc_method_key("inspection/skills.list")
+INSPECTION_DOCUMENTS_LIST = RpcMethod.key("inspection/documents.list")
+INSPECTION_DOCUMENTS_GET = RpcMethod.key("inspection/documents.get")
+INSPECTION_JOBS_LIST = RpcMethod.key("inspection/jobs.list")
+INSPECTION_JOBS_GET = RpcMethod.key("inspection/jobs.get")
+INSPECTION_SKILLS_LIST = RpcMethod.key("inspection/skills.list")
 
 INSPECTION_RPC_KEYS = (
     INSPECTION_DOCUMENTS_LIST,

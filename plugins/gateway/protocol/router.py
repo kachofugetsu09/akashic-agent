@@ -9,7 +9,7 @@ from typing import Any, cast
 
 from pydantic import ValidationError
 
-from agent.control.errors import (
+from ..errors import (
     ControlAdmissionError,
     RuntimeClosedError,
     PluginManagementError,
@@ -17,7 +17,7 @@ from agent.control.errors import (
     ThreadNotFoundError,
     TurnNotFoundError,
 )
-from agent.control.protocol.errors import (
+from .errors import (
     INTERNAL_ERROR,
     INVALID_PARAMS,
     INVALID_REQUEST,
@@ -31,10 +31,10 @@ from agent.control.protocol.errors import (
     PLUGIN_OPERATION_FAILED,
     JsonRpcError,
 )
-from agent.control.protocol.models import METHOD_PARAMS, InitializeParams, StrictModel, MessageSendParams
-from agent.control.protocol.method import RequestTransport
-from agent.control.service import ControlService
-from agent.restart import RestartPendingError
+from .models import METHOD_PARAMS, InitializeParams, StrictModel, MessageSendParams
+from ..contract import NAMES, RequestTransport
+from ..service import ControlService
+from agent.plugin_composition.tasks import RestartRejectedError
 
 logger = logging.getLogger(__name__)
 JsonObject = dict[str, Any]
@@ -73,6 +73,11 @@ class ConnectionRouter:
     async def handle_line(self, line: bytes) -> None:
         """解析单条 NDJSON frame，并在边界返回标准错误。"""
 
+        async with self._service.request_scope():
+            await self._handle_line(line)
+
+    async def _handle_line(self, line: bytes) -> None:
+        """调用租约覆盖回执的实际写入，换代不提前关闭旧传输。"""
         # 1. 严格解析 UTF-8 JSON object。
         try:
             payload = json.loads(line.decode("utf-8"))
@@ -154,7 +159,7 @@ class ConnectionRouter:
             await self._send(
                 JsonRpcError(INVALID_PARAMS, str(exc)).envelope(request_id)
             )
-        except (RestartPendingError, RuntimeClosedError) as exc:
+        except (RestartRejectedError, RuntimeClosedError) as exc:
             await self._send(
                 JsonRpcError(SERVER_OVERLOADED, str(exc), {"retryable": True}).envelope(
                     request_id
@@ -167,7 +172,7 @@ class ConnectionRouter:
             )
         else:
             frame = {"jsonrpc": "2.0", "id": request_id, "result": result}
-            if request["method"] == "message/read" and self._send_message_page is not None:
+            if request["method"] == NAMES.message_read and self._send_message_page is not None:
                 await self._send_message_page(frame, cast(Mapping[str, object], result))
             else:
                 await self._send(frame)
@@ -197,7 +202,7 @@ class ConnectionRouter:
         raw_params = request.get("params", {})
         if not isinstance(raw_params, dict):
             raise JsonRpcError(INVALID_PARAMS, "params must be an object")
-        if method == "initialize" and raw_params.get("protocolVersion") != "2.0":
+        if method == NAMES.initialize and raw_params.get("protocolVersion") != "2.0":
             raise JsonRpcError(
                 INCOMPATIBLE_VERSION,
                 "Unsupported protocol version",
@@ -213,7 +218,7 @@ class ConnectionRouter:
             ) from exc
 
         # 3. initialize 是唯一允许进入 new 状态的请求。
-        if method == "initialize":
+        if method == NAMES.initialize:
             if self._state != "new":
                 raise JsonRpcError(INVALID_REQUEST, "initialize may only be sent once")
             init = cast(InitializeParams, params)
@@ -251,18 +256,18 @@ class ConnectionRouter:
         if operation is not None:
             return await operation.invoke(params, self._transport)
         values = params.model_dump()
-        if method == "server/status":
+        if method == NAMES.server_status:
             return self._service.status()
-        if method == "session/create":
+        if method == NAMES.session_create:
             return self._service.create_session()
-        if method == "session/list":
+        if method == NAMES.session_list:
             return self._service.list_sessions(values["cursor"], values["limit"])
-        if method == "message/read":
+        if method == NAMES.message_read:
             return await self._service.read_messages(values["session_id"], values["after_seq"],
                                                 values["through_seq"], values["limit"])
-        if method == "message/send":
+        if method == NAMES.message_send:
             return await self._service.send_message(cast(MessageSendParams, params))
-        if method == "session/follow":
+        if method == NAMES.session_follow:
             session_id, subscription_id = values["session_id"], values["subscription_id"]
             async with self._subscription_lock:
                 await self._stop_subscription(session_id)
@@ -271,28 +276,28 @@ class ConnectionRouter:
                 self._subscriptions[session_id] = (subscription_id, None)
             return {"version": 2, "session_id": session_id, "subscription_id": subscription_id,
                     "after_seq": values["after_seq"]}
-        if method == "session/unfollow":
+        if method == NAMES.session_unfollow:
             async with self._subscription_lock:
                 existing = self._subscriptions.get(values["session_id"])
                 if existing is not None and existing[0] == values["subscription_id"]:
                     await self._stop_subscription(values["session_id"])
             return {"session_id": values["session_id"], "subscription_id": values["subscription_id"]}
-        if method == "plugin/status":
+        if method == NAMES.plugin_status:
             return self._service.plugin_status()
-        if method == "plugin/update":
+        if method == NAMES.plugin_update:
             return self._service.plugin_update(values["update_id"])
-        if method == "plugin/install":
+        if method == NAMES.plugin_install:
             return await self._service.install_plugin(values["source"], values["marketplace"],
                 values["ref"], values["sparse"], values["update_id"])
-        if method == "plugin/disable-and-drain":
+        if method == NAMES.plugin_drain:
             return await self._service.disable_and_drain_plugin(values["plugin_id"])
-        if method == "plugin/uninstall":
+        if method == NAMES.plugin_uninstall:
             return await self._service.uninstall_plugin(values["plugin_id"])
         raise AssertionError(f"unhandled protocol method: {method}")
 
     async def _post_response_notifications(self, request: JsonObject, result: object) -> None:
         """follow ACK 先进入传输队列，再启动订阅；客户端能建立对应的读取 owner。"""
-        if request["method"] != "session/follow":
+        if request["method"] != NAMES.session_follow:
             return
         assert isinstance(result, dict)
         session_id = cast(str, result["session_id"])

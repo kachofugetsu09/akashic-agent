@@ -97,6 +97,7 @@ async def provide_host_services(
     processes: PluginProcesses,
     restart_gate: RestartGate,
     control_frames: FrameBook,
+    host_ready: Callable[[], bool] | None,
 ) -> tuple[ExecutionAccess, CredentialClients]:
     """组装真实宿主端口与只读投影；不拥有安装选择或第二份运行状态。"""
     artifact_read = None if attachments is None else ArtifactRead(attachments.acquire)
@@ -128,7 +129,7 @@ async def provide_host_services(
 
     await root.context.provide(
         HOST_INFO,
-        HostInfo(boot_id=boot_id, validation=False),
+        HostInfo(boot_id=boot_id, validation=False, ready=host_ready or (lambda: True)),
     )
     custody = input_custody
     await root.context.provide(

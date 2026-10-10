@@ -5,7 +5,7 @@ from agent.plugin_composition.channels import CHANNELS
 
 import logging
 import os
-from collections.abc import Iterable
+from collections.abc import Callable, Iterable
 from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING
@@ -119,6 +119,7 @@ def build_core_runtime(
     *,
     clear_stale_session_admissions: bool = False,
     plugin_dirs: Iterable[Path] | None = None,
+    host_ready: Callable[[], bool] | None = None,
 ) -> CoreRuntime:
     """从已迁移消息库装配窄 owner；构造失败关闭此前取得的连接。"""
     from contextlib import ExitStack
@@ -180,6 +181,7 @@ def build_core_runtime(
             ignored_installed_roots=distribution.ignored_installed_roots,
             restart_gate=restart_gate,
             control_frames=control_frames,
+            host_ready=host_ready,
         )
         async def recover_input(raw):
             root = manager.live_root

@@ -7,7 +7,7 @@ from dataclasses import dataclass
 from typing import Any, cast
 from uuid import uuid4
 
-from agent.plugin_composition import CompositionRoot, FiberState, ServiceKey
+from agent.plugin_composition import Context, FiberState, ServiceKey
 from agent.plugin_contracts.reply import (
     REPLY_STATUS as REPLY_STATUS,
 )
@@ -91,14 +91,12 @@ class _StatusChannel:
 class RuntimeReplyStatus:
     """Subscribe to the live Root without retaining a provider call."""
 
-    def __init__(self, root: CompositionRoot):
-        if not isinstance(root, CompositionRoot):
-            raise TypeError("RuntimeReplyStatus 需要 CompositionRoot")
-        self._root = root
+    def __init__(self, context: Context):
+        self._context = context
 
     async def follow(self, session_id: str) -> AsyncGenerator[dict[str, object], None]:
         """Follow one optional provider Fiber until the Root or caller closes."""
-        root = self._root
+        context = self._context
         channel = _StatusChannel()
         subscriber = None
         root_effect = None
@@ -117,10 +115,7 @@ class RuntimeReplyStatus:
             """Start the Fiber-owned pump for one frozen provider activation."""
             try:
                 reader = context.require(REPLY_STATUS)
-                provider = context._fiber.dependency_store[  # pyright: ignore[reportPrivateUsage]
-                    cast(ServiceKey[Any], REPLY_STATUS)
-                ]
-                snapshot_id = f"{root.generation_id}:{provider.revision}"
+                snapshot_id = f"{context.generation_id}:{context.dependency_revision(REPLY_STATUS)}"
 
                 async def pump() -> None:
                     boundary_sent = False
@@ -162,11 +157,11 @@ class RuntimeReplyStatus:
                 raise
 
         try:
-            root_effect = await root.context.effect(
+            root_effect = await context.effect(
                 lambda: channel.close,
                 label=f"reply-status-root-close:{subscription_id}",
             )
-            subscriber = await root.context.inject(
+            subscriber = await context.inject(
                 (cast(ServiceKey[Any], REPLY_STATUS),),
                 apply,
                 name=f"reply-status:{subscription_id}",

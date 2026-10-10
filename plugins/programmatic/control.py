@@ -16,7 +16,7 @@ from agent.plugin_composition.messages import (
     MessageReader,
     SessionAttributes,
 )
-from agent.plugin_composition.rpc import RequestTransport, RpcMethod
+from plugins.gateway.contract import RequestTransport, RpcMethod
 from agent.plugin_contracts import ContentPart, Input
 from agent.plugin_contracts.delivery import (
     FinalOutputTurn as FinalOutputTurn,

@@ -4,16 +4,16 @@ import asyncio
 import logging
 import secrets
 from collections.abc import AsyncGenerator, Awaitable, Callable, Mapping
-from contextlib import AbstractAsyncContextManager, aclosing
+from contextlib import AbstractAsyncContextManager, aclosing, nullcontext
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import cast
 from types import MappingProxyType
 from uuid import uuid4
 
-from agent.control.protocol.errors import JsonRpcError, UNAUTHORIZED
-from agent.control.protocol.models import InitializeParams, MessageSendParams
-from agent.control.protocol.method import RpcMethod
+from .protocol.errors import JsonRpcError, UNAUTHORIZED
+from .protocol.models import InitializeParams, MessageSendParams
+from .contract import RpcMethod
 from agent.plugin_composition.channels import ChannelInboundMessage
 from agent.plugin_composition.message_view import (
     MessageDisplayReader,
@@ -21,9 +21,9 @@ from agent.plugin_composition.message_view import (
     read_message_rows,
     session_row,
 )
-from session.artifacts import AttachmentRef
-from session.log import MessageCatalog
-from session.message import Message
+from agent.plugin_composition import AttachmentRef
+from agent.plugin_composition.messages import MessageCatalog
+from agent.plugin_contracts import Message
 from agent.plugin_composition.control_frames import FrameBook
 
 logger = logging.getLogger(__name__)
@@ -51,6 +51,7 @@ class ControlService:
         methods: Mapping[str, RpcMethod] | None = None,
         resolve_method: Callable[[str], AbstractAsyncContextManager[RpcMethod | None]] | None = None,
         control_frames: FrameBook | None = None,
+        request_scope: Callable[[], AbstractAsyncContextManager[None]] = nullcontext,
     ) -> None:
         self._message_display = message_display
         self.messages = messages
@@ -72,6 +73,7 @@ class ControlService:
         self.control_frames = FrameBook() if control_frames is None else control_frames
         self.methods = MappingProxyType(dict(methods or {}))
         self.resolve_method = resolve_method
+        self.request_scope = request_scope
 
     def initialize(self, params: InitializeParams) -> dict[str, object]:
         if self._workspace_token is not None and not secrets.compare_digest(

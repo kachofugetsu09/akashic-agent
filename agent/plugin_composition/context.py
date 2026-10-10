@@ -444,6 +444,11 @@ class Context:
             )
         return value
 
+    def dependency_revision(self, key: ServiceKey[Any]) -> int:
+        """读取本 activation 已声明依赖的固定发布版本。"""
+        self.require(key)
+        return self._fiber.dependency_store[key].revision
+
     async def effect(self, setup: EffectSetup, *, label: str = "effect") -> Effect:
         reject_executor_context_access()
         self._require_current()

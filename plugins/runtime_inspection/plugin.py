@@ -5,7 +5,7 @@ from typing import TypeVar
 
 from agent.plugin_composition import Context
 from agent.plugin_composition.model import ServiceKey
-from agent.plugin_composition.rpc import rpc_method_key
+from plugins.gateway.contract import RpcMethod
 from plugins.runtime_inspection.contract import DOCUMENTS
 from .rpc import rpc_methods
 
@@ -55,7 +55,7 @@ async def apply(ctx: Context) -> None:
     provider = RuntimeInspectionProvider(ctx)
     _ = await ctx.provide(DOCUMENTS, provider)
     for name, operation in rpc_methods(provider).items():
-        _ = await ctx.provide(rpc_method_key(name), operation)
+        _ = await ctx.provide(RpcMethod.key(name), operation)
     await _bind_optional(
         ctx,
         provider,

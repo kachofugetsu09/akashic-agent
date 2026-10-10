@@ -280,7 +280,6 @@ def _prepare_startup_migrations(
         "init",
         "supervise",
         "gateway",
-        "app-server",
     }:
         return None
     if command in {"", "supervise"} and (not config_path.exists() or not workspace.exists()):
@@ -686,16 +685,6 @@ if __name__ == "__main__":
 
     if args and args[0] == "gateway":
         sys.exit(asyncio.run(serve(config_path, workspace)))
-
-    if args and args[0] == "app-server":
-        if "--stdio" not in args:
-            print("app-server 当前必须指定 --stdio", file=sys.stderr)
-            sys.exit(2)
-        from bootstrap.app_server import run_stdio_app_server
-
-        config = Config.load(config_path, workspace=workspace)
-        asyncio.run(run_stdio_app_server(config, workspace))
-        sys.exit(0)
 
     if args and not args[0].startswith("--") and args[0] != "gateway":
         command_args = list(args[1:])
