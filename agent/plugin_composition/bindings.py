@@ -165,7 +165,13 @@ class Bindings:
     ) -> Mapping[str, object]:
         """读取并校验 binding descriptor 的共同结构。"""
         descriptor = self._log.read_binding(identity)
-        if descriptor["version"] not in {1, 2} or descriptor["service"] != service.name:
+        if descriptor["version"] not in {1, 2}:
+            raise ValueError("binding 版本或服务不匹配")
+        # 旧 Commands 选择属于不可变事实；只解释存储表示，不改 hash 或注册旧 key。
+        stored_service = descriptor["service"]
+        if stored_service == "core.commands":
+            stored_service = "commands.v1"
+        if stored_service != service.name:
             raise ValueError("binding 版本或服务不匹配")
         metadata = descriptor["metadata"]
         if not isinstance(metadata, Mapping):
