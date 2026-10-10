@@ -6,14 +6,15 @@ from contextlib import contextmanager
 import json
 from pathlib import Path
 
-from agent.host_bridge.factory import build_shell_process_manager, build_requirements_checker
-from agent.plugin_composition.shell_runtime import resolve_shell
-from agent.plugin_composition.shell_runtime import ResolvedShell
-from plugins.host_execution.contract import RequirementsChecker
+from .bridge.factory import build_shell_process_manager, build_requirements_checker
+from .shell_runtime import resolve_shell
+from plugins.host_execution.contract import ResolvedShell, RequirementsChecker
 from plugins.host_execution.contract import (
     PROCESSES,
 )
-from agent.process_runtime import ExecutionCleanupReport, ExecutionResult, ShellProcessManagerProtocol
+from plugins.host_execution.contract import (
+    ExecutionCleanupReport, ExecutionResult, ShellProcessManagerProtocol
+)
 from agent.plugin_composition.context import Context
 
 

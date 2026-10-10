@@ -21,13 +21,13 @@ import uvicorn
 ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT))
 
-from agent.host_bridge import client as bridge_client, filesystem
+from plugins.host_execution.bridge import client as bridge_client, filesystem
 from plugins.host_execution import monitor
-from agent.host_bridge import transport
-from agent.host_bridge import host_bridge_pb2 as pb
-from agent.host_bridge.factory import HostBridgeRpcError
-from agent.host_bridge.client import HostBridgeShellProcessManager
-from agent.host_bridge.server import HostBridgeService
+from plugins.host_execution.bridge import transport
+from plugins.host_execution.bridge import host_bridge_pb2 as pb
+from plugins.host_execution.bridge.factory import HostBridgeRpcError
+from plugins.host_execution.bridge.client import HostBridgeShellProcessManager
+from plugins.host_execution.bridge.server import HostBridgeService
 from bootstrap.app import _run_primary_tasks
 from fastapi import FastAPI
 from bootstrap.web_shell import create_web_shell_app
@@ -425,7 +425,7 @@ async def run() -> None:
                 ("levelname", "name", "message", "process"),
                 rename_fields={"levelname": "level", "name": "logger", "process": "pid", "exc_info": "exception"},
             ))
-            rpc_logger = logging.getLogger("agent.host_bridge.server")
+            rpc_logger = logging.getLogger("plugins.host_execution.bridge.server")
             rpc_logger.addHandler(handler)
             try:
                 with diagnostic_context(session="diagnostic-session", turn="diagnostic-turn"):

@@ -23,9 +23,9 @@ def commit(path: Path) -> None:
 
 async def run(base: Path) -> dict[str, bool]:
     """真实协议探测只操作本场景的 boot 和 Unix socket。"""
-    from agent.host_bridge.server import HostBridgeService
-    from agent.host_bridge.transport import Server as BridgeServer
-    from agent.host_bridge.boot import claim_host_bridge_boot
+    from plugins.host_execution.bridge.server import HostBridgeService
+    from plugins.host_execution.bridge.transport import Server as BridgeServer
+    from plugins.host_execution.bridge.boot import claim_host_bridge_boot
     from agent.plugin_composition import ServiceKey
     from agent.plugins.install import install_git_plugin
     from agent.plugins.manager import PluginManager

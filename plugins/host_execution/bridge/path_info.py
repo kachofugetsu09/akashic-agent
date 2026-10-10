@@ -2,6 +2,10 @@
 
 from __future__ import annotations
 
+from plugins.host_execution.contract import (
+    AgentsChain, AgentsChainFailure, AgentsChainFile, DirectoryEntry, PathInfo, PathStatus
+)
+
 import heapq
 import json
 import os
@@ -9,8 +13,8 @@ from pathlib import Path
 import stat
 from typing import Literal, cast
 from pydantic import BaseModel, ConfigDict
-from agent.host_bridge.factory import HostBridgeRpcError
-from agent.host_bridge.factory import build_file_bridge
+from .factory import HostBridgeRpcError
+from .factory import build_file_bridge
 
 from core.common.file_io import run_file_io
 
@@ -215,54 +219,6 @@ def _agents_chain(current: Path, max_bytes: int) -> dict[str, object]:
             files.append({"path": entry["path"], "text": entry["text"], "bytes": entry["bytes"]})
             break
     return {"root": str(root), "files": files, "failure": None}
-
-
-PathStatus = Literal[
-    "available", "not_found", "not_directory", "permission_denied",
-    "not_file", "too_large", "invalid_text", "io_error", "offline",
-]
-
-
-class DirectoryEntry(BaseModel):
-    model_config = ConfigDict(extra="forbid", strict=True)
-    name: str
-    path: str
-
-
-class AgentsChainFile(BaseModel):
-    model_config = ConfigDict(extra="forbid", strict=True)
-    path: str
-    text: str
-    bytes: int
-
-
-class AgentsChainFailure(BaseModel):
-    model_config = ConfigDict(extra="forbid", strict=True)
-    kind: Literal["probe", "read", "budget"]
-    path: str | None = None
-    status: str | None = None
-    error: str | None = None
-
-
-class AgentsChain(BaseModel):
-    model_config = ConfigDict(extra="forbid", strict=True)
-    root: str | None = None
-    files: list[AgentsChainFile]
-    failure: AgentsChainFailure | None = None
-
-
-class PathInfo(BaseModel):
-    model_config = ConfigDict(extra="forbid", strict=True)
-    path: str
-    status: PathStatus
-    kind: Literal["file", "directory", "other"] | None = None
-    error: str | None = None
-    text: str | None = None
-    bytes: int | None = None
-    items: list[DirectoryEntry] | None = None
-    after: str | None = None
-    parent: str | None = None
-    chain: AgentsChain | None = None
 
 
 class PathAccess:

@@ -19,7 +19,7 @@ from agent.plugin_composition.channels import CHANNEL_INPUT_V2 as CHANNEL_INPUT,
 from agent.plugin_contracts import CallRef, ContentPart, ContentReferences, Control, Input, Message, Output, ToolCall, ToolResult, json_value
 from plugins.models.contract import CONTENT_VIEWS, MODEL_CALLS, RenderedContent
 from plugins.tools.contract import CallSource
-from agent.host_bridge.filesystem import ListDirOperation
+from plugins.host_execution.bridge.filesystem import ListDirOperation
 from agent.plugins.manager import PluginManager
 from infra.channels.artifacts import ChannelAttachmentArtifactStore
 from plugins.content_view.plugin import ReadContent, check_read, prepare_view

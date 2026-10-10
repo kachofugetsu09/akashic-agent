@@ -4,7 +4,7 @@ import asyncio
 import pytest
 
 from agent.plugin_composition import CompositionRoot
-from agent.process_runtime import ShellProcessManager
+from plugins.host_execution.process_runtime import ShellProcessManager
 
 
 @pytest.mark.asyncio

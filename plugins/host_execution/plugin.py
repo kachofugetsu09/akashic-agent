@@ -11,10 +11,11 @@ from agent.plugin_composition.host import HOST_INFO
 from core.common.file_io import run_file_io
 from infra.persistence.json_store import load_json, atomic_save_json
 from plugins.host_execution.contract import HOST_STATUS, WORKLOAD_CONTROLLER, PROCESSES, FILES
-from agent.host_bridge.factory import HostBridgeRpcError, build_file_bridge
+from .bridge.factory import HostBridgeRpcError, build_file_bridge
 from plugins.ui.contract import UI
 from .processes import PluginProcesses
 from .files import Files
+from .bridge.boot import claim_host_bridge_boot
 from .monitor import HostBridgeStatus, _monitor
 from . import dashboard
 from .controller_access import ControllerAccess, cleanup_workloads_for_boot
@@ -25,11 +26,14 @@ name = "host_execution"
 version = "1.0.0"
 desc = "拥有宿主进程与容器控制，代码 owner 与 generation 授权仍属内核"
 inject = (EXECUTION, HOST_INFO,)
-entrypoints = {"workload-controller": "controller.main"}
+entrypoints = {"workload-controller": "controller.main", "bridge-doctor": "bridge.doctor.main",
+               "host-bridge": "bridge.server.main"}
 
 
 async def apply(ctx: Context) -> None:
     """先核对旧候选清理回执，再发布实际 Context 的控制授权。"""
+    if not ctx.require(HOST_INFO).validation:
+        await claim_host_bridge_boot()
     await ctx.provide(FILES, Files())
     processes = PluginProcesses(formal=not ctx.require(HOST_INFO).validation)
     await ctx.effect(lambda: processes.close, label="host.processes")

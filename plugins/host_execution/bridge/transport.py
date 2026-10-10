@@ -14,7 +14,7 @@ import grpc
 from google.protobuf.message import DecodeError, Message
 from google.protobuf.message_factory import GetMessageClass
 
-from agent.host_bridge import host_bridge_pb2 as pb
+from . import host_bridge_pb2 as pb
 
 _HEADER = struct.Struct("!IBBQ")
 _HELLO, _REQUEST, _REPLY, _CANCEL = range(4)

@@ -1,5 +1,9 @@
 from __future__ import annotations
 
+from plugins.host_execution.contract import (
+    RequirementsAvailability
+)
+
 import asyncio
 import contextlib
 import logging
@@ -11,9 +15,9 @@ from typing import Any
 import grpc
 from google.protobuf.message import Message
 
-from agent.host_bridge import host_bridge_pb2 as pb
-from agent.host_bridge import transport
-from agent.host_bridge.protocol import (
+from . import host_bridge_pb2 as pb
+from . import transport
+from .protocol import (
     EXECUTION_ENV_NAMES,
     decode_cleanup,
     decode_execution,
@@ -24,20 +28,14 @@ from agent.host_bridge.protocol import (
     require_text,
 )
 from agent.tool_catalog import ToolResult
-from agent.process_runtime import ExecutionCleanupReport, ExecutionResult
-from agent.host_bridge.factory import HostBridgeRpcError
+from plugins.host_execution.contract import (
+    ExecutionCleanupReport, ExecutionResult
+)
+from .factory import HostBridgeRpcError
 from core.common.diagnostic_log import current_diagnostic_context
 
 _HEARTBEAT_INTERVAL_S = 2.0
 logger = logging.getLogger(__name__)
-
-
-@dataclass(frozen=True)
-class RequirementsAvailability:
-    available_bins: tuple[str, ...]
-    missing_bins: tuple[str, ...]
-    available_env: tuple[str, ...]
-    missing_env: tuple[str, ...]
 
 
 class HostBridgeRequirementsChecker:

@@ -18,7 +18,7 @@ from unittest.mock import patch
 ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT))
 
-from agent.host_bridge.client import HostBridgeShellProcessManager
+from plugins.host_execution.bridge.client import HostBridgeShellProcessManager
 from plugins.host_execution.monitor import HostBridgeStatus, _monitor
 from agent.plugin_composition.bindings import BINDINGS
 from agent.plugin_composition.channels import CHANNEL_INPUT_V2 as CHANNEL_INPUT, ChannelInboundMessage
@@ -150,7 +150,7 @@ async def run(base: Path, *, files: int, always: bool, max_lag: float) -> None:
     digest = "b" * 64
     bridge_log = (base / "bridge.log").open("w")
     bridge = await asyncio.create_subprocess_exec(
-        sys.executable, "-m", "agent.host_bridge.server", "--socket", str(socket),
+        sys.executable, "-m", "plugins.host_execution.bridge.server", "--socket", str(socket),
         "--token-file", str(token), "--lease-timeout", "60", "--artifact-root", str(base / "bridge-artifacts"),
         "--release-commit", commit, "--toolchain-digest", digest,
         "--runtime-checkout", str(ROOT), "--bridge-python", sys.executable,

@@ -31,15 +31,15 @@ def summarize(samples: list[float]) -> dict[str, float | int]:
 async def measure(args: argparse.Namespace, root: Path) -> dict[str, Any]:
     """在指定源码和一次性目录内测量真实进程、UDS 和清理。"""
     sys.path.insert(0, str(args.source))
-    client = importlib.import_module("agent.host_bridge.client")
-    unified = importlib.import_module("agent.process_runtime")
+    client = importlib.import_module("plugins.host_execution.bridge.client")
+    unified = importlib.import_module("plugins.host_execution.process_runtime")
     grpc = importlib.import_module("grpc")
     commit = subprocess.check_output(
         ["git", "-C", str(args.source), "rev-parse", "HEAD"], text=True
     ).strip()
     source_hash = hashlib.sha256()
-    sources = sorted((args.source / "agent/host_bridge").glob("*.py")) + [
-        args.source / "agent/process_runtime.py",
+    sources = sorted((args.source / "plugins/host_execution/bridge").glob("*.py")) + [
+        args.source / "plugins/host_execution/process_runtime.py",
     ]
     for source in sources:
         source_hash.update(str(source.relative_to(args.source)).encode())
@@ -80,7 +80,7 @@ async def measure(args: argparse.Namespace, root: Path) -> dict[str, Any]:
                     "-m", "cProfile", "-o", str(args.profile_server),
                 ]),
                 "-m",
-                "agent.host_bridge.server",
+                "plugins.host_execution.bridge.server",
                 "--socket",
                 str(socket),
                 "--token-file",
@@ -102,7 +102,7 @@ async def measure(args: argparse.Namespace, root: Path) -> dict[str, Any]:
                 stdout=log,
                 stderr=log,
             )
-            if (args.source / "agent/host_bridge/transport.py").exists():
+            if (args.source / "plugins/host_execution/bridge/transport.py").exists():
                 async with asyncio.timeout(15):
                     while not socket.exists():
                         if bridge.returncode is not None:
@@ -240,10 +240,10 @@ async def measure(args: argparse.Namespace, root: Path) -> dict[str, Any]:
 def measure_codec(args: argparse.Namespace) -> dict[str, Any]:
     """分别调用两版真实响应适配器，测独立编码往返和载荷字节数。"""
     sys.path.insert(0, str(args.source))
-    protocol = importlib.import_module("agent.host_bridge.protocol")
-    client = importlib.import_module("agent.host_bridge.client")
-    server = importlib.import_module("agent.host_bridge.server")
-    unified = importlib.import_module("agent.process_runtime")
+    protocol = importlib.import_module("plugins.host_execution.bridge.protocol")
+    client = importlib.import_module("plugins.host_execution.bridge.client")
+    server = importlib.import_module("plugins.host_execution.bridge.server")
+    unified = importlib.import_module("plugins.host_execution.process_runtime")
     results = []
     for size in args.sizes:
         raw = (bytes(range(256)) * ((size + 255) // 256))[:size]
@@ -264,7 +264,7 @@ def measure_codec(args: argparse.Namespace) -> dict[str, Any]:
                 return wire, decoded
 
         else:
-            pb = importlib.import_module("agent.host_bridge.host_bridge_pb2")
+            pb = importlib.import_module("plugins.host_execution.bridge.host_bridge_pb2")
 
             def roundtrip():
                 wire = protocol.encode_execution(result).SerializeToString()

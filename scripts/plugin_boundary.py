@@ -58,8 +58,6 @@ PLUGIN_ROOT = "plugins"
 # 与评审出处见 docs/design/plugin-boundary-foundation.md §9.37。
 PLUGIN_ALLOWED_MODULES = frozenset({
     "core.error_context",
-    "agent.host_bridge.filesystem",
-    "agent.host_bridge.factory",
     "agent.media",
     # Migration callbacks receive this source-neutral execution context from
     # the host; it is not a business implementation or plugin-name exception.
@@ -90,11 +88,9 @@ PLUGIN_ALLOWED_MODULES = frozenset({
     "agent.plugin_composition.plugin_config",
     "agent.plugin_contracts.configuration",
     "agent.plugin_composition.plugin_updates",
-    "agent.process_runtime",
     "agent.plugin_composition.requests",
     "agent.plugin_composition.runtime_catalog",
     "agent.plugin_composition.runtime_lifecycle",
-    "agent.plugin_composition.shell_runtime",
     "agent.plugin_composition.tasks",
     "agent.tool_catalog",
     "agent.plugin_contracts",

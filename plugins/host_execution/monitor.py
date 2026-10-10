@@ -6,7 +6,7 @@ import logging
 from dataclasses import asdict, dataclass
 from datetime import UTC, datetime
 from typing import Literal, Protocol
-from agent.host_bridge.factory import HostBridgeRpcError
+from .bridge.factory import HostBridgeRpcError
 from core.common.diagnostic_log import log_event
 from agent.plugin_composition.context import HealthHandle
 

@@ -11,6 +11,7 @@ from collections.abc import Collection
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
+from agent.plugin_composition.execution import process_group_exists
 
 
 _RUNTIME_IDENTITY_ENV = ("AKASHIC_BOOT_ID", "AKASHIC_SUPERVISED")
@@ -149,63 +150,3 @@ async def _wait_posix_group_exit(group_id: int, timeout_s: float) -> bool:
             return False
         await asyncio.sleep(min(0.05, remaining))
     return True
-
-
-def process_group_exists(group_id: int) -> bool:
-    """只在进程组仍有活成员时返回 True。"""
-
-    if sys.platform.startswith("linux"):
-        return _linux_group_has_live_members(group_id)
-    if sys.platform == "darwin":
-        return _darwin_group_has_live_members(group_id)
-    try:
-        os.killpg(group_id, 0)
-    except ProcessLookupError:
-        return False
-    except PermissionError:
-        return True
-    return True
-
-
-def _darwin_group_has_live_members(group_id: int) -> bool:
-    """Darwin 的 killpg(0) 也会命中 zombie，需检查 stat。"""
-
-    try:
-        result = subprocess.run(
-            ["ps", "-axo", "pgid=,stat="],
-            check=True,
-            capture_output=True,
-            text=True,
-        )
-    except (OSError, subprocess.SubprocessError):
-        return False
-    for line in result.stdout.splitlines():
-        fields = line.split()
-        if (
-            len(fields) >= 2
-            and fields[0].isdigit()
-            and int(fields[0]) == group_id
-            and not fields[1].startswith("Z")
-        ):
-            return True
-    return False
-
-
-def _linux_group_has_live_members(group_id: int) -> bool:
-    """将只剩 zombie 的组视为已释放，避免容器 PID 1 延迟回收误报。"""
-    for entry in Path("/proc").iterdir():
-        if not entry.name.isdigit():
-            continue
-        try:
-            stat = (entry / "stat").read_text()
-        except OSError:
-            continue
-        command_end = stat.rfind(")")
-        if command_end < 0:
-            continue
-        fields = stat[command_end + 2 :].split()
-        if len(fields) < 3 or int(fields[2]) != group_id:
-            continue
-        if fields[0] != "Z":
-            return True
-    return False

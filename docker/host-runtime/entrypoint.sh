@@ -27,7 +27,9 @@ mkdir -p "${AKASHIC_PLUGIN_HOME:?AKASHIC_PLUGIN_HOME is required}"
 if [[ "${AKASHIC_EXECUTION_MODE:-local}" == "host-bridge" ]]; then
     : "${AKASHIC_HOST_BRIDGE_SOCKET:?AKASHIC_HOST_BRIDGE_SOCKET is required}"
     : "${AKASHIC_HOST_BRIDGE_TOKEN:?AKASHIC_HOST_BRIDGE_TOKEN is required}"
-    /opt/venv/bin/python -m agent.host_bridge.doctor \
+    /opt/venv/bin/python -m agent.plugins.entrypoints \
+        --distribution "${AKASHIC_PLUGIN_DISTRIBUTION:?AKASHIC_PLUGIN_DISTRIBUTION is required}" \
+        --workspace "$WORKSPACE" --config "$CONFIG" bridge-doctor \
         --socket "$AKASHIC_HOST_BRIDGE_SOCKET" \
         --token "$AKASHIC_HOST_BRIDGE_TOKEN" \
         --expected-release-commit "$AKASHIC_RUNTIME_COMMIT" \

@@ -10,7 +10,6 @@ from typing import Any, Awaitable, Callable
 
 from bootstrap.web_shell import WebShellServer
 
-from agent.host_bridge.boot import claim_host_bridge_boot
 from agent.restart import RestartGate
 from agent.config_models import Config
 from bootstrap.cleanup import run_cleanup_steps
@@ -174,9 +173,6 @@ class AppRuntime:
         if self.readiness is not None:
             self.readiness.mark_stage("workspace.locked")
         try:
-            claim = await claim_host_bridge_boot()
-            if claim is not None and self.readiness is not None:
-                self.readiness.mark_stage("host_bridge.owner")
             configure_default_shared_http_resources(self.http_resources)
             self.core = build_core_runtime(
                 self.config,

@@ -26,7 +26,7 @@ def page(text: str) -> tuple[list[str], str | None]:
 async def run(args: argparse.Namespace) -> dict:
     """调用真实文件工具及 Bridge，只写本次创建的临时目录。"""
     sys.path.insert(0, str(args.source))
-    from agent.host_bridge import filesystem
+    from plugins.host_execution.bridge import filesystem
     from agent.tool_catalog import ToolResult
 
     report = {"source": str(args.source), "checks": []}
@@ -151,10 +151,10 @@ async def run(args: argparse.Namespace) -> dict:
 
         # 4. 真实 Protobuf UDS、认证与 manager admission，不替换 RPC 或业务 handler。
         import grpc
-        from agent.host_bridge import transport
-        from agent.host_bridge.factory import HostBridgeRpcError
-        from agent.host_bridge.client import HostBridgeShellProcessManager
-        from agent.host_bridge.server import HostBridgeService
+        from plugins.host_execution.bridge import transport
+        from plugins.host_execution.bridge.factory import HostBridgeRpcError
+        from plugins.host_execution.bridge.client import HostBridgeShellProcessManager
+        from plugins.host_execution.bridge.server import HostBridgeService
 
         class ReplyLossService(HostBridgeService):
             """完成真实目录读取后只丢一次 RPC 响应，不替换目录业务。"""

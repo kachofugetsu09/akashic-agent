@@ -6,10 +6,12 @@ from typing import TYPE_CHECKING
 from pathlib import Path
 
 if TYPE_CHECKING:
-    from agent.host_bridge.client import HostBridgeShellProcessManager, HostBridgeRequirementsChecker
-from agent.process_runtime import (
-    ShellProcessManager,
-    ShellProcessManagerProtocol,
+    from .client import HostBridgeShellProcessManager, HostBridgeRequirementsChecker
+from plugins.host_execution.contract import (
+    ShellProcessManagerProtocol
+)
+from ..process_runtime import (
+    ShellProcessManager
 )
 
 class HostBridgeRpcError(RuntimeError):
@@ -49,7 +51,7 @@ def build_shell_process_manager() -> ShellProcessManagerProtocol:
         raise RuntimeError(f"{_MODE_ENV} 只能是 local 或 host-bridge")
     socket_path, boot_id, token, release_commit, toolchain_digest = _bridge_identity()
     # 客户端消费本边界的错误类型；构造时导入避免双向模块初始化。
-    from agent.host_bridge.client import HostBridgeShellProcessManager
+    from .client import HostBridgeShellProcessManager
     return HostBridgeShellProcessManager(
         socket_path,
         boot_id,
@@ -82,7 +84,7 @@ def _bridge_identity() -> tuple[Path, str, str, str, str]:
 def build_file_bridge() -> HostBridgeShellProcessManager | None:
     """Build a file RPC client only in explicit host-bridge mode."""
 
-    from agent.host_bridge.client import HostBridgeShellProcessManager
+    from .client import HostBridgeShellProcessManager
     manager = build_shell_process_manager()
     if isinstance(manager, HostBridgeShellProcessManager):
         return manager
@@ -98,7 +100,7 @@ def build_requirements_checker() -> HostBridgeRequirementsChecker | None:
     if mode != "host-bridge":
         raise RuntimeError(f"{_MODE_ENV} 只能是 local 或 host-bridge")
     socket_path, boot_id, token, release_commit, toolchain_digest = _bridge_identity()
-    from agent.host_bridge.client import HostBridgeRequirementsChecker
+    from .client import HostBridgeRequirementsChecker
     return HostBridgeRequirementsChecker(
         socket_path, boot_id, token, release_commit, toolchain_digest
     )

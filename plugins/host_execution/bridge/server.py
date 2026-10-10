@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import sys
 import hashlib
 import hmac
 import logging
@@ -23,9 +24,9 @@ from google.protobuf.message import Message
 
 import grpc
 
-from agent.host_bridge import host_bridge_pb2 as pb
-from agent.host_bridge import transport
-from agent.host_bridge.protocol import (
+from . import host_bridge_pb2 as pb
+from . import transport
+from .protocol import (
     EXECUTION_ENV_NAMES,
     encode_execution,
     encode_cleanup,
@@ -36,12 +37,16 @@ from agent.host_bridge.protocol import (
     require_nonnegative,
     require_names,
 )
-from agent.process_runtime import ExecutionCleanupReport
-from agent.process_runtime import ExecutionResult
-from agent.process_runtime import ShellProcessManager
+from plugins.host_execution.contract import (
+    ExecutionCleanupReport
+)
+from plugins.host_execution.contract import (
+    ExecutionResult
+)
+from ..process_runtime import ShellProcessManager
 from agent.tool_catalog import ToolResult
-from agent.host_bridge.path_info import PathInfoOperation
-from agent.host_bridge.filesystem import (
+from .path_info import PathInfoOperation
+from .filesystem import (
     EditFileOperation,
     ListDirOperation,
     ReadFileOperation,
@@ -808,7 +813,7 @@ def _materialize_runtime_cli(
     return launcher
 
 
-def main() -> None:
+async def main(arguments: tuple[str, ...], *, workspace: Path, config_path: Path) -> int:
     configure_logging()
     parser = argparse.ArgumentParser(description="Run the Akashic Host Bridge")
     parser.add_argument("--socket", type=Path, required=True)
@@ -819,21 +824,20 @@ def main() -> None:
     parser.add_argument("--toolchain-digest", required=True)
     parser.add_argument("--runtime-checkout", type=Path, required=True)
     parser.add_argument("--bridge-python", type=Path, required=True)
-    args = parser.parse_args()
+    args = parser.parse_args(arguments)
     token = args.token_file.read_text(encoding="utf-8").strip()
-    asyncio.run(
-        serve(
-            args.socket.resolve(),
-            token,
-            args.lease_timeout,
-            args.artifact_root.resolve(),
-            args.release_commit,
-            args.toolchain_digest,
-            args.runtime_checkout.resolve(),
-            args.bridge_python.absolute(),
-        )
+    await serve(
+        args.socket.resolve(),
+        token,
+        args.lease_timeout,
+        args.artifact_root.resolve(),
+        args.release_commit,
+        args.toolchain_digest,
+        args.runtime_checkout.resolve(),
+        args.bridge_python.absolute(),
     )
+    return 0
 
 
 if __name__ == "__main__":
-    main()
+    raise SystemExit(asyncio.run(main(tuple(sys.argv[1:]), workspace=Path.cwd(), config_path=Path("config.toml"))))
