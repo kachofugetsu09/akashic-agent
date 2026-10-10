@@ -31,10 +31,14 @@ class PluginInstallPort(ConfigHost, Protocol):
     async def install(self, *, source: str, marketplace: str, ref_name: str, sparse_paths: list[str], update_id: str) -> UpdateStatus: ...
     def read_update(self, update_id: str) -> UpdateStatus: ...
     def watch_updates(self) -> AsyncGenerator[None]: ...
+    def plugin_status(self) -> dict[str, object]: ...
+    async def uninstall(self, plugin_id: str) -> dict[str, object]: ...
+    async def reconcile_disabled_and_drain(self, plugin_id: str) -> None: ...
+    async def wait_idle(self) -> None: ...
 
 
 class PluginUpdates:
-    """Expose only install, read, and change notifications."""
+    """插件管理端口；选择提交与资源排空仍由宿主拥有。"""
 
     def __init__(self, host: PluginInstallPort | None):
         self._host = host
@@ -69,6 +73,22 @@ class PluginUpdates:
         status = self.read(ctx, update_id)
         assert status is not None
         return status
+
+    def status(self, ctx: Context) -> dict[str, object]:
+        """读取宿主选择、generation 与当前操作，不返回 Manager 或 Root。"""
+        return self._check(ctx).plugin_status()
+
+    async def uninstall(self, ctx: Context, plugin_id: str) -> dict[str, object]:
+        """等待选择移除的 accepted；宿主继续拥有物理清理。"""
+        return await self._check(ctx).uninstall(plugin_id)
+
+    async def drain(self, ctx: Context, plugin_id: str) -> None:
+        """排空用户已停用的插件；此调用不替用户修改启停决定。"""
+        await self._check(ctx).reconcile_disabled_and_drain(plugin_id)
+
+    async def wait_idle(self, ctx: Context) -> None:
+        """等待当前宿主操作退出；不取消操作，也不提交新选择。"""
+        await self._check(ctx).wait_idle()
 
     async def changes(self, ctx: Context) -> AsyncGenerator[None]:
         """通知只唤醒读取，不保存队列或持有等待发布必须排空的租约。"""
