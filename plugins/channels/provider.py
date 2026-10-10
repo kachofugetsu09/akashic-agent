@@ -34,6 +34,8 @@ from plugins.channels.contract import (
     ChannelCapability,
     ChannelCleanupFailure,
     ChannelDefinition,
+    ChannelInboundMessage,
+    JsonValue,
     ChannelDeliveryReceipt,
     ChannelFactoryContext,
     ChannelPresentationPorts,
@@ -83,6 +85,35 @@ class _ChannelStopReceiptFailure(RuntimeError):
         super().__init__("channel adapter.stop 报告资源未完整关闭")
         self.receipt = receipt
         self.failures = failures
+
+
+@dataclass(slots=True)
+class _InboundEnvelope:
+    message_id: str
+    session_key: str
+    message: ChannelInboundMessage
+    lease: ChannelBindingLease
+    closed: bool = False
+
+    @property
+    def metadata(self) -> Mapping[str, JsonValue]:
+        return self.message.metadata
+
+    async def close(self) -> None:
+        """原 lease 完成释放后才发布关闭状态，保留调用方取消。"""
+        if self.closed:
+            return
+        task = asyncio.create_task(self.lease.aclose())
+        cancelled = False
+        while not task.done():
+            try:
+                await asyncio.shield(task)
+            except asyncio.CancelledError:
+                cancelled = True
+        task.result()
+        self.closed = True
+        if cancelled:
+            raise asyncio.CancelledError
 
 
 @dataclass
@@ -1610,12 +1641,9 @@ class PluginChannels:
                     if identity_task.done() and not identity_task.cancelled():
                         identity_receipt = identity_task.result()
                     raise
-            envelope = InboundEnvelope(
+            envelope = _InboundEnvelope(
                 message_id=raw.message_id,
                 session_key=session_key,
-                snapshot_id=binding.snapshot_id,
-                generation_id=binding.generation_id,
-                binding_token=binding.binding_token,
                 message=raw.message,
                 lease=binding,
             )

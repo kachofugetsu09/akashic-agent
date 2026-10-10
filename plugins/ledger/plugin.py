@@ -20,7 +20,7 @@ from .embedding_store import MessageEmbeddings
 from .identities import ChannelIdentities, ChannelIdentityWriteReceipt
 from .inbound_store import InboundHandoffStore
 from .log import MessageCatalog, MessageLog
-from .queue import MessageBus
+from .custody import InboundCustody
 from .services import MessageWriters, OwnerState, SessionAdmin, SessionAdmission
 
 api_version = 3
@@ -48,9 +48,7 @@ async def apply(ctx: Context) -> None:
         inbounds = InboundHandoffStore(path)
         cleanup.callback(inbounds.close)
         admissions.clear_stale()
-        bus = MessageBus()
-        bus.bind_session_admission_owner(admissions)
-        bus.bind_durable_inbound_store(inbounds)
+        custody = InboundCustody(inbounds, admissions)
         attachments = ChannelAttachmentArtifactStore(
             workspace=ctx.runtime.workspace, metadata_store=metadata,
         )
@@ -58,7 +56,7 @@ async def apply(ctx: Context) -> None:
 
     async def close() -> None:
         # 队列持有的租约先收束；失败时保留连接以供原 Effect 重试。
-        await bus.aclose()
+        await custody.aclose()
         stores.close()
 
     await ctx.effect(lambda: close, label="ledger.storage")
@@ -76,10 +74,10 @@ async def apply(ctx: Context) -> None:
     await ctx.provide(CHANNEL_ATTACHMENT_IMPORT, ChannelAttachmentImport(attachments.import_bytes))
     await ctx.provide(CHANNEL_ATTACHMENT_READ, ChannelAttachmentRead(attachments.resolve_refs, attachments.acquire))
     await ctx.provide(INPUT_CUSTODY, InputCustody(
-        bus.prepare_channel_input, bus.complete_channel_input, bus.retain_channel_input,
-        bus.reserve_durable_inbound, bus.defer_durable_inbound, bus.settle_rejected_inbound,
-        bus.has_pending_durable_inbound, bus.pending_durable_attachment_refs,
-        bus.recover_durable_inbounds,
+        custody.prepare_channel_input, custody.complete_channel_input, custody.retain_channel_input,
+        custody.reserve_durable_inbound, custody.defer_durable_inbound, custody.settle_rejected_inbound,
+        custody.has_pending_durable_inbound, custody.pending_durable_attachment_refs,
+        custody.recover_durable_inbounds,
     ))
     await ctx.provide(MESSAGE_CATALOG, MessageCatalog(log))
     await ctx.provide(MESSAGE_EMBEDDINGS, MessageEmbeddings(log))

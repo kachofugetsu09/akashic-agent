@@ -938,14 +938,8 @@ class MessageLog:
 class MessageCatalog:
     """只读会话目录；一次 heads 快照固定跨会话消费的消息上界。"""
 
-    def __init__(self, log: MessageLog | None):
-        self._storage = log
-
-    @property
-    def _log(self) -> MessageLog:
-        if self._storage is None:
-            raise RuntimeError("candidate 验证期禁止读取正式会话目录")
-        return self._storage
+    def __init__(self, log: MessageLog):
+        self._log = log
 
     def snapshot_heads(
         self, *, prefix: str = "", visibility: Literal["listed", "internal"] | None = None,
