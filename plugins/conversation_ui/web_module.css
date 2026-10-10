@@ -1,4 +1,6 @@
 .conversation-page {
+  /* 标签栏高度的唯一 owner：标签栏与下方内容区高度都从这里取。 */
+  --conversation-tools-bar-height: 42px;
   --conversation-tools-width: 42vw;
   position: relative;
   display: grid;
@@ -73,7 +75,7 @@
 
 .conversation-tools-bar {
   display: flex;
-  height: 42px;
+  height: var(--conversation-tools-bar-height);
   min-width: 0;
   align-items: stretch;
   gap: 2px;
@@ -100,7 +102,7 @@
 
 .conversation-tools-tab {
   flex: 0 0 auto;
-  min-height: 42px;
+  min-height: var(--conversation-tools-bar-height);
   padding-inline: 10px;
   border-block-end: 2px solid transparent;
   font-size: 0.8125rem;
@@ -155,7 +157,7 @@
 
 .conversation-tools-content,
 .conversation-tool-panel {
-  height: calc(100% - 42px);
+  height: calc(100% - var(--conversation-tools-bar-height));
   min-height: 0;
 }
 
@@ -211,6 +213,25 @@
     overflow: hidden;
     clip-path: inset(50%);
     white-space: nowrap;
+  }
+}
+
+/* 触控输入下开关、关闭与标签的可点区域不小于 44px；指针输入保持紧凑尺寸。 */
+@media (pointer: coarse) {
+  .conversation-tools-toggle {
+    min-width: 44px;
+    min-height: 44px;
+    justify-content: center;
+  }
+
+  .conversation-tools-close {
+    flex-basis: 44px;
+    width: 44px;
+    height: 44px;
+  }
+
+  .conversation-page {
+    --conversation-tools-bar-height: 48px;
   }
 }
 
