@@ -6,7 +6,7 @@
 规则
 ----
 R1  Core 不得 import `plugins.*`，历史迁移也计入精确欠账。
-R2  插件导入 Core 只能使用冻结的公开模块清单；目录不自动授予公开资格。
+R2  插件导入 Core 只能使用冻结的公开模块与包入口的显式公开符号。
 R3  只允许兄弟插件的 contract.py；实现不可跨插件或绕过 generation 导入。
 R4  Core 文件中的字面 ServiceKey 必须在 `plugin_boundary.toml` 登记角色；
     表中登记的 key 也必须真实存在。
@@ -185,6 +185,16 @@ def collect_imports(files: list[str], sources: dict[str, str] | None = None) -> 
 
     imports: list[Import] = []
     known_files = set(files)
+    # 1. 包入口只接受显式公开的名字，防止已删除的符号穿过模块级检查。
+    public_root = "agent.plugin_composition"
+    root_path = "agent/plugin_composition/__init__.py"
+    root_source = (REPO_ROOT / root_path).read_text(encoding="utf-8") if sources is None else sources[root_path]
+    root_tree = ast.parse(root_source, filename=root_path)
+    root_exports = frozenset(ast.literal_eval(next(
+        node.value for node in root_tree.body if isinstance(node, ast.Assign)
+        and any(isinstance(target, ast.Name) and target.id == "__all__" for target in node.targets)
+    )))
+    # 2. 非公开名字拆成限定路径，交给既有 R2 和精确欠账检查。
     for rel in files:
         path = REPO_ROOT / rel
         try:
@@ -211,6 +221,7 @@ def collect_imports(files: list[str], sources: dict[str, str] | None = None) -> 
                         target = f"{resolved}.{alias.name}"
                         if alias.name != "*" and (
                             resolved in roots
+                            or (resolved == public_root and alias.name not in root_exports)
                             or (target.replace(".", "/") + ".py") in known_files
                             or (target.replace(".", "/") + "/__init__.py") in known_files
                         ):
