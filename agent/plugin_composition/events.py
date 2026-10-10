@@ -353,7 +353,7 @@ class EventRegistry:
                     key.name,
                 )
                 try:
-                    with listener.context._call_scope():
+                    with listener.context.call_scope():
                         if operation is None:
                             result = listener.callback(payload)
                         else:
@@ -579,7 +579,7 @@ def _listener_boundary(
         operation=f"event.{mode}",
         entrypoint=event_name,
     )
-    with listener.context._call_scope(), boundary:
+    with listener.context.call_scope(), boundary:
         yield
 
 

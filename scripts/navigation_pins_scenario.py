@@ -185,7 +185,8 @@ async def composition(root_path: Path):
     from agent.plugin_composition import CompositionRoot, PluginRuntime, CHANNELS
     from plugins.ui.contract import UI_SLOTS
     from agent.plugin_composition.channels import ChannelFactoryContext
-    from agent.plugin_composition.messages import MESSAGE_CATALOG, OWNER_STATE, SESSION_ADMISSION, OwnerState, SessionAdmission
+    from session.services import OwnerState, SessionAdmission
+    from agent.plugin_composition.messages import MESSAGE_CATALOG, OWNER_STATE, SESSION_ADMISSION
     from plugins.ui.contract import PLUGIN_UI
     from plugins.ui.queries import LivePluginUiProvider
     from plugins.akashic_clients import plugin

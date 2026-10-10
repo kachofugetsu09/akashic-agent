@@ -28,7 +28,7 @@ sys.path.insert(0, str(args.source))
 from yoyo import get_backend, read_migrations
 
 from agent.migrations.context import bind_migration_context
-from agent.plugin_composition.messages import SessionAdmin
+from session.services import SessionAdmin
 from plugins.akashic_clients.chat_api import create_chat_app
 from plugins.akashic_clients.navigation import NavigationPreferences, PinReference
 from plugins.akashic_clients.web_chat import WebChatChannel
