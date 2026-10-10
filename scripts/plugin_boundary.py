@@ -102,7 +102,6 @@ PLUGIN_ALLOWED_MODULES = frozenset({
     "agent.tool_catalog",
     "agent.plugin_composition.ui",
     "agent.plugin_composition.ui_slots",
-    "agent.plugin_composition.workload_slots",
     "agent.plugin_contracts",
     "agent.plugin_contracts.ui",
     "agent.plugin_contracts.content",

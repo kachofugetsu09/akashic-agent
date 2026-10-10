@@ -63,4 +63,4 @@ class Workloads(Protocol):
     def urls(self, ctx: Context) -> Mapping[tuple[str, str], str]: ...
 
 
-WORKLOADS = ServiceKey[Workloads]("core.workloads")
+WORKLOADS = ServiceKey[Workloads]("workloads.v1")

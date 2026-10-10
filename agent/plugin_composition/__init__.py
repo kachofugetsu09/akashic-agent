@@ -112,15 +112,6 @@ from agent.plugin_composition.models import (
     UsageCoverage,
 )
 
-from agent.plugin_composition.workload_slots import (
-    WORKLOADS,
-    Workloads,
-    Workload,
-    WorkloadData,
-    WorkloadHealth,
-    WorkloadLimits,
-    WorkloadPort,
-)
 from agent.plugin_composition.channels import (
     CHANNELS,
     ChannelAdapter,
@@ -291,14 +282,7 @@ __all__ = [
     "OwnerCall",
     "SourceMutationFence",
     "JsonValue",
-    "WORKLOADS",
     "EMBEDDING_MEMORY_PLUGIN",
-    "Workloads",
-    "Workload",
-    "WorkloadData",
-    "WorkloadHealth",
-    "WorkloadLimits",
-    "WorkloadPort",
     "PluginUiBinding",
     "PluginUiDefinition",
     "PluginUiDescriptor",

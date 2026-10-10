@@ -8,7 +8,7 @@ from pathlib import PurePosixPath
 from urllib.parse import urlsplit
 from agent.plugin_composition.context import FiberHandle, HealthHandle
 from agent.plugin_composition.model import IncidentView
-from agent.plugin_composition.workload_slots import Workload, WorkloadPort, WorkloadData, WorkloadHealth, WorkloadLimits
+from plugins.workloads.contract import Workload, WorkloadPort, WorkloadData, WorkloadHealth, WorkloadLimits
 
 _NAME = re.compile(r"^[a-z][a-z0-9_-]{0,63}$")
 _IMAGE = re.compile(r"^[^\s@]+@sha256:[0-9a-f]{64}$")
