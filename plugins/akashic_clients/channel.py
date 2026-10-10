@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from agent.plugin_composition.models import ModelError
 from agent.plugin_composition.models import MODEL_CALL_STATS, ModelCallStats, ModelUnavailableError
 from agent.plugin_composition.model_settings_http import ModelControlUnavailable
 
@@ -371,8 +372,9 @@ class _GenerationAkashicAdapter:
             selection = scope.require(MODEL_SELECTION).read_saved(metadata)
             try:
                 return scope.require(MODEL_CATALOG).validate_chat_selection(selection)
-            except ModelUnavailableError:
-                # 现有但不可用的选择仍交给 UI 标明原因；执行入口继续拒绝它。
+            except (RuntimeError, TimeoutError) as _model_error:
+                if not (ModelError.matches(_model_error, ModelUnavailableError)):
+                    raise
                 return selection
 
     def attach_runtime(self, ports: ChannelRuntimePorts) -> None:

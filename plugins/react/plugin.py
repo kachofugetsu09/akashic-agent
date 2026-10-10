@@ -423,7 +423,9 @@ async def _complete(
         message_id, request_key, callback = begin()
         try:
             response = await generate(request, request_key, callback)
-        except ContextLengthError as error:
+        except (RuntimeError, TimeoutError) as error:
+            if not (ModelError.matches(error, ContextLengthError)):
+                raise
             previews.close()
             # 强制缩减重试每代至多一次，且只适用于可证明的容量拒绝——
             # send_evidence="rejected" 是 provider HTTP 拒绝应答的正面证据；

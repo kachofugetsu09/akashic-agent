@@ -30,7 +30,7 @@ from plugins.models.state import _BoundChat
 from plugins.models.store import ModelsStore
 from plugins.openai_compatible import driver
 from core.common.file_io import run_file_io
-from agent.plugin_composition import InvalidRequestError, ModelUnavailableError
+from agent.plugin_composition import InvalidRequestError, ModelUnavailableError, ModelError
 from agent.plugin_composition.models import DriverChatModel, LLMResponse
 from agent.plugin_composition import (
     CHAT_MODELS,
@@ -222,7 +222,9 @@ async def cancellation_checks(directory, server, descriptor, physical):
             # 取消等待不抹掉真实成功；同 key 复用或拒绝，均不再 POST。
             try:
                 replayed = await bound.complete(request)
-            except ModelUnavailableError:
+            except (RuntimeError, TimeoutError) as _model_error:
+                if not (ModelError.matches(_model_error, ModelUnavailableError)):
+                    raise
                 assert expected == 'error'
             else:
                 assert expected == 'success' and replayed.content == 'local-result'
@@ -369,11 +371,12 @@ async def cross_store_checks(directory, server, descriptor, physical):
             if kind == 'success':
                 assert (await second).content == 'local-result'
             else:
-                expected = ValueError if kind in ['digest', 'binding'] else ModelUnavailableError
+                expected = ValueError if kind in ['digest', 'binding'] else RuntimeError
                 try:
                     await second
-                except expected:
-                    pass
+                except expected as error:
+                    if kind not in ['digest', 'binding']:
+                        assert ModelError.matches(error, ModelUnavailableError)
                 else:
                     raise AssertionError('过时准入不应再次调用 provider')
             finish.set()
@@ -474,8 +477,8 @@ async def queued_settlement_check(directory, server, descriptor, physical: Drive
             settlement = failures
             if phase == 'failure':
                 provider_error, settlement_error = failures.exceptions
-                assert isinstance(provider_error, InvalidRequestError)
-                assert provider_error.send_evidence == 'rejected'
+                assert ModelError.matches(provider_error, InvalidRequestError)
+                assert (failure := ModelError.read(provider_error)) is not None and failure.send_evidence == 'rejected'
                 assert 'fixture provider rejection' in str(provider_error)
                 if not reject:
                     assert isinstance(settlement_error, asyncio.CancelledError)
@@ -501,7 +504,9 @@ async def queued_settlement_check(directory, server, descriptor, physical: Drive
                 assert record['failure'] == ('CancelledError' if phase == 'begin' else None)
             try:
                 replayed = await bound.complete(request)
-            except ModelUnavailableError:
+            except (RuntimeError, TimeoutError) as _model_error:
+                if not (ModelError.matches(_model_error, ModelUnavailableError)):
+                    raise
                 assert expected == 'error'
             else:
                 assert expected == 'success' and replayed.content == 'local-result'

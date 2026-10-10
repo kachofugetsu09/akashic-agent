@@ -416,8 +416,9 @@ class _BoundChat:
                         failure="CancelledError", send_evidence="unsent",
                     ), cancelled)
                 raise
-            except ModelUnavailableError:
-                # 写事务发现读取后已完成的调用时，只回放原成功，不新开 attempt。
+            except (RuntimeError, TimeoutError) as _model_error:
+                if not (ModelError.matches(_model_error, ModelUnavailableError)):
+                    raise
                 replayed, _ = await self._scan(request_key, digest, budget=budget)
                 if replayed is not None:
                     return replayed
@@ -476,17 +477,22 @@ class _BoundChat:
                     # 3. 失败先结算发送事实、usage 和下次允许时间，再决定是否继续。
                     # 模型生成与本地工具效果分开：暂时故障允许重发生成，
                     # 保留真实发送证据和未知 usage，不声称第一次请求没有计费。
-                    partial_response = first_token or bool(getattr(failure, "response_delta_seen", False))
-                    evidence = getattr(failure, "send_evidence", None)
-                    retryable = isinstance(failure, ModelError) and not callback_failed and bool(
-                        failure.retryable or getattr(failure, "retry_safe", False)
+                    original_failure = failure
+                    model_failure = ModelError.read(failure)
+                    partial_response = first_token or (
+                        model_failure.response_delta_seen if model_failure is not None
+                        else bool(getattr(failure, "response_delta_seen", False))
+                    )
+                    evidence = None if model_failure is None else model_failure.send_evidence
+                    retryable = model_failure is not None and not callback_failed and (
+                        model_failure.retryable or model_failure.retry_safe
                     )
                     retry_at = None
                     stop_reason = ""
-                    if retryable and (budget is None or len(records) + 1 < budget):
+                    if model_failure is not None and retryable and (budget is None or len(records) + 1 < budget):
                         # Retry-After 优先于本地退避，且随失败记录耐久保存。
-                        allowed_at = getattr(failure, "retry_at", None)
-                        hint = getattr(failure, "retry_after", None)
+                        allowed_at = model_failure.retry_at
+                        hint = model_failure.retry_after
                         now = time.time()
                         if allowed_at is not None:
                             candidate = float(allowed_at)
@@ -505,16 +511,16 @@ class _BoundChat:
                     ):
                         # 取消结束当前 Task；下一次仍须由来源授权，才能恢复原模型步。
                         retry_at = time.time()
-                    if isinstance(failure, ModelError):
-                        failure.args = (
+                    if model_failure is not None:
+                        failure = ModelError.change(failure, message=(
                             f"模型 {descriptor.model} 调用失败：{failure}\n"
-                            f"已尝试 {len(records) + 1}{limit} 次。{stop_reason}",
-                        )
+                            f"已尝试 {len(records) + 1}{limit} 次。{stop_reason}"
+                        ))
                     try:
                         await self._finish_call(partial(self._store.finish_call,
                             call_id, usage=None if response is None else response.usage, failure=(
-                                f"{type(failure).__name__}: {failure}"
-                                if isinstance(failure, ModelError) else type(failure).__name__
+                                f"{type(model_failure).__name__}: {failure}"
+                                if model_failure is not None else type(failure).__name__
                             ),
                             duration_ms=None if started is None else (monotonic_ns() - started) / 1_000_000,
                             next_attempt_at=retry_at,
@@ -530,14 +536,16 @@ class _BoundChat:
                             f"模型请求失败且回执结算被取消。原请求错误：{failure}", [failure, record_failure]
                         ) from None
                     except Exception as record_failure:
-                        if isinstance(failure, ModelError):
-                            failure.args = (
+                        if model_failure is not None:
+                            failure = ModelError.change(failure, message=(
                                 f"{failure}\n调用回执保存失败（{type(record_failure).__name__}），"
-                                "自动重试已停止。请检查服务日志。",
-                            )
+                                "自动重试已停止。请检查服务日志。"
+                            ))
                         raise failure from record_failure
                     if retry_at is None:
-                        raise
+                        if failure is original_failure:
+                            raise
+                        raise failure from original_failure
                     continue
                 assert response is not None
                 await self._finish_call(partial(self._store.finish_call,

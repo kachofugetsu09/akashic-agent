@@ -4,6 +4,7 @@
 """
 from __future__ import annotations
 
+from agent.plugin_composition.models import ModelError
 import asyncio
 import sqlite3
 import tempfile
@@ -188,7 +189,9 @@ async def scenario(workspace: Path) -> None:
                 await remove("extra")
                 try:
                     await models.settings.apply(RemoveModel(old_revision, CHAT))
-                except RevisionConflictError:
+                except (RuntimeError, TimeoutError) as _model_error:
+                    if not (ModelError.matches(_model_error, RevisionConflictError)):
+                        raise
                     pass
                 else:
                     raise AssertionError("stale delete was accepted")
@@ -226,7 +229,9 @@ async def scenario(workspace: Path) -> None:
             try:
                 async with models.chat_models.execution(model_id="extra"):
                     raise AssertionError("execution without any selected chat model was accepted")
-            except ModelUnavailableError:
+            except (RuntimeError, TimeoutError) as _model_error:
+                if not (ModelError.matches(_model_error, ModelUnavailableError)):
+                    raise
                 pass
             print("PASS removed session preference uses default; deleted default selects a remaining model; empty selection fails clearly")
 
@@ -236,7 +241,9 @@ async def scenario(workspace: Path) -> None:
             assert snapshot().default_embedding_model_id is None
             try:
                 models.embeddings.describe(model_id=descriptor.model_id)
-            except ModelUnavailableError:
+            except (RuntimeError, TimeoutError) as _model_error:
+                if not (ModelError.matches(_model_error, ModelUnavailableError)):
+                    raise
                 pass
             else:
                 raise AssertionError("removed embedding identity silently rebound")

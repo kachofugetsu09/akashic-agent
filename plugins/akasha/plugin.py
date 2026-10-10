@@ -1,6 +1,7 @@
 """从消息学习；模型未配置时保持可见的记忆不可用状态。"""
 from __future__ import annotations
 
+from agent.plugin_composition.models import ModelError
 import asyncio
 import json
 import logging
@@ -352,7 +353,9 @@ async def run(ctx: Context, interest: Interest) -> None:
                 selected.embedding_model, selected.dimension,
             ) for selected in selected_rules):
                 raise EmbeddingSpaceMismatchError("默认 embedding 空间已变化，需显式重建 Akasha")
-        except (ModelUnavailableError, DriverUnavailableError, EmbeddingSpaceMismatchError) as error:
+        except (RuntimeError, TimeoutError, EmbeddingSpaceMismatchError) as error:
+            if not (ModelError.matches(error, ModelUnavailableError, DriverUnavailableError) or isinstance(error, EmbeddingSpaceMismatchError)):
+                raise
             health.degrade(str(error))
             raise
         except ValueError as error:
@@ -389,7 +392,9 @@ async def run(ctx: Context, interest: Interest) -> None:
     def readiness() -> str | None:
         try:
             ctx.require(EMBEDDINGS).describe()
-        except (ModelUnavailableError, DriverUnavailableError) as error:
+        except (RuntimeError, TimeoutError) as error:
+            if not (ModelError.matches(error, ModelUnavailableError, DriverUnavailableError)):
+                raise
             return str(error)
         return None
     def attach_interest():
@@ -426,13 +431,17 @@ async def run(ctx: Context, interest: Interest) -> None:
                 except (EmbeddingSpaceMismatchError, MemoryRebuildRequiredError) as error:
                     set_graph_error(key, str(error))
                     return unavailable(key)
-                except (ModelUnavailableError, DriverUnavailableError) as error:
+                except (RuntimeError, TimeoutError) as error:
+                    if not (ModelError.matches(error, ModelUnavailableError, DriverUnavailableError)):
+                        raise
                     health.degrade(str(error))
                     return unavailable(key)
         # 归档和显式程序只查询已发布图的副本，不取得正式学习 writer。
         try:
             identity, rule, model_id = select_learning()
-        except (ModelUnavailableError, DriverUnavailableError, EmbeddingSpaceMismatchError):
+        except (RuntimeError, TimeoutError, EmbeddingSpaceMismatchError) as _model_error:
+            if not (ModelError.matches(_model_error, ModelUnavailableError, DriverUnavailableError) or isinstance(_model_error, EmbeddingSpaceMismatchError)):
+                raise
             return unavailable(key)
         bindings = ctx.require(BINDINGS)
         query_records = records()
@@ -454,7 +463,9 @@ async def run(ctx: Context, interest: Interest) -> None:
         except (EmbeddingSpaceMismatchError, MemoryRebuildRequiredError) as error:
             set_graph_error(key, str(error))
             return unavailable(key)
-        except (ModelUnavailableError, DriverUnavailableError) as error:
+        except (RuntimeError, TimeoutError) as error:
+            if not (ModelError.matches(error, ModelUnavailableError, DriverUnavailableError)):
+                raise
             health.degrade(str(error))
             return unavailable(key)
         set_graph_error(key, None)
@@ -494,7 +505,9 @@ async def run(ctx: Context, interest: Interest) -> None:
             raise ValueError("召回工具没有额外 binding 配置")
         try:
             identity = ctx.require(EMBEDDINGS).save_binding(ctx.require(BINDINGS))
-        except (ModelUnavailableError, DriverUnavailableError) as error:
+        except (RuntimeError, TimeoutError) as error:
+            if not (ModelError.matches(error, ModelUnavailableError, DriverUnavailableError)):
+                raise
             return RecallBinding(embedding_binding=None, unavailable=str(error)).model_dump()
         return RecallBinding(embedding_binding=identity, unavailable=None).model_dump()
 
@@ -543,7 +556,9 @@ async def run(ctx: Context, interest: Interest) -> None:
         # 1. 未配置或空间变化只停用记忆；其他数据损坏仍明确失败。
         try:
             identity, rule, model_id = select_learning()
-        except (ModelUnavailableError, DriverUnavailableError, EmbeddingSpaceMismatchError):
+        except (RuntimeError, TimeoutError, EmbeddingSpaceMismatchError) as _model_error:
+            if not (ModelError.matches(_model_error, ModelUnavailableError, DriverUnavailableError) or isinstance(_model_error, EmbeddingSpaceMismatchError)):
+                raise
             return False
         if key in memories:
             return key not in graph_errors
@@ -568,16 +583,14 @@ async def run(ctx: Context, interest: Interest) -> None:
             # 2. 新选择必须与已有图一致；失败先归还 writer，绝不自动重建。
             try:
                 await prepared.consume()
-            except (EmbeddingSpaceMismatchError, MemoryRebuildRequiredError) as error:
+            except BaseException as error:
                 await prepared.close()
-                set_graph_error(key, str(error))
-                return False
-            except (ModelUnavailableError, DriverUnavailableError) as error:
-                await prepared.close()
-                health.degrade(str(error))
-                return False
-            except BaseException:
-                await prepared.close()
+                if isinstance(error, (EmbeddingSpaceMismatchError, MemoryRebuildRequiredError)):
+                    set_graph_error(key, str(error))
+                    return False
+                if ModelError.matches(error, ModelUnavailableError, DriverUnavailableError):
+                    health.degrade(str(error))
+                    return False
                 raise
             memories[key], memory_rule = prepared, rule
             set_graph_error(key, None)
@@ -658,12 +671,11 @@ async def run(ctx: Context, interest: Interest) -> None:
             _note_replay({"phase": "rebuilding", "pending": [str(path) for path in pending]})
             detail = await rebuild_now()
             _note_replay({"phase": "completed", "detail": detail})
-        except (ModelUnavailableError, DriverUnavailableError, EmbeddingSpaceMismatchError) as error:
-            # 缺模型不阻塞启动：请求保留，下一次真实输入或重启再试。
-            _note_replay({"phase": "degraded", "reason": str(error)})
-            health.degrade(f"待执行的 Akasha 重放需要可用 embedding 空间: {error}")
-            return
         except BaseException as error:
+            if ModelError.matches(error, ModelUnavailableError, DriverUnavailableError) or isinstance(error, EmbeddingSpaceMismatchError):
+                _note_replay({"phase": "degraded", "reason": str(error)})
+                health.degrade(f"待执行的 Akasha 重放需要可用 embedding 空间: {error}")
+                return
             _note_replay({"phase": "failed", "error": f"{type(error).__name__}: {error}"})
             raise
         for path in pending:
@@ -687,7 +699,9 @@ async def run(ctx: Context, interest: Interest) -> None:
                         _ = await memories[key].consume()
                     except (EmbeddingSpaceMismatchError, MemoryRebuildRequiredError) as error:
                         set_graph_error(key, str(error))
-                    except (ModelUnavailableError, DriverUnavailableError) as error:
+                    except (RuntimeError, TimeoutError) as error:
+                        if not (ModelError.matches(error, ModelUnavailableError, DriverUnavailableError)):
+                            raise
                         health.degrade(str(error))
 
         async with asyncio.TaskGroup() as group:

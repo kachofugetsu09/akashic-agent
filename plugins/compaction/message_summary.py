@@ -1,6 +1,7 @@
 """只摘要已结算的完整消息前缀；原始事实和 provider 调用账保持各自的 owner。"""
 from __future__ import annotations
 
+from agent.plugin_composition.models import ModelError
 import json
 import logging
 from dataclasses import replace
@@ -183,7 +184,9 @@ async def summarize(groups: tuple[tuple[Message, ...], ...], *, previous: str,
     """主模型在本层可恢复的生成失败后，使用本次作用域已固定的 DEFAULT。"""
     try:
         return await _summarize(model, groups, previous)
-    except (SummaryError, ContextLengthError, ModelTimeoutError, RateLimitError, TransportError) as failure:
+    except (RuntimeError, TimeoutError, SummaryError) as failure:
+        if not (ModelError.matches(failure, ContextLengthError, ModelTimeoutError, RateLimitError, TransportError) or isinstance(failure, SummaryError)):
+            raise
         if fallback.descriptor.binding_id == model.descriptor.binding_id:
             raise
         logger.warning("摘要模型 %s 失败，改用已固定的 DEFAULT %s: %s",

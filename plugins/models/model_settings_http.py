@@ -58,9 +58,9 @@ from .settings import (
 )
 from .selection import MODEL_SELECTION
 
-# ModelError already covers the concrete provider and revision errors below.
+# 模型失败值由标准异常承载；未知程序错误由映射入口原样抛出。
 # Only discover/command accept an HTTPException as an RPC error envelope.
-_MODEL_ERRORS = (ModelControlUnavailable, ModelError, ValueError)
+_MODEL_ERRORS = (ModelControlUnavailable, RuntimeError, TimeoutError, ValueError)
 _HTTP_MODEL_ERRORS = (HTTPException, *_MODEL_ERRORS)
 
 
@@ -352,23 +352,23 @@ def _http_error(error: Exception, *, operation: str) -> HTTPException:
         return error
     if operation == "call_stats" and isinstance(error, KeyError):
         return HTTPException(status_code=404, detail="模型调用不存在")
-    if isinstance(error, RevisionConflictError):
+    if ModelError.matches(error, RevisionConflictError):
         return HTTPException(status_code=409, detail=str(error))
-    if isinstance(error, AuthenticationError):
+    if ModelError.matches(error, AuthenticationError):
         return HTTPException(status_code=401, detail=str(error))
-    if isinstance(error, RateLimitError):
+    if ModelError.matches(error, RateLimitError):
         return HTTPException(status_code=429, detail=str(error))
-    if isinstance(error, QuotaError):
+    if ModelError.matches(error, QuotaError):
         return HTTPException(status_code=402, detail=str(error))
-    if isinstance(error, (ModelControlUnavailable, DriverUnavailableError)):
+    if (ModelError.matches(error, DriverUnavailableError) or isinstance(error, ModelControlUnavailable)):
         return HTTPException(status_code=503, detail=str(error))
-    if isinstance(error, ModelUnavailableError):
+    if ModelError.matches(error, ModelUnavailableError):
         return HTTPException(status_code=409, detail=str(error))
-    if isinstance(error, ModelTimeoutError):
+    if ModelError.matches(error, ModelTimeoutError):
         return HTTPException(status_code=504, detail=str(error))
-    if isinstance(error, TransportError):
+    if ModelError.matches(error, TransportError):
         return HTTPException(status_code=502, detail=str(error))
-    if isinstance(error, (ModelError, ValueError)):
+    if (ModelError.matches(error) or isinstance(error, ValueError)):
         return HTTPException(status_code=422, detail=str(error))
     raise error
 

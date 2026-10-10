@@ -160,8 +160,10 @@ class _Chat:
         try:
             body = _body(request, self.descriptor)
             headers = await _headers(self.credential)
-        except ModelError as error:
-            error.send_evidence = "unsent"
+        except (RuntimeError, TimeoutError) as error:
+            if not (ModelError.matches(error)):
+                raise
+            error = ModelError.change(error, send_evidence="unsent")
             raise
         model = quote(self.descriptor.model.removeprefix('models/'), safe='/')
         parts: list[dict[str, Any]] = []
@@ -201,12 +203,14 @@ class _Chat:
                     if event or finish is None:
                         raise TransportError("Gemini SSE 未完整结束")
             return _answer(parts, finish, usage)
-        except ModelError as error:
-            error.response_delta_seen = bool(parts)
+        except (RuntimeError, TimeoutError) as error:
+            if not (ModelError.matches(error)):
+                raise
+            error = ModelError.change(error, response_delta_seen=bool(parts))
             raise
         except (httpx.ConnectError, httpx.ConnectTimeout, httpx.PoolTimeout) as cause:
             error = TransportError(f"Gemini 连接未建立：{type(cause).__name__}")
-            error.send_evidence = "unsent"
+            error = ModelError.change(error, send_evidence="unsent")
             raise error from cause
         except httpx.TimeoutException as cause:
             raise ModelTimeoutError("Gemini 请求超时，远端效果未知") from cause
@@ -330,7 +334,7 @@ def _chunk(data: Mapping[str, Any]) -> tuple[list[dict[str, Any]], str | None, M
     if reason == 'MALFORMED_FUNCTION_CALL':
         # 上游生成失败，不是请求 schema 错误；丢弃整次候选，由 Models 恢复生成。
         error = ModelError(f"Gemini 生成了无法解析的工具调用：{reason}")
-        error.retryable = True
+        error = ModelError.change(error, retryable=True)
         raise error
     if reason == 'UNEXPECTED_TOOL_CALL':
         raise ModelError(f"Gemini 工具协议失败：{reason}")
@@ -403,9 +407,9 @@ def _status(response: httpx.Response) -> None:
         # 不透传可能包含密钥或完整请求的错误正文。
         error = InvalidRequestError(f"Gemini 拒绝请求：HTTP {status}")
     if status < 500:
-        error.send_evidence = "rejected"
-    if error.retryable:
-        error.retry_at = retry_after_time(response.headers.get("retry-after"))
+        error = ModelError.change(error, send_evidence="rejected")
+    if (value := ModelError.read(error)) is not None and value.retryable:
+        error = ModelError.change(error, retry_at=retry_after_time(response.headers.get("retry-after")))
     raise error
 
 

@@ -98,9 +98,9 @@ class CodexResponses:
                     # 的是轮换后的凭据。轮换失败只影响可否调度重试。
                     rotated = await self._rotate_rejected(token)
                     error = AuthenticationError("Codex 请求认证失败，请重新登录")
-                    error.send_evidence = "rejected"
+                    error = ModelError.change(error, send_evidence="rejected")
                     if rotated:
-                        setattr(error, "retry_safe", True)
+                        error = ModelError.change(error, retry_safe=True)
                     raise error
                 _raise_status(response, token)
                 return await _consume_stream(
@@ -111,30 +111,34 @@ class CodexResponses:
             raise
         except _CallbackError as exc:
             raise exc.error from exc
-        except ModelTimeoutError:
-            # parser 已携带进展期限和部分响应事实，不再包装丢失信息。
-            raise
-        except (httpx.TimeoutException, TimeoutError) as exc:
+        except (httpx.TimeoutException, TimeoutError, RuntimeError) as exc:
+            # parser 已携带进展期限和部分响应事实，直接保留；普通超时仍在此转换。
+            if ModelError.matches(exc, ModelTimeoutError):
+                raise
+            if not isinstance(exc, (httpx.TimeoutException, TimeoutError)):
+                raise
             error = ModelTimeoutError(describe_transport_error(exc))
             if isinstance(exc, httpx.ConnectTimeout):
                 # 连接建立失败可证明请求未发出。
-                error.send_evidence = "unsent"
+                error = ModelError.change(error, send_evidence="unsent")
             if getattr(exc, "response_delta_seen", False):
-                setattr(error, "response_delta_seen", True)
+                error = ModelError.change(error, response_delta_seen=True)
             raise error from exc
         except httpx.TransportError as exc:
             error = TransportError(describe_transport_error(exc))
             if isinstance(exc, httpx.ConnectError):
-                error.send_evidence = "unsent"
+                error = ModelError.change(error, send_evidence="unsent")
             if getattr(exc, "response_delta_seen", False):
-                setattr(error, "response_delta_seen", True)
+                error = ModelError.change(error, response_delta_seen=True)
             raise error from exc
 
     async def _rotate_rejected(self, token: str) -> bool:
         """凭据轮换由 auth owner 承担；失败不让本次 401 失去明确拒绝分类。"""
         try:
             await headers(self._credential, rejected_access_token=token)
-        except ModelError:
+        except (RuntimeError, TimeoutError) as _model_error:
+            if not (ModelError.matches(_model_error)):
+                raise
             return False
         return True
 
@@ -329,6 +333,7 @@ async def _consume_stream(
                 _raise_stream_error(error)
     except asyncio.CancelledError as error:
         if delta_seen:
+            # 取消保留 asyncio 的原类型；这里只携带已观察到的流进展。
             setattr(error, "response_delta_seen", True)
         raise
     except _CallbackError:
@@ -336,7 +341,7 @@ async def _consume_stream(
     except TimeoutError as exc:
         error = ModelTimeoutError(f"Codex 模型流超过 {progress_timeout:g} 秒没有有效进展")
         if delta_seen:
-            setattr(error, "response_delta_seen", True)
+            error = ModelError.change(error, response_delta_seen=True)
         raise error from exc
     except Exception as exc:
         if delta_seen:
@@ -345,7 +350,7 @@ async def _consume_stream(
     if not completed:
         error = TransportError("Codex Responses 在 completed 事件前断流")
         if delta_seen:
-            setattr(error, "response_delta_seen", True)
+            error = ModelError.change(error, response_delta_seen=True)
         raise error
     try:
         calls = [_tool_call(item) for item in tool_args.values() if item.get("name")]
@@ -627,9 +632,9 @@ def _optional_int(value: object) -> int | None:
 
 
 
-def _unsent(error: ModelError) -> ModelError:
+def _unsent(error: Exception) -> Exception:
     """发送前本地校验失败：请求可证明未到达 provider，标记为允许重试的证据。"""
-    error.send_evidence = "unsent"
+    error = ModelError.change(error, send_evidence="unsent")
     return error
 
 def _raise_status(response: httpx.Response, secret: str) -> None:
@@ -639,11 +644,11 @@ def _raise_status(response: httpx.Response, secret: str) -> None:
     # 4xx 是对本请求的明确拒绝应答——正面证据。5xx 只说明服务端/网关
     # 未能给出结论，不能证明后端未接收或未处理：不授证据，fail-closed。
     if response.status_code < 500:
-        error.send_evidence = "rejected"
+        error = ModelError.change(error, send_evidence="rejected")
     raise error
 
 
-def _status_error(response: httpx.Response, secret: str) -> ModelError | None:
+def _status_error(response: httpx.Response, secret: str) -> Exception | None:
     if response.status_code < 400:
         return None
     text = response.text.replace(secret, "[REDACTED]") if secret else response.text
@@ -666,7 +671,7 @@ def _status_error(response: httpx.Response, secret: str) -> ModelError | None:
         return QuotaError("Codex 账号额度不足" + detail)
     if response.status_code == 429:
         error = RateLimitError("Codex 请求被限流（HTTP 429）" + detail)
-        error.retry_at = retry_after_time(response.headers.get("retry-after"))
+        error = ModelError.change(error, retry_at=retry_after_time(response.headers.get("retry-after")))
         return error
     if 400 <= response.status_code < 500:
         return InvalidRequestError(f"Codex 请求失败 (HTTP {response.status_code}){detail}")

@@ -73,8 +73,11 @@ async def run(ctx: Context, task: Task, reader: MessageReader, request: Request)
             ),
             prompt_hints=(HINTS[phase.stage],),
         )
-    except ModelError as error:
-        reason = WakeFailure(message=str(error), retryable=error.retryable).model_dump_json()
+    except (RuntimeError, TimeoutError) as error:
+        failure = ModelError.read(error)
+        if failure is None:
+            raise
+        reason = WakeFailure(message=str(error), retryable=failure.retryable).model_dump_json()
     # 此处只结算本层已知的失败；未知工具效果和存储错误保持原事实并向上传播。
     writer = ctx.require(MESSAGE_WRITERS).bind(ctx, author="wake", source="wake", body_types=(Control,), content={})(reader.session_id)
     task.on_close(writer.expire)
