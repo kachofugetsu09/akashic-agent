@@ -21,6 +21,7 @@ from plugins.context.api import check_summary
 from plugins.context.plugin import ContextBuilder
 from plugins.models.content import render_content
 from plugins.models.projection import MessageProjection, check_facts, check_tool_rejection
+from plugins.gemini.driver import _Chat as GeminiChat
 from plugins.models.state import _BoundChat
 from plugins.models.store import ModelsStore
 from plugins.openai_compatible.driver import _BoundChat as PhysicalChat, _ConnectionConfig, _ModelConfig
@@ -30,13 +31,13 @@ from plugins.sources.session import SourceSession
 from plugins.standard_tools.filesystem import WriteFileTool
 from plugins.tools.execution import MessageReply, Result, ToolExecution
 from plugins.tools.menu import ToolCallDecode
-from scripts.check_model_retry import Credential
+from scripts.check_model_retry import Credential, GeminiCredential
 from session.log import MessageLog, SessionAttributes
 
 
-async def run(folder: Path, *, cancel: bool = False) -> dict:
-    """一次输入先写文件，再经历完整工具参数断流与读超时，最后自动给出正文。"""
-    # 1. 真实 HTTP 对端先返回工具，再产生可观察的传输故障。
+async def run(folder: Path, *, cancel: bool = False, gemini: bool = False) -> dict:
+    """一次输入先写文件，再经历生成失败与超时，最后自动给出正文。"""
+    # 1. 真实 HTTP 对端先返回工具，再产生断流或畸形调用及超时。
     plan = deque(['tool', 'timeout', 'final'] if cancel else ['tool', 'broken', 'timeout', 'final'])
     requests, previews, invocations = [], [], []
     held = asyncio.Event()
@@ -63,11 +64,20 @@ async def run(folder: Path, *, cancel: bool = False) -> dict:
             chunks.append({'choices': [{'delta': {'tool_calls': [call]} if kind != 'final' else {'content': 'file verified'}}]})
             if kind != 'broken':
                 chunks.append({'choices': [{'delta': {}, 'finish_reason': 'tool_calls' if kind == 'tool' else 'stop'}]})
+            if gemini:
+                part = {'text': 'file verified'} if kind == 'final' else {'functionCall': {
+                    'name': 'write_file', 'args': {'path': str(folder / 'receipt.txt'), 'content': 'done\n'},
+                    'id': 'write-1'}}
+                chunks = [
+                    {'candidates': [{'content': {'role': 'model', 'parts': [{'text': 'thinking', 'thought': True}]}}]},
+                    {'candidates': [{'content': {'role': 'model', 'parts': [part]}}]},
+                    {'candidates': [{'finishReason': 'MALFORMED_FUNCTION_CALL' if kind == 'broken' else 'STOP'}]},
+                ]
             body = ''.join('data: ' + json.dumps(chunk) + '\n\n' for chunk in chunks)
             if kind != 'broken':
                 body += 'data: [DONE]\n\n'
             data = body.encode()
-            writer.write(f'HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nContent-Length: {len(data) + (100 if kind == "broken" else 0)}\r\nConnection: close\r\n\r\n'.encode() + data)
+            writer.write(f'HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nContent-Length: {len(data) + (100 if kind == "broken" and not gemini else 0)}\r\nConnection: close\r\n\r\n'.encode() + data)
             await writer.drain()
         finally:
             writer.close()
@@ -77,12 +87,15 @@ async def run(folder: Path, *, cancel: bool = False) -> dict:
     server = await asyncio.start_server(serve, '127.0.0.1', 0)
     endpoint = f'http://127.0.0.1:{server.sockets[0].getsockname()[1]}'
     http = HttpClient(lambda: httpx.AsyncClient(base_url=endpoint, trust_env=False, timeout=0.15))
-    descriptor = BoundModelDescriptor('model', 'scenario', 0, 'model', 'connection', 'openai-compatible', '1',
+    descriptor = BoundModelDescriptor('model', 'scenario', 0, 'model', 'connection', 'gemini' if gemini else 'openai-compatible', '1',
         'scenario', 'scenario', 'agent', None, ModelCapabilities(context_window=10000), CapabilitySources(), 'scenario')
     store = ModelsStore(folder / 'models.db', folder / 'backups')
     store.initialize()
-    model = _BoundChat(descriptor, PhysicalChat(_ConnectionConfig(endpoint, 1, 0.15, 0, False),
-        Credential(), descriptor, _ModelConfig(None, 16), http), store, max_attempts=None)
+    native_http = httpx.AsyncClient(base_url=endpoint + '/', trust_env=False, timeout=0.15)
+    physical = (GeminiChat(native_http, GeminiCredential(), descriptor) if gemini else
+        PhysicalChat(_ConnectionConfig(endpoint, 1, 0.15, 0, False),
+                     Credential(), descriptor, _ModelConfig(None, 16), http))
+    model = _BoundChat(descriptor, physical, store, max_attempts=None)
     # 2. 使用真实文件工具、模型调用账与消息日志，目标限制在临时目录。
     log, tasks, status = MessageLog(folder / 'sessions.db'), Tasks(), ReplyState()
     log.ensure_session('scenario', SessionAttributes())
@@ -186,12 +199,20 @@ async def run(folder: Path, *, cancel: bool = False) -> dict:
         assert isinstance(rows[-1].body, Output) and rows[-1].body.finish == 'complete'
         assert 'file verified' in [part.value for part in rows[-1].body.parts if isinstance(part, ContentPart)]
         assert all(request == requests[1] for request in requests[2:]), '模型恢复改变了原冻结请求'
-        assert any(message['role'] == 'tool' for message in requests[1]['messages'])
+        if gemini:
+            assert any('functionResponse' in part for row in requests[1]['contents'] for part in row['parts'])
+            if not cancel:
+                failed = next(call for call in store.read_calls('', 100)
+                              if call['failure'] and 'MALFORMED_FUNCTION_CALL' in call['failure'])
+                assert failed['response'] is None and failed['partial_response']
+                assert failed['send_evidence'] is None and failed['next_attempt_at'] is not None
+        else:
+            assert any(message['role'] == 'tool' for message in requests[1]['messages'])
         if not cancel:
             assert any(preview.retry_status and not preview.text and not preview.thinking for preview in previews)
-        expected_failure = 'CancelledError' if cancel else 'ReadTimeout'
+        expected_failure = 'CancelledError' if cancel else 'ModelTimeoutError' if gemini else 'ReadTimeout'
         assert any(expected_failure in call['failure'] for call in store.read_calls('', 100) if call['failure'])
-        report = {'input_messages': 1, 'http_attempts': len(requests), 'file_effects': len(invocations),
+        report = {'protocol': 'gemini' if gemini else 'openai-compatible', 'input_messages': 1, 'http_attempts': len(requests), 'file_effects': len(invocations),
                   'final_output': 'file verified', 'frozen_request_preserved': True, 'failed_draft_removed': True}
         log.close()
         log = MessageLog(folder / 'sessions.db')
@@ -208,12 +229,13 @@ async def run(folder: Path, *, cancel: bool = False) -> dict:
         store.close()
         await operation.aclose()
         await http.aclose()
+        await native_http.aclose()
 
 
 if __name__ == '__main__':
     with tempfile.TemporaryDirectory(prefix='model-recovery-workflow-') as path:
         folder = Path(path)
-        for cancel in (False, True):
-            target = folder / ('cancel' if cancel else 'automatic')
+        for gemini, cancel in ((False, False), (False, True), (True, False)):
+            target = folder / ('gemini' if gemini else 'cancel' if cancel else 'automatic')
             target.mkdir()
-            print(json.dumps(asyncio.run(run(target, cancel=cancel)), ensure_ascii=False, indent=2))
+            print(json.dumps(asyncio.run(run(target, cancel=cancel, gemini=gemini)), ensure_ascii=False, indent=2))

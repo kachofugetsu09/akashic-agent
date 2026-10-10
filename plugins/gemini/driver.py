@@ -312,7 +312,12 @@ def _chunk(data: Mapping[str, Any]) -> tuple[list[dict[str, Any]], str | None, M
         _string(reason, "finishReason")
     if reason in {'SAFETY', 'RECITATION', 'BLOCKLIST', 'PROHIBITED_CONTENT', 'SPII'}:
         raise ContentSafetyError(f"Gemini 输出被拒绝：{reason}")
-    if reason in {'MALFORMED_FUNCTION_CALL', 'UNEXPECTED_TOOL_CALL'}:
+    if reason == 'MALFORMED_FUNCTION_CALL':
+        # 上游生成失败，不是请求 schema 错误；丢弃整次候选，由 Models 恢复生成。
+        error = ModelError(f"Gemini 生成了无法解析的工具调用：{reason}")
+        error.retryable = True
+        raise error
+    if reason == 'UNEXPECTED_TOOL_CALL':
         raise ModelError(f"Gemini 工具协议失败：{reason}")
     content = _object(candidate.get('content', {}), "content")
     if content.get('role', 'model') != 'model':
