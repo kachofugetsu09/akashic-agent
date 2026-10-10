@@ -185,10 +185,6 @@ note = "公共结构合同；实际状态与生命周期由提供方插件拥有
 role = "core"
 note = "按实际 Context 应用自身固定输入；沿 selection CAS 与局部换代，不解释业务字段"
 
-[capabilities."models.content-views.v1"]
-role = "seam"
-note = "模型内容纯投影贡献；不授予消息写入或执行权"
-
 [capabilities."channel.input.v2"]
 role = "seam"
 note = "Channel 入站入口；由 CHANNELS 的注册者提供"
