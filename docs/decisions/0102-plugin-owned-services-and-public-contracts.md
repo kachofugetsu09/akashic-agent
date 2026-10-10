@@ -22,6 +22,12 @@ UI 查询目录、配额和线程池由 UI 插件的 Effect 拥有；查询只�
 和贡献登记，不读取 Root 内部状态。取消尚未进入子任务时释放捕获许可，已运行
 线程在物理完成后才释放 scope 和名额；插件清理结束后不残留查询线程。
 
+插件在真实监听器就绪后用 `Context.endpoint` 发布协议、地址与路由前缀。
+Root 独占登记，runtime catalog 与 `runtime/endpoints.json` 只读取派生视图；
+Core 不根据业务路径推断 owner。计划文件完整写入并替换成功后才提交内存登记，
+撤下失败保留 Effect 和监听器，成功撤下后按资源取得的逆序关闭监听器。
+该文件不承诺掉电持久或替代外部效果回执，启动从当前选择重建。
+
 持久 binding 中的 service 名属于原选择证据，不能随 key 改名原位改写。
 存储读取边界解释实际存在的旧 Commands service 名，继续打开当前领域 provider；
 这不注册旧运行 key，也不改变 descriptor、hash、binding 身份或原消息。未知版本、

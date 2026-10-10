@@ -37,6 +37,7 @@ from agent.plugin_composition.events import (
     TransformEventKey,
 )
 from agent.plugin_composition.executor import reject_executor_context_access
+from agent.plugin_composition.endpoints import Endpoint, EndpointPublisher
 from agent.plugin_composition.model import (
     CompositionError,
     CompositionReceipt,
@@ -471,6 +472,22 @@ class Context:
 
         _ = await self.effect(setup, label=f"health:{name}")
         return handle
+
+    async def endpoint(
+        self, name: str, *, protocol: str, address: str, routes: tuple[str, ...] = (),
+    ) -> Effect:
+        """发布已就绪的监听器；同一 Effect 先撤下路由，再由插件关闭监听器。"""
+        reject_executor_context_access()
+        self._require_current()
+        runtime = self._fiber.runtime
+        endpoint = Endpoint(name, protocol, address, routes, self._fiber.path,
+                            self.generation_id if runtime is None else runtime.generation_id)
+
+        def setup() -> Callable[[], None]:
+            self._root._register_endpoint(self._fiber, endpoint)
+            return lambda: self._root._remove_endpoint(self._fiber, endpoint)
+
+        return await self.effect(setup, label=f"endpoint:{name}")
 
     def report_incident(self, kind: str, message: str) -> IncidentView:
         """记录一条结构化 Incident，但不隐式改变当前 Health。"""
@@ -1375,6 +1392,8 @@ class CompositionRoot:
     def __init__(
         self,
         generation_id: str,
+        *,
+        endpoint_publisher: EndpointPublisher | None = None,
     ) -> None:
         if not generation_id:
             raise ValueError("generation_id 不能为空")
@@ -1386,6 +1405,10 @@ class CompositionRoot:
         self._fibers: dict[int, Fiber] = {}
         self._providers: dict[ServiceKey[Any], _Provider] = {}
         self._health_entries: dict[tuple[int, str], _HealthEntry] = {}
+        self._endpoints: dict[tuple[int, str], Endpoint] = {}
+        self._endpoint_publisher = endpoint_publisher
+        if endpoint_publisher is not None:
+            endpoint_publisher(())
         self._incident_sequence = 0
         self._incident_counts: dict[tuple[int, str], int] = {}
         self._recent_incidents: deque[IncidentView] = deque(maxlen=self.RECENT_INCIDENT_LIMIT)
@@ -1414,6 +1437,35 @@ class CompositionRoot:
         """标识单个 Root 实例，不参与可持久化拓扑身份。"""
 
         return self._instance_token
+
+    def endpoints(self) -> tuple[Endpoint, ...]:
+        """读取当前 Root 的唯一端点登记，不借出可变容器。"""
+        return tuple(self._endpoints.values())
+
+    def _register_endpoint(self, owner: Fiber, endpoint: Endpoint) -> None:
+        """在发布派生视图成功后提交登记，不声称回滚已经发布的外部效果。"""
+        key = (owner.fiber_id, endpoint.name)
+        if key in self._endpoints:
+            raise ValueError(f"端点重复登记: {owner.path}/{endpoint.name}")
+        used = {route for item in self._endpoints.values() for route in item.routes}
+        if used.intersection(endpoint.routes):
+            raise ValueError(f"端点路由前缀已被占用: {endpoint.routes}")
+        proposed = {**self._endpoints, key: endpoint}
+        if self._endpoint_publisher is not None:
+            self._endpoint_publisher(tuple(proposed.values()))
+        self._endpoints = proposed
+        self._bump_composition_revision()
+
+    def _remove_endpoint(self, owner: Fiber, endpoint: Endpoint) -> None:
+        """撤下路由失败时保留登记与 Effect，监听器 owner 仍负责重试清理。"""
+        key = (owner.fiber_id, endpoint.name)
+        if self._endpoints[key] is not endpoint:
+            raise RuntimeError("端点清理对象不属于当前登记")
+        proposed = {key_: item for key_, item in self._endpoints.items() if key_ != key}
+        if self._endpoint_publisher is not None:
+            self._endpoint_publisher(tuple(proposed.values()))
+        self._endpoints = proposed
+        self._bump_composition_revision()
 
     async def mount(
         self,

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from collections.abc import Callable, Mapping, Sequence
+from dataclasses import asdict
 from typing import TYPE_CHECKING
 
 from agent.plugin_composition.model import HealthView, IncidentView, ServiceKey
@@ -29,6 +30,7 @@ def build_runtime_catalog(
         # not a snapshot lease or a frozen publication token.
         "snapshot_id": f"{root.generation_id}:{revision}",
         "plugins": _plugin_items(root, active_generations, draining, revision),
+        "endpoints": [asdict(item) for item in root.endpoints()],
     }
     return catalog
 
@@ -108,6 +110,7 @@ def _plugin_items(
                 "revision": generation.source_revision,
                 "generation_id": generation.generation_id,
                 "input_ref": generation.input_ref,
+                "code_dir": str(generation.code_dir),
                 "state": generation.state,
                 "api_version": manifest.api_version,
                 "load_error": (
