@@ -592,6 +592,8 @@ class ModelsStore:
             if not isinstance(usage, Mapping) or set(usage) != {item.name for item in fields(ModelUsage)}:
                 raise ValueError("Model 调用用量字段无效")
             usage = cast(Mapping[str, Any], usage)
+            if usage["coverage"] not in {"exact", "partial", "unavailable"}:
+                raise ValueError("Model 调用用量覆盖无效")
             for key, value in usage.items():
                 if key == "coverage":
                     continue
@@ -607,7 +609,7 @@ class ModelsStore:
             first_token_ms=first_token,
             duration_ms=duration,
             usage=None if usage is None else ModelUsage(
-                **{**usage, "coverage": UsageCoverage(usage["coverage"])},
+                **{**usage, "coverage": cast(UsageCoverage, usage["coverage"])},
             ),
         )
 
@@ -954,7 +956,7 @@ class ModelsStore:
             raise ValueError("driver returned an empty model catalog")
         keys: set[tuple[ModelKind | None, str]] = set()
         for item in catalog:
-            if item.kind not in {None, ModelKind.CHAT, ModelKind.EMBEDDING}:
+            if item.kind not in {None, 'chat', 'embedding'}:
                 raise ValueError("driver returned invalid model kind")
             if not isinstance(item.capabilities, ModelCapabilities):
                 raise TypeError("driver returned invalid model capabilities")
@@ -969,7 +971,7 @@ class ModelsStore:
                     f"driver returned duplicate model: {model}"
                 )
             keys.add(key)
-            if item.kind is ModelKind.EMBEDDING:
+            if item.kind == 'embedding':
                 dimensions = item.capabilities.embedding_dimensions
                 if dimensions is None or dimensions <= 0:
                     raise ValueError(f"embedding model lacks dimensions: {model}")
@@ -988,12 +990,14 @@ class ModelsStore:
                 raise RuntimeError("model registry disappeared during catalog sync")
             # 1. 目录未声明用途时，只借用已选配置的验证事实；不推断新型号。
             existing = _existing_model_ids(connection, target_connection)
-            known = {(item.kind, item.model): item for item in catalog if item.kind is not None}
+            known: dict[tuple[ModelKind, str], DiscoveredModel] = {
+                (item.kind, item.model): item for item in catalog if item.kind is not None
+            }
             for item in catalog:
                 if item.kind is not None:
                     continue
-                for kind in (ModelKind.CHAT, ModelKind.EMBEDDING):
-                    key = (kind, item.model)
+                for kind in ('chat', 'embedding'):
+                    key = (cast(ModelKind, kind), item.model)
                     stored = existing.get(key)
                     if stored is None or key in known:
                         continue
@@ -1006,7 +1010,7 @@ class ModelsStore:
             # 用户字段覆盖目录证据，其余能力和可用性继续由目录刷新。
             for key, item in known.items():
                 stored = existing.get(key)
-                if item.kind is ModelKind.CHAT and stored is not None:
+                if item.kind == 'chat' and stored is not None:
                     known[key] = _keep_user_capabilities(item, current.models[stored[0]])
             items = tuple(known.values())
             # 2. 可用性和能力只更新已选行，仍保护手工配置。
@@ -1025,7 +1029,7 @@ class ModelsStore:
                 if discovery_owned and key not in desired:
                     table = (
                         "model_definitions"
-                        if key[0] is ModelKind.CHAT
+                        if key[0] == 'chat'
                         else "embedding_models"
                     )
                     connection.execute(
@@ -1040,7 +1044,7 @@ class ModelsStore:
                     continue
                 model_id = stored[0]
                 # 向量空间由显式探测确认；目录同步只改变其可用性。
-                if item.kind is ModelKind.EMBEDDING:
+                if item.kind == 'embedding':
                     connection.execute(
                         "UPDATE embedding_models SET enabled = 1, updated_at = CURRENT_TIMESTAMP "
                         "WHERE id = ? AND enabled = 0", (model_id,),
@@ -1286,8 +1290,8 @@ def _existing_model_ids(
 ) -> dict[tuple[ModelKind, str], tuple[str, bool, bool]]:
     result: dict[tuple[ModelKind, str], tuple[str, bool, bool]] = {}
     for table, kind in (
-        ("model_definitions", ModelKind.CHAT),
-        ("embedding_models", ModelKind.EMBEDDING),
+        ("model_definitions", 'chat'),
+        ("embedding_models", 'embedding'),
     ):
         capabilities_column = (
             "capabilities_json"
@@ -1299,10 +1303,10 @@ def _existing_model_ids(
             (connection_id,),
         ).fetchall()
         for row in rows:
-            key = (kind, str(row[1]))
+            key = (cast(ModelKind, kind), str(row[1]))
             if key in result:
                 raise RuntimeError(
-                    f"duplicate stored model identity: {kind.value}/{row[1]}"
+                    f"duplicate stored model identity: {kind}/{row[1]}"
                 )
             raw_payload = row[2]
             result[key] = (
@@ -1354,7 +1358,7 @@ def _sync_would_change(
             not stored.discovery_owned and (item.kind, item.model) not in legacy_keys
         ):
             continue
-        if item.kind is ModelKind.EMBEDDING:
+        if item.kind == 'embedding':
             if not stored.enabled:
                 return True
             continue
@@ -1505,7 +1509,7 @@ def _chat_model_from_row(row: sqlite3.Row) -> StoredModel:
     return StoredModel(
         model_id=str(row[0]),
         connection_id=str(row[1]),
-        kind=ModelKind.CHAT,
+        kind='chat',
         model=str(row[2]),
         default_reasoning_effort=str(row[4]) or None,
         capabilities=capabilities,
@@ -1535,7 +1539,7 @@ def _embedding_model_from_row(row: sqlite3.Row) -> StoredModel:
     return StoredModel(
         model_id=str(row[0]),
         connection_id=str(row[1]),
-        kind=ModelKind.EMBEDDING,
+        kind='embedding',
         model=str(row[2]),
         default_reasoning_effort=None,
         capabilities=capabilities,
@@ -1582,7 +1586,7 @@ def _insert_connection(
 def _set_added_embedding_default(connection: sqlite3.Connection, command: AddModel) -> None:
     """新增与默认选择在同一个 Models 事务中提交。"""
     if command.make_default_embedding:
-        if command.kind is not ModelKind.EMBEDDING:
+        if command.kind != 'embedding':
             raise ValueError("只有向量模型可以设为默认向量模型")
         connection.execute(
             "UPDATE model_registry_meta SET default_embedding_model_id = ? WHERE singleton = 1",
@@ -1594,7 +1598,7 @@ def _insert_model(connection: sqlite3.Connection, command: AddModel) -> None:
     model_id = _required(command.model_id, "model_id")
     connection_id = _required(command.connection_id, "connection_id")
     model = _required(command.model, "model")
-    kind = str(command.kind.value if hasattr(command.kind, "value") else command.kind)
+    kind = command.kind
     if kind not in {"chat", "embedding"}:
         raise ValueError(f"unsupported model kind: {kind}")
     duplicate = connection.execute(

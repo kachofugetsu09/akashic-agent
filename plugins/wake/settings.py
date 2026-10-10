@@ -6,7 +6,10 @@ from typing import Any, cast
 from pydantic import BaseModel
 from agent.plugin_composition import Context, ServiceKey
 from agent.plugin_composition.context import FiberHandle
-from agent.plugin_composition.models import MODEL_CATALOG, ModelCatalogSnapshot, ModelAvailability
+from agent.plugin_composition.models import (
+    MODEL_CATALOG,
+    ModelCatalogSnapshot,
+)
 from agent.plugin_composition.messages import MESSAGE_CATALOG
 from agent.plugin_composition.plugin_config import PLUGIN_CONFIG
 from agent.plugin_composition.runtime_catalog import RUNTIME_CATALOG
@@ -71,7 +74,7 @@ class Settings:
             elif self.interest() is not None:
                 reason = self.interest() or "Akasha 不可用"
                 blocked = self.interest_decision is not None and self.interest_decision() is not True
-            elif model is None or selected_model is None or model.model(selected_model).availability != ModelAvailability.AVAILABLE:
+            elif model is None or selected_model is None or model.model(selected_model).availability != 'available':
                 reason = "请先选择默认聊天模型"
             elif not self.targets():
                 reason = "还没有可用发送目标，请先开启发送渠道并建立对话"

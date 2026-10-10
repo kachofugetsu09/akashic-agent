@@ -14,12 +14,27 @@ import httpx
 from core.net.http import retry_after_time
 
 from agent.plugin_composition.models import (
-    AuthenticationError, BoundModelDescriptor, CapabilitySources, ContentSafetyError,
-    ContextLengthError, CredentialHandle, DiscoveredModel, DriverConnection,
-    DriverConnectionDescriptor, EmbeddingSpaceDescriptor, InvalidRequestError,
-    LLMResponse, ModelCapabilities, ModelDriverDefinition, ModelError, ModelKind,
-    ModelRequest, ModelTimeoutError, ModelUsage, RateLimitError, ToolCall,
-    TransportError, UsageCoverage,
+    AuthenticationError,
+    BoundModelDescriptor,
+    CapabilitySources,
+    ContentSafetyError,
+    ContextLengthError,
+    CredentialHandle,
+    DiscoveredModel,
+    DriverConnection,
+    DriverConnectionDescriptor,
+    EmbeddingSpaceDescriptor,
+    InvalidRequestError,
+    LLMResponse,
+    ModelCapabilities,
+    ModelDriverDefinition,
+    ModelError,
+    ModelRequest,
+    ModelTimeoutError,
+    ModelUsage,
+    RateLimitError,
+    ToolCall,
+    TransportError,
 )
 
 
@@ -105,7 +120,7 @@ async def _discover(connection: DriverConnectionDescriptor, credential: Credenti
                     output = _count(item.get('outputTokenLimit'), 'outputTokenLimit')
                     if context == 0 or output == 0:
                         raise TransportError("Gemini 模型容量必须为正数")
-                    rows.append(DiscoveredModel(ModelKind.CHAT, name.removeprefix('models/'),
+                    rows.append(DiscoveredModel('chat', name.removeprefix('models/'),
                         ModelCapabilities(context_window=context, max_output_tokens=output),
                         CapabilitySources(context_window='driver' if context is not None else 'unknown',
                             max_output_tokens='driver' if output is not None else 'unknown')))
@@ -350,7 +365,7 @@ def _chunk(data: Mapping[str, Any]) -> tuple[list[dict[str, Any]], str | None, M
         usage = ModelUsage(input_tokens=input_tokens, output_tokens=output_tokens,
             reasoning_output_tokens=_count(raw_usage.get('thoughtsTokenCount'), 'thoughtsTokenCount'),
             cached_input_tokens=_count(raw_usage.get('cachedContentTokenCount'), 'cachedContentTokenCount'),
-            coverage=UsageCoverage.EXACT if exact else UsageCoverage.PARTIAL,
+            coverage='exact' if exact else 'partial',
             covered_request_count=1 if exact else 0)
     return parts, reason, usage
 

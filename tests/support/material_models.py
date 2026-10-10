@@ -23,7 +23,6 @@ from agent.plugin_composition import (
     LLMResponse,
     ModelCapabilities,
     ModelDriverDefinition,
-    ModelKind,
     ModelRequest,
 )
 from plugins.models.settings import (
@@ -273,7 +272,7 @@ async def _save_models(state: ModelsState) -> None:
         expected_revision=0,
         model_id=_CHAT_MODEL_ID,
         connection_id=_CONNECTION_ID,
-        kind=ModelKind.CHAT,
+        kind='chat',
         model="fixture-chat",
         capabilities=ModelCapabilities(
             context_window=8_192,
@@ -301,7 +300,7 @@ async def _save_models(state: ModelsState) -> None:
             expected_revision=receipt.revision,
             model_id=_EMBEDDING_MODEL_ID,
             connection_id=_CONNECTION_ID,
-            kind=ModelKind.EMBEDDING,
+            kind='embedding',
             model="fixture-embedding",
             capabilities=_embedding_capabilities(),
             capability_sources=_embedding_sources(),
@@ -336,7 +335,7 @@ def _embedding_discovery():
     from agent.plugin_composition import DiscoveredModel
 
     return DiscoveredModel(
-        kind=ModelKind.EMBEDDING,
+        kind='embedding',
         model="fixture-embedding",
         capabilities=_embedding_capabilities(),
         capability_sources=_embedding_sources(),

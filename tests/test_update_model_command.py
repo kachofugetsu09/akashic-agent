@@ -4,7 +4,6 @@ import pytest
 from agent.plugin_composition.models import (
     CapabilitySources,
     ModelCapabilities,
-    ModelKind,
 )
 from plugins.models.settings import (
     AddConnection,
@@ -42,7 +41,7 @@ def _seed(store: ModelsStore, *, capabilities=None, sources=None) -> int:
                 0,
                 "c1__m1",
                 "c1",
-                ModelKind.CHAT,
+                'chat',
                 "m1",
                 capabilities if capabilities is not None else ModelCapabilities(
                     input_modalities=("text",),
@@ -136,7 +135,7 @@ def test_update_model_rejects_embedding_model(store):
             revision,
             "c1__emb",
             "c1",
-            ModelKind.EMBEDDING,
+            'embedding',
             "emb-1",
             ModelCapabilities(embedding_dimensions=768),
             CapabilitySources(embedding_dimensions="probe"),

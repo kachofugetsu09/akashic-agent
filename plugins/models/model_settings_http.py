@@ -28,7 +28,6 @@ from agent.plugin_composition.models import (
     ModelCapabilities,
     ModelCatalogSnapshot,
     ModelError,
-    ModelKind,
     ModelTimeoutError,
     ModelUnavailableError,
     QuotaError,
@@ -594,7 +593,7 @@ def _add_model(payload: ModelInput) -> AddModel:
         expected_revision=payload.expected_revision,
         model_id=payload.model_id,
         connection_id=payload.connection_id,
-        kind=ModelKind(payload.kind),
+        kind=payload.kind,
         model=payload.model,
         capabilities=ModelCapabilities(
             **{
@@ -648,7 +647,7 @@ def _catalog_payload(snapshot: ModelCatalogSnapshot) -> dict[str, object]:
                 "name": item.name,
                 "driverId": item.driver_id,
                 "authIdentity": item.auth_identity,
-                "availability": item.availability.value,
+                "availability": item.availability,
             }
             for item in snapshot.connections
         ],
@@ -656,10 +655,10 @@ def _catalog_payload(snapshot: ModelCatalogSnapshot) -> dict[str, object]:
             {
                 "id": item.model_id,
                 "connectionId": item.connection_id,
-                "kind": item.kind.value,
+                "kind": item.kind,
                 "model": item.model,
                 "defaultReasoningEffort": item.default_reasoning_effort,
-                "availability": item.availability.value,
+                "availability": item.availability,
                 "capabilities": _capabilities_payload(item.capabilities),
                 "capabilitySources": _capability_sources_payload(item.capability_sources),
             }
@@ -676,7 +675,7 @@ def _discovered_payload(model: DiscoveredModel) -> dict[str, object]:
     """Project an unsaved provider model without inventing a registry ID."""
 
     return {
-        "kind": model.kind.value if model.kind is not None else None,
+        "kind": model.kind if model.kind is not None else None,
         "model": model.model,
         "defaultReasoningEffort": model.default_reasoning_effort,
         "capabilities": _capabilities_payload(model.capabilities),

@@ -34,7 +34,6 @@ from agent.plugin_composition import (
     ModelCapabilities,
     ModelDriverDefinition,
     ModelError,
-    ModelKind,
     ModelRequest,
     ModelTimeoutError,
     ModelUsage,
@@ -43,7 +42,6 @@ from agent.plugin_composition import (
     RateLimitError,
     ToolCall,
     TransportError,
-    UsageCoverage,
 )
 
 
@@ -339,7 +337,7 @@ async def _discover(
         context_window, max_output_tokens, supports_tools = _catalog_capabilities(metadata)
         result.append(
             DiscoveredModel(
-                kind=ModelKind.CHAT,
+                kind='chat',
                 model=normalized,
                 default_reasoning_effort=("high" if "high" in efforts else None),
                 capabilities=ModelCapabilities(
@@ -1021,12 +1019,12 @@ def _usage(raw: Mapping[str, Any]) -> ModelUsage:
     )
     covered = int(input_tokens is not None and output_tokens is not None)
     coverage = (
-        UsageCoverage.EXACT
+        'exact'
         if covered
         else (
-            UsageCoverage.PARTIAL
+            'partial'
             if input_tokens is not None or output_tokens is not None
-            else UsageCoverage.UNAVAILABLE
+            else 'unavailable'
         )
     )
     return ModelUsage(

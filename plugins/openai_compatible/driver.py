@@ -39,7 +39,6 @@ from agent.plugin_composition import (
     ModelCapabilities,
     ModelDriverDefinition,
     ModelError,
-    ModelKind,
     ModelRequest,
     ModelTimeoutError,
     ModelUsage,
@@ -47,7 +46,6 @@ from agent.plugin_composition import (
     RateLimitError,
     ToolCall,
     TransportError,
-    UsageCoverage,
 )
 
 _THINK_RE = re.compile(r"<think>(.*?)</think>", re.DOTALL)
@@ -378,7 +376,7 @@ async def _probe_embedding(
         raise ModelTimeoutError("向量试算超时，请检查服务地址或稍后重试；配置未保存。") from error
     result = _parse_embedding_response(payload, expected_count=2)
     return DiscoveredModel(
-        kind=ModelKind.EMBEDDING, model=model,
+        kind='embedding', model=model,
         capabilities=ModelCapabilities(embedding_dimensions=len(result.vectors[0]), embedding_normalization="none"),
         capability_sources=CapabilitySources(embedding_dimensions="probe", embedding_normalization="driver"),
         driver_config={"format_version": 1},
@@ -1177,12 +1175,12 @@ def _usage(raw: Mapping[str, Any]) -> ModelUsage:
     )
     covered = int(input_tokens is not None and output_tokens is not None)
     coverage = (
-        UsageCoverage.EXACT
+        'exact'
         if covered
         else (
-            UsageCoverage.PARTIAL
+            'partial'
             if input_tokens is not None or output_tokens is not None
-            else UsageCoverage.UNAVAILABLE
+            else 'unavailable'
         )
     )
     return ModelUsage(
@@ -1214,12 +1212,12 @@ def _merge_usage(items: Sequence[ModelUsage | None]) -> ModelUsage | None:
     request_count = sum(item.request_count for item in normalized)
     covered = sum(item.covered_request_count for item in normalized)
     coverage = (
-        UsageCoverage.UNAVAILABLE
-        if all(item.coverage is UsageCoverage.UNAVAILABLE for item in normalized)
-        else UsageCoverage.EXACT
+        'unavailable'
+        if all(item.coverage == 'unavailable' for item in normalized)
+        else 'exact'
         if covered == request_count
-        and all(item.coverage is UsageCoverage.EXACT for item in normalized)
-        else UsageCoverage.PARTIAL
+        and all(item.coverage == 'exact' for item in normalized)
+        else 'partial'
     )
     return ModelUsage(
         input_tokens=total("input_tokens"),

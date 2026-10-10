@@ -82,9 +82,8 @@ async def apply(ctx: Context) -> None:
     async def status():
         async with ctx.runtime_scope():
             catalog = state.catalog.snapshot()
-            from agent.plugin_composition.models import ModelAvailability
             model_id = catalog.role_bindings.get("default")
-            ready = model_id is not None and catalog.model(model_id).availability == ModelAvailability.AVAILABLE
+            ready = model_id is not None and catalog.model(model_id).availability == 'available'
             return {"ready": ready, "enabled": True if ready else None, "blocked": False,
                     "reason": "" if ready else "请选择连接方式并设置默认模型"}
     async def contribute(child: Context):

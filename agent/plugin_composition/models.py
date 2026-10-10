@@ -5,7 +5,6 @@ from collections.abc import AsyncGenerator, Awaitable, Callable, Mapping, Sequen
 from contextlib import asynccontextmanager
 from pydantic import BaseModel, ConfigDict, Field
 from dataclasses import dataclass, field
-from enum import StrEnum
 from agent.plugin_contracts.message import freeze_json
 from types import MappingProxyType
 from typing import TYPE_CHECKING, Any, AsyncContextManager, Literal, Protocol, TypeAlias, cast
@@ -18,21 +17,9 @@ if TYPE_CHECKING:
     from agent.plugin_composition.bindings import Bindings
 
 
-class ModelKind(StrEnum):
-    CHAT = "chat"
-    EMBEDDING = "embedding"
-
-
-class ModelAvailability(StrEnum):
-    AVAILABLE = "available"
-    DISABLED = "disabled"
-    DRIVER_UNAVAILABLE = "driver_unavailable"
-
-
-class UsageCoverage(StrEnum):
-    EXACT = "exact"
-    PARTIAL = "partial"
-    UNAVAILABLE = "unavailable"
+ModelKind: TypeAlias = Literal["chat", "embedding"]
+ModelAvailability: TypeAlias = Literal["available", "disabled", "driver_unavailable"]
+UsageCoverage: TypeAlias = Literal["exact", "partial", "unavailable"]
 
 
 @dataclass(frozen=True, slots=True)
@@ -44,7 +31,7 @@ class ModelUsage:
     reasoning_output_tokens: int | None = None
     request_count: int = 1
     covered_request_count: int = 0
-    coverage: UsageCoverage = UsageCoverage.UNAVAILABLE
+    coverage: UsageCoverage = "unavailable"
 
 
 @dataclass(frozen=True, slots=True)
@@ -68,6 +55,9 @@ class ToolCall:
     name: str
     arguments: Mapping[str, Any]
 
+    def __post_init__(self) -> None:
+        object.__setattr__(self, "arguments", _freeze_json_mapping(self.arguments))
+
 
 @dataclass(frozen=True, slots=True)
 class ModelContinuation:
@@ -80,10 +70,10 @@ class ModelContinuation:
         object.__setattr__(self, "payload", _freeze_json_mapping(self.payload))
 
 
-@dataclass(slots=True)
+@dataclass(frozen=True, slots=True)
 class LLMResponse:
     content: str | None
-    tool_calls: list[ToolCall] = field(default_factory=list)
+    tool_calls: Sequence[ToolCall] = ()
     thinking: str | None = None
     finish_reason: str | None = None
     continuation: ModelContinuation | None = None
@@ -93,10 +83,12 @@ class LLMResponse:
     provider_metadata: Mapping[str, Any] | None = None
 
     def __post_init__(self) -> None:
+        """冻结一次响应，多个请求等待者不能相互改变已结算事实。"""
+        object.__setattr__(self, "tool_calls", tuple(self.tool_calls))
         if self.provider_metadata is not None:
             if not isinstance(self.provider_metadata, Mapping):
                 raise TypeError("响应协议 metadata 必须是 JSON 对象")
-            self.provider_metadata = _freeze_json_mapping(self.provider_metadata)
+            object.__setattr__(self, "provider_metadata", _freeze_json_mapping(self.provider_metadata))
 
 
 StreamCallback: TypeAlias = Callable[[dict[str, str]], Awaitable[None]]
