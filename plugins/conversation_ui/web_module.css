@@ -1,6 +1,4 @@
 .conversation-page {
-  /* 标签栏高度的唯一 owner：标签栏与下方内容区高度都从这里取。 */
-  --conversation-tools-bar-height: 42px;
   --conversation-tools-width: 42vw;
   position: relative;
   display: grid;
@@ -75,7 +73,7 @@
 
 .conversation-tools-bar {
   display: flex;
-  height: var(--conversation-tools-bar-height);
+  height: 42px;
   min-width: 0;
   align-items: stretch;
   gap: 2px;
@@ -102,7 +100,7 @@
 
 .conversation-tools-tab {
   flex: 0 0 auto;
-  min-height: var(--conversation-tools-bar-height);
+  min-height: 42px;
   padding-inline: 10px;
   border-block-end: 2px solid transparent;
   font-size: 0.8125rem;
@@ -157,7 +155,7 @@
 
 .conversation-tools-content,
 .conversation-tool-panel {
-  height: calc(100% - var(--conversation-tools-bar-height));
+  height: calc(100% - 42px);
   min-height: 0;
 }
 
@@ -230,8 +228,8 @@
     height: 44px;
   }
 
-  .conversation-page {
-    --conversation-tools-bar-height: 48px;
+  .conversation-tools-tab {
+    min-height: 44px;
   }
 }
 
