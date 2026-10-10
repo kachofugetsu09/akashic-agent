@@ -9,7 +9,7 @@ from dataclasses import dataclass, replace
 from agent.plugin_composition import Context
 from agent.plugin_composition.model import FiberState
 from agent.plugin_composition.execution import EXECUTION
-from agent.plugin_composition.mcp_slots import MCP_SERVERS, McpServerDefinition, McpSessionFailure
+from plugins.mcp.contract import MCP_SERVERS, McpServerDefinition, McpSessionFailure, MCP_DETAIL, McpDetailUnavailable
 from .definitions import McpServerBinding, _descriptor, _normalize_definition, _ENV_NAME, _RESERVED_ENV
 from .host import McpGenerationHost, McpMaterializedCommand
 
@@ -187,18 +187,11 @@ class McpServers:
             for name, entry in sorted(self._entries.items())
         ]
 
-    async def inspect(
-        self, caller: Context, reader: object, owner_id: str, name: str,
-    ) -> list[dict[str, object]]:
+    async def inspect(self, owner_id: str, name: str) -> list[dict[str, object]]:
         """Read real tools in one session owned by the original contribution."""
-        from agent.plugin_composition.runtime_catalog import RUNTIME_MCP_DETAIL, RuntimeCatalogUnavailable
-
-        if caller.root_instance_token is not self.root_instance_token:
-            raise PermissionError("MCP provider 不能跨 Root")
-        caller.require_declared_runtime_owner(RUNTIME_MCP_DETAIL, reader)
         entry = self._entries.get(name)
         if entry is None or entry.ctx.runtime.plugin_id != owner_id:
-            raise RuntimeCatalogUnavailable("mcp_not_found", f"MCP server 不存在: {owner_id}/{name}")
+            raise McpDetailUnavailable("mcp_not_found", f"MCP server 不存在: {owner_id}/{name}")
         # open checks the original activation and holds its Fiber until close.
         async with self.open(entry.ctx, name) as server:
             return [
@@ -221,4 +214,6 @@ def _plain_schema(value):
 
 
 async def apply(ctx: Context):
-    await ctx.provide(MCP_SERVERS, McpServers(ctx))
+    servers = McpServers(ctx)
+    await ctx.provide(MCP_SERVERS, servers)
+    await ctx.provide(MCP_DETAIL, ctx.entrypoint(servers.inspect))

@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from collections.abc import Awaitable, Callable, Mapping, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from typing import TYPE_CHECKING
 
 from agent.plugin_composition.model import HealthView, IncidentView, ServiceKey
@@ -15,24 +15,12 @@ if TYPE_CHECKING:
 
 RuntimeCatalogReader = Callable[["Context | RequestContext"], dict[str, object]]
 RUNTIME_CATALOG = ServiceKey[RuntimeCatalogReader]("core.runtime_catalog.v1")
-RuntimeMcpDetailReader = Callable[["Context | RequestContext", str, str], Awaitable[list[dict[str, object]]]]
-RUNTIME_MCP_DETAIL = ServiceKey[RuntimeMcpDetailReader]("core.runtime_mcp_detail.v1")
-
-
-class RuntimeCatalogUnavailable(RuntimeError):
-    """Report a catalog section that cannot be projected yet."""
-
-    def __init__(self, code: str, message: str) -> None:
-        super().__init__(message)
-        self.code = code
-
-
 def build_runtime_catalog(
     root: CompositionRoot,
     active_generations: Mapping[str, PluginGeneration],
     draining_generations: Mapping[str, Sequence[PluginGeneration]] | None = None,
 ) -> dict[str, object]:
-    """Read current Fibers, health, incidents, and MCP state from one live Root."""
+    """读取当前 Root 的 Fiber、健康与事件，不包含业务投影。"""
 
     revision = root._composition_revision  # pyright: ignore[reportPrivateUsage]
     draining = {} if draining_generations is None else draining_generations
@@ -42,13 +30,6 @@ def build_runtime_catalog(
         "snapshot_id": f"{root.generation_id}:{revision}",
         "plugins": _plugin_items(root, active_generations, draining, revision),
     }
-    try:
-        catalog["mcp_servers"] = _mcp_items(root)
-    except RuntimeCatalogUnavailable as error:
-        catalog["mcp_unavailable"] = {
-            "code": error.code,
-            "message": str(error),
-        }
     return catalog
 
 
@@ -196,26 +177,8 @@ def _incident_item(item: IncidentView) -> dict[str, object]:
     }
 
 
-def _mcp_items(root: CompositionRoot) -> list[dict[str, object]]:
-    """Read the MCP owner or return an explicit unavailable section."""
-
-    from agent.plugin_composition.mcp_slots import MCP_SERVERS
-
-    service = root.context.get(MCP_SERVERS)
-    if service is None:
-        raise RuntimeCatalogUnavailable(
-            "mcp_provider_unavailable", "MCP provider 尚未在当前 Root 提供"
-        )
-    if service.root_instance_token is not root.instance_token:
-        raise RuntimeError("MCP provider 不属于当前 Root")
-    return service.catalog()
-
-
 __all__ = [
     "RUNTIME_CATALOG",
-    "RUNTIME_MCP_DETAIL",
     "RuntimeCatalogReader",
-    "RuntimeMcpDetailReader",
-    "RuntimeCatalogUnavailable",
     "build_runtime_catalog",
 ]

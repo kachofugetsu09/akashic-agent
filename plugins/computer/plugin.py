@@ -11,19 +11,17 @@ from dataclasses import dataclass
 from typing import cast
 
 from agent.plugin_composition import (
-    MCP_SERVERS,
     RUNTIME_STARTED,
     ServiceKey,
     WORKLOADS,
     Context,
-    McpServerDefinition,
-    WorkloadEnv,
     Workload,
     WorkloadData,
     WorkloadHealth,
     WorkloadLimits,
     WorkloadPort,
 )
+from plugins.mcp.contract import MCP_SERVERS, McpServerDefinition, WorkloadEnv
 from core.common.file_io import run_file_io
 
 from agent.plugin_composition.assets import INSTALLED_ASSETS

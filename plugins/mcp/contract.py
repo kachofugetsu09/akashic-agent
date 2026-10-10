@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from collections.abc import Mapping
+from collections.abc import Awaitable, Callable, Mapping
 from contextlib import AbstractAsyncContextManager
 from agent.plugin_composition.workload_slots import WorkloadHandle
 from agent.plugin_composition.process_slots import ManagedProcessHandle
@@ -98,11 +98,20 @@ class McpServers(Protocol):
     async def register(self, ctx: Context, definition: McpServerDefinition) -> None: ...
     def open(self, ctx: Context, name: str) -> AbstractAsyncContextManager[McpServer]: ...
     def catalog(self) -> list[dict[str, object]]: ...
-    async def inspect(
-        self, caller: Context, reader: object, owner_id: str, name: str,
-    ) -> list[dict[str, object]]: ...
     def failures(self) -> tuple[McpSessionFailure, ...]: ...
     async def retry_cleanup(self, ctx: Context, identity: str) -> None: ...
 
 
-MCP_SERVERS = ServiceKey[McpServers]("core.mcp_servers")
+MCP_SERVERS = ServiceKey[McpServers]("mcp.servers.v1")
+
+
+class McpDetailUnavailable(RuntimeError):
+    """明确报告目标已缺席，或所属 provider 当前不可用。"""
+
+    def __init__(self, code: str, message: str) -> None:
+        super().__init__(message)
+        self.code = code
+
+
+McpDetailReader = Callable[[str, str], Awaitable[list[dict[str, object]]]]
+MCP_DETAIL = ServiceKey[McpDetailReader]("mcp.detail.v1")

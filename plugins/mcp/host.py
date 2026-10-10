@@ -15,7 +15,7 @@ from typing import Any, Literal, Protocol, cast
 
 from .client import McpClient, McpToolExecutionError
 from agent.plugin_composition.execution import ProcessSpawner
-from agent.plugin_composition.mcp_slots import McpToolView, McpCallResult, McpLogView
+from plugins.mcp.contract import McpToolView, McpCallResult, McpLogView
 from .definitions import (
     McpServerBinding,
     McpServerDefinition,

@@ -122,12 +122,6 @@ from agent.plugin_composition.models import (
     UsageCoverage,
 )
 
-from agent.plugin_composition.mcp_slots import (
-    MCP_SERVERS,
-    EndpointEnv,
-    McpServerDefinition,
-    WorkloadEnv,
-)
 from agent.plugin_composition.process_slots import (
     MANAGED_PROCESSES,
     ManagedProcessDefinition,
@@ -321,10 +315,6 @@ __all__ = [
     "MANAGED_PROCESSES",
     "WORKLOADS",
     "EMBEDDING_MEMORY_PLUGIN",
-    "MCP_SERVERS",
-    "EndpointEnv",
-    "WorkloadEnv",
-    "McpServerDefinition",
     "ManagedProcessDefinition",
     "Workloads",
     "Workload",

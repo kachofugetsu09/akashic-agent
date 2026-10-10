@@ -7,7 +7,7 @@ from pathlib import Path
 from types import MappingProxyType
 from agent.plugin_composition.context import FiberHandle, HealthHandle
 from agent.plugin_composition.model import FiberState, IncidentView
-from agent.plugin_composition.mcp_slots import McpServerDefinition, EndpointEnv, WorkloadEnv
+from plugins.mcp.contract import McpServerDefinition, EndpointEnv, WorkloadEnv
 
 _NAME = re.compile(r"^[a-z][a-z0-9_-]{0,63}$")
 _ENV_NAME = re.compile(r"^[A-Z_][A-Z0-9_]{0,127}$")

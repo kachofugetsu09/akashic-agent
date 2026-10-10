@@ -61,8 +61,6 @@ from agent.plugin_composition.processes import PROCESSES, PluginProcesses
 from agent.plugin_composition.requests import RequestContext
 from agent.plugin_composition.runtime_catalog import (
     RUNTIME_CATALOG,
-    RUNTIME_MCP_DETAIL,
-    RuntimeCatalogUnavailable,
     build_runtime_catalog,
 )
 from agent.plugin_composition.tasks import TASKS, PluginTasks
@@ -195,7 +193,6 @@ async def provide_host_services(
     requested.update(
         {
             RUNTIME_CATALOG,
-            RUNTIME_MCP_DETAIL,
             PLUGIN_UPDATES,
             RESTART_GATE,
             CONTROL_FRAMES,
@@ -235,42 +232,6 @@ async def provide_host_services(
             return catalog
 
         _ = await root.context.provide(RUNTIME_CATALOG, read_runtime_catalog)
-    if RUNTIME_MCP_DETAIL in requested:
-        if root is not live_root():
-            raise RuntimeError("MCP detail 只在当前 live Root 提供")
-
-        async def read_runtime_mcp_detail(
-            context: Context | RequestContext,
-            owner_id: str,
-            name: str,
-        ) -> list[dict[str, object]]:
-            """Inspect one target under caller and contributor owner scopes."""
-            from agent.plugin_composition.mcp_slots import MCP_SERVERS
-
-            if isinstance(context, RequestContext):
-                context = context._require_context(
-                    RUNTIME_MCP_DETAIL, read_runtime_mcp_detail
-                )
-            if (
-                root is not live_root()
-                or context.root_instance_token is not root.instance_token
-            ):
-                raise RuntimeError("MCP detail 不属于当前 live Root")
-            context.require_declared_runtime_owner(
-                RUNTIME_MCP_DETAIL, read_runtime_mcp_detail
-            )
-            service = root.context.get(MCP_SERVERS)
-            if service is None:
-                raise RuntimeCatalogUnavailable(
-                    "mcp_provider_unavailable", "MCP provider 尚未在当前 Root 提供"
-                )
-            if service.root_instance_token is not root.instance_token:
-                raise RuntimeError("MCP provider 不属于当前 Root")
-            return await service.inspect(
-                context, read_runtime_mcp_detail, owner_id, name
-            )
-
-        _ = await root.context.provide(RUNTIME_MCP_DETAIL, read_runtime_mcp_detail)
     clients = CredentialClients(
         {
             (generation.plugin_id, generation.generation_id): CoreProviderClientFactory(
@@ -384,7 +345,6 @@ def check_host_dependencies(
         EXECUTION,
         WORKLOAD_CONTROLLER,
         RUNTIME_CATALOG,
-        RUNTIME_MCP_DETAIL,
         CREDENTIALS,
         PLUGIN_UPDATES,
         PLUGIN_CONFIG,
