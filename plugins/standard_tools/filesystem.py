@@ -5,7 +5,7 @@ from typing import Any
 
 from plugins.host_execution.contract import Files, LIST_DIR_MAX_BYTES, LIST_DIR_MAX_ENTRIES
 
-from agent.tool_catalog import ToolResult
+from plugins.host_execution.contract import FileResult
 
 
 class _FileTool:
@@ -16,10 +16,10 @@ class _FileTool:
     def name(self) -> str:
         raise NotImplementedError
 
-    async def execute(self, **arguments: Any) -> str | ToolResult:
+    async def execute(self, **arguments: Any) -> FileResult:
         return await self._operation.execute(**arguments)
 
-    async def read_raw(self, **arguments: Any) -> str | ToolResult:
+    async def read_raw(self, **arguments: Any) -> FileResult:
         return await self._operation.execute(**arguments)
 
     async def aclose(self) -> None:

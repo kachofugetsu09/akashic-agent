@@ -10,7 +10,6 @@ from collections.abc import Mapping
 from enum import Enum
 import shlex
 from pydantic import BaseModel, ConfigDict
-from agent.tool_catalog import ToolResult
 from pathlib import Path
 from agent.plugin_composition.context import Context
 from agent.plugin_composition.model import ServiceKey
@@ -331,8 +330,23 @@ class RequirementsChecker(Protocol):
     def check_requirements(self, bins: list[str], env: list[str]) -> RequirementsAvailability: ...
 
 
+@dataclass(frozen=True, slots=True)
+class FileError:
+    text: str
+
+
+@dataclass(frozen=True, slots=True)
+class FileImage:
+    text: str
+    mime_type: str
+    data: bytes
+
+
+FileResult = str | FileError | FileImage
+
+
 class FileOperation(Protocol):
-    async def execute(self, **arguments: Any) -> str | ToolResult: ...
+    async def execute(self, **arguments: Any) -> FileResult: ...
     async def aclose(self) -> None: ...
 
 

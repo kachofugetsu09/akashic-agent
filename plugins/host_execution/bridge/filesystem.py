@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import base64
 import builtins
 import difflib
 import heapq
@@ -20,7 +21,7 @@ from plugins.host_execution.contract import LIST_DIR_MAX_ENTRIES, LIST_DIR_MAX_B
 from core.common.file_io import run_file_io as _run_file_io
 
 from agent.media import detect_supported_image_mime, encode_image_data_uri
-from agent.tool_catalog import ToolResult
+from plugins.host_execution.contract import FileError, FileImage, FileResult
 from infra.persistence.json_store import atomic_write_text
 
 if TYPE_CHECKING:
@@ -142,16 +143,12 @@ _READ_MAX_BYTES = 10_000
 _READ_PROBE_BYTES = 4096
 
 
-def _read_image(file_path: Path) -> ToolResult:
+def _read_image(file_path: Path) -> FileImage:
     data_uri = encode_image_data_uri(file_path)
-    return ToolResult(
+    header, encoded = data_uri.split(";base64,", 1)
+    return FileImage(
         text=f"[已读取图片文件 {file_path.name}，图片内容已提供给多模态模型]",
-        content_blocks=[
-            {
-                "type": "image_url",
-                "image_url": {"url": data_uri, "detail": "high"},
-            }
-        ],
+        mime_type=header[5:], data=base64.b64decode(encoded, validate=True),
     )
 
 
@@ -268,7 +265,7 @@ class _FileOperation:
 class ReadFileOperation(_FileOperation):
     """读取文件内容，支持按行分页，超大文件自动截断。"""
 
-    async def execute(self, path: str, **kwargs: Any) -> str | ToolResult:
+    async def execute(self, path: str, **kwargs: Any) -> FileResult:
         """读取原始文件结果；实际模型投影由调用者决定。"""
         bridge = self._get_bridge()
         if bridge is not None:
@@ -279,7 +276,7 @@ class ReadFileOperation(_FileOperation):
             )
         return await _run_file_io(lambda: self.read_from_disk(path, **kwargs))
 
-    def read_from_disk(self, path: str, **kwargs: Any) -> str | ToolResult:
+    def read_from_disk(self, path: str, **kwargs: Any) -> FileResult:
         """Read host bytes without applying the current Turn model projection."""
 
         offset: int = int(kwargs.get("offset", 0))
@@ -289,9 +286,9 @@ class ReadFileOperation(_FileOperation):
         try:
             file_path = _resolve_read_path(path, self._allowed_dir)
             if not file_path.exists():
-                return ToolResult(text=f"错误：文件不存在：{path}", is_error=True)
+                return FileError(text=f"错误：文件不存在：{path}")
             if not file_path.is_file():
-                return ToolResult(text=f"错误：路径不是文件：{path}", is_error=True)
+                return FileError(text=f"错误：路径不是文件：{path}")
 
             with builtins.open(file_path, "rb") as fh:
                 head = fh.read(_READ_PROBE_BYTES)
@@ -300,12 +297,11 @@ class ReadFileOperation(_FileOperation):
                 try:
                     return _read_image(file_path)
                 except ValueError as error:
-                    return ToolResult(text=f"图片处理失败：{error}", is_error=True)
+                    return FileError(text=f"图片处理失败：{error}")
             if _looks_binary(head):
-                return ToolResult(
+                return FileError(
                     text=f"错误：{path} 看起来是二进制文件，read_file 仅适合文本和图片。"
                     "建议改用 shell 搭配 file/xxd/strings 查看。",
-                    is_error=True,
                 )
 
             sliced, total_lines, total_bytes, had_decode_errors = _scan_text_file(
@@ -351,9 +347,9 @@ class ReadFileOperation(_FileOperation):
 
             return text + suffix_note
         except PermissionError as e:
-            return ToolResult(text=f"错误：{e}", is_error=True)
+            return FileError(text=f"错误：{e}")
         except OSError as e:
-            return ToolResult(text=f"读取文件失败：{e}", is_error=True)
+            return FileError(text=f"读取文件失败：{e}")
 
 
 def _create_write_parents(file_path: Path, required_dir: Path) -> None:
@@ -382,7 +378,7 @@ def _create_write_parents(file_path: Path, required_dir: Path) -> None:
 class WriteFileOperation(_FileOperation):
     """将内容写入文件，自动创建所需的父目录。"""
 
-    async def execute(self, path: str, content: str, *, required_dir: str | None = None, **kwargs: Any) -> str | ToolResult:
+    async def execute(self, path: str, content: str, *, required_dir: str | None = None, **kwargs: Any) -> FileResult:
         if required_dir is not None and not Path(required_dir).is_absolute():
             raise ValueError("required_dir must be absolute")
         bridge = self._get_bridge()
@@ -397,10 +393,10 @@ class WriteFileOperation(_FileOperation):
         try:
             file_path = await _run_file_io(lambda: _resolve_path(path, self._allowed_dir))
 
-            def _write() -> str | ToolResult:
+            def _write() -> FileResult:
                 if file_path.exists() and file_path.is_dir():
-                    return ToolResult(
-                        text=f"写入文件失败：目标路径是目录：{path}", is_error=True
+                    return FileError(
+                        text=f"写入文件失败：目标路径是目录：{path}"
                     )
                 if required_dir is not None:
                     _create_write_parents(file_path, Path(required_dir))
@@ -409,9 +405,9 @@ class WriteFileOperation(_FileOperation):
 
             return await _run_with_file_mutation_lock(file_path, _write)
         except PermissionError as e:
-            return ToolResult(text=f"错误：{e}", is_error=True)
+            return FileError(text=f"错误：{e}")
         except OSError as e:
-            return ToolResult(text=f"写入文件失败：{e}", is_error=True)
+            return FileError(text=f"写入文件失败：{e}")
 
 
 class EditFileOperation(_FileOperation):
@@ -419,7 +415,7 @@ class EditFileOperation(_FileOperation):
 
     async def execute(
         self, path: str, old_text: str, new_text: str, **kwargs: Any
-    ) -> str | ToolResult:
+    ) -> FileResult:
         replace_all: bool = bool(kwargs.get("replace_all", False))
         bridge = self._get_bridge()
         if bridge is not None:
@@ -437,11 +433,11 @@ class EditFileOperation(_FileOperation):
         try:
             file_path = await _run_file_io(lambda: _resolve_path(path, self._allowed_dir))
 
-            def _edit() -> str | ToolResult:
+            def _edit() -> FileResult:
                 if not file_path.exists():
-                    return ToolResult(text=f"错误：文件不存在：{path}", is_error=True)
+                    return FileError(text=f"错误：文件不存在：{path}")
                 if not file_path.is_file():
-                    return ToolResult(text=f"错误：路径不是文件：{path}", is_error=True)
+                    return FileError(text=f"错误：路径不是文件：{path}")
 
                 raw_content = file_path.read_bytes().decode("utf-8")
                 content, has_bom = _strip_utf8_bom(raw_content)
@@ -455,16 +451,16 @@ class EditFileOperation(_FileOperation):
                         replacement_text = new_text.replace("\n", "\r\n")
 
                 if matched_old_text not in content:
-                    return ToolResult(
+                    return FileError(
                         text="错误：未找到 old_text，请确保与文件内容完全一致。",
-                        is_error=True,
+
                     )
 
                 count = content.count(matched_old_text)
                 if count > 1 and not replace_all:
-                    return ToolResult(
+                    return FileError(
                         text=f"警告：old_text 在文件中出现了 {count} 次。如需全部替换，设 replace_all=true；如需精确定位，请在 old_text 中包含更多上下文。",
-                        is_error=True,
+
                     )
 
                 new_content = (
@@ -485,9 +481,9 @@ class EditFileOperation(_FileOperation):
 
             return await _run_with_file_mutation_lock(file_path, _edit)
         except PermissionError as e:
-            return ToolResult(text=f"错误：{e}", is_error=True)
+            return FileError(text=f"错误：{e}")
         except (OSError, UnicodeDecodeError) as e:
-            return ToolResult(text=f"编辑文件失败：{e}", is_error=True)
+            return FileError(text=f"编辑文件失败：{e}")
 
 
 
@@ -505,17 +501,16 @@ class ListDirOperation(_FileOperation):
     async def execute(
         self, path: str, limit: int | None = None, after: str | None = None,
         **kwargs: Any,
-    ) -> str | ToolResult:
+    ) -> FileResult:
         """校验页大小，再由本地或 Bridge 的文件线程读取同一页。"""
         # 1. 此入口是目录参数的唯一校验 owner，内部遍历信任已检查的值。
         page_size = LIST_DIR_MAX_ENTRIES if limit is None else limit
         if type(page_size) is not int or not 1 <= page_size <= LIST_DIR_MAX_ENTRIES:
-            return ToolResult(
+            return FileError(
                 text=f"错误：limit 必须是 1～{LIST_DIR_MAX_ENTRIES} 的整数",
-                is_error=True,
             )
         if after is not None and not isinstance(after, str):
-            return ToolResult(text="错误：after 必须是文件名字符串", is_error=True)
+            return FileError(text="错误：after 必须是文件名字符串")
         bridge = self._get_bridge()
         if bridge is not None:
             result = await bridge.execute_file_tool(
@@ -528,14 +523,14 @@ class ListDirOperation(_FileOperation):
 
     def _list_from_disk(
         self, path: str, limit: int, after: str | None,
-    ) -> str | ToolResult:
+    ) -> FileResult:
         """遍历全部名字，只保留一页及一个后续标记，不读取文件正文。"""
         try:
             dir_path = _resolve_path(path, self._allowed_dir)
             if not dir_path.exists():
-                return ToolResult(text=f"错误：目录不存在：{path}", is_error=True)
+                return FileError(text=f"错误：目录不存在：{path}")
             if not dir_path.is_dir():
-                return ToolResult(text=f"错误：路径不是目录：{path}", is_error=True)
+                return FileError(text=f"错误：路径不是目录：{path}")
 
             # 2. 名字按原来的区分大小写顺序排列；堆的内存最多为 limit+1 个名字。
             with os.scandir(dir_path) as entries:
@@ -563,15 +558,15 @@ class ListDirOperation(_FileOperation):
                 used_bytes += line_bytes
 
             if not items:
-                return ToolResult(text="错误：单个目录条目超过 10KB 输出上限", is_error=True)
+                return FileError(text="错误：单个目录条目超过 10KB 输出上限")
             output = "\n".join(items)
             if len(items) < len(names):
                 output += _list_dir_next_page(names[len(items) - 1])
             return output
         except PermissionError as e:
-            return ToolResult(text=f"错误：{e}", is_error=True)
+            return FileError(text=f"错误：{e}")
         except OSError as e:
-            return ToolResult(text=f"列举目录失败：{e}", is_error=True)
+            return FileError(text=f"列举目录失败：{e}")
 
 
 def _build_file_bridge(enable_bridge: bool) -> HostBridgeShellProcessManager | None:

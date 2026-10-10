@@ -8,7 +8,7 @@ from typing import Any, cast
 import httpx
 
 from agent.plugin_composition import Context
-from agent.tool_catalog import (
+from plugins.tools.contract import (
     normalize_tool_parameters,
     validate_tool_parameters,
 )

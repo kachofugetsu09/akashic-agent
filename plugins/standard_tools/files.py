@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import base64
 from collections.abc import AsyncGenerator, Mapping
 from contextlib import asynccontextmanager
 from pathlib import Path
@@ -10,11 +9,10 @@ from typing import Any, Protocol, cast
 from pydantic import BaseModel, ConfigDict, field_validator
 
 from agent.plugin_composition import Context
-from plugins.host_execution.contract import FILES
+from plugins.host_execution.contract import FILES, FileError, FileImage
 from agent.plugin_composition.artifacts import ARTIFACT_IMPORT
 from agent.plugin_composition.artifacts import AttachmentKind
-from agent.tool_catalog import (
-    ToolResult,
+from plugins.tools.contract import (
     normalize_tool_parameters,
     validate_tool_parameters,
 )
@@ -113,30 +111,17 @@ class FileTool:
                 await backend.aclose()
         if isinstance(value, str):
             return ToolResultValue("success", (ContentPart("text", value),))
-        if value.runtime_provenance:
-            raise ValueError("文件后端返回了未声明的交互或来源字段")
-        parts = [ContentPart("text", value.text)] if value.text else []
-        # 2. 保存后端实际返回的 model-safe 图片；临时文件不是权威 Artifact。
-        for block in value.content_blocks:
-            parts.append(await self._import_image(block))
-        return ToolResultValue("error" if value.is_error else "success", tuple(parts))
+        if isinstance(value, FileError):
+            return ToolResultValue("error", (ContentPart("text", value.text),))
+        return ToolResultValue("success", (ContentPart("text", value.text), await self._import_image(value)))
 
-    async def _import_image(self, block: Mapping[str, object]) -> ContentPart:
-        image = block.get("image_url")
-        if block.get("type") != "image_url" or not isinstance(image, Mapping):
-            raise ValueError("文件后端返回了不支持的内容块")
-        uri = cast(Mapping[str, object], image).get("url")
-        if not isinstance(uri, str):
-            raise TypeError("文件图片缺少 data URI")
-        header, separator, data = uri.partition(",")
-        suffixes = {"data:image/png;base64": ".png", "data:image/jpeg;base64": ".jpg",
-                    "data:image/webp;base64": ".webp", "data:image/gif;base64": ".gif"}
-        if not separator or header not in suffixes:
-            raise ValueError("文件图片 data URI 格式无效")
-        image_bytes = base64.b64decode(data, validate=True)
+    async def _import_image(self, image: FileImage) -> ContentPart:
+        """将后端已校验的图片保存为权威附件，临时文件随 scope 释放。"""
+        suffixes = {"image/png": ".png", "image/jpeg": ".jpg",
+                    "image/webp": ".webp", "image/gif": ".gif"}
         with TemporaryDirectory(prefix="akashic-file-image-") as folder:
-            path = Path(folder) / ("image" + suffixes[header])
-            _ = path.write_bytes(image_bytes)
+            path = Path(folder) / ("image" + suffixes[image.mime_type])
+            _ = path.write_bytes(image.data)
             ref = await self._ctx.require(ARTIFACT_IMPORT).import_source(str(path), AttachmentKind.IMAGE)
         return ContentPart("artifact_ref", ref.artifact_id)
 

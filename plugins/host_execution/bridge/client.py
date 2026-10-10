@@ -27,7 +27,7 @@ from .protocol import (
     require_positive,
     require_text,
 )
-from agent.tool_catalog import ToolResult
+from plugins.host_execution.contract import FileResult
 from plugins.host_execution.contract import (
     ExecutionCleanupReport, ExecutionResult
 )
@@ -317,7 +317,7 @@ class HostBridgeShellProcessManager:
 
     async def execute_file_tool(
         self, operation: str, *, allowed_dir: Path | None, arguments: dict[str, Any]
-    ) -> str | ToolResult:
+    ) -> FileResult:
         """把已有四种文件工具参数转换为明确的 oneof。"""
         # Protobuf 会把 Python bool 转成整数；在丢失类型前拒绝错误参数。
         if operation == "list_dir" and isinstance(arguments.get("limit"), bool):

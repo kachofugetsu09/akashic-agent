@@ -18,7 +18,7 @@ from plugins.models.contract import (
 )
 from agent.plugin_composition.tasks import Tasks
 from agent.plugin_contracts import ContentPart, Control, Input, Output, ToolResult
-from agent.tool_catalog import normalize_tool_result
+from plugins.host_execution.contract import FileError
 from core.net.http import HttpClient
 from plugins.content.plugin import _decode_text, check_text
 from plugins.context.api import check_summary
@@ -119,8 +119,9 @@ async def run(folder: Path, *, cancel: bool = False, gemini: bool = False) -> di
             return None
         async def invoke(self, key, arguments):
             invocations.append(key)
-            actual = normalize_tool_result(await operation.execute(**dict(arguments)))
-            return Result('error' if actual.is_error else 'success', (ContentPart('text', actual.text),))
+            actual = await operation.execute(**dict(arguments))
+            return Result('error' if isinstance(actual, FileError) else 'success',
+                          (ContentPart('text', actual if isinstance(actual, str) else actual.text),))
 
     @asynccontextmanager
     async def open_tool(binding):

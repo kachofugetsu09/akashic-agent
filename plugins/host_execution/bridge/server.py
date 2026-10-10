@@ -44,7 +44,6 @@ from plugins.host_execution.contract import (
     ExecutionResult
 )
 from ..process_runtime import ShellProcessManager
-from agent.tool_catalog import ToolResult
 from .path_info import PathInfoOperation
 from .filesystem import (
     EditFileOperation,
