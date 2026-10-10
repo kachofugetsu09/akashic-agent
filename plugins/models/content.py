@@ -22,9 +22,9 @@ from agent.plugin_contracts import (
     Control,
     Message,
     ToolCall,
-    freeze_json,
     json_value,
 )
+from core.common.frozen_json import freeze_json
 from agent.plugin_composition.artifacts import ArtifactRead
 from plugins.models.contract import MODEL_CONTENT as MODEL_CONTENT
 

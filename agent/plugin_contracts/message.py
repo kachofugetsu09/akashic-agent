@@ -8,11 +8,11 @@
 from __future__ import annotations
 
 import json
-import math
 from collections.abc import Mapping
 from dataclasses import dataclass, field
 from datetime import datetime
-from typing import Literal, Never, cast
+from typing import Literal, cast
+from core.common.frozen_json import freeze_json as _freeze_json
 
 
 MAX_METADATA_BYTES = 64 * 1024
@@ -22,7 +22,7 @@ def freeze_metadata(value: Mapping[str, object]) -> Mapping[str, object]:
     """附加信息只接受有界 JSON 对象；插件内部结构不参与消息类型校验。"""
     if not isinstance(value, Mapping):
         raise TypeError("消息 metadata 必须是 JSON 对象")
-    frozen = cast(Mapping[str, object], freeze_json(value))
+    frozen = cast(Mapping[str, object], _freeze_json(value))
     if any(not key for key in frozen):
         raise ValueError("消息 metadata 命名空间不能为空")
     # JSON 编码同时固定字节预算；不按 Python 对象大小或字符数计算。
@@ -39,74 +39,6 @@ def _json_container(value: object) -> dict[str, object]:
     raise TypeError("消息 metadata 包含非 JSON 值")
 
 
-class _FrozenJson(dict[str, object]):
-    """深冻结的 JSON 使用原生字典读取与编码，只禁止修改操作。"""
-
-    __slots__ = ()
-
-    def __new__(cls, value: Mapping[str, object]) -> _FrozenJson:
-        result = dict.__new__(cls)
-        dict.update(result, value)
-        return result
-
-    def __init__(self, value: Mapping[str, object]) -> None:
-        # 仅在新建时填充；对既有对象再次调用 __init__ 不能修改内容。
-        pass
-
-    def _immutable(self: object, *args: object, **kwargs: object) -> Never:
-        raise TypeError("冻结的 JSON 对象不能修改")
-
-    __setitem__ = _immutable
-    __delitem__ = _immutable
-    __ior__ = _immutable
-    clear = _immutable
-    pop = _immutable
-    popitem = _immutable
-    setdefault = _immutable
-    update = _immutable
-
-
-class _FrozenJsonArray(tuple[object, ...]):
-    """标记已经深冻结的 JSON 数组，边界间直接复用。"""
-
-    __slots__ = ()
-
-
-def freeze_json(value: object) -> object:
-    """复制外部 JSON；已经冻结的对象不重复校验或复制。"""
-    if isinstance(value, (_FrozenJson, _FrozenJsonArray)):
-        return value
-    active: set[int] = set()
-
-    def freeze(item: object) -> object:
-        if item is None or isinstance(item, (str, bool, int, _FrozenJson, _FrozenJsonArray)):
-            return item
-        if isinstance(item, float):
-            if not math.isfinite(item):
-                raise ValueError("消息 JSON 不接受非有限浮点数")
-            return item
-        if isinstance(item, (Mapping, list, tuple)):
-            identity = id(item)
-            if identity in active:
-                raise ValueError("JSON value 不允许循环引用")
-            active.add(identity)
-            try:
-                if isinstance(item, Mapping):
-                    mapping = cast(Mapping[object, object], item)
-                    frozen: dict[str, object] = {}
-                    for key, nested in mapping.items():
-                        if not isinstance(key, str):
-                            raise TypeError("消息 JSON 对象的 key 必须是字符串")
-                        frozen[key] = freeze(nested)
-                    return _FrozenJson(frozen)
-                return _FrozenJsonArray(freeze(nested) for nested in cast(list[object] | tuple[object, ...], item))
-            finally:
-                active.remove(identity)
-        raise TypeError(f"消息内容必须是 JSON 值，实际为 {type(item).__name__}")
-
-    return freeze(value)
-
-
 @dataclass(frozen=True, slots=True)
 class ContentPart:
     """内容类型及其不可变载荷；具体 schema 由声明该类型的能力校验。"""
@@ -117,7 +49,7 @@ class ContentPart:
     def __post_init__(self) -> None:
         if not isinstance(self.kind, str) or not self.kind or self.kind == "tool_call":
             raise ValueError("内容类型不能为空")
-        object.__setattr__(self, "value", freeze_json(self.value))
+        object.__setattr__(self, "value", _freeze_json(self.value))
 
 
 @dataclass(frozen=True, slots=True)
@@ -145,7 +77,7 @@ class ToolCall:
             raise ValueError("工具调用必须固定 binding_id")
         if not isinstance(self.arguments, Mapping):
             raise TypeError("工具参数必须是 JSON 对象")
-        object.__setattr__(self, "arguments", freeze_json(self.arguments))
+        object.__setattr__(self, "arguments", _freeze_json(self.arguments))
 
 
 @dataclass(frozen=True, slots=True)

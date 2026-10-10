@@ -17,9 +17,9 @@ from agent.plugin_contracts.message import (
     Part,
     ToolCall,
     ToolResult,
-    freeze_json,
     freeze_metadata,
 )
+from core.common.frozen_json import freeze_json
 
 __all__ = [
     "MAX_METADATA_BYTES",

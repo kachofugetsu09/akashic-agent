@@ -4,7 +4,7 @@ import asyncio
 from collections.abc import AsyncGenerator, Awaitable, Callable, Mapping, Sequence
 from contextlib import asynccontextmanager
 from dataclasses import dataclass, field, replace
-from agent.plugin_contracts.message import freeze_json
+from core.common.frozen_json import freeze_json
 from types import MappingProxyType
 from typing import TYPE_CHECKING, Any, AsyncContextManager, Literal, Protocol, TypeAlias, cast
 

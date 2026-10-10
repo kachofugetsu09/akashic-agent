@@ -20,7 +20,7 @@ import httpx
 
 from core.net.http import HttpClient, StreamProgress, describe_transport_error, finish_response, retry_after_time
 
-from agent.plugin_contracts import freeze_json
+from core.common.frozen_json import freeze_json
 
 from agent.plugin_composition import (
     BoundModelDescriptor,
