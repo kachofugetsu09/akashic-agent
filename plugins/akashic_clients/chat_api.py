@@ -13,9 +13,9 @@ from typing import TYPE_CHECKING, Any, Literal, Protocol, cast
 import uvicorn
 from fastapi import FastAPI, HTTPException, Query, Request, WebSocket
 from fastapi.responses import FileResponse, JSONResponse, Response, StreamingResponse
-from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, ConfigDict, Field
 
+from .static import register_chat_assets
 from agent.plugin_composition.message_view import read_message_rows, session_row
 from .navigation import NavigationPreferences, PinUpdate, check_project_pin, session_pin_row
 from .notifications import NotificationFeed, NotificationRequest, notification_events
@@ -147,20 +147,17 @@ def create_chat_app(
         async with session_admin_scope() as admin:
             yield cast(SessionAdminPort, admin)
 
-    project_root = Path(__file__).resolve().parent.parent
-    static_dir = project_root / "static" / "chat"
-    index_file = static_dir / "index.html"
-    app.mount(
-        "/assets",
-        StaticFiles(directory=static_dir, check_dir=False),
-        name="chat_assets",
-    )
+    register_chat_assets(app, Path(__file__).resolve().parent / "static/chat")
 
-    @app.get("/", response_model=None)
-    def chat_index() -> FileResponse | dict[str, str]:
-        if index_file.exists():
-            return FileResponse(index_file)
-        return {"status": "ok", "channel": channel.name}
+    @app.get("/api/shell/state")
+    async def client_state() -> dict[str, object]:
+        try:
+            async with open_message_catalog():
+                ready = True
+        except RuntimeError:
+            ready = False
+        return {"status": "ready" if ready else "unavailable",
+                "configured": True, "chatReady": ready}
 
     @app.get("/api/chat/health")
     async def chat_health() -> dict[str, str]:

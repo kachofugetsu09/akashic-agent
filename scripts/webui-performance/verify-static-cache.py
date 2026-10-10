@@ -5,23 +5,28 @@ from pathlib import Path
 import runpy
 import shutil
 import tempfile
+import sys
 
 import httpx
+from fastapi import FastAPI
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
 
 async def verify(root: Path) -> None:
-    """在一次性目录中加载当前服务端源码，检查入口、资源与重定向。"""
+    """在一次性目录中加载当前服务端源码，检查实际客户端入口、资源和缓存。"""
     # 1. 只替换资源所在目录，路由和中间件使用当前仓库的完整实现。
-    source = Path(__file__).resolve().parents[2] / "bootstrap/settings_api.py"
-    module = root / "bootstrap/settings_api.py"
-    module.parent.mkdir()
+    source = Path(__file__).resolve().parents[2] / "plugins/akashic_clients/static.py"
+    module = root / "plugins/akashic_clients/static.py"
+    module.parent.mkdir(parents=True)
     shutil.copyfile(source, module)
     assets = root / "static/chat"
     assets.mkdir(parents=True)
     (assets / "index.html").write_text("<html>chat</html>", encoding="utf-8")
     (assets / "index-12345678.js").write_text("export {};", encoding="utf-8")
     (assets / "theme.json").write_text("{}", encoding="utf-8")
-    app = runpy.run_path(str(module))["create_settings_app"]()
+    app = FastAPI()
+    runpy.run_path(str(module))["register_chat_assets"](app, assets)
 
     # 2. 实际经过 FileResponse、StaticFiles 和响应头中间件。
     async with httpx.AsyncClient(

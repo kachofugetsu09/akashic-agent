@@ -3,6 +3,8 @@ from __future__ import annotations
 import asyncio
 import logging
 import stat
+import socket
+import threading
 from collections.abc import AsyncIterable, Awaitable, Callable, Mapping
 from contextlib import suppress
 from pathlib import Path
@@ -13,14 +15,13 @@ import uvicorn
 import websockets
 from websockets.asyncio.client import ClientConnection
 from fastapi import FastAPI, Request, WebSocket
-from fastapi.responses import JSONResponse, Response, StreamingResponse
-from fastapi.staticfiles import StaticFiles
+from fastapi.responses import HTMLResponse, JSONResponse, Response, StreamingResponse
 from starlette.requests import ClientDisconnect
 from starlette.types import Receive, Scope, Send
-from starlette.websockets import WebSocketDisconnect
+from starlette.websockets import WebSocketDisconnect, WebSocketState
 
-from bootstrap.settings_api import SettingsServer, create_settings_app
-from bootstrap.web_runtime import chat_socket_path, dashboard_socket_path
+from agent.plugin_composition.endpoints import Endpoint, load_endpoint_plan
+from core.common.file_io import run_file_io
 
 _REQUEST_HEADERS_EXCLUDED = {
     "connection",
@@ -41,8 +42,13 @@ _RESPONSE_HEADERS_ALLOWED = {
     "content-length",
     "content-range",
     "content-type",
+    "content-security-policy",
+    "pragma",
+    "referrer-policy",
+    "x-content-type-options",
     "etag",
     "last-modified",
+    "location",
     "x-akashic-web-stale",
 }
 
@@ -80,7 +86,7 @@ _WEB_CONTENT_SECURITY_POLICY = "; ".join((
     "font-src 'self' data:",
     "connect-src 'self'",
     "frame-src 'self'",
-    # Computer 的当前客户端创建 Blob 视频缓冲区和解码 Worker。
+    # 浏览器模块的媒体缓冲与解码 worker 不取得外部网络来源。
     "media-src blob:",
     "worker-src blob:",
     "object-src 'none'",
@@ -89,133 +95,81 @@ _WEB_CONTENT_SECURITY_POLICY = "; ".join((
 ))
 
 
-def create_web_shell_app(
-    config_path: Path,
-    workspace: Path,
-) -> FastAPI:
-    """Serve the only public Web entry and relay ready Gateway capabilities."""
+class WebShellServer(uvicorn.Server):
+    """在线程和进程入口之间发布确定的监听启动结果。"""
 
-    chat_socket = chat_socket_path(workspace)
-    dashboard_socket = dashboard_socket_path(workspace)
-    dashboard_static = Path(__file__).resolve().parent.parent / "static" / "dashboard"
+    def __init__(self, config: uvicorn.Config) -> None:
+        super().__init__(config)
+        self.startup_event = threading.Event()
+
+    async def startup(self, sockets: list[socket.socket] | None = None) -> None:
+        try:
+            await super().startup(sockets=sockets)
+        finally:
+            self.startup_event.set()
+
+
+def create_web_shell_app(workspace: Path) -> FastAPI:
+    """按 provider 发布的路由前缀转发；runtime 缺席时由外壳响应。"""
+    plan = workspace / "runtime/endpoints.json"
     app = FastAPI(docs_url=None, redoc_url=None, openapi_url=None)
 
-    @app.get("/")
-    @app.get("/dashboard")
-    @app.get("/dashboard/")
-    async def dashboard_shell_index() -> Response:
-        index_file = dashboard_static / "index.html"
-        if not index_file.exists():
-            return Response(
-                content="Dashboard 前端尚未构建，请先运行 `npm run build`。",
-                media_type="text/plain; charset=utf-8",
-                status_code=503,
-            )
-        return Response(
-            content=index_file.read_text(encoding="utf-8"),
-            media_type="text/html",
-            headers={
-                "Cache-Control": "no-store",
-                "Content-Security-Policy": _WEB_CONTENT_SECURITY_POLICY,
-                "X-Content-Type-Options": "nosniff",
-            },
-        )
+    async def endpoint(path: str) -> Endpoint | None:
+        return _matching_endpoint(await run_file_io(lambda: load_endpoint_plan(plan)), path)
 
-    @app.get("/api/shell/state")
-    async def shell_state() -> dict[str, object]:
-        chat_ready = await _runtime_ready(chat_socket, "/api/chat/health")
-        return {
-            "status": (
-                "ready"
-                if chat_ready
-                else "unavailable" if config_path.exists() else "needs_setup"
-            ),
-            "configured": config_path.exists(),
-            "chatReady": chat_ready,
-        }
+    @app.api_route("/{path:path}",
+                   methods=["GET", "HEAD", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"])
+    async def proxy(path: str, request: Request) -> Response:
+        try:
+            target = await endpoint("/" + path)
+        except (OSError, ValueError) as error:
+            logger.error("Web Shell endpoint plan 无法读取", exc_info=error)
+            return _runtime_unavailable(html="text/html" in request.headers.get("accept", ""),
+                                        code="endpoint_plan_unavailable", message="Runtime 路由信息不可用")
+        if target is None:
+            return _runtime_unavailable(html="text/html" in request.headers.get("accept", ""))
+        response = await _proxy_http(request, Path(target.address),
+                                     request.scope["raw_path"].decode("ascii"))
+        response.headers.setdefault("Content-Security-Policy", _WEB_CONTENT_SECURITY_POLICY)
+        response.headers.setdefault("X-Content-Type-Options", "nosniff")
+        return response
 
-    @app.get("/api/runtime/host-bridge")
-    async def proxy_host_bridge_status(request: Request) -> Response:
-        return await _proxy_http(request, dashboard_socket, "/api/runtime/host-bridge")
+    @app.websocket("/{path:path}")
+    async def proxy_socket(path: str, websocket: WebSocket) -> None:
+        try:
+            target = await endpoint("/" + path)
+        except (OSError, ValueError) as error:
+            logger.error("Web Shell endpoint plan 无法读取", exc_info=error)
+            await websocket.close(code=1013, reason="Runtime 端点不可用")
+            return
+        if target is None:
+            await websocket.close(code=1013, reason="Runtime 尚未就绪")
+            return
+        await _proxy_websocket(websocket, Path(target.address),
+                               websocket.scope["raw_path"].decode("ascii"))
 
-    @app.api_route(
-        "/api/chat/{proxy_path:path}",
-        methods=["GET", "HEAD", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
-    )
-    async def proxy_chat(proxy_path: str, request: Request) -> Response:
-        if proxy_path.startswith("model-settings"):
-            return JSONResponse(
-                status_code=404,
-                content={"code": "not_found", "message": "接口不存在"},
-            )
-        return await _proxy_http(request, chat_socket, f"/api/chat/{proxy_path}")
-
-    @app.api_route("/api/settings/model/{proxy_path:path}", methods=["GET", "POST", "OPTIONS"])
-    @app.api_route("/api/settings/state", methods=["GET", "HEAD", "OPTIONS"])
-    @app.api_route("/api/settings/models", methods=["POST", "OPTIONS"])
-    @app.api_route("/api/settings/apply", methods=["POST", "OPTIONS"])
-    @app.api_route("/api/settings/roles", methods=["POST", "OPTIONS"])
-    @app.api_route("/api/settings/embedding-models", methods=["POST", "OPTIONS"])
-    @app.api_route("/api/settings/codex-login", methods=["POST", "OPTIONS"])
-    @app.api_route(
-        "/api/settings/codex-login/{login_id}",
-        methods=["GET", "HEAD", "OPTIONS"],
-    )
-    async def retired_model_settings(login_id: str | None = None) -> Response:
-        _ = login_id
-        return JSONResponse(
-            status_code=410,
-            content={
-                "code": "model_settings_moved",
-                "message": "模型设置已迁移到插件控制接口",
-            },
-        )
-
-    @app.websocket("/ws")
-    async def proxy_chat_websocket(websocket: WebSocket) -> None:
-        await _proxy_websocket(websocket, chat_socket, "/ws")
-
-    @app.websocket("/api/dashboard/{proxy_path:path}")
-    async def proxy_dashboard_websocket(
-        proxy_path: str,
-        websocket: WebSocket,
-    ) -> None:
-        await _proxy_websocket(websocket, dashboard_socket, f"/api/dashboard/{proxy_path}")
-
-    @app.api_route(
-        "/api/dashboard/{proxy_path:path}",
-        methods=["GET", "HEAD", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
-    )
-    async def proxy_dashboard_api(proxy_path: str, request: Request) -> Response:
-        return await _proxy_http(
-            request,
-            dashboard_socket,
-            f"/api/dashboard/{proxy_path}",
-        )
-
-    app.mount(
-        "/dashboard/assets",
-        StaticFiles(directory=dashboard_static, check_dir=False),
-        name="dashboard-shell-assets",
-    )
-
-    app.mount(
-        "/",
-        create_settings_app(),
-        name="web-shell-static-and-settings",
-    )
     return app
 
 
+def _matching_endpoint(endpoints: tuple[Endpoint, ...], path: str) -> Endpoint | None:
+    """使用最长完整路径前缀；不把 /panel-other 误送给 /panel。"""
+    matches = [
+        (len(prefix), endpoint)
+        for endpoint in endpoints if endpoint.protocol == "http+unix"
+        for prefix in endpoint.routes
+        if prefix == "/" or path == prefix or path.startswith(prefix + "/")
+    ]
+    return max(matches, key=lambda match: match[0])[1] if matches else None
+
+
 def create_web_shell_server(
-    config_path: Path,
     workspace: Path,
     *,
     host: str = "127.0.0.1",
     port: int = 2236,
-) -> SettingsServer:
+) -> WebShellServer:
     config = uvicorn.Config(
-        create_web_shell_app(config_path, workspace),
+        create_web_shell_app(workspace),
         host=host,
         port=port,
         log_level="warning",
@@ -223,23 +177,7 @@ def create_web_shell_server(
         # 流式代理没有读取期限；停止时不能让旧浏览器请求无限阻止 Core 关闭。
         timeout_graceful_shutdown=10,
     )
-    return SettingsServer(config)
-
-
-async def _runtime_ready(socket_path: Path, health_path: str) -> bool:
-    if not _is_socket(socket_path):
-        return False
-    transport = httpx.AsyncHTTPTransport(uds=str(socket_path))
-    try:
-        async with httpx.AsyncClient(
-            transport=transport,
-            base_url="http://akashic-runtime",
-            timeout=0.5,
-        ) as client:
-            response = await client.get(health_path)
-            return response.status_code == 200
-    except httpx.HTTPError:
-        return False
+    return WebShellServer(config)
 
 
 async def _proxy_http(
@@ -256,7 +194,7 @@ async def _proxy_http(
             socket_path,
             target_path,
         )
-        return _runtime_unavailable()
+        return _runtime_unavailable(html="text/html" in request.headers.get("accept", ""))
     client = httpx.AsyncClient(
         transport=httpx.AsyncHTTPTransport(uds=str(socket_path)),
         base_url="http://akashic-runtime",
@@ -294,7 +232,7 @@ async def _proxy_http(
         raise
     except httpx.HTTPError:
         await client.aclose()
-        return _runtime_unavailable()
+        return _runtime_unavailable(html="text/html" in request.headers.get("accept", ""))
     response_headers = {
         name: value
         for name, value in upstream.headers.items()
@@ -322,19 +260,19 @@ async def _proxy_websocket(
 ) -> None:
     """Relay one browser WebSocket while preserving disconnect semantics."""
 
-    # 查询参数属于上游协议，Chat 与 Dashboard 都按原始编码透传。
+    # 查询参数属于上游协议，按原始编码透传。
     query = bytes(websocket.scope.get("query_string", b""))
     if query:
         target_path = f"{target_path}?{query.decode('ascii')}"
 
-    # 1. Reject before accepting when no Gateway owns the runtime socket.
+    # 1. Reject before accepting when no provider owns the runtime socket.
     if not _is_socket(socket_path):
         logger.warning(
             "[web_shell.proxy] ws reject, upstream unavailable socket=%s target=%s",
             socket_path,
             target_path,
         )
-        await websocket.close(code=1013, reason="Gateway 尚未就绪")
+        await websocket.close(code=1013, reason="Runtime 尚未就绪")
         return
     origin = websocket.headers.get("origin")
     host = websocket.headers.get("host", "akashic-runtime")
@@ -437,7 +375,7 @@ async def _proxy_websocket(
             error,
         )
         with suppress(OSError, RuntimeError, WebSocketDisconnect):
-            await websocket.close(code=1013, reason="Gateway 连接不可用")
+            await websocket.close(code=1013, reason="Runtime 连接不可用")
 
 
 async def _relay_browser_messages(
@@ -484,6 +422,8 @@ async def _relay_gateway_messages(
                 await websocket.send_text(message)
             else:
                 await websocket.send_bytes(message)
+    except websockets.ConnectionClosed:
+        pass  # 对端关闭已经结束流；下面转发其真实关闭码。
     except Exception as error:
         logger.debug(
             "[web_shell.proxy] gateway->browser closed ws=%s err=%r",
@@ -496,6 +436,15 @@ async def _relay_gateway_messages(
         f"ws-{id(websocket):x}",
     )
 
+    if websocket.client_state is WebSocketState.DISCONNECTED:
+        return
+    code = upstream.close_code
+    assert code is not None
+    if code in {1005, 1006, 1015}:
+        await websocket.close(code=1013, reason="Runtime 连接不可用")
+    else:
+        await websocket.close(code=code, reason=upstream.close_reason or "")
+
 
 def _is_socket(path: Path) -> bool:
     try:
@@ -504,9 +453,12 @@ def _is_socket(path: Path) -> bool:
         return False
 
 
-def _runtime_unavailable() -> JSONResponse:
-    return JSONResponse(
-        status_code=503,
-        content={"code": "gateway_unavailable", "message": "Gateway 尚未就绪"},
-        headers={"Retry-After": "1"},
-    )
+def _runtime_unavailable(*, html: bool = False, code: str = "runtime_unavailable",
+                         message: str = "Runtime 尚未就绪") -> Response:
+    if html:
+        return HTMLResponse("<!doctype html><meta charset=utf-8><title>Akashic</title>"
+                            f"<main><h1>{message}</h1><p>服务恢复后刷新此页面。</p></main>",
+                            status_code=503, headers={"Retry-After": "1", "Cache-Control": "no-store"})
+    return JSONResponse(status_code=503,
+                        content={"code": code, "message": message},
+                        headers={"Retry-After": "1"})

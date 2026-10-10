@@ -232,6 +232,7 @@ def _build_web_assets(
         ).stdout.strip()
 
     shutil.copytree(asset_root / "dashboard", source / "plugins/ui/static/dashboard")
+    shutil.copytree(asset_root / "chat", source / "plugins/akashic_clients/static/chat")
     return asset_root, source / "plugins", {
         "enabled": True,
         "source_commit": commit,
@@ -467,7 +468,7 @@ def build(repository: Path, revision: str, output: Path) -> dict[str, object]:
     ]
     core = git(repository, "archive", "--format=tar", commit, "--", *core_paths)
 
-    # 2. Web 构建完全在临时源码副本执行；只把生成的静态目录带入 Core tar。
+    # 2. Web 构建完全在临时源码副本执行；把生成的静态目录交给实际插件制品。
     with tempfile.TemporaryDirectory(prefix="akashic-distribution-web-") as directory:
         asset_root, generated_plugins_root, web = _build_web_assets(
             repository, commit, Path(directory)
@@ -482,16 +483,6 @@ def build(repository: Path, revision: str, output: Path) -> dict[str, object]:
             ).encode(),
             mtime=commit_epoch,
         )
-        if asset_root is not None:
-            core = _append_tree(
-                core, asset_root / "chat", "static/chat", mtime=commit_epoch
-            )
-            core = _append_tree(
-                core,
-                asset_root / "dashboard",
-                "static/dashboard",
-                mtime=commit_epoch,
-            )
         # 3. 插件 bundle 使用同一次隔离构建生成的前端资产。
         names: set[str] = set()
         rows = [

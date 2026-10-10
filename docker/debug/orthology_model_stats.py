@@ -10,6 +10,7 @@ from tempfile import TemporaryDirectory
 import httpx
 import uvicorn
 from agent.plugin_composition import CompositionRoot
+from agent.plugin_composition.endpoints import save_endpoint_plan
 from agent.plugin_composition.model import FiberState
 from docker.debug.orthology_optional_requests import install_ports
 from plugins.akashic_clients import plugin as clients
@@ -40,7 +41,8 @@ async def serve(app, *, uds=None, sockets=None):
 async def check(workspace: Path) -> None:
     store = ModelsStore(workspace / "models.db", workspace / "backups")
     store.initialize()
-    root = CompositionRoot("model-stats-scenario")
+    root = CompositionRoot("model-stats-scenario", endpoint_publisher=lambda endpoints: save_endpoint_plan(
+        workspace / "runtime/endpoints.json", "model-stats-scenario", endpoints))
     try:
         descriptor = BoundModelDescriptor("binding", "snapshot", 0, "model", "connection", "driver", "1",
                                           "private-auth-identity", "scenario-model", "agent", None,
@@ -56,7 +58,7 @@ async def check(workspace: Path) -> None:
         await root.mount(channels.apply, name="channels", inject=channels.inject, runtime=runtime("channels"))
         chat = await root.mount(clients.apply, name="clients", inject=clients.inject, runtime=runtime("clients"))
         assert chat.state is FiberState.ACTIVE, chat.error
-        shell = create_web_shell_app(workspace / "config.toml", workspace)
+        shell = create_web_shell_app(workspace)
         with socket.socket() as listener:
             listener.bind(("127.0.0.1", 0))
             listener.listen()
@@ -79,9 +81,6 @@ console.log('frontend loader and parser: PASS');
                 assert process.returncode == 0, (out.decode(), err.decode())
                 async with httpx.AsyncClient(base_url=base) as http:
                     assert (await http.get("/api/chat/model-calls/missing")).status_code == 404
-                    retired = await http.get("/api/settings/model/calls/" + call_id)
-                    assert retired.status_code == 410 and retired.json()["code"] == "model_settings_moved"
-                    assert (await http.post("/api/settings/model/command", json={})).status_code == 410
                     await provider.dispose()
                     assert (await http.get("/api/chat/model-calls/" + call_id)).status_code == 503
                     assert (await http.get("/api/chat/health")).status_code == 200
@@ -96,4 +95,4 @@ console.log('frontend loader and parser: PASS');
 if __name__ == "__main__":
     with TemporaryDirectory(prefix="akashic-stats-") as directory:
         asyncio.run(check(Path(directory)))
-    print("PASS: real frontend fetch/parse → Shell → Chat optional read capability → call ledger; 404/503/410; no model or state mutation")
+    print("PASS: real frontend fetch/parse → Shell → Chat optional read capability → call ledger; 404/503; no model or state mutation")

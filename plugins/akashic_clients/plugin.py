@@ -47,7 +47,7 @@ async def apply(ctx: Context) -> None:
                 }
             ),
             factory=build_akashic_channel_factory(
-                config, ctx.runtime.workspace,
+                ctx, config, ctx.runtime.workspace,
                 NavigationPreferences(lambda: ctx.require(OWNER_STATE).open(ctx)),
             ),
             inbound_identity=InboundIdentity.PROVIDER_MESSAGE_ID,

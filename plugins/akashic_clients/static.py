@@ -1,17 +1,10 @@
-from __future__ import annotations
-
-import logging
-import re
-import socket
-import threading
+"""聊天制品只属于客户端插件；读取和缓存不改变业务事实。"""
 from pathlib import Path
-
-import uvicorn
-from fastapi import FastAPI, Request
-from fastapi.responses import FileResponse, JSONResponse, RedirectResponse
+import re
+from fastapi import FastAPI, HTTPException, Request
+from fastapi.responses import FileResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
-
-logger = logging.getLogger(__name__)
+from core.common.file_io import run_file_io
 
 # Vite 产物文件名内嵌内容哈希，命中后才允许永久缓存；入口 HTML 仍需每次校验。
 _HASHED_ASSET = re.compile(r"/assets/[^/]*-[\w-]{8}\.[\w]+$")
@@ -25,40 +18,14 @@ def _cache_control_for(path: str) -> str:
     return "no-store"
 
 
-class SettingsServer(uvicorn.Server):
-    """Publish one deterministic startup result across the server thread."""
-
-    def __init__(self, config: uvicorn.Config) -> None:
-        super().__init__(config)
-        self.startup_event = threading.Event()
-
-    async def startup(self, sockets: list[socket.socket] | None = None) -> None:
-        try:
-            await super().startup(sockets=sockets)
-        finally:
-            self.startup_event.set()
-
-
-def create_settings_app() -> FastAPI:
-    """Serve the model-plugin UI without owning model or memory state."""
-
-    static_dir = Path(__file__).resolve().parent.parent / "static" / "chat"
-    app = FastAPI(docs_url=None, redoc_url=None, openapi_url=None)
-
-    @app.exception_handler(Exception)
-    async def internal_error(_request: Request, error: Exception) -> JSONResponse:
-        logger.exception("[settings] unexpected failure", exc_info=error)
-        return JSONResponse(
-            status_code=500,
-            content={
-                "code": "internal_error",
-                "message": "设置操作失败，请查看服务端日志",
-            },
-        )
+def register_chat_assets(app: FastAPI, static_dir: Path) -> None:
+    """在客户端 owner 的监听器提供插件制品和既有缓存合同。"""
 
     @app.middleware("http")
     async def secure_static_response(request: Request, call_next):
         response = await call_next(request)
+        if request.url.path not in {"/", "/chat", "/chat/", "/settings", "/settings/"} and not request.url.path.startswith("/assets/"):
+            return response
         cache_control = _cache_control_for(request.url.path)
         response.headers["Cache-Control"] = cache_control
         if cache_control == "no-store":
@@ -77,20 +44,22 @@ def create_settings_app() -> FastAPI:
 
     @app.get("/settings")
     @app.get("/settings/")
-    async def retired_settings() -> RedirectResponse:
+    async def settings() -> RedirectResponse:
         return RedirectResponse(url="/#models", status_code=308)
 
+    @app.get("/")
     @app.get("/chat")
     @app.get("/chat/")
     async def index() -> FileResponse:
-        return FileResponse(static_dir / "index.html")
+        path = static_dir / "index.html"
+        try:
+            info = await run_file_io(path.stat)
+        except FileNotFoundError as error:
+            raise HTTPException(503, "聊天前端资产尚未构建") from error
+        return FileResponse(path, stat_result=info)
 
     app.mount(
         "/assets",
         StaticFiles(directory=static_dir, check_dir=False),
-        name="settings-assets",
+        name="chat_assets",
     )
-    return app
-
-
-__all__ = ["SettingsServer", "create_settings_app"]

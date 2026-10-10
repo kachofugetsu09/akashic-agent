@@ -158,3 +158,28 @@ UI 关闭只清理其原 socket，节点被替换时明确拒绝删除；监听�
 Web 目录编码和 route matching 留在 UI 实现，公开数据保持 frozen。
 这层只改变源码合同和 key；资产、query、请求作用域和持久状态行为不变。
 消息展示合同和投影仍有 App Server 消费者，随 Gateway owner 迁移一并移走。
+
+## Web Shell 读取派生端点
+
+```text
+┌─────────┐    ┌───────────┐    ┌──────────────────────┐
+│ Browser │ ─→ │ Web Shell │ ─→ │ 最长匹配的插件 listener │
+└─────────┘    └─────┬─────┘    └──────────────────────┘
+                    │ 只读
+             ┌──────▼───────┐
+             │ endpoint plan │
+             └──────────────┘
+```
+
+Web Shell 只按 `runtime/endpoints.json` 的最长完整路径前缀转发 HTTP/WebSocket，
+不识别插件名、业务健康接口、模型设置或固定业务 socket。
+路由缺席/监听器不可达返回明确的 503；损坏计划单独返回 `endpoint_plan_unavailable` 并记录原错误。
+浏览器 HTML 请求在 runtime 停止后仍得到外壳的不可用页面。
+
+客户端 listener 在就绪后登记自己的 API、WebSocket 和资产前缀，关闭时先撤下端点。
+聊天状态、静态缓存和 settings 导航仍由客户端响应；UI listener 负责 Dashboard 及其插件路由。
+目录读取使用有界文件任务；查询编码、redirect Location、WebSocket 关闭码都经过真实代理验证。
+
+Dashboard/Chat 的构建产物只进入各自插件 bundle，不再进入 Core tar。
+当前聊天区域实现仍在 frontend/chat；区域 slot 化由独立的前端阶段处理。
+端点计划和监听器都是可重建状态，本层无权减少消息或插件数据。
