@@ -1,0 +1,698 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Akashic 首次引导</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Source+Serif+4:opsz,wght@8..60,400;8..60,600;8..60,700&family=Noto+Serif+SC:wght@400;600;700&family=JetBrains+Mono:wght@400;500&display=swap">
+<style>
+/* 布局：上方是原型控制条（模拟插件组合 / 视图），中间是引导本体（单列纸面，底部固定动作栏），下方是改动说明。 */
+:root {
+  --paper: rgb(245 244 237);
+  --paper-edit: rgb(250 249 245);
+  --paper-sheet: rgb(239 238 230);
+  --paper-raised: rgb(232 230 220);
+  --ink: rgb(20 20 19);
+  --ink-2: rgb(80 78 73);
+  --ink-3: rgb(107 106 100);
+  --rule: rgb(20 20 19 / 0.1);
+  --rule-strong: rgb(20 20 19 / 0.22);
+  --accent: rgb(27 54 93);
+  --accent-ink: rgb(250 249 245);
+  --accent-soft: rgb(27 54 93 / 0.08);
+  --ok: rgb(47 93 58);
+  --warn: rgb(107 84 32);
+  --backdrop: rgb(225 223 213);
+  --font-read: "Source Serif 4", "Noto Serif SC", "Source Han Serif SC", "Songti SC", Georgia, serif;
+  --font-tech: "JetBrains Mono", ui-monospace, "SFMono-Regular", Menlo, monospace;
+  --r: 10px;
+}
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    --paper: rgb(24 24 22); --paper-edit: rgb(30 30 27); --paper-sheet: rgb(36 35 32); --paper-raised: rgb(46 45 41);
+    --ink: rgb(236 235 228); --ink-2: rgb(186 184 175); --ink-3: rgb(146 144 136);
+    --rule: rgb(236 235 228 / 0.12); --rule-strong: rgb(236 235 228 / 0.26);
+    --accent: rgb(150 180 226); --accent-ink: rgb(18 22 30); --accent-soft: rgb(150 180 226 / 0.12);
+    --ok: rgb(136 190 146); --warn: rgb(214 186 120); --backdrop: rgb(16 16 15);
+    color-scheme: dark;
+  }
+}
+:root[data-theme="dark"] {
+  --paper: rgb(24 24 22); --paper-edit: rgb(30 30 27); --paper-sheet: rgb(36 35 32); --paper-raised: rgb(46 45 41);
+  --ink: rgb(236 235 228); --ink-2: rgb(186 184 175); --ink-3: rgb(146 144 136);
+  --rule: rgb(236 235 228 / 0.12); --rule-strong: rgb(236 235 228 / 0.26);
+  --accent: rgb(150 180 226); --accent-ink: rgb(18 22 30); --accent-soft: rgb(150 180 226 / 0.12);
+  --ok: rgb(136 190 146); --warn: rgb(214 186 120); --backdrop: rgb(16 16 15);
+  color-scheme: dark;
+}
+
+* { box-sizing: border-box; }
+[hidden] { display: none !important; }
+body {
+  margin: 0;
+  background: var(--backdrop);
+  color: var(--ink);
+  font-family: var(--font-read);
+  font-size: 16px;
+  line-height: 1.55;
+  -webkit-font-smoothing: antialiased;
+}
+button, input, select { font: inherit; color: inherit; }
+button { cursor: pointer; }
+:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+.sr { position: absolute; width: 1px; height: 1px; overflow: hidden; clip-path: inset(50%); white-space: nowrap; }
+
+/* ---------- 原型控制条 ---------- */
+.demo-bar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 10px 20px;
+  padding-block: 12px;
+  padding-inline: 16px;
+  border-block-end: 1px solid var(--rule);
+  background: var(--paper-sheet);
+  font-size: 13px;
+}
+.demo-bar h1 { margin: 0; font-size: 14px; font-weight: 600; letter-spacing: 0.01em; }
+.demo-bar .tag { font-family: var(--font-tech); font-size: 11px; color: var(--ink-3); letter-spacing: 0.04em; text-transform: uppercase; }
+.demo-group { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; }
+.demo-group > span { color: var(--ink-3); margin-inline-end: 2px; }
+.chip {
+  display: inline-flex; align-items: center; gap: 6px;
+  min-height: 32px; padding-inline: 10px;
+  border: 1px solid var(--rule-strong); border-radius: 999px;
+  background: transparent; font-size: 13px;
+}
+.chip[aria-pressed="true"] { background: var(--ink); color: var(--paper); border-color: var(--ink); }
+.chip small { font-family: var(--font-tech); font-size: 10px; opacity: 0.7; }
+.demo-spacer { flex: 1 1 auto; }
+
+/* ---------- 舞台与设备 ---------- */
+.stage { display: grid; place-items: center; padding-block: 28px; padding-inline: 16px; }
+.device {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  width: min(100%, 1040px);
+  height: min(760px, calc(100dvh - 140px));
+  min-height: 600px;
+  overflow: hidden;
+  border: 1px solid var(--rule);
+  border-radius: 14px;
+  background: var(--paper);
+  transition: width 320ms cubic-bezier(.22,1,.36,1);
+}
+.device.is-phone { width: min(100%, 390px); height: min(800px, calc(100dvh - 120px)); border-radius: 28px; }
+
+/* ---------- 引导本体 ---------- */
+.ob-top {
+  display: grid;
+  grid-template-columns: auto 1fr auto;
+  align-items: center;
+  gap: 16px;
+  min-height: 56px;
+  padding-inline: 20px;
+}
+.brand { display: inline-flex; align-items: center; gap: 8px; font-weight: 650; font-size: 15px; letter-spacing: 0.01em; }
+.mark { width: 20px; height: 20px; background: currentColor; -webkit-mask: var(--logo) center / contain no-repeat; mask: var(--logo) center / contain no-repeat; }
+.progress { display: flex; gap: 4px; justify-self: center; width: min(100%, 260px); }
+.progress i { flex: 1 1 0; height: 3px; border-radius: 2px; background: var(--rule-strong); transition: background 240ms, flex-grow 320ms; }
+.progress i.done { background: var(--ink-2); }
+.progress i.now { background: var(--accent); flex-grow: 2.2; }
+.progress[hidden] + .later { grid-column: 3; }
+.text-btn {
+  min-height: 44px; padding-inline: 10px; border: 0; border-radius: 8px;
+  background: transparent; color: var(--ink-3); font-size: 14px;
+}
+.text-btn:hover { color: var(--ink); background: var(--accent-soft); }
+
+.ob-scroll { flex: 1 1 auto; overflow-y: auto; overscroll-behavior: contain; }
+.ob-col {
+  width: min(100%, 36rem);
+  margin-inline: auto;
+  padding-block: 28px 32px;
+  padding-inline: 24px;
+}
+.is-phone .ob-col { padding-block: 12px 24px; padding-inline: 20px; }
+.eyebrow {
+  display: inline-flex; align-items: center; gap: 8px;
+  font-family: var(--font-tech); font-size: 11px; letter-spacing: 0.06em; text-transform: uppercase; color: var(--ink-3);
+}
+.eyebrow b { font-weight: 500; color: var(--accent); }
+.ob-col h2 {
+  margin: 10px 0 8px;
+  font-size: clamp(26px, 3.2vw, 34px);
+  line-height: 1.2;
+  font-weight: 650;
+  letter-spacing: -0.005em;
+  text-wrap: balance;
+}
+.is-phone .ob-col h2 { font-size: 26px; }
+.lead { margin: 0 0 24px; color: var(--ink-2); font-size: 16px; max-width: 32em; text-wrap: pretty; }
+
+.ob-foot {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding-block: 12px max(12px, env(safe-area-inset-bottom, 0px));
+  padding-inline: 20px;
+  border-block-start: 1px solid var(--rule);
+  background: var(--paper);
+}
+.ob-foot .hint { flex: 1 1 auto; min-width: 0; font-size: 13px; color: var(--ink-3); text-align: center; }
+.primary {
+  min-height: 46px; min-width: 132px; padding-inline: 22px;
+  border: 0; border-radius: 10px;
+  background: var(--accent); color: var(--accent-ink);
+  font-weight: 600; font-size: 15px;
+  transition: opacity 160ms, transform 160ms;
+}
+.primary:disabled { opacity: 0.38; cursor: not-allowed; }
+.primary:not(:disabled):active { transform: translateY(1px); }
+.ghost {
+  min-height: 46px; padding-inline: 16px; border: 1px solid var(--rule-strong); border-radius: 10px; background: transparent;
+}
+.ghost:hover { background: var(--accent-soft); }
+
+/* 步骤切换：从可见态出发的短位移，不依赖观察器。 */
+.step-enter { animation: enter 360ms cubic-bezier(.22,1,.36,1) both; }
+@keyframes enter { from { opacity: 0.001; transform: translateY(8px); } to { opacity: 1; transform: none; } }
+
+/* ---------- 欢迎 ---------- */
+.welcome { display: grid; justify-items: center; text-align: center; padding-block: 8vh 24px; }
+.welcome .big-mark { width: 64px; height: 64px; color: var(--ink); }
+.welcome h2 { font-size: clamp(30px, 4.6vw, 44px); margin-block: 22px 10px; }
+.welcome .lead { margin-inline: auto; text-align: center; }
+.promise { display: grid; gap: 0; width: 100%; max-width: 26rem; margin: 8px 0 28px; padding: 0; list-style: none; text-align: start; }
+.promise li { display: grid; grid-template-columns: 22px 1fr auto; gap: 12px; align-items: baseline; padding-block: 12px; border-block-end: 1px solid var(--rule); }
+.promise li:first-child { border-block-start: 1px solid var(--rule); }
+.promise .n { font-family: var(--font-tech); font-size: 12px; color: var(--ink-3); }
+.promise .t { font-family: var(--font-tech); font-size: 12px; color: var(--ink-3); white-space: nowrap; }
+.welcome .primary { min-width: 220px; }
+.quiet-link { margin-top: 14px; font-size: 14px; color: var(--ink-3); background: none; border: 0; min-height: 44px; text-decoration: underline; text-underline-offset: 3px; }
+
+/* ---------- 选项砖 ---------- */
+.tiles { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 10px; }
+.is-phone .tiles { grid-template-columns: minmax(0, 1fr); }
+.tile {
+  display: grid; grid-template-columns: 36px minmax(0, 1fr); gap: 12px; align-items: center;
+  min-height: 72px; padding: 12px 14px;
+  border: 1px solid var(--rule-strong); border-radius: var(--r);
+  background: var(--paper-edit); text-align: start;
+  transition: border-color 160ms, background 160ms;
+}
+.tile:hover { border-color: var(--ink-3); }
+.tile[aria-pressed="true"] { border-color: var(--accent); background: var(--accent-soft); box-shadow: inset 0 0 0 1px var(--accent); }
+.tile .ic { display: grid; place-items: center; width: 36px; height: 36px; border-radius: 8px; background: var(--paper-raised); font-family: var(--font-tech); font-size: 13px; font-weight: 500; }
+.tile strong { display: block; font-size: 15px; font-weight: 600; }
+.tile small { display: block; color: var(--ink-3); font-size: 13px; line-height: 1.4; }
+.tile.dashed { border-style: dashed; background: transparent; }
+
+.inline-form { display: grid; gap: 10px; margin-top: 16px; padding: 16px; border: 1px solid var(--rule); border-radius: var(--r); background: var(--paper-edit); }
+.inline-form label { font-size: 14px; color: var(--ink-2); }
+.field-row { display: flex; gap: 8px; }
+.field-row input { flex: 1 1 auto; min-width: 0; }
+input[type="text"], input[type="password"], select {
+  min-height: 46px; padding-inline: 12px;
+  border: 1px solid var(--rule-strong); border-radius: 8px; background: var(--paper);
+  font-family: var(--font-tech); font-size: 14px;
+}
+.help { margin: 0; font-size: 13px; color: var(--ink-3); }
+.help code { font-family: var(--font-tech); font-size: 12px; padding: 1px 5px; border-radius: 4px; background: var(--paper-raised); color: var(--ink-2); }
+.result { display: flex; align-items: center; gap: 10px; margin-top: 16px; padding: 14px 16px; border-radius: var(--r); background: var(--paper-edit); border: 1px solid var(--rule); }
+.result .dot { width: 8px; height: 8px; border-radius: 50%; background: var(--ok); flex: 0 0 auto; }
+.result strong { font-weight: 600; }
+.result span { color: var(--ink-3); font-size: 13px; font-family: var(--font-tech); }
+.result.wait .dot { background: var(--warn); animation: pulse 1.2s ease-in-out infinite; }
+@keyframes pulse { 50% { opacity: 0.3; } }
+.sample-reply { margin: 10px 0 0; padding-inline-start: 14px; border-inline-start: 2px solid var(--rule-strong); color: var(--ink-2); font-size: 15px; }
+
+/* ---------- 能力卡 ---------- */
+.abilities { display: grid; gap: 12px; }
+.ability {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 4px 16px;
+  padding: 16px 18px;
+  border: 1px solid var(--rule-strong);
+  border-radius: 12px;
+  background: var(--paper-edit);
+  transition: border-color 160ms, background 160ms;
+}
+.ability.on { border-color: var(--accent); background: color-mix(in oklch, var(--accent) 5%, var(--paper-edit)); }
+.ability h3 { margin: 0; font-size: 17px; font-weight: 600; }
+.ability p { margin: 0; grid-column: 1; color: var(--ink-2); font-size: 14px; }
+.ability .src { grid-column: 1 / -1; display: flex; flex-wrap: wrap; gap: 6px 12px; margin-top: 6px; font-family: var(--font-tech); font-size: 11px; color: var(--ink-3); }
+.ability .src .needs { color: var(--warn); }
+.switch {
+  grid-column: 2; grid-row: 1 / span 2; align-self: start;
+  position: relative; width: 48px; height: 28px; margin-top: 2px;
+  border: 0; border-radius: 999px; background: var(--rule-strong);
+  transition: background 180ms;
+}
+.switch::after { content: ""; position: absolute; inset-block-start: 3px; inset-inline-start: 3px; width: 22px; height: 22px; border-radius: 50%; background: var(--paper-edit); box-shadow: 0 1px 2px rgb(0 0 0 / 0.25); transition: transform 200ms cubic-bezier(.22,1,.36,1); }
+.switch[aria-checked="true"] { background: var(--accent); }
+.switch[aria-checked="true"]::after { transform: translateX(20px); }
+.switch::before { content: ""; position: absolute; inset: -8px; }
+.vignette {
+  grid-column: 1 / -1;
+  margin-top: 12px;
+  padding: 12px 14px;
+  border-radius: 8px;
+  background: var(--paper);
+  border: 1px dashed var(--rule-strong);
+  font-size: 14px;
+}
+.vignette .who { font-family: var(--font-tech); font-size: 11px; color: var(--ink-3); letter-spacing: 0.03em; }
+.vignette .line { margin: 2px 0 8px; }
+.vignette .line:last-child { margin-bottom: 0; }
+.vignette mark { background: var(--accent-soft); color: inherit; padding: 0 3px; border-radius: 3px; }
+.ability:not(.on) .vignette { display: none; }
+.count-note { margin: 18px 0 0; font-size: 13px; color: var(--ink-3); }
+.count-note b { font-weight: 600; color: var(--ink-2); }
+
+/* ---------- 配置项 ---------- */
+.opts { display: flex; flex-wrap: wrap; gap: 8px; }
+.opt { min-height: 44px; padding-inline: 14px; border: 1px solid var(--rule-strong); border-radius: 999px; background: var(--paper-edit); font-size: 14px; }
+.opt[aria-checked="true"] { border-color: var(--accent); background: var(--accent-soft); box-shadow: inset 0 0 0 1px var(--accent); }
+.group { display: grid; gap: 10px; padding-block: 16px; border-block-end: 1px solid var(--rule); }
+.group:first-of-type { padding-top: 0; }
+.group:last-child { border-bottom: 0; }
+.group > .label { font-size: 15px; font-weight: 600; }
+.group > .label small { display: block; font-weight: 400; color: var(--ink-3); font-size: 13px; }
+.depends { display: flex; gap: 10px; align-items: baseline; margin: 0 0 18px; padding: 10px 14px; border-radius: 8px; background: var(--accent-soft); font-size: 14px; color: var(--ink-2); }
+.depends b { color: var(--ink); font-weight: 600; }
+
+/* ---------- 完成 ---------- */
+.done-list { display: grid; gap: 0; margin: 0 0 24px; padding: 0; list-style: none; }
+.done-list li { display: grid; grid-template-columns: 18px minmax(0, 1fr) auto; gap: 12px; align-items: baseline; padding-block: 11px; border-block-end: 1px solid var(--rule); font-size: 15px; }
+.done-list li:first-child { border-block-start: 1px solid var(--rule); }
+.done-list .ck { color: var(--ok); font-family: var(--font-tech); }
+.done-list .off { color: var(--ink-3); }
+.done-list em { font-style: normal; font-family: var(--font-tech); font-size: 12px; color: var(--ink-3); }
+.composer { border: 1px solid var(--accent); border-radius: 14px; background: var(--paper-edit); padding: 14px 14px 10px; }
+.composer p { margin: 0 0 12px; color: var(--ink-3); }
+.composer .row { display: flex; justify-content: space-between; align-items: center; }
+.composer .send { width: 36px; height: 36px; border-radius: 50%; border: 0; background: var(--accent); color: var(--accent-ink); font-size: 16px; }
+.starters { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 12px; }
+.starter { min-height: 40px; padding-inline: 12px; border: 1px solid var(--rule-strong); border-radius: 999px; background: transparent; font-size: 14px; color: var(--ink-2); }
+.starter:hover { color: var(--ink); border-color: var(--ink-3); }
+
+/* ---------- 改动说明 ---------- */
+.notes { width: min(100%, 1040px); margin: 0 auto; padding-block: 8px 56px; padding-inline: 16px; }
+.notes h2 { font-size: 20px; margin: 0 0 4px; }
+.notes > p { margin: 0 0 18px; color: var(--ink-2); max-width: 44em; }
+.diff { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 300px), 1fr)); gap: 12px; }
+.diff article { padding: 16px 18px; border: 1px solid var(--rule); border-radius: 12px; background: var(--paper); }
+.diff h3 { margin: 0 0 8px; font-size: 16px; }
+.diff dl { margin: 0; display: grid; grid-template-columns: auto minmax(0, 1fr); gap: 4px 10px; font-size: 14px; }
+.diff dt { font-family: var(--font-tech); font-size: 11px; color: var(--ink-3); padding-top: 3px; letter-spacing: 0.04em; }
+.diff dd { margin: 0; color: var(--ink-2); }
+.contract { margin-top: 16px; padding: 16px 18px; border-radius: 12px; background: var(--paper); border: 1px solid var(--rule); overflow-x: auto; }
+.contract pre { margin: 0; font-family: var(--font-tech); font-size: 12.5px; line-height: 1.6; color: var(--ink-2); }
+.contract pre b { color: var(--accent); font-weight: 500; }
+
+@media (max-width: 720px) {
+  .stage { padding-block: 12px; padding-inline: 0; }
+  .device, .device.is-phone { width: 100%; height: calc(100dvh - 120px); min-height: 560px; border-radius: 0; border-inline: 0; }
+  .ob-top { padding-inline: 12px; gap: 8px; }
+  .brand span { display: none; }
+  .tiles { grid-template-columns: minmax(0, 1fr); }
+  .ob-col { padding-inline: 20px; }
+  .demo-view { display: none; }
+}
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after { animation: none !important; transition: none !important; }
+}
+</style>
+</head>
+<body>
+
+<header class="demo-bar">
+  <div>
+    <span class="tag">原型 · 可点击</span>
+    <h1>Akashic 首次引导</h1>
+  </div>
+  <div class="demo-group" role="group" aria-label="模拟已安装的插件">
+    <span>已安装插件</span>
+    <button class="chip" type="button" data-plugin="akasha" aria-pressed="true">Akasha</button>
+    <button class="chip" type="button" data-plugin="wake" aria-pressed="true">Wake</button>
+    <button class="chip" type="button" data-plugin="telegram" aria-pressed="true">Telegram</button>
+    <button class="chip" type="button" data-plugin="fitbit" aria-pressed="false">Fitbit <small>fleet</small></button>
+  </div>
+  <span class="demo-spacer"></span>
+  <div class="demo-group demo-view" role="group" aria-label="视图">
+    <button class="chip" type="button" data-view="desktop" aria-pressed="true">桌面</button>
+    <button class="chip" type="button" data-view="phone" aria-pressed="false">手机</button>
+  </div>
+  <button class="chip" type="button" id="restart">重新开始</button>
+</header>
+
+<main class="stage">
+  <div class="device" id="device">
+    <div class="ob-top">
+      <span class="brand"><i class="mark" aria-hidden="true"></i><span>Akashic</span></span>
+      <div class="progress" id="progress" aria-hidden="true"></div>
+      <button class="text-btn later" type="button" id="later">稍后再说</button>
+    </div>
+    <div class="ob-scroll" id="scroll">
+      <div class="ob-col" id="view" aria-live="polite"></div>
+    </div>
+    <footer class="ob-foot" id="foot">
+      <button class="text-btn" type="button" id="back">上一步</button>
+      <span class="hint" id="hint"></span>
+      <button class="primary" type="button" id="next">继续</button>
+    </footer>
+  </div>
+</main>
+
+<section class="notes" aria-labelledby="notes-title">
+  <h2 id="notes-title">相对现在改了什么</h2>
+  <p>引导的骨架不变：步骤仍然由已安装插件贡献，顺序仍由运行时依赖图计算。变的是它对用户说什么、出现在哪里、一次让人做几件事。在上方切换「已安装插件」，能力页和进度条会随之增减；关掉 Telegram 时，Wake 会提示它缺少接收渠道。</p>
+  <div class="diff">
+    <article>
+      <h3>从设置弹窗里出来</h3>
+      <dl><dt>现在</dt><dd>嵌在「功能设置」对话框里，左边是设置目录，像在填后台表单。</dd>
+      <dt>改为</dt><dd>首次启动时占满整屏的单列纸面，只有进度、一个问题和一个按钮。以后在设置里也能重新打开。</dd></dl>
+    </article>
+    <article>
+      <h3>按好处命名，不按插件命名</h3>
+      <dl><dt>现在</dt><dd>「Akasha 情景记忆」「Wake 主动联系」「Telegram 发送 / 接入」。</dd>
+      <dt>改为</dt><dd>「记住你们聊过的事」「在合适的时候主动找你」「在 Telegram 里找到它」，插件名降为小字来源。</dd></dl>
+    </article>
+    <article>
+      <h3>只有一步是必需的</h3>
+      <dl><dt>现在</dt><dd>五步平级，每一步都要「做出决定」才能往下走。</dd>
+      <dt>改为</dt><dd>连接模型是唯一必需项。其余能力在一页里用开关挑选，只为打开的能力出配置步骤。</dd></dl>
+    </article>
+    <article>
+      <h3>先让人看到会得到什么</h3>
+      <dl><dt>现在</dt><dd>直接给表单，用户不知道开了之后会怎样。</dd>
+      <dt>改为</dt><dd>每张能力卡打开后显示一段示例对话或通知，配置前就看到回报。</dd></dl>
+    </article>
+    <article>
+      <h3>状态自己更新</h3>
+      <dl><dt>现在</dt><dd>「刷新状态」按钮，「已启用 · 待完善配置」「依赖项未就绪」这类系统用语。</dd>
+      <dt>改为</dt><dd>连接后就地给出结果和一句试回复；依赖关系写成人话：「Wake 需要一个接收渠道，已为你排在 Telegram 之后」。</dd></dl>
+    </article>
+    <article>
+      <h3>终点是第一句话</h3>
+      <dl><dt>现在</dt><dd>完成页列出配置状态，按钮写着「进入工作台」（工作台已退役）。</dd>
+      <dt>改为</dt><dd>完成页直接给输入框和几条起手话题，引导结束即对话开始。手机上动作栏固定在拇指区。</dd></dl>
+    </article>
+  </div>
+  <div class="contract">
+<pre>// 插件侧的合同只多三个可选字段；不填时退回今天的行为（嵌入设置分节）。
+Step(
+  key="configure", title="Wake 主动联系", group="proactive", route="wake-settings", status=...,
+  <b>pitch</b>="在合适的时候主动找你",            # 能力卡标题，用户语言
+  <b>benefit</b>="天气突变、日程临近、你提过的事有了进展时发消息给你。",
+  <b>preview</b>=Preview(kind="notification", lines=(...)),   # 示例对话 / 通知
+)
+# 模型连接等必需步骤用 required=True 标出；其余都进入「能力」页由用户挑选。</pre>
+  </div>
+</section>
+
+<script>
+(() => {
+  const LOGO = "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAGAAAABgCAQAAABIkb+zAAAAIGNIUk0AAHomAACAhAAA+gAAAIDoAAB1MAAA6mAAADqYAAAXcJy6UTwAAAACYktHRAAAqo0jMgAAAAd0SU1FB+oHEQ4oCHiWdTwAAAAldEVYdGRhdGU6Y3JlYXRlADIwMjYtMDctMTdUMTQ6Mzk6NTArMDA6MDA+rUxAAAAAJXRFWHRkYXRlOm1vZGlmeQAyMDI2LTA3LTE3VDE0OjM5OjUwKzAwOjAwT/D0/AAAACh0RVh0ZGF0ZTp0aW1lc3RhbXAAMjAyNi0wNy0xN1QxNDo0MDowOCswMDowMLbEq2kAAAyzSURBVHja7Zt7tB1Vfcc/c+bcmxAeCeFCwiNgSIBcMUWQiIhUlihoK9RlAKE+qxZqDWqlXav0oVCr4ipLsa3KksJqsWorYC0ComBcPETKq4CQIEISwqOhJAQSQpJzZubTP2bP3DnnntclF7q6en+z1r3nzOzZ+/v97d/+7d/+7X1gSqZkSqZkSqZkSqYEAPOrLuLBXunzLhBr/m8DmzD8un/tNlWX5Xf+D0gF/hJXqbpN/YEYv4IErF5Ry1Xe7/peZCyepWrDzFRd7ZAYvXLAI2Pr1q2J7XRi68ZjT8a9HYvnq5qomqnbPUCsvRLQa9aNWyDv7CxnOsuZ7u5wC5V6lUbFeD6hpqYWkqlHiXH39us7Bh6AiBhJyYBZLOYwXsPBzGF3poUiEZtZxxM8wD3czxqS8FaKFjgSTuKrSMSYwWTEjLy8mo+C08MDPNtrfMZ+0vAev+TrSr1HuaN0rpu1on3VpvohcYfU3B184bEjT/M6t4dGU5s2TUzNKldqEu4XcpdnO7MyeK9QG21kXx4Cpc3H4pDL/HXZXGLWtwcyU5uh3HrPdRdr4pvHab8g8MFJJtCi+6WungD0Vklsqvo3Iv4wwG0vo2/vPYhfCvjc7vfxh8Gm0wnAHq/hk8XRLnVk6pJJI1CaDuLpblGbOwA+h/esI8F9Njs+3+p+veeBgaeI4O5iMuAivssMEuqDv99BMuBh1gNv7trkGp4IJbvIgMOj4q0jfsSJpEQ7NoeEStcCsLCjKjNq3AfEpK0BSDWyGAhEBf5u3MRraTK0g+AL2QLMZM82VLkk1LkRiKi10UsmSACAmITduJ3RSYSf6306MzroLGM6j3M1kJF1N6IBCJg3lALLGaXB8KTBz+UFNjETW0KIGjHf5E/YBGSM8loWMZeMmBdYySUTqD04TsQfOX6u3BFJ1J+KeJe2hXD6ERGHPMu721+cKPx82vrqJMM3xPvTxW9V3Ghmpn5AxLf4aLjbDFdDfWSiBIbED3T01JMhR7TV3lT/XMQzVW1U4qe81749MfixuNCG7tCk1Vma6rnibNerjaDhn4t4Rgm4vdfeNXHrv+Nl0n+qPmBNvKBy943iIpMOKkvVRx3UiZTm8xdOtvWPSaK+U9zXh7ze77jRW8rgbnybDfWcAcdwGfccZKYTjjUnQuBOI3GaiHu4QDyoY5SVqKsHzlGU9t850J08aarvEHHU1wev9/kS8JhkJqHkIJNv6Tzf4fiBNJmSqevdS/xTVb8u4sle6ipb54aG+rmB01zlovH+SSUw3hCb6rXi3m4LLS0pw/ZLyrYTE/UbIdc0Af2f4WSbTzbu2yXuIe7sc+aD9DO+z0s9UcSb1O0BwXljXnFwB3r7pOo/dXMLhWbQKh7uu1yhppWnp4mnhs8rPKHQ/qAGFIsnTip83e45lf7M1C3OFT/b1jvbfF69UjxB/bHvNRZrE4GfE7jayTOgTH3Baf6grDNR7xb3C6DbW3qnuJcHhhGxtzt1z6yOJ1ATF5g4ef4/Ve8Vj7HwLcWdnV3bQjPxWv/Vt1dSkYs8z8zfL3Ihgw7gz06i/vOa/k7EK8O3XDWj4pEu926/5NrQL0eKOM2jXOoXvTUQvrdXdruTA13hZIZviXqKiAeW8BP15jI1ibepL6q/JX6wDKRz+k31hIH2CoL9Hzup8DN1m/PEYfFcizgnUVd5pkucLf62qrdaFzeap8uKlFlT/feArS+Buvj1CRhQs2+ol6jLxzyJt1kdyqoPO0McdanTxU/ZHsrlPXag/XbMgv8fcs2APZCo3/Upew/3pvrhoJpYnOeLJfg0pHxvc34wpY+VkNvrOK9vKBEaeMuA8FN1jW/qkRgs/q93Zrm6qIc5pgoyUbf7E7/vio7w87YeyqfY/h7obx3MgJrquz3CThPeGKmGekGZEC7a+KitM29S+dS5N1PzxU7ci0Ak1tsiwV7wfxG6vJVuvjDfVOryBffK625JE/yl7RtKSc9sa1P9sjjUi0AcJvD+IUSupcPFi9oI5J8/7zfUxIal7Vp11LH46Tbd95ZUXdnTC4Vmvu0gBtQwX5Djdep2UzUr92A+KX7PfK93lfVC/xVTzfdlPlTWNags7kWgJu7tFvuHEA31prBqXtP2bLmLW9YSx4z573IU1KwZOSQe7bPm+8L9pal+qheBodCt/fSfqBvcU8T5bnGtt/grdatX+7YAcU83qvrxMfMpwUcliSFxT2+omF6/dq/qbUL4S/sN4PzpUSFnMcM54v6+yv3dJwAbFt+q6vmF9ksCtRCgHWixu4x4TqXm3i3/ukdaJTTbD35mHtcMBXAj3mLmVr9msf1UD+nCT1Tj+BL+XH+mpl7rSOiHmjjqzX1NN1MbvroXgX/o05V5A2cFkHk65OHy/uVj+vbLHi/GY8uQUD4OfZypt5djYkjEC+3nk1L19O4E8tg860PgD8pJqS5+Rt1q7oHCllzLnFu6vfB9mblvytxmnoOuh/AZT7PfSEjUL1Qxt+58vIF5LXn6dkmJuJGLqYc9kgR4DzBMscNyevgkMXFeqlJdBpxKviuRb1G9h2IDKAUOYhBZ1J3Ab9JzQw2AXcoyNWB/FpQYI+Cw8mlK2gY/ImMXDilbrQGHMoO0LNQ/ZRUB+3YncMQAr+/PTmREoc2dmdZCYJ+cQFRebTLctr8zg+mVb7MGIjC3O4FD6L3xGgGzGQGKeTU/o1KMUtgE9Dqe1O7EW3e/5jKIVCm3wd2ra0MFAZnOfhR2Dut4tuWdNUC3aFFgI0+3EH6c58KnLBDofzqrxchbCcxkzBw6U0iBQxkbqJu4I9zNK/5pFe/YFaQOLC/Lp+FbPqQzauwzEIHuUkktbeziTpvqN0vXF4tvUrXhNvW/3TW40Fo4elZc+VGzmniwqtvD8ZxwrNJowCgsU5/uTqDwtNf7tS4eOVV/WdFtbJFX1tS3iXEZ67RftRCBfris7aPlxBeLx9k/mMjUh6uYWx3XJnYjI+Y61vGHHTlGwCgHsooaGfnMcAE38342czGriMkQmM8oC5jDLFK28AwP8iBPku8AX8Y9/B41/pn/CPvPeb1Hh+cdNEvEBp7gMFLq/Ff3Hngo6P1oF3btzKZ6ZssCMa58qolH+EB5fmtMXvQuF1sclGp/syYut1sgkaq3emGYwy/rPojvCXee5RHWEHWc1CLgDKq+ICWmTp0aKTXgSA4lJiWpXCnTeB3HQChVp04ctA81Ml4VnnaSDLidx8O3+7sT+LeKYd1I51k5Bo7jN1o6OwdblN5O7qHqlSs/prO+BJSTqqJ4H8MkPXzQDTwTWv9FdwJX8TA1UgSuoJtLS4CPhcoqc25ENHaEZrwmY2A1kEXt83REQsxHuupf6mzhJ8wB6qzm3q4kxdPVhqNi1HVpk4+NQzol+ozEPXzOTnsxTzmjPatThtIf7xGHNtXviV9Q9Su9VmSx+I/qcRIyN42uVV5TXWtVANXF74x7s6Fe3J5XK4fvSNd5p3DsJ4a1Sp9Ffe6/7/TvzY+kPtTVLyTBiw+3UgiAFms4vD3mRfSg1sxmJUP0/R76T9Q7RLxW/Va/xFZNrPvWUPHJXSvOtbWknUIJ6Vw1tWEa/uaJlvbcUP72H9trGVPsDg/7lJlz7HUEsLLojoKBXK4dfHpR8XMuEoeLmbflZOP5LaX/rKy5Wqou/q5FJq+TNNSrRDxSPcneyV2LlNMYiboPdR0JibrF44PWq+FDvp+4xMt90Pu8zCXlvbES+Sr40xUTa+/fvIWN7iXi+/MzvO1uozeZWDzADfYazPpXpTXHFZCtR/HjCvQ4zOKz/BfHnz3Nyr/5wv+Eyqw/zmn0I5C/usANFUNKW9Lmuax0afmLgLiMPuv5ry8csl5GpwWRnTzbdeM0XvTF8xY56mUvEX6FwpC4wMdadFWc5bnNL/pkuPeYn/PwDr/caL+GfaNf8dnw1hYv8b4SeN7PZ/mz8LQKv8sWX9SbApCfF92Jf+JUYCvXcCr5bFwnZRGPcCxH8XpOYjrwND/ndn7F4zzNZiI2UWNXMmYxwnxezRs4hlnA09zIau7nauaxkjqSIXW28m6u5xlG2MB7+XGR/3jJq5yWzjvFleof+RrvLTv+0dLqZ7vUS8uj+IVprHND27h5wIs83umlTleo24MR3egBYV1wubvbllfqLH2phddrRKTAMuZzDvA7LONYpgF3ciwJUXmadoSFLGQ/9mVXZjObjCdpsJG1PMYa1rCBol8jmlzBKeH7HVwQgsl5jPCfoef7Qhygbyor2hzkEAkCB3Mc89mVC1lDDYlpORTctcUYyaiR8kkuoslabuAKlpMHc7nK60W+4uX/BdaUTMmUTMmUTMmU/D+W/wGZEHgnLlD3igAAAABJRU5ErkJggg==";
+  document.documentElement.style.setProperty("--logo", `url(${LOGO})`);
+
+  // 插件贡献的引导元数据：真实系统里来自 /api/dashboard/onboarding/catalog。
+  const PLUGINS = {
+    telegram: {
+      id: "telegram", plugin: "telegram_channel + telegram_sender", level: 1,
+      pitch: "在 Telegram 里找到它",
+      benefit: "手机上直接给 Akashic 发消息，不用打开网页。",
+      preview: [["你 · Telegram", "帮我记一下，周五下午三点牙医。"], ["Akashic", "记下了：<mark>周五 15:00 牙医</mark>。前一天晚上提醒你？"]],
+    },
+    wake: {
+      id: "wake", plugin: "wake", level: 2, needs: "telegram",
+      pitch: "在合适的时候主动找你",
+      benefit: "天气突变、日程临近、你提过的事有了进展时，它会先开口。",
+      preview: [["Akashic · 08:12 主动消息", "今天比昨天冷 8 度。你说周六要去爬山，记得带件外套。"]],
+    },
+    akasha: {
+      id: "akasha", plugin: "akasha", level: 1,
+      pitch: "记住你们聊过的事",
+      benefit: "过去的对话会沉淀成记忆，下次聊到相关的事它会自己想起来。",
+      preview: [["你", "上次说的那家拉面店叫什么来着？"], ["Akashic", "是<mark>「风云儿」</mark>，你 9 月 14 日去过，说汤头偏咸但面很好。"]],
+    },
+    fitbit: {
+      id: "fitbit", plugin: "fitbit · akashic-fleet", level: 1,
+      pitch: "了解你的作息和运动",
+      benefit: "读取睡眠和步数，聊到状态时有数据可依。",
+      preview: [["Akashic", "昨晚睡了 <mark>6 小时 12 分</mark>，比你这周平均少一小时。今天午后可能会困。"]],
+    },
+  };
+  const ORDER = ["akasha", "telegram", "wake", "fitbit"];
+
+  const state = {
+    installed: new Set(["akasha", "wake", "telegram"]),
+    chosen: new Set(["akasha", "wake", "telegram"]),
+    step: 0,
+    provider: null,
+    model: "idle",           // idle | waiting | ok
+    tg: "idle", fitbit: "idle",
+    wakeVia: "telegram", wakeQuiet: "23:00 – 08:00", wakePace: "克制",
+    embed: "local",
+  };
+
+  const $ = (s) => document.querySelector(s);
+  const view = $("#view"), progress = $("#progress"), foot = $("#foot");
+  const nextBtn = $("#next"), backBtn = $("#back"), hint = $("#hint"), later = $("#later");
+
+  // 依赖图排序：渠道先于主动联系，与运行时 Fiber 层级一致。
+  function chosenSteps() {
+    return [...state.chosen].filter((id) => state.installed.has(id))
+      .sort((a, b) => PLUGINS[a].level - PLUGINS[b].level || ORDER.indexOf(a) - ORDER.indexOf(b));
+  }
+  function flow() {
+    const configs = chosenSteps().map((id) => ({ kind: "config", id }));
+    const abilities = [...state.installed].length ? [{ kind: "abilities" }] : [];
+    return [{ kind: "welcome" }, { kind: "model" }, ...abilities, ...configs, { kind: "done" }];
+  }
+
+  function renderProgress(steps) {
+    const middle = steps.filter((s) => s.kind !== "welcome" && s.kind !== "done");
+    const at = state.step - 1;
+    progress.hidden = state.step === 0 || state.step === steps.length - 1;
+    progress.innerHTML = middle.map((_, i) => `<i class="${i < at ? "done" : i === at ? "now" : ""}"></i>`).join("");
+  }
+
+  const esc = (s) => s;
+  function vignette(lines) {
+    return `<div class="vignette">${lines.map(([who, text]) => `<div class="who">${who}</div><p class="line">${esc(text)}</p>`).join("")}</div>`;
+  }
+
+  const VIEWS = {
+    welcome() {
+      const extras = chosenSteps().length;
+      return {
+        html: `<div class="welcome">
+          <i class="mark big-mark" aria-hidden="true"></i>
+          <h2>你好，我是 Akashic</h2>
+          <p class="lead">一个会记事、会主动开口的助手。先花两三分钟让我能说话，其余的随时可以再开。</p>
+          <ol class="promise">
+            <li><span class="n">1</span><span>连接一个对话模型</span><span class="t">必需 · 1 分钟</span></li>
+            <li><span class="n">2</span><span>挑选你想要的能力</span><span class="t">${state.installed.size} 项可选</span></li>
+            <li><span class="n">3</span><span>说第一句话</span><span class="t">马上</span></li>
+          </ol>
+          <button class="primary" type="button" data-go="next">开始</button>
+          <button class="quiet-link" type="button" data-go="skip">我已经配好了，直接聊天</button>
+        </div>`,
+        foot: false,
+      };
+    },
+    model() {
+      const tiles = [
+        ["codex", "Cx", "ChatGPT 订阅", "用 Codex 登录，不需要 API Key"],
+        ["opencode", "OC", "OpenCode Go", "本机登录或 API Key"],
+        ["deepseek", "DS", "DeepSeek", "官方 API Key"],
+        ["custom", "+", "其他兼容服务", "OpenAI 兼容地址与 Key"],
+      ];
+      const p = state.provider;
+      let detail = "";
+      if (p && state.model !== "ok") {
+        if (p === "codex" || p === "opencode") {
+          detail = state.model === "waiting"
+            ? `<div class="result wait"><i class="dot"></i><div><strong>正在等待浏览器登录…</strong><br><span>在弹出的页面完成登录后，这里会自动继续</span></div></div>`
+            : `<div class="inline-form"><p class="help">会打开浏览器完成登录，凭据只保存在这台机器上。</p><button class="ghost" type="button" data-act="login">在浏览器中登录</button></div>`;
+        } else {
+          detail = `<form class="inline-form" data-act="key">
+            <label for="api-key">${p === "custom" ? "服务地址与 API Key" : "DeepSeek API Key"}</label>
+            ${p === "custom" ? `<input id="base-url" type="text" placeholder="https://api.example.com/v1" autocomplete="off">` : ""}
+            <div class="field-row"><input id="api-key" type="password" placeholder="sk-…" autocomplete="off"><button class="ghost" type="submit">连接</button></div>
+            <p class="help">在 <code>platform.deepseek.com</code> 的 API Keys 页面创建。Key 只保存在本机。</p>
+          </form>`;
+        }
+      }
+      const ok = state.model === "ok" ? `<div class="result"><i class="dot"></i><div><strong>已连接 ${tiles.find((t) => t[0] === p)[2]}</strong><br><span>${p === "deepseek" ? "deepseek-chat" : p === "codex" ? "gpt-5-codex" : "默认模型"} · 首字 0.6s</span>
+        <p class="sample-reply">「你好！我能说话了。接下来想让我帮你做什么？」</p></div></div>` : "";
+      return {
+        eyebrow: `<b>必需</b> · 让它能说话`,
+        title: "连接一个对话模型",
+        lead: "Akashic 本身不带模型。选一个你已经有账号的服务，连上之后它就能回答你。",
+        html: `<div class="tiles" role="group" aria-label="模型服务">${tiles.map(([id, ic, name, sub]) =>
+          `<button class="tile${id === "custom" ? " dashed" : ""}" type="button" data-provider="${id}" aria-pressed="${p === id}"><span class="ic">${ic}</span><span><strong>${name}</strong><small>${sub}</small></span></button>`).join("")}</div>${detail}${ok}`,
+        next: state.model === "ok", hint: state.model === "ok" ? "" : "连接成功后继续",
+      };
+    },
+    abilities() {
+      const ids = ORDER.filter((id) => state.installed.has(id));
+      const on = ids.filter((id) => state.chosen.has(id)).length;
+      return {
+        eyebrow: `可选 · 随时可改`,
+        title: "还想让它做什么？",
+        lead: "下面每一项都来自一个已安装的插件。打开的项会在下一步做简单设置，没打开的不会打扰你。",
+        html: `<div class="abilities">${ids.map((id) => {
+          const p = PLUGINS[id], checked = state.chosen.has(id);
+          const needs = p.needs && !(state.installed.has(p.needs) && state.chosen.has(p.needs))
+            ? `<span class="needs">需要一个接收渠道 · 将只在网页里提醒</span>` : p.needs ? `<span>会通过 ${PLUGINS[p.needs].pitch.replace("在 ", "").replace(" 里找到它", "")} 联系你</span>` : "";
+          return `<article class="ability${checked ? " on" : ""}">
+            <h3 id="ab-${id}">${p.pitch}</h3>
+            <button class="switch" type="button" role="switch" aria-checked="${checked}" aria-labelledby="ab-${id}" data-toggle="${id}"></button>
+            <p>${p.benefit}</p>
+            <div class="src"><span>来自插件 ${p.plugin}</span>${needs}</div>
+            ${vignette(p.preview)}
+          </article>`;
+        }).join("")}</div>
+        <p class="count-note">已选 <b>${on}</b> 项，接下来还有 <b>${on}</b> 个小设置。安装新插件后，这里会自动多出对应的一项。</p>`,
+        next: true, nextLabel: on ? "继续" : "先不用，直接开始",
+      };
+    },
+    config(id) {
+      const p = PLUGINS[id];
+      if (id === "telegram") {
+        const ok = state.tg === "ok";
+        return {
+          eyebrow: `${p.pitch}`, title: "连接你的 Telegram 机器人",
+          lead: "Akashic 通过你自己的机器人收发消息，聊天记录不经过第三方。",
+          html: ok ? `<div class="result"><i class="dot"></i><div><strong>已连接 @hua_akashic_bot</strong><br><span>给它发一句「你好」试试，回复会出现在 Telegram 里</span></div></div>`
+            : `<form class="inline-form" data-act="tg">
+              <label for="tg-token">Bot Token</label>
+              <div class="field-row"><input id="tg-token" type="password" placeholder="123456:ABC-DEF…" autocomplete="off"><button class="ghost" type="submit">验证</button></div>
+              <p class="help">在 Telegram 里找 <code>@BotFather</code>，发送 <code>/newbot</code>，按提示起名后会拿到这串 Token。</p>
+            </form>`,
+          next: ok, hint: ok ? "" : "验证后继续", skippable: true,
+        };
+      }
+      if (id === "wake") {
+        const viaTg = state.installed.has("telegram") && state.chosen.has("telegram");
+        const via = viaTg ? state.wakeVia : "web";
+        const opt = (key, val, label) => `<button class="opt" type="button" role="radio" aria-checked="${state[key] === val || (key === "wakeVia" && via === val)}" data-set="${key}" data-val="${val}">${label}</button>`;
+        return {
+          eyebrow: p.pitch, title: "它什么时候、在哪里找你",
+          lead: "主动消息默认很克制：只在有具体理由时才发，你随时能叫它安静。",
+          html: `${viaTg ? `<p class="depends"><span>↳</span><span>主动联系需要一个接收渠道，已排在 <b>Telegram</b> 之后。</span></p>` : `<p class="depends"><span>↳</span><span>还没有聊天渠道，主动消息只会出现在网页里。之后装上 Telegram 再改。</span></p>`}
+          <div class="group" role="radiogroup" aria-label="接收渠道"><span class="label">发到哪里</span><div class="opts">${viaTg ? opt("wakeVia", "telegram", "Telegram") : ""}${opt("wakeVia", "web", "只在网页")}</div></div>
+          <div class="group" role="radiogroup" aria-label="安静时段"><span class="label">安静时段<small>这段时间里不会主动发消息</small></span><div class="opts">${["22:00 – 07:00", "23:00 – 08:00", "不设置"].map((v) => opt("wakeQuiet", v, v)).join("")}</div></div>
+          <div class="group" role="radiogroup" aria-label="频率"><span class="label">多久找你一次<small>克制：一天最多两三条</small></span><div class="opts">${["克制", "适中", "积极"].map((v) => opt("wakePace", v, v)).join("")}</div></div>`,
+          next: true,
+        };
+      }
+      if (id === "akasha") {
+        const opt = (val, label, sub) => `<button class="tile" type="button" role="radio" aria-checked="${state.embed === val}" aria-pressed="${state.embed === val}" data-set="embed" data-val="${val}"><span class="ic">${val === "local" ? "本" : "AI"}</span><span><strong>${label}</strong><small>${sub}</small></span></button>`;
+        return {
+          eyebrow: p.pitch, title: "选一种方式整理记忆",
+          lead: "记忆需要一个「向量模型」把对话变成可检索的线索。用本机的就够了，不花钱，也不出这台电脑。",
+          html: `<div class="tiles" role="radiogroup" aria-label="向量模型">${opt("local", "本机模型", "bge-small · 推荐 · 首次下载约 130 MB")}${opt("openai", "OpenAI 兼容服务", "text-embedding-3-small · 按量计费")}</div>
+          <p class="help" style="margin-top:14px">已有的对话会在后台慢慢整理，不影响聊天。关掉后已有记忆仍然保留。</p>`,
+          next: true,
+        };
+      }
+      if (id === "fitbit") {
+        const ok = state.fitbit === "ok";
+        return {
+          eyebrow: p.pitch, title: "连接 Fitbit 账号",
+          lead: "只读取睡眠、步数和心率摘要，不会写入任何数据。",
+          html: ok ? `<div class="result"><i class="dot"></i><div><strong>已连接 Fitbit</strong><br><span>已读取最近 7 天的睡眠与步数</span></div></div>`
+            : `<div class="inline-form"><p class="help">会在浏览器打开 Fitbit 授权页。</p><button class="ghost" type="button" data-act="fitbit">用 Fitbit 登录</button></div>`,
+          next: ok, hint: ok ? "" : "授权后继续", skippable: true,
+        };
+      }
+    },
+    done() {
+      const ids = ORDER.filter((id) => state.installed.has(id));
+      return {
+        eyebrow: "准备好了",
+        title: "说第一句话吧",
+        lead: "设置都可以在「功能设置」里随时修改，新装的插件也会出现在那里。",
+        html: `<ul class="done-list">
+          ${state.model === "ok"
+            ? `<li><span class="ck">✓</span><span>能说话</span><em>${state.provider === "codex" ? "ChatGPT 订阅" : state.provider === "opencode" ? "OpenCode Go" : state.provider === "custom" ? "兼容服务" : "DeepSeek"}</em></li>`
+            : `<li><span class="off">!</span><span>还没有连接模型</span><em>在功能设置里连接</em></li>`}
+          ${ids.map((id) => state.chosen.has(id)
+            ? `<li><span class="ck">✓</span><span>${PLUGINS[id].pitch}</span><em>已开启</em></li>`
+            : `<li><span class="off">–</span><span class="off">${PLUGINS[id].pitch}</span><em>未开启</em></li>`).join("")}
+        </ul>
+        <div class="composer"><p>想聊点什么…</p><div class="row"><span class="help">Enter 发送</span><button class="send" type="button" aria-label="发送" data-go="restart">↑</button></div></div>
+        <div class="starters">${["介绍一下你能做什么", "帮我规划这个周末", state.chosen.has("akasha") ? "记住：我对花生过敏" : "今天有什么新闻值得看"].map((s) => `<button class="starter" type="button">${s}</button>`).join("")}</div>`,
+        next: true, nextLabel: "开始对话",
+      };
+    },
+  };
+
+  function render(focus) {
+    const steps = flow();
+    if (state.step >= steps.length) state.step = steps.length - 1;
+    const s = steps[state.step];
+    const v = s.kind === "config" ? VIEWS.config(s.id) : VIEWS[s.kind]();
+    renderProgress(steps);
+    later.hidden = s.kind === "welcome" || s.kind === "done";
+    view.innerHTML = (v.eyebrow ? `<span class="eyebrow">${v.eyebrow}</span><h2 tabindex="-1" id="step-title">${v.title}</h2><p class="lead">${v.lead}</p>` : "") + v.html;
+    view.classList.remove("step-enter"); void view.offsetWidth; view.classList.add("step-enter");
+    foot.hidden = v.foot === false;
+    backBtn.style.visibility = state.step <= 1 ? "hidden" : "visible";
+    nextBtn.disabled = !v.next;
+    nextBtn.textContent = v.nextLabel ?? (s.kind === "abilities" ? "继续" : "继续");
+    hint.innerHTML = v.skippable && !v.next ? `<button class="text-btn" type="button" data-go="next" data-force="1">跳过这项</button>` : (v.hint ?? "");
+    if (focus) { $("#scroll").scrollTop = 0; (view.querySelector("#step-title") ?? view.querySelector(".primary"))?.focus({ preventScroll: true }); }
+  }
+
+  function go(delta) { state.step = Math.max(0, Math.min(flow().length - 1, state.step + delta)); render(true); }
+
+  document.addEventListener("click", (e) => {
+    const t = e.target.closest("button");
+    if (!t) return;
+    if (t.dataset.go === "next") return go(1);
+    if (t.dataset.go === "skip") { state.provider = state.provider ?? "deepseek"; state.model = "ok"; state.step = flow().length - 1; return render(true); }
+    if (t.dataset.go === "restart" || t.id === "restart") { Object.assign(state, { step: 0, provider: null, model: "idle", tg: "idle", fitbit: "idle", chosen: new Set(state.installed) }); return render(true); }
+    if (t.dataset.provider) { state.provider = t.dataset.provider; state.model = "idle"; render(false); view.querySelector("#api-key, #base-url, [data-act=login]")?.focus(); return; }
+    if (t.dataset.act === "login") { state.model = "waiting"; render(false); setTimeout(() => { state.model = "ok"; render(false); nextBtn.focus(); }, 1400); return; }
+    if (t.dataset.act === "fitbit") { state.fitbit = "ok"; return render(false); }
+    if (t.dataset.toggle) { const id = t.dataset.toggle; state.chosen.has(id) ? state.chosen.delete(id) : state.chosen.add(id); render(false); view.querySelector(`[data-toggle="${id}"]`)?.focus(); return; }
+    if (t.dataset.set) { state[t.dataset.set] = t.dataset.val; render(false); view.querySelector(`[data-set="${t.dataset.set}"][data-val="${t.dataset.val}"]`)?.focus(); return; }
+    if (t.dataset.plugin) {
+      const id = t.dataset.plugin, on = !state.installed.has(id);
+      on ? (state.installed.add(id), state.chosen.add(id)) : (state.installed.delete(id), state.chosen.delete(id));
+      t.setAttribute("aria-pressed", String(on)); return render(false);
+    }
+    if (t.dataset.view) {
+      document.querySelectorAll("[data-view]").forEach((b) => b.setAttribute("aria-pressed", String(b === t)));
+      $("#device").classList.toggle("is-phone", t.dataset.view === "phone"); return;
+    }
+  });
+  document.addEventListener("submit", (e) => {
+    e.preventDefault();
+    const act = e.target.dataset.act;
+    if (act === "key") { state.model = "ok"; render(false); nextBtn.focus(); }
+    if (act === "tg") { state.tg = "ok"; render(false); nextBtn.focus(); }
+  });
+  nextBtn.addEventListener("click", () => {
+    if (flow()[state.step].kind === "done") { state.step = 0; return render(true); }
+    go(1);
+  });
+  backBtn.addEventListener("click", () => go(-1));
+  later.addEventListener("click", () => { state.step = flow().length - 1; state.model = state.model === "ok" ? "ok" : state.model; render(true); });
+
+  render(false);
+})();
+</script>
+
+</body>
+</html>
