@@ -574,10 +574,8 @@ SLOC 是有内容的源码行：Python 使用 AST 标出完整 docstring 表达�
 ## 2026-07-23 less-is-more PR27：删除 PersonaMem runtime 转发 wrapper
 
 > 2026-09-24 现状补记：维护者决定退役 LongMemEval；其专属 CLI、数据适配和文档已删除。
-> PersonaMem 仍使用的 runtime、ingest、Turn 数据和纯评分实现已归回 `eval/personamem/`，
-> 没有恢复下述只转发的 wrapper。下面的调用路径、文件计量和测试结果都是 PR27 当时的记录，
-> 不代表当前存在 LongMemEval 包或这些测试。PersonaMem 的旧 CoreRuntime 入口尚未恢复，
-> 具体运行边界见其 README；本次未迁移或删除正式 benchmark 数据。
+> 2026-10-10 勘误：PersonaMem 已按维护者决定完整退役。下文只保留历史改动证据，
+> 不再表示当前存在 benchmark 入口、helper 或验收命令。
 
 ### `PR27` `refactor(eval): remove PersonaMem runtime forwarding wrapper`
 

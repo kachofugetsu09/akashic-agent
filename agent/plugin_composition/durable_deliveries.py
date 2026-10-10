@@ -9,7 +9,13 @@ from typing import Literal, cast
 from agent.control.scoped_turn import TurnAcceptedReceipt
 from agent.plugin_composition.channels import ChannelDeliveryReceipt, DeliveryStatus
 from agent.plugin_composition.durable_delivery_store import DurableDeliveryStore
-from session.store import validate_message_delivery_id
+
+
+def validate_message_delivery_id(value: object) -> str:
+    """在投递边界校验消息身份，不依赖旧 Session 存储。"""
+    if not isinstance(value, str) or not value or len(value) > 128:
+        raise ValueError("delivery_id 必须是 1..128 字符串")
+    return value
 
 
 @dataclass(frozen=True, slots=True)

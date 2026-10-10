@@ -13,11 +13,9 @@ from agent.host_bridge.plugin_execution import (
     ExecutionAccess,
 )
 from agent.plugin_composition import (
-    INTERACTION_UNDO,
     TIMERS,
     CompositionError,
     CompositionRoot,
-    InteractionUndoService,
     PluginTimers,
     ServiceKey,
 )
@@ -76,7 +74,6 @@ from agent.plugin_contracts.ui import MESSAGE_DISPLAY, PLUGIN_UI
 from agent.plugins.channel_credentials import CoreProviderClientFactory
 from agent.plugins.composable import ComposablePlugin
 from agent.plugins.generation import PluginGeneration
-from agent.plugins.interaction_undo import InteractionUndoCoordinator
 from agent.restart import RESTART_GATE, RestartGate
 from agent.workloads.client import WorkloadController
 from infra.channels.artifacts import ChannelAttachmentArtifactStore
@@ -112,7 +109,6 @@ async def provide_host_services(
     processes: PluginProcesses,
     restart_gate: RestartGate,
     control_frames: FrameBook,
-    session_manager: Any,
 ) -> tuple[ExecutionAccess, CredentialClients]:
     """组装真实宿主端口与只读投影；不拥有安装选择或第二份运行状态。"""
     artifact_read = None if attachments is None else ArtifactRead(attachments.acquire)
@@ -123,15 +119,6 @@ async def provide_host_services(
             ChannelOutboundAttachmentImporter(attachments).import_source
         )
     )
-    interaction_undo = (
-        None if session_manager is None else InteractionUndoCoordinator(
-            session_manager,
-            invalidate_attachments=(
-                None if message_log is None else message_log.invalidate_attachment_memo
-            ),
-        )
-    )
-
     def resolve_identity(channel: str, provider_identity: str) -> str | None:
         if channel_identities is None:
             raise RuntimeError("Channel identities 未绑定")
@@ -223,8 +210,6 @@ async def provide_host_services(
     )
     if artifact_import is not None:
         requested.add(ARTIFACT_IMPORT)
-    if interaction_undo is not None:
-        requested.add(INTERACTION_UNDO)
     if RUNTIME_CATALOG in requested:
         if root is not live_root():
             raise RuntimeError("runtime catalog 只在当前 live Root 提供")
@@ -388,14 +373,6 @@ async def provide_host_services(
             "plugin_ui_provider.close",
             plugin_ui.aclose,
         )
-    if any(
-        INTERACTION_UNDO in cast(ComposablePlugin, item.instance).inject
-        for item in mount_order
-    ):
-        if interaction_undo is None:
-            raise RuntimeError("INTERACTION_UNDO 需要 Session owner")
-        interaction_undo = InteractionUndoService(interaction_undo.undo_latest)
-        _ = await root.context.provide(INTERACTION_UNDO, interaction_undo)
     return execution, clients
 
 
@@ -431,8 +408,7 @@ def check_host_dependencies(
         ARTIFACT_READ,
         ARTIFACT_IMPORT,
         TIMERS,
-        INTERACTION_UNDO,
-        MESSAGE_DISPLAY,
+            MESSAGE_DISPLAY,
         PLUGIN_UI,
     }
     for generation in generations:

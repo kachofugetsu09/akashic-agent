@@ -15,7 +15,8 @@ from agent.plugin_composition.durable_deliveries import (
     PluginDurableDeliveries,
 )
 from agent.plugin_composition.durable_delivery_store import DurableDeliveryStore
-from session.manager import SessionManager
+from session.log import MessageLog
+from session.message import ContentPart, ContentReferences, Output
 
 def _request(logical_id: str = "delivery:one") -> DurableDeliveryRequest:
     return DurableDeliveryRequest(
@@ -34,7 +35,7 @@ async def test_provider_receipt_precedes_one_append_only_session_projection(
     tmp_path: Path,
 ) -> None:
     store = DurableDeliveryStore(tmp_path / "settlements.sqlite")
-    sessions = SessionManager(tmp_path / "workspace")
+    log = MessageLog(tmp_path / "sessions.db")
     provider_states: list[str] = []
 
     async def sender(request, provider_started):
@@ -58,12 +59,17 @@ async def test_provider_receipt_precedes_one_append_only_session_projection(
     async def project(request) -> str:
         row = store.lookup("wake:default", "turn:one")
         assert row is not None and row["state"] == "delivered"
-        return await sessions.append_durable_delivery(
-            session_key=request.projection_session_id,
-            content=request.body,
-            delivery_id=request.logical_delivery_id,
-            control_turn_id=request.accepted_turn.turn_id,
+        writer = log.writer(
+            request.projection_session_id,
+            author="assistant", source="delivery", body_types=(Output,),
+            content={"text": lambda _: ContentReferences()},
+            message_metadata_keys=frozenset({"delivery"}),
         )
+        return writer.append(
+            request.logical_delivery_id,
+            Output((ContentPart("text", request.body),), "complete"),
+            metadata={"delivery": {"id": request.logical_delivery_id}},
+        ).message_id
 
     service = PluginDurableDeliveries(store, sender, project)
     projected = await service.submit(_request())
@@ -71,13 +77,13 @@ async def test_provider_receipt_precedes_one_append_only_session_projection(
 
     assert provider_states == ["provider_started"]
     assert projected.state == duplicate.state == "projected"
-    messages = sessions.control_store.fetch_session_messages("recipient-session")
+    messages = log.reader("recipient-session").snapshot()
     assert len(messages) == 1
-    assert messages[0]["content"] == "hello from Wake"
-    assert messages[0]["delivery_id"] == "delivery:one"
+    assert messages[0].body == Output((ContentPart("text", "hello from Wake"),), "complete")
+    assert messages[0].metadata["delivery"] == {"id": "delivery:one"}
     assert store.confirm_settled("delivery:one", "domain:one")["state"] == "settled"
     assert store.confirm_settled("delivery:one", "domain:one")["state"] == "settled"
-    sessions.close()
+    log.close()
 
 def test_provider_started_sigkill_recovers_uncertain_without_resend(
     tmp_path: Path,

@@ -33,8 +33,8 @@
   负责恢复；停止时不再次抛成 generation-cleanup。取消期间真实 teardown 错误仍
   上抛并保留资源 owner。当前故障夹具证明旧 Root 真正关闭后同进程新 stack 恢复，
   不冒称两个独立 OS 进程的崩溃恢复。
-- LongMemEval 按维护者决定退役。PersonaMem 的必要 helper 收回本包，但旧
-  CoreRuntime 入口尚未恢复，不把导入/纯函数检查写成 benchmark 端到端通过。
+- LongMemEval 与 PersonaMem 已按维护者决定完整退役，旧 benchmark 入口及 helper
+  不再保留；历史运行数据未操作。
 
 本地证据集中在 `/mnt/data/issue750-overnight-20260924.DgHQu2/`：完整公开回归曾为
 2389 passed / 5 failed / 4 skipped；五个失败修复后的 clean `d7a08247` 联合对照
