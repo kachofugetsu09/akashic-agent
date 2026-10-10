@@ -13,8 +13,10 @@ from typing import cast
 from agent.plugin_composition import (
     RUNTIME_STARTED,
     ServiceKey,
-    WORKLOADS,
     Context,
+)
+from plugins.workloads.contract import (
+    WORKLOADS,
     Workload,
     WorkloadData,
     WorkloadHealth,
