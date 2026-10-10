@@ -6,6 +6,7 @@
 
 | ID | 状态 | 主题 | 关联条款 |
 |---|---|---|---|
+| [0108](0108-bundles-are-composition-inputs.md) | proposed / input format implemented, activation pending | Bundle 分层整行替换，选择仍唯一 | PLG、RUN、MIG |
 | [0107](0107-restore-missing-vectors-before-reading-memory.md) | proposed / implemented for review | 按原模型空间补齐丢失的派生向量 | STA、MEM、MIG |
 | [0106](0106-derived-vectors-use-separate-storage.md) | proposed / implemented for review | 派生向量独立存储，复制保留原表 | STA、MIG、MEM |
 | [0105](0105-ledger-owns-business-storage.md) | proposed / implemented for review | Ledger 插件拥有业务持久化与入站交接 | PLG、STA、SES、MIG |
