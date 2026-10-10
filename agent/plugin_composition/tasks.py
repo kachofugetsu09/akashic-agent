@@ -525,7 +525,7 @@ class PluginTasks:
             raise RuntimeError("当前不能接纳正式 Task")
         if self._closed:
             raise TaskServiceClosed("当前不能接纳正式 Task")
-        owner = ctx.require_runtime_owner(TASKS, self)
+        owner = ctx.require_runtime_identity(TASKS, self).plugin_id
         if owner not in self._owners:
             self._owners[owner] = Tasks(max_resident=self._max_resident)
         return self._owners[owner]

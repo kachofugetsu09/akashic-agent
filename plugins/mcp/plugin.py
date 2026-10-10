@@ -139,7 +139,7 @@ class McpServers:
     async def open(self, ctx: Context, name: str):
         self.check(ctx)
         async with ctx.runtime_scope():
-            ctx.require_runtime_owner(MCP_SERVERS, self)
+            ctx.require_runtime_identity(MCP_SERVERS, self)
             entry = self._entries[name]
             if entry.token is not ctx.fiber.activation_token or entry.ctx.runtime.plugin_id != ctx.runtime.plugin_id:
                 raise PermissionError("MCP 目标不属于当前 Context activation")

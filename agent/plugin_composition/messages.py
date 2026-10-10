@@ -79,7 +79,7 @@ class MessageWriters:
         log = self._log
         if log is None:
             raise RuntimeError("candidate 验证期禁止签发消息 writer")
-        owner = ctx.require_runtime_owner(MESSAGE_WRITERS, self)
+        owner = ctx.require_runtime_identity(MESSAGE_WRITERS, self).plugin_id
         grants = {
             key: grant for key, grant in self._metadata.items()
             if grant[0] is ctx and grant[1] is update_metadata
@@ -95,7 +95,7 @@ class MessageWriters:
         body_types = tuple(body_types)
 
         def open(session_id: str, *, call_ref: CallRef | None = None) -> MessageWriter:
-            _ = ctx.require_runtime_owner(MESSAGE_WRITERS, self)
+            _ = ctx.require_runtime_identity(MESSAGE_WRITERS, self)
             return log.writer(
                 session_id, author=author, source=source, body_types=body_types,
                 content=content, call_ref=call_ref, check_call=check_call,
@@ -122,7 +122,7 @@ class OwnerState:
     def open(self, ctx: Context) -> OwnerStore:
         if self._log is None:
             raise RuntimeError("candidate 验证期禁止访问正式 owner state")
-        return self._log.owner("plugin:" + ctx.require_runtime_owner(OWNER_STATE, self))
+        return self._log.owner("plugin:" + ctx.require_runtime_identity(OWNER_STATE, self).plugin_id)
 
     def open_scoped(self, ctx: Context, scope: str) -> OwnerStore:
         """同一 owner 的独立子空间；其他消费者的 key 扫描互不可见。"""
@@ -130,7 +130,7 @@ class OwnerState:
             raise RuntimeError("candidate 验证期禁止访问正式 owner state")
         if not isinstance(scope, str) or not scope or ":" in scope:
             raise ValueError("owner state 子空间名必须是非空且不含冒号的字符串")
-        owner = ctx.require_runtime_owner(OWNER_STATE, self)
+        owner = ctx.require_runtime_identity(OWNER_STATE, self).plugin_id
         return self._log.owner(f"plugin:{owner}:{scope}")
 
 
@@ -226,7 +226,7 @@ class SessionAdmission:
     def ensure(self, ctx: Context, session_id: str, attributes: SessionAttributes) -> SessionAttributes:
         if self._log is None:
             raise RuntimeError("candidate 验证期禁止接纳正式 Session")
-        _ = ctx.require_runtime_owner(SESSION_ADMISSION, self)
+        _ = ctx.require_runtime_identity(SESSION_ADMISSION, self)
         # 1. 维度值只在首次接纳时由其 owner 校验；已有 Session 只比较固定事实。
         if attributes.scope and not self._admitted(session_id):
             self._check_dimensions(attributes)
@@ -244,7 +244,7 @@ class SessionAdmission:
         log = self._log
         if log is None:
             raise RuntimeError("candidate 验证期禁止接纳正式 Session")
-        _ = ctx.require_runtime_owner(SESSION_ADMISSION, self)
+        _ = ctx.require_runtime_identity(SESSION_ADMISSION, self)
         if attributes.scope and not await run_file_io(lambda: self._admitted(session_id)):
             self._check_dimensions(attributes)
         async with AsyncExitStack() as scopes:

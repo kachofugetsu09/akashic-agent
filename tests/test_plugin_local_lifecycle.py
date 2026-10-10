@@ -554,25 +554,25 @@ async def test_runtime_owner_uses_local_owner_call_and_rejects_inherited_or_fore
     other_ctx = contexts["other"]
     try:
         with pytest.raises(CompositionError) as excinfo:
-            owner_ctx.require_runtime_owner(owner_key, owner_value)
+            owner_ctx.require_runtime_identity(owner_key, owner_value)
         assert excinfo.value.code == "OWNER_CALL_CONTEXT"
 
         async with other_ctx.runtime_scope():
             with pytest.raises(CompositionError) as excinfo:
-                owner_ctx.require_runtime_owner(owner_key, owner_value)
+                owner_ctx.require_runtime_identity(owner_key, owner_value)
             assert excinfo.value.code == "OWNER_CALL_CONTEXT"
 
         async with owner_ctx.runtime_scope():
-            assert owner_ctx.require_runtime_owner(owner_key, owner_value) == "owner"
+            assert owner_ctx.require_runtime_identity(owner_key, owner_value).plugin_id == "owner"
             with pytest.raises(CompositionError) as excinfo:
-                owner_ctx.require_runtime_owner(owner_key, object())
+                owner_ctx.require_runtime_identity(owner_key, object())
             assert excinfo.value.code == "SERVICE_SCOPE_MISMATCH"
 
             child_errors: list[BaseException] = []
 
             async def raw_child() -> None:
                 try:
-                    owner_ctx.require_runtime_owner(owner_key, owner_value)
+                    owner_ctx.require_runtime_identity(owner_key, owner_value)
                 except BaseException as error:
                     child_errors.append(error)
 
@@ -581,7 +581,7 @@ async def test_runtime_owner_uses_local_owner_call_and_rejects_inherited_or_fore
 
         with pytest.raises(CompositionError) as excinfo:
             async with owner_ctx.runtime_scope():
-                owner_ctx.require_runtime_owner(owner_key, foreign_value)
+                owner_ctx.require_runtime_identity(owner_key, foreign_value)
         assert excinfo.value.code == "SERVICE_SCOPE_MISMATCH"
     finally:
         await foreign.dispose()

@@ -90,6 +90,14 @@ class TopologyView:
 
 
 @dataclass(frozen=True, slots=True)
+class CallerIdentity:
+    """由内核核对实际调用作用域后返回的插件身份，不是授权凭据。"""
+
+    plugin_id: str
+    generation_id: str
+
+
+@dataclass(frozen=True, slots=True)
 class PluginRuntime:
     """Expose the Core-assigned paths and config to one mounted plugin tree."""
 

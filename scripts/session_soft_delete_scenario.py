@@ -99,7 +99,7 @@ async def akasha_participation(root: Path, deleted_session: str) -> None:
     await SessionAdmin(log).set_deleted(deleted_session, deleted=True)
 
     root_cm = CompositionRoot("soft-delete-akasha")
-    bindings = Bindings(log, root_cm)
+    bindings = Bindings(log, root_cm.context)
 
     async def provide(ctx: Context) -> None:
         await ctx.provide(AKASHA_LEARNING, learning)

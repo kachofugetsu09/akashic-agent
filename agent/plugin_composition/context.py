@@ -39,6 +39,7 @@ from agent.plugin_composition.events import (
 from agent.plugin_composition.executor import reject_executor_context_access
 from agent.plugin_composition.endpoints import Endpoint, EndpointPublisher
 from agent.plugin_composition.model import (
+    CallerIdentity,
     CompositionError,
     CompositionReceipt,
     FiberState,
@@ -211,8 +212,8 @@ class Context:
         with provider.owner.context._call_scope():
             yield cast(T, provider.value)
 
-    def require_runtime_owner(self, key: ServiceKey[Any], service: object) -> str:
-        """验证当前 scope 的实际服务与 Context，返回 Core 分配的插件 owner。"""
+    def require_runtime_identity(self, key: ServiceKey[Any], service: object) -> CallerIdentity:
+        """核对实际 Task、Context 和服务后返回身份；不接受调用方填写的身份字段。"""
         reject_executor_context_access()
         self._require_current()
         task = asyncio.current_task()
@@ -234,7 +235,86 @@ class Context:
                 "SERVICE_SCOPE_MISMATCH",
                 "授权服务不属于当前 Context 的 dependency store",
             )
-        return self.runtime.plugin_id
+        runtime = self.runtime
+        return CallerIdentity(runtime.plugin_id, runtime.generation_id)
+
+    def _caller_context(self) -> Context:
+        """只读取当前 Task 的实际许可，不信任继承的 ContextVar。"""
+        reject_executor_context_access()
+        self._require_current()
+        current = _current_runtime_scope()
+        if current is not None:
+            caller = current._call._fiber.context
+        else:
+            binding = _lifecycle_binding.get()
+            if binding is None or binding[1] is not asyncio.current_task():
+                raise CompositionError("OWNER_CALL_CONTEXT", "操作需要实际调用许可或生命周期借用")
+            caller = binding[0]
+        if caller._root is not self._root:
+            raise CompositionError("SERVICE_SCOPE_MISMATCH", "调用方不属于 provider 的 Root")
+        caller._require_current()
+        return caller
+
+    def service_origins(
+        self, key: ServiceKey[Any], *, contributors: tuple[Context, ...] = (),
+    ) -> tuple[CallerIdentity, ...]:
+        """从调用者已声明的依赖图读取来源，不返回 Fiber、服务或安装器。"""
+        # 1. 服务必须属于真实调用者的许可；遍历只读取冻结的依赖。
+        caller = self._caller_context()
+        caller.require(key)
+        origins: dict[str, CallerIdentity] = {}
+        contexts: set[int] = set()
+        services: set[ServiceKey[Any]] = set()
+        pending: list[Context] = []
+
+        def include_context(context: Context) -> None:
+            context._require_current()
+            fiber = context._fiber
+            if (context._root is not self._root
+                or self._root._fibers.get(fiber.fiber_id) is not fiber):
+                raise CompositionError("SERVICE_SCOPE_MISMATCH", "贡献 Context 不属于当前 Root")
+            if id(context) in contexts:
+                return
+            runtime = context.runtime
+            contexts.add(id(context))
+            origins[runtime.plugin_id] = CallerIdentity(runtime.plugin_id, runtime.generation_id)
+            pending.append(context)
+
+        def include_service(service: ServiceKey[Any], requester: Context) -> None:
+            if service in services:
+                return
+            services.add(service)
+            provider = requester._fiber.dependency_store.get(service)
+            if provider is None:
+                provider = self._root._providers.get(service)
+                if provider is None or provider.owner is not requester._fiber:
+                    raise CompositionError("UNDECLARED_SERVICE", f"调用者未声明服务: {service.name}")
+            if provider.owner.runtime is None:
+                return
+            include_context(provider.owner.context)
+            if provider.binding_contributors is not None:
+                for context in provider.binding_contributors():
+                    include_context(context)
+
+        # 2. 动态贡献者仍由原 provider 声明，身份只取内核登记的 Context。
+        for context in contributors:
+            include_context(context)
+        include_service(key, caller)
+        while pending:
+            context = pending.pop()
+            for dependency in context._fiber.dependencies:
+                include_service(dependency, context)
+        return tuple(origins[name] for name in sorted(origins))
+
+    @asynccontextmanager
+    async def open_service(self, key: ServiceKey[T]) -> AsyncGenerator[T]:
+        """为已保存的动态选择打开当前 provider，并保护其准确的调用寿命。"""
+        self._require_current()
+        if not self._fiber._is_root or _current_runtime_scope() is not None:
+            self._caller_context()
+        context, value = self._root._service_provider(key)
+        async with context.runtime_scope():
+            yield value
 
     def capture_runtime_scope(self) -> RuntimeScope:
         """把当前 Task 已接纳的许可延长成一份可移交子 Task 的 scope。"""
@@ -1820,22 +1900,6 @@ class CompositionRoot:
             if not provider.revoking
             if (runtime := provider.owner.runtime) is not None
         }
-
-    def binding_contributors(self, key: ServiceKey[Any]) -> tuple[Context, ...]:
-        """归档依赖来自当前服务 provider，不另存动态注册状态。"""
-        provider = self._active_provider(key)
-        if provider is None:
-            raise RuntimeError(f"归档服务已失效: {key.name}")
-        return () if provider.binding_contributors is None else provider.binding_contributors()
-
-    def context_owner(self, context: Context) -> str | None:
-        """只识别本 Root 实际存活的插件 Context，不接受重建的身份字段。"""
-        for fiber in self._fibers.values():
-            if fiber.context is context:
-                if fiber.state != FiberState.ACTIVE or fiber.runtime is None:
-                    raise RuntimeError("注册 Context 已失效或没有插件 owner")
-                return fiber.runtime.plugin_id
-        return None
 
     def plugin_dependencies(self) -> Mapping[str, frozenset[ServiceKey[Any]]]:
         """收集各插件及子 Fiber 声明的服务依赖。"""

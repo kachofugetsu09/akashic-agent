@@ -118,7 +118,7 @@ class DashboardResources:
             # 旧 generation 的 Fiber 已退役：scope 校验不能先经 ctx.require
             # 取服务（INACTIVE_SERVICE 会吞掉 runtime scope 拒绝）。直接以
             # 注册时的实际 Ui 实例证明 owner 归属。
-            ctx.require_runtime_owner(UI, self._registry)
+            ctx.require_runtime_identity(UI, self._registry)
             return ctx.require(key)
 
         dashboard_context = DashboardContext(

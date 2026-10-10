@@ -44,7 +44,7 @@ class PluginUpdates:
         self._host = host
 
     def _check(self, ctx: Context) -> PluginInstallPort:
-        _ = ctx.require_runtime_owner(PLUGIN_UPDATES, self)
+        _ = ctx.require_runtime_identity(PLUGIN_UPDATES, self)
         if self._host is None:
             raise PermissionError("插件更新宿主不可用")
         return self._host

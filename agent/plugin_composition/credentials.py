@@ -43,7 +43,7 @@ class CredentialClients:
 
     async def create(self, ctx: Context, refs: Mapping[str, CredentialRef]) -> ProviderClient:
         """为实际贡献 Context 创建凭据句柄；调用方负责确认释放。"""
-        owner = ctx.require_runtime_owner(CREDENTIALS, self)
+        owner = ctx.require_runtime_identity(CREDENTIALS, self).plugin_id
         if self._factories is None:
             raise RuntimeError("candidate 验证期禁止读取正式凭据")
         key = (ctx.runtime.plugin_id, ctx.runtime.generation_id)

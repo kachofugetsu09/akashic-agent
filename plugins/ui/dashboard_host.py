@@ -78,7 +78,7 @@ class LiveDashboardMiddleware:
         rejection: tuple[int, str] | None = None
         try:
             async with ui_context.runtime_scope():
-                ui_context.require_runtime_owner(UI, registry)
+                ui_context.require_runtime_identity(UI, registry)
                 catalog = registry.catalog()
                 if identity is not None and not _web_request_matches(ui_context.generation_id, catalog, identity):
                     rejection = (409, "stale_catalog")

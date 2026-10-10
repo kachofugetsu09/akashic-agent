@@ -84,7 +84,6 @@ async def provide_host_services(
         [PluginGeneration, tuple[str, ...], str], tuple[str, ...]
     ],
     message_log: MessageLog | None,
-    generation_for_context: Callable[[Context], PluginGeneration],
     runtime_generations: Callable[
         [], tuple[Mapping[str, PluginGeneration], Mapping[str, list[PluginGeneration]]]
     ],
@@ -204,7 +203,7 @@ async def provide_host_services(
                     "UNDECLARED_SERVICE",
                     "当前 Fiber 未声明 runtime catalog 依赖",
                 )
-            context.require_runtime_owner(RUNTIME_CATALOG, read_runtime_catalog)
+            context.require_runtime_identity(RUNTIME_CATALOG, read_runtime_catalog)
             catalog = build_runtime_catalog(root, *runtime_generations())
             catalog["updating"] = runtime_updating()
             return catalog
@@ -251,7 +250,7 @@ async def provide_host_services(
         _ = await root.context.provide(SESSION_ADMISSION, SessionAdmission(log))
         _ = await root.context.provide(SESSION_ADMIN, SessionAdmin(log))
         _ = await root.context.provide(
-            BINDINGS, Bindings(log, root, generation_for_context)
+            BINDINGS, Bindings(log, root.context)
         )
     if TASKS in requested or message_log is not None:
         _ = await root.context.provide(TASKS, tasks)

@@ -22,7 +22,7 @@ class PluginConfig:
         self._host = host
 
     def _owner(self, ctx: Context) -> tuple[ConfigHost, str]:
-        ctx.require_runtime_owner(PLUGIN_CONFIG, self)
+        ctx.require_runtime_identity(PLUGIN_CONFIG, self)
         if self._host is None:
             raise PermissionError("配置应用宿主不可用")
         return self._host, ctx.runtime.plugin_id

@@ -46,7 +46,7 @@ class Fixture:
         self.root = CompositionRoot('subagent-' + mode)
         self.log = MessageLog(directory / 'sessions.db')
         self.tasks = PluginTasks()
-        self.bindings = Bindings(self.log, self.root)
+        self.bindings = Bindings(self.log, self.root.context)
 
     async def open(self):
         """装配真实服务，并固定一个已准备请求的合法 binding 描述符。"""

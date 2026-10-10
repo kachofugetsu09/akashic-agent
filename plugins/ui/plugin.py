@@ -224,13 +224,13 @@ class Ui:
 
     async def bootstrap(self) -> bytes:
         async with self._ctx.runtime_scope():
-            self._ctx.require_runtime_owner(WEB_UI, self)
+            self._ctx.require_runtime_identity(WEB_UI, self)
             # catalog 只含已激活并初始化的贡献；无关管理操作不关闭读取。
             return encode_web_ui_bootstrap(self.catalog(), self._ctx.generation_id)
 
     async def state(self) -> dict[str, str | bool]:
         async with self._ctx.runtime_scope():
-            self._ctx.require_runtime_owner(WEB_UI, self)
+            self._ctx.require_runtime_identity(WEB_UI, self)
             return {"snapshotId": self._ctx.generation_id, "catalogId": self.catalog().identity,
                     "updating": bool(self._ctx.require(RUNTIME_CATALOG)(self._ctx)["updating"])}
 

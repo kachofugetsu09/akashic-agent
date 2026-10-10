@@ -533,3 +533,15 @@ SDK 导入路径静态链路：向导从自身 `__file__` 定位宿主源码根�
 
 能力没有消息 writer、模型调用或工具执行口。`content_view` 是其普通消费者，仅另依赖 CONTENT
 与 TOOLS。完整行为、范围和恢复约束见 [0081](../decisions/0081-content-views-keep-original-messages.md)。
+
+## 服务调用者与来源身份
+
+provider 用 `ctx.require_runtime_identity(KEY, self)` 验证传入 Context 的实际
+Task、调用许可和服务对象，取得 `CallerIdentity(plugin_id, generation_id)`。
+返回值只描述内核已核对的事实，不作为可以转交的授权 token；后续操作仍需
+当前 Context 的有效 scope。原生 Task 继承 ContextVar 不会继承调用许可。
+
+`ctx.service_origins(KEY, contributors=...)` 从当前调用者声明的依赖以及
+provider 登记的动态贡献者读取来源，返回身份，不暴露 Root 或 Fiber。
+`ctx.open_service(KEY)` 为持久动态选择借用当前 provider，退出时释放同代许可。
+Ledger 只负责保存 descriptor 和解释业务 metadata；依赖图和调用寿命仍归内核。
