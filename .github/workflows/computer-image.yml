@@ -3,6 +3,7 @@ name: Computer image
 on:
   workflow_dispatch:
   push:
+    branches: [main]
     paths:
       - docker/computer/**
       - .github/workflows/computer-image.yml
