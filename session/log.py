@@ -950,7 +950,9 @@ class MessageCatalog:
             raise RuntimeError("candidate 验证期禁止读取正式会话目录")
         return self._storage
 
-    def snapshot_heads(self) -> Mapping[str, int]:
+    def snapshot_heads(
+        self, *, prefix: str = "", visibility: Literal["listed", "internal"] | None = None,
+    ) -> Mapping[str, int]:
         """单条查询取得同一数据库快照，不逐会话读取可能变化的 head。
 
         只在同一只读连接内按该连接自己的 data_version 复用目录：版本与数据来自
@@ -959,20 +961,30 @@ class MessageCatalog:
         是复用连接与同版本命中，不是跨连接共享结果。
         """
         log = self._log
+        if visibility not in (None, "listed", "internal"):
+            raise InvalidPage("目录 visibility 无效")
+        filtered = bool(prefix) or visibility is not None
         with log._read(snapshot=False) as connection:
             # 1. data_version 只可在同一连接上比较；writer 未提交视图不能复用。
             read = log._reads.current
             current = None if read is None else connection.execute("PRAGMA data_version").fetchone()[0]
-            if read is not None and read.heads is not None and read.heads_version == current:
+            if not filtered and read is not None and read.heads is not None and read.heads_version == current:
                 return read.heads
             # 2. 每个只读连接只保留最近一份目录，其他连接提交后重新查询。
+            where = ["substr(s.key,1,?)=?"]
+            values: list[object] = [len(prefix), prefix]
+            if visibility is not None:
+                where.append("json_extract(s.attributes,'$.visibility')=?")
+                values.append(visibility)
+                if log._has_deleted:
+                    where.append("s.deleted_at IS NULL")
             rows = connection.execute(
                 "SELECT s.key, COALESCE((SELECT m.seq FROM messages m "
                 "WHERE m.session_key=s.key ORDER BY m.seq DESC LIMIT 1), -1) AS head "
-                "FROM sessions s ORDER BY s.key"
+                "FROM sessions s WHERE " + " AND ".join(where) + " ORDER BY s.key", values,
             ).fetchall()
             heads = MappingProxyType({row["key"]: row["head"] for row in rows})
-            if read is not None:
+            if not filtered and read is not None:
                 read.heads_version, read.heads = current, heads
             return heads
 
@@ -1055,6 +1067,7 @@ class MessageCatalog:
 
     async def follow(
         self, *, poll_interval: float | None = None, wake_on: type[Body] | None = None,
+        prefix: str = "", visibility: Literal["listed", "internal"] | None = None,
     ) -> AsyncGenerator[Mapping[str, int]]:
         """先订阅再取 heads；通知只降低延迟，消费者始终按快照重读事实。
 
@@ -1062,6 +1075,7 @@ class MessageCatalog:
         会话管理变化和关闭仍通知所有订阅。
         poll_interval 给出有界重扫节奏：进程内唤醒丢失时，已提交的持久变化
         最多在一个周期后被重新发现。
+        prefix 与 visibility 限定只读目录；指定 visibility 时排除软删会话。
         """
         event = asyncio.Event()
         with self._log._listener_lock:
@@ -1074,7 +1088,7 @@ class MessageCatalog:
                 event.clear()
                 if self._log._closed:
                     return
-                heads = self.snapshot_heads()
+                heads = self.snapshot_heads(prefix=prefix, visibility=visibility)
                 if heads != previous:
                     previous = heads
                     yield heads

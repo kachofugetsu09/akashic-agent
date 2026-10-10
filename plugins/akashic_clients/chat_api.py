@@ -6,7 +6,7 @@ from agent.plugin_composition.models import ModelCallStats
 import hashlib
 import json
 from collections.abc import AsyncGenerator, Awaitable, Callable, Mapping
-from contextlib import asynccontextmanager
+from contextlib import aclosing, asynccontextmanager
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Literal, Protocol, cast
 
@@ -19,8 +19,10 @@ from pydantic import BaseModel, ConfigDict, Field
 from agent.plugin_composition.message_view import read_message_rows, session_row
 from .navigation import NavigationPreferences, PinUpdate, check_project_pin, session_pin_row
 from .notifications import NotificationFeed, NotificationRequest, notification_events
+from .session_activity import follow_session_activity
 from .services import AttachmentStorePort as AttachmentStore
 from .services import (
+    ActiveSessionsFollowPort,
     ActiveSessionsPort,
     InvalidPage,
     MessageCatalogPort as MessageCatalog,
@@ -102,6 +104,7 @@ def create_chat_app(
     messages: MessageCatalog | None = None,
     reply_status: Callable[[str], AsyncGenerator[dict[str, object], None]] | None = None,
     active_sessions: ActiveSessionsPort | None = None,
+    follow_active_sessions: ActiveSessionsFollowPort | None = None,
     message_scope: Callable[[], Any] | None = None,
     session_admin_scope: Callable[[], Any] | None = None,
     attachment_store: AttachmentStore | None = None,
@@ -139,6 +142,25 @@ def create_chat_app(
         if messages is None:
             raise HTTPException(status_code=503, detail="会话日志不可用")
         yield messages
+
+    async def session_activity_stream() -> AsyncGenerator[dict[str, object], None]:
+        """短借目录后独立跟随；订阅不持有请求 scope 或消息写权限。"""
+        async def reply_activity() -> AsyncGenerator[frozenset[str] | None, None]:
+            if follow_active_sessions is None:
+                yield None
+                return
+            async with aclosing(follow_active_sessions()) as frames:
+                async for frame in frames:
+                    yield frame
+
+        async with open_message_catalog() as catalog:
+            heads = catalog.follow(prefix=f"{channel.name}:", visibility="listed", poll_interval=60)
+        async with aclosing(follow_session_activity(heads, reply_activity(), prefix=f"{channel.name}:")) as frames:
+            async for frame in frames:
+                yield frame
+
+    if messages is not None or message_scope is not None:
+        channel.bind_session_activity(session_activity_stream)
 
     @asynccontextmanager
     async def open_session_admin() -> AsyncGenerator[SessionAdminPort, None]:
@@ -233,7 +255,7 @@ def create_chat_app(
 
     @app.get("/api/chat/sessions/activity")
     async def session_activity() -> JSONResponse:
-        """侧栏轮询：哪些会话此刻正在回复；纯内存读取，回复插件缺席时 available=false。"""
+        """一次性读取活动集合；纯内存读取，回复插件缺席时 available=false。"""
         active = None if active_sessions is None else await active_sessions()
         prefix = f"{channel.name}:"
         return JSONResponse(
@@ -621,6 +643,7 @@ def build_chat_server(
     messages: MessageCatalog | None = None,
     reply_status: Callable[[str], AsyncGenerator[dict[str, object], None]] | None = None,
     active_sessions: ActiveSessionsPort | None = None,
+    follow_active_sessions: ActiveSessionsFollowPort | None = None,
     message_scope: Callable[[], Any] | None = None,
     session_admin_scope: Callable[[], Any] | None = None,
     attachment_store: AttachmentStore | None = None,
@@ -643,6 +666,7 @@ def build_chat_server(
             messages=messages,
             reply_status=reply_status,
             active_sessions=active_sessions,
+            follow_active_sessions=follow_active_sessions,
             message_scope=message_scope,
             session_admin_scope=session_admin_scope,
             attachment_store=attachment_store,

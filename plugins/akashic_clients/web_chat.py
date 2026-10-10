@@ -213,6 +213,7 @@ class WebChatChannel:
         self._messages: MessageCatalog | None = None
         self._message_scope: Callable[[], Any] | None = None
         self._reply_status: Callable[[str], AsyncGenerator[dict[str, object], None]] | None = None
+        self._session_activity: Callable[[], AsyncGenerator[dict[str, object], None]] | None = None
         self._message_display: MessageDisplayReader | None = None
         self._followers: dict[WebSocket, tuple[str, asyncio.Task[None]]] = {}
         self._stopping = False
@@ -220,6 +221,10 @@ class WebChatChannel:
         self._client_sessions: dict[str, str] = {}
         self._turn_sessions: dict[str, str] = {}
         self._turn_contents: dict[str, str] = {}
+
+    def bind_session_activity(self, follow: Callable[[], AsyncGenerator[dict[str, object], None]]) -> None:
+        """每条连接只拥有一个通道级摘要订阅，与当前会话的正文跟随独立。"""
+        self._session_activity = follow
 
     def bind_message_readers(
         self, messages: MessageCatalog,
@@ -496,6 +501,8 @@ class WebChatChannel:
         await websocket.accept()
         try:
             async with asyncio.TaskGroup() as tasks:
+                activity = None if self._session_activity is None else tasks.create_task(
+                    self._send_session_activity(websocket))
                 try:
                     while True:
                         payload = await websocket.receive_json()
@@ -510,9 +517,18 @@ class WebChatChannel:
                                 socket_id, error.code, error.reason)
                 finally:
                     await self._cancel_follow(websocket)
+                    if activity is not None:
+                        activity.cancel()
         finally:
             await self._remove_connection(websocket)
             logger.info("[web_chat] websocket closed id=%s", socket_id)
+
+    async def _send_session_activity(self, websocket: WebSocket) -> None:
+        """只发送变化的摘要；连接断开后由连接 scope 取消并排空。"""
+        assert self._session_activity is not None
+        async with aclosing(self._session_activity()) as frames:
+            async for frame in frames:
+                await websocket.send_json({"type": "sessions.activity", **frame})
 
     async def save_upload_stream(
         self,

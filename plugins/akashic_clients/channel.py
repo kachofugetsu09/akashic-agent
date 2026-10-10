@@ -4,7 +4,7 @@ from agent.plugin_composition.models import MODEL_CALL_STATS, ModelCallStats, Mo
 from agent.plugin_composition.model_settings_http import ModelControlUnavailable
 
 import asyncio
-from collections.abc import AsyncIterator, Mapping, Sequence
+from collections.abc import AsyncGenerator, AsyncIterator, Mapping, Sequence
 from contextlib import aclosing, asynccontextmanager
 from dataclasses import dataclass
 from pathlib import Path
@@ -42,6 +42,7 @@ from .web_chat import WebChatChannel
 from .chat_api import build_chat_server
 from .runtime_inspection import ScopedRpcRuntimeInspection
 from .services import (
+    ActiveSessionsFollowPort,
     ActiveSessionsPort,
     MessageCatalogPort,
     ModelCatalogReader,
@@ -226,6 +227,7 @@ class _GenerationAkashicAdapter:
         self._workspace = state.workspace
         self._reply_status: ReplyStatusPort | None = None
         self._active_sessions: ActiveSessionsPort | None = None
+        self._follow_active_sessions: ActiveSessionsFollowPort = self._follow_session_activity
         self._model_catalog_reader: ModelCatalogReader | None = None
         self._model_selection_reader: ModelSelectionReader | None = None
         self._runtime_inspection: ScopedRpcRuntimeInspection | None = None
@@ -328,6 +330,18 @@ class _GenerationAkashicAdapter:
                 if service is None:
                     return None
                 return frozenset(service.active_sessions())
+
+    async def _follow_session_activity(self) -> AsyncGenerator[frozenset[str] | None, None]:
+        """短借当代 reader，订阅自己拥有生命周期；缺席明确返回不可用。"""
+        async with self._open_request_scope() as scope:
+            with scope.borrow(REPLY_STATUS) as service:
+                reader = service
+        if reader is None:
+            yield None
+            return
+        async with aclosing(reader.follow_active_sessions()) as frames:
+            async for frame in frames:
+                yield frame
 
     async def _follow_reply_status(self, session_id: str):
         """Acquire the reply reader briefly, then own its long follow locally."""
@@ -443,6 +457,7 @@ class _GenerationAkashicAdapter:
             artifact_store=artifact_store,
             reply_status=self._reply_status,
             active_sessions=self._active_sessions,
+            follow_active_sessions=self._follow_active_sessions,
             message_scope=self._message_scope,
             session_admin_scope=self._session_admin_scope,
             uds=str(socket_path),
