@@ -10,16 +10,18 @@ from pathlib import Path
 from typing import Any
 
 from agent.plugin_composition import (
+    CompositionRoot,
+    EmbeddingResult,
+    LLMResponse,
+    ModelRequest,
+)
+from plugins.models.contract import (
     BoundModelDescriptor,
     CapabilitySources,
-    CompositionRoot,
     DriverConnection,
     DriverConnectionDescriptor,
-    EmbeddingResult,
     EmbeddingSpaceDescriptor,
-    LLMResponse,
     ModelCapabilities,
-    ModelRequest,
 )
 from plugins.models.contract import EMBEDDINGS
 from plugins.models.contract import (
@@ -334,7 +336,7 @@ def _embedding_sources() -> CapabilitySources:
 def _embedding_discovery():
     """Return a probe result accepted by the real embedding settings boundary."""
 
-    from agent.plugin_composition import DiscoveredModel
+    from plugins.models.contract import DiscoveredModel
 
     return DiscoveredModel(
         kind='embedding',

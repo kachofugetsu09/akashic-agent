@@ -30,26 +30,28 @@ from typing import (
 from uuid import uuid4
 
 from agent.plugin_composition import (
+    Context,
+    Effect,
+    EmbeddingResult,
+    FiberState,
+    LLMResponse,
+    ModelRequest,
+    ServiceKey,
+)
+from plugins.models.contract import (
     BoundModelDescriptor,
     ChatModelSelection,
     ConnectionDescriptor,
-    Context,
     CredentialHandle,
     DiscoveredModel,
     DriverChatModel,
     DriverConnection,
     DriverConnectionDescriptor,
     DriverEmbeddingModel,
-    Effect,
-    EmbeddingResult,
     EmbeddingSpaceDescriptor,
-    FiberState,
-    LLMResponse,
     ModelAvailability,
     ModelCatalogSnapshot,
     ModelDescriptor,
-    ModelRequest,
-    ServiceKey,
 )
 from plugins.models.contract import (
     EMBEDDINGS,

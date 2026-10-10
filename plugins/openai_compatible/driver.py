@@ -23,19 +23,21 @@ from core.net.http import HttpClient, StreamProgress, describe_transport_error, 
 from core.common.frozen_json import freeze_json
 
 from agent.plugin_composition import (
+    EmbeddingResult,
+    LLMResponse,
+    ModelRequest,
+    ModelUsage,
+    ToolCall,
+)
+from plugins.models.contract import (
     BoundModelDescriptor,
     CapabilitySources,
     CredentialHandle,
     DiscoveredModel,
     DriverConnection,
     DriverConnectionDescriptor,
-    EmbeddingResult,
     EmbeddingSpaceDescriptor,
-    LLMResponse,
     ModelCapabilities,
-    ModelRequest,
-    ModelUsage,
-    ToolCall,
 )
 from plugins.models.contract import (
     AuthenticationError,

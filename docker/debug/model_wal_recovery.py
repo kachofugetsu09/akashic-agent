@@ -9,7 +9,13 @@ from pathlib import Path
 from tempfile import TemporaryDirectory
 
 from agent.plugin_composition.models import (
-    BoundModelDescriptor, CapabilitySources, LLMResponse, ModelCapabilities, ModelRequest,
+    LLMResponse,
+    ModelRequest,
+)
+from plugins.models.contract import (
+    BoundModelDescriptor,
+    CapabilitySources,
+    ModelCapabilities,
 )
 from plugins.models.store import ModelsStore
 

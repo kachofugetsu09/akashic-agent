@@ -8,7 +8,7 @@ from typing import Any, Mapping
 
 import httpx
 
-from agent.plugin_composition import CredentialHandle
+from plugins.models.contract import CredentialHandle
 from plugins.models.contract import (
     AuthenticationError,
     RateLimitError,

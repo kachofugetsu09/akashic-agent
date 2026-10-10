@@ -725,7 +725,11 @@ from contextlib import asynccontextmanager
 from pathlib import Path
 from types import SimpleNamespace
 from plugins.models.contract import CHAT_MODELS
-from agent.plugin_composition.models import BoundModelDescriptor, CapabilitySources, ModelCapabilities
+from plugins.models.contract import (
+    BoundModelDescriptor,
+    CapabilitySources,
+    ModelCapabilities,
+)
 from plugins.models.content import MODEL_CONTENT, ContentOwner
 from plugins.models.projection import (
     MODEL_CALLS,

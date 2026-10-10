@@ -17,7 +17,7 @@ from typing import Any, Mapping
 import httpx
 
 from .litellm_capabilities import resolve_catalog_capabilities
-from agent.plugin_composition import DiscoveredModel
+from plugins.models.contract import DiscoveredModel
 
 logger = logging.getLogger(__name__)
 

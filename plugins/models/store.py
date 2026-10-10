@@ -18,7 +18,7 @@ from types import MappingProxyType
 from typing import Any, Literal, cast
 from urllib.parse import quote
 
-from agent.plugin_composition import (
+from plugins.models.contract import (
     CapabilitySources,
     DiscoveredModel,
     ModelCapabilities,
@@ -41,7 +41,6 @@ from .settings import (
     UpdateModel,
 )
 from agent.plugin_composition.models import (
-    BoundModelDescriptor,
     LLMResponse,
     ModelContinuation,
     ModelRequest,
@@ -49,6 +48,7 @@ from agent.plugin_composition.models import (
     ToolCall,
     UsageCoverage,
 )
+from plugins.models.contract import BoundModelDescriptor
 from plugins.models.contract import ModelCallStats
 
 MODEL_ROLES = ("default", "fast", "agent", "vision")

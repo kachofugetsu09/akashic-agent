@@ -8,7 +8,7 @@ from types import MappingProxyType
 from typing import Any, Protocol, TypeAlias
 
 from agent.plugin_composition.model import ServiceKey
-from agent.plugin_composition.models import (
+from plugins.models.contract import (
     CapabilitySources,
     DiscoveredModel,
     ModelCapabilities,

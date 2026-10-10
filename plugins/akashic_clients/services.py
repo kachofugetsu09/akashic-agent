@@ -19,7 +19,7 @@ from agent.plugin_composition.messages import (
     SessionDeleteResult,
     SessionTitleResult,
 )
-from agent.plugin_composition.models import (
+from plugins.models.contract import (
     ChatModelSelection,
     ModelCatalogSnapshot,
 )

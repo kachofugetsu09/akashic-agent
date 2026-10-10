@@ -1,7 +1,7 @@
 from collections.abc import Mapping, MutableMapping, Sequence
 from typing import cast
 
-from agent.plugin_composition.models import ChatModelSelection
+from plugins.models.contract import ChatModelSelection
 from agent.plugin_contracts import ContentPart, ContentReferences, Input, Message
 from plugins.models.contract import MODEL_SELECTION as MODEL_SELECTION
 
