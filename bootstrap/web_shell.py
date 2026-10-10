@@ -180,11 +180,7 @@ def create_web_shell_app(
         proxy_path: str,
         websocket: WebSocket,
     ) -> None:
-        query = bytes(websocket.scope.get("query_string", b""))
-        target_path = f"/api/dashboard/{proxy_path}"
-        if query:
-            target_path = f"{target_path}?{query.decode('ascii')}"
-        await _proxy_websocket(websocket, dashboard_socket, target_path)
+        await _proxy_websocket(websocket, dashboard_socket, f"/api/dashboard/{proxy_path}")
 
     @app.api_route(
         "/api/dashboard/{proxy_path:path}",
@@ -325,6 +321,11 @@ async def _proxy_websocket(
     target_path: str,
 ) -> None:
     """Relay one browser WebSocket while preserving disconnect semantics."""
+
+    # 查询参数属于上游协议，Chat 与 Dashboard 都按原始编码透传。
+    query = bytes(websocket.scope.get("query_string", b""))
+    if query:
+        target_path = f"{target_path}?{query.decode('ascii')}"
 
     # 1. Reject before accepting when no Gateway owns the runtime socket.
     if not _is_socket(socket_path):
