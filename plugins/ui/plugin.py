@@ -17,14 +17,14 @@ from agent.plugin_composition import (
 )
 from agent.plugin_composition.host import HOST_INFO
 from agent.plugin_composition.runtime_catalog import RUNTIME_CATALOG
-from agent.plugin_composition.ui import (
+from plugins.ui.contract import (
     UI,
     WEB_UI,
     DashboardBinding,
     WebModuleDescriptor,
     WebUiCatalog,
 )
-from agent.plugin_composition.ui_slots import UI_SLOTS
+from plugins.ui.contract import UI_SLOTS
 from plugins.workloads.contract import WORKLOADS
 
 from .dashboard import DashboardResources, _server_routes, _require_routes_available
@@ -35,7 +35,7 @@ from .plugin_ui import PluginUiSlots
 from .queries import LivePluginUiProvider
 from agent.plugin_contracts.ui import PLUGIN_UI, MESSAGE_DISPLAY
 from .message_display import project_message_rows
-from .web import build_web_ui_catalog, resolve_web_module
+from .web import build_web_ui_catalog, encode_web_ui_bootstrap, resolve_web_module
 
 api_version = 3
 name = "ui"
@@ -188,7 +188,7 @@ class Ui:
         async with self._ctx.runtime_scope():
             self._ctx.require_runtime_owner(WEB_UI, self)
             # catalog 只含已激活并初始化的贡献；无关管理操作不关闭读取。
-            return self.catalog().encode_bootstrap(self._ctx.generation_id)
+            return encode_web_ui_bootstrap(self.catalog(), self._ctx.generation_id)
 
     async def state(self) -> dict[str, str | bool]:
         async with self._ctx.runtime_scope():

@@ -28,7 +28,7 @@ args.source = args.source.resolve()
 if args.output.exists():
     parser.error('--output must not already exist')
 sys.path.insert(0, str(args.source))
-from agent.plugin_composition import PluginUiRpcInvalidRequest
+from plugins.ui.contract import PluginUiRpcInvalidRequest
 from agent.plugin_contracts import CallRef, ContentPart, ContentReferences, Control, Input, Output, ToolCall, ToolResult
 from agent.plugin_contracts.tools import durable_call_key
 import session.log as storage

@@ -129,7 +129,7 @@ async def recover(manager, client, root, workspace, blocked=False):
             **({'blocked_consumer_report': 'passed', 'ready_provider_retained': 'passed'} if blocked else {})}
 
 
-NOTES = """from agent.plugin_composition.ui import UI
+NOTES = """from plugins.ui.contract import UI
 api_version = 3
 name = 'notes-ui'
 version = '1'
@@ -456,7 +456,7 @@ asyncio.run(run())
         installed_before = (target.code_dir / 'plugin.py').read_bytes()
         registry = manager.live_root.context.require(ServiceKey('e2e.registry'))
         if case == 'ui':
-            from agent.plugin_composition.ui import WEB_UI
+            from plugins.ui.contract import WEB_UI
             ui = manager.live_root.context.require(WEB_UI)
             bootstrap_before = await ui.bootstrap()
         async def hold_contribution():

@@ -13,10 +13,13 @@ from typing import Any, cast
 
 from agent.control.context import running_turn_id
 from agent.plugin_composition import (
-    UI_SLOTS,
     CompositionError,
     Context,
     FiberState,
+    RuntimeScope,
+)
+from plugins.ui.contract import (
+    UI_SLOTS,
     PluginUiAsset,
     PluginUiBinding,
     PluginUiPluginUnavailable,
@@ -25,7 +28,6 @@ from agent.plugin_composition import (
     PluginUiRpcExecutionError,
     PluginUiRpcInvalidRequest,
     PluginUiStaleRevision,
-    RuntimeScope,
     UiSlots,
 )
 from agent.plugin_composition.diagnostics import plugin_entrypoint

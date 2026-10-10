@@ -26,7 +26,7 @@ def commit(path: Path) -> None:
 
 async def run(base: Path) -> dict[str, bool]:
     """经过实际安装、连接和 owner 关闭，不伪造 transport 或 Scope。"""
-    from agent.plugin_composition.ui import WEB_UI
+    from plugins.ui.contract import WEB_UI
     from agent.plugins.install import install_git_plugin
     from agent.plugins.manager import PluginManager
     from agent.plugins.selection import PluginSelection
@@ -44,7 +44,7 @@ async def run(base: Path) -> dict[str, bool]:
     panel.mkdir(parents=True)
     observer.mkdir()
     (panel / "panel.js").write_text("export function activate(ctx) { return () => {}; }\n")
-    (panel / "plugin.py").write_text('''from agent.plugin_composition.ui import UI
+    (panel / "plugin.py").write_text('''from plugins.ui.contract import UI
 from . import dashboard
 api_version = 3
 name = "panel"

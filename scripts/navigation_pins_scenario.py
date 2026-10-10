@@ -31,7 +31,7 @@ from agent.plugin_contracts.message import ContentPart, ContentReferences, Input
 from plugins.akashic_clients.chat_api import create_chat_app
 from plugins.akashic_clients.navigation import NavigationPreferences, PinReference
 from plugins.akashic_clients.web_chat import WebChatChannel
-from agent.plugin_composition.ui_slots import PluginUiStaleRevision, PluginUiRpcExecutionError
+from plugins.ui.contract import PluginUiStaleRevision, PluginUiRpcExecutionError
 from plugins.projects.plugin import Projects
 from session.log import MessageLog, SessionAttributes
 
@@ -182,7 +182,8 @@ async def run(root: Path):
 
 
 async def composition(root_path: Path):
-    from agent.plugin_composition import CompositionRoot, PluginRuntime, CHANNELS, UI_SLOTS
+    from agent.plugin_composition import CompositionRoot, PluginRuntime, CHANNELS
+    from plugins.ui.contract import UI_SLOTS
     from agent.plugin_composition.channels import ChannelFactoryContext
     from agent.plugin_composition.messages import MESSAGE_CATALOG, OWNER_STATE, SESSION_ADMISSION, OwnerState, SessionAdmission
     from agent.plugin_contracts.ui import PLUGIN_UI

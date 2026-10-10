@@ -16,7 +16,7 @@ from agent.plugin_composition.runtime_catalog import (
     RUNTIME_CATALOG as RUNTIME_CATALOG,
 )
 from plugins.mcp.contract import MCP_DETAIL, MCP_SERVERS
-from agent.plugin_composition.ui import (
+from plugins.ui.contract import (
     WEB_UI as WEB_UI,
 )
 from agent.plugin_contracts.models import (

@@ -154,22 +154,6 @@ from agent.plugin_composition.channels import (
     StopReceipt,
 )
 from agent.plugin_composition.claims import EMBEDDING_MEMORY_PLUGIN
-from agent.plugin_composition.ui_slots import (
-    UI_SLOTS,
-    PluginUiBinding,
-    PluginUiDefinition,
-    PluginUiDescriptor,
-    PluginUiNavigation,
-    PluginUiQueryHandler,
-    PluginUiRpcInvalidRequest,
-    PluginUiPluginUnavailable,
-    PluginUiStaleRevision,
-    PluginUiQueryTimeout,
-    PluginUiQueryOverloaded,
-    PluginUiRpcExecutionError,
-    UiSlots,
-    PluginUiAsset,
-)
 
 from agent.plugin_composition.processes import PROCESSES, PluginProcesses, ProcessCleanupError
 
@@ -283,20 +267,7 @@ __all__ = [
     "SourceMutationFence",
     "JsonValue",
     "EMBEDDING_MEMORY_PLUGIN",
-    "PluginUiBinding",
-    "PluginUiDefinition",
-    "PluginUiDescriptor",
-    "PluginUiNavigation",
-    "PluginUiQueryHandler",
-    "PluginUiRpcInvalidRequest",
-    "PluginUiPluginUnavailable",
-    "PluginUiStaleRevision",
-    "PluginUiQueryTimeout",
-    "PluginUiQueryOverloaded",
-    "PluginUiRpcExecutionError",
     "ObserveEventKey",
-    "UiSlots",
-    "PluginUiAsset",
     "PluginRuntime",
     "PluginDiagnostics",
     "PluginDiagnosticContext",
@@ -329,5 +300,4 @@ __all__ = [
     "TopologyView",
     "TurnAcceptedReceipt",
     "TransformEventKey",
-    "UI_SLOTS",
 ]

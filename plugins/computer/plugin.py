@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from importlib import import_module
-from agent.plugin_composition.ui import UI
+from plugins.ui.contract import UI
 
 import hashlib
 import json

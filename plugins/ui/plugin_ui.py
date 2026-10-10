@@ -10,7 +10,7 @@ from typing import cast
 from uuid import uuid4
 
 from agent.plugin_composition import Context, CompositionError, Effect, FiberState
-from agent.plugin_composition.ui_slots import (
+from plugins.ui.contract import (
     UI_SLOTS, PLUGIN_UI_SLOTS, PluginUiAsset, PluginUiBinding, PluginUiDefinition,
     PluginUiDescriptor, PluginUiNavigation, PluginUiQueryHandler,
 )

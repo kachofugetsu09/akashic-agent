@@ -82,10 +82,6 @@ role = "core"
 note = "有界纯同步 worker 池"
 
 # ── 人类与模型入口 ───────────────────────────────────────────
-[capabilities."core.ui_slots"]
-role = "seam"
-note = "普通 UI provider 拥有插件页面、查询与导航注册及当前活动目录"
-
 [capabilities."ui.messages.v1"]
 role = "seam"
 note = "UI owner 在本次实际 provider 的调用作用域投影消息，不改写事实"
@@ -94,17 +90,9 @@ note = "UI owner 在本次实际 provider 的调用作用域投影消息，不�
 role = "seam"
 note = "UI 插件拥有登记投影、查询准入和物理线程排空"
 
-[capabilities."core.web_ui.v1"]
-role = "seam"
-note = "普通 UI provider 提供当前 Root 的 Web bootstrap 与身份投影"
-
 [capabilities."core.host_info"]
 role = "core"
 note = "宿主装配固定提供 boot identity 与 validation marker 的只读值"
-
-[capabilities."ui.v1"]
-role = "seam"
-note = "普通 UI provider 拥有贡献注册、活动目录和 Dashboard 资源"
 
 [capabilities."core.runtime_catalog.v1"]
 role = "core"

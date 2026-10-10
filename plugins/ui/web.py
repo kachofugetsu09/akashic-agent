@@ -8,7 +8,7 @@ from pathlib import Path
 import tree_sitter_javascript
 from tree_sitter import Language, Node, Parser
 
-from agent.plugin_composition.ui import WebModuleAsset, WebModuleDescriptor, WebUiCatalog
+from plugins.ui.contract import WebModuleAsset, WebModuleDescriptor, WebUiCatalog
 
 
 WEB_MODULE_MAX_BYTES = 4 * 1024 * 1024
@@ -133,6 +133,40 @@ def build_web_ui_catalog(modules: tuple[WebModuleDescriptor, ...]) -> WebUiCatal
     )
     identity = hashlib.sha256(identity_source.encode("utf-8")).hexdigest()
     return WebUiCatalog(identity=identity, modules=modules)
+
+
+def encode_web_ui_bootstrap(catalog: WebUiCatalog, snapshot_id: str) -> bytes:
+    """Encode one exact catalog together with every executable byte."""
+
+    payload = {
+        "schemaVersion": 1,
+        "snapshotId": snapshot_id,
+        "catalogId": catalog.identity,
+        "modules": [
+            {
+                "pluginId": item.plugin_id,
+                "generationId": item.generation_id,
+                "module": item.asset.module,
+                "moduleSha256": item.asset.module_sha256,
+                "moduleBytes": item.asset.module_bytes,
+                "stylesheet": item.asset.stylesheet,
+                "stylesheetSha256": item.asset.stylesheet_sha256,
+                "stylesheetBytes": item.asset.stylesheet_bytes,
+                "requires": list(item.asset.requires),
+                "provides": list(item.asset.provides),
+                "contractDigests": dict(item.asset.contract_digests),
+                "contractSha256": item.asset.contract_sha256,
+            }
+            for item in catalog.modules
+        ],
+    }
+    return json.dumps(
+        payload,
+        ensure_ascii=False,
+        separators=(",", ":"),
+        sort_keys=True,
+        allow_nan=False,
+    ).encode("utf-8")
 
 
 def _validate_web_contracts(modules: tuple[WebModuleDescriptor, ...]) -> None:

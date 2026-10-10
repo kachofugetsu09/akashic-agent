@@ -1,5 +1,5 @@
 from importlib import import_module
-from agent.plugin_composition.ui import UI
+from plugins.ui.contract import UI
 from agent.plugin_composition.messages import MESSAGE_CATALOG
 
 api_version = 3

@@ -4,7 +4,7 @@ from __future__ import annotations
 from importlib import import_module
 from agent.plugin_composition import Context
 from agent.plugin_composition.runtime_catalog import RUNTIME_CATALOG
-from agent.plugin_composition.ui import UI
+from plugins.ui.contract import UI
 from plugins.onboarding.contract import ONBOARDING
 from .projection import Registry
 

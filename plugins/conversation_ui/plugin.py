@@ -1,4 +1,4 @@
-from agent.plugin_composition.ui import UI
+from plugins.ui.contract import UI
 api_version = 3
 name = "conversation-ui"
 version = "1.0.0"

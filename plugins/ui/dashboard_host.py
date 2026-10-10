@@ -12,7 +12,7 @@ from starlette.routing import Match
 
 from agent.plugin_composition import CompositionError, Context, FiberState
 from agent.plugin_composition.diagnostics import plugin_entrypoint
-from agent.plugin_composition.ui import UI, DashboardBinding, UiRegistry, WebUiCatalog
+from plugins.ui.contract import UI, DashboardBinding, UiRegistry, WebUiCatalog
 
 logger = logging.getLogger(__name__)
 
@@ -301,7 +301,7 @@ def _matching_binding(
     bindings: tuple[DashboardBinding, ...], scope: dict[str, Any],
 ) -> DashboardBinding | None:
     for binding in bindings:
-        if binding.matches(scope):
+        if any(route.matches(scope)[0] is Match.FULL for route in binding.routes):
             return binding
     return None
 

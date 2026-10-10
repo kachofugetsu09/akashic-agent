@@ -9,7 +9,7 @@ from agent.plugin_composition.context import FiberHandle
 from agent.plugin_composition.plugin_config import PLUGIN_CONFIG
 from agent.plugin_composition.runtime_catalog import RUNTIME_CATALOG
 from agent.plugin_composition.config_input import save_credential
-from agent.plugin_composition.ui import UI
+from plugins.ui.contract import UI
 from agent.plugin_contracts.configuration import Configuration
 from plugins.onboarding.contract import ONBOARDING, Step
 
