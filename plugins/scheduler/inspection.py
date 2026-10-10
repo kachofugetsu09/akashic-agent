@@ -4,9 +4,6 @@ from __future__ import annotations
 
 from collections.abc import Mapping
 
-from agent.plugin_contracts.inspection import (
-    SCHEDULER_INSPECTION_V3 as SCHEDULER_INSPECTION,
-)
 
 from .dashboard import job_detail, job_summary
 from .store import JobStore

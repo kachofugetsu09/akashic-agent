@@ -293,10 +293,6 @@ note = "公共结构合同；实际状态与生命周期由提供方插件拥有
 role = "seam"
 note = "公共结构合同；实际状态与生命周期由提供方插件拥有"
 
-[capabilities."scheduler.inspection.v3"]
-role = "seam"
-note = "Scheduler 异步只读快照；查询取消排空由提供方插件拥有"
-
 [capabilities."tools.bind-saved.v1"]
 role = "seam"
 note = "公共结构合同；实际状态与生命周期由提供方插件拥有"

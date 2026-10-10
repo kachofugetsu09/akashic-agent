@@ -8,9 +8,9 @@ from dataclasses import replace
 from agent.plugin_composition import Context, Effect
 
 from plugins.standard_tools.contract import SKILL_INSPECTION, SkillReader
+from plugins.scheduler.contract import SCHEDULER_INSPECTION
 from agent.plugin_contracts.inspection import (
     Document,
-    SCHEDULER_INSPECTION_V3 as SCHEDULER_INSPECTION,
 )
 
 _MAX_DOCUMENT_BYTES = 192 * 1024
@@ -130,6 +130,5 @@ class RuntimeInspectionProvider:
 
 __all__ = [
     "RuntimeInspectionProvider",
-    "SCHEDULER_INSPECTION",
     "SKILL_INSPECTION",
 ]
