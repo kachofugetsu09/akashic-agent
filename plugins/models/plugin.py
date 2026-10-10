@@ -78,7 +78,7 @@ async def apply(ctx: Context) -> None:
     views = ContentViews(ctx)
     _ = await ctx.provide(CONTENT_VIEWS, views, binding_contributors=views.binding_contributors)
     _ = await ctx.provide(MODEL_SELECTION, SelectionOwner())
-    from agent.plugin_contracts.onboarding import ONBOARDING, Step
+    from plugins.onboarding.contract import ONBOARDING, Step
     async def status():
         async with ctx.runtime_scope():
             catalog = state.catalog.snapshot()

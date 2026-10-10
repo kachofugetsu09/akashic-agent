@@ -15,7 +15,7 @@ inject = (HOST_INFO, INPUT_CUSTODY, CHANNEL_IDENTITY, CHANNEL_ATTACHMENT_IMPORT,
 
 
 async def apply(ctx: Context) -> None:
-    from agent.plugin_contracts.onboarding import ONBOARDING
+    from plugins.onboarding.contract import ONBOARDING
     async def contribute(child: Context):
         await child.require(ONBOARDING).group(child, "channels", "渠道")
     await ctx.inject((ONBOARDING,), contribute, name="onboarding")
