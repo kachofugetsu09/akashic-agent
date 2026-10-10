@@ -24,11 +24,10 @@ from collections.abc import Coroutine, Mapping
 from typing import Any, TypeVar, cast
 from urllib.parse import quote, urlencode, urlsplit
 
-from agent.plugin_composition.execution import (
+from plugins.host_execution.contract import (
     WorkloadLease,
     WorkloadMode,
     WorkloadStartRequest,
-    workload_spec_digest,
 )
 
 _SEGMENT = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._@-]{0,127}$")
@@ -836,28 +835,12 @@ class WorkloadControllerServer:
             request.generation_id
         ):
             raise ValueError("Workload transaction/generation 无效")
-        if not re.fullmatch(r"[0-9a-f]{64}", request.spec_digest):
-            raise ValueError("Workload spec digest 无效")
         if not _IMAGE.fullmatch(request.image):
             raise ValueError("Workload image 必须使用 sha256 digest")
         if not request.command:
             raise ValueError("Workload command 不能为空")
         if not isinstance(request.user_namespaces, bool):
             raise ValueError("Workload user_namespaces 无效")
-        expected_digest = workload_spec_digest(
-            plugin_id=request.plugin_id,
-            workload=request.workload,
-            image=request.image,
-            command=request.command,
-            ports=request.ports,
-            data=request.data,
-            health=request.health,
-            limits=request.limits,
-            loopback_ports=request.loopback_ports,
-            user_namespaces=request.user_namespaces,
-        )
-        if request.spec_digest != expected_digest:
-            raise ValueError("Workload spec digest 与请求内容不一致")
         if not request.ports or len({name for name, _ in request.ports}) != len(
             request.ports
         ):
@@ -1062,14 +1045,13 @@ def _start_request(raw: dict[str, object]) -> WorkloadStartRequest:
     mode = _required_text(raw, "mode")
     if mode not in {"candidate", "formal"}:
         raise ValueError("Workload mode 无效")
-    return WorkloadStartRequest(
+    request = WorkloadStartRequest(
         workspace_id=_required_text(raw, "workspace_id"),
         plugin_id=_required_text(raw, "plugin_id"),
         workload=_required_text(raw, "workload"),
         mode=cast(WorkloadMode, mode),
         transaction_id=_required_text(raw, "transaction_id"),
         generation_id=_required_text(raw, "generation_id"),
-        spec_digest=_required_text(raw, "spec_digest"),
         image=_required_text(raw, "image"),
         command=_text_tuple(raw.get("command"), "command"),
         ports=_ports(raw.get("ports")),
@@ -1079,6 +1061,9 @@ def _start_request(raw: dict[str, object]) -> WorkloadStartRequest:
         loopback_ports=_ports(raw.get("loopback_ports")),
         user_namespaces=_required_bool(raw, "user_namespaces"),
     )
+    if _required_text(raw, "spec_digest") != request.spec_digest:
+        raise ValueError("Workload spec digest 与请求内容不一致")
+    return request
 
 
 def _security_options(user_namespaces: bool) -> list[str]:
@@ -1428,7 +1413,7 @@ def _safe_segment(value: str, label: str) -> str:
     return value
 
 
-def main() -> None:
+async def main(arguments: tuple[str, ...], *, workspace: Path, config_path: Path) -> int:
     parser = argparse.ArgumentParser(description="Akashic Workload Controller")
     parser.add_argument("--workspace", type=Path, required=True)
     parser.add_argument("--socket", type=Path, required=True)
@@ -1445,7 +1430,7 @@ def main() -> None:
     parser.add_argument("--owner-container")
     parser.add_argument("--owner-grace-seconds", type=float, default=10.0)
     parser.add_argument("--owner-poll-seconds", type=float, default=2.0)
-    args = parser.parse_args()
+    args = parser.parse_args(arguments)
     server = WorkloadControllerServer(
         workspace=args.workspace,
         socket_path=args.socket,
@@ -1461,7 +1446,8 @@ def main() -> None:
         owner_grace_seconds=args.owner_grace_seconds,
         owner_poll_seconds=args.owner_poll_seconds,
     )
-    asyncio.run(_serve_until_signal(server))
+    await _serve_until_signal(server)
+    return 0
 
 
 async def _serve_until_signal(server: WorkloadControllerServer) -> None:
@@ -1485,4 +1471,4 @@ async def _serve_until_signal(server: WorkloadControllerServer) -> None:
 
 
 if __name__ == "__main__":
-    main()
+    raise SystemExit(asyncio.run(main(tuple(sys.argv[1:]), workspace=Path.cwd(), config_path=Path.cwd() / "config.toml")))

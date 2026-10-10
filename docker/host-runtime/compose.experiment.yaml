@@ -103,7 +103,14 @@ services:
     entrypoint:
       - /opt/venv/bin/python
       - -m
-      - agent.workloads.controller
+      - agent.plugins.entrypoints
+      - --distribution
+      - /opt/akashic/distribution
+      - --workspace
+      - "${AKASHIC_WORKSPACE:?AKASHIC_WORKSPACE is required}"
+      - --config
+      - "${AKASHIC_CONFIG:?AKASHIC_CONFIG is required}"
+      - workload-controller
     command:
       - --workspace
       - "${AKASHIC_WORKSPACE:?AKASHIC_WORKSPACE is required}"

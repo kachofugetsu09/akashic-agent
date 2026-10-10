@@ -6,9 +6,8 @@ from collections.abc import Callable, Mapping
 from typing import Any, cast
 
 from agent.plugin_composition.control_frames import CONTROL_FRAMES, FrameBook
-from agent.host_bridge.plugin_execution import (
+from agent.plugins.execution import (
     CodeOwner,
-    ControllerAccess,
     ExecutionAccess,
 )
 from agent.plugin_composition import (
@@ -37,7 +36,7 @@ from agent.plugin_composition.channel_io import (
 )
 from agent.plugin_composition.context import Context
 from agent.plugin_composition.credentials import CREDENTIALS, CredentialClients
-from agent.plugin_composition.execution import EXECUTION, WORKLOAD_CONTROLLER
+from agent.plugin_composition.execution import EXECUTION
 from agent.plugin_composition.host import HOST_INFO, HostInfo
 from agent.plugin_composition.messages import (
     MESSAGE_CATALOG,
@@ -69,7 +68,6 @@ from agent.plugins.channel_credentials import CoreProviderClientFactory
 from agent.plugins.composable import ComposablePlugin
 from agent.plugins.generation import PluginGeneration
 from agent.restart import RESTART_GATE, RestartGate
-from agent.workloads.client import WorkloadController
 from infra.channels.artifacts import ChannelAttachmentArtifactStore
 from infra.channels.attachment_import import ChannelOutboundAttachmentImporter
 from session.embedding_store import MessageEmbeddings
@@ -89,8 +87,6 @@ async def provide_host_services(
     resolve_command: Callable[
         [PluginGeneration, tuple[str, ...], str], tuple[str, ...]
     ],
-    workload_controller: WorkloadController | None,
-    workspace_id: str,
     message_log: MessageLog | None,
     generation_for_context: Callable[[Context], PluginGeneration],
     runtime_generations: Callable[
@@ -179,10 +175,6 @@ async def provide_host_services(
         candidate=False,
     )
     await root.context.provide(EXECUTION, execution)
-    await root.context.provide(
-        WORKLOAD_CONTROLLER,
-        ControllerAccess(execution, workload_controller, workspace_id),
-    )
     requested = {
         key
         for generation in mount_order
@@ -298,7 +290,6 @@ def check_host_dependencies(
         CHANNEL_ATTACHMENT_IMPORT,
         CHANNEL_ATTACHMENT_READ,
         EXECUTION,
-        WORKLOAD_CONTROLLER,
         RUNTIME_CATALOG,
         CREDENTIALS,
         PLUGIN_UPDATES,

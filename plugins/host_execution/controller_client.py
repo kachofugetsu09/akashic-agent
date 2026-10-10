@@ -5,7 +5,7 @@ import json
 from pathlib import Path
 from typing import Protocol, cast
 
-from agent.plugin_composition.execution import (
+from plugins.host_execution.contract import (
     WorkloadEffectUnknown,
     WorkloadEndpoint,
     WorkloadLease,

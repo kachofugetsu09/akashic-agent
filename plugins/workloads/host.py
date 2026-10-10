@@ -15,14 +15,13 @@ from .definitions import (
     WorkloadBinding,
     WorkloadDescriptor,
 )
-from agent.plugin_composition.execution import (
+from plugins.host_execution.contract import (
     WorkloadEffectUnknown,
     WorkloadLease,
     WorkloadMode,
     WorkloadStartRequest,
     WorkloadStartReceipt,
     WorkloadStopReceipt,
-    workload_spec_digest,
 )
 HealthCallback = Callable[[str, str, bool, str], Awaitable[None] | None]
 IncidentCallback = Callable[[str, str, str, str], Awaitable[None] | None]
@@ -475,18 +474,6 @@ def _start_request(
         descriptor.limits.cpu_count,
         descriptor.limits.pids,
     )
-    digest = workload_spec_digest(
-        plugin_id=plugin_id,
-        workload=descriptor.name,
-        image=descriptor.image,
-        command=descriptor.command,
-        ports=ports,
-        data=data,
-        health=health,
-        limits=limits,
-        loopback_ports=loopback_ports,
-        user_namespaces=descriptor.user_namespaces,
-    )
     return WorkloadStartRequest(
         workspace_id=workspace_id,
         plugin_id=plugin_id,
@@ -494,7 +481,6 @@ def _start_request(
         mode=mode,
         transaction_id=generation_id,
         generation_id=generation_id,
-        spec_digest=digest,
         image=descriptor.image,
         command=descriptor.command,
         ports=ports,
@@ -543,7 +529,7 @@ def _check_stop_receipt(
     lease: WorkloadLease,
     receipt: object,
 ) -> None:
-    from agent.plugin_composition.execution import WorkloadStopReceipt
+    from plugins.host_execution.contract import WorkloadStopReceipt
 
     if not isinstance(receipt, WorkloadStopReceipt) or receipt.lease != lease:
         raise RuntimeError("Workload Controller stop receipt identity 不匹配")

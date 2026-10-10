@@ -6,8 +6,8 @@ import os
 
 import pytest
 
-from agent.plugin_composition.execution import WorkloadLease
-from agent.workloads.controller import WorkloadControllerServer, _lease_key, _stop_key
+from plugins.host_execution.contract import WorkloadLease
+from plugins.host_execution.controller import WorkloadControllerServer, _lease_key, _stop_key
 
 
 @pytest.mark.asyncio

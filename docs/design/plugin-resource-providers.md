@@ -1,12 +1,12 @@
 # 普通资源 provider
 
 本层按 0071 把资源操作移出 Manager 与 Snapshot。仓库默认发行 profile 显式选择
-`workloads`、`managed_processes`、`mcp`。贡献插件通过 `inject` 声明所需服务；
+`host_execution`、`workloads`、`managed_processes`、`mcp`。贡献插件通过 `inject` 声明所需服务；
 缺少服务与服务冲突按普通组合规则失败。Core 不按 provider 名称或资源类别启动插件。
 
 ```text
 ┌──────────────────────────────────────┐
-│ 宿主绑定当前 Root 的执行/Controller 授权 │
+│ 内核绑定代码授权；执行插件发布 Controller │
 └──────────────────┬───────────────────┘
                    ▼
 ┌──────────────────────────────────────┐
@@ -61,32 +61,30 @@ Snapshot 不再存储三份 registry 或 identity；编译器不校验资源定�
 子进程不再第二次合并整个宿主环境。Supervisor 身份仍由进程组 helper 固定。
 这不是 OS 沙箱，也不声称可以隔离同 UID 的任意 Python 代码。
 
-`host.workload_controller.v1` 为实际 Context 发出独立授权，固定 workspace、插件 owner、
+`host_execution` 的 `host.workloads.v1` 为实际 Context 发出独立授权，固定 workspace、插件 owner、
 候选/正式模式与请求身份。插件不能把候选请求改成正式请求，也不能用其他 owner 的 lease
 请求停止资源。Controller 仍拥有容器与挂载的原子操作及回执。
 
-## 新 Core boot 的候选清理
+## 新进程 boot 的候选清理
 
-宿主在真实新 Core boot 的 `load_all` 边界先读取有效 selection，再按该 workspace
-的固定身份调用 Controller `cleanup_candidates`，最后才允许任何新插件 `apply`。
-宿主原子模块逐份确认回执属于同一 workspace 的 candidate，且 `container_absent`
-和 `mounts_released` 都成立；任一失败或未知结果阻止 boot，不提前结算恢复记录。
-未配置 Controller 的宿主没有该外部清理调用。
+`host_execution` 激活时按当前 workspace 的固定身份调用 Controller
+`cleanup_candidates`，逐份确认回执属于该 workspace 的 candidate，且
+`container_absent` 和 `mounts_released` 都成立，随后才提供 `host.workloads.v1`。
+失败或未知结果使本 provider 失败，其硬依赖无法取得资源；无关插件不受阻断。
+Core 不再构造 Controller，也不在 `load_all` 中发起该外部操作。
 
 ```text
-┌──────────────────┐   ┌────────────────────────┐   ┌─────────────────────┐
-│ 读取有效 selection │ → │ 清理旧候选并确认全部回执 │ → │ 检查 operation 许可 │
-└──────────────────┘   └────────────────────────┘   └──────────┬──────────┘
-                                                              ▼
-                                                       新 Root apply
+┌────────────────────────────┐   ┌─────────────────────┐   ┌─────────────────────┐
+│ 执行插件核对本 boot 的清理事实 │ → │ 清理并核对全部回执 │ → │ 提供 Controller 授权 │
+└────────────────────────────┘   └─────────────────────┘   └─────────────────────┘
 ```
 
-此调用由已有启动 operation 的实际任务持有；取消或截止撤销许可，迟到的成功回执
-也不能继续 `apply`。Controller 保留其原有 lease/停止账及未决外部工作，Manager 保留
-实际 operation；此边界不重发未知 start，也不把连接取消解释为 Docker 已回滚。
-普通 Root 换代、候选子 Manager、Controller 首次连接或首次 start 均不触发清扫。
-`owner_container` 可选，进程组 guardian 不负责 Docker，二者不能替代该 boot 清理。
-清理仅释放候选容器和挂载，不删除持久业务数据，也不改变实际容器协议。
+执行插件的数据根中 `last-cleaned-boot.json` 只记录已确认完成清理的 boot ID。
+同进程换代不重发清扫，新 boot 在回执完整后原子替换旧标记；未配置 Controller 时不写标记。
+该派生文件损坏时显式失败，缺失时重新核对清理回执；它不代替 Controller 的 lease、
+停止账或未决外部工作。标记只随新 boot 更新，不自动删除；恢复依据是 Controller 的真实回执。
+清理只释放旧候选容器和挂载，不删除持久业务数据，不重发未知 start，
+也不把连接取消解释为 Docker 已回滚。
 
 ## 失败与持久数据
 
@@ -107,6 +105,8 @@ plugin-data、消息、回执或归档。代码更新后的数据解释仍由新
 正式 Root 关闭成功后才挂载新正式 Root；候选使用宿主绑定的候选权限。该构造、提交、
 operation 与外部 Channel admission 协议由并行切片负责，本层不建立第二套发布协议。
 
-验证遵从本次授权：只静态阅读与 `git diff --check`。测试源码覆盖 Scope 预登记、真实句柄
-依赖、未知请求保留、跨 Root/owner、候选环境、每调用 MCP、EOF/进程组关闭和发行安装
-fixtures；未执行 tests、Gate、CI、build、lint、AST 或产品运行，不能据此声称运行验收通过。
+Controller 的真实验证入口是 [host_controller_scenario.py](../../scripts/host_controller_scenario.py)：
+隔离安装执行与 Workloads provider，在独立 Docker 网络中读取实际 HTTP 响应，
+更新服务与执行 provider，再重启、卸载；核对租约排空、数据保留、Controller 关闭回执
+与每个 boot 的清理请求次数。MCP、managed process 和 UI 的验收分别由其真实场景负责；
+这一场景不代替整发行版或生产部署验收。
