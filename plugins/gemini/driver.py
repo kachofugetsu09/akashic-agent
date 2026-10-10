@@ -14,6 +14,12 @@ import httpx
 from core.net.http import retry_after_time
 
 from agent.plugin_composition.models import (
+    LLMResponse,
+    ModelRequest,
+    ModelUsage,
+    ToolCall,
+)
+from plugins.models.contract import (
     BoundModelDescriptor,
     CapabilitySources,
     CredentialHandle,
@@ -21,11 +27,7 @@ from agent.plugin_composition.models import (
     DriverConnection,
     DriverConnectionDescriptor,
     EmbeddingSpaceDescriptor,
-    LLMResponse,
     ModelCapabilities,
-    ModelRequest,
-    ModelUsage,
-    ToolCall,
 )
 from plugins.models.contract import (
     AuthenticationError,

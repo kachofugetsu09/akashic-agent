@@ -9,7 +9,7 @@ from typing import Any
 import httpx
 from core.net.http import HttpClient
 
-from agent.plugin_composition import (
+from plugins.models.contract import (
     BoundModelDescriptor,
     CredentialHandle,
     DiscoveredModel,

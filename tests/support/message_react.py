@@ -3,7 +3,12 @@ import asyncio
 from collections.abc import Mapping
 from contextlib import asynccontextmanager, nullcontext
 from typing import Any
-from agent.plugin_composition.models import BoundModelDescriptor, CapabilitySources, ModelCapabilities, ToolCall as ModelToolCall
+from agent.plugin_composition.models import ToolCall as ModelToolCall
+from plugins.models.contract import (
+    BoundModelDescriptor,
+    CapabilitySources,
+    ModelCapabilities,
+)
 from agent.plugin_composition.tasks import Task, Tasks
 from plugins.content.plugin import _decode_text, check_text
 from plugins.context.api import Materials, check_summary, material_data

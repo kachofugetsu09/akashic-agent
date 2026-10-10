@@ -25,7 +25,7 @@ from tests.test_default_reply import application
 from tests.support.delivery_sources import sources as delivery_sources
 from agent.plugin_composition import ServiceKey
 from agent.plugin_composition.channels import CHANNEL_INPUT_V2 as CHANNEL_INPUT, ChannelInboundMessage
-from agent.plugin_composition.models import BoundModelDescriptor
+from plugins.models.contract import BoundModelDescriptor
 from session.log import MessageCatalog, MessageLog, MessageReader, MessageWriter
 from session.message import (
     ContentPart,

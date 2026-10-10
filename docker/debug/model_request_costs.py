@@ -21,7 +21,12 @@ args = args_parser.parse_args()
 sys.path[:0] = [str(args.source), str(args.source / 'sdk/python/src')]
 import httpx
 import tiktoken
-from agent.plugin_composition import BoundModelDescriptor, CapabilitySources, ModelCapabilities, ServiceKey
+from agent.plugin_composition import ServiceKey
+from plugins.models.contract import (
+    BoundModelDescriptor,
+    CapabilitySources,
+    ModelCapabilities,
+)
 from agent.plugin_composition.channels import CHANNEL_INPUT_V2 as CHANNEL_INPUT, ChannelInboundMessage
 from core.net.http import HttpClient
 from plugins.codex.responses import CodexResponses

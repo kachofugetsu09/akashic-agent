@@ -36,8 +36,11 @@ from agent.plugin_composition.messages import (
     MESSAGE_CATALOG, MESSAGE_WRITERS, OWNER_STATE, SESSION_ADMISSION,
     MessageWriters, OwnerState, SessionAdmission,
 )
-from agent.plugin_composition.models import (
-    BoundModelDescriptor, CapabilitySources, LLMResponse, ModelCapabilities,
+from agent.plugin_composition.models import LLMResponse
+from plugins.models.contract import (
+    BoundModelDescriptor,
+    CapabilitySources,
+    ModelCapabilities,
 )
 from agent.plugin_composition.tasks import TASKS, PluginTasks
 from agent.plugin_contracts import ContentPart, ContentReferences, Control, Input, Output

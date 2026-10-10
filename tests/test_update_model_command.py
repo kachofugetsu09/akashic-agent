@@ -1,7 +1,7 @@
 """update_model: user-declared chat capabilities write all three fields at once."""
 import pytest
 
-from agent.plugin_composition.models import (
+from plugins.models.contract import (
     CapabilitySources,
     ModelCapabilities,
 )

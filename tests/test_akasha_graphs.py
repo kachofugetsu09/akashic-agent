@@ -35,7 +35,8 @@ original_apply = apply
 async def apply(ctx):
     import asyncio
     from plugins.models.contract import EMBEDDINGS
-    from agent.plugin_composition.models import EmbeddingSpaceDescriptor, EmbeddingResult
+    from agent.plugin_composition.models import EmbeddingResult
+    from plugins.models.contract import EmbeddingSpaceDescriptor
     await original_apply(ctx)
     ready = asyncio.Event()
     class Embedding:

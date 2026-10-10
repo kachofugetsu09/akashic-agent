@@ -7,7 +7,7 @@ from typing import Any
 
 import httpx
 
-from agent.plugin_composition import (
+from plugins.models.contract import (
     CapabilitySources,
     CredentialHandle,
     DiscoveredModel,

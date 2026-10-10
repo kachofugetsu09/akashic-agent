@@ -24,7 +24,12 @@ args = parser.parse_args()
 sys.path.insert(0, str(args.source.resolve()))
 
 import httpx
-from agent.plugin_composition import BoundModelDescriptor, CapabilitySources, ModelCapabilities, ModelRequest
+from agent.plugin_composition import ModelRequest
+from plugins.models.contract import (
+    BoundModelDescriptor,
+    CapabilitySources,
+    ModelCapabilities,
+)
 from core.net.http import HttpClient
 from plugins.models.state import _BoundChat
 from plugins.models.store import ModelsStore
@@ -35,7 +40,8 @@ from plugins.models.contract import (
     ModelUnavailableError,
     ModelError,
 )
-from agent.plugin_composition.models import DriverChatModel, LLMResponse
+from agent.plugin_composition.models import LLMResponse
+from plugins.models.contract import DriverChatModel
 from agent.plugin_composition import CompositionRoot
 from plugins.models.contract import (
     CHAT_MODELS,

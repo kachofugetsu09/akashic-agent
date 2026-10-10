@@ -79,7 +79,12 @@ from types import SimpleNamespace
 from pathlib import Path
 from agent.plugin_composition import ServiceKey
 from plugins.models.contract import CHAT_MODELS
-from agent.plugin_composition.models import BoundModelDescriptor, CapabilitySources, LLMResponse, ModelCapabilities, ToolCall
+from agent.plugin_composition.models import LLMResponse, ToolCall
+from plugins.models.contract import (
+    BoundModelDescriptor,
+    CapabilitySources,
+    ModelCapabilities,
+)
 from plugins.models.projection import MODEL_CALLS, MODEL_PROJECTION, ProjectionOwner, MODEL_MESSAGE_CHECKS, MessageChecksOwner
 from plugins.models.content import MODEL_CONTENT, ContentOwner
 from plugins.models.selection import MODEL_SELECTION, SelectionOwner

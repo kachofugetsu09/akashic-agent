@@ -19,6 +19,12 @@ from core.net.http import HttpClient, StreamProgress, describe_transport_error, 
 import httpx
 
 from agent.plugin_composition import (
+    LLMResponse,
+    ModelRequest,
+    ModelUsage,
+    ToolCall,
+)
+from plugins.models.contract import (
     BoundModelDescriptor,
     CapabilitySources,
     CredentialHandle,
@@ -26,11 +32,7 @@ from agent.plugin_composition import (
     DriverConnection,
     DriverConnectionDescriptor,
     EmbeddingSpaceDescriptor,
-    LLMResponse,
     ModelCapabilities,
-    ModelRequest,
-    ModelUsage,
-    ToolCall,
 )
 from plugins.models.contract import (
     AuthenticationError,

@@ -14,13 +14,15 @@ import httpx
 from core.net.http import HttpClient, StreamProgress, describe_transport_error, finish_response, retry_after_time
 
 from agent.plugin_composition import (
-    BoundModelDescriptor,
-    CredentialHandle,
     LLMResponse,
     ModelContinuation,
     ModelRequest,
     ModelUsage,
     ToolCall,
+)
+from plugins.models.contract import (
+    BoundModelDescriptor,
+    CredentialHandle,
 )
 from plugins.models.contract import (
     AuthenticationError,

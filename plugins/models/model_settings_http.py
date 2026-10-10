@@ -16,7 +16,7 @@ from pydantic import (
 )
 
 from plugins.models.contract import ModelControlUnavailable
-from agent.plugin_composition.models import (
+from plugins.models.contract import (
     ChatModelSelection,
     CapabilitySources,
     DiscoveredModel,

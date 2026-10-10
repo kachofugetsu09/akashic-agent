@@ -11,7 +11,11 @@ import tempfile
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 import httpx
-from agent.plugin_composition.models import BoundModelDescriptor, CapabilitySources, ModelCapabilities
+from plugins.models.contract import (
+    BoundModelDescriptor,
+    CapabilitySources,
+    ModelCapabilities,
+)
 from agent.plugin_composition.tasks import Tasks
 from agent.plugin_contracts import ContentPart, Control, Input, Output, ToolResult
 from agent.tool_catalog import normalize_tool_result
