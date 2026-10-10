@@ -8,6 +8,8 @@
 :scope {
   width: 100%;
   height: 100%;
+  /* 工作台住在对话工具区里，宽度由分栏决定而不是视口：断点一律查询这个容器。 */
+  container: workbench / inline-size;
 }
 
 /* Public plugin preset. Plugins may use these classes or the matching SDK components. */
@@ -127,23 +129,6 @@
     box-shadow: none;
   }
 
-  .brand {
-    @apply flex h-16 flex-shrink-0 items-center gap-3 border-b border-border px-4;
-  }
-
-  .brand-mark {
-    @apply h-8 w-8 flex-shrink-0 object-contain;
-    filter: var(--ak-ink-image-filter);
-  }
-
-  .brand-title {
-    @apply text-[14px] font-semibold leading-4 tracking-tight text-fg;
-  }
-
-  .brand-sub {
-    @apply mt-0.5 text-[11.5px] leading-4 text-muted;
-  }
-
 
   .content-toolbar {
     @apply flex min-h-16 flex-shrink-0 items-center gap-3 border-b border-border bg-surface px-4;
@@ -230,7 +215,7 @@
   .sessions-pane {
     @apply flex min-h-0 flex-shrink-0 flex-col overflow-hidden;
     margin: 0;
-    width: clamp(280px, 18vw, 320px);
+    width: clamp(280px, 18cqi, 320px);
     border-inline-end: 1px solid var(--ak-rule-subtle);
     border-radius: 0;
     box-shadow: none;
@@ -257,7 +242,7 @@
   }
 
   .detail-pane.is-open {
-    width: clamp(360px, 26vw, 460px);
+    width: clamp(360px, 26cqi, 460px);
     border-inline-start-width: 1px;
     opacity: 1;
     pointer-events: auto;
@@ -1284,7 +1269,7 @@
     }
   }
 
-  @media (max-width: 1180px) {
+  @container workbench (max-width: 1180px) {
     .ak-plugin-grid-4,
     .ak-plugin-grid-3 {
       grid-template-columns: repeat(2, minmax(0, 1fr));
@@ -1306,7 +1291,7 @@
     }
   }
 
-  @media (max-width: 980px) {
+  @container workbench (max-width: 980px) {
     .sessions-pane {
       width: 240px;
     }
@@ -1324,7 +1309,7 @@
     }
   }
 
-@media (max-width: 760px) {
+@container workbench (max-width: 760px) {
     .ak-plugin-grid-4,
     .ak-plugin-grid-3,
     .ak-plugin-grid-2 {
@@ -1333,7 +1318,6 @@
 
     /* 小屏按列表、消息和详情逐层阅读，不再把目录与正文挤在一屏。 */
     .shell { flex-direction: column; }
-    .brand { display: none; }
     .sessions-pane {
       width: 100%;
       height: auto;

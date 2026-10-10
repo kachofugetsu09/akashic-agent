@@ -35,7 +35,7 @@ batchActions:[{label:'处理选中',className:'',run:async ids=>window.fixture.b
 const request=async path=>{window.fixture.httpCalls.push(path);return new Response(JSON.stringify(path.includes('/messages?')
   ? {items:[{id:'message-1',session_id:'web:fixture',seq:7,timestamp:'2026-09-10T12:00:00Z',author:'assistant',source:'conversation',body:{kind:'output',parts:[{kind:'text',value:'fixture message'}]}}],through_seq:7,next_before_seq:null,has_more:false}
   : {items:[{key:'web:fixture',created_at:'2026-09-10T11:00:00Z',updated_at:'2026-09-10T12:00:00Z',message_count:1,head_seq:7,first_message_content:'fixture session',attributes:{visibility:'listed',learning:'enabled'}}],total:1,next_cursor:null}))};
-activate({http:{request},ui:{inject:(_,register)=>register({register:entry=>entry.render(document.getElementById('root'),{child:()=>({entries:[panel],style:()=>()=>{}})})})}});
+activate({http:{request},ui:{inject:(_,register)=>register({register:entry=>entry.render(document.getElementById('root'),{child:()=>({entries:[panel],style:()=>()=>{}})},{active:true,onActiveChange:listener=>{listener(true);return()=>{}},requestAttention:()=>{}})})}});
 `;
 await build({stdin:{contents:source,resolveDir:repoRoot,sourcefile:'fixture.js'},alias:{'@akashic/web-ui-v1':join(repoRoot,'frontend/theme/src/material-react.tsx')},bundle:true,format:'esm',outfile:join(root,'bundle.js'),define:{'process.env.NODE_ENV':'"production"'}});
 const cssPath=join(root,'bundle.css');
@@ -73,7 +73,7 @@ await page.evaluate(()=>window.fixture.reject('detail'));
 await page.locator('.wb-table-row').filter({hasText:'fine'}).click();
 await page.getByText('DETAIL fine',{exact:true}).waitFor();
 assert.equal(await page.getByRole('alert').count(),0);
-await page.getByRole('button',{name:'关闭详情',exact:true}).click();
+await page.getByRole('button',{name:'关闭详情面板',exact:true}).click();
 await page.getByRole('button',{name:'filter all',exact:true}).click();
 await page.locator('.wb-table-row').filter({hasText:'error'}).click();
 await page.getByRole('alert').filter({hasText:'detail failed'}).waitFor();

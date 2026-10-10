@@ -10,7 +10,6 @@ import {
   ConversationScrollButton,
 } from "@/components/ai-elements/conversation";
 import { HostBridgeNotice } from "./host-bridge-notice";
-import { ChatProductBand } from "./chat-product-band";
 import { DesktopAutoScroll } from "./desktop-auto-scroll";
 import { ComposerStatsLine } from "./composer-stats-line";
 import { ThinkingPlaceholder } from "./thinking-placeholder";
@@ -60,21 +59,10 @@ export function DesktopChatView({ embeddedShell, controller }: DesktopChatViewPr
   const committed = new Set(timelineMessages.map((message) => message.id));
   const hasMessages = messages.length + timelineMessages.length + replyActivities.length > 0;
 
-  const shellClass = [
-    "chat-shell",
-    embeddedShell ? "is-embedded" : "is-standalone-l",
-  ].filter(Boolean).join(" ");
+  const shellClass = embeddedShell ? "chat-shell is-embedded" : "chat-shell";
 
   return (
     <main className={shellClass}>
-      {!embeddedShell ? (
-        <ChatProductBand
-          chatReady={chatReady}
-          themeLabel={theme.label}
-          onCycleTheme={cycleTheme}
-        />
-      ) : null}
-
       <div className="chat-shell-body" style={rail.style}>
         <DesktopSidebar
             embeddedShell={embeddedShell} surface={surface} sessions={sidebarSessions}

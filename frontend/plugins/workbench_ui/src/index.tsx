@@ -7,7 +7,6 @@ import type { WorkbenchUi } from "@akashic/workbench-ui-v2";
 import type { DashboardColumn, FetchPageResult, PluginConfig, PluginDispatch, PluginState, SortOrder } from "./types";
 import { api, bindApiRequest } from "./api";
 import { formatSessionKeyForTable, relativeTime, roleClass, shortTs, stripMarkdown } from "./format";
-import { akashicBrandIcon } from "./brand";
 import { PluginDetail, PluginMain, mountPluginDom } from "./PluginDetail";
 import { Btn, Chip as WorkbenchChip, Grid, JsonView, Markdown } from "./ui";
 import { MetricTile, Sparkline, TrendChart } from "./charts";
@@ -195,13 +194,6 @@ interface NavigationProps {
   onSelect(pluginId: string | null): void;
 }
 
-function Brand(): React.ReactElement {
-  return <div className="brand">
-    <img className="brand-mark" src={akashicBrandIcon} alt="" />
-    <div><div className="brand-title">Akashic</div><div className="brand-sub">Dashboard</div></div>
-  </div>;
-}
-
 function ModuleSwitcher(props: NavigationProps): React.ReactElement {
   return <div className="module-switcher">
     <select aria-label="工作台模块" value={props.currentPluginId ?? ""}
@@ -309,7 +301,6 @@ function Messages(props: NavigationProps & { selected: string | null; select(key
   const messageColumns = "64px 86px minmax(220px, 1fr) 110px 92px 104px";
   return <div className={`shell sessions-shell ${props.selected !== null ? "has-selection" : ""} ${activeMessage ? "has-detail" : ""}`}>
     <aside className="sessions-pane" aria-label="会话目录">
-      <Brand />
       <ModuleSwitcher {...props} sessionsCount={sessions.total} />
       <div className="explorer-body">
         <div className="filters-stack session-filters">
@@ -513,7 +504,6 @@ function Panel(props: { plugin: PluginConfig } & NavigationProps): React.ReactEl
   const workbenchLayout = plugin.layout === "workbench" && plugin.renderMain;
   return <div className={`shell plugin-shell ${state.activeRowKey ? "has-detail" : ""}`}>
     <aside className={`sessions-pane ${navigationOpen ? "nav-open" : ""}`}>
-      <Brand />
       <ModuleSwitcher {...props} sessionsCount={props.sessionsCount} />
       {plugin.renderNavBody && <>
         <button className="mobile-back" type="button" aria-expanded={navigationOpen}
@@ -684,27 +674,48 @@ function DashboardWorkspace({ initialPlugins }: { initialPlugins: PluginConfig[]
 
 export function activate(ctx: WebHostContextV1): WebUiDisposer {
   const releaseApi = bindApiRequest(ctx.http.request);
-  const releaseEntry = ctx.ui.inject("shell.pages.v1", (mount) => mount.register({
+  // 工作台是对话工具区的一个标签，不再是顶层页面；面板合同 workbench.panels.v2 原样下传。
+  const releaseEntry = ctx.ui.inject("conversation.tools.v1", (mount) => mount.register({
     id: "workbench",
     label: "工作台",
-    route: "workbench",
     order: 20,
-    iconSvg: '<svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="lucide lucide-gauge" aria-hidden="true"><path d="m12 14 4-4"></path><path d="M3.34 19a10 10 0 1 1 17.32 0"></path></svg>',
     children: [{ id: "workbench.panels.v2", cardinality: "list" }],
-    render(host: HTMLElement, view: WebEntryView): WebUiDisposer {
+    render(host: HTMLElement, view: WebEntryView, props?: unknown): WebUiDisposer {
       const panels = view.child("workbench.panels.v2");
       const plugins = panels.entries.map((entry) => ({
         ...checkPanelEntry(entry as Record<string, unknown>),
         applyStyle: (target: HTMLElement) => panels.style(entry.id, target),
       }));
-      const root = createRoot(host);
-      root.render(<DashboardWorkspace initialPlugins={plugins} />);
-      return () => root.unmount();
+      return mountWhenActive(host, checkToolTab(props), () => <DashboardWorkspace initialPlugins={plugins} />);
     },
   }));
   return () => {
     releaseEntry();
     releaseApi();
+  };
+}
+
+interface ConversationToolTab {
+  onActiveChange(listener: (active: boolean) => void): () => void;
+}
+
+function checkToolTab(props: unknown): ConversationToolTab {
+  const tab = props as Partial<ConversationToolTab> | undefined;
+  if (typeof tab?.onActiveChange !== "function") throw new Error("工作台缺少 conversation.tools.v1 标签视图");
+  return tab as ConversationToolTab;
+}
+
+// 对话页每次打开都会渲染工具区；首次切到本标签才挂 React 并发起计数请求，之后保留状态。
+function mountWhenActive(host: HTMLElement, tab: ConversationToolTab, render: () => React.ReactElement): WebUiDisposer {
+  let root: ReturnType<typeof createRoot> | null = null;
+  const stop = tab.onActiveChange((active) => {
+    if (!active || root) return;
+    root = createRoot(host);
+    root.render(render());
+  });
+  return () => {
+    stop();
+    root?.unmount();
   };
 }
 

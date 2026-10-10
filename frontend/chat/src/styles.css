@@ -101,15 +101,13 @@ input {
   grid-template-rows: minmax(0, 1fr);
   width: 100%;
   height: 100dvh;
+  /* 没有顶栏承接刘海区：独立打开时外壳自己让出；嵌入 iframe 内 env 恒为 0，由宿主外框让出。 */
+  padding-block-start: env(safe-area-inset-top, 0px);
   overflow: hidden;
   color: var(--chat-ink);
   /* Paper fiber fill comes from paper-surface.css */
   font-family: var(--ak-type-reading);
   -webkit-font-smoothing: antialiased;
-}
-
-.chat-shell.is-standalone-l {
-  grid-template-rows: calc(var(--band-height) + env(safe-area-inset-top, 0px)) minmax(0, 1fr);
 }
 
 .chat-shell-body {
@@ -118,12 +116,6 @@ input {
   min-height: 0;
   grid-template-columns: var(--chat-rail-width) minmax(0, 1fr);
   overflow: hidden;
-}
-
-.product-band__theme-label {
-  max-width: 7rem;
-  overflow: hidden;
-  text-overflow: ellipsis;
 }
 
 .chat-sidebar {
@@ -242,6 +234,7 @@ input {
 
 .chat-sidebar__action {
   display: inline-flex;
+  text-decoration: none;
   min-height: 36px;
   width: 100%;
   align-items: center;
@@ -1342,13 +1335,7 @@ input {
    首条消息落地后回到底部 dock。上下 auto 外边距均分自由空间。 */
 .chat-main.is-empty {
   overflow-y: auto;
-  /* 簇的参照系是整个可视窗口：顶部 band 不占 chat-main，用等量
-     底部 padding 把 auto 分割区上移半个 band 高；再补 16px 吸收簇内
-     hero/状态块上下内边距的非对称，让感知矩形中心落在窗口几何中心。 */
-  padding-block-end: calc(var(--band-height, 48px) + 16px);
-}
-
-:root[data-embedded-shell="true"] .chat-main.is-empty {
+  /* 16px 吸收簇内 hero/状态块上下内边距的非对称，让感知矩形中心落在窗口几何中心。 */
   padding-block-end: 16px;
 }
 
@@ -1755,21 +1742,12 @@ form.composer:focus-within [data-slot="input-group"] {
 }
 
 @media (max-width: 820px) {
-  .chat-shell {
-    --band-inline: 12px;
-  }
-
   .chat-shell-body,
   :root[data-embedded-shell="true"] .chat-shell-body {
     grid-template-columns: minmax(0, 1fr);
   }
 
   .chat-sidebar {
-    display: none;
-  }
-
-  .product-band__brand strong,
-  .product-band__theme-label {
     display: none;
   }
 

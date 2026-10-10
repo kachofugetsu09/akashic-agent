@@ -4,6 +4,7 @@ import {
   Pin,
   PinOff,
   ArrowUpDown,
+  Settings,
   SunMoon,
   X,
 } from "lucide-react";
@@ -395,7 +396,7 @@ export const DesktopSidebar = memo(function DesktopSidebar({
         ) : undefined}
       />
       </div>
-      {railActions.length || embeddedShell ? <div className="chat-sidebar__footer">
+      <div className="chat-sidebar__footer">
         {railActions.map((action) => (
           <button key={action.id} type="button" className="chat-sidebar__action"
             onClick={() => activateShellRailAction(action.id)}>
@@ -404,14 +405,19 @@ export const DesktopSidebar = memo(function DesktopSidebar({
             <span>{action.label}</span>
           </button>
         ))}
-        {embeddedShell ? <button type="button" className="chat-sidebar__action"
+        {/* 独立打开时没有宿主 Shell 下发动作：设置是 Shell 的对话框，经深链回到完整界面打开。 */}
+        {embeddedShell ? null : <a className="chat-sidebar__action" href="/#models">
+          <Settings size={18} aria-hidden="true" />
+          <span>功能设置</span>
+        </a>}
+        <button type="button" className="chat-sidebar__action"
           onClick={() => onCycleTheme()}
           title={`切换主题，当前为${themeLabel}`}
           aria-label={`切换主题，当前为${themeLabel}`}>
           <SunMoon size={18} aria-hidden="true" />
           <span>主题 · {themeLabel}</span>
-        </button> : null}
-      </div> : null}
+        </button>
+      </div>
       {rail ? <SidebarRailResizer rail={rail} sidebarRef={sidebarRef} /> : null}
       {directoryProject && projects ? <ProjectDirectoryDialog project={directoryProject}
         onClose={() => setDirectoryProjectId("")} onChoose={(path) => projects.onBindDirectory(directoryProject.id, path)}
