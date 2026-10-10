@@ -18,7 +18,6 @@ from agent.plugin_composition import (
 from agent.plugin_composition.host import HOST_INFO
 from agent.plugin_composition.runtime_catalog import RUNTIME_CATALOG
 from agent.plugin_composition.ui import (
-    DASHBOARD_ROUTES,
     UI,
     WEB_UI,
     DashboardBinding,
@@ -28,7 +27,10 @@ from agent.plugin_composition.ui import (
 from agent.plugin_composition.ui_slots import UI_SLOTS
 from plugins.workloads.contract import WORKLOADS
 
-from .dashboard import DashboardResources, _core_routes, _require_routes_available
+from .dashboard import DashboardResources, _server_routes, _require_routes_available
+from .dashboard_app import create_dashboard_app
+from .dashboard_server import start_dashboard_server
+from .dashboard_host import LiveDashboardMiddleware
 from .plugin_ui import PluginUiSlots
 from .queries import LivePluginUiProvider
 from agent.plugin_contracts.ui import PLUGIN_UI, MESSAGE_DISPLAY
@@ -39,7 +41,8 @@ api_version = 3
 name = "ui"
 version = "1.0.0"
 desc = "注册并封存插件的 Web 与 Dashboard UI"
-inject = (DASHBOARD_ROUTES, HOST_INFO, RUNTIME_CATALOG)
+inject = (HOST_INFO, RUNTIME_CATALOG)
+entrypoints = {"dashboard": "dashboard_server.main"}
 
 @dataclass
 class Registration:
@@ -56,8 +59,9 @@ class Registration:
 class Ui:
     """一个 Root 的唯一 UI 注册表；关闭不删除代码或插件数据。"""
 
-    def __init__(self, ctx: Context) -> None:
+    def __init__(self, ctx: Context, routes: tuple[object, ...]) -> None:
         self._ctx = ctx
+        self._routes = routes
         self._entries: dict[str, Registration] = {}
 
     @property
@@ -123,7 +127,7 @@ class Ui:
             )
             build_web_ui_catalog(modules)
             if resources is not None:
-                occupied = list(_core_routes(self._ctx.require(DASHBOARD_ROUTES)))
+                occupied = list(_server_routes(self._routes))
                 for entry in self._entries.values():
                     if entry.binding is None:
                         continue
@@ -215,7 +219,9 @@ def _path(root: Path, relative_path: str, suffix: str) -> Path:
 
 
 async def apply(ctx: Context) -> None:
-    registry = Ui(ctx)
+    app = create_dashboard_app(ctx.runtime.plugin_dir / "static/dashboard")
+    registry = Ui(ctx, tuple(app.routes))
+    app.add_middleware(LiveDashboardMiddleware, context=ctx, registry=registry)
     await ctx.provide(UI, registry, binding_contributors=registry.contributors)
     await ctx.provide(WEB_UI, registry, binding_contributors=registry.contributors)
     slots = PluginUiSlots(ctx)
@@ -228,3 +234,6 @@ async def apply(ctx: Context) -> None:
         return await project_message_rows(ctx, page, display_only=display_only)
 
     await ctx.provide(MESSAGE_DISPLAY, ctx.entrypoint(display))
+
+    if not ctx.require(HOST_INFO).validation:
+        await start_dashboard_server(ctx, app)

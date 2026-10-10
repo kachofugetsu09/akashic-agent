@@ -184,7 +184,6 @@ class PluginManager:
             _source_failure_key(failure): failure
             for failure in source_failures
         }
-        self._dashboard_routes: tuple[object, ...] | None = None
         self._endpoint_switcher: (
             Callable[
                 [
@@ -368,17 +367,6 @@ class PluginManager:
 
     def generation(self, plugin_id: str) -> PluginGeneration | None:
         return self._active_generations.get(plugin_id)
-
-    def configure_dashboard_routes(self, routes: tuple[object, ...]) -> None:
-        """Store the one real host route tuple before the live Root exists."""
-
-        if not isinstance(routes, tuple):
-            raise TypeError("Dashboard host routes 必须是 tuple")
-        if self._live_root is not None:
-            raise RuntimeError("Dashboard host routes 必须在 live Root 前配置")
-        if self._dashboard_routes is not None:
-            raise RuntimeError("Dashboard host routes 不能重复配置")
-        self._dashboard_routes = routes
 
     def bind_endpoint_switcher(
         self,
@@ -2254,7 +2242,7 @@ class PluginManager:
         """把固定安装事实和宿主输入交给装配层，不解释产品 Service。"""
         self._live_execution_access, self._live_credentials = await provide_host_services(
             root, mount_order, boot_id=self._host_boot_id,
-            dashboard_routes=self._dashboard_routes, input_custody=self._input_custody,
+            input_custody=self._input_custody,
             channel_identities=self._channel_identities, attachments=self._channel_attachment_store,
             resolve_command=self._resolve_runtime_command,
             message_log=self._message_log,

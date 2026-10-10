@@ -63,7 +63,6 @@ from agent.plugin_composition.runtime_catalog import (
     build_runtime_catalog,
 )
 from agent.plugin_composition.tasks import TASKS, PluginTasks
-from agent.plugin_composition.ui import DASHBOARD_ROUTES
 from agent.plugins.channel_credentials import CoreProviderClientFactory
 from agent.plugins.composable import ComposablePlugin
 from agent.plugins.generation import PluginGeneration
@@ -80,7 +79,6 @@ async def provide_host_services(
     mount_order: tuple[PluginGeneration, ...],
     *,
     boot_id: str,
-    dashboard_routes: tuple[object, ...] | None,
     input_custody: InputCustody | None,
     channel_identities: ChannelIdentities | None,
     attachments: ChannelAttachmentArtifactStore | None,
@@ -131,10 +129,6 @@ async def provide_host_services(
     await root.context.provide(
         HOST_INFO,
         HostInfo(boot_id=boot_id, validation=False),
-    )
-    await root.context.provide(
-        DASHBOARD_ROUTES,
-        () if dashboard_routes is None else dashboard_routes,
     )
     custody = input_custody
     await root.context.provide(
@@ -284,7 +278,6 @@ def check_host_dependencies(
     """只对实际请求且缺席的宿主能力失败，插件依赖由组合图负责。"""
     host_keys: set[ServiceKey[Any]] = {
         HOST_INFO,
-        DASHBOARD_ROUTES,
         INPUT_CUSTODY,
         CHANNEL_IDENTITY,
         CHANNEL_ATTACHMENT_IMPORT,

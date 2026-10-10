@@ -10,7 +10,6 @@ import subprocess
 import sys
 import tempfile
 import httpx
-import uvicorn
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
@@ -22,12 +21,6 @@ def commit(path: Path) -> None:
                     "-c", "user.email=scenario@example.invalid", "commit", "-qm", "scenario"], check=True)
 
 
-class Server(uvicorn.Server):
-    async def startup(self, sockets=None):
-        await super().startup(sockets)
-        self.ready.set()
-
-
 async def run(base: Path) -> dict[str, bool]:
     """真实协议探测只操作本场景的 boot 和 Unix socket。"""
     from agent.host_bridge.server import HostBridgeService
@@ -37,7 +30,6 @@ async def run(base: Path) -> dict[str, bool]:
     from agent.plugins.install import install_git_plugin
     from agent.plugins.manager import PluginManager
     from agent.plugins.selection import PluginSelection
-    from bootstrap.dashboard_api import create_dashboard_app
 
     home, workspace = base / "home", base / "workspace"
     workspace.mkdir()
@@ -75,8 +67,6 @@ async def apply(ctx):
     await ctx.provide(ServiceKey("scenario.status"), ctx.entrypoint(read))
 ''')
     host = None
-    dashboard = None
-    dashboard_task = None
 
     def monitors():
         return [task for task in asyncio.all_tasks() if task.get_name() == "host-bridge-monitor"]
@@ -93,13 +83,9 @@ async def apply(ctx):
     try:
         for boot in range(2):
             host = PluginManager([observer], workspace=workspace, installed_cache_root=home / "cache")
-            app = create_dashboard_app(workspace, plugin_manager=host)
             await host.load_all()
-            dashboard = Server(uvicorn.Config(app, uds=str(base / "dashboard.sock"), log_level="error"))
-            dashboard.ready = asyncio.Event()
-            dashboard_task = asyncio.create_task(dashboard.serve())
-            await asyncio.wait_for(dashboard.ready.wait(), 5)
-            async with httpx.AsyncClient(transport=httpx.AsyncHTTPTransport(uds=str(base / "dashboard.sock")),
+            endpoint = next(item for item in host.live_root.endpoints() if item.name == "dashboard")
+            async with httpx.AsyncClient(transport=httpx.AsyncHTTPTransport(uds=endpoint.address),
                                          base_url="http://local") as web:
                 await wait_status(web, "healthy")
                 assert len(monitors()) == 1 and not service._managers
@@ -143,18 +129,11 @@ async def apply(ctx):
                     assert host._active_generations["observer"].fiber is observer_fiber
                     assert await host.live_root.context.require(ServiceKey("scenario.status"))() is None
                     assert not monitors()
-            dashboard.should_exit = True
-            await dashboard_task
-            dashboard_task = None
             await host.terminate_all()
             host = None
             assert not monitors()
         assert not (workspace / "sessions.db").exists()
     finally:
-        if dashboard is not None:
-            dashboard.should_exit = True
-        if dashboard_task is not None:
-            await dashboard_task
         if host is not None:
             await host.terminate_all()
         await service.shutdown()

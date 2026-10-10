@@ -231,6 +231,7 @@ def _build_web_assets(
             text=True,
         ).stdout.strip()
 
+    shutil.copytree(asset_root / "dashboard", source / "plugins/ui/static/dashboard")
     return asset_root, source / "plugins", {
         "enabled": True,
         "source_commit": commit,
@@ -382,6 +383,10 @@ def _bundle_plugin(
                 generated = generated_plugin / name
                 if generated.is_file():
                     (package / name).write_bytes(generated.read_bytes())
+        if generated_plugins_root is not None:
+            static = generated_plugins_root / Path(root).name / "static"
+            if static.is_dir():
+                shutil.copytree(static, package / "static", dirs_exist_ok=True)
         manifest = load_static_plugin_manifest(package)
         if manifest.name in names:
             raise ValueError(f"发布插件名称重复: {manifest.name}")

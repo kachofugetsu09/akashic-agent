@@ -2,15 +2,11 @@ from __future__ import annotations
 
 import logging
 from pathlib import Path
-from typing import TYPE_CHECKING, cast
 
-if TYPE_CHECKING:
-    from agent.plugins.manager import PluginManager
-
-import uvicorn
 from fastapi import FastAPI
 from fastapi.responses import Response
 from fastapi.staticfiles import StaticFiles
+from core.common.file_io import run_file_io
 
 logger = logging.getLogger(__name__)
 
@@ -54,20 +50,14 @@ def _install_dashboard_access_log_filter() -> None:
     access_logger.addFilter(_DashboardAccessLogFilter())
 
 
-def create_dashboard_app(
-    workspace: Path,
-    *,
-    plugin_manager: object | None = None,
-) -> FastAPI:
-    workspace.mkdir(parents=True, exist_ok=True)
-    project_root = Path(__file__).resolve().parent.parent
-    static_dir = project_root / "static" / "dashboard"
-
+def create_dashboard_app(static_dir: Path) -> FastAPI:
+    """只读取固定代码制品中的构建资产；缺少入口时明确返回不可用。"""
     app = FastAPI(title="Akashic Dashboard API")
     # Vite 构建产物被 gitignore，新 clone 或 CI 环境可能没有该目录。
-    # 预先创建目录并在挂载时关闭目录检查，避免 app 创建依赖构建是否执行；
+    # 挂载时不写代码目录，避免 app 创建依赖构建是否执行；
     # dashboard_index() 会在入口文件缺失时报告错误。
-    static_dir.mkdir(parents=True, exist_ok=True)
+    app.mount("/dashboard/assets", StaticFiles(directory=static_dir, check_dir=False),
+              name="dashboard-public-assets")
     app.mount(
         "/assets",
         StaticFiles(directory=static_dir, check_dir=False),
@@ -76,84 +66,18 @@ def create_dashboard_app(
     # Vite 会在 /assets 下生成带内容哈希的资源 URL，因此直接原样提供 index.html；
     # 不需要手动处理缓存失效。
     @app.get("/")
-    def dashboard_index() -> Response:
+    @app.get("/dashboard")
+    @app.get("/dashboard/")
+    async def dashboard_index() -> Response:
         index_file = static_dir / "index.html"
-        if not index_file.exists():
+        try:
+            html = await run_file_io(lambda: index_file.read_text(encoding="utf-8"))
+        except FileNotFoundError:
             return Response(
                 content="Dashboard 前端尚未构建，请先运行 `npm run build`。",
                 media_type="text/plain; charset=utf-8",
                 status_code=503,
             )
-        html = index_file.read_text(encoding="utf-8")
         return Response(content=html, media_type="text/html")
 
-    if plugin_manager is not None:
-        from agent.plugins.dashboard_host import (
-            LiveDashboardMiddleware,
-        )
-
-        plugin_manager.configure_dashboard_routes(tuple(app.routes))
-        app.add_middleware(
-            LiveDashboardMiddleware,
-            plugin_manager=cast("PluginManager", plugin_manager),
-        )
-
     return app
-
-
-def run_dashboard_api(
-    *,
-    workspace: Path,
-    host: str = "0.0.0.0",
-    port: int = 2236,
-) -> None:
-    server = uvicorn.Server(
-        _build_dashboard_uvicorn_config(
-            workspace=workspace,
-            host=host,
-            port=port,
-            uds=None,
-        )
-    )
-    server.run()
-
-
-def _build_dashboard_uvicorn_config(
-    *,
-    workspace: Path,
-    host: str | None,
-    port: int | None,
-    uds: str | None = None,
-    plugin_manager: object | None = None,
-) -> uvicorn.Config:
-    config = uvicorn.Config(
-        create_dashboard_app(
-            workspace,
-            plugin_manager=plugin_manager,
-        ),
-        host=host or "127.0.0.1",
-        port=port or 2236,
-        uds=uds,
-        log_level="info",
-        timeout_graceful_shutdown=10,
-    )
-    _install_dashboard_access_log_filter()
-    return config
-
-
-def build_dashboard_server(
-    *,
-    workspace: Path,
-    host: str | None = None,
-    port: int | None = None,
-    uds: str | None = None,
-    plugin_manager: object | None = None,
-) -> uvicorn.Server:
-    config = _build_dashboard_uvicorn_config(
-        workspace=workspace,
-        host=host,
-        port=port,
-        uds=uds,
-        plugin_manager=plugin_manager,
-    )
-    return uvicorn.Server(config)

@@ -29,7 +29,7 @@ from agent.host_bridge.factory import HostBridgeRpcError
 from agent.host_bridge.client import HostBridgeShellProcessManager
 from agent.host_bridge.server import HostBridgeService
 from bootstrap.app import _run_primary_tasks
-from bootstrap.dashboard_api import create_dashboard_app
+from fastapi import FastAPI
 from bootstrap.web_shell import create_web_shell_app
 from bootstrap.web_runtime import dashboard_socket_path
 from core.common import file_io
@@ -208,7 +208,7 @@ async def run() -> None:
             assert status.state == "degraded" and status.code == "DEADLINE_EXCEEDED"
             assert not service._managers, "健康探测不能创建 execution manager"
             workspace = root / "dashboard"
-            app = create_dashboard_app(workspace)
+            app = FastAPI()
             @app.get("/api/runtime/host-bridge")
             async def read_status():
                 return status.snapshot()

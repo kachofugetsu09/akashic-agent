@@ -5,7 +5,6 @@ import inspect
 import logging
 import os
 import signal
-import stat
 from pathlib import Path
 from typing import Any, Awaitable, Callable
 
@@ -17,8 +16,6 @@ from agent.host_bridge.boot import claim_host_bridge_boot
 from agent.restart import RestartGate
 from agent.config_models import Config
 from bootstrap.cleanup import run_cleanup_steps
-from bootstrap.dashboard_api import build_dashboard_server
-from bootstrap.web_runtime import dashboard_socket_path, prepare_runtime_socket
 from bootstrap.runtime_readiness import RuntimeReadiness
 from bootstrap.tools import CoreRuntime, build_core_runtime
 from bootstrap.workspace_lock import WorkspaceInstanceLock
@@ -138,37 +135,6 @@ def _wait_server_task(
     return wait
 
 
-def _remove_dashboard_socket(
-    server: uvicorn.Server | None,
-    task: asyncio.Task[None] | None,
-) -> Callable[[], Awaitable[None]]:
-    """Remove this host's Unix socket after its dashboard listener has stopped."""
-
-    async def remove() -> None:
-        if server is None:
-            return
-        if task is not None and not task.done():
-            raise RuntimeError("Dashboard server task is still running")
-        if not server.started:
-            return
-        if any(listener.is_serving() for listener in server.servers):
-            raise RuntimeError("Dashboard Unix socket is still serving")
-        uds = server.config.uds
-        if uds is None:
-            return
-        path = Path(uds)
-        try:
-            mode = path.lstat().st_mode
-        except FileNotFoundError:
-            return
-        if not stat.S_ISSOCK(mode):
-            raise RuntimeError(f"Dashboard socket path is not a socket: {path}")
-        # Python 3.12 closes the listener but leaves its Unix socket pathname.
-        path.unlink()
-
-    return remove
-
-
 class AppRuntime:
     def __init__(
         self,
@@ -194,8 +160,6 @@ class AppRuntime:
         self.control_service: ControlService | None = None
         self.core: CoreRuntime | None = None
         self.bus = None
-        self.dashboard_server: uvicorn.Server | None = None
-        self.dashboard_task: asyncio.Task[None] | None = None
         self.web_shell: uvicorn.Server | None = None
         self.web_shell_task: asyncio.Task[None] | None = None
         self.plugin_watcher: PluginWatcher | None = None
@@ -230,10 +194,6 @@ class AppRuntime:
             self.bus = self.core.bus
             manager = self.core.plugin_manager
             manager.bind_endpoint_switcher(self._swap_plugin_endpoints)
-            self.dashboard_server = build_dashboard_server(
-                workspace=self.workspace,
-                plugin_manager=manager,
-            )
             await self.core.start()
             if self.readiness is not None:
                 self.readiness.mark_stage("core.ready")
@@ -273,13 +233,6 @@ class AppRuntime:
             if plugin_manager is None:
                 raise RuntimeError("插件 Runtime 不可用")
             self.tasks = []
-            self.dashboard_server.config.uds = prepare_runtime_socket(
-                dashboard_socket_path(self.workspace)
-            )
-            self.dashboard_task = asyncio.create_task(
-                self.dashboard_server.serve(),
-                name="dashboard_server",
-            )
             if os.environ.get("AKASHIC_SUPERVISED") != "1" and "AKASHIC_WEB_PORT" in os.environ:
                 from bootstrap.web_shell import create_web_shell_server
                 host = os.environ.get("AKASHIC_WEB_HOST", "127.0.0.1")
@@ -331,7 +284,6 @@ class AppRuntime:
             watched_tasks = {
                 task
                 for task in (
-                    self.dashboard_task,
                     self.web_shell_task,
                     self.plugin_watcher_task,
                 )
@@ -358,9 +310,6 @@ class AppRuntime:
                 if self.web_shell_task is not None and self.web_shell_task in done:
                     watched_task = self.web_shell_task
                     self.web_shell_task = None
-                elif self.dashboard_task is not None and self.dashboard_task in done:
-                    watched_task = self.dashboard_task
-                    self.dashboard_task = None
                 elif (
                     self.plugin_watcher_task is not None
                     and self.plugin_watcher_task in done
@@ -446,8 +395,6 @@ class AppRuntime:
         _raise_unexpected_task_errors("plugin candidate task", results)
 
     async def _request_server_shutdown(self) -> None:
-        if self.dashboard_server is not None:
-            self.dashboard_server.should_exit = True
         if self.web_shell is not None:
             self.web_shell.should_exit = True
 
@@ -464,14 +411,6 @@ class AppRuntime:
                 ("runtime_tasks.cancel", self._cancel_runtime_tasks),
                 ("servers.request_shutdown", self._request_server_shutdown),
                 ("web_shell.wait", _wait_server_task(self.web_shell_task)),
-                (
-                    "dashboard_server.wait",
-                    _wait_server_task(self.dashboard_task),
-                ),
-                (
-                    "dashboard_socket.remove",
-                    _remove_dashboard_socket(self.dashboard_server, self.dashboard_task),
-                ),
                 ("message_bus.aclose", _close_message_bus(self.bus)),
                 (
                     "plugin_watcher.stop",

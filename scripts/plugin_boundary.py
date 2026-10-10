@@ -120,6 +120,7 @@ PLUGIN_ALLOWED_MODULES = frozenset({
     "core.common.diagnostic_log",
     # 有界文件工作与取消排空；公开合同见 plugin-v3-capabilities.md。
     "core.common.file_io",
+    "core.common.unix_socket",
     "core.error_context",
     "core.net.http",
     "core.common.timekit",
