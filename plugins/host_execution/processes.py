@@ -44,7 +44,7 @@ class PluginProcesses:
         """同步接纳实际调用，关闭时先排空，防止已接纳 spawn 晚于 shutdown。"""
         if not self._formal or self._closed:
             raise RuntimeError("当前不能操作正式进程")
-        owner = ctx.require_runtime_owner(PROCESSES, self)
+        owner = ctx.require_runtime_identity(PROCESSES, self).plugin_id
         if not isinstance(key, str) or not key:
             raise ValueError("进程 owner key 不能为空")
         self._operations += 1

@@ -735,33 +735,6 @@ class PluginManager:
             result.append(replacement)
         return tuple(result)
 
-    def _generation_for_context(self, context: object) -> PluginGeneration:
-        """Resolve a real current Context by its Root and runtime generation."""
-        root = self._live_root
-        if root is None:
-            raise RuntimeError("正式 live Root 尚未建立")
-        if not isinstance(context, type(root.context)):
-            raise TypeError("generation lookup 需要同一 CompositionRoot 的 Context")
-        if context.root_instance_token is not root.instance_token:
-            raise ValueError("Context 不属于当前 live Root")
-        runtime = context.runtime
-        generation = self._active_generations.get(runtime.plugin_id)
-        if generation is None or generation.generation_id != runtime.generation_id:
-            raise ValueError("Context 与当前 generation 不匹配")
-        if generation.code_dir.resolve() != runtime.plugin_dir.resolve():
-            raise ValueError("Context 与当前固定代码制品不匹配")
-        # The Context may be a child provider/contributor.  Identity is the
-        # Root's registered Context plus runtime tuple, not the top-level Fiber.
-        if not any(
-            fiber.context is context
-            and fiber.runtime is not None
-            and fiber.runtime.plugin_id == runtime.plugin_id
-            and fiber.runtime.generation_id == runtime.generation_id
-            for fiber in root.fibers()
-        ):
-            raise ValueError("Context 不属于当前 Root 登记的 generation Context")
-        return generation
-
     async def _load_live_initial(
         self,
         components: tuple[str, ...],
@@ -2271,7 +2244,6 @@ class PluginManager:
             channel_identities=self._channel_identities, attachments=self._channel_attachment_store,
             resolve_command=self._resolve_runtime_command,
             message_log=self._message_log,
-            generation_for_context=self._generation_for_context,
             runtime_generations=lambda: (self._active_generations, self._draining_generations),
             runtime_updating=lambda: self._operation is not None and not self._operation.task.done(),
             live_root=lambda: self._live_root, installer=self,

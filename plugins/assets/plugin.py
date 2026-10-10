@@ -64,7 +64,7 @@ class Assets:
         return await ctx.effect(setup, label=f"asset:{category}:{relative_path}")
 
     def __call__(self, consumer: Context) -> tuple[InstalledAsset, ...]:
-        consumer.require_runtime_owner(INSTALLED_ASSETS, self)
+        consumer.require_runtime_identity(INSTALLED_ASSETS, self)
         return tuple(sorted(
             self._entries,
             key=lambda item: (item.owner_id, item.category, str(item.root_dir)),

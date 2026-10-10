@@ -407,7 +407,7 @@ class ToolCatalog:
                 await stack.enter_async_context(contributor.runtime_scope())
             state: Mapping[str, object] | None = None
             if registration.capture is not None:
-                _ = self._ctx.require_runtime_owner(TOOLS, self)
+                _ = self._ctx.require_runtime_identity(TOOLS, self)
                 options = freeze_json({} if configuration is None else configuration)
                 if not isinstance(options, Mapping):
                     raise TypeError("工具 binding 配置必须是 JSON 对象")

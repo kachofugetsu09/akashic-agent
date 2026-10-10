@@ -31,7 +31,7 @@ class DeliveryAdmission:
         self._tasks = tasks
 
     def open(self, consumer: Context) -> Deliveries:
-        owner = consumer.require_runtime_owner(DELIVERY_GUARDED_START, self)
+        owner = consumer.require_runtime_identity(DELIVERY_GUARDED_START, self).plugin_id
         if self._state is None or self._tasks is None:
             raise RuntimeError("candidate 验证期禁止打开正式 Delivery")
         ctx = self._ctx

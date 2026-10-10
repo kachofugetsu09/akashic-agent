@@ -15,7 +15,7 @@
 - 注册身份来自实际 Context，Web 路径、Dashboard loader 源码和返回模块均校验代码制品归属。
   Dashboard 使用原包的延迟 loader，避免第二个 Python namespace 破坏领域类身份。
 - 目录由 provider 的 `SNAPSHOT_SEALING` listener 封存。宿主校验服务的实际 Root token；
-  请求能力由公开 `Context.require_runtime_owner` 验证，拒绝跨 Root 借用。
+  请求能力由公开 `Context.require_runtime_identity` 验证，拒绝跨 Root 借用。
 - 注册 Effect 拥有 Dashboard 资源；失败保留关闭句柄，成功后才注销。
   返回列表有坏项时也保留其中实际资源；不重放初始化。没有新增代码/资产复制或持久状态减少。
 - HTTP/WebSocket 路由前缀、身份头、鉴权和 stale 响应沿用现有宿主逻辑。

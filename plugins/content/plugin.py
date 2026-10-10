@@ -221,7 +221,7 @@ class _ContentView:
     ) -> tuple[tuple[ContentPart, ...], Mapping[str, object]]:
         self._check_active()
         protocols = tuple(
-            (ctx.require_runtime_owner(CONTENT, self._content), protocol)
+            (ctx.require_runtime_identity(CONTENT, self._content).plugin_id, protocol)
             for ctx, protocol in self._protocols
         )
         parts, metadata = await _decode_text(text, protocols, references)
