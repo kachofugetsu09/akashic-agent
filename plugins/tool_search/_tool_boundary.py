@@ -11,10 +11,10 @@ from agent.plugin_contracts.tools import (
     TOOLS as TOOLS,
     CallSource as CallSource,
     ToolCatalog as ToolCatalog,
-    ToolPresentation as ToolPresentation,
     ToolRef as ToolRef,
     ToolView as ToolView,
 )
+from plugins.tools.contract import ToolPresentation as ToolPresentation
 
 ToolOutcome = Literal["success", "denied", "error", "interrupted"]
 

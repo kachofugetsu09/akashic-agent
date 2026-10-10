@@ -35,14 +35,16 @@ from plugins.react.contract import (
 )
 from agent.plugin_contracts.tools import (
     TOOL_CLEANUP as TOOL_CLEANUP,
-    TOOL_PROGRAM_V2 as TOOL_PROGRAM,
     TOOLS as TOOLS,
     ToolCatalog as ToolCatalog,
     ToolCleanup as ToolCleanup,
+    ToolView as ToolView,
+)
+from plugins.tools.contract import (
+    TOOL_PROGRAM_V2 as TOOL_PROGRAM,
     ToolMenu as ToolMenu,
     ToolPresentation as ToolPresentation,
     OrderedToolProgram as ToolProgram,
-    ToolView as ToolView,
 )
 from plugins.turn_projection.contract import (
     TURN_PROJECTION as TURN_PROJECTION,

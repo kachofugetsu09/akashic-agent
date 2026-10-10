@@ -14,7 +14,6 @@ from agent.plugin_composition.context import Context
 from agent.plugin_composition.effect import Effect
 from agent.plugin_composition.messages import MessageReader, OwnerTransaction
 from agent.plugin_composition.model import ServiceKey
-from plugins.models.contract import ToolCall as ModelToolCall
 from agent.plugin_composition.tasks import ExternalRootPermit, Task
 from agent.plugin_contracts import (
     CallRef,
@@ -113,20 +112,6 @@ class ToolView:
     @classmethod
     def combine(cls, *views: ToolView) -> ToolView:
         return cls(tuple(ref for view in views for ref in view.refs))
-
-
-class ToolPresentation(Protocol):
-    """定义一次程序固定的 schema、wire 解码和系统提示词。"""
-
-    @property
-    def schemas(self) -> tuple[Mapping[str, Any], ...]: ...
-
-    @property
-    def system_prompt(self) -> str: ...
-
-    def decode(self, call: ModelToolCall) -> tuple[str, Mapping[str, object]] | str: ...
-
-    def configuration(self, name: str) -> Mapping[str, object] | None: ...
 
 
 @dataclass(frozen=True, slots=True)
@@ -237,9 +222,6 @@ class ToolCatalog(Protocol):
 TOOLS = ServiceKey[ToolCatalog]("tools.v1")
 ALL_TOOLS = ServiceKey[Callable[[], ToolView]]("tools.all.v1")
 TOOL_DISPLAY_NAME = ServiceKey[Callable[[str], str]]("tools.display-name.v1")
-TOOL_LOADING_PRESENTATION = ServiceKey[
-    Callable[[ToolView], tuple[ToolView, ToolPresentation]]
-]("tools.loading.presentation.v1")
 
 
 class DecodedCall(Protocol):
@@ -259,21 +241,6 @@ class CommitAfter(Protocol):
     async def wait(self) -> None: ...
 
 
-class ToolMenu(Protocol):
-    @property
-    def schemas(self) -> tuple[Mapping[str, Any], ...]: ...
-    @property
-    def names(self) -> frozenset[str]: ...
-    @property
-    def system_prompt(self) -> str: ...
-    def name(self, binding_id: str) -> str: ...
-    def parallel(self, binding_id: str) -> bool: ...
-    def decode(self, call: ModelToolCall) -> DecodedCall: ...
-    def check_call(self, call: ToolCall) -> None: ...
-    async def execute(self, call: CallRef, *, commit_after: CommitAfter | None = None) -> Result: ...
-    async def settle_abandoned(self, call: CallRef) -> Result: ...
-
-
 # 本 gateway 进程的启动时刻；早于它提交的未结工具调用属于上一个进程（ADR-0100）。
 # 位于 Core 契约模块，插件热更新不会重新导入它。
 PROCESS_STARTED_AT = datetime.now(timezone.utc)
@@ -283,25 +250,6 @@ class StartCheck(Protocol):
     def __call__(self, transaction: OwnerTransaction | None, /) -> None:
         """核对执行前提；新 Output 在同一事务内核对，工具启动前可在事务外核对。"""
         ...
-
-
-class OrderedToolProgram(Protocol):
-    async def create_menu(
-        self,
-        reader: MessageReader,
-        source: str,
-        *,
-        content: Mapping[str, Callable[[ContentPart], ContentReferences]],
-        check_start: StartCheck,
-        authorize: Callable[
-            [str, Mapping[str, object]], Awaitable[Mapping[str, object] | str]
-        ],
-        view: ToolView | None = None,
-        fixed_bindings: Mapping[str, str] | None = None,
-        limit: int | None = None,
-        presentation: ToolPresentation | None = None,
-        child_permit: Callable[[], ExternalRootPermit] | None = None,
-    ) -> ToolMenu: ...
 
 
 class ToolCleanup(Protocol):
@@ -328,6 +276,5 @@ class BindSavedTool(Protocol):
     ) -> str: ...
 
 
-TOOL_PROGRAM_V2 = ServiceKey[OrderedToolProgram]("tools.program.v2")
 TOOL_CLEANUP = ServiceKey[ToolCleanup]("tools.cleanup.v1")
 TOOL_BIND_SAVED = ServiceKey[BindSavedTool]("tools.bind-saved.v1")

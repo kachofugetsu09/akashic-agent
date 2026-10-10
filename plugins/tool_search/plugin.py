@@ -11,9 +11,7 @@ from agent.plugin_composition import Context
 from plugins.models.contract import ToolCall as ModelToolCall
 from agent.plugin_contracts import ContentPart, json_value
 from core.common.frozen_json import freeze_json
-from agent.plugin_contracts.tools import (
-    TOOL_LOADING_PRESENTATION as TOOL_LOADING_PRESENTATION,
-)
+from plugins.tools.contract import TOOL_LOADING_PRESENTATION as TOOL_LOADING_PRESENTATION
 
 from ._tool_boundary import (
     TOOLS,
