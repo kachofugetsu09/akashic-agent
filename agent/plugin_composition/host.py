@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from collections.abc import Callable
 
 from agent.plugin_composition.model import ServiceKey
 
@@ -12,6 +13,7 @@ class HostInfo:
 
     boot_id: str
     validation: bool
+    ready: Callable[[], bool] = lambda: True
 
     def __post_init__(self) -> None:
         if not isinstance(self.boot_id, str) or not self.boot_id or self.boot_id.strip() != self.boot_id:

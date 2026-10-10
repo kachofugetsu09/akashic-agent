@@ -54,7 +54,7 @@ PLUGIN_ROOT = "plugins"
 # admission/channel_io/config_input/execution/requests/ui 六个窄合同的 owner
 # 与评审出处见 docs/design/plugin-boundary-foundation.md §9.37。
 PLUGIN_ALLOWED_MODULES = frozenset({
-    "agent.control.context",
+    "core.error_context",
     "agent.host_bridge.filesystem",
     "agent.host_bridge.factory",
     "agent.media",

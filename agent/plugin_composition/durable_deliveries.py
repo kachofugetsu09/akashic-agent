@@ -6,9 +6,16 @@ from dataclasses import dataclass, field
 from types import MappingProxyType
 from typing import Literal, cast
 
-from agent.control.scoped_turn import TurnAcceptedReceipt
 from agent.plugin_composition.channels import ChannelDeliveryReceipt, DeliveryStatus
 from agent.plugin_composition.durable_delivery_store import DurableDeliveryStore
+
+
+@dataclass(frozen=True, slots=True)
+class TurnAcceptedReceipt:
+    """Identify the Turn after Core accepts custody."""
+
+    session_id: str
+    turn_id: str
 
 
 def validate_message_delivery_id(value: object) -> str:

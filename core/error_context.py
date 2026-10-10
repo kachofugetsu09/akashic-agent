@@ -24,3 +24,6 @@ current_provider_attempt: ContextVar[int] = ContextVar(
 current_provider_operation: ContextVar[str] = ContextVar(
     "akashic_current_provider_operation", default=""
 )
+
+
+running_turn_id: ContextVar[str] = ContextVar("running_turn_id", default="")

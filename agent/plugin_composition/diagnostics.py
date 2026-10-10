@@ -12,7 +12,7 @@ from time import monotonic
 from types import TracebackType
 from typing import Any, ContextManager, Generator, Literal, Protocol, cast
 
-from agent.control.context import running_turn_id
+from core.error_context import running_turn_id
 from core.common.diagnostic_log import log_event
 from core.error_context import current_session_key
 

@@ -4,7 +4,7 @@ import logging
 import os
 from pathlib import Path
 
-from agent.control.context import running_turn_id
+from core.error_context import running_turn_id
 from agent.process_runtime import ExecutionResult
 from core.common.diagnostic_log import log_event
 
