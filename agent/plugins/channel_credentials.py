@@ -6,7 +6,7 @@ import json
 from collections.abc import Callable, Mapping
 from pathlib import Path
 
-from agent.plugin_composition.channels import CredentialRef, ProviderClient
+from agent.plugin_composition.credentials import CredentialRef, ProviderClient
 from agent.plugin_composition.config_input import config_refs, load_config, _credential_path
 
 

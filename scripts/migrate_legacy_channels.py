@@ -21,7 +21,7 @@ from typing import Any, Mapping
 import tomlkit
 
 from agent.plugins.manifest import ensure_workspace_plugin_data_dir, workspace_plugin_data_dir
-from agent.plugin_composition.channels import CredentialRef
+from agent.plugin_composition.credentials import CredentialRef
 from agent.plugin_composition.config_input import load_config, save_config, save_credential
 from agent.plugins.channel_credentials import CoreProviderClientFactory
 

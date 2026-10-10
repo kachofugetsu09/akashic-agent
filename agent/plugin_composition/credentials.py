@@ -4,8 +4,46 @@ from collections.abc import AsyncGenerator, Mapping
 from contextlib import asynccontextmanager
 
 from agent.plugin_composition.context import Context
-from agent.plugin_composition.channels import CredentialRef, ProviderClient, ProviderClientFactory
+from dataclasses import dataclass
+from typing import Protocol
 from agent.plugin_composition.model import ServiceKey
+
+
+@dataclass(frozen=True, slots=True)
+class CredentialRef:
+    """Opaque credential path; it never contains or resolves secret bytes."""
+
+    path: tuple[str, ...]
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.path, tuple) or not self.path:
+            raise ValueError("CredentialRef.path 必须是非空 tuple")
+        for segment in self.path:
+            if (
+                not isinstance(segment, str)
+                or not segment
+                or segment.strip() != segment
+                or segment in {".", ".."}
+                or "/" in segment
+                or "\\" in segment
+                or "\x00" in segment
+            ):
+                raise ValueError("CredentialRef.path 包含非法段")
+
+
+class ProviderClient(Protocol):
+    def credential(self, ref: CredentialRef) -> str: ...
+
+    async def aclose(self) -> None: ...
+
+
+class ProviderClientFactory(Protocol):
+    async def create(
+        self,
+        credentials: Mapping[str, CredentialRef],
+    ) -> ProviderClient: ...
+
+    async def aclose(self) -> None: ...
 
 
 class CredentialClients:
@@ -43,10 +81,10 @@ class CredentialClients:
 
     async def create(self, ctx: Context, refs: Mapping[str, CredentialRef]) -> ProviderClient:
         """为实际贡献 Context 创建凭据句柄；调用方负责确认释放。"""
-        owner = ctx.require_runtime_identity(CREDENTIALS, self).plugin_id
+        identity = ctx.require_runtime_identity(CREDENTIALS, self)
         if self._factories is None:
             raise RuntimeError("candidate 验证期禁止读取正式凭据")
-        key = (ctx.runtime.plugin_id, ctx.runtime.generation_id)
+        key = (identity.plugin_id, identity.generation_id)
         factory = self._factories.get(key) or self._factories.get((ctx.runtime.plugin_id, "*"))
         if factory is None:
             raise PermissionError("插件没有当前固定输入的凭据授权")

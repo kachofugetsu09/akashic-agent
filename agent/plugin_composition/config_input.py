@@ -13,7 +13,7 @@ from uuid import uuid4
 from agent.plugins.files import sync_directory
 from datetime import date, datetime, time
 from typing import cast
-from agent.plugin_composition.channels import CredentialRef
+from agent.plugin_composition.credentials import CredentialRef
 
 CONFIG_INPUT = "config.input.json"
 _LEGACY = "config.local.toml"
