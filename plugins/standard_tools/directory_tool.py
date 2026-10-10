@@ -65,7 +65,7 @@ class DirectoryTool:
         return None if result is None else await self._result(result)
 
     async def _result(self, result: Mapping[str, object]) -> ToolResultValue:
-        rules = await read_agents(str(result["path"]))
+        rules = await read_agents(self._directories.files, str(result["path"]))
         value = {**result, "agents": {key: item for key, item in rules.items() if key != "files"}}
         return ToolResultValue("success", (ContentPart("text", json.dumps(value, ensure_ascii=False)),))
 

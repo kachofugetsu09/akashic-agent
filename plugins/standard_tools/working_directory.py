@@ -10,7 +10,8 @@ from agent.plugin_composition import Context, Effect
 from agent.plugin_composition.messages import OwnerStore, OwnerTransaction, SessionAttributes, MessageConflict
 from plugins.standard_tools.contract import DirectorySnapshot
 
-from .path_access import PathAccess, check_directory
+from .path_access import check_directory
+from plugins.host_execution.contract import Files
 from .agents import read_agents
 
 _SESSION = "directory:"
@@ -18,7 +19,8 @@ _SWITCH = "directory-switch:"
 
 
 class WorkingDirectories:
-    def __init__(self, store: OwnerStore):
+    def __init__(self, store: OwnerStore, files: Files):
+        self.files = files
         self._store = store
         self._defaults: dict[str, Callable[[str], str | None]] = {}
 
@@ -57,20 +59,20 @@ class WorkingDirectories:
         return DirectorySnapshot(path, record.version)
 
     async def check_directory(self, path: str, *, base_dir: str | None = None) -> str:
-        async with PathAccess() as access:
+        async with self.files.paths() as access:
             return check_directory(await access.read("inspect", path, base_dir=base_dir))
 
     async def inspect(self, path: str | None) -> Mapping[str, object]:
         if path is None:
             return {"path": None, "status": "unset"}
-        async with PathAccess() as access:
+        async with self.files.paths() as access:
             info = await access.read("inspect", path)
         if info.status == "available" and info.kind != "directory":
             return {"path": path, "status": "not_directory"}
         return {**info.model_dump(exclude_none=True), "path": path}
 
     async def browse(self, path: str, *, after: str | None = None) -> Mapping[str, object]:
-        async with PathAccess() as access:
+        async with self.files.paths() as access:
             return (await access.read("browse", path, after=after)).model_dump(exclude_none=True)
 
     async def resolve_target(self, session_id: str | None, path: str, *, legacy_base: str | None = None) -> tuple[str, str | None]:
@@ -78,7 +80,7 @@ class WorkingDirectories:
         current = DirectorySnapshot(None, None) if session_id is None else self.snapshot(session_id)
         base = current.path if current.path is not None else legacy_base
         explicit = Path(path).is_absolute() or path.startswith("~")
-        async with PathAccess() as access:
+        async with self.files.paths() as access:
             if not explicit and current.path is not None:
                 _ = check_directory(await access.read("inspect", current.path))
             info = await access.read("resolve", path, base_dir=base)
@@ -132,6 +134,6 @@ class WorkingDirectories:
     async def current_info(self, session_id: str) -> dict[str, object]:
         current = self.snapshot(session_id)
         info = await self.inspect(current.path)
-        rules = await read_agents(current.path)
+        rules = await read_agents(self.files, current.path)
         return {"path": current.path, "revision": current.revision, "status": info["status"],
                 "agents": {key: value for key, value in rules.items() if key != "files"}}

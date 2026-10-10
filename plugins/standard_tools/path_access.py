@@ -1,6 +1,6 @@
 """Directory validation uses the public physical filesystem contract."""
 
-from agent.host_bridge.filesystem import PathAccess as PathAccess, PathInfo as PathInfo
+from plugins.host_execution.contract import PathInfo
 
 def check_directory(info: PathInfo) -> str:
     """Reject unavailable targets before any persistent directory change."""

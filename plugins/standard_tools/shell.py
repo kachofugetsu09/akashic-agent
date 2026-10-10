@@ -17,19 +17,9 @@ from agent.plugin_composition import Context, ServiceKey
 from agent.plugin_composition.bindings import BINDINGS
 from agent.plugin_composition.messages import MessageReader
 from agent.process_runtime import (
-    DEFAULT_HARD_TIMEOUT_S,
-    DEFAULT_INITIAL_YIELD_TIME_MS,
-    DEFAULT_MAX_OUTPUT_TOKENS,
-    MAX_HARD_TIMEOUT_S,
-    ExecutionCleanupReport,
-    UnknownExecutionError,
-    clamp_initial_yield_time,
-    clamp_write_stdin_yield_time,
-    format_execution_result,
+    DEFAULT_HARD_TIMEOUT_S, DEFAULT_INITIAL_YIELD_TIME_MS, DEFAULT_MAX_OUTPUT_TOKENS, MAX_HARD_TIMEOUT_S, ExecutionCleanupReport, UnknownExecutionError, clamp_initial_yield_time, clamp_write_stdin_yield_time
 )
-from agent.plugin_composition.shell_runtime import (
-    resolve_shell,
-)
+from .shell_backend import format_execution_result
 from agent.plugin_composition.tasks import TASKS, Task, TaskAdmission, TaskSlot
 from agent.plugin_contracts import (
     CallRef,
@@ -193,7 +183,7 @@ class ShellTool:
         if not text:
             return '命令不能为空'
         try:
-            shell = resolve_shell(command.shell)
+            shell = self._ctx.require(PROCESSES).resolve_shell(command.shell)
         except ValueError as error:
             return str(error)
         cwd = command.cwd or self._settings.working_dir or self._settings.restricted_dir
@@ -301,7 +291,7 @@ async def register_shell(ctx: Context, directories: WorkingDirectories | None = 
 
     async def environment(_snapshot: tuple[Message, ...], _source: str) -> Mapping[str, object]:
         """请求准备时公开实际默认 shell；安装和归档装配不探测执行环境。"""
-        shell = resolve_shell()
+        shell = ctx.require(PROCESSES).resolve_shell()
         return {"reminders": ({"name": "shell-environment", "priority": 350, "replay": False,
                                "text": f"默认命令 shell：{shell.path}（{shell.kind.value}）。"
                                "未指定 shell 参数时使用此环境，命令须遵守该 shell 的语法；"

@@ -15,9 +15,8 @@ from typing import Any, Literal, Protocol, cast
 
 import yaml
 
-from agent.host_bridge.factory import build_requirements_checker
 from plugins.assets.contract import InstalledAsset
-from agent.plugin_composition.shell_runtime import resolve_shell
+from plugins.host_execution.contract import Processes
 
 SkillSource = Literal["plugin", "workspace", "user"]
 
@@ -107,9 +106,9 @@ class SkillCatalogParser:
     变化都会触发完整重读，热更新语义不变。
     """
 
-    def __init__(self, capability_checker: RequirementsChecker | None = None):
-        if capability_checker is None:
-            capability_checker = build_requirements_checker()
+    def __init__(self, processes: Processes):
+        self._processes = processes
+        capability_checker = processes.requirements_checker()
         self._capability_checker = capability_checker
         self._shell_path: str | None = None
         self._frontmatter: dict[str, dict[str, Any]] = {}
@@ -396,7 +395,7 @@ class SkillCatalogParser:
             if os.name == "nt":
                 self._shell_path = os.environ.get("PATH", "")
             else:
-                shell = resolve_shell()
+                shell = self._processes.resolve_shell()
                 result = subprocess.run(
                     shell.derive_argv("command env -0", login=True),
                     check=True,
