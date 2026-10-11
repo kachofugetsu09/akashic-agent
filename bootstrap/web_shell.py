@@ -22,6 +22,7 @@ from starlette.websockets import WebSocketDisconnect, WebSocketState
 
 from agent.plugin_composition.endpoints import Endpoint, load_endpoint_plan
 from core.common.file_io import run_file_io
+from core.net.asgi_server import PromptShutdownServer
 
 _REQUEST_HEADERS_EXCLUDED = {
     "connection",
@@ -95,7 +96,7 @@ _WEB_CONTENT_SECURITY_POLICY = "; ".join((
 ))
 
 
-class WebShellServer(uvicorn.Server):
+class WebShellServer(PromptShutdownServer):
     """在线程和进程入口之间发布确定的监听启动结果。"""
 
     def __init__(self, config: uvicorn.Config) -> None:

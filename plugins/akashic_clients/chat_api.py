@@ -15,6 +15,8 @@ from fastapi import FastAPI, HTTPException, Query, Request, WebSocket
 from fastapi.responses import FileResponse, JSONResponse, Response, StreamingResponse
 from pydantic import BaseModel, ConfigDict, Field
 
+from core.net.asgi_server import PromptShutdownServer
+
 from plugins.models.contract import (
     ModelControlUnavailable,
     ModelError,
@@ -667,7 +669,7 @@ def build_chat_server(
         access_log=False,
         timeout_graceful_shutdown=10,
     )
-    return uvicorn.Server(config)
+    return PromptShutdownServer(config)
 
 
 def _require_runtime_inspection(

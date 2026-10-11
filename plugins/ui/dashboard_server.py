@@ -14,12 +14,13 @@ import uvicorn
 
 from agent.plugin_composition import Context
 from core.common.unix_socket import prepare_unix_socket, socket_alias_path
+from core.net.asgi_server import PromptShutdownServer
 from .dashboard_app import create_dashboard_app, _install_dashboard_access_log_filter
 
 logger = logging.getLogger(__name__)
 
 
-class DashboardServer(uvicorn.Server):
+class DashboardServer(PromptShutdownServer):
     def __init__(self, config: uvicorn.Config):
         super().__init__(config)
         self.ready = asyncio.Event()
