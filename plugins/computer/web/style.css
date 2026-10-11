@@ -626,14 +626,6 @@
   pointer-events: none;
 }
 
-@media (prefers-reduced-motion: no-preference) {
-  .computer-connection-icon[data-icon="spinner"] .computer-icon { animation: computer-spin 0.9s linear infinite; }
-}
-
-@keyframes computer-spin {
-  to { rotate: 360deg; }
-}
-
 @media (prefers-reduced-motion: reduce) {
   .computer-view *,
   .computer-view *::before,

@@ -74,3 +74,15 @@ jobs:
 
       - name: Run frontend typecheck
         run: npm run typecheck
+
+      - name: Build and load plugin web modules
+        run: |
+          npm run build:web-plugins
+          .venv/bin/python - <<'PY'
+          from pathlib import Path
+          from plugins.ui.web import resolve_web_module
+
+          for path in sorted(Path("plugins").glob("*/web_module.js")):
+              resolve_web_module(path.parent, path.name)
+              print(f"Loaded {path}")
+          PY
