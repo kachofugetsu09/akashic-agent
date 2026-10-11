@@ -8,10 +8,8 @@ from typing import Any, Mapping, cast
 
 # 在线目录由 models 插件在显式同步时刷新、校验和缓存。
 # 普通 import 只读固定 wheel，不能绕过插件缓存 owner 单独联网。
+# litellm 与 genai-prices 导入约 1s，只在首次查目录时加载，不进入插件启动路径。
 os.environ["LITELLM_LOCAL_MODEL_COST_MAP"] = "True"
-
-import litellm
-from genai_prices.data_snapshot import get_snapshot
 
 @dataclass(frozen=True)
 class CatalogCapabilities:
@@ -106,6 +104,8 @@ def resolve_catalog_provider_id(
     # 1. genai-prices 的 provider API 正则优先识别官方入口。
     if base_url:
         try:
+            from genai_prices.data_snapshot import get_snapshot
+
             matched_provider = get_snapshot().find_provider(None, None, base_url)
         except LookupError:
             pass
@@ -142,6 +142,8 @@ def _known_provider_ids() -> frozenset[str]:
 
 @lru_cache(maxsize=1)
 def _registry() -> dict[str, dict[str, Any]]:
+    import litellm
+
     return cast(dict[str, dict[str, Any]], litellm.model_cost)
 
 
