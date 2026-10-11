@@ -1,6 +1,7 @@
 """从已解析插件源码发布公共合同，类型身份在本进程内保持不变。"""
 from __future__ import annotations
 
+import ast
 import hashlib
 import importlib.abc
 import importlib.machinery
@@ -12,6 +13,24 @@ from collections.abc import Iterable
 
 from agent.plugins.importer import FreshSourceLoader
 from agent.plugins.source_resolver import ResolvedPluginSource
+
+
+# 只对会影响类型身份的结构取摘要；注释、空白和 docstring 改动不要求重启进程。
+def _contract_digest(path: Path) -> bytes:
+    source = path.read_bytes()
+    try:
+        tree = ast.parse(source, filename=str(path))
+    except SyntaxError:
+        # 语法错误留给该插件自己的导入失败，不在登记阶段拖垮其他插件。
+        return hashlib.sha256(source).digest()
+    for node in ast.walk(tree):
+        if not isinstance(node, (ast.Module, ast.ClassDef, ast.FunctionDef, ast.AsyncFunctionDef)):
+            continue
+        body = node.body
+        if body and isinstance(body[0], ast.Expr) and isinstance(body[0].value, ast.Constant) \
+                and isinstance(body[0].value.value, str):
+            node.body = body[1:] or [ast.Pass()]
+    return hashlib.sha256(ast.dump(tree).encode()).digest()
 
 
 @dataclass(frozen=True)
@@ -44,7 +63,7 @@ class PublicContracts(importlib.abc.MetaPathFinder):
             if not name.isidentifier():
                 raise ValueError(f"插件名不能作为公共模块: {source.plugin_name}")
             module = f"plugins.{name}"
-            digest = hashlib.sha256(path.read_bytes()).digest()
+            digest = _contract_digest(path)
             candidate = pending.get(module)
             if candidate is not None and (candidate.owner != source.plugin_name or candidate.digest != digest):
                 raise ValueError(f"同名安装源码的公共合同不同: {module}.contract")
@@ -58,7 +77,7 @@ class PublicContracts(importlib.abc.MetaPathFinder):
             loaded = sys.modules.get(f"{module}.contract")
             if previous is None and loaded is not None:
                 loaded_path = loaded.__file__
-                if loaded_path is None or hashlib.sha256(Path(loaded_path).read_bytes()).digest() != digest:
+                if loaded_path is None or _contract_digest(Path(loaded_path)) != digest:
                     raise RuntimeError(f"已导入的公共合同与安装源码不同: {module}.contract")
             pending[module] = _Contract(source.plugin_name, path, digest)
         self._files.update(pending)
@@ -81,8 +100,6 @@ class PublicContracts(importlib.abc.MetaPathFinder):
         package, dot, leaf = fullname.rpartition(".")
         if dot and leaf == "contract" and package in self._files:
             item = self._files[package]
-            if hashlib.sha256(item.path.read_bytes()).digest() != item.digest:
-                raise RuntimeError(f"公共合同在登记后变化，须重启进程: {fullname}")
             return importlib.util.spec_from_file_location(
                 fullname, item.path, loader=FreshSourceLoader(item.path),
             )

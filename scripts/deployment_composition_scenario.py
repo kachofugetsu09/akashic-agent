@@ -83,17 +83,13 @@ def migration(repo, name, migration_id, body):
     code = "from yoyo import step\n" + body
     (package / f"{migration_id}.py").write_text(code)
     files = sorted(package.glob("*.py"))
-    catalog = (f'schema_version = 1\nbundle_id = "{name}"\nversion = "1"\n'
+    catalog = (f'schema_version = 2\nbundle_id = "{name}"\nversion = "1"\n'
                f'migration_root = "{package_name}"\npackage_name = "{package_name}"\n')
-    for file in files:
-        digest = hashlib.sha256(file.read_bytes()).hexdigest()
-        catalog += f'\n[[files]]\npath = "{file.name}"\nsha256 = "{digest}"\n'
     for file in files:
         if file.name == "__init__.py":
             continue
-        digest = hashlib.sha256(file.read_bytes()).hexdigest()
         catalog += (f'\n[[migrations]]\nid = "{file.stem}"\npath = "{file.name}"\n'
-                    f'depends = []\ntransactional = true\nsha256 = "{digest}"\n')
+                    f'depends = []\ntransactional = true\n')
     (plugin_root / "migration.catalog.toml").write_text(catalog)
 
 
