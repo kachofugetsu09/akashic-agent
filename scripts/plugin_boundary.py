@@ -788,6 +788,8 @@ def capability_catalog() -> tuple[dict[str, str], dict[str, set[str]], dict[str,
                     if node.func.attr == "provide":
                         table = providers
                     # 普通 mapping.get 不是能力读取；只有解析出的 key 才计入。
+                if node.func.attr in {"bind", "open"}:
+                    expressions.extend(node.args)
                 expressions.extend(item.value for item in node.keywords if item.arg == "inject")
             elif isinstance(node, (ast.Assign, ast.AnnAssign)) and node.value is not None:
                 targets = node.targets if isinstance(node, ast.Assign) else [node.target]
