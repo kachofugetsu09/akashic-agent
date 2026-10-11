@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import json
-from collections.abc import AsyncGenerator, Callable
+from collections.abc import AsyncGenerator, Callable, Mapping
 from contextlib import AbstractAsyncContextManager
 from typing import Annotated
 
@@ -18,6 +18,7 @@ _PAGE_SIZE = 100
 
 type CatalogOpener = Callable[[], AbstractAsyncContextManager[MessageCatalogPort]]
 type Cursor = dict[str, int]
+type ReadMarksReader = Callable[[], Mapping[str, int]]
 
 
 class NotificationRequest(BaseModel):
@@ -25,6 +26,8 @@ class NotificationRequest(BaseModel):
 
     model_config = ConfigDict(extra="forbid", strict=True)
     cursor: dict[str, Annotated[StrictInt, Field(ge=-1)]] | None = None
+    # 客户端声明能处理 read 事件后才推送；旧客户端遇到未知事件会停止接收。
+    read_events: bool = False
 
 
 def _text_of(parts: tuple[object, ...]) -> str:
@@ -66,6 +69,10 @@ class NotificationFeed:
         self._open_catalog = open_catalog
         self._prefix = prefix
 
+    @property
+    def prefix(self) -> str:
+        return self._prefix
+
     async def sessions(self) -> AsyncGenerator[SessionEntryPort, None]:
         """完整遍历 live 目录；并发移动的条目由下一轮按 seq 补齐。"""
         after: tuple[str, str] | None = None
@@ -99,17 +106,21 @@ async def notification_events(
     feed: NotificationFeed,
     cursor: Cursor,
     *,
+    reads: ReadMarksReader | None = None,
+    read_events: bool = False,
     poll_interval: float = POLL_INTERVAL_SECONDS,
     heartbeat: float = HEARTBEAT_SECONDS,
 ) -> AsyncGenerator[bytes, None]:
     """按会话 seq 重放；提醒先于进度，客户端展示成功后才能保存进度。"""
     # 1. ready 保存首次基线；重连时客户端仍是进度的唯一 owner。
     cursor = dict(cursor)
-    yield _event("ready", {"cursor": cursor})
+    sent_reads = _reads(feed, reads) if read_events else {}
+    yield _event("ready", {"cursor": cursor, **({"read": sent_reads} if read_events else {})})
     clock = asyncio.get_running_loop().time
     last_beat = clock()
     while True:
-        # 2. 每轮完整扫目录，页大小只控制内存，不裁掉离线消息。
+        # 2. 每轮完整扫目录，页大小只控制内存，不裁掉离线消息；别处已读的消息不再提醒。
+        marks = _reads(feed, reads)
         async for entry in feed.sessions():
             after = cursor.get(entry.session_id, -1)
             while after < entry.head_seq:
@@ -117,15 +128,27 @@ async def notification_events(
                 if page is None:
                     break
                 for message in page.messages:
-                    if is_notifiable(message):
+                    if is_notifiable(message) and message.seq > marks.get(entry.session_id, -1):
                         yield _event("message", _item(message, entry))
                 after = page.messages[-1].seq if page.has_more else page.through_seq
                 cursor[entry.session_id] = after
                 yield _event("cursor", {"session_id": entry.session_id, "seq": after})
                 # 网络发送期间不持有 catalog 或 generation lease。
                 await asyncio.sleep(0)
-        # 3. 心跳只保活，不凭时间推进消费进度。
+        # 3. 已读水位只前进；客户端据此撤掉已在别处读过的提醒。
+        if read_events:
+            for session_id, seq in _reads(feed, reads).items():
+                if sent_reads.get(session_id) != seq:
+                    sent_reads[session_id] = seq
+                    yield _event("read", {"session_id": session_id, "seq": seq})
+        # 4. 心跳只保活，不凭时间推进消费进度。
         if clock() - last_beat >= heartbeat:
             last_beat = clock()
             yield _event("heartbeat", {})
         await asyncio.sleep(poll_interval)
+
+
+def _reads(feed: NotificationFeed, reads: ReadMarksReader | None) -> dict[str, int]:
+    if reads is None:
+        return {}
+    return {session_id: seq for session_id, seq in reads().items() if session_id.startswith(feed.prefix)}

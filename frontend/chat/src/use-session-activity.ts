@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { SessionStatus } from "./session-status-mark";
+import { fetchChatJson } from "./web-chat-data";
 
 const SEEN_KEY = "akashic.chat.seen-head.v1";
 
@@ -15,7 +16,13 @@ interface SessionActivityFrame {
   active: string[];
   heads: Record<string, number>;
   removed: string[];
+  /** 服务端共享的已读水位；缺席时退回本浏览器记录。 */
+  read_available?: boolean;
+  read?: Record<string, number>;
 }
+
+const seqMap = (value: unknown): value is Record<string, number> => typeof value === "object" && value !== null
+  && !Array.isArray(value) && Object.entries(value).every(([key, seq]) => key && Number.isSafeInteger(seq) && Number(seq) >= -1);
 
 /** 只在 WebSocket 边界检查摘要；其他消息继续交给原协议解析器。 */
 export function readSessionActivityFrame(value: unknown): SessionActivityFrame | null {
@@ -25,8 +32,8 @@ export function readSessionActivityFrame(value: unknown): SessionActivityFrame |
     && items.every((id) => typeof id === "string" && id.length > 0);
   if (row.version !== 1 || typeof row.snapshot !== "boolean" || typeof row.available !== "boolean"
     || !ids(row.active) || !ids(row.removed) || (!row.available && row.active.length > 0)
-    || typeof row.heads !== "object" || row.heads === null || Array.isArray(row.heads)
-    || Object.entries(row.heads).some(([key, seq]) => !key || !Number.isSafeInteger(seq) || Number(seq) < -1)) {
+    || !seqMap(row.heads) || (row.read_available !== undefined && typeof row.read_available !== "boolean")
+    || (row.read !== undefined && !seqMap(row.read))) {
     throw new Error("会话活动摘要无效");
   }
   return row as unknown as SessionActivityFrame;
@@ -61,12 +68,27 @@ function useSeenHeads(heads: readonly SessionHead[], activeSessionId: string, sh
   return seen;
 }
 
+/** 正在阅读时把已加载的水位报给服务端；回推的摘要帧更新所有设备，失败留给下一次变化重试。 */
+function useMarkRead(reads: Record<string, number> | null, activeSessionId: string, shownHead: number | null, reading: boolean) {
+  const sent = useRef<Record<string, number>>({});
+  useEffect(() => {
+    if (reads === null || !reading || !activeSessionId || shownHead === null) return;
+    if (shownHead <= Math.max(reads[activeSessionId] ?? -1, sent.current[activeSessionId] ?? -1)) return;
+    sent.current[activeSessionId] = shownHead;
+    void fetchChatJson("/api/chat/sessions/read", {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ session_id: activeSessionId, seq: shownHead }),
+    }).catch(() => { delete sent.current[activeSessionId]; });
+  }, [reads, activeSessionId, shownHead, reading]);
+}
+
 /** 一个连接的摘要快照与增量；未读水位独立于回复开始、结束是否被观察到。 */
 export function useSessionActivity(
   heads: readonly SessionHead[], activeSessionId: string, shownHead: number | null,
   readingChat: boolean, reloadSessions: () => Promise<void>,
 ) {
-  const [data, setData] = useState({ heads: {} as Record<string, number>, running: new Set<string>(), available: false });
+  const [data, setData] = useState({ heads: {} as Record<string, number>, running: new Set<string>(), available: false,
+    reads: {} as Record<string, number>, readAvailable: null as boolean | null });
   const current = useRef(data);
   const latest = useRef({ heads, activeSessionId, reloadSessions });
   useEffect(() => { latest.current = { heads, activeSessionId, reloadSessions }; }, [heads, activeSessionId, reloadSessions]);
@@ -86,9 +108,16 @@ export function useSessionActivity(
     const sameHeads = Object.keys(previous.heads).length === Object.keys(nextHeads).length
       && Object.keys(nextHeads).every((key) => nextHeads[key] === previous.heads[key]);
     const sameRunning = running.size === previous.running.size && [...running].every((key) => previous.running.has(key));
-    if (!sameHeads || !sameRunning || frame.available !== previous.available) {
+    const readAvailable = frame.read_available ?? false;
+    const nextReads = frame.snapshot ? { ...frame.read } : { ...previous.reads, ...frame.read };
+    frame.removed.forEach((key) => { delete nextReads[key]; });
+    const sameReads = readAvailable === previous.readAvailable
+      && Object.keys(previous.reads).length === Object.keys(nextReads).length
+      && Object.keys(nextReads).every((key) => nextReads[key] === previous.reads[key]);
+    if (!sameHeads || !sameRunning || !sameReads || frame.available !== previous.available) {
       current.current = { heads: sameHeads ? previous.heads : nextHeads,
-        running: sameRunning ? previous.running : running, available: frame.available };
+        running: sameRunning ? previous.running : running, available: frame.available,
+        reads: sameReads ? previous.reads : nextReads, readAvailable };
       setData(current.current);
     }
     const known = new Set(latest.current.heads.map((head) => head.key));
@@ -111,15 +140,20 @@ export function useSessionActivity(
       : Math.max(data.heads[head.key], head.headSeq ?? -1) })), [heads, data.heads]);
   const reading = visible && readingChat;
   const seen = useSeenHeads(liveHeads, activeSessionId, shownHead, reading);
+  useMarkRead(data.readAvailable === true ? data.reads : null, activeSessionId, shownHead, reading);
   const statuses = useMemo(() => {
     const result = new Map<string, SessionStatus>();
+    // 服务端水位跨设备共享；尚未收到首帧时不亮未读，避免与本地记录来回切换。
+    const readOf = (key: string): number | undefined => data.readAvailable === true ? data.reads[key] ?? -1
+      : data.readAvailable === false ? seen[key] : undefined;
     for (const { key, headSeq } of liveHeads) {
+      const read = readOf(key);
       if (data.available && data.running.has(key)) result.set(key, "running");
       // 正在阅读的会话不亮未读：水位帧可能先于消息帧到达，避免在当前行上闪一下。
       else if (!(reading && key === activeSessionId) && headSeq !== undefined
-        && seen[key] !== undefined && headSeq > seen[key]) result.set(key, "unread");
+        && read !== undefined && headSeq > read) result.set(key, "unread");
     }
     return result;
-  }, [liveHeads, data.available, data.running, seen, reading, activeSessionId]);
+  }, [liveHeads, data.available, data.running, data.reads, data.readAvailable, seen, reading, activeSessionId]);
   return { statuses, receive, disconnect };
 }

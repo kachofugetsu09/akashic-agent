@@ -376,6 +376,14 @@ H4 后 Core 配置、Setup、Prompt、Dashboard 与 Mobile Runtime Inspection �
 恢复依赖原 sessions.db/OwnerState；重新打开数据库保留准确顺序。代码回滚不删除这一记录。
 浏览器的项目展开状态是独立本地呈现偏好，不参与服务端备份、scope 或学习路由。
 
+### 会话已读水位
+
+同一 owner 中，`read:<session_id>` 记录该会话已读到的消息 seq（[0114](../decisions/0114-shared-session-read-marks.md)）。
+只由 Web 在可见页面实际加载消息后上报，服务端截断到当前 head，事务内只前进不后退。
+`read-baseline` 在首次使用时一次写入：当时已有的会话按当时 head 视为已读，之后出现的会话从 -1 开始。
+会话软删、恢复或插件停用都不减少记录；没有自动清理或 cascade。恢复依赖原 sessions.db/OwnerState。
+浏览器旧的本地已读记录不迁移，只在服务端不提供水位时作为退路。
+
 ### 3.4 Workspace 之外的 companion state
 
 | 对象 | 正常增加 | 允许的原位或逻辑变化 | 允许物理减少的条件 |

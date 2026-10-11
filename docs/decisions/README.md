@@ -145,3 +145,5 @@
 | [0110](0110-ledger-checks-use-existing-message-semantics.md) | proposed / implemented for review | 追加检查复用现有 Turn 与未知效果合同 | PLG、SES、OUT |
 
 | [0113](0113-background-job-notices.md) | proposed / implemented for review | 后台任务完成通知：忙时注入下一步，闲时唤醒原会话 | SES、OUT、PLG |
+
+| [0114](0114-shared-session-read-marks.md) | proposed / implemented for review | 会话已读水位改为服务端共享，手机通知随已读撤掉 | WEBUI、SES |

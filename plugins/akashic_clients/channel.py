@@ -46,6 +46,7 @@ from .capabilities import (
 )
 from .config import AkashicClientsConfig
 from .navigation import NavigationPreferences
+from .read_marks import ReadMarks
 from .attachments import AttachmentStore
 from .web_chat import WebChatChannel
 from .chat_api import build_chat_server
@@ -198,17 +199,21 @@ class _ClientGeneration:
     # 固定输入与实际 adapter 只属于本次 apply。
     adapters: dict[str, "_GenerationAkashicAdapter"]
     navigation: NavigationPreferences | None
+    read_marks: ReadMarks | None
 
-    def __init__(self, config: AkashicClientsConfig, workspace: Any, navigation: NavigationPreferences | None) -> None:
+    def __init__(self, config: AkashicClientsConfig, workspace: Any, navigation: NavigationPreferences | None,
+                 read_marks: ReadMarks | None = None) -> None:
         self.navigation = navigation
+        self.read_marks = read_marks
         self.config = config
         self.workspace = workspace
         self.adapters = {}
 
 
-def build_akashic_channel_factory(owner: Context, config: AkashicClientsConfig, workspace: Any, navigation: NavigationPreferences | None = None):
+def build_akashic_channel_factory(owner: Context, config: AkashicClientsConfig, workspace: Any, navigation: NavigationPreferences | None = None,
+                                  read_marks: ReadMarks | None = None):
     """为本次 apply 保留固定输入，实际 binding 由贡献 Scope 关闭。"""
-    state = _ClientGeneration(config, workspace, navigation)
+    state = _ClientGeneration(config, workspace, navigation, read_marks)
 
     def build(context: ChannelFactoryContext) -> _GenerationAkashicAdapter:
         if state.adapters:
@@ -446,6 +451,7 @@ class _GenerationAkashicAdapter:
         server = build_chat_server(
             workspace=self._workspace,
             navigation=self._state.navigation,
+            read_marks=self._state.read_marks,
             channel=self._web,
             runtime_inspection=self._runtime_inspection,
             model_catalog_reader=self._model_catalog_reader,

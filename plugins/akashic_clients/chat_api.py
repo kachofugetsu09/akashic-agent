@@ -25,6 +25,7 @@ from .static import register_chat_assets
 from plugins.ui.contract import read_message_rows, session_row
 from .navigation import NavigationPreferences, PinUpdate, check_project_pin, session_pin_row
 from .notifications import NotificationFeed, NotificationRequest, notification_events
+from .read_marks import ReadMarks
 from .session_activity import follow_session_activity
 from .services import AttachmentStorePort as AttachmentStore
 from .services import (
@@ -90,11 +91,18 @@ class WebUiProvider(Protocol):
     async def state(self) -> dict[str, str | bool]: ...
 
 
+class ReadMarkUpdate(BaseModel):
+    model_config = ConfigDict(extra="forbid", strict=True)
+    session_id: str = Field(min_length=1, max_length=512)
+    seq: int = Field(ge=-1)
+
+
 def create_chat_app(
     *,
     workspace: Path,
     channel: WebChatChannel,
     navigation: NavigationPreferences | None = None,
+    read_marks: ReadMarks | None = None,
     runtime_inspection: RuntimeInspectionService | None = None,
     message_display: MessageDisplayReader | None = None,
     plugin_ui_provider: PluginUiProvider | None = None,
@@ -156,11 +164,22 @@ def create_chat_app(
                 async for frame in frames:
                     yield frame
 
+        marks = await ready_read_marks()
         async with open_message_catalog() as catalog:
             heads = catalog.follow(prefix=f"{channel.name}:", visibility="listed", poll_interval=60)
-        async with aclosing(follow_session_activity(heads, reply_activity(), prefix=f"{channel.name}:")) as frames:
+        async with aclosing(follow_session_activity(
+            heads, reply_activity(), prefix=f"{channel.name}:", reads=None if marks is None else marks.follow(),
+        )) as frames:
             async for frame in frames:
                 yield frame
+
+    # 首次使用时以当时的会话水位为基线；之后出现的新会话从头算未读。
+    async def ready_read_marks() -> ReadMarks | None:
+        if read_marks is None:
+            return None
+        if not read_marks.has_baseline():
+            read_marks.ensure_baseline(await NotificationFeed(open_message_catalog, prefix=f"{channel.name}:").baseline())
+        return read_marks
 
     if messages is not None or message_scope is not None:
         channel.bind_session_activity(session_activity_stream)
@@ -294,11 +313,32 @@ def create_chat_app(
     async def notification_stream(payload: NotificationRequest) -> StreamingResponse:
         feed = NotificationFeed(open_message_catalog, prefix=f"{channel.name}:")
         cursor = await feed.baseline() if payload.cursor is None else payload.cursor
+        marks = await ready_read_marks()
         return StreamingResponse(
-            notification_events(feed, cursor),
+            notification_events(feed, cursor, reads=None if marks is None else marks.read_all,
+                                read_events=payload.read_events and marks is not None),
             media_type="text/event-stream",
             headers={"Cache-Control": "no-store", "X-Accel-Buffering": "no"},
         )
+
+    @app.post("/api/chat/sessions/read")
+    async def mark_session_read(payload: ReadMarkUpdate) -> dict[str, object]:
+        marks = await ready_read_marks()
+        if marks is None:
+            raise HTTPException(status_code=503, detail="已读状态暂不可用")
+        if not payload.session_id.startswith(f"{channel.name}:"):
+            raise HTTPException(status_code=400, detail="只能标记本通道的会话")
+        # 水位不超过已提交消息，避免客户端把尚未出现的消息提前标为已读。
+        async with open_message_catalog() as catalog:
+            try:
+                reader = catalog.reader(payload.session_id)
+                deleted, head = reader.deleted, reader.head()
+            except (KeyError, ValueError) as error:
+                raise HTTPException(status_code=404, detail="会话不存在") from error
+            if deleted:
+                raise HTTPException(status_code=404, detail="会话不存在")
+        seq = marks.mark(payload.session_id, min(payload.seq, head))
+        return {"session_id": payload.session_id, "seq": seq}
 
     async def read_pins() -> dict[str, object]:
         if navigation is None:
@@ -623,6 +663,7 @@ def build_chat_server(
     workspace: Path,
     channel: WebChatChannel,
     navigation: NavigationPreferences | None = None,
+    read_marks: ReadMarks | None = None,
     runtime_inspection: RuntimeInspectionService | None = None,
     message_display: MessageDisplayReader | None = None,
     plugin_ui_provider: PluginUiProvider | None = None,
@@ -647,6 +688,7 @@ def build_chat_server(
             workspace=workspace,
             channel=channel,
             navigation=navigation,
+            read_marks=read_marks,
             runtime_inspection=runtime_inspection,
             message_display=message_display,
             plugin_ui_provider=plugin_ui_provider,

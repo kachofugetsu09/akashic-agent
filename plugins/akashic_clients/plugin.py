@@ -9,6 +9,7 @@ from .channel import build_akashic_channel_factory
 from plugins.channels.contract import CHANNEL_INPUT_V2 as CHANNEL_INPUT
 from .config import AkashicClientsConfig
 from .navigation import NavigationPreferences
+from .read_marks import ReadMarks
 from plugins.ledger.contract import OWNER_STATE
 
 api_version = 3
@@ -44,6 +45,7 @@ async def apply(ctx: Context) -> None:
             factory=build_akashic_channel_factory(
                 ctx, config, ctx.runtime.workspace,
                 NavigationPreferences(lambda: ctx.require(OWNER_STATE).open(ctx)),
+                ReadMarks(lambda: ctx.require(OWNER_STATE).open(ctx)),
             ),
             inbound_identity=InboundIdentity.PROVIDER_MESSAGE_ID,
             optional_services=frozenset((*INSPECTION_RPC_KEYS, MODEL_CALL_STATS, REPLY_STATUS, MCP_DETAIL, MCP_SERVERS)),
