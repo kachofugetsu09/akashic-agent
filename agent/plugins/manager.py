@@ -1863,7 +1863,7 @@ class PluginManager:
 
         operation_view = None if self._operation is None else self._operation.status()
         operation_plugin_id = (
-            None if operation_view is None else cast(str | None, operation_view["plugin_id"])
+            None if operation_view is None else operation_view["plugin_id"]
         )
 
         installed = self._installed_ids()

@@ -247,7 +247,6 @@ export type PromptInputTextareaProps = ComponentProps<
 >;
 
 export const PromptInputTextarea = ({
-  onChange,
   onKeyDown,
   className,
   placeholder = "What would you like to know?",
@@ -343,7 +342,6 @@ export const PromptInputTextarea = ({
       onPaste={handlePaste}
       placeholder={placeholder}
       {...props}
-      onChange={onChange}
     />
   );
 };

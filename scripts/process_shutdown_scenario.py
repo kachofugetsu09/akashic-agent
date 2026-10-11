@@ -17,6 +17,7 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 
 PROVIDER = '''import asyncio
+import os
 import sys
 from agent.plugin_composition.tasks import RESTART_GATE
 api_version = 3
@@ -29,6 +30,11 @@ async def apply(ctx):
         transport, _ = await asyncio.get_running_loop().connect_read_pipe(
             lambda: asyncio.StreamReaderProtocol(reader), sys.stdin.buffer)
         try:
+            if os.environ.get("AKASHIC_SUPERVISED") == "1":
+                sys.stdout.write("x" * (1024 * 1024) + "\\n")
+                sys.stderr.write("x" * (1024 * 1024) + "\\n")
+                sys.stdout.flush()
+                sys.stderr.flush()
             print("SCENARIO_READY", flush=True)
             line = await reader.readline()
             error = RuntimeError("native owner failed") if line == b"fail\\n" else None
@@ -55,15 +61,15 @@ async def stop_ready_process(
     transport, _ = await asyncio.get_running_loop().connect_read_pipe(
         lambda: asyncio.StreamReaderProtocol(reader), os.fdopen(read_fd, "rb"))
     boot_id = uuid4().hex
-    with closing(transport):
+    # 日志写入文件，避免等待就绪或退出时填满无人读取的管道。
+    with closing(transport), tempfile.TemporaryFile() as output, tempfile.TemporaryFile() as error:
         try:
             process = await asyncio.create_subprocess_exec(
                 sys.executable, str(ROOT / "main.py"), "gateway", "--config", str(config),
                 "--workspace", str(workspace), pass_fds=(write_fd,),
                 env={**env, "AKASHIC_SUPERVISED": "1", "AKASHIC_BOOT_ID": boot_id,
                      "AKASHIC_RESTART_NONCE": uuid4().hex, "AKASHIC_LIFECYCLE_FD": str(write_fd)},
-                stdin=asyncio.subprocess.PIPE, stdout=asyncio.subprocess.PIPE,
-                stderr=asyncio.subprocess.PIPE)
+                stdin=asyncio.subprocess.PIPE, stdout=output, stderr=error)
         finally:
             os.close(write_fd)
         try:
@@ -83,8 +89,8 @@ async def stop_ready_process(
                     "--workspace", str(target), env=env,
                     stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE)
                 try:
-                    output, error = await asyncio.wait_for(contender.communicate(), 20)
-                    assert contender.returncode != 0 and conflict in error.decode(), (output, error)
+                    stdout, stderr = await asyncio.wait_for(contender.communicate(), 20)
+                    assert contender.returncode != 0 and conflict in stderr.decode(), (stdout, stderr)
                 finally:
                     if contender.returncode is None:
                         contender.kill()
@@ -93,15 +99,18 @@ async def stop_ready_process(
             # 3. 保持输入管道打开，确保退出来自 SIGTERM，而不是输入 EOF。
             process.send_signal(signal.SIGTERM)
             await asyncio.wait_for(process.wait(), 20)
-            output, error = await process.communicate()
-            assert process.returncode == 0, (output, error)
+            output.seek(0)
+            error.seek(0)
+            assert process.returncode == 0, (output.read(), error.read())
             assert not (workspace / ".runtime-ready.json").exists()
             closed = json.loads((workspace / "runtime/closed" / f"{boot_id}.json").read_text())
             assert closed["state"] == "closed" and closed["pid"] == process.pid
         finally:
             if process.returncode is None:
                 process.kill()
-                await process.communicate()
+                await process.wait()
+            assert process.stdin is not None
+            process.stdin.close()
 
 
 async def run(base: Path) -> dict[str, bool]:

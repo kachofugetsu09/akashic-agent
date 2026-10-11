@@ -223,21 +223,26 @@ async def run() -> None:
             async with httpx.AsyncClient(transport=httpx.ASGITransport(app=shell), base_url="http://local",
                                          headers={"sec-fetch-site": "same-origin"}) as web:
                 response = await web.get("/api/runtime/host-bridge")
+                assert response.status_code == 200 and not dashboard_task.done()
                 assert response.json()["state"] == "degraded"
                 service.probe_error = None
                 await service.until("probe", 4)
                 assert (await web.get("/api/runtime/host-bridge")).json()["state"] == "healthy"
-            results.append("probe_deadline_monitor_survives_and_public_shell_http_recovers")
+                results.append("probe_deadline_monitor_survives_and_public_shell_http_recovers")
 
-            # 真正断开 UDS transport，然后重建监听；保留 service 的 boot/lease owner。
-            await server.stop()
-            await expect_rpc(grpc.StatusCode.UNAVAILABLE, control.probe())
-            await until(lambda: status.state == "degraded")
-            assert not monitoring.done()
-            server = transport.Server(service)
-            await server.start(socket)
-            await until(lambda: status.state == "healthy")
-            results.append("real_transport_disconnect_and_reconnect")
+                # 真正断开 UDS transport，其他宿主任务和公开 HTTP 必须继续服务。
+                await server.stop()
+                await expect_rpc(grpc.StatusCode.UNAVAILABLE, control.probe())
+                await until(lambda: status.state == "degraded")
+                assert not monitoring.done() and not dashboard_task.done()
+                response = await web.get("/api/runtime/host-bridge")
+                assert response.status_code == 200
+                assert response.json()["state"] == "degraded" and response.json()["code"] == "UNAVAILABLE"
+                server = transport.Server(service)
+                await server.start(socket)
+                await until(lambda: status.state == "healthy")
+                assert (await web.get("/api/runtime/host-bridge")).json()["state"] == "healthy"
+                results.append("real_transport_disconnect_and_reconnect_preserve_public_http")
 
             # 并发首次调用只登记一次；短暂心跳故障保持同一个 execution owner。
             worker = client()
