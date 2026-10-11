@@ -105,6 +105,24 @@ async def apply(ctx):
         file.write("apply\\n")
     await ctx.provide(ServiceKey("scenario.timer"), ctx.require(TIMERS))
 ''')
+    borrower = sources / "borrower"
+    borrower.mkdir()
+    (borrower / "plugin.py").write_text('''from datetime import UTC, datetime
+from agent.plugin_composition import ServiceKey
+from plugins.timer.contract import TIMERS
+api_version = 3
+name = "borrower"
+version = "1.0.0"
+async def apply(ctx):
+    with (ctx.data_root / "applies").open("a") as file:
+        file.write("apply\\n")
+    async def fire():
+        with ctx.borrow(TIMERS) as timer:
+            if timer is None:
+                raise LookupError("timer unavailable")
+            return (await timer.schedule(datetime.now(UTC)).result()).status.value
+    await ctx.provide(ServiceKey("scenario.timer.fire"), ctx.entrypoint(fire))
+''')
     # 所有插件使用实际实现；instant 任务不会调用未配置的模型。
     save_config(workspace / "plugin-data/context-builtin", {"prompt_sources": {"skills": "standard_tools"}})
     http = SharedHttpResources()
@@ -151,6 +169,9 @@ async def apply(ctx):
         root = host.live_root
         assert root is not None
         from plugins.timer.contract import TIMERS, TimerStatus
+        from agent.plugin_composition import ServiceKey
+        fire = root.context.require(ServiceKey("scenario.timer.fire"))
+        assert await fire() == "fired"
         timer = root.context.require(TIMERS)
         # 1. 没有 yield 就取消，仍得到稳定 cancelled 回执。
         immediate = timer.schedule(datetime.now(UTC) + timedelta(hours=1))
@@ -174,6 +195,8 @@ async def apply(ctx):
         timer = root.context.require(TIMERS)
         assert (await timer.schedule(datetime.now(UTC)).result()).status == TimerStatus.FIRED
         await notice(runtime, "second")
+        assert await fire() == "fired"
+        assert (workspace / "plugin-data/borrower-builtin/applies").read_text() == "apply\n"
         applies = workspace / "plugin-data/probe-builtin/applies"
         assert applies.read_text().splitlines() == ["apply", "apply"]
     finally:
@@ -202,7 +225,7 @@ async def apply(ctx):
         await runtime.stop()
         await http.aclose()
     return {"immediate_cancel": True, "generation_cleanup": True, "second_provider": True,
-            "scheduler_delivered": 3, "restart": True, "disable": True, "unrelated_stable": True}
+            "scheduler_delivered": 3, "borrower_apply_delta": 0, "restart": True, "disable": True, "unrelated_stable": True}
 
 
 def main() -> None:
