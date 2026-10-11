@@ -200,7 +200,6 @@ from agent.restart import RestartGate, SupervisorCommitChannel
 from agent.supervisor import RESTART_EXIT_CODE, run_supervisor
 from agent.plugins.doctor import format_plugin_doctor_report, run_plugin_doctor
 from agent.plugins.install import set_installed_plugin_enabled
-from bootstrap.app import build_app_runtime
 from agent.plugins.entrypoints import invoke_plugin_command, invoke_distribution_command
 from bootstrap.init_workspace import InitSummary, init_workspace
 from bootstrap.runtime_readiness import RuntimeReadiness
@@ -322,6 +321,9 @@ async def inspect_modules(config_path: str, workspace: Path) -> None:
 
 
 async def serve(config_path: str, workspace: Path) -> int:
+    # Web shell 与 FastAPI 只属于 gateway；插件命令客户端不加载它们。
+    from bootstrap.app import build_app_runtime
+
     commit_channel = SupervisorCommitChannel.from_environment()
     if commit_channel is not None:
         commit_channel.stage("gateway.starting")

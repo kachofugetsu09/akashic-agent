@@ -9,6 +9,8 @@ from pathlib import Path
 from types import CodeType, ModuleType
 from functools import lru_cache
 
+from agent.plugins.manifest import plugins_root
+
 # PEP 552 checked hash pyc：标志位 0b11，源码哈希一致才复用，不依赖 mtime。
 _HASH_PYC_FLAGS = (0b11).to_bytes(4, "little")
 _PYC_HEADER_SIZE = 16
@@ -27,12 +29,17 @@ def _compile_source(source: bytes, filename: str) -> CodeType:
     return code
 
 
-# 冷启动复用磁盘字节码；路径与标准 __pycache__ 规则一致（含 PYTHONPYCACHEPREFIX）。
+# 字节码属于宿主缓存，镜像源码绝对路径放在插件 home 下，不写入插件制品目录。
 def _cache_path(filename: str) -> Path | None:
-    try:
-        return Path(importlib.util.cache_from_source(filename))
-    except (NotImplementedError, ValueError):
+    tag = sys.implementation.cache_tag
+    if tag is None:
         return None
+    try:
+        root = Path(sys.pycache_prefix) if sys.pycache_prefix else plugins_root() / "bytecode"
+    except ValueError:
+        return None
+    source = Path(filename).resolve(strict=False)
+    return root.joinpath(*source.parent.parts[1:], f"{source.stem}.{tag}.pyc")
 
 
 def _read_cached_code(cache_path: Path | None, source_hash: bytes) -> CodeType | None:
