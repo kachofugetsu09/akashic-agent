@@ -11,6 +11,20 @@
 - 目标读者：维护者、coding agent、迁移与备份实现者、评审者
 - 关联条款：STA-001～STA-003、CTX-001、SES-001～SES-006、MEM-001～MEM-009、PLG-001～PLG-013、WSP-001～WSP-004、SCH-001～SCH-002、PRO-001～PRO-002、BAK-001
 
+## 2026-10-11：workspace 插件选择与配置（待评审）
+
+[0109](../decisions/0109-workspace-owns-plugin-choices.md) 取代下文旧全局清单的现状描述。
+
+| 对象与 owner | 正常增加/更新 | 失效、减少与恢复证据 |
+|---|---|---|
+| `bundle.patch.toml` / 当前 workspace 的安装与启停操作 | 增加完整插件 ID 的选择 row；更新 enabled 意图时保留 config | 卸载保留 disabled row，防止 base 再启用；安装失败只恢复本次旧选择。没有插件数据删除权 |
+| `plugin-stable.json` / 宿主 selection | 原子发布完整已验证输入；运行时只读取已提交选择 | 新选择替代旧指针，历史 journal/恢复事实按原合同保留；换内存指针不假装外部资源已回滚 |
+| `config.input.json` / 插件配置事务 | 既有 revision 管理用户更新；bundle config 只初始化新目录 | 普通启动不覆盖现有配置，不因 row 改变而减少它 |
+| 旧 `manifest.toml` 与 `disabled_builtin` / 一次性 Yoyo | `20261011_02_bundle_choices` 先保存完整恢复计划，再写 patch、退休 Core 字段 | 旧全局清单保留但不再被正常路径读取；Core 原文保存在同目录 `.before-bundle-choices.toml`，每个 workspace 保留 `runtime/before-bundle-choices.json`。共享 config/cache 与失败重试场景核对原消息和旁支字节 |
+
+迁移不自动删除旧向量表、消息、附件、plugin-data 或外部插件数据。
+源码回退使用旧 Core 与恢复计划；不能用代码回退撤销已发生的进程停止或外部发送。
+
 ## 2026-10-11：Ledger 派生向量（存储层待评审）
 
 [0106](../decisions/0106-derived-vectors-use-separate-storage.md) 分离 `sessions-derived.db`。
@@ -30,6 +44,8 @@ owner 在同库事务内更新，附件和身份沿原导入/映射合同增加�
 瞬时 session admission 在旧依赖图收束后清除，卸载不删除持久数据和附件。
 五项历史 Yoyo 步骤仅改变代码所在 bundle，保留 ID 和 SQL 行为；完整旧消息/绑定/
 owner 行及提交后崩溃恢复是隔离验收证据，正式 workspace 未执行任何迁移。
+补充旧 Core `bdcc1660` 实际发布的附件、渠道身份、pending handoff 验收：十张源表
+完整行与 uploads 全部文件摘要在 Yoyo 和新 Ledger 启停后相同，公开端口能读回原值。
 下文旧 `session/`、`bus/` 和 `infra/channels/` 路径对应当前 `plugins/ledger/` 实现。
 
 ## 2026-10-11：Gateway 配置与控制端点归属
