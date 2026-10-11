@@ -38,7 +38,60 @@ def snapshot(database: Path) -> dict[str, list[tuple[object, ...]]]:
     with sqlite3.connect(database) as connection:
         assert connection.execute("PRAGMA integrity_check").fetchone() == ("ok",)
         return {name: connection.execute(f"SELECT * FROM {name} ORDER BY 1").fetchall()
-                for name in ("messages", "bindings", "owner_records", "message_bindings")}
+                for name in ("messages", "bindings", "owner_records", "message_bindings", "attachments",
+                             "attachment_imports", "message_attachments", "channel_identities",
+                             "channel_identity_migrations", "inbound_handoffs")}
+
+
+async def seed_old_resources(workspace: Path, log) -> None:
+    """由旧发行代码发布附件、路由和待处理交接，不伪造数据库行。"""
+    from contextlib import closing
+    from dataclasses import asdict
+    from agent.plugin_composition.channels import AttachmentKind
+    from infra.channels.artifacts import ChannelAttachmentArtifactStore
+    from session.artifact_store import ArtifactStore
+    from session.identities import ChannelIdentities
+    from session.inbound_store import InboundHandoffStore
+    from session.message import ContentPart, ContentReferences, Input
+
+    with closing(ArtifactStore(workspace / "sessions.db")) as metadata:
+        artifacts = ChannelAttachmentArtifactStore(workspace=workspace, metadata_store=metadata)
+        ref = await artifacts.import_bytes(b"old attachment bytes", kind=AttachmentKind.FILE,
+            filename="old.txt", media_type="text/plain")
+    (workspace / "artifact-id").write_text(ref.artifact_id)
+    writer = log.writer("saved", author="human", source="scenario", body_types=(Input,),
+        content={"attachment": lambda part: ContentReferences(artifact_ids=(ref.artifact_id,))})
+    writer.append("saved-attachment", Input((ContentPart("attachment", asdict(ref)),)))
+    with closing(ChannelIdentities(workspace / "sessions.db")) as identities:
+        identities.remember("probe", "provider", "recipient")
+    with closing(InboundHandoffStore(workspace / "sessions.db")) as inbounds:
+        inbounds.reserve_inbound_handoff(handoff_id="pending", dedupe_key="old-pending", channel="probe",
+            sender="sender", chat_id="room", session_key="saved", content="not yet accepted",
+            timestamp="2026-10-10T00:00:00+00:00", media_json="[]", created_at="2026-10-10T00:00:00+00:00",
+            metadata_json=json.dumps({"durable_inbound": True, "durable_handoff_id": "pending",
+                "provider_message_id": "provider-pending", "durable_attachment_refs": [asdict(ref)]}))
+
+
+async def read_current_resources(workspace: Path, root) -> None:
+    """新 Ledger 只通过公开窄端口读取旧附件、身份和待处理输入。"""
+    from plugins.ledger.contract import CHANNEL_ATTACHMENT_READ, CHANNEL_IDENTITY, INPUT_CUSTODY
+    attachments = root.context.require(CHANNEL_ATTACHMENT_READ)
+    ref, = attachments.resolve_refs(((workspace / "artifact-id").read_text(),))
+    lease = await attachments.acquire(ref)
+    try:
+        assert await lease.read_bytes(max_bytes=1024) == b"old attachment bytes"
+    finally:
+        await lease.aclose()
+    assert root.context.require(CHANNEL_IDENTITY).resolve("probe", "provider") == "recipient"
+    custody = root.context.require(INPUT_CUSTODY)
+    key = dict(channel="probe", session_key="saved", provider_message_id="provider-pending")
+    assert custody.has_pending_durable_inbound(**key)
+    assert custody.pending_durable_attachment_refs(**key) == (ref,)
+
+
+def artifact_files(workspace: Path) -> dict[str, str]:
+    return {str(path.relative_to(workspace)): hashlib.sha256(path.read_bytes()).hexdigest()
+            for path in (workspace / "uploads").rglob("*") if path.is_file()}
 
 
 async def run(directory: Path, *, old: bool) -> None:
@@ -100,7 +153,9 @@ async def run(directory: Path, *, old: bool) -> None:
             log.owner("scenario").transact(lambda transaction: transaction.save(
                 "admitted-command", {"binding_id": identity, "message_id": "saved-input"},
                 expected_version=None))
+            await seed_old_resources(workspace, log)
         else:
+            await read_current_resources(workspace, root)
             # 2. 当前 provider 接管恢复，旧运行 key 没有重新登记。
             assert root.context.get(ServiceKey("core.commands")) is None
             identity = (directory / "binding-id").read_text()
@@ -133,6 +188,7 @@ def main() -> None:
     sys.path.insert(0, str(ROOT))
     with tempfile.TemporaryDirectory(prefix="akashic-binding-upgrade-") as temporary:
         directory = Path(temporary)
+        (directory / "config.toml").write_text("[runtime]\n")
         # 1. 归档准确旧基线，旧进程无法从当前 checkout 导入 Core。
         archive = directory / "old.tar"
         with archive.open("wb") as output:
@@ -155,11 +211,14 @@ def main() -> None:
                        cwd=directory, env=environment, check=True)
         database = directory / "workspace/sessions.db"
         before = snapshot(database)
+        files = artifact_files(directory / "workspace")
+        assert files
         # 栈内 journal schema 也已升级；走实际迁移入口，不绕过校验或删除旧账本。
         from agent.migrations.runner import MigrationRunner
         MigrationRunner(repo_root=ROOT, config_path=directory / "config.toml",
                         workspace=directory / "workspace", plugin_dirs=[ROOT / "plugins/ledger"]).run()
         assert snapshot(database) == before
+        assert artifact_files(directory / "workspace") == files
         # 2. 同一 workspace 只升级源码，原绑定和消息没有数据管理写入。
         shutil.rmtree(providers / "commands")
         shutil.copytree(ROOT / "plugins/commands", providers / "commands", ignore=shutil.ignore_patterns("__pycache__"))
@@ -176,9 +235,11 @@ def main() -> None:
         subprocess.run([sys.executable, str(script), "--child", str(directory), "new"],
                        cwd=directory, env=environment, check=True)
         assert snapshot(database) == before
+        assert artifact_files(directory / "workspace") == files
         assert (directory / "workspace/plugin-data/command_owner-builtin/recoveries").read_text() == "recovered\n"
         print(json.dumps({"old_core_generated": True, "current_provider_recovered_once": True,
-                          "no_old_runtime_key": True, "binding_message_owner_rows_unchanged": True}))
+                          "no_old_runtime_key": True, "binding_message_owner_rows_unchanged": True, "attachments_readable": True,
+                          "identity_and_pending_input_readable": True, "all_source_rows_and_files_unchanged": True}))
 
 
 if __name__ == "__main__":
