@@ -1,0 +1,149 @@
+# 用开源 harness-perf-benchmark 对比 PR 前后的 harness 性能（定义见 scripts/harness-performance/README.md）。
+# 只报告：结果写入 job 摘要与 PR 的置顶评论，不作为合并门禁；测量失效（剧本没跑完或结果不对）时本步骤标红但不阻塞。
+name: Harness performance
+
+on:
+  workflow_dispatch:
+    inputs:
+      base:
+        description: 基线分支或提交（与当前提交的 merge-base 作为 A）
+        default: main
+      pairs:
+        description: 交替配对组数
+        default: "8"
+  pull_request:
+    paths:
+      - "main.py"
+      - "agent/**"
+      - "bootstrap/**"
+      - "core/**"
+      - "infra/**"
+      - "plugins/**"
+      - "sdk/python/**"
+      - "requirements.txt"
+      - "scripts/build_plugin_distribution.py"
+      - "scripts/install_plugin_distribution.py"
+      - "scripts/distribution_runtime.py"
+      - "scripts/harness-performance/**"
+      - ".github/workflows/harness-performance.yml"
+
+permissions:
+  contents: read
+  pull-requests: write
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+env:
+  BENCHMARK_REPOSITORY: KonghaYao/harness-perf-benchmark
+  # 固定上游提交：剧本生成器、mock 与积分口径随它变化，升级要单独提交并说明。
+  BENCHMARK_REVISION: e89a895a27a6634bded08f93c886b1a70bb15d63
+
+jobs:
+  compare:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Check out harness-perf-benchmark
+        uses: actions/checkout@v4
+        with:
+          repository: ${{ env.BENCHMARK_REPOSITORY }}
+          ref: ${{ env.BENCHMARK_REVISION }}
+          path: .harness-perf-benchmark
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+
+      - name: Set up Bun
+        uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: 1.4.0
+
+      - name: Install dependencies
+        run: |
+          python -m venv .venv
+          .venv/bin/python -m pip install --upgrade pip
+          .venv/bin/python -m pip install -r requirements.txt
+          .venv/bin/python -m pip install -e sdk/python
+          (cd .harness-perf-benchmark && bun install --frozen-lockfile)
+
+      - name: Resolve baseline
+        id: base
+        env:
+          BASE_REF: ${{ github.event.pull_request.base.ref || inputs.base }}
+        run: |
+          git fetch --no-tags origin "$BASE_REF"
+          base=$(git merge-base FETCH_HEAD HEAD)
+          git worktree add --detach "$RUNNER_TEMP/akashic-base" "$base"
+          echo "sha=$base" >> "$GITHUB_OUTPUT"
+
+      - name: Compare harness performance
+        id: compare
+        continue-on-error: true
+        env:
+          PAIRS: ${{ inputs.pairs || '8' }}
+          BASE_SHA: ${{ steps.base.outputs.sha }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+        run: |
+          .venv/bin/python scripts/harness-performance/compare.py \
+            --benchmark .harness-perf-benchmark \
+            --benchmark-rev "${BENCHMARK_REVISION::7}" \
+            --a-root "$RUNNER_TEMP/akashic-base" --a-label "base ${BASE_SHA::8}" \
+            --b-root "$GITHUB_WORKSPACE" --b-label "head ${HEAD_SHA::8}" \
+            --work "$RUNNER_TEMP/harness-perf" --pairs "$PAIRS" \
+            --report "$RUNNER_TEMP/harness-perf-report.md"
+
+      - name: Publish summary
+        if: always()
+        run: |
+          report="$RUNNER_TEMP/harness-perf-report.md"
+          if [ -f "$report" ]; then
+            cat "$report" >> "$GITHUB_STEP_SUMMARY"
+          else
+            echo "测量没有产出报告，见 Compare 步骤日志。" >> "$GITHUB_STEP_SUMMARY"
+          fi
+
+      - name: Update PR comment
+        if: always() && github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PR: ${{ github.event.pull_request.number }}
+        run: |
+          report="$RUNNER_TEMP/harness-perf-report.md"
+          [ -f "$report" ] || exit 0
+          body=$(jq -Rs '{body: .}' "$report")
+          id=$(gh api "repos/$GITHUB_REPOSITORY/issues/$PR/comments" --paginate \
+            --jq '[.[] | select(.user.login == "github-actions[bot]" and (.body | startswith("<!-- harness-performance -->")))][0].id // empty')
+          if [ -n "$id" ]; then
+            gh api -X PATCH "repos/$GITHUB_REPOSITORY/issues/comments/$id" --input - <<< "$body" > /dev/null
+          else
+            gh api -X POST "repos/$GITHUB_REPOSITORY/issues/$PR/comments" --input - <<< "$body" > /dev/null
+          fi
+
+      - name: Upload measurements
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: harness-performance
+          retention-days: 14
+          path: |
+            ${{ runner.temp }}/harness-perf-report.md
+            ${{ runner.temp }}/harness-perf/results.json
+            ${{ runner.temp }}/harness-perf/runs/**
+            !${{ runner.temp }}/harness-perf/runs/**/wire.jsonl
+            !${{ runner.temp }}/harness-perf/runs/**/tool-cwd/**
