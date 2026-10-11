@@ -66,6 +66,7 @@ from agent.plugins.input_preparation import (
     _resolve_plugin_data_dir,
     _resolve_plugin_id,
     _source_revision,
+    source_revisions,
     prepare_plugin_input,
 )
 from agent.plugins.install import (
@@ -2133,7 +2134,7 @@ class PluginManager:
         for index, (ref, record) in enumerate(zip(components, records, strict=True)):
             code_dir = Path(cast(str, record["code"])).resolve(strict=True)
             is_distribution_input(record, code_dir)
-            revision = _source_revision(code_dir)
+            revision, runtime_revision = source_revisions(code_dir)
             plugin_id = cast(str, record["plugin_id"])
             if plugin_id in generations:
                 raise ValueError(f"选择重复包含插件: {plugin_id}")
@@ -2158,7 +2159,7 @@ class PluginManager:
             generation = PluginGeneration(
                 plugin_id=plugin_id, generation_id=generation_id, module_path=module_path,
                 source_revision=revision, config_revision=config_revision,
-                runtime_revision=_source_revision(code_dir, runtime_only=True),
+                runtime_revision=runtime_revision,
                 plugin_dir=code_dir if source is None else source.plugin_dir,
                 data_dir=data_dir, config_projection=cast(dict[str, object], projection),
                 instance=None, scope=scope,

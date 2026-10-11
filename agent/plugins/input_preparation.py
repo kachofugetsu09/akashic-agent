@@ -30,6 +30,7 @@ SOURCE_EXCLUDED_NAMES = frozenset({
     ".git", ".mypy_cache", ".pytest_cache", ".ruff_cache", ".venv",
     "__pycache__", "node_modules", ENVIRONMENT_FILE, ".akashic-source.json",
 })
+_SOURCE_LABEL = ".akashic-source.json"
 
 
 @dataclass(frozen=True, slots=True)
@@ -65,7 +66,7 @@ def prepare_plugin_input(
     identity = load_static_plugin_manifest(plugin_dir)
     if mod.get("manifest_digest", "") != identity.identity_digest:
         raise RuntimeError("source discovery identity 已漂移")
-    revision = _source_revision(plugin_dir)
+    revision, runtime_revision = source_revisions(plugin_dir)
     data_dir = _resolve_plugin_data_dir(mod["name"], mod, workspace)
     validate_workspace_plugin_data_path(data_dir, workspace)
     config, config_revision = load_config(data_dir)
@@ -119,7 +120,7 @@ def prepare_plugin_input(
     })
     return PreparedPluginInput(
         plugin_id=plugin_id, input_ref=ref,
-        source_revision=revision, runtime_revision=_source_revision(code_dir, runtime_only=True),
+        source_revision=revision, runtime_revision=runtime_revision,
         config_revision=config_revision, config=config,
         static_manifest=identity, plugin_dir=plugin_dir, code_dir=code_dir,
         data_dir=data_dir,
@@ -153,9 +154,15 @@ def _require_plugin_path(plugin_dir: Path, path: Path, label: str) -> None:
 
 def _source_revision(plugin_dir: Path, *, runtime_only: bool = False) -> str:
     """校验完整源码；仅在比较运行变化时忽略来源标签。"""
-    digest = hashlib.sha256()
+    source, runtime = source_revisions(plugin_dir)
+    return runtime if runtime_only else source
+
+
+# 一次遍历同时得到完整摘要与忽略来源标签的运行摘要；两者喂入的字节与分别遍历相同。
+def source_revisions(plugin_dir: Path) -> tuple[str, str]:
+    source, runtime = hashlib.sha256(), hashlib.sha256()
     root = plugin_dir.resolve(strict=False)
-    excluded = SOURCE_EXCLUDED_NAMES if runtime_only else SOURCE_EXCLUDED_NAMES - {".akashic-source.json"}
+    excluded = SOURCE_EXCLUDED_NAMES - {_SOURCE_LABEL}
     for current, directories, filenames in os.walk(plugin_dir, followlinks=False):
         directories[:] = sorted(name for name in directories if name not in excluded)
         current_path = Path(current)
@@ -164,18 +171,22 @@ def _source_revision(plugin_dir: Path, *, runtime_only: bool = False) -> str:
                 continue
             path = current_path / name
             relative = path.relative_to(plugin_dir)
-            if path.is_symlink():
-                resolved = path.resolve(strict=False)
-                _require_plugin_path(root, resolved, "源码符号链接")
-                digest.update(str(relative).encode())
-                digest.update(os.readlink(path).encode())
-                if resolved.is_file():
-                    digest.update(resolved.read_bytes())
-                continue
-            if not path.is_file():
-                continue
-            resolved = path.resolve(strict=False)
-            _require_plugin_path(root, resolved, "源码文件")
-            digest.update(str(relative).encode())
-            digest.update(path.read_bytes())
-    return digest.hexdigest()
+            digests = (source,) if _SOURCE_LABEL in relative.parts else (source, runtime)
+            for chunk in _source_entry_chunks(root, path, relative):
+                for digest in digests:
+                    digest.update(chunk)
+    return source.hexdigest(), runtime.hexdigest()
+
+
+# 单个源码条目参与摘要的字节；越界路径在读取前失败。
+def _source_entry_chunks(root: Path, path: Path, relative: Path) -> tuple[bytes, ...]:
+    if path.is_symlink():
+        resolved = path.resolve(strict=False)
+        _require_plugin_path(root, resolved, "源码符号链接")
+        link = (str(relative).encode(), os.readlink(path).encode())
+        return (*link, resolved.read_bytes()) if resolved.is_file() else link
+    if not path.is_file():
+        return ()
+    resolved = path.resolve(strict=False)
+    _require_plugin_path(root, resolved, "源码文件")
+    return str(relative).encode(), path.read_bytes()
