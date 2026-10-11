@@ -9,12 +9,6 @@ from pathlib import Path
 from typing import Any, cast
 
 from infra.persistence.json_store import atomic_write_text
-from agent.plugin_composition import ServiceKey
-
-
-MEMORY_WRITES = ServiceKey[
-    Callable[[tuple[str, str] | None, int], tuple[dict[str, object], ...]]
-]("markdown-memory.writes.v1")
 
 
 DEFAULT_SELF_MD = """# Akashic 的自我认知

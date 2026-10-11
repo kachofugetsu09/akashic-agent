@@ -50,7 +50,8 @@ if TYPE_CHECKING:
 
 from plugins.runtime_inspection.contract import DOCUMENTS, Document
 
-from .store import DEFAULT_SELF_MD, MEMORY_WRITES, MarkdownProfileStore, content_digest
+from .store import DEFAULT_SELF_MD, MarkdownProfileStore, content_digest
+from .contract import MEMORY_WRITES
 
 logger = logging.getLogger("plugins.markdown_memory")
 
