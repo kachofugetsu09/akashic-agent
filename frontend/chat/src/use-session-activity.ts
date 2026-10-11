@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { SessionStatus } from "./session-status-mark";
-import { fetchChatJson } from "./web-chat-data";
+import { ChatRequestError, fetchChatJson } from "./web-chat-data";
 
 const SEEN_KEY = "akashic.chat.seen-head.v1";
 
@@ -68,17 +68,43 @@ function useSeenHeads(heads: readonly SessionHead[], activeSessionId: string, sh
   return seen;
 }
 
-/** 正在阅读时把已加载的水位报给服务端；回推的摘要帧更新所有设备，失败留给下一次变化重试。 */
+/** 保留实际读过的待提交水位；临时失败退避重试，重连快照会重新核对。 */
 function useMarkRead(reads: Record<string, number> | null, activeSessionId: string, shownHead: number | null, reading: boolean) {
-  const sent = useRef<Record<string, number>>({});
+  const pending = useRef(new Map<string, number>());
   useEffect(() => {
-    if (reads === null || !reading || !activeSessionId || shownHead === null) return;
-    if (shownHead <= Math.max(reads[activeSessionId] ?? -1, sent.current[activeSessionId] ?? -1)) return;
-    sent.current[activeSessionId] = shownHead;
-    void fetchChatJson("/api/chat/sessions/read", {
-      method: "POST", headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ session_id: activeSessionId, seq: shownHead }),
-    }).catch(() => { delete sent.current[activeSessionId]; });
+    if (reads === null) return;
+    // 1. 只记录可见页面已加载的消息；切换会话不丢弃此前读过的水位。
+    if (reading && activeSessionId && shownHead !== null) {
+      pending.current.set(activeSessionId, Math.max(pending.current.get(activeSessionId) ?? -1, shownHead));
+    }
+    for (const [id, seq] of pending.current) if (seq <= (reads[id] ?? -1)) pending.current.delete(id);
+    const controller = new AbortController();
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    let delay = 1000;
+    // 2. 单调写入允许重试；取消旧请求后，迟到结果不能清掉较新的待提交水位。
+    const send = async () => {
+      for (const [id, seq] of pending.current) {
+        try {
+          await fetchChatJson("/api/chat/sessions/read", {
+            method: "POST", headers: { "Content-Type": "application/json" }, signal: controller.signal,
+            body: JSON.stringify({ session_id: id, seq }),
+          });
+          if (controller.signal.aborted) return;
+          if (pending.current.get(id) === seq) pending.current.delete(id);
+        } catch (error) {
+          if (controller.signal.aborted) return;
+          if (error instanceof TypeError || (error instanceof ChatRequestError && (error.status >= 500 || [408, 429].includes(error.status)))) {
+            timer = setTimeout(() => void send(), delay);
+            delay = Math.min(delay * 2, 30_000);
+            return;
+          }
+          if (pending.current.get(id) === seq) pending.current.delete(id);
+          console.error("已读水位上报失败", id, error);
+        }
+      }
+    };
+    void send();
+    return () => { controller.abort(); clearTimeout(timer); };
   }, [reads, activeSessionId, shownHead, reading]);
 }
 
@@ -111,7 +137,7 @@ export function useSessionActivity(
     const readAvailable = frame.read_available ?? false;
     const nextReads = frame.snapshot ? { ...frame.read } : { ...previous.reads, ...frame.read };
     frame.removed.forEach((key) => { delete nextReads[key]; });
-    const sameReads = readAvailable === previous.readAvailable
+    const sameReads = !frame.snapshot && readAvailable === previous.readAvailable
       && Object.keys(previous.reads).length === Object.keys(nextReads).length
       && Object.keys(nextReads).every((key) => nextReads[key] === previous.reads[key]);
     if (!sameHeads || !sameRunning || !sameReads || frame.available !== previous.available) {
