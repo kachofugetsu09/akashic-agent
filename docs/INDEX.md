@@ -84,3 +84,5 @@ Git worktree 保存源码、测试和项目文档；Akashic `<workspace>` 保存
 ## 5. 维护本索引
 
 新增、移动或删除工作手册文件时更新相关入口和入站链接；检查相对链接、决策状态和路由是否仍能带到真实实现。无需维护第二份完整文件树。历史事故分析保留在 [语义安全设计](design/project-workbook-and-semantic-safety.md)，不能用已退役的流程覆盖当前工作手册。
+
+- [内置插件逐项禁用验收](design/builtin-disable-matrix.md)：#1179 E6 的完整发行制品、49 项依赖隔离和冷启动证据。
