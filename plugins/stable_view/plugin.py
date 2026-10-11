@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 from collections.abc import Mapping, Sequence
+from typing import cast
 
 from agent.plugin_composition import Context
 from plugins.commands.contract import (
@@ -19,10 +20,6 @@ version = "1.0.0"
 desc = "命令行查看当前 stable 插件组合树"
 inject = (COMMANDS, RUNTIME_CATALOG)
 
-_FIBER_KEYS = ("name", "parent", "state", "required", "dependencies",
-               "missing_services", "error")
-
-
 def _short(value: object, length: int = 12) -> str:
     text = str(value or "")
     return text[:length] if len(text) > length else text
@@ -31,10 +28,10 @@ def _short(value: object, length: int = 12) -> str:
 def _fiber_annotations(fiber: Mapping[str, object]) -> str:
     """汇总单个 Fiber 的依赖、缺失服务和错误为一段尾注。"""
     parts: list[str] = []
-    dependencies = fiber.get("dependencies") or ()
+    dependencies = cast(Sequence[str], fiber["dependencies"])
     if dependencies:
         parts.append("→ " + ", ".join(str(item) for item in dependencies))
-    missing = fiber.get("missing_services") or ()
+    missing = cast(Sequence[str], fiber["missing_services"])
     if missing:
         parts.append("missing: " + ", ".join(str(item) for item in missing))
     error = fiber.get("error")
@@ -66,7 +63,7 @@ def _render_fiber_tree(
                 f"  [{fiber.get('state') or 'unknown'}]"
                 f"{_fiber_annotations(fiber)}"
             )
-            walk(children.get(fiber.get("name"), []), base + ("   " if last else "│  "))
+            walk(children.get(cast(str, fiber["name"]), []), base + ("   " if last else "│  "))
 
     walk(children.get(None, []), prefix)
 
@@ -107,8 +104,8 @@ def format_stable_catalog(catalog: Mapping[str, object]) -> str:
         f"current runtime graph {_short(catalog.get('snapshot_id'), 16)}",
         "plugins",
     ]
-    plugins = catalog.get("plugins")
-    items = [item for item in plugins or () if isinstance(item, Mapping)]
+    plugins = cast(Sequence[Mapping[str, object]], catalog["plugins"])
+    items = plugins
     for index, item in enumerate(items):
         _render_plugin(lines, item, "   ", index == len(items) - 1)
     servers = catalog.get("mcp_servers")
