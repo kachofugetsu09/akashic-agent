@@ -1004,3 +1004,9 @@ def describe_transport_error(error: Exception) -> str:
             details.append(f"{type(cause).__name__}: {cause.strerror}")
         cause = cause.__cause__ or cause.__context__
     return f"{reason}（{'；'.join(dict.fromkeys(details))}）"
+
+
+# Fleet Observe 读取真实 provider attempt 历史，不持有 Models writer。
+MODEL_CALL_HISTORY = ServiceKey[Callable[[str, int], tuple[Mapping[str, Any], ...]]](
+    "models.call-history.v1"
+)

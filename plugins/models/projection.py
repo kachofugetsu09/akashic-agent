@@ -42,9 +42,6 @@ ContentRenderer = Callable[[ContentPart], Sequence[Mapping[str, Any]]]
 CallReader = Callable[[str], Mapping[str, Any]]
 ContentCheck = Callable[[ContentPart], ContentReferences]
 DisplayRenderer = Callable[[ContentPart], Mapping[str, object]]
-MODEL_CALL_HISTORY = ServiceKey[Callable[[str, int], tuple[Mapping[str, Any], ...]]](
-    "models.call-history.v1"
-)
 MODEL_DISPLAY = ServiceKey[DisplayRenderer]("message.display:model.facts")
 
 
