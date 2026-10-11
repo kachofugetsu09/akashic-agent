@@ -1,6 +1,6 @@
 ---
 name: codex-delegate
-description: 把长代码库任务委托给本机 Codex CLI 后台执行。当用户说用 codex skill、codexskill、codex delegate、委托 codex、后台 codex、阻塞 codex exec、subagent 跑 codex 时使用。
+description: 把长代码库任务委托给本机 Codex CLI 后台执行，完成时自动通知当前会话，并可续聊同一个 Codex 会话。当用户说用 codex skill、codexskill、codex delegate、委托 codex、后台 codex、让 codex 去做、继续那个 codex 会话时使用。
 metadata: {"akashic": {"always": false, "requires": {"bins": ["codex"]}}}
 ---
 
@@ -8,97 +8,95 @@ metadata: {"akashic": {"always": false, "requires": {"bins": ["codex"]}}}
 
 ## 目标
 
-把一个可以独立完成的长任务交给后台 subagent；subagent 内部用 `shell` 启动 `codex exec`，再用 `write_stdin` 长等待直至完成，最后由后台 subagent 把结果带回主会话。
+用后台 `shell` 直接启动 `codex exec`。启动后本轮可以继续和用户对话或结束；Codex 结束时，
+运行时会把完成通知送回当前会话（回合进行中注入下一步，空闲时唤醒一轮）。不要再包一层 subagent，
+也不要用 `write_stdin` 长等待或轮询。
+
+Codex 以 bypass 模式运行：没有审批和沙箱，能以当前用户权限执行任何命令、修改任何文件。
+只委托用户明确要求交给 Codex 的任务。
 
 ## 流程
 
 ```
-┌─ 主会话
-│  ├─ shell(command -v codex && codex --version)
-│  └─ spawn(run_in_background=true, profile="scripting" 或 "general")
-│     └─ 后台 subagent
-│        ├─ write_file(<task_dir>/prompt.txt)
-│        ├─ shell(yield_time_ms=30000)
-│        │  └─ codex exec --cd <repo> --output-last-message <task_dir>/codex-result.md - < <task_dir>/prompt.txt
-│        │     └─ 若返回 execution_id，write_stdin(yield_time_ms=300000) 续接到完成
-│        ├─ read_file(<task_dir>/codex-result.md)
-│        └─ read_file(<task_dir>/codex-session.txt)
-└─ subagent 完成后回灌结果
+新任务
+├─ shell(command -v codex && codex --version && echo $HOME)
+├─ write_file(<HOME>/.akashic/codex-runs/<run>/prompt-1.txt)
+├─ shell(run_in_background=true, cwd=<repo>)      → 返回 execution_id，本轮可继续
+│   codex exec --dangerously-bypass-approvals-and-sandbox --skip-git-repo-check \
+│     --json -o <dir>/result-1.md - < <dir>/prompt-1.txt > <dir>/events-1.jsonl
+└─ 收到「后台任务 shell-N 已结束」通知
+    ├─ read_file(<dir>/result-1.md)               → 向用户汇报
+    └─ shell(head -1 <dir>/events-1.jsonl)        → 记下 thread_id，写入 <dir>/session.txt
+
+续聊同一会话
+├─ read_file(<dir>/session.txt)
+├─ write_file(<dir>/prompt-2.txt)
+└─ shell(run_in_background=true, cwd=<repo>)
+    codex exec resume <thread_id> --dangerously-bypass-approvals-and-sandbox --skip-git-repo-check \
+      --json -o <dir>/result-2.md - < <dir>/prompt-2.txt > <dir>/events-2.jsonl
 ```
 
 ## 使用规则
 
-1. 主 agent 必须先检查 `codex` 是否存在：调用 `shell(command="command -v codex && codex --version")`。如果失败，直接告诉用户本机没有可用 Codex CLI，不要 spawn。不要把这个检查下放给 subagent。
-2. 如果用户已经给出 repo 路径，主 agent 不要为了理解任务先 `list_dir`、`read_file`、`shell find/grep` 探索该仓库；只把 repo 路径和任务目标原样传给 spawn。代码库探索由 Codex delegate 完成。
-3. 只有用户没给 repo 路径、路径明显缺失、或用户要求主 agent 先确认路径时，主 agent 才做最小路径检查。
-4. 主 agent 不要在 spawn task 里写“重点读取这些文件”“我已经发现这些入口”“候选路径如下”这类预探索结果；除非用户原文明确指定文件。spawn task 只能包含用户给出的 repo 路径、用户目标、输出要求和本技能的执行约束。
-5. Codex prompt 必须要求 Codex 自己从整个 repo 发现入口、目录和相关文件，而不是沿着主 agent 预先挑出的文件列表工作。
-6. 检查通过后，外层必须用 `spawn(run_in_background=true)`，不要在主会话里直接跑长时间 `codex exec`。
-7. subagent 的 `profile` 选 `scripting`；如果任务还需要联网调研，选 `general`。
-8. subagent 内部启动 `codex exec` 时把 `yield_time_ms` 设为 30000；若返回 `execution_id`，用空 `chars` 的 `write_stdin` 续接，并把 `yield_time_ms` 设为 300000，直到结果不再返回 `execution_id`。
-9. `timeout` 是 execution 进程组的硬截止，默认 14400 秒；它不控制单次等待。只有需要更短硬截止时才显式传入。
-10. `codex exec` 要用 `--cd <repo>` 指定工作目录，避免依赖 shell 的 `cd` 状态。
-11. 默认把任务说明写入 prompt 文件，再用 `codex exec --cd <repo> - < prompt.txt` 读取，避免 shell 引号、换行和特殊字符破坏 prompt。
-12. 必须给 `codex exec` 加 `--output-last-message <task_dir>/codex-result.md`，完成后读这个文件作为主要结果；不要从 `/tmp/akashic-shell-*.log` 里 grep 或 tail 输出。
-13. 同时把 stdout+stderr 保存到 `<task_dir>/codex-run.log`，因为 `session id: ...` 在 stderr 里。
-14. 如果需要后续复用同一个 Codex 会话，必须从 `codex-run.log` 提取 session id，写入 `<task_dir>/codex-session.txt`，并在回复里告诉主会话这个 session id。
-15. prompt、result、run log、session id 都必须放在 subagent 任务目录 `<task_dir>`；不要写 `/tmp`，也不要依赖 `/tmp/akashic-shell-*.log`。
+1. 先检查 `codex` 是否可用并取得家目录：`shell(command="command -v codex && codex --version && echo $HOME")`。失败就告诉用户本机没有 Codex CLI，不要继续。
+2. 每个委托任务用一个运行目录 `<HOME>/.akashic/codex-runs/<run>/`（`<HOME>` 是上一步输出的绝对路径；`read_file`、`write_file` 不展开 `~`），`<run>` 取简短英文任务名加日期，例如 `refactor-auth-20261011`。prompt、结果、事件流和 session id 都放在这里，不写 `/tmp`。
+3. 任务说明写进 `prompt-<n>.txt`，再用 `- < prompt-<n>.txt` 从 stdin 读入；不要把任务说明拼进命令行，避免引号和换行破坏 prompt。
+4. 启动命令必须同时满足：
+   - `run_in_background=true`，`cwd` 设为用户给出的 repo 路径；
+   - 带 `--dangerously-bypass-approvals-and-sandbox` 和 `--skip-git-repo-check`；
+   - 带 `--json` 并把 stdout 重定向到 `events-<n>.jsonl`；
+   - 带 `-o <dir>/result-<n>.md`，结果以这个文件为准；
+   - 不加 `--ephemeral`，否则会话不会保存，无法续聊；
+   - 不加 `&`、`nohup`、`disown`、`| tee`，后台化交给 `run_in_background`。
+5. 启动后告诉用户已派发、运行目录在哪，然后结束本轮或继续处理用户的其他话题。不要调用 `write_stdin` 等待，不要轮询结果文件。
+6. 收到完成通知后：
+   - 读 `result-<n>.md` 向用户汇报；status 不是 completed 或结果文件为空时，用 `shell(tail -20 <dir>/events-<n>.jsonl)` 查看失败原因；
+   - 首次运行完成后，`events-1.jsonl` 第一行是 `{"type":"thread.started","thread_id":"..."}`，把 thread_id 写入 `session.txt`，并在回复里告诉用户。
+7. 续聊用 `codex exec resume <thread_id> ... -`。resume 不支持 `--cd` 和 `-s`，工作目录用 shell 的 `cwd` 指定，与首次保持同一个 repo。
+8. 同一个 Codex 会话同时只能有一个运行：上一轮还没收到完成通知时不要再 resume；用户要改方向就先 `task_stop(execution_id=N)`，再发新的 resume。
+9. 自动续聊必须传明确的 thread_id，不用 `--last`，避免串到别的 Codex 会话。
+10. 用户已经给出 repo 路径时，不要先自己探索这个仓库；prompt 里只写用户目标、输出要求和 repo 路径，让 Codex 自行发现入口和相关文件。不要塞进自己猜的文件列表，除非文件来自用户原文。
+11. 默认硬超时是 4 小时（shell 的 `timeout`）；只有用户要求更短时才显式传入。
 
 ## 推荐调用形态
 
-外层：
-
 ```text
-shell(
-  command="command -v codex && codex --version",
-  description="检查 codex"
+shell(command="command -v codex && codex --version && echo $HOME", description="检查 codex")
+
+write_file(
+  path="/home/me/.akashic/codex-runs/refactor-auth-20261011/prompt-1.txt",
+  content="仓库 /path/to/repo。目标：<用户目标>。请自行在整个仓库中定位相关实现。完成后用简短中文总结改了什么、怎么验证。"
 )
 
-spawn(
-  task="用户给出的 repo 路径是 /path/to/repo；用户目标是：<原样概括用户目标>。不要让主 agent 先探索这个仓库，不要使用主 agent 预选的文件列表；Codex CLI 必须把 /path/to/repo 当作完整代码库，自行发现入口、目录和相关文件。在当前 subagent 任务目录写入 prompt.txt，然后用 shell 执行 codex exec --cd /path/to/repo --output-last-message <当前任务目录>/codex-result.md - < <当前任务目录>/prompt.txt，并用 2>&1 | tee <当前任务目录>/codex-run.log 保存完整日志。shell 返回 execution_id 时，使用 write_stdin 的空 chars 和 yield_time_ms=300000 续接到命令结束；不要写 /tmp，不要读取 /tmp/akashic-exec 日志。完成后读取 codex-result.md，总结结果；从 codex-run.log 提取 Codex session id 写入 codex-session.txt 并带回。",
-  label="codex delegate",
-  profile="scripting",
+shell(
+  command="D=/home/me/.akashic/codex-runs/refactor-auth-20261011; codex exec --dangerously-bypass-approvals-and-sandbox --skip-git-repo-check --json -o $D/result-1.md - < $D/prompt-1.txt > $D/events-1.jsonl",
+  description="后台 codex",
+  cwd="/path/to/repo",
   run_in_background=true
 )
 ```
 
-subagent 内层：
+完成通知到达后：
+
+```text
+read_file(path="/home/me/.akashic/codex-runs/refactor-auth-20261011/result-1.md")
+shell(command="head -1 /home/me/.akashic/codex-runs/refactor-auth-20261011/events-1.jsonl", description="取 codex 会话 id")
+write_file(path="/home/me/.akashic/codex-runs/refactor-auth-20261011/session.txt", content="<thread_id>")
+```
+
+续聊：
 
 ```text
 shell(
-  command="bash -lc 'set -o pipefail; codex exec --cd /path/to/repo --output-last-message /path/to/task_dir/codex-result.md - < /path/to/task_dir/prompt.txt 2>&1 | tee /path/to/task_dir/codex-run.log; sed -n \"s/^session id: //p\" /path/to/task_dir/codex-run.log | tail -1 > /path/to/task_dir/codex-session.txt'",
-  description="阻塞 codex",
-  yield_time_ms=30000
+  command="D=/home/me/.akashic/codex-runs/refactor-auth-20261011; codex exec resume <thread_id> --dangerously-bypass-approvals-and-sandbox --skip-git-repo-check --json -o $D/result-2.md - < $D/prompt-2.txt > $D/events-2.jsonl",
+  description="续聊 codex",
+  cwd="/path/to/repo",
+  run_in_background=true
 )
-
-write_stdin(
-  execution_id=<shell 返回的 execution_id>,
-  chars="",
-  yield_time_ms=300000
-)
-```
-
-完成后：
-
-```text
-read_file(path="/path/to/task_dir/codex-result.md")
-read_file(path="/path/to/task_dir/codex-session.txt")
-```
-
-需要续聊同一个 Codex 会话时：
-
-```text
-codex exec resume <session_id> --output-last-message /path/to/task_dir/codex-result-2.md - < /path/to/task_dir/prompt-2.txt
 ```
 
 ## 注意
 
-- 不要把 `codex exec` 命令末尾加 `&`、`nohup`、`disown`，也不要用 shell 后台化包装。
-- 用户消息里已经有 repo 路径时，主 agent 不要提前读这个 repo 的文件来“了解一下”；直接委托 Codex CLI。
-- 主 agent 不要把自己猜的入口文件、相关目录、搜索结果塞进 Codex prompt；这些会污染 Codex 对完整 repo 的自主分析。
-- Codex prompt 可以写“请自行在整个 repo 中定位相关实现”，不要写“请重点读取以下文件”，除非这些文件来自用户原文。
-- 不要调用已删除的 `task_output`。只在 `shell` 返回 `execution_id` 后调用 `write_stdin`，并使用 300000ms 长等待，避免无信息的短周期轮询。
-- 简短 prompt 可以作为参数传给 `codex exec --cd <repo> '<任务说明>'`，但默认优先用 stdin 文件形态。
-- `--last` 只适合人工临时使用；自动化续聊必须传明确的 `<session_id>`，避免串到别的 Codex 会话。
-- 如果不用 `bash -lc`，也可以分两步执行：先跑 `codex exec ... 2>&1 | tee codex-run.log`，再用 `sed` 从 `codex-run.log` 提取 session id。
-- 如果 `write_file` 因路径限制失败，说明路径没用当前 subagent 任务目录；修正为 `<task_dir>/prompt.txt`，不要改用 shell 写 `/tmp`。
+- 收到通知前不要把 Codex 的结果当成已知事实向用户汇报。
+- `events-*.jsonl` 里可能有 Codex 的配置告警（`"type":"error"` 条目），不代表任务失败；以退出状态和结果文件为准。
+- 没有启用 jobs 插件时，shell 会提示后台完成不会通知；这时告诉用户需要手动让你去读结果文件。

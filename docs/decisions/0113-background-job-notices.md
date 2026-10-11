@@ -45,6 +45,8 @@ shell(run_in_background) ──► watch(JobWatch) ──► settled()
 - 结算落在模型最后一步生成期间时，本回合看不到它，回合结束后由唤醒补上。
 - 回合领取后若该回合失败且没有后续步骤，下一次用户输入会让这条领取退出。
 - 后台子任务（subagent）仍使用自己的持久回传路径；本决定不改变它。
+- 内置 `codex-delegate` skill 改为主会话直接后台 Shell 启动 `codex exec`（bypass 模式），
+  不再包一层阻塞等待的 subagent；续聊用 `codex exec resume <thread_id>`，同一会话串行。
 
 ## 验收
 
