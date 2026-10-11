@@ -4,6 +4,26 @@
 边界①已在 main；这里交付边界②非账本 Core 收口与边界③ Ledger/整体验收。
 全部 PR 为 Draft，尚未合并或部署，正式 workspace 未写入。
 
+## 评审后续
+
+以下 PR 依次叠在 #1293 之后；原栈的固定 head 保持不变。
+
+| PR | 固定 head | 接受的意见与验证 |
+|---|---|---|
+| [#1294](https://github.com/kachofugetsu09/akashic-agent/pull/1294) | `abd29a37` | 四个调试脚本改写 workspace patch；Docker init、RPC、exec、重启、stdio 及 provenance 场景通过。两个 probe 仅核对当前配置读写，未重跑完整外部服务场景 |
+| [#1295](https://github.com/kachofugetsu09/akashic-agent/pull/1295) | `b25f59d4` | 真正入站处理持有租约时换代：接纳关闭、并发事务结束后租约仍完整；处理完成再释放，消息前缀和旁支保持。保留现有生命周期，不加首次 apply 分支 |
+| [#1296](https://github.com/kachofugetsu09/akashic-agent/pull/1296) | `f604da81` | Harbor 使用当前插件配置并显式加载 checkout；保留步数/压缩/聊天设置，停用 Subagent 与无 Controller 的 Computer。真实宿主及本地模型 CLI 回复通过，未跑完整题目 |
+| [#1297](https://github.com/kachofugetsu09/akashic-agent/pull/1297) | `f5141155` | 删除 read_raw 同义转发及唯一特判，真实临时文件读写与缺失文件错误通过 |
+
+新增的租约和 Harbor 验收入口分别是 `scripts/ledger_runtime_scenario.py`、
+`scripts/harbor_config_scenario.py`。只剩旧版本迁移场景刻意生成
+`disabled_builtin`，用于证明升级，不是当前配置入口。
+
+[ADR-0110](../decisions/0110-ledger-checks-use-existing-message-semantics.md) 补充
+检查插件可选、禁用后重复 abandon 不再被它拒绝、重新启用不改写历史的说明；
+这次澄清不改变实现。nightly 和 Host Bridge 风险复核见 [NOW](../NOW.md)。
+合同重启沿用 ADR-0104；SHA、迁移目录及其他校验清理留到下一轮。
+
 基线 `ca3d0d20baa420dd6b847dedfff53308b1d17bb6`。唯一 writer 的隔离 worktree 为
 `/mnt/data/coding/akashic-boundary23-1179`；原 checkout 与其未提交内容未修改。
 恢复分支 `backup/1179-boundary23-start-20261011`；各层 commit 是源码恢复点。
