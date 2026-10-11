@@ -13,8 +13,8 @@ Yoyo 与通用 runner 保留，用于 owner 声明的显式升级。ADR-0066 在
 源文件日期或一台机器的账本。运行时旧格式读取另需核对实际数据和当前消费者，见
 [兼容截止盘点](../docs/design/compatibility-cutoff-inventory.md)。
 
-未来业务迁移放在插件自己的 bundle 中，由 `migration.catalog.toml` 声明源文件、依赖、事务属性
-和 package digest，通过正式安装链校验与发现。Core 只执行这些声明，不导入业务插件源码或
+未来业务迁移放在插件自己的 bundle 中，由 `migration.catalog.toml` 声明源文件、依赖和事务属性，
+通过正式安装链发现；字节完整性由安装边界保证（ADR-0113）。Core 只执行这些声明，不导入业务插件源码或
 建立业务 schema 目录。新迁移不得依赖仅存在于旧 ledger、源码已经退役的 ID。
 
 执行前持有 workspace 锁；成功才记录 Yoyo 回执，失败阻止启动并允许同一 artifact 重试。

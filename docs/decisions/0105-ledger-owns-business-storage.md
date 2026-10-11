@@ -30,7 +30,7 @@ Core 不构造这些对象，不发布占位服务，也不保留旧模块转发
 
 五项既有消息迁移移入 Ledger 的离线 Yoyo bundle。ID、依赖、事务设置和 SQL 保持
 原行为；历史实现只依赖 bundle 内冻结的 schema helper，不导入运行插件。
-`migrations/ledger-moves.toml` 保存准确的新旧路径与 SHA-256，门禁同时校验两端。
+`migrations/ledger-moves.toml` 保存准确的新旧路径与 SHA-256，门禁同时校验两端。合入后该清单由 ADR-0113 删除，搬迁证据保留在 Git 历史中。
 迁移账本中已完成或空库基线声明的依赖可解析，但 receipt 不能被当成步骤执行。
 Core-only 迁移必须先运行它依赖的实际插件步骤，不能跨过尚未落账的依赖。
 
