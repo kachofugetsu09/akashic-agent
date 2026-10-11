@@ -1,31 +1,320 @@
-.computer-view,
-.computer-desktop {
+/* 电脑面板。颜色跟随宿主 color-scheme：插件自有的语义色用 light-dark() 在这里定义一次。
+   外框（.computer-frame）表达"这是谁的浏览器、谁在操作"：主桌面只有细线；匿名浏览器是靛紫斜纹；你在操作是橙色实线。 */
+.computer-view {
+  --computer-ok: light-dark(rgb(47 93 58), rgb(136 190 146));
+  --computer-busy: light-dark(rgb(27 54 93), rgb(150 180 226));
+  --computer-warn: light-dark(rgb(116 94 0), rgb(220 196 96));
+  --computer-error: light-dark(rgb(150 48 40), rgb(232 140 128));
+  --computer-control: light-dark(rgb(176 92 36), rgb(232 150 96));
+  --computer-on-control: light-dark(rgb(255 255 255), rgb(30 18 10));
+  --computer-anonymous: light-dark(rgb(92 84 140), rgb(176 168 226));
+  --computer-on-anonymous: light-dark(rgb(255 255 255), rgb(20 20 19));
+  --computer-agent: light-dark(rgb(37 99 205), rgb(98 150 236));
+  --computer-screen: rgb(18 18 18);
+  --computer-ease: cubic-bezier(0.2, 0, 0, 1);
+
+  position: relative;
+  display: grid;
   width: 100%;
   height: 100%;
   min-width: 0;
   min-height: 0;
+  grid-template-columns: minmax(0, 1fr);
+  grid-template-rows: auto auto minmax(0, 1fr);
+  color: var(--ak-ink-primary);
+  background: var(--ak-paper-canvas);
 }
 
-.computer-view {
+.computer-view button {
+  font: inherit;
+  color: inherit;
+  cursor: pointer;
+}
+
+.computer-view button:focus-visible,
+.computer-view textarea:focus-visible,
+.computer-view summary:focus-visible {
+  outline: 2px solid var(--ak-rule-focus);
+  outline-offset: 2px;
+}
+
+.computer-view [hidden] {
+  display: none !important;
+}
+
+.computer-icon {
+  width: 16px;
+  height: 16px;
+  flex: 0 0 auto;
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 1.5;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+
+.computer-visually-hidden {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  overflow: hidden;
+  clip-path: inset(50%);
+  white-space: nowrap;
+}
+
+/* ───── 头部：观看目标 + 工具 ───── */
+.computer-head {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+  min-height: 48px;
+  padding-inline: 8px 6px;
+  border-block-end: 1px solid var(--ak-rule-subtle);
+  background: var(--ak-paper-sheet);
+}
+
+.computer-target-tabs {
+  display: flex;
+  flex: 1 1 auto;
+  gap: 4px;
+  min-width: 0;
+  overflow-x: auto;
+  scrollbar-width: none;
+}
+
+.computer-target {
+  display: inline-flex;
+  flex: 0 0 auto;
+  align-items: center;
+  gap: 6px;
+  max-width: 15rem;
+  min-height: 36px;
+  padding-inline: 10px;
+  border: 1px solid transparent;
+  border-radius: 7px;
+  color: var(--ak-ink-secondary);
+  background: transparent;
+  font-size: 0.8125rem;
+}
+
+.computer-target-label {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.computer-target[aria-selected="true"] {
+  border-color: var(--ak-rule-default);
+  color: var(--ak-ink-primary);
+  background: var(--ak-paper-raised);
+}
+
+/* 匿名标签：面具图标 + 靛紫下划线，与画面外框同色 */
+.computer-target[data-anonymous] .computer-icon {
+  color: var(--computer-anonymous);
+}
+
+.computer-target[data-anonymous][aria-selected="true"] {
+  box-shadow: inset 0 -2px 0 var(--computer-anonymous);
+}
+
+.computer-actions {
+  display: flex;
+  flex: 0 0 auto;
+  gap: 2px;
+}
+
+.computer-icon-button {
+  display: inline-grid;
+  width: 36px;
+  height: 36px;
+  place-items: center;
+  padding: 0;
+  border: 0;
+  border-radius: 7px;
+  color: var(--ak-ink-secondary);
+  background: transparent;
+}
+
+.computer-icon-button[aria-expanded="true"] {
+  color: var(--ak-ink-primary);
+  background: var(--ak-paper-raised);
+}
+
+/* ───── 状态条：一句话 + 唯一主操作 ───── */
+.computer-status {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-width: 0;
+  min-height: 56px;
+  padding: 8px 12px;
+  border-block-end: 1px solid var(--ak-rule-subtle);
+  background: var(--ak-paper-sheet);
+}
+
+.computer-status-dot {
+  width: 8px;
+  height: 8px;
+  flex: 0 0 auto;
+  border-radius: 50%;
+  background: var(--ak-ink-muted);
+}
+
+.computer-status[data-tone="ok"] .computer-status-dot { background: var(--computer-ok); }
+.computer-status[data-tone="busy"] .computer-status-dot { background: var(--computer-busy); }
+.computer-status[data-tone="you"] .computer-status-dot { background: var(--computer-control); }
+.computer-status[data-tone="warn"] .computer-status-dot { background: var(--computer-warn); }
+.computer-status[data-tone="error"] .computer-status-dot { background: var(--computer-error); }
+
+.computer-status-text {
+  display: flex;
+  flex: 1 1 auto;
+  flex-direction: column;
+  min-width: 0;
+}
+
+.computer-status-title {
+  font-size: 0.875rem;
+  font-weight: 600;
+}
+
+.computer-status-detail {
+  overflow: hidden;
+  color: var(--ak-ink-secondary);
+  font-size: 0.75rem;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.computer-action-wrap {
+  display: flex;
+  flex: 0 0 auto;
+  flex-direction: column;
+  align-items: flex-end;
+  gap: 2px;
+}
+
+.computer-action-hint {
+  color: var(--ak-ink-secondary);
+  font-size: 0.75rem;
+}
+
+.computer-action-hint:empty {
+  display: none;
+}
+
+.computer-action {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-height: 36px;
+  padding-inline: 14px;
+  border: 1px solid var(--ak-rule-default);
+  border-radius: 8px;
+  background: var(--ak-paper-editing);
+  font-size: 0.8125rem;
+  white-space: nowrap;
+  transition-property: scale;
+  transition-duration: 150ms;
+  transition-timing-function: var(--computer-ease);
+}
+
+.computer-action[data-emphasis="primary"] {
+  border-color: transparent;
+  color: var(--ak-paper-canvas);
+  background: var(--ak-ink-primary);
+}
+
+.computer-action[data-emphasis="control"] {
+  border-color: transparent;
+  color: var(--computer-on-control);
+  background: var(--computer-control);
+}
+
+.computer-action:active:not(:disabled) {
+  scale: 0.96;
+}
+
+.computer-action:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+/* ───── 画面区：外框 + 画面 + 遮罩 ───── */
+.computer-stage {
   position: relative;
   display: grid;
-  grid-template-rows: auto 44px minmax(0, 1fr);
-  color: var(--ak-ink-primary);
-  background: rgb(18 18 18);
+  min-width: 0;
+  min-height: 0;
+  padding: 18px 12px 12px;
 }
 
-.computer-desktop {
+.computer-frame {
+  --frame-pad: 0px;
+
   position: relative;
+  min-width: 0;
+  min-height: 0;
+  padding: var(--frame-pad);
+  border-radius: calc(8px + var(--frame-pad));
+  box-shadow: 0 0 0 1px var(--ak-rule-subtle);
+}
+
+.computer-frame[data-frame="anonymous"] {
+  --frame-pad: 4px;
+
+  box-shadow: none;
+  /* 斜纹标的是"匿名身份"：不靠颜色也能和接管的实线外框区分开 */
+  /* deslop-ignore-next-line 06 */
+  background: repeating-linear-gradient(-45deg, var(--computer-anonymous) 0 7px,
+    color-mix(in srgb, var(--computer-anonymous) 38%, transparent) 7px 14px);
+}
+
+.computer-frame[data-frame="control"] {
+  --frame-pad: 3px;
+
+  background: var(--computer-control);
+}
+
+.computer-frame-legend {
+  position: absolute;
+  z-index: 3;
+  inset-block-start: 0;
+  inset-inline-start: 14px;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  max-width: calc(100% - 28px);
+  padding: 3px 10px 3px 8px;
   overflow: hidden;
-  background: rgb(18 18 18);
+  border-radius: 999px;
+  font-size: 0.75rem;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+  translate: 0 -55%;
+  box-shadow: 0 0 0 3px var(--ak-paper-canvas);
+}
+
+.computer-frame-legend:empty { display: none; }
+.computer-frame-legend .computer-icon { width: 14px; height: 14px; }
+.computer-frame[data-frame="anonymous"] .computer-frame-legend {
+  color: var(--computer-on-anonymous);
+  background: var(--computer-anonymous);
+}
+.computer-frame[data-frame="control"] .computer-frame-legend {
+  color: var(--computer-on-control);
+  background: var(--computer-control);
 }
 
 .computer-screen {
-  position: absolute;
-  inset: 0;
-  display: block;
+  position: relative;
+  width: 100%;
+  height: 100%;
   overflow: hidden;
-  background: rgb(18 18 18);
+  border-radius: 8px;
+  background: var(--computer-screen);
   outline: 0;
 }
 
@@ -33,324 +322,345 @@
   overflow: hidden !important;
 }
 
-.computer-screen canvas:focus-visible,
-.computer-screen:focus-visible {
+.computer-screen:focus-visible,
+.computer-screen canvas:focus-visible {
   outline: 2px solid var(--ak-rule-focus);
   outline-offset: -2px;
+}
+
+.computer-stream,
+.computer-browser-screen {
+  display: block;
+  width: 100%;
+  height: 100%;
+  border: 0;
+  outline: 0;
+  object-fit: contain;
 }
 
 .computer-connection-state {
   position: absolute;
   z-index: 2;
-  inset: 0;
-  display: flex;
-  flex-direction: column;
-  align-items: center;
-  justify-content: center;
-  gap: 8px;
-  padding: 32px;
-  color: rgb(238 238 238);
-  background: rgb(18 18 18);
+  inset: var(--frame-pad);
+  display: grid;
+  place-items: center;
+  padding: 24px;
+  border-radius: 8px;
+  color: rgb(236 235 228);
+  background: var(--computer-screen);
   text-align: center;
 }
 
-.computer-connection-state[hidden],
-.computer-clipboard[hidden] {
-  display: none;
+.computer-connection-body {
+  display: grid;
+  justify-items: center;
+  gap: 8px;
+  max-width: 22rem;
 }
 
-.computer-connection-state strong {
-  font-size: 0.9375rem;
-  font-weight: 600;
-}
-
-.computer-connection-state span {
-  color: rgb(186 186 186);
-  font-size: 0.8125rem;
-}
-
-.computer-connection-state button,
-.computer-clipboard button {
-  min-height: 36px;
-  border: 1px solid var(--ak-rule-default);
-  border-radius: 6px;
-  color: var(--ak-ink-primary);
-  background: var(--ak-paper-editing);
-  font: inherit;
-  font-size: 0.8125rem;
-  cursor: pointer;
-}
-
-.computer-connection-state button {
-  min-height: 44px;
-  margin-block-start: 6px;
-  padding-inline: 14px;
-}
-
-.computer-toolbar {
-  display: flex;
-  min-width: 0;
-  align-items: center;
-  justify-content: space-between;
-  padding-inline: 10px 6px;
-  border-block-end: 1px solid var(--ak-rule-subtle);
-  background: var(--ak-paper-sheet);
-}
-
-.computer-status,
-.computer-actions {
-  display: flex;
-  align-items: center;
-}
-
-.computer-status {
-  gap: 7px;
-  min-width: 0;
-  color: var(--ak-ink-secondary);
-  font-size: 0.75rem;
-}
-
-.computer-status-dot {
-  width: 7px;
-  height: 7px;
-  border-radius: 50%;
-  background: var(--ak-color-status-warning);
-}
-
-.computer-status[data-state="connected"] .computer-status-dot {
-  background: var(--ak-color-status-success);
-}
-
-.computer-status[data-state="failed"] .computer-status-dot {
-  background: var(--ak-color-status-error);
-}
-
-.computer-status[data-state="waiting"] .computer-status-dot {
-  background: rgb(175 175 175);
-}
-
-.computer-actions {
-  flex: 0 0 auto;
-  gap: 2px;
-}
-
-.computer-icon-button {
-  display: inline-grid;
-  width: 34px;
-  height: 34px;
+.computer-connection-icon {
+  display: grid;
   place-items: center;
-  padding: 0;
-  border: 0;
-  border-radius: 5px;
-  color: var(--ak-ink-secondary);
-  background: transparent;
+  color: rgb(200 198 190);
+}
+
+.computer-connection-icon .computer-icon { width: 24px; height: 24px; }
+.computer-connection-icon[data-icon="alert"] { color: rgb(232 140 128); }
+
+.computer-connection-body p {
+  margin: 0;
+  color: rgb(200 198 190);
+  font-size: 0.8125rem;
+  line-height: 1.5;
+  text-wrap: pretty;
+}
+
+.computer-connection-actions {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: center;
+  gap: 8px;
+  margin-block-start: 6px;
+}
+
+.computer-connection-state .computer-action {
+  min-height: 40px;
+  border-color: rgb(255 255 255 / 20%);
+  color: rgb(236 235 228);
+  background: rgb(255 255 255 / 8%);
+}
+
+.computer-connection-state .computer-action[data-emphasis="primary"] {
+  border-color: transparent;
+  color: rgb(20 20 19);
+  background: rgb(236 235 228);
+}
+
+.computer-connection-details {
+  width: 100%;
+  color: rgb(180 178 170);
+  font-size: 0.75rem;
+  text-align: start;
+}
+
+.computer-connection-details summary {
   cursor: pointer;
+  text-align: center;
 }
 
-.computer-icon-button svg {
-  width: 17px;
-  height: 17px;
-  fill: none;
-  stroke: currentColor;
-  stroke-width: 1.8;
-  stroke-linecap: round;
-  stroke-linejoin: round;
+.computer-connection-details pre {
+  margin: 6px 0 0;
+  padding: 8px;
+  border-radius: 6px;
+  background: rgb(0 0 0 / 35%);
+  font: 0.75rem/1.5 var(--ak-type-technical);
+  white-space: pre-wrap;
+  overflow-wrap: break-word;
 }
 
+/* ───── 剪贴板浮层 ───── */
 .computer-clipboard {
   position: absolute;
   z-index: 4;
   inset-block-start: 8px;
-  inset-inline-end: 10px;
+  inset-inline-end: 12px;
   display: grid;
-  width: min(26rem, calc(100% - 20px));
-  gap: 10px;
+  box-sizing: border-box;
+  width: min(22rem, calc(100% - 24px));
+  max-block-size: calc(100% - 16px);
+  gap: 8px;
   padding: 12px;
+  overflow: auto;
   border: 1px solid var(--ak-rule-default);
-  border-radius: 8px;
+  border-radius: 12px;
   color: var(--ak-ink-primary);
-  background: color-mix(in oklch, var(--ak-paper-raised) 94%, transparent);
-  box-shadow: 0 12px 34px rgb(0 0 0 / 24%);
-  backdrop-filter: blur(12px);
+  background: var(--ak-paper-raised);
+  box-shadow: 0 4px 12px rgb(0 0 0 / 12%);
 }
 
 .computer-clipboard-header {
   display: flex;
-  min-height: 34px;
   align-items: center;
   justify-content: space-between;
 }
 
 .computer-clipboard-header strong {
   font-size: 0.875rem;
-  font-weight: 650;
-}
-
-.computer-clipboard-header .computer-icon-button {
-  color: var(--ak-ink-secondary);
+  font-weight: 600;
 }
 
 .computer-clipboard p {
-  margin: 0;
+  margin: 0 0 10px;
   color: var(--ak-ink-secondary);
-  font-size: 0.75rem;
+  font-size: 0.8125rem;
   line-height: 1.5;
-}
-
-.computer-clipboard .computer-clipboard-status {
-  min-height: 1.125rem;
-  color: var(--ak-ink-primary);
 }
 
 .computer-clipboard textarea {
   box-sizing: border-box;
   width: 100%;
-  min-height: 8rem;
+  min-height: 6rem;
   resize: vertical;
-  padding: 9px 10px;
+  padding: 8px 10px;
   border: 1px solid var(--ak-rule-default);
-  border-radius: 6px;
+  border-radius: 8px;
   color: var(--ak-ink-primary);
   background: var(--ak-paper-editing);
-  font: 0.8125rem/1.5 var(--ak-type-technical);
+  font: inherit;
+  font-size: 1rem;
+  line-height: 1.5;
 }
 
 .computer-clipboard-footer {
   display: flex;
-  flex-wrap: wrap;
+  align-items: center;
   justify-content: flex-end;
   gap: 6px;
+  margin-block-start: 8px;
 }
 
-.computer-clipboard-footer button {
-  padding-inline: 10px;
+.computer-clipboard button:not(.computer-icon-button) {
+  min-height: 36px;
+  padding-inline: 12px;
+  border: 1px solid var(--ak-rule-default);
+  border-radius: 8px;
+  background: var(--ak-paper-editing);
+  font-size: 0.8125rem;
+  white-space: nowrap;
 }
 
-.computer-clipboard-footer .is-primary {
-  border-color: var(--ak-color-action-primary);
-  color: var(--md-sys-color-on-primary);
-  background: var(--ak-color-action-primary);
+.computer-clipboard button.is-primary {
+  border-color: transparent;
+  color: var(--ak-paper-canvas);
+  background: var(--ak-ink-primary);
 }
 
-@media (hover: hover) {
-  .computer-icon-button:hover,
-  .computer-clipboard button:hover,
-  .computer-connection-state button:hover {
-    background: color-mix(in oklch, currentColor 10%, transparent);
-  }
-
-  .computer-clipboard-footer .is-primary:hover {
-    background: color-mix(in oklch, var(--ak-color-action-primary) 86%, black);
-  }
+.computer-clipboard .computer-clipboard-status {
+  flex: 1 1 auto;
+  margin: 0;
+  color: var(--computer-ok);
+  font-size: 0.75rem;
 }
 
-.computer-icon-button:focus-visible,
-.computer-clipboard button:focus-visible,
-.computer-clipboard textarea:focus-visible,
-.computer-connection-state button:focus-visible {
-  outline: 2px solid var(--ak-rule-focus);
-  outline-offset: 2px;
+/* ───── Agent 光标：参照 cua-driver cua.default ─────
+   会话色指针 + 白描边；名字徽章 2 秒后收成圆点。运动在 agent-cursor.ts。 */
+.computer-agent-layer {
+  position: absolute;
+  inset: 0;
+  z-index: 1;
+  overflow: hidden;
+  pointer-events: none;
+  transition-property: opacity;
+  transition-duration: 200ms;
+  transition-timing-function: ease-out;
 }
 
-@media (max-width: 38rem) {
-  .computer-status {
-    max-width: calc(100% - 86px);
-  }
+.computer-agent-layer[data-leaving] { opacity: 0; }
 
-  .computer-clipboard {
-    inset-inline: 8px;
-    width: auto;
-  }
-}
-
-@media (prefers-reduced-motion: reduce) {
-  .computer-view * {
-    scroll-behavior: auto !important;
-  }
-}
-
-.computer-stream {
-  width: 100%;
-  height: 100%;
-  border: 0;
-  display: block;
-}
-
-.computer-agent-cursor {
+.computer-agent-glow,
+.computer-agent-ripple,
+.computer-agent-pointer {
   position: absolute;
   inset: 0 auto auto 0;
-  z-index: 1;
-  width: 24px;
-  height: 24px;
-  pointer-events: none;
-  transform-origin: 2px 2px;
-  filter: drop-shadow(0 0 6px var(--ak-color-status-trace));
 }
 
-.computer-agent-cursor svg {
-  width: 100%;
-  height: 100%;
-  overflow: visible;
-  fill: var(--ak-ink-primary);
-  stroke: var(--ak-paper-raised);
-  stroke-width: 1.5px;
-  stroke-linejoin: round;
-  transform-origin: 2px 2px;
+.computer-agent-glow {
+  width: 60px;
+  height: 60px;
+  margin: -30px 0 0 -30px;
+  border-radius: 50%;
+  /* 速度光晕只在移动时出现，落在运动方向之后，表达速度与方向 */
+  /* deslop-ignore-next-line 06 */
+  background: radial-gradient(circle, color-mix(in srgb, var(--computer-agent) 55%, transparent), transparent 70%);
+  opacity: 0;
 }
+
+.computer-agent-ripple {
+  width: 52px;
+  height: 52px;
+  margin: -26px 0 0 -26px;
+  box-sizing: border-box;
+  border: 2px solid var(--computer-agent);
+  border-radius: 50%;
+  opacity: 0;
+}
+
+.computer-agent-pointer {
+  width: 26px;
+  height: 26px;
+}
+
+.computer-agent-glyph {
+  position: absolute;
+  inset: 0;
+  transform-origin: 3px 2px;
+}
+
+.computer-agent-pointer svg {
+  width: 26px;
+  height: 26px;
+  overflow: visible;
+  filter: drop-shadow(0 1px 1.5px rgb(0 0 0 / 35%));
+}
+
+.computer-agent-arrow {
+  fill: var(--computer-agent);
+  stroke: rgb(255 255 255);
+  stroke-width: 1.6;
+  stroke-linejoin: round;
+}
+
+.computer-agent-badge {
+  position: absolute;
+  inset-block-start: 24px;
+  inset-inline-start: 14px;
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  max-width: 90px;
+  padding: 3px 8px 3px 4px;
+  overflow: hidden;
+  border-radius: 999px;
+  color: rgb(255 255 255);
+  background: var(--computer-agent);
+  box-shadow: 0 2px 8px rgb(0 0 0 / 25%);
+  font-size: 0.75rem;
+  line-height: 18px;
+  white-space: nowrap;
+  transition-property: max-width, padding;
+  transition-duration: 400ms;
+  transition-timing-function: var(--computer-ease);
+}
+
+.computer-agent-badge i {
+  width: 10px;
+  height: 10px;
+  flex: 0 0 auto;
+  border-radius: 50%;
+  background: rgb(255 255 255);
+  box-shadow: inset 0 0 0 3px var(--computer-agent);
+}
+
+.computer-agent-badge span { transition: opacity 400ms var(--computer-ease); }
+.computer-agent-badge[data-quiet] { max-width: 18px; padding-inline: 4px; }
+.computer-agent-badge[data-quiet] span { opacity: 0; }
 
 .computer-cursor-notice {
   position: absolute;
-  inset: auto 8px 8px 8px;
+  inset: auto 8px 8px;
   z-index: 1;
-  pointer-events: none;
   padding: 4px 8px;
+  border-radius: 6px;
   color: var(--ak-ink-primary);
   background: var(--ak-paper-raised);
-  font-family: var(--ak-type-technical);
+  font-size: 0.75rem;
+  line-height: 1.5;
+  pointer-events: none;
 }
 
-.computer-agent-cursor[hidden],
-.computer-cursor-notice[hidden] {
-  display: none;
+@media (prefers-reduced-motion: no-preference) {
+  .computer-connection-icon[data-icon="spinner"] .computer-icon { animation: computer-spin 0.9s linear infinite; }
 }
 
-.computer-target-tabs {
-  display: flex;
-  gap: 4px;
-  overflow-x: auto;
-  padding: 4px;
-  background: var(--ak-paper-sheet);
-  border-bottom: 1px solid var(--ak-rule-default);
+@keyframes computer-spin {
+  to { rotate: 360deg; }
 }
-.computer-target-tabs button {
-  min-height: 44px;
-  max-width: 15rem;
-  flex-shrink: 0;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-.computer-view button {
-  font: inherit;
-  color: inherit;
-  background: transparent;
-  border: 1px solid var(--ak-rule-default);
-  border-radius: 6px;
-  padding-inline: 8px;
-  cursor: pointer;
-}
-.computer-view button:disabled { opacity: .5; cursor: default; }
-.computer-target-tabs [aria-selected="true"] {
-  background: var(--ak-paper-raised);
-  border-color: var(--ak-rule-strong);
-}
-.computer-view button:focus-visible { outline: 2px solid var(--ak-rule-focus); }
-.computer-browser-screen { width: 100%; height: 100%; object-fit: contain; outline: 0; }
-.computer-toolbar { gap: 4px; }
-.computer-actions button { min-height: 40px; }
 
-@media (max-width: 68rem) {
-  .computer-actions button { min-height: 44px; }
-  .computer-toolbar { min-height: 88px; flex-wrap: wrap; }
-  .computer-view { grid-template-rows: auto auto minmax(0, 1fr); }
+@media (prefers-reduced-motion: reduce) {
+  .computer-view *,
+  .computer-view *::before,
+  .computer-view *::after {
+    transition-duration: 0ms !important;
+  }
+}
+
+@media (hover: hover) {
+  .computer-target:hover,
+  .computer-icon-button:hover {
+    color: var(--ak-ink-primary);
+    background: color-mix(in srgb, currentColor 8%, transparent);
+  }
+
+  .computer-action:not(:disabled):hover {
+    border-color: var(--ak-rule-strong);
+  }
+}
+
+/* 窄屏：状态条移到底部，方便单手点按；外框贴边 */
+@media (max-width: 38rem) {
+  .computer-view { grid-template-rows: auto minmax(0, 1fr) auto; }
+  .computer-status {
+    order: 3;
+    padding-block-end: max(8px, env(safe-area-inset-bottom));
+    border-block: 1px solid var(--ak-rule-subtle) 0;
+  }
+  .computer-stage { padding: 18px 0 0; }
+  .computer-frame,
+  .computer-screen,
+  .computer-connection-state { border-radius: 0; }
+  .computer-target,
+  .computer-icon-button,
+  .computer-action { min-height: 44px; }
+  .computer-icon-button { width: 44px; }
+  .computer-clipboard { inset-inline: 8px; width: auto; }
 }

@@ -132,7 +132,7 @@ try {
     return page;
   };
   const first = await createPage(), second = await createPage();
-  const open = page => page.getByRole("button", { name: /^打开 Computer/ }).click();
+  const open = page => page.getByRole("button", { name: /^打开 电脑/ }).click();
   const connected = page => page.waitForFunction(() => document.querySelector(".computer-status")?.textContent?.startsWith("只读观看"));
   const videoReady = page => page.waitForFunction(() => {
     const frame = document.querySelector(".computer-stream");
@@ -151,8 +151,8 @@ try {
   await first.getByRole("button", { name: "接管操作", exact: true }).click();
   await first.waitForFunction(() => document.querySelector(".computer-status").textContent.startsWith("你正在操作"));
   await videoReady(second);
-  await second.getByRole("button", { name: "另一窗口正在操作" }).waitFor();
-  assert.equal(await second.getByRole("button", { name: "另一窗口正在操作" }).isDisabled(), true);
+  await second.waitForFunction(() => document.querySelector(".computer-status").textContent.startsWith("另一个窗口正在操作"));
+  assert.equal(await second.getByRole("button", { name: "接管操作", exact: true }).isDisabled(), true);
   const conflicting = await fetch(gateway + "/control/take", {method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({id:randomUUID()})});
   assert.equal(conflicting.status,500); assert.match((await conflicting.json()).error,/Another viewer/);
   let openCliFinished = false;
@@ -166,14 +166,14 @@ try {
   await first.waitForTimeout(1400);
   assert.equal(resumed, false);
   assert.equal(openCliFinished, false);
-  await first.getByRole("button", { name: "释放操作" }).click();
+  await first.getByRole("button", { name: "交还给 Agent" }).click();
   assert.match(textResult(await paused), /RESUMED/);
   assert.ok((await pendingOpenCli) < 500);
   pass("explicit takeover pauses Agent clock and OpenCLI, refuses another controller, and release resumes them");
   await connected(first); await videoReady(first); await videoReady(second);
 
   // 3. 标签展示真实匿名页面；只读、输入、键盘、关闭和释放均经生产路由。
-  const select = (page, path) => page.getByRole("tab", { name: new RegExp(`匿名 .* · /${path}$`) }).click();
+  const select = (page, path) => page.getByRole("tab", { name: new RegExp(`/${path}（匿名浏览器）$`) }).click();
   await select(first, "a");
   await first.locator(".computer-browser-screen").waitFor();
   await connected(first);
@@ -200,9 +200,9 @@ try {
   await first.getByRole("textbox", { name: "剪贴板文字" }).fill(" Clipboard");
   // 粘贴前重新把焦点放回匿名输入框。
   await first.mouse.click(input.x, input.y);
-  await first.getByRole("button", { name: "粘贴到 Computer" }).click();
+  await first.getByRole("button", { name: "粘贴到电脑" }).click();
   await first.getByText("已粘贴", { exact: true }).waitFor();
-  await first.getByRole("button", { name: "释放操作" }).click();
+  await first.getByRole("button", { name: "交还给 Agent" }).click();
   const changed = textResult(await action(`console.log(await pageA.playwright.evaluate(() => ({
     input: document.querySelector('#x').value, button: document.querySelector('#hit').textContent })));`));
   assert.match(changed, /Human Clipboard/); assert.match(changed, /CLICKED/);
@@ -210,8 +210,8 @@ try {
   pass("anonymous pointer, keyboard, Backspace and acknowledged paste affect only selected page");
   await first.screenshot({ path: join(artifacts, "anonymous-tabs.png") });
   await action("await anonB.close();");
-  await until(() => second.locator(".computer-status").textContent(), value => value.includes("目标已结束"), "closed context disappears");
-  assert.equal(await second.getByRole("tab", { name: /匿名 .* · \/b$/ }).count(), 0);
+  await until(() => second.locator(".computer-status").textContent(), value => value.includes("这个浏览器已关闭"), "closed context disappears");
+  assert.equal(await second.getByRole("tab", { name: /\/b（匿名浏览器）$/ }).count(), 0);
   pass("closed anonymous contexts remove tabs and stop their display");
 
   // 4. 手机活动仅增加徽标；手动打开、关闭与聊天输入保持独立。
@@ -228,8 +228,9 @@ try {
   assert.equal(await mobile.locator(".conversation-tools").isVisible(), false);
   pass("320px mobile activity and later activity preserve closed panel and chat input");
 
+  // 未接管时剪贴板浮层直接给出接管入口。
   await first.getByRole("button", { name: "剪贴板", exact: true }).click();
-  await first.getByRole("button", { name: "接管操作", exact: true }).click();
+  await first.getByRole("dialog", { name: "剪贴板" }).getByRole("button", { name: "接管操作", exact: true }).click();
   await first.waitForFunction(() => document.querySelector(".computer-status").textContent.startsWith("你正在操作"));
   await first.getByRole("button", { name: "关闭工具区" }).click();
   await until(async () => (await (await fetch(gateway + "/targets")).json()).control, value => !value, "closing panel releases control");

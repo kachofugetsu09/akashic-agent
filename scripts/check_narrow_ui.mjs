@@ -436,7 +436,7 @@ async function chat(page, prefix, narrow) {
       await tabs.nth(i).click();
       await measure(page, `${prefix}-tool-${i}`);
       const clipboard = tools.getByRole("button", {
-        name: "打开剪贴板",
+        name: "剪贴板",
         exact: true,
       });
       if (await clipboard.count()) {

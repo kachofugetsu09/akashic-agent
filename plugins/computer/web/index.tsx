@@ -1,6 +1,9 @@
 import type { WebHostContextV1, WebUiDisposer } from "@akashic/web-ui-v1";
 import { ComputerDisplay } from "./display";
 import { BrowserDisplay } from "./browser-display";
+import { ClipboardPopover } from "./clipboard";
+import { present, type ActionId, type ControlState, type LinkState, type PanelFacts, type RuntimeState } from "./panel-state";
+import { PanelSurface, type Target } from "./panel-view";
 import { keysymForKey } from "./remote-input.js";
 import "./style.css";
 
@@ -9,77 +12,39 @@ interface ConversationTabView {
   onActiveChange(listener: (active: boolean) => void): WebUiDisposer;
   requestAttention(noticeId: string): void;
 }
-interface Target { id: string; label: string; kind: "desktop" | "browser"; url?: string }
 interface Activity { noticeId: number; active: boolean; browser: { state: string; error: string } }
 
-function button(label: string) {
-  const node = document.createElement("button");
-  node.type = "button";
-  node.textContent = label;
-  return node;
-}
+const RUNTIME_STATES: readonly string[] = ["sleeping", "starting", "ready", "stopping", "failed"];
+// 这三种连接结果需要用户明确处理，轮询不自动重连。
+const SETTLED_LINKS: readonly LinkState[] = ["failed", "stale", "ended"];
 
-/** 目录、观看目标、输入权限与面板可见性各自拥有一个事实。 */
+/** 控制器：采集事实、维持连接、执行动作。呈现规则在 panel-state，DOM 在 panel-view。 */
 function renderComputer(ctx: WebHostContextV1, host: HTMLElement, rawView: unknown): WebUiDisposer {
   const view = rawView as ConversationTabView;
   if (!view || typeof view.active !== "boolean" || typeof view.onActiveChange !== "function"
     || typeof view.requestAttention !== "function") throw new Error("Computer 缺少 conversation.tools.v1 view");
-  const root = document.createElement("div");
-  root.className = "computer-view";
-  const tabs = document.createElement("div");
-  tabs.className = "computer-target-tabs";
-  tabs.setAttribute("role", "tablist");
-  tabs.setAttribute("aria-label", "Computer 观看目标");
-  const toolbar = document.createElement("div");
-  toolbar.className = "computer-toolbar";
-  const status = document.createElement("span");
-  status.className = "computer-status";
-  status.setAttribute("role", "status");
-  const controlButton = button("接管操作");
-  const clipboardButton = button("剪贴板");
-  const fullscreen = button("全屏");
-  const actions = document.createElement("div");
-  actions.className = "computer-actions";
-  actions.append(controlButton, clipboardButton, fullscreen);
-  toolbar.append(status, actions);
-  const desktop = document.createElement("div");
-  desktop.className = "computer-desktop";
-  const screen = document.createElement("div");
-  screen.className = "computer-screen";
-  screen.tabIndex = 0;
-  screen.setAttribute("role", "tabpanel");
-  const empty = document.createElement("div");
-  empty.className = "computer-connection-state";
-  const detail = document.createElement("span");
-  const retry = button("重新连接");
-  empty.append(detail, retry);
-  desktop.append(screen, empty);
-  const clipboard = document.createElement("section");
-  clipboard.className = "computer-clipboard";
-  clipboard.hidden = true;
-  clipboard.setAttribute("aria-label", "Computer 剪贴板");
-  const text = document.createElement("textarea");
-  text.maxLength = 65536;
-  text.rows = 6;
-  text.setAttribute("aria-label", "剪贴板文字");
-  const send = button("粘贴到 Computer");
-  const copy = button("复制到本机");
-  const clipStatus = document.createElement("p");
-  clipStatus.setAttribute("role", "status");
-  clipboard.append(text, send, copy, clipStatus);
-  desktop.append(clipboard);
-  root.append(tabs, toolbar, desktop);
-  host.replaceChildren(root);
+  const surface = new PanelSurface(id => void perform(id), id => select(id));
+  const screen = surface.screen;
+  const clipboard = new ClipboardPopover(surface.clipboardToggle, {
+    paste: text => paste(text),
+    takeControl: () => void perform("take"),
+  });
+  surface.stage.append(clipboard.element);
+  host.replaceChildren(surface.root);
 
   let targets: Target[] = [];
   let selected = "desktop";
+  let runtime: RuntimeState = "loading";
+  let runtimeError = "";
+  let wakeError = "";
+  let wakeRequested = false;
+  let link: LinkState = "idle";
+  let linkError = "";
   let control = "";
   let busy = false;
+  let agentActive = false;
   let active = view.active;
-  let ready = false;
-  let connected = false;
   let disposed = false;
-  let blocked = false;
   let lastNotice: number | null = null;
   let display: ComputerDisplay | BrowserDisplay | null = null;
   let timer = 0;
@@ -87,13 +52,18 @@ function renderComputer(ctx: WebHostContextV1, host: HTMLElement, rawView: unkno
   let lastTouch = 0;
   const held = new Map<string, number>();
 
-  function state(message: string, waiting = false) {
-    status.textContent = message;
-    detail.textContent = message;
-    empty.hidden = !waiting;
-    controlButton.textContent = control ? "释放操作" : busy ? "另一窗口正在操作" : "接管操作";
-    controlButton.disabled = !ready || !connected || (busy && !control);
-    send.disabled = !control || !connected;
+  function facts(): PanelFacts {
+    const target = targets.find(item => item.id === selected);
+    const controlState: ControlState = control ? (link === "connected" ? "mine" : "taking") : busy ? "other" : "none";
+    return { runtime, runtimeError: runtimeError || wakeError, link, linkError, control: controlState, agentActive,
+      targetKind: target?.kind ?? "desktop", targetTitle: target?.kind === "browser" ? target.title || target.url || "" : "",
+      wakeRequested };
+  }
+
+  function update() {
+    if (disposed) return;
+    surface.render(present(facts()));
+    clipboard.setCanPaste(Boolean(control) && link === "connected");
   }
 
   function releaseKeys() {
@@ -108,17 +78,16 @@ function renderComputer(ctx: WebHostContextV1, host: HTMLElement, rawView: unkno
     display?.disconnect();
     display = null;
     control = "";
-    connected = false;
   }
 
   function inputKey(event: KeyboardEvent) {
-    if (!control || !connected) return;
+    if (!control || link !== "connected") return;
     event.preventDefault();
     touch(event);
     if (display instanceof BrowserDisplay) { display.key(event); return; }
     if (event.type === "keydown" && (event.ctrlKey || event.metaKey) && event.key.toLowerCase() === "v") {
       releaseKeys();
-      void navigator.clipboard.readText().then(paste).catch(error => state(String(error)));
+      void navigator.clipboard.readText().then(paste).catch(error => clipboard.report(String(error)));
       return;
     }
     const keysym = keysymForKey(event.key, event.code);
@@ -131,13 +100,20 @@ function renderComputer(ctx: WebHostContextV1, host: HTMLElement, rawView: unkno
   function touch(event: Event) {
     if (!event.isTrusted || !control || Date.now() - lastTouch < 1000) return;
     lastTouch = Date.now();
-    void ctx.http.request("/api/dashboard/computer/touch", { method: "POST" }).then(response => {
-      if (!response.ok) state("操作活动同步失败，请重新连接");
-    }).catch(() => state("操作活动同步失败，请重新连接"));
+    const lost = () => fail("操作活动同步失败，请重新连接");
+    void ctx.http.request("/api/dashboard/computer/touch", { method: "POST" })
+      .then(response => { if (!response.ok) lost(); }, lost);
+  }
+
+  function fail(reason: string) {
+    disconnect();
+    link = "failed";
+    linkError = reason;
+    update();
   }
 
   async function paste(value: string) {
-    if (!control || !display || !connected) throw new Error("请先接管操作");
+    if (!control || !display || link !== "connected") throw new Error("请先接管操作");
     await display.clipboardPasteFrom(value);
     if (display instanceof ComputerDisplay) {
       display.sendKey(0xffe3, "ControlLeft", true);
@@ -148,151 +124,149 @@ function renderComputer(ctx: WebHostContextV1, host: HTMLElement, rawView: unkno
   }
 
   function connect(token = "") {
-    if (!active || !ready || disposed || blocked) return;
+    if (!active || runtime !== "ready" || disposed || SETTLED_LINKS.includes(link)) return;
     const target = targets.find(item => item.id === selected);
     if (!target) return;
     disconnect();
     control = token;
+    link = "connecting";
     const current = ++attempt;
-    state(token ? "正在接管，等待 Agent 释放输入" : "正在连接 · 只读观看", true);
     const next = target.kind === "desktop"
       ? new ComputerDisplay(screen, ctx, { keydown: inputKey, keyup: inputKey,
         touch, blur: releaseKeys, paste: event => {
           event.preventDefault();
-          void paste(event.clipboardData?.getData("text/plain") ?? "").catch(error => state(String(error)));
+          void paste(event.clipboardData?.getData("text/plain") ?? "").catch(error => clipboard.report(String(error)));
         } }, token)
       : new BrowserDisplay(screen, ctx, selected, token);
     display = next;
     next.addEventListener("connect", () => {
       if (attempt !== current) return;
-      connected = true;
-      state(control ? "你正在操作 · Agent 已暂停" : "只读观看");
+      link = "connected";
+      update();
     });
-    next.addEventListener("clipboard", event => {
-      text.value = (event as CustomEvent<{ text: string }>).detail.text;
-    });
+    next.addEventListener("clipboard", event => clipboard.receive((event as CustomEvent<{ text: string }>).detail.text));
     next.addEventListener("error", event => {
       if (attempt !== current) return;
-      blocked = true;
-      state((event as CustomEvent<{ reason: string }>).detail.reason, true);
+      link = "failed";
+      linkError = (event as CustomEvent<{ reason: string }>).detail.reason;
+      update();
     });
     next.addEventListener("stale", () => {
       if (attempt !== current) return;
-      blocked = true;
-      state("界面已更新，请刷新页面", true);
+      link = "stale";
+      update();
     });
     next.addEventListener("disconnect", () => {
       if (attempt !== current) return;
       display = null;
       control = "";
-      connected = false;
-      state(blocked ? detail.textContent ?? "连接失败" : "连接中断，正在恢复只读观看", true);
+      if (!SETTLED_LINKS.includes(link)) link = "lost";
+      update();
     });
+    update();
   }
 
   function select(id: string) {
+    if (id === selected && link === "connected") return;
     selected = id;
-    blocked = false;
+    link = "idle";
     disconnect();
-    renderTabs();
+    surface.renderTargets(targets, selected);
     connect();
+    update();
   }
 
-  function renderTabs() {
-    tabs.replaceChildren(...targets.map((target, index) => {
-      const tab = button(target.label);
-      tab.title = target.url || target.label;
-      tab.id = `computer-target-${index}`;
-      tab.setAttribute("role", "tab");
-      tab.setAttribute("aria-selected", String(target.id === selected));
-      tab.tabIndex = target.id === selected ? 0 : -1;
-      if (target.id === selected) screen.setAttribute("aria-labelledby", tab.id);
-      tab.onclick = () => select(target.id);
-      tab.onkeydown = event => {
-        if (!["ArrowLeft", "ArrowRight", "Home", "End"].includes(event.key)) return;
-        event.preventDefault();
-        const next = event.key === "Home" ? 0 : event.key === "End" ? targets.length - 1
-          : (index + (event.key === "ArrowRight" ? 1 : -1) + targets.length) % targets.length;
-        select(targets[next].id);
-        (tabs.children[next] as HTMLElement).focus();
-      };
-      return tab;
-    }));
+  async function perform(id: ActionId) {
+    // 1. 控制权：接管、交还和取消都以新的连接身份重连，旧连接的输入立即失效。
+    if (id === "take" || id === "release" || id === "cancel") {
+      if (id === "take" && SETTLED_LINKS.includes(link)) link = "idle";
+      connect(id === "take" ? crypto.randomUUID() : "");
+    } else if (id === "reconnect") {
+      link = "idle";
+      connect();
+    } else if (id === "home") select("desktop");
+    else if (id === "reload") location.reload();
+    else if (id === "copy-error") await navigator.clipboard.writeText(runtimeError || wakeError);
+    else if (id === "wake") {
+      // 2. 唤醒是长请求；期间轮询会看到 starting，失败原因留在本地直到下次尝试。
+      wakeRequested = true;
+      wakeError = "";
+      update();
+      try {
+        const response = await ctx.http.request("/api/dashboard/computer/wake", { method: "POST" });
+        if (!response.ok) wakeError = `唤醒请求失败（${response.status}）`;
+      } catch (error) { wakeError = String(error); }
+      wakeRequested = false;
+      update();
+    }
+  }
+
+  // 读取一轮活动和目标目录；格式不对就整体拒绝。
+  async function read(): Promise<{ activity: Activity; catalog: { targets: Target[]; control: boolean } } | "stale"> {
+    const responses = await Promise.all([
+      ctx.http.request("/api/dashboard/computer/activity", { cache: "no-store" }),
+      ctx.http.request("/api/dashboard/computer/targets", { cache: "no-store" }),
+    ]);
+    if (responses.some(response => response.headers.get("X-Akashic-Web-Stale") === "1")) return "stale";
+    if (responses.some(response => !response.ok)) throw new Error("Computer 状态读取失败");
+    const activity = await responses[0].json() as Activity;
+    const catalog = await responses[1].json() as { targets: Target[]; control: boolean };
+    if (!Number.isInteger(activity.noticeId) || typeof activity.active !== "boolean"
+      || !RUNTIME_STATES.includes(activity.browser?.state) || typeof activity.browser.error !== "string"
+      || !Array.isArray(catalog.targets) || typeof catalog.control !== "boolean"
+      || catalog.targets.some(target => !target.id || !target.label || !["desktop", "browser"].includes(target.kind)))
+      throw new Error("Computer 回执无效");
+    return { activity, catalog };
   }
 
   /** 轮询只观察；休眠需明确唤醒，通知不修改面板和观看目标。 */
   async function poll() {
     try {
-      const responses = await Promise.all([
-        ctx.http.request("/api/dashboard/computer/activity", { cache: "no-store" }),
-        ctx.http.request("/api/dashboard/computer/targets", { cache: "no-store" }),
-      ]);
+      const result = await read();
       if (disposed) return;
-      if (responses.some(response => response.headers.get("X-Akashic-Web-Stale") === "1")) {
-        blocked = true;
+      if (result === "stale") {
         disconnect();
-        state("界面已更新，请刷新页面", true);
+        link = "stale";
         return;
       }
-      if (responses.some(response => !response.ok)) throw new Error("Computer 状态读取失败");
-      const activity = await responses[0].json() as Activity;
-      const catalog = await responses[1].json() as { targets: Target[]; control: boolean };
-      if (!Number.isInteger(activity.noticeId) || typeof activity.active !== "boolean"
-        || typeof activity.browser?.state !== "string" || !Array.isArray(catalog.targets)
-        || typeof catalog.control !== "boolean" || catalog.targets.some(target => !target.id
-          || !target.label || !["desktop", "browser"].includes(target.kind))) throw new Error("Computer 回执无效");
-      ready = activity.browser.state === "ready";
+      const { activity, catalog } = result;
+      runtime = activity.browser.state as RuntimeState;
+      runtimeError = activity.browser.error;
+      agentActive = activity.active;
       busy = catalog.control;
       if ((lastNotice !== null && lastNotice !== activity.noticeId) || (lastNotice === null && activity.active))
         view.requestAttention(`computer:${activity.noticeId}`);
       lastNotice = activity.noticeId;
       if (JSON.stringify(targets) !== JSON.stringify(catalog.targets)) {
         targets = catalog.targets;
-        renderTabs();
+        surface.renderTargets(targets, selected);
       }
-      if (!ready) {
-        disconnect();
-        retry.textContent = "唤醒 Computer";
-        state(activity.browser.error || "Computer 已休眠，保存的身份仍在", true);
+      if (runtime !== "ready") {
+        if (display) disconnect();
+        if (link !== "stale") link = "idle";
       } else if (!targets.some(target => target.id === selected)) {
-        disconnect();
-        blocked = true;
-        state("观看目标已结束，请选择其他标签", true);
-      } else {
-        retry.textContent = "重新连接";
-        if (active && !display && !blocked) connect();
-        if (connected) state(control ? "你正在操作 · Agent 已暂停"
-          : busy ? "只读观看 · 另一窗口正在操作" : activity.active ? "只读观看 · Agent 正在执行" : "只读观看");
-      }
-    } catch (error) { if (!disposed) state(String(error), !connected); }
-    finally { if (!disposed) timer = window.setTimeout(() => void poll(), 1000); }
+        if (display) disconnect();
+        link = "ended";
+      } else if (active && !display) connect();
+    } catch (error) {
+      if (!disposed && link !== "connected") { link = "lost"; linkError = String(error); }
+    } finally {
+      update();
+      if (!disposed) timer = window.setTimeout(() => void poll(), 1000);
+    }
   }
 
-  controlButton.onclick = () => {
-    blocked = false;
-    connect(control ? "" : crypto.randomUUID());
-  };
-  retry.onclick = async () => {
-    blocked = false;
-    if (!ready) {
-      const response = await ctx.http.request("/api/dashboard/computer/wake", { method: "POST" });
-      if (!response.ok) state("唤醒失败，请重试", true);
-    } else connect();
-  };
-  clipboardButton.onclick = () => { clipboard.hidden = !clipboard.hidden; if (!clipboard.hidden) text.focus(); };
-  fullscreen.onclick = () => void (document.fullscreenElement ? document.exitFullscreen() : root.requestFullscreen());
-  send.onclick = () => { void paste(text.value).then(() => { clipStatus.textContent = "已粘贴"; },
-    error => { clipStatus.textContent = String(error); }); };
-  copy.onclick = () => { void navigator.clipboard.writeText(text.value).then(() => { clipStatus.textContent = "已复制"; },
-    error => { clipStatus.textContent = String(error); }); };
+  surface.fullscreenToggle.onclick = () =>
+    void (document.fullscreenElement ? document.exitFullscreen() : surface.root.requestFullscreen());
   screen.addEventListener("keydown", inputKey, true);
   screen.addEventListener("keyup", inputKey, true);
   const stopActive = view.onActiveChange(value => {
     active = value;
-    if (!active) disconnect();
+    if (!active) { disconnect(); link = SETTLED_LINKS.includes(link) ? link : "idle"; }
     else connect();
+    update();
   });
-  state("正在读取 Computer 状态", true);
+  update();
   void poll();
   return () => {
     disposed = true;
@@ -305,7 +279,7 @@ function renderComputer(ctx: WebHostContextV1, host: HTMLElement, rawView: unkno
 
 export function activate(ctx: WebHostContextV1): WebUiDisposer {
   return ctx.ui.inject("conversation.tools.v1", mount => mount.register({
-    id: "computer", label: "Computer", order: 10,
+    id: "computer", label: "电脑", order: 10,
     render(host, _entryView, props) { return renderComputer(ctx, host, props); },
   }));
 }

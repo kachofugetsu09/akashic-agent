@@ -1,4 +1,5 @@
 import type { WebHostContextV1 } from "@akashic/web-ui-v1";
+import { Motion, glowFor, rippleAt, squishAt, RIPPLE_MS, type Vec } from "./cursor-motion";
 
 interface Point {
   readonly x: number;
@@ -34,19 +35,32 @@ function checkState(raw: string): CursorState {
   return value as CursorState;
 }
 
-/** 光标只拥有临时画面、订阅和动画；人工输入或断线立即清除。 */
+const NAME_MS = 2000;
+const LEAVE_MS = 200;
+const CLICK_TARGET_PX = 24;
+
+/** 光标只拥有临时画面、订阅和动画；人工输入或断线立即清除。运动数学在 cursor-motion。 */
 export class AgentCursor {
-  private readonly element = document.createElement("div");
+  private readonly layer = document.createElement("div");
+  private readonly pointer = document.createElement("div");
+  private readonly glyph = document.createElement("div");
+  private readonly glow = document.createElement("div");
+  private readonly ripple = document.createElement("div");
+  private readonly badge = document.createElement("div");
   private readonly notice = document.createElement("div");
   private readonly socket: WebSocket;
   private readonly resize: ResizeObserver;
   private readonly reduced = matchMedia("(prefers-reduced-motion: reduce)");
   private point: Point | null = null;
-  private shown: { x: number; y: number } | null = null;
+  private shown: Vec | null = null;
+  private motion: Motion | null = null;
+  private motionStart = 0;
+  private clickAt: { at: number; x: number; y: number } | null = null;
   private revision = -1;
   private expiry = 0;
+  private leaving = 0;
+  private quiet = 0;
   private frame = 0;
-  private pulse: Animation | null = null;
   private closed = false;
 
   constructor(
@@ -54,17 +68,11 @@ export class AgentCursor {
     ctx: WebHostContextV1,
     private readonly viewport: () => DOMRect | null,
   ) {
-    this.element.className = "computer-agent-cursor";
-    this.element.setAttribute("aria-hidden", "true");
-    this.element.hidden = true;
-    this.element.innerHTML = `<svg viewBox="0 0 24 24"><path
-      d="M2 2 L8.5 21 L12 13 L20 9.5 Z"/></svg>`;
-    this.notice.className = "computer-cursor-notice";
-    this.notice.setAttribute("role", "status");
-    this.notice.hidden = true;
-    host.append(this.element, this.notice);
+    this.build();
+    host.append(this.layer, this.notice);
     this.resize = new ResizeObserver(() => this.place(false));
     this.resize.observe(host);
+    host.addEventListener("pointermove", this.reveal);
     this.socket = new WebSocket(ctx.http.webSocketUrl("/api/dashboard/computer/cursor"));
     this.socket.addEventListener("message", (event) => {
       if (this.closed) return;
@@ -72,14 +80,12 @@ export class AgentCursor {
         const state = checkState(event.data);
         if (state.revision <= this.revision) return;
         this.revision = state.revision;
-        const previous = this.shown;
-        this.hide();
         this.notice.textContent = state.error;
         this.notice.hidden = !state.error;
-        if (!state.point || state.ttlMs === 0) return;
+        if (!state.point || state.ttlMs === 0) { this.hide(); return; }
         this.point = state.point;
-        this.shown = previous;
         this.place(true);
+        window.clearTimeout(this.expiry);
         this.expiry = window.setTimeout(() => this.hide(), state.ttlMs);
       } catch (error) {
         this.unavailable(String(error));
@@ -91,6 +97,26 @@ export class AgentCursor {
     });
   }
 
+  // 结构：光晕和涟漪在指针下层；箭头和名字徽章同在指针层，随指针移动。
+  private build() {
+    this.layer.className = "computer-agent-layer";
+    this.layer.setAttribute("aria-hidden", "true");
+    this.layer.hidden = true;
+    this.glow.className = "computer-agent-glow";
+    this.ripple.className = "computer-agent-ripple";
+    this.pointer.className = "computer-agent-pointer";
+    this.glyph.className = "computer-agent-glyph";
+    this.glyph.innerHTML = `<svg viewBox="0 0 24 24"><path class="computer-agent-arrow"
+      d="M3 2 L10 21 L12.6 13.4 L20 11 Z"/></svg>`;
+    this.badge.className = "computer-agent-badge";
+    this.badge.innerHTML = `<i></i><span>Akashic</span>`;
+    this.pointer.append(this.glyph, this.badge);
+    this.layer.append(this.glow, this.ripple, this.pointer);
+    this.notice.className = "computer-cursor-notice";
+    this.notice.setAttribute("role", "status");
+    this.notice.hidden = true;
+  }
+
   /** 坐标对齐实际视频区域，留白、全屏和窄屏缩放不改变热点。 */
   private place(animate: boolean) {
     if (!this.point || this.closed) return;
@@ -99,48 +125,106 @@ export class AgentCursor {
     const bounds = this.host.getBoundingClientRect();
     const end = { x: view.x - bounds.x + this.point.x * view.width / this.point.width,
       y: view.y - bounds.y + this.point.y * view.height / this.point.height };
-    const start = this.shown ?? end;
-    window.cancelAnimationFrame(this.frame);
-    this.element.hidden = false;
-    // 1. 只有操作后的短动效；减少动态效果时直接对齐目标。
-    const duration = Number.parseFloat(getComputedStyle(this.element).getPropertyValue("--ak-sys-duration-medium"));
-    if (!animate || this.reduced.matches || !Number.isFinite(duration) || duration <= 0) {
-      this.draw(end, 0, 1);
+    // 1. 首次出现：直接落在目标处并亮出名字，2 秒后收成圆点。
+    if (!this.shown || this.layer.hidden) {
+      this.layer.hidden = false;
+      this.showName(NAME_MS);
+    }
+    window.clearTimeout(this.leaving);
+    this.layer.removeAttribute("data-leaving");
+    const still = !animate || !this.shown || this.reduced.matches;
+    // 2. 减少动态效果或尺寸变化时直接对齐；否则沿 Cua 弧线移动，点击在到达后触发。
+    this.motion = still ? null : new Motion(this.shown!, end, CLICK_TARGET_PX);
+    this.motionStart = performance.now();
+    this.clickAt = null;
+    if (still) {
+      this.draw(end, 0, 0);
+      if (animate && this.point.kind === "click") this.clicked(end);
       return;
     }
-    const dx = end.x - start.x, dy = end.y - start.y;
-    const distance = Math.hypot(dx, dy);
-    const bend = distance > 196 ? Math.min(32, distance * 0.12) : 0;
-    const began = performance.now();
-    // 2. 长移动略带弧度和转向，结束后恢复普通箭头；不延迟真实输入。
-    const step = (now: number) => {
-      const progress = this.reduced.matches ? 1 : Math.min(1, (now - began) / duration);
-      const ratio = 1 - (1 - progress) ** 3;
-      const wave = Math.sin(Math.PI * ratio);
-      const curve = bend * wave / Math.max(1, distance);
-      this.draw({ x: start.x + dx * ratio - dy * curve,
-        y: start.y + dy * ratio + dx * curve },
-        bend ? (Math.atan2(dy, dx) * 180 / Math.PI + 135) * wave : 0, 1 - 0.12 * wave);
-      this.frame = progress < 1 ? requestAnimationFrame(step) : 0;
-    };
-    this.frame = requestAnimationFrame(step);
-    if (this.point.kind === "click") this.pulse = this.element.querySelector("svg")!.animate(
-      [{ transform: "scale(0.86)" }, { transform: "scale(1)" }], { duration, easing: "ease-out" });
+    this.run();
   }
 
-  private draw(point: { x: number; y: number }, rotation: number, scale: number) {
-    this.shown = point;
-    this.element.style.transform = `translate(${point.x - 2}px, ${point.y - 2}px) rotate(${rotation}deg) scale(${scale})`;
+  private run() {
+    if (!this.frame) this.frame = requestAnimationFrame(this.tick);
   }
+
+  private readonly tick = (now: number) => {
+    this.frame = 0;
+    if (this.closed || this.layer.hidden) return;
+    let speed = 0;
+    if (this.motion) {
+      const pose = this.motion.poseAt(now - this.motionStart);
+      speed = pose.speed;
+      const glow = glowFor(pose);
+      this.glow.style.opacity = glow ? String(glow.alpha) : "0";
+      if (glow) this.glow.style.transform = `translate(${glow.x}px, ${glow.y}px) scale(${glow.scale})`;
+      // 移动时按水平速度轻微倾斜，静止时回正。
+      this.draw(pose, Math.max(-12, Math.min(12, pose.vx * 0.012)), 0);
+      if (pose.done) {
+        this.motion = null;
+        this.glow.style.opacity = "0";
+        if (this.point?.kind === "click") this.clicked(pose);
+      }
+    }
+    if (this.clickAt) {
+      const age = now - this.clickAt.at;
+      const ripple = rippleAt(age);
+      this.ripple.style.opacity = ripple ? String(ripple.alpha) : "0";
+      if (ripple) {
+        this.ripple.style.transform = `translate(${this.clickAt.x}px, ${this.clickAt.y}px) scale(${ripple.radius / 26})`;
+        this.ripple.style.borderWidth = `${ripple.width * 26 / ripple.radius}px`;
+      }
+      if (!this.motion) this.draw(this.shown!, 0, squishAt(age));
+      if (age > RIPPLE_MS) this.clickAt = null;
+    }
+    if (this.motion || this.clickAt || speed > 0) this.run();
+  };
+
+  private clicked(at: Vec) {
+    if (this.reduced.matches) return;
+    this.clickAt = { at: performance.now(), x: at.x, y: at.y };
+    this.run();
+  }
+
+  private draw(point: Vec, tilt: number, squish: number) {
+    this.shown = { x: point.x, y: point.y };
+    // 位移在外层，倾斜和挤压只作用于箭头，名字徽章保持水平。
+    this.pointer.style.transform = `translate(${point.x - 3}px, ${point.y - 2}px)`;
+    this.glyph.style.transform = `rotate(${tilt}deg) scale(${1 - squish}, ${1 - squish * 0.6})`;
+  }
+
+  private showName(ms: number) {
+    this.badge.removeAttribute("data-quiet");
+    window.clearTimeout(this.quiet);
+    this.quiet = window.setTimeout(() => this.badge.setAttribute("data-quiet", ""), ms);
+  }
+
+  // 指针靠近光标时重新亮出名字，方便确认这是 Agent 而不是自己的鼠标。
+  private readonly reveal = (event: PointerEvent) => {
+    if (!this.shown || this.layer.hidden) return;
+    const bounds = this.host.getBoundingClientRect();
+    if (Math.hypot(event.clientX - bounds.x - this.shown.x, event.clientY - bounds.y - this.shown.y) < 36)
+      this.showName(1200);
+  };
 
   hide() {
     this.point = null;
-    this.shown = null;
+    this.motion = null;
+    this.clickAt = null;
     window.clearTimeout(this.expiry);
     window.cancelAnimationFrame(this.frame);
-    this.pulse?.cancel();
-    this.pulse = null;
-    this.element.hidden = true;
+    this.frame = 0;
+    this.glow.style.opacity = "0";
+    this.ripple.style.opacity = "0";
+    if (this.layer.hidden) { this.shown = null; return; }
+    // 淡出后再移除，下一次出现从目标处重新开始。
+    this.layer.setAttribute("data-leaving", "");
+    this.leaving = window.setTimeout(() => {
+      this.layer.hidden = true;
+      this.layer.removeAttribute("data-leaving");
+      this.shown = null;
+    }, this.reduced.matches ? 0 : LEAVE_MS);
   }
 
   private unavailable(message: string) {
@@ -152,9 +236,12 @@ export class AgentCursor {
   destroy() {
     this.closed = true;
     this.hide();
+    window.clearTimeout(this.leaving);
+    window.clearTimeout(this.quiet);
+    this.host.removeEventListener("pointermove", this.reveal);
     this.socket.close();
     this.resize.disconnect();
-    this.element.remove();
+    this.layer.remove();
     this.notice.remove();
   }
 }
