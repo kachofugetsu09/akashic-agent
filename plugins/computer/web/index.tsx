@@ -36,6 +36,8 @@ function renderComputer(ctx: WebHostContextV1, host: HTMLElement, rawView: unkno
   let runtimeError = "";
   let wakeError = "";
   let wakeRequested = false;
+  // 人工打开面板时还没收到首个状态，等状态到达后再决定是否唤醒。
+  let wakeOnState = false;
   let statusError = "";
   let link: LinkState = "idle";
   let linkError = "";
@@ -192,6 +194,7 @@ function renderComputer(ctx: WebHostContextV1, host: HTMLElement, rawView: unkno
     statusError = "";
     runtime = state.browser.state as RuntimeState;
     runtimeError = state.browser.error;
+    if (wakeOnState) { wakeOnState = false; wakeIfSleeping(); }
     agentActive = state.active;
     busy = state.control;
     if ((lastNotice !== null && lastNotice !== state.noticeId) || (lastNotice === null && state.active))
@@ -227,12 +230,23 @@ function renderComputer(ctx: WebHostContextV1, host: HTMLElement, rawView: unkno
     void (document.fullscreenElement ? document.exitFullscreen() : surface.root.requestFullscreen());
   screen.addEventListener("keydown", inputKey, true);
   screen.addEventListener("keyup", inputKey, true);
+  // 0084：人工打开面板唤醒一次。注册时的首次回调只报告现状，不算打开；
+  // 之后保持打开不会再次唤醒，休眠后由用户点"唤醒电脑"。
+  function wakeIfSleeping() {
+    if (runtime === "loading") wakeOnState = true;
+    else if (runtime === "sleeping" && !runtimeError && !wakeError && !wakeRequested) void perform("wake");
+  }
+
+  let registered = false;
   const stopActive = view.onActiveChange(value => {
+    const opened = registered && value && !active;
     active = value;
-    if (!active) { disconnect(); link = SETTLED_LINKS.includes(link) ? link : "idle"; }
+    if (!active) { disconnect(); link = SETTLED_LINKS.includes(link) ? link : "idle"; wakeOnState = false; }
     else connect();
     update();
+    if (opened) wakeIfSleeping();
   });
+  registered = true;
   update();
   return () => {
     disposed = true;
