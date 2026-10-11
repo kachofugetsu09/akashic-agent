@@ -63,20 +63,6 @@ class DashboardServer(uvicorn.Server):
                 pass
             should_exit = await self.on_tick(counter)
 
-    # 有连接或后台任务时沿用 uvicorn 的等待与超时取消；空闲时省去无对象可等的固定 0.1s。
-    async def shutdown(self, sockets: list[socket.socket] | None = None) -> None:
-        for server in self.servers:
-            server.close()
-        if self.server_state.connections or self.server_state.tasks:
-            await super().shutdown(sockets)
-            return
-        for sock in sockets or []:
-            sock.close()
-        for server in self.servers:
-            await server.wait_closed()
-        if not self.force_exit:
-            await self.lifespan.shutdown()
-
 
 async def start_dashboard_server(ctx: Context, app: FastAPI) -> None:
     """先保留清理责任，再等待实际启动，最后发布当前 owner 的端点。"""

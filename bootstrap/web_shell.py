@@ -137,20 +137,6 @@ class WebShellServer(uvicorn.Server):
                 pass
             should_exit = await self.on_tick(counter)
 
-    # 有连接或后台任务时沿用 uvicorn 的等待与超时取消；空闲时省去无对象可等的固定 0.1s。
-    async def shutdown(self, sockets: list[socket.socket] | None = None) -> None:
-        for server in self.servers:
-            server.close()
-        if self.server_state.connections or self.server_state.tasks:
-            await super().shutdown(sockets)
-            return
-        for sock in sockets or []:
-            sock.close()
-        for server in self.servers:
-            await server.wait_closed()
-        if not self.force_exit:
-            await self.lifespan.shutdown()
-
 
 def create_web_shell_app(workspace: Path) -> FastAPI:
     """按 provider 发布的路由前缀转发；runtime 缺席时由外壳响应。"""
