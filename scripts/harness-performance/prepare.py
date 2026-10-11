@@ -56,7 +56,8 @@ def build_distribution(side: Side) -> None:
     if side.distribution.exists():
         shutil.rmtree(side.distribution)
     # 构建只读源码提交、只写发行版目录；npm/pip 的下载缓存沿用调用者环境。
-    # 构建在临时 git 仓库里提交插件源码；自动 gc/maintenance 会在后台写对象库，与临时目录清理竞争。
+    # 构建在临时 git 仓库里提交插件源码；自动 gc 会在后台写对象库并与临时目录清理竞争。
+    # 构建脚本已自行关闭，这里仍设置一次，供尚未包含该修复的旧基线使用。
     env = {**os.environ, "PYTHONPATH": environment(side)["PYTHONPATH"],
            "GIT_CONFIG_COUNT": "2", "GIT_CONFIG_KEY_0": "gc.auto", "GIT_CONFIG_VALUE_0": "0",
            "GIT_CONFIG_KEY_1": "maintenance.auto", "GIT_CONFIG_VALUE_1": "false"}

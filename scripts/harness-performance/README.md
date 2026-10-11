@@ -91,7 +91,7 @@ git worktree add --detach /tmp/ak-base origin/main
 ```
 
 需要 Linux（采样器读 `/proc`）与 bun。被测 HOME 是空目录，但 shell 工具的 `bash -lic` 快照仍会读
-`/etc/profile.d/`；CI 去掉了 runner 的 `bash_completion.sh`，本地机器若装有它也应同样处理。插件从各侧 `HEAD` 提交构建，核心代码运行工作树，
+系统级 profile（如 `/etc/profile.d/`）；同一次对比里两侧读到的相同，不影响 A/B 比值。插件从各侧 `HEAD` 提交构建，核心代码运行工作树，
 所以对比未提交的插件改动前要先提交。端口 18457（mock）与 18458（Web）需要空闲。
 
 ## 文件
