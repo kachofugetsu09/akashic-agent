@@ -504,6 +504,24 @@ export class ComputerDriver extends EventEmitter {
     this.sessions.delete(sessionId);
     await rm(session.directory, { recursive: true, force: true });
   }
+  /** 0115：close 失败后由重启调用。只结束本 driver 创建的 worker、原生输入和匿名进程，不碰主 profile。 */
+  async abandon() {
+    this.closed = true;
+    this.active?.reject(new Error("Computer is restarting"));
+    const control = this.control;
+    this.control = null;
+    this.emit("control");
+    control?.releaseWorkload?.();
+    control?.resume?.();
+    for (const session of this.sessions.values()) await session.worker.terminate();
+    this.desktop.process?.kill("SIGKILL");
+    await this.anonymous.abandon();
+    this.browser.close();
+    for (const session of this.sessions.values())
+      await rm(session.directory, { recursive: true, force: true });
+    this.sessions.clear();
+  }
+
   async close() {
     this.closed = true;
     const active = this.active;

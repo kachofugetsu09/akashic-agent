@@ -12,10 +12,11 @@ export class ComputerLifecycle {
   transition = null;
   child = null;
 
-  constructor({ start, stop, idleMs, onChange = () => {} }) {
+  constructor({ start, stop, abandon, idleMs, onChange = () => {} }) {
     this.changed = onChange;
     this.startDriver = start;
     this.stopDriver = stop;
+    this.abandonDriver = abandon;
     this.idleMs = idleMs;
     this.timer = setInterval(
       () => {
@@ -193,6 +194,55 @@ export class ComputerLifecycle {
       throw new Error(`Computer runtime exited by ${child.signalCode}; profile flush was not confirmed`);
   }
 
+  /** 0115：人工从 failed 恢复。旧运行时整组结束、确认无进程后，才允许再次打开主 profile。 */
+  async restart() {
+    if (this.transition) await this.transition;
+    if (this.state !== "failed")
+      throw new Error(`Computer is ${this.state}; only a failed Computer can be restarted`);
+    this.state = "stopping";
+    this.transition = (async () => {
+      // 1. 能正常收尾就正常收尾，让还活着的 Chromium 有机会落盘。
+      try {
+        await this.stopDriver();
+      } catch (error) {
+        // 2. 否则强制结束 driver 自己的子进程；旧输入随下面的 X server 一起消失。
+        console.error("Computer restart: driver stop failed:", error.message);
+        await this.abandonDriver();
+      }
+      // 3. 整组结束运行时（Xvnc、桌面、Chromium、推流），并确认组内没有存活进程。
+      await this.killRuntime();
+      this.state = "sleeping";
+      this.error = "";
+    })().catch((error) => {
+      this.state = "failed";
+      this.error = `Computer restart failed: ${error.message}`;
+      throw error;
+    }).finally(() => {
+      this.transition = null;
+    });
+    await this.transition;
+    // 4. 和普通唤醒走同一条路径；启动失败按原规则回到休眠或 failed。
+    await this.wake();
+  }
+
+  async killRuntime() {
+    const child = this.child;
+    if (!child?.pid) return;
+    try {
+      process.kill(-child.pid, "SIGKILL");
+    } catch (error) {
+      if (error.code !== "ESRCH") throw error;
+    }
+    await this.exited;
+    const deadline = performance.now() + 5000;
+    while (groupAlive(child.pid)) {
+      if (performance.now() > deadline)
+        throw new Error("Computer runtime processes did not exit after SIGKILL");
+      await sleep(50);
+    }
+    this.child = null;
+  }
+
   async close() {
     clearInterval(this.timer);
     await this.stop();
@@ -204,4 +254,14 @@ export function duration(name, defaultMs) {
   if (!Number.isSafeInteger(value) || value <= 0)
     throw new Error(`${name} must be positive milliseconds`);
   return value;
+}
+
+function groupAlive(pid) {
+  try {
+    process.kill(-pid, 0);
+    return true;
+  } catch (error) {
+    if (error.code === "ESRCH") return false;
+    throw error;
+  }
 }

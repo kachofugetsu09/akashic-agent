@@ -3,6 +3,7 @@
 - 状态：accepted
 - 依据：维护者要求按需唤醒、无操作满 10 分钟回收，并保留已保存的身份。
 - 关联：PLG-017、STA-003、BAK-001、ERR-001
+- 补充：`failed` 的人工恢复见 [0115](0115-computer-manual-restart-from-failed.md)
 
 ## 决定与理由
 

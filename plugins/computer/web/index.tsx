@@ -36,6 +36,7 @@ function renderComputer(ctx: WebHostContextV1, host: HTMLElement, rawView: unkno
   let runtimeError = "";
   let wakeError = "";
   let wakeRequested = false;
+  let restartRequested = false;
   // 人工打开面板时还没收到首个状态，等状态到达后再决定是否唤醒。
   let wakeOnState = false;
   let statusError = "";
@@ -58,7 +59,7 @@ function renderComputer(ctx: WebHostContextV1, host: HTMLElement, rawView: unkno
     const controlState: ControlState = control ? (link === "connected" ? "mine" : "taking") : busy ? "other" : "none";
     return { runtime, runtimeError: runtimeError || wakeError, link, linkError, control: controlState, agentActive,
       targetKind: target?.kind ?? "desktop", targetTitle: target?.kind === "browser" ? target.title || target.url || "" : "",
-      wakeRequested, statusError };
+      wakeRequested, restartRequested, statusError };
   }
 
   function update() {
@@ -175,7 +176,18 @@ function renderComputer(ctx: WebHostContextV1, host: HTMLElement, rawView: unkno
     } else if (id === "home") select("desktop");
     else if (id === "reload") location.reload();
     else if (id === "copy-error") await navigator.clipboard.writeText(runtimeError || wakeError);
-    else if (id === "wake") {
+    else if (id === "restart") {
+      // 3. 重启同样是长请求；失败时后端回到 failed 并带上原因，由状态流呈现。
+      restartRequested = true;
+      wakeError = "";
+      update();
+      try {
+        const response = await ctx.http.request("/api/dashboard/computer/restart", { method: "POST" });
+        if (!response.ok) wakeError = `重启请求失败（${response.status}）`;
+      } catch (error) { wakeError = String(error); }
+      restartRequested = false;
+      update();
+    } else if (id === "wake") {
       // 2. 唤醒是长请求；期间轮询会看到 starting，失败原因留在本地直到下次尝试。
       wakeRequested = true;
       wakeError = "";

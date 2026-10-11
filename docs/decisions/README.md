@@ -6,6 +6,7 @@
 
 | ID | 状态 | 主题 | 关联条款 |
 |---|---|---|---|
+| [0115](0115-computer-manual-restart-from-failed.md) | proposed / implemented for review | Computer 出错后由用户重启电脑，整组结束旧运行时再唤醒 | PLG-017、ERR-001、STA-003 |
 | [0113](0113-verify-bytes-at-install-boundary.md) | proposed / implemented for review | 字节完整性只在安装边界校验，运行时不重复取摘要 | PLG、MIG |
 | [0112](0112-akasha-reads-validated-consumption.md) | proposed / implemented for review | Akasha 只读面板沿用消费状态校验 | MEM、STA、ERR |
 | [0111](0111-remove-unconsumed-business-ports.md) | proposed / implemented for review | 删除没有消费者的业务端口 | PLG、STA |

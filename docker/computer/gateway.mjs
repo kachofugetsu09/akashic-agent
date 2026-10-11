@@ -25,6 +25,14 @@ function driverCall(callId) {
   }
   return call;
 }
+function forgetDriver() {
+  driver = undefined;
+  driverReady = undefined;
+  activeTargetId = "";
+  browserSnapshots.clear();
+  publishCursor({ point: null });
+}
+
 async function readyDriver() {
   await computer.wake();
   return driverReady;
@@ -58,11 +66,15 @@ const computer = new ComputerLifecycle({
   async stop() {
     // 2. 已确认正常输入释放后才允许关闭浏览器与重用 profile。
     if (driver) await driver.close();
-    driver = undefined;
-    driverReady = undefined;
-    activeTargetId = "";
-    browserSnapshots.clear();
-    publishCursor({ point: null });
+    forgetDriver();
+  },
+  async abandon() {
+    // 3. 只由人工重启调用：正常收尾失败时强制结束 driver 的子进程。
+    try {
+      await driver?.abandon();
+    } finally {
+      forgetDriver();
+    }
   },
 });
 const activityPath = "/data/state/activity.json";
@@ -975,6 +987,9 @@ const server = createServer(async (request, response) => {
         }), 30000);
       }
       json(response, 200, { controlled: url.pathname !== "/control/release" });
+    } else if (request.method === "POST" && url.pathname === "/restart") {
+      await computer.restart();
+      json(response, 200, computer.status());
     } else if (request.method === "POST" && url.pathname === "/wake") {
       json(response, 200, computer.status());
     } else if (request.method === "GET" && url.pathname === "/screenshot") {

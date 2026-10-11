@@ -252,6 +252,18 @@ export class AnonymousBrowsers extends EventEmitter {
     this.engine = null;
   }
 
+  /** 正常关闭失败后的强制收尾：通知所属 Session，直接结束 headless 进程并删除临时目录。 */
+  async abandon() {
+    for (const instance of this.instances.values()) {
+      clearTimeout(instance.idleTimer);
+      instance.closing = true;
+      this.emit("closed", { browserId: instance.id, reason: "restart", context: instance.context });
+    }
+    this.instances.clear();
+    if (this.starting) await this.starting.catch(() => {});
+    if (this.engine) await this.stopEngine();
+  }
+
   async cleanup(match) {
     // 顺序关闭，最后一个 Context 独占 headless 的停机与目录删除。
     for (const instance of [...this.instances.values()].filter(match))

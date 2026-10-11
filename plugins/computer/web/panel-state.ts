@@ -16,11 +16,12 @@ export interface PanelFacts {
   readonly targetKind: TargetKind;
   readonly targetTitle: string;
   readonly wakeRequested: boolean;
+  readonly restartRequested: boolean;
   /** 最近一次状态读取失败的原因；成功读取后清空。 */
   readonly statusError: string;
 }
 
-export type ActionId = "take" | "release" | "cancel" | "wake" | "reconnect" | "home" | "reload" | "copy-error";
+export type ActionId = "take" | "release" | "cancel" | "wake" | "restart" | "reconnect" | "home" | "reload" | "copy-error";
 export type Tone = "idle" | "busy" | "ok" | "you" | "warn" | "error";
 export type Icon = "moon" | "spinner" | "alert" | "closed" | "refresh" | "unplug";
 export type FrameKind = "none" | "anonymous" | "control";
@@ -63,9 +64,12 @@ function withoutScreen(f: PanelFacts): PanelView | null {
   if (f.statusError && f.link !== "connected") return blank("warn", "读不到电脑状态", "每秒自动重试",
     { icon: "alert", text: "Akashic 暂时没有返回电脑状态，正在每秒重试。持续出现时请确认电脑容器在运行。",
       actions: [], details: f.statusError });
-  if (f.runtime === "failed") return blank("error", "电脑出错了", "需要重启 Akashic 后才能再次唤醒",
-    { icon: "alert", text: "电脑的运行环境异常退出。重启 Akashic 后可以重新唤醒；如果反复出现，请把详情发给维护者。",
-      actions: [{ id: "copy-error", label: "复制详情", emphasis: "plain" }], details: f.runtimeError });
+  if (f.restartRequested && f.runtime !== "ready") return blank("busy", "正在重启电脑", "会先结束卡住的进程，再重新启动",
+    { icon: "spinner", text: "正在结束卡住的进程并重新启动电脑…", actions: [] });
+  if (f.runtime === "failed") return blank("error", "电脑出错了", "可以重启电脑；反复出现时请复制详情",
+    { icon: "alert", text: "电脑的运行环境异常退出。重启电脑会结束卡住的进程再重新启动；出错前最后一刻的浏览器改动可能没有保存。如果反复出现，请把详情发给维护者。",
+      actions: [{ id: "restart", label: "重启电脑", emphasis: "primary" }, { id: "copy-error", label: "复制详情", emphasis: "plain" }],
+      details: f.runtimeError });
   if (f.runtime === "loading") return blank("idle", "正在读取电脑状态", "",
     { icon: "spinner", text: "正在读取电脑状态…", actions: [] });
   if (f.runtime === "starting" || (f.wakeRequested && f.runtime === "sleeping" && !f.runtimeError))

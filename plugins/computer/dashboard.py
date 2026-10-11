@@ -54,6 +54,11 @@ def register(app: FastAPI, context: DashboardContext) -> httpx.Client:
         result = forward("POST", "/wake", {})
         return Response(result.content, media_type="application/json")
 
+    @app.post("/api/dashboard/computer/restart")
+    def restart() -> Response:
+        result = forward("POST", "/restart", {})
+        return Response(result.content, media_type="application/json")
+
     @app.get("/api/dashboard/computer/stream-client")
     def stream_client() -> Response:
         result = forward("GET", stream_http.rstrip("/") + "/selkies-core.js")
