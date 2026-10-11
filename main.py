@@ -192,14 +192,12 @@ if __name__ == "__main__" and _run_lightweight_command():
 
 
 from agent.config import Config
-from agent.plugins.doctor import format_plugin_doctor_report, run_plugin_doctor
-from agent.plugins.install import set_installed_plugin_enabled
 from agent.plugins.entrypoints import invoke_plugin_command, invoke_distribution_command
-from bootstrap.init_workspace import InitSummary, init_workspace
 
-# 迁移、重启、HTTP 与 readiness 只属于 gateway/supervise；插件命令客户端不加载它们。
+# 各命令的实现只在对应分支导入；插件命令客户端不加载迁移、重启、HTTP 与管理命令。
 if TYPE_CHECKING:
     from agent.migrations import MigrationOutcome
+    from bootstrap.init_workspace import InitSummary
 
 _HELP = """\
 用法: python main.py [命令] [选项]
@@ -280,6 +278,8 @@ def _prepare_startup_migrations(
     }:
         return None
     if command in {"", "supervise"} and (not config_path.exists() or not workspace.exists()):
+        from bootstrap.init_workspace import init_workspace
+
         # 首次启动必须先建立空选择，迁移不能抢先把新目录变成旧 workspace。
         init_workspace(config_path=config_path, workspace=workspace)
     if command in {"init", "setup"} and not workspace.exists():
@@ -629,6 +629,8 @@ if __name__ == "__main__":
         sys.exit(1)
 
     if args and args[0] == "setup":
+        from bootstrap.init_workspace import init_workspace
+
         summary = init_workspace(config_path=Path(config_path), workspace=workspace)
         for note in summary.notes:
             print(note)
@@ -636,6 +638,8 @@ if __name__ == "__main__":
         sys.exit(0)
 
     if args and args[0] == "init":
+        from bootstrap.init_workspace import init_workspace
+
         summary = init_workspace(
             config_path=config_path,
             workspace=workspace,
@@ -650,6 +654,8 @@ if __name__ == "__main__":
             sys.exit(1)
         plugin_id = args[1]
         enabled = args[0] == "plugin-enable"
+        from agent.plugins.install import set_installed_plugin_enabled
+
         try:
             manifest = set_installed_plugin_enabled(plugin_id, enabled=enabled, workspace=workspace)
         except ValueError as exc:
@@ -663,6 +669,8 @@ if __name__ == "__main__":
         target_plugin_id = ""
         if len(args) >= 2 and not args[1].startswith("--"):
             target_plugin_id = args[1]
+        from agent.plugins.doctor import format_plugin_doctor_report, run_plugin_doctor
+
         report = run_plugin_doctor(
             plugin_id=target_plugin_id,
             workspace=workspace,
