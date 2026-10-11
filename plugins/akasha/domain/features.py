@@ -8,7 +8,7 @@ from array import array
 from collections import defaultdict
 from dataclasses import dataclass
 
-import numpy as np
+from ..numeric import np
 
 from .model import ContextState, SeedEvidence, Turn
 

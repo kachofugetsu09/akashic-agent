@@ -8,7 +8,7 @@ from contextlib import contextmanager
 from collections.abc import Iterator
 from dataclasses import dataclass
 
-import numpy as np
+from ..numeric import np
 
 from .model import DiffusionResult, MemoryConfig, PlasticityResult, SeedEvidence
 

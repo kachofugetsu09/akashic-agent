@@ -9,7 +9,7 @@ from typing import Protocol
 
 from plugins.ledger.contract import MessageCatalog
 from plugins.ledger.contract import Input, Message, Output, encode_body
-import numpy as np
+from .numeric import np
 
 from .domain.model import Turn, TurnFeedback
 from .infrastructure.consumption import Applied

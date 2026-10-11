@@ -4,7 +4,7 @@ from __future__ import annotations
 import hashlib
 import json
 from datetime import datetime
-import numpy as np
+from .numeric import np
 from typing import TYPE_CHECKING, Literal, cast
 from collections.abc import Mapping
 

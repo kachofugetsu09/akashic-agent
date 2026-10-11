@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, replace
 
-import numpy as np
+from ..numeric import np
 
 from ..domain.diffusion import residual_push
 from ..domain.features import (

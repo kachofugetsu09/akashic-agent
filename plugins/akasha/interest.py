@@ -3,7 +3,7 @@ from __future__ import annotations
 from collections.abc import Awaitable, Callable, Sequence
 from datetime import datetime
 
-import numpy as np
+from .numeric import np
 
 from plugins.ledger.contract import MessageCatalog, MessageEmbeddings
 from plugins.ledger.contract import Input, Output

@@ -5,7 +5,7 @@ from __future__ import annotations
 import math
 from typing import Protocol
 
-import numpy as np
+from ..numeric import np
 
 from .model import DiffusionResult
 

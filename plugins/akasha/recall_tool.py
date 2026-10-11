@@ -8,7 +8,7 @@ import json
 from pathlib import Path
 from typing import cast
 
-import numpy as np
+from .numeric import np
 from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_validator
 
 from plugins.ledger.contract import Bindings

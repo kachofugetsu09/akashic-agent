@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from dataclasses import asdict, dataclass
 
-import numpy as np
+from ..numeric import np
 
 
 class EmbeddingSpaceMismatchError(RuntimeError):
