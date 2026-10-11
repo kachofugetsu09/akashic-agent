@@ -7,6 +7,7 @@ import hashlib
 import json
 from pathlib import Path
 import sys
+import sqlite3
 import tempfile
 
 import numpy as np
@@ -18,6 +19,8 @@ from agent.plugin_composition import CompositionRoot, Context
 from plugins.akasha.application.consumer import MessageConsumer
 from plugins.akasha.application.snapshot import read_memory
 from plugins.akasha.domain.model import MemoryConfig
+from plugins.akasha.ledger import read_overview, list_skipped
+from plugins.akasha.infrastructure.persistence import MemoryRebuildRequiredError
 from plugins.akasha.learning import AKASHA_LEARNING, Learning, LearningConfig
 from plugins.akasha.contract import ProgramSource
 from plugins.akasha.recalls import query_memory
@@ -93,6 +96,20 @@ async def run(workspace: Path) -> dict[str, object]:
         log.close()
         original = path.read_bytes()
         published = graph.read_bytes()
+        assert read_overview(graph)["learned"] == 3
+        assert list_skipped(graph) == []
+        # 仅损坏隔离副本，证明 UI 读边界不会把坏进度显示成空数据。
+        broken = workspace / "broken-memory.db"
+        broken.write_bytes(published)
+        with sqlite3.connect(broken) as connection:
+            connection.execute("UPDATE metadata SET value='{}' WHERE key='consumer_state_json'")
+        for read in (read_overview, list_skipped):
+            try:
+                read(broken)
+            except MemoryRebuildRequiredError:
+                pass
+            else:
+                raise AssertionError("损坏的学习进度被隐藏")
         # 丢失的是可重建副本；不改源消息或学习事实来配合测试。
         derived.unlink()
         log = MessageLog(path)
@@ -113,7 +130,7 @@ async def run(workspace: Path) -> dict[str, object]:
         assert graph.read_bytes() == published
         return {'learned_turns': 3, 'rebuilt_vectors': 6, 'same_nonempty_recall': True,
                 'warm_query_no_reembedding': True, 'online_restore': True,
-                'messages_bytes_unchanged': True, 'graph_bytes_unchanged': True}
+                'invalid_progress_fails': True, 'messages_bytes_unchanged': True, 'graph_bytes_unchanged': True}
     finally:
         await root.dispose()
         store.close()
