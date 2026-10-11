@@ -31,7 +31,6 @@ from ._boundary import (
     DELIVERY,
     DELIVERY_READ,
     DELIVERY_SENDERS,
-    DRIFT_CHANGED,
     SEMANTIC_INTEREST,
     TOOLS,
     ToolRef,
@@ -158,7 +157,6 @@ async def start_function(ctx: Context) -> None:
     _ = await ctx.on(RUNTIME_STARTED, start)
     _ = await ctx.on(RUNTIME_STOPPING, stop)
     _ = await ctx.on(EVENTMAIL_CHANGED, changed)
-    _ = await ctx.on(DRIFT_CHANGED, changed)
 
 
 

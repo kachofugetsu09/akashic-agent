@@ -53,6 +53,3 @@ class ToolResultValue:
 
 
 WAKE_TOOLS_VIEW = ServiceKey[ToolView]("wake.tools.v1")
-
-
-DRIFT_CHANGED = EmitEventKey[None]("drift.changed")

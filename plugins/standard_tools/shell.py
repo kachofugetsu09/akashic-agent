@@ -13,7 +13,7 @@ from typing import Literal, cast
 from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_validator
 
 from plugins.host_execution.contract import PROCESSES
-from agent.plugin_composition import Context, ServiceKey
+from agent.plugin_composition import Context
 from plugins.ledger.contract import BINDINGS
 from plugins.ledger.contract import MessageReader
 from plugins.host_execution.contract import (
@@ -143,9 +143,6 @@ class ShellOwners:
             return await self._ctx.require(PROCESSES).terminate_owner(self._ctx, owner_key)
 
 
-SHELL_OWNERS = ServiceKey[ShellOwners]("shell.owners.v1")
-
-
 class ShellTool:
     idempotent = False
 
@@ -273,7 +270,6 @@ async def register_shell(ctx: Context, directories: WorkingDirectories | None = 
     """配置由 Shell owner 校验，所有操作与作业释放共用此插件身份。"""
     owners = ShellOwners(ctx)
     shell_tasks = ctx.require(TASKS).open(ctx)
-    _ = await ctx.provide(SHELL_OWNERS, owners)
 
     def cleanup_entry(
         reader: MessageReader,
