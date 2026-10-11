@@ -68,12 +68,6 @@ export interface PluginUiResult {
   error?: string;
 }
 
-export interface PluginUiDashboardEntry {
-  id: string;
-  label: string;
-  description: string;
-}
-
 const definitions = new Map<string, {
   revision: string;
   definition: PluginUiDefinition;
@@ -371,39 +365,6 @@ export async function queryHostPlugin(
     pluginId: plugin.id, pluginRevision: plugin.revision, method, payload, slot: "drawer.panel", sessionId,
     signal: signal ?? new AbortController().signal,
   });
-}
-
-export function usePluginUiDashboards(): PluginUiDashboardEntry[] {
-  useSyncExternalStore(
-    (listener) => { listeners.add(listener); return () => listeners.delete(listener); },
-    () => registryVersion,
-  );
-  return catalog.plugins.flatMap((plugin) => plugin.navigation
-    ? [{ id: plugin.id, ...plugin.navigation }]
-    : []);
-}
-
-export function PluginUiDashboard({ pluginId }: { pluginId: string }) {
-  useSyncExternalStore(
-    (listener) => { listeners.add(listener); return () => listeners.delete(listener); },
-    () => registryVersion,
-  );
-  const plugin = catalog.plugins.find((item) => item.id === pluginId);
-  if (!plugin?.navigation) return null;
-  if (catalog.error) return <div className="plugin-ui-host plugin-ui-host--error">{catalog.error}</div>;
-  const loaded = definitions.get(pluginId);
-  const definition = loaded?.revision === plugin.revision ? loaded.definition : undefined;
-  if (!definition?.dashboard) {
-    return <div className="plugin-ui-host plugin-ui-host--loading">正在加载插件界面…</div>;
-  }
-  return (
-    <MountedPlugin
-      pluginId={pluginId}
-      pluginRevision={plugin.revision}
-      renderer={definition.dashboard}
-      context={{ slot: "dashboard.main" }}
-    />
-  );
 }
 
 export function receivePluginUiResult(response: PluginUiResult) {

@@ -1,8 +1,4 @@
 import { Cause, Effect, Exit } from "effect";
-import type { ChatMessage, ToolBlock } from "./chat-message";
-import type { ChatStatus } from "./web-chat-status";
-import { blocksWithFinalThinking, mediaToAttachments, mergeAttachments } from "./web-chat-message-data.ts";
-import type { WebTurnTraceKind } from "./web-turn-trace";
 
 export type ChatFrame =
   | { type: "sessions.changed"; version: 2 }
@@ -31,19 +27,6 @@ export type ChatFrame =
   | { type: "turn.interrupted"; request_id: string; session_id: string; status: string; message: string }
   | { type: "error"; request_id: string; message: string }
   | { type: "pong"; request_id: string };
-
-export interface WebChatFrameContext {
-  activeSessionId: () => string;
-  activateSession: (sessionId: string) => void;
-  setError: (message: string) => void;
-  setMessages: (updater: (messages: ChatMessage[]) => ChatMessage[]) => void;
-  getStatus: () => ChatStatus;
-  setStatus: (status: ChatStatus) => void;
-  getActiveTurnId: () => string | null;
-  setActiveTurnId: (turnId: string | null) => void;
-  loadSessions: () => Promise<void>;
-  loadMessages: (sessionId: string) => Promise<void>;
-}
 
 function parseDurationMs(value: unknown): number | null {
   if (typeof value === "number") return Number.isFinite(value) ? value : null;
@@ -162,180 +145,6 @@ function artifactDescriptor(value: unknown): value is ArtifactDescriptor {
     && item.url.startsWith("/api/chat/artifacts/");
 }
 
-export function traceKindForChatFrame(frame: ChatFrame): WebTurnTraceKind | undefined {
-  if (frame.type === "react.thinking.delta" && frame.delta !== "") return "thinking";
-  if (frame.type === "answer.delta" && frame.delta !== "") return "answer";
-  if (frame.type === "message.final") return "terminal";
-  return undefined;
-}
-
-export function applyChatFrame(frame: ChatFrame, context: WebChatFrameContext): void {
-  console.debug("[chat-transport] apply frame", {
-    type: frame.type,
-    session_id: "session_id" in frame ? frame.session_id : undefined,
-    turn_id: "turn_id" in frame ? frame.turn_id : undefined,
-  });
-  if (frame.type === "session.created") {
-    context.activateSession(frame.session_id);
-    return;
-  }
-  if (frame.type === "error") {
-    console.debug("[chat-transport] error frame", frame.message);
-    context.setError(frame.message);
-    context.setStatus("error");
-    return;
-  }
-  if (!("session_id" in frame)) return;
-  if (frame.session_id !== context.activeSessionId()) {
-    console.debug("[chat-transport] skip frame for inactive session", {
-      type: frame.type,
-      frameSessionId: frame.session_id,
-      activeSessionId: context.activeSessionId(),
-    });
-    return;
-  }
-
-  if (frame.type === "turn.interrupted") {
-    console.debug("[chat-transport] turn.interrupted", {
-      status: frame.status,
-      message: frame.message,
-    });
-    context.setError(frame.status === "idle" ? frame.message : "");
-    context.setStatus("idle");
-    context.setActiveTurnId(null);
-    return;
-  }
-  if (frame.type === "turn.started") {
-    console.debug("[chat-transport] turn.started", { turn_id: frame.turn_id });
-    context.setStatus("streaming");
-    context.setActiveTurnId(frame.turn_id);
-    context.setMessages((messages) => {
-      const next = [...messages];
-      if (
-        frame.content !== ""
-        && !next.some((message) => message.id === frame.client_message_id)
-      ) {
-        next.push({
-          id: frame.client_message_id,
-          role: "user",
-          content: frame.content,
-          blocks: [],
-          createdAt: new Date().toISOString(),
-          canonical: false,
-        });
-      }
-      if (!next.some((message) => message.id === frame.turn_id)) {
-        next.push({
-          id: frame.turn_id,
-          role: "assistant",
-          content: "",
-          blocks: [],
-          streaming: true,
-          startedAt: Date.now(),
-          controlTurnId: frame.control_turn_id,
-        });
-      }
-      return next;
-    });
-    return;
-  }
-  if (frame.type === "react.thinking.delta") {
-    context.setStatus("streaming");
-    context.setMessages((messages) => updateAssistantById(messages, frame.turn_id, (message) => {
-      const blocks = [...message.blocks];
-      const last = blocks.at(-1);
-      if (last?.kind === "thinking") blocks[blocks.length - 1] = { ...last, content: last.content + frame.delta };
-      else blocks.push({ kind: "thinking", content: frame.delta });
-      return { ...message, blocks, streaming: true };
-    }));
-    return;
-  }
-  if (frame.type === "react.tool.started") {
-    context.setMessages((messages) => updateAssistantById(messages, frame.turn_id, (message) => ({
-      ...message,
-      blocks: [...message.blocks, {
-        kind: "tool",
-        callId: frame.call_id,
-        name: frame.tool_name,
-        status: "input-available",
-        input: frame.arguments,
-        output: undefined,
-        errorText: undefined,
-      }],
-      streaming: true,
-    })));
-    return;
-  }
-  if (frame.type === "react.tool.completed") {
-    const succeeded = frame.status === "success";
-    context.setMessages((messages) => updateTool(messages, frame.turn_id, frame.call_id, {
-      status: succeeded ? "output-available" : "output-error",
-      output: frame.result_preview,
-      errorText: succeeded ? undefined : frame.result_preview,
-    }));
-    return;
-  }
-  if (frame.type === "answer.delta") {
-    console.debug("[chat-transport] answer.delta", { turn_id: frame.turn_id });
-    context.setMessages((messages) => updateAssistantById(messages, frame.turn_id, (message) => ({
-      ...message,
-      content: message.content + frame.delta,
-      streaming: true,
-    })));
-    return;
-  }
-  if (frame.type === "turn.output.completed") {
-    // 只有属于当前 active turn 且仍处于生成中才进入 finalizing；
-    // 迟到/跨 turn 的 completion 直接忽略，避免污染下一轮或把 idle 改回 finalizing。
-    const current = context.getStatus();
-    if (
-      frame.turn_id === context.getActiveTurnId() &&
-      (current === "streaming" || current === "submitted")
-    ) {
-      context.setStatus("finalizing");
-    }
-    return;
-  }
-  if (frame.type !== "message.final") return;
-
-  if (frame.metadata?.source === "message_push") {
-    if (!frame.session_message_id) {
-      throw new Error("message_push final 缺少 canonical session_message_id");
-    }
-    console.debug("[chat-transport] message_push final", {
-      session_id: frame.session_id,
-      message_id: frame.session_message_id,
-    });
-    void context.loadMessages(frame.session_id);
-    void context.loadSessions();
-    return;
-  }
-  const isActiveTerminal = frame.turn_id === context.getActiveTurnId();
-  const isRecoveredTerminal = context.getActiveTurnId() === null;
-  const failed = frame.terminal_status === "failed";
-  if (isActiveTerminal) {
-    context.setStatus(failed ? "error" : "idle");
-    context.setActiveTurnId(null);
-  }
-  if (failed && (isActiveTerminal || isRecoveredTerminal)) {
-    context.setError(frame.content);
-    context.setStatus("error");
-  }
-  context.setMessages((messages) => updateAssistantById(messages, frame.turn_id, (message) => ({
-    ...message,
-    content: frame.content || message.content,
-    attachments: frame.media?.length
-      ? mergeAttachments(message.attachments, mediaToAttachments(frame.media))
-      : message.attachments,
-    blocks: blocksWithFinalThinking(message.blocks, frame.thinking),
-    durationMs: frame.duration_ms ?? (message.startedAt ? Date.now() - message.startedAt : message.durationMs),
-    streaming: false,
-    controlTurnId: frame.control_turn_id ?? message.controlTurnId,
-  })));
-  void context.loadMessages(frame.session_id);
-  void context.loadSessions();
-}
-
 /** 等待连接后发送一次；Effect 负责超时、取消和竞争结果。 */
 export async function sendWhenOpen(
   socket: WebSocket,
@@ -380,34 +189,6 @@ export async function sendWhenOpen(
     if (signal?.aborted && Cause.isInterruptedOnly(sent.cause)) throw new DOMException("请求已取消", "AbortError");
     throw Cause.squash(sent.cause);
   }
-}
-
-function updateAssistantById(
-  messages: ChatMessage[],
-  messageId: string,
-  updater: (message: ChatMessage) => ChatMessage,
-): ChatMessage[] {
-  const index = messages.findIndex((message) => message.role === "assistant" && message.id === messageId);
-  if (index < 0) {
-    return [...messages, updater({ id: messageId, role: "assistant", content: "", blocks: [] })];
-  }
-  const next = [...messages];
-  next[index] = updater(next[index]);
-  return next;
-}
-
-function updateTool(
-  messages: ChatMessage[],
-  messageId: string,
-  callId: string,
-  patch: Pick<ToolBlock, "status" | "output" | "errorText">,
-): ChatMessage[] {
-  return updateAssistantById(messages, messageId, (message) => ({
-    ...message,
-    blocks: message.blocks.map((block) => block.kind === "tool" && block.callId === callId
-      ? { ...block, ...patch }
-      : block),
-  }));
 }
 
 function recordValue(value: unknown): Record<string, unknown> | null {

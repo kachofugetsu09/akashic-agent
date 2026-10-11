@@ -242,34 +242,6 @@ export const AttachmentPreview = ({
   );
 };
 
-export type AttachmentInfoProps = HTMLAttributes<HTMLDivElement> & {
-  showMediaType?: boolean;
-};
-
-export const AttachmentInfo = ({
-  showMediaType = false,
-  className,
-  ...props
-}: AttachmentInfoProps) => {
-  const { data, variant } = useAttachmentContext();
-  const label = getAttachmentLabel(data);
-
-  if (variant === "grid") {
-    return null;
-  }
-
-  return (
-    <div className={cn("min-w-0 flex-1", className)} {...props}>
-      <span className="block truncate">{label}</span>
-      {showMediaType && data.mediaType && (
-        <span className="block truncate text-muted-foreground text-xs">
-          {data.mediaType}
-        </span>
-      )}
-    </div>
-  );
-};
-
 export type AttachmentRemoveProps = ComponentProps<typeof Button> & {
   label?: string;
 };
@@ -356,22 +328,4 @@ export const AttachmentHoverCardContent = ({
     className={cn("w-auto p-2", className)}
     {...props}
   />
-);
-
-export type AttachmentEmptyProps = HTMLAttributes<HTMLDivElement>;
-
-export const AttachmentEmpty = ({
-  className,
-  children,
-  ...props
-}: AttachmentEmptyProps) => (
-  <div
-    className={cn(
-      "flex items-center justify-center p-4 text-muted-foreground text-sm",
-      className
-    )}
-    {...props}
-  >
-    {children ?? "No attachments"}
-  </div>
 );

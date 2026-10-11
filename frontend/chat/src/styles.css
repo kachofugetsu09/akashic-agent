@@ -1770,8 +1770,7 @@ form.composer:focus-within [data-slot="input-group"] {
   font-size: 11px;
 }
 
-.composer [data-slot="input-group-addon"],
-.composer [cmdk-root] {
+.composer [data-slot="input-group-addon"] {
   border: 0;
 }
 
