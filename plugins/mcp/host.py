@@ -305,8 +305,6 @@ class McpGenerationHost:
         materialized_commands: Mapping[str, McpMaterializedCommand],
         *,
         mode: McpMode = "candidate",
-        endpoint_ports: Mapping[str, int] | None = None,
-        workload_endpoints: Mapping[tuple[str, str], str] | None = None,
     ) -> McpGeneration:
         """Start one exact Root registry and publish it only after MCP readiness."""
 
@@ -319,8 +317,6 @@ class McpGenerationHost:
         commands = self._validate_materialized_commands(
             bindings,
             materialized_commands,
-            endpoint_ports or {},
-            workload_endpoints or {},
         )
         generation = _Generation(
             generation_id=generation_id,
@@ -335,8 +331,6 @@ class McpGenerationHost:
                     generation,
                     binding,
                     commands[name],
-                    endpoint_ports or {},
-                    workload_endpoints or {},
                 )
                 generation.entries[name] = entry
             generation.state = "ready"
@@ -555,8 +549,6 @@ class McpGenerationHost:
         generation: _Generation,
         binding: McpServerBinding,
         materialized: McpMaterializedCommand,
-        endpoint_ports: Mapping[str, int],
-        workload_endpoints: Mapping[tuple[str, str], str],
     ) -> _McpEntry:
         definition = binding.definition
         descriptor = binding.descriptor
@@ -566,8 +558,6 @@ class McpGenerationHost:
         env, candidate_env = self._materialize_envs(
             descriptor,
             materialized,
-            endpoint_ports,
-            workload_endpoints,
         )
         prepared = self._spawner.prepare_process(
             tuple(materialized.command), materialized.cwd, env, candidate_env,
@@ -892,54 +882,11 @@ class McpGenerationHost:
     def _validate_materialized_commands(
         bindings: Mapping[str, McpServerBinding],
         commands: Mapping[str, McpMaterializedCommand],
-        endpoint_ports: Mapping[str, int],
-        workload_endpoints: Mapping[tuple[str, str], str],
     ) -> dict[str, McpMaterializedCommand]:
         if not isinstance(commands, Mapping):
             raise TypeError("MCP materialized commands must be a mapping")
         if set(commands) != set(bindings):
             raise ValueError("MCP materialized commands must exactly match registry")
-        for process_name, port in endpoint_ports.items():
-            if (
-                not isinstance(process_name, str)
-                or not isinstance(port, int)
-                or isinstance(port, bool)
-            ):
-                raise TypeError("MCP endpoint ports must be process-name/integer pairs")
-            if not 1 <= port <= 65535:
-                raise ValueError(f"MCP endpoint port invalid: {process_name}={port}")
-        for name, binding in bindings.items():
-            required_processes = {
-                endpoint.process for endpoint in binding.descriptor.endpoint_env
-            }
-            missing_processes = required_processes - set(endpoint_ports)
-            if missing_processes:
-                raise ValueError(
-                    f"MCP endpoint materialization missing for {name}: "
-                    + ", ".join(sorted(missing_processes))
-                )
-            required_workloads = {
-                (endpoint.workload, endpoint.port)
-                for endpoint in binding.descriptor.workload_env
-            }
-            missing_workloads = required_workloads - set(workload_endpoints)
-            if missing_workloads:
-                raise ValueError(
-                    f"MCP workload endpoint materialization missing for {name}: "
-                    + ", ".join(
-                        f"{workload}:{port}"
-                        for workload, port in sorted(missing_workloads)
-                    )
-                )
-        for key, url in workload_endpoints.items():
-            if (
-                not isinstance(key, tuple)
-                or len(key) != 2
-                or any(not isinstance(item, str) or not item for item in key)
-                or not isinstance(url, str)
-                or not url.startswith("http://")
-            ):
-                raise TypeError("MCP workload endpoints must be name/port HTTP pairs")
         result: dict[str, McpMaterializedCommand] = {}
         for name, materialized in commands.items():
             if type(materialized) is not McpMaterializedCommand:
@@ -975,8 +922,6 @@ class McpGenerationHost:
         cls,
         descriptor: McpServerDescriptor,
         materialized: McpMaterializedCommand,
-        endpoint_ports: Mapping[str, int],
-        workload_endpoints: Mapping[tuple[str, str], str],
     ) -> tuple[dict[str, str], dict[str, str]]:
         """返回 (formal env, candidate env) 两份完整输入，交 grant 一次授权。
 
@@ -1006,31 +951,6 @@ class McpGenerationHost:
                     f"MCP candidate env drift: {descriptor.name}:{key}"
                 )
             candidate_environment[key] = value
-        for endpoint in descriptor.endpoint_env:
-            if endpoint.process not in endpoint_ports:
-                raise ValueError(
-                    f"MCP endpoint process 未 materialize: {descriptor.name}:{endpoint.process}"
-                )
-            if endpoint.env in environment or endpoint.env in candidate_environment:
-                raise ValueError(
-                    f"MCP endpoint env 已被占用: {descriptor.name}:{endpoint.env}"
-                )
-            value = str(endpoint_ports[endpoint.process])
-            environment[endpoint.env] = value
-            candidate_environment[endpoint.env] = value
-        for endpoint in descriptor.workload_env:
-            key = (endpoint.workload, endpoint.port)
-            if key not in workload_endpoints:
-                raise ValueError(
-                    "MCP workload endpoint 未 materialize: "
-                    f"{descriptor.name}:{endpoint.workload}:{endpoint.port}"
-                )
-            if endpoint.env in environment or endpoint.env in candidate_environment:
-                raise ValueError(
-                    f"MCP workload env 已被占用: {descriptor.name}:{endpoint.env}"
-                )
-            environment[endpoint.env] = workload_endpoints[key]
-            candidate_environment[endpoint.env] = workload_endpoints[key]
         return environment, candidate_environment
 
     def _require_generation(self, generation_id: str) -> _Generation:
