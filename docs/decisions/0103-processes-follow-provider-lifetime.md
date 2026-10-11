@@ -1,6 +1,6 @@
 # 0103 · 进程集合随提供方生命周期关闭
 
-- 状态：accepted
+- 状态：proposed / implemented for review
 - 日期：2026-10-11
 - 依据：Issue 1179 P2d、ADR-0102；维护者授权自主推进并将重大决定单独交付评审。
 

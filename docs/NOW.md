@@ -4,11 +4,10 @@
 
 ## P0 · Issue 1179 后续边界
 
-入口与主要业务服务的实现停在维护者约定的边界①，待按
-[审查入口](design/plugin-core-boundary1-review.md) 评审后继续。
-剩余：边界②完整 HostExecution、Onboarding、非账本合同与声明式组合；
-边界③ Ledger、派生库、可信调用者身份、禁用/替换矩阵与最终门验收。
-前端 slot 化独立推进。
+边界②非账本 Core 收口与边界③ Ledger/整体验收已交付 stacked Draft PR，
+待维护者和 Opus 审查；入口见 [边界②③审查](design/plugin-core-boundary23-review.md)。
+重大决定独立标注，隔离验证不能代替合并、正式状态迁移或部署。
+前端区域 owner slot 化仍独立推进；第二 provider 示例的明确限制见审查入口。
 
 ## P1 · Akasha 学习图一次性重放
 
@@ -27,13 +26,11 @@
 
 按 [0065](decisions/0065-plugin-boundary-checks-do-not-grant-core-ownership.md) 与
 [阶段验收](design/plugin-boundary-foundation.md#7-验收标准) 完成已授权的 stacked PR 实施。
-当前优先完成全部本地插件的行为回归、默认组合与无 checkout 的分发产物验收。
-维护者已明确将第三方外部插件的进一步迁移与验收后置；已提交改动保留，
-不将第三方迁移完成作为本地插件阶段的退出条件。
-当前维护者要求只交付 stacked Draft PR；仅做静态检查，交由维护者评审，
-不运行测试、Gate 或 CI。真实运行验收须另行获得授权，不因实现完成自动开始。
-验收必须覆盖 Core-only CLI/AppRuntime、独立子集和异名 provider、generation/归档生命周期、
-实际 Message 与持久送达闭环；不能以 import 数量清零代替这些证据。
+当前边界与证据以 [#1179 审查入口](design/plugin-core-boundary23-review.md) 为准。
+本次明确授权已覆盖真实隔离场景、既有回归与 CI；此前“只做静态、不跑 Gate/CI”
+的阶段限制不再适用于该任务。14 个当前 Fleet 源码迁移已交付独立 Draft PR，
+仍待按依赖顺序审查、合并和发布，未更新 Fleet gitlink 或正式安装 cache。
+正式账号、设备、部署与生产数据的验收继续独立，不以本地通过代替。
 
 ## P1 · Android Shell 真实设备验收
 

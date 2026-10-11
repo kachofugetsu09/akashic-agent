@@ -121,7 +121,7 @@
 
 | [0102](0102-plugin-owned-services-and-public-contracts.md) | accepted target / implementation | 服务与公共合同归提供方，Core 只保留组合与宿主机制 | PLG、CAP、STA |
 
-| [0103](0103-processes-follow-provider-lifetime.md) | accepted | 进程集合随 HostExecution provider 关闭，取消等待保留本代续接 | PLG-017、SH |
+| [0103](0103-processes-follow-provider-lifetime.md) | proposed / implemented for review | 进程集合随 HostExecution provider 关闭，取消等待保留本代续接 | PLG-017、SH |
 
 ## 新增规则
 
