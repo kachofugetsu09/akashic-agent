@@ -141,6 +141,9 @@ async def apply(ctx):
     runtime = build()
     try:
         await runtime.start()
+        await runtime.plugin_manager.install(source=str(provider), marketplace="lab", ref_name="", sparse_paths=[], update_id="timer-initial")
+        await runtime.plugin_manager.wait_idle()
+        await runtime.plugin_manager.reconcile_changed()
         from plugins.ledger.contract import MESSAGE_CATALOG
         log = runtime.plugin_manager.live_root.context.require(MESSAGE_CATALOG)._log
         host = runtime.plugin_manager
