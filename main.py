@@ -19,7 +19,7 @@ import signal
 import sys
 import tomllib
 from pathlib import Path
-from typing import Any, cast
+from typing import TYPE_CHECKING, Any, cast
 from uuid import uuid4
 
 _DISTRIBUTION_COMMANDS = frozenset({"dashboard", "workload-controller"})
@@ -192,18 +192,14 @@ if __name__ == "__main__" and _run_lightweight_command():
 
 
 from agent.config import Config
-from agent.migrations import (
-    MigrationOutcome,
-    migrate_installation,
-)
-from agent.restart import RestartGate, SupervisorCommitChannel
-from agent.supervisor import RESTART_EXIT_CODE, run_supervisor
 from agent.plugins.doctor import format_plugin_doctor_report, run_plugin_doctor
 from agent.plugins.install import set_installed_plugin_enabled
 from agent.plugins.entrypoints import invoke_plugin_command, invoke_distribution_command
 from bootstrap.init_workspace import InitSummary, init_workspace
-from bootstrap.runtime_readiness import RuntimeReadiness
-from core.net.http import SharedHttpResources
+
+# 迁移、重启、HTTP 与 readiness 只属于 gateway/supervise；插件命令客户端不加载它们。
+if TYPE_CHECKING:
+    from agent.migrations import MigrationOutcome
 
 _HELP = """\
 用法: python main.py [命令] [选项]
@@ -292,6 +288,8 @@ def _prepare_startup_migrations(
         return None
     if command == "gateway" and os.environ.get("AKASHIC_SUPERVISED") == "1":
         return None
+    from agent.migrations import migrate_installation
+
     outcome = migrate_installation(config_path, workspace)
     if outcome.state == "migrated":
         print(f"启动迁移完成: migrations={len(outcome.migrations)}")
@@ -302,6 +300,7 @@ async def inspect_modules(config_path: str, workspace: Path) -> None:
     import logging
     from bootstrap.cleanup import run_cleanup_steps
     from bootstrap.tools import build_core_runtime
+    from core.net.http import SharedHttpResources
 
     logging.getLogger().setLevel(logging.WARNING)
     config = Config.load(config_path, workspace=workspace)
@@ -322,7 +321,10 @@ async def inspect_modules(config_path: str, workspace: Path) -> None:
 
 async def serve(config_path: str, workspace: Path) -> int:
     # Web shell 与 FastAPI 只属于 gateway；插件命令客户端不加载它们。
+    from agent.restart import RestartGate, SupervisorCommitChannel
+    from agent.supervisor import RESTART_EXIT_CODE
     from bootstrap.app import build_app_runtime
+    from bootstrap.runtime_readiness import RuntimeReadiness
 
     commit_channel = SupervisorCommitChannel.from_environment()
     if commit_channel is not None:
@@ -677,6 +679,8 @@ if __name__ == "__main__":
         except ValueError as exc:
             print(str(exc), file=sys.stderr)
             sys.exit(2)
+        from agent.supervisor import run_supervisor
+
         sys.exit(
             run_supervisor(
                 config_path=Path(config_path),
@@ -721,6 +725,8 @@ if __name__ == "__main__":
         )
         sys.exit(asyncio.run(serve(config_path, workspace)))
     else:
+        from agent.supervisor import run_supervisor
+
         sys.exit(
             run_supervisor(
                 config_path=Path(config_path),
