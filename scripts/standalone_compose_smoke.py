@@ -36,10 +36,12 @@ status = json.loads(subprocess.check_output([
 ], text=True))
 assert any(plugin['plugin_id'] == 'gateway@release' and plugin['state'] == 'active'
            for plugin in status['plugins']), '本地控制入口没有加载 Gateway'
-paths = ('startup.json', 'config.toml', 'plugin-home/manifest.toml',
+patch = state / 'workspace/bundle.patch.toml'
+paths = ('startup.json', 'config.toml',
          'workspace/runtime/distribution-install.json',
          'workspace/runtime/plugin-stable.json')
 print(json.dumps({'uid': os.getuid(), 'source_commit': report['source_commit'],
+                  'bundle_patch': patch.read_text() if patch.exists() else None,
                   'files': {name: hashlib.sha256((state / name).read_bytes()).hexdigest()
                             for name in paths}}))
 """
