@@ -1,7 +1,7 @@
 """跨设备已读水位：存储、侧栏摘要、手机通知流与标记接口。"""
 import asyncio
 import json
-from contextlib import asynccontextmanager, suppress
+from contextlib import asynccontextmanager, nullcontext, suppress
 from types import MappingProxyType
 from typing import cast
 
@@ -20,7 +20,7 @@ from tests.test_message_log import text_schema
 
 
 def _marks(log: MessageLog) -> ReadMarks:
-    return ReadMarks(lambda: log.owner("plugin:akashic_clients"))
+    return ReadMarks(lambda: nullcontext(log.owner("plugin:akashic_clients")))
 
 
 def _say(log: MessageLog, session: str, message_id: str, text: str = "hi") -> None:
