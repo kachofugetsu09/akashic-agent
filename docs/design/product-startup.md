@@ -59,6 +59,30 @@ Use isolated HOME, state, plugin home, cache, browser profile and Compose projec
 
 维护者可用 Python 标准库运行 `python3 scripts/standalone_compose_smoke.py --image <本地镜像> --revision <完整 commit>`。它创建独立 project 和空数据卷，验证普通用户读取制品、网页与插件模块、重建容器后的配置和选择保留；不连接模型。日志留在输出目录，结束后只删除本次 project 的测试卷。
 
+## Building Compose from source
+
+需要 Git、Docker 和 Compose 2.20+。仓库中的 `compose.yaml` 构建明确指定的已推送完整提交，未提交改动不会进入镜像；不要把提交设为浮动的 `main`，它可能复用旧构建层。
+
+Linux、macOS 或 WSL2：
+
+```bash
+git clone --branch v0.2.0 https://github.com/kachofugetsu09/akashic-agent.git
+cd akashic-agent
+printf 'AKASHIC_REVISION=%s\n' "$(git rev-parse HEAD)" > .env
+docker compose up -d --build --wait
+```
+
+Windows PowerShell：
+
+```powershell
+git clone --branch v0.2.0 https://github.com/kachofugetsu09/akashic-agent.git
+cd akashic-agent
+"AKASHIC_REVISION=$(git rev-parse HEAD)" | Set-Content .env
+docker compose up -d --build --wait
+```
+
+`.env` 保存源码提交，之后在新终端也能停止和重启；端口、日志和数据卷管理与发行版相同。
+
 ## Updating standalone Compose
 
 源码构建先取得并切换目标已推送提交，将 `AKASHIC_REVISION` 重新设为 `git rev-parse HEAD`，再运行 `docker compose up -d --build --wait`。发行版使用者先停止服务并备份实例数据卷，在同一目录替换新发行版的 Compose，运行 `docker compose up -d --wait`。保持 project 和数据卷不变。旧镜像只恢复代码；已经发生的数据迁移需要升级前的匹配数据备份。不要使用 `down -v` 升级。
