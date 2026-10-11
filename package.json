@@ -16,7 +16,6 @@
     "baseline:webui-performance:build": "node scripts/webui-performance/run-build-baseline.mjs --update-baseline",
     "baseline:webui-performance:browser": "node scripts/webui-performance/run-browser-scenarios.mjs --update-baseline",
     "typecheck": "tsc --noEmit",
-    "test:web": "node --test \"plugins/*/web/**/*.test.ts\" \"frontend/plugins/*/src/**/*.test.ts\"",
     "check:narrow-ui": "node scripts/check_narrow_ui.mjs"
   },
   "devDependencies": {

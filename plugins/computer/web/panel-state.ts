@@ -16,6 +16,8 @@ export interface PanelFacts {
   readonly targetKind: TargetKind;
   readonly targetTitle: string;
   readonly wakeRequested: boolean;
+  /** 最近一次状态读取失败的原因；成功读取后清空。 */
+  readonly statusError: string;
 }
 
 export type ActionId = "take" | "release" | "cancel" | "wake" | "reconnect" | "home" | "reload" | "copy-error";
@@ -57,6 +59,10 @@ function withoutScreen(f: PanelFacts): PanelView | null {
   if (f.link === "stale") return blank("warn", "Akashic 已更新", "刷新页面后才能继续看画面",
     { icon: "refresh", text: "刷新页面后才能继续看画面，电脑里的任务不受影响。",
       actions: [{ id: "reload", label: "刷新页面", emphasis: "primary" }] });
+  // 读不到状态时不猜运行时和连接；已连上的画面不依赖轮询，继续显示。
+  if (f.statusError && f.link !== "connected") return blank("warn", "读不到电脑状态", "每秒自动重试",
+    { icon: "alert", text: "Akashic 暂时没有返回电脑状态，正在每秒重试。持续出现时请确认电脑容器在运行。",
+      actions: [], details: f.statusError });
   if (f.runtime === "failed") return blank("error", "电脑出错了", "需要重启 Akashic 后才能再次唤醒",
     { icon: "alert", text: "电脑的运行环境异常退出。重启 Akashic 后可以重新唤醒；如果反复出现，请把详情发给维护者。",
       actions: [{ id: "copy-error", label: "复制详情", emphasis: "plain" }], details: f.runtimeError });

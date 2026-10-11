@@ -104,6 +104,14 @@
   white-space: nowrap;
 }
 
+/* 重名时的浏览器编号：不参与截断，等宽方便辨认 */
+.computer-target-tag {
+  flex: 0 0 auto;
+  color: var(--ak-ink-muted);
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 0.75rem;
+}
+
 .computer-target[aria-selected="true"] {
   border-color: var(--ak-rule-default);
   color: var(--ak-ink-primary);

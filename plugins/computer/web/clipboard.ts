@@ -69,16 +69,20 @@ export class ClipboardPopover {
       event.stopPropagation();
       this.setOpen(false);
     });
-    this.setCanPaste(false);
+    this.editor.hidden = true;
+    toggle.title = "剪贴板 · 接管后可用";
   }
 
+  // 每轮轮询都会调用；只在权限切换、且原焦点所在的区域被隐藏时才移动焦点。
   setCanPaste(value: boolean) {
-    const focused = this.element.contains(document.activeElement);
+    if (value === this.canPaste) return;
+    const lost = value ? this.locked : this.editor;
+    const orphaned = lost.contains(document.activeElement);
     this.canPaste = value;
     this.locked.hidden = value;
     this.editor.hidden = !value;
     this.toggle.title = value ? "剪贴板" : "剪贴板 · 接管后可用";
-    if (focused && !this.element.hidden) this.focusInside();
+    if (orphaned && !this.element.hidden) this.focusInside();
   }
 
   /** 电脑里复制的新内容。 */

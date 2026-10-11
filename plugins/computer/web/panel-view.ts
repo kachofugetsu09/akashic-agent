@@ -58,6 +58,7 @@ export class PanelSurface {
   private readonly legend = element("div", "computer-frame-legend");
   private readonly overlay = element("div", "computer-connection-state");
   private actionId: ActionId | null = null;
+  private restoreAction = false;
 
   constructor(private readonly onAction: (id: ActionId) => void, private readonly onSelect: (id: string) => void) {
     // 1. 头部：观看目标标签 + 工具按钮。面板的开合属于宿主，这里不放关闭按钮。
@@ -99,10 +100,17 @@ export class PanelSurface {
     if (view.overlay) this.renderOverlay(view.overlay);
   }
 
+  // 主操作在重连等过渡态会短暂消失：焦点先交给画面，按钮回来时再交还，避免掉到 body。
   private renderAction(action: ActionView | null) {
+    const hiding = !action && !this.actionWrap.hidden && document.activeElement === this.action;
     this.actionWrap.hidden = !action;
     this.actionId = action?.id ?? null;
+    if (hiding) { this.restoreAction = true; this.screen.focus(); }
     if (!action) return;
+    if (this.restoreAction) {
+      this.restoreAction = false;
+      if (document.activeElement === this.screen) this.action.focus();
+    }
     this.action.textContent = action.label;
     this.action.dataset.emphasis = action.emphasis;
     this.action.disabled = Boolean(action.blockedBy);
@@ -152,18 +160,22 @@ export class PanelSurface {
   /** 标签页：roving tabindex，左右方向键切换（ARIA tabs 模式）。匿名浏览器用面具图标标出。 */
   renderTargets(targets: readonly Target[], selected: string) {
     const focused = this.tabs.contains(document.activeElement);
+    const names = targets.map(target => target.kind === "browser"
+      ? target.title || shortUrl(target.url) || "空白页" : target.label);
     this.tabs.replaceChildren(...targets.map((target, index) => {
       const tab = element("button", "computer-target");
       tab.type = "button";
       tab.id = `computer-target-${index}`;
-      tab.title = target.url || target.label;
+      tab.title = target.url ? `${target.label}\n${target.url}` : target.label;
       tab.setAttribute("role", "tab");
       tab.setAttribute("aria-selected", String(target.id === selected));
       tab.tabIndex = target.id === selected ? 0 : -1;
       const anonymous = target.kind === "browser";
       if (anonymous) tab.dataset.anonymous = "";
-      const label = anonymous ? target.title || shortUrl(target.url) || "空白页" : target.label;
-      tab.innerHTML = `${anonymous ? icon("mask") : ""}<span class="computer-target-label">${escape(label)}</span>`
+      // 两个匿名浏览器停在同名页面时，补上浏览器编号（与 runtime label 中的编号一致）。
+      const twin = anonymous && names.some((name, other) => other !== index && name === names[index]);
+      const browser = twin ? `<span class="computer-target-tag">${escape(target.id.slice(0, 4))}</span>` : "";
+      tab.innerHTML = `${anonymous ? icon("mask") : ""}<span class="computer-target-label">${escape(names[index])}</span>${browser}`
         + (anonymous ? `<span class="computer-visually-hidden">（匿名浏览器）</span>` : "");
       if (target.id === selected) this.screen.setAttribute("aria-labelledby", tab.id);
       tab.addEventListener("click", () => this.onSelect(target.id));

@@ -38,6 +38,7 @@ function renderComputer(ctx: WebHostContextV1, host: HTMLElement, rawView: unkno
   let runtimeError = "";
   let wakeError = "";
   let wakeRequested = false;
+  let statusError = "";
   let link: LinkState = "idle";
   let linkError = "";
   let control = "";
@@ -57,7 +58,7 @@ function renderComputer(ctx: WebHostContextV1, host: HTMLElement, rawView: unkno
     const controlState: ControlState = control ? (link === "connected" ? "mine" : "taking") : busy ? "other" : "none";
     return { runtime, runtimeError: runtimeError || wakeError, link, linkError, control: controlState, agentActive,
       targetKind: target?.kind ?? "desktop", targetTitle: target?.kind === "browser" ? target.title || target.url || "" : "",
-      wakeRequested };
+      wakeRequested, statusError };
   }
 
   function update() {
@@ -208,7 +209,8 @@ function renderComputer(ctx: WebHostContextV1, host: HTMLElement, rawView: unkno
       ctx.http.request("/api/dashboard/computer/targets", { cache: "no-store" }),
     ]);
     if (responses.some(response => response.headers.get("X-Akashic-Web-Stale") === "1")) return "stale";
-    if (responses.some(response => !response.ok)) throw new Error("Computer 状态读取失败");
+    const failed = responses.find(response => !response.ok);
+    if (failed) throw new Error(`状态接口返回 ${failed.status}`);
     const activity = await responses[0].json() as Activity;
     const catalog = await responses[1].json() as { targets: Target[]; control: boolean };
     if (!Number.isInteger(activity.noticeId) || typeof activity.active !== "boolean"
@@ -224,6 +226,7 @@ function renderComputer(ctx: WebHostContextV1, host: HTMLElement, rawView: unkno
     try {
       const result = await read();
       if (disposed) return;
+      statusError = "";
       if (result === "stale") {
         disconnect();
         link = "stale";
@@ -249,7 +252,8 @@ function renderComputer(ctx: WebHostContextV1, host: HTMLElement, rawView: unkno
         link = "ended";
       } else if (active && !display) connect();
     } catch (error) {
-      if (!disposed && link !== "connected") { link = "lost"; linkError = String(error); }
+      // 读取失败与画面连接无关：不改写 link，已确定的 stale 等终态保持不变。
+      statusError = error instanceof Error ? error.message : String(error);
     } finally {
       update();
       if (!disposed) timer = window.setTimeout(() => void poll(), 1000);
