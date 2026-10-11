@@ -10,7 +10,7 @@
 | Gateway 的 `session/list`、`message/read` | `examples/readonly_gateway` 独立 Unix JSON-RPC 服务，只依赖公开 Ledger/UI 合同 | 同一 Python SDK、真实账本、热替换、原 Ledger Fiber 不变、重启和端点排空 |
 | `models.drivers.v1` 的驱动贡献 | `examples/text_model_driver` 独立 HTTP 文本驱动，复用同一已配置 driver identity | Models 与 Reply apply 增量 0；默认驱动、替代驱动、重启后各完成一次真实 CLI 回复 |
 | `compaction.summaries.v1` | `examples/summary_archive` 独立 JSON 首代 v2 归档 | 真实 HTTP 模型压缩生成摘要；同一借用消费者读回相同来源与正文，apply 增量 0；卸载重开；原消息和 owner 行完整不变 |
-| `timers.v1` | `timer_plugin_scenario.py` 中事件循环 callback 实现 | 原实现使用 Task，第二实现使用 callback；真实 Scheduler 先后提交通知，取消、重启、卸载和无关 Fiber 保持 |
+| `timers.v1` | `timer_plugin_scenario.py` 中事件循环 callback 实现 | 原实现使用 Task，第二实现使用 callback；真实 Scheduler 先后提交通知，取消、重启、卸载；借用消费者 apply 增量 0，硬依赖另按原合同换代 |
 
 附件场景只接受本地文件，远程 URL 明确拒绝。它证明附件端口可以替换，
 不声称这个示例可以替代 Ledger 的消息、同库事务、入站交接等端口。
@@ -18,7 +18,7 @@
 原 Ledger 数据保留，所有操作均限于临时 workspace。
 
 Timer 的硬依赖消费者按既有组合规则重新 apply；无关旁支不变。
-请求期借用的附件消费者始终只 apply 一次。这个差别来自现有声明的依赖方式，
+请求期借用的附件与 Timer 消费者始终只 apply 一次。这个差别来自现有声明的依赖方式，
 不能把硬依赖重新激活伪称为零变化。
 
 ```text
