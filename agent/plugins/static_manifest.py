@@ -7,10 +7,14 @@ import hashlib
 import json
 import os
 import re
+import sys
 from collections.abc import Mapping
 from dataclasses import dataclass
-from functools import lru_cache
+from functools import cache, lru_cache
 from pathlib import Path, PurePosixPath
+from typing import cast
+
+from agent.plugins.manifest import plugins_root
 
 _NAME = re.compile(r"^[a-z][a-z0-9_-]{0,63}$")
 _VERSION = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]*$")
@@ -110,6 +114,15 @@ def _plugin_entrypoints(path: Path) -> tuple[tuple[str, str], ...]:
 
 @lru_cache(maxsize=128)
 def _parse_plugin_entrypoints(path: Path, source: str) -> tuple[tuple[str, str], ...]:
+    cached = _cached_entrypoints(_read_fact("entrypoints", source))
+    if cached is not None:
+        return cached
+    entries = _parse_entrypoint_tree(path, source)
+    _write_fact("entrypoints", source, [list(item) for item in entries])
+    return entries
+
+
+def _parse_entrypoint_tree(path: Path, source: str) -> tuple[tuple[str, str], ...]:
     tree = _parse_source_tree(path, source)
     declarations: list[ast.expr | None] = []
     for statement in tree.body:
@@ -146,6 +159,89 @@ def _parse_source_tree(path: Path, source: str) -> ast.Module:
     return ast.parse(source, filename=str(path))
 
 
+# 身份与入口只由 plugin.py 文本决定。成功结果按内容和解析器指纹存入宿主目录，
+# 只省去 AST 解析；读回的值仍逐项校验，失败结果从不落盘。
+@cache
+def _parser_fingerprint() -> str | None:
+    try:
+        parser = Path(__file__).read_bytes()
+    except OSError:
+        return None
+    return hashlib.sha256(sys.implementation.cache_tag.encode() + b"\0" + parser).hexdigest()[:16]
+
+
+def _fact_path(kind: str, source: str) -> Path | None:
+    fingerprint = _parser_fingerprint()
+    if fingerprint is None:
+        return None
+    try:
+        root = plugins_root()
+    except ValueError:
+        return None
+    digest = hashlib.sha256(source.encode("utf-8")).hexdigest()
+    return root / "manifest-facts" / fingerprint / f"{digest}.{kind}.json"
+
+
+def _read_fact(kind: str, source: str) -> object:
+    path = _fact_path(kind, source)
+    if path is None:
+        return None
+    try:
+        return json.loads(path.read_bytes())
+    except (OSError, ValueError):
+        return None
+
+
+# 读回的身份按源码解析的同一组规则重新校验；任何不符都当作未命中。
+def _cached_identity(value: object) -> tuple[str, str, int] | None:
+    if not isinstance(value, list):
+        return None
+    fields = cast(list[object], value)
+    if len(fields) != 3:
+        return None
+    try:
+        if _integer({"api_version": fields[2]}, "api_version") != 3:
+            return None
+        return _name(fields[0], "name"), _version(fields[1], "version"), 3
+    except PluginSourceContentError:
+        return None
+
+
+# 读回的入口必须已是 check_entrypoints 的规范结果：无重复、已排序、格式合法。
+def _cached_entrypoints(value: object) -> tuple[tuple[str, str], ...] | None:
+    if not isinstance(value, list):
+        return None
+    pairs: list[tuple[str, str]] = []
+    for item in cast(list[object], value):
+        if not isinstance(item, list):
+            return None
+        parts = cast(list[object], item)
+        if len(parts) != 2 or not isinstance(parts[0], str) or not isinstance(parts[1], str):
+            return None
+        pairs.append((parts[0], parts[1]))
+    try:
+        entries = check_entrypoints(dict(pairs))
+    except ValueError:
+        return None
+    return entries if list(entries) == pairs else None
+
+
+def _write_fact(kind: str, source: str, value: object) -> None:
+    path = _fact_path(kind, source)
+    if path is None or sys.dont_write_bytecode:
+        return
+    temporary = path.with_name(f"{path.name}.{os.getpid()}.tmp")
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        _ = temporary.write_text(json.dumps(value, ensure_ascii=False, separators=(",", ":")), encoding="utf-8")
+        os.replace(temporary, path)
+    except OSError:
+        try:
+            temporary.unlink(missing_ok=True)
+        except OSError:
+            pass
+
+
 def check_entrypoints(value: object) -> tuple[tuple[str, str], ...]:
     """在源码与选择输入边界校验同一命令声明表示。"""
     if not isinstance(value, Mapping):
@@ -176,6 +272,15 @@ def load_plugin_identity(plugin_root: Path) -> tuple[str, str, int]:
 @lru_cache(maxsize=128)
 def _parse_plugin_identity(path: Path, source: str) -> tuple[str, str, int]:
     """只复用内容完全相同的解析结果；磁盘读取和路径检查仍逐次执行。"""
+    cached = _cached_identity(_read_fact("identity", source))
+    if cached is not None:
+        return cached
+    identity = _parse_identity_tree(path, source)
+    _write_fact("identity", source, list(identity))
+    return identity
+
+
+def _parse_identity_tree(path: Path, source: str) -> tuple[str, str, int]:
     try:
         tree = _parse_source_tree(path, source)
     except SyntaxError as error:
