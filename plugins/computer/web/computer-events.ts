@@ -30,8 +30,7 @@ function message(error: unknown): string {
 
 /** 事件：state（完整快照）、cursor（光标原始回执）、error（读取失败，自动重试）、stale（页面过期，停止）。 */
 export class ComputerEvents extends EventTarget {
-  /** 最近一次光标回执；新建的光标层从这里补齐当前位置。 */
-  cursor: unknown = null;
+  private latestCursor: { value: object; expiresAt: number } | null = null;
   private socket: WebSocket | null = null;
   private timer = 0;
   private closed = false;
@@ -39,6 +38,13 @@ export class ComputerEvents extends EventTarget {
   constructor(private readonly ctx: WebHostContextV1) {
     super();
     void this.open();
+  }
+
+  /** 最近一次光标回执，ttlMs 换算成剩余寿命；新建的光标层从这里补齐当前位置，不会让过期光标复活。 */
+  get cursor(): unknown {
+    if (!this.latestCursor) return null;
+    const ttlMs = Math.max(0, this.latestCursor.expiresAt - Date.now());
+    return { ...this.latestCursor.value, ttlMs };
   }
 
   close() {
@@ -66,8 +72,8 @@ export class ComputerEvents extends EventTarget {
     this.socket = socket;
     socket.addEventListener("message", event => {
       try {
-        const value = JSON.parse(String(event.data)) as Partial<ComputerState> & { type?: string };
-        if (value?.type === "cursor") { this.cursor = value; this.emit("cursor", value); }
+        const value = JSON.parse(String(event.data)) as Partial<ComputerState> & { type?: string; ttlMs?: unknown };
+        if (value?.type === "cursor") { this.remember(value); this.emit("cursor", value); }
         else if (value?.type === "state") this.emit("state", checkState(value));
         else throw new Error("Computer 状态回执无效");
       } catch (error) {
@@ -81,6 +87,11 @@ export class ComputerEvents extends EventTarget {
       this.socket = null;
       this.retry("状态连接中断");
     });
+  }
+
+  private remember(value: { ttlMs?: unknown }) {
+    const ttlMs = typeof value.ttlMs === "number" && Number.isFinite(value.ttlMs) ? value.ttlMs : 0;
+    this.latestCursor = { value, expiresAt: Date.now() + ttlMs };
   }
 
   private retry(reason: string) {

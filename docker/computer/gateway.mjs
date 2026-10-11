@@ -71,10 +71,11 @@ let activity = { revision: 0, noticeId: 0, active: false, action: "", updatedAt:
 let activeTargetId = "";
 const legacyCall = new AsyncLocalStorage();
 const browserSnapshots = new Map();
-const eventClients = new Set();
+// 订阅者 → 它最近收到的状态快照；按订阅者去重，新订阅者也能补到最新状态。
+const eventClients = new Map();
 let cursor = { revision: 0, point: null, error: "" };
-let lastState = "";
 let stateTimer = null;
+let stateDirty = false;
 
 function cursorEvent() {
   const ttlMs = cursor.point ? Math.max(0, cursor.point.expiresAt - Date.now()) : 0;
@@ -83,7 +84,7 @@ function cursorEvent() {
 
 /** 慢消费者直接断开，不能让操作等待显示或积压事件。 */
 function broadcast(event) {
-  for (const client of eventClients) {
+  for (const client of eventClients.keys()) {
     if (!client.write(event)) client.destroy();
   }
 }
@@ -96,12 +97,14 @@ function publishCursor({ point, error = "" }) {
 }
 
 async function stateEvent() {
+  // 先等目录，再同步读取其余字段，避免拿等待之前的旧值。
+  const targets = driver && computer.state === "ready" ? await driver.targets() : [];
   const state = {
     type: "state",
     noticeId: activity.noticeId,
     active: activity.active,
     browser: { state: computer.state, error: computer.error },
-    targets: driver && computer.state === "ready" ? await driver.targets() : [],
+    targets,
     control: Boolean(driver?.control),
   };
   return `data: ${JSON.stringify(state)}\n\n`;
@@ -109,19 +112,28 @@ async function stateEvent() {
 
 /** 运行时、活动、控制权和目录变化时触发；合并 50ms 内的变化，内容不变就不推送。 */
 function scheduleState() {
-  if (stateTimer) return;
-  stateTimer = setTimeout(async () => {
-    try {
-      const event = await stateEvent();
-      if (event !== lastState) broadcast((lastState = event));
-    } catch (error) {
-      // 目录读取可能撞上浏览器正在关闭；稍后重读一次，不推送半截状态。
-      console.error("Computer state:", error.message);
-      setTimeout(scheduleState, 1000);
-    } finally {
-      stateTimer = null;
+  stateDirty = true;
+  if (!stateTimer) stateTimer = setTimeout(publishState, 50);
+}
+
+async function publishState() {
+  // 读取期间到达的变化只记为 dirty，读完后补发一次最新快照，不能丢。
+  stateDirty = false;
+  try {
+    const event = await stateEvent();
+    for (const [client, sent] of eventClients) {
+      if (sent === event) continue;
+      eventClients.set(client, event);
+      if (!client.write(event)) client.destroy();
     }
-  }, 50);
+  } catch (error) {
+    // 目录读取可能撞上浏览器正在关闭；稍后重读一次，不推送半截状态。
+    console.error("Computer state:", error.message);
+    setTimeout(scheduleState, 1000);
+  } finally {
+    stateTimer = null;
+    if (stateDirty) scheduleState();
+  }
 }
 
 class InputError extends Error {}
@@ -906,8 +918,10 @@ const server = createServer(async (request, response) => {
       const snapshot = await stateEvent();
       response.writeHead(200, {"content-type": "text/event-stream", "cache-control": "no-store"});
       response.write(snapshot + cursorEvent());
-      eventClients.add(response);
+      eventClients.set(response, snapshot);
       response.once("close", () => eventClients.delete(response));
+      // 快照读取期间可能有变化已经广播过，补一次核对。
+      scheduleState();
     } else if (request.method === "GET" && url.pathname === "/targets") {
       json(response, 200, { targets: driver && computer.state === "ready" ? await driver.targets() : [],
         control: Boolean(driver?.control) });
@@ -1078,7 +1092,7 @@ async function stop() {
   stopping = true;
   clearTimeout(refreshTimer);
   server.close();
-  for (const client of eventClients) client.end();
+  for (const client of eventClients.keys()) client.end();
   openCliServer.close();
   const timer = setTimeout(() => {
     console.error("Computer shutdown timed out");
