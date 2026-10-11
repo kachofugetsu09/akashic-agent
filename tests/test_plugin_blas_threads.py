@@ -53,4 +53,5 @@ def test_explicit_thread_setting_is_left_to_the_user(tmp_path: Path):
 
 @pytest.mark.skipif((os.cpu_count() or 1) < 2 or not Path("/proc/self/task").is_dir(), reason="需要多核")
 def test_numpy_outside_plugin_host_keeps_library_default(tmp_path: Path):
-    assert _probe(tmp_path, "plain")["threads"] > 1
+    threads = _probe(tmp_path, "plain")["threads"]
+    assert isinstance(threads, int) and threads > 1
