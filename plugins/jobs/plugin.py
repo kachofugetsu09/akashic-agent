@@ -59,21 +59,22 @@ class Jobs:
         self._ctx = ctx
         self._config = config
         self._board = JobBoard(config.max_consecutive_wakes)
-        self._tasks: set[asyncio.Task[None]] = set()
+        self._queue: asyncio.Queue[JobWatch] = asyncio.Queue()
 
     def watch(self, job: JobWatch) -> None:
-        # 登记发生在生产方工具调用内；等待任务不能继承调用方持有的 Task 句柄。
-        task = asyncio.create_task(
-            self._follow(job), name=f"job-notice:{job.job_id}", context=independent_task_context(),
-        )
-        self._tasks.add(task)
-        task.add_done_callback(self._tasks.discard)
+        self._queue.put_nowait(job)
 
-    async def stop(self) -> None:
-        tasks = tuple(self._tasks)
-        for task in tasks:
-            _ = task.cancel()
-        _ = await asyncio.gather(*tasks, return_exceptions=True)
+    def origin_source(self, session_id: str, source: str) -> str:
+        return self._board.origin_source(session_id, source)
+
+    async def run(self) -> None:
+        """插件任务持有全部等待者；卸载先取消并排空，再释放运行许可。"""
+        async with asyncio.TaskGroup() as tasks:
+            while True:
+                job = await self._queue.get()
+                _ = tasks.create_task(
+                    self._follow(job), name=f"job-notice:{job.job_id}", context=independent_task_context(),
+                )
 
     # 每一步准备材料时调用：当前输入领取未读结算，并在该输入的后续步骤中保持可回放。
     async def materials(self, snapshot: tuple[Message, ...], source: str) -> Mapping[str, object]:
@@ -105,10 +106,9 @@ class Jobs:
             async with self._ctx.runtime_scope():
                 await self._wake(notice)
         except CompositionError:
-            self._board.release_wake(notice)
+            return
         except Exception:
             logger.exception("后台任务完成唤醒失败 job=%s", job.job_id)
-            self._board.release_wake(notice)
 
     # 在原会话槽空闲后运行一轮；槽内再次核对，忙时已被回合领取的结算不再唤醒。
     async def _wake(self, notice: Notice) -> None:
@@ -124,7 +124,12 @@ class Jobs:
             reminders: tuple[Mapping[str, object], ...] = (
                 {"name": "background_job", "text": notice.text(), "priority": 500},
             )
-            return await ctx.require(REPLY_PROGRAM)(task, current, source, reminders, check_admission=check_admission)
+            try:
+                return await ctx.require(REPLY_PROGRAM)(task, current, source, reminders, check_admission=check_admission)
+            except (Exception, asyncio.CancelledError):
+                # complete 会在新输入抢占后重试；领取必须在本次执行退出时释放。
+                board.release_wake(notice)
+                raise
 
         message = await ctx.require(CONVERSATION_COMPLETE)(job.session_id, report)
         if message.source != source:
@@ -161,6 +166,6 @@ class Jobs:
 async def apply(ctx: Context) -> None:
     config = Config.model_validate(ctx.config)
     jobs = Jobs(ctx, config)
-    _ = await ctx.effect(lambda: jobs.stop, label="job-notices")
+    _ = await ctx.spawn(jobs.run(), name="job-notices")
     _ = await ctx.provide(JOB_NOTICES, jobs)
     _ = await ctx.require(MATERIALS).register(ctx, name="job-notices", kind="context", prepare=jobs.materials)

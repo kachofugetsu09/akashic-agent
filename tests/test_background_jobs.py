@@ -3,6 +3,7 @@ import asyncio
 import json
 import shutil
 from datetime import UTC, datetime
+from functools import partial
 from pathlib import Path
 
 import pytest
@@ -10,7 +11,7 @@ import pytest
 from agent.plugin_composition import ServiceKey
 from plugins.channels.contract import CHANNEL_INPUT_V2 as CHANNEL_INPUT, ChannelInboundMessage
 from plugins.jobs.board import JobBoard
-from plugins.jobs.contract import JobOutcome, JobWatch
+from plugins.jobs.contract import JOB_NOTICES, JobOutcome, JobWatch
 from plugins.ledger.contract import Input, Output, ToolResult
 from tests.test_default_reply import application, live_root
 
@@ -178,9 +179,29 @@ _FIXTURE_CLEANUP = '''    await ctx.provide(ServiceKey("tools.cleanup.v1"), part
 '''
 
 
+def _collecting_shell_sources(sources: Path, *, tool: str, chain: bool) -> None:
+    """夹具模型收到通知后实际领取或停止后台进程，不只检查提醒文字。"""
+    _shell_sources(sources)
+    provider = sources / "test_provider/plugin.py"
+    text = provider.read_text().replace('return LLMResponse("finished")', '''if len(calls) in (3, 6):
+                import re
+                execution_id = int(re.findall(r"后台任务 shell-(\\d+)", str(request.messages))[-1])
+                return LLMResponse(None, [ToolCall("collect-call", COLLECT_TOOL, {"execution_id": execution_id})])
+            return LLMResponse("finished")'''.replace("COLLECT_TOOL", repr(tool)))
+    if chain:
+        text = text.replace('return LLMResponse("finished")', '''if len(calls) == 4:
+                return LLMResponse(None, [ToolCall("next-job", "shell", {
+                    "command": "sleep 1; echo next-background-done", "description": "next background",
+                    "run_in_background": True, "yield_time_ms": 250})])
+            return LLMResponse("finished")''')
+    provider.write_text(text)
+
+
 @pytest.mark.asyncio
-async def test_background_shell_outlives_turn_and_wakes_session(tmp_path):
-    async with application(tmp_path, replying=True, extra_sources=_shell_sources, shell=True) as (log, host):
+@pytest.mark.parametrize("tool,chain", [("write_stdin", False), ("task_stop", False), ("write_stdin", True)])
+async def test_background_shell_outlives_turn_and_wakes_session(tmp_path, tool, chain):
+    async with application(tmp_path, replying=True, extra_sources=partial(_collecting_shell_sources, tool=tool, chain=chain),
+                           shell=True) as (log, host):
         calls, _gate = await _send(host)
         rows = await _rows_until(log, lambda rows: _finished(rows, 1))
         # 1. 首个窗口内仍在运行：工具结果给出后台句柄，回合正常结束。
@@ -190,4 +211,75 @@ async def test_background_shell_outlives_turn_and_wakes_session(tmp_path):
         # 2. 回合清理不回收后台分区；进程自然退出后唤醒原会话。
         rows = await _rows_until(log, lambda rows: _finished(rows, 2))
         assert rows[-1].source.startswith("job:shell-")
-        assert "status: completed，exit_code=0" in str(calls[-1].messages)
+        assert "status: completed，exit_code=0" in str(calls[2].messages)
+        collected = [row for row in rows if isinstance(row.body, ToolResult)][1]
+        assert collected.body.outcome == "success"
+        text = "\n".join(str(part.value) for part in collected.body.parts)
+        assert ('background-done' if tool == "write_stdin" else '"status": "stopped"') in text
+        if chain:
+            # 唤醒中追加的后台任务仍归原来源，下一次结算也能唤醒并读取。
+            rows = await _rows_until(log, lambda rows: _finished(rows, 3))
+            collected = [row for row in rows if isinstance(row.body, ToolResult)][-1]
+            assert collected.body.outcome == "success"
+            assert "next-background-done" in str(collected.body.parts)
+
+
+def _gated_wake_sources(sources: Path) -> None:
+    """将唤醒的模型请求停在明确边界，观察新输入和卸载的真实取消路径。"""
+    _job_sources(sources)
+    provider = sources / "test_provider/plugin.py"
+    text = provider.read_text().replace("calls = []", """calls = []
+    import asyncio
+    wake_started, wake_release, wake_exited = asyncio.Event(), asyncio.Event(), asyncio.Event()""")
+    text = text.replace('return LLMResponse("finished")', '''if len(calls) == 3:
+                wake_started.set()
+                try:
+                    await wake_release.wait()
+                finally:
+                    wake_exited.set()
+            return LLMResponse("finished")''')
+    text += '\n    await ctx.provide(ServiceKey("fixture.wake_events"), (wake_started, wake_release, wake_exited))\n'
+    provider.write_text(text)
+
+
+@pytest.mark.asyncio
+async def test_new_input_claims_notice_from_preempted_wake(tmp_path):
+    async with application(tmp_path, replying=True, extra_sources=_gated_wake_sources) as (log, host):
+        calls, gate = await _send(host)
+        original = await _rows_until(log, lambda rows: _finished(rows, 1))
+        async with live_root(host) as root:
+            started, release, exited = root.context.require(ServiceKey("fixture.wake_events"))
+            gate.set()
+            try:
+                await asyncio.wait_for(started.wait(), 5)
+                await root.context.require(CHANNEL_INPUT)("test:room", "u2", ChannelInboundMessage(
+                    "test", "user", "room", "new user message", datetime(2026, 10, 11, tzinfo=UTC), {},
+                ))
+                rows = await _rows_until(log, lambda rows: _finished(rows, 2))
+                assert exited.is_set()
+                assert "后台任务 fake-1" in str(calls[3].messages)
+                assert rows[-1].source == "conversation"
+                assert rows[:len(original)] == original
+            finally:
+                release.set()
+
+
+@pytest.mark.asyncio
+async def test_jobs_unload_cancels_active_wake(tmp_path):
+    async with application(tmp_path, replying=True, extra_sources=_gated_wake_sources) as (log, host):
+        _calls, gate = await _send(host)
+        original = await _rows_until(log, lambda rows: _finished(rows, 1))
+        async with live_root(host) as root:
+            started, release, exited = root.context.require(ServiceKey("fixture.wake_events"))
+            jobs = root.context.require(JOB_NOTICES)
+            handle = jobs._ctx.fiber
+            gate.set()
+            try:
+                await asyncio.wait_for(started.wait(), 5)
+                # 插件卸载必须主动取消请求，不能等夹具放行后才完成。
+                async with asyncio.timeout(5):
+                    await handle.dispose()
+                assert exited.is_set()
+                assert log.reader("test:room").snapshot() == original
+            finally:
+                release.set()

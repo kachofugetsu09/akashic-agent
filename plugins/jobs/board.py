@@ -40,6 +40,15 @@ class JobBoard:
     def pending(self, session_id: str) -> tuple[Notice, ...]:
         return tuple(notice for notice in self._notices if notice.job.session_id == session_id)
 
+    def origin_source(self, session_id: str, source: str) -> str:
+        """仅从本会话正在唤醒的登记记录取得原来源，不解析或猜测来源名。"""
+        for notice in self._notices:
+            if (notice.job.session_id == session_id
+                    and source == "job:" + notice.job.job_id
+                    and notice.claimed_by == _WAKE + notice.job.job_id):
+                return notice.job.source
+        return source
+
     # 同一输入的后续步骤看到同一组通知；新输入出现后，旧输入领取过的通知退出。
     def claim(self, session_id: str, source: str, input_id: str) -> tuple[Notice, ...]:
         visible: list[Notice] = []

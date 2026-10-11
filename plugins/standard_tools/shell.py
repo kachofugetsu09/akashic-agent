@@ -192,10 +192,14 @@ class ShellTool:
                 _abandon_before(source.messages, source.messages[-1].source, source.messages[-1].seq),
             )
         )
-        background_owner = (
-            None if source is None or self._settings.owner_key is not None
-            else _background_owner(self._settings, source.messages[-1].session_id, source.messages[-1].source)
-        )
+        background_owner = None
+        background_source = None
+        if source is not None and self._settings.owner_key is None:
+            latest = source.messages[-1]
+            with self._ctx.borrow(JOB_NOTICES) as notices:
+                background_source = (latest.source if notices is None
+                                     else notices.origin_source(latest.session_id, latest.source))
+            background_owner = _background_owner(self._settings, latest.session_id, background_source)
         raw = json_value(arguments)
         try:
             if self._name == "task_stop":
@@ -241,13 +245,13 @@ class ShellTool:
             return denied
         background = None
         if command.run_in_background:
-            if background_owner is None or source is None:
+            if background_owner is None or background_source is None or source is None:
                 return '当前调用上下文不支持后台运行'
             with self._ctx.borrow(JOB_NOTICES) as notices:
                 if notices is None:
                     return '后台运行需要启用 jobs 插件'
             owner = background_owner
-            background = BackgroundTarget(session_id=source.messages[-1].session_id, source=source.messages[-1].source)
+            background = BackgroundTarget(session_id=source.messages[-1].session_id, source=background_source)
         return PreparedCommand(
             background=background, owner_key=owner, command=text, description=command.description,
             argv=shell.derive_argv(text, login=command.login), shell_kind=shell.kind.value,
@@ -271,7 +275,7 @@ class ShellTool:
             return await self._continue(PreparedStdin.model_validate(raw))
         return await self._execute(key, PreparedCommand.model_validate(raw))
 
-    # 回合分区找不到时再查后台分区；两者都属于本会话来源。
+    # 回合分区找不到时再查后台分区；唤醒只继承本会话原来源的后台分区。
     async def _stop(self, stop: PreparedStop) -> ToolResultValue:
         processes = self._ctx.require(PROCESSES)
         stopped = await processes.terminate_execution(self._ctx, stop.owner_key, stop.execution_id)

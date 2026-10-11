@@ -31,5 +31,9 @@ class JobWatch:
 class JobNotices(Protocol):
     def watch(self, job: JobWatch) -> None: ...
 
+    def origin_source(self, session_id: str, source: str) -> str:
+        """当前唤醒可访问登记任务的原来源；其他会话和来源保持原样。"""
+        ...
+
 
 JOB_NOTICES = ServiceKey[JobNotices]("jobs.notices.v1")
