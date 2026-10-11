@@ -39,7 +39,10 @@ def _cache_path(filename: str) -> Path | None:
     except ValueError:
         return None
     source = Path(filename).resolve(strict=False)
-    return root.joinpath(*source.parent.parts[1:], f"{source.stem}.{tag}.pyc")
+    # 与 CPython 相同，优化级别进入文件名；-O 与非 -O 的字节码不能互相复用。
+    level = sys.flags.optimize
+    suffix = f"{tag}.opt-{level}" if level else tag
+    return root.joinpath(*source.parent.parts[1:], f"{source.stem}.{suffix}.pyc")
 
 
 def _read_cached_code(cache_path: Path | None, source_hash: bytes) -> CodeType | None:

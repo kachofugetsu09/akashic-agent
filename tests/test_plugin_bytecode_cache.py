@@ -53,3 +53,30 @@ def test_corrupt_or_disabled_cache_falls_back_to_compile(plugin_source, monkeypa
     cache.unlink()
     assert _run(plugin_source) == 3
     assert not cache.exists()
+
+
+
+def test_optimization_level_has_its_own_cache(plugin_source, tmp_path):
+    import os
+    import subprocess
+    import sys
+
+    plugin_source.write_text("assert False, 'debug only'\nVALUE = 1\n")
+    root = Path(__file__).resolve().parents[1]
+    environment = dict(os.environ, AKASHIC_PLUGIN_HOME=str(tmp_path / "home"),
+                       PYTHONPATH=os.pathsep.join((str(root), str(root / "sdk/python/src"))))
+    probe = (
+        "import sys; from agent.plugins import importer; "
+        "code = importer._compile_source(open(sys.argv[1], 'rb').read(), sys.argv[1]); "
+        "exec(code, {}); print('stripped')"
+    )
+
+    def run(*flags: str) -> str:
+        result = subprocess.run([sys.executable, *flags, "-c", probe, str(plugin_source)],
+                                env=environment, capture_output=True, text=True)
+        return "stripped" if result.returncode == 0 else "asserted"
+
+    # 交替运行：任一级别都不能复用另一级别写入的字节码。
+    assert [run("-O"), run(), run("-O"), run()] == ["stripped", "asserted", "stripped", "asserted"]
+    names = sorted(path.name for path in (tmp_path / "home" / "bytecode").rglob("*.pyc"))
+    assert len(names) == 2 and any(".opt-1." in name for name in names)
