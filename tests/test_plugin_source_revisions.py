@@ -5,6 +5,7 @@ from pathlib import Path
 
 import pytest
 
+from agent.plugins import input_preparation
 from agent.plugins.input_preparation import SOURCE_EXCLUDED_NAMES, _source_revision, source_revisions
 
 
@@ -76,3 +77,19 @@ def test_escaping_symlink_is_rejected(tmp_path: Path):
     (plugin / "escape.py").symlink_to(tmp_path / "outside.py")
     with pytest.raises(RuntimeError, match="越界"):
         _ = source_revisions(plugin)
+
+
+def test_single_revision_walk_hashes_only_requested_digest(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
+    plugin = _tree(tmp_path)
+    expected = (_reference(plugin, runtime_only=True), _reference(plugin, runtime_only=False))
+    created: list[object] = []
+    original = hashlib.sha256
+
+    def counting_sha256() -> object:
+        digest = original()
+        created.append(digest)
+        return digest
+
+    monkeypatch.setattr(input_preparation.hashlib, "sha256", counting_sha256)
+    assert (_source_revision(plugin, runtime_only=True), _source_revision(plugin)) == expected
+    assert len(created) == 2

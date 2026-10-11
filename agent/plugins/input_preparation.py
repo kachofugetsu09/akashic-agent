@@ -154,15 +154,22 @@ def _require_plugin_path(plugin_dir: Path, path: Path, label: str) -> None:
 
 def _source_revision(plugin_dir: Path, *, runtime_only: bool = False) -> str:
     """校验完整源码；仅在比较运行变化时忽略来源标签。"""
-    source, runtime = source_revisions(plugin_dir)
-    return runtime if runtime_only else source
+    (digest,) = _digest_tree(plugin_dir, (not runtime_only,))
+    return digest
 
 
-# 一次遍历同时得到完整摘要与忽略来源标签的运行摘要；两者喂入的字节与分别遍历相同。
+# 一次遍历同时得到完整摘要与忽略来源标签的运行摘要。
 def source_revisions(plugin_dir: Path) -> tuple[str, str]:
-    source, runtime = hashlib.sha256(), hashlib.sha256()
+    source, runtime = _digest_tree(plugin_dir, (True, False))
+    return source, runtime
+
+
+# 每个摘要按是否包含来源标签取条目；喂入的字节与逐个单独遍历完全相同。
+def _digest_tree(plugin_dir: Path, include_label: tuple[bool, ...]) -> tuple[str, ...]:
+    digests = tuple(hashlib.sha256() for _ in include_label)
+    labelled = tuple(digest for digest, include in zip(digests, include_label) if include)
     root = plugin_dir.resolve(strict=False)
-    excluded = SOURCE_EXCLUDED_NAMES - {_SOURCE_LABEL}
+    excluded = SOURCE_EXCLUDED_NAMES - {_SOURCE_LABEL} if labelled else SOURCE_EXCLUDED_NAMES
     for current, directories, filenames in os.walk(plugin_dir, followlinks=False):
         directories[:] = sorted(name for name in directories if name not in excluded)
         current_path = Path(current)
@@ -171,11 +178,11 @@ def source_revisions(plugin_dir: Path) -> tuple[str, str]:
                 continue
             path = current_path / name
             relative = path.relative_to(plugin_dir)
-            digests = (source,) if _SOURCE_LABEL in relative.parts else (source, runtime)
+            targets = labelled if _SOURCE_LABEL in relative.parts else digests
             for chunk in _source_entry_chunks(root, path, relative):
-                for digest in digests:
+                for digest in targets:
                     digest.update(chunk)
-    return source.hexdigest(), runtime.hexdigest()
+    return tuple(digest.hexdigest() for digest in digests)
 
 
 # 单个源码条目参与摘要的字节；越界路径在读取前失败。
