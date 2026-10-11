@@ -411,10 +411,15 @@ def _bundle_plugin(
             "GIT_AUTHOR_DATE": stamp,
             "GIT_COMMITTER_DATE": stamp,
         }
+        # 临时仓库随 with 块删除；关闭自动 gc/maintenance，避免后台进程在清理时仍写对象库。
         git(
             package,
             "-c",
             "commit.gpgSign=false",
+            "-c",
+            "gc.auto=0",
+            "-c",
+            "maintenance.auto=false",
             "commit",
             "-m",
             f"Build {root} from {commit}",
