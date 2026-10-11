@@ -8,7 +8,6 @@ import socket
 import ssl
 
 import httpx
-from PIL import Image, ImageOps
 from plugins.ledger.contract import detect_supported_image_mime
 from core.common.frozen_json import freeze_json
 from dataclasses import (
@@ -894,6 +893,9 @@ def validate_image_attachment_budget(sizes: list[int]) -> None:
 
 def encode_image_bytes(raw: bytes) -> str:
     """从 Artifact 的已核验只读 bytes 构造有界请求图，不重新打开来源路径。"""
+    # Pillow 只服务图片附件；首次编码时加载，缺失依赖在这里原样失败。
+    from PIL import Image, ImageOps
+
     validate_image_attachment_budget([len(raw)])
     mime = detect_supported_image_mime(raw[:4096])
     if mime is None:
