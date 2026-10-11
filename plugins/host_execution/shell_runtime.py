@@ -275,17 +275,18 @@ def _write_snapshot(shell: ResolvedShell, key: _SnapshotKey, env: dict[str, str]
     return target
 
 
+# 快照按 rc 结束时的状态重放：选项先于函数，因为 bash 在 source 时就按当前选项解析函数体
+# （例如 bash-completion 的函数依赖 extglob）；expand_aliases 最后打开，确保别名可用。
 def _assemble_snapshot(shell: ResolvedShell, parts: dict[str, bytes], env: Mapping[str, str]) -> str:
     lines = ["# akashic shell snapshot"]
-    if shell.kind is ShellKind.BASH:
+    options = parts.get("options", b"").decode("utf-8", "replace")
+    if shell.kind is ShellKind.ZSH:
+        lines.extend(f"setopt {name} 2>/dev/null" for name in options.split() if name not in _ZSH_SKIP_OPTIONS)
+    else:
+        lines.append(options)
         lines.append("shopt -s expand_aliases")
     lines.append(parts.get("functions", b"").decode("utf-8", "replace"))
     lines.append(parts.get("aliases", b"").decode("utf-8", "replace"))
-    options = parts.get("options", b"").decode("utf-8", "replace").split()
-    if shell.kind is ShellKind.ZSH:
-        lines.extend(f"setopt {name} 2>/dev/null" for name in options if name not in _ZSH_SKIP_OPTIONS)
-    else:
-        lines.append(parts.get("options", b"").decode("utf-8", "replace"))
     # 只导出 rc 新增或改动的变量，避免覆盖网关按调用设置的环境。
     for entry in parts.get("env", b"").split(b"\0"):
         name, sep, value = entry.decode("utf-8", "replace").partition("=")

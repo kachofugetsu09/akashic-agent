@@ -85,10 +85,9 @@ async def test_exit_waits_for_in_flight_response(tmp_path, server_type):
 async def test_accepted_connection_before_registration_keeps_shutdown_timeout(server_type):
     """真实连接已接受但尚未登记时退出，仍会超时并执行 lifespan 关闭。"""
     events: list[str] = []
-    config = uvicorn.Config(
-        _app(events), host="127.0.0.1", port=0, log_level="critical",
-        timeout_graceful_shutdown=0.03,
-    )
+    config = uvicorn.Config(_app(events), host="127.0.0.1", port=0, log_level="critical")
+    # uvicorn 把该参数标注为 int，但只用于 asyncio.wait_for；测试用亚秒超时保持快速。
+    setattr(config, "timeout_graceful_shutdown", 0.03)
     config.load()
     server = server_type(config)
     server.lifespan = config.lifespan_class(config)
