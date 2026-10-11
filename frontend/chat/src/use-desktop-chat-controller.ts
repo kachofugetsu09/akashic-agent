@@ -833,8 +833,10 @@ export function useDesktopChatController() {
     setModelSelectionDirty(false);
     newChatScopeRef.current = null;
     setNewChatProjectId("");
+    // 空白页仍订阅侧栏摘要；旧会话已清空，重连不会继续跟随旧正文。
+    connect();
     void loadModels("").catch((error: unknown) => reportError(error));
-  }, [closeConnection, loadModels, reportError, setFollowAfter, setMessages, setReplyAvailable, setTimelineMessages]);
+  }, [closeConnection, connect, loadModels, reportError, setFollowAfter, setMessages, setReplyAvailable, setTimelineMessages]);
 
   const startProjectChat = useCallback((projectId: string) => {
     startNewChat();
