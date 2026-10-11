@@ -14,7 +14,7 @@ from uuid import uuid4
 from akashic_sdk import AsyncAkashic, RemoteError
 from agent.plugin_composition import load_endpoint_plan
 from core.common.file_io import run_file_io
-from .socket import is_tcp_endpoint
+from .endpoint import is_tcp_endpoint
 from .token import read_secret
 
 

@@ -1,13 +1,12 @@
 from __future__ import annotations
 
 import asyncio
-import ipaddress
 import logging
 import os
 import stat
-import zlib
 from pathlib import Path
 
+from .endpoint import parse_loopback_tcp
 from .protocol.limits import DEFAULT_CONTROL_FRAME_BYTES
 from .service import ControlService
 from .connection import NdjsonConnection
@@ -29,7 +28,7 @@ class SocketAppServer:
         outbound_queue_size: int = 512,
     ) -> None:
         raw_endpoint = str(endpoint)
-        self._tcp_address = _parse_loopback_tcp(raw_endpoint)
+        self._tcp_address = parse_loopback_tcp(raw_endpoint)
         self.endpoint: str | Path = raw_endpoint if self._tcp_address else Path(raw_endpoint)
         self._service = service
         self._slots = asyncio.Semaphore(max_connections)
@@ -149,40 +148,3 @@ class SocketAppServer:
             if (current.st_dev, current.st_ino) == self._socket_identity:
                 self.endpoint.unlink()
         self._socket_identity = None
-
-
-def _parse_loopback_tcp(endpoint: str) -> tuple[str, int] | None:
-    if endpoint.startswith("/") or endpoint.count(":") != 1:
-        return None
-    host, raw_port = endpoint.rsplit(":", 1)
-    try:
-        address = ipaddress.ip_address(host)
-        port = int(raw_port)
-    except ValueError as exc:
-        raise ValueError(f"无效 app-server TCP endpoint: {endpoint}") from exc
-    if not address.is_loopback:
-        raise ValueError(f"app-server TCP 只允许 loopback: {endpoint}")
-    if not 0 <= port <= 65535:
-        raise ValueError(f"app-server TCP 端口无效: {port}")
-    return host, port
-
-
-def is_tcp_endpoint(endpoint: str) -> bool:
-    return _parse_loopback_tcp(endpoint) is not None
-
-
-def resolve_endpoint(value: str, workspace: Path) -> str:
-    """保留显式端点；Windows 按原路径稳定派生 loopback 端口。"""
-    text = value.strip()
-    if os.name != "nt":
-        return text or str(workspace / "akashic.sock")
-    host, separator, port = text.rpartition(":")
-    if separator and host:
-        try:
-            int(port)
-        except ValueError:
-            pass
-        else:
-            return text
-    seed = zlib.crc32((text or str(workspace)).encode("utf-8")) % 20000
-    return f"127.0.0.1:{20000 + seed}"

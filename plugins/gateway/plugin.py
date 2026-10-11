@@ -14,7 +14,8 @@ from agent.plugin_composition.tasks import RESTART_GATE
 from .factory import build_control_service
 from .frames import FrameBook
 from .migrations.gateway_migrations.helpers.settings import GatewayConfig
-from .socket import SocketAppServer, is_tcp_endpoint, resolve_endpoint
+from .endpoint import is_tcp_endpoint, resolve_endpoint
+from .socket import SocketAppServer
 from .stdio import StdioAppServer
 from .token import ensure_token
 
