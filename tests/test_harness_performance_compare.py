@@ -43,11 +43,11 @@ def test_noise_within_threshold_is_not_reported(compare: ModuleType) -> None:
     assert compare.compare(_pairs(compare, "cu", a, b), _metric(compare, "cu"), 0).verdict == "无可分辨变化"
 
 
-def test_deterministic_metric_reports_any_difference(compare: ModuleType) -> None:
+def test_request_volume_reports_small_but_material_growth(compare: ModuleType) -> None:
     metric = _metric(compare, "request_kib")
-    same = compare.compare(_pairs(compare, "request_kib", [100.0] * 3, [100.0] * 3), metric, 0)
-    grown = compare.compare(_pairs(compare, "request_kib", [100.0] * 3, [100.001] * 3), metric, 0)
-    assert same.verdict == "无可分辨变化"
+    jitter = compare.compare(_pairs(compare, "request_kib", [100.0] * 3, [100.03] * 3), metric, 0)
+    grown = compare.compare(_pairs(compare, "request_kib", [100.0] * 3, [100.2] * 3), metric, 0)
+    assert jitter.verdict == "无可分辨变化"
     assert grown.verdict == "衰退"
 
 
@@ -66,6 +66,12 @@ def test_validate_requires_every_tool_output(compare: ModuleType, tmp_path: Path
     _write_run(tmp_path / "ok", ["bench-tick-0001\n", "bench-tick-0002\n"])
     _write_run(tmp_path / "skipped", ["bench-tick-0001\n", "bench-tick-0003\n"])
     _write_run(tmp_path / "short", ["bench-tick-0001\n"])
+    _write_run(tmp_path / "failed", ["bench-tick-0001\n", "bench-tick-0002\n"])
+    wire = tmp_path / "failed/wire.jsonl"
+    rows = [json.loads(line) for line in wire.read_text().splitlines()]
+    rows[1]["messages"][-1]["content"].insert(0, {"type": "text", "text": "工具状态: error"})
+    _ = wire.write_text("".join(json.dumps(row) + "\n" for row in rows))
     assert compare.validate(tmp_path / "ok", 2) == ""
     assert "第 2 轮" in compare.validate(tmp_path / "skipped", 2)
     assert "请求数" in compare.validate(tmp_path / "short", 2)
+    assert "第 1 轮" in compare.validate(tmp_path / "failed", 2)

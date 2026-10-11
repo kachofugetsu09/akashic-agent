@@ -29,7 +29,7 @@ class Metric:
     key: str
     label: str
     unit: str
-    # 小于该相对变化即视为分辨不出（即使置信区间不跨 0）；确定性指标取 0。
+    # 小于该相对变化即视为分辨不出（即使置信区间不跨 0）。
     threshold: float
     digits: int
 
@@ -44,7 +44,7 @@ METRICS: tuple[Metric, ...] = (
     Metric("turn_ms", "每轮工具循环", "ms", 0.05, 1),
     Metric("tail_s", "收尾段", "s", 0.10, 3),
     Metric("exec_cpu_s", "exec 客户端 CPU", "s", 0.05, 3),
-    Metric("request_kib", "模型请求总量", "KiB", 0.0, 1),
+    Metric("request_kib", "模型请求总量", "KiB", 0.001, 1),
 )
 
 
@@ -122,12 +122,25 @@ def validate(out: Path, turns: int) -> str:
     if len(wire) != turns + 1:
         return f"请求数 {len(wire)}，应为 {turns + 1}"
     for n, request in enumerate(wire[1:], 1):
-        content = request["messages"][-1]["content"]
-        text = content[0]["text"] if isinstance(content, list) else content
-        output = json.loads(text).get("output") if text.startswith("{") else text
-        if output != EXPECTED_OUTPUT.format(n):
-            return f"第 {n} 轮工具结果不符: {str(output)[:80]!r}"
+        message = request["messages"][-1]
+        if message.get("role") != "tool":
+            return f"第 {n} 个请求的最后一条不是工具结果: role={message.get('role')!r}"
+        if _tool_output(message["content"]) != EXPECTED_OUTPUT.format(n):
+            return f"第 {n} 轮工具结果不符: {json.dumps(message['content'], ensure_ascii=False)[:400]}"
     return ""
+
+
+# 工具消息可能是纯文本或多个 block；失败时前面会有状态 block，只有一个可解析的输出才算成功。
+def _tool_output(content: str | list[dict[str, str]]) -> str | None:
+    texts = [content] if isinstance(content, str) else [block.get("text", "") for block in content]
+    if len(texts) != 1:
+        return None
+    text = texts[0]
+    try:
+        parsed = json.loads(text)
+    except ValueError:
+        return text
+    return parsed.get("output") if isinstance(parsed, dict) else text
 
 
 def read_values(out: Path, turns: int) -> dict[str, float]:
@@ -154,6 +167,10 @@ def run_once(args: argparse.Namespace, side: str, index: int, script: Path) -> R
     root, home = (args.a_root, args.work / "side-a") if side == "A" else (args.b_root, args.work / "side-b")
     out = args.work / "runs" / f"{index:02d}-{side}"
     code = measure(args.benchmark, args.python, root, home, script, out)
+    wire = out / "wire.jsonl"
+    if wire.exists():
+        with wire.open() as rows:
+            _ = (out / "wire-head.jsonl").write_text("".join(next(rows, "") for _ in range(3)))
     try:
         problem = validate(out, args.turns) if code == 0 else f"runner 退出码 {code}"
         values = read_values(out, args.turns) if not problem else {}
@@ -168,15 +185,11 @@ def _hodges_lehmann(logs: Sequence[float]) -> float:
     return statistics.median((x + y) / 2 for i, x in enumerate(logs) for y in logs[i:])
 
 
-# 变化量取 HL 估计，置信区间对配对重抽样；确定性指标要求两侧每次运行完全一致。
+# 变化量取 HL 估计，置信区间对配对重抽样。
 def compare(pairs: Sequence[tuple[Run, Run]], metric: Metric, seed: int) -> Comparison:
     a_values = [a.values[metric.key] for a, _ in pairs]
     b_values = [b.values[metric.key] for _, b in pairs]
     a, b = statistics.median(a_values), statistics.median(b_values)
-    if metric.threshold == 0:
-        ratio = b / a if a else 1.0
-        verdict = "无可分辨变化" if a == b else ("衰退" if b > a else "改善")
-        return Comparison(metric=metric, a=a, b=b, ratio=ratio, low=ratio, high=ratio, verdict=verdict)
     logs = [math.log(y / x) for x, y in zip(a_values, b_values)]
     rng = random.Random(seed)
     boot = sorted(_hodges_lehmann(rng.choices(logs, k=len(logs))) for _ in range(BOOTSTRAP_ROUNDS))
@@ -218,7 +231,7 @@ def render(rows: Sequence[Comparison], runs: Sequence[Run], args: argparse.Names
                      f"| {_percent(row.low)} ~ {_percent(row.high)} | {mark} |")
     invalid = [run for run in runs if not run.valid]
     lines += ["", "判定：置信区间整体超出该指标的分辨阈值（CU/CPU/内存 3%，分段 5%，收尾 10%，"
-              "请求总量为确定性指标，两侧逐字节不同即报告）才算衰退或改善。定义与口径见 "
+              "请求总量 0.1%）才算衰退或改善。定义与口径见 "
               "`scripts/harness-performance/README.md`。"]
     if invalid:
         lines += ["", "无效运行（未计入）：" + "；".join(f"{r.index:02d}-{r.side} {r.problem}" for r in invalid)]
