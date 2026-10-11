@@ -17,8 +17,8 @@ from .content import MODEL_CONTENT, ContentOwner
 from .views import CONTENT_VIEWS, ContentViews
 from .litellm_catalog import LiteLlmCapabilityCatalog
 from .model_settings_http import BoundModelControl, rpc_methods
+from .contract import MODEL_CALL_HISTORY
 from .projection import (
-    MODEL_CALL_HISTORY,
     MODEL_CALLS,
     MODEL_DISPLAY,
     MODEL_MESSAGE_CHECKS,
