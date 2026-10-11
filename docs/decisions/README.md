@@ -6,6 +6,7 @@
 
 | ID | 状态 | 主题 | 关联条款 |
 |---|---|---|---|
+| [0112](0112-akasha-reads-validated-consumption.md) | proposed / implemented for review | Akasha 只读面板沿用消费状态校验 | MEM、STA、ERR |
 | [0111](0111-remove-unconsumed-business-ports.md) | proposed / implemented for review | 删除没有消费者的业务端口 | PLG、STA |
 | [0108](0108-bundles-are-composition-inputs.md) | proposed / implemented for review | Bundle 分层整行替换，选择仍唯一 | PLG、RUN、MIG |
 | [0107](0107-restore-missing-vectors-before-reading-memory.md) | proposed / implemented for review | 按原模型空间补齐丢失的派生向量 | STA、MEM、MIG |

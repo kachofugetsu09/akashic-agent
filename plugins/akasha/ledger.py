@@ -5,11 +5,13 @@
 """
 from __future__ import annotations
 
-import json
 import sqlite3
 from collections import Counter
 from contextlib import closing
 from pathlib import Path
+
+from .infrastructure.consumption import Skipped
+from .infrastructure.persistence import load_consumption
 
 _TURN_COLUMNS = (
     "turn.node_id",
@@ -61,15 +63,10 @@ def _row(row: sqlite3.Row) -> dict[str, object]:
     return {name: row[name] for name in _FIELDS}
 
 
-def _consumption(memory_path: Path) -> dict[str, object]:
-    with closing(_connect(memory_path)) as connection:
-        row = connection.execute(
-            "SELECT value FROM metadata WHERE key='consumer_state_json'"
-        ).fetchone()
-    if row is None:
-        return {}
-    payload = json.loads(str(row[0]))
-    return payload if isinstance(payload, dict) else {}
+def _skipped(memory_path: Path) -> tuple[Skipped, ...]:
+    """沿用学习 owner 的持久化校验，不把损坏的消费状态展示成空进度。"""
+    state = load_consumption(memory_path)
+    return () if state is None else state.skipped
 
 
 def read_overview(memory_path: Path) -> dict[str, object]:
@@ -80,19 +77,14 @@ def read_overview(memory_path: Path) -> dict[str, object]:
             "SELECT COUNT(*), COUNT(DISTINCT session_key), MIN(started_at), MAX(started_at) "
             "FROM turn_nodes"
         ).fetchone()
-    state = _consumption(memory_path)
-    skipped = state.get("skipped", [])
-    reasoned = Counter(
-        str(item.get("reason", ""))
-        for item in skipped
-        if isinstance(item, dict)
-    )
+    skipped = _skipped(memory_path)
+    reasoned = Counter(item.reason for item in skipped)
     return {
         "learned": int(learned or 0),
         "sessions": int(sessions or 0),
         "first_learned_at": first_at,
         "last_learned_at": last_at,
-        "skipped": len(skipped) if isinstance(skipped, list) else 0,
+        "skipped": len(skipped),
         "skipped_reasons": dict(sorted(reasoned.items())),
     }
 
@@ -135,18 +127,8 @@ def read_turn(memory_path: Path, node_id: int) -> dict[str, object] | None:
 def list_skipped(memory_path: Path) -> list[dict[str, object]]:
     """列出被明确跳过的闭段；它们不在学习图里。"""
 
-    skipped = _consumption(memory_path).get("skipped", [])
-    result: list[dict[str, object]] = []
-    for item in skipped if isinstance(skipped, list) else []:
-        if not isinstance(item, dict):
-            continue
-        ending = item.get("ending")
-        seq = ending[0] if isinstance(ending, list) and ending else None
-        message_id = ending[1] if isinstance(ending, list) and len(ending) > 1 else ""
-        result.append({
-            "session_key": str(item.get("session_id", "")),
-            "seq": seq,
-            "message_id": str(message_id),
-            "reason": str(item.get("reason", "")),
-        })
-    return result
+    return [
+        {"session_key": item.session_id, "seq": item.ending[0],
+         "message_id": item.ending[1], "reason": item.reason}
+        for item in _skipped(memory_path)
+    ]
