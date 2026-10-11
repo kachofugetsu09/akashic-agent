@@ -2,16 +2,71 @@ from __future__ import annotations
 
 import importlib.abc
 import importlib.util
+import marshal
+import os
 import sys
 from pathlib import Path
 from types import CodeType, ModuleType
 from functools import lru_cache
 
+# PEP 552 checked hash pyc：标志位 0b11，源码哈希一致才复用，不依赖 mtime。
+_HASH_PYC_FLAGS = (0b11).to_bytes(4, "little")
+_PYC_HEADER_SIZE = 16
+
 
 @lru_cache(maxsize=128)
 def _compile_source(source: bytes, filename: str) -> CodeType:
     """只复用相同路径和源码的字节码；模块字典与执行副作用仍每次独立。"""
-    return compile(source, filename, "exec")
+    source_hash = importlib.util.source_hash(source)
+    cache_path = _cache_path(filename)
+    cached = _read_cached_code(cache_path, source_hash)
+    if cached is not None:
+        return cached
+    code = compile(source, filename, "exec")
+    _write_cached_code(cache_path, source_hash, code)
+    return code
+
+
+# 冷启动复用磁盘字节码；路径与标准 __pycache__ 规则一致（含 PYTHONPYCACHEPREFIX）。
+def _cache_path(filename: str) -> Path | None:
+    try:
+        return Path(importlib.util.cache_from_source(filename))
+    except (NotImplementedError, ValueError):
+        return None
+
+
+def _read_cached_code(cache_path: Path | None, source_hash: bytes) -> CodeType | None:
+    if cache_path is None:
+        return None
+    try:
+        data = cache_path.read_bytes()
+    except OSError:
+        return None
+    header = importlib.util.MAGIC_NUMBER + _HASH_PYC_FLAGS + source_hash
+    if data[:_PYC_HEADER_SIZE] != header:
+        return None
+    try:
+        code = marshal.loads(data[_PYC_HEADER_SIZE:])
+    except (EOFError, ValueError, TypeError):
+        return None
+    return code if isinstance(code, CodeType) else None
+
+
+# 只读安装目录或并发写失败时静默放弃缓存，编译结果仍然可用。
+def _write_cached_code(cache_path: Path | None, source_hash: bytes, code: CodeType) -> None:
+    if cache_path is None or sys.dont_write_bytecode:
+        return
+    data = importlib.util.MAGIC_NUMBER + _HASH_PYC_FLAGS + source_hash + marshal.dumps(code)
+    temporary = cache_path.with_name(f"{cache_path.name}.{os.getpid()}.tmp")
+    try:
+        cache_path.parent.mkdir(parents=True, exist_ok=True)
+        _ = temporary.write_bytes(data)
+        os.replace(temporary, cache_path)
+    except OSError:
+        try:
+            temporary.unlink(missing_ok=True)
+        except OSError:
+            pass
 
 
 class FreshSourceLoader(importlib.abc.Loader):
