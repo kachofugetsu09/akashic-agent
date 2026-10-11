@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from functools import partial
+from typing import TYPE_CHECKING
 
 from agent.plugin_composition import Context
 from plugins.channels.contract import CHANNELS, ChannelCapability, ChannelDefinition, InboundIdentity
@@ -11,8 +12,10 @@ from plugins.sources.contract import (
     SOURCE_INTERRUPT_V2 as SOURCE_INTERRUPT,
 )
 
-from .channel import TelegramChannelAdapter, build_telegram_channel
 from .config import TelegramChannelConfig
+
+if TYPE_CHECKING:
+    from .channel import TelegramChannelAdapter, build_telegram_channel
 
 api_version = 3
 name = "telegram_channel"
@@ -29,6 +32,9 @@ async def run(ctx: Context) -> None:
 
     if not config.enabled:
         return
+    # python-telegram-bot 只在启用后加载；停用时不进入插件启动成本。
+    from .channel import build_telegram_channel
+
     async def interrupt(raw: RawInbound) -> bool:
         """先通过来源提交 pause 并等待旧工作，再由原 binding 发送 ack。"""
         session_id = f"telegram:{raw.message.chat_id}"
@@ -48,6 +54,15 @@ async def run(ctx: Context) -> None:
             inbound_identity=InboundIdentity.PROVIDER_MESSAGE_ID,
         ),
     )
+
+
+# 保留模块公开名称；适配器实现按需导入。
+def __getattr__(name: str) -> object:
+    if name in {"TelegramChannelAdapter", "build_telegram_channel"}:
+        from . import channel
+
+        return getattr(channel, name)
+    raise AttributeError(name)
 
 
 __all__ = [

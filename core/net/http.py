@@ -295,11 +295,15 @@ class SharedHttpResources:
     _closed: bool = field(init=False, default=False)
 
     def __post_init__(self) -> None:
+        # 两个客户端的 TLS 信任配置相同，共用一次 CA 加载。
+        ssl_context = httpx.create_ssl_context()
         external_client = httpx.AsyncClient(
-            limits=httpx.Limits(max_connections=20, max_keepalive_connections=10)
+            verify=ssl_context,
+            limits=httpx.Limits(max_connections=20, max_keepalive_connections=10),
         )
         local_client = httpx.AsyncClient(
-            limits=httpx.Limits(max_connections=10, max_keepalive_connections=5)
+            verify=ssl_context,
+            limits=httpx.Limits(max_connections=10, max_keepalive_connections=5),
         )
         self._clients = [external_client, local_client]
         self.external_default = HttpRequester(
