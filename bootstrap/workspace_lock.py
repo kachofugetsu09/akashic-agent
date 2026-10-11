@@ -5,11 +5,12 @@ from pathlib import Path
 from typing import IO
 
 
-class WorkspaceInstanceLock:
-    """保证一个 workspace 同时只有一个 runtime owner。"""
+class _FileLock:
+    """独占一个诊断锁文件，内核锁和文件句柄由同一对象持有。"""
 
-    def __init__(self, workspace: Path) -> None:
-        self.path = workspace / ".instance.lock"
+    def __init__(self, path: Path, conflict: str) -> None:
+        self.path = path
+        self._conflict = conflict
         self._stream: IO[str] | None = None
 
     def acquire(self) -> None:
@@ -32,7 +33,7 @@ class WorkspaceInstanceLock:
             owner = stream.read().strip() or "unknown"
             stream.close()
             raise RuntimeError(
-                f"workspace 已由其他 runtime 占用: {self.path} owner={owner}"
+                f"{self._conflict}: {self.path} owner={owner}"
             ) from exc
 
         # 2. 获取后刷新诊断 owner，不把文件存在误当成锁。
@@ -61,60 +62,18 @@ class WorkspaceInstanceLock:
             stream.close()
 
 
-class PluginPublicationLock:
+class WorkspaceInstanceLock(_FileLock):
+    """保证一个 workspace 同时只有一个 runtime owner。"""
+
+    def __init__(self, workspace: Path) -> None:
+        super().__init__(workspace / ".instance.lock", "workspace 已由其他 runtime 占用")
+
+
+class PluginPublicationLock(_FileLock):
     """保证一个 plugin-home 同时只有一个发布或消费 owner。"""
 
     def __init__(self, plugins_home: Path) -> None:
-        self.path = plugins_home / ".publication.lock"
-        self._stream: IO[str] | None = None
-
-    def acquire(self) -> None:
-        """非阻塞取得 plugin-home 发布锁，并记录当前进程。"""
-
-        # 1. 锁定共享 cache/manifest owner，而不是某一个 workspace。
-        self.path.parent.mkdir(parents=True, exist_ok=True)
-        stream = self.path.open("a+", encoding="utf-8")
-        try:
-            if os.name == "nt":
-                import msvcrt
-
-                msvcrt.locking(stream.fileno(), msvcrt.LK_NBLCK, 1)
-            else:
-                import fcntl
-
-                fcntl.flock(stream.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
-        except OSError as exc:
-            stream.seek(0)
-            owner = stream.read().strip() or "unknown"
-            stream.close()
-            raise RuntimeError(
-                f"plugin-home 已有发布或消费 owner: {self.path} owner={owner}"
-            ) from exc
-
-        # 2. 文件内容只用于诊断，内核锁拥有权才是事实。
-        stream.seek(0)
-        stream.truncate()
-        stream.write(str(os.getpid()))
-        stream.flush()
-        self._stream = stream
-
-    def release(self) -> None:
-        stream = self._stream
-        self._stream = None
-        if stream is None:
-            return
-        try:
-            if os.name == "nt":
-                import msvcrt
-
-                stream.seek(0)
-                msvcrt.locking(stream.fileno(), msvcrt.LK_UNLCK, 1)
-            else:
-                import fcntl
-
-                fcntl.flock(stream.fileno(), fcntl.LOCK_UN)
-        finally:
-            stream.close()
+        super().__init__(plugins_home / ".publication.lock", "plugin-home 已有发布或消费 owner")
 
 
 class WorkspaceMaintenanceLock:

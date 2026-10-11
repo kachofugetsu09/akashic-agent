@@ -38,11 +38,13 @@ from infra.persistence.json_store import atomic_write_text
 from core.common.file_io import run_file_io
 from plugins.ledger.contract import MessageCatalog
 from plugins.ledger.contract import ContentPart, Control, Input, Message, Output, ToolResult
-from ._boundaries import (
-    COMPACTION_READER, COMPACTION_SUMMARIES, CONTENT, CONTEXT, MATERIALS,
-    CompactionReader, ContentFacts, ContextBuilder, PartitionedSummary, StoredSummary, SummaryLookup,
-    TURN_PROJECTION, TurnProjection,
+from plugins.compaction.contract import (
+    COMPACTION_READER, COMPACTION_SUMMARIES, CompactionReader,
+    PartitionedSummary, StoredSummary, SummaryLookup,
 )
+from plugins.content.contract import CONTENT, Content
+from plugins.context.contract import CONTEXT, MATERIALS_V4, ContextBuilder
+from plugins.turn_projection.contract import TURN_PROJECTION, TurnProjection
 from .llm_json import load_json_object_loose
 
 if TYPE_CHECKING:
@@ -68,7 +70,7 @@ workspace_files = (
 )
 
 MaterialData = Mapping[str, object]
-inject = (CHAT_MODELS, MATERIALS, BINDINGS, MESSAGE_CATALOG, CONTENT, CONTEXT,
+inject = (CHAT_MODELS, MATERIALS_V4, BINDINGS, MESSAGE_CATALOG, CONTENT, CONTEXT,
           TURN_PROJECTION, COMPACTION_SUMMARIES, COMPACTION_READER)
 
 
@@ -744,7 +746,7 @@ async def project(
     message: Message, *, reader: MessageReader, bindings: Bindings,
     store: MarkdownProfileStore, models: ChatModels, lock_path: Path,
     sources: tuple[str, ...], projection: TurnProjection,
-    content: ContentFacts,
+    content: Content,
     context: ContextBuilder,
     summaries: SummaryLookup,
     compaction: CompactionReader | None,
@@ -924,7 +926,7 @@ async def apply(ctx: Context) -> None:
             except asyncio.CancelledError:
                 pass
 
-    _ = await ctx.require(MATERIALS).register(ctx, kind="profile", name="markdown_memory", prepare=prepare, prompt=True, priority=200)
+    _ = await ctx.require(MATERIALS_V4).register(ctx, kind="profile", name="markdown_memory", prepare=prepare, prompt=True, priority=200)
     _ = await ctx.on(RUNTIME_STARTED, start)
     _ = await ctx.on(RUNTIME_STOPPING, stop)
 

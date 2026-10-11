@@ -83,7 +83,6 @@ async def run(directory: Path) -> dict[str, bool]:
 
     try:
         await host.load_all()
-        await host.start_runtime()
         root = host.live_root
         assert root is not None
         identity, pid = await start_process()
@@ -120,7 +119,6 @@ async def run(directory: Path) -> dict[str, bool]:
     host = PluginManager(workspace=workspace, plugin_dirs=[probe.parent], installed_cache_root=home / "cache")
     try:
         await host.load_all()
-        await host.start_runtime()
         assert host._active_generations["timer@lab"].fiber.state == "active"
         assert host._active_generations["process_probe"].fiber.state != "active"
     finally:

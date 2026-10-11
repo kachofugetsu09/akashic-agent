@@ -298,39 +298,6 @@ def _append_bytes(
     return stream.getvalue()
 
 
-def _append_tree(
-    archive: bytes,
-    root: Path,
-    prefix: str,
-    *,
-    mtime: int,
-) -> bytes:
-    result = archive
-    for path in sorted(root.rglob("*")):
-        relative = path.relative_to(root).as_posix()
-        name = f"{prefix.rstrip('/')}/{relative}"
-        if path.is_dir():
-            result = _append_bytes(
-                result,
-                name + "/",
-                b"",
-                mtime=mtime,
-                mode=0o755,
-                type=tarfile.DIRTYPE,
-            )
-            continue
-        if not path.is_file():
-            raise RuntimeError(f"Web 静态产物含不支持的文件类型: {path}")
-        result = _append_bytes(
-            result,
-            name,
-            path.read_bytes(),
-            mtime=mtime,
-            mode=0o755 if os.access(path, os.X_OK) else 0o644,
-        )
-    return result
-
-
 def _copy_bundles(repository: Path, commit: str, output: Path) -> list[dict[str, str]]:
     """发布固定提交的完整声明文件，不在构建时替用户选择 mode。"""
     records = []

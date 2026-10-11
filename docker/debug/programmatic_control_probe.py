@@ -211,43 +211,6 @@ class JsonRpcSocketClient:
             if "method" in message:
                 self._pending_notifications.append(message)
 
-    def wait_terminal(
-        self,
-        turn_id: str,
-        *,
-        timeout: float = SCENARIO_DEADLINE_S,
-    ) -> dict[str, Any]:
-        deadline = time.monotonic() + timeout
-        while True:
-            for index, event in enumerate(self._pending_notifications):
-                if _is_terminal_event(event, turn_id):
-                    return self._pending_notifications.pop(index)
-            event = self._receive(deadline)
-            if _is_terminal_event(event, turn_id):
-                return event
-            if "method" in event:
-                self._pending_notifications.append(event)
-
-    def wait_notification(
-        self,
-        method: str,
-        *,
-        turn_id: str | None = None,
-        timeout: float = SCENARIO_DEADLINE_S,
-    ) -> dict[str, Any]:
-        """等待指定 method/turn notification，并缓存其他事件。"""
-
-        deadline = time.monotonic() + timeout
-        while True:
-            for index, event in enumerate(self._pending_notifications):
-                if _matches_event(event, method, turn_id):
-                    return self._pending_notifications.pop(index)
-            event = self._receive(deadline)
-            if _matches_event(event, method, turn_id):
-                return event
-            if "method" in event:
-                self._pending_notifications.append(event)
-
     def wait_session_event(
         self,
         event_type: str,
@@ -308,166 +271,6 @@ class JsonRpcSocketClient:
         }
         with self._events_path.open("a", encoding="utf-8") as stream:
             stream.write(json.dumps(record, ensure_ascii=False) + "\n")
-
-
-def _is_terminal_event(event: dict[str, Any], turn_id: str) -> bool:
-    return _matches_event(event, "turn/completed", turn_id)
-
-
-def _matches_event(
-    event: dict[str, Any], method: str, turn_id: str | None = None
-) -> bool:
-    if event.get("method") != method:
-        return False
-    if turn_id is None:
-        return True
-    params = event.get("params")
-    if not isinstance(params, dict):
-        return False
-    event_turn_id = params.get("turnId")
-    if event_turn_id is None and isinstance(params.get("turn"), dict):
-        event_turn_id = params["turn"].get("id")
-    return event_turn_id == turn_id
-
-
-def _event_turn(event: dict[str, Any]) -> dict[str, Any]:
-    params = event.get("params")
-    if not isinstance(params, dict) or not isinstance(params.get("turn"), dict):
-        raise GateFailure(f"turn event 缺少 turn payload：{event!r}")
-    return cast(dict[str, Any], params["turn"])
-
-
-def _recorded_turn_notifications(path: Path, turn_id: str) -> list[dict[str, Any]]:
-    """从原始协议记录中提取指定 turn 的服务端通知。"""
-
-    notifications: list[dict[str, Any]] = []
-    for line in path.read_text(encoding="utf-8").splitlines():
-        record = json.loads(line)
-        message = record.get("message")
-        if (
-            record.get("direction") == "server"
-            and isinstance(message, dict)
-            and "method" in message
-            and _matches_event(message, str(message["method"]), turn_id)
-        ):
-            notifications.append(cast(dict[str, Any], message))
-    return notifications
-
-
-def _tool_lifecycle(
-    notifications: list[dict[str, Any]],
-    tool_name: str,
-) -> tuple[dict[str, Any], dict[str, Any]]:
-    """返回指定工具同 ID 的 started/completed item。"""
-
-    started = [
-        cast(dict[str, Any], event.get("params", {}).get("item"))
-        for event in notifications
-        if event.get("method") == "item/started"
-        and isinstance(event.get("params", {}).get("item"), dict)
-        and event["params"]["item"].get("type") == "toolCall"
-        and event["params"]["item"].get("data", {}).get("name") == tool_name
-    ]
-    if len(started) != 1:
-        raise GateFailure(f"{tool_name} started item 数量异常：{len(started)}")
-    item_id = started[0].get("id")
-    completed = [
-        cast(dict[str, Any], event.get("params", {}).get("item"))
-        for event in notifications
-        if event.get("method") == "item/completed"
-        and isinstance(event.get("params", {}).get("item"), dict)
-        and event["params"]["item"].get("id") == item_id
-    ]
-    if len(completed) != 1:
-        raise GateFailure(f"{tool_name} completed item 数量异常：{len(completed)}")
-    return started[0], completed[0]
-
-
-def _wait_tool_started(
-    client: JsonRpcSocketClient,
-    turn_id: str,
-    tool_name: str,
-) -> dict[str, Any]:
-    """等待指定 turn 的真实工具 started 通知。"""
-
-    deadline = time.monotonic() + SCENARIO_DEADLINE_S
-    while time.monotonic() < deadline:
-        event = client.wait_notification(
-            "item/started",
-            turn_id=turn_id,
-            timeout=deadline - time.monotonic(),
-        )
-        item = event.get("params", {}).get("item")
-        if (
-            isinstance(item, dict)
-            and item.get("type") == "toolCall"
-            and item.get("data", {}).get("name") == tool_name
-        ):
-            return cast(dict[str, Any], item)
-    raise GateFailure(f"等待工具 started 超时：turn={turn_id} tool={tool_name}")
-
-
-def _turn_projection(turn: dict[str, Any]) -> dict[str, Any]:
-    """移除随机标识与时间，只保留 channel parity 所需领域事实。"""
-
-    raw_items = turn.get("items")
-    if not isinstance(raw_items, list):
-        raise GateFailure(f"turn items 非数组：{turn!r}")
-    items = []
-    for raw_item in raw_items:
-        if not isinstance(raw_item, dict):
-            raise GateFailure(f"turn item 非对象：{raw_item!r}")
-        data = raw_item.get("data")
-        if isinstance(data, dict):
-            data = dict(data)
-            data.pop("timestamp", None)
-            metadata = data.get("metadata")
-            if isinstance(metadata, dict):
-                stable_metadata = dict(metadata)
-                stable_metadata.pop("client_request_id", None)
-                stable_metadata.pop("client_message_id", None)
-                stable_metadata.pop("effects", None)
-                data["metadata"] = stable_metadata
-        if raw_item.get("type") == "assistantMessage" and isinstance(data, dict):
-            session_message_id = data.get("sessionMessageId")
-            if isinstance(session_message_id, str):
-                data["sessionMessageId"] = "<session-message-id>"
-            metadata = data.get("metadata")
-            if isinstance(metadata, dict):
-                stable_metadata = dict(metadata)
-                for volatile_key in (
-                    "client_request_id",
-                    "control_turn_id",
-                    "turn_duration_ms",
-                    "context_retry",
-                ):
-                    stable_metadata.pop(volatile_key, None)
-                persisted_id = stable_metadata.get("persisted_user_message_id")
-                if isinstance(persisted_id, str):
-                    stable_metadata["persisted_user_message_id"] = (
-                        "<persisted-user-message-id>"
-                    )
-                persisted_ids = stable_metadata.get("persisted_user_message_ids")
-                if isinstance(persisted_ids, list):
-                    stable_metadata["persisted_user_message_ids"] = [
-                        "<persisted-user-message-id>" for _ in persisted_ids
-                    ]
-                data["metadata"] = stable_metadata
-        items.append({"type": raw_item.get("type"), "data": data})
-    error = turn.get("error")
-    error_class = None
-    if isinstance(error, dict):
-        error_class = {
-            "type": error.get("type"),
-            "retryable": error.get("retryable"),
-        }
-    return {
-        "status": turn.get("status"),
-        "finalResponse": turn.get("finalResponse"),
-        "items": items,
-        "usage": turn.get("usage"),
-        "error": error_class,
-    }
 
 
 def _receive_web_follow_rows(
@@ -560,17 +363,6 @@ def _wait_message_log_rows(
         f"Message 日志未在 deadline 内达到前缀：session={session_id} "
         f"minimum={minimum} required={sorted(required_ids)} rows={last_rows!r}"
     )
-
-
-def _extract_id(response: dict[str, Any], resource: str) -> str:
-    result = response.get("result")
-    if not isinstance(result, dict):
-        raise GateFailure(f"{resource} response 缺少 result 对象")
-    nested = result.get(resource)
-    identifier = nested.get("id") if isinstance(nested, dict) else result.get("id")
-    if not isinstance(identifier, str) or not identifier:
-        raise GateFailure(f"{resource} response 缺少稳定 id：{result!r}")
-    return identifier
 
 
 def _http_json(
@@ -926,41 +718,6 @@ def _release_barrier(model_url: str, name: str) -> None:
     result = _http_json("POST", f"{model_url}/control/barriers/{name}/release")
     if not isinstance(result, dict) or result.get("released") is not True:
         raise GateFailure(f"barrier 释放失败：{name} {result!r}")
-
-
-def _start_thread(client: JsonRpcSocketClient, check_id: str) -> str:
-    return _extract_id(
-        client.request("thread/start", {"metadata": {"gate": check_id}}),
-        "thread",
-    )
-
-
-def _start_turn(
-    client: JsonRpcSocketClient,
-    thread_id: str,
-    text: str,
-    *,
-    detached: bool = False,
-) -> str:
-    return _extract_id(
-        client.request(
-            "turn/start",
-            {
-                "threadId": thread_id,
-                "input": text,
-                "metadata": {},
-                "detached": detached,
-            },
-        ),
-        "turn",
-    )
-
-
-def _terminal_status(event: dict[str, Any]) -> str:
-    status = _event_turn(event).get("status")
-    if not isinstance(status, str):
-        raise GateFailure(f"terminal event 缺少 status：{event!r}")
-    return status
 
 
 def _message_text(item: object) -> str:
@@ -4913,20 +4670,6 @@ def _workspace_lock_check(
             "gatewayStatus": gateway_status,
         },
     )
-
-
-def _non_terminal_turns(snapshot: dict[str, object]) -> list[dict[str, object]]:
-    tables = snapshot.get("tables")
-    if not isinstance(tables, dict):
-        return []
-    turns = tables.get("turns")
-    if not isinstance(turns, list):
-        return []
-    return [
-        turn
-        for turn in turns
-        if isinstance(turn, dict) and turn.get("status") in {"queued", "in_progress"}
-    ]
 
 
 def _sample_resources(

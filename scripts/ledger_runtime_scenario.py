@@ -99,7 +99,6 @@ async def child(folder, phase):
                          installed_cache_root=folder / 'home/cache')
     try:
         await host.load_all()
-        await host.start_runtime()
         root = host.live_root
         assert root is not None
         async def receive(identity):

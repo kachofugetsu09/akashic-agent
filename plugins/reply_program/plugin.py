@@ -19,30 +19,23 @@ from plugins.sources.contract import (
     SourceGuard,
 )
 
-from .inputs import (
-    CONTENT,
-    CONTEXT,
-    MATERIALS,
-    MODEL_CALLS,
-    MODEL_CHECKS,
-    MODEL_CONTENT,
-    MODEL_PROJECTION,
-    MODEL_SELECTION,
-    REACT,
-    TOOL_CLEANUP,
-    TOOL_PROGRAM,
-    TOOLS,
-    TURN_PROJECTION,
+from plugins.content.contract import CONTENT
+from plugins.context.contract import CONTEXT, MATERIALS_V4
+from plugins.models.contract import (
+    MODEL_CALLS, MODEL_CHECKS, MODEL_CONTENT, MODEL_PROJECTION, MODEL_SELECTION,
 )
+from plugins.react.contract import REACT_ORDERED_V2
+from plugins.tools.contract import TOOL_CLEANUP, TOOL_PROGRAM_V2, TOOLS
+from plugins.turn_projection.contract import TURN_PROJECTION
 from .program import run_reply
 
 api_version = 3
 name = "reply_program"
 version = "1.0.0"
 desc = "一次回复的资源与执行组合；不拥有来源策略或后台监听"
-inject = (CHAT_MODELS, CONTENT, CONTEXT, MATERIALS, MODEL_CALLS, MODEL_CHECKS,
-          MODEL_CONTENT, MODEL_PROJECTION, MODEL_SELECTION, REACT, TOOL_CLEANUP,
-          TOOL_PROGRAM, TOOLS, TURN_PROJECTION, OWNER_STATE, MESSAGE_WRITERS, ARTIFACT_READ)
+inject = (CHAT_MODELS, CONTENT, CONTEXT, MATERIALS_V4, MODEL_CALLS, MODEL_CHECKS,
+          MODEL_CONTENT, MODEL_PROJECTION, MODEL_SELECTION, REACT_ORDERED_V2, TOOL_CLEANUP,
+          TOOL_PROGRAM_V2, TOOLS, TURN_PROJECTION, OWNER_STATE, MESSAGE_WRITERS, ARTIFACT_READ)
 
 
 async def apply(ctx: Context) -> None:
@@ -50,10 +43,10 @@ async def apply(ctx: Context) -> None:
     run = partial(
         run_reply, models=ctx.require(CHAT_MODELS), content=ctx.require(CONTENT),
         context=ctx.require(CONTEXT), tools=ctx.require(TOOLS), cleanup=ctx.require(TOOL_CLEANUP),
-        react=ctx.require(REACT),
+        react=ctx.require(REACT_ORDERED_V2),
         turn_projection=ctx.require(TURN_PROJECTION), read_call=ctx.require(MODEL_CALLS),
         selection=ctx.require(MODEL_SELECTION),
-        tool_program=ctx.require(TOOL_PROGRAM), model_checks=ctx.require(MODEL_CHECKS),
+        tool_program=ctx.require(TOOL_PROGRAM_V2), model_checks=ctx.require(MODEL_CHECKS),
         model_content=ctx.require(MODEL_CONTENT), model_projection=ctx.require(MODEL_PROJECTION),
         writers=ctx.require(MESSAGE_WRITERS), owner_state=ctx.require(OWNER_STATE),
         artifact_reader=ctx.require(ARTIFACT_READ),
@@ -68,7 +61,7 @@ async def apply(ctx: Context) -> None:
                 return await run(caller, task, reader, source, prepare_content=prepare,
                                  dynamic_content_kinds=kinds, **options)
 
-    materials = ctx.require(MATERIALS)
+    materials = ctx.require(MATERIALS_V4)
 
     async def selected(ctx: Context, task: Task, reader: MessageReader, source: str, *,
                        check_admission: SourceGuard,

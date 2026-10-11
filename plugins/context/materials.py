@@ -2,35 +2,28 @@ from __future__ import annotations
 
 import asyncio
 
-from collections.abc import AsyncIterator, Awaitable, Callable, Mapping
+from collections.abc import AsyncIterator, Mapping
 from contextlib import AsyncExitStack, asynccontextmanager
 from dataclasses import dataclass
 
 from agent.plugin_composition import Context, Effect
 from agent.plugin_composition.model import FiberState
-from plugins.models.contract import ModelRequest
+from plugins.models.contract import ContextModel, ModelRequest
 from plugins.models.contract import BoundChatModel
 from agent.plugin_composition.tasks import child_task_context
 from plugins.ledger.contract import Message
 from plugins.context.contract import (
-    MaterialKind,
-    ReductionStatus,
+    MaterialData, MaterialKind, Prepare, ReductionStatus, SummaryData, SummaryReducer,
 )
 
 from .api import (
-    ContextModel,
-    MaterialData,
     Materials,
     Reminder,
     Summary,
-    SummaryData,
-    SummaryReducer,
     decode_material,
     decode_summary,
     material_data,
 )
-
-Prepare = Callable[[tuple[Message, ...], str], Awaitable[MaterialData]]
 
 
 @dataclass(frozen=True, slots=True)

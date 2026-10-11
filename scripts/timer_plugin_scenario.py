@@ -165,7 +165,6 @@ async def apply(ctx):
         from plugins.ledger.contract import MESSAGE_CATALOG
         log = runtime.plugin_manager.live_root.context.require(MESSAGE_CATALOG)._log
         host = runtime.plugin_manager
-        await host.start_runtime()
         root = host.live_root
         assert root is not None
         from plugins.timer.contract import TIMERS, TimerStatus
@@ -207,7 +206,6 @@ async def apply(ctx):
         await runtime.start()
         log = runtime.plugin_manager.live_root.context.require(MESSAGE_CATALOG)._log
         host = runtime.plugin_manager
-        await host.start_runtime()
         await notice(runtime, "third")
         root = host.live_root
         assert root is not None

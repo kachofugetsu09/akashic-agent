@@ -15,7 +15,7 @@ from agent.plugin_composition import Context
 from plugins.assets.contract import INSTALLED_ASSETS, InstalledAsset
 from plugins.ledger.contract import ContentPart, Message, json_value
 
-from ._materials_boundary import MATERIALS
+from plugins.context.contract import MATERIALS_V4
 from ._tool_boundary import TOOLS, CallSource, ToolRef, ToolResultValue
 from .contract import SKILL_INSPECTION
 from .skill_catalog import (
@@ -158,7 +158,7 @@ async def register_skills(ctx: Context) -> ToolRef:
             text += "\n\n## 当前常驻技能\n\n" + "\n\n".join(active)
         return {"system_prompt": text, "reminders": ()}
 
-    _ = await ctx.require(MATERIALS).register(ctx, kind="context", name="skills", prepare=prepare, prompt=True, priority=300)
+    _ = await ctx.require(MATERIALS_V4).register(ctx, kind="context", name="skills", prepare=prepare, prompt=True, priority=300)
     return cast(ToolRef, await ctx.require(TOOLS).register(
         ctx, name="load_skill", description="按技能名称热读取当前指令和实际资源目录；先读取再执行，相对资源以返回的 base_directory 为根。未知、不可用或空技能返回错误。",
         parameters=SkillQuery.model_json_schema(), open=open_tool, capture=capture,

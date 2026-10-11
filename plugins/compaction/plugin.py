@@ -1,7 +1,6 @@
 """候选 Message 摘要入口；正式 manifest 在完整迁移验收后切换。"""
 from __future__ import annotations
 
-from plugins.models.contract import ModelError
 from collections.abc import Callable, Mapping, Sequence
 from uuid import uuid4
 
@@ -14,32 +13,28 @@ from agent.plugin_composition import (
     RUNTIME_STOPPING,
     Context,
 )
-from plugins.models.contract import CHAT_MODELS
-from plugins.models.contract import ModelRequest
 from plugins.models.contract import (
+    CHAT_MODELS, BoundChatModel, ContextModel, ModelError, ModelRequest,
     ContextLengthError,
     ModelTimeoutError,
     RateLimitError,
     TransportError,
 )
-from plugins.models.contract import BoundChatModel
-from plugins.context.contract import ReductionStatus
+from plugins.context.contract import CONTEXT, MATERIALS_V4, MaterialData, ReductionStatus
 from plugins.ledger.contract import BINDINGS
 from plugins.ledger.contract import MESSAGE_CATALOG, OWNER_STATE
 from plugins.ledger.contract import Input, Message
 
 from .records import StoredSummary, SummaryLookup, SummaryRecord, SummaryRecords
 from .message_summary import SummaryError, closed_groups, source_text, summarize, summary_groups, window_starts
-from ._boundaries import (
-    COMPACTION_READER, COMPACTION_SUMMARIES, CONTEXT, MATERIALS, TURN_PROJECTION,
-    ContextModel, MaterialData, TurnProjection,
-)
+from plugins.compaction.contract import COMPACTION_READER, COMPACTION_SUMMARIES
+from plugins.turn_projection.contract import TURN_PROJECTION, TurnProjection
 
 api_version = 3
 name = "compaction"
 version = "4.1.0"
 desc = "按不可变消息前缀发布摘要，并为已使用的摘要保留原始读取口"
-inject = (MATERIALS, CONTEXT, OWNER_STATE, BINDINGS, MESSAGE_CATALOG, CHAT_MODELS, TURN_PROJECTION)
+inject = (MATERIALS_V4, CONTEXT, OWNER_STATE, BINDINGS, MESSAGE_CATALOG, CHAT_MODELS, TURN_PROJECTION)
 
 
 class Config(BaseModel):
@@ -311,4 +306,4 @@ async def apply(ctx: Context) -> None:
                 await on_status(detail + "原请求仍满足硬容量，本次继续生成。", True)
             return None
 
-    _ = await ctx.require(MATERIALS).register(ctx, kind="context", name="compaction", prepare=prepare, reduce=reduce, priority=500)
+    _ = await ctx.require(MATERIALS_V4).register(ctx, kind="context", name="compaction", prepare=prepare, reduce=reduce, priority=500)

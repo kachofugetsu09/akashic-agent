@@ -353,7 +353,6 @@ class RuntimeStack:
             raise GateFailure("RESTART_CHANGED_STABLE_SELECTION")
         if self.after_load is not None:
             await self.after_load()
-        await self.manager.start_runtime()
 
     async def close(self) -> None:
         """Close every isolated runtime owner while preserving its durable workspace."""

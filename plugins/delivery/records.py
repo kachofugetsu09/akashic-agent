@@ -119,12 +119,11 @@ class DeliveryRecords:
         self,
         reader: MessageReader,
         message: Message,
-        sinks: tuple[Sink | Mapping[str, object], ...],
+        sinks: tuple[Sink, ...],
         *,
         passive: bool = False,
     ) -> Selection:
         """显式发送固定全体目的地，不替自动消费者跳过其他消息。"""
-        sinks = _normalize_sinks(sinks)
         self._check_message(reader, message, sinks)
         def commit(tx: OwnerTransaction) -> Selection:
             existing = self.selection(message.message_id)
@@ -177,11 +176,10 @@ class DeliveryRecords:
         if len({sink.name for sink in sinks}) != len(sinks):
             raise ValueError("一次选路不能重复同一目的地")
 
-    def _consume_message(self, reader: MessageReader, message: Message, sinks: tuple[Sink | Mapping[str, object], ...] | None,
+    def _consume_message(self, reader: MessageReader, message: Message, sinks: tuple[Sink, ...] | None,
                 *, passive: bool = False) -> Selection | None:
         """按序消费；None 表示不拥有选路权，空集合是明确的零目标选择。"""
-        fixed = None if sinks is None else _normalize_sinks(sinks)
-        return self._consume_batch(reader, ((message, fixed),), passive=passive)[0]
+        return self._consume_batch(reader, ((message, sinks),), passive=passive)[0]
 
     def _consume_batch(self, reader: MessageReader,
                        items: tuple[tuple[Message, tuple[Sink, ...] | None], ...],
@@ -257,9 +255,8 @@ class DeliveryRecords:
             self._add(tx, message.message_id, sink)
         return selection
 
-    def _add_destination(self, message_id: str, sink: Sink | Mapping[str, object]) -> None:
+    def _add_destination(self, message_id: str, sink: Sink) -> None:
         """显式新增一个目的地；相同发送键不能改绑地址或旧 generation。"""
-        sink = _normalize_sink(sink)
         def commit(tx: OwnerTransaction) -> None:
             _ = self.check_owner(message_id)
             self._add(tx, message_id, sink)

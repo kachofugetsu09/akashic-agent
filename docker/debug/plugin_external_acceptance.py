@@ -507,9 +507,9 @@ def _runtime_task_evidence(runtime: Any) -> dict[str, Any]:
     tasks = {
         name: getattr(runtime, name)
         for name in (
-            "dashboard_task",
+            "web_shell_task",
             "plugin_watcher_task",
-            "_primary_task",
+            "_shutdown_task",
         )
     }
     return {

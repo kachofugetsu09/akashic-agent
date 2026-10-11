@@ -84,7 +84,7 @@ async def run(folder: Path, case: str, *, second_provider: bool = False) -> dict
         entry.write_text(source)
 
     try:
-        async with application(folder, replying=True, start=False, compaction=True,
+        async with application(folder, replying=True, compaction=True,
                                output_tokens=512, keep_recent_tokens=20_000 if case == "short_tail" else 2000,
                                extra_sources=configure) as (log, host):
             root = host.live_root
@@ -112,7 +112,6 @@ async def run(folder: Path, case: str, *, second_provider: bool = False) -> dict
             before = tuple(log.reader("test:room").snapshot())
             with sqlite3.connect(folder / "workspace/sessions.db") as connection:
                 original_rows = connection.execute("SELECT * FROM messages ORDER BY seq").fetchall()
-            await host.start_runtime()
             accept = root.context.require(CHANNEL_INPUT_V2)
             accepted = await accept("test:room", "current-input", ChannelInboundMessage(
                 "test", "user", "room", "implement now", datetime.now(UTC), {}))

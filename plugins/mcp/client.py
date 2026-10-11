@@ -6,7 +6,6 @@ import logging
 import os
 from collections import deque
 from dataclasses import dataclass
-from pathlib import Path
 from typing import Any, cast
 
 from agent.plugin_composition.execution import ChildProcess, PreparedProcess, ProcessSpawner
@@ -41,15 +40,6 @@ class McpToolInfo:
 
 class McpToolExecutionError(RuntimeError):
     """MCP 远端工具已执行但返回失败结果。"""
-
-
-def _infer_cwd(command: list[str]) -> str | None:
-    """从 command 中找第一个绝对路径文件，返回其父目录作为 cwd。"""
-    for arg in command:
-        p = Path(arg)
-        if p.is_absolute() and p.is_file():
-            return str(p.parent)
-    return None
 
 
 async def _wait_for_leader_exit(process: asyncio.subprocess.Process) -> int | None:

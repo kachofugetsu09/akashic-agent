@@ -17,7 +17,7 @@ from plugins.models.contract import (
 from plugins.models.contract import BoundChatModel
 from plugins.ledger.contract import CallRef, ContentPart, Control, Message, Output, ToolCall, ToolResult
 from plugins.ledger.contract import body_to_dict
-from ._boundaries import TurnProjection
+from plugins.turn_projection.contract import TurnProjection
 
 logger = logging.getLogger(__name__)
 

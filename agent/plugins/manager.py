@@ -12,12 +12,10 @@ import stat
 import sys
 from collections.abc import AsyncGenerator, Awaitable, Callable, Mapping
 from contextvars import Context as TaskContext
-from dataclasses import asdict
 from pathlib import Path
-from typing import Any, Literal, TypeVar, cast
+from typing import Literal, TypeVar, cast
 from uuid import uuid4
 
-from core.common.diagnostic_log import log_event
 from core.common.file_io import run_file_io
 
 from agent.plugins.execution import (
@@ -42,6 +40,7 @@ from agent.plugin_composition.plugin_updates import (
 )
 from agent.plugin_composition.tasks import PluginTasks
 from agent.plugins._operation import (
+    AcceptedFuture,
     ManagerOperation,
     OperationBusyError,
     OperationTimeoutError,
@@ -167,16 +166,6 @@ class PluginManager:
             _source_failure_key(failure): failure
             for failure in source_failures
         }
-        self._endpoint_switcher: (
-            Callable[
-                [
-                    tuple[tuple[str, str], ...],
-                    tuple[tuple[str, str], ...],
-                ],
-                Awaitable[None],
-            ]
-            | None
-        ) = None
         self._cleanup_failures: list[CleanupFailure] = []
         # watch_revision 的廉价指纹门控：只有磁盘元数据指纹变化才重做完整发现。
         self._watch_fingerprint: bytes | None = None
@@ -198,8 +187,6 @@ class PluginManager:
         self._host_ready = host_ready
         self._host_boot_id = restart_gate.boot_id if restart_gate is not None else uuid4().hex
         self._restart_gate = restart_gate or RestartGate(boot_id=self._host_boot_id, supervised=False)
-        self._runtime_started_roots: set[object] = set()
-        self._runtime_lifecycle_lock = asyncio.Lock()
         self._reload_journal = ReloadJournal(workspace)
 
     def _require_operation_idle(self) -> None:
@@ -269,7 +256,7 @@ class PluginManager:
     def _start_operation(
         self, work: Callable[[], Awaitable[U]], *, background: bool = False,
         commit_timeout: float | None = None, update_id: str | None = None,
-        accepted: asyncio.Future[Any] | None = None,
+        accepted: AcceptedFuture | None = None,
     ) -> ManagerOperation:
         """Start one finite operation whose task retains cleanup ownership."""
         self._restart_gate.check_open()
@@ -282,11 +269,8 @@ class PluginManager:
         )
         self._operation = operation
 
-        async def admitted_work() -> U:
-            return await work()
-
         operation.task = asyncio.create_task(
-            run_operation(operation, admitted_work), name="plugin-manager-operation",
+            run_operation(operation, work), name="plugin-manager-operation",
             context=TaskContext() if background else None,
         )
         operation.task.add_done_callback(self._operation_finished)
@@ -309,31 +293,6 @@ class PluginManager:
                 self._revoke_operation(operation)
 
 
-    async def start_runtime(self) -> None:
-        await self._run_operation(
-            self._start_runtime, commit_timeout=self.BOOT_COMMIT_TIMEOUT_SECONDS,
-        )
-
-    async def _start_runtime(self) -> None:
-        """Record host startup after each live Fiber has completed its own start."""
-        self._check_operation_commit()
-        root = self._live_root
-        if root is None:
-            return
-        async with self._runtime_lifecycle_lock:
-            if root is not self._live_root or root.instance_token in self._runtime_started_roots:
-                return
-            self._runtime_started_roots.add(root.instance_token)
-
-    async def _stop_runtime_root(self, root: CompositionRoot) -> None:
-        """Clear host startup state; each Fiber closes its own lifecycle."""
-        async with self._runtime_lifecycle_lock:
-            await self._stop_runtime_root_locked(root)
-
-    async def _stop_runtime_root_locked(self, root: CompositionRoot) -> None:
-        self._runtime_started_roots.discard(root.instance_token)
-
-
     @property
     def cleanup_failures(self) -> list[CleanupFailure]:
         return list(self._cleanup_failures)
@@ -346,22 +305,6 @@ class PluginManager:
 
     def generation(self, plugin_id: str) -> PluginGeneration | None:
         return self._active_generations.get(plugin_id)
-
-    def bind_endpoint_switcher(
-        self,
-        switcher: Callable[
-            [
-                tuple[tuple[str, str], ...],
-                tuple[tuple[str, str], ...],
-            ],
-            Awaitable[None],
-        ],
-    ) -> None:
-        self._endpoint_switcher = switcher
-
-
-
-
 
     @property
     def installed_plugins_home(self) -> Path:
@@ -1245,18 +1188,15 @@ class PluginManager:
         else:
             raise RuntimeError("已有插件更新请求只能查询，不能重跑安装")
         accepted: asyncio.Future[UpdateStatus] = asyncio.get_running_loop().create_future()
-        operation = self._start_operation(
+        self._start_operation(
             lambda: self._install_public(
                 source=source, marketplace=marketplace, ref_name=ref_name,
                 sparse_paths=sparse_paths, update_id=update_id, accepted=accepted,
             ),
             background=True, update_id=update_id, accepted=accepted,
         )
-        try:
-            return await asyncio.shield(accepted)
-        except asyncio.CancelledError:
-            # The owner task remains responsible for the install and drain after CAS.
-            raise
+        # 调用方取消只结束等待；宿主任务继续负责安装与排空。
+        return await asyncio.shield(accepted)
 
     async def uninstall(self, plugin_id: str) -> dict[str, object]:
         """Return after selection removal; one Manager task owns physical cleanup."""
@@ -1269,11 +1209,8 @@ class PluginManager:
             background=True,
             accepted=accepted,
         )
-        try:
-            return cast(dict[str, object], await asyncio.shield(accepted))
-        except asyncio.CancelledError:
-            # Caller cancellation only abandons this wait; the Manager task keeps ownership.
-            raise
+        # 调用方取消只结束等待；宿主任务继续负责物理清理。
+        return await asyncio.shield(accepted)
 
     async def _uninstall_public(
         self, plugin_id: str, *, accepted: asyncio.Future[dict[str, object]],
@@ -1924,87 +1861,10 @@ class PluginManager:
                 ),
             }
 
-        operation = self._operation
-        operation_view: dict[str, object] | None = None
-        operation_kind = (
-            "install" if operation is not None and operation.update_id is not None
-            else "unknown"
+        operation_view = None if self._operation is None else self._operation.status()
+        operation_plugin_id = (
+            None if operation_view is None else cast(str | None, operation_view["plugin_id"])
         )
-        operation_plugin_id: str | None = None
-        if operation is not None:
-            if operation.task.cancelled():
-                task_state = "cancelled"
-                task_error = None
-            elif not operation.task.done():
-                task_state = "running"
-                task_error = None
-            else:
-                task_error_value = operation.task.exception()
-                task_state = "error" if task_error_value is not None else "done"
-                task_error = (
-                    None
-                    if task_error_value is None
-                    else str(task_error_value) or type(task_error_value).__name__
-                )
-
-            accepted_view: dict[str, object] | None = None
-            if operation.accepted is not None:
-                if operation.accepted.cancelled():
-                    accepted_view = {"state": "cancelled"}
-                elif not operation.accepted.done():
-                    accepted_view = {"state": "pending"}
-                else:
-                    try:
-                        accepted_result = operation.accepted.result()
-                    except asyncio.CancelledError:
-                        accepted_view = {"state": "cancelled"}
-                    except Exception as error:
-                        accepted_view = {
-                            "state": "error",
-                            "error": str(error) or type(error).__name__,
-                        }
-                    else:
-                        if isinstance(accepted_result, UpdateStatus):
-                            operation_kind = "install"
-                            operation_plugin_id = accepted_result.plugin_id
-                            accepted_view = {
-                                "kind": "install",
-                                "state": "accepted",
-                                "result": asdict(accepted_result),
-                            }
-                        elif isinstance(accepted_result, dict):
-                            accepted_plugin_id = accepted_result.get("plugin_id")
-                            accepted_state = accepted_result.get("state")
-                            if not isinstance(accepted_plugin_id, str):
-                                raise TypeError(
-                                    "ManagerOperation.accepted uninstall 结果缺少 plugin_id"
-                                )
-                            if not isinstance(accepted_state, str):
-                                raise TypeError(
-                                    "ManagerOperation.accepted uninstall 结果缺少 state"
-                                )
-                            operation_kind = "uninstall"
-                            operation_plugin_id = accepted_plugin_id
-                            accepted_view = {
-                                "kind": "uninstall",
-                                "state": accepted_state,
-                                "result": dict(accepted_result),
-                            }
-                        else:
-                            raise TypeError(
-                                "ManagerOperation.accepted 结果类型不受支持: "
-                                f"{type(accepted_result).__name__}"
-                            )
-            operation_view = {
-                "kind": operation_kind,
-                "plugin_id": operation_plugin_id,
-                "update_id": operation.update_id,
-                "state": task_state,
-                "error": task_error,
-                "revoked": operation.revoked,
-                "committed": operation.committed is not None,
-                "accepted": accepted_view,
-            }
 
         installed = self._installed_ids()
         plugin_ids = (
@@ -2439,10 +2299,6 @@ class PluginManager:
         # The shutdown task owns all resources after the previous operation exits.
         externally_cancelled = False
         live_root = self._live_root
-        if live_root is not None:
-            _, externally_cancelled = await _complete_critical(
-                self._stop_runtime_root(live_root)
-            )
         for generation in tuple(reversed(tuple(self._active_generations.values()))):
             _, cancelled = await _complete_critical(
                 self._dispose_generation(generation, state="retired")

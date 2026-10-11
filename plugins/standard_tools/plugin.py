@@ -8,7 +8,7 @@ from agent.plugin_composition.tasks import TASKS
 from plugins.ledger.contract import OWNER_STATE, SESSION_ADMISSION
 from plugins.standard_tools.contract import WORKING_DIRECTORY
 
-from ._materials_boundary import MATERIALS
+from plugins.context.contract import MATERIALS_V4
 from ._tool_boundary import TOOLS
 from .files import register_file
 from .filesystem import (
@@ -28,7 +28,7 @@ api_version = 3
 name = "standard_tools"
 version = "1.0.0"
 desc = "提供文件、命令与技能读取工具"
-inject = (BINDINGS, TASKS, TOOLS, PROCESSES, FILES, ARTIFACT_IMPORT, MATERIALS, INSTALLED_ASSETS,
+inject = (BINDINGS, TASKS, TOOLS, PROCESSES, FILES, ARTIFACT_IMPORT, MATERIALS_V4, INSTALLED_ASSETS,
           OWNER_STATE, SESSION_ADMISSION)
 
 
@@ -53,7 +53,7 @@ async def apply(ctx: Context) -> None:
         return {"reminders": ({"name": "working-directory", "priority": 400, "replay": False,
                                "text": directory_material(current.path, str(rules["directory_status"]), rules)},)}
 
-    _ = await ctx.require(MATERIALS).register(
+    _ = await ctx.require(MATERIALS_V4).register(
         ctx, name="working-directory", kind="context", prepare=materials,
     )
 

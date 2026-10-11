@@ -272,7 +272,7 @@ async def run(mode, count, full_history=False):
         patches.enter_context(patch.object(MessageWriter, "_append", append))
         path = Path(directory)
         async with application(
-            path, replying=True, start=False, extra_sources=extras(mode)
+            path, replying=True, extra_sources=extras(mode)
         ) as (log, host):
             model_store = model_descriptor = None
             if full_history:
@@ -287,7 +287,6 @@ async def run(mode, count, full_history=False):
                 async with context.runtime_scope(), chat_models.execution() as execution:
                     model_descriptor = execution.chat("agent").descriptor
             seed(log, count, model_store, model_descriptor)
-            await host.start_runtime()
             # 排空启动追赶，让订阅进入等待；启动耗时不计入本次请求。
             for _ in range(30):
                 await asyncio.sleep(0)

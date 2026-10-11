@@ -28,11 +28,11 @@ from plugins.models.contract import CHAT_MODELS
 from plugins.ledger.contract import ARTIFACT_READ
 from plugins.ledger.contract import BINDINGS
 from plugins.ledger.bindings import Bindings
+from plugins.ledger.services import MessageWriters, OwnerState, SessionAdmission
 from plugins.channels.contract import ChannelInboundMessage
 from agent.restart import RESTART_GATE, RestartGate
 from plugins.ledger.contract import (
     MESSAGE_CATALOG, MESSAGE_WRITERS, OWNER_STATE, SESSION_ADMISSION,
-    MessageWriters, OwnerState, SessionAdmission,
 )
 from agent.plugin_composition.tasks import TASKS, PluginTasks
 from plugins.ledger.contract import ContentPart, Control, Input, Output, ToolResult
@@ -55,7 +55,13 @@ from plugins.commands import plugin as commands_plugin
 from plugins.conversation import plugin as conversation_plugin
 from plugins.reply import plugin as reply_plugin
 from plugins.reply_program import plugin as program_plugin
-from plugins.reply_program import inputs as program_inputs
+from plugins.context.contract import CONTEXT, MATERIALS_V4
+from plugins.models.contract import (
+    MODEL_CALLS, MODEL_CHECKS, MODEL_CONTENT, MODEL_PROJECTION, MODEL_SELECTION,
+)
+from plugins.react.contract import REACT_ORDERED_V2
+from plugins.tools.contract import TOOL_CLEANUP, TOOL_PROGRAM_V2, TOOLS
+from plugins.turn_projection.contract import TURN_PROJECTION
 from plugins.sources import plugin as sources_plugin
 from plugins.conversation.contract import (
     CHECK_ORIGIN,
@@ -198,16 +204,16 @@ async def check(directory: Path, stage: str, control: bool, *, boundary_source: 
             (DELIVERY, LocalDelivery()), (BINDINGS, bindings), (ARTIFACT_READ, object()),
             (RESTART_GATE, RestartGate(boot_id="scenario", supervised=False)),
             (CHAT_MODELS, Models()), (ALL_TOOLS, lambda: fixture.EmptyTools()),
-            (program_inputs.CONTEXT, fixture.ContextBuilder()),
-            (program_inputs.MATERIALS, Materials()), (program_inputs.MODEL_CALLS, models.read_call),
-            (program_inputs.MODEL_CHECKS, fixture.MessageChecksOwner()),
-            (program_inputs.MODEL_CONTENT, fixture.ContentOwner()),
-            (program_inputs.MODEL_PROJECTION, fixture.ProjectionOwner()),
-            (program_inputs.MODEL_SELECTION, fixture.SelectionOwner()),
-            (program_inputs.REACT, fixture.react), (program_inputs.TOOL_CLEANUP, fixture.cleanup),
-            (program_inputs.TOOL_PROGRAM, Menu() if stage in {"tool", "tool-success", "tool-finished"} else fixture.EmptyTools()),
-            (program_inputs.TOOLS, fixture.EmptyTools()),
-            (program_inputs.TURN_PROJECTION, fixture.TurnProjection()),
+            (CONTEXT, fixture.ContextBuilder()),
+            (MATERIALS_V4, Materials()), (MODEL_CALLS, models.read_call),
+            (MODEL_CHECKS, fixture.MessageChecksOwner()),
+            (MODEL_CONTENT, fixture.ContentOwner()),
+            (MODEL_PROJECTION, fixture.ProjectionOwner()),
+            (MODEL_SELECTION, fixture.SelectionOwner()),
+            (REACT_ORDERED_V2, fixture.react), (TOOL_CLEANUP, fixture.cleanup),
+            (TOOL_PROGRAM_V2, Menu() if stage in {"tool", "tool-success", "tool-finished"} else fixture.EmptyTools()),
+            (TOOLS, fixture.EmptyTools()),
+            (TURN_PROJECTION, fixture.TurnProjection()),
         ):
             await ctx.provide(key, value)
         tool_tasks = tasks.open(ctx)

@@ -23,17 +23,12 @@ from plugins.delivery_policy.contract import (
     INPUT_ORIGIN as INPUT_ORIGIN,
 )
 
-from .boundary import (
-    DELIVERY,
-    DELIVERY_SENDERS,
-    FINAL_OUTPUT_DELIVERY,
-    ORIGIN_CHECK,
-    REPLY_COMPLETION,
-    DeliveryExecution,
-    FinalOutputTurn,
-    OriginCheck,
-    SinkInput,
+from plugins.delivery.contract import (
+    DELIVERY_GUARDED_START, DELIVERY_SENDERS, FINAL_OUTPUT_DELIVERY,
+    FinalOutputTurn, GuardedDeliveries,
 )
+from plugins.conversation.contract import CHECK_ORIGIN, OriginCheck
+from plugins.reply.contract import REPLY_COMPLETION
 from .follow import follow
 
 logger = logging.getLogger(__name__)
@@ -43,12 +38,12 @@ name = "delivery_policy"
 version = "1.0.0"
 desc = "默认只发送完整可见回复；显式通知沿来源自己的固定发送选择"
 inject = (
-    DELIVERY,
+    DELIVERY_GUARDED_START,
     DELIVERY_SENDERS,
     BINDINGS,
     MESSAGE_CATALOG,
     FINAL_OUTPUT_DELIVERY,
-    ORIGIN_CHECK,
+    CHECK_ORIGIN,
 )
 
 
@@ -110,7 +105,7 @@ def input_origin(
 class DeliveryFinalOutput:
     """等待 delivery owner 为一个最终 Output 写入 delivered 回执。"""
 
-    def __init__(self, ctx: Context, delivery: Callable[[], DeliveryExecution], timeout_s: float = 15.0) -> None:
+    def __init__(self, ctx: Context, delivery: Callable[[], GuardedDeliveries], timeout_s: float = 15.0) -> None:
         self._ctx = ctx
         self._delivery = delivery
         self._timeout_s = timeout_s
@@ -144,15 +139,15 @@ class DeliveryFinalOutput:
 async def apply(ctx: Context) -> None:
     """正式启动后跟随日志；不把策略、学习或来源 ACK 放进发送原子能力。"""
     config = Config.model_validate(ctx.config)
-    delivery: DeliveryExecution | None = None
+    delivery: GuardedDeliveries | None = None
 
-    def current_delivery() -> DeliveryExecution:
+    def current_delivery() -> GuardedDeliveries:
         if delivery is None:
             raise RuntimeError("Delivery 尚未完成正式启动准备")
         return delivery
 
     final_delivery = DeliveryFinalOutput(ctx, current_delivery)
-    origin_check = ctx.require(ORIGIN_CHECK)
+    origin_check = ctx.require(CHECK_ORIGIN)
     _ = await ctx.provide(INPUT_ORIGIN, partial(input_origin, check_origin=origin_check))
     final_outputs = ctx.require(FINAL_OUTPUT_DELIVERY)
 
@@ -183,7 +178,7 @@ async def apply(ctx: Context) -> None:
     def prepare(_event: object) -> None:
         """正式接纳开放前占住原被动效果，直到 follower 实际恢复一次发送或查询。"""
         nonlocal delivery
-        delivery = ctx.require(DELIVERY).open(ctx)
+        delivery = ctx.require(DELIVERY_GUARDED_START).open(ctx)
         for message_id, sink in delivery.pending():
             selection = delivery.selection(message_id)
             assert selection is not None
@@ -195,7 +190,7 @@ async def apply(ctx: Context) -> None:
 
     _ = await ctx.effect(lambda: close_recovery, label="pending-delivery")
 
-    def select(reader: MessageReader, message: Message) -> tuple[SinkInput, ...] | None:
+    def select(reader: MessageReader, message: Message) -> tuple[Mapping[str, object], ...] | None:
         if message.source not in config.sources or reader.attributes.visibility == "internal":
             return None
         route = origin(reader, message, config.sources, check_origin=origin_check)

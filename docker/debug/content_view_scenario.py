@@ -392,7 +392,6 @@ async def restart(directory: Path, *, failed: bool) -> dict[str, object]:
         await host.load_all()
         from plugins.ledger.contract import MESSAGE_CATALOG
         log = host.live_root.context.require(MESSAGE_CATALOG)._log
-        await host.start_runtime()
         root = host.live_root
         assert root is not None
         calls = root.context.require(ServiceKey('fixture.calls'))

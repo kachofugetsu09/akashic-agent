@@ -105,7 +105,7 @@ async def apply(ctx):
 async def test_slow_graph_does_not_block_another_graph_publication(tmp_path):
     """O / MEM-013: graph-local time advances in order while a neighbor waits."""
     memory = tmp_path / "workspace/memory/akasha.db"
-    async with application(tmp_path, replying=False, start=False, extra_sources=add_gated_memory) as (log, host):
+    async with application(tmp_path, replying=False, extra_sources=add_gated_memory) as (log, host):
         policies = ScopePolicies(log.owner("plugin:akasha:scope-policy"), log.catalog())
         for name in ("slow", "fast"):
             policies.set("project", name, "isolated")
@@ -120,7 +120,6 @@ async def test_slow_graph_does_not_block_another_graph_publication(tmp_path):
                 name + "-output" + suffix, Output((ContentPart("text", "remembered"),), "complete"))
 
         append_pair("slow", "1")
-        await host.start_runtime()
         root = host.live_root
         assert root is not None
         entered = root.context.require(ServiceKey("fixture.slow-entered"))
@@ -158,7 +157,7 @@ async def test_unavailable_graph_does_not_stop_other_graphs(tmp_path: Path, brok
         connection.execute("CREATE TABLE metadata (key TEXT PRIMARY KEY, value TEXT)")
         connection.commit()
     original_graph = broken_path.read_bytes()
-    async with application(tmp_path, replying=False, start=False, extra_sources=add_memory) as (log, host):
+    async with application(tmp_path, replying=False, extra_sources=add_memory) as (log, host):
         policy = ScopePolicies(log.owner("plugin:akasha:scope-policy"), log.catalog())
         if broken_scope is not None:
             policy.set("project", broken_scope, "isolated")
@@ -172,7 +171,6 @@ async def test_unavailable_graph_does_not_stop_other_graphs(tmp_path: Path, brok
         log.writer("healthy", author="assistant", source="conversation", body_types=(Output,),
                    content={"text": check_text}).append(
             "healthy-output", Output((ContentPart("text", "remembered fact"),), "complete"))
-        await host.start_runtime()
         root = host.live_root
         assert root is not None
         # 2. 由真实后台学习触发 embedding；材料读取的同图锁等待发布完成。

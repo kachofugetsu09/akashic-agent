@@ -1831,7 +1831,7 @@ Delivery 恢复 unknown 且 query 无新证据时保留原 receipt，防止丢�
 | 问题 | 备选 | 选择与理由 |
 | --- | --- | --- |
 | 默认插件入口 | 测试改写 manifest；真实默认配置切换 | Akasha、Compaction、Markdown memory、Scheduler、Wake 的实际 manifest 选择 Message 入口，首次初始化与完整 App 都读取这些文件 |
-| readiness | 后台获得一次调度机会；等待生命周期完成 | 已有启动方法公开为 `PluginManager.start_runtime()`；App 等待真正 `RUNTIME_STARTED` 完成后才进入 ready，长期服务随后复用同一生命周期 |
+| readiness | 后台获得一次调度机会；等待生命周期完成 | `PluginManager.load_all()` 等待各 Fiber 完成 `RUNTIME_STARTED` 与 required health；App 再监督宿主任务并发布 ready，冷启动与局部换代共用 Fiber 生命周期 |
 | 默认 Context 授权 | 内核硬编码可信材料；初始化普通插件配置 | `init` 与 yoyo 只在配置不存在时写默认 Prompt/Markdown memory/Compaction 授权。操作者已有配置不覆盖，Core 不认识材料名称 |
 | 原生收件和发送 | 隐式复制 token；启用后检查实际注册 | 收件与 Sender 各自配置，ChannelHost 声明要求同名 Sender 的渠道；App 在 `start_all` 前核对实际注册名，缺失立即失败且尚未收件 |
 | embedding 尚未配置 | 整体启动失败；可见的可选服务不可用 | Akasha 使用 optional health，材料明确返回 `akasha.status available=false`；模型设置页仍可打开，工具不可用是明确错误，不伪造召回结果 |

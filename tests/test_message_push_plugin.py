@@ -49,7 +49,6 @@ async def test_push_completes_while_target_turn_is_active_and_appends_one_output
         log.close()
         from plugins.ledger.contract import MESSAGE_CATALOG
         log = host.live_root.context.require(MESSAGE_CATALOG)._log
-        await host.start_runtime()
         root = host.live_root
         sender = host.generation("test_sender")
         assert root is not None and sender is not None and sender.fiber is not None

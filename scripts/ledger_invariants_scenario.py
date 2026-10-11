@@ -63,7 +63,6 @@ async def run(base: Path) -> None:
     host = PluginManager([sources], workspace=workspace, installed_cache_root=base / "home/cache")
     try:
         await host.load_all()
-        await host.start_runtime()
         root = host.live_root
         assert root is not None
         async def submit(identity, body, transaction=False):

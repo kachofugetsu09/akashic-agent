@@ -19,7 +19,7 @@ async def live_root(host: PluginManager):
     yield root
 
 @asynccontextmanager
-async def application(tmp_path, *, replying, start=True, missing_tool=False, discovery=False, compaction=False,
+async def application(tmp_path, *, replying, missing_tool=False, discovery=False, compaction=False,
                       output_tokens=4096, keep_recent_tokens=128, summary_padding=0, provider_effect_data=False,
                       updates=False, validation_passed=True, extra_sources=None, shell=False):
     sources = tmp_path / "plugins"
@@ -200,8 +200,6 @@ async def apply(ctx):
         await host.load_all()
         from plugins.ledger.contract import MESSAGE_CATALOG
         log = host.live_root.context.require(MESSAGE_CATALOG)._log
-        if start:
-            await host.start_runtime()
         yield log, host
     finally:
         await host.terminate_all()

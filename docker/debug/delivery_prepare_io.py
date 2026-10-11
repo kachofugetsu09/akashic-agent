@@ -13,7 +13,8 @@ from unittest.mock import patch
 from agent.plugin_composition import CompositionRoot, PluginRuntime
 from plugins.ledger.contract import BINDINGS
 from plugins.ledger.bindings import Bindings
-from plugins.ledger.contract import MESSAGE_CATALOG, OWNER_STATE, OwnerState
+from plugins.ledger.contract import MESSAGE_CATALOG, OWNER_STATE
+from plugins.ledger.services import OwnerState
 from agent.plugin_composition.tasks import TASKS, PluginTasks
 from plugins.delivery.contract import (
     DELIVERY_GUARDED_START as DELIVERY,

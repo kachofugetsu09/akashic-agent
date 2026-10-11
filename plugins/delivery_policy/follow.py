@@ -2,17 +2,17 @@ from __future__ import annotations
 
 import asyncio
 import logging
-from collections.abc import Callable
+from collections.abc import Callable, Mapping
 from dataclasses import dataclass, field
 
 from agent.plugin_composition import Context
 from plugins.ledger.contract import MessageCatalog, MessageReader
 from plugins.ledger.contract import Message, Output
 
-from .boundary import DeliveryExecution, SinkInput
+from plugins.delivery.contract import GuardedDeliveries
 
 logger = logging.getLogger(__name__)
-Select = Callable[[MessageReader, Message], tuple[SinkInput, ...] | None]
+Select = Callable[[MessageReader, Message], tuple[Mapping[str, object], ...] | None]
 
 
 @dataclass(slots=True)
@@ -30,7 +30,7 @@ class _Destination:
 
 async def follow(
     ctx: Context, catalog: MessageCatalog,
-    execution: Callable[[], DeliveryExecution], select: Select,
+    execution: Callable[[], GuardedDeliveries], select: Select,
     *, settled: Callable[[str, str], None] | None = None,
 ) -> None:
     """按 seq 固定选路；重启追赶 prepared，各目的地与各 Session 独立结算。"""

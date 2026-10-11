@@ -36,8 +36,8 @@ from plugins.tools.contract import (
 )
 
 from ._tool_boundary import TOOLS, CallSource, ToolRef, ToolResultValue
-from ._materials_boundary import MATERIALS
-from ._jobs_boundary import JOB_NOTICES, JobOutcome, JobWatch
+from plugins.context.contract import MATERIALS_V4
+from plugins.jobs.contract import JOB_NOTICES, JobOutcome, JobWatch
 from .shell_backend import _log_shell_execution, _shell_env
 from .shell_security import validate_command
 from .working_directory import WorkingDirectories
@@ -407,7 +407,7 @@ async def register_shell(ctx: Context, directories: WorkingDirectories | None = 
                                "未指定 shell 参数时使用此环境，命令须遵守该 shell 的语法；"
                                "需要 Bash 或其他 shell 时显式传入 shell 参数，不要假定默认是 Bash。"},)}
 
-    _ = await ctx.require(MATERIALS).register(
+    _ = await ctx.require(MATERIALS_V4).register(
         ctx, name="shell-environment", kind="context", prepare=environment,
     )
     definitions: tuple[tuple[Literal["shell", "write_stdin", "task_stop"], type[BaseModel], str], ...] = (

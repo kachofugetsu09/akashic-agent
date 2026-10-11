@@ -42,10 +42,8 @@ from .settings import (
 )
 from plugins.models.contract import (
     LLMResponse,
-    ModelContinuation,
     ModelRequest,
     ModelUsage,
-    ToolCall,
     UsageCoverage,
 )
 from plugins.models.contract import BoundModelDescriptor
@@ -772,12 +770,7 @@ class ModelsStore:
         return self._domain_write(command.expected_revision, "remove-model", write)
 
     def update_model(self, command: UpdateModel) -> int:
-        """Rewrite the user-declared chat capabilities in one revision CAS.
-
-        The three fields carry their full target state: null clears a token
-        limit to unknown, and image_input toggles the image modality while
-        preserving the rest. Sources of the touched fields become "user".
-        """
+        """在同一 revision CAS 中设置用户能力；空容量表示未知，其余输入模态保留。"""
         model_id = _required(command.model_id, "model_id")
         for name, value in (
             ("context window", command.context_window),
@@ -787,6 +780,7 @@ class ModelsStore:
                 raise ValueError(f"model {name} must be positive")
 
         def write(connection: sqlite3.Connection) -> bool:
+            # 1. 在写事务中检查模型和视觉绑定，拒绝会使当前绑定失效的编辑。
             row = connection.execute(
                 "SELECT supported_reasoning_efforts, context_window, "
                 "max_output_tokens, input_modalities, capability_source, "
@@ -805,7 +799,7 @@ class ModelsStore:
                     )
                 raise ValueError(f"model does not exist: {model_id}")
 
-            modalities = list(_decode_string_list(str(row[3]), "model modalities"))
+            modalities = list(_decode_string_list(str(row["input_modalities"]), "model modalities"))
             if command.image_input and "image" not in modalities:
                 modalities.append("image")
             if not command.image_input:
@@ -819,33 +813,33 @@ class ModelsStore:
             if not modalities:
                 modalities = ["text"]
 
-            # capabilities_json 是权威载荷；旧行按一等列先合成等价载荷再补写。
-            raw = row[11]
+            # 2. capabilities_json 是权威载荷；旧行先由原字段合成等价载荷。
+            raw = row["capabilities_json"]
             if raw is not None and str(raw):
                 payload: dict[str, Any] = json.loads(str(raw))
             else:
                 payload = {
                     "capabilities": {
-                        "context_window": int(row[1]) or None,
-                        "max_output_tokens": int(row[2]) or None,
+                        "context_window": int(row["context_window"]) or None,
+                        "max_output_tokens": int(row["max_output_tokens"]) or None,
                         "input_modalities": modalities,
                         "supports_tool_calls": True,
-                        "supports_parallel_tool_calls": bool(row[8]),
+                        "supports_parallel_tool_calls": bool(row["supports_parallel_tool_calls"]),
                         "supported_reasoning_efforts": list(
-                            _decode_string_list(str(row[0]), "model reasoning efforts")
+                            _decode_string_list(str(row["supported_reasoning_efforts"]), "model reasoning efforts")
                         ),
                     },
                     "capability_sources": {
-                        "context_window": str(row[5]),
-                        "max_output_tokens": str(row[6]),
-                        "input_modalities": str(row[7]),
-                        "tool_calls": str(row[4]),
-                        "parallel_tool_calls": str(row[4]),
-                        "reasoning_efforts": str(row[4]),
+                        "context_window": str(row["context_window_source"]),
+                        "max_output_tokens": str(row["max_output_tokens_source"]),
+                        "input_modalities": str(row["input_modalities_source"]),
+                        "tool_calls": str(row["capability_source"]),
+                        "parallel_tool_calls": str(row["capability_source"]),
+                        "reasoning_efforts": str(row["capability_source"]),
                     },
                     "driver_config": {
-                        "use_responses_lite": bool(row[9]),
-                        "reasoning_summary": str(row[10]),
+                        "use_responses_lite": bool(row["use_responses_lite"]),
+                        "reasoning_summary": str(row["reasoning_summary"]),
                     },
                     "source": "manual",
                 }
@@ -858,6 +852,7 @@ class ModelsStore:
             sources["max_output_tokens"] = "user"
             sources["input_modalities"] = "user"
 
+            # 3. 同步现有索引字段和载荷，用户编辑字段的来源固定为 user。
             connection.execute(
                 "UPDATE model_definitions SET "
                 "context_window = ?, max_output_tokens = ?, input_modalities = ?, "
@@ -883,10 +878,9 @@ class ModelsStore:
         role = command.role
         if role is not None and type(role) is not str:
             raise ValueError("model role must be a string")
-        role_value = role
 
         def write(connection: sqlite3.Connection) -> None:
-            if role_value is None:
+            if role is None:
                 row = connection.execute(
                     """
                     SELECT 1 FROM embedding_models AS m
@@ -903,8 +897,8 @@ class ModelsStore:
                     (model_id,),
                 )
                 return
-            if role_value not in MODEL_ROLES:
-                raise ValueError(f"unsupported model role: {role_value}")
+            if role not in MODEL_ROLES:
+                raise ValueError(f"unsupported model role: {role}")
             row = connection.execute(
                 """
                 SELECT m.input_modalities, m.capabilities_json
@@ -916,14 +910,14 @@ class ModelsStore:
             ).fetchone()
             if row is None:
                 raise ValueError(f"chat model is unavailable: {model_id}")
-            if role_value == "vision":
-                payload = _decode_model_payload(row[1], f"model {model_id}")
+            if role == "vision":
+                payload = _decode_model_payload(row["capabilities_json"], f"model {model_id}")
                 modalities = (
                     payload[0].input_modalities
                     if payload is not None
                     else tuple(
                         _decode_string_list(
-                            str(row[0]),
+                            str(row["input_modalities"]),
                             f"model {model_id} modalities",
                         )
                     )
@@ -939,7 +933,7 @@ class ModelsStore:
                     reasoning_effort = excluded.reasoning_effort,
                     updated_at = CURRENT_TIMESTAMP
                 """,
-                (role_value, model_id),
+                (role, model_id),
             )
 
         return self._domain_write(command.expected_revision, "set-default", write)

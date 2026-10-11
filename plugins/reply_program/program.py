@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from collections.abc import Awaitable, Callable, Iterable, Mapping, Sequence
 from typing import Any, cast
-from contextlib import AbstractAsyncContextManager
+from contextlib import AbstractAsyncContextManager, AbstractContextManager
 
 from core.common.file_io import run_file_io
 from core.common.diagnostic_log import log_timing
@@ -24,28 +24,16 @@ from plugins.sources.contract import (
     SourceGuard,
 )
 
-from .inputs import (
-    Authorize,
-    CallReader,
-    Content,
-    ContentRenderer,
-    ContextBuilder,
-    ContextModel,
-    Materials,
-    ModelChecks,
-    ModelContent,
-    ModelProjections,
-    ModelSelection,
-    Preview,
-    Reminder,
-    Summary,
-    ToolCatalog,
-    ToolCleanup,
-    ToolPresentation,
-    ToolProgram,
-    ToolView,
-    TurnProjection,
+from plugins.content.contract import Content
+from plugins.context.contract import ContextBuilder, MaterialData, SummaryData
+from plugins.models.contract import (
+    CallReader, ContentRenderer, ContextModel, ModelChecks, ModelContent,
+    ModelProjections, ModelSelection, StreamCallback,
 )
+from plugins.tools.contract import (
+    OrderedToolProgram, ToolCatalog, ToolCleanup, ToolPresentation, ToolView,
+)
+from plugins.turn_projection.contract import TurnProjection
 
 
 async def run_reply(
@@ -53,7 +41,7 @@ async def run_reply(
     models: ChatModels, content: Content, context: ContextBuilder, tools: ToolCatalog,
     cleanup: ToolCleanup,
     check_admission: SourceGuard,
-    selection: ModelSelection, tool_program: ToolProgram,
+    selection: ModelSelection, tool_program: OrderedToolProgram,
     model_checks: ModelChecks, model_content: ModelContent, model_projection: ModelProjections,
     writers: MessageWriters, owner_state: OwnerState, artifact_reader: ArtifactRead,
     react: Callable[..., Awaitable[Message]],
@@ -63,7 +51,7 @@ async def run_reply(
     prepare_content: PrepareContent | None = None,
     dynamic_content_kinds: frozenset[str] | None = frozenset(),
     read_call: CallReader,
-    authorize: Authorize,
+    authorize: Callable[[str, Mapping[str, object]], Awaitable[Mapping[str, object] | str]],
     max_output_tokens: int | None,
     max_steps: int,
     max_parallel_calls: int = 4,
@@ -71,8 +59,8 @@ async def run_reply(
     tool_names: Sequence[str] | None = None,
     prompt_hints: Sequence[str] = (),
     fixed_bindings: Mapping[str, str] | None = None,
-    preview: Preview | None = None,
-    reminders: Sequence[Reminder] = (),
+    preview: Callable[[str], AbstractContextManager[StreamCallback]] | None = None,
+    reminders: Sequence[Mapping[str, object]] = (),
     terminal_tools: frozenset[str] = frozenset(),
     presentation: ToolPresentation | None = None,
 ) -> Message:
@@ -156,14 +144,14 @@ async def run_reply(
         )
 
         # 2. 内容协议提示与解码来自同一 view；Context 仍只接收已取得的材料。
-        async def build_materials(messages: tuple[Message, ...]) -> Materials:
+        async def build_materials(messages: tuple[Message, ...]) -> MaterialData:
             nonlocal artifacts
             mark("materials.begin")
             result = await material_view.prepare(
                 messages, source, caller=ctx, reminders=tuple(reminders),
             )
             if render_content is None:
-                summary = cast(Summary | None, result.get("summary"))
+                summary = cast(SummaryData | None, result.get("summary"))
                 start = 0 if summary is None else context.summary_range(messages, cast(tuple[str, ...], summary["source_message_ids"])).stop
                 refs = reader.attachments_for(tuple(
                     message.message_id for index, message in enumerate(messages)
@@ -184,10 +172,10 @@ async def run_reply(
             )}
 
         async def reduce(
-            snapshot: tuple[Message, ...], prepared: Materials, request: ModelRequest,
+            snapshot: tuple[Message, ...], prepared: MaterialData, request: ModelRequest,
             model: BoundChatModel, projection: ContextModel, *, source: str, force: bool,
             on_status: ReductionStatus | None = None,
-        ) -> Summary | None:
+        ) -> SummaryData | None:
             result = await material_view.reduce(snapshot, prepared, request, model, projection,
                                                 source=source, force=force, on_status=on_status)
             check()

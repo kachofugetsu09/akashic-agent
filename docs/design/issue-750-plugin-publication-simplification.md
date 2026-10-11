@@ -891,7 +891,7 @@ T-cbecef 的六项测试源、文档已由主审及独立 review 静态接受；
 
   **iii. owner startup 的资源访问**：选窄的 owner-self 读取——`Context.get` 在本 Fiber LOADING 时允许读**本 Fiber 自己**已登记的 provide（`owner is self._fiber`），其他 owner 仍要求 ACTIVE；不开全局 fallback、不允许跨 LOADING owner 互读。`ctx.runtime_scope` 的本地化是前置依赖（见 v 的 T03a）：局部 activation 需要不经过整图 snapshot lease 的 scope 入口，接口为"按 Fiber/activation 的 scope 获取"，阶段上先于 start 执行点。
 
-  **iv. 迁移期 seam（已被 T03a-5 合同取代）**：原"局部装载标记 seam"废弃——T03a-5 定为同一不可分割单元内直接切换：内核 `_load`/`_unload` 对每次 activation 统一 dispatch 生命周期（冷启动与局部换代同链），不新增第二套 lifecycle owner。T-57630a 只删除 Manager 的 resident `run_runtime_services` 与 App/stdio 的正式 bootstrap 调用；`start_runtime`、`_start_runtime_snapshot`、`_start_closed_runtime_snapshot`、`_stop_runtime_snapshot*`、snapshot store 及真实消费者需要的清理责任保留。freeze 屏障随 fence/lease 消费者迁移一并解除，不先 no-op。
+  **iv. 迁移期 seam（已被 T03a-5 合同取代）**：原"局部装载标记 seam"废弃——T03a-5 定为同一不可分割单元内直接切换：内核 `_load`/`_unload` 对每次 activation 统一 dispatch 生命周期（冷启动与局部换代同链），不新增第二套 lifecycle owner。T-57630a 当时只删除 Manager 的 resident `run_runtime_services` 与 App/stdio 的正式 bootstrap 调用，保留尚有消费者的启动、停止和 snapshot 清理路径；freeze 屏障随 fence/lease 消费者迁移一并解除，不先 no-op。当前 `load_all()` 已等待 Fiber 完成生命周期，Manager 不再保存第二份 started 集合或提供额外启动步骤；停止仍由 `terminate_all()` 排空真实 generation、任务和 Root。
 
   **v. 校正后的实施依赖**（最小 Unicode 依赖图）：
 
@@ -2148,6 +2148,8 @@ Plugin Context → Root EventRegistry → Fiber Effect（独立，不桥接）
 T-71cb50 的 EventBus R1 两项测试源尾修与上述退役 wrapper/旧 fixture 删除已由主审与独立只读静态接受；行为测试未运行。
 
 #### T-57630a · 退役常驻 runtime loop 与正式宿主入口（production 已冻结；T-d8e47c production/test review 未通过；T-4f17d6 Cold-Start 累计静态接受，未运行）
+
+> 下文保留该批次的迁移记录。当前宿主直接监督 Web Shell、PluginWatcher 和进程停止等待；Host Bridge 监控归 HostExecution 插件。旧任务聚合与 Manager 启动记账已删除，Fiber 仍独占生命周期，真实资源仍由原 owner 排空。
 
 本批只收窄真实宿主边界，不扩大到全部 candidate/snapshot 删除。Manager 删除唯一常驻
 `run_runtime_services` loop 及其开关字段；保留仍有真实消费者的 snapshot start/stop/store、candidate/history、cleanup、operation/CAS、accepted、physical owner 与 `terminate_all` 责任。App 不再在正式启动中调用 `start_runtime` 或登记旧 loop；只有实际 `host_bridge_monitor` 等 runtime task 才创建 primary supervisor，Dashboard/PluginWatcher 仍是独立真实监督对象，意外空集合明确失败。stdio 直接等待 `StdioAppServer.run()`，EOF/错误后沿原 `ControlService → Bus → Core.stop → Manager.terminate_all → Fiber` 清理链退出。

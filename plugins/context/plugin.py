@@ -10,7 +10,7 @@ from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 from agent.plugin_composition import Context
 from plugins.ledger.contract import MessageSnapshot
-from plugins.models.contract import ModelRequest
+from plugins.models.contract import ContextModel, ModelRequest
 from plugins.ledger.contract import (
     Message,
 )
@@ -18,12 +18,11 @@ from plugins.context.contract import (
     CONTEXT as CONTEXT,
     CONTEXT_NOTICE_DISPLAY,
     MATERIALS_V4,
+    MaterialData,
 )
 
 from .api import (
-    ContextModel,
     ContextOverflow,
-    MaterialData,
     Materials,
     Summary,
     check_summary,

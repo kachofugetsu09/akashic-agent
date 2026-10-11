@@ -665,16 +665,6 @@ def _print_failure(path: Path, errors: list[str]) -> None:
         print(f"- {error}", file=sys.stderr)
 
 
-def _safe_relative_path(value: str) -> bool:
-    candidate = Path(value)
-    return (
-        not candidate.is_absolute()
-        and ".." not in candidate.parts
-        and "" not in candidate.parts
-        and "\\" not in value
-    )
-
-
 def _relative_or_name(path: Path, root: Path) -> str:
     try:
         return str(path.relative_to(root))
@@ -684,13 +674,6 @@ def _relative_or_name(path: Path, root: Path) -> str:
 
 def _sha256(path: Path) -> str:
     return hashlib.sha256(path.read_bytes()).hexdigest()
-
-
-def _json_sha256(value: object) -> str:
-    encoded = json.dumps(
-        value, ensure_ascii=False, sort_keys=True, separators=(",", ":")
-    ).encode()
-    return hashlib.sha256(encoded).hexdigest()
 
 
 def _git_output(cwd: Path, *args: str) -> str:

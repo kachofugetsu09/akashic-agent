@@ -16,13 +16,7 @@ from plugins.ledger.contract import (
     ToolCall,
     ToolResult,
 )
-from plugins.context.contract import (
-    SummaryReducer as SummaryReducer,
-)
-from plugins.models.contract import ContextModel as ContextModel
-
-MaterialData = Mapping[str, object]
-SummaryData = Mapping[str, object]
+from plugins.context.contract import MaterialData
 
 
 def settled_prefixes(messages: Sequence[Message]) -> tuple[int, ...]:

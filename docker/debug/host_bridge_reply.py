@@ -41,13 +41,13 @@ def add_skills(sources: Path, *, files: int, always: bool) -> None:
         shutil.copytree(ROOT / "plugins" / source_name, sources / target,
                         ignore=shutil.ignore_patterns("__pycache__"))
     (sources / "skill_probe/plugin.py").write_text('''from plugins.assets.contract import INSTALLED_ASSETS
-from ._materials_boundary import MATERIALS
+from plugins.context.contract import MATERIALS_V4
 from ._tool_boundary import TOOLS
 from .skills import register_skills
 api_version = 3
 name = "skill_probe"
 version = "1.0.0"
-inject = (TOOLS, MATERIALS, INSTALLED_ASSETS)
+inject = (TOOLS, MATERIALS_V4, INSTALLED_ASSETS)
 async def apply(ctx):
     await ctx.require(TOOLS).declare_group(ctx, always_on=True)
     await register_skills(ctx)

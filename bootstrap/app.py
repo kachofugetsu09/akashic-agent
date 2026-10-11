@@ -1,10 +1,10 @@
 from __future__ import annotations
 
 import asyncio
-import inspect
 import logging
 import os
 import signal
+from collections.abc import Iterable
 from pathlib import Path
 from typing import Any, Awaitable, Callable
 
@@ -36,10 +36,6 @@ logger = logging.getLogger(__name__)
 _run_cleanup_steps = run_cleanup_steps
 
 
-async def _noop_async() -> None:
-    return None
-
-
 def _clear_readiness(
     readiness: RuntimeReadiness | None,
 ) -> Callable[[], Awaitable[None]]:
@@ -50,7 +46,7 @@ def _clear_readiness(
     return clear
 
 
-def _raise_unexpected_task_errors(name: str, results: list[object]) -> None:
+def _raise_unexpected_task_errors(name: str, results: Iterable[object]) -> None:
     """记录并重新抛出任务停止时的首个非取消异常。"""
 
     first_error: BaseException | None = None
@@ -68,25 +64,6 @@ def _raise_unexpected_task_errors(name: str, results: list[object]) -> None:
             first_error = result
     if first_error is not None:
         raise first_error
-
-
-async def _run_primary_tasks(tasks: list[asyncio.Future[Any]]) -> None:
-    """监督 runtime tasks，并在失败或取消时等待兄弟任务收束。"""
-
-    try:
-        _ = await asyncio.gather(*tasks)
-    except asyncio.CancelledError:
-        # gather 已把取消传播给子任务；再次 cancel 会打断子任务的 finally。
-        if tasks:
-            _ = await asyncio.gather(*tasks, return_exceptions=True)
-        raise
-    except Exception:
-        for task in tasks:
-            if not task.done():
-                _ = task.cancel()
-        if tasks:
-            _ = await asyncio.gather(*tasks, return_exceptions=True)
-        raise
 
 
 def _stop_plugin_watcher(
@@ -146,13 +123,11 @@ class AppRuntime:
         self.web_shell_task: asyncio.Task[None] | None = None
         self.plugin_watcher: PluginWatcher | None = None
         self.plugin_watcher_task: asyncio.Task[None] | None = None
-        self.tasks: list[Awaitable[None]] = []
         self._shutdown = False
         self._started = False
         self._plugin_candidate_tasks: set[asyncio.Task[Any]] = set()
         self._plugin_reload_signal_installed = False
-        self._runtime_tasks: set[asyncio.Future[Any]] = set()
-        self._primary_task: asyncio.Future[Any] | None = None
+        self._shutdown_task: asyncio.Task[None] | None = None
         self._workspace_lock = WorkspaceInstanceLock(workspace)
 
     async def start(self) -> None:
@@ -170,8 +145,6 @@ class AppRuntime:
                 restart_gate=self.restart_gate,
                 host_ready=(lambda: self.readiness.ready) if self.readiness else None,
             )
-            manager = self.core.plugin_manager
-            manager.bind_endpoint_switcher(self._swap_plugin_endpoints)
             await self.core.start()
             if self.readiness is not None:
                 self.readiness.mark_stage("core.ready")
@@ -181,7 +154,6 @@ class AppRuntime:
 
             if plugin_manager is None:
                 raise RuntimeError("插件 Runtime 不可用")
-            self.tasks = []
             if os.environ.get("AKASHIC_SUPERVISED") != "1" and "AKASHIC_WEB_PORT" in os.environ:
                 from bootstrap.web_shell import create_web_shell_server
                 host = os.environ.get("AKASHIC_WEB_HOST", "127.0.0.1")
@@ -218,21 +190,14 @@ class AppRuntime:
             raise
 
     async def run(self) -> None:
+        """监督宿主任务，退出时完成清理并保留原始错误。"""
         run_error: BaseException | None = None
         try:
+            # 1. 完整启动后监督实际宿主任务与进程停止请求。
             await self.start()
-            runtime_tasks = self._schedule_runtime_tasks()
-            if runtime_tasks:
-                self._primary_task = asyncio.create_task(
-                    _run_primary_tasks(runtime_tasks),
-                    name="primary_runtime",
-                )
-            else:
-                self._primary_task = None
-            self._runtime_tasks.clear()
             assert self.core is not None
             shutdown_task = asyncio.create_task(self.core.restart_gate.wait_shutdown(), name="process_shutdown")
-            self._runtime_tasks.add(shutdown_task)
+            self._shutdown_task = shutdown_task
             watched_tasks = {
                 task
                 for task in (
@@ -242,28 +207,20 @@ class AppRuntime:
                 )
                 if task is not None
             }
-            supervised_tasks = set(watched_tasks)
-            if self._primary_task is not None:
-                supervised_tasks.add(self._primary_task)
-            if not supervised_tasks:
-                raise RuntimeError("没有可监督的宿主任务")
-
             # 实际宿主监督任务获得一次调度机会后仍存活，才对外发布 ready。
-            done, _ = await asyncio.wait(supervised_tasks, timeout=0)
+            done, _ = await asyncio.wait(watched_tasks, timeout=0)
             if not done:
                 if self.readiness is not None:
                     self.readiness.mark_ready()
                 done, _ = await asyncio.wait(
-                    supervised_tasks,
+                    watched_tasks,
                     return_when=asyncio.FIRST_COMPLETED,
                 )
             if shutdown_task in done:
                 try:
                     await shutdown_task
                 finally:
-                    self._runtime_tasks.discard(shutdown_task)
-            elif self._primary_task is not None and self._primary_task in done:
-                await self._primary_task
+                    self._shutdown_task = None
             else:
                 if self.web_shell_task is not None and self.web_shell_task in done:
                     watched_task = self.web_shell_task
@@ -280,6 +237,7 @@ class AppRuntime:
         except (asyncio.CancelledError, Exception) as error:
             run_error = error
 
+        # 2. 清理全部资源；关闭失败作为原始错误的原因保留。
         shutdown_error: BaseException | None = None
         try:
             await self.shutdown()
@@ -293,50 +251,18 @@ class AppRuntime:
         if shutdown_error is not None:
             raise shutdown_error
 
-    def _schedule_runtime_tasks(self) -> list[asyncio.Future[Any]]:
-        pending = self.tasks
-        self.tasks = []
-        scheduled: list[asyncio.Future[Any]] = []
+    async def _cancel_shutdown_task(self) -> None:
+        """收束进程停止等待；取消正常结束，其他错误继续暴露。"""
+        task = self._shutdown_task
+        if task is None:
+            return
+        _ = task.cancel()
         try:
-            for awaitable in pending:
-                task = asyncio.ensure_future(awaitable)
-                scheduled.append(task)
-        except (asyncio.CancelledError, Exception):
-            self._runtime_tasks = set(scheduled)
-            self.tasks = pending[len(scheduled) :]
-            for awaitable in self.tasks:
-                if inspect.iscoroutine(awaitable):
-                    awaitable.close()
-            raise
-        self._runtime_tasks = set(scheduled)
-        return scheduled
-
-    async def _cancel_runtime_tasks(self) -> None:
-        results: list[object] = []
-        primary_task = self._primary_task
-        try:
-            if primary_task is not None:
-                _ = primary_task.cancel()
-                try:
-                    await primary_task
-                except (asyncio.CancelledError, Exception) as error:
-                    results.append(error)
-            elif self._runtime_tasks:
-                for task in self._runtime_tasks:
-                    _ = task.cancel()
-                results = await asyncio.gather(
-                    *self._runtime_tasks,
-                    return_exceptions=True,
-                )
+            results = await asyncio.gather(task, return_exceptions=True)
         finally:
-            self._runtime_tasks.clear()
-            for awaitable in self.tasks:
-                if inspect.iscoroutine(awaitable):
-                    awaitable.close()
-            self.tasks.clear()
-            self._primary_task = None
+            self._shutdown_task = None
 
-        _raise_unexpected_task_errors("primary runtime task", results)
+        _raise_unexpected_task_errors("process shutdown task", results)
 
     async def _cancel_plugin_candidate_tasks(self) -> None:
         for task in self._plugin_candidate_tasks:
@@ -366,7 +292,7 @@ class AppRuntime:
             # 已排空业务后先关闭入站连接；插件释放前保留数据库和 HTTP provider。
             await _run_cleanup_steps(
                 ("plugin_candidate_tasks.cancel", self._cancel_plugin_candidate_tasks),
-                ("runtime_tasks.cancel", self._cancel_runtime_tasks),
+                ("process_shutdown.cancel", self._cancel_shutdown_task),
                 ("servers.request_shutdown", self._request_server_shutdown),
                 ("web_shell.wait", _wait_server_task(self.web_shell_task)),
                 (
@@ -432,15 +358,6 @@ class AppRuntime:
                 "plugin candidate scan failed",
                 exc_info=(type(error), error, error.__traceback__),
             )
-
-    async def _swap_plugin_endpoints(
-        self,
-        old_commands: tuple[tuple[str, str], ...],
-        new_commands: tuple[tuple[str, str], ...],
-    ) -> None:
-        # Installed channel plugins resolve COMMANDS inside each exact
-        # request scope.  There is no Core endpoint registry to mutate.
-        _ = old_commands, new_commands
 
 
 def build_app_runtime(
