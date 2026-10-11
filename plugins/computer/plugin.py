@@ -157,7 +157,7 @@ workspace_files = ()
 
 _IMAGE = (
     "ghcr.io/kachofugetsu09/akashic-computer@"
-    "sha256:d26c506263fecb0bddfab5f23f6508fb118c714ae470ad7a0fc3dc29b38fc35e"
+    "sha256:f48cab96d491c4965a34877fac6d64adb3fcd2d94fff47cdcb83c1e8af1f6a45"
 )
 
 
