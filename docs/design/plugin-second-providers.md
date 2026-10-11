@@ -6,6 +6,7 @@
 | 范围 | 第二实现 | 实际证据 |
 |---|---|---|
 | `ledger.artifact_import.v1`、`ledger.artifact_read.v1` | `examples/artifact_provider` 用独立 SQLite BLOB 存储，未导入 Ledger 实现 | 正式安装、文件导入、完整和分片读取、旧引用读取、删掉原来源后重启、卸载；消费者 apply 增量 0 |
+| `ui.plugin.v1`（公开 UiSlots 登记保持） | `examples/ui_query_provider` 串行查询，共用文件工作线程；不导入默认查询实现 | 同一目录、真实 JS、文件查询、旧线程池排空、重启、卸载；借用消费者 apply 增量 0 |
 | `timers.v1` | `timer_plugin_scenario.py` 中事件循环 callback 实现 | 原实现使用 Task，第二实现使用 callback；真实 Scheduler 先后提交通知，取消、重启、卸载和无关 Fiber 保持 |
 
 附件场景只接受本地文件，远程 URL 明确拒绝。它证明附件端口可以替换，
@@ -26,4 +27,6 @@ Timer 的硬依赖消费者按既有组合规则重新 apply；无关旁支不�
 ```
 
 复现：运行 `scripts/artifact_provider_scenario.py` 和 `scripts/timer_plugin_scenario.py`。
-场景返回 JSON 并明确各自临时目录。完整端口覆盖仍需逐项补齐 UI、Gateway、Models 与 Compaction 的证据。
+场景返回 JSON 并明确各自临时目录。完整端口覆盖仍需逐项补齐 Gateway、Models 与 Compaction 的证据。
+
+UI 示例独立实现目录、资产和查询三个方法；贡献方和 provider 许可覆盖实际工作。它不提供默认并行配额与超时策略，因此只作组合可替换性证据，不作为产品默认配置。`ui_query_plugin_scenario.py` 负责实际安装和重开验收。

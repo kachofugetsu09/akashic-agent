@@ -34,7 +34,7 @@ async def run(directory: Path) -> dict[str, object]:
     PluginSelection(workspace).initialize()
     home = directory / "home"
     os.environ.update(HOME=str(home), AKASHIC_PLUGIN_HOME=str(home), AKASHIC_PLUGIN_DISTRIBUTION="")
-    for name in ("ui", "workloads", "tools", "models"):
+    for name in ("ui", "workloads", "tools", "models", "ledger", "channels"):
         source = directory / name
         shutil.copytree(ROOT / "plugins" / name, source, ignore=shutil.ignore_patterns("__pycache__"))
         subprocess.run(["git", "init", "-q", "--initial-branch=source", str(source)], check=True)
@@ -93,7 +93,7 @@ async def apply(ctx):
         result = await root.context.require(ServiceKey("scenario.ui.read"))()
         assert "value" in result, (result, [(name, str(item.load_error)) for name, item in host._active_generations.items()])
         assert result["value"]["text"] == "stored panel value"
-        assert result["value"]["worker"].startswith("plugin-ui")
+        assert result["value"]["worker"] != "MainThread"
         assert result["module"] == "export default {};\n"
 
     def workers_closed():
@@ -103,10 +103,16 @@ async def apply(ctx):
     try:
         # 1. 首次读取得到真实 JS 资产和在线程中读取的插件文件。
         await host.load_all()
+        await host.install(source=str(provider), marketplace="lab", ref_name="", sparse_paths=[], update_id="ui-initial")
+        await host.wait_idle()
+        await host.reconcile_changed()
         await read(host)
         observer = host._active_generations["reader"].fiber
-        with (provider / "plugin.py").open("a") as file:
-            file.write("\n# installed implementation update\n")
+        # 独立串行引擎只消费公开 UiSlots，替换默认线程池查询实现。
+        shutil.copy2(ROOT / "examples/ui_query_provider/queries.py", provider / "queries.py")
+        module = provider / "plugin.py"
+        module.write_text(module.read_text().replace("LivePluginUiProvider", "SerialPluginUiProvider").replace(
+            '    await ctx.effect(lambda: queries.aclose, label="ui.queries")\n', ""))
         commit(provider)
         await host.install(source=str(provider), marketplace="lab", ref_name="", sparse_paths=[], update_id="ui-update")
         assert host._operation is not None
@@ -137,7 +143,7 @@ async def apply(ctx):
         workers_closed()
     finally:
         await host.terminate_all()
-    return {"catalog_asset": True, "worker_query": True, "generation_cleanup": True,
+    return {"second_query_provider": True, "consumer_apply_delta": 0, "catalog_asset": True, "worker_query": True, "generation_cleanup": True,
             "restart": True, "disable": True, "observer_stable": True, "threads_drained": True}
 
 
