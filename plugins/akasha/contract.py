@@ -22,7 +22,7 @@ SEMANTIC_INTEREST = ServiceKey[SemanticInterest]("akasha.semantic-interest.v1")
 
 
 
-# Marker only: vector-backed providers declare a mutually exclusive role.
+# 互斥角色标记：第二个 provider 在 Core provide 唯一性检查处冲突，不需要读取消费者。
 EMBEDDING_MEMORY_PLUGIN = ServiceKey[Any]("plugin.claim.embedding_memory")
 
 

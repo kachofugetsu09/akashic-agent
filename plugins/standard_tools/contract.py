@@ -36,4 +36,5 @@ class SkillReader(Protocol):
     async def list_sources(self) -> tuple[Mapping[str, object], ...]: ...
 
 
+# RuntimeInspection._bind_optional 将此 key 传给 ctx.inject 的技能目录子 Fiber。
 SKILL_INSPECTION = ServiceKey[SkillReader]("standard_tools.skill_inspection.v1")

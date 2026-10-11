@@ -42,4 +42,5 @@ class ProgrammaticService(Protocol):
     ) -> dict[str, object]: ...
 
 
+# Fleet Proactive Feedback 与 GitHub Watch 提交程序输入；调用与传输适配仍由本插件拥有。
 PROGRAMMATIC = ServiceKey[ProgrammaticService]("programmatic.v1")

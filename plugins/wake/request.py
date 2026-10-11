@@ -174,4 +174,5 @@ def read_phase(messages: Sequence[Message], request: Request) -> tuple[Message, 
     raise ValueError("Wake 程序缺少已提交阶段输入")
 
 
+# 私有程序 binding：runtime.py 固定身份，source.py 恢复时经 Bindings.open 读取。
 WAKE_PROGRAM = ServiceKey[Callable[[Task, MessageReader, Request], Awaitable[Message]]]("wake.program.v1")

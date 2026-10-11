@@ -791,6 +791,9 @@ def capability_catalog() -> tuple[dict[str, str], dict[str, set[str]], dict[str,
                 if node.func.attr in {"bind", "open"}:
                     expressions.extend(node.args)
                 expressions.extend(item.value for item in node.keywords if item.arg == "inject")
+            elif isinstance(node, ast.Call) and isinstance(node.func, ast.Name):
+                # 公开 key 传给局部 helper 也是静态消费位置；例如可选子 Fiber 的装配。
+                expressions = list(node.args)
             elif isinstance(node, (ast.Assign, ast.AnnAssign)) and node.value is not None:
                 targets = node.targets if isinstance(node, ast.Assign) else [node.target]
                 if any(isinstance(target, ast.Name) and target.id == "inject" for target in targets):

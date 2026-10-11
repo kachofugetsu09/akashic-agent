@@ -28,6 +28,7 @@ from plugins.sources.contract import (
 from .request import Request, check_request
 
 logger = logging.getLogger(__name__)
+# 私有程序 binding：tools.py 固定身份，恢复路径经 Bindings.open 读取，不提供外部 SDK。
 SUBAGENT_PROGRAM = ServiceKey[Callable[[Task, MessageReader, Request], Awaitable[Message]]]("subagent.program.v1")
 _MAX_ACTIVE = 3
 
