@@ -14,7 +14,9 @@ export class ComputerDriver extends EventEmitter {
   constructor({ anonymousIdleMs = 600000 } = {}) {
     super();
     this.anonymous = new AnonymousBrowsers(anonymousIdleMs);
+    this.anonymous.on("targets", () => this.emit("targets"));
     this.anonymous.on("closed", ({ browserId, reason, context }) => {
+      this.emit("targets");
       this.sessions.get(context.session_id)?.worker.postMessage({ kind: "browserClosed", browserId, reason });
     });
     this.anonymous.on("cleanupError", error => {
@@ -40,6 +42,7 @@ export class ComputerDriver extends EventEmitter {
     control.instance = this.anonymous.instances.get(target.split(":")[0]);
     if (control.instance) this.anonymous.hold(control.instance);
     this.control = control;
+    this.emit("control");
     this.pauseClock();
     try {
       await waitForSignal(Promise.allSettled([...this.agentJobs]), signal);
@@ -75,6 +78,7 @@ export class ComputerDriver extends EventEmitter {
       }
       if (this.control !== control) throw new Error("Computer control owner changed during release");
       this.control = null;
+      this.emit("control");
       if (control.instance) this.anonymous.unhold(control.instance);
       control.releaseWorkload?.();
       control.resume();

@@ -54,6 +54,7 @@ export class AnonymousBrowsers extends EventEmitter {
       );
       instance.backend = backend;
       await backend.start();
+      this.emit("targets");
       backend.on("event", onEvent);
       this.armIdle(instance);
       return id;
@@ -130,6 +131,11 @@ export class AnonymousBrowsers extends EventEmitter {
       engine.url = `http://127.0.0.1:${port}`;
       const backend = new BrowserBackend(engine.url);
       await backend.start();
+      // 标签页的创建、关闭、标题和网址变化都由 Chromium 推送，目录不靠轮询发现变化。
+      backend.browser.on("event", ({ method }) => {
+        if (method?.startsWith("Target.target")) this.emit("targets");
+      });
+      await backend.browser.send("Target.setDiscoverTargets", { discover: true });
       engine.backend = backend;
     } catch (error) {
       await this.stopEngine();

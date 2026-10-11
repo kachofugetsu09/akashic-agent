@@ -2,6 +2,7 @@ import type { WebHostContextV1, WebUiDisposer } from "@akashic/web-ui-v1";
 import { ComputerDisplay } from "./display";
 import { BrowserDisplay } from "./browser-display";
 import { ClipboardPopover } from "./clipboard";
+import { ComputerEvents, type ComputerState } from "./computer-events";
 import { present, type ActionId, type ControlState, type LinkState, type PanelFacts, type RuntimeState } from "./panel-state";
 import { PanelSurface, type Target } from "./panel-view";
 import { keysymForKey } from "./remote-input.js";
@@ -12,9 +13,6 @@ interface ConversationTabView {
   onActiveChange(listener: (active: boolean) => void): WebUiDisposer;
   requestAttention(noticeId: string): void;
 }
-interface Activity { noticeId: number; active: boolean; browser: { state: string; error: string } }
-
-const RUNTIME_STATES: readonly string[] = ["sleeping", "starting", "ready", "stopping", "failed"];
 // 这三种连接结果需要用户明确处理，轮询不自动重连。
 const SETTLED_LINKS: readonly LinkState[] = ["failed", "stale", "ended"];
 
@@ -48,9 +46,9 @@ function renderComputer(ctx: WebHostContextV1, host: HTMLElement, rawView: unkno
   let disposed = false;
   let lastNotice: number | null = null;
   let display: ComputerDisplay | BrowserDisplay | null = null;
-  let timer = 0;
+  let retry = 0;
   let attempt = 0;
-  let lastTouch = 0;
+  const events = new ComputerEvents(ctx);
   const held = new Map<string, number>();
 
   function facts(): PanelFacts {
@@ -84,7 +82,6 @@ function renderComputer(ctx: WebHostContextV1, host: HTMLElement, rawView: unkno
   function inputKey(event: KeyboardEvent) {
     if (!control || link !== "connected") return;
     event.preventDefault();
-    touch(event);
     if (display instanceof BrowserDisplay) { display.key(event); return; }
     if (event.type === "keydown" && (event.ctrlKey || event.metaKey) && event.key.toLowerCase() === "v") {
       releaseKeys();
@@ -96,21 +93,6 @@ function renderComputer(ctx: WebHostContextV1, host: HTMLElement, rawView: unkno
     if (event.type === "keydown") held.set(event.code, keysym);
     else held.delete(event.code);
     display?.sendKey(keysym, event.code, event.type === "keydown");
-  }
-
-  function touch(event: Event) {
-    if (!event.isTrusted || !control || Date.now() - lastTouch < 1000) return;
-    lastTouch = Date.now();
-    const lost = () => fail("操作活动同步失败，请重新连接");
-    void ctx.http.request("/api/dashboard/computer/touch", { method: "POST" })
-      .then(response => { if (!response.ok) lost(); }, lost);
-  }
-
-  function fail(reason: string) {
-    disconnect();
-    link = "failed";
-    linkError = reason;
-    update();
   }
 
   async function paste(value: string) {
@@ -134,10 +116,10 @@ function renderComputer(ctx: WebHostContextV1, host: HTMLElement, rawView: unkno
     const current = ++attempt;
     const next = target.kind === "desktop"
       ? new ComputerDisplay(screen, ctx, { keydown: inputKey, keyup: inputKey,
-        touch, blur: releaseKeys, paste: event => {
+        blur: releaseKeys, paste: event => {
           event.preventDefault();
           void paste(event.clipboardData?.getData("text/plain") ?? "").catch(error => clipboard.report(String(error)));
-        } }, token)
+        } }, events, token)
       : new BrowserDisplay(screen, ctx, selected, token);
     display = next;
     next.addEventListener("connect", () => {
@@ -163,6 +145,9 @@ function renderComputer(ctx: WebHostContextV1, host: HTMLElement, rawView: unkno
       control = "";
       if (!SETTLED_LINKS.includes(link)) link = "lost";
       update();
+      // 画面断开不会带来新的状态事件，自己隔一秒重连。
+      window.clearTimeout(retry);
+      retry = window.setTimeout(() => { if (link === "lost") connect(); }, 1000);
     });
     update();
   }
@@ -202,63 +187,41 @@ function renderComputer(ctx: WebHostContextV1, host: HTMLElement, rawView: unkno
     }
   }
 
-  // 读取一轮活动和目标目录；格式不对就整体拒绝。
-  async function read(): Promise<{ activity: Activity; catalog: { targets: Target[]; control: boolean } } | "stale"> {
-    const responses = await Promise.all([
-      ctx.http.request("/api/dashboard/computer/activity", { cache: "no-store" }),
-      ctx.http.request("/api/dashboard/computer/targets", { cache: "no-store" }),
-    ]);
-    if (responses.some(response => response.headers.get("X-Akashic-Web-Stale") === "1")) return "stale";
-    const failed = responses.find(response => !response.ok);
-    if (failed) throw new Error(`状态接口返回 ${failed.status}`);
-    const activity = await responses[0].json() as Activity;
-    const catalog = await responses[1].json() as { targets: Target[]; control: boolean };
-    if (!Number.isInteger(activity.noticeId) || typeof activity.active !== "boolean"
-      || !RUNTIME_STATES.includes(activity.browser?.state) || typeof activity.browser.error !== "string"
-      || !Array.isArray(catalog.targets) || typeof catalog.control !== "boolean"
-      || catalog.targets.some(target => !target.id || !target.label || !["desktop", "browser"].includes(target.kind)))
-      throw new Error("Computer 回执无效");
-    return { activity, catalog };
+  // 状态流的每个快照：只观察；休眠需明确唤醒，通知不修改面板和观看目标。
+  function apply(state: ComputerState) {
+    statusError = "";
+    runtime = state.browser.state as RuntimeState;
+    runtimeError = state.browser.error;
+    agentActive = state.active;
+    busy = state.control;
+    if ((lastNotice !== null && lastNotice !== state.noticeId) || (lastNotice === null && state.active))
+      view.requestAttention(`computer:${state.noticeId}`);
+    lastNotice = state.noticeId;
+    if (JSON.stringify(targets) !== JSON.stringify(state.targets)) {
+      targets = state.targets;
+      surface.renderTargets(targets, selected);
+    }
+    if (runtime !== "ready") {
+      if (display) disconnect();
+      if (link !== "stale") link = "idle";
+    } else if (!targets.some(target => target.id === selected)) {
+      if (display) disconnect();
+      link = "ended";
+    } else if (active && !display) connect();
+    update();
   }
 
-  /** 轮询只观察；休眠需明确唤醒，通知不修改面板和观看目标。 */
-  async function poll() {
-    try {
-      const result = await read();
-      if (disposed) return;
-      statusError = "";
-      if (result === "stale") {
-        disconnect();
-        link = "stale";
-        return;
-      }
-      const { activity, catalog } = result;
-      runtime = activity.browser.state as RuntimeState;
-      runtimeError = activity.browser.error;
-      agentActive = activity.active;
-      busy = catalog.control;
-      if ((lastNotice !== null && lastNotice !== activity.noticeId) || (lastNotice === null && activity.active))
-        view.requestAttention(`computer:${activity.noticeId}`);
-      lastNotice = activity.noticeId;
-      if (JSON.stringify(targets) !== JSON.stringify(catalog.targets)) {
-        targets = catalog.targets;
-        surface.renderTargets(targets, selected);
-      }
-      if (runtime !== "ready") {
-        if (display) disconnect();
-        if (link !== "stale") link = "idle";
-      } else if (!targets.some(target => target.id === selected)) {
-        if (display) disconnect();
-        link = "ended";
-      } else if (active && !display) connect();
-    } catch (error) {
-      // 读取失败与画面连接无关：不改写 link，已确定的 stale 等终态保持不变。
-      statusError = error instanceof Error ? error.message : String(error);
-    } finally {
-      update();
-      if (!disposed) timer = window.setTimeout(() => void poll(), 1000);
-    }
-  }
+  events.addEventListener("state", event => apply((event as CustomEvent<ComputerState>).detail));
+  // 读取失败与画面连接无关：不改写 link，已确定的 stale 等终态保持不变。
+  events.addEventListener("error", event => {
+    statusError = (event as CustomEvent<string>).detail;
+    update();
+  });
+  events.addEventListener("stale", () => {
+    disconnect();
+    link = "stale";
+    update();
+  });
 
   surface.fullscreenToggle.onclick = () =>
     void (document.fullscreenElement ? document.exitFullscreen() : surface.root.requestFullscreen());
@@ -271,10 +234,10 @@ function renderComputer(ctx: WebHostContextV1, host: HTMLElement, rawView: unkno
     update();
   });
   update();
-  void poll();
   return () => {
     disposed = true;
-    window.clearTimeout(timer);
+    events.close();
+    window.clearTimeout(retry);
     stopActive();
     disconnect();
     host.replaceChildren();

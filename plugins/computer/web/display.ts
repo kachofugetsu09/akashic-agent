@@ -1,8 +1,9 @@
 import type { WebHostContextV1 } from "@akashic/web-ui-v1";
 import { AgentCursor } from "./agent-cursor";
+import type { ComputerEvents } from "./computer-events";
 
 interface StreamWindow extends Window {
-  computerInputHandlers?: InputHandlers;
+  computerInputHandlers?: InputHandlers & { touch(event: Event): void };
   fps?: number;
   selkiesTransport?: { readonly readyState: number; close(): void;
     addEventListener(type: "close" | "message", listener: (event: { reason?: string; data?: unknown }) => void): void };
@@ -18,7 +19,6 @@ interface InputHandlers {
   keydown(event: KeyboardEvent): void;
   keyup(event: KeyboardEvent): void;
   paste(event: ClipboardEvent): void;
-  touch(event: Event): void;
   blur(): void;
 }
 
@@ -45,6 +45,7 @@ export class ComputerDisplay extends EventTarget {
     private readonly host: HTMLElement,
     private readonly ctx: WebHostContextV1,
     private readonly handlers: InputHandlers,
+    private readonly events: ComputerEvents,
     private readonly control = "",
   ) {
     super();
@@ -153,9 +154,9 @@ export class ComputerDisplay extends EventTarget {
     }
   };
 
+  // 人工输入时立即收起 Agent 光标。
   private readonly touch = (event: Event) => {
     if (event.isTrusted) this.cursor?.hide();
-    this.handlers.touch(event);
   };
 
   private viewport(): DOMRect | null {
@@ -216,7 +217,7 @@ export class ComputerDisplay extends EventTarget {
       if (!this.connected && transport?.readyState === WebSocket.OPEN && input && hasFrame) {
         this.connected = true;
         window.clearTimeout(this.startupTimer);
-        this.cursor = new AgentCursor(this.host, this.ctx, () => this.viewport());
+        this.cursor = new AgentCursor(this.host, this.events, () => this.viewport());
         this.dispatchEvent(new Event("connect"));
       }
       if (transport?.readyState === WebSocket.CLOSED) {

@@ -1,4 +1,4 @@
-import type { WebHostContextV1 } from "@akashic/web-ui-v1";
+import type { ComputerEvents } from "./computer-events";
 import { Motion, glowFor, rippleAt, squishAt, RIPPLE_MS, type Vec } from "./cursor-motion";
 
 interface Point {
@@ -16,8 +16,8 @@ interface CursorState {
 }
 
 /** 在只读传输边界检查坐标；展示不能反向发送输入。 */
-function checkState(raw: string): CursorState {
-  const value = JSON.parse(raw) as Partial<CursorState> | null;
+function checkState(raw: unknown): CursorState {
+  const value = raw as Partial<CursorState> | null;
   if (!value || !Number.isInteger(value.revision) || value.revision! < 0
     || typeof value.ttlMs !== "number" || !Number.isFinite(value.ttlMs)
     || value.ttlMs < 0 || value.ttlMs > 5000 || typeof value.error !== "string") {
@@ -48,7 +48,6 @@ export class AgentCursor {
   private readonly ripple = document.createElement("div");
   private readonly badge = document.createElement("div");
   private readonly notice = document.createElement("div");
-  private readonly socket: WebSocket;
   private readonly resize: ResizeObserver;
   private readonly reduced = matchMedia("(prefers-reduced-motion: reduce)");
   private point: Point | null = null;
@@ -65,7 +64,7 @@ export class AgentCursor {
 
   constructor(
     private readonly host: HTMLElement,
-    ctx: WebHostContextV1,
+    private readonly events: ComputerEvents,
     private readonly viewport: () => DOMRect | null,
   ) {
     this.build();
@@ -73,28 +72,35 @@ export class AgentCursor {
     this.resize = new ResizeObserver(() => this.place(false));
     this.resize.observe(host);
     host.addEventListener("pointermove", this.reveal);
-    this.socket = new WebSocket(ctx.http.webSocketUrl("/api/dashboard/computer/cursor"));
-    this.socket.addEventListener("message", (event) => {
-      if (this.closed) return;
-      try {
-        const state = checkState(event.data);
-        if (state.revision <= this.revision) return;
-        this.revision = state.revision;
-        this.notice.textContent = state.error;
-        this.notice.hidden = !state.error;
-        if (!state.point || state.ttlMs === 0) { this.hide(); return; }
-        this.point = state.point;
-        this.place(true);
-        window.clearTimeout(this.expiry);
-        this.expiry = window.setTimeout(() => this.hide(), state.ttlMs);
-      } catch (error) {
-        this.unavailable(String(error));
-        this.socket.close(1002, "Invalid cursor receipt");
-      }
-    });
-    this.socket.addEventListener("close", () => {
-      if (!this.closed) this.unavailable("操作位置标记已断开；重新连接 Computer 可恢复。");
-    });
+    events.addEventListener("cursor", this.onCursor);
+    events.addEventListener("error", this.onLost);
+    if (events.cursor) this.receive(events.cursor);
+  }
+
+  private readonly onCursor = (event: Event) => this.receive((event as CustomEvent<unknown>).detail);
+
+  // 状态流重连后 gateway 可能已重启，revision 从头计数。
+  private readonly onLost = () => {
+    this.revision = -1;
+    this.unavailable("操作位置标记已断开，正在重连…");
+  };
+
+  private receive(raw: unknown) {
+    if (this.closed) return;
+    try {
+      const state = checkState(raw);
+      if (state.revision <= this.revision) return;
+      this.revision = state.revision;
+      this.notice.textContent = state.error;
+      this.notice.hidden = !state.error;
+      if (!state.point || state.ttlMs === 0) { this.hide(); return; }
+      this.point = state.point;
+      this.place(true);
+      window.clearTimeout(this.expiry);
+      this.expiry = window.setTimeout(() => this.hide(), state.ttlMs);
+    } catch (error) {
+      this.unavailable(String(error));
+    }
   }
 
   // 结构：光晕和涟漪在指针下层；箭头和名字徽章同在指针层，随指针移动。
@@ -239,7 +245,8 @@ export class AgentCursor {
     window.clearTimeout(this.leaving);
     window.clearTimeout(this.quiet);
     this.host.removeEventListener("pointermove", this.reveal);
-    this.socket.close();
+    this.events.removeEventListener("cursor", this.onCursor);
+    this.events.removeEventListener("error", this.onLost);
     this.resize.disconnect();
     this.layer.remove();
     this.notice.remove();

@@ -4,7 +4,7 @@ import { performance } from "node:perf_hooks";
 
 /** 主 profile 只有这个 owner 能启动；请求与 Turn 阻止空闲回收。 */
 export class ComputerLifecycle {
-  state = "sleeping";
+  #state = "sleeping";
   error = "";
   users = 0;
   turns = new Set();
@@ -12,7 +12,8 @@ export class ComputerLifecycle {
   transition = null;
   child = null;
 
-  constructor({ start, stop, idleMs }) {
+  constructor({ start, stop, idleMs, onChange = () => {} }) {
+    this.changed = onChange;
     this.startDriver = start;
     this.stopDriver = stop;
     this.idleMs = idleMs;
@@ -31,6 +32,16 @@ export class ComputerLifecycle {
       },
       Math.min(idleMs, 1000),
     );
+  }
+
+  // 状态变化通知订阅者；error 总与 state 一起读取，由订阅方合并同一轮的多次变化。
+  get state() {
+    return this.#state;
+  }
+
+  set state(value) {
+    this.#state = value;
+    this.changed();
   }
 
   status() {
