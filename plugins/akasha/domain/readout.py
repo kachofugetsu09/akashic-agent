@@ -5,7 +5,7 @@ from __future__ import annotations
 import math
 from dataclasses import dataclass
 
-from ..numeric import np
+import numpy as np
 
 from .diffusion import residual_push
 from .features import (

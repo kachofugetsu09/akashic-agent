@@ -12,7 +12,7 @@ from dataclasses import asdict
 from pathlib import Path
 from typing import Any
 
-from ..numeric import np
+import numpy as np
 from pydantic import ValidationError
 
 from .consumption import Consumption
