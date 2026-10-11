@@ -82,8 +82,15 @@ class Command(BaseModel):
     timeout: int = Field(default=DEFAULT_HARD_TIMEOUT_S, ge=1, le=MAX_HARD_TIMEOUT_S)
     run_in_background: bool = Field(
         default=False,
-        description="后台运行：本轮结束后继续执行，完成时自动通知当前会话，期间可继续对话；"
-                    "不要轮询，需要时用 write_stdin 读取输出、task_stop 终止。适合派发长任务（如 codex exec）。",
+        description=(
+            "后台运行并在结束时回调：命令退出后自动通知当前会话（本轮进行中注入下一步，空闲时唤醒新一轮），"
+            "期间可以继续对话或结束本轮。\n"
+            "任何需要等待结果的事都能变成回调，只要把它写成一条阻塞到完成才退出的命令："
+            "编译、测试、下载、渲染、部署、长脚本；其他 agent 的非交互模式（如 codex exec、devin -p、claude -p）；"
+            "只提供异步接口的服务，写一个轮询到终态再退出的脚本。结果写入文件，通知到达后再读取。\n"
+            "不要在本轮轮询或用 write_stdin 长等待，也不要承诺稍后再看：你不会自己回来，只有回调会唤醒你。"
+            "需要时用 write_stdin 读取输出、task_stop 终止。"
+        ),
     )
 
 
@@ -400,7 +407,8 @@ async def register_shell(ctx: Context, directories: WorkingDirectories | None = 
         ctx, name="shell-environment", kind="context", prepare=environment,
     )
     definitions: tuple[tuple[Literal["shell", "write_stdin", "task_stop"], type[BaseModel], str], ...] = (
-        ("shell", Command, "执行 shell 命令；返回终态或可供 write_stdin/task_stop 使用的 execution_id。"),
+        ("shell", Command, "执行 shell 命令；返回终态或可供 write_stdin/task_stop 使用的 execution_id。"
+                           "run_in_background=true 时命令结束会回调通知本会话，任何要等待结果的工作都可借此异步完成。"),
         ("write_stdin", Stdin, "续接命令，等待新增输出或输入 PTY 字符；仅返回上次读取后的新增内容。"),
         ("task_stop", Stop, "确认终止命令的进程组并释放 execution_id。"),
     )
