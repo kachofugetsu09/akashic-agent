@@ -50,8 +50,8 @@ from plugins.sources.contract import (
     GuardedSourceSession as SourceSession,
 )
 
+from .contract import PROGRAMMATIC
 from .control import (
-    PROGRAMMATIC,
     Programmatic,
     check_session,
     rpc_methods,
