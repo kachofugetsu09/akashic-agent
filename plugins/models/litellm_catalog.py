@@ -16,7 +16,7 @@ from typing import Any, Mapping
 
 import httpx
 
-from .litellm_capabilities import resolve_catalog_capabilities
+from .litellm_capabilities import load_catalog_registries, resolve_catalog_capabilities
 from plugins.models.contract import DiscoveredModel
 
 logger = logging.getLogger(__name__)
@@ -63,6 +63,8 @@ class LiteLlmCapabilityCatalog:
 
         async with self._lock:
             models, source = await self._load_for_sync()
+        # 首次查询的依赖加载不占用事件循环，其他会话不因此停顿。
+        await asyncio.to_thread(load_catalog_registries)
         return tuple(
             _enrich_model(item, provider_id=provider_id, models=models, source=source)
             for item in discovered

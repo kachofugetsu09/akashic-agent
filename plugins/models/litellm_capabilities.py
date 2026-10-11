@@ -129,6 +129,15 @@ def resolve_catalog_provider_id(
     return ""
 
 
+# LiteLLM 与 genai-prices 导入约耗一核秒半；异步调用方先在线程里完成首次加载，
+# 之后的同步查询直接命中缓存。失败不缓存，下次调用重新加载并原样报错。
+def load_catalog_registries() -> None:
+    from genai_prices.data_snapshot import get_snapshot
+
+    _ = get_snapshot()
+    _ = _known_provider_ids()
+
+
 @lru_cache(maxsize=1)
 def _known_provider_ids() -> frozenset[str]:
     providers = {
