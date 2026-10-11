@@ -21,6 +21,7 @@ from .protocol import (
     EXECUTION_ENV_NAMES,
     decode_cleanup,
     decode_execution,
+    decode_execution_states,
     decode_file_result,
     require_fields,
     require_names,
@@ -29,7 +30,7 @@ from .protocol import (
 )
 from plugins.host_execution.contract import FileResult
 from plugins.host_execution.contract import (
-    ExecutionCleanupReport, ExecutionResult
+    ExecutionCleanupReport, ExecutionResult, ExecutionState
 )
 from .factory import HostBridgeRpcError
 from core.common.diagnostic_log import current_diagnostic_context
@@ -314,6 +315,13 @@ class HostBridgeShellProcessManager:
         for execution_id in reply.execution_ids:
             require_positive(execution_id, "execution_id")
         return list(reply.execution_ids)
+
+    async def execution_states(self, owner_session_key: str) -> list[ExecutionState]:
+        reply: pb.ExecutionStatesReply = await self._call(
+            pb.OwnerRequest(context=self._request_context(), owner_session_key=owner_session_key),
+            method="ExecutionStates",
+        )
+        return decode_execution_states(reply)
 
     async def execute_file_tool(
         self, operation: str, *, allowed_dir: Path | None, arguments: dict[str, Any]

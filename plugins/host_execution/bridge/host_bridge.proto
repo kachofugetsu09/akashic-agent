@@ -17,6 +17,7 @@ service HostBridge {
   rpc ActiveExecutions(ContextRequest) returns (ActiveExecutionsReply);
   rpc FileTool(FileRequest) returns (FileReply);
   rpc SkillRequirements(SkillRequirementsRequest) returns (SkillRequirementsReply);
+  rpc ExecutionStates(OwnerRequest) returns (ExecutionStatesReply);
 }
 
 message RequestContext {
@@ -97,6 +98,15 @@ message CleanupReply {
   repeated CleanupFailure failures = 3;
 }
 message ActiveExecutionsReply { repeated int64 execution_ids = 1; }
+
+// 不消费输出的 owner 执行快照；settled 表示已退出且没有调用方在等待终态。
+message ExecutionState {
+  optional int64 execution_id = 1;
+  optional bool settled = 2;
+  optional sint32 exit_code = 3;
+  string finish_reason = 4;
+}
+message ExecutionStatesReply { repeated ExecutionState states = 1; }
 
 message FileRequest {
   RequestContext context = 1;

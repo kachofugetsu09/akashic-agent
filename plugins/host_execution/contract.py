@@ -149,6 +149,8 @@ class ShellProcessManagerProtocol(Protocol):
 
     async def active_execution_ids(self) -> list[int]: ...
 
+    async def execution_states(self, owner_session_key: str) -> list["ExecutionState"]: ...
+
 
 MIN_YIELD_TIME_MS = 250
 
@@ -187,6 +189,15 @@ class ExecutionResult:
     execution_id: int | None
     exit_code: int | None
     output_path: str | None
+    finish_reason: str
+
+
+# 不消费输出的执行快照；settled 表示已退出且没有调用方正在等待它的终态。
+@dataclass(frozen=True)
+class ExecutionState:
+    execution_id: int
+    settled: bool
+    exit_code: int | None
     finish_reason: str
 
 
@@ -238,6 +249,7 @@ class Processes(Protocol):
     ) -> ExecutionResult: ...
     async def terminate_execution(self, ctx: Context, owner_key: str, execution_id: int) -> bool: ...
     async def terminate_owner(self, ctx: Context, owner_key: str) -> ExecutionCleanupReport: ...
+    async def execution_states(self, ctx: Context, owner_key: str) -> list[ExecutionState]: ...
 
 
 PROCESSES = ServiceKey[Processes]("host.processes.v1")

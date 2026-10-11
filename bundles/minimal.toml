@@ -133,6 +133,10 @@ disabled = true
 plugin = "reply@release"
 disabled = true
 
+[rows."jobs"]
+plugin = "jobs@release"
+disabled = true
+
 [rows."akashic_clients"]
 plugin = "akashic_clients@release"
 disabled = true

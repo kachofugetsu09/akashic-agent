@@ -101,6 +101,9 @@ plugin = "reply_program@release"
 [rows."reply"]
 plugin = "reply@release"
 
+[rows."jobs"]
+plugin = "jobs@release"
+
 [rows."akashic_clients"]
 plugin = "akashic_clients@release"
 config = { "enabled" = true, "web" = { "enabled" = true, "socket_path" = "" } }

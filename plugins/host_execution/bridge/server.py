@@ -30,6 +30,7 @@ from .protocol import (
     EXECUTION_ENV_NAMES,
     encode_execution,
     encode_cleanup,
+    encode_execution_states,
     encode_file_result,
     require_fields,
     require_text,
@@ -505,6 +506,13 @@ class HostBridgeService:
             return pb.ActiveExecutionsReply(
                 execution_ids=await manager.active_execution_ids()
             )
+
+    @_rpc
+    async def ExecutionStates(self, request: pb.OwnerRequest) -> pb.ExecutionStatesReply:
+        require_text(request.owner_session_key, "owner_session_key")
+        async with self._manager_operation(request.context) as manager:
+            states = await manager.execution_states(request.owner_session_key)
+        return encode_execution_states(states)
 
     @_rpc
     async def FileTool(self, request: pb.FileRequest) -> pb.FileReply:

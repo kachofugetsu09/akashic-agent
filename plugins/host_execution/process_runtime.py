@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from plugins.host_execution.contract import (
-    DEFAULT_HARD_TIMEOUT_S, DEFAULT_INITIAL_YIELD_TIME_MS, DEFAULT_MAX_OUTPUT_TOKENS, ExecutionCleanupFailure, ExecutionCleanupReport, ExecutionResult, MAX_HARD_TIMEOUT_S, MAX_WRITE_STDIN_YIELD_TIME_MS, MAX_YIELD_TIME_MS, MIN_EMPTY_YIELD_TIME_MS, MIN_YIELD_TIME_MS, ShellProcessManagerProtocol, UnknownExecutionError, clamp_initial_yield_time, clamp_write_stdin_yield_time
+    DEFAULT_HARD_TIMEOUT_S, DEFAULT_INITIAL_YIELD_TIME_MS, DEFAULT_MAX_OUTPUT_TOKENS, ExecutionCleanupFailure, ExecutionCleanupReport, ExecutionResult, ExecutionState, MAX_HARD_TIMEOUT_S, MAX_WRITE_STDIN_YIELD_TIME_MS, MAX_YIELD_TIME_MS, MIN_EMPTY_YIELD_TIME_MS, MIN_YIELD_TIME_MS, ShellProcessManagerProtocol, UnknownExecutionError, clamp_initial_yield_time, clamp_write_stdin_yield_time
 )
 
 import asyncio
@@ -136,6 +136,7 @@ class _Execution:
     hard_timeout_task: asyncio.Task[None] | None = None
     finish_reason: str = "natural"
     failure_message: str | None = None
+    waiters: int = 0
 
 
 class ShellProcessManager:
@@ -218,6 +219,8 @@ class ShellProcessManager:
                 env=env,
                 tty=tty,
             )
+            # 首个窗口在登记前就算作等待者，状态查询不会把立即退出的命令当成后台结算。
+            execution.waiters += 1
             async with self._lock:
                 self._executions[execution_id] = execution
             execution.pump_task = asyncio.create_task(
@@ -230,17 +233,12 @@ class ShellProcessManager:
             )
 
         # 2. 调用方取消只中止这次等待；manager 继续持有 execution。
-        started = time.monotonic()
-        collected = await self._collect_until_deadline(
-            execution,
-            started + clamp_initial_yield_time(yield_time_ms) / 1000,
-        )
-        return await self._build_result(
-            execution,
-            collected,
-            started,
-            max_output_tokens,
-        )
+        try:
+            return await self._observe(
+                execution, clamp_initial_yield_time(yield_time_ms), max_output_tokens,
+            )
+        finally:
+            execution.waiters -= 1
 
     async def write_stdin(
         self,
@@ -287,17 +285,19 @@ class ShellProcessManager:
             has_input=bool(chars),
             max_empty_ms=self._max_write_stdin_yield_time_ms,
         )
+        execution.waiters += 1
+        try:
+            return await self._observe(execution, wait_ms, max_output_tokens)
+        finally:
+            execution.waiters -= 1
+
+    # 等待一个窗口并发布结果；调用方负责登记等待者。
+    async def _observe(
+        self, execution: _Execution, wait_ms: int, max_output_tokens: int,
+    ) -> ExecutionResult:
         started = time.monotonic()
-        collected = await self._collect_until_deadline(
-            execution,
-            started + wait_ms / 1000,
-        )
-        return await self._build_result(
-            execution,
-            collected,
-            started,
-            max_output_tokens,
-        )
+        collected = await self._collect_until_deadline(execution, started + wait_ms / 1000)
+        return await self._build_result(execution, collected, started, max_output_tokens)
 
     async def terminate_execution(
         self,
@@ -361,6 +361,25 @@ class ShellProcessManager:
     async def active_execution_ids(self) -> list[int]:
         async with self._lock:
             return sorted(self._executions)
+
+    async def execution_states(self, owner_session_key: str) -> list[ExecutionState]:
+        """只读 owner 的执行快照；不消费输出，也不移除已结算条目。"""
+        async with self._lock:
+            executions = [
+                execution for execution in self._executions.values()
+                if execution.owner_session_key == owner_session_key
+            ]
+        states: list[ExecutionState] = []
+        for execution in executions:
+            # 只有已回收的退出码算结算；退出事件在取消或清理失败时也会置位。
+            exit_code = execution.process.returncode
+            states.append(ExecutionState(
+                execution_id=execution.execution_id,
+                settled=exit_code is not None and execution.waiters == 0,
+                exit_code=exit_code,
+                finish_reason=execution.finish_reason,
+            ))
+        return sorted(states, key=lambda state: state.execution_id)
 
     async def _spawn(
         self,

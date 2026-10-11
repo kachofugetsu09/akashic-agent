@@ -13,7 +13,7 @@ from plugins.host_execution.contract import (
     PROCESSES,
 )
 from plugins.host_execution.contract import (
-    ExecutionCleanupReport, ExecutionResult, ShellProcessManagerProtocol
+    ExecutionCleanupReport, ExecutionResult, ExecutionState, ShellProcessManagerProtocol
 )
 from agent.plugin_composition.context import Context
 
@@ -94,6 +94,12 @@ class PluginProcesses:
             if self._manager is None:
                 return ExecutionCleanupReport((), (), ())
             return await self._manager.terminate_owner(owner)
+
+    async def execution_states(self, ctx: Context, owner_key: str) -> list[ExecutionState]:
+        with self._operation(ctx, owner_key) as owner:
+            if self._manager is None:
+                return []
+            return await self._manager.execution_states(owner)
 
     async def close(self) -> None:
         """关闭准入并核对全部清理；失败保留原 manager 和进程证据。"""

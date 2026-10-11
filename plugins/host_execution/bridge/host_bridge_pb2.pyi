@@ -177,6 +177,24 @@ class ActiveExecutionsReply(_message.Message):
     execution_ids: _containers.RepeatedScalarFieldContainer[int]
     def __init__(self, execution_ids: _Optional[_Iterable[int]] = ...) -> None: ...
 
+class ExecutionState(_message.Message):
+    __slots__ = ("execution_id", "settled", "exit_code", "finish_reason")
+    EXECUTION_ID_FIELD_NUMBER: _ClassVar[int]
+    SETTLED_FIELD_NUMBER: _ClassVar[int]
+    EXIT_CODE_FIELD_NUMBER: _ClassVar[int]
+    FINISH_REASON_FIELD_NUMBER: _ClassVar[int]
+    execution_id: int
+    settled: bool
+    exit_code: int
+    finish_reason: str
+    def __init__(self, execution_id: _Optional[int] = ..., settled: bool = ..., exit_code: _Optional[int] = ..., finish_reason: _Optional[str] = ...) -> None: ...
+
+class ExecutionStatesReply(_message.Message):
+    __slots__ = ("states",)
+    STATES_FIELD_NUMBER: _ClassVar[int]
+    states: _containers.RepeatedCompositeFieldContainer[ExecutionState]
+    def __init__(self, states: _Optional[_Iterable[_Union[ExecutionState, _Mapping]]] = ...) -> None: ...
+
 class FileRequest(_message.Message):
     __slots__ = ("context", "allowed_dir", "read", "write", "edit", "list", "path_info")
     CONTEXT_FIELD_NUMBER: _ClassVar[int]

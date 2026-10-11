@@ -7,7 +7,7 @@ from google.protobuf.message import Message
 from . import host_bridge_pb2 as pb
 from plugins.host_execution.contract import FileError, FileImage, FileResult
 from plugins.host_execution.contract import (
-    ExecutionCleanupFailure, ExecutionCleanupReport, ExecutionResult
+    ExecutionCleanupFailure, ExecutionCleanupReport, ExecutionResult, ExecutionState
 )
 
 # 宿主只接纳执行级展示与诊断字段；Core 的其余环境不会改变宿主身份。
@@ -125,6 +125,34 @@ def decode_cleanup(reply: pb.CleanupReply) -> ExecutionCleanupReport:
     return ExecutionCleanupReport(
         tuple(reply.attempted), tuple(reply.cleaned), tuple(failures)
     )
+
+
+def encode_execution_states(states: Iterable[ExecutionState]) -> pb.ExecutionStatesReply:
+    return pb.ExecutionStatesReply(states=[
+        pb.ExecutionState(
+            execution_id=state.execution_id, settled=state.settled,
+            exit_code=state.exit_code, finish_reason=state.finish_reason,
+        )
+        for state in states
+    ])
+
+
+def decode_execution_states(reply: pb.ExecutionStatesReply) -> list[ExecutionState]:
+    """校验快照；已结算的执行必须携带退出码。"""
+    states: list[ExecutionState] = []
+    for state in reply.states:
+        require_fields(state, "execution_id", "settled")
+        require_positive(state.execution_id, "execution_id")
+        require_text(state.finish_reason, "finish_reason")
+        if state.settled and not state.HasField("exit_code"):
+            raise ValueError("Host Bridge 已结算执行缺少退出码")
+        states.append(ExecutionState(
+            execution_id=state.execution_id,
+            settled=state.settled,
+            exit_code=state.exit_code if state.HasField("exit_code") else None,
+            finish_reason=state.finish_reason,
+        ))
+    return states
 
 
 def encode_file_result(result: FileResult) -> pb.FileReply:

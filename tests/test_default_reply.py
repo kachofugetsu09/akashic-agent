@@ -21,7 +21,7 @@ async def live_root(host: PluginManager):
 @asynccontextmanager
 async def application(tmp_path, *, replying, start=True, missing_tool=False, discovery=False, compaction=False,
                       output_tokens=4096, keep_recent_tokens=128, summary_padding=0, provider_effect_data=False,
-                      updates=False, validation_passed=True, extra_sources=None):
+                      updates=False, validation_passed=True, extra_sources=None, shell=False):
     sources = tmp_path / "plugins"
     workspace = tmp_path / "workspace"
     initialize_plugin_workspace(workspace)
@@ -180,10 +180,16 @@ async def apply(ctx):
                 return LLMResponse("\\n".join(heading + "\\nPreserved facts." for heading in HEADINGS))
             business.append(request)
             if len(business) == 1:''').replace("Preserved facts.", "Preserved facts." + "z" * summary_padding))
+    if shell:
+        save_config(workspace / "plugin-data/context-builtin", {"prompt_sources": {"skills": "standard_tools"}})
+        for name in ("host_execution", "assets"):
+            if not (sources / name).exists():
+                shutil.copytree(Path(__file__).parents[1] / "plugins" / name, sources / name,
+                                ignore=shutil.ignore_patterns("__pycache__"))
     if extra_sources is not None:
         extra_sources(sources)
     from agent.plugins.bundles import set_plugin_choice
-    for name in {"models", "standard_tools", *(() if replying else ("reply",))}:
+    for name in {"models", *(() if shell else ("standard_tools",)), *(() if replying else ("reply",))}:
         set_plugin_choice(workspace, name, enabled=False)
     host = PluginManager(
         [sources],
