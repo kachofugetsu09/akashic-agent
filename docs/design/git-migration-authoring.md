@@ -29,7 +29,7 @@ Core 自有脚本 / 当前发行版全部内置 migration bundle
 
 ## 2. 新增迁移
 
-在内置 owner 的 migration bundle 中新增文件，并更新其 catalog/digest；Core 自有中立状态使用 `migrations/core/`。外置插件的迁移入口与运行方式由插件自己定义。文件名使用日期、同日序号和短职责，例如：
+在内置 owner 的 migration bundle 中新增文件，并在其 catalog 中登记 ID、路径、依赖和事务属性；Core 自有中立状态使用 `migrations/core/`。外置插件的迁移入口与运行方式由插件自己定义。文件名使用日期、同日序号和短职责，例如：
 
 ```text
 20260803_01_add_example_index.py
