@@ -1,4 +1,4 @@
-"""即时关闭的 uvicorn Server 保留在途请求与 lifespan 的优雅关闭语义。"""
+"""各 Web 服务器所有者的即时关闭保留在途请求与 lifespan 的优雅关闭语义。"""
 import asyncio
 import threading
 import time
@@ -6,7 +6,11 @@ import time
 import pytest
 import uvicorn
 
-from core.net.asgi_server import PromptShutdownServer
+from bootstrap.web_shell import WebShellServer
+from plugins.akashic_clients.chat_api import ChatApiServer
+from plugins.ui.dashboard_server import DashboardServer
+
+PROMPT_SERVERS = [WebShellServer, DashboardServer, ChatApiServer]
 
 
 def _app(events: list[str]):
@@ -28,7 +32,7 @@ def _app(events: list[str]):
     return app
 
 
-async def _serve(tmp_path, events, server_type=PromptShutdownServer):
+async def _serve(tmp_path, events, server_type):
     server = server_type(uvicorn.Config(_app(events), uds=str(tmp_path / "s.sock"), log_level="warning"))
     task = asyncio.create_task(server.serve())
     while not server.started:
@@ -36,9 +40,10 @@ async def _serve(tmp_path, events, server_type=PromptShutdownServer):
     return server, task
 
 
-async def test_idle_exit_from_other_thread_runs_lifespan_shutdown_promptly(tmp_path):
+@pytest.mark.parametrize("server_type", PROMPT_SERVERS)
+async def test_idle_exit_from_other_thread_runs_lifespan_shutdown_promptly(tmp_path, server_type):
     events: list[str] = []
-    server, task = await _serve(tmp_path, events)
+    server, task = await _serve(tmp_path, events, server_type)
     started = time.perf_counter()
     thread = threading.Thread(target=setattr, args=(server, "should_exit", True))
     thread.start()
@@ -48,7 +53,7 @@ async def test_idle_exit_from_other_thread_runs_lifespan_shutdown_promptly(tmp_p
     assert events == ["lifespan.shutdown"]
 
 
-@pytest.mark.parametrize("server_type", [uvicorn.Server, PromptShutdownServer])
+@pytest.mark.parametrize("server_type", [uvicorn.Server, *PROMPT_SERVERS])
 async def test_exit_waits_for_in_flight_response(tmp_path, server_type):
     events: list[str] = []
     server, task = await _serve(tmp_path, events, server_type)

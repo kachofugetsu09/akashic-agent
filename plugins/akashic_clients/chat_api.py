@@ -3,8 +3,10 @@ from __future__ import annotations
 from dataclasses import asdict
 from plugins.models.contract import ModelCallStats
 
+import asyncio
 import hashlib
 import json
+import socket
 from collections.abc import AsyncGenerator, Awaitable, Callable, Mapping
 from contextlib import aclosing, asynccontextmanager
 from pathlib import Path
@@ -14,8 +16,6 @@ import uvicorn
 from fastapi import FastAPI, HTTPException, Query, Request, WebSocket
 from fastapi.responses import FileResponse, JSONResponse, Response, StreamingResponse
 from pydantic import BaseModel, ConfigDict, Field
-
-from core.net.asgi_server import PromptShutdownServer
 
 from plugins.models.contract import (
     ModelControlUnavailable,
@@ -669,7 +669,57 @@ def build_chat_server(
         access_log=False,
         timeout_graceful_shutdown=10,
     )
-    return PromptShutdownServer(config)
+    return ChatApiServer(config)
+
+
+class ChatApiServer(uvicorn.Server):
+    """Chat API 的退出请求立即进入 uvicorn 优雅关闭。"""
+
+    def __init__(self, config: uvicorn.Config) -> None:
+        self._exit_loop: asyncio.AbstractEventLoop | None = None
+        self._exit_event: asyncio.Event | None = None
+        self._exit_requested = False
+        super().__init__(config)
+
+    @property
+    def should_exit(self) -> bool:
+        return self._exit_requested
+
+    # uvicorn 只轮询该标志；置位时同时通知主循环，可能来自信号处理器。
+    @should_exit.setter
+    def should_exit(self, value: bool) -> None:
+        self._exit_requested = value
+        loop, event = self._exit_loop, self._exit_event
+        if value and loop is not None and event is not None and not loop.is_closed():
+            _ = loop.call_soon_threadsafe(event.set)
+
+    # 未请求退出时保持 uvicorn 每 0.1s 一次的 on_tick 节拍。
+    async def main_loop(self) -> None:
+        self._exit_event = asyncio.Event()
+        self._exit_loop = asyncio.get_running_loop()
+        counter = 0
+        should_exit = await self.on_tick(counter)
+        while not should_exit:
+            counter = (counter + 1) % 864000
+            try:
+                _ = await asyncio.wait_for(self._exit_event.wait(), timeout=0.1)
+            except TimeoutError:
+                pass
+            should_exit = await self.on_tick(counter)
+
+    # 有连接或后台任务时沿用 uvicorn 的等待与超时取消；空闲时省去无对象可等的固定 0.1s。
+    async def shutdown(self, sockets: list[socket.socket] | None = None) -> None:
+        for server in self.servers:
+            server.close()
+        if self.server_state.connections or self.server_state.tasks:
+            await super().shutdown(sockets)
+            return
+        for sock in sockets or []:
+            sock.close()
+        for server in self.servers:
+            await server.wait_closed()
+        if not self.force_exit:
+            await self.lifespan.shutdown()
 
 
 def _require_runtime_inspection(
