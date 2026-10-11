@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import importlib.abc
-import importlib.machinery
 import importlib.util
 import marshal
 import os
@@ -100,16 +99,12 @@ class FreshPluginImporter(importlib.abc.MetaPathFinder):
     def register(self, module_name: str, plugin_root: Path) -> None:
         if not self._roots:
             sys.meta_path.insert(0, self)
-            if _BLAS_THREAD_DEFAULTS not in sys.meta_path:
-                sys.meta_path.insert(0, _BLAS_THREAD_DEFAULTS)
         self._roots[module_name] = plugin_root.resolve(strict=False)
 
     def unregister(self, module_name: str) -> None:
         _ = self._roots.pop(module_name, None)
         if not self._roots and self in sys.meta_path:
             sys.meta_path.remove(self)
-            if _BLAS_THREAD_DEFAULTS in sys.meta_path:
-                sys.meta_path.remove(_BLAS_THREAD_DEFAULTS)
 
     def root_spec(self, module_name: str, path: Path):
         return importlib.util.spec_from_file_location(
@@ -156,43 +151,3 @@ class FreshPluginImporter(importlib.abc.MetaPathFinder):
             _ = path.resolve(strict=False).relative_to(plugin_root)
         except ValueError as error:
             raise ImportError(f"插件模块路径越界: {path}") from error
-
-
-# 插件宿主是 I/O 密集的异步进程；OpenBLAS 默认按核数起线程并逐个自旋，
-# 一次加载约耗一核秒以上。宿主只在 numpy 首次加载期间给出单线程默认值，
-# 用户设置任一线程变量时不干预；加载后恢复环境，子进程不继承这项选择。
-_BLAS_THREAD_ENV = ("OPENBLAS_NUM_THREADS", "GOTO_NUM_THREADS", "OMP_NUM_THREADS")
-_BLAS_PACKAGES = frozenset({"numpy"})
-
-
-class _BlasThreadDefaultLoader(importlib.machinery.SourceFileLoader):
-    def exec_module(self, module: ModuleType) -> None:
-        if any(name in os.environ for name in _BLAS_THREAD_ENV):
-            super().exec_module(module)
-            return
-        os.environ[_BLAS_THREAD_ENV[0]] = "1"
-        try:
-            super().exec_module(module)
-        finally:
-            _ = os.environ.pop(_BLAS_THREAD_ENV[0], None)
-
-
-class _BlasThreadDefaults(importlib.abc.MetaPathFinder):
-    # 只替换顶层包的加载器类型，查找与其余导入行为仍由标准 PathFinder 决定。
-    def find_spec(
-        self,
-        fullname: str,
-        path: object = None,
-        target: ModuleType | None = None,
-    ):
-        if fullname not in _BLAS_PACKAGES or fullname in sys.modules:
-            return None
-        spec = importlib.machinery.PathFinder.find_spec(fullname)
-        loader = None if spec is None else spec.loader
-        if spec is None or type(loader) is not importlib.machinery.SourceFileLoader:
-            return spec
-        spec.loader = _BlasThreadDefaultLoader(loader.name, loader.path)
-        return spec
-
-
-_BLAS_THREAD_DEFAULTS = _BlasThreadDefaults()
