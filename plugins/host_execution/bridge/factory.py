@@ -1,11 +1,12 @@
 from __future__ import annotations
 
 import os
-import grpc
 from typing import TYPE_CHECKING
 from pathlib import Path
 
 if TYPE_CHECKING:
+    import grpc
+
     from .client import HostBridgeShellProcessManager, HostBridgeRequirementsChecker
 from plugins.host_execution.contract import (
     ShellProcessManagerProtocol
@@ -29,6 +30,9 @@ class HostBridgeRpcError(RuntimeError):
 
     @property
     def transient(self) -> bool:
+        # 错误只在 host-bridge 传输中产生；本地执行模式不加载 gRPC。
+        import grpc
+
         return self.code in {grpc.StatusCode.UNAVAILABLE, grpc.StatusCode.DEADLINE_EXCEEDED}
 
 
@@ -84,6 +88,8 @@ def _bridge_identity() -> tuple[Path, str, str, str, str]:
 def build_file_bridge() -> HostBridgeShellProcessManager | None:
     """Build a file RPC client only in explicit host-bridge mode."""
 
+    if os.environ.get(_MODE_ENV, "local") == "local":
+        return None
     from .client import HostBridgeShellProcessManager
     manager = build_shell_process_manager()
     if isinstance(manager, HostBridgeShellProcessManager):
