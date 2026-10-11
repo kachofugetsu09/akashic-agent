@@ -113,4 +113,5 @@ class ContextMaterialsV4(Protocol):
 
 CONTEXT = ServiceKey[ContextBuilder]("context.v2")
 MATERIALS_V4 = ServiceKey[ContextMaterialsV4]("context.materials.v4")
+# UI.message_display 按 Message 内容 kind 拼接 message.display:<kind> 后借用 renderer。
 CONTEXT_NOTICE_DISPLAY = ServiceKey[Callable[[ContentPart], Mapping[str, object]]]("message.display:context.notice")

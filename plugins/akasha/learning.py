@@ -169,4 +169,5 @@ def resolve_feedback(
     return TurnFeedback(tuple(sorted(remember)), tuple(sorted(forget)), 3.0 if remember else 1.0)
 
 
+# 插件私有的耐久规则 key；plugin.py 把它写入 learning_binding，再经 Bindings.open 读取。
 AKASHA_LEARNING = ServiceKey[Learning]("akasha.learning.v1")

@@ -35,6 +35,7 @@ from plugins.ledger.contract import ContentPart, Input, Message, Output, ToolCal
 
 from .control import ComputerDriverError, endpoint_name, request
 
+# 私有耐久 control binding；工具的 freeze/open 在本插件内保存并打开同一个 key。
 COMPUTER_CONTROL = ServiceKey["ComputerControl"]("computer.control.v1")
 
 

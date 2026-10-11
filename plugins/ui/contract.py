@@ -422,3 +422,6 @@ def _part(
     if tool_result:
         return {"kind": part.kind, "display": "data", "value": json_value(part.value)}
     return {"kind": part.kind, "display": "unavailable"}
+
+# message_display.py 按内容 kind 借用 message.display:* 与 message.result_display:*。
+# Context、Models 与 ContentView 分别拥有自己的 renderer；没有中央 key 列表或默认补位。

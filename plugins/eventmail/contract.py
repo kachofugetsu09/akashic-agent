@@ -179,6 +179,7 @@ class ContextSourceServices(Protocol):
     def bind(self, source_id: str) -> BoundContextSource: ...
 
 
+# Fleet Feed/Steam/Calendar/Fitbit 通过 bind(source_id) 使用三种来源端口；主仓目录不扫描外部源码。
 EVENTMAIL_CONTENT_SOURCE = ServiceKey[ContentSourceServices]("eventmail.content_source.v2")
 EVENTMAIL_ALERT_SOURCE = ServiceKey[AlertSourceServices]("eventmail.alert_source.v2")
 EVENTMAIL_CONTEXT_SOURCE = ServiceKey[ContextSourceServices]("eventmail.context_source.v2")

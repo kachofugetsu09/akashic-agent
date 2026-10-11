@@ -1006,7 +1006,7 @@ def describe_transport_error(error: Exception) -> str:
     return f"{reason}（{'；'.join(dict.fromkeys(details))}）"
 
 
-# Fleet Observe 读取真实 provider attempt 历史，不持有 Models writer。
+# Fleet Observe 读取真实 provider attempt 历史，不持有 Models writer；主仓 catalog 不扫描外部源码。
 MODEL_CALL_HISTORY = ServiceKey[Callable[[str, int], tuple[Mapping[str, Any], ...]]](
     "models.call-history.v1"
 )
