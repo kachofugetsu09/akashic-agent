@@ -13,7 +13,7 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 
 
-async def headless_reply(app, workspace: Path, config: Path) -> None:
+async def headless_reply(app, workspace: Path, config: Path, *, between_replies=()) -> None:
     """真实 OpenAI-compatible driver 访问隔离 HTTP 模型，回复走完整 CLI 链路。"""
     from plugins.gateway.contract import RpcMethod
     requests = []
@@ -62,18 +62,21 @@ async def headless_reply(app, workspace: Path, config: Path) -> None:
             "model_id": "local", "connection_id": "local", "kind": "chat", "model": "scenario",
             "capabilities": {"context_window": 131072, "max_output_tokens": 4096, "supports_tool_calls": True}, "capability_sources": {}})
         await command({"type": "set_default", "expected_revision": revision, "role": "default", "model_id": "local"})
-        process = await asyncio.create_subprocess_exec(sys.executable, str(ROOT / "main.py"),
-            "exec", "--new", "--session", "programmatic:bundle", "--final-only", "hello bundle",
-            "--config", str(config), "--workspace", str(workspace),
-            stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE)
-        try:
-            output, errors = await asyncio.wait_for(process.communicate(), 60)
-            assert process.returncode == 0 and output.decode().strip() == "bundle reply", (output, errors)
-            assert requests and any("hello bundle" in json.dumps(request) for request in requests)
-        finally:
-            if process.returncode is None:
-                process.kill()
-                await process.communicate()
+        for index in range(len(between_replies) + 1):
+            if index:
+                await between_replies[index - 1]()
+            process = await asyncio.create_subprocess_exec(sys.executable, str(ROOT / "main.py"),
+                "exec", "--new", "--session", f"programmatic:bundle-{index}", "--final-only", "hello bundle",
+                "--config", str(config), "--workspace", str(workspace),
+                stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE)
+            try:
+                output, errors = await asyncio.wait_for(process.communicate(), 60)
+                assert process.returncode == 0 and output.decode().strip() == "bundle reply", (output, errors)
+                assert requests and any("hello bundle" in json.dumps(request) for request in requests)
+            finally:
+                if process.returncode is None:
+                    process.kill()
+                    await process.communicate()
 
 
 async def run(distribution: Path, base: Path, mode: str) -> None:
