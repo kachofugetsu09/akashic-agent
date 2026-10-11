@@ -23,7 +23,8 @@ from .application.snapshot import read_memory
 from .domain.model import MemoryConfig
 from .learning import AKASHA_LEARNING, Learning, LearningConfig
 from .scopes import MemoryDisabled
-from .recalls import ProgramSource, Recall, RecallRecords, ToolSource, query_memory, render_materials
+from .contract import ProgramSource, Recall, ToolSource
+from .recalls import RecallRecords, query_memory, render_materials
 
 
 class RecallArguments(BaseModel):

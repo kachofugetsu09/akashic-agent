@@ -12,8 +12,9 @@ from plugins.ledger.contract import MESSAGE_CATALOG
 from plugins.ledger.contract import ContentPart, Message
 
 from . import ledger
-from .plugin import AKASHA_MEMORY_PATH, AKASHA_RECORDS_VIEW
-from .recalls import ContextSource, Hit, ProgramSource, Recall, RecallRecordsRead, ToolSource
+from .plugin import AKASHA_MEMORY_PATH
+from .contract import AKASHA_RECORDS_VIEW, RecallRecordsRead
+from .contract import ContextSource, Hit, ProgramSource, Recall, ToolSource
 
 
 from plugins.ui.contract import UI

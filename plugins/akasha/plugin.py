@@ -64,7 +64,8 @@ from .inspector import RecallInspector
 from .interest import SEMANTIC_INTEREST, Embed, SemanticInterest
 from .learning import AKASHA_LEARNING, Learning, LearningConfig
 from .recall_tool import RecallArguments, RecallTool, check_recall
-from .recalls import Recall, RecallRecords, RecallRecordsRead
+from .recalls import RecallRecords, RecallRecordsRead
+from .contract import AKASHA_RECORDS_VIEW
 from .runtime import MessageMemory, prepare_materials
 from .tools import FeedbackArguments, FeedbackTool, check_feedback
 from .scopes import DEFAULT_GRAPH, LEARN_POLICIES, LearnPolicy, MemoryDisabled, PolicyLocked, ScopePolicies, ensure_graph_directory, graph_path
@@ -131,10 +132,6 @@ class RecallBinding(BaseModel):
         return self
 
 
-AKASHA_RECORDS = ServiceKey[Callable[[str], Recall | None]]("akasha.recalls.v1")
-AKASHA_RECORDS_VIEW = ServiceKey[Callable[[], RecallRecordsRead]](
-    "akasha.recall-records.v1"
-)
 AKASHA_MEMORY_PATH = ServiceKey[Callable[[], Path]]("akasha.memory-path.v1")
 
 
@@ -259,12 +256,6 @@ async def run(ctx: Context, interest: Interest) -> None:
 
     def records() -> RecallRecords:
         return RecallRecords(record_state)
-
-    # 公开读取函数不暴露 owner transaction；归档 apply 也不会读取正式数据库。
-    def read_recall(identity: str) -> Recall | None:
-        return records().read(identity)
-    _ = await ctx.provide(AKASHA_RECORDS, read_recall)
-
 
     inspector: RecallInspector | None = None
 

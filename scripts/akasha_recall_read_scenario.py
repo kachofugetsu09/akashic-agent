@@ -34,7 +34,8 @@ from plugins.tools.contract import durable_call_key
 import plugins.ledger.log as storage
 from plugins.ledger.log import MessageLog
 from plugins.akasha.inspector import RecallInspector
-from plugins.akasha.recalls import ContextSource, Hit, ProgramSource, Recall, RecallRecords, ToolSource, context_identity
+from plugins.akasha.contract import ContextSource, Hit, ProgramSource, Recall, ToolSource
+from plugins.akasha.recalls import RecallRecords, context_identity
 from plugins.turn_projection.plugin import TurnProjection
 BASE = args.baseline_ref
 old_module = None

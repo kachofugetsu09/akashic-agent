@@ -19,7 +19,8 @@ from plugins.akasha.application.consumer import MessageConsumer
 from plugins.akasha.application.snapshot import read_memory
 from plugins.akasha.domain.model import MemoryConfig
 from plugins.akasha.learning import AKASHA_LEARNING, Learning, LearningConfig
-from plugins.akasha.recalls import ProgramSource, query_memory
+from plugins.akasha.contract import ProgramSource
+from plugins.akasha.recalls import query_memory
 from plugins.content.api import legacy_post_commit_effect
 from plugins.content.plugin import check_text
 from plugins.ledger.bindings import Bindings

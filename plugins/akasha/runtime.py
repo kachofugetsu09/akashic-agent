@@ -15,7 +15,8 @@ from .learning import AKASHA_LEARNING, Learning, LearningConfig
 from .application.cycle import MemoryCycle
 from .infrastructure.consumption import Consumption
 from .projection import input_features
-from .recalls import ContextSource, RecallRecords, context_identity, query_memory, render_materials
+from .contract import ContextSource
+from .recalls import RecallRecords, context_identity, query_memory, render_materials
 from .recall_tool import tool_references
 
 MaterialData = Mapping[str, object]
