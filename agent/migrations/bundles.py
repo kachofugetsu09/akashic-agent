@@ -10,6 +10,7 @@ import re
 import sys
 import tomllib
 from dataclasses import dataclass
+from functools import lru_cache
 from pathlib import Path
 from typing import Iterator, Sequence, cast
 
@@ -645,9 +646,33 @@ def _validate_local_dependency_graph(
 
 def _validate_source_imports(path: Path, *, migration_root: Path) -> None:
     try:
-        tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
+        source = path.read_text(encoding="utf-8")
+        imports = _source_imports(path, source)
     except (OSError, SyntaxError, UnicodeDecodeError) as error:
         raise MigrationBundleError(f"migration source 无法解析: {path}") from error
+    for module, level, node in imports:
+        if node is not None and level:
+            # 相对 import 目标依赖当前文件系统，每次重新核对。
+            _validate_relative_import(path, migration_root, node)
+            continue
+        if any(
+            module == prefix or module.startswith(prefix + ".")
+            for prefix in _REJECTED_IMPORT_PREFIXES
+        ):
+            raise MigrationBundleError(
+                f"migration 不得 import 当前 runtime/插件 namespace: {path}:{module}"
+            )
+        if _is_disallowed_migration_host(module):
+            raise MigrationBundleError(
+                f"migration 不得 import Core 业务 migration helper: {path}:{module}"
+            )
+
+
+# 同一启动会多次发现 bundle；只复用由源码内容决定的 import 事实。
+@lru_cache(maxsize=256)
+def _source_imports(path: Path, source: str) -> tuple[tuple[str, int, ast.ImportFrom | None], ...]:
+    tree = ast.parse(source, filename=str(path))
+    imports: list[tuple[str, int, ast.ImportFrom | None]] = []
     for node in ast.walk(tree):
         if isinstance(node, ast.Call):
             function = node.func
@@ -663,30 +688,10 @@ def _validate_source_imports(path: Path, *, migration_root: Path) -> None:
                     f"migration 不允许动态 import: {path}"
                 )
         if isinstance(node, ast.Import):
-            modules = [item.name for item in node.names]
-            levels = [0] * len(modules)
+            imports.extend((item.name, 0, None) for item in node.names)
         elif isinstance(node, ast.ImportFrom):
-            if node.level:
-                _validate_relative_import(path, migration_root, node)
-                continue
-            modules = [node.module or ""]
-            levels = [node.level]
-        else:
-            continue
-        for module, level in zip(modules, levels):
-            if level:
-                continue
-            if any(
-                module == prefix or module.startswith(prefix + ".")
-                for prefix in _REJECTED_IMPORT_PREFIXES
-            ):
-                raise MigrationBundleError(
-                    f"migration 不得 import 当前 runtime/插件 namespace: {path}:{module}"
-                )
-            if _is_disallowed_migration_host(module):
-                raise MigrationBundleError(
-                    f"migration 不得 import Core 业务 migration helper: {path}:{module}"
-                )
+            imports.append((node.module or "", node.level, node))
+    return tuple(imports)
 
 
 def _is_disallowed_migration_host(module: str) -> bool:
