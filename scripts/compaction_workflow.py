@@ -30,7 +30,7 @@ from plugins.tools.contract import ALL_TOOLS, TOOLS
 from tests.test_default_reply import application
 
 
-async def run(folder: Path, case: str) -> dict[str, object]:
+async def run(folder: Path, case: str, *, second_provider: bool = False) -> dict[str, object]:
     """只替换外部模型对端；插件安装、回复、投影和持久提交均走真实实现。"""
     # 1. 本地 HTTP 对端区分摘要与业务调用，不读取凭据或正式 workspace。
     requests: list[dict] = []
@@ -61,6 +61,9 @@ async def run(folder: Path, case: str) -> dict[str, object]:
     url = f"http://127.0.0.1:{server.sockets[0].getsockname()[1]}/complete"
 
     def configure(sources: Path) -> None:
+        if second_provider:
+            from scripts.compaction_second_provider_scenario import add_reader
+            add_reader(sources)
         shutil.copytree(Path(__file__).resolve().parents[1] / "plugins/ui", sources / "ui",
                         ignore=shutil.ignore_patterns("__pycache__"))
         entry = sources / "test_provider/plugin.py"
@@ -107,7 +110,7 @@ async def run(folder: Path, case: str) -> dict[str, object]:
             if case != "open_turn":
                 writer(Output).append("old-final", Output((ContentPart("text", "old task finished"),), "complete"))
             before = tuple(log.reader("test:room").snapshot())
-            with sqlite3.connect(folder / "sessions.db") as connection:
+            with sqlite3.connect(folder / "workspace/sessions.db") as connection:
                 original_rows = connection.execute("SELECT * FROM messages ORDER BY seq").fetchall()
             await host.start_runtime()
             accept = root.context.require(CHANNEL_INPUT_V2)
@@ -122,7 +125,7 @@ async def run(folder: Path, case: str) -> dict[str, object]:
                         return rows
             rows = await asyncio.wait_for(finish(), 15)
             assert rows is not None
-            with sqlite3.connect(folder / "sessions.db") as connection:
+            with sqlite3.connect(folder / "workspace/sessions.db") as connection:
                 after_rows = connection.execute("SELECT * FROM messages ORDER BY seq").fetchall()
                 summaries = [json.loads(row[0]) for row in connection.execute(
                     "SELECT value FROM owner_records WHERE owner='plugin:compaction' AND key LIKE 'summary:%'")]
@@ -203,9 +206,12 @@ async def run(folder: Path, case: str) -> dict[str, object]:
                     assert next_record.generation == record.generation + 1
                     assert "old-input" in learned and "old-final" in learned
                     assert not {"earlier-input", "earlier-final"}.intersection(learned)
-            with sqlite3.connect(folder / "sessions.db") as connection:
+            with sqlite3.connect(folder / "workspace/sessions.db") as connection:
                 assert connection.execute("SELECT * FROM messages ORDER BY seq").fetchall()[:len(original_rows)] == original_rows
                 generations = connection.execute("SELECT count(*) FROM owner_records WHERE owner='plugin:compaction' AND key LIKE 'summary:%'").fetchone()[0]
+            if second_provider:
+                from scripts.compaction_second_provider_scenario import replace
+                await replace(host, folder)
             return {"case": case, "http_requests": len(requests), "summaries": generations,
                     "original_rows_preserved": len(original_rows), "result": "passed"}
     finally:
