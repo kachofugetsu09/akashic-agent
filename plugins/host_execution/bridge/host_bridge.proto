@@ -73,6 +73,8 @@ message ExecutionReply {
   oneof result {
     int64 execution_id = 5;
     sint32 exit_code = 6;
+    // 当前 owner 下没有该执行；没有消费输出或写入 stdin，manager 租约仍有效。
+    int64 unknown_execution_id = 9;
   }
   optional string output_path = 7;
   string finish_reason = 8;

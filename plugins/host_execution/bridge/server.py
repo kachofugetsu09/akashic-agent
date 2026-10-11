@@ -42,7 +42,7 @@ from plugins.host_execution.contract import (
     ExecutionCleanupReport
 )
 from plugins.host_execution.contract import (
-    ExecutionResult
+    ExecutionResult, UnknownExecutionError
 )
 from ..process_runtime import ShellProcessManager
 from .path_info import PathInfoOperation
@@ -448,13 +448,16 @@ class HostBridgeService:
         require_text(request.owner_session_key, "owner_session_key")
         require_nonnegative(request.max_output_tokens, "max_output_tokens")
         async with self._manager_operation(request.context) as manager:
-            result = await manager.write_stdin(
-                execution_id=request.execution_id,
-                chars=request.chars,
-                yield_time_ms=request.yield_time_ms,
-                max_output_tokens=request.max_output_tokens,
-                owner_session_key=request.owner_session_key,
-            )
+            try:
+                result = await manager.write_stdin(
+                    execution_id=request.execution_id,
+                    chars=request.chars,
+                    yield_time_ms=request.yield_time_ms,
+                    max_output_tokens=request.max_output_tokens,
+                    owner_session_key=request.owner_session_key,
+                )
+            except UnknownExecutionError:
+                return pb.ExecutionReply(unknown_execution_id=request.execution_id)
         return encode_execution(result)
 
     @_rpc

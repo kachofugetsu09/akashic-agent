@@ -83,6 +83,7 @@ Python client 在 protobuf 构造前拒绝布尔 limit（ValueError），避免 
 | ClaimBoot | 非空 owner_boot_id；previous_boot_id optional，省略表示此前无 owner；必需 cleaned_manager_count、cleaned_execution_count，可为0 |
 | OpenManager、Heartbeat | 必需 alive，成功须为true |
 | Exec、WriteStdin | 必需 output bytes（可空）、wall_time_ms/original_token_count/output_omitted_bytes≥0、非空 finish_reason；必需 result oneof：execution_id>0 或 exit_code（零与负信号值合法）；output_path optional，设置时非空 |
+| WriteStdin 未找到执行 | result oneof 为 unknown_execution_id>0；不携带输出，客户端还原为 UnknownExecutionError |
 | Stop | 必需 stopped，false 的存在性不能丢失 |
 | TerminateOwner、ShutdownManager | attempted/cleaned 为正整数集合，可空；failures 为 execution_id>0、非空 error_type/message 列表，可空 |
 | ActiveExecutions | execution_ids 为正整数集合，可空 |
@@ -100,6 +101,9 @@ Python client 在 protobuf 构造前拒绝布尔 limit（ValueError），避免 
 release、toolchain、boot 或 owner 的权限错误仍为 PERMISSION_DENIED；内部未预期错误为 INTERNAL。
 manager 不存在为 NOT_FOUND；正在回收或 cleanup 未确认为 FAILED_PRECONDITION。
 命令非零退出是正常 ExecutionReply。请求身份只在 RPC 入口认证一次，内部仍逐操作检查实时 lease。
+当前 owner 下找不到 execution 时，WriteStdin 返回正常 RPC 的 `unknown_execution_id` 分支。
+此结果明确表示没有消费输出或写入 stdin，Shell 可以继续查找自己的后台分区；它不使 manager
+租约失效。manager 丢失与实际传输故障仍沿原错误协议处理，不自动重发。
 
 取消显式传播 CancelledError，不改为 INTERNAL，不终止已登记的 execution。Exec 响应丢失、
 UNAVAILABLE、deadline 或 caller 取消后，执行状态可能未知；WriteStdin 的输入也可能已经写入。

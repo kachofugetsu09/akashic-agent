@@ -7,7 +7,7 @@ from google.protobuf.message import Message
 from . import host_bridge_pb2 as pb
 from plugins.host_execution.contract import FileError, FileImage, FileResult
 from plugins.host_execution.contract import (
-    ExecutionCleanupFailure, ExecutionCleanupReport, ExecutionResult, ExecutionState
+    ExecutionCleanupFailure, ExecutionCleanupReport, ExecutionResult, ExecutionState, UnknownExecutionError
 )
 
 # 宿主只接纳执行级展示与诊断字段；Core 的其余环境不会改变宿主身份。
@@ -66,6 +66,9 @@ def encode_execution(result: ExecutionResult) -> pb.ExecutionReply:
 
 def decode_execution(reply: pb.ExecutionReply) -> ExecutionResult:
     """在远端响应边界拒绝缺失结果，保留空输出和退出码零。"""
+    if reply.WhichOneof("result") == "unknown_execution_id":
+        require_positive(reply.unknown_execution_id, "unknown_execution_id")
+        raise UnknownExecutionError(f"未知 execution_id: {reply.unknown_execution_id}")
     # 1. 校验响应的存在性及值域，不用 protobuf 默认值补齐坏响应。
     require_fields(
         reply, "output", "wall_time_ms", "original_token_count", "output_omitted_bytes"

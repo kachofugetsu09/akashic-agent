@@ -108,13 +108,14 @@ class WriteStdinRequest(_message.Message):
     def __init__(self, context: _Optional[_Union[RequestContext, _Mapping]] = ..., execution_id: _Optional[int] = ..., chars: _Optional[str] = ..., yield_time_ms: _Optional[int] = ..., max_output_tokens: _Optional[int] = ..., owner_session_key: _Optional[str] = ...) -> None: ...
 
 class ExecutionReply(_message.Message):
-    __slots__ = ("output", "wall_time_ms", "original_token_count", "output_omitted_bytes", "execution_id", "exit_code", "output_path", "finish_reason")
+    __slots__ = ("output", "wall_time_ms", "original_token_count", "output_omitted_bytes", "execution_id", "exit_code", "unknown_execution_id", "output_path", "finish_reason")
     OUTPUT_FIELD_NUMBER: _ClassVar[int]
     WALL_TIME_MS_FIELD_NUMBER: _ClassVar[int]
     ORIGINAL_TOKEN_COUNT_FIELD_NUMBER: _ClassVar[int]
     OUTPUT_OMITTED_BYTES_FIELD_NUMBER: _ClassVar[int]
     EXECUTION_ID_FIELD_NUMBER: _ClassVar[int]
     EXIT_CODE_FIELD_NUMBER: _ClassVar[int]
+    UNKNOWN_EXECUTION_ID_FIELD_NUMBER: _ClassVar[int]
     OUTPUT_PATH_FIELD_NUMBER: _ClassVar[int]
     FINISH_REASON_FIELD_NUMBER: _ClassVar[int]
     output: bytes
@@ -123,9 +124,10 @@ class ExecutionReply(_message.Message):
     output_omitted_bytes: int
     execution_id: int
     exit_code: int
+    unknown_execution_id: int
     output_path: str
     finish_reason: str
-    def __init__(self, output: _Optional[bytes] = ..., wall_time_ms: _Optional[int] = ..., original_token_count: _Optional[int] = ..., output_omitted_bytes: _Optional[int] = ..., execution_id: _Optional[int] = ..., exit_code: _Optional[int] = ..., output_path: _Optional[str] = ..., finish_reason: _Optional[str] = ...) -> None: ...
+    def __init__(self, output: _Optional[bytes] = ..., wall_time_ms: _Optional[int] = ..., original_token_count: _Optional[int] = ..., output_omitted_bytes: _Optional[int] = ..., execution_id: _Optional[int] = ..., exit_code: _Optional[int] = ..., unknown_execution_id: _Optional[int] = ..., output_path: _Optional[str] = ..., finish_reason: _Optional[str] = ...) -> None: ...
 
 class StopRequest(_message.Message):
     __slots__ = ("context", "execution_id", "owner_session_key")

@@ -2,11 +2,13 @@
 import asyncio
 import json
 import shutil
+import sys
 from datetime import UTC, datetime
 from functools import partial
 from pathlib import Path
 
 import pytest
+import pytest_asyncio
 
 from agent.plugin_composition import ServiceKey
 from plugins.channels.contract import CHANNEL_INPUT_V2 as CHANNEL_INPUT, ChannelInboundMessage
@@ -197,9 +199,47 @@ def _collecting_shell_sources(sources: Path, *, tool: str, chain: bool) -> None:
     provider.write_text(text)
 
 
+@pytest_asyncio.fixture(params=["local", "host-bridge"])
+async def shell_backend(tmp_path, monkeypatch, request):
+    """真实 Socket 和服务端复跑后台 Shell，核对本地与远端的可观察语义。"""
+    if request.param == "local":
+        yield
+        return
+    from plugins.host_execution.bridge.boot import claim_host_bridge_boot
+    socket = tmp_path.parent / "bridge.sock"
+    for name, value in {
+        "AKASHIC_EXECUTION_MODE": "host-bridge", "AKASHIC_HOST_BRIDGE_SOCKET": str(socket),
+        "AKASHIC_HOST_BRIDGE_TOKEN": "jobs-fixture", "AKASHIC_BOOT_ID": "jobs-fixture",
+        "AKASHIC_RUNTIME_COMMIT": "a" * 40, "AKASHIC_HOST_TOOLCHAIN_DIGEST": "b" * 64,
+    }.items():
+        monkeypatch.setenv(name, value)
+    token_file = tmp_path / "bridge.token"
+    token_file.write_text("jobs-fixture")
+    # Bridge 独立进程也能响应同步的环境探测，和正式部署保持相同边界。
+    with (tmp_path / "bridge.log").open("w") as log:
+        process = await asyncio.create_subprocess_exec(
+            sys.executable, "-m", "plugins.host_execution.bridge.server",
+            "--socket", str(socket), "--token-file", str(token_file), "--lease-timeout", "60",
+            "--artifact-root", str(tmp_path / "artifacts"), "--release-commit", "a" * 40,
+            "--toolchain-digest", "b" * 64, "--runtime-checkout", str(Path(__file__).parents[1]),
+            "--bridge-python", sys.executable, stdout=log, stderr=log,
+        )
+        try:
+            async with asyncio.timeout(5):
+                while not socket.exists():
+                    assert process.returncode is None, (tmp_path / "bridge.log").read_text()
+                    await asyncio.sleep(0.01)
+            assert await claim_host_bridge_boot() is not None
+            yield
+        finally:
+            if process.returncode is None:
+                process.terminate()
+            await asyncio.wait_for(process.wait(), 5)
+
+
 @pytest.mark.asyncio
 @pytest.mark.parametrize("tool,chain", [("write_stdin", False), ("task_stop", False), ("write_stdin", True)])
-async def test_background_shell_outlives_turn_and_wakes_session(tmp_path, tool, chain):
+async def test_background_shell_outlives_turn_and_wakes_session(tmp_path, tool, chain, shell_backend):
     async with application(tmp_path, replying=True, extra_sources=partial(_collecting_shell_sources, tool=tool, chain=chain),
                            shell=True) as (log, host):
         calls, _gate = await _send(host)
