@@ -105,7 +105,12 @@ def load_static_plugin_manifest(plugin_root: Path) -> StaticPluginManifest:
 
 def _plugin_entrypoints(path: Path) -> tuple[tuple[str, str], ...]:
     """只接受字面命令到模块函数的映射，发现阶段不执行插件入口。"""
-    tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
+    return _parse_plugin_entrypoints(path, path.read_text(encoding="utf-8"))
+
+
+@lru_cache(maxsize=128)
+def _parse_plugin_entrypoints(path: Path, source: str) -> tuple[tuple[str, str], ...]:
+    tree = _parse_source_tree(path, source)
     declarations: list[ast.expr | None] = []
     for statement in tree.body:
         if isinstance(statement, ast.Assign):
@@ -133,6 +138,12 @@ def _plugin_entrypoints(path: Path) -> tuple[tuple[str, str], ...]:
         return check_entrypoints(entries)
     except ValueError as error:
         raise PluginSourceContentError(f"插件命令声明无效: {path}") from error
+
+
+# 身份与入口共用同一份只读 AST；调用方只遍历顶层语句，不修改节点。
+@lru_cache(maxsize=16)
+def _parse_source_tree(path: Path, source: str) -> ast.Module:
+    return ast.parse(source, filename=str(path))
 
 
 def check_entrypoints(value: object) -> tuple[tuple[str, str], ...]:
@@ -166,7 +177,7 @@ def load_plugin_identity(plugin_root: Path) -> tuple[str, str, int]:
 def _parse_plugin_identity(path: Path, source: str) -> tuple[str, str, int]:
     """只复用内容完全相同的解析结果；磁盘读取和路径检查仍逐次执行。"""
     try:
-        tree = ast.parse(source, filename=str(path))
+        tree = _parse_source_tree(path, source)
     except SyntaxError as error:
         raise PluginSourceContentError(f"插件身份源码无法解析: {path}") from error
 
