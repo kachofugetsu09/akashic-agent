@@ -85,8 +85,7 @@ def generate_script(benchmark: Path, turns: int, out: Path) -> None:
 
 
 def prepare_side(root: Path, side: Path, benchmark: Path, python: str) -> None:
-    if (side / "template").exists():
-        return
+    """每次对比从当前提交准备发行版，只在本次各轮测量间复用。"""
     if side.exists():
         shutil.rmtree(side)
     _ = subprocess.run([python, str(HERE / "prepare.py"), "--root", str(root), "--side", str(side),
@@ -112,8 +111,8 @@ def measure(benchmark: Path, python: str, root: Path, side: Path, script: Path, 
     return result.returncode
 
 
-# 有效运行 = 进程正常退出 + 每个请求都按序收到上一轮工具的精确输出；否则不计入统计。
-def validate(out: Path, turns: int) -> str:
+def validate(out: Path, turns: int, script: Path) -> str:
+    """按剧本核对新增轮次和完整历史，丢失上下文的运行不计入统计。"""
     meta = json.loads(next(out.glob("akashic/*/run.json")).read_text())
     usage = json.loads((out / "wait4.json").read_text())
     wire = [json.loads(line) for line in (out / "wire.jsonl").read_text().splitlines()]
@@ -121,12 +120,44 @@ def validate(out: Path, turns: int) -> str:
         return f"退出异常: status={meta['status']} exec={usage['exec_exit']} gateway={usage['gateway_exit']}"
     if len(wire) != turns + 1:
         return f"请求数 {len(wire)}，应为 {turns + 1}"
+
+    # 1. 原始输入必须到达模型；系统材料可随版本变化，但本次运行中不能丢失历史。
+    history = wire[0]["messages"]
+    if not any(message.get("role") == "user" and (
+        message.get("content") == PROMPT or
+        isinstance(message.get("content"), list) and
+        {"type": "text", "text": PROMPT} in message["content"]
+    ) for message in history):
+        return "首个请求缺少原始用户输入"
+    responses = json.loads(script.read_text())["responses"]
+
+    # 2. 每轮只能追加剧本中的助手消息和对应工具结果，旧消息逐条保持原样。
     for n, request in enumerate(wire[1:], 1):
-        message = request["messages"][-1]
-        if message.get("role") != "tool":
-            return f"第 {n} 个请求的最后一条不是工具结果: role={message.get('role')!r}"
+        messages = request["messages"]
+        if len(messages) != len(history) + 2 or messages[:-2] != history:
+            return f"第 {n} 轮历史缺失、改写或顺序不符"
+        assistant, message = messages[-2:]
+        expected = responses[n - 1]["message"]
+        # 模型 adapter 去掉正文首尾空白；核对同一文本合同，不忽略正文内的任何内容。
+        content = expected["content"].strip()
+        if assistant.get("role") != "assistant" or assistant.get("content") not in (
+            content, [{"type": "text", "text": content}],
+        ):
+            return f"第 {n} 轮助手正文与剧本不符"
+        calls = assistant.get("tool_calls", [])
+        expected_calls = expected["tool_calls"]
+        if len(calls) != len(expected_calls) or any(
+            call["id"] != wanted["id"] or call["type"] != wanted["type"] or
+            call["function"]["name"] != wanted["function"]["name"] or
+            json.loads(call["function"]["arguments"]) != wanted["function"]["arguments"]
+            for call, wanted in zip(calls, expected_calls)
+        ):
+            return f"第 {n} 轮工具调用与剧本不符"
+        if message.get("role") != "tool" or message.get("tool_call_id") != expected_calls[0]["id"]:
+            return f"第 {n} 轮工具结果与调用不匹配"
         if _tool_output(message["content"]) != EXPECTED_OUTPUT.format(n):
             return f"第 {n} 轮工具结果不符: {json.dumps(message['content'], ensure_ascii=False)[:400]}"
+        history = messages
     return ""
 
 
@@ -172,7 +203,7 @@ def run_once(args: argparse.Namespace, side: str, index: int, script: Path) -> R
         with wire.open() as rows:
             _ = (out / "wire-head.jsonl").write_text("".join(next(rows, "") for _ in range(3)))
     try:
-        problem = validate(out, args.turns) if code == 0 else f"runner 退出码 {code}"
+        problem = validate(out, args.turns, script) if code == 0 else f"runner 退出码 {code}"
         values = read_values(out, args.turns) if not problem else {}
     except (OSError, StopIteration, KeyError, ValueError) as error:
         problem, values = f"结果缺失: {error!r}", {}
