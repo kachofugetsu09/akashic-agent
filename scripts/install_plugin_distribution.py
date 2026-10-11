@@ -160,12 +160,11 @@ def _stage_deployment_targets(
     report = verify_distribution(distribution)
     bundled = {row["name"]: row for row in report["plugins"]}
     _, selected = _selected_components(selection, expected_root_ref, replacing_distribution=True)
-    manifest = plugin_choices(workspace, distribution)
     result: list[dict[str, Any]] = []
     for index, target in enumerate(targets):
         plugin_id = target["plugin_id"]
-        if plugin_id not in selected or manifest.get(plugin_id) is not True:
-            raise SelectionConflictError(f"external target 未选择或未启用: {plugin_id}")
+        if plugin_id not in selected:
+            raise SelectionConflictError(f"external target 未选择: {plugin_id}")
         old_ref, descriptor, old_code = selected[plugin_id]
         name, marketplace = plugin_id.split("@")
         if (descriptor["source_type"] != "installed"
