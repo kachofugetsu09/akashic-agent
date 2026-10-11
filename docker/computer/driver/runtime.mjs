@@ -511,7 +511,10 @@ export class ComputerDriver extends EventEmitter {
     const control = this.control;
     this.control = null;
     this.emit("control");
-    control?.releaseWorkload?.();
+    // 占用只归还一次：仍在等待的旧 releaseControl 稍后结束时不能再归还。
+    const releaseWorkload = control?.releaseWorkload;
+    if (control) control.releaseWorkload = null;
+    releaseWorkload?.();
     control?.resume?.();
     for (const session of this.sessions.values()) await session.worker.terminate();
     this.desktop.process?.kill("SIGKILL");

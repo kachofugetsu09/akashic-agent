@@ -56,24 +56,29 @@ const computer = new ComputerLifecycle({
       }
     }
     if (failure) throw failure;
-    driver = new ComputerDriver({ anonymousIdleMs: duration("COMPUTER_ANONYMOUS_IDLE_MS", 600000) });
-    driver.on("cursor", publishCursor);
-    driver.on("control", scheduleState);
-    driver.on("targets", scheduleState);
-    driverReady = driver.start();
+    // 重启后旧一代可能还有迟到的事件；只转发当前这一代的。
+    const owner = new ComputerDriver({ anonymousIdleMs: duration("COMPUTER_ANONYMOUS_IDLE_MS", 600000) });
+    driver = owner;
+    owner.on("cursor", (state) => { if (driver === owner) publishCursor(state); });
+    owner.on("control", () => { if (driver === owner) scheduleState(); });
+    owner.on("targets", () => { if (driver === owner) scheduleState(); });
+    driverReady = owner.start();
     await driverReady;
   },
   async stop() {
     // 2. 已确认正常输入释放后才允许关闭浏览器与重用 profile。
-    if (driver) await driver.close();
-    forgetDriver();
+    const owner = driver;
+    if (owner) await owner.close();
+    // 重启超时后旧的 close 可能迟到完成，不能清掉新一代 driver。
+    if (driver === owner) forgetDriver();
   },
   async abandon() {
-    // 3. 只由人工重启调用：正常收尾失败时强制结束 driver 的子进程。
+    // 3. 只由人工重启调用：正常收尾失败或超时时强制结束 driver 的子进程。
+    const owner = driver;
     try {
-      await driver?.abandon();
+      await owner?.abandon();
     } finally {
-      forgetDriver();
+      if (driver === owner) forgetDriver();
     }
   },
 });

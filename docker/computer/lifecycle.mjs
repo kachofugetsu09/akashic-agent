@@ -201,11 +201,12 @@ export class ComputerLifecycle {
       throw new Error(`Computer is ${this.state}; only a failed Computer can be restarted`);
     this.state = "stopping";
     this.transition = (async () => {
-      // 1. 能正常收尾就正常收尾，让还活着的 Chromium 有机会落盘。
+      // 1. 能正常收尾就正常收尾，让还活着的 Chromium 有机会落盘；原生输入卡住时
+      //    收尾可能永远等不到回执，所以给出期限。
       try {
-        await this.stopDriver();
+        await withDeadline(this.stopDriver(), RESTART_STOP_MS);
       } catch (error) {
-        // 2. 否则强制结束 driver 自己的子进程；旧输入随下面的 X server 一起消失。
+        // 2. 失败或超时就强制结束 driver 自己的子进程；旧输入随下面的 X server 一起消失。
         console.error("Computer restart: driver stop failed:", error.message);
         await this.abandonDriver();
       }
@@ -254,6 +255,23 @@ export function duration(name, defaultMs) {
   if (!Number.isSafeInteger(value) || value <= 0)
     throw new Error(`${name} must be positive milliseconds`);
   return value;
+}
+
+// driver.close 内部各步已有期限（原生输入 4s、浏览器释放 11s），这里覆盖剩下无期限的等待。
+const RESTART_STOP_MS = 20000;
+
+async function withDeadline(work, ms) {
+  let timer;
+  try {
+    return await Promise.race([
+      work,
+      new Promise((_, reject) => {
+        timer = setTimeout(() => reject(new Error(`driver stop timed out after ${ms}ms`)), ms);
+      }),
+    ]);
+  } finally {
+    clearTimeout(timer);
+  }
 }
 
 function groupAlive(pid) {
