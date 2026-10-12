@@ -12,17 +12,15 @@
 - 已有受管理 Chromium 时，插件配置 `executable_path` 指向它的绝对路径。
 - 容器需提供 Chromium 的系统依赖并允许 Chromium sandbox；不通过关闭 sandbox 绕过环境错误。
 
-源码构建运行 `npm run build:web-plugins`，生成 UI 入口、frame、固定 Plot runtime 和从主题目录派生的预检 CSS。
+源码构建运行 `npm run build:web-plugins`，生成 UI 入口、frame 和从主题目录派生的预检 CSS。
 只修改 `frontend/plugins/visuals/src` 的展示源文件。插件不修改任何默认 bundle 或自动启用自身。
 
 ## 可观察合同
 
 输入包含标题、纯文本摘要和完整 body HTML，最多 200,000 个字符。
 使用内联脚本和样式，不依赖 CDN、外部请求、导航、宿主接口或动态导入。
-文档可直接使用完整的 Observable Plot 0.6.17（`Plot`），也可自由编写 HTML、SVG 和 Canvas。
-`ak.plot(host, width => PlotOptions)` 统一纸面默认值、容器宽度和底部图例，返回重画函数；
-`ak.param(host, {label,min,max,step,value,format,onInput})` 创建带读数的原生滑块。
-Plot 的 marks、scale、transform、tip 等保持原有 API，没有固定图表类型清单。
+文档自行编写 HTML/CSS/JavaScript，按内容选择 SVG、Canvas 或普通 DOM。
+不内置绘图库或专用图表 API；坐标、刻度、图例、读数与交互逻辑由文档自己实现。
 图表使用 `--ak-chart-1` 至 `--ak-chart-6`；纸面、文字和规则线使用工具 schema 列出的公共 token。
 布局需要适应 280px 和 720px，控件至少 44px；每图最多 12 个滑块。
 
@@ -40,7 +38,7 @@ Plot 的 marks、scale、transform、tip 等保持原有 API，没有固定图�
 已打开的图发生交互错误时保留原 iframe 与参数，并在图旁说明错误；原始文件仍可下载。预检不是数学正确性证明，也不能保证任意
 后续交互都没有错误。服务端断网与客户端 sandbox/CSP 的保证不同，详见架构决定。
 
-入选模型上下文的工具调用仍携带原 HTML 参数；Plot 缩短源码，不另建历史裁剪机制。
+入选模型上下文的工具调用仍携带原 HTML 参数；不另建历史裁剪机制。
 模型收到标题、摘要与附件引用，不会自动看到截图；预检耗时不代表完整模型生成耗时。
 
 ## 验收

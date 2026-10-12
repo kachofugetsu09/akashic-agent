@@ -22,8 +22,7 @@ const server = createServer(async (req, res) => {
     if (url.pathname === "/favicon.ico") { res.writeHead(204).end(); return; }
     if (url.pathname === "/") { res.setHeader("content-type", "text/html; charset=utf-8"); res.end(html); return; }
     if (url.pathname === "/api/chat/plugin-ui/catalog") { res.setHeader("content-type", "application/json"); res.end(catalog); return; }
-    const route = url.pathname.startsWith("/api/chat/plugin-ui/script/") ? "frame_runtime.js"
-      : url.pathname === "/api/chat/plugin-ui/asset" ? "module.js"
+    const route = url.pathname === "/api/chat/plugin-ui/asset" ? "module.js"
       : url.pathname.startsWith("/api/chat/artifacts/") ? `${url.pathname.split("/").at(-1)}.json`
       : ["/messages.json", "/showcase-messages.json"].includes(url.pathname) ? url.pathname.slice(1) : null;
     const path = route ? join(evidence, route) : join(output, url.pathname);

@@ -141,32 +141,15 @@ async def run(directory: Path, executable_path: str | None) -> dict[str, object]
             catalog = await ui.catalog()
             item = next(item for item in cast(list[dict[str, str]], catalog["items"]) if item["id"] == "visuals@lab")
             module = await ui.asset(item["id"], item["revision"], "module", item["module_sha256"])
-            for name, digest in cast(dict[str, str], item["scripts"]).items():
-                script = await ui.asset(item["id"], item["revision"], f"script:{name}", digest)
-                (directory / name).write_text(cast(str, script["content"]))
         (directory / "module.js").write_text(cast(str, module["content"]))
         (directory / "catalog.json").write_text(json.dumps(catalog))
-        # 真实 HTTP 路由复用当前服务作用域，校验脚本身份和停用后的拒绝行为。
-        from httpx import ASGITransport, AsyncClient
-        from plugins.akashic_clients.chat_api import create_chat_app
-        from plugins.akashic_clients.web_chat import WebChatChannel
-        app = create_chat_app(workspace=workspace, channel=WebChatChannel(),
-                              plugin_ui_scope=lambda: root.context.open_service(PLUGIN_UI))
-        params = {"plugin_id": item["id"], "plugin_revision": item["revision"], "name": name}
-        script_url = f"/api/chat/plugin-ui/script/{digest}.js"
-        async with AsyncClient(transport=ASGITransport(app=app), base_url="http://scenario") as http:
-            response = await http.get(script_url, params=params)
-            assert response.status_code == 200 and response.text == script["content"]
-            assert (await http.get("/api/chat/plugin-ui/script/bad.js", params=params)).status_code == 422
-            assert (await http.get(script_url, params={**params, "name": "missing.js"})).status_code == 404
-            assert (await http.get(script_url, params={**params, "plugin_revision": "stale"})).status_code == 409
         async with root.context.open_service(MESSAGE_DISPLAY) as display:
             page = await display(reader.read_page(after_seq=-1, limit=100), display_only=False)
         (directory / "messages.json").write_text(json.dumps(page, ensure_ascii=False))
         from visuals.examples import SCALING, SCATTER, CANVAS, INTRO, EXPLANATION
         async with root.context.open_service(ServiceKey("scenario.visual.call")) as call:
             showcase = await call("showcase", [(INTRO, {"title": "同样的参数量，训练数据越多，Loss 越低", "summary": EXPLANATION, "html": SCALING}),
-                (EXPLANATION + "\n\n图表语法也能自由组合散点、回归线和误差带。", {"title": "散点与回归", "summary": "散点与回归线展示整体趋势及波动。", "html": SCATTER}),
+                (EXPLANATION + "\n\n原生 SVG 也能自由组合散点、回归线和误差带。", {"title": "散点与回归", "summary": "散点与回归线展示整体趋势及波动。", "html": SCATTER}),
                 ("并非所有解释都是统计图。下面直接用 Canvas 计算梯度下降。", {"title": "梯度下降", "summary": "每一步沿梯度下降，损失逐步降低。", "html": CANVAS})])
         assert showcase.outcome == "success", showcase
         async with root.context.open_service(MESSAGE_DISPLAY) as display:
@@ -208,8 +191,6 @@ async def run(directory: Path, executable_path: str | None) -> dict[str, object]
         await stopping
         async with root.context.open_service(PLUGIN_UI) as ui:
             assert all(item["id"] != "visuals@lab" for item in cast(list[dict[str, str]], (await ui.catalog())["items"]))
-        async with AsyncClient(transport=ASGITransport(app=app), base_url="http://scenario") as http:
-            assert (await http.get(script_url, params=params)).status_code == 404
         from plugins.tools.contract import ALL_TOOLS
         assert all(ref.name != "render_visual" for ref in root.context.require(ALL_TOOLS)().refs)
         async with root.context.open_service(ARTIFACT_READ) as files:
@@ -243,7 +224,7 @@ async def run(directory: Path, executable_path: str | None) -> dict[str, object]
         await host.terminate_all()
     return {"first_seconds": timings[0], "warm_seconds": timings[1], "artifact_id": ref.artifact_id,
             "artifact_sha256": ref.sha256, "artifact_bytes": ref.size_bytes,
-            "checks": ["installed plugin and UI asset", "HTTP script identity and withdrawal", "real tool messages", "Plot marks and native Canvas in one reply", "preview errors do not publish",
+            "checks": ["installed plugin and UI asset", "real tool messages", "native HTML, SVG and Canvas in one reply", "preview errors do not publish",
                        "disable withdraws UI and tool", "disable preserves messages and artifact bytes",
                        "reenable restores UI", "inflight owner drains before browser closes",
                        "headless tool works", "restart preserves all message rows"]}
