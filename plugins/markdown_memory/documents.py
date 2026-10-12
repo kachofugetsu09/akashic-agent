@@ -86,6 +86,17 @@ def _parse_op(item: object) -> Op:
     values = {key: value for key, value in data.items() if key not in {"op", "message_ids", "folder", "olds"}}
     if any(not isinstance(value, str) for value in values.values()):
         raise InvalidDraft(f"{name} 操作的文本字段必须是字符串")
+    # 条目在操作边界校验，不能靠文档差异判断：空行或已有标题也可能是非法替换结果。
+    if "line" in values:
+        line = cast(str, values["line"])
+        if (not line.startswith("- ") or not line[2:].strip() or line.splitlines() != [line]
+                or len(line) > MAX_LINE_CHARS or "```" in line):
+            raise InvalidDraft(f"新条目必须是不超过 {MAX_LINE_CHARS} 字的非空单行 '- ' 条目: {line[:40]}")
+    if "description" in values:
+        description = cast(str, values["description"])
+        if (not description.strip() or len(description) > MAX_DESCRIPTION_CHARS
+                or description.splitlines() != [description]):
+            raise InvalidDraft(f"description 必须是不超过 {MAX_DESCRIPTION_CHARS} 字的非空单行文本")
     olds = data.get("olds", [])
     if name == "merge" and (not isinstance(olds, list) or len(cast(list[object], olds)) < 2
                             or any(not isinstance(old, str) for old in cast(list[object], olds))):
@@ -271,24 +282,13 @@ def _section_sizes(text: str) -> dict[str, int]:
     return sizes
 
 
-# 只校验模型新写的部分；既有手写内容不因超额或格式而阻断提炼。
-def check_changes(before: Mapping[str, str], after: Mapping[str, str],
+# 只限制本次增加的用量；既有手写内容超额时仍允许减少。
+def check_budgets(before: Mapping[str, str], after: Mapping[str, str],
                   *, profile_budget: int, self_budgets: Mapping[str, int]) -> None:
     for doc, text in after.items():
         old = before.get(doc, "")
         if text == old:
             continue
-        # 空行与该文档固定标题是程序维护的结构，不按条目校验。
-        structure = {"", *(PROFILE_HEADINGS if doc == PROFILE else SELF_HEADINGS if doc == SELF else ())}
-        added = [row for row in text.splitlines() if row not in old.splitlines() and row not in structure]
-        if doc.endswith(SCOPE_FILE) or (doc.startswith(TOPICS) and not old):
-            fields, _ = split_frontmatter(text)
-            if not 0 < len(fields.get("description", "")) <= MAX_DESCRIPTION_CHARS:
-                raise InvalidDraft(f"{doc} 需要不超过 {MAX_DESCRIPTION_CHARS} 字的 description")
-            added = [row for row in added if not row.startswith(("---", "description:", "scope:"))]
-        for row in added:
-            if not row.startswith("- ") or len(row) > MAX_LINE_CHARS or "```" in row:
-                raise InvalidDraft(f"新条目必须是不超过 {MAX_LINE_CHARS} 字的单行 '- ' 条目: {row[:40]}")
         if doc in USER_SECTIONS:
             _check_budget(doc, old, text, profile_budget, self_budgets)
 

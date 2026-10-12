@@ -53,7 +53,7 @@ from plugins.runtime_inspection.contract import DOCUMENTS, Document
 
 from .documents import (
     PROFILE, SELF, SELF_HEADINGS, PROFILE_HEADINGS, InvalidDraft, Op, Workspace,
-    SCOPE_FILE, TOPICS, check_changes, parse_ops, rank, render_memory, section_of, split_frontmatter, surfaceable,
+    SCOPE_FILE, TOPICS, check_budgets, parse_ops, rank, render_memory, section_of, split_frontmatter, surfaceable,
 )
 from .store import DEFAULT_SELF_MD, ConcurrentChange, MarkdownProfileStore
 from .contract import MEMORY_WRITES
@@ -216,7 +216,7 @@ def _check_profile_response(response: LLMResponse, messages: tuple[Message, ...]
     ops = parse_ops(load_json_object_loose(response.content or ""))
     trial = Workspace(dict(workspace.texts), dict(workspace.folders), workspace.scope)
     trial.apply(ops, strict=True)
-    check_changes(workspace.texts, trial.texts,
+    check_budgets(workspace.texts, trial.texts,
                   profile_budget=config.profile_budget, self_budgets=config.self_budgets)
     check_evidence(ops, workspace.texts, messages, is_user_input=is_user_input)
     return ops
@@ -316,7 +316,7 @@ def _check_consolidation(response: LLMResponse, workspace: Workspace, docs: tupl
         raise InvalidDraft(f"整理只能对 {list(docs)} 使用 merge")
     trial = Workspace(dict(workspace.texts), dict(workspace.folders), workspace.scope)
     trial.apply(ops, strict=True)
-    check_changes(workspace.texts, trial.texts,
+    check_budgets(workspace.texts, trial.texts,
                   profile_budget=config.profile_budget, self_budgets=config.self_budgets)
     return ops
 
@@ -687,6 +687,10 @@ async def apply(ctx: Context) -> None:
                             assert store is not None
                             await consolidate(store, ctx.require(CHAT_MODELS), lock_path, config)
                     except (RuntimeError, TimeoutError) as error:
+                        if isinstance(error, ConcurrentChange):
+                            logger.warning("Markdown 整理遇到文件变化，保留草稿稍后重试: %s", error)
+                            retry = True
+                            break
                         failure = ModelError.read(error)
                         if failure is None or not failure.retryable:
                             raise
