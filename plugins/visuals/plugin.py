@@ -38,10 +38,8 @@ class Visual(BaseModel):
         "完整 HTML body 片段，可含内联 style/script、SVG 和 Canvas。"
         "不得依赖网络、外部库、宿主 API、iframe、表单提交或导航。"
         "使用原生 JS 和响应式布局，适应 280px 与 720px；图表固定高度，控件至少 44px。"
-        "数据图优先用内置 Observable Plot 0.6.17，任意 marks 可组合；原生 HTML/SVG/Canvas 仍可自由使用。"
-        "ak.plot(host, width => PlotOptions) 提供响应式、网格、图例和主题默认值，返回重画函数。"
-        "ak.param(host, {label,min,max,step,value,format,onInput}) 返回原生 range；回调更新计算后重画。"
-        "不要手写坐标轴；用 Plot.line/dot/rule/text/area 等叠加，悬停读数用 tip:true 或 Plot.tip。"
+        "自己编写 HTML/CSS/JavaScript，按内容选择 SVG、Canvas 或普通 DOM，不提供绘图库或专用图表 API。"
+        "图形和控件必须基于真实数据或公式更新；坐标、刻度、图例和悬停读数由文档自己实现。"
         "一张图突出一个关系，保留单位、刻度和图例；默认无框透明背景，不重复正文标题。"
         "图标题用 h2，副标题用 p.caption；优先 2–3 个系列，颜色只用于数据线和点，文字用正文色。"
         "用 --ak-chart-1 到 --ak-chart-6 配色；文字、背景、线条使用 --ak-color-text-primary、"
@@ -107,6 +105,6 @@ async def apply(ctx: Context) -> None:
             raise PluginUiRpcInvalidRequest("可视化只读取消息附件，不提供 UI RPC")
 
         await child.require(UI_SLOTS).register_plugin_ui(child,
-            PluginUiDefinition(module="message_ui.js", slots=("message.attachment",), scripts=("frame_runtime.js",)), query=query)
+            PluginUiDefinition(module="message_ui.js", slots=("message.attachment",)), query=query)
 
     await ctx.inject((UI_SLOTS,), register_ui, name="visual-ui")
