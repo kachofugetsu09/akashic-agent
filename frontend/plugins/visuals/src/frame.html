@@ -3,7 +3,7 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width,initial-scale=1">
-  <meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'unsafe-inline' __VISUAL_RUNTIME_CSP__; style-src 'unsafe-inline'; img-src data:; font-src data:; connect-src 'none'; frame-src 'none'; object-src 'none'; base-uri 'none'; form-action 'none'">
+  <meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline'; img-src data:; font-src data:; connect-src 'none'; frame-src 'none'; object-src 'none'; base-uri 'none'; form-action 'none'">
   <style>
     :root {
       color-scheme: light dark;
@@ -20,11 +20,7 @@
     svg, canvas { display: block; max-width: 100%; }
     svg text { font-family: inherit; font-size: 12px; }
     svg text:not([fill]) { fill: currentColor; }
-    [aria-label$="-grid"] line { stroke: var(--ak-color-border-default); stroke-opacity: 1; stroke-dasharray: 2 5; }
     figure { margin: 0; }
-    svg { --plot-background: var(--ak-color-bg-canvas) !important; }
-    [class*="-swatches"] { justify-content: center; font-size: .875rem; color: var(--ak-color-text-primary); }
-    [class*="-swatches"] svg { width: 9px; height: 9px; border-radius: 50%; }
     button, input, select { font: inherit; accent-color: var(--ak-color-action-primary); }
     button, select, input[type=range] { min-height: 44px; }
     button, select {
@@ -36,16 +32,6 @@
     }
     label { display: block; }
     input[type=range] { width: 100%; margin: 0; cursor: pointer; }
-    .ak-param { display: grid; grid-template-columns: 1fr auto; align-items: center; gap: 0 12px; margin-top: 16px; font-size: .875rem; }
-    .ak-param output { font-weight: 600; }
-    .ak-param input { grid-column: 1 / -1; appearance: none; background: transparent; }
-    .ak-param input::-webkit-slider-runnable-track { height: 4px; border-radius: 2px;
-      background: linear-gradient(to right, var(--ak-color-action-primary) var(--range-fill), var(--ak-color-border-default) var(--range-fill)); }
-    .ak-param input::-webkit-slider-thumb { appearance: none; width: 18px; height: 18px; margin-top: -7px; border-radius: 50%;
-      background: var(--ak-color-bg-canvas); border: 2px solid var(--ak-color-action-primary); }
-    .ak-param input::-moz-range-track { height: 4px; border-radius: 2px; background: var(--ak-color-border-default); }
-    .ak-param input::-moz-range-progress { height: 4px; background: var(--ak-color-action-primary); }
-    .ak-param input::-moz-range-thumb { width: 14px; height: 14px; border-radius: 50%; border: 2px solid var(--ak-color-action-primary); background: var(--ak-color-bg-canvas); }
     output { font-variant-numeric: tabular-nums; }
     button:focus-visible, input:focus-visible, select:focus-visible {
       outline: 2px solid var(--ak-color-action-primary);
@@ -60,7 +46,6 @@
     }
   </style>
   <style id="visual-theme">/*visual-theme*/</style>
-  <script src="__VISUAL_RUNTIME_URL__"></script>
   <script>
     (() => {
       const send = (type, value) => parent.postMessage({channel: 'akashic.visual.v1', type, value}, '*');

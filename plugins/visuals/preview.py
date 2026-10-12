@@ -2,11 +2,9 @@
 from __future__ import annotations
 
 import asyncio
-import hashlib
-import html as html_escape
 from pathlib import Path
 
-from playwright.async_api import Browser, BrowserContext, Error, Playwright, Route, async_playwright
+from playwright.async_api import Browser, BrowserContext, Error, Playwright, async_playwright
 
 
 _PAGE_PROBLEM = """() => {
@@ -33,12 +31,8 @@ class Preview:
         self._lock = asyncio.Lock()
         self._slots = asyncio.Semaphore(2)
         root = Path(__file__).parent
-        self._runtime = (root / "frame_runtime.js").read_text()
-        self._runtime_url = f"https://akashic.invalid/{hashlib.sha256(self._runtime.encode()).hexdigest()}.js"
-        self._template = ((root / "frame.html").read_text()
-                          .replace("/*visual-theme*/", (root / "preview-theme.css").read_text())
-                          .replace("__VISUAL_RUNTIME_CSP__", self._runtime_url)
-                          .replace("__VISUAL_RUNTIME_URL__", html_escape.escape(self._runtime_url, quote=True)))
+        self._template = (root / "frame.html").read_text().replace(
+            "/*visual-theme*/", (root / "preview-theme.css").read_text())
 
     async def close(self) -> None:
         """作用域收束后关闭所有预检资源。"""
@@ -98,12 +92,7 @@ class Preview:
         """检查真实页面；外层始终等待它随 context 关闭而结束。"""
         errors: list[str] = []
         # 2. 服务端拒绝全部网络，预检和客户端使用同一文档外壳。
-        async def route_request(route: Route) -> None:
-            if route.request.url == self._runtime_url:
-                await route.fulfill(body=self._runtime, content_type="text/javascript")
-            else:
-                await route.abort()
-        await context.route("**/*", route_request)
+        await context.route("**/*", lambda route: route.abort())
         page = await context.new_page()
         page.on("pageerror", lambda error: errors.append(str(error)[:300]) if len(errors) < 8 else None)
         page.on("console", lambda message: errors.append(message.text[:300])
