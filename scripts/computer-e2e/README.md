@@ -29,3 +29,6 @@ workspace。该验收不代表生产热更新、generation 切换或真实 Andro
 
 `input.mjs` 使用真实 gateway 和 Chromium，验证主浏览器及匿名 Context 的拖拽按键、
 释放后的移动，以及截图赋值不产生隐式文本、显式图片仍正常输出。该检查不需要用户浏览器。
+
+该输入检查还通过真实快捷键放大页面，核对裁剪图片的 CSS 尺寸、目标颜色和全页边界。
+CDP 截图矩形使用 DIP；Browser API 的 CSS 矩形必须先按页面 zoom 转换。

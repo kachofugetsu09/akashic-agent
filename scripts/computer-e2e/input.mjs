@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
 import { mkdtemp, chmod, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { join, resolve } from "node:path";
 import { randomUUID } from "node:crypto";
 
 // 真实 gateway、driver 和 Chromium 验证输出及按住鼠标的连续移动。
@@ -28,6 +28,12 @@ document.addEventListener('mouseup', e => {
 </script>`;
 let started = false;
 const checks = [];
+// 用项目现有 Pillow 读取真实图片的尺寸和颜色，不替换浏览器截图。
+const imageInfo = result => JSON.parse(execFileSync(
+  resolve(import.meta.dirname, "../../.venv/bin/python"), ["-c",
+    "import io,json,sys;from PIL import Image;im=Image.open(io.BytesIO(sys.stdin.buffer.read())).convert('RGB');print(json.dumps({'size':im.size,'center':im.getpixel((im.width//2,im.height//2))}))"],
+  {input:Buffer.from(result.content.find(item => item.type === "image").data,"base64"),encoding:"utf8"},
+));
 try {
   // 1. 独立桌面、数据目录和本地页面；不接触正式 workspace。
   docker("run", "-d", "--name", container, "--security-opt", "seccomp=unconfined",
@@ -76,6 +82,19 @@ try {
     const after = JSON.parse(texts(await action("nodeRepl.write(await tab.playwright.evaluate(() => document.querySelector('#events').textContent));"))[0]);
     assert.equal(after.at(-1), 0);
     checks.push(`${mode}: explicit image output, held drag, released hover`);
+    if (mode === "main") {
+      // 实际浏览器快捷键放大，验证 clip 仍指向同一个可见元素。
+      await action('for(var i=0;i<8;i++) await sky.press_key({key:"ctrl+plus"});');
+      const crop = imageInfo(await action('await nodeRepl.emitImage(await tab.screenshot({clip:{x:20,y:20,width:80,height:80}}));'));
+      assert.deepEqual(crop.size, [80,80]);
+      assert.ok(crop.center[0] > 240 && crop.center[1] > 145 && crop.center[1] < 185 && crop.center[2] < 20);
+      const bounds = JSON.parse(texts(await action('nodeRepl.write(await tab.playwright.evaluate(() => ({width:document.documentElement.scrollWidth,height:document.documentElement.scrollHeight,dpr:devicePixelRatio})));'))[0]);
+      assert.ok(bounds.dpr > 1);
+      const full = imageInfo(await action('await nodeRepl.emitImage(await tab.screenshot({fullPage:true}));'));
+      assert.deepEqual(full.size, [bounds.width,bounds.height]);
+      await action('await sky.press_key({key:"ctrl+0"});');
+      checks.push("zoom: CSS clip keeps size and target; full page keeps document bounds");
+    }
     if (mode === "anonymous") await action("await owner.close();");
   }
   await writeFile(join(artifacts, "result.json"), JSON.stringify({image,sourceMounts,checks},null,2));

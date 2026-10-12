@@ -28956,6 +28956,16 @@ async function zP(t, e, r) {
         scale: a,
       }));
   }
+  // DOM 与公开 clip 使用 CSS 像素，CDP 的截图矩形使用 DIP；输出缩放仍由原路径负责。
+  const { cssVisualViewport } = await e.cdp.call(n, "Page.getLayoutMetrics");
+  const zoom = cssVisualViewport.zoom ?? 1;
+  o.clip = {
+    ...o.clip,
+    x: o.clip.x * zoom,
+    y: o.clip.y * zoom,
+    width: o.clip.width * zoom,
+    height: o.clip.height * zoom,
+  };
   let s = await e.cdp.call(n, "Page.captureScreenshot", o, {
     preserveDebuggerOnTimeout: !0,
     timeoutMs: r === "device" && i == null && t.fullPage !== !0 ? a9 : s9,

@@ -121,6 +121,10 @@ target, emit a clipped screenshot with `tab.screenshot({clip:{x,y,width,height}}
 before changing browser zoom or probing image libraries. Browser coordinates are relative to the
 tab viewport; `sky` uses desktop coordinates, including browser chrome. Refresh geometry after
 scrolling and bring a target into view before a coordinate action.
+`tab.screenshot` uses CSS coordinates and returns CSS-pixel images. Browser zoom does not enlarge
+that output. With the browser focused, `await sky.press_key({key:"ctrl+plus"})` enlarges the page.
+Use a `sky` desktop screenshot to read that magnified detail; restore zoom with
+`await sky.press_key({key:"ctrl+0"})` when finished.
 
 OpenCLI remains a separate ordinary shell command and uses the same browser.
 
