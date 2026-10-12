@@ -2328,6 +2328,40 @@ form.composer:focus-within [data-slot="input-group"] {
   translate: 0 1px;
 }
 
+/* 返回按钮浮在正文上：纸色实底与轻阴影，不和下面的文字混在一起。 */
+.reading-return {
+  position: absolute;
+  display: inline-flex;
+  min-width: 36px;
+  height: 36px;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  padding-inline: 9px;
+  border: 1px solid var(--ak-rule-default);
+  border-radius: 999px;
+  background: var(--ak-paper-raised);
+  color: var(--ak-ink-primary);
+  box-shadow: 0 2px 10px color-mix(in oklch, var(--ak-ink-primary) 12%, transparent);
+  font: inherit;
+  font-size: 0.8125rem;
+  cursor: pointer;
+}
+
+.reading-return[data-label] { padding-inline: 12px 10px; }
+.reading-return:focus-visible { outline: 2px solid var(--ak-rule-focus); outline-offset: 2px; }
+
+.reading-return__live {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--ak-color-status-trace);
+}
+
+@media (prefers-reduced-motion: no-preference) {
+  .reading-return__live { animation: process-trace-breathe 1.6s ease-in-out infinite; }
+}
+
 /* 同一区域使用固定字号层级；纸感由字体与底色承担。 */
 .chat-sidebar--entry .conversation-session__title strong,
 .chat-sidebar__new,
@@ -2389,14 +2423,27 @@ form.composer:focus-within [data-slot="input-group"] {
     --composer-compact-h: 7.375rem;
   }
 
+  /* 2px + (44 - 20) / 2 + Menu 线条起笔 ≈ 16px：汉堡横线与正文、输入卡左缘同一条线。 */
   .conversation-heading {
     min-block-size: 52px;
-    padding-inline: max(6px, env(safe-area-inset-left, 0px)) max(16px, env(safe-area-inset-right, 0px));
+    padding-inline: max(2px, env(safe-area-inset-left, 0px)) max(16px, env(safe-area-inset-right, 0px));
   }
 
   .home-state {
     padding: 24px 16px calc(11rem + env(safe-area-inset-bottom, 0px));
   }
+
+  /* 有消息时标题栏浮在滚动区上方，向下读时整条移出，不改变滚动区几何。 */
+  .chat-main:not(.is-empty) .conversation-heading {
+    position: absolute;
+    inset: 0 0 auto;
+    z-index: 6;
+    background: var(--ak-color-bg-canvas);
+    transition: translate var(--ak-sys-duration-short, 200ms) var(--ak-sys-motion-standard, ease);
+  }
+
+  .chat-main.is-reading .conversation-heading { translate: 0 -100%; }
+  .chat-main:not(.is-empty) .conversation-content { padding-block-start: calc(1.5rem + 53px); }
 
   .chat-main .composer.is-compact,
   .chat-main .composer.is-expanded {
@@ -2443,7 +2490,8 @@ form.composer:focus-within [data-slot="input-group"] {
     grid-template-columns: 44px minmax(0, 1fr) 44px;
     align-items: center;
     column-gap: 8px;
-    padding: 2px 8px 0;
+    /* 左 2px：1 + 2 + (44 - 16) / 2 = 17px，回形针与输入文字左缘对齐。 */
+    padding: 2px 8px 0 2px;
   }
 
   .chat-main .composer.is-compact .composer__lead,
@@ -2473,13 +2521,15 @@ form.composer:focus-within [data-slot="input-group"] {
   .chat-main .composer.is-expanded .composer-action-button {
     grid-column: 3;
     grid-row: 1;
-    border-radius: 8px;
+    /* 与 22px 外圆角同心：发送键离卡片外缘约 8px。 */
+    border-radius: 14px;
   }
 
   .chat-main .composer.is-compact .composer-action-button:disabled,
   .chat-main .composer.is-expanded .composer-action-button:disabled {
     color: var(--chat-muted);
-    background: color-mix(in oklch, var(--chat-ink) 14%, var(--chat-lift));
+    background: transparent;
+    box-shadow: inset 0 0 0 1px var(--ak-rule-default);
     opacity: 1;
   }
 
@@ -2529,6 +2579,40 @@ form.composer:focus-within [data-slot="input-group"] {
     inset-inline: -4px;
   }
 
+  /* 阅读态输入卡：一行 52px，只留输入与发送；获得焦点或有草稿时恢复工具行。 */
+  .chat-main:has(.composer.is-resting) { --composer-compact-h: 52px; }
+
+  .chat-main .composer.is-resting {
+    padding-block: 3px;
+    border-radius: 26px;
+  }
+
+  .chat-main .composer.is-resting [data-slot="input-group"] {
+    flex-direction: row;
+    align-items: center;
+    gap: 0;
+  }
+
+  .chat-main .composer.is-resting textarea {
+    max-height: 44px;
+    padding-block: 10px;
+  }
+
+  .chat-main .composer.is-resting .composer__bar {
+    width: auto;
+    grid-template-columns: 44px;
+    padding: 0 3px 0 0;
+  }
+
+  .chat-main .composer.is-resting .composer__lead,
+  .chat-main .composer.is-resting .composer-tool {
+    display: none;
+  }
+
+  .chat-main .composer.is-resting .composer-action-button {
+    grid-column: 1;
+    border-radius: 50%;
+  }
 }
 
 /* 模型名必须能区分版本，不能在选择列表里只留下相同的省略前缀。 */

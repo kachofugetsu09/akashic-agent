@@ -397,9 +397,10 @@ class _BoundChat:
                 delay = float(next_at) - time.time()
                 if delay > 0:
                     if request.on_delta is not None:
+                        # 首行是状态标题，其后是原始失败原因；前端按行分开排版。
                         await request.on_delta({"retry_status": (
-                            f"正在自动恢复模型响应，第 {len(records) + 1}{limit} 次尝试将在约 {math.ceil(delay)} 秒后开始。"
-                            f"可以取消等待。上次失败：{last['failure']}"
+                            f"模型暂时不可用，第 {len(records) + 1}{limit} 次重试约 {math.ceil(delay)} 秒后开始\n"
+                            f"{last['failure']}"
                         )})
                     # 等待可取消；已结算的失败与允许时间保留，恢复按剩余额度继续。
                     log_timing("model.retry.wait", request_id=request_key, counts={"attempt": len(records) + 1})
