@@ -59,5 +59,7 @@ agent 用原生 `read_file` / `write_file` / `edit_file` / `shell rg` 读写记�
 follower 每次唤醒检查：距上次整理不少于 `consolidate_hours`（默认 24）且其后新应用的提炼 draft 不少于
 `consolidate_min_drafts`（默认 5）时，对全局（PROFILE、SELF、全局主题）和这些 draft 涉及的 scope 文件夹各调用一次模型。
 整理只能使用 `merge`（把同一文件中 ≥2 条现有条目逐字替换为一条），不新增事实；提炼阶段不能使用 `merge`。
+重放时只有全部旧条目仍在才合并；旧条目全不在且合并结果已在视为已应用；其余（部分变化、或旧新都不在）记为冲突跳过。
+矛盾条目只在一方带更新日期或明确是更正时合并，不按文件中的先后位置判断。
 结果走同一 `markdown_ops_v1` → 幂等叠加 → `markdown_ops_applied_v1` 路径，完成后写 `markdown_consolidated_v1`；
 两次不合格的 scope 跳过，模型暂时失败留到下次唤醒。`consolidate: false` 关闭。
