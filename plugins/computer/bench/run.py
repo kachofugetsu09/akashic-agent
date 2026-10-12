@@ -31,7 +31,8 @@ Read-only inspection of visible DOM and screenshots is allowed. Finish when the 
 UNSUITABLE = {"hover-shape": "upstream_reward_not_implemented",
               "moving-items": "internal_9.9_second_timer",
               "chase-circle": "internal_animation_timer",
-              "stock-market": "price_series_expires_after_10_seconds"}
+              "stock-market": "price_series_expires_after_10_seconds",
+              "simon-says": "sequence_ends_before_cold_observation"}
 
 
 def measurements(directory, status, score):
