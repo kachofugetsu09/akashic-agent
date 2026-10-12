@@ -442,8 +442,11 @@ Agent 使用 `computer` 执行持久 JavaScript，通过 `browser` 读取页面�
 Computer MCP 仍原子写入 plugin-data 下的截图缓存，每次只保留最近 32 张。Computer 工具
 通过 Ledger 的窄导入接口保存独立的持久附件；同一调用超过 32 张也使用原图字节，不依赖
 缓存路径仍存在。消息和附件只增加，不改写旧回执；缓存淘汰、Turn 结束或插件卸载不删除
-Ledger 附件。旧消息和图片可按原引用回读。普通截图不再要求额外调用 `read_file`；
-不支持图片的模型沿原能力提示使用 `read_image_vision`。base64 不作为模型文本返回。
+Ledger 附件。旧消息和图片可按原引用回读。`read_file` 保留为图片文件的通用入口；只有当前
+模型已经收到像素时，才可以省略重复回读。不支持图片的主模型通过 `read_image_vision(path,
+prompt)` 得到视觉描述，不能仅凭文件路径声称看过图片。该工具由 standard_tools 注册，
+Files 拥有路径与图片读取，Models 拥有本次执行冻结的 vision 角色；没有可用视觉模型时明确
+失败，不循环截图或猜测。base64 不作为主模型文本返回。
 
 用户通过完整 RFB client 使用桌面；Agent 通过同一个容器内的驱动操作。两条路径复用同一桌面、
 浏览器和 profile。原 HTTP 路由仍供已有 benchmark 与驱动检查使用，不作为模型工具发布。

@@ -149,7 +149,7 @@ def _read_image(file_path: Path) -> FileImage:
     data_uri = encode_image_bytes(file_path.read_bytes())
     header, encoded = data_uri.split(";base64,", 1)
     return FileImage(
-        text=f"[已读取图片文件 {file_path.name}，图片内容已提供给多模态模型]",
+        text=f"[已读取图片文件 {file_path.name}]",
         mime_type=header[5:], data=base64.b64decode(encoded, validate=True),
     )
 

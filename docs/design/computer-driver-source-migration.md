@@ -116,8 +116,9 @@ renderer 保留节点身份、完整树和动作所需信息，首版输出完�
 ZXing `3.1.2` 的上游 npm WASM 与 rev 中 SHA-256 完全
 相同，作为有公开 C++ 源码和构建方法的第三方依赖固定；不从 rev 再分发该二进制。
 
-新旧截图工具统一返回文件路径并提示 `read_file`。读文件工具拥有当前 Agent 的模型能力判断：
-多模态模型直接得到图片内容，文字模型才转向 `read_image_vision`。Computer 不重复判断模型能力。
+截图返回文件路径与图片附件；`read_file` 保留为通用文件入口。Models 按当前执行的能力决定
+是否提供像素，多模态模型可直接查看，文字模型通过 `read_image_vision` 获取视觉描述。
+standard_tools 拥有文件和视觉工具，Models 拥有 vision 角色选择；Computer 不重复判断模型能力。
 
 ## 7. 已验证的重建细节
 

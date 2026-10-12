@@ -149,7 +149,7 @@ async def register_file(
             await backend.aclose()
 
     description = (
-        "读取文件。文本带行号，支持 offset/limit 分页；图片保存为附件并交给当前模型查看。"
+        "读取文件。文本带行号，支持 offset/limit 分页；图片保存为附件。支持图片的主模型直接查看；若提示未提供图片内容，使用 read_image_vision(path, prompt) 获取视觉描述。"
         if backend_type is ReadFileTool else prototype.description
     )
     return cast(ToolRef, await ctx.require(TOOLS).register(

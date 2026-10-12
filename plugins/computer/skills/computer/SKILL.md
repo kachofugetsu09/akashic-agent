@@ -110,9 +110,12 @@ await sky.click({x: 640, y: 400, mouse_button: "right"});
 await nodeRepl.emitImage((await sky.get_screenshot())[0].bytes);
 ```
 
-Images emitted by Computer arrive as image attachments in the same tool result. Inspect them directly;
-do not call `read_file` again for an image already shown. The saved path remains available for later use.
-Use `read_image_vision` only if the current model reports that it cannot accept images.
+Computer saves a screenshot path and also attaches the image to the tool result. If the image pixels
+are available to the current model, inspect them directly; a second `read_file` is unnecessary.
+`read_file` remains the general entry point for saved images. If the tool result says the current model
+does not receive images, use `read_image_vision` with that path and a specific visual question. It uses
+the configured vision model and returns text. If that role is unavailable, report the missing capability;
+do not keep taking screenshots or claim to have seen pixels. Never infer visual access from a path alone.
 `sky.get_screenshot()` returns bytes and a data URL, without a separate temporary filepath. AX state is
 currently full text; its formatting and compression are not claimed identical to the original WASM.
 The returned screenshot path belongs to Akashic, not the Computer container's filesystem.

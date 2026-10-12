@@ -40,3 +40,8 @@ CDP 截图矩形使用 DIP；Browser API 的 CSS 矩形必须先按页面 zoom �
 
 输入检查还验证原生 AX 的 readonly、disabled、settable 区别；通过页面按钮解锁后，
 同一个控件的 readonly 消失、settable 出现，真实 fill 随即成功。主浏览器与匿名 Context 均覆盖。
+
+`vision.py` 验证原生看图、文本主模型向视觉角色转交，以及缺少视觉角色三种配置。
+运行 `.venv/bin/python scripts/computer-e2e/vision.py`，每种配置独立启动完整 AppRuntime，
+检查实际 HTTP 请求：文本主模型始终收不到图片，视觉角色收到原图并将描述交回主模型；
+没有可用视觉角色时必须报错。本地脚本模型只验证工具与模型路由，不计入模型能力成绩。
