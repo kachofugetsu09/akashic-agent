@@ -1,0 +1,75 @@
+<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline'; img-src data:; font-src data:; connect-src 'none'; frame-src 'none'; object-src 'none'; base-uri 'none'; form-action 'none'">
+  <style>
+    :root {
+      color-scheme: light dark;
+      font-family: "Source Serif 4", "Noto Serif SC", "Noto Serif CJK SC", serif;
+      color: var(--ak-color-text-primary);
+      background: var(--ak-color-bg-canvas);
+    }
+    * { box-sizing: border-box; }
+    body { margin: 0; padding: 12px; overflow-wrap: anywhere; }
+    h1, h2, h3, p { margin: 0 0 12px; }
+    h2 { font-size: 1.25rem; }
+    p { line-height: 1.65; }
+    svg, canvas { display: block; max-width: 100%; }
+    svg text { font-family: inherit; font-size: 12px; fill: currentColor; }
+    button, input, select { font: inherit; accent-color: var(--ak-chart-1); }
+    button, select, input[type=range] { min-height: 44px; }
+    button, select {
+      color: inherit;
+      background: var(--ak-color-bg-surface);
+      border: 1px solid var(--ak-color-border-default);
+      border-radius: 4px;
+      padding: 8px 12px;
+    }
+    label { display: block; }
+    input[type=range] { width: 100%; }
+    output { font-variant-numeric: tabular-nums; }
+    button:focus-visible, input:focus-visible, select:focus-visible {
+      outline: 2px solid var(--ak-chart-1);
+      outline-offset: 3px;
+    }
+    @media (prefers-reduced-motion: reduce) {
+      *, *::before, *::after {
+        animation: none !important;
+        transition: none !important;
+        scroll-behavior: auto !important;
+      }
+    }
+  </style>
+  <style id="visual-theme">/*visual-theme*/</style>
+  <script>
+    (() => {
+      const send = (type, value) => parent.postMessage({channel: 'akashic.visual.v1', type, value}, '*');
+      let queued = false, last = 0;
+      const measure = () => {
+        queued = false;
+        const height = Math.ceil(document.body.getBoundingClientRect().height);
+        if (height !== last) { last = height; send('height', height); }
+      };
+      const resize = () => {
+        if (!queued) { queued = true; requestAnimationFrame(measure); }
+      };
+      addEventListener('error', event => send('error', event.message));
+      addEventListener('unhandledrejection', event => send('error', String(event.reason)));
+      addEventListener('message', event => {
+        if (event.source !== parent || event.data?.channel !== 'akashic.visual.v1' || event.data.type !== 'theme') return;
+        document.getElementById('visual-theme').textContent = event.data.value;
+        resize();
+      });
+      addEventListener('DOMContentLoaded', () => {
+        new ResizeObserver(resize).observe(document.body);
+        measure();
+        // 隐藏或屏外 iframe 的 rAF 可暂停；启动确认不能等待下一帧。
+        send('ready', true);
+      });
+    })();
+  </script>
+</head>
+<body><!--visual-content--></body>
+</html>

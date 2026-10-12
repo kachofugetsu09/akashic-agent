@@ -1,4 +1,4 @@
-import { access, readdir } from "node:fs/promises";
+import { access, readdir, copyFile, readFile } from "node:fs/promises";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -99,3 +99,15 @@ await bundle({
   minify: true,
   outfile: resolve(pluginsRoot, "akasha/message_ui.js"),
 });
+
+// 可视化使用同一份 frame 模板完成服务端预检与浏览器展示。
+await bundle({
+  entryPoints: [resolve(repoRoot, "frontend/plugins/visuals/src/plugin-ui.ts")],
+  bundle: true, format: "esm", target: "es2022", minify: true,
+  plugins: [{ name: "frame-template", setup(build) {
+    build.onResolve({ filter: /\.html\?raw$/ }, args => ({ path: resolve(args.resolveDir, args.path.slice(0, -4)), namespace: "frame" }));
+    build.onLoad({ filter: /.*/, namespace: "frame" }, async args => ({ contents: await readFile(args.path, "utf8"), loader: "text" }));
+  } }],
+  outfile: resolve(pluginsRoot, "visuals/message_ui.js"),
+});
+await copyFile(resolve(repoRoot, "frontend/plugins/visuals/src/frame.html"), resolve(pluginsRoot, "visuals/frame.html"));
