@@ -148,3 +148,5 @@
 | [0113](0113-background-job-notices.md) | proposed / implemented for review | 后台任务完成通知：忙时注入下一步，闲时唤醒原会话 | SES、OUT、PLG |
 
 | [0114](0114-shared-session-read-marks.md) | proposed / implemented for review | 会话已读水位改为服务端共享，手机通知随已读撤掉 | WEBUI、SES |
+
+| [0116](0116-visuals-are-message-attachments.md) | proposed / implemented for review | 可视化是普通消息附件，工具与可选展示分别拥有生命周期 | WEBUI、SES、PLG |

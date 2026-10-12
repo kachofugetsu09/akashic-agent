@@ -235,6 +235,10 @@ workspace 仍不是完整运行环境的全部。模型 Provider credential 已�
 
 ### 3.1 对话与附件
 
+Visuals 的 `akashic.visual.v1` 是下表既有不可变附件的一种文件格式，不增加独立存储 owner。
+工具只导入新文件；禁用、卸载或刷新只释放预检资源和临时页面状态，不减少附件、引用或消息。
+恢复核对原文件 hash/size，沿既有 workspace 备份；见 [0116](../decisions/0116-visuals-are-message-attachments.md)。
+
 | 对象 | 正常增加 | 允许的原位或逻辑变化 | 允许物理减少的条件 |
 |---|---|---|---|
 | `sessions.db/messages` | 每次持久化一批新消息时 INSERT；同一 session 的 `seq` 单调增加且不复用 | 正常收发不改旧正文；当前代码存在显式 `update_message`，但它是否属于获授权产品语义仍待确认 | 只有用户主动撤销消息或删除会话/线程，管理命令才能 DELETE；带 `control_turn_id` 的显式 interaction 只能整组原子撤销，并声明目标、cascade、备份和审计 |
