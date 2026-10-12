@@ -425,7 +425,6 @@ class LivePluginUiProvider:
             "stylesheet_bytes": asset.stylesheet_bytes,
             "navigation": navigation,
             "slots": list(asset.slots),
-            "scripts": {script.name: script.sha256 for script in asset.scripts},
         }
 
     async def _run_query(
@@ -507,9 +506,6 @@ def _asset_content(asset: PluginUiAsset, kind: str) -> tuple[str, str]:
         return asset.module, asset.module_sha256
     if kind == "stylesheet" and asset.stylesheet_sha256 is not None:
         return asset.stylesheet, asset.stylesheet_sha256
-    for script in asset.scripts:
-        if kind == f"script:{script.name}":
-            return script.content, script.sha256
     raise PluginUiPluginUnavailable(f"plugin UI asset 不存在: {kind}")
 
 

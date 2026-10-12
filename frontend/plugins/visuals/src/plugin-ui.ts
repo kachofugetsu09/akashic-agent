@@ -81,13 +81,7 @@ function mount(host: HTMLElement, context: PluginUiContext): () => void {
         || typeof value.html !== "string" || Array.from(value.html).length > 200_000) throw new Error("不支持的文档格式");
       if (abort.signal.aborted) return;
       frame.title = value.title;
-      const runtime = context.scripts["frame_runtime.js"];
-      if (!runtime) throw new Error("插件缺少固定绘图脚本");
-      const runtimeUrl = new URL(runtime, location.href);
-      const escape = (value: string) => value.replaceAll("&", "&amp;").replaceAll('"', "&quot;");
       frame.srcdoc = template.replace("/*visual-theme*/", () => themeCss(host))
-        .replace("__VISUAL_RUNTIME_CSP__", () => escape(runtimeUrl.origin + runtimeUrl.pathname))
-        .replace("__VISUAL_RUNTIME_URL__", () => escape(runtimeUrl.href))
         .replace("<!--visual-content-->", () => value.html);
       host.append(frame);
     } catch (error) {

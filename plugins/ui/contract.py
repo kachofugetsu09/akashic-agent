@@ -92,15 +92,6 @@ UI = ServiceKey[UiRegistry]("ui.v1")
 WEB_UI = ServiceKey[WebUiProvider]("ui.web.v1")
 
 @dataclass(frozen=True)
-class PluginUiScript:
-    """插件随制品提供的固定脚本；发布后按内容 hash 读取。"""
-
-    name: str
-    content: str
-    sha256: str
-
-
-@dataclass(frozen=True)
 class PluginUiAsset:
     module: str
     module_sha256: str
@@ -111,7 +102,6 @@ class PluginUiAsset:
     navigation_label: str | None
     navigation_description: str | None
     slots: tuple[str, ...]
-    scripts: tuple[PluginUiScript, ...] = ()
 
 
 PluginUiSlot = Literal[
@@ -173,7 +163,6 @@ class PluginUiDefinition:
     stylesheet: str | None = None
     navigation: PluginUiNavigation | None = None
     slots: tuple[PluginUiSlot, ...] = ()
-    scripts: tuple[str, ...] = ()
 
 @dataclass(frozen=True, slots=True)
 class PluginUiDescriptor:
