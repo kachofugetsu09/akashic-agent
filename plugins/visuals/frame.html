@@ -7,6 +7,7 @@
   <style>
     :root {
       color-scheme: light dark;
+      --ak-type-ui: system-ui, -apple-system, "PingFang SC", "Noto Sans CJK SC", "Microsoft YaHei", sans-serif;
       font-family: var(--ak-type-reading, "Source Serif 4"), "Noto Serif SC", "Noto Serif CJK SC", serif;
       color: var(--ak-color-text-primary);
       background: transparent;
@@ -15,28 +16,67 @@
     body { margin: 0; padding: 0; overflow-wrap: anywhere; font-size: 16px; line-height: 1.65; }
     h1, h2, h3, p { margin: 0 0 12px; }
     h2 { padding-inline-end: 44px; font-size: 1.0625rem; font-weight: 600; margin-bottom: 2px; }
-    .caption { color: var(--ak-color-text-secondary); font-size: .875rem; margin-bottom: 16px; }
     p { line-height: 1.65; }
-    svg, canvas { display: block; max-width: 100%; }
-    svg text { font-family: inherit; font-size: 12px; }
-    svg text:not([fill]) { fill: currentColor; }
     figure { margin: 0; }
-    button, input, select { font: inherit; accent-color: var(--ak-color-action-primary); }
-    button, select, input[type=range] { min-height: 44px; }
-    button, select {
-      color: inherit;
-      background: var(--ak-color-bg-surface);
-      border: 1px solid var(--ak-color-border-default);
-      border-radius: 4px;
-      padding: 8px 12px;
-    }
-    label { display: block; }
-    input[type=range] { width: 100%; margin: 0; cursor: pointer; }
+    /* 默认排版组件：模型直接写原生 HTML，也和聊天正文同一套观感。 */
+    .caption { color: var(--ak-color-text-secondary); font-size: .875rem; margin-bottom: 16px; }
+    .note { color: var(--ak-color-text-muted); font-size: .8125rem; margin: 12px 0 0; }
+    .readout { color: var(--ak-color-text-secondary); font-size: .875rem; margin: 8px 0 0; font-variant-numeric: tabular-nums; }
+    svg, canvas { display: block; max-width: 100%; }
+    .chart { width: 100%; height: 280px; margin-top: 8px; }
+    svg text { font: 12px/1 var(--ak-type-ui); font-variant-numeric: tabular-nums; }
+    svg text:not([fill]) { fill: var(--ak-color-text-muted); }
+    .grid { stroke: var(--ak-color-border-default); stroke-dasharray: 2 5; fill: none; }
+    .axis { stroke: var(--ak-color-border-default); fill: none; }
+    .legend { display: flex; justify-content: center; flex-wrap: wrap; gap: 6px 24px; margin-top: 8px; font-size: .875rem; }
+    .legend span { display: inline-flex; align-items: center; gap: 8px; }
+    .legend i { width: 9px; height: 9px; border-radius: 50%; background: var(--series, var(--ak-chart-1)); }
+    /* 控件：参数行、按钮组、滑块 */
+    .param { display: grid; grid-template-columns: 1fr auto; align-items: center; gap: 0 12px; margin: 16px 0 0; font-size: .875rem; }
+    .param input { grid-column: 1 / -1; }
+    .param output { font: 600 .9375rem var(--ak-type-ui); }
+    .controls { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 12px; margin: 16px 0 0; }
     output { font-variant-numeric: tabular-nums; }
-    button:focus-visible, input:focus-visible, select:focus-visible {
-      outline: 2px solid var(--ak-color-action-primary);
-      outline-offset: 3px;
+    button, input, select { font: inherit; accent-color: var(--ak-color-action-primary); }
+    button, select {
+      min-height: 36px;
+      padding: 6px 14px;
+      color: var(--ak-color-text-primary);
+      background: transparent;
+      border: 1px solid var(--ak-color-border-default);
+      border-radius: 6px;
+      font-size: .875rem;
+      cursor: pointer;
     }
+    button:hover, select:hover { border-color: var(--ak-color-text-muted); }
+    button.primary { color: var(--ak-color-bg-canvas); background: var(--ak-color-action-primary); border-color: var(--ak-color-action-primary); }
+    button:disabled { opacity: .5; cursor: default; }
+    @media (pointer: coarse) { button, select { min-height: 44px; } }
+    label { display: block; }
+    input[type=range] {
+      --fill: 50%;
+      width: 100%; min-height: 44px; margin: 0; cursor: pointer; appearance: none; -webkit-appearance: none; background: transparent;
+    }
+    input[type=range]::-webkit-slider-runnable-track {
+      height: 4px; border-radius: 2px;
+      background: linear-gradient(to right, var(--ak-color-action-primary) var(--fill), var(--ak-color-border-default) var(--fill));
+    }
+    input[type=range]::-webkit-slider-thumb {
+      -webkit-appearance: none; width: 18px; height: 18px; margin-top: -7px; border-radius: 50%;
+      background: var(--ak-color-bg-canvas); border: 2px solid var(--ak-color-action-primary);
+    }
+    input[type=range]::-moz-range-track { height: 4px; border-radius: 2px; background: var(--ak-color-border-default); }
+    input[type=range]::-moz-range-progress { height: 4px; border-radius: 2px; background: var(--ak-color-action-primary); }
+    input[type=range]::-moz-range-thumb {
+      width: 14px; height: 14px; border-radius: 50%; background: var(--ak-color-bg-canvas); border: 2px solid var(--ak-color-action-primary);
+    }
+    button:focus-visible, select:focus-visible {
+      outline: 2px solid var(--ak-color-action-primary);
+      outline-offset: 2px;
+    }
+    input[type=range]:focus-visible { outline: none; }
+    input[type=range]:focus-visible::-webkit-slider-thumb { box-shadow: 0 0 0 3px var(--ak-color-bg-canvas), 0 0 0 5px var(--ak-color-action-primary); }
+    input[type=range]:focus-visible::-moz-range-thumb { box-shadow: 0 0 0 3px var(--ak-color-bg-canvas), 0 0 0 5px var(--ak-color-action-primary); }
     @media (prefers-reduced-motion: reduce) {
       *, *::before, *::after {
         animation: none !important;
@@ -66,7 +106,15 @@
         dispatchEvent(new CustomEvent('akashic:theme'));
         resize();
       });
+      // 滑块已填充段跟随数值，模型脚本无需自己维护。
+      const fill = input => {
+        if (!(input instanceof HTMLInputElement) || input.type !== 'range') return;
+        const min = Number(input.min || 0), max = Number(input.max || 100);
+        input.style.setProperty('--fill', `${max > min ? (input.valueAsNumber - min) / (max - min) * 100 : 0}%`);
+      };
+      addEventListener('input', event => fill(event.target), true);
       addEventListener('DOMContentLoaded', () => {
+        document.querySelectorAll('input[type=range]').forEach(fill);
         new ResizeObserver(resize).observe(document.body);
         measure();
         // 隐藏或屏外 iframe 的 rAF 可暂停；启动确认不能等待下一帧。
