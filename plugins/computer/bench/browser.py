@@ -57,8 +57,10 @@ class Page:
         path.write_bytes(base64.b64decode(result["data"]))
 
     async def score(self):
-        return await self.evaluate("({done:WOB_DONE_GLOBAL, raw:WOB_RAW_REWARD_GLOBAL, "
-            "reward:WOB_REWARD_GLOBAL, reason:WOB_REWARD_REASON, episode:WOB_EPISODE_ID})")
+        return await self.evaluate("({ ...(__miniwobAudit.first || "
+            "{done:false,raw:0,reward:0,reason:null,episode:0}), "
+            "starts:__miniwobAudit.starts, elapsed_ms:performance.now()-__miniwobAudit.started, "
+            "final_episode:WOB_EPISODE_ID })")
 
 
 async def prepare(identity: dict, html: Path, task: str, seed: int, timeout: int):
@@ -75,6 +77,24 @@ async def prepare(identity: dict, html: Path, task: str, seed: int, timeout: int
         async with asyncio.timeout(60):
             while not await page.evaluate("document.readyState === 'complete' && typeof core !== 'undefined' && WOB_TASK_READY"):
                 await asyncio.sleep(.1)
+        # 首次结算是本题成绩；继续观察 Agent 是否正常收尾，不把重开后的分数覆盖进来。
+        await page.evaluate("""(() => {
+          const audit = window.__miniwobAudit = {starts:0,first:null,started:performance.now()};
+          const start = core.startEpisodeReal, end = core.endEpisode;
+          core.startEpisodeReal = function(...args) {
+            audit.starts++; return start.apply(this,args);
+          };
+          core.endEpisode = function(...args) {
+            const result = end.apply(this,args);
+            if (WOB_DONE_GLOBAL && audit.first === null) audit.first = {
+              done:true,raw:WOB_RAW_REWARD_GLOBAL,reward:WOB_REWARD_GLOBAL,
+              reason:WOB_REWARD_REASON,episode:WOB_EPISODE_ID,
+              done_ms:performance.now()-audit.started
+            };
+            return result;
+          };
+          return true;
+        })()""")
         instruction = await page.evaluate(f"Math.seedrandom({json.dumps(str(seed))}); "
             f"core.EPISODE_MAX_TIME={timeout * 1000}; core.startEpisodeReal(); document.querySelector('#query').innerText")
         return server, page, url, instruction

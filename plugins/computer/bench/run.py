@@ -27,6 +27,27 @@ Do not use shell, HTTP requests, or direct JavaScript DOM mutation to solve the 
 Read-only inspection of visible DOM and screenshots is allowed. Finish when the UI task is done.
 """
 
+# 这些页面不接受通用 episode 时间预算；单独保留诊断，不混入可比目标集。
+UNSUITABLE = {"hover-shape": "upstream_reward_not_implemented",
+              "moving-items": "internal_9.9_second_timer",
+              "chase-circle": "internal_animation_timer",
+              "stock-market": "price_series_expires_after_10_seconds"}
+
+
+def measurements(directory, status, score):
+    """从真实回执计算收尾与错误；违规标记不代替人工完整审计。"""
+    rows = json.loads((directory / "messages.json").read_text())
+    calls = [part for row in rows for part in row["body"].get("parts", []) if part["kind"] == "tool_call"]
+    violations = sorted({part["name"] for part in calls if part["name"] in {"shell", "web_search", "web_fetch"}})
+    if score["starts"] != 1:
+        violations.append("episode_restart")
+    errors = sum(row["body"]["kind"] == "tool_result" and row["body"]["outcome"] != "success" for row in rows)
+    positive = score["done"] and score["raw"] > 0
+    return {"tool_calls": len(calls), "tool_errors": errors, "violations": violations,
+            "completed": positive and status == "complete" and not violations,
+            "smooth": positive and status == "complete" and not violations and errors == 0,
+            "finish_after_done_ms": score["elapsed_ms"] - score["done_ms"] if score["done"] else None}
+
 
 def save(path: Path, value):
     path.write_text(json.dumps(value, ensure_ascii=False, indent=2) + "\n")
@@ -83,6 +104,10 @@ async def case(args, task, seed):
     directory = args.output / f"{task}-s{seed}"
     directory.mkdir(mode=0o700)
     result = {"task": task, "seed": seed, "status": "infra_error", "success": False}
+    if task in UNSUITABLE:
+        result.update(status="unsupported", reason=UNSUITABLE[task])
+        save(directory / "result.json", result)
+        return result
     start = time.monotonic()
     try:
         async with runtime(directory, max_steps=args.max_steps, endpoint=args.endpoint,
@@ -103,6 +128,8 @@ async def case(args, task, seed):
                     await page.screenshot(directory / "end.png")
                 result.update(status=status, score=score, success=score["done"] and score["raw"] > 0,
                               audit="pending" if args.mode == "agent" else "not_applicable")
+                if args.mode == "agent":
+                    result.update(measurements(directory, status, score))
             finally:
                 await asyncio.to_thread(server.shutdown)
                 server.server_close()
