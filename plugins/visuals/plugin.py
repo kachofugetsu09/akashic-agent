@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import re
 from collections.abc import AsyncIterator, Mapping
 from contextlib import asynccontextmanager
 from pathlib import Path
@@ -15,7 +16,7 @@ from plugins.ledger.contract import ARTIFACT_IMPORT, ArtifactImport, AttachmentK
 from plugins.tools.contract import TOOLS, CallSource, Result
 from plugins.ui.contract import UI_SLOTS, PluginUiDefinition, PluginUiRpcInvalidRequest
 
-from .preview import Preview, PreviewFailed
+from .preview import Preview, PreviewFailed, PreviewUnavailable
 
 api_version = 3
 name = "visuals"
@@ -37,11 +38,17 @@ class Visual(BaseModel):
         "完整 HTML body 片段，可含内联 style/script、SVG 和 Canvas。"
         "不得依赖网络、外部库、宿主 API、iframe、表单提交或导航。"
         "使用原生 JS 和响应式布局，适应 280px 与 720px；图表固定高度，控件至少 44px。"
+        "数据图优先用内置 Observable Plot 0.6.17，任意 marks 可组合；原生 HTML/SVG/Canvas 仍可自由使用。"
+        "ak.plot(host, width => PlotOptions) 提供响应式、网格、图例和主题默认值，返回重画函数。"
+        "ak.param(host, {label,min,max,step,value,format,onInput}) 返回原生 range；回调更新计算后重画。"
+        "不要手写坐标轴；用 Plot.line/dot/rule/text/area 等叠加，悬停读数用 tip:true 或 Plot.tip。"
+        "一张图突出一个关系，保留单位、刻度和图例；默认无框透明背景，不重复正文标题。"
+        "图标题用 h2，副标题用 p.caption；优先 2–3 个系列，颜色只用于数据线和点，文字用正文色。"
         "用 --ak-chart-1 到 --ak-chart-6 配色；文字、背景、线条使用 --ak-color-text-primary、"
         "--ak-color-text-secondary、--ak-color-bg-canvas、--ak-color-bg-surface、--ak-color-border-default。"
         "每图最多 12 个滑块，必须带可访问名称和当前值，改变参数应立即更新真实计算结果。"
         "保留图例、单位、轴标签；文本用 textContent，避免数值 NaN/Infinity。"
-        "静态解释先输出正文，再调用本工具，返回后可继续解释。"
+        "静态解释先输出正文，再调用本工具，返回后继续说明含义，不复述摘要。每一步最多并行调用两次。"
     ))
 
 
@@ -63,15 +70,16 @@ class VisualTool:
         visual = Visual.model_validate(json_value(arguments))
         try:
             await self._preview.check(visual.html)
-        except PreviewFailed as error:
+        except (PreviewFailed, PreviewUnavailable) as error:
             return Result("error", (ContentPart("text", str(error)),))
         # 附件导入是唯一持久效果；插件没有消息改写或附件删除权限。
         with TemporaryDirectory(prefix="akashic-visual-") as directory:
-            path = Path(directory) / "visual.akashic-visual.json"
+            filename = re.sub(r'[\x00-\x1f<>:"/\\|?*]', "-", visual.title).strip(" .")[:60] or "visual"
+            path = Path(directory) / f"{filename}.akashic-visual.json"
             content = json.dumps({"schema": "akashic.visual.v1", **visual.model_dump()}, ensure_ascii=False)
             await asyncio.to_thread(path.write_text, content, encoding="utf-8")
             artifact = await self._artifacts.import_source(str(path), AttachmentKind.FILE)
-        return Result("success", (ContentPart("text", visual.summary), ContentPart("artifact_ref", artifact.artifact_id)))
+        return Result("success", (ContentPart("text", f"### {visual.title}\n\n{visual.summary}"), ContentPart("artifact_ref", artifact.artifact_id)))
 
     async def query(self, key: str) -> Result | None:
         # 没有重放凭据时不重新发布；tools owner 负责保留已提交的结果。
@@ -99,6 +107,6 @@ async def apply(ctx: Context) -> None:
             raise PluginUiRpcInvalidRequest("可视化只读取消息附件，不提供 UI RPC")
 
         await child.require(UI_SLOTS).register_plugin_ui(child,
-            PluginUiDefinition(module="message_ui.js", slots=("message.attachment",)), query=query)
+            PluginUiDefinition(module="message_ui.js", slots=("message.attachment",), scripts=("frame_runtime.js",)), query=query)
 
     await ctx.inject((UI_SLOTS,), register_ui, name="visual-ui")
