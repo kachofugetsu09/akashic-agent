@@ -71,7 +71,24 @@
          import.meta.url,
        ),
      );
-@@ -33028,11 +33032,10 @@
+@@ -28952,6 +28956,16 @@
+         scale: a,
+       }));
+   }
++  // DOM 与公开 clip 使用 CSS 像素，CDP 的截图矩形使用 DIP；输出缩放仍由原路径负责。
++  const { cssVisualViewport } = await e.cdp.call(n, "Page.getLayoutMetrics");
++  const zoom = cssVisualViewport.zoom ?? 1;
++  o.clip = {
++    ...o.clip,
++    x: o.clip.x * zoom,
++    y: o.clip.y * zoom,
++    width: o.clip.width * zoom,
++    height: o.clip.height * zoom,
++  };
+   let s = await e.cdp.call(n, "Page.captureScreenshot", o, {
+     preserveDebuggerOnTimeout: !0,
+     timeoutMs: r === "device" && i == null && t.fullPage !== !0 ? a9 : s9,
+@@ -33028,11 +33042,10 @@
        return Zy.buildRevision(t, e, r);
      },
    };
@@ -87,7 +104,15 @@
  function mG(t) {
    Zy = t;
  }
-@@ -45457,6 +45460,7 @@
+@@ -33065,6 +33078,7 @@
+     "placeholder",
+     "pressed",
+     "radiogroup",
++    "readonly",
+     "relevant",
+     "required",
+     "roledescription",
+@@ -45457,6 +45471,7 @@
    return r != null ? Promise.resolve({ browser: r }) : EY(t, e, n, o);
  }
  async function TY(t) {
@@ -95,7 +120,7 @@
    try {
      return { error: null, pipes: await kY(t) };
    } catch (e) {
-@@ -45520,6 +45524,8 @@
+@@ -45520,6 +45535,8 @@
      : { ...e, capabilities: { ...e.capabilities, tab: [...n, ki.info] } };
  }
  function RY(t, e) {
@@ -104,7 +129,7 @@
    let r = gt(t, _v),
      n = "codex-browser-use-tinysky",
      o = !1;
-@@ -46743,13 +46749,11 @@
+@@ -46743,13 +46760,11 @@
      e.reverse(),
      dM.test(rf(e).function || "") &&
        (e.pop(), dM.test(rf(e).function || "") && e.pop()),
@@ -123,7 +148,7 @@
    );
  }
  function rf(t) {
-@@ -53296,15 +53300,13 @@
+@@ -53296,15 +53311,13 @@
              headers: r.headers,
              keepalive: r.keepAlive,
            };

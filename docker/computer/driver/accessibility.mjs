@@ -70,6 +70,7 @@ function renderNode(node, index, tab) {
     "focused",
     "selected",
     "required",
+    "readonly",
     "multiline",
   ]) {
     if (value(node, name) === true) flags.push(name);

@@ -33078,6 +33078,7 @@ var fG = new Set([
     "placeholder",
     "pressed",
     "radiogroup",
+    "readonly",
     "relevant",
     "required",
     "roledescription",

@@ -37,3 +37,6 @@ CDP 截图矩形使用 DIP；Browser API 的 CSS 矩形必须先按页面 zoom �
 固定动作。运行 `.venv/bin/python scripts/computer-e2e/attachments.py`，验证一次调用的 33 张
 截图直接进入下一次模型请求，文本顺序不变，32 张缓存淘汰不损坏持久附件，退出宿主后
 附件字节仍匹配。它不调用真实模型，不计入模型能力成绩；全链路证据留在输出目录。
+
+输入检查还验证原生 AX 的 readonly、disabled、settable 区别；通过页面按钮解锁后，
+同一个控件的 readonly 消失、settable 出现，真实 fill 随即成功。主浏览器与匿名 Context 均覆盖。

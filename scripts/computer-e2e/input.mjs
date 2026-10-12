@@ -14,8 +14,11 @@ const docker = (...args) => execFileSync("docker", args, { encoding: "utf8", tim
 const fixture = `<!doctype html><style>
   #drag {position:absolute;left:20px;top:20px;width:80px;height:80px;background:orange}
   #drop {position:absolute;left:200px;top:20px;width:80px;height:80px;background:lightblue}
-</style><div id="drag">Drag</div><div id="drop">Drop here</div><output id="events"></output>
+</style><div style="position:absolute;top:180px">
+<label>Editable<input value="a"></label><label>Locked<input id="locked" value="b" readonly></label>
+<label>Disabled<input value="c" disabled></label><button id="unlock">Unlock</button></div><div id="drag">Drag</div><div id="drop">Drop here</div><output id="events"></output>
 <script>
+document.querySelector('#unlock').onclick = () => { document.querySelector('#locked').readOnly = false; };
 let active=false; const events=[];
 document.addEventListener('mousedown', e => { active=e.target.id==='drag'; });
 document.addEventListener('mousemove', e => {
@@ -64,6 +67,19 @@ try {
   for (const mode of ["main", "anonymous"]) {
     await action(`var owner=${mode === "main" ? "browser" : "await agent.browsers.create()"};
       var tab=await owner.tabs.new(); await tab.goto('http://127.0.0.1:8989/');`);
+    // 原生 AX 属性穿过实际 snapshot 与渲染；状态变化后同一控件必须更新。
+    const fields = texts(await action('await tab.ax.write();')).join("\n");
+    assert.match(fields, /text field \(settable\).*Editable/);
+    assert.match(fields, /text field \(readonly\).*Locked/);
+    assert.match(fields, /text field \(disabled\).*Disabled/);
+    await action('await tab.playwright.getByRole("button", {name:"Unlock"}).click();');
+    const unlocked = texts(await action('await tab.ax.write();')).join("\n");
+    assert.match(unlocked, /text field \(settable\).*Locked/);
+    assert.doesNotMatch(unlocked, /text field \(readonly\).*Locked/);
+    await action('await tab.playwright.getByRole("textbox", {name:"Locked",exact:true}).fill("now editable");');
+    const edited = texts(await action('nodeRepl.write(await tab.playwright.getByRole("textbox", {name:"Locked",exact:true}).evaluate(el => el.value));'));
+    assert.deepEqual(edited, ["now editable"]);
+    checks.push(`${mode}: readonly, disabled and editable states; unlock then fill`);
     const stored = await action("var frames=[]; for(var i=0;i<3;i++) frames.push(await tab.screenshot({})); frames=frames;");
     assert.deepEqual(stored.content, []);
     const explicit = await action("nodeRepl.write('saved'); await nodeRepl.emitImage(frames[0]);");
