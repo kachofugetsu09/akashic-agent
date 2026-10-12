@@ -18,8 +18,6 @@ export interface PluginUiContext {
   messageId?: string;
   turnId?: string;
   block?: unknown;
-  /** 本 generation 提供的固定脚本 URL，不含动态代码或宿主桥。 */
-  scripts: Readonly<Record<string, string>>;
   /** 挂载内的事实失效提示；不改变挂载身份。 */
   onInvalidate(callback: () => void): () => void;
   /** 异步展示失败时交还宿主降级内容；不改变消息。 */
@@ -61,7 +59,6 @@ export interface PluginUiCatalogItem {
   revision: string;
   moduleUrl: string;
   stylesheetUrl?: string;
-  scripts?: Readonly<Record<string, string>>;
   navigation?: {
     label: string;
     description: string;
@@ -195,10 +192,6 @@ function parseWebPluginCatalog(value: unknown): PluginUiCatalog {
         : undefined,
       navigation,
       slots,
-      scripts: Object.fromEntries(Object.entries(requireRecord(item.scripts ?? {}, `plugins[${index}].scripts`)).map(([name, hash]) => {
-        const query = new URLSearchParams({ plugin_id: id, plugin_revision: pluginRevision, name });
-        return [name, `/api/chat/plugin-ui/script/${requireDigest(hash, name)}.js?${query}`];
-      })),
     } satisfies PluginUiCatalogItem;
   });
   if (new Set(plugins.map((plugin) => plugin.id)).size !== plugins.length) {
@@ -529,7 +522,7 @@ function MountedPlugin({
   pluginRevision: string;
   renderer: PluginUiRenderer;
   prefetch?: boolean;
-  context: Omit<PluginUiContext, "query" | "capabilities" | "onInvalidate" | "reportError" | "scripts">;
+  context: Omit<PluginUiContext, "query" | "capabilities" | "onInvalidate" | "reportError">;
   refreshToken?: string | number;
 }) {
   const hostRef = React.useRef<HTMLDivElement>(null);
@@ -564,7 +557,6 @@ function MountedPlugin({
     try {
       const queryContext: PluginUiContext = {
         slot, sessionId, messageId, turnId, block: stableBlock,
-        scripts: catalog.plugins.find(plugin => plugin.id === pluginId && plugin.revision === pluginRevision)?.scripts ?? {},
         onInvalidate: (callback) => {
           invalidators.add(callback);
           return () => { invalidators.delete(callback); };
