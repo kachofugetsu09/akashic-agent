@@ -148,7 +148,7 @@ async def run(directory: Path, executable_path: str | None) -> dict[str, object]
         (directory / "messages.json").write_text(json.dumps(page, ensure_ascii=False))
         from visuals.examples import SCALING, SCATTER, CANVAS, INTRO, EXPLANATION
         async with root.context.open_service(ServiceKey("scenario.visual.call")) as call:
-            showcase = await call("showcase", [(INTRO, {"title": "同样的参数量，训练数据越多，Loss 越低", "summary": EXPLANATION, "html": SCALING}),
+            showcase = await call("showcase", [(INTRO, {"title": "同样的参数量，训练数据越多，Loss 越低", "summary": "训练数据越多，同样参数量下 Loss 越低；固定数据量时，模型再大也会遇到平台。", "html": SCALING}),
                 (EXPLANATION + "\n\n原生 SVG 也能自由组合散点、回归线和误差带。", {"title": "散点与回归", "summary": "散点与回归线展示整体趋势及波动。", "html": SCATTER}),
                 ("并非所有解释都是统计图。下面直接用 Canvas 计算梯度下降。", {"title": "梯度下降", "summary": "每一步沿梯度下降，损失逐步降低。", "html": CANVAS})])
         assert showcase.outcome == "success", showcase
