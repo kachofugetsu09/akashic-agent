@@ -11,7 +11,7 @@ from typing import Any, cast
 
 from infra.persistence.json_store import atomic_write_text
 
-from .documents import PROFILE, PROFILE_TEMPLATE, SCOPE_FILE, SELF, TOPICS, Workspace, parse_ops, split_frontmatter
+from .documents import MEMORY, MEMORY_TEMPLATE, SCOPE_FILE, SELF, TOPICS, Workspace, parse_ops, split_frontmatter
 
 logger = logging.getLogger(__name__)
 _APPLY_ATTEMPTS = 3
@@ -47,20 +47,18 @@ class MarkdownProfileStore:
         self.receipts_path = receipts_path
         (root / TOPICS).mkdir(parents=True, exist_ok=True)
         # 缺失或只有空白的画像写入合法标题结构；有内容的手写文件保持原样。
-        if not (root / PROFILE).exists() or not (root / PROFILE).read_text(encoding="utf-8").strip():
-            atomic_write_text(root / PROFILE, PROFILE_TEMPLATE, domain="markdown_memory")
+        if not (root / MEMORY).exists() or not (root / MEMORY).read_text(encoding="utf-8").strip():
+            atomic_write_text(root / MEMORY, MEMORY_TEMPLATE, domain="markdown_memory")
         if not (root / SELF).exists():
             atomic_write_text(root / SELF, DEFAULT_SELF_MD, domain="markdown_memory")
         self._init_schema()
 
-    # 旧布局与未完成的旧版 draft 须先人工迁移，不在新版本里兼容。
+    # 旧 PENDING 队列与未完成的旧版 draft 须先人工处理，不在新版本里兼容。
     def check_layout(self) -> None:
-        if (self.root / "MEMORY.md").exists():
-            raise RuntimeError("检测到旧布局 memory/MEMORY.md：请手动拆分为 PROFILE.md 与 topics/ 后移走原文件")
         for name in ("PENDING.md", "PENDING.snapshot.md"):
             path = self.root / name
             if path.exists() and path.read_text(encoding="utf-8").strip():
-                raise RuntimeError(f"memory/{name} 仍有旧队列内容：请手动并入 PROFILE.md 或 topics/")
+                raise RuntimeError(f"memory/{name} 仍有旧队列内容：请手动并入 MEMORY.md 或 topics/")
         with closing(sqlite3.connect(str(self.receipts_path), timeout=30.0)) as conn:
             refs = [row[0] for row in conn.execute(
                 "SELECT DISTINCT source_ref FROM consolidation_writes WHERE kind IN (?, ?)",
@@ -83,7 +81,7 @@ class MarkdownProfileStore:
     # 一次提炼可见的文件：两份档案、全局主题与当前 scope 文件夹。
     def workspace(self, scope: str | None) -> Workspace:
         folders = self.folders()
-        names = [PROFILE, SELF, *(f"{TOPICS}/{path.name}" for path in sorted((self.root / TOPICS).glob("*.md")))]
+        names = [MEMORY, SELF, *(f"{TOPICS}/{path.name}" for path in sorted((self.root / TOPICS).glob("*.md")))]
         folder = next((name for name, key in folders.items() if key == scope), None)
         if folder is not None:
             names += [f"{TOPICS}/{folder}/{path.name}" for path in sorted((self.root / TOPICS / folder).glob("*.md"))]

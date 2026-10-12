@@ -40,21 +40,21 @@ async def check(workspace: Path) -> None:
         assert persona.state is FiberState.ACTIVE and profiles.state is FiberState.ACTIVE
         observer = await root.mount(inspection.apply, name="inspection", runtime=runtime("inspection"))
         documents = root.context.require(DOCUMENTS)
-        assert [row["id"] for row in documents.list_documents()] == ["profile", "self", "veda"]
-        path = workspace / "memory/PROFILE.md"
-        path.rename(workspace / "original-profile.md")
-        assert documents.get_document("profile")["unavailable"]["code"] == "document_unavailable"
+        assert [row["id"] for row in documents.list_documents()] == ["memory", "self", "veda"]
+        path = workspace / "memory/MEMORY.md"
+        path.rename(workspace / "original-memory.md")
+        assert documents.get_document("memory")["unavailable"]["code"] == "document_unavailable"
         assert documents.get_document("veda")["markdown"]
-        path = workspace / "memory/PROFILE.md"
+        path = workspace / "memory/MEMORY.md"
         path.write_text("owner text\n")
-        assert documents.get_document("profile")["markdown"] == "owner text\n"
+        assert documents.get_document("memory")["markdown"] == "owner text\n"
         path.write_bytes(b"\xff")
-        assert documents.get_document("profile")["unavailable"]["code"] == "document_invalid_utf8"
+        assert documents.get_document("memory")["unavailable"]["code"] == "document_invalid_utf8"
         path.write_bytes(b"x" * (192 * 1024 + 1))
-        assert documents.get_document("profile")["unavailable"]["code"] == "document_too_large"
+        assert documents.get_document("memory")["unavailable"]["code"] == "document_too_large"
         before = path.read_bytes()
         await profiles.dispose()
-        assert documents.get_document("profile") is None and path.read_bytes() == before
+        assert documents.get_document("memory") is None and path.read_bytes() == before
         assert [row["id"] for row in documents.list_documents()] == ["veda"]
 
         # 新增异名 owner 不修改诊断目录源码；每次读取都经过其入口。

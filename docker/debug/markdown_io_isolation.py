@@ -7,7 +7,7 @@ import threading
 from unittest.mock import patch
 
 from plugins.markdown_memory import store as store_module
-from plugins.markdown_memory.documents import PROFILE_TEMPLATE
+from plugins.markdown_memory.documents import MEMORY_TEMPLATE
 from plugins.markdown_memory.plugin import profile_lock, start_store
 from plugins.markdown_memory.store import MarkdownProfileStore
 
@@ -17,7 +17,7 @@ async def check(root: Path) -> None:
     store = MarkdownProfileStore(root / "memory", root / "writes.db")
     before_self = store.read("SELF.md")
     draft: dict[str, object] = {"version": 3, "scope": None, "ops": [
-        {"op": "add", "doc": "PROFILE.md", "section": "## 用户偏好", "line": "- new memory", "message_ids": ["m"]},
+        {"op": "add", "doc": "MEMORY.md", "section": "## 用户偏好", "line": "- new memory", "message_ids": ["m"]},
         {"op": "add", "doc": "SELF.md", "section": "## 人格与形象", "line": "- new self", "message_ids": ["m"]},
     ]}
     store.write_draft("ref", draft, session_key="session", generation=1)
@@ -29,14 +29,14 @@ async def check(root: Path) -> None:
 
     def blocked(path, text, **kwargs):
         original(path, text, **kwargs)
-        if path.name == "PROFILE.md":
+        if path.name == "MEMORY.md":
             loop.call_soon_threadsafe(entered.set)
             if not release.wait(5):
                 raise RuntimeError("档案恢复阻塞了事件循环")
 
     async def read():
         async with profile_lock(lock):
-            return store.read("PROFILE.md"), store.read("SELF.md")
+            return store.read("MEMORY.md"), store.read("SELF.md")
 
     with patch.object(store_module, "atomic_write_text", blocked):
         writer = asyncio.create_task(start_store(store, lock))
@@ -61,10 +61,10 @@ async def check(root: Path) -> None:
             assert "## 用户偏好\n- new memory" in profile and "- new self" in self_profile
             assert store.is_applied("ref")
             backup = store._read_receipt("ref", "markdown_before_v1")
-            assert backup == {"PROFILE.md": PROFILE_TEMPLATE, "SELF.md": before_self}
+            assert backup == {"MEMORY.md": MEMORY_TEMPLATE, "SELF.md": before_self}
             # 重放已应用操作保持幂等，文件不再变化。
             store.apply("ref")
-            assert (store.read("PROFILE.md"), store.read("SELF.md")) == (profile, self_profile)
+            assert (store.read("MEMORY.md"), store.read("SELF.md")) == (profile, self_profile)
         finally:
             release.set()
             await asyncio.gather(writer, *(() if reader is None else (reader,)), return_exceptions=True)

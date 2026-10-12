@@ -1551,7 +1551,7 @@ def _inside_memory_context(report_dir: Path) -> int:
             if isinstance(part, dict) and part.get("kind") == "text"
         ] if isinstance(final_output_body, dict) else []
 
-        memory_path = Path("/sandbox/workspace/memory/PROFILE.md")
+        memory_path = Path("/sandbox/workspace/memory/MEMORY.md")
         self_path = Path("/sandbox/workspace/memory/SELF.md")
         receipt_payloads: dict[str, dict[str, object]] = {}
         receipt_inventory: list[dict[str, object]] = []

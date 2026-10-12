@@ -34,7 +34,7 @@ async def run(folder: Path) -> None:
     topic = memory / "topics/editor.md"
     original = "---\ndescription: 编辑器约定\n---\n- 使用 helix\n- 用 helix 编辑代码\n"
     topic.write_text(original)
-    protected = {doc: store.read(doc) for doc in ("PROFILE.md", "SELF.md")}
+    protected = {doc: store.read(doc) for doc in ("MEMORY.md", "SELF.md")}
     for index in range(5):
         reference = f"seed-{index}"
         store.write_draft(reference, {"version": 3, "scope": None, "ops": []},

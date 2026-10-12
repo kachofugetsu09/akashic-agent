@@ -1,4 +1,4 @@
-"""Markdown 记忆的文件模型：SELF、PROFILE、topics/ 与按 scope 归属的文件夹，以及提炼操作的校验和叠加。"""
+"""Markdown 记忆的文件模型：SELF、MEMORY、topics/ 与按 scope 归属的文件夹，以及提炼操作的校验和叠加。"""
 from __future__ import annotations
 
 from collections import Counter
@@ -8,15 +8,15 @@ import math
 import re
 from typing import Literal, cast, get_args
 
-PROFILE = "PROFILE.md"
+MEMORY = "MEMORY.md"
 SELF = "SELF.md"
 TOPICS = "topics"
 SCOPE_FILE = "_scope.md"
-PROFILE_HEADINGS = ("# 用户画像", "## 用户事实", "## 用户偏好", "## 用户明确要求长期记住的关键内容")
+MEMORY_HEADINGS = ("# 用户长期记忆", "## 用户事实", "## 用户偏好", "## 用户明确要求长期记住的关键内容")
 SELF_HEADINGS = ("# Akashic 的自我认知", "## 人格与形象", "## 我对当前用户的理解", "## 我们关系的定义")
 # 这些章节记录用户本人或关系判断，只能以用户原话为证据。
-USER_SECTIONS: dict[str, frozenset[str]] = {PROFILE: frozenset(PROFILE_HEADINGS[1:]), SELF: frozenset(SELF_HEADINGS[2:])}
-USER_HEADINGS: dict[str, tuple[str, ...]] = {PROFILE: PROFILE_HEADINGS[1:], SELF: SELF_HEADINGS[1:]}
+USER_SECTIONS: dict[str, frozenset[str]] = {MEMORY: frozenset(MEMORY_HEADINGS[1:]), SELF: frozenset(SELF_HEADINGS[2:])}
+USER_HEADINGS: dict[str, tuple[str, ...]] = {MEMORY: MEMORY_HEADINGS[1:], SELF: SELF_HEADINGS[1:]}
 MAX_LINE_CHARS = 120
 MAX_DESCRIPTION_CHARS = 80
 _FOLDER = re.compile(r"[^\s/\\._][^/\\]{0,39}")
@@ -128,7 +128,7 @@ def scope_text(scope: str, description: str) -> str:
     return f"---\nscope: {scope}\ndescription: {description}\n---\n"
 
 
-PROFILE_TEMPLATE = "\n\n".join(PROFILE_HEADINGS) + "\n"
+MEMORY_TEMPLATE = "\n\n".join(MEMORY_HEADINGS) + "\n"
 
 
 def topic_text(description: str, line: str) -> str:
@@ -138,7 +138,7 @@ def topic_text(description: str, line: str) -> str:
 # 当前会话可写的路径：两份档案、全局主题和本 scope 文件夹内的主题。
 def writable(doc: str, folder: str | None) -> bool:
     parts = doc.split("/")
-    if doc in {PROFILE, SELF}:
+    if doc in {MEMORY, SELF}:
         return True
     if parts[0] != TOPICS or not _TOPIC_FILE.fullmatch(parts[-1]):
         return False
@@ -205,8 +205,8 @@ class Workspace:
             if strict:
                 raise InvalidDraft(f"重复已有条目: {op.line}")
             return
-        if doc == PROFILE and not text.strip():
-            text = PROFILE_TEMPLATE
+        if doc == MEMORY and not text.strip():
+            text = MEMORY_TEMPLATE
         if strict and doc in USER_SECTIONS and op.section not in USER_HEADINGS[doc]:
             raise InvalidDraft(f"{doc} 的 section 必须是 {list(USER_HEADINGS[doc])} 之一")
         if doc in USER_SECTIONS:
@@ -284,21 +284,22 @@ def _section_sizes(text: str) -> dict[str, int]:
 
 # 只限制本次增加的用量；既有手写内容超额时仍允许减少。
 def check_budgets(before: Mapping[str, str], after: Mapping[str, str],
-                  *, profile_budget: int, self_budgets: Mapping[str, int]) -> None:
+                  *, memory_budget: int, self_budgets: Mapping[str, int]) -> None:
     for doc, text in after.items():
         old = before.get(doc, "")
         if text == old:
             continue
         if doc in USER_SECTIONS:
-            _check_budget(doc, old, text, profile_budget, self_budgets)
+            _check_budget(doc, old, text, memory_budget, self_budgets)
 
 
-def _check_budget(doc: str, old: str, text: str, profile_budget: int, self_budgets: Mapping[str, int]) -> None:
+def _check_budget(doc: str, old: str, text: str, memory_budget: int, self_budgets: Mapping[str, int]) -> None:
     before, after = _section_sizes(old), _section_sizes(text)
-    if doc == PROFILE:
-        total = sum(after.values())
-        if total > profile_budget and total > sum(before.values()):
-            raise InvalidDraft(f"PROFILE.md 超出 {profile_budget} 字配额：用 supersede 合并旧条目，或写入 topics/")
+    if doc == MEMORY:
+        # 只统计三个用户章节；手写的其他章节（如旧的助手操作上下文）不占配额。
+        total = sum(after.get(heading, 0) for heading in MEMORY_HEADINGS[1:])
+        if total > memory_budget and total > sum(before.get(heading, 0) for heading in MEMORY_HEADINGS[1:]):
+            raise InvalidDraft(f"MEMORY.md 超出 {memory_budget} 字配额：用 supersede 合并旧条目，或写入 topics/")
         return
     for heading, budget in self_budgets.items():
         if after.get(heading, 0) > budget and after.get(heading, 0) > before.get(heading, 0):
@@ -312,7 +313,7 @@ PINNED_CHARS = 4000
 def render_memory(root: str, workspace: Workspace, others: Mapping[str, str]) -> str:
     folder = workspace.folder()
     parts = [_usage(root, workspace.scope, folder)]
-    for title, doc in (("Akashic 自我认知", SELF), ("用户画像", PROFILE)):
+    for title, doc in (("Akashic 自我认知", SELF), ("用户长期记忆", MEMORY)):
         if text := workspace.texts.get(doc, "").strip():
             parts.append(f"## {title}（{doc}）\n\n{text}")
     if folder is not None:
@@ -366,7 +367,7 @@ def _usage(root: str, scope: str | None, folder: str | None) -> str:
 读：这里只有档案、pinned 主题和索引。需要某个主题时用 read_file 读完整文件；找不到或要看其他项目时，用 shell 在记忆目录执行 rg。记忆可能过时：涉及路径、版本、配置和当前状态的条目，先对照实际文件或命令核实再依赖。
 
 写：直接用 write_file / edit_file 编辑文件。用户要求记住时立即写；要求忘记时删除对应条目。后台也会在上下文压缩后自动提炼，不必为了保险重复写。
-- 用户本人的身份、偏好、明确要求 → PROFILE.md 对应标题下。
+- 用户本人的身份、偏好、明确要求 → MEMORY.md 对应标题下。
 - 用户对你工作方式的纠正或确认 → 跨项目适用的写全局主题，只对本项目适用的写项目文件夹；写明原因。
 - 项目的约定、决策、背景与外部资源位置 → 项目文件夹的主题文件。{where}
 - 已有的记忆文件只用 edit_file 修改或追加，write_file 只用来新建文件，避免整文件覆盖掉后台刚写入的条目。
