@@ -1,6 +1,6 @@
 import { gfm, gfmHtml } from "micromark-extension-gfm";
 import { micromark } from "micromark";
-import { isConceptLabel, isNumericColumn, isPlainTextLanguage } from "./markdown-reading";
+import { isConceptLabel, isNumericColumn, isPlainTextLanguage, stripConceptSeparator } from "./markdown-reading";
 
 /** Render settled GFM while keeping raw HTML and unsafe protocols inert. */
 export function renderStaticMarkdown(markdown: string) {
@@ -50,6 +50,13 @@ export function renderStaticMarkdown(markdown: string) {
       const description = document.createElement("div");
       description.className = "reading-concept-description";
       description.append(...item.childNodes);
+      // 松散列表的说明包在首个 <p> 里；冒号去掉后若段落已空，就让嵌套内容直接接上。
+      let lead = description.firstChild;
+      while (lead?.nodeType === Node.TEXT_NODE && !lead.textContent?.trim()) lead = lead.nextSibling;
+      const paragraph = lead instanceof HTMLParagraphElement ? lead : null;
+      const text = paragraph ? paragraph.firstChild : lead;
+      if (text?.nodeType === Node.TEXT_NODE) text.textContent = stripConceptSeparator(text.textContent ?? "");
+      if (paragraph && !paragraph.textContent?.trim() && !paragraph.children.length) paragraph.remove();
       item.append(labelColumn, description);
     });
   }

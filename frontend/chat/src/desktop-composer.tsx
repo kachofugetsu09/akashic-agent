@@ -1,5 +1,5 @@
 import { Paperclip } from "lucide-react";
-import { memo, useCallback, useEffect, useImperativeHandle, useRef, useState, type ChangeEvent, type DragEvent, type Ref } from "react";
+import { memo, useCallback, useEffect, useImperativeHandle, useRef, useState, type ChangeEvent, type DragEvent, type FocusEvent, type Ref } from "react";
 import {
   Attachment, AttachmentHoverCard, AttachmentHoverCardContent, AttachmentHoverCardTrigger,
   AttachmentPreview, AttachmentRemove, Attachments, getAttachmentLabel, getMediaCategory,
@@ -120,6 +120,15 @@ export const DesktopComposer = memo(function DesktopComposer({
     }
   }, [canSend, modelProblem, expanded, onSend, setInput, setDraft, draftKey]);
   const shellExpanded = expanded || hasAttachments || Boolean(replyTarget);
+  // 窄屏阅读时输入卡只保留一行。用户点进卡片才展开（程序 autofocus 不算）；
+  // 焦点离开整张卡（含它弹出的模型菜单）才收回。
+  const [engaged, setEngaged] = useState(false);
+  const onComposerBlur = (event: FocusEvent<HTMLFormElement>) => {
+    const next = event.relatedTarget;
+    if (next instanceof Element && (event.currentTarget.contains(next) || next.closest("[data-radix-popper-content-wrapper]"))) return;
+    setEngaged(false);
+  };
+  const resting = !engaged && !shellExpanded && !input.trim();
   // 文件拖拽强调态：dragenter/dragleave 用深度计数去抖，子元素间移动不成对出入时也不会闪烁。
   const dragDepth = useRef(0);
   const [fileDragActive, setFileDragActive] = useState(false);
@@ -151,10 +160,13 @@ export const DesktopComposer = memo(function DesktopComposer({
     <>
     {draftStorageError ? <p role="status">浏览器无法保存本页草稿。刷新前请复制已输入的文字。</p> : null}
     <PromptInput
-      className={`composer ${shellExpanded ? "is-expanded" : "is-compact"} ${input.trim() || replyTarget ? "has-text" : "empty"}${fileDragActive ? " is-drop-target" : ""}`}
+      className={`composer ${shellExpanded ? "is-expanded" : "is-compact"} ${input.trim() || replyTarget ? "has-text" : "empty"}${resting ? " is-resting" : ""}${fileDragActive ? " is-drop-target" : ""}`}
       multiple
       data-draft-version={draftVersion}
       onSubmit={(message) => submit(message.text, message.files)}
+      onPointerDown={(event) => { if (!(event.target instanceof Element && event.target.closest("button"))) setEngaged(true); }}
+      onKeyDown={() => setEngaged(true)}
+      onBlur={onComposerBlur}
       onDragEnter={onDragEnter}
       onDragOver={onDragOver}
       onDragLeave={onDragLeave}

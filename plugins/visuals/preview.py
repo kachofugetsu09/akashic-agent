@@ -2,21 +2,27 @@
 from __future__ import annotations
 
 import asyncio
+import hashlib
+import html as html_escape
 from pathlib import Path
 
-from playwright.async_api import Browser, BrowserContext, Error, Playwright, async_playwright
+from playwright.async_api import Browser, BrowserContext, Error, Playwright, Route, async_playwright
 
 
 _PAGE_PROBLEM = """() => {
     if (!document.body.innerText.trim() && !document.body.querySelector('svg,canvas')) return '文档没有可见内容';
     if (document.documentElement.scrollWidth > innerWidth + 1) return '内容超出可用宽度';
-    if (/\\b(?:NaN|Infinity)\\b/.test(document.body.innerText)) return '出现非有限数值';
+    if ([...document.querySelectorAll('output,[data-numeric]')].some(node => /\\b(?:NaN|Infinity)\\b/.test(node.textContent))) return '数值输出出现非有限数值';
     return null;
 }"""
 
 
 class PreviewFailed(ValueError):
     """调用者可修正文档或浏览器配置后重试。"""
+
+
+class PreviewUnavailable(RuntimeError):
+    """操作者需要修复浏览器环境，修改生成内容无法恢复。"""
 
 
 class Preview:
@@ -26,7 +32,13 @@ class Preview:
         self._browser: Browser | None = None
         self._lock = asyncio.Lock()
         self._slots = asyncio.Semaphore(2)
-        self._template = Path(__file__).with_name("frame.html").read_text()
+        root = Path(__file__).parent
+        self._runtime = (root / "frame_runtime.js").read_text()
+        self._runtime_url = f"https://akashic.invalid/{hashlib.sha256(self._runtime.encode()).hexdigest()}.js"
+        self._template = ((root / "frame.html").read_text()
+                          .replace("/*visual-theme*/", (root / "preview-theme.css").read_text())
+                          .replace("__VISUAL_RUNTIME_CSP__", self._runtime_url)
+                          .replace("__VISUAL_RUNTIME_URL__", html_escape.escape(self._runtime_url, quote=True)))
 
     async def close(self) -> None:
         """作用域收束后关闭所有预检资源。"""
@@ -50,7 +62,10 @@ class Preview:
                 self._browser = await self._playwright.chromium.launch(
                     executable_path=self._executable_path, chromium_sandbox=True, timeout=10_000,
                 )
-            except (Error, asyncio.CancelledError):
+            except Error as error:
+                await self.close()
+                raise PreviewUnavailable(f"浏览器环境不可用，需要操作者修复；请勿通过改写 HTML 重试：{error}") from error
+            except asyncio.CancelledError:
                 await self.close()
                 raise
             return self._browser
@@ -83,7 +98,12 @@ class Preview:
         """检查真实页面；外层始终等待它随 context 关闭而结束。"""
         errors: list[str] = []
         # 2. 服务端拒绝全部网络，预检和客户端使用同一文档外壳。
-        await context.route("**/*", lambda route: route.abort())
+        async def route_request(route: Route) -> None:
+            if route.request.url == self._runtime_url:
+                await route.fulfill(body=self._runtime, content_type="text/javascript")
+            else:
+                await route.abort()
+        await context.route("**/*", route_request)
         page = await context.new_page()
         page.on("pageerror", lambda error: errors.append(str(error)[:300]) if len(errors) < 8 else None)
         page.on("console", lambda message: errors.append(message.text[:300])

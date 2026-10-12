@@ -497,10 +497,11 @@ Core 只保存和比较 scope，不解释维度含义。每个维度必须有唯
 ### MEM-001 档案重写同时验证结构和事实保全
 
 替换 MEMORY 或 SELF 要求模型输出 Markdown 结构合法、必需 section 完整，且受保护事实没有无理由消失。结构合法不代表语义完整；删除 pinned fact 必须有显式 tombstone、来源和理由。
+常驻档案超额时，允许按 MEM-014 压缩并舍弃低价值条目；此授权不扩展到 topics 中的 pinned 主题或会话正文。
 
 ### MEM-002 Markdown 记忆按 checkpoint 直接且独立提交
 
-Included compaction checkpoint 是 Markdown 记忆唯一的自动写入触发。MEMORY 与 SELF 分别按
+Included compaction checkpoint 是 Markdown 新事实的自动提炼来源；既有条目的去重整理和 MEM-014 超额剪枝可独立触发。MEMORY 与 SELF 分别按
 `source_ref + kind` 幂等提交；一份失败不得伪装另一份成功，也不得回滚 Session ledger。
 每次替换前先保留恢复点，并以校验、fsync 和原子 replace 发布。旧非空 PENDING 只允许在
 带备份和 receipt 的一次性迁移中合并，在线 runtime 不再创建或消费 PENDING。
@@ -574,6 +575,13 @@ Markdown 新草稿逐条引用本次可学习的真实 Message ID。用户事实
 default 图沿用 `memory/akasha.db`，不迁移已有数据；独立图位于 `memory/akasha-graphs/<规范键摘要>/`，附带记录规范键的 `manifest.json`，embedding 仍按 Message 共享。策略只能在该取值还没有任何 Session 时一次写入；已有 Session 后改变策略需要另行批准的显式重建协议，普通 UI 不提供改写。显式重建逐图执行，每张图各自按 MEM-009 留恢复点并原子替换。
 
 单张图需要重建或 embedding 空间不匹配时，必须明确报告该图身份和原因，停止该图的学习与召回，其他图继续运行。访问故障图不得回退到全局图；健康图成功不得清除故障图状态。公共 embedding 依赖不可用时，按实际依赖范围报告不可用。未预期异常继续传播，不作为可跳过的图故障。
+
+### MEM-014 常驻 Markdown 档案超额自动剪枝
+
+MEMORY 的三个用户章节及 SELF 的受管理章节超出配置配额时，Markdown owner 必须让模型按长期价值压缩、合并或舍弃较低价值条目，并恢复到配额内；既有文件超额与本批提炼将导致超额都适用。
+剪枝只解释现有条目，不新增事实，不改标题、其他手写章节、topics、Session 或 Akasha 数据。模型不能凭文件顺序判定矛盾条目的新旧；不确定时优先保留重要约束。
+提交使用已验证操作、不可覆盖的写前副本和幂等 receipt，明确区分成功、冲突与失败。非法或不完整结果不写文件；可重试模型或文件故障保留进度并稍后重试。定期整理的时间与数量门槛不得阻止容量自愈。
+本条允许常驻 Markdown 正文物理减少；来源消息和写前副本不因此减少。决定与代价见 [0116](decisions/0116-markdown-budget-pruning.md)。
 
 ## 9. 运行时、并发和出站
 

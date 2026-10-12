@@ -1,4 +1,4 @@
-import { access, readdir, copyFile, readFile } from "node:fs/promises";
+import { access, readdir, copyFile, readFile, writeFile } from "node:fs/promises";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -111,3 +111,27 @@ await bundle({
   outfile: resolve(pluginsRoot, "visuals/message_ui.js"),
 });
 await copyFile(resolve(repoRoot, "frontend/plugins/visuals/src/frame.html"), resolve(pluginsRoot, "visuals/frame.html"));
+
+const runtimeBuild = await bundle({
+  metafile: true,
+  entryPoints: [resolve(repoRoot, "frontend/plugins/visuals/src/frame-runtime.ts")],
+  bundle: true, format: "iife", target: "es2022", minify: true,
+  outfile: resolve(pluginsRoot, "visuals/frame_runtime.js"),
+});
+const themeBuild = await bundle({ entryPoints: [resolve(repoRoot, "frontend/theme/src/theme-runtime.ts")],
+  bundle: true, format: "esm", platform: "node", write: false });
+const themeModule = await import(`data:text/javascript;base64,${Buffer.from(themeBuild.outputFiles[0].contents).toString("base64")}`);
+await writeFile(resolve(pluginsRoot, "visuals/preview-theme.css"), themeModule.themeCss());
+
+// 固定 runtime 随插件分发；按实际打包输入收集并合并相同的第三方许可文本。
+const licenses = new Map();
+const packages = new Set(Object.keys(runtimeBuild.metafile.inputs).flatMap(path => {
+  const match = path.match(/node_modules\/((?:@[^/]+\/)?[^/]+)\//);
+  return match ? [match[1]] : [];
+}));
+for (const name of [...packages].sort()) {
+  const text = (await readFile(resolve(repoRoot, "node_modules", name, "LICENSE"), "utf8")).trim();
+  licenses.set(text, [...(licenses.get(text) ?? []), name]);
+}
+await writeFile(resolve(pluginsRoot, "visuals/THIRD_PARTY_LICENSES.txt"),
+  [...licenses].map(([text, names]) => `${names.join(", ")}\n\n${text}\n`).join("\n"));

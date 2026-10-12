@@ -162,7 +162,8 @@ function rgbChannels(value: string): string {
   return `${Number.parseInt(value.slice(1, 3), 16)} ${Number.parseInt(value.slice(3, 5), 16)} ${Number.parseInt(value.slice(5, 7), 16)}`;
 }
 
-function themeCss(): string {
+/** 浏览器与离线预检使用同一份主题变量。 */
+export function themeCss(): string {
   return CATALOG.themes.map((theme) => {
     const declarations = MATERIAL_COLOR_ROLES.flatMap((role) => colorDeclarations("md-sys-color", role, theme.material[role]));
     declarations.push(...CHART_COLOR_ROLES.map((role) => `--ak-chart-${role}:${theme.chart[role]}`));

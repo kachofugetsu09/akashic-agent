@@ -12,7 +12,7 @@ from uuid import uuid4
 from agent.plugin_composition import Context, CompositionError, Effect, FiberState
 from plugins.ui.contract import (
     UI_SLOTS, PLUGIN_UI_SLOTS, PluginUiAsset, PluginUiBinding, PluginUiDefinition,
-    PluginUiDescriptor, PluginUiNavigation, PluginUiQueryHandler,
+    PluginUiDescriptor, PluginUiNavigation, PluginUiQueryHandler, PluginUiScript,
 )
 
 
@@ -86,6 +86,7 @@ class PluginUiSlots:
                 None if navigation is None else navigation.description
             ),
             slots=tuple(definition.slots),
+            scripts=definition.scripts,
         )
         binding = PluginUiBinding(
             descriptor=PluginUiDescriptor(
@@ -148,6 +149,7 @@ def resolve_plugin_ui_asset(
     navigation_label: str | None,
     navigation_description: str | None,
     slots: tuple[str, ...],
+    scripts: tuple[str, ...] = (),
 ) -> PluginUiAsset:
     """Validate and freeze plugin-owned plugin UI static assets."""
 
@@ -173,12 +175,28 @@ def resolve_plugin_ui_asset(
             kind="stylesheet",
         )
     )
+    # 脚本使用独立缓存入口，不挤占 UI 入口的 240 KiB 预算。
+    if not isinstance(scripts, tuple) or any(
+        not isinstance(name, str) or not name or name != name.strip() or Path(name).is_absolute()
+        for name in scripts
+    ) or len(scripts) != len(set(scripts)):
+        raise RuntimeError("插件 UI scripts 必须为不重复的路径 tuple")
+    frozen_scripts: list[PluginUiScript] = []
+    total_bytes = 0
+    for name in scripts:
+        path = _resolve_asset_path(plugin_root, name, suffix=".js", kind="script")
+        total_bytes += path.stat().st_size
+        if total_bytes > 4 * 1024 * 1024:
+            raise RuntimeError("插件 UI 固定脚本超过 4 MiB 预算")
+        content = path.read_text(encoding="utf-8")
+        frozen_scripts.append(PluginUiScript(name, content, hashlib.sha256(content.encode()).hexdigest()))
     return _build_plugin_ui_asset(
         module_path,
         stylesheet_path,
         navigation_label=navigation_label,
         navigation_description=navigation_description,
         slots=slots,
+        scripts=tuple(frozen_scripts),
     )
 
 
@@ -230,6 +248,7 @@ def _build_plugin_ui_asset(
     navigation_label: str | None,
     navigation_description: str | None,
     slots: tuple[str, ...],
+    scripts: tuple[PluginUiScript, ...],
 ) -> PluginUiAsset:
     """Read validated assets and attach content hashes and byte sizes."""
 
@@ -261,6 +280,7 @@ def _build_plugin_ui_asset(
             else navigation_description.strip()
         ),
         slots=slots,
+        scripts=scripts,
     )
 
 
