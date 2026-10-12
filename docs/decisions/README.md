@@ -149,5 +149,5 @@
 
 | [0114](0114-shared-session-read-marks.md) | proposed / implemented for review | 会话已读水位改为服务端共享，手机通知随已读撤掉 | WEBUI、SES |
 
-| [0116](0116-visuals-are-message-attachments.md) | proposed / implemented for review | 可视化是普通消息附件，工具与可选展示分别拥有生命周期 | WEBUI、SES、PLG |
 | [0116](0116-markdown-budget-pruning.md) | accepted | 常驻 Markdown 档案超额后由模型压缩并舍弃低价值条目 | MEM-001～MEM-004、MEM-012、MEM-014 |
+| [0117](0117-visuals-are-message-attachments.md) | proposed / implemented for review | 可视化是普通消息附件，工具与可选展示分别拥有生命周期 | WEBUI、SES、PLG |

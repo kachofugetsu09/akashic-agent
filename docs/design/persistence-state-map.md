@@ -237,7 +237,7 @@ workspace 仍不是完整运行环境的全部。模型 Provider credential 已�
 
 Visuals 的 `akashic.visual.v1` 是下表既有不可变附件的一种文件格式，不增加独立存储 owner。
 工具只导入新文件；禁用、卸载或刷新只释放预检资源和临时页面状态，不减少附件、引用或消息。
-恢复核对原文件 hash/size，沿既有 workspace 备份；见 [0116](../decisions/0116-visuals-are-message-attachments.md)。
+恢复核对原文件 hash/size，沿既有 workspace 备份；见 [0117](../decisions/0117-visuals-are-message-attachments.md)。
 
 | 对象 | 正常增加 | 允许的原位或逻辑变化 | 允许物理减少的条件 |
 |---|---|---|---|

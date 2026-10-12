@@ -4,34 +4,45 @@ import { createRoot } from "react-dom/client";
 import { StickToBottom } from "use-stick-to-bottom";
 import { DesktopTimelineMessages } from "../../frontend/chat/src/desktop-conversation";
 import { loadWebPluginCatalog, receivePluginUiCatalog } from "../../frontend/chat/src/plugin-ui-runtime";
-import { readTimelineMessage, type ReplyActivity } from "../../frontend/chat/src/message-timeline";
+import { ReplyActivityView } from "../../frontend/chat/src/message-view";
+import { readTimelineMessage, timelineReplyGroups, timelineToolResults, type ReplyActivity } from "../../frontend/chat/src/message-timeline";
 import { cycleTheme, initializeTheme } from "../../frontend/theme/src/theme-runtime";
 import { TooltipProvider } from "../../frontend/chat/src/components/ui/tooltip";
 import "../../frontend/chat/src/styles.css";
 import "../../frontend/chat/src/message-view.css";
 
 initializeTheme();
-const messages = (await (await fetch("/messages.json")).json()).slice(0, 4).map(readTimelineMessage);
+const basic = new URL(location.href).searchParams.has("basic");
+const loaded = (await (await fetch(basic ? "/messages.json" : "/showcase-messages.json")).json()).map(readTimelineMessage);
+const messages = basic ? loaded.slice(0, 4) : loaded;
+const catalog = await (await fetch("/api/chat/plugin-ui/catalog")).json();
 await loadWebPluginCatalog();
 function App() {
-  const [phase, setPhase] = useState(0);
+  const [phase, setPhase] = useState(basic ? 0 : 2);
   const [disabled, setDisabled] = useState(false);
   const anchors = useRef(new Map());
   const activities: ReplyActivity[] = phase === 2 ? [] : [{ session_id: messages[0].session_id,
     source: messages[0].source, handle: "live", active: true,
-    preview: phase === 1 ? { message_id: "first:end", text: "参数越大，同一横坐标对应的数值越高。", thinking: "" } : null }];
+    preview: phase === 1 ? { message_id: messages[3].id, text: "后续文字仍在生成，已经出现的图可以继续操作。", thinking: "" } : null }];
+  const shown = phase === 2 ? messages : messages.slice(0, 3);
+  const groups = timelineReplyGroups(shown, activities);
   return <TooltipProvider><nav>
+    <button onClick={() => setPhase(0)}>分步生成</button>
     <button onClick={() => setPhase(1)}>追加流式文字</button>
     <button onClick={() => setPhase(2)}>完成回复</button>
     <button onClick={() => cycleTheme()}>切换主题</button>
+    <button onClick={() => receivePluginUiCatalog({ catalogRevision: catalog.catalog_revision, updating: true,
+      plugins: catalog.items.map((item: { id: string; revision: string }) => ({ id: item.id, revision: item.revision, moduleUrl: "", slots: [] })) })}>目录更新中</button>
     <button onClick={async () => {
       if (disabled) await loadWebPluginCatalog();
       else await receivePluginUiCatalog({ catalogRevision: "disabled", updating: false, plugins: [] });
       setDisabled(!disabled);
     }}>{disabled ? "启用插件" : "禁用插件"}</button>
-  </nav><main><StickToBottom><DesktopTimelineMessages messages={messages.slice(0, phase === 2 ? 4 : 3)}
+  </nav><main><StickToBottom><DesktopTimelineMessages messages={shown}
     activities={activities} status={phase === 2 ? "idle" : "streaming"} copiedMessageId="" messageElementsRef={anchors}
     onReply={() => {}} onCopied={() => {}} onError={error => { throw error; }} />
+    {activities.map(activity => <ReplyActivityView key={activity.handle} activity={activity}
+      committed={new Set(shown.map(message => message.id))} processMessages={groups.active.get(activity.handle)} toolResults={timelineToolResults(shown)} />)}
   </StickToBottom></main></TooltipProvider>;
 }
 createRoot(document.getElementById("root")!).render(<App />);
