@@ -44,8 +44,8 @@ async def run(folder: Path) -> None:
             if "你在压缩超额的长期 Markdown 记忆" in prompt:
                 pruning += 1
                 text = json.dumps({"ops": [
-                    {"op": "prune", "doc": "MEMORY.md", "old": first, "line": condensed},
-                    {"op": "prune", "doc": "MEMORY.md", "old": second},
+                    {"op": "prune", "doc": "MEMORY.md", "old": "1", "line": condensed},
+                    {"op": "prune", "doc": "MEMORY.md", "old": "2"},
                 ]}, ensure_ascii=False)
             elif "你维护 Akashic 的长期 Markdown 记忆" in prompt:
                 rows = json.loads(prompt.split("本次精确来源：\n", 1)[1])
