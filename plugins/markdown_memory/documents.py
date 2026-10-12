@@ -1,8 +1,10 @@
 """Markdown 记忆的文件模型：SELF、PROFILE、topics/ 与按 scope 归属的文件夹，以及提炼操作的校验和叠加。"""
 from __future__ import annotations
 
+from collections import Counter
 from collections.abc import Mapping
 from dataclasses import asdict, dataclass, field
+import math
 import re
 from typing import Literal, cast, get_args
 
@@ -20,13 +22,14 @@ MAX_DESCRIPTION_CHARS = 80
 _FOLDER = re.compile(r"[^\s/\\._][^/\\]{0,39}")
 _TOPIC_FILE = re.compile(r"[a-z0-9][a-z0-9-]{0,63}\.md")
 
-OpName = Literal["add", "supersede", "retract", "create", "create_folder"]
+OpName = Literal["add", "supersede", "retract", "create", "create_folder", "merge"]
 _FIELDS: dict[str, frozenset[str]] = {
     "add": frozenset({"op", "doc", "line", "message_ids", "section"}),
     "supersede": frozenset({"op", "doc", "old", "line", "message_ids"}),
     "retract": frozenset({"op", "doc", "old", "message_ids"}),
     "create": frozenset({"op", "doc", "description", "line", "message_ids"}),
     "create_folder": frozenset({"op", "folder", "description"}),
+    "merge": frozenset({"op", "doc", "olds", "line"}),
 }
 
 
@@ -43,12 +46,15 @@ class Op:
     section: str = ""
     description: str = ""
     message_ids: tuple[str, ...] = ()
+    olds: tuple[str, ...] = ()
 
     # 只写出该操作类型的字段，receipt 重放时与模型输出走同一解析。
     def to_json(self) -> dict[str, object]:
         values: dict[str, object] = {key: value for key, value in asdict(self).items() if key in _FIELDS[self.op]}
         if self.op == "create_folder":
             values["folder"] = self.doc.split("/", 1)[1]
+        elif self.op == "merge":
+            values["olds"] = list(self.olds)
         else:
             values["message_ids"] = list(self.message_ids)
         if self.op == "add" and not self.section:
@@ -77,11 +83,15 @@ def _parse_op(item: object) -> Op:
     required = allowed - {"section"} if name == "add" else allowed
     if not required <= set(data) <= allowed:
         raise InvalidDraft(f"{name} 操作字段必须是 {sorted(allowed)}")
-    values = {key: value for key, value in data.items() if key not in {"op", "message_ids", "folder"}}
+    values = {key: value for key, value in data.items() if key not in {"op", "message_ids", "folder", "olds"}}
     if any(not isinstance(value, str) for value in values.values()):
         raise InvalidDraft(f"{name} 操作的文本字段必须是字符串")
+    olds = data.get("olds", [])
+    if name == "merge" and (not isinstance(olds, list) or len(cast(list[object], olds)) < 2
+                            or any(not isinstance(old, str) for old in cast(list[object], olds))):
+        raise InvalidDraft("merge 的 olds 必须是至少两条旧条目原文")
     ids = data.get("message_ids", [])
-    if name != "create_folder" and (not isinstance(ids, list) or not ids
+    if name not in {"create_folder", "merge"} and (not isinstance(ids, list) or not ids
                                      or any(not isinstance(key, str) for key in cast(list[object], ids))):
         raise InvalidDraft("message_ids 必须是非空消息 ID 数组")
     if name == "create_folder":
@@ -89,7 +99,8 @@ def _parse_op(item: object) -> Op:
         if not isinstance(folder, str):
             raise InvalidDraft("folder 必须是字符串")
         values["doc"] = f"{TOPICS}/{folder}"
-    return Op(cast(OpName, name), message_ids=tuple(cast(list[str], ids)), **cast(dict[str, str], values))
+    return Op(cast(OpName, name), message_ids=tuple(cast(list[str], ids)), olds=tuple(cast(list[str], olds)),
+              **cast(dict[str, str], values))
 
 
 def split_frontmatter(text: str) -> tuple[dict[str, str], list[str]]:
@@ -152,6 +163,8 @@ class Workspace:
                 self.texts[doc] = topic_text(op.description, op.line)
             elif op.op in {"add", "create"}:
                 self._add(doc, op, strict, index)
+            elif op.op == "merge":
+                self._merge(doc, op, strict, index)
             else:
                 self._replace(doc, op, strict, index)
 
@@ -206,6 +219,23 @@ class Workspace:
         index = lines.index(op.old)
         lines[index:index + 1] = [] if op.op == "retract" or op.line in lines else [op.line]
         self.texts[doc] = "\n".join(lines) + "\n"
+
+
+    def _merge(self, doc: str, op: Op, strict: bool, index: int) -> None:
+        # 只有全部旧条目仍在才合并；旧条目全不在且结果已在算已应用，其余视为前提失效。
+        lines = self.texts.get(doc, "").splitlines()
+        present = {line for line in lines if line in op.olds}
+        if len(set(op.olds)) == len(op.olds) and len(present) == len(op.olds):
+            first = next(position for position, line in enumerate(lines) if line in present)
+            keep = op.line not in [line for line in lines if line not in present]
+            lines = [row for position, line in enumerate(lines)
+                     for row in (([op.line] if keep else []) if position == first
+                                 else [] if line in present else [line])]
+            self.texts[doc] = "\n".join(lines) + "\n"
+        elif strict:
+            raise InvalidDraft(f"merge 的旧条目必须各不相同且都在 {doc} 中")
+        elif present or op.line not in lines:
+            self.conflicts.append(f"#{index} merge {doc}: 旧条目已部分或全部变化（现存 {len(present)}/{len(op.olds)}）")
 
 
 def append_section_lines(content: str, heading: str, lines: list[str]) -> str:
@@ -343,3 +373,48 @@ def _usage(root: str, scope: str | None, folder: str | None) -> str:
 - 每条是一行 `- ` 文本；新主题文件以 `---` / `description: 一句话` / `---` 开头；先更新已有主题和条目，不追加相互矛盾的条目。
 - 在 frontmatter 加 `pinned: true` 会让该主题常驻，只用于每次都需要的少量内容。
 - 不要保存：能从仓库、配置或命令直接读到的内容，临时任务状态，调试步骤，git 历史。"""
+
+
+_WORD = re.compile(r"[a-z0-9_]+|[\u4e00-\u9fff]+")
+
+
+# ASCII 词与中文二元组；不依赖分词器，足以对短主题文件排序。
+def terms(text: str) -> list[str]:
+    result: list[str] = []
+    for token in _WORD.findall(text.lower()):
+        if token[0].isascii():
+            result.append(token)
+        else:
+            result.extend(token[index:index + 2] for index in range(max(len(token) - 1, 1)))
+    return result
+
+
+def rank(query: str, docs: Mapping[str, str], *, k1: float = 1.2, b: float = 0.75) -> list[tuple[str, float]]:
+    bags = {doc: Counter(terms(text)) for doc, text in docs.items()}
+    if not bags:
+        return []
+    average = sum(sum(bag.values()) for bag in bags.values()) / len(bags) or 1.0
+    scores: dict[str, float] = {}
+    for term in set(terms(query)):
+        hits = [doc for doc, bag in bags.items() if term in bag]
+        idf = math.log(1 + (len(bags) - len(hits) + 0.5) / (len(hits) + 0.5))
+        for doc in hits:
+            bag = bags[doc]
+            frequency = bag[term]
+            size = sum(bag.values())
+            scores[doc] = scores.get(doc, 0.0) + idf * frequency * (k1 + 1) / (
+                frequency + k1 * (1 - b + b * size / average))
+    return sorted(scores.items(), key=lambda item: (-item[1], item[0]))
+
+
+def surfaceable(texts: Mapping[str, str], folder: str | None) -> dict[str, str]:
+    prefixes = (f"{TOPICS}/", *((f"{TOPICS}/{folder}/",) if folder is not None else ()))
+    result: dict[str, str] = {}
+    for doc, text in texts.items():
+        if not any(doc.startswith(prefix) and "/" not in doc.removeprefix(prefix) for prefix in prefixes):
+            continue
+        fields, body = split_frontmatter(text)
+        if doc.endswith(SCOPE_FILE) or fields.get("pinned", "").lower() == "true":
+            continue
+        result[doc] = fields.get("description", "") + "\n" + "\n".join(body)
+    return result

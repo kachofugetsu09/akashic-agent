@@ -5,6 +5,7 @@ import asyncio
 import fcntl
 import json
 import logging
+from datetime import UTC, datetime
 from contextlib import aclosing, asynccontextmanager
 from pathlib import Path
 from dataclasses import replace
@@ -52,7 +53,7 @@ from plugins.runtime_inspection.contract import DOCUMENTS, Document
 
 from .documents import (
     PROFILE, SELF, SELF_HEADINGS, PROFILE_HEADINGS, InvalidDraft, Op, Workspace,
-    check_changes, parse_ops, render_memory, section_of,
+    SCOPE_FILE, TOPICS, check_changes, parse_ops, rank, render_memory, section_of, split_frontmatter, surfaceable,
 )
 from .store import DEFAULT_SELF_MD, ConcurrentChange, MarkdownProfileStore
 from .contract import MEMORY_WRITES
@@ -80,6 +81,12 @@ class Config(BaseModel):
     sources: tuple[str, ...] = Field(default=("conversation", "programmatic", "legacy-unattributed"), min_length=1)
     profile_budget: int = Field(default=3000, ge=1)
     self_budgets: dict[str, int] = Field(default_factory=lambda: dict(zip(SELF_HEADINGS[1:], (800, 600, 300))))
+    surface_limit: int = Field(default=3, ge=0)
+    surface_min_score: float = Field(default=2.0, ge=0)
+    surface_chars: int = Field(default=4000, ge=1)
+    consolidate: bool = True
+    consolidate_hours: int = Field(default=24, ge=1)
+    consolidate_min_drafts: int = Field(default=5, ge=1)
 
 
 class ProfileDraftError(ModelError):
@@ -174,26 +181,30 @@ async def _prepare_profile_batch(messages: tuple[Message, ...], source: str, wor
                                  provider: BoundChatModel, *, is_user_input: Callable[[Message], bool],
                                  config: Config) -> tuple[Op, ...]:
     """校验一批操作与当前内存副本，不写文件或推进 receipt。"""
-    prompt = _profile_prompt(workspace, source)
+    return await _complete_ops(provider, _profile_prompt(workspace, source), lambda response: _check_profile_response(
+        response, messages, workspace, is_user_input=is_user_input, config=config))
+
+
+# 单次模型调用产出操作；合同不合格时只反馈错误修正一次，不补写模型猜错的内容。
+async def _complete_ops(provider: BoundChatModel, prompt: str,
+                        check: Callable[[LLMResponse], tuple[Op, ...]]) -> tuple[Op, ...]:
     # 新增条目与模型推理共享输出预算，采用 provider 已声明的生成上限。
     output_cap = provider.descriptor.capabilities.max_output_tokens or 0
+    request = prompt
     repaired = False
     while True:
         response = await provider.complete(ModelRequest(
-            messages=[{"role": "user", "content": prompt}],
+            messages=[{"role": "user", "content": request}],
             max_output_tokens=output_cap, disable_reasoning=True,
         ))
         try:
-            return _check_profile_response(response, messages, workspace,
-                                           is_user_input=is_user_input, config=config)
+            return check(response)
         except InvalidDraft as error:
             if repaired:
                 raise ProfileDraftError(str(error)).exception() from error
-            # 原草稿没有提交；只反馈合同错误，不补写模型猜错的证据或消息 ID。
             logger.warning("Markdown 模型草稿不合格，本批修正一次: %s", error)
-            prompt = "上次草稿没有提交，校验失败：" + str(error)
-            prompt += "\n重新生成操作；message_id 从本次来源逐字符完整复制，不缩写、不猜测。\n\n"
-            prompt += _profile_prompt(workspace, source)
+            request = ("上次草稿没有提交，校验失败：" + str(error)
+                       + "\n重新生成操作；引用的条目原文与 message_id 逐字符完整复制，不缩写、不猜测。\n\n" + prompt)
             repaired = True
 
 
@@ -218,6 +229,8 @@ def check_evidence(ops: tuple[Op, ...], texts: Mapping[str, str], messages: tupl
     for op in ops:
         if op.op == "create_folder":
             continue
+        if op.op == "merge":
+            raise InvalidDraft("提炼不能使用 merge；合并旧条目由整理阶段负责")
         if any(key not in by_id for key in op.message_ids):
             raise InvalidDraft("操作必须引用本次来源中的完整 message_id")
         section = op.section if op.op == "add" else section_of(texts.get(op.doc, ""), op.old)
@@ -241,6 +254,95 @@ def _recover_profile(store: MarkdownProfileStore, scope: str | None) -> Workspac
     for source_ref in store.pending_source_refs():
         store.apply(source_ref)
     return store.workspace(scope)
+
+
+async def consolidate(store: MarkdownProfileStore, models: ChatModels, lock_path: Path, config: Config) -> None:
+    """到期时逐 scope 整理：只把重复或相互矛盾的旧条目合并为一条，不引入新事实。"""
+    if not config.consolidate:
+        return
+    scopes = await run_file_io(lambda: store.consolidation_scopes(
+        config.consolidate_hours, config.consolidate_min_drafts))
+    if not scopes:
+        return
+    stamp = datetime.now(UTC).strftime("%Y%m%dT%H%M%S")
+    async with models.independent_execution() as execution:
+        provider = execution.chat("default")
+        for scope in scopes:
+            # 1. 更新锁覆盖模型等待，期间后台提炼不会改写同一批文件。
+            async with profile_lock(lock_path.with_name(_UPDATE_LOCK_NAME)):
+                async with profile_lock(lock_path):
+                    workspace = await run_file_io(lambda: _recover_profile(store, scope))
+                docs = _consolidation_docs(workspace)
+                prompt = _consolidation_prompt(workspace, docs)
+                window = provider.descriptor.capabilities.context_window or 0
+                if not docs or provider.estimate_context_tokens([{"role": "user", "content": prompt}]) > window * 0.74:
+                    continue
+                try:
+                    ops = await _complete_ops(provider, prompt, lambda response: _check_consolidation(
+                        response, workspace, docs, config))
+                except (RuntimeError, TimeoutError) as error:
+                    if not ModelError.matches(error, ProfileDraftError):
+                        raise
+                    logger.warning("Markdown 整理草稿两次不合格，跳过 scope=%s: %s", scope, error)
+                    continue
+                if not ops:
+                    continue
+                # 2. 与提炼共用 draft → 幂等叠加 → applied 的 receipt 路径，崩溃后启动时重放。
+                reference = f"consolidation:{stamp}:{scope or 'global'}"
+                draft: dict[str, object] = {"version": 3, "scope": scope, "ops": [op.to_json() for op in ops]}
+                async with profile_lock(lock_path):
+                    def install() -> None:
+                        _ = store.write_ops(reference, draft)
+                        store.apply(reference)
+                    await run_file_io(install)
+    await run_file_io(lambda: store.mark_consolidated(stamp, scopes))
+
+
+def _consolidation_docs(workspace: Workspace) -> tuple[str, ...]:
+    folder = workspace.folder()
+    prefix = f"{TOPICS}/{folder}/" if workspace.scope is not None and folder is not None else None
+    return tuple(doc for doc, text in workspace.texts.items()
+                 if (doc.startswith(prefix) if prefix is not None else "/" not in doc.removeprefix(f"{TOPICS}/"))
+                 and not doc.endswith(SCOPE_FILE)
+                 and sum(row.startswith("- ") for row in text.splitlines()) >= 2)
+
+
+def _check_consolidation(response: LLMResponse, workspace: Workspace, docs: tuple[str, ...],
+                         config: Config) -> tuple[Op, ...]:
+    if response.finish_reason == "length":
+        raise InvalidDraft("模型输出达到生成上限，草稿尚未完整")
+    ops = parse_ops(load_json_object_loose(response.content or ""))
+    if any(op.op != "merge" or op.doc not in docs for op in ops):
+        raise InvalidDraft(f"整理只能对 {list(docs)} 使用 merge")
+    trial = Workspace(dict(workspace.texts), dict(workspace.folders), workspace.scope)
+    trial.apply(ops, strict=True)
+    check_changes(workspace.texts, trial.texts,
+                  profile_budget=config.profile_budget, self_budgets=config.self_budgets)
+    return ops
+
+
+def _consolidation_prompt(workspace: Workspace, docs: tuple[str, ...]) -> str:
+    files = "\n\n".join(f"### {doc}\n{workspace.texts[doc].strip()}" for doc in docs)
+    return f"""你在整理 Akashic 的长期 Markdown 记忆。只合并已有条目，不新增事实。
+
+只返回 JSON：{{"ops":[{{"op":"merge","doc":"文件","olds":["- 旧条目原文","- 另一条旧条目原文"],"line":"- 合并后的一条"}}]}}；没有需要整理的内容时返回 {{"ops":[]}}。
+- 合并同一文件中重复或可以合成一句的条目。
+- 相互矛盾的条目：只有一方带有更新的日期，或明确写着是更正、改口时，才合并为较新的说法；不能凭条目在文件中的先后位置判断哪条正确。
+- 不确定是否重复，或无法判断哪条矛盾说法正确时，保留原样不动；不跨文件合并，不改标题和 frontmatter。
+- olds 逐字复制同一文件中至少两条现有条目；line 是不超过 120 字的单行 '- ' 文本。
+
+{files}
+"""
+
+
+def _surfaced_text(docs: list[str], texts: Mapping[str, str], ages: Mapping[str, int], limit: int) -> str:
+    parts = ["## 相关记忆（按本条消息自动浮现的 Markdown 主题；可能过时，依赖前先核实）"]
+    for doc in docs:
+        body = "\n".join(split_frontmatter(texts[doc])[1]).strip()
+        age = ages.get(doc, 0)
+        parts.append(f"### {doc}（{'今天' if age == 0 else f'{age} 天前'}更新）\n"
+                     + (body if len(body) <= limit else body[:limit] + "\n（已截断，完整内容用 read_file 读取）"))
+    return "\n\n".join(parts)
 
 
 def _scope_line(workspace: Workspace) -> str:
@@ -476,26 +578,60 @@ async def apply(ctx: Context) -> None:
 
     root = ctx.workspace_root("memory")
     frozen: dict[tuple[str, str], MaterialData] = {}
+    shown: dict[tuple[str, str], set[str]] = {}
+    surfaced: dict[str, tuple[Mapping[str, object], ...]] = {}
 
     async def prepare(snapshot: tuple[Message, ...], source: str) -> MaterialData:
         # 1. 快照按 会话 + 最新压缩摘要 冻结：同一压缩代内前缀稳定，agent 写入下一代才可见。
         session = snapshot[-1].session_id if snapshot else ""
         record = ctx.require(COMPACTION_SUMMARIES).head(session) if session else None
         key = (session, "" if record is None else record.reference)
-        if (hit := frozen.get(key)) is not None:
-            return hit
         if store is None:
             return {"system_prompt": render_memory(str(root), Workspace({SELF: DEFAULT_SELF_MD}, {}, None), {})}
-        # 2. 在文件锁内读取，后台叠加只会被看到完整的前后两版之一。
         scope = _scope_key(ctx.require(MESSAGE_CATALOG).reader(session)) if session else None
         current = store
+        if (material := frozen.get(key)) is None:
+            # 2. 在文件锁内读取，后台叠加只会被看到完整的前后两版之一。
+            async with profile_lock(lock_path, create=False):
+                workspace, others = await run_file_io(lambda: current.view(scope))
+            material = {"system_prompt": render_memory(str(root), workspace, others)}
+            frozen[key] = material
+            while len(frozen) > 64:
+                del frozen[next(iter(frozen))]
+        # 3. 相关主题随当前用户 Input 浮现为可回放 reminder，不改变 system 前缀。
+        reminders = await surface(snapshot, key, scope, current)
+        return {**material, "reminders": reminders} if reminders else material
+
+    async def surface(snapshot: tuple[Message, ...], key: tuple[str, str], scope: str | None,
+                      current: MarkdownProfileStore) -> tuple[Mapping[str, object], ...]:
+        user = next((item for item in reversed(snapshot)
+                     if isinstance(item.body, Input) and item.author == "user"), None)
+        if user is None or config.surface_limit == 0:
+            return ()
+        # 同一 Input 的后续工具步骤复用首次结果；同一压缩代内同一主题只浮现一次。
+        if (hit := surfaced.get(user.message_id)) is not None:
+            return hit
+        assert isinstance(user.body, Input)
+        query = " ".join(str(part.value) for part in user.body.parts
+                         if isinstance(part, ContentPart) and part.kind == "text")
         async with profile_lock(lock_path, create=False):
-            workspace, others = await run_file_io(lambda: current.view(scope))
-        material: MaterialData = {"system_prompt": render_memory(str(root), workspace, others)}
-        frozen[key] = material
-        while len(frozen) > 64:
-            del frozen[next(iter(frozen))]
-        return material
+            workspace = await run_file_io(lambda: current.workspace(scope))
+        seen = shown.setdefault(key, set())
+        candidates = {doc: text for doc, text in surfaceable(workspace.texts, workspace.folder()).items()
+                      if doc not in seen}
+        docs = [doc for doc, score in rank(query, candidates) if score >= config.surface_min_score]
+        docs = docs[:config.surface_limit]
+        ages = await run_file_io(lambda: current.ages_days(docs))
+        seen.update(docs)
+        reminder: Mapping[str, object] = {"name": "markdown_memory", "priority": 200,
+                                          "text": _surfaced_text(docs, workspace.texts, ages, config.surface_chars)}
+        reminders: tuple[Mapping[str, object], ...] = (reminder,) if docs else ()
+        surfaced[user.message_id] = reminders
+        while len(surfaced) > 256:
+            del surfaced[next(iter(surfaced))]
+        while len(shown) > 256:
+            del shown[next(iter(shown))]
+        return reminders
 
     async def follow(catalog: MessageCatalog) -> None:
         """模型暂时失败时保留原游标，关闭订阅后延时重读，其他会话继续处理。"""
@@ -546,6 +682,15 @@ async def apply(ctx: Context) -> None:
                             return
                     if retry:
                         break
+                    try:
+                        async with ctx.runtime_scope():
+                            assert store is not None
+                            await consolidate(store, ctx.require(CHAT_MODELS), lock_path, config)
+                    except (RuntimeError, TimeoutError) as error:
+                        failure = ModelError.read(error)
+                        if failure is None or not failure.retryable:
+                            raise
+                        logger.warning("Markdown 整理暂时失败，下次唤醒再试: %s", type(error).__name__)
             if not retry:
                 return
             # 2. 释放当前 lease 和订阅再等待，取消正常传播，成功写入仍由原 receipt 去重。

@@ -47,3 +47,17 @@ system 材料按"会话 + 最新压缩摘要"冻结：同一压缩代内前缀�
 pinned 每组 4000 字，超出截断并提示。不属于项目的会话没有项目段。
 
 agent 用原生 `read_file` / `write_file` / `edit_file` / `shell rg` 读写记忆，不经过证据校验，也不与 Akasha 召回争用同一通道。
+
+## 每轮浮现
+
+每条新的用户 Input 首次准备材料时，用 BM25（ASCII 词 + 中文二元组）对当前项目文件夹与全局主题中**未 pinned** 的文件排序，
+得分不低于 `surface_min_score`（默认 2.0）的前 `surface_limit`（默认 3，0 关闭）个以可回放 reminder 附在本轮，
+标注"N 天前更新"，单文件最多 `surface_chars` 字。同一 Input 的后续工具步骤复用结果；同一压缩代内同一主题只浮现一次。不改变 system 前缀。
+
+## 整理
+
+follower 每次唤醒检查：距上次整理不少于 `consolidate_hours`（默认 24）且其后新应用的提炼 draft 不少于
+`consolidate_min_drafts`（默认 5）时，对全局（PROFILE、SELF、全局主题）和这些 draft 涉及的 scope 文件夹各调用一次模型。
+整理只能使用 `merge`（把同一文件中 ≥2 条现有条目逐字替换为一条），不新增事实；提炼阶段不能使用 `merge`。
+结果走同一 `markdown_ops_v1` → 幂等叠加 → `markdown_ops_applied_v1` 路径，完成后写 `markdown_consolidated_v1`；
+两次不合格的 scope 跳过，模型暂时失败留到下次唤醒。`consolidate: false` 关闭。

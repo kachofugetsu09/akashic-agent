@@ -4,6 +4,7 @@ import hashlib
 import json
 import logging
 import sqlite3
+import time
 from contextlib import closing
 from pathlib import Path
 from typing import Any, cast
@@ -96,6 +97,32 @@ class MarkdownProfileStore:
                   for name in workspace.folders if name != current}
         return workspace, others
 
+    def ages_days(self, docs: list[str]) -> dict[str, int]:
+        now = time.time()
+        return {doc: int((now - self._path(doc).stat().st_mtime) // 86400)
+                for doc in docs if self._path(doc).exists()}
+
+    # 整理到期时返回本轮要整理的 scope（None 为全局），按上次整理后新应用的提炼 draft 计数。
+    def consolidation_scopes(self, hours: int, min_drafts: int) -> tuple[str | None, ...]:
+        with closing(sqlite3.connect(str(self.receipts_path), timeout=30.0)) as conn:
+            last = conn.execute("SELECT max(done_at) FROM consolidation_writes WHERE kind=?",
+                                ("markdown_consolidated_v1",)).fetchone()[0]
+            if last is not None and conn.execute("SELECT datetime(?, ?) > datetime('now')",
+                                                 (last, f"+{hours} hours")).fetchone()[0]:
+                return ()
+            rows = conn.execute(
+                "SELECT draft.payload FROM consolidation_writes AS applied JOIN consolidation_writes AS draft "
+                "ON draft.source_ref=applied.source_ref AND draft.kind='markdown_ops_v1' "
+                "WHERE applied.kind='markdown_ops_applied_v1' AND applied.source_ref NOT LIKE 'consolidation:%' "
+                "AND applied.done_at > ?", (last or "",)).fetchall()
+        if len(rows) < min_drafts:
+            return ()
+        scopes = {cast(dict[str, object], json.loads(row[0])).get("scope") for row in rows}
+        return (None, *sorted(scope for scope in scopes if isinstance(scope, str)))
+
+    def mark_consolidated(self, stamp: str, scopes: tuple[str | None, ...]) -> None:
+        _ = self._write_once(f"consolidation:{stamp}", "markdown_consolidated_v1", {"scopes": list(scopes)})
+
     def read_writes(
         self, after: tuple[str, str] | None, limit: int,
     ) -> tuple[dict[str, object], ...]:
@@ -131,6 +158,10 @@ class MarkdownProfileStore:
             ("markdown_projection_order_v1", {"session_key": session_key, "generation": generation}),
         ))
         return dict(payload)
+
+    # 不属于任何会话进度的操作（如整理），只落 draft，由 pending 恢复路径兜底。
+    def write_ops(self, source_ref: str, payload: dict[str, object]) -> dict[str, object]:
+        return self._write_once(source_ref, "markdown_ops_v1", payload)
 
     def is_applied(self, source_ref: str) -> bool:
         return (self._read_receipt(source_ref, "markdown_ops_applied_v1") is not None
@@ -180,7 +211,9 @@ class MarkdownProfileStore:
         draft = self.read_draft(source_ref)
         if draft is None:
             raise RuntimeError(f"Markdown 操作 draft 缺失: {source_ref}")
-        if self._read_receipt(source_ref, "markdown_projection_order_v1") is None:
+        # 提炼 draft 必须带会话进度；整理 draft 不推进任何会话进度。
+        if (self._read_receipt(source_ref, "markdown_projection_order_v1") is None
+                and not source_ref.startswith("consolidation:")):
             raise RuntimeError(f"Markdown 提炼 draft 缺少会话进度，拒绝应用: {source_ref}")
         scope = draft.get("scope")
         if scope is not None and not isinstance(scope, str):
