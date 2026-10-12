@@ -278,12 +278,12 @@ workspace 仍不是完整运行环境的全部。模型 Provider credential 已�
 
 | 对象 | 正常增加 | 允许的原位或逻辑变化 | 允许物理减少的条件 |
 |---|---|---|---|
-| `MEMORY.md`、`SELF.md` | Markdown memory 普通插件消费 committed compaction fact，按文档发布下一版 | 每个文档以独立 draft、before-image、atomic replace 和 applied receipt 收敛；在线投影不能隐式删除既有事实 | 没有普通自动减少协议；未来移除事实需要显式 tombstone、来源、理由和独立管理合同 |
+| `MEMORY.md`、`SELF.md` | Markdown owner 从已消费压缩摘要的精确 Message 提炼新事实 | 经校验操作、首次 before-image、atomic replace 与 applied receipt 发布；普通提炼的用户事实及 retract 仍须有真实用户 Input 证据 | MEM-014/0116 授权超额章节按长期价值压缩、合并或舍弃低价值条目；模型只解释已有条目。逐次操作、来源和不可覆盖的写前副本保留恢复证据，不减少来源 Message、topics 或未超额章节 |
 | `VEDA.md` | 已安装 Prompt 包的 setup 在首次配置时只在缺失时创建默认人格 | Prompt 包的显式 `persona.py` 恢复入口仅在用户明确要求时原子更新，并先备份原始字节 | 正常运行没有删除协议；候选 setup 使用隔离 workspace，不能回写正式文件 |
 | `PENDING.md` / `PENDING.snapshot.md` | 在线路径不再增加 | Markdown plugin 启动迁移先把两份原始文本和 digest 写入 immutable receipt，再确定性合入 MEMORY | 合入和 `PENDING.retired.md` 发布成功后才清空旧文件；任一步失败由 receipt 重启收敛 |
 | `RECENT_CONTEXT.md` | 旧版本曾由近期会话生成投影；新安装不创建 | 新语义不读取、不原位更新 | 仅由 DAG 最后阶段 R06 在备份、完整性检查和 config 归档成功后删除；失败恢复原文件 |
 | `consolidation_writes.db` | compaction plugin 为 `session_compaction_receipt` INSERT immutable crash-recovery receipt | v4 保存 source-plan digest、实际 runtime/model/usage 并发布新 profile fact；旧 v3 只恢复 ledger 和保留审计；同 key 内容漂移 fail-loud | receipt 是恢复与审计证据，当前没有自动删除或跨库 cascade |
-| `markdown-profile-writes.db` | Markdown plugin 按 `source_ref + memory/self kind` INSERT model、draft、before-image 和 applied receipt | 每个文档独立推进；完整 model draft 是准备恢复点，部分 order/document draft 由原出处重放补齐；文件或 receipt 单侧领先时重启确定性收敛。同 Session 的已应用进度从现有 receipts 派生，已应用 child 之后不再重写迟到 ancestor | 当前没有自动删除协议；它是 MEMORY/SELF 和旧 PENDING 的恢复证据 |
+| `markdown-profile-writes.db` | Markdown owner 按 `source_ref + kind` 增加操作 draft、首次 before-image 和 applied receipt；提炼 draft 与会话进度同事务提交 | pending 重放同一操作；独立整理及超额剪枝不推进会话进度。applied 区分文件提交与前提失效冲突；已应用 child 后不再重写迟到 ancestor，旧版 receipt 只读保留 | 当前没有自动删除协议；它是 Markdown 档案及旧 PENDING 的恢复证据，超额剪枝不减少 receipt |
 | `memory2.db/*` | 无当前 writer；经典记忆退出前曾写入结构化记忆和替换关系 | runtime 不再读取、导入或更新 | 只作为历史归档备份，不自动删除 |
 | `akasha.db` | 固定算法读取 `sessions.db/messages` 和已有 `message_embeddings`，增加图、激活和查询记录；重建与在线学习共用同一个 `MessageConsumer` | 可以用同一组输入确定性重建；用户整组撤销 interaction 后由 Akasha owner 串行全量替换；只读 Inspector 从既有表派生视图，不新增状态；重建不调用 LLM，也不重新解释历史 | 只能由显式 sidecar rebuild/maintenance 或 interaction 撤销协调流程替换；模型或维度不匹配必须 fail-loud；缺少固定向量的单个 turn 明确跳过并记账（`consumption.skipped`），不计入图 |
 | `memory/akasha-graphs/<摘要>/akasha.db` 与 `manifest.json` | MEM-013 的 isolated 范围第一次有成员 Session 时建立；与 default 图同一 `MessageConsumer`，只消费路由到本图的 Session，从成员第一条消息开始学习；`manifest.json` 记录 `v2:` 前缀的有序维度元组 JSON 键 | 与 `akasha.db` 相同：同输入确定性重建，显式重建逐图建立恢复点（`backups/rebuild/graphs/<摘要>/`）后原子替换；本 PR 旧预览图不自动搬迁或回退读取 | 与 `akasha.db` 相同，没有自动减少协议；范围归档不删除图文件 |

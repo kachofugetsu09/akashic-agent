@@ -90,6 +90,8 @@ export function focusMessagePart(element: HTMLElement, messageId: string, partIn
       ?? (element.dataset.messageId === messageId ? element.querySelector<HTMLElement>(`[data-part-index="${partIndex}"]`) : null);
   const focus = () => {
     const target = find() ?? element;
+    const disclosure = target.closest("details");
+    if (disclosure) disclosure.open = true;
     target.focus({ preventScroll: true });
     target.scrollIntoView({ block: "center", behavior: "instant" });
   };

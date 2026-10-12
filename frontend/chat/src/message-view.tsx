@@ -27,7 +27,7 @@ import {
   DialogTitle,
   DialogTrigger,
 } from "@/components/ui/dialog";
-import { Brain, Check, ChevronDown, Copy, ImageIcon, Wrench } from "lucide-react";
+import { Brain, Check, ChevronDown, Copy, Download, Gauge, ImageIcon, Wrench } from "lucide-react";
 import {
   Fragment,
   lazy,
@@ -36,6 +36,8 @@ import {
   type MouseEvent as ReactMouseEvent,
   type ReactNode,
   useEffect,
+  useLayoutEffect,
+  useRef,
   useMemo,
   useState,
 } from "react";
@@ -88,8 +90,9 @@ const MessageBody = memo(function MessageBody({
 });
 
 /** 草稿复用聊天的等待和思考组件，提交后由相同样式的历史行接替。 */
-export function ReplyActivityView({ activity, committed, onError, processMessages = [], toolResults = new Map(), inputStarts = new Map(), refreshToken }: {
+export function ReplyActivityView({ activity, committed, onError, onStop, processMessages = [], toolResults = new Map(), inputStarts = new Map(), refreshToken }: {
   activity: ReplyActivity;
+  onStop?: () => void;
   inputStarts?: ReadonlyMap<string, number>;
   refreshToken?: string;
   committed: ReadonlySet<string>;
@@ -116,10 +119,22 @@ export function ReplyActivityView({ activity, committed, onError, processMessage
         beforePart={(part, index, message) => part.kind === "tool_call" && !("display" in part) ? <PluginUiSlot
           name="turn.before_tool" sessionId={message.session_id} messageId={message.id}
           block={{ ...part, message_id: message.id, part_index: index }} /> : null} />
-      {activity.active && draft?.retry_status ? <p className="plain-message-response" role="status">{draft.retry_status}</p> : null}
+      {activity.active && draft?.retry_status ? <RetryStatus text={draft.retry_status} onStop={onStop} /> : null}
       {activity.active && !draft?.retry_status && !text && !draft?.thinking && !flow.length ? <ThinkingPlaceholder /> : null}
       {text ? <MessageBody content={text} streaming={Boolean(draft?.text) && activity.active} deferRichContent onError={onError} /> : null}
     </div>
+  </div>;
+}
+
+/** 重试与压缩进度共用一张状态卡：首行是状态，其余是原始原因，停止就在旁边。 */
+function RetryStatus({ text, onStop }: { text: string; onStop?: () => void }) {
+  const [headline, ...detail] = text.split("\n");
+  return <div className="retry-status" role="status">
+    <div className="retry-status__text">
+      <strong>{headline}</strong>
+      {detail.length ? <code>{detail.join("\n")}</code> : null}
+    </div>
+    {onStop ? <button type="button" onClick={onStop}>停止</button> : null}
   </div>;
 }
 
@@ -205,13 +220,15 @@ type FlowItem =
   | { kind: "thinking"; key: string; origin: TimelineMessage; index: number; part: TimelinePart; content: string }
   | { kind: "tool"; key: string; origin: TimelineMessage; index: number; part: TimelinePart; block: ToolBlock }
   | { kind: "narration"; key: string; origin: TimelineMessage; index: number; part: TimelinePart; text: string }
+  | { kind: "notice"; key: string; origin: TimelineMessage; index: number; part: TimelinePart; text: string }
   | { kind: "part"; key: string; origin: TimelineMessage; index: number; part: TimelinePart };
 
 /** 组内全部成员按 part 顺序展开成独立流项：思考、工具、中途正文、末条正文各归原位。 */
 function timelineFlow(messages: TimelineMessage[], finalId: string | undefined, toolResults: ReadonlyMap<string, TimelineMessage>): FlowItem[] {
   return messages.flatMap((origin) => origin.body.kind !== "output" ? [] :
     origin.body.parts.map((part, index) => ({ part, index }))
-    .sort((left, right) => Number(right.part.kind === "model.facts") - Number(left.part.kind === "model.facts"))
+    // 上下文提示发生在生成之前，排在思考之前；思考再排在正文之前。
+    .sort((left, right) => flowRank(right.part) - flowRank(left.part))
     .flatMap(({ part, index }): FlowItem[] => {
       if ("display" in part) return [];
       const key = `${origin.id}:${index}`;
@@ -235,7 +252,7 @@ function timelineFlow(messages: TimelineMessage[], finalId: string | undefined, 
           status: outcome === null ? "input-available" : outcome === "success" ? "output-available" : "output-error",
           errorText: outcome && outcome !== "success" ? outcomeLabels[outcome] : undefined } }];
       }
-      if (part.kind === "context.notice") return [{ kind: "part", key, origin, index, part }];
+      if (part.kind === "context.notice") return [{ kind: "notice", key, origin, index, part, text: part.value.text }];
       if (origin.id === finalId) {
         return isTimelinePartVisible(part) ? [{ kind: "part", key, origin, index, part }] : [];
       }
@@ -244,6 +261,23 @@ function timelineFlow(messages: TimelineMessage[], finalId: string | undefined, 
       }
       return [];
     }));
+}
+
+function flowRank(part: TimelinePart): number {
+  if ("display" in part) return 0;
+  return part.kind === "context.notice" ? 2 : part.kind === "model.facts" ? 1 : 0;
+}
+
+/** 上下文提示是本轮请求的诊断，与思考行同级：收起时一行摘要，展开看全文。 */
+function ContextNoticeRow({ text }: { text: string }) {
+  return <details className="context-notice">
+    <summary className="process-trigger">
+      <Gauge className="process-trigger-icon" size={13} aria-hidden="true" />
+      <span className="process-trigger-summary">{text}</span>
+      <ChevronDown className="process-chevron" size={13} aria-hidden="true" />
+    </summary>
+    <p className="process-content process-text" role="status">{text}</p>
+  </details>;
 }
 
 interface FlowPartViewProps {
@@ -262,6 +296,7 @@ function FlowItemView({ item, beforePart, onCopyToolDetail, partView }: {
 }) {
   const content = item.kind === "thinking" ? <ThinkingRow content={item.content} streaming={false} />
     : item.kind === "tool" ? <ToolStep block={item.block} active={item.block.status === "input-available"} onCopyDetail={onCopyToolDetail} />
+    : item.kind === "notice" ? <ContextNoticeRow text={item.text} />
     : item.kind === "narration" ? <div className="timeline-narration">
       <MessageBody content={item.text} streaming={false} deferRichContent onError={partView?.onError} />
     </div>
@@ -373,8 +408,26 @@ function TimelineProcess({ flow, draftThinking = "", beforeReasoning, beforePart
   </>;
 }
 
+/** 图文回复只收纳思考与已完成工具；正文和仍在执行的工具保持可见。 */
+function InlineReplyProcess({ messages, toolResults, beforeReasoning, beforePart }: {
+  messages: TimelineMessage[]; toolResults: ReadonlyMap<string, TimelineMessage>;
+  beforeReasoning?: (message: TimelineMessage) => ReactNode;
+  beforePart?: (part: TimelinePart, index: number, message: TimelineMessage) => ReactNode;
+}) {
+  const flow = timelineFlow(messages, undefined, toolResults).filter(item => item.kind === "tool" || item.kind === "thinking");
+  const running = flow.filter(item => item.kind === "tool" && item.block.status === "input-available");
+  const settled = flow.filter(item => !running.includes(item));
+  const count = settled.filter(item => item.kind === "tool").length;
+  return <div className="inline-reply-process">
+    {settled.length ? <details><summary>{count ? `思考并调用 ${count} 个工具` : "思考过程"}</summary>
+      <TimelineProcess flow={settled} beforeReasoning={beforeReasoning} beforePart={beforePart} />
+    </details> : null}
+    <TimelineProcess flow={running} beforeReasoning={beforeReasoning} beforePart={beforePart} />
+  </div>;
+}
+
 /** 保留消息引用与 part 位置，复用原聊天的过程和正文组件。 */
-export function TimelineMessageView({ message, lookupMessage, toolResults, onNavigate, onError, beforeReasoning, beforePart, afterBody, renderAttachment, hideBody = false, processMessages = [message], hideProcess = false, canLoadReferences = false }: {
+export function TimelineMessageView({ message, lookupMessage, toolResults, onNavigate, onError, beforeReasoning, beforePart, afterBody, renderAttachment, hideBody = false, processMessages = [message], hideProcess = false, inlineReply = false, leadingProcess, canLoadReferences = false }: {
   message: TimelineMessage;
   hideBody?: boolean;
   canLoadReferences?: boolean;
@@ -383,6 +436,8 @@ export function TimelineMessageView({ message, lookupMessage, toolResults, onNav
   beforeReasoning?: (message: TimelineMessage) => ReactNode;
   processMessages?: TimelineMessage[];
   hideProcess?: boolean;
+  inlineReply?: boolean;
+  leadingProcess?: TimelineMessage[];
   beforePart?: (part: TimelinePart, index: number, message: TimelineMessage) => ReactNode;
   afterBody?: ReactNode;
   lookupMessage: (id: string) => TimelineMessage | undefined;
@@ -390,25 +445,35 @@ export function TimelineMessageView({ message, lookupMessage, toolResults, onNav
   onError?: (error: unknown) => void;
 }) {
   const body = message.body;
-  const flow = hideProcess ? [] : timelineFlow(processMessages, message.id, toolResults);
+  const flow = hideProcess || inlineReply ? [] : timelineFlow(processMessages, message.id, toolResults);
   const hasFlow = body.kind === "output" && flow.length > 0;
-  const leadingContent = hideProcess || hasFlow ? null : beforeReasoning?.(message);
+  const leadingContent = hideProcess || hasFlow || inlineReply ? null : beforeReasoning?.(message);
   const referencedArtifacts = new Set(body.kind === "control" ? [] : body.parts.flatMap((part) =>
     !("display" in part) && part.kind === "artifact_ref" ? [part.value] : []));
+  const origin = attachmentOrigin(message, lookupMessage);
+  // 单文件成功结果作为回复插图；原始工具数据仍可从过程行查看。
+  const attachmentResult = body.kind === "tool_result" && body.outcome === "success"
+    && message.attachments.length === 1 && message.attachments[0].kind === "file"
+    && body.parts.every(part => !("display" in part) && (part.kind === "text" || part.kind === "artifact_ref"));
+  const fallback = attachmentResult ? <div className="attachment-description">{body.parts.map((part, index) =>
+    part.kind === "text" && !("display" in part) ? <MessageBody key={index} content={part.value}
+      streaming={false} deferRichContent onError={onError} /> : null)}
+    {!body.parts.some(part => part.kind === "text" && !("display" in part) && part.value.trim())
+      ? <p>{message.attachments[0].filename ?? "附件"}</p> : null}</div> : null;
   const attachment = (id: string) => {
-    const ref = message.attachments.find((item) => item.artifact_id === id)!;
+    const ref = message.attachments.find(item => item.artifact_id === id)!;
     if (renderAttachment) return renderAttachment(ref);
-    return <Fragment>
-      <PluginUiSlot name="message.attachment" sessionId={message.session_id}
-        messageId={message.id} block={ref} />
-      <MessageAttachmentItem attachment={{ id: ref.artifact_id, type: "file",
+    if (attachmentResult) return <MessageAttachmentFigure attachment={ref} origin={origin}
+      sessionId={message.session_id} messageId={message.id} fallback={fallback} />;
+    return <MessageAttachmentItem attachment={{ id: ref.artifact_id, type: "file",
       filename: ref.filename ?? "附件", mediaType: ref.media_type ?? "application/octet-stream",
-      url: `/api/chat/artifacts/${encodeURIComponent(ref.artifact_id)}` }} />
-    </Fragment>;
+      url: `/api/chat/artifacts/${encodeURIComponent(ref.artifact_id)}` }} />;
   };
   return <div className={`message-row timeline-message timeline-${body.kind}`}>
     <div className={body.kind === "input" ? "user-bubble" : "agent-content"}>
       {leadingContent}
+      {leadingProcess ? <InlineReplyProcess messages={leadingProcess} toolResults={toolResults}
+        beforeReasoning={beforeReasoning} beforePart={beforePart} /> : null}
       {hasFlow ? <TimelineProcess flow={flow}
         beforeReasoning={beforeReasoning} beforePart={beforePart}
         partView={{ attachment, lookupMessage, onNavigate, onError, canLoadReferences }} /> : null}
@@ -416,7 +481,7 @@ export function TimelineMessageView({ message, lookupMessage, toolResults, onNav
         <strong>{controlLabels[body.action]}</strong>
         {body.reason !== null ? <p className="plain-message-response">{body.reason}</p> : null}
       </div> : hasFlow ? null : <>
-        {body.kind === "tool_result" ? <div className="timeline-result-heading">
+        {body.kind === "tool_result" && !attachmentResult ? <div className="timeline-result-heading">
           <strong>工具结果 · {outcomeLabels[body.outcome]}</strong>
           <button type="button" onClick={() => onNavigate(body.call_ref.message_id, body.call_ref.part_index)}
             disabled={!lookupMessage(body.call_ref.message_id)}>
@@ -424,11 +489,11 @@ export function TimelineMessageView({ message, lookupMessage, toolResults, onNav
           </button>
         </div> : null}
         {body.parts.map((part, index) => ({ part, index })).sort((left, right) =>
-          Number(right.part.kind === "model.facts" || right.part.kind === "history.transcript")
-          - Number(left.part.kind === "model.facts" || left.part.kind === "history.transcript"))
-          .map(({ part, index }) => isTimelinePartVisible(part) && !(hideBody && part.kind === "text") && !(hideProcess && (part.kind === "model.facts" || part.kind === "tool_call" || part.kind === "history.transcript")) ? <div key={index} data-part-index={index} tabIndex={-1}>
+          flowRank(right.part) + Number(right.part.kind === "history.transcript")
+          - flowRank(left.part) - Number(left.part.kind === "history.transcript"))
+          .map(({ part, index }) => isTimelinePartVisible(part) && !((hideBody || (attachmentResult && !renderAttachment)) && part.kind === "text") && !((hideProcess || inlineReply) && (part.kind === "model.facts" || part.kind === "tool_call" || part.kind === "history.transcript")) ? <div key={index} data-part-index={index} tabIndex={-1}>
           {beforePart?.(part, index, message)}
-          <TimelinePartView part={part} toolResult={body.kind === "tool_result"} attachment={attachment} lookupMessage={lookupMessage} canLoadReferences={canLoadReferences}
+          <TimelinePartView part={part} toolResult={body.kind === "tool_result" && !attachmentResult} attachment={attachment} lookupMessage={lookupMessage} canLoadReferences={canLoadReferences}
             onNavigate={onNavigate} onError={onError} processStartContent={leadingContent} />
         </div> : null)}
       </>}
@@ -437,6 +502,46 @@ export function TimelineMessageView({ message, lookupMessage, toolResults, onNav
         <Fragment key={`${ref.artifact_id}:${index}`}>{attachment(ref.artifact_id)}</Fragment>)}
     </div>
   </div>;
+}
+
+export interface TimelineAttachmentOrigin {
+  kind: TimelineMessage["body"]["kind"];
+  author: string;
+  tool: string | null;
+}
+
+// 插件按来源决定是否认领附件；工具结果附带产生它的工具名，缺少调用记录时为 null。
+function attachmentOrigin(message: TimelineMessage, lookupMessage: (id: string) => TimelineMessage | undefined): TimelineAttachmentOrigin {
+  const body = message.body;
+  if (body.kind !== "tool_result") return { kind: body.kind, author: message.author, tool: null };
+  const call = lookupMessage(body.call_ref.message_id);
+  const part = call?.body.kind === "control" ? undefined : call?.body.parts[body.call_ref.part_index];
+  return { kind: body.kind, author: message.author, tool: part?.kind === "tool_call" && !("display" in part) ? part.name : null };
+}
+
+/** 保留一个稳定的插图容器；插件退出后用原消息文字降级，平滑收起高度。 */
+function MessageAttachmentFigure({ attachment, origin, sessionId, messageId, fallback }: {
+  attachment: TimelineAttachment; origin: TimelineAttachmentOrigin;
+  sessionId: string; messageId: string; fallback: ReactNode;
+}) {
+  const box = useRef<HTMLElement>(null);
+  const content = useRef<HTMLDivElement>(null);
+  useLayoutEffect(() => {
+    const outer = box.current!, inner = content.current!;
+    const measure = () => { outer.style.height = `${inner.getBoundingClientRect().height}px`; };
+    measure();
+    const observer = new ResizeObserver(measure);
+    observer.observe(inner);
+    return () => observer.disconnect();
+  }, []);
+  return <section ref={box} className="message-figure" aria-label="回复附件">
+    <div ref={content}>
+      <PluginUiSlot name="message.attachment" quiet sessionId={sessionId} messageId={messageId}
+        block={{ ...attachment, origin }} fallback={fallback} />
+      <a className="message-figure-download" href={`/api/chat/artifacts/${encodeURIComponent(attachment.artifact_id)}`}
+        download={attachment.filename ?? "附件"} aria-label={`下载源文件 ${attachment.filename ?? "附件"}`}><Download size={16} aria-hidden="true" /></a>
+    </div>
+  </section>;
 }
 
 function TimelinePartView({ part, toolResult = false, attachment, lookupMessage, onNavigate, onError, processStartContent, canLoadReferences }: {
@@ -454,7 +559,7 @@ function TimelinePartView({ part, toolResult = false, attachment, lookupMessage,
     : <p className="timeline-state">无法展示此内容</p>;
   if ("archive" in part) return part.kind === "history.transcript" ? <TimelineTranscript archive={part.archive} startContent={processStartContent} onError={onError} /> : null;
   switch (part.kind) {
-    case "context.notice": return <p className="plain-message-response" role="status">{part.value.text}</p>;
+    case "context.notice": return <ContextNoticeRow text={part.value.text} />;
     case "text": return toolResult ? <ToolResultContent value={"rendered" in part ? part.rendered : part.value} /> : <MessageBody content={part.value} streaming={false} deferRichContent onError={onError} />;
     case "artifact_ref": return attachment(part.value);
     case "reply_ref": {

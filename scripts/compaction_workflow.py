@@ -172,8 +172,7 @@ async def run(folder: Path, case: str, *, second_provider: bool = False) -> dict
                 assert shown == notices
                 if case == "split_turn":
                     # 3. 真正应用前一代完整 Turn，再由第二次压缩补学上一代延后的尾部。
-                    store = MarkdownProfileStore(folder / "learning/memory.md", folder / "learning/self.md",
-                                                 folder / "learning/receipts.db")
+                    store = MarkdownProfileStore(folder / "learning", folder / "learning/receipts.db")
                     lookup = root.context.require(COMPACTION_SUMMARIES)
                     async def learning():
                         record = lookup.head("test:room")
@@ -187,10 +186,9 @@ async def run(folder: Path, case: str, *, second_provider: bool = False) -> dict
                         return record, {message.message_id for group in groups or () for message in group}
                     record, learned = await learning()
                     assert learned == {"earlier-input", "earlier-final"}
-                    draft = {"version": 1, "memory_before": store.read_memory(), "memory": store.read_memory(),
-                             "self_before": store.read_self(), "self": store.read_self()}
+                    draft = {"version": 3, "scope": None, "ops": []}
                     store.write_draft(record.reference, draft, session_key="test:room", generation=record.generation)
-                    store.apply_draft(record.reference, draft)
+                    store.apply(record.reference)
                     writer(Input).append("next-task", Input((ContentPart("text", "next task"),)))
                     for index in range(6):
                         identity = f"next-call-{index}"

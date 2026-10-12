@@ -21,8 +21,9 @@ from plugins.runtime_inspection import plugin as inspection
 async def check(workspace: Path) -> None:
     root = CompositionRoot("document-owner-scenario")
     log = MessageLog(workspace / "sessions.db")
-    def runtime(name, files=(), config=None):
-        return PluginRuntime(name, name, workspace, workspace / name, workspace, config or {}, workspace_files=files)
+    def runtime(name, files=(), config=None, roots=()):
+        return PluginRuntime(name, name, workspace, workspace / name, workspace, config or {},
+                             workspace_roots=roots, workspace_files=files)
     try:
         await root.mount(context.apply, name="context", runtime=runtime("context", config={
             "prompt_sources": {"default_prompt": "prompt", "markdown_memory": "markdown_memory"},
@@ -34,7 +35,8 @@ async def check(workspace: Path) -> None:
         persona = await root.mount(prompt.apply, name="prompt", inject=prompt.inject,
                                    runtime=runtime("prompt", prompt.workspace_files))
         profiles = await root.mount(memory.apply, name="memory", inject=memory.inject,
-                                    runtime=runtime("markdown_memory", memory.workspace_files))
+                                    runtime=runtime("markdown_memory", memory.workspace_files,
+                                                    roots=memory.workspace_roots))
         assert persona.state is FiberState.ACTIVE and profiles.state is FiberState.ACTIVE
         observer = await root.mount(inspection.apply, name="inspection", runtime=runtime("inspection"))
         documents = root.context.require(DOCUMENTS)

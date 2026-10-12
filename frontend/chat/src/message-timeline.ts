@@ -371,6 +371,8 @@ export function timelineReplyGroups(messages: TimelineMessage[], activities: Rep
   const pending = new Map<string, TimelineMessage[]>();
   const completed = new Map<string, TimelineMessage[]>();
   const hiddenBodies = new Set<string>();
+  // 被附件结果切开的同一回复只在末尾显示一次时间和操作。
+  const joined = new Set<string>();
   for (const message of messages) {
     const key = `${message.session_id}:${message.source}`;
     const body = message.body;
@@ -395,6 +397,10 @@ export function timelineReplyGroups(messages: TimelineMessage[], activities: Rep
         hiddenBodies.delete(ending.id);
         if (closed.length > 1) completed.set(ending.id, closed);
       }
+      if (body.kind === "tool_result") {
+        joined.add(message.id);
+        if (ending?.body.kind === "output" && ending.body.finish === "continue") joined.add(ending.id);
+      }
       pending.set(key, members.filter((item) => item.seq > throughSeq));
     }
   }
@@ -402,7 +408,43 @@ export function timelineReplyGroups(messages: TimelineMessage[], activities: Rep
   for (const activity of activities) active.set(activity.handle, pending.get(`${activity.session_id}:${activity.source}`) ?? []);
   const moved = new Set([...completed.values()].flatMap((members) => members.slice(0, -1).map((message) => message.id)));
   for (const members of active.values()) for (const message of members) moved.add(message.id);
-  return { completed, active, moved, hiddenBodies };
+  // 附件把正文留在原位；整条图文回复的过程集中在首段上方。
+  const inline = timelineInlineReplies(messages);
+  for (const members of inline.leading.values()) for (const item of members.slice(0, -1)) joined.add(item.id);
+  for (const id of inline.outputs) {
+    completed.delete(id); moved.delete(id); hiddenBodies.delete(id);
+  }
+  for (const [handle, members] of active) active.set(handle, members.filter(item => !inline.outputs.has(item.id)));
+  return { completed, active, moved, hiddenBodies, joined, inline };
+}
+
+/** 从已提交消息识别图文回复；不依赖插件是否启用，也不改写消息顺序。 */
+function timelineInlineReplies(messages: TimelineMessage[]) {
+  const pending = new Map<string, { messages: TimelineMessage[]; attachment: boolean }>();
+  const leading = new Map<string, TimelineMessage[]>();
+  const outputs = new Set<string>();
+  const save = (key: string) => {
+    const reply = pending.get(key);
+    if (reply?.attachment && reply.messages.length) {
+      leading.set(reply.messages[0].id, reply.messages);
+      for (const item of reply.messages) outputs.add(item.id);
+    }
+    pending.delete(key);
+  };
+  for (const message of messages) {
+    const key = timelineSourceKey(message), body = message.body;
+    if (body.kind === "input" || (body.kind === "control" && body.action !== "resume")) save(key);
+    if (body.kind === "output") {
+      const reply = pending.get(key) ?? { messages: [], attachment: false };
+      reply.messages.push(message); pending.set(key, reply);
+      if (body.finish !== "continue") save(key);
+    } else if (body.kind === "tool_result" && message.attachments.length) {
+      const reply = pending.get(key);
+      if (reply) reply.attachment = true;
+    }
+  }
+  for (const key of pending.keys()) save(key);
+  return { leading, outputs };
 }
 
 /** 已加载的工具结果在原调用面板中展示；缺少调用的分页仍保留结果行。 */

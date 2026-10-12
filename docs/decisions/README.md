@@ -148,3 +148,5 @@
 | [0113](0113-background-job-notices.md) | proposed / implemented for review | 后台任务完成通知：忙时注入下一步，闲时唤醒原会话 | SES、OUT、PLG |
 
 | [0114](0114-shared-session-read-marks.md) | proposed / implemented for review | 会话已读水位改为服务端共享，手机通知随已读撤掉 | WEBUI、SES |
+
+| [0116](0116-markdown-budget-pruning.md) | accepted | 常驻 Markdown 档案超额后由模型压缩并舍弃低价值条目 | MEM-001～MEM-004、MEM-012、MEM-014 |
