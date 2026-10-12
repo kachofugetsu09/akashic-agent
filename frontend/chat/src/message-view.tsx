@@ -27,7 +27,7 @@ import {
   DialogTitle,
   DialogTrigger,
 } from "@/components/ui/dialog";
-import { Brain, Check, ChevronDown, Copy, ImageIcon, Wrench } from "lucide-react";
+import { Brain, Check, ChevronDown, Copy, Gauge, ImageIcon, Wrench } from "lucide-react";
 import {
   Fragment,
   lazy,
@@ -88,8 +88,9 @@ const MessageBody = memo(function MessageBody({
 });
 
 /** 草稿复用聊天的等待和思考组件，提交后由相同样式的历史行接替。 */
-export function ReplyActivityView({ activity, committed, onError, processMessages = [], toolResults = new Map(), inputStarts = new Map(), refreshToken }: {
+export function ReplyActivityView({ activity, committed, onError, onStop, processMessages = [], toolResults = new Map(), inputStarts = new Map(), refreshToken }: {
   activity: ReplyActivity;
+  onStop?: () => void;
   inputStarts?: ReadonlyMap<string, number>;
   refreshToken?: string;
   committed: ReadonlySet<string>;
@@ -116,10 +117,22 @@ export function ReplyActivityView({ activity, committed, onError, processMessage
         beforePart={(part, index, message) => part.kind === "tool_call" && !("display" in part) ? <PluginUiSlot
           name="turn.before_tool" sessionId={message.session_id} messageId={message.id}
           block={{ ...part, message_id: message.id, part_index: index }} /> : null} />
-      {activity.active && draft?.retry_status ? <p className="plain-message-response" role="status">{draft.retry_status}</p> : null}
+      {activity.active && draft?.retry_status ? <RetryStatus text={draft.retry_status} onStop={onStop} /> : null}
       {activity.active && !draft?.retry_status && !text && !draft?.thinking && !flow.length ? <ThinkingPlaceholder /> : null}
       {text ? <MessageBody content={text} streaming={Boolean(draft?.text) && activity.active} deferRichContent onError={onError} /> : null}
     </div>
+  </div>;
+}
+
+/** 重试与压缩进度共用一张状态卡：首行是状态，其余是原始原因，停止就在旁边。 */
+function RetryStatus({ text, onStop }: { text: string; onStop?: () => void }) {
+  const [headline, ...detail] = text.split("\n");
+  return <div className="retry-status" role="status">
+    <div className="retry-status__text">
+      <strong>{headline}</strong>
+      {detail.length ? <code>{detail.join("\n")}</code> : null}
+    </div>
+    {onStop ? <button type="button" onClick={onStop}>停止</button> : null}
   </div>;
 }
 
@@ -205,13 +218,15 @@ type FlowItem =
   | { kind: "thinking"; key: string; origin: TimelineMessage; index: number; part: TimelinePart; content: string }
   | { kind: "tool"; key: string; origin: TimelineMessage; index: number; part: TimelinePart; block: ToolBlock }
   | { kind: "narration"; key: string; origin: TimelineMessage; index: number; part: TimelinePart; text: string }
+  | { kind: "notice"; key: string; origin: TimelineMessage; index: number; part: TimelinePart; text: string }
   | { kind: "part"; key: string; origin: TimelineMessage; index: number; part: TimelinePart };
 
 /** 组内全部成员按 part 顺序展开成独立流项：思考、工具、中途正文、末条正文各归原位。 */
 function timelineFlow(messages: TimelineMessage[], finalId: string | undefined, toolResults: ReadonlyMap<string, TimelineMessage>): FlowItem[] {
   return messages.flatMap((origin) => origin.body.kind !== "output" ? [] :
     origin.body.parts.map((part, index) => ({ part, index }))
-    .sort((left, right) => Number(right.part.kind === "model.facts") - Number(left.part.kind === "model.facts"))
+    // 上下文提示发生在生成之前，排在思考之前；思考再排在正文之前。
+    .sort((left, right) => flowRank(right.part) - flowRank(left.part))
     .flatMap(({ part, index }): FlowItem[] => {
       if ("display" in part) return [];
       const key = `${origin.id}:${index}`;
@@ -235,7 +250,7 @@ function timelineFlow(messages: TimelineMessage[], finalId: string | undefined, 
           status: outcome === null ? "input-available" : outcome === "success" ? "output-available" : "output-error",
           errorText: outcome && outcome !== "success" ? outcomeLabels[outcome] : undefined } }];
       }
-      if (part.kind === "context.notice") return [{ kind: "part", key, origin, index, part }];
+      if (part.kind === "context.notice") return [{ kind: "notice", key, origin, index, part, text: part.value.text }];
       if (origin.id === finalId) {
         return isTimelinePartVisible(part) ? [{ kind: "part", key, origin, index, part }] : [];
       }
@@ -244,6 +259,23 @@ function timelineFlow(messages: TimelineMessage[], finalId: string | undefined, 
       }
       return [];
     }));
+}
+
+function flowRank(part: TimelinePart): number {
+  if ("display" in part) return 0;
+  return part.kind === "context.notice" ? 2 : part.kind === "model.facts" ? 1 : 0;
+}
+
+/** 上下文提示是本轮请求的诊断，与思考行同级：收起时一行摘要，展开看全文。 */
+function ContextNoticeRow({ text }: { text: string }) {
+  return <details className="context-notice">
+    <summary className="process-trigger">
+      <Gauge className="process-trigger-icon" size={13} aria-hidden="true" />
+      <span className="process-trigger-summary">{text}</span>
+      <ChevronDown className="process-chevron" size={13} aria-hidden="true" />
+    </summary>
+    <p className="process-content process-text" role="status">{text}</p>
+  </details>;
 }
 
 interface FlowPartViewProps {
@@ -262,6 +294,7 @@ function FlowItemView({ item, beforePart, onCopyToolDetail, partView }: {
 }) {
   const content = item.kind === "thinking" ? <ThinkingRow content={item.content} streaming={false} />
     : item.kind === "tool" ? <ToolStep block={item.block} active={item.block.status === "input-available"} onCopyDetail={onCopyToolDetail} />
+    : item.kind === "notice" ? <ContextNoticeRow text={item.text} />
     : item.kind === "narration" ? <div className="timeline-narration">
       <MessageBody content={item.text} streaming={false} deferRichContent onError={partView?.onError} />
     </div>
@@ -420,8 +453,8 @@ export function TimelineMessageView({ message, lookupMessage, toolResults, onNav
           </button>
         </div> : null}
         {body.parts.map((part, index) => ({ part, index })).sort((left, right) =>
-          Number(right.part.kind === "model.facts" || right.part.kind === "history.transcript")
-          - Number(left.part.kind === "model.facts" || left.part.kind === "history.transcript"))
+          flowRank(right.part) + Number(right.part.kind === "history.transcript")
+          - flowRank(left.part) - Number(left.part.kind === "history.transcript"))
           .map(({ part, index }) => isTimelinePartVisible(part) && !(hideBody && part.kind === "text") && !(hideProcess && (part.kind === "model.facts" || part.kind === "tool_call" || part.kind === "history.transcript")) ? <div key={index} data-part-index={index} tabIndex={-1}>
           {beforePart?.(part, index, message)}
           <TimelinePartView part={part} toolResult={body.kind === "tool_result"} attachment={attachment} lookupMessage={lookupMessage} canLoadReferences={canLoadReferences}
@@ -450,7 +483,7 @@ function TimelinePartView({ part, toolResult = false, attachment, lookupMessage,
     : <p className="timeline-state">无法展示此内容</p>;
   if ("archive" in part) return part.kind === "history.transcript" ? <TimelineTranscript archive={part.archive} startContent={processStartContent} onError={onError} /> : null;
   switch (part.kind) {
-    case "context.notice": return <p className="plain-message-response" role="status">{part.value.text}</p>;
+    case "context.notice": return <ContextNoticeRow text={part.value.text} />;
     case "text": return toolResult ? <ToolResultContent value={"rendered" in part ? part.rendered : part.value} /> : <MessageBody content={part.value} streaming={false} deferRichContent onError={onError} />;
     case "artifact_ref": return attachment(part.value);
     case "reply_ref": {

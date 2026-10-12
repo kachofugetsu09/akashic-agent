@@ -213,8 +213,9 @@ async def apply(ctx: Context) -> None:
         if not selected:
             selected = fallback
             if selected and on_status is not None:
-                await on_status(f"近期原文目标 {config.keep_recent_tokens:,} tokens 无法满足容量；"
-                                f"本次保留约 {retained_tokens:,} tokens，当前输入与未结算工具仍保留。", True)
+                await on_status(f"上下文空间不足，这一轮只保留了最近约 {retained_tokens:,} tokens 的原文"
+                                f"（目标 {config.keep_recent_tokens:,}），更早的内容改用摘要。"
+                                "当前输入和进行中的工具调用完整保留。", True)
         if not selected:
             raise SummaryError("没有能降低完整请求容量的已结算工具批次切点")
         inputs = summary_groups(selected, snapshot)

@@ -318,9 +318,14 @@ export const DesktopTimelineMessages = React.memo(function DesktopTimelineMessag
   onCopied: (id: string) => void;
   onError: (error: unknown) => void;
 }) {
-  const { stopScroll } = useStickToBottomContext();
+  const { stopScroll, scrollRef } = useStickToBottomContext();
   const byId = useMemo(() => new Map(messages.map((message) => [message.id, message])), [messages]);
   const lookupMessage = useCallback((id: string) => byId.get(id), [byId]);
+  const swipeReply = useCallback((id: string) => {
+    const message = byId.get(id);
+    if (message && status === "idle" && (message.body.kind === "input" || message.body.kind === "output")) onReply(timelineReply(message));
+  }, [byId, onReply, status]);
+  useNarrowMessageGestures(scrollRef, swipeReply);
   const toolResults = useMemo(() => timelineToolResults(messages), [messages]);
   const groups = useMemo(() => timelineReplyGroups(messages, activities), [messages, activities]);
   const inputStarts = useMemo(() => timelineInputStarts(messages), [messages]);
@@ -399,3 +404,75 @@ export const DesktopTimelineMessages = React.memo(function DesktopTimelineMessag
         && activity.preview?.message_id === other.preview?.message_id;
     });
 });
+
+type TouchGesture = { x: number; y: number; anchor: HTMLElement | null; fromEdge: boolean; axis: "x" | "y" | null; dx: number };
+
+// 窄屏触控：点消息显示它的时间与操作；在消息上左滑引用；离开屏幕边缘右滑打开会话抽屉。
+function useNarrowMessageGestures(scrollRef: React.RefObject<HTMLElement | null>, onSwipeReply: (id: string) => void) {
+  const replyRef = useRef(onSwipeReply);
+  useEffect(() => { replyRef.current = onSwipeReply; }, [onSwipeReply]);
+
+  // 必要 effect：在滚动区上委托触摸与点击（DOM 手势只能在原生事件里读取几何）
+  useEffect(() => {
+    const scroller = scrollRef.current;
+    if (!scroller) return;
+    const narrow = window.matchMedia("(max-width: 36rem)");
+    let gesture: TouchGesture | null = null;
+    // 1. 代码块和表格保留自己的横向滚动，不参与手势。
+    const onStart = (event: TouchEvent) => {
+      const target = event.target instanceof Element ? event.target : null;
+      gesture = null;
+      if (!narrow.matches || event.touches.length !== 1 || !target || target.closest("pre, table, .reading-table, input, textarea")) return;
+      const touch = event.touches[0];
+      gesture = { x: touch.clientX, y: touch.clientY, anchor: target.closest<HTMLElement>(".web-message-anchor"),
+        fromEdge: touch.clientX < 24, axis: null, dx: 0 };
+    };
+    // 2. 先判定方向；横向时消息跟手左移，给出引用反馈。
+    const onMove = (event: TouchEvent) => {
+      if (!gesture) return;
+      const dx = event.touches[0].clientX - gesture.x;
+      const dy = event.touches[0].clientY - gesture.y;
+      if (!gesture.axis && Math.hypot(dx, dy) > 10) gesture.axis = Math.abs(dx) > Math.abs(dy) * 1.5 ? "x" : "y";
+      if (gesture.axis !== "x") return;
+      gesture.dx = dx;
+      if (gesture.anchor && dx < 0) {
+        gesture.anchor.style.transition = "none";
+        gesture.anchor.style.translate = `${Math.max(dx, -64)}px 0`;
+      }
+    };
+    // 3. 松手时按距离决定引用或打开抽屉，消息回弹到原位。
+    const onEnd = () => {
+      if (!gesture) return;
+      const { anchor, axis, dx, fromEdge } = gesture;
+      gesture = null;
+      if (axis !== "x") return;
+      if (anchor) {
+        anchor.style.transition = "";
+        anchor.style.translate = "";
+      }
+      if (dx < -56 && anchor?.dataset.messageId) replyRef.current(anchor.dataset.messageId);
+      else if (dx > 72 && !fromEdge) scroller.closest(".chat-main")?.querySelector<HTMLButtonElement>(".compact-navigation-trigger")?.click();
+    };
+    // 4. 点在正文上切换该条的时间与操作；可交互元素和选中文字不受影响。
+    const onClick = (event: MouseEvent) => {
+      const target = event.target instanceof Element ? event.target : null;
+      if (!narrow.matches || !target || window.getSelection()?.toString()) return;
+      if (target.closest("a, button, summary, input, textarea, [role='button'], .shared-message-meta")) return;
+      const anchor = target.closest<HTMLElement>(".web-message-anchor");
+      for (const open of scroller.querySelectorAll(".web-message-anchor.is-revealed")) if (open !== anchor) open.classList.remove("is-revealed");
+      anchor?.classList.toggle("is-revealed");
+    };
+    scroller.addEventListener("touchstart", onStart, { passive: true });
+    scroller.addEventListener("touchmove", onMove, { passive: true });
+    scroller.addEventListener("touchend", onEnd);
+    scroller.addEventListener("touchcancel", onEnd);
+    scroller.addEventListener("click", onClick);
+    return () => {
+      scroller.removeEventListener("touchstart", onStart);
+      scroller.removeEventListener("touchmove", onMove);
+      scroller.removeEventListener("touchend", onEnd);
+      scroller.removeEventListener("touchcancel", onEnd);
+      scroller.removeEventListener("click", onClick);
+    };
+  }, [scrollRef]);
+}

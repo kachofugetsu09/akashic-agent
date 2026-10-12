@@ -2,7 +2,7 @@ import { CheckIcon, CopyIcon } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
 import { CodeBlockNode, ListNode, ParagraphNode as ParagraphRenderer, PreCodeNode, type NodeComponentProps } from "markstream-react";
 import type { CodeBlockNode as CodeData, ListNode as ListData, ParagraphNode, ParsedNode, TableNode as TableData } from "stream-markdown-parser";
-import { copyReadingCode, isConceptLabel, isNumericColumn, isPlainTextLanguage } from "./markdown-reading";
+import { copyReadingCode, isConceptLabel, isNumericColumn, isPlainTextLanguage, stripConceptSeparator } from "./markdown-reading";
 
 export const CODE_BLOCK_PROPS = {
   showLineNumbers: false,
@@ -54,14 +54,23 @@ export function ReadingList(props: NodeComponentProps<ListData>) {
     // 上面的结构判断保证每项都是以 strong 开头的 paragraph。
     if (!isParagraph(paragraph)) throw new Error("Concept item must start with a paragraph");
     const key = `${String(indexKey)}-${index}`;
+    const description = conceptDescription(paragraph.children.slice(1));
     return <li key={key} dir="auto">
       <span className="reading-concept-label">{renderNode(paragraph.children[0], `${key}-label`, ctx)}</span>
       <div className="reading-concept-description">
-        {renderNode({ ...paragraph, children: paragraph.children.slice(1) }, `${key}-description`, ctx)}
+        {description.length ? renderNode({ ...paragraph, children: description }, `${key}-description`, ctx) : null}
         {item.children.slice(1).map((child, childIndex) => renderNode(child, `${key}-child-${childIndex}`, ctx))}
       </div>
     </li>;
   })}</ul>;
+}
+
+/** 去掉说明开头的冒号；只剩冒号时说明为空，由后续嵌套内容接上。 */
+function conceptDescription(children: ParsedNode[]): ParsedNode[] {
+  const [first, ...rest] = children;
+  if (first?.type !== "text" || typeof first.content !== "string") return children;
+  const content = stripConceptSeparator(first.content);
+  return content ? [{ ...first, content, raw: content }, ...rest] : rest;
 }
 
 /** 显式对齐优先，整列数值用等宽字体；表格保留行列与 loading 语义。 */

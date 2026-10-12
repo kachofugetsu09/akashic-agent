@@ -7,10 +7,9 @@ import {
   Conversation,
   ConversationContent,
   ConversationEmptyState,
-  ConversationScrollButton,
 } from "@/components/ai-elements/conversation";
 import { HostBridgeNotice } from "./host-bridge-notice";
-import { DesktopAutoScroll } from "./desktop-auto-scroll";
+import { DesktopAutoScroll, NarrowReadingChrome, ReadingReturnButton } from "./desktop-auto-scroll";
 import { ComposerStatsLine } from "./composer-stats-line";
 import { ThinkingPlaceholder } from "./thinking-placeholder";
 import { DesktopComposer, type ComposerApi } from "./desktop-composer";
@@ -22,6 +21,7 @@ import { DesktopSidebar } from "./desktop-sidebar";
 import { useSidebarRail } from "./use-sidebar-rail";
 import type { DesktopChatController } from "./use-desktop-chat-controller";
 import { SessionDirectory } from "./session-directory";
+import { isGeneratingChatStatus } from "./web-chat-status";
 
 interface DesktopChatViewProps {
   embeddedShell: boolean;
@@ -122,14 +122,15 @@ export function DesktopChatView({ embeddedShell, controller }: DesktopChatViewPr
                   onCopied={handleCopiedMessage} onError={reportError}
                 />
                 {replyActivities.map((activity) => <ReplyActivityView key={activity.handle}
-                  activity={activity} committed={committed} inputStarts={inputStarts} refreshToken={refreshTokens.get(timelineSourceKey(activity))} processMessages={replyGroups.active.get(activity.handle)} toolResults={toolResults} onError={reportError} />)}
+                  activity={activity} committed={committed} inputStarts={inputStarts} refreshToken={refreshTokens.get(timelineSourceKey(activity))} processMessages={replyGroups.active.get(activity.handle)} toolResults={toolResults} onError={reportError} onStop={stopTurn} />)}
               </MessageRendererErrorBoundary>
             )}
             {status === "submitted" && !replyActivities.some((activity) => activity.active) ? <ThinkingPlaceholder /> : null}
           </ConversationContent>
           <DesktopAutoScroll messages={messages} status={status} streamStore={streamStore}
             timelineMessages={timelineMessages} replyActivities={replyActivities} />
-          <ConversationScrollButton className="desktop-scroll-return" />
+          <NarrowReadingChrome />
+          <ReadingReturnButton generating={isGeneratingChatStatus(status)} />
         </Conversation>
 
         <div className={`composer-wrap ${!hasMessages ? "home" : ""}`}>
