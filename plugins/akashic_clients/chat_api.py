@@ -12,7 +12,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any, Literal, Protocol, cast
 
 import uvicorn
-from fastapi import FastAPI, HTTPException, Query, Request, WebSocket
+from fastapi import FastAPI, HTTPException, Path as ApiPath, Query, Request, WebSocket
 from fastapi.responses import FileResponse, JSONResponse, Response, StreamingResponse
 from pydantic import BaseModel, ConfigDict, Field
 
@@ -461,6 +461,26 @@ def create_chat_app(
             media_type="text/javascript" if kind == "module" else "text/css",
             headers={"Cache-Control": "private, max-age=31536000, immutable"},
         )
+
+    @app.get("/api/chat/plugin-ui/script/{sha256}.js")
+    async def plugin_ui_script(
+        sha256: str = ApiPath(..., pattern=r"^[0-9a-f]{64}$"),
+        plugin_id: str = Query(..., min_length=1, max_length=128),
+        plugin_revision: str = Query(..., min_length=1, max_length=128),
+        name: str = Query(..., min_length=1, max_length=256),
+    ) -> Response:
+        # 复用现有 owner、generation 和 hash 校验；路径中的 hash 也可供 iframe CSP 精确限定。
+        try:
+            if plugin_ui_scope is not None:
+                async with plugin_ui_scope() as provider:
+                    asset = await provider.asset(plugin_id, plugin_revision, f"script:{name}", sha256)
+            else:
+                asset = await _require_plugin_ui_provider(plugin_ui_provider).asset(
+                    plugin_id, plugin_revision, f"script:{name}", sha256)
+        except (PluginUiPluginUnavailable, PluginUiStaleRevision) as error:
+            raise _plugin_ui_http_error(error) from error
+        return Response(content=str(asset["content"]), media_type="text/javascript",
+                        headers={"Cache-Control": "private, max-age=31536000, immutable", "X-Content-Type-Options": "nosniff"})
 
     @app.post("/api/chat/plugin-ui/query")
     async def plugin_ui_query(

@@ -67,10 +67,7 @@ _DEFAULT_SELF_MD = """# Akashic 的自我认知
 ## 我们关系的定义
 - 我与当前用户的关系以透明、尊重边界和持续协作为基础。
 """
-_MEMORY_CONTEXT_PROFILE_RESPONSE = json.dumps(
-    {"memory": "", "self": _DEFAULT_SELF_MD},
-    ensure_ascii=False,
-)
+_MEMORY_CONTEXT_PROFILE_RESPONSE = json.dumps({"ops": []}, ensure_ascii=False)
 _MEMORY_CONTEXT_TOKEN_REPEAT = 4_500
 
 
@@ -586,7 +583,7 @@ def _memory_context_request_kinds(requests: Sequence[object]) -> list[str]:
             and "[Source messages]" in serialized
         ):
             kind = "summary"
-        elif "你维护两个长期 Markdown 档案" in serialized:
+        elif "你维护 Akashic 的长期 Markdown 记忆" in serialized:
             kind = "markdown"
         elif _MEMORY_CONTEXT_INPUT in serialized:
             kind = "business"
@@ -1565,7 +1562,7 @@ def _inside_memory_context(report_dir: Path) -> int:
             ) as connection:
                 receipt_rows = connection.execute(
                     "SELECT source_ref, kind, payload FROM consolidation_writes "
-                    "WHERE kind IN ('markdown_memory_applied_v1', 'markdown_self_applied_v1') "
+                    "WHERE kind = 'markdown_ops_applied_v1' "
                     "ORDER BY source_ref, kind"
                 ).fetchall()
             receipt_inventory = [
@@ -1580,24 +1577,19 @@ def _inside_memory_context(report_dir: Path) -> int:
                 if not isinstance(value, dict):
                     raise GateFailure(f"Markdown receipt 不是 object：{kind}")
                 candidate[str(kind)] = value
-            memory_content = memory_path.read_text(encoding="utf-8") if memory_path.exists() else ""
-            self_content = self_path.read_text(encoding="utf-8") if self_path.exists() else ""
+            applied = candidate.get("markdown_ops_applied_v1")
             if (
-                set(candidate) == {
-                    "markdown_memory_applied_v1",
-                    "markdown_self_applied_v1",
-                }
-                and memory_path.exists()
-                and self_path.exists()
-                and candidate["markdown_memory_applied_v1"].get("digest")
-                == hashlib.sha256(memory_content.encode("utf-8")).hexdigest()
-                and candidate["markdown_self_applied_v1"].get("digest")
-                == hashlib.sha256(self_content.encode("utf-8")).hexdigest()
+                applied is not None and memory_path.exists() and self_path.exists()
+                and all(
+                    hashlib.sha256(Path("/sandbox/workspace/memory", doc).read_text(encoding="utf-8")
+                                   .encode("utf-8")).hexdigest() == digest
+                    for doc, digest in cast(dict[str, str], applied.get("files", {})).items()
+                )
             ):
                 receipt_payloads = candidate
                 break
             threading.Event().wait(0.05)
-        if len(receipt_payloads) != 2:
+        if not receipt_payloads:
             raise GateFailure(
                 "Markdown receipt 或目标文件未收敛："
                 f"{sorted(receipt_payloads)} inventory={receipt_inventory!r} "
@@ -1609,8 +1601,8 @@ def _inside_memory_context(report_dir: Path) -> int:
             not pending_path.exists()
             or not pending_path.read_text(encoding="utf-8").strip()
         )
-        memory_applied = receipt_payloads.get("markdown_memory_applied_v1")
-        self_applied = receipt_payloads.get("markdown_self_applied_v1")
+        memory_applied = receipt_payloads.get("markdown_ops_applied_v1")
+        self_applied = memory_applied
 
         request_kinds = _memory_context_request_kinds(final_requests)
         source_positions = [

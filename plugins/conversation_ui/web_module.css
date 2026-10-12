@@ -212,6 +212,14 @@
     clip-path: inset(50%);
     white-space: nowrap;
   }
+
+  /* 与标题栏里的图标按钮同一形态：无卡片底，悬停才有底色。 */
+  .conversation-tools-toggle {
+    border-color: transparent;
+    background: transparent;
+    box-shadow: none;
+    backdrop-filter: none;
+  }
 }
 
 /* 触控输入下开关、关闭与标签的可点区域不小于 44px；指针输入保持紧凑尺寸。 */

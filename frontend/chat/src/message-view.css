@@ -351,16 +351,29 @@
   margin-block-end: 0;
 }
 
-/* 用原生 list-item counter 保留 start/value、嵌套与辅助阅读的序号。 */
+/* 用原生 list-item counter 保留 start/value、嵌套与辅助阅读的序号。
+   序号画在 ::before 上：左缘贴阅读边线，虚线与正文同一起点（::marker 靠右排，左缘无法对齐）。 */
 :is(.agent-content, .process-markdown, .user-bubble) .markdown-reading :where(ol):not(li ol) {
   margin-block: 0.75rem 1rem;
-  padding-inline-start: 2.65rem;
-  list-style-type: decimal-leading-zero;
+  padding-inline-start: 2.5rem;
+  list-style: none;
 }
 
 :is(.agent-content, .process-markdown, .user-bubble) .markdown-reading :where(ol):not(li ol) > li {
+  position: relative;
   margin: 0;
-  padding: 0 0 0 0.4rem;
+  padding: 0;
+}
+
+:is(.agent-content, .process-markdown, .user-bubble) .markdown-reading :where(ol):not(li ol) > li::before {
+  content: counter(list-item, decimal-leading-zero) ".";
+  position: absolute;
+  inset-inline-start: -2.5rem;
+  color: var(--ak-ink-secondary);
+  font-family: var(--ak-type-technical);
+  font-size: 0.85em;
+  font-variant-numeric: tabular-nums;
+  line-height: calc(var(--chat-response-leading, 1.5) / 0.85);
 }
 
 :is(.agent-content, .process-markdown, .user-bubble) .markdown-reading :where(ol):not(li ol) > li + li {
@@ -1413,6 +1426,14 @@ button.tool-step-summary:active {
   .shared-message-actions button {
     opacity: 1;
   }
+
+  /* 左滑引用松手后消息回弹原位。 */
+  .web-message-anchor { transition: translate 180ms var(--ak-sys-motion-standard, ease); }
+
+  /* 热区互相重叠 12px：图标间距与时间到首个图标同为 18px，每个热区仍是 44px。 */
+  .shared-message-actions button + button {
+    margin-inline-start: -12px;
+  }
 }
 
 @media (prefers-reduced-motion: reduce) {
@@ -1549,6 +1570,70 @@ button.tool-step-summary:active {
 .tool-result-fields details { padding-inline-start: 0.75rem; border-inline-start: 1px solid var(--ak-rule-subtle); }
 .tool-result-data.error .tool-result { color: var(--ak-color-status-error); }
 
+/* 上下文提示：沿用思考行的触发行；原生 details 的三角标记换成右侧 chevron。 */
+.context-notice > summary {
+  display: flex;
+  align-items: center;
+  list-style: none;
+  cursor: pointer;
+}
+
+.context-notice > summary::-webkit-details-marker { display: none; }
+.context-notice[open] .process-chevron { rotate: 180deg; }
+.context-notice > .process-content { margin: 2px 0 6px; }
+
+.retry-status {
+  display: flex;
+  align-items: flex-start;
+  gap: 12px;
+  padding: 10px 12px;
+  border: 1px solid var(--ak-rule-subtle);
+  border-radius: 10px;
+  background: var(--ak-paper-quiet);
+  font-size: 0.8125rem;
+  line-height: 1.5;
+}
+
+.retry-status__text {
+  display: grid;
+  flex: 1;
+  min-width: 0;
+  gap: 2px;
+}
+
+.retry-status__text strong { font-weight: 600; }
+
+.retry-status__text code {
+  padding: 0;
+  background: none;
+  color: var(--ak-ink-muted);
+  font-family: var(--ak-type-technical);
+  font-size: 0.6875rem;
+  overflow-wrap: anywhere;
+  white-space: pre-wrap;
+}
+
+.retry-status > button {
+  flex: none;
+  min-height: 32px;
+  padding: 0 12px;
+  border: 1px solid var(--ak-rule-default);
+  border-radius: 8px;
+  background: var(--ak-paper-canvas);
+  color: var(--ak-ink-primary);
+  font: inherit;
+  cursor: pointer;
+}
+
+.retry-status > button:hover { background: var(--ak-paper-raised); }
+.retry-status > button:focus-visible { outline: 2px solid var(--ak-rule-focus); outline-offset: 2px; }
+
+@media (max-width: 36rem) {
+  .web-message-anchor:not(:nth-last-child(1 of .web-message-anchor)):not(.is-revealed) .shared-message-meta {
+    display: none;
+  }
+}
+
 .message-attachment-download {
   display: inline-flex;
   align-items: center;
@@ -1561,3 +1646,20 @@ button.tool-step-summary:active {
   outline: 2px solid var(--ak-color-action-primary);
   outline-offset: 2px;
 }
+
+/* 插图沿正文左缘，无卡片外壳；降级文字和下载由宿主保留。 */
+.message-figure { position: relative; margin-block: 1.25rem; transition: height var(--ak-sys-duration-medium, 300ms) ease; }
+.message-figure .plugin-ui-host { margin: 0; }
+.message-figure-download { position: absolute; right: 0; top: 0; display: flex; width: 40px; min-height: 40px; align-items: center; justify-content: center;
+  color: var(--ak-color-text-secondary); font-size: 0.8125rem; text-underline-offset: 3px; opacity: 0;
+  transition: opacity var(--ak-sys-duration-short, 150ms); }
+.message-figure:hover .message-figure-download, .message-figure:focus-within .message-figure-download { opacity: 1; }
+.message-figure-download:focus-visible { outline: 2px solid var(--ak-color-action-primary); outline-offset: 2px; }
+.attachment-description p:last-child { margin-bottom: 0; }
+@media (hover: none), (max-width: 820px) { .message-figure-download { width: 44px; min-height: 44px; opacity: 1; } }
+@media (prefers-reduced-motion: reduce) { .message-figure, .message-figure-download { transition: none; } }
+
+.inline-reply-process { margin-bottom: 1rem; color: var(--ak-color-text-secondary); }
+.inline-reply-process summary { cursor: pointer; min-height: 40px; align-content: center; font-size: 0.8125rem; }
+.attachment-description h3 { padding-inline-end: 44px; }
+@media (max-width: 820px) { .inline-reply-process summary { min-height: 44px; } }

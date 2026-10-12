@@ -7,7 +7,7 @@
       "label": "纸感",
       "status": "stable",
       "colorScheme": "light",
-      "chart": {"1": "#2563eb", "2": "#0f766e", "3": "#b45309", "4": "#7c3aed", "5": "#be185d", "6": "#4d7c0f"},
+      "chart": {"1": "#4c89cc", "2": "#b47825", "3": "#0f6a31", "4": "#763671", "5": "#b05457", "6": "#00898a"},
       "material": {
         "primary": "#1b365d", "onPrimary": "#fafaf9", "primaryContainer": "#eef2f7", "onPrimaryContainer": "#0d1f38",
         "secondary": "#53524e", "onSecondary": "#fafaf9", "secondaryContainer": "#e8e7e2", "onSecondaryContainer": "#1c1c19",
@@ -31,7 +31,7 @@
       "label": "墨纸",
       "status": "stable",
       "colorScheme": "dark",
-      "chart": {"1": "#60a5fa", "2": "#2dd4bf", "3": "#fbbf24", "4": "#c4b5fd", "5": "#f472b6", "6": "#a3e635"},
+      "chart": {"1": "#6fa2db", "2": "#b98749", "3": "#a1e4ae", "4": "#e1afed", "5": "#f19f91", "6": "#1c989e"},
       "material": {
         "primary": "#a8bdd9", "onPrimary": "#0d1f38", "primaryContainer": "#2a4568", "onPrimaryContainer": "#eef2f7",
         "secondary": "#c8c6bf", "onSecondary": "#1c1c19", "secondaryContainer": "#3d3d3a", "onSecondaryContainer": "#e8e7e2",
