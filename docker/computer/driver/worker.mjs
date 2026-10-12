@@ -483,8 +483,8 @@ async function run(message) {
     } else {
       let scriptError;
       try {
-        const value = await evaluate(message.code);
-        if (value !== undefined) nodeRepl.write(value);
+        // 赋值也有求值结果；只发布显式输出，避免把截图数组当文本回显。
+        await evaluate(message.code);
       } catch (error) { scriptError = error; }
       // 脚本失败也运行参考客户端的结算 hook；hook 失败不能保留绑定。
       for (const hook of hooks) await hook.run();

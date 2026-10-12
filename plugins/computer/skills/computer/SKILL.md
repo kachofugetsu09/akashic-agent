@@ -26,6 +26,12 @@ receipt says they were reset or the browser was closed.
 Earlier actions may have taken effect: inspect the current page before retrying an action.
 Correct an invalid method and continue; do not treat a script error as task completion.
 
+Keep each call focused: observe, choose a small action, then check its visible effect. Once one
+reliable UI signal confirms the requested result, finish. A second view is useful only when the
+first is unclear or contradicted. Do not keep inspecting a completed task, look up its implementation,
+or repeat it to improve a displayed score. A highlighted row alone does not prove its checkbox or
+icon changed; inspect the specific control's selected/checked state.
+
 Before the first browser action, read the installed API in a separate call:
 
 ```js
@@ -54,13 +60,35 @@ Read additional documents
 with `agent.documentation.get(name)` using names listed in that guidance. The bundled API is the reference Browser API; optional capabilities must be
 listed before use. macOS application AX and optional desktop audio are unavailable here.
 
+This is a bounded Browser API, not the full Playwright library. Locators do not have `inputValue()`
+or `boundingBox()`. Read a visible input's current value or an element's rectangle through the
+documented read-only `evaluate`, for example:
+
+```js
+var field = await tab.playwright.getByRole("textbox", {name: "Name"}).evaluate(el => ({
+  value: el.value, readOnly: el.readOnly, rect: el.getBoundingClientRect()
+}));
+nodeRepl.write(field);
+```
+
+Keep page evaluation to short DOM reads. Do calculations and timing loops in the outer REPL;
+the read-only page scope does not expose every browser global. Use `Number(text)` for numeric
+conversion. Do not discover APIs by reflection, source reads or guessing many method/key names.
+Use `var` for bindings reused across calls; do not redeclare top-level `const` or `let` names.
+Output only what is needed with `nodeRepl.write` or `nodeRepl.emitImage`. Assignments and returned
+values do not print automatically. Keep screenshot bytes in a variable and emit the image;
+never write a byte array as JSON. Methods such as `tab.ax.write()` already emit their output.
+
 1. Inspect the current page before acting. Prefer `tab.ax` element indices or `tab.playwright` locators.
    Derive indices from the latest AX state; derive selectors from observed page structure.
 2. Use `fill()` for typed controls such as dates and range sliders, and `selectOption()` for native
    selects. Do not type an ISO date into Chromium's segmented date editor.
+   If an input is read-only, open its picker and use the visible controls instead of retrying fill.
 3. Verify the resulting UI state before claiming success; partial content does not prove completeness.
    Batch related actions and their resulting observation in one call. The driver waits after input;
    use page state or locator waits when loading is asynchronous.
+   If the UI confirms there are no matching items to change, complete the remaining requested
+   confirmation or submission; do not invent a target or search for hidden state.
 4. Use `sky` for native dialogs, browser chrome, and coordinate actions. Coordinates refer to the
    container's 1280 × 800 desktop. It supports click, move, drag, scroll, press_key, type_text and screenshot.
 5. New tabs belong to this Turn and close at its end unless marked deliverable or handoff. Preserve
@@ -87,6 +115,12 @@ It supplies image content to the current multimodal model. Use `read_image_visio
 reports that the current model cannot accept images.
 `sky.get_screenshot()` returns bytes and a data URL, without a separate temporary filepath. AX state is
 currently full text; its formatting and compression are not claimed identical to the original WASM.
+The returned screenshot path belongs to Akashic, not the Computer container's filesystem. Pass it
+unchanged to `read_file`; do not open it with `require('fs')` inside Computer. For a small visual
+target, emit a clipped screenshot with `tab.screenshot({clip:{x,y,width,height}})` and inspect it
+before changing browser zoom or probing image libraries. Browser coordinates are relative to the
+tab viewport; `sky` uses desktop coordinates, including browser chrome. Refresh geometry after
+scrolling and bring a target into view before a coordinate action.
 
 OpenCLI remains a separate ordinary shell command and uses the same browser.
 

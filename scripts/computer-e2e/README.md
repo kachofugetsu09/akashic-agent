@@ -6,6 +6,7 @@
 ```bash
 COMPUTER_E2E_CHROMIUM=/path/to/chrome node scripts/computer-e2e/run.mjs
 node scripts/computer-e2e/idle.mjs
+node scripts/computer-e2e/input.mjs
 ```
 
 开发尚未发布的驱动时，明确设置 `COMPUTER_E2E_SOURCE=1`；`COMPUTER_E2E_IMAGE`
@@ -25,3 +26,6 @@ Selkies 参与验收。主桌面观看检查真实 H.264 帧；匿名输入检�
 fixture 只提供 UI 挂载目录、主题接口、聊天占位和设置正文，不启动完整 Core，也不读写正式
 workspace。该验收不代表生产热更新、generation 切换或真实 Android WebView 已验证。
 开发容器允许 Chromium 创建沙箱所需的系统调用；正式 workload 的 seccomp 接入另行验收。
+
+`input.mjs` 使用真实 gateway 和 Chromium，验证主浏览器及匿名 Context 的拖拽按键、
+释放后的移动，以及截图赋值不产生隐式文本、显式图片仍正常输出。该检查不需要用户浏览器。

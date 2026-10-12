@@ -392,12 +392,21 @@ export class BrowserBackend extends EventEmitter {
       case "nameSession":
         this.sessionNames.set(context.session_id, params.name);
         return;
-      case "moveMouse":
+      case "moveMouse": {
+        // 浏览器 UI 的指针移动不能松开 CDP 已按住的键，否则网页会中断拖拽。
+        const held = this.inputs.get(`${params.tabId}:`)?.buttons;
+        const masks = { left: 1, right: 2, middle: 4, back: 8, forward: 16 };
+        let buttons = 0;
+        for (const button of held?.keys() ?? []) buttons |= masks[button];
         return this.execute({
           target: { tabId: params.tabId },
           method: "Input.dispatchMouseEvent",
-          commandParams: { type: "mouseMoved", x: params.x, y: params.y },
+          commandParams: {
+            type: "mouseMoved", x: params.x, y: params.y,
+            button: held?.keys().next().value ?? "none", buttons,
+          },
         });
+      }
       case "turnEnded":
         return this.endTurn(context);
       default:

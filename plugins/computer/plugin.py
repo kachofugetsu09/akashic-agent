@@ -275,6 +275,8 @@ async def apply(ctx: Context) -> None:
             "search/fetch fails or cannot provide the needed content. "
             "Prefer suitable dedicated skills, connectors, APIs or CLIs when available. "
             "Run JavaScript with the initialized browser and desktop APIs. "
+            "Only documented APIs are available; this is not full Playwright. "
+            "Use explicit nodeRepl.write/emitImage output; expression values are not echoed. "
             "Use browser.tabs, tab.ax, tab.playwright, tab.dom_cua or sky. "
             "Use agent.browsers.create() for an anonymous BrowserContext and close() to release it. "
             "Reuse anonymous browser bindings across calls; browsers.get(browserId) reselects the same instance. "
