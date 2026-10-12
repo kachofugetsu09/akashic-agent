@@ -419,7 +419,12 @@ function InlineReplyProcess({ messages, toolResults, beforeReasoning, beforePart
   const settled = flow.filter(item => !running.includes(item));
   const count = settled.filter(item => item.kind === "tool").length;
   return <div className="inline-reply-process">
-    {settled.length ? <details><summary>{count ? `思考并调用 ${count} 个工具` : "思考过程"}</summary>
+    {settled.length ? <details className="context-notice"><summary className="process-trigger">
+      {count ? <Wrench className="process-trigger-icon" size={13} aria-hidden="true" />
+        : <Brain className="process-trigger-icon" size={13} aria-hidden="true" />}
+      <span className="process-trigger-summary">{count ? `思考并调用 ${count} 个工具` : "思考过程"}</span>
+      <ChevronDown className="process-chevron" size={13} aria-hidden="true" />
+    </summary>
       <TimelineProcess flow={settled} beforeReasoning={beforeReasoning} beforePart={beforePart} />
     </details> : null}
     <TimelineProcess flow={running} beforeReasoning={beforeReasoning} beforePart={beforePart} />

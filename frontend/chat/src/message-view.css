@@ -1660,6 +1660,6 @@ button.tool-step-summary:active {
 @media (prefers-reduced-motion: reduce) { .message-figure, .message-figure-download { transition: none; } }
 
 .inline-reply-process { margin-bottom: 1rem; color: var(--ak-color-text-secondary); }
-.inline-reply-process summary { cursor: pointer; min-height: 40px; align-content: center; font-size: 0.8125rem; }
+.inline-reply-process > details > summary { min-height: 40px; }
 .attachment-description h3 { padding-inline-end: 44px; }
-@media (max-width: 820px) { .inline-reply-process summary { min-height: 44px; } }
+@media (max-width: 820px) { .inline-reply-process > details > summary { min-height: 44px; } }
