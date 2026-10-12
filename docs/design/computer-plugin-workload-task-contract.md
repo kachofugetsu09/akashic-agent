@@ -438,9 +438,12 @@ OpenCLI daemon、extension 和 connectivity 可用。登录态是各站自己的
 Agent 使用 `computer` 执行持久 JavaScript，通过 `browser` 读取页面结构和操作元素，通过
 `sky` 完成桌面输入和截图。调用身份、取消、标签归属和 Turn 收尾见
 [驱动源码迁移](computer-driver-source-migration.md)。原四个 MCP 工具已移除。
-截图结果原子写入 Computer plugin-data 下的有界文件集合并返回绝对路径，统一提示用 `read_file`
-读取。`read_file` 按当前 Agent 的真实模型能力提供图片内容；不支持图片时才提示使用
-`read_image_vision`。截图工具不把 base64 当作文本返回；每次写入仍只保留最近 32 张截图。
+截图结果在同一次工具回执中成为图片附件，模型可直接查看；绝对路径同时保留供后续使用。
+Computer MCP 仍原子写入 plugin-data 下的截图缓存，每次只保留最近 32 张。Computer 工具
+通过 Ledger 的窄导入接口保存独立的持久附件；同一调用超过 32 张也使用原图字节，不依赖
+缓存路径仍存在。消息和附件只增加，不改写旧回执；缓存淘汰、Turn 结束或插件卸载不删除
+Ledger 附件。旧消息和图片可按原引用回读。普通截图不再要求额外调用 `read_file`；
+不支持图片的模型沿原能力提示使用 `read_image_vision`。base64 不作为模型文本返回。
 
 用户通过完整 RFB client 使用桌面；Agent 通过同一个容器内的驱动操作。两条路径复用同一桌面、
 浏览器和 profile。原 HTTP 路由仍供已有 benchmark 与驱动检查使用，不作为模型工具发布。

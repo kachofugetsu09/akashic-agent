@@ -110,13 +110,13 @@ await sky.click({x: 640, y: 400, mouse_button: "right"});
 await nodeRepl.emitImage((await sky.get_screenshot())[0].bytes);
 ```
 
-Images are saved by the existing screenshot owner; inspect the returned path with `read_file`.
-It supplies image content to the current multimodal model. Use `read_image_vision` only if `read_file`
-reports that the current model cannot accept images.
+Images emitted by Computer arrive as image attachments in the same tool result. Inspect them directly;
+do not call `read_file` again for an image already shown. The saved path remains available for later use.
+Use `read_image_vision` only if the current model reports that it cannot accept images.
 `sky.get_screenshot()` returns bytes and a data URL, without a separate temporary filepath. AX state is
 currently full text; its formatting and compression are not claimed identical to the original WASM.
-The returned screenshot path belongs to Akashic, not the Computer container's filesystem. Pass it
-unchanged to `read_file`; do not open it with `require('fs')` inside Computer. For a small visual
+The returned screenshot path belongs to Akashic, not the Computer container's filesystem.
+Do not open it with `require('fs')` inside Computer. For a small visual
 target, emit a clipped screenshot with `tab.screenshot({clip:{x,y,width,height}})` and inspect it
 before changing browser zoom or probing image libraries. Browser coordinates are relative to the
 tab viewport; `sky` uses desktop coordinates, including browser chrome. Refresh geometry after

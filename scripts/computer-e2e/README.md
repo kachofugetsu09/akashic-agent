@@ -32,3 +32,8 @@ workspace。该验收不代表生产热更新、generation 切换或真实 Andro
 
 该输入检查还通过真实快捷键放大页面，核对裁剪图片的 CSS 尺寸、目标颜色和全页边界。
 CDP 截图矩形使用 DIP；Browser API 的 CSS 矩形必须先按页面 zoom 转换。
+
+`attachments.py` 启动完整 AppRuntime、Computer、MCP 和 Ledger，以本地 HTTP 脚本模型驱动
+固定动作。运行 `.venv/bin/python scripts/computer-e2e/attachments.py`，验证一次调用的 33 张
+截图直接进入下一次模型请求，文本顺序不变，32 张缓存淘汰不损坏持久附件，退出宿主后
+附件字节仍匹配。它不调用真实模型，不计入模型能力成绩；全链路证据留在输出目录。

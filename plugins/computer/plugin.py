@@ -4,10 +4,13 @@ from importlib import import_module
 from plugins.ui.contract import UI
 
 import hashlib
+import base64
 import json
 from collections.abc import AsyncIterator, Mapping
 from contextlib import asynccontextmanager
 from dataclasses import dataclass
+from pathlib import Path
+from tempfile import TemporaryDirectory
 from typing import cast
 
 from agent.plugin_composition import (
@@ -31,7 +34,7 @@ from plugins.ledger.contract import BINDINGS
 from plugins.ledger.contract import MESSAGE_CATALOG, OWNER_STATE
 from .inputs import CallSource, Result, TOOLS, TURN_PROJECTION, TurnProjection
 from plugins.ledger.contract import MessageCatalog, OwnerRecord, OwnerStore
-from plugins.ledger.contract import ContentPart, Input, Message, Output, ToolCall
+from plugins.ledger.contract import ARTIFACT_IMPORT, AttachmentKind, ContentPart, Input, Message, Output, ToolCall
 
 from .control import ComputerDriverError, endpoint_name, request
 
@@ -150,6 +153,7 @@ inject = (UI,
     BINDINGS,
     MESSAGE_CATALOG,
     OWNER_STATE,
+    ARTIFACT_IMPORT,
     TURN_PROJECTION,
 )
 workspace_roots = ()
@@ -202,10 +206,28 @@ class _ComputerTool:
         return values
 
     async def invoke(self, key: str, arguments: Mapping[str, object]) -> Result:
+        """保留文本顺序，把截图直接提交为本次工具回执的图片附件。"""
+        # 1. 动作仍由原 control owner 执行；失败不伪装成空成功。
         value = await self._control.run(key, self._control_binding, arguments)
         if value.get("kind") == "driver_error":
             return Result("error", (ContentPart("text", cast(str, value["error"])),))
-        return Result("success", (ContentPart("text", json.dumps(value, ensure_ascii=False)),))
+        # 2. 文本与图片保持驱动顺序；Ledger 拥有持久附件，截图缓存仍由 MCP 管理。
+        parts = []
+        for item in cast(list[dict[str, str]], value["content"]):
+            if item["type"] == "text":
+                parts.append(ContentPart("text", item["text"]))
+            elif item["type"] == "image":
+                with TemporaryDirectory(prefix="akashic-computer-image-") as folder:
+                    path = Path(folder) / "screenshot"
+                    raw = base64.b64decode(item["data"], validate=True)
+                    _ = await run_file_io(lambda: path.write_bytes(raw))
+                    ref = await self._control.ctx.require(ARTIFACT_IMPORT).import_source(str(path), AttachmentKind.IMAGE)
+                if ref.kind is not AttachmentKind.IMAGE:
+                    raise ValueError("Computer returned invalid image bytes")
+                parts.append(ContentPart("artifact_ref", ref.artifact_id))
+            else:
+                raise ValueError(f"Unknown Computer content type: {item['type']}")
+        return Result("success", tuple(parts))
 
     async def query(self, key: str) -> Result | None:
         _ = key
