@@ -19,6 +19,11 @@ export function isConceptLabel(label: string, description: string) {
   return label.trim().length > 0 && [...label.trim()].length <= 40 && description.trim().length > 0;
 }
 
+/** 标签与说明分栏后，原文写在两者之间的冒号不再有语义，留着会悬在说明行首。 */
+export function stripConceptSeparator(text: string) {
+  return text.replace(/^\s*[:：]\s*/u, "");
+}
+
 /**
  * 表格对齐在 MarkdownIt 的局部 token 阶段补齐。不要使用 postTransformTokens：
  * 它会禁用稳定节点复用，并在每次追加时克隆全部 token、重复转换整个正文。
