@@ -22,7 +22,7 @@ MAX_DESCRIPTION_CHARS = 80
 _FOLDER = re.compile(r"[^\s/\\._][^/\\]{0,39}")
 _TOPIC_FILE = re.compile(r"[a-z0-9][a-z0-9-]{0,63}\.md")
 
-OpName = Literal["add", "supersede", "retract", "create", "create_folder", "merge"]
+OpName = Literal["add", "supersede", "retract", "create", "create_folder", "merge", "prune"]
 _FIELDS: dict[str, frozenset[str]] = {
     "add": frozenset({"op", "doc", "line", "message_ids", "section"}),
     "supersede": frozenset({"op", "doc", "old", "line", "message_ids"}),
@@ -30,6 +30,7 @@ _FIELDS: dict[str, frozenset[str]] = {
     "create": frozenset({"op", "doc", "description", "line", "message_ids"}),
     "create_folder": frozenset({"op", "folder", "description"}),
     "merge": frozenset({"op", "doc", "olds", "line"}),
+    "prune": frozenset({"op", "doc", "old", "line"}),
 }
 
 
@@ -55,6 +56,9 @@ class Op:
             values["folder"] = self.doc.split("/", 1)[1]
         elif self.op == "merge":
             values["olds"] = list(self.olds)
+        elif self.op == "prune":
+            if not self.line:
+                del values["line"]
         else:
             values["message_ids"] = list(self.message_ids)
         if self.op == "add" and not self.section:
@@ -80,7 +84,7 @@ def _parse_op(item: object) -> Op:
     if name not in get_args(OpName):
         raise InvalidDraft(f"未知操作: {name!r}")
     allowed = _FIELDS[cast(str, name)]
-    required = allowed - {"section"} if name == "add" else allowed
+    required = allowed - ({"section"} if name == "add" else {"line"} if name == "prune" else set())
     if not required <= set(data) <= allowed:
         raise InvalidDraft(f"{name} 操作字段必须是 {sorted(allowed)}")
     values = {key: value for key, value in data.items() if key not in {"op", "message_ids", "folder", "olds"}}
@@ -102,7 +106,7 @@ def _parse_op(item: object) -> Op:
                             or any(not isinstance(old, str) for old in cast(list[object], olds))):
         raise InvalidDraft("merge 的 olds 必须是至少两条旧条目原文")
     ids = data.get("message_ids", [])
-    if name not in {"create_folder", "merge"} and (not isinstance(ids, list) or not ids
+    if name not in {"create_folder", "merge", "prune"} and (not isinstance(ids, list) or not ids
                                      or any(not isinstance(key, str) for key in cast(list[object], ids))):
         raise InvalidDraft("message_ids 必须是非空消息 ID 数组")
     if name == "create_folder":
@@ -224,11 +228,12 @@ class Workspace:
             if strict:
                 raise InvalidDraft(f"旧条目不存在: {op.old}")
             # retract 的结果就是旧条目不在；supersede 只有新条目已在才算已应用。
-            if op.op == "supersede" and op.line not in lines:
-                self.conflicts.append(f"#{index} supersede {doc}: 旧条目与新条目都不在")
+            if (op.op == "supersede" or (op.op == "prune" and op.line)) and op.line not in lines:
+                self.conflicts.append(f"#{index} {op.op} {doc}: 旧条目与新条目都不在")
             return
         index = lines.index(op.old)
-        lines[index:index + 1] = [] if op.op == "retract" or op.line in lines else [op.line]
+        remove = op.op == "retract" or (op.op == "prune" and not op.line) or op.line in lines
+        lines[index:index + 1] = [] if remove else [op.line]
         self.texts[doc] = "\n".join(lines) + "\n"
 
 
@@ -293,17 +298,20 @@ def check_budgets(before: Mapping[str, str], after: Mapping[str, str],
             _check_budget(doc, old, text, memory_budget, self_budgets)
 
 
-def _check_budget(doc: str, old: str, text: str, memory_budget: int, self_budgets: Mapping[str, int]) -> None:
-    before, after = _section_sizes(old), _section_sizes(text)
+def budget_usage(doc: str, text: str, memory_budget: int,
+                 self_budgets: Mapping[str, int]) -> dict[str, tuple[int, int]]:
+    """返回受管理章节的实际字数与配额；手写的其他章节不占配额。"""
+    sizes = _section_sizes(text)
     if doc == MEMORY:
-        # 只统计三个用户章节；手写的其他章节（如旧的助手操作上下文）不占配额。
-        total = sum(after.get(heading, 0) for heading in MEMORY_HEADINGS[1:])
-        if total > memory_budget and total > sum(before.get(heading, 0) for heading in MEMORY_HEADINGS[1:]):
-            raise InvalidDraft(f"MEMORY.md 超出 {memory_budget} 字配额：用 supersede 合并旧条目，或写入 topics/")
-        return
-    for heading, budget in self_budgets.items():
-        if after.get(heading, 0) > budget and after.get(heading, 0) > before.get(heading, 0):
-            raise InvalidDraft(f"SELF.md {heading} 超出 {budget} 字配额：用 supersede 合并旧条目")
+        return {"": (sum(sizes.get(heading, 0) for heading in MEMORY_HEADINGS[1:]), memory_budget)}
+    return {heading: (sizes.get(heading, 0), budget) for heading, budget in self_budgets.items()}
+
+
+def _check_budget(doc: str, old: str, text: str, memory_budget: int, self_budgets: Mapping[str, int]) -> None:
+    before = budget_usage(doc, old, memory_budget, self_budgets)
+    for heading, (size, budget) in budget_usage(doc, text, memory_budget, self_budgets).items():
+        if size > budget and size > before[heading][0]:
+            raise InvalidDraft(f"{doc} {heading} 超出 {budget} 字配额（当前 {size} 字）")
 
 
 PINNED_CHARS = 4000

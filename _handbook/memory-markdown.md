@@ -21,7 +21,7 @@ Output 引用压缩摘要后，follower 读取尚未学习的完整 Turn，把�
 文件夹全文交给模型，模型只返回操作：`add`、`supersede`、`retract`、`create`、`create_folder`。
 
 - 证据：每个操作引用本次来源的真实 message_id；`MEMORY.md`、`SELF.md` 中对用户与关系的判断及 `retract` 只认用户 Input。
-- 新条目为不超过 120 字的单行 `- ` 文本；配额只在内容变长时检查，既有手写内容不阻断提炼。不合格草稿修正一次。
+- 新条目为不超过 120 字的非空单行 `- ` 文本。既有档案或新提炼结果超额时，先按 MEM-014 剪枝回配额内，再提交；其他手写章节不参与剪枝。不合格草稿修正一次。
 - 只能写全局主题或当前 scope 的文件夹；后台不设置 `pinned`。
 
 ```
@@ -63,3 +63,10 @@ follower 每次唤醒检查：距上次整理不少于 `consolidate_hours`（默
 矛盾条目只在一方带更新日期或明确是更正时合并，不按文件中的先后位置判断。
 结果走同一 `markdown_ops_v1` → 幂等叠加 → `markdown_ops_applied_v1` 路径，完成后写 `markdown_consolidated_v1`；
 两次不合格的 scope 跳过，模型暂时失败留到下次唤醒。`consolidate: false` 关闭。
+
+## 超额自愈
+
+容量维护独立于定期整理：每次 follower 唤醒检查现有 MEMORY/SELF；每批提炼在内存中叠加后也检查，超额则请模型保留更重要的条目，允许压缩、合并或舍弃低价值内容。目标为约八成配额，提交前必须满足硬配额。
+剪枝只可使用 `merge` 或 `prune`：后者逐字引用 `old`，带非空 `line` 表示压缩，省略 `line` 表示舍弃。只接纳超额章节的旧条目，不改 topics、标题、未超额章节或会话正文；普通提炼不能直接返回维护操作。
+独立剪枝使用 `consolidation:budget:` 来源，提炼期间的剪枝随同一提炼 draft 提交。两者都保留不可覆盖的 before-image 和操作 receipt；输出不合格不写文件，模型或文件暂时失败保留进度并延时重试，不依赖新消息。`consolidate: false` 只关闭定期整理，不关闭超额自愈。
+自动遗忘的长期合同、状态减少范围和恢复依据见 [MEM-014](../docs/projectneed.md#mem-014-常驻-markdown-档案超额自动剪枝) 与 [0116](../docs/decisions/0116-markdown-budget-pruning.md)。

@@ -15,6 +15,8 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from plugins.markdown_memory.store import MarkdownProfileStore
 from agent.plugin_composition.config_input import save_config
+from plugins.content.plugin import check_text
+from plugins.ledger.contract import ContentPart, Output
 from tests.test_default_reply import application
 
 
@@ -43,6 +45,9 @@ async def run(folder: Path) -> None:
     initial_receipts = receipts(database)
     conflict = asyncio.Event()
     retried = asyncio.Event()
+    pruned = asyncio.Event()
+    important = "- 保留重要的协作约定。"
+    unimportant = "- 临时线索：" + "x" * 90
     requests: list[str] = []
     failure: list[Exception] = []
 
@@ -50,6 +55,8 @@ async def run(folder: Path) -> None:
         def emit(self, record: logging.LogRecord) -> None:
             if "保留草稿稍后重试" in record.getMessage():
                 conflict.set()
+            if "超额剪枝已完成" in record.getMessage():
+                pruned.set()
 
     # 2. 真实模型端口先返回非法空行，修正后返回有效 merge；恢复后的新整理无操作。
     async def serve(reader: asyncio.StreamReader, writer: asyncio.StreamWriter) -> None:
@@ -68,6 +75,8 @@ async def run(folder: Path) -> None:
                 "olds": ["- 使用 helix", "- 用 helix 编辑代码"],
                 "line": "" if len(requests) == 1 else "- 使用 helix 编辑代码",
             }]
+            if "你在压缩超额的长期 Markdown 记忆" in requests[-1]:
+                ops = [{"op": "prune", "doc": "MEMORY.md", "old": unimportant}]
             body = json.dumps({"text": json.dumps({"ops": ops}, ensure_ascii=False)}).encode()
             writer.write(f"HTTP/1.1 200 OK\r\nContent-Length: {len(body)}\r\nConnection: close\r\n\r\n".encode() + body)
             await writer.drain()
@@ -77,6 +86,7 @@ async def run(folder: Path) -> None:
             failure.append(error)
             conflict.set()
             retried.set()
+            pruned.set()
         finally:
             writer.close()
             await writer.wait_closed()
@@ -89,6 +99,7 @@ async def run(folder: Path) -> None:
             "summary_source": ["compaction", "compaction"],
             "prompt_sources": {"markdown_memory": "markdown_memory"},
         })
+        save_config(folder / "workspace/plugin-data/markdown_memory-builtin", {"memory_budget": 80})
         for name in ("markdown_memory", "runtime_inspection"):
             shutil.copytree(Path(__file__).resolve().parents[1] / "plugins" / name, sources / name,
                             ignore=shutil.ignore_patterns("__pycache__"))
@@ -124,6 +135,8 @@ async def run(folder: Path) -> None:
 
     handler = ConflictLog()
     logger = logging.getLogger("plugins.markdown_memory")
+    previous_level = logger.level
+    logger.setLevel(logging.INFO)
     logger.addHandler(handler)
     try:
         async with application(folder, replying=False, compaction=True, extra_sources=configure) as (log, _host):
@@ -147,11 +160,27 @@ async def run(folder: Path) -> None:
             assert all(store.read(doc) == text for doc, text in protected.items())
             assert all(row in receipts(database) for row in initial_receipts)
             assert log.reader("seed").snapshot() == ()
+            # 4. 模拟原生文件编辑超额；真实 Output 唤醒 follower，未到定期整理时间也能自愈。
+            before_pruning = store.read("MEMORY.md").replace("## 用户偏好", "## 用户偏好\n" + important + "\n" + unimportant)
+            (memory / "MEMORY.md").write_text(before_pruning)
+            log.writer("pruning", author="assistant", source="programmatic", body_types=(Output,),
+                       content={"text": check_text}).append("wake-pruning", Output((ContentPart("text", "检查容量"),), "complete"))
+            await asyncio.wait_for(pruned.wait(), 10)
+            if failure:
+                raise failure[0]
+            assert important in store.read("MEMORY.md") and unimportant not in store.read("MEMORY.md")
+            pruning_refs = {ref for ref, kind, _ in receipts(database)
+                            if ref.startswith("consolidation:budget:") and kind == "markdown_ops_applied_v1"}
+            assert len(pruning_refs) == 1
+            assert store._read_receipt(pruning_refs.pop(), "markdown_before_v1") == {"MEMORY.md": before_pruning}
+            assert store.read("SELF.md") == protected["SELF.md"]
             print(json.dumps({"invalid_merge_rejected": True, "conflicts": 3,
                               "pending_retried_without_new_message": True,
-                              "protected_files_and_receipts_preserved": True, "model_requests": len(requests)}))
+                              "protected_files_and_receipts_preserved": True,
+                              "native_overflow_pruned_with_backup": True, "model_requests": len(requests)}))
     finally:
         logger.removeHandler(handler)
+        logger.setLevel(previous_level)
         server.close()
         await server.wait_closed()
 
