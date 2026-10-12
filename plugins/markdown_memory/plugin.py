@@ -194,6 +194,11 @@ async def _prepare_profile_batch(messages: tuple[Message, ...], source: str, wor
 # 单次模型调用产出操作；合同不合格时只反馈错误修正一次，不补写模型猜错的内容。
 async def _complete_ops(provider: BoundChatModel, prompt: str,
                         check: Callable[[LLMResponse], tuple[Op, ...]]) -> tuple[Op, ...]:
+    """流式接收长草稿，只在完整响应通过校验后返回操作。"""
+    async def consume_delta(_delta: dict[str, str]) -> None:
+        # 后台没有逐字展示；驱动聚合全文，避免长生成耗尽非流式等待窗口。
+        pass
+
     # 新增条目与模型推理共享输出预算，采用 provider 已声明的生成上限。
     output_cap = provider.descriptor.capabilities.max_output_tokens or 0
     request = prompt
@@ -201,7 +206,7 @@ async def _complete_ops(provider: BoundChatModel, prompt: str,
     while True:
         response = await provider.complete(ModelRequest(
             messages=[{"role": "user", "content": request}],
-            max_output_tokens=output_cap, disable_reasoning=True,
+            max_output_tokens=output_cap, disable_reasoning=True, on_delta=consume_delta,
         ))
         try:
             return check(response)
