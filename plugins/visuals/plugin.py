@@ -33,19 +33,19 @@ class Config(BaseModel):
 class Visual(BaseModel):
     model_config = ConfigDict(extra="forbid", strict=True)
     title: str = Field(min_length=1, max_length=120, description="简短中文标题")
-    summary: str = Field(min_length=1, max_length=2000, description="图的主要结论；无法显示交互图时仍可阅读")
+    summary: str = Field(min_length=1, max_length=2000, description="一两句话的结论，只在无法显示交互图时代替图出现；不要写成后文正文")
     html: str = Field(min_length=1, max_length=200_000, description=(
-        "完整 HTML body 片段，可含内联 style/script、SVG 和 Canvas。"
-        "不得依赖网络、外部库、宿主 API、iframe、表单提交或导航。"
-        "使用原生 JS 和响应式布局，适应 280px 与 720px；图表固定高度，控件至少 44px。"
-        "自己编写 HTML/CSS/JavaScript，按内容选择 SVG、Canvas 或普通 DOM，不提供绘图库或专用图表 API。"
-        "图形和控件必须基于真实数据或公式更新；坐标、刻度、图例和悬停读数由文档自己实现。"
-        "一张图突出一个关系，保留单位、刻度和图例；默认无框透明背景，不重复正文标题。"
-        "图标题用 h2，副标题用 p.caption；优先 2–3 个系列，颜色只用于数据线和点，文字用正文色。"
-        "用 --ak-chart-1 到 --ak-chart-6 配色；文字、背景、线条使用 --ak-color-text-primary、"
-        "--ak-color-text-secondary、--ak-color-bg-canvas、--ak-color-bg-surface、--ak-color-border-default。"
-        "每图最多 12 个滑块，必须带可访问名称和当前值，改变参数应立即更新真实计算结果。"
-        "保留图例、单位、轴标签；文本用 textContent，避免数值 NaN/Infinity。"
+        "完整 HTML body 片段，可含内联 style/script、SVG 和 Canvas；自己编写 HTML/CSS/JavaScript，按内容选择 SVG、"
+        "Canvas 或普通 DOM。不得依赖网络、外部库、宿主 API、iframe、表单提交或导航。"
+        "文档已有与聊天一致的默认样式，直接使用、不要重写：h2 图标题，p.caption 副标题，svg.chart 图区（默认高 280px），"
+        ".grid/.axis 网格与轴线，svg 文字默认是小号刻度字，div.legend > span > i[style=--series:var(--ak-chart-N)] 图例，"
+        "label.param（文字 + output + input[type=range]）参数行，div.controls 按钮组，button.primary 主按钮，"
+        "p.readout 当前读数，p.note 注释。背景透明、不加卡片外框，不重复正文标题。"
+        "图形和读数必须由真实数据或公式计算，参数改变立即更新；刻度、单位、图例和悬停读数由文档自己实现，"
+        "边缘刻度用 text-anchor start/end 留在图内。适应 280px 与 720px 宽度。"
+        "系列色只用 --ak-chart-1 到 --ak-chart-6，优先 2–3 个系列，颜色只用于数据线、点和面；"
+        "文字和线条用 --ak-color-text-primary/secondary/muted、--ak-color-border-default。"
+        "每图最多 12 个滑块，必须带可访问名称和当前值；文本用 textContent，避免 NaN/Infinity。"
         "静态解释先输出正文，再调用本工具，返回后继续说明含义，不复述摘要。每一步最多并行调用两次。"
     ))
 
