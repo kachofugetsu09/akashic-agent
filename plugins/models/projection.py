@@ -488,9 +488,13 @@ class MessageProjection:
                 changed_content = True
             else:
                 blocks = tuple(self._render_content(part))
-                rendered = RenderedContent(blocks, complete=(
-                    part.kind == "text" and blocks == ({"type": "text", "text": part.value},)
-                ))
+                complete = (
+                    part.kind == "text" and len(blocks) == 1
+                    and len(blocks[0]) == 2
+                    and blocks[0].get("type") == "text"
+                    and blocks[0].get("text") == part.value
+                )
+                rendered = RenderedContent(blocks, complete=complete)
             if rendered.blocks and rendered.complete:
                 out_refs.append((message.message_id, index))
             return rendered.blocks
