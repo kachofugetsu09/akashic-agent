@@ -12,7 +12,7 @@ from pathlib import Path
 
 import uvicorn
 from fastapi import FastAPI, Request
-from fastapi.responses import HTMLResponse
+from fastapi.responses import HTMLResponse, JSONResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -134,8 +134,24 @@ def create_app(port: int, frontend: Path) -> FastAPI:
 
     @app.get("/upstream/codex/models")
     async def codex_models():
-        return {"models": [{"slug": "local-codex", "context_window": 8192,
-                            "input_modalities": ["text"], "supported_in_api": True}]}
+        return {"models": [{"slug": name, "context_window": 8192,
+                            "input_modalities": ["text"], "supported_in_api": True,
+                            "use_responses_lite": lite}
+                           for name, lite in (("local-codex", True), ("local-codex-standard", False))]}
+
+    @app.post("/upstream/codex/responses")
+    async def codex_response(request: Request):
+        """按上游协议拒绝错误请求，让浏览器覆盖目录配置到保存的完整路径。"""
+        body = await request.json()
+        if "extra_body" in body:
+            return JSONResponse({"detail": "Unsupported parameter: extra_body"}, status_code=400)
+        if request.headers.get("x-openai-internal-codex-responses-lite") == "true":
+            if body.get("reasoning", {}).get("context") != "all_turns":
+                return JSONResponse({"detail": "Responses Lite requires reasoning.context=all_turns"}, status_code=400)
+        events = ({"type": "response.output_text.done", "text": "OK"},
+                  {"type": "response.completed", "response": {}})
+        return StreamingResponse(iter("data: " + json.dumps(event) + "\n\n" for event in events),
+                                 media_type="text/event-stream")
 
     @app.get("/upstream/opencode/v1/models")
     async def opencode_models():

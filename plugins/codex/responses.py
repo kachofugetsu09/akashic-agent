@@ -197,7 +197,8 @@ class CodexResponses:
             )
         if self._summary != "none" and not request.disable_reasoning:
             reasoning["summary"] = self._summary
-        if self._lite and not request.disable_reasoning:
+        # Lite 协议必需的上下文模式，不随推理强度或摘要一起关闭。
+        if self._lite:
             reasoning["context"] = "all_turns"
         if reasoning:
             payload["reasoning"] = reasoning
