@@ -1,4 +1,4 @@
-"""最小页面插件：在 WebUI 侧栏加一个页面。web_module.js / .css 与本文件放在插件根目录。"""
+"""最小页面插件：在 WebUI 主导航加一个页面。web_module.js / .css 与本文件放在插件根目录。"""
 
 from agent.plugin_composition import Context
 from plugins.ui.contract import UI

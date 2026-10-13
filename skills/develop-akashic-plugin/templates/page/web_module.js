@@ -5,6 +5,7 @@ export function activate(ctx) {
   return ctx.ui.inject("shell.pages.v1", (mount) => mount.register({
     id: "hello-page",
     label: "示例页面",
+    order: 100,
     route: "hello",
     iconSvg: ICON,
     render(host) {

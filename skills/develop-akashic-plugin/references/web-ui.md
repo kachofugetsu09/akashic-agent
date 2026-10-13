@@ -23,11 +23,11 @@
 
 | 挂载点 | 出现在哪 | entry 必填字段 |
 |---|---|---|
-| `shell.pages.v1` | 侧栏页面 | `id`、`label`、`route`（唯一）、`iconSvg`（以 `<svg` 开头）、`render` |
+| `shell.pages.v1` | 顶部主导航的页面 | `id`、`label`、`route`（唯一）、`iconSvg`（以 `<svg` 开头）、`render` |
 | `shell.rail-actions.v1` | 侧栏底部动作按钮 | `id`、`label`、`iconSvg`、`onActivate()` |
 | `shell.settings.v1` | 设置里的分节 | `id`、`label`、`route`、`iconSvg`、`render` |
 
-entry 还可以带 `order`（数字）控制排序；不填时按注册顺序。
+entry 可带 `order`（数字，越小越靠前，缺省 0）；相同时按 `id` 字母序。不想排到「对话」前面就给一个正数。
 
 ## 视觉一致性
 
