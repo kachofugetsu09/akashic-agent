@@ -64,7 +64,7 @@ ps -eo args= | grep -F "$AKASHIC_CORE_ROOT/main.py --config" | grep -v grep | he
 |---|---|
 | 工具 | 用上面的 `exec`：工具组非 `always_on` 时让新会话先 `load_tools` 传插件 ID 再调用；贴出原始返回 |
 | Skill | 用上面的 `exec` 让新会话 `load_skill` 并复述要点，核对来源是本插件 |
-| WebUI | 有浏览器或截图能力时打开 WebUI，在亮色和暗色主题下各看一次新内容，并检查控制台没有报错；没有就明确写"界面未亲眼验证"，请用户刷新页面查看 |
+| WebUI | 先查目录：`curl -s "http://$AKASHIC_WEB_HOST:$AKASHIC_WEB_PORT/api/chat/web-ui/bootstrap" \| grep -o '"<plugin_id>"'` 有输出说明浏览器会加载这个模块。有浏览器或截图工具时再打开页面，亮色、暗色各看一次并确认控制台没有报错；**没有就到此为止**，写明"界面未亲眼验证，请刷新页面查看"，不要用 curl 扒前端资源或研究主题机制来代替 |
 | 上下文材料、后台任务 | 触发一次对应场景，用它产生的真实结果作证据 |
 
 ## 5. 汇报

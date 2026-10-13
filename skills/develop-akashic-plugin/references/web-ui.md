@@ -1,7 +1,8 @@
 # WebUI 插件
 
 插件在 `plugin.py` 里 `UI.register(ctx, web="web_module.js", requires=("挂载点",))`，浏览器加载插件根目录的
-`web_module.js`，同名 `web_module.css` 存在时一并加载。安装时宿主会静态校验（`ui/web.py`），不满足直接安装失败。
+`web_module.js`，同名 `web_module.css` 存在时一并加载。安装时宿主会静态校验，不满足直接安装失败、`error` 会写明原因。
+本文件和 `templates/page/` 已经覆盖校验规则与 entry 字段，**不需要再去读宿主的校验器、`shell_ui` 打包代码或前端资源**。
 
 ## 硬性限制（安装时校验）
 
@@ -26,8 +27,7 @@
 | `shell.rail-actions.v1` | 侧栏底部动作按钮 | `id`、`label`、`iconSvg`、`onActivate()` |
 | `shell.settings.v1` | 设置里的分节 | `id`、`label`、`route`、`iconSvg`、`render` |
 
-字段校验以 `shell_ui` 插件为准：源码仓库 `frontend/plugins/shell_ui/src/index.tsx` 的 `checkPages` 等函数；
-发行版里只有打包后的 `$AKASHIC_PLUGIN_DISTRIBUTION/sources/shell_ui/web_module.js`。
+entry 还可以带 `order`（数字）控制排序；不填时按注册顺序。
 
 ## 视觉一致性
 
