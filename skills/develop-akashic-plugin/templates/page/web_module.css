@@ -1,0 +1,4 @@
+/* 只用主题 token，亮暗主题自动切换。限制见 references/web-ui.md；注释里也不要写 at-rule 关键字，校验不跳过注释。 */
+.hello-page { padding: 24px; color: var(--ak-ink-primary); background: var(--ak-paper-sheet); font-family: var(--ak-type-reading); }
+.hello-page h1 { margin: 0 0 8px; font-size: inherit; }
+.hello-page p { margin: 0; color: var(--ak-ink-secondary); }

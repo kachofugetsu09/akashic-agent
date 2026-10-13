@@ -8,13 +8,13 @@ description: 创建或改写 akashic-bot 技能（SKILL.md）。当用户要求�
 ## 技能目录结构
 
 ```
-$HOME/.akashic/workspace/skills/{skill-name}/   ← 用户自定义技能（优先）
-  SKILL.md                                  ← 必须
-  scripts/                                  ← 可选，放辅助脚本
-  references/                               ← 可选，放参考文档
+$AKASHIC_WORKSPACE/skills/{skill-name}/   ← 工作区技能（优先级最高）
+  SKILL.md                                ← 必须
+  scripts/                                ← 可选，放辅助脚本
+  references/                             ← 可选，放参考文档
 
-项目/skills/{skill-name}/                  ← 内置技能
-  SKILL.md
+~/.akashic/skills/{skill-name}/           ← 用户级技能
+随插件发布的技能                           ← 见 develop-akashic-plugin
 ```
 
 用 `write_file` 或 `edit_file` 直接创建/修改文件，无需任何脚手架脚本。
@@ -55,7 +55,7 @@ metadata: {"akashic": {"always": false, "requires": {"bins": ["curl"], "env": ["
 
 ## 创建流程
 
-1. 确认技能名称和保存位置（workspace 还是内置）
+1. 确认技能名称和保存位置（默认工作区；要随插件发布时改用 develop-akashic-plugin）
 2. 用 `write_file` 写入 SKILL.md
 3. 如有辅助脚本，写入 `scripts/` 目录
 4. 验证：`requires.bins` 里的命令是否正确

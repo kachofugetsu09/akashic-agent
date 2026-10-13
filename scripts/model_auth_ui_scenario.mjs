@@ -73,6 +73,18 @@ try {
     const connectionId = catalog.connections[0].id;
     checks.push("Codex 新连接显示验证码并完成认证提交");
 
+    // 目录返回的 Lite 配置必须穿过实际选择、关闭推理的验证请求与保存。
+    await page.getByRole("button", {name: "编辑连接 Codex", exact: true}).click();
+    await page.getByRole("button", {name: "探测目录", exact: true}).click();
+    const selection = page.getByRole("dialog");
+    await selection.getByRole("button", {name: "全选", exact: true}).click();
+    await selection.getByRole("button", {name: /^保存选择/}).click();
+    await page.getByText("模型选择已保存。", {exact: true}).waitFor();
+    catalog = await get("/api/dashboard/models/catalog");
+    assert.deepEqual(catalog.models.map(model => model.model).sort(), ["local-codex", "local-codex-standard"]);
+    await page.locator(".settings-dialog--inline").getByRole("button", {name: "关闭", exact: true}).click();
+    checks.push("目录中的 Lite 与标准模型均通过真实验证请求并保存");
+
     // 4. 重新登录保留连接身份；取消下一次登录不改变已保存连接。
     await page.getByRole("button", {name: "编辑连接 Codex", exact: true}).click();
     await page.getByRole("button", {name: "重新授权"}).click();

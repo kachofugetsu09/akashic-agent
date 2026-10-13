@@ -173,13 +173,11 @@ class CodexResponses:
             "model": self._descriptor.model,
             "instructions": instructions,
             "input": messages,
-            "extra_body": {
-                "client_metadata": {
-                    "x-codex-installation-id": self._installation_id,
-                    "session-id": self._session_id,
-                    "thread-id": self._thread_id,
-                    "x-codex-window-id": self._window_id,
-                }
+            "client_metadata": {
+                "x-codex-installation-id": self._installation_id,
+                "session-id": self._session_id,
+                "thread-id": self._thread_id,
+                "x-codex-window-id": self._window_id,
             },
             "tool_choice": tool_choice,
             "parallel_tool_calls": bool(
@@ -199,7 +197,8 @@ class CodexResponses:
             )
         if self._summary != "none" and not request.disable_reasoning:
             reasoning["summary"] = self._summary
-        if self._lite and not request.disable_reasoning:
+        # Lite 协议必需的上下文模式，不随推理强度或摘要一起关闭。
+        if self._lite:
             reasoning["context"] = "all_turns"
         if reasoning:
             payload["reasoning"] = reasoning

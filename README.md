@@ -71,10 +71,9 @@ cd akashic-agent
 
 | 主题 | 文档 |
 | --- | --- |
-| 插件开发与安装 | [插件教程](./_handbook/plugins-tutorial.md) |
+| 插件开发与安装 | [插件能力手册](./docs/design/plugin-v3-capabilities.md)；Agent 自己扩展能力用内置 Skill [`develop-akashic-plugin`](./skills/develop-akashic-plugin/SKILL.md) |
 | 手机接入 | [Android Shell](https://github.com/kachofugetsu09/akashic-android-shell) |
-| 主动推送 | [Proactive 指南](./_handbook/proactive-guide.md) |
-| 记忆与 Drift | [记忆手册](./_handbook/memory-markdown.md)、[Drift 指南](./_handbook/drift-guide.md) |
+| 记忆 | [记忆手册](./_handbook/memory-markdown.md) |
 | Python 客户端与协议 | [Python SDK](./sdk/python/README.md)、[协议 schema](./schema/app-server-v2.json) |
 | 数据位置与恢复 | [持久状态地图](./docs/design/persistence-state-map.md) |
 | 项目需求与开发流程 | [工作手册索引](./docs/INDEX.md) |

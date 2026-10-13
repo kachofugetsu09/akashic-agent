@@ -1,30 +1,53 @@
 ---
 name: develop-akashic-plugin
-description: 创建、编写、修改并验证 Akashic 插件及插件内 Skill/MCP。用户要求创建插件、加入能力、安装候选或热更新时使用。
+description: 给自己扩展新能力时使用：编写一个 Akashic 插件（新工具、WebUI 页面、随插件发布的 Skill、后台服务），安装到当前运行实例并验收。用户说做个插件、加个工具/功能/页面、扩展你的能力、改某个插件时使用。
 ---
 
 # 开发 Akashic 插件
 
-只修改插件源码，不编辑安装 cache、runtime pointer 或正式 plugin-data。先确定范围和恢复点。
+插件是给自己加能力的唯一正式方式：写源码 → git commit → 安装到当前实例 → 实际用一次验收。
+不要改安装 cache、`plugin-home`、`runtime/` 下的指针或别的插件的 `plugin-data`，也不要手写 manifest。
 
-## 阅读入口
+## 流程
 
-1. 读取目标仓库的 docs/INDEX.md 和 docs/WORKFLOW.md。
-2. 读取 [编写参考](references/plugin-authoring.md)，并打开其中指定的当前能力手册与决策。
-3. 以目标 checkout 的真实接口为准。旧 self-validation 和 runtime-diagnostics 文档仅作历史调查线索，不能据此恢复已删除的协议。
+1. **定目标和形态**：要的是模型可调用的工具、WebUI 页面、Skill，还是后台服务？只做能交付的最小版本。
+2. **建源码仓库**：在 `$AKASHIC_WORKSPACE/plugin-src/<name>/` 新建目录并 `git init`。一个插件一个仓库，插件根目录必须有 `plugin.py`。
+3. **从模板起步**：按下表用文件读取工具读模板，写一份到源码目录，改名字和逻辑。`name` 在当前实例里必须唯一。
+4. **只查需要的接口**：按下面的知识来源顺序读真实代码，不凭记忆写 API。
+5. **提交并安装**：`git add -A && git commit`，然后加载 `verify-akashic-plugin`，按它安装并验收。
+6. **修到能用为止**：失败就改同一个插件，重新 commit、重新安装新的 commit。能用后汇报插件 ID、commit、验收证据和没验证到的部分，不追加没被要求的功能。
 
-## 实现
+## 知识来源，按顺序
 
-- 唯一入口是 apply(ctx)，配置从 ctx.config 取得并由插件自行解析。
-- 功能启用条件写在 apply 内，不导出 is_active。已选插件的 inject 仍是硬依赖；整包禁用由组合选择决定。
-- 依赖通过 ServiceKey 组合；资源、监听和任务必须有清楚的 Scope owner。
-- 插件负责自己的持久数据。代码回退不表示数据已回退。
-- import 不启动进程、开放端口或发送消息；正式接纳和候选隔离服从当前宿主合同。
-- 不重新引入第二份运行描述、静态业务自测或固定参数名检查。
+1. 本 skill 的模板和 `references/extension-points.md`：先确定用哪个扩展点。
+2. 真实合同：先确认当前执行环境可读的 Core 和插件源码目录，再读 `agent/plugin_composition/context.py` 与提供方的 `<插件名>/contract.py`。
+   开发实例通常提供 `$AKASHIC_CORE_ROOT`、`$AKASHIC_PLUGIN_DISTRIBUTION/sources/`；Host Bridge 宿主可能没有这两个变量，
+   此时从 `$PYTHONPATH` 列出的目录核对 `agent/plugin_composition/context.py`，同一运行 checkout 的 `plugins/` 可读内置合同。
+   容器内路径不能直接当宿主路径；目录必须实际存在，找不到就报告缺少源码入口，不猜路径或复制过期合同。
+3. 同类的真实插件：找一个用同一 ServiceKey 的内置插件读它的 `plugin.py`。
+4. 当前源码仓库的 `docs/INDEX.md` 是需求与设计入口；分发产物可能不带 `docs/`。签名以真实合同为准，语义冲突要指出，不能用实现覆盖已确认需求。
 
-## 验证与交付
+`load_skill` 返回的 `base_directory` 就是本 skill 目录，下表路径都相对它：
 
-按当前用户授权及仓库工作流确定是否运行测试、安装或部署；用户禁止时不得执行。
-说明实际运行过的检查、未验证边界和恢复点。提交 PR 不表示已完成安装、换代或业务验证。
-安装和发布必须走当前管理入口，不手改 cache 或 stable。行为证据应来自实际插件能力和持久回执，
-不能只凭 catalog、最终回复文字或健康检查宣称成功。
+| 用途 | 文件 |
+|---|---|
+| 扩展点速查：工具、Skill、页面、提示词材料、后台任务、配置与数据 | `references/extension-points.md` |
+| WebUI 模块的硬性限制、挂载点、主题 token、亮暗主题 | `references/web-ui.md` |
+| 工具插件模板（一个文件） | `templates/tool/plugin.py` |
+| 页面插件模板（三个文件） | `templates/page/plugin.py`、`templates/page/web_module.js`、`templates/page/web_module.css` |
+
+## 省步数
+
+一轮最多约 40 次模型输出，开发控制在 15 次以内，留足验收和汇报。只读模板和真正要用的那一两个合同文件，不通读插件源码；
+WebUI 页面读 `references/web-ui.md` 和 `templates/page/` 就够了，不再去找 ui 合同、类型定义或别的页面插件。不要用单独的 python 去 import 插件做自测：
+插件模块只有宿主加载器能导入，安装本身就是加载检查，失败原因看 `plugin-status` 的 `error`。
+
+## 硬规则
+
+- 唯一入口是 `async def apply(ctx)`；`api_version = 3`、`name`、`version` 写成顶层字面量。
+- 依赖的服务写进 `inject`，用 `ctx.require(KEY)` 取。资源、监听、后台任务都交给 `ctx.effect` / `ctx.spawn` 管理，
+  不在 import 时启动进程、开端口或发消息。
+- 配置读 `ctx.config`（没有配置时是空对象），自己校验；插件自己的持久数据只写 `ctx.data_root`。
+- 外部 Python 依赖写 `requirements.txt`，没有时不要假设第三方包已装。
+- 不恢复已删除的旧协议：`class Plugin`、`apply(ctx, config)`、`is_active`、`skill_roots`、TOML MCP 声明、
+  `plugin_latest`、stable/latest 候选晋升都已退役。
