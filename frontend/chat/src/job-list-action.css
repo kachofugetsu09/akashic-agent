@@ -1,0 +1,49 @@
+/* 后台任务标记与目录标记同属标题行右侧的安静入口：平时淡墨，展开或有任务运行时才提亮。 */
+.job-list { position: relative; flex: 0 0 auto; margin-inline-start: auto; padding-inline-start: 4px; font-size: var(--chat-type-caption, 0.75rem); }
+.directory-marker + .job-list { margin-inline-start: 0; }
+.job-list + .conversation-heading__new { margin-inline-start: 0; }
+
+.job-list__trigger { display: inline-flex; min-height: 32px; align-items: center; gap: 6px; padding-inline: 8px; border: 0; border-radius: 6px; background: transparent; color: var(--chat-faint); font: inherit; cursor: pointer; transition: color 120ms; }
+.job-list__trigger[data-live] { color: var(--chat-muted); }
+.job-list__trigger:hover,
+.job-list__trigger[aria-expanded="true"] { color: var(--chat-ink); }
+.job-list__trigger:focus-visible { outline: 2px solid var(--ak-rule-focus); outline-offset: 2px; }
+.job-list__count { display: none; font-variant-numeric: tabular-nums; }
+
+.job-list__dot { width: 6px; height: 6px; flex: 0 0 auto; border-radius: 50%; background: currentColor; opacity: 0.5; }
+.job-list__dot[data-status="running"] { background: var(--ak-color-status-success); opacity: 1; }
+.job-list__dot[data-status="failed"],
+.job-list__dot[data-status="timeout"] { background: var(--ak-color-status-error); opacity: 1; }
+.job-list__dot[data-status="killed"] { background: var(--ak-color-status-warning); opacity: 1; }
+
+.job-list__panel { position: absolute; z-index: 20; inset-block-start: calc(100% + 4px); inset-inline-end: 0; inline-size: min(24rem, calc(100vw - 32px)); max-block-size: min(26rem, calc(100dvh - 8rem)); overflow: auto; padding: 6px; border: 1px solid var(--chat-line); border-radius: 10px; background: var(--ak-paper-canvas); box-shadow: 0 8px 24px color-mix(in oklch, var(--ak-ink-primary) 12%, transparent); color: var(--chat-muted); }
+.job-list__panel ul { display: grid; gap: 2px; margin: 0; padding: 0; list-style: none; }
+
+/* 两行：标签与耗时一行，种类与结果一行；圆点对齐第一行。 */
+.job-list__row { display: grid; grid-template-columns: 6px minmax(0, 1fr) auto; column-gap: 10px; row-gap: 2px; align-items: center; padding: 8px 10px; border-radius: 6px; line-height: 1.4; }
+.job-list__row[data-status="running"] { background: var(--chat-chip); }
+.job-list__label { min-width: 0; overflow: hidden; color: var(--chat-ink); font-family: var(--ak-type-technical); font-size: var(--chat-type-control, 0.875rem); text-overflow: ellipsis; white-space: nowrap; }
+.job-list__row:not([data-status="running"]) .job-list__label { color: var(--chat-muted); }
+.job-list__duration { color: var(--chat-faint); font-variant-numeric: tabular-nums; white-space: nowrap; }
+.job-list__meta { grid-column: 2 / -1; min-width: 0; overflow: hidden; color: var(--chat-faint); text-overflow: ellipsis; white-space: nowrap; }
+.job-list__row[data-status="failed"] .job-list__meta,
+.job-list__row[data-status="timeout"] .job-list__meta { color: var(--ak-color-status-error); }
+
+@media (prefers-reduced-motion: no-preference) {
+  .job-list__trigger .job-list__dot[data-status="running"] { animation: job-list-breathe 2.4s ease-in-out infinite; }
+}
+
+@keyframes job-list-breathe {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.35; }
+}
+
+/* 窄屏标题行只留圆点和数字，触控热区放大到 44px。 */
+@media (max-width: 820px), (hover: none) {
+  .job-list__trigger { min-width: 44px; min-height: 44px; justify-content: center; }
+}
+
+@media (max-width: 820px) {
+  .job-list__summary { display: none; }
+  .job-list__count { display: inline; }
+}

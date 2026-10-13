@@ -1,188 +1,131 @@
-import { useEffect, useMemo, useRef, useState, type KeyboardEvent } from "react";
-import styles from "./job-list-action.module.css";
+import { useEffect, useId, useMemo, useRef, useState } from "react";
+import "./job-list-action.css";
 
+export type JobStatus = "running" | "completed" | "failed" | "timeout" | "killed";
+
+/** 后台任务只读镜像的一行；时间为 epoch 毫秒。 */
 export interface JobView {
   id: string;
   kind: string;
   label: string;
-  status: "running" | "stopping" | "completed" | "failed" | "timeout" | "killed";
+  status: JobStatus;
   detail: string;
   started_at: number;
-  finished_at?: number | null;
+  finished_at: number | null;
 }
 
-export interface JobListActionProps {
+export interface SessionJobs {
+  sessionId: string;
   jobs: JobView[];
 }
 
-function isLive(job: JobView): boolean {
-  return job.status === "running" || job.status === "stopping";
-}
+const STATUS_LABEL: Record<JobStatus, string> = {
+  running: "运行中",
+  completed: "已完成",
+  failed: "失败",
+  timeout: "超时",
+  killed: "已停止",
+};
 
-function dotClass(status: JobView["status"]): string {
-  switch (status) {
-    case "running":
-      return styles.dotRunning;
-    case "stopping":
-    case "killed":
-      return styles.dotWarning;
-    case "completed":
-      return styles.dotDone;
-    case "failed":
-    case "timeout":
-      return styles.dotError;
-    default:
-      return styles.dotDone;
-  }
-}
+const isJob = (value: unknown): value is JobView => {
+  if (typeof value !== "object" || value === null || Array.isArray(value)) return false;
+  const row = value as Record<string, unknown>;
+  return typeof row.id === "string" && row.id.length > 0
+    && typeof row.kind === "string" && typeof row.label === "string" && typeof row.detail === "string"
+    && typeof row.status === "string" && row.status in STATUS_LABEL
+    && Number.isSafeInteger(row.started_at)
+    && (row.finished_at === null || Number.isSafeInteger(row.finished_at));
+};
 
-function statusLabel(status: JobView["status"]): string {
-  switch (status) {
-    case "running":
-      return "运行中";
-    case "stopping":
-      return "停止中";
-    case "completed":
-      return "已完成";
-    case "killed":
-      return "已终止";
-    case "failed":
-      return "失败";
-    case "timeout":
-      return "超时";
-    default:
-      return status;
+/** 只在 WebSocket 边界检查后台任务快照；其他消息继续交给原协议解析器。 */
+export function readJobsFrame(value: unknown): SessionJobs | null {
+  if (typeof value !== "object" || value === null || !("type" in value) || value.type !== "session.jobs") return null;
+  const row = value as Record<string, unknown>;
+  if (typeof row.session_id !== "string" || !Array.isArray(row.jobs) || !row.jobs.every(isJob)) {
+    throw new Error("后台任务快照无效");
   }
+  return { sessionId: row.session_id, jobs: row.jobs };
 }
 
 function formatDuration(elapsedMs: number): string {
   const total = Math.max(0, Math.floor(elapsedMs / 1000));
-  const seconds = total % 60;
-  const minutes = Math.floor(total / 60) % 60;
   const hours = Math.floor(total / 3600);
-  if (hours > 0) return `${hours}小时${minutes}分`;
-  if (minutes > 0) return `${minutes}分${seconds}秒`;
-  return `${seconds}秒`;
+  const minutes = Math.floor(total / 60) % 60;
+  if (hours > 0) return `${hours} 小时 ${minutes} 分`;
+  if (minutes > 0) return `${minutes} 分 ${total % 60} 秒`;
+  return `${total} 秒`;
 }
 
-function ordered(jobs: JobView[]): JobView[] {
+// 运行中按开始时间升序，已结束按结束时间倒序。
+function ordered(jobs: readonly JobView[]): JobView[] {
   return [...jobs].sort((left, right) => {
-    const liveLeft = isLive(left);
-    if (liveLeft !== isLive(right)) return liveLeft ? -1 : 1;
-    if (liveLeft) return left.started_at - right.started_at;
-    const finished = (right.finished_at ?? right.started_at) - (left.finished_at ?? left.started_at);
-    return finished !== 0 ? finished : left.started_at - right.started_at;
+    const live = left.status === "running";
+    if (live !== (right.status === "running")) return live ? -1 : 1;
+    if (live) return left.started_at - right.started_at;
+    return (right.finished_at ?? right.started_at) - (left.finished_at ?? left.started_at);
   });
 }
 
-export function JobListAction({ jobs }: JobListActionProps) {
+// 标题行右侧的安静标记：有任务运行时显示呼吸点和数量，只剩已结束任务时退为淡色计数。
+export function JobListAction({ jobs }: { jobs: readonly JobView[] }) {
   const [open, setOpen] = useState(false);
   const [now, setNow] = useState(() => Date.now());
   const rootRef = useRef<HTMLDivElement>(null);
   const triggerRef = useRef<HTMLButtonElement>(null);
-
+  const panelId = useId();
   const rows = useMemo(() => ordered(jobs), [jobs]);
-  const liveCount = useMemo(() => jobs.filter(isLive).length, [jobs]);
-
+  const live = rows.filter((job) => job.status === "running").length;
+  // 1. 点击面板外或按 Esc 收起，Esc 把焦点还给触发按钮。
   useEffect(() => {
     if (!open) return;
-    const closeOutside = (event: PointerEvent): void => {
-      if (event.target instanceof Node && !rootRef.current?.contains(event.target)) {
-        setOpen(false);
-      }
+    const onPointer = (event: PointerEvent) => {
+      if (!rootRef.current?.contains(event.target as Node)) setOpen(false);
     };
-    document.addEventListener("pointerdown", closeOutside);
+    const onKey = (event: KeyboardEvent) => {
+      if (event.key !== "Escape") return;
+      setOpen(false);
+      triggerRef.current?.focus();
+    };
+    document.addEventListener("pointerdown", onPointer);
+    document.addEventListener("keydown", onKey);
     return () => {
-      document.removeEventListener("pointerdown", closeOutside);
+      document.removeEventListener("pointerdown", onPointer);
+      document.removeEventListener("keydown", onKey);
     };
   }, [open]);
-
-  // 时钟仅在面板展开且存在活跃任务时跳动
+  // 2. 时钟只在面板展开且有运行中任务时走动，收起后不再触发重渲染。
   useEffect(() => {
-    if (!open || liveCount === 0) return;
+    if (!open || live === 0) return;
     setNow(Date.now());
-    const timer = setInterval(() => {
-      setNow(Date.now());
-    }, 1000);
-    return () => {
-      clearInterval(timer);
-    };
-  }, [open, liveCount]);
-
-  useEffect(() => {
-    if (jobs.length === 0 && open) setOpen(false);
-  }, [jobs.length, open]);
-
-  if (jobs.length === 0) return null;
-
-  const countLabel = liveCount > 0 ? `${liveCount} 项进行中` : `${jobs.length} 项已结算`;
-
-  const onKeyDown = (event: KeyboardEvent<HTMLDivElement>): void => {
-    if (event.key !== "Escape" || !open) return;
-    event.preventDefault();
-    setOpen(false);
-    triggerRef.current?.focus();
-  };
-
-  return (
-    <div ref={rootRef} className={styles.root} onKeyDown={onKeyDown}>
-      <button
-        ref={triggerRef}
-        type="button"
-        className={styles.trigger}
-        aria-expanded={open}
-        aria-label={countLabel}
-        data-testid="job-list-trigger"
-        onClick={() => {
-          setNow(Date.now());
-          setOpen((current) => !current);
-        }}
-      >
-        {liveCount > 0 ? <span className={`${styles.dot} ${styles.dotOngoing} ${styles.triggerDot}`} /> : null}
-        <span className={styles.count}>{countLabel}</span>
-        <svg
-          className={`${styles.chevron} ${open ? styles.triggerOpen : ""}`}
-          width="12"
-          height="12"
-          viewBox="0 0 16 16"
-          fill="none"
-          stroke="currentColor"
-          strokeWidth="2"
-          strokeLinecap="round"
-          strokeLinejoin="round"
-        >
-          <path d="M4 6l4 4 4-4" />
-        </svg>
-      </button>
-      {open ? (
-        <ul className={styles.menu} aria-label="后台任务列表" data-testid="job-list-popover">
-          {rows.map((job) => {
-            const live = isLive(job);
-            const elapsed = live ? now - job.started_at : (job.finished_at ?? job.started_at) - job.started_at;
-            const duration = formatDuration(elapsed);
-            const status = statusLabel(job.status);
-            return (
-              <li
-                key={job.id}
-                className={`${styles.row} ${live ? "" : styles.rowSettled}`}
-                data-testid={`job-row-${job.id}`}
-              >
-                <span className={`${styles.dot} ${dotClass(job.status)} ${styles.rowDot}`} />
-                <span className={styles.kind}>{job.kind}</span>
-                <span className={styles.label} title={job.label}>
-                  {job.label}
-                </span>
-                <span className={styles.status} title={job.detail || status}>
-                  {job.detail || status}
-                </span>
-                <span className={styles.duration} title={duration}>
-                  {duration}
-                </span>
-              </li>
-            );
-          })}
-        </ul>
-      ) : null}
-    </div>
-  );
+    const timer = window.setInterval(() => setNow(Date.now()), 1000);
+    return () => window.clearInterval(timer);
+  }, [open, live]);
+  // 3. 没有任何任务时不占位置。
+  if (rows.length === 0) return null;
+  const summary = live > 0 ? `${live} 个任务运行中` : `${rows.length} 个后台任务`;
+  return <div className="job-list" ref={rootRef}>
+    <button ref={triggerRef} type="button" className="job-list__trigger" data-live={live > 0 || undefined}
+      aria-expanded={open} aria-controls={open ? panelId : undefined} aria-label={`后台任务：${summary}`}
+      onClick={() => { setNow(Date.now()); setOpen((value) => !value); }}>
+      <span className="job-list__dot" data-status={live > 0 ? "running" : "idle"} aria-hidden="true" />
+      <span className="job-list__summary">{summary}</span>
+      <span className="job-list__count" aria-hidden="true">{live > 0 ? live : rows.length}</span>
+    </button>
+    {open ? <div id={panelId} className="job-list__panel" role="group" aria-label="后台任务">
+      <ul>
+        {rows.map((job) => {
+          const running = job.status === "running";
+          const duration = formatDuration((running ? now : job.finished_at ?? job.started_at) - job.started_at);
+          // 正常完成只说状态；失败、超时、停止时附上 detail 便于判断原因。
+          const note = job.status === "completed" || !job.detail ? STATUS_LABEL[job.status] : `${STATUS_LABEL[job.status]} · ${job.detail}`;
+          return <li key={job.id} className="job-list__row" data-status={job.status}>
+            <span className="job-list__dot" data-status={job.status} aria-hidden="true" />
+            <span className="job-list__label" title={job.label}>{job.label}</span>
+            <span className="job-list__duration">{duration}</span>
+            <span className="job-list__meta" title={note}>{job.kind} · {note}</span>
+          </li>;
+        })}
+      </ul>
+    </div> : null}
+  </div>;
 }

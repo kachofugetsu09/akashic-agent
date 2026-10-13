@@ -92,9 +92,9 @@ export function DesktopChatView({ embeddedShell, controller }: DesktopChatViewPr
           {/* 同一父节点下的兄弟 key 必须互不相同；共用会话 ID 会让 React 留下旧标题节点。 */}
           <SessionHeadingTitle key={`title:${activeSessionId}`} heading={headingTitle} value={activeTitle}
             onRename={activeSessionId && !activeSessionDeleted ? (title) => renameSession(activeSessionId, title) : undefined} />
-          <JobListAction jobs={controller.activeSessionJobs} />
           {activeSessionId ? <SessionDirectory key={`directory:${activeSessionId}`} sessionId={activeSessionId}
             refreshKey={Array.from(toolResults.keys()).join("|")} /> : null}
+          <JobListAction key={`jobs:${activeSessionId}`} jobs={controller.activeSessionJobs} />
           {/* 窄屏没有常驻侧栏：新会话留在拇指可达的标题行，不必先打开抽屉。 */}
           {hasMessages ? <button type="button" className="conversation-heading__new" aria-label="新会话" title="新会话"
             onClick={() => startNewChat()}>

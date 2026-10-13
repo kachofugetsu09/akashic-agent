@@ -24,19 +24,6 @@ export type ChatFrame =
     terminal_status?: "completed" | "failed" | "interrupted" | "cancelled";
   }
   | { type: "turn.output.completed"; session_id: string; turn_id: string; client_message_id?: string }
-  | {
-      type: "session/jobs";
-      session_id: string;
-      jobs: Array<{
-        id: string;
-        kind: string;
-        label: string;
-        status: "running" | "stopping" | "completed" | "failed" | "timeout" | "killed";
-        detail: string;
-        started_at: number;
-        finished_at?: number | null;
-      }>;
-    }
   | { type: "turn.interrupted"; request_id: string; session_id: string; status: string; message: string }
   | { type: "error"; request_id: string; message: string }
   | { type: "pong"; request_id: string };
@@ -114,12 +101,6 @@ export function parseChatFrame(value: unknown): ChatFrame {
       requireStrings(frame, ["session_id", "turn_id"]);
       if (frame.client_message_id !== undefined && typeof frame.client_message_id !== "string") {
         throw new Error("turn.output.completed.client_message_id 格式无效");
-      }
-      break;
-    case "session/jobs":
-      requireStrings(frame, ["session_id"]);
-      if (!Array.isArray(frame.jobs)) {
-        throw new Error("session/jobs.jobs 必须为数组");
       }
       break;
     case "turn.interrupted":
