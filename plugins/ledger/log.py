@@ -496,7 +496,7 @@ class MessageLog:
         return self._writer_lock if read is None else read.lock
 
     def _decode(self, row: sqlite3.Row) -> Message:
-        """查询仍读真实行；小行另有有界强缓存，大行只复用仍被持有的不可变消息。"""
+        """查询仍读真实行；解码结果先进弱引用共享，小行另有有界强缓存。"""
         key = tuple(row)
         # 独立只读连接共享解码结果；此短锁不等待 writer 的事务或磁盘操作。
         with self._decode_lock:
@@ -506,12 +506,11 @@ class MessageLog:
         if message is None:
             message = _message(row)
             with self._decode_lock:
+                self._decoded[key] = message
                 if len(row["body"]) <= _DECODE_STRONG_BODY:
                     if len(self._decoded_strong) >= _DECODE_STRONG_LIMIT:
                         self._decoded_strong.pop(next(iter(self._decoded_strong)))
                     self._decoded_strong[key] = message
-                else:
-                    self._decoded[key] = message
         return message
 
     def backup(self, destination: Path) -> None:
@@ -1496,9 +1495,15 @@ class MessageReader:
             return ()
         log = self._log
         memo = log._attachment_memo
-        with log._decode_lock:
-            missing = tuple(dict.fromkeys(mid for mid in message_ids if mid not in memo))
-        if missing:
+        for _ in range(2):
+            with log._decode_lock:
+                missing = tuple(dict.fromkeys(mid for mid in message_ids if mid not in memo))
+                if not missing:
+                    try:
+                        return tuple(ref for identity in message_ids for ref in memo[identity])
+                    except KeyError:
+                        # 并发 Session 的大批量写入淘汰了已命中条目；按缺失重查一次。
+                        continue
             with log._read():
                 rows = log._connection.execute(
                     "SELECT m.id,ma.ordinal,a.* FROM messages m "
@@ -1519,10 +1524,17 @@ class MessageReader:
             with log._decode_lock:
                 for identity in missing:
                     memo[identity] = tuple(refs[identity])
+                # 先取结果再淘汰：单次调用超过容量上限时，刚写入的条目也可能被
+                # FIFO 淘汰，不能在返回路径上再查 memo。查询期间被并发淘汰的
+                # 旧命中条目同样按缺失重查一次。
+                try:
+                    result = tuple(ref for identity in message_ids for ref in memo[identity])
+                except KeyError:
+                    continue
                 while len(memo) > _ATTACHMENT_MEMO_SIZE:
                     _ = memo.pop(next(iter(memo)))
-        with log._decode_lock:
-            return tuple(ref for identity in message_ids for ref in memo[identity])
+                return result
+        raise RuntimeError("附件读取反复遇到并发淘汰")
 
     def head(self, *, source: str | None = None) -> int:
         sql = "SELECT COALESCE(MAX(seq), -1) FROM messages WHERE session_key=?"
