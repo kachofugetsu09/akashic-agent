@@ -19,6 +19,7 @@ from plugins.delivery.contract import (
 )
 from plugins.tools.contract import (
     ALL_TOOLS as ALL_TOOLS,
+    TOOL_LOADING_PRESENTATION as TOOL_LOADING_PRESENTATION,
     TOOLS as TOOLS,
     ToolCatalog as ToolCatalog,
     ToolRef as ToolRef,
