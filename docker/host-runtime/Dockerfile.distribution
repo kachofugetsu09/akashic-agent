@@ -97,12 +97,7 @@ RUN --mount=type=cache,target=/root/.cache/pip \
     && mkdir -p /tmp/akashic-distribution-workspace /tmp/akashic-distribution-plugins \
     && /opt/venv/bin/python /opt/akashic/source/scripts/distribution_runtime.py prepare-wheels \
         --distribution /opt/akashic/distribution \
-    && python -m venv /tmp/visuals-browser-build \
-    && /tmp/visuals-browser-build/bin/pip install --no-index \
-        --find-links /opt/akashic/distribution/wheels/visuals \
-        -r /opt/akashic/distribution/sources/visuals/requirements.txt \
-    && /tmp/visuals-browser-build/bin/python -m playwright install --only-shell chromium \
-    && rm -rf /tmp/visuals-browser-build \
+    && /opt/venv/bin/python -m playwright install --only-shell chromium \
     && /opt/venv/bin/python /opt/akashic/source/scripts/install_plugin_distribution.py \
         --distribution /opt/akashic/distribution \
         --bundle /opt/akashic/distribution/bundles/base.toml \

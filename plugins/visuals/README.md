@@ -6,9 +6,10 @@
 ## 运行条件
 
 插件依赖 `tools.v1` 和 `ledger.artifact_import.v1`；`ui.slots.v1` 仅用于可选展示。
-安装链读取 `requirements.txt` 建立 Playwright 环境。正式发行镜像随默认组合启用插件，构建时安装匹配版本的 Chromium headless shell、系统库与中英文字体；插件不在运行中下载程序。原生运行由操作者准备浏览器：
+插件在产品进程内导入 Playwright，因此版本由产品 `requirements.txt` 与发行依赖锁拥有。
+正式发行镜像随默认组合启用插件，构建时安装匹配版本的 Chromium headless shell、系统库与中英文字体；插件不在运行中下载程序。原生运行由操作者准备浏览器：
 
-- 默认使用 Playwright 1.59.0 对应的 Chromium，可在插件环境中运行 `python -m playwright install chromium`。
+- 默认使用 Playwright 1.59.0 对应的 Chromium，可在产品环境中运行 `python -m playwright install --only-shell chromium`。
 - 已有受管理 Chromium 时，插件配置 `executable_path` 指向它的绝对路径。
 - 容器需提供 Chromium 的系统依赖并允许 Chromium sandbox；不通过关闭 sandbox 绕过环境错误。
 
