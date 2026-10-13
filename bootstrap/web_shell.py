@@ -5,8 +5,10 @@ import logging
 import stat
 import socket
 import threading
-from collections.abc import AsyncIterable, Awaitable, Callable, Mapping
-from contextlib import suppress
+from collections.abc import AsyncIterable, AsyncIterator, Awaitable, Callable, Mapping
+from contextlib import AsyncExitStack, asynccontextmanager, suppress
+from dataclasses import dataclass
+from http.cookiejar import CookieJar, DefaultCookiePolicy
 from pathlib import Path
 from urllib.parse import urlsplit
 
@@ -53,6 +55,66 @@ _RESPONSE_HEADERS_ALLOWED = {
 }
 
 logger = logging.getLogger(__name__)
+
+
+@dataclass(eq=False)
+class _HttpClient:
+    client: httpx.AsyncClient
+    requests: int = 0
+
+
+class _HttpClients:
+    """Web Shell 独占端点连接池；已撤回端点只排空已有响应。"""
+
+    def __init__(self) -> None:
+        self._current: dict[Endpoint, _HttpClient] = {}
+        self._retired: set[_HttpClient] = set()
+        self._lock = asyncio.Lock()
+
+    async def update(self, endpoints: tuple[Endpoint, ...]) -> None:
+        """按实际发布计划退休旧池；长流结束前不关闭其底层连接。"""
+        async with self._lock:
+            for endpoint, entry in tuple(self._current.items()):
+                if endpoint not in endpoints:
+                    del self._current[endpoint]
+                    self._retired.add(entry)
+            for entry in tuple(self._retired):
+                if entry.requests == 0:
+                    await entry.client.aclose()
+                    self._retired.remove(entry)
+
+    @asynccontextmanager
+    async def open(self, endpoint: Endpoint) -> AsyncIterator[httpx.AsyncClient]:
+        """请求持有借用直到响应结束；Cookie 与鉴权只来自当前浏览器请求。"""
+        # 1. 完整端点身份含 owner、generation 和地址，不跨换代复用旧 socket。
+        async with self._lock:
+            entry = self._current.get(endpoint)
+            if entry is None:
+                entry = _HttpClient(httpx.AsyncClient(
+                    # 只限制闲置连接；长流不能占满一个新增的全局并发配额。
+                    transport=httpx.AsyncHTTPTransport(uds=endpoint.address,
+                        limits=httpx.Limits(max_connections=None, max_keepalive_connections=20)),
+                    base_url="http://akashic-runtime", timeout=httpx.Timeout(30.0, read=None),
+                    cookies=CookieJar(policy=DefaultCookiePolicy(allowed_domains=())),
+                ))
+                self._current[endpoint] = entry
+            entry.requests += 1
+        try:
+            yield entry.client
+        finally:
+            # 2. 最后一个响应负责完成旧池的排空。
+            async with self._lock:
+                entry.requests -= 1
+                if entry in self._retired and entry.requests == 0:
+                    await entry.client.aclose()
+                    self._retired.remove(entry)
+
+    async def aclose(self) -> None:
+        async with self._lock:
+            for entry in (*self._current.values(), *self._retired):
+                await entry.client.aclose()
+            self._current.clear()
+            self._retired.clear()
 
 
 class _ProxyStreamingResponse(StreamingResponse):
@@ -141,10 +203,21 @@ class WebShellServer(uvicorn.Server):
 def create_web_shell_app(workspace: Path) -> FastAPI:
     """按 provider 发布的路由前缀转发；runtime 缺席时由外壳响应。"""
     plan = workspace / "runtime/endpoints.json"
-    app = FastAPI(docs_url=None, redoc_url=None, openapi_url=None)
+    clients = _HttpClients()
+
+    @asynccontextmanager
+    async def lifespan(_app: FastAPI) -> AsyncIterator[None]:
+        try:
+            yield
+        finally:
+            await clients.aclose()
+
+    app = FastAPI(docs_url=None, redoc_url=None, openapi_url=None, lifespan=lifespan)
 
     async def endpoint(path: str) -> Endpoint | None:
-        return _matching_endpoint(await run_file_io(lambda: load_endpoint_plan(plan)), path)
+        endpoints = await run_file_io(lambda: load_endpoint_plan(plan))
+        await clients.update(endpoints)
+        return _matching_endpoint(endpoints, path)
 
     @app.api_route("/{path:path}",
                    methods=["GET", "HEAD", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"])
@@ -157,7 +230,7 @@ def create_web_shell_app(workspace: Path) -> FastAPI:
                                         code="endpoint_plan_unavailable", message="Runtime 路由信息不可用")
         if target is None:
             return _runtime_unavailable(html="text/html" in request.headers.get("accept", ""))
-        response = await _proxy_http(request, Path(target.address),
+        response = await _proxy_http(request, clients, target,
                                      request.scope["raw_path"].decode("ascii"))
         response.headers.setdefault("Content-Security-Policy", _WEB_CONTENT_SECURITY_POLICY)
         response.headers.setdefault("X-Content-Type-Options", "nosniff")
@@ -211,12 +284,14 @@ def create_web_shell_server(
 
 async def _proxy_http(
     request: Request,
-    socket_path: Path,
+    clients: _HttpClients,
+    endpoint: Endpoint,
     target_path: str,
 ) -> Response:
     """Relay one HTTP request to a workspace-owned Unix socket."""
 
     # 1. Refuse stale or unavailable runtimes with an explicit readiness result.
+    socket_path = Path(endpoint.address)
     if not _is_socket(socket_path):
         logger.warning(
             "[web_shell.proxy] http backend unavailable socket=%s target=%s",
@@ -224,11 +299,6 @@ async def _proxy_http(
             target_path,
         )
         return _runtime_unavailable(html="text/html" in request.headers.get("accept", ""))
-    client = httpx.AsyncClient(
-        transport=httpx.AsyncHTTPTransport(uds=str(socket_path)),
-        base_url="http://akashic-runtime",
-        timeout=httpx.Timeout(30.0, read=None),
-    )
     query = request.url.query
     target = f"{target_path}?{query}" if query else target_path
     headers = {
@@ -237,49 +307,24 @@ async def _proxy_http(
         if name.lower() not in _REQUEST_HEADERS_EXCLUDED
     }
 
-    # 2. Stream request and response bodies without turning attachments into RAM copies.
-    try:
-        logger.debug(
-            "[web_shell.proxy] http relay start socket=%s target=%s method=%s",
-            socket_path,
-            target_path,
-            request.method,
-        )
-        upstream_request = client.build_request(
-            request.method,
-            target,
-            headers=headers,
-            content=request.stream(),
-        )
-        upstream = await client.send(upstream_request, stream=True)
-    except ClientDisconnect:
-        await client.aclose()
-        return Response(status_code=499)
-    except asyncio.CancelledError:
-        # 停止可能发生在 upstream 响应头之前，此时还没有 Response owner 收尾。
-        await client.aclose()
-        raise
-    except httpx.HTTPError:
-        await client.aclose()
-        return _runtime_unavailable(html="text/html" in request.headers.get("accept", ""))
-    response_headers = {
-        name: value
-        for name, value in upstream.headers.items()
-        if name.lower() in _RESPONSE_HEADERS_ALLOWED
-    }
-
-    async def close_upstream() -> None:
+    # 2. 借用跨越整个流式响应；异常、取消和浏览器断连都先关闭响应再归还借用。
+    async with AsyncExitStack() as lifetime:
+        client = await lifetime.enter_async_context(clients.open(endpoint))
         try:
-            await upstream.aclose()
-        finally:
-            await client.aclose()
-
-    return _ProxyStreamingResponse(
-        upstream.aiter_raw(),
-        status_code=upstream.status_code,
-        headers=response_headers,
-        close=close_upstream,
-    )
+            logger.debug("[web_shell.proxy] http relay start socket=%s target=%s method=%s",
+                         socket_path, target_path, request.method)
+            upstream_request = client.build_request(request.method, target, headers=headers,
+                                                    content=request.stream())
+            upstream = await client.send(upstream_request, stream=True)
+        except ClientDisconnect:
+            return Response(status_code=499)
+        except httpx.HTTPError:
+            return _runtime_unavailable(html="text/html" in request.headers.get("accept", ""))
+        lifetime.push_async_callback(upstream.aclose)
+        response_headers = {name: value for name, value in upstream.headers.items()
+                            if name.lower() in _RESPONSE_HEADERS_ALLOWED}
+        return _ProxyStreamingResponse(upstream.aiter_raw(), status_code=upstream.status_code,
+                                       headers=response_headers, close=lifetime.pop_all().aclose)
 
 
 async def _proxy_websocket(
