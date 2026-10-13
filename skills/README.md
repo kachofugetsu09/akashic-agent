@@ -1,6 +1,6 @@
 # Builtin Skills Index
 
-本文件导航仓库中的技能源码，不代表运行时已安装目录。运行时只发现普通插件通过资产 provider 注册的固定制品；仓库顶层 `skills/` 不会自动发布。
+本目录是随 Core 发布的内置 Skill：发行版把 `skills/` 打进 Core 制品，`standard_tools` 的 Skill 目录把它作为 `builtin` 来源读取。优先级从低到高：插件随包资产 < 内置 `skills/` < `~/.akashic/skills` < `<workspace>/skills`，高层同名覆盖低层。
 
 ## 目录与格式
 
@@ -14,10 +14,6 @@
   - 在 canonical source 中创建或修改 Akashic 插件及插件内 Skill/MCP，并按 stable/latest 合同做递归行为验证。
   - 文件：`skills/develop-akashic-plugin/SKILL.md`
 
-- `feed-manage`
-  - 管理和查询 RSS/信息来源订阅，支持列订阅、查最新、查概况、关键词搜索。
-  - 文件：`skills/feed-manage/SKILL.md`
-
 - `create-drift-skill`
   - 在工作区 drift/skills 下创建或更新 drift skill。
   - 文件：`skills/create-drift-skill/SKILL.md`
@@ -25,10 +21,6 @@
 - `codex-delegate`
   - 把长代码库任务委托给本机 Codex CLI 后台执行，并等待完成后回灌结果。
   - 文件：`skills/codex-delegate/SKILL.md`
-
-- `akashic-call`
-  - 指导 Codex 或其他外部程序调用已运行的固定 Akashic runtime，并复用持久 thread。
-  - 文件：`skills/akashic-call/SKILL.md`
 
 - `skill-creater`
   - 创建或改写技能 `SKILL.md`，用于新增技能与结构迁移。
