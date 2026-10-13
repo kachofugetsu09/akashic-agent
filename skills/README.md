@@ -38,10 +38,6 @@
   - 说明安装、更新时机、局部换代、卸载排空和结果核对；由内置 `plugin_update` 插件注册，与外部 Skill 使用同一资产链。
   - 文件：[`plugins/plugin_update/skills/plugin-system/SKILL.md`](../plugins/plugin_update/skills/plugin-system/SKILL.md)
 
-- `summarize`
-  - 总结 URL/文件/YouTube 内容，支持提取转写。
-  - 文件：`skills/summarize/SKILL.md`
-
 - `weather`
   - 通过 wttr.in / Open-Meteo 查询天气与预报。
   - 文件：`skills/weather/SKILL.md`
