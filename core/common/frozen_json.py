@@ -66,6 +66,13 @@ def _freeze(item: object, active: set[int]) -> object:
             )
         finally:
             active.remove(identity)
+    # 标量子类与原 isinstance 语义一致：按标量接受，不因精确类型失败误拒。
+    if isinstance(item, (str, bool, int, _FrozenJson, _FrozenJsonArray)):
+        return item
+    if isinstance(item, float):
+        if not math.isfinite(item):
+            raise ValueError("JSON 不接受非有限浮点数")
+        return item
     if isinstance(item, Mapping):
         identity = id(item)
         if identity in active:
