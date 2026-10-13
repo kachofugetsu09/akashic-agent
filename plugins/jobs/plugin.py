@@ -69,6 +69,10 @@ class Jobs:
     def origin_source(self, session_id: str, source: str) -> str:
         return self._board.origin_source(session_id, source)
 
+    # activation 关闭时结束全部镜像订阅；消费方据此失效旧快照并向新一代重新订阅。
+    def close(self) -> None:
+        self._mirror.close()
+
     def follow_jobs(self, session_id: str) -> AsyncGenerator[tuple[JobSnapshot, ...], None]:
         return self._mirror.follow(session_id)
 
@@ -174,5 +178,6 @@ async def apply(ctx: Context) -> None:
     config = Config.model_validate(ctx.config)
     jobs = Jobs(ctx, config)
     _ = await ctx.spawn(jobs.run(), name="job-notices")
+    _ = await ctx.effect(lambda: jobs.close, label="job-mirror")
     _ = await ctx.provide(JOB_NOTICES, jobs)
     _ = await ctx.require(MATERIALS).register(ctx, name="job-notices", kind="context", prepare=jobs.materials)

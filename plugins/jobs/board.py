@@ -92,10 +92,19 @@ class JobBoard:
 
 
 # 前端只读镜像：运行中的任务按登记顺序保留，已结束的每会话只留最近若干条；关注者按会话被 Event 唤醒。
+# 镜像随插件 activation 存亡：close 后所有 follow 结束，由消费方失效旧快照并向新一代重新订阅。
 class JobMirror:
     def __init__(self) -> None:
         self._rows: dict[str, dict[str, JobSnapshot]] = {}
         self._watchers: dict[str, set[asyncio.Event]] = {}
+        self._closed = False
+
+    def close(self) -> None:
+        self._closed = True
+        self._rows.clear()
+        for watchers in self._watchers.values():
+            for changed in watchers:
+                changed.set()
 
     def start(self, job: JobWatch) -> None:
         rows = self._rows.setdefault(job.session_id, {})
@@ -126,7 +135,7 @@ class JobMirror:
         changed = asyncio.Event()
         self._watchers.setdefault(session_id, set()).add(changed)
         try:
-            while True:
+            while not self._closed:
                 changed.clear()
                 yield self.snapshot(session_id)
                 _ = await changed.wait()

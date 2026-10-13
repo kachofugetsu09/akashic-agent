@@ -57,7 +57,8 @@ class JobNotices(Protocol):
         ...
 
     def follow_jobs(self, session_id: str) -> AsyncGenerator[tuple[JobSnapshot, ...], None]:
-        """先产出会话当前全量快照，之后每次变化产出最新全量快照；连续变化会合并。"""
+        """先产出会话当前全量快照，之后每次变化产出最新全量快照；连续变化会合并。
+        提供方 activation 关闭时迭代结束，消费方应视旧快照失效并重新借用服务。"""
         ...
 
 
