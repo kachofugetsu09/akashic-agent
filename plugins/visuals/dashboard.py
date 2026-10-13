@@ -1,6 +1,4 @@
 """只提供隔离文档的静态入口，不读取附件或业务状态。"""
-from pathlib import Path
-
 from fastapi import FastAPI
 from fastapi.responses import HTMLResponse
 
@@ -11,7 +9,7 @@ def register(app: FastAPI, context: DashboardContext) -> None:
     """由插件 UI 生命周期发布静态入口，响应自身强制脚本沙箱。"""
     document = (context.plugin_dir / "bootstrap.html").read_text(encoding="utf-8")
 
-    @app.get("/api/dashboard/visuals/frame")
+    @app.get("/visuals/frame.html")
     async def frame() -> HTMLResponse:
         return HTMLResponse(document, headers={
             "Cache-Control": "no-cache",

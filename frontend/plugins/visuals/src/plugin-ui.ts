@@ -90,7 +90,7 @@ function mount(host: HTMLElement, context: PluginUiContext): () => void {
       frame.title = value.title;
       documentHtml = template.replace("/*visual-theme*/", () => themeCss(host))
         .replace("<!--visual-content-->", () => value.html);
-      frame.src = "/api/dashboard/visuals/frame";
+      frame.src = "/visuals/frame.html";
       host.append(frame);
     } catch (error) {
       if (!abort.signal.aborted) fail(error instanceof Error ? error.message : String(error));

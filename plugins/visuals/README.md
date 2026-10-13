@@ -24,9 +24,10 @@
 Workload Controller 仍用 Docker 默认策略。上游 Apache-2.0 许可保存在
 `docker/host-runtime/chromium-seccomp.LICENSE`，本地策略的修改范围仅为上述过滤和沙箱调用。
 
-客户端通过插件的独立 HTTP 文档入口打开图表，响应 CSP 强制 `sandbox allow-scripts`，
+客户端通过插件的静态入口 `/visuals/frame.html` 打开图表，响应 CSP 强制 `sandbox allow-scripts`，
 不继承聊天页禁止内联脚本的策略，也不放宽聊天页权限。父页面只交付一次已读取的附件文档；
 后续通信只包含主题、尺寸、就绪和错误，不提供宿主查询或执行能力。
+静态文档不放在要求 Web UI 身份头的 `/api/dashboard/` 下：浏览器 iframe 导航无法携带这些头。
 
 ## 可观察合同
 
