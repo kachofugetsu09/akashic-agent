@@ -149,7 +149,7 @@ def binding(protocol, endpoint):
         reasoning_effort=None, capabilities=ModelCapabilities(), capability_sources=CapabilitySources(), capability_digest='fixture')
     http = HttpClient(lambda: httpx.AsyncClient(base_url=endpoint, trust_env=False, timeout=httpx.Timeout(2)))
     if protocol == 'codex':
-        physical = CodexResponses(http=http, credential=Credential(), descriptor=descriptor, config={})
+        physical = CodexResponses(http=http, credential=Credential(), descriptor=descriptor, config={}, client_version="0.0.0")
     elif protocol == 'compatible':
         physical = compatible._BoundChat(compatible._ConnectionConfig(endpoint, 2, 2, 0, False),
             Credential(), descriptor, compatible._ModelConfig(None, 16), http)

@@ -251,7 +251,9 @@ function WebMessageMeta({
 }) {
   return (
     <div className={`shared-message-meta ${message.role}`}>
-      {message.createdAt ? <time dateTime={message.createdAt}>{formatMessageTime(message.createdAt)}</time> : null}
+      {message.delivery ? <span className="shared-message-delivery" role="status">
+        {message.delivery === "retrying" ? "网络不稳，正在重发…" : "发送中…"}
+      </span> : message.createdAt ? <time dateTime={message.createdAt}>{formatMessageTime(message.createdAt)}</time> : null}
       <SharedMessageActions
         canReply={canReply}
         canCopy={Boolean(message.content)}

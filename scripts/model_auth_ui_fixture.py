@@ -73,7 +73,10 @@ def create_app(port: int, frontend: Path) -> FastAPI:
                 await ctx.provide(MODEL_CATALOG, state.catalog)
 
             async def drivers(ctx):
-                await ctx.require(MODEL_DRIVERS).register(ctx, codex_definition())
+                async def read_version():
+                    return "0.0.0"
+
+                await ctx.require(MODEL_DRIVERS).register(ctx, codex_definition(read_version))
                 await ctx.require(MODEL_DRIVERS).register(ctx, opencode_definition())
 
             await root.mount(models, name="models")
@@ -114,7 +117,7 @@ def create_app(port: int, frontend: Path) -> FastAPI:
     @app.post("/upstream/api/accounts/deviceauth/usercode")
     async def device_code(request: Request):
         assert (await request.json())["client_id"] == codex_auth.CODEX_CLIENT_ID
-        return {"device_auth_id": "local-device", "user_code": "LOCAL-CODE", "interval": 3}
+        return {"device_auth_id": "local-device", "user_code": "LOCAL-CODE", "interval": "3"}
 
     @app.post("/upstream/api/accounts/deviceauth/token")
     async def device_token(request: Request):

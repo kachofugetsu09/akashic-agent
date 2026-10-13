@@ -19,16 +19,17 @@ from plugins.models.contract import (
     TransportError,
 )
 
-from .auth import CODEX_CLIENT_VERSION, headers
+from .auth import headers
 
 
 async def discover(
     descriptor: DriverConnectionDescriptor,
     credential: CredentialHandle,
+    client_version: str,
 ) -> tuple[DiscoveredModel, ...]:
     """Load the complete visible Codex catalog for one connection."""
 
-    payload = await _catalog_request(descriptor, credential)
+    payload = await _catalog_request(descriptor, credential, client_version)
     raw_models = payload.get("models")
     if not isinstance(raw_models, list):
         raise TransportError("Codex 模型目录响应缺少 models 数组").exception()
@@ -49,15 +50,17 @@ async def discover(
 async def probe(
     descriptor: DriverConnectionDescriptor,
     credential: CredentialHandle,
+    client_version: str,
 ) -> None:
     """Prove the credential can read a valid Codex catalog."""
 
-    _ = await _catalog_request(descriptor, credential)
+    _ = await _catalog_request(descriptor, credential, client_version)
 
 
 async def _catalog_request(
     descriptor: DriverConnectionDescriptor,
     credential: CredentialHandle,
+    client_version: str,
 ) -> Mapping[str, Any]:
     if descriptor.driver_id != "codex":
         raise ValueError(f"unexpected driver id: {descriptor.driver_id}")
@@ -77,7 +80,7 @@ async def _catalog_request(
             async with httpx.AsyncClient(timeout=timeout, follow_redirects=False) as client:
                 response = await client.get(
                     f"{endpoint}/models",
-                    params={"client_version": CODEX_CLIENT_VERSION},
+                    params={"client_version": client_version},
                     headers=request_headers,
                 )
         except asyncio.CancelledError:

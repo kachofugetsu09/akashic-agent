@@ -2,8 +2,9 @@ from __future__ import annotations
 
 import math
 
-from collections.abc import Mapping
+from collections.abc import Awaitable, Callable, Mapping
 from dataclasses import dataclass
+from functools import partial
 from typing import Any
 
 import httpx
@@ -38,15 +39,15 @@ class _ConnectionConfig:
     progress_timeout: float
 
 
-def definition() -> ModelDriverDefinition:
+def definition(read_version: Callable[[], Awaitable[str]]) -> ModelDriverDefinition:
     """Build the Codex driver contribution."""
 
     return ModelDriverDefinition(
         driver_id="codex",
         contract_version="1",
-        open=_open,
-        discover=_discover,
-        probe=_probe,
+        open=partial(_open, read_version=read_version),
+        discover=partial(_discover, read_version=read_version),
+        probe=partial(_probe, read_version=read_version),
         start_auth=start_auth,
         finish_auth=finish_auth,
     )
@@ -55,12 +56,16 @@ def definition() -> ModelDriverDefinition:
 async def _open(
     descriptor: DriverConnectionDescriptor,
     credential: CredentialHandle,
+    *,
+    read_version: Callable[[], Awaitable[str]],
 ) -> DriverConnection:
     config = _connection_config(descriptor)
     if credential.connection_id != descriptor.connection_id:
         raise AuthenticationError("credential connection scope does not match").exception()
     if credential.auth_identity != descriptor.auth_identity:
         raise AuthenticationError("credential auth identity does not match").exception()
+
+    client_version = await read_version()
 
     http = HttpClient(lambda: httpx.AsyncClient(
         base_url=config.endpoint,
@@ -80,6 +85,7 @@ async def _open(
             credential=credential,
             descriptor=model,
             config=_model_config(raw_config),
+            client_version=client_version,
             progress_timeout=config.progress_timeout,
         )
 
@@ -96,17 +102,21 @@ async def _open(
 async def _discover(
     descriptor: DriverConnectionDescriptor,
     credential: CredentialHandle,
+    *,
+    read_version: Callable[[], Awaitable[str]],
 ) -> tuple[DiscoveredModel, ...]:
     _ = _connection_config(descriptor)
-    return await discover_catalog(descriptor, credential)
+    return await discover_catalog(descriptor, credential, await read_version())
 
 
 async def _probe(
     descriptor: DriverConnectionDescriptor,
     credential: CredentialHandle,
+    *,
+    read_version: Callable[[], Awaitable[str]],
 ) -> None:
     _ = _connection_config(descriptor)
-    await probe_catalog(descriptor, credential)
+    await probe_catalog(descriptor, credential, await read_version())
 
 
 def _connection_config(descriptor: DriverConnectionDescriptor) -> _ConnectionConfig:

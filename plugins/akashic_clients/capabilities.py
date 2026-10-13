@@ -15,6 +15,7 @@ from plugins.gateway.contract import RpcMethod
 from agent.plugin_composition.runtime_catalog import (
     RUNTIME_CATALOG as RUNTIME_CATALOG,
 )
+from plugins.jobs.contract import JOB_NOTICES as JOB_NOTICES
 from plugins.mcp.contract import MCP_DETAIL, MCP_SERVERS
 from plugins.ui.contract import (
     WEB_UI as WEB_UI,
@@ -76,6 +77,7 @@ __all__ = [
     "INSPECTION_JOBS_LIST",
     "INSPECTION_RPC_KEYS",
     "INSPECTION_SKILLS_LIST",
+    "JOB_NOTICES",
     "MODEL_CATALOG",
     "MODEL_SELECTION",
     "MESSAGE_DISPLAY",
