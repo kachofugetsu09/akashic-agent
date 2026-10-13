@@ -215,7 +215,7 @@ class WebChatChannel:
         self._reply_status: Callable[[str], AsyncGenerator[dict[str, object], None]] | None = None
         self._session_activity: Callable[[], AsyncGenerator[dict[str, object], None]] | None = None
         self._message_display: MessageDisplayReader | None = None
-        self._job_notices: Any = None
+        self._jobs: Callable[[str], AsyncGenerator[dict[str, object], None]] | None = None
         self._followers: dict[WebSocket, tuple[str, asyncio.Task[None]]] = {}
         self._stopping = False
         self._presentation_subscription: StreamSubscription | None = None
@@ -242,6 +242,7 @@ class WebChatChannel:
         scope: Callable[[], Any],
         *,
         reply_status: Callable[[str], AsyncGenerator[dict[str, object], None]] | None = None,
+        jobs: Callable[[str], AsyncGenerator[dict[str, object], None]] | None = None,
     ) -> None:
         """Bind a request scope factory instead of retaining a host provider."""
 
@@ -256,6 +257,10 @@ class WebChatChannel:
             if self._reply_status is not None and self._reply_status is not reply_status:
                 raise RuntimeError("Web reply status reader 不允许替换")
             self._reply_status = reply_status
+        if jobs is not None:
+            if self._jobs is not None and self._jobs != jobs:
+                raise RuntimeError("Web jobs reader 不允许替换")
+            self._jobs = jobs
 
     @asynccontextmanager
     async def _open_message_catalog(self) -> AsyncIterator[MessageCatalog]:
@@ -274,12 +279,6 @@ class WebChatChannel:
         if self._message_display is not None and self._message_display != providers:
             raise RuntimeError("Web 消息展示 provider 已绑定")
         self._message_display = providers
-
-    def bind_job_notices(self, notices: Any) -> None:
-        """绑定后台任务观察源，用于推送会话级后台任务镜像。"""
-        if self._job_notices is not None and self._job_notices != notices:
-            raise RuntimeError("Web job notices provider 已绑定")
-        self._job_notices = notices
 
     @property
     def message_display(self) -> MessageDisplayReader | None:
@@ -955,51 +954,11 @@ class WebChatChannel:
                 reader, after_seq=after_seq,
                 display_only=True, reader_display=self.message_display))
 
-        async def send_jobs() -> None:
-            if self._job_notices is None:
-                await websocket.send_json({"type": "session/jobs", "session_id": session_id, "jobs": []})
-                return
-
-            loop = asyncio.get_running_loop()
-            queue: asyncio.Queue[tuple[Any, ...]] = asyncio.Queue()
-
-            def on_changed(changed_session_id: str, snapshot: tuple[Any, ...]) -> None:
-                if changed_session_id == session_id:
-                    loop.call_soon_threadsafe(queue.put_nowait, snapshot)
-
-            # ScopedJobNotices.subscribe 会在 short scope 内借用 JOB_NOTICES 注册
-            if hasattr(self._job_notices, "subscribe"):
-                unregister = await self._job_notices.subscribe(on_changed)
-                baseline = await self._job_notices.list_jobs(session_id)
-            else:
-                unregister = self._job_notices.on_jobs_changed(on_changed)
-                baseline = self._job_notices.list_jobs(session_id)
-
-            if baseline is None:
-                await websocket.send_json({"type": "session/jobs", "session_id": session_id, "jobs": []})
-                return
-
-            try:
-                # 建立连接时推送 baseline 全量快照
-                await websocket.send_json({
-                    "type": "session/jobs",
-                    "session_id": session_id,
-                    "jobs": [j.to_wire() for j in baseline],
-                })
-                while True:
-                    snapshot = await queue.get()
-                    await websocket.send_json({
-                        "type": "session/jobs",
-                        "session_id": session_id,
-                        "jobs": [j.to_wire() for j in snapshot],
-                    })
-            finally:
-                if unregister is not None:
-                    unregister()
-
         async with asyncio.TaskGroup() as tasks:
             _ = tasks.create_task(send_messages())
-            _ = tasks.create_task(send_jobs())
+            # 后台任务镜像可选：jobs 插件缺席时不发帧，前端按空列表处理。
+            if self._jobs is not None:
+                _ = tasks.create_task(send("session.jobs", self._jobs(session_id)))
             if self._reply_status is None:
                 await websocket.send_json({"type": "reply.status", "version": 2,
                     "session_id": session_id, "snapshot_id": None, "available": False, "items": []})

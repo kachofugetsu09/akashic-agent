@@ -3,7 +3,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
-from collections.abc import Callable, Mapping, Sequence
+from collections.abc import AsyncGenerator, Mapping, Sequence
 from typing import Literal, cast
 
 from pydantic import BaseModel, ConfigDict, Field
@@ -18,8 +18,8 @@ from plugins.ledger.contract import BINDINGS, MESSAGE_CATALOG, Input, Message, M
 from plugins.reply.contract import REPLY_PROGRAM_V3 as REPLY_PROGRAM
 from plugins.sources.contract import SourceGuard
 
-from .board import JobBoard, Notice
-from .contract import JOB_NOTICES, JobSnapshot, JobWatch, JobsChangedListener
+from .board import JobBoard, JobMirror, Notice
+from .contract import JOB_NOTICES, JobOutcome, JobSnapshot, JobWatch
 
 logger = logging.getLogger(__name__)
 api_version = 3
@@ -59,20 +59,18 @@ class Jobs:
         self._ctx = ctx
         self._config = config
         self._board = JobBoard(config.max_consecutive_wakes)
+        self._mirror = JobMirror()
         self._queue: asyncio.Queue[JobWatch] = asyncio.Queue()
 
     def watch(self, job: JobWatch) -> None:
-        self._board.register(job)
+        self._mirror.start(job)
         self._queue.put_nowait(job)
 
     def origin_source(self, session_id: str, source: str) -> str:
         return self._board.origin_source(session_id, source)
 
-    def list_jobs(self, session_id: str) -> tuple[JobSnapshot, ...]:
-        return self._board.list_jobs(session_id)
-
-    def on_jobs_changed(self, listener: JobsChangedListener) -> Callable[[], None]:
-        return self._board.on_jobs_changed(listener)
+    def follow_jobs(self, session_id: str) -> AsyncGenerator[tuple[JobSnapshot, ...], None]:
+        return self._mirror.follow(session_id)
 
     async def run(self) -> None:
         """插件任务持有全部等待者；卸载先取消并排空，再释放运行许可。"""
@@ -97,12 +95,14 @@ class Jobs:
         )}
 
     async def _follow(self, job: JobWatch) -> None:
-        # 1. 生产方等待失败只丢弃这一条通知，不影响其他任务。
+        # 1. 生产方等待失败只丢弃这一条通知，不影响其他任务；无论结果如何都让镜像离开运行中。
+        outcome: JobOutcome | None = None
         try:
             outcome = await job.settled()
         except Exception:
             logger.warning("后台任务结算等待失败 job=%s", job.job_id, exc_info=True)
-            return
+        finally:
+            self._mirror.finish(job, outcome)
         if outcome is None:
             return
         notice = self._board.settle(job, outcome)

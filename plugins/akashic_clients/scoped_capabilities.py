@@ -14,9 +14,8 @@ from contextvars import ContextVar
 from typing import Any, cast
 
 from plugins.ui.contract import MessageDisplayReader
-from plugins.jobs.contract import JobNotices, JobSnapshot, JobsChangedListener
 
-from .capabilities import JOB_NOTICES, MESSAGE_DISPLAY, PLUGIN_UI, WEB_UI
+from .capabilities import MESSAGE_DISPLAY, PLUGIN_UI, WEB_UI
 from .services import PluginUiProvider, WebUiProvider
 
 
@@ -137,32 +136,8 @@ class ScopedWebUiProvider:
             return await cast(WebUiProvider, scope.require(WEB_UI)).state()
 
 
-class ScopedJobNotices:
-    """Job notices projection that resolves provider from request scope without retaining provider objects."""
-
-    def __init__(self, opener: RequestScopeOpener) -> None:
-        self._opener = opener
-
-    async def list_jobs(self, session_id: str) -> tuple[JobSnapshot, ...] | None:
-        async with _request_scope(self._opener) as scope:
-            with scope.borrow(JOB_NOTICES) as service:
-                if service is None:
-                    return None
-                notices = cast(JobNotices, service)
-                return notices.list_jobs(session_id)
-
-    async def subscribe(self, listener: JobsChangedListener) -> Callable[[], None] | None:
-        async with _request_scope(self._opener) as scope:
-            with scope.borrow(JOB_NOTICES) as service:
-                if service is None:
-                    return None
-                notices = cast(JobNotices, service)
-                return notices.on_jobs_changed(listener)
-
-
 __all__ = [
     "RequestScopeOpener",
-    "ScopedJobNotices",
     "ScopedMessageDisplay",
     "ScopedPluginUiProvider",
     "ScopedWebUiProvider",

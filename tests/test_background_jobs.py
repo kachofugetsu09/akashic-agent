@@ -305,65 +305,6 @@ async def test_new_input_claims_notice_from_preempted_wake(tmp_path):
 
 
 @pytest.mark.asyncio
-async def test_job_board_snapshots_and_lifecycle():
-    board = JobBoard()
-    changes = []
-    unregister = board.on_jobs_changed(lambda s, snap: changes.append((s, snap)))
-
-    async def fake_settle():
-        return JobOutcome("completed", "exit code 0")
-
-    watch = JobWatch(
-        session_id="s1",
-        source="conversation",
-        job_id="j1",
-        kind="shell",
-        label="test job",
-        collect_hint="read with tool",
-        settled=fake_settle,
-    )
-    board.register(watch)
-    assert len(changes) == 1
-    session_id, snap = changes[-1]
-    assert session_id == "s1"
-    assert len(snap) == 1
-    assert snap[0].status == "running"
-    initial_started_at = snap[0].started_at
-    assert initial_started_at > 0
-
-    # 重复 list_jobs，started_at 不应漂移
-    snap2 = board.list_jobs("s1")
-    assert snap2[0].started_at == initial_started_at
-
-    # 结算
-    board.settle(watch, JobOutcome("completed", "done"))
-    assert len(changes) == 2
-    _, settled_snap = changes[-1]
-    assert len(settled_snap) == 1
-    assert settled_snap[0].status == "completed"
-    assert settled_snap[0].started_at == initial_started_at
-    assert settled_snap[0].finished_at is not None
-    assert settled_snap[0].finished_at >= initial_started_at
-
-    wire = settled_snap[0].to_wire()
-    assert wire["id"] == "j1"
-    assert wire["kind"] == "shell"
-    assert wire["status"] == "completed"
-
-    unregister()
-    board.register(JobWatch(
-        session_id="s1",
-        source="conversation",
-        job_id="j2",
-        kind="shell",
-        label="test job 2",
-        collect_hint="read",
-        settled=fake_settle,
-    ))
-    assert len(changes) == 2  # unregister 之后不再触发
-
-
-@pytest.mark.asyncio
 async def test_jobs_unload_cancels_active_wake(tmp_path):
     async with application(tmp_path, replying=True, extra_sources=_gated_wake_sources) as (log, host):
         _calls, gate = await _send(host)

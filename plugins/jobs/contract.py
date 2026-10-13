@@ -1,41 +1,19 @@
 """后台任务完成通知的公共合同；生产方只登记等待入口，投递归 jobs 插件。"""
 from __future__ import annotations
 
-from collections.abc import Awaitable, Callable
+from collections.abc import AsyncGenerator, Awaitable, Callable
 from dataclasses import dataclass
 from typing import Literal, Protocol
 
 from agent.plugin_composition import ServiceKey
 
-JobOutcomeStatus = Literal["completed", "failed", "timeout", "killed"]
-JobSnapshotStatus = Literal["running", "stopping", "completed", "failed", "timeout", "killed"]
-
-
-@dataclass(frozen=True, slots=True)
-class JobSnapshot:
-    job_id: str
-    kind: str
-    label: str
-    status: JobSnapshotStatus
-    detail: str
-    started_at: int
-    finished_at: int | None = None
-
-    def to_wire(self) -> dict[str, object]:
-        return {
-            "id": self.job_id,
-            "kind": self.kind,
-            "label": self.label,
-            "status": self.status,
-            "detail": self.detail,
-            "started_at": self.started_at,
-            "finished_at": self.finished_at,
-        }
+JobStatus = Literal["completed", "failed", "timeout", "killed"]
+JobSnapshotStatus = Literal["running", "completed", "failed", "timeout", "killed"]
 
 
 @dataclass(frozen=True, slots=True)
 class JobOutcome:
-    status: JobOutcomeStatus
+    status: JobStatus
     detail: str
 
 
@@ -49,10 +27,24 @@ class JobWatch:
     label: str
     collect_hint: str
     settled: Callable[[], Awaitable[JobOutcome | None]]
-    started_at: int | None = None
 
 
-JobsChangedListener = Callable[[str, tuple[JobSnapshot, ...]], None]
+# 前端只读镜像的一行；时间均为 epoch 毫秒。
+@dataclass(frozen=True, slots=True)
+class JobSnapshot:
+    job_id: str
+    kind: str
+    label: str
+    status: JobSnapshotStatus
+    detail: str
+    started_at: int
+    finished_at: int | None = None
+
+    def to_wire(self) -> dict[str, object]:
+        return {
+            "id": self.job_id, "kind": self.kind, "label": self.label, "status": self.status,
+            "detail": self.detail, "started_at": self.started_at, "finished_at": self.finished_at,
+        }
 
 
 class JobNotices(Protocol):
@@ -62,12 +54,8 @@ class JobNotices(Protocol):
         """当前唤醒可访问登记任务的原来源；其他会话和来源保持原样。"""
         ...
 
-    def list_jobs(self, session_id: str) -> tuple[JobSnapshot, ...]:
-        """返回指定会话当前可见的完整任务快照。"""
-        ...
-
-    def on_jobs_changed(self, listener: JobsChangedListener) -> Callable[[], None]:
-        """订阅会话级任务快照变化。返回反注册函数。"""
+    def follow_jobs(self, session_id: str) -> AsyncGenerator[tuple[JobSnapshot, ...], None]:
+        """先产出会话当前全量快照，之后每次变化产出最新全量快照；连续变化会合并。"""
         ...
 
 
