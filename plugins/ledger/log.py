@@ -1412,7 +1412,7 @@ class MessageReader:
             def messages() -> Generator[Message, None, None]:
                 cursor = after_seq
                 while cursor < head:
-                    page = self.read(after_seq=cursor, through_seq=head, source=source, limit=64)
+                    page = self.read(after_seq=cursor, through_seq=head, source=source, limit=256)
                     if not page:
                         break
                     yield from page

@@ -645,7 +645,7 @@ class MessageProjection:
         inherited: Mapping[str, tuple[Message, Mapping[str, Any] | None]],
     ) -> None:
         """预扫描的全量形式；与原逐轮三趟扫描逐行等价。"""
-        # 放弃只撤销未结束前缀的执行协议；可读正文仍属于聊天历史。
+        # 放弃结算与 meta/facts 互不依赖，同一趟完成；调用账仍需在 main 之前取齐。
         pending: dict[str, list[Message]] = {}
         for message in messages:
             body = message.body
@@ -666,7 +666,6 @@ class MessageProjection:
                             if isinstance(part, ToolCall)
                         )
                 pending[message.source] = [output for output in outputs if output.seq > body.through_seq]
-        for message in messages:
             self._fold_meta(fold, message)
             self._fold_facts(fold, message, inherited)
         # 调用账 owner 批量读取窄字段；插件自带 reader 保持原调用合同。
