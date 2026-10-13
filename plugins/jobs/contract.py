@@ -27,6 +27,8 @@ class JobWatch:
     label: str
     collect_hint: str
     settled: Callable[[], Awaitable[JobOutcome | None]]
+    # 任务实际开始的 epoch 毫秒；生产方先前台运行再转后台时提供，缺席按登记时刻计。
+    started_at_ms: int | None = None
 
 
 # 前端只读镜像的一行；时间均为 epoch 毫秒。
