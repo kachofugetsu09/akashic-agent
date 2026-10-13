@@ -73,7 +73,10 @@ def create_app(port: int, frontend: Path) -> FastAPI:
                 await ctx.provide(MODEL_CATALOG, state.catalog)
 
             async def drivers(ctx):
-                await ctx.require(MODEL_DRIVERS).register(ctx, codex_definition())
+                async def read_version():
+                    return "0.0.0"
+
+                await ctx.require(MODEL_DRIVERS).register(ctx, codex_definition(read_version))
                 await ctx.require(MODEL_DRIVERS).register(ctx, opencode_definition())
 
             await root.mount(models, name="models")

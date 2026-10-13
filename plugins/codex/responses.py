@@ -38,7 +38,7 @@ from plugins.models.contract import (
     TransportError,
 )
 
-from .auth import CODEX_CLIENT_VERSION, headers
+from .auth import headers
 
 
 class CodexResponses:
@@ -51,8 +51,10 @@ class CodexResponses:
         credential: CredentialHandle,
         descriptor: BoundModelDescriptor,
         config: Mapping[str, Any],
+        client_version: str,
         progress_timeout: float = 300.0,
     ) -> None:
+        self._client_version = client_version
         self._progress_timeout = progress_timeout
         self._http = http
         self._credential = credential
@@ -80,7 +82,7 @@ class CodexResponses:
             "Accept": "text/event-stream",
             "Content-Type": "application/json",
             "originator": "codex_cli_rs",
-            "User-Agent": f"codex_cli_rs/{CODEX_CLIENT_VERSION}",
+            "User-Agent": f"codex_cli_rs/{self._client_version}",
             "x-codex-installation-id": self._installation_id,
             "session-id": self._session_id,
             "thread-id": self._thread_id,

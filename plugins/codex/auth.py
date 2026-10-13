@@ -18,7 +18,6 @@ from plugins.models.contract import (
 CODEX_CLIENT_ID = "app_EMoamEEZ73f0CkXaXp7hrann"
 CODEX_AUTH_BASE = "https://auth.openai.com"
 CODEX_API_BASE = "https://chatgpt.com/backend-api/codex"
-CODEX_CLIENT_VERSION = "0.144.1"
 _REFRESH_SKEW_SECONDS = 120
 
 
