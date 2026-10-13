@@ -6,14 +6,28 @@
 ## 运行条件
 
 插件依赖 `tools.v1` 和 `ledger.artifact_import.v1`；`ui.slots.v1` 仅用于可选展示。
-安装链读取 `requirements.txt` 建立 Playwright 环境。浏览器由操作者准备，插件不在运行中下载程序：
+插件在产品进程内导入 Playwright，因此版本由产品 `requirements.txt` 与发行依赖锁拥有。
+正式发行镜像随默认组合启用插件，构建时安装匹配版本的 Chromium headless shell、系统库与中英文字体；插件不在运行中下载程序。原生运行由操作者准备浏览器：
 
-- 默认使用 Playwright 1.59.0 对应的 Chromium，可在插件环境中运行 `python -m playwright install chromium`。
+- 默认使用 Playwright 1.59.0 对应的 Chromium，可在产品环境中运行 `python -m playwright install --only-shell chromium`。
 - 已有受管理 Chromium 时，插件配置 `executable_path` 指向它的绝对路径。
 - 容器需提供 Chromium 的系统依赖并允许 Chromium sandbox；不通过关闭 sandbox 绕过环境错误。
 
 源码构建运行 `npm run build:web-plugins`，生成 UI 入口、frame 和从主题目录派生的预检 CSS。
-只修改 `frontend/plugins/visuals/src` 的展示源文件。插件不修改任何默认 bundle 或自动启用自身。
+只修改 `frontend/plugins/visuals/src` 的展示源文件。启停仍由 workspace 插件选择拥有；已有显式禁用选择不会被默认组合覆盖。
+
+发行容器沿用非 root、只读根目录、移除全部 capabilities 和 no-new-privileges。Core 使用
+`docker/host-runtime/chromium-seccomp.json` 允许浏览器创建用户命名空间，保留 Chromium sandbox。
+该策略来自 [Docker 上游默认策略](https://github.com/moby/profiles/blob/4b8214fc4971e06172938a1f1554ccff6647ee80/seccomp/default.json)，
+只保留本发行版 x86_64 与无 capabilities 的规则，并按 [Playwright 指导](https://playwright.dev/python/docs/docker)
+允许 clone、setns、unshare，以及无宿主权限时仅在用户命名空间内可用的 chroot。
+Workload Controller 仍用 Docker 默认策略。上游 Apache-2.0 许可保存在
+`docker/host-runtime/chromium-seccomp.LICENSE`，本地策略的修改范围仅为上述过滤和沙箱调用。
+
+客户端通过插件的静态入口 `/visuals/frame.html` 打开图表，响应 CSP 强制 `sandbox allow-scripts`，
+不继承聊天页禁止内联脚本的策略，也不放宽聊天页权限。父页面只交付一次已读取的附件文档；
+后续通信只包含主题、尺寸、就绪和错误，不提供宿主查询或执行能力。
+静态文档不放在要求 Web UI 身份头的 `/api/dashboard/` 下：浏览器 iframe 导航无法携带这些头。
 
 ## 可观察合同
 

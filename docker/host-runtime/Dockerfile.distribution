@@ -10,7 +10,8 @@ ENV HOME=/home/huashen \
     PATH=/opt/venv/bin:/home/huashen/.local/bin:/usr/local/sbin:/usr/local/bin:/usr/bin \
     PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1 \
-    AKASHIC_DISTRIBUTION=/opt/akashic/distribution
+    AKASHIC_DISTRIBUTION=/opt/akashic/distribution \
+    PLAYWRIGHT_BROWSERS_PATH=/opt/akashic/browsers
 
 RUN printf '%s\n' \
         'CacheServer = https://mirrors.tuna.tsinghua.edu.cn/archlinux/$repo/os/$arch' \
@@ -20,6 +21,21 @@ RUN printf '%s\n' \
     && pacman -Syyu --noconfirm \
     && pacman -S --noconfirm --needed \
         ca-certificates \
+        alsa-lib \
+        at-spi2-core \
+        cairo \
+        libcups \
+        libdrm \
+        libxcomposite \
+        libxdamage \
+        libxfixes \
+        libxkbcommon \
+        libxrandr \
+        mesa \
+        nss \
+        pango \
+        ttf-liberation \
+        wqy-zenhei \
         curl \
         git \
         python \
@@ -81,6 +97,7 @@ RUN --mount=type=cache,target=/root/.cache/pip \
     && mkdir -p /tmp/akashic-distribution-workspace /tmp/akashic-distribution-plugins \
     && /opt/venv/bin/python /opt/akashic/source/scripts/distribution_runtime.py prepare-wheels \
         --distribution /opt/akashic/distribution \
+    && /opt/venv/bin/python -m playwright install --only-shell chromium \
     && /opt/venv/bin/python /opt/akashic/source/scripts/install_plugin_distribution.py \
         --distribution /opt/akashic/distribution \
         --bundle /opt/akashic/distribution/bundles/base.toml \

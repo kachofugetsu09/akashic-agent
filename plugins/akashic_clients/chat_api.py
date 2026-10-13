@@ -10,6 +10,7 @@ from collections.abc import AsyncGenerator, Awaitable, Callable, Mapping
 from contextlib import aclosing, asynccontextmanager
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Literal, Protocol, cast
+from urllib.parse import quote
 
 import uvicorn
 from fastapi import FastAPI, HTTPException, Query, Request, WebSocket
@@ -640,7 +641,12 @@ def create_chat_app(
         if filename:
             safe_filename = Path(filename).name.replace('"', "").replace("\r", "").replace("\n", "")
             if safe_filename:
-                headers["Content-Disposition"] = f'inline; filename="{safe_filename}"'
+                encoded_filename = quote(safe_filename, safe="")
+                headers["Content-Disposition"] = (
+                    f"inline; filename*=utf-8''{encoded_filename}"
+                    if encoded_filename != safe_filename
+                    else f'inline; filename="{safe_filename}"'
+                )
         return Response(
             content=data,
             media_type=media_type or "application/octet-stream",

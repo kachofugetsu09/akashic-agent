@@ -77,6 +77,20 @@ async def apply(ctx):
     with (ctx.data_root / "applies").open("a") as file:
         file.write("apply\\n")
 ''')
+    # 使用真实 visuals 文档模块，覆盖 HTTPS iframe 会发送的来源头。
+    visual = base / "sources/visual_frame"
+    visual.mkdir()
+    for name in ("dashboard.py", "bootstrap.html"):
+        shutil.copyfile(ROOT / "plugins/visuals" / name, visual / name)
+    (visual / "plugin.py").write_text('''from plugins.ui.contract import UI
+from . import dashboard
+api_version = 3
+name = "visual_frame"
+version = "1.0.0"
+inject = (UI,)
+async def apply(ctx):
+    await ctx.require(UI).register(ctx, dashboard=lambda: dashboard)
+''')
     host = None
     address = ""
 
@@ -102,6 +116,12 @@ async def apply(ctx):
             async with httpx.AsyncClient(transport=httpx.AsyncHTTPTransport(uds=address), base_url="http://local") as web:
                 assert (await web.get("/api/dashboard/probe", headers=headers)).json() == {"value": "real-route"}
                 assert (await web.get("/api/dashboard/probe")).status_code == 403
+                browser_headers = {"sec-fetch-site": "same-origin", "sec-fetch-mode": "navigate", "sec-fetch-dest": "iframe"}
+                frame = await web.get("/visuals/frame.html", headers=browser_headers)
+                assert frame.status_code == 200, frame.text
+                assert "sandbox allow-scripts;" in frame.headers["content-security-policy"]
+                assert frame.text == (ROOT / "plugins/visuals/bootstrap.html").read_text()
+                assert (await web.get("/api/dashboard/probe", headers=browser_headers)).status_code == 403
                 assert (await web.get("/dashboard")).status_code == 503  # 无构建资产时不伪造成功页面。
                 query = urlencode({"__akashic_web_" + key: value for key, value in values.items()})
                 async with unix_connect(address, "ws://local/api/dashboard/stream?" + query, origin="http://local") as socket:

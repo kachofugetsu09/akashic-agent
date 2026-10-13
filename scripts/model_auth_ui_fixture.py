@@ -114,7 +114,7 @@ def create_app(port: int, frontend: Path) -> FastAPI:
     @app.post("/upstream/api/accounts/deviceauth/usercode")
     async def device_code(request: Request):
         assert (await request.json())["client_id"] == codex_auth.CODEX_CLIENT_ID
-        return {"device_auth_id": "local-device", "user_code": "LOCAL-CODE", "interval": 3}
+        return {"device_auth_id": "local-device", "user_code": "LOCAL-CODE", "interval": "3"}
 
     @app.post("/upstream/api/accounts/deviceauth/token")
     async def device_token(request: Request):
