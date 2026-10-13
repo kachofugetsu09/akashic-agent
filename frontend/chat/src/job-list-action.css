@@ -43,7 +43,9 @@
   .job-list__trigger { min-width: 44px; min-height: 44px; justify-content: center; }
 }
 
+/* 窄屏标记不在行尾，面板改为贴视口两侧展开，避免向左溢出。 */
 @media (max-width: 820px) {
   .job-list__summary { display: none; }
   .job-list__count { display: inline; }
+  .job-list__panel { position: fixed; inset-block-start: calc(52px + env(safe-area-inset-top, 0px)); inset-inline: 12px; inline-size: auto; }
 }
