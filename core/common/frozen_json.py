@@ -55,14 +55,16 @@ def _freeze(item: object, active: set[int]) -> object:
         active.add(identity)
         try:
             if item_type is dict:
-                frozen: dict[str, object] = {}
+                # 直接向冻结实例填充，省掉临时字典到 _FrozenJson 的二次复制。
+                frozen: dict[str, object] = dict.__new__(_FrozenJson)
+                setitem = dict.__setitem__
                 for key, nested in cast(dict[object, object], item).items():
                     if not isinstance(key, str):
                         raise TypeError("JSON 对象的 key 必须是字符串")
-                    frozen[key] = _freeze(nested, active)
-                return _FrozenJson(frozen)
+                    setitem(frozen, key, _freeze(nested, active))
+                return frozen
             return _FrozenJsonArray(
-                _freeze(nested, active) for nested in cast(list[object] | tuple[object, ...], item)
+                [_freeze(nested, active) for nested in cast(list[object] | tuple[object, ...], item)]
             )
         finally:
             active.remove(identity)
@@ -79,12 +81,13 @@ def _freeze(item: object, active: set[int]) -> object:
             raise ValueError("JSON value 不允许循环引用")
         active.add(identity)
         try:
-            frozen = {}
+            frozen = dict.__new__(_FrozenJson)
+            setitem = dict.__setitem__
             for key, nested in cast(Mapping[object, object], item).items():
                 if not isinstance(key, str):
                     raise TypeError("JSON 对象的 key 必须是字符串")
-                frozen[key] = _freeze(nested, active)
-            return _FrozenJson(frozen)
+                setitem(frozen, key, _freeze(nested, active))
+            return frozen
         finally:
             active.remove(identity)
     if isinstance(item, (list, tuple)):
@@ -94,7 +97,7 @@ def _freeze(item: object, active: set[int]) -> object:
         active.add(identity)
         try:
             return _FrozenJsonArray(
-                _freeze(nested, active) for nested in cast(list[object] | tuple[object, ...], item)
+                [_freeze(nested, active) for nested in cast(list[object] | tuple[object, ...], item)]
             )
         finally:
             active.remove(identity)
