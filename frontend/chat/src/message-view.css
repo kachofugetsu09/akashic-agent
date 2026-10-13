@@ -1400,6 +1400,13 @@ button.tool-step-summary:active {
   flex-direction: row-reverse;
 }
 
+/* 发送确认通常在一秒内到达：短暂停留时不闪"发送中"，超过 1.2 秒才淡入。 */
+.shared-message-delivery { padding-inline: 4px; color: var(--ak-ink-muted); }
+@media (prefers-reduced-motion: no-preference) {
+  .shared-message-delivery { animation: shared-delivery-reveal 160ms ease-out 1.2s both; }
+}
+@keyframes shared-delivery-reveal { from { opacity: 0; } }
+
 /* 热区与视觉尺寸的唯一 owner；窄屏断点只改这两个变量（触控目标 ≥44px，视觉仍 24px）。 */
 .shared-message-actions {
   --shared-action-hit: 40px;

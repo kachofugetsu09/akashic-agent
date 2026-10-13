@@ -1161,6 +1161,8 @@ class WebChatChannel:
             raise
         finally:
             adapter._finish_inbound()
+        # 显式确认已入账：客户端以此区分"已送达"和"只进了本地发送缓冲"，重复 id 的重发也会得到确认。
+        await websocket.send_json({"type": "message.accepted", "request_id": client_message_id, "session_id": session_key})
         return session_key
 
     async def _add_connection(self, session_key: str, websocket: WebSocket) -> bool:
