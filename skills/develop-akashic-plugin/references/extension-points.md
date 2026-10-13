@@ -1,7 +1,7 @@
 # 扩展点速查
 
 先按"想做什么"选扩展点，再去读表里的合同文件确认签名。签名以合同文件为准，本表不复制。
-内置插件源码在 `$AKASHIC_PLUGIN_DISTRIBUTION/sources/<插件名>/`，Core 在 `$AKASHIC_CORE_ROOT/`。
+表中插件路径都相对 `$AKASHIC_PLUGIN_DISTRIBUTION/sources/`（如 `tools/contract.py`），`agent/...` 相对 `$AKASHIC_CORE_ROOT/`。
 
 | 想做什么 | 用什么 | 合同文件 | 可参照的真实插件 |
 |---|---|---|---|

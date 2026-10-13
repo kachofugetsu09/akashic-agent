@@ -47,16 +47,25 @@ ps -eo args= | grep -F "$AKASHIC_CORE_ROOT/main.py --config" | grep -v grep | he
 
 ## 4. 实际用一次
 
-激活只说明代码加载了，还要按插件类型取能力证据：
+激活只说明代码加载了，还要按插件类型取能力证据。
+
+当前这一轮的工具和 Skill 目录在安装前就固定了，新能力在本轮看不到（`load_tools` 会报"不属于当前获授工具目录"）。
+工具和 Skill 用一个新会话验，同一个 python 和参数：
+
+```sh
+<python> "$AKASHIC_CORE_ROOT/main.py" exec --new --final-only \
+  "只做一件事：调用 <工具名>，参数 <...>，把工具返回的原始结果原样贴出来，不要自己算。" \
+  --config <config> --workspace <workspace> 2>&1
+```
+
+它新建一个程序化会话（不写记忆），等那一轮结束后只打印最终回复；失败时退出码为 1，`reason` 在输出里。
 
 | 插件类型 | 怎么验 |
 |---|---|
-| 工具 | 先 `load_tools` 传插件 ID 拿到 schema（`always_on` 的工具组跳过这步），再真调用一次，贴出返回结果 |
-| Skill | `load_skill` 读出新正文，核对 `source_id` 是本插件 |
+| 工具 | 用上面的 `exec`：工具组非 `always_on` 时让新会话先 `load_tools` 传插件 ID 再调用；贴出原始返回 |
+| Skill | 用上面的 `exec` 让新会话 `load_skill` 并复述要点，核对来源是本插件 |
 | WebUI | 有浏览器或截图能力时打开 WebUI，在亮色和暗色主题下各看一次新内容，并检查控制台没有报错；没有就明确写"界面未亲眼验证"，请用户刷新页面查看 |
 | 上下文材料、后台任务 | 触发一次对应场景，用它产生的真实结果作证据 |
-
-新工具和 Skill 只出现在之后新取得的调用里；本轮看不到时，在下一轮再验，不要声称已生效。
 
 ## 5. 汇报
 

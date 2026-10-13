@@ -34,6 +34,7 @@ class Result:
 
 
 class RollTool:
+    # 必须与下方 register(idempotent=...) 一致，否则调用时报"工具幂等协议与固定描述不一致"。
     idempotent = False
 
     # prepare 只校验并规范参数；返回值就是 invoke 收到的 arguments。
@@ -61,5 +62,5 @@ async def apply(ctx: Context) -> None:
 
     _ = await catalog.register(
         ctx, name="roll_dice", description="掷一次骰子并返回点数",
-        parameters=RollInput.model_json_schema(), open=open_tool,
+        parameters=RollInput.model_json_schema(), open=open_tool, idempotent=RollTool.idempotent,
     )

@@ -20,8 +20,9 @@ description: 给自己扩展新能力时使用：编写一个 Akashic 插件（�
 ## 知识来源，按顺序
 
 1. 本 skill 的模板和 `references/extension-points.md`：先确定用哪个扩展点。
-2. 真实合同：`$AKASHIC_CORE_ROOT/agent/plugin_composition/__init__.py`（`Context` 能做什么），
-   提供方插件的 `contract.py`（ServiceKey、协议、数据类型）。内置插件源码在 `$AKASHIC_PLUGIN_DISTRIBUTION/sources/<插件名>/`。
+2. 真实合同：Core 的 `$AKASHIC_CORE_ROOT/agent/plugin_composition/context.py`（`Context` 能做什么）；
+   提供方插件的 `$AKASHIC_PLUGIN_DISTRIBUTION/sources/<插件名>/contract.py`（ServiceKey、协议、数据类型）。
+   插件源码不在 `$AKASHIC_CORE_ROOT` 下。
 3. 同类的真实插件：找一个用同一 ServiceKey 的内置插件读它的 `plugin.py`。
 4. 设计文档只作背景：`$AKASHIC_CORE_ROOT` 下没有 `docs/`；源码仓库的 `docs/design/plugin-v3-capabilities.md` 与代码冲突时以代码为准。
 
@@ -33,6 +34,11 @@ description: 给自己扩展新能力时使用：编写一个 Akashic 插件（�
 | WebUI 模块的硬性限制、挂载点、主题 token、亮暗主题 | `references/web-ui.md` |
 | 工具插件模板（一个文件） | `templates/tool/plugin.py` |
 | 页面插件模板（三个文件） | `templates/page/plugin.py`、`templates/page/web_module.js`、`templates/page/web_module.css` |
+
+## 省步数
+
+每轮工具调用有上限。只读模板和真正要用的那一两个合同文件，不通读插件源码。不要用单独的 python 去 import 插件做自测：
+插件模块只有宿主加载器能导入，安装本身就是加载检查，失败原因看 `plugin-status` 的 `error`。
 
 ## 硬规则
 
