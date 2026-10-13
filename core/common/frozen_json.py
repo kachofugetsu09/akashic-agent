@@ -45,7 +45,7 @@ def _freeze(item: object, active: set[int]) -> object:
     if item_type in _TRIVIAL_TYPES:
         return item
     if item_type is float:
-        if not math.isfinite(item):
+        if not math.isfinite(cast(float, item)):
             raise ValueError("JSON 不接受非有限浮点数")
         return item
     if item_type is dict or item_type is list or item_type is tuple:
