@@ -11,15 +11,15 @@
 ## 当前内置技能
 
 - `develop-akashic-plugin`
-  - 在 canonical source 中创建或修改 Akashic 插件及插件内 Skill/MCP，并按 stable/latest 合同做递归行为验证。
+  - 给自己扩展能力：编写工具、WebUI 页面、Skill 或后台服务插件；附扩展点速查、WebUI 限制和可直接安装的模板。
   - 文件：`skills/develop-akashic-plugin/SKILL.md`
 
-- `create-drift-skill`
-  - 在工作区 drift/skills 下创建或更新 drift skill。
-  - 文件：`skills/create-drift-skill/SKILL.md`
+- `verify-akashic-plugin`
+  - 把写好的插件提交、安装到当前实例（`plugin_install` 工具或实例自带命令行），核对状态并实际用一次后汇报。
+  - 文件：`skills/verify-akashic-plugin/SKILL.md`
 
 - `codex-delegate`
-  - 把长代码库任务委托给本机 Codex CLI 后台执行，并等待完成后回灌结果。
+  - 把长代码库任务委托给本机 Codex CLI 后台执行，完成时由后台任务通知回到当前会话。
   - 文件：`skills/codex-delegate/SKILL.md`
 
 - `skill-creater`
@@ -36,6 +36,7 @@
 
 ## 维护约定
 
-- 发布内置技能：放入所属插件的制品，通过 `INSTALLED_ASSETS.register` 注册，并验证目录及 `load_skill` 正文；只放顶层目录不算交付。
+- 发布内置技能：与某个插件绑定的放入该插件制品并通过 `INSTALLED_ASSETS.register` 注册；通用技能放本目录。两者都要在真实实例里验证目录和 `load_skill` 正文。
+- 改动插件开发相关技能时，同步核对模板能真实安装：`develop-akashic-plugin/templates/` 下每个模板都应能按 `verify-akashic-plugin` 装上并用起来。
 - 删除内置技能：移除条目，避免索引悬空。
 - 本索引仅用于源码导航；运行时实际可用性以 Skill provider 的目录和读取结果为准。运行时另外按来源分层发现本地目录中的 Skill（见 [0091](../docs/decisions/0091-skill-sources-are-layered-providers.md)），本索引不列举这些目录。

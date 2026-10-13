@@ -49,11 +49,13 @@ const report = {
   entry, entrySha256: hash(Buffer.from(entryBytes)),
   chatEntry, chatEntrySha256: hash(Buffer.from(chatEntryBytes)),
   moduleIds: JSON.parse(bootstrap).modules.map(m => m.pluginId),
-  profiles, runCount, viewport: { width: 412, height: 915 }, cpuRate: 4,
+  profiles, runCount, plannedSamples: selected.length * runCount * 2,
+  viewport: { width: 412, height: 915 }, cpuRate: 4,
   timeoutMs: 45_000, startedAt: new Date().toISOString(), runs: [],
 };
 const browser = await chromium.launch({ executablePath: values.browser, headless: true });
 report.browserVersion = browser.version();
+writeFileSync(resolve(output, "report.json"), JSON.stringify(report, null, 2));
 try {
   // 1. 每轮新 context；同一 context 第二次访问才算热缓存，保留真实浏览器 HTTP 缓存。
   for (let run = 0; run < runCount; run++) {
@@ -82,7 +84,12 @@ try {
       });
       try {
         for (const cache of ["cold", "warm"]) {
-          const result = await measure(context, profile, cache);
+          let result;
+          try { result = await measure(context, profile, cache); }
+          catch (error) {
+            // 浏览器或取证失败也是本次样本失败；保留记录后继续下一页。
+            result = { success: false, readyMs: null, error: String(error) };
+          }
           report.runs.push({ run, profile, cache, ...result });
           writeFileSync(resolve(output, "report.json"), JSON.stringify(report, null, 2));
           console.log(JSON.stringify({ run, profile, cache, readyMs: result.readyMs,
@@ -110,6 +117,12 @@ if (report.runs.some(r => !r.success)) process.exitCode = 1;
 async function measure(context, profile, cache) {
   /** 只有历史正文、可编辑输入框和真实 WebSocket 数据均就绪才结束计时。 */
   const page = await context.newPage();
+  try { return await measurePage(page, context, profile, cache); }
+  finally { await page.close(); }
+}
+
+async function measurePage(page, context, profile, cache) {
+  /** 测量与取证共用一页，页面关闭由调用方保证。 */
   page.setDefaultTimeout(report.timeoutMs);
   const cdp = await context.newCDPSession(page);
   await cdp.send("Network.enable");
@@ -171,7 +184,6 @@ async function measure(context, profile, cache) {
     if (errors.length) throw new Error(errors.join("; "));
   } catch (reason) {
     error = String(reason);
-    await page.screenshot({ path: resolve(output, `${profile}-${cache}-${report.runs.length}-failed.png`) });
   }
   const frames = [];
   for (const frame of page.frames()) {
@@ -228,9 +240,9 @@ async function measure(context, profile, cache) {
     });
     if (errors.length) throw new Error(errors.join("; "));
   } catch (reason) { error = String(reason); }
-  await page.screenshot({ path: resolve(output, `${profile}-${cache}-${report.runs.length}.png`) });
+  const suffix = error === null ? "" : "-failed";
+  await page.screenshot({ path: resolve(output, `${profile}-${cache}-${report.runs.length}${suffix}.png`) });
   const socketsBeforeClose = liveSockets;
-  await page.close();
   return { success: error === null, readyMs, fcpMs, transferBytes, error, errors, failures,
     websocketDataMs: websocketDataAt === null ? null : websocketDataAt - started,
     sockets: sockets.length, socketsAtReady, peakSockets, socketsBeforeClose,
