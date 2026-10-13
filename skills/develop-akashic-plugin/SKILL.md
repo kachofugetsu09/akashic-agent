@@ -20,11 +20,12 @@ description: 给自己扩展新能力时使用：编写一个 Akashic 插件（�
 ## 知识来源，按顺序
 
 1. 本 skill 的模板和 `references/extension-points.md`：先确定用哪个扩展点。
-2. 真实合同：Core 的 `$AKASHIC_CORE_ROOT/agent/plugin_composition/context.py`（`Context` 能做什么）；
-   提供方插件的 `$AKASHIC_PLUGIN_DISTRIBUTION/sources/<插件名>/contract.py`（ServiceKey、协议、数据类型）。
-   插件源码不在 `$AKASHIC_CORE_ROOT` 下。
+2. 真实合同：先确认当前执行环境可读的 Core 和插件源码目录，再读 `agent/plugin_composition/context.py` 与提供方的 `<插件名>/contract.py`。
+   开发实例通常提供 `$AKASHIC_CORE_ROOT`、`$AKASHIC_PLUGIN_DISTRIBUTION/sources/`；Host Bridge 宿主可能没有这两个变量，
+   此时从 `$PYTHONPATH` 列出的目录核对 `agent/plugin_composition/context.py`，同一运行 checkout 的 `plugins/` 可读内置合同。
+   容器内路径不能直接当宿主路径；目录必须实际存在，找不到就报告缺少源码入口，不猜路径或复制过期合同。
 3. 同类的真实插件：找一个用同一 ServiceKey 的内置插件读它的 `plugin.py`。
-4. 设计文档只作背景：`$AKASHIC_CORE_ROOT` 下没有 `docs/`；源码仓库的 `docs/design/plugin-v3-capabilities.md` 与代码冲突时以代码为准。
+4. 当前源码仓库的 `docs/INDEX.md` 是需求与设计入口；分发产物可能不带 `docs/`。签名以真实合同为准，语义冲突要指出，不能用实现覆盖已确认需求。
 
 `load_skill` 返回的 `base_directory` 就是本 skill 目录，下表路径都相对它：
 

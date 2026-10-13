@@ -9,7 +9,8 @@
 - `web_module.js` 是一个普通 ES module，必须**同步**导出 `activate(ctx)`，返回清理函数。不需要构建步骤，直接手写。
 - 只能 `import` 这几个：`react`、`react/jsx-runtime`、`react-dom/client`、`@akashic/web-ui-v1`。不能动态 `import()`，不能引外部 URL。
 - `web_module.css` 不能出现 `@import`（注释里也不行），`url()` 只能是 `data:` 或 `#`，不能声明 `@keyframes`、`@font-face`、`@property`、`@layer` 等全局 at-rule。
-- 类名加插件前缀（如 `.hello-page`），不写 `body`、`:root` 等全局选择器。
+
+样式约定：类名加插件前缀（如 `.hello-page`），不写 `body`、`:root` 等全局选择器。安装校验不代替这项人工检查。
 
 ## 浏览器侧 API
 

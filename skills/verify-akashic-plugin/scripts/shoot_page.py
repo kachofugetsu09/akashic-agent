@@ -1,82 +1,124 @@
-# 打开 WebUI 的一个导航页，亮色、暗色、390px 窄屏各截一张，并打印控制台错误、失败请求和横向溢出。
-# 用法：python shoot_page.py <导航文字> <输出目录> [--click 按钮文字 ...]
-# 需要能 import playwright；没有就直接退出码 2，验收写"界面未亲眼验证"。
+"""打开实际 Web 页面，保存亮色、暗色和窄屏截图及交互、请求证据。"""
 import argparse
 import asyncio
 import json
-import os
 import shutil
+import sys
 from pathlib import Path
+from urllib.parse import urlsplit
 
 
-# 1. 先用 playwright 自带浏览器，失败再找系统 chromium
-async def _launch(p):
-    try:
-        return await p.chromium.launch()
-    except Exception:
-        for name in ("chromium", "chromium-browser", "google-chrome"):
-            path = shutil.which(name)
-            if path:
-                return await p.chromium.launch(executable_path=path, args=["--no-sandbox"])
-        raise
+async def _launch(playwright, executable: str | None):
+    """按显式路径、已安装 Playwright 浏览器、系统浏览器顺序选择。"""
+    if executable is None:
+        bundled = playwright.chromium.executable_path
+        executable = bundled if Path(bundled).is_file() else next(
+            (path for name in ("chromium", "chromium-browser", "google-chrome")
+             if (path := shutil.which(name))), None,
+        )
+    if executable is None or not Path(executable).is_file():
+        print("没有可用浏览器；界面未亲眼验证，可用 --browser 指定已安装路径", file=sys.stderr)
+        raise SystemExit(2)
+    # 启动失败保留真实错误，不关闭浏览器沙箱或掩盖依赖问题。
+    return await playwright.chromium.launch(executable_path=executable)
 
 
-async def _shoot(label: str, out: Path, clicks: list[str]) -> dict[str, object]:
+async def _set_theme(page, theme: str) -> None:
+    """等主题的 CSS 过渡结束，避免把中间颜色当作暗色验收。"""
+    await page.evaluate("""async theme => {
+        document.documentElement.setAttribute('data-theme', theme);
+        await new Promise(requestAnimationFrame);
+        await Promise.allSettled(document.getAnimations()
+            .filter(animation => animation instanceof CSSTransition)
+            .map(animation => animation.finished));
+    }""", theme)
+
+
+async def _shoot(label: str, out: Path, clicks: list[str], url: str,
+                 executable: str | None) -> dict[str, object]:
+    """在独立页面记录操作和三种视口，失败也由本次调用关闭浏览器。"""
     from playwright.async_api import async_playwright
 
-    base = f"http://{os.environ.get('AKASHIC_WEB_HOST', '127.0.0.1')}:{os.environ['AKASHIC_WEB_PORT']}/"
-    out.mkdir(parents=True, exist_ok=True)
+    out.mkdir(parents=True, exist_ok=False)
     errors: list[str] = []
-    async with async_playwright() as p:
-        browser = await _launch(p)
-        page = await browser.new_page(viewport={"width": 1280, "height": 800})
-        # 资源失败由 response 带 URL 记录；浏览器自取 favicon 的 404 不经过 response，忽略它的无 URL 控制台行
-        page.on("console", lambda m: errors.append(m.text[:200])
-                if m.type == "error" and not m.text.startswith("Failed to load resource") else None)
-        page.on("pageerror", lambda e: errors.append(f"pageerror {e}"[:200]))
-        page.on("response", lambda r: errors.append(f"{r.status} {r.url}") if r.status >= 400 else None)
-        # 2. 打开首页，跳过首跑引导，点导航进入页面
-        await page.goto(base, wait_until="networkidle")
-        skip = page.get_by_text("我已经配好了，直接聊天")
-        if await skip.count():
-            await skip.click()
-        await page.get_by_role("button", name=label).or_(page.get_by_role("link", name=label)).first.click()
-        await page.wait_for_timeout(1000)
-        # 3. 依次点用户给的按钮，记录每次点击后的页面文字
-        texts: list[str] = []
-        for name in clicks:
-            await page.get_by_role("button", name=name).first.click()
-            await page.wait_for_timeout(1500)
-            texts.append(f"{name} -> {(await page.locator('body').inner_text())[:200]}")
-        # 4. 亮色、暗色、窄屏各一张
-        shots: list[str] = []
-        for theme in ("light", "dark"):
-            await page.evaluate("t => document.documentElement.setAttribute('data-theme', t)", theme)
-            await page.wait_for_timeout(500)
-            await page.screenshot(path=out / f"{theme}.png")
-            shots.append(str(out / f"{theme}.png"))
-        await page.evaluate("document.documentElement.setAttribute('data-theme', 'light')")
-        await page.set_viewport_size({"width": 390, "height": 780})
-        await page.wait_for_timeout(500)
-        await page.screenshot(path=out / "narrow.png")
-        shots.append(str(out / "narrow.png"))
-        overflow = await page.evaluate("document.documentElement.scrollWidth > window.innerWidth")
-        await browser.close()
-    return {"shots": shots, "clicks": texts, "horizontal_overflow": overflow, "errors": errors}
+    cancelled_requests: list[str] = []
+    browser_notes: list[str] = []
+    async with async_playwright() as playwright:
+        browser = await _launch(playwright, executable)
+        try:
+            page = await browser.new_page(viewport={"width": 1280, "height": 800})
+            def record_console(message):
+                """保留控制台故障；浏览器自动请求的缺省图标单列。"""
+                if message.type != "error":
+                    return
+                location = message.location.get("url", "")
+                detail = f"{message.text} {location}"
+                target = browser_notes if (urlsplit(location).path == "/favicon.ico"
+                                           and "404" in message.text) else errors
+                target.append(detail)
+
+            def record_failure(request):
+                """路由切换取消的请求保留证据，但不当作连接故障。"""
+                target = cancelled_requests if request.failure == "net::ERR_ABORTED" else errors
+                target.append(f"{request.failure} {request.url}")
+
+            page.on("console", record_console)
+            page.on("pageerror", lambda error: errors.append(f"pageerror {error}"))
+            page.on("response", lambda response: errors.append(f"{response.status} {response.url}")
+                    if response.status >= 400 else None)
+            page.on("requestfailed", record_failure)
+            # 1. 以实际导航元素就绪为准，不等待整个应用停止网络活动。
+            await page.goto(url, wait_until="domcontentloaded")
+            skip = page.get_by_text("我已经配好了，直接聊天", exact=True)
+            if await skip.is_visible():
+                await skip.click()
+            await page.get_by_role("button", name=label, exact=True).or_(
+                page.get_by_role("link", name=label, exact=True),
+            ).first.click()
+            # 2. 保存每次点击后的页面文字；异步业务结果仍需按需求核对。
+            texts: list[str] = []
+            for name in clicks:
+                await page.get_by_role("button", name=name, exact=True).first.click()
+                await page.wait_for_timeout(1500)
+                texts.append(f"{name} -> {(await page.locator('body').inner_text())[:2000]}")
+            # 3. 主题与窄屏截图不覆盖上次证据。
+            shots: list[str] = []
+            for theme in ("light", "dark"):
+                await _set_theme(page, theme)
+                await page.screenshot(path=out / f"{theme}.png")
+                shots.append(str(out / f"{theme}.png"))
+            await _set_theme(page, "light")
+            await page.set_viewport_size({"width": 390, "height": 780})
+            await page.screenshot(path=out / "narrow.png")
+            shots.append(str(out / "narrow.png"))
+            overflow = await page.evaluate("document.documentElement.scrollWidth > window.innerWidth")
+        finally:
+            await browser.close()
+    return {"shots": shots, "clicks": texts, "horizontal_overflow": overflow, "errors": errors,
+            "cancelled_requests": cancelled_requests, "browser_notes": browser_notes}
 
 
 def main() -> None:
-    parser = argparse.ArgumentParser()
+    """明确验证网页地址；缺少浏览器依赖与实际验收失败使用不同退出码。"""
+    parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("label")
-    parser.add_argument("out")
+    parser.add_argument("out", type=Path)
+    parser.add_argument("--url", required=True, help="当前实例可访问的完整 Web URL")
+    parser.add_argument("--browser", help="已安装 Chromium 的路径")
     parser.add_argument("--click", action="append", default=[])
     args = parser.parse_args()
+    url = urlsplit(args.url)
+    if url.scheme not in {"http", "https"} or not url.hostname:
+        parser.error("--url 必须是完整的 http(s) 网页地址")
     try:
         import playwright  # noqa: F401
     except ImportError:
-        print("没有 playwright，无法截图")
+        print("没有 playwright；界面未亲眼验证", file=sys.stderr)
         raise SystemExit(2)
-    print(json.dumps(asyncio.run(_shoot(args.label, Path(args.out), args.click)), ensure_ascii=False, indent=1))
+    result = asyncio.run(_shoot(args.label, args.out, args.click, args.url, args.browser))
+    print(json.dumps(result, ensure_ascii=False, indent=1))
+    if result["horizontal_overflow"] or result["errors"]:
+        raise SystemExit(1)
 
 
 if __name__ == "__main__":

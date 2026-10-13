@@ -7,7 +7,7 @@ import random
 from collections.abc import AsyncIterator, Mapping
 from contextlib import asynccontextmanager
 from dataclasses import dataclass
-from typing import Literal
+from typing import Literal, cast
 
 from pydantic import BaseModel, ConfigDict, Field
 
@@ -42,7 +42,7 @@ class RollTool:
         return RollInput.model_validate(dict(arguments)).model_dump()
 
     async def invoke(self, key: str, arguments: Mapping[str, object]) -> Result:
-        sides = int(str(arguments["sides"]))
+        sides = cast(int, arguments["sides"])
         value = random.randint(1, sides)
         return Result("success", (ContentPart("text", json.dumps({"sides": sides, "value": value})),))
 
