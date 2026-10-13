@@ -173,13 +173,11 @@ class CodexResponses:
             "model": self._descriptor.model,
             "instructions": instructions,
             "input": messages,
-            "extra_body": {
-                "client_metadata": {
-                    "x-codex-installation-id": self._installation_id,
-                    "session-id": self._session_id,
-                    "thread-id": self._thread_id,
-                    "x-codex-window-id": self._window_id,
-                }
+            "client_metadata": {
+                "x-codex-installation-id": self._installation_id,
+                "session-id": self._session_id,
+                "thread-id": self._thread_id,
+                "x-codex-window-id": self._window_id,
             },
             "tool_choice": tool_choice,
             "parallel_tool_calls": bool(
