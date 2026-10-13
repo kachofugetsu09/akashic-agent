@@ -303,6 +303,7 @@ class _GenerationAkashicAdapter:
             self._message_scope,
             reply_status=self._reply_status,
             jobs=self._follow_jobs,
+            stop_job=self._stop_job,
         )
         self._web.bind_message_display(self._message_display)
 
@@ -400,6 +401,13 @@ class _GenerationAkashicAdapter:
                     yield {"session_id": session_id, "jobs": [job.to_wire() for job in snapshot]}
             yield {"session_id": session_id, "jobs": []}
             await asyncio.sleep(delay)
+
+    async def _stop_job(self, session_id: str, job_id: str) -> bool:
+        async with self._open_request_scope() as scope:
+            with scope.borrow(JOB_NOTICES) as service:
+                if service is None:
+                    return False
+                return await cast(JobNotices, service).stop_job(session_id, job_id)
 
     async def _read_model_call_stats(self, call_id: str) -> ModelCallStats:
         """借用实际统计 owner；缺席不关闭聊天，也不获取模型修改权限。"""

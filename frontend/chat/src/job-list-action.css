@@ -33,11 +33,13 @@
 
 /* 两行：标签与耗时一行，种类与结果一行；圆点对齐第一行。 */
 .job-list__row { display: grid; grid-template-columns: 6px minmax(0, 1fr) auto; column-gap: 10px; row-gap: 2px; align-items: center; padding: 8px 10px; border-radius: 6px; line-height: 1.4; }
-.job-list__row[data-status="running"] { background: var(--chat-chip); }
+.job-list__row[data-stoppable] { grid-template-columns: 6px minmax(0, 1fr) auto auto; }
+.job-list__row[data-status="running"],
+.job-list__row[data-status="stopping"] { background: var(--chat-chip); }
 .job-list__label { min-width: 0; overflow: hidden; color: var(--chat-ink); font-family: var(--ak-type-technical); font-size: var(--chat-type-control, 0.875rem); text-overflow: ellipsis; white-space: nowrap; }
-.job-list__row:not([data-status="running"]) .job-list__label { color: var(--chat-muted); }
+.job-list__row:not([data-status="running"], [data-status="stopping"]) .job-list__label { color: var(--chat-muted); }
 .job-list__duration { color: var(--chat-faint); font-variant-numeric: tabular-nums; white-space: nowrap; }
-.job-list__meta { grid-column: 2 / -1; min-width: 0; overflow: hidden; color: var(--chat-faint); text-overflow: ellipsis; white-space: nowrap; }
+.job-list__meta { grid-column: 2 / 4; min-width: 0; overflow: hidden; color: var(--chat-faint); text-overflow: ellipsis; white-space: nowrap; }
 .job-list__row[data-status="failed"] .job-list__meta,
 .job-list__row[data-status="timeout"] .job-list__meta { color: var(--ak-color-status-error); }
 
@@ -62,4 +64,16 @@
   .job-list__summary { display: none; }
   .job-list__count { display: inline; }
   .job-list__panel { position: fixed; inset-block-start: calc(52px + env(safe-area-inset-top, 0px)); inset-inline: 12px; inline-size: auto; }
+}
+
+/* 停止按钮：平时是安静的方块，武装后展开成带字的确认胶囊，免得只靠颜色区分。 */
+.job-list__stop { display: inline-flex; grid-row: 1 / span 2; grid-column: 4; align-self: center; min-width: 28px; min-height: 28px; align-items: center; justify-content: center; gap: 4px; margin-left: 4px; padding: 0 6px; border: 1px solid transparent; border-radius: 999px; background: transparent; color: var(--chat-faint); font: inherit; font-size: var(--chat-type-caption, 0.75rem); cursor: pointer; }
+.job-list__stop:hover { background: var(--chat-chip); color: var(--chat-ink); }
+.job-list__stop[data-phase="armed"] { border-color: var(--ak-color-status-error); color: var(--ak-color-status-error); }
+.job-list__stop[data-phase="failed"] { color: var(--ak-color-status-error); }
+.job-list__stop:disabled { opacity: 0.5; cursor: progress; }
+.job-list__stop:focus-visible { outline: 2px solid var(--ak-rule-focus); outline-offset: 2px; }
+.job-list__dot[data-status="stopping"] { background: var(--ak-color-status-warning); }
+@media (max-width: 820px), (hover: none) {
+  .job-list__stop { min-width: 40px; min-height: 40px; }
 }

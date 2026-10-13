@@ -346,6 +346,7 @@ class ShellTool:
                 collect_hint=f"需要结果时用 write_stdin(execution_id={execution_id}) 读取输出。",
                 settled=partial(_settled, self._ctx, command.owner_key, execution_id),
                 started_at_ms=started_at_ms,
+                stop=partial(_stop_background, self._ctx, command.owner_key, execution_id),
             ))
         return True
 
@@ -365,6 +366,12 @@ def _outcome(state: ExecutionState) -> JobOutcome:
     if state.finish_reason != "natural":
         return JobOutcome("killed", f"{detail}，{state.finish_reason}")
     return JobOutcome("completed" if state.exit_code == 0 else "failed", detail)
+
+
+# 用户在界面上停止后台命令；与 task_stop 一样终止进程组，结算由 _settled 照常观察。
+async def _stop_background(ctx: Context, owner_key: str, execution_id: int) -> bool:
+    async with ctx.runtime_scope():
+        return await ctx.require(PROCESSES).terminate_execution(ctx, owner_key, execution_id)
 
 
 # 后台执行退出且无人等待时结算；条目消失说明终态已交给模型或执行已被停止。

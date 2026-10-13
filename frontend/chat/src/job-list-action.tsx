@@ -1,8 +1,8 @@
 import { useEffect, useId, useMemo, useRef, useState } from "react";
-import { ChevronDown } from "lucide-react";
+import { ChevronDown, Square } from "lucide-react";
 import "./job-list-action.css";
 
-export type JobStatus = "running" | "completed" | "failed" | "timeout" | "killed";
+export type JobStatus = "running" | "stopping" | "completed" | "failed" | "timeout" | "killed";
 
 /** 后台任务只读镜像的一行；时间为 epoch 毫秒。 */
 export interface JobView {
@@ -13,6 +13,7 @@ export interface JobView {
   detail: string;
   started_at: number;
   finished_at: number | null;
+  stoppable: boolean;
 }
 
 export interface SessionJobs {
@@ -22,6 +23,7 @@ export interface SessionJobs {
 
 const STATUS_LABEL: Record<JobStatus, string> = {
   running: "运行中",
+  stopping: "正在停止",
   completed: "已完成",
   failed: "失败",
   timeout: "超时",
@@ -35,7 +37,8 @@ const isJob = (value: unknown): value is JobView => {
     && typeof row.kind === "string" && typeof row.label === "string" && typeof row.detail === "string"
     && typeof row.status === "string" && row.status in STATUS_LABEL
     && Number.isSafeInteger(row.started_at)
-    && (row.finished_at === null || Number.isSafeInteger(row.finished_at));
+    && (row.finished_at === null || Number.isSafeInteger(row.finished_at))
+    && typeof row.stoppable === "boolean";
 };
 
 /** 只在 WebSocket 边界检查后台任务快照；其他消息继续交给原协议解析器。 */
@@ -48,6 +51,13 @@ export function readJobsFrame(value: unknown): SessionJobs | null {
   return { sessionId: row.session_id, jobs: row.jobs };
 }
 
+export function readJobStopResult(value: unknown): { requestId: string; accepted: boolean } | null {
+  if (typeof value !== "object" || value === null || !("type" in value) || value.type !== "job.stop.result") return null;
+  const frame = value as Record<string, unknown>;
+  if (typeof frame.request_id !== "string" || typeof frame.accepted !== "boolean") return null;
+  return { requestId: frame.request_id, accepted: frame.accepted };
+}
+
 function formatDuration(elapsedMs: number): string {
   const total = Math.max(0, Math.floor(elapsedMs / 1000));
   const hours = Math.floor(total / 3600);
@@ -57,32 +67,63 @@ function formatDuration(elapsedMs: number): string {
   return `${total} 秒`;
 }
 
+const isLive = (job: JobView) => job.status === "running" || job.status === "stopping";
+
 // 运行中按开始时间升序，已结束按结束时间倒序。
 function ordered(jobs: readonly JobView[]): JobView[] {
   return [...jobs].sort((left, right) => {
-    const live = left.status === "running";
-    if (live !== (right.status === "running")) return live ? -1 : 1;
+    const live = isLive(left);
+    if (live !== isLive(right)) return live ? -1 : 1;
     if (live) return left.started_at - right.started_at;
     return (right.finished_at ?? right.started_at) - (left.finished_at ?? left.started_at);
   });
 }
 
-function JobRow({ job, now }: { job: JobView; now: number }) {
-  const running = job.status === "running";
+type StopPhase = "idle" | "armed" | "pending" | "failed";
+
+// 两击停止：首击武装、3 秒内再点确认；受理后保持等待，直到 session.jobs 帧把行改成"正在停止"而移除按钮。
+function StopButton({ job, onStop }: { job: JobView; onStop: (jobId: string) => Promise<boolean> }) {
+  const [phase, setPhase] = useState<StopPhase>("idle");
+  useEffect(() => {
+    if (phase !== "armed" && phase !== "failed") return;
+    const timer = window.setTimeout(() => setPhase("idle"), phase === "armed" ? 3000 : 4000);
+    return () => window.clearTimeout(timer);
+  }, [phase]);
+  const label = phase === "armed" ? "再点一次确认停止" : phase === "failed" ? "停止失败，任务可能已结束" : `停止任务 ${job.label}`;
+  return <button type="button" className="job-list__stop" data-phase={phase} disabled={phase === "pending"}
+    aria-label={label} title={label}
+    onClick={() => {
+      if (phase !== "armed") {
+        setPhase("armed");
+        return;
+      }
+      setPhase("pending");
+      void onStop(job.id).then((accepted) => { if (!accepted) setPhase("failed"); });
+    }}>
+    <Square size={10} aria-hidden="true" />
+    {phase === "armed" ? <span>确认停止</span> : null}
+  </button>;
+}
+
+function JobRow({ job, now, onStop }: { job: JobView; now: number; onStop: (jobId: string) => Promise<boolean> }) {
+  const running = isLive(job);
   const duration = formatDuration((running ? now : job.finished_at ?? job.started_at) - job.started_at);
   // 正常完成只说状态；失败、超时、停止时附上 detail 便于判断原因。
   const note = job.status === "completed" || !job.detail ? STATUS_LABEL[job.status] : `${STATUS_LABEL[job.status]} · ${job.detail}`;
-  return <li className="job-list__row" data-status={job.status}>
+  const stoppable = job.status === "running" && job.stoppable;
+  return <li className="job-list__row" data-status={job.status} data-stoppable={stoppable || undefined}>
     <span className="job-list__dot" data-status={job.status} aria-hidden="true" />
     <span className="job-list__label" title={job.label}>{job.label}</span>
     <span className="job-list__duration" title={running ? `已运行 ${duration}` : `耗时 ${duration}`}>{duration}</span>
     <span className="job-list__meta" title={note}>{job.kind} · {note}</span>
+    {stoppable ? <StopButton job={job} onStop={onStop} /> : null}
   </li>;
 }
 
 // 面板分"进行中 / 已结束"两组：有任务运行时已结束组默认折叠；清空只隐藏本页已有的结束行，之后新结束的任务照常出现。
-function JobPanel({ id, live, settled, now, settledOpen, onToggleSettled, onClear }: {
+function JobPanel({ id, live, settled, now, settledOpen, onToggleSettled, onClear, onStop }: {
   id: string;
+  onStop: (jobId: string) => Promise<boolean>;
   live: readonly JobView[];
   settled: readonly JobView[];
   now: number;
@@ -93,7 +134,7 @@ function JobPanel({ id, live, settled, now, settledOpen, onToggleSettled, onClea
   return <div id={id} className="job-list__panel" role="group" aria-label="后台任务">
     {live.length ? <>
       <p className="job-list__section" aria-hidden="true">进行中</p>
-      <ul>{live.map((job) => <JobRow key={job.id} job={job} now={now} />)}</ul>
+      <ul>{live.map((job) => <JobRow key={job.id} job={job} now={now} onStop={onStop} />)}</ul>
     </> : null}
     {settled.length ? <>
       <div className="job-list__section">
@@ -102,13 +143,13 @@ function JobPanel({ id, live, settled, now, settledOpen, onToggleSettled, onClea
         </button>
         <button type="button" className="job-list__clear" onClick={onClear}>清空</button>
       </div>
-      {settledOpen ? <ul>{settled.map((job) => <JobRow key={job.id} job={job} now={now} />)}</ul> : null}
+      {settledOpen ? <ul>{settled.map((job) => <JobRow key={job.id} job={job} now={now} onStop={onStop} />)}</ul> : null}
     </> : null}
   </div>;
 }
 
 // 标题行右侧的安静标记：有任务运行时显示呼吸点和数量，只剩已结束任务时退为淡色计数。
-export function JobListAction({ jobs }: { jobs: readonly JobView[] }) {
+export function JobListAction({ jobs, onStop }: { jobs: readonly JobView[]; onStop: (jobId: string) => Promise<boolean> }) {
   const [open, setOpen] = useState(false);
   const [now, setNow] = useState(() => Date.now());
   const [settledOpen, setSettledOpen] = useState<boolean | undefined>(undefined);
@@ -117,8 +158,8 @@ export function JobListAction({ jobs }: { jobs: readonly JobView[] }) {
   const triggerRef = useRef<HTMLButtonElement>(null);
   const panelId = useId();
   const rows = useMemo(() => ordered(jobs), [jobs]);
-  const live = useMemo(() => rows.filter((job) => job.status === "running"), [rows]);
-  const settled = useMemo(() => rows.filter((job) => job.status !== "running" && !cleared.has(job.id)), [rows, cleared]);
+  const live = useMemo(() => rows.filter(isLive), [rows]);
+  const settled = useMemo(() => rows.filter((job) => !isLive(job) && !cleared.has(job.id)), [rows, cleared]);
   // 1. 点击面板外或按 Esc 收起，Esc 把焦点还给触发按钮。
   useEffect(() => {
     if (!open) return;
@@ -162,7 +203,7 @@ export function JobListAction({ jobs }: { jobs: readonly JobView[] }) {
       <span className="job-list__summary">{summary}</span>
       <span className="job-list__count" aria-hidden="true">{live.length || visible}</span>
     </button>
-    {open ? <JobPanel id={panelId} live={live} settled={settled} now={now}
+    {open ? <JobPanel id={panelId} live={live} settled={settled} now={now} onStop={onStop}
       settledOpen={settledOpen ?? live.length === 0}
       onToggleSettled={() => setSettledOpen(!(settledOpen ?? live.length === 0))}
       onClear={() => {

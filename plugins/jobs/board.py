@@ -110,6 +110,7 @@ class JobMirror:
         rows = self._rows.setdefault(job.session_id, {})
         rows[job.job_id] = JobSnapshot(
             job.job_id, job.kind, job.label, "running", "", job.started_at_ms or _now_ms(),
+            stoppable=job.stop is not None,
         )
         self._signal(job.session_id)
 
@@ -120,13 +121,25 @@ class JobMirror:
         if current is None:
             return
         if outcome is not None:
-            rows[job.job_id] = replace(current, status=outcome.status, detail=outcome.detail, finished_at=_now_ms())
-            settled = [job_id for job_id, row in rows.items() if row.status != "running"]
+            rows[job.job_id] = replace(
+                current, status=outcome.status, detail=outcome.detail, finished_at=_now_ms(), stoppable=False,
+            )
+            settled = [job_id for job_id, row in rows.items() if row.status not in ("running", "stopping")]
             for job_id in settled[:-_SETTLED_KEPT]:
                 del rows[job_id]
         if not rows:
             _ = self._rows.pop(job.session_id, None)
         self._signal(job.session_id)
+
+    # 运行中 ↔ 停止中的转换；停止入口失败时退回运行中。返回是否发生了转换。
+    def set_stopping(self, session_id: str, job_id: str, stopping: bool) -> bool:
+        rows = self._rows.get(session_id, {})
+        current = rows.get(job_id)
+        if current is None or current.status != ("running" if stopping else "stopping"):
+            return False
+        rows[job_id] = replace(current, status="stopping" if stopping else "running", stoppable=not stopping)
+        self._signal(session_id)
+        return True
 
     def snapshot(self, session_id: str) -> tuple[JobSnapshot, ...]:
         return tuple(self._rows.get(session_id, {}).values())

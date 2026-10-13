@@ -94,7 +94,7 @@ export function DesktopChatView({ embeddedShell, controller }: DesktopChatViewPr
             onRename={activeSessionId && !activeSessionDeleted ? (title) => renameSession(activeSessionId, title) : undefined} />
           {activeSessionId ? <SessionDirectory key={`directory:${activeSessionId}`} sessionId={activeSessionId}
             refreshKey={Array.from(toolResults.keys()).join("|")} /> : null}
-          <JobListAction key={`jobs:${activeSessionId}`} jobs={controller.activeSessionJobs} />
+          <JobListAction key={`jobs:${activeSessionId}`} jobs={controller.activeSessionJobs} onStop={controller.stopJob} />
           {/* 窄屏没有常驻侧栏：新会话留在拇指可达的标题行，不必先打开抽屉。 */}
           {hasMessages ? <button type="button" className="conversation-heading__new" aria-label="新会话" title="新会话"
             onClick={() => startNewChat()}>
