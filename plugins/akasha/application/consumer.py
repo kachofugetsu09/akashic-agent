@@ -33,6 +33,9 @@ if TYPE_CHECKING:
 
 type RestoreEmbeddings = Callable[["LearningConfig", list[str]], Awaitable[list[list[float]]]]
 
+# 在线连续学习最多攒这么多条再发布一次；未发布的尾部崩溃后由日志按原序重学。
+PUBLISH_EVERY = 16
+
 
 class MessageConsumer:
     """拥有一个学习快照；调用者串行提交已用固定规则验证的材料。"""
@@ -44,6 +47,8 @@ class MessageConsumer:
         state.check_turns(turns)
         self.path = path
         self.state = state
+        # 磁盘上已发布快照的消费进度；连续发布以它为增量起点。
+        self._published = state
         self.config = config
         # 完整重建写的是丢弃用候选文件：每次学习都重写整库没有恢复价值，
         # 因此允许把发布推迟到重放结束的一次原子写入。
@@ -178,6 +183,16 @@ class MessageConsumer:
         self._closed = True
         self._lease.close()
 
+    def flush(self) -> None:
+        """把内存中已提交、尚未发布的学习尾部写成一份完整快照。"""
+        if self._closed or self._deferred_publish or self.state == self._published:
+            return
+        try:
+            _ = self.publish_snapshot_for(self.state)
+        except BaseException as error:
+            self._error = error
+            raise
+
     def check_embedding_space(self, model: str, dimension: int, bindings: Bindings) -> None:
         """查询与学习都在模型调用前核对同一张图的固定空间。"""
         from ..learning import AKASHA_LEARNING, LearningConfig
@@ -265,11 +280,15 @@ class MessageConsumer:
                     if turn is None:
                         raise RuntimeError("已接纳的学习样本没有产生节点")
                     entry = applied_source(sample, learning_binding=learning_binding)
-                    applied = self.apply(turn, entry)
+                    applied = self.apply(turn, entry, publish=False)
                     self._embedding_model = rule.embedding_model
+                    if len(self.state.applied) - len(self._published.applied) >= PUBLISH_EVERY:
+                        self.flush()
                     return applied
 
                 count += await run_memory_job(learn_sample)
+            # 3. 本批学完统一发布一次；批内攒满 PUBLISH_EVERY 已在途中发布。
+            await run_memory_job(self.flush)
             return count
 
     def publish_snapshot(self) -> str:
@@ -283,13 +302,15 @@ class MessageConsumer:
         cycle = self.cycle
         if cycle.context is None:
             raise RuntimeError("已学习图缺少 context")
-        return write_memory_database(
+        digest = write_memory_database(
             self.path, turns=cycle.turns, graph=cycle.graph, events=cycle.events,
             evidence=cycle.evidence, captures=[], context=cycle.context,
             burst_members=cycle.burst_members, config=self.config, metadata={},
             recalls=cycle.recalls, consumption=state,
-            previous_consumption=None if self._deferred_publish else self.state,
+            previous_consumption=None if self._deferred_publish else self._published,
         )
+        self._published = state
+        return digest
 
     def skip(self, sample: Sample, *, reason: str) -> bool:
         """把一个闭段记为明确跳过；重复记事必须完全一致。"""
@@ -317,7 +338,7 @@ class MessageConsumer:
         return True
 
 
-    def apply(self, turn: Turn, entry: Applied) -> bool:
+    def apply(self, turn: Turn, entry: Applied, *, publish: bool = True) -> bool:
         """重复通知不强化；提交失败后停止本实例，避免猜测外部发布是否成功。"""
         # 1. 同一 ending 的重复消费必须有完全相同的固定出处。
         cycle = self.cycle
@@ -347,7 +368,7 @@ class MessageConsumer:
         # 2. MemoryCycle 唯一学习一次；图与消费出处在一个完整文件中一起发布。
         try:
             _ = cycle.commit(turn, None)
-            if not self._deferred_publish:
+            if publish and not self._deferred_publish:
                 _ = self.publish_snapshot_for(state)
         except BaseException as error:
             # 发布可能已经 replace；回退 Python 指针不能证明文件没有提交。

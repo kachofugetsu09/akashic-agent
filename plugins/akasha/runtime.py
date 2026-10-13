@@ -71,7 +71,11 @@ class MessageMemory:
         self._closing = True
         async def drain() -> None:
             async with self._lock:
-                self._consumer.close()
+                try:
+                    # 已提交未发布的尾部先落盘；失败也照常归还 writer，尾部由日志重学。
+                    await run_memory_job(self._consumer.flush)
+                finally:
+                    self._consumer.close()
         job = asyncio.create_task(drain())
         cancelled = False
         while not job.done():
