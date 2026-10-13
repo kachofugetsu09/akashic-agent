@@ -13,7 +13,7 @@
 
 ## 浏览器侧 API
 
-`activate(ctx)` 拿到的 `ctx`（类型见 Core 仓库 `packages/akashic-web-ui-v1/index.d.ts`）：
+`activate(ctx)` 拿到的 `ctx` 只有下面这些，没有别的类型文件要找：
 
 - `ctx.ui.inject(挂载点, mount => mount.register(entry))`：向挂载点登记一项，返回清理函数。
 - `ctx.http.request(path, init)`：请求本插件后端路由；`ctx.http.webSocketUrl(path)` 构造 WebSocket 地址。
