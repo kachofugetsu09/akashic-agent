@@ -4,6 +4,7 @@ import asyncio
 import hashlib
 import json
 import os
+import time
 from collections.abc import AsyncGenerator, Awaitable, Callable, Mapping
 from contextlib import AbstractAsyncContextManager, asynccontextmanager
 from functools import partial
@@ -314,6 +315,7 @@ class ShellTool:
         log("shell.execution_admitted")
         env = _shell_env()
         env["AKASHIC_CALL_CONTEXT"] = json.dumps(command.call_context)
+        started_at_ms = time.time_ns() // 1_000_000
         result = await processes.exec_command(
             self._ctx, command.owner_key, command=command.command, argv=command.argv,
             cwd=None if command.cwd is None else Path(command.cwd), env=env, tty=command.tty,
@@ -325,7 +327,7 @@ class ShellTool:
         value = _result(result, command.command)
         if command.background is None or result.execution_id is None:
             return value
-        watched = self._watch(command, command.background, result.execution_id)
+        watched = self._watch(command, command.background, result.execution_id, started_at_ms)
         notice = (
             f"已转入后台（execution_id={result.execution_id}）。完成时会通知当前会话，不要轮询；"
             "可以继续处理其他事情，需要时用 write_stdin 读取输出、task_stop 终止。"
@@ -334,7 +336,7 @@ class ShellTool:
         return ToolResultValue(value.outcome, (*value.parts, ContentPart("text", notice)))
 
     # 运行中的后台命令交给 jobs 等待结算；插件缺席时命令照常运行，只是没有完成通知。
-    def _watch(self, command: PreparedCommand, target: BackgroundTarget, execution_id: int) -> bool:
+    def _watch(self, command: PreparedCommand, target: BackgroundTarget, execution_id: int, started_at_ms: int) -> bool:
         with self._ctx.borrow(JOB_NOTICES) as notices:
             if notices is None:
                 return False
@@ -343,6 +345,7 @@ class ShellTool:
                 kind="shell", label=command.description or command.command[:60],
                 collect_hint=f"需要结果时用 write_stdin(execution_id={execution_id}) 读取输出。",
                 settled=partial(_settled, self._ctx, command.owner_key, execution_id),
+                started_at_ms=started_at_ms,
             ))
         return True
 

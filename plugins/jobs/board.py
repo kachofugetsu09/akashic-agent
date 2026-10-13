@@ -99,7 +99,9 @@ class JobMirror:
 
     def start(self, job: JobWatch) -> None:
         rows = self._rows.setdefault(job.session_id, {})
-        rows[job.job_id] = JobSnapshot(job.job_id, job.kind, job.label, "running", "", _now_ms())
+        rows[job.job_id] = JobSnapshot(
+            job.job_id, job.kind, job.label, "running", "", job.started_at_ms or _now_ms(),
+        )
         self._signal(job.session_id)
 
     # outcome 为 None 表示结果已被模型收走或任务被停止：没有可信终态，直接移出镜像。
