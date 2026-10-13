@@ -344,13 +344,16 @@ function hostPlugins(pluginName: string): PluginUiCatalogItem[] {
 }
 
 /** 宿主自身的导航按插件名组合能力；目录变化时返回新版本号以便重读。 */
-export function usePluginUiCatalogVersion(): { version: number; installed: (pluginName: string) => boolean } {
+export function usePluginUiCatalogVersion(): {
+  version: number; catalogRevision: string; installed: (pluginName: string) => boolean;
+} {
   const version = useSyncExternalStore(
     (listener) => { listeners.add(listener); return () => listeners.delete(listener); },
     () => registryVersion,
   );
   return {
     version,
+    catalogRevision: catalog.catalogRevision,
     installed: (pluginName) => hostPlugins(pluginName).length > 0,
   };
 }

@@ -223,6 +223,8 @@ export function useDesktopChatController() {
   const chatReady = shellState?.chatReady === true;
   const navigationPins = useNavigationPins(chatReady);
   const reloadPins = navigationPins.reload;
+  const reloadPinsRef = useRef(reloadPins);
+  useEffect(() => { reloadPinsRef.current = reloadPins; }, [reloadPins]);
 
   useEffect(() => {
     activeSessionRef.current = activeSessionId;
@@ -567,7 +569,7 @@ export function useDesktopChatController() {
               const other = parseChatFrame(value);
               if (other.type === "sessions.changed") {
                 void loadSessionsSafely();
-                void reloadPins();
+                void reloadPinsRef.current();
               } else if (other.type === "message.accepted") {
                 ackWaitersRef.current.get(other.request_id)?.();
               } else if (other.type === "error") {
@@ -629,7 +631,7 @@ export function useDesktopChatController() {
     }).pipe(Effect.catchAll(() => Effect.sync(() => setConnectionError("暂时无法连接，请重试")))));
     return first;
   }, [cacheSessionTail, closeConnection, disconnectSessionActivity, loadMessagesSafely, loadSessionsSafely,
-    receiveSessionActivity, reconnect, reloadPins, reportError, setFollowAfter, setMessages, setReplyAvailable, setStatusLive, setTimelineMessages]);
+    receiveSessionActivity, reconnect, reportError, setFollowAfter, setMessages, setReplyAvailable, setStatusLive, setTimelineMessages]);
 
   // 手机从后台回来或网络切换后，旧连接常常已经半开；立刻探测一次，不等下一轮心跳。
   useEffect(() => {
@@ -662,10 +664,10 @@ export function useDesktopChatController() {
   }, [connect]);
 
   useEffect(() => {
-    // 插件目录换代后重新连接，让摘要订阅取得当代的回复 reader。
+    // 首次目录和真正换代都重取 reader，覆盖启动中途换代；界面激活进度不重建传输。
     connect();
     return closeConnection;
-  }, [closeConnection, connect, pluginCatalog.version]);
+  }, [closeConnection, connect, pluginCatalog.catalogRevision]);
 
   // 就绪后继续等待在途请求；只有旧请求失败才补发一次，成功结果直接复用。
   const startupRequestsRef = useRef<Partial<Record<"sessions", Promise<void>>>>({});
@@ -989,10 +991,11 @@ export function useDesktopChatController() {
     setNewChatProjectId("");
     setSurface("chat");
     clearChatRoute();
+    // 空白页只订阅目录，没有旧正文跟随；首次进入会话可以复用已有连接。
+    if (activeSessionRef.current) closeConnection();
     activeSessionRef.current = sessionId;
     sendRequestRef.current?.abort();
     stopRequestRef.current?.abort();
-    closeConnection();
     messagesRequestRef.current?.abort();
     messagesRequestRef.current = null;
     setHistoryLoading(false);
@@ -1029,7 +1032,7 @@ export function useDesktopChatController() {
         if (activeSessionRef.current === sessionId) setPendingSessionId("");
       });
     // 新鲜快照跳过了分页拉取，仍需恢复 WebSocket 增量跟随。
-    if (cachedFresh) connectRef.current?.();
+    if (cachedFresh) followSession(socketRef.current ?? connectRef.current?.() ?? null, sessionId, cached.throughSeq);
   }, [closeConnection, loadMessages, loadModels, reportError, setFollowAfter, setMessages, setTimelineMessages, setReplyAvailable, setStatusLive, surface, sessions, navigationPins.sessions]);
 
   useEffect(() => {
