@@ -66,8 +66,19 @@ ps -eo args= | grep -F "$AKASHIC_CORE_ROOT/main.py --config" | grep -v grep | he
 |---|---|
 | 工具 | 用上面的 `exec`：工具组非 `always_on` 时让新会话先 `load_tools` 传插件 ID 再调用；贴出原始返回 |
 | Skill | 用上面的 `exec` 让新会话 `load_skill` 并复述要点，核对来源是本插件 |
-| WebUI | 先用一条命令查目录：`curl -s "http://$AKASHIC_WEB_HOST:$AKASHIC_WEB_PORT/api/chat/web-ui/bootstrap" \| grep -o '"<plugin_id>"'` 有输出说明浏览器会加载这个模块。有浏览器自动化或截图工具时，写**一个**脚本一次跑完：打开页面、亮色暗色各截一张、窄屏一张、收集控制台错误，然后读截图；**没有就到此为止**，写明"界面未亲眼验证，请刷新页面查看"，不要用 curl 扒前端资源或研究主题机制来代替 |
+| WebUI | 先用一条命令查目录：`curl -s "http://$AKASHIC_WEB_HOST:$AKASHIC_WEB_PORT/api/chat/web-ui/bootstrap" \| grep -o '"<plugin_id>"'` 有输出说明浏览器会加载这个模块。再跑本 skill 自带的截图脚本（见下），读它输出的截图；脚本退出码 2 表示没有 playwright，**到此为止**，写明"界面未亲眼验证，请刷新页面查看"，不要用 curl 扒前端资源或研究主题机制来代替 |
 | 上下文材料、后台任务 | 触发一次对应场景，用它产生的真实结果作证据 |
+
+WebUI 截图脚本，不用自己写浏览器脚本：
+
+```sh
+python "$AKASHIC_CORE_ROOT/skills/verify-akashic-plugin/scripts/shoot_page.py" "<导航文字>" "$AKASHIC_WORKSPACE/.shots/<name>" \
+  --click "<按钮文字>" --click "<按钮文字>"
+```
+
+`python` 用 PATH 里能 `import playwright` 的那个（先试 `python3`）。它打开页面、按顺序点按钮并记录点击后的页面文字，
+存 `light.png`、`dark.png`、`narrow.png`，输出 JSON：`clicks`、`horizontal_overflow`、`errors`（控制台错误和失败请求）。
+读截图看布局；能读图就写看到了什么，读图失败就只写 JSON 里的事实。
 
 ## 5. 汇报
 
