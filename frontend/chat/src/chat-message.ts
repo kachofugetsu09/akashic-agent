@@ -37,6 +37,8 @@ export interface ChatMessage {
   durationMs?: number;
   createdAt?: string;
   canonical?: boolean;
+  /** 本地发送中的消息：sending 等待服务端确认，retrying 正在换连接重发；确认后移除。 */
+  delivery?: "sending" | "retrying";
   controlTurnId?: string;
   reply?: {
     messageId: string;

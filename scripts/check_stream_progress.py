@@ -138,7 +138,7 @@ async def check_codex_receipt() -> None:
         base_url="https://scenario.invalid", transport=httpx.MockTransport(respond),
     ))
     driver = codex.CodexResponses(http=http, credential=LocalCredential(),
-                                 descriptor=descriptor, config={}, progress_timeout=0.1)
+                                 descriptor=descriptor, config={}, client_version="0.0.0", progress_timeout=0.1)
     with TemporaryDirectory(prefix="stream-progress-") as directory:
         root = Path(directory)
         store = ModelsStore(root / "models.db", root / "backups")

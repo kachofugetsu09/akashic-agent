@@ -32,7 +32,7 @@ from plugins.reply_program.contract import (
     REPLY_EXECUTE_V4 as REPLY_EXECUTE,
 )
 
-from .inputs import ALL_TOOLS, CONTENT, DELIVERY, DELIVERY_SENDERS, TOOLS
+from .inputs import ALL_TOOLS, CONTENT, DELIVERY, DELIVERY_SENDERS, TOOL_LOADING_PRESENTATION, TOOLS
 from .contract import SCHEDULER_INSPECTION
 from .inspection import SchedulerInspectionProvider
 from .runtime import SchedulerRuntime
@@ -115,19 +115,25 @@ async def apply(ctx: Context) -> None:
             tool = cast(
                 Mapping[str, object], bindings.describe(binding_id, TOOLS)["tool"]
             )
-            if tool["name"] not in {ref.name for ref in tool_view.refs}:
+            if tool["name"] not in {ref.name for ref in view.refs}:
                 return '当前调度组合未授予此工具'
             return {"source": "scheduler", "session_id": reader.session_id}
 
-        return await ctx.require(REPLY_EXECUTE)(
-                         ctx, task, reader, 'scheduler',
-                         check_admission=partial(ctx.require(SOURCE_CHECK), task, reader, "scheduler", task.boundary_hint),
-                         authorize=authorize,
-                         tool_view=tool_view,
-                         max_output_tokens=config.max_output_tokens,
-                         max_steps=config.max_steps,
-                         exclude_material_kinds=frozenset({'recall', 'profile'}),
-                     )
+        view = tool_view
+        with ctx.borrow(TOOL_LOADING_PRESENTATION) as present:
+            presentation = None
+            if present is not None:
+                view, presentation = present(view)
+            return await ctx.require(REPLY_EXECUTE)(
+                ctx, task, reader, 'scheduler',
+                check_admission=partial(ctx.require(SOURCE_CHECK), task, reader, "scheduler", task.boundary_hint),
+                authorize=authorize,
+                tool_view=view,
+                max_output_tokens=config.max_output_tokens,
+                max_steps=config.max_steps,
+                presentation=presentation,
+                exclude_material_kinds=frozenset({'recall', 'profile'}),
+            )
 
     async def start(_event: object) -> None:
         nonlocal tool_view, watcher

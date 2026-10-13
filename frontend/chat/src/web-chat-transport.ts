@@ -25,6 +25,7 @@ export type ChatFrame =
   }
   | { type: "turn.output.completed"; session_id: string; turn_id: string; client_message_id?: string }
   | { type: "turn.interrupted"; request_id: string; session_id: string; status: string; message: string }
+  | { type: "message.accepted"; request_id: string; session_id: string }
   | { type: "error"; request_id: string; message: string }
   | { type: "pong"; request_id: string };
 
@@ -105,6 +106,9 @@ export function parseChatFrame(value: unknown): ChatFrame {
       break;
     case "turn.interrupted":
       requireStrings(frame, ["request_id", "session_id", "status", "message"]);
+      break;
+    case "message.accepted":
+      requireStrings(frame, ["request_id", "session_id"]);
       break;
     case "error":
       requireStrings(frame, ["request_id", "message"]);

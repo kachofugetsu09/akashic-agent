@@ -215,6 +215,8 @@ class WebChatChannel:
         self._reply_status: Callable[[str], AsyncGenerator[dict[str, object], None]] | None = None
         self._session_activity: Callable[[], AsyncGenerator[dict[str, object], None]] | None = None
         self._message_display: MessageDisplayReader | None = None
+        self._jobs: Callable[[str], AsyncGenerator[dict[str, object], None]] | None = None
+        self._stop_job: Callable[[str, str], Awaitable[bool]] | None = None
         self._followers: dict[WebSocket, tuple[str, asyncio.Task[None]]] = {}
         self._stopping = False
         self._presentation_subscription: StreamSubscription | None = None
@@ -241,6 +243,8 @@ class WebChatChannel:
         scope: Callable[[], Any],
         *,
         reply_status: Callable[[str], AsyncGenerator[dict[str, object], None]] | None = None,
+        jobs: Callable[[str], AsyncGenerator[dict[str, object], None]] | None = None,
+        stop_job: Callable[[str, str], Awaitable[bool]] | None = None,
     ) -> None:
         """Bind a request scope factory instead of retaining a host provider."""
 
@@ -255,6 +259,12 @@ class WebChatChannel:
             if self._reply_status is not None and self._reply_status is not reply_status:
                 raise RuntimeError("Web reply status reader 不允许替换")
             self._reply_status = reply_status
+        if jobs is not None:
+            if self._jobs is not None and self._jobs != jobs:
+                raise RuntimeError("Web jobs reader 不允许替换")
+            self._jobs = jobs
+        if stop_job is not None:
+            self._stop_job = stop_job
 
     @asynccontextmanager
     async def _open_message_catalog(self) -> AsyncIterator[MessageCatalog]:
@@ -884,11 +894,25 @@ class WebChatChannel:
             return await self._follow_session(websocket, request_id, payload, tasks)
         if frame_type == "message.send":
             return await self._send_user_message(websocket, request_id, payload)
+        if frame_type == "job.stop":
+            await self._request_job_stop(websocket, request_id, payload)
+            return ""
         if frame_type == "ping":
             await websocket.send_json({"type": "pong", "request_id": request_id})
             return ""
         await self._send_error(websocket, request_id, f"未知消息类型: {frame_type}")
         return ""
+
+    # 用户停止后台任务：只回答是否受理，行状态经 session.jobs 帧收敛（停止中 → 已停止）。
+    async def _request_job_stop(self, websocket: WebSocket, request_id: str, payload: dict[str, Any]) -> None:
+        try:
+            session_id = self._normalize_session_id(payload.get("session_id"))
+        except ValueError:
+            session_id = ""
+        job_id = payload.get("job_id")
+        accepted = (self._stop_job is not None and bool(session_id) and isinstance(job_id, str) and bool(job_id)
+                    and await self._stop_job(session_id, job_id))
+        await websocket.send_json({"type": "job.stop.result", "request_id": request_id, "accepted": accepted})
 
     async def _follow_session(
         self, websocket: WebSocket, request_id: str, payload: dict[str, Any], tasks: asyncio.TaskGroup,
@@ -950,6 +974,9 @@ class WebChatChannel:
 
         async with asyncio.TaskGroup() as tasks:
             _ = tasks.create_task(send_messages())
+            # 后台任务镜像可选：jobs 插件缺席时不发帧，前端按空列表处理。
+            if self._jobs is not None:
+                _ = tasks.create_task(send("session.jobs", self._jobs(session_id)))
             if self._reply_status is None:
                 await websocket.send_json({"type": "reply.status", "version": 2,
                     "session_id": session_id, "snapshot_id": None, "available": False, "items": []})
@@ -1161,6 +1188,8 @@ class WebChatChannel:
             raise
         finally:
             adapter._finish_inbound()
+        # 显式确认已入账：客户端以此区分"已送达"和"只进了本地发送缓冲"，重复 id 的重发也会得到确认。
+        await websocket.send_json({"type": "message.accepted", "request_id": client_message_id, "session_id": session_key})
         return session_key
 
     async def _add_connection(self, session_key: str, websocket: WebSocket) -> bool:

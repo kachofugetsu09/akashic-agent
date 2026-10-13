@@ -14,8 +14,9 @@ from pydantic import BaseModel, ConfigDict, Field, ValidationError
 from agent.plugin_composition import Context
 from plugins.ledger.contract import ARTIFACT_IMPORT, ArtifactImport, AttachmentKind, ContentPart, json_value
 from plugins.tools.contract import TOOLS, CallSource, Result
-from plugins.ui.contract import UI_SLOTS, PluginUiDefinition, PluginUiRpcInvalidRequest
+from plugins.ui.contract import UI, UI_SLOTS, PluginUiDefinition, PluginUiRpcInvalidRequest
 
+from . import dashboard
 from .preview import Preview, PreviewFailed, PreviewUnavailable
 
 api_version = 3
@@ -101,10 +102,12 @@ async def apply(ctx: Context) -> None:
                            parameters=Visual.model_json_schema(), open=open_tool, parallel=True)
 
     async def register_ui(child: Context) -> None:
+        await child.require(UI).register(child, dashboard=lambda: dashboard)
+
         def query(method: str, payload: dict[str, object], *, session_id: str | None, turn_id: str | None) -> object:
             raise PluginUiRpcInvalidRequest("可视化只读取消息附件，不提供 UI RPC")
 
         await child.require(UI_SLOTS).register_plugin_ui(child,
             PluginUiDefinition(module="message_ui.js", slots=("message.attachment",)), query=query)
 
-    await ctx.inject((UI_SLOTS,), register_ui, name="visual-ui")
+    await ctx.inject((UI, UI_SLOTS), register_ui, name="visual-ui")

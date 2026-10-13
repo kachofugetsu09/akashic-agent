@@ -21,6 +21,7 @@ import {
 } from "./web-projects";
 import { useNavigationPins } from "./use-navigation-pins";
 import { readSessionActivityFrame, useSessionActivity, type SessionHead } from "./use-session-activity";
+import { readJobStopResult, readJobsFrame, type JobView, type SessionJobs } from "./job-list-action";
 import { StreamProjectionStore } from "./stream-projection";
 import { canProjectWebStreamWithoutRoot, publishWebStreamChanges } from "./web-stream-projection";
 import { replyChatStatus, type ChatStatus } from "./web-chat-status";
@@ -62,6 +63,17 @@ const RECONNECT_MAX_DELAY_MS = 30_000;
 const DELETED_NOTICE_MS = 10_000;
 // 新鲜快照激活时不再重复拉尾页；超过窗口或实时跟随断档仍回到权威分页。
 const SESSION_TAIL_FRESH_MS = 30_000;
+// 弱网下连接可能半开：socket.send 成功也不代表服务端收到。心跳发现死连接，发送以服务端确认为准，
+// 超时换新连接用同一 request_id 重发（服务端按 provider message id 去重）。
+const HEARTBEAT_INTERVAL_MS = 25_000;
+const HEARTBEAT_TIMEOUT_MS = 10_000;
+const SEND_ACK_TIMEOUT_MS = 10_000;
+const SEND_ATTEMPTS = 3;
+
+// 服务端明确拒绝的发送不重试，直接把原因交给用户。
+class SendRejected extends Error {}
+const NO_JOBS: readonly JobView[] = [];
+const JOB_STOP_TIMEOUT_MS = 10_000;
 
 function followSession(socket: WebSocket | null, sessionId: string, afterSeq: number): void {
   if (!sessionId || socket?.readyState !== WebSocket.OPEN) return;
@@ -97,6 +109,8 @@ export function useDesktopChatController() {
   const memoryInstalled = pluginCatalog.installed(MEMORY_PLUGIN);
   const [activeSessionId, setActiveSessionId] = useState("");
   const [pendingSessionId, setPendingSessionId] = useState("");
+  const [sessionJobs, setSessionJobs] = useState<SessionJobs | null>(null);
+  const jobStopsRef = useRef(new Map<string, (accepted: boolean) => void>());
   // 通知入口统一使用网页导航，会话参数在 chatReady 后消费一次。
   const [requestedSessionId, setRequestedSessionId] = useState(
     () => {
@@ -202,6 +216,8 @@ export function useDesktopChatController() {
   const modelsSnapshotSessionRef = useRef<string | null>(null);
   const sendRequestRef = useRef<AbortController | null>(null);
   const stopRequestRef = useRef<AbortController | null>(null);
+  const ackWaitersRef = useRef(new Map<string, (error?: Error) => void>());
+  const probeRef = useRef<(() => void) | null>(null);
   const tailCacheRef = useRef(new Map<string, SessionTail>());
   const tailRequestsRef = useRef(new Map<string, { controller: AbortController; promise: Promise<SessionTail> }>());
   const chatReady = shellState?.chatReady === true;
@@ -468,6 +484,7 @@ export function useDesktopChatController() {
   const closeConnection = useCallback(() => {
     // React 可立即重新挂载；先撤销旧连接，不能等异步 finalizer 才清引用。
     socketRef.current = null;
+    setSessionJobs(null);
     if (connectionTaskRef.current) Effect.runFork(Fiber.interrupt(connectionTaskRef.current));
     connectionTaskRef.current = null;
     disconnectSessionActivity();
@@ -487,15 +504,39 @@ export function useDesktopChatController() {
       while (true) {
         const current = socket;
         let openedAt: number | null = null;
+        let heartbeat: number | undefined;
+        let probeTimer: number | undefined;
+        let probe: (() => void) | null = null;
         const event = yield* Effect.async<CloseEvent>((resume) => {
+          // 任何入站帧都证明连接活着；ping 超时不等浏览器的关闭握手，直接按断线进入重连。
+          probe = () => {
+            if (current.readyState !== WebSocket.OPEN || probeTimer !== undefined) return;
+            current.send(JSON.stringify({ type: "ping", request_id: createUuid() }));
+            probeTimer = window.setTimeout(() => {
+              console.warn("[chat-ui] ws heartbeat timeout");
+              resume(Effect.succeed(new CloseEvent("close", { code: 4000, reason: "heartbeat timeout" })));
+            }, HEARTBEAT_TIMEOUT_MS);
+          };
           current.onmessage = (event) => {
             if (socketRef.current !== current) return;
+            window.clearTimeout(probeTimer);
+            probeTimer = undefined;
             console.debug("[chat-ui] ws message", typeof event.data);
             try {
               const value: unknown = JSON.parse(String(event.data));
               const activity = readSessionActivityFrame(value);
               if (activity) {
                 receiveSessionActivity(activity);
+                return;
+              }
+              const jobs = readJobsFrame(value);
+              if (jobs) {
+                if (jobs.sessionId === activeSessionRef.current) setSessionJobs(jobs);
+                return;
+              }
+              const stopped = readJobStopResult(value);
+              if (stopped) {
+                jobStopsRef.current.get(stopped.requestId)?.(stopped.accepted);
                 return;
               }
               const frame = readMessageLogFrame(value);
@@ -511,6 +552,7 @@ export function useDesktopChatController() {
                   if (cached) cacheSessionTail(frame.session_id, { ...cached, items: merged, throughSeq: frame.next_after_seq, fetchedAt: Date.now() });
                   setFollowAfter(frame.next_after_seq);
                   const saved = new Set(frame.items.map((item) => item.id));
+                  for (const id of saved) ackWaitersRef.current.get(id)?.();
                   setMessages((currentMessages) => currentMessages.filter((item) => !saved.has(item.id)));
                   if (statusLiveRef.current !== "uploading") setStatusLive(replyChatStatus(replyActivitiesRef.current, messagesRef.current.length + Number(sendRequestRef.current !== null), timelineRef.current, replyAvailableRef.current));
                   void loadSessionsSafely();
@@ -526,7 +568,14 @@ export function useDesktopChatController() {
               if (other.type === "sessions.changed") {
                 void loadSessionsSafely();
                 void reloadPins();
+              } else if (other.type === "message.accepted") {
+                ackWaitersRef.current.get(other.request_id)?.();
               } else if (other.type === "error") {
+                const waiter = ackWaitersRef.current.get(other.request_id);
+                if (waiter) {
+                  waiter(new SendRejected(other.message));
+                  return;
+                }
                 setMessages((currentMessages) => currentMessages.filter((item) => item.id !== other.request_id));
                 reportError(new Error(other.message), "error");
               }
@@ -537,6 +586,8 @@ export function useDesktopChatController() {
           current.onopen = () => {
             if (socketRef.current !== current) return;
             openedAt = performance.now();
+            heartbeat = window.setInterval(() => probe?.(), HEARTBEAT_INTERVAL_MS);
+            probeRef.current = probe;
             setConnectionError("");
             console.info("[chat-ui] ws connected", current.url);
             const sessionId = activeSessionRef.current;
@@ -555,6 +606,9 @@ export function useDesktopChatController() {
           };
         }).pipe(Effect.ensuring(Effect.sync(() => {
           current.onmessage = current.onopen = current.onerror = current.onclose = null;
+          window.clearInterval(heartbeat);
+          window.clearTimeout(probeTimer);
+          if (probeRef.current === probe) probeRef.current = null;
           if (socketRef.current === current) socketRef.current = null;
           current.close(1000, "connection released");
         })));
@@ -563,6 +617,9 @@ export function useDesktopChatController() {
         disconnectSessionActivity();
         setReplyActivities([]);
         setReplyAvailable(null);
+        // 任务镜像属于这一代连接：断线即失效，重连后的基线帧再装回；jobs 缺席时就保持为空。
+        setSessionJobs(null);
+        for (const settle of jobStopsRef.current.values()) settle(false);
         setStatusLive(replyChatStatus([], messagesRef.current.length, [], false));
         if (event.code !== 1000 && event.code !== 1013) setConnectionError("连接已断开，正在重新连接…");
         yield* reconnect.next(undefined);
@@ -573,6 +630,19 @@ export function useDesktopChatController() {
     return first;
   }, [cacheSessionTail, closeConnection, disconnectSessionActivity, loadMessagesSafely, loadSessionsSafely,
     receiveSessionActivity, reconnect, reloadPins, reportError, setFollowAfter, setMessages, setReplyAvailable, setStatusLive, setTimelineMessages]);
+
+  // 手机从后台回来或网络切换后，旧连接常常已经半开；立刻探测一次，不等下一轮心跳。
+  useEffect(() => {
+    const check = () => {
+      if (document.visibilityState === "visible") probeRef.current?.();
+    };
+    window.addEventListener("online", check);
+    document.addEventListener("visibilitychange", check);
+    return () => {
+      window.removeEventListener("online", check);
+      document.removeEventListener("visibilitychange", check);
+    };
+  }, []);
 
   useEffect(() => {
     // 只等待首次启动就绪；此后的断线与恢复由聊天连接负责。
@@ -695,6 +765,39 @@ export function useDesktopChatController() {
     return sessionId;
   }, [loadMessages, setFollowAfter]);
 
+  // 等服务端对 requestId 的确认；超时返回 false 交给调用方换连接重发，服务端拒绝时抛 SendRejected。
+  const waitForAccepted = useCallback((requestId: string, signal: AbortSignal) => new Promise<boolean>((resolve, reject) => {
+    const finish = (result: boolean | Error) => {
+      window.clearTimeout(timer);
+      signal.removeEventListener("abort", abort);
+      ackWaitersRef.current.delete(requestId);
+      if (result instanceof Error) reject(result);
+      else resolve(result);
+    };
+    const abort = () => finish(new DOMException("请求已取消", "AbortError"));
+    const timer = window.setTimeout(() => finish(false), SEND_ACK_TIMEOUT_MS);
+    signal.addEventListener("abort", abort, { once: true });
+    ackWaitersRef.current.set(requestId, (error) => finish(error ?? true));
+  }), []);
+
+  // 1. 发出后等确认；2. 超时或连接打不开就丢弃当前连接，用同一 requestId 在新连接上重发；3. 用尽次数后交还给输入框。
+  const deliverMessage = useCallback(async (requestId: string, payload: Record<string, unknown>, signal: AbortSignal, onRetry: () => void) => {
+    for (let attempt = 1; ; attempt += 1) {
+      const socket = connect();
+      try {
+        await sendWhenOpen(socket, payload, signal);
+        if (await waitForAccepted(requestId, signal)) return;
+      } catch (error) {
+        if (isAbortError(error) || error instanceof SendRejected) throw error;
+        console.warn("[chat-ui] send attempt failed", { attempt, error });
+      }
+      if (attempt >= SEND_ATTEMPTS) throw new Error("网络不稳定，消息没有送达，已放回输入框。");
+      console.warn("[chat-ui] send not acknowledged, reconnecting", { attempt });
+      onRetry();
+      if (socketRef.current === socket) closeConnection();
+    }
+  }, [closeConnection, connect, waitForAccepted]);
+
   const sendMessage = useCallback(async (text: string, files: ComposerFile[]) => {
     const cleanText = text.trim();
     if (!cleanText && files.length === 0) return;
@@ -715,7 +818,7 @@ export function useDesktopChatController() {
         id: `${clientMessageId}:${index}`, type: "file", filename: file.filename,
         mediaType: file.mediaType || "application/octet-stream", url: file.url || "",
       })),
-      blocks: [], createdAt: new Date().toISOString(), canonical: false,
+      blocks: [], createdAt: new Date().toISOString(), canonical: false, delivery: "sending",
     }]);
     try {
       const sessionId = await ensureSession();
@@ -744,8 +847,10 @@ export function useDesktopChatController() {
         payload.model_runtime_id = selectedRuntimeId;
         payload.model_reasoning_effort = selectedReasoningEffort;
       }
-      await sendWhenOpen(connect(), payload, controller.signal);
+      const markDelivery = (delivery: ChatMessage["delivery"]) => setMessages((current) => current.map((item) => item.id === clientMessageId ? { ...item, delivery } : item));
+      await deliverMessage(clientMessageId, payload, controller.signal, () => markDelivery("retrying"));
       controller.signal.throwIfAborted();
+      markDelivery(undefined);
       setActiveSessionId(sessionId);
       console.debug("[chat-ui] send frame delivered", { sessionId });
       modelDirtyRef.current = false;
@@ -763,7 +868,7 @@ export function useDesktopChatController() {
     } finally {
       if (sendRequestRef.current === controller) sendRequestRef.current = null;
     }
-  }, [canSend, modelProblem, connect, ensureSession, modelSelectionDirty, replyTarget, reportError, selectedReasoningEffort, selectedRuntimeId, setMessages, setStatusLive]);
+  }, [canSend, modelProblem, deliverMessage, ensureSession, modelSelectionDirty, replyTarget, reportError, selectedReasoningEffort, selectedRuntimeId, setMessages, setStatusLive]);
 
   const stopTurn = useCallback(() => {
     if (sendRequestRef.current) {
@@ -1035,7 +1140,27 @@ export function useDesktopChatController() {
     }
   }, [closeConnection, connect, loadMessagesSafely, loadModels, loadSessionsSafely, reportError, setReplyAvailable, shellState?.chatReady]);
 
+  // 用户停止后台任务：只回答服务端是否受理；行状态由 session.jobs 帧收敛，断线或超时视为未受理。
+  const stopJob = useCallback((jobId: string): Promise<boolean> => {
+    const socket = socketRef.current;
+    const sessionId = activeSessionRef.current;
+    if (!sessionId || socket?.readyState !== WebSocket.OPEN) return Promise.resolve(false);
+    const requestId = createUuid();
+    return new Promise<boolean>((resolve) => {
+      const timer = window.setTimeout(() => settle(false), JOB_STOP_TIMEOUT_MS);
+      const settle = (accepted: boolean) => {
+        window.clearTimeout(timer);
+        jobStopsRef.current.delete(requestId);
+        resolve(accepted);
+      };
+      jobStopsRef.current.set(requestId, settle);
+      socket.send(JSON.stringify({ type: "job.stop", request_id: requestId, session_id: sessionId, job_id: jobId }));
+    });
+  }, []);
+
   return {
+    activeSessionJobs: sessionJobs?.sessionId === activeSessionId ? sessionJobs.jobs : NO_JOBS,
+    stopJob,
     surface, sidebarSessions, activeSessionId, pendingSessionId, chatReady, messages, timelineMessages, timelineRefresh, replyActivities, replyAvailable, status,
     streamStore, messageElementsRef, copiedMessageId, shellState, stopPending, modelState,
     canSend, modelProblem, modelsPhase, modelsError, retryModels, draftKey: activeSessionId || `new:${newChatProjectId}`,

@@ -3,7 +3,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
-from collections.abc import Mapping, Sequence
+from collections.abc import AsyncGenerator, Mapping, Sequence
 from typing import Literal, cast
 
 from pydantic import BaseModel, ConfigDict, Field
@@ -18,10 +18,11 @@ from plugins.ledger.contract import BINDINGS, MESSAGE_CATALOG, Input, Message, M
 from plugins.reply.contract import REPLY_PROGRAM_V3 as REPLY_PROGRAM
 from plugins.sources.contract import SourceGuard
 
-from .board import JobBoard, Notice
-from .contract import JOB_NOTICES, JobWatch
+from .board import JobBoard, JobMirror, Notice
+from .contract import JOB_NOTICES, JobOutcome, JobSnapshot, JobWatch
 
 logger = logging.getLogger(__name__)
+_STOPPED_BY_USER = "用户在界面上停止了此任务"
 api_version = 3
 name = "jobs"
 version = "1.0.0"
@@ -59,13 +60,42 @@ class Jobs:
         self._ctx = ctx
         self._config = config
         self._board = JobBoard(config.max_consecutive_wakes)
+        self._mirror = JobMirror()
         self._queue: asyncio.Queue[JobWatch] = asyncio.Queue()
+        self._running: dict[str, JobWatch] = {}
+        self._stopped_by_user: set[str] = set()
 
     def watch(self, job: JobWatch) -> None:
+        self._running[job.job_id] = job
+        self._mirror.start(job)
         self._queue.put_nowait(job)
 
     def origin_source(self, session_id: str, source: str) -> str:
         return self._board.origin_source(session_id, source)
+
+    # 1. 只停本会话登记、且生产方给了停止入口的运行中任务；2. 先进入停止中，再交给生产方终止；
+    # 3. 结算时据 _stopped_by_user 注明是用户停止，通知照常送达模型，不让它以为任务还在跑。
+    async def stop_job(self, session_id: str, job_id: str) -> bool:
+        job = self._running.get(job_id)
+        if job is None or job.session_id != session_id or job.stop is None:
+            return False
+        if not self._mirror.set_stopping(session_id, job_id, True):
+            return False
+        self._stopped_by_user.add(job_id)
+        try:
+            return await job.stop()
+        except Exception:
+            logger.warning("用户停止后台任务失败 job=%s", job_id, exc_info=True)
+            self._stopped_by_user.discard(job_id)
+            _ = self._mirror.set_stopping(session_id, job_id, False)
+            return False
+
+    # activation 关闭时结束全部镜像订阅；消费方据此失效旧快照并向新一代重新订阅。
+    def close(self) -> None:
+        self._mirror.close()
+
+    def follow_jobs(self, session_id: str) -> AsyncGenerator[tuple[JobSnapshot, ...], None]:
+        return self._mirror.follow(session_id)
 
     async def run(self) -> None:
         """插件任务持有全部等待者；卸载先取消并排空，再释放运行许可。"""
@@ -90,12 +120,18 @@ class Jobs:
         )}
 
     async def _follow(self, job: JobWatch) -> None:
-        # 1. 生产方等待失败只丢弃这一条通知，不影响其他任务。
+        # 1. 生产方等待失败只丢弃这一条通知，不影响其他任务；无论结果如何都让镜像离开运行中。
+        outcome: JobOutcome | None = None
         try:
             outcome = await job.settled()
         except Exception:
             logger.warning("后台任务结算等待失败 job=%s", job.job_id, exc_info=True)
-            return
+        finally:
+            _ = self._running.pop(job.job_id, None)
+            if job.job_id in self._stopped_by_user:
+                self._stopped_by_user.discard(job.job_id)
+                outcome = _stopped_outcome(outcome)
+            self._mirror.finish(job, outcome)
         if outcome is None:
             return
         notice = self._board.settle(job, outcome)
@@ -163,9 +199,19 @@ class Jobs:
                              receipt.error or receipt.status)
 
 
+# 用户停止后生产方可能已把条目回收（settled 返回 None），也可能先给出 killed 终态；两者都要让模型知道是谁停的。
+def _stopped_outcome(outcome: JobOutcome | None) -> JobOutcome | None:
+    if outcome is None:
+        return JobOutcome("killed", _STOPPED_BY_USER)
+    if outcome.status == "killed":
+        return JobOutcome("killed", f"{outcome.detail}；{_STOPPED_BY_USER}")
+    return outcome
+
+
 async def apply(ctx: Context) -> None:
     config = Config.model_validate(ctx.config)
     jobs = Jobs(ctx, config)
     _ = await ctx.spawn(jobs.run(), name="job-notices")
+    _ = await ctx.effect(lambda: jobs.close, label="job-mirror")
     _ = await ctx.provide(JOB_NOTICES, jobs)
     _ = await ctx.require(MATERIALS).register(ctx, name="job-notices", kind="context", prepare=jobs.materials)
