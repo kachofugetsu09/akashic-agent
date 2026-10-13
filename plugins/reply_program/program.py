@@ -4,7 +4,6 @@ from collections.abc import Awaitable, Callable, Iterable, Mapping, Sequence
 from typing import Any, cast
 from contextlib import AbstractAsyncContextManager, AbstractContextManager
 
-from core.common.file_io import run_file_io
 from core.common.diagnostic_log import log_timing
 from functools import partial
 from agent.plugin_composition import Context
@@ -98,7 +97,10 @@ async def run_reply(
             members.append(message)
         return tuple(members)
 
-    opened = await run_file_io(lambda: reader.scan(read_open, through_seq=through_seq, source=source))
+    # Turn 投影与 react 共用同一份已提交前缀：history_view 持有共享读面直到
+    # react 自己的快照接手，历史只解码一次。
+    history_view = await reader.committed_snapshot_async(through_seq=through_seq)
+    opened = read_open(history_view)
     chosen = selection.read(opened)
     if chosen is None:
         chosen = selection.read_saved(saved_selection or {})
