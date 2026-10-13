@@ -29,6 +29,8 @@ async def run(folder: Path) -> None:
     condensed = "- 优先用具体示例解释概念。"
     extracted = 0
     pruning = 0
+    partial_sent = asyncio.Event()
+    finish_stream = asyncio.Event()
 
     # 1. 本地 HTTP 模型分别响应压缩、提炼、剪枝与业务请求。
     async def serve(reader: asyncio.StreamReader, writer: asyncio.StreamWriter) -> None:
@@ -42,8 +44,8 @@ async def run(folder: Path) -> None:
             if "你在压缩超额的长期 Markdown 记忆" in prompt:
                 pruning += 1
                 text = json.dumps({"ops": [
-                    {"op": "prune", "doc": "MEMORY.md", "old": first, "line": condensed},
-                    {"op": "prune", "doc": "MEMORY.md", "old": second},
+                    {"op": "prune", "doc": "MEMORY.md", "old": "1", "line": condensed},
+                    {"op": "prune", "doc": "MEMORY.md", "old": "2"},
                 ]}, ensure_ascii=False)
             elif "你维护 Akashic 的长期 Markdown 记忆" in prompt:
                 rows = json.loads(prompt.split("本次精确来源：\n", 1)[1])
@@ -57,8 +59,21 @@ async def run(folder: Path) -> None:
                 text = "\n".join(heading + "\nRecorded facts." for heading in HEADINGS)
             else:
                 text = "业务回复完成"
-            body = json.dumps({"text": text}).encode()
-            writer.write(f"HTTP/1.1 200 OK\r\nContent-Length: {len(body)}\r\nConnection: close\r\n\r\n".encode() + body)
+            if "你在压缩超额的长期 Markdown 记忆" in prompt:
+                assert request["stream"] is True
+                writer.write(b"HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nConnection: close\r\n\r\n")
+                half = len(text) // 2
+                for index, part in enumerate((text[:half], text[half:])):
+                    frame = {"choices": [{"index": 0, "delta": {"content": part}, "finish_reason": None}]}
+                    writer.write(("data: " + json.dumps(frame) + "\n\n").encode())
+                    await writer.drain()
+                    if index == 0:
+                        partial_sent.set()
+                        await finish_stream.wait()
+                writer.write(b'data: {"choices":[{"index":0,"delta":{},"finish_reason":"stop"}]}\n\ndata: [DONE]\n\n')
+            else:
+                body = json.dumps({"text": text}).encode()
+                writer.write(f"HTTP/1.1 200 OK\r\nContent-Length: {len(body)}\r\nConnection: close\r\n\r\n".encode() + body)
             await writer.drain()
         finally:
             writer.close()
@@ -85,11 +100,34 @@ async def run(folder: Path) -> None:
         async def complete(self, request):
             import httpx
             from plugins.ledger.contract import json_value
+            if "你在压缩超额的长期 Markdown 记忆" in str(request.messages):
+                return await streaming_driver.complete(request)
             async with httpx.AsyncClient(trust_env=False) as client:
                 response = await client.post({url!r}, json={{"messages": json_value(request.messages)}})
                 response.raise_for_status()
                 return LLMResponse(response.json()["text"])
 ''' + source[end:]
+        # 剪枝走正式 OpenAI-compatible 驱动；只有远端服务由本地 HTTP 替代。
+        source = source.replace("    model = _BoundChat(descriptor, Driver(), store)", f'''
+    from dataclasses import replace
+    from plugins.models.contract import DriverConnectionDescriptor
+    from plugins.openai_compatible.driver import definition
+    class Credential:
+        connection_id = "fixture"
+        auth_identity = "fixture"
+        async def read(self):
+            return {{"api_key": "local-scenario"}}
+        async def refresh(self, payload):
+            raise AssertionError("local credential does not refresh")
+        @asynccontextmanager
+        async def exclusive(self):
+            yield
+    connection = await definition().open(DriverConnectionDescriptor(
+        "fixture", "fixture", "openai-compatible", {url!r}, "fixture", {{}}), Credential())
+    await ctx.effect(lambda: connection.close, label="scenario-http")
+    streaming_driver = connection.bind_chat(replace(descriptor, driver_id="openai-compatible"), {{}})
+    model = _BoundChat(descriptor, Driver(), store)
+''')
         entry.write_text(source.replace("    class Target:", "        independent_execution = execution\n    class Target:"))
 
     try:
@@ -112,6 +150,11 @@ async def run(folder: Path) -> None:
             await root.context.require(CHANNEL_INPUT_V2)("test:room", "current", ChannelInboundMessage(
                 "test", "user", "room", "继续处理", datetime.now(UTC), {}))
 
+            await asyncio.wait_for(partial_sent.wait(), 15)
+            assert store.read("MEMORY.md") == before
+            assert store.latest_applied("test:room") is None
+            finish_stream.set()
+
             async def wait_for_receipt() -> None:
                 while store.latest_applied("test:room") is None:
                     await asyncio.sleep(0.05)
@@ -127,6 +170,7 @@ async def run(folder: Path) -> None:
                 assert connection.execute("SELECT * FROM messages ORDER BY seq").fetchall()[:len(original)] == original
                 assert connection.execute("PRAGMA integrity_check").fetchall() == [("ok",)]
             print(json.dumps({"new_facts_pruned_before_commit": True, "pruning_requests": pruning,
+                              "real_driver_streamed_without_partial_commit": True,
                               "before_image_preserved": True, "original_messages_preserved": len(original)}))
     finally:
         server.close()

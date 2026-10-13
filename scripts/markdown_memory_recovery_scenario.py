@@ -50,6 +50,9 @@ async def run(folder: Path) -> None:
     unimportant = "- 临时线索：" + "x" * 90
     requests: list[str] = []
     failure: list[Exception] = []
+    pruning_requests = 0
+    before_pruning = ""
+    before_pruning_receipts: list[tuple[str, str, str]] = []
 
     class ConflictLog(logging.Handler):
         def emit(self, record: logging.LogRecord) -> None:
@@ -76,7 +79,12 @@ async def run(folder: Path) -> None:
                 "line": "" if len(requests) == 1 else "- 使用 helix 编辑代码",
             }]
             if "你在压缩超额的长期 Markdown 记忆" in requests[-1]:
-                ops = [{"op": "prune", "doc": "MEMORY.md", "old": unimportant}]
+                nonlocal pruning_requests
+                pruning_requests += 1
+                # 两次未知编号都必须拒绝；正式 follower 无新消息延时重试后才给有效编号。
+                assert store.read("MEMORY.md") == before_pruning
+                assert receipts(database) == before_pruning_receipts
+                ops = [{"op": "prune", "doc": "MEMORY.md", "old": "999" if pruning_requests <= 2 else "2"}]
             body = json.dumps({"text": json.dumps({"ops": ops}, ensure_ascii=False)}).encode()
             writer.write(f"HTTP/1.1 200 OK\r\nContent-Length: {len(body)}\r\nConnection: close\r\n\r\n".encode() + body)
             await writer.drain()
@@ -153,6 +161,10 @@ async def run(folder: Path) -> None:
             await asyncio.wait_for(retried.wait(), 40)
             if failure:
                 raise failure[0]
+            async def wait_consolidated() -> None:
+                while store.consolidation_scopes(24, 5):
+                    await asyncio.sleep(0.01)
+            await asyncio.wait_for(wait_consolidated(), 5)
             assert store.is_applied(pending[0]) and not store.pending_source_refs()
             assert topic.read_text() == original.replace(
                 "- 使用 helix\n- 用 helix 编辑代码\n", "- 使用 helix 编辑代码\n") + external
@@ -163,20 +175,29 @@ async def run(folder: Path) -> None:
             # 4. 模拟原生文件编辑超额；真实 Output 唤醒 follower，未到定期整理时间也能自愈。
             before_pruning = store.read("MEMORY.md").replace("## 用户偏好", "## 用户偏好\n" + important + "\n" + unimportant)
             (memory / "MEMORY.md").write_text(before_pruning)
+            before_pruning_receipts = receipts(database)
             log.writer("pruning", author="assistant", source="programmatic", body_types=(Output,),
                        content={"text": check_text}).append("wake-pruning", Output((ContentPart("text", "检查容量"),), "complete"))
-            await asyncio.wait_for(pruned.wait(), 10)
+            await asyncio.wait_for(pruned.wait(), 45)
             if failure:
                 raise failure[0]
             assert important in store.read("MEMORY.md") and unimportant not in store.read("MEMORY.md")
             pruning_refs = {ref for ref, kind, _ in receipts(database)
                             if ref.startswith("consolidation:budget:") and kind == "markdown_ops_applied_v1"}
             assert len(pruning_refs) == 1
-            assert store._read_receipt(pruning_refs.pop(), "markdown_before_v1") == {"MEMORY.md": before_pruning}
+            reference = pruning_refs.pop()
+            assert store._read_receipt(reference, "markdown_before_v1") == {"MEMORY.md": before_pruning}
+            assert store._read_receipt(reference, "markdown_ops_v1") == {
+                "version": 3, "scope": None,
+                "ops": [{"op": "prune", "doc": "MEMORY.md", "old": unimportant}],
+            }
+            assert pruning_requests == 3
             assert store.read("SELF.md") == protected["SELF.md"]
             print(json.dumps({"invalid_merge_rejected": True, "conflicts": 3,
                               "pending_retried_without_new_message": True,
                               "protected_files_and_receipts_preserved": True,
+                              "invalid_pruning_retried_without_new_message": True,
+                              "pruning_receipt_keeps_exact_original": True,
                               "native_overflow_pruned_with_backup": True, "model_requests": len(requests)}))
     finally:
         logger.removeHandler(handler)
