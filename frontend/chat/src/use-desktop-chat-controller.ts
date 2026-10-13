@@ -471,6 +471,7 @@ export function useDesktopChatController() {
   const closeConnection = useCallback(() => {
     // React 可立即重新挂载；先撤销旧连接，不能等异步 finalizer 才清引用。
     socketRef.current = null;
+    setSessionJobs(null);
     if (connectionTaskRef.current) Effect.runFork(Fiber.interrupt(connectionTaskRef.current));
     connectionTaskRef.current = null;
     disconnectSessionActivity();
@@ -571,6 +572,8 @@ export function useDesktopChatController() {
         disconnectSessionActivity();
         setReplyActivities([]);
         setReplyAvailable(null);
+        // 任务镜像属于这一代连接：断线即失效，重连后的基线帧再装回；jobs 缺席时就保持为空。
+        setSessionJobs(null);
         setStatusLive(replyChatStatus([], messagesRef.current.length, [], false));
         if (event.code !== 1000 && event.code !== 1013) setConnectionError("连接已断开，正在重新连接…");
         yield* reconnect.next(undefined);

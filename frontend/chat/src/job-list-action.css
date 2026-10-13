@@ -19,6 +19,18 @@
 .job-list__panel { position: absolute; z-index: 20; inset-block-start: calc(100% + 4px); inset-inline-end: 0; inline-size: min(24rem, calc(100vw - 32px)); max-block-size: min(26rem, calc(100dvh - 8rem)); overflow: auto; padding: 6px; border: 1px solid var(--chat-line); border-radius: 10px; background: var(--ak-paper-canvas); box-shadow: 0 8px 24px color-mix(in oklch, var(--ak-ink-primary) 12%, transparent); color: var(--chat-muted); }
 .job-list__panel ul { display: grid; gap: 2px; margin: 0; padding: 0; list-style: none; }
 
+/* 分组标题：进行中只是标签；已结束可折叠，右侧是清空。 */
+.job-list__section { display: flex; min-height: 28px; align-items: center; justify-content: space-between; margin: 0; padding: 4px 10px 2px; color: var(--chat-faint); font-size: var(--chat-type-caption, 0.75rem); }
+.job-list__section:not(:first-child) { margin-top: 4px; border-top: 1px solid var(--chat-line); padding-top: 8px; }
+.job-list__fold,
+.job-list__clear { display: inline-flex; min-height: 28px; align-items: center; gap: 4px; margin-inline: -6px; padding-inline: 6px; border: 0; border-radius: 6px; background: transparent; color: inherit; font: inherit; cursor: pointer; }
+.job-list__fold svg { transition: transform 120ms; }
+.job-list__fold[aria-expanded="false"] svg { transform: rotate(-90deg); }
+.job-list__fold:hover,
+.job-list__clear:hover { background: var(--chat-chip); color: var(--chat-ink); }
+.job-list__fold:focus-visible,
+.job-list__clear:focus-visible { outline: 2px solid var(--ak-rule-focus); outline-offset: 2px; }
+
 /* 两行：标签与耗时一行，种类与结果一行；圆点对齐第一行。 */
 .job-list__row { display: grid; grid-template-columns: 6px minmax(0, 1fr) auto; column-gap: 10px; row-gap: 2px; align-items: center; padding: 8px 10px; border-radius: 6px; line-height: 1.4; }
 .job-list__row[data-status="running"] { background: var(--chat-chip); }
@@ -41,6 +53,8 @@
 /* 窄屏标题行只留圆点和数字，触控热区放大到 44px。 */
 @media (max-width: 820px), (hover: none) {
   .job-list__trigger { min-width: 44px; min-height: 44px; justify-content: center; }
+  .job-list__fold,
+  .job-list__clear { min-height: 40px; }
 }
 
 /* 窄屏标记不在行尾，面板改为贴视口两侧展开，避免向左溢出。 */
