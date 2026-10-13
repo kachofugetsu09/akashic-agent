@@ -74,6 +74,9 @@ plugin = "tool_search@release"
 [rows."assets"]
 plugin = "assets@release"
 
+[rows."visuals"]
+plugin = "visuals@release"
+
 [rows."standard_tools"]
 plugin = "standard_tools@release"
 
