@@ -36,7 +36,7 @@ from plugins.channels.contract import (
     StopReceipt,
 )
 from plugins.ledger.contract import MESSAGE_CATALOG, SESSION_ADMIN
-from plugins.jobs.contract import JOB_NOTICES
+from plugins.jobs.contract import JOB_NOTICES, JobNotices
 
 from .capabilities import (
     MESSAGE_DISPLAY,
@@ -63,7 +63,6 @@ from .services import (
 from .services import ArtifactReadLeasePort, PluginUiProvider, WebUiProvider
 from plugins.ui.contract import MessageDisplayReader
 from .scoped_capabilities import (
-    ScopedJobNotices,
     ScopedMessageDisplay,
     ScopedPluginUiProvider,
     ScopedWebUiProvider,
@@ -299,9 +298,9 @@ class _GenerationAkashicAdapter:
         self._web.bind_message_scope(
             self._message_scope,
             reply_status=self._reply_status,
+            jobs=self._follow_jobs,
         )
         self._web.bind_message_display(self._message_display)
-        self._web.bind_job_notices(ScopedJobNotices(open_scope))
 
     @asynccontextmanager
     async def _open_request_scope(self) -> AsyncIterator[Any]:
@@ -378,6 +377,18 @@ class _GenerationAkashicAdapter:
                     "available": True,
                     "items": [dict(item) for item in frame],
                 }
+
+    async def _follow_jobs(self, session_id: str) -> AsyncGenerator[dict[str, object], None]:
+        """短借 jobs owner 取得订阅；插件缺席时不产出帧，聊天照常。"""
+
+        async with self._open_request_scope() as scope:
+            with scope.borrow(JOB_NOTICES) as service:
+                if service is None:
+                    return
+                notices = cast(JobNotices, service)
+        async with aclosing(notices.follow_jobs(session_id)) as snapshots:
+            async for snapshot in snapshots:
+                yield {"session_id": session_id, "jobs": [job.to_wire() for job in snapshot]}
 
     async def _read_model_call_stats(self, call_id: str) -> ModelCallStats:
         """借用实际统计 owner；缺席不关闭聊天，也不获取模型修改权限。"""
