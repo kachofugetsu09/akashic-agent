@@ -9,6 +9,7 @@ services:
       - ALL
     security_opt:
       - no-new-privileges:true
+      - seccomp:${AKASHIC_RUNTIME_CHECKOUT:?AKASHIC_RUNTIME_CHECKOUT is required}/docker/host-runtime/chromium-seccomp.json
     labels:
       com.akashic.observability: "true"
       com.akashic.service: "akashic-core"

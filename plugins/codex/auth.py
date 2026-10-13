@@ -46,7 +46,11 @@ async def start_auth(input: Mapping[str, Any]) -> Mapping[str, Any]:
     data = _json_object(response)
     user_code = _required(data.get("user_code"), "user_code")
     device_auth_id = _required(data.get("device_auth_id"), "device_auth_id")
-    interval = max(3, _integer(data.get("interval"), default=5))
+    interval = data.get("interval")
+    # OpenAI 设备码接口也会把轮询秒数返回为十进制字符串。
+    if isinstance(interval, str) and interval.isascii() and interval.isdecimal():
+        interval = int(interval)
+    interval = max(3, _integer(interval, default=5))
     return {
         "state": {
             "auth_base": auth_base,

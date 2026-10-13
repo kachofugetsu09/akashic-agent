@@ -41,6 +41,7 @@ CORE_PATHS = (
     "requirements.txt",
     "requirements-dev.txt",
     "sdk/python",
+    "skills",
     "scripts/install_plugin_distribution.py",
     "scripts/distribution_runtime.py",
     "scripts/start.py",

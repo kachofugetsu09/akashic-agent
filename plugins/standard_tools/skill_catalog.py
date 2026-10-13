@@ -15,10 +15,12 @@ from typing import Any, Literal, Protocol, cast
 
 import yaml
 
+import agent.plugin_composition as core_composition
+
 from plugins.assets.contract import InstalledAsset
 from plugins.host_execution.contract import Processes
 
-SkillSource = Literal["plugin", "workspace", "user"]
+SkillSource = Literal["plugin", "builtin", "workspace", "user"]
 
 
 class RequirementsChecker(Protocol):
@@ -91,6 +93,11 @@ def _by_name(path: Path) -> str:
     return path.name
 
 
+# 随 Core 发布的内置 Skill 目录：开发态是仓库根 skills/，发行态是解包后的 Core 根 skills/。
+def _builtin_skill_dir() -> Path:
+    return Path(core_composition.__file__).resolve().parents[2] / "skills"
+
+
 def _default_user_skill_dir() -> Path:
     """用户级 Skill 目录；与插件随包资产并列的独立来源。"""
 
@@ -100,7 +107,7 @@ def _default_user_skill_dir() -> Path:
 class SkillCatalogParser:
     """按来源分层解析 Skill，并计算本 generation 的可用性。
 
-    来源优先级从高到低是工作区目录、用户目录、插件随包资产；高层同名 Skill 静默
+    来源优先级从高到低是工作区目录、用户目录、Core 内置目录、插件随包资产；高层同名 Skill 静默
     覆盖低层，插件资产同一层内重名仍是错误。本地目录不需要打包成插件。
     解析按目录签名缓存：目录项、SKILL.md (mtime,size) 与 requires 可用性任一
     变化都会触发完整重读，热更新语义不变。
@@ -183,6 +190,7 @@ class SkillCatalogParser:
         """本地目录来源，按优先级从低到高排列。"""
 
         roots: list[tuple[SkillSource, Path]] = [
+            ("builtin", _builtin_skill_dir()),
             ("user", user_dir if user_dir is not None else _default_user_skill_dir()),
         ]
         if workspace_dir is not None:
@@ -233,7 +241,7 @@ class SkillCatalogParser:
                     parsed=parsed,
                 )
 
-        # 2. 本地来源按 user、workspace 顺序覆盖；普通目录链接可直接使用。
+        # 2. 本地来源按 builtin、user、workspace 顺序覆盖；普通目录链接可直接使用。
         records.update(plugin_records)
         plugin_roots = {item.root_dir.resolve() for item in plugin_records.values()}
         sources: list[SkillSourceStatus] = []
