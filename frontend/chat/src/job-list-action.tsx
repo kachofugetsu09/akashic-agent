@@ -102,12 +102,15 @@ export function JobListAction({ jobs }: { jobs: readonly JobView[] }) {
   }, [open, live]);
   // 3. 没有任何任务时不占位置。
   if (rows.length === 0) return null;
+  // 4. 没有运行中任务时，圆点沿用最近结束任务的状态：失败、超时、停止在收起时也能被看见。
+  const latest = live > 0 ? "running" : rows[0].status;
   const summary = live > 0 ? `${live} 个任务运行中` : `${rows.length} 个后台任务`;
+  const outcome = latest === "running" || latest === "completed" ? "" : `，最近一个${STATUS_LABEL[latest]}`;
   return <div className="job-list" ref={rootRef}>
     <button ref={triggerRef} type="button" className="job-list__trigger" data-live={live > 0 || undefined}
-      aria-expanded={open} aria-controls={open ? panelId : undefined} aria-label={`后台任务：${summary}`}
+      aria-expanded={open} aria-controls={open ? panelId : undefined} aria-label={`后台任务：${summary}${outcome}`}
       onClick={() => { setNow(Date.now()); setOpen((value) => !value); }}>
-      <span className="job-list__dot" data-status={live > 0 ? "running" : "idle"} aria-hidden="true" />
+      <span className="job-list__dot" data-status={latest} aria-hidden="true" />
       <span className="job-list__summary">{summary}</span>
       <span className="job-list__count" aria-hidden="true">{live > 0 ? live : rows.length}</span>
     </button>
