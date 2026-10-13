@@ -62,7 +62,9 @@ MESSAGE_SOURCE_INDEX_SCHEMA = """CREATE INDEX IF NOT EXISTS message_source_seq
 # 小行强缓存：每轮重复读取的近期消息不再依赖调用者持有引用；上界约 512×8KB。
 _DECODE_STRONG_LIMIT = 512
 _DECODE_STRONG_BODY = 8192
-_ATTACHMENT_MEMO_SIZE = 8192
+# 附件引用备忘：长会话一次材料准备就引用全部历史 id，容量小于历史时
+# FIFO 必抖穿且每轮重查；值多为共享空元组，32768 条约占几 MB。
+_ATTACHMENT_MEMO_SIZE = 32768
 MESSAGE_BODY_KIND_INDEX_SCHEMA = """CREATE INDEX IF NOT EXISTS message_source_kind_seq
     ON messages (session_key, source, json_extract(body, '$.kind'), seq,
                  json_extract(body, '$.finish'));"""
