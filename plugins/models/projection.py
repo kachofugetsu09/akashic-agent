@@ -8,6 +8,7 @@ from itertools import chain
 from typing import Any, cast
 
 from agent.plugin_composition import ServiceKey
+from core.common.frozen_json import freeze_json
 from plugins.ledger.contract import MessageSnapshot
 from plugins.models.contract import (
     LLMResponse,
@@ -632,7 +633,8 @@ class MessageProjection:
             msg_rows = [prior[i] if i < len(prior) and _same_json(row, prior[i]) else row
                         for i, row in enumerate(msg_rows)]
         return _RenderedMessage(
-            message, position, reminder, tuple(ModelRequest(messages=msg_rows).messages),
+            message, position, reminder,
+            cast(tuple[Mapping[str, Any], ...], freeze_json(msg_rows)),
             tuple(msg_refs), tuple(msg_used), changed_content, dynamic,
         )
 

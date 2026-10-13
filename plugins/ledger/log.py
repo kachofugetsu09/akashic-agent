@@ -2302,6 +2302,9 @@ class OwnerTransaction:
         return self._perform(lambda: prepared._append(expected_source_head)[0])
 
 
+_EMPTY_JSON_OBJECT = freeze_json({})
+
+
 def _json_object(raw: str, label: str) -> Mapping[str, object]:
     """持久 JSON 对象在读取边界校验并深冻结，错误带所属记录。"""
     def fields(pairs: list[tuple[str, object]]) -> dict[str, object]:
@@ -2312,6 +2315,9 @@ def _json_object(raw: str, label: str) -> Mapping[str, object]:
     try:
         if not isinstance(raw, str):
             raise ValueError("JSON 原文必须是文本")
+        if raw == "{}":
+            # 持久空对象是规范形式；共享同一份深冻结空映射，不重复解析。
+            return cast(Mapping[str, object], _EMPTY_JSON_OBJECT)
         value = freeze_json(json.loads(raw, object_pairs_hook=fields))
         if not isinstance(value, Mapping):
             raise ValueError("必须是 JSON 对象")
