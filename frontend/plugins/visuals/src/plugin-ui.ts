@@ -63,10 +63,17 @@ function mount(host: HTMLElement, context: PluginUiContext): () => void {
     }
   };
   window.addEventListener("message", receive);
-  let loaded = false;
+  let loads = 0;
+  let documentHtml = "";
   frame.addEventListener("load", () => {
-    if (loaded) fail("文档发生了不允许的导航");
-    loaded = true;
+    loads += 1;
+    if (loads === 1) {
+      // 独立 HTTP 文档不继承聊天页禁止内联脚本的 CSP；只传入一次展示内容。
+      frame.contentWindow?.postMessage({ channel: CHANNEL, type: "init", document: documentHtml }, "*");
+      documentHtml = "";
+    } else if (loads > 2) {
+      fail("文档发生了不允许的导航");
+    }
   });
   const theme = new MutationObserver(() => frame.contentWindow?.postMessage(
     { channel: CHANNEL, type: "theme", value: themeCss(host) }, "*"));
@@ -81,8 +88,9 @@ function mount(host: HTMLElement, context: PluginUiContext): () => void {
         || typeof value.html !== "string" || Array.from(value.html).length > 200_000) throw new Error("不支持的文档格式");
       if (abort.signal.aborted) return;
       frame.title = value.title;
-      frame.srcdoc = template.replace("/*visual-theme*/", () => themeCss(host))
+      documentHtml = template.replace("/*visual-theme*/", () => themeCss(host))
         .replace("<!--visual-content-->", () => value.html);
+      frame.src = "/api/dashboard/visuals/frame";
       host.append(frame);
     } catch (error) {
       if (!abort.signal.aborted) fail(error instanceof Error ? error.message : String(error));

@@ -111,6 +111,7 @@ await bundle({
   outfile: resolve(pluginsRoot, "visuals/message_ui.js"),
 });
 await copyFile(resolve(repoRoot, "frontend/plugins/visuals/src/frame.html"), resolve(pluginsRoot, "visuals/frame.html"));
+await copyFile(resolve(repoRoot, "frontend/plugins/visuals/src/bootstrap.html"), resolve(pluginsRoot, "visuals/bootstrap.html"));
 
 const themeBuild = await bundle({ entryPoints: [resolve(repoRoot, "frontend/theme/src/theme-runtime.ts")],
   bundle: true, format: "esm", platform: "node", write: false });
