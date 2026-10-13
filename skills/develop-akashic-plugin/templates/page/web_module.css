@@ -1,0 +1,4 @@
+/* 只用主题 token，亮暗主题自动切换；不写 @import、外链 url、@keyframes/@font-face 等全局 at-rule。 */
+.hello-page { padding: 24px; color: var(--ak-ink-primary); background: var(--ak-paper-sheet); font-family: var(--ak-type-reading); }
+.hello-page h1 { margin: 0 0 8px; font-size: 1.25rem; }
+.hello-page p { margin: 0; color: var(--ak-ink-secondary); }
