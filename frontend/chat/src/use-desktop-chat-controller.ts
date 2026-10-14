@@ -24,7 +24,7 @@ import { readSessionActivityFrame, useSessionActivity, type SessionHead } from "
 import { readJobStopResult, readJobsFrame, type JobView, type SessionJobs } from "./job-list-action";
 import { StreamProjectionStore } from "./stream-projection";
 import { canProjectWebStreamWithoutRoot, publishWebStreamChanges } from "./web-stream-projection";
-import { replyChatStatus, type ChatStatus } from "./web-chat-status";
+import { isGeneratingChatStatus, replyChatStatus, type ChatStatus } from "./web-chat-status";
 import {
   chatHistoryPage,
   chatModelState,
@@ -895,12 +895,26 @@ export function useDesktopChatController() {
       .then(() => {
         console.debug("[chat-ui] stop request sent", { activeSessionId });
       })
-      .catch((error: unknown) => reportError(error, "error"))
+      .catch((error: unknown) => {
+        reportError(error, "error");
+        setStopPending(false);
+      })
       .finally(() => {
         if (stopRequestRef.current === controller) stopRequestRef.current = null;
-        setStopPending(false);
       });
   }, [activeSessionId, closeConnection, connect, reportError, setStatusLive]);
+
+  // "正在停止"持续到本轮真正结束：/stop 发出只代表请求送达，后端要到下一个检查点才停。
+  // 10 秒仍未结束时复位，让用户可以再停一次。
+  useEffect(() => {
+    if (!stopPending) return;
+    if (!isGeneratingChatStatus(status)) {
+      setStopPending(false);
+      return;
+    }
+    const timer = window.setTimeout(() => setStopPending(false), 10_000);
+    return () => window.clearTimeout(timer);
+  }, [status, stopPending]);
 
   const startNewChat = useCallback(() => {
     setSurface("chat");

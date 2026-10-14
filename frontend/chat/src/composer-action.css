@@ -65,3 +65,23 @@
   background: color-mix(in srgb, var(--md-sys-color-on-surface) 12%, transparent);
   cursor: default;
 }
+
+/* 正在停止：停止键保持方块，外圈一道细环转动，表示请求已送达、等本轮收尾。 */
+.composer-action-button[data-mode="stop"]:disabled::after {
+  content: "";
+  position: absolute;
+  inset: 4px;
+  border: 1.5px solid currentColor;
+  border-inline-end-color: transparent;
+  border-radius: 50%;
+  opacity: 0.7;
+  animation: composer-action-stopping 0.9s linear infinite;
+}
+
+@keyframes composer-action-stopping {
+  to { rotate: 1turn; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .composer-action-button[data-mode="stop"]:disabled::after { animation: none; border-inline-end-color: currentColor; opacity: 0.4; }
+}

@@ -1576,6 +1576,13 @@ button.tool-step-summary:active {
 .timeline-control-summary, .timeline-result-heading { border-inline-start: 2px solid var(--ak-color-border-default); padding-inline-start: 0.875rem; }
 /* 与落定后的消息同一节奏：只靠列表 gap 分隔，结束换成历史消息时不跳行。 */
 .reply-activity { overflow-wrap: anywhere; }
+.timeline-control-note {
+  margin: 0;
+  color: var(--ak-color-text-secondary);
+  font-size: 0.8125rem;
+  line-height: 1.25rem;
+  overflow-wrap: anywhere;
+}
 .reply-activity-label { display: flex; gap: 0.75rem; color: var(--ak-color-text-secondary); font-size: 0.8125rem; }
 .reply-unavailable { color: var(--ak-color-text-secondary); font-size: 0.8125rem; text-align: center; }
 .timeline-control-summary strong, .timeline-result-heading strong { font-size: 0.875rem; }

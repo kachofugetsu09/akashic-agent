@@ -559,10 +559,13 @@ export function TimelineMessageView({ message, lookupMessage, toolResults, onNav
       {hasFlow ? <SettledTurnFlow flow={flow} startedAt={turnStartedAt} endedAt={message.timestamp}
         beforeReasoning={beforeReasoning} beforePart={beforePart}
         partView={{ attachment, lookupMessage, onNavigate, onError, canLoadReferences }} /> : null}
-      {body.kind === "control" ? <div className="timeline-control-summary">
+      {body.kind === "control" ? body.action === "failure" ? <div className="timeline-control-summary">
         <strong>{controlLabels[body.action]}</strong>
         {body.reason !== null ? <p className="plain-message-response">{body.reason}</p> : null}
-      </div> : hasFlow ? null : <>
+      </div> : <p className="timeline-control-note">
+        {/* 暂停、恢复、放弃是轮次里的一个事件，不是一段回复：一行次级小字即可。 */}
+        {controlLabels[body.action]}{body.reason ? ` · ${body.reason}` : ""}
+      </p> : hasFlow ? null : <>
         {body.kind === "tool_result" && !attachmentResult ? <div className="timeline-result-heading">
           <strong>工具结果 · {outcomeLabels[body.outcome]}</strong>
           <button type="button" onClick={() => onNavigate(body.call_ref.message_id, body.call_ref.part_index)}
