@@ -56,7 +56,6 @@ from .documents import (
     SCOPE_FILE, TOPICS, budget_usage, check_budgets, parse_ops, rank, render_memory, section_of, split_frontmatter, surfaceable,
 )
 from .store import DEFAULT_SELF_MD, ConcurrentChange, MarkdownProfileStore
-from .contract import MEMORY_WRITES
 
 logger = logging.getLogger("plugins.markdown_memory")
 
@@ -670,12 +669,6 @@ async def apply(ctx: Context) -> None:
     watcher: asyncio.Task[None] | None = None
     lock_path = ctx.workspace_file("memory/markdown-profile.lock")
 
-    def read_writes(after: tuple[str, str] | None, limit: int) -> tuple[dict[str, object], ...]:
-        if store is None:
-            raise RuntimeError("Markdown 写入记录读取口尚未启动")
-        return store.read_writes(after, limit)
-
-    _ = await ctx.provide(MEMORY_WRITES, read_writes)
     await ctx.inject((DOCUMENTS,), publish_documents, name="documents")
 
     root = ctx.workspace_root("memory")

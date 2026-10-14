@@ -17,7 +17,6 @@ from .content import MODEL_CONTENT, ContentOwner
 from .views import CONTENT_VIEWS, ContentViews
 from .litellm_catalog import LiteLlmCapabilityCatalog
 from .model_settings_http import BoundModelControl, rpc_methods
-from .contract import MODEL_CALL_HISTORY
 from .projection import (
     MODEL_CALLS,
     MODEL_DISPLAY,
@@ -69,7 +68,6 @@ async def apply(ctx: Context) -> None:
     _ = await ctx.provide(MODEL_CATALOG, state.catalog)
     _ = await ctx.provide(MODEL_SETTINGS, state.settings)
     _ = await ctx.provide(MODEL_CALLS, store.read_call)
-    _ = await ctx.provide(MODEL_CALL_HISTORY, store.read_calls)
     _ = await ctx.provide(MODEL_CALL_STATS, store.read_call_stats)
     _ = await ctx.provide(MODEL_DISPLAY, display_facts)
     _ = await ctx.provide(MODEL_PROJECTION, ProjectionOwner())

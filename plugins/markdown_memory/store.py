@@ -121,30 +121,6 @@ class MarkdownProfileStore:
     def mark_consolidated(self, stamp: str, scopes: tuple[str | None, ...]) -> None:
         _ = self._write_once(f"consolidation:{stamp}", "markdown_consolidated_v1", {"scopes": list(scopes)})
 
-    def read_writes(
-        self, after: tuple[str, str] | None, limit: int,
-    ) -> tuple[dict[str, object], ...]:
-        """读取独立的 receipt 副本；分页位置只用于本轮扫描，不代表写入顺序。"""
-        if type(limit) is not int or not 1 <= limit <= 1000:
-            raise ValueError("Markdown 写入分页大小无效")
-        if after is not None and (
-            not isinstance(after, tuple) or len(after) != 2
-            or any(not isinstance(value, str) for value in after)
-        ):
-            raise ValueError("Markdown 写入分页位置无效")
-        with closing(sqlite3.connect(self.receipts_path.resolve().as_uri() + "?mode=ro", uri=True)) as conn:
-            conn.row_factory = sqlite3.Row
-            rows = conn.execute(
-                "SELECT source_ref,kind,payload,done_at FROM consolidation_writes "
-                "WHERE (source_ref,kind)>(?,?) ORDER BY source_ref,kind LIMIT ?",
-                (*(after or ("", "")), limit),
-            ).fetchall()
-        return tuple({
-            "source_ref": row["source_ref"], "kind": row["kind"],
-            "payload": None if row["payload"] is None else json.loads(row["payload"]),
-            "done_at": row["done_at"],
-        } for row in rows)
-
     def read_draft(self, source_ref: str) -> dict[str, object] | None:
         return self._read_receipt(source_ref, "markdown_ops_v1")
 

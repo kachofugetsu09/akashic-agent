@@ -10,7 +10,7 @@
 | `computer.control.v1` | 私有工具控制 binding；Computer freeze/open 后执行当前 scope |
 | `drift.proposals.v2` | 无消费者，删除端口及变化通知；旧 proposals 仍由 DriftStore 读取和结算，不删数据 |
 | `eventmail.*_source.v2` | Fleet Calendar/Feed/Fitbit/Steam 使用公开 bind 端口；主仓目录不扫描外部仓库 |
-| `markdown-memory.writes.v1` | Fleet Observe 读取已提交写入历史 |
+| `markdown-memory.writes.v1` | Observe 退役后删除；写入回执与恢复路径保留 |
 | `programmatic.v1` | Fleet Proactive Feedback/GitHub Watch 调用程序入口 |
 | `subagent.program.v1` | 私有程序 binding；Tools 固定，Subagents 恢复时打开 |
 | `wake.program.v1` | 私有程序 binding；Wake runtime 固定，source 恢复时打开 |
@@ -19,7 +19,7 @@
 | `standard_tools.skill_inspection.v1` | RuntimeInspection `_bind_optional` 装配可选读取子 Fiber，目录记录 helper 实参 |
 | `message.display:*` | UI 按内容 kind 动态借用 Context/Models renderer |
 | `message.result_display:content_view.read` | UI 按工具结果 kind 动态借用 ContentView renderer |
-| `models.call-history.v1` | Fleet Observe 读取 provider attempt 历史 |
+| `models.call-history.v1` | Observe 退役后删除；调用账点读与 Models 内部用量查询保留 |
 | `plugin.claim.embedding_memory` | 互斥角色声明；第二个 provider 在 provide 唯一性检查处冲突，不要求 reader |
 | `executor` | 内核私有 worker 服务；由 Context 执行路径取得，不是插件业务能力 |
 
@@ -30,3 +30,6 @@
 复现 `python scripts/plugin_boundary.py catalog`，结合
 [第二 provider 场景](plugin-second-providers.md) 与外部源码 PR 检查；
 静态零消费者既不证明死代码，也不证明可以拔除。
+
+2026-10-15 收尾：以 Fleet #6 的 14 个剩余成员逐仓核对，上述两个历史扫描服务已无消费者。
+移除服务、注册和专用分页函数；不删除模型调用、Markdown 回执或旧 observe.db。
