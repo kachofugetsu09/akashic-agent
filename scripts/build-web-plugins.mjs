@@ -100,6 +100,13 @@ await bundle({
   outfile: resolve(pluginsRoot, "akasha/message_ui.js"),
 });
 
+// Models 的回答尾注经插件界面插槽挂载，与设置页 Web 模块分开打包。
+await bundle({
+  entryPoints: [resolve(repoRoot, "frontend/plugins/models/src/message-ui.js")],
+  bundle: true, format: "esm", target: "es2022", minify: true,
+  outfile: resolve(pluginsRoot, "models/message_ui.js"),
+});
+
 // 可视化使用同一份 frame 模板完成服务端预检与浏览器展示。
 await bundle({
   entryPoints: [resolve(repoRoot, "frontend/plugins/visuals/src/plugin-ui.ts")],

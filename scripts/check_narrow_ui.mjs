@@ -67,10 +67,10 @@ function readQuery(query) {
     return (
       query.method === "scope.policy.get" || query.method === "recall.turn"
     );
-  // 外部插件源码的只读 Message/Compaction 与 Observe 投影。
+  // 外部插件源码的只读 Message/Compaction 与 plugins/models 的回答用量尾注。
   return (
     (plugin === "status_commands" && query.method === "memory.status") ||
-    (plugin === "observe" && query.method === "kvcache.message_usage")
+    (plugin === "models" && query.method === "usage.message")
   );
 }
 
@@ -230,6 +230,12 @@ async function settings(page, prefix) {
     await panel.locator("nav button", { hasText: name }).click();
     await page.waitForTimeout(400);
     await measure(page, `${prefix}-settings-${index}`);
+    // plugins/models 的缓存效率分节：展开一条 Turn 明细，只读不写。
+    const cacheTurn = panel.locator(".models-cache-turn > button").first();
+    if (await cacheTurn.count()) {
+      await cacheTurn.click();
+      await measure(page, `${prefix}-settings-${index}-cache-turn`);
+    }
     if (await panel.locator(".shell-plugin-cards").count()) await pluginCards(page, prefix, panel);
     const rerun = panel.getByRole("button", { name: "重新走一遍引导", exact: true });
     if (await rerun.count()) {
@@ -310,43 +316,6 @@ async function customPanel(page, prefix, id) {
       .locator('.meme-state[role="status"]')
       .waitFor({ state: "hidden" });
     await measure(page, `${prefix}-meme-last-category`);
-  }
-  if (id === "observe") {
-    const portal = view.getByRole("button", {
-      name: "查看错误分析",
-      exact: true,
-    });
-    await portal.waitFor();
-    await portal.click();
-    const dialog = page.getByRole("dialog", { name: /错误 ·/ });
-    await dialog.waitFor();
-    await measure(page, `${prefix}-observe-errors`);
-    const row = dialog.locator(".observe-error-list > div > button").first();
-    if (await row.count()) {
-      await row.click();
-      await dialog.locator(".observe-error-detail").waitFor();
-      for (const tab of ["趋势", "Traceback", "现场"]) {
-        const button = dialog
-          .getByRole("button", { name: new RegExp("^" + tab) })
-          .first();
-        await button.click();
-        await measure(page, `${prefix}-observe-${tab}`);
-      }
-      const back = dialog.getByRole("button", {
-        name: "‹ 错误列表",
-        exact: true,
-      });
-      if (await back.isVisible()) {
-        assert(await hit(back));
-        await back.click();
-      }
-    }
-    const close = dialog.getByRole("button", {
-      name: "关闭错误分析",
-      exact: true,
-    });
-    assert(await hit(close));
-    await close.click();
   }
 }
 

@@ -571,6 +571,24 @@ class ModelsStore:
             ).fetchall()
         return tuple(_decode_call(row) for row in rows)
 
+    def read_call_usages(self, call_ids: list[str]) -> dict[str, Mapping[str, object] | None]:
+        """批量读取调用用量；未成功结算的调用为 None，未知身份不出现在结果中。"""
+        result: dict[str, Mapping[str, object] | None] = {}
+        unique = list(dict.fromkeys(call_ids))
+        with self._connect(read_only=True) as connection:
+            _ = require_model_calls_schema(connection)
+            for start in range(0, len(unique), 500):
+                chunk = unique[start:start + 500]
+                rows = connection.execute(
+                    f"SELECT id, state, usage_json FROM model_calls WHERE id IN ({','.join('?' * len(chunk))})",
+                    chunk,
+                ).fetchall()
+                for row in rows:
+                    usage = row["usage_json"]
+                    success = row["state"] == "success" and usage is not None
+                    result[str(row["id"])] = cast(Mapping[str, object], json.loads(usage)) if success else None
+        return result
+
     def read_call_stats(self, call_id: str) -> ModelCallStats:
         """从同一调用账选取公开字段，不把完整 binding 暴露给客户端。"""
         # 1. 在数据库边界校验持久字段；损坏记录不能误报成“调用不存在”。

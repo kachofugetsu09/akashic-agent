@@ -567,6 +567,17 @@ class ModelCallStats:
 MODEL_CALL_STATS = ServiceKey[Callable[[str], ModelCallStats]]("models.call-stats.v1")
 
 
+class CacheUsageRead(Protocol):
+    """按需计算的 KV Cache 用量；数据来自调用账与消息 Turn，不另存投影。"""
+
+    async def overview(self) -> dict[str, object]: ...
+
+    async def message_output_tokens(self, session_id: str, message_id: str) -> int | None: ...
+
+
+MODEL_CACHE_USAGE = ServiceKey[CacheUsageRead]("models.cache-usage.v1")
+
+
 class BoundChatModel(Protocol):
     @property
     def descriptor(self) -> BoundModelDescriptor: ...

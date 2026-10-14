@@ -9,9 +9,9 @@ from plugins.models.contract import (
     MODEL_CATALOG,
     MODEL_DRIVERS,
 )
-from plugins.models.contract import MODEL_CALL_STATS
+from plugins.models.contract import MODEL_CACHE_USAGE, MODEL_CALL_STATS
 from plugins.gateway.contract import RpcMethod
-from plugins.ui.contract import UI
+from plugins.ui.contract import UI, UI_SLOTS, PluginUiDefinition, PluginUiRpcInvalidRequest
 
 from .content import MODEL_CONTENT, ContentOwner
 from .views import CONTENT_VIEWS, ContentViews
@@ -31,6 +31,7 @@ from .selection import MODEL_SELECTION, SelectionOwner
 from .settings import MODEL_SETTINGS
 from .state import ModelsState
 from .store import ModelsStore
+from .usage import CacheUsage
 
 api_version = 3
 name = "models"
@@ -71,6 +72,8 @@ async def apply(ctx: Context) -> None:
     _ = await ctx.provide(MODEL_CALLS, store.read_call)
     _ = await ctx.provide(MODEL_CALL_HISTORY, store.read_calls)
     _ = await ctx.provide(MODEL_CALL_STATS, store.read_call_stats)
+    usage = CacheUsage(ctx, store)
+    _ = await ctx.provide(MODEL_CACHE_USAGE, usage)
     _ = await ctx.provide(MODEL_DISPLAY, display_facts)
     _ = await ctx.provide(MODEL_PROJECTION, ProjectionOwner())
     _ = await ctx.provide(MODEL_MESSAGE_CHECKS, MessageChecksOwner())
@@ -96,8 +99,24 @@ async def apply(ctx: Context) -> None:
     await ctx.inject((ONBOARDING,), contribute, name="onboarding")
     for method, operation in rpc_methods(BoundModelControl(ctx)).items():
         _ = await ctx.provide(RpcMethod.key(method), operation)
-    _ = await ctx.inject((UI, MODEL_CATALOG, MODEL_CALL_STATS, MODEL_SETTINGS, MODEL_SELECTION),
+    _ = await ctx.inject((UI, MODEL_CATALOG, MODEL_CALL_STATS, MODEL_SETTINGS, MODEL_SELECTION, MODEL_CACHE_USAGE),
                          _register_ui, name="ui")
+
+    # 回答尾注只读本插件的用量视图；聊天界面经插件界面插槽查询。
+    async def message_ui(child: Context) -> None:
+        async def query(method: str, payload: dict[str, object], *,
+                        session_id: str | None, turn_id: str | None) -> dict[str, object]:
+            message_id = payload.get("message_id")
+            if method != "usage.message" or set(payload) != {"message_id"} or not session_id \
+                    or not isinstance(message_id, str) or not message_id:
+                raise PluginUiRpcInvalidRequest("用量查询需要会话与消息")
+            return {"output_tokens": await usage.message_output_tokens(session_id, message_id)}
+
+        _ = await child.require(UI_SLOTS).register_plugin_ui(
+            child, PluginUiDefinition(module="message_ui.js", stylesheet="message_ui.css",
+                                      slots=("turn.after_answer",)), query=query)
+
+    _ = await ctx.inject((UI_SLOTS,), message_ui, name="message-ui")
 
 
 async def _register_ui(ctx: Context) -> None:

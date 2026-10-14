@@ -1,0 +1,24 @@
+.models-usage-tail-host {
+  min-height: 0;
+}
+
+.models-usage-tail {
+  display: block;
+  margin-top: 10px;
+  color: var(--ak-color-text-secondary);
+  font-size: 0.75rem;
+  line-height: 1.4;
+  font-variant-numeric: tabular-nums;
+}
+
+.models-usage-tail strong {
+  color: var(--ak-color-text-primary);
+  font-weight: 500;
+}
+
+.models-usage-tail-host--error {
+  margin-top: 8px;
+  color: var(--ak-color-status-error);
+  font-size: 0.75rem;
+  line-height: 1.4;
+}
