@@ -851,7 +851,8 @@ const ThinkingRow = memo(function ThinkingRow({
     ? content.split("\n").map((line) => line.trim()).filter(Boolean).at(-1) ?? ""
     : "";
   return (
-    <Reasoning className="thinking-row" isStreaming={streaming} defaultOpen={streaming} duration={duration}>
+    // 流式时只在标题行滚动最新一句，不自动展开：展开会与标题行重复同一句，结束时行重挂载又会瞬间收起。
+    <Reasoning className="thinking-row" isStreaming={streaming} defaultOpen={false} duration={duration}>
       <div className="process-trigger-sticky"><ThinkingRowTrigger summary={latestLine} /></div>
       <CollapsibleContent className="process-content">
         <div className="process-text process-markdown">

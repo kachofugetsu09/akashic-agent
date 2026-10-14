@@ -13,6 +13,8 @@ import { StreamProjectionStore } from "./stream-projection";
 import type { ChatStatus } from "./web-chat-status";
 import { webTurnTrace } from "./web-turn-trace";
 
+const LIVE_TAIL_MESSAGES = 16;
+
 type ProjectedChatMessageViewProps = React.ComponentProps<typeof ChatMessageView> & {
   streamStore: StreamProjectionStore<ChatMessage>;
 };
@@ -366,10 +368,14 @@ export const DesktopTimelineMessages = React.memo(function DesktopTimelineMessag
       ?? (activity ? document.querySelector<HTMLElement>(`[data-reply-handle="${CSS.escape(activity.handle)}"]`) : null);
     if (row) focusMessagePart(row, id, partIndex);
   }, [activities, anchorIndexes, groups.inline.leading, messageElementsRef, stopScroll, visibleMessages]);
-  return <>{visibleMessages.map((message) => <React.Fragment key={message.id}>
+  // 末尾一段不跳过渲染：新插入或刚切到 content-visibility:auto 的元素首帧按 160px 占位布局，
+  // 一轮落定时正式回复会先塌成占位高度、滚动被夹紧，下一帧再弹回，形成整屏闪跳。
+  // 窗口取得足够宽，切换只发生在远离视口的上方，由原生滚动锚定吸收。
+  const settledFrom = visibleMessages.length - LIVE_TAIL_MESSAGES;
+  return <>{visibleMessages.map((message, index) => <React.Fragment key={message.id}>
     {dayBreaks.has(message.id) ? <DaySeparator label={dayBreaks.get(message.id)!} /> : null}
     <div
-    className={`web-message-anchor history-isolated timeline-${message.body.kind}`}
+    className={`web-message-anchor${index < settledFrom ? " history-isolated" : ""} timeline-${message.body.kind}`}
     tabIndex={-1} data-message-id={message.id} data-message-kind={message.body.kind} data-message-seq={message.seq}
     ref={(element) => {
       if (element) messageElementsRef.current.set(message.id, element);
