@@ -208,8 +208,13 @@ input {
   width: 20px;
   height: 20px;
   flex: 0 0 auto;
-  border-radius: 50%;
-  object-fit: cover;
+  background: currentColor;
+  mask-size: contain;
+  mask-repeat: no-repeat;
+  mask-position: center;
+  -webkit-mask-size: contain;
+  -webkit-mask-repeat: no-repeat;
+  -webkit-mask-position: center;
 }
 
 .chat-sidebar__new,

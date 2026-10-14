@@ -15,7 +15,7 @@ import {
 } from "@/components/ui/dropdown-menu";
 import { ConversationNavigation, ConversationSessionRow, type ConversationRowDrag, type ConversationSession } from "./conversation-navigation";
 import { PluginUiSlot } from "./plugin-ui-runtime";
-import akashicAvatar from "./assets/akashic-avatar.png";
+import akashicBrandIcon from "../../theme/src/akashic-brand.svg";
 import { activateShellRailAction, useShellRailActions } from "./shell-rail-actions";
 import { ProjectNavigation, ProjectNavigationRow, type ProjectSessionItem } from "./project-navigation";
 import { sessionLabel } from "./web-chat-message-data";
@@ -135,6 +135,9 @@ export interface DesktopSidebarProps {
 }
 
 /** 会话导航竖栏；底部动作由宿主 Shell 经 shell.rail-actions.v1 桥下发，主题行是 chat 域原生。 */
+
+// 品牌剪影跟随主题墨色。
+const brandMask = { WebkitMaskImage: `url(${akashicBrandIcon})`, maskImage: `url(${akashicBrandIcon})` };
 
 export const DesktopSidebar = memo(function DesktopSidebar({
   embeddedShell,
@@ -298,7 +301,7 @@ export const DesktopSidebar = memo(function DesktopSidebar({
       <div className="chat-sidebar__toolbar">
         <div className="chat-sidebar__brand-row">
           <span className="chat-sidebar__brand">
-            <img className="chat-sidebar__mark" src={akashicAvatar} alt="" aria-hidden="true" />
+            <span className="chat-sidebar__mark" style={brandMask} aria-hidden="true" />
             <strong>Akashic</strong>
           </span>
           <button type="button" className="chat-sidebar__new" aria-label="新会话" title="新会话" onClick={() => onNewChat()}>
