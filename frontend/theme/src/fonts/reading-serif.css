@@ -49,36 +49,3 @@
   font-display: swap;
   unicode-range: U+AC00-10FFFF;
 }
-
-/*
- * 度量匹配回退：Web 字体下载期间用系统衬线渲染时保持 Source Serif 4 的行位，
- * swap 不发生纵向跳动。数值按 capHeight 对齐计算（目标：upm 1000、cap 670、
- * ascent 1036、descent -335、lineGap 0，fontTools 实测）；只承载拉丁等西文字形，
- * 中文仍沿字体栈落到 Noto Serif SC 或系统宋体。
- */
-@font-face {
-  font-family: "Source Serif 4 Fallback";
-  src: local("Georgia");
-  size-adjust: 96.7%;
-  ascent-override: 107.14%;
-  descent-override: 34.64%;
-  line-gap-override: 0%;
-}
-
-@font-face {
-  font-family: "Source Serif 4 Fallback";
-  src: local("Times New Roman"), local("Liberation Serif"), local("LiberationSerif-Regular");
-  size-adjust: 102.32%;
-  ascent-override: 101.25%;
-  descent-override: 32.74%;
-  line-gap-override: 0%;
-}
-
-@font-face {
-  font-family: "Source Serif 4 Fallback";
-  src: local("DejaVu Serif"), local("DejaVuSerif");
-  size-adjust: 91.91%;
-  ascent-override: 112.72%;
-  descent-override: 36.45%;
-  line-gap-override: 0%;
-}
