@@ -4,12 +4,12 @@ import asyncio
 import ctypes
 import logging
 import os
-import pty
 import shlex
 import shutil
 import signal
 import sys
 import tempfile
+from contextlib import ExitStack
 from collections.abc import Mapping
 from pathlib import Path
 
@@ -17,7 +17,7 @@ from core.common.diagnostic_log import log_event
 
 logger = logging.getLogger(__name__)
 
-# 设为 0 关闭 fork server，所有命令回到每命令 spawn。
+# 只有显式设为 1 才启用；zsh 子 shell 的 $$ / PPID 与独立进程不同。
 FORK_SERVER_ENV = "AKASHIC_SHELL_FORK_SERVER"
 _READY_TIMEOUT_S = 10.0
 _ACK_TIMEOUT_S = 5.0
@@ -75,7 +75,7 @@ class ForkServerLost(RuntimeError):
 
 
 def fork_server_enabled() -> bool:
-    return sys.platform.startswith("linux") and os.environ.get(FORK_SERVER_ENV, "1") != "0"
+    return sys.platform.startswith("linux") and os.environ.get(FORK_SERVER_ENV) == "1"
 
 
 def _zsh_quote(value: str) -> str:
@@ -151,6 +151,7 @@ class ShellForkServer:
         self._process: asyncio.subprocess.Process | None = None
         self._request_fd: int | None = None
         self._pty_master: int | None = None
+        self._reply_transport: asyncio.ReadTransport | None = None
         self._reader_task: asyncio.Task[None] | None = None
         self._dir = Path(tempfile.mkdtemp(prefix="akashic-fork-"))
         self._next_id = 0
@@ -160,26 +161,31 @@ class ShellForkServer:
 
     # 启动 zsh 并等待 ready；失败由调用方 close 回收并回退到每命令 spawn。
     async def start(self) -> None:
-        # 1. 两条继承管道做控制面；pty slave 只让 zsh 拿到 SHTTY，不成为控制终端。
+        import pty
+
+        # 1. 本地描述符逐个登记，部分启动失败也能关闭。
         loop = asyncio.get_running_loop()
-        request_read, self._request_fd = os.pipe()
-        reply_read, reply_write = os.pipe()
-        self._pty_master, slave = pty.openpty()
-        prelude = (f"_ak_in={request_read} _ak_out={reply_write} _ak_dir={shlex.quote(str(self._dir))}; "
-                   f". {shlex.quote(str(self.snapshot))} || builtin exit $?\n")
-        try:
+        with ExitStack() as local_fds:
+            request_read, self._request_fd = os.pipe()
+            local_fds.callback(os.close, request_read)
+            reply_read, reply_write = os.pipe()
+            local_fds.enter_context(os.fdopen(reply_read, "rb", 0))
+            local_fds.callback(os.close, reply_write)
+            self._pty_master, slave = pty.openpty()
+            local_fds.callback(os.close, slave)
+            prelude = (f"_ak_in={request_read} _ak_out={reply_write} _ak_dir={shlex.quote(str(self._dir))}; "
+                       f". {shlex.quote(str(self.snapshot))} || builtin exit $?\n")
             self._process = await asyncio.create_subprocess_exec(
                 str(self.shell_path), "-c", prelude + _SERVER_SCRIPT, stdin=slave,
                 stdout=asyncio.subprocess.DEVNULL, stderr=asyncio.subprocess.DEVNULL,
                 env=self.base_env, pass_fds=(request_read, reply_write), start_new_session=True,
             )
-        finally:
-            for fd in (request_read, reply_write, slave):
-                os.close(fd)
-        # 2. 请求行远小于 PIPE_BUF，非阻塞写天然原子；回复由单一 reader 分发。
-        os.set_blocking(self._request_fd, False)
-        reader = asyncio.StreamReader()
-        _ = await loop.connect_read_pipe(lambda: asyncio.StreamReaderProtocol(reader), os.fdopen(reply_read, "rb", 0))
+            # 2. transport 接管独立副本，ExitStack 仍负责原始描述符。
+            os.set_blocking(self._request_fd, False)
+            reader = asyncio.StreamReader()
+            self._reply_transport, _ = await loop.connect_read_pipe(
+                lambda: asyncio.StreamReaderProtocol(reader), os.fdopen(os.dup(reply_read), "rb", 0),
+            )
         self._reader_task = asyncio.create_task(self._read_replies(reader), name="shell-fork-server")
         loop.add_reader(self._pty_master, self._discard_tty)
         await asyncio.wait_for(asyncio.shield(self._ready), _READY_TIMEOUT_S)
@@ -300,7 +306,33 @@ class ShellForkServer:
                 child.settle(None)
 
     async def close(self) -> None:
-        # 1. 关闭请求管道让 zsh 读到 EOF 自行退出；卡死时按进程组强杀。
+        """回收 server；确认失败时也回收尚未登记的直接子进程组。"""
+        # 1. 先停止 server，固定未确认 job 的集合，避免遍历期间继续 fork。
+        process = self._process
+        if self._acks and process is not None and process.returncode is None:
+            try:
+                os.kill(process.pid, signal.SIGSTOP)
+                # SIGSTOP 生效后才读取 children，保证没有 fork 窗口。
+                while Path(f"/proc/{process.pid}/stat").read_text().split(") ", 1)[1][0] not in "TtZ":
+                    await asyncio.sleep(0)
+                children = Path(f"/proc/{process.pid}/task/{process.pid}/children").read_text().split()
+                tracked = {child.pid for child in self._children.values()}
+                for raw_pid in children:
+                    pid = int(raw_pid)
+                    if pid in tracked:
+                        continue
+                    try:
+                        os.killpg(pid, signal.SIGKILL)
+                    except ProcessLookupError:
+                        pass
+                    try:
+                        os.kill(pid, signal.SIGKILL)
+                    except ProcessLookupError:
+                        pass
+                os.kill(process.pid, signal.SIGKILL)
+            except (ProcessLookupError, FileNotFoundError):
+                pass
+        # 2. 关闭请求管道让 zsh 读到 EOF 自行退出；卡死时按进程组强杀。
         self.alive = False
         if self._request_fd is not None:
             os.close(self._request_fd)
@@ -312,7 +344,11 @@ class ShellForkServer:
             except asyncio.TimeoutError:
                 os.killpg(process.pid, signal.SIGKILL)
                 _ = await process.wait()
-        # 2. 回收 reader、pty 和请求目录。
+        # 3. 显式关闭控制管道，后代意外继承描述符也不阻塞退出。
+        if self._reply_transport is not None:
+            self._reply_transport.close()
+            self._reply_transport = None
+        # 回收 reader、pty 和请求目录。
         if self._reader_task is not None:
             _ = await asyncio.gather(self._reader_task, return_exceptions=True)
         if self._pty_master is not None:
@@ -340,26 +376,26 @@ class ShellForkPool:
             return None
         server = self._servers.get(snapshot)
         if server is not None and not server.alive:
-            _ = self._servers.pop(snapshot)
             await server.close()
+            del self._servers[snapshot]
             server = None
         # 2. 首次使用该快照时启动 server；启动失败关闭整个池，不再反复付启动成本。
         if server is None:
             if len(self._servers) >= _MAX_SERVERS:
                 return None
             server = ShellForkServer(shell_path, snapshot, dict(env))
+            self._servers[snapshot] = server
             try:
                 await server.start()
             except (OSError, asyncio.TimeoutError, ForkServerLost) as exc:
                 await server.close()
+                del self._servers[snapshot]
                 self._enabled = False
                 log_event(logger, logging.WARNING, "shell.fork_server_disabled", message=str(exc), error_type=type(exc).__name__)
                 return None
-            self._servers[snapshot] = server
         return await server.spawn(command, cwd, env)
 
     async def close(self) -> None:
-        servers = list(self._servers.values())
-        self._servers.clear()
-        for server in servers:
+        for snapshot, server in list(self._servers.items()):
             await server.close()
+            del self._servers[snapshot]

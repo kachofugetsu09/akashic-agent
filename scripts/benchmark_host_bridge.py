@@ -52,9 +52,9 @@ async def measure(args: argparse.Namespace, root: Path) -> dict[str, Any]:
         ["git", "-C", str(args.source), "rev-parse", "HEAD"], text=True
     ).strip()
     source_hash = hashlib.sha256()
-    sources = sorted((args.source / "plugins/host_execution/bridge").glob("*.py")) + [
-        args.source / "plugins/host_execution/process_runtime.py",
-    ]
+    sources = sorted((args.source / "plugins/host_execution/bridge").glob("*.py")) + sorted(
+        (args.source / "plugins/host_execution").glob("*.py")
+    )
     for source in sources:
         source_hash.update(str(source.relative_to(args.source)).encode())
         source_hash.update(source.read_bytes())
@@ -76,7 +76,7 @@ async def measure(args: argparse.Namespace, root: Path) -> dict[str, Any]:
         "benchmark_sha256": hashlib.sha256(Path(__file__).read_bytes()).hexdigest(),
         "shell": "/bin/sh -c" if login_shell is None else str(login_shell.path),
         "login": login_shell is not None,
-        "fork_server": os.environ.get("AKASHIC_SHELL_FORK_SERVER", "1") != "0",
+        "fork_server": sys.platform.startswith("linux") and os.environ.get("AKASHIC_SHELL_FORK_SERVER") == "1",
         "yield_time_ms": args.yield_ms,
         "environment": "inherited",
         "work_bytes": args.work_bytes,
