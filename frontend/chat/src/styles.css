@@ -96,6 +96,7 @@ input {
   --chat-type-caption: 0.75rem;
   --chat-type-body: 0.9375rem;
   --chat-type-section: 0.8125rem;
+  --chat-type-micro: 0.6875rem;
   display: grid;
   grid-template-columns: minmax(0, 1fr);
   grid-template-rows: minmax(0, 1fr);
@@ -207,13 +208,8 @@ input {
   width: 20px;
   height: 20px;
   flex: 0 0 auto;
-  background: currentColor;
-  mask-size: contain;
-  mask-repeat: no-repeat;
-  mask-position: center;
-  -webkit-mask-size: contain;
-  -webkit-mask-repeat: no-repeat;
-  -webkit-mask-position: center;
+  border-radius: 50%;
+  object-fit: cover;
 }
 
 .chat-sidebar__new,
@@ -1757,7 +1753,7 @@ form.composer:focus-within [data-slot="input-group"] {
 .attachment-hover-title {
   margin-top: 10px;
   overflow: hidden;
-  font-size: 13px;
+  font-size: var(--chat-type-section);
   font-weight: 600;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -1767,7 +1763,7 @@ form.composer:focus-within [data-slot="input-group"] {
   margin-top: 4px;
   color: var(--ak-color-text-secondary);
   font-family: var(--ak-type-technical, ui-monospace, SFMono-Regular, Menlo, Consolas, monospace);
-  font-size: 11px;
+  font-size: var(--chat-type-micro);
 }
 
 .composer [data-slot="input-group-addon"] {
@@ -1953,7 +1949,7 @@ form.composer:focus-within [data-slot="input-group"] {
   color: var(--md-sys-color-on-surface-variant);
   background: transparent;
   font: inherit;
-  font-size: 12px;
+  font-size: var(--chat-type-caption);
   font-weight: 500;
   line-height: 20px;
   cursor: pointer;
@@ -2142,7 +2138,7 @@ form.composer:focus-within [data-slot="input-group"] {
 .model-picker__meta em,
 .model-picker__meta i {
   color: var(--md-sys-color-on-surface-variant);
-  font-size: 11px;
+  font-size: var(--chat-type-micro);
   font-style: normal;
 }
 
@@ -2214,7 +2210,7 @@ form.composer:focus-within [data-slot="input-group"] {
   color: var(--ak-ink-secondary);
   background: transparent;
   font: inherit;
-  font-size: 11px;
+  font-size: var(--chat-type-micro);
   font-weight: 500;
   line-height: 20px;
   cursor: pointer;
@@ -2439,7 +2435,7 @@ form.composer:focus-within [data-slot="input-group"] {
     inset: 0 0 auto;
     z-index: 6;
     background: var(--ak-color-bg-canvas);
-    transition: translate var(--ak-sys-duration-short, 200ms) var(--ak-sys-motion-standard, ease);
+    transition: translate var(--ak-sys-duration-short) var(--ak-sys-motion-standard);
   }
 
   .chat-main.is-reading .conversation-heading { translate: 0 -100%; }
@@ -2680,7 +2676,7 @@ form.composer:focus-within [data-slot="input-group"] {
 .directory-notice strong { display: block; color: var(--ak-ink-primary); }
 .directory-actions { display: flex; flex-flow: row wrap; gap: 8px; }
 .directory-marker { position: relative; flex: 0 0 auto; margin-inline-start: auto; padding-inline-start: 12px; font-size: var(--chat-type-caption, 0.75rem); }
-.directory-marker__trigger { display: inline-flex; max-width: 14rem; min-height: 32px; align-items: center; gap: 6px; padding-inline: 8px; border: 0; border-radius: 6px; background: transparent; color: var(--chat-faint); font: inherit; cursor: pointer; transition: color 120ms; }
+.directory-marker__trigger { display: inline-flex; max-width: 14rem; min-height: 32px; align-items: center; gap: 6px; padding-inline: 8px; border: 0; border-radius: 6px; background: transparent; color: var(--chat-faint); font: inherit; cursor: pointer; transition: color var(--ak-sys-duration-short) var(--ak-sys-motion-standard); }
 .directory-marker__trigger span { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .directory-marker__trigger svg { flex: 0 0 auto; }
 .directory-marker__trigger:hover, .directory-marker__trigger[aria-expanded="true"] { color: var(--chat-ink); }

@@ -19,6 +19,17 @@ import time
 from typing import Any
 
 
+# 一轮典型只读工具调用：仓库状态、目录、搜索、文件片段、统计。
+TURN_MIX = (
+    "git -C {source} status --short | head -n 20",
+    "ls -la {source}/plugins/host_execution",
+    "grep -rn exec_command {source}/plugins/host_execution | head -n 20",
+    "sed -n 1,40p {source}/plugins/host_execution/contract.py",
+    "wc -l {source}/plugins/host_execution/*.py",
+    "git -C {source} log --oneline -n 5",
+)
+
+
 def summarize(samples: list[float]) -> dict[str, float | int]:
     ordered = sorted(samples)
     return {
@@ -33,14 +44,17 @@ async def measure(args: argparse.Namespace, root: Path) -> dict[str, Any]:
     sys.path.insert(0, str(args.source))
     client = importlib.import_module("plugins.host_execution.bridge.client")
     unified = importlib.import_module("plugins.host_execution.process_runtime")
+    shell_runtime = importlib.import_module("plugins.host_execution.shell_runtime")
     grpc = importlib.import_module("grpc")
+    # --login-shell 走真实工具路径：passwd shell 的 login argv + 执行侧快照（fork server 由环境开关决定）。
+    login_shell = shell_runtime.resolve_shell() if args.login_shell else None
     commit = subprocess.check_output(
         ["git", "-C", str(args.source), "rev-parse", "HEAD"], text=True
     ).strip()
     source_hash = hashlib.sha256()
-    sources = sorted((args.source / "plugins/host_execution/bridge").glob("*.py")) + [
-        args.source / "plugins/host_execution/process_runtime.py",
-    ]
+    sources = sorted((args.source / "plugins/host_execution/bridge").glob("*.py")) + sorted(
+        (args.source / "plugins/host_execution").glob("*.py")
+    )
     for source in sources:
         source_hash.update(str(source.relative_to(args.source)).encode())
         source_hash.update(source.read_bytes())
@@ -60,8 +74,9 @@ async def measure(args: argparse.Namespace, root: Path) -> dict[str, Any]:
         "platform": platform.platform(),
         "cpu_affinity": sorted(os.sched_getaffinity(0)),
         "benchmark_sha256": hashlib.sha256(Path(__file__).read_bytes()).hexdigest(),
-        "shell": "/bin/sh -c",
-        "login": False,
+        "shell": "/bin/sh -c" if login_shell is None else str(login_shell.path),
+        "login": login_shell is not None,
+        "fork_server": sys.platform.startswith("linux") and os.environ.get("AKASHIC_SHELL_FORK_SERVER") == "1",
         "yield_time_ms": args.yield_ms,
         "environment": "inherited",
         "work_bytes": args.work_bytes,
@@ -142,6 +157,28 @@ async def measure(args: argparse.Namespace, root: Path) -> dict[str, Any]:
         for offset in range(0, args.work_bytes, 1024 * 1024):
             digest.update(bytes(min(1024 * 1024, args.work_bytes - offset)))
 
+        async def run(command: str, index: int, tty: bool = False) -> Any:
+            argv = ["/bin/sh", "-c", command] if login_shell is None else login_shell.derive_argv(command, login=True)
+            return await manager.exec_command(
+                command=command, argv=argv, cwd=root, env=os.environ.copy(), tty=tty,
+                yield_time_ms=args.yield_ms, max_output_tokens=300000, hard_timeout_s=30,
+                owner_session_key=f"benchmark:{index}", shell_snapshot=login_shell is not None,
+            )
+
+        async def turn() -> float:
+            """固定命令混合按一轮工具调用顺序执行，返回整轮墙钟。"""
+            start = time.perf_counter()
+            for command in TURN_MIX:
+                result = await run(command.format(source=args.source), 0)
+                if result.exit_code != 0 or result.execution_id is not None:
+                    raise RuntimeError(f"turn command failed: {command} exit={result.exit_code}")
+            return (time.perf_counter() - start) * 1000
+
+        if args.turns:
+            _ = await turn()
+            report["turn_mix"] = list(TURN_MIX)
+            report["turn"] = summarize([await turn() for _ in range(args.turns)])
+
         async def one(size: int, index: int, tty: bool = False, delay: int = 0) -> dict[str, Any]:
             """执行完整命令并核对每次续接拼出的原始输出。"""
             command = ":" if size == 0 else f"head -c {size} /dev/zero"
@@ -152,17 +189,7 @@ async def measure(args: argparse.Namespace, root: Path) -> dict[str, Any]:
             if delay:
                 command = f"sleep {delay / 1000}; {command}"
             start = time.perf_counter()
-            result = await manager.exec_command(
-                command=command,
-                argv=["/bin/sh", "-c", command],
-                cwd=root,
-                env=os.environ.copy(),
-                tty=tty,
-                yield_time_ms=args.yield_ms,
-                max_output_tokens=300000,
-                hard_timeout_s=30,
-                owner_session_key=f"benchmark:{index}",
-            )
+            result = await run(command, index, tty)
             first_ms = (time.perf_counter() - start) * 1000
             output = result.output
             omitted = result.output_omitted_bytes
@@ -310,6 +337,8 @@ def main() -> None:
     parser.add_argument("--delays", type=int, nargs="+", default=[0], help="命令等待毫秒数，0..10000")
     parser.add_argument("--work-bytes", type=int, default=0, help="对零字节流执行 SHA-256；只配合 --sizes 0")
     parser.add_argument("--yield-ms", type=int, default=10000, help="首轮等待窗口；运行态自动通过 write_stdin 续接")
+    parser.add_argument("--login-shell", action="store_true", help="用真实 login shell argv 与执行侧快照，而非 /bin/sh -c")
+    parser.add_argument("--turns", type=int, default=0, help="额外测量固定命令混合的整轮墙钟次数")
     parser.add_argument("--profile-server", type=Path, help="诊断用 cProfile 输出；不用于最终性能比较")
     parser.add_argument(
         "--sizes", type=int, nargs="+", default=[0, 4096, 40000, 1048576]

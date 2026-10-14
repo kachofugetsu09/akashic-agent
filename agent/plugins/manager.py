@@ -1719,6 +1719,51 @@ class PluginManager:
             return False
         return True
 
+    async def set_plugin_enabled(self, plugin_id: str, enabled: bool) -> dict[str, object]:
+        return await self._run_operation(lambda: self._set_plugin_enabled(plugin_id, enabled))
+
+    # 用户启停：写入持久选择后在同一 live Root 内生效，公开合同变化才留到重启。
+    async def _set_plugin_enabled(self, plugin_id: str, enabled: bool) -> dict[str, object]:
+        # 1. 只接受已安装或发行版自带的插件，选择与 CLI plugin-enable 同源。
+        self.require_installed_plugin(plugin_id)
+        _ = set_plugin_choice(self._workspace, plugin_id, enabled=enabled, distribution=self._distribution.root)
+        # 2. 停用沿用排空路径，依赖它的插件由组合图转入等待。
+        if not enabled:
+            await self._reconcile_disabled_and_drain(plugin_id)
+            self._notify_updates()
+            return {"plugin_id": plugin_id, "publication_state": "disabled"}
+        # 3. 已选中的输入按变化调和；调和不报告未变化的插件，已在运行即视为启用完成。
+        results = await self._reconcile_changed(frozenset({plugin_id}))
+        result: dict[str, object] | None = next((item for item in results if item.get("plugin_id") == plugin_id), None)
+        if result is None and plugin_id in self._active_generations:
+            result = {"plugin_id": plugin_id, "publication_state": "unchanged"}
+        # 4. 只有确实未选入的插件才按安装路径准备新 generation。
+        elif result is None or result.get("publication_state") == "unselected_source":
+            result = await self._select_enabled(plugin_id)
+        self._notify_updates()
+        return result
+
+    # 把重新启用的插件准备为新 generation 并挂入当前 Root。
+    async def _select_enabled(self, plugin_id: str) -> dict[str, object]:
+        mods, _failures = self._discover_modules(record_source_failures=True)
+        mod = next((item for item in mods if _resolve_plugin_id(item) == plugin_id), None)
+        if mod is None:
+            return {"plugin_id": plugin_id, "publication_state": "source_unavailable"}
+        generation = await self._prepare_one_with_source_diagnostics(mod)
+        if generation is None:
+            return {"plugin_id": plugin_id, "publication_state": "source_unavailable"}
+        expected_ref = self._selection.read()
+        if public_contracts.register((ResolvedPluginSource(
+            generation.code_dir, generation.source_type, plugin_name=mod["name"],
+        ),)):
+            # 当前 Root 保留旧类型；选择提交给下次启动。
+            operation = self._check_operation_commit()
+            components = self._selection_for_plugin(expected_ref, plugin_id, self._generation_input_ref(generation))
+            operation.committed = self._selection.commit(components, expected_ref=expected_ref)
+            await self._dispose_generation(generation, state="discarded")
+            return {"plugin_id": plugin_id, "publication_state": "restart_required"}
+        return await self._update_live_generation(generation, None, expected_ref=expected_ref)
+
     async def reconcile_disabled_and_drain(self, plugin_id: str) -> None:
         await self._run_operation(lambda: self._reconcile_disabled_and_drain(plugin_id))
 
@@ -1913,6 +1958,8 @@ class PluginManager:
                     None if active is None or active.fiber is None
                     else active.fiber.state.value
                 ),
+                "version": None if active is None or active.static_manifest is None else active.static_manifest.version,
+                "description": str(getattr(active.instance, "desc", "")) if active is not None else "",
             })
         source_failures = [
             {
