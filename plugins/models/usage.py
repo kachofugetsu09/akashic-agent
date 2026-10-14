@@ -91,7 +91,12 @@ class CacheUsage:
     # 汇总所有 Session；被动近期命中只取最近 10 个被动 Turn。
     def _overview(self, catalog: MessageCatalog, projection: TurnProjection) -> dict[str, object]:
         with self._lock:
-            for session_id, head in catalog.snapshot_heads().items():
+            # 无过滤目录保留软删 Session；按两种可见性读取才是当前有效集合。
+            heads = dict(catalog.snapshot_heads(visibility="listed"))
+            heads.update(catalog.snapshot_heads(visibility="internal"))
+            self._heads = {key: head for key, head in self._heads.items() if key in heads}
+            self._sources = {key: state for key, state in self._sources.items() if key[0] in heads}
+            for session_id, head in heads.items():
                 self._refresh(catalog, projection, session_id, head)
             states = tuple((source in _PROACTIVE_SOURCES, state) for (_, source), state in self._sources.items())
             passive, proactive = _Totals(), _Totals()
@@ -118,6 +123,8 @@ class CacheUsage:
         self, catalog: MessageCatalog, projection: TurnProjection, session_id: str, message_id: str,
     ) -> int | None:
         reader = catalog.reader(session_id)
+        if reader.deleted:
+            return None
         message = reader.get(message_id)
         if message is None or message.source in _PROACTIVE_SOURCES:
             return None
