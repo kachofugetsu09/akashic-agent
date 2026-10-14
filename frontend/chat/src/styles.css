@@ -96,6 +96,7 @@ input {
   --chat-type-caption: 0.75rem;
   --chat-type-body: 0.9375rem;
   --chat-type-section: 0.8125rem;
+  --chat-type-micro: 0.6875rem;
   display: grid;
   grid-template-columns: minmax(0, 1fr);
   grid-template-rows: minmax(0, 1fr);
@@ -1757,7 +1758,7 @@ form.composer:focus-within [data-slot="input-group"] {
 .attachment-hover-title {
   margin-top: 10px;
   overflow: hidden;
-  font-size: 13px;
+  font-size: var(--chat-type-section);
   font-weight: 600;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -1767,7 +1768,7 @@ form.composer:focus-within [data-slot="input-group"] {
   margin-top: 4px;
   color: var(--ak-color-text-secondary);
   font-family: var(--ak-type-technical, ui-monospace, SFMono-Regular, Menlo, Consolas, monospace);
-  font-size: 11px;
+  font-size: var(--chat-type-micro);
 }
 
 .composer [data-slot="input-group-addon"] {
@@ -1953,7 +1954,7 @@ form.composer:focus-within [data-slot="input-group"] {
   color: var(--md-sys-color-on-surface-variant);
   background: transparent;
   font: inherit;
-  font-size: 12px;
+  font-size: var(--chat-type-caption);
   font-weight: 500;
   line-height: 20px;
   cursor: pointer;
@@ -2142,7 +2143,7 @@ form.composer:focus-within [data-slot="input-group"] {
 .model-picker__meta em,
 .model-picker__meta i {
   color: var(--md-sys-color-on-surface-variant);
-  font-size: 11px;
+  font-size: var(--chat-type-micro);
   font-style: normal;
 }
 
@@ -2214,7 +2215,7 @@ form.composer:focus-within [data-slot="input-group"] {
   color: var(--ak-ink-secondary);
   background: transparent;
   font: inherit;
-  font-size: 11px;
+  font-size: var(--chat-type-micro);
   font-weight: 500;
   line-height: 20px;
   cursor: pointer;
