@@ -1,6 +1,6 @@
 # 0119 · 运行诊断本地可用，外部接入独立消费
 
-- 状态：accepted
+- 状态：accepted；前端决定由 [0120](0120-runtime-diagnostics-is-operations-only.md) 替代
 - 日期：2026-10-14
 - 关联：PLG-015、PLG-016、ERR-001；补充 [0042](0042-plugin-diagnostics-preserve-domain-owners.md)
 

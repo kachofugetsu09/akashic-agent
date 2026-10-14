@@ -12,7 +12,7 @@ from .runtime import Monitor
 api_version = 3
 name = "runtime_diagnostics"
 version = "1.0.0"
-desc = "本地运行曲线、插件操作与限时内存剖析，无需外部监控服务"
+desc = "运行指标、插件操作与限时内存剖析，供运维读取"
 
 
 async def apply(ctx: Context) -> None:
@@ -26,8 +26,7 @@ async def apply(ctx: Context) -> None:
     await ctx.provide(PROFILES, profiles)
     await ctx.spawn(monitor.run(), name="diagnostics-sampling")
 
-    async def register_ui(child: Context) -> None:
-        await child.require(UI).register(child, web="web_module.js", dashboard=lambda: dashboard,
-                                        requires=("shell.pages.v1",))
+    async def register_http(child: Context) -> None:
+        await child.require(UI).register(child, dashboard=lambda: dashboard)
 
-    await ctx.inject((UI, DIAGNOSTICS, PROFILES), register_ui, name="diagnostics-ui")
+    await ctx.inject((UI, DIAGNOSTICS, PROFILES), register_http, name="diagnostics-http")

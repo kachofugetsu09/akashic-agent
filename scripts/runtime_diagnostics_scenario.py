@@ -45,7 +45,7 @@ async def apply(ctx):
 
 
 async def run(directory: Path, port: int | None) -> dict[str, bool]:
-    """实际 UI 许可、HTTP、插件生命周期与可分配内存共同构成验收边界。"""
+    """实际 HTTP 访问约束、插件生命周期与可分配内存共同构成验收边界。"""
     from agent.plugin_composition import ServiceKey
     from agent.plugins.bundles import set_plugin_choice
     from agent.plugins.manager import PluginManager
@@ -68,7 +68,8 @@ async def run(directory: Path, port: int | None) -> dict[str, bool]:
     for path in sources.iterdir():
         if (path / "plugin.py").is_file():
             name = load_static_plugin_manifest(path).name
-            set_plugin_choice(workspace, name, enabled=name in {"ui", "shell-ui"})
+            set_plugin_choice(workspace, name, enabled=name in {"ui", "shell-ui"}
+                              or (port is not None and name == "conversation-ui"))
     provider = directory / "runtime_diagnostics"
     shutil.copytree(ROOT / "plugins/runtime_diagnostics", provider, ignore=shutil.ignore_patterns("__pycache__"))
     subprocess.run(["git", "init", "-q", "--initial-branch=source", str(provider)], check=True)
@@ -95,17 +96,16 @@ async def run(directory: Path, port: int | None) -> dict[str, bool]:
         assert root is not None
         endpoint = next(item for item in root.endpoints() if item.name == "dashboard")
         catalog = json.loads(await root.context.require(WEB_UI).bootstrap())
-        module = next(item for item in catalog["modules"] if item["pluginId"] == "runtime_diagnostics@lab")
-        headers = {"x-akashic-web-snapshot": catalog["snapshotId"], "x-akashic-web-catalog": catalog["catalogId"],
-                   "x-akashic-web-module": module["pluginId"], "x-akashic-web-generation": module["generationId"]}
+        assert all(item["pluginId"] != "runtime_diagnostics@lab" for item in catalog["modules"])
+        checks["no_frontend_module"] = True
         async with httpx.AsyncClient(transport=httpx.AsyncHTTPTransport(uds=endpoint.address), base_url="http://local") as web:
             async def get(after: int = 0):
-                response = await web.get("/api/dashboard/runtime-diagnostics", headers=headers, params={"after": after})
+                response = await web.get("/api/dashboard/runtime-diagnostics", params={"after": after})
                 assert response.status_code == 200, response.text
                 return response.json()
 
             async def post(path: str, values: dict[str, object] | None = None, status: int = 200):
-                response = await web.post("/api/dashboard/runtime-diagnostics/" + path, headers=headers, json=values)
+                response = await web.post("/api/dashboard/runtime-diagnostics/" + path, json=values)
                 assert response.status_code == status, response.text
                 return response.json()
 
@@ -114,7 +114,7 @@ async def run(directory: Path, port: int | None) -> dict[str, bool]:
                     await function(*args)
 
             if port is not None:
-                # 浏览器使用实际 Dashboard 及其 generation 头；这里只把 TCP 转发到实际 UDS。
+                # 浏览器加载实际宿主；这里只把 TCP 转发到实际 UDS。
                 app = FastAPI()
                 @app.get("/api/chat/web-ui/bootstrap")
                 async def bootstrap():
@@ -138,7 +138,12 @@ async def run(directory: Path, port: int | None) -> dict[str, bool]:
                 return {"browser_fixture_closed": True}
 
             # 2. 实际权限、边界校验与 OS 指标；追踪真实分配，不替换采样函数。
-            assert (await web.get("/api/dashboard/runtime-diagnostics")).status_code == 403
+            assert (await web.get("/api/dashboard/runtime-diagnostics",
+                                  headers={"sec-fetch-site": "same-origin"})).status_code == 403
+            assert (await web.post("/api/dashboard/runtime-diagnostics/profile",
+                                   headers={"sec-fetch-site": "same-site"}, json={"seconds": 10})).status_code == 403
+            assert (await web.post("/api/dashboard/runtime-diagnostics/profile/stop",
+                                   headers={"sec-fetch-site": "cross-site"})).status_code == 403
             await post("profile", {"seconds": 0}, status=422)
             await post("profile", {"seconds": True}, status=422)
             async with asyncio.timeout(10):
@@ -172,7 +177,7 @@ async def run(directory: Path, port: int | None) -> dict[str, bool]:
             assert len(delta["events"]) == 2048
             leaked = "private-diagnostic-sentinel"
             logger.info(leaked, extra={"akashic_fields": {"event": "plugin.operation.done", "note": leaked}})
-            exported = await web.get("/api/dashboard/runtime-diagnostics/export", headers=headers)
+            exported = await web.get("/api/dashboard/runtime-diagnostics/export")
             assert leaked not in exported.text and "attachment" in exported.headers["content-disposition"]
             checks["bounded_reader_export_and_redaction"] = True
             tracemalloc.start()
@@ -181,7 +186,7 @@ async def run(directory: Path, port: int | None) -> dict[str, bool]:
             assert tracemalloc.is_tracing()
             tracemalloc.stop()
             await post("profile", {"seconds": 120})
-            # 真实安装更新会停止旧代剖析，并撤销旧页面的 generation 许可。
+            # 真实安装更新会停止旧代剖析，不再发布前端模块。
             old_stream = report["stream_id"]
             with (provider / "plugin.py").open("a") as file:
                 file.write("\n# isolated source update\n")
@@ -192,11 +197,8 @@ async def run(directory: Path, port: int | None) -> dict[str, bool]:
             await manager.wait_idle()
             assert manager.read_update("diagnostics-update").state == "active"
             assert not tracemalloc.is_tracing()
-            assert (await web.get("/api/dashboard/runtime-diagnostics", headers=headers)).status_code == 409
             catalog = json.loads(await root.context.require(WEB_UI).bootstrap())
-            module = next(item for item in catalog["modules"] if item["pluginId"] == "runtime_diagnostics@lab")
-            headers.update({"x-akashic-web-snapshot": catalog["snapshotId"], "x-akashic-web-catalog": catalog["catalogId"],
-                            "x-akashic-web-generation": module["generationId"]})
+            assert all(item["pluginId"] != "runtime_diagnostics@lab" for item in catalog["modules"])
             assert (await get())["stream_id"] != old_stream
             assert len(gc.callbacks) == len(before_callbacks) + 1
             assert len(logger.handlers) == len(before_handlers) + 1
