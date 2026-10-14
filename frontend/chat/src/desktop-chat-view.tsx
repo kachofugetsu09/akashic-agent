@@ -42,7 +42,7 @@ export function DesktopChatView({ embeddedShell, controller }: DesktopChatViewPr
     streamStore, messageElementsRef, copiedMessageId, shellState, stopPending, modelState,
     selectedRuntimeId, selectedReasoningEffort, replyTarget, error,
     canSend, modelProblem, modelsError, retryModels, draftKey,
-    historyHasMore, historyLoading, historyLoadingOlder, loadOlderMessages,
+    historyHasMore, historyLoading, historyLoadingOlder, loadOlderMessages, sessionRequested,
     activeSessionDeleted, deletedNotice, deleteSession, restoreSession, dismissDeletedNotice, renameSession,
     activateSession, prefetchSessionTail, startNewChat, handleReplyMessage, handleCopiedMessage,
     reportError, handleModelChange, cancelReply, sendMessage, stopTurn, retry,
@@ -61,7 +61,10 @@ export function DesktopChatView({ embeddedShell, controller }: DesktopChatViewPr
   const committed = new Set(timelineMessages.map((message) => message.id));
   const hasMessages = messages.length + timelineMessages.length + replyActivities.length > 0;
   // 读取已有会话期间就按会话版式摆放：输入区停在底部，消息到达时不从屏幕中央跳下来。
-  const conversationLayout = hasMessages || historyLoading;
+  // 刷新或通知入口带着会话打开时，会话要等聊天就绪才开始读取；外壳需要配置、启动中或不可用时让给引导页。
+  const shellStatus = shellState?.status ?? null;
+  const sessionOpening = historyLoading || (sessionRequested && (shellStatus === null || shellStatus === "ready"));
+  const conversationLayout = hasMessages || sessionOpening;
 
   const shellClass = embeddedShell ? "chat-shell is-embedded" : "chat-shell";
 
@@ -105,8 +108,8 @@ export function DesktopChatView({ embeddedShell, controller }: DesktopChatViewPr
         </header>
         <Conversation className="conversation" resize="instant">
           <ConversationContent className={conversationLayout ? "conversation-content" : "conversation-content empty"}>
-            {!hasMessages && historyLoading ? <p className="history-switch-loading" role="status">正在读取消息</p>
-              : !hasMessages ? <DesktopEmptyState shellStatus={shellState?.status ?? null} modelProblem={modelProblem} /> : (
+            {!hasMessages && sessionOpening ? <p className="history-switch-loading" role="status">正在读取消息</p>
+              : !hasMessages ? <DesktopEmptyState shellStatus={shellStatus} modelProblem={modelProblem} /> : (
               <MessageRendererErrorBoundary>
                 <DesktopHistoryLoader
                   firstMessageId={timelineMessages[0]?.id ?? messages[0]?.id}
