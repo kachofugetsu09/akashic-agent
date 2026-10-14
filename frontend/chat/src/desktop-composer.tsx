@@ -1,5 +1,5 @@
 import { Paperclip } from "lucide-react";
-import { memo, useCallback, useEffect, useImperativeHandle, useRef, useState, type ChangeEvent, type DragEvent, type FocusEvent, type Ref } from "react";
+import { memo, useCallback, useEffect, useImperativeHandle, useRef, useState, type ChangeEvent, type FocusEvent, type Ref } from "react";
 import {
   Attachment, AttachmentHoverCard, AttachmentHoverCardContent, AttachmentHoverCardTrigger,
   AttachmentPreview, AttachmentRemove, Attachments, getAttachmentLabel, getMediaCategory,
@@ -132,33 +132,7 @@ export const DesktopComposer = memo(function DesktopComposer({
     setEngaged(false);
   };
   const resting = !engaged && !shellExpanded && !input.trim();
-  // 文件拖拽强调态：dragenter/dragleave 用深度计数去抖，子元素间移动不成对出入时也不会闪烁。
-  const dragDepth = useRef(0);
   const [fileDragActive, setFileDragActive] = useState(false);
-  const isFileDrag = useCallback((event: DragEvent<HTMLFormElement>) =>
-    Array.from(event.dataTransfer?.types ?? []).includes("Files"), []);
-  const onDragEnter = useCallback((event: DragEvent<HTMLFormElement>) => {
-    if (!isFileDrag(event)) return;
-    event.preventDefault();
-    dragDepth.current += 1;
-    setFileDragActive(true);
-  }, [isFileDrag]);
-  const onDragOver = useCallback((event: DragEvent<HTMLFormElement>) => {
-    if (!isFileDrag(event)) return;
-    event.preventDefault();
-    event.dataTransfer.dropEffect = "copy";
-  }, [isFileDrag]);
-  const onDragLeave = useCallback((event: DragEvent<HTMLFormElement>) => {
-    if (!isFileDrag(event)) return;
-    dragDepth.current = Math.max(0, dragDepth.current - 1);
-    if (dragDepth.current === 0) setFileDragActive(false);
-  }, [isFileDrag]);
-  const onDrop = useCallback((event: DragEvent<HTMLFormElement>) => {
-    dragDepth.current = 0;
-    setFileDragActive(false);
-    // 附件入列由 PromptInput 内部共享的 drop 处理（与粘贴/选择器同一条 add 路径）；这里只防浏览器直接打开文件。
-    if (isFileDrag(event)) event.preventDefault();
-  }, [isFileDrag]);
   return (
     <>
     {draftStorageError ? <p role="status">浏览器无法保存本页草稿。刷新前请复制已输入的文字。</p> : null}
@@ -177,11 +151,8 @@ export const DesktopComposer = memo(function DesktopComposer({
       }}
       onKeyDown={() => setEngaged(true)}
       onBlur={onComposerBlur}
-      onDragEnter={onDragEnter}
-      onDragOver={onDragOver}
-      onDragLeave={onDragLeave}
-      onDrop={onDrop}
     >
+      <WindowFileDrop enabled={chatReady} onActiveChange={setFileDragActive} />
       {replyTarget ? <ComposerReply author={replyTarget.author} preview={replyTarget.preview} onCancel={onCancelReply} /> : null}
       {fileDragActive ? <div className="composer-drop-hint" aria-hidden="true">松开以添加文件</div> : null}
       <PromptInputBody>
@@ -324,6 +295,59 @@ function ComposerAttachments({ onPresenceChange }: { onPresenceChange: (hasAttac
       })}
     </Attachments>
   );
+}
+
+// 文件拖进窗口任意位置都由输入区接住：卡片显示"松开以添加文件"，松开即入列（与粘贴、选择器同一条 add 路径）。
+// 落在输入卡里的 drop 由 PromptInput 自己处理；落在别处时这里入列并阻止浏览器直接打开文件、离开聊天页。
+// 已被其它放置区（如对话框里的上传框）处理的 drop 不重复入列；对话框打开时不显示强调态。
+function WindowFileDrop({ enabled, onActiveChange }: { enabled: boolean; onActiveChange: (active: boolean) => void }) {
+  const attachments = usePromptInputAttachments();
+  const add = attachments.add;
+  useEffect(() => {
+    // 1. dragenter/dragleave 在每个元素上成对出入，用深度计数判断是否还在窗口内。
+    let depth = 0;
+    const isFileDrag = (event: DragEvent) => Array.from(event.dataTransfer?.types ?? []).includes("Files");
+    const reset = () => { depth = 0; onActiveChange(false); };
+    const onEnter = (event: DragEvent) => {
+      if (!isFileDrag(event)) return;
+      depth += 1;
+      onActiveChange(enabled && !document.querySelector("[role='dialog']"));
+    };
+    const onLeave = (event: DragEvent) => {
+      if (!isFileDrag(event)) return;
+      depth = Math.max(0, depth - 1);
+      if (depth === 0 || event.relatedTarget === null) reset();
+    };
+    // 2. dragover 必须 preventDefault，drop 才会派发而不是被浏览器当作打开文件。
+    const onOver = (event: DragEvent) => {
+      if (!isFileDrag(event)) return;
+      event.preventDefault();
+      if (event.dataTransfer) event.dataTransfer.dropEffect = enabled ? "copy" : "none";
+    };
+    // 3. 卡片内的 drop 已由 PromptInput 入列；其余位置在这里入列。
+    const onDrop = (event: DragEvent) => {
+      reset();
+      if (!isFileDrag(event) || event.defaultPrevented) return;
+      event.preventDefault();
+      const insideComposer = event.target instanceof Element && event.target.closest("form.composer");
+      if (enabled && !insideComposer && !document.querySelector("[role='dialog']") && event.dataTransfer?.files.length) {
+        add(event.dataTransfer.files);
+      }
+    };
+    window.addEventListener("dragenter", onEnter);
+    window.addEventListener("dragleave", onLeave);
+    window.addEventListener("dragover", onOver);
+    window.addEventListener("drop", onDrop);
+    window.addEventListener("dragend", reset);
+    return () => {
+      window.removeEventListener("dragenter", onEnter);
+      window.removeEventListener("dragleave", onLeave);
+      window.removeEventListener("dragover", onOver);
+      window.removeEventListener("drop", onDrop);
+      window.removeEventListener("dragend", reset);
+    };
+  }, [add, enabled, onActiveChange]);
+  return null;
 }
 
 function AttachmentHover({ attachment }: { attachment: ReturnType<typeof usePromptInputAttachments>["files"][number] }) {
