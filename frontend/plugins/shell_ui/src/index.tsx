@@ -2,6 +2,7 @@ import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, typ
 import { createRoot } from "react-dom/client";
 import "./style.css";
 import { akashicBrandIcon } from "./brand";
+import { PluginInventory } from "./plugin-inventory";
 import type {
   WebEntry,
   WebHostContextV1,
@@ -30,7 +31,6 @@ const SETTINGS_PLUGINS_MOUNT = "shell.settings-plugins.v1";
 const SETTINGS_PLUGINS_ORDER = 40;
 const SETTINGS_PLUGINS_LABEL = "插件";
 const SETTINGS_PLUGINS_ROUTE = "plugins";
-const SETTINGS_PLUGINS_INTRO = "已安装插件提供的能力。点开一项查看说明、开关和详细设置。";
 const CHEVRON_ICON = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m9 18 6-6-6-6"/></svg>';
 const BACK_ICON = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m15 18-6-6 6-6"/></svg>';
 const CLOSE_ICON = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M18 6 6 18"/><path d="m6 6 12 12"/></svg>';
@@ -110,6 +110,7 @@ export function activate(ctx: WebHostContextV1): WebUiDisposer {
           railActions={view.child(RAIL_ACTIONS_MOUNT)}
           settings={view.child(SETTINGS_MOUNT)}
           settingsPlugins={view.child(SETTINGS_PLUGINS_MOUNT)}
+          http={ctx.http}
         />);
         return () => root.unmount();
       },
@@ -127,11 +128,12 @@ export function activate(ctx: WebHostContextV1): WebUiDisposer {
   };
 }
 
-function Shell({ pages, railActions, settings, settingsPlugins }: {
+function Shell({ pages, railActions, settings, settingsPlugins, http }: {
   pages: WebMountView;
   railActions: WebMountView;
   settings: WebMountView;
   settingsPlugins: WebMountView;
+  http: WebHostContextV1["http"];
 }): React.ReactElement {
   const bandEntries = useMemo(() => checkPages(pages.entries), [pages.entries]);
   const railActionEntries = useMemo(() => checkRailActions(railActions.entries), [railActions.entries]);
@@ -211,6 +213,8 @@ function Shell({ pages, railActions, settings, settingsPlugins }: {
   const settingsMembers = useMemo(() => activeCard?.entries ?? [], [activeCard]);
   // 窄屏两级页面：nav 是分节列表，content 是分节内容；宽屏两栏同时可见，这个状态不起作用。
   const [settingsPane, setSettingsPane] = useState<"nav" | "content">("content");
+  // 插件分节的两个 tab：插件列表管理启停，插件配置是成员自己的设置表单。
+  const [pluginsTab, setPluginsTab] = useState<"list" | "config">("list");
 
   const openPage = useCallback((entry: ShellPage): void => {
     if (entry.id === activeId) { setWithdrawn(false); setSettingsOpen(false); return; }
@@ -527,12 +531,18 @@ function Shell({ pages, railActions, settings, settingsPlugins }: {
             card={activeCard}
             back={() => openSettings({ kind: "plugins", memberId: null })}
           />
-          {currentTarget?.kind === "plugins" && currentTarget.memberId === null && <PluginCardList
-            cards={pluginCards}
-            view={settingsPlugins}
-            railActions={railActionEntries}
-            open={(card) => openSettings({ kind: "plugins", memberId: card.entries[0].id })}
-          />}
+          {currentTarget?.kind === "plugins" && currentTarget.memberId === null && <>
+            <div className="shell-settings-tabs" role="tablist" aria-label="插件">
+              <button type="button" role="tab" aria-selected={pluginsTab === "list"} onClick={() => setPluginsTab("list")}>插件列表</button>
+              <button type="button" role="tab" aria-selected={pluginsTab === "config"} onClick={() => setPluginsTab("config")}>插件配置</button>
+            </div>
+            {pluginsTab === "list" ? <PluginInventory http={http} /> : <PluginCardList
+              cards={pluginCards}
+              view={settingsPlugins}
+              railActions={railActionEntries}
+              open={(card) => openSettings({ kind: "plugins", memberId: card.entries[0].id })}
+            />}
+          </>}
           <div ref={settingsContent} className="shell-settings-mount" />
         </div>
       </div>
@@ -563,10 +573,7 @@ function SettingsHeading({ target, sections, card, back }: {
     const entry = sections.find((item) => item.id === target.id);
     return <header className="shell-settings-heading"><h3>{entry?.label}</h3></header>;
   }
-  if (!card) return <header className="shell-settings-heading">
-    <h3>{SETTINGS_PLUGINS_LABEL}</h3>
-    <p>{SETTINGS_PLUGINS_INTRO}</p>
-  </header>;
+  if (!card) return <header className="shell-settings-heading"><h3>{SETTINGS_PLUGINS_LABEL}</h3></header>;
   return <header className="shell-settings-heading">
     <button type="button" className="shell-settings-crumb" onClick={back}>
       <span aria-hidden="true" dangerouslySetInnerHTML={{ __html: BACK_ICON }} />{SETTINGS_PLUGINS_LABEL}
