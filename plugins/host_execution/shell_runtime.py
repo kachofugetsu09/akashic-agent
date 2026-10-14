@@ -222,7 +222,7 @@ def build_shell_snapshot(shell: ResolvedShell, env: Mapping[str, str] | None = N
     return path
 
 
-async def snapshot_shell_argv(argv: list[str], command: str, env: Mapping[str, str]) -> list[str]:
+async def login_shell_snapshot(argv: list[str], command: str, env: Mapping[str, str]) -> tuple[ResolvedShell, Path | None]:
     """只在实际进程 owner 所在主机创建并复用 login shell 快照。"""
     if not argv:
         raise ValueError("shell 快照缺少执行路径")
@@ -232,7 +232,7 @@ async def snapshot_shell_argv(argv: list[str], command: str, env: Mapping[str, s
     known, snapshot = cached_shell_snapshot(shell, env)
     if not known:
         snapshot = await run_file_io(lambda: build_shell_snapshot(shell, env))
-    return shell.derive_argv(command, login=True, snapshot=snapshot)
+    return shell, snapshot
 
 
 def _write_snapshot(shell: ResolvedShell, key: _SnapshotKey, env: dict[str, str]) -> Path:
