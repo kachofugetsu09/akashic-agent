@@ -218,10 +218,10 @@
   white-space: pre-wrap;
 }
 
-/* 流式期间代码块先用 PreCodeNode 的 <pre> 渲染，落定后换成高亮组件。两者必须同一几何：
+/* 流式期间代码块先用 PreCodeNode 的 <pre> 渲染（块外的那一个），落定后换成高亮组件。两者必须同一几何：
    44px 块头位（+8px 首行偏移，按落定块实测）、12px/18px 行、一圈 subtle 发丝线、1rem 外边距。
    PreCodeNode 带 inline 字号/行高/上下内边距，只能用 !important 覆盖。 */
-:is(.agent-content, .process-markdown) .markstream-react pre[data-markstream-pre="1"] {
+:is(.agent-content, .process-markdown) .markstream-react pre[data-markstream-pre="1"]:not(.code-block-container pre) {
   max-width: 100%;
   margin-block: 1rem !important;
   overflow-x: auto;
@@ -230,6 +230,22 @@
   padding: 52px 7px 8px !important;
   color: var(--ak-ink-primary) !important;
   background: var(--ak-paper-quiet) !important;
+  font-family: var(--ak-type-technical, ui-monospace, SFMono-Regular, Menlo, Consolas, monospace) !important;
+  font-size: 12px !important;
+  font-weight: 400;
+  line-height: 18px !important;
+  white-space: pre-wrap;
+}
+
+/* 高亮组件加载期间，块头下面先放一个同样的 <pre> 占位：它已经在块里，不再自带块头留白与边框，
+   只对齐高亮后代码区的字号、行高与内边距，换成高亮时块高不变。 */
+:is(.agent-content, .process-markdown) .code-block-container pre[data-markstream-pre="1"] {
+  margin: 0 !important;
+  border: 0 !important;
+  border-radius: 0 !important;
+  padding: 8px 7px !important;
+  color: var(--ak-ink-primary) !important;
+  background: transparent !important;
   font-family: var(--ak-type-technical, ui-monospace, SFMono-Regular, Menlo, Consolas, monospace) !important;
   font-size: 12px !important;
   font-weight: 400;
