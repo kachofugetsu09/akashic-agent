@@ -86,6 +86,7 @@ export const DesktopComposer = memo(function DesktopComposer({
   useEffect(() => {
     if (autoFocus && chatReady) textareaRef.current?.focus();
   }, [autoFocus, chatReady, draftKey]);
+  useTypeToCompose(textareaRef, chatReady);
   const [expanded, setExpanded] = useState(false);
   const [hasAttachments, setHasAttachments] = useState(false);
   const syncExpanded = useCallback((textarea: HTMLTextAreaElement | null, text: string) => {
@@ -194,7 +195,7 @@ export const DesktopComposer = memo(function DesktopComposer({
           aria-label="消息"
           aria-describedby={modelProblem ? "chat-model-reason" : undefined}
           disabled={!chatReady}
-          placeholder={!canSend ? "先写下想说的话…" : fresh ? "布置一件事，或随便聊聊…" : "继续…"}
+          placeholder={!canSend ? "先写下想说的话…" : fresh ? "说说想做什么…" : "继续…"}
         />
       </PromptInputBody>
       <PromptInputFooter className="composer__bar">
@@ -228,6 +229,29 @@ export const DesktopComposer = memo(function DesktopComposer({
     </>
   );
 });
+
+// 读回复时直接打字就进入输入框：焦点不在任何可编辑处、也没有浮层时，把这次按键的焦点交给输入框，
+// 字符随按键的默认动作落进去。触屏设备没有这种输入方式，不挂监听。
+function useTypeToCompose(textareaRef: { current: HTMLTextAreaElement | null }, enabled: boolean) {
+  useEffect(() => {
+    if (!enabled || !window.matchMedia("(hover: hover) and (pointer: fine)").matches) return;
+    const onKeyDown = (event: KeyboardEvent) => {
+      // 1. 只接普通可见字符；组合键、输入法组合中与已被处理的按键都不碰。
+      if (event.defaultPrevented || event.isComposing || event.ctrlKey || event.metaKey || event.altKey) return;
+      if (event.key.length !== 1 || event.key === " ") return;
+      // 2. 焦点已在可编辑处，或有对话框/菜单/浮层打开时，按键属于它们。
+      const active = document.activeElement;
+      if (active instanceof HTMLElement && active.closest("input, textarea, select, [contenteditable]:not([contenteditable='false'])")) return;
+      if (document.querySelector("[role='dialog'], [role='menu'], [role='listbox'], [data-radix-popper-content-wrapper]")) return;
+      const textarea = textareaRef.current;
+      if (!textarea || textarea.disabled) return;
+      textarea.focus();
+      textarea.setSelectionRange(textarea.value.length, textarea.value.length);
+    };
+    document.addEventListener("keydown", onKeyDown);
+    return () => document.removeEventListener("keydown", onKeyDown);
+  }, [enabled, textareaRef]);
+}
 
 function ComposerEffortAction({ modelState, selectedRuntimeId, selectedEffort, disabled, onChange }: {
   modelState: { defaultRuntime: string; runtimes: ChatModelRuntime[] };

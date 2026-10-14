@@ -2551,8 +2551,9 @@ form.composer:focus-within [data-slot="input-group"] {
   .chat-main .composer.is-compact .composer-action-button:disabled,
   .chat-main .composer.is-expanded .composer-action-button:disabled {
     color: var(--chat-muted);
-    background: transparent;
-    box-shadow: inset 0 0 0 1px var(--ak-rule-default);
+    /* 空草稿的发送钮只是一块淡墨底，不再描一圈边框与输入卡外框抢轮廓。 */
+    background: color-mix(in oklch, var(--ak-ink-primary) 5%, transparent);
+    box-shadow: none;
     opacity: 1;
   }
 
@@ -2616,7 +2617,9 @@ form.composer:focus-within [data-slot="input-group"] {
     gap: 0;
   }
 
-  .chat-main .composer.is-resting textarea {
+  /* 与上方 is-compact 文本框规则同特异性才能生效：文字行居中于 44px，与发送钮同一中线。 */
+  .chat-main .composer.is-resting textarea,
+  .chat-main .composer.is-resting .composer__textarea {
     max-height: 44px;
     padding-block: 10px;
   }
