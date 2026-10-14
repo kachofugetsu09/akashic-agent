@@ -1049,6 +1049,15 @@ input {
   justify-items: end;
 }
 
+/* 排队条与回复引用同一几何，底色退到纸面：它是待办，不是正在进行的引用。 */
+.composer .composer-queued {
+  color: var(--ak-ink-primary);
+  background: var(--ak-paper-quiet);
+}
+
+.composer .composer-queued > svg,
+.composer .composer-queued strong { color: var(--chat-muted); }
+
 .composer .composer-reply {
   margin: -8px -10px 8px;
   border-radius: var(--md-sys-shape-corner-extra-large) var(--md-sys-shape-corner-extra-large) var(--md-sys-shape-corner-medium) var(--md-sys-shape-corner-medium);

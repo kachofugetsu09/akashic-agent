@@ -1,12 +1,12 @@
-import { Paperclip } from "lucide-react";
-import { memo, useCallback, useEffect, useImperativeHandle, useRef, useState, type ChangeEvent, type FocusEvent, type Ref } from "react";
+import { Clock3, Paperclip, Undo2 } from "lucide-react";
+import { memo, useCallback, useEffect, useImperativeHandle, useRef, useState, type ChangeEvent, type FocusEvent, type KeyboardEvent as ReactKeyboardEvent, type Ref } from "react";
 import {
   Attachment, AttachmentHoverCard, AttachmentHoverCardContent, AttachmentHoverCardTrigger,
   AttachmentPreview, AttachmentRemove, Attachments, getAttachmentLabel, getMediaCategory,
 } from "@/components/ai-elements/attachments";
 import {
   PromptInput, PromptInputBody, PromptInputButton, PromptInputFooter, PromptInputTextarea, PromptInputTools,
-  usePromptInputAttachments,
+  touchOnly, usePromptInputAttachments,
 } from "@/components/ai-elements/prompt-input";
 import type { TimelineReply } from "./message-timeline";
 import { nextComposerExpanded } from "./composer-layout";
@@ -125,7 +125,20 @@ export const DesktopComposer = memo(function DesktopComposer({
       throw error;
     }
   }, [canSend, modelProblem, expanded, onSend, setInput, setDraft, draftKey]);
-  const shellExpanded = expanded || hasAttachments || Boolean(replyTarget);
+  const readDraft = useCallback((key: string) => drafts.current.get(key) ?? "", []);
+  const followUp = useFollowUpQueue({ draftKey, status, stopPending, canSend, readDraft, setDraft, onSend });
+  const queueOnEnter = (event: ReactKeyboardEvent<HTMLTextAreaElement>) => {
+    // 生成中发送钮是停止钮，回车原本无效；桌面键盘下改为排队。附件与回复引用仍等本轮结束后手动发。
+    const native = event.nativeEvent;
+    if (event.key !== "Enter" || event.shiftKey || native.isComposing || native.keyCode === 229 || touchOnly()) return;
+    const text = input.trim();
+    if (!isGeneratingChatStatus(status) || !text || hasAttachments || replyTarget) return;
+    event.preventDefault();
+    followUp.enqueue(text);
+    setInput("");
+    setExpanded(false);
+  };
+  const shellExpanded = expanded || hasAttachments || Boolean(replyTarget) || Boolean(followUp.queued);
   // 窄屏阅读时输入卡只保留一行。用户点进卡片才展开（程序 autofocus 不算）；
   // 焦点离开整张卡（含它弹出的模型菜单）才收回。
   const [engaged, setEngaged] = useState(false);
@@ -157,6 +170,16 @@ export const DesktopComposer = memo(function DesktopComposer({
     >
       <WindowFileDrop enabled={chatReady} onActiveChange={setFileDragActive} />
       {replyTarget ? <ComposerReply author={replyTarget.author} preview={replyTarget.preview} onCancel={onCancelReply} /> : null}
+      {followUp.queued ? <div className="composer-reply composer-queued" role="status">
+        <Clock3 size={17} aria-hidden="true" />
+        <div>
+          <strong>{followUp.queued.stopped ? "已停止，结束后退回输入框" : "本轮结束后发送"}</strong>
+          <span>{followUp.queued.text}</span>
+        </div>
+        <button type="button" onClick={() => followUp.queued && followUp.restore(followUp.queued)} aria-label="撤回到输入框" title="撤回到输入框">
+          <Undo2 size={18} aria-hidden="true" />
+        </button>
+      </div> : null}
       {fileDragActive ? <div className="composer-drop-hint" aria-hidden="true">松开以添加文件</div> : null}
       <PromptInputBody>
         <ComposerAttachments onPresenceChange={setHasAttachments} />
@@ -166,6 +189,7 @@ export const DesktopComposer = memo(function DesktopComposer({
           className="composer__textarea !min-h-0"
           value={input}
           onChange={onInputChange}
+          onKeyDown={queueOnEnter}
           aria-label="消息"
           aria-describedby={modelProblem ? "chat-model-reason" : undefined}
           disabled={!chatReady}
@@ -196,7 +220,7 @@ export const DesktopComposer = memo(function DesktopComposer({
         </PromptInputTools>
         <PromptInputTools className="composer__trail">
           <ComposerAttachmentButton />
-          <ComposerSubmit input={input} status={status} stopPending={stopPending} onStop={onStop} disabled={!canSend} />
+          <ComposerSubmit input={input} status={status} stopPending={stopPending} onStop={() => { followUp.markStopped(); onStop(); }} disabled={!canSend} />
         </PromptInputTools>
       </PromptInputFooter>
     </PromptInput>
@@ -206,6 +230,52 @@ export const DesktopComposer = memo(function DesktopComposer({
 
 // 读回复时直接打字就进入输入框：焦点不在任何可编辑处、也没有浮层时，把这次按键的焦点交给输入框，
 // 字符随按键的默认动作落进去。触屏设备没有这种输入方式，不挂监听。
+interface QueuedFollowUp {
+  key: string;
+  text: string;
+  /** 排队时或之后用户按过停止：本轮结束后退回草稿，不自动发送。 */
+  stopped: boolean;
+}
+
+// 生成中按回车把文字排进本轮之后；本轮正常落定再发出，停止、出错或切走会话则退回草稿。
+function useFollowUpQueue({ draftKey, status, stopPending, canSend, readDraft, setDraft, onSend }: {
+  draftKey: string;
+  status: ChatStatus;
+  stopPending: boolean;
+  canSend: boolean;
+  readDraft: (key: string) => string;
+  setDraft: (key: string, text: string) => void;
+  onSend: (text: string, files: ComposerFile[]) => Promise<string | undefined>;
+}) {
+  const [queued, setQueued] = useState<QueuedFollowUp | null>(null);
+  const restore = useCallback((item: QueuedFollowUp) => {
+    setQueued(null);
+    setDraft(item.key, [item.text, readDraft(item.key)].filter(Boolean).join("\n\n"));
+  }, [readDraft, setDraft]);
+  const enqueue = useCallback((text: string) => setQueued((current) => ({
+    key: draftKey,
+    text: current ? `${current.text}\n\n${text}` : text,
+    stopped: Boolean(current?.stopped) || stopPending,
+  })), [draftKey, stopPending]);
+
+  // 用户按停止是在表达"这轮不要了"，排队内容随之改为退回。
+  const markStopped = useCallback(() => setQueued((current) => current && { ...current, stopped: true }), []);
+
+  // 必要 effect：本轮何时落定由传输层决定，这里把这一外部状态变化同步成发送或退回
+  useEffect(() => {
+    if (!queued) return;
+    // 1. 切走会话：排队内容回到原会话草稿。
+    if (queued.key !== draftKey) return restore(queued);
+    if (isGeneratingChatStatus(status) || status === "finalizing") return;
+    // 2. 用户停止、本轮出错或暂不可发：不替用户做决定。
+    if (queued.stopped || status === "error" || !canSend) return restore(queued);
+    // 3. 正常落定：发出；失败同样退回草稿。
+    setQueued(null);
+    onSend(queued.text, []).catch(() => restore(queued));
+  }, [queued, draftKey, status, canSend, onSend, restore]);
+  return { queued, enqueue, restore, markStopped };
+}
+
 function useTypeToCompose(textareaRef: { current: HTMLTextAreaElement | null }, enabled: boolean) {
   useEffect(() => {
     if (!enabled || !window.matchMedia("(hover: hover) and (pointer: fine)").matches) return;

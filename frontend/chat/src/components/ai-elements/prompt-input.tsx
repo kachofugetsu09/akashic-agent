@@ -247,7 +247,7 @@ export type PromptInputTextareaProps = ComponentProps<
 >;
 
 // 外接键盘的平板会报告精细指针或悬停能力，此时仍按回车发送。
-const touchOnly = () => window.matchMedia("(hover: none) and (pointer: coarse)").matches;
+export const touchOnly = () => window.matchMedia("(hover: none) and (pointer: coarse)").matches;
 
 export const PromptInputTextarea = ({
   onKeyDown,
