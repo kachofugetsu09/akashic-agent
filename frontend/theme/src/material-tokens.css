@@ -11,9 +11,9 @@
 
 :root {
   /* Akashic owns these Material 3 system values; components only consume them. */
-  /* 英文使用 Source Serif 4，中文由 Noto Serif SC 承接。 */
-  --md-ref-typeface-brand: "Source Serif 4", "Noto Serif SC", "Source Han Serif SC", "Noto Serif CJK SC", "Songti SC", Georgia, serif;
-  --md-ref-typeface-plain: "Source Serif 4", "Noto Serif SC", "Source Han Serif SC", "Noto Serif CJK SC", "Songti SC", Georgia, serif;
+  /* 英文使用 Source Serif 4，中文由 Noto Serif SC 承接；Fallback 面孔是度量匹配的 swap 期回退。 */
+  --md-ref-typeface-brand: "Source Serif 4", "Source Serif 4 Fallback", "Noto Serif SC", "Source Han Serif SC", "Noto Serif CJK SC", "Songti SC", Georgia, serif;
+  --md-ref-typeface-plain: "Source Serif 4", "Source Serif 4 Fallback", "Noto Serif SC", "Source Han Serif SC", "Noto Serif CJK SC", "Songti SC", Georgia, serif;
   --md-ref-typeface-mono: "JetBrains Mono", "SF Mono", "Fira Code", Consolas, Monaco, monospace;
 
   --md-sys-typescale-display-large-font: var(--md-ref-typeface-brand);
