@@ -71,6 +71,7 @@ jobs:
           PYTHONWARNINGS: "ignore:.*AbstractEventLoopPolicy.*:DeprecationWarning"
         run: |
           .venv/bin/pytest -q tests/
+          .venv/bin/python scripts/runtime_diagnostics_scenario.py
 
       - name: Run frontend typecheck
         run: npm run typecheck
