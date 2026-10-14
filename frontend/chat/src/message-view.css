@@ -751,9 +751,12 @@
   box-shadow: inset 0 -1px 0 color-mix(in oklch, var(--ak-color-text-primary) 7%, transparent);
 }
 
-.process-trigger:hover,
 .process-trigger:active {
   color: var(--ak-color-status-trace);
+}
+
+@media (hover: hover) {
+  .process-trigger:hover { color: var(--ak-color-status-trace); }
 }
 
 .process-trigger .process-chevron {
@@ -868,9 +871,12 @@
   cursor: default;
 }
 
-button.tool-step-summary:hover {
-  color: color-mix(in oklch, var(--ak-color-text-primary) 72%, transparent);
-  background: color-mix(in oklch, var(--ak-ink-primary) 5%, transparent);
+/* 触屏的 :hover 会粘在最后点过的行上，悬停底色只给真正能悬停的指针。 */
+@media (hover: hover) {
+  button.tool-step-summary:hover {
+    color: color-mix(in oklch, var(--ak-color-text-primary) 72%, transparent);
+    background: color-mix(in oklch, var(--ak-ink-primary) 5%, transparent);
+  }
 }
 
 button.tool-step-summary:active {
@@ -967,7 +973,8 @@ button.tool-step-summary:active {
 
 /* 展开的工具行吸在消息列表顶部，读到哪都能收起；嵌在工具组里的行让出一行组标题的高度。
    行高在展开时固定，嵌套偏移才能直接用变量计算。button 上 sticky 在部分内核不生效，吸附放在外包 div。 */
-.process-trace {
+.process-trace,
+.turn-process {
   --tool-sticky-h: 28px;
 }
 
@@ -995,7 +1002,8 @@ button.tool-step-summary:active {
 }
 
 @media (pointer: coarse) {
-  .process-trace {
+  .process-trace,
+  .turn-process {
     --tool-sticky-h: 44px;
   }
 }
