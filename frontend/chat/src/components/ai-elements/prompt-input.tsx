@@ -269,7 +269,8 @@ export const PromptInputTextarea = ({
       }
 
       if (e.key === "Enter") {
-        if (isComposing || e.nativeEvent.isComposing) {
+        // Safari 在 compositionend 之后才派发确认候选词的回车，isComposing 已为 false，只剩 keyCode 229 可辨认。
+        if (isComposing || e.nativeEvent.isComposing || e.nativeEvent.keyCode === 229) {
           return;
         }
         // 纯触屏（无悬停、粗指针）上回车换行，发送交给按钮；与移动端聊天应用的手感一致。

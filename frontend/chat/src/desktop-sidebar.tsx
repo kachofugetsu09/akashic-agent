@@ -419,7 +419,7 @@ export const DesktopSidebar = memo(function DesktopSidebar({
             value={query}
             onChange={(event) => setQuery(event.target.value)}
             onKeyDown={(event) => {
-              if (event.nativeEvent.isComposing) return;
+              if (event.nativeEvent.isComposing || event.nativeEvent.keyCode === 229) return;
               // 1. Esc 先清空，再按一次把焦点还给页面。
               if (event.key === "Escape") {
                 if (query) setQuery("");
