@@ -483,6 +483,24 @@ input {
   overscroll-behavior: contain;
 }
 
+/* 会话列表滚动时边缘 24px 渐隐，不再被分隔线硬切；在顶端时上沿清晰，到底时下沿清晰。
+   用滚动驱动动画驱动两个自定义属性，不挂 JS；不支持时保持无渐隐。 */
+@property --nav-fade-top { syntax: "<length>"; inherits: false; initial-value: 0px; }
+@property --nav-fade-bottom { syntax: "<length>"; inherits: false; initial-value: 0px; }
+
+@supports (animation-timeline: scroll()) {
+  .chat-sidebar__navigation {
+    mask-image: linear-gradient(to bottom, transparent, #000 var(--nav-fade-top),
+      #000 calc(100% - var(--nav-fade-bottom)), transparent);
+    animation: nav-fade-top linear both, nav-fade-bottom linear both;
+    animation-timeline: scroll(self), scroll(self);
+    animation-range: 0 24px, calc(100% - 24px) 100%;
+  }
+}
+
+@keyframes nav-fade-top { from { --nav-fade-top: 0px; } to { --nav-fade-top: 24px; } }
+@keyframes nav-fade-bottom { from { --nav-fade-bottom: 24px; } to { --nav-fade-bottom: 0px; } }
+
 .chat-sidebar__navigation .conversation-navigation {
   height: auto;
   overflow: visible;
