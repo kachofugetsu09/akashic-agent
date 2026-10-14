@@ -26,9 +26,14 @@ _MAX_SERVERS = 4
 # 常驻 zsh：source 快照一次，之后每条命令 fork 成独立进程组（pid == pgid）。
 # monitor 只需要 SHTTY：stdin 是一个不作控制终端的 pty，后台任务因此各自建组，
 # 又因为没有控制终端，命令打开 /dev/tty 仍和今天一样直接失败。
+# server 退出（EOF、宿主被杀）不能向在飞 job 发 SIGHUP：与每命令 start_new_session 的存活语义一致；
+# 不用 disown，server 仍需 wait 回传状态。用户自己的 hup/checkjobs/bgnice 在 job 内还原。
 _SERVER_SCRIPT = r"""
+_ak_restore=:
+for _ak_o in hup checkjobs bgnice; do [[ -o $_ak_o ]] && _ak_restore+="; builtin setopt $_ak_o"; done
+builtin unset _ak_o
 builtin setopt monitor 2>/dev/null || builtin exit 97
-builtin unsetopt bg_nice
+builtin setopt no_hup no_check_jobs no_bg_nice
 _ak_reply() { emulate -L zsh; builtin print -ru$_ak_out -- "$*" }
 _ak_next() {
   emulate -L zsh
@@ -57,7 +62,7 @@ _ak_reply ready
 while IFS= builtin read -ru$_ak_in _ak_line; do
   _ak_next "$_ak_line" || continue
   _ak_prev=$!
-  { _ak_job; builtin eval "builtin unset _ak _ak_cmd _ak_id _ak_line _ak_prev _ak_in _ak_out _ak_dir; builtin unfunction _ak_reply _ak_next _ak_job; $_ak_cmd" } </dev/null >|$_ak_dir/$_ak_id.out 2>&1 &
+  { _ak_job; builtin eval "$_ak_restore; builtin unset _ak _ak_cmd _ak_id _ak_line _ak_prev _ak_in _ak_out _ak_dir _ak_restore; builtin unfunction _ak_reply _ak_next _ak_job; $_ak_cmd" } </dev/null >|$_ak_dir/$_ak_id.out 2>&1 &
   if [[ $! == $_ak_prev ]]; then _ak_reply fail $_ak_id; else _ak_reply ack $_ak_id $!; fi
 done
 """
