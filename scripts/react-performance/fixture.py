@@ -184,24 +184,22 @@ async def run(mode, count, full_history=False):
     decoded_messages = [0]
     import plugins.ledger.log as message_log
 
-    original_decode = message_log._message
+    originals = {}
 
     def decode(row):
-        result = original_decode(row)
+        result = originals["decode"](row)
         if ACTIVE:
             decoded_messages[0] += 1
         return result
 
-    original_snapshot = MessageReader.snapshot
-    original_write = MessageLog._write
     from plugins.models.store import ModelsStore
 
     created_stores = []
-    original_init = ModelsStore.__init__
 
     def store_init(store, *args, **kwargs):
-        original_init(store, *args, **kwargs)
-        created_stores.append(store)
+        originals["store_init"][type(store)](store, *args, **kwargs)
+        if all(store is not existing for existing in created_stores):
+            created_stores.append(store)
 
     original_thread = asyncio.to_thread
     threads_idle = asyncio.Event()
@@ -221,17 +219,16 @@ async def run(mode, count, full_history=False):
             if thread_jobs == 0:
                 threads_idle.set()
 
-    original_append = MessageWriter._append
     writes = threading.local()
 
-    def append(writer, *args, **kwargs):
-        result = original_append(writer, *args, **kwargs)
+    def insert(writer, *args, **kwargs):
+        result = originals["insert"][type(writer)](writer, *args, **kwargs)
         writes.pending.append(result)
         return result
 
     def snapshot(reader, **kwargs):
         start = time.perf_counter()
-        result = original_snapshot(reader, **kwargs)
+        result = originals["snapshot"](reader, **kwargs)
         if ACTIVE:
             frame = sys._getframe(1)
             key = f"{Path(frame.f_code.co_filename).parent.name}/{Path(frame.f_code.co_filename).name}:{frame.f_code.co_name}"
@@ -244,7 +241,7 @@ async def run(mode, count, full_history=False):
     def write(log, callback):
         writes.pending = []
         try:
-            result = original_write(log, callback)
+            result = originals["write"](log, callback)
         except BaseException:
             writes.pending = []
             raise
@@ -260,20 +257,62 @@ async def run(mode, count, full_history=False):
 
     from contextlib import ExitStack
 
+    def runtime_module(tmp_root, suffix):
+        """正式运行时从安装副本加载模块；monkeypatch 必须落在运行时模块对象上。"""
+        for module in list(sys.modules.values()):
+            file = getattr(module, "__file__", None)
+            if file and file.endswith("/plugins/" + suffix) and str(tmp_root) in file:
+                return module
+        return None
+
+    def instrument(tmp_root):
+        ledger_module = runtime_module(tmp_root, "ledger/log.py")
+        if ledger_module is None:
+            raise RuntimeError("运行时模块未加载: ledger/log.py")
+        originals["decode"] = ledger_module._message
+        originals["snapshot"] = ledger_module.MessageReader.snapshot
+        originals["write"] = ledger_module.MessageLog._write
+        originals["insert"] = {
+            message_log.MessageWriter: message_log.MessageWriter._insert,
+            ledger_module.MessageWriter: ledger_module.MessageWriter._insert,
+        }
+        originals["store_init"] = {ModelsStore: ModelsStore.__init__}
+        patches.enter_context(patch.object(ledger_module, "_message", decode))
+        patches.enter_context(
+            patch.object(ledger_module.MessageReader, "snapshot", snapshot)
+        )
+        patches.enter_context(patch.object(ledger_module.MessageLog, "_write", write))
+        patches.enter_context(
+            patch.object(ledger_module.MessageWriter, "_insert", insert)
+        )
+        patches.enter_context(patch.object(message_log.MessageLog, "_write", write))
+        patches.enter_context(
+            patch.object(message_log.MessageWriter, "_insert", insert)
+        )
+        patches.enter_context(patch.object(message_log, "_message", decode))
+        patches.enter_context(patch.object(MessageReader, "snapshot", snapshot))
+        models_module = runtime_module(tmp_root, "models/store.py")
+        if models_module is not None:
+            originals["store_init"][models_module.ModelsStore] = (
+                models_module.ModelsStore.__init__
+            )
+            patches.enter_context(
+                patch.object(models_module.ModelsStore, "__init__", store_init)
+            )
+
     with (
         ExitStack() as patches,
         tempfile.TemporaryDirectory(prefix="akashic-flow-perf-") as directory,
     ):
         patches.enter_context(patch.object(asyncio, "to_thread", to_thread))
-        patches.enter_context(patch.object(MessageReader, "snapshot", snapshot))
-        patches.enter_context(patch.object(message_log, "_message", decode))
+        # ModelsStore 在 load_all 期间经仓库模块创建，须在进入 application 前打点。
+        originals["store_init"] = {ModelsStore: ModelsStore.__init__}
         patches.enter_context(patch.object(ModelsStore, "__init__", store_init))
-        patches.enter_context(patch.object(MessageLog, "_write", write))
-        patches.enter_context(patch.object(MessageWriter, "_append", append))
         path = Path(directory)
         async with application(
             path, replying=True, extra_sources=extras(mode)
         ) as (log, host):
+            instrument(path)
             model_store = model_descriptor = None
             if full_history:
                 from plugins.models.contract import CHAT_MODELS

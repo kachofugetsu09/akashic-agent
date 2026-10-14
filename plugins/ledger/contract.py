@@ -30,6 +30,9 @@ def freeze_metadata(value: Mapping[str, object]) -> Mapping[str, object]:
     if not isinstance(value, Mapping):
         raise TypeError("消息 metadata 必须是 JSON 对象")
     frozen = cast(Mapping[str, object], freeze_json(value))
+    if not frozen:
+        # 空对象没有命名空间和字节预算问题；大多数消息走这条快路径。
+        return frozen
     if any(not key for key in frozen):
         raise ValueError("消息 metadata 命名空间不能为空")
     # JSON 编码同时固定字节预算；不按 Python 对象大小或字符数计算。

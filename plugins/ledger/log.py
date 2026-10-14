@@ -62,7 +62,9 @@ MESSAGE_SOURCE_INDEX_SCHEMA = """CREATE INDEX IF NOT EXISTS message_source_seq
 # 小行强缓存：每轮重复读取的近期消息不再依赖调用者持有引用；上界约 512×8KB。
 _DECODE_STRONG_LIMIT = 512
 _DECODE_STRONG_BODY = 8192
-_ATTACHMENT_MEMO_SIZE = 8192
+# 附件引用备忘：长会话一次材料准备就引用全部历史 id，容量小于历史时
+# FIFO 必抖穿且每轮重查；值多为共享空元组，32768 条约占几 MB。
+_ATTACHMENT_MEMO_SIZE = 32768
 MESSAGE_BODY_KIND_INDEX_SCHEMA = """CREATE INDEX IF NOT EXISTS message_source_kind_seq
     ON messages (session_key, source, json_extract(body, '$.kind'), seq,
                  json_extract(body, '$.finish'));"""
@@ -496,7 +498,7 @@ class MessageLog:
         return self._writer_lock if read is None else read.lock
 
     def _decode(self, row: sqlite3.Row) -> Message:
-        """查询仍读真实行；小行另有有界强缓存，大行只复用仍被持有的不可变消息。"""
+        """查询仍读真实行；解码结果先进弱引用共享，小行另有有界强缓存。"""
         key = tuple(row)
         # 独立只读连接共享解码结果；此短锁不等待 writer 的事务或磁盘操作。
         with self._decode_lock:
@@ -506,12 +508,11 @@ class MessageLog:
         if message is None:
             message = _message(row)
             with self._decode_lock:
+                self._decoded[key] = message
                 if len(row["body"]) <= _DECODE_STRONG_BODY:
                     if len(self._decoded_strong) >= _DECODE_STRONG_LIMIT:
                         self._decoded_strong.pop(next(iter(self._decoded_strong)))
                     self._decoded_strong[key] = message
-                else:
-                    self._decoded[key] = message
         return message
 
     def backup(self, destination: Path) -> None:
@@ -1198,9 +1199,9 @@ class MessageReader:
     async def committed_snapshot_async(self, *, through_seq: int | None = None) -> MessageSnapshot:
         """在线程内签发一次固定读面；取消先排空实际读取。"""
         self._check_async_snapshot()
-        # 热前缀只差几条尾部时，WAL 只读查询不等待 writer，直接在调用线程完成，省掉线程往返。
-        if self._log.warm_prefix(self._session_id):
-            return self.committed_snapshot(through_seq=through_seq)
+        # 热前缀只证明「本地 head 距前缀尾部不超过若干条」，不验证数据库 revision；外部
+        # 改写旧行后仍会在新 revision 上重读整段历史。签发一律留在可排空 worker 内，
+        # 否则失效重读会把历史级扫描放回事件循环。
         return await run_file_io(lambda: self.committed_snapshot(through_seq=through_seq))
 
     def _check_async_snapshot(self) -> None:
@@ -1413,7 +1414,7 @@ class MessageReader:
             def messages() -> Generator[Message, None, None]:
                 cursor = after_seq
                 while cursor < head:
-                    page = self.read(after_seq=cursor, through_seq=head, source=source, limit=64)
+                    page = self.read(after_seq=cursor, through_seq=head, source=source, limit=256)
                     if not page:
                         break
                     yield from page
@@ -1496,8 +1497,16 @@ class MessageReader:
             return ()
         log = self._log
         memo = log._attachment_memo
+        identities = tuple(dict.fromkeys(message_ids))
+        # 本次调用的结果由局部映射持有：共享 memo 只作优化，其他 Session 的大批量
+        # 写入可以在锁外淘汰任何条目，所以返回路径不能再依赖它。
+        resolved: dict[str, tuple[AttachmentRef, ...]] = {}
         with log._decode_lock:
-            missing = tuple(dict.fromkeys(mid for mid in message_ids if mid not in memo))
+            for identity in identities:
+                cached = memo.get(identity)
+                if cached is not None:
+                    resolved[identity] = cached
+        missing = tuple(identity for identity in identities if identity not in resolved)
         if missing:
             with log._read():
                 rows = log._connection.execute(
@@ -1516,13 +1525,15 @@ class MessageReader:
                     items.append(_artifact_ref(row))
             if refs.keys() != set(missing):
                 raise LookupError("消息不在 reader 获授的 Session 中")
+            for identity in missing:
+                resolved[identity] = tuple(refs[identity])
+            # 回填与容量维护仍在锁内，但淘汰不再影响本次返回结果。
             with log._decode_lock:
                 for identity in missing:
-                    memo[identity] = tuple(refs[identity])
+                    memo[identity] = resolved[identity]
                 while len(memo) > _ATTACHMENT_MEMO_SIZE:
                     _ = memo.pop(next(iter(memo)))
-        with log._decode_lock:
-            return tuple(ref for identity in message_ids for ref in memo[identity])
+        return tuple(ref for identity in message_ids for ref in resolved[identity])
 
     def head(self, *, source: str | None = None) -> int:
         sql = "SELECT COALESCE(MAX(seq), -1) FROM messages WHERE session_key=?"
@@ -2290,6 +2301,9 @@ class OwnerTransaction:
         return self._perform(lambda: prepared._append(expected_source_head)[0])
 
 
+_EMPTY_JSON_OBJECT = freeze_json({})
+
+
 def _json_object(raw: str, label: str) -> Mapping[str, object]:
     """持久 JSON 对象在读取边界校验并深冻结，错误带所属记录。"""
     def fields(pairs: list[tuple[str, object]]) -> dict[str, object]:
@@ -2300,6 +2314,9 @@ def _json_object(raw: str, label: str) -> Mapping[str, object]:
     try:
         if not isinstance(raw, str):
             raise ValueError("JSON 原文必须是文本")
+        if raw == "{}":
+            # 持久空对象是规范形式；共享同一份深冻结空映射，不重复解析。
+            return cast(Mapping[str, object], _EMPTY_JSON_OBJECT)
         value = freeze_json(json.loads(raw, object_pairs_hook=fields))
         if not isinstance(value, Mapping):
             raise ValueError("必须是 JSON 对象")

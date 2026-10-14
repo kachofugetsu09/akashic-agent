@@ -84,15 +84,33 @@ async def run_commands(ctx: Context, task: Task, reader: MessageReader, source: 
     state = ctx.require(OWNER_STATE).open(ctx)
     registry = ctx.require(COMMANDS).freeze()
     check_source(task, reader, source, task.boundary_hint)
-    snapshot = await reader.read_async(lambda snapshot: snapshot.snapshot())
+
+    def narrow(reader: MessageReader) -> tuple[int, Message | None, int]:
+        """命令判定只需要来源 head、最新 Input 与放弃边界，不解码全量历史。"""
+        head = reader.head(source=source)
+        latest = reader.latest_input(source, through_seq=head)
+        abandoned = reader.scan_controls(
+            lambda rows: max(
+                (body.through_seq for _, body in rows if body.action == "abandon"),
+                default=-1,
+            ),
+            source=source, after_seq=-1, through_seq=head,
+        )
+        return head, latest, abandoned
+
+    source_head, latest, abandoned_through = await reader.read_async(narrow)
     check_source(task, reader, source, task.boundary_hint)
-    source_head = max((message.seq for message in snapshot if message.source == source), default=-1)
-    inputs = [m for m in snapshot if m.source == source and isinstance(m.body, Input)]
-    abandoned_through = max((m.body.through_seq for m in snapshot
-                             if m.source == source and isinstance(m.body, Control)
-                             and m.body.action == "abandon"), default=-1)
-    input_positions = {message.message_id: message.seq for message in inputs}
-    latest = inputs[-1]
+    intent_positions: dict[str, int] = {}
+
+    def position(input_id: str) -> int:
+        if input_id not in intent_positions:
+            message = reader.get(input_id)
+            if message is None or message.source != source or not isinstance(message.body, Input):
+                raise KeyError(input_id)
+            intent_positions[input_id] = message.seq
+        return intent_positions[input_id]
+
+    assert latest is not None
     intents: list[tuple[CommandIntent, bool]] = []
     selected: CommandIntent | None = None
     for key, row in state.list():
@@ -104,7 +122,7 @@ async def run_commands(ctx: Context, task: Task, reader: MessageReader, source: 
         if (intent.session_id, intent.source) != (reader.session_id, source):
             continue
         # 放弃停止后续命令调用；原 intent 与领域 receipt 保留，不能伪称效果已回滚。
-        if input_positions[intent.input_id] <= abandoned_through:
+        if position(intent.input_id) <= abandoned_through:
             continue
         if intent.input_id == latest.message_id:
             selected = intent
@@ -131,11 +149,8 @@ async def run_commands(ctx: Context, task: Task, reader: MessageReader, source: 
 
     if not intents:
         return None if selected is None else reader.get(selected.output_id)
-    positions = await reader.read_async(lambda snapshot: snapshot.scan(
-        lambda rows: {message.message_id: message.seq for message in rows},
-    ))
     check_source(task, reader, source, source_head)
-    intents.sort(key=lambda item: positions[item[0].input_id])
+    intents.sort(key=lambda item: position(item[0].input_id))
 
     # 2. handler 执行前后核对来源权限；中断后的副作用只能由领域回执确认。
     writer = ctx.require(MESSAGE_WRITERS).bind(

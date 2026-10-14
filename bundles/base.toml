@@ -16,6 +16,9 @@ plugin = "gateway@release"
 [rows."host_execution"]
 plugin = "host_execution@release"
 
+[rows."runtime_diagnostics"]
+plugin = "runtime_diagnostics@release"
+
 [rows."workloads"]
 plugin = "workloads@release"
 

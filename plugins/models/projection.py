@@ -8,6 +8,7 @@ from itertools import chain
 from typing import Any, cast
 
 from agent.plugin_composition import ServiceKey
+from core.common.frozen_json import freeze_json
 from plugins.ledger.contract import MessageSnapshot
 from plugins.models.contract import (
     LLMResponse,
@@ -487,9 +488,13 @@ class MessageProjection:
                 changed_content = True
             else:
                 blocks = tuple(self._render_content(part))
-                rendered = RenderedContent(blocks, complete=(
-                    part.kind == "text" and blocks == ({"type": "text", "text": part.value},)
-                ))
+                complete = (
+                    part.kind == "text" and len(blocks) == 1
+                    and len(blocks[0]) == 2
+                    and blocks[0].get("type") == "text"
+                    and blocks[0].get("text") == part.value
+                )
+                rendered = RenderedContent(blocks, complete=complete)
             if rendered.blocks and rendered.complete:
                 out_refs.append((message.message_id, index))
             return rendered.blocks
@@ -632,7 +637,8 @@ class MessageProjection:
             msg_rows = [prior[i] if i < len(prior) and _same_json(row, prior[i]) else row
                         for i, row in enumerate(msg_rows)]
         return _RenderedMessage(
-            message, position, reminder, tuple(ModelRequest(messages=msg_rows).messages),
+            message, position, reminder,
+            cast(tuple[Mapping[str, Any], ...], freeze_json(msg_rows)),
             tuple(msg_refs), tuple(msg_used), changed_content, dynamic,
         )
 
@@ -643,7 +649,7 @@ class MessageProjection:
         inherited: Mapping[str, tuple[Message, Mapping[str, Any] | None]],
     ) -> None:
         """预扫描的全量形式；与原逐轮三趟扫描逐行等价。"""
-        # 放弃只撤销未结束前缀的执行协议；可读正文仍属于聊天历史。
+        # 放弃结算与 meta/facts 互不依赖，同一趟完成；调用账仍需在 main 之前取齐。
         pending: dict[str, list[Message]] = {}
         for message in messages:
             body = message.body
@@ -664,7 +670,6 @@ class MessageProjection:
                             if isinstance(part, ToolCall)
                         )
                 pending[message.source] = [output for output in outputs if output.seq > body.through_seq]
-        for message in messages:
             self._fold_meta(fold, message)
             self._fold_facts(fold, message, inherited)
         # 调用账 owner 批量读取窄字段；插件自带 reader 保持原调用合同。

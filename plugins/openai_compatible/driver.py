@@ -120,6 +120,7 @@ class _BoundChat:
         self._config = config
         self._http = http
         self._message_sizes: dict[int, tuple[Mapping[str, Any], int, int]] = {}
+        self._message_size_totals: tuple[tuple[int, ...], int, int] | None = None
         self._tool_size: tuple[object, int] | None = None
         # 原冻结行只编译一次；图片发射位置仍由本轮工具配对决定。
         self._chat_rows: dict[int, _ChatRow] = {}
@@ -257,19 +258,36 @@ class _BoundChat:
         messages: Sequence[Mapping[str, Any]],
     ) -> int:
         """仅复用同一个深冻结消息的长度；动态内容和普通可变输入重新计算。"""
-        sizes: dict[int, tuple[Mapping[str, Any], int, int]] = {}
-        text_chars = image_tokens = 0
+        previous = self._message_sizes
+        frozen_rows: list[Mapping[str, Any]] = []
+        frozen_ids: list[int] = []
         for message in messages:
             frozen = cast(Mapping[str, Any], freeze_json(message))
-            saved = self._message_sizes.get(id(frozen))
+            frozen_rows.append(frozen)
+            frozen_ids.append(id(frozen))
+        sizes: dict[int, tuple[Mapping[str, Any], int, int]] = {}
+        for frozen, identity in zip(frozen_rows, frozen_ids):
+            saved = previous.get(identity)
             if saved is None or saved[0] is not frozen:
                 chars, images = _message_size(frozen)
                 saved = (frozen, chars, images)
-            sizes[id(frozen)] = saved
+            sizes[identity] = saved
+        # 窗口只追加时合计只算尾部；前缀身份逐位一致才能沿用旧合计。
+        text_chars = image_tokens = start = 0
+        totals = self._message_size_totals
+        if totals is not None:
+            old_ids, text_chars, image_tokens = totals
+            if len(old_ids) <= len(frozen_ids) and old_ids == tuple(frozen_ids[:len(old_ids)]):
+                start = len(old_ids)
+            else:
+                text_chars = image_tokens = 0
+        for identity in frozen_ids[start:]:
+            saved = sizes[identity]
             text_chars += saved[1]
             image_tokens += saved[2]
         # 只保留本次输入，切窗或结束 scope 后不保留被排除的历史。
         self._message_sizes = sizes
+        self._message_size_totals = (tuple(frozen_ids), text_chars, image_tokens)
         return max(1, text_chars // 3 + image_tokens) if messages else 0
 
 

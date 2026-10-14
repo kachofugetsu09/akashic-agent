@@ -468,7 +468,18 @@ async def shell_cleanup(
             yield
         finally:
             # 1. 放弃后到达的新输入与调用不属于旧程序的清理范围。
-            messages = reader.snapshot()
+            # 调用与放弃判定只涉及 from_seq 起的前缀；更早历史只贡献最后一个
+            # abandon Control 的 owner 分区，逐个点查 Control 即可，不做全量快照。
+            messages = reader.snapshot(after_seq=from_seq - 1)
+            through = from_seq - 1
+            while through >= 0:
+                control = reader.latest_control(source, through_seq=through)
+                if control is None:
+                    break
+                if control.body.action == "abandon":
+                    messages = (control, *messages)
+                    break
+                through = control.seq - 1
             abandoned = next((message for message in messages
                               if message.source == source and isinstance(message.body, Control)
                               and message.body.action == "abandon" and message.body.through_seq >= from_seq), None)
