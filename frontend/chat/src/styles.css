@@ -2406,6 +2406,90 @@ form.composer:focus-within [data-slot="input-group"] {
   translate: 0 1px;
 }
 
+/* 提问目录：只在右侧留白放得下刻度的宽屏指针设备上出现（阅读列偏左，右侧留白 ≥ 70px）。
+   收起时是每轮一道 2px 刻度，当前一轮更长更深；悬停或键盘聚焦展开为提问列表，浮在正文上。 */
+.turn-rail { display: none; }
+
+@media (hover: hover) and (pointer: fine) and (min-width: 1200px) {
+  .turn-rail {
+    position: absolute;
+    inset-inline-end: 12px;
+    top: 50%;
+    z-index: 6;
+    display: flex;
+    translate: 0 -50%;
+  }
+
+  .turn-rail__ticks {
+    display: flex;
+    max-height: 60vh;
+    flex-direction: column;
+    align-items: flex-end;
+    gap: 7px;
+    padding: 8px 4px;
+    overflow: hidden;
+    transition: opacity var(--ak-sys-duration-short) var(--ak-sys-motion-standard);
+  }
+
+  .turn-rail__ticks i {
+    flex: none;
+    width: 12px;
+    height: 2px;
+    border-radius: 1px;
+    background: color-mix(in srgb, var(--ak-ink-muted) 35%, transparent);
+  }
+
+  .turn-rail:hover .turn-rail__ticks i { background: color-mix(in srgb, var(--ak-ink-muted) 60%, transparent); }
+  .turn-rail__ticks i[data-active],
+  .turn-rail:hover .turn-rail__ticks i[data-active] { width: 18px; background: color-mix(in srgb, var(--ak-ink-primary) 70%, transparent); }
+
+  .turn-rail__list {
+    position: absolute;
+    inset-inline-end: 0;
+    top: 50%;
+    width: 18rem;
+    max-height: min(60vh, 30rem);
+    margin: 0;
+    padding: 6px;
+    overflow-y: auto;
+    overscroll-behavior: contain;
+    list-style: none;
+    border: 1px solid var(--ak-rule-default);
+    border-radius: 12px;
+    background: var(--ak-paper-raised);
+    box-shadow: 0 6px 24px color-mix(in oklch, var(--ak-ink-primary) 12%, transparent);
+    opacity: 0;
+    pointer-events: none;
+    translate: 0 -50%;
+    transition: opacity var(--ak-sys-duration-short) var(--ak-sys-motion-standard);
+  }
+
+  .turn-rail[data-open] .turn-rail__list { opacity: 1; pointer-events: auto; }
+  .turn-rail[data-open] .turn-rail__ticks { opacity: 0; }
+
+  .turn-rail__list button {
+    display: block;
+    width: 100%;
+    height: 32px;
+    padding-inline: 10px;
+    overflow: hidden;
+    border: 0;
+    border-radius: 8px;
+    color: var(--ak-color-text-secondary);
+    background: none;
+    font: inherit;
+    font-size: 0.8125rem;
+    text-align: start;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    cursor: pointer;
+  }
+
+  .turn-rail__list button:hover { color: var(--ak-ink-primary); background: var(--ak-paper-quiet); }
+  .turn-rail__list button[aria-current] { color: var(--ak-ink-primary); font-weight: 600; }
+  .turn-rail__list button:focus-visible { outline: 2px solid var(--ak-rule-focus); outline-offset: -2px; }
+}
+
 /* 返回按钮浮在正文上：纸色实底与轻阴影，不和下面的文字混在一起。 */
 .reading-return {
   position: absolute;

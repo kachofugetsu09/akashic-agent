@@ -9,7 +9,7 @@ import {
   ConversationEmptyState,
 } from "@/components/ai-elements/conversation";
 import { HostBridgeNotice } from "./host-bridge-notice";
-import { DesktopAutoScroll, NarrowReadingChrome, ReadingReturnButton } from "./desktop-auto-scroll";
+import { DesktopAutoScroll, NarrowReadingChrome, ReadingReturnButton, TurnRail } from "./desktop-auto-scroll";
 import { ComposerStatsLine } from "./composer-stats-line";
 import { ThinkingPlaceholder } from "./thinking-placeholder";
 import { DesktopComposer, type ComposerApi } from "./desktop-composer";
@@ -139,6 +139,7 @@ export function DesktopChatView({ embeddedShell, controller }: DesktopChatViewPr
             timelineMessages={timelineMessages} replyActivities={replyActivities} />
           <NarrowReadingChrome />
           <ReadingReturnButton generating={isGeneratingChatStatus(status)} />
+          <TurnRail revision={`${activeSessionId}:${timelineMessages.length}:${messages.length}:${timelineMessages[0]?.id ?? ""}`} />
         </Conversation>
 
         <div className={`composer-wrap ${!conversationLayout ? "home" : ""}`}>
