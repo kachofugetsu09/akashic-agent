@@ -5,23 +5,20 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0, interactive-widget=resizes-content" />
     <title>Akashic Chat</title>
     <style>
-      /* 启动壳：在 JS 下载与执行前先画出应用外形，React 首次提交时整棵替换。 */
+      /* 启动壳：在 JS 下载与执行前先画出应用外形，React 首次提交时整棵替换。
+         几何镜像真实布局（owner 在 styles.css）：侧栏 clamp(17rem,23vw,20rem) 通高、
+         标题带 52px 只盖内容列、compact composer 高 44px 体育场形、底部留白 20px、
+         阅读列 52rem 偏左 1/4；窄屏断点与真实抽屉一致取 820px。 */
       .boot-shell {
         display: grid;
-        grid-template-rows: 48px minmax(0, 1fr);
+        grid-template-columns: clamp(17rem, 23vw, 20rem) minmax(0, 1fr);
         height: 100dvh;
         background: var(--ak-paper-canvas, #faf9f6);
       }
-      .boot-shell__band {
-        border-bottom: 1px solid var(--ak-rule-subtle, #e6e2d9);
-      }
-      .boot-shell__body {
-        display: grid;
-        grid-template-columns: 14rem minmax(0, 1fr);
-        min-height: 0;
-      }
       .boot-shell__rail {
-        padding: 16px 12px;
+        display: flex;
+        flex-direction: column;
+        padding: 12px;
         background: var(--ak-paper-quiet, #f3f1ea);
         border-right: 1px solid var(--ak-rule-subtle, #e6e2d9);
       }
@@ -32,38 +29,71 @@
         background: color-mix(in srgb, var(--ak-ink-muted, #8a8578) 14%, transparent);
       }
       .boot-shell__rail-head {
-        width: 55%;
-        height: 14px;
-        margin-bottom: 18px;
+        width: 40%;
+        height: 16px;
+        margin: 12px 0 16px 10px;
+      }
+      .boot-shell__rail-search {
+        height: 36px;
+        margin-bottom: 14px;
+      }
+      .boot-shell__rail-group {
+        width: 30%;
+        height: 12px;
+        margin: 4px 0 8px 10px;
       }
       .boot-shell__rail-row {
-        height: 34px;
-        margin-bottom: 8px;
+        width: 78%;
+        height: 14px;
+        margin: 10px 0 10px 10px;
+      }
+      .boot-shell__rail-foot {
+        width: 45%;
+        height: 14px;
+        margin: 9px 0 9px 10px;
+      }
+      .boot-shell__rail-foot:first-of-type {
+        margin-top: auto;
       }
       .boot-shell__main {
         display: flex;
         flex-direction: column;
-        padding: 20px 24px;
         min-width: 0;
       }
-      .boot-shell__heading {
-        width: 9rem;
-        height: 20px;
+      .boot-shell__band {
+        flex: none;
+        height: 52px;
+        border-bottom: 1px solid var(--ak-rule-subtle, #e6e2d9);
       }
       .boot-shell__composer {
+        flex: none;
         margin-top: auto;
-        margin-bottom: 24px;
-        height: 56px;
-        border-radius: 16px;
+        margin-bottom: 20px;
+        margin-inline-start: max(24px, calc((100% - 52rem) / 4 - 4px));
+        width: min(840px, calc(100% - 48px));
+        height: 44px;
+        border-radius: 22px;
         background: var(--ak-paper-sheet, #f5f3ec);
         border: 1px solid var(--ak-rule-subtle, #e6e2d9);
       }
-      @media (max-width: 760px) {
-        .boot-shell__body {
+      @media (max-width: 820px) {
+        .boot-shell {
           grid-template-columns: minmax(0, 1fr);
         }
         .boot-shell__rail {
           display: none;
+        }
+        .boot-shell__composer {
+          margin-inline: 18px;
+          width: auto;
+        }
+      }
+      @media (max-width: 36rem) {
+        /* 手机断点真实 composer 是双行编辑卡（--composer-compact-h: 7.375rem）。 */
+        .boot-shell__composer {
+          margin-inline: 16px;
+          height: 7.375rem;
+          border-radius: 14px;
         }
       }
     </style>
@@ -71,20 +101,20 @@
   <body>
     <div id="root">
       <div class="boot-shell" role="status" aria-label="界面载入中">
-        <div class="boot-shell__band"></div>
-        <div class="boot-shell__body">
-          <aside class="boot-shell__rail">
-            <i class="boot-shell__rail-head"></i>
-            <i class="boot-shell__rail-row"></i>
-            <i class="boot-shell__rail-row"></i>
-            <i class="boot-shell__rail-row"></i>
-            <i class="boot-shell__rail-row"></i>
-          </aside>
-          <main class="boot-shell__main">
-            <i class="boot-shell__heading"></i>
-            <div class="boot-shell__composer"></div>
-          </main>
-        </div>
+        <aside class="boot-shell__rail">
+          <i class="boot-shell__rail-head"></i>
+          <i class="boot-shell__rail-search"></i>
+          <i class="boot-shell__rail-group"></i>
+          <i class="boot-shell__rail-row"></i>
+          <i class="boot-shell__rail-row"></i>
+          <i class="boot-shell__rail-row"></i>
+          <i class="boot-shell__rail-foot"></i>
+          <i class="boot-shell__rail-foot"></i>
+        </aside>
+        <main class="boot-shell__main">
+          <div class="boot-shell__band"></div>
+          <div class="boot-shell__composer"></div>
+        </main>
       </div>
     </div>
     <script type="module" src="/src/main.tsx"></script>
