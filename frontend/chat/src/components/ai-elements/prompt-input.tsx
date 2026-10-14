@@ -246,6 +246,9 @@ export type PromptInputTextareaProps = ComponentProps<
   typeof InputGroupTextarea
 >;
 
+// 外接键盘的平板会报告精细指针或悬停能力，此时仍按回车发送。
+const touchOnly = () => window.matchMedia("(hover: none) and (pointer: coarse)").matches;
+
 export const PromptInputTextarea = ({
   onKeyDown,
   className,
@@ -269,7 +272,8 @@ export const PromptInputTextarea = ({
         if (isComposing || e.nativeEvent.isComposing) {
           return;
         }
-        if (e.shiftKey) {
+        // 纯触屏（无悬停、粗指针）上回车换行，发送交给按钮；与移动端聊天应用的手感一致。
+        if (e.shiftKey || touchOnly()) {
           return;
         }
         e.preventDefault();
@@ -341,6 +345,7 @@ export const PromptInputTextarea = ({
       onKeyDown={handleKeyDown}
       onPaste={handlePaste}
       placeholder={placeholder}
+      enterKeyHint={touchOnly() ? "enter" : "send"}
       {...props}
     />
   );
