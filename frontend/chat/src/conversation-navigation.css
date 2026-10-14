@@ -51,7 +51,7 @@
   font: inherit;
   text-align: start;
   text-decoration: none;
-  transition: background-color 150ms cubic-bezier(0.2, 0, 0, 1), scale 150ms cubic-bezier(0.2, 0, 0, 1);
+  transition: background-color var(--ak-sys-duration-short) var(--ak-sys-motion-standard), scale var(--ak-sys-duration-short) var(--ak-sys-motion-standard);
 }
 
 .conversation-destination:hover,
@@ -193,7 +193,7 @@
   background: transparent;
   font: inherit;
   text-align: start;
-  transition: background-color 150ms cubic-bezier(0.2, 0, 0, 1), scale 150ms cubic-bezier(0.2, 0, 0, 1);
+  transition: background-color var(--ak-sys-duration-short) var(--ak-sys-motion-standard), scale var(--ak-sys-duration-short) var(--ak-sys-motion-standard);
 }
 
 .conversation-session:hover,
@@ -320,7 +320,7 @@
   font-weight: 500;
   line-height: 1.35;
   text-align: start;
-  transition: background-color 150ms cubic-bezier(0.2, 0, 0, 1), scale 150ms cubic-bezier(0.2, 0, 0, 1);
+  transition: background-color var(--ak-sys-duration-short) var(--ak-sys-motion-standard), scale var(--ak-sys-duration-short) var(--ak-sys-motion-standard);
 }
 
 .conversation-navigation__action:hover,

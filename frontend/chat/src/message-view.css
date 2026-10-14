@@ -542,7 +542,7 @@
   background: color-mix(in oklch, var(--ak-color-action-primary) 8%, transparent);
   font: inherit;
   text-align: start;
-  transition: background-color 150ms cubic-bezier(0.2, 0, 0, 1);
+  transition: background-color var(--ak-sys-duration-short) var(--ak-sys-motion-standard);
 }
 
 .message-reply-reference:hover,
@@ -709,7 +709,7 @@
 }
 
 .process-chevron {
-  transition: transform 180ms cubic-bezier(0.2, 0, 0, 1);
+  transition: transform var(--ak-sys-duration-short) var(--ak-sys-motion-standard);
 }
 
 .process-chevron.open {
@@ -808,7 +808,7 @@
   color: inherit;
   background: transparent;
   text-align: left;
-  transition: background-color 150ms cubic-bezier(0.2, 0, 0, 1), color 150ms cubic-bezier(0.2, 0, 0, 1), scale 150ms cubic-bezier(0.2, 0, 0, 1);
+  transition: background-color var(--ak-sys-duration-short) var(--ak-sys-motion-standard), color var(--ak-sys-duration-short) var(--ak-sys-motion-standard), scale var(--ak-sys-duration-short) var(--ak-sys-motion-standard);
 }
 
 .tool-step-summary-static {
@@ -863,7 +863,7 @@ button.tool-step-summary:active {
 }
 
 .tool-step-chevron {
-  transition: transform 180ms cubic-bezier(0.2, 0, 0, 1);
+  transition: transform var(--ak-sys-duration-short) var(--ak-sys-motion-standard);
 }
 
 .tool-step-chevron.open {
@@ -883,7 +883,7 @@ button.tool-step-summary:active {
 .tool-step-disclosure {
   display: grid;
   grid-template-rows: 0fr;
-  transition: grid-template-rows 280ms cubic-bezier(0.2, 0, 0, 1);
+  transition: grid-template-rows var(--ak-sys-duration-medium) var(--ak-sys-motion-standard);
 }
 
 .tool-step-disclosure.open {
@@ -896,14 +896,14 @@ button.tool-step-summary:active {
   opacity: 0;
   translate: 0 -4px;
   transition-property: opacity, translate;
-  transition-duration: 180ms, 280ms;
-  transition-timing-function: ease-out, cubic-bezier(0.2, 0, 0, 1);
+  transition-duration: var(--ak-sys-duration-short), var(--ak-sys-duration-medium);
+  transition-timing-function: ease-out, var(--ak-sys-motion-standard);
 }
 
 .tool-step-disclosure.open > .tool-step-disclosure-inner {
   opacity: 1;
   translate: 0 0;
-  transition-duration: 240ms, 280ms;
+  transition-duration: var(--ak-sys-duration-medium), var(--ak-sys-duration-medium);
 }
 
 /* 吸顶状态下的收起瞬间完成，由脚本把行放回原位后再淡入下方内容。 */
@@ -987,7 +987,7 @@ button.tool-step-summary:active {
   background: transparent;
   font-size: var(--md-sys-typescale-label-medium-size);
   font-weight: 650;
-  transition: scale 180ms cubic-bezier(0.2, 0, 0, 1), background-color 180ms cubic-bezier(0.2, 0, 0, 1);
+  transition: scale var(--ak-sys-duration-short) var(--ak-sys-motion-standard), background-color var(--ak-sys-duration-short) var(--ak-sys-motion-standard);
 }
 
 .tool-detail-copy:hover,
@@ -1059,7 +1059,7 @@ button.tool-step-summary:active {
   color: var(--ak-color-action-primary);
   background: transparent;
   font-size: 0.75rem;
-  transition: background-color 150ms cubic-bezier(0.2, 0, 0, 1);
+  transition: background-color var(--ak-sys-duration-short) var(--ak-sys-motion-standard);
 }
 
 .tool-result-more:hover {
@@ -1204,8 +1204,8 @@ button.tool-step-summary:active {
   background: var(--md-sys-color-surface-container-low);
   place-items: center;
   transition-property: border-color;
-  transition-duration: 120ms;
-  transition-timing-function: cubic-bezier(0.2, 0, 0, 1);
+  transition-duration: var(--ak-sys-duration-short);
+  transition-timing-function: var(--ak-sys-motion-standard);
 }
 
 .message-attachment-chip:hover,
@@ -1335,7 +1335,7 @@ button.tool-step-summary:active {
   padding: 0;
   color: var(--md-sys-color-on-surface-variant);
   background: transparent;
-  transition: scale 150ms cubic-bezier(0.2, 0, 0, 1), background-color 150ms cubic-bezier(0.2, 0, 0, 1), color 150ms cubic-bezier(0.2, 0, 0, 1);
+  transition: scale var(--ak-sys-duration-short) var(--ak-sys-motion-standard), background-color var(--ak-sys-duration-short) var(--ak-sys-motion-standard), color var(--ak-sys-duration-short) var(--ak-sys-motion-standard);
 }
 
 /* 次要操作幽灵钮：默认透明，父消息 hover/focus-within 显现；透明边撑热区，视觉保持 24px 见方。 */
@@ -1435,7 +1435,7 @@ button.tool-step-summary:active {
   }
 
   /* 左滑引用松手后消息回弹原位。 */
-  .web-message-anchor { transition: translate 180ms var(--ak-sys-motion-standard, ease); }
+  .web-message-anchor { transition: translate var(--ak-sys-duration-short) var(--ak-sys-motion-standard, ease); }
 
   /* 热区互相重叠 12px：图标间距与时间到首个图标同为 18px，每个热区仍是 44px。 */
   .shared-message-actions button + button {

@@ -34,6 +34,7 @@ class PluginInstallPort(ConfigHost, Protocol):
     def plugin_status(self) -> dict[str, object]: ...
     async def uninstall(self, plugin_id: str) -> dict[str, object]: ...
     async def reconcile_disabled_and_drain(self, plugin_id: str) -> None: ...
+    async def set_plugin_enabled(self, plugin_id: str, enabled: bool) -> dict[str, object]: ...
     async def wait_idle(self) -> None: ...
 
 
@@ -81,6 +82,10 @@ class PluginUpdates:
     async def uninstall(self, ctx: Context, plugin_id: str) -> dict[str, object]:
         """等待选择移除的 accepted；宿主继续拥有物理清理。"""
         return await self._check(ctx).uninstall(plugin_id)
+
+    async def set_enabled(self, ctx: Context, plugin_id: str, enabled: bool) -> dict[str, object]:
+        """写入用户启停选择并等待当前 Root 调和完成。"""
+        return await self._check(ctx).set_plugin_enabled(plugin_id, enabled)
 
     async def drain(self, ctx: Context, plugin_id: str) -> None:
         """排空用户已停用的插件；此调用不替用户修改启停决定。"""

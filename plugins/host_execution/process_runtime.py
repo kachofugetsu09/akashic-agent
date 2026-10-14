@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from plugins.host_execution.contract import (
-    DEFAULT_HARD_TIMEOUT_S, DEFAULT_INITIAL_YIELD_TIME_MS, DEFAULT_MAX_OUTPUT_TOKENS, ExecutionCleanupFailure, ExecutionCleanupReport, ExecutionResult, ExecutionState, MAX_HARD_TIMEOUT_S, MAX_WRITE_STDIN_YIELD_TIME_MS, MAX_YIELD_TIME_MS, MIN_EMPTY_YIELD_TIME_MS, MIN_YIELD_TIME_MS, ShellProcessManagerProtocol, UnknownExecutionError, clamp_initial_yield_time, clamp_write_stdin_yield_time
+    DEFAULT_HARD_TIMEOUT_S, DEFAULT_INITIAL_YIELD_TIME_MS, DEFAULT_MAX_OUTPUT_TOKENS, ExecutionCleanupFailure, ExecutionCleanupReport, ExecutionResult, ExecutionState, MAX_HARD_TIMEOUT_S, MAX_WRITE_STDIN_YIELD_TIME_MS, MAX_YIELD_TIME_MS, MIN_EMPTY_YIELD_TIME_MS, MIN_YIELD_TIME_MS, ShellKind, ShellProcessManagerProtocol, UnknownExecutionError, clamp_initial_yield_time, clamp_write_stdin_yield_time
 )
 
 import asyncio
@@ -20,6 +20,8 @@ from pathlib import Path
 from typing import Any, BinaryIO, Protocol
 
 from agent.plugin_composition.execution import process_group_exists
+
+from .fork_server import ForkServerLost, ShellForkPool
 
 
 OUTPUT_MAX_BYTES = 1024 * 1024
@@ -115,12 +117,32 @@ class HeadTailBuffer:
         self.omitted_bytes += excess
 
 
+class _ProcessHandle(Protocol):
+    """asyncio 子进程与 fork server 子进程的共同观察面；pid 同时是进程组 id。"""
+
+    @property
+    def pid(self) -> int: ...
+    @property
+    def returncode(self) -> int | None: ...
+    @property
+    def stdout(self) -> asyncio.StreamReader | None: ...
+    async def wait(self) -> int: ...
+    def send_signal(self, sig: int, /) -> None: ...
+    def kill(self) -> None: ...
+
+
+@dataclass(frozen=True)
+class _ForkTarget:
+    shell_path: Path
+    snapshot: Path
+
+
 @dataclass
 class _Execution:
     execution_id: int
     owner_session_key: str
     command: str
-    process: asyncio.subprocess.Process
+    process: _ProcessHandle
     tty: bool
     output_path: str
     log_file: BinaryIO
@@ -168,6 +190,7 @@ class ShellProcessManager:
         self._owners_ready = asyncio.Event()
         self._owners_ready.set()
         self._rng = random.SystemRandom()
+        self._forks = ShellForkPool()
 
     @asynccontextmanager
     async def _owner_access(self, owner: str):
@@ -203,37 +226,57 @@ class ShellProcessManager:
         # 1. 串行容量回收和 spawn，保证新进程在开始等待前已注册。
         async with self._owner_access(owner_session_key), self._spawn_lock:
             await self._ensure_owner_admitted(owner_session_key)
+            fork: _ForkTarget | None = None
             if shell_snapshot:
                 # 在实际执行主机准备文件；延迟导入避免 composition 的公开入口循环依赖。
-                from .shell_runtime import snapshot_shell_argv
+                from .shell_runtime import login_shell_snapshot
 
-                argv = await snapshot_shell_argv(argv, command, env)
+                shell, snapshot = await login_shell_snapshot(argv, command, env)
+                argv = shell.derive_argv(command, login=True, snapshot=snapshot)
+                if snapshot is not None and shell.kind is ShellKind.ZSH and not tty:
+                    fork = _ForkTarget(shell.path, snapshot)
             await self._prune_if_needed()
             execution_id = await self._allocate_execution_id()
-            execution = await self._spawn(
-                execution_id=execution_id,
-                owner_session_key=owner_session_key,
-                command=command,
-                argv=argv,
-                cwd=cwd,
-                env=env,
-                tty=tty,
-            )
-            # 首个窗口在登记前就算作等待者，状态查询不会把立即退出的命令当成后台结算。
-            execution.waiters += 1
-            async with self._lock:
-                self._executions[execution_id] = execution
-            execution.pump_task = asyncio.create_task(
-                self._pump_execution(execution),
-                name=f"shell-pump:{execution_id}",
-            )
-            execution.hard_timeout_task = asyncio.create_task(
-                self._enforce_hard_timeout(execution, hard_timeout_s),
-                name=f"shell-timeout:{execution_id}",
-            )
+            async def start_execution() -> _Execution:
+                """启动和登记不可被调用方取消拆开。"""
+                execution = await self._spawn(
+                    execution_id=execution_id,
+                    owner_session_key=owner_session_key,
+                    command=command,
+                    argv=argv,
+                    cwd=cwd,
+                    env=env,
+                    tty=tty,
+                    fork=fork,
+                )
+                # 首个窗口在登记前就算作等待者，状态查询不会把立即退出的命令当成后台结算。
+                execution.waiters += 1
+                async with self._lock:
+                    self._executions[execution_id] = execution
+                execution.pump_task = asyncio.create_task(
+                    self._pump_execution(execution),
+                    name=f"shell-pump:{execution_id}",
+                )
+                execution.hard_timeout_task = asyncio.create_task(
+                    self._enforce_hard_timeout(execution, hard_timeout_s),
+                    name=f"shell-timeout:{execution_id}",
+                )
+                return execution
 
+            start_task = asyncio.create_task(start_execution(), name=f"shell-start:{execution_id}")
+            cancelled = False
+            while True:
+                try:
+                    execution = await asyncio.shield(start_task)
+                    break
+                except asyncio.CancelledError:
+                    if start_task.cancelled():
+                        raise
+                    cancelled = True
         # 2. 调用方取消只中止这次等待；manager 继续持有 execution。
         try:
+            if cancelled:
+                raise asyncio.CancelledError
             return await self._observe(
                 execution, clamp_initial_yield_time(yield_time_ms), max_output_tokens,
             )
@@ -354,7 +397,11 @@ class ShellProcessManager:
                         await owners.enter_async_context(lock)
                     async with self._spawn_lock, self._lock:
                         executions = list(self._executions.values())
-                    return await self._terminate_many(executions)
+                    report = await self._terminate_many(executions)
+                    # 在飞执行清理确认后才关闭 fork server；未确认的执行保留 server 以便后续 wait。
+                    if not report.failures:
+                        await self._forks.close()
+                    return report
             finally:
                 self._owners_ready.set()
 
@@ -391,6 +438,7 @@ class ShellProcessManager:
         cwd: Path | None,
         env: dict[str, str],
         tty: bool,
+        fork: _ForkTarget | None = None,
     ) -> _Execution:
         """创建子进程和诊断日志，但不开始等待。"""
 
@@ -430,7 +478,14 @@ class ShellProcessManager:
                     options["creationflags"] = subprocess.CREATE_NEW_PROCESS_GROUP
                 else:
                     options["start_new_session"] = True
-            process = await asyncio.create_subprocess_exec(*argv, **options)
+            # fork server 未受理时返回 None，此时按原路径 spawn 不会重复执行。
+            forked = None if fork is None else await self._forks.spawn(
+                fork.shell_path, fork.snapshot, command, cwd, env,
+            )
+            process: _ProcessHandle = (
+                forked if forked is not None
+                else await asyncio.create_subprocess_exec(*argv, **options)
+            )
         except BaseException:
             log_file.close()
             Path(output_path).unlink(missing_ok=True)
@@ -496,6 +551,8 @@ class ShellProcessManager:
             raise
         except Exception as exc:
             execution.failure_message = f"shell 输出读取失败: {exc}"
+            reader.cancel()
+            await asyncio.gather(reader, return_exceptions=True)
             try:
                 await self._terminate_confirmed(execution)
             except Exception as terminate_exc:
@@ -726,6 +783,11 @@ class ShellProcessManager:
             raise RuntimeError(
                 f"execution_id={execution.execution_id} 进程组终止未确认"
             ) from exc
+        except ForkServerLost as exc:
+            # pidfd 已确认 leader 退出；状态丢失仍报错，但不阻止回收已消失的进程组。
+            execution.failure_message = str(exc)
+            if process_group_exists(execution.process.pid):
+                raise
         execution.exit_event.set()
         execution.output_event.set()
 
@@ -778,7 +840,7 @@ class ShellProcessManager:
         await _write_fd(execution.master_fd, data)
 
     @staticmethod
-    def _interrupt_process_group(process: asyncio.subprocess.Process) -> None:
+    def _interrupt_process_group(process: _ProcessHandle) -> None:
         if process.returncode is not None:
             return
         if _IS_WINDOWS:
@@ -794,7 +856,7 @@ def _limit_output(buffer: HeadTailBuffer, max_output_tokens: int) -> HeadTailBuf
     return limited
 
 
-def _kill_process_group(process: asyncio.subprocess.Process) -> None:
+def _kill_process_group(process: _ProcessHandle) -> None:
     if _IS_WINDOWS:
         completed = subprocess.run(
             ["taskkill", "/PID", str(process.pid), "/T", "/F"],
@@ -808,7 +870,7 @@ def _kill_process_group(process: asyncio.subprocess.Process) -> None:
     os.killpg(process.pid, signal.SIGKILL)
 
 
-def _kill_remaining_process_group(process: asyncio.subprocess.Process) -> None:
+def _kill_remaining_process_group(process: _ProcessHandle) -> None:
     """与 Codex ProcessHandle.drop 一致，清理 leader 退出后残留的子孙。"""
 
     if _IS_WINDOWS:
