@@ -18,6 +18,43 @@
   overflow-wrap: break-word;
 }
 
+/* 长输入收成 12 行，末两行渐隐提示还有内容；展开后不限高。 */
+.user-text-clamp:not([data-state="open"]) {
+  max-height: 12lh;
+  overflow: hidden;
+}
+
+.user-text-clamp[data-state="clamped"] {
+  mask-image: linear-gradient(to bottom, #000 calc(100% - 2lh), transparent);
+}
+
+/* 开关是气泡上的一行次级文字，不是按钮外观。 */
+.user-text-toggle {
+  display: block;
+  margin-block-start: 2px;
+  border: 0;
+  padding: 0;
+  color: var(--ak-color-text-secondary, var(--chat-muted));
+  background: none;
+  font: inherit;
+  font-size: 0.8125rem;
+  cursor: pointer;
+}
+
+@media (hover: hover) {
+  .user-text-toggle:hover { color: var(--chat-ink, var(--ak-ink-primary)); }
+}
+
+.user-text-toggle:focus-visible {
+  outline: 2px solid var(--ak-rule-focus);
+  outline-offset: 2px;
+  border-radius: 2px;
+}
+
+@media (pointer: coarse) {
+  .user-text-toggle { min-height: 32px; }
+}
+
 .agent-row {
   align-items: flex-start;
 }

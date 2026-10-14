@@ -333,6 +333,8 @@ input {
   font-family: var(--ak-type-technical);
   font-size: 0.6875rem;
   letter-spacing: 0.02em;
+  white-space: nowrap;
+  flex: none;
 }
 
 @media (hover: hover) and (pointer: fine) and (min-width: 820.02px) {

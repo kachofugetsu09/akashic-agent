@@ -173,12 +173,14 @@ export function ChatMessageView({
           {leadingContent}
           {attachments}
           {message.content ? (
-            <MessageBody
-              content={message.content}
-              streaming={message.streaming === true}
-              deferRichContent={deferRichContent}
-              onError={onError}
-            />
+            <UserTextClamp enabled>
+              <MessageBody
+                content={message.content}
+                streaming={message.streaming === true}
+                deferRichContent={deferRichContent}
+                onError={onError}
+              />
+            </UserTextClamp>
           ) : null}
         </MessageContent>
       </Message>
@@ -573,20 +575,51 @@ export function TimelineMessageView({ message, lookupMessage, toolResults, onNav
             {lookupMessage(body.call_ref.message_id) ? "查看调用" : "调用不在当前记录中"}
           </button>
         </div> : null}
-        {body.parts.map((part, index) => ({ part, index })).sort((left, right) =>
+        <UserTextClamp enabled={body.kind === "input"}>{body.parts.map((part, index) => ({ part, index })).sort((left, right) =>
           flowRank(right.part) + Number(right.part.kind === "history.transcript")
           - flowRank(left.part) - Number(left.part.kind === "history.transcript"))
           .map(({ part, index }) => isTimelinePartVisible(part) && !((hideBody || (attachmentResult && !renderAttachment)) && part.kind === "text") && !((hideProcess || inlineReply) && (part.kind === "model.facts" || part.kind === "tool_call" || part.kind === "history.transcript")) ? <div key={index} data-part-index={index} tabIndex={-1}>
           {beforePart?.(part, index, message)}
           <TimelinePartView part={part} toolResult={body.kind === "tool_result" && !attachmentResult} attachment={attachment} lookupMessage={lookupMessage} canLoadReferences={canLoadReferences}
             onNavigate={onNavigate} onError={onError} processStartContent={leadingContent} />
-        </div> : null)}
+        </div> : null)}</UserTextClamp>
       </>}
       {afterBody}
       {message.attachments.filter((ref) => !referencedArtifacts.has(ref.artifact_id)).map((ref, index) =>
         <Fragment key={`${ref.artifact_id}:${index}`}>{attachment(ref.artifact_id)}</Fragment>)}
     </div>
   </div>;
+}
+
+// 长输入（粘贴的日志、整段代码）收成约 12 行，下面一行安静的"展开全部"；短输入不受影响。
+// 是否溢出取决于当前宽度，只在收起时测量，宽度变化时重测。
+function UserTextClamp({ enabled, children }: { enabled: boolean; children: ReactNode }) {
+  const [expanded, setExpanded] = useState(false);
+  const [overflowing, setOverflowing] = useState(false);
+  const box = useRef<HTMLDivElement>(null);
+  const toggle = useRef<HTMLButtonElement>(null);
+  useLayoutEffect(() => {
+    const element = box.current;
+    if (!enabled || expanded || !element) return;
+    const measure = () => setOverflowing(element.scrollHeight - element.clientHeight > 1);
+    measure();
+    const observer = new ResizeObserver(measure);
+    observer.observe(element);
+    return () => observer.disconnect();
+  }, [enabled, expanded]);
+  if (!enabled) return <>{children}</>;
+  const onToggle = () => {
+    setExpanded((value) => !value);
+    // 收起时上方内容变短，把按钮留在视口里，读者不会被甩到别处。
+    if (expanded) requestAnimationFrame(() => toggle.current?.scrollIntoView({ block: "nearest" }));
+  };
+  return <>
+    <div ref={box} className="user-text-clamp" data-state={expanded ? "open" : overflowing ? "clamped" : undefined}>
+      {children}
+    </div>
+    {overflowing || expanded ? <button ref={toggle} type="button" className="user-text-toggle"
+      aria-expanded={expanded} onClick={onToggle}>{expanded ? "收起" : "展开全部"}</button> : null}
+  </>;
 }
 
 export interface TimelineAttachmentOrigin {
