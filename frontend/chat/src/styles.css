@@ -2475,7 +2475,7 @@ form.composer:focus-within [data-slot="input-group"] {
     overflow: hidden;
     border: 0;
     border-radius: 8px;
-    color: var(--ak-color-text-secondary);
+    color: var(--chat-muted);
     background: none;
     font: inherit;
     font-size: 0.8125rem;

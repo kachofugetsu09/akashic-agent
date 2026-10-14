@@ -100,6 +100,8 @@ export function ProjectNavigation({
     }
   };
 
+  // 搜索没有命中任何项目时整节收起，不留空的分组标题。
+  if (searching && projects.length === 0 && pending.length === 0 && !pendingError) return null;
   return (
     <section className="project-navigation" aria-label="项目">
       <header className="project-navigation__header">

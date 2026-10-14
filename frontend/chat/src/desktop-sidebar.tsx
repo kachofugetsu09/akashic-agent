@@ -369,7 +369,8 @@ export const DesktopSidebar = memo(function DesktopSidebar({
   const visibleProject = (project: ProjectRow) => !needle || project.name.toLowerCase().includes(needle)
     || Boolean(sessionsByProject.get(project.id)?.length);
   const otherProjects = projects?.items.filter((project) => !pinnedProjects.has(project.id) && visibleProject(project)) ?? [];
-  const hasMatches = recentSessions.length > 0 || otherProjects.length > 0 || navigationPins.pins.some((pin) => {
+  // 搜索时只留有匹配行的置顶分组，空分组标题一起收起。
+  const visiblePins = navigationPins.pins.filter((pin) => {
     if (pin.kind === "project") {
       const project = knownProjects.get(pin.id);
       if (project) return visibleProject(project);
@@ -381,6 +382,7 @@ export const DesktopSidebar = memo(function DesktopSidebar({
     }
     return pin.id.toLowerCase().includes(needle);
   });
+  const hasMatches = recentSessions.length > 0 || otherProjects.length > 0 || visiblePins.length > 0;
   const pinAction = (pin: NavigationPin, pinned: boolean): NavigationRowAction[] => [{
     label: pinned ? "取消置顶" : "置顶",
     icon: pinned ? <PinOff size={18} aria-hidden="true" /> : <Pin size={18} aria-hidden="true" />,
@@ -453,9 +455,9 @@ export const DesktopSidebar = memo(function DesktopSidebar({
           <X size={14} aria-hidden="true" />
         </button>
       </div> : null}
-      {navigationPins.pins.length ? <section className="pinned-navigation" aria-label="置顶">
+      {visiblePins.length ? <section className="pinned-navigation" aria-label="置顶">
         <header className="project-navigation__header"><span>置顶</span></header>
-        {navigationPins.pins.map((pin) => {
+        {visiblePins.map((pin) => {
           if (pin.kind === "project") {
             const project = knownProjects.get(pin.id);
             if (project && projects) return visibleProject(project) ? <ProjectNavigationRow

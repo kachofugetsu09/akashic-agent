@@ -125,8 +125,11 @@ function anchorableAnswer(scroller: HTMLElement, anchored: string) {
   return offset <= 0 ? { key: answer.key, offset } : null;
 }
 
+// 每一轮提问的锚点；"最新一轮"按钮与提问目录共用。
+const TURN_START = ".web-message-anchor.timeline-input, .web-message-anchor.user";
+
 function latestTurnStart(scroller: HTMLElement): HTMLElement | undefined {
-  return Array.from(scroller.querySelectorAll<HTMLElement>(".web-message-anchor.timeline-input, .web-message-anchor.user")).at(-1);
+  return Array.from(scroller.querySelectorAll<HTMLElement>(TURN_START)).at(-1);
 }
 
 /** 离开底部后的返回入口：生成中提示还在写；翻回历史时先回到最新一轮开头，再到底部。 */
@@ -226,46 +229,55 @@ function settleAtReadingTop(scroller: HTMLElement, anchor: HTMLElement) {
 interface TurnSegment {
   id: string;
   preview: string;
+  anchor: HTMLElement;
+}
+
+// 提问目录只在右侧留白放得下刻度的宽屏指针设备上出现，与样式表的媒体查询同一条件。
+const TURN_RAIL_MEDIA = "(hover: hover) and (pointer: fine) and (min-width: 1200px)";
+
+function subscribeTurnRailMedia(onChange: () => void): () => void {
+  const media = window.matchMedia(TURN_RAIL_MEDIA);
+  media.addEventListener("change", onChange);
+  return () => media.removeEventListener("change", onChange);
 }
 
 // 当前已载入的每一轮提问，按文档顺序；预览取气泡文字的第一行。
 function turnSegments(scroller: HTMLElement): TurnSegment[] {
-  return Array.from(scroller.querySelectorAll<HTMLElement>(".web-message-anchor.timeline-input, .web-message-anchor.user"))
+  return Array.from(scroller.querySelectorAll<HTMLElement>(TURN_START))
     .map((anchor) => ({
       id: anchor.dataset.messageId ?? "",
       preview: (anchor.querySelector(".user-bubble")?.textContent ?? "").trim().replace(/\s+/g, " ").slice(0, 80),
+      anchor,
     }))
     .filter((segment) => segment.id && segment.preview);
 }
 
-function turnAnchor(scroller: HTMLElement, id: string): HTMLElement | null {
-  return scroller.querySelector<HTMLElement>(`.web-message-anchor[data-message-id="${CSS.escape(id)}"]`);
-}
-
 // 读到哪一轮：贴底时是最后一轮；否则是顶缘已越过阅读区上方三分之一的最后一轮提问。
+// 锚点在收集时取好，每个滚动帧只读几何，不再查询 DOM。
 function activeTurn(scroller: HTMLElement, segments: TurnSegment[]): string {
   if (scroller.scrollTop + scroller.clientHeight >= scroller.scrollHeight - 2) return segments.at(-1)?.id ?? "";
   const line = scroller.getBoundingClientRect().top + scroller.clientHeight / 3;
   let active = segments[0]?.id ?? "";
   for (const segment of segments) {
-    const anchor = turnAnchor(scroller, segment.id);
-    if (anchor && anchor.getBoundingClientRect().top <= line) active = segment.id;
+    if (segment.anchor.getBoundingClientRect().top > line) break;
+    active = segment.id;
   }
   return active;
 }
 
-/** 宽屏右侧的提问目录：每轮一道刻度，悬停或聚焦展开为提问列表，点选平滑滚到那一轮开头。 */
+/** 宽屏右侧的提问目录：每轮一道刻度，悬停或聚焦展开为提问列表，点选停到那一轮开头。 */
 export function TurnRail({ revision }: { revision: string }) {
   const { scrollRef, stopScroll } = useStickToBottomContext();
   const [segments, setSegments] = useState<TurnSegment[]>([]);
   const [active, setActive] = useState("");
   const [open, setOpen] = useState(false);
   const closeTimer = useRef(0);
+  const wide = useSyncExternalStore(subscribeTurnRailMedia, () => window.matchMedia(TURN_RAIL_MEDIA).matches);
 
-  // 必要 effect：消息变化后从 DOM 取提问列表，并随滚动同步当前所在的一轮
+  // 必要 effect：消息变化后从 DOM 取提问列表，并随滚动同步当前所在的一轮；窄屏与触屏不挂监听
   useEffect(() => {
     const scroller = scrollRef.current;
-    if (!scroller) return;
+    if (!scroller || !wide) return;
     let frame = 0;
     let current: TurnSegment[] = [];
     const sync = () => {
@@ -284,7 +296,7 @@ export function TurnRail({ revision }: { revision: string }) {
       window.cancelAnimationFrame(frame);
       scroller.removeEventListener("scroll", onScroll);
     };
-  }, [revision, scrollRef]);
+  }, [revision, scrollRef, wide]);
   useEffect(() => () => window.clearTimeout(closeTimer.current), []);
   const listRef = useRef<HTMLOListElement>(null);
   // 必要 effect：展开时把当前一轮滚进列表视野（长会话的列表超过 60vh）
@@ -292,17 +304,18 @@ export function TurnRail({ revision }: { revision: string }) {
     if (open) listRef.current?.querySelector("[aria-current]")?.scrollIntoView({ block: "nearest" });
   }, [open]);
 
-  if (segments.length < 3) return null;
+  if (!wide || segments.length < 3) return null;
   const show = () => { window.clearTimeout(closeTimer.current); setOpen(true); };
   const hide = () => { window.clearTimeout(closeTimer.current); closeTimer.current = window.setTimeout(() => setOpen(false), 150); };
-  const jump = (id: string) => {
+  const jump = (segment: TurnSegment) => {
     const scroller = scrollRef.current;
-    const anchor = scroller ? turnAnchor(scroller, id) : null;
+    const anchor = segment.anchor.isConnected ? segment.anchor
+      : scroller?.querySelector<HTMLElement>(`.web-message-anchor[data-message-id="${CSS.escape(segment.id)}"]`);
     if (!scroller || !anchor) return;
     // 离开贴底跟随，否则生成中的回答会把视图拉回底部。
     stopScroll();
     settleAtReadingTop(scroller, anchor);
-    setActive(id);
+    setActive(segment.id);
     setOpen(false);
   };
   return <nav className="turn-rail" aria-label="按提问跳转" data-open={open || undefined}
@@ -310,8 +323,11 @@ export function TurnRail({ revision }: { revision: string }) {
     onBlur={(event) => { if (!event.currentTarget.contains(event.relatedTarget as Node | null)) hide(); }}
     onKeyDown={(event) => {
       if (event.key !== "Escape") return;
+      // 收起后列表不可见，焦点不能留在里面；交还给输入框，与"读回复时直接打字"同一落点。
       setOpen(false);
-      scrollRef.current?.focus({ preventScroll: true });
+      const composer = document.querySelector<HTMLTextAreaElement>(".composer-wrap textarea");
+      if (composer) composer.focus({ preventScroll: true });
+      else (document.activeElement as HTMLElement | null)?.blur();
     }}>
     <div className="turn-rail__ticks" aria-hidden="true">
       {segments.map((segment) => <i key={segment.id} data-active={segment.id === active || undefined} />)}
@@ -319,7 +335,7 @@ export function TurnRail({ revision }: { revision: string }) {
     <ol ref={listRef} className="turn-rail__list">
       {segments.map((segment) => <li key={segment.id}>
         <button type="button" aria-current={segment.id === active ? "true" : undefined}
-          tabIndex={open ? 0 : segment.id === active ? 0 : -1} onClick={() => jump(segment.id)}>{segment.preview}</button>
+          tabIndex={open ? 0 : segment.id === active ? 0 : -1} onClick={() => jump(segment)}>{segment.preview}</button>
       </li>)}
     </ol>
   </nav>;
