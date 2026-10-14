@@ -68,9 +68,18 @@ def extras(mode):
                     sources / name,
                     ignore=shutil.ignore_patterns("__pycache__"),
                 )
-            parsed = ast.parse(
-                (base.ROOT / "tests/test_akasha_message_plugin.py").read_text()
-            )
+            fixture_test = base.ROOT / "tests/test_akasha_message_plugin.py"
+            if fixture_test.exists():
+                fixture_text = fixture_test.read_text()
+            else:
+                # 上游已删除该测试文件，fixture_embeddings 插件源码只存在于其历史版本中。
+                import subprocess
+
+                fixture_text = subprocess.run(
+                    ["git", "show", "ad40a70d^:tests/test_akasha_message_plugin.py"],
+                    capture_output=True, text=True, check=True, cwd=base.ROOT,
+                ).stdout
+            parsed = ast.parse(fixture_text)
             source = next(
                 node.value
                 for node in ast.walk(parsed)

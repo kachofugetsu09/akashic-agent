@@ -21,6 +21,10 @@ disabled = true
 plugin = "host_execution@release"
 disabled = true
 
+[rows."runtime_diagnostics"]
+plugin = "runtime_diagnostics@release"
+disabled = true
+
 [rows."workloads"]
 plugin = "workloads@release"
 disabled = true

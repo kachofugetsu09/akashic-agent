@@ -72,7 +72,6 @@ async def apply(ctx: Context) -> None:
     _ = await ctx.provide(SCHEDULER_INSPECTION, SchedulerInspectionProvider(store))
     watcher: asyncio.Task[None] | None = None
     catalog = ctx.require(TOOLS)
-    tool_view = catalog.view()
     _ = await catalog.declare_group(ctx, description=desc)
 
     for action, schema, description in (
@@ -107,7 +106,10 @@ async def apply(ctx: Context) -> None:
     )
 
     async def program(task: Task, reader: MessageReader) -> Message:
+        """每次执行取得当前工具；展示与授权共用本次固定的目录。"""
         bindings = ctx.require(BINDINGS)
+        # 1. STARTED 只表示本插件已启动，其他 provider 之后仍可注册或卸载。
+        view = ctx.require(ALL_TOOLS)().without(_DISABLED_TOOLS)
 
         async def authorize(
             binding_id: str, arguments: Mapping[str, object]
@@ -119,7 +121,7 @@ async def apply(ctx: Context) -> None:
                 return '当前调度组合未授予此工具'
             return {"source": "scheduler", "session_id": reader.session_id}
 
-        view = tool_view
+        # 2. 展示追加的入口与业务工具共用这次执行的授权范围。
         with ctx.borrow(TOOL_LOADING_PRESENTATION) as present:
             presentation = None
             if present is not None:
@@ -136,8 +138,7 @@ async def apply(ctx: Context) -> None:
             )
 
     async def start(_event: object) -> None:
-        nonlocal tool_view, watcher
-        tool_view = ctx.require(ALL_TOOLS)().without(_DISABLED_TOOLS)
+        nonlocal watcher
         runtime = SchedulerRuntime(ctx, store, program)
         watcher = await ctx.spawn(runtime.follow(), name="scheduler")
 

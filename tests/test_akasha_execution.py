@@ -1,4 +1,4 @@
-"""Akasha 保持逐条因果发布；后台工作不能冻结宿主或提前释放 owner。"""
+"""Akasha 按批发布因果检查点；后台工作不能冻结宿主或提前释放 owner。"""
 from __future__ import annotations
 
 import asyncio
@@ -115,8 +115,8 @@ def append_pair(log: MessageLog, embeddings: MessageEmbeddings, learning: Learni
 @pytest.mark.asyncio
 @pytest.mark.parametrize("boundary", ["before", "after"])
 @pytest.mark.parametrize("fail", [False, True])
-async def test_learning_waits_for_prior_durable_publication(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, boundary: str, fail: bool) -> None:
-    """MEM-009 / O：同图 t+1 等待 t 发布，宿主仍运行；失败不能越过前驱。"""
+async def test_batch_publication_keeps_trajectory_and_failure_stops_graph(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, boundary: str, fail: bool) -> None:
+    """MEM-009 / O：同图按批发布检查点，宿主仍运行；发布失败后同图学习与查询都停止，磁盘只含完整前缀。"""
     async with memory_fixture(tmp_path) as (memory, consumer, learning, _, log, embeddings, _, _):
         for number in range(2):
             append_pair(log, embeddings, learning, number)
@@ -133,7 +133,7 @@ async def test_learning_waits_for_prior_durable_publication(tmp_path: Path, monk
             return original_make(*args, **kwargs)
 
         def publish(state: Consumption) -> str:
-            if len(state.applied) != 1:
+            if len(state.applied) != 2:
                 return original_publish(state)
             if boundary == "after":
                 result = original_publish(state)
@@ -152,24 +152,24 @@ async def test_learning_waits_for_prior_durable_publication(tmp_path: Path, monk
             query = asyncio.create_task(memory.prepare(log.reader("conversation").snapshot(), "conversation"))
             tasks.extend((follower, query))
             await loop_turn()
-            assert observed == [(0, 0)]
+            # 1. 同批第二条在第一条落盘前按内存中的 S(1) 计算；检查点一次覆盖整批。
+            assert observed == [(0, 0), (1, 0)]
             assert not any(task.done() for task in tasks)
             disk = load_consumption(consumer.path)
             assert disk is not None
-            assert len(disk.applied) == (1 if boundary == "after" else 0)
-            assert len(consumer.state.applied) == 0
+            assert len(disk.applied) == (2 if boundary == "after" else 0)
             gate.release.set()
             results = await asyncio.gather(*tasks, return_exceptions=True)
+            disk = load_consumption(consumer.path)
+            assert disk is not None
             if fail:
+                # 2. 失败后同图 fail-loud；磁盘要么是旧检查点，要么是完整新检查点。
                 assert isinstance(results[0], OSError)
                 assert all(isinstance(result, RuntimeError) for result in results[1:])
-                assert observed == [(0, 0)]
+                assert len(disk.applied) in (0, 2)
             else:
                 assert results[:2] == [2, 0]
                 assert isinstance(results[2], dict)
-                assert observed == [(0, 0), (1, 1)]
-                disk = load_consumption(consumer.path)
-                assert disk is not None
                 assert [entry.ending[1] for entry in disk.applied] == ["assistant-0", "assistant-1"]
         finally:
             gate.release.set()
@@ -271,19 +271,21 @@ async def test_cancelled_creation_closes_the_completed_writer(tmp_path: Path, mo
 
 @pytest.mark.asyncio
 async def test_cancelled_learning_drains_before_close(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    """取消只阻止后续经历；当前发布与 writer 释放必须按顺序完成。"""
+    """取消只阻止后续经历；当前经历与关闭时的检查点发布、writer 释放必须按顺序完成。"""
     async with memory_fixture(tmp_path) as (memory, consumer, learning, _, log, embeddings, _, _):
         for number in range(2):
             append_pair(log, embeddings, learning, number)
         gate = WorkerGate()
-        original = consumer.publish_snapshot_for
+        original = learning.make_turn
 
-        def publish(state: Consumption) -> str:
-            result = original(state)
-            gate.stop()
+        def make_turn(*args, **kwargs):
+            # 停在第一条经历内部；第二条必须因取消而不开始。
+            result = original(*args, **kwargs)
+            if not kwargs["previous"]:
+                gate.stop()
             return result
 
-        monkeypatch.setattr(consumer, "publish_snapshot_for", publish)
+        monkeypatch.setattr(learning, "make_turn", make_turn)
         job = asyncio.create_task(memory.consume())
         close = None
         try:
