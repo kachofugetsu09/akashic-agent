@@ -24,6 +24,9 @@ export interface ComposerApi {
 }
 
 /** Own transient editor state while the app controller owns transport and durable chat state. */
+// 浮层打开时按键与拖放都属于浮层：读回复打字、窗口拖放都让路。
+const FLOATING_LAYER = "[role='dialog'], [role='menu'], [role='listbox'], [data-radix-popper-content-wrapper]";
+
 export const DesktopComposer = memo(function DesktopComposer({
   chatReady, canSend, modelProblem, draftKey, autoFocus = false, fresh = false, status, stopPending, modelState, selectedRuntimeId, selectedEffort, replyTarget,
   onModelChange, onCancelReply, onSend, onStop, ref,
@@ -213,7 +216,7 @@ function useTypeToCompose(textareaRef: { current: HTMLTextAreaElement | null }, 
       // 2. 焦点已在可编辑处，或有对话框/菜单/浮层打开时，按键属于它们。
       const active = document.activeElement;
       if (active instanceof HTMLElement && active.closest("input, textarea, select, [contenteditable]:not([contenteditable='false'])")) return;
-      if (document.querySelector("[role='dialog'], [role='menu'], [role='listbox'], [data-radix-popper-content-wrapper]")) return;
+      if (document.querySelector(FLOATING_LAYER)) return;
       const textarea = textareaRef.current;
       if (!textarea || textarea.disabled) return;
       textarea.focus();
@@ -298,8 +301,9 @@ function ComposerAttachments({ onPresenceChange }: { onPresenceChange: (hasAttac
 }
 
 // 文件拖进窗口任意位置都由输入区接住：卡片显示"松开以添加文件"，松开即入列（与粘贴、选择器同一条 add 路径）。
-// 落在输入卡里的 drop 由 PromptInput 自己处理；落在别处时这里入列并阻止浏览器直接打开文件、离开聊天页。
-// 已被其它放置区（如对话框里的上传框）处理的 drop 不重复入列；对话框打开时不显示强调态。
+// 落在输入卡里的 drop 由 PromptInput 自己处理；落在别处时这里入列。
+// 对话框、菜单、选择器打开或聊天未就绪时不入列、不显示强调态；已被其它放置区处理的拖放不干预。
+// 无论是否入列，都阻止浏览器把文件当页面打开——那会直接离开聊天页、丢掉草稿。
 function WindowFileDrop({ enabled, onActiveChange }: { enabled: boolean; onActiveChange: (active: boolean) => void }) {
   const attachments = usePromptInputAttachments();
   const add = attachments.add;
@@ -307,11 +311,12 @@ function WindowFileDrop({ enabled, onActiveChange }: { enabled: boolean; onActiv
     // 1. dragenter/dragleave 在每个元素上成对出入，用深度计数判断是否还在窗口内。
     let depth = 0;
     const isFileDrag = (event: DragEvent) => Array.from(event.dataTransfer?.types ?? []).includes("Files");
+    const accepting = () => enabled && !document.querySelector(FLOATING_LAYER);
     const reset = () => { depth = 0; onActiveChange(false); };
     const onEnter = (event: DragEvent) => {
       if (!isFileDrag(event)) return;
       depth += 1;
-      onActiveChange(enabled && !document.querySelector("[role='dialog']"));
+      onActiveChange(accepting());
     };
     const onLeave = (event: DragEvent) => {
       if (!isFileDrag(event)) return;
@@ -320,9 +325,9 @@ function WindowFileDrop({ enabled, onActiveChange }: { enabled: boolean; onActiv
     };
     // 2. dragover 必须 preventDefault，drop 才会派发而不是被浏览器当作打开文件。
     const onOver = (event: DragEvent) => {
-      if (!isFileDrag(event)) return;
+      if (!isFileDrag(event) || event.defaultPrevented) return;
       event.preventDefault();
-      if (event.dataTransfer) event.dataTransfer.dropEffect = enabled ? "copy" : "none";
+      if (event.dataTransfer) event.dataTransfer.dropEffect = accepting() ? "copy" : "none";
     };
     // 3. 卡片内的 drop 已由 PromptInput 入列；其余位置在这里入列。
     const onDrop = (event: DragEvent) => {
@@ -330,7 +335,7 @@ function WindowFileDrop({ enabled, onActiveChange }: { enabled: boolean; onActiv
       if (!isFileDrag(event) || event.defaultPrevented) return;
       event.preventDefault();
       const insideComposer = event.target instanceof Element && event.target.closest("form.composer");
-      if (enabled && !insideComposer && !document.querySelector("[role='dialog']") && event.dataTransfer?.files.length) {
+      if (accepting() && !insideComposer && event.dataTransfer?.files.length) {
         add(event.dataTransfer.files);
       }
     };
