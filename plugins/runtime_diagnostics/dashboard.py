@@ -51,4 +51,3 @@ def register(app: FastAPI, context: RequestContext) -> None:
     @app.post("/api/dashboard/runtime-diagnostics/profile/stop", dependencies=browser_guard)
     async def stop() -> dict[str, object]:
         return await context.require(PROFILES).stop()
-
