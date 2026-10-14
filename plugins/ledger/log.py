@@ -1497,15 +1497,17 @@ class MessageReader:
             return ()
         log = self._log
         memo = log._attachment_memo
-        for _ in range(2):
-            with log._decode_lock:
-                missing = tuple(dict.fromkeys(mid for mid in message_ids if mid not in memo))
-                if not missing:
-                    try:
-                        return tuple(ref for identity in message_ids for ref in memo[identity])
-                    except KeyError:
-                        # 并发 Session 的大批量写入淘汰了已命中条目；按缺失重查一次。
-                        continue
+        identities = tuple(dict.fromkeys(message_ids))
+        # 本次调用的结果由局部映射持有：共享 memo 只作优化，其他 Session 的大批量
+        # 写入可以在锁外淘汰任何条目，所以返回路径不能再依赖它。
+        resolved: dict[str, tuple[AttachmentRef, ...]] = {}
+        with log._decode_lock:
+            for identity in identities:
+                cached = memo.get(identity)
+                if cached is not None:
+                    resolved[identity] = cached
+        missing = tuple(identity for identity in identities if identity not in resolved)
+        if missing:
             with log._read():
                 rows = log._connection.execute(
                     "SELECT m.id,ma.ordinal,a.* FROM messages m "
@@ -1523,20 +1525,15 @@ class MessageReader:
                     items.append(_artifact_ref(row))
             if refs.keys() != set(missing):
                 raise LookupError("消息不在 reader 获授的 Session 中")
+            for identity in missing:
+                resolved[identity] = tuple(refs[identity])
+            # 回填与容量维护仍在锁内，但淘汰不再影响本次返回结果。
             with log._decode_lock:
                 for identity in missing:
-                    memo[identity] = tuple(refs[identity])
-                # 先取结果再淘汰：单次调用超过容量上限时，刚写入的条目也可能被
-                # FIFO 淘汰，不能在返回路径上再查 memo。查询期间被并发淘汰的
-                # 旧命中条目同样按缺失重查一次。
-                try:
-                    result = tuple(ref for identity in message_ids for ref in memo[identity])
-                except KeyError:
-                    continue
+                    memo[identity] = resolved[identity]
                 while len(memo) > _ATTACHMENT_MEMO_SIZE:
                     _ = memo.pop(next(iter(memo)))
-                return result
-        raise RuntimeError("附件读取反复遇到并发淘汰")
+        return tuple(ref for identity in message_ids for ref in resolved[identity])
 
     def head(self, *, source: str | None = None) -> int:
         sql = "SELECT COALESCE(MAX(seq), -1) FROM messages WHERE session_key=?"

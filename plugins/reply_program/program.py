@@ -1,10 +1,11 @@
 from __future__ import annotations
 
-from collections.abc import Awaitable, Callable, Iterable, Mapping, Sequence
+from collections.abc import Awaitable, Callable, Mapping, Sequence
 from typing import Any, cast
 from contextlib import AbstractAsyncContextManager, AbstractContextManager
 
 from core.common.diagnostic_log import log_timing
+from core.common.file_io import run_file_io
 from functools import partial
 from agent.plugin_composition import Context
 from plugins.ledger.contract import ArtifactRead
@@ -84,23 +85,26 @@ async def run_reply(
     def check(transaction: OwnerTransaction | None = None) -> None:
         check_admission(transaction=transaction)
 
-    def read_open(messages: Iterable[Message]) -> tuple[Message, ...]:
+    def read_open(messages: Sequence[Message]) -> tuple[Message, ...]:
         """同一短快照内只取未闭合 Turn 正文，历史分段只保留引用。"""
         turns = turn_projection.project(messages, source, include_closed=False)
         if not turns or turns[-1].status != "open":
             return ()
+        # 开放尾段的成员已经在这份固定视图里，直接复用，不再逐 ID 同步点查。
+        index = {message.message_id: message for message in messages}
         members: list[Message] = []
         for identity in turns[-1].message_ids:
-            message = reader.get(identity)
+            message = index.get(identity)
             if message is None:
                 raise RuntimeError("同一快照中的 Turn 消息缺失")
             members.append(message)
         return tuple(members)
 
     # Turn 投影与 react 共用同一份已提交前缀：history_view 持有共享读面直到
-    # react 自己的快照接手，历史只解码一次。
+    # react 自己的快照接手，历史只解码一次。投影与成员提取是不受调用方约束的
+    # 全量扫描，必须留在可排空 worker 内，避免长历史时占住事件循环。
     history_view = await reader.committed_snapshot_async(through_seq=through_seq)
-    opened = read_open(history_view)
+    opened = await run_file_io(lambda: read_open(history_view))
     chosen = selection.read(opened)
     if chosen is None:
         chosen = selection.read_saved(saved_selection or {})
