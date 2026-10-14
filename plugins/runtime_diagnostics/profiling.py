@@ -5,6 +5,7 @@ import asyncio
 import copy
 import logging
 from pathlib import Path
+from collections.abc import Sequence
 import time
 import tracemalloc
 
@@ -14,6 +15,29 @@ from core.common.file_io import run_file_io
 
 class ProfileBusy(RuntimeError):
     pass
+
+
+_INSTALL_ROOT = Path(__file__).resolve().parents[2]
+
+
+def _export_locator(
+    filename: str,
+    *,
+    roots: Sequence[tuple[Path, str]] | None = None,
+) -> str:
+    """导出用定位路径：已知根相对化，未知根退化为不含父目录身份的基名。"""
+    path = Path(filename)
+    if not path.is_absolute():
+        return path.as_posix()
+    effective = roots if roots is not None else ((Path.home(), "~"), (_INSTALL_ROOT, "<install>"))
+    for root, label in effective:
+        try:
+            relative = path.relative_to(root)
+        except ValueError:
+            continue
+        return label if str(relative) == "." else f"{label}/{relative.as_posix()}"
+    # 未知根：不保留任何父目录身份，避免导出文件名泄漏用户名或安装路径。
+    return path.name
 
 
 class Profiles:
@@ -87,9 +111,7 @@ class Profiles:
         for stat in snapshot.statistics("traceback")[:30]:
             frames = []
             for frame in stat.traceback:
-                path = Path(frame.filename)
-                # 导出保留定位用的尾部路径，不公开用户 home 或完整安装目录。
-                frames.append({"file": "/".join(path.parts[-4:]), "line": frame.lineno})
+                frames.append({"file": _export_locator(frame.filename), "line": frame.lineno})
             rows.append({"bytes": stat.size, "count": stat.count, "frames": frames})
         return {"traced_bytes": current, "peak_bytes": peak, "overhead_bytes": overhead, "allocations": rows}
 
