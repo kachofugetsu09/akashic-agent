@@ -41,12 +41,7 @@
 }
 
 .agent-content h1 { font-size: 1.375em; }
-.agent-content h2 {
-  font-size: 1.175em;
-  border-bottom: 1px solid var(--ak-rule-subtle);
-  padding-bottom: 0.3em;
-  border-bottom-style: dashed;
-}
+.agent-content h2 { font-size: 1.175em; }
 .agent-content h3 { font-size: 1.025em; }
 .agent-content h4 { font-size: 1em; }
 
@@ -182,6 +177,18 @@
   font-weight: 480;
 }
 
+/* Markstream 的行内代码自带 (0,2,0) 工具类且在懒加载后插入：用三级作用域显式压过，
+   底色只取墨色的 6% 透明叠加，深浅主题都不出现冷蓝底；字体回到技术字体。 */
+.agent-content .markstream-react .inline-code,
+.process-markdown .markstream-react .inline-code {
+  border-radius: 0.3125rem;
+  padding: 0.125rem 0.375rem;
+  color: inherit;
+  background: color-mix(in oklch, var(--ak-ink-primary) 6%, transparent);
+  font-family: var(--ak-type-technical);
+  font-size: 0.875em;
+}
+
 /* Markstream owns Markdown structure; the product only maps it to chat tokens. */
 .message-response-markstream > .markstream-react {
   color: inherit;
@@ -259,16 +266,30 @@
 /* 语言代码块保留现有高亮与复制，控件只占一行。 */
 :where(.agent-content, .process-markdown) .code-block-container {
   margin-block: 0.85rem;
-  border: 1px dashed var(--ak-rule-default) !important;
+  border: 1px solid var(--ak-rule-subtle) !important;
   border-radius: 0 !important;
   box-shadow: none !important;
   background: var(--ak-paper-quiet) !important;
 }
 
+/* 高亮主题把底色写在 shadow 的 :host 上；外部对宿主的声明优先，代码区与块头同一纸面。 */
+:where(.agent-content, .process-markdown) .code-block-container diffs-container {
+  --diffs-bg: var(--ak-paper-quiet);
+  background-color: var(--ak-paper-quiet);
+}
+
 :where(.agent-content, .process-markdown) .code-block-header {
-  padding: 0.2rem 1rem !important;
-  background: var(--ak-paper-sheet) !important;
-  border-block-end: 1px solid var(--ak-rule-subtle);
+  min-height: 0 !important;
+  padding: 0 0.25rem 0 1rem !important;
+  background: transparent !important;
+  border-block-end: 0 !important;
+}
+
+@media (min-width: 36.0625rem) {
+  :where(.agent-content, .process-markdown) .code-header-actions .code-action-btn {
+    min-width: 36px;
+    min-height: 36px;
+  }
 }
 
 :where(.agent-content, .process-markdown) .code-block-header .icon-slot {
@@ -313,7 +334,7 @@
 :is(.agent-content, .process-markdown, .user-bubble) .markdown-reading .reading-concepts {
   margin-block: 0.85rem;
   padding: 0;
-  border: 1px dashed var(--ak-rule-default);
+  border: 1px solid var(--ak-rule-subtle);
   list-style: none;
 }
 
@@ -352,10 +373,10 @@
 }
 
 /* 用原生 list-item counter 保留 start/value、嵌套与辅助阅读的序号。
-   序号画在 ::before 上：左缘贴阅读边线，虚线与正文同一起点（::marker 靠右排，左缘无法对齐）。 */
+   序号画在 ::before 上：左缘贴阅读边线（::marker 靠右排，左缘无法对齐）；序号是阅读字体的次级墨色，条目之间只有行距。 */
 :is(.agent-content, .process-markdown, .user-bubble) .markdown-reading :where(ol):not(li ol) {
   margin-block: 0.75rem 1rem;
-  padding-inline-start: 2.5rem;
+  padding-inline-start: 1.75rem;
   list-style: none;
 }
 
@@ -366,19 +387,15 @@
 }
 
 :is(.agent-content, .process-markdown, .user-bubble) .markdown-reading :where(ol):not(li ol) > li::before {
-  content: counter(list-item, decimal-leading-zero) ".";
+  content: counter(list-item) ".";
   position: absolute;
-  inset-inline-start: -2.5rem;
+  inset-inline-start: -1.75rem;
   color: var(--ak-ink-secondary);
-  font-family: var(--ak-type-technical);
-  font-size: 0.85em;
   font-variant-numeric: tabular-nums;
-  line-height: calc(var(--chat-response-leading, 1.5) / 0.85);
 }
 
 :is(.agent-content, .process-markdown, .user-bubble) .markdown-reading :where(ol):not(li ol) > li + li {
-  padding-block-start: calc(var(--chat-list-gap, 0.25em) - 1px);
-  border-block-start: 1px dashed var(--ak-rule-subtle);
+  padding-block-start: var(--chat-list-gap, 0.25em);
 }
 
 :is(.agent-content, .process-markdown, .user-bubble) .markdown-reading ol > li::marker {
@@ -416,8 +433,6 @@
   max-width: 100%;
   overflow-x: auto;
   margin-block: 1rem;
-  padding: 0.3rem 0.7rem;
-  border: 1px dashed var(--ak-rule-default);
 }
 
 :is(.agent-content, .process-markdown, .user-bubble) .markdown-reading table {
@@ -455,8 +470,8 @@
   white-space: nowrap;
 }
 
-:is(.agent-content, .process-markdown, .user-bubble) .markdown-reading tbody tr:nth-child(even) {
-  background: var(--ak-paper-quiet);
+:is(.agent-content, .process-markdown, .user-bubble) .markdown-reading thead :where(th, td) {
+  border-block-end-color: var(--ak-rule-default);
 }
 
 :is(.agent-content, .process-markdown, .user-bubble) .markdown-reading .math-block-node {
@@ -464,7 +479,6 @@
   padding: 0.35rem 0.6rem;
   max-width: 100%;
   overflow-x: auto;
-  border-block: 1px dashed var(--ak-rule-default);
   background: var(--ak-paper-quiet);
 }
 
@@ -475,7 +489,7 @@
   min-width: 0;
   max-width: 100%;
   margin-block: 0.85rem;
-  border-inline-start: 1px dashed var(--ak-rule-default);
+  border: 1px solid var(--ak-rule-subtle);
   background: var(--ak-paper-quiet);
 }
 

@@ -125,7 +125,9 @@ export function ReadingCode({ node, ctx, isDark }: NodeComponentProps<CodeData>)
     </div>;
   }
   if (ctx?.renderCodeBlocksAsPre) return <PreCodeNode node={node} showLineNumbers={false} />;
-  return <CodeBlockNode node={node} isDark={isDark} loading={Boolean(node.loading)}
+  // 围栏正文自带结尾换行，高亮层会把它渲染成一整行空白。
+  const settled = node.code.endsWith("\n") ? { ...node, code: node.code.replace(/\n+$/, "") } : node;
+  return <CodeBlockNode node={settled} isDark={isDark} loading={Boolean(node.loading)}
     codeBlockOptions={ctx?.codeBlockOptions} onCopy={ctx?.events.onCopy}
     {...ctx?.codeBlockThemes}
     {...ctx?.codeBlockProps}
