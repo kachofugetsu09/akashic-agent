@@ -219,6 +219,19 @@
   white-space: pre-wrap;
 }
 
+/* 流式期间代码块先用 <pre> 渲染，落定后换成高亮组件。两者必须同一几何：
+   预留 44px 块头、12px/18px 行、同一圈发丝线与外边距，换手时版面不跳。 */
+.agent-content .markstream-react pre[data-markstream-pre="1"],
+.process-markdown .markstream-react pre[data-markstream-pre="1"] {
+  margin-block: 1rem !important;
+  border: 1px solid var(--ak-rule-subtle) !important;
+  border-radius: 0 !important;
+  padding: 52px 7px 8px !important;
+  font-size: 12px !important;
+  font-weight: 400;
+  line-height: 18px !important;
+}
+
 /* GFM 任务列表：勾选框自带语义，去掉重复的 disc 标记。 */
 .agent-content li:has(.checkbox-node),
 .process-markdown li:has(.checkbox-node) {
