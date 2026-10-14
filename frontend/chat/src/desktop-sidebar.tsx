@@ -101,13 +101,13 @@ const SHORTCUT_MOD = typeof navigator !== "undefined" && /Mac|iPhone|iPad/.test(
 // 常驻侧栏的两个全局快捷键：Mod+K 聚焦会话搜索，Mod+Shift+O 新会话。
 // 抽屉里的侧栏副本与被隐藏的常驻侧栏不挂监听，避免同一按键触发两次。
 function useSidebarShortcuts(sidebarRef: RefObject<HTMLElement | null>, searchRef: RefObject<HTMLInputElement | null>, onNewChat: () => void) {
-  const latest = useRef(onNewChat);
-  latest.current = onNewChat;
   useEffect(() => {
     const onKeyDown = (event: KeyboardEvent) => {
       const sidebar = sidebarRef.current;
       if (!sidebar || sidebar.closest("[role='dialog']") || sidebar.offsetParent === null) return;
       if (!(event.metaKey || event.ctrlKey) || event.altKey || event.isComposing) return;
+      // 对话框、菜单、选择器打开时按键属于它们，不把焦点抢到背后或在背后开新会话。
+      if (document.querySelector("[role='dialog'], [role='menu'], [role='listbox'], [data-radix-popper-content-wrapper]")) return;
       const key = event.key.toLowerCase();
       if (key === "k" && !event.shiftKey) {
         event.preventDefault();
@@ -115,12 +115,12 @@ function useSidebarShortcuts(sidebarRef: RefObject<HTMLElement | null>, searchRe
         searchRef.current?.select();
       } else if (key === "o" && event.shiftKey) {
         event.preventDefault();
-        latest.current();
+        onNewChat();
       }
     };
     document.addEventListener("keydown", onKeyDown);
     return () => document.removeEventListener("keydown", onKeyDown);
-  }, [searchRef, sidebarRef]);
+  }, [onNewChat, searchRef, sidebarRef]);
 }
 
 function sortSessions(rows: DesktopSidebarSession[], sort: SessionSortId, order: readonly string[]): DesktopSidebarSession[] {
@@ -360,7 +360,7 @@ export const DesktopSidebar = memo(function DesktopSidebar({
             onChange={(event) => setQuery(event.target.value)}
             onKeyDown={(event) => {
               // 搜索框里 Esc 先清空，再按一次把焦点还给输入框所在的页面。
-              if (event.key !== "Escape") return;
+              if (event.key !== "Escape" || event.nativeEvent.isComposing) return;
               if (query) setQuery("");
               else event.currentTarget.blur();
             }}

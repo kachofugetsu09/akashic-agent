@@ -43,15 +43,15 @@
   background: var(--md-sys-color-error-container);
 }
 
-.composer-action-button:hover:not(:disabled) {
+.composer-action-button:hover:not(:disabled, [aria-disabled="true"]) {
   background: color-mix(in srgb, var(--md-sys-color-primary) 92%, var(--md-sys-color-on-primary) 8%);
 }
 
-.composer-action-button[data-mode="stop"]:hover:not(:disabled) {
+.composer-action-button[data-mode="stop"]:hover:not(:disabled, [aria-disabled="true"]) {
   background: color-mix(in srgb, var(--md-sys-color-error-container) 92%, var(--md-sys-color-on-error-container) 8%);
 }
 
-.composer-action-button:active:not(:disabled) {
+.composer-action-button:active:not(:disabled, [aria-disabled="true"]) {
   scale: 0.96;
 }
 
@@ -60,14 +60,14 @@
   outline-offset: 2px;
 }
 
-.composer-action-button:disabled {
+.composer-action-button:is(:disabled, [aria-disabled="true"]) {
   color: color-mix(in srgb, var(--md-sys-color-on-surface) 38%, transparent);
   background: color-mix(in srgb, var(--md-sys-color-on-surface) 12%, transparent);
   cursor: default;
 }
 
 /* 正在停止：停止键保持方块，外圈一道细环转动，表示请求已送达、等本轮收尾。 */
-.composer-action-button[data-mode="stop"]:disabled::after {
+.composer-action-button[data-mode="stop"][aria-disabled="true"]::after {
   content: "";
   position: absolute;
   inset: 4px;
@@ -83,5 +83,5 @@
 }
 
 @media (prefers-reduced-motion: reduce) {
-  .composer-action-button[data-mode="stop"]:disabled::after { animation: none; border-inline-end-color: currentColor; opacity: 0.4; }
+  .composer-action-button[data-mode="stop"][aria-disabled="true"]::after { animation: none; border-inline-end-color: currentColor; opacity: 0.4; }
 }

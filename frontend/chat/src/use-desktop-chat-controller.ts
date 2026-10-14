@@ -905,16 +905,16 @@ export function useDesktopChatController() {
   }, [activeSessionId, closeConnection, connect, reportError, setStatusLive]);
 
   // "正在停止"持续到本轮真正结束：/stop 发出只代表请求送达，后端要到下一个检查点才停。
-  // 10 秒仍未结束时复位，让用户可以再停一次。
+  // status 由回复活动推导，生成中不会出现非生成的中间值；离开生成集合即本轮结束。
+  useEffect(() => {
+    if (stopPending && !isGeneratingChatStatus(status)) setStopPending(false);
+  }, [status, stopPending]);
+  // 自点击起 10 秒仍未结束时复位，让用户可以再停一次。
   useEffect(() => {
     if (!stopPending) return;
-    if (!isGeneratingChatStatus(status)) {
-      setStopPending(false);
-      return;
-    }
     const timer = window.setTimeout(() => setStopPending(false), 10_000);
     return () => window.clearTimeout(timer);
-  }, [status, stopPending]);
+  }, [stopPending]);
 
   const startNewChat = useCallback(() => {
     setSurface("chat");

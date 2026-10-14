@@ -339,15 +339,18 @@ function AttachmentHover({ attachment }: { attachment: ReturnType<typeof useProm
 function ComposerSubmit({ input, status, stopPending, onStop, disabled }: { input: string; status: ChatStatus; stopPending: boolean; onStop: () => void; disabled: boolean }) {
   const attachments = usePromptInputAttachments();
   const generating = isGeneratingChatStatus(status);
+  // 正在停止时用 aria-disabled 而非 disabled：禁用按钮会被浏览器夺走键盘焦点，状态只剩读屏文本。
+  const stopping = generating && stopPending;
   return <ComposerActionButton
     mode={generating ? "stop" : "send"}
     label={stopPending ? "正在停止" : status === "uploading" ? "取消上传" : generating ? "中止回答" : "发送消息"}
     type={generating ? "button" : "submit"}
+    aria-disabled={stopping || undefined}
     onClick={generating ? (event) => {
       // 取消会把同一按钮变回 submit；先阻断这次点击的默认提交。
       event.preventDefault();
-      onStop();
+      if (!stopping) onStop();
     } : undefined}
-    disabled={stopPending || (!generating && (disabled || (!input.trim() && attachments.files.length === 0)))}
+    disabled={!generating && (stopPending || disabled || (!input.trim() && attachments.files.length === 0))}
   />;
 }

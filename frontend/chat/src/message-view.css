@@ -201,13 +201,12 @@
   content-visibility: visible;
 }
 
-.agent-content .markstream-react pre[data-markstream-pre="1"],
-.process-markdown .markstream-react pre[data-markstream-pre="1"],
+/* 数学块在定稿前的源码兜底（DeferredMathBlock）：一块安静的纸面，不画框。 */
 .markstream-deferred-source {
   max-width: 100%;
   margin-block: 0.5rem !important;
-  overflow-x: auto;
   border: none !important;
+  overflow-x: auto;
   border-radius: var(--md-sys-shape-corner-medium) !important;
   padding: 10px 14px !important;
   color: var(--ak-ink-primary) !important;
@@ -219,17 +218,23 @@
   white-space: pre-wrap;
 }
 
-/* 流式期间代码块先用 <pre> 渲染，落定后换成高亮组件。两者必须同一几何：
-   预留 44px 块头、12px/18px 行、同一圈发丝线与外边距，换手时版面不跳。 */
-.agent-content .markstream-react pre[data-markstream-pre="1"],
-.process-markdown .markstream-react pre[data-markstream-pre="1"] {
+/* 流式期间代码块先用 PreCodeNode 的 <pre> 渲染，落定后换成高亮组件。两者必须同一几何：
+   44px 块头位（+8px 首行偏移，按落定块实测）、12px/18px 行、一圈 subtle 发丝线、1rem 外边距。
+   PreCodeNode 带 inline 字号/行高/上下内边距，只能用 !important 覆盖。 */
+:is(.agent-content, .process-markdown) .markstream-react pre[data-markstream-pre="1"] {
+  max-width: 100%;
   margin-block: 1rem !important;
+  overflow-x: auto;
   border: 1px solid var(--ak-rule-subtle) !important;
   border-radius: 0 !important;
   padding: 52px 7px 8px !important;
+  color: var(--ak-ink-primary) !important;
+  background: var(--ak-paper-quiet) !important;
+  font-family: var(--ak-type-technical, ui-monospace, SFMono-Regular, Menlo, Consolas, monospace) !important;
   font-size: 12px !important;
   font-weight: 400;
   line-height: 18px !important;
+  white-space: pre-wrap;
 }
 
 /* GFM 任务列表：勾选框自带语义，去掉重复的 disc 标记。 */
@@ -276,9 +281,10 @@
   border-block-start: 1px solid color-mix(in oklch, var(--md-sys-color-on-surface) 12%, transparent);
 }
 
-/* 语言代码块保留现有高亮与复制，控件只占一行。 */
+/* 语言代码块保留现有高亮与复制，控件只占一行。外边距与流式 <pre> 同为 1rem；
+   组件自带 my-4 工具类，显式 !important 让两边一致不依赖层叠顺序。 */
 :where(.agent-content, .process-markdown) .code-block-container {
-  margin-block: 0.85rem;
+  margin-block: 1rem !important;
   border: 1px solid var(--ak-rule-subtle) !important;
   border-radius: 0 !important;
   box-shadow: none !important;
