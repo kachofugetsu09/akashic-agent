@@ -1,7 +1,7 @@
 """只向运维客户端提供 HTTP；读取和剖析控制分别登记。"""
 from __future__ import annotations
 
-from fastapi import APIRouter, Depends, FastAPI, HTTPException, Query, Request
+from fastapi import Depends, FastAPI, HTTPException, Query, Request
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel, ConfigDict, Field
 
@@ -25,29 +25,30 @@ def reject_browser_request(request: Request) -> None:
 
 def register(app: FastAPI, context: RequestContext) -> None:
     """不接受文件路径、日志内容或任意执行参数。"""
-    router = APIRouter(dependencies=[Depends(reject_browser_request)])
-    @router.get("/api/dashboard/runtime-diagnostics")
+    # 宿主只接收 APIRoute；新版 FastAPI 的嵌套路由不属于这个合同。
+    browser_guard = [Depends(reject_browser_request)]
+
+    @app.get("/api/dashboard/runtime-diagnostics", dependencies=browser_guard)
     async def read(after: int = Query(default=0, ge=0)) -> JSONResponse:
         report = context.require(DIAGNOSTICS).read(after=after)
         report["profile"] = context.require(PROFILES).status()
         return JSONResponse(report, headers={"Cache-Control": "no-store"})
 
-    @router.get("/api/dashboard/runtime-diagnostics/export")
+    @app.get("/api/dashboard/runtime-diagnostics/export", dependencies=browser_guard)
     async def export() -> JSONResponse:
         report = context.require(DIAGNOSTICS).read()
         report["profile"] = context.require(PROFILES).status()
         return JSONResponse(report, headers={"Cache-Control": "no-store",
                             "Content-Disposition": 'attachment; filename="akashic-diagnostics.json"'})
 
-    @router.post("/api/dashboard/runtime-diagnostics/profile")
+    @app.post("/api/dashboard/runtime-diagnostics/profile", dependencies=browser_guard)
     async def start(request: ProfileRequest) -> dict[str, object]:
         try:
             return await context.require(PROFILES).start(request.seconds)
         except ProfileBusy as error:
             raise HTTPException(409, str(error)) from error
 
-    @router.post("/api/dashboard/runtime-diagnostics/profile/stop")
+    @app.post("/api/dashboard/runtime-diagnostics/profile/stop", dependencies=browser_guard)
     async def stop() -> dict[str, object]:
         return await context.require(PROFILES).stop()
 
-    app.include_router(router)
