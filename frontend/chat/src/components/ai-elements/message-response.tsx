@@ -10,6 +10,7 @@ import MarkdownRender, {
   MathBlockNode,
   MathInlineNode,
   setCustomComponents,
+  setDefaultI18nMap,
   type NodeComponentProps,
 } from "markstream-react";
 import "markstream-react/index.px.css";
@@ -62,6 +63,28 @@ function DeferredMathInline({ node, ctx }: NodeComponentProps<DeferredNode>) {
 function MermaidAsCode(props: NodeComponentProps<DeferredNode>) {
   return <ReadingCode {...props} node={{ ...props.node, type: "code_block", language: "mermaid", code: String(props.node.code ?? props.node.content ?? ""), raw: String(props.node.raw ?? "") }} />;
 }
+
+// markstream 自带按钮的文案与提示默认是英文；高亮完成后代码块会从占位换成它的工具栏，
+// 文案要与占位按钮（"复制代码"）和界面其余部分一致。
+setDefaultI18nMap({
+  "common.copy": "复制代码",
+  "common.copied": "已复制",
+  "common.decrease": "缩小字号",
+  "common.reset": "重置字号",
+  "common.increase": "放大字号",
+  "common.expand": "展开",
+  "common.collapse": "收起",
+  "common.preview": "预览",
+  "common.source": "源码",
+  "common.export": "导出",
+  "common.open": "打开",
+  "common.close": "关闭",
+  "common.zoomIn": "放大",
+  "common.zoomOut": "缩小",
+  "common.resetZoom": "重置缩放",
+  "image.loadError": "图片加载失败",
+  "image.loading": "正在加载图片…",
+});
 
 setCustomComponents({
   kaomoji_literal: KaomojiLiteral,
