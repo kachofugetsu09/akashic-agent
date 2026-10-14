@@ -365,3 +365,15 @@
   align-self: start;
   margin-block-start: 2px;
 }
+
+/* 时间分组标签：比分组标题更轻，只是列表里的一段留白和一行小字，不加线不加底。 */
+.conversation-session-group {
+  padding: 14px 10px 4px;
+  color: var(--chat-faint, var(--ak-color-text-secondary));
+  font-size: 0.75rem;
+  line-height: 1rem;
+}
+
+.conversation-session-group:first-child {
+  padding-block-start: 2px;
+}

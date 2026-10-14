@@ -84,6 +84,18 @@ function compareSessionTime(a: string | undefined, b: string | undefined): numbe
   return Date.parse(b) - Date.parse(a);
 }
 
+// 按时间排序时的分组：自然日边界按本地时区计算，跨过 7 天统一收进"更早"。
+function sessionDayGroup(iso: string | undefined, now: Date): string | undefined {
+  const time = iso ? Date.parse(iso) : Number.NaN;
+  if (Number.isNaN(time)) return undefined;
+  const startOfToday = new Date(now.getFullYear(), now.getMonth(), now.getDate()).getTime();
+  const days = Math.floor((startOfToday - time) / 86_400_000) + 1;
+  if (time >= startOfToday) return "今天";
+  if (days <= 1) return "昨天";
+  if (days <= 7) return "7 天内";
+  return "更早";
+}
+
 function sortSessions(rows: DesktopSidebarSession[], sort: SessionSortId, order: readonly string[]): DesktopSidebarSession[] {
   if (sort === "title") return [...rows].sort((a, b) => a.title.localeCompare(b.title, "zh-Hans-CN"));
   if (sort === "created") return [...rows].sort((a, b) => compareSessionTime(a.createdAt, b.createdAt));
@@ -288,6 +300,9 @@ export const DesktopSidebar = memo(function DesktopSidebar({
     disabled: !navigationPins.ready || navigationPins.pending,
     onSelect: () => { void navigationPins.setPinned(pin, !pinned); },
   }];
+  const sessionById = useMemo(() => new Map(allSessions.map((session) => [session.id, session])), [allSessions]);
+  // 分组只按渲染时刻的日期，跨午夜后随下一次列表更新重算即可。
+  const groupNow = new Date();
   const sessionView = (session: DesktopSidebarSession): ConversationSession => ({
     ...session, active: surface === "chat" && session.active,
   });
@@ -394,6 +409,10 @@ export const DesktopSidebar = memo(function DesktopSidebar({
         destinations={[]}
         actions={[]}
         sessions={recentSessions.map(sessionView)}
+        sessionGroup={sessionSort === "activity" || sessionSort === "created" ? (session) => {
+          const row = sessionById.get(session.id);
+          return sessionDayGroup(sessionSort === "created" ? row?.createdAt : row?.updatedAt, groupNow);
+        } : undefined}
         sessionDrag={sessionDrag}
         onSessionDelete={deleteHandler}
         onSessionRename={onRenameSession ? (session, title) => onRenameSession(session.id, title) : undefined}

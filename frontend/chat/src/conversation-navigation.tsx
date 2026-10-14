@@ -1,5 +1,5 @@
 import { ChevronRight, PenLine, Trash2 } from "lucide-react";
-import { useEffect, useRef, useState, type ReactNode } from "react";
+import { Fragment, useEffect, useRef, useState, type ReactNode } from "react";
 import "./conversation-navigation.css";
 import { SessionStatusMark, type SessionStatus } from "./session-status-mark";
 import { NavigationRowMenu, type NavigationRowAction } from "./navigation-row-menu";
@@ -75,6 +75,7 @@ export function ConversationNavigation({
   sessionDrag,
   onSessionDelete,
   onSessionRename,
+  sessionGroup,
 }: {
   destinations: ConversationDestination[];
   sessions: ConversationSession[];
@@ -98,6 +99,8 @@ export function ConversationNavigation({
   onSessionDelete?: (session: ConversationSession) => Promise<void>;
   /** 提供后会话行获得双击/菜单行内重命名；Promise 拒绝时编辑态保留。 */
   onSessionRename?: (session: ConversationSession, title: string) => Promise<void>;
+  /** 提供后在组名变化处插入一行安静的分组标签（如按时间排序时的"今天""昨天"）。 */
+  sessionGroup?: (session: ConversationSession) => string | undefined;
 }) {
   const featuredDestinations = destinations.filter((destination) => destination.featured);
   const standardDestinations = destinations.filter((destination) => !destination.featured);
@@ -132,8 +135,9 @@ export function ConversationNavigation({
 
       <section className="conversation-navigation__sessions">
         <nav className="conversation-session-list" aria-label="最近会话">
-          {sessions.map((session) => <ConversationSessionRow
-            key={session.id}
+          {sessions.map((session, index) => <Fragment key={session.id}>
+            {groupLabel(sessions, index, sessionGroup)}
+            <ConversationSessionRow
             session={session}
             pendingSessionId={pendingSessionId}
             onActivate={onSessionActivate}
@@ -142,7 +146,7 @@ export function ConversationNavigation({
             drag={sessionDrag?.(session)}
             onDelete={onSessionDelete ? () => onSessionDelete(session) : undefined}
             onRename={onSessionRename ? (title: string) => onSessionRename(session, title) : undefined}
-          />)}
+          /></Fragment>)}
         </nav>
       </section>
 
@@ -168,6 +172,14 @@ export function ConversationNavigation({
       </div> : null}
     </aside>
   );
+}
+
+// 只在组名与上一行不同时出标签；拖拽与菜单仍挂在会话行上，标签不参与。
+function groupLabel(sessions: ConversationSession[], index: number, group?: (session: ConversationSession) => string | undefined) {
+  if (!group) return null;
+  const label = group(sessions[index]);
+  if (!label || (index > 0 && group(sessions[index - 1]) === label)) return null;
+  return <div className="conversation-session-group">{label}</div>;
 }
 
 export function ConversationSessionRow({ session, pendingSessionId, onActivate, onPrefetch, actions, drag, onDelete, onRename }: {
