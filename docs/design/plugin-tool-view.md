@@ -65,9 +65,9 @@ replay 材料保存，Message 日志只提交解码后的真实 `ToolCall`，因
 必须在旧 selection 内完成或按既有 abandon 规则结算，不能依赖新 selection 猜测旧参数。
 
 目录通过当前 Tool loading presentation 加入 system，按插件 ID 稳定排序，每行只显示“插件 ID ·
-声明用途 · 工具数量”。固定工具已有顶层 schema，不在目录重复列出工具名。Wake、Scheduler、
-Subagent 和其他 native presentation 不得到该目录。顶层 schemas 在加载前后严格相同。加载返回
-一整组，不提供关键词、排序、风险过滤、截断或分页。
+声明用途 · 工具数量”。固定工具已有顶层 schema，不在目录重复列出工具名。Scheduler 与普通回复
+借用同一加载展示；Wake、Subagent 和其他 native presentation 不得到该目录。顶层 schemas
+在加载前后严格相同。加载返回一整组，不提供关键词、排序、风险过滤、截断或分页。
 
 `model.facts` 兼容旧字段；新成功 Output 额外保存本次实际使用的 reminder replay、它所属
 Input 与内容 SHA-256 摘要，以及原 wire tool calls。同一 Input 的同一材料只重放一次，当前请求复用
@@ -107,7 +107,7 @@ Output 仍为 continue 并计入原步数上限，所以取消、重启或新输
 |---|---|---|
 | conversation/reply | `ALL_TOOLS` 中全部公开 provider view，加 tool-search 私有 view；只有 provider 声明的 always-on 组直接展示，其余组通过准确插件 ID 加载 | 每轮当前 Root 引用；旧调用按 binding 恢复 |
 | Wake | 自己的私有决定工具、Memory recall provider、Web provider | `Request.tools` 保存原 binding；缺硬依赖不激活 |
-| Scheduler | 当前全池减 message-push 与 memory 写入/召回工具 | 原允许范围不扩大；外部工具仍可用 |
+| Scheduler | 每次执行开始时取当前全池，减 message-push 与 memory 写入/召回工具，再借用加载展示 | 同次执行的目录、展示与授权保持一致；后续任务重新取当前引用 |
 | Subagent | `research`、`scripting`、`general` 三个既有 profile | prepared 时保存配置化 binding；无搜索能力 |
 | Plugin validation | 请求显式 `validation_tools`，未声明时为候选 Root 的完整 view | 只在候选隔离 Session 执行 |
 | Programmatic | 作为普通 Source 进入 reply，复用同一 presentation | 不新建独立工具池或来源特判 |
@@ -121,6 +121,10 @@ runtime 且完整送达依赖就绪时挂载的可选 child，因此沿用 `mess
 MCP `tools/list` 得到的工具必须注册进同一引用池并归到声明它的实际插件组；正式 MCP route
 仍拥有进程、allowlist、恢复和 transport 错误。Akasha 的直接 Tool 与 MCP 工具对消费者都只
 通过 view 暴露，不能绕回 legacy `ToolRegistry` 获得额外权限。
+
+`RUNTIME_STARTED` 只表示当前插件 activation 已启动，不是全部 provider 注册完成的屏障。
+Scheduler 不在这个时点缓存全池。晚注册的工具应进入之后启动的任务；卸载的工具应从新任务
+目录消失。在途任务不因其他任务取到新目录而扩大权限，旧 ToolCall 仍按原 binding 处理。
 
 ## 5. 验收
 
