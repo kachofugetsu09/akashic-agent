@@ -345,6 +345,17 @@ export const DesktopTimelineMessages = React.memo(function DesktopTimelineMessag
     return breaks;
   }, [visibleMessages]);
   const anchorIndexes = useMemo(() => timelineAnchorIndexes(messages, groups), [messages, groups]);
+  // 每条输出所在轮次的开始时间：同来源最近一条用户输入。
+  const turnStarts = useMemo(() => {
+    const starts = new Map<string, string>();
+    const inputs = new Map<string, string>();
+    for (const message of messages) {
+      const key = timelineSourceKey(message);
+      if (message.body.kind === "input" && message.author === "user") inputs.set(key, message.timestamp);
+      else if (message.body.kind === "output" && inputs.has(key)) starts.set(message.id, inputs.get(key)!);
+    }
+    return starts;
+  }, [messages]);
   const onNavigate = useCallback((id: string, partIndex?: number) => {
     stopScroll();
     const processOwner = partIndex === undefined ? undefined : [...groups.inline.leading].find(
@@ -364,7 +375,7 @@ export const DesktopTimelineMessages = React.memo(function DesktopTimelineMessag
       if (element) messageElementsRef.current.set(message.id, element);
       else messageElementsRef.current.delete(message.id);
     }}>
-    <TimelineMessageView message={message} hideBody={groups.hiddenBodies.has(message.id) || groups.moved.has(message.id)} processMessages={groups.completed.get(message.id)}
+    <TimelineMessageView message={message} turnStartedAt={turnStarts.get(message.id)} hideBody={groups.hiddenBodies.has(message.id) || groups.moved.has(message.id)} processMessages={groups.completed.get(message.id)}
       inlineReply={groups.inline.outputs.has(message.id)} leadingProcess={groups.inline.leading.get(message.id)}
       hideProcess={groups.moved.has(message.id)} lookupMessage={lookupMessage} toolResults={toolResults} onNavigate={onNavigate} onError={onError}
       beforeReasoning={(origin) => needsBeforeReasoningFallback(origin, inputStarts) ? <PluginUiSlot name="turn.before_reasoning"

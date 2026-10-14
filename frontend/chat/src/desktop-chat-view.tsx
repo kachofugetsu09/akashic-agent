@@ -151,7 +151,7 @@ export function DesktopChatView({ embeddedShell, controller }: DesktopChatViewPr
           </div> : null}
           <DesktopComposer
             ref={composerApi}
-            chatReady={chatReady} canSend={canSend} modelProblem={modelProblem} draftKey={draftKey} autoFocus={!hasMessages && chatReady} status={status} stopPending={stopPending} modelState={modelState}
+            chatReady={chatReady} canSend={canSend} modelProblem={modelProblem} draftKey={draftKey} autoFocus={!hasMessages && chatReady} fresh={!hasMessages} status={status} stopPending={stopPending} modelState={modelState}
             selectedRuntimeId={selectedRuntimeId} selectedEffort={selectedReasoningEffort}
             replyTarget={replyTarget} onModelChange={handleModelChange} onCancelReply={cancelReply}
             onSend={sendMessage} onStop={stopTurn}

@@ -606,6 +606,32 @@
   min-width: 0;
 }
 
+/* 一轮结束后的过程摘要：与工具行同一栅格；展开后内部吸顶行让出摘要行的高度。 */
+.turn-process {
+  min-width: 0;
+  margin-block-end: 10px;
+}
+
+.turn-process-items {
+  display: grid;
+  gap: 2px;
+  min-width: 0;
+  padding-block-start: 2px;
+}
+
+.turn-process-failed {
+  color: var(--ak-color-status-error);
+  font-style: normal;
+}
+
+.turn-process.is-open .turn-process-items :is(.tool-step-sticky.is-open, .thinking-row[data-state="open"] .process-trigger-sticky) {
+  top: var(--tool-sticky-h);
+}
+
+.turn-process.is-open .turn-process-items .tool-group.is-open .tool-group-items .tool-step-sticky.is-open {
+  top: calc(2 * var(--tool-sticky-h));
+}
+
 /* 跨天分隔：居中日期两侧各一条发丝线，与消息行同色阶。 */
 .day-separator {
   display: flex;
@@ -1398,6 +1424,18 @@ button.tool-step-summary:active {
 .shared-message-meta.user {
   margin-inline-start: auto;
   flex-direction: row-reverse;
+}
+
+/* 有悬停的宽屏：只有最新一条常驻时间与操作，更早的消息悬停或聚焦时整行显现，行高不变、不推动正文。 */
+@media (hover: hover) and (min-width: 36.0625rem) {
+  .web-message-anchor:not(:nth-last-child(1 of .web-message-anchor)) .shared-message-meta {
+    opacity: 0;
+    transition: opacity var(--ak-sys-duration-short) var(--ak-sys-motion-standard);
+  }
+
+  .web-message-anchor:is(:hover, :focus-within) .shared-message-meta {
+    opacity: 1;
+  }
 }
 
 /* 发送确认通常在一秒内到达：短暂停留时不闪"发送中"，超过 1.2 秒才淡入。 */

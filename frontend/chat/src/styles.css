@@ -1155,10 +1155,32 @@ input {
   margin-block-end: 0;
 }
 
+/* 正文同样经过过程流渲染：末段与流容器都不再向下留白，消息间距只由列表 gap 决定。 */
+.web-message-anchor .agent-content > .process-trace:last-child {
+  margin-block-end: 0;
+}
+
+.web-message-anchor .agent-content > .process-trace:last-child > .flow-item:last-child > p:last-child,
+.web-message-anchor .agent-content > .process-trace:last-child > .flow-item:last-child .markdown-renderer > .node-slot:last-child :where(p, ul, ol, pre, table, blockquote):last-child {
+  margin-block-end: 0;
+}
+
 .web-message-anchor .shared-message-meta {
-  min-block-size: 32px;
-  margin-block-start: 8px;
+  min-block-size: 28px;
+  margin-block-start: 4px;
   font-size: var(--chat-type-caption);
+}
+
+/* 宽屏元信息行固定 28px；40px 操作热区向上下透明溢出，不再撑高每条消息。 */
+@media (min-width: 36.0625rem) {
+  .web-message-anchor .shared-message-meta {
+    block-size: 28px;
+    min-height: 0;
+  }
+
+  .web-message-anchor .shared-message-actions {
+    margin-block: -6px;
+  }
 }
 
 .conversation {
@@ -1178,7 +1200,7 @@ input {
   width: min(100%, var(--chat-column));
   margin: 0;
   margin-inline-start: max(0px, calc((100% - var(--chat-column)) / 4));
-  gap: 24px;
+  gap: 20px;
   padding-block: 1.5rem calc(
     var(--composer-compact-h)
     + var(--composer-dock-gap)
@@ -2613,6 +2635,11 @@ form.composer:focus-within [data-slot="input-group"] {
   .chat-main .composer.is-resting .composer-action-button {
     grid-column: 1;
     border-radius: 50%;
+  }
+
+  /* 阅读态空草稿的发送钮不可用：点击穿透到卡片，等同点进输入框。 */
+  .chat-main .composer.is-resting .composer-action-button:disabled {
+    pointer-events: none;
   }
 }
 

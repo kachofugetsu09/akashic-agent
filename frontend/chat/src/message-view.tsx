@@ -408,6 +408,81 @@ function TimelineProcess({ flow, draftThinking = "", beforeReasoning, beforePart
   </>;
 }
 
+/** 一轮结束后，思考、工具与中途旁白收进一行摘要；正文、附件和仍在运行的工具留在外面。 */
+function SettledTurnFlow({ flow, startedAt, endedAt, beforeReasoning, beforePart, partView }: {
+  flow: FlowItem[];
+  startedAt?: string;
+  endedAt: string;
+  beforeReasoning?: (message: TimelineMessage) => ReactNode;
+  beforePart?: (part: TimelinePart, index: number, message: TimelineMessage) => ReactNode;
+  partView: FlowPartViewProps;
+}) {
+  const process = flow.filter((item) => item.kind !== "part");
+  const running = process.some((item) => item.kind === "tool" && item.block.status === "input-available");
+  const worthSummary = process.some((item) => item.kind === "tool") || process.length >= 2;
+  if (running || !worthSummary) {
+    return <TimelineProcess flow={flow} beforeReasoning={beforeReasoning} beforePart={beforePart} partView={partView} />;
+  }
+  // 1. 召回等插件槽位属于本轮开头，留在摘要外保持可见。
+  // 2. 摘要内复用逐行过程视图，展开后与运行时看到的一致。
+  return <>
+    {beforeReasoning?.(process[0].origin)}
+    <TurnProcessSummary items={process} durationMs={turnDurationMs(startedAt, endedAt)}>
+      <TimelineProcess flow={process} beforePart={beforePart} />
+    </TurnProcessSummary>
+    <TimelineProcess flow={flow.filter((item) => item.kind === "part")} beforePart={beforePart} partView={partView} />
+  </>;
+}
+
+function turnDurationMs(startedAt: string | undefined, endedAt: string): number | undefined {
+  const elapsed = startedAt ? Date.parse(endedAt) - Date.parse(startedAt) : Number.NaN;
+  return Number.isFinite(elapsed) && elapsed >= 1_000 ? elapsed : undefined;
+}
+
+function formatTurnDuration(durationMs: number): string {
+  const seconds = Math.round(durationMs / 1_000);
+  return seconds < 60 ? `${seconds}s` : `${Math.floor(seconds / 60)}m ${seconds % 60}s`;
+}
+
+function TurnProcessSummary({ items, durationMs, children }: {
+  items: FlowItem[];
+  durationMs?: number;
+  children: ReactNode;
+}) {
+  const { open, instant, rowRef, toggle } = useStickyDisclosure();
+  const [mounted, setMounted] = useState(false);
+  const thinking = items.filter((item) => item.kind === "thinking").length;
+  const tools = items.filter((item) => item.kind === "tool");
+  const failed = tools.filter((item) => item.kind === "tool" && item.block.status === "output-error").length;
+  const label = [thinking ? `思考 ${thinking} 次` : "", tools.length ? `调用 ${tools.length} 个工具` : ""]
+    .filter(Boolean).join("，") || "过程记录";
+  const Icon = tools.length ? Wrench : Brain;
+  return (
+    <div className={`turn-process${open ? " is-open" : ""}`}>
+      <div ref={rowRef} className={`tool-step-sticky${open ? " is-open" : ""}`}>
+        <button type="button" className="tool-step-summary turn-process-summary" aria-expanded={open}
+          onClick={() => { setMounted(true); toggle(); }}>
+          <span className="tool-step-heading">
+            <span className="tool-step-title">
+              <Icon className="tool-step-icon" size={13} aria-hidden="true" />
+              <span>{label}</span>
+            </span>
+            <span className="tool-step-description">{failed ? <em className="turn-process-failed">{failed} 个失败</em> : null}</span>
+            <span className="tool-step-state">
+              {durationMs !== undefined ? formatTurnDuration(durationMs) : ""}
+              <CollapseHint open={open} lead={durationMs !== undefined} />
+            </span>
+            <ChevronDown className={`tool-step-chevron ${open ? "open" : ""}`} size={13} aria-hidden="true" />
+          </span>
+        </button>
+      </div>
+      <Disclosure open={open} instant={instant}>
+        {mounted ? <div className="turn-process-items">{children}</div> : null}
+      </Disclosure>
+    </div>
+  );
+}
+
 /** 图文回复只收纳思考与已完成工具；正文和仍在执行的工具保持可见。 */
 function InlineReplyProcess({ messages, toolResults, beforeReasoning, beforePart }: {
   messages: TimelineMessage[]; toolResults: ReadonlyMap<string, TimelineMessage>;
@@ -432,8 +507,10 @@ function InlineReplyProcess({ messages, toolResults, beforeReasoning, beforePart
 }
 
 /** 保留消息引用与 part 位置，复用原聊天的过程和正文组件。 */
-export function TimelineMessageView({ message, lookupMessage, toolResults, onNavigate, onError, beforeReasoning, beforePart, afterBody, renderAttachment, hideBody = false, processMessages = [message], hideProcess = false, inlineReply = false, leadingProcess, canLoadReferences = false }: {
+export function TimelineMessageView({ message, lookupMessage, toolResults, onNavigate, onError, beforeReasoning, beforePart, afterBody, renderAttachment, hideBody = false, processMessages = [message], hideProcess = false, inlineReply = false, leadingProcess, canLoadReferences = false, turnStartedAt }: {
   message: TimelineMessage;
+  /** 本轮用户输入的时间；摘要行据此给出整轮用时。 */
+  turnStartedAt?: string;
   hideBody?: boolean;
   canLoadReferences?: boolean;
   toolResults: ReadonlyMap<string, TimelineMessage>;
@@ -479,7 +556,7 @@ export function TimelineMessageView({ message, lookupMessage, toolResults, onNav
       {leadingContent}
       {leadingProcess ? <InlineReplyProcess messages={leadingProcess} toolResults={toolResults}
         beforeReasoning={beforeReasoning} beforePart={beforePart} /> : null}
-      {hasFlow ? <TimelineProcess flow={flow}
+      {hasFlow ? <SettledTurnFlow flow={flow} startedAt={turnStartedAt} endedAt={message.timestamp}
         beforeReasoning={beforeReasoning} beforePart={beforePart}
         partView={{ attachment, lookupMessage, onNavigate, onError, canLoadReferences }} /> : null}
       {body.kind === "control" ? <div className="timeline-control-summary">
@@ -847,13 +924,14 @@ const ToolStep = memo(function ToolStep({
     onCopyDetail?.(text);
     setCopiedDetail({ section, text });
   };
+  // 成功是默认结果，不再逐行写"完成"；只有运行中、失败和耗时值得占位。
   const stateLabel = block.status === "input-available"
     ? "运行中"
     : block.status === "output-error"
       ? "失败"
       : block.durationMs === undefined
-        ? "完成"
-        : `完成 · ${formatToolDuration(block.durationMs)}`;
+        ? ""
+        : formatToolDuration(block.durationMs);
 
   return (
     <div
@@ -978,7 +1056,7 @@ function ToolStepSummary({
         <span>{block.name}</span>
       </span>
       <span className="tool-step-description">{description}</span>
-      <span className="tool-step-state">{stateLabel}<CollapseHint open={open} /></span>
+      <span className="tool-step-state">{stateLabel}<CollapseHint open={open} lead={Boolean(stateLabel)} /></span>
       {expandable ? <ChevronDown className={`tool-step-chevron ${open ? "open" : ""}`} size={13} /> : null}
     </span>
   );

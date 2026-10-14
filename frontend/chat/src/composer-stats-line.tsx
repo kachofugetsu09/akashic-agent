@@ -19,6 +19,9 @@ export function ComposerStatsLine({ messages, activities, connected, load = load
   const { callId, active } = selectModelCall(messages, activities);
   const [result, setResult] = useState<{ callId: string; stats?: ModelCallStats; error?: string } | null>(null);
   const [phase, setPhase] = useState<StatsPhase>("active");
+  // 终态摘要只给看着它跑完的那次调用；打开旧会话不回放上一轮的统计。
+  const [watchedCallId, setWatchedCallId] = useState("");
+  if (active && callId && watchedCallId !== callId) setWatchedCallId(callId);
   useEffect(() => {
     if (!callId || !connected) return;
     const selectedId = callId;
@@ -32,7 +35,7 @@ export function ComposerStatsLine({ messages, activities, connected, load = load
         if (active && stats.state === "started") timer = setTimeout(() => void read(), 1000);
       } catch {
         if (!controller.signal.aborted) {
-          setResult({ callId: selectedId, error: "统计暂不可用" });
+          setResult({ callId: selectedId, error: "unavailable" });
           if (active) timer = setTimeout(() => void read(), 1000);
         }
       }
@@ -53,8 +56,9 @@ export function ComposerStatsLine({ messages, activities, connected, load = load
   }, [active]);
   if (!callId || !connected || phase === "gone") return null;
   const current = result?.callId === callId ? result : null;
-  if (!active && !current) return null;
-  const summary = current?.stats ? formatModelCallStats(current.stats, false) : current?.error ?? "";
+  if (!active && (!current?.stats || watchedCallId !== callId)) return null;
+  // 统计读取失败只影响遥测，不向用户报错。
+  const summary = current?.stats ? formatModelCallStats(current.stats, false) : "";
   // aria-live 只在活动切换时改文案：开始固定"正在生成…"，结束给一条终态摘要；逐秒数据进 aria-hidden 呈现层。
   const liveText = active ? "正在生成…" : summary;
   const detail = active && current?.stats ? formatModelCallStats(current.stats, true) : "";

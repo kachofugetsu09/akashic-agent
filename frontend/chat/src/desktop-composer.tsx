@@ -25,7 +25,7 @@ export interface ComposerApi {
 
 /** Own transient editor state while the app controller owns transport and durable chat state. */
 export const DesktopComposer = memo(function DesktopComposer({
-  chatReady, canSend, modelProblem, draftKey, autoFocus = false, status, stopPending, modelState, selectedRuntimeId, selectedEffort, replyTarget,
+  chatReady, canSend, modelProblem, draftKey, autoFocus = false, fresh = false, status, stopPending, modelState, selectedRuntimeId, selectedEffort, replyTarget,
   onModelChange, onCancelReply, onSend, onStop, ref,
 }: {
   chatReady: boolean;
@@ -34,6 +34,8 @@ export const DesktopComposer = memo(function DesktopComposer({
   draftKey: string;
   /** 空态（新会话/无消息）时输入框接收焦点。 */
   autoFocus?: boolean;
+  /** 会话还没有消息；占位文案邀请开场，而不是"继续"。 */
+  fresh?: boolean;
   status: ChatStatus;
   stopPending: boolean;
   modelState: { defaultRuntime: string; runtimes: ChatModelRuntime[] } | null;
@@ -164,7 +166,14 @@ export const DesktopComposer = memo(function DesktopComposer({
       multiple
       data-draft-version={draftVersion}
       onSubmit={(message) => submit(message.text, message.files)}
-      onPointerDown={(event) => { if (!(event.target instanceof Element && event.target.closest("button"))) setEngaged(true); }}
+      onClick={(event) => {
+        // 触摸的 click 在 pointerdown 之后按当时布局命中目标；展开必须等这次点击落定，
+        // 否则工具行会顶到手指下，把点击送进模型选择。卡片空白处的点击等同点进输入框。
+        const target = event.target instanceof Element ? event.target : null;
+        if (target?.closest("button, a, [role='button'], [data-radix-popper-content-wrapper]")) return;
+        setEngaged(true);
+        if (!target?.closest("textarea")) textareaRef.current?.focus();
+      }}
       onKeyDown={() => setEngaged(true)}
       onBlur={onComposerBlur}
       onDragEnter={onDragEnter}
@@ -185,7 +194,7 @@ export const DesktopComposer = memo(function DesktopComposer({
           aria-label="消息"
           aria-describedby={modelProblem ? "chat-model-reason" : undefined}
           disabled={!chatReady}
-          placeholder={canSend ? "继续布置任务…" : "先写下想说的话…"}
+          placeholder={!canSend ? "先写下想说的话…" : fresh ? "布置一件事，或随便聊聊…" : "继续…"}
         />
       </PromptInputBody>
       <PromptInputFooter className="composer__bar">
