@@ -585,8 +585,10 @@ class ModelsStore:
                 ).fetchall()
                 for row in rows:
                     usage = row["usage_json"]
-                    success = row["state"] == "success" and usage is not None
-                    result[str(row["id"])] = cast(Mapping[str, object], json.loads(usage)) if success else None
+                    result[str(row["id"])] = (
+                        cast(Mapping[str, object], json.loads(usage))
+                        if row["state"] == "success" and usage is not None else None
+                    )
         return result
 
     def read_call_stats(self, call_id: str) -> ModelCallStats:
