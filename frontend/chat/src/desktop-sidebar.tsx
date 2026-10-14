@@ -100,6 +100,63 @@ const SHORTCUT_MOD = typeof navigator !== "undefined" && /Mac|iPhone|iPad/.test(
 
 // 常驻侧栏的两个全局快捷键：Mod+K 聚焦会话搜索，Mod+Shift+O 新会话。
 // 抽屉里的侧栏副本与被隐藏的常驻侧栏不挂监听，避免同一按键触发两次。
+const SEARCH_HIGHLIGHT = "sidebar-search";
+
+// 侧栏里可见的会话行主按钮，按文档顺序：置顶、项目内、最近会话。
+function sessionRows(root: HTMLElement | null): HTMLButtonElement[] {
+  return Array.from(root?.querySelectorAll<HTMLButtonElement>(".chat-sidebar__navigation button.conversation-session") ?? [])
+    .filter((row) => row.offsetParent !== null);
+}
+
+// 焦点在会话行上时，↑↓ 在行间移动；从第一行再按 ↑ 回到搜索框。
+function moveSessionFocus(event: React.KeyboardEvent<HTMLElement>) {
+  if (event.key !== "ArrowDown" && event.key !== "ArrowUp") return;
+  const target = event.target;
+  if (!(target instanceof HTMLButtonElement) || !target.classList.contains("conversation-session")) return;
+  const sidebar = target.closest<HTMLElement>(".chat-sidebar");
+  const rows = sessionRows(sidebar);
+  const index = rows.indexOf(target);
+  event.preventDefault();
+  if (event.key === "ArrowDown") rows[Math.min(index + 1, rows.length - 1)]?.focus();
+  else if (index > 0) rows[index - 1].focus();
+  else sidebar?.querySelector<HTMLInputElement>(".chat-sidebar__search input")?.focus();
+}
+
+// 搜索时用 CSS Custom Highlight 标出标题里的命中片段：不改行组件的 DOM，不支持的浏览器只是不标。
+// 抽屉与常驻侧栏各有一份实例，只清理自己登记的那一份。
+function useSearchHighlight(rootRef: RefObject<HTMLElement | null>, needle: string) {
+  useEffect(() => {
+    const root = rootRef.current;
+    if (!needle || !root || typeof CSS === "undefined" || !("highlights" in CSS)) return;
+    const registry = CSS.highlights;
+    const mine = new Highlight();
+    // 1. 列表随会话推送重渲染，标题文本节点会被替换；观察子树变化后重新取范围。
+    const collect = () => {
+      mine.clear();
+      for (const title of root.querySelectorAll(".conversation-session__title")) {
+        const walker = document.createTreeWalker(title, NodeFilter.SHOW_TEXT);
+        for (let node = walker.nextNode(); node; node = walker.nextNode()) {
+          const text = (node.textContent ?? "").toLowerCase();
+          for (let at = text.indexOf(needle); at >= 0; at = text.indexOf(needle, at + needle.length)) {
+            const range = new Range();
+            range.setStart(node, at);
+            range.setEnd(node, at + needle.length);
+            mine.add(range);
+          }
+        }
+      }
+    };
+    collect();
+    registry.set(SEARCH_HIGHLIGHT, mine);
+    const observer = new MutationObserver(collect);
+    observer.observe(root, { subtree: true, childList: true, characterData: true });
+    return () => {
+      observer.disconnect();
+      if (registry.get(SEARCH_HIGHLIGHT) === mine) registry.delete(SEARCH_HIGHLIGHT);
+    };
+  }, [needle, rootRef]);
+}
+
 function useSidebarShortcuts(sidebarRef: RefObject<HTMLElement | null>, searchRef: RefObject<HTMLInputElement | null>, onNewChat: () => void) {
   useEffect(() => {
     const onKeyDown = (event: KeyboardEvent) => {
@@ -216,6 +273,7 @@ export const DesktopSidebar = memo(function DesktopSidebar({
   });
   const needle = query.trim().toLowerCase();
   const searching = Boolean(needle);
+  useSearchHighlight(sidebarRef, needle);
   const allSessions = useMemo(() => {
     const rows = new Map<string, DesktopSidebarSession>(navigationPins.sessions.map((session) => [session.key, {
       id: session.key, title: sessionLabel(session), preview: session.message_count === undefined ? "" : `${session.message_count} 条消息`,
@@ -359,10 +417,20 @@ export const DesktopSidebar = memo(function DesktopSidebar({
             value={query}
             onChange={(event) => setQuery(event.target.value)}
             onKeyDown={(event) => {
-              // 搜索框里 Esc 先清空，再按一次把焦点还给输入框所在的页面。
-              if (event.key !== "Escape" || event.nativeEvent.isComposing) return;
-              if (query) setQuery("");
-              else event.currentTarget.blur();
+              if (event.nativeEvent.isComposing) return;
+              // 1. Esc 先清空，再按一次把焦点还给页面。
+              if (event.key === "Escape") {
+                if (query) setQuery("");
+                else event.currentTarget.blur();
+                return;
+              }
+              // 2. 回车打开第一条结果，↓ 进入结果列表；与命令面板同一手感。
+              if (event.key !== "Enter" && event.key !== "ArrowDown") return;
+              const first = sessionRows(sidebarRef.current)[0];
+              if (!first || (event.key === "Enter" && !searching)) return;
+              event.preventDefault();
+              if (event.key === "Enter") first.click();
+              else first.focus();
             }}
             placeholder="搜索会话"
             aria-label="搜索会话"
@@ -372,7 +440,7 @@ export const DesktopSidebar = memo(function DesktopSidebar({
         </label>
       </div>
 
-      <div className="chat-sidebar__navigation">
+      <div className="chat-sidebar__navigation" onKeyDown={moveSessionFocus}>
       {searching && !hasMatches ? <p className="navigation-search-empty" role="status">没有匹配的会话或项目</p> : null}
       {navigationPins.error ? <div className="navigation-pins-error" role="alert">
         <span>{navigationPins.error}</span>
@@ -442,8 +510,8 @@ export const DesktopSidebar = memo(function DesktopSidebar({
 
       <ConversationNavigation
         destinationHeading={false}
-        sessionHeading="最近会话"
-        sessionHeadingAction={<SessionSortMenu sort={sessionSort} onSort={setSessionSort} />}
+        sessionHeading={!searching ? "最近会话" : recentSessions.length ? "匹配的会话" : ""}
+        sessionHeadingAction={searching ? undefined : <SessionSortMenu sort={sessionSort} onSort={setSessionSort} />}
         destinations={[]}
         actions={[]}
         sessions={recentSessions.map(sessionView)}

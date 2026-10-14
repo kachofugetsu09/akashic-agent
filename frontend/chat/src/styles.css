@@ -325,6 +325,13 @@ input {
   background: color-mix(in oklch, var(--md-sys-color-on-surface) 8%, transparent);
 }
 
+/* 搜索命中只换墨色并加粗下划线，不铺底色块，列表仍然安静。 */
+::highlight(sidebar-search) {
+  color: var(--ak-ink-primary);
+  text-decoration: underline 1.5px color-mix(in srgb, var(--ak-ink-primary) 55%, transparent);
+  text-underline-offset: 3px;
+}
+
 /* 快捷键提示只在宽屏指针设备上、搜索框空闲时出现；聚焦或有输入就让位。 */
 .chat-sidebar__search-key {
   display: none;
@@ -670,7 +677,8 @@ input {
   padding-inline: var(--chat-rail-inline);
 }
 
-.navigation-search-empty { margin: 8px 16px; color: var(--chat-muted); font-size: 0.8125rem; }
+/* 与列表标题、分组标签同一左缘（22px），占在列表原本的位置。 */
+.navigation-search-empty { margin: 18px 22px 0; color: var(--chat-muted); font-size: 0.8125rem; }
 .navigation-pins-error { display: grid; gap: 5px; padding: 8px 16px; font-size: 0.75rem; color: var(--ak-color-status-error); }
 .navigation-pins-error button { justify-self: start; border: 0; background: transparent; color: var(--chat-ink); text-decoration: underline; cursor: pointer; }
 
