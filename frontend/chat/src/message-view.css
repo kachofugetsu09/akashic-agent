@@ -1442,13 +1442,13 @@ button.tool-step-summary:active {
 
 /* 有悬停的宽屏：只有最新一条常驻时间与操作，更早的消息悬停或聚焦时整行显现，行高不变、不推动正文。 */
 @media (hover: hover) and (min-width: 36.0625rem) {
-  .web-message-anchor:not(:nth-last-child(1 of .web-message-anchor)) .shared-message-meta {
-    opacity: 0;
+  .web-message-anchor .shared-message-meta {
     transition: opacity var(--ak-sys-duration-short) var(--ak-sys-motion-standard);
   }
 
-  .web-message-anchor:is(:hover, :focus-within) .shared-message-meta {
-    opacity: 1;
+  /* 悬停与聚焦写进同一个 :not()：分成两条时 nth-last-child(of) 的特异性更高，悬停永远显不出来。 */
+  .web-message-anchor:not(:nth-last-child(1 of .web-message-anchor), :hover, :focus-within) .shared-message-meta {
+    opacity: 0;
   }
 }
 
