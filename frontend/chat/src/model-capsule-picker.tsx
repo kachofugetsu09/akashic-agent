@@ -128,6 +128,14 @@ function useFixedPanelStyle(open: boolean, triggerRef: RefObject<HTMLElement | n
   return style;
 }
 
+// 窄屏下面板是底部抽屉，遮罩在面板之下、正文之上；宽屏不显示。用 click 而不是 pointerdown 关闭，
+// 遮罩撑到点击结束，触摸不会穿透到下面的消息或输入框。遮罩在根节点内，外部关闭逻辑不会先触发。
+// 按下时阻止焦点转移：输入区失焦会切回阅读态重新布局，遮罩随之移开，click 就落到别处。
+function PickerSheetScrim({ onClose }: { onClose: () => void }) {
+  return <div className="picker-sheet-scrim" aria-hidden="true"
+    onPointerDown={(event) => event.preventDefault()} onClick={onClose} />;
+}
+
 function useDismissLayer(open: boolean, rootRef: RefObject<HTMLElement | null>, onClose: (restoreFocus: boolean) => void) {
   useEffect(() => {
     if (!open) return;
@@ -266,8 +274,11 @@ export function ModelCapsulePicker({
 
   useEffect(() => {
     if (!open) return;
+    // 触屏上聚焦搜索框会立刻弹出软键盘盖住半个列表；改为聚焦当前选中行，需要搜索时再点。
     const focusTimer = window.setTimeout(() => {
-      searchRef.current?.focus({ preventScroll: true });
+      if (window.matchMedia("(pointer: coarse)").matches) {
+        rootRef.current?.querySelector<HTMLElement>(".model-picker__option[aria-selected='true']")?.focus({ preventScroll: true });
+      } else searchRef.current?.focus({ preventScroll: true });
     }, 0);
     return () => window.clearTimeout(focusTimer);
   }, [open]);
@@ -399,6 +410,7 @@ export function ModelCapsulePicker({
           </div>
         </div>
       ) : null}
+      {open ? <PickerSheetScrim onClose={() => closePicker(false)} /> : null}
     </div>
   );
 }
@@ -479,6 +491,7 @@ export function ModelEffortAction({ runtime, effort, explicit, disabled, onChang
           {!explicit ? <p className="model-effort__hint">选择强度会把 {runtime.model} 固定到当前会话</p> : null}
         </div>
       ) : null}
+      {open ? <PickerSheetScrim onClose={() => closePicker(false)} /> : null}
     </div>
   );
 }
