@@ -11,12 +11,15 @@
     <style>
       /* 启动壳：在 JS 下载与执行前先画出应用外形，React 首次提交时整棵替换。
          几何镜像真实布局（owner 在 styles.css）：侧栏 clamp(17rem,23vw,20rem) 通高、
-         标题带 52px 只盖内容列、compact composer 高 44px 体育场形、底部留白 20px、
-         阅读列 52rem 偏左 1/4；窄屏断点与真实抽屉一致取 820px。 */
+         标题带 52px 只盖内容列、阅读列 52rem 偏左 1/4。
+         镜像默认侧栏宽度下的阅读态；空态、草稿和已保存的侧栏宽度由应用接管后决定。 */
+      body { margin: 0; }
+      .boot-shell, .boot-shell * { box-sizing: border-box; }
       .boot-shell {
         display: grid;
         grid-template-columns: clamp(17rem, 23vw, 20rem) minmax(0, 1fr);
         height: 100dvh;
+        padding-block-start: env(safe-area-inset-top, 0px);
         background: var(--ak-paper-canvas, #faf9f6);
       }
       .boot-shell__rail {
@@ -56,7 +59,7 @@
         height: 14px;
         margin: 9px 0 9px 10px;
       }
-      .boot-shell__rail-foot:first-of-type {
+      .boot-shell__rail-row + .boot-shell__rail-foot {
         margin-top: auto;
       }
       .boot-shell__main {
@@ -72,9 +75,9 @@
       .boot-shell__composer {
         flex: none;
         margin-top: auto;
-        margin-bottom: 20px;
-        margin-inline-start: max(24px, calc((100% - 52rem) / 4 - 4px));
-        width: min(840px, calc(100% - 48px));
+        margin-bottom: max(20px, env(safe-area-inset-bottom, 0px));
+        margin-inline-start: max(6px, calc(max(0px, (100% - 52rem) / 4) - 4px));
+        width: min(calc(52rem + 8px), calc(100% - 12px));
         height: 44px;
         border-radius: 22px;
         background: var(--ak-paper-sheet, #f5f3ec);
@@ -90,14 +93,17 @@
         .boot-shell__composer {
           margin-inline: 18px;
           width: auto;
+          height: 56px;
+          border-radius: 28px;
         }
       }
       @media (max-width: 36rem) {
-        /* 手机断点真实 composer 是双行编辑卡（--composer-compact-h: 7.375rem）。 */
+        /* 无焦点且无草稿时使用 .composer.is-resting 的单行阅读态。 */
         .boot-shell__composer {
           margin-inline: 16px;
-          height: 7.375rem;
-          border-radius: 14px;
+          margin-bottom: max(8px, env(safe-area-inset-bottom, 0px));
+          height: 52px;
+          border-radius: 26px;
         }
       }
     </style>
