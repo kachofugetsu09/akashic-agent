@@ -96,6 +96,33 @@ function sessionDayGroup(iso: string | undefined, now: Date): string | undefined
   return "更早";
 }
 
+const SHORTCUT_MOD = typeof navigator !== "undefined" && /Mac|iPhone|iPad/.test(navigator.platform) ? "⌘" : "Ctrl";
+
+// 常驻侧栏的两个全局快捷键：Mod+K 聚焦会话搜索，Mod+Shift+O 新会话。
+// 抽屉里的侧栏副本与被隐藏的常驻侧栏不挂监听，避免同一按键触发两次。
+function useSidebarShortcuts(sidebarRef: RefObject<HTMLElement | null>, searchRef: RefObject<HTMLInputElement | null>, onNewChat: () => void) {
+  const latest = useRef(onNewChat);
+  latest.current = onNewChat;
+  useEffect(() => {
+    const onKeyDown = (event: KeyboardEvent) => {
+      const sidebar = sidebarRef.current;
+      if (!sidebar || sidebar.closest("[role='dialog']") || sidebar.offsetParent === null) return;
+      if (!(event.metaKey || event.ctrlKey) || event.altKey || event.isComposing) return;
+      const key = event.key.toLowerCase();
+      if (key === "k" && !event.shiftKey) {
+        event.preventDefault();
+        searchRef.current?.focus();
+        searchRef.current?.select();
+      } else if (key === "o" && event.shiftKey) {
+        event.preventDefault();
+        latest.current();
+      }
+    };
+    document.addEventListener("keydown", onKeyDown);
+    return () => document.removeEventListener("keydown", onKeyDown);
+  }, [searchRef, sidebarRef]);
+}
+
 function sortSessions(rows: DesktopSidebarSession[], sort: SessionSortId, order: readonly string[]): DesktopSidebarSession[] {
   if (sort === "title") return [...rows].sort((a, b) => a.title.localeCompare(b.title, "zh-Hans-CN"));
   if (sort === "created") return [...rows].sort((a, b) => compareSessionTime(a.createdAt, b.createdAt));
@@ -173,6 +200,8 @@ export const DesktopSidebar = memo(function DesktopSidebar({
 }: DesktopSidebarProps) {
   const [query, setQuery] = useState("");
   const sidebarRef = useRef<HTMLElement>(null);
+  const searchRef = useRef<HTMLInputElement>(null);
+  useSidebarShortcuts(sidebarRef, searchRef, onNewChat);
   const [directoryProjectId, setDirectoryProjectId] = useState("");
   const [sessionSort, setSessionSort] = useState(readSessionSort);
   const [sessionOrder, setSessionOrder] = useState(readSessionOrder);
@@ -319,18 +348,27 @@ export const DesktopSidebar = memo(function DesktopSidebar({
             <span className="chat-sidebar__mark" style={brandMask} aria-hidden="true" />
             <strong>Akashic</strong>
           </span>
-          <button type="button" className="chat-sidebar__new" aria-label="新会话" title="新会话" onClick={() => onNewChat()}>
+          <button type="button" className="chat-sidebar__new" aria-label="新会话" title={`新会话（${SHORTCUT_MOD}+Shift+O）`} onClick={() => onNewChat()}>
             <MessageSquarePlus size={18} strokeWidth={1.75} aria-hidden="true" />
           </button>
         </div>
         <label className="chat-sidebar__search">
           <Search size={14} aria-hidden="true" />
           <input
+            ref={searchRef}
             value={query}
             onChange={(event) => setQuery(event.target.value)}
+            onKeyDown={(event) => {
+              // 搜索框里 Esc 先清空，再按一次把焦点还给输入框所在的页面。
+              if (event.key !== "Escape") return;
+              if (query) setQuery("");
+              else event.currentTarget.blur();
+            }}
             placeholder="搜索会话"
             aria-label="搜索会话"
+            aria-keyshortcuts={`${SHORTCUT_MOD === "⌘" ? "Meta" : "Control"}+K`}
           />
+          <kbd className="chat-sidebar__search-key" aria-hidden="true">{SHORTCUT_MOD === "⌘" ? "⌘K" : "Ctrl K"}</kbd>
         </label>
       </div>
 

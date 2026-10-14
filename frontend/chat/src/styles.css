@@ -325,6 +325,20 @@ input {
   background: color-mix(in oklch, var(--md-sys-color-on-surface) 8%, transparent);
 }
 
+/* 快捷键提示只在宽屏指针设备上、搜索框空闲时出现；聚焦或有输入就让位。 */
+.chat-sidebar__search-key {
+  display: none;
+  margin-inline-start: auto;
+  color: var(--chat-faint, var(--chat-muted));
+  font-family: var(--ak-type-technical);
+  font-size: 0.6875rem;
+  letter-spacing: 0.02em;
+}
+
+@media (hover: hover) and (pointer: fine) and (min-width: 820.02px) {
+  .chat-sidebar__search:not(:focus-within):has(input:placeholder-shown) .chat-sidebar__search-key { display: inline; }
+}
+
 .chat-sidebar__search {
   display: flex;
   min-height: 36px;
