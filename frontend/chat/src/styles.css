@@ -1230,6 +1230,19 @@ input {
   scrollbar-gutter: auto !important;
 }
 
+/* 读取已有会话：阅读列顶部一行次级文字，300ms 后才淡入，预取命中的切换不闪。 */
+.history-switch-loading {
+  margin: 0;
+  color: var(--ak-color-text-secondary);
+  font-size: var(--chat-type-caption, 0.8125rem);
+}
+
+@media (prefers-reduced-motion: no-preference) {
+  .history-switch-loading { animation: history-switch-in 160ms ease-out 300ms both; }
+}
+
+@keyframes history-switch-in { from { opacity: 0; } }
+
 .conversation-content {
   width: min(100%, var(--chat-column));
   margin: 0;

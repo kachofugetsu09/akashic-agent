@@ -60,6 +60,8 @@ export function DesktopChatView({ embeddedShell, controller }: DesktopChatViewPr
   const headingTitle = activeProject ? `${activeProject.name} / ${activeTitle}` : activeTitle;
   const committed = new Set(timelineMessages.map((message) => message.id));
   const hasMessages = messages.length + timelineMessages.length + replyActivities.length > 0;
+  // 读取已有会话期间就按会话版式摆放：输入区停在底部，消息到达时不从屏幕中央跳下来。
+  const conversationLayout = hasMessages || historyLoading;
 
   const shellClass = embeddedShell ? "chat-shell is-embedded" : "chat-shell";
 
@@ -77,7 +79,7 @@ export function DesktopChatView({ embeddedShell, controller }: DesktopChatViewPr
             onRenameSession={renameSession}
           />
 
-        <section className={`chat-main${hasMessages ? "" : " is-empty"}`}>
+        <section className={`chat-main${conversationLayout ? "" : " is-empty"}`}>
         <header className="conversation-heading">
           <CompactNavigation
             embeddedShell={embeddedShell} surface={surface} sessions={sidebarSessions}
@@ -96,14 +98,15 @@ export function DesktopChatView({ embeddedShell, controller }: DesktopChatViewPr
             refreshKey={Array.from(toolResults.keys()).join("|")} /> : null}
           <JobListAction key={`jobs:${activeSessionId}`} jobs={controller.activeSessionJobs} onStop={controller.stopJob} />
           {/* 窄屏没有常驻侧栏：新会话留在拇指可达的标题行，不必先打开抽屉。 */}
-          {hasMessages ? <button type="button" className="conversation-heading__new" aria-label="新会话" title="新会话"
+          {conversationLayout ? <button type="button" className="conversation-heading__new" aria-label="新会话" title="新会话"
             onClick={() => startNewChat()}>
             <MessageSquarePlus size={20} strokeWidth={1.75} aria-hidden="true" />
           </button> : null}
         </header>
         <Conversation className="conversation" resize="instant">
-          <ConversationContent className={hasMessages ? "conversation-content" : "conversation-content empty"}>
-            {!hasMessages ? <DesktopEmptyState shellStatus={shellState?.status ?? null} loadingSession={historyLoading} modelProblem={modelProblem} /> : (
+          <ConversationContent className={conversationLayout ? "conversation-content" : "conversation-content empty"}>
+            {!hasMessages && historyLoading ? <p className="history-switch-loading" role="status">正在读取消息</p>
+              : !hasMessages ? <DesktopEmptyState shellStatus={shellState?.status ?? null} modelProblem={modelProblem} /> : (
               <MessageRendererErrorBoundary>
                 <DesktopHistoryLoader
                   firstMessageId={timelineMessages[0]?.id ?? messages[0]?.id}
@@ -135,7 +138,7 @@ export function DesktopChatView({ embeddedShell, controller }: DesktopChatViewPr
           <ReadingReturnButton generating={isGeneratingChatStatus(status)} />
         </Conversation>
 
-        <div className={`composer-wrap ${!hasMessages ? "home" : ""}`}>
+        <div className={`composer-wrap ${!conversationLayout ? "home" : ""}`}>
           {status === "uploading" ? <p className="reply-unavailable" role="status">正在上传附件…</p> : null}
           {activeSessionDeleted ? <p className="reply-unavailable" role="status">
             此会话已删除，内容只读保留。
@@ -151,7 +154,7 @@ export function DesktopChatView({ embeddedShell, controller }: DesktopChatViewPr
           </div> : null}
           <DesktopComposer
             ref={composerApi}
-            chatReady={chatReady} canSend={canSend} modelProblem={modelProblem} draftKey={draftKey} autoFocus={!hasMessages && chatReady} fresh={!hasMessages} status={status} stopPending={stopPending} modelState={modelState}
+            chatReady={chatReady} canSend={canSend} modelProblem={modelProblem} draftKey={draftKey} autoFocus={!conversationLayout && chatReady} fresh={!conversationLayout} status={status} stopPending={stopPending} modelState={modelState}
             selectedRuntimeId={selectedRuntimeId} selectedEffort={selectedReasoningEffort}
             replyTarget={replyTarget} onModelChange={handleModelChange} onCancelReply={cancelReply}
             onSend={sendMessage} onStop={stopTurn}
@@ -259,9 +262,9 @@ function greetingFor(hour: number): string {
   return "晚上好";
 }
 
-function DesktopEmptyState({ shellStatus, loadingSession, modelProblem }: { shellStatus: string | null; loadingSession: boolean; modelProblem: string }) {
+function DesktopEmptyState({ shellStatus, modelProblem }: { shellStatus: string | null; modelProblem: string }) {
   return <ConversationEmptyState className="home-state">
-    {loadingSession ? <div className="home-state__ready" role="status"><strong>正在读取消息</strong></div> : shellStatus === "needs_setup" ? <div className="model-connection-state">
+    {shellStatus === "needs_setup" ? <div className="model-connection-state">
       <span>对话尚未就绪</span><h1>请完成所需配置</h1>
       <p>绑定 Codex、OpenCode 或自己的 API Key 后，就可以在这里直接对话。</p>
       <a href="/#models">连接模型</a>
