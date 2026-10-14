@@ -4,8 +4,10 @@ from __future__ import annotations
 import asyncio
 import copy
 import logging
+import os
 from pathlib import Path
 from collections.abc import Sequence
+import re
 import time
 import tracemalloc
 
@@ -19,17 +21,27 @@ class ProfileBusy(RuntimeError):
 
 _INSTALL_ROOT = Path(__file__).resolve().parents[2]
 
+# 安全虚拟标签：tracemalloc 对非文件来源给出的形如 <frozen importlib._bootstrap> 的名字。
+# 它不含路径分隔符，不是文件系统路径，原样保留不构成身份泄漏。
+_VIRTUAL_LABEL = re.compile(r"^<[^/\\]*>$")
+
 
 def _export_locator(
     filename: str,
     *,
     roots: Sequence[tuple[Path, str]] | None = None,
 ) -> str:
-    """导出用定位路径：已知根相对化，未知根退化为不含父目录身份的基名。"""
-    path = Path(filename)
+    """导出用定位路径：只保留确认安全的相对定位，其他一律退化为基名。"""
+    raw = str(filename)
+    if _VIRTUAL_LABEL.match(raw):
+        return raw
+    # 词法折叠 `..`：/home/alice/../bob/x.py 必须先变成 /home/bob/x.py，
+    # 否则按 home 前缀匹配会通过，却在输出里带出另一个身份目录。
+    path = Path(os.path.normpath(raw))
     if not path.is_absolute():
-        return path.as_posix()
-    effective = roots if roots is not None else ((Path.home(), "~"), (_INSTALL_ROOT, "<install>"))
+        # 相对路径同样可能带出身份目录（home/alice/private/app.py），只留基名。
+        return path.name
+    effective = roots if roots is not None else ((_INSTALL_ROOT, "<install>"), (Path.home(), "~"))
     for root, label in effective:
         try:
             relative = path.relative_to(root)
