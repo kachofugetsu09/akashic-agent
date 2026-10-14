@@ -53,7 +53,7 @@ try {
   await page.getByRole("status").filter({ hasText: "正在追踪" }).waitFor();
   assert.equal((await fetch(base + "/__scenario/allocate", { method: "POST" })).status, 200);
   await page.getByRole("status").filter({ hasText: "剖析完成" }).waitFor();
-  await page.locator(".diagnostics-allocations").getByText(/diagnostics_probe\/plugin.py/).first().waitFor();
+  await page.locator(".diagnostics-allocations").getByText(/diagnostics_probe_allocations\.py:2/).first().waitFor();
   assert.equal(await page.getByRole("alert").count(), 0);
   checks.push("浏览器开启真实剖析，自动停止后可查看实际分配文件");
 

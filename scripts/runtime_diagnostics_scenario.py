@@ -23,6 +23,7 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 
 PROBE = '''from agent.plugin_composition import ServiceKey
+from .diagnostics_probe_allocations import allocate_bytes
 api_version = 3
 name = "diagnostics_probe"
 version = "1.0.0"
@@ -30,7 +31,7 @@ async def apply(ctx):
     held = []
     async def allocate(megabytes):
         with ctx.diagnostics.operation("scenario.allocate"):
-            held.append(bytearray(megabytes * 1024 * 1024))
+            held.append(allocate_bytes(megabytes))
         ctx.diagnostics.measure("scenario.held", sum(map(len, held)), unit="bytes")
     async def release():
         held.clear()
@@ -78,6 +79,10 @@ async def run(directory: Path, port: int | None) -> dict[str, bool]:
     probe = sources / "diagnostics_probe"
     probe.mkdir()
     (probe / "plugin.py").write_text(PROBE)
+    # 独立真实文件让脱敏后仍能精确定位本次分配，不依赖临时目录名。
+    (probe / "diagnostics_probe_allocations.py").write_text(
+        "def allocate_bytes(megabytes):\n    return bytearray(megabytes * 1024 * 1024)\n"
+    )
     logging.getLogger("akashic.plugin.diagnostics").setLevel(logging.INFO)
     before_callbacks = tuple(gc.callbacks)
     logger = logging.getLogger("akashic.plugin.diagnostics")
@@ -149,8 +154,10 @@ async def run(directory: Path, port: int | None) -> dict[str, bool]:
                     await asyncio.sleep(.1)
             profile = report["profile"]
             assert profile["traced_bytes"] > 24 * 1024 * 1024
-            assert any(frame["file"].endswith("diagnostics_probe/plugin.py")
-                       for item in profile["allocations"] for frame in item["frames"]), profile
+            assert any(item["bytes"] >= 24 * 1024 * 1024
+                       and any(frame["file"] == "diagnostics_probe_allocations.py" and frame["line"] == 2
+                               for frame in item["frames"])
+                       for item in profile["allocations"]), profile
             assert not tracemalloc.is_tracing()
             assert max(row["rss_bytes"] for row in report["samples"]) > baseline["samples"][-1]["rss_bytes"] + 16 * 1024 * 1024
             checks["allocation_site_and_auto_stop"] = True
