@@ -85,7 +85,7 @@ function settingsTargetForRoute(
   if (section) return { kind: "section", id: section.id };
   const member = plugins.find((entry) => entry.route === route);
   if (member) return { kind: "plugins", memberId: member.id };
-  if (route === SETTINGS_PLUGINS_ROUTE && plugins.length > 0) return { kind: "plugins", memberId: null };
+  if (route === SETTINGS_PLUGINS_ROUTE) return { kind: "plugins", memberId: null };
   return undefined;
 }
 
@@ -145,15 +145,15 @@ function Shell({ pages, railActions, settings, settingsPlugins, http }: {
     if (new Set(routes).size !== routes.length) throw new Error("Shell 页面与设置分节的 route 不能重复");
   }, [bandEntries, sectionEntries, pluginEntries]);
 
-  // 左栏导航是顶层分节按 order 排列；插件配置区有条目时按固定 order 插入。
+  // 左栏导航是顶层分节按 order 排列；插件分节常驻，停用全部配置成员后仍要能从列表里启用。
   const settingsNav = useMemo(() => {
     const items: { order: number; item: SettingsNavItem }[] = sectionEntries.map((entry) => ({
       order: typeof entry.order === "number" ? entry.order : 0,
       item: { kind: "section", entry },
     }));
-    if (pluginEntries.length > 0) items.push({ order: SETTINGS_PLUGINS_ORDER, item: { kind: "plugins" } });
+    items.push({ order: SETTINGS_PLUGINS_ORDER, item: { kind: "plugins" } });
     return items.sort((left, right) => left.order - right.order).map(({ item }) => item);
-  }, [sectionEntries, pluginEntries]);
+  }, [sectionEntries]);
   const pluginCards = useMemo(() => buildPluginCards(pluginEntries), [pluginEntries]);
 
   const defaultPage = bandEntries.find((entry) => entry.route === "") ?? bandEntries[0];
@@ -201,7 +201,7 @@ function Shell({ pages, railActions, settings, settingsPlugins, http }: {
   }, [settingsNav]);
   const currentTarget = useMemo<SettingsTarget | undefined>(() => {
     if (settingsTarget?.kind === "section" && sectionEntries.some((entry) => entry.id === settingsTarget.id)) return settingsTarget;
-    if (settingsTarget?.kind === "plugins" && pluginEntries.length > 0
+    if (settingsTarget?.kind === "plugins"
       && (settingsTarget.memberId === null || pluginEntries.some((entry) => entry.id === settingsTarget.memberId))) return settingsTarget;
     return firstTarget;
   }, [settingsTarget, sectionEntries, pluginEntries, firstTarget]);
@@ -536,7 +536,8 @@ function Shell({ pages, railActions, settings, settingsPlugins, http }: {
               <button type="button" role="tab" aria-selected={pluginsTab === "list"} onClick={() => setPluginsTab("list")}>插件列表</button>
               <button type="button" role="tab" aria-selected={pluginsTab === "config"} onClick={() => setPluginsTab("config")}>插件配置</button>
             </div>
-            {pluginsTab === "list" ? <PluginInventory http={http} /> : <PluginCardList
+            {pluginsTab === "list" ? <PluginInventory http={http} /> : pluginCards.length === 0
+              ? <p className="shell-inventory-empty">已启用的插件都没有设置项</p> : <PluginCardList
               cards={pluginCards}
               view={settingsPlugins}
               railActions={railActionEntries}

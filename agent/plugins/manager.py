@@ -1732,10 +1732,13 @@ class PluginManager:
             await self._reconcile_disabled_and_drain(plugin_id)
             self._notify_updates()
             return {"plugin_id": plugin_id, "publication_state": "disabled"}
-        # 3. 已选中的输入按变化调和；被停用过的插件按安装路径重新选入。
+        # 3. 已选中的输入按变化调和；调和不报告未变化的插件，已在运行即视为启用完成。
         results = await self._reconcile_changed(frozenset({plugin_id}))
-        result = next((item for item in results if item.get("plugin_id") == plugin_id), None)
-        if result is None or result.get("publication_state") == "unselected_source":
+        result: dict[str, object] | None = next((item for item in results if item.get("plugin_id") == plugin_id), None)
+        if result is None and plugin_id in self._active_generations:
+            result = {"plugin_id": plugin_id, "publication_state": "unchanged"}
+        # 4. 只有确实未选入的插件才按安装路径准备新 generation。
+        elif result is None or result.get("publication_state") == "unselected_source":
             result = await self._select_enabled(plugin_id)
         self._notify_updates()
         return result

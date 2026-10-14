@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { WebHostContextV1 } from "@akashic/web-ui-v1";
 
-type Phase = "active" | "pending" | "failed" | "disabled" | "loading";
+type Phase = "active" | "pending" | "failed" | "disabled" | "stopping" | "loading";
 
 interface PluginRow {
   id: string;
@@ -23,8 +23,10 @@ type Filter = "all" | "attention";
 type RowNote = { kind: "busy"; enabled: boolean } | { kind: "restart" } | { kind: "error"; text: string };
 
 const PHASE_TEXT: Record<Exclude<Phase, "active">, string> = {
-  pending: "等待依赖", failed: "启动失败", disabled: "已停用", loading: "正在启动",
+  pending: "等待依赖", failed: "启动失败", disabled: "已停用", stopping: "正在停用", loading: "正在启动",
 };
+// 需要用户处理：启动失败、等待依赖，或停用时资源没能关闭。
+const needsAttention = (row: PluginRow) => row.phase === "failed" || row.phase === "pending" || (row.phase === "stopping" && !!row.error);
 const CHEVRON = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m9 18 6-6-6-6"/></svg>';
 
 async function call<T>(http: Http, path: string, init?: RequestInit): Promise<T> {
@@ -82,11 +84,11 @@ export function PluginInventory({ http }: { http: Http }): React.ReactElement {
   }, [http, load]);
 
   const all = rows ?? [];
-  const attention = all.filter((row) => row.phase === "failed" || row.phase === "pending").length;
+  const attention = all.filter(needsAttention).length;
   const searching = query.trim() !== "" || filter !== "all";
   const visible = useMemo(() => {
     const needle = query.trim().toLowerCase();
-    return all.filter((row) => (filter === "all" || row.phase === "failed" || row.phase === "pending")
+    return all.filter((row) => (filter === "all" || needsAttention(row))
       && (!needle || `${row.name} ${row.id} ${row.description}`.toLowerCase().includes(needle)));
   }, [all, query, filter]);
 
@@ -146,11 +148,12 @@ function InventoryRow({ row, rows, open, note, flip, toggle }: {
 }): React.ReactElement {
   const busy = note?.kind === "busy";
   const status = busy ? (note.enabled ? "正在启用" : "正在停用")
-    : note?.kind === "restart" ? "重启后生效" : row.phase === "active" ? null : PHASE_TEXT[row.phase];
+    : note?.kind === "restart" ? "重启后生效" : row.phase === "active" ? null
+    : row.phase === "stopping" && row.error ? "未能停用" : PHASE_TEXT[row.phase];
   const waiting = row.enabled ? row.dependents.map((id) => rows.find((item) => item.id === id)?.name ?? id) : [];
   const hint = waiting.length === 0 ? ""
     : `停用后，${waiting.slice(0, 2).join("、")}${waiting.length > 2 ? ` 等 ${waiting.length} 个插件` : ""}会等待依赖`;
-  return <li className="shell-inventory-row" data-phase={row.phase}>
+  return <li className="shell-inventory-row" data-phase={row.phase === "stopping" && row.error ? "failed" : row.phase}>
     <button type="button" className="shell-inventory-head" aria-expanded={open} onClick={flip}>
       <strong>{row.name}</strong>
       {status

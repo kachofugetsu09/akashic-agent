@@ -12,7 +12,7 @@ from agent.plugin_composition import Context, DashboardContext, ServiceKey
 from agent.plugin_composition.plugin_updates import PLUGIN_UPDATES
 from agent.plugin_composition.runtime_catalog import RUNTIME_CATALOG
 
-Phase = Literal["active", "pending", "failed", "disabled", "loading"]
+Phase = Literal["active", "pending", "failed", "disabled", "stopping", "loading"]
 Row = dict[str, object]
 
 # 插件管理页面的宿主（Dashboard、设置外框、提供网页的 Web 客户端）；它们及其传递依赖停用后，这个页面会失去入口。
@@ -70,7 +70,9 @@ def plugin_rows(plugins: list[Row], catalog: list[Row]) -> list[Row]:
         plugin_id = cast(str, plugin["plugin_id"])
         own = fibers.get(plugin_id, [])
         missing = sorted({cast(str, key) for fiber in own for key in cast(list[object], fiber["missing_services"])})
-        error = plugin["load_error"] or next((fiber["error"] for fiber in own if fiber["error"]), None)
+        draining = cast(list[Row], plugin["draining_generations"])
+        error = (plugin["load_error"] or next((fiber["error"] for fiber in own if fiber["error"]), None)
+                 or next((item["load_error"] for item in draining if item["load_error"]), None))
         name = plugin_id.split("@", 1)[0]
         # 发行版带着但组合未选的插件没有选择记录，按未运行即停用处理。
         enabled = plugin["state"] is not None if plugin["enabled"] is None else plugin["enabled"] is True
@@ -81,7 +83,7 @@ def plugin_rows(plugins: list[Row], catalog: list[Row]) -> list[Row]:
             "description": plugin["description"],
             "source": "builtin" if plugin["distribution_available"] else "external",
             "enabled": enabled,
-            "phase": _phase(plugin, enabled, error, missing),
+            "phase": _phase(plugin, enabled, bool(draining), error, missing),
             "error": error,
             "missing_services": missing,
             "dependents": sorted(dependents.get(plugin_id, ())),
@@ -101,9 +103,10 @@ def _closure(roots: set[str], edges: Mapping[str, set[str]]) -> set[str]:
     return seen
 
 
-def _phase(plugin: Row, enabled: bool, error: object, missing: list[str]) -> Phase:
+def _phase(plugin: Row, enabled: bool, draining: bool, error: object, missing: list[str]) -> Phase:
+    # 停用是用户意图；仍有 generation 或待排空的 owner 时，实际还没停下。
     if not enabled:
-        return "disabled"
+        return "stopping" if draining or plugin["state"] is not None or plugin["cleanup_pending"] else "disabled"
     if error or plugin["state"] == "failed":
         return "failed"
     if missing or plugin["fiber_state"] == "pending":
