@@ -106,5 +106,5 @@ class RecallRecordsRead(Protocol):
     def legacy_page(self, before: str = "g", *, limit: int = 64) -> tuple[tuple[tuple[str, Recall], ...], str | None]: ...
 
 
-# Fleet Observe 与 Akasha dashboard 读取查询出处，不取得学习 writer。
+# Akasha dashboard 读取查询出处，不取得学习 writer。
 AKASHA_RECORDS_VIEW = ServiceKey[Callable[[], RecallRecordsRead]]("akasha.recall-records.v1")

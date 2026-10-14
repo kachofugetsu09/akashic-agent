@@ -129,7 +129,7 @@ fleet 报告固定来源和 v3-only 静态合同；真实 MCP handshake/readines
 
 ## Content / Wake / Drift 真实插件互操作 Gate
 
-`content_source_interop_gate.py` 不复制 Calendar、Fitbit、Feed、Steam、Emotion 或 Observe
+`content_source_interop_gate.py` 不复制 Calendar、Fitbit、Feed、Steam 或 Emotion
 实现。它先把调用方提供的 canonical checkout 与 exact lock 对账，再运行 Core 已有的
 Content/Wake/Drift/Session 组合 fixture，最后在每个插件自己的目录运行其原样 fixture。
 因此修改一个插件的业务模型只需要更新该插件与 exact revision，不会给 Core 增加来源分支。
@@ -158,15 +158,13 @@ python docker/debug/content_source_interop_gate.py \
   --plugin-root github-watch=/absolute/github-watch-checkout \
   --plugin-root proactive_feedback=/absolute/proactive-feedback-checkout \
   --plugin-root emotion=/absolute/emotion-checkout \
-  --plugin-root observe=/absolute/observe-checkout \
   --plugin-python calendar=/absolute/calendar-python \
   --plugin-python fitbit=/absolute/fitbit-python \
   --plugin-python feed=/absolute/feed-python \
   --plugin-python steam=/absolute/steam-python \
   --plugin-python github-watch=/absolute/github-watch-python \
   --plugin-python proactive_feedback=/absolute/proactive-feedback-python \
-  --plugin-python emotion=/absolute/emotion-python \
-  --plugin-python observe=/absolute/observe-python
+  --plugin-python emotion=/absolute/emotion-python
 ```
 
 默认 pending 调查会让 Gate 非零；开发期间只核对已完成 revision 可使用
@@ -527,7 +525,7 @@ docker/debug/profiles/<profile>/workspace/context-probe-<profile>.json
 }
 ```
 
-场景 JSON 只描述连续输入和流程，不写语义结果要求。探针遇到主流程的通用失败回复时会立即失败，正常回复则只记录 observe 结果，不主观判断内容质量。
+场景 JSON 只描述连续输入和流程，不写语义结果要求。探针遇到主流程的通用失败回复时会立即失败，正常回复则只记录观测结果，不主观判断内容质量。
 
 内置样例在：
 

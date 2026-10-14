@@ -34,7 +34,6 @@ EXPECTED_PLUGIN_IDS: tuple[str, ...] = (
     "calendar-mcp",
     "emotion",
     "plugin_undo",
-    "observe",
     "setup_helper",
     "status_commands",
     "feed-mcp",

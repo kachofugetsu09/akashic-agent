@@ -51,13 +51,6 @@
       "change_source_pr_head": "86941208ea9313086c1c5d8f33b38cf4432e599d"
     },
     {
-      "id": "observe",
-      "repository": "https://github.com/akashic-plugins/observe",
-      "requested_ref": "2123ae50cd8703620c374f2652864230af131563",
-      "resolved_sha": "2123ae50cd8703620c374f2652864230af131563",
-      "change_source_pr_head": "2123ae50cd8703620c374f2652864230af131563"
-    },
-    {
       "id": "setup_helper",
       "repository": "https://github.com/akashic-plugins/setup_helper",
       "requested_ref": "3d9671bfee523e78bf421535ed77cbc94a8a4744",

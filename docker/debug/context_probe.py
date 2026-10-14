@@ -42,10 +42,6 @@ class ProbePaths:
         return self.profile_dir / "akashic.sock"
 
     @property
-    def observe_db(self) -> Path:
-        return self.workspace / "observe" / "observe.db"
-
-    @property
     def sessions_db(self) -> Path:
         return self.workspace / "sessions.db"
 
@@ -177,37 +173,33 @@ async def _send_and_read(
     return str(result.get("finalResponse") or "")
 
 
-def _tool_rows(observe_db: Path, session_key: str) -> list[dict[str, Any]]:
-    if not observe_db.exists():
+# 从 Ledger 消息主表按用户输入分轮统计工具调用；失败结果只记 outcome，不复制参数或结果正文。
+def _tool_rows(sessions_db: Path, session_key: str) -> list[dict[str, Any]]:
+    if not sessions_db.exists():
         return []
-    conn = sqlite3.connect(observe_db)
-    try:
-        rows = conn.execute(
-            """
-            select id, user_msg,
-                   case
-                     when tool_calls is null or tool_calls='' or tool_calls='[]'
-                     then 0
-                     else json_array_length(tool_calls)
-                   end,
-                   coalesce(error, '')
-            from turns
-            where session_key = ?
-            order by id
-            """,
+    rows: list[dict[str, Any]] = []
+    with closing(sqlite3.connect(f"file:{sessions_db}?mode=ro", uri=True)) as connection:
+        for seq, body in connection.execute(
+            "SELECT seq, body FROM messages WHERE session_key = ? ORDER BY seq",
             (session_key,),
-        ).fetchall()
-        return [
-            {
-                "turn": int(row[0]),
-                "user": str(row[1] or ""),
-                "tool_calls": int(row[2] or 0),
-                "error": str(row[3] or ""),
-            }
-            for row in rows
-        ]
-    finally:
-        conn.close()
+        ):
+            payload = cast(dict[str, object], json.loads(str(body)))
+            kind = payload.get("kind")
+            raw_parts = payload.get("parts")
+            parts = [
+                cast(dict[str, object], part)
+                for part in cast(list[object], raw_parts if isinstance(raw_parts, list) else [])
+                if isinstance(part, dict)
+            ]
+            if kind == "input":
+                text = "".join(str(part.get("value", "")) for part in parts if part.get("kind") == "text")
+                rows.append({"turn": int(seq), "user": text, "tool_calls": 0, "error": ""})
+            elif rows and kind == "output":
+                rows[-1]["tool_calls"] += sum(1 for part in parts if part.get("kind") == "tool_call")
+            elif rows and kind == "tool_result" and payload.get("outcome") != "success":
+                failed = str(payload.get("outcome") or "unknown")
+                rows[-1]["error"] = ",".join(filter(None, (rows[-1]["error"], failed)))
+    return rows
 
 
 def _akasha_events(workspace: Path, session_key: str) -> list[dict[str, object]]:
@@ -422,7 +414,7 @@ async def _run_probe(args: argparse.Namespace) -> None:
         report_md = report_base.with_suffix(".md")
         report_json = report_base.with_suffix(".json")
         _ = report_md.parent.mkdir(parents=True, exist_ok=True)
-        tools = _tool_rows(paths.observe_db, session_key)
+        tools = _tool_rows(paths.sessions_db, session_key)
         akasha_events = _akasha_events(paths.workspace, session_key)
         _write_reports(
             report_md=report_md,
