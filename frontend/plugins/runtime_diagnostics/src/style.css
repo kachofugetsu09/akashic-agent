@@ -44,3 +44,4 @@
 .diagnostics-allocations summary { cursor: pointer; min-height: 44px; padding-block: 8px; }
 .diagnostics-allocations code { display: block; white-space: normal; overflow-wrap: anywhere; color: var(--ak-ink-secondary); }
 .diagnostics-page footer { border-top: 1px solid var(--ak-rule-default); padding-top: 20px; }
+.diagnostics-gap { color: var(--ak-color-status-error); border-inline-start: 2px solid currentColor; padding-inline-start: 12px; overflow-wrap: anywhere; }

@@ -101,6 +101,22 @@ async def apply(ctx):
             assert (await client.get("/api/shell/state")).json()["chatReady"] is True
             async with websockets.connect(origin.replace("http:", "ws:") + "/ws?watch_sessions=true", proxy=None) as ws:
                 assert json.loads(await ws.recv()) == {"type": "sessions.changed", "version": 2}
+                # 无回复 provider 的真实子组合仍能阅读历史，不能在跟随后进入断线循环。
+                await ws.send(json.dumps({"type": "session.follow", "version": 2,
+                    "request_id": "without-reply", "session_id": "akashic:read-only", "after_seq": 0}))
+                async with asyncio.timeout(10):
+                    while True:
+                        frame = json.loads(await ws.recv())
+                        if frame["type"] == "reply.status":
+                            assert frame["available"] is False and frame["items"] == []
+                            break
+                await ws.send(json.dumps({"type": "ping", "request_id": "still-connected"}))
+                async with asyncio.timeout(10):
+                    while True:
+                        frame = json.loads(await ws.recv())
+                        if frame["type"] == "pong":
+                            assert frame["request_id"] == "still-connected"
+                            break
                 path = sources / "akashic_clients"
                 (path / "static/chat/index.html").write_text("<!doctype html><title>new client</title>")
                 commit(path)
@@ -143,6 +159,7 @@ async def apply(ctx):
             await core.stop()
         await http.aclose()
     return {"actual_installed_listeners": True, "http_and_cache": True,
+            "missing_reply_keeps_history_connected": True,
             "client_state_and_redirect": True, "websocket_update_drained": True,
             "observer_not_reapplied": True, "damaged_plan_explicit": True,
             "shell_survives_runtime_stop": True, "messages_preserved": True}

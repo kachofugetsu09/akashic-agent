@@ -4,7 +4,10 @@ from __future__ import annotations
 import asyncio
 import copy
 import logging
+import os
 from pathlib import Path
+from collections.abc import Sequence
+import re
 import time
 import tracemalloc
 
@@ -14,6 +17,39 @@ from core.common.file_io import run_file_io
 
 class ProfileBusy(RuntimeError):
     pass
+
+
+_INSTALL_ROOT = Path(__file__).resolve().parents[2]
+
+# 安全虚拟标签：tracemalloc 对非文件来源给出的形如 <frozen importlib._bootstrap> 的名字。
+# 它不含路径分隔符，不是文件系统路径，原样保留不构成身份泄漏。
+_VIRTUAL_LABEL = re.compile(r"^<[^/\\]*>$")
+
+
+def _export_locator(
+    filename: str,
+    *,
+    roots: Sequence[tuple[Path, str]] | None = None,
+) -> str:
+    """导出用定位路径：只保留确认安全的相对定位，其他一律退化为基名。"""
+    raw = str(filename)
+    if _VIRTUAL_LABEL.match(raw):
+        return raw
+    # 词法折叠 `..`：/home/alice/../bob/x.py 必须先变成 /home/bob/x.py，
+    # 否则按 home 前缀匹配会通过，却在输出里带出另一个身份目录。
+    path = Path(os.path.normpath(raw))
+    if not path.is_absolute():
+        # 相对路径同样可能带出身份目录（home/alice/private/app.py），只留基名。
+        return path.name
+    effective = roots if roots is not None else ((_INSTALL_ROOT, "<install>"), (Path.home(), "~"))
+    for root, label in effective:
+        try:
+            relative = path.relative_to(root)
+        except ValueError:
+            continue
+        return label if str(relative) == "." else f"{label}/{relative.as_posix()}"
+    # 未知根：不保留任何父目录身份，避免导出文件名泄漏用户名或安装路径。
+    return path.name
 
 
 class Profiles:
@@ -87,9 +123,7 @@ class Profiles:
         for stat in snapshot.statistics("traceback")[:30]:
             frames = []
             for frame in stat.traceback:
-                path = Path(frame.filename)
-                # 导出保留定位用的尾部路径，不公开用户 home 或完整安装目录。
-                frames.append({"file": "/".join(path.parts[-4:]), "line": frame.lineno})
+                frames.append({"file": _export_locator(frame.filename), "line": frame.lineno})
             rows.append({"bytes": stat.size, "count": stat.count, "frames": frames})
         return {"traced_bytes": current, "peak_bytes": peak, "overhead_bytes": overhead, "allocations": rows}
 

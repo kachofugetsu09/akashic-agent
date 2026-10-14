@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import asyncio
+import logging
 from collections.abc import Awaitable, Callable, Mapping
 from datetime import UTC, datetime
 from typing import cast
@@ -20,6 +21,7 @@ from .recalls import RecallRecords, context_identity, query_memory, render_mater
 from .recall_tool import tool_references
 
 MaterialData = Mapping[str, object]
+logger = logging.getLogger(__name__)
 
 
 def _reference_rows(material: MaterialData) -> tuple[Mapping[str, object], ...]:
@@ -71,7 +73,13 @@ class MessageMemory:
         self._closing = True
         async def drain() -> None:
             async with self._lock:
-                self._consumer.close()
+                try:
+                    # 已提交未发布的尾部先落盘；失败只记录，尾部下次启动由日志按原序重学。
+                    await run_memory_job(self._consumer.flush)
+                except Exception:
+                    logger.exception("Akasha 关闭时发布学习尾部失败，下次启动将从日志重学")
+                finally:
+                    self._consumer.close()
         job = asyncio.create_task(drain())
         cancelled = False
         while not job.done():

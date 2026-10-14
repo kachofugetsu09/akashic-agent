@@ -78,6 +78,8 @@ function Diagnostics({ ctx }: { ctx: WebHostContextV1 }) {
   const [selectedSeq, setSelected] = useState<number | null>(null);
   const [filter, setFilter] = useState("");
   const cursor = useRef({ stream: "", seq: 0 });
+  // 本流是否曾发生漏读：reset 时按当前响应重建，普通轮询按需累计。
+  const [gapSeen, setGapSeen] = useState({ samples: false, events: false });
   const controller = useRef<AbortController | null>(null);
   const actionVersion = useRef(0);
   useEffect(() => {
@@ -93,6 +95,12 @@ function Diagnostics({ ctx }: { ctx: WebHostContextV1 }) {
         if (reset && cursor.current.seq) next = await (await request(ctx, "/api/dashboard/runtime-diagnostics", { signal: abort.signal })).json() as Report;
         if (abort.signal.aborted) return;
         if (reset) setSelected(null);
+        // reset 只表示游标需要重取，不代表最终采用的响应没有缺口：先按新流清空，再并入
+        // 本次响应的 gap。用两个结构化标志维护「本流曾发生」，避免后一次覆盖前一次。
+        setGapSeen(previous => ({
+          samples: (reset ? false : previous.samples) || next.gap.samples,
+          events: (reset ? false : previous.events) || next.gap.events,
+        }));
         cursor.current = { stream: next.stream_id, seq: next.through_seq };
         setReport(previous => ({ ...next,
           profile: reset || version === actionVersion.current || !previous ? next.profile : previous.profile,
@@ -146,6 +154,10 @@ function Diagnostics({ ctx }: { ctx: WebHostContextV1 }) {
     {error && <p role="alert" className="diagnostics-error">{error}。保留上次数据，稍后自动重试。</p>}
     {actionError && <p role="alert" className="diagnostics-error">操作未完成：{actionError}</p>}
     {!report ? <p role="status">正在读取运行状态…</p> : <>
+      {(gapSeen.samples || gapSeen.events) && <p role="status" className="diagnostics-gap">
+        本流曾发生{[gapSeen.samples ? "样本" : "", gapSeen.events ? "事件" : ""].filter(Boolean).join("、")}漏读：缺口两侧的记录不构成连续采样。
+        窗口累计淘汰 {number(report.evicted.samples)} 条样本 / {number(report.evicted.events)} 条事件（当前值）。
+      </p>}
       <section aria-labelledby="diagnostics-memory"><div className="diagnostics-heading"><h2 id="diagnostics-memory">内存变化</h2>
         <span>{selected ? clock(selected.timestamp) : "等待首个样本"} · 每 5 秒采样</span></div>
         <Chart samples={report.samples} selected={selected} select={setSelected} />
