@@ -75,7 +75,7 @@ export function DesktopAutoScroll({
     if (scroller && answer && offsetToReadingTop(scroller, answer.element) <= 0) anchoredAnswerRef.current = answer.key;
   }, [escapedFromLock, generating, isAtBottom, scrollRef]);
 
-  // 必要 effect：窄屏长回答在贴底跟随中顶到阅读区顶缘时停在开头。
+  // 必要 effect：长回答在贴底跟随中把停靠点顶到阅读区顶缘时停下，读者从开头读起。
   // 正文由逐字动画长出、不经过 React 状态，只能在跟随产生的滚动里检查。
   useEffect(() => {
     const scroller = scrollRef.current;
@@ -108,15 +108,17 @@ function offsetToReadingTop(scroller: HTMLElement, element: HTMLElement): number
   return element.getBoundingClientRect().top - scroller.getBoundingClientRect().top - readingTopInset(scroller);
 }
 
+// 跟随停在哪里：窄屏屏幕小，停在回答开头；宽屏停在本轮提问，问题与回答开头同屏。
 function currentAnswer(scroller: HTMLElement) {
-  const element = Array.from(scroller.querySelectorAll<HTMLElement>(".reply-activity, .web-message-anchor.streaming")).at(-1);
+  const element = window.matchMedia(NARROW_READING).matches
+    ? Array.from(scroller.querySelectorAll<HTMLElement>(".reply-activity, .web-message-anchor.streaming")).at(-1)
+    : latestTurnStart(scroller);
   const key = element?.dataset.replyHandle ?? element?.dataset.messageId ?? "";
   return element && key ? { element, key } : undefined;
 }
 
-// 正在生成的回答一旦顶到阅读区顶缘，就返回它的身份与回退距离。
+// 正在生成的回答一旦把停靠点顶到阅读区顶缘，就返回它的身份与回退距离。
 function anchorableAnswer(scroller: HTMLElement, anchored: string) {
-  if (!window.matchMedia(NARROW_READING).matches) return null;
   const answer = currentAnswer(scroller);
   if (!answer || answer.key === anchored) return null;
   const offset = offsetToReadingTop(scroller, answer.element);
