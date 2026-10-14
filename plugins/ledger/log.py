@@ -1199,9 +1199,9 @@ class MessageReader:
     async def committed_snapshot_async(self, *, through_seq: int | None = None) -> MessageSnapshot:
         """在线程内签发一次固定读面；取消先排空实际读取。"""
         self._check_async_snapshot()
-        # 热前缀只差几条尾部时，WAL 只读查询不等待 writer，直接在调用线程完成，省掉线程往返。
-        if self._log.warm_prefix(self._session_id):
-            return self.committed_snapshot(through_seq=through_seq)
+        # 热前缀只证明「本地 head 距前缀尾部不超过若干条」，不验证数据库 revision；外部
+        # 改写旧行后仍会在新 revision 上重读整段历史。签发一律留在可排空 worker 内，
+        # 否则失效重读会把历史级扫描放回事件循环。
         return await run_file_io(lambda: self.committed_snapshot(through_seq=through_seq))
 
     def _check_async_snapshot(self) -> None:
