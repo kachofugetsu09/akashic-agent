@@ -18,6 +18,16 @@
   overflow-wrap: break-word;
 }
 
+/* 视口外的占位行与完整行同高：用户气泡占位同样收在 12 行，升级时不塌陷。 */
+.desktop-message-placeholder .user-bubble {
+  max-height: calc(12lh + 18px + 0.8125rem * var(--chat-user-leading, calc(20 / 15)));
+  overflow: hidden;
+}
+
+@media (pointer: coarse) {
+  .desktop-message-placeholder .user-bubble { max-height: calc(12lh + 18px + 32px); }
+}
+
 /* 长输入收成 12 行，末两行渐隐提示还有内容；展开后不限高。 */
 .user-text-clamp:not([data-state="open"]) {
   max-height: 12lh;

@@ -2668,20 +2668,27 @@ form.composer:focus-within [data-slot="input-group"] {
 .picker-sheet-scrim { display: none; }
 
 /* 窄屏模型与思考强度面板是底部抽屉：贴底全宽、顶部圆角、遮罩压暗正文。
-   内联定位来自宽屏贴触发器的算法，这里用 !important 统一覆盖。 */
-@media (max-width: 820px) {
+   内联定位来自宽屏贴触发器的算法，这里用 !important 统一覆盖。
+   横屏或软键盘把视口压到 30rem 以下时仍是 inset 8px 的浮动盒子，抽屉外观只给常规高度。 */
+@media (max-width: 820px) and (min-height: 30.01rem) {
   .model-picker__panel,
   .model-effort__panel {
     inset: auto 0 0 0 !important;
     width: auto !important;
     max-height: min(70dvh, 32rem) !important;
-    display: block;
-    overflow-y: auto;
     border-width: 1px 0 0;
     border-radius: 16px 16px 0 0;
     padding-block-end: env(safe-area-inset-bottom, 0px);
     box-shadow: 0 -8px 24px color-mix(in srgb, var(--ak-ink-primary) 10%, transparent);
     animation: picker-sheet-in 180ms cubic-bezier(0.2, 0, 0, 1);
+  }
+}
+
+@media (max-width: 820px) {
+  .model-picker__panel,
+  .model-effort__panel {
+    display: block;
+    overflow-y: auto;
   }
 
   .picker-sheet-scrim {
@@ -2692,6 +2699,9 @@ form.composer:focus-within [data-slot="input-group"] {
     background: color-mix(in srgb, var(--ak-ink-primary) 22%, transparent);
     animation: picker-scrim-in 180ms ease-out;
   }
+
+  /* 面板与遮罩在输入区的层叠上下文里；打开时把输入区抬到浮动标题条（z 6）之上，遮罩才能盖住整屏。 */
+  .chat-main .composer-wrap:has(.model-picker.is-open, .model-effort.is-open) { z-index: 7; }
 
   .model-picker__search input { font-size: 16px; }
 }
