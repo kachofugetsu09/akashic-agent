@@ -2814,6 +2814,10 @@ form.composer:focus-within [data-slot="input-group"] {
   }
 
   .chat-main.is-reading .conversation-heading { translate: 0 -100%; }
+  /* 标题栏在场时吸顶的工具/思考行停在它下面（44px 按钮 + 上下 6px + 发丝线），向下阅读它移出后贴回顶缘。 */
+  .chat-main:not(.is-empty) { --heading-cover: 57px; }
+  .chat-main.is-reading { --heading-cover: 0px; }
+  .chat-main :is(.tool-step-sticky, .process-trigger-sticky) { transition: top var(--ak-sys-duration-short) var(--ak-sys-motion-standard); }
   .chat-main:not(.is-empty) .conversation-content { padding-block-start: calc(1.5rem + 53px); }
 
   .chat-main .composer.is-compact,

@@ -792,11 +792,11 @@
 }
 
 .turn-process.is-open .turn-process-items :is(.tool-step-sticky.is-open, .thinking-row[data-state="open"] .process-trigger-sticky) {
-  top: var(--tool-sticky-h);
+  top: calc(var(--heading-cover, 0px) + var(--tool-sticky-h));
 }
 
 .turn-process.is-open .turn-process-items .tool-group.is-open .tool-group-items .tool-step-sticky.is-open {
-  top: calc(2 * var(--tool-sticky-h));
+  top: calc(var(--heading-cover, 0px) + 2 * var(--tool-sticky-h));
 }
 
 /* 跨天分隔：居中日期两侧各一条发丝线，与消息行同色阶。 */
@@ -885,7 +885,7 @@
    button 上 sticky 在部分内核不生效，吸附放在外包 div。 */
 .thinking-row[data-state="open"] .process-trigger-sticky {
   position: sticky;
-  top: 0;
+  top: var(--heading-cover, 0px);
   z-index: 2;
   background: var(--ak-color-bg-canvas);
   box-shadow: inset 0 -1px 0 color-mix(in oklch, var(--ak-color-text-primary) 7%, transparent);
@@ -1130,9 +1130,10 @@ button.tool-step-summary:active {
   --tool-sticky-h: 28px;
 }
 
+/* --heading-cover：窄屏浮在滚动区上方的标题栏在场时的遮挡高度，吸顶行让到它下面。 */
 .tool-step-sticky.is-open {
   position: sticky;
-  top: 0;
+  top: var(--heading-cover, 0px);
   z-index: 3;
   display: flex;
   height: var(--tool-sticky-h);
@@ -1142,7 +1143,7 @@ button.tool-step-summary:active {
 }
 
 .tool-group.is-open .tool-group-items .tool-step-sticky.is-open {
-  top: var(--tool-sticky-h);
+  top: calc(var(--heading-cover, 0px) + var(--tool-sticky-h));
   z-index: 2;
 }
 
