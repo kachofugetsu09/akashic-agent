@@ -1,5 +1,5 @@
 import { Check, ChevronDown, Eye, Search, Sparkles, Star } from "lucide-react";
-import { useEffect, useLayoutEffect, useMemo, useRef, useState, type CSSProperties, type RefObject } from "react";
+import { useEffect, useId, useLayoutEffect, useMemo, useRef, useState, type CSSProperties, type RefObject } from "react";
 import codexIcon from "./assets/provider-icons/codex.svg";
 import deepseekIcon from "./assets/provider-icons/deepseek.svg";
 import opencodeIcon from "./assets/provider-icons/opencode.svg";
@@ -249,6 +249,8 @@ export function ModelCapsulePicker({
 }: ModelCapsulePickerProps) {
   const [open, setOpen] = useState(false);
   const [query, setQuery] = useState("");
+  // 行内不再重复写来源，来源靠分组名承接：每组是 listbox 里的 group，组名指向可见标题。
+  const groupId = useId();
   const [favorites, setFavorites] = useState<string[]>(readFavorites);
   const rootRef = useRef<HTMLDivElement>(null);
   const triggerRef = useRef<HTMLButtonElement>(null);
@@ -381,8 +383,8 @@ export function ModelCapsulePicker({
               </span>
             </div>
             {items.favorites.length ? (
-              <div className="model-picker__group">
-                <div className="model-picker__group-title"><Star size={12} aria-hidden="true" />收藏</div>
+              <div className="model-picker__group" role="group" aria-labelledby={`${groupId}-fav`}>
+                <div className="model-picker__group-title" role="presentation" id={`${groupId}-fav`}><Star size={12} aria-hidden="true" />收藏</div>
                 {items.favorites.map((runtime) => (
                   <ModelRow
                     key={`fav:${runtime.id}`}
@@ -396,9 +398,9 @@ export function ModelCapsulePicker({
                 ))}
               </div>
             ) : null}
-            {items.groups.map(([source, models]) => (
-              <div className="model-picker__group" aria-label={source} key={source}>
-                <div className="model-picker__group-title">
+            {items.groups.map(([source, models], index) => (
+              <div className="model-picker__group" role="group" aria-labelledby={`${groupId}-${index}`} key={source}>
+                <div className="model-picker__group-title" role="presentation" id={`${groupId}-${index}`}>
                   <GroupIcon runtime={models[0].runtime} />
                   {source}
                 </div>
