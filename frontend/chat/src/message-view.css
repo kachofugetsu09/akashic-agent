@@ -274,7 +274,7 @@
   overflow-x: auto;
   border: 1px solid var(--ak-rule-subtle) !important;
   border-radius: 0 !important;
-  padding: 52px 7px 8px !important;
+  padding: 52px 16px 8px !important;
   color: var(--ak-ink-primary) !important;
   background: var(--ak-paper-quiet) !important;
   font-family: var(--ak-type-technical, ui-monospace, SFMono-Regular, Menlo, Consolas, monospace) !important;
@@ -290,7 +290,7 @@
   margin: 0 !important;
   border: 0 !important;
   border-radius: 0 !important;
-  padding: 8px 7px !important;
+  padding: 8px 16px !important;
   color: var(--ak-ink-primary) !important;
   background: transparent !important;
   font-family: var(--ak-type-technical, ui-monospace, SFMono-Regular, Menlo, Consolas, monospace) !important;
@@ -410,7 +410,12 @@
 }
 
 /* 两条渲染路径共用阅读结构，源 Markdown 与 DOM 中的文字保持原样。 */
-:is(.agent-content, .process-markdown, .user-bubble) .markdown-reading :where(h1, h2, h3, h4):first-child {
+/* 只清整段回复首块的上边距（标题、表格、代码、引用都算）。富渲染路径每个块都包在 node-slot > node-content 里，
+   按 :first-child 写会命中每一个标题，让标题上方比下方还窄。 */
+:is(.agent-content, .process-markdown, .user-bubble) :is(
+  .markdown-reading .markdown-renderer > .node-slot:first-child > .node-content,
+  .static-message-response
+) > :first-child {
   margin-block-start: 0;
 }
 
