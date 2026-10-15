@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import codecs
 import json
 import posixpath
 from collections import Counter
@@ -58,29 +59,29 @@ def _text_like(ref: AttachmentRef) -> bool:
     return extension in _TEXT_EXTENSIONS or name in {"dockerfile", "makefile", "readme", "license"}
 
 
-# 读前缀并按 UTF-8 解码；带 NUL 或解不开的视为二进制，不交给模型。截断处可能落在多字节字符中间，丢掉残片。
+# 读前缀并按 UTF-8 解码；带 NUL 或含非法字节的视为二进制，不交给模型。
+# 截断处可能落在合法多字节字符中间：增量解码器只把这种未写完的尾部留在缓冲里丢掉，非法字节照常报错。
 def _decode_text(raw: bytes, *, truncated: bool) -> str | None:
     if b"\x00" in raw:
         return None
     try:
-        return raw.decode("utf-8")
-    except UnicodeDecodeError as error:
-        if truncated and error.start >= len(raw) - 3:
-            return raw[:error.start].decode("utf-8")
+        return codecs.getincrementaldecoder("utf-8")().decode(raw, final=not truncated)
+    except UnicodeDecodeError:
         return None
 
 
 # 有预算时读入文本附件内容，写回附件标签里的状态说明；返回实际计入预算的字节数与内容块。
+# 同一附件在历史里出现几次，正文就投影几次：单份额度按出现次数分摊，返回的成本已乘上次数。
 async def _text_view(reader: ArtifactRead, ref: AttachmentRef, label: dict[str, object], *,
-                     remaining: int) -> tuple[int, Mapping[str, Any] | None]:
+                     remaining: int, occurrences: int) -> tuple[int, Mapping[str, Any] | None]:
     # 1. 预算用完时只说明未提供，原附件不变
-    if remaining <= 0:
+    if remaining // occurrences <= 0:
         label["text_status"] = "本次未提供文本内容；文本附件预算已用完"
         return 0, None
     if ref.size_bytes == 0:
         label["text_status"] = "空文件"
         return 0, None
-    limit = min(MAX_TEXT_FILE_BYTES, remaining)
+    limit = min(MAX_TEXT_FILE_BYTES, remaining // occurrences)
     truncated = ref.size_bytes > limit
     # 2. 只读前缀：超长文件给开头部分并写明
     lease = await reader.acquire(ref)
@@ -95,7 +96,7 @@ async def _text_view(reader: ArtifactRead, ref: AttachmentRef, label: dict[str, 
     if truncated:
         label["text_status"] = f"内容过长，只提供前 {len(raw) // 1024}KB（共 {ref.size_bytes // 1024}KB）"
     # 3. 内容放在独立文本块里，与附件标签分开，避免 JSON 转义把代码弄得难读
-    return len(raw), {"type": "text", "text": f"<attachment_text artifact_id=\"{ref.artifact_id}\">\n{text}\n</attachment_text>"}
+    return len(raw) * occurrences, {"type": "text", "text": f"<attachment_text artifact_id=\"{ref.artifact_id}\">\n{text}\n</attachment_text>"}
 
 
 async def load_artifacts(
@@ -118,7 +119,8 @@ async def load_artifacts(
         uri = None
         text_block: Mapping[str, Any] | None = None
         if ref.kind is AttachmentKind.FILE and _text_like(ref):
-            cost, text_block = await _text_view(reader, ref, label, remaining=MAX_TEXT_TOTAL_BYTES - text_bytes)
+            cost, text_block = await _text_view(reader, ref, label, remaining=MAX_TEXT_TOTAL_BYTES - text_bytes,
+                                                occurrences=counts[ref.artifact_id])
             text_bytes += cost
         elif ref.kind is AttachmentKind.IMAGE:
             if not accepts_images:
