@@ -10,10 +10,12 @@ const STATS_FADE_MS = 150;
 type StatsPhase = "active" | "settled" | "fading" | "gone";
 
 /** 按调用 ID 读取服务端统计；切页立即撤销旧读取，重连不重新计时。 */
-export function ComposerStatsLine({ messages, activities, connected, load = loadWebModelCallStats }: {
+export function ComposerStatsLine({ messages, activities, connected, stopping = false, load = loadWebModelCallStats }: {
   messages: readonly TimelineMessage[];
   activities: readonly ReplyActivity[];
   connected: boolean;
+  /** 已请求停止、本轮还没停下（当前工具跑完才停）：与停止钮的"正在停止"同一说法。 */
+  stopping?: boolean;
   load?: LoadModelCallStats;
 }) {
   const { callId, active } = selectModelCall(messages, activities);
@@ -60,7 +62,7 @@ export function ComposerStatsLine({ messages, activities, connected, load = load
   // 统计读取失败只影响遥测，不向用户报错。
   const summary = current?.stats ? formatModelCallStats(current.stats, false) : "";
   // aria-live 只在活动切换时改文案：开始固定"正在生成…"，结束给一条终态摘要；逐秒数据进 aria-hidden 呈现层。
-  const liveText = active ? "正在生成…" : summary;
+  const liveText = active ? stopping ? "正在停止…" : "正在生成…" : summary;
   const detail = active && current?.stats ? formatModelCallStats(current.stats, true) : "";
   const titleLine = current?.stats ? formatModelCallStats(current.stats, active) : undefined;
   return (

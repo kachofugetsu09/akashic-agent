@@ -202,7 +202,7 @@ export function DesktopChatView({ embeddedShell, controller }: DesktopChatViewPr
             replyTarget={replyTarget} onModelChange={handleModelChange} onCancelReply={cancelReply}
             onSend={sendMessage} onStop={stopTurn} lastInput={lastInput}
           />
-          <ComposerStatsLine messages={timelineMessages} activities={replyActivities} connected={replyAvailable !== null} />
+          <ComposerStatsLine messages={timelineMessages} activities={replyActivities} connected={replyAvailable !== null} stopping={stopPending} />
           {replyAvailable === false ? <p className="reply-unavailable" role="status">当前未加载回复插件</p> : null}
           {controller.reconnecting ? <p className="reply-unavailable connection-status" role="status">
             <i aria-hidden="true" />连接已断开，正在重新连接…
