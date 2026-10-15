@@ -1,0 +1,190 @@
+/* 附件卡（参考 Claude Desktop MessageAttachments，尺寸取紧凑横条）：输入框托盘与已发送消息共用。
+   文件 64px 高横条：左类型块写扩展名，右侧单行文件名（中间省略、保住末 6 个字符）+"大小 · 行数"；
+   媒体 64px 方形缩略图，点开交给媒体查看器。 */
+.ak-attachment {
+  --attachment-height: 64px;
+  --attachment-tone: var(--ak-ink-muted);
+  position: relative;
+  flex: none;
+  width: 216px;
+  height: var(--attachment-height);
+  border-radius: 10px;
+  transition: opacity 200ms var(--ak-sys-motion-emphasized), scale 200ms var(--ak-sys-motion-emphasized), translate 200ms var(--ak-sys-motion-emphasized);
+}
+.ak-attachment.is-media { width: var(--attachment-height); }
+.ak-attachment[data-tone="text"] { --attachment-tone: var(--ak-rule-focus); }
+.ak-attachment[data-tone="data"] { --attachment-tone: var(--ak-color-status-success); }
+.ak-attachment[data-tone="pdf"] { --attachment-tone: var(--ak-color-status-error); }
+
+.ak-attachment__surface {
+  display: flex;
+  width: 100%;
+  height: 100%;
+  min-width: 0;
+  align-items: center;
+  gap: 10px;
+  overflow: hidden;
+  border: 0;
+  border-radius: inherit;
+  padding: 8px 12px 8px 8px;
+  color: var(--ak-ink-primary);
+  background: var(--ak-paper-quiet);
+  box-shadow: 0 0 0 1px var(--ak-rule-subtle), 0 1px 2px rgb(var(--ak-color-shadow-rgb) / 0.05);
+  font: inherit;
+  text-align: start;
+  cursor: pointer;
+  transition: box-shadow var(--ak-sys-duration-short) var(--ak-sys-motion-standard), scale 60ms;
+}
+.ak-attachment__surface:active:not(:disabled) { scale: 0.98; }
+.ak-attachment__surface:focus-visible { outline: 2px solid var(--ak-rule-focus); outline-offset: 2px; }
+.ak-attachment__surface:disabled { cursor: default; }
+@media (hover: hover) {
+  .ak-attachment__surface:hover:not(:disabled) { box-shadow: 0 0 0 1px var(--ak-rule-default), 0 1px 2px rgb(var(--ak-color-shadow-rgb) / 0.08); }
+}
+/* 没有预览可开的文件（PDF、压缩包）只是一张信息卡。 */
+.ak-attachment__surface[data-static] { cursor: default; }
+.ak-attachment.is-media .ak-attachment__surface { padding: 0; background: var(--ak-paper-sheet); cursor: zoom-in; }
+
+.ak-attachment__image {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  opacity: 0;
+  transition: opacity 200ms var(--ak-sys-motion-standard);
+}
+.ak-attachment__image[data-loaded],
+video.ak-attachment__image { opacity: 1; }
+.ak-attachment__play {
+  position: absolute;
+  inset: auto auto 6px 6px;
+  display: grid;
+  width: 20px;
+  height: 20px;
+  place-items: center;
+  border-radius: 999px;
+  color: #fff;
+  background: rgb(0 0 0 / 0.55);
+}
+
+.ak-attachment__tile {
+  display: grid;
+  flex: none;
+  width: 40px;
+  height: 48px;
+  place-items: center;
+  overflow: hidden;
+  border-radius: 6px;
+  color: color-mix(in oklab, var(--attachment-tone) 62%, var(--ak-ink-primary));
+  background: color-mix(in oklab, var(--attachment-tone) 12%, var(--ak-paper-editing));
+  box-shadow: inset 0 0 0 1px color-mix(in oklab, var(--attachment-tone) 18%, transparent);
+  font-size: 0.625rem;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+.ak-attachment__meta { display: grid; min-width: 0; flex: 1; gap: 2px; }
+.ak-attachment__name {
+  display: flex;
+  min-width: 0;
+  font-size: 0.8125rem;
+  font-weight: 500;
+  line-height: 1.35;
+  white-space: nowrap;
+}
+.ak-attachment__head { min-width: 0; overflow: hidden; text-overflow: ellipsis; }
+/* 结尾一般整段保留；全角字符很宽时也不越出卡片，至少给开头留一个字和省略号。 */
+.ak-attachment__tail { flex: none; max-width: calc(100% - 1.5em); overflow: hidden; white-space: pre; }
+.ak-attachment__desc {
+  overflow: hidden;
+  color: var(--ak-ink-secondary);
+  font-size: 0.75rem;
+  font-variant-numeric: tabular-nums;
+  line-height: 1.35;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* 移除钮：20px 圆，右上角外溢；悬停、键盘聚焦时出现，触屏常显。不压在图片内容上。 */
+.ak-attachment__remove {
+  position: absolute;
+  top: -7px;
+  right: -7px;
+  z-index: 1;
+  display: grid;
+  width: 20px;
+  height: 20px;
+  place-items: center;
+  border: 0;
+  border-radius: 999px;
+  padding: 0;
+  color: var(--ak-ink-secondary);
+  background: var(--ak-paper-raised);
+  box-shadow: 0 0 0 1px var(--ak-rule-default);
+  cursor: pointer;
+  opacity: 0;
+  transition: opacity var(--ak-sys-duration-short) var(--ak-sys-motion-standard);
+}
+/* 触点放大到 32px，视觉仍是 20px。 */
+.ak-attachment__remove::before { content: ""; position: absolute; inset: -6px; }
+.ak-attachment__remove:focus-visible { opacity: 1; outline: 2px solid var(--ak-rule-focus); outline-offset: 1px; }
+.ak-attachment:focus-within .ak-attachment__remove { opacity: 1; }
+@media (hover: hover) {
+  .ak-attachment:hover .ak-attachment__remove { opacity: 1; }
+  .ak-attachment__remove:hover { color: var(--ak-ink-primary); }
+}
+@media (hover: none) {
+  .ak-attachment__remove { opacity: 1; }
+}
+
+/* 上传中：整卡骨架闪烁（Desktop 不显示百分比），文字与图片隐去一半。 */
+.ak-attachment[aria-busy="true"] .ak-attachment__surface > * { opacity: 0.45; }
+.ak-attachment__skeleton {
+  position: absolute;
+  inset: 0;
+  border-radius: inherit;
+  pointer-events: none;
+  background: linear-gradient(100deg, transparent 30%, color-mix(in oklab, var(--ak-ink-primary) 7%, transparent) 50%, transparent 70%);
+  background-size: 200% 100%;
+  animation: ak-attachment-shimmer 1.2s linear infinite;
+}
+@keyframes ak-attachment-shimmer {
+  from { background-position: 150% 0; }
+  to { background-position: -50% 0; }
+}
+
+/* —— 输入卡托盘 —— */
+.composer-tray {
+  display: flex;
+  grid-column: 1 / -1;
+  width: 100%;
+  gap: 10px;
+  overflow-x: auto;
+  overscroll-behavior-x: contain;
+  /* 上、右留出外溢移除钮的位置。 */
+  padding: 10px 10px 8px 2px;
+  scrollbar-width: none;
+}
+.composer-tray::-webkit-scrollbar { display: none; }
+.composer-tray[data-fade-end] { mask-image: linear-gradient(to right, #000 calc(100% - 32px), transparent); }
+.composer-tray[data-fade-start] { mask-image: linear-gradient(to right, transparent, #000 32px); }
+.composer-tray[data-fade-start][data-fade-end] { mask-image: linear-gradient(to right, transparent, #000 32px, #000 calc(100% - 32px), transparent); }
+@starting-style {
+  .composer-tray .ak-attachment { opacity: 0; scale: 0.92; translate: 0 4px; }
+}
+/* 删除时：被删卡缩小淡出 130ms，其余卡 180ms 补位（Desktop 同款曲线）。 */
+.composer-tray[data-reflow] > [role="listitem"] {
+  view-transition-name: var(--reflow-name);
+  view-transition-class: attachment;
+}
+::view-transition-group(*.attachment) { animation-duration: 180ms; animation-timing-function: cubic-bezier(0.215, 0.61, 0.355, 1); }
+::view-transition-old(*.attachment):only-child { animation: ak-attachment-out 130ms cubic-bezier(0.55, 0.055, 0.675, 0.19) both; }
+@keyframes ak-attachment-out { to { opacity: 0; scale: 0.5; } }
+
+@media (max-width: 480px) {
+  .composer-tray .ak-attachment.is-file { width: 184px; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .ak-attachment, .ak-attachment__image { transition-duration: 1ms; }
+  .ak-attachment__skeleton { animation: none; }
+}

@@ -1959,109 +1959,6 @@ form.composer:focus-within [data-slot="input-group"] {
   color: var(--md-sys-color-on-surface-variant);
 }
 
-.composer-attachments {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 8px;
-  grid-column: 1 / -1;
-  width: 100%;
-  padding: 2px 2px 8px;
-}
-
-.composer-attachments [data-radix-collection-item],
-.composer-attachments .group {
-  max-width: none;
-}
-
-.composer-attachments .attachment-chip,
-.composer-attachments .message-attachment-chip {
-  border-color: color-mix(in oklab, var(--md-sys-color-on-surface) 14%, transparent);
-  background: var(--md-sys-color-surface-container-low);
-  color: var(--md-sys-color-on-surface);
-}
-
-.attachment-preview-slot {
-  position: relative;
-  width: 100%;
-  height: 100%;
-  flex: 0 0 auto;
-}
-
-.attachment-preview-icon,
-.attachment-remove-inline {
-  position: absolute;
-  inset: 0;
-}
-
-.attachment-preview-icon {
-  display: grid;
-  place-items: center;
-  overflow: hidden;
-}
-
-.attachment-preview-icon img {
-  width: 100%;
-  height: 100%;
-  object-fit: cover;
-}
-
-.attachment-remove-inline {
-  inset: auto 4px 4px auto;
-  width: 22px;
-  height: 22px;
-  border-radius: 999px;
-  background: color-mix(in oklab, var(--md-sys-color-on-surface) 72%, transparent);
-  color: var(--md-sys-color-surface);
-  opacity: 0;
-  transition-property: opacity;
-  transition-duration: var(--ak-sys-duration-short);
-  transition-timing-function: var(--ak-sys-motion-standard);
-}
-
-.composer-attachments .group:focus-within .attachment-remove-inline {
-  opacity: 1;
-}
-@media (hover: hover) {
-  .composer-attachments .group:hover .attachment-remove-inline {
-    opacity: 1;
-  }
-}
-/* 没有悬停的设备上移除钮常显，否则只能靠碰巧粘住的 hover 才找得到。 */
-@media (hover: none) {
-  .composer-attachments .attachment-remove-inline { opacity: 1; }
-}
-
-.attachment-hover {
-  max-width: 320px;
-  color: var(--ak-color-text-primary);
-}
-
-.attachment-hover-image {
-  display: block;
-  max-width: 320px;
-  max-height: 240px;
-  border-radius: 8px;
-  object-fit: contain;
-}
-
-/* 悬停卡就是用来看全名的：完整换行，不再单行省略。 */
-.attachment-hover-title {
-  font-size: var(--chat-type-section);
-  font-weight: 600;
-  overflow-wrap: anywhere;
-}
-
-.attachment-hover-image + .attachment-hover-title {
-  margin-top: 10px;
-}
-
-.attachment-hover-type {
-  margin-top: 4px;
-  color: var(--ak-color-text-secondary);
-  font-family: var(--ak-type-technical, ui-monospace, SFMono-Regular, Menlo, Consolas, monospace);
-  font-size: var(--chat-type-micro);
-}
-
 .composer [data-slot="input-group-addon"] {
   border: 0;
 }
@@ -3146,13 +3043,8 @@ form.composer:focus-within [data-slot="input-group"] {
   .chat-main .conversation-content { padding-block-end: 1rem; }
   /* 回到底部按钮同理贴消息区底部：再叠加输入卡高度与增高量，会被推出只有 60dvh 的消息区。 */
   .chat-main .desktop-scroll-return { bottom: 12px; }
-  /* 键盘弹起后（安卓按 resizes-content 缩小视口）整屏只剩 400px 上下：引用、附件、长草稿叠在一起不能把正文框挤出屏幕。 */
-  .chat-main .composer-attachments { padding-block-end: 4px; }
-  .chat-main .composer-attachments .attachment-chip.is-media { --chat-chip-size: 56px; }
-  /* 文件块不能只缩外壳：改成 56px 高的横条，文件名两行，扩展名与大小让位，右侧留出移除钮。 */
-  .chat-main .composer-attachments .attachment-chip.is-file { width: 9rem; height: 56px; padding: 6px 30px 6px 8px; }
-  .chat-main .composer-attachments .attachment-chip.is-file .attachment-file-name { -webkit-line-clamp: 2; }
-  .chat-main .composer-attachments .attachment-chip.is-file :is(.attachment-file-ext, .attachment-file-ext-icon, .attachment-file-size) { display: none; }
+  /* 键盘弹起后（安卓按 resizes-content 缩小视口）整屏只剩 400px 上下：附件托盘本来就只占一行，再收 8px 底距。 */
+  .chat-main .composer-tray { padding-block-end: 0; }
   .chat-main .composer.is-expanded textarea,
   .chat-main .composer.is-expanded .composer__textarea { max-height: 4.5rem; }
   .chat-main .composer-wrap,
