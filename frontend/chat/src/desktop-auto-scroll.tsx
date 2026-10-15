@@ -96,6 +96,17 @@ export function DesktopAutoScroll({
 
 const NARROW_READING = "(max-width: 36rem)";
 
+// MediaQueryList 的 matches 是实时的；每个滚动帧重新 matchMedia 会重复解析查询，这里只建一次。
+const mediaLists = new Map<string, MediaQueryList>();
+function media(query: string): MediaQueryList {
+  let list = mediaLists.get(query);
+  if (!list) {
+    list = window.matchMedia(query);
+    mediaLists.set(query, list);
+  }
+  return list;
+}
+
 // 浮在滚动区上方的标题栏会遮住内容顶部；返回被遮挡的高度加 8px 呼吸。
 function readingTopInset(scroller: HTMLElement): number {
   const heading = scroller.closest(".chat-main")?.querySelector(".conversation-heading");
@@ -110,7 +121,7 @@ function offsetToReadingTop(scroller: HTMLElement, element: HTMLElement): number
 
 // 跟随停在哪里：窄屏屏幕小，停在回答开头；宽屏停在本轮提问，问题与回答开头同屏。
 function currentAnswer(scroller: HTMLElement) {
-  const element = window.matchMedia(NARROW_READING).matches
+  const element = media(NARROW_READING).matches
     ? Array.from(scroller.querySelectorAll<HTMLElement>(".reply-activity, .web-message-anchor.streaming")).at(-1)
     : latestTurnStart(scroller);
   const key = element?.dataset.replyHandle ?? element?.dataset.messageId ?? "";
@@ -182,7 +193,7 @@ export function NarrowReadingChrome() {
     const scroller = scrollRef.current;
     const main = scroller?.closest(".chat-main");
     if (!scroller || !main) return;
-    const narrow = window.matchMedia(NARROW_READING);
+    const narrow = media(NARROW_READING);
     let last = scroller.scrollTop;
     let touchedAt = Number.NEGATIVE_INFINITY;
     // 只认用户手势带来的滚动（含松手后的惯性）；贴底跟随、加载定位等程序滚动不收起标题栏。
@@ -236,9 +247,9 @@ interface TurnSegment {
 const TURN_RAIL_MEDIA = "(hover: hover) and (pointer: fine) and (min-width: 1200px)";
 
 function subscribeTurnRailMedia(onChange: () => void): () => void {
-  const media = window.matchMedia(TURN_RAIL_MEDIA);
-  media.addEventListener("change", onChange);
-  return () => media.removeEventListener("change", onChange);
+  const list = media(TURN_RAIL_MEDIA);
+  list.addEventListener("change", onChange);
+  return () => list.removeEventListener("change", onChange);
 }
 
 // 当前已载入的每一轮提问，按文档顺序；预览取气泡文字的第一行。
@@ -278,7 +289,7 @@ export function TurnRail({ revision }: { revision: string }) {
   const [active, setActive] = useState("");
   const [open, setOpen] = useState(false);
   const closeTimer = useRef(0);
-  const wide = useSyncExternalStore(subscribeTurnRailMedia, () => window.matchMedia(TURN_RAIL_MEDIA).matches);
+  const wide = useSyncExternalStore(subscribeTurnRailMedia, () => media(TURN_RAIL_MEDIA).matches);
 
   // 必要 effect：消息变化后从 DOM 取提问列表，并随滚动同步当前所在的一轮；窄屏与触屏不挂监听
   useEffect(() => {
