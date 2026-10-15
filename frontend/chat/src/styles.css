@@ -1399,6 +1399,23 @@ input {
 
 @keyframes history-switch-in { from { opacity: 0; } }
 
+/* 读取失败与"正在读取"同一位置、同一字号：一句原因加一个文字按钮，错误行不再在输入框下重复一遍。 */
+.history-switch-loading.is-failed {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 4px 12px;
+}
+.history-switch-loading.is-failed p { margin: 0; }
+.history-switch-loading.is-failed button {
+  border: 0;
+  padding: 0;
+  background: none;
+  color: var(--ak-color-action-primary);
+  font: inherit;
+  cursor: pointer;
+}
+
 .conversation-content {
   width: min(100%, var(--chat-column));
   margin: 0;
