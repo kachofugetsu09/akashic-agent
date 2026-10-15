@@ -278,7 +278,7 @@
 }
 
 /* 流式期间代码块先用 PreCodeNode 的 <pre> 渲染（块外的那一个），落定后换成高亮组件。两者必须同一几何：
-   44px 块头位（+8px 首行偏移，按落定块实测）、12px/18px 行、一圈 subtle 发丝线、1rem 外边距。
+   44px 块头位（+4px 首行偏移、12px 末行留白，见 CODE_BLOCK_OPTIONS）、12px/18px 行、一圈 subtle 发丝线、1rem 外边距。
    PreCodeNode 带 inline 字号/行高/上下内边距，只能用 !important 覆盖。 */
 :is(.agent-content, .process-markdown, .user-bubble) .markstream-react pre[data-markstream-pre="1"]:not(.code-block-container pre) {
   max-width: 100%;
@@ -286,7 +286,7 @@
   overflow-x: auto;
   border: 1px solid var(--ak-rule-subtle) !important;
   border-radius: 0 !important;
-  padding: 52px 16px 8px !important;
+  padding: 48px 16px 12px !important;
   color: var(--ak-ink-primary) !important;
   background: var(--ak-paper-quiet) !important;
   font-family: var(--ak-type-technical, ui-monospace, SFMono-Regular, Menlo, Consolas, monospace) !important;
@@ -302,7 +302,7 @@
   margin: 0 !important;
   border: 0 !important;
   border-radius: 0 !important;
-  padding: 8px 16px !important;
+  padding: 4px 16px 12px !important;
   color: var(--ak-ink-primary) !important;
   background: transparent !important;
   font-family: var(--ak-type-technical, ui-monospace, SFMono-Regular, Menlo, Consolas, monospace) !important;

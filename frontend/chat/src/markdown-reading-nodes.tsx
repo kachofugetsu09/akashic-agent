@@ -19,7 +19,9 @@ export const CODE_BLOCK_PROPS = {
 // 代码不折行：折行会把缩进与对齐打散，窄屏读代码更难；长行在代码块自己的区域里横向滚动。
 // 流式期间的 <pre> 也不折行（message-view.css），两种状态行数一致，换手时块高不变。
 // 高亮组件把行内边距写死为 1ch，代码比块头语言标签左缩约 9px；注入 shadow 样式改为 16px，与块头、生成中的普通 pre 同一左缘。
-export const CODE_BLOCK_OPTIONS = { overflow: "scroll", unsafeCSS: "[data-line] { padding-inline: 16px; }" } as const;
+// 代码区上 4px、下 12px：44px 块头的标题下方已有留白，代码首行与标题、末行与块底边的距离都约 12–15px（与块头左缩进同一节奏）。
+// 流式 pre 与高亮占位按同一几何写（message-view.css），换手时块高不变。
+export const CODE_BLOCK_OPTIONS = { overflow: "scroll", unsafeCSS: "[data-line] { padding-inline: 16px; } [data-code] { padding-block: 4px 12px; }" } as const;
 
 /** 展示判断只读可见文本，不解析 raw 或猜测内容的用途。 */
 function nodeText(node: ParsedNode): string {
