@@ -2119,6 +2119,24 @@ form.composer:focus-within [data-slot="input-group"] {
   margin-block-start: 0.25rem;
 }
 
+/* 快捷键复制的结果：浮在输入卡上方左侧（回到底部按钮在正中），出现与消失不改变输入区高度。 */
+.copy-notice {
+  position: absolute;
+  inset-block-end: calc(100% + 8px);
+  inset-inline-start: 12px;
+  margin: 0;
+  border-radius: 999px;
+  padding: 4px 12px;
+  color: var(--ak-ink-secondary);
+  background: var(--ak-paper-sheet);
+  box-shadow: 0 0 0 1px var(--ak-rule-subtle), 0 4px 12px color-mix(in oklab, var(--ak-ink-primary) 8%, transparent);
+  font-size: 0.8125rem;
+  line-height: 1.4;
+  pointer-events: none;
+  transition: opacity var(--ak-sys-duration-short) var(--ak-sys-motion-standard);
+}
+.copy-notice:empty { opacity: 0; box-shadow: none; padding: 0; }
+
 .error-line {
   display: flex;
   align-items: center;

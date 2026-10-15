@@ -24,6 +24,7 @@ import type { DesktopChatController } from "./use-desktop-chat-controller";
 import { SessionDirectory } from "./session-directory";
 import { SelectionQuote } from "./selection-quote";
 import { MarqueeText } from "./marquee-text";
+import { CopyNotice, useCopyLastCode } from "./copy-last-code";
 import { isGeneratingChatStatus, lastInputResult } from "./web-chat-status";
 
 interface DesktopChatViewProps {
@@ -68,6 +69,12 @@ export function DesktopChatView({ embeddedShell, controller }: DesktopChatViewPr
   const pagedTimeline = useMemo(() => withoutLeadingOrphanResults(timelineMessages, historyHasMore),
     [historyHasMore, timelineMessages]);
   const inputId = messages.filter((message) => message.role === "user").at(-1)?.id ?? inputResult.id;
+  // 已落定的回复原文，按时间顺序：时间线在前，本地仍在补齐的消息在后（与渲染顺序一致）。
+  const replyTexts = useMemo(() => [
+    ...timelineMessages.filter((message) => message.body.kind === "output").map(timelineText),
+    ...messages.filter((message) => message.role === "assistant" && !message.streaming).map((message) => message.content),
+  ], [messages, timelineMessages]);
+  const copyNotice = useCopyLastCode(replyTexts, reportError);
   // 选了回复引用就是要开始写：焦点直接进输入框（触屏会弹出键盘），不必再点一次。
   const replyTo = useCallback((reply: TimelineReply) => {
     handleReplyMessage(reply);
@@ -202,6 +209,7 @@ export function DesktopChatView({ embeddedShell, controller }: DesktopChatViewPr
             replyTarget={replyTarget} onModelChange={handleModelChange} onCancelReply={cancelReply}
             onSend={sendMessage} onStop={stopTurn} lastInput={lastInput}
           />
+          <CopyNotice text={copyNotice} />
           <ComposerStatsLine messages={timelineMessages} activities={replyActivities} connected={replyAvailable !== null} stopping={stopPending} />
           {replyAvailable === false ? <p className="reply-unavailable" role="status">当前未加载回复插件</p> : null}
           {controller.reconnecting ? <p className="reply-unavailable connection-status" role="status">
