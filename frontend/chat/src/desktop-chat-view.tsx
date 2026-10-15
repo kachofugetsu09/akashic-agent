@@ -9,7 +9,7 @@ import {
   ConversationEmptyState,
 } from "@/components/ai-elements/conversation";
 import { HostBridgeNotice } from "./host-bridge-notice";
-import { DesktopAutoScroll, NarrowReadingChrome, ReadingReturnButton, SessionReadingMemory, TurnRail } from "./desktop-auto-scroll";
+import { DesktopAutoScroll, ComposerPageKeys, NarrowReadingChrome, ReadingReturnButton, SessionReadingMemory, TurnRail } from "./desktop-auto-scroll";
 import { ComposerStatsLine } from "./composer-stats-line";
 import { ThinkingPlaceholder } from "./thinking-placeholder";
 import { DesktopComposer, type ComposerApi } from "./desktop-composer";
@@ -165,6 +165,7 @@ export function DesktopChatView({ embeddedShell, controller }: DesktopChatViewPr
           <DesktopAutoScroll messages={messages} status={status} streamStore={streamStore}
             timelineMessages={timelineMessages} replyActivities={replyActivities} />
           <NarrowReadingChrome />
+          <ComposerPageKeys />
           <ReadingReturnButton generating={isGeneratingChatStatus(status)} />
           {hasMessages ? <SelectionQuote onQuote={editInput} /> : null}
           {hasMessages ? <ReplyImageViewer /> : null}

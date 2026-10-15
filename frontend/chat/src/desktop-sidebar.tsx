@@ -238,6 +238,7 @@ function ShortcutsDialog({ open, onOpenChange, returnFocus }: { open: boolean; o
       ["换行", ["Shift", "Enter"]],
       ["停止生成", ["Esc"]],
       ["取回上一条提问（输入框为空时）", ["↑"]],
+      ["在输入框里翻看对话", ["PageUp", "PageDown"]],
       ["阅读时直接打字，进入输入框", ["任意字符"]],
     ] },
     { title: "导航", items: [
