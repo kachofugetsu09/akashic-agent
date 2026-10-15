@@ -1,6 +1,6 @@
 import { CheckIcon, CopyIcon } from "lucide-react";
 import { createContext, useContext, useEffect, useLayoutEffect, useRef, useState, type RefObject } from "react";
-import { CodeBlockNode, FootnoteNode as FootnoteRenderer, LinkNode as LinkRenderer, ListNode, ParagraphNode as ParagraphRenderer, PreCodeNode, languageMap, resolveLanguageId, type NodeComponentProps } from "markstream-react";
+import { CodeBlockNode, FootnoteNode as FootnoteRenderer, LinkNode as LinkRenderer, ListNode, ParagraphNode as ParagraphRenderer, PreCodeNode, languageMap, normalizeLanguageIdentifier, resolveLanguageId, type NodeComponentProps } from "markstream-react";
 import type { CodeBlockNode as CodeData, FootnoteAnchorNode as FootnoteAnchorData, FootnoteNode as FootnoteData, FootnoteReferenceNode as FootnoteReferenceData, LinkNode as LinkData, ListNode as ListData, ParagraphNode, ParsedNode, TableNode as TableData } from "stream-markdown-parser";
 import { copyReadingCode, isConceptLabel, isNumericColumn, isPlainTextLanguage, stripConceptSeparator, watchOverflowEdges, writeOverflowEdges } from "./markdown-reading";
 import { renderStaticMarkdown } from "./static-markdown";
@@ -192,15 +192,21 @@ function useCodeOverflowEdges(ref: RefObject<HTMLDivElement | null>): void {
     if (!wrapper) return;
     let root: ShadowRoot | null = null;
     let scroller: HTMLElement | null = null;
-    const resize = new ResizeObserver(() => measure());
-    const contents = new MutationObserver(() => measure());
+    let frame = 0;
+    // 测量要读 scrollWidth（强制布局）：流式时每次字符变化都会触发观察者，合并到下一帧只量一次（见 design.md 3.18）。
+    // 曾经同步测量，一段带代码的回复生成期间在这里累计约 130ms 强制布局。
+    const schedule = () => {
+      if (frame === 0) frame = requestAnimationFrame(() => { frame = 0; measure(); });
+    };
+    const resize = new ResizeObserver(() => schedule());
+    const contents = new MutationObserver(() => schedule());
     // 1. 每次测量都重新找滚动元素：高亮完成前后 shadow 里的节点会被替换；没有高亮宿主时量自身的 pre。
     const measure = () => {
       const scope: ParentNode = root ?? wrapper;
       scroller = [...scope.querySelectorAll<HTMLElement>("pre, code")].find((el) => el.scrollWidth > el.clientWidth + 1) ?? null;
       writeOverflowEdges(wrapper, scroller);
     };
-    const onScroll = () => measure();
+    const onScroll = () => schedule();
     // 2. 高亮组件可能晚于本组件挂载，等宿主出现再接上滚动与尺寸监听。
     const attach = () => {
       const host = wrapper.querySelector("diffs-container");
@@ -211,7 +217,7 @@ function useCodeOverflowEdges(ref: RefObject<HTMLDivElement | null>): void {
       root.addEventListener("scroll", onScroll, { capture: true, passive: true });
       resize.observe(host);
       contents.observe(root, { childList: true, subtree: true });
-      measure();
+      schedule();
     };
     // 3. markstream 的 pre（生成中、高亮完成前）一律 tabIndex=0、读屏名写死英文"Code block: json"：
     //    摘掉，交给 writeOverflowEdges 按是否放得下决定进不进 Tab 序、用中文名。
@@ -222,14 +228,15 @@ function useCodeOverflowEdges(ref: RefObject<HTMLDivElement | null>): void {
       }
     };
     // 4. 流式正文增长同样走这里：子树变化后重新接宿主并测量。
-    const mounts = new MutationObserver(() => { adopt(); attach(); measure(); });
+    const mounts = new MutationObserver(() => { adopt(); attach(); schedule(); });
     mounts.observe(wrapper, { childList: true, subtree: true, characterData: true });
     wrapper.addEventListener("scroll", onScroll, { capture: true, passive: true });
     resize.observe(wrapper);
     adopt();
     attach();
-    measure();
+    schedule();
     return () => {
+      cancelAnimationFrame(frame);
       mounts.disconnect();
       wrapper.removeEventListener("scroll", onScroll, true);
       contents.disconnect();
@@ -239,12 +246,119 @@ function useCodeOverflowEdges(ref: RefObject<HTMLDivElement | null>): void {
   }, [ref]);
 }
 
+interface CodeSnapshot {
+  html: string;
+  sheets: CSSStyleSheet[];
+  // 高亮宿主自身的属性（字号、配色等 CSS 变量写在它的 style 上，shadow 样式靠 :host 读取）与它在代码区里的位置
+  attributes: [string, string][];
+  variables: [string, string][];
+  top: number;
+  left: number;
+}
+
+const SNAPSHOT_LIMIT = 40;
+const codeSnapshots = new Map<string, CodeSnapshot>();
+const HANDOFF_TIMEOUT_MS = 3000;
+
+// 高亮交接：生成中闭合的代码块已经高亮，落定后的消息是新挂载的组件，高亮器要再等几帧（实测约 80ms）
+// 才重新上色，这段时间显示的是无色占位——同一块代码"有色 → 无色 → 有色"闪一下。
+// 每块代码第一次高亮完成时记下 shadow 里的结果（HTML 与样式表），同一段代码再挂载时先盖上这份快照，
+// 新的高亮画稳后撤掉。快照只作视觉占位，不可交互（pointer-events: none）。
+function useHighlightHandoff(ref: RefObject<HTMLDivElement | null>, key: string): void {
+  useLayoutEffect(() => {
+    const wrapper = ref.current;
+    if (!wrapper) return;
+    let overlay: HTMLDivElement | null = null;
+    let frame = 0;
+    const started = performance.now();
+    // 高亮器会分几轮重绘（先无色的行、再上色、再按可见区补全）：shadow 里连续 150ms 没有变化才算画好。
+    let watched: ShadowRoot | null = null;
+    let changedAt = 0;
+    const shadowChanges = new MutationObserver(() => { changedAt = performance.now(); });
+    const highlighted = () => {
+      const host = wrapper.querySelector<HTMLElement>("diffs-container");
+      const root = host?.shadowRoot;
+      if (!host || !root?.querySelector("[data-line]") || host.offsetHeight === 0) return null;
+      if (watched !== root) {
+        watched = root;
+        changedAt = performance.now();
+        shadowChanges.observe(root, { childList: true, subtree: true, characterData: true, attributes: true });
+      }
+      return performance.now() - changedAt > 150 ? host : null;
+    };
+    // 1. 还没高亮、又有同一段代码的快照：在代码区盖上快照
+    const body = wrapper.querySelector<HTMLElement>(".code-block-body");
+    const snapshot = codeSnapshots.get(key);
+    if (!highlighted() && snapshot && body) {
+      overlay = document.createElement("div");
+      for (const [name, value] of snapshot.attributes) overlay.setAttribute(name, value);
+      overlay.classList.add("reading-code-handoff");
+      overlay.setAttribute("aria-hidden", "true");
+      for (const [name, value] of snapshot.variables) overlay.style.setProperty(name, value);
+      overlay.style.setProperty("--handoff-top", `${snapshot.top}px`);
+      overlay.style.setProperty("--handoff-left", `${snapshot.left}px`);
+      const shadow = overlay.attachShadow({ mode: "open" });
+      shadow.adoptedStyleSheets = snapshot.sheets;
+      shadow.innerHTML = snapshot.html;
+      body.append(overlay);
+    }
+    // 2. 逐帧等高亮完成：记快照、撤掉占位
+    const poll = () => {
+      const host = highlighted();
+      if (!host && performance.now() - started < HANDOFF_TIMEOUT_MS) {
+        frame = requestAnimationFrame(poll);
+        return;
+      }
+      if (host?.shadowRoot && body) {
+        const hostRect = host.getBoundingClientRect();
+        const bodyRect = body.getBoundingClientRect();
+        codeSnapshots.delete(key);
+        codeSnapshots.set(key, {
+          html: host.shadowRoot.innerHTML,
+          sheets: [...host.shadowRoot.adoptedStyleSheets],
+          attributes: [...host.attributes].filter((attribute) => attribute.name !== "id" && attribute.name !== "style").map((attribute) => [attribute.name, attribute.value]),
+          variables: localVariables(host, body),
+          top: hostRect.top - bodyRect.top,
+          left: hostRect.left - bodyRect.left,
+        });
+        if (codeSnapshots.size > SNAPSHOT_LIMIT) codeSnapshots.delete(codeSnapshots.keys().next().value!);
+      }
+      shadowChanges.disconnect();
+      overlay?.remove();
+      overlay = null;
+    };
+    frame = requestAnimationFrame(poll);
+    return () => {
+      cancelAnimationFrame(frame);
+      shadowChanges.disconnect();
+      overlay?.remove();
+    };
+  }, [ref, key]);
+}
+
+// 高亮样式读的 CSS 变量（字号、配色）定义在宿主与代码区之间的几层元素上，快照挂在代码区上继承不到：
+// 取宿主上与代码区取值不同的自定义属性，写到快照宿主上。
+function localVariables(host: HTMLElement, body: HTMLElement): [string, string][] {
+  const own = getComputedStyle(host);
+  const outer = getComputedStyle(body);
+  const result: [string, string][] = [];
+  for (let index = 0; index < own.length; index += 1) {
+    const name = own[index];
+    if (!name.startsWith("--")) continue;
+    const value = own.getPropertyValue(name);
+    if (value !== outer.getPropertyValue(name)) result.push([name, value]);
+  }
+  for (const name of ["color", "font-family", "font-size", "line-height", "background-color"]) result.push([name, own.getPropertyValue(name)]);
+  return result;
+}
+
 function HighlightedCode(props: NodeComponentProps<CodeData>) {
   const { node, ctx, isDark } = props;
   const ref = useRef<HTMLDivElement>(null);
   useCodeOverflowEdges(ref);
   // 围栏正文自带结尾换行，高亮层会把它渲染成一整行空白。
   const settled = node.code.endsWith("\n") ? { ...node, code: node.code.replace(/\n+$/, "") } : node;
+  useHighlightHandoff(ref, `${isDark ? "dark" : "light"}\u0000${node.language}\u0000${settled.code}`);
   return <div ref={ref} className="reading-code-scroll">
     <CodeBlockNode node={settled} isDark={isDark} loading={Boolean(node.loading)}
       codeBlockOptions={ctx?.codeBlockOptions} onCopy={ctx?.events.onCopy}
@@ -259,9 +373,10 @@ function HighlightedCode(props: NodeComponentProps<CodeData>) {
 function StreamingCode({ node }: { node: CodeData }) {
   const ref = useRef<HTMLDivElement>(null);
   useCodeOverflowEdges(ref);
+  // 块头名按归一后的语言取（bash/sh/zsh → shell → "Shell"），与落定块头同一张表；resolveLanguageId 是给高亮器的
+  // 语法 id（shell → zsh），拿它取名生成中会显示 "Zsh"。映射外的语言只把首字母大写（myLang → MyLang）。
   const id = resolveLanguageId(node.language);
-  // 映射外的语言按落定块头的规则只把首字母大写（myLang → MyLang）。
-  const label = languageMap[id] ?? (id ? `${id.charAt(0).toUpperCase()}${id.slice(1)}` : "");
+  const label = languageMap[normalizeLanguageIdentifier(node.language)] ?? languageMap[id] ?? (id ? `${id.charAt(0).toUpperCase()}${id.slice(1)}` : "");
   return <div ref={ref} className="reading-code-scroll is-streaming">
     {label ? <span className="reading-code-stream-label code-header-title" aria-hidden="true">{label}</span> : null}
     <PreCodeNode node={node} showLineNumbers={false} />
@@ -272,19 +387,22 @@ function StreamingCode({ node }: { node: CodeData }) {
 export function ReadingCode({ node, ctx, isDark }: NodeComponentProps<CodeData>) {
   // markstream 把 ```diff 解析成"改后代码"（code 只剩 + 与上下文行、language 置空），删除行与文件头都丢了；
   // 用原文逐行着色，与工具结果里的 diff 同一外观，复制的也是完整 diff。生成中与落定同一渲染，换手不跳。
+  // 还在写的块不给复制钮：复制到的会是半截代码（参考 Claude Desktop 流式期间不渲染复制按钮）。
   if (node.diff) {
     return <div className="reading-plain-text is-diff">
+      <div className="reading-diff-header"><span className="code-header-title">Diff</span></div>
       <pre><code><DiffLines lines={node.raw.replace(/\n$/u, "").split("\n")} /></code></pre>
-      <PlainCodeCopy code={node.raw} />
+      {node.loading ? null : <PlainCodeCopy code={node.raw} />}
     </div>;
   }
   if (isPlainTextLanguage(node.language)) {
     return <div className="reading-plain-text">
       <pre><code>{node.code}</code></pre>
-      <PlainCodeCopy code={node.code} />
+      {node.loading ? null : <PlainCodeCopy code={node.code} />}
     </div>;
   }
-  if (ctx?.renderCodeBlocksAsPre) return <StreamingCode node={node} />;
+  // 生成中只有末尾还在写的那一块保持纯文本；已闭合的块内容不会再变，直接高亮，落定时不再整批换手。
+  if (ctx?.renderCodeBlocksAsPre && node.loading) return <StreamingCode node={node} />;
   return <HighlightedCode node={node} ctx={ctx} isDark={isDark} />;
 }
 
