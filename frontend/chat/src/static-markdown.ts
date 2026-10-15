@@ -1,10 +1,11 @@
 import { gfm, gfmHtml } from "micromark-extension-gfm";
 import { micromark } from "micromark";
+import { protectKaomojiLiterals } from "./kaomoji-markdown";
 import { isConceptLabel, isNumericColumn, isPlainTextLanguage, stripConceptSeparator } from "./markdown-reading";
 
 /** Render settled GFM while keeping raw HTML and unsafe protocols inert. */
 export function renderStaticMarkdown(markdown: string) {
-  const html = micromark(markdown, {
+  const html = micromark(protectKaomojiLiterals(markdown), {
     extensions: [gfm()],
     // 脚注区的隐藏标题与返回链接读屏名默认是英文（Footnotes / Back to reference 1）：与富渲染路径同说"返回引用 1"。
     htmlExtensions: [gfmHtml({
