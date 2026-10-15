@@ -490,8 +490,8 @@ export function ModelEffortAction({ runtime, effort, explicit, disabled, onChang
                 >
                   <Check size={14} className="model-picker__check" aria-hidden="true" />
                   <span className="model-picker__copy">
+                    {/* 只写中文档名：英文值是同一信息，第二行只会让每个选项高一倍。 */}
                     <strong>{EFFORT_LABELS[level] || level}</strong>
-                    <span className="model-picker__meta"><em>{level}</em></span>
                   </span>
                 </div>
               );

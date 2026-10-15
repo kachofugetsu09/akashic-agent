@@ -2568,6 +2568,11 @@ form.composer:focus-within [data-slot="input-group"] {
   background: var(--ak-paper-raised);
 }
 
+/* 强度选项只有一行档名：桌面紧凑 36px，触屏按 44px 触控目标，文字垂直居中。 */
+.model-effort__option { min-height: 36px; align-items: center; }
+.model-effort__option .model-picker__check { margin-block-start: 0; }
+@media (pointer: coarse) { .model-effort__option { min-height: 44px; } }
+
 .model-effort__list {
   overflow-y: auto;
   overscroll-behavior: contain;
