@@ -434,9 +434,11 @@
 ) > :first-child {
   margin-block-start: 0;
 }
-/* 首块是代码、Mermaid 或数学兜底时，真实边距在包裹层里面的框上（多为 !important），一并清掉；列表、引用、表格里嵌着的不算首块。 */
+/* 首块是代码、Mermaid、公式或数学兜底时，真实边距在框上（多为 !important）：框可能是首块本身（流式数学兜底），也可能在包裹层里面，
+   两种都清；列表、引用、表格里嵌着的不算首块。 */
+:is(.agent-content, .process-markdown, .user-bubble) .markdown-reading .markdown-renderer > .node-slot:first-child > .node-content > :first-child:is(.code-block-container, pre[data-markstream-pre="1"], .mermaid-block, .markstream-deferred-source, .math-block-node),
 :is(.agent-content, .process-markdown, .user-bubble) .markdown-reading .markdown-renderer > .node-slot:first-child > .node-content > :first-child
-  :is(.code-block-container, pre[data-markstream-pre="1"], .mermaid-block, .markstream-deferred-source, .math-block-node):not(:is(li, blockquote, td) *) {
+  :is(.code-block-container, pre[data-markstream-pre="1"], .mermaid-block, .markstream-deferred-source, .math-block-node, .katex-display):not(:is(li, blockquote, td) *) {
   margin-block-start: 0 !important;
 }
 
