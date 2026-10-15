@@ -291,7 +291,8 @@ export function footnoteLookup(region: string): FootnoteLookup {
 }
 
 // 脚注正文来自静态 GFM（没有数学扩展）：其中的 $…$ / $$…$$ 按需用 KaTeX 补渲染，代码里的不动。
-const MATH = /\$\$([\s\S]+?)\$\$|\$(?!\s)([^$\n]+?)(?<!\s)\$/gu;
+// 行内公式与 pandoc 同规则：开 $ 后、闭 $ 前不是空白，闭 $ 后不紧跟数字（"$5 和 $10"是价格不是公式）。
+const MATH = /\$\$([\s\S]+?)\$\$|\$(?!\s)([^$\n]+?)(?<!\s)\$(?!\d)/gu;
 async function renderFootnoteMath(root: HTMLElement): Promise<void> {
   const texts: Text[] = [];
   const walker = document.createTreeWalker(root, NodeFilter.SHOW_TEXT, {
