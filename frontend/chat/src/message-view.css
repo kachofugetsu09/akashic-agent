@@ -1793,7 +1793,47 @@ button.tool-step-summary:active {
   object-fit: contain;
 }
 
-/* 回复正文里的图片可点开看大图（ReplyImageViewer 委托点击）。 */
+/* 同一条消息里有多张媒体时，顶栏中间是"‹ 2 / 5 ›"：计数用等宽数字，翻页钮与其它顶栏钮同尺寸，到头时退为禁用。 */
+.media-preview__pager {
+  display: flex;
+  align-items: center;
+  font-size: 0.8125rem;
+  font-variant-numeric: tabular-nums;
+}
+.media-preview__pager > span {
+  min-width: 3.5em;
+  text-align: center;
+  opacity: 0.82;
+}
+.media-preview__bar button:disabled {
+  opacity: 0.32;
+  background: none;
+  cursor: default;
+}
+
+/* 图片外框就是滚动容器：适应视口时与图片同大，切到原始像素后在同一块区域里滚动看细节。 */
+.media-preview__frame {
+  max-width: 94vw;
+  max-height: calc(96dvh - 48px);
+  overflow: hidden;
+  border-radius: 10px;
+}
+/* 在媒体上横滑交给页面脚本切换上一个/下一个（媒体外的暗区是遮罩层，点它关闭）；原始像素画框本身是滚动容器，
+   touch-action 只沿祖先链算到最近的滚动容器，横向平移仍归浏览器。 */
+.media-preview { touch-action: pan-y pinch-zoom; }
+.media-preview__frame.is-actual {
+  overflow: auto;
+  overscroll-behavior: contain;
+}
+.media-preview__media.is-scaled { cursor: zoom-in; }
+.media-preview__media.is-actual {
+  max-width: none;
+  max-height: none;
+  border-radius: 0;
+  cursor: zoom-out;
+}
+
+/* 回复正文里的图片可点开看大图（MediaGalleryViewer 委托点击）。 */
 :is(.agent-content, .process-markdown) img:not(:is(a, button) img) {
   cursor: zoom-in;
 }

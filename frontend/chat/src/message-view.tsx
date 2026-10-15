@@ -24,9 +24,8 @@ import {
   DialogClose,
   DialogContent,
   DialogTitle,
-  DialogTrigger,
 } from "@/components/ui/dialog";
-import { Brain, Check, ChevronDown, Copy, Download, ExternalLink, Gauge, ImageIcon, Play, Video, Wrench, X } from "lucide-react";
+import { Brain, Check, ChevronDown, ChevronLeft, ChevronRight, Copy, Download, ExternalLink, Gauge, ImageIcon, Play, Video, Wrench, X, ZoomIn, ZoomOut } from "lucide-react";
 import { useStickToBottomContext } from "use-stick-to-bottom";
 import { MarqueeText } from "./marquee-text";
 import {
@@ -35,6 +34,7 @@ import {
   memo,
   Suspense,
   type MouseEvent as ReactMouseEvent,
+  type PointerEvent as ReactPointerEvent,
   type ReactNode,
   useEffect,
   useLayoutEffect,
@@ -791,81 +791,82 @@ function MessageAttachmentItem({ attachment }: { attachment: MessageAttachment }
 
 // 视频与图片同一套：块里取首帧铺满（解不出时垫图标和文件名），点开在查看器里播放，而不是直接下载。
 function MessageContentVideo({ url, label }: { url: string; label: string }) {
-  return <MediaPreview url={url} label={label} kind="video">
-    <button type="button" className="message-attachment-chip is-media is-video" title={`播放 ${label}`} aria-label={`播放 ${label}`}>
-      <span className="message-video-fallback">
-        <Video size={18} aria-hidden="true" />
-        <span>{label}</span>
-      </span>
-      <video src={url} muted playsInline preload="metadata" />
-      <span className="message-video-badge" aria-hidden="true"><Play size={12} fill="currentColor" /></span>
-    </button>
-  </MediaPreview>;
-}
-
-// 图片与视频的查看器：整屏压暗，媒体按视口等比放大（小视频不再按原始尺寸播放）；顶栏是文件名、新标签打开、下载与关闭，点媒体外的空白处关闭。
-function MediaPreview({ url, label, kind, children }: { url: string; label: string; kind: MediaKind; children: ReactNode }) {
-  const [open, setOpen] = useState(false);
-  return <Dialog open={open} onOpenChange={setOpen}>
-    <DialogTrigger asChild>{children}</DialogTrigger>
-    <MediaViewer url={url} label={label} kind={kind} onClose={() => setOpen(false)} />
-  </Dialog>;
+  return <button type="button" className="message-attachment-chip is-media is-video" title={`播放 ${label}`} aria-label={`播放 ${label}`}
+    {...mediaAttributes(url, label, "video")}>
+    <span className="message-video-fallback">
+      <Video size={18} aria-hidden="true" />
+      <span>{label}</span>
+    </span>
+    <video src={url} muted playsInline preload="metadata" />
+    <span className="message-video-badge" aria-hidden="true"><Play size={12} fill="currentColor" /></span>
+  </button>;
 }
 
 type MediaKind = "image" | "video";
+type MediaItem = { url: string; label: string; kind: MediaKind; trigger: HTMLElement };
+type MediaGallery = { items: MediaItem[]; index: number };
 
-function MediaViewer({ url, label, kind, onClose, returnFocus }: {
-  url: string; label: string; kind: MediaKind; onClose: () => void;
-  /** 没有 DialogTrigger 的入口（正文图片委托）关闭后把焦点还给它。 */
-  returnFocus?: HTMLElement;
-}) {
-  const closeRef = useRef<HTMLButtonElement>(null);
-  return <DialogContent className="media-preview" overlayClassName="media-preview-overlay" showCloseButton={false}
-    aria-describedby={undefined}
-    // 打开后焦点落在关闭钮（Esc 与回车都能离开），而不是顶栏第一个"新标签打开"。
-    onOpenAutoFocus={(event) => { event.preventDefault(); closeRef.current?.focus(); }}
-    onCloseAutoFocus={returnFocus ? (event) => {
-      if (!returnFocus.isConnected) return;
-      event.preventDefault();
-      returnFocus.focus({ preventScroll: true });
-    } : undefined}
-    onClick={(event) => { if (event.target === event.currentTarget) onClose(); }}>
-    <div className="media-preview__bar">
-      <DialogTitle className="media-preview__title"><MarqueeText still>{label}</MarqueeText></DialogTitle>
-      <a href={url} target="_blank" rel="noreferrer" aria-label="在新标签页打开" title="在新标签页打开"><ExternalLink size={18} aria-hidden="true" /></a>
-      <a href={url} download={label} aria-label={`下载 ${label}`} title="下载"><Download size={18} aria-hidden="true" /></a>
-      <DialogClose ref={closeRef} aria-label="关闭" title="关闭（Esc）"><X size={20} aria-hidden="true" /></DialogClose>
-    </div>
-    {kind === "image"
-      ? <img alt={label} className="media-preview__media" src={url} />
-      : <video className="media-preview__media is-video" src={url} controls autoPlay playsInline />}
-  </DialogContent>;
+const REPLY_IMAGE_SCOPE = ".agent-content, .process-markdown";
+
+// 附件媒体按钮的标记：委托查看器据此取地址与类型，不再每个附件各挂一个对话框。
+function mediaAttributes(url: string, label: string, kind: MediaKind) {
+  return { "data-media-url": url, "data-media-label": label, "data-media-kind": kind };
 }
 
-// 正文图片（两条 Markdown 渲染路径都是普通 img）点开进同一个查看器。document 级委托不改渲染节点；
-// 键盘入口由这里补：可预览的图片设为可聚焦、按钮语义，Enter/空格打开，关闭后焦点回到这张图。
-export function ReplyImageViewer() {
+// 可预览的媒体：带 data-media-* 的附件按钮；回复正文里的 Markdown 图片（普通 img，不在链接或按钮里）。
+function mediaItem(node: Element): MediaItem | null {
+  if (node instanceof HTMLElement && node.dataset.mediaUrl) {
+    return { url: node.dataset.mediaUrl, label: node.dataset.mediaLabel ?? "附件",
+      kind: node.dataset.mediaKind === "video" ? "video" : "image", trigger: node };
+  }
+  if (node instanceof HTMLImageElement && node.closest(REPLY_IMAGE_SCOPE) && !node.closest("a, button")) {
+    return { url: node.currentSrc || node.src, label: node.alt || "图片", kind: "image", trigger: node };
+  }
+  return null;
+}
+
+// 同一条消息里的全部媒体按文档顺序成组。不跨消息：远处的消息是占位渲染，媒体不在 DOM 里，跨消息的组会时有时无。
+function galleryFrom(item: MediaItem): MediaGallery {
+  const scope = item.trigger.closest(".web-message-anchor");
+  const items = scope ? [...scope.querySelectorAll("[data-media-url], img")].flatMap((node) => {
+    const found = mediaItem(node);
+    return found ? [found] : [];
+  }) : [];
+  const index = items.findIndex((candidate) => candidate.trigger === item.trigger);
+  return index < 0 ? { items: [item], index: 0 } : { items, index };
+}
+
+// 图片与视频的查看器（参考 Memoh 的媒体灯箱）：附件与回复正文图片共用，document 级委托，不改渲染节点。
+// 正文图片由这里补键盘入口（可聚焦、按钮语义，Enter/空格打开）；同一条消息里有多张时 ←/→ 切换；
+// 关闭后焦点回到当前这一张的入口。
+export function MediaGalleryViewer() {
   const { scrollRef } = useStickToBottomContext();
-  const [image, setImage] = useState<{ url: string; label: string; trigger: HTMLImageElement } | null>(null);
+  const [gallery, setGallery] = useState<MediaGallery | null>(null);
   // 必要 effect：点击、按键委托挂在 document 上；新消息与懒加载换出的 img 由 MutationObserver 补上键盘入口。
   useEffect(() => {
-    const previewable = (node: EventTarget | null): node is HTMLImageElement =>
-      node instanceof HTMLImageElement && Boolean(node.closest(REPLY_IMAGE_SCOPE)) && !node.closest("a, button");
-    const open = (target: HTMLImageElement) => setImage({ url: target.currentSrc || target.src, label: target.alt || "图片", trigger: target });
+    const triggerOf = (target: EventTarget | null) => target instanceof Element
+      ? mediaItem(target.closest("[data-media-url]") ?? target) : null;
     const mark = (root: ParentNode) => {
       for (const img of root.querySelectorAll("img")) {
         // markstream 的图片自带 tabindex="0"：焦点属性与按钮语义分开补，不因已可聚焦就跳过角色和标签。
-        if (!previewable(img) || img.getAttribute("role") === "button") continue;
+        if (!mediaItem(img) || img.getAttribute("role") === "button") continue;
         if (!img.hasAttribute("tabindex")) img.tabIndex = 0;
         img.setAttribute("role", "button");
         img.setAttribute("aria-label", `查看图片：${img.alt || "图片"}`);
       }
     };
-    const onClick = (event: MouseEvent) => { if (previewable(event.target)) open(event.target); };
-    const onKey = (event: KeyboardEvent) => {
-      if ((event.key !== "Enter" && event.key !== " ") || !previewable(event.target)) return;
+    const onClick = (event: MouseEvent) => {
+      const item = triggerOf(event.target);
+      if (!item) return;
       event.preventDefault();
-      open(event.target);
+      setGallery(galleryFrom(item));
+    };
+    const onKey = (event: KeyboardEvent) => {
+      if ((event.key !== "Enter" && event.key !== " ") || !(event.target instanceof HTMLImageElement)) return;
+      const item = mediaItem(event.target);
+      if (!item) return;
+      event.preventDefault();
+      setGallery(galleryFrom(item));
     };
     const scroller = scrollRef.current;
     const observer = new MutationObserver((records) => {
@@ -886,12 +887,125 @@ export function ReplyImageViewer() {
       document.removeEventListener("keydown", onKey);
     };
   }, [scrollRef]);
-  return <Dialog open={image !== null} onOpenChange={(open) => { if (!open) setImage(null); }}>
-    {image ? <MediaViewer url={image.url} label={image.label} kind="image" returnFocus={image.trigger} onClose={() => setImage(null)} /> : null}
+  const step = (delta: number) => setGallery((current) => current
+    ? { ...current, index: Math.min(Math.max(current.index + delta, 0), current.items.length - 1) } : current);
+  return <Dialog open={gallery !== null} onOpenChange={(open) => { if (!open) setGallery(null); }}>
+    {gallery ? <MediaViewer gallery={gallery} onStep={step} onClose={() => setGallery(null)} /> : null}
   </Dialog>;
 }
 
-const REPLY_IMAGE_SCOPE = ".agent-content, .process-markdown";
+type ZoomPoint = { x: number; y: number; px: number; py: number };
+
+// 图片被缩小显示时可切到原始像素，在同一块区域里滚动看细节。状态记在当前这张的地址上：切到下一张自然回到适应视口，不需要 effect 重置。
+function useImageZoom(item: MediaItem) {
+  const frameRef = useRef<HTMLDivElement>(null);
+  const [scaledUrl, setScaledUrl] = useState("");
+  const [actualUrl, setActualUrl] = useState("");
+  const anchor = useRef<ZoomPoint | null>(null);
+  const actual = item.kind === "image" && actualUrl === item.url;
+  const zoomable = actual || (item.kind === "image" && scaledUrl === item.url);
+  const toggle = (point?: ZoomPoint) => {
+    anchor.current = point ?? null;
+    setActualUrl(actual ? "" : item.url);
+  };
+  // 切到原始像素后让点击处留在指针下（键盘切换时停在中心）。
+  useLayoutEffect(() => {
+    const frame = frameRef.current;
+    if (!actual || !frame) return;
+    const point = anchor.current ?? { x: 0.5, y: 0.5, px: frame.clientWidth / 2, py: frame.clientHeight / 2 };
+    frame.scrollLeft = point.x * frame.scrollWidth - point.px;
+    frame.scrollTop = point.y * frame.scrollHeight - point.py;
+  }, [actual]);
+  const measure = (image: HTMLImageElement) => {
+    if (image.naturalWidth > image.clientWidth + 1 || image.naturalHeight > image.clientHeight + 1) setScaledUrl(item.url);
+  };
+  return { frameRef, actual, zoomable, toggle, measure };
+}
+
+// 触屏在媒体上横滑切换上一个/下一个。原始像素下滑动是平移画面；顶栏与视频底部控制条（拖进度）上的滑动也不算。
+function useSwipeStep(enabled: boolean, go: (delta: number) => void) {
+  const start = useRef<{ x: number; y: number } | null>(null);
+  return {
+    onPointerDown: (event: ReactPointerEvent) => {
+      const target = event.target instanceof Element ? event.target : null;
+      const onControls = target instanceof HTMLVideoElement && event.clientY > target.getBoundingClientRect().bottom - 64;
+      start.current = enabled && event.pointerType === "touch" && !onControls && !target?.closest(".media-preview__bar")
+        ? { x: event.clientX, y: event.clientY } : null;
+    },
+    onPointerUp: (event: ReactPointerEvent) => {
+      const from = start.current;
+      start.current = null;
+      if (!from) return;
+      const dx = event.clientX - from.x;
+      if (Math.abs(dx) > 48 && Math.abs(event.clientY - from.y) < 40) go(dx < 0 ? 1 : -1);
+    },
+  };
+}
+
+function MediaPager({ index, count, go }: { index: number; count: number; go: (delta: number) => void }) {
+  return <div className="media-preview__pager">
+    <button type="button" aria-label="上一个" title="上一个（←）" disabled={index === 0} onClick={() => go(-1)}>
+      <ChevronLeft size={18} aria-hidden="true" />
+    </button>
+    <span aria-live="polite">{index + 1} / {count}</span>
+    <button type="button" aria-label="下一个" title="下一个（→）" disabled={index === count - 1} onClick={() => go(1)}>
+      <ChevronRight size={18} aria-hidden="true" />
+    </button>
+  </div>;
+}
+
+// 整屏压暗，视频按视口放大；图片原尺寸显示、超出视口才等比缩小，被缩小时点图（或顶栏按钮）切到原始像素。
+function MediaViewer({ gallery, onStep, onClose }: { gallery: MediaGallery; onStep: (delta: number) => void; onClose: () => void }) {
+  const { items, index } = gallery;
+  const item = items[index];
+  const closeRef = useRef<HTMLButtonElement>(null);
+  const zoom = useImageZoom(item);
+  // 到头停住不循环。
+  const go = (delta: number) => { if (index + delta >= 0 && index + delta < items.length) onStep(delta); };
+  const swipe = useSwipeStep(items.length > 1 && !zoom.actual, go);
+  return <DialogContent className="media-preview" overlayClassName="media-preview-overlay" showCloseButton={false}
+    aria-describedby={undefined} {...swipe}
+    // 打开后焦点落在关闭钮（Esc 与回车都能离开），而不是顶栏第一个"新标签打开"；关闭后回到当前这一张的入口。
+    onOpenAutoFocus={(event) => { event.preventDefault(); closeRef.current?.focus(); }}
+    onCloseAutoFocus={(event) => {
+      if (!item.trigger.isConnected) return;
+      event.preventDefault();
+      item.trigger.focus({ preventScroll: true });
+    }}
+    onKeyDown={(event) => {
+      if (event.target instanceof HTMLVideoElement || event.altKey || event.ctrlKey || event.metaKey) return;
+      if (event.key !== "ArrowLeft" && event.key !== "ArrowRight") return;
+      event.preventDefault();
+      go(event.key === "ArrowLeft" ? -1 : 1);
+    }}
+    onClick={(event) => { if (event.target === event.currentTarget) onClose(); }}>
+    <div className="media-preview__bar">
+      <DialogTitle className="media-preview__title"><MarqueeText still>{item.label}</MarqueeText></DialogTitle>
+      {items.length > 1 ? <MediaPager index={index} count={items.length} go={go} /> : null}
+      {zoom.zoomable ? <button type="button" aria-pressed={zoom.actual} aria-label={zoom.actual ? "适应窗口" : "原始尺寸"}
+        title={zoom.actual ? "适应窗口" : "原始尺寸"} onClick={() => zoom.toggle()}>
+        {zoom.actual ? <ZoomOut size={18} aria-hidden="true" /> : <ZoomIn size={18} aria-hidden="true" />}
+      </button> : null}
+      <a href={item.url} target="_blank" rel="noreferrer" aria-label="在新标签页打开" title="在新标签页打开"><ExternalLink size={18} aria-hidden="true" /></a>
+      <a href={item.url} download={item.label} aria-label={`下载 ${item.label}`} title="下载"><Download size={18} aria-hidden="true" /></a>
+      <DialogClose ref={closeRef} aria-label="关闭" title="关闭（Esc）"><X size={20} aria-hidden="true" /></DialogClose>
+    </div>
+    {item.kind === "image"
+      ? <div ref={zoom.frameRef} className={`media-preview__frame${zoom.actual ? " is-actual" : ""}`}>
+        <img key={item.url} alt={item.label} src={item.url}
+          className={`media-preview__media${zoom.zoomable ? zoom.actual ? " is-actual" : " is-scaled" : ""}`}
+          onLoad={(event) => zoom.measure(event.currentTarget)}
+          onClick={(event) => {
+            if (!zoom.zoomable) return;
+            const box = event.currentTarget.getBoundingClientRect();
+            const frame = event.currentTarget.parentElement!.getBoundingClientRect();
+            zoom.toggle({ x: (event.clientX - box.left) / box.width, y: (event.clientY - box.top) / box.height,
+              px: event.clientX - frame.left, py: event.clientY - frame.top });
+          }} />
+      </div>
+      : <video key={item.url} className="media-preview__media is-video" src={item.url} controls autoPlay playsInline />}
+  </DialogContent>;
+}
 
 function MessageContentImage({
   attachment,
@@ -912,8 +1026,8 @@ function MessageContentImage({
     );
   }
 
-  return <MediaPreview url={attachment.url} label={label} kind="image">
-    <button type="button" className="message-content-image" title="点击预览图片">
+  return <button type="button" className="message-content-image" title="点击预览图片"
+    {...mediaAttributes(attachment.url, label, "image")}>
       <img
         alt={label}
         className="message-content-image__media"
@@ -922,8 +1036,7 @@ function MessageContentImage({
         decoding="async"
         onError={() => setFailed(true)}
       />
-    </button>
-  </MediaPreview>;
+  </button>;
 }
 
 /** 每个过程项独立成行：思考、工具各自折叠，不共用外框。 */
