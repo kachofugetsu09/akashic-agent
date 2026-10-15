@@ -4,6 +4,7 @@ import { CodeBlockNode, FootnoteNode as FootnoteRenderer, LinkNode as LinkRender
 import type { CodeBlockNode as CodeData, FootnoteAnchorNode as FootnoteAnchorData, FootnoteNode as FootnoteData, FootnoteReferenceNode as FootnoteReferenceData, LinkNode as LinkData, ListNode as ListData, ParagraphNode, ParsedNode, TableNode as TableData } from "stream-markdown-parser";
 import { copyReadingCode, isConceptLabel, isNumericColumn, isPlainTextLanguage, stripConceptSeparator, watchOverflowEdges, writeOverflowEdges } from "./markdown-reading";
 import { renderStaticMarkdown } from "./static-markdown";
+import { loadKatex } from "./reading-math";
 import { DiffLines } from "./tool-result-view";
 
 export const CODE_BLOCK_PROPS = {
@@ -481,7 +482,8 @@ export function footnoteLookup(markdown: string): FootnoteLookup {
 async function renderFootnoteMath(root: HTMLElement): Promise<void> {
   const nodes = [...root.querySelectorAll<HTMLElement>("[data-math]")];
   if (!nodes.length) return;
-  const [{ default: katex }] = await Promise.all([import("katex"), import("@/katex-styles")]);
+  const katex = await loadKatex();
+  if (!katex) return;
   for (const node of nodes) {
     if (node.isConnected) katex.render(node.dataset.tex ?? "", node, { displayMode: node.dataset.math === "display", throwOnError: false });
   }

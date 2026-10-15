@@ -260,6 +260,18 @@
   content-visibility: visible;
 }
 
+/* 复制含公式的选区时，克隆挂在页外取 innerText（reading-math.tsx）：渲染外壳的 content-visibility:auto 在页外会跳过渲染、读不到字，这里统一改回可见。 */
+.reading-copy-holder {
+  position: fixed;
+  inset-block-start: 0;
+  inset-inline-start: -99999px;
+  white-space: pre-wrap;
+}
+.reading-copy-holder,
+.reading-copy-holder * {
+  content-visibility: visible !important;
+}
+
 /* 公式（reading-math.tsx）。独立公式不画底色：与正文同一纸面，上下留出呼吸；放不下时横滚，渐隐提示同代码块。
    KaTeX 自带的 .katex-display 外边距归零，间距只由外层决定，生成中与落定同一几何。 */
 :is(.agent-content, .process-markdown, .user-bubble) .markdown-reading .reading-math-display {

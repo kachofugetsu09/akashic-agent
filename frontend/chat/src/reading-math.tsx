@@ -1,5 +1,6 @@
-import { memo, useEffect, useLayoutEffect, useRef, useSyncExternalStore, type ClipboardEvent as ReactClipboardEvent } from "react";
+import { memo, useEffect, useLayoutEffect, useRef, useSyncExternalStore } from "react";
 import type { KatexOptions } from "katex";
+import katexAssetUrl from "katex/dist/katex.mjs?url";
 import { watchOverflowEdges } from "./markdown-reading";
 
 // 公式渲染（参考 Claude Desktop：KaTeX 按需加载、errorColor 跟正文、复制还原 TeX）。
@@ -12,6 +13,8 @@ type MathMode = "inline" | "display" | "inline-display";
 
 let katex: Katex | null = null;
 let katexLoad: Promise<void> | null = null;
+let retryDelay = 2000;
+let katexAttempts = 0;
 const listeners = new Set<() => void>();
 
 const CACHE_LIMIT = 400;
@@ -20,14 +23,34 @@ const cache = new Map<string, string | null>();
 // 只输出 HTML（不带 MathML）：DOM 少两到三成、排版快近一半，复制也不会混进 MathML 的逐字文本；读屏名用 TeX 源码。
 const OPTIONS: KatexOptions = { throwOnError: true, strict: false, output: "html", trust: false };
 
-/** 检测到公式就开始加载 KaTeX、样式和常用字体：字体晚到会让排好的公式整块重排。 */
+/** 检测到公式就开始加载 KaTeX、样式和常用字体：字体晚到会让排好的公式整块重排。
+ *  加载失败（断网、发版后旧 chunk 不在）不缓存失败结果：已挂的公式先按源码显示，退避重试，新公式挂载也会再试；成功后全部排版。 */
 export function preloadMath(): Promise<void> {
-  katexLoad ??= Promise.all([import("katex"), import("@/katex-styles")]).then(async ([module]) => {
+  installMathCopy();
+  katexLoad ??= Promise.all([importKatex(), import("@/katex-styles")]).then(async ([module]) => {
     katex = module.default;
     for (const listener of listeners) listener();
     await Promise.allSettled(["KaTeX_Main", "KaTeX_Math", "KaTeX_Size1", "KaTeX_Size2"].map((family) => document.fonts.load(`1em ${family}`)));
+  }, () => {
+    katexLoad = null;
+    if (listeners.size) window.setTimeout(() => void preloadMath(), retryDelay);
+    retryDelay = Math.min(retryDelay * 2, 60_000);
   });
   return katexLoad;
+}
+
+/** 等 KaTeX 载入；这一次没载入成功返回 null（之后仍会重试）。 */
+export async function loadKatex(): Promise<Katex | null> {
+  await preloadMath();
+  return katex;
+}
+
+// 首次走正常的分包导入（与 markstream 共用同一 chunk）。失败后浏览器把这个模块地址的失败记在模块表里，
+// 同一地址再导入直接复用失败结果、不发请求；重试改从自包含的 katex.mjs 资源导入，每次换查询串重新请求。
+function importKatex(): Promise<typeof import("katex")> {
+  katexAttempts += 1;
+  if (katexAttempts === 1) return import("katex");
+  return import(/* @vite-ignore */ `${katexAssetUrl}?retry=${katexAttempts}`) as Promise<typeof import("katex")>;
 }
 
 function subscribe(listener: () => void) {
@@ -128,12 +151,10 @@ export const ReadingMath = memo(function ReadingMath({ node, block }: { node: Ma
   const lastGood = useRef<string | null>(null);
   useEffect(() => { void preloadMath(); }, []);
   // 1. 闭合：完整排版；排不了（真错误）按源码显示，跟正文同色，不出红字。
-  // 2. 未闭合：渐进排版，失败沿用上一次结果。
+  // 2. 未闭合：渐进排版，失败沿用上一次提交的结果（提交后才记下，被弃置的渲染不会污染它）。
   let html: string | null = null;
-  if (ready) {
-    html = node.loading ? renderPartial(tex, mode) ?? lastGood.current : render(tex, mode);
-    if (html) lastGood.current = html;
-  }
+  if (ready) html = node.loading ? renderPartial(tex, mode) ?? lastGood.current : render(tex, mode);
+  useLayoutEffect(() => { if (html) lastGood.current = html; }, [html]);
   const pending = Boolean(node.loading);
   if (block) return <MathDisplay html={html} source={sourceText(node, true)} tex={tex} pending={pending} />;
   // 还在写、又一点都排不出来（刚写出 "\fr"）：先不显示，免得源码闪一下再变成公式；它后面还没有文字，不会错位。
@@ -174,29 +195,36 @@ function MathDisplay({ html, source, tex, pending }: { html: string | null; sour
 
 // 选区里有公式时，复制得到 $tex$ / $$tex$$ 源码（参考 Claude Desktop）：KaTeX 排出的是逐字拆开的 span，
 // 按原样复制只会得到一堆散字。纯文本与 HTML 两份都替换，粘到哪里都是源码。
-export function copyMathAsTex(event: ReactClipboardEvent<HTMLElement>): void {
+// 挂在 document 上统一处理（与图片查看器同一委托方式）：选区可以跨多条消息，单条回复上的处理器接不到。
+let copyInstalled = false;
+function installMathCopy(): void {
+  if (copyInstalled) return;
+  copyInstalled = true;
+  document.addEventListener("copy", copyMathAsTex);
+}
+
+function copyMathAsTex(event: ClipboardEvent): void {
   const selection = window.getSelection();
-  if (!selection || selection.isCollapsed || selection.rangeCount === 0) return;
-  const range = selection.getRangeAt(0);
-  const root = event.currentTarget;
-  if (!root.contains(range.commonAncestorContainer)) return;
-  if (![...root.querySelectorAll("[data-tex]")].some((element) => range.intersectsNode(element))) return;
+  if (event.defaultPrevented || !event.clipboardData || !selection || selection.isCollapsed || selection.rangeCount === 0) return;
   // 1. 选区起止落在公式内部时扩到整个公式，避免复制半个公式
-  const startMath = elementOf(range.startContainer)?.closest("[data-tex]");
-  const endMath = elementOf(range.endContainer)?.closest("[data-tex]");
-  const expanded = range.cloneRange();
+  const expanded = selection.getRangeAt(0).cloneRange();
+  const startMath = elementOf(expanded.startContainer)?.closest("[data-tex]");
+  const endMath = elementOf(expanded.endContainer)?.closest("[data-tex]");
   if (startMath) expanded.setStartBefore(startMath);
   if (endMath) expanded.setEndAfter(endMath);
-  // 2. 克隆选区，把每个公式换成源码文字
+  // 2. 克隆选区，把每个公式换成源码文字；选区里没有公式就交给浏览器
   const fragment = expanded.cloneContents();
-  for (const math of fragment.querySelectorAll<HTMLElement>("[data-tex]")) {
+  const maths = fragment.querySelectorAll<HTMLElement>("[data-tex]");
+  if (!maths.length) return;
+  for (const math of maths) {
     const tex = math.dataset.tex ?? "";
     const display = math.classList.contains("reading-math-display");
     math.replaceWith(document.createTextNode(display ? `\n$$\n${tex}\n$$\n` : math.dataset.mode === "inline-display" ? `$$${tex}$$` : `$${tex}$`));
   }
-  // 3. 挂到页外取 innerText，保留段落换行
+  // 3. 挂到页外取 innerText，保留段落、列表、表格的分隔；克隆的渲染外壳带 content-visibility:auto，
+  //    页外会被跳过渲染、读不到字，由 .reading-copy-holder 规则（message-view.css）统一改回可见
   const holder = document.createElement("div");
-  holder.style.cssText = "position:fixed;left:-99999px;top:0;white-space:pre-wrap";
+  holder.className = "reading-copy-holder";
   holder.append(fragment);
   document.body.append(holder);
   const text = holder.innerText;

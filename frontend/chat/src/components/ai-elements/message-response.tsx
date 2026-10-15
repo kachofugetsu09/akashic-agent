@@ -15,7 +15,7 @@ import "markstream-react/index.px.css";
 import { useReducedMotion } from "motion/react";
 import { CODE_BLOCK_OPTIONS, CODE_BLOCK_PROPS, FootnoteSource, ReadingCode, ReadingFootnote, ReadingFootnoteAnchor, ReadingFootnoteReference, ReadingLink, ReadingList, ReadingParagraph, ReadingTable, footnoteLookup } from "@/markdown-reading-nodes";
 import type { MarkdownIt } from "stream-markdown-parser";
-import { copyMathAsTex, mightContainMath, preloadMath, ReadingMath, type MathNode } from "@/reading-math";
+import { mightContainMath, preloadMath, ReadingMath, type MathNode } from "@/reading-math";
 
 function configureMessageMarkdown(markdown: MarkdownIt) {
   return configureReadingMarkdown(configureKaomojiMarkdown(markdown));
@@ -118,7 +118,7 @@ export const MessageResponse = memo(function MessageResponse({
   useEffect(() => { if (hasMath) void preloadMath(); }, [hasMath]);
   return (
     <div className={cn("message-response-markstream markdown-reading size-full", isAnimating && "is-streaming", className)}
-      onClickCapture={jumpToFootnote} onCopy={copyMathAsTex}>
+      onClickCapture={jumpToFootnote}>
       <FootnoteSource.Provider value={footnotes}>
       <MarkdownRender
         content={children}
