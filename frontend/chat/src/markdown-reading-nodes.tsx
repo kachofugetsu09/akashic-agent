@@ -263,7 +263,7 @@ const HANDOFF_TIMEOUT_MS = 3000;
 // 高亮交接：生成中闭合的代码块已经高亮，落定后的消息是新挂载的组件，高亮器要再等几帧（实测约 80ms）
 // 才重新上色，这段时间显示的是无色占位——同一块代码"有色 → 无色 → 有色"闪一下。
 // 每块代码第一次高亮完成时记下 shadow 里的结果（HTML 与样式表），同一段代码再挂载时先盖上这份快照，
-// 新的高亮画稳后撤掉。快照只作视觉占位，不可交互（pointer-events: none）。
+// 新的高亮画稳后撤掉。快照只作视觉占位：inert 且去掉复制来的 tabindex（横滚代码加的焦点入口），不进 Tab 序、不可点。
 function useHighlightHandoff(ref: RefObject<HTMLDivElement | null>, key: string): void {
   useLayoutEffect(() => {
     const wrapper = ref.current;
@@ -294,12 +294,15 @@ function useHighlightHandoff(ref: RefObject<HTMLDivElement | null>, key: string)
       for (const [name, value] of snapshot.attributes) overlay.setAttribute(name, value);
       overlay.classList.add("reading-code-handoff");
       overlay.setAttribute("aria-hidden", "true");
+      overlay.removeAttribute("tabindex");
+      overlay.inert = true;
       for (const [name, value] of snapshot.variables) overlay.style.setProperty(name, value);
       overlay.style.setProperty("--handoff-top", `${snapshot.top}px`);
       overlay.style.setProperty("--handoff-left", `${snapshot.left}px`);
       const shadow = overlay.attachShadow({ mode: "open" });
       shadow.adoptedStyleSheets = snapshot.sheets;
       shadow.innerHTML = snapshot.html;
+      for (const element of shadow.querySelectorAll("[tabindex]")) element.removeAttribute("tabindex");
       body.append(overlay);
     }
     // 2. 逐帧等高亮完成：记快照、撤掉占位
