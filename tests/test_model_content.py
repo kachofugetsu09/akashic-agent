@@ -29,7 +29,7 @@ async def test_text_model_preserves_identity_without_reading_image_data():
 
 @pytest.mark.asyncio
 async def test_file_attachment_keeps_its_identity():
-    ref = AttachmentRef("file", AttachmentKind.FILE, "notes.txt", "text/plain", 10, "1" * 64)
+    ref = AttachmentRef("file", AttachmentKind.FILE, "archive.zip", "application/zip", 10, "1" * 64)
     blocks = (await load_artifacts(ArtifactRead(reject_read), (ref,), accepts_images=True, current_artifact_ids=frozenset()))[ref.artifact_id]
     label = json.loads(blocks[0]["text"])
     assert label["artifact"]["artifact_id"] == ref.artifact_id

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import posixpath
 from collections import Counter
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import asdict
@@ -29,6 +30,74 @@ from plugins.ledger.contract import ArtifactRead
 from plugins.models.contract import MODEL_CONTENT as MODEL_CONTENT
 
 
+# 文本类附件直接把内容交给模型：模型没有按 artifact 读文件的工具，只给元数据等于没传。
+# 历史里的附件每轮都会重新投影，预算按 token 成本保守取（48KB 约 1.2 万 token）。
+MAX_TEXT_FILE_BYTES = 48 * 1024
+MAX_TEXT_TOTAL_BYTES = 160 * 1024
+_TEXT_MEDIA_TYPES = frozenset({
+    "application/json", "application/ld+json", "application/xml", "application/yaml", "application/x-yaml",
+    "application/toml", "application/javascript", "application/x-javascript", "application/typescript",
+    "application/x-sh", "application/x-python", "application/sql", "application/x-ndjson",
+})
+# mimetypes 猜不出或猜错（.ts 会被当成 video/mp2t）的常见源码与配置扩展名。
+_TEXT_EXTENSIONS = frozenset({
+    ".txt", ".md", ".markdown", ".rst", ".log", ".csv", ".tsv", ".json", ".jsonl", ".ndjson", ".yaml", ".yml",
+    ".toml", ".ini", ".cfg", ".conf", ".env", ".xml", ".html", ".css", ".scss", ".py", ".pyi", ".js", ".mjs",
+    ".cjs", ".jsx", ".ts", ".tsx", ".mts", ".vue", ".svelte", ".go", ".rs", ".java", ".kt", ".swift", ".c",
+    ".h", ".cc", ".cpp", ".hpp", ".cs", ".rb", ".php", ".lua", ".sh", ".bash", ".zsh", ".fish", ".sql",
+    ".graphql", ".proto", ".diff", ".patch", ".gitignore", ".dockerfile", ".tex", ".r", ".dart", ".zig",
+})
+
+
+def _text_like(ref: AttachmentRef) -> bool:
+    media = (ref.media_type or "").split(";", 1)[0].strip().lower()
+    if media.startswith("text/") or media in _TEXT_MEDIA_TYPES or media.endswith(("+json", "+xml")):
+        return True
+    name = (ref.filename or "").lower()
+    extension = posixpath.splitext(name)[1] or (name if name.startswith(".") else "")
+    return extension in _TEXT_EXTENSIONS or name in {"dockerfile", "makefile", "readme", "license"}
+
+
+# 读前缀并按 UTF-8 解码；带 NUL 或解不开的视为二进制，不交给模型。截断处可能落在多字节字符中间，丢掉残片。
+def _decode_text(raw: bytes, *, truncated: bool) -> str | None:
+    if b"\x00" in raw:
+        return None
+    try:
+        return raw.decode("utf-8")
+    except UnicodeDecodeError as error:
+        if truncated and error.start >= len(raw) - 3:
+            return raw[:error.start].decode("utf-8")
+        return None
+
+
+# 有预算时读入文本附件内容，写回附件标签里的状态说明；返回实际计入预算的字节数与内容块。
+async def _text_view(reader: ArtifactRead, ref: AttachmentRef, label: dict[str, object], *,
+                     remaining: int) -> tuple[int, Mapping[str, Any] | None]:
+    # 1. 预算用完时只说明未提供，原附件不变
+    if remaining <= 0:
+        label["text_status"] = "本次未提供文本内容；文本附件预算已用完"
+        return 0, None
+    if ref.size_bytes == 0:
+        label["text_status"] = "空文件"
+        return 0, None
+    limit = min(MAX_TEXT_FILE_BYTES, remaining)
+    truncated = ref.size_bytes > limit
+    # 2. 只读前缀：超长文件给开头部分并写明
+    lease = await reader.acquire(ref)
+    try:
+        raw = await lease.read_chunk(offset=0, max_bytes=min(limit, ref.size_bytes))
+    finally:
+        await lease.aclose()
+    text = _decode_text(raw, truncated=truncated)
+    if text is None:
+        label["text_status"] = "不是 UTF-8 文本；未提供内容"
+        return 0, None
+    if truncated:
+        label["text_status"] = f"内容过长，只提供前 {len(raw) // 1024}KB（共 {ref.size_bytes // 1024}KB）"
+    # 3. 内容放在独立文本块里，与附件标签分开，避免 JSON 转义把代码弄得难读
+    return len(raw), {"type": "text", "text": f"<attachment_text artifact_id=\"{ref.artifact_id}\">\n{text}\n</attachment_text>"}
+
+
 async def load_artifacts(
     reader: ArtifactRead,
     refs: Sequence[AttachmentRef],
@@ -36,18 +105,22 @@ async def load_artifacts(
     accepts_images: bool,
     current_artifact_ids: frozenset[str],
 ) -> Mapping[str, tuple[Mapping[str, Any], ...]]:
-    """有界构造本次图片视图；当前 Input 优先，其余按最近引用优先。"""
+    """有界构造本次图片与文本附件视图；当前 Input 优先，其余按最近引用优先。"""
     # 1. 一个 artifact 的所有出现共用投影，资源预算按实际出现次数计费。
     counts = Counter(ref.artifact_id for ref in refs)
     recent = {ref.artifact_id: ref for ref in reversed(refs)}
     ordered = sorted(recent.values(), key=lambda ref: ref.artifact_id not in current_artifact_ids)
     content: dict[str, tuple[Mapping[str, Any], ...]] = {}
-    raw_bytes = encoded_bytes = 0
+    raw_bytes = encoded_bytes = text_bytes = 0
     exhausted = False
     for ref in ordered:
         label: dict[str, object] = {"artifact": asdict(ref)}
         uri = None
-        if ref.kind is AttachmentKind.IMAGE:
+        text_block: Mapping[str, Any] | None = None
+        if ref.kind is AttachmentKind.FILE and _text_like(ref):
+            cost, text_block = await _text_view(reader, ref, label, remaining=MAX_TEXT_TOTAL_BYTES - text_bytes)
+            text_bytes += cost
+        elif ref.kind is AttachmentKind.IMAGE:
             if not accepts_images:
                 label["image_status"] = "当前模型不接收图片；未提供图片内容"
             else:
@@ -82,6 +155,8 @@ async def load_artifacts(
         ]
         if uri is not None:
             blocks.append({"type": "image_url", "image_url": {"url": uri}})
+        if text_block is not None:
+            blocks.append(text_block)
         content[ref.artifact_id] = tuple(blocks)
     return cast(Mapping[str, tuple[Mapping[str, Any], ...]], freeze_json(content))
 
