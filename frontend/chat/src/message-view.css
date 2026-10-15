@@ -1687,6 +1687,11 @@ button.tool-step-summary:active {
   object-fit: contain;
 }
 
+/* 回复正文里的图片可点开看大图（ReplyImageViewer 委托点击）。 */
+:is(.agent-content, .process-markdown) img:not(:is(a, button) img) {
+  cursor: zoom-in;
+}
+
 /* 视频按视口放大：320px 的录屏也铺到 56rem 宽，等比、不裁切。 */
 .media-preview__media.is-video {
   width: min(94vw, 56rem);

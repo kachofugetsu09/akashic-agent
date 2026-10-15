@@ -15,7 +15,7 @@ import { ThinkingPlaceholder } from "./thinking-placeholder";
 import { DesktopComposer, type ComposerApi } from "./desktop-composer";
 import { JobListAction } from "./job-list-action";
 import { DesktopConversationMessages, DesktopTimelineMessages, messageDayKey, withoutLeadingOrphanResults } from "./desktop-conversation";
-import { ReplyActivityView } from "./message-view";
+import { ReplyActivityView, ReplyImageViewer } from "./message-view";
 import { MessageSquarePlus } from "lucide-react";
 import { CompactNavigation } from "./compact-navigation";
 import { DesktopSidebar } from "./desktop-sidebar";
@@ -167,6 +167,7 @@ export function DesktopChatView({ embeddedShell, controller }: DesktopChatViewPr
           <NarrowReadingChrome />
           <ReadingReturnButton generating={isGeneratingChatStatus(status)} />
           {hasMessages ? <SelectionQuote onQuote={editInput} /> : null}
+          {hasMessages ? <ReplyImageViewer /> : null}
           <SessionReadingMemory sessionId={activeSessionId}
             ready={!historyLoading && timelineMessages.at(-1)?.session_id === activeSessionId
               ? `${timelineMessages.length}:${timelineMessages[0]?.id ?? ""}` : ""} />

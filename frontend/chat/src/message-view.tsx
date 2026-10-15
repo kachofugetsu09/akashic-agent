@@ -803,28 +803,54 @@ function MessageContentVideo({ url, label }: { url: string; label: string }) {
 }
 
 // 图片与视频的查看器：整屏压暗，媒体按视口等比放大（小视频不再按原始尺寸播放）；顶栏是文件名、新标签打开、下载与关闭，点媒体外的空白处关闭。
-function MediaPreview({ url, label, kind, children }: { url: string; label: string; kind: "image" | "video"; children: ReactNode }) {
+function MediaPreview({ url, label, kind, children }: { url: string; label: string; kind: MediaKind; children: ReactNode }) {
   const [open, setOpen] = useState(false);
-  const closeRef = useRef<HTMLButtonElement>(null);
   return <Dialog open={open} onOpenChange={setOpen}>
     <DialogTrigger asChild>{children}</DialogTrigger>
-    <DialogContent className="media-preview" overlayClassName="media-preview-overlay" showCloseButton={false}
-      aria-describedby={undefined}
-      // 打开后焦点落在关闭钮（Esc 与回车都能离开），而不是顶栏第一个"新标签打开"。
-      onOpenAutoFocus={(event) => { event.preventDefault(); closeRef.current?.focus(); }}
-      onClick={(event) => { if (event.target === event.currentTarget) setOpen(false); }}>
-      <div className="media-preview__bar">
-        <DialogTitle className="media-preview__title"><MarqueeText still>{label}</MarqueeText></DialogTitle>
-        <a href={url} target="_blank" rel="noreferrer" aria-label="在新标签页打开" title="在新标签页打开"><ExternalLink size={18} aria-hidden="true" /></a>
-        <a href={url} download={label} aria-label={`下载 ${label}`} title="下载"><Download size={18} aria-hidden="true" /></a>
-        <DialogClose ref={closeRef} aria-label="关闭" title="关闭（Esc）"><X size={20} aria-hidden="true" /></DialogClose>
-      </div>
-      {kind === "image"
-        ? <img alt={label} className="media-preview__media" src={url} />
-        : <video className="media-preview__media is-video" src={url} controls autoPlay playsInline />}
-    </DialogContent>
+    <MediaViewer url={url} label={label} kind={kind} onClose={() => setOpen(false)} />
   </Dialog>;
 }
+
+type MediaKind = "image" | "video";
+
+function MediaViewer({ url, label, kind, onClose }: { url: string; label: string; kind: MediaKind; onClose: () => void }) {
+  const closeRef = useRef<HTMLButtonElement>(null);
+  return <DialogContent className="media-preview" overlayClassName="media-preview-overlay" showCloseButton={false}
+    aria-describedby={undefined}
+    // 打开后焦点落在关闭钮（Esc 与回车都能离开），而不是顶栏第一个"新标签打开"。
+    onOpenAutoFocus={(event) => { event.preventDefault(); closeRef.current?.focus(); }}
+    onClick={(event) => { if (event.target === event.currentTarget) onClose(); }}>
+    <div className="media-preview__bar">
+      <DialogTitle className="media-preview__title"><MarqueeText still>{label}</MarqueeText></DialogTitle>
+      <a href={url} target="_blank" rel="noreferrer" aria-label="在新标签页打开" title="在新标签页打开"><ExternalLink size={18} aria-hidden="true" /></a>
+      <a href={url} download={label} aria-label={`下载 ${label}`} title="下载"><Download size={18} aria-hidden="true" /></a>
+      <DialogClose ref={closeRef} aria-label="关闭" title="关闭（Esc）"><X size={20} aria-hidden="true" /></DialogClose>
+    </div>
+    {kind === "image"
+      ? <img alt={label} className="media-preview__media" src={url} />
+      : <video className="media-preview__media is-video" src={url} controls autoPlay playsInline />}
+  </DialogContent>;
+}
+
+// 回复正文里的图片（Markdown 图片，两条渲染路径都是普通 img）点开进同一个查看器。document 级委托，不改渲染节点；链接、按钮里的图片照旧。
+export function ReplyImageViewer() {
+  const [image, setImage] = useState<{ url: string; label: string } | null>(null);
+  // 必要 effect：点击委托挂在 document 上。
+  useEffect(() => {
+    const onClick = (event: MouseEvent) => {
+      const target = event.target;
+      if (!(target instanceof HTMLImageElement) || !target.closest(REPLY_IMAGE_SCOPE) || target.closest("a, button")) return;
+      setImage({ url: target.currentSrc || target.src, label: target.alt || "图片" });
+    };
+    document.addEventListener("click", onClick);
+    return () => document.removeEventListener("click", onClick);
+  }, []);
+  return <Dialog open={image !== null} onOpenChange={(open) => { if (!open) setImage(null); }}>
+    {image ? <MediaViewer url={image.url} label={image.label} kind="image" onClose={() => setImage(null)} /> : null}
+  </Dialog>;
+}
+
+const REPLY_IMAGE_SCOPE = ".agent-content, .process-markdown";
 
 function MessageContentImage({
   attachment,
