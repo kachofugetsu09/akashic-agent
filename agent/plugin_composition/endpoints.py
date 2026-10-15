@@ -58,6 +58,25 @@ def save_endpoint_plan(path: Path, generation_id: str, endpoints: tuple[Endpoint
         raise
 
 
+class EndpointPlanWriter:
+    """一个 Root 的 plan 发布者；requires 在本 boot 内只增不减，停用守卫插件要重启才解除。"""
+
+    def __init__(self, path: Path, generation_id: str) -> None:
+        self._path = path
+        self._generation_id = generation_id
+        self._endpoints: tuple[Endpoint, ...] = ()
+        self._requires: tuple[str, ...] = ()
+
+    def publish(self, endpoints: tuple[Endpoint, ...]) -> None:
+        self._endpoints = endpoints
+        save_endpoint_plan(self._path, self._generation_id, endpoints, self._requires)
+
+    def require(self, protocol: str) -> None:
+        if protocol not in self._requires:
+            self._requires = (*self._requires, protocol)
+            save_endpoint_plan(self._path, self._generation_id, self._endpoints, self._requires)
+
+
 def load_endpoint_plan(path: Path) -> tuple[Endpoint, ...]:
     """在进程外读取已发布计划；缺席可恢复，损坏必须显式报错。"""
     return load_endpoint_plan_requirements(path)[0]

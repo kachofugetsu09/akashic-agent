@@ -15,11 +15,15 @@
 
 1. **Core 只提供通用扩展点。** 插件可以发布一个 `guard+unix` 端点作为入口守卫。
    Web Shell 每个 HTTP 与 WebSocket 请求先 `GET /_guard/check`，附上原请求的头与
-   `x-akashic-method / uri / upgrade / peer`；2xx 放行，其余响应原样返回给浏览器
+   `x-akashic-method / uri / upgrade / peer / host`；2xx 放行，其余响应原样返回给浏览器
    （WebSocket 则以 1008 关闭）。Web Shell 不理解账号、cookie 或密码。
+   - 路径只有一种解释：守卫、路由与上游使用同一个原样路径；网络路径（`//`）、点段、
+     编码斜杠和反斜杠在外壳直接 400，不交给守卫或插件。
+   - 已建立的 WebSocket 每 5 秒重问一次守卫，不再放行（会话失效、密码重置、守卫缺席）即以 1008 断开。
 2. **守卫缺席时失败关闭，要求来自选中而不是运行结果。** 插件在 `plugin.py` 顶层写
    `ingress_guard = True`（发现阶段只读字面量）。Root 在任何 apply 之前，把“本代选中插件要求守卫”
-   写进 endpoint plan 的 `requires`；此后守卫缺席（apply 失败、热重载换代、崩溃、不可达）或出现两个，一律 503。
+   写进 endpoint plan 的 `requires`，运行中启用或换代守卫插件也在其 apply 前登记；
+   要求在本 boot 内只增不减。此后守卫缺席（apply 失败、热重载换代、崩溃、不可达）或出现两个，一律 503。
    Supervisor 的外壳在 Core 就绪前也不放行。没有选中守卫插件的实例保持原样；
    停用守卫插件要重启实例才放开。
 
@@ -48,10 +52,24 @@ Core 只承担“问一次、按结果放行”。代价是每个请求多一次
 
 分两步：先交付第 1、2 条的 Core 扩展点（此时没有守卫插件，行为不变）；再交付第 3、4 条的插件与启动器接入。
 
+## 已知且接受的限制
+
+单主人、少量自有设备的场景下，以下几项代价大于收益，不做：
+
+- 登录校验与签发会话分两次加锁：与本机 `web-passwd` 在同一瞬间交错时，持有旧密码的一方可能拿到会话；
+  需要攻击者已知旧密码并恰好与重置同时发生。
+- 会话 cookie 固定 90 天，不随使用续期；到期重新登录一次。
+- 同源判断比较 Origin 的 host:port 与 Host，不区分 scheme；带会话的写请求缺少 Origin 时不拒绝。
+  跨站带 cookie 的写请求已由 SameSite=Lax 挡住。
+- 对端地址只采信本机反代（uvicorn 默认 `127.0.0.1`）给的 X-Forwarded-For；容器外或另一台机器上的反代后，
+  所有来源共用一个输错退避桶；
+  被陌生人触发退避时，主人可在本机用 `web-login` 进入。
+
 ## 验收
 
 `scripts/web_ingress_guard_e2e.py` 用真实 Web Shell 进程与假守卫、假后端验证扩展点：
-就绪前拒绝、无守卫直通、要求守卫但从未发布时拒绝、守卫响应原样返回、伪造的 `x-akashic-*` 被覆盖、WebSocket 拒绝与放行、
+就绪前拒绝、无守卫直通、要求守卫但从未发布时拒绝、守卫响应原样返回、不规范路径 400、
+撤销后已建立的 WebSocket 以 1008 断开、伪造的 `x-akashic-*` 被覆盖、WebSocket 拒绝与放行、
 仍被要求时守卫撤下失败关闭、两个守卫拒绝、不再要求时放开、守卫不可达拒绝。
 
 `scripts/web_auth_e2e.py` 用隔离 state 运行真实 `./start` 与 Chromium，覆盖：

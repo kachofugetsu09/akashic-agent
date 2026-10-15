@@ -13,7 +13,10 @@ import sys
 import threading
 import time
 
-from fastapi import FastAPI, Request, WebSocket
+from contextlib import suppress
+import socket as raw_socket
+
+from fastapi import FastAPI, Request, WebSocket, WebSocketDisconnect
 from fastapi.responses import JSONResponse, Response
 import httpx
 import uvicorn
@@ -21,6 +24,8 @@ import websockets
 
 ROOT = Path(__file__).resolve().parents[1]
 seen: dict[str, dict[str, str]] = {}
+# 假守卫的撤销开关：置位后所有请求都不再放行，用来验证已建立的 WebSocket 会被断开。
+revoked: dict[str, bool] = {"all": False}
 
 
 def fake_guard() -> FastAPI:
@@ -29,7 +34,7 @@ def fake_guard() -> FastAPI:
     @app.get("/_guard/check")
     async def check(request: Request) -> Response:
         seen["guard"] = dict(request.headers)
-        if request.headers.get("x-test-allow") == "1":
+        if request.headers.get("x-test-allow") == "1" and not revoked["all"]:
             return Response(status_code=204)
         return JSONResponse({"code": "unauthorized"}, 401, headers={"www-authenticate": "Bearer"})
     return app
@@ -46,7 +51,9 @@ def fake_backend() -> FastAPI:
     @app.websocket("/api/ws")
     async def socket(websocket: WebSocket) -> None:
         await websocket.accept()
-        await websocket.close()
+        with suppress(WebSocketDisconnect):
+            while True:
+                await websocket.send_text(await websocket.receive_text())
     return app
 
 
@@ -69,6 +76,28 @@ def publish(workspace: Path, *endpoints: tuple[str, str, str, list[str]], guarde
 
 def ready(workspace: Path, boot: str) -> None:
     (workspace / ".runtime-ready.json").write_text(json.dumps({"bootId": boot, "pid": os.getpid(), "state": "ready"}))
+
+
+def raw_status(port: int, target: str) -> int:
+    """发送原样 request-target；HTTP 客户端库会先把它规范化，测不到外壳的边界。"""
+    with raw_socket.create_connection(("127.0.0.1", port), timeout=10) as connection:
+        connection.sendall(f"GET {target} HTTP/1.1\r\nHost: 127.0.0.1\r\nConnection: close\r\n\r\n".encode())
+        return int(connection.recv(64).split()[1])
+
+
+async def websocket_revoked(url: str) -> str:
+    """握手放行后撤销授权：外壳应在重检周期内以 1008 断开，而不是继续转发。"""
+    async with websockets.connect(url, additional_headers={"x-test-allow": "1"}) as connection:
+        await connection.send("ping")
+        assert await connection.recv() == "ping"
+        revoked["all"] = True
+        try:
+            await asyncio.wait_for(connection.recv(), timeout=15)
+        except websockets.ConnectionClosed as closed:
+            return str(closed.rcvd.code if closed.rcvd else "none")
+        finally:
+            revoked["all"] = False
+        return "still-open"
 
 
 async def websocket_status(url: str, allow: bool) -> str:
@@ -127,12 +156,21 @@ def main() -> int:
               (401, {"code": "unauthorized"}, "Bearer"))
         check("guard_sees_real_uri", seen["guard"].get("x-akashic-uri"), "/api/echo")
         check("guard_sees_original_host", seen["guard"].get("x-akashic-host"), f"127.0.0.1:{args.port}")
-        check("guard_allows", http.get("/api/echo?x=1", headers={"x-test-allow": "1"}).status_code, 200)
-        check("backend_gets_peer_and_host", (seen["backend"].get("x-akashic-peer"), seen["backend"].get("x-akashic-host")),
-              ("127.0.0.1", f"127.0.0.1:{args.port}"))
+        check("guard_allows", http.get("/api/echo?x=1", headers={
+            "x-test-allow": "1", "x-akashic-web-module": "m1", "x-akashic-peer": "6.6.6.6"}).status_code, 200)
+        check("guard_sees_query", seen["guard"].get("x-akashic-uri"), "/api/echo?x=1")
+        # 路径只有一种解释：会在下一层改变路由的形式在外壳直接 400，不交给守卫或插件。
+        check("ambiguous_targets_rejected", [raw_status(args.port, target) for target in (
+            "//ignored/_auth/../api/echo", "/_auth/../api/echo", "/_auth/%2e%2e/api/echo",
+            "/api%2Fecho", "/_auth%2F..%2Fapi/echo", "/api/./echo")], [400] * 6)
+        # 只有外壳保留头被覆盖；前端模块身份等其他 x-akashic-* 原样到达上游。
+        check("backend_gets_shell_headers_and_module_identity", (seen["backend"].get("x-akashic-peer"),
+              seen["backend"].get("x-akashic-host"), seen["backend"].get("x-akashic-web-module")),
+              ("127.0.0.1", f"127.0.0.1:{args.port}", "m1"))
         ws = base.replace("http", "ws") + "/api/ws"
         check("websocket_denied", asyncio.run(websocket_status(ws, allow=False)), "403")
         check("websocket_allowed", asyncio.run(websocket_status(ws, allow=True)), "open")
+        check("websocket_closed_after_revoke", asyncio.run(websocket_revoked(ws)), "1008")
         # 5. 守卫撤下（热重载换代或崩溃）而插件仍被选中：失败关闭，不退回无门。
         publish(workspace, route, guarded=True)
         check("guard_gone_while_required_rejected", http.get("/api/echo").status_code, 503)
