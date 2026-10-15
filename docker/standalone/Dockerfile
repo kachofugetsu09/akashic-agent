@@ -34,7 +34,8 @@ COPY --from=build /opt/distribution /opt/distribution
 COPY --from=build /opt/core /opt/core
 # 插件源码保留临时目录的 700 权限；运行用户需要读取，但不应改写镜像制品。
 RUN chmod -R a=rX /opt/distribution
-ENV PATH=/opt/venv/bin:$PATH AKASHIC_EXECUTION_MODE=local PYTHONUNBUFFERED=1 AKASHIC_PLUGIN_DISTRIBUTION=/opt/distribution
+ENV PATH=/opt/venv/bin:$PATH AKASHIC_EXECUTION_MODE=local PYTHONUNBUFFERED=1 AKASHIC_PLUGIN_DISTRIBUTION=/opt/distribution \
+    AKASHIC_WORKSPACE=/data/workspace AKASHIC_PLUGIN_HOME=/data/plugin-home
 USER akashic
 WORKDIR /opt/core
 EXPOSE 2236

@@ -15,7 +15,8 @@ services:
     restart: "no"
     healthcheck:
       # 与启动器一致：聊天网关和 Web 插件目录都就绪后才显示 healthy。
-      test: ["CMD", "python", "-c", "import json,urllib.request; u='http://127.0.0.1:2236'; assert json.load(urllib.request.urlopen(u+'/api/shell/state', timeout=3))['chatReady']; assert json.load(urllib.request.urlopen(u+'/api/chat/web-ui/bootstrap', timeout=3))['modules']"]
+      # 本机进程读门禁密钥作为凭据；未启用门禁插件时不带。
+      test: ["CMD", "python", "-c", "import json,os,urllib.request as r; u='http://127.0.0.1:2236'; s='/data/workspace/web-auth/secret'; h={'Authorization':'Bearer '+open(s).read().strip()} if os.path.exists(s) else {}; assert json.load(r.urlopen(u+'/api/shell/state', timeout=3))['chatReady']; assert json.load(r.urlopen(r.Request(u+'/api/chat/web-ui/bootstrap', headers=h), timeout=3))['modules']"]
       interval: 10s
       timeout: 5s
       retries: 12

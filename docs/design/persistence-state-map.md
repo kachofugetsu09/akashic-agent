@@ -308,6 +308,7 @@ Visuals 的 `akashic.visual.v1` 是下表既有不可变附件的一种文件格
 | `PROACTIVE_CONTEXT.md` | H3 后初始化与 runtime 均不再创建或写入；H2 按 exact bytes/digest 只读归档 | 用户或获授权文件工具仍可修改既有文件；Wake archive consumer 未接通前 activation `BLOCK` | 当前没有自动清空或删除协议；代码升级不得用默认模板覆盖已有内容 |
 | `proactive_pending.md` | H3 后旧 paired-documents writer 已删除；H2 只盘点既有非空内容和 intents | 只有后续名称明确的目标领域 owner handoff 可以改变 | 非空 pending 或 active intent 在 owner 缺失时阻止 activation；代码升级不减少正文或 intent |
 | `plugin-data/` | 已激活插件在自己的 opaque 目录增加数据 | 由插件 schema 和 owner 决定 | 普通卸载只删除代码和能力投影，保留数据；永久删除必须使用名称不同的用户操作、影响预览、备份和再次确认 |
+| `web-auth/`（workspace root） | `web-auth` 插件首次启动创建 `secret`、`account.json`（scrypt 摘要）与 `initial-password`；登录写 `sessions.json`，本机命令写 `tickets.json`；全部 `0600`、加 `lock` 文件锁后原子替换 | 设置密码删除 `initial-password` 并只保留当前会话；`web-passwd` 清空全部会话；会话从签发起固定有效期（记住 90 天，否则 24 小时）；票据 120 秒过期、一次即删 | 停用或卸载插件保留目录，重新启用原账号继续有效；忘记密码只能本机重置，不提供远程找回 |
 | `plugin-data/computer/state/` | Computer Workload 中的 Chromium 增加并原位更新 profile；Gateway 更新活动状态；OpenCLI 更新登录刷新状态 | 容器停止、插件更新、禁用或普通卸载只让数据暂时无 writer，不改变或删除登录资料；重启只清除 Chromium 自己的 `Singleton*` 临时锁并收束未完成 activity | 只有名称明确的 Computer 数据永久删除操作可以物理减少；必须先停唯一 Workload writer、备份整个目录并核对恢复方式 |
 | `plugin-data/computer/screenshots/` | Computer MCP 以原子替换增加截图文件 | 普通卸载保留该有界集合 | Computer MCP 是唯一删除 owner：每次成功写入后只保留最新 32 张，并删除遗留临时文件 |
 | `plugin-data/models-builtin/litellm-capabilities.json` | 用户同步模型且远端目录通过边界校验时保存完整能力快照、schema、ETag、摘要和抓取时间 | `models` 插件以 `0600` 临时文件完成 fsync 后原子替换；刷新失败保持最近可信快照不变，读取损坏时降级到随包目录 | 普通卸载和同步失败不删除；只有名称明确的模型缓存重置或整个 workspace 删除可以减少，删除后首次离线同步会退回随包目录或 unknown |
