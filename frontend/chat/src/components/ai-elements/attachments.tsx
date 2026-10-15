@@ -18,7 +18,7 @@ import {
   XIcon,
 } from "lucide-react";
 import type { ComponentProps, HTMLAttributes, ReactNode } from "react";
-import { createContext, useCallback, useContext, useMemo } from "react";
+import { createContext, Fragment, useCallback, useContext, useMemo } from "react";
 
 export type AttachmentData =
   | (FileUIPart & { id: string })
@@ -72,13 +72,17 @@ export function formatBytes(bytes: number): string {
   return `${value < 10 ? value.toFixed(1) : Math.round(value)} ${units[index]}`;
 }
 
-/** 文件块正文（Memoh 版式）：文件名最多 3 行、任意处断行，不截掉扩展名和日期；其下大小，左下角扩展名标签。 */
+/** 文件块正文（Memoh 版式）：文件名最多 3 行，不截掉扩展名和日期；其下大小，左下角扩展名标签。 */
 export const AttachmentFileBody = ({ name, sizeBytes }: { name: string; sizeBytes?: number }) => {
   const dot = name.lastIndexOf(".");
   const ext = dot > 0 && name.length - dot <= 6 ? name.slice(dot + 1) : "";
+  // 优先在 - _ . / 之后断行（qdrant-bench- / 2026-10-14.log），不把日期、版本号拆开；放不下的整段再任意处断。
+  const parts = name.split(/(?<=[-_./])/u);
   return (
     <span className="attachment-file-body">
-      <span className="attachment-file-name" title={name}>{name}</span>
+      <span className="attachment-file-name" title={name}>
+        {parts.map((part, index) => <Fragment key={index}>{index ? <wbr /> : null}{part}</Fragment>)}
+      </span>
       {sizeBytes !== undefined ? <span className="attachment-file-size">{formatBytes(sizeBytes)}</span> : null}
       {ext ? <span className="attachment-file-ext">{ext}</span> : <FileTextIcon className="attachment-file-ext-icon size-4" aria-hidden="true" />}
     </span>
