@@ -189,7 +189,8 @@ function StreamingCode({ node }: { node: CodeData }) {
   const ref = useRef<HTMLDivElement>(null);
   useCodeOverflowEdges(ref);
   const id = resolveLanguageId(node.language);
-  const label = languageMap[id] ?? id;
+  // 映射外的语言按落定块头的规则只把首字母大写（myLang → MyLang）。
+  const label = languageMap[id] ?? (id ? `${id.charAt(0).toUpperCase()}${id.slice(1)}` : "");
   return <div ref={ref} className="reading-code-scroll is-streaming">
     {label ? <span className="reading-code-stream-label code-header-title" aria-hidden="true">{label}</span> : null}
     <PreCodeNode node={node} showLineNumbers={false} />
