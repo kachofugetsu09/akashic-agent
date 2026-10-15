@@ -19,6 +19,8 @@ export function renderStaticMarkdown(markdown: string) {
     if (!href || href.startsWith("#") || /^(?:mailto|tel):/iu.test(href)) continue;
     link.target = "_blank";
     link.rel = "noopener noreferrer";
+    // 链接文字本身就是网址（GFM 自动链接）时按字符折行，见 message-view.css 的 .reading-url。
+    if (/^(?:https?:\/\/|www\.)\S+$/u.test(link.textContent ?? "")) link.classList.add("reading-url");
   }
 
   for (const paragraph of root.querySelectorAll("p")) {

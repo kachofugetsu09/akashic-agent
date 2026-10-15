@@ -236,6 +236,18 @@
   font-size: 0.875em;
 }
 
+/* 长标识符折行时每一段都自带内边距与圆角，不在断开处被硬切成半块底色。 */
+:is(.agent-content, .static-message-response, .process-markdown) :not(pre) > code,
+:is(.agent-content, .process-markdown) .markstream-react .inline-code {
+  -webkit-box-decoration-break: clone;
+  box-decoration-break: clone;
+}
+
+/* 裸网址没有可读的词边界：按字符填满整行，不在 "-" 前后紧急断开、留下单独一行的连字符。 */
+.markdown-reading a.reading-url {
+  word-break: break-all;
+}
+
 /* Markstream owns Markdown structure; the product only maps it to chat tokens. */
 .message-response-markstream > .markstream-react {
   color: inherit;
