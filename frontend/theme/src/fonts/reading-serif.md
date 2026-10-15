@@ -21,8 +21,10 @@ Noto Serif SC 按字频分层切片（Version 2.003，源 `NotoSerifSC[wght].ttf
 - `symbols`、`astral`：其余符号与兼容字形、增补平面。
 
 普通中文页面只需 `core` + `common-1`（约 1.5MB，构建时预加载），原先四段码位切片会下载全部约 11MB。
-宽分片先声明、常用层后声明：CSS Fonts 规定 `unicode-range` 重叠时后声明的规则先检查，
-所以生僻分片可以用连续区间，只有常用层需要写码位表。
+每片只声明实际含有的码位，各分片的 `unicode-range` 互不重叠。不要用连续宽区间盖住生僻区、指望
+"重叠时后声明的规则先匹配"让常用字只命中常用层：Chromium 如此，但 Firefox 冷启动整页时会把与页面文字
+区间相交的宽分片一并下载（实测 7–8MB）；精确区间后两者都只取 `core`、`common-1` 与用到的二级字分片
+（约 1.7MB），出现一个生僻字只多一片。代价是 CSS 约 97KB（gzip 约 33KB）。
 
 重新生成（FontTools 4.66.1）：
 
@@ -30,5 +32,5 @@ Noto Serif SC 按字频分层切片（Version 2.003，源 `NotoSerifSC[wght].ttf
 python scripts/split-reading-font.py /path/to/NotoSerifSC[wght].ttf
 ```
 
-脚本校验源摘要、分片互不相交且并集等于源 cmap，并按 CSS 匹配规则模拟每个码位都落到含它的分片后，
+脚本校验源摘要、分片与 CSS 区间都互不相交且并集等于源 cmap，并按 CSS 匹配规则模拟每个码位都落到含它的分片后，
 才替换仓库里的分片与 `reading-serif.css`。

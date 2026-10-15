@@ -91,8 +91,9 @@ def css_range(ranges: tuple[tuple[int, int], ...]) -> str:
     return ", ".join(f"U+{a:X}" if a == b else f"U+{a:X}-{b:X}" for a, b in ranges)
 
 
-# 分层：宽分片（生僻汉字、扩展 A、增补平面、其余符号）先声明；常用层后声明、先匹配。
-# CSS Fonts 规定 unicode-range 重叠时后声明的规则先检查，常用字因此只会命中常用层。
+# 分层：生僻汉字、扩展 A、增补平面、其余符号先声明，常用层后声明。每片只声明实际含有的码位，区间互不重叠：
+# 不能依赖"重叠时后声明的规则先匹配"（CSS Fonts 4）来省流量，Firefox 冷启动整页时会把与页面文字区间相交的
+# 宽分片一并下载（实测 7–8MB，精确区间后与 Chromium 同为 1.7MB）。
 def plan(source: set[int]) -> list[Shard]:
     # 1. 首屏层：拉丁、通用标点（“”—…）、箭头、CJK 标点与假名、全角形式。
     def in_core(c: int) -> bool:
@@ -102,20 +103,20 @@ def plan(source: set[int]) -> list[Shard]:
     level2 = frozenset(c for c in gb2312_level(0xD8, 0xF7) if c in source)
     taken = core | level1 | level2
     shards: list[Shard] = []
-    # 2. 生僻区按码位顺序每 RARE_CHUNK 字一片，区间盖住片内落下的常用字。
+    # 2. 生僻区按码位顺序每 RARE_CHUNK 字一片。
     def rare(prefix: str, low: int, high: int) -> None:
         chunks = balanced(sorted(c for c in source if low <= c <= high and c not in taken), RARE_CHUNK)
         for index, chunk in enumerate(chunks):
-            first = low if index == 0 else chunk[0]
-            last = high if index == len(chunks) - 1 else chunks[index + 1][0] - 1
-            shards.append(Shard(f"{prefix}-{index + 1:02d}.woff2", frozenset(chunk), ((first, last),)))
+            codepoints = frozenset(chunk)
+            shards.append(Shard(f"{prefix}-{index + 1:02d}.woff2", codepoints, runs(codepoints)))
     rare("noto-serif-sc-han", 0x4E00, 0x9FFF)
     rare("noto-serif-sc-ext-a", 0x3400, 0x4DFF)
     # 3. 其余符号与兼容字形、增补平面各一片。
     other = frozenset(c for c in source if c not in taken and not (0x3400 <= c <= 0x9FFF))
-    shards.append(Shard("noto-serif-sc-symbols.woff2", frozenset(c for c in other if c < 0x10000),
-                        ((0x0000, 0x33FF), (0xA000, 0xFFFF))))
-    shards.append(Shard("noto-serif-sc-astral.woff2", frozenset(c for c in other if c >= 0x10000), ((0x10000, 0x10FFFF),)))
+    symbols = frozenset(c for c in other if c < 0x10000)
+    astral = frozenset(c for c in other if c >= 0x10000)
+    shards.append(Shard("noto-serif-sc-symbols.woff2", symbols, runs(symbols)))
+    shards.append(Shard("noto-serif-sc-astral.woff2", astral, runs(astral)))
     # 4. 常用层最后声明：二级字（按 GB2312 部首顺序分片）、一级字、首屏层。
     for index, items in enumerate(balanced([c for c in gb2312_level(0xD8, 0xF7) if c in level2], LEVEL2_CHUNK)):
         chunk = frozenset(items)
@@ -125,8 +126,12 @@ def plan(source: set[int]) -> list[Shard]:
     return shards
 
 
-# 校验：分片互不相交、并集等于源 cmap，并按 CSS 的逆序匹配规则模拟，每个码位都落到实际含它的分片。
+# 校验：分片与 CSS 区间都互不相交、并集等于源 cmap，并按 CSS 的逆序匹配规则模拟，每个码位都落到实际含它的分片。
 def verify(source: set[int], shards: list[Shard]) -> None:
+    declared = sorted((a, b, shard.filename) for shard in shards for a, b in shard.css_ranges)
+    for (_, end, first), (start, _, second) in zip(declared, declared[1:]):
+        if start <= end:
+            raise RuntimeError(f"unicode-range of {first} overlaps {second} at U+{start:X}")
     owner: dict[int, str] = {}
     for shard in shards:
         for codepoint in shard.codepoints:
