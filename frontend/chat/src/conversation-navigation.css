@@ -243,12 +243,10 @@
 
 .conversation-session__title strong {
   flex: 1;
-  overflow: hidden;
+  min-width: 0;
   font-size: 0.9375rem;
   font-weight: 600;
   line-height: 1.4;
-  text-overflow: ellipsis;
-  white-space: nowrap;
 }
 
 /* 行内重命名：输入框沿用标题排版，只以发丝底线标示编辑态。 */
@@ -285,11 +283,9 @@
 }
 
 .conversation-session small {
-  overflow: hidden;
+  min-width: 0;
   font-size: 0.75rem;
   line-height: 1.35;
-  text-overflow: ellipsis;
-  white-space: nowrap;
 }
 
 .conversation-session.active .conversation-session__title time,
@@ -376,4 +372,49 @@
 
 .conversation-session-group:first-child {
   padding-block-start: 2px;
+}
+
+/* 一行标题放不下时右缘 28px 渐隐，代替省略号；行悬停或键盘聚焦 0.35s 后以 30px/s 往返滚出尾部（参考 Memoh 的 marquee）。
+   只动画 --marquee-pos 一个量：位移与两侧渐隐都是它的函数，滚动与渐隐同步；越界部分被 clamp 钉住，就是两端的停顿。 */
+.marquee {
+  display: block;
+  min-width: 0;
+  overflow: hidden;
+}
+
+.marquee__content {
+  display: inline-block;
+  white-space: nowrap;
+  transform: translateX(clamp(calc(-1 * var(--marquee-travel, 0px)), calc(-1 * var(--marquee-pos)), 0px));
+}
+
+.marquee.is-truncated {
+  mask-image: linear-gradient(to right,
+    transparent,
+    #000 min(var(--marquee-pos), 12px),
+    #000 calc(100% - min(var(--marquee-travel) - var(--marquee-pos), 28px)),
+    transparent);
+}
+
+@property --marquee-pos {
+  syntax: "<length>";
+  inherits: true;
+  initial-value: 0px;
+}
+
+@keyframes marquee-pingpong {
+  0%, 100% { --marquee-pos: -6px; }
+  50% { --marquee-pos: calc(var(--marquee-travel, 0px) + 6px); }
+}
+
+@media (hover: hover) and (prefers-reduced-motion: no-preference) {
+  :is(
+    .conversation-session-row:hover,
+    .conversation-session:focus-visible,
+    .project-session:is(:hover, :focus-visible),
+    .project-group__open:is(:hover, :focus-visible),
+    .conversation-heading h1:hover
+  ) .marquee.is-truncated:not(.is-still) {
+    animation: marquee-pingpong var(--marquee-duration, 4s) linear 0.35s infinite;
+  }
 }

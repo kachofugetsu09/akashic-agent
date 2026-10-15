@@ -23,6 +23,7 @@ import { useSidebarRail } from "./use-sidebar-rail";
 import type { DesktopChatController } from "./use-desktop-chat-controller";
 import { SessionDirectory } from "./session-directory";
 import { SelectionQuote } from "./selection-quote";
+import { MarqueeText } from "./marquee-text";
 import { isGeneratingChatStatus, lastInputResult } from "./web-chat-status";
 
 interface DesktopChatViewProps {
@@ -398,7 +399,7 @@ function SessionHeadingTitle({ heading, value, onRename }: {
   const cancelledRef = useRef(false);
   // 回车提交后紧接着失焦会再触发一次 commit；请求未回时只认第一次。
   const inFlightRef = useRef(false);
-  if (!onRename) return <h1 title={heading}>{heading}</h1>;
+  if (!onRename) return <h1 title={heading}><MarqueeText>{heading}</MarqueeText></h1>;
   const start = () => {
     cancelledRef.current = false;
     setDraft(value);
@@ -425,7 +426,7 @@ function SessionHeadingTitle({ heading, value, onRename }: {
       inFlightRef.current = false;
     }
   };
-  if (!editing) return <h1 title={heading} onDoubleClick={start}>{heading}</h1>;
+  if (!editing) return <h1 title={heading} onDoubleClick={start}><MarqueeText>{heading}</MarqueeText></h1>;
   return <input
     ref={inputRef}
     className="conversation-heading-input"

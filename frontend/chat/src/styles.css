@@ -962,10 +962,7 @@ input {
 .project-group__name {
   min-width: 0;
   flex: 1;
-  overflow: hidden;
   font-weight: 550;
-  text-overflow: ellipsis;
-  white-space: nowrap;
 }
 
 .project-group__memory {
@@ -1002,9 +999,6 @@ input {
 .project-session > span:not(.session-status-slot) {
   min-width: 0;
   flex: 1;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
 }
 
 .project-session {
@@ -1026,6 +1020,8 @@ input {
   .project-session,
   .project-navigation__icon { min-height: 44px; }
   .project-navigation__header > .project-navigation__icon { width: 44px; }
+  /* 排序钮放到 44px 后，分组标题行不再叠 18px 上内边距：热区不变，搜索框到"最近会话"文字的空白 62→44px。 */
+  .conversation-navigation__heading--section:has(.conversation-sort-trigger) { padding-block: 4px 0; }
 }
 
 .project-dialog-overlay { background: rgb(var(--ak-color-shadow-rgb) / 0.32); }
@@ -1301,14 +1297,11 @@ input {
 
 .conversation-heading h1 {
   min-inline-size: 0;
-  overflow: hidden;
   margin: 0;
   color: var(--chat-muted);
   font-size: 0.9375rem;
   font-weight: 500;
   line-height: 1.5;
-  text-overflow: ellipsis;
-  white-space: nowrap;
 }
 
 :root[data-shell-tools="true"] .conversation-heading {

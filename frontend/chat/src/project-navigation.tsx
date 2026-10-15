@@ -16,6 +16,7 @@ import {
   DropdownMenu, DropdownMenuContent, DropdownMenuRadioGroup,
   DropdownMenuRadioItem, DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
+import { MarqueeText } from "./marquee-text";
 import {
   PROJECT_MEMORY_CHOICES,
   projectMemoryLabel,
@@ -194,7 +195,7 @@ export function ProjectNavigationRow({
         {collapsedStatus
           ? <span className="project-group__icon"><SessionStatusMark status={collapsedStatus} /></span>
           : <Folder size={18} strokeWidth={1.75} aria-hidden="true" />}
-        <span className="project-group__name">{project.name}</span>
+        <span className="project-group__name"><MarqueeText>{project.name}</MarqueeText></span>
         {project.memory && project.memory !== "global" ? (
           <small className="project-group__memory">{projectMemoryLabel(project.memory)}</small>
         ) : project.memoryUnreadable ? <small className="project-group__memory">当前策略未能读取</small> : null}
@@ -215,7 +216,7 @@ export function ProjectNavigationRow({
         onPointerEnter={() => onPrefetchSession?.(session.id)}
         onFocus={() => onPrefetchSession?.(session.id)}>
         <SessionStatusMark status={session.status} />
-        <span className="project-session__title">{session.title}</span>
+        <span className="project-session__title"><MarqueeText>{session.title}</MarqueeText></span>
       </button>)}
     </nav> : null}
   </div>;
