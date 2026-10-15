@@ -1916,10 +1916,15 @@ form.composer:focus-within [data-slot="input-group"] {
   gap: 4px;
 }
 
+/* 输入框随内容长高：写代码时常整段粘贴，上限按视口取 30%（120–320px，约 5–13 行），超出才在框内滚动；
+   键盘弹起后 dvh 变小，上限随之回落到 120px，不把对话挤没。 */
+.composer {
+  --composer-text-max: clamp(120px, 30dvh, 320px);
+}
 .composer textarea,
 .composer .composer__textarea {
   min-height: 20px;
-  max-height: 120px;
+  max-height: var(--composer-text-max);
   resize: none;
   border: 0;
   padding: 2px 2px;
@@ -1945,7 +1950,7 @@ form.composer:focus-within [data-slot="input-group"] {
 .composer.is-expanded .composer__textarea {
   field-sizing: content;
   height: auto;
-  max-height: 120px;
+  max-height: var(--composer-text-max);
   line-height: 1.5;
   padding-block: 2px;
 }
