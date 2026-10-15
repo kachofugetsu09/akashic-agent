@@ -558,6 +558,9 @@
   border-block-end: 1px solid var(--ak-rule-subtle);
 }
 
+/* 表格没有外框，只有行线：首列文字贴正文左缘，不比段落缩进一格。 */
+:is(.agent-content, .process-markdown, .user-bubble) .markdown-reading :where(th, td):first-child { padding-inline-start: 0; }
+
 /* 紧凑外壳（触屏为主）列多时宁可横滚，也不把每列挤成三四个字一行；宽屏鼠标横滚别扭，仍以折行为主。 */
 /* 条件与 COMPACT_SHELL 一致：含横屏触屏的矮视口。 */
 @media (max-width: 820px), (max-height: 30rem) and (pointer: coarse) {

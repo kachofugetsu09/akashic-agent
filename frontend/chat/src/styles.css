@@ -1420,6 +1420,10 @@ input {
   );
   padding-inline: var(--chat-dock-inset);
 }
+/* 问答成组：提问到它的回答（落定、流式、思考占位同一规则，换手不跳）收 12px，轮与轮之间放 12px。
+   每条消息下都预留了悬停操作行，均匀 gap 会让提问离上一轮回答和离自己的回答一样远。 */
+.conversation-content > .timeline-input + :is(.timeline-output, .reply-activity, .thinking-placeholder) { margin-block-start: -12px; }
+.conversation-content > :is(.timeline-output, .reply-activity) + .timeline-input { margin-block-start: 12px; }
 
 .desktop-history-loader,
 .desktop-history-start {
