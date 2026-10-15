@@ -3165,9 +3165,10 @@ form.composer:focus-within [data-slot="input-group"] {
 .directory-notice { color: var(--ak-ink-secondary); }
 .directory-notice strong { display: block; color: var(--ak-ink-primary); }
 .directory-actions { display: flex; flex-flow: row wrap; gap: 8px; }
-.directory-marker { position: relative; display: flex; min-width: 4.5rem; flex: 0 1 auto; margin-inline-start: auto; padding-inline-start: 12px; font-size: var(--chat-type-caption, 0.75rem); }
+/* 目录名短而信息量大：不与标题按比例分摊收缩（上限 14rem），长标题先让；真超长时与标题同样右缘渐隐，不用省略号。 */
+.directory-marker { position: relative; display: flex; min-width: 4.5rem; flex: 0 0 auto; margin-inline-start: auto; padding-inline-start: 12px; font-size: var(--chat-type-caption, 0.75rem); }
 .directory-marker__trigger { display: inline-flex; max-width: min(14rem, 100%); min-height: 32px; align-items: center; gap: 6px; padding-inline: 8px; border: 0; border-radius: 6px; background: transparent; color: var(--chat-faint); font: inherit; cursor: pointer; transition: color var(--ak-sys-duration-short) var(--ak-sys-motion-standard); }
-.directory-marker__trigger span { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.directory-marker__trigger > span { min-width: 0; overflow: hidden; white-space: nowrap; }
 .directory-marker__trigger svg { flex: 0 0 auto; }
 
 .directory-marker__trigger[aria-expanded="true"] { color: var(--chat-ink); }
@@ -3191,7 +3192,7 @@ form.composer:focus-within [data-slot="input-group"] {
   .conversation-heading h1 { flex: 1 1 auto; }
   .directory-marker { min-width: 0; flex: 0 0 auto; margin-inline-start: 0; padding-inline-start: 0; }
   .directory-marker__trigger { width: 44px; height: 44px; justify-content: center; padding: 0; }
-  .directory-marker__trigger span { display: none; }
+  .directory-marker__trigger > span { display: none; }
   .directory-marker__trigger svg { width: 18px; height: 18px; }
   /* 图标不再贴右缘，面板改为相对标题栏左右各留 16px 铺开，不从屏幕左边溢出。 */
   .conversation-heading:has(.directory-marker) { position: relative; }

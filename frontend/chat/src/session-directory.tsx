@@ -1,6 +1,7 @@
 import { Folder } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
 import { copyText } from "./copy-text";
+import { MarqueeText } from "./marquee-text";
 import { queryHostPlugin, usePluginUiCatalogVersion } from "./plugin-ui-runtime";
 import { directoryName, directoryState, directoryStatus, type DirectoryState } from "./directory-data";
 
@@ -101,7 +102,7 @@ function DirectoryMarker({ current, error, onRefresh }: {
       aria-expanded={open} aria-label={`工作目录：${current.path}${abnormal ? `，${label}` : ""}`}
       onClick={() => setOpen((value) => !value)}>
       <Folder size={14} aria-hidden="true" />
-      <span>{label}</span>
+      <span><MarqueeText still>{label}</MarqueeText></span>
     </button>
     {open ? <div className="directory-marker__panel" role="group" aria-label="工作目录" data-escape-layer="">
       <code className="directory-path">{current.path}</code>
