@@ -33,7 +33,32 @@ export function configureReadingMarkdown(markdown: MarkdownIt): MarkdownIt {
   markdown.core.ruler.push("akashic_numeric_tables", (state: { tokens: MarkdownToken[] }) => {
     state.tokens = alignNumericTableTokens(state.tokens);
   });
+  markdown.inline.ruler.before("math", "akashic_currency_dollar", (rawState: unknown, silent?: boolean) => {
+    const state = rawState as DollarState;
+    if (!isRejectedDollar(state.src, state.pos)) return false;
+    if (!silent) state.push("text", "", 0).content = "$";
+    state.pos += 1;
+    return true;
+  });
   return markdown;
+}
+
+interface DollarState {
+  src: string;
+  pos: number;
+  push: (type: string, tag: string, nesting: number) => { content: string };
+}
+
+// 行内 $…$ 与静态路径同一规则（pandoc）：开 $ 后、闭 $ 前不是空白，闭 $ 后不紧跟数字。
+// 不满足时只把开头这个 $ 当文字吐出，后面的原文照常解析：闭合的那个 $ 可能是下一个真公式的开头
+// （"成本 $5 和公式 $x$"），转义（"$\{x\}$"）也保持原样交给公式规则。没有闭合的留给生成中的源码态。
+function isRejectedDollar(source: string, offset: number): boolean {
+  if (source[offset] !== "$" || source[offset + 1] === "$" || source[offset - 1] === "\\") return false;
+  let close = offset + 1;
+  while ((close = source.indexOf("$", close)) >= 0 && source[close - 1] === "\\") close += 1;
+  if (close < 0) return false;
+  const content = source.slice(offset + 1, close);
+  return content.length === 0 || /^\s|\s$/u.test(content) || /^\d/u.test(source[close + 1] ?? "");
 }
 
 /** parser 会把未指定的表格对齐转成 left，因此在 token 阶段补齐数值列对齐。 */
