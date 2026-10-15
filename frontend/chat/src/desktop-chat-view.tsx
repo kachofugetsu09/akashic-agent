@@ -209,6 +209,11 @@ export function DesktopChatView({ embeddedShell, controller }: DesktopChatViewPr
             <button type="button" onClick={retry}>立即重试</button>
           </p> : null}
           <HostBridgeNotice paused={controller.connectionLost} />
+          {/* 已有消息（旧记录或先到的实时回复）时读取失败不占阅读区：正文保留，失败与重试放在输入框下的错误行。 */}
+          {controller.historyFailure !== null && hasMessages ? <div className="error-line" role="alert">
+            <span>没能读取这段对话的完整记录：{controller.historyFailure}</span>
+            <MaterialButton variant="danger" onClick={controller.retryHistory}>重试</MaterialButton>
+          </div> : null}
           {error ? <div className="error-line" role="alert"><span>{error}</span>
             {controller.errorRetry ? <MaterialButton variant="danger" onClick={retry}>重试</MaterialButton> : null}
           </div> : null}
