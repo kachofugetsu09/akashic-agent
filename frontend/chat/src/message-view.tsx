@@ -593,6 +593,14 @@ export function TimelineMessageView({ message, lookupMessage, toolResults, onNav
 
 // 长输入（粘贴的日志、整段代码）收成约 12 行，下面一行安静的"展开全部"；短输入不受影响。
 // 是否溢出取决于当前宽度，只在收起时测量，宽度变化时重测。
+// 按最窄阅读宽度（约 12 个汉字一行）粗估行数；含图片、代码块、表格时高度无法从字数推断，一律测量。
+function mayExceedClamp(element: HTMLElement): boolean {
+  if (element.querySelector("img, pre, table")) return true;
+  const lines = (element.textContent ?? "").split("\n")
+    .reduce((count, line) => count + Math.max(1, Math.ceil(line.length / 12)), 0);
+  return lines >= 12;
+}
+
 function UserTextClamp({ enabled, children }: { enabled: boolean; children: ReactNode }) {
   const [expanded, setExpanded] = useState(false);
   const [overflowing, setOverflowing] = useState(false);
@@ -601,11 +609,26 @@ function UserTextClamp({ enabled, children }: { enabled: boolean; children: Reac
   useLayoutEffect(() => {
     const element = box.current;
     if (!enabled || expanded || !element) return;
-    const measure = () => setOverflowing(element.scrollHeight - element.clientHeight > 1);
+    // 用户消息发出后正文不再变化；宽度变化（窗口尺寸）、字体与图片加载才可能改变是否溢出。
+    // 不逐条挂 ResizeObserver：历史消息带 content-visibility:auto，滚进滚出时尺寸在 0 与实际值间切换，
+    // 每条观察都会让浏览器多跑一轮布局，长会话滚动时布局次数会翻倍。
+    // 明显不到 12 行的短输入不读几何：补载历史时这些消息多在跳过渲染的区域里，逐条读 scrollHeight 会逐条强制布局。
+    if (!mayExceedClamp(element)) return;
+    let frame = 0;
+    const measure = () => {
+      frame = 0;
+      setOverflowing(element.scrollHeight - element.clientHeight > 1);
+    };
+    const schedule = () => { if (!frame) frame = window.requestAnimationFrame(measure); };
     measure();
-    const observer = new ResizeObserver(measure);
-    observer.observe(element);
-    return () => observer.disconnect();
+    void document.fonts.ready.then(schedule);
+    window.addEventListener("resize", schedule);
+    element.addEventListener("load", schedule, true);
+    return () => {
+      window.cancelAnimationFrame(frame);
+      window.removeEventListener("resize", schedule);
+      element.removeEventListener("load", schedule, true);
+    };
   }, [enabled, expanded]);
   if (!enabled) return <>{children}</>;
   const onToggle = () => {
