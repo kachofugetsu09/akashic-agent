@@ -50,44 +50,50 @@ function color(key: ColorKey | undefined, index: number): string {
   return `var(--k${(slot % 6) + 1})`;
 }
 
-// 数值格式：raw 原样千分位，% 百分比，wan 中文万/亿，si 用 K/M/B；也接受函数。
+// 数值格式：raw 原样千分位，% 百分比，wan 中文万/亿，si 用 K/M/B；也接受函数。先按显示精度舍入再决定单位，避免 "10,000"。
 function formatter(format: Format | undefined, unit = ""): (value: number) => string {
   if (typeof format === "function") return format;
+  const units: readonly [number, string, number][] = format === "wan" ? [[1e8, "亿", 1], [1e4, "万", 1]]
+    : format === "si" ? [[1e9, "B", 1], [1e6, "M", 1], [1e3, "K", 10]] : [];
   return value => {
     const size = Math.abs(value);
     if (format === "%") return `${size >= 10 || Number.isInteger(value) ? Math.round(value) : round(value)}%`;
-    let text: string;
-    if (format === "wan" && size >= 1e8) text = `${round(value / 1e8)}亿`;
-    else if (format === "wan" && size >= 1e4) text = `${round(value / 1e4)}万`;
-    else if (format === "si" && size >= 1e9) text = `${round(value / 1e9)}B`;
-    else if (format === "si" && size >= 1e6) text = `${round(value / 1e6)}M`;
-    else if (format === "si" && size >= 1e4) text = `${round(value / 1e3)}K`;
-    else text = (Number.isInteger(value) ? value : Number(value.toFixed(size < 1 ? 2 : 1))).toLocaleString("en-US");
-    return text + unit;
+    const scaled = units.find(([base, , least], at) => Math.abs(round(value / base)) >= least
+      && (at < units.length - 1 || Math.abs(Number(value.toFixed(1))) >= base * least));
+    if (scaled) return `${round(value / scaled[0])}${scaled[1]}${unit}`;
+    const plain = Number.isInteger(value) ? value : Number(value.toPrecision(size < 1 ? 2 : Math.max(2, Math.floor(Math.log10(size)) + 2)));
+    return (plain === 0 ? 0 : plain).toLocaleString("en-US", { maximumFractionDigits: 6 }) + unit;
   };
 }
 
-// 刻度取 1/2/2.5/5 的整倍数，范围包住全部数据。
+// 刻度取 1/2/2.5/5 的整倍数，范围包住全部数据；超出浮点可绘制精度的数域直接报错，不进入无界循环。
 function niceScale(low: number, high: number, count: number): { low: number; high: number; ticks: number[] } {
-  if (!(high > low)) high = low + 1;
+  if (!(high > low)) high = low + (Math.abs(low) * 0.1 || 1);
   const raw = (high - low) / count, power = 10 ** Math.floor(Math.log10(raw)), ratio = raw / power;
   const step = (ratio <= 1 ? 1 : ratio <= 2 ? 2 : ratio <= 2.5 ? 2.5 : ratio <= 5 ? 5 : 10) * power;
-  const start = Math.floor(low / step + 1e-9) * step, end = Math.ceil(high / step - 1e-9) * step, ticks: number[] = [];
-  for (let value = start; value <= end + step / 2; value += step) ticks.push(Number(value.toPrecision(12)));
+  const start = Math.floor(low / step + 1e-9) * step, end = Math.ceil(high / step - 1e-9) * step, steps = Math.round((end - start) / step);
+  if (![step, start, end, steps].every(Number.isFinite) || !(step > 0) || steps < 1 || steps > 20 || start + step === start)
+    throw new Error("ak: 数值范围超出可绘制精度，请先换算单位（如万、亿）再画");
+  const ticks = Array.from({ length: steps + 1 }, (_, index) => Number((start + index * step).toPrecision(12)));
   return { low: start, high: end, ticks };
 }
 
 // 横轴标签：日期多时按月，否则按宽度抽稀，保证不重叠。
 function xTicks(labels: readonly string[], width: number): { index: number; text: string }[] {
   if (labels.length > 35 && labels.every(label => ISO.test(label))) {
-    const months: { index: number; text: string }[] = [];
+    // 月份边界再按像素抽稀；跨年时一月写成年份。
+    const years = new Set(labels.map(label => label.slice(0, 4))).size > 1, months: { index: number; text: string }[] = [];
     let previous = "";
     labels.forEach((label, index) => {
       const match = ISO.exec(label)!, month = match[1] + match[2];
-      if (month !== previous && (index > 0 || Number(match[3]) <= 3)) months.push({ index, text: `${Number(match[2])}月` });
+      if (month !== previous && (index > 0 || Number(match[3]) <= 3))
+        months.push({ index, text: years && match[2] === "01" ? match[1] : `${Number(match[2])}月` });
       previous = month;
     });
-    return months;
+    const gap = Math.max(...months.map(tick => textWidth(tick.text))) + 12, pixel = width / labels.length;
+    const kept: { index: number; text: string }[] = [];
+    for (const tick of months) if (!kept.length || (tick.index - kept[kept.length - 1].index) * pixel >= gap) kept.push(tick);
+    return kept;
   }
   const short = labels.map(shortLabel), widest = Math.max(0, ...short.map(text => textWidth(text))) + 12;
   const step = Math.max(1, Math.ceil(widest / (width / Math.max(1, labels.length))));
@@ -120,7 +126,7 @@ function indexOf(labels: readonly string[], at: string | number): number {
 // 标签避让：按优先级放置，取第一个落在图内且不与已放标签重叠的候选位置。
 class Placement {
   private readonly boxes: Box[] = [];
-  constructor(private readonly width: number, private readonly height: number) {}
+  constructor(readonly width: number, private readonly height: number) {}
   block(box: Box): void { this.boxes.push(box); }
   // 候选先水平收进图内；都冲突时 force 取第一个候选，宁可贴近也不静默丢掉注释。
   place(candidates: readonly Box[], force = false): Box | null {
@@ -128,26 +134,42 @@ class Placement {
       .filter(box => box.y >= 0 && box.y + box.h <= this.height);
     const free = inside.find(box => !this.boxes.some(other => box.x < other.x + other.w + 2 && other.x < box.x + box.w + 2
       && box.y < other.y + other.h + 1 && other.y < box.y + box.h + 1));
-    const chosen = free ?? (force ? inside[0] ?? null : null);
+    const first = candidates[0], fallback = first && { ...first, x: clamp(first.x, 0, Math.max(0, this.width - first.w)), y: clamp(first.y, 0, Math.max(0, this.height - first.h)) };
+    const chosen = free ?? (force ? fallback ?? null : null);
     if (chosen) this.boxes.push(chosen);
     return chosen;
   }
 }
 
-// 注释文字：粗体主句 + 可选次级说明；依次尝试上方（居中、左右错开）、右、左、下方和更远的上方。
+// 按可用宽度逐字折行：中文按字，含空格的英文优先在空格处断开。
+function wrap(text: string, limit: number, weight = 400): string[] {
+  const lines: string[] = [];
+  let line = "";
+  for (const char of Array.from(text)) {
+    if (line && textWidth(line + char, 12, weight) > limit) {
+      const space = line.lastIndexOf(" ");
+      lines.push(space > 0 && char !== " " ? line.slice(0, space) : line);
+      line = space > 0 && char !== " " ? line.slice(space + 1) + char : char.trimStart();
+    } else line += char;
+  }
+  return line ? [...lines, line] : lines;
+}
+
+// 注释文字：粗体主句 + 可选次级说明，超出图宽时折行；依次尝试上方（居中、左右错开）、右、左、下方和更远的上方。
 function annotation(placement: Placement, note: Note, x: number, y: number, gap = 8): string {
   const text = String(note.text ?? note.label ?? "");
   if (!text) return "";
-  const w = Math.max(textWidth(text, 12, 600), note.sub ? textWidth(note.sub) : 0), h = note.sub ? 32 : 16;
+  const limit = Math.max(48, Math.min(240, placement.width - 4)), head = wrap(text, limit, 600), tail = note.sub ? wrap(note.sub, limit) : [];
+  const w = Math.max(...head.map(line => textWidth(line, 12, 600)), ...tail.map(line => textWidth(line))), h = 16 * (head.length + tail.length);
   const box = (left: number, top: number): Box => ({ x: left, y: top, w, h });
   const chosen = placement.place([
     box(x - w / 2, y - gap - h), box(x - w + 8, y - gap - h), box(x - 8, y - gap - h),
     box(x + gap, y - h / 2), box(x - gap - w, y - h / 2), box(x - w / 2, y + gap),
     box(x - w / 2, y - gap - h - 20), box(x - w - gap, y - gap - h), box(x + gap, y - gap - h)], true);
   if (!chosen) return "";
-  const tx = chosen.x + w / 2;
-  return `<text class="ak-b" x="${round(tx)}" y="${round(chosen.y + 12)}" text-anchor="middle">${esc(text)}</text>`
-    + (note.sub ? `<text x="${round(tx)}" y="${round(chosen.y + 28)}" text-anchor="middle">${esc(note.sub)}</text>` : "");
+  const tx = round(chosen.x + w / 2);
+  return [...head.map(line => [line, ' class="ak-b"']), ...tail.map(line => [line, ""])].map(([line, kind], index) =>
+    `<text${kind} x="${tx}" y="${round(chosen.y + 12 + index * 16)}" text-anchor="middle">${esc(line)}</text>`).join("");
 }
 
 const svgOpen = (width: number, height: number, label?: string): string =>
@@ -166,7 +188,9 @@ const xLabel = (x: number, y: number, text: string, width: number): string => {
   return `<text x="${round(clamp(x, half, width - half))}" y="${y}" text-anchor="middle">${esc(text)}</text>`;
 };
 
-// 挂载：按容器实际宽度绘制，宽度变化时重画；悬停与键盘读数挂在 SVG 上。
+const observers = new WeakMap<HTMLElement, ResizeObserver>();
+
+// 挂载：按容器实际宽度绘制，宽度变化时重画；同一容器再次挂载时先断开旧的监听。
 function mount(target: Target, draw: (width: number, id: string) => Drawing): Handle {
   const element = typeof target === "string" ? document.querySelector<HTMLElement>(target) : target;
   if (!(element instanceof HTMLElement)) throw new Error(`ak: 找不到容器 ${String(target)}`);
@@ -182,7 +206,10 @@ function mount(target: Target, draw: (width: number, id: string) => Drawing): Ha
     if (svg && drawing.hits.length) interact(element, svg, drawing.hits);
   };
   render();
-  new ResizeObserver(render).observe(element);
+  observers.get(element)?.disconnect();
+  const observer = new ResizeObserver(render);
+  observer.observe(element);
+  observers.set(element, observer);
   return { redraw: () => { width = 0; render(); } };
 }
 
@@ -236,9 +263,20 @@ function bars(target: Target, options: BarsOptions): Handle {
   const labels = (options?.x ?? []).map(String);
   if (!labels.length) throw new Error("ak.bars: x 不能为空");
   const series = readSeries("bars", options.series, labels.length, false), format = formatter(options.fmt, options.unit);
+  if (options.horizontal) checkHorizontal(options, labels.length, series);
   return mount(target, (width, id) => options.horizontal
     ? horizontalBars(width, id, options, labels, series, format)
     : verticalBars(width, options, labels, series, format));
+}
+
+// 横条只表达非负量；区间必须是有限数字且 lo ≤ hi，不在绘制时悄悄改写。
+function checkHorizontal(options: BarsOptions, count: number, series: readonly Series[]): void {
+  if (series.some(item => item.values.some(value => (value ?? 0) < 0))) throw new Error("ak.bars: 横向条不支持负数，请改用竖向柱");
+  (options.range ?? []).slice(0, count).forEach((range, index) => {
+    if (range == null) return;
+    if (![range.lo, range.hi].every(value => typeof value === "number" && Number.isFinite(value))) throw new Error(`ak.bars: range[${index}] 的 lo、hi 必须是有限数字`);
+    if (range.lo < 0 || range.lo > range.hi) throw new Error(`ak.bars: range[${index}] 需要 0 ≤ lo ≤ hi`);
+  });
 }
 
 function verticalBars(width: number, options: BarsOptions, labels: string[], series: Series[], format: (value: number) => string): Drawing {

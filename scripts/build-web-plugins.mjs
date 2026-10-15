@@ -112,7 +112,9 @@ const visualCharts = await bundle({
   entryPoints: [resolve(repoRoot, "frontend/plugins/visuals/src/charts.ts")],
   bundle: true, format: "iife", target: "es2022", minify: true, write: false,
 });
-const visualFrame = (await readFile(resolve(repoRoot, "frontend/plugins/visuals/src/frame.html"), "utf8"))
+const visualFrameSource = await readFile(resolve(repoRoot, "frontend/plugins/visuals/src/frame.html"), "utf8");
+if (visualFrameSource.split("/*visual-charts*/").length !== 2) throw new Error("visuals frame.html 必须恰有一处 /*visual-charts*/ 占位符");
+const visualFrame = visualFrameSource
   .replace("/*visual-charts*/", () => visualCharts.outputFiles[0].text.trim().replaceAll("</script", "<\\/script"));
 await bundle({
   entryPoints: [resolve(repoRoot, "frontend/plugins/visuals/src/plugin-ui.ts")],
