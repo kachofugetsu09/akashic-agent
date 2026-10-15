@@ -1722,25 +1722,28 @@ button.tool-step-summary:active {
   cursor: zoom-in;
 }
 
-/* 图片/视频查看器：整屏压暗，内容宽度随媒体收紧（至少放得下顶栏），点媒体外的空白处关闭。
-   压暗层在深浅主题都是暗的，顶栏用固定的浅色前景，和所有看图器一样不随主题翻转。 */
+/* 图片/视频查看器：整屏压暗，点媒体外的空白处关闭。压暗层在深浅主题都是暗的，顶栏用固定的浅色前景，
+   和所有看图器一样不随主题翻转；背后的标题文字再糊一层，不透出来和顶栏抢。 */
 .media-preview-overlay {
-  background: rgb(var(--ak-color-shadow-rgb) / 0.86);
+  background: rgb(var(--ak-color-shadow-rgb) / 0.92);
+  backdrop-filter: blur(6px);
 }
 
+/* 查看器铺满视口：顶栏固定在顶部、媒体在其下居中。翻到尺寸不同的下一张时翻页钮不跟着图片挪位置，
+   切原始像素也不会让顶栏从屏幕中间跳到顶端。媒体四周的空白就是查看器本身，点它关闭。 */
 .media-preview {
   display: grid;
-  width: max-content;
-  min-width: min(94vw, 24rem);
-  max-width: 94vw;
-  max-height: 96dvh;
+  width: 100vw;
+  height: 100dvh;
+  max-width: none;
+  max-height: none;
   grid-template-rows: auto minmax(0, 1fr);
-  justify-items: center;
-  gap: 8px;
-  overflow: visible;
+  place-items: center;
+  gap: 0;
+  overflow: hidden;
   border: 0;
   border-radius: 0;
-  padding: 0;
+  padding: max(4px, env(safe-area-inset-top)) max(8px, 3vw) max(2dvh, env(safe-area-inset-bottom));
   background: transparent;
   box-shadow: none;
   color: rgb(255 255 255 / 0.92);
@@ -1750,6 +1753,7 @@ button.tool-step-summary:active {
   display: flex;
   min-width: 0;
   justify-self: stretch;
+  padding-block-end: 4px;
   align-items: center;
   gap: 4px;
 }
@@ -1818,7 +1822,7 @@ button.tool-step-summary:active {
   overflow: hidden;
   border-radius: 10px;
 }
-/* 在媒体上横滑交给页面脚本切换上一个/下一个（媒体外的暗区是遮罩层，点它关闭）；原始像素画框本身是滚动容器，
+/* 横滑交给页面脚本切换上一个/下一个；原始像素画框本身是滚动容器，
    touch-action 只沿祖先链算到最近的滚动容器，横向平移仍归浏览器。 */
 .media-preview { touch-action: pan-y pinch-zoom; }
 .media-preview__frame.is-actual {
