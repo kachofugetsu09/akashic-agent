@@ -174,11 +174,13 @@ interface ModelRowProps {
   runtime: ChatModelRuntime;
   selected: boolean;
   favorite: boolean;
+  /** 所在分组已写明来源时不再逐行重复；收藏组混着不同来源，要写。 */
+  showProvider: boolean;
   onChoose: () => void;
   onToggleFavorite: () => void;
 }
 
-function ModelRow({ runtime, selected, favorite, onChoose, onToggleFavorite }: ModelRowProps) {
+function ModelRow({ runtime, selected, favorite, showProvider, onChoose, onToggleFavorite }: ModelRowProps) {
   return (
     <div
       className={`model-picker__option ${selected ? "is-selected" : ""}`}
@@ -205,7 +207,7 @@ function ModelRow({ runtime, selected, favorite, onChoose, onToggleFavorite }: M
         <strong>{runtime.model}</strong>
         <span className="model-picker__meta">
           <CapabilityMarks runtime={runtime} />
-          <em>{runtime.provider}</em>
+          {showProvider ? <em>{runtime.provider}</em> : null}
         </span>
       </span>
       <button
@@ -387,6 +389,7 @@ export function ModelCapsulePicker({
                     runtime={runtime}
                     selected={runtime.id === selectedRuntimeId}
                     favorite
+                    showProvider
                     onChoose={() => choose(runtime)}
                     onToggleFavorite={() => toggleFavorite(runtime.id)}
                   />
@@ -398,13 +401,13 @@ export function ModelCapsulePicker({
                 <div className="model-picker__group-title">
                   <GroupIcon runtime={models[0].runtime} />
                   {source}
-                  <span>{models.length}</span>
                 </div>
                 {models.map(({ runtime }) => (
                   <ModelRow
                     key={runtime.id}
                     runtime={runtime}
                     selected={runtime.id === selectedRuntimeId}
+                    showProvider={runtime.provider.toLowerCase() !== source.toLowerCase()}
                     favorite={items.favoriteSet.has(runtime.id)}
                     onChoose={() => choose(runtime)}
                     onToggleFavorite={() => toggleFavorite(runtime.id)}

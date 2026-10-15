@@ -2367,17 +2367,6 @@ form.composer:focus-within [data-slot="input-group"] {
   letter-spacing: 0.02em;
 }
 
-.model-picker__group-title > span {
-  display: grid;
-  min-width: 1.1rem;
-  min-height: 1.1rem;
-  place-items: center;
-  margin-inline-start: auto;
-  border-radius: var(--md-sys-shape-corner-full);
-  color: var(--ak-ink-secondary);
-  background: color-mix(in oklch, var(--ak-ink-primary) 6%, transparent);
-}
-
 .model-picker__option {
   display: flex;
   align-items: flex-start;
