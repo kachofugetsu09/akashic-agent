@@ -1,8 +1,9 @@
 import { CheckIcon, CopyIcon } from "lucide-react";
-import { useEffect, useRef, useState, type RefObject } from "react";
-import { CodeBlockNode, ListNode, ParagraphNode as ParagraphRenderer, PreCodeNode, languageMap, resolveLanguageId, type NodeComponentProps } from "markstream-react";
-import type { CodeBlockNode as CodeData, ListNode as ListData, ParagraphNode, ParsedNode, TableNode as TableData } from "stream-markdown-parser";
+import { createContext, useContext, useEffect, useRef, useState, type RefObject } from "react";
+import { CodeBlockNode, FootnoteNode as FootnoteRenderer, ListNode, ParagraphNode as ParagraphRenderer, PreCodeNode, languageMap, resolveLanguageId, type NodeComponentProps } from "markstream-react";
+import type { CodeBlockNode as CodeData, FootnoteNode as FootnoteData, ListNode as ListData, ParagraphNode, ParsedNode, TableNode as TableData } from "stream-markdown-parser";
 import { copyReadingCode, isConceptLabel, isNumericColumn, isPlainTextLanguage, stripConceptSeparator, watchOverflowEdges, writeOverflowEdges } from "./markdown-reading";
+import { renderStaticMarkdown } from "./static-markdown";
 
 export const CODE_BLOCK_PROPS = {
   showLineNumbers: false,
@@ -207,4 +208,47 @@ export function ReadingCode({ node, ctx, isDark }: NodeComponentProps<CodeData>)
   }
   if (ctx?.renderCodeBlocksAsPre) return <StreamingCode node={node} />;
   return <HighlightedCode node={node} ctx={ctx} isDark={isDark} />;
+}
+
+type FootnoteLookup = (label: string) => string | null;
+
+/** 当前这条回复的脚注正文（按标签取），由 MessageResponse 按原文提供。 */
+export const FootnoteSource = createContext<FootnoteLookup | null>(null);
+
+const FOOTNOTE_ID_PREFIX = "user-content-fn-";
+
+// 标签按 GFM 的规则归一（空白折叠、大小写不敏感），与 micromark 生成 id 前的处理一致。
+const footnoteKey = (label: string) => label.replace(/[\t\n\r ]+/gu, " ").trim().toLowerCase();
+
+/** 按原文惰性解析一次：只有真的渲染到脚注时才跑 micromark，同一原文的多条脚注共用结果。 */
+export function footnoteLookup(markdown: string): FootnoteLookup {
+  let items: Map<string, HTMLLIElement> | null = null;
+  return (label) => {
+    if (!items) {
+      const template = document.createElement("template");
+      template.innerHTML = renderStaticMarkdown(markdown);
+      items = new Map();
+      for (const item of template.content.querySelectorAll<HTMLLIElement>(`li[id^="${FOOTNOTE_ID_PREFIX}"]`)) {
+        // 脚注里的代码只读不复制：复制钮的点击委托只挂在静态回复容器上。
+        for (const copy of item.querySelectorAll("[data-static-code-copy]")) copy.remove();
+        items.set(footnoteKey(decodeURIComponent(item.id.slice(FOOTNOTE_ID_PREFIX.length))), item);
+      }
+    }
+    const item = items.get(footnoteKey(label));
+    if (!item) return null;
+    // 返回箭头指回富渲染里的引用号（markstream 的 sup id 是 fnref-标签）。
+    for (const back of item.querySelectorAll("a[data-footnote-backref]")) back.setAttribute("href", `#fnref-${label}`);
+    return item.innerHTML;
+  };
+}
+
+/** markstream 的脚注只收段落：列表被拍成段落，代码与其后的返回链接丢掉。脚注正文改用同一原文的完整 GFM 解析结果；
+ *  原文里找不到（生成中定义还没写完、未被引用的定义）时退回 markstream 自己的渲染。 */
+export function ReadingFootnote(props: NodeComponentProps<FootnoteData>) {
+  const lookup = useContext(FootnoteSource);
+  const html = lookup?.(props.node.id) ?? null;
+  if (html === null) return <FootnoteRenderer {...props} />;
+  return <div id={`fnref--${props.node.id}`} className="footnote-node reading-footnote">
+    <div className="reading-footnote__body" dangerouslySetInnerHTML={{ __html: html }} />
+  </div>;
 }

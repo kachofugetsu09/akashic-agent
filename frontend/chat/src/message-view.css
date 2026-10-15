@@ -673,6 +673,20 @@
   font-size: 0.875em;
   line-height: inherit;
 }
+/* ReadingFootnote：脚注正文取自完整 GFM 解析（列表、代码、引用保留块结构），返回箭头本就在末段 p 里。 */
+:is(.agent-content, .process-markdown, .user-bubble) .markdown-reading .reading-footnote {
+  display: flex;
+}
+:is(.agent-content, .process-markdown, .user-bubble) .markdown-reading .reading-footnote__body {
+  flex: 1;
+  min-width: 0;
+}
+:is(.agent-content, .process-markdown, .user-bubble) .markdown-reading .reading-footnote__body > :where(p, ul, ol, blockquote) {
+  margin: 0 0 0.5em;
+}
+:is(.agent-content, .process-markdown, .user-bubble) .markdown-reading .reading-footnote__body > :last-child {
+  margin-block-end: 0;
+}
 /* 脚注正文是块级 p，返回箭头会掉到下一行：只把紧挨箭头的那一段改成行内，箭头跟在句末，和静态路径一样；
    多段脚注的前几段、列表、代码保持块结构，段间留半行。 */
 :is(.agent-content, .process-markdown, .user-bubble) .markdown-reading .footnote-node .paragraph-node {
