@@ -1417,6 +1417,8 @@ input {
    每条消息下都预留了悬停操作行，均匀 gap 会让提问离上一轮回答和离自己的回答一样远。 */
 .conversation-content > .timeline-input + :is(.timeline-output, .reply-activity, .thinking-placeholder) { margin-block-start: -12px; }
 .conversation-content > :is(.timeline-output, .reply-activity) + .timeline-input { margin-block-start: 12px; }
+/* 同一方接着说（补充一句、连发的主动消息）与问答同距：它们是一段话的续写，不是新一轮。 */
+.conversation-content > .timeline-output + :is(.timeline-output, .reply-activity) { margin-block-start: -12px; }
 
 .desktop-history-loader,
 .desktop-history-start {
