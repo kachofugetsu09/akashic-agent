@@ -1,5 +1,5 @@
 import { Check, Copy, Download, ImageIcon, Pencil, Play, X } from "lucide-react";
-import { useEffect, useState, type CSSProperties, type KeyboardEvent as ReactKeyboardEvent, type ReactNode } from "react";
+import { useEffect, useRef, useState, type CSSProperties, type KeyboardEvent as ReactKeyboardEvent, type ReactNode } from "react";
 import { Dialog, DialogClose, DialogContent, DialogDescription, DialogTitle } from "@/components/ui/dialog";
 import { copyText } from "./copy-text";
 import "./attachment-card.css";
@@ -203,51 +203,134 @@ export async function readAttachmentText(url: string): Promise<string> {
   return (await readText(url, Number.POSITIVE_INFINITY)).text;
 }
 
-// 预览最多排 5000 行：再多的行交给下载，避免一次挂上几十万个节点。
+// 预览只读开头 512KB、最多排 5000 行：大日志不整份解码、不拆成千万个数组项，其余交给下载。
 const PREVIEW_LINE_LIMIT = 5000;
+const PREVIEW_BYTE_LIMIT = 512 * 1024;
+// 复制全文要整份读进内存再写剪贴板：太大的文件只给下载。
+const COPY_BYTE_LIMIT = 8 * 1024 * 1024;
 
 type PreviewTarget = { name: string; url: string; sizeBytes?: number };
-type PreviewState = { target: PreviewTarget; text: string | null; error: string };
+type PreviewText = { lines: string[]; truncated: boolean; size: number; full?: string; totalLines?: number; table?: { columns: string[]; rows?: number } };
+type PreviewState = { target: PreviewTarget; text: PreviewText | null; error: string };
+
+// 1. 只解码前缀；2. 截断时丢掉最后半行；3. 行数沿用卡片的 2MB 统计；4. CSV/TSV 按引号规则读表头与记录数。
+async function readPreview(target: PreviewTarget): Promise<PreviewText> {
+  const response = await fetch(target.url);
+  if (!response.ok) throw new Error(`读取附件失败: ${response.status}`);
+  const blob = await response.blob();
+  const prefix = await blob.slice(0, PREVIEW_BYTE_LIMIT).text();
+  const lines: string[] = [];
+  let from = 0;
+  while (lines.length <= PREVIEW_LINE_LIMIT && from <= prefix.length) {
+    const end = prefix.indexOf("\n", from);
+    lines.push(prefix.slice(from, end < 0 ? prefix.length : end));
+    from = end < 0 ? prefix.length + 1 : end + 1;
+  }
+  const bytesCut = blob.size > PREVIEW_BYTE_LIMIT;
+  if (bytesCut && lines.length > 1 && lines.length <= PREVIEW_LINE_LIMIT) lines.pop();
+  if (!bytesCut && from > prefix.length && lines.at(-1) === "") lines.pop();
+  const truncated = bytesCut || lines.length > PREVIEW_LINE_LIMIT;
+  const delimiter = /\.csv$/iu.test(target.name) ? "," : /\.tsv$/iu.test(target.name) ? "\t" : "";
+  const totalLines = (await loadFacts(target.url))?.lines;
+  return { lines: lines.slice(0, PREVIEW_LINE_LIMIT), truncated, size: blob.size, full: bytesCut ? undefined : prefix, totalLines,
+    table: delimiter ? readTable(prefix, delimiter, !bytesCut) : undefined };
+}
+
+// 前缀放不下的文件按下复制时才读：剪贴板接受读取中的 Promise，读完前不丢用户手势；不支持时读完再走普通复制。
+async function copyLarge(url: string): Promise<void> {
+  const blob = fetch(url).then((response) => response.blob()).then((raw) => new Blob([raw], { type: "text/plain" }));
+  if (navigator.clipboard?.write && typeof ClipboardItem !== "undefined") {
+    try {
+      await navigator.clipboard.write([new ClipboardItem({ "text/plain": blob })]);
+      return;
+    } catch {
+      // 权限或类型不被接受时走普通复制。
+    }
+  }
+  await copyText(await (await blob).text());
+}
+
+// RFC 4180：引号字段里可以有分隔符、换行和成对的 ""。只数前缀里的记录，截断时不报行数。
+function readTable(text: string, delimiter: string, complete: boolean): { columns: string[]; rows?: number } {
+  const columns: string[] = [];
+  let field = "", quoted = false, started = false, records = 0;
+  const endField = () => {
+    if (records === 0) columns.push(field);
+    field = "";
+  };
+  for (let index = 0; index < text.length; index += 1) {
+    const character = text[index];
+    if (quoted) {
+      if (character === '"' && text[index + 1] === '"') { field += '"'; index += 1; }
+      else if (character === '"') quoted = false;
+      else field += character;
+    } else if (character === '"') {
+      quoted = started = true;
+    } else if (character === delimiter) {
+      endField();
+      started = true;
+    } else if (character === "\n" || character === "\r") {
+      if (character === "\r" && text[index + 1] === "\n") continue;
+      // 空行不算记录。
+      if (started) { endField(); records += 1; }
+      started = false;
+    } else {
+      field += character;
+      started = true;
+    }
+  }
+  if (started) { endField(); records += 1; }
+  return { columns, rows: complete ? Math.max(0, records - 1) : undefined };
+}
 
 // 文本附件预览（参考 Desktop 的文本附件面板）：标题下写"大小 • 行数"，等宽带行号，可复制全文、下载；
-// CSV/TSV 先列出列名。媒体不走这里，交给媒体查看器。
+// CSV/TSV 先列出列名。媒体不走这里，交给媒体查看器。关闭后焦点回到打开它的卡，卡已不在时回到正文框。
 export function useAttachmentPreview(): { open: (target: PreviewTarget) => void; dialog: ReactNode } {
   const [state, setState] = useState<PreviewState | null>(null);
+  const opener = useRef<HTMLElement | null>(null);
   const open = (target: PreviewTarget) => {
+    opener.current = document.activeElement instanceof HTMLElement ? document.activeElement : null;
     setState({ target, text: null, error: "" });
-    readAttachmentText(target.url).then(
+    readPreview(target).then(
       (text) => setState((current) => current?.target === target ? { ...current, text } : current),
       (error: unknown) => setState((current) => current?.target === target
         ? { ...current, error: error instanceof Error ? error.message : "读取失败" } : current));
   };
+  const restoreFocus = (event: Event) => {
+    event.preventDefault();
+    const target = opener.current?.isConnected ? opener.current : document.querySelector<HTMLElement>("textarea[name=message]");
+    target?.focus();
+  };
   const dialog = <Dialog open={state !== null} onOpenChange={(next) => { if (!next) setState(null); }}>
-    {state ? <AttachmentPreviewContent state={state} /> : null}
+    {state ? <AttachmentPreviewContent state={state} onCloseAutoFocus={restoreFocus} /> : null}
   </Dialog>;
   return { open, dialog };
 }
 
-function AttachmentPreviewContent({ state }: { state: PreviewState }) {
+function AttachmentPreviewContent({ state, onCloseAutoFocus }: { state: PreviewState; onCloseAutoFocus: (event: Event) => void }) {
   const { target, text, error } = state;
   const [copied, setCopied] = useState(false);
-  const lines = text === null ? [] : text.replace(/\n$/u, "").split("\n");
-  const meta = [target.sizeBytes !== undefined ? formatBytes(target.sizeBytes) : "", text !== null ? `${lines.length.toLocaleString("zh-CN")} 行` : ""]
+  const lines = text?.lines ?? [];
+  const size = target.sizeBytes ?? text?.size;
+  const meta = [size !== undefined ? formatBytes(size) : "", text?.totalLines !== undefined ? `${text.totalLines.toLocaleString("zh-CN")} 行` : ""]
     .filter(Boolean).join(" • ");
-  const delimiter = /\.csv$/iu.test(target.name) ? "," : /\.tsv$/iu.test(target.name) ? "\t" : "";
-  const columns = delimiter && text ? lines[0].split(delimiter) : [];
+  const columns = text?.table?.columns ?? [];
+  const copyable = text !== null && text.size <= COPY_BYTE_LIMIT;
   const copy = () => {
-    if (text === null) return;
-    void copyText(text).then(() => {
+    if (!copyable) return;
+    void (text.full !== undefined ? copyText(text.full) : copyLarge(target.url)).then(() => {
       setCopied(true);
       window.setTimeout(() => setCopied(false), 2000);
     });
   };
-  return <DialogContent className="attachment-preview" showCloseButton={false}>
+  return <DialogContent className="attachment-preview" showCloseButton={false} onCloseAutoFocus={onCloseAutoFocus}>
     <header className="attachment-preview__bar">
       <div className="attachment-preview__title">
         <DialogTitle><bdi>{target.name}</bdi></DialogTitle>
         <DialogDescription>{meta || "\u00a0"}</DialogDescription>
       </div>
-      <button type="button" onClick={copy} disabled={text === null} aria-label={copied ? "已复制" : "复制全文"} title="复制全文">
+      <button type="button" onClick={copy} disabled={!copyable} aria-label={copied ? "已复制" : "复制全文"}
+        title={text && !copyable ? "文件较大，请下载后复制" : "复制全文"}>
         {copied ? <Check size={16} aria-hidden="true" /> : <Copy size={16} aria-hidden="true" />}
       </button>
       <a href={target.url} download={target.name} aria-label={`下载 ${target.name}`} title="下载"><Download size={16} aria-hidden="true" /></a>
@@ -255,13 +338,13 @@ function AttachmentPreviewContent({ state }: { state: PreviewState }) {
     </header>
     {columns.length > 1 ? <section className="attachment-preview__columns" aria-label="表格结构">
       <ul>{columns.map((column, index) => <li key={index}><bdi>{column.trim() || `第 ${index + 1} 列`}</bdi></li>)}</ul>
-      <p>{columns.length} 列，{Math.max(0, lines.length - 1).toLocaleString("zh-CN")} 行</p>
+      <p>{columns.length} 列{text?.table?.rows !== undefined ? `，${text.table.rows.toLocaleString("zh-CN")} 行` : ""}</p>
     </section> : null}
     <div className="attachment-preview__body" tabIndex={0} aria-label={`${target.name} 内容`}>
       {error ? <p className="attachment-preview__note" role="alert">{error}</p>
         : text === null ? <p className="attachment-preview__note" role="status">正在读取…</p>
-        : <pre>{lines.slice(0, PREVIEW_LINE_LIMIT).map((line, index) => <span key={index}>{line || " "}</span>)}</pre>}
-      {lines.length > PREVIEW_LINE_LIMIT ? <p className="attachment-preview__note">只显示前 {PREVIEW_LINE_LIMIT} 行，完整内容请下载。</p> : null}
+        : <pre>{lines.map((line, index) => <span key={index}>{line || " "}</span>)}</pre>}
+      {text?.truncated ? <p className="attachment-preview__note">只显示前 {lines.length.toLocaleString("zh-CN")} 行，完整内容请下载。</p> : null}
     </div>
   </DialogContent>;
 }
