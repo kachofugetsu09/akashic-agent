@@ -834,6 +834,17 @@
   background: transparent;
 }
 
+/* 回复里的 ```diff：每行一个网格项，增删底色整行铺满（含两侧留白），整体在块内横滚。 */
+.reading-plain-text.is-diff > pre { padding-inline: 0; }
+.reading-plain-text.is-diff > pre > code {
+  display: grid;
+  grid-template-columns: minmax(max-content, 1fr);
+}
+.reading-plain-text.is-diff .tool-diff-line {
+  display: block;
+  padding-inline: 1rem 3.4rem;
+}
+
 :is(.agent-content, .process-markdown, .user-bubble) .markdown-reading .reading-code-copy {
   position: absolute;
   inset-block-start: 0;

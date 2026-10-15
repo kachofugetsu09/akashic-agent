@@ -148,7 +148,7 @@ function looksLikeDiff(lines: string[]): boolean {
   return lines.some((line) => line.startsWith("@@ ")) && lines.some((line) => line.startsWith("+++ ") || line.startsWith("--- "));
 }
 
-function DiffLines({ lines }: { lines: string[] }) {
+export function DiffLines({ lines }: { lines: string[] }) {
   return lines.map((line, index) => <span key={index} className={`tool-diff-line${diffLineKind(line)}`}>
     {line}{index < lines.length - 1 ? "\n" : null}
   </span>);

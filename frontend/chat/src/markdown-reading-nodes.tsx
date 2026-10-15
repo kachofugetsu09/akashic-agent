@@ -4,6 +4,7 @@ import { CodeBlockNode, FootnoteNode as FootnoteRenderer, LinkNode as LinkRender
 import type { CodeBlockNode as CodeData, FootnoteAnchorNode as FootnoteAnchorData, FootnoteNode as FootnoteData, FootnoteReferenceNode as FootnoteReferenceData, LinkNode as LinkData, ListNode as ListData, ParagraphNode, ParsedNode, TableNode as TableData } from "stream-markdown-parser";
 import { copyReadingCode, isConceptLabel, isNumericColumn, isPlainTextLanguage, stripConceptSeparator, watchOverflowEdges, writeOverflowEdges } from "./markdown-reading";
 import { renderStaticMarkdown } from "./static-markdown";
+import { DiffLines } from "./tool-result-view";
 
 export const CODE_BLOCK_PROPS = {
   showLineNumbers: false,
@@ -268,6 +269,14 @@ function StreamingCode({ node }: { node: CodeData }) {
 
 /** 纯文本始终是无标题阅读面，带语言的代码仍使用原高亮与流式路径。 */
 export function ReadingCode({ node, ctx, isDark }: NodeComponentProps<CodeData>) {
+  // markstream 把 ```diff 解析成"改后代码"（code 只剩 + 与上下文行、language 置空），删除行与文件头都丢了；
+  // 用原文逐行着色，与工具结果里的 diff 同一外观，复制的也是完整 diff。生成中与落定同一渲染，换手不跳。
+  if (node.diff) {
+    return <div className="reading-plain-text is-diff">
+      <pre><code><DiffLines lines={node.raw.replace(/\n$/u, "").split("\n")} /></code></pre>
+      <PlainCodeCopy code={node.raw} />
+    </div>;
+  }
   if (isPlainTextLanguage(node.language)) {
     return <div className="reading-plain-text">
       <pre><code>{node.code}</code></pre>
