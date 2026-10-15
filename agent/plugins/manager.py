@@ -633,6 +633,9 @@ class PluginManager:
         # 1. 已选外置输入：停用则移除，制品与当前指针不同则换成当前制品。
         choices = plugin_choices(self._workspace, self._distribution.root)
         installed = {_resolve_plugin_id(mod): mod for mod in discovered if mod["source_type"] == "installed"}
+        # discovery 读不出的已提交制品：同一插件目录下、但不是当前运行代码的那一份。
+        broken = {failure.source_root for failure in self._source_failures.values()
+                  if failure.source_type == "installed" and failure.phase == "identity"}
         components: list[str] = []
         selected: set[str] = set()
         for ref in self._selection_components(selection_ref):
@@ -641,6 +644,11 @@ class PluginManager:
             mod = installed.get(plugin_id)
             selected.add(plugin_id)
             if record["source_type"] == "installed" and choices.get(plugin_id) is False:
+                continue
+            code = Path(cast(str, record["code"])).resolve()
+            if record["source_type"] == "installed" and mod is None and any(
+                    root.parent == code.parent and root != code for root in broken):
+                # 当前制品内容错误：插件不可用并保留诊断，不自动退回旧制品。
                 continue
             # cache 缺失时保留原输入，由加载 fail loud，不静默丢掉已启用插件。
             if record["source_type"] != "installed" or mod is None or (

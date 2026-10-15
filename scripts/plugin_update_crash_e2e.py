@@ -158,13 +158,14 @@ def run_case(output: Path, name: str, mode: str, kill_at: str) -> dict[str, obje
         # 停用后重装同一 commit：制品与指针都不变，只有启用写入。
         git(case / "source", "reset", "-q", "--hard", "HEAD~1")
         assert child(case, env, "disable") == {"disabled": True}
-    if name in {"boot-before-bind", "bad-current-entry"}:
+    if name in {"boot-before-bind", "bad-current-entry", "bad-current-module"}:
         assert child(case, env, "offline", update_id) == {"installed": update_id}
-    if name == "bad-current-entry":
-        # 已提交的新制品入口损坏：启动只能继续跑旧版本，更新不得显示为 active。
+    if name in {"bad-current-entry", "bad-current-module"}:
+        # 已提交的新制品内容损坏（入口或其他模块）：插件不可用，不退回旧版本，更新不得显示为 active。
         base = case / "plugins/cache/lab/probe"
         stable = json.loads(pointer_state_path(base).read_text())["stable"]
-        (base / stable / "plugin.py").write_text("def broken(:\n")
+        broken = "plugin.py" if name == "bad-current-entry" else "helper.py"
+        (base / stable / broken).write_text("def broken(:\n")
     report: dict[str, object] = {"crash": child(case, env, mode, update_id, kill_at)}
     if name == "offline-retry-after-arm":
         # 不经启动直接重试安装：新安装入口自己结算遗留记录。
@@ -195,8 +196,9 @@ CASES: dict[str, tuple[str, str, str | None, dict[str, tuple[str, str]]]] = {
     "offline-reinstall-after-enable": ("offline", "after-enable", "1", {"v2": ("committed", "active")}),
     # selection 已换代、绑定前崩溃：下次启动补绑。
     "boot-before-bind": ("boot", "before-bind", "2", {"v2": ("committed", "active")}),
-    # 新制品不可加载：旧版本继续运行，更新不得显示为 active。
-    "bad-current-entry": ("boot", "none", "1", {"v2": ("committed", "unknown")}),
+    # 已提交新制品入口损坏：插件不可用，不自动退回旧版本，更新不得显示为 active。
+    "bad-current-entry": ("boot", "none", None, {"v2": ("committed", "unknown")}),
+    "bad-current-module": ("boot", "none", None, {"v2": ("committed", "unknown")}),
     # 卸载已写停用选择、selection 尚未移除：期望启动时不再运行该插件。
     "online-uninstall-after-choice": ("uninstall", "after-choice", None, {}),
 }
