@@ -415,7 +415,10 @@ export function timelineReplyGroups(messages: TimelineMessage[], activities: Rep
     completed.delete(id); moved.delete(id); hiddenBodies.delete(id);
   }
   for (const [handle, members] of active) active.set(handle, members.filter(item => !inline.outputs.has(item.id)));
-  return { completed, active, moved, hiddenBodies, joined, inline };
+  // 轮次还没结束（末条输出 finish=continue，之后没有输入或控制收尾）的输出：重连后尚未收到实时活动时它们按原位显示，
+  // 不能当成已落定的一轮收进摘要。
+  const unsettled = new Set([...pending.values()].flat().map((message) => message.id));
+  return { completed, active, moved, hiddenBodies, joined, inline, unsettled };
 }
 
 /** 从已提交消息识别图文回复；不依赖插件是否启用，也不改写消息顺序。 */

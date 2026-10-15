@@ -511,10 +511,12 @@ function InlineReplyProcess({ messages, toolResults, beforeReasoning, beforePart
 }
 
 /** 保留消息引用与 part 位置，复用原聊天的过程和正文组件。 */
-export function TimelineMessageView({ message, lookupMessage, toolResults, onNavigate, onError, beforeReasoning, beforePart, afterBody, renderAttachment, hideBody = false, processMessages = [message], hideProcess = false, inlineReply = false, leadingProcess, canLoadReferences = false, turnStartedAt }: {
+export function TimelineMessageView({ message, lookupMessage, toolResults, onNavigate, onError, beforeReasoning, beforePart, afterBody, renderAttachment, hideBody = false, processMessages = [message], hideProcess = false, inlineReply = false, leadingProcess, canLoadReferences = false, turnStartedAt, turnOpen = false }: {
   message: TimelineMessage;
   /** 本轮用户输入的时间；摘要行据此给出整轮用时。 */
   turnStartedAt?: string;
+  /** 本轮还没结束：过程逐行显示，不收摘要。 */
+  turnOpen?: boolean;
   hideBody?: boolean;
   canLoadReferences?: boolean;
   toolResults: ReadonlyMap<string, TimelineMessage>;
@@ -531,7 +533,8 @@ export function TimelineMessageView({ message, lookupMessage, toolResults, onNav
   onError?: (error: unknown) => void;
 }) {
   const body = message.body;
-  const flow = hideProcess || inlineReply ? [] : timelineFlow(processMessages, message.id, toolResults);
+  // 未结束轮次里的输出都是 finish=continue，文字后面还有工具调用，是旁白而不是最终回答。
+  const flow = hideProcess || inlineReply ? [] : timelineFlow(processMessages, turnOpen ? "" : message.id, toolResults);
   const hasFlow = body.kind === "output" && flow.length > 0;
   const leadingContent = hideProcess || hasFlow || inlineReply ? null : beforeReasoning?.(message);
   const referencedArtifacts = new Set(body.kind === "control" ? [] : body.parts.flatMap((part) =>
@@ -567,9 +570,12 @@ export function TimelineMessageView({ message, lookupMessage, toolResults, onNav
       {body.kind === "input" ? attachmentList : null}
       {leadingProcess ? <InlineReplyProcess messages={leadingProcess} toolResults={toolResults}
         beforeReasoning={beforeReasoning} beforePart={beforePart} /> : null}
-      {hasFlow ? <SettledTurnFlow flow={flow} startedAt={turnStartedAt} endedAt={message.timestamp}
-        beforeReasoning={beforeReasoning} beforePart={beforePart}
-        partView={{ attachment, lookupMessage, onNavigate, onError, canLoadReferences }} /> : null}
+      {hasFlow ? turnOpen
+        ? <TimelineProcess flow={flow} beforeReasoning={beforeReasoning} beforePart={beforePart}
+          partView={{ attachment, lookupMessage, onNavigate, onError, canLoadReferences }} />
+        : <SettledTurnFlow flow={flow} startedAt={turnStartedAt} endedAt={message.timestamp}
+          beforeReasoning={beforeReasoning} beforePart={beforePart}
+          partView={{ attachment, lookupMessage, onNavigate, onError, canLoadReferences }} /> : null}
       {body.kind === "control" ? body.action === "failure" ? <div className="timeline-control-summary">
         <strong>{controlLabels[body.action]}</strong>
         {body.reason !== null ? <p className="plain-message-response">{body.reason}</p> : null}

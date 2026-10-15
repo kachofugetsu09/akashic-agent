@@ -402,7 +402,7 @@ export const DesktopTimelineMessages = React.memo(function DesktopTimelineMessag
       if (element) messageElementsRef.current.set(message.id, element);
       else messageElementsRef.current.delete(message.id);
     }}>
-    <TimelineMessageView message={message} turnStartedAt={turnStarts.get(message.id)} hideBody={groups.hiddenBodies.has(message.id) || groups.moved.has(message.id)} processMessages={groups.completed.get(message.id)}
+    <TimelineMessageView message={message} turnStartedAt={turnStarts.get(message.id)} hideBody={groups.hiddenBodies.has(message.id) || groups.moved.has(message.id)} processMessages={groups.completed.get(message.id)} turnOpen={groups.unsettled.has(message.id)}
       inlineReply={groups.inline.outputs.has(message.id)} leadingProcess={groups.inline.leading.get(message.id)}
       hideProcess={groups.moved.has(message.id)} lookupMessage={lookupMessage} toolResults={toolResults} onNavigate={onNavigate} onError={onError}
       beforeReasoning={(origin) => needsBeforeReasoningFallback(origin, inputStarts) ? <PluginUiSlot name="turn.before_reasoning"
@@ -412,7 +412,8 @@ export const DesktopTimelineMessages = React.memo(function DesktopTimelineMessag
         name="turn.before_tool" sessionId={origin.session_id} messageId={origin.id} block={{ ...part, message_id: origin.id, part_index: index }} /> : null}
       afterBody={message.body.kind === "output" && message.body.finish === "complete" ? <PluginUiSlot
         name="turn.after_answer" sessionId={message.session_id} messageId={message.id} /> : undefined} />
-    {!groups.hiddenBodies.has(message.id) && !groups.moved.has(message.id) && !groups.joined.has(message.id) ? <div className={`shared-message-meta timeline-meta ${message.body.kind === "input" ? "user" : "assistant"}`}>
+    {/* 轮次未结束的输出还会接着长，时间与复制等落定后挂在末条上，和实时视图一致。 */}
+    {!groups.hiddenBodies.has(message.id) && !groups.moved.has(message.id) && !groups.joined.has(message.id) && !groups.unsettled.has(message.id) ? <div className={`shared-message-meta timeline-meta ${message.body.kind === "input" ? "user" : "assistant"}`}>
       <time dateTime={message.timestamp}>{formatMessageTime(message.timestamp)}</time>
       <SharedMessageActions
         canReply={status === "idle" && (message.body.kind === "input" || message.body.kind === "output")}
