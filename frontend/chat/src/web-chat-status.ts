@@ -39,3 +39,24 @@ export function replyChatStatus(
   }
   return activities.length ? "finalizing" : "idle";
 }
+
+/** 排队发送只跟随本来源正常完成的输入；暂停、失败与能力撤回不算完成。 */
+export function lastInputResult(messages: TimelineMessage[]): { id: string; completed: boolean } {
+  let input: TimelineMessage | undefined;
+  for (let index = messages.length - 1; index >= 0; index -= 1) {
+    if (messages[index].body.kind === "input" && messages[index].author === "user") {
+      input = messages[index];
+      break;
+    }
+  }
+  if (!input) return { id: "", completed: false };
+  // 从后往前找覆盖这次输入的最终事实，其他来源不能替它结算。
+  for (let index = messages.length - 1; index >= 0; index -= 1) {
+    const message = messages[index];
+    if (message.seq <= input.seq) break;
+    if (message.source !== input.source) continue;
+    if (message.body.kind === "control" && message.body.through_seq >= input.seq) return { id: input.id, completed: false };
+    if (message.body.kind === "output" && message.body.finish !== "continue") return { id: input.id, completed: true };
+  }
+  return { id: input.id, completed: false };
+}

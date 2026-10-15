@@ -29,7 +29,7 @@ export interface ComposerApi {
 const FLOATING_LAYER = "[role='dialog'], [role='menu'], [role='listbox'], [data-radix-popper-content-wrapper]";
 
 export const DesktopComposer = memo(function DesktopComposer({
-  chatReady, canSend, modelProblem, draftKey, autoFocus = false, fresh = false, status, stopPending, modelState, selectedRuntimeId, selectedEffort, replyTarget,
+  chatReady, canSend, modelProblem, draftKey, autoFocus = false, fresh = false, status, stopPending, stopVersion, inputId, turnCompleted, modelState, selectedRuntimeId, selectedEffort, replyTarget,
   onModelChange, onCancelReply, onSend, onStop, ref,
 }: {
   chatReady: boolean;
@@ -42,6 +42,9 @@ export const DesktopComposer = memo(function DesktopComposer({
   fresh?: boolean;
   status: ChatStatus;
   stopPending: boolean;
+  stopVersion: number;
+  inputId: string;
+  turnCompleted: boolean;
   modelState: { defaultRuntime: string; runtimes: ChatModelRuntime[] } | null;
   selectedRuntimeId: string;
   selectedEffort: string;
@@ -54,6 +57,8 @@ export const DesktopComposer = memo(function DesktopComposer({
 }) {
   // 标签页文本草稿是展示状态，既不上传，也不创建 Message。
   const drafts = useRef(new Map<string, string>());
+  // 同一草稿存储保留排队文字；刷新后只恢复编辑内容，不恢复自动发送意图。
+  const queuedDrafts = useRef(new Map<string, string>());
   const [draftVersion, setDraftVersion] = useState(0);
   const [draftStorageError, setDraftStorageError] = useState(false);
   let input = drafts.current.get(draftKey);
@@ -65,7 +70,8 @@ export const DesktopComposer = memo(function DesktopComposer({
   const setDraft = useCallback((key: string, text: string) => {
     drafts.current.set(key, text);
     try {
-      if (text) sessionStorage.setItem(`akashic.chat.draft:${key}`, text);
+      const saved = [queuedDrafts.current.get(key), text].filter(Boolean).join("\n\n");
+      if (saved) sessionStorage.setItem(`akashic.chat.draft:${key}`, saved);
       else sessionStorage.removeItem(`akashic.chat.draft:${key}`);
     } catch (error) {
       if (!(error instanceof DOMException)) throw error;
@@ -109,6 +115,9 @@ export const DesktopComposer = memo(function DesktopComposer({
     setInput(next);
     syncExpanded(event.target, next);
   }, [setInput, syncExpanded]);
+  const readDraft = useCallback((key: string) => drafts.current.get(key) ?? "", []);
+  const followUp = useFollowUpQueue({ draftKey, status, stopPending, stopVersion, inputId, turnCompleted, canSend: canSend && !replyTarget, readDraft, setDraft, queuedDrafts, onSend });
+  const moveQueue = followUp.move;
   const submit = useCallback(async (text: string, files: ComposerFile[]) => {
     if (!canSend) throw new Error(modelProblem || "聊天服务暂不可用，请稍后重试。");
     const wasExpanded = expanded;
@@ -119,6 +128,7 @@ export const DesktopComposer = memo(function DesktopComposer({
       // 首次接纳只是给同一编辑位置确定会话身份，后写的草稿随它保留。
       if (sessionId && draftKey.startsWith("new:")) {
         const next = drafts.current.get(draftKey) || "";
+        moveQueue(draftKey, sessionId);
         setDraft(sessionId, next);
         setDraft(draftKey, "");
       }
@@ -128,18 +138,15 @@ export const DesktopComposer = memo(function DesktopComposer({
       setExpanded(wasExpanded);
       throw error;
     }
-  }, [canSend, modelProblem, expanded, onSend, setInput, setDraft, draftKey]);
-  const readDraft = useCallback((key: string) => drafts.current.get(key) ?? "", []);
-  const followUp = useFollowUpQueue({ draftKey, status, stopPending, canSend, readDraft, setDraft, onSend });
+  }, [canSend, modelProblem, expanded, onSend, setInput, setDraft, draftKey, moveQueue]);
   const queueOnEnter = (event: ReactKeyboardEvent<HTMLTextAreaElement>) => {
     // 生成中发送钮是停止钮，回车原本无效；桌面键盘下改为排队。附件与回复引用仍等本轮结束后手动发。
     const native = event.nativeEvent;
     if (event.key !== "Enter" || event.shiftKey || native.isComposing || native.keyCode === 229 || touchOnly()) return;
     const text = input.trim();
-    if (!isGeneratingChatStatus(status) || !text || hasAttachments || replyTarget) return;
+    if (!(isGeneratingChatStatus(status) || status === "finalizing") || !text || hasAttachments || replyTarget) return;
     event.preventDefault();
     followUp.enqueue(text);
-    setInput("");
     setExpanded(false);
   };
   const shellExpanded = expanded || hasAttachments || Boolean(replyTarget) || Boolean(followUp.queued);
@@ -174,10 +181,10 @@ export const DesktopComposer = memo(function DesktopComposer({
     >
       <WindowFileDrop enabled={chatReady} onActiveChange={setFileDragActive} />
       {replyTarget ? <ComposerReply author={replyTarget.author} preview={replyTarget.preview} onCancel={onCancelReply} /> : null}
-      {followUp.queued ? <div className="composer-reply composer-queued" role="status">
+      {followUp.queued ? <div className="composer-reply composer-queued" aria-label="待发送文字">
         <Clock3 size={17} aria-hidden="true" />
         <div>
-          <strong>{followUp.queued.stopped ? "已停止，结束后退回输入框" : "本轮结束后发送"}</strong>
+          <strong role="status">{followUp.stopped ? "已停止，结束后退回输入框" : "本轮结束后发送"}</strong>
           <span>{followUp.queued.text}</span>
         </div>
         <button type="button" onClick={() => followUp.queued && followUp.restore(followUp.queued)} aria-label="撤回到输入框" title="撤回到输入框">
@@ -224,7 +231,7 @@ export const DesktopComposer = memo(function DesktopComposer({
         </PromptInputTools>
         <PromptInputTools className="composer__trail">
           <ComposerAttachmentButton />
-          <ComposerSubmit input={input} status={status} stopPending={stopPending} onStop={() => { followUp.markStopped(); onStop(); }} disabled={!canSend} />
+          <ComposerSubmit input={input} status={status} stopPending={stopPending} onStop={onStop} disabled={!canSend} />
         </PromptInputTools>
       </PromptInputFooter>
     </PromptInput>
@@ -236,16 +243,22 @@ export const DesktopComposer = memo(function DesktopComposer({
 // 字符随按键的默认动作落进去。触屏设备没有这种输入方式，不挂监听。
 interface QueuedFollowUp {
   key: string;
+  inputId: string;
   text: string;
   /** 排队时或之后用户按过停止：本轮结束后退回草稿，不自动发送。 */
   stopped: boolean;
+  stopVersion: number;
 }
 
 // 生成中按回车把文字排进本轮之后；本轮正常落定再发出，停止、出错或切走会话则退回草稿。
-function useFollowUpQueue({ draftKey, status, stopPending, canSend, readDraft, setDraft, onSend }: {
+function useFollowUpQueue({ draftKey, status, stopPending, stopVersion, inputId, turnCompleted, canSend, readDraft, setDraft, queuedDrafts, onSend }: {
   draftKey: string;
   status: ChatStatus;
   stopPending: boolean;
+  stopVersion: number;
+  inputId: string;
+  turnCompleted: boolean;
+  queuedDrafts: { current: Map<string, string> };
   canSend: boolean;
   readDraft: (key: string) => string;
   setDraft: (key: string, text: string) => void;
@@ -253,31 +266,55 @@ function useFollowUpQueue({ draftKey, status, stopPending, canSend, readDraft, s
 }) {
   const [queued, setQueued] = useState<QueuedFollowUp | null>(null);
   const restore = useCallback((item: QueuedFollowUp) => {
-    setQueued(null);
+    setQueued((current) => current === item ? null : current);
+    queuedDrafts.current.delete(item.key);
     setDraft(item.key, [item.text, readDraft(item.key)].filter(Boolean).join("\n\n"));
-  }, [readDraft, setDraft]);
-  const enqueue = useCallback((text: string) => setQueued((current) => ({
-    key: draftKey,
-    text: current ? `${current.text}\n\n${text}` : text,
-    stopped: Boolean(current?.stopped) || stopPending,
-  })), [draftKey, stopPending]);
+  }, [readDraft, setDraft, queuedDrafts]);
+  const stopped = Boolean(queued && (queued.stopped || queued.stopVersion !== stopVersion));
+  const enqueue = useCallback((text: string) => {
+    const next = {
+      key: draftKey,
+      inputId: queued?.inputId ?? inputId,
+      text: queued ? `${queued.text}\n\n${text}` : text,
+      stopped: stopped || stopPending,
+      stopVersion,
+    };
+    setQueued(next);
+    queuedDrafts.current.set(draftKey, next.text);
+    setDraft(draftKey, "");
+  }, [draftKey, inputId, queued, stopped, stopPending, stopVersion, setDraft, queuedDrafts]);
 
-  // 用户按停止是在表达"这轮不要了"，排队内容随之改为退回。
-  const markStopped = useCallback(() => setQueued((current) => current && { ...current, stopped: true }), []);
+  // 首次消息接纳只确定原草稿的会话身份，不是切换会话。
+  const move = useCallback((from: string, to: string) => {
+    const text = queuedDrafts.current.get(from);
+    if (text === undefined) return;
+    queuedDrafts.current.delete(from);
+    queuedDrafts.current.set(to, text);
+    setQueued((current) => current?.key === from ? { ...current, key: to } : current);
+  }, [queuedDrafts]);
 
-  // 必要 effect：本轮何时落定由传输层决定，这里把这一外部状态变化同步成发送或退回
+  // 传输状态与最终消息共同决定发送时机；idle 也可能来自暂停、失败或能力撤回。
   useEffect(() => {
     if (!queued) return;
     // 1. 切走会话：排队内容回到原会话草稿。
-    if (queued.key !== draftKey) return restore(queued);
+    if (queued.key !== draftKey || queued.inputId !== inputId) return restore(queued);
+    if (stopped && !queued.stopped) {
+      setQueued({ ...queued, stopped: true });
+      return;
+    }
     if (isGeneratingChatStatus(status) || status === "finalizing") return;
     // 2. 用户停止、本轮出错或暂不可发：不替用户做决定。
-    if (queued.stopped || status === "error" || !canSend) return restore(queued);
+    if (stopped || status === "error" || !canSend || !turnCompleted) return restore(queued);
     // 3. 正常落定：发出；失败同样退回草稿。
     setQueued(null);
-    onSend(queued.text, []).catch(() => restore(queued));
-  }, [queued, draftKey, status, canSend, onSend, restore]);
-  return { queued, enqueue, restore, markStopped };
+    queuedDrafts.current.delete(queued.key);
+    setDraft(queued.key, readDraft(queued.key));
+    onSend(queued.text, []).catch(() => {
+      // 发送失败可能晚于下一条入队，不能清掉新的排队意图。
+      setDraft(queued.key, [queued.text, readDraft(queued.key)].filter(Boolean).join("\n\n"));
+    });
+  }, [queued, draftKey, inputId, status, stopped, turnCompleted, canSend, onSend, restore, queuedDrafts, setDraft, readDraft]);
+  return { queued, stopped, enqueue, restore, move };
 }
 
 function useTypeToCompose(textareaRef: { current: HTMLTextAreaElement | null }, enabled: boolean) {
@@ -446,7 +483,7 @@ function ComposerSubmit({ input, status, stopPending, onStop, disabled }: { inpu
   const stopping = generating && stopPending;
   return <ComposerActionButton
     mode={generating ? "stop" : "send"}
-    label={stopPending ? "正在停止" : status === "uploading" ? "取消上传" : generating ? "中止回答" : "发送消息"}
+    label={stopPending ? "正在停止" : status === "finalizing" ? "正在收尾" : status === "uploading" ? "取消上传" : generating ? "中止回答" : "发送消息"}
     type={generating ? "button" : "submit"}
     aria-disabled={stopping || undefined}
     onClick={generating ? (event) => {
@@ -454,6 +491,6 @@ function ComposerSubmit({ input, status, stopPending, onStop, disabled }: { inpu
       event.preventDefault();
       if (!stopping) onStop();
     } : undefined}
-    disabled={!generating && (stopPending || disabled || (!input.trim() && attachments.files.length === 0))}
+    disabled={!generating && (status === "finalizing" || stopPending || disabled || (!input.trim() && attachments.files.length === 0))}
   />;
 }

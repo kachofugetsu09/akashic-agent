@@ -22,7 +22,7 @@ import { DesktopSidebar } from "./desktop-sidebar";
 import { useSidebarRail } from "./use-sidebar-rail";
 import type { DesktopChatController } from "./use-desktop-chat-controller";
 import { SessionDirectory } from "./session-directory";
-import { isGeneratingChatStatus } from "./web-chat-status";
+import { isGeneratingChatStatus, lastInputResult } from "./web-chat-status";
 
 interface DesktopChatViewProps {
   embeddedShell: boolean;
@@ -41,7 +41,7 @@ export function DesktopChatView({ embeddedShell, controller }: DesktopChatViewPr
   const toolResults = useMemo(() => timelineToolResults(controller.timelineMessages), [controller.timelineMessages]);
   const {
     surface, sidebarSessions, activeSessionId, pendingSessionId, chatReady, messages, timelineMessages, replyActivities, replyAvailable, status,
-    streamStore, messageElementsRef, copiedMessageId, shellState, stopPending, modelState,
+    streamStore, messageElementsRef, copiedMessageId, shellState, stopPending, stopVersion, modelState,
     selectedRuntimeId, selectedReasoningEffort, replyTarget, error,
     canSend, modelProblem, modelsError, retryModels, draftKey,
     historyHasMore, historyLoading, historyLoadingOlder, loadOlderMessages, sessionRequested,
@@ -51,6 +51,8 @@ export function DesktopChatView({ embeddedShell, controller }: DesktopChatViewPr
     projects, pendingProjects, pendingProjectsError, projectsInstalled, memoryInstalled, activeProject,
     startProjectChat, createProject, continueProject, stopProject, bindDirectory,
   } = controller;
+  const inputResult = useMemo(() => lastInputResult(timelineMessages), [timelineMessages]);
+  const inputId = messages.filter((message) => message.role === "user").at(-1)?.id ?? inputResult.id;
   const sidebarProjects = useMemo(() => projectsInstalled ? {
     items: projects, pending: pendingProjects, pendingError: pendingProjectsError,
     activeProjectId: activeProject?.id ?? "", memoryInstalled,
@@ -160,7 +162,8 @@ export function DesktopChatView({ embeddedShell, controller }: DesktopChatViewPr
           </div> : null}
           <DesktopComposer
             ref={composerApi}
-            chatReady={chatReady} canSend={canSend} modelProblem={modelProblem} draftKey={draftKey} autoFocus={!conversationLayout && chatReady} fresh={!conversationLayout} status={status} stopPending={stopPending} modelState={modelState}
+            chatReady={chatReady} canSend={canSend} modelProblem={modelProblem} draftKey={draftKey} autoFocus={!conversationLayout && chatReady} fresh={!conversationLayout} status={status} stopPending={stopPending} stopVersion={stopVersion}
+            inputId={inputId} turnCompleted={replyAvailable !== false && inputResult.completed} modelState={modelState}
             selectedRuntimeId={selectedRuntimeId} selectedEffort={selectedReasoningEffort}
             replyTarget={replyTarget} onModelChange={handleModelChange} onCancelReply={cancelReply}
             onSend={sendMessage} onStop={stopTurn}
