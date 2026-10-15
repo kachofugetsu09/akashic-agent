@@ -634,6 +634,8 @@
 /* 条件与 COMPACT_SHELL 一致：含横屏触屏的矮视口。 */
 @media (max-width: 820px), (max-height: 30rem) and (pointer: coarse) {
   :is(.agent-content, .process-markdown, .user-bubble) .markdown-reading :where(th, td) { min-width: 8.5em; }
+  /* 三列以内本来放得下（390 宽每列约 6 个字）：不为每列 8.5em 的下限去横滚，只防把列挤成两三个字。 */
+  :is(.agent-content, .process-markdown, .user-bubble) .markdown-reading table:not(:has(tr > :nth-child(4))) :where(th, td) { min-width: 5em; }
 }
 
 :is(.agent-content, .process-markdown, .user-bubble) .markdown-reading th {
