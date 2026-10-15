@@ -442,6 +442,15 @@
   background: color-mix(in srgb, var(--ak-sys-color-success) 12%, transparent);
 }
 
+/* markstream 默认把代码区限高 500px 并在块内纵向滚动：回复流里多出一个嵌套滚动区（滚轮先滚代码、底边硬切半行），
+   生成中的 <pre> 又不限高，落定时长代码整块塌下几百像素。代码完整铺开，与工具结果、用户气泡"流里不出现内部滚动"一致；
+   横向仍在块内滚动。 */
+:where(.agent-content, .process-markdown, .user-bubble) .code-block-container .code-editor-container {
+  /* 组件在行内同时写了 max-height 与 height（都是 500px），两项都要放开。 */
+  height: auto !important;
+  max-height: none !important;
+}
+
 :where(.agent-content, .process-markdown, .user-bubble) .code-block-container pre {
   background: transparent !important;
   border: none !important;
