@@ -205,7 +205,7 @@ export function DesktopChatView({ embeddedShell, controller }: DesktopChatViewPr
           </p> : null}
           <HostBridgeNotice paused={controller.connectionLost} />
           {error ? <div className="error-line" role="alert"><span>{error}</span>
-            <MaterialButton variant="danger" onClick={retry}>重试</MaterialButton>
+            {controller.errorRetry ? <MaterialButton variant="danger" onClick={retry}>重试</MaterialButton> : null}
           </div> : null}
         </div>
       </section>

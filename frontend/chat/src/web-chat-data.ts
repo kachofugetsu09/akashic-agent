@@ -75,14 +75,14 @@ export async function fetchChatJson<T>(url: string, options: RequestInit = {}): 
     try {
       payload = JSON.parse(text);
     } catch {
-      if (!response.ok) throw new ChatRequestError(response.status, `请求失败: ${response.status}`);
+      if (!response.ok) throw new ChatRequestError(response.status, `请求失败（${response.status}）`);
       throw new Error("服务器返回了无效 JSON");
     }
   }
   if (!response.ok) {
     const body = recordValue(payload);
     const detail = typeof body?.detail === "string" ? body.detail : typeof body?.message === "string" ? body.message : "";
-    throw new ChatRequestError(response.status, detail || `请求失败: ${response.status}`);
+    throw new ChatRequestError(response.status, detail || `请求失败（${response.status}）`);
   }
   if (payload === null) throw new Error("服务器返回空响应");
   return payload as T;

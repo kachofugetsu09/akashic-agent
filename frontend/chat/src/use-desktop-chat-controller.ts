@@ -94,6 +94,8 @@ function clearChatRoute() {
 
 /** 重发用尽仍未送达：属于连接问题，连接恢复后提示自动撤下。 */
 class DeliveryFailed extends Error {}
+// 发送（上传附件或投递）失败：草稿与附件都还在输入框里，发送钮本身就是重试入口。
+class SendFailed extends Error {}
 
 const RECONNECTING_NOTICE = "连接已断开，正在重新连接…";
 
@@ -188,6 +190,7 @@ export function useDesktopChatController() {
   const [stopPending, setStopPending] = useState(false);
   const [stopCount, setStopCount] = useState(0);
   const [error, setError] = useState("");
+  const [errorFromSend, setErrorFromSend] = useState(false);
   const [connectionError, setConnectionError] = useState("");
   const [shellState, setShellState] = useState<WebShellState | null>(null);
   const [replyTarget, setReplyTarget] = useState<TimelineReply | null>(null);
@@ -255,6 +258,7 @@ export function useDesktopChatController() {
     if (isAbortError(error)) return;
     console.error("[chat] request failed", error);
     deliveryErrorRef.current = error instanceof DeliveryFailed;
+    setErrorFromSend(error instanceof DeliveryFailed || error instanceof SendFailed);
     setError(errorMessage(error));
     if (nextStatus) { statusLiveRef.current = nextStatus; setStatus(nextStatus); }
   }, []);
@@ -884,7 +888,8 @@ export function useDesktopChatController() {
         if (sendRequestRef.current === controller) setStatusLive("idle");
         throw error;
       }
-      reportError(error, "error");
+      reportError(error instanceof DeliveryFailed ? error
+        : new SendFailed(`没有发出：${errorMessage(error).replace(/[。.]$/u, "")}。内容还在输入框里，可以直接再发。`), "error");
       throw error;
     } finally {
       if (sendRequestRef.current === controller) sendRequestRef.current = null;
@@ -1213,6 +1218,8 @@ export function useDesktopChatController() {
     reconnecting: !error && connectionError === RECONNECTING_NOTICE,
     connectionLost: connectionError !== "",
     selectedRuntimeId, selectedReasoningEffort, replyTarget, error: error || (connectionError === RECONNECTING_NOTICE ? "" : connectionError),
+    // 发送失败时"重试"（重连并重新加载）不会重新发送，反而误导；发送钮就是重试入口，横幅不再给按钮。
+    errorRetry: !error || !errorFromSend,
     activateSession, prefetchSessionTail, startNewChat, handleReplyMessage, handleCopiedMessage,
     reportError, handleModelChange, cancelReply, sendMessage, stopTurn, retry,
     projects, pendingProjects, pendingProjectsError, projectsInstalled, memoryInstalled, activeProject, navigationPins, bindDirectory,
