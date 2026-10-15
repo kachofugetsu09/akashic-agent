@@ -257,12 +257,18 @@ function turnSegments(scroller: HTMLElement): TurnSegment[] {
 function activeTurn(scroller: HTMLElement, segments: TurnSegment[]): string {
   if (scroller.scrollTop + scroller.clientHeight >= scroller.scrollHeight - 2) return segments.at(-1)?.id ?? "";
   const line = scroller.getBoundingClientRect().top + scroller.clientHeight / 3;
-  let active = segments[0]?.id ?? "";
-  for (const segment of segments) {
-    if (segment.anchor.getBoundingClientRect().top > line) break;
-    active = segment.id;
+  // 锚点按文档顺序排列、顶缘单调递增：二分找最后一个越过阅读线的，每帧只读 log n 次几何。
+  let low = 0;
+  let high = segments.length - 1;
+  let found = 0;
+  while (low <= high) {
+    const middle = (low + high) >> 1;
+    if (segments[middle].anchor.getBoundingClientRect().top <= line) {
+      found = middle;
+      low = middle + 1;
+    } else high = middle - 1;
   }
-  return active;
+  return segments[found]?.id ?? "";
 }
 
 /** 宽屏右侧的提问目录：每轮一道刻度，悬停或聚焦展开为提问列表，点选停到那一轮开头。 */
