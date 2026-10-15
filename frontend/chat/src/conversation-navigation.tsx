@@ -320,7 +320,7 @@ export function ConversationSessionRow({ session, pendingSessionId, onActivate, 
       type="button"
       aria-current={session.active ? "true" : undefined}
       aria-busy={pendingSessionId === session.id || undefined}
-      tabIndex={session.active ? 0 : -1}
+      data-row-primary=""
       disabled={session.unavailable}
       title={session.preview ? `${session.title} · ${session.preview}` : session.title}
       draggable={drag !== undefined}

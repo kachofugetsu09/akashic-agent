@@ -3,6 +3,8 @@ import { useLayoutEffect, useRef, useState, type CSSProperties, type ReactNode }
 // 往返一趟的阅读速度（px/s）与两端停顿（以越界距离折算，见 conversation-navigation.css 的 clamp）。
 const SPEED = 30;
 const OVERSHOOT = 6;
+// 往返滚动靠注册过的 --marquee-pos 插值；不支持注册属性的浏览器自定义属性只会离散跳变，只保留静态渐隐。
+const ANIMATABLE = typeof CSS !== "undefined" && "registerProperty" in CSS;
 
 type Measured = { viewport: HTMLElement; content: HTMLElement; report: (overflow: number) => void };
 
@@ -53,7 +55,7 @@ export function MarqueeText({ children, still = false }: { children: ReactNode; 
     "--marquee-travel": `${overflow}px`,
     "--marquee-duration": `${Math.round(((overflow + 2 * OVERSHOOT) * 2000) / SPEED)}ms`,
   } as CSSProperties : undefined;
-  return <span ref={viewportRef} className={`marquee${overflow ? " is-truncated" : ""}${still ? " is-still" : ""}`} style={style}>
+  return <span ref={viewportRef} className={`marquee${overflow ? ` is-truncated${ANIMATABLE ? " is-animatable" : ""}` : ""}${still ? " is-still" : ""}`} style={style}>
     <span ref={contentRef} className="marquee__content">{children}</span>
   </span>;
 }

@@ -389,14 +389,14 @@
 
 /* 位移与遮罩只给放不下的标题：放得下的行不建合成层，文字保持普通灰度抗锯齿。 */
 .marquee.is-truncated > .marquee__content {
-  transform: translateX(clamp(calc(-1 * var(--marquee-travel, 0px)), calc(-1 * var(--marquee-pos)), 0px));
+  transform: translateX(clamp(calc(-1 * var(--marquee-travel, 0px)), calc(-1 * var(--marquee-pos, 0px)), 0px));
 }
 
 .marquee.is-truncated {
   mask-image: linear-gradient(to right,
     transparent,
-    #000 min(var(--marquee-pos), 12px),
-    #000 calc(100% - min(var(--marquee-travel) - var(--marquee-pos), 28px)),
+    #000 min(var(--marquee-pos, 0px), 12px),
+    #000 calc(100% - min(var(--marquee-travel) - var(--marquee-pos, 0px), 28px)),
     transparent);
 }
 
@@ -418,7 +418,7 @@
     .project-session:is(:hover, :focus-visible),
     .project-group__open:is(:hover, :focus-visible),
     .conversation-heading h1:hover
-  ) .marquee.is-truncated:not(.is-still) {
+  ) .marquee.is-truncated.is-animatable:not(.is-still) {
     animation: marquee-pingpong var(--marquee-duration, 4s) linear 0.35s infinite;
   }
 }

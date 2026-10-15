@@ -190,7 +190,7 @@ export function ProjectNavigationRow({
         onClick={onToggle} disabled={searching}>
         <ChevronRight size={14} aria-hidden="true" className="project-group__chevron" />
       </button>
-      <button type="button" className="project-group__open" onClick={onToggle}
+      <button type="button" className="project-group__open" data-row-primary="" onClick={onToggle}
         aria-expanded={open} disabled={searching}
         title={`${open ? "收起" : "展开"} ${project.name}${project.directory ? ` · ${project.directory}` : ""}`}>
         {collapsedStatus
@@ -201,8 +201,9 @@ export function ProjectNavigationRow({
           <small className="project-group__memory">{projectMemoryLabel(project.memory)}</small>
         ) : project.memoryUnreadable ? <small className="project-group__memory">当前策略未能读取</small> : null}
       </button>
+      {/* 行菜单里有同一个"新建对话"：键盘用 Shift+F10 打开，不再每个项目多占一个 Tab 停靠点。 */}
       <button type="button" className="project-navigation__icon project-group__new-chat" aria-label={`在 ${project.name} 中新建对话`}
-        title="新建对话" onClick={onNewChat}>
+        title="新建对话" tabIndex={-1} onClick={onNewChat}>
         <Plus size={14} aria-hidden="true" />
       </button>
     </NavigationRowMenu>
@@ -212,7 +213,6 @@ export function ProjectNavigationRow({
         className={`project-session ${session.active ? "active" : ""}`}
         aria-current={session.active ? "true" : undefined}
         aria-busy={pendingSessionId === session.id || undefined}
-        tabIndex={session.active ? 0 : -1}
         title={session.title}
         onClick={() => onSelectSession(session.id)}
         onPointerEnter={() => onPrefetchSession?.(session.id)}

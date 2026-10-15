@@ -112,7 +112,45 @@ function sessionRows(root: HTMLElement | null): HTMLButtonElement[] {
     .filter((row) => row.offsetParent !== null && !row.disabled);
 }
 
-// 会话列表只占一个 Tab 停靠点（当前会话行）；焦点在行上时 ↑↓ 逐行、Home/End 到首末行，从第一行再按 ↑ 回到搜索框。
+// 会话列表只占一个 Tab 停靠点：键盘上次停过的行；它被搜索过滤或项目折叠卸掉后回退到当前会话，再回退到首个可用行。
+// 停靠点按 DOM 统一维护（行组件不写 tabIndex，免得和重渲染互相覆盖）；切换当前会话后停靠点跟到新会话。
+function useRovingTabStop(sidebarRef: RefObject<HTMLElement | null>) {
+  // 必要 effect：列表增删、当前会话变化与焦点移动都在 DOM 上发生，只能在这里观测。
+  useEffect(() => {
+    const navigation = sidebarRef.current?.querySelector<HTMLElement>(".chat-sidebar__navigation");
+    if (!navigation) return;
+    let last: HTMLButtonElement | null = null;
+    const sync = () => {
+      const rows = [...navigation.querySelectorAll<HTMLButtonElement>(NAVIGATION_ROW)];
+      const usable = rows.filter((row) => !row.disabled);
+      const stop = (last && usable.includes(last) ? last : null)
+        ?? usable.find((row) => row.getAttribute("aria-current") === "true") ?? usable[0];
+      // 显式写属性：没写 tabindex 的按钮本身就是 0，按属性比较才不会漏掉。
+      for (const row of rows) {
+        const value = row === stop ? "0" : "-1";
+        if (row.getAttribute("tabindex") !== value) row.setAttribute("tabindex", value);
+      }
+    };
+    const observer = new MutationObserver((records) => {
+      if (records.some((record) => record.attributeName === "aria-current")) last = null;
+      sync();
+    });
+    const onFocus = (event: FocusEvent) => {
+      if (!(event.target instanceof HTMLButtonElement) || !event.target.matches(NAVIGATION_ROW)) return;
+      last = event.target;
+      sync();
+    };
+    observer.observe(navigation, { childList: true, subtree: true, attributes: true, attributeFilter: ["aria-current", "disabled"] });
+    navigation.addEventListener("focusin", onFocus);
+    sync();
+    return () => {
+      observer.disconnect();
+      navigation.removeEventListener("focusin", onFocus);
+    };
+  }, [sidebarRef]);
+}
+
+// 焦点在行上时 ↑↓ 逐行、Home/End 到首末行，从第一行再按 ↑ 回到搜索框。
 function moveSessionFocus(event: React.KeyboardEvent<HTMLElement>) {
   if (!["ArrowDown", "ArrowUp", "Home", "End"].includes(event.key)) return;
   const target = event.target;
@@ -339,6 +377,7 @@ export const DesktopSidebar = memo(function DesktopSidebar({
   const needle = query.trim().toLowerCase();
   const searching = Boolean(needle);
   useSearchHighlight(sidebarRef, needle);
+  useRovingTabStop(sidebarRef);
   const allSessions = useMemo(() => {
     const rows = new Map<string, DesktopSidebarSession>(navigationPins.sessions.map((session) => [session.key, {
       id: session.key, title: sessionLabel(session), preview: session.message_count === undefined ? "" : `${session.message_count} 条消息`,

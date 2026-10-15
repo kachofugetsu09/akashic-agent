@@ -96,7 +96,11 @@ export function NavigationRowMenu({ title, actions = [], className, children, on
             event.preventDefault();
             held.current = false;
             // 菜单动作可能把行换成输入框（重命名）：焦点交给它，而不是"…"按钮——输入框一失焦就会按原标题提交并退出编辑。
-            rowRef.current?.querySelector<HTMLElement>("input:not(:disabled), button:not(:disabled)")?.focus({ preventScroll: true });
+            // 否则回到行的主按钮（data-row-primary），不能取"第一个按钮"：项目行排第一的是不参与方向键导航的展开箭头。
+            const row = rowRef.current;
+            (row?.querySelector<HTMLElement>("input:not(:disabled)")
+              ?? row?.querySelector<HTMLElement>("[data-row-primary]:not(:disabled)")
+              ?? row?.querySelector<HTMLElement>("button:not(:disabled)"))?.focus({ preventScroll: true });
           }}>
           {actions.map((action) => <DropdownMenuItem key={action.label} disabled={action.disabled}
             onSelect={action.onSelect}
