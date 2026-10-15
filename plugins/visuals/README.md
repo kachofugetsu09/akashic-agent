@@ -13,7 +13,7 @@
 - 已有受管理 Chromium 时，插件配置 `executable_path` 指向它的绝对路径。
 - 容器需提供 Chromium 的系统依赖并允许 Chromium sandbox；不通过关闭 sandbox 绕过环境错误。
 
-源码构建运行 `npm run build:web-plugins`，生成 UI 入口、frame 和从主题目录派生的预检 CSS。
+源码构建运行 `npm run build:web-plugins`，生成 UI 入口、内联图表工具包的 frame 和从主题目录派生的预检 CSS。
 只修改 `frontend/plugins/visuals/src` 的展示源文件。启停仍由 workspace 插件选择拥有；已有显式禁用选择不会被默认组合覆盖。
 
 发行容器沿用非 root、只读根目录、移除全部 capabilities 和 no-new-privileges。Core 使用
@@ -34,8 +34,10 @@ Workload Controller 仍用 Docker 默认策略。上游 Apache-2.0 许可保存�
 输入包含标题、纯文本摘要和完整 body HTML，最多 200,000 个字符。
 使用内联脚本和样式，不依赖 CDN、外部请求、导航、宿主接口或动态导入。
 文档自行编写 HTML/CSS/JavaScript，按内容选择 SVG、Canvas 或普通 DOM。
-不内置绘图库或专用图表 API；坐标、刻度、图例、读数与交互逻辑由文档自己实现。
-图表使用 `--ak-chart-1` 至 `--ak-chart-6`；纸面、文字和规则线使用工具 schema 列出的公共 token。
+数据图调用 frame 内联的 `window.ak`（源码 `frontend/plugins/visuals/src/charts.ts`），目前提供竖向/横向柱状图，
+配合 `.headline`、`.hero`、`.dtable`、`.foot` 等编辑式版式类。
+其余图由文档自己实现坐标、图例、读数与交互。API 只增不改，因为已保存附件会在新 frame 中重新执行。
+系列色使用 `--k1` 至 `--k6`（映射到 `--ak-chart-*`）；纸面、文字和规则线使用工具 schema 列出的公共 token。
 布局需要适应 280px 和 720px，控件至少 44px；每图最多 12 个滑块。
 
 预检复用浏览器，最多两次并发，繁忙直接返回工具错误。单次检查预算 20 秒。

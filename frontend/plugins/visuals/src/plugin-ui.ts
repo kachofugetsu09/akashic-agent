@@ -5,7 +5,7 @@ import type { TimelineAttachment } from "../../../chat/src/message-timeline";
 
 const CHANNEL = "akashic.visual.v1";
 type VisualAttachment = TimelineAttachment & { origin: TimelineAttachmentOrigin };
-const TOKENS = ["type-reading", "color-action-primary", "color-text-muted", "color-text-primary", "color-text-secondary", "color-bg-canvas", "color-bg-surface", "color-border-default",
+const TOKENS = ["type-reading", "color-action-primary", "color-text-muted", "color-text-primary", "color-text-secondary", "color-bg-canvas", "color-bg-surface", "color-border-default", "color-border-strong",
   ...[1, 2, 3, 4, 5, 6].map(index => `chart-${index}`)];
 
 function accepts(block: unknown): block is VisualAttachment {
