@@ -216,35 +216,84 @@ type FootnoteLookup = (label: string) => string | null;
 export const FootnoteSource = createContext<FootnoteLookup | null>(null);
 
 const FOOTNOTE_ID_PREFIX = "user-content-fn-";
-const FOOTNOTE_DEFINITION = /^ {0,3}\[\^([^\]\s]+)\]:/u;
-const FENCE = /^ {0,3}(`{3,}|~{3,})/u;
+const FOOTNOTE_LABEL = /\[\^([^\]\s]+)\]/gu;
 
 // 标签按 GFM 的规则归一（空白折叠、大小写不敏感），与 micromark 生成 id 前的处理一致。
 const footnoteKey = (label: string) => label.replace(/[\t\n\r ]+/gu, " ").trim().toLowerCase();
 
-/** 定义区：第一条不在围栏里的脚注定义起到文末（定义通常写在文末）。只解析这一段，正文流式追加时它不变，不必整条重算。
- *  定义区前补一行对每个标签的引用：GFM 只输出被引用过的定义。 */
-export function footnoteRegion(markdown: string): string {
-  const lines = markdown.split("\n");
-  let fence = "";
-  for (let index = 0; index < lines.length; index += 1) {
-    const marker = FENCE.exec(lines[index])?.[1];
-    if (marker && (!fence || (marker[0] === fence[0] && marker.length >= fence.length))) fence = fence ? "" : marker;
-    else if (!fence && FOOTNOTE_DEFINITION.test(lines[index])) {
-      const region = lines.slice(index);
-      const labels = new Set(region.map((line) => FOOTNOTE_DEFINITION.exec(line)?.[1]).filter((label) => label !== undefined));
-      return `${[...labels].map((label) => `[^${label}]`).join(" ")}\n\n${region.join("\n")}`;
-    }
+// micromark 的 id 是小写并 URI 编码过的标签；按原文第一次的写法还原，与富渲染的 fnref--标签 用同一个标签。
+function footnoteLabels(markdown: string): Map<string, string> {
+  const labels = new Map<string, string>();
+  for (const match of markdown.matchAll(FOOTNOTE_LABEL)) {
+    if (!labels.has(footnoteKey(match[1]))) labels.set(footnoteKey(match[1]), match[1]);
   }
-  return "";
+  return labels;
 }
 
-// 脚注子树换成富渲染的 id 体系：引用指向 fnref--标签、显示标签；GFM 的回链（按合成引用编号）换成一个指向本条引用的回链。
-function adoptFootnoteItem(item: HTMLLIElement, label: string): string {
+// 先按原样找（"a%20b" 本身就是标签），找不到再按 URI 解码找（中文标签被编码成 %E6…）。
+function originalLabel(id: string, labels: Map<string, string>): string {
+  const raw = labels.get(footnoteKey(id));
+  if (raw !== undefined) return raw;
+  try { return labels.get(footnoteKey(decodeURIComponent(id))) ?? id; } catch { return id; }
+}
+
+// 静态 GFM 没有数学扩展。解析前把 \$ 与 $…$ / $$…$$ 换成私用区占位，GFM 就不会去掉转义、也不会把公式拆成强调；
+// 解析后代码里的占位还原成原文，其余换成待 KaTeX 渲染的公式节点。公式不跨反引号与 ~~~，不会吃掉代码边界。
+// 行内公式与 pandoc 同规则：开 $ 后、闭 $ 前不是空白，闭 $ 后不紧跟数字（"$5 和 $10"是价格不是公式）。
+const ESCAPED_DOLLAR = "";
+const MATH_SOURCE = /\\\$|\$\$((?:(?!~~~)[^`])+?)\$\$|\$(?!\s)([^$\n`]+?)(?<!\s)\$(?!\d)/gu;
+const MATH_SLOT = /(\d+)|/gu;
+
+type MathSlot = { source: string; tex: string; display: boolean };
+
+function protectMath(markdown: string): { text: string; slots: MathSlot[] } {
+  const slots: MathSlot[] = [];
+  const text = markdown.replace(MATH_SOURCE, (whole: string, display?: string, inline?: string) => {
+    if (whole === "\\$") return ESCAPED_DOLLAR;
+    slots.push({ source: whole, tex: display ?? inline ?? "", display: display !== undefined });
+    return `${slots.length - 1}`;
+  });
+  return { text, slots };
+}
+
+// 占位还原：代码里回到原文；正文里转义的 $ 成为字面 $，公式成为 data-math 节点（先显示原文，挂载后再渲染）。
+function restoreMath(root: DocumentFragment, slots: MathSlot[]): void {
+  const walker = document.createTreeWalker(root, NodeFilter.SHOW_TEXT);
+  const texts: Text[] = [];
+  for (let node = walker.nextNode(); node; node = walker.nextNode()) {
+    if (/[]/u.test(node.textContent ?? "")) texts.push(node as Text);
+  }
+  for (const text of texts) {
+    const source = text.textContent ?? "";
+    if (text.parentElement?.closest("pre, code")) {
+      text.textContent = source.replace(MATH_SLOT, (_whole: string, index?: string) => index === undefined ? "\\$" : slots[Number(index)].source);
+      continue;
+    }
+    const parts: (string | Node)[] = [];
+    let cursor = 0;
+    for (const match of source.matchAll(MATH_SLOT)) {
+      parts.push(source.slice(cursor, match.index));
+      const slot = match[1] === undefined ? null : slots[Number(match[1])];
+      if (slot === null) parts.push("$");
+      else {
+        const math = document.createElement("span");
+        math.dataset.math = slot.display ? "display" : "inline";
+        math.dataset.tex = slot.tex;
+        math.textContent = slot.source;
+        parts.push(math);
+      }
+      cursor = match.index + match[0].length;
+    }
+    text.replaceWith(...parts, source.slice(cursor));
+  }
+}
+
+// 脚注子树换成富渲染的 id 体系：引用指向 fnref--标签、显示标签；GFM 的回链换成一个指向本条引用的回链。
+function adoptFootnoteItem(item: HTMLLIElement, label: string, labels: Map<string, string>): string {
   for (const copy of item.querySelectorAll("[data-static-code-copy]")) copy.remove();
   for (const back of item.querySelectorAll("a[data-footnote-backref]")) back.remove();
   for (const ref of item.querySelectorAll<HTMLAnchorElement>("a[data-footnote-ref]")) {
-    const target = decodeURIComponent((ref.getAttribute("href") ?? "").replace(`#${FOOTNOTE_ID_PREFIX}`, ""));
+    const target = originalLabel((ref.getAttribute("href") ?? "").replace(`#${FOOTNOTE_ID_PREFIX}`, ""), labels);
     ref.setAttribute("href", `#fnref--${target}`);
     ref.id = `fnref-${target}`;
     ref.textContent = target;
@@ -266,60 +315,46 @@ function adoptFootnoteItem(item: HTMLLIElement, label: string): string {
   return item.innerHTML;
 }
 
-const regionCache = new Map<string, Map<string, string>>();
+// 整条原文走一次完整 GFM：围栏、链接引用声明、嵌套引用都按标准解析，不自己截段。
+function parseFootnotes(markdown: string): Map<string, string> {
+  const items = new Map<string, string>();
+  if (!markdown.includes("[^")) return items;
+  const labels = footnoteLabels(markdown);
+  const { text, slots } = protectMath(markdown);
+  const template = document.createElement("template");
+  template.innerHTML = renderStaticMarkdown(text);
+  restoreMath(template.content, slots);
+  for (const item of template.content.querySelectorAll<HTMLLIElement>(`li[id^="${FOOTNOTE_ID_PREFIX}"]`)) {
+    const label = originalLabel(item.id.slice(FOOTNOTE_ID_PREFIX.length), labels);
+    items.set(footnoteKey(label), adoptFootnoteItem(item, label, labels));
+  }
+  return items;
+}
 
-/** 按定义区惰性解析：只有真的渲染到脚注时才跑 micromark；同一定义区的结果缓存，流式更新与多条脚注共用。 */
-export function footnoteLookup(region: string): FootnoteLookup {
+const footnoteCache = new Map<string, Map<string, string>>();
+
+/** 惰性：真的渲染到脚注时才解析，同一原文的结果缓存，多条脚注共用一次解析。
+ *  只给落定的回复用（生成中由 markstream 自己渲染脚注），流式追加不会让长回复每次整条重算。 */
+export function footnoteLookup(markdown: string): FootnoteLookup {
   return (label) => {
-    if (!region) return null;
-    let items = regionCache.get(region);
+    let items = footnoteCache.get(markdown);
     if (!items) {
-      const template = document.createElement("template");
-      template.innerHTML = renderStaticMarkdown(region);
-      items = new Map();
-      for (const item of template.content.querySelectorAll<HTMLLIElement>(`li[id^="${FOOTNOTE_ID_PREFIX}"]`)) {
-        let id = item.id.slice(FOOTNOTE_ID_PREFIX.length);
-        try { id = decodeURIComponent(id); } catch { /* 标签里的 % 不是编码，原样用 */ }
-        items.set(footnoteKey(id), adoptFootnoteItem(item, id));
-      }
-      regionCache.set(region, items);
-      // 只留最近几段：流式中定义区每长一字就是一个新键。
-      if (regionCache.size > 8) regionCache.delete(regionCache.keys().next().value!);
+      items = parseFootnotes(markdown);
+      footnoteCache.set(markdown, items);
+      if (footnoteCache.size > 8) footnoteCache.delete(footnoteCache.keys().next().value!);
     }
     return items.get(footnoteKey(label)) ?? null;
   };
 }
 
-// 脚注正文来自静态 GFM（没有数学扩展）：其中的 $…$ / $$…$$ 按需用 KaTeX 补渲染，代码里的不动。
-// 行内公式与 pandoc 同规则：开 $ 后、闭 $ 前不是空白，闭 $ 后不紧跟数字（"$5 和 $10"是价格不是公式）。
-const MATH = /\$\$([\s\S]+?)\$\$|\$(?!\s)([^$\n]+?)(?<!\s)\$(?!\d)/gu;
+// 公式节点挂载后按需加载 KaTeX 渲染；代码里的 $ 在解析阶段已还原成原文，这里不会碰到。
 async function renderFootnoteMath(root: HTMLElement): Promise<void> {
-  const texts: Text[] = [];
-  const walker = document.createTreeWalker(root, NodeFilter.SHOW_TEXT, {
-    acceptNode: (node) => node.parentElement?.closest("pre, code") ? NodeFilter.FILTER_REJECT : NodeFilter.FILTER_ACCEPT,
-  });
-  for (let node = walker.nextNode(); node; node = walker.nextNode()) if (/\$[^$]/u.test(node.textContent ?? "")) texts.push(node as Text);
-  if (!texts.length) return;
+  const nodes = [...root.querySelectorAll<HTMLElement>("[data-math]")];
+  if (!nodes.length) return;
   const [{ default: katex }] = await Promise.all([import("katex"), import("@/katex-styles")]);
-  for (const text of texts) {
-    const source = text.textContent ?? "";
-    let html = "";
-    let cursor = 0;
-    for (const match of source.matchAll(MATH)) {
-      // 公式外的文字按原样转义，只有 KaTeX 的输出是 HTML。
-      html += escapeHtml(source.slice(cursor, match.index));
-      html += katex.renderToString(match[1] ?? match[2], { displayMode: match[1] !== undefined, throwOnError: false });
-      cursor = match.index + match[0].length;
-    }
-    if (!cursor || !text.isConnected) continue;
-    const fragment = document.createElement("template");
-    fragment.innerHTML = html + escapeHtml(source.slice(cursor));
-    text.replaceWith(fragment.content);
+  for (const node of nodes) {
+    if (node.isConnected) katex.render(node.dataset.tex ?? "", node, { displayMode: node.dataset.math === "display", throwOnError: false });
   }
-}
-
-function escapeHtml(text: string): string {
-  return text.replace(/[&<>"]/gu, (char) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" })[char]!);
 }
 
 /** markstream 的脚注只收段落：列表被拍成段落，代码与其后的返回链接丢掉。脚注正文改用同一原文的完整 GFM 解析结果；
