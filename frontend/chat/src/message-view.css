@@ -268,7 +268,7 @@
 /* 流式期间代码块先用 PreCodeNode 的 <pre> 渲染（块外的那一个），落定后换成高亮组件。两者必须同一几何：
    44px 块头位（+8px 首行偏移，按落定块实测）、12px/18px 行、一圈 subtle 发丝线、1rem 外边距。
    PreCodeNode 带 inline 字号/行高/上下内边距，只能用 !important 覆盖。 */
-:is(.agent-content, .process-markdown) .markstream-react pre[data-markstream-pre="1"]:not(.code-block-container pre) {
+:is(.agent-content, .process-markdown, .user-bubble) .markstream-react pre[data-markstream-pre="1"]:not(.code-block-container pre) {
   max-width: 100%;
   margin-block: 1rem !important;
   overflow-x: auto;
@@ -286,7 +286,7 @@
 
 /* 高亮组件加载期间，块头下面先放一个同样的 <pre> 占位：它已经在块里，不再自带块头留白与边框，
    只对齐高亮后代码区的字号、行高与内边距，换成高亮时块高不变。 */
-:is(.agent-content, .process-markdown) .code-block-container pre[data-markstream-pre="1"] {
+:is(.agent-content, .process-markdown, .user-bubble) .code-block-container pre[data-markstream-pre="1"] {
   margin: 0 !important;
   border: 0 !important;
   border-radius: 0 !important;
@@ -346,7 +346,7 @@
 
 /* 语言代码块保留现有高亮与复制，控件只占一行。外边距与流式 <pre> 同为 1rem；
    组件自带 my-4 工具类，显式 !important 让两边一致不依赖层叠顺序。 */
-:where(.agent-content, .process-markdown) .code-block-container {
+:where(.agent-content, .process-markdown, .user-bubble) .code-block-container {
   margin-block: 1rem !important;
   border: 1px solid var(--ak-rule-subtle) !important;
   border-radius: 0 !important;
@@ -355,7 +355,7 @@
 }
 
 /* 高亮主题把底色写在 shadow 的 :host 上；外部对宿主的声明优先，代码区与块头同一纸面。 */
-:where(.agent-content, .process-markdown) .code-block-container diffs-container {
+:where(.agent-content, .process-markdown, .user-bubble) .code-block-container diffs-container {
   --diffs-bg: var(--ak-paper-quiet);
   background-color: var(--ak-paper-quiet);
 }
@@ -385,7 +385,7 @@
   mask-image: linear-gradient(to right, transparent, #000 var(--code-edge), #000 calc(100% - var(--code-edge)), transparent);
 }
 
-:where(.agent-content, .process-markdown) .code-block-header {
+:where(.agent-content, .process-markdown, .user-bubble) .code-block-header {
   min-height: 0 !important;
   padding: 0 0.25rem 0 1rem !important;
   background: transparent !important;
@@ -393,44 +393,44 @@
 }
 
 @media (min-width: 36.0625rem) {
-  :where(.agent-content, .process-markdown) .code-header-actions .code-action-btn {
+  :where(.agent-content, .process-markdown, .user-bubble) .code-header-actions .code-action-btn {
     min-width: 36px;
     min-height: 36px;
   }
 }
 
-:where(.agent-content, .process-markdown) .code-block-header .icon-slot {
+:where(.agent-content, .process-markdown, .user-bubble) .code-block-header .icon-slot {
   display: none;
 }
 
 /* markstream 自带 `:where(.markstream-react) .code-block-header .code-header-title`（写死的灰、继承字体），特异性需高过它；
    流式标签用同一类名，两态同一字体、字重与墨色。 */
-:is(.agent-content, .process-markdown) :is(.code-block-header, .reading-code-scroll) .code-header-title {
+:is(.agent-content, .process-markdown, .user-bubble) :is(.code-block-header, .reading-code-scroll) .code-header-title {
   font-family: var(--ak-type-technical);
   font-size: var(--chat-type-caption, 0.75rem);
   font-weight: 500;
   color: var(--ak-ink-secondary);
 }
 
-:where(.agent-content, .process-markdown) .code-header-actions .code-action-btn {
+:where(.agent-content, .process-markdown, .user-bubble) .code-header-actions .code-action-btn {
   min-width: 44px;
   min-height: 44px;
 }
 
 /* markstream 的复制钮颜色走它根上的 --code-action-*（写死的近黑、浅灰底），在代码块上改接设计 token，深浅主题一致；
    复制成功与消息、工具结果的复制同一成功色反馈（组件只把 aria-label 换成"已复制"）。 */
-:where(.agent-content, .process-markdown) .code-block-container {
+:where(.agent-content, .process-markdown, .user-bubble) .code-block-container {
   --code-action-fg: var(--ak-ink-secondary);
   --code-action-hover-fg: var(--ak-ink-primary);
   --code-action-hover-bg: color-mix(in oklch, var(--ak-ink-primary) 6%, transparent);
 }
 
-:is(.agent-content, .process-markdown) .code-header-actions .code-action-btn:is([aria-label="已复制"], [aria-label="Copied"]) {
+:is(.agent-content, .process-markdown, .user-bubble) .code-header-actions .code-action-btn:is([aria-label="已复制"], [aria-label="Copied"]) {
   color: var(--ak-sys-color-success);
   background: color-mix(in srgb, var(--ak-sys-color-success) 12%, transparent);
 }
 
-:where(.agent-content, .process-markdown) .code-block-container pre {
+:where(.agent-content, .process-markdown, .user-bubble) .code-block-container pre {
   background: transparent !important;
   border: none !important;
   border-radius: 0 !important;
