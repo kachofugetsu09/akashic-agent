@@ -1032,9 +1032,9 @@
 
 /* 过程里每一步（思考、工具、上下文提示）都能展开，一列十个常驻箭头只是噪音（Codex 桌面版同样只在悬停时给）。
    鼠标下收起着的箭头在悬停或键盘聚焦该行时才出现；展开着的保留，它告诉人怎么收回去。
-   本轮与工具组的摘要行、触屏照旧常驻。 */
+   本轮与工具组的摘要行、图文回复前段收纳过程的摘要行、触屏照旧常驻。 */
 @media (hover: hover) and (pointer: fine) {
-  .process-trigger .process-chevron:not(.open),
+  .process-trigger:not(.inline-reply-process > details > summary) .process-chevron:not(.open),
   .tool-step-summary:not(.turn-process-summary, .tool-group-summary) .tool-step-chevron:not(.open) {
     opacity: 0;
     transition: opacity var(--ak-sys-duration-short) var(--ak-sys-motion-standard), transform var(--ak-sys-duration-short) var(--ak-sys-motion-standard);
@@ -1759,7 +1759,8 @@ button.tool-step-summary:active {
   overflow: hidden;
   border: 0;
   border-radius: 0;
-  padding: max(4px, env(safe-area-inset-top)) max(8px, 3vw) max(2dvh, env(safe-area-inset-bottom));
+  padding: max(4px, env(safe-area-inset-top)) max(8px, 3vw, env(safe-area-inset-right))
+    max(2dvh, env(safe-area-inset-bottom)) max(8px, 3vw, env(safe-area-inset-left));
   background: transparent;
   box-shadow: none;
   color: rgb(255 255 255 / 0.92);
@@ -1805,10 +1806,11 @@ button.tool-step-summary:active {
   outline-offset: 1px;
 }
 
+/* 媒体只用顶栏之下、四侧安全区以内的那块区域（grid 第二行），长图不压顶栏、横屏不进刘海。 */
 .media-preview__media {
   display: block;
-  max-width: 94vw;
-  max-height: calc(96dvh - 48px);
+  max-width: 100%;
+  max-height: 100%;
   border-radius: 10px;
   object-fit: contain;
 }
@@ -1831,13 +1833,18 @@ button.tool-step-summary:active {
   cursor: default;
 }
 
-/* 图片外框就是滚动容器：适应视口时与图片同大，切到原始像素后在同一块区域里滚动看细节。 */
+/* 图片画框固定占满媒体区，也是原始像素下的滚动容器：两种状态框不动，点击放大时所点细节留在指针下；
+   画框尺寸确定，没有固有宽高的 SVG 也量得出大小。图片用 auto 外边距居中，放大后超出的部分从左上角起可滚到。
+   画框里图片以外的空白同样点了关闭。 */
 .media-preview__frame {
-  max-width: 94vw;
-  max-height: calc(96dvh - 48px);
+  display: grid;
+  width: 100%;
+  height: 100%;
+  grid-template: minmax(0, 1fr) / minmax(0, 1fr);
   overflow: hidden;
   border-radius: 10px;
 }
+.media-preview__frame > .media-preview__media { margin: auto; }
 /* 横滑交给页面脚本切换上一个/下一个；原始像素画框本身是滚动容器，
    touch-action 只沿祖先链算到最近的滚动容器，横向平移仍归浏览器。 */
 .media-preview { touch-action: pan-y pinch-zoom; }
@@ -1860,7 +1867,7 @@ button.tool-step-summary:active {
 
 /* 视频按视口放大：320px 的录屏也铺到 56rem 宽，等比、不裁切。 */
 .media-preview__media.is-video {
-  width: min(94vw, 56rem);
+  width: min(100%, 56rem);
   height: auto;
   background: #000;
 }

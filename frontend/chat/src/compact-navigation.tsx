@@ -8,6 +8,8 @@ import { reportShellOverlay } from "./shell-rail-actions";
 // 与 styles.css 紧凑外壳媒体块同一条件：不再满足时常驻侧栏回来，抽屉没有存在的理由。
 const COMPACT_SHELL = "(max-width: 820px), (max-height: 30rem) and (pointer: coarse)";
 
+const shown = (element: HTMLElement | null): element is HTMLElement => element !== null && element.isConnected && element.getClientRects().length > 0;
+
 /** Expose the desktop navigation contract as a modal drawer on narrow viewports. */
 export function CompactNavigation(props: DesktopSidebarProps) {
   const [open, setOpen] = useState(false);
@@ -23,6 +25,8 @@ export function CompactNavigation(props: DesktopSidebarProps) {
   }, []);
   const overlayOpen = open || projectDialogOpen;
   const searchOnOpen = useRef(false);
+  // 关闭后回到打开前的位置：快捷键打开时是当时的焦点（输入框里写到一半的草稿，光标位置由 textarea 自己保留），点按钮打开时是按钮。
+  const returnFocus = useRef<HTMLElement | null>(null);
   // 必要 effect：常驻侧栏被隐藏时 Ctrl/⌘+K 没有可见的搜索框，改为打开抽屉并聚焦其中的搜索（平板竖屏接键盘）。
   useEffect(() => {
     const compact = window.matchMedia(COMPACT_SHELL);
@@ -32,6 +36,7 @@ export function CompactNavigation(props: DesktopSidebarProps) {
       if (document.querySelector("[role='dialog'], [role='menu'], [role='listbox'], [data-radix-popper-content-wrapper]")) return;
       event.preventDefault();
       searchOnOpen.current = true;
+      returnFocus.current = document.activeElement instanceof HTMLElement ? document.activeElement : null;
       setOpen(true);
     };
     document.addEventListener("keydown", onKeyDown);
@@ -52,7 +57,10 @@ export function CompactNavigation(props: DesktopSidebarProps) {
   }, [overlayOpen]);
 
   return <>
-    <button ref={triggerRef} className="compact-navigation-trigger" type="button" aria-label="打开导航" onClick={() => setOpen(true)}>
+    <button ref={triggerRef} className="compact-navigation-trigger" type="button" aria-label="打开导航" onClick={() => {
+      returnFocus.current = triggerRef.current;
+      setOpen(true);
+    }}>
       <Menu aria-hidden="true" size={20} />
     </button>
     <Dialog open={open} onOpenChange={setOpen}>
@@ -74,8 +82,11 @@ export function CompactNavigation(props: DesktopSidebarProps) {
             openProjectAfterClose.current = false;
             setProjectDialogOpen(true);
           } else {
-            triggerRef.current?.focus();
+            // 打开期间拉宽离开紧凑断点时原目标可能已隐藏：依次退到打开按钮、输入框。
+            const composer = document.querySelector<HTMLElement>(".chat-main .composer textarea");
+            [returnFocus.current, triggerRef.current, composer].find(shown)?.focus({ preventScroll: true });
           }
+          returnFocus.current = null;
         }}
       >
         <DialogTitle className="sr-only">Akashic 导航</DialogTitle>

@@ -896,30 +896,52 @@ export function MediaGalleryViewer() {
 
 type ZoomPoint = { x: number; y: number; px: number; py: number };
 
-// 图片被缩小显示时可切到原始像素，在同一块区域里滚动看细节。状态记在当前这张的地址上：切到下一张自然回到适应视口，不需要 effect 重置。
-function useImageZoom(item: MediaItem) {
-  const frameRef = useRef<HTMLDivElement>(null);
-  const [scaledUrl, setScaledUrl] = useState("");
-  const [actualUrl, setActualUrl] = useState("");
+type ZoomState = { owner: MediaGallery; scaled: boolean; actual: boolean };
+
+// 图片放不下画框时可切到原始像素，在同一块区域里滚动看细节。状态跟着这一次翻页（图集对象）走：
+// 翻走再翻回来、同一地址在图集里出现两次，都从适应窗口开始，不需要 effect 重置。
+function useImageZoom(item: MediaItem, owner: MediaGallery) {
+  // 画框与图片要用 state 记：对话框内容在 Portal 挂上后才出现，图片还会随地址换节点，effect 要跟着重新接上。
+  const [frame, frameRef] = useState<HTMLDivElement | null>(null);
+  const [image, imageRef] = useState<HTMLImageElement | null>(null);
+  const [state, setState] = useState<ZoomState | null>(null);
   const anchor = useRef<ZoomPoint | null>(null);
-  const actual = item.kind === "image" && actualUrl === item.url;
-  const zoomable = actual || (item.kind === "image" && scaledUrl === item.url);
+  const current = item.kind === "image" && state?.owner === owner ? state : null;
+  const zoomable = current?.scaled ?? false;
+  const actual = zoomable && (current?.actual ?? false);
   const toggle = (point?: ZoomPoint) => {
     anchor.current = point ?? null;
-    setActualUrl(actual ? "" : item.url);
+    setState({ owner, scaled: true, actual: !actual });
   };
-  // 切到原始像素后让点击处留在指针下（键盘切换时停在中心）。
+  // 必要 effect：放不放得下取决于画框尺寸（转屏、分屏、拉窗口），加载完成与画框变化时都重算；放得下了就撤掉缩放。
+  useEffect(() => {
+    if (!frame || !image) return;
+    const measure = () => {
+      if (!image.naturalWidth) return;
+      const scaled = image.naturalWidth > frame.clientWidth + 1 || image.naturalHeight > frame.clientHeight + 1;
+      setState((previous) => {
+        const mine = previous?.owner === owner ? previous : null;
+        return mine?.scaled === scaled ? mine : { owner, scaled, actual: scaled && (mine?.actual ?? false) };
+      });
+    };
+    const resize = new ResizeObserver(measure);
+    resize.observe(frame);
+    image.addEventListener("load", measure);
+    return () => {
+      resize.disconnect();
+      image.removeEventListener("load", measure);
+    };
+  }, [owner, frame, image]);
+  // 切到原始像素后让点击处留在指针下（键盘切换时停在中心）。画框不随缩放变化，按图片在框里的新位置换算。
   useLayoutEffect(() => {
-    const frame = frameRef.current;
-    if (!actual || !frame) return;
+    if (!actual || !frame || !image) return;
     const point = anchor.current ?? { x: 0.5, y: 0.5, px: frame.clientWidth / 2, py: frame.clientHeight / 2 };
-    frame.scrollLeft = point.x * frame.scrollWidth - point.px;
-    frame.scrollTop = point.y * frame.scrollHeight - point.py;
-  }, [actual]);
-  const measure = (image: HTMLImageElement) => {
-    if (image.naturalWidth > image.clientWidth + 1 || image.naturalHeight > image.clientHeight + 1) setScaledUrl(item.url);
-  };
-  return { frameRef, actual, zoomable, toggle, measure };
+    const box = image.getBoundingClientRect();
+    const area = frame.getBoundingClientRect();
+    frame.scrollLeft += box.left - area.left + point.x * box.width - point.px;
+    frame.scrollTop += box.top - area.top + point.y * box.height - point.py;
+  }, [actual, frame, image]);
+  return { frame, frameRef, imageRef, actual, zoomable, toggle };
 }
 
 // 触屏在媒体上横滑切换上一个/下一个。原始像素下滑动是平移画面；顶栏与视频底部控制条（拖进度）上的滑动也不算。
@@ -959,7 +981,7 @@ function MediaViewer({ gallery, onStep, onClose }: { gallery: MediaGallery; onSt
   const { items, index } = gallery;
   const item = items[index];
   const closeRef = useRef<HTMLButtonElement>(null);
-  const zoom = useImageZoom(item);
+  const zoom = useImageZoom(item, gallery);
   // 到头停住不循环。
   const go = (delta: number) => { if (index + delta >= 0 && index + delta < items.length) onStep(delta); };
   const swipe = useSwipeStep(items.length > 1 && !zoom.actual, go);
@@ -973,12 +995,12 @@ function MediaViewer({ gallery, onStep, onClose }: { gallery: MediaGallery; onSt
       item.trigger.focus({ preventScroll: true });
     }}
     onKeyDown={(event) => {
-      if (event.target instanceof HTMLVideoElement || event.altKey || event.ctrlKey || event.metaKey) return;
+      if (event.target instanceof HTMLVideoElement || event.altKey || event.ctrlKey || event.metaKey || event.shiftKey) return;
       if (event.key !== "ArrowLeft" && event.key !== "ArrowRight") return;
       event.preventDefault();
       go(event.key === "ArrowLeft" ? -1 : 1);
     }}
-    onClick={(event) => { if (event.target === event.currentTarget) onClose(); }}>
+    onClick={(event) => { if (event.target === event.currentTarget || event.target === zoom.frame) onClose(); }}>
     <div className="media-preview__bar">
       <DialogTitle className="media-preview__title"><MarqueeText still>{item.label}</MarqueeText></DialogTitle>
       {items.length > 1 ? <MediaPager index={index} count={items.length} go={go} /> : null}
@@ -992,9 +1014,8 @@ function MediaViewer({ gallery, onStep, onClose }: { gallery: MediaGallery; onSt
     </div>
     {item.kind === "image"
       ? <div ref={zoom.frameRef} className={`media-preview__frame${zoom.actual ? " is-actual" : ""}`}>
-        <img key={item.url} alt={item.label} src={item.url}
+        <img key={item.url} ref={zoom.imageRef} alt={item.label} src={item.url}
           className={`media-preview__media${zoom.zoomable ? zoom.actual ? " is-actual" : " is-scaled" : ""}`}
-          onLoad={(event) => zoom.measure(event.currentTarget)}
           onClick={(event) => {
             if (!zoom.zoomable) return;
             const box = event.currentTarget.getBoundingClientRect();
