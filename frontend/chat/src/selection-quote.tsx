@@ -76,14 +76,42 @@ function selectionLines(): DOMRect[] | null {
   const message = closestComposed(ends.startContainer, MESSAGE);
   if (!message || message !== closestComposed(ends.endContainer, MESSAGE)) return null;
   if (closestComposed(ends.startContainer, EDITABLE) || closestComposed(ends.endContainer, EDITABLE)) return null;
-  // 3. 同一棵树里取逐行矩形；跨树（代码块连着后面的正文）普通 Range 存不下，取两端插入点的位置。
-  if (ends.startContainer.getRootNode() === ends.endContainer.getRootNode()) {
-    const lines = document.createRange();
-    lines.setStart(ends.startContainer, ends.startOffset);
-    lines.setEnd(ends.endContainer, ends.endOffset);
-    return [...lines.getClientRects()];
+  // 3. 取逐行矩形；跨树（代码块连着后面的正文）普通 Range 存不下，按树切段分别测量。
+  return treeSegments(ends).flatMap((segment) => [...segment.getClientRects()]);
+}
+
+// 把可能跨 shadow 边界的选区切成各树内的 Range：起点所在 shadow 的剩余部分、两个宿主之间的文档部分、终点所在 shadow 的开头部分。
+// 只处理一层 shadow（高亮代码块的宿主都在文档里）；长选区两端都在视口外时，中间可见的行照样量得到。
+function treeSegments(ends: Endpoints): Range[] {
+  const startRoot = ends.startContainer.getRootNode();
+  const endRoot = ends.endContainer.getRootNode();
+  const segment = () => document.createRange();
+  if (startRoot === endRoot) {
+    const whole = segment();
+    whole.setStart(ends.startContainer, ends.startOffset);
+    whole.setEnd(ends.endContainer, ends.endOffset);
+    return [whole];
   }
-  return [caretRect(ends.startContainer, ends.startOffset), caretRect(ends.endContainer, ends.endOffset)];
+  const startHost = startRoot instanceof ShadowRoot ? startRoot.host : null;
+  const endHost = endRoot instanceof ShadowRoot ? endRoot.host : null;
+  const segments: Range[] = [];
+  if (startRoot instanceof ShadowRoot) {
+    const head = segment();
+    head.setStart(ends.startContainer, ends.startOffset);
+    head.setEnd(startRoot, startRoot.childNodes.length);
+    segments.push(head);
+  }
+  const middle = segment();
+  if (startHost) middle.setStartAfter(startHost); else middle.setStart(ends.startContainer, ends.startOffset);
+  if (endHost) middle.setEndBefore(endHost); else middle.setEnd(ends.endContainer, ends.endOffset);
+  segments.push(middle);
+  if (endRoot instanceof ShadowRoot) {
+    const tail = segment();
+    tail.setStart(endRoot, 0);
+    tail.setEnd(ends.endContainer, ends.endOffset);
+    segments.push(tail);
+  }
+  return segments;
 }
 
 // 现行签名传 { shadowRoots }；旧签名（MDN 记载的早期实现）以剩余参数传 shadow root，传对象会抛 TypeError。
@@ -126,13 +154,6 @@ function readingBounds(): { top: number; bottom: number } {
   const top = Math.max(heading?.bottom ?? 0, 0) + BUTTON_GAP;
   const bottom = Math.min(composer && composer.height > 0 ? composer.top : window.innerHeight, window.innerHeight) - BUTTON_GAP;
   return { top, bottom };
-}
-
-function caretRect(node: Node, offset: number): DOMRect {
-  const caret = document.createRange();
-  caret.setStart(node, offset);
-  caret.collapse(true);
-  return caret.getBoundingClientRect();
 }
 
 function closestComposed(node: Node, selector: string): Element | null {
