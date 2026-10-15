@@ -123,32 +123,45 @@ const FOOTNOTE_LINK = "a[data-footnote-ref], a[data-footnote-backref], a.footnot
 const footnoteOrigins = new WeakMap<HTMLElement, HTMLElement>();
 const FOOTNOTE_BACK = "a[data-footnote-backref], a.footnote-anchor";
 
-function hrefId(link: Element): string {
+// href 里的 id 先按原样找（富渲染直接拼标签，"a%20b" 就是标签本身），找不到再按 URI 解码找（静态路径编码过中文标签）。
+function hrefIds(link: Element): string[] {
   const raw = (link.getAttribute("href") ?? "").slice(1);
-  // 富渲染的 href 直接拼标签（可能含不是编码的 %），静态路径是已编码的。
-  try { return decodeURIComponent(raw); } catch { return raw; }
+  let decoded = raw;
+  try { decoded = decodeURIComponent(raw); } catch { /* 不是合法编码，只按原样找 */ }
+  return decoded === raw ? [raw] : [raw, decoded];
 }
 
 function byId(container: HTMLElement, id: string): HTMLElement[] {
   return [...container.querySelectorAll<HTMLElement>(`[id="${CSS.escape(id)}"]`)];
 }
 
+function byHref(container: HTMLElement, link: Element): HTMLElement[] {
+  for (const id of hrefIds(link)) {
+    const found = byId(container, id);
+    if (found.length) return found;
+  }
+  return [];
+}
+
 // 返回目标：出发点仍在且属于这条脚注时回到出发点；否则按 id（"标签-序号"在富渲染里是同名 id 的第几个）。
 function referenceFor(container: HTMLElement, back: HTMLElement): HTMLElement | null {
   const origin = footnoteOrigins.get(container);
-  if (origin?.isConnected && byId(container, hrefId(origin)).some((note) => note.contains(back))) return origin;
-  const id = hrefId(back);
-  const exact = byId(container, id)[0];
-  if (exact) return exact;
-  const repeat = /^(.*)-(\d+)$/u.exec(id);
-  return repeat ? byId(container, repeat[1])[Number(repeat[2]) - 1] ?? null : null;
+  if (origin?.isConnected && byHref(container, origin).some((note) => note.contains(back))) return origin;
+  for (const id of hrefIds(back)) {
+    const exact = byId(container, id)[0];
+    if (exact) return exact;
+    const repeat = /^(.*)-(\d+)$/u.exec(id);
+    const nth = repeat ? byId(container, repeat[1])[Number(repeat[2]) - 1] : undefined;
+    if (nth) return nth;
+  }
+  return null;
 }
 
 // 进脚注后落在对应出发点的返回箭头上（静态路径重复引用各有一个箭头），没有对应的就落在第一个。
 function backFor(note: HTMLElement, origin: HTMLElement): HTMLElement {
   const backs = [...note.querySelectorAll<HTMLElement>(FOOTNOTE_BACK)];
   const ids = [origin.id, origin.closest("sup")?.id].filter(Boolean);
-  return backs.find((back) => ids.includes(hrefId(back))) ?? backs[0] ?? note;
+  return backs.find((back) => hrefIds(back).some((id) => ids.includes(id))) ?? backs[0] ?? note;
 }
 
 /** 脚注引用与返回链接在本条回复内跳转（挂在回复容器的 onClickCapture 上）：每条回复的脚注 id 都从 1 编起，
@@ -161,7 +174,7 @@ export function jumpToFootnote(event: ReactMouseEvent<HTMLElement>): void {
   event.preventDefault();
   event.stopPropagation();
   const backward = link.matches(FOOTNOTE_BACK);
-  const target = backward ? referenceFor(container, link) : byId(container, hrefId(link))[0];
+  const target = backward ? referenceFor(container, link) : byHref(container, link)[0];
   if (!target) return;
   // 2. 焦点落到对面的链接：去脚注落在返回箭头上，回正文落在引用号上，回车即可来回。
   if (!backward) footnoteOrigins.set(container, link);
