@@ -55,15 +55,8 @@
 .ak-attachment__image[data-loaded],
 video.ak-attachment__image { opacity: 1; }
 .ak-attachment__play {
-  position: absolute;
-  inset: auto auto 6px 6px;
-  display: grid;
-  width: 20px;
-  height: 20px;
-  place-items: center;
-  border-radius: 999px;
-  color: #fff;
-  background: rgb(0 0 0 / 0.55);
+  position: absolute; inset: auto auto 6px 6px; display: grid; width: 20px; height: 20px; place-items: center;
+  border-radius: 999px; color: #fff; background: rgb(0 0 0 / 0.55);
 }
 
 .ak-attachment__tile {
@@ -95,13 +88,8 @@ video.ak-attachment__image { opacity: 1; }
 /* 结尾一般整段保留；全角字符很宽时也不越出卡片，至少给开头留一个字和省略号。 */
 .ak-attachment__tail { flex: none; max-width: calc(100% - 1.5em); overflow: hidden; white-space: pre; }
 .ak-attachment__desc {
-  overflow: hidden;
-  color: var(--ak-ink-secondary);
-  font-size: 0.75rem;
-  font-variant-numeric: tabular-nums;
-  line-height: 1.35;
-  text-overflow: ellipsis;
-  white-space: nowrap;
+  overflow: hidden; color: var(--ak-ink-secondary); font-size: 0.75rem; font-variant-numeric: tabular-nums;
+  line-height: 1.35; text-overflow: ellipsis; white-space: nowrap;
 }
 
 /* 移除钮：20px 圆，右上角外溢；悬停、键盘聚焦时出现，触屏常显。不压在图片内容上。 */
@@ -139,18 +127,11 @@ video.ak-attachment__image { opacity: 1; }
 /* 上传中：整卡骨架闪烁（Desktop 不显示百分比），文字与图片隐去一半。 */
 .ak-attachment[aria-busy="true"] .ak-attachment__surface > * { opacity: 0.45; }
 .ak-attachment__skeleton {
-  position: absolute;
-  inset: 0;
-  border-radius: inherit;
-  pointer-events: none;
+  position: absolute; inset: 0; border-radius: inherit; pointer-events: none;
   background: linear-gradient(100deg, transparent 30%, color-mix(in oklab, var(--ak-ink-primary) 7%, transparent) 50%, transparent 70%);
-  background-size: 200% 100%;
-  animation: ak-attachment-shimmer 1.2s linear infinite;
+  background-size: 200% 100%; animation: ak-attachment-shimmer 1.2s linear infinite;
 }
-@keyframes ak-attachment-shimmer {
-  from { background-position: 150% 0; }
-  to { background-position: -50% 0; }
-}
+@keyframes ak-attachment-shimmer { from { background-position: 150% 0; } to { background-position: -50% 0; } }
 
 /* —— 输入卡托盘 —— */
 .composer-tray {

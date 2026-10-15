@@ -72,9 +72,11 @@ function describe(data: AttachmentCardData, broken: boolean): string {
   return parts.join(" · ");
 }
 
-// 文件名中间省略：最后 6 个字符（含扩展名）固定不截，前面放不下的部分以省略号收尾。
+// 文件名中间省略：最后 6 个字（按字形簇，组合 emoji 不拆）固定不截，前面放不下的部分以省略号收尾。
+const graphemes = new Intl.Segmenter(undefined, { granularity: "grapheme" });
+
 function FileName({ name }: { name: string }) {
-  const chars = Array.from(name);
+  const chars = Array.from(graphemes.segment(name), (part) => part.segment);
   const cut = Math.max(0, chars.length - 6);
   return <span className="ak-attachment__name">
     <bdi className="ak-attachment__head">{chars.slice(0, cut).join("")}</bdi>

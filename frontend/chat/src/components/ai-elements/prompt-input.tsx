@@ -101,6 +101,8 @@ export const PromptInput = ({
   const formRef = useRef<HTMLFormElement | null>(null);
   const submittingRef = useRef(false);
   const [submittedFileIds, setSubmittedFileIds] = useState<string[]>([]);
+  // 提交中的附件属于上一条消息，不占下一份草稿的名额。
+  const submittedRef = useRef<string[]>([]);
 
   const [files, setFiles] = useState<PromptInputFile[]>([]);
   // 附件与草稿一样按会话保留：切走时存到旧会话名下，切回时取出，不跟到别的会话里被发出去。
@@ -144,7 +146,7 @@ export const PromptInput = ({
       const all = Array.from(fileList);
       const sized = maxFileSize === undefined ? all : all.filter((file) => file.size <= maxFileSize);
       if (sized.length < all.length) onRejectFiles?.(all.filter((file) => !sized.includes(file)), "size");
-      const room = Math.max(0, maxFiles - filesRef.current.length);
+      const room = Math.max(0, maxFiles - filesRef.current.filter((file) => !submittedRef.current.includes(file.id)).length);
       const incoming = sized.slice(0, room);
       if (incoming.length < sized.length) onRejectFiles?.(sized.slice(room), "count");
       if (!incoming.length) return;
@@ -265,7 +267,8 @@ export const PromptInput = ({
       // 提交中的附件由本次发送持有；编辑器仍可接收下一份草稿。
       const submitted = files.map(({ id, ...file }) => ({ id, file }));
       const submittedKey = attachmentKey;
-      setSubmittedFileIds(submitted.map((item) => item.id));
+      submittedRef.current = submitted.map((item) => item.id);
+      setSubmittedFileIds(submittedRef.current);
       form.reset();
 
       try {
@@ -277,6 +280,7 @@ export const PromptInput = ({
         // 发送者显示失败原因；原附件保留供重试，不清除后来输入的内容。
       } finally {
         submittingRef.current = false;
+        submittedRef.current = [];
         setSubmittedFileIds([]);
       }
     },
