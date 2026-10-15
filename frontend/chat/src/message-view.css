@@ -415,7 +415,19 @@
 :where(.agent-content, .process-markdown) .code-header-actions .code-action-btn {
   min-width: 44px;
   min-height: 44px;
-  color: var(--ak-ink-secondary);
+}
+
+/* markstream 的复制钮颜色走它根上的 --code-action-*（写死的近黑、浅灰底），在代码块上改接设计 token，深浅主题一致；
+   复制成功与消息、工具结果的复制同一成功色反馈（组件只把 aria-label 换成"已复制"）。 */
+:where(.agent-content, .process-markdown) .code-block-container {
+  --code-action-fg: var(--ak-ink-secondary);
+  --code-action-hover-fg: var(--ak-ink-primary);
+  --code-action-hover-bg: color-mix(in oklch, var(--ak-ink-primary) 6%, transparent);
+}
+
+:is(.agent-content, .process-markdown) .code-header-actions .code-action-btn:is([aria-label="已复制"], [aria-label="Copied"]) {
+  color: var(--ak-sys-color-success);
+  background: color-mix(in srgb, var(--ak-sys-color-success) 12%, transparent);
 }
 
 :where(.agent-content, .process-markdown) .code-block-container pre {
