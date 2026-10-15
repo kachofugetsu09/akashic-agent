@@ -2127,6 +2127,23 @@ button.tool-step-summary:active {
   outline-offset: 2px;
 }
 
+/* 下载提示：悬停或聚焦时露出右下角图标（与左下扩展名标签对称，不压文件名）、块边线加深；触屏没有悬停，图标常驻但退一档。 */
+.message-attachment-download__icon {
+  position: absolute;
+  right: 10px;
+  bottom: 10px;
+  color: var(--ak-ink-secondary);
+  opacity: 0;
+  transition: opacity var(--ak-sys-duration-short, 150ms);
+}
+
+.message-attachment-download:is(:hover, :focus-visible) .message-attachment-download__icon { opacity: 1; }
+.message-attachment-download:hover .message-attachment-chip { border-color: var(--ak-rule-strong); }
+
+@media (hover: none) {
+  .message-attachment-download__icon { opacity: 0.7; }
+}
+
 /* 插图沿正文左缘，无卡片外壳；降级文字和下载由宿主保留。 */
 .message-figure { position: relative; margin-block: 1.25rem; transition: height var(--ak-sys-duration-medium, 300ms) ease; }
 .message-figure .plugin-ui-host { margin: 0; }

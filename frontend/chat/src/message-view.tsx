@@ -2,12 +2,9 @@ import { PluginUiSlot } from "./plugin-ui-runtime";
 import { ThinkingPlaceholder } from "./thinking-placeholder";
 import {
   Attachment,
-  AttachmentHoverCard,
-  AttachmentHoverCardContent,
-  AttachmentHoverCardTrigger,
   AttachmentFileBody,
-  AttachmentPreview,
   Attachments,
+  formatBytes,
   getAttachmentLabel,
   getMediaCategory,
 } from "@/components/ai-elements/attachments";
@@ -772,19 +769,15 @@ function MessageAttachmentItem({ attachment }: { attachment: MessageAttachment }
     return <MessageContentVideo url={attachment.url} label={label} />;
   }
 
+  // 文件块本身已写全名、大小与类型，不再弹一张重复的悬停卡；悬停或聚焦时右上角露出下载图标，说明点下去会发生什么。
+  const size = attachment.sizeBytes !== undefined ? `（${formatBytes(attachment.sizeBytes)}）` : "";
   return (
-    <AttachmentHoverCard>
-      <AttachmentHoverCardTrigger asChild>
-        <a className="message-attachment-download" href={attachment.url} download={label} aria-label={`下载 ${label}`}>
-          <Attachment className="message-attachment-chip is-file" data={attachment}>
-            <AttachmentFileBody name={label} sizeBytes={attachment.sizeBytes} />
-          </Attachment>
-        </a>
-      </AttachmentHoverCardTrigger>
-      <AttachmentHoverCardContent>
-        <AttachmentHover attachment={attachment} />
-      </AttachmentHoverCardContent>
-    </AttachmentHoverCard>
+    <a className="message-attachment-download" href={attachment.url} download={label} aria-label={`下载 ${label}`} title={`下载 ${label}${size}`}>
+      <Attachment className="message-attachment-chip is-file" data={attachment}>
+        <AttachmentFileBody name={label} sizeBytes={attachment.sizeBytes} />
+        <Download className="message-attachment-download__icon" size={16} aria-hidden="true" />
+      </Attachment>
+    </a>
   );
 }
 
@@ -883,29 +876,6 @@ function MessageContentImage({
       />
     </button>
   </MediaPreview>;
-}
-
-function AttachmentHover({ attachment }: { attachment: MessageAttachment }) {
-  const category = getMediaCategory(attachment);
-  const label = getAttachmentLabel(attachment);
-
-  return (
-    <div className="attachment-hover">
-      {category === "image" && attachment.url ? (
-        <img alt={label} className="attachment-hover-image" src={attachment.url} />
-      ) : (
-        <div className="attachment-hover-file">
-          <Attachment data={attachment}>
-            <AttachmentPreview />
-          </Attachment>
-        </div>
-      )}
-      <div className="attachment-hover-title">{label}</div>
-      {attachment.mediaType ? (
-        <div className="attachment-hover-type">{attachment.mediaType}</div>
-      ) : null}
-    </div>
-  );
 }
 
 /** 每个过程项独立成行：思考、工具各自折叠，不共用外框。 */
