@@ -651,6 +651,59 @@
 :is(.agent-content, .process-markdown, .user-bubble) .markdown-reading .data-footnote-backref {
   text-decoration: none;
 }
+/* 富渲染路径（含代码、公式的回复）每条脚注各占一个 node-slot、各自带一条写死浅色的上边线、没有序号：
+   只在第一条前画同一条 subtle 发丝线，墨色、字号与静态路径一致，序号用计数器补成同样的"1."。
+   计数器要累加在 node-slot 上：累加在里层 .footnote-node 上时 Chromium 每条都从 1 数起。 */
+:is(.agent-content, .process-markdown, .user-bubble) .markdown-reading .markdown-renderer {
+  counter-reset: reading-footnote;
+}
+:is(.agent-content, .process-markdown, .user-bubble) .markdown-reading .node-slot[data-node-type="footnote"] {
+  counter-increment: reading-footnote;
+}
+:is(.agent-content, .process-markdown, .user-bubble) .markdown-reading .node-slot:not([data-node-type="footnote"]) + .node-slot[data-node-type="footnote"] {
+  margin-block-start: 1.25rem;
+  padding-block-start: 0.75rem;
+  border-block-start: 1px solid var(--ak-rule-subtle);
+}
+:is(.agent-content, .process-markdown, .user-bubble) .markdown-reading .footnote-node {
+  gap: 0;
+  padding-block-start: 0;
+  border-block-start: 0;
+  color: var(--ak-ink-secondary);
+  font-size: 0.875em;
+  line-height: inherit;
+}
+/* 脚注正文是块级 p，返回箭头会掉到下一行：改成行内，箭头跟在句末，和静态路径一样。 */
+:is(.agent-content, .process-markdown, .user-bubble) .markdown-reading .footnote-node .paragraph-node {
+  display: inline;
+  margin: 0;
+}
+:is(.agent-content, .process-markdown, .user-bubble) .markdown-reading .footnote-anchor {
+  margin-inline-start: 0.25em;
+}
+/* markstream 在每个脚注引用处把段落拆成几个 p，"看这里 / [1] / ，还有这里"各占一行：同一段落槽里的 p 与引用改回行内排，
+   段后距挪到槽上。 */
+:is(.agent-content, .process-markdown, .user-bubble) .markdown-reading .node-content:has(> .footnote-reference) {
+  margin-block-end: 0.75rem;
+}
+:is(.agent-content, .process-markdown, .user-bubble) .markdown-reading .node-content:has(> .footnote-reference) > .paragraph-node {
+  display: inline;
+  margin: 0;
+}
+/* 引用号与静态路径的上标同色同大小；markstream 写死的 "[1]" 文字保留。 */
+:is(.agent-content, .process-markdown, .user-bubble) .markdown-reading .footnote-link {
+  color: var(--ak-color-action-primary);
+  font-size: 0.75em;
+}
+:is(.agent-content, .process-markdown, .user-bubble) .markdown-reading .footnote-node::before {
+  content: counter(reading-footnote) ".";
+  flex: 0 0 1.75rem;
+  font-variant-numeric: tabular-nums;
+}
+:is(.agent-content, .process-markdown, .user-bubble) .markdown-reading .footnote-anchor {
+  font-size: inherit;
+  text-decoration: none;
+}
 
 /* 无标题文本块：技术字符等宽，中文沿用阅读字体。 */
 .static-code-block,

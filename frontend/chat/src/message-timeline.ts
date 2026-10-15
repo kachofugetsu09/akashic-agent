@@ -367,7 +367,7 @@ export function timelineSourceRefreshTokens(messages: TimelineMessage[], activit
 }
 
 /** 完成或停止展示时，把同来源的过程归到末条输出；不改变 Turn。 */
-export function timelineReplyGroups(messages: TimelineMessage[], activities: ReplyActivity[] = []) {
+export function timelineReplyGroups(messages: TimelineMessage[], activities: ReplyActivity[] = [], replySynced = true) {
   const pending = new Map<string, TimelineMessage[]>();
   const completed = new Map<string, TimelineMessage[]>();
   const hiddenBodies = new Set<string>();
@@ -410,14 +410,21 @@ export function timelineReplyGroups(messages: TimelineMessage[], activities: Rep
   for (const members of active.values()) for (const message of members) moved.add(message.id);
   // 附件把正文留在原位；整条图文回复的过程集中在首段上方。
   const inline = timelineInlineReplies(messages);
+  // 回复状态未同步时，未结束的图文回复不按图文合并（合并会把前段过程折成摘要、文字按正文排），与普通未结束轮次一样逐行显示。
+  const openInline = new Set<string>();
+  if (!replySynced) for (const id of inline.open) {
+    for (const item of inline.leading.get(id) ?? []) { inline.outputs.delete(item.id); openInline.add(item.id); }
+    inline.leading.delete(id);
+  }
   for (const members of inline.leading.values()) for (const item of members.slice(0, -1)) joined.add(item.id);
   for (const id of inline.outputs) {
     completed.delete(id); moved.delete(id); hiddenBodies.delete(id);
   }
   for (const [handle, members] of active) active.set(handle, members.filter(item => !inline.outputs.has(item.id)));
-  // 轮次还没结束（末条输出 finish=continue，之后没有输入或控制收尾）的输出：重连后尚未收到实时活动时它们按原位显示，
-  // 不能当成已落定的一轮收进摘要。
-  const unsettled = new Set([...pending.values()].flat().map((message) => message.id));
+  // 轮次还没结束（末条输出 finish=continue，之后没有输入或控制收尾）的输出：本会话的回复状态还没同步到时按原位显示，
+  // 不能当成已落定的一轮收进摘要。状态同步后，仍在运行的轮次由实时活动接管（moved）；没有活动说明它已不会再继续
+  // （异常中断、没有收尾记录的旧轮次），照常收起并挂上时间与操作。
+  const unsettled = replySynced ? new Set<string>() : new Set([...[...pending.values()].flat().map((message) => message.id), ...openInline]);
   return { completed, active, moved, hiddenBodies, joined, inline, unsettled };
 }
 
@@ -426,11 +433,15 @@ function timelineInlineReplies(messages: TimelineMessage[]) {
   const pending = new Map<string, { messages: TimelineMessage[]; attachment: boolean }>();
   const leading = new Map<string, TimelineMessage[]>();
   const outputs = new Set<string>();
-  const save = (key: string) => {
+  // 记录到末尾仍以 finish=continue 结尾、后面没有输入或控制收尾的图文回复（首段 id）。
+  const open = new Set<string>();
+  const save = (key: string, ended = true) => {
     const reply = pending.get(key);
     if (reply?.attachment && reply.messages.length) {
       leading.set(reply.messages[0].id, reply.messages);
       for (const item of reply.messages) outputs.add(item.id);
+      const last = reply.messages.at(-1)?.body;
+      if (!ended && last?.kind === "output" && last.finish === "continue") open.add(reply.messages[0].id);
     }
     pending.delete(key);
   };
@@ -446,8 +457,8 @@ function timelineInlineReplies(messages: TimelineMessage[]) {
       if (reply) reply.attachment = true;
     }
   }
-  for (const key of pending.keys()) save(key);
-  return { leading, outputs };
+  for (const key of [...pending.keys()]) save(key, false);
+  return { leading, outputs, open };
 }
 
 /** 已加载的工具结果在原调用面板中展示；缺少调用的分页仍保留结果行。 */

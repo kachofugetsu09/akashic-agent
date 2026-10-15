@@ -329,9 +329,11 @@ function DaySeparator({ label }: { label: string }) {
 }
 
 /** 展示完整日志，引用只定位原消息，不给工具结果补造助手身份。 */
-export const DesktopTimelineMessages = React.memo(function DesktopTimelineMessages({ messages, activities, refresh = 0, status, messageElementsRef, copiedMessageId, onReply, onEditInput, onCopied, onError }: {
+export const DesktopTimelineMessages = React.memo(function DesktopTimelineMessages({ messages, activities, replySynced, refresh = 0, status, messageElementsRef, copiedMessageId, onReply, onEditInput, onCopied, onError }: {
   messages: TimelineMessage[];
   activities: ReplyActivity[];
+  /** 本会话的回复状态已同步（收到 reply.status）：之后没有实时活动的未收尾轮次按已结束显示。 */
+  replySynced: boolean;
   refresh?: number;
   status: ChatStatus;
   messageElementsRef: React.RefObject<Map<string, HTMLDivElement>>;
@@ -350,7 +352,7 @@ export const DesktopTimelineMessages = React.memo(function DesktopTimelineMessag
   }, [byId, onReply, status]);
   useNarrowMessageGestures(scrollRef, swipeReply);
   const toolResults = useMemo(() => timelineToolResults(messages), [messages]);
-  const groups = useMemo(() => timelineReplyGroups(messages, activities), [messages, activities]);
+  const groups = useMemo(() => timelineReplyGroups(messages, activities, replySynced), [messages, activities, replySynced]);
   const inputStarts = useMemo(() => timelineInputStarts(messages), [messages]);
   const refreshTokens = useMemo(() => timelineSourceRefreshTokens(messages, activities, refresh), [messages, activities, refresh]);
   const visibleMessages = useMemo(() => timelineVisibleMessages(messages, groups), [messages, groups]);

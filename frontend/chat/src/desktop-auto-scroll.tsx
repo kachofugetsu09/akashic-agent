@@ -193,6 +193,8 @@ export function ComposerPageKeys() {
   useEffect(() => {
     const onKey = (event: KeyboardEvent) => {
       if ((event.key !== "PageUp" && event.key !== "PageDown") || event.altKey || event.ctrlKey || event.metaKey || event.shiftKey) return;
+      // 输入法组合中翻的是候选页（Safari 确认候选时还会补发 keyCode 229）；别处已处理的按键也不接管。
+      if (event.isComposing || event.keyCode === 229 || event.defaultPrevented) return;
       const input = event.target;
       const scroller = scrollRef.current;
       if (!(input instanceof HTMLTextAreaElement) || !input.closest(".composer") || !scroller) return;

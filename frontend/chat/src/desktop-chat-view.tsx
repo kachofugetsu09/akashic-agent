@@ -144,7 +144,7 @@ export function DesktopChatView({ embeddedShell, controller }: DesktopChatViewPr
                   loading={historyLoadingOlder}
                   onLoadOlder={() => loadOlderMessages().catch(reportError)}
                 />
-                <DesktopTimelineMessages messages={pagedTimeline} activities={replyActivities} refresh={controller.timelineRefresh} status={status}
+                <DesktopTimelineMessages messages={pagedTimeline} activities={replyActivities} replySynced={replyAvailable !== null} refresh={controller.timelineRefresh} status={status}
                   messageElementsRef={messageElementsRef} copiedMessageId={copiedMessageId}
                   onReply={replyTo} onEditInput={editInput} onCopied={handleCopiedMessage} onError={reportError} />
                 <DesktopConversationMessages

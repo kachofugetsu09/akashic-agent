@@ -27,6 +27,7 @@ import {
   DialogTrigger,
 } from "@/components/ui/dialog";
 import { Brain, Check, ChevronDown, Copy, Download, ExternalLink, Gauge, ImageIcon, Play, Video, Wrench, X } from "lucide-react";
+import { useStickToBottomContext } from "use-stick-to-bottom";
 import { MarqueeText } from "./marquee-text";
 import {
   Fragment,
@@ -812,12 +813,21 @@ function MediaPreview({ url, label, kind, children }: { url: string; label: stri
 
 type MediaKind = "image" | "video";
 
-function MediaViewer({ url, label, kind, onClose }: { url: string; label: string; kind: MediaKind; onClose: () => void }) {
+function MediaViewer({ url, label, kind, onClose, returnFocus }: {
+  url: string; label: string; kind: MediaKind; onClose: () => void;
+  /** 没有 DialogTrigger 的入口（正文图片委托）关闭后把焦点还给它。 */
+  returnFocus?: HTMLElement;
+}) {
   const closeRef = useRef<HTMLButtonElement>(null);
   return <DialogContent className="media-preview" overlayClassName="media-preview-overlay" showCloseButton={false}
     aria-describedby={undefined}
     // 打开后焦点落在关闭钮（Esc 与回车都能离开），而不是顶栏第一个"新标签打开"。
     onOpenAutoFocus={(event) => { event.preventDefault(); closeRef.current?.focus(); }}
+    onCloseAutoFocus={returnFocus ? (event) => {
+      if (!returnFocus.isConnected) return;
+      event.preventDefault();
+      returnFocus.focus({ preventScroll: true });
+    } : undefined}
     onClick={(event) => { if (event.target === event.currentTarget) onClose(); }}>
     <div className="media-preview__bar">
       <DialogTitle className="media-preview__title"><MarqueeText still>{label}</MarqueeText></DialogTitle>
@@ -832,20 +842,51 @@ function MediaViewer({ url, label, kind, onClose }: { url: string; label: string
 }
 
 // 回复正文里的图片（Markdown 图片，两条渲染路径都是普通 img）点开进同一个查看器。document 级委托，不改渲染节点；链接、按钮里的图片照旧。
+// 正文图片（两条 Markdown 渲染路径都是普通 img）点开进同一个查看器。document 级委托不改渲染节点；
+// 键盘入口由这里补：可预览的图片设为可聚焦、按钮语义，Enter/空格打开，关闭后焦点回到这张图。
 export function ReplyImageViewer() {
-  const [image, setImage] = useState<{ url: string; label: string } | null>(null);
-  // 必要 effect：点击委托挂在 document 上。
+  const { scrollRef } = useStickToBottomContext();
+  const [image, setImage] = useState<{ url: string; label: string; trigger: HTMLImageElement } | null>(null);
+  // 必要 effect：点击、按键委托挂在 document 上；新消息与懒加载换出的 img 由 MutationObserver 补上键盘入口。
   useEffect(() => {
-    const onClick = (event: MouseEvent) => {
-      const target = event.target;
-      if (!(target instanceof HTMLImageElement) || !target.closest(REPLY_IMAGE_SCOPE) || target.closest("a, button")) return;
-      setImage({ url: target.currentSrc || target.src, label: target.alt || "图片" });
+    const previewable = (node: EventTarget | null): node is HTMLImageElement =>
+      node instanceof HTMLImageElement && Boolean(node.closest(REPLY_IMAGE_SCOPE)) && !node.closest("a, button");
+    const open = (target: HTMLImageElement) => setImage({ url: target.currentSrc || target.src, label: target.alt || "图片", trigger: target });
+    const mark = (root: ParentNode) => {
+      for (const img of root.querySelectorAll("img")) {
+        if (!previewable(img) || img.hasAttribute("tabindex")) continue;
+        img.tabIndex = 0;
+        img.setAttribute("role", "button");
+        img.setAttribute("aria-label", `查看图片：${img.alt || "图片"}`);
+      }
     };
+    const onClick = (event: MouseEvent) => { if (previewable(event.target)) open(event.target); };
+    const onKey = (event: KeyboardEvent) => {
+      if ((event.key !== "Enter" && event.key !== " ") || !previewable(event.target)) return;
+      event.preventDefault();
+      open(event.target);
+    };
+    const scroller = scrollRef.current;
+    const observer = new MutationObserver((records) => {
+      for (const record of records) for (const node of record.addedNodes) {
+        if (node instanceof HTMLImageElement) mark(node.parentElement ?? node);
+        else if (node instanceof Element && node.querySelector("img")) mark(node);
+      }
+    });
+    if (scroller) {
+      mark(scroller);
+      observer.observe(scroller, { childList: true, subtree: true });
+    }
     document.addEventListener("click", onClick);
-    return () => document.removeEventListener("click", onClick);
-  }, []);
+    document.addEventListener("keydown", onKey);
+    return () => {
+      observer.disconnect();
+      document.removeEventListener("click", onClick);
+      document.removeEventListener("keydown", onKey);
+    };
+  }, [scrollRef]);
   return <Dialog open={image !== null} onOpenChange={(open) => { if (!open) setImage(null); }}>
-    {image ? <MediaViewer url={image.url} label={image.label} kind="image" onClose={() => setImage(null)} /> : null}
+    {image ? <MediaViewer url={image.url} label={image.label} kind="image" returnFocus={image.trigger} onClose={() => setImage(null)} /> : null}
   </Dialog>;
 }
 
