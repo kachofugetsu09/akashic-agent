@@ -1057,6 +1057,13 @@ input {
 
 .composer .composer-queued > svg,
 .composer .composer-queued strong { color: var(--chat-muted); }
+/* 带附件或引用时回车不排队：输入卡内一行轻提示，自动消失。 */
+.composer .composer-queue-refused {
+  margin: 0;
+  padding: 4px 0 0;
+  color: var(--chat-muted);
+  font-size: 0.8125rem;
+}
 
 .composer .composer-reply {
   margin: -8px -10px 8px;

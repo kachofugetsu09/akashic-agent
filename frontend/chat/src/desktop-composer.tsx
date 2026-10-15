@@ -29,7 +29,7 @@ export interface ComposerApi {
 const FLOATING_LAYER = "[role='dialog'], [role='menu'], [role='listbox'], [data-radix-popper-content-wrapper]";
 
 export const DesktopComposer = memo(function DesktopComposer({
-  chatReady, canSend, modelProblem, draftKey, autoFocus = false, fresh = false, status, stopPending, stopVersion, inputId, turnCompleted, modelState, selectedRuntimeId, selectedEffort, replyTarget,
+  chatReady, canSend, modelProblem, draftKey, autoFocus = false, fresh = false, status, stopPending, stopCount, inputId, turnCompleted, modelState, selectedRuntimeId, selectedEffort, replyTarget,
   onModelChange, onCancelReply, onSend, onStop, ref,
 }: {
   chatReady: boolean;
@@ -42,7 +42,7 @@ export const DesktopComposer = memo(function DesktopComposer({
   fresh?: boolean;
   status: ChatStatus;
   stopPending: boolean;
-  stopVersion: number;
+  stopCount: number;
   inputId: string;
   turnCompleted: boolean;
   modelState: { defaultRuntime: string; runtimes: ChatModelRuntime[] } | null;
@@ -116,7 +116,7 @@ export const DesktopComposer = memo(function DesktopComposer({
     syncExpanded(event.target, next);
   }, [setInput, syncExpanded]);
   const readDraft = useCallback((key: string) => drafts.current.get(key) ?? "", []);
-  const followUp = useFollowUpQueue({ draftKey, status, stopPending, stopVersion, inputId, turnCompleted, canSend: canSend && !replyTarget, readDraft, setDraft, queuedDrafts, onSend });
+  const followUp = useFollowUpQueue({ draftKey, status, stopPending, stopCount, inputId, turnCompleted, canSend: canSend && !replyTarget, readDraft, setDraft, queuedDrafts, onSend });
   const moveQueue = followUp.move;
   const submit = useCallback(async (text: string, files: ComposerFile[]) => {
     if (!canSend) throw new Error(modelProblem || "聊天服务暂不可用，请稍后重试。");
@@ -139,13 +139,20 @@ export const DesktopComposer = memo(function DesktopComposer({
       throw error;
     }
   }, [canSend, modelProblem, expanded, onSend, setInput, setDraft, draftKey, moveQueue]);
+  const [queueRefused, setQueueRefused] = useState(false);
+  useEffect(() => {
+    if (!queueRefused) return;
+    const timer = window.setTimeout(() => setQueueRefused(false), 2400);
+    return () => window.clearTimeout(timer);
+  }, [queueRefused]);
   const queueOnEnter = (event: ReactKeyboardEvent<HTMLTextAreaElement>) => {
-    // 生成中发送钮是停止钮，回车原本无效；桌面键盘下改为排队。附件与回复引用仍等本轮结束后手动发。
+    // 本轮未落定时，桌面键盘按回车把纯文字排到本轮之后。
     const native = event.nativeEvent;
     if (event.key !== "Enter" || event.shiftKey || native.isComposing || native.keyCode === 229 || touchOnly()) return;
     const text = input.trim();
-    if (!(isGeneratingChatStatus(status) || status === "finalizing") || !text || hasAttachments || replyTarget) return;
+    if (!turnBusy(status) || !text) return;
     event.preventDefault();
+    if (hasAttachments || replyTarget) return setQueueRefused(true);
     followUp.enqueue(text);
     setExpanded(false);
   };
@@ -191,6 +198,7 @@ export const DesktopComposer = memo(function DesktopComposer({
           <Undo2 size={18} aria-hidden="true" />
         </button>
       </div> : null}
+      {queueRefused ? <p className="composer-queue-refused" role="status">带附件或引用的消息，本轮结束后再发送</p> : null}
       {fileDragActive ? <div className="composer-drop-hint" aria-hidden="true">松开以添加文件</div> : null}
       <PromptInputBody>
         <ComposerAttachments onPresenceChange={setHasAttachments} />
@@ -239,23 +247,26 @@ export const DesktopComposer = memo(function DesktopComposer({
   );
 });
 
-// 读回复时直接打字就进入输入框：焦点不在任何可编辑处、也没有浮层时，把这次按键的焦点交给输入框，
-// 字符随按键的默认动作落进去。触屏设备没有这种输入方式，不挂监听。
 interface QueuedFollowUp {
   key: string;
   inputId: string;
   text: string;
   /** 排队时或之后用户按过停止：本轮结束后退回草稿，不自动发送。 */
   stopped: boolean;
-  stopVersion: number;
+  stopCount: number;
 }
 
-// 生成中按回车把文字排进本轮之后；本轮正常落定再发出，停止、出错或切走会话则退回草稿。
-function useFollowUpQueue({ draftKey, status, stopPending, stopVersion, inputId, turnCompleted, canSend, readDraft, setDraft, queuedDrafts, onSend }: {
+// 排队入口与落定判定共用本轮是否结束的规则。
+function turnBusy(status: ChatStatus): boolean {
+  return isGeneratingChatStatus(status) || status === "finalizing";
+}
+
+// 本轮未落定时按回车把文字排进本轮之后；本轮正常落定再发出，停止、出错或切走会话则退回草稿。
+function useFollowUpQueue({ draftKey, status, stopPending, stopCount, inputId, turnCompleted, canSend, readDraft, setDraft, queuedDrafts, onSend }: {
   draftKey: string;
   status: ChatStatus;
   stopPending: boolean;
-  stopVersion: number;
+  stopCount: number;
   inputId: string;
   turnCompleted: boolean;
   queuedDrafts: { current: Map<string, string> };
@@ -270,19 +281,19 @@ function useFollowUpQueue({ draftKey, status, stopPending, stopVersion, inputId,
     queuedDrafts.current.delete(item.key);
     setDraft(item.key, [item.text, readDraft(item.key)].filter(Boolean).join("\n\n"));
   }, [readDraft, setDraft, queuedDrafts]);
-  const stopped = Boolean(queued && (queued.stopped || queued.stopVersion !== stopVersion));
+  const stopped = Boolean(queued && (queued.stopped || queued.stopCount !== stopCount));
   const enqueue = useCallback((text: string) => {
     const next = {
       key: draftKey,
       inputId: queued?.inputId ?? inputId,
       text: queued ? `${queued.text}\n\n${text}` : text,
       stopped: stopped || stopPending,
-      stopVersion,
+      stopCount,
     };
     setQueued(next);
     queuedDrafts.current.set(draftKey, next.text);
     setDraft(draftKey, "");
-  }, [draftKey, inputId, queued, stopped, stopPending, stopVersion, setDraft, queuedDrafts]);
+  }, [draftKey, inputId, queued, stopped, stopPending, stopCount, setDraft, queuedDrafts]);
 
   // 首次消息接纳只确定原草稿的会话身份，不是切换会话。
   const move = useCallback((from: string, to: string) => {
@@ -302,7 +313,7 @@ function useFollowUpQueue({ draftKey, status, stopPending, stopVersion, inputId,
       setQueued({ ...queued, stopped: true });
       return;
     }
-    if (isGeneratingChatStatus(status) || status === "finalizing") return;
+    if (turnBusy(status)) return;
     // 2. 用户停止、本轮出错或暂不可发：不替用户做决定。
     if (stopped || status === "error" || !canSend || !turnCompleted) return restore(queued);
     // 3. 正常落定：发出；失败同样退回草稿。
@@ -317,6 +328,8 @@ function useFollowUpQueue({ draftKey, status, stopPending, stopVersion, inputId,
   return { queued, stopped, enqueue, restore, move };
 }
 
+// 读回复时直接打字就进入输入框：焦点不在任何可编辑处、也没有浮层时，把这次按键的焦点交给输入框，
+// 字符随按键的默认动作落进去。触屏设备没有这种输入方式，不挂监听。
 function useTypeToCompose(textareaRef: { current: HTMLTextAreaElement | null }, enabled: boolean) {
   useEffect(() => {
     if (!enabled || !window.matchMedia("(hover: hover) and (pointer: fine)").matches) return;

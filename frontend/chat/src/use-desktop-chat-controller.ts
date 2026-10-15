@@ -181,7 +181,7 @@ export function useDesktopChatController() {
     setStatus(next);
   }, [setStatus]);
   const [stopPending, setStopPending] = useState(false);
-  const [stopVersion, setStopVersion] = useState(0);
+  const [stopCount, setStopCount] = useState(0);
   const [error, setError] = useState("");
   const [connectionError, setConnectionError] = useState("");
   const [shellState, setShellState] = useState<WebShellState | null>(null);
@@ -874,7 +874,7 @@ export function useDesktopChatController() {
   }, [canSend, modelProblem, deliverMessage, ensureSession, modelSelectionDirty, replyTarget, reportError, selectedReasoningEffort, selectedRuntimeId, setMessages, setStatusLive]);
 
   const stopTurn = useCallback(() => {
-    setStopVersion((version) => version + 1);
+    setStopCount((version) => version + 1);
     if (sendRequestRef.current) {
       sendRequestRef.current.abort();
       if (socketRef.current?.readyState === WebSocket.CONNECTING) {
@@ -1181,7 +1181,7 @@ export function useDesktopChatController() {
     activeSessionJobs: sessionJobs?.sessionId === activeSessionId ? sessionJobs.jobs : NO_JOBS,
     stopJob,
     surface, sidebarSessions, activeSessionId, pendingSessionId, chatReady, messages, timelineMessages, timelineRefresh, replyActivities, replyAvailable, status,
-    streamStore, messageElementsRef, copiedMessageId, shellState, stopPending, stopVersion, modelState,
+    streamStore, messageElementsRef, copiedMessageId, shellState, stopPending, stopCount, modelState,
     canSend, modelProblem, modelsPhase, modelsError, retryModels, draftKey: activeSessionId || `new:${newChatProjectId}`,
     historyHasMore, historyLoading, historyLoadingOlder, loadOlderMessages, sessionRequested: requestedSessionId !== "",
     activeSessionDeleted, deletedNotice, deleteSession, restoreSession, dismissDeletedNotice, renameSession,

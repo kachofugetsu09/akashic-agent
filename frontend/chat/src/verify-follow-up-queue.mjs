@@ -171,6 +171,13 @@ try {
     assert.equal(await a.page.evaluate(key => sessionStorage.getItem('akashic.chat.draft:' + key), a.session), '切走不丢\n\n原会话草稿');
     assert.equal(a.sends().length, 1);
   });
+  await run('attachment-refused', async a => {
+    await a.page.locator('input[type=file]').setInputFiles({ name: 'note.txt', mimeType: 'text/plain', buffer: Buffer.from('附件') });
+    await a.editor.fill('带附件的追问'); await a.editor.press('Enter');
+    await a.page.getByText('带附件或引用的消息，本轮结束后再发送', { exact: true }).waitFor();
+    assert.equal(await a.editor.inputValue(), '带附件的追问');
+    assert.equal(await a.page.locator('.composer-queued').count(), 0); assert.equal(a.sends().length, 1);
+  });
   await run('ime', async a => {
     await a.editor.fill('你好');
     await a.editor.dispatchEvent('keydown', { key: 'Enter', keyCode: 229, bubbles: true });
