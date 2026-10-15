@@ -19,9 +19,26 @@ export const CODE_BLOCK_PROPS = {
 // 代码不折行：折行会把缩进与对齐打散，窄屏读代码更难；长行在代码块自己的区域里横向滚动。
 // 流式期间的 <pre> 也不折行（message-view.css），两种状态行数一致，换手时块高不变。
 // 高亮组件把行内边距写死为 1ch，代码比块头语言标签左缩约 9px；注入 shadow 样式改为 16px，与块头、生成中的普通 pre 同一左缘。
+// vitesse 在纸面底色（--ak-paper-quiet）上有不少 token 低于 4.5:1（浅色：变量 3.3、函数 3.9、标点 2.6；深色：标点 3.0）。
+// 不换主题：按原色相在 OKLab 里只调明度到约 4.6:1；半透明的引号等弱化字符调到 3.5:1，仍比正文浅一级。
+// 高亮把颜色写在 span 的 inline style 里，只能按色值覆盖；两套主题的色值互不重叠。半透明色以不透明色为前缀，必须排在后面。
+const READABLE_TOKENS: ReadonlyArray<readonly [string, string]> = [
+  // vitesse-light
+  ["#B07D48", "#95642F"], ["#59873A", "#4E7B2E"], ["#999999", "#6F6F6F"], ["#2E8F82", "#127D70"],
+  ["#998418", "#836E00"], ["#B56959", "#A55B4B"], ["#BDA437", "#866D00"], ["#A0ADA0", "#667266"],
+  ["#E36209", "#C44500"], ["#B05A78", "#A95472"], ["#AB5E3F", "#A75A3C"], ["#2E808F", "#257988"],
+  ["#22863A", "#198034"], ["#B5695977", "#9C7B71"], ["#99841877", "#8D834F"], ["#393A3490", "#83837E"],
+  // vitesse-dark
+  ["#666666", "#858585"], ["#6872AB", "#7781BC"], ["#B8A96577", "#7A7251"], ["#C98A7D77", "#896A63"],
+];
+const readableTokenCSS = READABLE_TOKENS.map(([from, to]) => `[style*="${from}" i] { color: ${to} !important; }`).join(" ");
+
 // 代码区上 4px、下 12px：44px 块头的标题下方已有留白，代码首行与标题、末行与块底边的距离都约 12–15px（与块头左缩进同一节奏）。
 // 流式 pre 与高亮占位按同一几何写（message-view.css），换手时块高不变。
-export const CODE_BLOCK_OPTIONS = { overflow: "scroll", unsafeCSS: "[data-line] { padding-inline: 16px; } [data-code] { padding-block: 4px 12px; }" } as const;
+export const CODE_BLOCK_OPTIONS = {
+  overflow: "scroll",
+  unsafeCSS: `[data-line] { padding-inline: 16px; } [data-code] { padding-block: 4px 12px; } ${readableTokenCSS}`,
+} as const;
 
 /** 展示判断只读可见文本，不解析 raw 或猜测内容的用途。 */
 function nodeText(node: ParsedNode): string {
