@@ -216,30 +216,109 @@ type FootnoteLookup = (label: string) => string | null;
 export const FootnoteSource = createContext<FootnoteLookup | null>(null);
 
 const FOOTNOTE_ID_PREFIX = "user-content-fn-";
+const FOOTNOTE_DEFINITION = /^ {0,3}\[\^([^\]\s]+)\]:/u;
+const FENCE = /^ {0,3}(`{3,}|~{3,})/u;
 
 // 标签按 GFM 的规则归一（空白折叠、大小写不敏感），与 micromark 生成 id 前的处理一致。
 const footnoteKey = (label: string) => label.replace(/[\t\n\r ]+/gu, " ").trim().toLowerCase();
 
-/** 按原文惰性解析一次：只有真的渲染到脚注时才跑 micromark，同一原文的多条脚注共用结果。 */
-export function footnoteLookup(markdown: string): FootnoteLookup {
-  let items: Map<string, HTMLLIElement> | null = null;
+/** 定义区：第一条不在围栏里的脚注定义起到文末（定义通常写在文末）。只解析这一段，正文流式追加时它不变，不必整条重算。
+ *  定义区前补一行对每个标签的引用：GFM 只输出被引用过的定义。 */
+export function footnoteRegion(markdown: string): string {
+  const lines = markdown.split("\n");
+  let fence = "";
+  for (let index = 0; index < lines.length; index += 1) {
+    const marker = FENCE.exec(lines[index])?.[1];
+    if (marker && (!fence || (marker[0] === fence[0] && marker.length >= fence.length))) fence = fence ? "" : marker;
+    else if (!fence && FOOTNOTE_DEFINITION.test(lines[index])) {
+      const region = lines.slice(index);
+      const labels = new Set(region.map((line) => FOOTNOTE_DEFINITION.exec(line)?.[1]).filter((label) => label !== undefined));
+      return `${[...labels].map((label) => `[^${label}]`).join(" ")}\n\n${region.join("\n")}`;
+    }
+  }
+  return "";
+}
+
+// 脚注子树换成富渲染的 id 体系：引用指向 fnref--标签、显示标签；GFM 的回链（按合成引用编号）换成一个指向本条引用的回链。
+function adoptFootnoteItem(item: HTMLLIElement, label: string): string {
+  for (const copy of item.querySelectorAll("[data-static-code-copy]")) copy.remove();
+  for (const back of item.querySelectorAll("a[data-footnote-backref]")) back.remove();
+  for (const ref of item.querySelectorAll<HTMLAnchorElement>("a[data-footnote-ref]")) {
+    const target = decodeURIComponent((ref.getAttribute("href") ?? "").replace(`#${FOOTNOTE_ID_PREFIX}`, ""));
+    ref.setAttribute("href", `#fnref--${target}`);
+    ref.id = `fnref-${target}`;
+    ref.textContent = target;
+  }
+  const back = document.createElement("a");
+  back.href = `#fnref-${label}`;
+  back.className = "data-footnote-backref";
+  back.dataset.footnoteBackref = "";
+  back.setAttribute("aria-label", `返回引用 ${label}`);
+  back.textContent = "↩";
+  const last = item.lastElementChild;
+  if (last?.tagName !== "P") item.append(back);
+  else {
+    // 去掉原回链留下的空白，箭头与句末只隔一个空格。
+    const tail = last.lastChild;
+    if (tail?.nodeType === Node.TEXT_NODE) tail.textContent = (tail.textContent ?? "").trimEnd();
+    last.append(" ", back);
+  }
+  return item.innerHTML;
+}
+
+const regionCache = new Map<string, Map<string, string>>();
+
+/** 按定义区惰性解析：只有真的渲染到脚注时才跑 micromark；同一定义区的结果缓存，流式更新与多条脚注共用。 */
+export function footnoteLookup(region: string): FootnoteLookup {
   return (label) => {
+    if (!region) return null;
+    let items = regionCache.get(region);
     if (!items) {
       const template = document.createElement("template");
-      template.innerHTML = renderStaticMarkdown(markdown);
+      template.innerHTML = renderStaticMarkdown(region);
       items = new Map();
       for (const item of template.content.querySelectorAll<HTMLLIElement>(`li[id^="${FOOTNOTE_ID_PREFIX}"]`)) {
-        // 脚注里的代码只读不复制：复制钮的点击委托只挂在静态回复容器上。
-        for (const copy of item.querySelectorAll("[data-static-code-copy]")) copy.remove();
-        items.set(footnoteKey(decodeURIComponent(item.id.slice(FOOTNOTE_ID_PREFIX.length))), item);
+        let id = item.id.slice(FOOTNOTE_ID_PREFIX.length);
+        try { id = decodeURIComponent(id); } catch { /* 标签里的 % 不是编码，原样用 */ }
+        items.set(footnoteKey(id), adoptFootnoteItem(item, id));
       }
+      regionCache.set(region, items);
+      // 只留最近几段：流式中定义区每长一字就是一个新键。
+      if (regionCache.size > 8) regionCache.delete(regionCache.keys().next().value!);
     }
-    const item = items.get(footnoteKey(label));
-    if (!item) return null;
-    // 返回箭头指回富渲染里的引用号（markstream 的 sup id 是 fnref-标签）。
-    for (const back of item.querySelectorAll("a[data-footnote-backref]")) back.setAttribute("href", `#fnref-${label}`);
-    return item.innerHTML;
+    return items.get(footnoteKey(label)) ?? null;
   };
+}
+
+// 脚注正文来自静态 GFM（没有数学扩展）：其中的 $…$ / $$…$$ 按需用 KaTeX 补渲染，代码里的不动。
+const MATH = /\$\$([\s\S]+?)\$\$|\$(?!\s)([^$\n]+?)(?<!\s)\$/gu;
+async function renderFootnoteMath(root: HTMLElement): Promise<void> {
+  const texts: Text[] = [];
+  const walker = document.createTreeWalker(root, NodeFilter.SHOW_TEXT, {
+    acceptNode: (node) => node.parentElement?.closest("pre, code") ? NodeFilter.FILTER_REJECT : NodeFilter.FILTER_ACCEPT,
+  });
+  for (let node = walker.nextNode(); node; node = walker.nextNode()) if (/\$[^$]/u.test(node.textContent ?? "")) texts.push(node as Text);
+  if (!texts.length) return;
+  const [{ default: katex }] = await Promise.all([import("katex"), import("@/katex-styles")]);
+  for (const text of texts) {
+    const source = text.textContent ?? "";
+    let html = "";
+    let cursor = 0;
+    for (const match of source.matchAll(MATH)) {
+      // 公式外的文字按原样转义，只有 KaTeX 的输出是 HTML。
+      html += escapeHtml(source.slice(cursor, match.index));
+      html += katex.renderToString(match[1] ?? match[2], { displayMode: match[1] !== undefined, throwOnError: false });
+      cursor = match.index + match[0].length;
+    }
+    if (!cursor || !text.isConnected) continue;
+    const fragment = document.createElement("template");
+    fragment.innerHTML = html + escapeHtml(source.slice(cursor));
+    text.replaceWith(fragment.content);
+  }
+}
+
+function escapeHtml(text: string): string {
+  return text.replace(/[&<>"]/gu, (char) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" })[char]!);
 }
 
 /** markstream 的脚注只收段落：列表被拍成段落，代码与其后的返回链接丢掉。脚注正文改用同一原文的完整 GFM 解析结果；
@@ -247,8 +326,13 @@ export function footnoteLookup(markdown: string): FootnoteLookup {
 export function ReadingFootnote(props: NodeComponentProps<FootnoteData>) {
   const lookup = useContext(FootnoteSource);
   const html = lookup?.(props.node.id) ?? null;
+  const bodyRef = useRef<HTMLDivElement>(null);
+  // 必要 effect：公式只能在 HTML 挂上后按需加载 KaTeX 补渲染。
+  useEffect(() => {
+    if (bodyRef.current) void renderFootnoteMath(bodyRef.current);
+  }, [html]);
   if (html === null) return <FootnoteRenderer {...props} />;
   return <div id={`fnref--${props.node.id}`} className="footnote-node reading-footnote">
-    <div className="reading-footnote__body" dangerouslySetInnerHTML={{ __html: html }} />
+    <div ref={bodyRef} className="reading-footnote__body" dangerouslySetInnerHTML={{ __html: html }} />
   </div>;
 }

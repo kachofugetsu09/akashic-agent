@@ -15,7 +15,7 @@ import MarkdownRender, {
 } from "markstream-react";
 import "markstream-react/index.px.css";
 import { useReducedMotion } from "motion/react";
-import { CODE_BLOCK_OPTIONS, CODE_BLOCK_PROPS, FootnoteSource, ReadingCode, ReadingFootnote, ReadingList, ReadingParagraph, ReadingTable, footnoteLookup } from "@/markdown-reading-nodes";
+import { CODE_BLOCK_OPTIONS, CODE_BLOCK_PROPS, FootnoteSource, ReadingCode, ReadingFootnote, ReadingList, ReadingParagraph, ReadingTable, footnoteLookup, footnoteRegion } from "@/markdown-reading-nodes";
 import type { MarkdownIt } from "stream-markdown-parser";
 
 function configureMessageMarkdown(markdown: MarkdownIt) {
@@ -108,7 +108,8 @@ export const MessageResponse = memo(function MessageResponse({
   // markstream 的代码高亮按 isDark 选 light/dark 主题；不接入时暗色下代码块永远落在亮色分支。
   const theme = useTheme();
   // 脚注正文按同一原文的完整 GFM 解析取（见 ReadingFootnote）；惰性，没有脚注的回复不解析。
-  const footnotes = useMemo(() => footnoteLookup(children), [children]);
+  const region = useMemo(() => footnoteRegion(children), [children]);
+  const footnotes = useMemo(() => footnoteLookup(region), [region]);
   return (
     <div className={cn("message-response-markstream markdown-reading size-full", isAnimating && "is-streaming", className)}>
       <FootnoteSource.Provider value={footnotes}>
