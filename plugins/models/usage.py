@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import heapq
 import threading
+import time
 from collections import deque
 from collections.abc import Iterable, Iterator, Mapping
 from dataclasses import dataclass, field
@@ -19,6 +20,7 @@ _PROACTIVE_SOURCES = frozenset({"wake", "drift"})
 _RECENT_TURNS = 50
 _RECENT_PASSIVE_TURNS = 10
 _PREVIEW_CHARS = 90
+_SCAN_SECONDS = 2.0
 
 
 @dataclass(frozen=True, slots=True)
@@ -90,14 +92,22 @@ class CacheUsage:
 
     # 汇总所有 Session；被动近期命中只取最近 10 个被动 Turn。
     def _overview(self, catalog: MessageCatalog, projection: TurnProjection) -> dict[str, object]:
+        """按需推进扫描，所有当前 Session 完成后才返回完整统计。"""
         with self._lock:
             # 无过滤目录保留软删 Session；按两种可见性读取才是当前有效集合。
             heads = dict(catalog.snapshot_heads(visibility="listed"))
             heads.update(catalog.snapshot_heads(visibility="internal"))
             self._heads = {key: head for key, head in self._heads.items() if key in heads}
             self._sources = {key: state for key, state in self._sources.items() if key[0] in heads}
+            # 冷读在闭合 Turn 边界让出请求；下一次接着已有消费位置继续。
+            deadline = time.monotonic() + _SCAN_SECONDS
             for session_id, head in heads.items():
-                self._refresh(catalog, projection, session_id, head)
+                self._refresh(catalog, projection, session_id, head, deadline=deadline)
+                if time.monotonic() >= deadline:
+                    break
+            scanned = sum(self._heads.get(session_id) == head for session_id, head in heads.items())
+            if scanned < len(heads):
+                return {"complete": False, "scanned_sessions": scanned, "total_sessions": len(heads)}
             states = tuple((source in _PROACTIVE_SOURCES, state) for (_, source), state in self._sources.items())
             passive, proactive = _Totals(), _Totals()
             for is_proactive, state in states:
@@ -111,6 +121,7 @@ class CacheUsage:
                                 _RECENT_PASSIVE_TURNS):
                 recent_passive.add(turn)
         return {
+            "complete": True,
             "recent_passive": recent_passive.body(), "passive": passive.body(), "proactive": proactive.body(),
             "total": passive.turns + proactive.turns,
             "turns": [{"session_id": turn.session_id, "proactive": turn.proactive, "recorded_at": turn.recorded_at,
@@ -134,7 +145,11 @@ class CacheUsage:
             return None if state is None else state.outputs.get(message_id)
 
     # 只扫描上次闭合 Turn 之后的消息；未闭合尾段留到下次。
-    def _refresh(self, catalog: MessageCatalog, projection: TurnProjection, session_id: str, head: int) -> None:
+    def _refresh(
+        self, catalog: MessageCatalog, projection: TurnProjection, session_id: str, head: int,
+        *, deadline: float | None = None,
+    ) -> None:
+        """从上次闭合位置读取；时间预算只在完整 Turn 边界生效。"""
         if self._heads.get(session_id) == head:
             return
         reader = catalog.reader(session_id)
@@ -142,9 +157,20 @@ class CacheUsage:
             state = self._sources.setdefault((session_id, source), _SourceState())
             facts: dict[str, _Fact] = {}
             after = state.after_seq
+            stopped = False
+
+            def bounded(rows: Iterable[Message]) -> Iterator[Message]:
+                nonlocal stopped
+                for message in rows:
+                    yield message
+                    # 保留完整 Turn；任意消息处截断会反复重读很长的 open 尾段。
+                    if (deadline is not None and time.monotonic() >= deadline
+                            and isinstance(message.body, Output) and message.body.finish != "continue"):
+                        stopped = True
+                        return
 
             def consume(rows: Iterable[Message], source: str = source, after: int = after) -> tuple[Turn, ...]:
-                return projection.project(_tap(rows, facts), source, after_seq=after)
+                return projection.project(_tap(bounded(rows), facts), source, after_seq=after)
 
             turns = [turn for turn in reader.scan(consume, after_seq=after, through_seq=head, source=source)
                      if turn.status != "open"]
@@ -152,6 +178,8 @@ class CacheUsage:
             usages = self._store.read_call_usages([identity for identity in call_ids if identity is not None])
             for turn in turns:
                 _record(state, session_id, source, turn, facts, usages)
+            if stopped:
+                return
         self._heads[session_id] = head
 
 
