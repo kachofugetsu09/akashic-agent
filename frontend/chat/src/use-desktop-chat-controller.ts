@@ -97,6 +97,8 @@ function clearChatRoute() {
 class DeliveryFailed extends Error {}
 // 发送（上传附件或投递）失败：草稿与附件都还在输入框里，发送钮本身就是重试入口。
 class SendFailed extends Error {}
+// 历史没读到：原因由对话区的读取失败视图持有，不写全局错误（否则重试期间旧原因掉到输入框下，切会话还会残留）。
+class HistoryUnavailable extends Error {}
 
 const RECONNECTING_NOTICE = "连接已断开，正在重新连接…";
 
@@ -160,7 +162,7 @@ export function useDesktopChatController() {
   const [historyLoadingOlder, setHistoryLoadingOlder] = useState(false);
   const [historyLoading, setHistoryLoading] = useState(false);
   // 历史没读到的会话：对话区写明原因并给重试，不退回新会话的空白页（那会让人以为这段对话是空的，接着发也看不到上文）。
-  const [historyFailedSession, setHistoryFailedSession] = useState("");
+  const [historyFailure, setHistoryFailure] = useState<{ sessionId: string; reason: string } | null>(null);
   const messagesRef = useRef<ChatMessage[]>([]);
   const commitMessages = useCallback((action: SetStateAction<ChatMessage[]>) => {
     // 1. Resolve every WebSocket mutation against a synchronous immutable baseline.
@@ -343,7 +345,7 @@ export function useDesktopChatController() {
     olderMessagesRequestRef.current?.abort();
     messagesRequestRef.current = controller;
     setHistoryLoading(true);
-    setHistoryFailedSession("");
+    setHistoryFailure(null);
     const current = () => messagesRequestRef.current === controller
       && !controller.signal.aborted && activeSessionRef.current === sessionId;
     try {
@@ -365,8 +367,11 @@ export function useDesktopChatController() {
     } catch (error) {
       if (!current()) return;
       // 会话已不存在（404）时重试没有意义，照旧回到首页版式开新对话。
-      if (!(error instanceof ChatRequestError && error.status === 404)) setHistoryFailedSession(sessionId);
-      throw error;
+      if (isAbortError(error) || (error instanceof ChatRequestError && error.status === 404)) throw error;
+      console.error("[chat] history request failed", error);
+      const reason = errorMessage(error);
+      setHistoryFailure({ sessionId, reason });
+      throw new HistoryUnavailable(reason);
     } finally {
       if (messagesRequestRef.current === controller) {
         messagesRequestRef.current = null;
@@ -424,7 +429,11 @@ export function useDesktopChatController() {
     sessionHeads, activeSessionId, historyLoading ? null : followAfter,
     surface === "chat", loadSessionsSafely,
   );
-  const loadMessagesSafely = useCallback((sessionId: string) => loadMessages(sessionId).catch((error: unknown) => reportError(error)), [loadMessages, reportError]);
+  // 读取失败已由读取失败视图展示，其它错误照常进全局错误行。
+  const reportHistoryError = useCallback((error: unknown) => {
+    if (!(error instanceof HistoryUnavailable)) reportError(error);
+  }, [reportError]);
+  const loadMessagesSafely = useCallback((sessionId: string) => loadMessages(sessionId).catch(reportHistoryError), [loadMessages, reportHistoryError]);
 
   /** 同会话读取合并；设置变更须废弃变更前的读取，迟到结果不能覆盖新事实。 */
   const loadModels = useCallback((sessionId: string, force = false): Promise<void> => {
@@ -1073,13 +1082,13 @@ export function useDesktopChatController() {
     setModelSelectionDirty(false);
     void loadModels(sessionId);
     void (cachedFresh ? Promise.resolve() : loadMessages(sessionId))
-      .catch((reason: unknown) => reportError(reason))
+      .catch(reportHistoryError)
       .finally(() => {
         if (activeSessionRef.current === sessionId) setPendingSessionId("");
       });
     // 新鲜快照跳过了分页拉取，仍需恢复 WebSocket 增量跟随。
     if (cachedFresh) followSession(socketRef.current ?? connectRef.current?.() ?? null, sessionId, cached.throughSeq);
-  }, [closeConnection, loadMessages, loadModels, reportError, setFollowAfter, setMessages, setTimelineMessages, setReplyAvailable, setStatusLive, surface, sessions, navigationPins.sessions]);
+  }, [closeConnection, loadMessages, loadModels, reportError, reportHistoryError, setFollowAfter, setMessages, setTimelineMessages, setReplyAvailable, setStatusLive, surface, sessions, navigationPins.sessions]);
 
   useEffect(() => {
     if (!chatReady || !requestedSessionId) return;
@@ -1181,7 +1190,6 @@ export function useDesktopChatController() {
   const activeProjectId = activeRow ? activeRow.scope?.[PROJECT_DIMENSION] ?? "" : newChatProjectId;
   const activeProject = projects.find((project) => project.id === activeProjectId) ?? null;
   const retryHistory = useCallback(() => {
-    setError("");
     if (activeSessionRef.current) void loadMessagesSafely(activeSessionRef.current);
   }, [loadMessagesSafely]);
   const retry = useCallback(() => {
@@ -1224,7 +1232,7 @@ export function useDesktopChatController() {
     streamStore, messageElementsRef, copiedMessageId, shellState, stopPending, stopCount, modelState,
     canSend, modelProblem, modelsPhase, modelsError, retryModels, draftKey: activeSessionId || `new:${newChatProjectId}`,
     historyHasMore, historyLoading, historyLoadingOlder, loadOlderMessages, sessionRequested: requestedSessionId !== "",
-    historyFailed: activeSessionId !== "" && historyFailedSession === activeSessionId, retryHistory,
+    historyFailure: activeSessionId !== "" && historyFailure?.sessionId === activeSessionId ? historyFailure.reason : null, retryHistory,
     activeSessionDeleted, deletedNotice, deleteSession, restoreSession, dismissDeletedNotice, renameSession,
     // 自动重连是会自己恢复的临时状态，单独给视图一个安静的状态行；重连失败等才走错误行。
     reconnecting: !error && connectionError === RECONNECTING_NOTICE,

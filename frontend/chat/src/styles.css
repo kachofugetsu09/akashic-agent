@@ -3165,9 +3165,10 @@ form.composer:focus-within [data-slot="input-group"] {
 .directory-notice { color: var(--ak-ink-secondary); }
 .directory-notice strong { display: block; color: var(--ak-ink-primary); }
 .directory-actions { display: flex; flex-flow: row wrap; gap: 8px; }
-/* 目录名短而信息量大：不与标题按比例分摊收缩（上限 14rem），长标题先让；真超长时与标题同样右缘渐隐，不用省略号。 */
-.directory-marker { position: relative; display: flex; min-width: 4.5rem; flex: 0 0 auto; margin-inline-start: auto; padding-inline-start: 12px; font-size: var(--chat-type-caption, 0.75rem); }
-.directory-marker__trigger { display: inline-flex; max-width: min(14rem, 100%); min-height: 32px; align-items: center; gap: 6px; padding-inline: 8px; border: 0; border-radius: 6px; background: transparent; color: var(--chat-faint); font: inherit; cursor: pointer; transition: color var(--ak-sys-duration-short) var(--ak-sys-motion-standard); }
+/* 目录名短而信息量大：不与标题按比例分摊收缩，长标题先让；真超长时与标题同样右缘渐隐，不用省略号。
+   上限放在参与标题栏 flex 的外层（含左内边距）：只限按钮时外层仍按目录全名的固有宽度占位，会把标题挤没。 */
+.directory-marker { position: relative; display: flex; min-width: 4.5rem; max-width: calc(14rem + 12px); flex: 0 0 auto; margin-inline-start: auto; padding-inline-start: 12px; font-size: var(--chat-type-caption, 0.75rem); }
+.directory-marker__trigger { display: inline-flex; max-width: 100%; min-height: 32px; align-items: center; gap: 6px; padding-inline: 8px; border: 0; border-radius: 6px; background: transparent; color: var(--chat-faint); font: inherit; cursor: pointer; transition: color var(--ak-sys-duration-short) var(--ak-sys-motion-standard); }
 .directory-marker__trigger > span { min-width: 0; overflow: hidden; white-space: nowrap; }
 .directory-marker__trigger svg { flex: 0 0 auto; }
 

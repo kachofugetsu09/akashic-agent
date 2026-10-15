@@ -91,7 +91,7 @@ export function DesktopChatView({ embeddedShell, controller }: DesktopChatViewPr
   // 刷新或通知入口带着会话打开时，会话要等聊天就绪才开始读取；外壳需要配置、启动中或不可用时让给引导页。
   const shellStatus = shellState?.status ?? null;
   const sessionOpening = historyLoading || (sessionRequested && (shellStatus === null || shellStatus === "ready"));
-  const historyFailed = controller.historyFailed && !hasMessages;
+  const historyFailed = controller.historyFailure !== null && !hasMessages;
   const conversationLayout = hasMessages || sessionOpening || historyFailed;
 
   const shellClass = embeddedShell ? "chat-shell is-embedded" : "chat-shell";
@@ -137,7 +137,7 @@ export function DesktopChatView({ embeddedShell, controller }: DesktopChatViewPr
         <Conversation className="conversation" resize="instant">
           <ConversationContent className={conversationLayout ? "conversation-content" : "conversation-content empty"}>
             {historyFailed ? <div className="history-switch-loading is-failed" role="alert">
-              <p>没能读取这段对话的记录{error ? `：${error}` : "。"}</p>
+              <p>没能读取这段对话的记录{controller.historyFailure ? `：${controller.historyFailure}` : "。"}</p>
               <button type="button" onClick={controller.retryHistory}>重试</button>
             </div>
               : !hasMessages && sessionOpening ? <p className="history-switch-loading" role="status">正在读取消息</p>
@@ -209,7 +209,7 @@ export function DesktopChatView({ embeddedShell, controller }: DesktopChatViewPr
             <button type="button" onClick={retry}>立即重试</button>
           </p> : null}
           <HostBridgeNotice paused={controller.connectionLost} />
-          {error && !historyFailed ? <div className="error-line" role="alert"><span>{error}</span>
+          {error ? <div className="error-line" role="alert"><span>{error}</span>
             {controller.errorRetry ? <MaterialButton variant="danger" onClick={retry}>重试</MaterialButton> : null}
           </div> : null}
         </div>
