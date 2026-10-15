@@ -74,7 +74,8 @@ const MessageBody = memo(function MessageBody({
   }
   if (!streaming && deferRichContent) {
     const features = detectMessageRenderingFeatures(content);
-    if (features.math || features.code) {
+    // 脚注里有块结构时宁可代码不高亮，也要走能完整表达脚注的静态渲染；公式只有富渲染能排，仍走富渲染。
+    if (features.math || (features.code && !features.blockFootnote)) {
       return (
         <Suspense fallback={<p className="plain-message-response">{content}</p>}>
           <LazyMessageResponse isAnimating={false}>{content}</LazyMessageResponse>

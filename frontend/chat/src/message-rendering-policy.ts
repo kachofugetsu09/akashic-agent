@@ -1,11 +1,15 @@
 export interface MessageRenderingFeatures {
   code: boolean;
   math: boolean;
+  /** 脚注定义里有列表、代码、引用等块结构（富渲染路径表达不了，见 hasBlockFootnote）。 */
+  blockFootnote: boolean;
 }
 
 const fencedCodePattern = /^\s{0,3}(`{3,}|~{3,})([^\n]*)$/gm;
 const blockMathPattern = /(^|\n)\s*\$\$[\s\S]*?\$\$\s*(?=\n|$)/m;
 const inlineMathPattern = /(^|[^\\$])\$[^\s$](?:[^$\n]*?[^\s$])?\$(?!\$)/m;
+const footnoteDefinitionPattern = /^\s{0,3}\[\^[^\]\s]+\]:/;
+const footnoteBlockPattern = /^(?: {4}|\t)\s{0,3}(?:[-+*]\s|\d+[.)]\s|```|~~~|>|#{1,6}\s|\|)/;
 const markdownSyntaxPattern = /(^|\n)\s{0,3}(?:#{1,6}\s|>|[-+*]\s|\d+[.)]\s|```|~~~|(?:-{3,}|_{3,}|\*{3,})\s*$)|!?(?:\[[^\]]+\]\([^\n)]+\))|`[^`\n]+`|\*\*|__|~~|https?:\/\/|<\/?[a-z][^>]*>/im;
 
 /** Detect rich Markdown features so expensive renderers load only when needed. */
@@ -29,7 +33,24 @@ export function detectMessageRenderingFeatures(markdown: string): MessageRenderi
   return {
     code,
     math: blockMathPattern.test(markdown) || inlineMathPattern.test(markdown),
+    blockFootnote: hasBlockFootnote(markdown),
   };
+}
+
+// markstream 的脚注只收段落：脚注里的列表被拍成段落，代码块和其后的返回链接直接丢掉。
+// 只看脚注定义的缩进续行，正文里的同类结构不算。
+function hasBlockFootnote(markdown: string): boolean {
+  let inside = false;
+  for (const line of markdown.split("\n")) {
+    if (footnoteDefinitionPattern.test(line)) {
+      inside = true;
+      continue;
+    }
+    if (!inside || !line.trim()) continue;
+    if (footnoteBlockPattern.test(line)) return true;
+    if (!/^(?: {4}|\t)/.test(line)) inside = false;
+  }
+  return false;
 }
 
 /** Keep ordinary chat text on the zero-parser path while preserving Markdown semantics. */
