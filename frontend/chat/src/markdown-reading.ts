@@ -85,7 +85,8 @@ export function watchOverflowEdges(scroller: HTMLElement): () => void {
   resize.observe(scroller);
   if (scroller.firstElementChild) resize.observe(scroller.firstElementChild);
   scroller.addEventListener("scroll", measure, { passive: true });
-  measure();
+  // 不在注册时同步测量：ResizeObserver 在 observe 后的同一帧布局之后、绘制之前必回调一次，
+  // 同步读 scrollLeft 会在 effect 提交阶段强制布局（落定换手实测约 12–16ms）。
   return () => {
     resize.disconnect();
     scroller.removeEventListener("scroll", measure);
