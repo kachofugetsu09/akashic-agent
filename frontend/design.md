@@ -40,6 +40,8 @@
 
 新组件不得新增 `--md-sys-*` 直接依赖（旧 namespace 是迁移期 transport alias）；不得为设想中的组件提前发布 token；同一几何值出现在两处时，先收进上表的某个 owner。
 
+强制颜色（Windows 高对比度，`@media (forced-colors: active)`）下背景色会被系统统一替换：只靠底色表达的状态必须另有表达。规则集中在 styles.css 末尾一个块里：品牌标记、会话状态点与旋涡、轮次刻度、后台任务点用 `forced-color-adjust: none` + `CanvasText`（当前轮刻度 `Highlight`）保留形状；当前会话行、当前项目、选中的模型用 `Highlight` 内描边；用户气泡加 `CanvasText` 细边框；输入卡内层不再画第二圈描边，聚焦由外框的 `Highlight` 描边表达。新增只靠底色区分的状态时同步加进这个块。
+
 ## 3. 布局与对齐合同
 
 ### 3.1 阅读竖线
