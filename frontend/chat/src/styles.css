@@ -2740,7 +2740,6 @@ form.composer:focus-within [data-slot="input-group"] {
     font: inherit;
     font-size: 0.8125rem;
     text-align: start;
-    text-overflow: ellipsis;
     white-space: nowrap;
     cursor: pointer;
   }

@@ -3,6 +3,7 @@ import { useCallback, useEffect, useLayoutEffect, useRef, useState, useSyncExter
 import { useStickToBottomContext } from "use-stick-to-bottom";
 
 import type { ChatMessage } from "./chat-message";
+import { MarqueeText } from "./marquee-text";
 import type { StreamProjectionStore } from "./stream-projection";
 import { isGeneratingChatStatus, type ChatStatus } from "./web-chat-status";
 import type { ReplyActivity, TimelineMessage } from "./message-timeline";
@@ -384,7 +385,7 @@ export function TurnRail({ revision }: { revision: string }) {
     <ol ref={listRef} className="turn-rail__list">
       {segments.map((segment) => <li key={segment.id}>
         <button type="button" aria-current={segment.id === active ? "true" : undefined}
-          tabIndex={open ? 0 : segment.id === active ? 0 : -1} onClick={() => jump(segment)}>{segment.preview}</button>
+          tabIndex={open ? 0 : segment.id === active ? 0 : -1} onClick={() => jump(segment)}><MarqueeText>{segment.preview}</MarqueeText></button>
       </li>)}
     </ol>
   </nav>;

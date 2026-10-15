@@ -417,7 +417,8 @@
     .conversation-session:focus-visible,
     .project-session:is(:hover, :focus-visible),
     .project-group__open:is(:hover, :focus-visible),
-    .conversation-heading h1:hover
+    .conversation-heading h1:hover,
+    .turn-rail__list button:is(:hover, :focus-visible)
   ) .marquee.is-truncated.is-animatable:not(.is-still) {
     animation: marquee-pingpong var(--marquee-duration, 4s) linear 0.35s infinite;
   }
