@@ -479,7 +479,7 @@ function ComposerAttachments({ onPresenceChange }: { onPresenceChange: (hasAttac
                   <div className="attachment-preview-icon">
                     <AttachmentPreview />
                   </div>
-                  <AttachmentRemove className="attachment-remove-inline" />
+                  <AttachmentRemove className="attachment-remove-inline" label={`移除 ${getAttachmentLabel(attachment)}`} title="移除" />
                 </div>
                 {isMedia ? null : <AttachmentFileBody name={getAttachmentLabel(attachment)} />}
               </Attachment>

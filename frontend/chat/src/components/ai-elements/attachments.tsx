@@ -91,11 +91,11 @@ export const AttachmentFileBody = ({ name, sizeBytes }: { name: string; sizeByte
 
 export const getAttachmentLabel = (data: AttachmentData): string => {
   if (data.type === "source-document") {
-    return data.title || data.filename || "Source";
+    return data.title || data.filename || "来源";
   }
 
   const category = getMediaCategory(data);
-  return data.filename || (category === "image" ? "Image" : "Attachment");
+  return data.filename || (category === "image" ? "图片" : "附件");
 };
 
 const renderAttachmentImage = (
@@ -105,7 +105,7 @@ const renderAttachmentImage = (
 ) =>
   isGrid ? (
     <img
-      alt={filename || "Image"}
+      alt={filename || "图片"}
       className="size-full object-cover"
       height={96}
       src={url}
@@ -113,7 +113,7 @@ const renderAttachmentImage = (
     />
   ) : (
     <img
-      alt={filename || "Image"}
+      alt={filename || "图片"}
       className="size-full rounded object-cover"
       height={20}
       src={url}
@@ -281,7 +281,7 @@ export type AttachmentRemoveProps = ComponentProps<typeof Button> & {
 };
 
 export const AttachmentRemove = ({
-  label = "Remove",
+  label = "移除",
   className,
   children,
   ...props

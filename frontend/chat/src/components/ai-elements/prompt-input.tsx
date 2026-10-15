@@ -272,12 +272,12 @@ export const PromptInput = ({
   return (
     <LocalAttachmentsContext.Provider value={attachmentsCtx}>
       <input
-        aria-label="Upload files"
+        aria-label="选择要上传的文件"
         className="hidden"
         multiple={multiple}
         onChange={handleChange}
         ref={inputRef}
-        title="Upload files"
+        title="选择要上传的文件"
         type="file"
       />
       <form
