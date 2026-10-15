@@ -10,9 +10,25 @@
 - https://github.com/google/fonts/tree/main/ofl/notoserifsc
 - https://github.com/google/fonts/tree/main/ofl/sourceserif4
 
-Noto 的四个 WOFF2 分片覆盖原始字体的完整 Unicode cmap，按 `reading-serif.css`
-的 Unicode 范围加载。由 FontTools 4.66.1 subset（默认选项）与系统 woff2_compress
-生成，保留可变字重。源 WOFF2 来自 NotoSerifSC[wght].ttf 的完整压缩版本；
-本次生成已比较源 cmap 与四片并集，确保没有删减支持字符。
+Noto Serif SC 按字频分层切片（Version 2.003，源 `NotoSerifSC[wght].ttf` SHA256
+`050080d9255a86808f2945bffac582b31ef32bc36411ce29563b4961670c66f9`），浏览器按
+`unicode-range` 只下载页面用到的分片：
 
-源 Noto WOFF2 SHA256：`ee1376b2e481cb117e8786b95c1d7e7aa0f3c61ccfa50392823e56101e9cd065`。
+- `core`：拉丁、通用标点、箭头、CJK 标点与假名、全角形式；
+- `common-1`：GB2312 一级字（3755），整片；
+- `common-2-NN`：GB2312 二级字（3008）按部首顺序每 500 字一片——"阈""渚"这类现代常见字在二级字里，一页常有几个，细切后只多下载几片；
+- `han-NN`、`ext-a-NN`：其余基本区汉字与扩展 A，按码位每 800 字一片；
+- `symbols`、`astral`：其余符号与兼容字形、增补平面。
+
+普通中文页面只需 `core` + `common-1`（约 1.5MB，构建时预加载），原先四段码位切片会下载全部约 11MB。
+宽分片先声明、常用层后声明：CSS Fonts 规定 `unicode-range` 重叠时后声明的规则先检查，
+所以生僻分片可以用连续区间，只有常用层需要写码位表。
+
+重新生成（FontTools 4.66.1）：
+
+```bash
+python scripts/split-reading-font.py /path/to/NotoSerifSC[wght].ttf
+```
+
+脚本校验源摘要、分片互不相交且并集等于源 cmap，并按 CSS 匹配规则模拟每个码位都落到含它的分片后，
+才替换仓库里的分片与 `reading-serif.css`。

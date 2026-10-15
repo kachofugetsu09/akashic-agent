@@ -42,12 +42,12 @@ function serveLocalPluginUi(): Plugin {
 
 // 阅读字体此前要等 CSS 下载解析后才被发现，首屏文本先以系统字体渲染再 swap。
 // 构建期把已成形的字体资产以 preload 注入 HTML，让字体下载与 JS 并行开始。
-// 只预载首屏必用的三份：Source Serif 4 正常体、Noto Serif SC 首片（ASCII/标点/假名）、JetBrains Mono；
-// 其余 Noto 分片与斜体仍按需加载，不为可能不渲染的字形提前占带宽。
+// 只预载首屏必用的：Source Serif 4 正常体、Noto Serif SC 首屏层（标点/假名/全角）与一级常用字、JetBrains Mono；
+// 二级字、生僻字分片与斜体仍按需加载，不为可能不渲染的字形提前占带宽。
 function preloadReadingFonts(): Plugin {
   const wanted = [
     /^source-serif(?!-italic)-[A-Za-z0-9_-]+\.woff2$/u,
-    /^noto-serif-sc-0-[A-Za-z0-9_-]+\.woff2$/u,
+    /^noto-serif-sc-(?:core|common-1)-[A-Za-z0-9_-]+\.woff2$/u,
     /^JetBrainsMono-[A-Za-z0-9_-]+\.woff2$/u,
   ];
   return {
