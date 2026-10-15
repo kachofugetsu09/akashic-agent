@@ -184,7 +184,8 @@ export function ProjectNavigationRow({
       { label: "新建对话", icon: <Plus size={18} aria-hidden="true" />, onSelect: onNewChat },
       ...(actions ?? []),
     ]}>
-      <button type="button" className="project-group__toggle"
+      {/* 与右侧项目名按钮做同一件事，键盘只停项目名一处。 */}
+      <button type="button" className="project-group__toggle" tabIndex={-1}
         aria-label={`${open ? "收起" : "展开"} ${project.name} 的对话`} aria-expanded={open}
         onClick={onToggle} disabled={searching}>
         <ChevronRight size={14} aria-hidden="true" className="project-group__chevron" />
@@ -211,6 +212,7 @@ export function ProjectNavigationRow({
         className={`project-session ${session.active ? "active" : ""}`}
         aria-current={session.active ? "true" : undefined}
         aria-busy={pendingSessionId === session.id || undefined}
+        tabIndex={session.active ? 0 : -1}
         title={session.title}
         onClick={() => onSelectSession(session.id)}
         onPointerEnter={() => onPrefetchSession?.(session.id)}

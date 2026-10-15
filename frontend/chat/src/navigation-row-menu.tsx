@@ -86,7 +86,8 @@ export function NavigationRowMenu({ title, actions = [], className, children, on
       {children}
       {actions.length ? <>
         <DropdownMenuTrigger asChild>
-          <button type="button" className="navigation-menu-trigger" aria-label={`${title} 的操作`}>
+          {/* 键盘在行上按菜单键或 Shift+F10 打开，不再为每行多占一个 Tab 停靠点。 */}
+          <button type="button" className="navigation-menu-trigger" aria-label={`${title} 的操作`} tabIndex={-1}>
             <Ellipsis size={18} aria-hidden="true" />
           </button>
         </DropdownMenuTrigger>

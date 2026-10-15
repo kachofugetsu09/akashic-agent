@@ -104,22 +104,26 @@ const SHORTCUT_MOD = typeof navigator !== "undefined" && /Mac|iPhone|iPad/.test(
 // 抽屉里的侧栏副本与被隐藏的常驻侧栏不挂监听，避免同一按键触发两次。
 const SEARCH_HIGHLIGHT = "sidebar-search";
 
-// 侧栏里可见的会话行主按钮，按文档顺序：置顶、项目内、最近会话。
+const NAVIGATION_ROW = "button.conversation-session, button.project-session, button.project-group__open";
+
+// 侧栏里可见、可用的导航行主按钮，按文档顺序：置顶、项目（含项目内会话）、最近会话。
 function sessionRows(root: HTMLElement | null): HTMLButtonElement[] {
-  return Array.from(root?.querySelector(".chat-sidebar__navigation")?.querySelectorAll<HTMLButtonElement>("button.conversation-session, button.project-session") ?? [])
-    .filter((row) => row.offsetParent !== null);
+  return Array.from(root?.querySelector(".chat-sidebar__navigation")?.querySelectorAll<HTMLButtonElement>(NAVIGATION_ROW) ?? [])
+    .filter((row) => row.offsetParent !== null && !row.disabled);
 }
 
-// 焦点在会话行上时，↑↓ 在行间移动；从第一行再按 ↑ 回到搜索框。
+// 会话列表只占一个 Tab 停靠点（当前会话行）；焦点在行上时 ↑↓ 逐行、Home/End 到首末行，从第一行再按 ↑ 回到搜索框。
 function moveSessionFocus(event: React.KeyboardEvent<HTMLElement>) {
-  if (event.key !== "ArrowDown" && event.key !== "ArrowUp") return;
+  if (!["ArrowDown", "ArrowUp", "Home", "End"].includes(event.key)) return;
   const target = event.target;
-  if (!(target instanceof HTMLButtonElement) || !target.matches(".conversation-session, .project-session")) return;
+  if (!(target instanceof HTMLButtonElement) || !target.matches(NAVIGATION_ROW)) return;
   const sidebar = target.closest<HTMLElement>(".chat-sidebar");
   const rows = sessionRows(sidebar);
   const index = rows.indexOf(target);
   event.preventDefault();
-  if (event.key === "ArrowDown") rows[Math.min(index + 1, rows.length - 1)]?.focus();
+  if (event.key === "Home") rows[0]?.focus();
+  else if (event.key === "End") rows.at(-1)?.focus();
+  else if (event.key === "ArrowDown") rows[Math.min(index + 1, rows.length - 1)]?.focus();
   else if (index > 0) rows[index - 1].focus();
   else sidebar?.querySelector<HTMLInputElement>(".chat-sidebar__search input")?.focus();
 }
@@ -201,6 +205,8 @@ function ShortcutsDialog({ open, onOpenChange, returnFocus }: { open: boolean; o
     { title: "导航", items: [
       ["搜索会话", [mod, "K"]],
       ["新会话", [mod, "Shift", "O"]],
+      ["在会话列表里上下移动", ["↑", "↓"]],
+      ["会话的操作菜单", ["Shift", "F10"]],
       ["快捷键", [mod, "/"]],
     ] },
   ];
@@ -487,7 +493,9 @@ export const DesktopSidebar = memo(function DesktopSidebar({
               }
               // 2. 回车打开第一条结果，↓ 进入结果列表；与命令面板同一手感。
               if (event.key !== "Enter" && event.key !== "ArrowDown") return;
-              const first = sessionRows(sidebarRef.current)[0];
+              // 回车只打开会话，跳过项目标题行；↓ 落到列表首行（可能是项目）。
+              const rows = sessionRows(sidebarRef.current);
+              const first = event.key === "Enter" ? rows.find((row) => !row.matches(".project-group__open")) : rows[0];
               if (!first || (event.key === "Enter" && !searching)) return;
               event.preventDefault();
               if (event.key !== "Enter") { first.focus(); return; }
