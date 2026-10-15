@@ -1212,6 +1212,17 @@ button.tool-step-summary:active {
   user-select: text;
 }
 
+/* 路径摘要：目录的收缩权重远大于文件名，放不下时先把目录收成省略号，文件名最后才让。 */
+.tool-step-description--path { display: flex; }
+.tool-step-path-dir,
+.tool-step-path-file {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.tool-step-path-dir { flex: 0 100000 auto; }
+.tool-step-path-file { flex: 0 1 auto; }
+
 .tool-step-state {
   font-size: 0.6875rem;
   font-variant-numeric: tabular-nums;

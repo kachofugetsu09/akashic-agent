@@ -1327,7 +1327,7 @@ function ToolStepSummary({
   open,
 }: {
   block: ToolBlock;
-  description: string;
+  description: ToolDescription;
   stateLabel: string;
   expandable: boolean;
   open: boolean;
@@ -1338,26 +1338,40 @@ function ToolStepSummary({
         <Wrench className="tool-step-icon" size={13} />
         <span>{block.name}</span>
       </span>
-      <span className="tool-step-description">{description}</span>
+      <ToolDescriptionText description={description} />
       <span className="tool-step-state">{stateLabel}<CollapseHint open={open} lead={Boolean(stateLabel)} /></span>
       {expandable ? <ChevronDown className={`tool-step-chevron ${open ? "open" : ""}`} size={13} /> : null}
     </span>
   );
 }
 
+// 路径摘要放不下时先收目录、保住文件名："plugins/runtime_di…/profiling.py"，而不是把文件名截成"profilin…"。
+function ToolDescriptionText({ description }: { description: ToolDescription }) {
+  if (description.kind !== "path") return <span className="tool-step-description">{description.text}</span>;
+  const cut = description.text.lastIndexOf("/") + 1;
+  return (
+    <span className="tool-step-description tool-step-description--path" title={description.text}>
+      {cut > 0 ? <span className="tool-step-path-dir">{description.text.slice(0, cut)}</span> : null}
+      <span className="tool-step-path-file">{description.text.slice(cut)}</span>
+    </span>
+  );
+}
+
+type ToolDescription = { kind: "text" | "path"; text: string };
+
 // 工具行摘要：优先模型写的 description；没有时取调用目标（文件、网址、检索词、命令），
 // 不展开也知道读了哪个文件、搜了什么——只有工具名的一行等于没说。
-function toolDescription(input: unknown) {
+function toolDescription(input: unknown): ToolDescription {
   if (typeof input !== "object" || input === null || Array.isArray(input)) {
-    return "";
+    return { kind: "text", text: "" };
   }
   const args = input as Record<string, unknown>;
   const text = (name: string) => typeof args[name] === "string" ? (args[name] as string).trim() : "";
-  if (text("description")) return text("description");
-  if (text("path")) return text("path").split(/[\\/]/u).filter(Boolean).slice(-3).join("/");
-  if (text("url")) return text("url").replace(/^https?:\/\//u, "");
-  if (text("query")) return text("query");
-  return text("command").split("\n")[0] ?? "";
+  if (text("description")) return { kind: "text", text: text("description") };
+  if (text("path")) return { kind: "path", text: text("path").split(/[\\/]/u).filter(Boolean).slice(-3).join("/") };
+  if (text("url")) return { kind: "text", text: text("url").replace(/^https?:\/\//u, "") };
+  if (text("query")) return { kind: "text", text: text("query") };
+  return { kind: "text", text: text("command").split("\n")[0] ?? "" };
 }
 
 function toolParameters(input: unknown): [string, string][] {
