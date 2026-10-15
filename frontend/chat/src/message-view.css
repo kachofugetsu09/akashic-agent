@@ -532,10 +532,9 @@
   padding-block-start: var(--chat-list-gap, 0.25em);
 }
 
+/* 嵌套列表仍用 ::marker：与顶层 ::before 同为阅读字体的次级墨色，不换等宽小字，同一份清单里两级序号不像两种文档。 */
 :is(.agent-content, .process-markdown, .user-bubble) .markdown-reading ol > li::marker {
   color: var(--ak-ink-secondary);
-  font-family: var(--ak-type-technical);
-  font-size: 0.85em;
   font-variant-numeric: tabular-nums;
 }
 
@@ -638,6 +637,21 @@
   background: var(--ak-paper-quiet);
 }
 
+/* 脚注区是正文的附注：发丝线隔开，次级墨色小一号，不像正文里又起了一个列表。 */
+:is(.agent-content, .process-markdown, .user-bubble) .markdown-reading .footnotes {
+  margin-block-start: 1.25rem;
+  padding-block-start: 0.75rem;
+  border-block-start: 1px solid var(--ak-rule-subtle);
+  color: var(--ak-ink-secondary);
+  font-size: 0.875em;
+}
+:is(.agent-content, .process-markdown, .user-bubble) .markdown-reading .footnotes > ol {
+  margin-block: 0;
+}
+:is(.agent-content, .process-markdown, .user-bubble) .markdown-reading .data-footnote-backref {
+  text-decoration: none;
+}
+
 /* 无标题文本块：技术字符等宽，中文沿用阅读字体。 */
 .static-code-block,
 .reading-plain-text {
@@ -670,8 +684,8 @@
 
 :is(.agent-content, .process-markdown, .user-bubble) .markdown-reading .reading-code-copy {
   position: absolute;
-  inset-block-start: 0.2rem;
-  inset-inline-end: 0.2rem;
+  inset-block-start: 0;
+  inset-inline-end: 0;
   display: grid;
   place-items: center;
   width: 44px;
@@ -681,6 +695,8 @@
   border-radius: 0;
   color: var(--ak-ink-muted);
   background: var(--ak-paper-quiet);
+  /* 贴住块的右上角，不留露出滚动文字的缝；横滚的长行在按钮左侧 16px 内淡出，不被硬切。 */
+  box-shadow: -16px 0 12px -4px var(--ak-paper-quiet);
   cursor: pointer;
 }
 
