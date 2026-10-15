@@ -1,12 +1,12 @@
-import { Clock3, Paperclip, Undo2 } from "lucide-react";
+import { Clock3, FileText, FolderOpen, ImageIcon, Paperclip, Undo2 } from "lucide-react";
 import { memo, useCallback, useEffect, useImperativeHandle, useLayoutEffect, useRef, useState, type ChangeEvent, type CSSProperties, type FocusEvent, type KeyboardEvent as ReactKeyboardEvent, type Ref, type RefObject } from "react";
-import { flushSync } from "react-dom";
+import { createPortal, flushSync } from "react-dom";
 import {
   PromptInput, PromptInputBody, PromptInputButton, PromptInputFooter, PromptInputTextarea, PromptInputTools,
   touchOnly, usePromptInputAttachments, type PromptInputFile, type RejectReason,
 } from "@/components/ai-elements/prompt-input";
 import {
-  AttachmentCard, attachmentCardKind, isTextLike, mediaAttributes, useTextFacts,
+  AttachmentCard, attachmentCardKind, isTextLike, mediaAttributes, PASTED_TEXT_NAME, readAttachmentText, useAttachmentPreview, useTextFacts,
 } from "./attachment-card";
 import type { TimelineReply } from "./message-timeline";
 import { nextComposerExpanded } from "./composer-layout";
@@ -36,7 +36,8 @@ const ESCAPE_LAYERS = "[role='dialog'], [role='menu'], [role='listbox'], [data-r
 const MAX_ATTACHMENT_MB = 50;
 // 一条消息最多带的附件数（与 Desktop 相同）。
 const MAX_ATTACHMENTS = 20;
-
+// 粘贴的纯文本达到 4KB（UTF-8）就转成附件（与 Desktop 相同）。
+const PASTE_AS_FILE_BYTES = 4096;
 
 export const DesktopComposer = memo(function DesktopComposer({
   chatReady, canSend, modelProblem, draftKey, autoFocus = false, fresh = false, status, stopPending, stopCount, inputId, turnCompleted, modelState, selectedRuntimeId, selectedEffort, replyTarget,
@@ -186,6 +187,21 @@ export const DesktopComposer = memo(function DesktopComposer({
     const label = names.length > 1 ? `${first} 等 ${names.length} 个文件` : first;
     setNotice({ text: `${label} 超过 ${MAX_ATTACHMENT_MB}MB，未添加`, ms: 4000, title: names.join("\n") });
   }, []);
+  // 粘贴卡还原成文字：接在已有草稿之后，光标放到末尾。
+  const restoreText = useCallback((text: string) => {
+    const current = drafts.current.get(draftKey) ?? "";
+    const next = current ? `${current}\n${text}` : text;
+    setInput(next);
+    window.requestAnimationFrame(() => {
+      const textarea = textareaRef.current;
+      if (!textarea) return;
+      textarea.focus();
+      textarea.setSelectionRange(next.length, next.length);
+      syncExpanded(textarea, next);
+    });
+  }, [draftKey, setInput, syncExpanded]);
+  const pasteAsFile = { bytes: PASTE_AS_FILE_BYTES, filename: PASTED_TEXT_NAME,
+    onConverted: (lines: number) => setNotice({ text: `${lines} 行文本已作为附件（按住 Shift 粘贴可直接插入）`, ms: 3200 }) };
   const onComposerKeyDown = (event: ReactKeyboardEvent<HTMLTextAreaElement>) => {
     const native = event.nativeEvent;
     // 生成中在输入框按 Esc 停止本轮（coding 工具的中断习惯）；输入法组合中的 Esc 属于输入法。
@@ -277,9 +293,9 @@ export const DesktopComposer = memo(function DesktopComposer({
         </button>
       </div> : null}
       {notice ? <p className="composer-queue-refused" role="status" title={notice.title}>{notice.text}</p> : null}
-      {fileDragActive ? <div className="composer-drop-hint" aria-hidden="true">松开以添加文件</div> : null}
+      {fileDragActive ? <ComposerDropScrim /> : null}
       <PromptInputBody>
-        <ComposerAttachments onPresenceChange={setHasAttachments} />
+        <ComposerAttachments onPresenceChange={setHasAttachments} onRestoreText={restoreText} />
         <PromptInputTextarea
           ref={textareaRef}
           autoFocus={autoFocus}
@@ -287,6 +303,7 @@ export const DesktopComposer = memo(function DesktopComposer({
           value={input}
           onChange={onInputChange}
           onKeyDown={onComposerKeyDown}
+          pasteAsFile={pasteAsFile}
           aria-label="消息"
           aria-describedby={modelProblem ? "chat-model-reason" : undefined}
           disabled={!chatReady}
@@ -465,11 +482,15 @@ function ComposerAttachmentButton() {
 
 // 输入卡里的附件托盘：单行横滚，溢出一侧渐隐；新卡入列后滚到末尾。
 // 删除用 View Transition：被删的卡缩小淡出，其余卡平滑补位；聚焦卡上按 Delete/Backspace 删，焦点移到相邻卡或回到输入框。
-function ComposerAttachments({ onPresenceChange }: { onPresenceChange: (hasAttachments: boolean) => void }) {
+function ComposerAttachments({ onPresenceChange, onRestoreText }: {
+  onPresenceChange: (hasAttachments: boolean) => void;
+  onRestoreText: (text: string) => void;
+}) {
   const attachments = usePromptInputAttachments();
   const { files } = attachments;
   const trayRef = useRef<HTMLDivElement>(null);
   const transitionRef = useRef<ViewTransition | null>(null);
+  const preview = useAttachmentPreview();
   const hasAttachments = files.length > 0;
   useEffect(() => {
     onPresenceChange(hasAttachments);
@@ -498,24 +519,39 @@ function ComposerAttachments({ onPresenceChange }: { onPresenceChange: (hasAttac
     });
   };
   if (!hasAttachments) return null;
-  return <div ref={trayRef} className="composer-tray" role="list" aria-label={`附件，${files.length} 个`}>
+  return <>
+    <div ref={trayRef} className="composer-tray" role="list" aria-label={`附件，${files.length} 个`}>
       {files.map((file) => <div key={file.id} role="listitem" data-attachment-id={file.id} style={{ "--reflow-name": `attachment-${file.id}` } as CSSProperties}>
-        <ComposerAttachment file={file} onRemove={(refocus) => remove(file.id, refocus)} />
+        <ComposerAttachment file={file} onRemove={(refocus) => remove(file.id, refocus)} onRestoreText={onRestoreText} onPreview={preview.open} />
       </div>)}
-  </div>;
+    </div>
+    {preview.dialog}
+  </>;
 }
 
-function ComposerAttachment({ file, onRemove }: { file: PromptInputFile; onRemove: (refocus: boolean) => void }) {
+function ComposerAttachment({ file, onRemove, onRestoreText, onPreview }: {
+  file: PromptInputFile;
+  onRemove: (refocus: boolean) => void;
+  onRestoreText: (text: string) => void;
+  onPreview: ReturnType<typeof useAttachmentPreview>["open"];
+}) {
   const name = file.filename || "未命名";
-  const kind = attachmentCardKind(file.mediaType);
-  const textual = kind === "file" && isTextLike(file.mediaType, name);
+  const kind = attachmentCardKind(file.mediaType, name);
+  const textual = kind === "paste" || (kind === "file" && isTextLike(file.mediaType, name));
   const facts = useTextFacts(file.url, textual);
   const media = kind === "image" || kind === "video";
+  const restore = async () => {
+    if (!file.url) return;
+    onRestoreText(await readAttachmentText(file.url));
+    onRemove(false);
+  };
   return <AttachmentCard
     data={{ id: file.id, name, kind, mediaType: file.mediaType, url: file.url, sizeBytes: file.sizeBytes,
-      lines: facts?.lines }}
+      lines: facts?.lines, previewText: kind === "paste" ? facts?.preview : undefined }}
     mediaTrigger={media && file.url ? mediaAttributes(file.url, name, kind) : undefined}
+    onOpen={!media && textual && file.url ? () => onPreview({ name, url: file.url!, sizeBytes: file.sizeBytes }) : undefined}
     onRemove={() => onRemove(false)}
+    onEdit={kind === "paste" ? () => void restore() : undefined}
     onSurfaceKeyDown={(event) => {
       if (event.key !== "Delete" && event.key !== "Backspace") return;
       event.preventDefault();
@@ -546,6 +582,17 @@ function useTrayEdges(trayRef: RefObject<HTMLDivElement | null>, count: number) 
       tray.removeEventListener("scroll", measure);
     };
   }, [trayRef, count]);
+}
+
+// 拖文件进窗口：整窗模糊遮罩，内缩的高亮框里三个图标依次浮起（Desktop ChatComposerDropScrim）。
+// 挂到 body 上：输入卡祖先的 backdrop-filter 会成为 fixed 的包含块，遮罩会被困在卡片里。
+function ComposerDropScrim() {
+  return createPortal(<div className="composer-drop-scrim" aria-hidden="true">
+    <div className="composer-drop-scrim__ring">
+      <span className="composer-drop-scrim__icons"><ImageIcon /><FileText /><FolderOpen /></span>
+      松开以添加文件
+    </div>
+  </div>, document.body);
 }
 
 // 文件拖进窗口任意位置都由输入区接住：卡片显示"松开以添加文件"，松开即入列（与粘贴、选择器同一条 add 路径）。

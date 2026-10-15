@@ -75,6 +75,24 @@ video.ak-attachment__image { opacity: 1; }
   letter-spacing: 0.04em;
   text-transform: uppercase;
 }
+/* 粘贴卡的类型块是一页缩小的原文：一眼认出是哪段内容。 */
+.ak-attachment__paste {
+  align-self: start;
+  width: 100%;
+  height: 100%;
+  overflow: hidden;
+  padding: 5px 4px;
+  color: color-mix(in oklab, var(--ak-ink-secondary) 75%, transparent);
+  font-family: var(--ak-type-technical);
+  font-size: 4px;
+  font-weight: 400;
+  line-height: 5px;
+  letter-spacing: 0;
+  text-transform: none;
+  white-space: pre-wrap;
+  word-break: break-all;
+}
+
 .ak-attachment__meta { display: grid; min-width: 0; flex: 1; gap: 2px; }
 .ak-attachment__name {
   display: flex;
@@ -124,6 +142,25 @@ video.ak-attachment__image { opacity: 1; }
   .ak-attachment__remove { opacity: 1; }
 }
 
+.ak-attachment__edit {
+  position: absolute;
+  right: 6px;
+  bottom: 6px;
+  display: grid;
+  width: 24px;
+  height: 24px;
+  place-items: center;
+  border: 0;
+  border-radius: 6px;
+  color: var(--ak-ink-secondary);
+  background: transparent;
+  cursor: pointer;
+}
+.ak-attachment__edit:focus-visible { outline: 2px solid var(--ak-rule-focus); outline-offset: 0; }
+@media (hover: hover) {
+  .ak-attachment__edit:hover { color: var(--ak-ink-primary); background: var(--ak-paper-raised); }
+}
+
 /* 上传中：整卡骨架闪烁（Desktop 不显示百分比），文字与图片隐去一半。 */
 .ak-attachment[aria-busy="true"] .ak-attachment__surface > * { opacity: 0.45; }
 .ak-attachment__skeleton {
@@ -165,7 +202,135 @@ video.ak-attachment__image { opacity: 1; }
   .composer-tray .ak-attachment.is-file { width: 184px; }
 }
 
+/* —— 拖放遮罩 —— */
+.composer-drop-scrim {
+  position: fixed;
+  inset: 0;
+  z-index: 60;
+  pointer-events: none;
+  background: color-mix(in oklab, var(--ak-paper-canvas) 60%, transparent);
+  backdrop-filter: blur(12px);
+  animation: ak-drop-fade 150ms both;
+}
+.composer-drop-scrim__ring {
+  position: absolute;
+  inset: 14px;
+  display: grid;
+  place-content: center;
+  justify-items: center;
+  gap: 14px;
+  border-radius: 12px;
+  color: var(--ak-rule-focus);
+  box-shadow: inset 0 0 0 2px var(--ak-rule-focus), inset 0 0 24px 0 color-mix(in oklab, var(--ak-rule-focus) 20%, transparent);
+  font-size: 1rem;
+  font-weight: 500;
+  animation: ak-drop-fade 200ms 80ms both;
+}
+.composer-drop-scrim__icons { display: flex; gap: 6px; }
+.composer-drop-scrim__icons svg { width: 34px; height: 34px; stroke-width: 1.6; animation: ak-drop-rise 220ms var(--ak-sys-motion-emphasized) both; }
+.composer-drop-scrim__icons svg:nth-child(1) { rotate: -14deg; }
+.composer-drop-scrim__icons svg:nth-child(2) { translate: 0 -12px; animation-delay: 60ms; }
+.composer-drop-scrim__icons svg:nth-child(3) { rotate: 14deg; animation-delay: 120ms; }
+@keyframes ak-drop-fade { from { opacity: 0; } }
+@keyframes ak-drop-rise { from { transform: translateY(12px); opacity: 0; } }
+
+/* —— 文本附件预览 —— */
+/* 带上 role 选择器：对话框的默认工具类（p-6、gap-4）与这里同为一个类，打包顺序在后会盖掉这里。 */
+[role="dialog"].attachment-preview {
+  display: flex;
+  width: min(760px, calc(100vw - 2rem));
+  max-height: min(80dvh, 720px);
+  flex-direction: column;
+  gap: 0;
+  overflow: hidden;
+  padding: 0;
+}
+.attachment-preview__bar {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  border-block-end: 1px solid var(--ak-rule-subtle);
+  padding: 12px 10px 10px 18px;
+}
+.attachment-preview__title { display: grid; min-width: 0; flex: 1; gap: 2px; }
+.attachment-preview__title h2 {
+  overflow: hidden;
+  color: var(--ak-ink-primary);
+  font-size: 0.9375rem;
+  font-weight: 600;
+  line-height: 1.35;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.attachment-preview__title p { color: var(--ak-ink-secondary); font-size: 0.75rem; font-variant-numeric: tabular-nums; }
+.attachment-preview__bar > :is(button, a) {
+  display: grid;
+  width: 36px;
+  height: 36px;
+  flex: none;
+  place-items: center;
+  border: 0;
+  border-radius: 8px;
+  color: var(--ak-ink-secondary);
+  background: transparent;
+}
+.attachment-preview__bar > :is(button, a):focus-visible { outline: 2px solid var(--ak-rule-focus); outline-offset: 0; }
+@media (hover: hover) {
+  .attachment-preview__bar > :is(button, a):hover { color: var(--ak-ink-primary); background: var(--ak-paper-raised); }
+}
+.attachment-preview__columns { display: grid; gap: 6px; padding: 14px 18px 0; }
+.attachment-preview__columns ul {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+.attachment-preview__columns li {
+  border-radius: 6px;
+  padding: 2px 8px;
+  color: var(--ak-ink-primary);
+  background: var(--ak-paper-quiet);
+  box-shadow: inset 0 0 0 1px var(--ak-rule-subtle);
+  font-family: var(--ak-type-technical);
+  font-size: 0.75rem;
+}
+.attachment-preview__columns p { color: var(--ak-ink-secondary); font-size: 0.75rem; }
+.attachment-preview__body {
+  min-height: 0;
+  flex: 1;
+  margin: 14px 18px 18px;
+  overflow: auto;
+  overscroll-behavior: contain;
+  border-radius: 8px;
+  background: var(--ak-paper-quiet);
+  box-shadow: inset 0 0 0 1px var(--ak-rule-subtle);
+}
+.attachment-preview__body:focus-visible { outline: 2px solid var(--ak-rule-focus); outline-offset: 2px; }
+.attachment-preview__body pre {
+  margin: 0;
+  padding: 10px 0;
+  color: var(--ak-ink-primary);
+  counter-reset: line;
+  font-family: var(--ak-type-technical);
+  font-size: 0.75rem;
+  line-height: 1.5;
+}
+.attachment-preview__body pre > span { display: block; padding-inline-end: 16px; white-space: pre; }
+.attachment-preview__body pre > span::before {
+  display: inline-block;
+  width: 3.25rem;
+  padding-inline-end: 14px;
+  color: var(--ak-ink-muted);
+  content: counter(line);
+  counter-increment: line;
+  text-align: end;
+  user-select: none;
+}
+.attachment-preview__note { margin: 0; padding: 16px; color: var(--ak-ink-secondary); font-size: 0.8125rem; }
+
 @media (prefers-reduced-motion: reduce) {
   .ak-attachment, .ak-attachment__image { transition-duration: 1ms; }
-  .ak-attachment__skeleton { animation: none; }
+  .ak-attachment__skeleton, .composer-drop-scrim, .composer-drop-scrim__ring, .composer-drop-scrim__icons svg { animation: none; }
 }
