@@ -1,3 +1,4 @@
+import type { Extension } from "micromark-extension-gfm";
 import type { MarkdownIt } from "stream-markdown-parser";
 
 const MARKDOWN_OPERATOR = /[*_^~+=`]/u;
@@ -18,13 +19,19 @@ interface InlineState {
 
 /** Return a parenthesized kaomoji that Markdown would otherwise style. */
 export function readKaomojiLiteral(source: string, offset: number): string | undefined {
-  const openingBackticks = /^`+/u.exec(source.slice(offset))?.[0];
+  const literal = readLiteral(source, offset);
+  // 反引号开头的候选：后面有同长度的反引号串就是行内代码，不算颜文字（只在命中候选时才扫，免得每个反引号都扫到文末）
+  const openingBackticks = literal && /^`+/u.exec(literal)?.[0];
   if (openingBackticks) {
     const rest = source.slice(offset + openingBackticks.length);
     const hasMatchingCloser = (rest.match(/`+/gu) ?? []).some((run) => run.length === openingBackticks.length);
     if (hasMatchingCloser) return undefined;
   }
+  return literal;
+}
 
+// 每次查找都限定在候选的最大长度内（脸 80 字、往前找括号 8 字），长文本里逐字调用也是线性的。
+function readLiteral(source: string, offset: number): string | undefined {
   const decorated = readDecoratedKaomojiLiteral(source, offset);
   if (decorated) return decorated;
 
@@ -37,10 +44,9 @@ export function readKaomojiLiteral(source: string, offset: number): string | und
     if (bare) return bare;
     if (!MARKDOWN_OPERATOR.test(opener ?? "")) return undefined;
 
-    const nextAsciiOpen = source.indexOf("(", offset + 1);
-    const nextWideOpen = source.indexOf("（", offset + 1);
-    const forwardOpenings = [nextAsciiOpen, nextWideOpen].filter((value) => value >= 0);
-    const nextOpeningOffset = forwardOpenings.length > 0 ? Math.min(...forwardOpenings) : -1;
+    const ahead = source.slice(offset + 1, offset + 9);
+    const forwardOpenings = [ahead.indexOf("("), ahead.indexOf("（")].filter((value) => value >= 0);
+    const nextOpeningOffset = forwardOpenings.length > 0 ? offset + 1 + Math.min(...forwardOpenings) : -1;
     const prefix = source.slice(offset, nextOpeningOffset);
     const followsWord = /[\p{L}\p{N}]/u.test(source[offset - 1] ?? "");
     const crossesProse = prefix.includes("`") || /\s[\p{L}\p{N}]/u.test(prefix);
@@ -49,19 +55,20 @@ export function readKaomojiLiteral(source: string, offset: number): string | und
       if (whole) return source.slice(offset, nextOpeningOffset + whole.length);
     }
 
-    const asciiOpen = source.lastIndexOf("(", offset);
-    const wideOpen = source.lastIndexOf("（", offset);
-    const openingOffset = Math.max(asciiOpen, wideOpen);
-    if (openingOffset < 0 || offset - openingOffset >= MAX_KAOMOJI_LENGTH) return undefined;
+    const behindStart = Math.max(0, offset - MAX_KAOMOJI_LENGTH + 1);
+    const behind = source.slice(behindStart, offset + 1);
+    const openingIndex = Math.max(behind.lastIndexOf("("), behind.lastIndexOf("（"));
+    if (openingIndex < 0) return undefined;
+    const openingOffset = behindStart + openingIndex;
     const whole = readKaomojiLiteral(source, openingOffset);
     if (!whole || openingOffset + whole.length <= offset) return undefined;
     return source.slice(offset, openingOffset + whole.length);
   }
   const closer = opener === "(" ? ")" : "）";
   const limit = Math.min(source.length, offset + MAX_KAOMOJI_LENGTH);
-  const end = source.indexOf(closer, offset + 1);
-  if (end < 0) return isOpenFaceTail(source.slice(offset)) ? source.slice(offset) : undefined;
-  if (end >= limit) return undefined;
+  const closerIndex = source.slice(offset + 1, limit).indexOf(closer);
+  if (closerIndex < 0) return isOpenFaceTail(source.slice(offset)) ? source.slice(offset) : undefined;
+  const end = offset + 1 + closerIndex;
 
   const inner = source.slice(offset + 1, end);
   if (!inner || inner.includes("\n") || !MARKDOWN_OPERATOR.test(inner)) return undefined;
@@ -112,54 +119,51 @@ function isOpenFaceTail(tail: string): boolean {
   return tail.length <= 24 && !inner.includes("\n") && MARKDOWN_OPERATOR.test(inner) && isFaceInner(inner);
 }
 
-/** 静态路径（micromark）没有可插的行内规则：解析前用同一套判断找出颜文字，把其中的 Markdown 符号转义成字面字符。
- *  围栏代码与行内代码原样跳过。两条渲染路径因此同一结果，生成中正常、落定后不会再变成斜体。 */
-export function protectKaomojiLiterals(markdown: string): string {
-  let fence: string | null = null;
-  return markdown.split("\n").map((line) => {
-    const open = /^ {0,3}(`{3,}|~{3,})/u.exec(line);
-    if (fence !== null) {
-      if (open && open[1][0] === fence[0] && open[1].length >= fence.length && /^ {0,3}[`~]+[ \t]*$/u.test(line)) fence = null;
-      return line;
-    }
-    if (open) {
-      fence = open[1];
-      return line;
-    }
-    return protectLine(line);
-  }).join("\n");
+type TextConstruct = Exclude<NonNullable<Extension["text"]>[string], unknown[] | undefined>;
+type State = Parameters<TextConstruct["tokenize"]>[1];
+
+// 静态路径（micromark）的行内扩展：与富渲染的行内规则同一套判断，命中的颜文字按普通文字输出。
+// 扩展只在 micromark 已认出的行内文字里触发：围栏、缩进代码、跨行的行内代码都不会进来；表格先分列再看单元格，
+// 逐字核对、遇到单元格边界即放弃，与富渲染路径（分列后才跑颜文字规则）同一结果。
+const STATIC_TRIGGERS = "(（\\*_^~+=-";
+
+export function kaomojiLiteralExtension(source: string): Extension {
+  const construct: TextConstruct = { name: "kaomojiLiteral", tokenize(effects, ok, nok) {
+    const context = this;
+    let literal = "";
+    let index = 0;
+    const inside: State = (code) => {
+      if (index === literal.length) {
+        effects.exit("data");
+        return ok(code);
+      }
+      if (code !== literal.charCodeAt(index)) return nok(code);
+      index += 1;
+      effects.consume(code);
+      return inside;
+    };
+    return (code) => {
+      literal = staticKaomojiLiteral(source, context.now().offset, context.events.length === 0) ?? "";
+      if (!literal) return nok(code);
+      effects.enter("data");
+      return inside(code);
+    };
+  } };
+  return { text: Object.fromEntries([...STATIC_TRIGGERS].map((character) => [character.charCodeAt(0), construct])) };
 }
 
-const STATIC_TRIGGER = /[(（\\*_^~+=`-]/u;
-
-function protectLine(line: string): string {
-  let out = "";
-  let index = 0;
-  while (index < line.length) {
-    const character = line[index];
-    // 1. 行内代码整段照抄
-    if (character === "`") {
-      const run = /^`+/u.exec(line.slice(index))![0];
-      const close = line.indexOf(run, index + run.length);
-      if (close > 0) {
-        out += line.slice(index, close + run.length);
-        index = close + run.length;
-        continue;
-      }
-    }
-    // 2. 命中颜文字：转义其中的 Markdown 符号
-    const literal = STATIC_TRIGGER.test(character) ? readKaomojiLiteral(line, index) : undefined;
-    if (literal) {
-      out += literal.replace(/[\\`*_~[\]<>^=+#|-]/gu, "\\$&");
-      index += literal.length;
-      continue;
-    }
-    // 3. 原有转义成对照抄，不拆开
-    const step = character === "\\" ? 2 : 1;
-    out += line.slice(index, index + step);
-    index += step;
+// 只把当前位置前后有界的一段交给判断。富渲染传入的是本段行内源码，"整段只有一个装饰脸"只在段首成立：
+// 段首取到行尾；下一行还有字时带上换行（可能是段落续行，按"不止一行"处理）。
+function staticKaomojiLiteral(source: string, offset: number, atContentStart: boolean): string | undefined {
+  const ahead = source.slice(offset, offset + MAX_DECORATED_KAOMOJI_LENGTH + 1);
+  if (atContentStart) {
+    const lineEnd = ahead.indexOf("\n");
+    const nextLine = source.slice(offset + lineEnd + 1, offset + lineEnd + 1 + MAX_KAOMOJI_LENGTH);
+    const single = lineEnd >= 0 && /^[ \t]*(?:\n|$)/u.test(nextLine);
+    return readKaomojiLiteral(single ? ahead.slice(0, lineEnd) : ahead, 0);
   }
-  return out;
+  const start = Math.max(0, offset - MAX_KAOMOJI_LENGTH);
+  return readKaomojiLiteral(source.slice(start, offset) + ahead, offset - start);
 }
 
 /** Protect a short standalone decorated face without consuming surrounding prose Markdown. */
