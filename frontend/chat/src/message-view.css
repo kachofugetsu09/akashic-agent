@@ -206,8 +206,7 @@
   outline: none;
 }
 
-.media-preview__media:not(.is-video),
-.attachment-hover-image {
+.media-preview__media:not(.is-video) {
   outline: 1px solid var(--ak-color-image-outline);
   outline-offset: -1px;
 }

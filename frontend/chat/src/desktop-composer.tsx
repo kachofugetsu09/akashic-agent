@@ -1,13 +1,13 @@
 import { Clock3, Paperclip, Undo2 } from "lucide-react";
-import { memo, useCallback, useEffect, useImperativeHandle, useRef, useState, type ChangeEvent, type FocusEvent, type KeyboardEvent as ReactKeyboardEvent, type Ref } from "react";
-import {
-  Attachment, AttachmentFileBody, AttachmentHoverCard, AttachmentHoverCardContent, AttachmentHoverCardTrigger,
-  AttachmentPreview, AttachmentRemove, Attachments, getAttachmentLabel, getMediaCategory,
-} from "@/components/ai-elements/attachments";
+import { memo, useCallback, useEffect, useImperativeHandle, useLayoutEffect, useRef, useState, type ChangeEvent, type CSSProperties, type FocusEvent, type KeyboardEvent as ReactKeyboardEvent, type Ref, type RefObject } from "react";
+import { flushSync } from "react-dom";
 import {
   PromptInput, PromptInputBody, PromptInputButton, PromptInputFooter, PromptInputTextarea, PromptInputTools,
-  touchOnly, usePromptInputAttachments,
+  touchOnly, usePromptInputAttachments, type PromptInputFile, type RejectReason,
 } from "@/components/ai-elements/prompt-input";
+import {
+  AttachmentCard, attachmentCardKind, isTextLike, mediaAttributes, useTextFacts,
+} from "./attachment-card";
 import type { TimelineReply } from "./message-timeline";
 import { nextComposerExpanded } from "./composer-layout";
 import { ComposerActionButton } from "./composer-action";
@@ -16,7 +16,7 @@ import { ModelCapsulePicker, ModelEffortAction, resolveVisibleRuntime } from "./
 import { compatibleEffort, type ChatModelRuntime } from "./model-capsule-data";
 import { isGeneratingChatStatus, type ChatStatus } from "./web-chat-status";
 
-export type ComposerFile = { filename?: string; mediaType?: string; url?: string };
+export type ComposerFile = { filename?: string; mediaType?: string; url?: string; sizeBytes?: number };
 
 /** 空态推荐等外部入口写入草稿的窄接口。 */
 export interface ComposerApi {
@@ -34,6 +34,9 @@ const FLOATING_LAYER = "[role='dialog'], [role='menu'], [role='listbox'], [data-
 const ESCAPE_LAYERS = "[role='dialog'], [role='menu'], [role='listbox'], [data-radix-popper-content-wrapper], [data-escape-layer]";
 // 与服务端单个上传上限（web_chat.MAX_UPLOAD_BYTES）一致。
 const MAX_ATTACHMENT_MB = 50;
+// 一条消息最多带的附件数（与 Desktop 相同）。
+const MAX_ATTACHMENTS = 20;
+
 
 export const DesktopComposer = memo(function DesktopComposer({
   chatReady, canSend, modelProblem, draftKey, autoFocus = false, fresh = false, status, stopPending, stopCount, inputId, turnCompleted, modelState, selectedRuntimeId, selectedEffort, replyTarget,
@@ -172,8 +175,12 @@ export const DesktopComposer = memo(function DesktopComposer({
     const timer = window.setTimeout(() => setNotice(null), notice.ms);
     return () => window.clearTimeout(timer);
   }, [notice]);
-  const rejectFiles = useCallback((files: File[]) => {
+  const rejectFiles = useCallback((files: File[], reason: RejectReason) => {
     const names = files.map((file) => file.name || "未命名");
+    if (reason === "count") {
+      setNotice({ text: `每条消息最多 ${MAX_ATTACHMENTS} 个附件，多出的 ${files.length} 个未添加`, ms: 4000, title: names.join("\n") });
+      return;
+    }
     // 过长的文件名中间省略：开头与带扩展名的结尾最能区分文件，完整名称放在 title 里。
     const first = [...names[0]].length > 40 ? `${[...names[0]].slice(0, 20).join("")}…${[...names[0]].slice(-16).join("")}` : names[0];
     const label = names.length > 1 ? `${first} 等 ${names.length} 个文件` : first;
@@ -233,6 +240,7 @@ export const DesktopComposer = memo(function DesktopComposer({
       multiple
       attachmentKey={draftKey}
       maxFileSize={MAX_ATTACHMENT_MB * 1024 * 1024}
+      maxFiles={MAX_ATTACHMENTS}
       onRejectFiles={rejectFiles}
       data-draft-version={draftVersion}
       onSubmit={(message) => {
@@ -455,43 +463,80 @@ function ComposerAttachmentButton() {
   );
 }
 
+// 输入卡里的附件托盘：单行横滚，溢出一侧渐隐；新卡入列后滚到末尾。
+// 删除用 View Transition：被删的卡缩小淡出，其余卡平滑补位；聚焦卡上按 Delete/Backspace 删，焦点移到相邻卡或回到输入框。
 function ComposerAttachments({ onPresenceChange }: { onPresenceChange: (hasAttachments: boolean) => void }) {
   const attachments = usePromptInputAttachments();
-  const hasAttachments = attachments.files.length > 0;
+  const { files } = attachments;
+  const trayRef = useRef<HTMLDivElement>(null);
+  const hasAttachments = files.length > 0;
   useEffect(() => {
     onPresenceChange(hasAttachments);
   }, [hasAttachments, onPresenceChange]);
-  if (attachments.files.length === 0) return null;
-  return (
-    <Attachments className="composer-attachments" variant="grid">
-      {attachments.files.map((attachment) => {
-        const category = getMediaCategory(attachment);
-        const isMedia = category === "image" || category === "video";
-        return (
-          <AttachmentHoverCard key={attachment.id}>
-            <AttachmentHoverCardTrigger asChild>
-              <Attachment
-                className={`attachment-chip ${isMedia ? "is-media" : "is-file"}`}
-                data={attachment}
-                onRemove={() => attachments.remove(attachment.id)}
-              >
-                <div className="attachment-preview-slot">
-                  <div className="attachment-preview-icon">
-                    <AttachmentPreview />
-                  </div>
-                  <AttachmentRemove className="attachment-remove-inline" label={`移除 ${getAttachmentLabel(attachment)}`} title="移除" />
-                </div>
-                {isMedia ? null : <AttachmentFileBody name={getAttachmentLabel(attachment)} />}
-              </Attachment>
-            </AttachmentHoverCardTrigger>
-            <AttachmentHoverCardContent>
-              <AttachmentHover attachment={attachment} />
-            </AttachmentHoverCardContent>
-          </AttachmentHoverCard>
-        );
-      })}
-    </Attachments>
-  );
+  useTrayEdges(trayRef, files.length);
+  const remove = (id: string, refocus: boolean) => {
+    const index = files.findIndex((file) => file.id === id);
+    const next = files[index + 1] ?? files[index - 1];
+    const apply = () => {
+      flushSync(() => attachments.remove(id));
+      if (!refocus) return;
+      const target = next && trayRef.current?.querySelector<HTMLElement>(`[data-attachment-id="${next.id}"] .ak-attachment__surface`);
+      (target ?? trayRef.current?.closest("form")?.querySelector("textarea"))?.focus();
+    };
+    const tray = trayRef.current;
+    if (!tray || !document.startViewTransition || window.matchMedia("(prefers-reduced-motion: reduce)").matches) return apply();
+    tray.dataset.reflow = "";
+    document.startViewTransition(apply).finished.finally(() => { delete tray.dataset.reflow; });
+  };
+  if (!hasAttachments) return null;
+  return <div ref={trayRef} className="composer-tray" role="list" aria-label={`附件，${files.length} 个`}>
+      {files.map((file) => <div key={file.id} role="listitem" data-attachment-id={file.id} style={{ "--reflow-name": `attachment-${file.id}` } as CSSProperties}>
+        <ComposerAttachment file={file} onRemove={(refocus) => remove(file.id, refocus)} />
+      </div>)}
+  </div>;
+}
+
+function ComposerAttachment({ file, onRemove }: { file: PromptInputFile; onRemove: (refocus: boolean) => void }) {
+  const name = file.filename || "未命名";
+  const kind = attachmentCardKind(file.mediaType);
+  const textual = kind === "file" && isTextLike(file.mediaType, name);
+  const facts = useTextFacts(file.url, textual);
+  const media = kind === "image" || kind === "video";
+  return <AttachmentCard
+    data={{ id: file.id, name, kind, mediaType: file.mediaType, url: file.url, sizeBytes: file.sizeBytes,
+      lines: facts?.lines }}
+    mediaTrigger={media && file.url ? mediaAttributes(file.url, name, kind) : undefined}
+    onRemove={() => onRemove(false)}
+    onSurfaceKeyDown={(event) => {
+      if (event.key !== "Delete" && event.key !== "Backspace") return;
+      event.preventDefault();
+      onRemove(true);
+    }}
+  />;
+}
+
+// 托盘两侧有被遮住的卡时渐隐提示还能滚；附件数变多时滚到末尾露出新卡。
+function useTrayEdges(trayRef: RefObject<HTMLDivElement | null>, count: number) {
+  const previous = useRef(count);
+  // 必要 layout effect：渐隐取决于实际滚动宽度，绘制前算好，避免先露硬边再淡出。
+  useLayoutEffect(() => {
+    const tray = trayRef.current;
+    if (!tray) return;
+    const measure = () => {
+      tray.toggleAttribute("data-fade-start", tray.scrollLeft > 1);
+      tray.toggleAttribute("data-fade-end", tray.scrollLeft + tray.clientWidth < tray.scrollWidth - 1);
+    };
+    if (count > previous.current) tray.scrollTo({ left: tray.scrollWidth, behavior: "smooth" });
+    previous.current = count;
+    measure();
+    const resize = new ResizeObserver(measure);
+    resize.observe(tray);
+    tray.addEventListener("scroll", measure, { passive: true });
+    return () => {
+      resize.disconnect();
+      tray.removeEventListener("scroll", measure);
+    };
+  }, [trayRef, count]);
 }
 
 // 文件拖进窗口任意位置都由输入区接住：卡片显示"松开以添加文件"，松开即入列（与粘贴、选择器同一条 add 路径）。
@@ -547,17 +592,6 @@ function WindowFileDrop({ enabled, onActiveChange }: { enabled: boolean; onActiv
     };
   }, [add, enabled, onActiveChange]);
   return null;
-}
-
-// 输入卡里的附件块会截断文件名：悬停卡给出全名与类型；图片附带预览，文件不再垫一块只有小图标的空白。
-function AttachmentHover({ attachment }: { attachment: ReturnType<typeof usePromptInputAttachments>["files"][number] }) {
-  const category = getMediaCategory(attachment);
-  const label = getAttachmentLabel(attachment);
-  return <div className="attachment-hover">
-    {category === "image" && attachment.url ? <img alt={label} className="attachment-hover-image" src={attachment.url} /> : null}
-    <div className="attachment-hover-title">{label}</div>
-    {attachment.mediaType ? <div className="attachment-hover-type">{attachment.mediaType}</div> : null}
-  </div>;
 }
 
 function ComposerSubmit({ input, status, stopPending, onStop, disabled }: { input: string; status: ChatStatus; stopPending: boolean; onStop: () => void; disabled: boolean }) {
