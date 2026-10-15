@@ -126,9 +126,30 @@ type State = Parameters<TextConstruct["tokenize"]>[1];
 // 扩展只在 micromark 已认出的行内文字里触发：围栏、缩进代码、跨行的行内代码都不会进来；表格先分列再看单元格，
 // 逐字核对、遇到单元格边界即放弃，与富渲染路径（分列后才跑颜文字规则）同一结果。
 const STATIC_TRIGGERS = "(（\\*_^~+=-";
+// 装饰脸（"꒰ *´꒳`* ꒱"、"★*゜ﾟ*★"）只在段首成立，起始字符不在上面的触发字符里：把每行、每个单元格开头的字符也注册上，
+// 这些字符只在内容开头才判断，正文中间遇到直接放过。
+const CONTENT_START = /(?:^|\n)[ \t]*(?:>[ \t]?)*(?:(?:[-*+]|\d{1,9}[.)])[ \t]+)?(?:\[[ xX]\][ \t]+)?(\S)|\|[ \t]*([^\s|])/gu;
+
+function contentStartCodes(source: string): Set<number> {
+  const codes = new Set<number>();
+  for (const match of source.matchAll(CONTENT_START)) {
+    const code = (match[1] ?? match[2]).charCodeAt(0);
+    if (!STATIC_TRIGGERS.includes(String.fromCharCode(code))) codes.add(code);
+  }
+  return codes;
+}
 
 export function kaomojiLiteralExtension(source: string): Extension {
-  const construct: TextConstruct = { name: "kaomojiLiteral", tokenize(effects, ok, nok) {
+  const construct = literalConstruct(source, false);
+  const startOnly = literalConstruct(source, true);
+  return { text: Object.fromEntries([
+    ...[...STATIC_TRIGGERS].map((character) => [character.charCodeAt(0), construct]),
+    ...[...contentStartCodes(source)].map((code) => [code, startOnly]),
+  ]) };
+}
+
+function literalConstruct(source: string, contentStartOnly: boolean): TextConstruct {
+  return { name: "kaomojiLiteral", tokenize(effects, ok, nok) {
     const context = this;
     let literal = "";
     let index = 0;
@@ -143,13 +164,14 @@ export function kaomojiLiteralExtension(source: string): Extension {
       return inside;
     };
     return (code) => {
-      literal = staticKaomojiLiteral(source, context.now().offset, context.events.length === 0) ?? "";
+      const atContentStart = context.events.length === 0;
+      if (contentStartOnly && !atContentStart) return nok(code);
+      literal = staticKaomojiLiteral(source, context.now().offset, atContentStart) ?? "";
       if (!literal) return nok(code);
       effects.enter("data");
       return inside(code);
     };
   } };
-  return { text: Object.fromEntries([...STATIC_TRIGGERS].map((character) => [character.charCodeAt(0), construct])) };
 }
 
 // 只把当前位置前后有界的一段交给判断。富渲染传入的是本段行内源码，"整段只有一个装饰脸"只在段首成立：
