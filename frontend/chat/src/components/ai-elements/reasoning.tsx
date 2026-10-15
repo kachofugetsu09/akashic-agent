@@ -81,6 +81,8 @@ export const Reasoning = memo(
 
     const hasEverStreamedRef = useRef(isStreaming);
     const [hasAutoClosed, setHasAutoClosed] = useState(false);
+    // 用户自己点开的内容不自动收起：思考结束只改标题，正在读的内容不能消失。
+    const userToggledRef = useRef(false);
     const startTimeRef = useRef<number | null>(null);
 
     // Track when streaming starts and compute duration
@@ -105,6 +107,7 @@ export const Reasoning = memo(
     useEffect(() => {
       if (
         hasEverStreamedRef.current &&
+        !userToggledRef.current &&
         !isStreaming &&
         isOpen &&
         !hasAutoClosed
@@ -121,6 +124,7 @@ export const Reasoning = memo(
 
     const handleOpenChange = useCallback(
       (newOpen: boolean) => {
+        userToggledRef.current = true;
         setIsOpen(newOpen);
       },
       [setIsOpen]

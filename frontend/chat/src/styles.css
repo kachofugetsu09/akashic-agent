@@ -3221,11 +3221,14 @@ form.composer:focus-within [data-slot="input-group"] {
   .session-status-dot,
   .session-swirl > i,
   .turn-rail__ticks i,
+  .turn-rail:hover .turn-rail__ticks i,
   .job-list__dot {
     forced-color-adjust: none;
     background: CanvasText;
   }
-  .turn-rail__ticks i[data-active] { background: Highlight; }
+  /* 悬停规则的特异性更高，这里按同一选择器再写一遍，否则悬停时当前刻度回到半透明墨色、在系统黑底上看不见。 */
+  .turn-rail__ticks i[data-active],
+  .turn-rail:hover .turn-rail__ticks i[data-active] { background: Highlight; }
   :is(.conversation-session, .project-session, .conversation-destination).active,
   .project-group.active > .project-group__row,
   .model-picker__option.is-selected {

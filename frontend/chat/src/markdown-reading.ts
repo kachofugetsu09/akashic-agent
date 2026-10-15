@@ -119,18 +119,54 @@ export function watchOverflowEdges(scroller: HTMLElement): () => void {
 
 const FOOTNOTE_LINK = "a[data-footnote-ref], a[data-footnote-backref], a.footnote-link, a.footnote-anchor";
 
+// 每个回复容器最近一次从哪个引用跳进脚注：同一脚注被引用多次时，返回落回出发的那一处。
+const footnoteOrigins = new WeakMap<HTMLElement, HTMLElement>();
+const FOOTNOTE_BACK = "a[data-footnote-backref], a.footnote-anchor";
+
+function hrefId(link: Element): string {
+  const raw = (link.getAttribute("href") ?? "").slice(1);
+  // 富渲染的 href 直接拼标签（可能含不是编码的 %），静态路径是已编码的。
+  try { return decodeURIComponent(raw); } catch { return raw; }
+}
+
+function byId(container: HTMLElement, id: string): HTMLElement[] {
+  return [...container.querySelectorAll<HTMLElement>(`[id="${CSS.escape(id)}"]`)];
+}
+
+// 返回目标：出发点仍在且属于这条脚注时回到出发点；否则按 id（"标签-序号"在富渲染里是同名 id 的第几个）。
+function referenceFor(container: HTMLElement, back: HTMLElement): HTMLElement | null {
+  const origin = footnoteOrigins.get(container);
+  if (origin?.isConnected && byId(container, hrefId(origin)).some((note) => note.contains(back))) return origin;
+  const id = hrefId(back);
+  const exact = byId(container, id)[0];
+  if (exact) return exact;
+  const repeat = /^(.*)-(\d+)$/u.exec(id);
+  return repeat ? byId(container, repeat[1])[Number(repeat[2]) - 1] ?? null : null;
+}
+
+// 进脚注后落在对应出发点的返回箭头上（静态路径重复引用各有一个箭头），没有对应的就落在第一个。
+function backFor(note: HTMLElement, origin: HTMLElement): HTMLElement {
+  const backs = [...note.querySelectorAll<HTMLElement>(FOOTNOTE_BACK)];
+  const ids = [origin.id, origin.closest("sup")?.id].filter(Boolean);
+  return backs.find((back) => ids.includes(hrefId(back))) ?? backs[0] ?? note;
+}
+
 /** 脚注引用与返回链接在本条回复内跳转（挂在回复容器的 onClickCapture 上）：每条回复的脚注 id 都从 1 编起，
  *  按 id 全局找会跳到别的回复；也不往地址栏写 hash、不多一条历史记录。 */
 export function jumpToFootnote(event: ReactMouseEvent<HTMLElement>): void {
+  const container = event.currentTarget;
   const link = event.target instanceof Element ? event.target.closest<HTMLAnchorElement>(FOOTNOTE_LINK) : null;
-  const href = link?.getAttribute("href");
-  if (!link || !href?.startsWith("#") || !event.currentTarget.contains(link)) return;
-  const target = event.currentTarget.querySelector<HTMLElement>(`[id="${CSS.escape(decodeURIComponent(href.slice(1)))}"]`);
-  if (!target) return;
+  if (!link?.getAttribute("href")?.startsWith("#") || !container.contains(link)) return;
+  // 1. 受管的脚注链接一律不走浏览器的 hash 导航：本条里找不到目标也只留在原处，不跳出这条回复。
   event.preventDefault();
   event.stopPropagation();
-  // 焦点落到对面的链接：去脚注落在返回箭头上，回正文落在引用号上，回车即可来回。
-  const landing = target.matches(FOOTNOTE_LINK) ? target : target.querySelector<HTMLElement>(FOOTNOTE_LINK) ?? target;
+  const backward = link.matches(FOOTNOTE_BACK);
+  const target = backward ? referenceFor(container, link) : byId(container, hrefId(link))[0];
+  if (!target) return;
+  // 2. 焦点落到对面的链接：去脚注落在返回箭头上，回正文落在引用号上，回车即可来回。
+  if (!backward) footnoteOrigins.set(container, link);
+  const landing = backward ? (target.matches(FOOTNOTE_LINK) ? target : target.querySelector<HTMLElement>(FOOTNOTE_LINK) ?? target)
+    : backFor(target, link);
   landing.focus({ preventScroll: true });
   const reduce = window.matchMedia("(prefers-reduced-motion: reduce)").matches;
   target.scrollIntoView({ block: "center", behavior: reduce ? "auto" : "smooth" });

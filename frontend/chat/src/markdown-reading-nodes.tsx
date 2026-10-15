@@ -49,7 +49,12 @@ export function ReadingLink(props: NodeComponentProps<LinkData>) {
   const ref = useRef<HTMLSpanElement>(null);
   // 必要 effect：属性写在 markstream 内部组件上，只能提交后摘；React 只在值变化时重写属性，每次提交后摘一次即可。
   useLayoutEffect(() => {
-    ref.current?.querySelector("a.link-node[aria-label]")?.removeAttribute("aria-label");
+    const link = ref.current?.querySelector<HTMLAnchorElement>("a.link-node");
+    if (!link) return;
+    // 链接文字或图片 alt 能命名时摘掉英文"Link: …"；空文字链接没有别的名称，用网址。
+    const named = Boolean(link.textContent?.trim()) || [...link.querySelectorAll("img")].some((image) => image.alt.trim());
+    if (named) link.removeAttribute("aria-label");
+    else link.setAttribute("aria-label", link.getAttribute("href") ?? "链接");
   });
   return <span ref={ref}><LinkRenderer {...props} /></span>;
 }
