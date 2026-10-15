@@ -27,10 +27,44 @@ async def test_text_model_preserves_identity_without_reading_image_data():
     assert "当前模型不接收图片" in label["image_status"]
 
 
+class _MemoryLease:
+    """内存里的附件字节，记录是否被关闭。"""
+
+    def __init__(self, ref: AttachmentRef, data: bytes):
+        self.ref = ref
+        self.data = data
+        self.closed = False
+
+    async def read_bytes(self, *, max_bytes: int) -> bytes:
+        return self.data[:max_bytes]
+
+    async def read_chunk(self, *, offset: int, max_bytes: int) -> bytes:
+        return self.data[offset:offset + max_bytes]
+
+    async def aclose(self) -> None:
+        self.closed = True
+
+
 @pytest.mark.asyncio
 async def test_file_attachment_keeps_its_identity():
-    ref = AttachmentRef("file", AttachmentKind.FILE, "archive.zip", "application/zip", 10, "1" * 64)
-    blocks = (await load_artifacts(ArtifactRead(reject_read), (ref,), accepts_images=True, current_artifact_ids=frozenset()))[ref.artifact_id]
+    """文本附件保留身份标签并把内容交给模型；二进制文件只给身份、不读取字节。"""
+    data = "第一行\nsecond line\n".encode()
+    text_ref = AttachmentRef("notes", AttachmentKind.FILE, "notes.txt", "text/plain", len(data), "1" * 64)
+    leases: list[_MemoryLease] = []
+
+    async def read(ref: AttachmentRef) -> AttachmentReadLease:
+        leases.append(_MemoryLease(ref, data))
+        return leases[-1]
+
+    blocks = (await load_artifacts(ArtifactRead(read), (text_ref,), accepts_images=True, current_artifact_ids=frozenset()))[text_ref.artifact_id]
     label = json.loads(blocks[0]["text"])
-    assert label["artifact"]["artifact_id"] == ref.artifact_id
-    assert "image_status" not in label
+    assert label["artifact"]["artifact_id"] == text_ref.artifact_id
+    assert label["artifact"]["filename"] == "notes.txt"
+    assert "image_status" not in label and "text_status" not in label
+    assert blocks[1]["text"] == f"<attachment_text artifact_id=\"{text_ref.artifact_id}\">\n第一行\nsecond line\n\n</attachment_text>"
+    assert [lease.closed for lease in leases] == [True]
+
+    binary_ref = AttachmentRef("archive", AttachmentKind.FILE, "archive.zip", "application/zip", 10, "2" * 64)
+    blocks = (await load_artifacts(ArtifactRead(reject_read), (binary_ref,), accepts_images=True, current_artifact_ids=frozenset()))[binary_ref.artifact_id]
+    assert len(blocks) == 1
+    assert json.loads(blocks[0]["text"])["artifact"]["filename"] == "archive.zip"
