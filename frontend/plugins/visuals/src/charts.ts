@@ -101,18 +101,23 @@ function niceScale(low: number, high: number, count: number): { low: number; hig
 // 横轴标签：日期多时按月，否则按宽度抽稀，保证不重叠。
 function xTicks(labels: readonly string[], width: number): { index: number; text: string }[] {
   if (labels.length > 35 && labels.every(label => ISO.test(label))) {
-    // 月份边界再按像素抽稀；跨年时一月写成年份。
-    const years = new Set(labels.map(label => label.slice(0, 4))).size > 1, months: { index: number; text: string }[] = [];
+    // 月份边界再按像素抽稀；跨年时每段新年份的第一个保留刻度写年份。
+    const years = new Set(labels.map(label => label.slice(0, 4))).size > 1, months: { index: number; month: string; year: string }[] = [];
     let previous = "";
     labels.forEach((label, index) => {
-      const match = ISO.exec(label)!, month = match[1] + match[2];
-      if (month !== previous && (index > 0 || Number(match[3]) <= 3))
-        months.push({ index, text: years && match[2] === "01" ? match[1] : `${Number(match[2])}月` });
-      previous = month;
+      const match = ISO.exec(label)!;
+      if (match[1] + match[2] !== previous && (index > 0 || Number(match[3]) <= 3)) months.push({ index, month: `${Number(match[2])}月`, year: match[1] });
+      previous = match[1] + match[2];
     });
-    const gap = Math.max(...months.map(tick => textWidth(tick.text))) + 12, pixel = width / labels.length;
+    const gap = Math.max(...months.map(tick => textWidth(years ? tick.year : tick.month))) + 12, pixel = width / labels.length;
     const kept: { index: number; text: string }[] = [];
-    for (const tick of months) if (!kept.length || (tick.index - kept[kept.length - 1].index) * pixel >= gap) kept.push(tick);
+    let year = "", last = -Infinity;
+    for (const tick of months) {
+      if ((tick.index - last) * pixel < gap) continue;
+      kept.push({ index: tick.index, text: years && tick.year !== year ? tick.year : tick.month });
+      year = tick.year;
+      last = tick.index;
+    }
     return kept;
   }
   const short = labels.map(shortLabel), widest = Math.max(0, ...short.map(text => textWidth(text))) + 12;
@@ -418,14 +423,16 @@ function line(target: Target, options: LineOptions): Handle {
   if (!labels.length) throw new Error("ak.line: x 不能为空");
   const series = readSeries("line", options.series, labels.length, true), format = formatter(options.fmt, options.unit);
   if (series.every(item => item.values.every(value => value == null))) throw new Error("ak.line: 没有可画的数值");
+  if (options.projectFrom != null && indexOf(labels, options.projectFrom) < 0) throw new Error("ak.line: projectFrom 不是 x 中的值或有效下标");
+  const most = Math.max(...series.flatMap(item => item.values.filter((value): value is number => value != null)), options.refLine?.value ?? -Infinity);
+  if (options.yMin != null && !(Number.isFinite(options.yMin) && options.yMin < most)) throw new Error("ak.line: yMin 必须是有限数字且小于数据最大值");
   return mount(target, (width, id) => drawLine(width, id, options, labels, series, format));
 }
 
 function drawLine(width: number, id: string, options: LineOptions, labels: string[], series: Series[], format: (value: number) => string): Drawing {
   const count = labels.length, numbers = series.flatMap(item => item.values.filter((value): value is number => value != null));
-  const most = Math.max(...numbers, options.refLine?.value ?? -Infinity);
-  let least = Math.min(...numbers);
-  least = options.yMin ?? (least >= 0 && least < most * 0.5 ? 0 : least);
+  const most = Math.max(...numbers, options.refLine?.value ?? -Infinity), lowest = Math.min(...numbers, options.refLine?.value ?? Infinity);
+  const least = options.yMin ?? (lowest >= 0 && lowest < most * 0.5 ? 0 : lowest);
   const notes = [...(options.milestones ?? []), ...(options.annotate ?? [])], multi = series.length > 1;
   const height = options.height ?? (width < 480 ? 220 : 280), top = notes.length ? (notes.some(note => note.sub) ? 44 : 28) : 12, bottom = 24;
   const scale = niceScale(least, most, height < 240 ? 3 : 4), left = Math.max(...scale.ticks.map(value => textWidth(format(value)))) + 10;
@@ -433,7 +440,7 @@ function drawLine(width: number, id: string, options: LineOptions, labels: strin
   const plot = width - left - right, base = height - bottom;
   const x = (index: number): number => left + (count === 1 ? plot / 2 : index / (count - 1) * plot);
   const y = (value: number): number => base - (clamp(value, scale.low, scale.high) - scale.low) / (scale.high - scale.low) * (base - top);
-  const project = options.projectFrom == null ? count : indexOf(labels, options.projectFrom);
+  const project = options.projectFrom == null ? count - 1 : indexOf(labels, options.projectFrom);
   const placement = new Placement(width, height);
   placement.block({ x: 0, y: 0, w: left - 4, h: height });
   placement.block({ x: 0, y: height - bottom + 4, w: width, h: bottom });
@@ -442,28 +449,10 @@ function drawLine(width: number, id: string, options: LineOptions, labels: strin
   let defs = "", marks = "";
   const ends: { y: number; html: (y: number) => string }[] = [];
   series.forEach((item, index) => {
-    const points = item.values.map((value, at) => value == null ? null : [round(x(at)), round(y(value))] as const);
-    const path = (from: number, to: number): string => points.slice(from, to + 1).map((point, at) =>
-      point ? `${at && points[from + at - 1] ? "L" : "M"}${point[0]} ${point[1]}` : "").join("");
-    const real = points.filter(point => point != null);
-    // 注释避让线条：沿折线每隔约 8px 登记一个小块。
-    real.forEach((point, at) => {
-      const next = real[at + 1];
-      const steps = next ? Math.max(1, Math.ceil(Math.hypot(next[0] - point[0], next[1] - point[1]) / 8)) : 1;
-      for (let step = 0; step < steps; step += 1) {
-        const px = next ? point[0] + (next[0] - point[0]) * step / steps : point[0], py = next ? point[1] + (next[1] - point[1]) * step / steps : point[1];
-        placement.block({ x: px - 2, y: py - 2, w: 4, h: 4 });
-      }
-    });
-    if ((options.area ?? !multi) && real.length > 1) {
-      defs += `<linearGradient id="${id}g${index}" x1="0" y1="0" x2="0" y2="1"><stop offset="0" style="stop-color:${item.color};stop-opacity:.24"/><stop offset="1" style="stop-color:${item.color};stop-opacity:.02"/></linearGradient>`;
-      marks += `<path d="M${real[0][0]} ${base}L${real.map(point => point.join(" ")).join("L")}L${real[real.length - 1][0]} ${base}Z" style="fill:url(#${id}g${index})"/>`;
-    }
-    marks += `<path d="${path(0, Math.min(project, count - 1))}" fill="none" style="stroke:${item.color}" stroke-width="2" stroke-linejoin="round" stroke-linecap="round"/>`;
-    if (project < count - 1) marks += `<path d="${path(Math.max(0, project), count - 1)}" fill="none" style="stroke:${item.color}" stroke-width="2" stroke-dasharray="4 4"/>`;
-    if (real.length === 1) marks += `<circle cx="${real[0][0]}" cy="${real[0][1]}" r="3" style="fill:${item.color}"/>`;
-    const last = real[real.length - 1];
-    if (multi && last) ends.push({ y: last[1] + 4, html: at => `<rect x="${round(left + plot + 12)}" y="${round(at - 8)}" width="8" height="8" rx="2" style="fill:${item.color}"/>`
+    const drawn = drawSeries(item, `${id}g${index}`, { x, y, base }, options.area ?? !multi, project, placement);
+    defs += drawn.defs;
+    marks += drawn.marks;
+    if (multi && drawn.last) ends.push({ y: drawn.last[1] + 4, html: at => `<rect x="${round(left + plot + 12)}" y="${round(at - 8)}" width="8" height="8" rx="2" style="fill:${item.color}"/>`
       + `<text class="ak-b" x="${round(left + plot + 24)}" y="${round(at)}">${esc(item.name)}</text>` });
   });
   marks += spread(ends, top + 8, base + 4);
@@ -474,6 +463,41 @@ function drawLine(width: number, id: string, options: LineOptions, labels: strin
   const hits = labels.map((label, index) => ({ x0: x(index) - step / 2, x1: x(index) + step / 2, y0: 0, y1: height, cx: round(x(index)),
     html: tip(shortLabel(label), series.filter(item => item.values[index] != null).map(item => [item.name, format(item.values[index]!), item.color])) }));
   return { html: svgOpen(width, height, options.label) + `<defs>${defs}</defs>` + grid + marks + "</svg>", hits };
+}
+
+type Point = readonly [number, number];
+
+// 把系列切成连续非空段：描边、面积、孤立点和避让都按段处理，不跨缺失值连线。
+function runs(values: readonly (number | null)[]): number[][] {
+  const out: number[][] = [];
+  values.forEach((value, index) => {
+    if (value == null) return;
+    const last = out[out.length - 1];
+    if (last && last[last.length - 1] === index - 1) last.push(index); else out.push([index]);
+  });
+  return out;
+}
+
+// 单个系列：每段画面积、实线和外推虚线，孤立点画圆点，并沿线每隔约 8px 登记避让块。
+function drawSeries(item: Series, gradient: string, axes: { x: (index: number) => number; y: (value: number) => number; base: number },
+  area: boolean, project: number, placement: Placement): { defs: string; marks: string; last: Point | null } {
+  const point = (at: number): Point => [round(axes.x(at)), round(axes.y(item.values[at]!))];
+  const stroke = (indices: readonly number[], dash: string): string => indices.length < 2 ? ""
+    : `<path d="${indices.map((at, order) => `${order ? "L" : "M"}${point(at).join(" ")}`).join("")}" fill="none" style="stroke:${item.color}" stroke-width="2" stroke-linejoin="round" stroke-linecap="round"${dash}/>`;
+  let marks = "", last: Point | null = null;
+  for (const run of runs(item.values)) {
+    const points = run.map(point);
+    points.forEach((from, order) => {
+      const to = points[order + 1] ?? from, steps = Math.max(1, Math.ceil(Math.hypot(to[0] - from[0], to[1] - from[1]) / 8));
+      for (let step = 0; step < steps; step += 1) placement.block({ x: from[0] + (to[0] - from[0]) * step / steps - 2, y: from[1] + (to[1] - from[1]) * step / steps - 2, w: 4, h: 4 });
+    });
+    last = points[points.length - 1];
+    if (points.length === 1) { marks += `<circle cx="${last[0]}" cy="${last[1]}" r="3" style="fill:${item.color}"/>`; continue; }
+    if (area) marks += `<path d="M${points[0][0]} ${axes.base}L${points.map(at => at.join(" ")).join("L")}L${last[0]} ${axes.base}Z" style="fill:url(#${gradient})"/>`;
+    marks += stroke(run.filter(at => at <= project), "") + stroke(run.filter(at => at >= project), ' stroke-dasharray="4 4"');
+  }
+  const defs = area ? `<linearGradient id="${gradient}" x1="0" y1="0" x2="0" y2="1"><stop offset="0" style="stop-color:${item.color};stop-opacity:.24"/><stop offset="1" style="stop-color:${item.color};stop-opacity:.02"/></linearGradient>` : "";
+  return { defs, marks, last };
 }
 
 // 里程碑画点和落地虚线，区间标在底部；注释可用 series 指定挂在哪条线上。
@@ -509,7 +533,7 @@ function lineNotes(placement: Placement, options: LineOptions, labels: string[],
 function barlist(target: Target, options: BarlistOptions): Handle {
   const format = formatter(options?.fmt, options?.unit), fill = color(options?.color ?? 1, 0);
   let items = (options?.items ?? []).map((item, index) => {
-    if (typeof item?.value !== "number" || !Number.isFinite(item.value)) throw new Error(`ak.barlist: items[${index}].value 不是有限数字`);
+    if (typeof item?.value !== "number" || !Number.isFinite(item.value) || item.value < 0) throw new Error(`ak.barlist: items[${index}].value 必须是非负有限数字`);
     return { label: String(item.label ?? ""), value: item.value, note: item.note };
   });
   if (!items.length) throw new Error("ak.barlist: items 不能为空");
@@ -544,7 +568,8 @@ function spark(target: Target, values: readonly number[], options: { color?: Col
 function scatter(target: Target, options: ScatterOptions): Handle {
   const points = (options?.points ?? []).map((point, index) => {
     if (![point?.x, point?.y].every(value => typeof value === "number" && Number.isFinite(value))) throw new Error(`ak.scatter: points[${index}] 的 x、y 必须是有限数字`);
-    return { x: point.x, y: point.y, label: String(point.label ?? ""), size: Math.max(0, Number(point.size) || 0), group: String(point.group ?? "") };
+    if (point.size != null && !(typeof point.size === "number" && Number.isFinite(point.size) && point.size >= 0)) throw new Error(`ak.scatter: points[${index}].size 必须是非负有限数字`);
+    return { x: point.x, y: point.y, label: String(point.label ?? ""), size: point.size ?? 0, group: String(point.group ?? "") };
   });
   if (!points.length) throw new Error("ak.scatter: points 不能为空");
   const groups = [...new Set(points.map(point => point.group))], fx = formatter(options.xFmt ?? options.fmt, ""), fy = formatter(options.yFmt ?? options.fmt, options.unit);
@@ -617,6 +642,8 @@ function dumbbell(target: Target, options: DumbbellOptions): Handle {
 function heatmap(target: Target, options: HeatmapOptions): Handle {
   const rows = (options?.rows ?? []).map(String), cols = (options?.cols ?? []).map(String);
   if (!rows.length || !cols.length) throw new Error("ak.heatmap: rows 和 cols 不能为空");
+  if (!Array.isArray(options.values) || options.values.length !== rows.length || options.values.some(row => !Array.isArray(row) || row.length !== cols.length))
+    throw new Error(`ak.heatmap: values 必须是 ${rows.length} 行 × ${cols.length} 列`);
   const grid = rows.map((_, r) => cols.map((_, c) => {
     const value = options.values?.[r]?.[c];
     if (typeof value !== "number" || !Number.isFinite(value)) throw new Error(`ak.heatmap: values[${r}][${c}] 不是有限数字`);
@@ -655,6 +682,7 @@ function share(target: Target, options: ShareOptions): Handle {
   const labels = (options?.x ?? []).map(String);
   if (labels.length < 2) throw new Error("ak.share: x 至少需要两个时点");
   const series = readSeries("share", options.series, labels.length, false);
+  if (series.some(item => item.values.some(value => value! < 0))) throw new Error("ak.share: 份额不支持负数");
   const totals = labels.map((_, index) => series.reduce((sum, item) => sum + Math.max(0, item.values[index]!), 0));
   const shares = series.map(item => item.values.map((value, index) => totals[index] ? Math.max(0, value!) / totals[index] * 100 : 0));
   return mount(target, width => {
@@ -693,21 +721,22 @@ interface Area<T> { item: T; value: number; x: number; y: number; w: number; h: 
 function squarify<T>(items: readonly { item: T; value: number }[], x: number, y: number, w: number, h: number): Area<T>[] {
   const out: Area<T>[] = [], total = items.reduce((sum, entry) => sum + entry.value, 0);
   if (!total || w <= 0 || h <= 0) return out;
-  const unit = w * h / total;
+  // 先换算成占比再乘面积，极小或极大的数值都不会溢出。
+  const unit = w * h, weight = (entry: { value: number }): number => entry.value / total;
   let rest = [...items];
   while (rest.length) {
     const side = Math.min(w, h);
     let row: typeof rest = [], best = Infinity;
     for (const entry of rest) {
-      const next = [...row, entry], area = next.reduce((sum, item) => sum + item.value * unit, 0), sizes = next.map(item => item.value * unit);
+      const next = [...row, entry], area = next.reduce((sum, item) => sum + weight(item) * unit, 0), sizes = next.map(item => weight(item) * unit);
       const worst = Math.max(side * side * Math.max(...sizes) / (area * area), area * area / (side * side * Math.min(...sizes)));
       if (worst > best) break;
       best = worst;
       row = next;
     }
-    const area = row.reduce((sum, entry) => sum + entry.value * unit, 0);
-    if (w >= h) { const cw = area / h; let cy = y; row.forEach(entry => { const eh = entry.value * unit / cw; out.push({ ...entry, x, y: cy, w: cw, h: eh }); cy += eh; }); x += cw; w -= cw; }
-    else { const ch = area / w; let cx = x; row.forEach(entry => { const ew = entry.value * unit / ch; out.push({ ...entry, x: cx, y, w: ew, h: ch }); cx += ew; }); y += ch; h -= ch; }
+    const area = row.reduce((sum, entry) => sum + weight(entry) * unit, 0);
+    if (w >= h) { const cw = area / h; let cy = y; row.forEach(entry => { const eh = weight(entry) * unit / cw; out.push({ ...entry, x, y: cy, w: cw, h: eh }); cy += eh; }); x += cw; w -= cw; }
+    else { const ch = area / w; let cx = x; row.forEach(entry => { const ew = weight(entry) * unit / ch; out.push({ ...entry, x: cx, y, w: ew, h: ch }); cx += ew; }); y += ch; h -= ch; }
     rest = rest.slice(row.length);
   }
   return out;
@@ -715,7 +744,10 @@ function squarify<T>(items: readonly { item: T; value: number }[], x: number, y:
 
 // 矩形树图：层级加大小；先按组切块再切节点，组色区分，组内按大小深浅。
 function treemap(target: Target, options: TreemapOptions): Handle {
-  const nodes = (options?.nodes ?? []).map(node => ({ name: String(node.name ?? ""), value: Math.max(0, Number(node.value) || 0), group: String(node.group ?? "") })).filter(node => node.value > 0);
+  const nodes = (options?.nodes ?? []).map((node, index) => {
+    if (typeof node?.value !== "number" || !Number.isFinite(node.value) || node.value < 0) throw new Error(`ak.treemap: nodes[${index}].value 必须是非负有限数字`);
+    return { name: String(node.name ?? ""), value: node.value, group: String(node.group ?? "") };
+  }).filter(node => node.value > 0);
   if (!nodes.length) throw new Error("ak.treemap: nodes 需要至少一个正数 value");
   const format = formatter(options.fmt, options.unit), names = [...new Set(nodes.map(node => node.group))], total = nodes.reduce((sum, node) => sum + node.value, 0);
   const groups = names.map((name, index) => ({ item: { name, fill: color(undefined, index) }, value: nodes.filter(node => node.group === name).reduce((sum, node) => sum + node.value, 0) })).sort((a, b) => b.value - a.value);
@@ -727,9 +759,9 @@ function treemap(target: Target, options: TreemapOptions): Handle {
       const inside = nodes.filter(node => node.group === group.item.name).sort((a, b) => b.value - a.value), top = inside[0].value;
       if (head) marks += `<text class="ak-b" x="${round(group.x + 4)}" y="${round(group.y + 13)}">${esc(group.item.name)} <tspan class="ak-m" font-weight="400">${esc(format(group.value))}</tspan></text>`;
       squarify(inside.map(node => ({ item: node, value: node.value })), group.x + 1, group.y + head + 1, group.w - 2, group.h - head - 2).forEach(cell => {
-        marks += `<rect x="${round(cell.x + 1)}" y="${round(cell.y + 1)}" width="${round(Math.max(0, cell.w - 2))}" height="${round(Math.max(0, cell.h - 2))}" rx="2" style="fill:color-mix(in oklab, ${group.item.fill} ${Math.round(30 + 45 * cell.value / top)}%, var(--ak-color-bg-surface))"/>`;
+        marks += `<rect x="${round(cell.x + 1)}" y="${round(cell.y + 1)}" width="${round(Math.max(0, cell.w - 2))}" height="${round(Math.max(0, cell.h - 2))}" rx="2" style="fill:color-mix(in oklab, ${group.item.fill} ${Math.round(16 + 30 * cell.value / top)}%, var(--ak-color-bg-surface))"/>`;
         if (cell.w > textWidth(cell.item.name, 12, 600) + 10 && cell.h > 20) marks += `<text class="ak-b" x="${round(cell.x + 6)}" y="${round(cell.y + 16)}">${esc(cell.item.name)}</text>`;
-        if (cell.w > textWidth(format(cell.value)) + 10 && cell.h > 36) marks += `<text x="${round(cell.x + 6)}" y="${round(cell.y + 31)}">${esc(format(cell.value))}</text>`;
+        if (cell.w > textWidth(format(cell.value)) + 10 && cell.h > 36) marks += `<text class="ak-b" style="font-weight:400" x="${round(cell.x + 6)}" y="${round(cell.y + 31)}">${esc(format(cell.value))}</text>`;
         hits.push({ x0: cell.x, x1: cell.x + cell.w, y0: cell.y, y1: cell.y + cell.h, html: tip(cell.item.name, [[cell.item.group || "大小", `${format(cell.value)} · ${round(cell.value / total * 100)}%`, group.item.fill]]) });
       });
     });
