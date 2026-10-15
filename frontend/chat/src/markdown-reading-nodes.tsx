@@ -1,6 +1,6 @@
 import { CheckIcon, CopyIcon } from "lucide-react";
 import { useEffect, useRef, useState, type RefObject } from "react";
-import { CodeBlockNode, ListNode, ParagraphNode as ParagraphRenderer, PreCodeNode, type NodeComponentProps } from "markstream-react";
+import { CodeBlockNode, ListNode, ParagraphNode as ParagraphRenderer, PreCodeNode, languageMap, resolveLanguageId, type NodeComponentProps } from "markstream-react";
 import type { CodeBlockNode as CodeData, ListNode as ListData, ParagraphNode, ParsedNode, TableNode as TableData } from "stream-markdown-parser";
 import { copyReadingCode, isConceptLabel, isNumericColumn, isPlainTextLanguage, stripConceptSeparator, watchOverflowEdges, writeOverflowEdges } from "./markdown-reading";
 
@@ -184,11 +184,14 @@ function HighlightedCode(props: NodeComponentProps<CodeData>) {
   </div>;
 }
 
-// 生成中的代码不高亮，但横滚提示与落定后一致。
+// 生成中的代码不高亮，但横滚提示与落定后一致；预留的块头位先写上与落定块头同名的语言，换手时只多出复制钮。
 function StreamingCode({ node }: { node: CodeData }) {
   const ref = useRef<HTMLDivElement>(null);
   useCodeOverflowEdges(ref);
-  return <div ref={ref} className="reading-code-scroll">
+  const id = resolveLanguageId(node.language);
+  const label = languageMap[id] ?? id;
+  return <div ref={ref} className="reading-code-scroll is-streaming">
+    {label ? <span className="reading-code-stream-label code-header-title" aria-hidden="true">{label}</span> : null}
     <PreCodeNode node={node} showLineNumbers={false} />
   </div>;
 }

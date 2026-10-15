@@ -360,6 +360,19 @@
   background-color: var(--ak-paper-quiet);
 }
 
+/* 流式代码块的语言标签：落在预留的 44px 块头位里，几何与落定块头的标题一致（左 17px、垂直居中），不随代码横滚。 */
+.reading-code-scroll.is-streaming { position: relative; }
+.reading-code-stream-label {
+  position: absolute;
+  z-index: 1;
+  inset-block-start: 1px;
+  inset-inline-start: 17px;
+  display: flex;
+  block-size: 44px;
+  align-items: center;
+  pointer-events: none;
+}
+
 /* 横滚提示：哪边还有被藏住的字，哪边渐隐 28px；滚到头渐隐消失。只遮代码区，不遮块头。 */
 .reading-code-scroll { --code-edge: 28px; }
 .reading-code-scroll[data-overflow="end"] :is(diffs-container, pre) {
@@ -390,9 +403,12 @@
   display: none;
 }
 
-:where(.agent-content, .process-markdown) .code-header-title {
+/* markstream 自带 `:where(.markstream-react) .code-block-header .code-header-title`（写死的灰、继承字体），特异性需高过它；
+   流式标签用同一类名，两态同一字体、字重与墨色。 */
+:is(.agent-content, .process-markdown) :is(.code-block-header, .reading-code-scroll) .code-header-title {
   font-family: var(--ak-type-technical);
   font-size: var(--chat-type-caption, 0.75rem);
+  font-weight: 500;
   color: var(--ak-ink-secondary);
 }
 
