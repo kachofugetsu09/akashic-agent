@@ -451,6 +451,40 @@
   max-height: none !important;
 }
 
+/* 代码不限高后，长块读到中间时块头（语言、复制）还在：块头在回复滚动区里吸顶，代码从它下面滑过。
+   组件给容器的 overflow: hidden 会让 sticky 失效，改成不产生滚动容器的 clip（裁剪效果相同）。 */
+:where(.agent-content, .process-markdown) .code-block-container {
+  overflow: clip !important;
+}
+:where(.agent-content, .process-markdown) .code-block-container > .code-block-header {
+  position: sticky;
+  /* 与吸顶的工具行同一规则：紧凑外壳的顶栏在场时停在它下面，向下阅读顶栏移出后贴回顶缘。 */
+  inset-block-start: var(--heading-cover, 0px);
+  z-index: 2;
+  /* 上面的通用规则把块头底色设为 transparent !important；吸顶时代码要从它下面滑过，这里必须不透明。 */
+  background: var(--ak-paper-quiet) !important;
+  transition: inset-block-start var(--ak-sys-duration-short) var(--ak-sys-motion-standard);
+  container-type: scroll-state;
+}
+/* 只在真正吸住时下沿出一道发丝线（与吸顶的过程行同款），把块头和从下面滑过的半行代码分开；
+   不支持 scroll-state 查询的浏览器只是没有这条线。 */
+:where(.agent-content, .process-markdown) .code-block-container > .code-block-header::after {
+  position: absolute;
+  inset: auto 0 0;
+  block-size: 1px;
+  background: transparent;
+  content: "";
+}
+@container scroll-state(stuck: top) {
+  :where(.agent-content, .process-markdown) .code-block-container > .code-block-header::after {
+    background: color-mix(in oklab, var(--ak-color-text-primary) 7%, transparent);
+  }
+}
+/* 展开的过程组、思考里，上面已有吸顶的摘要行，块头停在它下面，不叠在一起。 */
+:where(.agent-content) :is(.turn-process.is-open, .thinking-row[data-state="open"]) .code-block-container > .code-block-header {
+  inset-block-start: calc(var(--heading-cover, 0px) + var(--tool-sticky-h));
+}
+
 :where(.agent-content, .process-markdown, .user-bubble) .code-block-container pre {
   background: transparent !important;
   border: none !important;
