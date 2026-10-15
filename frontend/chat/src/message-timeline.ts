@@ -401,6 +401,9 @@ export function timelineReplyGroups(messages: TimelineMessage[], activities: Rep
         joined.add(message.id);
         if (ending?.body.kind === "output" && ending.body.finish === "continue") joined.add(ending.id);
       }
+      // 停止或暂停收尾、只有过程没有正文的输出：时间挂在紧随其后的"已暂停"上，空白处不再挂一行时间与指向空消息的操作。
+      if (body.kind === "control" && ending?.body.kind === "output"
+        && !ending.body.parts.some((part) => part.kind === "text" && isTimelinePartVisible(part))) joined.add(ending.id);
       pending.set(key, members.filter((item) => item.seq > throughSeq));
     }
   }
