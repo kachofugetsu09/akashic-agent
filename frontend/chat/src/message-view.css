@@ -392,7 +392,7 @@
   container-type: scroll-state;
 }
 :where(.agent-content) :is(.turn-process.is-open, .thinking-row[data-state="open"]) .reading-code-stream-label {
-  inset-block-start: calc(var(--heading-cover, 0px) + var(--tool-sticky-h));
+  inset-block-start: calc(var(--heading-cover, 0px) + var(--code-sticky-layers) * var(--tool-sticky-h));
 }
 
 /* 横滚提示：哪边还有被藏住的字，哪边渐隐 28px；滚到头渐隐消失。只遮代码区，不遮块头。 */
@@ -492,9 +492,16 @@
     background: color-mix(in oklab, var(--ak-color-text-primary) 7%, transparent);
   }
 }
-/* 展开的过程组、思考里，上面已有吸顶的摘要行，块头停在它下面，不叠在一起。 */
+/* 展开的过程组、思考里，上面已有吸顶的摘要行，块头停在它下面，不叠在一起。
+   摘要会嵌套（过程组里的思考，两行摘要都吸住），按祖先里展开的摘要层数让位；生成中的语言标签同一规则。 */
+:where(.agent-content) :is(.turn-process.is-open, .thinking-row[data-state="open"]) {
+  --code-sticky-layers: 1;
+}
+:where(.agent-content) .turn-process.is-open .thinking-row[data-state="open"] {
+  --code-sticky-layers: 2;
+}
 :where(.agent-content) :is(.turn-process.is-open, .thinking-row[data-state="open"]) .code-block-container > .code-block-header {
-  inset-block-start: calc(var(--heading-cover, 0px) + var(--tool-sticky-h));
+  inset-block-start: calc(var(--heading-cover, 0px) + var(--code-sticky-layers) * var(--tool-sticky-h));
 }
 
 :where(.agent-content, .process-markdown, .user-bubble) .code-block-container pre {
