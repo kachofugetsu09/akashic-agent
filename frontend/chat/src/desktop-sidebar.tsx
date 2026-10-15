@@ -246,6 +246,7 @@ function ShortcutsDialog({ open, onOpenChange, returnFocus }: { open: boolean; o
       ["新会话", [mod, "Shift", "O"]],
       ["在会话列表里上下移动", ["↑", "↓"]],
       ["会话的操作菜单", ["Shift", "F10"]],
+      ["看图时切到同一条消息里的上一个、下一个", ["←", "→"]],
       ["快捷键", [mod, "/"]],
     ] },
   ];
