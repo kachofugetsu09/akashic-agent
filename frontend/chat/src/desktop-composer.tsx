@@ -114,7 +114,16 @@ export const DesktopComposer = memo(function DesktopComposer({
     // 写入后把焦点与光标放到草稿末尾，用户接着补完即可。
     insertDraft: (text, options) => {
       const current = options?.append ? drafts.current.get(draftKey)?.trim() : "";
-      setDraft(draftKey, current ? `${current}\n\n${text}` : text);
+      const next = current ? `${current}\n\n${text}` : text;
+      // 走浏览器的编辑命令整段替换：进原生撤销栈，误点"引用""放回输入框编辑"后 Ctrl+Z 即可撤回；
+      // 它触发的 input 事件照常经 onInputChange 写回草稿与展开状态。不支持时退回直接写值。
+      const textarea = textareaRef.current;
+      if (textarea && !textarea.disabled) {
+        textarea.focus();
+        textarea.setSelectionRange(0, textarea.value.length);
+        if (document.execCommand("insertText", false, next)) return;
+      }
+      setDraft(draftKey, next);
       window.requestAnimationFrame(() => {
         const textarea = textareaRef.current;
         if (!textarea) return;
