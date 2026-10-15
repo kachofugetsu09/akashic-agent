@@ -317,23 +317,31 @@ export const PromptInputBody = ({
 
 export type PromptInputTextareaProps = ComponentProps<
   typeof InputGroupTextarea
->;
+> & {
+  /** 粘贴的纯文本达到这个 UTF-8 字节数就转成附件（按住 Shift 粘贴照常插入）。 */
+  pasteAsFile?: { bytes: number; filename: string; onConverted?: (lines: number) => void };
+};
 
 // 外接键盘的平板会报告精细指针或悬停能力，此时仍按回车发送。
 export const touchOnly = () => window.matchMedia("(hover: none) and (pointer: coarse)").matches;
 
 export const PromptInputTextarea = ({
   onKeyDown,
+  onKeyUp,
   className,
   placeholder = "What would you like to know?",
+  pasteAsFile,
   ...props
 }: PromptInputTextareaProps) => {
+  // 粘贴事件不带修饰键：按键时记下 Shift，Ctrl/⌘+Shift+V 随后的粘贴据此照常插入。
+  const shiftHeld = useRef(false);
   const attachments = usePromptInputAttachments();
   const [isComposing, setIsComposing] = useState(false);
 
   const handleKeyDown: KeyboardEventHandler<HTMLTextAreaElement> = useCallback(
     (e) => {
       // Call the external onKeyDown handler first
+      shiftHeld.current = e.shiftKey;
       onKeyDown?.(e);
 
       // If the external handler prevented default, don't run internal logic
@@ -387,6 +395,19 @@ export const PromptInputTextarea = ({
       if (!items) {
         return;
       }
+      // 1. 长文本转附件：几百行日志灌进输入框会淹没要说的话（Desktop 同样在 4KB 处转换）。
+      //    Office 类来源同时带文本与渲染图，按文本处理。
+      const text = event.clipboardData.getData("text/plain");
+      const officeLike = Boolean(text) && event.clipboardData.types.includes("text/html");
+      if (pasteAsFile && text && !shiftHeld.current && new Blob([text]).size >= pasteAsFile.bytes) {
+        event.preventDefault();
+        attachments.add([new File([text], pasteAsFile.filename, { type: "text/plain" })]);
+        pasteAsFile.onConverted?.(text.split("\n").length);
+        return;
+      }
+      if (officeLike) {
+        return;
+      }
 
       const files: File[] = [];
 
@@ -404,7 +425,7 @@ export const PromptInputTextarea = ({
         attachments.add(files);
       }
     },
-    [attachments]
+    [attachments, pasteAsFile]
   );
 
   const handleCompositionEnd = useCallback(() => setIsComposing(false), []);
@@ -417,6 +438,10 @@ export const PromptInputTextarea = ({
       onCompositionEnd={handleCompositionEnd}
       onCompositionStart={handleCompositionStart}
       onKeyDown={handleKeyDown}
+      onKeyUp={(event) => {
+        shiftHeld.current = event.shiftKey;
+        onKeyUp?.(event);
+      }}
       onPaste={handlePaste}
       placeholder={placeholder}
       enterKeyHint={touchOnly() ? "enter" : "send"}
