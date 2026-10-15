@@ -206,7 +206,7 @@
   outline: none;
 }
 
-.image-preview-full,
+.media-preview__media:not(.is-video),
 .attachment-hover-image {
   outline: 1px solid var(--ak-color-image-outline);
   outline-offset: -1px;
@@ -1616,23 +1616,82 @@ button.tool-step-summary:active {
   cursor: zoom-in;
 }
 
-.image-preview-dialog {
-  width: min(94vw, 56rem);
-  max-width: none;
-  max-height: 90vh;
+/* 图片/视频查看器：整屏压暗，内容宽度随媒体收紧（至少放得下顶栏），点媒体外的空白处关闭。
+   压暗层在深浅主题都是暗的，顶栏用固定的浅色前景，和所有看图器一样不随主题翻转。 */
+.media-preview-overlay {
+  background: rgb(var(--ak-color-shadow-rgb) / 0.86);
+}
+
+.media-preview {
+  display: grid;
+  width: max-content;
+  min-width: min(94vw, 24rem);
+  max-width: 94vw;
+  max-height: 96dvh;
+  grid-template-rows: auto minmax(0, 1fr);
+  justify-items: center;
+  gap: 8px;
+  overflow: visible;
   border: 0;
+  border-radius: 0;
   padding: 0;
   background: transparent;
   box-shadow: none;
+  color: rgb(255 255 255 / 0.92);
 }
 
-.image-preview-full {
+.media-preview__bar {
+  display: flex;
+  min-width: 0;
+  justify-self: stretch;
+  align-items: center;
+  gap: 4px;
+}
+
+.media-preview__title {
+  flex: 1;
+  min-width: 0;
+  color: inherit;
+  font-size: 0.875rem;
+  font-weight: 500;
+  line-height: 1.4;
+}
+
+.media-preview__bar :is(a, button) {
+  display: grid;
+  width: 40px;
+  height: 40px;
+  flex: 0 0 40px;
+  place-items: center;
+  border-radius: 10px;
+  color: inherit;
+  opacity: 0.82;
+}
+
+.media-preview__bar :is(a, button):hover {
+  opacity: 1;
+  background: rgb(255 255 255 / 0.12);
+}
+
+.media-preview__bar :is(a, button):focus-visible {
+  opacity: 1;
+  outline: 2px solid rgb(255 255 255 / 0.9);
+  outline-offset: 1px;
+}
+
+.media-preview__media {
   display: block;
-  max-width: 100%;
-  max-height: 84vh;
-  margin: 0 auto;
-  border-radius: 14px;
+  max-width: 94vw;
+  max-height: calc(96dvh - 48px);
+  border-radius: 10px;
   object-fit: contain;
+}
+
+/* 视频按视口放大：320px 的录屏也铺到 56rem 宽，等比、不裁切。 */
+.media-preview__media.is-video {
+  width: min(94vw, 56rem);
+  height: auto;
+  background: #000;
 }
 
 .composer-reply {

@@ -24,11 +24,13 @@ import {
 import { CollapsibleContent } from "@/components/ui/collapsible";
 import {
   Dialog,
+  DialogClose,
   DialogContent,
   DialogTitle,
   DialogTrigger,
 } from "@/components/ui/dialog";
-import { Brain, Check, ChevronDown, Copy, Download, Gauge, ImageIcon, Play, Video, Wrench } from "lucide-react";
+import { Brain, Check, ChevronDown, Copy, Download, ExternalLink, Gauge, ImageIcon, Play, Video, Wrench, X } from "lucide-react";
+import { MarqueeText } from "./marquee-text";
 import {
   Fragment,
   lazy,
@@ -786,26 +788,42 @@ function MessageAttachmentItem({ attachment }: { attachment: MessageAttachment }
   );
 }
 
-// 视频与图片同一套：块里取首帧铺满（解不出时垫图标和文件名），点开在对话框里播放，而不是直接下载。
+// 视频与图片同一套：块里取首帧铺满（解不出时垫图标和文件名），点开在查看器里播放，而不是直接下载。
 function MessageContentVideo({ url, label }: { url: string; label: string }) {
-  return (
-    <Dialog>
-      <DialogTrigger asChild>
-        <button type="button" className="message-attachment-chip is-media is-video" title={`播放 ${label}`} aria-label={`播放 ${label}`}>
-          <span className="message-video-fallback">
-            <Video size={18} aria-hidden="true" />
-            <span>{label}</span>
-          </span>
-          <video src={url} muted playsInline preload="metadata" />
-          <span className="message-video-badge" aria-hidden="true"><Play size={12} fill="currentColor" /></span>
-        </button>
-      </DialogTrigger>
-      <DialogContent className="image-preview-dialog">
-        <DialogTitle className="sr-only">{label}</DialogTitle>
-        <video className="image-preview-full" src={url} controls autoPlay playsInline />
-      </DialogContent>
-    </Dialog>
-  );
+  return <MediaPreview url={url} label={label} kind="video">
+    <button type="button" className="message-attachment-chip is-media is-video" title={`播放 ${label}`} aria-label={`播放 ${label}`}>
+      <span className="message-video-fallback">
+        <Video size={18} aria-hidden="true" />
+        <span>{label}</span>
+      </span>
+      <video src={url} muted playsInline preload="metadata" />
+      <span className="message-video-badge" aria-hidden="true"><Play size={12} fill="currentColor" /></span>
+    </button>
+  </MediaPreview>;
+}
+
+// 图片与视频的查看器：整屏压暗，媒体按视口等比放大（小视频不再按原始尺寸播放）；顶栏是文件名、新标签打开、下载与关闭，点媒体外的空白处关闭。
+function MediaPreview({ url, label, kind, children }: { url: string; label: string; kind: "image" | "video"; children: ReactNode }) {
+  const [open, setOpen] = useState(false);
+  const closeRef = useRef<HTMLButtonElement>(null);
+  return <Dialog open={open} onOpenChange={setOpen}>
+    <DialogTrigger asChild>{children}</DialogTrigger>
+    <DialogContent className="media-preview" overlayClassName="media-preview-overlay" showCloseButton={false}
+      aria-describedby={undefined}
+      // 打开后焦点落在关闭钮（Esc 与回车都能离开），而不是顶栏第一个"新标签打开"。
+      onOpenAutoFocus={(event) => { event.preventDefault(); closeRef.current?.focus(); }}
+      onClick={(event) => { if (event.target === event.currentTarget) setOpen(false); }}>
+      <div className="media-preview__bar">
+        <DialogTitle className="media-preview__title"><MarqueeText still>{label}</MarqueeText></DialogTitle>
+        <a href={url} target="_blank" rel="noreferrer" aria-label="在新标签页打开" title="在新标签页打开"><ExternalLink size={18} aria-hidden="true" /></a>
+        <a href={url} download={label} aria-label={`下载 ${label}`} title="下载"><Download size={18} aria-hidden="true" /></a>
+        <DialogClose ref={closeRef} aria-label="关闭" title="关闭（Esc）"><X size={20} aria-hidden="true" /></DialogClose>
+      </div>
+      {kind === "image"
+        ? <img alt={label} className="media-preview__media" src={url} />
+        : <video className="media-preview__media is-video" src={url} controls autoPlay playsInline />}
+    </DialogContent>
+  </Dialog>;
 }
 
 function MessageContentImage({
@@ -827,26 +845,18 @@ function MessageContentImage({
     );
   }
 
-  return (
-    <Dialog>
-      <DialogTrigger asChild>
-        <button type="button" className="message-content-image" title="点击预览图片">
-          <img
-            alt={label}
-            className="message-content-image__media"
-            src={attachment.url}
-            loading="eager"
-            decoding="async"
-            onError={() => setFailed(true)}
-          />
-        </button>
-      </DialogTrigger>
-      <DialogContent className="image-preview-dialog">
-        <DialogTitle className="sr-only">{label}</DialogTitle>
-        <img alt={label} className="image-preview-full" src={attachment.url} />
-      </DialogContent>
-    </Dialog>
-  );
+  return <MediaPreview url={attachment.url} label={label} kind="image">
+    <button type="button" className="message-content-image" title="点击预览图片">
+      <img
+        alt={label}
+        className="message-content-image__media"
+        src={attachment.url}
+        loading="eager"
+        decoding="async"
+        onError={() => setFailed(true)}
+      />
+    </button>
+  </MediaPreview>;
 }
 
 function AttachmentHover({ attachment }: { attachment: MessageAttachment }) {
