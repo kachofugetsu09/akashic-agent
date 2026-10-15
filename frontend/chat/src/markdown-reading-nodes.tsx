@@ -1,7 +1,7 @@
 import { CheckIcon, CopyIcon } from "lucide-react";
 import { createContext, useContext, useEffect, useLayoutEffect, useRef, useState, type RefObject } from "react";
-import { CodeBlockNode, FootnoteNode as FootnoteRenderer, ListNode, ParagraphNode as ParagraphRenderer, PreCodeNode, languageMap, resolveLanguageId, type NodeComponentProps } from "markstream-react";
-import type { CodeBlockNode as CodeData, FootnoteNode as FootnoteData, ListNode as ListData, ParagraphNode, ParsedNode, TableNode as TableData } from "stream-markdown-parser";
+import { CodeBlockNode, FootnoteNode as FootnoteRenderer, LinkNode as LinkRenderer, ListNode, ParagraphNode as ParagraphRenderer, PreCodeNode, languageMap, resolveLanguageId, type NodeComponentProps } from "markstream-react";
+import type { CodeBlockNode as CodeData, FootnoteNode as FootnoteData, LinkNode as LinkData, ListNode as ListData, ParagraphNode, ParsedNode, TableNode as TableData } from "stream-markdown-parser";
 import { copyReadingCode, isConceptLabel, isNumericColumn, isPlainTextLanguage, stripConceptSeparator, watchOverflowEdges, writeOverflowEdges } from "./markdown-reading";
 import { renderStaticMarkdown } from "./static-markdown";
 
@@ -40,6 +40,16 @@ export function ReadingParagraph(props: NodeComponentProps<ParagraphNode>) {
   if (content.length !== 1 || content[0].type !== "strong" || !ctx || !renderNode) return <ParagraphRenderer {...props} />;
   const className = nodeText(content[0]).length < 65 ? "reading-topic" : "reading-emphasis";
   return <p className={className} dir="auto">{node.children.map((child, index) => renderNode(child, `${String(indexKey)}-${index}`, ctx))}</p>;
+}
+
+/** markstream 给链接写死英文 aria-label（"Link: 地址"），它会顶替链接文字成为读屏名：摘掉后读屏念的是正文里的链接文字。 */
+export function ReadingLink(props: NodeComponentProps<LinkData>) {
+  const ref = useRef<HTMLSpanElement>(null);
+  // 必要 effect：属性写在 markstream 内部组件上，只能提交后摘；React 只在值变化时重写属性，每次提交后摘一次即可。
+  useLayoutEffect(() => {
+    ref.current?.querySelector("a.link-node[aria-label]")?.removeAttribute("aria-label");
+  });
+  return <span ref={ref}><LinkRenderer {...props} /></span>;
 }
 
 /** 短加粗标签组成的无序列表分栏，其余列表沿用现有 renderer。 */
@@ -165,11 +175,20 @@ function useCodeOverflowEdges(ref: RefObject<HTMLDivElement | null>): void {
       contents.observe(root, { childList: true, subtree: true });
       measure();
     };
-    // 3. 流式正文增长同样走这里：子树变化后重新接宿主并测量。
-    const mounts = new MutationObserver(() => { attach(); measure(); });
+    // 3. markstream 的 pre（生成中、高亮完成前）一律 tabIndex=0、读屏名写死英文"Code block: json"：
+    //    摘掉，交给 writeOverflowEdges 按是否放得下决定进不进 Tab 序、用中文名。
+    const adopt = () => {
+      for (const pre of wrapper.querySelectorAll<HTMLElement>("pre[aria-label^='Code block']")) {
+        pre.removeAttribute("tabindex");
+        pre.removeAttribute("aria-label");
+      }
+    };
+    // 4. 流式正文增长同样走这里：子树变化后重新接宿主并测量。
+    const mounts = new MutationObserver(() => { adopt(); attach(); measure(); });
     mounts.observe(wrapper, { childList: true, subtree: true, characterData: true });
     wrapper.addEventListener("scroll", onScroll, { capture: true, passive: true });
     resize.observe(wrapper);
+    adopt();
     attach();
     measure();
     return () => {

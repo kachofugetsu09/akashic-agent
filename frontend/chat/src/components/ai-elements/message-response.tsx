@@ -15,7 +15,7 @@ import MarkdownRender, {
 } from "markstream-react";
 import "markstream-react/index.px.css";
 import { useReducedMotion } from "motion/react";
-import { CODE_BLOCK_OPTIONS, CODE_BLOCK_PROPS, FootnoteSource, ReadingCode, ReadingFootnote, ReadingList, ReadingParagraph, ReadingTable, footnoteLookup } from "@/markdown-reading-nodes";
+import { CODE_BLOCK_OPTIONS, CODE_BLOCK_PROPS, FootnoteSource, ReadingCode, ReadingFootnote, ReadingLink, ReadingList, ReadingParagraph, ReadingTable, footnoteLookup } from "@/markdown-reading-nodes";
 import type { MarkdownIt } from "stream-markdown-parser";
 
 function configureMessageMarkdown(markdown: MarkdownIt) {
@@ -91,6 +91,7 @@ setCustomComponents({
   math_block: DeferredMathBlock,
   math_inline: DeferredMathInline,
   mermaid: MermaidAsCode,
+  link: ReadingLink,
   list: ReadingList,
   paragraph: ReadingParagraph,
   table: ReadingTable,
