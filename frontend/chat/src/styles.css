@@ -464,6 +464,28 @@ input {
   outline: none;
 }
 
+.chat-sidebar__search-clear {
+  display: grid;
+  flex: none;
+  width: 24px;
+  height: 24px;
+  place-items: center;
+  margin-inline-end: -4px;
+  border: 0;
+  border-radius: 6px;
+  padding: 0;
+  color: var(--chat-muted);
+  background: transparent;
+  cursor: pointer;
+}
+@media (hover: hover) { .chat-sidebar__search-clear:hover { color: var(--chat-ink); background: var(--chat-chip); } }
+.chat-sidebar__search-clear:focus-visible { outline: 2px solid var(--ak-rule-focus); outline-offset: 1px; }
+/* 触屏热区 44px，图形不变；向外扩到搜索框边缘，不撑高搜索框。 */
+@media (pointer: coarse) {
+  .chat-sidebar__search-clear { position: relative; }
+  .chat-sidebar__search-clear::after { position: absolute; inset: -10px -10px; content: ""; }
+}
+
 .chat-sidebar__search input::placeholder {
   color: var(--chat-faint);
 }
