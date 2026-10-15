@@ -1,39 +1,25 @@
+import { micromark } from "micromark";
 import { useEffect, useRef, useState } from "react";
 import { copyText } from "./copy-text";
 
 type CodeBlock = { code: string; language: string };
-type OpenFence = { indent: number; fence: string; language: string; lines: string[] };
-
-const FENCE_OPEN = /^( {0,3})(`{3,}|~{3,})(.*)$/u;
-const FENCE_CLOSE = /^ {0,3}(`{3,}|~{3,})[ \t]*$/u;
 const NOTICE_MS = 1800;
 
-// 按 CommonMark 围栏规则取出 Markdown 里的代码块：闭合须同字符、不短于开栏且其后只有空白，没闭合的延续到文末；
-// 开栏缩进几格，正文就去掉至多几格。反引号围栏的信息串里不能再有反引号。
-export function fencedCodeBlocks(markdown: string): CodeBlock[] {
-  const blocks: CodeBlock[] = [];
-  let open: OpenFence | null = null;
-  for (const line of markdown.split("\n")) {
-    if (open) {
-      const close = FENCE_CLOSE.exec(line);
-      if (close && close[1][0] === open.fence[0] && close[1].length >= open.fence.length) {
-        blocks.push({ code: open.lines.join("\n"), language: open.language });
-        open = null;
-      } else open.lines.push(line.replace(new RegExp(`^ {0,${open.indent}}`, "u"), ""));
-      continue;
-    }
-    const start = FENCE_OPEN.exec(line);
-    if (!start || (start[2][0] === "`" && start[3].includes("`"))) continue;
-    open = { indent: start[1].length, fence: start[2], language: start[3].trim().split(/\s+/u)[0] ?? "", lines: [] };
-  }
-  if (open) blocks.push({ code: open.lines.join("\n"), language: open.language });
-  return blocks;
+// 用 Markdown 解析器取出回复里显示成代码块的部分（含引用、列表里的围栏与缩进代码），与页面上看到的同一组块；
+// 自己按行认围栏不懂容器前缀，会跳过引用里的最后一块、静默复制更早的代码。micromark 输出已转义，模板不挂到页面。
+export function codeBlocks(markdown: string): CodeBlock[] {
+  const template = document.createElement("template");
+  template.innerHTML = micromark(markdown);
+  return Array.from(template.content.querySelectorAll("pre > code"), (code) => ({
+    code: (code.textContent ?? "").replace(/\n$/u, ""),
+    language: Array.from(code.classList).find((name) => name.startsWith("language-"))?.slice(9) ?? "",
+  }));
 }
 
 // 从最新的回复往前找，第一条带代码块的回复里的最后一块。
 function lastCodeBlock(replies: readonly string[]): CodeBlock | null {
   for (let index = replies.length - 1; index >= 0; index -= 1) {
-    const blocks = fencedCodeBlocks(replies[index]);
+    const blocks = codeBlocks(replies[index]);
     if (blocks.length) return blocks[blocks.length - 1];
   }
   return null;
