@@ -321,8 +321,8 @@ class ReloadJournal:
                 for update in updates
             )
 
-    def bind_boot_input(self, plugin_id: str, input_ref: str) -> None:
-        """启动按磁盘换代后，把指向当前制品且尚未绑定的已提交安装接到实际输入。"""
+    def bind_boot_input(self, plugin_id: str, input_ref: str, code: Path) -> None:
+        """把尚未绑定的已提交安装接到本次启动实际选中的输入；只认代码确为候选制品的输入，可重复调用。"""
         with self._connect() as conn:
             _ = conn.execute("BEGIN IMMEDIATE")
             rows = conn.execute(
@@ -332,7 +332,9 @@ class ReloadJournal:
             for row in rows:
                 update = update_rollback.read(conn, str(row[0]))
                 pointers = read_pointers(update.plugin_base, validate_content=False)
-                if pointers is not None and pointers.stable == update.candidate:
+                if update.candidate.path is None or pointers is None or pointers.stable != update.candidate:
+                    continue
+                if (update.plugin_base / update.candidate.path).resolve() == code.resolve():
                     update_rollback.set_input_ref(conn, update_id=update.update_id, input_ref=input_ref)
 
     def create_config_update(self, request_id: str, plugin_id: str, previous_input: str, input_ref: str,

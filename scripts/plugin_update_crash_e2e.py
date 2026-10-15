@@ -9,8 +9,11 @@ from pathlib import Path
 import shutil
 import subprocess
 import sys
+from typing import cast
 
 ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(ROOT))
+from agent.plugins.artifacts import pointer_state_path  # noqa: E402
 
 # 子进程只做一件事：安装、在线更新或启动；崩溃点在真实调用返回后立即 SIGKILL。
 CHILD = '''import asyncio, json, os, signal, sys
@@ -38,6 +41,13 @@ elif kill_at == "after-install":
     manager_module.install_git_plugin = killing(manager_module.install_git_plugin)
 elif kill_at == "after-choice":
     manager_module.set_plugin_choice = killing(manager_module.set_plugin_choice)
+elif kill_at == "after-enable":
+    install.set_plugin_choice = killing(install.set_plugin_choice)
+elif kill_at == "before-bind":
+    # selection CAS 已提交、更新记录尚未绑定时崩溃。
+    def die(*args, **kwargs):
+        os.kill(os.getpid(), signal.SIGKILL)
+    manager_module.PluginManager._bind_installed_inputs = die
 
 from agent.plugin_composition.model import ServiceKey
 from agent.plugins.manager import PluginManager
@@ -47,6 +57,11 @@ async def run():
         install.install_git_plugin(workspace=workspace, source=source, marketplace="lab",
                                    plugins_home=home, update_id=update_id)
         print(json.dumps({"installed": update_id}))
+        return
+    if mode == "disable":
+        from agent.plugins.bundles import set_plugin_choice
+        set_plugin_choice(workspace, "probe@lab", enabled=False)
+        print(json.dumps({"disabled": True}))
         return
     host = PluginManager([], workspace=workspace, installed_cache_root=home / "cache")
     report = {}
@@ -126,7 +141,9 @@ def prepare(case: Path) -> dict[str, str]:
     git(source, "add", ".")
     git(source, "commit", "-qm", "v1")
     assert child(case, env, "offline", "install-v1") == {"installed": "install-v1"}
-    assert child(case, env, "boot")["running_version"] == "1"
+    # 首次启动（selection 为空）也要把安装记录接到实际输入。
+    first = child(case, env, "boot", "install-v1")
+    assert first["running_version"] == "1" and cast(dict[str, object], first["install-v1"])["state"] == "active", first
     (source / "plugin.py").write_text(PROBE.format(version="2"))
     git(source, "commit", "-qam", "v2")
     return env
@@ -137,6 +154,17 @@ def run_case(output: Path, name: str, mode: str, kill_at: str) -> dict[str, obje
     case = output / name
     env = prepare(case)
     update_id = f"{name}-v2"
+    if name == "offline-reinstall-after-enable":
+        # 停用后重装同一 commit：制品与指针都不变，只有启用写入。
+        git(case / "source", "reset", "-q", "--hard", "HEAD~1")
+        assert child(case, env, "disable") == {"disabled": True}
+    if name in {"boot-before-bind", "bad-current-entry"}:
+        assert child(case, env, "offline", update_id) == {"installed": update_id}
+    if name == "bad-current-entry":
+        # 已提交的新制品入口损坏：启动只能继续跑旧版本，更新不得显示为 active。
+        base = case / "plugins/cache/lab/probe"
+        stable = json.loads(pointer_state_path(base).read_text())["stable"]
+        (base / stable / "plugin.py").write_text("def broken(:\n")
     report: dict[str, object] = {"crash": child(case, env, mode, update_id, kill_at)}
     if name == "offline-retry-after-arm":
         # 不经启动直接重试安装：新安装入口自己结算遗留记录。
@@ -149,19 +177,50 @@ def run_case(output: Path, name: str, mode: str, kill_at: str) -> dict[str, obje
     return report
 
 
-CASES = {
+# 场景 -> (模式, 崩溃点, 期望运行版本, 期望 {更新: (phase, state)})；两次启动结果都必须等于期望。
+CASES: dict[str, tuple[str, str, str | None, dict[str, tuple[str, str]]]] = {
     # 提交前崩溃：只留下未引用的制品或恢复点，期望启动旧版本。
-    "offline-after-build": ("offline", "after-build"),
-    "offline-after-arm": ("offline", "after-arm"),
+    "offline-after-build": ("offline", "after-build", "1", {}),
+    "offline-after-arm": ("offline", "after-arm", "1", {"v2": ("rolled_back", "failed")}),
+    "online-after-build": ("online", "after-build", "1", {}),
+    "online-after-arm": ("online", "after-arm", "1", {"v2": ("rolled_back", "failed")}),
     # 指针已原子换到新制品：磁盘已提交，期望启动新版本。
-    "offline-after-pointer": ("offline", "after-pointer"),
-    "online-after-pointer": ("online", "after-pointer"),
+    "offline-after-pointer": ("offline", "after-pointer", "2", {"v2": ("committed", "active")}),
+    "online-after-pointer": ("online", "after-pointer", "2", {"v2": ("committed", "active")}),
     # 在线安装已提交指针与安装记录，但运行选择尚未换代。
-    "online-after-install": ("online", "after-install"),
-    "offline-retry-after-arm": ("offline", "after-arm"),
+    "online-after-install": ("online", "after-install", "2", {"v2": ("committed", "active")}),
+    "offline-retry-after-arm": ("offline", "after-arm", "2", {"v2": ("rolled_back", "failed"),
+                                                             "retry-v2": ("committed", "active")}),
+    # 同制品重装在启用写入后崩溃：启用已是提交事实，不得被撤销。
+    "offline-reinstall-after-enable": ("offline", "after-enable", "1", {"v2": ("committed", "active")}),
+    # selection 已换代、绑定前崩溃：下次启动补绑。
+    "boot-before-bind": ("boot", "before-bind", "2", {"v2": ("committed", "active")}),
+    # 新制品不可加载：旧版本继续运行，更新不得显示为 active。
+    "bad-current-entry": ("boot", "none", "1", {"v2": ("committed", "unknown")}),
     # 卸载已写停用选择、selection 尚未移除：期望启动时不再运行该插件。
-    "online-uninstall-after-choice": ("uninstall", "after-choice"),
+    "online-uninstall-after-choice": ("uninstall", "after-choice", None, {}),
 }
+
+
+def verify(name: str, report: dict[str, object]) -> list[str]:
+    """逐场景核对崩溃确实发生、两次启动的运行版本与更新状态都等于期望。"""
+    mode, kill_at, version, updates = CASES[name]
+    problems: list[str] = []
+    if kill_at != "none" and report["crash"] != {"killed": kill_at}:
+        problems.append(f"崩溃未按预期发生: {report['crash']}")
+    for boot in ("first_boot", "second_boot"):
+        result = cast(dict[str, object], report[boot])
+        if "boot_error" in result or "exit" in result:
+            problems.append(f"{boot} 失败: {result}")
+            continue
+        if result.get("running_version") != version:
+            problems.append(f"{boot} 运行版本 {result.get('running_version')!r}，期望 {version!r}")
+        for suffix, (phase, state) in updates.items():
+            raw = result.get(f"{name}-{suffix}" if suffix == "v2" else suffix)
+            item = cast(dict[str, object], raw) if isinstance(raw, dict) else {"phase": raw}
+            if (item.get("phase"), item.get("state")) != (phase, state):
+                problems.append(f"{boot} {suffix} 为 {item}，期望 {(phase, state)}")
+    return problems
 
 
 def main() -> None:
@@ -172,9 +231,12 @@ def main() -> None:
     output = args.output.resolve()
     if output.exists():
         shutil.rmtree(output)
-    report = {name: run_case(output, name, *CASES[name]) for name in args.case or sorted(CASES)}
-    (output / "report.json").write_text(json.dumps(report, ensure_ascii=False, indent=2))
-    print(json.dumps(report, ensure_ascii=False, indent=2))
+    report = {name: run_case(output, name, *CASES[name][:2]) for name in args.case or sorted(CASES)}
+    problems = {name: verify(name, item) for name, item in report.items()}
+    (output / "report.json").write_text(json.dumps({"cases": report, "problems": problems}, ensure_ascii=False, indent=2))
+    for name, items in problems.items():
+        print(("PASS " if not items else "FAIL ") + name + "".join(f"\n  - {item}" for item in items))
+    sys.exit(1 if any(problems.values()) else 0)
 
 
 if __name__ == "__main__":

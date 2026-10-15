@@ -655,17 +655,23 @@ class PluginManager:
                 if (added := await self._boot_input(mod, initial=True)) is not None:
                     components.append(added)
         if tuple(components) == self._selection_components(selection_ref):
+            self._bind_installed_inputs(selection_ref)
             return selection_ref
-        # 3. 一次 CAS 提交按磁盘换代后的完整选择，并接上中断安装的状态记录。
+        # 3. 一次 CAS 提交按磁盘换代后的完整选择；绑定在提交后补做，崩溃后下次启动仍会补。
         operation = self._check_operation_commit()
         committed = self._selection.commit(tuple(components), expected_ref=selection_ref)
         operation.committed = committed
-        for ref in components:
-            record = self._selection.read_input(ref)
-            if record["source_type"] == "installed":
-                self._reload_journal.bind_boot_input(cast(str, record["plugin_id"]), ref)
+        self._bind_installed_inputs(committed)
         logger.warning("启动按磁盘指针与启停选择换代外置插件 selection")
         return committed
+
+    # 每次启动把最终选中的外置输入接到已提交但未绑定的安装记录；按代码路径精确匹配，幂等。
+    def _bind_installed_inputs(self, selection_ref: str) -> None:
+        for ref in self._selection_components(selection_ref):
+            record = self._selection.read_input(ref)
+            if record["source_type"] == "installed":
+                self._reload_journal.bind_boot_input(
+                    cast(str, record["plugin_id"]), ref, Path(cast(str, record["code"])))
 
     # 准备一个外置插件的启动输入；源码内容错误按首次启动规则只留诊断并跳过。
     async def _boot_input(self, mod: dict[str, str], *, initial: bool) -> str | None:
@@ -744,6 +750,7 @@ class PluginManager:
                 operation = self._check_operation_commit()
                 committed = self._selection.commit(components, expected_ref=None)
                 operation.committed = committed
+                self._bind_installed_inputs(committed)
             runnable_items: list[PluginGeneration] = []
             for generation in generations:
                 if not (generation.data_dir / CONFIG_INPUT).exists() and generation.config_projection:
