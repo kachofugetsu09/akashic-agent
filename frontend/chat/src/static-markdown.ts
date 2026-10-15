@@ -6,7 +6,11 @@ import { isConceptLabel, isNumericColumn, isPlainTextLanguage, stripConceptSepar
 export function renderStaticMarkdown(markdown: string) {
   const html = micromark(markdown, {
     extensions: [gfm()],
-    htmlExtensions: [gfmHtml()],
+    // 脚注区的隐藏标题与返回链接读屏名默认是英文（Footnotes / Back to reference 1）：与富渲染路径同说"返回引用 1"。
+    htmlExtensions: [gfmHtml({
+      label: "脚注",
+      backLabel: (reference, rereference) => `返回引用 ${reference + 1}${rereference > 1 ? `-${rereference}` : ""}`,
+    })],
   });
   // 1. 只处理 micromark 已转义、已过滤协议的输出；模板不挂到页面。
   const template = document.createElement("template");
