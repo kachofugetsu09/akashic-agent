@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
 import stat
 import socket
@@ -24,6 +25,10 @@ from starlette.websockets import WebSocketDisconnect, WebSocketState
 
 from agent.plugin_composition.endpoints import Endpoint, load_endpoint_plan
 from core.common.file_io import run_file_io
+
+# 插件可发布一个此协议的端点作为入口守卫；Web Shell 不理解其账号或会话语义。
+GUARD_PROTOCOL = "guard+unix"
+_GUARD_RESPONSE_HEADERS = {"content-type", "location", "cache-control", "retry-after", "www-authenticate"}
 
 _REQUEST_HEADERS_EXCLUDED = {
     "connection",
@@ -51,6 +56,8 @@ _RESPONSE_HEADERS_ALLOWED = {
     "etag",
     "last-modified",
     "location",
+    # 入口守卫插件的登录接口经代理下发会话 cookie。
+    "set-cookie",
     "x-akashic-web-stale",
 }
 
@@ -200,10 +207,63 @@ class WebShellServer(uvicorn.Server):
             should_exit = await self.on_tick(counter)
 
 
-def create_web_shell_app(workspace: Path) -> FastAPI:
+class _IngressGuard:
+    """同一 boot 内出现过守卫后，守卫缺席即拒绝；等待就绪的外壳在就绪前也拒绝。"""
+
+    def __init__(self, workspace: Path, *, wait_for_ready: bool) -> None:
+        self._ready = workspace / ".runtime-ready.json"
+        self._wait_for_ready = wait_for_ready
+        self._seen_in: str | None = None
+
+    def _boot(self) -> str | None:
+        if not self._wait_for_ready:
+            return "process"
+        try:
+            ready = json.loads(self._ready.read_text(encoding="utf-8"))
+        except (FileNotFoundError, ValueError):
+            return None
+        return str(ready["bootId"]) if ready.get("state") == "ready" else None
+
+    # 返回要询问的守卫；None 表示没有守卫且允许直通；False 表示必须拒绝。
+    def select(self, endpoints: tuple[Endpoint, ...]) -> Endpoint | None | bool:
+        guards = [item for item in endpoints if item.protocol == GUARD_PROTOCOL]
+        boot = self._boot()
+        if len(guards) > 1:
+            return False
+        if guards:
+            self._seen_in = boot or "starting"
+            return guards[0]
+        if boot is None or self._seen_in in {boot, "starting"}:
+            return False
+        return None
+
+
+async def _guard_verdict(clients: _HttpClients, guard: Endpoint, headers: Mapping[str, str], *,
+                         method: str, uri: str, upgrade: str, peer: str) -> Response | None:
+    """把原请求的方法、路径与头交给守卫；2xx 放行，其余响应原样作为拒绝结果。"""
+    forwarded = {name: value for name, value in headers.items()
+                 if name.lower() not in _REQUEST_HEADERS_EXCLUDED and not name.lower().startswith("x-akashic-")}
+    # 代理不转 Host；原值以 x-akashic-host 交给守卫做同源判断。
+    forwarded.update({"x-akashic-method": method, "x-akashic-uri": uri, "x-akashic-upgrade": upgrade,
+                      "x-akashic-peer": peer, "x-akashic-host": headers.get("host", "")})
+    try:
+        async with clients.open(guard) as client:
+            verdict = await client.get("/_guard/check", headers=forwarded, timeout=10)
+    except httpx.HTTPError as error:
+        logger.error("Web Shell 入口守卫不可用", exc_info=error)
+        return _runtime_unavailable(code="guard_unavailable", message="入口守卫不可用")
+    if 200 <= verdict.status_code < 300:
+        return None
+    return Response(verdict.content[:65536], status_code=verdict.status_code,
+                    headers={name: value for name, value in verdict.headers.items()
+                             if name.lower() in _GUARD_RESPONSE_HEADERS})
+
+
+def create_web_shell_app(workspace: Path, *, wait_for_ready: bool = False) -> FastAPI:
     """按 provider 发布的路由前缀转发；runtime 缺席时由外壳响应。"""
     plan = workspace / "runtime/endpoints.json"
     clients = _HttpClients()
+    ingress = _IngressGuard(workspace, wait_for_ready=wait_for_ready)
 
     @asynccontextmanager
     async def lifespan(_app: FastAPI) -> AsyncIterator[None]:
@@ -214,20 +274,36 @@ def create_web_shell_app(workspace: Path) -> FastAPI:
 
     app = FastAPI(docs_url=None, redoc_url=None, openapi_url=None, lifespan=lifespan)
 
-    async def endpoint(path: str) -> Endpoint | None:
+    # 先过入口守卫再匹配路由；拒绝时不暴露任何插件端点。
+    async def endpoint(path: str, headers: Mapping[str, str], *, method: str, uri: str,
+                       upgrade: str, peer: str) -> Endpoint | Response | None:
         endpoints = await run_file_io(lambda: load_endpoint_plan(plan))
         await clients.update(endpoints)
+        guard = await run_file_io(lambda: ingress.select(endpoints))
+        if guard is False:
+            return _runtime_unavailable(html="text/html" in headers.get("accept", ""),
+                                        code="guard_unavailable", message="入口守卫尚未就绪")
+        if isinstance(guard, Endpoint):
+            verdict = await _guard_verdict(clients, guard, headers, method=method, uri=uri,
+                                           upgrade=upgrade, peer=peer)
+            if verdict is not None:
+                return verdict
         return _matching_endpoint(endpoints, path)
 
     @app.api_route("/{path:path}",
                    methods=["GET", "HEAD", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"])
     async def proxy(path: str, request: Request) -> Response:
         try:
-            target = await endpoint("/" + path)
+            target = await endpoint("/" + path, request.headers, method=request.method,
+                                    uri=request.scope["raw_path"].decode("ascii") + (
+                                        "?" + request.url.query if request.url.query else ""),
+                                    upgrade="", peer=request.client.host if request.client else "")
         except (OSError, ValueError) as error:
             logger.error("Web Shell endpoint plan 无法读取", exc_info=error)
             return _runtime_unavailable(html="text/html" in request.headers.get("accept", ""),
                                         code="endpoint_plan_unavailable", message="Runtime 路由信息不可用")
+        if isinstance(target, Response):
+            return target
         if target is None:
             return _runtime_unavailable(html="text/html" in request.headers.get("accept", ""))
         response = await _proxy_http(request, clients, target,
@@ -239,10 +315,15 @@ def create_web_shell_app(workspace: Path) -> FastAPI:
     @app.websocket("/{path:path}")
     async def proxy_socket(path: str, websocket: WebSocket) -> None:
         try:
-            target = await endpoint("/" + path)
+            target = await endpoint("/" + path, websocket.headers, method="GET",
+                                    uri=websocket.scope["raw_path"].decode("ascii"), upgrade="websocket",
+                                    peer=websocket.client.host if websocket.client else "")
         except (OSError, ValueError) as error:
             logger.error("Web Shell endpoint plan 无法读取", exc_info=error)
             await websocket.close(code=1013, reason="Runtime 端点不可用")
+            return
+        if isinstance(target, Response):
+            await websocket.close(code=1008 if target.status_code < 500 else 1013, reason="未通过入口守卫")
             return
         if target is None:
             await websocket.close(code=1013, reason="Runtime 尚未就绪")
@@ -269,9 +350,10 @@ def create_web_shell_server(
     *,
     host: str = "127.0.0.1",
     port: int = 2236,
+    wait_for_ready: bool = False,
 ) -> WebShellServer:
     config = uvicorn.Config(
-        create_web_shell_app(workspace),
+        create_web_shell_app(workspace, wait_for_ready=wait_for_ready),
         host=host,
         port=port,
         log_level="warning",
@@ -301,11 +383,14 @@ async def _proxy_http(
         return _runtime_unavailable(html="text/html" in request.headers.get("accept", ""))
     query = request.url.query
     target = f"{target_path}?{query}" if query else target_path
+    # x-akashic-* 只能由外壳写入；对端地址与原 Host 供插件退避和同源判断。
     headers = {
         name: value
         for name, value in request.headers.items()
-        if name.lower() not in _REQUEST_HEADERS_EXCLUDED
+        if name.lower() not in _REQUEST_HEADERS_EXCLUDED and not name.lower().startswith("x-akashic-")
     }
+    headers["x-akashic-peer"] = request.client.host if request.client else ""
+    headers["x-akashic-host"] = request.headers.get("host", "")
 
     # 2. 借用跨越整个流式响应；异常、取消和浏览器断连都先关闭响应再归还借用。
     async with AsyncExitStack() as lifetime:

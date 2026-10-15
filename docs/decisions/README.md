@@ -154,3 +154,4 @@
 | [0117](0117-visuals-are-message-attachments.md) | proposed / implemented for review | 可视化是普通消息附件，工具与可选展示分别拥有生命周期 | WEBUI、SES、PLG |
 | [0119](0119-local-runtime-diagnostics.md) | accepted；前端由 0120 替代 | 运行诊断本地可用，外部接入独立消费 | PLG-015、PLG-016、ERR-001 |
 | [0120](0120-runtime-diagnostics-is-operations-only.md) | accepted | 运行诊断只面向运维，不提供前端 | PLG-015、PLG-016 |
+| [0122](0122-web-ingress-guard-plugin.md) | proposed / implemented for review | Web 入口守卫是可选插件，本机进程可信；修订 0017 的认证 non-goal | SEC、PLG、WEBUI |

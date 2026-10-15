@@ -1,0 +1,56 @@
+# 0122 · Web 入口守卫是可选插件，本机进程可信
+
+- 状态：proposed / implemented for review
+- 日期：2026-10-16
+- 关联：修订 [ADR-0017](0017-one-person-companion-security-boundary.md) 第 1 条中“不增加认证、Origin”；PLG 正交原则
+
+## 背景
+
+云端实例的 Web Shell 常以 `0.0.0.0` 或 Tunnel 对公网开放，而网页带宿主等价的 Shell。
+网页本身没有登录，聊天 `/ws` 也不校验 Origin：任何陌生人、以及主人浏览的任何跨站页面，
+都可以驱动 Agent。ADR-0017 把认证列为 non-goal，针对的是渠道之间的 ACL；
+“门外的陌生人”不在它讨论的范围内。
+
+## 决定
+
+1. **Core 只提供通用扩展点。** 插件可以发布一个 `guard+unix` 端点作为入口守卫。
+   Web Shell 每个 HTTP 与 WebSocket 请求先 `GET /_guard/check`，附上原请求的头与
+   `x-akashic-method / uri / upgrade / peer`；2xx 放行，其余响应原样返回给浏览器
+   （WebSocket 则以 1008 关闭）。Web Shell 不理解账号、cookie 或密码。
+2. **守卫缺席时失败关闭。** 同一 boot 内出现过守卫后，守卫缺席（换代、崩溃）一律 503；
+   Supervisor 的外壳在 Core 就绪前也不放行。没有任何守卫插件的实例保持原样。
+   卸载守卫插件要重启实例才放行。
+3. **门禁本身是普通插件 `web-auth@release`，默认在 base bundle 中。**
+   - 单主人：用户名 `akashic` 加密码；首次启动随机生成初始密码，只写日志与 0600 文件，
+     不推送到任何渠道；首次登录必须改成自己的密码。
+   - 记住设备：HttpOnly、SameSite=Lax cookie，默认 90 天，使用时顺延；可选不记住。
+   - 浏览器会话的写请求与 WebSocket 必须同源。
+   - 输错按来源退避，并设全来源总上限；不锁定账号。
+4. **本机进程可信。** 能读写本机文件与 unix socket 的进程就是主人：
+   - programmatic、SDK、CLI 走 Gateway unix socket，不经过门；
+   - 本机进程可读 `web-auth/secret` 作为 Bearer（健康检查、启动器）；
+   - `main.py web-login` 签发一次性登录链接，`./start` 打开浏览器时自动带上；
+   - `main.py web-passwd` 重置为临时密码并让所有设备退出。Agent 有 Shell，可以替主人运行它。
+   来源 IP 是 127.0.0.1 的 TCP 请求**不算**本机：反向代理与 Tunnel 转发后，公网请求同样来自 127.0.0.1。
+
+## 理由与代价
+
+守卫走端点协议而不是 Core 内置逻辑，账号模型、存储与 UI 都能随插件替换或移除，
+Core 只承担“问一次、按结果放行”。代价是每个请求多一次本机 UDS 往返。
+
+反向代理必须把原始 `Host` 转给 Akashic（nginx 需 `proxy_set_header Host $host`），否则同源校验会拒绝写请求与 WebSocket。
+
+## 交付
+
+分两步：先交付第 1、2 条的 Core 扩展点（此时没有守卫插件，行为不变）；再交付第 3、4 条的插件与启动器接入。
+
+## 验收
+
+`scripts/web_ingress_guard_e2e.py` 用真实 Web Shell 进程与假守卫、假后端验证扩展点：
+就绪前拒绝、无守卫直通、守卫响应原样返回、伪造的 `x-akashic-*` 被覆盖、WebSocket 拒绝与放行、
+同一 boot 守卫撤下失败关闭、两个守卫拒绝、新 boot 无守卫放开、守卫不可达拒绝。
+
+`scripts/web_auth_e2e.py` 用隔离 state 运行真实 `./start` 与 Chromium，覆盖：
+陌生人跳转与 401、WebSocket 跨站拒绝、本机 Bearer、初始密码强制改密、一次性链接单次有效、
+记住与不记住的 cookie、退避、程序调用不受影响、重置让设备失效、重启后会话保留、
+停用插件后门消失、重新启用后原账号继续生效。
