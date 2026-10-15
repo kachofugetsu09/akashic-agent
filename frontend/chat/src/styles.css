@@ -927,7 +927,7 @@ input {
   padding-inline: 4px;
 }
 
-.project-group__open:disabled,
+.project-group__open[aria-disabled="true"],
 .project-group__toggle:disabled { cursor: default; }
 
 .project-group__open svg { flex: 0 0 auto; }

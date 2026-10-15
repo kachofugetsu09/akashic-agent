@@ -190,8 +190,9 @@ export function ProjectNavigationRow({
         onClick={onToggle} disabled={searching}>
         <ChevronRight size={14} aria-hidden="true" className="project-group__chevron" />
       </button>
-      <button type="button" className="project-group__open" data-row-primary="" onClick={onToggle}
-        aria-expanded={open} disabled={searching}
+      {/* 搜索时只停用折叠，不禁用按钮：它是这一行唯一的键盘入口，行菜单（含"新建对话"）要靠它 Shift+F10 打开。 */}
+      <button type="button" className="project-group__open" data-row-primary="" onClick={searching ? undefined : onToggle}
+        aria-expanded={open} aria-disabled={searching || undefined}
         title={`${open ? "收起" : "展开"} ${project.name}${project.directory ? ` · ${project.directory}` : ""}`}>
         {collapsedStatus
           ? <span className="project-group__icon"><SessionStatusMark status={collapsedStatus} /></span>
