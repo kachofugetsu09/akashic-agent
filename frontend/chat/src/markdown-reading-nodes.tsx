@@ -1,5 +1,5 @@
 import { CheckIcon, CopyIcon } from "lucide-react";
-import { createContext, useContext, useEffect, useRef, useState, type RefObject } from "react";
+import { createContext, useContext, useEffect, useLayoutEffect, useRef, useState, type RefObject } from "react";
 import { CodeBlockNode, FootnoteNode as FootnoteRenderer, ListNode, ParagraphNode as ParagraphRenderer, PreCodeNode, languageMap, resolveLanguageId, type NodeComponentProps } from "markstream-react";
 import type { CodeBlockNode as CodeData, FootnoteNode as FootnoteData, ListNode as ListData, ParagraphNode, ParsedNode, TableNode as TableData } from "stream-markdown-parser";
 import { copyReadingCode, isConceptLabel, isNumericColumn, isPlainTextLanguage, stripConceptSeparator, watchOverflowEdges, writeOverflowEdges } from "./markdown-reading";
@@ -221,10 +221,25 @@ const FOOTNOTE_LABEL = /\[\^([^\]\s]+)\]/gu;
 // 标签按 GFM 的规则归一（空白折叠、大小写不敏感），与 micromark 生成 id 前的处理一致。
 const footnoteKey = (label: string) => label.replace(/[\t\n\r ]+/gu, " ").trim().toLowerCase();
 
-// micromark 的 id 是小写并 URI 编码过的标签；按原文第一次的写法还原，与富渲染的 fnref--标签 用同一个标签。
+// 找标签原始写法时只看正文：围栏代码、行内代码与转义的 \[ 里的 "[^A]" 不是引用。
+function proseOnly(markdown: string): string {
+  let fence: string | null = null;
+  const lines = markdown.split("\n").map((line) => {
+    const open = /^ {0,3}(`{3,}|~{3,})/u.exec(line);
+    if (fence !== null) {
+      if (open && open[1][0] === fence[0] && open[1].length >= fence.length && /^ {0,3}[`~]+[ \t]*$/u.test(line)) fence = null;
+      return "";
+    }
+    if (open) fence = open[1];
+    return open ? "" : line;
+  });
+  return lines.join("\n").replace(/(`+)[\s\S]*?\1/gu, "").replace(/\\\[/gu, "");
+}
+
+// micromark 的 id 是小写并 URI 编码过的标签；按正文里第一次真实引用的写法还原，与富渲染的 fnref--标签 用同一个标签。
 function footnoteLabels(markdown: string): Map<string, string> {
   const labels = new Map<string, string>();
-  for (const match of markdown.matchAll(FOOTNOTE_LABEL)) {
+  for (const match of proseOnly(markdown).matchAll(FOOTNOTE_LABEL)) {
     if (!labels.has(footnoteKey(match[1]))) labels.set(footnoteKey(match[1]), match[1]);
   }
   return labels;
@@ -238,40 +253,78 @@ function originalLabel(id: string, labels: Map<string, string>): string {
 }
 
 // 静态 GFM 没有数学扩展。解析前把 \$ 与 $…$ / $$…$$ 换成私用区占位，GFM 就不会去掉转义、也不会把公式拆成强调；
-// 解析后代码里的占位还原成原文，其余换成待 KaTeX 渲染的公式节点。公式不跨反引号与 ~~~，不会吃掉代码边界。
+// 解析后代码与属性里的占位还原成原文，正文里的换成待 KaTeX 渲染的公式节点。公式不跨反引号与 ~~~，不会吃掉代码边界；
+// 原文里像 HTML 标签的片段（这条路径按文字显示）整段跳过，属性里的 $ 保持字面。
 // 行内公式与 pandoc 同规则：开 $ 后、闭 $ 前不是空白，闭 $ 后不紧跟数字（"$5 和 $10"是价格不是公式）。
-const ESCAPED_DOLLAR = "";
-const MATH_SOURCE = /\\\$|\$\$((?:(?!~~~)[^`])+?)\$\$|\$(?!\s)([^$\n`]+?)(?<!\s)\$(?!\d)/gu;
-const MATH_SLOT = /(\d+)|/gu;
+const MATH_SOURCE = /<\/?[A-Za-z][A-Za-z0-9-]*(?:\s[^<>\n]*)?\/?>|\\\$|\$\$((?:(?!~~~)[^`])+?)\$\$|\$(?!\s)([^$\n`]+?)(?<!\s)\$(?!\d)/gu;
 
 type MathSlot = { source: string; tex: string; display: boolean };
+type MathMarks = { escaped: string; open: string; close: string };
 
-function protectMath(markdown: string): { text: string; slots: MathSlot[] } {
+// 占位字符逐条挑原文里没有出现过的私用区字符：原文自带的私用区字符原样保留，不会被当成占位。
+function freeMarks(markdown: string): MathMarks {
+  const free: string[] = [];
+  for (let code = 0xe000; free.length < 3 && code <= 0xf8ff; code += 1) {
+    const char = String.fromCharCode(code);
+    if (!markdown.includes(char)) free.push(char);
+  }
+  return { escaped: free[0], open: free[1], close: free[2] };
+}
+
+function protectMath(markdown: string): { text: string; slots: MathSlot[]; marks: MathMarks } {
   const slots: MathSlot[] = [];
+  const marks = freeMarks(markdown);
   const text = markdown.replace(MATH_SOURCE, (whole: string, display?: string, inline?: string) => {
-    if (whole === "\\$") return ESCAPED_DOLLAR;
+    if (whole.startsWith("<")) return whole;
+    if (whole === "\\$") return marks.escaped;
     slots.push({ source: whole, tex: display ?? inline ?? "", display: display !== undefined });
-    return `${slots.length - 1}`;
+    return `${marks.open}${slots.length - 1}${marks.close}`;
   });
-  return { text, slots };
+  return { text, slots, marks };
+}
+
+// 占位的匹配式：raw 用于文本与 title/alt，encoded 用于被 URI 编码过的 href/src。
+function slotPattern(marks: MathMarks, encode: (char: string) => string): RegExp {
+  return new RegExp(`${encode(marks.open)}(\\d+)${encode(marks.close)}|${encode(marks.escaped)}`, "giu");
+}
+
+// 链接地址、图片地址与 title/alt 只能回到原文（\$ 在这些位置本就解成 $）。
+function restoreMathAttributes(root: DocumentFragment, slots: MathSlot[], marks: MathMarks): void {
+  const raw = slotPattern(marks, (char) => char);
+  const encoded = slotPattern(marks, encodeURIComponent);
+  for (const element of root.querySelectorAll("[href], [src], [title], [alt]")) {
+    for (const name of ["href", "src", "title", "alt"]) {
+      const value = element.getAttribute(name);
+      if (value === null) continue;
+      const restore = (asUri: boolean) => (_whole: string, index?: string) => {
+        if (index === undefined) return "$";
+        return asUri ? encodeURI(slots[Number(index)].source) : slots[Number(index)].source;
+      };
+      const next = value.replace(encoded, restore(true)).replace(raw, restore(false));
+      if (next !== value) element.setAttribute(name, next);
+    }
+  }
 }
 
 // 占位还原：代码里回到原文；正文里转义的 $ 成为字面 $，公式成为 data-math 节点（先显示原文，挂载后再渲染）。
-function restoreMath(root: DocumentFragment, slots: MathSlot[]): void {
+function restoreMath(root: DocumentFragment, slots: MathSlot[], marks: MathMarks): void {
+  restoreMathAttributes(root, slots, marks);
+  const pattern = slotPattern(marks, (char) => char);
   const walker = document.createTreeWalker(root, NodeFilter.SHOW_TEXT);
   const texts: Text[] = [];
   for (let node = walker.nextNode(); node; node = walker.nextNode()) {
-    if (/[]/u.test(node.textContent ?? "")) texts.push(node as Text);
+    const value = node.textContent ?? "";
+    if (value.includes(marks.escaped) || value.includes(marks.open)) texts.push(node as Text);
   }
   for (const text of texts) {
     const source = text.textContent ?? "";
     if (text.parentElement?.closest("pre, code")) {
-      text.textContent = source.replace(MATH_SLOT, (_whole: string, index?: string) => index === undefined ? "\\$" : slots[Number(index)].source);
+      text.textContent = source.replace(pattern, (_whole: string, index?: string) => index === undefined ? "\\$" : slots[Number(index)].source);
       continue;
     }
     const parts: (string | Node)[] = [];
     let cursor = 0;
-    for (const match of source.matchAll(MATH_SLOT)) {
+    for (const match of source.matchAll(pattern)) {
       parts.push(source.slice(cursor, match.index));
       const slot = match[1] === undefined ? null : slots[Number(match[1])];
       if (slot === null) parts.push("$");
@@ -320,10 +373,10 @@ function parseFootnotes(markdown: string): Map<string, string> {
   const items = new Map<string, string>();
   if (!markdown.includes("[^")) return items;
   const labels = footnoteLabels(markdown);
-  const { text, slots } = protectMath(markdown);
+  const { text, slots, marks } = protectMath(markdown);
   const template = document.createElement("template");
   template.innerHTML = renderStaticMarkdown(text);
-  restoreMath(template.content, slots);
+  restoreMath(template.content, slots, marks);
   for (const item of template.content.querySelectorAll<HTMLLIElement>(`li[id^="${FOOTNOTE_ID_PREFIX}"]`)) {
     const label = originalLabel(item.id.slice(FOOTNOTE_ID_PREFIX.length), labels);
     items.set(footnoteKey(label), adoptFootnoteItem(item, label, labels));
@@ -357,12 +410,43 @@ async function renderFootnoteMath(root: HTMLElement): Promise<void> {
   }
 }
 
+type FocusedLink = { href: string; index: number; element: Element };
+
+// 生成中脚注由 markstream 渲染，落定换成完整 GFM 的子树；焦点在脚注里的链接上时旧节点被整体换掉，焦点会退回 body。
+// 记下脚注内获得焦点的链接（同 href 的第几个），换手后把焦点交还给新子树里对应的那个。
+function useFootnoteFocusCarry(id: string, html: string | null): void {
+  const focused = useRef<FocusedLink | null>(null);
+  useEffect(() => {
+    const onFocusIn = (event: FocusEvent) => {
+      const target = event.target instanceof Element ? event.target.closest("a[href]") : null;
+      const host = target?.closest(`[id="fnref--${CSS.escape(id)}"]`);
+      if (!target || !host) { focused.current = null; return; }
+      const href = target.getAttribute("href") ?? "";
+      const same = [...host.querySelectorAll("a[href]")].filter((link) => link.getAttribute("href") === href);
+      focused.current = { href, index: same.indexOf(target), element: target };
+    };
+    document.addEventListener("focusin", onFocusIn);
+    return () => document.removeEventListener("focusin", onFocusIn);
+  }, [id]);
+  // 必要 effect：焦点只能在新子树挂上之后交还；仍连着的旧节点（没有换手）不动。
+  useLayoutEffect(() => {
+    const last = focused.current;
+    if (!last || last.element.isConnected) return;
+    const active = document.activeElement;
+    if (active && active !== document.body) return;
+    const host = document.querySelector(`[id="fnref--${CSS.escape(id)}"]`);
+    const same = host ? [...host.querySelectorAll<HTMLElement>("a[href]")].filter((link) => link.getAttribute("href") === last.href) : [];
+    same[last.index]?.focus({ preventScroll: true });
+  }, [html, id]);
+}
+
 /** markstream 的脚注只收段落：列表被拍成段落，代码与其后的返回链接丢掉。脚注正文改用同一原文的完整 GFM 解析结果；
  *  原文里找不到（生成中定义还没写完、未被引用的定义）时退回 markstream 自己的渲染。 */
 export function ReadingFootnote(props: NodeComponentProps<FootnoteData>) {
   const lookup = useContext(FootnoteSource);
   const html = lookup?.(props.node.id) ?? null;
   const bodyRef = useRef<HTMLDivElement>(null);
+  useFootnoteFocusCarry(props.node.id, html);
   // 必要 effect：公式只能在 HTML 挂上后按需加载 KaTeX 补渲染。
   useEffect(() => {
     if (bodyRef.current) void renderFootnoteMath(bodyRef.current);
