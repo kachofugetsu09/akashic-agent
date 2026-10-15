@@ -84,14 +84,25 @@ export function cacheUsageSection(ctx) {
         </div>
       </div>`;
       host.replaceChildren(page);
-      ctx.http.request("/api/dashboard/models/cache-usage").then(async (response) => {
-        if (!response.ok) throw new Error(`读取失败（${response.status}）`);
-        const usage = await response.json();
-        if (!active) return;
-        render(page, usage);
-        page.querySelector(".models-cache-status").remove();
-        page.querySelector("[data-content]").hidden = false;
-      }).catch((error) => {
+      async function load() {
+        // 每次读取只推进一段历史；离开页面后不再发起下一次请求。
+        while (active) {
+          const response = await ctx.http.request("/api/dashboard/models/cache-usage");
+          if (!response.ok) throw new Error(`读取失败（${response.status}）`);
+          const usage = await response.json();
+          if (!active) return;
+          if (!usage.complete) {
+            page.querySelector(".models-cache-status").textContent =
+              `正在读取历史记录（${number(usage.scanned_sessions)} / ${number(usage.total_sessions)} 个会话）…`;
+            continue;
+          }
+          render(page, usage);
+          page.querySelector(".models-cache-status").remove();
+          page.querySelector("[data-content]").hidden = false;
+          return;
+        }
+      }
+      load().catch((error) => {
         if (!active) return;
         const status = page.querySelector(".models-cache-status");
         status.classList.add("error");
