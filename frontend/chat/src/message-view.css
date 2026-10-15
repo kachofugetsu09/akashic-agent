@@ -589,6 +589,13 @@
   margin-block: 1rem;
 }
 
+/* 放不下时可 Tab 到这里用方向键横滚：聚焦时去掉渐隐；回复正文左右贴边会裁掉外扩的框，框画在里面。 */
+.reading-table[data-scroll-stop]:focus-visible {
+  outline: 2px solid var(--ak-rule-focus);
+  outline-offset: -2px;
+  mask-image: none;
+}
+
 /* 与代码块同一套横滚提示：哪边还有列，哪边渐隐。 */
 .reading-table[data-overflow="end"] {
   mask-image: linear-gradient(to right, #000 calc(100% - var(--code-edge)), transparent);

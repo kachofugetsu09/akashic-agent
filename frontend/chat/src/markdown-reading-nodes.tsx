@@ -125,6 +125,18 @@ function PlainCodeCopy({ code }: { code: string }) {
   </button>;
 }
 
+let shadowFocusRing: CSSStyleSheet | null = null;
+
+// 横滚代码进 Tab 序后（见 writeOverflowEdges）焦点落在 shadow 里，外面的样式够不着、宿主也不匹配 :focus-visible：往 shadow 里补一条焦点框。
+function adoptFocusRing(root: ShadowRoot): void {
+  shadowFocusRing ??= (() => {
+    const sheet = new CSSStyleSheet();
+    sheet.replaceSync("[data-scroll-stop]:focus-visible { outline: 2px solid var(--ak-rule-focus); outline-offset: -2px; }");
+    return sheet;
+  })();
+  if (!root.adoptedStyleSheets.includes(shadowFocusRing)) root.adoptedStyleSheets = [...root.adoptedStyleSheets, shadowFocusRing];
+}
+
 // 代码的横滚发生在高亮组件的 shadow DOM 里（生成中则是普通 pre），触屏滚动条是浮层，看不出右边还有字。
 function useCodeOverflowEdges(ref: RefObject<HTMLDivElement | null>): void {
   useEffect(() => {
@@ -147,6 +159,7 @@ function useCodeOverflowEdges(ref: RefObject<HTMLDivElement | null>): void {
       if (!host?.shadowRoot || host.shadowRoot === root) return;
       root?.removeEventListener("scroll", onScroll, true);
       root = host.shadowRoot;
+      adoptFocusRing(root);
       root.addEventListener("scroll", onScroll, { capture: true, passive: true });
       resize.observe(host);
       contents.observe(root, { childList: true, subtree: true });

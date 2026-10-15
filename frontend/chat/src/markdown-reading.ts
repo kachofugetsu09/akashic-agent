@@ -76,6 +76,29 @@ export function writeOverflowEdges(target: HTMLElement, scroller: HTMLElement | 
   const end = scroller !== null && scroller.scrollLeft + scroller.clientWidth < scroller.scrollWidth - 1;
   const next = [start ? "start" : "", end ? "end" : ""].filter(Boolean).join(" ");
   if (target.dataset.overflow !== next) target.dataset.overflow = next;
+  syncScrollStop(target, start || end ? scroller : null);
+}
+
+const scrollStops = new WeakMap<HTMLElement, HTMLElement>();
+
+// 横滚区放不下时进 Tab 序，键盘才能用方向键看藏住的列；放得下或换了滚动元素（高亮前后）就撤掉，不多一个空停靠点。
+// 只撤自己加的：markstream 或页面另给的 tabindex 不动。
+function syncScrollStop(target: HTMLElement, scroller: HTMLElement | null): void {
+  const previous = scrollStops.get(target);
+  if (previous === scroller) return;
+  if (previous?.hasAttribute("data-scroll-stop")) {
+    for (const name of ["tabindex", "role", "aria-label", "data-scroll-stop"]) previous.removeAttribute(name);
+  }
+  if (!scroller) {
+    scrollStops.delete(target);
+    return;
+  }
+  scrollStops.set(target, scroller);
+  if (scroller.hasAttribute("tabindex")) return;
+  scroller.tabIndex = 0;
+  scroller.setAttribute("role", "group");
+  scroller.setAttribute("aria-label", scroller.querySelector("table") ? "表格，可左右滚动" : "代码，可左右滚动");
+  scroller.setAttribute("data-scroll-stop", "");
 }
 
 /** 自身就是滚动容器的块（宽表）：滚动、容器或内容尺寸变化时重新判定，返回清理函数。 */
