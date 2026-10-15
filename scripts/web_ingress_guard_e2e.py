@@ -57,10 +57,14 @@ def serve(app: FastAPI, path: Path) -> None:
         time.sleep(0.05)
 
 
-def publish(workspace: Path, *endpoints: tuple[str, str, str, list[str]]) -> None:
+def publish(workspace: Path, *endpoints: tuple[str, str, str, list[str]], guarded: bool = False) -> None:
+    """写一份与 Root 相同形状的 plan；guarded 即选中插件静态声明了 ingress_guard。"""
     rows = [{"name": name, "protocol": protocol, "address": address, "routes": routes,
              "owner": "e2e", "generation_id": "g"} for name, protocol, address, routes in endpoints]
-    (workspace / "runtime/endpoints.json").write_text(json.dumps({"generation_id": "g", "endpoints": rows}))
+    payload: dict[str, object] = {"generation_id": "g", "endpoints": rows}
+    if guarded:
+        payload["requires"] = ["guard+unix"]
+    (workspace / "runtime/endpoints.json").write_text(json.dumps(payload))
 
 
 def ready(workspace: Path, boot: str) -> None:
@@ -110,11 +114,14 @@ def main() -> int:
         # 1. 外壳等待就绪：Core 就绪前一律拒绝，即使后端端点已发布。
         publish(workspace, route)
         check("before_ready_rejected", http.get("/api/echo").status_code, 503)
-        # 2. 就绪且从未出现守卫：保持无门直通。
+        # 2. 就绪且没有插件要求守卫：保持无门直通。
         ready(workspace, "boot-a")
         check("no_guard_passthrough", http.get("/api/echo").status_code, 200)
-        # 3. 守卫发布：拒绝原样返回守卫响应；放行时后端拿到外壳写入的头，客户端伪造的被覆盖。
-        publish(workspace, route, gate)
+        # 3. 守卫插件已选中但从未发布守卫（apply 失败或尚未执行）：失败关闭。
+        publish(workspace, route, guarded=True)
+        check("required_guard_never_published_rejected", http.get("/api/echo").status_code, 503)
+        # 4. 守卫发布：拒绝原样返回守卫响应；放行时后端拿到外壳写入的头，客户端伪造的被覆盖。
+        publish(workspace, route, gate, guarded=True)
         denied = http.get("/api/echo", headers={"x-akashic-uri": "/_auth/forged"})
         check("guard_denies_with_its_response", (denied.status_code, denied.json(), denied.headers.get("www-authenticate")),
               (401, {"code": "unauthorized"}, "Bearer"))
@@ -126,18 +133,18 @@ def main() -> int:
         ws = base.replace("http", "ws") + "/api/ws"
         check("websocket_denied", asyncio.run(websocket_status(ws, allow=False)), "403")
         check("websocket_allowed", asyncio.run(websocket_status(ws, allow=True)), "open")
-        # 4. 同一 boot 内守卫撤下（换代或崩溃）：失败关闭，不退回无门。
-        publish(workspace, route)
-        check("guard_gone_same_boot_rejected", http.get("/api/echo").status_code, 503)
-        # 5. 两个守卫：拒绝而不是任选其一。
-        publish(workspace, route, gate, ("gate2", "guard+unix", str(guard), []))
+        # 5. 守卫撤下（热重载换代或崩溃）而插件仍被选中：失败关闭，不退回无门。
+        publish(workspace, route, guarded=True)
+        check("guard_gone_while_required_rejected", http.get("/api/echo").status_code, 503)
+        # 6. 两个守卫：拒绝而不是任选其一。
+        publish(workspace, route, gate, ("gate2", "guard+unix", str(guard), []), guarded=True)
         check("two_guards_rejected", http.get("/api/echo", headers={"x-test-allow": "1"}).status_code, 503)
-        # 6. 新 boot 不再有守卫（插件已停用并重启）：放开。
+        # 7. 插件已停用并重启：plan 不再要求守卫，放开。
         publish(workspace, route)
         ready(workspace, "boot-b")
-        check("new_boot_without_guard_passthrough", http.get("/api/echo").status_code, 200)
-        # 7. 守卫端点已发布但进程不在：503，不放行。
-        publish(workspace, route, ("gate", "guard+unix", str(workspace / "runtime/missing.sock"), []))
+        check("guard_not_required_passthrough", http.get("/api/echo").status_code, 200)
+        # 8. 守卫端点已发布但进程不在：503，不放行。
+        publish(workspace, route, ("gate", "guard+unix", str(workspace / "runtime/missing.sock"), []), guarded=True)
         check("guard_unreachable_rejected", http.get("/api/echo").status_code, 503)
     finally:
         shell.terminate()

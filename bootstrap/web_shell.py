@@ -23,11 +23,9 @@ from starlette.requests import ClientDisconnect
 from starlette.types import Receive, Scope, Send
 from starlette.websockets import WebSocketDisconnect, WebSocketState
 
-from agent.plugin_composition.endpoints import Endpoint, load_endpoint_plan
+from agent.plugin_composition.endpoints import GUARD_PROTOCOL, Endpoint, load_endpoint_plan_requirements
 from core.common.file_io import run_file_io
 
-# 插件可发布一个此协议的端点作为入口守卫；Web Shell 不理解其账号或会话语义。
-GUARD_PROTOCOL = "guard+unix"
 _GUARD_RESPONSE_HEADERS = {"content-type", "location", "cache-control", "retry-after", "www-authenticate"}
 
 _REQUEST_HEADERS_EXCLUDED = {
@@ -208,34 +206,29 @@ class WebShellServer(uvicorn.Server):
 
 
 class _IngressGuard:
-    """同一 boot 内出现过守卫后，守卫缺席即拒绝；等待就绪的外壳在就绪前也拒绝。"""
+    """plan 要求守卫（选中插件静态声明）时守卫缺席即拒绝；等待就绪的外壳在 Core 就绪前也拒绝。"""
 
     def __init__(self, workspace: Path, *, wait_for_ready: bool) -> None:
         self._ready = workspace / ".runtime-ready.json"
         self._wait_for_ready = wait_for_ready
-        self._seen_in: str | None = None
 
-    def _boot(self) -> str | None:
+    def _ready_now(self) -> bool:
         if not self._wait_for_ready:
-            return "process"
+            return True
         try:
             ready = json.loads(self._ready.read_text(encoding="utf-8"))
         except (FileNotFoundError, ValueError):
-            return None
-        return str(ready["bootId"]) if ready.get("state") == "ready" else None
+            return False
+        return isinstance(ready, dict) and ready.get("state") == "ready"
 
-    # 返回要询问的守卫；None 表示没有守卫且允许直通；False 表示必须拒绝。
-    def select(self, endpoints: tuple[Endpoint, ...]) -> Endpoint | None | bool:
+    # 返回要询问的守卫；None 表示不要求守卫且允许直通；False 表示必须拒绝。
+    def select(self, endpoints: tuple[Endpoint, ...], requires: tuple[str, ...]) -> Endpoint | None | bool:
         guards = [item for item in endpoints if item.protocol == GUARD_PROTOCOL]
-        boot = self._boot()
-        if len(guards) > 1:
+        if len(guards) > 1 or not self._ready_now():
             return False
         if guards:
-            self._seen_in = boot or "starting"
             return guards[0]
-        if boot is None or self._seen_in in {boot, "starting"}:
-            return False
-        return None
+        return False if GUARD_PROTOCOL in requires else None
 
 
 async def _guard_verdict(clients: _HttpClients, guard: Endpoint, headers: Mapping[str, str], *,
@@ -277,9 +270,9 @@ def create_web_shell_app(workspace: Path, *, wait_for_ready: bool = False) -> Fa
     # 先过入口守卫再匹配路由；拒绝时不暴露任何插件端点。
     async def endpoint(path: str, headers: Mapping[str, str], *, method: str, uri: str,
                        upgrade: str, peer: str) -> Endpoint | Response | None:
-        endpoints = await run_file_io(lambda: load_endpoint_plan(plan))
+        endpoints, requires = await run_file_io(lambda: load_endpoint_plan_requirements(plan))
         await clients.update(endpoints)
-        guard = await run_file_io(lambda: ingress.select(endpoints))
+        guard = await run_file_io(lambda: ingress.select(endpoints, requires))
         if guard is False:
             return _runtime_unavailable(html="text/html" in headers.get("accept", ""),
                                         code="guard_unavailable", message="入口守卫尚未就绪")

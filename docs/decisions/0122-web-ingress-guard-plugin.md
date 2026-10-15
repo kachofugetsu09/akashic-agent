@@ -17,9 +17,13 @@
    Web Shell 每个 HTTP 与 WebSocket 请求先 `GET /_guard/check`，附上原请求的头与
    `x-akashic-method / uri / upgrade / peer`；2xx 放行，其余响应原样返回给浏览器
    （WebSocket 则以 1008 关闭）。Web Shell 不理解账号、cookie 或密码。
-2. **守卫缺席时失败关闭。** 同一 boot 内出现过守卫后，守卫缺席（换代、崩溃）一律 503；
-   Supervisor 的外壳在 Core 就绪前也不放行。没有任何守卫插件的实例保持原样。
-   卸载守卫插件要重启实例才放行。
+2. **守卫缺席时失败关闭，要求来自选中而不是运行结果。** 插件在 `plugin.py` 顶层写
+   `ingress_guard = True`（发现阶段只读字面量）。Root 在任何 apply 之前，把“本代选中插件要求守卫”
+   写进 endpoint plan 的 `requires`；此后守卫缺席（apply 失败、热重载换代、崩溃、不可达）或出现两个，一律 503。
+   Supervisor 的外壳在 Core 就绪前也不放行。没有选中守卫插件的实例保持原样；
+   停用守卫插件要重启实例才放开。
+
+   不用“本次启动是否见过守卫”推断：守卫插件首次 apply 就失败时，那样会退回无门。
 3. **门禁本身是普通插件 `web-auth@release`，默认在 base bundle 中。**
    - 单主人：用户名 `akashic` 加密码；首次启动随机生成初始密码，只写日志与 0600 文件，
      不推送到任何渠道；首次登录必须改成自己的密码。
@@ -47,8 +51,8 @@ Core 只承担“问一次、按结果放行”。代价是每个请求多一次
 ## 验收
 
 `scripts/web_ingress_guard_e2e.py` 用真实 Web Shell 进程与假守卫、假后端验证扩展点：
-就绪前拒绝、无守卫直通、守卫响应原样返回、伪造的 `x-akashic-*` 被覆盖、WebSocket 拒绝与放行、
-同一 boot 守卫撤下失败关闭、两个守卫拒绝、新 boot 无守卫放开、守卫不可达拒绝。
+就绪前拒绝、无守卫直通、要求守卫但从未发布时拒绝、守卫响应原样返回、伪造的 `x-akashic-*` 被覆盖、WebSocket 拒绝与放行、
+仍被要求时守卫撤下失败关闭、两个守卫拒绝、不再要求时放开、守卫不可达拒绝。
 
 `scripts/web_auth_e2e.py` 用隔离 state 运行真实 `./start` 与 Chromium，覆盖：
 陌生人跳转与 401、WebSocket 跨站拒绝、本机 Bearer、初始密码强制改密、一次性链接单次有效、

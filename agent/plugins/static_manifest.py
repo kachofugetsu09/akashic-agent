@@ -56,6 +56,7 @@ class StaticPluginManifest:
     python: tuple[StaticPythonRuntime, ...]
     identity_digest: str
     entrypoints: tuple[tuple[str, str], ...] = ()
+    ingress_guard: bool = False
 
     @property
     def requirements(self) -> tuple[str, ...]:
@@ -75,6 +76,7 @@ def load_static_plugin_manifest(plugin_root: Path) -> StaticPluginManifest:
     name, version, api_version = load_plugin_identity(root)
     python = _python_runtimes(root)
     entrypoints = _plugin_entrypoints(root / "plugin.py")
+    ingress_guard = _plugin_ingress_guard(root / "plugin.py")
     identity: dict[str, object] = {
         "name": name,
         "version": version,
@@ -89,6 +91,8 @@ def load_static_plugin_manifest(plugin_root: Path) -> StaticPluginManifest:
     }
     if entrypoints:
         identity["entrypoints"] = dict(entrypoints)
+    if ingress_guard:
+        identity["ingress_guard"] = True
     identity_digest = hashlib.sha256(
         json.dumps(
             identity,
@@ -104,7 +108,21 @@ def load_static_plugin_manifest(plugin_root: Path) -> StaticPluginManifest:
         python=python,
         identity_digest=identity_digest,
         entrypoints=entrypoints,
+        ingress_guard=ingress_guard,
     )
+
+
+# 入口守卫插件被选中即要求守卫在场；声明必须是顶层字面 True，发现阶段不执行插件。
+def _plugin_ingress_guard(path: Path) -> bool:
+    tree = _parse_source_tree(path, path.read_text(encoding="utf-8"))
+    values = [statement.value for statement in tree.body
+              if isinstance(statement, ast.Assign) and len(statement.targets) == 1
+              and isinstance(statement.targets[0], ast.Name) and statement.targets[0].id == "ingress_guard"]
+    if not values:
+        return False
+    if len(values) != 1 or not isinstance(values[0], ast.Constant) or not isinstance(values[0].value, bool):
+        raise PluginSourceContentError("ingress_guard 必须是单次字面 bool 声明")
+    return values[0].value
 
 
 def _plugin_entrypoints(path: Path) -> tuple[tuple[str, str], ...]:

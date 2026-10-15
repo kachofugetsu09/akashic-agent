@@ -29,7 +29,7 @@ from agent.plugin_composition import (
 )
 from agent.plugin_composition.config_input import CONFIG_INPUT, load_config, save_config, config_bytes, config_refs, _credential_path
 from agent.plugin_composition.context import Fiber
-from agent.plugin_composition.endpoints import save_endpoint_plan
+from agent.plugin_composition.endpoints import GUARD_PROTOCOL, save_endpoint_plan
 from agent.plugin_composition.credentials import CredentialClients
 from agent.plugin_composition.model import (
     resolve_declared_workspace_file,
@@ -663,8 +663,10 @@ class PluginManager:
     ) -> None:
         """Build the single formal Root without compiling a snapshot or fallback Root."""
         generation_id = "plugins-live:" + secrets.token_hex(16)
+        plan = self._workspace / "runtime/endpoints.json"
+        requires: list[str] = []
         root = CompositionRoot(generation_id, endpoint_publisher=lambda endpoints: save_endpoint_plan(
-            self._workspace / "runtime/endpoints.json", generation_id, endpoints))
+            plan, generation_id, endpoints, tuple(requires)))
         generations: tuple[PluginGeneration, ...] = prepared
         cleanup_generations: tuple[PluginGeneration, ...] = generations
         runnable: tuple[PluginGeneration, ...] = ()
@@ -686,6 +688,10 @@ class PluginManager:
                         )
                     self._active_generations[generation.plugin_id] = generation
                 self._building_roots[root] = generations
+            # 选中即要求：守卫插件 apply 失败时入口仍失败关闭，而不是退回无门。
+            if any(item.static_manifest is not None and item.static_manifest.ingress_guard for item in generations):
+                requires.append(GUARD_PROTOCOL)
+                save_endpoint_plan(plan, generation_id, (), tuple(requires))
             # Selection is the durable input boundary.  No import or apply is
             # allowed before this commit when booting a fresh selection.
             if expected_ref is None:
