@@ -1230,11 +1230,12 @@ button.tool-step-summary:active {
   line-height: 1.5;
 }
 
+/* 退一步但要读得清：用 muted 墨色（浅色 4.9:1、深色 5.6:1）；原 52% 透明墨色在浅色纸面上 12px 只有 3.6:1。 */
 .tool-parameter dd,
 .tool-result {
   overflow-wrap: anywhere;
   margin: 0;
-  color: color-mix(in oklch, var(--ak-color-text-primary) 52%, transparent);
+  color: var(--ak-ink-muted);
   font-family: var(--ak-type-technical, ui-monospace, SFMono-Regular, Menlo, Consolas, monospace);
   font-size: 0.75rem;
   line-height: 1.5;
