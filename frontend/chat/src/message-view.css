@@ -1030,6 +1030,22 @@
   transform: rotate(180deg);
 }
 
+/* 过程里每一步（思考、工具、上下文提示）都能展开，一列十个常驻箭头只是噪音（Codex 桌面版同样只在悬停时给）。
+   鼠标下收起着的箭头在悬停或键盘聚焦该行时才出现；展开着的保留，它告诉人怎么收回去。
+   本轮与工具组的摘要行、触屏照旧常驻。 */
+@media (hover: hover) and (pointer: fine) {
+  .process-trigger .process-chevron:not(.open),
+  .tool-step-summary:not(.turn-process-summary, .tool-group-summary) .tool-step-chevron:not(.open) {
+    opacity: 0;
+    transition: opacity var(--ak-sys-duration-short) var(--ak-sys-motion-standard), transform var(--ak-sys-duration-short) var(--ak-sys-motion-standard);
+  }
+  .context-notice[open] > .process-trigger .process-chevron,
+  .process-trigger:is(:hover, :focus-visible) .process-chevron:not(.open),
+  .tool-step-summary:is(:hover, :focus-visible) .tool-step-chevron:not(.open) {
+    opacity: 1;
+  }
+}
+
 /* 展开的思考正文缩进到行标签之下，字色保持第三级。 */
 .process-content {
   min-width: 0;
