@@ -115,7 +115,7 @@ export function ReplyActivityView({ activity, committed, onError, onStop, proces
   return <div className="message-row agent-row reply-activity" data-reply-handle={activity.handle}
     data-preview-message-id={draft?.message_id} aria-busy={activity.active}>
     <div className="agent-content">
-      <TimelineProcess flow={flow} draftThinking={draft?.thinking}
+      <TimelineProcess flow={flow} draftThinking={draft?.thinking} draftThinkingActive={activity.active && !text}
         beforeReasoning={beforeReasoning}
         beforePart={(part, index, message) => part.kind === "tool_call" && !("display" in part) ? <PluginUiSlot
           name="turn.before_tool" sessionId={message.session_id} messageId={message.id}
@@ -376,9 +376,11 @@ function CollapsedToolGroup({ count, durationMs, children }: {
 }
 
 /** 历史与实时回复共用一条流，过程项继续引用原消息和 part。 */
-function TimelineProcess({ flow, draftThinking = "", groupTools = true, beforeReasoning, beforePart, onCopyToolDetail, partView }: {
+function TimelineProcess({ flow, draftThinking = "", draftThinkingActive = false, groupTools = true, beforeReasoning, beforePart, onCopyToolDetail, partView }: {
   flow: FlowItem[];
   draftThinking?: string;
+  /** 草稿思考是否仍在进行：正文开始输出（或本轮已停）时思考已经结束，标题改成"已思考"，不再与正文同时显示"正在思考"。 */
+  draftThinkingActive?: boolean;
   /** 本轮摘要里已经收过一次：展开后直接逐行，不再套一层"已执行 N 个工具"。 */
   groupTools?: boolean;
   beforeReasoning?: (message: TimelineMessage) => ReactNode;
@@ -408,7 +410,7 @@ function TimelineProcess({ flow, draftThinking = "", groupTools = true, beforeRe
           <FlowItemView item={item} beforePart={beforePart} onCopyToolDetail={onCopyToolDetail} partView={partView} />
         </Fragment>
       ))}
-      {draftThinking ? <ThinkingRow content={draftThinking} streaming /> : null}
+      {draftThinking ? <ThinkingRow content={draftThinking} streaming={draftThinkingActive} /> : null}
     </div>
   </>;
 }
