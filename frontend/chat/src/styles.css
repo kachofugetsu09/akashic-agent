@@ -1254,7 +1254,8 @@ input {
   --composer-expanded-radius: 14px;
   --composer-control-size: 32px;
   --composer-dock-gap: 4px;
-  --composer-stats-line: 0.85rem;
+  /* 统计行浮在输入卡下方的底距里、不占流（见 .composer-stats-line），消息区不再为它预留高度。 */
+  --composer-stats-line: 0px;
   --composer-dock-end: max(20px, env(safe-area-inset-bottom, 0px));
 }
 
@@ -2039,6 +2040,18 @@ form.composer:focus-within [data-slot="input-group"] {
   letter-spacing: 0.01em;
   user-select: none;
   transition: opacity var(--ak-sys-duration-short) var(--ak-sys-motion-standard);
+}
+
+/* 浮在输入卡下方的底距里（桌面 20px，放得下 4px 间隔 + 14px 行高）：出现、淡出都不把输入卡顶起再落下。 */
+.composer-wrap > .composer-stats-line {
+  position: absolute;
+  inset-block-start: calc(100% + var(--composer-dock-gap));
+  inset-inline: 0;
+}
+
+/* 窄屏底距只有 8px 放不下，停止钮与"运行中"已说明在生成；矮屏触屏输入区回到文档流，也不显示。 */
+@media (max-width: 36rem), (max-height: 30rem) and (pointer: coarse) {
+  .composer-stats-line { display: none; }
 }
 
 /* 终态摘要 3 秒后淡出收纳；reduced-motion 下过渡归零，直接隐藏。 */
