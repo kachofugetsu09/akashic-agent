@@ -466,6 +466,13 @@
   margin-block-start: 0 !important;
 }
 
+/* 气泡有自己的内边距：末块（代码块的 my-4、段落的段后距）的下边距只会在气泡底部多出一截空白。 */
+.user-bubble :is(.markdown-reading .markdown-renderer > .node-slot:last-child > .node-content, .static-message-response) > :last-child,
+.user-bubble .markdown-reading .markdown-renderer > .node-slot:last-child > .node-content > :last-child
+  :is(.code-block-container, pre[data-markstream-pre="1"], .markstream-deferred-source, .math-block-node, .katex-display):not(:is(li, blockquote, td) *) {
+  margin-block-end: 0 !important;
+}
+
 :is(.agent-content, .process-markdown, .user-bubble) .markdown-reading .reading-emphasis:not(li p) {
   padding-inline-start: 0.85rem;
   border-inline-start: 2px solid var(--ak-rule-default);
@@ -2054,6 +2061,9 @@ button.tool-step-summary:active {
 .timeline-input { align-items: flex-end; }
 .timeline-message .agent-content { min-width: 0; }
 .timeline-message .user-bubble { min-width: 0; }
+/* 气泡按内容收缩，而代码块、宽表、块公式的宽度又跟着容器走：两者互相依赖时气泡塌到最小内容宽度（只有代码时只剩一条缝）。
+   含这些块的气泡直接占满允许的最大宽度。 */
+.timeline-message .user-bubble:has(pre, table, .code-block-container, .katex-display) { width: 100%; }
 .timeline-details { margin-block: 0.5rem; color: var(--ak-color-text-secondary); }
 .timeline-details summary { cursor: pointer; padding-block: 0.5rem; overflow-wrap: anywhere; }
 .timeline-details summary:focus-visible,
