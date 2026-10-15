@@ -769,7 +769,7 @@ dialog.settings-scrim::backdrop { background: transparent; }
 .models-cache-ring {
   display: grid; width: 94px; height: 94px; place-items: center; border-radius: 50%;
   background: conic-gradient(var(--md-sys-color-primary) 0 var(--models-cache-rate),
-    color-mix(in oklch, var(--md-sys-color-primary) 22%, transparent) var(--models-cache-rate) 100%);
+    color-mix(in oklab, var(--md-sys-color-primary) 22%, transparent) var(--models-cache-rate) 100%);
 }
 .models-cache-ring::before { grid-area: 1 / 1; width: 70px; height: 70px; border-radius: 50%; background: var(--md-sys-color-surface-container-high); content: ""; }
 .models-cache-ring strong { z-index: 1; grid-area: 1 / 1; font-size: 1.25rem; font-variant-numeric: tabular-nums; }

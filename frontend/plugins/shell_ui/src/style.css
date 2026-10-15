@@ -3,13 +3,13 @@
 
   /* 滚动条与 chat 保持一致:细轨、透明轨道、墨色 thumb。 */
   * {
-    scrollbar-color: color-mix(in oklch, var(--ak-ink-primary) 22%, transparent) transparent;
+    scrollbar-color: color-mix(in oklab, var(--ak-ink-primary) 22%, transparent) transparent;
     scrollbar-width: thin;
   }
   *::-webkit-scrollbar { width: 8px; height: 8px; }
   *::-webkit-scrollbar-track { background: transparent; }
-  *::-webkit-scrollbar-thumb { border-radius: 4px; background: color-mix(in oklch, var(--ak-ink-primary) 22%, transparent); }
-  *::-webkit-scrollbar-thumb:hover { background: color-mix(in oklch, var(--ak-ink-primary) 34%, transparent); }
+  *::-webkit-scrollbar-thumb { border-radius: 4px; background: color-mix(in oklab, var(--ak-ink-primary) 22%, transparent); }
+  *::-webkit-scrollbar-thumb:hover { background: color-mix(in oklab, var(--ak-ink-primary) 34%, transparent); }
 
   /* 纵向一列：可选的撤回提示与顶栏按内容占高，页面栈吃掉其余高度。
      无顶栏时 iframe 内拿不到 safe-area，由外框让出顶部刘海区。 */
@@ -77,7 +77,7 @@
     border-radius: 16px;
     background: var(--ak-paper-sheet);
     color: var(--ak-ink-primary);
-    box-shadow: 0 24px 80px color-mix(in oklch, var(--ak-ink-primary) 16%, transparent);
+    box-shadow: 0 24px 80px color-mix(in oklab, var(--ak-ink-primary) 16%, transparent);
     overflow: hidden;
   }
 
@@ -87,7 +87,7 @@
   }
 
   .shell-settings-dialog::backdrop {
-    background: color-mix(in oklch, var(--ak-ink-primary) 24%, transparent);
+    background: color-mix(in oklab, var(--ak-ink-primary) 24%, transparent);
     backdrop-filter: blur(3px);
   }
 
@@ -134,11 +134,11 @@
   }
 
   .shell-settings-nav button:hover {
-    background: color-mix(in oklch, var(--ak-ink-primary) 5%, transparent);
+    background: color-mix(in oklab, var(--ak-ink-primary) 5%, transparent);
   }
 
   .shell-settings-nav button[aria-current="true"] {
-    background: color-mix(in oklch, var(--ak-ink-primary) 8%, transparent);
+    background: color-mix(in oklab, var(--ak-ink-primary) 8%, transparent);
     font-weight: 600;
   }
 
@@ -184,7 +184,7 @@
   }
 
   .shell-settings-close:hover {
-    background: color-mix(in oklch, var(--ak-ink-primary) 6%, transparent);
+    background: color-mix(in oklab, var(--ak-ink-primary) 6%, transparent);
     color: var(--ak-ink-primary);
   }
 
@@ -247,7 +247,7 @@
   }
 
   .shell-settings-crumb:hover {
-    background: color-mix(in oklch, var(--ak-ink-primary) 5%, transparent);
+    background: color-mix(in oklab, var(--ak-ink-primary) 5%, transparent);
     color: var(--ak-ink-primary);
   }
 
@@ -291,7 +291,7 @@
   }
 
   .shell-plugin-card:hover {
-    background: color-mix(in oklch, var(--ak-ink-primary) 5%, transparent);
+    background: color-mix(in oklab, var(--ak-ink-primary) 5%, transparent);
   }
 
   /* 图标格：发丝线方框 + 次级墨色线性图标；行圆角 18 = 方框圆角 10 + 行内边距 8，保持同心。 */
@@ -302,7 +302,7 @@
     flex: 0 0 auto;
     place-items: center;
     box-sizing: border-box;
-    border: 0.5px solid color-mix(in oklch, var(--ak-ink-primary) 22%, transparent);
+    border: 0.5px solid color-mix(in oklab, var(--ak-ink-primary) 22%, transparent);
     border-radius: 10px;
     color: var(--ak-ink-secondary);
   }
