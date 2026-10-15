@@ -48,6 +48,7 @@
   "dependencies": {
     "@ai-sdk/react": "^4.0.16",
     "@material/web": "^2.5.0",
+    "@pierre/diffs": "1.4.2",
     "@noble/hashes": "2.4.0",
     "@novnc/novnc": "1.7.0",
     "@radix-ui/react-collapsible": "^1.1.15",

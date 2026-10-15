@@ -1,6 +1,7 @@
+import { getOrCreateWorkerPoolSingleton, type WorkerPoolManager } from "@pierre/diffs/worker";
 import { CheckIcon, CopyIcon } from "lucide-react";
 import { createContext, useContext, useEffect, useLayoutEffect, useRef, useState, type RefObject } from "react";
-import { CodeBlockNode, FootnoteNode as FootnoteRenderer, LinkNode as LinkRenderer, ListNode, ParagraphNode as ParagraphRenderer, PreCodeNode, languageMap, normalizeLanguageIdentifier, resolveLanguageId, type NodeComponentProps } from "markstream-react";
+import { CodeBlockNode, FootnoteNode as FootnoteRenderer, LinkNode as LinkRenderer, ListNode, ParagraphNode as ParagraphRenderer, PreCodeNode, languageMap, normalizeLanguageIdentifier, resolveLanguageId, type CodeBlockOptions, type NodeComponentProps } from "markstream-react";
 import type { CodeBlockNode as CodeData, FootnoteAnchorNode as FootnoteAnchorData, FootnoteNode as FootnoteData, FootnoteReferenceNode as FootnoteReferenceData, LinkNode as LinkData, ListNode as ListData, ParagraphNode, ParsedNode, TableNode as TableData } from "stream-markdown-parser";
 import { copyReadingCode, isConceptLabel, isNumericColumn, isPlainTextLanguage, stripConceptSeparator, watchOverflowEdges, writeOverflowEdges } from "./markdown-reading";
 import { renderStaticMarkdown } from "./static-markdown";
@@ -21,26 +22,48 @@ export const CODE_BLOCK_PROPS = {
 // 代码不折行：折行会把缩进与对齐打散，窄屏读代码更难；长行在代码块自己的区域里横向滚动。
 // 流式期间的 <pre> 也不折行（message-view.css），两种状态行数一致，换手时块高不变。
 // 高亮组件把行内边距写死为 1ch，代码比块头语言标签左缩约 9px；注入 shadow 样式改为 16px，与块头、生成中的普通 pre 同一左缘。
-// vitesse 在纸面底色（--ak-paper-quiet）上有不少 token 低于 4.5:1（浅色：变量 3.3、函数 3.9、标点 2.6；深色：标点 3.0）。
+// vitesse 在纸面底色（--ak-paper-quiet）上有不少 token 低于 4.5:1（浅色：变量 3.3、函数 3.9、标点 2.6；深色：标点 3.0、注释 3.6）。
 // 不换主题：按原色相在 OKLab 里只调明度到约 4.6:1；半透明的引号等弱化字符调到 3.5:1，仍比正文浅一级。
-// 高亮把颜色写在 span 的 inline style 里，只能按色值覆盖；两套主题的色值互不重叠。半透明色以不透明色为前缀，必须排在后面。
-const READABLE_TOKENS: ReadonlyArray<readonly [string, string]> = [
-  // vitesse-light
-  ["#B07D48", "#95642F"], ["#59873A", "#4E7B2E"], ["#999999", "#6F6F6F"], ["#2E8F82", "#127D70"],
-  ["#998418", "#836E00"], ["#B56959", "#A55B4B"], ["#BDA437", "#866D00"], ["#A0ADA0", "#667266"],
-  ["#E36209", "#C44500"], ["#B05A78", "#A95472"], ["#AB5E3F", "#A75A3C"], ["#2E808F", "#257988"],
-  ["#22863A", "#198034"], ["#B5695977", "#9C7B71"], ["#99841877", "#8D834F"], ["#393A3490", "#83837E"],
-  // vitesse-dark
-  ["#666666", "#858585"], ["#6872AB", "#7781BC"], ["#B8A96577", "#7A7251"], ["#C98A7D77", "#896A63"],
-];
-const readableTokenCSS = READABLE_TOKENS.map(([from, to]) => `[style*="${from}" i] { color: ${to} !important; }`).join(" ");
+// 高亮按深浅一对主题输出，每个 span 的 inline style 同时写着两套色值（--diffs-token-light / -dark），
+// 只能按"变量名:色值"匹配并改写同名变量，不能直接改 color（浅色规则会命中深色值，反之亦然）。半透明色以不透明色为前缀，必须排在后面。
+const READABLE_TOKENS: Readonly<Record<"light" | "dark", ReadonlyArray<readonly [string, string]>>> = {
+  light: [
+    ["#B07D48", "#95642F"], ["#59873A", "#4E7B2E"], ["#999999", "#6F6F6F"], ["#2E8F82", "#127D70"],
+    ["#998418", "#836E00"], ["#B56959", "#A55B4B"], ["#BDA437", "#866D00"], ["#A0ADA0", "#667266"],
+    ["#E36209", "#C44500"], ["#B05A78", "#A95472"], ["#AB5E3F", "#A75A3C"], ["#2E808F", "#257988"],
+    ["#22863A", "#198034"], ["#B5695977", "#9C7B71"], ["#99841877", "#8D834F"], ["#393A3490", "#83837E"],
+  ],
+  dark: [["#666666", "#858585"], ["#6872AB", "#7781BC"], ["#758575DD", "#798979"], ["#B8A96577", "#7A7251"], ["#C98A7D77", "#896A63"]],
+};
+const readableTokenCSS = (["light", "dark"] as const).flatMap((scheme) => READABLE_TOKENS[scheme].map(([from, to]) =>
+  `[style*="--diffs-token-${scheme}:${from}" i] { --diffs-token-${scheme}: ${to} !important; }`)).join(" ");
+
+// 代码高亮放进 Worker 池（参考 Claude Desktop）：分词在主线程上一块就是 50–100ms 的长任务，生成中、落定、
+// 打开长会话时都会卡住滚动与输入。池子按核数取 2–4 个；Worker 起不来（CSP、不支持）时高亮器自己退回主线程。
+// 池子的主题必须与 markstream 的默认主题同一对，深浅切换只换 themeType，不重建池子。
+let highlightPool: WorkerPoolManager | undefined;
+
+function codeHighlightPool(): WorkerPoolManager | undefined {
+  if (typeof Worker === "undefined") return undefined;
+  highlightPool ??= getOrCreateWorkerPoolSingleton({
+    poolOptions: {
+      workerFactory: () => new Worker(new URL("@pierre/diffs/worker/worker.js", import.meta.url), { type: "module" }),
+      poolSize: Math.max(2, Math.min(4, Math.floor((navigator.hardwareConcurrency || 4) / 2))),
+      workerInitializationTimeout: 30_000,
+    },
+    highlighterOptions: { theme: { dark: "vitesse-dark", light: "vitesse-light" } },
+  });
+  return highlightPool;
+}
 
 // 代码区上 4px、下 12px：44px 块头的标题下方已有留白，代码首行与标题、末行与块底边的距离都约 12–15px（与块头左缩进同一节奏）。
 // 流式 pre 与高亮占位按同一几何写（message-view.css），换手时块高不变。
-export const CODE_BLOCK_OPTIONS = {
+export const CODE_BLOCK_OPTIONS: CodeBlockOptions = {
   overflow: "scroll",
   unsafeCSS: `[data-line] { padding-inline: 16px; } [data-code] { padding-block: 4px 12px; } ${readableTokenCSS}`,
-} as const;
+  // 第一个代码块渲染时才建池：markstream 每次渲染代码块都展开这份选项，getter 在那一刻求值，没有代码的会话不起 Worker。
+  get workerManager() { return codeHighlightPool(); },
+};
 
 /** 展示判断只读可见文本，不解析 raw 或猜测内容的用途。 */
 function nodeText(node: ParsedNode): string {
@@ -264,10 +287,12 @@ const HANDOFF_TIMEOUT_MS = 3000;
 // 才重新上色，这段时间显示的是无色占位——同一块代码"有色 → 无色 → 有色"闪一下。
 // 每块代码第一次高亮完成时记下 shadow 里的结果（HTML 与样式表），同一段代码再挂载时先盖上这份快照，
 // 新的高亮画稳后撤掉。快照只作视觉占位：inert 且去掉复制来的 tabindex（横滚代码加的焦点入口），不进 Tab 序、不可点。
-function useHighlightHandoff(ref: RefObject<HTMLDivElement | null>, key: string): void {
+// 只有生成中的回复（record）才记快照：打开历史会话时没有"同一段代码再挂载"，逐块等稳定、读样式全是白费的布局读取。
+function useHighlightHandoff(ref: RefObject<HTMLDivElement | null>, key: string, record: boolean): void {
   useLayoutEffect(() => {
     const wrapper = ref.current;
-    if (!wrapper) return;
+    const snapshot = codeSnapshots.get(key);
+    if (!wrapper || (!record && !snapshot)) return;
     let overlay: HTMLDivElement | null = null;
     let frame = 0;
     const started = performance.now();
@@ -288,7 +313,6 @@ function useHighlightHandoff(ref: RefObject<HTMLDivElement | null>, key: string)
     };
     // 1. 还没高亮、又有同一段代码的快照：在代码区盖上快照
     const body = wrapper.querySelector<HTMLElement>(".code-block-body");
-    const snapshot = codeSnapshots.get(key);
     if (!highlighted() && snapshot && body) {
       overlay = document.createElement("div");
       for (const [name, value] of snapshot.attributes) overlay.setAttribute(name, value);
@@ -312,7 +336,7 @@ function useHighlightHandoff(ref: RefObject<HTMLDivElement | null>, key: string)
         frame = requestAnimationFrame(poll);
         return;
       }
-      if (host?.shadowRoot && body) {
+      if (record && host?.shadowRoot && body) {
         const hostRect = host.getBoundingClientRect();
         const bodyRect = body.getBoundingClientRect();
         codeSnapshots.delete(key);
@@ -336,7 +360,7 @@ function useHighlightHandoff(ref: RefObject<HTMLDivElement | null>, key: string)
       shadowChanges.disconnect();
       overlay?.remove();
     };
-  }, [ref, key]);
+  }, [ref, key, record]);
 }
 
 // 高亮样式读的 CSS 变量（字号、配色）定义在宿主与代码区之间的几层元素上，快照挂在代码区上继承不到：
@@ -361,7 +385,7 @@ function HighlightedCode(props: NodeComponentProps<CodeData>) {
   useCodeOverflowEdges(ref);
   // 围栏正文自带结尾换行，高亮层会把它渲染成一整行空白。
   const settled = node.code.endsWith("\n") ? { ...node, code: node.code.replace(/\n+$/, "") } : node;
-  useHighlightHandoff(ref, `${isDark ? "dark" : "light"}\u0000${node.language}\u0000${settled.code}`);
+  useHighlightHandoff(ref, `${isDark ? "dark" : "light"}\u0000${node.language}\u0000${settled.code}`, Boolean(ctx?.renderCodeBlocksAsPre));
   return <div ref={ref} className="reading-code-scroll">
     <CodeBlockNode node={settled} isDark={isDark} loading={Boolean(node.loading)}
       codeBlockOptions={ctx?.codeBlockOptions} onCopy={ctx?.events.onCopy}
