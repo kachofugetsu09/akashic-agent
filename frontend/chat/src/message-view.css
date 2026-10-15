@@ -611,6 +611,15 @@
   border-block-end: 1px solid var(--ak-rule-subtle);
 }
 
+/* 正文的 break-word（继承的与 markstream 文本节点自带的 break-words）会让表格自动布局把列压得比单词还窄
+   （"preferenc/e"）：单元格里英文词保持完整，中文照常按字折行；真放不下时整表横滚（见 .reading-table 渐隐），
+   网址另有 break-all。 */
+:is(.agent-content, .process-markdown, .user-bubble) .markdown-reading :where(th, td),
+:is(.agent-content, .process-markdown, .user-bubble) .markdown-reading :where(th, td) .text-node {
+  overflow-wrap: normal;
+  word-break: normal;
+}
+
 /* 表格没有外框，只有行线：首列文字贴正文左缘，不比段落缩进一格。 */
 :is(.agent-content, .process-markdown, .user-bubble) .markdown-reading :where(th, td):first-child { padding-inline-start: 0; }
 
