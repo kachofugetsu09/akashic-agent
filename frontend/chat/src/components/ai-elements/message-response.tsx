@@ -4,11 +4,9 @@ import { configureReadingMarkdown, jumpToFootnote } from "@/markdown-reading";
 import { configureKaomojiMarkdown } from "@/kaomoji-markdown";
 import { cn } from "@/lib/utils";
 import { canBatchStreamingMarkdown } from "@/message-rendering-policy";
-import { memo, type ComponentProps, useEffect, useMemo } from "react";
+import { memo, useEffect, useMemo } from "react";
 import { useTheme } from "../../../../theme/src/theme-runtime";
 import MarkdownRender, {
-  MathBlockNode,
-  MathInlineNode,
   setCustomComponents,
   setDefaultI18nMap,
   type NodeComponentProps,
@@ -17,6 +15,7 @@ import "markstream-react/index.px.css";
 import { useReducedMotion } from "motion/react";
 import { CODE_BLOCK_OPTIONS, CODE_BLOCK_PROPS, FootnoteSource, ReadingCode, ReadingFootnote, ReadingFootnoteAnchor, ReadingFootnoteReference, ReadingLink, ReadingList, ReadingParagraph, ReadingTable, footnoteLookup } from "@/markdown-reading-nodes";
 import type { MarkdownIt } from "stream-markdown-parser";
+import { copyMathAsTex, mightContainMath, preloadMath, ReadingMath, type MathNode } from "@/reading-math";
 
 function configureMessageMarkdown(markdown: MarkdownIt) {
   return configureReadingMarkdown(configureKaomojiMarkdown(markdown));
@@ -39,24 +38,12 @@ interface DeferredNode {
   raw?: string;
 }
 
-let mathStylesPromise: Promise<unknown> | undefined;
-
-function useMathStyles() {
-  useEffect(() => {
-    mathStylesPromise ??= import("@/katex-styles");
-  }, []);
+function MathBlock({ node }: NodeComponentProps<MathNode>) {
+  return <ReadingMath node={node} block />;
 }
 
-function DeferredMathBlock({ node, ctx }: NodeComponentProps<DeferredNode>) {
-  useMathStyles();
-  if (!ctx?.final) return <pre className="markstream-deferred-source">{String(node.raw ?? node.content ?? "")}</pre>;
-  return <MathBlockNode node={node as ComponentProps<typeof MathBlockNode>["node"]} />;
-}
-
-function DeferredMathInline({ node, ctx }: NodeComponentProps<DeferredNode>) {
-  useMathStyles();
-  if (!ctx?.final) return <code className="markstream-deferred-source">{String(node.raw ?? node.content ?? "")}</code>;
-  return <MathInlineNode node={node as ComponentProps<typeof MathInlineNode>["node"]} />;
+function MathInline({ node }: NodeComponentProps<MathNode>) {
+  return <ReadingMath node={node} block={false} />;
 }
 
 /** Mermaid 已下线，保留源码展示。 */
@@ -88,8 +75,8 @@ setDefaultI18nMap({
 
 setCustomComponents({
   kaomoji_literal: KaomojiLiteral,
-  math_block: DeferredMathBlock,
-  math_inline: DeferredMathInline,
+  math_block: MathBlock,
+  math_inline: MathInline,
   mermaid: MermaidAsCode,
   footnote_anchor: ReadingFootnoteAnchor,
   footnote_reference: ReadingFootnoteReference,
@@ -100,6 +87,20 @@ setCustomComponents({
   code_block: ReadingCode,
   footnote: ReadingFootnote,
 });
+
+// 放字节奏跟着积压走（参考 Claude Desktop 的 paceReveal）：显示始终比到达晚约 0.3 秒，积压越多放得越快，
+// 不设固定字速上限。旧参数把速度钳在 140 字/秒、每帧 6 字，快模型（≈300 字/秒）发完时只显示出三成，
+// 剩下的在落定那一刻整段跳出。积压超过 400 字时按 120ms 追平。
+const STREAM_PACE = {
+  minCharsPerSecond: 30,
+  maxCharsPerSecond: 6000,
+  targetLatencyMs: 300,
+  catchUpLatencyMs: 120,
+  catchUpThreshold: 400,
+  maxCommitFps: 30,
+  startDelayMs: 60,
+  maxCharsPerCommit: 200,
+};
 
 /** Render complete or append-only Markdown with Markstream's incremental parser. */
 export const MessageResponse = memo(function MessageResponse({
@@ -112,9 +113,12 @@ export const MessageResponse = memo(function MessageResponse({
   const theme = useTheme();
   // 脚注正文按同一原文的完整 GFM 解析取（见 ReadingFootnote）：生成中不提供，落定后惰性解析一次。
   const footnotes = useMemo(() => isAnimating ? null : footnoteLookup(children), [children, isAnimating]);
+  // 第一个 $ 出现就开始加载 KaTeX 与字体，等公式闭合时已经能直接排版。
+  const hasMath = mightContainMath(children);
+  useEffect(() => { if (hasMath) void preloadMath(); }, [hasMath]);
   return (
     <div className={cn("message-response-markstream markdown-reading size-full", isAnimating && "is-streaming", className)}
-      onClickCapture={jumpToFootnote}>
+      onClickCapture={jumpToFootnote} onCopy={copyMathAsTex}>
       <FootnoteSource.Provider value={footnotes}>
       <MarkdownRender
         content={children}
@@ -123,16 +127,7 @@ export const MessageResponse = memo(function MessageResponse({
         fade={false}
         typewriter={false}
         smoothStreaming={isAnimating && !reducedMotion}
-        smoothStreamingOptions={{
-          minCharsPerSecond: 24,
-          maxCharsPerSecond: 140,
-          targetLatencyMs: 260,
-          catchUpLatencyMs: 120,
-          catchUpThreshold: 64,
-          maxCommitFps: 30,
-          startDelayMs: 80,
-          maxCharsPerCommit: 6,
-        }}
+        smoothStreamingOptions={STREAM_PACE}
         batchRendering={false}
         maxLiveNodes={0}
         viewportPriority

@@ -123,7 +123,8 @@ function syncScrollStop(target: HTMLElement, scroller: HTMLElement | null): void
   if (scroller.hasAttribute("tabindex")) return;
   scroller.tabIndex = 0;
   scroller.setAttribute("role", "group");
-  scroller.setAttribute("aria-label", scroller.querySelector("table") ? "表格，可左右滚动" : "代码，可左右滚动");
+  const label = scroller.querySelector("table") ? "表格" : scroller.classList.contains("reading-math-display") ? "公式" : "代码";
+  scroller.setAttribute("aria-label", `${label}，可左右滚动`);
   scroller.setAttribute("data-scroll-stop", "");
 }
 

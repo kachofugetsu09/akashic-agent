@@ -260,21 +260,59 @@
   content-visibility: visible;
 }
 
-/* 数学块在定稿前的源码兜底（DeferredMathBlock）：一块安静的纸面，不画框。 */
-.markstream-deferred-source {
+/* 公式（reading-math.tsx）。独立公式不画底色：与正文同一纸面，上下留出呼吸；放不下时横滚，渐隐提示同代码块。
+   KaTeX 自带的 .katex-display 外边距归零，间距只由外层决定，生成中与落定同一几何。 */
+:is(.agent-content, .process-markdown, .user-bubble) .markdown-reading .reading-math-display {
+  --code-edge: 28px;
   max-width: 100%;
-  margin-block: 0.5rem !important;
-  border: none !important;
+  margin-block: 0.85rem;
+  padding-block: 0.3rem;
   overflow-x: auto;
-  border-radius: var(--md-sys-shape-corner-medium) !important;
-  padding: 10px 14px !important;
-  color: var(--ak-ink-primary) !important;
-  background: var(--ak-paper-quiet) !important;
-  font-family: var(--ak-type-technical, ui-monospace, SFMono-Regular, Menlo, Consolas, monospace) !important;
-  font-size: 0.8125rem !important;
-  font-weight: 480;
-  line-height: 1.55 !important;
+  overflow-y: hidden;
+  scrollbar-width: thin;
+}
+.reading-math-display > .katex-display {
+  margin: 0;
+}
+.reading-math-display[data-overflow="end"] {
+  mask-image: linear-gradient(to right, #000 calc(100% - var(--code-edge)), transparent);
+}
+.reading-math-display[data-overflow="start"] {
+  mask-image: linear-gradient(to right, transparent, #000 var(--code-edge));
+}
+.reading-math-display[data-overflow="start end"] {
+  mask-image: linear-gradient(to right, transparent, #000 var(--code-edge), #000 calc(100% - var(--code-edge)), transparent);
+}
+.reading-math-display[data-scroll-stop]:focus-visible {
+  outline: 2px solid var(--ak-rule-focus);
+  outline-offset: -2px;
+}
+/* 生成中末尾还没写完的公式：已渐进排版，墨色略淡，闭合后回到正文墨色（不换节点，不跳）。 */
+:is(.reading-math, .reading-math-display)[data-pending] {
+  color: var(--ak-ink-secondary);
+}
+/* 排不了的公式（KaTeX 未载入或源码有错）按源码原样显示：等宽、正文同色，不出红字也不画框。 */
+.reading-math-source {
+  font-family: var(--ak-type-technical, ui-monospace, SFMono-Regular, Menlo, Consolas, monospace);
+  font-size: 0.875em;
   white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+.reading-math-display[data-empty] {
+  min-height: 2.6em;
+}
+.reading-math-display > .reading-math-source {
+  display: block;
+  text-align: center;
+}
+.reading-math-source[data-pending] {
+  color: var(--ak-ink-secondary);
+}
+/* 行内 $$…$$ 按 display 字号排在行里，行高随公式撑开，不压上下行。 */
+.reading-math[data-mode="inline-display"] {
+  display: inline-block;
+  vertical-align: middle;
+  margin-inline: 0.15em;
 }
 
 /* 流式期间代码块先用 PreCodeNode 的 <pre> 渲染（块外的那一个），落定后换成高亮组件。两者必须同一几何：
@@ -522,9 +560,9 @@
 }
 /* 首块是代码、Mermaid、公式或数学兜底时，真实边距在框上（多为 !important）：框可能是首块本身（流式数学兜底），也可能在包裹层里面，
    两种都清；列表、引用、表格里嵌着的不算首块。 */
-:is(.agent-content, .process-markdown, .user-bubble) .markdown-reading .markdown-renderer > .node-slot:first-child > .node-content > :first-child:is(.code-block-container, pre[data-markstream-pre="1"], .mermaid-block, .markstream-deferred-source, .math-block-node),
+:is(.agent-content, .process-markdown, .user-bubble) .markdown-reading .markdown-renderer > .node-slot:first-child > .node-content > :first-child:is(.code-block-container, pre[data-markstream-pre="1"], .mermaid-block, .reading-math-display),
 :is(.agent-content, .process-markdown, .user-bubble) .markdown-reading .markdown-renderer > .node-slot:first-child > .node-content > :first-child
-  :is(.code-block-container, pre[data-markstream-pre="1"], .mermaid-block, .markstream-deferred-source, .math-block-node, .katex-display):not(:is(li, blockquote, td) *) {
+  :is(.code-block-container, pre[data-markstream-pre="1"], .mermaid-block, .reading-math-display):not(:is(li, blockquote, td) *) {
   margin-block-start: 0 !important;
 }
 /* 生成中的语言标签跟着它的 pre 一起去掉 1rem（见 .reading-code-stream-label 的外边距说明）。 */
@@ -535,7 +573,7 @@
 /* 气泡有自己的内边距：末块（代码块的 my-4、段落的段后距）的下边距只会在气泡底部多出一截空白。 */
 .user-bubble :is(.markdown-reading .markdown-renderer > .node-slot:last-child > .node-content, .static-message-response) > :last-child,
 .user-bubble .markdown-reading .markdown-renderer > .node-slot:last-child > .node-content > :last-child
-  :is(.code-block-container, pre[data-markstream-pre="1"], .markstream-deferred-source, .math-block-node, .katex-display):not(:is(li, blockquote, td) *) {
+  :is(.code-block-container, pre[data-markstream-pre="1"], .reading-math-display):not(:is(li, blockquote, td) *) {
   margin-block-end: 0 !important;
 }
 
@@ -731,14 +769,6 @@
 
 :is(.agent-content, .process-markdown, .user-bubble) .markdown-reading thead :where(th, td) {
   border-block-end-color: var(--ak-rule-default);
-}
-
-:is(.agent-content, .process-markdown, .user-bubble) .markdown-reading .math-block-node {
-  margin-block: 0.85rem;
-  padding: 0.35rem 0.6rem;
-  max-width: 100%;
-  overflow-x: auto;
-  background: var(--ak-paper-quiet);
 }
 
 /* 脚注区是正文的附注：发丝线隔开，次级墨色小一号，不像正文里又起了一个列表。 */
@@ -2237,7 +2267,7 @@ button.tool-step-summary:active {
 .timeline-message .user-bubble { min-width: 0; }
 /* 气泡按内容收缩，而代码块、宽表、块公式的宽度又跟着容器走：两者互相依赖时气泡塌到最小内容宽度（只有代码时只剩一条缝）。
    含这些块的气泡直接占满允许的最大宽度。 */
-.timeline-message .user-bubble:has(pre, table, .code-block-container, .katex-display) { width: 100%; }
+.timeline-message .user-bubble:has(pre, table, .code-block-container, .reading-math-display) { width: 100%; }
 .timeline-details { margin-block: 0.5rem; color: var(--ak-color-text-secondary); }
 .timeline-details summary { cursor: pointer; padding-block: 0.5rem; overflow-wrap: anywhere; }
 .timeline-details summary:focus-visible,
