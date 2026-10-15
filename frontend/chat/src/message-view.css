@@ -374,15 +374,25 @@
 
 /* 流式代码块的语言标签：落在预留的 44px 块头位里，几何与落定块头的标题一致（左 17px、垂直居中），不随代码横滚。 */
 .reading-code-scroll.is-streaming { position: relative; }
+/* 生成中的语言标签与落定块头一样吸顶：放在流里、用负外边距叠到 pre 预留的块头位上（不占高度），
+   铺一层与代码块同色的底（两侧让出 1px 边框）；静止时看不出底，吸住时代码从它下面滑过。 */
 .reading-code-stream-label {
-  position: absolute;
+  position: sticky;
   z-index: 1;
-  inset-block-start: 1px;
-  inset-inline-start: 17px;
+  inset-block-start: var(--heading-cover, 0px);
   display: flex;
   block-size: 44px;
+  /* pre 自带 1rem 上外边距：标签带同样的外边距，与 pre 的相互折叠，pre 位置不变、标签落在边框内 1px。 */
+  margin: calc(1rem + 1px) 1px calc(-1rem - 45px);
+  padding-inline-start: 16px;
   align-items: center;
+  background: var(--ak-paper-quiet);
   pointer-events: none;
+  transition: inset-block-start var(--ak-sys-duration-short) var(--ak-sys-motion-standard);
+  container-type: scroll-state;
+}
+:where(.agent-content) :is(.turn-process.is-open, .thinking-row[data-state="open"]) .reading-code-stream-label {
+  inset-block-start: calc(var(--heading-cover, 0px) + var(--tool-sticky-h));
 }
 
 /* 横滚提示：哪边还有被藏住的字，哪边渐隐 28px；滚到头渐隐消失。只遮代码区，不遮块头。 */
@@ -468,7 +478,8 @@
 }
 /* 只在真正吸住时下沿出一道发丝线（与吸顶的过程行同款），把块头和从下面滑过的半行代码分开；
    不支持 scroll-state 查询的浏览器只是没有这条线。 */
-:where(.agent-content, .process-markdown) .code-block-container > .code-block-header::after {
+:where(.agent-content, .process-markdown) .code-block-container > .code-block-header::after,
+.reading-code-stream-label::after {
   position: absolute;
   inset: auto 0 0;
   block-size: 1px;
@@ -476,7 +487,8 @@
   content: "";
 }
 @container scroll-state(stuck: top) {
-  :where(.agent-content, .process-markdown) .code-block-container > .code-block-header::after {
+  :where(.agent-content, .process-markdown) .code-block-container > .code-block-header::after,
+  .reading-code-stream-label::after {
     background: color-mix(in oklab, var(--ak-color-text-primary) 7%, transparent);
   }
 }
@@ -507,6 +519,10 @@
 :is(.agent-content, .process-markdown, .user-bubble) .markdown-reading .markdown-renderer > .node-slot:first-child > .node-content > :first-child
   :is(.code-block-container, pre[data-markstream-pre="1"], .mermaid-block, .markstream-deferred-source, .math-block-node, .katex-display):not(:is(li, blockquote, td) *) {
   margin-block-start: 0 !important;
+}
+/* 生成中的语言标签跟着它的 pre 一起去掉 1rem（见 .reading-code-stream-label 的外边距说明）。 */
+:is(.agent-content, .process-markdown, .user-bubble) .markdown-reading .markdown-renderer > .node-slot:first-child > .node-content > .reading-code-scroll:first-child > .reading-code-stream-label {
+  margin-block: 1px -45px;
 }
 
 /* 气泡有自己的内边距：末块（代码块的 my-4、段落的段后距）的下边距只会在气泡底部多出一截空白。 */
