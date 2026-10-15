@@ -7,7 +7,7 @@ type Target = string | HTMLElement;
 type Value = number | null | undefined;
 
 export interface SeriesInput { name?: string; values?: readonly Value[]; color?: ColorKey }
-// 注释主句写 text；label 是 text 的别名，模型常用两种写法。
+// 注释主句写 text；label 是 text 的别名，便于里程碑沿用常见写法。
 export interface Note { at: string | number; text?: string; label?: string; sub?: string; series?: string }
 export interface RefLine { value: number; label?: string }
 interface Common { label?: string; fmt?: Format; unit?: string; height?: number }
@@ -17,6 +17,26 @@ export interface BarsOptions extends Common {
   sub?: readonly string[]; range?: readonly ({ lo: number; hi: number } | null)[]; rangeLabels?: readonly [string, string];
   colors?: readonly ColorKey[];
 }
+export interface LineOptions extends Common {
+  x: readonly (string | number)[]; series: readonly SeriesInput[]; area?: boolean; yMin?: number;
+  milestones?: readonly Note[]; annotate?: readonly Note[]; spans?: readonly { from: string | number; to: string | number; label: string }[];
+  projectFrom?: string | number; refLine?: RefLine;
+}
+export interface BarlistOptions extends Common {
+  items: readonly { label: string; value: number; note?: string }[]; sort?: boolean; limit?: number; max?: number; color?: ColorKey;
+}
+export interface ScatterOptions extends Common {
+  points: readonly { x: number; y: number; label?: string; size?: number; group?: string }[]; xTitle?: string; yTitle?: string;
+  xFmt?: Format; yFmt?: Format; highlight?: readonly string[]; refX?: RefLine; refY?: RefLine; trend?: boolean;
+}
+export interface DumbbellOptions extends Common {
+  x: readonly (string | number)[]; from: SeriesInput; to: SeriesInput; sort?: boolean;
+}
+export interface HeatmapOptions extends Common {
+  rows: readonly (string | number)[]; cols: readonly (string | number)[]; values: readonly (readonly number[])[]; color?: ColorKey; showValues?: boolean;
+}
+export interface ShareOptions extends Common { x: readonly (string | number)[]; series: readonly SeriesInput[]; annotate?: readonly Note[] }
+export interface TreemapOptions extends Common { nodes: readonly { name: string; value: number; group?: string }[] }
 export interface Handle { redraw(): void }
 
 interface Series { name: string; color: string; values: (number | null)[] }
@@ -170,6 +190,14 @@ function annotation(placement: Placement, note: Note, x: number, y: number, gap 
   const tx = round(chosen.x + w / 2);
   return [...head.map(line => [line, ' class="ak-b"']), ...tail.map(line => [line, ""])].map(([line, kind], index) =>
     `<text${kind} x="${tx}" y="${round(chosen.y + 12 + index * 16)}" text-anchor="middle">${esc(line)}</text>`).join("");
+}
+
+// 线尾标签：按数据位置排序后上下推开，整体留在绘图区内。
+function spread(items: { y: number; html: (y: number) => string }[], low: number, high: number, gap = 15): string {
+  const sorted = [...items].sort((a, b) => a.y - b.y);
+  sorted.forEach((item, index) => { if (index) item.y = Math.max(item.y, sorted[index - 1].y + gap); });
+  for (let index = sorted.length - 1, limit = high; index >= 0; index -= 1, limit -= gap) sorted[index].y = Math.min(sorted[index].y, limit);
+  return sorted.map(item => item.html(Math.max(low, item.y))).join("");
 }
 
 const svgOpen = (width: number, height: number, label?: string): string =>
@@ -384,7 +412,332 @@ function horizontalBars(width: number, id: string, options: BarsOptions, labels:
   return { html: head + svgOpen(width, height, options.label) + `<defs>${defs}</defs>` + marks + "</svg>", hits };
 }
 
-export const ak = { bars, fmt: (value: number, format?: Format, unit?: string): string => formatter(format, unit)(value) };
+// 折线 / 面积：里程碑、区间、外推虚线；多系列在线尾直接标名。
+function line(target: Target, options: LineOptions): Handle {
+  const labels = (options?.x ?? []).map(String);
+  if (!labels.length) throw new Error("ak.line: x 不能为空");
+  const series = readSeries("line", options.series, labels.length, true), format = formatter(options.fmt, options.unit);
+  if (series.every(item => item.values.every(value => value == null))) throw new Error("ak.line: 没有可画的数值");
+  return mount(target, (width, id) => drawLine(width, id, options, labels, series, format));
+}
+
+function drawLine(width: number, id: string, options: LineOptions, labels: string[], series: Series[], format: (value: number) => string): Drawing {
+  const count = labels.length, numbers = series.flatMap(item => item.values.filter((value): value is number => value != null));
+  const most = Math.max(...numbers, options.refLine?.value ?? -Infinity);
+  let least = Math.min(...numbers);
+  least = options.yMin ?? (least >= 0 && least < most * 0.5 ? 0 : least);
+  const notes = [...(options.milestones ?? []), ...(options.annotate ?? [])], multi = series.length > 1;
+  const height = options.height ?? (width < 480 ? 220 : 280), top = notes.length ? (notes.some(note => note.sub) ? 44 : 28) : 12, bottom = 24;
+  const scale = niceScale(least, most, height < 240 ? 3 : 4), left = Math.max(...scale.ticks.map(value => textWidth(format(value)))) + 10;
+  const right = multi ? Math.min(width * 0.3, Math.max(...series.map(item => textWidth(item.name, 12, 600))) + 30) : 12;
+  const plot = width - left - right, base = height - bottom;
+  const x = (index: number): number => left + (count === 1 ? plot / 2 : index / (count - 1) * plot);
+  const y = (value: number): number => base - (clamp(value, scale.low, scale.high) - scale.low) / (scale.high - scale.low) * (base - top);
+  const project = options.projectFrom == null ? count : indexOf(labels, options.projectFrom);
+  const placement = new Placement(width, height);
+  placement.block({ x: 0, y: 0, w: left - 4, h: height });
+  placement.block({ x: 0, y: height - bottom + 4, w: width, h: bottom });
+  let grid = horizontalGrid(scale.ticks, y, left, left + plot, format) + `<line class="ak-base" x1="${left}" x2="${left + plot}" y1="${base}" y2="${base}"/>`;
+  xTicks(labels, plot).forEach(tick => { grid += xLabel(x(tick.index), height - 6, tick.text, width); });
+  let defs = "", marks = "";
+  const ends: { y: number; html: (y: number) => string }[] = [];
+  series.forEach((item, index) => {
+    const points = item.values.map((value, at) => value == null ? null : [round(x(at)), round(y(value))] as const);
+    const path = (from: number, to: number): string => points.slice(from, to + 1).map((point, at) =>
+      point ? `${at && points[from + at - 1] ? "L" : "M"}${point[0]} ${point[1]}` : "").join("");
+    const real = points.filter(point => point != null);
+    // 注释避让线条：沿折线每隔约 8px 登记一个小块。
+    real.forEach((point, at) => {
+      const next = real[at + 1];
+      const steps = next ? Math.max(1, Math.ceil(Math.hypot(next[0] - point[0], next[1] - point[1]) / 8)) : 1;
+      for (let step = 0; step < steps; step += 1) {
+        const px = next ? point[0] + (next[0] - point[0]) * step / steps : point[0], py = next ? point[1] + (next[1] - point[1]) * step / steps : point[1];
+        placement.block({ x: px - 2, y: py - 2, w: 4, h: 4 });
+      }
+    });
+    if ((options.area ?? !multi) && real.length > 1) {
+      defs += `<linearGradient id="${id}g${index}" x1="0" y1="0" x2="0" y2="1"><stop offset="0" style="stop-color:${item.color};stop-opacity:.24"/><stop offset="1" style="stop-color:${item.color};stop-opacity:.02"/></linearGradient>`;
+      marks += `<path d="M${real[0][0]} ${base}L${real.map(point => point.join(" ")).join("L")}L${real[real.length - 1][0]} ${base}Z" style="fill:url(#${id}g${index})"/>`;
+    }
+    marks += `<path d="${path(0, Math.min(project, count - 1))}" fill="none" style="stroke:${item.color}" stroke-width="2" stroke-linejoin="round" stroke-linecap="round"/>`;
+    if (project < count - 1) marks += `<path d="${path(Math.max(0, project), count - 1)}" fill="none" style="stroke:${item.color}" stroke-width="2" stroke-dasharray="4 4"/>`;
+    if (real.length === 1) marks += `<circle cx="${real[0][0]}" cy="${real[0][1]}" r="3" style="fill:${item.color}"/>`;
+    const last = real[real.length - 1];
+    if (multi && last) ends.push({ y: last[1] + 4, html: at => `<rect x="${round(left + plot + 12)}" y="${round(at - 8)}" width="8" height="8" rx="2" style="fill:${item.color}"/>`
+      + `<text class="ak-b" x="${round(left + plot + 24)}" y="${round(at)}">${esc(item.name)}</text>` });
+  });
+  marks += spread(ends, top + 8, base + 4);
+  marks += lineNotes(placement, options, labels, series, notes, { x, y, base, top });
+  marks += referenceLine(placement, options.refLine, format, { x1: left, x2: left + plot, y: y(options.refLine?.value ?? 0) });
+  marks += `<line class="ak-cross" x1="0" x2="0" y1="${top}" y2="${base}" style="visibility:hidden"/>`;
+  const step = count > 1 ? plot / (count - 1) : plot;
+  const hits = labels.map((label, index) => ({ x0: x(index) - step / 2, x1: x(index) + step / 2, y0: 0, y1: height, cx: round(x(index)),
+    html: tip(shortLabel(label), series.filter(item => item.values[index] != null).map(item => [item.name, format(item.values[index]!), item.color])) }));
+  return { html: svgOpen(width, height, options.label) + `<defs>${defs}</defs>` + grid + marks + "</svg>", hits };
+}
+
+// 里程碑画点和落地虚线，区间标在底部；注释可用 series 指定挂在哪条线上。
+function lineNotes(placement: Placement, options: LineOptions, labels: string[], series: Series[], notes: Note[],
+  axes: { x: (index: number) => number; y: (value: number) => number; base: number; top: number }): string {
+  let marks = "";
+  for (const span of options.spans ?? []) {
+    const from = indexOf(labels, span.from), to = indexOf(labels, span.to);
+    if (from < 0 || to < 0) continue;
+    const middle = (axes.x(from) + axes.x(to)) / 2, width = textWidth(span.label);
+    if (width + 8 < Math.abs(axes.x(to) - axes.x(from)) && placement.place([{ x: middle - width / 2, y: axes.base - 20, w: width, h: 14 }]))
+      marks += `<text class="ak-m" x="${round(middle)}" y="${axes.base - 8}" text-anchor="middle">${esc(span.label)}</text>`;
+  }
+  const milestones = new Set(options.milestones ?? []);
+  notes.forEach((note, order) => {
+    const index = indexOf(labels, note.at);
+    const owner = series.find(item => item.name === note.series) ?? series.find(item => index >= 0 && item.values[index] != null);
+    const value = owner && index >= 0 ? owner.values[index] : null;
+    if (owner == null || value == null) return;
+    const px = axes.x(index), py = axes.y(value), last = milestones.has(note) && order === (options.milestones?.length ?? 0) - 1 && milestones.size > 1;
+    if (milestones.has(note)) {
+      marks += `<line class="ak-lead" x1="${round(px)}" x2="${round(px)}" y1="${round(py)}" y2="${axes.base}"/>` + (last
+        ? `<circle cx="${round(px)}" cy="${round(py)}" r="10" style="fill:none;stroke:var(--k-hot);opacity:.4"/><circle cx="${round(px)}" cy="${round(py)}" r="5.5" style="fill:var(--k-hot)"/>`
+        : `<circle cx="${round(px)}" cy="${round(py)}" r="4" style="fill:var(--ak-color-bg-surface);stroke:${owner.color}" stroke-width="2"/>`);
+    }
+    placement.block({ x: px - 6, y: py - 6, w: 12, h: 12 });
+    marks += annotation(placement, note, px, py, 10);
+  });
+  return marks;
+}
+
+// 排行横条列表：标签、内联条、数值三列；窄屏条换到下一行。
+function barlist(target: Target, options: BarlistOptions): Handle {
+  const format = formatter(options?.fmt, options?.unit), fill = color(options?.color ?? 1, 0);
+  let items = (options?.items ?? []).map((item, index) => {
+    if (typeof item?.value !== "number" || !Number.isFinite(item.value)) throw new Error(`ak.barlist: items[${index}].value 不是有限数字`);
+    return { label: String(item.label ?? ""), value: item.value, note: item.note };
+  });
+  if (!items.length) throw new Error("ak.barlist: items 不能为空");
+  if (options.sort !== false) items = [...items].sort((a, b) => b.value - a.value);
+  if (options.limit) items = items.slice(0, options.limit);
+  const most = options.max ?? Math.max(...items.map(item => item.value)) ?? 1;
+  return mount(target, width => ({ hits: [], html: `<div class="ak-barlist${width < 420 ? " narrow" : ""}" role="list" aria-label="${esc(options.label || "排行")}">`
+    + items.map(item => {
+      const name = `<span class="ak-l${/[\\/]/.test(item.label) ? " path" : ""}">${esc(item.label)}${item.note ? `<small>${esc(item.note)}</small>` : ""}</span>`;
+      const bar = `<span class="ak-bar" aria-hidden="true"><i style="width:${round(clamp(item.value / (most || 1) * 100, 0.5, 100))}%;background:${fill}"></i></span>`;
+      const value = `<b class="ak-v">${esc(format(item.value))}</b>`;
+      return `<div class="ak-row" role="listitem">${width < 420 ? name + value + bar : name + bar + value}</div>`;
+    }).join("") + "</div>" }));
+}
+
+// 迷你趋势线：放在 hero 数字或表格单元格里，只表达走势，末点标出。
+function spark(target: Target, values: readonly number[], options: { color?: ColorKey; label?: string } = {}): Handle {
+  if (!Array.isArray(values) || values.length < 2 || values.some(value => typeof value !== "number" || !Number.isFinite(value)))
+    throw new Error("ak.spark: 需要至少两个有限数字");
+  const low = Math.min(...values), high = Math.max(...values), stroke = color(options.color ?? 1, 0);
+  return mount(target, () => {
+    const width = 96, height = 28, x = (index: number) => 2 + index / (values.length - 1) * (width - 6);
+    const y = (value: number) => height - 3 - (high > low ? (value - low) / (high - low) : 0.5) * (height - 6);
+    const path = values.map((value, index) => `${index ? "L" : "M"}${round(x(index))} ${round(y(value))}`).join("");
+    return { hits: [], html: `<svg class="ak-spark" viewBox="0 0 ${width} ${height}" width="${width}" height="${height}" role="img" aria-label="${esc(options.label || "趋势")}">`
+      + `<path d="${path}" fill="none" style="stroke:${stroke}" stroke-width="1.5" stroke-linejoin="round"/>`
+      + `<circle cx="${round(x(values.length - 1))}" cy="${round(y(values[values.length - 1]))}" r="2.5" style="fill:${stroke}"/></svg>` };
+  });
+}
+
+// 散点 / 气泡：两个量的关系；少量点直接标名，多点只标 highlight，可加参考线分象限和最小二乘趋势线。
+function scatter(target: Target, options: ScatterOptions): Handle {
+  const points = (options?.points ?? []).map((point, index) => {
+    if (![point?.x, point?.y].every(value => typeof value === "number" && Number.isFinite(value))) throw new Error(`ak.scatter: points[${index}] 的 x、y 必须是有限数字`);
+    return { x: point.x, y: point.y, label: String(point.label ?? ""), size: Math.max(0, Number(point.size) || 0), group: String(point.group ?? "") };
+  });
+  if (!points.length) throw new Error("ak.scatter: points 不能为空");
+  const groups = [...new Set(points.map(point => point.group))], fx = formatter(options.xFmt ?? options.fmt, ""), fy = formatter(options.yFmt ?? options.fmt, options.unit);
+  return mount(target, width => {
+    const height = options.height ?? (width < 480 ? 240 : 300), top = 12, bottom = options.xTitle ? 40 : 24;
+    const sx = niceScale(Math.min(...points.map(point => point.x), options.refX?.value ?? Infinity), Math.max(...points.map(point => point.x), options.refX?.value ?? -Infinity), width < 480 ? 3 : 5);
+    const sy = niceScale(Math.min(...points.map(point => point.y), options.refY?.value ?? Infinity), Math.max(...points.map(point => point.y), options.refY?.value ?? -Infinity), height < 260 ? 3 : 4);
+    const left = Math.max(...sy.ticks.map(value => textWidth(fy(value)))) + 10, right = width - 8, base = height - bottom;
+    const x = (value: number): number => left + (value - sx.low) / (sx.high - sx.low) * (right - left);
+    const y = (value: number): number => base - (value - sy.low) / (sy.high - sy.low) * (base - top);
+    const biggest = Math.max(...points.map(point => point.size)) || 1, radius = (size: number): number => size ? 3 + Math.sqrt(size / biggest) * 15 : 4.5;
+    const placement = new Placement(width, height), wanted = new Set(options.highlight ?? (points.length <= 12 ? points.map(point => point.label) : []));
+    let grid = horizontalGrid(sy.ticks, y, left, right, fy) + `<line class="ak-base" x1="${left}" x2="${right}" y1="${base}" y2="${base}"/>`;
+    sx.ticks.forEach(value => { grid += xLabel(x(value), base + 16, fx(value), width); });
+    if (options.xTitle) grid += `<text class="ak-m" x="${right}" y="${height - 4}" text-anchor="end">${esc(options.xTitle)} →</text>`;
+    if (options.yTitle) grid += `<text class="ak-m" x="${left + 4}" y="${top + 4}">↑ ${esc(options.yTitle)}</text>`;
+    let marks = "";
+    if (options.refX) marks += `<line class="ak-lead" x1="${round(x(options.refX.value))}" x2="${round(x(options.refX.value))}" y1="${top}" y2="${base}"/>`;
+    marks += referenceLine(placement, options.refY, fy, { x1: left, x2: right, y: y(options.refY?.value ?? 0) }).replace('class="ak-ref"', 'class="ak-lead"');
+    if (options.trend && points.length > 2) marks += trendLine(points, x, y, sx);
+    const order = [...points].sort((a, b) => b.size - a.size);
+    order.forEach(point => {
+      const fill = color(undefined, groups.indexOf(point.group)), r = radius(point.size), hot = wanted.has(point.label) && point.label;
+      marks += `<circle cx="${round(x(point.x))}" cy="${round(y(point.y))}" r="${round(r)}" style="fill:${fill};fill-opacity:${point.size ? 0.55 : 0.85};stroke:${hot ? "var(--ak-color-text-primary)" : fill}" stroke-width="${hot ? 1.5 : 1}"/>`;
+      placement.block({ x: x(point.x) - r, y: y(point.y) - r, w: 2 * r, h: 2 * r });
+    });
+    points.forEach(point => { if (point.label && wanted.has(point.label)) marks += annotation(placement, { at: 0, text: point.label }, x(point.x), y(point.y), radius(point.size) + 3); });
+    const hits = points.map(point => { const r = Math.max(8, radius(point.size)); return { x0: x(point.x) - r, x1: x(point.x) + r, y0: y(point.y) - r, y1: y(point.y) + r,
+      html: tip(point.label || point.group || "点", [[options.xTitle ?? "x", fx(point.x), color(undefined, groups.indexOf(point.group))], [options.yTitle ?? "y", fy(point.y), color(undefined, groups.indexOf(point.group))]]) }; });
+    const head = groups.length > 1 ? legend(groups.map((group, index) => [color(undefined, index), null, group || "其他"])) : "";
+    return { html: head + svgOpen(width, height, options.label) + grid + marks + "</svg>", hits };
+  });
+}
+
+function trendLine(points: readonly { x: number; y: number }[], x: (value: number) => number, y: (value: number) => number, scale: { low: number; high: number }): string {
+  const n = points.length, mx = points.reduce((sum, point) => sum + point.x, 0) / n, my = points.reduce((sum, point) => sum + point.y, 0) / n;
+  const sxx = points.reduce((sum, point) => sum + (point.x - mx) ** 2, 0);
+  if (!sxx) return "";
+  const slope = points.reduce((sum, point) => sum + (point.x - mx) * (point.y - my), 0) / sxx, at = (value: number): number => my + slope * (value - mx);
+  return `<line class="ak-lead" x1="${round(x(scale.low))}" x2="${round(x(scale.high))}" y1="${round(y(at(scale.low)))}" y2="${round(y(at(scale.high)))}" style="stroke-dasharray:6 4"/>`;
+}
+
+// 哑铃：每行两个时点或两种口径的对比，线段长度就是差值；可按变化量排序。
+function dumbbell(target: Target, options: DumbbellOptions): Handle {
+  const labels = (options?.x ?? []).map(String);
+  if (!labels.length) throw new Error("ak.dumbbell: x 不能为空");
+  const [from, to] = readSeries("dumbbell", [options.from ?? {}, { color: 2, ...options.to }], labels.length, false), format = formatter(options.fmt, options.unit);
+  const rows = labels.map((label, index) => ({ label, a: from.values[index]!, b: to.values[index]! }));
+  if (options.sort !== false) rows.sort((m, n) => (n.b - n.a) - (m.b - m.a));
+  return mount(target, width => {
+    const narrow = width < 420, labelWidth = narrow ? 0 : Math.min(width * 0.3, Math.max(...labels.map(text => textWidth(text, 12, 600))) + 12);
+    const row = narrow ? 44 : 28, height = rows.length * row + 24, scale = niceScale(Math.min(0, ...rows.flatMap(item => [item.a, item.b])), Math.max(...rows.flatMap(item => [item.a, item.b])), 4);
+    const valueWidth = Math.max(...rows.flatMap(item => [item.a, item.b]).map(value => textWidth(format(value)))) + 8;
+    const x = (value: number): number => labelWidth + valueWidth + (value - scale.low) / (scale.high - scale.low) * (width - labelWidth - 2 * valueWidth);
+    let marks = scale.ticks.map(value => `<line class="ak-grid" x1="${round(x(value))}" x2="${round(x(value))}" y1="0" y2="${height - 20}"/>` + xLabel(x(value), height - 4, format(value), width)).join("");
+    const hits = rows.map((item, index) => {
+      const cy = index * row + (narrow ? 30 : row / 2), up = item.b >= item.a;
+      marks += narrow ? `<text class="ak-b" x="0" y="${cy - 12}">${esc(item.label)}</text>` : `<text class="ak-b" x="0" y="${cy + 4}">${esc(item.label)}</text>`;
+      marks += `<line x1="${round(x(item.a))}" x2="${round(x(item.b))}" y1="${cy}" y2="${cy}" style="stroke:var(--k-gray)" stroke-width="3"/>`
+        + `<circle cx="${round(x(item.a))}" cy="${cy}" r="5" style="fill:${from.color}"/><circle cx="${round(x(item.b))}" cy="${cy}" r="5" style="fill:${to.color}"/>`
+        + `<text x="${round(x(item.a) + (up ? -9 : 9))}" y="${cy + 4}" text-anchor="${up ? "end" : "start"}">${esc(format(item.a))}</text>`
+        + `<text class="ak-b" x="${round(x(item.b) + (up ? 9 : -9))}" y="${cy + 4}" text-anchor="${up ? "start" : "end"}">${esc(format(item.b))}</text>`;
+      return { x0: 0, x1: width, y0: index * row, y1: (index + 1) * row, html: tip(item.label, [[from.name, format(item.a), from.color], [to.name, format(item.b), to.color]]) };
+    });
+    return { html: legend([[from.color, null, from.name], [to.color, null, to.name]]) + svgOpen(width, height, options.label) + marks + "</svg>", hits };
+  });
+}
+
+// 热力图：两个周期维度的规律，单色相由浅到深，最大格描边，下方附色阶。
+function heatmap(target: Target, options: HeatmapOptions): Handle {
+  const rows = (options?.rows ?? []).map(String), cols = (options?.cols ?? []).map(String);
+  if (!rows.length || !cols.length) throw new Error("ak.heatmap: rows 和 cols 不能为空");
+  const grid = rows.map((_, r) => cols.map((_, c) => {
+    const value = options.values?.[r]?.[c];
+    if (typeof value !== "number" || !Number.isFinite(value)) throw new Error(`ak.heatmap: values[${r}][${c}] 不是有限数字`);
+    return value;
+  }));
+  const format = formatter(options.fmt, options.unit), flat = grid.flat(), low = Math.min(...flat), high = Math.max(...flat), base = color(options.color ?? 1, 0);
+  const tone = (value: number): string => `color-mix(in oklab, ${base} ${Math.round(8 + 90 * (high > low ? (value - low) / (high - low) : 1))}%, var(--ak-color-bg-surface))`;
+  return mount(target, width => {
+    const left = Math.max(...rows.map(text => textWidth(text))) + 10, cell = (width - left) / cols.length, tall = options.height ? options.height / rows.length : clamp(cell * 0.9, 14, 28), gap = cell > 10 ? 2 : 1;
+    const bottom = rows.length * tall, height = bottom + 46;
+    let marks = "", best = [0, 0];
+    const hits: Hit[] = [];
+    grid.forEach((line, r) => {
+      marks += `<text x="${left - 8}" y="${round(r * tall + tall / 2 + 4)}" text-anchor="end">${esc(rows[r])}</text>`;
+      line.forEach((value, c) => {
+        if (value > grid[best[0]][best[1]]) best = [r, c];
+        const cx = left + c * cell, cy = r * tall;
+        marks += `<rect x="${round(cx)}" y="${round(cy)}" width="${round(cell - gap)}" height="${round(tall - gap)}" rx="${cell > 12 ? 2 : 1}" style="fill:${tone(value)}"/>`;
+        if (options.showValues && cell >= 28) marks += `<text x="${round(cx + (cell - gap) / 2)}" y="${round(cy + tall / 2 + 4)}" text-anchor="middle" style="fill:${value > low + (high - low) * 0.55 ? "var(--ak-color-bg-surface)" : "var(--ak-color-text-primary)"}">${esc(format(value))}</text>`;
+        hits.push({ x0: cx, x1: cx + cell, y0: cy, y1: cy + tall, html: tip(`${rows[r]} · ${cols[c]}`, [[options.label || "数值", format(value), tone(value)]]) });
+      });
+    });
+    marks += `<rect x="${round(left + best[1] * cell - 1)}" y="${round(best[0] * tall - 1)}" width="${round(cell - gap + 2)}" height="${round(tall - gap + 2)}" rx="2" style="fill:none;stroke:var(--ak-color-text-primary)" stroke-width="1.5"/>`;
+    xTicks(cols, width - left).forEach(tick => { marks += xLabel(left + cell * (tick.index + 0.5), bottom + 16, tick.text, width); });
+    const scaleY = bottom + 28;
+    marks += `<text class="ak-m" x="${left}" y="${scaleY + 11}">${esc(format(low))}</text>`;
+    const start = left + textWidth(format(low)) + 6;
+    [0, 0.25, 0.5, 0.75, 1].forEach((step, index) => { marks += `<rect x="${round(start + index * 16)}" y="${scaleY + 1}" width="14" height="12" rx="2" style="fill:${tone(low + step * (high - low))}"/>`; });
+    marks += `<text class="ak-m" x="${round(start + 84)}" y="${scaleY + 11}">${esc(format(high))}${options.label ? ` · ${esc(options.label)}` : ""}</text>`;
+    return { html: svgOpen(width, height, options.label) + marks + "</svg>", hits };
+  });
+}
+
+// 100% 份额面积：构成随时间变化，右侧直接写名称和最新份额。
+function share(target: Target, options: ShareOptions): Handle {
+  const labels = (options?.x ?? []).map(String);
+  if (labels.length < 2) throw new Error("ak.share: x 至少需要两个时点");
+  const series = readSeries("share", options.series, labels.length, false);
+  const totals = labels.map((_, index) => series.reduce((sum, item) => sum + Math.max(0, item.values[index]!), 0));
+  const shares = series.map(item => item.values.map((value, index) => totals[index] ? Math.max(0, value!) / totals[index] * 100 : 0));
+  return mount(target, width => {
+    const count = labels.length, last = count - 1, names = series.map((item, index) => `${item.name} ${Math.round(shares[index][last])}%`);
+    const height = options.height ?? (width < 480 ? 220 : 260), top = options.annotate?.length ? 26 : 8, base = height - 24, left = textWidth("100%") + 10;
+    const plot = width - left - Math.min(width * 0.34, Math.max(...names.map(text => textWidth(text, 12, 600))) + 12);
+    const x = (index: number): number => left + index / last * plot, y = (value: number): number => base - value / 100 * (base - top);
+    let marks = "";
+    const sums = labels.map(() => 0), ends: { y: number; html: (y: number) => string }[] = [];
+    series.forEach((item, index) => {
+      const low = [...sums], high = sums.map((sum, at) => sum + shares[index][at]);
+      high.forEach((value, at) => { sums[at] = value; });
+      marks += `<path d="M${high.map((value, at) => `${round(x(at))} ${round(y(value))}`).join("L")}L${low.map((value, at) => `${round(x(at))} ${round(y(value))}`).reverse().join("L")}Z" class="ak-sep" style="fill:${item.color}"/>`;
+      if (shares[index][last] > 0) ends.push({ y: y((low[last] + high[last]) / 2) + 4, html: at => `<text class="ak-b" x="${round(left + plot + 6)}" y="${round(at)}">${esc(names[index])}</text>` });
+    });
+    marks += spread(ends, top + 8, base + 4);
+    [0, 50, 100].forEach(value => { marks += `<text x="${left - 8}" y="${round(y(value)) + 4}" text-anchor="end">${value}%</text>`; });
+    xTicks(labels, plot).forEach(tick => { marks += xLabel(x(tick.index), height - 6, tick.text, width); });
+    for (const note of options.annotate ?? []) {
+      const index = indexOf(labels, note.at), text = String(note.text ?? note.label ?? "");
+      if (index < 0 || !text) continue;
+      marks += `<line x1="${round(x(index))}" x2="${round(x(index))}" y1="${top - 4}" y2="${base}" style="stroke:var(--ak-color-bg-canvas)" stroke-width="2"/>`
+        + `<text class="ak-b" x="${round(clamp(x(index), textWidth(text, 12, 600) / 2, width - textWidth(text, 12, 600) / 2))}" y="${top - 9}" text-anchor="middle">${esc(text)}</text>`;
+    }
+    marks += `<line class="ak-cross" x1="0" x2="0" y1="${top}" y2="${base}" style="visibility:hidden"/>`;
+    const step = plot / last;
+    const hits = labels.map((label, at) => ({ x0: x(at) - step / 2, x1: x(at) + step / 2, y0: 0, y1: height, cx: round(x(at)),
+      html: tip(shortLabel(label), [...series].reverse().map(item => [item.name, `${round(shares[series.indexOf(item)][at])}%`, item.color])) }));
+    return { html: svgOpen(width, height, options.label) + marks + "</svg>", hits };
+  });
+}
+
+interface Area<T> { item: T; value: number; x: number; y: number; w: number; h: number }
+
+// squarify：按面积切块并让每块尽量接近正方形。
+function squarify<T>(items: readonly { item: T; value: number }[], x: number, y: number, w: number, h: number): Area<T>[] {
+  const out: Area<T>[] = [], total = items.reduce((sum, entry) => sum + entry.value, 0);
+  if (!total || w <= 0 || h <= 0) return out;
+  const unit = w * h / total;
+  let rest = [...items];
+  while (rest.length) {
+    const side = Math.min(w, h);
+    let row: typeof rest = [], best = Infinity;
+    for (const entry of rest) {
+      const next = [...row, entry], area = next.reduce((sum, item) => sum + item.value * unit, 0), sizes = next.map(item => item.value * unit);
+      const worst = Math.max(side * side * Math.max(...sizes) / (area * area), area * area / (side * side * Math.min(...sizes)));
+      if (worst > best) break;
+      best = worst;
+      row = next;
+    }
+    const area = row.reduce((sum, entry) => sum + entry.value * unit, 0);
+    if (w >= h) { const cw = area / h; let cy = y; row.forEach(entry => { const eh = entry.value * unit / cw; out.push({ ...entry, x, y: cy, w: cw, h: eh }); cy += eh; }); x += cw; w -= cw; }
+    else { const ch = area / w; let cx = x; row.forEach(entry => { const ew = entry.value * unit / ch; out.push({ ...entry, x: cx, y, w: ew, h: ch }); cx += ew; }); y += ch; h -= ch; }
+    rest = rest.slice(row.length);
+  }
+  return out;
+}
+
+// 矩形树图：层级加大小；先按组切块再切节点，组色区分，组内按大小深浅。
+function treemap(target: Target, options: TreemapOptions): Handle {
+  const nodes = (options?.nodes ?? []).map(node => ({ name: String(node.name ?? ""), value: Math.max(0, Number(node.value) || 0), group: String(node.group ?? "") })).filter(node => node.value > 0);
+  if (!nodes.length) throw new Error("ak.treemap: nodes 需要至少一个正数 value");
+  const format = formatter(options.fmt, options.unit), names = [...new Set(nodes.map(node => node.group))], total = nodes.reduce((sum, node) => sum + node.value, 0);
+  const groups = names.map((name, index) => ({ item: { name, fill: color(undefined, index) }, value: nodes.filter(node => node.group === name).reduce((sum, node) => sum + node.value, 0) })).sort((a, b) => b.value - a.value);
+  return mount(target, width => {
+    const height = options.height ?? (width < 480 ? 280 : 340), hits: Hit[] = [];
+    let marks = "";
+    squarify(groups, 0, 0, width, height).forEach(group => {
+      const head = names.length > 1 && group.w > 70 && group.h > 56 ? 18 : 0;
+      const inside = nodes.filter(node => node.group === group.item.name).sort((a, b) => b.value - a.value), top = inside[0].value;
+      if (head) marks += `<text class="ak-b" x="${round(group.x + 4)}" y="${round(group.y + 13)}">${esc(group.item.name)} <tspan class="ak-m" font-weight="400">${esc(format(group.value))}</tspan></text>`;
+      squarify(inside.map(node => ({ item: node, value: node.value })), group.x + 1, group.y + head + 1, group.w - 2, group.h - head - 2).forEach(cell => {
+        marks += `<rect x="${round(cell.x + 1)}" y="${round(cell.y + 1)}" width="${round(Math.max(0, cell.w - 2))}" height="${round(Math.max(0, cell.h - 2))}" rx="2" style="fill:color-mix(in oklab, ${group.item.fill} ${Math.round(30 + 45 * cell.value / top)}%, var(--ak-color-bg-surface))"/>`;
+        if (cell.w > textWidth(cell.item.name, 12, 600) + 10 && cell.h > 20) marks += `<text class="ak-b" x="${round(cell.x + 6)}" y="${round(cell.y + 16)}">${esc(cell.item.name)}</text>`;
+        if (cell.w > textWidth(format(cell.value)) + 10 && cell.h > 36) marks += `<text x="${round(cell.x + 6)}" y="${round(cell.y + 31)}">${esc(format(cell.value))}</text>`;
+        hits.push({ x0: cell.x, x1: cell.x + cell.w, y0: cell.y, y1: cell.y + cell.h, html: tip(cell.item.name, [[cell.item.group || "大小", `${format(cell.value)} · ${round(cell.value / total * 100)}%`, group.item.fill]]) });
+      });
+    });
+    return { html: svgOpen(width, height, options.label) + marks + "</svg>", hits };
+  });
+}
+
+export const ak = { bars, line, scatter, dumbbell, heatmap, share, treemap, barlist, spark, fmt: (value: number, format?: Format, unit?: string): string => formatter(format, unit)(value) };
 
 declare global { interface Window { ak: typeof ak } }
 window.ak = ak;
