@@ -1,6 +1,7 @@
 import { memo, useEffect, useLayoutEffect, useRef, useSyncExternalStore } from "react";
 import type { KatexOptions } from "katex";
 import katexAssetUrl from "katex/dist/katex.mjs?url";
+import katexStyleUrl from "katex/dist/katex.min.css?url";
 import { watchOverflowEdges } from "./markdown-reading";
 
 // 公式渲染（参考 Claude Desktop：KaTeX 按需加载、errorColor 跟正文、复制还原 TeX）。
@@ -27,7 +28,7 @@ const OPTIONS: KatexOptions = { throwOnError: true, strict: false, output: "html
  *  加载失败（断网、发版后旧 chunk 不在）不缓存失败结果：已挂的公式先按源码显示，退避重试，新公式挂载也会再试；成功后全部排版。 */
 export function preloadMath(): Promise<void> {
   installMathCopy();
-  katexLoad ??= Promise.all([importKatex(), import("@/katex-styles")]).then(async ([module]) => {
+  katexLoad ??= Promise.all([importKatex(), loadKatexStyles()]).then(async ([module]) => {
     katex = module.default;
     for (const listener of listeners) listener();
     await Promise.allSettled(["KaTeX_Main", "KaTeX_Math", "KaTeX_Size1", "KaTeX_Size2"].map((family) => document.fonts.load(`1em ${family}`)));
@@ -51,6 +52,26 @@ function importKatex(): Promise<typeof import("katex")> {
   katexAttempts += 1;
   if (katexAttempts === 1) return import("katex");
   return import(/* @vite-ignore */ `${katexAssetUrl}?retry=${katexAttempts}`) as Promise<typeof import("katex")>;
+}
+
+// 样式自己挂 link，加载成功才算就绪：Vite 的 CSS 预载失败后仍把那个地址记成已加载，再次导入直接放行，
+// 公式会排出来却没有样式。失败的 link 移除，重试换查询串重新请求。
+function loadKatexStyles(): Promise<void> {
+  const current = document.querySelector<HTMLLinkElement>("link[data-katex-styles]");
+  if (current?.sheet) return Promise.resolve();
+  current?.remove();
+  return new Promise((resolve, reject) => {
+    const link = document.createElement("link");
+    link.rel = "stylesheet";
+    link.dataset.katexStyles = "";
+    link.href = katexAttempts <= 1 ? katexStyleUrl : `${katexStyleUrl}?retry=${katexAttempts}`;
+    link.onload = () => resolve();
+    link.onerror = () => {
+      link.remove();
+      reject(new Error("KaTeX 样式加载失败"));
+    };
+    document.head.append(link);
+  });
 }
 
 function subscribe(listener: () => void) {
