@@ -55,15 +55,8 @@
 .ak-attachment__image[data-loaded],
 video.ak-attachment__image { opacity: 1; }
 .ak-attachment__play {
-  position: absolute;
-  inset: auto auto 6px 6px;
-  display: grid;
-  width: 20px;
-  height: 20px;
-  place-items: center;
-  border-radius: 999px;
-  color: #fff;
-  background: rgb(0 0 0 / 0.55);
+  position: absolute; inset: auto auto 6px 6px; display: grid; width: 20px; height: 20px; place-items: center;
+  border-radius: 999px; color: #fff; background: rgb(0 0 0 / 0.55);
 }
 
 .ak-attachment__tile {
@@ -113,13 +106,8 @@ video.ak-attachment__image { opacity: 1; }
 /* 结尾一般整段保留；全角字符很宽时也不越出卡片，至少给开头留一个字和省略号。 */
 .ak-attachment__tail { flex: none; max-width: calc(100% - 1.5em); overflow: hidden; white-space: pre; }
 .ak-attachment__desc {
-  overflow: hidden;
-  color: var(--ak-ink-secondary);
-  font-size: 0.75rem;
-  font-variant-numeric: tabular-nums;
-  line-height: 1.35;
-  text-overflow: ellipsis;
-  white-space: nowrap;
+  overflow: hidden; color: var(--ak-ink-secondary); font-size: 0.75rem; font-variant-numeric: tabular-nums;
+  line-height: 1.35; text-overflow: ellipsis; white-space: nowrap;
 }
 
 /* 移除钮：20px 圆，右上角外溢；悬停、键盘聚焦时出现，触屏常显。不压在图片内容上。 */
@@ -176,18 +164,11 @@ video.ak-attachment__image { opacity: 1; }
 /* 上传中：整卡骨架闪烁（Desktop 不显示百分比），文字与图片隐去一半。 */
 .ak-attachment[aria-busy="true"] .ak-attachment__surface > * { opacity: 0.45; }
 .ak-attachment__skeleton {
-  position: absolute;
-  inset: 0;
-  border-radius: inherit;
-  pointer-events: none;
+  position: absolute; inset: 0; border-radius: inherit; pointer-events: none;
   background: linear-gradient(100deg, transparent 30%, color-mix(in oklab, var(--ak-ink-primary) 7%, transparent) 50%, transparent 70%);
-  background-size: 200% 100%;
-  animation: ak-attachment-shimmer 1.2s linear infinite;
+  background-size: 200% 100%; animation: ak-attachment-shimmer 1.2s linear infinite;
 }
-@keyframes ak-attachment-shimmer {
-  from { background-position: 150% 0; }
-  to { background-position: -50% 0; }
-}
+@keyframes ak-attachment-shimmer { from { background-position: 150% 0; } to { background-position: -50% 0; } }
 
 /* —— 已发送附件条：用户消息在气泡上方右对齐，回复里左对齐；媒体保持原比例，之后另起一行排文件卡 —— */
 .ak-attachment-strip {
@@ -201,25 +182,23 @@ video.ak-attachment__image { opacity: 1; }
 .timeline-input > .ak-attachment-strip { justify-content: flex-end; margin-inline-start: auto; }
 .agent-content .ak-attachment-strip { margin-block: 10px; }
 .ak-attachment-strip__break { flex: 0 0 100%; height: 0; }
-.ak-attachment-strip .ak-attachment.is-media { width: auto; height: auto; }
-.ak-attachment-strip .ak-attachment.is-media .ak-attachment__surface { display: block; width: auto; height: auto; background: var(--ak-paper-sheet); }
-/* 加载前先占 120 方块（最小尺寸），加载后按原比例：单张最大 480×320，放不下就等比缩小，不裁切。 */
+/* 媒体卡可以收缩到附件条宽度：窄屏上单张 480 宽的图跟着阅读区等比缩小，不越出左右边。 */
+.ak-attachment-strip .ak-attachment.is-media { flex: 0 1 auto; min-width: 0; max-width: 100%; width: auto; height: auto; }
+.ak-attachment-strip .ak-attachment.is-media .ak-attachment__surface { display: block; width: auto; max-width: 100%; height: auto; background: var(--ak-paper-sheet); }
+/* 加载后按原比例：单张最大 480×320，放不下就等比缩小，不裁切；只在加载前先占 120 方块，极端比例的图加载后不再垫空白。 */
 .ak-attachment-strip .ak-attachment__image {
   display: block;
   width: auto;
   height: auto;
-  min-width: 120px;
-  min-height: 120px;
   max-width: min(100%, 480px);
   max-height: 320px;
   object-fit: contain;
 }
-.ak-attachment-strip[data-multi] .ak-attachment__image {
-  min-width: 80px;
-  min-height: 80px;
-  max-width: min(240px, 40vw);
-  max-height: 160px;
-}
+.ak-attachment-strip img.ak-attachment__image:not([data-loaded]),
+.ak-attachment-strip video.ak-attachment__image { min-width: 120px; min-height: 120px; }
+.ak-attachment-strip[data-multi] .ak-attachment__image { max-width: min(240px, 40vw); max-height: 160px; }
+.ak-attachment-strip[data-multi] img.ak-attachment__image:not([data-loaded]),
+.ak-attachment-strip[data-multi] video.ak-attachment__image { min-width: 80px; min-height: 80px; }
 
 /* —— 输入卡托盘 —— */
 .composer-tray {
