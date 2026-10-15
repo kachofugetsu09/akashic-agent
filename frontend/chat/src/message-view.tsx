@@ -841,7 +841,6 @@ function MediaViewer({ url, label, kind, onClose, returnFocus }: {
   </DialogContent>;
 }
 
-// 回复正文里的图片（Markdown 图片，两条渲染路径都是普通 img）点开进同一个查看器。document 级委托，不改渲染节点；链接、按钮里的图片照旧。
 // 正文图片（两条 Markdown 渲染路径都是普通 img）点开进同一个查看器。document 级委托不改渲染节点；
 // 键盘入口由这里补：可预览的图片设为可聚焦、按钮语义，Enter/空格打开，关闭后焦点回到这张图。
 export function ReplyImageViewer() {
@@ -854,8 +853,9 @@ export function ReplyImageViewer() {
     const open = (target: HTMLImageElement) => setImage({ url: target.currentSrc || target.src, label: target.alt || "图片", trigger: target });
     const mark = (root: ParentNode) => {
       for (const img of root.querySelectorAll("img")) {
-        if (!previewable(img) || img.hasAttribute("tabindex")) continue;
-        img.tabIndex = 0;
+        // markstream 的图片自带 tabindex="0"：焦点属性与按钮语义分开补，不因已可聚焦就跳过角色和标签。
+        if (!previewable(img) || img.getAttribute("role") === "button") continue;
+        if (!img.hasAttribute("tabindex")) img.tabIndex = 0;
         img.setAttribute("role", "button");
         img.setAttribute("aria-label", `查看图片：${img.alt || "图片"}`);
       }

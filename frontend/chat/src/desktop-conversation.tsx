@@ -436,6 +436,7 @@ export const DesktopTimelineMessages = React.memo(function DesktopTimelineMessag
   // 草稿正文只更新活动行；身份/活动阶段变化才让稳定输入槽位重新读取事实。
   return previous.messages === next.messages
     && previous.status === next.status
+    && previous.replySynced === next.replySynced
     && previous.refresh === next.refresh
     && previous.messageElementsRef === next.messageElementsRef
     && previous.copiedMessageId === next.copiedMessageId

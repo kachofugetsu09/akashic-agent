@@ -673,8 +673,12 @@
   font-size: 0.875em;
   line-height: inherit;
 }
-/* 脚注正文是块级 p，返回箭头会掉到下一行：改成行内，箭头跟在句末，和静态路径一样。 */
+/* 脚注正文是块级 p，返回箭头会掉到下一行：只把紧挨箭头的那一段改成行内，箭头跟在句末，和静态路径一样；
+   多段脚注的前几段、列表、代码保持块结构，段间留半行。 */
 :is(.agent-content, .process-markdown, .user-bubble) .markdown-reading .footnote-node .paragraph-node {
+  margin: 0 0 0.5em;
+}
+:is(.agent-content, .process-markdown, .user-bubble) .markdown-reading .footnote-node .paragraph-node:has(+ .footnote-anchor) {
   display: inline;
   margin: 0;
 }
