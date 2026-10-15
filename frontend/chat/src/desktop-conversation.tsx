@@ -311,7 +311,7 @@ function DaySeparator({ label }: { label: string }) {
 }
 
 /** 展示完整日志，引用只定位原消息，不给工具结果补造助手身份。 */
-export const DesktopTimelineMessages = React.memo(function DesktopTimelineMessages({ messages, activities, refresh = 0, status, messageElementsRef, copiedMessageId, onReply, onCopied, onError }: {
+export const DesktopTimelineMessages = React.memo(function DesktopTimelineMessages({ messages, activities, refresh = 0, status, messageElementsRef, copiedMessageId, onReply, onEditInput, onCopied, onError }: {
   messages: TimelineMessage[];
   activities: ReplyActivity[];
   refresh?: number;
@@ -319,6 +319,7 @@ export const DesktopTimelineMessages = React.memo(function DesktopTimelineMessag
   messageElementsRef: React.RefObject<Map<string, HTMLDivElement>>;
   copiedMessageId: string;
   onReply: (reply: TimelineReply) => void;
+  onEditInput: (text: string) => void;
   onCopied: (id: string) => void;
   onError: (error: unknown) => void;
 }) {
@@ -397,6 +398,8 @@ export const DesktopTimelineMessages = React.memo(function DesktopTimelineMessag
         canReply={status === "idle" && (message.body.kind === "input" || message.body.kind === "output")}
         canCopy={Boolean(timelineText(message))} copied={copiedMessageId === message.id}
         onReply={() => onReply(timelineReply(message))}
+        onEdit={message.body.kind === "input" && message.author === "user" && timelineText(message)
+          ? () => onEditInput(timelineText(message)) : undefined}
         onCopy={() => { void copyText(timelineText(message)).then(() => onCopied(message.id)).catch(onError); }} />
     </div> : null}
     {message.body.kind === "input" && message.author === "user" ? <div className="message-row agent-row">
@@ -414,6 +417,7 @@ export const DesktopTimelineMessages = React.memo(function DesktopTimelineMessag
     && previous.messageElementsRef === next.messageElementsRef
     && previous.copiedMessageId === next.copiedMessageId
     && previous.onReply === next.onReply
+    && previous.onEditInput === next.onEditInput
     && previous.onCopied === next.onCopied
     && previous.onError === next.onError
     && previous.activities.length === next.activities.length

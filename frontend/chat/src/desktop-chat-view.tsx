@@ -33,6 +33,8 @@ export function DesktopChatView({ embeddedShell, controller }: DesktopChatViewPr
   const theme = useTheme();
   const rail = useSidebarRail();
   const composerApi = useRef<ComposerApi | null>(null);
+  // 改一改再问：原文接在已有草稿之后，不覆盖用户正在写的内容。
+  const editInput = useCallback((text: string) => composerApi.current?.insertDraft(text, { append: true }), []);
   const replyGroups = useMemo(() => timelineReplyGroups(controller.timelineMessages, controller.replyActivities), [controller.timelineMessages, controller.replyActivities]);
   const inputStarts = useMemo(() => timelineInputStarts(controller.timelineMessages), [controller.timelineMessages]);
   const refreshTokens = timelineSourceRefreshTokens(controller.timelineMessages, controller.replyActivities, controller.timelineRefresh);
@@ -119,7 +121,7 @@ export function DesktopChatView({ embeddedShell, controller }: DesktopChatViewPr
                 />
                 <DesktopTimelineMessages messages={timelineMessages} activities={replyActivities} refresh={controller.timelineRefresh} status={status}
                   messageElementsRef={messageElementsRef} copiedMessageId={copiedMessageId}
-                  onReply={handleReplyMessage} onCopied={handleCopiedMessage} onError={reportError} />
+                  onReply={handleReplyMessage} onEditInput={editInput} onCopied={handleCopiedMessage} onError={reportError} />
                 <DesktopConversationMessages
                   messages={messages} status={status}
                   carryDayKey={timelineMessages.length

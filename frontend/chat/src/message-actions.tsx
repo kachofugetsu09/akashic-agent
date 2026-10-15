@@ -1,4 +1,4 @@
-import { Check, Copy, Reply, X } from "lucide-react";
+import { Check, Copy, PencilLine, Reply, X } from "lucide-react";
 
 export type ReplyRole = "user" | "assistant";
 
@@ -8,15 +8,23 @@ export function SharedMessageActions({
   copied,
   onReply,
   onCopy,
+  onEdit,
 }: {
   canReply: boolean;
   canCopy: boolean;
   copied: boolean;
   onReply: () => void;
   onCopy: () => void;
+  /** 只给用户自己的提问：把原文放回输入框，改一改再问。 */
+  onEdit?: () => void;
 }) {
   return (
     <div className="shared-message-actions">
+      {onEdit ? (
+        <button type="button" onClick={onEdit} aria-label="放回输入框编辑" title="放回输入框编辑">
+          <PencilLine size={16} aria-hidden="true" />
+        </button>
+      ) : null}
       {canReply ? (
         <button type="button" onClick={onReply} aria-label="引用此消息">
           <Reply size={16} aria-hidden="true" />

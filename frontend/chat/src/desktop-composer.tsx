@@ -20,7 +20,8 @@ export type ComposerFile = { filename?: string; mediaType?: string; url?: string
 
 /** 空态推荐等外部入口写入草稿的窄接口。 */
 export interface ComposerApi {
-  insertDraft: (text: string) => void;
+  /** append：接在已有草稿之后（空行分隔），否则替换。 */
+  insertDraft: (text: string, options?: { append?: boolean }) => void;
 }
 
 /** Own transient editor state while the app controller owns transport and durable chat state. */
@@ -74,18 +75,6 @@ export const DesktopComposer = memo(function DesktopComposer({
   }, []);
   const setInput = useCallback((text: string) => setDraft(draftKey, text), [draftKey, setDraft]);
   const textareaRef = useRef<HTMLTextAreaElement | null>(null);
-  useImperativeHandle(ref, () => ({
-    // 写入后把焦点与光标放到草稿末尾，用户接着补完即可。
-    insertDraft: (text) => {
-      setDraft(draftKey, text);
-      window.requestAnimationFrame(() => {
-        const textarea = textareaRef.current;
-        if (!textarea) return;
-        textarea.focus();
-        textarea.setSelectionRange(textarea.value.length, textarea.value.length);
-      });
-    },
-  }), [draftKey, setDraft]);
   useEffect(() => {
     if (autoFocus && chatReady) textareaRef.current?.focus();
   }, [autoFocus, chatReady, draftKey]);
@@ -100,6 +89,21 @@ export const DesktopComposer = memo(function DesktopComposer({
       () => textarea ? textarea.scrollHeight > textarea.clientHeight : false,
     ));
   }, []);
+  useImperativeHandle(ref, () => ({
+    // 写入后把焦点与光标放到草稿末尾，用户接着补完即可。
+    insertDraft: (text, options) => {
+      const current = options?.append ? drafts.current.get(draftKey)?.trim() : "";
+      setDraft(draftKey, current ? `${current}\n\n${text}` : text);
+      window.requestAnimationFrame(() => {
+        const textarea = textareaRef.current;
+        if (!textarea) return;
+        textarea.focus();
+        textarea.setSelectionRange(textarea.value.length, textarea.value.length);
+        // 放回的原文可能有多行：按实际溢出展开，与手动输入同一判定。
+        syncExpanded(textarea, textarea.value);
+      });
+    },
+  }), [draftKey, setDraft, syncExpanded]);
   const onInputChange = useCallback((event: ChangeEvent<HTMLTextAreaElement>) => {
     const next = event.target.value;
     setInput(next);
