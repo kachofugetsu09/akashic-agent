@@ -40,6 +40,8 @@
 
 新组件不得新增 `--md-sys-*` 直接依赖（旧 namespace 是迁移期 transport alias）；不得为设想中的组件提前发布 token；同一几何值出现在两处时，先收进上表的某个 owner。
 
+混色一律 `color-mix(in oklab, …)`，不用 `in oklch`：Chromium 混两个近中性色（暖灰墨色、纸色、透明）时把结果色相记成 `none`，按 0° 渲染，暖灰被染成粉（浅色引用条曾渲染成 242,233,235，深色发丝线偏品红）。oklab 不插值色相，与透明混、浅色调的结果与设计意图一致；真要在两个高彩度色之间保彩度时再单独评估。
+
 强制颜色（Windows 高对比度，`@media (forced-colors: active)`）下背景色会被系统统一替换：只靠底色表达的状态必须另有表达。规则集中在 styles.css 末尾一个块里：品牌标记、会话状态点与旋涡、轮次刻度、后台任务点用 `forced-color-adjust: none` + `CanvasText`（当前轮刻度 `Highlight`）保留形状；当前会话行、当前项目、选中的模型用 `Highlight` 内描边；用户气泡加 `CanvasText` 细边框；输入卡内层不再画第二圈描边，聚焦由外框的 `Highlight` 描边表达。新增只靠底色区分的状态时同步加进这个块。
 
 ## 3. 布局与对齐合同

@@ -56,7 +56,7 @@
 
 .conversation-destination:hover,
 .conversation-destination:focus-visible {
-  background: color-mix(in oklch, var(--ak-ink-primary) 5%, transparent);
+  background: color-mix(in oklab, var(--ak-ink-primary) 5%, transparent);
 }
 
 .conversation-destination.active {
@@ -198,7 +198,7 @@
 
 .conversation-session:hover,
 .conversation-session:focus-visible {
-  background: color-mix(in oklch, var(--ak-ink-primary) 5%, transparent);
+  background: color-mix(in oklab, var(--ak-ink-primary) 5%, transparent);
 }
 
 .conversation-session:active {

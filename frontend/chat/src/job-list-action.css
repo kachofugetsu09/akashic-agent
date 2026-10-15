@@ -16,7 +16,7 @@
 .job-list__dot[data-status="timeout"] { background: var(--ak-color-status-error); opacity: 1; }
 .job-list__dot[data-status="killed"] { background: var(--ak-color-status-warning); opacity: 1; }
 
-.job-list__panel { position: absolute; z-index: 20; inset-block-start: calc(100% + 4px); inset-inline-end: 0; inline-size: min(24rem, calc(100vw - 32px)); max-block-size: min(26rem, calc(100dvh - 8rem)); overflow: auto; padding: 6px; border: 1px solid var(--chat-line); border-radius: 10px; background: var(--ak-paper-canvas); box-shadow: 0 8px 24px color-mix(in oklch, var(--ak-ink-primary) 12%, transparent); color: var(--chat-muted); }
+.job-list__panel { position: absolute; z-index: 20; inset-block-start: calc(100% + 4px); inset-inline-end: 0; inline-size: min(24rem, calc(100vw - 32px)); max-block-size: min(26rem, calc(100dvh - 8rem)); overflow: auto; padding: 6px; border: 1px solid var(--chat-line); border-radius: 10px; background: var(--ak-paper-canvas); box-shadow: 0 8px 24px color-mix(in oklab, var(--ak-ink-primary) 12%, transparent); color: var(--chat-muted); }
 .job-list__panel ul { display: grid; gap: 2px; margin: 0; padding: 0; list-style: none; }
 
 /* 分组标题：进行中只是标签；已结束可折叠，右侧是清空。 */

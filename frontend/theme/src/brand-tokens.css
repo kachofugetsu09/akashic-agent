@@ -21,12 +21,12 @@
   --ak-ink-image-filter: brightness(0);
 
   /* Rules: structure and focus, never decorative elevation. */
-  --ak-rule-subtle: color-mix(in oklch, var(--ak-ink-primary) 10%, transparent);
+  --ak-rule-subtle: color-mix(in oklab, var(--ak-ink-primary) 10%, transparent);
   --ak-rule-default: var(--ak-color-border-default);
   --ak-rule-strong: var(--ak-color-border-strong);
   --ak-rule-focus: var(--ak-color-action-primary);
   /* 柔光环向纸面混色而不是向固定深色混色，暗色主题下不再偏黑。 */
-  --ak-rule-focus-soft: color-mix(in oklch, var(--ak-rule-focus) 55%, var(--ak-paper-canvas));
+  --ak-rule-focus-soft: color-mix(in oklab, var(--ak-rule-focus) 55%, var(--ak-paper-canvas));
 
   /* Typography: reading and technical content stay visibly distinct. */
   --ak-type-reading: var(--md-ref-typeface-plain);
