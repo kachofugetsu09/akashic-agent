@@ -385,6 +385,10 @@
 .marquee__content {
   display: inline-block;
   white-space: nowrap;
+}
+
+/* 位移与遮罩只给放不下的标题：放得下的行不建合成层，文字保持普通灰度抗锯齿。 */
+.marquee.is-truncated > .marquee__content {
   transform: translateX(clamp(calc(-1 * var(--marquee-travel, 0px)), calc(-1 * var(--marquee-pos)), 0px));
 }
 
