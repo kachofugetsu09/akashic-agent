@@ -28,6 +28,9 @@ export function readKaomojiLiteral(source: string, offset: number): string | und
   const decorated = readDecoratedKaomojiLiteral(source, offset);
   if (decorated) return decorated;
 
+  const armed = readArmedKaomojiLiteral(source, offset);
+  if (armed) return armed;
+
   const opener = source[offset];
   if (opener !== "(" && opener !== "（") {
     const bare = BARE_ASCII_FACE.exec(source.slice(offset))?.[0];
@@ -57,7 +60,8 @@ export function readKaomojiLiteral(source: string, offset: number): string | und
   const closer = opener === "(" ? ")" : "）";
   const limit = Math.min(source.length, offset + MAX_KAOMOJI_LENGTH);
   const end = source.indexOf(closer, offset + 1);
-  if (end < 0 || end >= limit) return undefined;
+  if (end < 0) return isOpenFaceTail(source.slice(offset)) ? source.slice(offset) : undefined;
+  if (end >= limit) return undefined;
 
   const inner = source.slice(offset + 1, end);
   if (!inner || inner.includes("\n") || !MARKDOWN_OPERATOR.test(inner)) return undefined;
@@ -67,6 +71,95 @@ export function readKaomojiLiteral(source: string, offset: number): string | und
     && !/[\p{Script=Han}\p{Script=Hiragana}\p{Script=Katakana}]{2}/u.test(compact);
   if (!FACE_SYMBOL.test(compact) && !ASCII_FACE.test(compact) && !hasShortNonProseFace) return undefined;
   return source.slice(offset, end + 1);
+}
+
+// 手臂包着括号脸：_(:з」∠)_、~\(≧▽≦)/~、\(≧▽≦)/、¯\_(ツ)_/¯。手臂里的 _ ~ * \ 是颜文字的一部分，
+// 不是强调、下标、删除线或 \( 公式的开头；生成中写到一半（脸还没闭合）同样按字面显示。
+const ARMED_FACE = /^(\\_|[~_*]\\|\\|[~_*])[(（]([^()（）\n]{1,30})[)）](\\?_\/|\/[~_*]?|[~_*])?/u;
+const ARMED_FACE_OPEN = /^(\\_|[~_*]\\|\\|[~_*])[(（]([^()（）\n]{1,24})$/u;
+
+function readArmedKaomojiLiteral(source: string, offset: number): string | undefined {
+  // 前一个字符是反斜杠时，这里是被转义的字面字符，交给转义规则
+  if (source[offset - 1] === "\\") return undefined;
+  const rest = source.slice(offset);
+  const closed = ARMED_FACE.exec(rest);
+  if (closed) {
+    const [whole, arm, inner, tail] = closed;
+    const backslashArm = arm.includes("\\");
+    if (!isFaceInner(inner)) return undefined;
+    // 单个 \ 只在右边有 / 手臂时才算脸（\(x\) 是公式）；_ * ~ 手臂要两边都有，否则可能是普通强调
+    if (arm === "\\" && !tail?.startsWith("/")) return undefined;
+    if (!tail && !backslashArm) return undefined;
+    // 脸里没有任何符号（_(注意)_）是强调包着括号，除非手臂带反斜杠（¯\_(ツ)_/¯）
+    if (!backslashArm && !/[^\p{L}\p{N}\s]/u.test(inner)) return undefined;
+    return whole;
+  }
+  const open = ARMED_FACE_OPEN.exec(rest);
+  return open && isFaceInner(open[2]) && /[^\p{L}\p{N}\s]/u.test(open[2]) ? rest : undefined;
+}
+
+// 括号里像一张脸：有脸部符号、ASCII 脸，或是不含连续汉字/假名的短符号串。
+function isFaceInner(inner: string): boolean {
+  const compact = inner.replace(/\s/gu, "");
+  if (!compact || compact.endsWith("\\")) return false;
+  if (/[\p{Script=Han}\p{Script=Hiragana}\p{Script=Katakana}]{2}/u.test(compact)) return false;
+  return FACE_SYMBOL.test(compact) || ASCII_FACE.test(compact) || (compact.length <= 40 && /\P{ASCII}/u.test(compact));
+}
+
+// 生成中括号还没闭合的脸（"(*´▽"）：括号里已有会被当成 Markdown 的符号和脸部符号时先按字面显示，闭合后不跳。
+function isOpenFaceTail(tail: string): boolean {
+  const inner = tail.slice(1);
+  return tail.length <= 24 && !inner.includes("\n") && MARKDOWN_OPERATOR.test(inner) && isFaceInner(inner);
+}
+
+/** 静态路径（micromark）没有可插的行内规则：解析前用同一套判断找出颜文字，把其中的 Markdown 符号转义成字面字符。
+ *  围栏代码与行内代码原样跳过。两条渲染路径因此同一结果，生成中正常、落定后不会再变成斜体。 */
+export function protectKaomojiLiterals(markdown: string): string {
+  let fence: string | null = null;
+  return markdown.split("\n").map((line) => {
+    const open = /^ {0,3}(`{3,}|~{3,})/u.exec(line);
+    if (fence !== null) {
+      if (open && open[1][0] === fence[0] && open[1].length >= fence.length && /^ {0,3}[`~]+[ \t]*$/u.test(line)) fence = null;
+      return line;
+    }
+    if (open) {
+      fence = open[1];
+      return line;
+    }
+    return protectLine(line);
+  }).join("\n");
+}
+
+const STATIC_TRIGGER = /[(（\\*_^~+=`-]/u;
+
+function protectLine(line: string): string {
+  let out = "";
+  let index = 0;
+  while (index < line.length) {
+    const character = line[index];
+    // 1. 行内代码整段照抄
+    if (character === "`") {
+      const run = /^`+/u.exec(line.slice(index))![0];
+      const close = line.indexOf(run, index + run.length);
+      if (close > 0) {
+        out += line.slice(index, close + run.length);
+        index = close + run.length;
+        continue;
+      }
+    }
+    // 2. 命中颜文字：转义其中的 Markdown 符号
+    const literal = STATIC_TRIGGER.test(character) ? readKaomojiLiteral(line, index) : undefined;
+    if (literal) {
+      out += literal.replace(/[\\`*_~[\]<>^=+#|-]/gu, "\\$&");
+      index += literal.length;
+      continue;
+    }
+    // 3. 原有转义成对照抄，不拆开
+    const step = character === "\\" ? 2 : 1;
+    out += line.slice(index, index + step);
+    index += step;
+  }
+  return out;
 }
 
 /** Protect a short standalone decorated face without consuming surrounding prose Markdown. */
