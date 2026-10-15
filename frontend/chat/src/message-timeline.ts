@@ -290,6 +290,13 @@ export function isTimelinePartVisible(part: TimelinePart): boolean {
   return true;
 }
 
+// 过程与指针类 part（工具调用、思考、上下文提示、回复引用）不算正文；附件与其它可见 part 都算。
+const PROCESS_PARTS = new Set(["tool_call", "model.facts", "context.notice", "reply_ref"]);
+function hasReplyBody(message: TimelineMessage): boolean {
+  if (message.attachments.length > 0) return true;
+  return message.body.kind !== "control" && message.body.parts.some((part) => !PROCESS_PARTS.has(part.kind) && isTimelinePartVisible(part));
+}
+
 export function isTimelineMessageVisible(message: TimelineMessage): boolean {
   return message.attachments.length > 0 || message.body.kind === "control"
     || message.body.kind === "tool_result" || message.body.parts.some(isTimelinePartVisible);
@@ -402,8 +409,8 @@ export function timelineReplyGroups(messages: TimelineMessage[], activities: Rep
         if (ending?.body.kind === "output" && ending.body.finish === "continue") joined.add(ending.id);
       }
       // 停止或暂停收尾、只有过程没有正文的输出：时间挂在紧随其后的"已暂停"上，空白处不再挂一行时间与指向空消息的操作。
-      if (body.kind === "control" && ending?.body.kind === "output"
-        && !ending.body.parts.some((part) => part.kind === "text" && isTimelinePartVisible(part))) joined.add(ending.id);
+      // 图片、artifact、插件数据都算正文：带着它们的输出照常保留时间与"引用此消息"。
+      if (body.kind === "control" && ending?.body.kind === "output" && !hasReplyBody(ending)) joined.add(ending.id);
       pending.set(key, members.filter((item) => item.seq > throughSeq));
     }
   }

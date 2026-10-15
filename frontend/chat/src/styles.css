@@ -2049,9 +2049,20 @@ form.composer:focus-within [data-slot="input-group"] {
   inset-inline: 0;
 }
 
-/* 窄屏底距只有 8px 放不下，停止钮与"运行中"已说明在生成；矮屏触屏输入区回到文档流，也不显示。 */
+/* 窄屏底距只有 8px 放不下，停止钮与"运行中"已说明在生成；矮屏触屏输入区回到文档流，也不显示。
+   只在视觉上收起（不用 display:none）：开始与终态的 aria-live 播报仍要留在无障碍树里。 */
 @media (max-width: 36rem), (max-height: 30rem) and (pointer: coarse) {
-  .composer-stats-line { display: none; }
+  .composer-stats-line,
+  .composer-wrap > .composer-stats-line {
+    position: absolute;
+    inset: auto;
+    width: 1px;
+    height: 1px;
+    padding: 0;
+    overflow: hidden;
+    clip-path: inset(50%);
+    white-space: nowrap;
+  }
 }
 
 /* 终态摘要 3 秒后淡出收纳；reduced-motion 下过渡归零，直接隐藏。 */
