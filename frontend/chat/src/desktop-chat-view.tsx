@@ -170,6 +170,13 @@ export function DesktopChatView({ embeddedShell, controller }: DesktopChatViewPr
 }
 
 // 滚动到顶部附近时自动补载更早消息；文字按钮保留给键盘与不触发滚动的场景。
+// 隐藏行（如被归组的工具结果）没有 DOM，取第一条实际渲染的消息作锚。
+function pinFirstMessage(scroller: HTMLElement): { id: string; top: number } | null {
+  const anchor = scroller.querySelector<HTMLElement>("[data-message-id]");
+  const id = anchor?.dataset.messageId;
+  return anchor && id ? { id, top: anchor.getBoundingClientRect().top - scroller.getBoundingClientRect().top } : null;
+}
+
 function DesktopHistoryLoader({
   firstMessageId,
   hasMore,
@@ -184,34 +191,31 @@ function DesktopHistoryLoader({
   const { scrollRef } = useStickToBottomContext();
   const rowRef = useRef<HTMLDivElement>(null);
   const busyRef = useRef(false);
-  const latest = useRef({ onLoadOlder });
-  latest.current = { onLoadOlder };
+  const latest = useRef({ onLoadOlder, loading });
+  latest.current = { onLoadOlder, loading };
   // 首条消息在滚动区里的最新位置；请求期间用户继续滚动也随之更新。
   const pinRef = useRef<{ id: string; top: number } | null>(null);
 
   const load = useCallback(async () => {
     if (busyRef.current) return;
     busyRef.current = true;
+    const scroller = scrollRef.current;
+    if (scroller) pinRef.current = pinFirstMessage(scroller);
     try {
       await latest.current.onLoadOlder();
     } finally {
       busyRef.current = false;
     }
-  }, []);
+  }, [scrollRef]);
 
-  // 1. 每次滚动记下原首条消息离滚动区顶部的距离，而不是只在请求发出时记一次。
+  // 1. 请求期间每次滚动都更新原首条消息离滚动区顶部的距离，而不是只在请求发出时记一次。
+  //    没有请求时不读：滚动事件里同步读几何会逐次强制布局，长会话滚动时是主要的脚本开销。
   useEffect(() => {
     const scroller = scrollRef.current;
     if (!scroller || !firstMessageId) return;
-    // 隐藏行（如被归组的工具结果）没有 DOM，取第一条实际渲染的消息作锚。
     const record = () => {
-      const anchor = scroller.querySelector<HTMLElement>("[data-message-id]");
-      const id = anchor?.dataset.messageId;
-      pinRef.current = anchor && id
-        ? { id, top: anchor.getBoundingClientRect().top - scroller.getBoundingClientRect().top }
-        : null;
+      if (busyRef.current || latest.current.loading) pinRef.current = pinFirstMessage(scroller);
     };
-    record();
     scroller.addEventListener("scroll", record, { passive: true });
     return () => scroller.removeEventListener("scroll", record);
   }, [firstMessageId, scrollRef]);
