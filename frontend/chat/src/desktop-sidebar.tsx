@@ -205,13 +205,16 @@ function useSidebarShortcuts(sidebarRef: RefObject<HTMLElement | null>, searchRe
   onNewChat: () => void, onShortcuts: () => void) {
   useEffect(() => {
     const onKeyDown = (event: KeyboardEvent) => {
+      // 抽屉里那份侧栏不接（抽屉本身是对话框）；常驻侧栏在紧凑断点被隐藏时仍接新会话与快捷键面板，
+      // 搜索要先有可见的搜索框，交给抽屉（compact-navigation.tsx）打开后聚焦。
       const sidebar = sidebarRef.current;
-      if (!sidebar || sidebar.closest("[role='dialog']") || sidebar.offsetParent === null) return;
+      if (!sidebar || sidebar.closest("[role='dialog']")) return;
       if (!(event.metaKey || event.ctrlKey) || event.altKey || event.isComposing) return;
       // 对话框、菜单、选择器打开时按键属于它们，不把焦点抢到背后或在背后开新会话。
       if (document.querySelector("[role='dialog'], [role='menu'], [role='listbox'], [data-radix-popper-content-wrapper]")) return;
       const key = event.key.toLowerCase();
       if (key === "k" && !event.shiftKey) {
+        if (sidebar.offsetParent === null) return;
         event.preventDefault();
         searchRef.current?.focus();
         searchRef.current?.select();
