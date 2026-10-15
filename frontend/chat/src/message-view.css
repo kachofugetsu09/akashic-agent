@@ -634,8 +634,9 @@
 /* 条件与 COMPACT_SHELL 一致：含横屏触屏的矮视口。 */
 @media (max-width: 820px), (max-height: 30rem) and (pointer: coarse) {
   :is(.agent-content, .process-markdown, .user-bubble) .markdown-reading :where(th, td) { min-width: 8.5em; }
-  /* 三列以内本来放得下（390 宽每列约 6 个字）：不为每列 8.5em 的下限去横滚，只防把列挤成两三个字。 */
-  :is(.agent-content, .process-markdown, .user-bubble) .markdown-reading table:not(:has(tr > :nth-child(4))) :where(th, td) { min-width: 5em; }
+  /* 三列以内本来放得下（390 宽每列约 6 个字）：不为每列 8.5em 的下限去横滚，只防把列挤成两三个字。
+     有合并单元格时每行元素数不等于逻辑列数，保留原下限。 */
+  :is(.agent-content, .process-markdown, .user-bubble) .markdown-reading table:not(:has(tr > :nth-child(4), [colspan])) :where(th, td) { min-width: 5em; }
 }
 
 :is(.agent-content, .process-markdown, .user-bubble) .markdown-reading th {
@@ -1212,16 +1213,16 @@ button.tool-step-summary:active {
   user-select: text;
 }
 
-/* 路径摘要：目录的收缩权重远大于文件名，放不下时先把目录收成省略号，文件名最后才让。 */
-.tool-step-description--path { display: flex; }
-.tool-step-path-dir,
-.tool-step-path-file {
-  min-width: 0;
-  overflow: hidden;
-  text-overflow: ellipsis;
+/* 路径摘要：整段放进 RTL 行、内容按 LTR 隔离，省略号落在左侧——放不下时先让出最外层目录，文件名最后才让；
+   仍是一个文本节点，选中复制得到原样的一行路径。 */
+.tool-step-description--path {
+  direction: rtl;
+  text-align: left;
 }
-.tool-step-path-dir { flex: 0 100000 auto; }
-.tool-step-path-file { flex: 0 1 auto; }
+.tool-step-description--path > bdi {
+  direction: ltr;
+  unicode-bidi: isolate;
+}
 
 .tool-step-state {
   font-size: 0.6875rem;

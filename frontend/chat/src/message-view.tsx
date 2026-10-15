@@ -1346,18 +1346,18 @@ function ToolStepSummary({
 }
 
 // 路径摘要放不下时先收目录、保住文件名："plugins/runtime_di…/profiling.py"，而不是把文件名截成"profilin…"。
+// 路径保持一个文本节点（拆成多个 flex 子项时，选中复制会在目录与文件名之间插入换行）；
+// 放不下时从左侧省略，离文件最近的目录与文件名留到最后。title 是工具参数里的原始路径。
 function ToolDescriptionText({ description }: { description: ToolDescription }) {
   if (description.kind !== "path") return <span className="tool-step-description">{description.text}</span>;
-  const cut = description.text.lastIndexOf("/") + 1;
   return (
-    <span className="tool-step-description tool-step-description--path" title={description.text}>
-      {cut > 0 ? <span className="tool-step-path-dir">{description.text.slice(0, cut)}</span> : null}
-      <span className="tool-step-path-file">{description.text.slice(cut)}</span>
+    <span className="tool-step-description tool-step-description--path" title={description.full}>
+      <bdi>{description.text}</bdi>
     </span>
   );
 }
 
-type ToolDescription = { kind: "text" | "path"; text: string };
+type ToolDescription = { kind: "text"; text: string } | { kind: "path"; text: string; full: string };
 
 // 工具行摘要：优先模型写的 description；没有时取调用目标（文件、网址、检索词、命令），
 // 不展开也知道读了哪个文件、搜了什么——只有工具名的一行等于没说。
@@ -1368,7 +1368,7 @@ function toolDescription(input: unknown): ToolDescription {
   const args = input as Record<string, unknown>;
   const text = (name: string) => typeof args[name] === "string" ? (args[name] as string).trim() : "";
   if (text("description")) return { kind: "text", text: text("description") };
-  if (text("path")) return { kind: "path", text: text("path").split(/[\\/]/u).filter(Boolean).slice(-3).join("/") };
+  if (text("path")) return { kind: "path", text: text("path").split(/[\\/]/u).filter(Boolean).slice(-3).join("/"), full: text("path") };
   if (text("url")) return { kind: "text", text: text("url").replace(/^https?:\/\//u, "") };
   if (text("query")) return { kind: "text", text: text("query") };
   return { kind: "text", text: text("command").split("\n")[0] ?? "" };

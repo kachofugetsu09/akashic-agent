@@ -104,15 +104,20 @@ const renderAttachmentImage = (
   isGrid: boolean
 ) =>
   isGrid ? (
-    // 与视频同理：浏览器解不了的图（HEIC、损坏文件）不露破图图标和溢出的 alt，垫上图片图标与文件名，解码失败时撤掉 img。
-    <span className="relative grid size-full content-center justify-items-center gap-1">
-      <ImageIcon className="size-4 text-muted-foreground" />
-      {filename ? <span className="max-w-full truncate px-2 text-xs">{filename}</span> : null}
+    // 与视频同理：浏览器解不了的图（HEIC、损坏文件）不露破图图标和溢出的 alt，垫上图片图标与文件名，解码失败时撤掉 img；
+    // 解码成功就撤掉垫底，透明 PNG、贴纸的 alpha 区域不透出图标与文件名。
+    <span className="group relative grid size-full content-center justify-items-center gap-1">
+      <ImageIcon className="size-4 text-muted-foreground group-data-[loaded]:invisible" />
+      {filename ? <span className="max-w-full truncate px-2 text-xs group-data-[loaded]:invisible">{filename}</span> : null}
       <img
         alt={filename || "图片"}
         className="absolute inset-0 size-full object-cover"
         height={96}
-        onError={(event) => { event.currentTarget.style.display = "none"; }}
+        onError={(event) => {
+          event.currentTarget.style.display = "none";
+          delete event.currentTarget.parentElement?.dataset.loaded;
+        }}
+        onLoad={(event) => { event.currentTarget.parentElement?.setAttribute("data-loaded", ""); }}
         src={url}
         width={96}
       />
