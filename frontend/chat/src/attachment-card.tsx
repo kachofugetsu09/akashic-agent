@@ -97,6 +97,8 @@ export interface AttachmentCardProps {
   pending?: boolean;
   /** 点开：媒体走查看器（mediaTrigger 写 data-media-*），文件交给调用方的预览。 */
   onOpen?: () => void;
+  /** 读屏名里点开动作的动词：预览文本、下载其它文件。 */
+  openVerb?: string;
   mediaTrigger?: Record<string, string>;
   onRemove?: () => void;
   /** 粘贴卡还原成输入框里的文字。 */
@@ -105,7 +107,7 @@ export interface AttachmentCardProps {
   style?: CSSProperties;
 }
 
-export function AttachmentCard({ data, pending = false, onOpen, mediaTrigger, onRemove, onEdit, onSurfaceKeyDown, style }: AttachmentCardProps) {
+export function AttachmentCard({ data, pending = false, onOpen, openVerb = "预览", mediaTrigger, onRemove, onEdit, onSurfaceKeyDown, style }: AttachmentCardProps) {
   // 浏览器解不了的图（HEIC、损坏文件）按文件卡显示，写"无法预览"，不露破图。
   const [broken, setBroken] = useState(false);
   const media = (data.kind === "image" || data.kind === "video") && Boolean(data.url) && !broken;
@@ -114,7 +116,7 @@ export function AttachmentCard({ data, pending = false, onOpen, mediaTrigger, on
   return <div className={`ak-attachment ${media ? "is-media" : "is-file"}`} data-kind={data.kind} data-tone={toneOf(data, broken)}
     aria-busy={pending || undefined} style={style}>
     <button type="button" className="ak-attachment__surface" disabled={pending} title={data.name}
-      aria-label={`${media ? "查看 " : onOpen ? "预览 " : ""}${label}${description ? `（${description}）` : ""}`}
+      aria-label={`${media ? "查看 " : onOpen ? `${openVerb} ` : ""}${label}${description ? `（${description}）` : ""}`}
       data-static={!media && !onOpen ? "" : undefined}
       onClick={onOpen} onKeyDown={onSurfaceKeyDown} {...(media ? mediaTrigger : undefined)}>
       {media ? <AttachmentThumb data={data} onBroken={() => setBroken(true)} /> : <>
@@ -148,6 +150,56 @@ function AttachmentThumb({ data, onBroken }: { data: AttachmentCardData; onBroke
   // 加载完成后 200ms 淡入（Desktop 同款），先露底色而不是半张图逐行刷出来。
   return <img className="ak-attachment__image" src={data.url} alt="" draggable={false} decoding="async"
     onLoad={(event) => event.currentTarget.setAttribute("data-loaded", "")} onError={onBroken} />;
+}
+
+// —— 已发送的附件 ——
+
+export interface SentAttachmentItem {
+  id: string;
+  name: string;
+  mediaType?: string;
+  url: string;
+  sizeBytes?: number;
+}
+
+const isMediaKind = (kind: AttachmentCardKind): kind is MediaKind => kind === "image" || kind === "video";
+
+// 已发送附件条（参考 Desktop）：用户消息里放在气泡上方、右对齐，回复里左对齐；图片与录屏排前面并保持原比例
+// （单张最大 480×320，多张每张最宽 240、最高 160，不裁成方块），之后另起一行排文件卡。
+export function SentAttachments({ items, pending = false }: { items: SentAttachmentItem[]; pending?: boolean }) {
+  const preview = useAttachmentPreview();
+  const kinds = items.map((item) => attachmentCardKind(item.mediaType, item.name));
+  const media = items.filter((_, index) => isMediaKind(kinds[index]));
+  const files = items.filter((_, index) => !isMediaKind(kinds[index]));
+  const card = (item: SentAttachmentItem) => <SentAttachment key={item.id} item={item} pending={pending} onPreview={preview.open} />;
+  return <div className="ak-attachment-strip" data-multi={media.length > 1 ? "" : undefined} aria-busy={pending || undefined}>
+    {media.map(card)}
+    {media.length && files.length ? <span className="ak-attachment-strip__break" aria-hidden="true" /> : null}
+    {files.map(card)}
+    {preview.dialog}
+  </div>;
+}
+
+function SentAttachment({ item, pending, onPreview }: {
+  item: SentAttachmentItem;
+  pending: boolean;
+  onPreview: ReturnType<typeof useAttachmentPreview>["open"];
+}) {
+  const kind = attachmentCardKind(item.mediaType, item.name);
+  const media = isMediaKind(kind);
+  const textual = kind === "paste" || (!media && isTextLike(item.mediaType, item.name));
+  // 不能预览的文件点开就下载：卡片上已写全大小与类型，再弹一层说明只是多点一下。
+  const download = () => {
+    const link = document.createElement("a");
+    link.href = item.url;
+    link.download = item.name;
+    link.click();
+  };
+  return <AttachmentCard pending={pending}
+    data={{ id: item.id, name: item.name, kind, mediaType: item.mediaType, url: item.url, sizeBytes: item.sizeBytes }}
+    mediaTrigger={media ? mediaAttributes(item.url, item.name, kind) : undefined}
+    onOpen={media ? undefined : textual ? () => onPreview({ name: item.name, url: item.url, sizeBytes: item.sizeBytes }) : download}
+    openVerb={textual ? "预览" : "下载"} />;
 }
 
 // —— 文本内容：行数、粘贴缩影、预览 ——

@@ -189,6 +189,38 @@ video.ak-attachment__image { opacity: 1; }
   to { background-position: -50% 0; }
 }
 
+/* —— 已发送附件条：用户消息在气泡上方右对齐，回复里左对齐；媒体保持原比例，之后另起一行排文件卡 —— */
+.ak-attachment-strip {
+  display: flex;
+  max-width: min(100%, 34rem);
+  flex-wrap: wrap;
+  align-items: flex-end;
+  gap: 6px;
+}
+.user-row > .ak-attachment-strip,
+.timeline-input > .ak-attachment-strip { justify-content: flex-end; margin-inline-start: auto; }
+.agent-content .ak-attachment-strip { margin-block: 10px; }
+.ak-attachment-strip__break { flex: 0 0 100%; height: 0; }
+.ak-attachment-strip .ak-attachment.is-media { width: auto; height: auto; }
+.ak-attachment-strip .ak-attachment.is-media .ak-attachment__surface { display: block; width: auto; height: auto; background: var(--ak-paper-sheet); }
+/* 加载前先占 120 方块（最小尺寸），加载后按原比例：单张最大 480×320，放不下就等比缩小，不裁切。 */
+.ak-attachment-strip .ak-attachment__image {
+  display: block;
+  width: auto;
+  height: auto;
+  min-width: 120px;
+  min-height: 120px;
+  max-width: min(100%, 480px);
+  max-height: 320px;
+  object-fit: contain;
+}
+.ak-attachment-strip[data-multi] .ak-attachment__image {
+  min-width: 80px;
+  min-height: 80px;
+  max-width: min(240px, 40vw);
+  max-height: 160px;
+}
+
 /* —— 输入卡托盘 —— */
 .composer-tray {
   display: flex;

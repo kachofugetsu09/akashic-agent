@@ -853,10 +853,11 @@ export function useDesktopChatController() {
     const reply = replyTarget;
     // 本地预览先进入消息区；上传完成后换成服务端附件身份。
     setMessages((current) => [...current, {
-      id: clientMessageId, role: "user", content: cleanText || files.map((item) => item.filename || "附件").join("\n"),
+      // 只发附件时不写正文：附件条本身就是这条消息，不再在气泡里重复一遍文件名。
+      id: clientMessageId, role: "user", content: cleanText,
       attachments: files.map((file, index) => ({
         id: `${clientMessageId}:${index}`, type: "file", filename: file.filename,
-        mediaType: file.mediaType || "application/octet-stream", url: file.url || "",
+        mediaType: file.mediaType || "application/octet-stream", url: file.url || "", sizeBytes: file.sizeBytes,
       })),
       blocks: [], createdAt: new Date().toISOString(), canonical: false, delivery: "sending",
     }]);

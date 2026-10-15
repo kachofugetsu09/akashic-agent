@@ -1,13 +1,6 @@
 import { PluginUiSlot } from "./plugin-ui-runtime";
 import { ThinkingPlaceholder } from "./thinking-placeholder";
-import {
-  Attachment,
-  AttachmentFileBody,
-  Attachments,
-  formatBytes,
-  getAttachmentLabel,
-  getMediaCategory,
-} from "@/components/ai-elements/attachments";
+import { SentAttachments, type MediaKind, type SentAttachmentItem } from "./attachment-card";
 import {
   Message,
   MessageContent,
@@ -25,7 +18,7 @@ import {
   DialogContent,
   DialogTitle,
 } from "@/components/ui/dialog";
-import { Brain, Check, ChevronDown, ChevronLeft, ChevronRight, Copy, Download, ExternalLink, Gauge, ImageIcon, Play, Video, Wrench, X, ZoomIn, ZoomOut } from "lucide-react";
+import { Brain, Check, ChevronDown, ChevronLeft, ChevronRight, Copy, Download, ExternalLink, Gauge, Wrench, X, ZoomIn, ZoomOut } from "lucide-react";
 import { useStickToBottomContext } from "use-stick-to-bottom";
 import { MarqueeText } from "./marquee-text";
 import {
@@ -165,14 +158,15 @@ export function ChatMessageView({
   const attachments = attachmentContent !== undefined
     ? attachmentContent
     : message.attachments?.length
-      ? <MessageAttachments attachments={message.attachments} />
+      ? <MessageAttachments attachments={message.attachments} pending={message.delivery === "sending"} />
       : null;
   if (message.role === "user") {
+    // 附件在气泡上方、气泡外（Desktop 同款）：气泡只包文字，只发附件时不留一个空气泡。
     return (
       <Message from="user" className="message-row user-row">
-        <MessageContent className="user-bubble">
+        {attachments}
+        {leadingContent || message.content ? <MessageContent className="user-bubble">
           {leadingContent}
-          {attachments}
           {message.content ? (
             <UserTextClamp enabled>
               <MessageBody
@@ -183,7 +177,7 @@ export function ChatMessageView({
               />
             </UserTextClamp>
           ) : null}
-        </MessageContent>
+        </MessageContent> : null}
       </Message>
     );
   }
@@ -557,20 +551,21 @@ export function TimelineMessageView({ message, lookupMessage, toolResults, onNav
     if (renderAttachment) return renderAttachment(ref);
     if (attachmentResult) return <MessageAttachmentFigure attachment={ref} origin={origin}
       sessionId={message.session_id} messageId={message.id} fallback={fallback} />;
-    return <MessageAttachmentItem attachment={{ id: ref.artifact_id, type: "file",
-      filename: ref.filename ?? "附件", mediaType: ref.media_type ?? "application/octet-stream",
-      url: `/api/chat/artifacts/${encodeURIComponent(ref.artifact_id)}`, sizeBytes: ref.size_bytes }} />;
+    return <SentAttachments items={[timelineAttachmentItem(ref)]} />;
   };
-  // 与实时消息同一个容器（间距、顶对齐）；用户消息附件在正文上方，发出时与刷新后位置一致。
-  const looseAttachments = message.attachments.filter((ref) => !referencedArtifacts.has(ref.artifact_id));
-  // 工具结果插图沿正文宽度展示，不进缩略图容器；组件自带的 ml-auto/w-fit 会把附件推到右侧，这里显式去掉。
-  const looseItems = looseAttachments.map((ref, index) => <Fragment key={`${ref.artifact_id}:${index}`}>{attachment(ref.artifact_id)}</Fragment>);
-  const attachmentList = !looseAttachments.length ? null : attachmentResult ? looseItems
-    : <Attachments className="message-attachments ml-0 w-auto" variant="grid">{looseItems}</Attachments>;
+  // 与实时消息同一个容器；用户输入的附件（含正文里的 artifact_ref）全部收进气泡上方的附件条，发出时与刷新后位置一致。
+  const input = body.kind === "input";
+  const looseAttachments = input ? message.attachments : message.attachments.filter((ref) => !referencedArtifacts.has(ref.artifact_id));
+  // 工具结果插图沿正文宽度展示，不进附件条。
+  const attachmentList = !looseAttachments.length ? null : attachmentResult
+    ? looseAttachments.map((ref, index) => <Fragment key={`${ref.artifact_id}:${index}`}>{attachment(ref.artifact_id)}</Fragment>)
+    : <SentAttachments items={looseAttachments.map(timelineAttachmentItem)} />;
+  const emptyBubble = input && !leadingContent && !leadingProcess && !afterBody && body.parts.every((part) => !isTimelinePartVisible(part)
+    || (!("display" in part) && (part.kind === "artifact_ref" || (part.kind === "text" && !part.value.trim()))));
   return <div className={`message-row timeline-message timeline-${body.kind}`}>
-    <div className={body.kind === "input" ? "user-bubble" : "agent-content"}>
+    {input ? attachmentList : null}
+    {emptyBubble ? null : <div className={input ? "user-bubble" : "agent-content"}>
       {leadingContent}
-      {body.kind === "input" ? attachmentList : null}
       {leadingProcess ? <InlineReplyProcess messages={leadingProcess} toolResults={toolResults}
         beforeReasoning={beforeReasoning} beforePart={beforePart} /> : null}
       {hasFlow ? turnOpen
@@ -596,16 +591,21 @@ export function TimelineMessageView({ message, lookupMessage, toolResults, onNav
         <UserTextClamp enabled={body.kind === "input"}>{body.parts.map((part, index) => ({ part, index })).sort((left, right) =>
           flowRank(right.part) + Number(right.part.kind === "history.transcript")
           - flowRank(left.part) - Number(left.part.kind === "history.transcript"))
-          .map(({ part, index }) => isTimelinePartVisible(part) && !((hideBody || (attachmentResult && !renderAttachment)) && part.kind === "text") && !((hideProcess || inlineReply) && (part.kind === "model.facts" || part.kind === "tool_call" || part.kind === "history.transcript")) ? <div key={index} data-part-index={index} tabIndex={-1}>
+          .map(({ part, index }) => isTimelinePartVisible(part) && !(input && part.kind === "artifact_ref") && !((hideBody || (attachmentResult && !renderAttachment)) && part.kind === "text") && !((hideProcess || inlineReply) && (part.kind === "model.facts" || part.kind === "tool_call" || part.kind === "history.transcript")) ? <div key={index} data-part-index={index} tabIndex={-1}>
           {beforePart?.(part, index, message)}
           <TimelinePartView part={part} toolResult={body.kind === "tool_result" && !attachmentResult} attachment={attachment} lookupMessage={lookupMessage} canLoadReferences={canLoadReferences}
             onNavigate={onNavigate} onError={onError} processStartContent={leadingContent} />
         </div> : null)}</UserTextClamp>
       </>}
       {afterBody}
-      {body.kind === "input" ? null : attachmentList}
-    </div>
+      {input ? null : attachmentList}
+    </div>}
   </div>;
+}
+
+function timelineAttachmentItem(ref: TimelineAttachment): SentAttachmentItem {
+  return { id: ref.artifact_id, name: ref.filename ?? "附件", mediaType: ref.media_type ?? undefined,
+    url: `/api/chat/artifacts/${encodeURIComponent(ref.artifact_id)}`, sizeBytes: ref.size_bytes };
 }
 
 // 长输入（粘贴的日志、整段代码）收成约 12 行，下面一行安静的"展开全部"；短输入不受影响。
@@ -758,62 +758,16 @@ function TimelineTranscript({ archive }: { archive: unknown; startContent?: Reac
 const controlLabels = { pause: "已暂停", resume: "已恢复", abandon: "已放弃", failure: "执行失败" };
 const outcomeLabels = { success: "成功", denied: "已拒绝", error: "失败", interrupted: "已中断" };
 
-const MessageAttachments = memo(function MessageAttachments({ attachments }: { attachments: MessageAttachment[] }) {
-  return (
-    <Attachments className="message-attachments ml-0 w-auto" variant="grid">
-      {attachments.map((attachment) => (
-        <MessageAttachmentItem attachment={attachment} key={attachment.id} />
-      ))}
-    </Attachments>
-  );
+const MessageAttachments = memo(function MessageAttachments({ attachments, pending }: { attachments: MessageAttachment[]; pending: boolean }) {
+  // 发送中的附件还是本地 Blob：骨架闪烁到上传完成换成服务端附件。
+  return <SentAttachments pending={pending && attachments.some((item) => item.url.startsWith("blob:"))}
+    items={attachments.map((item) => ({ id: item.id, name: item.filename ?? "附件", mediaType: item.mediaType, url: item.url, sizeBytes: item.sizeBytes }))} />;
 });
 
-function MessageAttachmentItem({ attachment }: { attachment: MessageAttachment }) {
-  const category = getMediaCategory(attachment);
-  const label = getAttachmentLabel(attachment);
-
-  if (category === "image" && attachment.url) {
-    return <MessageContentImage attachment={attachment} label={label} />;
-  }
-  if (category === "video" && attachment.url) {
-    return <MessageContentVideo url={attachment.url} label={label} />;
-  }
-
-  // 文件块本身已写全名、大小与类型，不再弹一张重复的悬停卡；悬停或聚焦时右上角露出下载图标，说明点下去会发生什么。
-  const size = attachment.sizeBytes !== undefined ? `（${formatBytes(attachment.sizeBytes)}）` : "";
-  return (
-    <a className="message-attachment-download" href={attachment.url} download={label} aria-label={`下载 ${label}`} title={`下载 ${label}${size}`}>
-      <Attachment className="message-attachment-chip is-file" data={attachment}>
-        <AttachmentFileBody name={label} sizeBytes={attachment.sizeBytes} />
-        <Download className="message-attachment-download__icon" size={16} aria-hidden="true" />
-      </Attachment>
-    </a>
-  );
-}
-
-// 视频与图片同一套：块里取首帧铺满（解不出时垫图标和文件名），点开在查看器里播放，而不是直接下载。
-function MessageContentVideo({ url, label }: { url: string; label: string }) {
-  return <button type="button" className="message-attachment-chip is-media is-video" title={`播放 ${label}`} aria-label={`播放 ${label}`}
-    {...mediaAttributes(url, label, "video")}>
-    <span className="message-video-fallback">
-      <Video size={18} aria-hidden="true" />
-      <span>{label}</span>
-    </span>
-    <video src={url} muted playsInline preload="metadata" />
-    <span className="message-video-badge" aria-hidden="true"><Play size={12} fill="currentColor" /></span>
-  </button>;
-}
-
-type MediaKind = "image" | "video";
 type MediaItem = { url: string; label: string; kind: MediaKind; trigger: HTMLElement };
 type MediaGallery = { items: MediaItem[]; index: number };
 
 const REPLY_IMAGE_SCOPE = ".agent-content, .process-markdown";
-
-// 附件媒体按钮的标记：委托查看器据此取地址与类型，不再每个附件各挂一个对话框。
-function mediaAttributes(url: string, label: string, kind: MediaKind) {
-  return { "data-media-url": url, "data-media-label": label, "data-media-kind": kind };
-}
 
 // 可预览的媒体：带 data-media-* 的附件按钮；回复正文里的 Markdown 图片（普通 img，不在链接或按钮里）。
 function mediaItem(node: Element): MediaItem | null {
@@ -1028,38 +982,6 @@ function MediaViewer({ gallery, onStep, onClose }: { gallery: MediaGallery; onSt
       </div>
       : <video key={item.url} className="media-preview__media is-video" src={item.url} controls autoPlay playsInline />}
   </DialogContent>;
-}
-
-function MessageContentImage({
-  attachment,
-  label,
-}: {
-  attachment: MessageAttachment;
-  label: string;
-}) {
-  const [failed, setFailed] = useState(false);
-
-  if (failed || !attachment.url) {
-    return (
-      <div className="message-attachment-chip is-broken" title={label}>
-        <ImageIcon size={18} aria-hidden="true" />
-        <span>{label}</span>
-        <small>无法预览</small>
-      </div>
-    );
-  }
-
-  return <button type="button" className="message-content-image" title="点击预览图片"
-    {...mediaAttributes(attachment.url, label, "image")}>
-      <img
-        alt={label}
-        className="message-content-image__media"
-        src={attachment.url}
-        loading="eager"
-        decoding="async"
-        onError={() => setFailed(true)}
-      />
-  </button>;
 }
 
 /** 每个过程项独立成行：思考、工具各自折叠，不共用外框。 */

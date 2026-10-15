@@ -9,6 +9,7 @@ export function uploadedFileToAttachment(file: UploadedFile): MessageAttachment 
     filename,
     mediaType: file.media_type || guessMediaType(filename),
     url: file.upload_url || artifactUrl(file.artifact_id),
+    sizeBytes: file.size_bytes,
   };
 }
 
