@@ -73,11 +73,15 @@ export default defineConfig({
   base: "/assets/",
   plugins: [react(), emitThemeCatalog(), serveLocalPluginUi(), preloadReadingFonts()],
   resolve: {
+    // 代码高亮的 Worker 与主线程渲染器（经 stream-diffs）必须是同一份 @pierre/diffs，否则两边消息协议可能对不上。
+    dedupe: ["@pierre/diffs"],
     alias: {
       "@": resolve(here, "src"),
       mermaid: resolve(here, "src", "mermaid-stub.ts"),
     },
   },
+  // 代码高亮 Worker 里按需加载语法与正则引擎（动态导入），只能产出 ES 模块格式。
+  worker: { format: "es" },
   build: {
     outDir: resolve(repoRoot, "static", "chat"),
     emptyOutDir: true,

@@ -148,9 +148,9 @@ _WEB_CONTENT_SECURITY_POLICY = "; ".join((
     "font-src 'self' data:",
     "connect-src 'self'",
     "frame-src 'self'",
-    # 浏览器模块的媒体缓冲与解码 worker 不取得外部网络来源。
+    # 浏览器模块的媒体缓冲与解码 worker 不取得外部网络来源；代码高亮 worker 是同源的构建产物。
     "media-src blob:",
-    "worker-src blob:",
+    "worker-src 'self' blob:",
     "object-src 'none'",
     "base-uri 'none'",
     "form-action 'self'",
