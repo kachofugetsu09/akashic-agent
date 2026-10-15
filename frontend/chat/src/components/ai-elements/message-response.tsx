@@ -1,6 +1,6 @@
 "use client";
 
-import { configureReadingMarkdown } from "@/markdown-reading";
+import { configureReadingMarkdown, jumpToFootnote } from "@/markdown-reading";
 import { configureKaomojiMarkdown } from "@/kaomoji-markdown";
 import { cn } from "@/lib/utils";
 import { canBatchStreamingMarkdown } from "@/message-rendering-policy";
@@ -15,7 +15,7 @@ import MarkdownRender, {
 } from "markstream-react";
 import "markstream-react/index.px.css";
 import { useReducedMotion } from "motion/react";
-import { CODE_BLOCK_OPTIONS, CODE_BLOCK_PROPS, FootnoteSource, ReadingCode, ReadingFootnote, ReadingLink, ReadingList, ReadingParagraph, ReadingTable, footnoteLookup } from "@/markdown-reading-nodes";
+import { CODE_BLOCK_OPTIONS, CODE_BLOCK_PROPS, FootnoteSource, ReadingCode, ReadingFootnote, ReadingFootnoteAnchor, ReadingFootnoteReference, ReadingLink, ReadingList, ReadingParagraph, ReadingTable, footnoteLookup } from "@/markdown-reading-nodes";
 import type { MarkdownIt } from "stream-markdown-parser";
 
 function configureMessageMarkdown(markdown: MarkdownIt) {
@@ -91,6 +91,8 @@ setCustomComponents({
   math_block: DeferredMathBlock,
   math_inline: DeferredMathInline,
   mermaid: MermaidAsCode,
+  footnote_anchor: ReadingFootnoteAnchor,
+  footnote_reference: ReadingFootnoteReference,
   link: ReadingLink,
   list: ReadingList,
   paragraph: ReadingParagraph,
@@ -111,7 +113,8 @@ export const MessageResponse = memo(function MessageResponse({
   // 脚注正文按同一原文的完整 GFM 解析取（见 ReadingFootnote）：生成中不提供，落定后惰性解析一次。
   const footnotes = useMemo(() => isAnimating ? null : footnoteLookup(children), [children, isAnimating]);
   return (
-    <div className={cn("message-response-markstream markdown-reading size-full", isAnimating && "is-streaming", className)}>
+    <div className={cn("message-response-markstream markdown-reading size-full", isAnimating && "is-streaming", className)}
+      onClickCapture={jumpToFootnote}>
       <FootnoteSource.Provider value={footnotes}>
       <MarkdownRender
         content={children}

@@ -1,7 +1,7 @@
 import { CheckIcon, CopyIcon } from "lucide-react";
 import { createContext, useContext, useEffect, useLayoutEffect, useRef, useState, type RefObject } from "react";
 import { CodeBlockNode, FootnoteNode as FootnoteRenderer, LinkNode as LinkRenderer, ListNode, ParagraphNode as ParagraphRenderer, PreCodeNode, languageMap, resolveLanguageId, type NodeComponentProps } from "markstream-react";
-import type { CodeBlockNode as CodeData, FootnoteNode as FootnoteData, LinkNode as LinkData, ListNode as ListData, ParagraphNode, ParsedNode, TableNode as TableData } from "stream-markdown-parser";
+import type { CodeBlockNode as CodeData, FootnoteAnchorNode as FootnoteAnchorData, FootnoteNode as FootnoteData, FootnoteReferenceNode as FootnoteReferenceData, LinkNode as LinkData, ListNode as ListData, ParagraphNode, ParsedNode, TableNode as TableData } from "stream-markdown-parser";
 import { copyReadingCode, isConceptLabel, isNumericColumn, isPlainTextLanguage, stripConceptSeparator, watchOverflowEdges, writeOverflowEdges } from "./markdown-reading";
 import { renderStaticMarkdown } from "./static-markdown";
 
@@ -50,6 +50,18 @@ export function ReadingLink(props: NodeComponentProps<LinkData>) {
     ref.current?.querySelector("a.link-node[aria-label]")?.removeAttribute("aria-label");
   });
   return <span ref={ref}><LinkRenderer {...props} /></span>;
+}
+
+/** 脚注引用写成真正的链接（markstream 的是带点击的 span，键盘按不到），显示与静态路径同样的上标数字；跳转见 jumpToFootnote。 */
+export function ReadingFootnoteReference({ node }: NodeComponentProps<FootnoteReferenceData>) {
+  return <sup className="footnote-reference" id={`fnref-${node.id}`}>
+    <a className="footnote-link" href={`#fnref--${node.id}`} aria-label={`脚注 ${node.id}`}>{node.id}</a>
+  </sup>;
+}
+
+/** 脚注末尾的返回箭头：读屏名与静态路径同说"返回引用 1"，不念箭头字符。 */
+export function ReadingFootnoteAnchor({ node }: NodeComponentProps<FootnoteAnchorData>) {
+  return <a className="footnote-anchor" href={`#fnref-${node.id}`} aria-label={`返回引用 ${node.id}`}>↩</a>;
 }
 
 /** 短加粗标签组成的无序列表分栏，其余列表沿用现有 renderer。 */

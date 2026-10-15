@@ -1,3 +1,4 @@
+import type { MouseEvent as ReactMouseEvent } from "react";
 import type { MarkdownIt, MarkdownToken } from "stream-markdown-parser";
 
 import { copyText } from "./copy-text";
@@ -114,4 +115,23 @@ export function watchOverflowEdges(scroller: HTMLElement): () => void {
     resize.disconnect();
     scroller.removeEventListener("scroll", measure);
   };
+}
+
+const FOOTNOTE_LINK = "a[data-footnote-ref], a[data-footnote-backref], a.footnote-link, a.footnote-anchor";
+
+/** 脚注引用与返回链接在本条回复内跳转（挂在回复容器的 onClickCapture 上）：每条回复的脚注 id 都从 1 编起，
+ *  按 id 全局找会跳到别的回复；也不往地址栏写 hash、不多一条历史记录。 */
+export function jumpToFootnote(event: ReactMouseEvent<HTMLElement>): void {
+  const link = event.target instanceof Element ? event.target.closest<HTMLAnchorElement>(FOOTNOTE_LINK) : null;
+  const href = link?.getAttribute("href");
+  if (!link || !href?.startsWith("#") || !event.currentTarget.contains(link)) return;
+  const target = event.currentTarget.querySelector<HTMLElement>(`[id="${CSS.escape(decodeURIComponent(href.slice(1)))}"]`);
+  if (!target) return;
+  event.preventDefault();
+  event.stopPropagation();
+  // 焦点落到对面的链接：去脚注落在返回箭头上，回正文落在引用号上，回车即可来回。
+  const landing = target.matches(FOOTNOTE_LINK) ? target : target.querySelector<HTMLElement>(FOOTNOTE_LINK) ?? target;
+  landing.focus({ preventScroll: true });
+  const reduce = window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+  target.scrollIntoView({ block: "center", behavior: reduce ? "auto" : "smooth" });
 }

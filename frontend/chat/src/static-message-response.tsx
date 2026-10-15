@@ -1,5 +1,5 @@
 import { memo, useCallback, useEffect, useMemo, useRef } from "react";
-import { copyReadingCode, watchOverflowEdges } from "./markdown-reading";
+import { copyReadingCode, jumpToFootnote, watchOverflowEdges } from "./markdown-reading";
 import { renderStaticMarkdown } from "./static-markdown";
 
 export const StaticMessageResponse = memo(function StaticMessageResponse({
@@ -51,6 +51,7 @@ export const StaticMessageResponse = memo(function StaticMessageResponse({
       ref={ref}
       className="static-message-response markdown-reading"
       onClick={copyCode}
+      onClickCapture={jumpToFootnote}
       dangerouslySetInnerHTML={{ __html: html }}
     />
   );

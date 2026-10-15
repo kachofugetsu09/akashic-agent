@@ -743,10 +743,10 @@
   display: inline;
   margin: 0;
 }
-/* 引用号与静态路径的上标同色同大小；markstream 写死的 "[1]" 文字保留。 */
-:is(.agent-content, .process-markdown, .user-bubble) .markdown-reading .footnote-link {
+/* 引用号由 ReadingFootnoteReference 写成 <sup><a>1</a></sup>，与静态路径同一结构，这里只统一颜色、去下划线。 */
+:is(.agent-content, .process-markdown, .user-bubble) .markdown-reading :is(.footnote-link, [data-footnote-ref]) {
   color: var(--ak-color-action-primary);
-  font-size: 0.75em;
+  text-decoration: none;
 }
 :is(.agent-content, .process-markdown, .user-bubble) .markdown-reading .footnote-node::before {
   content: counter(reading-footnote) ".";
