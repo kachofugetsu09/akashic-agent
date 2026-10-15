@@ -104,7 +104,7 @@ const SEARCH_HIGHLIGHT = "sidebar-search";
 
 // 侧栏里可见的会话行主按钮，按文档顺序：置顶、项目内、最近会话。
 function sessionRows(root: HTMLElement | null): HTMLButtonElement[] {
-  return Array.from(root?.querySelectorAll<HTMLButtonElement>(".chat-sidebar__navigation button.conversation-session") ?? [])
+  return Array.from(root?.querySelector(".chat-sidebar__navigation")?.querySelectorAll<HTMLButtonElement>("button.conversation-session, button.project-session") ?? [])
     .filter((row) => row.offsetParent !== null);
 }
 
@@ -112,7 +112,7 @@ function sessionRows(root: HTMLElement | null): HTMLButtonElement[] {
 function moveSessionFocus(event: React.KeyboardEvent<HTMLElement>) {
   if (event.key !== "ArrowDown" && event.key !== "ArrowUp") return;
   const target = event.target;
-  if (!(target instanceof HTMLButtonElement) || !target.classList.contains("conversation-session")) return;
+  if (!(target instanceof HTMLButtonElement) || !target.matches(".conversation-session, .project-session")) return;
   const sidebar = target.closest<HTMLElement>(".chat-sidebar");
   const rows = sessionRows(sidebar);
   const index = rows.indexOf(target);
@@ -133,7 +133,7 @@ function useSearchHighlight(rootRef: RefObject<HTMLElement | null>, needle: stri
     // 1. 列表随会话推送重渲染，标题文本节点会被替换；观察子树变化后重新取范围。
     const collect = () => {
       mine.clear();
-      for (const title of root.querySelectorAll(".conversation-session__title")) {
+      for (const title of root.querySelectorAll(".conversation-session__title, .project-session__title, .project-group__name")) {
         const walker = document.createTreeWalker(title, NodeFilter.SHOW_TEXT);
         for (let node = walker.nextNode(); node; node = walker.nextNode()) {
           const text = (node.textContent ?? "").toLowerCase();

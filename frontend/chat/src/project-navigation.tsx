@@ -215,7 +215,7 @@ export function ProjectNavigationRow({
         onPointerEnter={() => onPrefetchSession?.(session.id)}
         onFocus={() => onPrefetchSession?.(session.id)}>
         <SessionStatusMark status={session.status} />
-        <span>{session.title}</span>
+        <span className="project-session__title">{session.title}</span>
       </button>)}
     </nav> : null}
   </div>;
