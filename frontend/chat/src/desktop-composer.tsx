@@ -540,11 +540,12 @@ function WindowFileDrop({ enabled, onActiveChange }: { enabled: boolean; onActiv
   return null;
 }
 
+// 输入卡里的附件块会截断文件名：悬停卡给出全名与类型；图片附带预览，文件不再垫一块只有小图标的空白。
 function AttachmentHover({ attachment }: { attachment: ReturnType<typeof usePromptInputAttachments>["files"][number] }) {
   const category = getMediaCategory(attachment);
   const label = getAttachmentLabel(attachment);
   return <div className="attachment-hover">
-    {category === "image" && attachment.url ? <img alt={label} className="attachment-hover-image" src={attachment.url} /> : <div className="attachment-hover-file"><Attachment data={attachment}><AttachmentPreview /></Attachment></div>}
+    {category === "image" && attachment.url ? <img alt={label} className="attachment-hover-image" src={attachment.url} /> : null}
     <div className="attachment-hover-title">{label}</div>
     {attachment.mediaType ? <div className="attachment-hover-type">{attachment.mediaType}</div> : null}
   </div>;

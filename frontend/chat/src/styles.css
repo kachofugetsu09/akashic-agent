@@ -1999,22 +1999,15 @@ form.composer:focus-within [data-slot="input-group"] {
   object-fit: contain;
 }
 
-.attachment-hover-file {
-  display: grid;
-  width: 96px;
-  height: 96px;
-  place-items: center;
-  border-radius: 8px;
-  background: var(--ak-color-bg-surface);
-}
-
+/* 悬停卡就是用来看全名的：完整换行，不再单行省略。 */
 .attachment-hover-title {
-  margin-top: 10px;
-  overflow: hidden;
   font-size: var(--chat-type-section);
   font-weight: 600;
-  text-overflow: ellipsis;
-  white-space: nowrap;
+  overflow-wrap: anywhere;
+}
+
+.attachment-hover-image + .attachment-hover-title {
+  margin-top: 10px;
 }
 
 .attachment-hover-type {
