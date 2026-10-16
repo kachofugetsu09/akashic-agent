@@ -2,13 +2,13 @@
 from __future__ import annotations
 
 import asyncio
+from contextlib import suppress
 from dataclasses import dataclass, field
 import errno
 import fcntl
 import os
 from pathlib import Path
 import pwd
-import signal
 import struct
 import sys
 import termios
@@ -25,8 +25,10 @@ MAX_TERMINALS = 32
 BUFFER_BYTES = 256 * 1024
 READ_CHUNK_BYTES = 64 * 1024
 _CLOSE_GRACE_S = 2.0
-# 交互 shell 需要控制终端才有作业控制与 Ctrl+C；子进程先成为会话首进程再接管 PTY。
-_TRAMPOLINE = "import os,sys;os.login_tty(0);os.execv(sys.argv[1],sys.argv[1:])"
+# 监管进程挂断会话最多用两段宽限（shell、残留进程），再留一点余量。
+_SUPERVISOR_WAIT_S = 2 * _CLOSE_GRACE_S + 1.0
+# shell 由监管进程启动并接管 PTY；会话的结束只经监管进程，服务端从不按 PID 数字发信号。
+_SUPERVISOR = Path(__file__).with_name("pty_supervisor.py")
 _LOGIN_SHELLS = {"bash", "zsh", "fish", "sh", "dash", "ksh"}
 
 
@@ -44,6 +46,10 @@ class _Terminal:
     exited: bool = False
     changed: asyncio.Event = field(default_factory=asyncio.Event)
     tasks: list[asyncio.Task[None]] = field(default_factory=lambda: list[asyncio.Task[None]]())
+    # 同一终端可能有多个浏览器同时输入，写入必须串行，否则 fd 上的等待回调会互相覆盖。
+    write_lock: asyncio.Lock = field(default_factory=asyncio.Lock)
+    closing: asyncio.Task[None] | None = None
+    fd_open: bool = True
 
     def info(self) -> TerminalInfo:
         return TerminalInfo(self.terminal_id, self.shell, self.cwd, self.exit_code, self.exited)
@@ -102,8 +108,15 @@ class PtyTerminals:
         if len(data) > TERMINAL_MAX_WRITE_BYTES:
             raise ValueError("单次终端输入过长")
         terminal = self._owned(owner_session_key, terminal_id)
-        if not terminal.exited and data:
-            await _write_fd(terminal.master_fd, data)
+        async with terminal.write_lock:
+            if terminal.exited or terminal.closing is not None or not data:
+                return
+            try:
+                await _write_fd(terminal.master_fd, data)
+            except OSError as exc:
+                # 会话已经结束，从端全部关闭后主端写入返回 EIO。
+                if exc.errno != errno.EIO:
+                    raise
 
     async def resize_terminal(
         self, *, owner_session_key: str, terminal_id: int, cols: int, rows: int,
@@ -134,35 +147,54 @@ class PtyTerminals:
             terminal = self._terminals.get(terminal_id)
             if terminal is None or terminal.owner != owner_session_key:
                 return False
-            del self._terminals[terminal_id]
-        await _close(terminal)
+            task = self._closing(terminal)
+        await _settle([task])
         return True
 
     async def list_terminals(self, owner_session_key: str) -> list[TerminalInfo]:
         return [
             item.info() for item in sorted(self._terminals.values(), key=lambda item: item.terminal_id)
-            if item.owner == owner_session_key
+            if item.owner == owner_session_key and item.closing is None
         ]
 
     async def close_owner(self, owner_session_key: str) -> None:
         async with self._lock:
-            owned = [item for item in self._terminals.values() if item.owner == owner_session_key]
-            for item in owned:
-                del self._terminals[item.terminal_id]
-        _ = await asyncio.gather(*(_close(item) for item in owned))
+            tasks = [self._closing(item) for item in self._terminals.values() if item.owner == owner_session_key]
+        await _settle(tasks)
 
     async def shutdown(self) -> None:
         async with self._lock:
             self._closed = True
-            owned = list(self._terminals.values())
-            self._terminals.clear()
-        _ = await asyncio.gather(*(_close(item) for item in owned))
+            tasks = [self._closing(item) for item in self._terminals.values()]
+        await _settle(tasks)
+
+    # 关闭是终端自己的任务：调用方被取消也会做完；完成前终端留在登记表里，shutdown 能看到并等待，
+    # 失败时保留记录并允许重试。
+    def _closing(self, terminal: _Terminal) -> asyncio.Task[None]:
+        task = terminal.closing
+        if task is None or (task.done() and (task.cancelled() or task.exception() is not None)):
+            task = asyncio.create_task(self._close(terminal), name=f"terminal-close-{terminal.terminal_id}")
+            terminal.closing = task
+        return task
+
+    async def _close(self, terminal: _Terminal) -> None:
+        await _close(terminal)
+        async with self._lock:
+            _ = self._terminals.pop(terminal.terminal_id, None)
 
     def _owned(self, owner: str, terminal_id: int) -> _Terminal:
         terminal = self._terminals.get(terminal_id)
-        if terminal is None or terminal.owner != owner:
+        if terminal is None or terminal.owner != owner or terminal.closing is not None:
             raise UnknownTerminalError(f"终端不存在: {terminal_id}")
         return terminal
+
+
+# 等待一组关闭任务；调用方被取消时任务继续，失败如实抛出第一个错误。
+async def _settle(tasks: list[asyncio.Task[None]]) -> None:
+    results = await asyncio.gather(*(asyncio.shield(task) for task in tasks), return_exceptions=True)
+    for result in results:
+        if isinstance(result, BaseException):
+            raise result
 
 
 def _check_size(cols: int, rows: int) -> None:
@@ -208,7 +240,7 @@ async def _spawn(terminal_id: int, owner: str, cwd: Path | None, cols: int, rows
         _set_size(slave_fd, cols, rows)
         os.set_blocking(master_fd, False)
         process = await asyncio.create_subprocess_exec(
-            sys.executable, "-I", "-c", _TRAMPOLINE, *argv,
+            sys.executable, "-I", str(_SUPERVISOR), *argv,
             stdin=slave_fd, stdout=slave_fd, stderr=slave_fd,
             cwd=str(directory), env=_terminal_env(),
         )
@@ -220,7 +252,7 @@ async def _spawn(terminal_id: int, owner: str, cwd: Path | None, cols: int, rows
     return _Terminal(terminal_id, owner, shell, str(directory), process, master_fd)
 
 
-# 读到 EOF 后回收退出码；shell 退出而后台子进程仍占着 PTY 时，宽限后结束整个会话。
+# 监管进程退出即整个会话已结束；再给读取一点时间收完残余输出，然后发布终态。
 async def _pump(terminal: _Terminal) -> None:
     async def read() -> None:
         while True:
@@ -230,61 +262,41 @@ async def _pump(terminal: _Terminal) -> None:
             terminal.append(chunk)
 
     reader = asyncio.create_task(read())
-    waiter = asyncio.create_task(terminal.process.wait())
     try:
-        _ = await asyncio.wait({reader, waiter}, return_when=asyncio.FIRST_COMPLETED)
+        code = await terminal.process.wait()
         if not reader.done():
             _ = await asyncio.wait({reader}, timeout=_CLOSE_GRACE_S)
-        _signal_group(terminal.process.pid, signal.SIGHUP)
-        terminal.exit_code = await waiter
+        terminal.exit_code = code
     finally:
         _ = reader.cancel()
-        _ = waiter.cancel()
         terminal.exited = True
         terminal.notify()
 
 
-def _signal_group(pid: int, sig: signal.Signals) -> None:
-    try:
-        os.killpg(pid, sig)
-    except (ProcessLookupError, PermissionError):
-        pass
-    except OSError as exc:
-        if exc.errno != errno.ESRCH:
-            raise
-
-
-# Linux 上按会话结束全部进程，包含 shell 放到别的进程组里的后台作业；
-# 会话里还有进程时内核不会复用这个 id，因此不会误杀无关进程。
-def _kill_session(sid: int) -> None:
-    _signal_group(sid, signal.SIGKILL)
-    proc = Path("/proc")
-    if not proc.is_dir():
-        return
-    for entry in proc.iterdir():
-        if not entry.name.isdigit():
-            continue
-        try:
-            fields = (entry / "stat").read_text().rpartition(")")[2].split()
-        except OSError:
-            continue
-        if len(fields) > 3 and fields[3] == str(sid):
-            try:
-                os.kill(int(entry.name), signal.SIGKILL)
-            except (ProcessLookupError, PermissionError):
-                pass
-
-
-# 关闭等同关掉终端窗口：先释放 PTY 主端让内核挂断会话，宽限后结束会话里剩下的进程。
+# 关闭等同关掉终端窗口：请监管进程挂断整个会话；它不响应时直接结束它，
+# 主端关闭后内核也会挂断会话。各步可重复执行，失败后重试不会二次释放。
 async def _close(terminal: _Terminal) -> None:
+    # 1. 等会话结束，在途写入随之以 EIO 返回。
+    process = terminal.process
+    if process.returncode is None:
+        with suppress(ProcessLookupError):
+            process.terminate()
+        try:
+            _ = await asyncio.wait_for(process.wait(), _SUPERVISOR_WAIT_S)
+        except TimeoutError:
+            with suppress(ProcessLookupError):
+                process.kill()
+            _ = await process.wait()
+    # 2. 停读取，等在途写入退出后释放主端。
     for task in terminal.tasks:
         _ = task.cancel()
     _ = await asyncio.gather(*terminal.tasks, return_exceptions=True)
-    os.close(terminal.master_fd)
-    if terminal.process.returncode is None:
-        try:
-            _ = await asyncio.wait_for(terminal.process.wait(), _CLOSE_GRACE_S)
-        except TimeoutError:
-            pass
-    _kill_session(terminal.process.pid)
-    _ = await terminal.process.wait()
+    if terminal.fd_open:
+        acquired = False
+        with suppress(TimeoutError):
+            acquired = await asyncio.wait_for(terminal.write_lock.acquire(), _CLOSE_GRACE_S)
+        terminal.fd_open = False
+        os.close(terminal.master_fd)
+        # 排队中的写入拿到锁后看到 closing 即返回。
+        if acquired:
+            terminal.write_lock.release()
