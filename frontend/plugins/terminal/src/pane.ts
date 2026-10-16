@@ -15,11 +15,10 @@ export interface TerminalFacts {
 }
 
 export interface PaneHost {
-  readonly session: string;
   changed?(pane: Pane): void;
   exited?(pane: Pane): void;
   gone(pane: Pane): void;
-  restart(pane: Pane): void;
+  restart(pane: Pane): Promise<void>;
   shortcut(pane: Pane, event: KeyboardEvent): boolean;
 }
 
@@ -65,7 +64,14 @@ export class Pane {
   // 已显示过退出提示；之后不再连接，重新开始时清除。
   private noticed = false;
 
-  constructor(private readonly ctx: WebHostContextV1, private readonly host: PaneHost, public facts: TerminalFacts, theme: ITheme) {
+  disposed = false;
+  private restarting = false;
+
+  // session 固定为创建时的会话：会话切换后迟到的回调也不会连到别的会话。
+  constructor(
+    private readonly ctx: WebHostContextV1, private readonly host: PaneHost,
+    readonly session: string, public facts: TerminalFacts, theme: ITheme,
+  ) {
     this.element.className = "terminal-pane";
     this.term = new Terminal({
       fontFamily: FONT, fontSize: 13, lineHeight: 1.2, cursorBlink: true, cursorStyle: "block",
@@ -103,7 +109,9 @@ export class Pane {
 
   private input(data: string): void {
     if (this.facts.exited) {
-      if (data.includes("\r")) this.host.restart(this);
+      if (!data.includes("\r") || this.restarting) return;
+      this.restarting = true;
+      void this.host.restart(this).finally(() => { this.restarting = false; });
       return;
     }
     // 切点落在代理对中间时后移一位，不发出孤立代理项。
@@ -119,20 +127,23 @@ export class Pane {
     if (this.socket?.readyState === WebSocket.OPEN) this.socket.send(JSON.stringify(message));
   }
 
-  // 换成新开的 PTY（重新开始）：清屏，从偏移 0 接上。
-  replace(facts: TerminalFacts): void {
+  // 换成新开的 PTY（重新开始）：清屏，从偏移 0 接上；已销毁时拒绝，收起期间只换不连。
+  replace(facts: TerminalFacts): boolean {
+    if (this.disposed) return false;
+    const visible = this.wanted;
     this.disconnect();
     this.facts = facts;
     this.offset = 0;
     this.noticed = false;
     this.term.reset();
-    this.connect();
+    if (visible) this.connect();
+    return true;
   }
 
   connect(): void {
     this.wanted = true;
     if (this.socket || this.noticed) return;
-    const query = new URLSearchParams({ session: this.host.session, terminal: String(this.facts.id), offset: String(this.offset) });
+    const query = new URLSearchParams({ session: this.session, terminal: String(this.facts.id), offset: String(this.offset) });
     const socket = new WebSocket(this.ctx.http.webSocketUrl(`/api/dashboard/terminal/attach?${query}`));
     socket.binaryType = "arraybuffer";
     socket.onopen = () => {
@@ -185,6 +196,7 @@ export class Pane {
   }
 
   dispose(): void {
+    this.disposed = true;
     this.disconnect();
     this.term.dispose();
     this.element.remove();

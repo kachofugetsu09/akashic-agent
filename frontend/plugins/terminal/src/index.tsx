@@ -92,7 +92,7 @@ class TerminalTab implements PaneHost {
   }
 
   private mount(facts: TerminalFacts): Pane {
-    const pane = new Pane(this.ctx, this, facts, terminalTheme(this.root, currentTheme().colorScheme === "dark"));
+    const pane = new Pane(this.ctx, this, this.session, facts, terminalTheme(this.root, currentTheme().colorScheme === "dark"));
     pane.element.hidden = true;
     this.stage.append(pane.element);
     if (this.active) pane.connect();
@@ -104,7 +104,7 @@ class TerminalTab implements PaneHost {
     if (!this.session) return;
     const generation = this.generation;
     try {
-      const facts = await this.open(this.proposeSize());
+      const facts = await this.open(this.session, this.proposeSize());
       if (generation !== this.generation) return;
       const pane = this.mount(facts);
       this.panes.push(pane);
@@ -116,8 +116,8 @@ class TerminalTab implements PaneHost {
   }
 
   // 按尺寸新开一个 PTY；失败时带上后端给的原因。
-  private async open(size: { cols: number; rows: number }): Promise<TerminalFacts> {
-    const response = await this.ctx.http.request(`${API}?${new URLSearchParams({ session: this.session })}`, {
+  private async open(session: string, size: { cols: number; rows: number }): Promise<TerminalFacts> {
+    const response = await this.ctx.http.request(`${API}?${new URLSearchParams({ session })}`, {
       method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(size),
     });
     const body = await response.json() as TerminalFacts & { detail?: string };
@@ -147,8 +147,8 @@ class TerminalTab implements PaneHost {
   }
 
   // 关闭远端 PTY 不等结果：失败时它随会话 owner 清理或换代关闭一并结束。
-  private release(id: number): void {
-    const query = new URLSearchParams({ session: this.session });
+  private release(session: string, id: number): void {
+    const query = new URLSearchParams({ session });
     void this.ctx.http.request(`${API}/${id}?${query}`, { method: "DELETE" }).catch(() => undefined);
   }
 
@@ -167,10 +167,16 @@ class TerminalTab implements PaneHost {
     else this.show("这个会话没有打开的终端。");
   }
 
-  // 退出后按 Enter：关掉旧 PTY，在同一个位置开一个新的。
-  restart(pane: Pane): void {
-    this.release(pane.facts.id);
-    void this.open({ cols: pane.term.cols, rows: pane.term.rows }).then((facts) => pane.replace(facts)).catch((error) => pane.term.write(`\r\n\x1b[31m${error instanceof Error ? error.message : String(error)}\x1b[0m\r\n`));
+  // 退出后按 Enter：关掉旧 PTY，在原处开一个新的。会话已切换或 Pane 已关时不再接上，新开的随即关掉。
+  async restart(pane: Pane): Promise<void> {
+    const generation = this.generation;
+    this.release(pane.session, pane.facts.id);
+    try {
+      const facts = await this.open(pane.session, { cols: pane.term.cols, rows: pane.term.rows });
+      if (generation !== this.generation || !pane.replace(facts)) this.release(pane.session, facts.id);
+    } catch (error) {
+      if (!pane.disposed) pane.term.write(`\r\n\x1b[31m${error instanceof Error ? error.message : String(error)}\x1b[0m\r\n`);
+    }
   }
 
   // 3. 快捷键与 kitty 一致：Ctrl+Shift+C/V 复制粘贴，其余组合照常交给终端。
