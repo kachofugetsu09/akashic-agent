@@ -13,7 +13,7 @@ import MarkdownRender, {
 } from "markstream-react";
 import "markstream-react/index.px.css";
 import { useReducedMotion } from "motion/react";
-import { CODE_BLOCK_OPTIONS, CODE_BLOCK_PROPS, FootnoteSource, ReadingCode, ReadingFootnote, ReadingFootnoteAnchor, ReadingFootnoteReference, ReadingLink, ReadingList, ReadingParagraph, ReadingTable, footnoteLookup } from "@/markdown-reading-nodes";
+import { CODE_BLOCK_OPTIONS, CODE_BLOCK_PROPS, FootnoteSource, ReadingCode, ReadingFootnote, ReadingFootnoteAnchor, ReadingFootnoteReference, ReadingInlineCode, ReadingLink, ReadingList, ReadingParagraph, ReadingTable, footnoteLookup } from "@/markdown-reading-nodes";
 import type { MarkdownIt } from "stream-markdown-parser";
 import { mightContainMath, preloadMath, ReadingMath, type MathNode } from "@/reading-math";
 
@@ -81,6 +81,7 @@ setCustomComponents({
   footnote_anchor: ReadingFootnoteAnchor,
   footnote_reference: ReadingFootnoteReference,
   link: ReadingLink,
+  inline_code: ReadingInlineCode,
   list: ReadingList,
   paragraph: ReadingParagraph,
   table: ReadingTable,

@@ -7,6 +7,8 @@ const POLL_MS = 3000;
 const FRESH_MS = 8000;
 /** workspace.changes.open.v1 的 payload：{ path: string }，打开“未提交”并选中这个文件。 */
 const OPEN_INTENT = "workspace.changes.open.v1";
+/** workspace.file.open.v1（对话回复里点文件路径）：{ path, line? }，先找未提交，再找相对默认分支；只写了文件名时按结尾匹配。 */
+const FILE_INTENT = "workspace.file.open.v1";
 const STATUS_LABELS = { A: "新增", M: "修改", D: "删除", T: "类型变化" } as const;
 
 interface FileStatus { path: string; status: keyof typeof STATUS_LABELS; added: number | null; removed: number | null }
@@ -101,6 +103,7 @@ class ChangesTab {
   private scope = "wt";
   private result: ScopeResult | null = null;
   private selected: string | null = null;
+  private targetLine: number | null = null;
   private shownPatch = "";
   private shownText: string | null = null;
   private readonly seen = new Map<string, string>();
@@ -147,14 +150,34 @@ class ChangesTab {
 
   // 意图：切到“未提交”并选中这个文件；它已经提交或还原时如实说明。
   async open(intent: ConversationIntent): Promise<ConversationIntentStatus> {
-    const payload = intent.payload as { path?: unknown } | null;
+    const payload = intent.payload as { path?: unknown; line?: unknown } | null;
     if (!payload || typeof payload.path !== "string" || !payload.path) return "invalid";
-    this.scope = "wt";
-    this.selected = payload.path;
-    await this.load(true);
-    if (!this.result?.files?.some((file) => file.path === payload.path))
-      this.showNote(`${payload.path} 现在没有未提交的改动，可能已经提交或还原。`);
+    this.targetLine = Number.isInteger(payload.line) && (payload.line as number) > 0 ? payload.line as number : null;
+    const want = payload.path.replace(/^\.\//, "");
+    const scopes = intent.name === FILE_INTENT ? ["wt", "base"] : ["wt"];
+    for (const scope of scopes) {
+      this.scope = scope;
+      this.selected = want;
+      await this.load(true);
+      const found = this.findFile(want);
+      if (found) return this.select(found, false), "handled";
+    }
+    // 都没找到：回到默认的“未提交”，再说明原因。
+    if (this.scope !== "wt") {
+      this.scope = "wt";
+      await this.load(true);
+    }
+    const where = intent.name === FILE_INTENT ? `相对 HEAD 和 ${this.result?.base_ref ?? "默认分支"} 都没有改动` : "现在没有未提交的改动，可能已经提交或还原";
+    this.showNote(`${want} ${where}。`);
     return "handled";
+  }
+
+  // 精确路径优先；回复里常只写文件名或半截路径，结尾唯一匹配时也算。
+  private findFile(path: string): string | null {
+    const files = this.result?.files ?? [];
+    if (files.some((file) => file.path === path)) return path;
+    const tail = files.filter((file) => file.path.endsWith(`/${path}`));
+    return tail.length === 1 ? tail[0].path : null;
   }
 
   dispose(): void {
@@ -286,7 +309,7 @@ class ChangesTab {
     const key = `${result.before}:${result.after}:${file.path}`;
     // 正在写评论时不刷新这份 diff，免得别处的改动把评论框冲掉；关掉评论框后下一次轮询再刷新。
     const writing = this.pane.querySelector(".changes-comment") && this.pane.dataset.path === file.path;
-    if (key === this.shownPatch || writing) return;
+    if (key === this.shownPatch || writing) return this.revealLine();
     this.shownPatch = key;
     const head = element("header", "changes-pane-head");
     head.append(element("span", "changes-pane-path", file.path), counts(file));
@@ -304,13 +327,14 @@ class ChangesTab {
         return void this.pane.replaceChildren(head, element("p", "changes-empty", body.message ?? "无法读取 diff"));
       }
       // 内容没变（别的文件变了导致树变了）时不重画，保留滚动位置。
-      if (this.pane.dataset.path === file.path && this.shownText === body.patch) return;
+      if (this.pane.dataset.path === file.path && this.shownText === body.patch) return this.revealLine();
       this.pane.dataset.path = file.path;
       this.shownText = body.patch ?? "";
       const rows = element("div", "changes-diff");
       rows.append(...parsePatch(body.patch ?? "").map((row) => this.rowNode(file.path, row)));
       const tail = body.truncated ? [element("p", "changes-empty", "diff 过长，只显示前 256 KiB。")] : [];
       this.pane.replaceChildren(head, rows, ...tail);
+      this.revealLine();
     } catch (error) {
       this.shownPatch = "";
       this.shownText = null;
@@ -318,9 +342,24 @@ class ChangesTab {
     }
   }
 
+  // 从回复里带行号打开时：滚到新文件里离这一行最近的 diff 行并短暂高亮；diff 还没换成这个文件时留到下次。
+  private revealLine(): void {
+    const line = this.targetLine;
+    if (line === null || this.pane.dataset.path !== this.selected) return;
+    this.targetLine = null;
+    const rows = [...this.pane.querySelectorAll<HTMLElement>(".changes-row[data-line]:not([data-kind='del'])")];
+    const near = rows.reduce<HTMLElement | null>((best, row) =>
+      !best || Math.abs(Number(row.dataset.line) - line) < Math.abs(Number(best.dataset.line) - line) ? row : best, null);
+    if (!near) return;
+    near.scrollIntoView({ block: "center" });
+    near.classList.add("is-target");
+    window.setTimeout(() => near.classList.remove("is-target"), 1200);
+  }
+
   private rowNode(path: string, row: Row): HTMLElement {
     const node = element("div", "changes-row");
     node.dataset.kind = row.kind;
+    if (row.line !== null) node.dataset.line = String(row.line);
     node.append(element("span", "changes-ln", row.line === null ? "" : String(row.line)), element("span", "changes-code", row.text));
     if (row.line !== null) {
       node.tabIndex = -1;
@@ -408,7 +447,7 @@ function renderChanges(ctx: WebHostContextV1, host: HTMLElement, rawView: unknow
   const stops = [
     view.onSessionChange((session) => tab.setSession(session)),
     view.onActiveChange((active) => tab.setActive(active)),
-    view.onIntent((intent) => intent.name === OPEN_INTENT ? tab.open(intent) : "invalid"),
+    view.onIntent((intent) => intent.name === OPEN_INTENT || intent.name === FILE_INTENT ? tab.open(intent) : "invalid"),
   ];
   return () => {
     for (const stop of stops) stop();
@@ -419,7 +458,7 @@ function renderChanges(ctx: WebHostContextV1, host: HTMLElement, rawView: unknow
 
 export function activate(ctx: WebHostContextV1): WebUiDisposer {
   return ctx.ui.inject("conversation.tools.v2", (mount) => mount.register({
-    id: "workspace-changes", label: "改动", order: 30, hint: "工作目录相对 git 的改动", shortcut: "Mod+Shift+G", accepts: [OPEN_INTENT],
+    id: "workspace-changes", label: "改动", order: 30, hint: "工作目录相对 git 的改动", shortcut: "Mod+Shift+G", accepts: [OPEN_INTENT, FILE_INTENT],
     icon: '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M6 3v12M18 9v12M6 15a3 3 0 1 0 0 6 3 3 0 0 0 0-6ZM18 3a3 3 0 1 0 0 6 3 3 0 0 0 0-6ZM6 15c0-4 12-2 12-6"/></svg>',
     render(host, _entryView, props) { return renderChanges(ctx, host, props); },
   }));

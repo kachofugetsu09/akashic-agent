@@ -166,6 +166,13 @@
 .changes-row[data-kind="hunk"],
 .changes-row[data-kind="meta"] { color: var(--ak-ink-muted); }
 .changes-row[data-kind="hunk"] { margin-block-start: 6px; background: var(--ak-paper-quiet); }
+/* 从回复带行号打开：目标行亮一下再淡出（宿主不允许插件声明 @keyframes，用 transition） */
+.changes-row { transition: background-color 0.8s ease-out, box-shadow 0.8s ease-out; }
+.changes-row.is-target { box-shadow: inset 3px 0 0 var(--ak-color-status-warning); background: color-mix(in oklab, var(--ak-color-status-warning) 22%, transparent); transition: none; }
+
+@media (prefers-reduced-motion: reduce) {
+  .changes-row { transition: none; }
+}
 
 /* diff 可以横向滚动；评论框贴住左边、宽度固定，按钮不跟着滚出去 */
 .changes-comment {

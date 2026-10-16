@@ -1,12 +1,13 @@
 import { getOrCreateWorkerPoolSingleton, type WorkerPoolManager } from "@pierre/diffs/worker";
 import { CheckIcon, CopyIcon } from "lucide-react";
 import { createContext, useContext, useEffect, useLayoutEffect, useRef, useState, type RefObject } from "react";
-import { CodeBlockNode, FootnoteNode as FootnoteRenderer, LinkNode as LinkRenderer, ListNode, ParagraphNode as ParagraphRenderer, PreCodeNode, languageMap, normalizeLanguageIdentifier, resolveLanguageId, type CodeBlockOptions, type NodeComponentProps } from "markstream-react";
+import { CodeBlockNode, FootnoteNode as FootnoteRenderer, InlineCodeNode, LinkNode as LinkRenderer, ListNode, ParagraphNode as ParagraphRenderer, PreCodeNode, languageMap, normalizeLanguageIdentifier, resolveLanguageId, type CodeBlockOptions, type NodeComponentProps } from "markstream-react";
 import type { CodeBlockNode as CodeData, FootnoteAnchorNode as FootnoteAnchorData, FootnoteNode as FootnoteData, FootnoteReferenceNode as FootnoteReferenceData, LinkNode as LinkData, ListNode as ListData, ParagraphNode, ParsedNode, TableNode as TableData } from "stream-markdown-parser";
 import { copyReadingCode, isConceptLabel, isNumericColumn, isPlainTextLanguage, stripConceptSeparator, watchOverflowEdges, writeOverflowEdges } from "./markdown-reading";
 import { renderStaticMarkdown } from "./static-markdown";
 import { loadKatex } from "./reading-math";
 import { DiffLines } from "./tool-result-view";
+import { FILE_INTENT, openFileInWorkbench, useWorkbenchAccepts, workspaceFileRef } from "./shell-workbench";
 
 export const CODE_BLOCK_PROPS = {
   showLineNumbers: false,
@@ -84,6 +85,16 @@ export function ReadingParagraph(props: NodeComponentProps<ParagraphNode>) {
   if (content.length !== 1 || content[0].type !== "strong" || !ctx || !renderNode) return <ParagraphRenderer {...props} />;
   const className = nodeText(content[0]).length < 65 ? "reading-topic" : "reading-emphasis";
   return <p className={className} dir="auto">{node.children.map((child, index) => renderNode(child, `${String(indexKey)}-${index}`, ctx))}</p>;
+}
+
+/** 行内代码是文件路径、且工作台有工具接受文件意图时，点一下在工作台里打开（“改动”会定位到该文件）。静态路径见 StaticMessageResponse。 */
+export function ReadingInlineCode(props: NodeComponentProps<{ type: "inline_code"; code: string }>) {
+  const accepts = useWorkbenchAccepts(FILE_INTENT);
+  const file = accepts ? workspaceFileRef(props.node.code) : null;
+  if (!file) return <InlineCodeNode {...props} />;
+  return <button type="button" className="reading-file-link" title={`在工作台里打开 ${file.path}`} onClick={() => void openFileInWorkbench(file)}>
+    <InlineCodeNode {...props} />
+  </button>;
 }
 
 /** markstream 给链接写死英文 aria-label（"Link: 地址"），它会顶替链接文字成为读屏名：摘掉后读屏念的是正文里的链接文字。 */
