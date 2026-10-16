@@ -11,12 +11,16 @@ from plugins.ledger.contract import ARTIFACT_READ, MESSAGE_CATALOG, AttachmentRe
 inject = (MESSAGE_CATALOG, ARTIFACT_READ)
 # 与聊天端文本预览同一上限：大日志只看开头，其余交给下载。
 PREVIEW_BYTES = 512 * 1024
-_ID = Query(min_length=1, max_length=512)
+
+
+# 每个参数各用一个 Query：同一个 FieldInfo 被多个参数共用时，FastAPI 会把它们都绑定到第一个参数名上。
+def _id() -> str:
+    return Query(min_length=1, max_length=512)
 
 
 def register(app: FastAPI, context: DashboardContext) -> None:
     @app.get("/api/dashboard/preview_ui/text")
-    async def text(session: str = _ID, message: str = _ID, artifact: str = _ID) -> dict[str, object]:
+    async def text(session: str = _id(), message: str = _id(), artifact: str = _id()) -> dict[str, object]:
         ref = _attachment(context, session, message, artifact)
         raw = await _read_prefix(context, ref)
         complete = ref.size_bytes <= PREVIEW_BYTES
