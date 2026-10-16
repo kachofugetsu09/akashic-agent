@@ -1,0 +1,14 @@
+{
+  "contract": "conversation.tools.v2",
+  "entry": {
+    "required": ["id", "label", "render"],
+    "optional": ["order"]
+  },
+  "view": {
+    "active": "boolean",
+    "onActiveChange": ["active"],
+    "session": "string | null",
+    "onSessionChange": ["session"],
+    "requestAttention": ["noticeId"]
+  }
+}

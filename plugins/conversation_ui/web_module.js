@@ -133,8 +133,21 @@ function frameSource(sessionId) {
   return sessionId ? `/chat?embedded=1&session=${encodeURIComponent(sessionId)}` : "/chat?embedded=1";
 }
 
+// chat iframe 报告当前会话；宿主只转交给标签，不保存、不推导。
+function followChatSession(frame, onSession) {
+  const onMessage = (event) => {
+    if (event.source !== frame.contentWindow || event.origin !== window.location.origin) return;
+    const message = event.data;
+    if (!message || typeof message !== "object" || message.type !== "akashic.chat-session") return;
+    if (message.sessionId !== null && typeof message.sessionId !== "string") return;
+    onSession(message.sessionId || null);
+  };
+  window.addEventListener("message", onMessage);
+  return () => window.removeEventListener("message", onMessage);
+}
+
 function renderConversation(host, view, props) {
-  const tools = view.child("conversation.tools.v1");
+  const tools = view.child("conversation.tools.v2");
   const entries = checkTabs(tools.entries);
   const railActions = checkRailActions(props?.railActions);
   const root = document.createElement("div");
@@ -194,6 +207,7 @@ function renderConversation(host, view, props) {
     useDefaultWidth: savedWidth === null,
     // chat 的模态层（窄屏导航抽屉等）在 iframe 内，盖不住宿主的浮动开关；打开期间收起开关。
     chatOverlay: false,
+    session: null,
   };
   const handled = new Set();
   const attention = new Set();
@@ -201,6 +215,7 @@ function renderConversation(host, view, props) {
   const panels = new Map();
   const activeValues = new Map();
   const activeListeners = new Map(entries.map((entry) => [entry.id, new Set()]));
+  const sessionListeners = new Set();
   const disposers = [];
 
   function panelMaximum() {
@@ -329,6 +344,15 @@ function renderConversation(host, view, props) {
         listener(state.open && state.activeId === entry.id);
         return () => listeners.delete(listener);
       },
+      get session() { return state.session; },
+      onSessionChange(listener) {
+        if (typeof listener !== "function") {
+          throw new Error("ConversationTab session listener 必须是函数");
+        }
+        sessionListeners.add(listener);
+        listener(state.session);
+        return () => sessionListeners.delete(listener);
+      },
       requestAttention(noticeId) {
         if (typeof noticeId !== "string" || !noticeId || handled.has(noticeId)) return;
         handled.add(noticeId);
@@ -393,6 +417,11 @@ function renderConversation(host, view, props) {
   const stopThemeSync = syncFrameTheme(frame);
   const stopRailActions = connectRailActions(frame, railActions);
   const stopToolsNotice = announceTools(frame);
+  const stopSession = followChatSession(frame, (session) => {
+    if (session === state.session) return;
+    state.session = session;
+    for (const listener of [...sessionListeners]) listener(session);
+  });
   resize();
   update();
   return () => {
@@ -400,7 +429,9 @@ function renderConversation(host, view, props) {
     window.removeEventListener("message", followChatOverlay);
     frame.removeEventListener("load", resetChatOverlay);
     window.removeEventListener("resize", resize);
+    stopSession();
     activeListeners.clear();
+    sessionListeners.clear();
     for (const dispose of disposers.reverse()) dispose();
     stopToolsNotice();
     stopRailActions();
@@ -416,7 +447,7 @@ export function activate(ctx) {
     iconSvg: '<svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"></path></svg>',
     route: "",
     order: 10,
-    children: [{ id: "conversation.tools.v1", cardinality: "list" }],
+    children: [{ id: "conversation.tools.v2", cardinality: "list" }],
     render: renderConversation,
   }));
 }
