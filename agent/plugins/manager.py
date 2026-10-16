@@ -29,7 +29,7 @@ from agent.plugin_composition import (
 )
 from agent.plugin_composition.config_input import CONFIG_INPUT, load_config, save_config, config_bytes, config_refs, _credential_path
 from agent.plugin_composition.context import Fiber
-from agent.plugin_composition.endpoints import save_endpoint_plan
+from agent.plugin_composition.endpoints import GUARD_PROTOCOL, EndpointPlanWriter
 from agent.plugin_composition.credentials import CredentialClients
 from agent.plugin_composition.model import (
     resolve_declared_workspace_file,
@@ -178,6 +178,7 @@ class PluginManager:
         self._draining_generations: dict[str, list[PluginGeneration]] = {}
         # The formal local runtime has one Root and one live generation owner map.
         self._live_root: CompositionRoot | None = None
+        self._plan_writer: EndpointPlanWriter | None = None
         self._active_generations: dict[str, PluginGeneration] = {}
         self._live_execution_access: ExecutionAccess | None = None
         self._live_credentials: CredentialClients | None = None
@@ -469,6 +470,7 @@ class PluginManager:
                         if source.static_manifest is not None
                         else ""
                     ),
+                    "ingress_guard": "true" if source.static_manifest is not None and source.static_manifest.ingress_guard else "false",
                     "marketplace": source.marketplace,
                     "source_type": source.source_type,
                     **({"distribution_source": source.distribution_source, "wheel_tree_sha256": source.wheel_tree_sha256}
@@ -611,6 +613,9 @@ class PluginManager:
                 )
                 if generation is None:
                     if _source_failure_key_for_mod(mod) in self._source_failures:
+                        # 普通坏插件可跳过；守卫不能从首次选择中消失，否则重启后也会无门放行。
+                        if mod["ingress_guard"] == "true":
+                            raise RuntimeError(f"入口守卫准备失败，拒绝启动: {_resolve_plugin_id(mod)}")
                         continue
                     raise RuntimeError(f"完整插件组合加载失败: {_resolve_plugin_id(mod)}")
                 inputs.append(generation)
@@ -729,8 +734,8 @@ class PluginManager:
     ) -> None:
         """Build the single formal Root without compiling a snapshot or fallback Root."""
         generation_id = "plugins-live:" + secrets.token_hex(16)
-        root = CompositionRoot(generation_id, endpoint_publisher=lambda endpoints: save_endpoint_plan(
-            self._workspace / "runtime/endpoints.json", generation_id, endpoints))
+        self._plan_writer = EndpointPlanWriter(self._workspace / "runtime/endpoints.json", generation_id)
+        root = CompositionRoot(generation_id, endpoint_publisher=self._plan_writer.publish)
         generations: tuple[PluginGeneration, ...] = prepared
         cleanup_generations: tuple[PluginGeneration, ...] = generations
         runnable: tuple[PluginGeneration, ...] = ()
@@ -752,6 +757,9 @@ class PluginManager:
                         )
                     self._active_generations[generation.plugin_id] = generation
                 self._building_roots[root] = generations
+            # 选中即要求，且先于任何 apply：其他插件的路由不会在守卫就位前发布成无门。
+            for generation in generations:
+                self._require_ingress(generation)
             # Selection is the durable input boundary.  No import or apply is
             # allowed before this commit when booting a fresh selection.
             if expected_ref is None:
@@ -833,8 +841,15 @@ class PluginManager:
                 raise ValueError("归档插件身份不一致")
         generation.state = "loading"
 
+    def _require_ingress(self, generation: PluginGeneration) -> None:
+        if (self._plan_writer is not None and generation.static_manifest is not None
+                and generation.static_manifest.ingress_guard):
+            self._plan_writer.require(GUARD_PROTOCOL)
+
     async def _load_live_generation(self, generation: PluginGeneration) -> None:
         """Record only live pre-Fiber load failures before normal retention."""
+        # 运行中启用或换代守卫插件同样先登记要求；其 apply 失败时入口拒绝而非放行。
+        self._require_ingress(generation)
         try:
             await self._load_selected_generation(generation)
         except Exception as error:

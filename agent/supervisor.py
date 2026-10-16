@@ -654,10 +654,12 @@ def _start_settings_server(
         raise RuntimeError("AKASHIC_WEB_PORT 必须是 1 到 65535 的整数") from error
     if not 1 <= port <= 65_535:
         raise RuntimeError("AKASHIC_WEB_PORT 必须是 1 到 65535 的整数")
+    # Supervisor 的外壳先于 Core 监听；Core 就绪前不放行未经守卫的请求。
     server = create_web_shell_server(
         workspace,
         host=host,
         port=port,
+        wait_for_ready=True,
     )
     thread = threading.Thread(
         target=lambda: asyncio.run(server.serve()),
