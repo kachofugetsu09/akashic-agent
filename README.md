@@ -45,8 +45,22 @@ docker compose up -d --wait
 
 想在其他设备上通过域名访问时，用 Cloudflare Tunnel、nginx、Caddy 等工具把域名转发到这台机器的 `localhost:2236`。
 
-> [!WARNING]
-> 网页本身**没有登录**，并且可以执行 Shell 和读写文件。公开到域名时，必须在前面加一层认证，例如 Cloudflare Access 或反向代理的 basic auth。不要把 Compose 的端口改成 `0.0.0.0:2236` 直接开放。
+### 网页登录
+
+网页可以执行 Shell 和读写文件，所以默认带登录门（`web-auth` 插件），只有主人能进：
+
+- **第一次**：启动时随机生成初始密码，只写在启动日志里（`docker compose logs akashic | grep 初始密码`），不会发到任何聊天渠道。用户名 `akashic`。首次登录后需要设置自己的密码（至少 10 个字符）。
+- **本机免密**：在运行 Akashic 的机器上，`./start` 会自动帮浏览器登录。也可以运行下面的命令，得到一条 2 分钟内有效、只能用一次的登录链接：
+
+  ```bash
+  python main.py web-login                              # ./start 安装
+  docker compose exec akashic python main.py web-login  # Docker
+  ```
+
+- **记住设备**：默认 90 天内免登录，到期后重新登录一次。在别人的电脑上登录时，取消勾选“记住这台设备”。
+- **忘记密码**：运行 `python main.py web-passwd`（Docker 前面加 `docker compose exec akashic`），会重置为临时密码，所有设备退出。也可以在 Telegram/QQ 里让 Akashic 帮你执行。
+
+程序调用（SDK、CLI、programmatic）走本机 unix socket，不经过这道门。反向代理需要把原始 Host 转给 Akashic，例如 nginx 写 `proxy_set_header Host $host;`，否则网页的写操作和实时连接会被同源检查拒绝。公网访问请用 HTTPS。
 
 ## 其他启动方式
 

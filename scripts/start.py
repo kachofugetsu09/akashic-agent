@@ -17,7 +17,7 @@ import tempfile
 import socket
 import time
 from urllib.error import URLError
-from urllib.request import ProxyHandler, build_opener
+from urllib.request import ProxyHandler, Request, build_opener
 import webbrowser
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -182,6 +182,23 @@ def prepare_install(preparation: Preparation, core: Path, distribution: Path,
                      "--ensure-bundle", "--receipt", str(receipt)], cwd=core)
 
 
+def _local_request(state: Path, url: str) -> Request:
+    """本机进程读得到门禁密钥就是主人；未启用门禁插件时不带凭据。"""
+    secret = state / "workspace/web-auth/secret"
+    headers = {"Authorization": "Bearer " + secret.read_text(encoding="utf-8").strip()} if secret.exists() else {}
+    return Request(url, headers=headers)
+
+
+def _login_url(core: Path, python: Path, state: Path, url: str) -> str:
+    """向门禁插件要一条一次性登录链接；插件缺席时打开普通地址。"""
+    result = subprocess.run([str(python), str(core / "main.py"), "web-login", "--url", url,
+                             "--config", str(state / "config.toml"), "--workspace", str(state / "workspace")],
+                            cwd=core, capture_output=True, text=True, env=dict(
+                                os.environ, AKASHIC_PLUGIN_HOME=str(state / "plugin-home")))
+    lines = result.stdout.strip().splitlines()
+    return lines[-1] if result.returncode == 0 and lines and "/_auth/login#t=" in lines[-1] else url
+
+
 def run_service(preparation: Preparation, core: Path, python: Path,
                 state: Path, port: int, container: bool, open_browser: bool,
                 distribution: Path) -> int:
@@ -209,7 +226,8 @@ def run_service(preparation: Preparation, core: Path, python: Path,
                     with opener.open(url + "/api/shell/state", timeout=3) as response:
                         ready = json.load(response)["chatReady"]
                     if ready:
-                        with opener.open(url + "/api/chat/web-ui/bootstrap", timeout=3) as response:
+                        with opener.open(_local_request(state, url + "/api/chat/web-ui/bootstrap"),
+                                         timeout=3) as response:
                             json.load(response)["modules"]
                         break
                 except (URLError, TimeoutError, ConnectionError):
@@ -228,7 +246,7 @@ def run_service(preparation: Preparation, core: Path, python: Path,
                 preparation.step(f"WebUI 已就绪：{url}")
                 if open_browser:
                     try:
-                        webbrowser.open(url)
+                        webbrowser.open(_login_url(core, python, state, url))
                     except webbrowser.Error as error:
                         print(f"无法自动打开浏览器：{error}。请手动打开上方地址。", flush=True)
             print(f"按 Ctrl+C 停止服务。运行日志：{preparation.log}", flush=True)
