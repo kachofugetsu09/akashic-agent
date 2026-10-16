@@ -17,11 +17,14 @@ from collections import deque
 from contextlib import AsyncExitStack, asynccontextmanager
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, BinaryIO, Protocol
+from typing import TYPE_CHECKING, Any, BinaryIO, Protocol
 
 from agent.plugin_composition.execution import process_group_exists
 
 from .fork_server import ForkServerLost, ShellForkPool
+
+if TYPE_CHECKING:
+    from .terminals import PtyTerminals
 
 
 OUTPUT_MAX_BYTES = 1024 * 1024
@@ -191,6 +194,16 @@ class ShellProcessManager:
         self._owners_ready.set()
         self._rng = random.SystemRandom()
         self._forks = ShellForkPool()
+        self._terminals: PtyTerminals | None = None
+
+    @property
+    def terminals(self) -> PtyTerminals:
+        # 终端依赖 POSIX PTY 且引用本模块的读写助手，首次使用时才导入。
+        if self._terminals is None:
+            from .terminals import PtyTerminals
+
+            self._terminals = PtyTerminals()
+        return self._terminals
 
     @asynccontextmanager
     async def _owner_access(self, owner: str):
@@ -377,13 +390,16 @@ class ShellProcessManager:
                     if execution.owner_session_key == owner_session_key
                 ]
             report = await self._terminate_many(executions)
-
-            # 2. cleanup 成功解除隔离；失败保留 execution 与失败证据。
-            async with self._lock:
-                if report.failures:
-                    self._quarantined_owners[owner_session_key] = report
-                else:
-                    _ = self._quarantined_owners.pop(owner_session_key, None)
+            try:
+                if self._terminals is not None:
+                    await self._terminals.close_owner(owner_session_key)
+            finally:
+                # 2. 终端关闭失败也照常登记执行清理结果，再把终端的错误抛给调用方。
+                async with self._lock:
+                    if report.failures:
+                        self._quarantined_owners[owner_session_key] = report
+                    else:
+                        _ = self._quarantined_owners.pop(owner_session_key, None)
             return report
 
     async def shutdown(self) -> ExecutionCleanupReport:
@@ -398,9 +414,13 @@ class ShellProcessManager:
                     async with self._spawn_lock, self._lock:
                         executions = list(self._executions.values())
                     report = await self._terminate_many(executions)
-                    # 在飞执行清理确认后才关闭 fork server；未确认的执行保留 server 以便后续 wait。
-                    if not report.failures:
-                        await self._forks.close()
+                    try:
+                        if self._terminals is not None:
+                            await self._terminals.shutdown()
+                    finally:
+                        # 终端关闭失败不跳过 fork server 的收尾；未确认的执行保留 server 以便后续 wait。
+                        if not report.failures:
+                            await self._forks.close()
                     return report
             finally:
                 self._owners_ready.set()

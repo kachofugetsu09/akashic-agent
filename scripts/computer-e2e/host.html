@@ -17,7 +17,7 @@ const ctx = { http: {
   request: (path, options) => fetch(path, options),
   webSocketUrl: path => location.origin.replace(/^http/, 'ws') + path,
 }, ui: { inject: (point, mount) => mount({ register: value => {
-  if (point === 'conversation.tools.v1') entry = value; else page = value;
+  if (point === 'conversation.tools.v2') entry = value; else page = value;
   return () => {};
 } }) } };
 computer(ctx); conversation(ctx);

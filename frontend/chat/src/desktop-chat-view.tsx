@@ -14,6 +14,7 @@ import { ComposerStatsLine } from "./composer-stats-line";
 import { ThinkingPlaceholder } from "./thinking-placeholder";
 import { DesktopComposer, type ComposerApi } from "./desktop-composer";
 import { JobListAction } from "./job-list-action";
+import { onWorkbenchQuote } from "./shell-workbench";
 import { DesktopConversationMessages, DesktopTimelineMessages, messageDayKey, withoutLeadingOrphanResults } from "./desktop-conversation";
 import { MediaGalleryViewer, ReplyActivityView } from "./message-view";
 import { MessageSquarePlus } from "lucide-react";
@@ -49,6 +50,11 @@ export function DesktopChatView({ embeddedShell, controller }: DesktopChatViewPr
   const lastInput = useMemo(() => lastUserInput(controller.timelineMessages), [controller.timelineMessages]);
   // 改一改再问：原文接在已有草稿之后，不覆盖用户正在写的内容。
   const editInput = useCallback((text: string) => composerApi.current?.insertDraft(text, { append: true }), []);
+  // 工具区的“引用到对话”：宿主已核对过会话，这里再核对一次，切走后迟到的引用不写进别的会话草稿。
+  useEffect(() => onWorkbenchQuote(({ session, text, source }) => {
+    if (session !== controller.activeSessionId) return;
+    composerApi.current?.insertDraft(`> ${source.replace(/\s+/g, " ")}\n\n${text}`, { append: true });
+  }), [controller.activeSessionId]);
   const replyGroups = useMemo(() => timelineReplyGroups(controller.timelineMessages, controller.replyActivities), [controller.timelineMessages, controller.replyActivities]);
   const inputStarts = useMemo(() => timelineInputStarts(controller.timelineMessages), [controller.timelineMessages]);
   const refreshTokens = timelineSourceRefreshTokens(controller.timelineMessages, controller.replyActivities, controller.timelineRefresh);

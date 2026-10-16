@@ -1,18 +1,14 @@
+import type { ConversationTabView } from "@akashic/conversation-tools-v2";
 import type { WebHostContextV1, WebUiDisposer } from "@akashic/web-ui-v1";
 import { ComputerDisplay } from "./display";
 import { BrowserDisplay } from "./browser-display";
 import { ClipboardPopover } from "./clipboard";
 import { ComputerEvents, type ComputerState } from "./computer-events";
 import { present, type ActionId, type ControlState, type LinkState, type PanelFacts, type RuntimeState } from "./panel-state";
-import { PanelSurface, type Target } from "./panel-view";
+import { PanelSurface, type Target, type ToolId } from "./panel-view";
 import { keysymForKey } from "./remote-input.js";
 import "./style.css";
 
-interface ConversationTabView {
-  readonly active: boolean;
-  onActiveChange(listener: (active: boolean) => void): WebUiDisposer;
-  requestAttention(noticeId: string): void;
-}
 // 这三种连接结果需要用户明确处理，轮询不自动重连。
 const SETTLED_LINKS: readonly LinkState[] = ["failed", "stale", "ended"];
 
@@ -20,8 +16,8 @@ const SETTLED_LINKS: readonly LinkState[] = ["failed", "stale", "ended"];
 function renderComputer(ctx: WebHostContextV1, host: HTMLElement, rawView: unknown): WebUiDisposer {
   const view = rawView as ConversationTabView;
   if (!view || typeof view.active !== "boolean" || typeof view.onActiveChange !== "function"
-    || typeof view.requestAttention !== "function") throw new Error("Computer 缺少 conversation.tools.v1 view");
-  const surface = new PanelSurface(id => void perform(id), id => select(id));
+    || typeof view.requestAttention !== "function") throw new Error("Computer 缺少 conversation.tools.v2 view");
+  const surface = new PanelSurface(id => void perform(id), id => select(id), id => void tool(id));
   const screen = surface.screen;
   const clipboard = new ClipboardPopover(surface.clipboardToggle, {
     paste: text => paste(text),
@@ -238,8 +234,31 @@ function renderComputer(ctx: WebHostContextV1, host: HTMLElement, rawView: unkno
     update();
   });
 
-  surface.fullscreenToggle.onclick = () =>
-    void (document.fullscreenElement ? document.exitFullscreen() : surface.root.requestFullscreen());
+  // 头部工具：都只读当前画面或地址，不改变控制权与连接。
+  async function tool(id: ToolId) {
+    const url = targets.find(item => item.id === selected)?.url ?? "";
+    try {
+      if (id === "fullscreen")
+        await (document.fullscreenElement ? document.exitFullscreen() : surface.root.requestFullscreen());
+      else if (id === "open-url") window.open(url, "_blank", "noopener");
+      else if (id === "copy-url") { await navigator.clipboard.writeText(url); surface.notify("已复制链接"); }
+      else if (id === "shot") {
+        if (!display || link !== "connected") throw new Error("画面还没连上");
+        save(await display.snapshot());
+        surface.notify("截图已保存");
+      }
+    } catch (error) { surface.notify(`${id === "shot" ? "截图" : "操作"}失败：${error instanceof Error ? error.message : String(error)}`); }
+  }
+
+  function save(blob: Blob) {
+    const link = document.createElement("a");
+    const stamp = new Date().toISOString().slice(0, 19).replace(/[-:]/g, "").replace("T", "-");
+    link.href = URL.createObjectURL(blob);
+    link.download = `computer-${stamp}.${blob.type === "image/jpeg" ? "jpg" : blob.type === "image/webp" ? "webp" : "png"}`;
+    link.click();
+    window.setTimeout(() => URL.revokeObjectURL(link.href), 1000);
+  }
+
   screen.addEventListener("keydown", inputKey, true);
   screen.addEventListener("keyup", inputKey, true);
   // 0084：人工打开面板唤醒一次。注册时的首次回调只报告现状，不算打开；
@@ -271,8 +290,9 @@ function renderComputer(ctx: WebHostContextV1, host: HTMLElement, rawView: unkno
 }
 
 export function activate(ctx: WebHostContextV1): WebUiDisposer {
-  return ctx.ui.inject("conversation.tools.v1", mount => mount.register({
-    id: "computer", label: "电脑", order: 10,
+  return ctx.ui.inject("conversation.tools.v2", mount => mount.register({
+    id: "computer", label: "电脑", order: 10, hint: "Agent 的浏览器和桌面", shortcut: "Mod+Shift+D", background: true,
+    icon: '<svg viewBox="0 0 24 24" aria-hidden="true"><rect x="3" y="4" width="18" height="12" rx="2"/><path d="M8 20h8M12 16v4"/></svg>',
     render(host, _entryView, props) { return renderComputer(ctx, host, props); },
   }));
 }

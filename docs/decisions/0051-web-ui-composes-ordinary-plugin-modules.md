@@ -87,7 +87,7 @@ generation、权限继承或领域状态。服务端 API 仍由原领域 owner �
 删除 `workbench-ui` 插件与 `workbench.panels.v2` 合同；Akasha、Wake 的 Web 入口只保留设置分节，
 后端只读观测接口不变。默认分发清单移除 `workbench-ui`，安装器按退役处理已选插件，不删除数据。
 
-扩展点保留在挂载树上：`shell.pages.v1`（顶层页面）、`conversation.tools.v1`（对话右侧工具区）、
+扩展点保留在挂载树上：`shell.pages.v1`（顶层页面）、`conversation.tools.v2`（对话右侧工具区，[0121](0121-conversation-workbench-tabs.md) 起替代 v1）、
 `shell.rail-actions.v1` 与两个设置挂载点。没有贡献者时界面不出现对应入口：只有一个页面时 Shell
 不渲染顶栏，没有工具标签时对话页不出现工具区开关，chat 标题带也不为它预留位置。
 

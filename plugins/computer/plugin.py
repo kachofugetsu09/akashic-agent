@@ -277,10 +277,10 @@ async def apply(ctx: Context) -> None:
     await ctx.require(UI).register(
         ctx, web="web_module.js",
         dashboard=lambda: import_module(".dashboard", __package__),
-        requires=("conversation.tools.v1",),
+        requires=("conversation.tools.v2",),
         provides=(),
         contract_digests={
-            "conversation.tools.v1": "ed47d69b84e946e27a2e297634e96bcc6afc72a3d3089caac1a14632703efb54",
+            "conversation.tools.v2": "dcbf5db629d4fa6fed4019ad91663f9af94c5b9a02f9e67c94b0745e40f19049",
         },
     )
     await ctx.require(INSTALLED_ASSETS).register(ctx, "skills", "skills")
