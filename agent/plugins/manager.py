@@ -575,10 +575,8 @@ class PluginManager:
         """从唯一完整选择启动；null 只允许首次固定安装输入。"""
         discovered = self.discover()
         self._recover_config_updates()
-        orphaned = self._reload_journal.orphaned_armed_updates()
-        if orphaned:
-            names = ", ".join(f"{item.update_id}:{item.plugin_id}" for item in orphaned)
-            raise RuntimeError(f"unsettled armed plugin updates require explicit settlement: {names}")
+        for update_id, plugin_id, outcome in self._reload_journal.settle_orphaned_installs(self.installed_plugins_home):
+            logger.warning("启动按磁盘指针结算中断安装: %s %s -> %s", update_id, plugin_id, outcome)
         selection_ref = self._selection.read()
         if self._live_root is not None:
             raise RuntimeError("load_all 不能重复启动正式 Root")
@@ -596,6 +594,7 @@ class PluginManager:
                 cleanup_receipt=receipts.get(action.tx_id),
             )
         if selection_ref is not None:
+            selection_ref = await self._adopt_installed_inputs(selection_ref, discovered)
             components = self._selection_components(selection_ref)
             await self._load_live_initial(components, expected_ref=selection_ref)
             return
@@ -628,6 +627,73 @@ class PluginManager:
                     except BaseException:
                         logger.exception("首次启动插件输入清理失败: %s", generation.plugin_id)
             raise
+
+    # 启动以磁盘为准：外置安装的当前指针与启停选择覆盖上次应用留下的 selection 输入。
+    async def _adopt_installed_inputs(self, selection_ref: str, discovered: list[dict[str, str]]) -> str:
+        # 1. 已选外置输入：停用则移除，制品与当前指针不同则换成当前制品。
+        choices = plugin_choices(self._workspace, self._distribution.root)
+        installed = {_resolve_plugin_id(mod): mod for mod in discovered if mod["source_type"] == "installed"}
+        # discovery 读不出的已提交制品：同一插件目录下、但不是当前运行代码的那一份。
+        broken = {failure.source_root for failure in self._source_failures.values()
+                  if failure.source_type == "installed" and failure.phase == "identity"}
+        components: list[str] = []
+        selected: set[str] = set()
+        for ref in self._selection_components(selection_ref):
+            record = self._selection.read_input(ref)
+            plugin_id = cast(str, record["plugin_id"])
+            mod = installed.get(plugin_id)
+            selected.add(plugin_id)
+            if record["source_type"] == "installed" and choices.get(plugin_id) is False:
+                continue
+            code = Path(cast(str, record["code"])).resolve()
+            if record["source_type"] == "installed" and mod is None and any(
+                    root.parent == code.parent and root != code for root in broken):
+                # 当前制品内容错误：插件不可用并保留诊断，不自动退回旧制品。
+                continue
+            # cache 缺失时保留原输入，由加载 fail loud，不静默丢掉已启用插件。
+            if record["source_type"] != "installed" or mod is None or (
+                Path(cast(str, record["code"])) == Path(mod["plugin_root"]).resolve()
+            ):
+                components.append(ref)
+            elif (replacement := await self._boot_input(mod, initial=False)) is not None:
+                components.append(replacement)
+        # 2. 已启用但尚未进入 selection 的外置安装，同样按当前制品加入。
+        for plugin_id, mod in sorted(installed.items()):
+            if plugin_id not in selected and choices.get(plugin_id) is True:
+                if (added := await self._boot_input(mod, initial=True)) is not None:
+                    components.append(added)
+        if tuple(components) == self._selection_components(selection_ref):
+            self._bind_installed_inputs(selection_ref)
+            return selection_ref
+        # 3. 一次 CAS 提交按磁盘换代后的完整选择；绑定在提交后补做，崩溃后下次启动仍会补。
+        operation = self._check_operation_commit()
+        committed = self._selection.commit(tuple(components), expected_ref=selection_ref)
+        operation.committed = committed
+        self._bind_installed_inputs(committed)
+        logger.warning("启动按磁盘指针与启停选择换代外置插件 selection")
+        return committed
+
+    # 每次启动把最终选中的外置输入接到已提交但未绑定的安装记录；按代码路径精确匹配，幂等。
+    def _bind_installed_inputs(self, selection_ref: str) -> None:
+        for ref in self._selection_components(selection_ref):
+            record = self._selection.read_input(ref)
+            if record["source_type"] == "installed":
+                self._reload_journal.bind_boot_input(
+                    cast(str, record["plugin_id"]), ref, Path(cast(str, record["code"])))
+
+    # 准备一个外置插件的启动输入；源码内容错误按首次启动规则只留诊断并跳过。
+    async def _boot_input(self, mod: dict[str, str], *, initial: bool) -> str | None:
+        try:
+            prepared = await run_file_io(lambda: prepare_plugin_input(
+                mod, workspace=self._workspace, selection=self._selection, initial=initial,
+            ))
+        except PluginSourceContentError as error:
+            phase = "compile" if isinstance(error, PluginSourceCompileError) else "identity"
+            self._remember_source_failures((self._source_failure_for_error(
+                mod, error, phase=phase, plugin_id=_resolve_plugin_id(mod) if phase == "compile" else None,
+            ),))
+            return None
+        return prepared.input_ref
 
     def _selection_components(self, ref: str) -> tuple[str, ...]:
         return self._selection.components(ref)
@@ -692,6 +758,7 @@ class PluginManager:
                 operation = self._check_operation_commit()
                 committed = self._selection.commit(components, expected_ref=None)
                 operation.committed = committed
+                self._bind_installed_inputs(committed)
             runnable_items: list[PluginGeneration] = []
             for generation in generations:
                 if not (generation.data_dir / CONFIG_INPUT).exists() and generation.config_projection:

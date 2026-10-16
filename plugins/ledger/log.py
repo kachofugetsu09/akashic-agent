@@ -418,9 +418,10 @@ class MessageLog:
         self._decoded_strong: dict[tuple[object, ...], Message] = {}
         self._decoded_owners: dict[tuple[object, ...], OwnerRecord] = {}
         self._decoded_attributes: dict[str, SessionAttributes] = {}
-        # 已提交消息的附件绑定只随消息同事务写入、本层不再变更；按 message_id
-        # 备忘查询结果，每轮材料准备只读取新增消息，由 _decode_lock 保护。
-        self._attachment_memo: dict[str, tuple[AttachmentRef, ...]] = {}
+        # 已提交消息的附件绑定只随消息同事务写入、本层不再变更；按 (Session, message_id)
+        # 备忘查询结果，每轮材料准备只读取新增消息，由 _decode_lock 保护。键含 Session：
+        # 命中缓存也不能绕过 reader 的会话授权。
+        self._attachment_memo: dict[tuple[str, str], tuple[AttachmentRef, ...]] = {}
         self._reads = _ReadLocal()
         self._path = Path(path).resolve()
         self._closed = False
@@ -1503,7 +1504,7 @@ class MessageReader:
         resolved: dict[str, tuple[AttachmentRef, ...]] = {}
         with log._decode_lock:
             for identity in identities:
-                cached = memo.get(identity)
+                cached = memo.get((self._session_id, identity))
                 if cached is not None:
                     resolved[identity] = cached
         missing = tuple(identity for identity in identities if identity not in resolved)
@@ -1530,7 +1531,7 @@ class MessageReader:
             # 回填与容量维护仍在锁内，但淘汰不再影响本次返回结果。
             with log._decode_lock:
                 for identity in missing:
-                    memo[identity] = resolved[identity]
+                    memo[(self._session_id, identity)] = resolved[identity]
                 while len(memo) > _ATTACHMENT_MEMO_SIZE:
                     _ = memo.pop(next(iter(memo)))
         return tuple(ref for identity in message_ids for ref in resolved[identity])
