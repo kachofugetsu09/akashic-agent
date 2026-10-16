@@ -86,6 +86,9 @@ plugin = "standard_tools@release"
 [rows."terminal"]
 plugin = "terminal@release"
 
+[rows."workspace_changes"]
+plugin = "workspace_changes@release"
+
 [rows."runtime_inspection"]
 plugin = "runtime_inspection@release"
 
