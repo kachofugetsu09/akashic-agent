@@ -1,13 +1,47 @@
-/* 终端标签：整块是终端底色；内容边距参照 kitty 的 window_padding。 */
+/* 终端标签：整块是终端底色，顶部一条细终端条；内容边距参照 kitty 的 window_padding。 */
+/* 内容（终端条、xterm）不决定标签宽度：多终端时终端条在条内滚动，xterm 按可见宽度排版。 */
 .terminal-root {
   display: flex;
   flex-direction: column;
   height: 100%;
+  min-width: 0;
   min-height: 0;
+  contain: inline-size;
   background: var(--ak-paper-sheet);
   color: var(--ak-ink-primary);
 }
 
+.terminal-bar,
+.terminal-search {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  padding: 3px 6px;
+  border-bottom: 1px solid var(--ak-rule-subtle);
+}
+
+.terminal-strip {
+  display: flex;
+  flex: 1;
+  min-width: 0;
+  gap: 2px;
+  overflow-x: auto;
+  scrollbar-width: none;
+}
+
+.terminal-tab {
+  display: flex;
+  flex: 0 1 auto;
+  align-items: center;
+  min-width: 0;
+  max-width: 240px;
+  border-radius: 6px;
+}
+
+.terminal-tab:has([aria-current="true"]) { background: var(--ak-paper-raised); }
+
+.terminal-tab-name,
+.terminal-tab-close,
 .terminal-tool {
   border: 0;
   border-radius: 6px;
@@ -17,9 +51,57 @@
   cursor: pointer;
 }
 
+.terminal-tab-name {
+  overflow: hidden;
+  min-width: 0;
+  padding: 6px 4px 6px 10px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.terminal-tab-name[aria-current="true"] { color: var(--ak-ink-primary); }
+.terminal-tab-name[data-state="exited"],
+.terminal-tab-name[data-state="closing"] { text-decoration: line-through; opacity: 0.7; }
+.terminal-tab-name[data-state="reconnecting"]::after { content: " ·"; color: var(--ak-rule-strong); }
+
+.terminal-tab-close {
+  width: 24px;
+  height: 24px;
+  margin-inline-end: 2px;
+  opacity: 0;
+}
+
+.terminal-tab:hover .terminal-tab-close,
+.terminal-tab:has([aria-current="true"]) .terminal-tab-close,
+.terminal-tab-close:focus-visible { opacity: 1; }
+
 .terminal-tool { padding: 6px 8px; white-space: nowrap; }
+.terminal-new { font-size: 15px; padding-block: 3px; }
+
+.terminal-tab-name:hover,
+.terminal-tab-close:hover,
 .terminal-tool:hover { color: var(--ak-ink-primary); background: var(--ak-paper-raised); }
-.terminal-tool:focus-visible { outline: 2px solid var(--ak-rule-focus); outline-offset: -2px; }
+
+.terminal-tab-name:focus-visible,
+.terminal-tab-close:focus-visible,
+.terminal-tool:focus-visible,
+.terminal-search-input:focus-visible {
+  outline: 2px solid var(--ak-rule-focus);
+  outline-offset: -2px;
+}
+
+.terminal-search[hidden] { display: none; }
+
+.terminal-search-input {
+  flex: 1;
+  min-width: 0;
+  padding: 5px 8px;
+  border: 1px solid var(--ak-rule-default);
+  border-radius: 6px;
+  color: var(--ak-ink-primary);
+  background: var(--ak-paper-canvas);
+  font: 12px/1.2 "JetBrains Mono", ui-monospace, monospace;
+}
 
 .terminal-stage {
   position: relative;
@@ -57,7 +139,10 @@
 .terminal-notice-text { margin: 0; color: var(--ak-ink-secondary); font-size: 13px; }
 .terminal-notice .terminal-tool { border: 1px solid var(--ak-rule-default); }
 
-/* 触控：可点区域至少 44px */
+/* 触控：可点区域至少 44px；关闭钮常显 */
 @media (pointer: coarse) {
-  .terminal-tool { min-height: 44px; }
+  .terminal-tab { flex-shrink: 0; }
+  .terminal-tab-name,
+  .terminal-tool { min-width: 44px; min-height: 44px; }
+  .terminal-tab-close { width: 44px; height: 44px; opacity: 1; }
 }

@@ -2,6 +2,8 @@ import type { WebHostContextV1 } from "@akashic/web-ui-v1";
 import { Terminal, type ITheme } from "@xterm/xterm";
 import { ClipboardAddon } from "@xterm/addon-clipboard";
 import { FitAddon } from "@xterm/addon-fit";
+import { ImageAddon } from "@xterm/addon-image";
+import { SearchAddon } from "@xterm/addon-search";
 import { Unicode11Addon } from "@xterm/addon-unicode11";
 import { WebLinksAddon } from "@xterm/addon-web-links";
 import { WebglAddon } from "@xterm/addon-webgl";
@@ -56,6 +58,8 @@ export class Pane {
   readonly element = document.createElement("div");
   readonly term: Terminal;
   readonly fit = new FitAddon();
+  readonly search = new SearchAddon();
+  title = "";
   private socket: WebSocket | null = null;
   private offset = 0;
   private attempt = 0;
@@ -63,8 +67,13 @@ export class Pane {
   private wanted = false;
   // 已显示过退出提示；之后不再连接，重新开始时清除。
   private noticed = false;
+  // 每次连上后的第一帧是积压输出的回放；其中旧的查询（CSI 14t、DA1 等）xterm 会再应答一遍，
+  // 解析这一帧期间的应答不能当输入送进 shell。
+  private caughtUp = false;
+  private replaying = false;
 
   disposed = false;
+  closing = false;
   private restarting = false;
 
   // session 固定为创建时的会话：会话切换后迟到的回调也不会连到别的会话。
@@ -78,14 +87,18 @@ export class Pane {
       cursorInactiveStyle: "outline", scrollback: 10_000, allowProposedApi: true, macOptionIsMeta: true,
       drawBoldTextInBrightColors: false, theme,
     });
-    for (const addon of [this.fit, new Unicode11Addon(), new ClipboardAddon(),
-      new WebLinksAddon((_event, uri) => window.open(uri, "_blank", "noopener"))]) this.term.loadAddon(addon);
+    // 图片：sixel 与 iTerm2 内联图（img2sixel、chafa、neofetch --sixel），并回报像素尺寸供程序缩放；
+    // kitty 图形协议要等 xterm.js 6.1 正式版。
+    for (const addon of [this.fit, this.search, new Unicode11Addon(), new ClipboardAddon(),
+      new WebLinksAddon((_event, uri) => window.open(uri, "_blank", "noopener")),
+      new ImageAddon({ storageLimit: 32 })]) this.term.loadAddon(addon);
     this.term.unicode.activeVersion = "11";
     this.term.open(this.element);
     this.useWebgl();
     this.term.attachCustomKeyEventHandler((event) => this.key(event));
     this.term.onData((data) => this.input(data));
     this.term.onResize(({ cols, rows }) => this.send({ type: "resize", cols, rows }));
+    this.term.onTitleChange((title) => { this.title = title; this.host.changed?.(this); });
   }
 
   // WebGL 渲染更接近原生终端的刷新速度；上下文丢失或不支持时退回 DOM 渲染。
@@ -99,6 +112,11 @@ export class Pane {
     }
   }
 
+  get label(): string {
+    const folder = this.facts.cwd.split("/").filter(Boolean).pop() ?? "~";
+    return this.title || `${this.facts.shell.split("/").pop() ?? "shell"} · ${folder}`;
+  }
+
   // Esc 留给终端里的程序（vim 等），不让工作台拿去还原或收起；Ctrl+Shift 组合交给标签处理。
   private key(event: KeyboardEvent): boolean {
     if (event.type !== "keydown") return true;
@@ -108,6 +126,7 @@ export class Pane {
   }
 
   private input(data: string): void {
+    if (this.replaying) return;
     if (this.facts.exited) {
       if (!data.includes("\r") || this.restarting) return;
       this.restarting = true;
@@ -133,6 +152,7 @@ export class Pane {
     const visible = this.wanted;
     this.disconnect();
     this.facts = facts;
+    this.title = "";
     this.offset = 0;
     this.noticed = false;
     this.term.reset();
@@ -145,10 +165,14 @@ export class Pane {
     if (this.socket || this.noticed) return;
     const query = new URLSearchParams({ session: this.session, terminal: String(this.facts.id), offset: String(this.offset) });
     const socket = new WebSocket(this.ctx.http.webSocketUrl(`/api/dashboard/terminal/attach?${query}`));
+    this.caughtUp = false;
     socket.binaryType = "arraybuffer";
     socket.onopen = () => {
+      const recovered = this.attempt > 0;
       this.attempt = 0;
       this.send({ type: "resize", cols: this.term.cols, rows: this.term.rows });
+      // 重连成功立刻撤下“重新连接中”，不等下一次输出或标题变化。
+      if (recovered) this.host.changed?.(this);
     };
     socket.onmessage = (event) => this.receive(event.data);
     socket.onclose = (event) => this.closed(socket, event.code);
@@ -158,7 +182,10 @@ export class Pane {
   private receive(data: unknown): void {
     if (data instanceof ArrayBuffer) {
       this.offset += data.byteLength;
-      this.term.write(new Uint8Array(data));
+      if (this.caughtUp) return this.term.write(new Uint8Array(data));
+      this.caughtUp = true;
+      this.replaying = true;
+      this.term.write(new Uint8Array(data), () => { this.replaying = false; });
       return;
     }
     const message = JSON.parse(String(data)) as { type: string; offset?: number; code?: number | null };
@@ -185,6 +212,10 @@ export class Pane {
     this.attempt += 1;
     this.host.changed?.(this);
     this.timer = window.setTimeout(() => this.connect(), delay);
+  }
+
+  get reconnecting(): boolean {
+    return this.wanted && !this.facts.exited && this.attempt > 0 && this.socket?.readyState !== WebSocket.OPEN;
   }
 
   disconnect(): void {

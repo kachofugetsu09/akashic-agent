@@ -142,7 +142,8 @@ class _ProxyStreamingResponse(StreamingResponse):
 
 _WEB_CONTENT_SECURITY_POLICY = "; ".join((
     "default-src 'self'",
-    "script-src 'self' blob: 'unsafe-inline'",
+    # 终端图片（sixel）的解码器是 WebAssembly；只放行编译，不放行 eval。
+    "script-src 'self' blob: 'unsafe-inline' 'wasm-unsafe-eval'",
     "style-src 'self' 'unsafe-inline'",
     "img-src 'self' data: blob:",
     "font-src 'self' data:",
