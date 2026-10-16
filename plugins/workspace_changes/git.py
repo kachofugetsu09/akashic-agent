@@ -1,10 +1,12 @@
-"""经执行主机运行固定 argv 的 git：用临时 index 拍工作树快照，不动用户的 index、HEAD 与 refs。"""
+"""经执行主机运行固定 argv 的 git：用私有 index 拍工作树快照，不动用户的 index、HEAD 与 refs。"""
 from __future__ import annotations
 
 import asyncio
+from collections import OrderedDict
 from dataclasses import dataclass
 import os
 import secrets
+from typing import Literal
 
 from agent.plugin_composition import Context
 from plugins.host_execution.contract import PROCESSES
@@ -14,6 +16,10 @@ MAX_FILES = 2000
 MAX_PATCH_BYTES = 256 * 1024
 _LIST_TOKENS = 256 * 1024  # 首段 512 KiB 稳定保留，足够 2000 个文件的 numstat
 _ENV_KEYS = ("PATH", "HOME", "XDG_CONFIG_HOME", "SYSTEMROOT")
+_INDEX = "akashic-changes.index"
+_DIFF = ("diff", "--no-ext-diff", "--no-textconv", "--no-renames", "--no-color")
+
+Status = Literal["A", "M", "D", "T"]
 
 
 class GitUnavailable(Exception):
@@ -54,6 +60,26 @@ class Changes:
 
 
 @dataclass(frozen=True, slots=True)
+class FileStatus:
+    path: str
+    status: Status
+    added: int | None
+    removed: int | None
+
+
+@dataclass(frozen=True, slots=True)
+class FileList:
+    files: tuple[FileStatus, ...]
+    truncated: bool
+
+
+@dataclass(frozen=True, slots=True)
+class FilePatch:
+    patch: str
+    truncated: bool
+
+
+@dataclass(frozen=True, slots=True)
 class _Run:
     code: int | None
     output: bytes
@@ -65,6 +91,9 @@ class Git:
     def __init__(self, ctx: Context) -> None:
         self._ctx = ctx
         self._locks: dict[str, asyncio.Lock] = {}
+        # 树 id 是内容地址：同一对树的文件列表与 patch 不变，命中缓存总是正确的。
+        self._lists: _Lru[tuple[str, str, str], FileList] = _Lru(64)
+        self._patches: _Lru[tuple[str, str, str, str], FilePatch] = _Lru(256)
 
     # 在起始目录解析仓库；目录、仓库与 filter 的问题都给出原因，不当作“没有改动”。
     async def resolve(self, path: str | None) -> Repo:
@@ -86,35 +115,88 @@ class Git:
         gitmodules = await self._git(toplevel, "ls-files", "-z", "--", ".gitmodules")
         return Repo(toplevel, git_dir, gitmodules.code == 0 and bool(gitmodules.output))
 
-    # 临时 index 从 HEAD 的树开始，add -A 覆盖整个工作树；同一仓库同一时刻只跑一个。
+    # 每个仓库一个私有 index，跨调用复用：stat 没变的文件 add 时不再重新哈希；同一仓库同一时刻只跑一个。
+    # 出错（含取消）时删掉 index 与锁文件，下次从头建。
     async def snapshot(self, repo: Repo) -> Snapshot:
         lock = self._locks.setdefault(repo.git_dir, asyncio.Lock())
-        index = os.path.join(repo.git_dir, f"akashic-changes-{secrets.token_hex(8)}")
+        index = os.path.join(repo.git_dir, _INDEX)
         extra = {"GIT_INDEX_FILE": index}
         async with lock:
             try:
-                head = await self._git(repo.toplevel, "rev-parse", "-q", "--verify", "HEAD^{tree}")
-                start = ("read-tree", _text(head.output).strip()) if head.code == 0 else ("read-tree", "--empty")
-                _ = await self._must(repo.toplevel, *start, extra=extra)
-                base = await self._must(repo.toplevel, "write-tree", extra=extra)
-                _ = await self._must(repo.toplevel, "add", "-A", "--", ".", extra=extra)
-                tree = await self._must(repo.toplevel, "write-tree", extra=extra)
-                return Snapshot(base, tree)
-            finally:
+                try:
+                    return await self._snapshot(repo.toplevel, extra)
+                except GitUnavailable as error:
+                    if error.reason != "git_failed":
+                        raise
+                    # 私有 index 可能已坏（如 gc 清掉了只被它引用的对象、残留锁文件）：删掉重建一次。
+                    await self._remove(index)
+                    return await self._snapshot(repo.toplevel, extra)
+            except BaseException:
                 await self._remove(index)
+                raise
+
+    async def _snapshot(self, toplevel: str, extra: dict[str, str]) -> Snapshot:
+        # 1. 单树合并读入 HEAD 的树：与 HEAD 相同的条目保留 stat，其余回到 HEAD 的样子，
+        #    之前加进来、后来被忽略的新文件也随之去掉；unborn 时清空。
+        head = await self._git(toplevel, "rev-parse", "-q", "--verify", "HEAD^{tree}")
+        if head.code == 0:
+            base = _text(head.output).strip()
+            _ = await self._must(toplevel, "read-tree", "-m", base, extra=extra)
+        else:
+            _ = await self._must(toplevel, "read-tree", "--empty", extra=extra)
+            base = await self._must(toplevel, "write-tree", extra=extra)
+        # 2. add -A 覆盖整个工作树，只重新哈希 stat 变了的文件。
+        _ = await self._must(toplevel, "add", "-A", "--", ".", extra=extra)
+        return Snapshot(base, await self._must(toplevel, "write-tree", extra=extra))
 
     # 立刻算出文件列表与 patch 保存下来：裸树没有引用，gc 后不可读。
     async def diff(self, repo: Repo, before: str, after: str) -> Changes:
-        args = ("diff", "--no-ext-diff", "--no-textconv", "--no-renames", "--no-color")
-        listed = await self._git(repo.toplevel, *args, "-z", "--numstat", before, after, tokens=_LIST_TOKENS)
+        listed = await self._git(repo.toplevel, *_DIFF, "-z", "--numstat", before, after, tokens=_LIST_TOKENS)
         if listed.code != 0:
             raise _failed(listed)
         files, more = _numstat(listed)
-        patch = await self._git(repo.toplevel, *args, "--patch", before, after, tokens=MAX_PATCH_BYTES // 4)
+        patch = await self._git(repo.toplevel, *_DIFF, "--patch", before, after, tokens=MAX_PATCH_BYTES // 4)
         if patch.code != 0:
             raise _failed(patch)
         whole = patch.omitted == 0
         return Changes(files, _text(patch.output) if whole else None, more or not whole)
+
+    # 两棵树之间的文件列表：numstat 给行数，name-status 给增删改类型。
+    async def files(self, repo: Repo, before: str, after: str) -> FileList:
+        key = (repo.git_dir, before, after)
+        if (cached := self._lists.get(key)) is not None:
+            return cached
+        counted = await self._git(repo.toplevel, *_DIFF, "-z", "--numstat", before, after, tokens=_LIST_TOKENS)
+        named = await self._git(repo.toplevel, *_DIFF, "-z", "--name-status", before, after, tokens=_LIST_TOKENS)
+        for run in (counted, named):
+            if run.code != 0:
+                raise _failed(run)
+        numbers, more = _numstat(counted)
+        statuses = _statuses(named)
+        listed = FileList(tuple(FileStatus(item.path, statuses.get(item.path, "M"), item.added, item.removed) for item in numbers), more)
+        self._lists.put(key, listed)
+        return listed
+
+    # 单个文件的 patch，超过 MAX_PATCH_BYTES 时截在行边界。
+    async def patch(self, repo: Repo, before: str, after: str, path: str) -> FilePatch:
+        key = (repo.git_dir, before, after, path)
+        if (cached := self._patches.get(key)) is not None:
+            return cached
+        run = await self._git(repo.toplevel, *_DIFF, "--patch", before, after, "--", f":(literal){path}", tokens=MAX_PATCH_BYTES // 2)
+        if run.code != 0:
+            raise _failed(run)
+        data = _head(run, b"\n")
+        cut = len(data) > MAX_PATCH_BYTES
+        if cut:
+            data = data[: data.rfind(b"\n", 0, MAX_PATCH_BYTES) + 1]
+        found = FilePatch(_text(data), cut or bool(run.omitted))
+        self._patches.put(key, found)
+        return found
+
+    # 只读查询：成功时返回去掉首尾空白的输出，失败返回 None。
+    async def query(self, repo: Repo, *args: str, tokens: int = 4096) -> str | None:
+        run = await self._git(repo.toplevel, *args, tokens=tokens)
+        return _text(run.output).strip() if run.code == 0 else None
 
     # 声明了 filter 的仓库（含 LFS）不拍快照：add 会执行外部程序。只配了驱动、没有属性用到时照常。
     async def _refuse_filters(self, toplevel: str) -> None:
@@ -177,14 +259,18 @@ def _environment() -> dict[str, str]:
     return env
 
 
-def _numstat(run: _Run) -> tuple[tuple[FileChange, ...], bool]:
+# 输出过长时首段稳定保留，丢掉省略标记之后的部分和最后一条不完整记录。
+def _head(run: _Run, separator: bytes) -> bytes:
     data = run.output
     if run.omitted:
-        # 输出过长时首段稳定保留，丢掉省略标记之后的部分和最后一条不完整记录。
         data = data[: data.rfind(b"\n... ")]
-        data = data[: data.rfind(b"\0") + 1]
+        data = data[: data.rfind(separator) + 1]
+    return data
+
+
+def _numstat(run: _Run) -> tuple[tuple[FileChange, ...], bool]:
     files: list[FileChange] = []
-    for record in data.split(b"\0"):
+    for record in _head(run, b"\0").split(b"\0"):
         if not record:
             continue
         added, removed, path = record.split(b"\t", 2)
@@ -193,6 +279,31 @@ def _numstat(run: _Run) -> tuple[tuple[FileChange, ...], bool]:
             None if added == b"-" else int(added), None if removed == b"-" else int(removed),
         ))
     return tuple(files[:MAX_FILES]), bool(run.omitted) or len(files) > MAX_FILES
+
+
+# name-status -z 是“类型\0路径\0”成对出现；不认识的类型按修改算。
+def _statuses(run: _Run) -> dict[str, Status]:
+    parts = _head(run, b"\0").split(b"\0")
+    known: dict[bytes, Status] = {b"A": "A", b"M": "M", b"D": "D", b"T": "T"}
+    return {parts[i + 1].decode("utf-8", "replace"): known.get(parts[i], "M") for i in range(0, len(parts) - 1, 2)}
+
+
+class _Lru[K, V]:
+    def __init__(self, size: int) -> None:
+        self._size = size
+        self._items: OrderedDict[K, V] = OrderedDict()
+
+    def get(self, key: K) -> V | None:
+        value = self._items.get(key)
+        if value is not None:
+            self._items.move_to_end(key)
+        return value
+
+    def put(self, key: K, value: V) -> None:
+        self._items[key] = value
+        self._items.move_to_end(key)
+        while len(self._items) > self._size:
+            _ = self._items.popitem(last=False)
 
 
 def _failed(run: _Run) -> GitUnavailable:
