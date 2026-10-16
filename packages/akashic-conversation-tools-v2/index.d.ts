@@ -74,6 +74,15 @@ export interface ConversationTabView {
    * 单开工具关闭标签后仍保持挂载、不会收到这个通知，按 onActiveChange 暂停即可。
    */
   onClose(listener: () => void): WebUiDisposer;
+  /**
+   * 本会话里这个工具当前打开的全部实例 ID（含自己，含还没渲染过的）；单开工具为空。
+   * 多开工具据此判断自己记下的“实例 → 后端资源”对应里哪些已经过期（标签已关）。
+   */
+  readonly instances: readonly string[];
+  /** 新开这个工具的一个实例，放在本标签之后并聚焦；只用于多开工具（如终端的 Ctrl+Shift+T）。 */
+  openNew(): void;
+  /** 切到本组里相邻的标签（delta 为 1 或 -1）并聚焦；本组只有一个标签时返回 false，什么也不做。 */
+  cycle(delta: 1 | -1): boolean;
   /** 标签标题，≤ 80 字符，null 恢复为 label。 */
   setTitle(title: string | null): void;
   /** 标签自报的状态：busy 在标签上亮琥珀色点；detail（≤ 24 字符）只出现在提示与新标签页里，不占标签宽度。 */

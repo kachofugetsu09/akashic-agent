@@ -45,7 +45,12 @@
     "titleChars": 80,
     "indicatorDetailChars": 24,
     "instance": "string | null",
-    "onClose": []
+    "onClose": [],
+    "instances": "readonly string[]",
+    "openNew": [],
+    "cycle": [
+      "delta"
+    ]
   },
   "intent": {
     "fields": [

@@ -22,7 +22,7 @@ async def apply(ctx: Context) -> None:
             child, web="web_module.js", dashboard=lambda: dashboard,
             requires=("conversation.tools.v2",),
             contract_digests={
-                "conversation.tools.v2": "9d42ff15d101dd80177264d0e4220cc9192d770aaea6d38cc4e320c4d9035141",
+                "conversation.tools.v2": "21cb91d7d41382dd349067aa5adfb61690a6791b8027c5ff1c7c0bb96fee8bf4",
             },
         )
 
