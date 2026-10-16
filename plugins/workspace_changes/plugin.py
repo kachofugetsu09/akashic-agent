@@ -1,4 +1,4 @@
-"""会话工作目录的改动：未提交的差异与每轮前后的差异，只读统计，不改用户的 index、HEAD 与 refs。"""
+"""会话工作目录的改动：按范围（未提交、本分支、单个提交）查看，每轮记下摘要；只读，不改用户的 index、HEAD 与 refs。"""
 from typing import cast
 
 from agent.plugin_composition import Context
@@ -15,7 +15,7 @@ from .changes import WORKSPACE_CHANGES, WorkspaceChanges
 api_version = 3
 name = "workspace_changes"
 version = "1.0.0"
-desc = "统计会话工作目录（git 仓库）每轮与未提交的改动"
+desc = "查看会话工作目录（git 仓库）的改动，回复下方给出每轮的摘要"
 author = "Akashic Core"
 inject = (PROCESSES, WORKING_DIRECTORY, MESSAGE_CATALOG, OWNER_STATE, TURN_PROJECTION)
 workspace_roots = ()
@@ -41,7 +41,7 @@ async def apply(ctx: Context) -> None:
 
     _ = await ctx.inject((UI, WORKSPACE_CHANGES), register_ui, name="workspace-changes-ui")
 
-    # 回复下方的摘要只要计数，不把整份文件列表送进聊天界面。
+    # 回复下方的摘要只要计数与第一个文件（点开时定位），不把整份文件列表送进聊天界面。
     async def message_ui(child: Context) -> None:
         async def query(method: str, payload: dict[str, object], *, session_id: str | None, turn_id: str | None) -> dict[str, object]:
             message_id = payload.get("message_id")
@@ -62,6 +62,7 @@ def summarize(turn: dict[str, object]) -> dict[str, object]:
     files = cast(list[dict[str, object]], turn.get("files") or [])
     return {
         "phase": turn["phase"], "turn_id": turn.get("turn_id"), "error": turn.get("error"),
+        "path": files[0]["path"] if files else None,
         "files": len(files), "added": sum(cast(int, item["added"] or 0) for item in files),
         "removed": sum(cast(int, item["removed"] or 0) for item in files),
         "uncertain": bool(turn.get("baseline_late") or turn.get("end_late") or turn.get("truncated")),

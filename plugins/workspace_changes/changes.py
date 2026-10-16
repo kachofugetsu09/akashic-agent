@@ -8,12 +8,13 @@ from agent.plugin_composition import Context, ServiceKey
 from core.common.file_io import run_file_io
 from plugins.standard_tools.contract import WORKING_DIRECTORY
 
-from .git import Changes, Git, GitUnavailable, Repo
+from .git import Git, GitUnavailable, Repo
 from .turns import TurnWindows
 
 MAX_COMMITS = 30
 SCOPE = re.compile(r"wt|base|[0-9a-f]{7,64}")
 OID = re.compile(r"[0-9a-f]{40}|[0-9a-f]{64}")
+_BASE_CANDIDATES = ("refs/remotes/origin/HEAD", "refs/remotes/origin/main", "refs/remotes/origin/master", "refs/heads/main", "refs/heads/master")
 _EMPTY_TREE = {40: "4b825dc642cb6eb9a060e54bf8d69288fbee4904", 64: "6ef19b41225c5369f1c104d45d8d85efa9b057b53b14b4b9b939dd74decc5321"}
 
 
@@ -46,16 +47,6 @@ class WorkspaceChanges:
         snapshot = await run_file_io(lambda: directories.snapshot(session))
         return await self.git.resolve(snapshot.path)
 
-    # 未提交：拍一次工作树快照与 HEAD 比较，含未跟踪的新文件；unborn 时与空树比较。
-    async def uncommitted(self, session: str) -> dict[str, object]:
-        try:
-            async with self._ctx.runtime_scope():
-                repo = await self.repo(session)
-                snapshot = await self.git.snapshot(repo)
-                return view(repo, await self.git.diff(repo, snapshot.base, snapshot.tree))
-        except GitUnavailable as error:
-            return {"status": "unavailable", **error.view()}
-
     # 一个范围的文件列表（不含 patch）：wt 未提交，base 本分支全部改动，十六进制为单个提交。
     async def scope(self, session: str, scope: str) -> dict[str, object]:
         try:
@@ -81,6 +72,7 @@ class WorkspaceChanges:
     async def _scope(self, repo: Repo, scope: str) -> dict[str, object]:
         # 1. 分支信息；找不到基线时 base 退回未提交的改动。
         branch = await self._branch(repo)
+        snapshot = None
         if scope in ("wt", "base"):
             snapshot = await self.git.snapshot(repo)
             if scope == "base" and branch.merge_base is not None:
@@ -97,24 +89,26 @@ class WorkspaceChanges:
             "base_unknown": branch.merge_base is None, "commits": [asdict(item) for item in branch.commits],
             "scope": scope, "before": before, "after": after, "files": [asdict(item) for item in listed.files],
             "truncated": listed.truncated, "submodules": repo.submodules,
+            "skipped": list(snapshot.skipped) if snapshot is not None else [],
         }
 
     async def _branch(self, repo: Repo) -> _Branch:
         name = await self.git.query(repo, "symbolic-ref", "-q", "--short", "HEAD")
-        base_ref = await self._default_branch(repo)
-        merge_base = None if base_ref is None else await self.git.query(repo, "merge-base", base_ref, "HEAD")
+        base = await self._default_branch(repo)
+        # 用完整引用名求 merge-base：同名的 tag 与分支不会有歧义。
+        merge_base = None if base is None else await self.git.query(repo, "merge-base", base, "HEAD")
         commits = () if merge_base is None else await self._commits(repo, merge_base)
-        return _Branch(name, base_ref, merge_base, commits)
+        return _Branch(name, None if base is None else _short(base), merge_base, commits)
 
-    # 默认分支：origin/HEAD 指向的远端分支，否则本地的 main 或 master。
+    # 默认分支（完整引用名）：origin/HEAD 指向且仍存在的远端分支，否则 origin/main、origin/master、本地 main、master。
+    # 远端优先：本地 main 常常落后，拿它当基线会混进远端已有的提交。一次 for-each-ref 列出全部候选。
     async def _default_branch(self, repo: Repo) -> str | None:
-        remote = await self.git.query(repo, "symbolic-ref", "-q", "--short", "refs/remotes/origin/HEAD")
-        if remote:
-            return remote
-        for name in ("main", "master"):
-            if await self.git.query(repo, "rev-parse", "-q", "--verify", f"refs/heads/{name}^{{commit}}") is not None:
-                return name
-        return None
+        listed = await self.git.query(repo, "for-each-ref", "--format=%(refname)\t%(symref)", *_BASE_CANDIDATES)
+        refs = {ref: symref for ref, _, symref in (line.partition("\t") for line in (listed or "").splitlines())}
+        target = refs.get("refs/remotes/origin/HEAD")
+        if target and target in refs:
+            return target
+        return next((ref for ref in _BASE_CANDIDATES[1:] if ref in refs), None)
 
     # merge_base..HEAD 的提交，新的在前；记录以 NUL 分隔，字段以 0x1f 分隔，标题放最后。
     async def _commits(self, repo: Repo, merge_base: str) -> tuple[Commit, ...]:
@@ -141,11 +135,8 @@ class WorkspaceChanges:
         return found
 
 
-def view(repo: Repo, changes: Changes) -> dict[str, object]:
-    return {
-        "status": "ok", "repo": repo.toplevel, "submodules": repo.submodules,
-        "files": [asdict(item) for item in changes.files], "patch": changes.patch, "truncated": changes.truncated,
-    }
+def _short(ref: str) -> str:
+    return ref.removeprefix("refs/remotes/").removeprefix("refs/heads/")
 
 
 WORKSPACE_CHANGES = ServiceKey[WorkspaceChanges]("workspace_changes.service.v1")
