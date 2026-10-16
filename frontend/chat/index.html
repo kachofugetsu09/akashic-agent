@@ -119,15 +119,8 @@
     </style>
   </head>
   <body>
-    <script>
-      // 与 use-desktop-chat-controller 的 requestedSessionId 同一判断：URL 的非空 session 参数或标签页记住的会话。
-      // 壳不知道外壳状态：外壳仍在启动或不可用时，应用会把首帧让给引导页，这一次版式切换是有意的。
-      try {
-        if (!new URLSearchParams(location.search).get("session") && !sessionStorage.getItem("akashic.chat.active-session")) {
-          document.documentElement.setAttribute("data-boot-home", "");
-        }
-      } catch (error) {}
-    </script>
+    <!-- 首帧前决定骨架版式；聊天页 CSP 为 script-src 'self'，不能内联，作为同源阻塞脚本加载。 -->
+    <script src="/assets/boot.js"></script>
     <div id="root">
       <div class="boot-shell" role="status" aria-label="界面载入中">
         <aside class="boot-shell__rail">
