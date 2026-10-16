@@ -909,4 +909,3 @@ async def _terminal_operation(terminals: TerminalBackend, request: pb.TerminalRe
 
 if __name__ == "__main__":
     raise SystemExit(asyncio.run(main(tuple(sys.argv[1:]), workspace=Path.cwd(), config_path=Path("config.toml"))))
-
