@@ -470,6 +470,7 @@ class PluginManager:
                         if source.static_manifest is not None
                         else ""
                     ),
+                    "ingress_guard": "true" if source.static_manifest is not None and source.static_manifest.ingress_guard else "false",
                     "marketplace": source.marketplace,
                     "source_type": source.source_type,
                     **({"distribution_source": source.distribution_source, "wheel_tree_sha256": source.wheel_tree_sha256}
@@ -613,6 +614,9 @@ class PluginManager:
                 )
                 if generation is None:
                     if _source_failure_key_for_mod(mod) in self._source_failures:
+                        # 普通坏插件可跳过；守卫不能从首次选择中消失，否则重启后也会无门放行。
+                        if mod["ingress_guard"] == "true":
+                            raise RuntimeError(f"入口守卫准备失败，拒绝启动: {_resolve_plugin_id(mod)}")
                         continue
                     raise RuntimeError(f"完整插件组合加载失败: {_resolve_plugin_id(mod)}")
                 inputs.append(generation)

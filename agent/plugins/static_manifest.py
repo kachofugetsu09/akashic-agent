@@ -114,15 +114,23 @@ def load_static_plugin_manifest(plugin_root: Path) -> StaticPluginManifest:
 
 # 入口守卫插件被选中即要求守卫在场；声明必须是顶层字面 True，发现阶段不执行插件。
 def _plugin_ingress_guard(path: Path) -> bool:
-    tree = _parse_source_tree(path, path.read_text(encoding="utf-8"))
+    """按源码内容缓存守卫声明，和身份、命令入口共用事实缓存。"""
+    source = path.read_text(encoding="utf-8")
+    cached = _read_fact("ingress_guard", source)
+    if isinstance(cached, bool):
+        return cached
+    tree = _parse_source_tree(path, source)
     values = [statement.value for statement in tree.body
               if isinstance(statement, ast.Assign) and len(statement.targets) == 1
               and isinstance(statement.targets[0], ast.Name) and statement.targets[0].id == "ingress_guard"]
     if not values:
+        _write_fact("ingress_guard", source, False)
         return False
     if len(values) != 1 or not isinstance(values[0], ast.Constant) or not isinstance(values[0].value, bool):
         raise PluginSourceContentError("ingress_guard 必须是单次字面 bool 声明")
-    return values[0].value
+    guard = values[0].value
+    _write_fact("ingress_guard", source, guard)
+    return guard
 
 
 def _plugin_entrypoints(path: Path) -> tuple[tuple[str, str], ...]:
