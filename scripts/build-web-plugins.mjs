@@ -107,17 +107,26 @@ await bundle({
   outfile: resolve(pluginsRoot, "models/message_ui.js"),
 });
 
-// 可视化使用同一份 frame 模板完成服务端预检与浏览器展示。
+// 可视化使用同一份 frame 模板完成服务端预检与浏览器展示；图表工具包内联进模板，不另开脚本入口。
+const visualCharts = await bundle({
+  entryPoints: [resolve(repoRoot, "frontend/plugins/visuals/src/charts.ts")],
+  bundle: true, format: "iife", target: "es2022", minify: true, write: false,
+});
+const visualFrameSource = await readFile(resolve(repoRoot, "frontend/plugins/visuals/src/frame.html"), "utf8");
+if (visualFrameSource.split("/*visual-charts*/").length !== 2) throw new Error("visuals frame.html 必须恰有一处 /*visual-charts*/ 占位符");
+const visualFrame = visualFrameSource
+  .replace("/*visual-charts*/", () => visualCharts.outputFiles[0].text.trim().replaceAll("</script", "<\\/script"));
 await bundle({
   entryPoints: [resolve(repoRoot, "frontend/plugins/visuals/src/plugin-ui.ts")],
   bundle: true, format: "esm", target: "es2022", minify: true,
   plugins: [{ name: "frame-template", setup(build) {
     build.onResolve({ filter: /\.html\?raw$/ }, args => ({ path: resolve(args.resolveDir, args.path.slice(0, -4)), namespace: "frame" }));
-    build.onLoad({ filter: /.*/, namespace: "frame" }, async args => ({ contents: await readFile(args.path, "utf8"), loader: "text" }));
+    build.onLoad({ filter: /.*/, namespace: "frame" }, async args => ({
+      contents: args.path.endsWith("frame.html") ? visualFrame : await readFile(args.path, "utf8"), loader: "text" }));
   } }],
   outfile: resolve(pluginsRoot, "visuals/message_ui.js"),
 });
-await copyFile(resolve(repoRoot, "frontend/plugins/visuals/src/frame.html"), resolve(pluginsRoot, "visuals/frame.html"));
+await writeFile(resolve(pluginsRoot, "visuals/frame.html"), visualFrame);
 await copyFile(resolve(repoRoot, "frontend/plugins/visuals/src/bootstrap.html"), resolve(pluginsRoot, "visuals/bootstrap.html"));
 
 const themeBuild = await bundle({ entryPoints: [resolve(repoRoot, "frontend/theme/src/theme-runtime.ts")],

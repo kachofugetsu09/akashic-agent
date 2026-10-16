@@ -1215,6 +1215,13 @@
   outline: none;
 }
 
+/* 展开瞬间到位、只淡入：思考常有几千像素，过渡高度每帧都要重排整段（Claude Desktop 同样不做高度动画）。 */
+.thinking-row > .process-content[data-state="open"] {
+  animation: thinking-content-in var(--ak-sys-duration-short) ease-out;
+}
+
+@keyframes thinking-content-in { from { opacity: 0; } }
+
 /* 同轮中途回复：正常流出但字色更淡，最终回复保持墨色。 */
 .timeline-narration {
   max-width: 72ch;
