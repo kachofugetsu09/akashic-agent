@@ -122,7 +122,7 @@ try {
   await navigating;
   pass("disconnecting a pending takeover releases owner without repeating admitted navigation");
 
-  // 2. 两份独立用户浏览器 Context 观看同一桌面，真实帧持续到达。
+  // 2. 画面同一时刻只给一个窗口：后打开的接走画面，先打开的提示另一个窗口正在看。
   browser = await chromium.launch({ executablePath, headless: true, args: ["--no-sandbox"] });
   const createPage = async (options = {}) => {
     const context = await browser.newContext({ viewport: { width: 1440, height: 900 }, ...options });
@@ -132,17 +132,18 @@ try {
     return page;
   };
   const first = await createPage(), second = await createPage();
-  const open = page => page.getByRole("button", { name: /^打开 电脑/ }).click();
+  const open = page => page.getByRole("button", { name: /^打开 浏览器/ }).click();
   const connected = page => page.waitForFunction(() => document.querySelector(".computer-status")?.textContent?.startsWith("只读观看"));
   const videoReady = page => page.waitForFunction(() => {
     const frame = document.querySelector(".computer-stream");
     return frame?.contentWindow?.fps > 0 && frame.contentWindow.selkiesTransport.readyState === 1;
   });
+  await open(second); await connected(second); await videoReady(second);
   await open(first); await connected(first); await videoReady(first);
-  await open(second); await connected(second); await videoReady(second); await videoReady(first);
+  await second.getByText("另一个窗口正在看这个浏览器").waitFor();
   assert.equal((await (await fetch(gateway + "/targets")).json()).control, false);
-  pass("two desktop viewers remain connected without taking input");
-  await first.screenshot({ path: join(artifacts, "desktop-two-viewers.png") });
+  pass("a second viewer takes the picture without taking input; the first explains why");
+  await first.screenshot({ path: join(artifacts, "browser-viewer.png") });
   const screen = first.locator(".computer-screen");
   const rect = await screen.boundingBox();
   await first.mouse.click(rect.x + rect.width / 2, rect.y + rect.height / 2);
@@ -202,7 +203,7 @@ try {
   await first.getByRole("textbox", { name: "剪贴板文字" }).fill(" Clipboard");
   // 粘贴前重新把焦点放回匿名输入框。
   await first.mouse.click(input.x, input.y);
-  await first.getByRole("button", { name: "粘贴到电脑" }).click();
+  await first.getByRole("button", { name: "粘贴到浏览器" }).click();
   await first.getByText("已粘贴", { exact: true }).waitFor();
   await first.getByRole("button", { name: "交还给 Agent" }).click();
   const changed = textResult(await action(`console.log(await pageA.playwright.evaluate(() => ({
@@ -239,7 +240,7 @@ try {
   pass("closing the panel releases its operation connection");
   await action("", 60000, { endTurn: true });
   const ended = await (await fetch(gateway + "/targets")).json();
-  assert.deepEqual(ended.targets.map(target => target.id), ["desktop"]);
+  assert.ok(ended.targets.length > 0 && ended.targets.every(target => !target.anonymous));
   pass("Turn end disposes anonymous targets without dropping the main profile");
   await action("var finalAnon = await agent.browsers.create(); var finalPage = await finalAnon.tabs.new();");
   const interrupted = await fetch(gateway + "/driver/run", {method:"POST", headers:{"Content-Type":"application/json"},
@@ -247,7 +248,7 @@ try {
       code:"await new Promise(resolve => setTimeout(resolve, 10000));", timeoutMs:100})});
   assert.equal(interrupted.status,500);
   assert.match((await interrupted.json()).error,/JS bindings for this session were reset/);
-  assert.deepEqual((await (await fetch(gateway+"/targets")).json()).targets.map(t=>t.id),["desktop"]);
+  assert.ok((await (await fetch(gateway+"/targets")).json()).targets.every(t=>!t.anonymous));
   assert.match(textResult(await action("console.log(typeof progress);")),/undefined/);
   pass("call timeout resets bindings and disposes anonymous contexts after confirmed cleanup");
   for(const [label,viewport] of [["desktop",{width:1440,height:900}],["mobile",{width:320,height:740}]]) {

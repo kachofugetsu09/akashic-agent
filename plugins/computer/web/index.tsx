@@ -1,7 +1,6 @@
 import type { ConversationTabView } from "@akashic/conversation-tools-v2";
 import type { WebHostContextV1, WebUiDisposer } from "@akashic/web-ui-v1";
 import { ComputerDisplay } from "./display";
-import { BrowserDisplay } from "./browser-display";
 import { ClipboardPopover } from "./clipboard";
 import { ComputerEvents, type ComputerState } from "./computer-events";
 import { present, type ActionId, type ControlState, type LinkState, type PanelFacts, type RuntimeState } from "./panel-state";
@@ -10,14 +9,14 @@ import { keysymForKey } from "./remote-input.js";
 import "./style.css";
 
 // 这三种连接结果需要用户明确处理，轮询不自动重连。
-const SETTLED_LINKS: readonly LinkState[] = ["failed", "stale", "ended"];
+const SETTLED_LINKS: readonly LinkState[] = ["failed", "stale"];
 
 /** 控制器：采集事实、维持连接、执行动作。呈现规则在 panel-state，DOM 在 panel-view。 */
 function renderComputer(ctx: WebHostContextV1, host: HTMLElement, rawView: unknown): WebUiDisposer {
   const view = rawView as ConversationTabView;
   if (!view || typeof view.active !== "boolean" || typeof view.onActiveChange !== "function"
     || typeof view.requestAttention !== "function") throw new Error("Computer 缺少 conversation.tools.v2 view");
-  const surface = new PanelSurface(id => void perform(id), id => select(id), id => void tool(id));
+  const surface = new PanelSurface(id => void perform(id), id => { follow = false; void select(id); }, id => void tool(id));
   const screen = surface.screen;
   const clipboard = new ClipboardPopover(surface.clipboardToggle, {
     paste: text => paste(text),
@@ -27,7 +26,13 @@ function renderComputer(ctx: WebHostContextV1, host: HTMLElement, rawView: unkno
   host.replaceChildren(surface.root);
 
   let targets: Target[] = [];
-  let selected = "desktop";
+  // 正在画面里的标签；以状态流里的 front 为准，点击切换时先乐观更新。
+  let selected = "";
+  // 跟随 Agent：它新开标签时画面切过去；你手动选过标签后本轮不再跟随，Agent 开始新一轮时恢复。
+  let follow = true;
+  let known = new Set<string>();
+  // 正在切换的标签；请求结束前状态流里的旧 front 不覆盖它。
+  let showing = "";
   let runtime: RuntimeState = "loading";
   let runtimeError = "";
   let wakeError = "";
@@ -44,7 +49,7 @@ function renderComputer(ctx: WebHostContextV1, host: HTMLElement, rawView: unkno
   let active = view.active;
   let disposed = false;
   let lastNotice: number | null = null;
-  let display: ComputerDisplay | BrowserDisplay | null = null;
+  let display: ComputerDisplay | null = null;
   let retry = 0;
   let attempt = 0;
   const events = new ComputerEvents(ctx);
@@ -54,8 +59,7 @@ function renderComputer(ctx: WebHostContextV1, host: HTMLElement, rawView: unkno
     const target = targets.find(item => item.id === selected);
     const controlState: ControlState = control ? (link === "connected" ? "mine" : "taking") : busy ? "other" : "none";
     return { runtime, runtimeError: runtimeError || wakeError, link, linkError, control: controlState, agentActive,
-      targetKind: target?.kind ?? "desktop", targetTitle: target?.kind === "browser" ? target.title || target.url || "" : "",
-      wakeRequested, restartRequested, statusError };
+      anonymous: target?.anonymous ?? false, wakeRequested, restartRequested, statusError };
   }
 
   function update() {
@@ -65,8 +69,7 @@ function renderComputer(ctx: WebHostContextV1, host: HTMLElement, rawView: unkno
   }
 
   function releaseKeys() {
-    if (display instanceof ComputerDisplay)
-      for (const [code, keysym] of held) display.sendKey(keysym, code, false);
+    for (const [code, keysym] of held) display?.sendKey(keysym, code, false);
     held.clear();
   }
 
@@ -81,7 +84,6 @@ function renderComputer(ctx: WebHostContextV1, host: HTMLElement, rawView: unkno
   function inputKey(event: KeyboardEvent) {
     if (!control || link !== "connected") return;
     event.preventDefault();
-    if (display instanceof BrowserDisplay) { display.key(event); return; }
     if (event.type === "keydown" && (event.ctrlKey || event.metaKey) && event.key.toLowerCase() === "v") {
       releaseKeys();
       void navigator.clipboard.readText().then(paste).catch(error => clipboard.report(String(error)));
@@ -97,29 +99,23 @@ function renderComputer(ctx: WebHostContextV1, host: HTMLElement, rawView: unkno
   async function paste(value: string) {
     if (!control || !display || link !== "connected") throw new Error("请先接管操作");
     await display.clipboardPasteFrom(value);
-    if (display instanceof ComputerDisplay) {
-      display.sendKey(0xffe3, "ControlLeft", true);
-      display.sendKey(0x76, "KeyV", true);
-      display.sendKey(0x76, "KeyV", false);
-      display.sendKey(0xffe3, "ControlLeft", false);
-    }
+    display.sendKey(0xffe3, "ControlLeft", true);
+    display.sendKey(0x76, "KeyV", true);
+    display.sendKey(0x76, "KeyV", false);
+    display.sendKey(0xffe3, "ControlLeft", false);
   }
 
   function connect(token = "") {
     if (!active || runtime !== "ready" || disposed || SETTLED_LINKS.includes(link)) return;
-    const target = targets.find(item => item.id === selected);
-    if (!target) return;
     disconnect();
     control = token;
     link = "connecting";
     const current = ++attempt;
-    const next = target.kind === "desktop"
-      ? new ComputerDisplay(screen, ctx, { keydown: inputKey, keyup: inputKey,
-        blur: releaseKeys, paste: event => {
-          event.preventDefault();
-          void paste(event.clipboardData?.getData("text/plain") ?? "").catch(error => clipboard.report(String(error)));
-        } }, events, token)
-      : new BrowserDisplay(screen, ctx, selected, token);
+    const next = new ComputerDisplay(screen, ctx, { keydown: inputKey, keyup: inputKey,
+      blur: releaseKeys, paste: event => {
+        event.preventDefault();
+        void paste(event.clipboardData?.getData("text/plain") ?? "").catch(error => clipboard.report(String(error)));
+      } }, events, token, selected);
     display = next;
     next.addEventListener("connect", () => {
       if (attempt !== current) return;
@@ -131,6 +127,13 @@ function renderComputer(ctx: WebHostContextV1, host: HTMLElement, rawView: unkno
       if (attempt !== current) return;
       link = "failed";
       linkError = (event as CustomEvent<{ reason: string }>).detail.reason;
+      update();
+    });
+    // 画面同一时刻只给一个窗口：被别的窗口接走后不自动抢回，避免两边来回顶替。
+    next.addEventListener("superseded", () => {
+      if (attempt !== current) return;
+      link = "failed";
+      linkError = "另一个窗口正在看这个浏览器。点“重新连接”在这里继续看。";
       update();
     });
     next.addEventListener("stale", () => {
@@ -151,14 +154,25 @@ function renderComputer(ctx: WebHostContextV1, host: HTMLElement, rawView: unkno
     update();
   }
 
-  function select(id: string) {
-    if (id === selected && link === "connected") return;
+  // 切换标签只把它提到屏幕最前，画面连接不动；失败时回到状态流里的 front。
+  async function select(id: string) {
+    if (id === selected) return;
+    const previous = selected;
     selected = id;
-    link = "idle";
-    disconnect();
+    showing = id;
     surface.renderTargets(targets, selected);
-    connect();
     update();
+    try {
+      const response = await ctx.http.request("/api/dashboard/computer/show", {
+        method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ target: id }) });
+      if (!response.ok) throw new Error(`切换失败（${response.status}）`);
+    } catch (error) {
+      selected = targets.find(target => target.front)?.id ?? previous;
+      surface.renderTargets(targets, selected);
+      surface.notify(error instanceof Error ? error.message : String(error));
+    } finally {
+      if (showing === id) showing = "";
+    }
   }
 
   async function perform(id: ActionId) {
@@ -169,8 +183,7 @@ function renderComputer(ctx: WebHostContextV1, host: HTMLElement, rawView: unkno
     } else if (id === "reconnect") {
       link = "idle";
       connect();
-    } else if (id === "home") select("desktop");
-    else if (id === "reload") location.reload();
+    } else if (id === "reload") location.reload();
     else if (id === "copy-error") await navigator.clipboard.writeText(runtimeError || wakeError);
     else if (id === "restart") {
       // 3. 重启同样是长请求；失败时后端回到 failed 并带上原因，由状态流呈现。
@@ -203,21 +216,25 @@ function renderComputer(ctx: WebHostContextV1, host: HTMLElement, rawView: unkno
     runtime = state.browser.state as RuntimeState;
     runtimeError = state.browser.error;
     if (wakeOnState) { wakeOnState = false; wakeIfSleeping(); }
+    if (state.active && !agentActive) follow = true;
     agentActive = state.active;
     busy = state.control;
     if ((lastNotice !== null && lastNotice !== state.noticeId) || (lastNotice === null && state.active))
       view.requestAttention(`computer:${state.noticeId}`);
     lastNotice = state.noticeId;
-    if (JSON.stringify(targets) !== JSON.stringify(state.targets)) {
+    const front = showing || (state.targets.find(target => target.front)?.id ?? selected);
+    const opened = state.targets.filter(target => target.agent && !known.has(target.id)).at(-1);
+    const first = known.size === 0;
+    known = new Set(state.targets.map(target => target.id));
+    if (JSON.stringify(targets) !== JSON.stringify(state.targets) || front !== selected) {
       targets = state.targets;
+      selected = front;
       surface.renderTargets(targets, selected);
     }
+    if (opened && follow && !first && opened.id !== front) void select(opened.id);
     if (runtime !== "ready") {
       if (display) disconnect();
       if (link !== "stale") link = "idle";
-    } else if (!targets.some(target => target.id === selected)) {
-      if (display) disconnect();
-      link = "ended";
     } else if (active && !display) connect();
     update();
   }
@@ -262,7 +279,7 @@ function renderComputer(ctx: WebHostContextV1, host: HTMLElement, rawView: unkno
   screen.addEventListener("keydown", inputKey, true);
   screen.addEventListener("keyup", inputKey, true);
   // 0084：人工打开面板唤醒一次。注册时的首次回调只报告现状，不算打开；
-  // 之后保持打开不会再次唤醒，休眠后由用户点"唤醒电脑"。
+  // 之后保持打开不会再次唤醒，休眠后由用户点"唤醒浏览器"。
   function wakeIfSleeping() {
     if (runtime === "loading") wakeOnState = true;
     else if (runtime === "sleeping" && !runtimeError && !wakeError && !wakeRequested) void perform("wake");
@@ -291,8 +308,8 @@ function renderComputer(ctx: WebHostContextV1, host: HTMLElement, rawView: unkno
 
 export function activate(ctx: WebHostContextV1): WebUiDisposer {
   return ctx.ui.inject("conversation.tools.v2", mount => mount.register({
-    id: "computer", label: "电脑", order: 10, hint: "Agent 的浏览器和桌面", shortcut: "Mod+Shift+D", background: true,
-    icon: '<svg viewBox="0 0 24 24" aria-hidden="true"><rect x="3" y="4" width="18" height="12" rx="2"/><path d="M8 20h8M12 16v4"/></svg>',
+    id: "computer", label: "浏览器", order: 10, hint: "带你登录态的浏览器，Agent 和你都能用", shortcut: "Mod+Shift+D", background: true,
+    icon: '<svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="9"/><path d="M3 12h18M12 3a14 14 0 0 1 0 18M12 3a14 14 0 0 0 0 18"/></svg>',
     render(host, _entryView, props) { return renderComputer(ctx, host, props); },
   }));
 }

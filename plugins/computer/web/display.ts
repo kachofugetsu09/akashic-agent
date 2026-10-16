@@ -47,10 +47,11 @@ export class ComputerDisplay extends EventTarget {
     private readonly handlers: InputHandlers,
     private readonly events: ComputerEvents,
     private readonly control = "",
+    private readonly target = "",
   ) {
     super();
     this.frame.className = "computer-stream";
-    this.frame.title = "Computer 远程桌面";
+    this.frame.title = "浏览器画面";
     this.frame.tabIndex = this.control ? 0 : -1;
     this.frame.style.pointerEvents = this.control ? "auto" : "none";
     this.frame.allow = "clipboard-read; clipboard-write; fullscreen";
@@ -101,6 +102,7 @@ export class ComputerDisplay extends EventTarget {
     if (this.closed) return;
     const socketUrl = new URL(this.ctx.http.webSocketUrl("/api/dashboard/computer/stream"));
     if (this.control) socketUrl.searchParams.set("control", this.control);
+    if (this.control && this.target) socketUrl.searchParams.set("target", this.target);
     const socket = socketUrl.href;
     // srcdoc 的 location.origin 是 "null"；客户端消息使用真实的窗口 origin。
     const moduleUrl = this.blob(source.replaceAll("window.location.origin", "window.origin"), "text/javascript");
