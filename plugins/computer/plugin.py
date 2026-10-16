@@ -280,7 +280,7 @@ async def apply(ctx: Context) -> None:
         requires=("conversation.tools.v2",),
         provides=(),
         contract_digests={
-            "conversation.tools.v2": "5aa099a3c88e6964834e95c4c1e122fdae25ba8b8cda816f5fe0a9d4ffd958d3",
+            "conversation.tools.v2": "438131c0fee0caf2ba0c8509d9312ccda6c2c195ad4ce29c26da404e8d15292c",
         },
     )
     await ctx.require(INSTALLED_ASSETS).register(ctx, "skills", "skills")
