@@ -25,6 +25,7 @@ import { readJobStopResult, readJobsFrame, type JobView, type SessionJobs } from
 import { StreamProjectionStore } from "./stream-projection";
 import { canProjectWebStreamWithoutRoot, publishWebStreamChanges } from "./web-stream-projection";
 import { isGeneratingChatStatus, replyChatStatus, type ChatStatus } from "./web-chat-status";
+import { reportShellSession } from "./shell-rail-actions";
 import {
   ChatRequestError,
   chatHistoryPage,
@@ -241,6 +242,8 @@ export function useDesktopChatController() {
   const reloadPins = navigationPins.reload;
   const reloadPinsRef = useRef(reloadPins);
   useEffect(() => { reloadPinsRef.current = reloadPins; }, [reloadPins]);
+
+  useEffect(() => reportShellSession(activeSessionId), [activeSessionId]);
 
   useEffect(() => {
     activeSessionRef.current = activeSessionId;
