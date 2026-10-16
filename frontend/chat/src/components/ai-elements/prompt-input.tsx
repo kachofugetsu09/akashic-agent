@@ -43,7 +43,8 @@ export type RejectReason = "size" | "count";
 
 export interface AttachmentsContext {
   files: PromptInputFile[];
-  add: (files: File[] | FileList) => void;
+  /** 返回实际入列的个数：满额或超限时可能为 0。 */
+  add: (files: File[] | FileList) => number;
   remove: (id: string) => void;
   openFileDialog: () => void;
 }
@@ -101,6 +102,8 @@ export const PromptInput = ({
   const formRef = useRef<HTMLFormElement | null>(null);
   const submittingRef = useRef(false);
   const [submittedFileIds, setSubmittedFileIds] = useState<string[]>([]);
+  // 提交中的附件属于上一条消息，不占下一份草稿的名额。
+  const submittedRef = useRef<string[]>([]);
 
   const [files, setFiles] = useState<PromptInputFile[]>([]);
   // 附件与草稿一样按会话保留：切走时存到旧会话名下，切回时取出，不跟到别的会话里被发出去。
@@ -144,10 +147,10 @@ export const PromptInput = ({
       const all = Array.from(fileList);
       const sized = maxFileSize === undefined ? all : all.filter((file) => file.size <= maxFileSize);
       if (sized.length < all.length) onRejectFiles?.(all.filter((file) => !sized.includes(file)), "size");
-      const room = Math.max(0, maxFiles - filesRef.current.length);
+      const room = Math.max(0, maxFiles - filesRef.current.filter((file) => !submittedRef.current.includes(file.id)).length);
       const incoming = sized.slice(0, room);
       if (incoming.length < sized.length) onRejectFiles?.(sized.slice(room), "count");
-      if (!incoming.length) return;
+      if (!incoming.length) return 0;
       // Blob URL 在 updater 外创建：updater 可能被 React 重复调用，里面建的 URL 会有一份无人释放。
       const next: PromptInputFile[] = incoming.map((file) => ({
         filename: file.name,
@@ -158,6 +161,7 @@ export const PromptInput = ({
         url: URL.createObjectURL(file),
       }));
       setFiles((prev) => [...prev, ...next]);
+      return next.length;
     },
     [maxFileSize, maxFiles, onRejectFiles]
   );
@@ -265,7 +269,8 @@ export const PromptInput = ({
       // 提交中的附件由本次发送持有；编辑器仍可接收下一份草稿。
       const submitted = files.map(({ id, ...file }) => ({ id, file }));
       const submittedKey = attachmentKey;
-      setSubmittedFileIds(submitted.map((item) => item.id));
+      submittedRef.current = submitted.map((item) => item.id);
+      setSubmittedFileIds(submittedRef.current);
       form.reset();
 
       try {
@@ -277,6 +282,7 @@ export const PromptInput = ({
         // 发送者显示失败原因；原附件保留供重试，不清除后来输入的内容。
       } finally {
         submittingRef.current = false;
+        submittedRef.current = [];
         setSubmittedFileIds([]);
       }
     },
@@ -328,12 +334,13 @@ export const touchOnly = () => window.matchMedia("(hover: none) and (pointer: co
 export const PromptInputTextarea = ({
   onKeyDown,
   onKeyUp,
+  onBlur,
   className,
   placeholder = "What would you like to know?",
   pasteAsFile,
   ...props
 }: PromptInputTextareaProps) => {
-  // 粘贴事件不带修饰键：按键时记下 Shift，Ctrl/⌘+Shift+V 随后的粘贴据此照常插入。
+  // 粘贴事件不带修饰键：只在按下 Shift+V 时记下，紧随其后的粘贴照常插入；松键、失焦即清掉，菜单粘贴不受影响。
   const shiftHeld = useRef(false);
   const attachments = usePromptInputAttachments();
   const [isComposing, setIsComposing] = useState(false);
@@ -341,7 +348,7 @@ export const PromptInputTextarea = ({
   const handleKeyDown: KeyboardEventHandler<HTMLTextAreaElement> = useCallback(
     (e) => {
       // Call the external onKeyDown handler first
-      shiftHeld.current = e.shiftKey;
+      shiftHeld.current = e.shiftKey && e.code === "KeyV";
       onKeyDown?.(e);
 
       // If the external handler prevented default, don't run internal logic
@@ -395,34 +402,23 @@ export const PromptInputTextarea = ({
       if (!items) {
         return;
       }
-      // 1. 长文本转附件：几百行日志灌进输入框会淹没要说的话（Desktop 同样在 4KB 处转换）。
-      //    Office 类来源同时带文本与渲染图，按文本处理。
+      // 1. 先分出真正的文件：Office 类来源同时带文本、HTML 与一张渲染图，那张图只是文字的替代渲染。
       const text = event.clipboardData.getData("text/plain");
-      const officeLike = Boolean(text) && event.clipboardData.types.includes("text/html");
+      const pasted = Array.from(items, (item) => item.kind === "file" ? item.getAsFile() : null).filter((file): file is File => file !== null);
+      const rendering = Boolean(text) && event.clipboardData.types.includes("text/html")
+        && pasted.length === 1 && pasted[0].type.startsWith("image/");
+      const files = rendering ? [] : pasted;
+      // 2. 长文本转附件（Desktop 同样在 4KB 处转换），与同时粘贴的文件一起入列；一个都没接纳就照常插入文字。
       if (pasteAsFile && text && !shiftHeld.current && new Blob([text]).size >= pasteAsFile.bytes) {
+        const accepted = attachments.add([new File([text], pasteAsFile.filename, { type: "text/plain" }), ...files]);
+        if (!accepted) return;
         event.preventDefault();
-        attachments.add([new File([text], pasteAsFile.filename, { type: "text/plain" })]);
         pasteAsFile.onConverted?.(text.split("\n").length);
         return;
       }
-      if (officeLike) {
-        return;
-      }
-
-      const files: File[] = [];
-
-      for (const item of Array.from(items)) {
-        if (item.kind === "file") {
-          const file = item.getAsFile();
-          if (file) {
-            files.push(file);
-          }
-        }
-      }
-
-      if (files.length > 0) {
+      // 3. 普通粘贴里的文件入列；没有接纳时不拦文字。
+      if (files.length > 0 && attachments.add(files) > 0) {
         event.preventDefault();
-        attachments.add(files);
       }
     },
     [attachments, pasteAsFile]
@@ -439,8 +435,12 @@ export const PromptInputTextarea = ({
       onCompositionStart={handleCompositionStart}
       onKeyDown={handleKeyDown}
       onKeyUp={(event) => {
-        shiftHeld.current = event.shiftKey;
+        shiftHeld.current = false;
         onKeyUp?.(event);
+      }}
+      onBlur={(event) => {
+        shiftHeld.current = false;
+        onBlur?.(event);
       }}
       onPaste={handlePaste}
       placeholder={placeholder}
