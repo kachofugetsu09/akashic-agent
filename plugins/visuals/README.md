@@ -34,8 +34,8 @@ Workload Controller 仍用 Docker 默认策略。上游 Apache-2.0 许可保存�
 输入包含标题、纯文本摘要和完整 body HTML，最多 200,000 个字符。
 使用内联脚本和样式，不依赖 CDN、外部请求、导航、宿主接口或动态导入。
 文档自行编写 HTML/CSS/JavaScript，按内容选择 SVG、Canvas 或普通 DOM。
-数据图调用 frame 内联的 `window.ak`（源码 `frontend/plugins/visuals/src/charts.ts`），目前提供竖向/横向柱状图，
-配合 `.headline`、`.hero`、`.dtable`、`.foot` 等编辑式版式类。
+数据图调用 frame 内联的 `window.ak`（源码 `frontend/plugins/visuals/src/charts.ts`）：柱、折线、份额、散点、哑铃、
+热力图、矩形树图、排行和迷你趋势线，配合 `.headline`、`.hero`、`.dtable`、`.foot` 等编辑式版式类。
 其余图由文档自己实现坐标、图例、读数与交互。API 只增不改，因为已保存附件会在新 frame 中重新执行。
 系列色使用 `--k1` 至 `--k6`（映射到 `--ak-chart-*`）；纸面、文字和规则线使用工具 schema 列出的公共 token。
 布局需要适应 280px 和 720px，控件至少 44px；每图最多 12 个滑块。

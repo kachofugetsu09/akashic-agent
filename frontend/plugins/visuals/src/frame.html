@@ -125,6 +125,17 @@
     .ak-tip b { color: var(--ak-color-text-primary); font-weight: 600; }
     .ak-tip i { display: inline-block; width: 8px; height: 8px; margin-inline-end: 6px; border-radius: 2px; }
     .ak-sr { position: absolute; width: 1px; height: 1px; overflow: hidden; clip-path: inset(50%); white-space: nowrap; }
+    .ak-barlist { display: grid; grid-template-columns: fit-content(45%) minmax(56px, 1fr) auto; gap: 7px 12px; align-items: center; font: .8125rem/1.35 var(--ak-type-ui); }
+    .ak-barlist.narrow { grid-template-columns: minmax(0, 1fr) auto; gap: 3px 12px; }
+    .ak-barlist.narrow .ak-bar { grid-column: 1 / -1; margin-bottom: 6px; }
+    .ak-row { display: contents; }
+    .ak-l { min-width: 0; color: var(--ak-color-text-primary); }
+    .ak-l.path { font-family: var(--ak-type-technical, ui-monospace), monospace; font-size: .75rem; color: var(--ak-color-text-secondary); }
+    .ak-l small { display: block; font: .75rem var(--ak-type-ui); color: var(--ak-color-text-muted); }
+    .ak-bar i { display: block; height: 8px; border-radius: 0 2px 2px 0; }
+    .ak-v { text-align: end; font-weight: 600; font-variant-numeric: lining-nums tabular-nums; }
+    .ak-chart:has(> .ak-spark) { display: inline-block; margin: 0; vertical-align: middle; }
+    .ak-chart svg.ak-spark { width: 96px; }
     @media (prefers-reduced-motion: reduce) {
       *, *::before, *::after {
         animation: none !important;
