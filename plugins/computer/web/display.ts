@@ -243,6 +243,21 @@ export class ComputerDisplay extends EventTarget {
   }
 
   /** 回执到达后才允许发送粘贴按键，断线或超时明确失败。 */
+  // 从流客户端正在显示的 video 或 canvas 取当前帧；两者都在同源 srcdoc 里，可以直接绘制。
+  snapshot(): Promise<Blob> {
+    const document = this.frame.contentDocument;
+    const source = [...document?.querySelectorAll<HTMLVideoElement | HTMLCanvasElement>("video, #videoCanvas, #videoWorkerCanvas") ?? []]
+      .find(node => getComputedStyle(node).display !== "none"
+        && (node instanceof HTMLVideoElement ? node.videoWidth > 0 : node.width > 0));
+    if (!source) return Promise.reject(new Error("还没有画面"));
+    const canvas = document!.createElement("canvas");
+    canvas.width = source instanceof HTMLVideoElement ? source.videoWidth : source.width;
+    canvas.height = source instanceof HTMLVideoElement ? source.videoHeight : source.height;
+    canvas.getContext("2d")!.drawImage(source, 0, 0);
+    return new Promise((resolve, reject) =>
+      canvas.toBlob(blob => blob ? resolve(blob) : reject(new Error("浏览器没有生成图片")), "image/png"));
+  }
+
   clipboardPasteFrom(text: string): Promise<void> {
     if (!this.control) return Promise.reject(new Error("请先接管操作"));
     if (!this.connected || this.closed) return Promise.reject(new Error("Computer 尚未连接"));
