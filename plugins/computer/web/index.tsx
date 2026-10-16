@@ -291,7 +291,7 @@ function renderComputer(ctx: WebHostContextV1, host: HTMLElement, rawView: unkno
 
 export function activate(ctx: WebHostContextV1): WebUiDisposer {
   return ctx.ui.inject("conversation.tools.v2", mount => mount.register({
-    id: "computer", label: "电脑", order: 10, hint: "Agent 的浏览器和桌面", background: true,
+    id: "computer", label: "电脑", order: 10, hint: "Agent 的浏览器和桌面", shortcut: "Mod+Shift+D", background: true,
     icon: '<svg viewBox="0 0 24 24" aria-hidden="true"><rect x="3" y="4" width="18" height="12" rx="2"/><path d="M8 20h8M12 16v4"/></svg>',
     render(host, _entryView, props) { return renderComputer(ctx, host, props); },
   }));

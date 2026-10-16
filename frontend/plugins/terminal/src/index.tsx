@@ -353,7 +353,7 @@ function renderTerminal(ctx: WebHostContextV1, host: HTMLElement, rawView: unkno
 
 export function activate(ctx: WebHostContextV1): WebUiDisposer {
   return ctx.ui.inject("conversation.tools.v2", (mount) => mount.register({
-    id: "terminal", label: "终端", order: 20, hint: "在会话的工作目录里",
+    id: "terminal", label: "终端", order: 20, hint: "在会话的工作目录里", shortcut: "Ctrl+`",
     icon: '<svg viewBox="0 0 24 24" aria-hidden="true"><rect x="3" y="4" width="18" height="16" rx="2"/><path d="m7 9 3 3-3 3M12 15h5"/></svg>',
     render(host, _entryView, props) { return renderTerminal(ctx, host, props); },
   }));

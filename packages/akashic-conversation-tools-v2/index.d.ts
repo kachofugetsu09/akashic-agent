@@ -22,6 +22,12 @@ export interface ConversationTab extends WebEntry {
   multiple?: boolean;
   /** 新标签页里工具名后面的一句说明，≤ 40 字符。 */
   hint?: string;
+  /**
+   * 切到（或打开）这个工具并把焦点移进去的快捷键："Ctrl+`" 或 "Mod+Shift+字母"（Mod 在 macOS 是 ⌘）。
+   * 浏览器、对话页与宿主占用的组合（Mod+Shift+A/B/C/I/J/N/O/P/Q/R/T/V/W/Z）不能用，工具之间不能重复；
+   * 标签自己处理过的按键（preventDefault）、按住不放的自动重复都不触发。宿主另占 Mod+J（开关工具区）与 Mod+\（上下分屏）。
+   */
+  shortcut?: string;
 }
 
 /** 来自用户点击的意图；宿主已校验名字、大小（payload JSON ≤ 16 KiB）与会话是当前会话。 */
@@ -63,7 +69,10 @@ export interface ConversationTabView {
    * 换会话时宿主卸下实例（调用 disposer），回到该会话再 render 一次。
    */
   readonly instance: string | null;
-  /** 用户关闭了这个标签（先于 disposer 调用）；会话切换引起的卸载不算关闭。 */
+  /**
+   * 只对多开工具的实例（instance 非 null）生效：用户关闭了这个实例的标签（先于 disposer 调用）；会话切换引起的卸载不算关闭。
+   * 单开工具关闭标签后仍保持挂载、不会收到这个通知，按 onActiveChange 暂停即可。
+   */
   onClose(listener: () => void): WebUiDisposer;
   /** 标签标题，≤ 80 字符，null 恢复为 label。 */
   setTitle(title: string | null): void;

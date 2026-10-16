@@ -41,6 +41,25 @@ export function workbenchAccepts(name: string): boolean {
   return accepted.has(name);
 }
 
+export interface HostShortcut {
+  label: string;
+  keys: readonly string[];
+}
+
+let hostShortcuts: readonly HostShortcut[] = [];
+
+/** 宿主工具区的快捷键（宿主自己处理），只用于快捷键面板展示；不合规的条目丢掉。 */
+export function setHostShortcuts(value: unknown): void {
+  if (!Array.isArray(value)) return;
+  hostShortcuts = value.slice(0, 16).filter((item): item is HostShortcut => Boolean(item) && typeof item === "object"
+    && typeof item.label === "string" && item.label.length <= 40 && Array.isArray(item.keys) && item.keys.length <= 4
+    && item.keys.every((key: unknown) => typeof key === "string" && key.length <= 8));
+}
+
+export function getHostShortcuts(): readonly HostShortcut[] {
+  return hostShortcuts;
+}
+
 /**
  * 只在用户点击或键盘激活的处理函数里同步调用；Agent 侧事件不走这里，这是“只有用户能打开工具区”的保证。
  * 没有宿主或没有接受者时立即返回 unhandled，超时按 failed。
