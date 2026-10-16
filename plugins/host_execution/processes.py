@@ -31,6 +31,7 @@ class PluginProcesses:
         self._manager: ShellProcessManagerProtocol | None = None
         self._closed = False
         self._operations = 0
+        self._terminal_writes: set[asyncio.Task[object]] = set()
         self._drained = asyncio.Event()
         self._drained.set()
 
@@ -44,6 +45,7 @@ class PluginProcesses:
     def _operation(
         self, ctx: Context, key: str,
         service: tuple[ServiceKey[Processes] | ServiceKey[Terminals], object] | None = None,
+        *, terminal_write: bool = False,
     ) -> Generator[str]:
         """同步接纳实际调用，关闭时先排空，防止已接纳 spawn 晚于 shutdown。"""
         if not self._formal or self._closed:
@@ -52,11 +54,16 @@ class PluginProcesses:
         owner = ctx.require_runtime_identity(service_key, provider).plugin_id
         if not isinstance(key, str) or not key:
             raise ValueError("进程 owner key 不能为空")
+        task = asyncio.current_task() if terminal_write else None
+        if task is not None:
+            self._terminal_writes.add(task)
         self._operations += 1
         self._drained.clear()
         try:
             yield json.dumps((owner, key), ensure_ascii=False, separators=(",", ":"))
         finally:
+            if task is not None:
+                self._terminal_writes.remove(task)
             self._operations -= 1
             if self._operations == 0:
                 self._drained.set()
@@ -109,6 +116,9 @@ class PluginProcesses:
     async def close(self) -> None:
         """关闭准入并核对全部清理；失败保留原 manager 和进程证据。"""
         self._closed = True
+        # 写满 PTY 的请求没有时限；先取消等待（远端同时收到取消），避免等它排空才关闭 PTY。
+        for task in tuple(self._terminal_writes):
+            _ = task.cancel()
         _ = await self._drained.wait()
         if self._manager is not None:
             report = await self._manager.shutdown()
@@ -124,8 +134,8 @@ class PluginTerminals:
         self._processes = processes
 
     @contextmanager
-    def _operation(self, ctx: Context, key: str) -> Generator[str]:
-        with self._processes._operation(ctx, key, (TERMINALS, self)) as owner:
+    def _operation(self, ctx: Context, key: str, *, terminal_write: bool = False) -> Generator[str]:
+        with self._processes._operation(ctx, key, (TERMINALS, self), terminal_write=terminal_write) as owner:
             yield owner
 
     async def open(
@@ -137,7 +147,7 @@ class PluginTerminals:
             )
 
     async def write(self, ctx: Context, owner_key: str, terminal_id: int, data: bytes) -> None:
-        with self._operation(ctx, owner_key) as owner:
+        with self._operation(ctx, owner_key, terminal_write=True) as owner:
             await self._processes._backend().terminals.write_terminal(
                 owner_session_key=owner, terminal_id=terminal_id, data=data,
             )

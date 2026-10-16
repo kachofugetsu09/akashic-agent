@@ -295,3 +295,33 @@ def rollback(conn: sqlite3.Connection, update: UpdateRollback, plugins_home: Pat
         "UPDATE plugin_updates SET phase='rolled_back',updated_at=?,error=? WHERE update_id=? AND phase='armed'",
         (now, error, update.update_id),
     )
+
+
+# 启动按磁盘结算无 runtime 记录的中断安装：指针换到候选即完成，未换即放弃；同制品重装以启用写入为提交点。
+def settle_orphan(conn: sqlite3.Connection, update: UpdateRollback, plugins_home: Path, *, workspace: Path, now: str) -> str:
+    if update.phase != 'armed' or update.reload_tx_id is not None:
+        raise RuntimeError("只有无 runtime 记录的中断安装可以按磁盘结算")
+    path = pointer_state_path(update.plugin_base)
+    missing = object()
+    current = load_json(path, default=missing, domain='plugin_update_rollback')
+    candidate = {'stable': update.candidate.path, 'latest': update.candidate.path}
+    enabled = {row.plugin: not row.disabled for row in patch_rows(workspace)}.get(update.plugin_id)
+    # 1. 同制品重装：指针前后相同，唯一留下的事实是启用写入；已写入即完成。
+    if pointer_value(update.previous) == candidate and current == candidate:
+        if enabled is not True:
+            rollback(conn, update, plugins_home, workspace=workspace, now=now, error="interrupted before enable")
+            return 'rolled_back'
+    # 2. 指针未变：提交点之前中断，记录放弃，磁盘原样保留。
+    elif (current is missing and update.previous is None) or current == pointer_value(update.previous):
+        rollback(conn, update, plugins_home, workspace=workspace, now=now, error="interrupted before pointer commit")
+        return 'rolled_back'
+    elif current != candidate:
+        raise RuntimeError(f"插件指针已被其他操作改变，不能结算: {update.plugin_id}")
+    # 3. 指针已是候选：提交点之后中断，补齐同一安装的启用选择。
+    if enabled is not True:
+        _ = set_plugin_choice(workspace, update.plugin_id, enabled=True)
+    _ = conn.execute(
+        "UPDATE plugin_updates SET phase='committed',updated_at=?,error='' WHERE update_id=? AND phase='armed'",
+        (now, update.update_id),
+    )
+    return 'committed'
