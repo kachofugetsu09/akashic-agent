@@ -28,7 +28,11 @@ function syncFrameTheme(frame) {
 
 function checkTabs(entries) {
   const tabs = entries.map((entry) => {
-    if (typeof entry.id !== "string" || typeof entry.label !== "string") {
+    if (
+      typeof entry.id !== "string" || typeof entry.label !== "string"
+      || (entry.icon !== undefined && (typeof entry.icon !== "string" || !entry.icon.startsWith("<svg")))
+      || (entry.background !== undefined && typeof entry.background !== "boolean")
+    ) {
       throw new Error(`对话工具标签合同无效: ${String(entry.id ?? "unknown")}`);
     }
     return entry;
@@ -146,6 +150,509 @@ function followChatSession(frame, onSession) {
   return () => window.removeEventListener("message", onMessage);
 }
 
+const NARROW_QUERY = "(max-width: 68rem)";
+const LAYOUT_KEY = "akashic.conversation.tools.layout.";
+const ICONS = {
+  close: '<path d="M18 6 6 18M6 6l12 12"/>',
+  add: '<path d="M12 5v14M5 12h14"/>',
+  expand: '<path d="M15 4h5v5M9 20H4v-5M20 4l-6 6M4 20l6-6"/>',
+  collapse: '<path d="M14 10h6M14 10V4M10 14H4M10 14v6M14 10l6-6M10 14l-6 6"/>',
+};
+
+function svgIcon(name) {
+  return `<svg viewBox="0 0 24 24" aria-hidden="true">${ICONS[name]}</svg>`;
+}
+
+function chromeButton(className, label, icon) {
+  const button = document.createElement("button");
+  button.type = "button";
+  button.className = `conversation-tools-button ${className}`;
+  button.title = label;
+  button.setAttribute("aria-label", label);
+  button.innerHTML = svgIcon(icon);
+  return button;
+}
+
+// 每个会话各记一份打开的标签、当前标签与展开状态；只是视图偏好，读写失败时退回当前布局。
+function readLayout(session) {
+  try {
+    const value = JSON.parse(window.sessionStorage.getItem(LAYOUT_KEY + session) ?? "null");
+    if (!value || typeof value !== "object" || !Array.isArray(value.opened)) return null;
+    return value;
+  } catch (error) {
+    if (!(error instanceof DOMException) && !(error instanceof SyntaxError)) throw error;
+    return null;
+  }
+}
+
+function saveLayout(session, layout) {
+  try {
+    window.sessionStorage.setItem(LAYOUT_KEY + session, JSON.stringify(layout));
+  } catch (error) {
+    if (!(error instanceof DOMException)) throw error;
+  }
+}
+
+function clearWidth() {
+  try {
+    window.localStorage.removeItem(WIDTH_KEY);
+  } catch (error) {
+    if (!(error instanceof DOMException)) throw error;
+  }
+}
+
+// 工具区外框：标签条、启动器、铺满与关闭；内容区与浮动开关。只建 DOM，不含状态。
+function buildChrome() {
+  const panel = document.createElement("aside");
+  panel.className = "conversation-tools";
+  panel.id = "conversation-tools-panel";
+  panel.setAttribute("aria-label", "对话工具");
+  const splitter = document.createElement("div");
+  splitter.className = "conversation-tools-splitter";
+  splitter.tabIndex = 0;
+  splitter.title = "拖动调整宽度，双击恢复默认";
+  splitter.setAttribute("role", "separator");
+  splitter.setAttribute("aria-orientation", "vertical");
+  splitter.setAttribute("aria-label", "调整工具区宽度");
+  const bar = document.createElement("div");
+  bar.className = "conversation-tools-bar";
+  const tabs = document.createElement("div");
+  tabs.className = "conversation-tools-tabs";
+  tabs.setAttribute("role", "tablist");
+  tabs.setAttribute("aria-label", "工具标签");
+  const launcher = chromeButton("conversation-tools-launcher", "打开工具", "add");
+  const menu = document.createElement("div");
+  menu.className = "conversation-tools-menu";
+  menu.id = "conversation-tools-menu";
+  menu.setAttribute("role", "menu");
+  menu.hidden = true;
+  launcher.setAttribute("aria-haspopup", "menu");
+  launcher.setAttribute("aria-controls", menu.id);
+  launcher.setAttribute("aria-expanded", "false");
+  const maximize = chromeButton("conversation-tools-maximize", "铺满", "expand");
+  const close = chromeButton("conversation-tools-close", "关闭工具区", "close");
+  bar.append(tabs, launcher, maximize, close, menu);
+  const content = document.createElement("div");
+  content.className = "conversation-tools-content";
+  panel.append(bar, content);
+  const toggle = document.createElement("button");
+  toggle.className = "conversation-tools-toggle";
+  toggle.type = "button";
+  toggle.setAttribute("aria-controls", panel.id);
+  toggle.append(toolIcon(), document.createElement("span"));
+  return { panel, splitter, bar, tabs, launcher, menu, maximize, close, content, toggle };
+}
+
+// 标签条里的一项：标签本身 + 关闭按钮；关闭按钮不进 Tab 序列，键盘用 Delete 关闭。
+function buildTab(entry, index) {
+  const item = document.createElement("div");
+  item.className = "conversation-tools-tab-item";
+  const button = document.createElement("button");
+  button.type = "button";
+  button.id = `conversation-tool-tab-${index}`;
+  button.className = "conversation-tools-tab";
+  button.setAttribute("role", "tab");
+  button.setAttribute("aria-controls", `conversation-tool-panel-${index}`);
+  button.textContent = entry.label;
+  const close = chromeButton("conversation-tools-tab-close", `关闭 ${entry.label}`, "close");
+  close.tabIndex = -1;
+  item.append(button, close);
+  const panel = document.createElement("section");
+  panel.id = `conversation-tool-panel-${index}`;
+  panel.className = "conversation-tool-panel";
+  panel.setAttribute("role", "tabpanel");
+  panel.setAttribute("aria-labelledby", button.id);
+  return { item, button, close, panel };
+}
+
+function menuItem(entry) {
+  const item = document.createElement("button");
+  item.type = "button";
+  item.className = "conversation-tools-menu-item";
+  item.setAttribute("role", "menuitem");
+  item.tabIndex = -1;
+  item.dataset.id = entry.id;
+  if (entry.icon) item.insertAdjacentHTML("afterbegin", entry.icon);
+  const label = document.createElement("span");
+  label.textContent = entry.label;
+  item.append(label);
+  return item;
+}
+
+// 启动器菜单：列出全部标签，选中即打开；方向键移动，Esc 与失焦关闭。
+function connectLauncher(chrome, entries, onPick) {
+  const { launcher, menu } = chrome;
+  menu.replaceChildren(...entries.map(menuItem));
+  const items = () => [...menu.querySelectorAll(".conversation-tools-menu-item")];
+  const setOpen = (open, returnFocus) => {
+    menu.hidden = !open;
+    launcher.setAttribute("aria-expanded", String(open));
+    if (open) items()[0]?.focus();
+    else if (returnFocus) launcher.focus();
+  };
+  launcher.addEventListener("click", () => setOpen(menu.hidden, true));
+  menu.addEventListener("click", (event) => {
+    const item = event.target.closest(".conversation-tools-menu-item");
+    if (!item) return;
+    setOpen(false, false);
+    onPick(item.dataset.id);
+  });
+  menu.addEventListener("keydown", (event) => {
+    const list = items();
+    const index = list.indexOf(document.activeElement);
+    if (event.key === "Escape") setOpen(false, true);
+    else if (event.key === "ArrowDown" || event.key === "ArrowUp")
+      list[(index + (event.key === "ArrowDown" ? 1 : -1) + list.length) % list.length]?.focus();
+    else return;
+    event.preventDefault();
+    event.stopPropagation();
+  });
+  menu.addEventListener("focusout", (event) => {
+    if (!menu.contains(event.relatedTarget) && event.relatedTarget !== launcher) setOpen(false, false);
+  });
+}
+
+// 分隔条：拖动与方向键调整宽度并记住，双击恢复默认比例。
+function connectSplitter(root, splitter, sizing) {
+  let dragStartX = 0;
+  let dragStartWidth = 0;
+  const stop = (event) => {
+    if (!root.classList.contains("is-resizing")) return;
+    root.classList.remove("is-resizing");
+    if (splitter.hasPointerCapture(event.pointerId)) splitter.releasePointerCapture(event.pointerId);
+    sizing.set(sizing.width(), true);
+  };
+  splitter.addEventListener("pointerdown", (event) => {
+    if (event.button !== 0) return;
+    event.preventDefault();
+    dragStartX = event.clientX;
+    dragStartWidth = sizing.width();
+    root.classList.add("is-resizing");
+    splitter.setPointerCapture(event.pointerId);
+  });
+  splitter.addEventListener("pointermove", (event) => {
+    if (!root.classList.contains("is-resizing")) return;
+    const rtl = getComputedStyle(root).direction === "rtl";
+    sizing.set(dragStartWidth + (dragStartX - event.clientX) * (rtl ? -1 : 1));
+  });
+  splitter.addEventListener("pointerup", stop);
+  splitter.addEventListener("pointercancel", stop);
+  splitter.addEventListener("dblclick", () => sizing.reset());
+  splitter.addEventListener("keydown", (event) => {
+    const rtl = getComputedStyle(root).direction === "rtl";
+    let next = sizing.width();
+    if (event.key === "Home") next = MIN_PANEL_WIDTH;
+    else if (event.key === "End") next = sizing.maximum();
+    else if (event.key === "ArrowLeft") next += rtl ? -24 : 24;
+    else if (event.key === "ArrowRight") next += rtl ? 24 : -24;
+    else return;
+    event.preventDefault();
+    sizing.set(next, true);
+  });
+}
+
+// 宽度：全局一份；没有记录时按页面宽度的默认比例。
+function createSizing(root, splitter) {
+  const saved = storedWidth();
+  const state = { width: saved ?? 0, preferred: saved ?? 0, useDefault: saved === null };
+  const maximum = () => Math.max(MIN_PANEL_WIDTH, root.clientWidth - MIN_CHAT_WIDTH);
+  const set = (value, persist = false) => {
+    state.width = Math.min(maximum(), Math.max(MIN_PANEL_WIDTH, value));
+    root.style.setProperty("--conversation-tools-width", `${state.width}px`);
+    splitter.setAttribute("aria-valuemin", String(MIN_PANEL_WIDTH));
+    splitter.setAttribute("aria-valuemax", String(Math.round(maximum())));
+    splitter.setAttribute("aria-valuenow", String(Math.round(state.width)));
+    if (!persist) return;
+    state.useDefault = false;
+    state.preferred = state.width;
+    saveWidth(state.width);
+  };
+  const fit = () => set(state.useDefault ? root.clientWidth * DEFAULT_WIDTH_RATIO : state.preferred);
+  const reset = () => {
+    state.useDefault = true;
+    clearWidth();
+    fit();
+  };
+  return { width: () => state.width, maximum, set, fit, reset };
+}
+
+// 标签挂载与父视图的生命周期。每个标签只 render 一次：先占位再 render，render 里调用 view 方法引起的更新不会重入；
+// 挂载前先记下当前可见值，订阅时收到的就是唯一一次首次通知。展开与当前标签只经 isActive 读取，不在这里保存。
+function createTabLifecycle(tools, panelOf, isActive, currentSession, onAttention) {
+  const mounted = new Map();
+  const reported = new Map();
+  const activeListeners = new Map();
+  const sessionListeners = new Map();
+  const listenersOf = (map, id) => {
+    if (!map.has(id)) map.set(id, new Set());
+    return map.get(id);
+  };
+  const subscribe = (map, id, listener, current, kind) => {
+    if (typeof listener !== "function") throw new Error(`ConversationTab ${kind} listener 必须是函数`);
+    const listeners = listenersOf(map, id);
+    listeners.add(listener);
+    listener(current);
+    return () => listeners.delete(listener);
+  };
+
+  function view(entry) {
+    return {
+      get active() { return isActive(entry.id); },
+      onActiveChange: (listener) => subscribe(activeListeners, entry.id, listener, isActive(entry.id), "active"),
+      get session() { return currentSession(); },
+      onSessionChange: (listener) => subscribe(sessionListeners, entry.id, listener, currentSession(), "session"),
+      requestAttention: (noticeId) => onAttention(entry, noticeId),
+    };
+  }
+
+  // render 失败时撤下它已登记的监听，面板里说明原因；占位保留，避免每次更新都重试。
+  // 标签自身抛错由宿主经 onError 通知；宿主拒绝挂载则直接抛出，两条路径同样处理。
+  function mount(entry) {
+    if (mounted.has(entry.id)) return;
+    mounted.set(entry.id, () => {});
+    reported.set(entry.id, isActive(entry.id));
+    const panel = panelOf(entry.id);
+    const fail = (error) => {
+      activeListeners.delete(entry.id);
+      sessionListeners.delete(entry.id);
+      panel.textContent = `${entry.label}没能加载：${error instanceof Error ? error.message : String(error)}`;
+    };
+    try {
+      mounted.set(entry.id, tools.render(entry.id, panel, view(entry), { onError: fail }));
+    } catch (error) {
+      fail(error);
+    }
+  }
+
+  function report(entry) {
+    const active = isActive(entry.id);
+    if (reported.get(entry.id) === active) return;
+    reported.set(entry.id, active);
+    for (const listener of [...listenersOf(activeListeners, entry.id)]) listener(active);
+  }
+
+  function session(value) {
+    for (const listeners of [...sessionListeners.values()])
+      for (const listener of [...listeners]) listener(value);
+  }
+
+  function dispose() {
+    activeListeners.clear();
+    sessionListeners.clear();
+    for (const stop of [...mounted.values()].reverse()) stop();
+  }
+
+  return { mount, report, session, dispose };
+}
+
+// 工具区状态的唯一 owner：打开的标签、当前标签、展开与铺满。标签只经 view 读到可见事实与当前会话。
+function mountTools(root, frame, tools, entries) {
+  const chrome = buildChrome();
+  const sizing = createSizing(root, chrome.splitter);
+  const narrow = window.matchMedia(NARROW_QUERY);
+  const state = {
+    open: false, maximized: false, activeId: entries[0].id, opened: new Set([entries[0].id]),
+    // chat 的模态层（窄屏导航抽屉等）在 iframe 内，盖不住宿主的浮动开关；打开期间收起开关。
+    chatOverlay: false, session: null,
+    // 窄屏恢复布局时只是暂不展开；记下的仍是用户的展开偏好，用户自己开关后清除。
+    held: false,
+  };
+  const handled = new Set();
+  const attention = new Set();
+  const tabs = new Map();
+  const isActive = (id) => state.open && state.activeId === id;
+  // 活动只提示；打开、关闭与切换由用户决定，包括移动端。
+  const lifecycle = createTabLifecycle(tools, (id) => tabs.get(id).panel,
+    isActive, () => state.session, (entry, noticeId) => {
+      if (typeof noticeId !== "string" || !noticeId || handled.has(noticeId)) return;
+      handled.add(noticeId);
+      if (!isActive(entry.id)) attention.add(entry.id);
+      update();
+    });
+
+  function update() {
+    root.classList.toggle("tools-open", state.open);
+    root.classList.toggle("tools-maximized", state.open && state.maximized);
+    chrome.panel.hidden = !state.open;
+    chrome.splitter.hidden = !state.open;
+    chrome.toggle.hidden = state.open || state.chatOverlay;
+    chrome.toggle.setAttribute("aria-expanded", String(state.open));
+    const pending = entries.find((entry) => attention.has(entry.id));
+    const target = entries.find((entry) => entry.id === state.activeId) ?? entries[0];
+    const label = `打开 ${target.label}${pending ? " · 有新活动" : ""}`;
+    chrome.toggle.classList.toggle("has-attention", Boolean(pending));
+    chrome.toggle.title = label;
+    chrome.toggle.setAttribute("aria-label", label);
+    chrome.toggle.querySelector("span").textContent = target.label;
+    const maximizeLabel = state.maximized ? "还原" : "铺满";
+    chrome.maximize.title = maximizeLabel;
+    chrome.maximize.setAttribute("aria-label", maximizeLabel);
+    chrome.maximize.setAttribute("aria-pressed", String(state.maximized));
+    chrome.maximize.innerHTML = svgIcon(state.maximized ? "collapse" : "expand");
+    for (const item of chrome.menu.querySelectorAll(".conversation-tools-menu-item"))
+      item.toggleAttribute("data-opened", state.opened.has(item.dataset.id));
+    for (const entry of entries) updateTab(entry);
+  }
+
+  function updateTab(entry) {
+    const active = state.open && entry.id === state.activeId;
+    const tab = tabs.get(entry.id);
+    tab.item.hidden = !state.opened.has(entry.id);
+    tab.button.setAttribute("aria-selected", String(active));
+    tab.button.classList.toggle("has-attention", attention.has(entry.id));
+    tab.button.tabIndex = entry.id === state.activeId ? 0 : -1;
+    tab.panel.hidden = entry.id !== state.activeId;
+    lifecycle.report(entry);
+    // 1. 首次被选中才渲染；声明 background 的标签挂载即渲染，以便在未打开时提示活动。
+    if (active) lifecycle.mount(entry);
+  }
+
+  function remember() {
+    if (state.session)
+      saveLayout(state.session, { open: state.open || state.held, active: state.activeId, opened: [...state.opened] });
+  }
+
+  function openTab(id, focusTab = false) {
+    state.held = false;
+    attention.delete(id);
+    state.opened.add(id);
+    state.activeId = id;
+    state.open = true;
+    update();
+    remember();
+    if (focusTab) tabs.get(id)?.button.focus();
+  }
+
+  // 2. 关掉当前标签时转到相邻的已打开标签；最后一个关掉时收起工具区。
+  function closeTab(id) {
+    const order = entries.filter((entry) => state.opened.has(entry.id)).map((entry) => entry.id);
+    state.opened.delete(id);
+    if (state.opened.size === 0) {
+      state.opened.add(id);
+      closePanel();
+      return;
+    }
+    if (state.activeId === id) {
+      const index = order.indexOf(id);
+      state.activeId = order[index + 1] ?? order[index - 1];
+      tabs.get(state.activeId)?.button.focus();
+    }
+    update();
+    remember();
+  }
+
+  function closePanel() {
+    state.held = false;
+    state.open = false;
+    state.maximized = false;
+    update();
+    remember();
+    chrome.toggle.focus();
+  }
+
+  // 3. 换会话时恢复那个会话记下的布局；没去过的会话继承当前布局并立即记下，之后不再跟随别的会话。
+  function applySession(session) {
+    if (session === state.session) return;
+    state.session = session;
+    const layout = session ? readLayout(session) : null;
+    if (layout) adoptLayout(layout);
+    else remember();
+    update();
+    lifecycle.session(session);
+  }
+
+  // 打开的标签与当前标签作为一个整体校正：已移除的标签丢掉，当前标签不在其中时取第一个；窄屏不自动展开。
+  function adoptLayout(layout) {
+    const known = entries.filter((entry) => layout.opened.includes(entry.id)).map((entry) => entry.id);
+    state.opened = new Set(known.length ? known : [entries[0].id]);
+    state.activeId = state.opened.has(layout.active) ? layout.active : [...state.opened][0];
+    const open = layout.open === true && known.length > 0;
+    state.held = open && narrow.matches;
+    state.open = open && !narrow.matches;
+    if (!state.open) state.maximized = false;
+  }
+
+  // 铺满时 Esc 在工具内容里也能还原；收起只从顶栏或分隔条触发。标签自己处理过的 Esc（defaultPrevented）不动。
+  function onKeydown(event) {
+    if (event.key !== "Escape" || !state.open || event.defaultPrevented) return;
+    const inChrome = chrome.bar.contains(event.target) || event.target === chrome.splitter;
+    if (state.maximized && (inChrome || chrome.content.contains(event.target))) {
+      state.maximized = false;
+      update();
+    } else if (inChrome) closePanel();
+    else return;
+    event.preventDefault();
+  }
+
+  function followChatOverlay(event) {
+    if (event.source !== frame.contentWindow || event.origin !== window.location.origin) return;
+    const message = event.data;
+    if (!message || typeof message !== "object" || message.type !== "akashic.chat-overlay") return;
+    state.chatOverlay = message.open === true;
+    update();
+  }
+  // iframe 重载时旧的打开状态作废。
+  const resetChatOverlay = () => {
+    state.chatOverlay = false;
+    update();
+  };
+
+  for (const [index, entry] of entries.entries()) {
+    const tab = buildTab(entry, index);
+    tabs.set(entry.id, tab);
+    tab.button.addEventListener("click", () => openTab(entry.id));
+    tab.close.addEventListener("click", () => closeTab(entry.id));
+    tab.button.addEventListener("keydown", (event) => {
+      if (event.key === "Delete") {
+        event.preventDefault();
+        closeTab(entry.id);
+        return;
+      }
+      if (event.key !== "ArrowLeft" && event.key !== "ArrowRight") return;
+      event.preventDefault();
+      const opened = entries.filter((item) => state.opened.has(item.id));
+      const at = opened.findIndex((item) => item.id === entry.id);
+      const next = opened[(at + (event.key === "ArrowRight" ? 1 : -1) + opened.length) % opened.length];
+      openTab(next.id, true);
+    });
+    chrome.tabs.append(tab.item);
+    chrome.content.append(tab.panel);
+  }
+  connectLauncher(chrome, entries, (id) => openTab(id, true));
+  connectSplitter(root, chrome.splitter, sizing);
+  chrome.close.addEventListener("click", closePanel);
+  chrome.maximize.addEventListener("click", () => {
+    state.maximized = !state.maximized;
+    update();
+  });
+  chrome.toggle.addEventListener("click", () => {
+    const pending = entries.find((entry) => attention.has(entry.id));
+    openTab(pending?.id ?? state.activeId, true);
+  });
+  root.classList.add("has-tools");
+  root.append(chrome.splitter, chrome.panel, chrome.toggle);
+  root.addEventListener("keydown", onKeydown);
+  window.addEventListener("message", followChatOverlay);
+  frame.addEventListener("load", resetChatOverlay);
+  window.addEventListener("resize", sizing.fit);
+  const stopSession = followChatSession(frame, applySession);
+  for (const entry of entries) if (entry.background) lifecycle.mount(entry);
+  return {
+    start() {
+      sizing.fit();
+      update();
+    },
+    dispose() {
+      stopSession();
+      root.removeEventListener("keydown", onKeydown);
+      window.removeEventListener("message", followChatOverlay);
+      frame.removeEventListener("load", resetChatOverlay);
+      window.removeEventListener("resize", sizing.fit);
+      lifecycle.dispose();
+    },
+  };
+}
+
 function renderConversation(host, view, props) {
   const tools = view.child("conversation.tools.v2");
   const entries = checkTabs(tools.entries);
@@ -157,282 +664,14 @@ function renderConversation(host, view, props) {
   frame.title = "Akashic 对话";
   frame.src = frameSource(takeRequestedSession());
   root.appendChild(frame);
-
-  if (entries.length === 0) {
-    host.replaceChildren(root);
-    const stopThemeSync = syncFrameTheme(frame);
-    const stopRailActions = connectRailActions(frame, railActions);
-    return () => {
-      stopRailActions();
-      stopThemeSync();
-      host.replaceChildren();
-    };
-  }
-
-  root.classList.add("has-tools");
-  const panel = document.createElement("aside");
-  panel.className = "conversation-tools";
-  panel.id = "conversation-tools-panel";
-  panel.setAttribute("aria-label", "对话工具");
-  const splitter = document.createElement("div");
-  splitter.className = "conversation-tools-splitter";
-  splitter.tabIndex = 0;
-  splitter.setAttribute("role", "separator");
-  splitter.setAttribute("aria-orientation", "vertical");
-  splitter.setAttribute("aria-label", "调整工具区宽度");
-  const bar = document.createElement("div");
-  bar.className = "conversation-tools-bar";
-  bar.setAttribute("role", "tablist");
-  bar.setAttribute("aria-label", "工具标签");
-  const close = document.createElement("button");
-  close.className = "conversation-tools-close";
-  close.type = "button";
-  close.title = "关闭工具区";
-  close.setAttribute("aria-label", "关闭工具区");
-  close.innerHTML = '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M18 6 6 18M6 6l12 12"/></svg>';
-  const content = document.createElement("div");
-  content.className = "conversation-tools-content";
-  const toggle = document.createElement("button");
-  toggle.className = "conversation-tools-toggle";
-  toggle.type = "button";
-  toggle.setAttribute("aria-controls", panel.id);
-  toggle.append(toolIcon(), document.createElement("span"));
-
-  const savedWidth = storedWidth();
-  const state = {
-    open: false,
-    activeId: entries[0].id,
-    width: savedWidth ?? 0,
-    preferredWidth: savedWidth ?? 0,
-    useDefaultWidth: savedWidth === null,
-    // chat 的模态层（窄屏导航抽屉等）在 iframe 内，盖不住宿主的浮动开关；打开期间收起开关。
-    chatOverlay: false,
-    session: null,
-  };
-  const handled = new Set();
-  const attention = new Set();
-  const buttons = new Map();
-  const panels = new Map();
-  const activeValues = new Map();
-  const activeListeners = new Map(entries.map((entry) => [entry.id, new Set()]));
-  const sessionListeners = new Set();
-  const disposers = [];
-
-  function panelMaximum() {
-    return Math.max(MIN_PANEL_WIDTH, root.clientWidth - MIN_CHAT_WIDTH);
-  }
-
-  function defaultWidth() {
-    return root.clientWidth * DEFAULT_WIDTH_RATIO;
-  }
-
-  function setWidth(value, persist = false) {
-    state.width = Math.min(panelMaximum(), Math.max(MIN_PANEL_WIDTH, value));
-    root.style.setProperty("--conversation-tools-width", `${state.width}px`);
-    splitter.setAttribute("aria-valuemin", String(MIN_PANEL_WIDTH));
-    splitter.setAttribute("aria-valuemax", String(Math.round(panelMaximum())));
-    splitter.setAttribute("aria-valuenow", String(Math.round(state.width)));
-    if (persist) {
-      state.useDefaultWidth = false;
-      state.preferredWidth = state.width;
-      saveWidth(state.width);
-    }
-  }
-
-  function update() {
-    root.classList.toggle("tools-open", state.open);
-    panel.hidden = !state.open;
-    splitter.hidden = !state.open;
-    toggle.hidden = state.open || state.chatOverlay;
-    toggle.setAttribute("aria-expanded", String(state.open));
-    const activeEntry = entries.find((entry) => entry.id === state.activeId) ?? entries[0];
-    const toggleLabel = `打开 ${activeEntry.label}${attention.size ? ' · 有新活动' : ''}`;
-    toggle.classList.toggle("has-attention", attention.size > 0);
-    toggle.title = toggleLabel;
-    toggle.setAttribute("aria-label", toggleLabel);
-    toggle.querySelector("span").textContent = activeEntry.label;
-    for (const entry of entries) {
-      const active = state.open && entry.id === state.activeId;
-      const button = buttons.get(entry.id);
-      const child = panels.get(entry.id);
-      button?.setAttribute("aria-selected", String(active));
-      button?.classList.toggle("has-attention", attention.has(entry.id));
-      if (button) button.tabIndex = entry.id === state.activeId ? 0 : -1;
-      if (child) child.hidden = entry.id !== state.activeId;
-      if (activeValues.get(entry.id) === active) continue;
-      activeValues.set(entry.id, active);
-      for (const listener of activeListeners.get(entry.id) ?? []) listener(active);
-    }
-  }
-
-  function openTab(id, focusTab = false) {
-    attention.delete(id);
-    state.activeId = id;
-    state.open = true;
-    update();
-    if (focusTab) buttons.get(id)?.focus();
-  }
-
-  function closePanel() {
-    state.open = false;
-    update();
-    toggle.focus();
-  }
-
-  function closePanelFromChrome(event) {
-    if (event.key !== "Escape" || !state.open) return;
-    if (!bar.contains(event.target) && event.target !== splitter) return;
-    event.preventDefault();
-    closePanel();
-  }
-
-  root.addEventListener("keydown", closePanelFromChrome);
-
-  function followChatOverlay(event) {
-    if (event.source !== frame.contentWindow || event.origin !== window.location.origin) return;
-    const message = event.data;
-    if (!message || typeof message !== "object" || message.type !== "akashic.chat-overlay") return;
-    state.chatOverlay = message.open === true;
-    update();
-  }
-  window.addEventListener("message", followChatOverlay);
-  // iframe 重载时旧的打开状态作废。
-  const resetChatOverlay = () => {
-    state.chatOverlay = false;
-    update();
-  };
-  frame.addEventListener("load", resetChatOverlay);
-
-  for (const [entryIndex, entry] of entries.entries()) {
-    const button = document.createElement("button");
-    const buttonId = `conversation-tool-tab-${entryIndex}`;
-    const panelId = `conversation-tool-panel-${entryIndex}`;
-    button.type = "button";
-    button.id = buttonId;
-    button.className = "conversation-tools-tab";
-    button.setAttribute("role", "tab");
-    button.setAttribute("aria-controls", panelId);
-    button.textContent = entry.label;
-    button.addEventListener("click", () => openTab(entry.id));
-    button.addEventListener("keydown", (event) => {
-      if (event.key !== "ArrowLeft" && event.key !== "ArrowRight") return;
-      event.preventDefault();
-      const index = entries.findIndex((item) => item.id === entry.id);
-      const step = event.key === "ArrowRight" ? 1 : -1;
-      const next = entries[(index + step + entries.length) % entries.length];
-      openTab(next.id, true);
-    });
-    buttons.set(entry.id, button);
-    bar.appendChild(button);
-
-    const child = document.createElement("section");
-    child.id = panelId;
-    child.className = "conversation-tool-panel";
-    child.setAttribute("role", "tabpanel");
-    child.setAttribute("aria-labelledby", buttonId);
-    panels.set(entry.id, child);
-    content.appendChild(child);
-
-    const listeners = activeListeners.get(entry.id);
-    const tabView = {
-      get active() { return state.open && state.activeId === entry.id; },
-      onActiveChange(listener) {
-        if (typeof listener !== "function") {
-          throw new Error("ConversationTab active listener 必须是函数");
-        }
-        listeners.add(listener);
-        listener(state.open && state.activeId === entry.id);
-        return () => listeners.delete(listener);
-      },
-      get session() { return state.session; },
-      onSessionChange(listener) {
-        if (typeof listener !== "function") {
-          throw new Error("ConversationTab session listener 必须是函数");
-        }
-        sessionListeners.add(listener);
-        listener(state.session);
-        return () => sessionListeners.delete(listener);
-      },
-      requestAttention(noticeId) {
-        if (typeof noticeId !== "string" || !noticeId || handled.has(noticeId)) return;
-        handled.add(noticeId);
-        // 活动只提示；打开、关闭与切换由用户决定，包括移动端。
-        if (!state.open || state.activeId !== entry.id) attention.add(entry.id);
-        update();
-      },
-    };
-    disposers.push(tools.render(entry.id, child, tabView));
-  }
-
-  close.addEventListener("click", closePanel);
-  toggle.addEventListener("click", () => openTab(state.activeId, true));
-  bar.appendChild(close);
-  panel.append(bar, content);
-  root.append(splitter, panel, toggle);
+  const workbench = entries.length ? mountTools(root, frame, tools, entries) : null;
   host.replaceChildren(root);
-
-  let dragStartX = 0;
-  let dragStartWidth = 0;
-  function moveSplitter(event) {
-    if (!root.classList.contains("is-resizing")) return;
-    const rtl = getComputedStyle(root).direction === "rtl";
-    const delta = (dragStartX - event.clientX) * (rtl ? -1 : 1);
-    setWidth(dragStartWidth + delta);
-  }
-  function stopSplitter(event) {
-    if (!root.classList.contains("is-resizing")) return;
-    root.classList.remove("is-resizing");
-    if (splitter.hasPointerCapture(event.pointerId)) {
-      splitter.releasePointerCapture(event.pointerId);
-    }
-    setWidth(state.width, true);
-  }
-  splitter.addEventListener("pointerdown", (event) => {
-    if (event.button !== 0) return;
-    event.preventDefault();
-    dragStartX = event.clientX;
-    dragStartWidth = state.width;
-    root.classList.add("is-resizing");
-    splitter.setPointerCapture(event.pointerId);
-  });
-  splitter.addEventListener("pointermove", moveSplitter);
-  splitter.addEventListener("pointerup", stopSplitter);
-  splitter.addEventListener("pointercancel", stopSplitter);
-  splitter.addEventListener("keydown", (event) => {
-    const rtl = getComputedStyle(root).direction === "rtl";
-    let next = state.width;
-    if (event.key === "Home") next = MIN_PANEL_WIDTH;
-    else if (event.key === "End") next = panelMaximum();
-    else if (event.key === "ArrowLeft") next += rtl ? -24 : 24;
-    else if (event.key === "ArrowRight") next += rtl ? 24 : -24;
-    else return;
-    event.preventDefault();
-    setWidth(next, true);
-  });
-
-  const resize = () => setWidth(
-    state.useDefaultWidth ? defaultWidth() : state.preferredWidth,
-  );
-  window.addEventListener("resize", resize);
   const stopThemeSync = syncFrameTheme(frame);
   const stopRailActions = connectRailActions(frame, railActions);
-  const stopToolsNotice = announceTools(frame);
-  const stopSession = followChatSession(frame, (session) => {
-    if (session === state.session) return;
-    state.session = session;
-    for (const listener of [...sessionListeners]) listener(session);
-  });
-  resize();
-  update();
+  const stopToolsNotice = workbench ? announceTools(frame) : () => {};
+  workbench?.start();
   return () => {
-    root.removeEventListener("keydown", closePanelFromChrome);
-    window.removeEventListener("message", followChatOverlay);
-    frame.removeEventListener("load", resetChatOverlay);
-    window.removeEventListener("resize", resize);
-    stopSession();
-    activeListeners.clear();
-    sessionListeners.clear();
-    for (const dispose of disposers.reverse()) dispose();
+    workbench?.dispose();
     stopToolsNotice();
     stopRailActions();
     stopThemeSync();

@@ -137,11 +137,7 @@ body {
   padding-inline: 12px 8px;
 }
 
-.unified-shell .conversation-tools-content {
-  block-size: calc(100% - 52px);
-}
-
 .unified-shell .conversation-tool-panel {
-  /* 内容容器已经扣掉工具栏，面板本身不应再扣一次。 */
+  /* 工具区是“顶栏 + 1fr”网格，内容行已经扣掉顶栏，这里不再扣。 */
   block-size: 100%;
 }
