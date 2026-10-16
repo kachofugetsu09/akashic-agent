@@ -404,7 +404,7 @@ WorkloadData 也不能挂正式目录；Computer candidate 只使用隔离复制
 - 唯一的普通插件工具 `computer`，组合 Browser 与 Desktop 驱动；
 - MCP 子进程只承接 WorkloadEnv、启动检查和驱动控制连接，不发布模型工具；
 - `opencli` Skill；Skill 只教 Agent 通过普通 `shell` 调用 CLI，不把 CLI 参数包装成 Browser Tool；
-- `conversation.tools.v1` 中的 Computer 标签；标签使用标准 noVNC RFB client，不自行模拟鼠标或键盘；
+- `conversation.tools.v2`（原 v1）中的 Computer 标签；标签使用标准 noVNC RFB client，不自行模拟鼠标或键盘；
 - 人工输入经 generation-bound dashboard WebSocket 到 RFB；Agent 视觉输入经 Gateway 到同一个 Xvnc display；
 - profile 与登录刷新状态的插件数据 schema。
 
