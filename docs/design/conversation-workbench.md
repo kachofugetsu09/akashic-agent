@@ -91,6 +91,8 @@ Agent 活动只经 `requestAttention` 亮徽标；宿主不因活动展开工具
 
 ## 3. 终端（standard_tools 自有）
 
+> **已撤回，由交互终端替代**（决策 [0122](../decisions/0122-interactive-terminal.md)，见第 8 节）。本节保留为设计记录。
+
 首版是只读命令记录，按轮分组显示：命令、cwd、状态、退出码、耗时、输出。
 
 - **记录**：shell 工具在 prepare 固定 cwd（SH-004）后写入 `running`，每次工具调用读到输出、或执行结束时更新。
@@ -172,7 +174,7 @@ Agent 活动只经 `requestAttention` 亮徽标；宿主不因活动展开工具
 | S2b | 懒挂载、按会话记忆、启动器、铺满、底部空白修复 | S2a |
 | S3a | 意图路由与异步回执、聊天插槽 `workbench` 上下文 | S2a |
 | S3b | 引用回输入框 | S2a |
-| S4 | standard_tools 命令记录与终端标签（Agent 已读输出、停止后台命令） | S2a |
+| S4 | ~~standard_tools 命令记录与终端标签~~ 撤回，改为交互终端 T1a / T1b / T2 / T3a / T3b（见第 8 节） | S2a |
 | S7a | workspace_changes 窗口时序与固定槽位存储 | S0 |
 | S7b | git 快照与 diff 执行、上限与不支持判定 | S7a |
 | S8a | 改动标签（本轮 / 未提交，文件列表 + diff，引用到对话） | S3、S7b |
@@ -201,9 +203,24 @@ Agent 活动只经 `requestAttention` 亮徽标；宿主不因活动展开工具
 | 切片过大、需求去向 | 重新拆分；延后项见下 |
 
 延后项（不随 S0～S9 视为完成）：
-- 终端实时输出、交互终端；
+- ~~终端实时输出、交互终端~~：已由 0122 落地，见第 8 节；
 - 非 git 目录的改动统计；
 - 本会话净 diff；
 - “活动”标签；
 - 文件树与记忆标签；
 - 电脑的原始尺寸、让电脑休息、正常状态下重启、匿名页后退/刷新：需要改后端语义，0115 规定重启只能从 failed 发起。
+
+## 8. 落地记录
+
+与上文规格的差异以本节为准。
+
+| 切片 | PR | 与规格的差异 |
+|---|---|---|
+| S1 | #1421 | 无 |
+| S2a / S2b | #1422、#1423 | 子挂载 render 失败经可选的 `WebChildRenderOptions.onError` 通知父插件，v1 调用方不受影响 |
+| S3a / S3b | #1424 | 引用上限是 **8192 字符**（不是 8 KiB），`source` ≤ 200 字符；意图 payload 上限按 UTF-8 字节计 16 KiB |
+| S4 | ~~#1425、#1426~~ → #1427、#1428、#1429、#1430、#1431 | 只读命令记录撤回，改为用户自己的交互终端：`host.terminals.v1`（本机 PTY 与 Host Bridge `Terminal` RPC），terminal 插件提供 `terminal.sessions.v1` 与 dashboard 列出 / 新开 / 关闭 / WebSocket 接入，前端是 xterm 标签。归 terminal 插件而不是 standard_tools，因为事实是用户的 PTY，与 shell 工具无关 |
+
+- **工具卡入口的意图名**：`shell.command.open.v1` 随 S4 撤回。约定以后工具卡入口统一用 `tool.<name>.open.v1 {call_id}`，聊天端不需要认识具体工具；目前没有使用者。S8、S9 仍用各自领域名（`workspace.changes.open.v1`、`artifact.open.v1`）。
+- **Agent 的命令**仍由对话里的工具卡展示；Agent 不读用户终端（0122）。
+- **终端的信任边界与已知限制**见 0122：已登录的 Web 用户等于能在执行主机上执行任意命令；重启不保留；截断回放可能从全屏程序中途开始；Windows 暂不支持；手机上没有 Esc / Tab / Ctrl 辅助键行。
