@@ -290,7 +290,10 @@ async function readPreview(target: PreviewTarget): Promise<PreviewText> {
 
 // 前缀放不下的文件按下复制时才读：剪贴板接受读取中的 Promise，读完前不丢用户手势；不支持时读完再走普通复制。
 async function copyLarge(url: string): Promise<void> {
-  const blob = fetch(url).then((response) => response.blob()).then((raw) => new Blob([raw], { type: "text/plain" }));
+  const blob = fetch(url).then((response) => {
+    if (!response.ok) throw new Error(`读取附件失败: ${response.status}`);
+    return response.blob();
+  }).then((raw) => new Blob([raw], { type: "text/plain" }));
   if (navigator.clipboard?.write && typeof ClipboardItem !== "undefined") {
     try {
       await navigator.clipboard.write([new ClipboardItem({ "text/plain": blob })]);
@@ -362,6 +365,7 @@ export function useAttachmentPreview(): { open: (target: PreviewTarget) => void;
 function AttachmentPreviewContent({ state, onCloseAutoFocus }: { state: PreviewState; onCloseAutoFocus: (event: Event) => void }) {
   const { target, text, error } = state;
   const [copied, setCopied] = useState(false);
+  const [copyError, setCopyError] = useState("");
   const lines = text?.lines ?? [];
   const size = target.sizeBytes ?? text?.size;
   const meta = [size !== undefined ? formatBytes(size) : "", text?.totalLines !== undefined ? `${text.totalLines.toLocaleString("zh-CN")} 行` : ""]
@@ -370,10 +374,12 @@ function AttachmentPreviewContent({ state, onCloseAutoFocus }: { state: PreviewS
   const copyable = text !== null && text.size <= COPY_BYTE_LIMIT;
   const copy = () => {
     if (!copyable) return;
+    setCopied(false);
+    setCopyError("");
     void (text.full !== undefined ? copyText(text.full) : copyLarge(target.url)).then(() => {
       setCopied(true);
       window.setTimeout(() => setCopied(false), 2000);
-    });
+    }, (error: unknown) => setCopyError(error instanceof Error ? `复制失败：${error.message}` : "复制失败，请重试或下载文件。"));
   };
   return <DialogContent className="attachment-preview" showCloseButton={false} onCloseAutoFocus={onCloseAutoFocus}>
     <header className="attachment-preview__bar">
@@ -388,6 +394,7 @@ function AttachmentPreviewContent({ state, onCloseAutoFocus }: { state: PreviewS
       <a href={target.url} download={target.name} aria-label={`下载 ${target.name}`} title="下载"><Download size={16} aria-hidden="true" /></a>
       <DialogClose aria-label="关闭" title="关闭（Esc）"><X size={18} aria-hidden="true" /></DialogClose>
     </header>
+    {copyError ? <p className="attachment-preview__note" role="alert">{copyError}</p> : null}
     {columns.length > 1 ? <section className="attachment-preview__columns" aria-label="表格结构">
       <ul>{columns.map((column, index) => <li key={index}><bdi>{column.trim() || `第 ${index + 1} 列`}</bdi></li>)}</ul>
       <p>{columns.length} 列{text?.table?.rows !== undefined ? `，${text.table.rows.toLocaleString("zh-CN")} 行` : ""}</p>
