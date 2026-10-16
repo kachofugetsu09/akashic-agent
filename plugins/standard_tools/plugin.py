@@ -1,6 +1,8 @@
 from plugins.host_execution.contract import PROCESSES, FILES
 from agent.plugin_composition import Context
-from plugins.ui.contract import UI_SLOTS, PluginUiDefinition, PluginUiRpcInvalidRequest
+from importlib import import_module
+
+from plugins.ui.contract import UI, UI_SLOTS, PluginUiDefinition, PluginUiRpcInvalidRequest
 from plugins.ledger.contract import ARTIFACT_IMPORT
 from plugins.assets.contract import INSTALLED_ASSETS
 from plugins.ledger.contract import BINDINGS
@@ -18,6 +20,7 @@ from .filesystem import (
     WriteFileTool,
 )
 from .shell import register_shell
+from .command_log import COMMAND_LOG_VIEW, CommandLog
 from .skills import register_skills
 from .working_directory import WorkingDirectories
 from .directory_tool import register_directory
@@ -39,7 +42,10 @@ async def apply(ctx: Context) -> None:
     """注册既有工具的普通入口；安装和归档装配不访问文件、进程或网络。"""
     _ = await ctx.require(INSTALLED_ASSETS).register(ctx, "skills", "skills")
     catalog = ctx.require(TOOLS)
-    directories = WorkingDirectories(ctx.require(OWNER_STATE).open(ctx), ctx.require(FILES))
+    store = ctx.require(OWNER_STATE).open(ctx)
+    directories = WorkingDirectories(store, ctx.require(FILES))
+    commands = CommandLog(ctx, store)
+    _ = await ctx.provide(COMMAND_LOG_VIEW, commands)
     _ = await ctx.provide(WORKING_DIRECTORY, directories)
     _ = await ctx.require(SESSION_ADMISSION).register_initializer(
         ctx, name="working-directory", initialize=directories.initialize,
@@ -71,6 +77,12 @@ async def apply(ctx: Context) -> None:
         )
 
     _ = await ctx.inject((UI_SLOTS,), directory_ui, name="directory-ui")
+
+    # 命令记录的只读接口，供本插件自己的终端标签读取；记录不发布给其他插件。
+    async def terminal_ui(child: Context) -> None:
+        _ = await child.require(UI).register(child, dashboard=lambda: import_module(".dashboard", __package__))
+
+    _ = await ctx.inject((UI, COMMAND_LOG_VIEW), terminal_ui, name="terminal-ui")
     _ = await catalog.declare_group(ctx, always_on=True, description=desc)
     await register_directory(ctx, directories)
     await register_vision(ctx, directories)
@@ -85,5 +97,5 @@ async def apply(ctx: Context) -> None:
                 else None
             ),
         )
-    await register_shell(ctx, directories)
+    await register_shell(ctx, directories, commands)
     await register_skills(ctx)

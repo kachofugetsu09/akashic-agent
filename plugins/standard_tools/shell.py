@@ -42,6 +42,7 @@ from plugins.jobs.contract import JOB_NOTICES, JobOutcome, JobWatch
 from .shell_backend import _log_shell_execution, _shell_env
 from .shell_security import validate_command
 from .working_directory import WorkingDirectories
+from .command_log import CommandLog, CommandStart, turn_input
 
 
 _SETTLE_POLL_S = 1.0
@@ -129,6 +130,9 @@ class PreparedCommand(BaseModel):
     timeout: int
     call_context: dict[str, object] = Field(default_factory=dict)
     background: BackgroundTarget | None = None
+    # 终端分组用：调用所属的最近一条输入；旧的已准备参数没有这两项。
+    input_id: str = ""
+    input_preview: str = ""
 
 
 class PreparedStdin(Stdin):
@@ -178,11 +182,12 @@ class ShellTool:
     idempotent = False
 
     def __init__(self, ctx: Context, name: Literal["shell", "write_stdin", "task_stop"], settings: ShellSettings,
-                 directories: WorkingDirectories | None = None):
+                 directories: WorkingDirectories | None = None, log: CommandLog | None = None):
         self._ctx = ctx
         self._name = name
         self._settings = settings
         self._directories = directories
+        self._log = log
 
     async def prepare(self, arguments: Mapping[str, object], source: CallSource | None = None) -> Mapping[str, object] | str:
         """校验最终命令并固定进程 owner；恢复不重选目录、shell 或默认参数。"""
@@ -253,7 +258,9 @@ class ShellTool:
                     return '后台运行需要启用 jobs 插件'
             owner = background_owner
             background = BackgroundTarget(session_id=source.messages[-1].session_id, source=background_source)
+        input_id, input_preview = ("", "") if source is None else turn_input(source.messages, source.messages[-1].source)
         return PreparedCommand(
+            input_id=input_id, input_preview=input_preview,
             background=background, owner_key=owner, command=text, description=command.description,
             argv=shell.derive_argv(text, login=command.login), shell_kind=shell.kind.value,
             login=command.login, cwd=None if directory is None else str(directory), tty=command.tty,
@@ -279,9 +286,13 @@ class ShellTool:
     # 回合分区找不到时再查后台分区；唤醒只继承本会话原来源的后台分区。
     async def _stop(self, stop: PreparedStop) -> ToolResultValue:
         processes = self._ctx.require(PROCESSES)
-        stopped = await processes.terminate_execution(self._ctx, stop.owner_key, stop.execution_id)
+        owner = stop.owner_key
+        stopped = await processes.terminate_execution(self._ctx, owner, stop.execution_id)
         if not stopped and stop.background_owner_key is not None:
-            stopped = await processes.terminate_execution(self._ctx, stop.background_owner_key, stop.execution_id)
+            owner = stop.background_owner_key
+            stopped = await processes.terminate_execution(self._ctx, owner, stop.execution_id)
+        if stopped and self._log is not None:
+            await self._log.stopped(owner, stop.execution_id)
         return ToolResultValue("success" if stopped else "error", (ContentPart("text", json.dumps({
             "execution_id": stop.execution_id, **({"process_status": "stopped"} if stopped else {}),
             "status": "stopped" if stopped else "not_found",
@@ -295,12 +306,16 @@ class ShellTool:
             if owner is None:
                 continue
             try:
-                return _result(await processes.write_stdin(
+                result = await processes.write_stdin(
                     self._ctx, owner, execution_id=stdin.execution_id, chars=stdin.chars,
                     yield_time_ms=stdin.yield_time_ms, max_output_tokens=stdin.max_output_tokens,
-                ), None)
+                )
             except UnknownExecutionError as caught:
                 error = caught
+                continue
+            if self._log is not None:
+                await self._log.output(owner, result, stdin.execution_id)
+            return _result(result, None)
         assert error is not None
         return ToolResultValue("error", (ContentPart("text", str(error)),))
 
@@ -316,6 +331,7 @@ class ShellTool:
         env = _shell_env()
         env["AKASHIC_CALL_CONTEXT"] = json.dumps(command.call_context)
         started_at_ms = time.time_ns() // 1_000_000
+        slot = await self._record_start(command)
         result = await processes.exec_command(
             self._ctx, command.owner_key, command=command.command, argv=command.argv,
             cwd=None if command.cwd is None else Path(command.cwd), env=env, tty=command.tty,
@@ -324,6 +340,8 @@ class ShellTool:
             shell_snapshot=command.login and command.shell_kind in {"bash", "zsh"},
         )
         log("shell.execution_result", result=result)
+        if slot is not None and self._log is not None:
+            await self._log.result(*slot, command.owner_key, result)
         value = _result(result, command.command)
         if command.background is None or result.execution_id is None:
             return value
@@ -335,6 +353,24 @@ class ShellTool:
         )
         return ToolResultValue(value.outcome, (*value.parts, ContentPart("text", notice)))
 
+    # 只记录来自会话的调用；记录失败不影响命令本身（记录是展示用的副本）。
+    async def _record_start(self, command: PreparedCommand) -> tuple[str, int, str] | None:
+        context = command.call_context
+        if self._log is None or "session_id" not in context:
+            return None
+        session_id = str(context["session_id"])
+        call_id = f"{context['call_message_id']}:{context['call_part_index']}"
+        try:
+            slot = await self._log.start(CommandStart(
+                session_id=session_id, call_id=call_id, input_id=command.input_id,
+                input_preview=command.input_preview, command=command.command, cwd=command.cwd or "",
+                tty=command.tty, background=command.background is not None,
+            ))
+        except Exception as error:
+            _ = self._ctx.report_incident("shell_command_log_failed", f"{type(error).__name__}: {error}")
+            return None
+        return session_id, slot, call_id
+
     # 运行中的后台命令交给 jobs 等待结算；插件缺席时命令照常运行，只是没有完成通知。
     def _watch(self, command: PreparedCommand, target: BackgroundTarget, execution_id: int, started_at_ms: int) -> bool:
         with self._ctx.borrow(JOB_NOTICES) as notices:
@@ -344,9 +380,9 @@ class ShellTool:
                 session_id=target.session_id, source=target.source, job_id=f"shell-{execution_id}",
                 kind="shell", label=command.description or command.command[:60],
                 collect_hint=f"需要结果时用 write_stdin(execution_id={execution_id}) 读取输出。",
-                settled=partial(_settled, self._ctx, command.owner_key, execution_id),
+                settled=partial(_settled, self._ctx, command.owner_key, execution_id, self._log),
                 started_at_ms=started_at_ms,
-                stop=partial(_stop_background, self._ctx, command.owner_key, execution_id),
+                stop=partial(_stop_background, self._ctx, command.owner_key, execution_id, self._log),
             ))
         return True
 
@@ -369,13 +405,17 @@ def _outcome(state: ExecutionState) -> JobOutcome:
 
 
 # 用户在界面上停止后台命令；与 task_stop 一样终止进程组，结算由 _settled 照常观察。
-async def _stop_background(ctx: Context, owner_key: str, execution_id: int) -> bool:
+# 终止会释放执行条目，_settled 看不到终态，所以命令记录在这里标记。
+async def _stop_background(ctx: Context, owner_key: str, execution_id: int, log: CommandLog | None = None) -> bool:
     async with ctx.runtime_scope():
-        return await ctx.require(PROCESSES).terminate_execution(ctx, owner_key, execution_id)
+        stopped = await ctx.require(PROCESSES).terminate_execution(ctx, owner_key, execution_id)
+    if stopped and log is not None:
+        await log.stopped(owner_key, execution_id)
+    return stopped
 
 
 # 后台执行退出且无人等待时结算；条目消失说明终态已交给模型或执行已被停止。
-async def _settled(ctx: Context, owner_key: str, execution_id: int) -> JobOutcome | None:
+async def _settled(ctx: Context, owner_key: str, execution_id: int, log: CommandLog | None = None) -> JobOutcome | None:
     while True:
         try:
             async with ctx.runtime_scope():
@@ -386,11 +426,14 @@ async def _settled(ctx: Context, owner_key: str, execution_id: int) -> JobOutcom
         if state is None:
             return None
         if state.settled:
+            if log is not None:
+                await log.settled(owner_key, state)
             return _outcome(state)
         await asyncio.sleep(_SETTLE_POLL_S)
 
 
-async def register_shell(ctx: Context, directories: WorkingDirectories | None = None) -> tuple[ToolRef, ...]:
+async def register_shell(ctx: Context, directories: WorkingDirectories | None = None,
+                         log: CommandLog | None = None) -> tuple[ToolRef, ...]:
     """配置由 Shell owner 校验，所有操作与作业释放共用此插件身份。"""
     owners = ShellOwners(ctx)
     shell_tasks = ctx.require(TASKS).open(ctx)
@@ -428,7 +471,7 @@ async def register_shell(ctx: Context, directories: WorkingDirectories | None = 
     )
     refs: list[ToolRef] = []
     for name, schema, description in definitions:
-        refs.append(await _register(ctx, name, schema, description, directories))
+        refs.append(await _register(ctx, name, schema, description, directories, log))
     return tuple(refs)
 
 
@@ -438,13 +481,14 @@ async def _register(
     schema: type[BaseModel],
     description: str,
     directories: WorkingDirectories | None,
+    log: CommandLog | None,
 ) -> ToolRef:
     def capture(configuration: Mapping[str, object]) -> Mapping[str, object]:
         return ShellSettings.model_validate(json_value(configuration)).model_dump()
 
     @asynccontextmanager
     async def open_tool(state: Mapping[str, object]) -> AsyncGenerator[ShellTool]:
-        yield ShellTool(ctx, name, ShellSettings.model_validate(json_value(state)), directories)
+        yield ShellTool(ctx, name, ShellSettings.model_validate(json_value(state)), directories, log)
 
     return cast(ToolRef, await ctx.require(TOOLS).register(
         ctx,
