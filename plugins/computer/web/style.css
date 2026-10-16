@@ -702,15 +702,24 @@
   .computer-status-detail { display: none; }
 }
 
-/* 窄屏触控：按钮放大到 44px，外框贴边 */
+/* 窄屏：外框贴边 */
 @media (max-width: 38rem) {
   .computer-stage { padding: 22px 0 0; }
   .computer-frame,
   .computer-screen,
   .computer-connection-state { border-radius: 0; }
+  .computer-clipboard { inset-inline: 8px; width: auto; }
+}
+
+/* 触控（不论宽度）：可点区域至少 44px；胶囊里的"接管"保持紧凑外观，用伪元素扩大点击区 */
+@media (pointer: coarse) {
   .computer-icon-button { width: 44px; height: 44px; }
   .computer-target-select,
   .computer-menu-item { min-height: 44px; }
-  .computer-status .computer-action { min-height: 36px; }
-  .computer-clipboard { inset-inline: 8px; width: auto; }
+  .computer-status .computer-action { position: relative; }
+  .computer-status .computer-action::after {
+    position: absolute;
+    inset: -9px -4px;
+    content: "";
+  }
 }

@@ -242,22 +242,25 @@ export class ComputerDisplay extends EventTarget {
     if (this.control) this.stream?.webrtcInput?._sendKeyEvent(keysym, code, down);
   }
 
-  /** 回执到达后才允许发送粘贴按键，断线或超时明确失败。 */
   // 从流客户端正在显示的 video 或 canvas 取当前帧；两者都在同源 srcdoc 里，可以直接绘制。
+  // 元素属于 srcdoc 的 realm，父窗口的 instanceof 不成立，按标签名区分；video 用自然尺寸。
   snapshot(): Promise<Blob> {
     const document = this.frame.contentDocument;
+    const size = (node: HTMLVideoElement | HTMLCanvasElement) => node.tagName === "VIDEO"
+      ? { width: (node as HTMLVideoElement).videoWidth, height: (node as HTMLVideoElement).videoHeight }
+      : { width: node.width, height: node.height };
     const source = [...document?.querySelectorAll<HTMLVideoElement | HTMLCanvasElement>("video, #videoCanvas, #videoWorkerCanvas") ?? []]
-      .find(node => getComputedStyle(node).display !== "none"
-        && (node instanceof HTMLVideoElement ? node.videoWidth > 0 : node.width > 0));
+      .find(node => getComputedStyle(node).display !== "none" && size(node).width > 0
+        && (node.tagName !== "VIDEO" || (node as HTMLVideoElement).readyState >= HTMLMediaElement.HAVE_CURRENT_DATA));
     if (!source) return Promise.reject(new Error("还没有画面"));
     const canvas = document!.createElement("canvas");
-    canvas.width = source instanceof HTMLVideoElement ? source.videoWidth : source.width;
-    canvas.height = source instanceof HTMLVideoElement ? source.videoHeight : source.height;
+    ({ width: canvas.width, height: canvas.height } = size(source));
     canvas.getContext("2d")!.drawImage(source, 0, 0);
     return new Promise((resolve, reject) =>
       canvas.toBlob(blob => blob ? resolve(blob) : reject(new Error("浏览器没有生成图片")), "image/png"));
   }
 
+  /** 回执到达后才允许发送粘贴按键，断线或超时明确失败。 */
   clipboardPasteFrom(text: string): Promise<void> {
     if (!this.control) return Promise.reject(new Error("请先接管操作"));
     if (!this.connected || this.closed) return Promise.reject(new Error("Computer 尚未连接"));
