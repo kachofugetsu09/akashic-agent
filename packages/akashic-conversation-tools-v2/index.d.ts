@@ -18,6 +18,10 @@ export interface ConversationTab extends WebEntry {
    * 宿主按标签顺序交给第一个接受者，不广播，也不认识意图含义。
    */
   accepts?: readonly string[];
+  /** 可以多开：每次打开都是新实例（如终端），各自 render 一次、各占一个标签。默认单开，已开时只切过去。 */
+  multiple?: boolean;
+  /** 新标签页里工具名后面的一句说明，≤ 40 字符。 */
+  hint?: string;
 }
 
 /** 来自用户点击的意图；宿主已校验名字、大小（payload JSON ≤ 16 KiB）与会话是当前会话。 */
@@ -54,9 +58,16 @@ export interface ConversationTabView {
   onIntent(listener: (intent: ConversationIntent) => ConversationIntentStatus | Promise<ConversationIntentStatus>): WebUiDisposer;
   /** 只在标签自己的点击或键盘处理函数里调用；会话已切走返回 stale，不自动发送。 */
   quote(request: ConversationQuote): ConversationQuoteStatus;
+  /**
+   * 多开工具的实例 ID（宿主生成，随会话布局恢复）；单开工具为 null。实例属于创建它的会话，session 不再变化，
+   * 换会话时宿主卸下实例（调用 disposer），回到该会话再 render 一次。
+   */
+  readonly instance: string | null;
+  /** 用户关闭了这个标签（先于 disposer 调用）；会话切换引起的卸载不算关闭。 */
+  onClose(listener: () => void): WebUiDisposer;
   /** 标签标题，≤ 80 字符，null 恢复为 label。 */
   setTitle(title: string | null): void;
-  /** 标签自报的状态：busy 在标签上亮琥珀色点；detail（≤ 24 字符）只出现在提示里，不占标签宽度。 */
+  /** 标签自报的状态：busy 在标签上亮琥珀色点；detail（≤ 24 字符）只出现在提示与新标签页里，不占标签宽度。 */
   setIndicator(indicator: ConversationTabIndicator | null): void;
 }
 

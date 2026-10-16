@@ -139,10 +139,6 @@
   opacity: 0;
 }
 
-.conversation-tools-tab-item[hidden] {
-  display: none;
-}
-
 .conversation-tools-tab-item.is-active {
   border-color: var(--ak-rule-subtle);
   background: var(--ak-paper-sheet);
@@ -151,7 +147,7 @@
 
 .conversation-tools-tab,
 .conversation-tools-button,
-.conversation-tools-menu-item,
+.conversation-tools-launch-tool,
 .conversation-tools-toggle {
   border: 0;
   color: var(--ak-ink-secondary);
@@ -260,7 +256,8 @@
 }
 
 .conversation-tools-button svg,
-.conversation-tools-toggle svg {
+.conversation-tools-toggle svg,
+.conversation-tools-launch-tool > svg {
   width: 16px;
   height: 16px;
   fill: none;
@@ -270,57 +267,52 @@
   stroke-linejoin: round;
 }
 
-.conversation-tools-menu {
-  position: absolute;
-  z-index: 7;
-  inset-block-start: calc(100% + 4px);
-  inset-inline-end: 6px;
+/* 新标签页：工具列表，单列，可滚动 */
+.conversation-tool-panel:has(> .conversation-tools-launch) {
+  overflow-y: auto;
+}
+
+.conversation-tools-launch {
   display: grid;
-  min-width: 12rem;
-  padding: 4px;
-  border: 1px solid var(--ak-rule-default);
-  border-radius: 8px;
-  background: var(--ak-paper-sheet);
-  box-shadow: 0 8px 24px rgb(0 0 0 / 0.14);
+  gap: 6px;
+  max-width: 34rem;
+  margin-inline: auto;
+  padding: 28px 20px;
 }
 
-.conversation-tools-menu[hidden] {
-  display: none;
+.conversation-tools-launch-heading {
+  margin: 14px 10px 4px;
+  color: var(--ak-ink-muted);
+  font-size: 0.75rem;
+  font-weight: 600;
 }
 
-.conversation-tools-menu-item {
-  display: flex;
+.conversation-tools-launch-tools {
+  display: grid;
+  gap: 2px;
+}
+
+.conversation-tools-launch-tool {
+  display: grid;
+  grid-template-columns: 16px minmax(0, auto) minmax(0, 1fr);
+  min-height: 40px;
   align-items: center;
-  gap: 8px;
-  min-height: 32px;
+  gap: 10px;
   padding-inline: 10px;
-  border-radius: 6px;
+  border-radius: 8px;
   color: var(--ak-ink-primary);
-  font-size: 0.8125rem;
+  font-size: 0.875rem;
   text-align: start;
 }
 
-/* 已打开的标签在菜单里打勾，再选只是切过去 */
-.conversation-tools-menu-item[data-opened]::after {
-  margin-inline-start: auto;
-  color: var(--ak-ink-secondary);
-  content: "✓";
+.conversation-tools-launch-state {
+  overflow: hidden;
+  color: var(--ak-ink-muted);
+  font-size: 0.8125rem;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
-.conversation-tools-menu-item svg {
-  width: 16px;
-  height: 16px;
-  fill: none;
-  stroke: currentColor;
-  stroke-width: 1.6;
-  stroke-linecap: round;
-  stroke-linejoin: round;
-}
-
-.conversation-tools-button[aria-expanded="true"] {
-  color: var(--ak-ink-primary);
-  background: color-mix(in oklch, var(--ak-ink-primary) 8%, transparent);
-}
 
 /* 工作台开关：与标题栏图标按钮同一形态，名称在提示里；有活动时右上角一个点 */
 .conversation-tools-toggle {
@@ -369,7 +361,7 @@
 @media (hover: hover) {
   .conversation-tools-tab-item:not(.is-active):hover,
   .conversation-tools-button:hover,
-  .conversation-tools-menu-item:hover,
+  .conversation-tools-launch-tool:hover,
   .conversation-tools-toggle:hover {
     color: var(--ak-ink-primary);
     background: color-mix(in oklch, var(--ak-ink-primary) 6%, transparent);
@@ -378,7 +370,7 @@
 
 .conversation-tools-tab:focus-visible,
 .conversation-tools-button:focus-visible,
-.conversation-tools-menu-item:focus-visible,
+.conversation-tools-launch-tool:focus-visible,
 .conversation-tools-toggle:focus-visible {
   outline: 2px solid var(--ak-rule-focus);
   outline-offset: -2px;
@@ -444,7 +436,7 @@
     margin-inline-end: 0;
   }
 
-  .conversation-tools-menu-item {
-    min-height: 44px;
+  .conversation-tools-launch-tool {
+    min-height: 48px;
   }
 }
