@@ -79,7 +79,7 @@ export interface ConversationTabView {
    * 多开工具据此判断自己记下的“实例 → 后端资源”对应里哪些已经过期（标签已关）。
    */
   readonly instances: readonly string[];
-  /** 新开这个工具的一个实例，放在本标签之后并聚焦；只用于多开工具（如终端的 Ctrl+Shift+T）。 */
+  /** 新开这个工具的一个实例，放在本标签之后并聚焦；只用于多开工具（如终端里新开终端的快捷键）。 */
   openNew(): void;
   /** 切到本组里相邻的标签（delta 为 1 或 -1）并聚焦；本组只有一个标签时返回 false，什么也不做。 */
   cycle(delta: 1 | -1): boolean;

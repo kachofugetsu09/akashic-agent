@@ -26,8 +26,10 @@ function button(className: string, label: string, text: string, onClick: () => v
 
 const reason = (error: unknown): string => (error instanceof Error ? error.message : String(error));
 
-// 实例 → 终端的对应，按会话记在 sessionStorage（与工作台布局同寿命）；读写失败时当作没有记录，最多重新认领。
-function readClaims(session: string): Record<string, number> {
+// 实例 → 终端的对应按会话记在模块内（主数据）；sessionStorage 只用于页面刷新后恢复，读写失败不影响本页内的判断。
+const claimStore = new Map<string, Record<string, number>>();
+
+function restoreClaims(session: string): Record<string, number> {
   try {
     const value: unknown = JSON.parse(window.sessionStorage.getItem(CLAIMS_KEY + session) ?? "{}");
     if (!value || typeof value !== "object") return {};
@@ -37,21 +39,43 @@ function readClaims(session: string): Record<string, number> {
   }
 }
 
+function readClaims(session: string): Record<string, number> {
+  const claims = claimStore.get(session) ?? restoreClaims(session);
+  claimStore.set(session, claims);
+  return { ...claims };
+}
+
 function writeClaims(session: string, claims: Record<string, number>): void {
+  claimStore.set(session, { ...claims });
   try {
     window.sessionStorage.setItem(CLAIMS_KEY + session, JSON.stringify(claims));
   } catch {
-    /* 只是少记一条，下次重新认领 */
+    /* 只影响刷新后的恢复：没记下的终端刷新后由新实例接管 */
   }
 }
 
-// 同一会话的认领串行：布局恢复时几个实例同时渲染，也不会认领到同一个终端。
+// 剪掉已关标签（不在实例快照里）和已不存在的终端的认领；已关标签留下的终端、没人认领又已退出的终端交给调用方关闭。
+function settleClaims(stored: Record<string, number>, siblings: ReadonlySet<string>, terminals: readonly TerminalFacts[]):
+  { claims: Record<string, number>; orphans: number[] } {
+  const live = new Set(terminals.map((item) => item.id));
+  const claims = Object.fromEntries(Object.entries(stored).filter(([instance, id]) => siblings.has(instance) && live.has(id)));
+  const kept = new Set(Object.values(claims));
+  const stale = Object.entries(stored).filter(([instance, id]) => !siblings.has(instance) && live.has(id)).map(([, id]) => id);
+  const exited = terminals.filter((item) => item.exited).map((item) => item.id);
+  return { claims, orphans: [...new Set([...stale, ...exited])].filter((id) => !kept.has(id)) };
+}
+
+// 同一会话的认领、重开与删除认领串行：布局恢复时几个实例同时渲染，也不会认领到同一个终端或互相覆盖记录。
 const claimQueues = new Map<string, Promise<unknown>>();
 function serial<T>(session: string, task: () => Promise<T>): Promise<T> {
   const next = (claimQueues.get(session) ?? Promise.resolve()).catch(() => undefined).then(task);
   claimQueues.set(session, next);
   return next;
 }
+
+// 正在关闭的终端（会话 → 终端 → 请求）：关完之前不再被认领；需要新开时先等它们关完，腾出每会话的名额。
+const releasing = new Map<string, Map<number, Promise<void>>>();
+const pause = (ms: number): Promise<void> => new Promise((resolve) => window.setTimeout(resolve, ms));
 
 // 终端标签的一个实例：对应一个 PTY，属于创建它的会话。只在可见时连接；用户关掉标签时关闭 PTY，换会话卸下时 PTY 留着。
 class TerminalInstance implements PaneHost {
@@ -103,13 +127,15 @@ class TerminalInstance implements PaneHost {
   private async attach(): Promise<void> {
     if (this.loading) return;
     this.loading = true;
+    // 实例列表在任何 await 之前取快照：getter 跟着宿主当前的会话走，换会话后读到的是别的会话的标签。
+    const siblings = new Set(this.view.instances);
     try {
-      const facts = await serial(this.session, () => this.claim());
+      const facts = await serial(this.session, () => this.claim(siblings));
       if (this.disposed) {
-        if (this.closed) this.forget(facts.id);
+        if (this.closed && facts) this.forget(facts.id);
         return;
       }
-      this.mount(facts);
+      if (facts) this.mount(facts);
     } catch (error) {
       if (!this.disposed) this.show(reason(error), () => this.sync());
     } finally {
@@ -117,21 +143,41 @@ class TerminalInstance implements PaneHost {
     }
   }
 
-  // 不在 view.instances 里的实例（标签已关）与已不存在的终端都从记录里剪掉。
-  private async claim(): Promise<TerminalFacts> {
-    const response = await this.ctx.http.request(`${API}?${new URLSearchParams({ session: this.session })}`);
-    if (!response.ok) throw new Error(`读取终端失败（${response.status}）`);
-    const { terminals } = await response.json() as { terminals: TerminalFacts[] };
-    const siblings = new Set(this.view.instances);
-    const live = new Set(terminals.map((item) => item.id));
-    const claims = Object.fromEntries(Object.entries(readClaims(this.session))
-      .filter(([instance, id]) => siblings.has(instance) && live.has(id)));
-    const taken = new Set(Object.entries(claims).filter(([instance]) => instance !== this.instance).map(([, id]) => id));
+  // 中途被卸下（换会话或关标签）就不写记录、不新开，返回 null。
+  private async claim(siblings: ReadonlySet<string>): Promise<TerminalFacts | null> {
+    if (this.disposed) return null;
+    if (!siblings.has(this.instance)) throw new Error("工作台标签还没就绪，请重试。");
+    const terminals = await this.list();
+    if (this.disposed) return null;
+    // 1. 已关标签留下的终端、没人认领又已退出的终端直接关闭，不再留给别的实例接管。
+    const { claims, orphans } = settleClaims(readClaims(this.session), siblings, terminals);
+    for (const id of orphans) void this.release(id);
+    const closing = this.pendingReleases();
+    // 2. 自己记下的 → 没人认领、还在运行的 → 新开。
+    const taken = new Set(Object.values(claims));
     const facts = terminals.find((item) => item.id === claims[this.instance])
-      ?? terminals.find((item) => !taken.has(item.id) && !item.exited)
-      ?? await this.open(this.proposeSize());
+      ?? terminals.find((item) => !taken.has(item.id) && !item.exited && !closing.has(item.id))
+      ?? await this.openAfter([...closing.values()]);
+    if (!facts) return null;
+    // 3. 新开期间标签被关掉：新终端随即关闭；只是换会话则照常记下，回来接着用。
+    if (this.closed) {
+      void this.release(facts.id);
+      return null;
+    }
     writeClaims(this.session, { ...claims, [this.instance]: facts.id });
     return facts;
+  }
+
+  private async list(): Promise<TerminalFacts[]> {
+    const response = await this.ctx.http.request(`${API}?${new URLSearchParams({ session: this.session })}`);
+    if (!response.ok) throw new Error(`读取终端失败（${response.status}）`);
+    return (await response.json() as { terminals: TerminalFacts[] }).terminals;
+  }
+
+  // 等正在关闭的终端关完（腾出名额）再新开；等待期间被卸下就不开。
+  private async openAfter(closing: readonly Promise<void>[]): Promise<TerminalFacts | null> {
+    await Promise.all(closing);
+    return this.disposed ? null : this.open(this.proposeSize());
   }
 
   private mount(facts: TerminalFacts): void {
@@ -142,14 +188,18 @@ class TerminalInstance implements PaneHost {
     this.sync();
   }
 
-  // 按尺寸新开一个 PTY；失败时带上后端给的原因。
+  // 按尺寸新开一个 PTY；名额已满（409）时稍等重试两次，刚关闭的终端可能还没从后端登记表移除；失败时带上后端给的原因。
   private async open(size: { cols: number; rows: number }): Promise<TerminalFacts> {
-    const response = await this.ctx.http.request(`${API}?${new URLSearchParams({ session: this.session })}`, {
-      method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(size),
-    });
-    const body = await response.json() as TerminalFacts & { detail?: string };
-    if (!response.ok) throw new Error(typeof body.detail === "string" ? body.detail : `新开终端失败（${response.status}）`);
-    return body;
+    for (let attempt = 0; ; attempt += 1) {
+      const response = await this.ctx.http.request(`${API}?${new URLSearchParams({ session: this.session })}`, {
+        method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(size),
+      });
+      const body = await response.json() as TerminalFacts & { detail?: string };
+      if (response.ok) return body;
+      if (response.status !== 409 || attempt >= 2)
+        throw new Error(typeof body.detail === "string" ? body.detail : `新开终端失败（${response.status}）`);
+      await pause(1000);
+    }
   }
 
   private proposeSize(): { cols: number; rows: number } {
@@ -183,14 +233,16 @@ class TerminalInstance implements PaneHost {
     this.show("这个终端已经关闭。", () => this.sync(), "新开终端");
   }
 
-  // 退出后按 Enter：关掉旧 PTY，在原处开一个新的；标签已关或已换掉时，新开的随即关掉。
+  // 退出后按 Enter：等旧 PTY 关完（腾出名额）再在原处开一个新的，与认领串行；标签已关或已换掉时，新开的随即关掉。
   async restart(pane: Pane): Promise<void> {
-    this.release(pane.facts.id);
     try {
-      const facts = await this.open({ cols: pane.term.cols, rows: pane.term.rows });
-      if (this.disposed || pane !== this.pane || !pane.replace(facts)) return this.release(facts.id);
-      writeClaims(this.session, { ...readClaims(this.session), [this.instance]: facts.id });
-      this.changed(pane);
+      await serial(this.session, async () => {
+        await this.release(pane.facts.id);
+        const facts = await this.open({ cols: pane.term.cols, rows: pane.term.rows });
+        if (this.disposed || pane !== this.pane || !pane.replace(facts)) return void this.release(facts.id);
+        writeClaims(this.session, { ...readClaims(this.session), [this.instance]: facts.id });
+        this.changed(pane);
+      });
     } catch (error) {
       if (!pane.disposed) pane.term.write(`\r\n\x1b[31m${reason(error)}\x1b[0m\r\n`);
     }
@@ -202,17 +254,33 @@ class TerminalInstance implements PaneHost {
     if (this.pane) this.forget(this.pane.facts.id);
   }
 
+  // 删掉本实例的认领并关闭它的 PTY；与认领串行，不会被正在进行的认领写回。
   private forget(id: number | null): void {
-    const claims = readClaims(this.session);
-    delete claims[this.instance];
-    writeClaims(this.session, claims);
-    if (id !== null) this.release(id);
+    void serial(this.session, async () => {
+      const claims = readClaims(this.session);
+      delete claims[this.instance];
+      writeClaims(this.session, claims);
+      if (id !== null) void this.release(id);
+    });
   }
 
-  // 关闭远端 PTY 不等结果：失败时它不再被认领，由下一个新开的实例接管，或随会话 owner 清理。
-  private release(id: number): void {
+  // 关闭远端 PTY，同一终端只发一次；失败时它已不在认领里，由下一个新开的实例接管或关闭，或随会话 owner 清理。
+  private release(id: number): Promise<void> {
+    const pending = this.pendingReleases();
+    const known = pending.get(id);
+    if (known) return known;
     const query = new URLSearchParams({ session: this.session });
-    void this.ctx.http.request(`${API}/${id}?${query}`, { method: "DELETE" }).catch(() => undefined);
+    const request = this.ctx.http.request(`${API}/${id}?${query}`, { method: "DELETE" })
+      .then(() => undefined, () => undefined)
+      .finally(() => pending.delete(id));
+    pending.set(id, request);
+    return request;
+  }
+
+  private pendingReleases(): Map<number, Promise<void>> {
+    const pending = releasing.get(this.session) ?? new Map<number, Promise<void>>();
+    releasing.set(this.session, pending);
+    return pending;
   }
 
   private show(text: string, retry?: () => void, label = "重试"): void {
@@ -222,6 +290,7 @@ class TerminalInstance implements PaneHost {
   }
 
   // 4. 快捷键与 kitty 一致：Ctrl+Shift+C/V 复制粘贴，T 新开终端，F 搜索，←/→ 切到相邻标签。
+  //    普通浏览器标签页里 Ctrl+Shift+T 被浏览器保留（恢复关闭的标签页），只在 PWA / 桌面壳里到得了页面。
   shortcut(pane: Pane, event: KeyboardEvent): boolean {
     switch (event.code) {
       case "KeyC":
