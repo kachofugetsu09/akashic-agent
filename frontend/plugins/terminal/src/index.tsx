@@ -5,7 +5,6 @@ import "@xterm/xterm/css/xterm.css";
 import "./style.css";
 
 const API = "/api/dashboard/terminal/terminals";
-const QUOTE_LIMIT = 8192;
 const STATE_LABELS = { closing: "（正在关闭）", exited: "（已退出）", reconnecting: "（重新连接中）" } as const;
 
 function element<K extends keyof HTMLElementTagNameMap>(tag: K, className: string, text = ""): HTMLElementTagNameMap[K] {
@@ -24,7 +23,7 @@ function button(className: string, label: string, text: string, onClick: () => v
   return node;
 }
 
-// 终端标签：本会话的多个终端、顶部的终端条和搜索栏。终端只在标签可见时连接，会话切换后整组换掉。
+// 终端标签：本会话的多个终端、顶部的终端条和搜索栏（Ctrl+Shift+F 打开）。终端只在标签可见时连接，会话切换后整组换掉。
 class TerminalTab implements PaneHost {
   readonly root = element("div", "terminal-root");
   private readonly strip = element("div", "terminal-strip");
@@ -32,7 +31,6 @@ class TerminalTab implements PaneHost {
   private readonly notice = element("div", "terminal-notice");
   private readonly finder = element("div", "terminal-search");
   private readonly query = element("input", "terminal-search-input");
-  private readonly quoteButton = button("terminal-tool", "引用选中内容到对话", "引用", () => this.quote());
   private panes: Pane[] = [];
   private current: Pane | null = null;
   private loaded: string | null = null;
@@ -40,7 +38,7 @@ class TerminalTab implements PaneHost {
   private active: boolean;
   session: string;
 
-  constructor(private readonly ctx: WebHostContextV1, private readonly view: ConversationTabView) {
+  constructor(private readonly ctx: WebHostContextV1, view: ConversationTabView) {
     this.active = view.active;
     this.session = view.session ?? "";
     this.notice.setAttribute("role", "status");
@@ -52,7 +50,7 @@ class TerminalTab implements PaneHost {
       button("terminal-tool", "下一个", "↓", () => this.find(false)), button("terminal-tool", "关闭搜索", "✕", () => this.closeSearch()));
     this.finder.hidden = true;
     const bar = element("div", "terminal-bar");
-    bar.append(this.strip, this.quoteButton, button("terminal-tool", "搜索（Ctrl+Shift+F）", "搜索", () => this.openSearch()));
+    bar.append(this.strip);
     this.stage.append(this.notice);
     this.root.append(bar, this.finder, this.stage);
   }
@@ -313,14 +311,6 @@ class TerminalTab implements PaneHost {
       matchBackground: dark ? "#5c5220" : "#f3e3a0", activeMatchBackground: dark ? "#8a4a1e" : "#f0b48a" } };
     if (backward) this.current.search.findPrevious(term, options);
     else this.current.search.findNext(term, options);
-  }
-
-  private quote(): void {
-    const text = this.current?.term.getSelection().trim() ?? "";
-    if (!text || !this.session) return;
-    const status = this.view.quote({ session: this.session, text: text.slice(0, QUOTE_LIMIT), source: "终端" });
-    this.quoteButton.textContent = status === "inserted" ? "已引用" : "引用";
-    window.setTimeout(() => { this.quoteButton.textContent = "引用"; }, 1200);
   }
 
   retheme(): void {

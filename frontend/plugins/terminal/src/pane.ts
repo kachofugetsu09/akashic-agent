@@ -2,6 +2,7 @@ import type { WebHostContextV1 } from "@akashic/web-ui-v1";
 import { Terminal, type ITheme } from "@xterm/xterm";
 import { ClipboardAddon } from "@xterm/addon-clipboard";
 import { FitAddon } from "@xterm/addon-fit";
+import { ImageAddon } from "@xterm/addon-image";
 import { SearchAddon } from "@xterm/addon-search";
 import { Unicode11Addon } from "@xterm/addon-unicode11";
 import { WebLinksAddon } from "@xterm/addon-web-links";
@@ -66,6 +67,10 @@ export class Pane {
   private wanted = false;
   // 已显示过退出提示；之后不再连接，重新开始时清除。
   private noticed = false;
+  // 每次连上后的第一帧是积压输出的回放；其中旧的查询（CSI 14t、DA1 等）xterm 会再应答一遍，
+  // 解析这一帧期间的应答不能当输入送进 shell。
+  private caughtUp = false;
+  private replaying = false;
 
   disposed = false;
   closing = false;
@@ -82,8 +87,11 @@ export class Pane {
       cursorInactiveStyle: "outline", scrollback: 10_000, allowProposedApi: true, macOptionIsMeta: true,
       drawBoldTextInBrightColors: false, theme,
     });
+    // 图片：sixel 与 iTerm2 内联图（img2sixel、chafa、neofetch --sixel），并回报像素尺寸供程序缩放；
+    // kitty 图形协议要等 xterm.js 6.1 正式版。
     for (const addon of [this.fit, this.search, new Unicode11Addon(), new ClipboardAddon(),
-      new WebLinksAddon((_event, uri) => window.open(uri, "_blank", "noopener"))]) this.term.loadAddon(addon);
+      new WebLinksAddon((_event, uri) => window.open(uri, "_blank", "noopener")),
+      new ImageAddon({ storageLimit: 32 })]) this.term.loadAddon(addon);
     this.term.unicode.activeVersion = "11";
     this.term.open(this.element);
     this.useWebgl();
@@ -118,6 +126,7 @@ export class Pane {
   }
 
   private input(data: string): void {
+    if (this.replaying) return;
     if (this.facts.exited) {
       if (!data.includes("\r") || this.restarting) return;
       this.restarting = true;
@@ -156,6 +165,7 @@ export class Pane {
     if (this.socket || this.noticed) return;
     const query = new URLSearchParams({ session: this.session, terminal: String(this.facts.id), offset: String(this.offset) });
     const socket = new WebSocket(this.ctx.http.webSocketUrl(`/api/dashboard/terminal/attach?${query}`));
+    this.caughtUp = false;
     socket.binaryType = "arraybuffer";
     socket.onopen = () => {
       const recovered = this.attempt > 0;
@@ -172,7 +182,10 @@ export class Pane {
   private receive(data: unknown): void {
     if (data instanceof ArrayBuffer) {
       this.offset += data.byteLength;
-      this.term.write(new Uint8Array(data));
+      if (this.caughtUp) return this.term.write(new Uint8Array(data));
+      this.caughtUp = true;
+      this.replaying = true;
+      this.term.write(new Uint8Array(data), () => { this.replaying = false; });
       return;
     }
     const message = JSON.parse(String(data)) as { type: string; offset?: number; code?: number | null };
