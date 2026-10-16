@@ -1,11 +1,13 @@
 """会话工作目录的改动：未提交的差异与每轮前后的差异，只读统计，不改用户的 index、HEAD 与 refs。"""
+from typing import cast
+
 from agent.plugin_composition import Context
 from plugins.host_execution.contract import PROCESSES
 from plugins.ledger.contract import MESSAGE_CATALOG, OWNER_STATE
 from plugins.sources.contract import SOURCE_CHANGED_V3
 from plugins.standard_tools.contract import WORKING_DIRECTORY
 from plugins.turn_projection.contract import TURN_PROJECTION
-from plugins.ui.contract import UI
+from plugins.ui.contract import UI, UI_SLOTS, PluginUiDefinition, PluginUiRpcInvalidRequest
 
 from . import dashboard
 from .changes import WORKSPACE_CHANGES, WorkspaceChanges
@@ -38,3 +40,29 @@ async def apply(ctx: Context) -> None:
         )
 
     _ = await ctx.inject((UI, WORKSPACE_CHANGES), register_ui, name="workspace-changes-ui")
+
+    # 回复下方的摘要只要计数，不把整份文件列表送进聊天界面。
+    async def message_ui(child: Context) -> None:
+        async def query(method: str, payload: dict[str, object], *, session_id: str | None, turn_id: str | None) -> dict[str, object]:
+            message_id = payload.get("message_id")
+            if method != "turn.message" or set(payload) != {"message_id"} or not session_id \
+                    or not isinstance(message_id, str) or not message_id:
+                raise PluginUiRpcInvalidRequest("改动摘要需要会话与消息")
+            return summarize(await changes.windows.by_message(session_id, message_id))
+
+        _ = await child.require(UI_SLOTS).register_plugin_ui(
+            child, PluginUiDefinition(module="message_ui.js", stylesheet="message_ui.css", slots=("turn.after_answer",)),
+            query=query,
+        )
+
+    _ = await ctx.inject((UI_SLOTS,), message_ui, name="workspace-changes-message-ui")
+
+
+def summarize(turn: dict[str, object]) -> dict[str, object]:
+    files = cast(list[dict[str, object]], turn.get("files") or [])
+    return {
+        "phase": turn["phase"], "turn_id": turn.get("turn_id"), "error": turn.get("error"),
+        "files": len(files), "added": sum(cast(int, item["added"] or 0) for item in files),
+        "removed": sum(cast(int, item["removed"] or 0) for item in files),
+        "uncertain": bool(turn.get("baseline_late") or turn.get("end_late") or turn.get("truncated")),
+    }
