@@ -5,6 +5,7 @@ import "@xterm/xterm/css/xterm.css";
 import "./style.css";
 
 const API = "/api/dashboard/terminal/terminals";
+const QUOTE_LIMIT = 8192;
 
 function element<K extends keyof HTMLElementTagNameMap>(tag: K, className: string, text = ""): HTMLElementTagNameMap[K] {
   const node = document.createElement(tag);
@@ -22,11 +23,15 @@ function button(className: string, label: string, text: string, onClick: () => v
   return node;
 }
 
-// 终端标签：本会话的终端。终端只在标签可见时连接，会话切换后整组换掉。
+// 终端标签：本会话的多个终端、顶部的终端条和搜索栏。终端只在标签可见时连接，会话切换后整组换掉。
 class TerminalTab implements PaneHost {
   readonly root = element("div", "terminal-root");
+  private readonly strip = element("div", "terminal-strip");
   private readonly stage = element("div", "terminal-stage");
   private readonly notice = element("div", "terminal-notice");
+  private readonly finder = element("div", "terminal-search");
+  private readonly query = element("input", "terminal-search-input");
+  private readonly quoteButton = button("terminal-tool", "引用选中内容到对话", "引用", () => this.quote());
   private panes: Pane[] = [];
   private current: Pane | null = null;
   private loaded: string | null = null;
@@ -34,12 +39,21 @@ class TerminalTab implements PaneHost {
   private active: boolean;
   session: string;
 
-  constructor(private readonly ctx: WebHostContextV1, view: ConversationTabView) {
+  constructor(private readonly ctx: WebHostContextV1, private readonly view: ConversationTabView) {
     this.active = view.active;
     this.session = view.session ?? "";
     this.notice.setAttribute("role", "status");
+    this.query.type = "search";
+    this.query.placeholder = "搜索终端输出";
+    this.query.setAttribute("aria-label", "搜索终端输出");
+    this.query.addEventListener("keydown", (event) => this.searchKey(event));
+    this.finder.append(this.query, button("terminal-tool", "上一个", "↑", () => this.find(true)),
+      button("terminal-tool", "下一个", "↓", () => this.find(false)), button("terminal-tool", "关闭搜索", "✕", () => this.closeSearch()));
+    this.finder.hidden = true;
+    const bar = element("div", "terminal-bar");
+    bar.append(this.strip, this.quoteButton, button("terminal-tool", "搜索（Ctrl+Shift+F）", "搜索", () => this.openSearch()));
     this.stage.append(this.notice);
-    this.root.append(this.stage);
+    this.root.append(bar, this.finder, this.stage);
   }
 
   // 1. 可见且有会话时载入本会话的终端；不可见时断开连接，xterm 保留，回来从偏移续接。
@@ -70,6 +84,7 @@ class TerminalTab implements PaneHost {
     this.panes.forEach((pane) => pane.dispose());
     this.panes = [];
     this.current = null;
+    this.renderStrip();
   }
 
   private async load(): Promise<void> {
@@ -137,6 +152,7 @@ class TerminalTab implements PaneHost {
     this.current = pane;
     for (const item of this.panes) item.element.hidden = item !== pane;
     this.notice.hidden = true;
+    this.renderStrip();
     this.fitCurrent();
     if (this.active) pane.term.focus();
   }
@@ -144,6 +160,27 @@ class TerminalTab implements PaneHost {
   fitCurrent(): void {
     if (!this.current || this.current.element.hidden || !this.stage.clientWidth) return;
     try { this.current.fit.fit(); } catch { /* 尺寸为 0 时跳过 */ }
+  }
+
+  // 3. 终端条：每个终端一个标签（shell 标题或目录名），末尾是新建按钮。
+  private renderStrip(): void {
+    const tabs = this.panes.map((pane) => {
+      const item = element("div", "terminal-tab");
+      item.setAttribute("aria-selected", String(pane === this.current));
+      const name = button("terminal-tab-name", pane.label, pane.label, () => this.select(pane));
+      name.setAttribute("role", "tab");
+      if (pane.facts.exited) name.dataset.state = "exited";
+      else if (pane.reconnecting) name.dataset.state = "reconnecting";
+      item.append(name, button("terminal-tab-close", `关闭 ${pane.label}`, "×", () => this.close(pane)));
+      return item;
+    });
+    this.strip.setAttribute("role", "tablist");
+    this.strip.replaceChildren(...tabs, button("terminal-tool terminal-new", "新建终端（Ctrl+Shift+T）", "+", () => void this.create()));
+  }
+
+  private close(pane: Pane): void {
+    this.release(pane.session, pane.facts.id);
+    this.gone(pane);
   }
 
   // 关闭远端 PTY 不等结果：失败时它随会话 owner 清理或换代关闭一并结束。
@@ -159,12 +196,23 @@ class TerminalTab implements PaneHost {
     this.notice.hidden = false;
   }
 
+  changed(): void {
+    this.renderStrip();
+  }
+
+  exited(): void {
+    this.renderStrip();
+  }
+
   gone(pane: Pane): void {
     pane.dispose();
     this.panes = this.panes.filter((item) => item !== pane);
     if (this.current === pane) this.current = null;
     if (this.panes.length) this.select(this.panes[this.panes.length - 1]);
-    else this.show("这个会话没有打开的终端。");
+    else {
+      this.renderStrip();
+      this.show("这个会话没有打开的终端。");
+    }
   }
 
   // 退出后按 Enter：关掉旧 PTY，在原处开一个新的。会话已切换或 Pane 已关时不再接上，新开的随即关掉。
@@ -174,12 +222,13 @@ class TerminalTab implements PaneHost {
     try {
       const facts = await this.open(pane.session, { cols: pane.term.cols, rows: pane.term.rows });
       if (generation !== this.generation || !pane.replace(facts)) this.release(pane.session, facts.id);
+      else this.renderStrip();
     } catch (error) {
       if (!pane.disposed) pane.term.write(`\r\n\x1b[31m${error instanceof Error ? error.message : String(error)}\x1b[0m\r\n`);
     }
   }
 
-  // 3. 快捷键与 kitty 一致：Ctrl+Shift+C/V 复制粘贴，其余组合照常交给终端。
+  // 4. 快捷键与 kitty 一致：Ctrl+Shift+C/V 复制粘贴，T 新建，F 搜索，←/→ 切换终端。
   shortcut(pane: Pane, event: KeyboardEvent): boolean {
     switch (event.code) {
       case "KeyC":
@@ -188,9 +237,69 @@ class TerminalTab implements PaneHost {
         return true;
       case "KeyV":
         return true;
+      case "KeyT":
+        event.preventDefault();
+        void this.create();
+        return true;
+      case "KeyF":
+        event.preventDefault();
+        this.openSearch();
+        return true;
+      case "ArrowLeft":
+      case "ArrowRight":
+        return this.step(pane, event.code === "ArrowLeft" ? -1 : 1);
       default:
         return false;
     }
+  }
+
+  private step(pane: Pane, delta: number): boolean {
+    if (this.panes.length < 2) return false;
+    const index = (this.panes.indexOf(pane) + delta + this.panes.length) % this.panes.length;
+    this.select(this.panes[index]);
+    return true;
+  }
+
+  private openSearch(): void {
+    this.finder.hidden = false;
+    this.query.value = this.current?.term.getSelection() || this.query.value;
+    this.query.focus();
+    this.query.select();
+  }
+
+  private closeSearch(): void {
+    this.finder.hidden = true;
+    this.current?.search.clearDecorations();
+    this.current?.term.focus();
+  }
+
+  private searchKey(event: KeyboardEvent): void {
+    if (event.key === "Escape") {
+      event.preventDefault();
+      this.closeSearch();
+    } else if (event.key === "Enter") {
+      event.preventDefault();
+      this.find(event.shiftKey);
+    }
+  }
+
+  private find(backward: boolean): void {
+    const term = this.query.value;
+    if (!term || !this.current) return;
+    // xterm 的装饰色只认不透明 #RRGGBB；按明暗各取一组，命中处保持前景可读。
+    const dark = currentTheme().colorScheme === "dark";
+    const options = { decorations: { matchOverviewRuler: "#a37f00", activeMatchColorOverviewRuler: "#d93025",
+      matchBackground: dark ? "#5c5220" : "#f3e3a0", activeMatchBackground: dark ? "#8a4a1e" : "#f0b48a" } };
+    if (backward) this.current.search.findPrevious(term, options);
+    else this.current.search.findNext(term, options);
+  }
+
+  private quote(): void {
+    const text = this.current?.term.getSelection().trim() ?? "";
+    if (!text || !this.session) return;
+    const status = this.view.quote({ session: this.session, text: text.slice(0, QUOTE_LIMIT), source: "终端" });
+    this.quoteButton.textContent = status === "inserted" ? "已引用" : "引用";
+    window.setTimeout(() => { this.quoteButton.textContent = "引用"; }, 1200);
   }
 
   retheme(): void {

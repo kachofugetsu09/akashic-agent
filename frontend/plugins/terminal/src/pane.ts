@@ -2,6 +2,7 @@ import type { WebHostContextV1 } from "@akashic/web-ui-v1";
 import { Terminal, type ITheme } from "@xterm/xterm";
 import { ClipboardAddon } from "@xterm/addon-clipboard";
 import { FitAddon } from "@xterm/addon-fit";
+import { SearchAddon } from "@xterm/addon-search";
 import { Unicode11Addon } from "@xterm/addon-unicode11";
 import { WebLinksAddon } from "@xterm/addon-web-links";
 import { WebglAddon } from "@xterm/addon-webgl";
@@ -56,6 +57,8 @@ export class Pane {
   readonly element = document.createElement("div");
   readonly term: Terminal;
   readonly fit = new FitAddon();
+  readonly search = new SearchAddon();
+  title = "";
   private socket: WebSocket | null = null;
   private offset = 0;
   private attempt = 0;
@@ -78,7 +81,7 @@ export class Pane {
       cursorInactiveStyle: "outline", scrollback: 10_000, allowProposedApi: true, macOptionIsMeta: true,
       drawBoldTextInBrightColors: false, theme,
     });
-    for (const addon of [this.fit, new Unicode11Addon(), new ClipboardAddon(),
+    for (const addon of [this.fit, this.search, new Unicode11Addon(), new ClipboardAddon(),
       new WebLinksAddon((_event, uri) => window.open(uri, "_blank", "noopener"))]) this.term.loadAddon(addon);
     this.term.unicode.activeVersion = "11";
     this.term.open(this.element);
@@ -86,6 +89,7 @@ export class Pane {
     this.term.attachCustomKeyEventHandler((event) => this.key(event));
     this.term.onData((data) => this.input(data));
     this.term.onResize(({ cols, rows }) => this.send({ type: "resize", cols, rows }));
+    this.term.onTitleChange((title) => { this.title = title; this.host.changed?.(this); });
   }
 
   // WebGL 渲染更接近原生终端的刷新速度；上下文丢失或不支持时退回 DOM 渲染。
@@ -97,6 +101,11 @@ export class Pane {
     } catch {
       /* DOM 渲染照常可用 */
     }
+  }
+
+  get label(): string {
+    const folder = this.facts.cwd.split("/").filter(Boolean).pop() ?? "~";
+    return this.title || `${this.facts.shell.split("/").pop() ?? "shell"} · ${folder}`;
   }
 
   // Esc 留给终端里的程序（vim 等），不让工作台拿去还原或收起；Ctrl+Shift 组合交给标签处理。
@@ -133,6 +142,7 @@ export class Pane {
     const visible = this.wanted;
     this.disconnect();
     this.facts = facts;
+    this.title = "";
     this.offset = 0;
     this.noticed = false;
     this.term.reset();
@@ -185,6 +195,10 @@ export class Pane {
     this.attempt += 1;
     this.host.changed?.(this);
     this.timer = window.setTimeout(() => this.connect(), delay);
+  }
+
+  get reconnecting(): boolean {
+    return this.wanted && !this.facts.exited && this.attempt > 0 && this.socket?.readyState !== WebSocket.OPEN;
   }
 
   disconnect(): void {
