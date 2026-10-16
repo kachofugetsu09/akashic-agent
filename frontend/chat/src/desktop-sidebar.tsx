@@ -29,6 +29,7 @@ import {
 import type { NavigationRowAction } from "./navigation-row-menu";
 import type { PendingProjectRow, ProjectMemory, ProjectRow } from "./web-projects";
 import { ProjectDirectoryDialog } from "./project-directory-dialog";
+import { getHostShortcuts } from "./shell-workbench";
 import { Folder } from "lucide-react";
 
 export interface DesktopSidebarSession extends Omit<ConversationSession, "active" | "state"> {
@@ -254,6 +255,8 @@ function ShortcutsDialog({ open, onOpenChange, returnFocus }: { open: boolean; o
       ["快捷键", [mod, "/"]],
     ] },
   ];
+  const host = getHostShortcuts();
+  if (host.length) groups.push({ title: "工作台", items: host.map((item) => [item.label, [...item.keys]]) });
   return <Dialog open={open} onOpenChange={onOpenChange}>
     <DialogContent className="shortcuts-dialog" onCloseAutoFocus={(event) => { event.preventDefault(); returnFocus(); }}>
       <DialogHeader>

@@ -1,0 +1,93 @@
+/* 终端标签：一个标签一个终端，整块是终端底色；内容边距参照 kitty 的 window_padding。 */
+/* xterm 不决定标签宽度，按可见宽度排版。 */
+.terminal-root {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  min-width: 0;
+  min-height: 0;
+  contain: inline-size;
+  background: var(--ak-paper-sheet);
+  color: var(--ak-ink-primary);
+}
+
+.terminal-search {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  padding: 3px 6px;
+  border-bottom: 1px solid var(--ak-rule-subtle);
+}
+
+.terminal-tool {
+  border: 0;
+  border-radius: 6px;
+  color: var(--ak-ink-secondary);
+  background: transparent;
+  font: 12px/1.2 "JetBrains Mono", ui-monospace, monospace;
+  cursor: pointer;
+}
+
+.terminal-tool { padding: 6px 8px; white-space: nowrap; }
+
+.terminal-tool:hover { color: var(--ak-ink-primary); background: var(--ak-paper-raised); }
+
+.terminal-tool:focus-visible,
+.terminal-search-input:focus-visible {
+  outline: 2px solid var(--ak-rule-focus);
+  outline-offset: -2px;
+}
+
+.terminal-search[hidden] { display: none; }
+
+.terminal-search-input {
+  flex: 1;
+  min-width: 0;
+  padding: 5px 8px;
+  border: 1px solid var(--ak-rule-default);
+  border-radius: 6px;
+  color: var(--ak-ink-primary);
+  background: var(--ak-paper-canvas);
+  font: 12px/1.2 "JetBrains Mono", ui-monospace, monospace;
+}
+
+.terminal-stage {
+  position: relative;
+  flex: 1;
+  min-height: 0;
+  overflow: hidden;
+}
+
+.terminal-pane {
+  position: absolute;
+  inset: 6px 2px 2px 10px;
+}
+
+.terminal-pane[hidden] { display: none; }
+.terminal-pane .xterm { height: 100%; }
+/* xterm.css 给视口铺了黑底；不足一行的余量要露出终端底色 */
+.terminal-pane .xterm-viewport {
+  background-color: transparent !important;
+  scrollbar-width: thin;
+}
+
+.terminal-notice {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  padding: 24px;
+  text-align: center;
+}
+
+.terminal-notice[hidden] { display: none; }
+.terminal-notice-text { margin: 0; color: var(--ak-ink-secondary); font-size: 13px; }
+.terminal-notice .terminal-tool { border: 1px solid var(--ak-rule-default); }
+
+/* 触控：可点区域至少 44px */
+@media (pointer: coarse) {
+  .terminal-tool { min-width: 44px; min-height: 44px; }
+}

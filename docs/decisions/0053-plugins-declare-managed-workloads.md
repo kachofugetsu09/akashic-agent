@@ -54,6 +54,7 @@ RFB 通道、Chromium、OpenCLI、Computer Gateway、输入控制权、Skill、T
 
 `conversation-ui` 作为普通插件声明 `conversation.tools.v1` 多 entry mount。Computer 和未来其他插件各自
 登记一个顶部标签；Core Web Host 不认识 Browser 或 Computer。
+（勘误：合同已升级为 `conversation.tools.v2`，v1 删除，见 [0121](0121-conversation-workbench-tabs.md)；本决策的约束不变。）
 
 Workload 是 0036 的窄同步例外：只当 data 包含单 writer 状态时，它参与现有
 admission-close → lease-drain → stop-receipt → new-ready → publish/restore 事务。这不改变 MCP
@@ -99,6 +100,6 @@ Computer 行为。改变 Computer、Docker backend 或 Chat 工具内容时，�
 - [x] stop/cleanup/restore 失败保持可见 owner，不假报完成。
 - [x] 禁用或卸载 Computer 会停止容器并撤下能力，但不删除登录态。
 - [x] 正式 Core 正常停止或异常退出后，Controller 会停止并移除 Workload，但保留登录态目录。
-- [x] Chat 多标签工具区只依赖 `conversation.tools.v1`，没有 Computer 特判。
+- [x] Chat 多标签工具区只依赖 `conversation.tools.v1`（现为 v2），没有 Computer 特判。
 - [x] Computer renderer 使用独立 user namespace；容器仍为非 root、零 capability、
       `no-new-privileges` 和受限 seccomp，不使用 `--no-sandbox` 或 `seccomp=unconfined`。

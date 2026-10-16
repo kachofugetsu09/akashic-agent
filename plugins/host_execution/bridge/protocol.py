@@ -5,7 +5,7 @@ from collections.abc import Iterable
 from google.protobuf.message import Message
 
 from . import host_bridge_pb2 as pb
-from plugins.host_execution.contract import FileError, FileImage, FileResult
+from plugins.host_execution.contract import FileError, FileImage, FileResult, TerminalInfo, TerminalOutput
 from plugins.host_execution.contract import (
     ExecutionCleanupFailure, ExecutionCleanupReport, ExecutionResult, ExecutionState, UnknownExecutionError
 )
@@ -191,3 +191,36 @@ def decode_file_result(reply: pb.FileReply) -> FileResult:
     ):
         raise ValueError("Host Bridge 文件图片响应不符合合同")
     return FileImage(image.text, image.mime_type, image.data)
+
+
+def encode_terminal_info(info: TerminalInfo) -> pb.TerminalInfo:
+    reply = pb.TerminalInfo(
+        terminal_id=info.terminal_id, shell=info.shell, cwd=info.cwd, exited=info.exited,
+    )
+    if info.exit_code is not None:
+        reply.exit_code = info.exit_code
+    return reply
+
+
+def decode_terminal_info(reply: pb.TerminalInfo) -> TerminalInfo:
+    require_fields(reply, "terminal_id", "shell", "cwd", "exited")
+    require_positive(reply.terminal_id, "terminal_id")
+    return TerminalInfo(
+        reply.terminal_id, reply.shell, reply.cwd,
+        reply.exit_code if reply.HasField("exit_code") else None, reply.exited,
+    )
+
+
+def encode_terminal_output(output: TerminalOutput) -> pb.TerminalOutput:
+    reply = pb.TerminalOutput(data=output.data, offset=output.offset, exited=output.exited)
+    if output.exit_code is not None:
+        reply.exit_code = output.exit_code
+    return reply
+
+
+def decode_terminal_output(reply: pb.TerminalOutput) -> TerminalOutput:
+    require_fields(reply, "data", "offset", "exited")
+    require_nonnegative(reply.offset, "offset")
+    return TerminalOutput(
+        reply.data, reply.offset, reply.exit_code if reply.HasField("exit_code") else None, reply.exited,
+    )

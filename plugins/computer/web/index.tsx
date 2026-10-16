@@ -1,3 +1,4 @@
+import type { ConversationTabView } from "@akashic/conversation-tools-v2";
 import type { WebHostContextV1, WebUiDisposer } from "@akashic/web-ui-v1";
 import { ComputerDisplay } from "./display";
 import { BrowserDisplay } from "./browser-display";
@@ -8,11 +9,6 @@ import { PanelSurface, type Target, type ToolId } from "./panel-view";
 import { keysymForKey } from "./remote-input.js";
 import "./style.css";
 
-interface ConversationTabView {
-  readonly active: boolean;
-  onActiveChange(listener: (active: boolean) => void): WebUiDisposer;
-  requestAttention(noticeId: string): void;
-}
 // 这三种连接结果需要用户明确处理，轮询不自动重连。
 const SETTLED_LINKS: readonly LinkState[] = ["failed", "stale", "ended"];
 
@@ -20,7 +16,7 @@ const SETTLED_LINKS: readonly LinkState[] = ["failed", "stale", "ended"];
 function renderComputer(ctx: WebHostContextV1, host: HTMLElement, rawView: unknown): WebUiDisposer {
   const view = rawView as ConversationTabView;
   if (!view || typeof view.active !== "boolean" || typeof view.onActiveChange !== "function"
-    || typeof view.requestAttention !== "function") throw new Error("Computer 缺少 conversation.tools.v1 view");
+    || typeof view.requestAttention !== "function") throw new Error("Computer 缺少 conversation.tools.v2 view");
   const surface = new PanelSurface(id => void perform(id), id => select(id), id => void tool(id));
   const screen = surface.screen;
   const clipboard = new ClipboardPopover(surface.clipboardToggle, {
@@ -294,8 +290,9 @@ function renderComputer(ctx: WebHostContextV1, host: HTMLElement, rawView: unkno
 }
 
 export function activate(ctx: WebHostContextV1): WebUiDisposer {
-  return ctx.ui.inject("conversation.tools.v1", mount => mount.register({
-    id: "computer", label: "电脑", order: 10,
+  return ctx.ui.inject("conversation.tools.v2", mount => mount.register({
+    id: "computer", label: "电脑", order: 10, hint: "Agent 的浏览器和桌面", shortcut: "Mod+Shift+D", background: true,
+    icon: '<svg viewBox="0 0 24 24" aria-hidden="true"><rect x="3" y="4" width="18" height="12" rx="2"/><path d="M8 20h8M12 16v4"/></svg>',
     render(host, _entryView, props) { return renderComputer(ctx, host, props); },
   }));
 }

@@ -212,22 +212,10 @@ McpServer(
 
 ### 5.3 Chat 工具区
 
-`conversation-ui` 的 Web module 声明 `conversation.tools.v1`，cardinality 为 `list`。子 entry 合同只有：
-
-```ts
-interface ConversationTab {
-  id: string;
-  label: string;
-  order: number;
-  render(host: HTMLElement, view: ConversationTabView): void | (() => void);
-}
-
-interface ConversationTabView {
-  active: boolean;
-  onActiveChange(listener: (active: boolean) => void): () => void;
-  requestAttention(noticeId: string): void;
-}
-```
+`conversation-ui` 的 Web module 声明 `conversation.tools.v2`，cardinality 为 `list`。子 entry 与父视图的类型见
+`packages/akashic-conversation-tools-v2/index.d.ts`，结构摘要取同目录 `contract.json`；v1 已随 [0121](../decisions/0121-conversation-workbench-tabs.md) 删除。
+v2 在 v1 的 `active`、`onActiveChange`、`requestAttention` 之外，增加聊天报告的当前会话 `session` 与 `onSessionChange`，
+以及用户点击触发的意图投递 `onIntent` 与引用回输入框的 `quote`（字段与上限见合同 JSON）。
 
 顶部是标签，不叫 `tag`；用户界面使用“标签”，entry 使用浏览器常用的 `ConversationTab`。
 `ConversationTabView` 是 generation-bound 父视图；它不暴露 `open()` 或可写父状态。conversation-ui 唯一拥有
@@ -255,7 +243,7 @@ interface ConversationTabView {
 多个插件只增加标签：
 
 ```text
-conversation.tools.v1
+conversation.tools.v2
 ├── computer: Computer
 ├── files: Preview
 └── call: Transcript
@@ -417,7 +405,7 @@ WorkloadData 也不能挂正式目录；Computer candidate 只使用隔离复制
 - 唯一的普通插件工具 `computer`，组合 Browser 与 Desktop 驱动；
 - MCP 子进程只承接 WorkloadEnv、启动检查和驱动控制连接，不发布模型工具；
 - `opencli` Skill；Skill 只教 Agent 通过普通 `shell` 调用 CLI，不把 CLI 参数包装成 Browser Tool；
-- `conversation.tools.v1` 中的 Computer 标签；标签使用标准 noVNC RFB client，不自行模拟鼠标或键盘；
+- `conversation.tools.v2`（原 v1）中的 Computer 标签；标签使用标准 noVNC RFB client，不自行模拟鼠标或键盘；
 - 人工输入经 generation-bound dashboard WebSocket 到 RFB；Agent 视觉输入经 Gateway 到同一个 Xvnc display；
 - profile 与登录刷新状态的插件数据 schema。
 

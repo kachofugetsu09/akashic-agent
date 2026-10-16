@@ -1,0 +1,84 @@
+{
+  "contract": "conversation.tools.v2",
+  "entry": {
+    "required": [
+      "id",
+      "label",
+      "render"
+    ],
+    "optional": [
+      "order",
+      "icon",
+      "background",
+      "accepts",
+      "multiple",
+      "hint",
+      "shortcut"
+    ],
+    "hintChars": 40,
+    "shortcut": "Ctrl+` | Mod+Shift+[A-Z]，除 A B C I J N O P Q R T V W Z；工具之间不能重复"
+  },
+  "view": {
+    "active": "boolean",
+    "onActiveChange": [
+      "active"
+    ],
+    "session": "string | null",
+    "onSessionChange": [
+      "session"
+    ],
+    "requestAttention": [
+      "noticeId"
+    ],
+    "onIntent": [
+      "intent"
+    ],
+    "quote": [
+      "request"
+    ],
+    "setTitle": [
+      "title"
+    ],
+    "setIndicator": [
+      "indicator"
+    ],
+    "titleChars": 80,
+    "indicatorDetailChars": 24,
+    "instance": "string | null",
+    "onClose": [],
+    "instances": "readonly string[]",
+    "openNew": [],
+    "cycle": [
+      "delta"
+    ]
+  },
+  "intent": {
+    "fields": [
+      "id",
+      "name",
+      "session",
+      "payload"
+    ],
+    "name": "^[a-z][a-z0-9_-]*(\\.[a-z0-9_-]+)*\\.v[0-9]+$",
+    "payloadBytes": 16384,
+    "status": [
+      "handled",
+      "invalid",
+      "failed"
+    ]
+  },
+  "quote": {
+    "fields": [
+      "session",
+      "text",
+      "source"
+    ],
+    "textChars": 8192,
+    "sourceChars": 200,
+    "status": [
+      "inserted",
+      "stale",
+      "rejected"
+    ]
+  }
+}

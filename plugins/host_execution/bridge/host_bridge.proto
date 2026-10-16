@@ -18,6 +18,7 @@ service HostBridge {
   rpc FileTool(FileRequest) returns (FileReply);
   rpc SkillRequirements(SkillRequirementsRequest) returns (SkillRequirementsReply);
   rpc ExecutionStates(OwnerRequest) returns (ExecutionStatesReply);
+  rpc Terminal(TerminalRequest) returns (TerminalReply);
 }
 
 message RequestContext {
@@ -180,4 +181,60 @@ message RequirementNames {
 message SkillRequirementsReply {
   RequirementNames available = 1;
   RequirementNames missing = 2;
+}
+
+// 用户交互终端；读取按偏移不消费，没有新输出时最多等待 wait_ms。
+message TerminalRequest {
+  RequestContext context = 1;
+  string owner_session_key = 2;
+  oneof operation {
+    TerminalOpen open = 3;
+    TerminalWrite write = 4;
+    TerminalResize resize = 5;
+    TerminalRead read = 6;
+    int64 close = 7;
+    bool list = 8;
+  }
+}
+message TerminalOpen {
+  optional string cwd = 1;
+  optional int32 cols = 2;
+  optional int32 rows = 3;
+}
+message TerminalWrite {
+  optional int64 terminal_id = 1;
+  optional bytes data = 2;
+}
+message TerminalResize {
+  optional int64 terminal_id = 1;
+  optional int32 cols = 2;
+  optional int32 rows = 3;
+}
+message TerminalRead {
+  optional int64 terminal_id = 1;
+  optional int64 offset = 2;
+  optional int32 wait_ms = 3;
+}
+message TerminalInfo {
+  optional int64 terminal_id = 1;
+  optional string shell = 2;
+  optional string cwd = 3;
+  optional int32 exit_code = 4;
+  optional bool exited = 5;
+}
+message TerminalOutput {
+  optional bytes data = 1;
+  optional int64 offset = 2;
+  optional int32 exit_code = 3;
+  optional bool exited = 4;
+}
+message TerminalList { repeated TerminalInfo terminals = 1; }
+message TerminalReply {
+  oneof result {
+    TerminalInfo info = 1;
+    bool done = 2;
+    TerminalOutput output = 3;
+    TerminalList list = 4;
+    int64 unknown_terminal_id = 5;
+  }
 }

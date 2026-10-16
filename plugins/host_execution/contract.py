@@ -151,6 +151,9 @@ class ShellProcessManagerProtocol(Protocol):
 
     async def execution_states(self, owner_session_key: str) -> list["ExecutionState"]: ...
 
+    @property
+    def terminals(self) -> "TerminalBackend": ...
+
 
 MIN_YIELD_TIME_MS = 250
 
@@ -199,6 +202,54 @@ class ExecutionState:
     settled: bool
     exit_code: int | None
     finish_reason: str
+
+
+class UnknownTerminalError(RuntimeError):
+    pass
+
+
+# 用户交互终端：shell 由执行主机按用户默认 shell 选定，不设硬超时，输出可按偏移重复读取。
+@dataclass(frozen=True)
+class TerminalInfo:
+    terminal_id: int
+    shell: str
+    cwd: str
+    exit_code: int | None
+    exited: bool
+
+
+# data 从 offset 开始；offset 大于请求值表示更早的输出已滚出缓冲。
+@dataclass(frozen=True)
+class TerminalOutput:
+    data: bytes
+    offset: int
+    exit_code: int | None
+    exited: bool
+
+    @property
+    def end(self) -> int:
+        return self.offset + len(self.data)
+
+
+TERMINAL_MAX_COLS = 1000
+TERMINAL_MAX_ROWS = 500
+TERMINAL_MAX_WRITE_BYTES = 64 * 1024
+TERMINAL_MAX_WAIT_MS = 30_000
+
+
+class TerminalBackend(Protocol):
+    async def open_terminal(
+        self, *, owner_session_key: str, cwd: Path | None, cols: int, rows: int,
+    ) -> TerminalInfo: ...
+    async def write_terminal(self, *, owner_session_key: str, terminal_id: int, data: bytes) -> None: ...
+    async def resize_terminal(
+        self, *, owner_session_key: str, terminal_id: int, cols: int, rows: int,
+    ) -> None: ...
+    async def read_terminal(
+        self, *, owner_session_key: str, terminal_id: int, offset: int, wait_ms: int,
+    ) -> TerminalOutput: ...
+    async def close_terminal(self, *, owner_session_key: str, terminal_id: int) -> bool: ...
+    async def list_terminals(self, owner_session_key: str) -> list[TerminalInfo]: ...
 
 
 @dataclass(frozen=True)
@@ -253,6 +304,23 @@ class Processes(Protocol):
 
 
 PROCESSES = ServiceKey[Processes]("host.processes.v1")
+
+
+# 插件按自己命名的 owner_key 持有交互终端；owner 清理与本 generation 关闭会结束其终端。
+class Terminals(Protocol):
+    async def open(
+        self, ctx: Context, owner_key: str, *, cwd: Path | None, cols: int, rows: int,
+    ) -> TerminalInfo: ...
+    async def write(self, ctx: Context, owner_key: str, terminal_id: int, data: bytes) -> None: ...
+    async def resize(self, ctx: Context, owner_key: str, terminal_id: int, *, cols: int, rows: int) -> None: ...
+    async def read(
+        self, ctx: Context, owner_key: str, terminal_id: int, *, offset: int, wait_ms: int,
+    ) -> TerminalOutput: ...
+    async def close(self, ctx: Context, owner_key: str, terminal_id: int) -> bool: ...
+    async def list(self, ctx: Context, owner_key: str) -> list[TerminalInfo]: ...
+
+
+TERMINALS = ServiceKey[Terminals]("host.terminals.v1")
 
 
 class ShellKind(str, Enum):
