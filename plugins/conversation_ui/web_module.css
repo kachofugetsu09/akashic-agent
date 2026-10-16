@@ -348,14 +348,17 @@
     height: 44px;
   }
 
+  /* 关闭钮本身就是 44px 点击区（图标仍是 13px），标签文字让出同样宽度，两者不重叠 */
   .conversation-tools-tab-close {
-    width: 32px;
-    height: 32px;
+    inset-inline-end: 0;
+    width: 44px;
+    height: 44px;
     opacity: 1;
   }
 
   .conversation-tools-tab {
-    padding-inline-end: 34px;
+    min-width: 88px;
+    padding-inline-end: 44px;
   }
 
   .conversation-tools-menu-item {

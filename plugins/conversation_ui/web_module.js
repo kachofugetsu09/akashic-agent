@@ -376,6 +376,71 @@ function createSizing(root, splitter) {
   return { width: () => state.width, maximum, set, fit, reset };
 }
 
+// 标签挂载与父视图的生命周期。每个标签只 render 一次：先占位再 render，render 里调用 view 方法引起的更新不会重入；
+// 挂载前先记下当前可见值，订阅时收到的就是唯一一次首次通知。展开与当前标签只经 isActive 读取，不在这里保存。
+function createTabLifecycle(tools, panelOf, isActive, currentSession, onAttention) {
+  const mounted = new Map();
+  const reported = new Map();
+  const activeListeners = new Map();
+  const sessionListeners = new Map();
+  const listenersOf = (map, id) => {
+    if (!map.has(id)) map.set(id, new Set());
+    return map.get(id);
+  };
+  const subscribe = (map, id, listener, current, kind) => {
+    if (typeof listener !== "function") throw new Error(`ConversationTab ${kind} listener 必须是函数`);
+    const listeners = listenersOf(map, id);
+    listeners.add(listener);
+    listener(current);
+    return () => listeners.delete(listener);
+  };
+
+  function view(entry) {
+    return {
+      get active() { return isActive(entry.id); },
+      onActiveChange: (listener) => subscribe(activeListeners, entry.id, listener, isActive(entry.id), "active"),
+      get session() { return currentSession(); },
+      onSessionChange: (listener) => subscribe(sessionListeners, entry.id, listener, currentSession(), "session"),
+      requestAttention: (noticeId) => onAttention(entry, noticeId),
+    };
+  }
+
+  // render 失败时撤下它已登记的监听，面板里说明原因；占位保留，避免每次更新都重试。
+  function mount(entry) {
+    if (mounted.has(entry.id)) return;
+    mounted.set(entry.id, () => {});
+    reported.set(entry.id, isActive(entry.id));
+    const panel = panelOf(entry.id);
+    try {
+      mounted.set(entry.id, tools.render(entry.id, panel, view(entry)));
+    } catch (error) {
+      activeListeners.delete(entry.id);
+      sessionListeners.delete(entry.id);
+      panel.textContent = `${entry.label}没能加载：${error instanceof Error ? error.message : String(error)}`;
+    }
+  }
+
+  function report(entry) {
+    const active = isActive(entry.id);
+    if (reported.get(entry.id) === active) return;
+    reported.set(entry.id, active);
+    for (const listener of [...listenersOf(activeListeners, entry.id)]) listener(active);
+  }
+
+  function session(value) {
+    for (const listeners of [...sessionListeners.values()])
+      for (const listener of [...listeners]) listener(value);
+  }
+
+  function dispose() {
+    activeListeners.clear();
+    sessionListeners.clear();
+    for (const stop of [...mounted.values()].reverse()) stop();
+  }
+
+  return { mount, report, session, dispose };
+}
+
 // 工具区状态的唯一 owner：打开的标签、当前标签、展开与铺满。标签只经 view 读到可见事实与当前会话。
 function mountTools(root, frame, tools, entries) {
   const chrome = buildChrome();
@@ -385,47 +450,21 @@ function mountTools(root, frame, tools, entries) {
     open: false, maximized: false, activeId: entries[0].id, opened: new Set([entries[0].id]),
     // chat 的模态层（窄屏导航抽屉等）在 iframe 内，盖不住宿主的浮动开关；打开期间收起开关。
     chatOverlay: false, session: null,
+    // 窄屏恢复布局时只是暂不展开；记下的仍是用户的展开偏好，用户自己开关后清除。
+    held: false,
   };
   const handled = new Set();
   const attention = new Set();
   const tabs = new Map();
-  const mounted = new Map();
-  const activeValues = new Map();
-  const activeListeners = new Map(entries.map((entry) => [entry.id, new Set()]));
-  const sessionListeners = new Set();
-
-  // 1. 首次被选中才渲染；声明 background 的标签挂载即渲染，以便在未打开时提示活动。
-  function ensureMounted(entry) {
-    if (mounted.has(entry.id)) return;
-    mounted.set(entry.id, tools.render(entry.id, tabs.get(entry.id).panel, tabView(entry)));
-  }
-
-  function tabView(entry) {
-    const listeners = activeListeners.get(entry.id);
-    return {
-      get active() { return state.open && state.activeId === entry.id; },
-      onActiveChange(listener) {
-        if (typeof listener !== "function") throw new Error("ConversationTab active listener 必须是函数");
-        listeners.add(listener);
-        listener(state.open && state.activeId === entry.id);
-        return () => listeners.delete(listener);
-      },
-      get session() { return state.session; },
-      onSessionChange(listener) {
-        if (typeof listener !== "function") throw new Error("ConversationTab session listener 必须是函数");
-        sessionListeners.add(listener);
-        listener(state.session);
-        return () => sessionListeners.delete(listener);
-      },
-      requestAttention(noticeId) {
-        if (typeof noticeId !== "string" || !noticeId || handled.has(noticeId)) return;
-        handled.add(noticeId);
-        // 活动只提示；打开、关闭与切换由用户决定，包括移动端。
-        if (!state.open || state.activeId !== entry.id) attention.add(entry.id);
-        update();
-      },
-    };
-  }
+  const isActive = (id) => state.open && state.activeId === id;
+  // 活动只提示；打开、关闭与切换由用户决定，包括移动端。
+  const lifecycle = createTabLifecycle(tools, (id) => tabs.get(id).panel,
+    isActive, () => state.session, (entry, noticeId) => {
+      if (typeof noticeId !== "string" || !noticeId || handled.has(noticeId)) return;
+      handled.add(noticeId);
+      if (!isActive(entry.id)) attention.add(entry.id);
+      update();
+    });
 
   function update() {
     root.classList.toggle("tools-open", state.open);
@@ -459,17 +498,18 @@ function mountTools(root, frame, tools, entries) {
     tab.button.classList.toggle("has-attention", attention.has(entry.id));
     tab.button.tabIndex = entry.id === state.activeId ? 0 : -1;
     tab.panel.hidden = entry.id !== state.activeId;
-    if (active) ensureMounted(entry);
-    if (activeValues.get(entry.id) === active) return;
-    activeValues.set(entry.id, active);
-    for (const listener of activeListeners.get(entry.id) ?? []) listener(active);
+    lifecycle.report(entry);
+    // 1. 首次被选中才渲染；声明 background 的标签挂载即渲染，以便在未打开时提示活动。
+    if (active) lifecycle.mount(entry);
   }
 
   function remember() {
-    if (state.session) saveLayout(state.session, { open: state.open, active: state.activeId, opened: [...state.opened] });
+    if (state.session)
+      saveLayout(state.session, { open: state.open || state.held, active: state.activeId, opened: [...state.opened] });
   }
 
   function openTab(id, focusTab = false) {
+    state.held = false;
     attention.delete(id);
     state.opened.add(id);
     state.activeId = id;
@@ -498,6 +538,7 @@ function mountTools(root, frame, tools, entries) {
   }
 
   function closePanel() {
+    state.held = false;
     state.open = false;
     state.maximized = false;
     update();
@@ -505,30 +546,38 @@ function mountTools(root, frame, tools, entries) {
     chrome.toggle.focus();
   }
 
-  // 3. 换会话时恢复那个会话记下的标签；窄屏不自动展开，避免盖住刚切过去的对话。
+  // 3. 换会话时恢复那个会话记下的布局；没去过的会话继承当前布局并立即记下，之后不再跟随别的会话。
   function applySession(session) {
     if (session === state.session) return;
     state.session = session;
     const layout = session ? readLayout(session) : null;
-    if (layout) {
-      const known = layout.opened.filter((id) => tabs.has(id));
-      if (known.length) state.opened = new Set(known);
-      if (tabs.has(layout.active) && state.opened.has(layout.active)) state.activeId = layout.active;
-      state.open = layout.open === true && !narrow.matches;
-      if (!state.open) state.maximized = false;
-    }
+    if (layout) adoptLayout(layout);
+    else remember();
     update();
-    for (const listener of [...sessionListeners]) listener(session);
+    lifecycle.session(session);
   }
 
+  // 打开的标签与当前标签作为一个整体校正：已移除的标签丢掉，当前标签不在其中时取第一个；窄屏不自动展开。
+  function adoptLayout(layout) {
+    const known = entries.filter((entry) => layout.opened.includes(entry.id)).map((entry) => entry.id);
+    state.opened = new Set(known.length ? known : [entries[0].id]);
+    state.activeId = state.opened.has(layout.active) ? layout.active : [...state.opened][0];
+    const open = layout.open === true && known.length > 0;
+    state.held = open && narrow.matches;
+    state.open = open && !narrow.matches;
+    if (!state.open) state.maximized = false;
+  }
+
+  // 铺满时 Esc 在工具内容里也能还原；收起只从顶栏或分隔条触发。标签自己处理过的 Esc（defaultPrevented）不动。
   function onKeydown(event) {
-    if (event.key !== "Escape" || !state.open) return;
-    if (!chrome.bar.contains(event.target) && event.target !== chrome.splitter) return;
-    event.preventDefault();
-    if (state.maximized) {
+    if (event.key !== "Escape" || !state.open || event.defaultPrevented) return;
+    const inChrome = chrome.bar.contains(event.target) || event.target === chrome.splitter;
+    if (state.maximized && (inChrome || chrome.content.contains(event.target))) {
       state.maximized = false;
       update();
-    } else closePanel();
+    } else if (inChrome) closePanel();
+    else return;
+    event.preventDefault();
   }
 
   function followChatOverlay(event) {
@@ -583,7 +632,7 @@ function mountTools(root, frame, tools, entries) {
   frame.addEventListener("load", resetChatOverlay);
   window.addEventListener("resize", sizing.fit);
   const stopSession = followChatSession(frame, applySession);
-  for (const entry of entries) if (entry.background) ensureMounted(entry);
+  for (const entry of entries) if (entry.background) lifecycle.mount(entry);
   return {
     start() {
       sizing.fit();
@@ -595,9 +644,7 @@ function mountTools(root, frame, tools, entries) {
       window.removeEventListener("message", followChatOverlay);
       frame.removeEventListener("load", resetChatOverlay);
       window.removeEventListener("resize", sizing.fit);
-      activeListeners.clear();
-      sessionListeners.clear();
-      for (const dispose of [...mounted.values()].reverse()) dispose();
+      lifecycle.dispose();
     },
   };
 }
