@@ -198,7 +198,8 @@ function readIntent(event, frame, session) {
   if (!message || typeof message !== "object" || message.type !== "akashic.workbench-intent") return null;
   if (typeof message.id !== "string" || !message.id || message.id.length > 64) return null;
   let size = Infinity;
-  try { size = JSON.stringify(message.payload ?? null).length; } catch { /* 不可序列化按超限处理 */ }
+  // 上限按 UTF-8 字节计（合同写的是 16 KiB）；不可序列化（循环引用、BigInt）按超限处理。
+  try { size = new TextEncoder().encode(JSON.stringify(message.payload ?? null)).byteLength; } catch { /* 见上 */ }
   const valid = typeof message.name === "string" && INTENT_NAME.test(message.name)
     && typeof message.session === "string" && message.session === session && size <= INTENT_LIMIT;
   return { id: message.id, valid, intent: { id: message.id, name: message.name, session: message.session, payload: message.payload ?? null } };
