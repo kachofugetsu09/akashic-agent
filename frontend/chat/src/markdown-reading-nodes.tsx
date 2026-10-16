@@ -87,10 +87,14 @@ export function ReadingParagraph(props: NodeComponentProps<ParagraphNode>) {
   return <p className={className} dir="auto">{node.children.map((child, index) => renderNode(child, `${String(indexKey)}-${index}`, ctx))}</p>;
 }
 
+// 链接里的行内代码不做成文件按钮：<a> 里不能嵌交互控件。
+const InsideLink = createContext(false);
+
 /** 行内代码是文件路径、且工作台有工具接受文件意图时，点一下在工作台里打开（“改动”会定位到该文件）。静态路径见 StaticMessageResponse。 */
 export function ReadingInlineCode(props: NodeComponentProps<{ type: "inline_code"; code: string }>) {
   const accepts = useWorkbenchAccepts(FILE_INTENT);
-  const file = accepts ? workspaceFileRef(props.node.code) : null;
+  const insideLink = useContext(InsideLink);
+  const file = accepts && !insideLink ? workspaceFileRef(props.node.code) : null;
   if (!file) return <InlineCodeNode {...props} />;
   return <button type="button" className="reading-file-link" title={`在工作台里打开 ${file.path}`} onClick={() => void openFileInWorkbench(file)}>
     <InlineCodeNode {...props} />
@@ -109,7 +113,7 @@ export function ReadingLink(props: NodeComponentProps<LinkData>) {
     if (named) link.removeAttribute("aria-label");
     else link.setAttribute("aria-label", link.getAttribute("href") ?? "链接");
   });
-  return <span ref={ref}><LinkRenderer {...props} /></span>;
+  return <InsideLink.Provider value={true}><span ref={ref}><LinkRenderer {...props} /></span></InsideLink.Provider>;
 }
 
 /** 脚注引用写成真正的链接（markstream 的是带点击的 span，键盘按不到），显示与静态路径同样的上标数字；跳转见 jumpToFootnote。 */

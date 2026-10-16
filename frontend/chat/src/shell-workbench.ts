@@ -49,16 +49,17 @@ export function setWorkbenchSession(sessionId: string): void {
   currentSession = sessionId;
 }
 
-// 像工作目录里文件的行内代码：带常见扩展名（或 Makefile 这类固定文件名）的相对路径，可带 :行号；
-// 网址、绝对路径、带空格的、order.currency 这类属性访问都不算。
-const FILE_PATH = /^(?:\.\/)?(?:[\w@.-]+\/)*(?:[\w@-][\w@.-]*\.(?:py|pyi|ts|tsx|js|jsx|mjs|cjs|json|md|mdx|toml|ya?ml|css|scss|html|vue|svelte|rs|go|java|kt|swift|c|h|cc|cpp|hpp|rb|php|sh|sql|txt|ini|cfg|xml|lock)|Makefile|Dockerfile|LICENSE)(?::\d+)?$/;
+// 像工作目录里文件的行内代码：带常见扩展名（或 Makefile 这类固定文件名）的相对路径，可带 :行号 或 :行:列；
+// 网址、绝对路径、带 .. 的、带空格的、order.currency 这类属性访问、Node.js 这类框架名都不算。
+const FILE_PATH = /^(?:\.\/)?(?:(?!\.\.\/)[\w@.-]+\/)*(?:[\w@-][\w@.-]*\.(?:py|pyi|ts|tsx|js|jsx|mjs|cjs|json|md|mdx|toml|ya?ml|css|scss|html|vue|svelte|rs|go|java|kt|swift|c|h|cc|cpp|hpp|cs|rb|php|lua|dart|scala|proto|sh|sql|txt|ini|cfg|xml|lock)|Makefile|Dockerfile|LICENSE)(?::\d+){0,2}$/;
+const FRAMEWORK_NAME = /^[A-Z][a-z]+\.js$/;
 
 export interface WorkspaceFileRef { path: string; line: number | null }
 
 /** 行内代码若像工作目录里的文件，返回去掉 ./ 的相对路径与可选行号；否则 null。 */
 export function workspaceFileRef(code: string): WorkspaceFileRef | null {
-  if (code.length > 300 || !FILE_PATH.test(code)) return null;
-  const [, path, line] = /^(?:\.\/)?(.+?)(?::(\d+))?$/.exec(code)!;
+  if (code.length > 300 || !FILE_PATH.test(code) || FRAMEWORK_NAME.test(code)) return null;
+  const [, path, line] = /^(?:\.\/)?(.+?)(?::(\d+))?(?::\d+)?$/.exec(code)!;
   return { path, line: line ? Number(line) : null };
 }
 

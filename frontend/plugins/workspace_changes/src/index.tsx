@@ -5,7 +5,7 @@ import "./style.css";
 const API = "/api/dashboard/workspace_changes";
 const POLL_MS = 3000;
 const FRESH_MS = 8000;
-/** workspace.changes.open.v1 的 payload：{ path: string }，打开“未提交”并选中这个文件。 */
+/** workspace.changes.open.v1 的 payload：{ path: string }，先在“未提交”里找这个文件，再找相对默认分支（这一轮可能已经提交）。 */
 const OPEN_INTENT = "workspace.changes.open.v1";
 /** workspace.file.open.v1（对话回复里点文件路径）：{ path, line? }，先找未提交，再找相对默认分支；只写了文件名时按结尾匹配。 */
 const FILE_INTENT = "workspace.file.open.v1";
@@ -103,7 +103,7 @@ class ChangesTab {
   private scope = "wt";
   private result: ScopeResult | null = null;
   private selected: string | null = null;
-  private targetLine: number | null = null;
+  private target: { path: string; line: number } | null = null;
   private shownPatch = "";
   private shownText: string | null = null;
   private readonly seen = new Map<string, string>();
@@ -152,23 +152,26 @@ class ChangesTab {
   async open(intent: ConversationIntent): Promise<ConversationIntentStatus> {
     const payload = intent.payload as { path?: unknown; line?: unknown } | null;
     if (!payload || typeof payload.path !== "string" || !payload.path) return "invalid";
-    this.targetLine = Number.isInteger(payload.line) && (payload.line as number) > 0 ? payload.line as number : null;
+    const line = Number.isInteger(payload.line) && (payload.line as number) > 0 ? payload.line as number : null;
     const want = payload.path.replace(/^\.\//, "");
-    const scopes = intent.name === FILE_INTENT ? ["wt", "base"] : ["wt"];
-    for (const scope of scopes) {
+    this.target = null;
+    for (const scope of ["wt", "base"]) {
       this.scope = scope;
       this.selected = want;
       await this.load(true);
       const found = this.findFile(want);
-      if (found) return this.select(found, false), "handled";
+      // 行号只认找到的这个文件：列表里没有时 render 会退回第一个文件，不能把行号耗在它身上。
+      if (!found) continue;
+      this.target = line === null ? null : { path: found, line };
+      this.select(found, false);
+      return "handled";
     }
     // 都没找到：回到默认的“未提交”，再说明原因。
     if (this.scope !== "wt") {
       this.scope = "wt";
       await this.load(true);
     }
-    const where = intent.name === FILE_INTENT ? `相对 HEAD 和 ${this.result?.base_ref ?? "默认分支"} 都没有改动` : "现在没有未提交的改动，可能已经提交或还原";
-    this.showNote(`${want} ${where}。`);
+    this.showNote(`${want} 相对 HEAD 和 ${this.result?.base_ref ?? "默认分支"} 都没有改动，可能已经还原。`);
     return "handled";
   }
 
@@ -344,9 +347,10 @@ class ChangesTab {
 
   // 从回复里带行号打开时：滚到新文件里离这一行最近的 diff 行并短暂高亮；diff 还没换成这个文件时留到下次。
   private revealLine(): void {
-    const line = this.targetLine;
-    if (line === null || this.pane.dataset.path !== this.selected) return;
-    this.targetLine = null;
+    const target = this.target;
+    if (target === null || this.pane.dataset.path !== target.path) return;
+    this.target = null;
+    const line = target.line;
     const rows = [...this.pane.querySelectorAll<HTMLElement>(".changes-row[data-line]:not([data-kind='del'])")];
     const near = rows.reduce<HTMLElement | null>((best, row) =>
       !best || Math.abs(Number(row.dataset.line) - line) < Math.abs(Number(best.dataset.line) - line) ? row : best, null);

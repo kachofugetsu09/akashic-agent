@@ -26,7 +26,8 @@ export const StaticMessageResponse = memo(function StaticMessageResponse({
     for (const link of root.querySelectorAll<HTMLButtonElement>("button.reading-file-link")) link.replaceWith(...link.childNodes);
     if (!acceptsFiles) return;
     for (const code of root.querySelectorAll<HTMLElement>(":not(pre) > code")) {
-      const file = workspaceFileRef(code.textContent ?? "");
+      // 已经在链接里的代码不再包按钮：<a> 里不能嵌交互控件，点击也会同时打开链接。
+      const file = code.closest("a") ? null : workspaceFileRef(code.textContent ?? "");
       if (!file) continue;
       const button = document.createElement("button");
       Object.assign(button, { type: "button", className: "reading-file-link", title: `在工作台里打开 ${file.path}` });
