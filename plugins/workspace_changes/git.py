@@ -86,7 +86,7 @@ class Git:
     def __init__(self, ctx: Context) -> None:
         self._ctx = ctx
         self._locks: dict[str, asyncio.Lock] = {}
-        self._seeded: set[str] = set()
+        self._initialized: set[str] = set()
         # 树 id 是内容地址：同一对树的文件列表与 patch 不变，命中缓存总是正确的。
         self._lists: _Lru[tuple[str, str, str], FileList] = _Lru(64)
         self._patches: _Lru[tuple[str, str, str, str], FilePatch] = _Lru(256)
@@ -119,33 +119,28 @@ class Git:
         extra = {"GIT_INDEX_FILE": index}
         async with lock:
             try:
-                if repo.git_dir not in self._seeded:
-                    await self._seed(repo.git_dir, index)
                 try:
-                    return await self._snapshot(repo.toplevel, extra)
+                    snapshot = await self._snapshot(repo.toplevel, extra, keep_stat=repo.git_dir in self._initialized)
                 except GitUnavailable as error:
                     if error.reason != "git_failed":
                         raise
                     # 私有 index 可能已坏（如 gc 清掉了只被它引用的对象）：删掉重建一次。
                     await self._remove(index, index + ".lock")
-                    await self._seed(repo.git_dir, index)
-                    return await self._snapshot(repo.toplevel, extra)
+                    snapshot = await self._snapshot(repo.toplevel, extra, keep_stat=False)
+                self._initialized.add(repo.git_dir)
+                return snapshot
             except BaseException:
                 await self._remove(index + ".lock")
                 raise
 
-    # 私有 index 不存在时复制用户的 index 作种子：带着现成的 stat，冷启动不必重新哈希所有跟踪文件。
-    async def _seed(self, git_dir: str, index: str) -> None:
-        _ = await self._exec(["cp", "-n", "--", os.path.join(git_dir, "index"), index], _environment(), 256)
-        self._seeded.add(git_dir)
-
-    async def _snapshot(self, toplevel: str, extra: dict[str, str]) -> Snapshot:
-        # 1. 单树合并读入 HEAD 的树：与 HEAD 相同的条目保留 stat，其余回到 HEAD 的样子，
-        #    之前加进来、后来被忽略的新文件也随之去掉；unborn 时清空。
+    async def _snapshot(self, toplevel: str, extra: dict[str, str], *, keep_stat: bool) -> Snapshot:
+        """从 HEAD 构建工作树快照，只有本进程已初始化的私有 index 才复用 stat。"""
+        # 1. 首次完整读入，清掉旧缓存可能继承的 assume-unchanged 等标志；后续单树合并保留 stat。
+        #    不复制用户 index；之前加进来、后来被忽略的新文件随 HEAD 重置去掉；unborn 时清空。
         head = await self._git(toplevel, "rev-parse", "-q", "--verify", "HEAD^{tree}")
         if head.code == 0:
             base = _text(head.output).strip()
-            _ = await self._must(toplevel, "read-tree", "-m", base, extra=extra)
+            _ = await self._must(toplevel, "read-tree", *(["-m"] if keep_stat else []), base, extra=extra)
         else:
             _ = await self._must(toplevel, "read-tree", "--empty", extra=extra)
             base = await self._must(toplevel, "write-tree", extra=extra)
@@ -156,16 +151,22 @@ class Git:
         return Snapshot(base, await self._must(toplevel, "write-tree", extra=extra), skipped)
 
     # 超过 LARGE_UNTRACKED_KIB 的未跟踪文件（没进 .gitignore 的数据库、日志）：轮询时它们一变就是一份新 blob。
-    # 只查前 MAX_FILES 个，每批 200 个交给 find 判断大小。
+    # 扫描范围与 add -A 一致；MAX_FILES 只限制展示，每批 200 个交给 find 判断大小。
     async def _large_untracked(self, toplevel: str, extra: dict[str, str]) -> tuple[str, ...]:
         run = await self._git(toplevel, "ls-files", "-o", "--exclude-standard", "-z", extra=extra, tokens=_LIST_TOKENS)
         if run.code != 0:
             raise _failed(run)
-        paths = [os.path.join(toplevel, _text(item)) for item in _head(run, b"\0").split(b"\0") if item][:MAX_FILES]
+        if run.omitted:
+            raise GitUnavailable("too_many_files", "未跟踪文件列表过长，无法完整检查大小，未拍快照")
+        paths = [os.path.join(toplevel, _text(item)) for item in run.output.split(b"\0") if item]
         large: list[str] = []
         for start in range(0, len(paths), 200):
             argv = ["find", *paths[start:start + 200], "-maxdepth", "0", "-type", "f", "-size", f"+{LARGE_UNTRACKED_KIB}k", "-print0"]
             found = await self._exec(argv, _environment(), _LIST_TOKENS)
+            if found.code != 0:
+                raise _failed(found)
+            if found.omitted:
+                raise GitUnavailable("too_many_files", "大文件列表过长，无法完整排除，未拍快照")
             large.extend(os.path.relpath(_text(item), toplevel) for item in found.output.split(b"\0") if item)
         return tuple(large)
 
@@ -229,7 +230,7 @@ class Git:
         default = os.path.join(env.get("XDG_CONFIG_HOME") or os.path.join(env.get("HOME", "/"), ".config"), "git", "attributes")
         files = [_text(info.output).strip() if info.code == 0 else ""]
         files.append(_text(configured.output).strip() if configured.code == 0 else default)
-        return [path for path in files if os.path.isabs(path)]
+        return [os.path.join(toplevel, path) for path in files if path]
 
     async def _must(self, cwd: str, *args: str, extra: dict[str, str]) -> str:
         run = await self._git(cwd, *args, extra=extra)
