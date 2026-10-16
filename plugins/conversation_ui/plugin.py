@@ -12,6 +12,6 @@ async def apply(ctx):
         requires=("shell.pages.v1",),
         provides=("conversation.tools.v2",),
         contract_digests={
-            "conversation.tools.v2": "5d7768495b92f6e365d37bae74dab1acb7f4335b8827a08623b933130e62b41b",
+            "conversation.tools.v2": "93276e748c767ee9b146c306edcf51b16050b8c5714e2ec11dd07ba625952eb1",
         },
     )

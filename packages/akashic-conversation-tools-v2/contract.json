@@ -10,8 +10,11 @@
       "order",
       "icon",
       "background",
-      "accepts"
-    ]
+      "accepts",
+      "multiple",
+      "hint"
+    ],
+    "hintChars": 40
   },
   "view": {
     "active": "boolean",
@@ -38,7 +41,9 @@
       "indicator"
     ],
     "titleChars": 80,
-    "indicatorDetailChars": 24
+    "indicatorDetailChars": 24,
+    "instance": "string | null",
+    "onClose": []
   },
   "intent": {
     "fields": [
