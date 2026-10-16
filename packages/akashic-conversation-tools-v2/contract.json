@@ -12,9 +12,11 @@
       "background",
       "accepts",
       "multiple",
-      "hint"
+      "hint",
+      "shortcut"
     ],
-    "hintChars": 40
+    "hintChars": 40,
+    "shortcut": "Ctrl+` | Mod+Shift+[A-Z]，除 A B C I J N O P Q R T W；工具之间不能重复"
   },
   "view": {
     "active": "boolean",

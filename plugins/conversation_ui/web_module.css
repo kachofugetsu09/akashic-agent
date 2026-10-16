@@ -27,8 +27,8 @@
 .conversation-tools {
   grid-column: 3;
   grid-row: 1;
-  display: grid;
-  grid-template-rows: auto minmax(0, 1fr);
+  display: flex;
+  flex-direction: column;
   min-width: 0;
   height: 100%;
   overflow: hidden;
@@ -81,6 +81,63 @@
 
 .conversation-page.is-resizing iframe {
   pointer-events: none;
+}
+
+/* 分组：一组时铺满；上下分屏时上方一组按比例，分隔条可拖。没聚焦的那组，当前标签不再加阴影。 */
+.conversation-tools-group {
+  display: grid;
+  flex: 1 1 0;
+  grid-template-rows: auto minmax(0, 1fr);
+  min-height: 0;
+}
+
+.conversation-tools.is-split > .conversation-tools-group:first-child {
+  flex: 0 0 var(--conversation-tools-upper, 50%);
+}
+
+.conversation-tools.is-split .conversation-tools-group:not(.is-focused) .conversation-tools-tab-item.is-active {
+  box-shadow: none;
+}
+
+.conversation-tools-divider {
+  position: relative;
+  z-index: 2;
+  flex: none;
+  height: 1px;
+  background: var(--ak-rule-subtle);
+  cursor: row-resize;
+  touch-action: none;
+}
+
+.conversation-tools-divider::before {
+  position: absolute;
+  inset-inline: 0;
+  inset-block: -5px;
+  content: "";
+}
+
+.conversation-tools-divider:hover,
+.conversation-tools-divider:focus-visible,
+.conversation-tools.is-dividing .conversation-tools-divider {
+  height: 2px;
+  margin-block: -1px 0;
+  background: var(--ak-color-action-primary);
+  outline: 0;
+}
+
+.conversation-tools.is-dividing,
+.conversation-tools.is-dividing * {
+  cursor: row-resize !important;
+  user-select: none !important;
+}
+
+.conversation-tools-tab-item.is-drop-target {
+  box-shadow: inset 2px 0 0 var(--ak-color-action-primary);
+}
+
+.conversation-tools-button[aria-pressed="true"] {
+  color: var(--ak-ink-primary);
+  background: color-mix(in oklch, var(--ak-ink-primary) 8%, transparent);
 }
 
 /* 标签条：浏览器式圆角标签，均分宽度，最窄 90px，再多就横向滚动；“+”紧跟最后一个标签，铺满与收起在最右。 */
@@ -352,6 +409,8 @@
 }
 
 .conversation-tools[hidden],
+.conversation-tools-group[hidden],
+.conversation-tools-divider[hidden],
 .conversation-tools-splitter[hidden],
 .conversation-tools-toggle[hidden],
 .conversation-tool-panel[hidden] {

@@ -22,6 +22,12 @@ export interface ConversationTab extends WebEntry {
   multiple?: boolean;
   /** 新标签页里工具名后面的一句说明，≤ 40 字符。 */
   hint?: string;
+  /**
+   * 切到（或打开）这个工具并把焦点移进去的快捷键："Ctrl+`" 或 "Mod+Shift+字母"（Mod 在 macOS 是 ⌘）。
+   * 浏览器、对话页与宿主占用的组合（Mod+Shift+A/B/C/I/J/N/O/P/Q/R/T/W）不能用，工具之间不能重复；
+   * 标签自己处理过的按键（preventDefault）不触发。宿主另占 Mod+J（开关工具区）与 Mod+\（上下分屏）。
+   */
+  shortcut?: string;
 }
 
 /** 来自用户点击的意图；宿主已校验名字、大小（payload JSON ≤ 16 KiB）与会话是当前会话。 */

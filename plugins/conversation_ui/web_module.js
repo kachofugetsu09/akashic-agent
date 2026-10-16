@@ -34,6 +34,8 @@ function checkTabs(entries) {
       || (entry.background !== undefined && typeof entry.background !== "boolean")
       || (entry.multiple !== undefined && typeof entry.multiple !== "boolean")
       || (entry.hint !== undefined && (typeof entry.hint !== "string" || entry.hint.length > HINT_LIMIT))
+      || (entry.shortcut !== undefined && (typeof entry.shortcut !== "string"
+        || !ENTRY_SHORTCUT.test(entry.shortcut) || RESERVED_SHORTCUTS.has(entry.shortcut)))
       || (entry.accepts !== undefined && (!Array.isArray(entry.accepts)
         || entry.accepts.some((name) => typeof name !== "string" || !INTENT_NAME.test(name))))
     ) {
@@ -44,6 +46,8 @@ function checkTabs(entries) {
   if (new Set(tabs.map((entry) => entry.id)).size !== tabs.length) {
     throw new Error("对话工具标签 id 不能重复");
   }
+  const keys = tabs.flatMap((entry) => entry.shortcut ?? []);
+  if (new Set(keys).size !== keys.length) throw new Error("对话工具快捷键不能重复");
   return [...tabs].sort((left, right) =>
     (left.order ?? 0) - (right.order ?? 0) || left.id.localeCompare(right.id));
 }
@@ -118,10 +122,15 @@ function toolIcon() {
   return icon;
 }
 
-// 告知 chat 宿主右上角有工具区开关，标题带据此让出开关所占的位置。
-function announceTools(frame) {
+// 告知 chat 宿主右上角有工具区开关，标题带据此让出开关所占的位置；快捷键列给 chat 的快捷键面板。
+function announceTools(frame, entries) {
+  const shortcuts = [
+    { label: "打开或收起工作台", keys: shortcutKeys(HOST_SHORTCUTS.toggle) },
+    { label: "工作台上下分屏", keys: shortcutKeys(HOST_SHORTCUTS.split) },
+    ...entries.filter((entry) => entry.shortcut).map((entry) => ({ label: `打开${entry.label}`, keys: shortcutKeys(entry.shortcut) })),
+  ];
   const send = () => frame.contentWindow?.postMessage(
-    { type: "akashic.chat-tools", present: true }, window.location.origin,
+    { type: "akashic.chat-tools", present: true, shortcuts }, window.location.origin,
   );
   frame.addEventListener("load", send);
   return () => frame.removeEventListener("load", send);
@@ -165,13 +174,35 @@ const TITLE_LIMIT = 80;
 const DETAIL_LIMIT = 24;
 const HINT_LIMIT = 40;
 const LAUNCH_LABEL = "新标签页";
+// 工具可声明的快捷键：Ctrl+` 或 Mod+Shift+字母（Mod 在 macOS 是 ⌘）；浏览器、对话页与宿主自己占用的组合不能用。
+const ENTRY_SHORTCUT = /^(?:Ctrl\+`|Mod\+Shift\+[A-Z])$/;
+const RESERVED_SHORTCUTS = new Set([..."ABCIJNOPQRTW"].map((key) => `Mod+Shift+${key}`));
+const HOST_SHORTCUTS = { toggle: "Mod+J", split: "Mod+\\" };
+const IS_MAC = /Mac|iPhone|iPad/.test(navigator.platform);
+const FOCUS_FIRST = ["textarea, [contenteditable='true']", "input, select, button, a[href], [tabindex]:not([tabindex='-1'])"];
 const ICONS = {
   close: '<path d="M18 6 6 18M6 6l12 12"/>',
   add: '<path d="M12 5v14M5 12h14"/>',
   expand: '<path d="M15 4h5v5M9 20H4v-5M20 4l-6 6M4 20l6-6"/>',
   collapse: '<path d="M14 10h6M14 10V4M10 14H4M10 14v6M14 10l6-6M10 14l-6 6"/>',
   launch: '<rect x="3" y="4" width="18" height="16" rx="2.5"/><path d="M3 9h18"/>',
+  split: '<rect x="3" y="4" width="18" height="16" rx="2.5"/><path d="M3 12h18"/>',
 };
+
+// 按键换成快捷键写法（与 entry.shortcut 同一套）；输入法组合中、带 Alt 的不算。
+function shortcutOf(event) {
+  if (event.altKey || event.isComposing) return null;
+  if (event.code === "Backquote" && event.ctrlKey && !event.metaKey && !event.shiftKey) return "Ctrl+`";
+  if (!(IS_MAC ? event.metaKey && !event.ctrlKey : event.ctrlKey && !event.metaKey)) return null;
+  const key = event.key.length === 1 ? event.key.toUpperCase() : "";
+  if (!event.shiftKey && (key === "J" || key === "\\")) return `Mod+${key}`;
+  return event.shiftKey && /^[A-Z]$/.test(key) ? `Mod+Shift+${key}` : null;
+}
+
+// 给 chat 的快捷键面板用：Mod 换成本平台的写法。
+function shortcutKeys(spec) {
+  return spec.split("+").map((key) => (key === "Mod" ? (IS_MAC ? "⌘" : "Ctrl") : key));
+}
 
 function svgIcon(name) {
   return `<svg viewBox="0 0 24 24" aria-hidden="true">${ICONS[name]}</svg>`;
@@ -229,18 +260,25 @@ function replyIntent(frame, id, status) {
   frame.contentWindow?.postMessage({ type: "akashic.workbench-intent-result", id, status }, window.location.origin);
 }
 
-// 每个会话各记一份标签（工具与实例）、当前标签与展开状态；只是视图偏好，读写失败时退回新标签页。
+// 每个会话各记一份分组（上下最多两组，每组的标签与当前标签）与展开状态；只是视图偏好，读写失败时退回新标签页。
 function readLayout(session) {
   try {
     const value = JSON.parse(window.sessionStorage.getItem(LAYOUT_KEY + session) ?? "null");
-    if (!value || typeof value !== "object" || !Array.isArray(value.tabs)) return null;
-    const tabs = value.tabs.filter((tab) => tab && typeof tab === "object"
-      && (tab.tool === null || typeof tab.tool === "string") && (tab.instance === null || typeof tab.instance === "string"));
-    return { open: value.open === true, tabs, active: Number.isInteger(value.active) ? value.active : 0 };
+    if (!value || typeof value !== "object") return null;
+    const groups = (Array.isArray(value.groups) ? value.groups : [value]).slice(0, 2).map(readGroup).filter(Boolean);
+    if (!groups.length) return null;
+    return { open: value.open === true, groups, focus: value.focus === 1 && groups.length > 1 ? 1 : 0 };
   } catch (error) {
     if (!(error instanceof DOMException) && !(error instanceof SyntaxError)) throw error;
     return null;
   }
+}
+
+function readGroup(value) {
+  if (!value || typeof value !== "object" || !Array.isArray(value.tabs)) return null;
+  const tabs = value.tabs.filter((tab) => tab && typeof tab === "object"
+    && (tab.tool === null || typeof tab.tool === "string") && (tab.instance === null || typeof tab.instance === "string"));
+  return { tabs, active: Number.isInteger(value.active) ? value.active : 0 };
 }
 
 function saveLayout(session, layout) {
@@ -270,28 +308,45 @@ function buildChrome() {
   splitter.setAttribute("role", "separator");
   splitter.setAttribute("aria-orientation", "vertical");
   splitter.setAttribute("aria-label", "调整工具区宽度");
-  const bar = element("div", "conversation-tools-bar");
-  const tabs = element("div", "conversation-tools-tabs");
-  tabs.setAttribute("role", "tablist");
-  tabs.setAttribute("aria-label", "工具标签");
-  const launch = chromeButton("conversation-tools-new", LAUNCH_LABEL, "add");
+  const groups = [buildGroup("工具标签"), buildGroup("下方工具标签")];
+  const divider = element("div", "conversation-tools-divider");
+  divider.tabIndex = 0;
+  divider.title = "拖动调整上下高度，双击恢复一半";
+  divider.setAttribute("role", "separator");
+  divider.setAttribute("aria-orientation", "horizontal");
+  divider.setAttribute("aria-label", "调整上下分屏");
   const end = element("div", "conversation-tools-end");
+  const split = chromeButton("conversation-tools-split", "上下分屏", "split");
   const maximize = chromeButton("conversation-tools-maximize", "铺满", "expand");
   const close = chromeButton("conversation-tools-close", "收起工具区", "close");
-  end.append(maximize, close);
-  bar.append(tabs, launch, end);
-  const content = element("div", "conversation-tools-content");
-  panel.append(bar, content);
+  end.append(split, maximize, close);
+  groups[0].bar.append(end);
+  panel.append(groups[0].root, divider, groups[1].root);
   const toggle = element("button", "conversation-tools-toggle");
   toggle.type = "button";
   toggle.setAttribute("aria-controls", panel.id);
   toggle.append(toolIcon(), document.createElement("span"));
-  return { panel, splitter, bar, tabs, launch, maximize, close, content, toggle };
+  return { panel, splitter, groups, divider, split, maximize, close, toggle };
+}
+
+// 一组标签：标签条（标签与“+”）与内容区；标签记录的面板挂在它所在那组的内容区里。
+function buildGroup(label) {
+  const root = element("div", "conversation-tools-group");
+  const bar = element("div", "conversation-tools-bar");
+  const tabs = element("div", "conversation-tools-tabs");
+  tabs.setAttribute("role", "tablist");
+  tabs.setAttribute("aria-label", label);
+  const launch = chromeButton("conversation-tools-new", LAUNCH_LABEL, "add");
+  bar.append(tabs, launch);
+  const content = element("div", "conversation-tools-content");
+  root.append(bar, content);
+  return { root, bar, tabs, launch, content };
 }
 
 // 标签条里的一项：图标、标题、标签自报的简短状态、活动点与关闭按钮；关闭按钮不进 Tab 序列，键盘用 Delete。
 function buildTabItem(record) {
   const item = element("div", "conversation-tools-tab-item");
+  item.draggable = true;
   const button = element("button", "conversation-tools-tab");
   button.type = "button";
   button.id = `conversation-tool-tab-${record.key}`;
@@ -368,6 +423,42 @@ function connectSplitter(root, splitter, sizing) {
     event.preventDefault();
     sizing.set(next, true);
   });
+}
+
+// 上下分屏的分隔条：拖动与上下方向键调整上方一组的高度比例（20%–80%），双击回到一半；不记住。
+function connectDivider(panel, divider) {
+  const set = (ratio) => {
+    const value = Math.min(80, Math.max(20, ratio));
+    panel.style.setProperty("--conversation-tools-upper", `${value}%`);
+    divider.setAttribute("aria-valuenow", String(Math.round(value)));
+  };
+  const current = () => Number(divider.getAttribute("aria-valuenow") ?? 50);
+  const move = (event) => {
+    const box = panel.getBoundingClientRect();
+    set(((event.clientY - box.top) / box.height) * 100);
+  };
+  const stop = (event) => {
+    panel.classList.remove("is-dividing");
+    divider.removeEventListener("pointermove", move);
+    if (divider.hasPointerCapture(event.pointerId)) divider.releasePointerCapture(event.pointerId);
+  };
+  divider.addEventListener("pointerdown", (event) => {
+    if (event.button !== 0) return;
+    event.preventDefault();
+    panel.classList.add("is-dividing");
+    divider.setPointerCapture(event.pointerId);
+    divider.addEventListener("pointermove", move);
+  });
+  divider.addEventListener("pointerup", stop);
+  divider.addEventListener("pointercancel", stop);
+  divider.addEventListener("dblclick", () => set(50));
+  divider.addEventListener("keydown", (event) => {
+    const step = { ArrowUp: -5, ArrowDown: 5 }[event.key];
+    if (!step) return;
+    event.preventDefault();
+    set(current() + step);
+  });
+  set(50);
 }
 
 // 宽度：全局一份；没有记录时按页面宽度的默认比例。
@@ -507,6 +598,10 @@ function createRecords(entries, content) {
   };
 }
 
+function newGroup(tabs, activeKey = undefined) {
+  return { tabs, activeKey: activeKey ?? tabs[0]?.key ?? null };
+}
+
 function titleOf(record, order) {
   if (!record.entry) return LAUNCH_LABEL;
   if (record.title) return record.title;
@@ -522,23 +617,28 @@ function readIndicator(value) {
   return { busy: value.busy === true, detail: value.detail ? value.detail.slice(0, DETAIL_LIMIT) : "" };
 }
 
-// 工具区状态的唯一 owner：本会话的标签（顺序、当前标签）、展开与铺满。标签只经 view 读到可见事实与当前会话。
+// 工具区状态的唯一 owner：本会话的分组（上下最多两组，各自的标签顺序与当前标签）、展开与铺满。
+// 标签只经 view 读到可见事实与当前会话。
 function mountTools(root, frame, tools, entries) {
   const chrome = buildChrome();
   const sizing = createSizing(root, chrome.splitter);
   const narrow = window.matchMedia(NARROW_QUERY);
-  const records = createRecords(entries, chrome.content);
+  const records = createRecords(entries, chrome.groups[0].content);
   const state = {
-    open: false, maximized: false, session: null, tabs: [records.launch()], activeKey: null,
+    open: false, maximized: false, session: null, groups: [newGroup([records.launch()])], focus: 0,
     // chat 的模态层（窄屏导航抽屉等）在 iframe 内，盖不住宿主的浮动开关；打开期间收起开关。
     chatOverlay: false,
     // 窄屏恢复布局时只是暂不展开；记下的仍是用户的展开偏好，用户自己开关后清除。
     held: false,
   };
-  state.activeKey = state.tabs[0].key;
   const handled = new Set();
-  const isActive = (key) => state.open && state.activeKey === key;
-  const activeRecord = () => state.tabs.find((record) => record.key === state.activeKey) ?? null;
+  const shortcuts = new Map(entries.filter((entry) => entry.shortcut).map((entry) => [entry.shortcut, entry]));
+  const allTabs = () => state.groups.flatMap((group) => group.tabs);
+  const groupOf = (record) => state.groups.find((group) => group.tabs.includes(record)) ?? null;
+  const focusedGroup = () => state.groups[state.focus] ?? state.groups[0];
+  const activeOf = (group) => group.tabs.find((record) => record.key === group.activeKey) ?? null;
+  const activeRecord = () => activeOf(focusedGroup());
+  const isActive = (key) => state.open && state.groups.some((group) => group.activeKey === key);
   // 活动只提示；打开、关闭与切换由用户决定，包括移动端。
   const lifecycle = createTabLifecycle(tools, isActive, () => state.session, {
     attention(record, noticeId) {
@@ -559,6 +659,7 @@ function mountTools(root, frame, tools, entries) {
     },
   });
   let disposed = false;
+  let dragging = null;
 
   function update() {
     root.classList.toggle("tools-open", state.open);
@@ -571,27 +672,39 @@ function mountTools(root, frame, tools, entries) {
     chrome.maximize.setAttribute("aria-label", maximizeLabel);
     chrome.maximize.setAttribute("aria-pressed", String(state.maximized));
     chrome.maximize.innerHTML = svgIcon(state.maximized ? "collapse" : "expand");
-    paintStrip();
+    const split = state.groups.length > 1;
+    const splitLabel = `${split ? "取消分屏" : "上下分屏"}（${shortcutKeys(HOST_SHORTCUTS.split).join("+")}）`;
+    chrome.panel.classList.toggle("is-split", split);
+    chrome.groups[1].root.hidden = !split;
+    chrome.divider.hidden = !split;
+    chrome.split.title = splitLabel;
+    chrome.split.setAttribute("aria-label", splitLabel);
+    chrome.split.setAttribute("aria-pressed", String(split));
+    paintStrips();
     updateToggle();
-    for (const record of new Set([...records.singles(), ...state.tabs])) paintPanel(record);
+    for (const record of new Set([...records.singles(), ...allTabs()])) paintPanel(record);
   }
 
-  // 1. 标签条按 state.tabs 排列；顺序没变时不动 DOM，免得夺走键盘焦点。
-  function paintStrip() {
+  // 1. 各组标签条按组内顺序排列，同一工具的多个实例按全局顺序编号；顺序没变时不动 DOM，免得夺走键盘焦点。
+  function paintStrips() {
     const counts = new Map();
-    for (const record of state.tabs) {
-      const order = record.entry ? (counts.get(record.entry.id) ?? 0) + 1 : 0;
-      if (record.entry) counts.set(record.entry.id, order);
-      paintTab(record, titleOf(record, order));
-    }
-    const items = state.tabs.map((record) => record.item);
-    if (items.some((item, index) => chrome.tabs.children[index] !== item) || chrome.tabs.children.length !== items.length)
-      chrome.tabs.replaceChildren(...items);
-    activeRecord()?.item.scrollIntoView({ block: "nearest", inline: "nearest" });
+    chrome.groups.forEach((shell, index) => {
+      const group = state.groups[index];
+      for (const record of group?.tabs ?? []) {
+        const order = record.entry ? (counts.get(record.entry.id) ?? 0) + 1 : 0;
+        if (record.entry) counts.set(record.entry.id, order);
+        paintTab(record, group, titleOf(record, order));
+      }
+      const items = group?.tabs.map((record) => record.item) ?? [];
+      if (items.length !== shell.tabs.children.length || items.some((item, at) => shell.tabs.children[at] !== item))
+        shell.tabs.replaceChildren(...items);
+      shell.root.classList.toggle("is-focused", state.groups.length > 1 && index === state.focus);
+      if (group) activeOf(group)?.item.scrollIntoView({ block: "nearest", inline: "nearest" });
+    });
   }
 
-  function paintTab(record, title) {
-    const active = record.key === state.activeKey;
+  function paintTab(record, group, title) {
+    const active = record.key === group.activeKey;
     const detail = record.indicator?.detail;
     record.label = title;
     record.item.classList.toggle("is-active", active);
@@ -605,9 +718,13 @@ function mountTools(root, frame, tools, entries) {
     record.close.setAttribute("aria-label", `关闭 ${title}`);
   }
 
-  // 2. 首次被选中才渲染；声明 background 的单开标签挂载即渲染，以便在未打开时提示活动。新标签页每次显示时重画。
+  // 2. 面板挂在所在那组的内容区；首次被选中才渲染，声明 background 的单开标签挂载即渲染，以便在未打开时提示活动。
+  //    新标签页每次显示时重画。
   function paintPanel(record) {
-    record.panel.hidden = record.key !== state.activeKey;
+    const group = groupOf(record);
+    const content = chrome.groups[state.groups.indexOf(group)]?.content;
+    if (content && record.panel.parentElement !== content) content.append(record.panel);
+    record.panel.hidden = group?.activeKey !== record.key;
     if (!record.entry) {
       if (isActive(record.key)) renderLaunch(record.panel, entries.map((entry) => ({ entry, state: toolState(entry) })),
         (entry) => openTool(entry, record, true));
@@ -618,7 +735,7 @@ function mountTools(root, frame, tools, entries) {
   }
 
   function toolState(entry) {
-    const opened = state.tabs.filter((record) => record.entry === entry);
+    const opened = allTabs().filter((record) => record.entry === entry);
     if (entry.multiple && !state.session) return "发出第一条消息后可用";
     if (entry.multiple && opened.length) return `${opened.length} 个已打开`;
     const detail = opened[0]?.indicator?.detail;
@@ -627,8 +744,9 @@ function mountTools(root, frame, tools, entries) {
   }
 
   function updateToggle() {
-    const pending = [...new Set([...records.singles(), ...state.tabs])].find((record) => record.attention || record.indicator?.busy);
-    const label = pending ? `打开工作台 · ${pending.label ?? pending.entry.label}有新活动` : "打开工作台";
+    const pending = [...new Set([...records.singles(), ...allTabs()])].find((record) => record.attention || record.indicator?.busy);
+    const keys = shortcutKeys(HOST_SHORTCUTS.toggle).join("+");
+    const label = pending ? `打开工作台（${keys}）· ${pending.label ?? pending.entry.label}有新活动` : `打开工作台（${keys}）`;
     chrome.toggle.classList.toggle("has-attention", Boolean(pending));
     chrome.toggle.title = label;
     chrome.toggle.setAttribute("aria-label", label);
@@ -639,117 +757,180 @@ function mountTools(root, frame, tools, entries) {
   function remember() {
     if (!state.session) return;
     saveLayout(state.session, {
-      open: state.open || state.held, active: state.tabs.findIndex((record) => record.key === state.activeKey),
-      tabs: state.tabs.map((record) => ({ tool: record.entry?.id ?? null, instance: record.instance })),
+      open: state.open || state.held, focus: state.focus,
+      groups: state.groups.map((group) => ({
+        active: group.tabs.findIndex((record) => record.key === group.activeKey),
+        tabs: group.tabs.map((record) => ({ tool: record.entry?.id ?? null, instance: record.instance })),
+      })),
     });
   }
 
-  function insert(record, replace) {
-    const index = state.tabs.indexOf(replace ?? activeRecord());
+  // 新标签放在目标组当前标签之后；replace 时原地替换（新标签页变成工具）。
+  function insert(record, replace, target = focusedGroup()) {
+    const group = (replace && groupOf(replace)) || target;
+    const index = group.tabs.indexOf(replace ?? activeOf(group));
     if (replace && index >= 0) {
-      state.tabs.splice(index, 1, record);
+      group.tabs.splice(index, 1, record);
       if (!replace.entry) records.drop(replace);
-    } else state.tabs.splice(index < 0 ? state.tabs.length : index + 1, 0, record);
+    } else group.tabs.splice(index < 0 ? group.tabs.length : index + 1, 0, record);
     return record;
   }
 
-  // 3. 打开工具：单开工具已在标签条上就切过去；从新标签页打开时，这一页原地变成该工具。多开工具每次一个新实例。
-  function openTool(entry, replace = null, focusTab = false) {
+  // 3. 打开工具：单开工具已在某组里就切过去；目标组当前停在新标签页时，这一页原地变成该工具。多开工具每次一个新实例。
+  function openTool(entry, replace = null, focusTab = false, target = focusedGroup()) {
     if (entry.multiple && !state.session) return null;
-    const existing = entry.multiple ? null : state.tabs.find((record) => record.entry === entry);
+    const current = activeOf(target);
+    if (!replace && current && !current.entry) replace = current;
+    const existing = entry.multiple ? null : allTabs().find((record) => record.entry === entry);
     if (existing && replace) removeTab(replace, false);
     const record = existing ?? insert(entry.multiple
-      ? records.instance(entry, newInstanceId(), state.session) : records.single(entry), replace);
-    activate(record.key, focusTab);
-    return record;
+      ? records.instance(entry, newInstanceId(), state.session) : records.single(entry), replace, target);
+    return activate(record.key, focusTab);
   }
 
-  function openLaunch() {
-    const record = state.tabs.find((item) => !item.entry) ?? insert(records.launch(), null);
+  function openLaunch(target) {
+    const record = target.tabs.find((item) => !item.entry) ?? insert(records.launch(), null, target);
     activate(record.key, true);
   }
 
   function activate(key, focusTab = false) {
+    const group = state.groups.find((candidate) => candidate.tabs.some((record) => record.key === key));
+    if (!group) return null;
     state.held = false;
-    state.activeKey = key;
+    group.activeKey = key;
+    state.focus = state.groups.indexOf(group);
     state.open = true;
-    const record = activeRecord();
-    if (record) record.attention = false;
+    const record = activeOf(group);
+    record.attention = false;
     update();
     remember();
-    if (focusTab) record?.button.focus();
+    if (focusTab) record.button.focus();
+    return record;
   }
 
+  // 展开工具区：有活动的单开工具优先切过去，否则回到上次的当前标签。
+  function openPanel(focusTab) {
+    const pending = [...records.singles(), ...allTabs()].find((record) => record.attention);
+    if (pending?.entry && !pending.instance) return openTool(pending.entry, null, focusTab);
+    return activate((pending ?? activeRecord() ?? allTabs()[0]).key, focusTab);
+  }
+
+  // 从所在组拿掉一个标签：当前标签让给相邻的，下方一组空了就并掉；实例随之卸下（closed 时标签先收到 onClose）。
   function removeTab(record, closed) {
-    state.tabs.splice(state.tabs.indexOf(record), 1);
+    const group = groupOf(record);
+    if (!group) return;
+    const index = group.tabs.indexOf(record);
+    group.tabs.splice(index, 1);
+    if (group.activeKey === record.key) group.activeKey = (group.tabs[index] ?? group.tabs[index - 1])?.key ?? null;
+    if (!group.tabs.length && state.groups.length > 1) {
+      state.groups.splice(state.groups.indexOf(group), 1);
+      state.focus = 0;
+    }
     if (record.instance) lifecycle.unmount(record.key, closed);
     if (record.instance || !record.entry) records.drop(record);
   }
 
   // 4. 关掉一个标签：实例随之卸下（标签先收到 onClose），单开工具保留挂载；关到没有标签时收起工具区。
   function closeTab(record) {
-    const index = state.tabs.indexOf(record);
-    if (index < 0) return;
+    if (!groupOf(record)) return;
     removeTab(record, true);
-    if (!state.tabs.length) {
-      state.activeKey = insert(records.launch(), null).key;
+    if (!allTabs().length) {
+      state.groups = [newGroup([records.launch()])];
       return closePanel();
     }
-    if (state.activeKey === record.key) state.activeKey = (state.tabs[index] ?? state.tabs[index - 1]).key;
     update();
     remember();
     if (state.open) activeRecord()?.button.focus();
   }
 
-  function closePanel() {
+  function closePanel(focusTarget = chrome.toggle) {
     state.held = false;
     state.open = false;
     state.maximized = false;
     update();
     remember();
-    chrome.toggle.focus();
+    focusTarget.focus();
   }
 
-  // 5. 换会话：上一个会话的实例与新标签页卸下，单开工具留着并跟随新会话；没去过的会话沿用当前打开的单开工具。
+  // 5. 分屏：当前标签移到下方一组（上方只有它一个时，下方开一个新标签页）；已分屏时把下方一组并回上方。
+  function toggleSplit() {
+    const [upper, lower] = state.groups;
+    if (lower) {
+      upper.tabs.push(...lower.tabs);
+      upper.activeKey = lower.activeKey ?? upper.activeKey;
+      state.groups = [upper];
+    } else {
+      let moving = activeOf(upper);
+      if (upper.tabs.length < 2 || !moving) moving = records.launch();
+      else {
+        const index = upper.tabs.indexOf(moving);
+        upper.tabs.splice(index, 1);
+        upper.activeKey = (upper.tabs[index] ?? upper.tabs[index - 1]).key;
+      }
+      state.groups.push(newGroup([moving]));
+    }
+    activate((state.groups[1] ?? upper).activeKey, true);
+  }
+
+  // 拖放：放到 before 之前（没有 before 时放到末尾），成为目标组的当前标签；拖空的那组并掉。
+  function moveTab(record, target, before) {
+    const from = groupOf(record);
+    if (!from || record === before) return;
+    const index = from.tabs.indexOf(record);
+    from.tabs.splice(index, 1);
+    if (from.activeKey === record.key) from.activeKey = (from.tabs[index] ?? from.tabs[index - 1])?.key ?? null;
+    const at = before ? target.tabs.indexOf(before) : -1;
+    target.tabs.splice(at < 0 ? target.tabs.length : at, 0, record);
+    if (!from.tabs.length) state.groups.splice(state.groups.indexOf(from), 1);
+    activate(record.key);
+  }
+
+  // 6. 换会话：上一个会话的实例与新标签页卸下，单开工具留着并跟随新会话；没去过的会话沿用当前打开的单开工具。
   function applySession(session) {
     if (session === state.session) return;
-    for (const record of [...state.tabs]) if (record.instance || !record.entry) removeTab(record, false);
+    for (const record of allTabs()) if (record.instance || !record.entry) removeTab(record, false);
     state.session = session;
     const layout = session ? readLayout(session) : null;
     if (layout) adoptLayout(layout);
-    if (!state.tabs.length) state.tabs.push(records.launch());
-    if (!activeRecord()) state.activeKey = state.tabs[0].key;
+    if (!allTabs().length) state.groups = [newGroup([records.launch()])];
+    for (const group of state.groups) if (!activeOf(group)) group.activeKey = group.tabs[0]?.key ?? null;
     if (!layout) remember();
     update();
     lifecycle.session(records.singles(), session);
   }
 
   function adoptLayout(layout) {
-    const tabs = [];
-    for (const item of layout.tabs) {
-      const entry = entries.find((candidate) => candidate.id === item.tool);
-      if (item.tool === null) tabs.push(records.launch());
-      else if (entry?.multiple && item.instance) tabs.push(records.instance(entry, item.instance, state.session));
-      else if (entry && !entry.multiple && !tabs.includes(records.single(entry))) tabs.push(records.single(entry));
-    }
-    state.tabs = tabs;
-    state.activeKey = (tabs[layout.active] ?? tabs[0])?.key ?? null;
-    const open = layout.open && tabs.length > 0;
+    const used = new Set();
+    const groups = layout.groups.map((spec) => {
+      const tabs = spec.tabs.map((item) => restoreTab(item, used)).filter(Boolean);
+      return newGroup(tabs, tabs[spec.active]?.key);
+    }).filter((group) => group.tabs.length);
+    state.groups = groups.length ? groups : [newGroup([])];
+    state.focus = Math.min(layout.focus, state.groups.length - 1);
+    const open = layout.open && groups.length > 0;
     state.held = open && narrow.matches;
     state.open = open && !narrow.matches;
     if (!state.open) state.maximized = false;
   }
 
-  // 6. 意图交给第一个声明 accepts 的工具：先展开并激活（多开工具取本会话最近的实例），再投递；结果异步回执给 chat。
+  function restoreTab(item, used) {
+    const entry = entries.find((candidate) => candidate.id === item.tool);
+    if (item.tool === null) return records.launch();
+    if (entry?.multiple && item.instance) return records.instance(entry, item.instance, state.session);
+    if (!entry || entry.multiple || used.has(entry)) return null;
+    used.add(entry);
+    return records.single(entry);
+  }
+
+  // 7. 意图交给第一个声明 accepts 的工具：先展开并激活（多开工具取本会话最近的实例），再投递；结果异步回执给 chat。
   async function routeIntent(event) {
     const request = readIntent(event, frame, state.session);
     if (!request) return;
     if (!request.valid) return replyIntent(frame, request.id, "invalid");
     const target = entries.find((entry) => entry.accepts?.includes(request.intent.name));
-    const existing = target?.multiple ? state.tabs.findLast((record) => record.entry === target) : null;
-    const record = existing ?? (target ? openTool(target) : null);
+    const existing = target?.multiple ? allTabs().findLast((record) => record.entry === target) : null;
+    const record = existing ? activate(existing.key) : target ? openTool(target) : null;
     if (!record) return replyIntent(frame, request.id, "unhandled");
-    if (existing) activate(existing.key);
     const listener = lifecycle.intentListener(record.key);
     if (!listener) return replyIntent(frame, request.id, "unhandled");
     let timer = 0;
@@ -760,7 +941,7 @@ function mountTools(root, frame, tools, entries) {
     replyIntent(frame, request.id, ["handled", "invalid", "failed"].includes(status) ? status : "failed");
   }
 
-  // 7. 引用只进发起时的那个会话：会话已切走、工具区已卸载或超长都拒绝，chat 收到后再核对一次。
+  // 8. 引用只进发起时的那个会话：会话已切走、工具区已卸载或超长都拒绝，chat 收到后再核对一次。
   function forwardQuote(request) {
     if (disposed || !request || typeof request !== "object") return "rejected";
     const { session, text, source } = request;
@@ -771,11 +952,37 @@ function mountTools(root, frame, tools, entries) {
     return "inserted";
   }
 
+  // 9. 快捷键：Mod+J 开关工具区，Mod+\ 分屏，工具声明的组合切到（或打开）该工具并把焦点移进去。
+  //    chat iframe 同源，直接在它的 window 上监听；页面不可见、有对话框或菜单、标签自己处理过的按键（如终端里）都不接。
+  function onShortcut(event) {
+    const spec = event.defaultPrevented || root.offsetParent === null ? null : shortcutOf(event);
+    const entry = spec ? shortcuts.get(spec) : null;
+    if (!entry && spec !== HOST_SHORTCUTS.toggle && spec !== HOST_SHORTCUTS.split) return;
+    const page = event.target?.ownerDocument ?? document;
+    if (page.querySelector("[role='dialog'], [role='menu'], [role='listbox']")) return;
+    event.preventDefault();
+    if (spec === HOST_SHORTCUTS.toggle) {
+      if (state.open) closePanel(frame);
+      else openPanel(true);
+    } else if (spec === HOST_SHORTCUTS.split) toggleSplit();
+    else focusTool(entry);
+  }
+
+  function focusTool(entry) {
+    const existing = allTabs().findLast((record) => record.entry === entry);
+    const record = existing ? activate(existing.key) : openTool(entry);
+    if (!record) return;
+    requestAnimationFrame(() => {
+      const target = FOCUS_FIRST.map((selector) => record.panel.querySelector(selector)).find(Boolean);
+      (target ?? record.button).focus();
+    });
+  }
+
   // 铺满时 Esc 在工具内容里也能还原；收起只从顶栏或分隔条触发。标签自己处理过的 Esc（defaultPrevented）不动。
   function onKeydown(event) {
     if (event.key !== "Escape" || !state.open || event.defaultPrevented) return;
-    const inChrome = chrome.bar.contains(event.target) || event.target === chrome.splitter;
-    if (state.maximized && (inChrome || chrome.content.contains(event.target))) {
+    const inChrome = chrome.groups.some((shell) => shell.bar.contains(event.target)) || event.target === chrome.splitter;
+    if (state.maximized && (inChrome || chrome.panel.contains(event.target))) {
       state.maximized = false;
       update();
     } else if (inChrome) closePanel();
@@ -790,50 +997,90 @@ function mountTools(root, frame, tools, entries) {
     state.chatOverlay = message.open === true;
     update();
   }
-  // iframe 重载时旧的打开状态作废。
-  const resetChatOverlay = () => {
+  // iframe 重载时旧的打开状态作废，键盘监听重新挂到新的 window 上。
+  const onFrameLoad = () => {
     state.chatOverlay = false;
     update();
+    frame.contentWindow?.addEventListener("keydown", onShortcut);
   };
 
-  // 标签条的指针与键盘：点选、中键关闭、关闭按钮；方向键与 Home/End 换标签，Delete 关闭。
+  // 标签条的指针与键盘：点选、中键关闭、关闭按钮；方向键与 Home/End 在本组里换标签，Delete 关闭。
   function onStripClick(event) {
-    const record = state.tabs.find((item) => item.item.contains(event.target));
+    const record = allTabs().find((item) => item.item.contains(event.target));
     if (!record) return;
     if (record.close.contains(event.target) || event.button === 1) closeTab(record);
     else if (event.button === 0) activate(record.key);
   }
 
   function onStripKey(event) {
-    const at = state.tabs.findIndex((record) => record.button === event.target);
-    if (at < 0) return;
-    const keys = { ArrowRight: at + 1, ArrowLeft: at - 1, Home: 0, End: state.tabs.length - 1 };
-    if (event.key === "Delete") closeTab(state.tabs[at]);
-    else if (event.key in keys) activate(state.tabs[(keys[event.key] + state.tabs.length) % state.tabs.length].key, true);
+    const record = allTabs().find((item) => item.button === event.target);
+    const group = record ? groupOf(record) : null;
+    if (!group) return;
+    const at = group.tabs.indexOf(record);
+    const keys = { ArrowRight: at + 1, ArrowLeft: at - 1, Home: 0, End: group.tabs.length - 1 };
+    if (event.key === "Delete") closeTab(record);
+    else if (event.key in keys) activate(group.tabs[(keys[event.key] + group.tabs.length) % group.tabs.length].key, true);
     else return;
     event.preventDefault();
   }
 
-  chrome.tabs.addEventListener("click", onStripClick);
-  chrome.tabs.addEventListener("auxclick", onStripClick);
-  chrome.tabs.addEventListener("keydown", onStripKey);
+  // 标签拖放：拖到另一个标签上插在它前面，拖到标签条空白处放到末尾；两组之间同样可以拖。
+  // 数据用自定义类型，拖到对话输入框里不会变成文字。
+  function connectDrag(shell, index) {
+    const mark = (item) => { for (const record of allTabs()) record.item.classList.toggle("is-drop-target", record.item === item); };
+    shell.bar.addEventListener("dragstart", (event) => {
+      dragging = allTabs().find((record) => record.item === event.target) ?? null;
+      if (!dragging) return;
+      event.dataTransfer.effectAllowed = "move";
+      event.dataTransfer.setData("application/x-akashic-tab", dragging.key);
+    });
+    shell.bar.addEventListener("dragover", (event) => {
+      if (!dragging) return;
+      event.preventDefault();
+      mark(event.target.closest?.(".conversation-tools-tab-item") ?? null);
+    });
+    shell.bar.addEventListener("dragleave", (event) => { if (!shell.bar.contains(event.relatedTarget)) mark(null); });
+    shell.bar.addEventListener("drop", (event) => {
+      const target = state.groups[index];
+      if (!dragging || !target) return;
+      event.preventDefault();
+      mark(null);
+      moveTab(dragging, target, allTabs().find((record) => record.item.contains(event.target)) ?? null);
+    });
+    shell.bar.addEventListener("dragend", () => { dragging = null; mark(null); });
+  }
+
+  // 有两组时，点到或聚焦到哪组，“+”、快捷键打开的标签就进哪组。
+  function focusGroup(index) {
+    if (state.focus === index || !state.groups[index]) return;
+    state.focus = index;
+    chrome.groups.forEach((shell, at) => shell.root.classList.toggle("is-focused", state.groups.length > 1 && at === index));
+  }
+
+  chrome.groups.forEach((shell, index) => {
+    shell.tabs.addEventListener("click", onStripClick);
+    shell.tabs.addEventListener("auxclick", onStripClick);
+    shell.tabs.addEventListener("keydown", onStripKey);
+    shell.launch.addEventListener("click", () => openLaunch(state.groups[index] ?? focusedGroup()));
+    shell.root.addEventListener("focusin", () => focusGroup(index));
+    shell.root.addEventListener("pointerdown", () => focusGroup(index));
+    connectDrag(shell, index);
+  });
   connectSplitter(root, chrome.splitter, sizing);
-  chrome.launch.addEventListener("click", openLaunch);
-  chrome.close.addEventListener("click", closePanel);
+  connectDivider(chrome.panel, chrome.divider);
+  chrome.split.addEventListener("click", toggleSplit);
+  chrome.close.addEventListener("click", () => closePanel());
   chrome.maximize.addEventListener("click", () => {
     state.maximized = !state.maximized;
     update();
   });
-  chrome.toggle.addEventListener("click", () => {
-    const pending = [...records.singles(), ...state.tabs].find((record) => record.attention);
-    if (pending?.entry && !pending.instance) openTool(pending.entry, null, true);
-    else activate((pending ?? activeRecord() ?? state.tabs[0]).key, true);
-  });
+  chrome.toggle.addEventListener("click", () => openPanel(true));
   root.classList.add("has-tools");
   root.append(chrome.splitter, chrome.panel, chrome.toggle);
   root.addEventListener("keydown", onKeydown);
+  window.addEventListener("keydown", onShortcut);
   window.addEventListener("message", followChatOverlay);
-  frame.addEventListener("load", resetChatOverlay);
+  frame.addEventListener("load", onFrameLoad);
   window.addEventListener("resize", sizing.fit);
   const stopSession = followChatSession(frame, applySession);
   const stopIntents = announceIntents(frame, entries);
@@ -851,8 +1098,10 @@ function mountTools(root, frame, tools, entries) {
       stopIntents();
       window.removeEventListener("message", onIntent);
       root.removeEventListener("keydown", onKeydown);
+      window.removeEventListener("keydown", onShortcut);
+      frame.contentWindow?.removeEventListener("keydown", onShortcut);
       window.removeEventListener("message", followChatOverlay);
-      frame.removeEventListener("load", resetChatOverlay);
+      frame.removeEventListener("load", onFrameLoad);
       window.removeEventListener("resize", sizing.fit);
       lifecycle.dispose();
     },
@@ -874,7 +1123,7 @@ function renderConversation(host, view, props) {
   host.replaceChildren(root);
   const stopThemeSync = syncFrameTheme(frame);
   const stopRailActions = connectRailActions(frame, railActions);
-  const stopToolsNotice = workbench ? announceTools(frame) : () => {};
+  const stopToolsNotice = workbench ? announceTools(frame, entries) : () => {};
   workbench?.start();
   return () => {
     workbench?.dispose();

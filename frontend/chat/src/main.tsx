@@ -4,7 +4,7 @@ import { initializeTheme, setTheme, startCrossPortThemeSync } from "../../theme/
 import { TooltipProvider } from "@/components/ui/tooltip";
 import { DesktopChatApp } from "./desktop-chat-app";
 import { setShellRailActions } from "./shell-rail-actions";
-import { receiveWorkbenchQuote, setWorkbenchIntents, settleWorkbenchIntent } from "./shell-workbench";
+import { receiveWorkbenchQuote, setHostShortcuts, setWorkbenchIntents, settleWorkbenchIntent } from "./shell-workbench";
 import { WebUiErrorBoundary } from "./webui-error-boundary";
 
 export type { AgentBlock, ChatMessage, MessageAttachment, ThinkingBlock, ToolBlock } from "./chat-message";
@@ -41,6 +41,7 @@ if (embeddedShell) {
     }
     if (message.type === "akashic.chat-tools") {
       document.documentElement.dataset.shellTools = message.present === true ? "true" : "false";
+      setHostShortcuts(message.shortcuts);
       return;
     }
     if (message.type !== "akashic.theme" || typeof message.themeId !== "string") return;
