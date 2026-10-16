@@ -1,5 +1,6 @@
 """工作台“预览”标签：在侧栏查看对话里的文本与表格附件。"""
 from agent.plugin_composition import Context
+from plugins.ledger.contract import ARTIFACT_READ, MESSAGE_CATALOG
 from plugins.ui.contract import UI
 
 from . import dashboard
@@ -9,7 +10,7 @@ name = "preview_ui"
 version = "1.0.0"
 desc = "在对话工作台侧栏预览文本与表格附件"
 author = "Akashic Core"
-inject = ()
+inject = (MESSAGE_CATALOG, ARTIFACT_READ)
 workspace_roots = ()
 workspace_files = ()
 
@@ -25,4 +26,5 @@ async def apply(ctx: Context) -> None:
             },
         )
 
-    _ = await ctx.inject((UI,), register_ui, name="preview-ui")
+    # 浏览器入口按会话与消息读附件，需要的服务随 UI 一起声明。
+    _ = await ctx.inject((UI, MESSAGE_CATALOG, ARTIFACT_READ), register_ui, name="preview-ui")
