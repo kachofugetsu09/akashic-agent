@@ -2,7 +2,7 @@
   "contract": "conversation.tools.v2",
   "entry": {
     "required": ["id", "label", "render"],
-    "optional": ["order"]
+    "optional": ["order", "icon", "background"]
   },
   "view": {
     "active": "boolean",

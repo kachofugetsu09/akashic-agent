@@ -27,10 +27,22 @@
 .conversation-tools {
   grid-column: 3;
   grid-row: 1;
+  display: grid;
+  grid-template-rows: auto minmax(0, 1fr);
   min-width: 0;
   height: 100%;
   overflow: hidden;
   background: var(--ak-paper-sheet);
+}
+
+/* 铺满：对话列收起但保留 iframe，不重载、不丢草稿 */
+.conversation-page.tools-maximized {
+  grid-template-columns: 0 0 minmax(0, 1fr);
+}
+
+.conversation-page.tools-maximized .conversation-page-frame,
+.conversation-page.tools-maximized .conversation-tools-splitter {
+  visibility: hidden;
 }
 
 .conversation-tools-splitter {
@@ -72,24 +84,44 @@
 }
 
 .conversation-tools-bar {
+  position: relative;
   display: flex;
   height: 42px;
   min-width: 0;
-  align-items: stretch;
+  align-items: center;
   gap: 2px;
-  padding-inline: 8px 4px;
+  padding-inline: 8px 6px;
+  border-block-end: 1px solid var(--ak-rule-subtle);
+}
+
+.conversation-tools-tabs {
+  display: flex;
+  flex: 1 1 auto;
+  min-width: 0;
+  height: 100%;
   overflow-x: auto;
   overflow-y: hidden;
-  border-block-end: 1px solid var(--ak-rule-subtle);
   scrollbar-width: none;
 }
 
-.conversation-tools-bar::-webkit-scrollbar {
+.conversation-tools-tabs::-webkit-scrollbar {
+  display: none;
+}
+
+.conversation-tools-tab-item {
+  position: relative;
+  display: flex;
+  flex: 0 0 auto;
+  align-items: center;
+}
+
+.conversation-tools-tab-item[hidden] {
   display: none;
 }
 
 .conversation-tools-tab,
-.conversation-tools-close,
+.conversation-tools-button,
+.conversation-tools-menu-item,
 .conversation-tools-toggle {
   border: 0;
   color: var(--ak-ink-secondary);
@@ -99,12 +131,34 @@
 }
 
 .conversation-tools-tab {
-  flex: 0 0 auto;
-  min-height: 42px;
-  padding-inline: 10px;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  align-self: stretch;
+  padding-inline: 10px 26px;
   border-block-end: 2px solid transparent;
   font-size: 0.8125rem;
   font-weight: 600;
+}
+
+/* 标签上的关闭：当前标签常显，其余悬停或聚焦时露出 */
+.conversation-tools-tab-close {
+  position: absolute;
+  inset-inline-end: 2px;
+  width: 22px;
+  height: 22px;
+  opacity: 0;
+}
+
+.conversation-tools-tab[aria-selected="true"] + .conversation-tools-tab-close,
+.conversation-tools-tab-item:hover .conversation-tools-tab-close,
+.conversation-tools-tab-item:focus-within .conversation-tools-tab-close {
+  opacity: 1;
+}
+
+.conversation-tools-tab-close svg {
+  width: 13px;
+  height: 13px;
 }
 
 .conversation-tools-tab[aria-selected="true"] {
@@ -112,16 +166,69 @@
   border-block-end-color: var(--ak-color-action-primary);
 }
 
-.conversation-tools-close {
-  flex: 0 0 38px;
-  width: 38px;
-  height: 38px;
-  margin-inline-start: auto;
-  align-self: center;
+.conversation-tools-button {
+  display: inline-grid;
+  flex: 0 0 auto;
+  width: 28px;
+  height: 28px;
+  place-items: center;
+  padding: 0;
   border-radius: 6px;
 }
 
-.conversation-tools-close svg,
+.conversation-tools-button[aria-expanded="true"] {
+  color: var(--ak-ink-primary);
+  background: color-mix(in oklch, var(--ak-ink-primary) 8%, transparent);
+}
+
+.conversation-tools-menu {
+  position: absolute;
+  z-index: 7;
+  inset-block-start: calc(100% + 4px);
+  inset-inline-end: 6px;
+  display: grid;
+  min-width: 12rem;
+  padding: 4px;
+  border: 1px solid var(--ak-rule-default);
+  border-radius: 8px;
+  background: var(--ak-paper-sheet);
+  box-shadow: 0 8px 24px rgb(0 0 0 / 0.14);
+}
+
+.conversation-tools-menu[hidden] {
+  display: none;
+}
+
+.conversation-tools-menu-item {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-height: 32px;
+  padding-inline: 10px;
+  border-radius: 6px;
+  color: var(--ak-ink-primary);
+  font-size: 0.8125rem;
+  text-align: start;
+}
+
+/* 已打开的标签在菜单里打勾，再选只是切过去 */
+.conversation-tools-menu-item[data-opened]::after {
+  margin-inline-start: auto;
+  color: var(--ak-ink-secondary);
+  content: "✓";
+}
+
+.conversation-tools-menu-item svg {
+  width: 16px;
+  height: 16px;
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 1.6;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+
+.conversation-tools-button svg,
 .conversation-tools-toggle svg {
   width: 17px;
   height: 17px;
@@ -153,13 +260,12 @@
   font-weight: 600;
 }
 
-.conversation-tools-content,
-.conversation-tool-panel {
-  height: calc(100% - 42px);
+.conversation-tools-content {
   min-height: 0;
 }
 
 .conversation-tool-panel {
+  height: 100%;
   overflow: hidden;
 }
 
@@ -172,7 +278,8 @@
 
 @media (hover: hover) {
   .conversation-tools-tab:hover,
-  .conversation-tools-close:hover,
+  .conversation-tools-button:hover,
+  .conversation-tools-menu-item:hover,
   .conversation-tools-toggle:hover {
     color: var(--ak-ink-primary);
     background: color-mix(in oklch, var(--ak-ink-primary) 6%, transparent);
@@ -180,7 +287,8 @@
 }
 
 .conversation-tools-tab:focus-visible,
-.conversation-tools-close:focus-visible,
+.conversation-tools-button:focus-visible,
+.conversation-tools-menu-item:focus-visible,
 .conversation-tools-toggle:focus-visible {
   outline: 2px solid var(--ak-rule-focus);
   outline-offset: -2px;
@@ -198,7 +306,8 @@
     border: 0;
   }
 
-  .conversation-tools-splitter {
+  .conversation-tools-splitter,
+  .conversation-tools-maximize {
     display: none;
   }
 }
@@ -224,19 +333,32 @@
 
 /* 触控输入下开关、关闭与标签的可点区域不小于 44px；指针输入保持紧凑尺寸。 */
 @media (pointer: coarse) {
+  .conversation-tools-bar {
+    height: 48px;
+  }
+
   .conversation-tools-toggle {
     min-width: 44px;
     min-height: 44px;
     justify-content: center;
   }
 
-  .conversation-tools-close {
-    flex-basis: 44px;
+  .conversation-tools-button {
     width: 44px;
     height: 44px;
   }
 
+  .conversation-tools-tab-close {
+    width: 32px;
+    height: 32px;
+    opacity: 1;
+  }
+
   .conversation-tools-tab {
+    padding-inline-end: 34px;
+  }
+
+  .conversation-tools-menu-item {
     min-height: 44px;
   }
 }
