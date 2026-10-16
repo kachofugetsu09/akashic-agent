@@ -5,8 +5,10 @@ import "./style.css";
 const API = "/api/dashboard/workspace_changes";
 const POLL_MS = 3000;
 const FRESH_MS = 8000;
-/** workspace.changes.open.v1 的 payload：{ path: string }，打开“未提交”并选中这个文件。 */
+/** workspace.changes.open.v1 的 payload：{ path: string }，先在“未提交”里找这个文件，再找相对默认分支（这一轮可能已经提交）。 */
 const OPEN_INTENT = "workspace.changes.open.v1";
+/** workspace.file.open.v1（对话回复里点文件路径）：{ path, line? }，先找未提交，再找相对默认分支；只写了文件名时按结尾匹配。 */
+const FILE_INTENT = "workspace.file.open.v1";
 const STATUS_LABELS = { A: "新增", M: "修改", D: "删除", T: "类型变化" } as const;
 
 interface FileStatus { path: string; status: keyof typeof STATUS_LABELS; added: number | null; removed: number | null }
@@ -101,11 +103,14 @@ class ChangesTab {
   private scope = "wt";
   private result: ScopeResult | null = null;
   private selected: string | null = null;
+  private target: { path: string; line: number } | null = null;
   private shownPatch = "";
   private shownText: string | null = null;
   private readonly seen = new Map<string, string>();
   private readonly fresh = new Map<string, number>();
   private generation = 0;
+  private viewVersion = 0;
+  private patchRequest = 0;
   private timer = 0;
   private freshTimer = 0;
 
@@ -131,11 +136,14 @@ class ChangesTab {
   }
 
   setSession(session: string | null): void {
+    this.viewVersion += 1;
     this.session = session;
     this.scope = "wt";
     this.selected = null;
     this.seen.clear();
     this.fresh.clear();
+    this.target = null;
+    this.message("读取改动中…");
     void this.load(true);
   }
 
@@ -147,26 +155,58 @@ class ChangesTab {
 
   // 意图：切到“未提交”并选中这个文件；它已经提交或还原时如实说明。
   async open(intent: ConversationIntent): Promise<ConversationIntentStatus> {
-    const payload = intent.payload as { path?: unknown } | null;
+    const payload = intent.payload as { path?: unknown; line?: unknown } | null;
     if (!payload || typeof payload.path !== "string" || !payload.path) return "invalid";
-    this.scope = "wt";
-    this.selected = payload.path;
-    await this.load(true);
-    if (!this.result?.files?.some((file) => file.path === payload.path))
-      this.showNote(`${payload.path} 现在没有未提交的改动，可能已经提交或还原。`);
+    const line = Number.isInteger(payload.line) && (payload.line as number) > 0 ? payload.line as number : null;
+    const want = payload.path.replace(/^\.\//, "");
+    const viewVersion = ++this.viewVersion;
+    this.target = null;
+    this.message("读取改动中…");
+    for (const scope of ["wt", "base"]) {
+      this.scope = scope;
+      this.selected = want;
+      await this.load(true);
+      if (viewVersion !== this.viewVersion) return "invalid";
+      const found = this.findFile(want);
+      // 行号只认找到的这个文件：列表里没有时 render 会退回第一个文件，不能把行号耗在它身上。
+      if (!found) continue;
+      this.target = line === null ? null : { path: found, line };
+      this.select(found, false);
+      return "handled";
+    }
+    // 都没找到：回到默认的“未提交”，再说明原因。
+    if (this.scope !== "wt") {
+      this.scope = "wt";
+      await this.load(true);
+      if (viewVersion !== this.viewVersion) return "invalid";
+    }
+    this.showNote(`${want} 相对 HEAD 和 ${this.result?.base_ref ?? "默认分支"} 都没有改动，可能已经还原。`);
     return "handled";
+  }
+
+  // 精确路径优先；回复里常只写文件名或半截路径，结尾唯一匹配时也算。
+  private findFile(path: string): string | null {
+    const files = this.result?.files ?? [];
+    if (files.some((file) => file.path === path)) return path;
+    const tail = files.filter((file) => file.path.endsWith(`/${path}`));
+    return tail.length === 1 ? tail[0].path : null;
   }
 
   dispose(): void {
     this.generation += 1;
+    this.viewVersion += 1;
+    this.patchRequest += 1;
     window.clearTimeout(this.timer);
     window.clearTimeout(this.freshTimer);
   }
 
   private setScope(scope: string): void {
+    this.viewVersion += 1;
     this.scope = scope;
     this.selected = null;
     this.seen.clear();
+    this.target = null;
+    this.message("读取改动中…");
     void this.load(true);
   }
 
@@ -279,6 +319,8 @@ class ChangesTab {
     const result = this.result;
     const file = result?.files?.find((item) => item.path === this.selected);
     if (!result || !file) {
+      this.patchRequest += 1;
+      this.shownPatch = "";
       this.shownText = null;
       delete this.pane.dataset.path;
       return void this.pane.replaceChildren();
@@ -286,8 +328,10 @@ class ChangesTab {
     const key = `${result.before}:${result.after}:${file.path}`;
     // 正在写评论时不刷新这份 diff，免得别处的改动把评论框冲掉；关掉评论框后下一次轮询再刷新。
     const writing = this.pane.querySelector(".changes-comment") && this.pane.dataset.path === file.path;
-    if (key === this.shownPatch || writing) return;
+    if (key === this.shownPatch || writing) return this.revealLine();
     this.shownPatch = key;
+    const request = ++this.patchRequest;
+    const session = this.session ?? "";
     const head = element("header", "changes-pane-head");
     head.append(element("span", "changes-pane-path", file.path), counts(file));
     if (file.added === null) {
@@ -297,43 +341,60 @@ class ChangesTab {
     try {
       const response = await this.get("patch", { before: result.before!, after: result.after!, path: file.path });
       const body = (await response.json()) as { status: string; patch?: string; truncated?: boolean; message?: string };
-      if (key !== this.shownPatch) return;
+      if (request !== this.patchRequest) return;
       if (body.status !== "ok") {
         // 记下当前显示的是哪个文件的错误：再点回之前的文件时不会因为“内容没变”停在这条错误上。
         [this.pane.dataset.path, this.shownText] = [file.path, null];
         return void this.pane.replaceChildren(head, element("p", "changes-empty", body.message ?? "无法读取 diff"));
       }
       // 内容没变（别的文件变了导致树变了）时不重画，保留滚动位置。
-      if (this.pane.dataset.path === file.path && this.shownText === body.patch) return;
+      if (this.pane.dataset.path === file.path && this.shownText === body.patch) return this.revealLine();
       this.pane.dataset.path = file.path;
       this.shownText = body.patch ?? "";
       const rows = element("div", "changes-diff");
-      rows.append(...parsePatch(body.patch ?? "").map((row) => this.rowNode(file.path, row)));
+      rows.append(...parsePatch(body.patch ?? "").map((row) => this.rowNode(session, file.path, row)));
       const tail = body.truncated ? [element("p", "changes-empty", "diff 过长，只显示前 256 KiB。")] : [];
       this.pane.replaceChildren(head, rows, ...tail);
+      this.revealLine();
     } catch (error) {
+      if (request !== this.patchRequest) return;
       this.shownPatch = "";
       this.shownText = null;
       this.pane.replaceChildren(head, element("p", "changes-empty is-error", error instanceof Error ? error.message : String(error)));
     }
   }
 
-  private rowNode(path: string, row: Row): HTMLElement {
+  // 从回复里带行号打开时：滚到新文件里离这一行最近的 diff 行并短暂高亮；diff 还没换成这个文件时留到下次。
+  private revealLine(): void {
+    const target = this.target;
+    if (target === null || this.pane.dataset.path !== target.path) return;
+    this.target = null;
+    const line = target.line;
+    const rows = [...this.pane.querySelectorAll<HTMLElement>(".changes-row[data-line]:not([data-kind='del'])")];
+    const near = rows.reduce<HTMLElement | null>((best, row) =>
+      !best || Math.abs(Number(row.dataset.line) - line) < Math.abs(Number(best.dataset.line) - line) ? row : best, null);
+    if (!near) return;
+    near.scrollIntoView({ block: "center" });
+    near.classList.add("is-target");
+    window.setTimeout(() => near.classList.remove("is-target"), 1200);
+  }
+
+  private rowNode(session: string, path: string, row: Row): HTMLElement {
     const node = element("div", "changes-row");
     node.dataset.kind = row.kind;
+    if (row.line !== null) node.dataset.line = String(row.line);
     node.append(element("span", "changes-ln", row.line === null ? "" : String(row.line)), element("span", "changes-code", row.text));
     if (row.line !== null) {
       node.tabIndex = -1;
       node.title = "点击写评论";
-      node.addEventListener("click", () => this.comment(node, path, row));
+      node.addEventListener("click", () => this.comment(session, node, path, row));
     }
     return node;
   }
 
   // 5. 行评论：写好后放进对话输入框（不自动发送）；Enter 放入，Shift+Enter 换行，Esc 取消。
-  private comment(node: HTMLElement, path: string, row: Row): void {
-    // 会话在打开评论框时记下：写的过程中切了会话，宿主会按 stale 拒绝，不会放进别的会话。
-    const session = this.session ?? "";
+  private comment(session: string, node: HTMLElement, path: string, row: Row): void {
+    // 引用绑定 diff 的来源会话；点击或提交时当前会话可能已改变。
     this.pane.querySelector(".changes-comment")?.remove();
     const box = element("div", "changes-comment");
     const field = element("textarea", "changes-comment-input");
@@ -379,6 +440,7 @@ class ChangesTab {
   }
 
   private message(text: string, failed = false): void {
+    this.patchRequest += 1;
     this.result = null;
     this.total.textContent = "";
     this.note.hidden = true;
@@ -408,7 +470,7 @@ function renderChanges(ctx: WebHostContextV1, host: HTMLElement, rawView: unknow
   const stops = [
     view.onSessionChange((session) => tab.setSession(session)),
     view.onActiveChange((active) => tab.setActive(active)),
-    view.onIntent((intent) => intent.name === OPEN_INTENT ? tab.open(intent) : "invalid"),
+    view.onIntent((intent) => intent.name === OPEN_INTENT || intent.name === FILE_INTENT ? tab.open(intent) : "invalid"),
   ];
   return () => {
     for (const stop of stops) stop();
@@ -419,7 +481,7 @@ function renderChanges(ctx: WebHostContextV1, host: HTMLElement, rawView: unknow
 
 export function activate(ctx: WebHostContextV1): WebUiDisposer {
   return ctx.ui.inject("conversation.tools.v2", (mount) => mount.register({
-    id: "workspace-changes", label: "改动", order: 30, hint: "工作目录相对 git 的改动", shortcut: "Mod+Shift+G", accepts: [OPEN_INTENT],
+    id: "workspace-changes", label: "改动", order: 30, hint: "工作目录相对 git 的改动", shortcut: "Mod+Shift+G", accepts: [OPEN_INTENT, FILE_INTENT],
     icon: '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M6 3v12M18 9v12M6 15a3 3 0 1 0 0 6 3 3 0 0 0 0-6ZM18 3a3 3 0 1 0 0 6 3 3 0 0 0 0-6ZM6 15c0-4 12-2 12-6"/></svg>',
     render(host, _entryView, props) { return renderChanges(ctx, host, props); },
   }));

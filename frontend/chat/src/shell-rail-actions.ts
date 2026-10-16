@@ -1,5 +1,7 @@
 import { useSyncExternalStore } from "react";
 
+import { setWorkbenchSession } from "./shell-workbench";
+
 export interface ShellRailActionItem {
   id: string;
   order?: number;
@@ -43,6 +45,7 @@ export function activateShellRailAction(id: string): void {
 
 /** 当前会话交给宿主转交工具区标签；新建对话尚未发送时为 null。standalone 下无宿主，静默。 */
 export function reportShellSession(sessionId: string): void {
+  setWorkbenchSession(sessionId);
   if (window.parent === window) return;
   window.parent.postMessage({ type: "akashic.chat-session", sessionId: sessionId || null }, window.location.origin);
 }

@@ -242,6 +242,35 @@
   box-decoration-break: clone;
 }
 
+/* 回复里的文件路径：行内代码外包一层按钮，点开在工作台“改动”里定位；只加虚下划线提示可点。 */
+.reading-file-link {
+  display: inline;
+  padding: 0;
+  border: 0;
+  background: none;
+  color: inherit;
+  font: inherit;
+  text-align: inherit;
+  cursor: pointer;
+}
+
+.reading-file-link > code,
+.reading-file-link .inline-code {
+  text-decoration: underline dotted color-mix(in oklab, currentColor 45%, transparent);
+  text-underline-offset: 0.2em;
+}
+
+.reading-file-link:hover > code,
+.reading-file-link:hover .inline-code {
+  text-decoration-style: solid;
+}
+
+.reading-file-link:focus-visible {
+  border-radius: 0.3125rem;
+  outline: 2px solid var(--ak-rule-focus);
+  outline-offset: 1px;
+}
+
 /* 裸网址没有可读的词边界：按字符填满整行，不在 "-" 前后紧急断开、留下单独一行的连字符。 */
 .markdown-reading a.reading-url {
   word-break: break-all;

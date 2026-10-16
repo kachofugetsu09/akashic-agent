@@ -17,6 +17,9 @@ let accepted: ReadonlySet<string> = new Set();
 const listeners = new Set<() => void>();
 const pending = new Map<string, (status: WorkbenchIntentStatus) => void>();
 let quoteHandler: ((quote: WorkbenchQuote) => void) | null = null;
+let currentSession = "";
+/** 打开会话工作目录里的一个文件：{ path, line? }，path 相对工作目录；由声明接受它的工具决定怎么打开（如“改动”定位到该文件）。 */
+export const FILE_INTENT = "workspace.file.open.v1";
 
 /** 宿主下发的可接受意图名集合；只用来决定是否显示“在侧栏打开”。 */
 export function setWorkbenchIntents(value: unknown): void {
@@ -39,6 +42,30 @@ export function useWorkbenchAccepts(name: string): boolean {
 
 export function workbenchAccepts(name: string): boolean {
   return accepted.has(name);
+}
+
+/** 当前会话随 reportShellSession 更新；回复里的文件链接用它投递意图。 */
+export function setWorkbenchSession(sessionId: string): void {
+  currentSession = sessionId;
+}
+
+// 像工作目录里文件的行内代码：带常见扩展名（或 Makefile 这类固定文件名）的相对路径，可带 :行号 或 :行:列；
+// 网址、绝对路径、带 .. 的、带空格的、order.currency 这类属性访问、Node.js 这类框架名都不算。
+const FILE_PATH = /^(?:\.\/)?(?:(?!\.\.\/)[\w@.-]+\/)*(?:[\w@-][\w@.-]*\.(?:py|pyi|ts|tsx|js|jsx|mjs|cjs|json|md|mdx|toml|ya?ml|css|scss|html|vue|svelte|rs|go|java|kt|swift|c|h|cc|cpp|hpp|cs|rb|php|lua|dart|scala|proto|sh|sql|txt|ini|cfg|xml|lock)|Makefile|Dockerfile|LICENSE)(?::\d+){0,2}$/;
+const FRAMEWORK_NAME = /^[A-Z][a-z]+\.js$/;
+
+export interface WorkspaceFileRef { path: string; line: number | null }
+
+/** 行内代码若像工作目录里的文件，返回去掉 ./ 的相对路径与可选行号；否则 null。 */
+export function workspaceFileRef(code: string): WorkspaceFileRef | null {
+  if (code.length > 300 || !FILE_PATH.test(code) || FRAMEWORK_NAME.test(code)) return null;
+  const [, path, line] = /^(?:\.\/)?(.+?)(?::(\d+))?(?::\d+)?$/.exec(code)!;
+  return { path, line: line ? Number(line) : null };
+}
+
+/** 只在用户点击时调用，同 openInWorkbench。 */
+export function openFileInWorkbench(file: WorkspaceFileRef): Promise<WorkbenchIntentStatus> {
+  return openInWorkbench(FILE_INTENT, currentSession, file.line === null ? { path: file.path } : file);
 }
 
 export interface HostShortcut {

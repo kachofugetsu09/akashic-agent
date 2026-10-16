@@ -24,7 +24,7 @@ function answerChanges(host, context) {
     button.type = "button";
     button.className = "changes-tail is-link";
     button.textContent = text;
-    button.title = "在工作台的“改动”里查看（未提交）";
+    button.title = "在工作台的“改动”里查看";
     button.addEventListener("click", () => void context.workbench.open(OPEN_INTENT, { path: summary.path }));
     host.replaceChildren(button);
   }
