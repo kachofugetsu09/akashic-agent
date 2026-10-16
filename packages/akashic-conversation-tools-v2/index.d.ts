@@ -13,7 +13,31 @@ export interface ConversationTab extends WebEntry {
    * 未选中时标签应按 onActiveChange 暂停昂贵工作。
    */
   background?: boolean;
+  /**
+   * 能处理的意图名，形如 "workspace.changes.open.v1"。payload 结构由意图的领域 owner 在自己的合同里定义；
+   * 宿主按标签顺序交给第一个接受者，不广播，也不认识意图含义。
+   */
+  accepts?: readonly string[];
 }
+
+/** 来自用户点击的意图；宿主已校验名字、大小（payload JSON ≤ 16 KiB）与会话是当前会话。 */
+export interface ConversationIntent {
+  readonly id: string;
+  readonly name: string;
+  readonly session: string;
+  readonly payload: unknown;
+}
+
+export type ConversationIntentStatus = "handled" | "invalid" | "failed";
+
+/** 引用回输入框；session 是发起时记下的会话，text ≤ 8192 字符，source ≤ 200 字符。 */
+export interface ConversationQuote {
+  session: string;
+  text: string;
+  source: string;
+}
+
+export type ConversationQuoteStatus = "inserted" | "stale" | "rejected";
 
 /**
  * 父视图只报告父级拥有的可见事实与聊天报告的当前会话，不授予子标签写父状态的能力。
@@ -26,4 +50,8 @@ export interface ConversationTabView {
   onSessionChange(listener: (session: string | null) => void): WebUiDisposer;
   /** 新的、未处理的 noticeId 只亮徽标，不打开工具区；重放同一 ID 无效。 */
   requestAttention(noticeId: string): void;
+  /** 宿主先展开并激活本标签再投递；10 秒内没有结果按 failed 回执。 */
+  onIntent(listener: (intent: ConversationIntent) => ConversationIntentStatus | Promise<ConversationIntentStatus>): WebUiDisposer;
+  /** 只在标签自己的点击或键盘处理函数里调用；会话已切走返回 stale，不自动发送。 */
+  quote(request: ConversationQuote): ConversationQuoteStatus;
 }

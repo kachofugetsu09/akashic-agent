@@ -4,6 +4,7 @@ import { initializeTheme, setTheme, startCrossPortThemeSync } from "../../theme/
 import { TooltipProvider } from "@/components/ui/tooltip";
 import { DesktopChatApp } from "./desktop-chat-app";
 import { setShellRailActions } from "./shell-rail-actions";
+import { receiveWorkbenchQuote, setWorkbenchIntents, settleWorkbenchIntent } from "./shell-workbench";
 import { WebUiErrorBoundary } from "./webui-error-boundary";
 
 export type { AgentBlock, ChatMessage, MessageAttachment, ThinkingBlock, ToolBlock } from "./chat-message";
@@ -23,6 +24,19 @@ if (embeddedShell) {
     const message = event.data as Record<string, unknown>;
     if (message.type === "akashic.rail-actions") {
       setShellRailActions(message.actions);
+      return;
+    }
+    // 工具区的意图回执与引用只认直接父窗口。
+    if (event.source === window.parent && message.type === "akashic.workbench-intents") {
+      setWorkbenchIntents(message.names);
+      return;
+    }
+    if (event.source === window.parent && message.type === "akashic.workbench-intent-result") {
+      settleWorkbenchIntent(message);
+      return;
+    }
+    if (event.source === window.parent && message.type === "akashic.composer-quote") {
+      receiveWorkbenchQuote(message);
       return;
     }
     if (message.type === "akashic.chat-tools") {
