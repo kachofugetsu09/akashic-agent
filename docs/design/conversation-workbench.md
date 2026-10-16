@@ -115,7 +115,7 @@ interface ConversationTabView {
 }
 ```
 
-- **新标签页**：“+”打开一个新标签页，列出可打开的工具（图标、名称、hint、快捷键）与最近关闭的标签。
+- **新标签页**：“+”打开一个新标签页，列出可打开的工具（图标、名称、hint、快捷键）。不做“最近关闭”：单开工具本来就在列表里，终端关掉时 shell 已结束，重开等于新开。
   当前停在新标签页时再打开工具，就地替换这一页。
 - **分屏**：最多上下两组，标签可拖到另一组（自定义 MIME `application/x-akashic-tab`）。
   布局按会话记为 `{open, focus, groups:[{tabs, active}]}`，旧的 `{tabs, active}` 照常读入。
@@ -284,7 +284,7 @@ interface ConversationTabView {
 | S8a / S8b | #1435、#1436 | 摘要的意图 payload 后改为 `{path}`（#1445） |
 | T1c | #1432 | 终端由监管进程管理会话生死，关闭做完才移除，写入串行 |
 | S9 | ~~#1438~~ | 撤回，见第 5 节 |
-| S10 | #1440、#1441 | 标签自报标题与状态（`setTitle` / `setIndicator`），新标签页记住最近关闭 |
+| S10 | #1440、#1441 | 标签自报标题与状态（`setTitle` / `setIndicator`），新标签页列出工具 |
 | S11 | #1442、#1445 | 去掉“本轮”视图与 `/uncommitted`、`/turns`、`/turn` 端点；轮次不再存 patch |
 | S12 | #1443 | Mod+\ 用于分屏（沿用 VS Code 习惯） |
 | S13 | #1444 | 实例与 PTY 的对应记在 `sessionStorage`；关闭标签即关闭 PTY，换会话只卸下。已知限制见 0122 |
