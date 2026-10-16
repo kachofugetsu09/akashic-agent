@@ -21,6 +21,9 @@ class GitUnavailable(Exception):
         super().__init__(message)
         self.reason = reason
 
+    def view(self) -> dict[str, object]:
+        return {"reason": self.reason, "message": str(self)}
+
 
 @dataclass(frozen=True, slots=True)
 class Repo:
