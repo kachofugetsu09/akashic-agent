@@ -25,10 +25,8 @@
 - B2 在停止期按维护锁、发布锁顺序，经正式 installer 与完整 archive 准备后作一次
   selection CAS；成功只报告 selected-not-started，不启动 Manager/Root 或业务服务。
   禁用项、外部替换、配置与历史归档仍按各自 owner 保留。
-- 孤立 armed 安装会阻止 cold boot、doctor 与下一安装。显式
-  `scripts/rollback_plugin_install.py` 只恢复一个 `update_id` 的安装状态，不提供
-  confirm-install、自动回退或 Root 切换。安全条件、备份和重试见
-  [状态地图](persistence-state-map.md#1022-单图安装与停止期指定回退)。
+- 孤立 armed 安装由启动或下一安装按指针确切值结算，显式停机回退脚本已删除，见
+  [0121](../decisions/0121-plugin-install-settles-from-disk.md)。
 - Wake 已结束的业务失败仍由 task incident、failed attempt 与原来源/Delivery 输入
   负责恢复；停止时不再次抛成 generation-cleanup。取消期间真实 teardown 错误仍
   上抛并保留资源 owner。当前故障夹具证明旧 Root 真正关闭后同进程新 stack 恢复，
