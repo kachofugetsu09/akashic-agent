@@ -28,8 +28,6 @@ function driverCall(callId) {
 function forgetDriver() {
   driver = undefined;
   driverReady = undefined;
-  activeTargetId = "";
-  browserSnapshots.clear();
   publishCursor({ point: null });
 }
 
@@ -85,9 +83,7 @@ const computer = new ComputerLifecycle({
 const activityPath = "/data/state/activity.json";
 const maxBodyBytes = 256 * 1024;
 let activity = { revision: 0, noticeId: 0, active: false, action: "", updatedAt: "" };
-let activeTargetId = "";
 const legacyCall = new AsyncLocalStorage();
-const browserSnapshots = new Map();
 // 订阅者 → 它最近收到的状态快照；按订阅者去重，新订阅者也能补到最新状态。
 const eventClients = new Map();
 let cursor = { revision: 0, point: null, error: "" };
@@ -213,23 +209,6 @@ async function daemonStatus() {
   return await response.json();
 }
 
-async function tcpReady(port) {
-  await new Promise((resolve, reject) => {
-    const socket = tcpConnect({ host: "127.0.0.1", port });
-    const timer = setTimeout(() => {
-      socket.destroy();
-      reject(new Error(`port ${port} timed out`));
-    }, 1500);
-    const finish = (callback) => {
-      clearTimeout(timer);
-      socket.destroy();
-      callback();
-    };
-    socket.once("error", (error) => finish(() => reject(error)));
-    socket.once("connect", () => finish(resolve));
-  });
-}
-
 async function rfbReady(port) {
   await new Promise((resolve, reject) => {
     const socket = tcpConnect({ host: "127.0.0.1", port });
@@ -331,19 +310,16 @@ async function health() {
       signal: AbortSignal.timeout(1500),
     }),
     rfbReady(5999),
-    tcpReady(6080),
     fetch("http://127.0.0.1:6081/api/health", {
       signal: AbortSignal.timeout(1500),
     }).then((response) => {
       if (!response.ok) throw new Error(`Computer stream returned ${response.status}`);
     }),
-    exec("pgrep", ["-x", "xfce4-session"], { timeout: 1500 }),
   ]);
   if (!cdp.ok) throw new Error(`Chromium CDP returned ${cdp.status}`);
   if (!daemon.extensionConnected) throw new Error("OpenCLI extension is not connected");
   return {
     status: "ready",
-    desktop: "ready",
     display: "ready",
     browser: "ready",
     opencli: "ready",
@@ -362,14 +338,10 @@ async function pageTargets() {
   return targets;
 }
 
-async function pageTarget(requestedId, select = false) {
+// 坐标输入和截图对准屏幕最前的页面；还没有记录时退回第一个页面。
+async function pageTarget() {
   const targets = await pageTargets();
-  const targetId = requestedId || activeTargetId;
-  const target = targets.find((item) => item.id === targetId);
-  if (requestedId && !target) throw new InputError(`unknown browser target: ${requestedId}`);
-  const selected = target ?? targets[0];
-  if (select) activeTargetId = selected.id;
-  return selected;
+  return targets.find((item) => item.id === driver?.browser.screen.front) ?? targets[0];
 }
 
 async function cdp(target, method, params = {}) {
@@ -381,75 +353,6 @@ async function cdp(target, method, params = {}) {
   if (!tab) throw new InputError("Browser target closed; observe again");
   call?.signal.throwIfAborted();
   return driver.browser.execute({target: {tabId: tab.id}, method, commandParams: params}, call?.context);
-}
-
-async function evaluate(target, expression) {
-  const result = await cdp(target, "Runtime.evaluate", {
-    expression,
-    awaitPromise: true,
-    returnByValue: true,
-    userGesture: true,
-  });
-  if (result.exceptionDetails) {
-    throw new Error(result.exceptionDetails.text || "browser evaluation failed");
-  }
-  return result.result?.value;
-}
-
-const interactiveRoles = new Set([
-  "button", "checkbox", "combobox", "link", "listbox", "menuitem",
-  "menuitemcheckbox", "menuitemradio", "option", "radio", "searchbox",
-  "slider", "spinbutton", "switch", "tab", "textbox", "treeitem",
-]);
-
-function axValue(value) {
-  return value && typeof value.value !== "undefined" ? String(value.value) : "";
-}
-
-async function pageLoaderId(target) {
-  const tree = await cdp(target, "Page.getFrameTree");
-  const loaderId = tree.frameTree?.frame?.loaderId;
-  if (typeof loaderId !== "string" || loaderId.length === 0) {
-    throw new Error("browser document identity is unavailable");
-  }
-  return loaderId;
-}
-
-async function browserSnapshot(target) {
-  const [tree, ax] = await Promise.all([
-    cdp(target, "Page.getFrameTree"),
-    cdp(target, "Accessibility.getFullAXTree", { depth: 32 }),
-  ]);
-  const loaderId = tree.frameTree?.frame?.loaderId;
-  if (typeof loaderId !== "string" || !Array.isArray(ax.nodes)) {
-    throw new Error("browser snapshot is invalid");
-  }
-  const refs = new Map();
-  const items = [];
-  for (const node of ax.nodes) {
-    const role = axValue(node.role);
-    if (node.ignored || !interactiveRoles.has(role) || !Number.isInteger(node.backendDOMNodeId)) {
-      continue;
-    }
-    const ref = `e${items.length + 1}`;
-    refs.set(ref, { backendNodeId: node.backendDOMNodeId, role });
-    items.push({
-      ref,
-      role,
-      name: axValue(node.name).trim().replace(/\s+/g, " ").slice(0, 240),
-      value: axValue(node.value).slice(0, 500),
-      disabled: node.properties?.some(
-        (property) => property.name === "disabled" && property.value?.value === true,
-      ) ?? false,
-    });
-    if (items.length === 200) break;
-  }
-  const snapshotId = crypto.randomUUID();
-  browserSnapshots.set(snapshotId, { targetId: target.id, loaderId, refs });
-  while (browserSnapshots.size > 32) {
-    browserSnapshots.delete(browserSnapshots.keys().next().value);
-  }
-  return { snapshot_id: snapshotId, target_id: target.id, url: target.url, title: target.title, items };
 }
 
 function requiredString(value, name, maxLength) {
@@ -466,285 +369,120 @@ function boundedString(value, name, maxLength) {
   return value;
 }
 
-async function browserObserve(value) {
-  const observe = value.observe;
-  if (observe === "tab_list") {
-    const targets = await pageTargets();
-    const active = targets.some((item) => item.id === activeTargetId)
-      ? activeTargetId
-      : targets[0].id;
-    return {
-      active_target_id: active,
-      tabs: targets.map((item) => ({ target_id: item.id, title: item.title, url: item.url })),
-    };
+const keyCodes = {
+  Enter: ["Enter", 13, "\r"], Return: ["Enter", 13, "\r"], Tab: ["Tab", 9, "\t"],
+  Escape: ["Escape", 27, ""], Esc: ["Escape", 27, ""], Backspace: ["Backspace", 8, ""],
+  BackSpace: ["Backspace", 8, ""], Delete: ["Delete", 46, ""], Home: ["Home", 36, ""],
+  End: ["End", 35, ""], PageUp: ["PageUp", 33, ""], Page_Up: ["PageUp", 33, ""],
+  PageDown: ["PageDown", 34, ""], Page_Down: ["PageDown", 34, ""], Up: ["ArrowUp", 38, ""],
+  Down: ["ArrowDown", 40, ""], Left: ["ArrowLeft", 37, ""], Right: ["ArrowRight", 39, ""],
+  ArrowUp: ["ArrowUp", 38, ""], ArrowDown: ["ArrowDown", 40, ""], ArrowLeft: ["ArrowLeft", 37, ""],
+  ArrowRight: ["ArrowRight", 39, ""], space: [" ", 32, " "], Space: [" ", 32, " "],
+};
+const modifierBits = { alt: 1, ctrl: 2, control: 2, meta: 4, super: 4, cmd: 4, shift: 8 };
+
+// "ctrl+shift+a" 这类组合键换成 CDP 键盘事件；未知键名直接报错，不猜。
+function keySteps(combo) {
+  const parts = combo.split("+").filter(Boolean);
+  const name = parts.pop() ?? "";
+  let modifiers = 0;
+  for (const part of parts) {
+    const bit = modifierBits[part.toLowerCase()];
+    if (!bit) throw new InputError(`unsupported modifier: ${part}`);
+    modifiers |= bit;
   }
-  const target = await pageTarget(value.target_id);
-  if (observe === "snapshot") {
-    return await browserSnapshot(target);
-  }
-  if (observe === "get_content") {
-    return {
-      url: target.url,
-      title: target.title,
-      content: await evaluate(target, "document.body?.innerText.slice(0, 200000) ?? ''"),
-    };
-  }
-  if (observe === "get_url") return { target_id: target.id, url: target.url };
-  if (observe === "get_title") return { target_id: target.id, title: target.title };
-  if (observe === "screenshot") {
-    const result = await cdp(target, "Page.captureScreenshot", { format: "png", fromSurface: true });
-    return { target_id: target.id, mimeType: "image/png", data: result.data };
-  }
-  throw new InputError("unsupported browser observation");
+  let key, keyCode, text, code;
+  if (keyCodes[name]) [key, keyCode, text] = keyCodes[name];
+  else if ([...name].length === 1) {
+    key = name;
+    keyCode = name.toUpperCase().charCodeAt(0);
+    text = name;
+    code = /[a-z]/i.test(name) ? `Key${name.toUpperCase()}` : /\d/.test(name) ? `Digit${name}` : undefined;
+  } else throw new InputError(`unsupported key: ${name}`);
+  if (modifiers & 7) text = "";
+  const base = { key, code: code ?? key, modifiers, windowsVirtualKeyCode: keyCode };
+  return [
+    ["Input.dispatchKeyEvent", { ...base, type: text ? "keyDown" : "rawKeyDown", text }],
+    ["Input.dispatchKeyEvent", { ...base, type: "keyUp" }],
+  ];
 }
 
-async function refTarget(value) {
-  const snapshotId = requiredString(value.snapshot_id, "snapshot_id", 64);
-  const checkedRef = requiredString(value.ref, "ref", 16);
-  const snapshot = browserSnapshots.get(snapshotId);
-  if (!snapshot) throw new InputError(`stale browser snapshot: ${snapshotId}`);
-  if (value.target_id && value.target_id !== snapshot.targetId) {
-    throw new InputError("target_id does not match snapshot_id");
-  }
-  const refNode = snapshot.refs.get(checkedRef);
-  if (!refNode) throw new InputError(`unknown browser ref: ${checkedRef}`);
-  const target = await pageTarget(snapshot.targetId);
-  if (await pageLoaderId(target) !== snapshot.loaderId) {
-    browserSnapshots.delete(snapshotId);
-    throw new InputError(`stale browser snapshot: ${snapshotId}`);
-  }
-  return { target, ...refNode, ref: checkedRef };
+function point(value, xName, yName) {
+  const x = value[xName], y = value[yName];
+  if (!Number.isInteger(x) || x < 0 || x > 16383 || !Number.isInteger(y) || y < 0 || y > 16383)
+    throw new InputError(`${xName} and ${yName} must be non-negative integers`);
+  return { x, y };
 }
 
-async function focusNode(target, backendNodeId) {
-  try {
-    await cdp(target, "DOM.scrollIntoViewIfNeeded", { backendNodeId });
-    await cdp(target, "DOM.focus", { backendNodeId });
-  } catch (error) {
-    throw new InputError("browser ref is no longer attached", { cause: error });
-  }
+function pressSteps({ x, y }, button, clickCount) {
+  return [
+    ["Input.dispatchMouseEvent", { type: "mousePressed", x, y, button, clickCount }],
+    ["Input.dispatchMouseEvent", { type: "mouseReleased", x, y, button, clickCount }],
+  ];
 }
 
-async function clickNode(target, backendNodeId) {
-  let model;
-  try {
-    await cdp(target, "DOM.scrollIntoViewIfNeeded", { backendNodeId });
-    model = await cdp(target, "DOM.getBoxModel", { backendNodeId });
-  } catch (error) {
-    throw new InputError("browser ref is no longer visible", { cause: error });
-  }
-  const quad = model.model?.border;
-  if (!Array.isArray(quad) || quad.length !== 8) throw new InputError("browser ref has no click area");
-  const x = (quad[0] + quad[2] + quad[4] + quad[6]) / 4;
-  const y = (quad[1] + quad[3] + quad[5] + quad[7]) / 4;
-  await cdp(target, "Input.dispatchMouseEvent", { type: "mouseMoved", x, y });
-  await cdp(target, "Input.dispatchMouseEvent", { type: "mousePressed", x, y, button: "left", clickCount: 1 });
-  await cdp(target, "Input.dispatchMouseEvent", { type: "mouseReleased", x, y, button: "left", clickCount: 1 });
-}
-
-async function openTarget(url) {
-  const call = legacyCall.getStore();
-  call.signal.throwIfAborted();
-  const tab = await driver.browser.call("createTab", {}, call.context);
-  const target = { id: driver.browser.tab(tab.id).targetId, url };
-  await cdp(target, "Page.navigate", {url});
-  await driver.browser.call("markTab", {tabId: tab.id, status: "deliverable"}, call.context);
-  activeTargetId = target.id;
-  return target;
-}
-
-async function browserAction(value) {
+// 坐标动作换成发给最前面页面的 CDP 输入；kiosk 窗口铺满屏幕，页面坐标就是屏幕坐标。
+function inputSteps(value) {
   const action = value.action;
-  if (action === "wait") {
-    const timeout = value.timeout ?? 1000;
-    if (!Number.isInteger(timeout) || timeout < 0 || timeout > 30_000) {
-      throw new InputError("timeout must be an integer between 0 and 30000");
-    }
-    await tracked("browser wait", () => sleep(timeout, undefined, {signal: legacyCall.getStore().signal}));
-    return { ok: true, waited_ms: timeout };
+  if (["click", "double_click", "move"].includes(action)) {
+    const at = point(value, "x", "y");
+    const button = value.mouse_button ?? "left";
+    if (!["left", "middle", "right"].includes(button)) throw new InputError("mouse_button is invalid");
+    const steps = [["Input.dispatchMouseEvent", { type: "mouseMoved", ...at }]];
+    if (action === "click") steps.push(...pressSteps(at, button, 1));
+    if (action === "double_click") steps.push(...pressSteps(at, button, 1), ...pressSteps(at, button, 2));
+    return steps;
   }
-  if (action === "tab_new") {
-    const url = checkedUrl(value.url ?? "about:blank");
-    const target = await tracked("browser tab new", () => openTarget(url));
-    return { ok: true, target_id: target.id, url: target.url };
+  if (action === "drag") {
+    const from = point(value, "x", "y"), to = point(value, "to_x", "to_y");
+    const steps = [["Input.dispatchMouseEvent", { type: "mouseMoved", ...from }],
+      ["Input.dispatchMouseEvent", { type: "mousePressed", ...from, button: "left", clickCount: 1 }]];
+    for (let index = 1; index <= 8; index++)
+      steps.push(["Input.dispatchMouseEvent", { type: "mouseMoved", button: "left", buttons: 1,
+        x: from.x + ((to.x - from.x) * index) / 8, y: from.y + ((to.y - from.y) * index) / 8 }]);
+    steps.push(["Input.dispatchMouseEvent", { type: "mouseReleased", ...to, button: "left", clickCount: 1 }]);
+    return steps;
   }
-  const target = ["click", "fill", "type"].includes(action)
-    ? null
-    : await pageTarget(value.target_id);
-  if (action === "tab_select") {
-    requiredString(value.target_id, "target_id", 128);
-    await cdp(target, "Page.bringToFront");
-    activeTargetId = target.id;
-    return { ok: true, target_id: target.id };
+  if (action === "type") return [["Input.insertText", { text: boundedString(value.text, "text", 16384) }]];
+  if (action === "key") return keySteps(requiredString(value.key, "key", 80));
+  if (action === "scroll") {
+    if (!Number.isInteger(value.amount) || Math.abs(value.amount) > 100)
+      throw new InputError("amount must be an integer between -100 and 100");
+    return [["Input.dispatchMouseEvent", { type: "mouseWheel", x: 640, y: 400, deltaX: 0, deltaY: value.amount * 100 }]];
   }
-  if (action === "tab_close") {
-    requiredString(value.target_id, "target_id", 128);
-    const call = legacyCall.getStore();
-    await driver.browser.listTabs();
-    const tab = driver.browser.tabs.get(target.id);
-    await driver.browser.call("claimUserTab", {tabId: tab.id}, call.context);
-    await cdp(target, "Page.close");
-    if (activeTargetId === target.id) activeTargetId = "";
-    return { ok: true, target_id: target.id };
-  }
-  return await tracked(`browser ${action}`, async () => {
-    if (action === "navigate") {
-      const url = checkedUrl(value.url);
-      await cdp(target, "Page.navigate", { url });
-      return { ok: true, target_id: target.id, url };
-    }
-    if (action === "click") {
-      const selected = await refTarget(value);
-      await clickNode(selected.target, selected.backendNodeId);
-      return { ok: true, ref: selected.ref, snapshot_id: value.snapshot_id };
-    }
-    if (action === "fill" || action === "type") {
-      const text = boundedString(value.text, "text", 16_384);
-      const selected = await refTarget(value);
-      if (!["combobox", "searchbox", "spinbutton", "textbox"].includes(selected.role)) {
-        throw new InputError(`browser ref is not editable: ${selected.ref}`);
-      }
-      await focusNode(selected.target, selected.backendNodeId);
-      if (action === "fill") {
-        await cdp(selected.target, "Input.dispatchKeyEvent", {
-          type: "rawKeyDown",
-          key: "a",
-          code: "KeyA",
-          modifiers: 2,
-          windowsVirtualKeyCode: 65,
-          commands: ["SelectAll"],
-        });
-        await cdp(selected.target, "Input.dispatchKeyEvent", {
-          type: "keyUp", key: "a", code: "KeyA", modifiers: 2, windowsVirtualKeyCode: 65,
-        });
-        await cdp(selected.target, "Input.dispatchKeyEvent", {
-          type: "rawKeyDown", key: "Backspace", code: "Backspace", windowsVirtualKeyCode: 8,
-        });
-        await cdp(selected.target, "Input.dispatchKeyEvent", {
-          type: "keyUp", key: "Backspace", code: "Backspace", windowsVirtualKeyCode: 8,
-        });
-      }
-      await cdp(selected.target, "Input.insertText", { text });
-      return { ok: true, ref: selected.ref, snapshot_id: value.snapshot_id, action };
-    }
-    if (action === "press") {
-      const key = requiredString(value.key, "key", 80);
-      await cdp(target, "Input.dispatchKeyEvent", { type: "keyDown", key });
-      await cdp(target, "Input.dispatchKeyEvent", { type: "keyUp", key });
-      return { ok: true, key };
-    }
-    if (action === "scroll") {
-      const direction = value.direction ?? "down";
-      const amount = value.amount ?? 500;
-      if (!["up", "down", "left", "right"].includes(direction) ||
-          !Number.isInteger(amount) || amount < 1 || amount > 5000) {
-        throw new InputError("scroll direction or amount is invalid");
-      }
-      const x = direction === "left" ? -amount : direction === "right" ? amount : 0;
-      const y = direction === "up" ? -amount : direction === "down" ? amount : 0;
-      await cdp(target, "Input.dispatchMouseEvent", {
-        type: "mouseWheel", x: 640, y: 400, deltaX: x, deltaY: y,
-      });
-      return { ok: true, direction, amount };
-    }
-    if (action === "reload") {
-      await cdp(target, "Page.reload", {});
-      return { ok: true, target_id: target.id };
-    }
-    if (action === "go_back" || action === "go_forward") {
-      await evaluate(target, action === "go_back" ? "history.back(); true" : "history.forward(); true");
-      return { ok: true, target_id: target.id };
-    }
-    throw new InputError("unsupported browser action");
-  });
+  throw new InputError("unsupported input action");
 }
 
-function checkedUrl(value) {
-  const url = requiredString(value, "url", 8192);
-  if (url === "about:blank") return url;
-  let parsed;
-  try {
-    parsed = new URL(url);
-  } catch {
-    throw new InputError("url must be an absolute HTTP or HTTPS URL");
-  }
-  if (parsed.protocol !== "http:" && parsed.protocol !== "https:") {
-    throw new InputError("url must use HTTP or HTTPS");
-  }
-  return parsed.href;
+// 页面级坐标操作：作为一次 legacy 调用执行，经过同一个人工接管与输入释放边界。
+async function pageOperation(task, signal) {
+  await readyDriver();
+  return driver.perform(
+    (inner) => legacyCall.run({ signal: inner, context: driver.active.context }, async () => task(await pageTarget())),
+    signal,
+  );
 }
 
 async function runInput(value, signal) {
-  const action = value.action;
-  let method, input;
-  if (["click", "double_click", "move", "drag"].includes(action)) {
-    if (
-      !Number.isInteger(value.x) ||
-      value.x < 0 ||
-      value.x > 1279 ||
-      !Number.isInteger(value.y) ||
-      value.y < 0 ||
-      value.y > 799
-    ) {
-      throw new InputError(
-        "x and y must be integers inside the 1280 by 800 screen",
-      );
-    }
-    method = action === "double_click" ? "click" : action;
-    input = { x: value.x, y: value.y };
-    if (action === "double_click") input.click_count = 2;
-    if (action === "click" && value.mouse_button != null)
-      input.mouse_button = value.mouse_button;
-    if (action === "drag") {
-      if (
-        !Number.isInteger(value.to_x) ||
-        value.to_x < 0 ||
-        value.to_x > 1279 ||
-        !Number.isInteger(value.to_y) ||
-        value.to_y < 0 ||
-        value.to_y > 799
-      ) {
-        throw new InputError(
-          "to_x and to_y must be integers inside the 1280 by 800 screen",
-        );
-      }
-      input = { path: [input, { x: value.to_x, y: value.to_y }] };
-    }
-  } else if (action === "type") {
-    method = "type_text";
-    input = { text: boundedString(value.text, "text", 16384) };
-  } else if (action === "key") {
-    method = "press_key";
-    input = { key: requiredString(value.key, "key", 80) };
-  } else if (action === "scroll") {
-    if (!Number.isInteger(value.amount) || Math.abs(value.amount) > 100)
-      throw new InputError("amount must be an integer between -100 and 100");
-    method = "scroll";
-    input = {
-      direction: value.amount < 0 ? "up" : "down",
-      pixels: Math.abs(value.amount) * 100,
-    };
-  } else if (action === "wait") {
+  if (value.action === "wait") {
     if (!Number.isInteger(value.ms) || value.ms < 0 || value.ms > 30000)
       throw new InputError("ms must be 0..30000");
-    await tracked(
-      "wait",
-      () => sleep(value.ms, undefined, {signal}),
-    );
+    await tracked("wait", () => sleep(value.ms, undefined, { signal }));
     return { ok: true };
-  } else throw new InputError("unsupported input action");
-  await readyDriver();
-  await tracked(String(action), () => driver.input(method, input, signal));
+  }
+  const steps = inputSteps(value);
+  await tracked(String(value.action), () => pageOperation(async (target) => {
+    for (const [method, params] of steps) await cdp(target, method, params);
+  }, signal));
   return { ok: true };
 }
 
 async function screenshot(response, quiet) {
-  await readyDriver();
-  const capture = () => driver.desktop.call("get_screenshot");
+  const capture = () => pageOperation((target) =>
+    cdp(target, "Page.captureScreenshot", { format: "png", captureBeyondViewport: false }));
   const result = quiet ? await capture() : await tracked("screenshot", capture);
   const bytes = Buffer.from(result.data, "base64");
   response.writeHead(200, {
-    "content-type": result.mimeType,
+    "content-type": "image/png",
     "content-length": String(bytes.length),
     "cache-control": "no-store",
   });
@@ -855,8 +593,6 @@ const server = createServer(async (request, response) => {
       [
         "/screenshot",
         "/input",
-        "/browser/observe",
-        "/browser/action",
         "/wake",
       ].includes(url.pathname) ||
       (driverPayload && (!driverPayload.endTurn || driver));
@@ -942,17 +678,11 @@ const server = createServer(async (request, response) => {
     } else if (request.method === "GET" && url.pathname === "/targets") {
       json(response, 200, { targets: driver && computer.state === "ready" ? await driver.targets() : [],
         control: Boolean(driver?.control) });
-    } else if (request.method === "GET" && url.pathname === "/view/frame") {
-      if (!driver || computer.state !== "ready") throw new InputError("Computer is not awake");
-      const frame = await driver.viewFrame(url.searchParams.get("target"));
-      response.writeHead(200, { "content-type": "image/jpeg", "cache-control": "no-store" });
-      response.end(frame);
-    } else if (request.method === "POST" && url.pathname === "/view/input") {
+    } else if (request.method === "POST" && url.pathname === "/view/show") {
       const payload = await body(request);
-      if (!driver) throw new InputError("Computer is not awake");
-      await driver.viewInput(payload.target, payload.owner, payload.input);
-      computer.touch();
-      json(response, 200, { sent: true });
+      if (!driver || computer.state !== "ready") throw new InputError("Computer is not awake");
+      await driver.show(requiredString(payload.target, "target", 128));
+      json(response, 200, { shown: true });
     } else if (request.method === "GET" && url.pathname === "/activity") {
       json(response, 200, { ...activity, browser: computer.status(), control: driver?.control ? { active: true } : { active: false } });
     } else if (request.method === "POST" && url.pathname.startsWith("/control/")) {
@@ -960,8 +690,9 @@ const server = createServer(async (request, response) => {
       requiredString(payload.id, "id", 128);
       if (url.pathname === "/control/take") {
         if (!driver || computer.state !== "ready") throw new InputError("Computer is not awake");
-        const target = payload.target ?? "desktop";
-        if (target !== "desktop") await driver.viewTarget(target);
+        const target = payload.target ?? "";
+        if (driver.control) throw new InputError("Another viewer controls this Computer");
+        if (target) await driver.show(target);
         const controller = new AbortController();
         const disconnected = () => {
           if (!response.writableFinished) controller.abort(new Error("Control caller disconnected"));
@@ -987,7 +718,7 @@ const server = createServer(async (request, response) => {
         const owner = driver;
         controlTimer = setTimeout(() => owner.releaseControl(payload.id).catch(error => {
           owner.closed = true;
-          owner.active?.reject(error);
+          owner.rejectAll(error);
           console.error("Computer control release failed:", error.message);
         }), 30000);
       }
@@ -1007,37 +738,6 @@ const server = createServer(async (request, response) => {
           controller.abort(new Error("Computer caller disconnected"));
       });
       json(response, 200, await runInput(payload, controller.signal));
-    } else if (
-      request.method === "POST" &&
-      url.pathname === "/browser/observe"
-    ) {
-      json(response, 200, await browserObserve(await body(request)));
-    } else if (
-      request.method === "POST" &&
-      url.pathname === "/browser/action"
-    ) {
-      const payload = await body(request);
-      await readyDriver();
-      const controller = new AbortController();
-      response.once("close", () => {
-        if (!response.writableFinished)
-          controller.abort(new Error("Computer caller disconnected"));
-      });
-      const result = await driver.perform(
-        (signal) =>
-          legacyCall.run(
-            { signal, context: driver.active.context },
-            async () => {
-              try {
-                return await browserAction(payload);
-              } finally {
-                await driver.browser.endTurn(driver.active.context);
-              }
-            },
-          ),
-        controller.signal,
-      );
-      json(response, 200, result);
     } else {
       json(response, 404, { error: "not found" });
     }
@@ -1068,23 +768,44 @@ async function refreshIdentity() {
   try {
     const { stdout } = await computer.use(async () => {
       await readyDriver();
-      return driver.agentOperation(() => exec(
-        "opencli",
-        [
-          "auth",
-          "refresh",
-          "--all",
-          "--site",
-          process.env.OPENCLI_AUTH_REFRESH_SITES ?? "",
-          "--concurrency",
-          "2",
-          "--timeout",
-          "45",
-          "--format",
-          "json",
-        ],
-        { timeout: 120000 },
-      ));
+      // OpenCLI 逐站打开页面且不关闭；结束后关掉它新开的站点页，免得常驻吃内存。
+      // 按 CDP 的真实 targetId 比较（站点跳转或预渲染激活会换 target）；刷新与 Agent 调用可以并行，
+      // 不关 Agent 的页面和匿名浏览器；结束时有人接管则一律不动。
+      const pages = async () => (await driver.browser.browser.send("Target.getTargets")).targetInfos
+        .filter(target => target.type === "page" && !driver.anonymous.contexts.has(target.browserContextId))
+        .map(target => target.targetId);
+      const agentPages = async () => new Set(await Promise.all((await driver.targets())
+        .filter(target => target.agent && !target.anonymous)
+        .map(target => driver.viewTarget(target.id).then(view => view.targetId, () => ""))));
+      let before = null;
+      try {
+        return await driver.agentOperation(async () => { before = new Set(await pages()); return exec(
+          "opencli",
+          [
+            "auth",
+            "refresh",
+            "--all",
+            "--site",
+            process.env.OPENCLI_AUTH_REFRESH_SITES ?? "",
+            "--concurrency",
+            "2",
+            "--timeout",
+            "45",
+            "--format",
+            "json",
+          ],
+          { timeout: 120000 },
+        ); });
+      } finally {
+        if (before && !driver.control) {
+          const agent = await agentPages();
+          const opened = (await pages()).filter(id => !before.has(id) && !agent.has(id));
+          for (const targetId of opened)
+            await driver.browser.browser.send("Target.closeTarget", { targetId })
+              .catch(error => console.error(`OpenCLI refresh page ${targetId} was not closed:`, error.message));
+          console.log(`OpenCLI refresh closed ${opened.length} pages; kept ${before.size}`);
+        }
+      }
     });
     const sites = JSON.parse(stdout);
     if (!Array.isArray(sites) || sites.length === 0) throw new Error("OpenCLI returned no refresh results");

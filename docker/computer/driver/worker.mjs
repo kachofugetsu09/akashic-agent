@@ -6,7 +6,6 @@ import { PassThrough } from "node:stream";
 import { start as startRepl } from "node:repl";
 import { readFile, writeFile, rm } from "node:fs/promises";
 import { randomUUID } from "node:crypto";
-import { setTimeout as sleep } from "node:timers/promises";
 
 let nextId = 1;
 const pending = new Map();
@@ -329,66 +328,6 @@ const evaluate = (code) =>
   }).finally(() => {
     evaluation = undefined;
   });
-let settledAt = 0;
-const settle = async () => {
-  while (performance.now() < settledAt)
-    await sleep(settledAt - performance.now());
-};
-const sky = { target: "linux" };
-for (const method of [
-  "click",
-  "drag",
-  "move",
-  "press_key",
-  "scroll",
-  "type_text",
-]) {
-  sky[method] = async (input) => {
-    await settle();
-    await call("desktop", method, input);
-    settledAt = performance.now() + 100;
-  };
-}
-sky.get_screenshot = async () => {
-  await settle();
-  const result = await call("desktop", "get_screenshot", {});
-  const bytes = Buffer.from(result.data, "base64");
-  return [{ bytes, data_url: `data:${result.mimeType};base64,${result.data}` }];
-};
-const handles = new Set();
-sky.drag_handle = () => {
-  let state = "idle";
-  const handle = {
-    async start(input) {
-      if (state !== "idle")
-        throw new Error("drag handle can only be started once");
-      await settle();
-      await call("desktop", "drag_handle", { action: "start", ...input });
-      state = "dragging";
-      handles.add(handle);
-      settledAt = performance.now() + 100;
-    },
-    async move_to(input) {
-      if (state !== "dragging")
-        throw new Error("drag handle must be started before moving");
-      await settle();
-      await call("desktop", "drag_handle", { action: "move_to", ...input });
-      settledAt = performance.now() + 100;
-    },
-    async end() {
-      if (state !== "dragging")
-        throw new Error("drag handle must be started before ending");
-      await settle();
-      await call("desktop", "drag_handle", { action: "end" });
-      state = "ended";
-      handles.delete(handle);
-      settledAt = performance.now() + 100;
-    },
-  };
-  return handle;
-};
-repl.context.sky = sky;
-repl.context.desktop = sky;
 let serviceQueue = Promise.resolve();
 if (workerData.service) parentPort.once("close", () => process.exit(0));
 parentPort.on("message", (message) => {
@@ -492,8 +431,7 @@ async function run(message) {
     }
     return output;
   } finally {
-    try { for (const handle of handles) await handle.end(); }
-    finally { context = undefined; }
+    context = undefined;
   }
 }
 /** 顺序处理 service RPC，输出与 backend 调用始终绑定发起它的 Computer call。 */

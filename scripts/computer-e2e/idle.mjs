@@ -43,7 +43,7 @@ try {
   await until(async()=>docker("exec",name,"node","-e","fetch('http://127.0.0.1:8989').then(r=>console.log(r.status)).catch(()=>console.log('starting'))"),v=>v==="200","fixture");
   await post("/wake",{});
   await action("var anon=await agent.browsers.create(); var tab=await anon.tabs.new(); await tab.goto('http://127.0.0.1:8989/slow');");
-  let target=(await targets()).find(t=>t.kind==="browser"); assert.ok(target);
+  let target=(await targets()).find(t=>t.anonymous); assert.ok(target);
   console.log("PASS active navigation survives more than the idle limit");
   const owner=randomUUID(); await post("/control/take",{id:owner,target:target.id});
   // 必须越过真实闲置期限，证明接管持有资源；帧读取继续保持只读。
@@ -53,21 +53,21 @@ try {
   console.log("PASS human takeover prevents idle disposal");
   await until(async()=>{
     const values=await targets();
-    if(values.some(t=>t.id===target.id)) await fetch(origin+"/view/frame?target="+encodeURIComponent(target.id));
+    if(values.some(t=>t.id===target.id)) await post("/view/show",{target:target.id});
     return values;
-  },v=>v.length===1,"idle disposal despite watching");
+  },v=>!v.some(t=>t.anonymous),"idle disposal despite watching");
   const failed=await post("/driver/run",{context:{session_id:"idle",turn_id:"turn",call_id:randomUUID()},code:"await agent.browsers.get(anon.browserId);"},500);
   assert.match(failed.error,/released after idle timeout/); assert.match(failed.error,/bindings and browser pages were kept/);
   console.log("PASS idle disposal removes targets and reports expired identity without selecting main");
   await action("console.log(await browser.tabs.list());");
   await post("/driver/run",{context:{session_id:"idle",turn_id:"turn",call_id:randomUUID()},endTurn:true});
-  const desktopOwner=randomUUID(); await post("/control/take",{id:desktopOwner});
+  const browserOwner=randomUUID(); await post("/control/take",{id:browserOwner});
   await new Promise(resolve=>setTimeout(resolve,2200));
   const state=(await (await fetch(origin+"/activity")).json()).browser;
   assert.equal(state.turns,0); assert.equal(state.state,"ready");
-  await post("/control/release",{id:desktopOwner});
-  await until(async()=>(await (await fetch(origin+"/activity")).json()).browser.state,v=>v==="sleeping","desktop sleeps after control release");
-  console.log("PASS takeover keeps desktop awake without a Turn and release permits real idle shutdown");
+  await post("/control/release",{id:browserOwner});
+  await until(async()=>(await (await fetch(origin+"/activity")).json()).browser.state,v=>v==="sleeping","browser sleeps after control release");
+  console.log("PASS takeover keeps the browser awake without a Turn and release permits real idle shutdown");
   await writeFile(join(artifacts,"result.json"),JSON.stringify({image,sourceMounted:sourceMounts.length>0,checks:4,artifacts},null,2));
 } finally {
   if(started) {await writeFile(join(artifacts,"computer.log"),docker("logs",name)); docker("rm","-f",name);}

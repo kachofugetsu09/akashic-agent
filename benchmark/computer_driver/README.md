@@ -1,5 +1,8 @@
 # Computer driver 基线
 
+> ADR 0123 之后的镜像只剩一个浏览器，没有桌面层和 `sky`。`adapter.py` 的 `/input`、`/screenshot`
+> 仍可用；`source_adapter.py` 与 `agent_adapter.py` 的坐标动作依赖 `sky`，只适用于 0123 之前的镜像。
+
 直接复用 `trycua/cua@aabb2082c170289256f0c8d9db4cce094c778578` 的
 `libs/cua-bench/datasets/cua-bench-basic`：题目、HTML、任务变体、参考步骤和判分器均不修改。
 `adapter.py` 只将上游 `DesktopSession` 接到现有 Computer Gateway。
