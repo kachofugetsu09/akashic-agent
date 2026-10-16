@@ -1,14 +1,64 @@
 {
   "contract": "conversation.tools.v2",
   "entry": {
-    "required": ["id", "label", "render"],
-    "optional": ["order", "icon", "background"]
+    "required": [
+      "id",
+      "label",
+      "render"
+    ],
+    "optional": [
+      "order",
+      "icon",
+      "background",
+      "accepts"
+    ]
   },
   "view": {
     "active": "boolean",
-    "onActiveChange": ["active"],
+    "onActiveChange": [
+      "active"
+    ],
     "session": "string | null",
-    "onSessionChange": ["session"],
-    "requestAttention": ["noticeId"]
+    "onSessionChange": [
+      "session"
+    ],
+    "requestAttention": [
+      "noticeId"
+    ],
+    "onIntent": [
+      "intent"
+    ],
+    "quote": [
+      "request"
+    ]
+  },
+  "intent": {
+    "fields": [
+      "id",
+      "name",
+      "session",
+      "payload"
+    ],
+    "name": "^[a-z][a-z0-9_-]*(\\.[a-z0-9_-]+)*\\.v[0-9]+$",
+    "payloadBytes": 16384,
+    "status": [
+      "handled",
+      "invalid",
+      "failed"
+    ]
+  },
+  "quote": {
+    "fields": [
+      "session",
+      "text",
+      "source"
+    ],
+    "textChars": 8192,
+    "sourceChars": 200,
+    "status": [
+      "inserted",
+      "stale",
+      "rejected"
+    ]
   }
 }

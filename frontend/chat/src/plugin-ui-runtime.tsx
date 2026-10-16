@@ -3,6 +3,7 @@ import React, { useEffect, useMemo, useState, useSyncExternalStore } from "react
 import { createUuid as createRequestId } from "./browser-uuid.ts";
 import { PluginUiQueryQueue } from "./plugin-ui-query-queue";
 import { PluginUiResultCache } from "./plugin-ui-result-cache";
+import { openInWorkbench, subscribeWorkbenchIntents, workbenchAccepts, type WorkbenchIntentStatus } from "./shell-workbench";
 
 export type PluginUiSlotName =
   | "turn.before_reasoning"
@@ -30,6 +31,14 @@ export interface PluginUiContext {
     payload?: Record<string, unknown>,
     options?: PluginUiQueryOptions,
   ): Promise<Record<string, unknown>>;
+  /**
+   * 在右侧工具区打开：只在点击或键盘激活的处理函数里调用；没有接受者时得到 unhandled，插件回到自己的原有行为。
+   * accepts 的结果会随宿主广播变化，变化时经 onInvalidate 通知，插件在回调里重新判断是否显示入口。
+   */
+  workbench: {
+    accepts(name: string): boolean;
+    open(name: string, payload: unknown): Promise<WorkbenchIntentStatus>;
+  };
 }
 
 export interface PluginUiQueryOptions {
@@ -525,7 +534,7 @@ function MountedPlugin({
   pluginRevision: string;
   renderer: PluginUiRenderer;
   prefetch?: boolean;
-  context: Omit<PluginUiContext, "query" | "capabilities" | "onInvalidate" | "reportError">;
+  context: Omit<PluginUiContext, "query" | "capabilities" | "onInvalidate" | "reportError" | "workbench">;
   refreshToken?: string | number;
 }) {
   const hostRef = React.useRef<HTMLDivElement>(null);
@@ -557,6 +566,12 @@ function MountedPlugin({
     let cleanup: void | (() => void);
     let live = true;
     setError(null);
+    const stopIntents = subscribeWorkbenchIntents(() => {
+      for (const callback of invalidators) {
+        try { callback(); }
+        catch (error) { console.error(`[plugin-ui] invalidation failed: ${pluginId}`, error); }
+      }
+    });
     try {
       const queryContext: PluginUiContext = {
         slot, sessionId, messageId, turnId, block: stableBlock,
@@ -569,6 +584,10 @@ function MountedPlugin({
         query: (method, payload = {}, options = {}) => queryPlugin({
           pluginId, pluginRevision, ownerId, slot, sessionId, messageId, turnId, method, payload, options, prefetch,
         }),
+        workbench: {
+          accepts: workbenchAccepts,
+          open: (name, payload) => live ? openInWorkbench(name, sessionId ?? "", payload) : Promise.resolve("invalid"),
+        },
       };
       if (prefetch) {
         void renderer.prefetch!(queryContext).catch((error: unknown) => {
@@ -582,6 +601,7 @@ function MountedPlugin({
     }
     return () => {
       live = false;
+      stopIntents();
       invalidators.clear();
       invalidatorsRef.current = null;
       releaseQueryOwner(ownerId);

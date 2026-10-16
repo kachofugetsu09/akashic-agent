@@ -32,6 +32,8 @@ function checkTabs(entries) {
       typeof entry.id !== "string" || typeof entry.label !== "string"
       || (entry.icon !== undefined && (typeof entry.icon !== "string" || !entry.icon.startsWith("<svg")))
       || (entry.background !== undefined && typeof entry.background !== "boolean")
+      || (entry.accepts !== undefined && (!Array.isArray(entry.accepts)
+        || entry.accepts.some((name) => typeof name !== "string" || !INTENT_NAME.test(name))))
     ) {
       throw new Error(`对话工具标签合同无效: ${String(entry.id ?? "unknown")}`);
     }
@@ -151,6 +153,11 @@ function followChatSession(frame, onSession) {
 }
 
 const NARROW_QUERY = "(max-width: 68rem)";
+const INTENT_NAME = /^[a-z][a-z0-9_-]*(\.[a-z0-9_-]+)*\.v[0-9]+$/;
+const INTENT_LIMIT = 16 * 1024;
+const INTENT_TIMEOUT_MS = 10_000;
+const QUOTE_LIMIT = 8 * 1024;
+const SOURCE_LIMIT = 200;
 const LAYOUT_KEY = "akashic.conversation.tools.layout.";
 const ICONS = {
   close: '<path d="M18 6 6 18M6 6l12 12"/>',
@@ -171,6 +178,35 @@ function chromeButton(className, label, icon) {
   button.setAttribute("aria-label", label);
   button.innerHTML = svgIcon(icon);
   return button;
+}
+
+// 告知 chat 哪些意图有接受者，chat 据此决定是否显示“在侧栏打开”；不代表一定成功。
+function announceIntents(frame, entries) {
+  const names = [...new Set(entries.flatMap((entry) => entry.accepts ?? []))];
+  const send = () => frame.contentWindow?.postMessage(
+    { type: "akashic.workbench-intents", names }, window.location.origin,
+  );
+  frame.addEventListener("load", send);
+  send();
+  return () => frame.removeEventListener("load", send);
+}
+
+// 外层校验：只认自己 chat iframe 发来的、当前会话的、大小合规的意图；领域 payload 由接收标签校验。
+function readIntent(event, frame, session) {
+  if (event.source !== frame.contentWindow || event.origin !== window.location.origin) return null;
+  const message = event.data;
+  if (!message || typeof message !== "object" || message.type !== "akashic.workbench-intent") return null;
+  if (typeof message.id !== "string" || !message.id || message.id.length > 64) return null;
+  let size = Infinity;
+  // 上限按 UTF-8 字节计（合同写的是 16 KiB）；不可序列化（循环引用、BigInt）按超限处理。
+  try { size = new TextEncoder().encode(JSON.stringify(message.payload ?? null)).byteLength; } catch { /* 见上 */ }
+  const valid = typeof message.name === "string" && INTENT_NAME.test(message.name)
+    && typeof message.session === "string" && message.session === session && size <= INTENT_LIMIT;
+  return { id: message.id, valid, intent: { id: message.id, name: message.name, session: message.session, payload: message.payload ?? null } };
+}
+
+function replyIntent(frame, id, status) {
+  frame.contentWindow?.postMessage({ type: "akashic.workbench-intent-result", id, status }, window.location.origin);
 }
 
 // 每个会话各记一份打开的标签、当前标签与展开状态；只是视图偏好，读写失败时退回当前布局。
@@ -378,11 +414,12 @@ function createSizing(root, splitter) {
 
 // 标签挂载与父视图的生命周期。每个标签只 render 一次：先占位再 render，render 里调用 view 方法引起的更新不会重入；
 // 挂载前先记下当前可见值，订阅时收到的就是唯一一次首次通知。展开与当前标签只经 isActive 读取，不在这里保存。
-function createTabLifecycle(tools, panelOf, isActive, currentSession, onAttention) {
+function createTabLifecycle(tools, panelOf, isActive, currentSession, onAttention, quote) {
   const mounted = new Map();
   const reported = new Map();
   const activeListeners = new Map();
   const sessionListeners = new Map();
+  const intentListeners = new Map();
   const listenersOf = (map, id) => {
     if (!map.has(id)) map.set(id, new Set());
     return map.get(id);
@@ -402,6 +439,13 @@ function createTabLifecycle(tools, panelOf, isActive, currentSession, onAttentio
       get session() { return currentSession(); },
       onSessionChange: (listener) => subscribe(sessionListeners, entry.id, listener, currentSession(), "session"),
       requestAttention: (noticeId) => onAttention(entry, noticeId),
+      onIntent(listener) {
+        if (typeof listener !== "function") throw new Error("ConversationTab intent listener 必须是函数");
+        const listeners = listenersOf(intentListeners, entry.id);
+        listeners.add(listener);
+        return () => listeners.delete(listener);
+      },
+      quote: (request) => quote(request),
     };
   }
 
@@ -415,6 +459,7 @@ function createTabLifecycle(tools, panelOf, isActive, currentSession, onAttentio
     const fail = (error) => {
       activeListeners.delete(entry.id);
       sessionListeners.delete(entry.id);
+      intentListeners.delete(entry.id);
       panel.textContent = `${entry.label}没能加载：${error instanceof Error ? error.message : String(error)}`;
     };
     try {
@@ -436,13 +481,19 @@ function createTabLifecycle(tools, panelOf, isActive, currentSession, onAttentio
       for (const listener of [...listeners]) listener(value);
   }
 
+  // 意图只交给该标签最先登记的监听，不广播。
+  function intentListener(id) {
+    return [...(intentListeners.get(id) ?? [])][0];
+  }
+
   function dispose() {
     activeListeners.clear();
     sessionListeners.clear();
+    intentListeners.clear();
     for (const stop of [...mounted.values()].reverse()) stop();
   }
 
-  return { mount, report, session, dispose };
+  return { mount, report, session, intentListener, dispose };
 }
 
 // 工具区状态的唯一 owner：打开的标签、当前标签、展开与铺满。标签只经 view 读到可见事实与当前会话。
@@ -468,7 +519,8 @@ function mountTools(root, frame, tools, entries) {
       handled.add(noticeId);
       if (!isActive(entry.id)) attention.add(entry.id);
       update();
-    });
+    }, (request) => forwardQuote(request));
+  let disposed = false;
 
   function update() {
     root.classList.toggle("tools-open", state.open);
@@ -572,6 +624,36 @@ function mountTools(root, frame, tools, entries) {
     if (!state.open) state.maximized = false;
   }
 
+
+  // 4. 意图交给第一个声明 accepts 的标签：先展开并激活，再投递；结果异步回执给 chat。
+  async function routeIntent(event) {
+    const request = readIntent(event, frame, state.session);
+    if (!request) return;
+    if (!request.valid) return replyIntent(frame, request.id, "invalid");
+    const target = entries.find((entry) => entry.accepts?.includes(request.intent.name));
+    if (!target) return replyIntent(frame, request.id, "unhandled");
+    openTab(target.id);
+    const listener = lifecycle.intentListener(target.id);
+    if (!listener) return replyIntent(frame, request.id, "unhandled");
+    let timer = 0;
+    const timeout = new Promise((resolve) => { timer = window.setTimeout(() => resolve("failed"), INTENT_TIMEOUT_MS); });
+    const status = await Promise.race([Promise.resolve().then(() => listener(request.intent)), timeout])
+      .catch((error) => { console.error("[conversation-ui] intent failed", error); return "failed"; });
+    window.clearTimeout(timer);
+    replyIntent(frame, request.id, ["handled", "invalid", "failed"].includes(status) ? status : "failed");
+  }
+
+  // 5. 引用只进发起时的那个会话：会话已切走、工具区已卸载或超长都拒绝，chat 收到后再核对一次。
+  function forwardQuote(request) {
+    if (disposed || !request || typeof request !== "object") return "rejected";
+    const { session, text, source } = request;
+    if (typeof text !== "string" || !text || text.length > QUOTE_LIMIT) return "rejected";
+    if (typeof source !== "string" || !source || source.length > SOURCE_LIMIT) return "rejected";
+    if (typeof session !== "string" || session !== state.session) return "stale";
+    frame.contentWindow?.postMessage({ type: "akashic.composer-quote", session, text, source }, window.location.origin);
+    return "inserted";
+  }
+
   // 铺满时 Esc 在工具内容里也能还原；收起只从顶栏或分隔条触发。标签自己处理过的 Esc（defaultPrevented）不动。
   function onKeydown(event) {
     if (event.key !== "Escape" || !state.open || event.defaultPrevented) return;
@@ -636,6 +718,9 @@ function mountTools(root, frame, tools, entries) {
   frame.addEventListener("load", resetChatOverlay);
   window.addEventListener("resize", sizing.fit);
   const stopSession = followChatSession(frame, applySession);
+  const stopIntents = announceIntents(frame, entries);
+  const onIntent = (event) => void routeIntent(event);
+  window.addEventListener("message", onIntent);
   for (const entry of entries) if (entry.background) lifecycle.mount(entry);
   return {
     start() {
@@ -643,7 +728,10 @@ function mountTools(root, frame, tools, entries) {
       update();
     },
     dispose() {
+      disposed = true;
       stopSession();
+      stopIntents();
+      window.removeEventListener("message", onIntent);
       root.removeEventListener("keydown", onKeydown);
       window.removeEventListener("message", followChatOverlay);
       frame.removeEventListener("load", resetChatOverlay);
