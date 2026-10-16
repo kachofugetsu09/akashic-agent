@@ -684,6 +684,7 @@ function share(target: Target, options: ShareOptions): Handle {
   const series = readSeries("share", options.series, labels.length, false);
   if (series.some(item => item.values.some(value => value! < 0))) throw new Error("ak.share: 份额不支持负数");
   const totals = labels.map((_, index) => series.reduce((sum, item) => sum + Math.max(0, item.values[index]!), 0));
+  if (totals.some(total => !Number.isFinite(total))) throw new Error("ak.share: 每个时点的合计必须是有限数字");
   const shares = series.map(item => item.values.map((value, index) => totals[index] ? Math.max(0, value!) / totals[index] * 100 : 0));
   return mount(target, width => {
     const count = labels.length, last = count - 1, names = series.map((item, index) => `${item.name} ${Math.round(shares[index][last])}%`);
@@ -750,6 +751,7 @@ function treemap(target: Target, options: TreemapOptions): Handle {
   }).filter(node => node.value > 0);
   if (!nodes.length) throw new Error("ak.treemap: nodes 需要至少一个正数 value");
   const format = formatter(options.fmt, options.unit), names = [...new Set(nodes.map(node => node.group))], total = nodes.reduce((sum, node) => sum + node.value, 0);
+  if (!Number.isFinite(total)) throw new Error("ak.treemap: value 合计必须是有限数字");
   const groups = names.map((name, index) => ({ item: { name, fill: color(undefined, index) }, value: nodes.filter(node => node.group === name).reduce((sum, node) => sum + node.value, 0) })).sort((a, b) => b.value - a.value);
   return mount(target, width => {
     const height = options.height ?? (width < 480 ? 280 : 340), hits: Hit[] = [];
@@ -759,7 +761,7 @@ function treemap(target: Target, options: TreemapOptions): Handle {
       const inside = nodes.filter(node => node.group === group.item.name).sort((a, b) => b.value - a.value), top = inside[0].value;
       if (head) marks += `<text class="ak-b" x="${round(group.x + 4)}" y="${round(group.y + 13)}">${esc(group.item.name)} <tspan class="ak-m" font-weight="400">${esc(format(group.value))}</tspan></text>`;
       squarify(inside.map(node => ({ item: node, value: node.value })), group.x + 1, group.y + head + 1, group.w - 2, group.h - head - 2).forEach(cell => {
-        marks += `<rect x="${round(cell.x + 1)}" y="${round(cell.y + 1)}" width="${round(Math.max(0, cell.w - 2))}" height="${round(Math.max(0, cell.h - 2))}" rx="2" style="fill:color-mix(in oklab, ${group.item.fill} ${Math.round(16 + 30 * cell.value / top)}%, var(--ak-color-bg-surface))"/>`;
+        marks += `<rect x="${round(cell.x + 1)}" y="${round(cell.y + 1)}" width="${round(Math.max(0, cell.w - 2))}" height="${round(Math.max(0, cell.h - 2))}" rx="2" style="fill:color-mix(in oklab, ${group.item.fill} ${Math.round(16 + cell.value / top * 30)}%, var(--ak-color-bg-surface))"/>`;
         if (cell.w > textWidth(cell.item.name, 12, 600) + 10 && cell.h > 20) marks += `<text class="ak-b" x="${round(cell.x + 6)}" y="${round(cell.y + 16)}">${esc(cell.item.name)}</text>`;
         if (cell.w > textWidth(format(cell.value)) + 10 && cell.h > 36) marks += `<text class="ak-b" style="font-weight:400" x="${round(cell.x + 6)}" y="${round(cell.y + 31)}">${esc(format(cell.value))}</text>`;
         hits.push({ x0: cell.x, x1: cell.x + cell.w, y0: cell.y, y1: cell.y + cell.h, html: tip(cell.item.name, [[cell.item.group || "大小", `${format(cell.value)} · ${round(cell.value / total * 100)}%`, group.item.fill]]) });
