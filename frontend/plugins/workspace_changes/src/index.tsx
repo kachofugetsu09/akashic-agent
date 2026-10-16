@@ -23,6 +23,7 @@ interface ScopeResult {
   files?: FileStatus[];
   truncated?: boolean;
   submodules?: boolean;
+  skipped?: string[];
 }
 interface Row { kind: "meta" | "hunk" | "add" | "del" | "ctx"; text: string; line: number | null }
 
@@ -64,16 +65,20 @@ function byDirectory(files: FileStatus[]): [string, FileStatus[]][] {
 }
 
 // 单文件 patch 拆成行：文件头不显示，hunk 头给出起始行号，之后按新文件行号编号（删除行用旧文件行号）。
+// 文件头只在 hunk 之外认：hunk 里删掉的 "-- 注释" 写出来就是 "--- 注释"，不能当文件头吞掉。
 function parsePatch(patch: string): Row[] {
   const rows: Row[] = [];
   let left = 0;
   let right = 0;
+  let inHunk = false;
   for (const text of patch.split("\n")) {
     const hunk = /^@@ -(\d+)(?:,\d+)? \+(\d+)/.exec(text);
+    if (text.startsWith("diff --git ")) inHunk = false;
     if (hunk) {
       [left, right] = [Number(hunk[1]), Number(hunk[2])];
+      inHunk = true;
       rows.push({ kind: "hunk", text, line: null });
-    } else if (!rows.length || /^(diff --git|index |--- |\+\+\+ )/.test(text)) {
+    } else if (!inHunk) {
       if (/^(new|deleted) file mode|^Binary files/.test(text)) rows.push({ kind: "meta", text, line: null });
     } else if (text.startsWith("+")) rows.push({ kind: "add", text, line: right++ });
     else if (text.startsWith("-")) rows.push({ kind: "del", text, line: left++ });
@@ -134,9 +139,10 @@ class ChangesTab {
     void this.load(true);
   }
 
+  // 重新可见时按新一轮比较：不可见期间没有轮询，那段时间变过的文件不算“刚刚变化”。
   setActive(active: boolean): void {
     window.clearTimeout(this.timer);
-    if (active) void this.load(false);
+    if (active) void this.load(true);
   }
 
   // 意图：切到“未提交”并选中这个文件；它已经提交或还原时如实说明。
@@ -215,6 +221,7 @@ class ChangesTab {
       result.base_unknown && this.scope === "base" ? "算不出这个分支相对默认分支的基线，只显示未提交的改动。" : "",
       result.truncated ? "改动过多，只列出前 2000 个文件。" : "",
       result.submodules ? "子模块内部的改动不统计。" : "",
+      result.skipped?.length ? `${result.skipped.length} 个超过 1 MiB 的未跟踪文件没有计入：${result.skipped.slice(0, 3).join("、")}${result.skipped.length > 3 ? " 等" : ""}。` : "",
     ].filter(Boolean);
     this.note.textContent = notes.join(" ");
     this.note.hidden = !notes.length;
@@ -284,14 +291,18 @@ class ChangesTab {
     const head = element("header", "changes-pane-head");
     head.append(element("span", "changes-pane-path", file.path), counts(file));
     if (file.added === null) {
-      this.shownText = null;
+      [this.pane.dataset.path, this.shownText] = [file.path, null];
       return void this.pane.replaceChildren(head, element("p", "changes-empty", "二进制文件，不显示内容。"));
     }
     try {
       const response = await this.get("patch", { before: result.before!, after: result.after!, path: file.path });
       const body = (await response.json()) as { status: string; patch?: string; truncated?: boolean; message?: string };
       if (key !== this.shownPatch) return;
-      if (body.status !== "ok") return void this.pane.replaceChildren(head, element("p", "changes-empty", body.message ?? "无法读取 diff"));
+      if (body.status !== "ok") {
+        // 记下当前显示的是哪个文件的错误：再点回之前的文件时不会因为“内容没变”停在这条错误上。
+        [this.pane.dataset.path, this.shownText] = [file.path, null];
+        return void this.pane.replaceChildren(head, element("p", "changes-empty", body.message ?? "无法读取 diff"));
+      }
       // 内容没变（别的文件变了导致树变了）时不重画，保留滚动位置。
       if (this.pane.dataset.path === file.path && this.shownText === body.patch) return;
       this.pane.dataset.path = file.path;
@@ -321,6 +332,8 @@ class ChangesTab {
 
   // 5. 行评论：写好后放进对话输入框（不自动发送）；Enter 放入，Shift+Enter 换行，Esc 取消。
   private comment(node: HTMLElement, path: string, row: Row): void {
+    // 会话在打开评论框时记下：写的过程中切了会话，宿主会按 stale 拒绝，不会放进别的会话。
+    const session = this.session ?? "";
     this.pane.querySelector(".changes-comment")?.remove();
     const box = element("div", "changes-comment");
     const field = element("textarea", "changes-comment-input");
@@ -331,7 +344,7 @@ class ChangesTab {
       const text = field.value.trim();
       if (!text) return;
       // 来源行带上路径、行号与这一行代码，整行不超过宿主的 200 字符上限；正文只放评论。
-      const result = this.view.quote({ session: this.session ?? "", text,
+      const result = this.view.quote({ session, text,
         source: `改动 · ${path}:${row.line} · ${row.text.trim()}`.slice(0, 200) });
       if (result === "inserted") return box.remove();
       status.textContent = result === "stale" ? "会话已经切换，没有放进去。" : "没能放进输入框（内容过长或对话不可用）。";

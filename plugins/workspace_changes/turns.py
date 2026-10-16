@@ -43,6 +43,7 @@ class TurnWindows:
         self._queue: asyncio.Queue[tuple[str, str]] = asyncio.Queue()
         self._queued: dict[tuple[str, str], int] = {}
         self._starting: dict[str, int] = {}
+        self._starting_after: dict[str, int] = {}
         self._active: dict[str, _Window] = {}
         self._locks: dict[str, asyncio.Lock] = {}
 
@@ -52,10 +53,12 @@ class TurnWindows:
         if not event.pending:
             return
         item = (event.reader.session_id, event.source)
+        head = event.reader.head()
         if item not in self._queued:
             self._starting[item[0]] = self._starting.get(item[0], 0) + 1
+            self._starting_after[item[0]] = min(self._starting_after.get(item[0], head), head)
             self._queue.put_nowait(item)
-        self._queued[item] = event.reader.head()
+        self._queued[item] = head
 
     async def run(self) -> None:
         await self._restore()
@@ -73,12 +76,20 @@ class TurnWindows:
         except Exception as error:
             _ = self._ctx.report_incident("workspace-changes", f"{label}: {error!r}")
 
-    # 回复下方的摘要按结束消息查；该轮还在收尾时返回 pending，重启前的轮次没有记录。
+    # 回复下方的摘要按结束消息查；消息落在进行中（或正在开始）的窗口之后才返回 pending，
+    # 更早的回答（被覆盖的旧槽、启用插件之前的轮次）直接说没有记录，不跟着新一轮一起“统计中”。
     async def by_message(self, session: str, message_id: str) -> dict[str, object]:
         for value in await self._records(session):
             if value["ending_message_id"] == message_id:
                 return _view(value)
-        if self._starting.get(session) or any(window.session == session for window in self._active.values()):
+        async with self._ctx.runtime_scope():
+            catalog = self._ctx.require(MESSAGE_CATALOG)
+            message = await run_file_io(lambda: catalog.reader(session).get(message_id))
+        starting = self._starting_after.get(session)
+        if message is not None and (
+            (starting is not None and message.seq > starting)
+            or any(window.session == session and message.seq > window.after_seq for window in self._active.values())
+        ):
             return {"phase": "pending"}
         return {"phase": "unavailable", "error": {"reason": "not_recorded", "message": "这一轮没有改动记录"}}
 
@@ -90,6 +101,7 @@ class TurnWindows:
             self._starting[session] -= 1
             if not self._starting[session]:
                 del self._starting[session]
+                del self._starting_after[session]
         # 拍快照期间该轮可能已经结束，那次唤醒没有看到这个窗口。
         if key is not None:
             await self._end(key)

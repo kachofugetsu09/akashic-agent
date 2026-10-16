@@ -34,7 +34,10 @@ function answerChanges(host, context) {
       if (!active) return;
       summary = result;
       render();
-      if (result.phase === "pending" && attempt < RETRY_MS.length) timer = window.setTimeout(() => load(attempt + 1), RETRY_MS[attempt]);
+      if (result.phase !== "pending") return;
+      // 重试用完仍在统计（例如收尾卡住）：撤掉占位，不让“统计改动中…”一直挂着。
+      if (attempt < RETRY_MS.length) timer = window.setTimeout(() => load(attempt + 1), RETRY_MS[attempt]);
+      else host.replaceChildren();
     }).catch((error) => {
       if (active) context.reportError(error instanceof Error ? error.message : String(error));
     });

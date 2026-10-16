@@ -13,6 +13,7 @@ from plugins.host_execution.contract import PROCESSES
 
 HARD_TIMEOUT_S = 20
 MAX_FILES = 2000
+LARGE_UNTRACKED_KIB = 1024  # 更大的未跟踪文件不进快照：每次变化都会往对象库写一份完整 blob
 MAX_PATCH_BYTES = 256 * 1024
 _LIST_TOKENS = 256 * 1024  # 首段 512 KiB 稳定保留，足够 2000 个文件的 numstat
 _ENV_KEYS = ("PATH", "HOME", "XDG_CONFIG_HOME", "SYSTEMROOT")
@@ -38,11 +39,12 @@ class Repo:
     submodules: bool
 
 
-# base 是拍快照时 HEAD 的树（unborn 时为空树），tree 是同一时刻的工作树。
+# base 是拍快照时 HEAD 的树（unborn 时为空树），tree 是同一时刻的工作树；skipped 是没计入的大文件。
 @dataclass(frozen=True, slots=True)
 class Snapshot:
     base: str
     tree: str
+    skipped: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True, slots=True)
@@ -84,6 +86,7 @@ class Git:
     def __init__(self, ctx: Context) -> None:
         self._ctx = ctx
         self._locks: dict[str, asyncio.Lock] = {}
+        self._seeded: set[str] = set()
         # 树 id 是内容地址：同一对树的文件列表与 patch 不变，命中缓存总是正确的。
         self._lists: _Lru[tuple[str, str, str], FileList] = _Lru(64)
         self._patches: _Lru[tuple[str, str, str, str], FilePatch] = _Lru(256)
@@ -109,24 +112,32 @@ class Git:
         return Repo(toplevel, git_dir, gitmodules.code == 0 and bool(gitmodules.output))
 
     # 每个仓库一个私有 index，跨调用复用：stat 没变的文件 add 时不再重新哈希；同一仓库同一时刻只跑一个。
-    # 出错（含取消）时删掉 index 与锁文件，下次从头建。
+    # index 由 git 原子替换，超时或取消只会留下锁文件，只删锁；git 报错时才删 index 重建一次。
     async def snapshot(self, repo: Repo) -> Snapshot:
         lock = self._locks.setdefault(repo.git_dir, asyncio.Lock())
         index = os.path.join(repo.git_dir, _INDEX)
         extra = {"GIT_INDEX_FILE": index}
         async with lock:
             try:
+                if repo.git_dir not in self._seeded:
+                    await self._seed(repo.git_dir, index)
                 try:
                     return await self._snapshot(repo.toplevel, extra)
                 except GitUnavailable as error:
                     if error.reason != "git_failed":
                         raise
-                    # 私有 index 可能已坏（如 gc 清掉了只被它引用的对象、残留锁文件）：删掉重建一次。
-                    await self._remove(index)
+                    # 私有 index 可能已坏（如 gc 清掉了只被它引用的对象）：删掉重建一次。
+                    await self._remove(index, index + ".lock")
+                    await self._seed(repo.git_dir, index)
                     return await self._snapshot(repo.toplevel, extra)
             except BaseException:
-                await self._remove(index)
+                await self._remove(index + ".lock")
                 raise
+
+    # 私有 index 不存在时复制用户的 index 作种子：带着现成的 stat，冷启动不必重新哈希所有跟踪文件。
+    async def _seed(self, git_dir: str, index: str) -> None:
+        _ = await self._exec(["cp", "-n", "--", os.path.join(git_dir, "index"), index], _environment(), 256)
+        self._seeded.add(git_dir)
 
     async def _snapshot(self, toplevel: str, extra: dict[str, str]) -> Snapshot:
         # 1. 单树合并读入 HEAD 的树：与 HEAD 相同的条目保留 stat，其余回到 HEAD 的样子，
@@ -138,9 +149,25 @@ class Git:
         else:
             _ = await self._must(toplevel, "read-tree", "--empty", extra=extra)
             base = await self._must(toplevel, "write-tree", extra=extra)
-        # 2. add -A 覆盖整个工作树，只重新哈希 stat 变了的文件。
-        _ = await self._must(toplevel, "add", "-A", "--", ".", extra=extra)
-        return Snapshot(base, await self._must(toplevel, "write-tree", extra=extra))
+        # 2. add -A 覆盖整个工作树，只重新哈希 stat 变了的文件；过大的未跟踪文件排除在外。
+        skipped = await self._large_untracked(toplevel, extra)
+        excludes = [f":(exclude,literal){path}" for path in skipped]
+        _ = await self._must(toplevel, "add", "-A", "--", ".", *excludes, extra=extra)
+        return Snapshot(base, await self._must(toplevel, "write-tree", extra=extra), skipped)
+
+    # 超过 LARGE_UNTRACKED_KIB 的未跟踪文件（没进 .gitignore 的数据库、日志）：轮询时它们一变就是一份新 blob。
+    # 只查前 MAX_FILES 个，每批 200 个交给 find 判断大小。
+    async def _large_untracked(self, toplevel: str, extra: dict[str, str]) -> tuple[str, ...]:
+        run = await self._git(toplevel, "ls-files", "-o", "--exclude-standard", "-z", extra=extra, tokens=_LIST_TOKENS)
+        if run.code != 0:
+            raise _failed(run)
+        paths = [os.path.join(toplevel, _text(item)) for item in _head(run, b"\0").split(b"\0") if item][:MAX_FILES]
+        large: list[str] = []
+        for start in range(0, len(paths), 200):
+            argv = ["find", *paths[start:start + 200], "-maxdepth", "0", "-type", "f", "-size", f"+{LARGE_UNTRACKED_KIB}k", "-print0"]
+            found = await self._exec(argv, _environment(), _LIST_TOKENS)
+            large.extend(os.path.relpath(_text(item), toplevel) for item in found.output.split(b"\0") if item)
+        return tuple(large)
 
     # 两棵树之间的文件列表：numstat 给行数，name-status 给增删改类型。按轮记录时要在结束当下算出：
     # 快照的裸树没有引用，gc 后不可读。
@@ -215,8 +242,8 @@ class Git:
         argv = ["git", "-C", cwd, "-c", "core.quotePath=false", *args]
         return await self._exec(argv, {**_environment(), **(extra or {})}, tokens)
 
-    async def _remove(self, index: str) -> None:
-        _ = await self._exec(["rm", "-f", "--", index, index + ".lock"], _environment(), 256)
+    async def _remove(self, *paths: str) -> None:
+        _ = await self._exec(["rm", "-f", "--", *paths], _environment(), 256)
 
     async def _exec(self, argv: list[str], env: dict[str, str], tokens: int) -> _Run:
         processes = self._ctx.require(PROCESSES)
@@ -230,7 +257,7 @@ class Git:
             _ = await processes.terminate_owner(self._ctx, owner)
         if result.finish_reason == "timeout":
             raise GitUnavailable("timeout", f"git 超过 {HARD_TIMEOUT_S} 秒未完成，仓库可能过大")
-        return _Run(result.exit_code, result.output, result.output_omitted_bytes, result.finish_reason)
+        return _Run(result.exit_code, _strip_notes(result.output), result.output_omitted_bytes, result.finish_reason)
 
 
 def _environment() -> dict[str, str]:
@@ -239,6 +266,16 @@ def _environment() -> dict[str, str]:
     # 非交互、不刷新用户 index 的 stat 缓存、不经分页器、错误信息用英文便于识别。
     env.update(GIT_TERMINAL_PROMPT="0", GIT_OPTIONAL_LOCKS="0", GIT_PAGER="cat", LC_ALL="C")
     return env
+
+
+# stderr 与 stdout 合在一起：开头的 warning:/hint: 行（如属性文件不可读、引用名有歧义）不是数据。
+def _strip_notes(output: bytes) -> bytes:
+    while output.startswith((b"warning: ", b"hint: ")):
+        end = output.find(b"\n")
+        if end < 0 or b"\0" in output[:end]:
+            break
+        output = output[end + 1:]
+    return output
 
 
 # 输出过长时首段稳定保留，丢掉省略标记之后的部分和最后一条不完整记录。
