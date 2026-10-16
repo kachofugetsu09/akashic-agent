@@ -21,18 +21,20 @@ let quoteHandler: ((quote: WorkbenchQuote) => void) | null = null;
 /** 宿主下发的可接受意图名集合；只用来决定是否显示“在侧栏打开”。 */
 export function setWorkbenchIntents(value: unknown): void {
   if (!Array.isArray(value)) return;
-  accepted = new Set(value.filter((name): name is string => typeof name === "string"));
-  for (const listener of listeners) listener();
+  const next = new Set(value.filter((name): name is string => typeof name === "string"));
+  if (next.size === accepted.size && [...next].every((name) => accepted.has(name))) return;
+  accepted = next;
+  for (const listener of [...listeners]) listener();
+}
+
+/** 能力集合变化的订阅：宿主的首次广播可能晚于插槽挂载，已挂载的读者靠它刷新。 */
+export function subscribeWorkbenchIntents(listener: () => void): () => void {
+  listeners.add(listener);
+  return () => { listeners.delete(listener); };
 }
 
 export function useWorkbenchAccepts(name: string): boolean {
-  return useSyncExternalStore(
-    (listener) => {
-      listeners.add(listener);
-      return () => listeners.delete(listener);
-    },
-    () => accepted.has(name),
-  );
+  return useSyncExternalStore(subscribeWorkbenchIntents, () => accepted.has(name));
 }
 
 export function workbenchAccepts(name: string): boolean {
