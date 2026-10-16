@@ -83,6 +83,9 @@ plugin = "visuals@release"
 [rows."standard_tools"]
 plugin = "standard_tools@release"
 
+[rows."terminal"]
+plugin = "terminal@release"
+
 [rows."runtime_inspection"]
 plugin = "runtime_inspection@release"
 
