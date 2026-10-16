@@ -546,6 +546,9 @@ function createTabLifecycle(tools, isActive, currentSession, hooks) {
       setTitle: (title) => hooks.title(record, title),
       setIndicator: (indicator) => hooks.indicator(record, indicator),
       onClose: (listener) => subscribe("close", record.key, listener, null),
+      get instances() { return hooks.instances(record); },
+      openNew: () => hooks.openNew(record),
+      cycle: (delta) => hooks.cycle(record, delta),
     };
   }
 
@@ -687,6 +690,21 @@ function mountTools(root, frame, tools, entries) {
     indicator(record, value) {
       record.indicator = readIndicator(value);
       update();
+    },
+    instances: (record) => allTabs().filter((item) => item.entry === record.entry && item.instance).map((item) => item.instance),
+    // 标签自己的“新开”：同一工具的新实例放在它后面，并把焦点移进去。
+    openNew(record) {
+      if (!record.entry?.multiple) throw new Error("openNew 只用于可多开的工具");
+      const opened = openTool(record.entry, null, false, groupOf(record) ?? focusedGroup());
+      if (opened) focusInto(opened);
+    },
+    // 在本组里切到相邻的标签（任何工具），焦点跟过去；只有一个标签时不动。
+    cycle(record, delta) {
+      const group = groupOf(record);
+      if (!group || group.tabs.length < 2 || (delta !== 1 && delta !== -1)) return false;
+      const next = group.tabs[(group.tabs.indexOf(record) + delta + group.tabs.length) % group.tabs.length];
+      if (activate(next.key)) focusInto(next);
+      return true;
     },
   });
   let disposed = false;
@@ -1029,7 +1047,11 @@ function mountTools(root, frame, tools, entries) {
   function focusTool(entry) {
     const existing = allTabs().findLast((record) => record.entry === entry);
     const record = existing ? activate(existing.key) : openTool(entry);
-    if (!record) return;
+    if (record) focusInto(record);
+  }
+
+  // 焦点移进标签内容：先找输入区（终端的 textarea 等），再找第一个可聚焦元素，都没有就停在标签上。
+  function focusInto(record) {
     requestAnimationFrame(() => {
       const target = FOCUS_FIRST.map((selector) => record.panel.querySelector(selector)).find(Boolean);
       (target ?? record.button).focus();

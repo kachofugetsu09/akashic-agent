@@ -16,7 +16,7 @@
       "shortcut"
     ],
     "hintChars": 40,
-    "shortcut": "Ctrl+` | Mod+Shift+[A-Z]，除 A B C I J N O P Q R T W；工具之间不能重复"
+    "shortcut": "Ctrl+` | Mod+Shift+[A-Z]，除 A B C I J N O P Q R T V W Z；工具之间不能重复"
   },
   "view": {
     "active": "boolean",
@@ -45,7 +45,12 @@
     "titleChars": 80,
     "indicatorDetailChars": 24,
     "instance": "string | null",
-    "onClose": []
+    "onClose": [],
+    "instances": "readonly string[]",
+    "openNew": [],
+    "cycle": [
+      "delta"
+    ]
   },
   "intent": {
     "fields": [
