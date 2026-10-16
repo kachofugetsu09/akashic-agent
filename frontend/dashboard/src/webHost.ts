@@ -1,4 +1,5 @@
 import type {
+  WebChildRenderOptions,
   WebEntry,
   WebEntryView,
   WebHostContextV1,
@@ -477,7 +478,10 @@ class BrowserCatalogSession implements WebHostSession {
     );
   }
 
-  private renderEntry(mounted: MountedEntry, host: HTMLElement, props?: unknown): Disposer {
+  // 子挂载失败时通知父插件：props 里的回调是父插件给的，只有它能撤销。
+  private renderEntry(
+    mounted: MountedEntry, host: HTMLElement, props?: unknown, options?: WebChildRenderOptions,
+  ): Disposer {
     if (!mounted.entry.render) throw new Error(`entry ${mounted.entry.id} cannot be rendered`);
     const releaseStyle = installEntryStyle(mounted, host);
     const childIds = new Set(mounted.childMountIds);
@@ -499,11 +503,11 @@ class BrowserCatalogSession implements WebHostSession {
         const entries = this.sortedEntries(mount);
         return {
           entries: entries.map((item) => item.entry),
-          render: (entryId, target, childProps) => {
+          render: (entryId, target, childProps, options) => {
             const child = entries.find((item) => item.entry.id === entryId);
             if (!child) throw new Error(`entry is unavailable: ${mountId}:${entryId}`);
             target.replaceChildren();
-            return trackChildEffect(this.renderEntry(child, target, childProps));
+            return trackChildEffect(this.renderEntry(child, target, childProps, options));
           },
           style: (entryId, target) => {
             const child = entries.find((item) => item.entry.id === entryId);
@@ -527,6 +531,7 @@ class BrowserCatalogSession implements WebHostSession {
       error.textContent = `界面模块加载失败：${asError(reason).message}`;
       host.appendChild(error);
       pluginDispose = undefined;
+      options?.onError?.(asError(reason));
     }
     return once(() => {
       disposeReverse(childRenderEffects);

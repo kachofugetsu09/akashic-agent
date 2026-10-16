@@ -66,9 +66,17 @@ export interface WebEntry {
   [key: string]: unknown;
 }
 
+export interface WebChildRenderOptions {
+  onError?(error: Error): void;
+}
+
 export interface WebMountView {
   readonly entries: readonly WebEntry[];
-  render(entryId: string, host: HTMLElement, props?: unknown): WebUiDisposer;
+  /**
+   * Render one child entry into a parent-owned host. When the child's render throws, the host shows
+   * the error in `host` and calls `options.onError`, so the parent can revoke what it handed over in `props`.
+   */
+  render(entryId: string, host: HTMLElement, props?: unknown, options?: WebChildRenderOptions): WebUiDisposer;
   /** Apply the entry owner's isolated stylesheet to a parent-owned child host. */
   style(entryId: string, host: HTMLElement): WebUiDisposer;
 }

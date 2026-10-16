@@ -406,17 +406,21 @@ function createTabLifecycle(tools, panelOf, isActive, currentSession, onAttentio
   }
 
   // render 失败时撤下它已登记的监听，面板里说明原因；占位保留，避免每次更新都重试。
+  // 标签自身抛错由宿主经 onError 通知；宿主拒绝挂载则直接抛出，两条路径同样处理。
   function mount(entry) {
     if (mounted.has(entry.id)) return;
     mounted.set(entry.id, () => {});
     reported.set(entry.id, isActive(entry.id));
     const panel = panelOf(entry.id);
-    try {
-      mounted.set(entry.id, tools.render(entry.id, panel, view(entry)));
-    } catch (error) {
+    const fail = (error) => {
       activeListeners.delete(entry.id);
       sessionListeners.delete(entry.id);
       panel.textContent = `${entry.label}没能加载：${error instanceof Error ? error.message : String(error)}`;
+    };
+    try {
+      mounted.set(entry.id, tools.render(entry.id, panel, view(entry), { onError: fail }));
+    } catch (error) {
+      fail(error);
     }
   }
 
