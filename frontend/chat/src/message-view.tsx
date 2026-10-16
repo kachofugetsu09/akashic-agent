@@ -1054,15 +1054,17 @@ const ThinkingRow = memo(function ThinkingRow({
   const latestLine = streaming
     ? content.split("\n").map((line) => line.trim()).filter(Boolean).at(-1) ?? ""
     : "";
+  const features = streaming ? null : detectMessageRenderingFeatures(content);
+  const needsRichContent = streaming || features?.math || features?.code;
   return (
     // 流式时只在标题行滚动最新一句，不自动展开：展开会与标题行重复同一句，结束时行重挂载又会瞬间收起。
-    // 已完成的思考用静态 Markdown 同步排版：流式渲染器要懒加载，展开时会先闪一下源码再跳高度。
+    // Render ordinary Markdown right away; math and code still need the rich renderer.
     <Reasoning className="thinking-row" isStreaming={streaming} defaultOpen={false} duration={duration}>
       <div className="process-trigger-sticky"><ThinkingRowTrigger summary={latestLine} /></div>
       <CollapsibleContent className="process-content">
         <div className="process-text process-markdown">
-          {streaming ? <Suspense fallback={<span className="process-markdown-fallback">{content}</span>}>
-            <LazyMessageResponse isAnimating>{content}</LazyMessageResponse>
+          {needsRichContent ? <Suspense fallback={<span className="process-markdown-fallback">{content}</span>}>
+            <LazyMessageResponse isAnimating={streaming}>{content}</LazyMessageResponse>
           </Suspense> : <StaticMessageResponse>{content}</StaticMessageResponse>}
         </div>
       </CollapsibleContent>
