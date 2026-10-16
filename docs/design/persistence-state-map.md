@@ -755,39 +755,18 @@ disable/uninstall，已选健康 source 的更新仍走既有受控 prepare/repl
 #### 10.2.2 单图安装与停止期指定回退
 
 当前 durable 运行输入只由 `PluginSelection` 提交，live Root/Fiber/Scope 拥有运行与
-清理。安装 cache 的历史 stable/latest 双字段仍可读，新安装写入同一个固定 artifact；
-它们不是两个运行选择。历史不等指针对和孤立 armed 安装不可由启动或下一安装猜测结算。
+清理。外置插件的意图是指针与 workspace patch；selection 是上次应用的投影，启动按
+[0121](../decisions/0121-plugin-install-settles-from-disk.md) 以磁盘为准修正外置输入。
+历史不等指针对仍不自动结算。
 
 | 对象 / owner | 正常增加与允许更新 | 逻辑终态与物理减少 | 恢复证据 |
 |---|---|---|---|
-| `plugin_updates` / 原安装 owner | 安装先登记原完整指针对、启用项和新 artifact；完成后提交同一行 | 停止期精确回退只将该孤立 armed 行更新为 rolled_back，保留原错误；无自动删行协议 | exact update_id、旧身份、原行与逻辑 SQLite 备份、回读后的终态 |
-| `.pointers.json`、manifest 目标项 / 原安装回退 owner | 恢复记录中的完整 previous 与 previous_enabled，不折叠历史字段 | 只有该记录原本缺失时，显式回退才移除目标 pointer 文件或 manifest 条目；其他项不变 | 原文件存在性/字节与 SHA、目标回读、非目标条目对照 |
-| `reload_transactions`、`reload_events` / ReloadJournal | 真实 generation 清理失败登记原 generation/动作；同一资源实际关闭后写 recovered 与清理回执 | 写回执失败保留原 draining owner 供重试；普通重构、安装回退无删行权 | exact tx/plugin/generation/resource 与真实物理关闭；不能用相等指针猜成功 |
-| Root、归档、artifact、plugin-data / 各原 owner | 回退入口只读校验，不重新选择、启动、迁移或重放 | 该入口不减少这些对象 | 完整 Root ref、archive/code/source 身份与数据保留对照 |
+| `plugin_updates` / 原安装 owner | 安装先登记原完整指针对、启用项和新 artifact；完成后提交同一行 | 孤立 armed 行在启动或下一安装时按指针确切值写成 rolled_back 或 committed；无自动删行协议 | exact update_id、指针文件确切值、回读后的终态 |
+| `.pointers.json`、patch 目标行 / 原安装 owner | 指针原子替换是安装的唯一提交点；提交后补写同一安装的启用行 | 提交点之前中断不改文件；其他项不变 | 指针字节与候选/原值对照 |
+| `reload_transactions`、`reload_events` / ReloadJournal | 真实 generation 清理失败登记原 generation/动作；同一资源实际关闭后写 recovered 与清理回执 | 写回执失败保留原 draining owner 供重试；普通重构、安装结算无删行权 | exact tx/plugin/generation/resource 与真实物理关闭；不能用相等指针猜成功 |
+| Root、artifact、plugin-data / 各原 owner | 启动修正只换外置输入引用，一次 CAS | 不删除 artifact 与 plugin-data；卸载未完成的 cache 由再次卸载清理 | 完整 Root ref、code 路径与数据保留对照 |
 
-停止期显式命令：
-
-```bash
-python scripts/rollback_plugin_install.py \
-  --workspace /absolute/workspace --plugins-home /absolute/plugin-home \
-  --update-id EXACT_ID --expected-root-ref EXACT_SHA256_OR_null \
-  --backup-dir /absolute/new-external-backup
-```
-
-它持有 WorkspaceMaintenanceLock 后再取得 PluginPublicationLock，拒绝 pending reload、
-未知身份、危险路径/sidecar、不同的新已选输入及文件漂移。目标未选或其已选 code/source
-与 previous stable 相同才可回退，previous 等于 candidate 的重装不被误拒。
-这些锁覆盖正式 writer 的合同；底层安装调用者仍须遵守外层锁，命令不扫描任意进程猜安全。
-
-首写前在两数据根以外的新目录保存原 selection、manifest、pointer、原 DB/WAL/SHM
-取证字节以及同一预检副本的 SQLite 逻辑备份，完成完整性与 fsync 检查。
-恢复数据库使用一致逻辑备份，不单独回放 WAL/SHM；恢复点不包含全部业务数据。
-实际回退仍调用原 `update_rollback` owner，先恢复文件再结算行，不宣称文件与 SQLite
-跨介质原子提交。文件已恢复但行仍 armed 可按同 U 重新预检；终态同 U 重试仅在后置
-状态仍吻合时只读返回，不建立新备份或执行另一更新。
-
-回执的 rolled_back 只证明指定安装恢复；其他 armed 或恢复出的历史不等指针对仍须
-各自结算，不表示环境可启动、Root 已采用或服务 ACTIVE。失败保留恢复点、原错误和阶段。
+回到旧版本是显式安装旧版本的普通安装，不另设停机回退命令。
 
 ### 10.3 MCP 的唯一插件路径
 
