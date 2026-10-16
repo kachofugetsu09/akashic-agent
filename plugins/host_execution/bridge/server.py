@@ -28,6 +28,8 @@ from . import host_bridge_pb2 as pb
 from . import transport
 from .protocol import (
     EXECUTION_ENV_NAMES,
+    encode_terminal_info,
+    encode_terminal_output,
     encode_execution,
     encode_cleanup,
     encode_execution_states,
@@ -42,7 +44,7 @@ from plugins.host_execution.contract import (
     ExecutionCleanupReport
 )
 from plugins.host_execution.contract import (
-    ExecutionResult, UnknownExecutionError
+    ExecutionResult, TerminalBackend, UnknownExecutionError, UnknownTerminalError
 )
 from ..process_runtime import ShellProcessManager
 from .path_info import PathInfoOperation
@@ -378,6 +380,7 @@ class HostBridgeService:
                 "file-tools",
                 "raw-bytes",
                 "skill-requirements",
+                "terminals",
             ],
         )
 
@@ -516,6 +519,20 @@ class HostBridgeService:
         async with self._manager_operation(request.context) as manager:
             states = await manager.execution_states(request.owner_session_key)
         return encode_execution_states(states)
+
+    @_rpc
+    async def Terminal(self, request: pb.TerminalRequest) -> pb.TerminalReply:
+        """用户终端交给 manager 拥有的 PTY 集合；未知终端用回复表达，不当作传输错误。"""
+        require_text(request.owner_session_key, "owner_session_key")
+        async with self._manager_operation(request.context) as manager:
+            try:
+                return await _terminal_operation(manager.terminals, request)
+            except UnknownTerminalError:
+                operation = request.WhichOneof("operation")
+                target = getattr(request, operation) if operation in {"write", "resize", "read"} else None
+                return pb.TerminalReply(
+                    unknown_terminal_id=target.terminal_id if target is not None else request.close
+                )
 
     @_rpc
     async def FileTool(self, request: pb.FileRequest) -> pb.FileReply:
@@ -848,6 +865,46 @@ async def main(arguments: tuple[str, ...], *, workspace: Path, config_path: Path
     )
     return 0
 
+# 每支 oneof 只拥有对应终端操作的公开参数；值域由 PTY 集合统一校验。
+async def _terminal_operation(terminals: TerminalBackend, request: pb.TerminalRequest) -> pb.TerminalReply:
+    owner = request.owner_session_key
+    match request.WhichOneof("operation"):
+        case "open":
+            item = request.open
+            require_fields(item, "cols", "rows")
+            info = await terminals.open_terminal(
+                owner_session_key=owner, cwd=Path(item.cwd) if item.HasField("cwd") else None,
+                cols=item.cols, rows=item.rows,
+            )
+            return pb.TerminalReply(info=encode_terminal_info(info))
+        case "write":
+            item = request.write
+            require_fields(item, "terminal_id", "data")
+            await terminals.write_terminal(owner_session_key=owner, terminal_id=item.terminal_id, data=item.data)
+            return pb.TerminalReply(done=True)
+        case "resize":
+            item = request.resize
+            require_fields(item, "terminal_id", "cols", "rows")
+            await terminals.resize_terminal(
+                owner_session_key=owner, terminal_id=item.terminal_id, cols=item.cols, rows=item.rows,
+            )
+            return pb.TerminalReply(done=True)
+        case "read":
+            item = request.read
+            require_fields(item, "terminal_id", "offset", "wait_ms")
+            output = await terminals.read_terminal(
+                owner_session_key=owner, terminal_id=item.terminal_id, offset=item.offset, wait_ms=item.wait_ms,
+            )
+            return pb.TerminalReply(output=encode_terminal_output(output))
+        case "close":
+            return pb.TerminalReply(done=await terminals.close_terminal(owner_session_key=owner, terminal_id=request.close))
+        case "list":
+            infos = await terminals.list_terminals(owner)
+            return pb.TerminalReply(list=pb.TerminalList(terminals=[encode_terminal_info(info) for info in infos]))
+        case _:
+            raise ValueError("Host Bridge 终端操作缺失")
+
 
 if __name__ == "__main__":
     raise SystemExit(asyncio.run(main(tuple(sys.argv[1:]), workspace=Path.cwd(), config_path=Path("config.toml"))))
+

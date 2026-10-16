@@ -23,6 +23,8 @@ from .protocol import (
     decode_execution,
     decode_execution_states,
     decode_file_result,
+    decode_terminal_info,
+    decode_terminal_output,
     require_fields,
     require_names,
     require_positive,
@@ -89,34 +91,64 @@ class HostBridgeRequirementsChecker:
         )
 
 
-class _UnsupportedTerminals:
-    """Host Bridge 协议还没有终端 RPC；明确拒绝，不在 Core 本机偷偷开 shell。"""
+class HostBridgeTerminals:
+    """终端 RPC 适配；读取是长轮询，不占 Agent 命令的业务并发槽。"""
+
+    def __init__(self, manager: HostBridgeShellProcessManager) -> None:
+        self._manager = manager
+
+    def _request(self, owner: str) -> pb.TerminalRequest:
+        return pb.TerminalRequest(context=self._manager._request_context(), owner_session_key=owner)
+
+    async def _call(self, request: pb.TerminalRequest) -> pb.TerminalReply:
+        reply: pb.TerminalReply = await self._manager._call(request, method="Terminal")
+        if reply.WhichOneof("result") == "unknown_terminal_id":
+            raise UnknownTerminalError(f"终端不存在: {reply.unknown_terminal_id}")
+        return reply
 
     async def open_terminal(self, *, owner_session_key: str, cwd: Path | None, cols: int, rows: int) -> TerminalInfo:
-        raise RuntimeError("Host Bridge 模式暂不支持交互终端")
+        request = self._request(owner_session_key)
+        request.open.CopyFrom(pb.TerminalOpen(cols=cols, rows=rows, cwd=None if cwd is None else str(cwd)))
+        reply = await self._call(request)
+        require_fields(reply, "info")
+        return decode_terminal_info(reply.info)
 
     async def write_terminal(self, *, owner_session_key: str, terminal_id: int, data: bytes) -> None:
-        raise UnknownTerminalError(f"终端不存在: {terminal_id}")
+        request = self._request(owner_session_key)
+        request.write.CopyFrom(pb.TerminalWrite(terminal_id=terminal_id, data=data))
+        _ = await self._call(request)
 
     async def resize_terminal(self, *, owner_session_key: str, terminal_id: int, cols: int, rows: int) -> None:
-        raise UnknownTerminalError(f"终端不存在: {terminal_id}")
+        request = self._request(owner_session_key)
+        request.resize.CopyFrom(pb.TerminalResize(terminal_id=terminal_id, cols=cols, rows=rows))
+        _ = await self._call(request)
 
     async def read_terminal(
         self, *, owner_session_key: str, terminal_id: int, offset: int, wait_ms: int,
     ) -> TerminalOutput:
-        raise UnknownTerminalError(f"终端不存在: {terminal_id}")
+        request = self._request(owner_session_key)
+        request.read.CopyFrom(pb.TerminalRead(terminal_id=terminal_id, offset=offset, wait_ms=wait_ms))
+        reply = await self._call(request)
+        require_fields(reply, "output")
+        return decode_terminal_output(reply.output)
 
     async def close_terminal(self, *, owner_session_key: str, terminal_id: int) -> bool:
-        return False
+        request = self._request(owner_session_key)
+        request.close = terminal_id
+        reply = await self._call(request)
+        require_fields(reply, "done")
+        return reply.done
 
     async def list_terminals(self, owner_session_key: str) -> list[TerminalInfo]:
-        return []
+        request = self._request(owner_session_key)
+        request.list = True
+        reply = await self._call(request)
+        require_fields(reply, "list")
+        return [decode_terminal_info(item) for item in reply.list.terminals]
 
 
 class HostBridgeShellProcessManager:
     """在 Protobuf UDS 上保留 ShellProcessManager 的可观察语义。"""
-
-    terminals = _UnsupportedTerminals()
 
     def __init__(
         self,
@@ -140,6 +172,7 @@ class HostBridgeShellProcessManager:
         self._open_lock = asyncio.Lock()
         self._unconfirmed_owners: dict[str, str] = {}
         self._closed = False
+        self.terminals = HostBridgeTerminals(self)
 
     def _request_context(self) -> pb.RequestContext:
         correlation = current_diagnostic_context()
