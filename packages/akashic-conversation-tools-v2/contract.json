@@ -30,7 +30,15 @@
     ],
     "quote": [
       "request"
-    ]
+    ],
+    "setTitle": [
+      "title"
+    ],
+    "setIndicator": [
+      "indicator"
+    ],
+    "titleChars": 80,
+    "indicatorDetailChars": 24
   },
   "intent": {
     "fields": [

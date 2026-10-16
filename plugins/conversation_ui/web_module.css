@@ -83,22 +83,25 @@
   pointer-events: none;
 }
 
+/* 标签条：浏览器式圆角标签，均分宽度，最窄 90px，再多就横向滚动；“+”紧跟最后一个标签，铺满与收起在最右。 */
 .conversation-tools-bar {
   position: relative;
   display: flex;
   height: 42px;
   min-width: 0;
   align-items: center;
-  gap: 2px;
-  padding-inline: 8px 6px;
+  gap: 4px;
+  padding-inline: 6px;
   border-block-end: 1px solid var(--ak-rule-subtle);
+  background: var(--ak-paper-canvas);
 }
 
 .conversation-tools-tabs {
   display: flex;
-  flex: 1 1 auto;
+  flex: 0 1 auto;
   min-width: 0;
-  height: 100%;
+  align-items: center;
+  gap: 1px;
   overflow-x: auto;
   overflow-y: hidden;
   scrollbar-width: none;
@@ -111,12 +114,39 @@
 .conversation-tools-tab-item {
   position: relative;
   display: flex;
-  flex: 0 0 auto;
+  flex: 0 1 auto;
+  width: 172px;
+  min-width: 90px;
+  height: 30px;
   align-items: center;
+  border: 1px solid transparent;
+  border-radius: 8px;
+  container-type: inline-size;
+}
+
+/* 相邻两个非当前标签之间一条短竖线；挨着当前标签的隐去 */
+.conversation-tools-tab-item + .conversation-tools-tab-item::before {
+  position: absolute;
+  inset-inline-start: -1px;
+  width: 1px;
+  height: 12px;
+  background: var(--ak-rule-default);
+  content: "";
+}
+
+.conversation-tools-tab-item.is-active::before,
+.conversation-tools-tab-item.is-active + .conversation-tools-tab-item::before {
+  opacity: 0;
 }
 
 .conversation-tools-tab-item[hidden] {
   display: none;
+}
+
+.conversation-tools-tab-item.is-active {
+  border-color: var(--ak-rule-subtle);
+  background: var(--ak-paper-sheet);
+  box-shadow: 0 0 8px rgb(0 0 0 / 5%);
 }
 
 .conversation-tools-tab,
@@ -131,29 +161,80 @@
 }
 
 .conversation-tools-tab {
-  display: inline-flex;
+  display: flex;
+  flex: 1 1 auto;
+  min-width: 0;
+  height: 100%;
   align-items: center;
-  gap: 6px;
-  align-self: stretch;
-  padding-inline: 10px 26px;
-  border-block-end: 2px solid transparent;
+  gap: 7px;
+  padding-inline: 9px 8px;
+  border-radius: 7px;
   font-size: 0.8125rem;
-  font-weight: 600;
+  text-align: start;
 }
 
-/* 标签上的关闭：当前标签常显，其余悬停或聚焦时露出 */
+.conversation-tools-tab-item.is-active .conversation-tools-tab {
+  color: var(--ak-ink-primary);
+}
+
+.conversation-tools-tab > svg {
+  flex: none;
+  width: 15px;
+  height: 15px;
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 1.8;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+
+/* 长标题尾部渐隐，不用省略号 */
+.conversation-tools-tab-label {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  white-space: nowrap;
+  mask-image: linear-gradient(to right, #000 calc(100% - 14px), transparent);
+}
+
+.conversation-tools-tab-dot {
+  display: none;
+  flex: none;
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--ak-ink-primary);
+}
+
+.conversation-tools-tab-item.has-attention .conversation-tools-tab-dot,
+.conversation-tools-tab-item.is-busy .conversation-tools-tab-dot {
+  display: block;
+}
+
+.conversation-tools-tab-item.is-busy .conversation-tools-tab-dot {
+  background: var(--ak-color-status-warning);
+}
+
+/* 关闭：当前标签常显并让出位置；其余悬停或聚焦时露出，标签窄于 100px 时不出现 */
 .conversation-tools-tab-close {
-  position: absolute;
-  inset-inline-end: 2px;
+  display: none;
+  flex: none;
   width: 22px;
   height: 22px;
-  opacity: 0;
+  margin-inline-end: 3px;
+  border-radius: 5px;
 }
 
-.conversation-tools-tab[aria-selected="true"] + .conversation-tools-tab-close,
+.conversation-tools-tab-item.is-active .conversation-tools-tab-close,
 .conversation-tools-tab-item:hover .conversation-tools-tab-close,
 .conversation-tools-tab-item:focus-within .conversation-tools-tab-close {
-  opacity: 1;
+  display: inline-grid;
+}
+
+@container (max-width: 99px) {
+  .conversation-tools-tab-item:not(.is-active) .conversation-tools-tab-close {
+    display: none;
+  }
 }
 
 .conversation-tools-tab-close svg {
@@ -161,9 +242,11 @@
   height: 13px;
 }
 
-.conversation-tools-tab[aria-selected="true"] {
-  color: var(--ak-ink-primary);
-  border-block-end-color: var(--ak-color-action-primary);
+.conversation-tools-end {
+  display: flex;
+  flex: none;
+  gap: 2px;
+  margin-inline-start: auto;
 }
 
 .conversation-tools-button {
@@ -176,9 +259,15 @@
   border-radius: 6px;
 }
 
-.conversation-tools-button[aria-expanded="true"] {
-  color: var(--ak-ink-primary);
-  background: color-mix(in oklch, var(--ak-ink-primary) 8%, transparent);
+.conversation-tools-button svg,
+.conversation-tools-toggle svg {
+  width: 16px;
+  height: 16px;
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 1.8;
+  stroke-linecap: round;
+  stroke-linejoin: round;
 }
 
 .conversation-tools-menu {
@@ -228,36 +317,37 @@
   stroke-linejoin: round;
 }
 
-.conversation-tools-button svg,
-.conversation-tools-toggle svg {
-  width: 17px;
-  height: 17px;
-  fill: none;
-  stroke: currentColor;
-  stroke-width: 1.8;
-  stroke-linecap: round;
-  stroke-linejoin: round;
+.conversation-tools-button[aria-expanded="true"] {
+  color: var(--ak-ink-primary);
+  background: color-mix(in oklch, var(--ak-ink-primary) 8%, transparent);
 }
 
+/* 工作台开关：与标题栏图标按钮同一形态，名称在提示里；有活动时右上角一个点 */
 .conversation-tools-toggle {
   position: absolute;
   z-index: 5;
   inset-block-start: 10px;
   inset-inline-end: 12px;
-  display: inline-flex;
-  min-width: 40px;
-  min-height: 34px;
-  align-items: center;
-  gap: 7px;
-  padding-inline: 9px;
-  border: 1px solid var(--ak-rule-subtle);
+  display: inline-grid;
+  width: 34px;
+  height: 34px;
+  place-items: center;
+  padding: 0;
   border-radius: 7px;
-  color: var(--ak-ink-secondary);
-  background: color-mix(in oklch, var(--ak-paper-sheet) 94%, transparent);
-  box-shadow: 0 2px 8px rgb(0 0 0 / 8%);
-  backdrop-filter: blur(8px);
-  font-size: 0.75rem;
-  font-weight: 600;
+}
+
+.conversation-tools-toggle span {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  overflow: hidden;
+  clip-path: inset(50%);
+  white-space: nowrap;
+}
+
+.conversation-tools-toggle svg {
+  width: 18px;
+  height: 18px;
 }
 
 .conversation-tools-content {
@@ -277,7 +367,7 @@
 }
 
 @media (hover: hover) {
-  .conversation-tools-tab:hover,
+  .conversation-tools-tab-item:not(.is-active):hover,
   .conversation-tools-button:hover,
   .conversation-tools-menu-item:hover,
   .conversation-tools-toggle:hover {
@@ -292,6 +382,21 @@
 .conversation-tools-toggle:focus-visible {
   outline: 2px solid var(--ak-rule-focus);
   outline-offset: -2px;
+}
+
+.conversation-tools-toggle[aria-expanded="true"] {
+  color: var(--ak-ink-primary);
+}
+
+.conversation-tools-toggle.has-attention::after {
+  position: absolute;
+  inset-block-start: 6px;
+  inset-inline-end: 6px;
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--ak-color-status-warning);
+  content: "";
 }
 
 @media (max-width: 68rem) {
@@ -312,71 +417,34 @@
   }
 }
 
-@media (max-width: 32rem) {
-  .conversation-tools-toggle span {
-    position: absolute;
-    width: 1px;
-    height: 1px;
-    overflow: hidden;
-    clip-path: inset(50%);
-    white-space: nowrap;
-  }
-
-  /* 与标题栏里的图标按钮同一形态：无卡片底，悬停才有底色。 */
-  .conversation-tools-toggle {
-    border-color: transparent;
-    background: transparent;
-    box-shadow: none;
-    backdrop-filter: none;
-  }
-}
-
 /* 触控输入下开关、关闭与标签的可点区域不小于 44px；指针输入保持紧凑尺寸。 */
 @media (pointer: coarse) {
   .conversation-tools-bar {
-    height: 48px;
+    height: 52px;
   }
 
-  .conversation-tools-toggle {
-    min-width: 44px;
-    min-height: 44px;
-    justify-content: center;
+  .conversation-tools-tab-item {
+    height: 44px;
+    min-width: 112px;
   }
 
+  .conversation-tools-toggle,
   .conversation-tools-button {
     width: 44px;
     height: 44px;
   }
 
-  /* 关闭钮本身就是 44px 点击区（图标仍是 13px），标签文字让出同样宽度，两者不重叠 */
-  .conversation-tools-tab-close {
-    inset-inline-end: 0;
-    width: 44px;
-    height: 44px;
-    opacity: 1;
+  .conversation-tools-tab-item:not(.is-active) .conversation-tools-tab-close {
+    display: none;
   }
 
-  .conversation-tools-tab {
-    min-width: 88px;
-    padding-inline-end: 44px;
+  .conversation-tools-tab-close {
+    width: 40px;
+    height: 40px;
+    margin-inline-end: 0;
   }
 
   .conversation-tools-menu-item {
     min-height: 44px;
   }
-}
-
-@media (prefers-reduced-motion: reduce) {
-  .conversation-tools-toggle {
-    transition: none;
-  }
-}
-.conversation-tools-toggle.has-attention::after,
-.conversation-tools-tab.has-attention::after {
-  content: "";
-  width: 6px;
-  height: 6px;
-  border-radius: 50%;
-  background: var(--ak-ink-primary);
-  flex-shrink: 0;
 }
