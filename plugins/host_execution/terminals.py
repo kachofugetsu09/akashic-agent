@@ -48,6 +48,8 @@ class _Terminal:
     tasks: list[asyncio.Task[None]] = field(default_factory=lambda: list[asyncio.Task[None]]())
     # 同一终端可能有多个浏览器同时输入，写入必须串行，否则 fd 上的等待回调会互相覆盖。
     write_lock: asyncio.Lock = field(default_factory=asyncio.Lock)
+    # 会话结束或开始关闭时置位；在途写入与它竞争，不在已挂断的主端上空转。
+    ended: asyncio.Event = field(default_factory=asyncio.Event)
     closing: asyncio.Task[None] | None = None
     fd_open: bool = True
 
@@ -109,14 +111,9 @@ class PtyTerminals:
             raise ValueError("单次终端输入过长")
         terminal = self._owned(owner_session_key, terminal_id)
         async with terminal.write_lock:
-            if terminal.exited or terminal.closing is not None or not data:
+            if terminal.ended.is_set() or not data:
                 return
-            try:
-                await _write_fd(terminal.master_fd, data)
-            except OSError as exc:
-                # 会话已经结束，从端全部关闭后主端写入返回 EIO。
-                if exc.errno != errno.EIO:
-                    raise
+            await _write_until_ended(terminal, data)
 
     async def resize_terminal(
         self, *, owner_session_key: str, terminal_id: int, cols: int, rows: int,
@@ -178,7 +175,12 @@ class PtyTerminals:
         return task
 
     async def _close(self, terminal: _Terminal) -> None:
-        await _close(terminal)
+        try:
+            await _close(terminal)
+        except Exception:
+            # 失败的关闭恢复成可列出、可再关的终端，不留下看不见却仍在运行的会话。
+            terminal.closing = None
+            raise
         async with self._lock:
             _ = self._terminals.pop(terminal.terminal_id, None)
 
@@ -187,6 +189,23 @@ class PtyTerminals:
         if terminal is None or terminal.owner != owner or terminal.closing is not None:
             raise UnknownTerminalError(f"终端不存在: {terminal_id}")
         return terminal
+
+
+# 输入缓冲写满后会话挂断时，主端写入只报 EAGAIN 而不是 EIO：写入与“会话结束”竞争，
+# 结束先到就取消写入。取消在持锁期间完成，写入注册的 fd 回调随之撤下，关闭再释放主端。
+async def _write_until_ended(terminal: _Terminal, data: bytes) -> None:
+    write = asyncio.create_task(_write_fd(terminal.master_fd, data))
+    ended = asyncio.create_task(terminal.ended.wait())
+    try:
+        _ = await asyncio.wait({write, ended}, return_when=asyncio.FIRST_COMPLETED)
+    finally:
+        for task in (write, ended):
+            _ = task.cancel()
+        _ = await asyncio.gather(write, ended, return_exceptions=True)
+    error = None if write.cancelled() else write.exception()
+    # 从端全部关闭后主端写入返回 EIO，与结束同义。
+    if error is not None and not (isinstance(error, OSError) and error.errno == errno.EIO):
+        raise error
 
 
 # 等待一组关闭任务；调用方被取消时任务继续，失败如实抛出第一个错误。
@@ -270,13 +289,15 @@ async def _pump(terminal: _Terminal) -> None:
     finally:
         _ = reader.cancel()
         terminal.exited = True
+        terminal.ended.set()
         terminal.notify()
 
 
 # 关闭等同关掉终端窗口：请监管进程挂断整个会话；它不响应时直接结束它，
 # 主端关闭后内核也会挂断会话。各步可重复执行，失败后重试不会二次释放。
 async def _close(terminal: _Terminal) -> None:
-    # 1. 等会话结束，在途写入随之以 EIO 返回。
+    # 1. 先结束在途写入，再等会话结束。
+    terminal.ended.set()
     process = terminal.process
     if process.returncode is None:
         with suppress(ProcessLookupError):
@@ -291,12 +312,9 @@ async def _close(terminal: _Terminal) -> None:
     for task in terminal.tasks:
         _ = task.cancel()
     _ = await asyncio.gather(*terminal.tasks, return_exceptions=True)
+    # 持锁时没有写入在 fd 上注册回调（写入已因 ended 撤下），此时关闭不会让同号新 fd 收到旧回调；
+    # 排队中的写入拿到锁后看到 ended 即返回。
     if terminal.fd_open:
-        acquired = False
-        with suppress(TimeoutError):
-            acquired = await asyncio.wait_for(terminal.write_lock.acquire(), _CLOSE_GRACE_S)
-        terminal.fd_open = False
-        os.close(terminal.master_fd)
-        # 排队中的写入拿到锁后看到 closing 即返回。
-        if acquired:
-            terminal.write_lock.release()
+        async with terminal.write_lock:
+            terminal.fd_open = False
+            os.close(terminal.master_fd)

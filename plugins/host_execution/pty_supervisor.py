@@ -122,17 +122,23 @@ def _wait_for_end(shell: int) -> bool:
             return True
 
 
+# Python 启动时忽略的 SIGPIPE、SIGXFSZ 会跨 exec 保留；还原后 `yes | head` 这类管道照常静默结束。
+def _exec_shell(argv: list[str]) -> None:
+    for signum in (signal.SIGPIPE, signal.SIGXFSZ):
+        _ = signal.signal(signum, signal.SIG_DFL)
+    os.login_tty(0)
+    os.execv(argv[0], argv)
+
+
 def main(argv: list[str]) -> int:
-    # 1. 没有 waitid 的平台无法在回收前固定会话号，退化为直接成为 shell。
-    if not hasattr(os, "waitid"):
-        os.login_tty(0)
-        os.execv(argv[0], argv)
+    # 1. 没有 waitid 或 sigwaitinfo 的平台无法在回收前固定会话号，退化为直接成为 shell。
+    if not hasattr(os, "waitid") or not hasattr(signal, "sigwaitinfo"):
+        _exec_shell(argv)
     _ = signal.pthread_sigmask(signal.SIG_BLOCK, _WATCHED)
     shell = os.fork()
     if shell == 0:
         _ = signal.pthread_sigmask(signal.SIG_UNBLOCK, _WATCHED)
-        os.login_tty(0)
-        os.execv(argv[0], argv)
+        _exec_shell(argv)
     # 2. 监管进程放下 PTY，否则会话结束后主端读不到 EOF。
     null = os.open(os.devnull, os.O_RDWR)
     for fd in (0, 1, 2):

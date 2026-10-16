@@ -390,15 +390,16 @@ class ShellProcessManager:
                     if execution.owner_session_key == owner_session_key
                 ]
             report = await self._terminate_many(executions)
-            if self._terminals is not None:
-                await self._terminals.close_owner(owner_session_key)
-
-            # 2. cleanup 成功解除隔离；失败保留 execution 与失败证据。
-            async with self._lock:
-                if report.failures:
-                    self._quarantined_owners[owner_session_key] = report
-                else:
-                    _ = self._quarantined_owners.pop(owner_session_key, None)
+            try:
+                if self._terminals is not None:
+                    await self._terminals.close_owner(owner_session_key)
+            finally:
+                # 2. 终端关闭失败也照常登记执行清理结果，再把终端的错误抛给调用方。
+                async with self._lock:
+                    if report.failures:
+                        self._quarantined_owners[owner_session_key] = report
+                    else:
+                        _ = self._quarantined_owners.pop(owner_session_key, None)
             return report
 
     async def shutdown(self) -> ExecutionCleanupReport:
@@ -413,11 +414,13 @@ class ShellProcessManager:
                     async with self._spawn_lock, self._lock:
                         executions = list(self._executions.values())
                     report = await self._terminate_many(executions)
-                    if self._terminals is not None:
-                        await self._terminals.shutdown()
-                    # 在飞执行清理确认后才关闭 fork server；未确认的执行保留 server 以便后续 wait。
-                    if not report.failures:
-                        await self._forks.close()
+                    try:
+                        if self._terminals is not None:
+                            await self._terminals.shutdown()
+                    finally:
+                        # 终端关闭失败不跳过 fork server 的收尾；未确认的执行保留 server 以便后续 wait。
+                        if not report.failures:
+                            await self._forks.close()
                     return report
             finally:
                 self._owners_ready.set()
