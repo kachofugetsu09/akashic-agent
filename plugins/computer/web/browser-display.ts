@@ -106,6 +106,11 @@ export class BrowserDisplay extends EventTarget {
   }
 
   clipboardPasteFrom(text: string) { return this.send({ kind: "text", text }); }
+  // 当前画面就是最近一帧的原始字节，直接交出，不重新编码。
+  async snapshot(): Promise<Blob> {
+    if (!this.url) throw new Error("还没有画面");
+    return (await fetch(this.url)).blob();
+  }
   focus(options?: FocusOptions) { this.image.focus(options); }
   blur() { this.image.blur(); }
   disconnect() {

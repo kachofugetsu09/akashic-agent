@@ -148,11 +148,11 @@ try {
   await first.mouse.click(rect.x + rect.width / 2, rect.y + rect.height / 2);
   assert.equal((await (await fetch(gateway + "/targets")).json()).control, false);
   pass("viewing pointer input does not claim control");
-  await first.getByRole("button", { name: "接管操作", exact: true }).click();
+  await first.getByRole("button", { name: "接管", exact: true }).click();
   await first.waitForFunction(() => document.querySelector(".computer-status").textContent.startsWith("你正在操作"));
   await videoReady(second);
   await second.waitForFunction(() => document.querySelector(".computer-status").textContent.startsWith("另一个窗口正在操作"));
-  assert.equal(await second.getByRole("button", { name: "接管操作", exact: true }).isDisabled(), true);
+  assert.equal(await second.getByRole("button", { name: "接管", exact: true }).isDisabled(), true);
   const conflicting = await fetch(gateway + "/control/take", {method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({id:randomUUID()})});
   assert.equal(conflicting.status,500); assert.match((await conflicting.json()).error,/Another viewer/);
   let openCliFinished = false;
@@ -173,14 +173,16 @@ try {
   await connected(first); await videoReady(first); await videoReady(second);
 
   // 3. 标签展示真实匿名页面；只读、输入、键盘、关闭和释放均经生产路由。
-  const select = (page, path) => page.getByRole("tab", { name: new RegExp(`/${path}（匿名浏览器）$`) }).click();
+  const options = (page, path) => page.getByRole("combobox", { name: "观看的画面" }).locator("option")
+    .evaluateAll((nodes, suffix) => nodes.filter(node => node.textContent.endsWith(suffix)).map(node => node.value), `/${path}`);
+  const select = async (page, path) => page.getByRole("combobox", { name: "观看的画面" }).selectOption((await options(page, path))[0]);
   await select(first, "a");
   await first.locator(".computer-browser-screen").waitFor();
   await connected(first);
   await select(second, "b"); await connected(second);
   const before = textResult(await action(`console.log(await pageA.playwright.evaluate(() => document.querySelector('#hit').textContent));`));
   assert.match(before, /CLICK/);
-  await first.getByRole("button", { name: "接管操作", exact: true }).click();
+  await first.getByRole("button", { name: "接管", exact: true }).click();
   await first.waitForFunction(() => document.querySelector(".computer-status").textContent.startsWith("你正在操作"));
   const imageNode = first.locator(".computer-browser-screen");
   const size = await imageNode.evaluate(node => ({ width: node.naturalWidth, height: node.naturalHeight }));
@@ -211,7 +213,7 @@ try {
   await first.screenshot({ path: join(artifacts, "anonymous-tabs.png") });
   await action("await anonB.close();");
   await until(() => second.locator(".computer-status").textContent(), value => value.includes("这个浏览器已关闭"), "closed context disappears");
-  assert.equal(await second.getByRole("tab", { name: /\/b（匿名浏览器）$/ }).count(), 0);
+  assert.equal((await options(second, "b")).length, 0);
   pass("closed anonymous contexts remove tabs and stop their display");
 
   // 4. 手机活动仅增加徽标；手动打开、关闭与聊天输入保持独立。
