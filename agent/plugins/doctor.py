@@ -43,9 +43,9 @@ def run_plugin_doctor(
         if armed:
             names = ", ".join(f"{item.update_id}:{item.plugin_id}" for item in armed)
             return {
-                "status": "broken", "plugins": plugins,
+                "status": _merge_status(item["status"] for item in plugins), "plugins": plugins,
                 "workspace": str(resolved_workspace),
-                "error": f"unsettled armed plugin updates require explicit settlement: {names}",
+                "interrupted_updates": f"下次启动或安装按磁盘指针结算: {names}",
             }
     return {
         "status": _merge_status(item["status"] for item in plugins),
