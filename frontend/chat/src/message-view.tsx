@@ -18,7 +18,7 @@ import {
   DialogContent,
   DialogTitle,
 } from "@/components/ui/dialog";
-import { Brain, Check, ChevronDown, ChevronLeft, ChevronRight, Copy, Download, ExternalLink, Gauge, Wrench, X, ZoomIn, ZoomOut } from "lucide-react";
+import { Brain, Check, ChevronDown, ChevronLeft, ChevronRight, Copy, Download, ExternalLink, Gauge, PanelRightOpen, Wrench, X, ZoomIn, ZoomOut } from "lucide-react";
 import { useStickToBottomContext } from "use-stick-to-bottom";
 import { MarqueeText } from "./marquee-text";
 import {
@@ -46,6 +46,7 @@ import { timelineReply, timelineToolOutput, historyTranscript, isTimelinePartVis
 import { MessageReplyReference } from "./message-actions";
 import { StaticMessageResponse } from "./static-message-response";
 import { Disclosure, formatToolDuration, ToolResultContent, useStickyDisclosure } from "./tool-result-view";
+import { openInWorkbench, useWorkbenchAccepts, type WorkbenchIntentStatus } from "./shell-workbench";
 
 const LazyMessageResponse = lazy(() =>
   import("@/components/ai-elements/message-response").then(({ MessageResponse }) => ({ default: MessageResponse })),
@@ -292,7 +293,8 @@ function FlowItemView({ item, beforePart, onCopyToolDetail, partView }: {
   partView?: FlowPartViewProps;
 }) {
   const content = item.kind === "thinking" ? <ThinkingRow content={item.content} streaming={false} />
-    : item.kind === "tool" ? <ToolStep block={item.block} active={item.block.status === "input-available"} onCopyDetail={onCopyToolDetail} />
+    : item.kind === "tool" ? <ToolStep block={item.block} active={item.block.status === "input-available"} onCopyDetail={onCopyToolDetail}
+      sessionId={item.origin.session_id} />
     : item.kind === "notice" ? <ContextNoticeRow text={item.text} />
     : item.kind === "narration" ? <div className="timeline-narration">
       <MessageBody content={item.text} streaming={false} deferRichContent onError={partView?.onError} />
@@ -1098,10 +1100,12 @@ const ToolStep = memo(function ToolStep({
   block,
   active,
   onCopyDetail,
+  sessionId,
 }: {
   block: ToolBlock;
   active: boolean;
   onCopyDetail?: (text: string) => void;
+  sessionId?: string;
 }) {
   const description = toolDescription(block.input);
   const resultValue = block.output === undefined ? block.errorText : block.output;
@@ -1132,6 +1136,7 @@ const ToolStep = memo(function ToolStep({
     onCopyDetail?.(text);
     setCopiedDetail({ section, text });
   };
+  const openAction = sessionId ? <ToolOpenAction name={block.name} callId={block.callId} sessionId={sessionId} /> : null;
   // 成功是默认结果，不再逐行写"完成"；只有运行中、失败和耗时值得占位。
   const stateLabel = block.status === "input-available"
     ? "运行中"
@@ -1181,6 +1186,7 @@ const ToolStep = memo(function ToolStep({
                   <section className="tool-detail-section" aria-label="工具参数">
                     <ToolDetailHeading
                       label="参数"
+                      extra={openAction}
                       copied={copiedDetail?.section === "parameters" && copiedDetail.text === parameterCopyText}
                       onCopy={onCopyDetail ? () => copyDetail("parameters", parameterCopyText) : undefined}
                     />
@@ -1198,6 +1204,7 @@ const ToolStep = memo(function ToolStep({
                   <section className={`tool-detail-section${block.status === "output-error" ? " is-error" : ""}`} aria-label={block.status === "output-error" ? "工具错误" : "工具结果"}>
                     <ToolDetailHeading
                       label={block.status === "output-error" ? "错误" : "结果"}
+                      extra={parameters.length > 0 ? null : openAction}
                       copied={copiedDetail?.section === "result" && copiedDetail.text === result}
                       onCopy={onCopyDetail ? () => copyDetail("result", result) : undefined}
                     />
@@ -1212,18 +1219,42 @@ const ToolStep = memo(function ToolStep({
   );
 });
 
+// 持久工具调用（message_id:part_index）有标签声明接 tool.<名字>.open.v1 时，才提供"在侧栏打开"；聊天不认识具体工具。
+function ToolOpenAction({ name, callId, sessionId }: { name: string; callId: string; sessionId: string }) {
+  const intent = `tool.${name}.open.v1`;
+  const accepted = useWorkbenchAccepts(intent);
+  const [status, setStatus] = useState<WorkbenchIntentStatus | null>(null);
+  useEffect(() => {
+    if (status === null) return;
+    const timer = window.setTimeout(() => setStatus(null), 1600);
+    return () => window.clearTimeout(timer);
+  }, [status]);
+  if (!accepted || !/^[^:]+:\d+$/.test(callId)) return null;
+  const label = status === "invalid" ? "记录已不在" : status === "failed" || status === "unhandled" ? "没能打开" : "在侧栏打开";
+  return (
+    <button className="tool-detail-copy" type="button"
+      onClick={() => void openInWorkbench(intent, sessionId, { call_id: callId }).then((next) => setStatus(next === "handled" ? null : next))}>
+      <PanelRightOpen size={14} aria-hidden="true" />
+      <span aria-live="polite">{label}</span>
+    </button>
+  );
+}
+
 function ToolDetailHeading({
   label,
+  extra,
   copied,
   onCopy,
 }: {
   label: string;
+  extra?: ReactNode;
   copied: boolean;
   onCopy?: () => void;
 }) {
   return (
     <div className="tool-detail-heading">
       <h4>{label}</h4>
+      {extra}
       {onCopy ? (
         <button
           className={copied ? "tool-detail-copy copied" : "tool-detail-copy"}

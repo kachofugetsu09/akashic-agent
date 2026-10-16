@@ -78,9 +78,16 @@ async def apply(ctx: Context) -> None:
 
     _ = await ctx.inject((UI_SLOTS,), directory_ui, name="directory-ui")
 
-    # 命令记录的只读接口，供本插件自己的终端标签读取；记录不发布给其他插件。
+    # 终端标签与它读取的命令记录接口；记录不发布给其他插件。没有对话工具区时标签不出现。
     async def terminal_ui(child: Context) -> None:
-        _ = await child.require(UI).register(child, dashboard=lambda: import_module(".dashboard", __package__))
+        _ = await child.require(UI).register(
+            child, web="web_module.js",
+            dashboard=lambda: import_module(".dashboard", __package__),
+            requires=("conversation.tools.v2",),
+            contract_digests={
+                "conversation.tools.v2": "438131c0fee0caf2ba0c8509d9312ccda6c2c195ad4ce29c26da404e8d15292c",
+            },
+        )
 
     _ = await ctx.inject((UI, COMMAND_LOG_VIEW), terminal_ui, name="terminal-ui")
     _ = await catalog.declare_group(ctx, always_on=True, description=desc)
