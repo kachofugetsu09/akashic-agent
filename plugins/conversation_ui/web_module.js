@@ -174,11 +174,13 @@ const TITLE_LIMIT = 80;
 const DETAIL_LIMIT = 24;
 const HINT_LIMIT = 40;
 const LAUNCH_LABEL = "新标签页";
-// 工具可声明的快捷键：Ctrl+` 或 Mod+Shift+字母（Mod 在 macOS 是 ⌘）；浏览器、对话页与宿主自己占用的组合不能用。
+// 工具可声明的快捷键：Ctrl+` 或 Mod+Shift+字母（Mod 在 macOS 是 ⌘）；浏览器、对话页与宿主自己占用的组合不能用
+// （含 macOS 的重做 ⌘⇧Z 与纯文本粘贴 Mod+Shift+V）。
 const ENTRY_SHORTCUT = /^(?:Ctrl\+`|Mod\+Shift\+[A-Z])$/;
-const RESERVED_SHORTCUTS = new Set([..."ABCIJNOPQRTW"].map((key) => `Mod+Shift+${key}`));
+const RESERVED_SHORTCUTS = new Set([..."ABCIJNOPQRTVWZ"].map((key) => `Mod+Shift+${key}`));
 const HOST_SHORTCUTS = { toggle: "Mod+J", split: "Mod+\\" };
 const IS_MAC = /Mac|iPhone|iPad/.test(navigator.platform);
+const OVERLAY_ROLES = "[role='dialog'], [role='alertdialog'], [role='menu'], [role='listbox'], [role='combobox'][aria-expanded='true']";
 const FOCUS_FIRST = ["textarea, [contenteditable='true']", "input, select, button, a[href], [tabindex]:not([tabindex='-1'])"];
 const ICONS = {
   close: '<path d="M18 6 6 18M6 6l12 12"/>',
@@ -197,6 +199,17 @@ function shortcutOf(event) {
   const key = event.key.length === 1 ? event.key.toUpperCase() : "";
   if (!event.shiftKey && (key === "J" || key === "\\")) return `Mod+${key}`;
   return event.shiftKey && /^[A-Z]$/.test(key) ? `Mod+Shift+${key}` : null;
+}
+
+// 按键来自浮层（对话框、菜单、下拉列表、展开的组合框）内部，或页面上开着模态对话框、菜单时，快捷键让给浮层。
+// 工作台面板里常驻的列表（如改动的文件列表）不算浮层：面板里的按键由标签自己 preventDefault 认领。
+function overlayOwnsKey(event, panel) {
+  const target = event.target;
+  const overlay = typeof target?.closest === "function" ? target.closest(OVERLAY_ROLES) : null;
+  if (overlay && !(overlay.getAttribute("role") === "listbox" && panel.contains(overlay))) return true;
+  const page = target?.ownerDocument ?? document;
+  return [...page.querySelectorAll("[aria-modal='true'], dialog[open], [role='menu']")]
+    .some((node) => node.checkVisibility?.() ?? true);
 }
 
 // 给 chat 的快捷键面板用：Mod 换成本平台的写法。
@@ -369,7 +382,21 @@ function toolPanel(key) {
   return panel;
 }
 
+// 面板换到另一组的内容区：支持 moveBefore 的浏览器原样搬过去（iframe 不重载，滚动与焦点保留），否则退回 append。
+function movePanel(panel, content) {
+  if (typeof content.moveBefore === "function" && content.isConnected && panel.isConnected) {
+    try {
+      content.moveBefore(panel, null);
+      return;
+    } catch (error) {
+      if (!(error instanceof DOMException)) throw error;
+    }
+  }
+  content.append(panel);
+}
+
 // 新标签页：列出全部工具（状态取自已打开的标签）；选中后这一页原地变成该工具。
+// 暂不可用的工具（多开工具在会话发出第一条消息前）仍可聚焦读到原因，但标为禁用、点了不响应。
 function renderLaunch(panel, tools, onTool) {
   const page = element("div", "conversation-tools-launch");
   const list = element("div", "conversation-tools-launch-tools");
@@ -379,7 +406,8 @@ function renderLaunch(panel, tools, onTool) {
     item.innerHTML = tool.entry.icon ?? svgIcon("launch");
     item.append(element("span", "conversation-tools-launch-name", tool.entry.label),
       element("span", "conversation-tools-launch-state", tool.state));
-    item.addEventListener("click", () => onTool(tool.entry));
+    if (tool.ready) item.addEventListener("click", () => onTool(tool.entry));
+    else item.setAttribute("aria-disabled", "true");
     list.append(item);
   }
   page.append(element("h2", "conversation-tools-launch-heading", "工具"), list);
@@ -543,13 +571,16 @@ function createTabLifecycle(tools, isActive, currentSession, hooks) {
   }
 
   // 卸下一个实例：先告诉标签它被用户关闭（closed 为真时），再撤监听并调用 disposer。
+  // 标签的监听或 disposer 抛错只记录，不打断其余监听、卸载与宿主后续的布局更新。
   function unmount(key, closed) {
-    if (closed) for (const listener of [...listenersOf("close", key)]) listener();
+    if (closed) for (const listener of [...listenersOf("close", key)]) {
+      try { listener(); } catch (error) { console.error("[conversation-ui] onClose listener failed", error); }
+    }
     const stop = mounted.get(key);
     mounted.delete(key);
     reported.delete(key);
     forget(key);
-    stop?.();
+    try { stop?.(); } catch (error) { console.error("[conversation-ui] tab dispose failed", error); }
   }
 
   function report(record) {
@@ -674,6 +705,9 @@ function mountTools(root, frame, tools, entries) {
     chrome.maximize.innerHTML = svgIcon(state.maximized ? "collapse" : "expand");
     const split = state.groups.length > 1;
     const splitLabel = `${split ? "取消分屏" : "上下分屏"}（${shortcutKeys(HOST_SHORTCUTS.split).join("+")}）`;
+    // 先显示要用的组再搬面板，搬完再隐藏不用的组：面板只在可见的容器之间搬，滚动位置不丢。
+    if (split) chrome.groups[1].root.hidden = false;
+    for (const record of allTabs()) placePanel(record);
     chrome.panel.classList.toggle("is-split", split);
     chrome.groups[1].root.hidden = !split;
     chrome.divider.hidden = !split;
@@ -718,20 +752,36 @@ function mountTools(root, frame, tools, entries) {
     record.close.setAttribute("aria-label", `关闭 ${title}`);
   }
 
-  // 2. 面板挂在所在那组的内容区；首次被选中才渲染，声明 background 的单开标签挂载即渲染，以便在未打开时提示活动。
-  //    新标签页每次显示时重画。
+  function placePanel(record) {
+    const content = chrome.groups[state.groups.indexOf(groupOf(record))]?.content;
+    if (content && record.panel.parentElement !== content) movePanel(record.panel, content);
+  }
+
+  // 2. 面板挂在所在那组的内容区（见 placePanel）；首次被选中才渲染，声明 background 的单开标签挂载即渲染，
+  //    以便在未打开时提示活动。
   function paintPanel(record) {
     const group = groupOf(record);
-    const content = chrome.groups[state.groups.indexOf(group)]?.content;
-    if (content && record.panel.parentElement !== content) content.append(record.panel);
     record.panel.hidden = group?.activeKey !== record.key;
-    if (!record.entry) {
-      if (isActive(record.key)) renderLaunch(record.panel, entries.map((entry) => ({ entry, state: toolState(entry) })),
-        (entry) => openTool(entry, record, true));
-      return;
-    }
+    if (!record.entry) return paintLaunch(record);
     lifecycle.report(record);
     if (isActive(record.key)) lifecycle.mount(record);
+  }
+
+  // 新标签页只在刚变成当前标签、或工具状态变了时重画，其余更新不动 DOM；
+  // 重画后焦点回到原来序号的那一项，键盘用户不会掉到页面开头。
+  function paintLaunch(record) {
+    if (!isActive(record.key)) {
+      record.launchView = null;
+      return;
+    }
+    const tools = entries.map((entry) => ({ entry, state: toolState(entry), ready: !(entry.multiple && !state.session) }));
+    const view = JSON.stringify(tools.map((tool) => [tool.state, tool.ready]));
+    if (record.launchView === view) return;
+    record.launchView = view;
+    const focused = [...record.panel.querySelectorAll("button")].indexOf(document.activeElement);
+    renderLaunch(record.panel, tools, (entry) => openTool(entry, record, true));
+    const buttons = record.panel.querySelectorAll("button");
+    if (focused >= 0) buttons[Math.min(focused, buttons.length - 1)]?.focus();
   }
 
   function toolState(entry) {
@@ -776,13 +826,15 @@ function mountTools(root, frame, tools, entries) {
     return record;
   }
 
-  // 3. 打开工具：单开工具已在某组里就切过去；目标组当前停在新标签页时，这一页原地变成该工具。多开工具每次一个新实例。
+  // 3. 打开工具：单开工具已在某组里就切过去，多开工具每次一个新实例。replace 只来自用户在新标签页里亲手点选：
+  //    这一页原地变成该工具（工具已在别处时这一页让掉）。快捷键、意图等其它入口不删任何标签，只在新开工具时
+  //    把目标组当前停着的新标签页原地变成它——组里标签数不变，分屏不会塌。
   function openTool(entry, replace = null, focusTab = false, target = focusedGroup()) {
     if (entry.multiple && !state.session) return null;
-    const current = activeOf(target);
-    if (!replace && current && !current.entry) replace = current;
     const existing = entry.multiple ? null : allTabs().find((record) => record.entry === entry);
     if (existing && replace) removeTab(replace, false);
+    const current = activeOf(target);
+    if (!existing && !replace && current && !current.entry) replace = current;
     const record = existing ?? insert(entry.multiple
       ? records.instance(entry, newInstanceId(), state.session) : records.single(entry), replace, target);
     return activate(record.key, focusTab);
@@ -853,11 +905,14 @@ function mountTools(root, frame, tools, entries) {
   }
 
   // 5. 分屏：当前标签移到下方一组（上方只有它一个时，下方开一个新标签页）；已分屏时把下方一组并回上方。
+  //    并回时丢掉下方的空白新标签页；焦点在下方且它的当前标签是工具时沿用它，否则保留上方原来的当前标签。
   function toggleSplit() {
     const [upper, lower] = state.groups;
     if (lower) {
-      upper.tabs.push(...lower.tabs);
-      upper.activeKey = lower.activeKey ?? upper.activeKey;
+      const lowerActive = state.focus === 1 ? activeOf(lower) : null;
+      for (const record of lower.tabs) if (!record.entry) records.drop(record);
+      upper.tabs.push(...lower.tabs.filter((record) => record.entry));
+      if (lowerActive?.entry) upper.activeKey = lowerActive.key;
       state.groups = [upper];
     } else {
       let moving = activeOf(upper);
@@ -902,8 +957,10 @@ function mountTools(root, frame, tools, entries) {
   function adoptLayout(layout) {
     const used = new Set();
     const groups = layout.groups.map((spec) => {
-      const tabs = spec.tabs.map((item) => restoreTab(item, used)).filter(Boolean);
-      return newGroup(tabs, tabs[spec.active]?.key);
+      // 当前标签按存下时的下标取，再滤掉恢复不了的标签，下标不会错位。
+      const restored = spec.tabs.map((item) => restoreTab(item, used));
+      const tabs = restored.filter(Boolean);
+      return newGroup(tabs, restored[spec.active]?.key);
     }).filter((group) => group.tabs.length);
     state.groups = groups.length ? groups : [newGroup([])];
     state.focus = Math.min(layout.focus, state.groups.length - 1);
@@ -953,14 +1010,15 @@ function mountTools(root, frame, tools, entries) {
   }
 
   // 9. 快捷键：Mod+J 开关工具区，Mod+\ 分屏，工具声明的组合切到（或打开）该工具并把焦点移进去。
-  //    chat iframe 同源，直接在它的 window 上监听；页面不可见、有对话框或菜单、标签自己处理过的按键（如终端里）都不接。
+  //    chat iframe 同源，直接在它的 window 上监听；页面不可见、浮层占着键盘、标签自己处理过的按键（如终端里）都不接。
+  //    按住不放的自动重复只吞掉，不反复开合。
   function onShortcut(event) {
     const spec = event.defaultPrevented || root.offsetParent === null ? null : shortcutOf(event);
     const entry = spec ? shortcuts.get(spec) : null;
     if (!entry && spec !== HOST_SHORTCUTS.toggle && spec !== HOST_SHORTCUTS.split) return;
-    const page = event.target?.ownerDocument ?? document;
-    if (page.querySelector("[role='dialog'], [role='menu'], [role='listbox']")) return;
+    if (overlayOwnsKey(event, chrome.panel)) return;
     event.preventDefault();
+    if (event.repeat) return;
     if (spec === HOST_SHORTCUTS.toggle) {
       if (state.open) closePanel(frame);
       else openPanel(true);
@@ -1024,10 +1082,24 @@ function mountTools(root, frame, tools, entries) {
     event.preventDefault();
   }
 
-  // 标签拖放：拖到另一个标签上插在它前面，拖到标签条空白处放到末尾；两组之间同样可以拖。
+  // 落点在标签的后半（按书写方向）时插到它后面，否则插到它前面；返回插入位置之后的那个标签，null 表示末尾。
+  function dropTarget(event, group) {
+    const over = allTabs().find((record) => record.item.contains(event.target)) ?? null;
+    if (!over) return { over, before: null };
+    const box = over.item.getBoundingClientRect();
+    const after = (event.clientX > box.left + box.width / 2) !== (getComputedStyle(over.item).direction === "rtl");
+    return { over, after, before: after ? group.tabs[group.tabs.indexOf(over) + 1] ?? null : over };
+  }
+
+  // 标签拖放：拖到另一个标签的前半插在它前面、后半插在它后面，拖到标签条空白处放到末尾；两组之间同样可以拖。
   // 数据用自定义类型，拖到对话输入框里不会变成文字。
   function connectDrag(shell, index) {
-    const mark = (item) => { for (const record of allTabs()) record.item.classList.toggle("is-drop-target", record.item === item); };
+    const mark = (over, after = false) => {
+      for (const record of allTabs()) {
+        record.item.classList.toggle("is-drop-target", record === over);
+        record.item.classList.toggle("is-drop-after", record === over && after === true);
+      }
+    };
     shell.bar.addEventListener("dragstart", (event) => {
       dragging = allTabs().find((record) => record.item === event.target) ?? null;
       if (!dragging) return;
@@ -1037,7 +1109,8 @@ function mountTools(root, frame, tools, entries) {
     shell.bar.addEventListener("dragover", (event) => {
       if (!dragging) return;
       event.preventDefault();
-      mark(event.target.closest?.(".conversation-tools-tab-item") ?? null);
+      const { over, after } = state.groups[index] ? dropTarget(event, state.groups[index]) : { over: null };
+      mark(over, after);
     });
     shell.bar.addEventListener("dragleave", (event) => { if (!shell.bar.contains(event.relatedTarget)) mark(null); });
     shell.bar.addEventListener("drop", (event) => {
@@ -1045,7 +1118,7 @@ function mountTools(root, frame, tools, entries) {
       if (!dragging || !target) return;
       event.preventDefault();
       mark(null);
-      moveTab(dragging, target, allTabs().find((record) => record.item.contains(event.target)) ?? null);
+      moveTab(dragging, target, dropTarget(event, target).before);
     });
     shell.bar.addEventListener("dragend", () => { dragging = null; mark(null); });
   }

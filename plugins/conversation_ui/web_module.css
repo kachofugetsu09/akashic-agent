@@ -135,6 +135,10 @@
   box-shadow: inset 2px 0 0 var(--ak-color-action-primary);
 }
 
+.conversation-tools-tab-item.is-drop-target.is-drop-after {
+  box-shadow: inset -2px 0 0 var(--ak-color-action-primary);
+}
+
 .conversation-tools-button[aria-pressed="true"] {
   color: var(--ak-ink-primary);
   background: color-mix(in oklch, var(--ak-ink-primary) 8%, transparent);
@@ -371,6 +375,12 @@
 }
 
 
+/* 暂不可用的工具：仍可聚焦读到原因，点了不响应 */
+.conversation-tools-launch-tool[aria-disabled="true"] {
+  color: var(--ak-ink-muted);
+  cursor: default;
+}
+
 /* 工作台开关：与标题栏图标按钮同一形态，名称在提示里；有活动时右上角一个点 */
 .conversation-tools-toggle {
   position: absolute;
@@ -420,7 +430,7 @@
 @media (hover: hover) {
   .conversation-tools-tab-item:not(.is-active):hover,
   .conversation-tools-button:hover,
-  .conversation-tools-launch-tool:hover,
+  .conversation-tools-launch-tool:not([aria-disabled="true"]):hover,
   .conversation-tools-toggle:hover {
     color: var(--ak-ink-primary);
     background: color-mix(in oklch, var(--ak-ink-primary) 6%, transparent);
@@ -490,9 +500,40 @@
   }
 
   .conversation-tools-tab-close {
-    width: 40px;
-    height: 40px;
+    width: 44px;
+    height: 44px;
     margin-inline-end: 0;
+  }
+
+  /* 上下分隔条：本身加高到 24px（中间一条线与一个握把），可点区域再向上下延伸到 44px，少压住下方标签条。 */
+  .conversation-tools-divider,
+  .conversation-tools-divider:hover,
+  .conversation-tools-divider:focus-visible,
+  .conversation-tools.is-dividing .conversation-tools-divider {
+    height: 24px;
+    margin-block: 0;
+    background: linear-gradient(var(--ak-rule-subtle), var(--ak-rule-subtle)) center / 100% 1px no-repeat;
+  }
+
+  .conversation-tools-divider::before {
+    inset-block: -14px -6px;
+  }
+
+  .conversation-tools-divider::after {
+    position: absolute;
+    top: 50%;
+    left: 50%;
+    width: 36px;
+    height: 4px;
+    border-radius: 2px;
+    background: var(--ak-rule-default);
+    content: "";
+    translate: -50% -50%;
+  }
+
+  .conversation-tools-divider:focus-visible::after,
+  .conversation-tools.is-dividing .conversation-tools-divider::after {
+    background: var(--ak-color-action-primary);
   }
 
   .conversation-tools-launch-tool {
