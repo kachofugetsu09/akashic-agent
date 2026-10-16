@@ -11,6 +11,7 @@ const evidence = resolve(process.argv[2]);
 const port = Number(process.argv[3] ?? 4330);
 const output = await mkdtemp(join(tmpdir(), "akashic-visuals-browser-"));
 await build({ configFile: false, root: repo, plugins: [react()],
+  worker: { format: "es" },
   resolve: { alias: { "@": resolve("frontend/chat/src"), mermaid: resolve("frontend/chat/src/mermaid-stub.ts") } },
   build: { outDir: output, emptyOutDir: false, target: "es2022",
     rollupOptions: { input: resolve("scripts/visuals/browser-entry.tsx"), output: { entryFileNames: "app.js", assetFileNames: "[name][extname]" } } } });
@@ -21,6 +22,12 @@ const server = createServer(async (req, res) => {
   try {
     if (url.pathname === "/favicon.ico") { res.writeHead(204).end(); return; }
     if (url.pathname === "/") { res.setHeader("content-type", "text/html; charset=utf-8"); res.end(html); return; }
+    if (url.pathname === "/visuals/frame.html") {
+      // 与 plugins/visuals/dashboard.py 相同：静态入口由响应 CSP 强制沙箱，文档经 postMessage 交付。
+      res.setHeader("content-type", "text/html; charset=utf-8");
+      res.setHeader("content-security-policy", "sandbox allow-scripts; default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline'; img-src data:; font-src data:; connect-src 'none'; frame-src 'none'; object-src 'none'; base-uri 'none'; form-action 'none'; frame-ancestors 'self'");
+      res.end(await readFile(resolve("plugins/visuals/bootstrap.html"))); return;
+    }
     if (url.pathname === "/api/chat/plugin-ui/catalog") { res.setHeader("content-type", "application/json"); res.end(catalog); return; }
     const route = url.pathname === "/api/chat/plugin-ui/asset" ? "module.js"
       : url.pathname.startsWith("/api/chat/artifacts/") ? `${url.pathname.split("/").at(-1)}.json`
