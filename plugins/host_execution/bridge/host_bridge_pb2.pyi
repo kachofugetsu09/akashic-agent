@@ -328,3 +328,107 @@ class SkillRequirementsReply(_message.Message):
     available: RequirementNames
     missing: RequirementNames
     def __init__(self, available: _Optional[_Union[RequirementNames, _Mapping]] = ..., missing: _Optional[_Union[RequirementNames, _Mapping]] = ...) -> None: ...
+
+class TerminalRequest(_message.Message):
+    __slots__ = ("context", "owner_session_key", "open", "write", "resize", "read", "close", "list")
+    CONTEXT_FIELD_NUMBER: _ClassVar[int]
+    OWNER_SESSION_KEY_FIELD_NUMBER: _ClassVar[int]
+    OPEN_FIELD_NUMBER: _ClassVar[int]
+    WRITE_FIELD_NUMBER: _ClassVar[int]
+    RESIZE_FIELD_NUMBER: _ClassVar[int]
+    READ_FIELD_NUMBER: _ClassVar[int]
+    CLOSE_FIELD_NUMBER: _ClassVar[int]
+    LIST_FIELD_NUMBER: _ClassVar[int]
+    context: RequestContext
+    owner_session_key: str
+    open: TerminalOpen
+    write: TerminalWrite
+    resize: TerminalResize
+    read: TerminalRead
+    close: int
+    list: bool
+    def __init__(self, context: _Optional[_Union[RequestContext, _Mapping]] = ..., owner_session_key: _Optional[str] = ..., open: _Optional[_Union[TerminalOpen, _Mapping]] = ..., write: _Optional[_Union[TerminalWrite, _Mapping]] = ..., resize: _Optional[_Union[TerminalResize, _Mapping]] = ..., read: _Optional[_Union[TerminalRead, _Mapping]] = ..., close: _Optional[int] = ..., list: bool = ...) -> None: ...
+
+class TerminalOpen(_message.Message):
+    __slots__ = ("cwd", "cols", "rows")
+    CWD_FIELD_NUMBER: _ClassVar[int]
+    COLS_FIELD_NUMBER: _ClassVar[int]
+    ROWS_FIELD_NUMBER: _ClassVar[int]
+    cwd: str
+    cols: int
+    rows: int
+    def __init__(self, cwd: _Optional[str] = ..., cols: _Optional[int] = ..., rows: _Optional[int] = ...) -> None: ...
+
+class TerminalWrite(_message.Message):
+    __slots__ = ("terminal_id", "data")
+    TERMINAL_ID_FIELD_NUMBER: _ClassVar[int]
+    DATA_FIELD_NUMBER: _ClassVar[int]
+    terminal_id: int
+    data: bytes
+    def __init__(self, terminal_id: _Optional[int] = ..., data: _Optional[bytes] = ...) -> None: ...
+
+class TerminalResize(_message.Message):
+    __slots__ = ("terminal_id", "cols", "rows")
+    TERMINAL_ID_FIELD_NUMBER: _ClassVar[int]
+    COLS_FIELD_NUMBER: _ClassVar[int]
+    ROWS_FIELD_NUMBER: _ClassVar[int]
+    terminal_id: int
+    cols: int
+    rows: int
+    def __init__(self, terminal_id: _Optional[int] = ..., cols: _Optional[int] = ..., rows: _Optional[int] = ...) -> None: ...
+
+class TerminalRead(_message.Message):
+    __slots__ = ("terminal_id", "offset", "wait_ms")
+    TERMINAL_ID_FIELD_NUMBER: _ClassVar[int]
+    OFFSET_FIELD_NUMBER: _ClassVar[int]
+    WAIT_MS_FIELD_NUMBER: _ClassVar[int]
+    terminal_id: int
+    offset: int
+    wait_ms: int
+    def __init__(self, terminal_id: _Optional[int] = ..., offset: _Optional[int] = ..., wait_ms: _Optional[int] = ...) -> None: ...
+
+class TerminalInfo(_message.Message):
+    __slots__ = ("terminal_id", "shell", "cwd", "exit_code", "exited")
+    TERMINAL_ID_FIELD_NUMBER: _ClassVar[int]
+    SHELL_FIELD_NUMBER: _ClassVar[int]
+    CWD_FIELD_NUMBER: _ClassVar[int]
+    EXIT_CODE_FIELD_NUMBER: _ClassVar[int]
+    EXITED_FIELD_NUMBER: _ClassVar[int]
+    terminal_id: int
+    shell: str
+    cwd: str
+    exit_code: int
+    exited: bool
+    def __init__(self, terminal_id: _Optional[int] = ..., shell: _Optional[str] = ..., cwd: _Optional[str] = ..., exit_code: _Optional[int] = ..., exited: bool = ...) -> None: ...
+
+class TerminalOutput(_message.Message):
+    __slots__ = ("data", "offset", "exit_code", "exited")
+    DATA_FIELD_NUMBER: _ClassVar[int]
+    OFFSET_FIELD_NUMBER: _ClassVar[int]
+    EXIT_CODE_FIELD_NUMBER: _ClassVar[int]
+    EXITED_FIELD_NUMBER: _ClassVar[int]
+    data: bytes
+    offset: int
+    exit_code: int
+    exited: bool
+    def __init__(self, data: _Optional[bytes] = ..., offset: _Optional[int] = ..., exit_code: _Optional[int] = ..., exited: bool = ...) -> None: ...
+
+class TerminalList(_message.Message):
+    __slots__ = ("terminals",)
+    TERMINALS_FIELD_NUMBER: _ClassVar[int]
+    terminals: _containers.RepeatedCompositeFieldContainer[TerminalInfo]
+    def __init__(self, terminals: _Optional[_Iterable[_Union[TerminalInfo, _Mapping]]] = ...) -> None: ...
+
+class TerminalReply(_message.Message):
+    __slots__ = ("info", "done", "output", "list", "unknown_terminal_id")
+    INFO_FIELD_NUMBER: _ClassVar[int]
+    DONE_FIELD_NUMBER: _ClassVar[int]
+    OUTPUT_FIELD_NUMBER: _ClassVar[int]
+    LIST_FIELD_NUMBER: _ClassVar[int]
+    UNKNOWN_TERMINAL_ID_FIELD_NUMBER: _ClassVar[int]
+    info: TerminalInfo
+    done: bool
+    output: TerminalOutput
+    list: TerminalList
+    unknown_terminal_id: int
+    def __init__(self, info: _Optional[_Union[TerminalInfo, _Mapping]] = ..., done: bool = ..., output: _Optional[_Union[TerminalOutput, _Mapping]] = ..., list: _Optional[_Union[TerminalList, _Mapping]] = ..., unknown_terminal_id: _Optional[int] = ...) -> None: ...
