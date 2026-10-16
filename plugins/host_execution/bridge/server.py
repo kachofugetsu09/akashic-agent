@@ -82,6 +82,12 @@ class _ManagerLease:
     def __post_init__(self) -> None:
         self.operations_drained.set()
 
+    async def shutdown(self) -> ExecutionCleanupReport:
+        """准入关闭后先挂断终端，解除阻塞写入，再排空并回收 manager。"""
+        await self.manager.terminals.shutdown()
+        await self.operations_drained.wait()
+        return await self.manager.shutdown()
+
 
 class _ManagerUnavailable(Exception):
     """manager 已停止接纳操作，不能继续复用。"""
@@ -243,8 +249,7 @@ class HostBridgeService:
                     for _, lease in expired:
                         lease.reaping = True
                 for key, lease in expired:
-                    await lease.operations_drained.wait()
-                    report = await lease.manager.shutdown()
+                    report = await lease.shutdown()
                     async with self._lock:
                         current = self._managers.get(key)
                         if current is not lease:
@@ -274,8 +279,7 @@ class HostBridgeService:
                     lease.reaping = True
             failures: list[ExecutionCleanupReport] = []
             for key, lease in leases:
-                await lease.operations_drained.wait()
-                report = await lease.manager.shutdown()
+                report = await lease.shutdown()
                 if report.failures:
                     failures.append(report)
                     continue
@@ -320,8 +324,7 @@ class HostBridgeService:
             reports: list[ExecutionCleanupReport] = []
             failed_keys: set[tuple[str, str]] = set()
             for key, lease in leases:
-                await lease.operations_drained.wait()
-                report = await lease.manager.shutdown()
+                report = await lease.shutdown()
                 active_ids = await lease.manager.active_execution_ids()
                 reports.append(report)
                 if report.failures or active_ids:
@@ -492,8 +495,7 @@ class HostBridgeService:
                 if lease is None:
                     raise _ManagerNotFound("Host Bridge manager 已不存在，无法确认本次清理")
                 lease.reaping = True
-            await lease.operations_drained.wait()
-            report = await lease.manager.shutdown()
+            report = await lease.shutdown()
             async with self._lock:
                 current = self._managers.get(key)
                 if current is lease:
