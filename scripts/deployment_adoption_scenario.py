@@ -168,8 +168,7 @@ async def run():
     inherited = selection.commit(tuple(ref for ref, _ in selected(work).values()), expected_ref=current)
     assert json_value(selection.adoption()) == proof
     assert len(distribution_sources(work, home, target).ignored_installed_roots) == 3
-    from scripts.rollback_plugin_install import _selected_code
-    assert _selected_code(selection, inherited, "outside@thirdparty") is not None
+    assert "outside@thirdparty" in {selection.read_input(ref)["plugin_id"] for ref in selection.components(inherited)}
     plan.write_text(json.dumps({"schema_version": 1, "expected_root_ref": inherited, "targets": []}))
     assert publish()["new_root_ref"] == inherited
     retired_source = historical / json.loads((historical / "distribution.json").read_text())["plugins"][1]["file"]
