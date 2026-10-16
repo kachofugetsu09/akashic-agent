@@ -53,13 +53,6 @@ class FileChange:
 
 
 @dataclass(frozen=True, slots=True)
-class Changes:
-    files: tuple[FileChange, ...]
-    patch: str | None
-    truncated: bool
-
-
-@dataclass(frozen=True, slots=True)
 class FileStatus:
     path: str
     status: Status
@@ -149,19 +142,8 @@ class Git:
         _ = await self._must(toplevel, "add", "-A", "--", ".", extra=extra)
         return Snapshot(base, await self._must(toplevel, "write-tree", extra=extra))
 
-    # 立刻算出文件列表与 patch 保存下来：裸树没有引用，gc 后不可读。
-    async def diff(self, repo: Repo, before: str, after: str) -> Changes:
-        listed = await self._git(repo.toplevel, *_DIFF, "-z", "--numstat", before, after, tokens=_LIST_TOKENS)
-        if listed.code != 0:
-            raise _failed(listed)
-        files, more = _numstat(listed)
-        patch = await self._git(repo.toplevel, *_DIFF, "--patch", before, after, tokens=MAX_PATCH_BYTES // 4)
-        if patch.code != 0:
-            raise _failed(patch)
-        whole = patch.omitted == 0
-        return Changes(files, _text(patch.output) if whole else None, more or not whole)
-
-    # 两棵树之间的文件列表：numstat 给行数，name-status 给增删改类型。
+    # 两棵树之间的文件列表：numstat 给行数，name-status 给增删改类型。按轮记录时要在结束当下算出：
+    # 快照的裸树没有引用，gc 后不可读。
     async def files(self, repo: Repo, before: str, after: str) -> FileList:
         key = (repo.git_dir, before, after)
         if (cached := self._lists.get(key)) is not None:

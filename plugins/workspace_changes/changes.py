@@ -8,7 +8,7 @@ from agent.plugin_composition import Context, ServiceKey
 from core.common.file_io import run_file_io
 from plugins.standard_tools.contract import WORKING_DIRECTORY
 
-from .git import Changes, Git, GitUnavailable, Repo
+from .git import Git, GitUnavailable, Repo
 from .turns import TurnWindows
 
 MAX_COMMITS = 30
@@ -45,16 +45,6 @@ class WorkspaceChanges:
         directories = self._ctx.require(WORKING_DIRECTORY)
         snapshot = await run_file_io(lambda: directories.snapshot(session))
         return await self.git.resolve(snapshot.path)
-
-    # 未提交：拍一次工作树快照与 HEAD 比较，含未跟踪的新文件；unborn 时与空树比较。
-    async def uncommitted(self, session: str) -> dict[str, object]:
-        try:
-            async with self._ctx.runtime_scope():
-                repo = await self.repo(session)
-                snapshot = await self.git.snapshot(repo)
-                return view(repo, await self.git.diff(repo, snapshot.base, snapshot.tree))
-        except GitUnavailable as error:
-            return {"status": "unavailable", **error.view()}
 
     # 一个范围的文件列表（不含 patch）：wt 未提交，base 本分支全部改动，十六进制为单个提交。
     async def scope(self, session: str, scope: str) -> dict[str, object]:
@@ -139,13 +129,6 @@ class WorkspaceChanges:
         if found is None:
             raise GitUnavailable("git_failed", f"git 无法解析 {revision}")
         return found
-
-
-def view(repo: Repo, changes: Changes) -> dict[str, object]:
-    return {
-        "status": "ok", "repo": repo.toplevel, "submodules": repo.submodules,
-        "files": [asdict(item) for item in changes.files], "patch": changes.patch, "truncated": changes.truncated,
-    }
 
 
 WORKSPACE_CHANGES = ServiceKey[WorkspaceChanges]("workspace_changes.service.v1")

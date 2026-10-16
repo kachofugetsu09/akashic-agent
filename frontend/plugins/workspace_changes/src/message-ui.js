@@ -19,13 +19,13 @@ function answerChanges(host, context) {
     if (summary.error) return host.replaceChildren(...(SILENT.has(summary.error.reason) ? [] : [line(`改动未统计：${summary.error.message}`, "is-muted")]));
     if (summary.phase !== "ended" || !summary.files) return host.replaceChildren();
     const text = `改动了 ${summary.files} 个文件 +${summary.added} −${summary.removed}${summary.uncertain ? "（可能不全）" : ""}`;
-    if (!context.workbench.accepts(OPEN_INTENT)) return host.replaceChildren(line(text, ""));
+    if (!summary.path || !context.workbench.accepts(OPEN_INTENT)) return host.replaceChildren(line(text, ""));
     const button = document.createElement("button");
     button.type = "button";
     button.className = "changes-tail is-link";
     button.textContent = text;
-    button.title = "在工作台的“改动”里查看这一轮";
-    button.addEventListener("click", () => void context.workbench.open(OPEN_INTENT, { turn_id: summary.turn_id }));
+    button.title = "在工作台的“改动”里查看（未提交）";
+    button.addEventListener("click", () => void context.workbench.open(OPEN_INTENT, { path: summary.path }));
     host.replaceChildren(button);
   }
 

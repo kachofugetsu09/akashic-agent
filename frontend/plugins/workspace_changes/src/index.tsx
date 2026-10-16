@@ -3,27 +3,28 @@ import type { WebHostContextV1, WebUiDisposer } from "@akashic/web-ui-v1";
 import "./style.css";
 
 const API = "/api/dashboard/workspace_changes";
-const POLL_MS = 4000;
-/** workspace.changes.open.v1 的 payload：{ turn_id: string }，打开“本轮”并选中这一轮。 */
+const POLL_MS = 3000;
+const FRESH_MS = 8000;
+/** workspace.changes.open.v1 的 payload：{ path: string }，打开“未提交”并选中这个文件。 */
 const OPEN_INTENT = "workspace.changes.open.v1";
+const STATUS_LABELS = { A: "新增", M: "修改", D: "删除", T: "类型变化" } as const;
 
-interface FileChange { path: string; added: number | null; removed: number | null }
-interface Failure { reason: string; message: string }
-interface TurnRecord {
-  turn_id: string;
-  phase: "started" | "ended";
-  status: "complete" | "quiet" | "abandoned" | null;
-  window: { started_at: string };
-  files: FileChange[];
-  patch?: string | null;
-  truncated: boolean;
-  baseline_late: boolean;
-  end_late: boolean;
-  repo: { submodules: boolean } | null;
-  error: Failure | null;
+interface FileStatus { path: string; status: keyof typeof STATUS_LABELS; added: number | null; removed: number | null }
+interface Commit { sha: string; short: string; subject: string; time: string }
+interface ScopeResult {
+  status: "ok" | "unavailable";
+  message?: string;
+  base_ref?: string | null;
+  base_unknown?: boolean;
+  commits?: Commit[];
+  scope?: string;
+  before?: string;
+  after?: string;
+  files?: FileStatus[];
+  truncated?: boolean;
+  submodules?: boolean;
 }
-interface Uncommitted { status: "ok" | "unavailable"; files?: FileChange[]; patch?: string | null; truncated?: boolean; submodules?: boolean; message?: string }
-type Mode = "turn" | "uncommitted";
+interface Row { kind: "meta" | "hunk" | "add" | "del" | "ctx"; text: string; line: number | null }
 
 function element<K extends keyof HTMLElementTagNameMap>(tag: K, className: string, text = ""): HTMLElementTagNameMap[K] {
   const node = document.createElement(tag);
@@ -39,266 +40,348 @@ function button(className: string, text: string, onClick: () => void): HTMLButto
   return node;
 }
 
-function totals(files: FileChange[], uncertain = false): string {
-  if (!files.length) return uncertain ? "没有统计到改动" : "没有改动";
-  const added = files.reduce((sum, item) => sum + (item.added ?? 0), 0);
-  const removed = files.reduce((sum, item) => sum + (item.removed ?? 0), 0);
-  return `${files.length} 个文件 +${added} −${removed}`;
-}
-
-function clock(iso: string): string {
-  const time = new Date(iso);
-  const today = time.toDateString() === new Date().toDateString();
-  return time.toLocaleString(undefined, today ? { hour: "2-digit", minute: "2-digit" } : { month: "numeric", day: "numeric", hour: "2-digit", minute: "2-digit" });
-}
-
-function turnLabel(turn: TurnRecord): string {
-  const state = turn.phase === "started" ? "进行中" : turn.error ? turn.error.message : totals(turn.files, turn.baseline_late || turn.end_late);
-  const ending = turn.status === "abandoned" ? "（已中止）" : "";
-  return `${clock(turn.window.started_at)} · ${state}${ending}`;
-}
-
-// 统计口径的提示：窗口标记、截断与子模块，都写成可读的一句话。
-function caveats(source: { baseline_late?: boolean; end_late?: boolean; truncated?: boolean; submodules?: boolean }): string[] {
-  const notes: string[] = [];
-  if (source.baseline_late) notes.push("起始快照晚于本轮第一次工具调用，可能遗漏改动。");
-  if (source.end_late) notes.push("结束快照偏晚（下一轮已开始、后台命令仍在运行或已中止），可能包含窗口外的改动。");
-  if (source.truncated) notes.push("改动过多，只列出前 2000 个文件或不显示 diff。");
-  if (source.submodules) notes.push("子模块内部的改动不统计。");
-  return notes;
-}
-
-function lineKind(line: string): string {
-  if (line.startsWith("+++ ") || line.startsWith("--- ")) return " is-meta";
-  if (line.startsWith("@@")) return " is-hunk";
-  if (line.startsWith("+")) return " is-add";
-  if (line.startsWith("-")) return " is-del";
-  return "";
-}
-
-// 把整份 patch 按 "diff --git" 切成每个文件一段，键为 b/ 之后的路径。
-function splitPatch(patch: string): Map<string, string[]> {
-  const sections = new Map<string, string[]>();
-  let current: string[] | null = null;
-  for (const line of patch.split("\n")) {
-    const head = /^diff --git a\/.* b\/(.*)$/.exec(line);
-    if (head) sections.set(head[1], current = []);
-    else if (current && !line.startsWith("index ")) current.push(line);
-  }
-  return sections;
-}
-
-// 目录可以省略，文件名始终完整；完整路径放在 title 里。
-function pathParts(path: string): HTMLElement[] {
-  const slash = path.lastIndexOf("/");
-  return [element("span", "changes-dir", path.slice(0, slash + 1)), element("span", "changes-name", path.slice(slash + 1))];
-}
-
-function fileDiff(file: FileChange, lines: string[] | undefined): HTMLDetailsElement {
-  const details = element("details", "changes-file");
-  details.open = true;
-  details.dataset.path = file.path;
-  const summary = element("summary", "changes-file-head");
-  summary.title = file.path;
-  summary.append(...pathParts(file.path), counts(file));
-  details.append(summary);
-  const body = element("pre", "changes-diff");
-  if (file.added === null) body.append(element("span", "changes-line is-meta", "二进制文件，不显示内容"));
-  else if (!lines) body.append(element("span", "changes-line is-meta", "diff 未保存（超出大小上限）"));
-  else for (const line of lines) body.append(element("span", `changes-line${lineKind(line)}`, line + "\n"));
-  details.append(body);
-  return details;
-}
-
-function counts(file: FileChange): HTMLElement {
+function counts(file: FileStatus): HTMLElement {
   const node = element("span", "changes-counts");
   if (file.added === null) node.append(element("span", "changes-binary", "二进制"));
   else node.append(element("span", "changes-add", `+${file.added}`), element("span", "changes-del", `−${file.removed}`));
   return node;
 }
 
-// 改动标签：本轮（每轮窗口内的差异）与未提交（工作目录对 HEAD）。可见时才轮询，会话切换后整体换掉。
+function totals(files: FileStatus[]): string {
+  const added = files.reduce((sum, item) => sum + (item.added ?? 0), 0);
+  const removed = files.reduce((sum, item) => sum + (item.removed ?? 0), 0);
+  return `${files.length} 个文件 +${added} −${removed}`;
+}
+
+// 按目录分组，根目录在前，其余按名字排；组内按文件名排。
+function byDirectory(files: FileStatus[]): [string, FileStatus[]][] {
+  const groups = new Map<string, FileStatus[]>();
+  for (const file of files) {
+    const dir = file.path.slice(0, file.path.lastIndexOf("/") + 1);
+    groups.set(dir, [...(groups.get(dir) ?? []), file]);
+  }
+  return [...groups].sort(([a], [b]) => a.localeCompare(b)).map(([dir, items]) => [dir, items.sort((a, b) => a.path.localeCompare(b.path))]);
+}
+
+// 单文件 patch 拆成行：文件头不显示，hunk 头给出起始行号，之后按新文件行号编号（删除行用旧文件行号）。
+function parsePatch(patch: string): Row[] {
+  const rows: Row[] = [];
+  let left = 0;
+  let right = 0;
+  for (const text of patch.split("\n")) {
+    const hunk = /^@@ -(\d+)(?:,\d+)? \+(\d+)/.exec(text);
+    if (hunk) {
+      [left, right] = [Number(hunk[1]), Number(hunk[2])];
+      rows.push({ kind: "hunk", text, line: null });
+    } else if (!rows.length || /^(diff --git|index |--- |\+\+\+ )/.test(text)) {
+      if (/^(new|deleted) file mode|^Binary files/.test(text)) rows.push({ kind: "meta", text, line: null });
+    } else if (text.startsWith("+")) rows.push({ kind: "add", text, line: right++ });
+    else if (text.startsWith("-")) rows.push({ kind: "del", text, line: left++ });
+    else if (text.startsWith(" ")) rows.push({ kind: "ctx", text, line: (left++, right++) });
+    else if (text) rows.push({ kind: "meta", text, line: null });
+  }
+  return rows;
+}
+
+// 改动标签：工作目录相对 git 的改动，范围可选（未提交 / 相对默认分支 / 单个提交）。左栏文件按目录分组，右栏只看一个文件；
+// 可见时轮询，刚变的文件带圆点。点一行写评论，放进对话输入框，由用户决定何时发送。
 class ChangesTab {
   readonly root = element("div", "changes-root");
-  private readonly turnButton = button("changes-mode", "本轮", () => this.setMode("turn"));
-  private readonly uncommittedButton = button("changes-mode", "未提交", () => this.setMode("uncommitted"));
-  private readonly picker = element("select", "changes-picker");
-  private readonly refresh = button("changes-refresh", "刷新", () => void this.load(true));
-  private readonly body = element("div", "changes-body");
-  private mode: Mode = "turn";
-  private turns: TurnRecord[] = [];
+  private readonly scopePicker = element("select", "changes-scope");
+  private readonly total = element("span", "changes-total");
+  private readonly note = element("p", "changes-note");
+  private readonly filter = element("input", "changes-filter");
+  private readonly list = element("div", "changes-files");
+  private readonly pane = element("section", "changes-pane");
+  private scope = "wt";
+  private result: ScopeResult | null = null;
   private selected: string | null = null;
-  private following = true;
-  private shown = "";
+  private shownPatch = "";
+  private shownText: string | null = null;
+  private readonly seen = new Map<string, string>();
+  private readonly fresh = new Map<string, number>();
   private generation = 0;
   private timer = 0;
+  private freshTimer = 0;
 
-  constructor(private readonly ctx: WebHostContextV1, private session: string | null, private active: boolean) {
-    const modes = element("div", "changes-modes");
-    modes.setAttribute("role", "group");
-    modes.setAttribute("aria-label", "统计范围");
-    modes.append(this.turnButton, this.uncommittedButton);
-    this.picker.setAttribute("aria-label", "选择轮次");
-    this.picker.addEventListener("change", () => {
-      this.selected = this.picker.value;
-      this.following = this.picker.selectedIndex === 0;
-      void this.showTurn();
-    });
+  constructor(private readonly ctx: WebHostContextV1, private readonly view: ConversationTabView, private session: string | null) {
+    this.scopePicker.setAttribute("aria-label", "改动范围");
+    this.scopePicker.addEventListener("change", () => this.setScope(this.scopePicker.value));
+    this.filter.type = "search";
+    this.filter.placeholder = "筛选文件";
+    this.filter.setAttribute("aria-label", "筛选文件");
+    this.filter.addEventListener("input", () => this.renderList());
+    this.list.setAttribute("role", "listbox");
+    this.list.setAttribute("aria-label", "改动的文件");
+    this.pane.setAttribute("aria-live", "polite");
     const bar = element("div", "changes-bar");
-    bar.append(modes, this.picker, this.refresh);
-    this.body.setAttribute("aria-live", "polite");
-    this.root.append(bar, this.body);
-    this.setMode("turn");
+    bar.append(this.scopePicker, this.total);
+    const side = element("nav", "changes-side");
+    side.append(this.filter, this.list);
+    const split = element("div", "changes-split");
+    split.append(side, this.pane);
+    this.note.hidden = true;
+    this.root.append(bar, this.note, split);
+    this.root.addEventListener("keydown", (event) => this.onKey(event));
   }
 
   setSession(session: string | null): void {
     this.session = session;
-    this.turns = [];
+    this.scope = "wt";
     this.selected = null;
-    this.following = true;
-    this.shown = "";
+    this.seen.clear();
+    this.fresh.clear();
     void this.load(true);
   }
 
   setActive(active: boolean): void {
-    this.active = active;
-    this.schedule();
+    window.clearTimeout(this.timer);
     if (active) void this.load(false);
   }
 
-  // 意图：切到本轮并选中指定的一轮；不在列表里（已被覆盖）时如实说明。
+  // 意图：切到“未提交”并选中这个文件；它已经提交或还原时如实说明。
   async open(intent: ConversationIntent): Promise<ConversationIntentStatus> {
-    const payload = intent.payload as { turn_id?: unknown } | null;
-    if (!payload || typeof payload.turn_id !== "string" || !payload.turn_id) return "invalid";
-    this.mode = "turn";
-    this.selected = payload.turn_id;
-    this.following = false;
-    this.shown = "";
-    this.renderModes();
+    const payload = intent.payload as { path?: unknown } | null;
+    if (!payload || typeof payload.path !== "string" || !payload.path) return "invalid";
+    this.scope = "wt";
+    this.selected = payload.path;
     await this.load(true);
+    if (!this.result?.files?.some((file) => file.path === payload.path))
+      this.showNote(`${payload.path} 现在没有未提交的改动，可能已经提交或还原。`);
     return "handled";
   }
 
   dispose(): void {
     this.generation += 1;
     window.clearTimeout(this.timer);
+    window.clearTimeout(this.freshTimer);
   }
 
-  private setMode(mode: Mode): void {
-    this.mode = mode;
-    this.shown = "";
-    this.renderModes();
+  private setScope(scope: string): void {
+    this.scope = scope;
+    this.selected = null;
+    this.seen.clear();
     void this.load(true);
   }
 
-  private renderModes(): void {
-    this.turnButton.setAttribute("aria-pressed", String(this.mode === "turn"));
-    this.uncommittedButton.setAttribute("aria-pressed", String(this.mode === "uncommitted"));
-    this.picker.hidden = this.mode !== "turn" || !this.turns.length;
-  }
-
-  // 本轮模式可见时每 4 秒取一次列表，轮次结束后自动出现；未提交只在进入和点刷新时统计。
-  private schedule(): void {
-    window.clearTimeout(this.timer);
-    if (this.active && this.mode === "turn" && this.session) this.timer = window.setTimeout(() => void this.load(false).finally(() => this.schedule()), POLL_MS);
-  }
-
-  private async load(explicit: boolean): Promise<void> {
+  // 1. 取文件列表；未提交与本分支两种范围在可见时每 3 秒再取一次，单个提交不会变，不轮询。
+  private async load(reset: boolean): Promise<void> {
     const generation = ++this.generation;
-    if (!this.session) return this.message("发送消息后，这里会显示每轮对工作目录的改动。");
-    if (this.mode === "uncommitted") return this.loadUncommitted(generation);
+    window.clearTimeout(this.timer);
+    if (!this.session) return this.message("发送消息后，这里会显示工作目录相对 git 的改动。");
     try {
-      const response = await this.get(`${API}/turns`, {});
+      const response = await this.get("scope", { scope: this.scope });
+      const result = (await response.json()) as ScopeResult;
       if (generation !== this.generation) return;
-      this.turns = ((await response.json()) as { turns: TurnRecord[] }).turns;
-      if (generation !== this.generation) return;
-      this.renderPicker();
-      await this.showTurn(explicit);
+      if (result.status !== "ok") return this.message(result.message ?? "无法读取改动");
+      this.track(result.files ?? [], reset);
+      this.result = result;
+      this.render();
     } catch (error) {
       if (generation === this.generation) this.message(error instanceof Error ? error.message : String(error), true);
     }
-    this.schedule();
+    if (generation === this.generation && this.view.active && (this.scope === "wt" || this.scope === "base"))
+      this.timer = window.setTimeout(() => void this.load(false), POLL_MS);
   }
 
-  private renderPicker(): void {
-    if (this.following || !this.selected) this.selected = this.turns[0]?.turn_id ?? this.selected;
-    const options = this.turns.map((turn) => {
-      const option = element("option", "", turnLabel(turn));
-      option.value = turn.turn_id;
-      return option;
+  // 2. 刚变的文件：与上一次列表相比新出现或行数、状态变了的，标记 8 秒。换范围、换会话后的第一次不算。
+  private track(files: FileStatus[], reset: boolean): void {
+    const now = Date.now();
+    const next = new Map(files.map((file) => [file.path, `${file.status}:${file.added}:${file.removed}`]));
+    if (!reset && this.seen.size) for (const [path, sign] of next) if (this.seen.get(path) !== sign) this.fresh.set(path, now);
+    this.seen.clear();
+    for (const [path, sign] of next) this.seen.set(path, sign);
+    this.expireFresh();
+  }
+
+  // 圆点到时自己消失：最早到期的那个到期时重画左栏。
+  private expireFresh(): void {
+    const now = Date.now();
+    for (const [path, at] of this.fresh) if (now - at >= FRESH_MS || !this.seen.has(path)) this.fresh.delete(path);
+    window.clearTimeout(this.freshTimer);
+    if (!this.fresh.size) return;
+    this.freshTimer = window.setTimeout(() => {
+      this.expireFresh();
+      this.renderList();
+    }, Math.min(...this.fresh.values()) + FRESH_MS - now);
+  }
+
+  private render(): void {
+    const result = this.result!;
+    const files = result.files ?? [];
+    this.renderScopes(result);
+    this.total.textContent = files.length ? totals(files) : "";
+    const notes = [
+      result.base_unknown && this.scope === "base" ? "算不出这个分支相对默认分支的基线，只显示未提交的改动。" : "",
+      result.truncated ? "改动过多，只列出前 2000 个文件。" : "",
+      result.submodules ? "子模块内部的改动不统计。" : "",
+    ].filter(Boolean);
+    this.note.textContent = notes.join(" ");
+    this.note.hidden = !notes.length;
+    if (!files.some((file) => file.path === this.selected)) this.selected = byDirectory(files)[0]?.[1][0]?.path ?? null;
+    this.renderList();
+    void this.renderPatch();
+  }
+
+  private renderScopes(result: ScopeResult): void {
+    const option = (value: string, label: string) => Object.assign(element("option", "", label), { value });
+    const commits = element("optgroup", "");
+    commits.label = "本分支的提交";
+    commits.append(...(result.commits ?? []).map((commit) => option(commit.sha, `${commit.short} ${commit.subject}`)));
+    const base = option("base", `相对 ${result.base_ref ?? "默认分支"}（含提交）`);
+    this.scopePicker.replaceChildren(option("wt", "未提交（相对 HEAD）"), base, ...(commits.children.length ? [commits] : []));
+    this.scopePicker.value = this.scope.length > 7 && !result.commits?.some((item) => item.sha === this.scope) ? "wt" : this.scope;
+  }
+
+  // 3. 左栏：按目录分组，可筛选；当前文件用 aria-selected，刚变的文件带圆点。
+  private renderList(): void {
+    const files = this.result?.files ?? [];
+    const query = this.filter.value.trim().toLowerCase();
+    const shown = files.filter((file) => file.path.toLowerCase().includes(query));
+    const groups = byDirectory(shown).map(([dir, items]) => {
+      const group = element("div", "changes-group");
+      if (dir) group.append(element("div", "changes-dir", dir));
+      group.append(...items.map((file) => this.fileItem(file)));
+      return group;
     });
-    this.picker.replaceChildren(...options);
-    if (this.selected) this.picker.value = this.selected;
-    this.renderModes();
+    const empty = files.length ? "没有匹配的文件" : this.scope === "wt" ? "工作目录没有未提交的改动。" : "这个范围里没有改动。";
+    this.list.replaceChildren(...(groups.length ? groups : [element("p", "changes-empty", empty)]));
   }
 
-  // 选中轮次变化或它从进行中变为结束时才重新取详情（含 patch）。
-  private async showTurn(force = true): Promise<void> {
-    const generation = this.generation;
-    const summary = this.turns.find((turn) => turn.turn_id === this.selected);
-    const key = `${this.selected}:${summary?.phase}`;
-    if (!force && key === this.shown) return;
-    if (!this.selected) return this.message("还没有记录到改动。会话工作目录是 git 仓库时，每轮结束后在这里列出这一轮改了什么。");
-    if (summary?.phase === "started") return this.show(key, "这一轮还在进行，结束后统计。");
-    const response = await this.get(`${API}/turn`, { turn: this.selected });
-    if (generation !== this.generation) return;
-    if (response.status === 404) return this.show(key, "这一轮的记录已被较新的轮次覆盖，或者在停用、重启期间没有记录。");
-    const turn = (await response.json()) as TurnRecord;
-    if (generation !== this.generation) return;
-    this.shown = key;
-    if (turn.error) return this.message(turn.error.message);
-    this.renderChanges(turn.files, turn.patch ?? null, caveats({ ...turn, submodules: turn.repo?.submodules }));
+  private fileItem(file: FileStatus): HTMLButtonElement {
+    const item = button("changes-file", "", () => this.select(file.path, false));
+    item.setAttribute("role", "option");
+    item.setAttribute("aria-selected", String(file.path === this.selected));
+    item.title = `${file.path}（${STATUS_LABELS[file.status]}）`;
+    const status = element("span", "changes-status", file.status);
+    status.dataset.status = file.status;
+    item.append(status, element("span", "changes-name", file.path.slice(file.path.lastIndexOf("/") + 1)), counts(file));
+    if (this.fresh.has(file.path)) item.append(Object.assign(element("span", "changes-fresh"), { title: "刚刚变化" }));
+    return item;
   }
 
-  private async loadUncommitted(generation: number): Promise<void> {
-    this.message("统计中…");
+  private select(path: string, focus: boolean): void {
+    this.selected = path;
+    this.renderList();
+    void this.renderPatch();
+    if (focus) this.list.querySelector<HTMLElement>("[aria-selected='true']")?.focus();
+  }
+
+  // 4. 右栏只看一个文件：按两棵树与路径取 patch，相同时不重取；二进制不取。
+  private async renderPatch(): Promise<void> {
+    const result = this.result;
+    const file = result?.files?.find((item) => item.path === this.selected);
+    if (!result || !file) {
+      this.shownText = null;
+      delete this.pane.dataset.path;
+      return void this.pane.replaceChildren();
+    }
+    const key = `${result.before}:${result.after}:${file.path}`;
+    // 正在写评论时不刷新这份 diff，免得别处的改动把评论框冲掉；关掉评论框后下一次轮询再刷新。
+    const writing = this.pane.querySelector(".changes-comment") && this.pane.dataset.path === file.path;
+    if (key === this.shownPatch || writing) return;
+    this.shownPatch = key;
+    const head = element("header", "changes-pane-head");
+    head.append(element("span", "changes-pane-path", file.path), counts(file));
+    if (file.added === null) {
+      this.shownText = null;
+      return void this.pane.replaceChildren(head, element("p", "changes-empty", "二进制文件，不显示内容。"));
+    }
     try {
-      const response = await this.get(`${API}/uncommitted`, {});
-      const result = (await response.json()) as Uncommitted;
-      if (generation !== this.generation) return;
-      if (result.status !== "ok") return this.message(result.message ?? "无法统计");
-      this.renderChanges(result.files ?? [], result.patch ?? null, caveats(result));
+      const response = await this.get("patch", { before: result.before!, after: result.after!, path: file.path });
+      const body = (await response.json()) as { status: string; patch?: string; truncated?: boolean; message?: string };
+      if (key !== this.shownPatch) return;
+      if (body.status !== "ok") return void this.pane.replaceChildren(head, element("p", "changes-empty", body.message ?? "无法读取 diff"));
+      // 内容没变（别的文件变了导致树变了）时不重画，保留滚动位置。
+      if (this.pane.dataset.path === file.path && this.shownText === body.patch) return;
+      this.pane.dataset.path = file.path;
+      this.shownText = body.patch ?? "";
+      const rows = element("div", "changes-diff");
+      rows.append(...parsePatch(body.patch ?? "").map((row) => this.rowNode(file.path, row)));
+      const tail = body.truncated ? [element("p", "changes-empty", "diff 过长，只显示前 256 KiB。")] : [];
+      this.pane.replaceChildren(head, rows, ...tail);
     } catch (error) {
-      if (generation === this.generation) this.message(error instanceof Error ? error.message : String(error), true);
+      this.shownPatch = "";
+      this.shownText = null;
+      this.pane.replaceChildren(head, element("p", "changes-empty is-error", error instanceof Error ? error.message : String(error)));
     }
   }
 
-  // 顶部是总计、提示与文件列表（点一下跳到该文件），下面是逐文件的 diff。
-  private renderChanges(files: FileChange[], patch: string | null, notes: string[]): void {
-    const head = element("div", "changes-summary");
-    head.append(element("p", "changes-total", totals(files, notes.length > 0)), ...notes.map((note) => element("p", "changes-note", note)));
-    const list = element("ul", "changes-files");
-    const sections = patch === null ? new Map<string, string[]>() : splitPatch(patch);
-    const diffs = files.map((file) => fileDiff(file, sections.get(file.path)));
-    files.forEach((file, index) => {
-      const item = element("li", "");
-      const jump = button("changes-jump", "", () => {
-        diffs[index].open = true;
-        diffs[index].scrollIntoView({ block: "start" });
-      });
-      jump.title = file.path;
-      jump.append(...pathParts(file.path), counts(file));
-      item.append(jump);
-      list.append(item);
-    });
-    this.body.replaceChildren(head, ...(files.length ? [list, ...diffs] : []));
+  private rowNode(path: string, row: Row): HTMLElement {
+    const node = element("div", "changes-row");
+    node.dataset.kind = row.kind;
+    node.append(element("span", "changes-ln", row.line === null ? "" : String(row.line)), element("span", "changes-code", row.text));
+    if (row.line !== null) {
+      node.tabIndex = -1;
+      node.title = "点击写评论";
+      node.addEventListener("click", () => this.comment(node, path, row));
+    }
+    return node;
   }
 
-  private show(key: string, text: string): void {
-    this.shown = key;
-    this.message(text);
+  // 5. 行评论：写好后放进对话输入框（不自动发送）；Enter 放入，Shift+Enter 换行，Esc 取消。
+  private comment(node: HTMLElement, path: string, row: Row): void {
+    this.pane.querySelector(".changes-comment")?.remove();
+    const box = element("div", "changes-comment");
+    const field = element("textarea", "changes-comment-input");
+    field.placeholder = `对 ${path} 第 ${row.line} 行的意见`;
+    field.setAttribute("aria-label", field.placeholder);
+    const status = element("span", "changes-comment-status", "Enter 放进输入框 · Shift+Enter 换行 · Esc 取消");
+    const submit = () => {
+      const text = field.value.trim();
+      if (!text) return;
+      // 来源行带上路径、行号与这一行代码，整行不超过宿主的 200 字符上限；正文只放评论。
+      const result = this.view.quote({ session: this.session ?? "", text,
+        source: `改动 · ${path}:${row.line} · ${row.text.trim()}`.slice(0, 200) });
+      if (result === "inserted") return box.remove();
+      status.textContent = result === "stale" ? "会话已经切换，没有放进去。" : "没能放进输入框（内容过长或对话不可用）。";
+    };
+    field.addEventListener("keydown", (event) => {
+      if (event.key === "Enter" && !event.shiftKey && !event.isComposing) { event.preventDefault(); submit(); }
+      else if (event.key === "Escape") { event.preventDefault(); box.remove(); node.focus(); }
+    });
+    const actions = element("div", "changes-comment-actions");
+    actions.append(status, button("changes-action", "取消", () => box.remove()), button("changes-action is-primary", "放进输入框", submit));
+    box.append(field, actions);
+    node.after(box);
+    field.focus();
+  }
+
+  // j / k 切到下一个、上一个文件（按左栏的顺序）；在输入框里不接。
+  private onKey(event: KeyboardEvent): void {
+    if (event.ctrlKey || event.metaKey || event.altKey || (event.key !== "j" && event.key !== "k")) return;
+    if (event.target instanceof HTMLInputElement || event.target instanceof HTMLTextAreaElement || event.target instanceof HTMLSelectElement) return;
+    const query = this.filter.value.trim().toLowerCase();
+    const order = byDirectory((this.result?.files ?? []).filter((file) => file.path.toLowerCase().includes(query))).flatMap(([, items]) => items);
+    if (!order.length) return;
+    const at = order.findIndex((file) => file.path === this.selected);
+    const next = order[Math.min(order.length - 1, Math.max(0, at + (event.key === "j" ? 1 : -1)))];
+    event.preventDefault();
+    this.select(next.path, true);
+  }
+
+  private showNote(text: string): void {
+    this.note.textContent = text;
+    this.note.hidden = false;
   }
 
   private message(text: string, failed = false): void {
-    const node = element("p", failed ? "changes-message is-error" : "changes-message", text);
+    this.result = null;
+    this.total.textContent = "";
+    this.note.hidden = true;
+    this.list.replaceChildren();
+    const node = element("p", failed ? "changes-empty is-error" : "changes-empty", text);
     node.setAttribute("role", failed ? "alert" : "status");
-    this.body.replaceChildren(node);
+    this.pane.replaceChildren(node);
+    this.shownPatch = "";
+    this.shownText = null;
+    delete this.pane.dataset.path;
   }
 
   private async get(path: string, params: Record<string, string>): Promise<Response> {
     const query = new URLSearchParams({ session: this.session ?? "", ...params });
-    const response = await this.ctx.http.request(`${path}?${query}`);
-    if (!response.ok && response.status !== 404) throw new Error(`读取改动失败（${response.status}）`);
+    const response = await this.ctx.http.request(`${API}/${path}?${query}`);
+    if (!response.ok) throw new Error(`读取改动失败（${response.status}）`);
     return response;
   }
 }
@@ -307,7 +390,7 @@ function renderChanges(ctx: WebHostContextV1, host: HTMLElement, rawView: unknow
   const view = rawView as ConversationTabView;
   if (!view || typeof view.onActiveChange !== "function" || typeof view.onIntent !== "function")
     throw new Error("改动标签缺少 conversation.tools.v2 view");
-  const tab = new ChangesTab(ctx, view.session, view.active);
+  const tab = new ChangesTab(ctx, view, view.session);
   host.replaceChildren(tab.root);
   const stops = [
     view.onSessionChange((session) => tab.setSession(session)),
