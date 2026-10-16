@@ -18,6 +18,12 @@ async def apply(ctx: Context) -> None:
 
     # UI 缺席时只是没有浏览器入口，终端服务照常可用。
     async def register_ui(child: Context) -> None:
-        _ = await child.require(UI).register(child, dashboard=lambda: dashboard)
+        _ = await child.require(UI).register(
+            child, web="web_module.js", dashboard=lambda: dashboard,
+            requires=("conversation.tools.v2",),
+            contract_digests={
+                "conversation.tools.v2": "5aa099a3c88e6964834e95c4c1e122fdae25ba8b8cda816f5fe0a9d4ffd958d3",
+            },
+        )
 
     _ = await ctx.inject((UI, SESSION_TERMINALS), register_ui, name="terminal-ui")
