@@ -164,7 +164,6 @@ const LAYOUT_KEY = "akashic.conversation.tools.layout.v2.";
 const TITLE_LIMIT = 80;
 const DETAIL_LIMIT = 24;
 const HINT_LIMIT = 40;
-const CLOSED_LIMIT = 6;
 const LAUNCH_LABEL = "新标签页";
 const ICONS = {
   close: '<path d="M18 6 6 18M6 6l12 12"/>',
@@ -315,8 +314,8 @@ function toolPanel(key) {
   return panel;
 }
 
-// 新标签页：列出全部工具（状态取自已打开的标签）与本会话最近关闭的标签；选中后这一页原地变成该工具。
-function renderLaunch(panel, tools, closed, onTool, onClosed) {
+// 新标签页：列出全部工具（状态取自已打开的标签）；选中后这一页原地变成该工具。
+function renderLaunch(panel, tools, onTool) {
   const page = element("div", "conversation-tools-launch");
   const list = element("div", "conversation-tools-launch-tools");
   for (const tool of tools) {
@@ -329,18 +328,6 @@ function renderLaunch(panel, tools, closed, onTool, onClosed) {
     list.append(item);
   }
   page.append(element("h2", "conversation-tools-launch-heading", "工具"), list);
-  if (closed.length) {
-    const rows = element("div", "conversation-tools-launch-rows");
-    for (const item of closed) {
-      const row = element("button", "conversation-tools-launch-row");
-      row.type = "button";
-      row.innerHTML = item.entry.icon ?? svgIcon("launch");
-      row.append(element("span", "conversation-tools-launch-name", item.title), element("span", "conversation-tools-launch-state", item.at));
-      row.addEventListener("click", () => onClosed(item));
-      rows.append(row);
-    }
-    page.append(element("h2", "conversation-tools-launch-heading", "最近关闭"), rows);
-  }
   panel.replaceChildren(page);
 }
 
@@ -549,11 +536,9 @@ function mountTools(root, frame, tools, entries) {
     held: false,
   };
   state.activeKey = state.tabs[0].key;
-  const closedBySession = new Map();
   const handled = new Set();
   const isActive = (key) => state.open && state.activeKey === key;
   const activeRecord = () => state.tabs.find((record) => record.key === state.activeKey) ?? null;
-  const closedList = () => closedBySession.get(state.session ?? "") ?? [];
   // 活动只提示；打开、关闭与切换由用户决定，包括移动端。
   const lifecycle = createTabLifecycle(tools, isActive, () => state.session, {
     attention(record, noticeId) {
@@ -625,7 +610,7 @@ function mountTools(root, frame, tools, entries) {
     record.panel.hidden = record.key !== state.activeKey;
     if (!record.entry) {
       if (isActive(record.key)) renderLaunch(record.panel, entries.map((entry) => ({ entry, state: toolState(entry) })),
-        closedList(), (entry) => openTool(entry, record, true), (item) => reopen(item, record));
+        (entry) => openTool(entry, record, true));
       return;
     }
     lifecycle.report(record);
@@ -684,12 +669,6 @@ function mountTools(root, frame, tools, entries) {
     activate(record.key, true);
   }
 
-  function reopen(item, launch) {
-    const list = closedList();
-    list.splice(list.indexOf(item), 1);
-    openTool(item.entry, launch, true);
-  }
-
   function activate(key, focusTab = false) {
     state.held = false;
     state.activeKey = key;
@@ -707,15 +686,10 @@ function mountTools(root, frame, tools, entries) {
     if (record.instance || !record.entry) records.drop(record);
   }
 
-  // 4. 关掉一个标签：记进最近关闭；实例随之卸下（标签先收到 onClose），单开工具保留挂载；关到没有标签时收起工具区。
+  // 4. 关掉一个标签：实例随之卸下（标签先收到 onClose），单开工具保留挂载；关到没有标签时收起工具区。
   function closeTab(record) {
     const index = state.tabs.indexOf(record);
     if (index < 0) return;
-    if (record.entry) {
-      const list = closedList();
-      list.unshift({ entry: record.entry, title: record.label, at: new Date().toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }) });
-      closedBySession.set(state.session ?? "", list.slice(0, CLOSED_LIMIT));
-    }
     removeTab(record, true);
     if (!state.tabs.length) {
       state.activeKey = insert(records.launch(), null).key;
