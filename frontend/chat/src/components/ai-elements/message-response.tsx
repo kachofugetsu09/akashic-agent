@@ -91,13 +91,15 @@ setCustomComponents({
 // 放字节奏跟着积压走（参考 Claude Desktop 的 paceReveal）：显示始终比到达晚约 0.3 秒，积压越多放得越快，
 // 不设固定字速上限。旧参数把速度钳在 140 字/秒、每帧 6 字，快模型（≈300 字/秒）发完时只显示出三成，
 // 剩下的在落定那一刻整段跳出。积压超过 400 字时按 120ms 追平。
+// 上屏上限 60 次/秒：30 次时文字一格一格跳，高刷屏上尤其明显；每次上屏要重新解析整段，
+// 再往上在低端机上会掉帧。两次上屏之间的平滑交给新文字的淡入（合成层动画，跟随屏幕刷新率）。
 const STREAM_PACE = {
   minCharsPerSecond: 30,
   maxCharsPerSecond: 6000,
   targetLatencyMs: 300,
   catchUpLatencyMs: 120,
   catchUpThreshold: 400,
-  maxCommitFps: 30,
+  maxCommitFps: 60,
   startDelayMs: 60,
   maxCharsPerCommit: 200,
 };
@@ -124,7 +126,7 @@ export const MessageResponse = memo(function MessageResponse({
         content={children}
         isDark={theme.colorScheme === "dark"}
         final={!isAnimating}
-        fade={false}
+        fade={isAnimating && !reducedMotion}
         typewriter={false}
         smoothStreaming={isAnimating && !reducedMotion}
         smoothStreamingOptions={STREAM_PACE}
