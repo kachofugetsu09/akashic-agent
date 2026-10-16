@@ -190,6 +190,10 @@ Thinking 与工具调用沿共享页面的一条过程轨迹展示；流式消�
 或子插件时按 Web module Effect 递归清理。Core Web Host 与 conversation-ui 不得按 Computer、Browser 或
 其他子插件名称分支，工具区也不得取得 Session、Turn 或插件领域状态所有权。
 
+工具区可以把聊天报告的当前会话 ID 作为只读事实转交给子标签，按标签声明的 `accepts` 路由来自用户手势的意图，
+并把核对过会话的标签引用请求转发为输入框草稿；它不保存、不推导这些事实，Agent 活动只能亮徽标，不能展开工具区。
+见 [0121](decisions/0121-conversation-workbench-tabs.md)。
+
 ### WEBUI-009 聊天导航置顶与展开状态独立
 
 聊天导航可以置顶真实项目和没有 `project` 维度的普通可见会话。`default` 只表示该维度缺失，
