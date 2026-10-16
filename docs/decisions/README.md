@@ -6,6 +6,7 @@
 
 | ID | 状态 | 主题 | 关联条款 |
 |---|---|---|---|
+| [0121](0121-conversation-workbench-tabs.md) | proposed | 对话工具区升级为按会话组织的工作台：会话上下文、意图路由、正交标签 | WEBUI-008、PLG-014、PLG-016、SES-009 |
 | [0118](0118-akasha-publishes-trajectory-checkpoints.md) | proposed / implemented for review | Akasha 按批发布轨迹检查点，可重建性由重放等价守护 | MEM-009、MEM-013、ERR-001 |
 | [0115](0115-computer-manual-restart-from-failed.md) | proposed / implemented for review | Computer 出错后由用户重启电脑，整组结束旧运行时再唤醒 | PLG-017、ERR-001、STA-003 |
 | [0113](0113-verify-bytes-at-install-boundary.md) | proposed / implemented for review | 字节完整性只在安装边界校验，运行时不重复取摘要 | PLG、MIG |
