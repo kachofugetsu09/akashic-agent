@@ -489,6 +489,7 @@ function ComposerAttachments({ onPresenceChange, onRestoreText }: {
   const attachments = usePromptInputAttachments();
   const { files } = attachments;
   const trayRef = useRef<HTMLDivElement>(null);
+  const transitionRef = useRef<ViewTransition | null>(null);
   const preview = useAttachmentPreview();
   const hasAttachments = files.length > 0;
   useEffect(() => {
@@ -498,16 +499,24 @@ function ComposerAttachments({ onPresenceChange, onRestoreText }: {
   const remove = (id: string, refocus: boolean) => {
     const index = files.findIndex((file) => file.id === id);
     const next = files[index + 1] ?? files[index - 1];
+    // 删掉最后一张后托盘卸载、ref 变空：正文框要在删除前取好。
+    const textarea = trayRef.current?.closest("form")?.querySelector("textarea");
     const apply = () => {
       flushSync(() => attachments.remove(id));
       if (!refocus) return;
       const target = next && trayRef.current?.querySelector<HTMLElement>(`[data-attachment-id="${next.id}"] .ak-attachment__surface`);
-      (target ?? trayRef.current?.closest("form")?.querySelector("textarea"))?.focus();
+      (target ?? textarea)?.focus();
     };
     const tray = trayRef.current;
     if (!tray || !document.startViewTransition || window.matchMedia("(prefers-reduced-motion: reduce)").matches) return apply();
     tray.dataset.reflow = "";
-    document.startViewTransition(apply).finished.finally(() => { delete tray.dataset.reflow; });
+    // 动画没放完又删一张：新过渡会跳过旧的，旧过渡的 ready 按预期拒绝；只由最新的过渡收尾。
+    const transition = document.startViewTransition(apply);
+    transitionRef.current = transition;
+    transition.ready.catch(() => undefined);
+    void transition.finished.finally(() => {
+      if (transitionRef.current === transition) delete tray.dataset.reflow;
+    });
   };
   if (!hasAttachments) return null;
   return <>

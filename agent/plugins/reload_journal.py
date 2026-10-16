@@ -15,7 +15,7 @@ from pathlib import Path
 from typing import Literal, cast
 
 from agent.plugins import update_rollback, config_updates
-from agent.plugins.artifacts import ArtifactPointer, ArtifactPointers
+from agent.plugins.artifacts import ArtifactPointer, ArtifactPointers, read_pointers
 from agent.plugins.selection import PluginSelection
 
 ReloadPhase = Literal[
@@ -305,18 +305,37 @@ class ReloadJournal:
             for row in conn.execute(query, values).fetchall():
                 update_rollback.rollback(conn, update_rollback.read(conn, row[0]), plugins_home, workspace=self.path.parent.parent, now=_now(), error=error)
 
-    def rollback_install_update(
-        self, plugins_home: Path, *, expected: update_rollback.UpdateRollback, error: str,
-    ) -> None:
-        """Roll back one unchanged, unlinked install row under the caller's offline locks."""
+    def settle_orphaned_installs(self, plugins_home: Path) -> tuple[tuple[str, str, str], ...]:
+        """按磁盘指针结算无 runtime 记录的中断安装；调用方已持有发布锁。"""
         with self._connect() as conn:
             _ = conn.execute("BEGIN IMMEDIATE")
-            current = update_rollback.read(conn, expected.update_id)
-            if current != expected:
-                raise RuntimeError("插件安装恢复点在预检后改变")
-            if current.phase != "armed" or current.reload_tx_id is not None or current.input_ref is not None:
-                raise RuntimeError("指定记录不是孤立 armed 安装")
-            update_rollback.rollback(conn, current, plugins_home, workspace=self.path.parent.parent, now=_now(), error=error)
+            if not update_rollback.check_schema(conn):
+                return ()
+            rows = conn.execute(
+                "SELECT update_id FROM plugin_updates WHERE phase='armed' AND reload_tx_id IS NULL ORDER BY update_id"
+            ).fetchall()
+            updates = tuple(update_rollback.read(conn, str(row[0])) for row in rows)
+            return tuple(
+                (update.update_id, update.plugin_id, update_rollback.settle_orphan(
+                    conn, update, plugins_home, workspace=self.path.parent.parent, now=_now()))
+                for update in updates
+            )
+
+    def bind_boot_input(self, plugin_id: str, input_ref: str, code: Path) -> None:
+        """把尚未绑定的已提交安装接到本次启动实际选中的输入；只认代码确为候选制品的输入，可重复调用。"""
+        with self._connect() as conn:
+            _ = conn.execute("BEGIN IMMEDIATE")
+            rows = conn.execute(
+                "SELECT update_id FROM plugin_updates WHERE plugin_id=? AND phase='committed' AND input_ref IS NULL",
+                (plugin_id,),
+            ).fetchall()
+            for row in rows:
+                update = update_rollback.read(conn, str(row[0]))
+                pointers = read_pointers(update.plugin_base, validate_content=False)
+                if update.candidate.path is None or pointers is None or pointers.stable != update.candidate:
+                    continue
+                if (update.plugin_base / update.candidate.path).resolve() == code.resolve():
+                    update_rollback.set_input_ref(conn, update_id=update.update_id, input_ref=input_ref)
 
     def create_config_update(self, request_id: str, plugin_id: str, previous_input: str, input_ref: str,
                              config_revision: str, pending_config: str) -> None:
@@ -790,17 +809,6 @@ class ReloadJournal:
     def pending_recovery(self) -> tuple[ReloadRecoveryAction, ...]:
         with self._connect() as conn:
             return self._pending_recovery(conn)
-
-    def orphaned_armed_updates(self) -> tuple[update_rollback.UpdateRollback, ...]:
-        """Read installs with no runtime transaction to settle at boot."""
-        with self._connect() as conn:
-            return tuple(
-                update_rollback.read(conn, str(row[0]))
-                for row in conn.execute(
-                    "SELECT update_id FROM plugin_updates "
-                    "WHERE phase='armed' AND reload_tx_id IS NULL ORDER BY update_id"
-                )
-            )
 
     def settle_generation_cleanup(
         self, *, tx_id: str, plugin_id: str, generation_id: str, receipt: str,

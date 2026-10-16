@@ -34,7 +34,7 @@ def _forbid_parse(monkeypatch: pytest.MonkeyPatch) -> None:
 def test_facts_reused_across_processes_only_for_same_source(plugin_root: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
     first = load_static_plugin_manifest(plugin_root)
     facts = sorted((tmp_path / "home" / "manifest-facts").rglob("*.json"))
-    assert [path.name.split(".", 1)[1] for path in facts] == ["entrypoints.json", "identity.json"]
+    assert [path.name.split(".", 1)[1] for path in facts] == ["entrypoints.json", "identity.json", "ingress_guard.json"]
     assert sorted(path.name for path in plugin_root.iterdir()) == ["plugin.py"]
 
     _fresh_process()
