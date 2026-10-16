@@ -28,7 +28,7 @@ from .protocol import (
     require_positive,
     require_text,
 )
-from plugins.host_execution.contract import FileResult
+from plugins.host_execution.contract import FileResult, TerminalInfo, TerminalOutput, UnknownTerminalError
 from plugins.host_execution.contract import (
     ExecutionCleanupReport, ExecutionResult, ExecutionState
 )
@@ -89,8 +89,34 @@ class HostBridgeRequirementsChecker:
         )
 
 
+class _UnsupportedTerminals:
+    """Host Bridge 协议还没有终端 RPC；明确拒绝，不在 Core 本机偷偷开 shell。"""
+
+    async def open_terminal(self, *, owner_session_key: str, cwd: Path | None, cols: int, rows: int) -> TerminalInfo:
+        raise RuntimeError("Host Bridge 模式暂不支持交互终端")
+
+    async def write_terminal(self, *, owner_session_key: str, terminal_id: int, data: bytes) -> None:
+        raise UnknownTerminalError(f"终端不存在: {terminal_id}")
+
+    async def resize_terminal(self, *, owner_session_key: str, terminal_id: int, cols: int, rows: int) -> None:
+        raise UnknownTerminalError(f"终端不存在: {terminal_id}")
+
+    async def read_terminal(
+        self, *, owner_session_key: str, terminal_id: int, offset: int, wait_ms: int,
+    ) -> TerminalOutput:
+        raise UnknownTerminalError(f"终端不存在: {terminal_id}")
+
+    async def close_terminal(self, *, owner_session_key: str, terminal_id: int) -> bool:
+        return False
+
+    async def list_terminals(self, owner_session_key: str) -> list[TerminalInfo]:
+        return []
+
+
 class HostBridgeShellProcessManager:
     """在 Protobuf UDS 上保留 ShellProcessManager 的可观察语义。"""
+
+    terminals = _UnsupportedTerminals()
 
     def __init__(
         self,

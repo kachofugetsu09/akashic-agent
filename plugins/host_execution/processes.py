@@ -10,12 +10,13 @@ from .bridge.factory import build_shell_process_manager, build_requirements_chec
 from .shell_runtime import resolve_shell
 from plugins.host_execution.contract import ResolvedShell, RequirementsChecker
 from plugins.host_execution.contract import (
-    PROCESSES,
+    PROCESSES, TERMINALS, Processes, Terminals, TerminalInfo, TerminalOutput,
 )
 from plugins.host_execution.contract import (
     ExecutionCleanupReport, ExecutionResult, ExecutionState, ShellProcessManagerProtocol
 )
 from agent.plugin_composition.context import Context
+from agent.plugin_composition.model import ServiceKey
 
 
 class PluginProcesses:
@@ -40,11 +41,15 @@ class PluginProcesses:
         return build_requirements_checker()
 
     @contextmanager
-    def _operation(self, ctx: Context, key: str) -> Generator[str]:
+    def _operation(
+        self, ctx: Context, key: str,
+        service: tuple[ServiceKey[Processes] | ServiceKey[Terminals], object] | None = None,
+    ) -> Generator[str]:
         """同步接纳实际调用，关闭时先排空，防止已接纳 spawn 晚于 shutdown。"""
         if not self._formal or self._closed:
             raise RuntimeError("当前不能操作正式进程")
-        owner = ctx.require_runtime_identity(PROCESSES, self).plugin_id
+        service_key, provider = service or (PROCESSES, self)
+        owner = ctx.require_runtime_identity(service_key, provider).plugin_id
         if not isinstance(key, str) or not key:
             raise ValueError("进程 owner key 不能为空")
         self._operations += 1
@@ -110,3 +115,53 @@ class PluginProcesses:
             if report.failures:
                 raise RuntimeError(f"进程清理未确认: {report.failures}")
             self._manager = None
+
+
+class PluginTerminals:
+    """交互终端与进程共用同一 manager 与关闭排空；owner 同样由调用插件身份限定。"""
+
+    def __init__(self, processes: PluginProcesses) -> None:
+        self._processes = processes
+
+    @contextmanager
+    def _operation(self, ctx: Context, key: str) -> Generator[str]:
+        with self._processes._operation(ctx, key, (TERMINALS, self)) as owner:
+            yield owner
+
+    async def open(
+        self, ctx: Context, owner_key: str, *, cwd: Path | None, cols: int, rows: int,
+    ) -> TerminalInfo:
+        with self._operation(ctx, owner_key) as owner:
+            return await self._processes._backend().terminals.open_terminal(
+                owner_session_key=owner, cwd=cwd, cols=cols, rows=rows,
+            )
+
+    async def write(self, ctx: Context, owner_key: str, terminal_id: int, data: bytes) -> None:
+        with self._operation(ctx, owner_key) as owner:
+            await self._processes._backend().terminals.write_terminal(
+                owner_session_key=owner, terminal_id=terminal_id, data=data,
+            )
+
+    async def resize(self, ctx: Context, owner_key: str, terminal_id: int, *, cols: int, rows: int) -> None:
+        with self._operation(ctx, owner_key) as owner:
+            await self._processes._backend().terminals.resize_terminal(
+                owner_session_key=owner, terminal_id=terminal_id, cols=cols, rows=rows,
+            )
+
+    async def read(
+        self, ctx: Context, owner_key: str, terminal_id: int, *, offset: int, wait_ms: int,
+    ) -> TerminalOutput:
+        with self._operation(ctx, owner_key) as owner:
+            return await self._processes._backend().terminals.read_terminal(
+                owner_session_key=owner, terminal_id=terminal_id, offset=offset, wait_ms=wait_ms,
+            )
+
+    async def close(self, ctx: Context, owner_key: str, terminal_id: int) -> bool:
+        with self._operation(ctx, owner_key) as owner:
+            return await self._processes._backend().terminals.close_terminal(
+                owner_session_key=owner, terminal_id=terminal_id,
+            )
+
+    async def list(self, ctx: Context, owner_key: str) -> list[TerminalInfo]:
+        with self._operation(ctx, owner_key) as owner:
+            return await self._processes._backend().terminals.list_terminals(owner)
