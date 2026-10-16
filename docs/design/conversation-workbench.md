@@ -1,7 +1,10 @@
 # 对话工作台：会话上下文、意图路由与正交标签
 
-决策见 [0121](../decisions/0121-conversation-workbench-tabs.md)，需求来源 #1419。本文给出合同、事实 owner 与切片顺序；
+决策见 [0121](../decisions/0121-conversation-workbench-tabs.md)（含 2026-10 修订），需求来源 #1419。本文给出合同、事实 owner 与切片顺序；
 每个切片落地后在这里补最终合同与验证，未落地的内容不代表已完成。规格评审（brief-25）的取舍记录在第 7 节。
+
+> **2026-10 修订**：工具收敛为电脑、终端、改动三个；预览撤回；改动只认 git、按范围看，不再按轮保存 diff；
+> 标签条改为浏览器式标签并支持新标签页、多开、上下分屏与快捷键。差异见 2.4、4.4 与第 8 节，与上文冲突时以它们为准。
 
 ## 1. 分层
 
@@ -14,14 +17,13 @@
 │ conversation-ui：展开/宽度/当前标签/窄屏 + 转交会话 ID + 按 accepts 路由 + 核对会话后转发引用 │
 └───────┬──────────────────┬──────────────────┬──────────────────┬────────────────┘
         │ conversation.tools.v2：每个标签只看到自己的 view
-   ┌────▼────┐       ┌─────▼──────┐     ┌─────▼──────┐     ┌─────▼─────┐
-   │ 电脑     │       │ 终端        │     │ 改动        │     │ 预览       │
-   │computer │       │standard_    │     │workspace_   │     │preview_ui │
-   └────┬────┘       │tools 自有   │     │changes      │     └─────┬─────┘
-        │            └─────┬──────┘     └─────┬──────┘           │ ARTIFACT_READ
-        ▼                  ▼ 自有记录          ▼ host.processes.v1  ▼
-   computer workload   jobs.notices.v1    WORKING_DIRECTORY     ledger
-                       (停止后台命令)       TURN_PROJECTION 等
+   ┌────▼────┐       ┌─────▼──────┐     ┌─────▼──────┐
+   │ 电脑     │       │ 终端（多开） │     │ 改动        │
+   │computer │       │terminal    │     │workspace_   │
+   └────┬────┘       └─────┬──────┘     │changes      │
+        │                  │            └─────┬──────┘
+        ▼                  ▼                  ▼ host.processes.v1
+   computer workload   host.terminals.v1  WORKING_DIRECTORY、TURN_PROJECTION 等
 ```
 
 规则：
@@ -73,7 +75,8 @@ type QuoteStatus = "inserted" | "stale" | "rejected";
    `unhandled` 与 `failed` 时聊天端回到原有行为（例如附件预览弹窗）。
 5. 宿主把当前可接受的意图名集合以 `akashic.workbench-intents {names}` 告诉聊天端，只用来决定是否显示“在侧栏打开”，不代表一定成功。
 6. 意图名带版本（`.v1`）。payload 的结构由该意图的领域 owner 在自己的 README 与 `contract.py` 里定义，例如
-   `workspace.changes.open.v1` 由 workspace_changes 定义 `{turn_id, path?}`。接收标签校验领域引用和读取权限。
+   `workspace.changes.open.v1` 由 workspace_changes 定义 `{path}`（2026-10 起，原为 `{turn_id, path?}`）。接收标签校验领域引用和读取权限。
+   通用的 `workspace.file.open.v1 {path, line?}` 表示“打开工作目录里的这个文件”，由聊天端对回复里像文件路径的行内代码发出，见 2.4。
    聊天插槽上下文增加 `workbench: { accepts(name): boolean; open(name, payload): Promise<status> }`，由聊天端转发。
 
 ### 2.2 引用回输入框
@@ -88,6 +91,38 @@ type QuoteStatus = "inserted" | "stale" | "rejected";
 ### 2.3 Agent 活动
 
 Agent 活动只经 `requestAttention` 亮徽标；宿主不因活动展开工具区（0092）。
+
+### 2.4 标签条、新标签页、分屏与快捷键（2026-10 增补）
+
+参照 Claude Desktop 与 Codex 的标签条：标签高 32px、圆角、宽 90–240px，溢出横向滚动、尾部渐隐；当前标签带边框与阴影；“+”紧跟最后一个标签。
+标签上不放 +N −M 之类的计数，状态只用一个琥珀点。
+
+合同增补（全部可选，旧标签不受影响）：
+
+```ts
+interface ConversationTab {
+  multiple?: boolean;   // 可多开：每次打开是新实例，各占一个标签（终端）
+  hint?: string;        // 新标签页里工具名后的一句说明，≤ 40 字符
+  shortcut?: string;    // "Ctrl+`" 或 "Mod+Shift+字母"；保留键与重复由宿主拒绝
+}
+interface ConversationTabView {
+  readonly instance: string | null;          // 多开实例 ID，随会话布局恢复
+  readonly instances: readonly string[];     // 本会话这个工具当前的全部实例
+  onClose(listener: () => void): Disposer;   // 用户关闭标签（先于 disposer）；换会话卸载不算
+  openNew(): void; cycle(delta: 1 | -1): boolean;
+  setTitle(title: string | null): void;      // ≤ 80 字符
+  setIndicator(indicator: { busy?: boolean; detail?: string } | null): void;   // detail ≤ 24 字符，只进提示
+}
+```
+
+- **新标签页**：“+”打开一个新标签页，列出可打开的工具（图标、名称、hint、快捷键）与最近关闭的标签。
+  当前停在新标签页时再打开工具，就地替换这一页。
+- **分屏**：最多上下两组，标签可拖到另一组（自定义 MIME `application/x-akashic-tab`）。
+  布局按会话记为 `{open, focus, groups:[{tabs, active}]}`，旧的 `{tabs, active}` 照常读入。
+- **快捷键**：宿主占 Mod+J（开关工具区）与 Mod+\（上下分屏），工具自己声明各自的键：终端 Ctrl+`，改动 Mod+Shift+G，电脑 Mod+Shift+D。
+  对话 iframe 同源，宿主直接在它的 window 上监听；有对话框或菜单打开、或按键已被 preventDefault 时不接。
+  对话页的快捷键面板（Ctrl+/）多出“工作台”一组，由宿主经 `akashic.chat-tools` 下发。
+- **回复里的文件路径**：相对路径加常见扩展名（可带 `:行号`）的行内代码显示为可点；工作台里没有工具接受 `workspace.file.open.v1` 时保持原样。
 
 ## 3. 终端（standard_tools 自有）
 
@@ -159,7 +194,21 @@ Agent 活动只经 `requestAttention` 亮徽标；宿主不因活动展开工具
 - **回复下方摘要**：`turn.after_answer` 只出现在 complete 的最终回答上，按 `messageId == ending_message_id` 查询，
   显示“改动了 N 个文件 +a −r”，计算中显示“统计中”。quiet/abandoned 的轮次只在标签的轮次列表里出现。
 
+### 4.4 按范围看（2026-10，取代 4.3 的“本轮 / 未提交”）
+
+- **只认 git，不做归属**：同一工作目录里 Akashic、外部 agent（如 Codex）与用户自己的修改都算“未提交”，需要隔离时用 worktree。
+- **范围**：未提交（工作树对 HEAD，含未跟踪的新文件）、相对默认分支（merge-base 对工作树；默认分支取 `origin/HEAD`，否则本地 main/master；算不出时如实说明只显示未提交）、本分支上的单个提交（最近 30 个）。
+- **先列文件再取 diff**：`GET /api/dashboard/workspace_changes/scope?session=&scope=` 返回两棵树的 id 与文件列表；
+  `GET .../patch?session=&before=&after=&path=` 返回单个文件的 patch（≤ 256 KiB）。服务端按树 id 做 LRU，工作树没变时轮询不跑 diff。
+- **快照**：持久私有 index `<git-dir>/akashic-changes.index`，每次 `read-tree -m HEAD` 后 `add -A` 再 `write-tree`。
+  不跳过 read-tree：跳过会在先构建、后补 `.gitignore` 时留下幽灵文件，提交后也会丢掉 stat；代价是大仓库每次约多 100ms。5.6 万文件的仓库从约 7 秒降到约 0.3 秒。
+- **轮次**：每轮仍按 4.1 记录观测窗口，只存文件列表与行数（不存 patch），用于回复下方的摘要；点摘要打开“未提交”并选中这一轮的第一个文件。
+- **界面**：左栏按目录分组、可筛选，带 A/M/D 状态与行数；右栏只显示一个文件的 diff，j/k 切换。标签可见时每 3 秒刷新，刚变化的文件亮 8 秒琥珀点。
+  点任意一行写评论，Enter 放进对话输入框（来源行 `改动 · 路径:行号 · 这一行代码`），不自动发送。
+
 ## 5. 预览（preview_ui）
+
+> **已撤回**（2026-10）：浏览器归“电脑”，附件仍在对话弹窗里查看；#1438 关闭。本节保留为设计记录。
 
 用 `ARTIFACT_READ` 读取附件，在侧栏查看附件、文本、表格和 visuals，accepts `artifact.open.v1 {message_id, artifact_id}`。
 聊天附件卡片先发意图，收到 `unhandled` 或 `failed` 时仍打开原弹窗。
@@ -179,7 +228,12 @@ Agent 活动只经 `requestAttention` 亮徽标；宿主不因活动展开工具
 | S7b | git 快照与 diff 执行、上限与不支持判定 | S7a |
 | S8a | 改动标签（本轮 / 未提交，文件列表 + diff，引用到对话） | S3、S7b |
 | S8b | 回复下方改动摘要 | S7b |
-| S9 | 预览标签与附件卡片的意图回退 | S3a |
+| S9 | ~~预览标签与附件卡片的意图回退~~ 撤回 | S3a |
+| S10 | 浏览器式标签条、新标签页与多开（2.4） | S2b |
+| S11 | 改动按范围看：持久私有 index、`/scope` 与 `/patch`、单文件 diff 与行评论（4.4） | S8a |
+| S12 | 上下分屏、标签拖放、工具声明快捷键（2.4） | S10 |
+| S13 | 每个终端一个标签 | S12、S4 |
+| S14 | 回复里的文件路径可点（`workspace.file.open.v1`） | S11 |
 
 每个切片一个 PR，新增约 500 行以内。验收用真实组件，不新增单元测试（TST-001）：
 - 前端：真实构建 + 浏览器，1440 / 900 / 360、浅色 / 深色、减少动效。
@@ -220,7 +274,16 @@ Agent 活动只经 `requestAttention` 亮徽标；宿主不因活动展开工具
 | S2a / S2b | #1422、#1423 | 子挂载 render 失败经可选的 `WebChildRenderOptions.onError` 通知父插件，v1 调用方不受影响 |
 | S3a / S3b | #1424 | 引用上限是 **8192 字符**（不是 8 KiB），`source` ≤ 200 字符；意图 payload 上限按 UTF-8 字节计 16 KiB |
 | S4 | ~~#1425、#1426~~ → #1427、#1428、#1429、#1430、#1431 | 只读命令记录撤回，改为用户自己的交互终端：`host.terminals.v1`（本机 PTY 与 Host Bridge `Terminal` RPC），terminal 插件提供 `terminal.sessions.v1` 与 dashboard 列出 / 新开 / 关闭 / WebSocket 接入，前端是 xterm 标签。归 terminal 插件而不是 standard_tools，因为事实是用户的 PTY，与 shell 工具无关 |
+| S7a / S7b | #1433、#1434 | 无 |
+| S8a / S8b | #1435、#1436 | 摘要的意图 payload 后改为 `{path}`（#1445） |
+| T1c | #1432 | 终端由监管进程管理会话生死，关闭做完才移除，写入串行 |
+| S9 | ~~#1438~~ | 撤回，见第 5 节 |
+| S10 | #1440、#1441 | 标签自报标题与状态（`setTitle` / `setIndicator`），新标签页记住最近关闭 |
+| S11 | #1442、#1445 | 去掉“本轮”视图与 `/uncommitted`、`/turns`、`/turn` 端点；轮次不再存 patch |
+| S12 | #1443 | Mod+\ 用于分屏（沿用 VS Code 习惯） |
+| S13 | #1444 | 实例与 PTY 的对应记在 `sessionStorage`；关闭标签即关闭 PTY，换会话只卸下。已知限制见 0122 |
+| S14 | #1446 | 先找未提交，再找相对默认分支；只写文件名时按结尾唯一匹配；带行号时滚到该行并短暂高亮 |
 
-- **工具卡入口的意图名**：`shell.command.open.v1` 随 S4 撤回。约定以后工具卡入口统一用 `tool.<name>.open.v1 {call_id}`，聊天端不需要认识具体工具；目前没有使用者。S8、S9 仍用各自领域名（`workspace.changes.open.v1`、`artifact.open.v1`）。
+- **工具卡入口的意图名**：`shell.command.open.v1` 随 S4 撤回。约定以后工具卡入口统一用 `tool.<name>.open.v1 {call_id}`，聊天端不需要认识具体工具；目前没有使用者。改动用自己的领域名 `workspace.changes.open.v1`；打开文件用通用的 `workspace.file.open.v1`（2.4）。
 - **Agent 的命令**仍由对话里的工具卡展示；Agent 不读用户终端（0122）。
 - **终端的信任边界与已知限制**见 0122：已登录的 Web 用户等于能在执行主机上执行任意命令；重启不保留；截断回放可能从全屏程序中途开始；Windows 暂不支持；手机上没有 Esc / Tab / Ctrl 辅助键行。
