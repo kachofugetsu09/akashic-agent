@@ -41,6 +41,12 @@ export function activateShellRailAction(id: string): void {
   window.parent.postMessage({ type: "akashic.rail-action-activate", id }, window.location.origin);
 }
 
+/** 当前会话交给宿主转交工具区标签；新建对话尚未发送时为 null。standalone 下无宿主，静默。 */
+export function reportShellSession(sessionId: string): void {
+  if (window.parent === window) return;
+  window.parent.postMessage({ type: "akashic.chat-session", sessionId: sessionId || null }, window.location.origin);
+}
+
 /** iframe 内的遮罩盖不住宿主 chrome：模态层开合时告知宿主，让它收起浮在页面上的控件。standalone 下无宿主，静默。 */
 export function reportShellOverlay(open: boolean): void {
   if (window.parent === window) return;
