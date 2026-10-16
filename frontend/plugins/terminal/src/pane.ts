@@ -158,8 +158,11 @@ export class Pane {
     const socket = new WebSocket(this.ctx.http.webSocketUrl(`/api/dashboard/terminal/attach?${query}`));
     socket.binaryType = "arraybuffer";
     socket.onopen = () => {
+      const recovered = this.attempt > 0;
       this.attempt = 0;
       this.send({ type: "resize", cols: this.term.cols, rows: this.term.rows });
+      // 重连成功立刻撤下“重新连接中”，不等下一次输出或标题变化。
+      if (recovered) this.host.changed?.(this);
     };
     socket.onmessage = (event) => this.receive(event.data);
     socket.onclose = (event) => this.closed(socket, event.code);

@@ -232,14 +232,18 @@ class TerminalTab implements PaneHost {
     }
   }
 
-  // 退出后按 Enter：关掉旧 PTY，在原处开一个新的。会话已切换或 Pane 已关时不再接上，新开的随即关掉。
+  // 退出后按 Enter：关掉旧 PTY，在原处开一个新的。正在关闭的不重开；会话已切换或 Pane 已关、正在关时不再接上，
+  // 新开的随即关掉——除非切回来后重新载入的列表已经把它挂成了 Pane。
   async restart(pane: Pane): Promise<void> {
+    if (pane.closing) return;
     const generation = this.generation;
     this.release(pane.session, pane.facts.id);
     try {
       const facts = await this.open(pane.session, { cols: pane.term.cols, rows: pane.term.rows });
-      if (generation !== this.generation || !pane.replace(facts)) this.release(pane.session, facts.id);
-      else this.renderStrip();
+      const adopted = this.panes.some((item) => item.session === pane.session && item.facts.id === facts.id);
+      if (generation !== this.generation || pane.closing || !pane.replace(facts)) {
+        if (!adopted) this.release(pane.session, facts.id);
+      } else this.renderStrip();
     } catch (error) {
       if (!pane.disposed) pane.term.write(`\r\n\x1b[31m${error instanceof Error ? error.message : String(error)}\x1b[0m\r\n`);
     }

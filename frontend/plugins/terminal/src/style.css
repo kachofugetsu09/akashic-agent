@@ -1,9 +1,12 @@
 /* 终端标签：整块是终端底色，顶部一条细终端条；内容边距参照 kitty 的 window_padding。 */
+/* 内容（终端条、xterm）不决定标签宽度：多终端时终端条在条内滚动，xterm 按可见宽度排版。 */
 .terminal-root {
   display: flex;
   flex-direction: column;
   height: 100%;
+  min-width: 0;
   min-height: 0;
+  contain: inline-size;
   background: var(--ak-paper-sheet);
   color: var(--ak-ink-primary);
 }
