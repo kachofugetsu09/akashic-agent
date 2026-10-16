@@ -4,6 +4,7 @@
 - 依据：维护者要求按需唤醒、无操作满 10 分钟回收，并保留已保存的身份。
 - 关联：PLG-017、STA-003、BAK-001、ERR-001
 - 补充：`failed` 的人工恢复见 [0115](0115-computer-manual-restart-from-failed.md)
+- 部分 superseded by [0123](0123-computer-is-one-browser.md)：容器不再有桌面与桌面输入 driver，匿名 Context 改在主 Chromium 内；身份与启停规则不变
 
 ## 决定与理由
 
