@@ -6,6 +6,7 @@ import "./style.css";
 
 const API = "/api/dashboard/terminal/terminals";
 const QUOTE_LIMIT = 8192;
+const STATE_LABELS = { closing: "（正在关闭）", exited: "（已退出）", reconnecting: "（重新连接中）" } as const;
 
 function element<K extends keyof HTMLElementTagNameMap>(tag: K, className: string, text = ""): HTMLElementTagNameMap[K] {
   const node = document.createElement(tag);
@@ -162,25 +163,41 @@ class TerminalTab implements PaneHost {
     try { this.current.fit.fit(); } catch { /* 尺寸为 0 时跳过 */ }
   }
 
-  // 3. 终端条：每个终端一个标签（shell 标题或目录名），末尾是新建按钮。
+  // 3. 终端条：每个终端一个按钮（shell 标题或目录名），当前终端用 aria-current 标出，末尾是新建按钮。
   private renderStrip(): void {
     const tabs = this.panes.map((pane) => {
       const item = element("div", "terminal-tab");
-      item.setAttribute("aria-selected", String(pane === this.current));
-      const name = button("terminal-tab-name", pane.label, pane.label, () => this.select(pane));
-      name.setAttribute("role", "tab");
-      if (pane.facts.exited) name.dataset.state = "exited";
-      else if (pane.reconnecting) name.dataset.state = "reconnecting";
-      item.append(name, button("terminal-tab-close", `关闭 ${pane.label}`, "×", () => this.close(pane)));
+      const state: keyof typeof STATE_LABELS | "" = pane.closing ? "closing" : pane.facts.exited ? "exited" : pane.reconnecting ? "reconnecting" : "";
+      const label = pane.label + (state ? STATE_LABELS[state] : "");
+      const name = button("terminal-tab-name", label, pane.label, () => this.select(pane));
+      if (pane === this.current) name.setAttribute("aria-current", "true");
+      if (state) name.dataset.state = state;
+      const close = button("terminal-tab-close", `关闭 ${pane.label}`, "×", () => void this.close(pane));
+      close.disabled = pane.closing;
+      item.append(name, close);
       return item;
     });
-    this.strip.setAttribute("role", "tablist");
+    this.strip.setAttribute("role", "group");
+    this.strip.setAttribute("aria-label", "终端");
     this.strip.replaceChildren(...tabs, button("terminal-tool terminal-new", "新建终端（Ctrl+Shift+T）", "+", () => void this.create()));
   }
 
-  private close(pane: Pane): void {
-    this.release(pane.session, pane.facts.id);
-    this.gone(pane);
+  // 关闭等后端确认：成功或终端已不存在才移除；失败时恢复并在终端里写明原因，可以再点一次。
+  private async close(pane: Pane): Promise<void> {
+    if (pane.closing) return;
+    pane.closing = true;
+    this.renderStrip();
+    try {
+      const query = new URLSearchParams({ session: pane.session });
+      const response = await this.ctx.http.request(`${API}/${pane.facts.id}?${query}`, { method: "DELETE" });
+      if (!response.ok && response.status !== 404) throw new Error(`关闭失败（${response.status}），终端仍在运行`);
+      if (!pane.disposed) this.gone(pane);
+    } catch (error) {
+      pane.closing = false;
+      if (pane.disposed) return;
+      this.renderStrip();
+      pane.term.write(`\r\n\x1b[31m${error instanceof Error ? error.message : String(error)}\x1b[0m\r\n`);
+    }
   }
 
   // 关闭远端 PTY 不等结果：失败时它随会话 owner 清理或换代关闭一并结束。

@@ -35,7 +35,7 @@
   border-radius: 6px;
 }
 
-.terminal-tab[aria-selected="true"] { background: var(--ak-paper-raised); }
+.terminal-tab:has([aria-current="true"]) { background: var(--ak-paper-raised); }
 
 .terminal-tab-name,
 .terminal-tab-close,
@@ -56,8 +56,9 @@
   white-space: nowrap;
 }
 
-.terminal-tab[aria-selected="true"] .terminal-tab-name { color: var(--ak-ink-primary); }
-.terminal-tab-name[data-state="exited"] { text-decoration: line-through; opacity: 0.7; }
+.terminal-tab-name[aria-current="true"] { color: var(--ak-ink-primary); }
+.terminal-tab-name[data-state="exited"],
+.terminal-tab-name[data-state="closing"] { text-decoration: line-through; opacity: 0.7; }
 .terminal-tab-name[data-state="reconnecting"]::after { content: " ·"; color: var(--ak-rule-strong); }
 
 .terminal-tab-close {
@@ -68,7 +69,7 @@
 }
 
 .terminal-tab:hover .terminal-tab-close,
-.terminal-tab[aria-selected="true"] .terminal-tab-close,
+.terminal-tab:has([aria-current="true"]) .terminal-tab-close,
 .terminal-tab-close:focus-visible { opacity: 1; }
 
 .terminal-tool { padding: 6px 8px; white-space: nowrap; }
@@ -137,7 +138,8 @@
 
 /* 触控：可点区域至少 44px；关闭钮常显 */
 @media (pointer: coarse) {
+  .terminal-tab { flex-shrink: 0; }
   .terminal-tab-name,
-  .terminal-tool { min-height: 44px; }
+  .terminal-tool { min-width: 44px; min-height: 44px; }
   .terminal-tab-close { width: 44px; height: 44px; opacity: 1; }
 }

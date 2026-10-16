@@ -68,6 +68,7 @@ export class Pane {
   private noticed = false;
 
   disposed = false;
+  closing = false;
   private restarting = false;
 
   // session 固定为创建时的会话：会话切换后迟到的回调也不会连到别的会话。
