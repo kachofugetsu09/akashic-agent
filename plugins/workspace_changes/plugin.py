@@ -29,6 +29,12 @@ async def apply(ctx: Context) -> None:
 
     # UI 缺席时只是没有浏览器入口，统计照常进行。
     async def register_ui(child: Context) -> None:
-        _ = await child.require(UI).register(child, dashboard=lambda: dashboard)
+        _ = await child.require(UI).register(
+            child, web="web_module.js", dashboard=lambda: dashboard,
+            requires=("conversation.tools.v2",),
+            contract_digests={
+                "conversation.tools.v2": "438131c0fee0caf2ba0c8509d9312ccda6c2c195ad4ce29c26da404e8d15292c",
+            },
+        )
 
     _ = await ctx.inject((UI, WORKSPACE_CHANGES), register_ui, name="workspace-changes-ui")
