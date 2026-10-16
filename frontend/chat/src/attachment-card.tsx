@@ -2,6 +2,7 @@ import { Check, Copy, Download, ImageIcon, Pencil, Play, X } from "lucide-react"
 import { useEffect, useRef, useState, type CSSProperties, type KeyboardEvent as ReactKeyboardEvent, type ReactNode } from "react";
 import { Dialog, DialogClose, DialogContent, DialogDescription, DialogTitle } from "@/components/ui/dialog";
 import { copyText } from "./copy-text";
+import { openInWorkbench, workbenchAccepts } from "./shell-workbench";
 import "./attachment-card.css";
 
 // 附件卡（参考 Claude Desktop 的 MessageAttachments，尺寸取紧凑横条）：输入框与已发送消息共用一张卡。
@@ -162,7 +163,12 @@ export interface SentAttachmentItem {
   mediaType?: string;
   url: string;
   sizeBytes?: number;
+  /** 已入账消息上的附件才有：工作台按会话与消息校验附件归属。 */
+  source?: { session: string; message: string };
 }
+
+/** 工作台侧栏预览附件的意图；payload 为 { message_id, artifact_id }，会话由意图本身携带。 */
+const ARTIFACT_OPEN = "artifact.open.v1";
 
 const isMediaKind = (kind: AttachmentCardKind): kind is MediaKind => kind === "image" || kind === "video";
 
@@ -200,8 +206,17 @@ function SentAttachment({ item, pending, onPreview }: {
   return <AttachmentCard pending={pending}
     data={{ id: item.id, name: item.name, kind, mediaType: item.mediaType, url: item.url, sizeBytes: item.sizeBytes }}
     mediaTrigger={media ? mediaAttributes(item.url, item.name, kind) : undefined}
-    onOpen={media ? undefined : textual ? () => onPreview({ name: item.name, url: item.url, sizeBytes: item.sizeBytes }) : download}
+    onOpen={media ? undefined : textual ? () => openText(item, onPreview) : download}
     openVerb={textual ? "预览" : "下载"} />;
+}
+
+// 文本附件先交给工作台的预览标签；没有宿主、没有接受者或打开失败时回到弹窗。
+// 意图必须在点击处理函数里同步发出，弹窗回退在结果回来后再开。
+function openText(item: SentAttachmentItem, onPreview: ReturnType<typeof useAttachmentPreview>["open"]) {
+  const fallback = () => onPreview({ name: item.name, url: item.url, sizeBytes: item.sizeBytes });
+  if (!item.source || !workbenchAccepts(ARTIFACT_OPEN)) return fallback();
+  void openInWorkbench(ARTIFACT_OPEN, item.source.session, { message_id: item.source.message, artifact_id: item.id })
+    .then((status) => { if (status !== "handled") fallback(); });
 }
 
 // —— 文本内容：行数、粘贴缩影、预览 ——

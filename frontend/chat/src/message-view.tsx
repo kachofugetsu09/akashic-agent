@@ -551,7 +551,7 @@ export function TimelineMessageView({ message, lookupMessage, toolResults, onNav
     if (renderAttachment) return renderAttachment(ref);
     if (attachmentResult) return <MessageAttachmentFigure attachment={ref} origin={origin}
       sessionId={message.session_id} messageId={message.id} fallback={fallback} />;
-    return <SentAttachments items={[timelineAttachmentItem(ref)]} />;
+    return <SentAttachments items={[timelineAttachmentItem(ref, message)]} />;
   };
   // 与实时消息同一个容器；用户输入的附件（含正文里的 artifact_ref）全部收进气泡上方的附件条，发出时与刷新后位置一致。
   const input = body.kind === "input";
@@ -559,7 +559,7 @@ export function TimelineMessageView({ message, lookupMessage, toolResults, onNav
   // 工具结果插图沿正文宽度展示，不进附件条。
   const attachmentList = !looseAttachments.length ? null : attachmentResult
     ? looseAttachments.map((ref, index) => <Fragment key={`${ref.artifact_id}:${index}`}>{attachment(ref.artifact_id)}</Fragment>)
-    : <SentAttachments items={looseAttachments.map(timelineAttachmentItem)} />;
+    : <SentAttachments items={looseAttachments.map((ref) => timelineAttachmentItem(ref, message))} />;
   const emptyBubble = input && !leadingContent && !leadingProcess && !afterBody && body.parts.every((part) => !isTimelinePartVisible(part)
     || (!("display" in part) && (part.kind === "artifact_ref" || (part.kind === "text" && !part.value.trim()))));
   return <div className={`message-row timeline-message timeline-${body.kind}`}>
@@ -603,9 +603,10 @@ export function TimelineMessageView({ message, lookupMessage, toolResults, onNav
   </div>;
 }
 
-function timelineAttachmentItem(ref: TimelineAttachment): SentAttachmentItem {
+function timelineAttachmentItem(ref: TimelineAttachment, message: TimelineMessage): SentAttachmentItem {
   return { id: ref.artifact_id, name: ref.filename ?? "附件", mediaType: ref.media_type ?? undefined,
-    url: `/api/chat/artifacts/${encodeURIComponent(ref.artifact_id)}`, sizeBytes: ref.size_bytes };
+    url: `/api/chat/artifacts/${encodeURIComponent(ref.artifact_id)}`, sizeBytes: ref.size_bytes,
+    source: { session: message.session_id, message: message.id } };
 }
 
 // 长输入（粘贴的日志、整段代码）收成约 12 行，下面一行安静的"展开全部"；短输入不受影响。

@@ -1,0 +1,86 @@
+/* 预览标签：顶部一行文件名、大小与动作，下面是带行号的原文或表格；横向只在内容区内滚动。 */
+.preview-root {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  min-width: 0;
+  min-height: 0;
+  contain: inline-size;
+  background: var(--ak-paper-sheet);
+  color: var(--ak-ink-primary);
+  font-size: 13px;
+}
+
+.preview-head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px 8px;
+  padding: 8px 12px;
+  border-bottom: 1px solid var(--ak-rule-subtle);
+}
+.preview-head:empty { display: none; }
+
+.preview-title { display: flex; flex: 1 1 12rem; flex-direction: column; min-width: 0; }
+.preview-name { overflow: hidden; font-weight: 600; text-overflow: ellipsis; white-space: nowrap; }
+.preview-meta { color: var(--ak-ink-secondary); font-size: 12px; font-variant-numeric: tabular-nums; }
+
+.preview-actions { display: flex; flex-shrink: 0; align-items: center; gap: 4px; }
+.preview-modes { display: flex; padding: 2px; border-radius: 8px; background: var(--ak-paper-quiet); }
+
+.preview-action {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  padding: 4px 10px;
+  border: 0;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--ak-ink-secondary);
+  font: inherit;
+  text-decoration: none;
+  cursor: pointer;
+}
+.preview-action:hover { background: var(--ak-paper-raised); color: var(--ak-ink-primary); }
+.preview-action[aria-pressed="true"] { background: var(--ak-paper-sheet); color: var(--ak-ink-primary); box-shadow: 0 0 0 1px var(--ak-rule-subtle); }
+.preview-action:focus-visible,
+.preview-body:focus-visible { outline: 2px solid var(--ak-rule-focus); outline-offset: -2px; }
+
+.preview-body { flex: 1; min-height: 0; overflow: auto; overscroll-behavior: contain; }
+
+.preview-message { margin: 0; padding: 24px 16px; color: var(--ak-ink-secondary); line-height: 1.6; }
+.preview-message.is-error { color: var(--ak-color-status-error); }
+
+/* 行号由计数器生成，选中复制时不带行号。 */
+.preview-text {
+  display: grid;
+  grid-template-columns: minmax(max-content, 1fr);
+  margin: 0;
+  padding: 6px 0;
+  counter-reset: line;
+  font-family: var(--ak-type-technical);
+  font-size: 12px;
+  line-height: 18px;
+  white-space: pre;
+}
+.preview-line { padding-inline-end: 12px; counter-increment: line; }
+.preview-line::before {
+  content: counter(line);
+  display: inline-block;
+  width: 4ch;
+  margin-inline-end: 12px;
+  padding-inline-start: 8px;
+  color: var(--ak-ink-muted);
+  text-align: end;
+  user-select: none;
+}
+
+.preview-grid { min-width: max-content; }
+.preview-table { border-collapse: collapse; font-family: var(--ak-type-technical); font-size: 12px; font-variant-numeric: tabular-nums; }
+.preview-table th,
+.preview-table td { max-width: 24rem; padding: 4px 10px; border-bottom: 1px solid var(--ak-rule-subtle); overflow: hidden; text-align: start; text-overflow: ellipsis; white-space: nowrap; }
+.preview-table th { position: sticky; top: 0; background: var(--ak-paper-quiet); color: var(--ak-ink-secondary); font-weight: 600; }
+
+@media (pointer: coarse) {
+  .preview-action { min-width: 44px; min-height: 44px; }
+}
