@@ -159,6 +159,8 @@ const INTENT_TIMEOUT_MS = 10_000;
 const QUOTE_LIMIT = 8 * 1024;
 const SOURCE_LIMIT = 200;
 const LAYOUT_KEY = "akashic.conversation.tools.layout.";
+const TITLE_LIMIT = 80;
+const DETAIL_LIMIT = 24;
 const ICONS = {
   close: '<path d="M18 6 6 18M6 6l12 12"/>',
   add: '<path d="M12 5v14M5 12h14"/>',
@@ -237,7 +239,7 @@ function clearWidth() {
   }
 }
 
-// 工具区外框：标签条、启动器、铺满与关闭；内容区与浮动开关。只建 DOM，不含状态。
+// 工具区外框：浏览器式标签条、启动器、铺满与收起；内容区与浮动开关。只建 DOM，不含状态。
 function buildChrome() {
   const panel = document.createElement("aside");
   panel.className = "conversation-tools";
@@ -266,8 +268,11 @@ function buildChrome() {
   launcher.setAttribute("aria-controls", menu.id);
   launcher.setAttribute("aria-expanded", "false");
   const maximize = chromeButton("conversation-tools-maximize", "铺满", "expand");
-  const close = chromeButton("conversation-tools-close", "关闭工具区", "close");
-  bar.append(tabs, launcher, maximize, close, menu);
+  const close = chromeButton("conversation-tools-close", "收起工具区", "close");
+  const end = document.createElement("div");
+  end.className = "conversation-tools-end";
+  end.append(maximize, close);
+  bar.append(tabs, launcher, end, menu);
   const content = document.createElement("div");
   content.className = "conversation-tools-content";
   panel.append(bar, content);
@@ -279,7 +284,7 @@ function buildChrome() {
   return { panel, splitter, bar, tabs, launcher, menu, maximize, close, content, toggle };
 }
 
-// 标签条里的一项：标签本身 + 关闭按钮；关闭按钮不进 Tab 序列，键盘用 Delete 关闭。
+// 标签条里的一项：图标、标题、活动点与关闭按钮；关闭按钮不进 Tab 序列，键盘用 Delete 关闭。
 function buildTab(entry, index) {
   const item = document.createElement("div");
   item.className = "conversation-tools-tab-item";
@@ -289,7 +294,13 @@ function buildTab(entry, index) {
   button.className = "conversation-tools-tab";
   button.setAttribute("role", "tab");
   button.setAttribute("aria-controls", `conversation-tool-panel-${index}`);
-  button.textContent = entry.label;
+  if (entry.icon) button.insertAdjacentHTML("afterbegin", entry.icon);
+  const label = document.createElement("span");
+  label.className = "conversation-tools-tab-label";
+  label.textContent = entry.label;
+  const dot = document.createElement("span");
+  dot.className = "conversation-tools-tab-dot";
+  button.append(label, dot);
   const close = chromeButton("conversation-tools-tab-close", `关闭 ${entry.label}`, "close");
   close.tabIndex = -1;
   item.append(button, close);
@@ -298,7 +309,7 @@ function buildTab(entry, index) {
   panel.className = "conversation-tool-panel";
   panel.setAttribute("role", "tabpanel");
   panel.setAttribute("aria-labelledby", button.id);
-  return { item, button, close, panel };
+  return { item, button, label, close, panel };
 }
 
 function menuItem(entry) {
@@ -414,7 +425,7 @@ function createSizing(root, splitter) {
 
 // 标签挂载与父视图的生命周期。每个标签只 render 一次：先占位再 render，render 里调用 view 方法引起的更新不会重入；
 // 挂载前先记下当前可见值，订阅时收到的就是唯一一次首次通知。展开与当前标签只经 isActive 读取，不在这里保存。
-function createTabLifecycle(tools, panelOf, isActive, currentSession, onAttention, quote) {
+function createTabLifecycle(tools, panelOf, isActive, currentSession, onAttention, quote, onFacts) {
   const mounted = new Map();
   const reported = new Map();
   const activeListeners = new Map();
@@ -446,6 +457,11 @@ function createTabLifecycle(tools, panelOf, isActive, currentSession, onAttentio
         return () => listeners.delete(listener);
       },
       quote: (request) => quote(request),
+      setTitle(title) {
+        if (title !== null && typeof title !== "string") throw new Error("setTitle 需要字符串或 null");
+        onFacts(entry, { title: title?.trim().slice(0, TITLE_LIMIT) || null });
+      },
+      setIndicator: (indicator) => onFacts(entry, { indicator: readIndicator(indicator) }),
     };
   }
 
@@ -496,6 +512,15 @@ function createTabLifecycle(tools, panelOf, isActive, currentSession, onAttentio
   return { mount, report, session, intentListener, dispose };
 }
 
+// 标签自报的状态：只收短的纯文本，超长截断；不合规的值直接拒绝，不改现有显示。
+function readIndicator(value) {
+  if (value === null) return null;
+  if (!value || typeof value !== "object") throw new Error("setIndicator 需要对象或 null");
+  if (value.busy !== undefined && typeof value.busy !== "boolean") throw new Error("indicator.busy 必须是布尔值");
+  if (value.detail !== undefined && typeof value.detail !== "string") throw new Error("indicator.detail 必须是字符串");
+  return { busy: value.busy === true, detail: value.detail ? value.detail.slice(0, DETAIL_LIMIT) : "" };
+}
+
 // 工具区状态的唯一 owner：打开的标签、当前标签、展开与铺满。标签只经 view 读到可见事实与当前会话。
 function mountTools(root, frame, tools, entries) {
   const chrome = buildChrome();
@@ -510,6 +535,9 @@ function mountTools(root, frame, tools, entries) {
   };
   const handled = new Set();
   const attention = new Set();
+  // 标签自报的标题与状态（setTitle / setIndicator），按标签记，只用于显示。
+  const facts = new Map(entries.map((entry) => [entry.id, { title: null, indicator: null }]));
+  const titleOf = (entry) => facts.get(entry.id).title ?? entry.label;
   const tabs = new Map();
   const isActive = (id) => state.open && state.activeId === id;
   // 活动只提示；打开、关闭与切换由用户决定，包括移动端。
@@ -519,7 +547,10 @@ function mountTools(root, frame, tools, entries) {
       handled.add(noticeId);
       if (!isActive(entry.id)) attention.add(entry.id);
       update();
-    }, (request) => forwardQuote(request));
+    }, (request) => forwardQuote(request), (entry, change) => {
+      Object.assign(facts.get(entry.id), change);
+      update();
+    });
   let disposed = false;
 
   function update() {
@@ -529,13 +560,13 @@ function mountTools(root, frame, tools, entries) {
     chrome.splitter.hidden = !state.open;
     chrome.toggle.hidden = state.open || state.chatOverlay;
     chrome.toggle.setAttribute("aria-expanded", String(state.open));
-    const pending = entries.find((entry) => attention.has(entry.id));
+    const pending = entries.find((entry) => attention.has(entry.id) || facts.get(entry.id).indicator?.busy);
     const target = entries.find((entry) => entry.id === state.activeId) ?? entries[0];
-    const label = `打开 ${target.label}${pending ? " · 有新活动" : ""}`;
+    const label = `打开 ${titleOf(target)}${pending ? ` · ${titleOf(pending)}有新活动` : ""}`;
     chrome.toggle.classList.toggle("has-attention", Boolean(pending));
     chrome.toggle.title = label;
     chrome.toggle.setAttribute("aria-label", label);
-    chrome.toggle.querySelector("span").textContent = target.label;
+    chrome.toggle.querySelector("span").textContent = titleOf(target);
     const maximizeLabel = state.maximized ? "还原" : "铺满";
     chrome.maximize.title = maximizeLabel;
     chrome.maximize.setAttribute("aria-label", maximizeLabel);
@@ -549,9 +580,16 @@ function mountTools(root, frame, tools, entries) {
   function updateTab(entry) {
     const active = state.open && entry.id === state.activeId;
     const tab = tabs.get(entry.id);
+    const { indicator } = facts.get(entry.id);
     tab.item.hidden = !state.opened.has(entry.id);
+    tab.item.classList.toggle("is-active", entry.id === state.activeId);
+    tab.item.classList.toggle("has-attention", attention.has(entry.id));
+    tab.item.classList.toggle("is-busy", Boolean(indicator?.busy));
+    tab.label.textContent = titleOf(entry);
+    tab.button.title = indicator?.detail ? `${titleOf(entry)} · ${indicator.detail}` : titleOf(entry);
+    tab.close.title = `关闭 ${titleOf(entry)}`;
+    tab.close.setAttribute("aria-label", tab.close.title);
     tab.button.setAttribute("aria-selected", String(active));
-    tab.button.classList.toggle("has-attention", attention.has(entry.id));
     tab.button.tabIndex = entry.id === state.activeId ? 0 : -1;
     tab.panel.hidden = entry.id !== state.activeId;
     lifecycle.report(entry);

@@ -54,4 +54,13 @@ export interface ConversationTabView {
   onIntent(listener: (intent: ConversationIntent) => ConversationIntentStatus | Promise<ConversationIntentStatus>): WebUiDisposer;
   /** 只在标签自己的点击或键盘处理函数里调用；会话已切走返回 stale，不自动发送。 */
   quote(request: ConversationQuote): ConversationQuoteStatus;
+  /** 标签标题，≤ 80 字符，null 恢复为 label。 */
+  setTitle(title: string | null): void;
+  /** 标签自报的状态：busy 在标签上亮琥珀色点；detail（≤ 24 字符）只出现在提示里，不占标签宽度。 */
+  setIndicator(indicator: ConversationTabIndicator | null): void;
+}
+
+export interface ConversationTabIndicator {
+  busy?: boolean;
+  detail?: string;
 }
