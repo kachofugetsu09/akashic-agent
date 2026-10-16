@@ -717,9 +717,14 @@
   .computer-target-select,
   .computer-menu-item { min-height: 44px; }
   .computer-status .computer-action { position: relative; }
+  /* 伪元素以 padding box 为基准，按中心定位并固定尺寸，不受边框厚度影响 */
   .computer-status .computer-action::after {
     position: absolute;
-    inset: -9px -4px;
+    top: 50%;
+    left: 50%;
+    width: max(calc(100% + 8px), 44px);
+    height: 44px;
+    transform: translate(-50%, -50%);
     content: "";
   }
 }
