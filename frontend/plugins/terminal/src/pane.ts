@@ -106,8 +106,12 @@ export class Pane {
       if (data.includes("\r")) this.host.restart(this);
       return;
     }
-    for (let index = 0; index < data.length; index += INPUT_CHUNK) {
-      this.send({ type: "input", data: data.slice(index, index + INPUT_CHUNK) });
+    // 切点落在代理对中间时后移一位，不发出孤立代理项。
+    for (let index = 0; index < data.length;) {
+      let end = Math.min(index + INPUT_CHUNK, data.length);
+      if (end < data.length && /[\uD800-\uDBFF]/.test(data[end - 1])) end += 1;
+      this.send({ type: "input", data: data.slice(index, end) });
+      index = end;
     }
   }
 
