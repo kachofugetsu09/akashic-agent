@@ -422,7 +422,9 @@ async def register_shell(ctx: Context, directories: WorkingDirectories | None = 
     )
     definitions: tuple[tuple[Literal["shell", "write_stdin", "task_stop"], type[BaseModel], str], ...] = (
         ("shell", Command, "执行 shell 命令；返回终态或可供 write_stdin/task_stop 使用的 execution_id。"
-                           "run_in_background=true 时命令结束会回调通知本会话，任何要等待结果的工作都可借此异步完成。"),
+                           "run_in_background=true 时命令结束会回调通知本会话，任何要等待结果的工作都可借此异步完成。"
+                           "前台命令结束时会回收它留下的整个进程组，nohup 或 & 放到后台的进程也会被结束；"
+                           "开发服务器等需要常驻的进程直接用 run_in_background=true 启动，不再需要时用 task_stop 结束。"),
         ("write_stdin", Stdin, "续接命令，等待新增输出或输入 PTY 字符；仅返回上次读取后的新增内容。"),
         ("task_stop", Stop, "确认终止命令的进程组并释放 execution_id。"),
     )
