@@ -191,6 +191,8 @@ async def run(args: argparse.Namespace) -> dict:
                                 on_retry()
                         if "call_record_id" in value:
                             assert not draft.retry_status, "下一次尝试没有清除旧错误提示"
+                            # 重试中的尝试持续携带进度，首次尝试不显示。
+                            assert draft is not None and (draft.attempt is not None) == bool(value.get("attempt_status"))
                         if on_attempt is not None and "call_record_id" in value:
                             on_attempt()
 
@@ -396,7 +398,7 @@ async def run(args: argparse.Namespace) -> dict:
                             failure = ModelError.read(error)
                             assert failure is not None and failure.retryable == (reason == "MALFORMED_FUNCTION_CALL")
                             if budget is not None:
-                                assert "自动重试次数已用完" in str(error)
+                                assert "已停止重试" in str(error)
                         else:
                             assert recovering and response.content == "local-result" and not response.tool_calls
                             assert (await bound.complete(request)).content == response.content
@@ -439,7 +441,7 @@ async def run(args: argparse.Namespace) -> dict:
                     if statuses[0] == 400:
                         assert "local-" not in str(error), "截断泄漏了部分凭据"
                     assert "local-scenario" not in str(error)
-                    assert f"已尝试 {count}" in str(error)
+                    assert f"已尝试 {count}" in str(error) or f"上游连续失败 {count} 次" in str(error)
                     report["errors"].append({"case": name, "message": str(error)})
                     await save_visible_failure(name, error)
                 else:
@@ -496,6 +498,9 @@ async def run(args: argparse.Namespace) -> dict:
                 return report
             await case("explicit-exhausted", {"max_attempts": 6}, [429] * 7, 6, False)
             await case("default-past-six", {}, [429] * 7 + [200], 8, True)
+            # 未配置时按 max_retries=10：第 11 次失败后停止，不再持续恢复。
+            await case("default-exhausted", {}, [429] * 12, 11, False)
+            await case("explicit-three", {"max_attempts": 3}, [429] * 4, 3, False)
             await case("explicit-one", {"max_attempts": 1}, [429, 200], 1, False)
             await case("legacy-zero", {"max_retries": 0}, [429, 200], 1, False)
             await case("legacy-one", {"max_retries": 1}, [429, 200], 2, True)
@@ -687,8 +692,8 @@ async def run(args: argparse.Namespace) -> dict:
                     except (RuntimeError, TimeoutError) as error:
                         if not (ModelError.matches(error)):
                             raise
-                        assert "ConnectError" in str(error) and "已尝试 6/6" in str(error)
-                        assert "自动重试次数已用完" in str(error)
+                        assert "ConnectError" in str(error) and "上游连续失败 6 次" in str(error)
+                        assert "已停止重试" in str(error) and "「继续」" in str(error)
                         report["errors"].append({"case": "real-connect-refused", "message": str(error)})
                         await save_visible_failure("real-connect-refused", error)
                     else:
@@ -697,8 +702,9 @@ async def run(args: argparse.Namespace) -> dict:
                     assert len(records) == 6
                     for index, record in enumerate(records[:-1]):
                         finished = datetime.fromisoformat(record["finished_at"]).replace(tzinfo=timezone.utc).timestamp()
-                        base = min(20, 2 * 2 ** index)
-                        assert base * 0.9 <= record["next_attempt_at"] - finished <= base * 1.1 + 1
+                        # 对齐 Claude Code：min(0.5*2^(n-1), 32) 秒加 0-25% 抖动；finished_at 只到秒。
+                        base = min(32, 0.5 * 2 ** index)
+                        assert base <= record["next_attempt_at"] - finished <= base * 1.25 + 1
                     assert all(record["send_evidence"] == "unsent" for record in records)
                     assert records[-1]["next_attempt_at"] is None
                 finally:

@@ -7,6 +7,7 @@ from dataclasses import dataclass
 from typing import Protocol
 
 from plugins.ledger.contract import MessageReader
+from plugins.models.contract import ModelAttemptStatus
 from agent.plugin_composition.model import ServiceKey
 from agent.plugin_composition.tasks import ExternalRootPermit, Task
 from plugins.ledger.contract import Message
@@ -38,6 +39,8 @@ class ReplyPreview:
     thinking: str = ""
     call_record_id: str | None = None
     retry_status: str = ""
+    # 重试中的尝试进度；与 retry_status 分开，持续显示时不撤下本次尝试的草稿。
+    attempt: ModelAttemptStatus | None = None
 
 
 @dataclass(frozen=True, slots=True)

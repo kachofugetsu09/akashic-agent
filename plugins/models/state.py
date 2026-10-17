@@ -6,12 +6,14 @@ import json
 import logging
 import math
 import random
+import re
 import secrets
 import threading
 import time
 from contextlib import asynccontextmanager
 from contextvars import ContextVar
 from dataclasses import asdict, dataclass, field, replace
+from datetime import datetime, timezone
 from functools import partial
 from time import monotonic_ns
 from core.common.diagnostic_log import log_timing
@@ -79,7 +81,7 @@ from plugins.models.contract import (
     ModelUsage,
     ToolCall,
 )
-from plugins.models.contract import EmptyResponseError
+from plugins.models.contract import EmptyResponseError, ModelAttemptStatus
 from agent.plugin_composition.tasks import register_task_bound_context
 from core.common.file_io import run_file_io
 
@@ -367,8 +369,8 @@ class _BoundChat:
         self, request: ModelRequest, request_key: str, digest: str, *,
         budget: int | None = None,
     ) -> LLMResponse:
-        """Models 独占重试预算：一次 complete 内持续恢复；每个真实 attempt
-        先记账再结算，失败写耐久 next_attempt_at，重试前重新核对准入与孤儿。"""
+        """Models 独占重试预算：一次 complete 内按预算恢复（默认最多 11 次）；每个真实
+        attempt 先记账再结算，失败写耐久 next_attempt_at，重试前重新核对准入与孤儿。"""
         budget = self._max_attempts if budget is None else max(1, budget)
         while True:
             # 1. 读取原请求回执和退避；成功只回放，终态不重新领取额度。
@@ -393,15 +395,17 @@ class _BoundChat:
                 ).exception()
             limit = "" if budget is None else f"/{budget}"
             next_at = None if last is None else last.get("next_attempt_at")
+            # 已有失败时，退避与随后整次尝试都携带可见进度，直到这次尝试结束。
+            attempt_status = _attempt_status(records, budget)
             if isinstance(next_at, (int, float)) and not isinstance(next_at, bool):
                 delay = float(next_at) - time.time()
                 if delay > 0:
-                    if request.on_delta is not None:
+                    if request.on_delta is not None and attempt_status is not None and last is not None:
                         # 首行是状态标题，其后是原始失败原因；前端按行分开排版。
                         await request.on_delta({"retry_status": (
-                            f"模型暂时不可用，第 {len(records) + 1}{limit} 次重试约 {math.ceil(delay)} 秒后开始\n"
+                            f"模型暂时不可用，约 {math.ceil(delay)} 秒后进行第 {len(records) + 1}{limit} 次尝试\n"
                             f"{last['failure']}"
-                        )})
+                        ), "attempt_status": replace(attempt_status, next_attempt_at=float(next_at)).encode()})
                     # 等待可取消；已结算的失败与允许时间保留，恢复按剩余额度继续。
                     log_timing("model.retry.wait", request_id=request_key, counts={"attempt": len(records) + 1})
                     await asyncio.sleep(delay)
@@ -476,7 +480,9 @@ class _BoundChat:
                         request_key=request_key,
                     )
                     if request.on_delta is not None:
-                        await publish({"call_record_id": call_id, "retry_status": ""})
+                        await publish({"call_record_id": call_id, "retry_status": "", "attempt_status": (
+                            "" if attempt_status is None else attempt_status.encode()
+                        )})
                     started = monotonic_ns()
                     log_timing("model.driver.begin", operation_id=call_id, request_id=request_key)
                     response = await self._driver.complete(driver_request)
@@ -503,6 +509,7 @@ class _BoundChat:
                     )
                     retry_at = None
                     stop_reason = ""
+                    exhausted = False
                     if model_failure is not None and retryable and (budget is None or len(records) + 1 < budget):
                         # Retry-After 优先于本地退避，且随失败记录耐久保存。
                         allowed_at = model_failure.retry_at
@@ -513,11 +520,12 @@ class _BoundChat:
                         elif isinstance(hint, (int, float)) and not isinstance(hint, bool):
                             candidate = now + float(hint)
                         else:
-                            candidate = now + min(20.0, 2.0 * (2 ** min(len(records), 4))) * random.uniform(0.9, 1.1)
+                            candidate = now + _backoff_seconds(len(records) + 1)
                         retry_at = candidate
                         stop_reason = "将自动恢复当前模型请求；此前生成的 usage 可能未知"
                     elif retryable:
                         stop_reason = "自动重试次数已用完；已完成的工具结果仍保留"
+                        exhausted = budget is not None and budget > 1
                     else:
                         stop_reason = "当前错误无法自动恢复；已完成的工具结果仍保留"
                     if isinstance(failure, asyncio.CancelledError) and (
@@ -526,7 +534,11 @@ class _BoundChat:
                         # 取消结束当前 Task；下一次仍须由来源授权，才能恢复原模型步。
                         retry_at = time.time()
                     if model_failure is not None:
+                        # 预算用完时先说结论和下一步，最后一次失败原因放在后面。
                         failure = ModelError.change(failure, message=(
+                            f"上游连续失败 {len(records) + 1} 次，已停止重试；已完成的工具结果仍保留，"
+                            f"可以发「继续」重试。\n最后一次失败：模型 {descriptor.model} 调用失败：{failure}"
+                        ) if exhausted else (
                             f"模型 {descriptor.model} 调用失败：{failure}\n"
                             f"已尝试 {len(records) + 1}{limit} 次。{stop_reason}"
                         ))
@@ -2210,10 +2222,14 @@ def _driver_connection_descriptor(
     )
 
 
-def _retry_budget(config: Mapping[str, Any]) -> int | None:
+# 未配置时与 Claude Code DEFAULT_MAX_RETRIES 一致：首次加 10 次重试。
+_DEFAULT_MAX_RETRIES = 10
+
+
+def _retry_budget(config: Mapping[str, Any]) -> int:
     """连接配置中的 Models 重试预算：max_attempts 显式优先，旧 max_retries
     迁移为 N+1 次 attempt（N 次重试 = 首次 + N 次重试）；
-    未配置时持续恢复直到成功或取消，非法值直接报错。"""
+    都未配置时按 max_retries=10 处理，即最多 11 次；非法值直接报错。"""
     configured = config.get("max_attempts")
     if configured is not None:
         if not isinstance(configured, int) or isinstance(configured, bool) or configured < 1:
@@ -2221,10 +2237,60 @@ def _retry_budget(config: Mapping[str, Any]) -> int | None:
         return configured
     legacy = config.get("max_retries")
     if legacy is None:
-        return None
+        return _DEFAULT_MAX_RETRIES + 1
     if not isinstance(legacy, int) or isinstance(legacy, bool) or legacy < 0:
         raise ValueError("max_retries must be a non-negative integer")
     return legacy + 1
+
+
+# 对齐 Claude Code getRetryDelay：第 n 次重试等待 min(0.5*2^(n-1), 32) 秒，再加 0-25% 抖动。
+def _backoff_seconds(retry: int) -> float:
+    base = min(0.5 * 2 ** min(max(retry, 1) - 1, 7), 32.0)
+    return base + random.uniform(0.0, 0.25 * base)
+
+
+# 把耐久失败记录压成一句面向用户的短原因；原文另行折叠展示。
+def _short_failure(failure: object) -> str:
+    text = str(failure or "")
+    kind = text.split(":", 1)[0]
+    status = re.search(r"HTTP (\d{3})", text)
+    if "ReadTimeout" in text:
+        return "读取超时"
+    if kind == "ModelTimeoutError":
+        return "响应超时"
+    if kind == "RateLimitError":
+        return "被限流"
+    if status is not None:
+        return f"上游返回 {status.group(1)}"
+    if "ConnectError" in text:
+        return "无法连接"
+    if kind == "TransportError":
+        return "连接中断"
+    if kind == "EmptyResponseError":
+        return "模型没有输出"
+    return "服务重启中断" if text.startswith("orphaned") else "请求失败"
+
+
+# 首次失败的结算时间（UTC 秒）；账本只有秒级文本，读不到时退回当前时间。
+def _failing_since(records: Sequence[Mapping[str, Any]]) -> float:
+    stamp = next((record.get("finished_at") for record in records if record.get("state") == "error"), None)
+    if isinstance(stamp, str):
+        try:
+            return datetime.strptime(stamp, "%Y-%m-%d %H:%M:%S").replace(tzinfo=timezone.utc).timestamp()
+        except ValueError:
+            pass
+    return time.time()
+
+
+# 已有失败时构造下一次尝试的可见进度；首次尝试没有可展示的内容。
+def _attempt_status(records: Sequence[Mapping[str, Any]], budget: int | None) -> ModelAttemptStatus | None:
+    if not records:
+        return None
+    failure = str(records[-1].get("failure") or "")
+    return ModelAttemptStatus(
+        attempt=len(records) + 1, limit=budget, failing_since=_failing_since(records),
+        last_failure=_short_failure(failure), detail=failure,
+    )
 
 
 def _capability_provider_id(

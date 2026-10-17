@@ -1286,7 +1286,11 @@ def _status_error(response: httpx.Response, *, secret: str) -> Exception | None:
     if response.status_code >= 500:
         # status-first：5xx 只说明服务端/网关未给出结论，正文诊断文案
         # （context_length 等）不得把错误提升为可证明的容量拒绝。
-        return TransportError(f"模型服务暂不可用（HTTP {response.status_code}），请稍后重试。服务返回：{message}").exception()
+        error = TransportError(f"模型服务暂不可用（HTTP {response.status_code}），请稍后重试。服务返回：{message}").exception()
+        if response.status_code == 503:
+            # 503 与 429 一样可能带 Retry-After；固定为绝对允许时间，由 Models 可取消地遵守。
+            error = ModelError.change(error, retry_at=retry_after_time(response.headers.get("retry-after")))
+        return error
     if any(code in lowered for code in _CONTEXT_CODES):
         return ContextLengthError(f"模型上下文超过限制（HTTP {response.status_code}）。服务返回：{message}").exception()
     if any(code in lowered for code in _SAFETY_CODES):

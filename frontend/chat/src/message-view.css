@@ -2271,6 +2271,52 @@ button.tool-step-summary:active {
 }
 .retry-status > button:focus-visible { outline: 2px solid var(--ak-rule-focus); outline-offset: 2px; }
 
+.retry-status__text span { color: var(--ak-ink-muted); }
+
+/* 重试中的尝试只占一行次级小字：草稿照常流式，原始错误点开才看。 */
+.attempt-status {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  margin: 2px 0 6px;
+  color: var(--ak-ink-muted);
+  font-size: 0.75rem;
+  line-height: 1.5;
+}
+
+.attempt-status > details { flex: 1; min-width: 0; }
+.attempt-status summary { cursor: pointer; list-style: none; overflow-wrap: anywhere; }
+.attempt-status summary::-webkit-details-marker { display: none; }
+.attempt-status summary:focus-visible { outline: 2px solid var(--ak-rule-focus); outline-offset: 2px; border-radius: 4px; }
+
+.attempt-status code {
+  display: block;
+  margin-top: 4px;
+  padding: 0;
+  background: none;
+  font-family: var(--ak-type-technical);
+  font-size: 0.6875rem;
+  overflow-wrap: anywhere;
+  white-space: pre-wrap;
+}
+
+.attempt-status > button {
+  flex: none;
+  min-height: 24px;
+  margin-top: -3px;
+  padding: 0 6px;
+  border: 0;
+  border-radius: 4px;
+  background: none;
+  color: var(--ak-ink-primary);
+  font: inherit;
+  text-decoration: underline;
+  text-underline-offset: 2px;
+  cursor: pointer;
+}
+
+.attempt-status > button:focus-visible { outline: 2px solid var(--ak-rule-focus); outline-offset: 2px; }
+
 @media (max-width: 36rem) {
   .web-message-anchor:not(:nth-last-child(1 of .web-message-anchor)):not(.is-revealed) .shared-message-meta {
     display: none;

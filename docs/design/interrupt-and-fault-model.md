@@ -246,7 +246,7 @@ Models 退出时尝试将未结算调用保存为 error（原因 interrupted，u
 每个可重试失败先耐久保存错误及下一次允许时间，再尝试下一次请求。attempt 序号和限制从回执核对，重启不能重置。退避可取消，每次外部开始重新检查来源许可与实际 binding。空响应等已完成但不可用的响应可按显式策略消耗下一次尝试，不伪造 quiet。
 
 模型恢复遵守 [0092](../decisions/0092-model-generation-recovers-until-output.md)。
-默认持续恢复 timeout、transport、429、5xx 与空生成；显式次数上限仍按原 key
+默认对 timeout、transport、429、5xx 与空生成最多重试 10 次；显式次数上限仍按原 key
 核对。部分响应和未知 usage 保留真实诊断，但不禁止重新生成完整响应。
 移除 90 秒恢复窗口，退避仍可取消；Retry-After 固定绝对允许时间，不提前发送。
 回调、回执保存、内部契约、永久模型错误不被当成暂时网络故障。
