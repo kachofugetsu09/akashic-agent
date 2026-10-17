@@ -1,5 +1,5 @@
-/* 电脑面板。颜色跟随宿主 color-scheme：插件自有的语义色用 light-dark() 在这里定义一次。
-   外框（.computer-frame）表达"这是谁的浏览器、谁在操作"：主桌面只有细线；匿名浏览器是靛紫斜纹；你在操作是橙色实线。 */
+/* 浏览器面板。颜色跟随宿主 color-scheme：插件自有的语义色用 light-dark() 在这里定义一次。
+   外框（.computer-frame）表达"这是谁的浏览器、谁在操作"：你的浏览器只有细线；匿名标签是靛紫斜纹；你在操作是橙色实线。 */
 .computer-view {
   --computer-ok: light-dark(rgb(47 93 58), rgb(136 190 146));
   --computer-busy: light-dark(rgb(27 54 93), rgb(150 180 226));
@@ -63,63 +63,91 @@
   white-space: nowrap;
 }
 
-/* ───── 头部一行：观看目标 · 匿名页地址 · 工具 ───── */
+/* ───── 头部：标签条 · 工具，下一行是当前标签的地址 ───── */
 .computer-head {
   position: relative;
   display: flex;
+  flex-wrap: wrap;
   align-items: center;
-  gap: 6px;
+  column-gap: 6px;
   min-width: 0;
-  min-height: 44px;
-  padding-inline: 8px 6px;
+  padding: 4px 6px 0 6px;
   border-block-end: 1px solid var(--ak-rule-subtle);
   background: var(--ak-paper-sheet);
 }
 
-.computer-target {
+/* 标签条：本地绘制，横向滚动，不换行；选中的标签与下方地址栏连成一片 */
+.computer-tabs {
+  display: flex;
+  flex: 1 1 0;
+  gap: 2px;
+  min-width: 0;
+  overflow-x: auto;
+  scrollbar-width: none;
+}
+
+.computer-tab {
   display: inline-flex;
-  flex: 0 1 auto;
+  flex: 0 1 12rem;
   align-items: center;
   gap: 6px;
-  min-width: 0;
-  max-width: 50%;
-}
-
-/* 匿名目标：面具图标与外框同色 */
-.computer-target[data-anonymous] .computer-icon { color: var(--computer-anonymous); }
-
-.computer-target-select {
-  min-width: 0;
-  max-width: 100%;
-  height: 28px;
-  padding-inline: 6px 2px;
-  overflow: hidden;
+  min-width: 4.5rem;
+  height: 32px;
+  padding-inline: 10px;
   border: 0;
-  border-radius: 6px;
-  color: var(--ak-ink-primary);
+  border-radius: 8px 8px 0 0;
+  color: var(--ak-ink-secondary);
   background: transparent;
-  font: inherit;
   font-size: 0.8125rem;
+  transition: background-color 120ms var(--computer-ease), color 120ms var(--computer-ease);
+}
+
+.computer-tab[aria-selected="true"] {
+  color: var(--ak-ink-primary);
+  background: var(--ak-paper-raised);
   font-weight: 600;
+}
+
+.computer-tab .computer-icon { width: 14px; height: 14px; }
+.computer-tab[data-anonymous] .computer-icon { color: var(--computer-anonymous); }
+
+/* Agent 打开的标签：标题前一个蓝点 */
+.computer-tab-agent {
+  width: 6px;
+  height: 6px;
+  flex: 0 0 auto;
+  border-radius: 50%;
+  background: var(--computer-agent);
+}
+
+.computer-tab-label {
+  min-width: 0;
+  overflow: hidden;
   text-overflow: ellipsis;
-  cursor: pointer;
+  white-space: nowrap;
 }
 
-/* 只有主桌面时不是下拉，只是标题 */
-.computer-target-select:disabled {
-  appearance: none;
-  opacity: 1;
-  cursor: default;
-}
-
-.computer-target-select:focus-visible {
+.computer-tab:focus-visible {
   outline: 2px solid var(--ak-rule-focus);
-  outline-offset: 0;
+  outline-offset: -2px;
+}
+
+.computer-bar {
+  display: flex;
+  flex: 1 0 100%;
+  min-width: 0;
+  padding: 0 0 6px;
+}
+
+.computer-bar:has(.computer-address[hidden]) { display: none; }
+
+.computer-address[data-anonymous] {
+  box-shadow: inset 3px 0 0 var(--computer-anonymous);
 }
 
 .computer-address {
   display: inline-flex;
-  flex: 1 1 0;
+  flex: 1 1 auto;
   align-items: center;
   min-width: 0;
   height: 28px;
@@ -378,8 +406,7 @@
   outline-offset: -2px;
 }
 
-.computer-stream,
-.computer-browser-screen {
+.computer-stream {
   display: block;
   width: 100%;
   height: 100%;
@@ -677,7 +704,7 @@
 }
 
 @media (hover: hover) {
-  .computer-target-select:not(:disabled):hover,
+  .computer-tab:not([aria-selected="true"]):hover,
   .computer-menu-item:hover,
   .computer-icon-button:hover {
     color: var(--ak-ink-primary);
@@ -695,10 +722,10 @@
 
 /* 按面板宽度逐级收起：先收地址与说明，再把截图、全屏收进 ⋮ */
 @container computer (max-width: 34rem) {
-  .computer-address { display: none; }
+  .computer-bar { display: none; }
   .computer-wide { display: none; }
   .computer-more { display: inline-grid; }
-  .computer-target { max-width: none; flex: 1 1 auto; }
+  .computer-tab { flex-basis: 8rem; }
   .computer-status-detail { display: none; }
 }
 
@@ -714,7 +741,7 @@
 /* 触控（不论宽度）：可点区域至少 44px；胶囊里的"接管"保持紧凑外观，用伪元素扩大点击区 */
 @media (pointer: coarse) {
   .computer-icon-button { width: 44px; height: 44px; }
-  .computer-target-select,
+  .computer-tab,
   .computer-menu-item { min-height: 44px; }
   .computer-status .computer-action { position: relative; }
   /* 伪元素以 padding box 为基准，按中心定位并固定尺寸，不受边框厚度影响 */

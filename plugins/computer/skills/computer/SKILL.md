@@ -1,25 +1,26 @@
 ---
 name: computer
-description: Read or operate browser and desktop UI when a task needs interaction, login state, visual inspection, or content that web search/fetch cannot obtain.
+description: Read or operate web pages in the user's logged-in browser when a task needs interaction, login state, visual inspection, or content that web search/fetch cannot obtain.
 ---
 
 # Computer
 
 Prefer `web_search` / `web_fetch` for information that can be retrieved without operating UI.
-Use `computer` when the task needs browser interaction, an existing login or tab, desktop controls,
+Use `computer` when the task needs browser interaction, an existing login or tab,
 visual inspection, or when search/fetch fails or returns insufficient content. If UI interaction is
 clearly required, start here without a redundant search/fetch attempt. Prefer a suitable dedicated
 skill, connector, API, or CLI when available. Respect an explicit user request to use the browser.
 
-Use the `computer` tool for browser and desktop work. It runs JavaScript inside the existing Computer
-container, using its logged-in Chromium profile. `browser`, `agent`, `sky`, and `nodeRepl` are ready.
+Use the `computer` tool for browser work. It runs JavaScript inside the existing Computer
+container, using its logged-in Chromium profile. `browser`, `agent`, and `nodeRepl` are ready.
+There is no desktop: only one Chromium, whose tabs the user watches in the Browser panel.
 If the tool is not visible, call `load_tools` with `{"plugin":"computer"}`. Its exact tool name is
 `computer`.
 
 Bindings persist within this Akashic Session while Computer is awake; a timeout, cancellation, reset,
 idle sleep, or workload restart invalidates them. First use wakes the saved personal profile.
 An active Turn prevents sleep. After the Turn and identity refresh finish, 10 minutes without
-actual input releases the desktop. A panel left open does not keep it alive.
+actual input stops the browser. A panel left open does not keep it alive.
 After a script error, bindings and pages remain if input release was confirmed. Read the error and
 API, inspect the current page, and reuse the existing browser. Acquire fresh bindings only when the
 receipt says they were reset or the browser was closed.
@@ -58,7 +59,7 @@ await tab.ax.write();
 
 Read additional documents
 with `agent.documentation.get(name)` using names listed in that guidance. The bundled API is the reference Browser API; optional capabilities must be
-listed before use. macOS application AX and optional desktop audio are unavailable here.
+listed before use. macOS application AX and desktop audio are unavailable here.
 
 This is a bounded Browser API, not the full Playwright library. Locators do not have `inputValue()`
 or `boundingBox()`. Read a visible input's current value or an element's rectangle through the
@@ -89,12 +90,11 @@ never write a byte array as JSON. Methods such as `tab.ax.write()` already emit 
    use page state or locator waits when loading is asynchronous.
    If the UI confirms there are no matching items to change, complete the remaining requested
    confirmation or submission; do not invent a target or search for hidden state.
-4. Use `sky` for native dialogs, browser chrome, and coordinate actions. Coordinates refer to the
-   container's 1280 × 800 desktop. It supports click, move, drag, scroll, press_key, type_text and screenshot.
+4. Use `tab.cua` for coordinate actions inside the page viewport: click, double_click, move, drag,
+   scroll, keypress and type. There is no browser chrome or desktop to click.
 5. New tabs belong to this Turn and close at its end unless marked deliverable or handoff. Preserve
    useful output with `await tab.markDeliverable()`. Never close a human tab without explicitly claiming it.
-6. Keep `drag_handle()` inside one call and use `try/finally` with `end()`. The driver releases remaining
-   input when the call ends. A cancelled action may already have changed the page; observe before retrying.
+6. The driver releases remaining input when the call ends. A cancelled action may already have changed the page; observe before retrying.
 7. Do not launch Chromium yourself, alter profile files, or bypass the Workload owner. Use the Computer
    panel for human login and takeover. File chooser paths refer to the container, not the Akashic host.
 
@@ -106,8 +106,8 @@ await tab.ax.write();
 ```
 
 ```js
-await sky.click({x: 640, y: 400, mouse_button: "right"});
-await nodeRepl.emitImage((await sky.get_screenshot())[0].bytes);
+await tab.cua.click({x: 640, y: 400, button: 3});
+await nodeRepl.emitImage(await tab.screenshot({}));
 ```
 
 Computer saves a screenshot path and also attaches the image to the tool result. If the image pixels
@@ -116,24 +116,19 @@ are available to the current model, inspect them directly; a second `read_file` 
 does not receive images, use `read_image_vision` with that path and a specific visual question. It uses
 the configured vision model and returns text. If that role is unavailable, report the missing capability;
 do not keep taking screenshots or claim to have seen pixels. Never infer visual access from a path alone.
-`sky.get_screenshot()` returns bytes and a data URL, without a separate temporary filepath. AX state is
-currently full text; its formatting and compression are not claimed identical to the original WASM.
+AX state is currently full text; its formatting and compression are not claimed identical to the original WASM.
 The returned screenshot path belongs to Akashic, not the Computer container's filesystem.
 Do not open it with `require('fs')` inside Computer. For a small visual
 target, emit a clipped screenshot with `tab.screenshot({clip:{x,y,width,height}})` and inspect it
-before changing browser zoom or probing image libraries. Browser coordinates are relative to the
-tab viewport; `sky` uses desktop coordinates, including browser chrome. Refresh geometry after
+before probing image libraries. Coordinates are relative to the tab viewport. Refresh geometry after
 scrolling and bring a target into view before a coordinate action.
-`tab.screenshot` uses CSS coordinates and returns CSS-pixel images. Browser zoom does not enlarge
-that output. With the browser focused, `await sky.press_key({key:"ctrl+plus"})` enlarges the page.
-Use a `sky` desktop screenshot to read that magnified detail; restore zoom with
-`await sky.press_key({key:"ctrl+0"})` when finished.
+`tab.screenshot` uses CSS coordinates and returns CSS-pixel images.
 
 OpenCLI remains a separate ordinary shell command and uses the same browser.
 
 For anonymous E2E, use the managed extension `await agent.browsers.create()`. It returns the same
-Browser API with an empty, isolated Context in a separate shared headless Chromium. It never copies
-the personal profile, login state, or OpenCLI extension. `browser` still refers to the main browser.
+Browser API with an empty, isolated BrowserContext inside the same Chromium. It never sees the
+personal profile's cookies, storage, login state, or OpenCLI extension; the user can watch its tabs too. `browser` still refers to the main browser.
 At most eight anonymous browsers can be open. Close them with `await testBrowser.close()`;
 ending the Turn, an interrupted call, Session reset, or sleep also closes them. Ordinary script errors
 keep them when cleanup was confirmed. Another Turn cannot use them. Each instance has a stable
@@ -142,8 +137,8 @@ keep them when cleanup was confirmed. Another Turn cannot use them. Each instanc
 across tool calls instead of restarting the E2E for every step. An instance idle for 10 minutes is
 released; running operations and explicit human takeover prevent idle release. Watching does not.
 A closed or expired ID fails explicitly and never selects the main browser.
-The last Context releases the headless process and its temporary data. A process crash affects all
-anonymous Contexts; close them and acquire fresh bindings. Saved screenshots keep their normal owner.
+Closing a Context discards its cookies and storage. A browser restart closes all anonymous Contexts;
+acquire fresh bindings. Saved screenshots keep their normal owner.
 
 ```js
 var testBrowser = await agent.browsers.create();

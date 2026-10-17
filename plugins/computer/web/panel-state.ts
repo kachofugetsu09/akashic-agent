@@ -2,9 +2,8 @@
 // 纯函数，不碰 DOM；index.tsx 只负责采集事实和执行动作，文案与优先级都在这里。
 
 export type RuntimeState = "loading" | "sleeping" | "starting" | "ready" | "stopping" | "failed";
-export type LinkState = "idle" | "connecting" | "connected" | "lost" | "failed" | "stale" | "ended";
+export type LinkState = "idle" | "connecting" | "connected" | "lost" | "failed" | "stale";
 export type ControlState = "none" | "taking" | "mine" | "other";
-export type TargetKind = "desktop" | "browser";
 
 export interface PanelFacts {
   readonly runtime: RuntimeState;
@@ -13,17 +12,17 @@ export interface PanelFacts {
   readonly linkError: string;
   readonly control: ControlState;
   readonly agentActive: boolean;
-  readonly targetKind: TargetKind;
-  readonly targetTitle: string;
+  /** 最前的标签属于匿名 Context：不带你的登录。 */
+  readonly anonymous: boolean;
   readonly wakeRequested: boolean;
   readonly restartRequested: boolean;
   /** 最近一次状态读取失败的原因；成功读取后清空。 */
   readonly statusError: string;
 }
 
-export type ActionId = "take" | "release" | "cancel" | "wake" | "restart" | "reconnect" | "home" | "reload" | "copy-error";
+export type ActionId = "take" | "release" | "cancel" | "wake" | "restart" | "reconnect" | "reload" | "copy-error";
 export type Tone = "idle" | "busy" | "ok" | "you" | "warn" | "error";
-export type Icon = "moon" | "spinner" | "alert" | "closed" | "refresh" | "unplug";
+export type Icon = "moon" | "spinner" | "alert" | "refresh" | "unplug";
 export type FrameKind = "none" | "anonymous" | "control";
 
 export interface ActionView {
@@ -58,38 +57,35 @@ const NO_FRAME = { kind: "none" } as const;
 // 没有画面的情况：运行时未就绪、连接未建立或已失效。按严重程度从高到低判断。
 function withoutScreen(f: PanelFacts): PanelView | null {
   if (f.link === "stale") return blank("warn", "Akashic 已更新", "刷新页面后才能继续看画面",
-    { icon: "refresh", text: "刷新页面后才能继续看画面，电脑里的任务不受影响。",
+    { icon: "refresh", text: "刷新页面后才能继续看画面，浏览器里的任务不受影响。",
       actions: [{ id: "reload", label: "刷新页面", emphasis: "primary" }] });
   // 读不到状态时不猜运行时和连接；已连上的画面不依赖轮询，继续显示。
-  if (f.statusError && f.link !== "connected") return blank("warn", "读不到电脑状态", "每秒自动重试",
-    { icon: "alert", text: "Akashic 暂时没有返回电脑状态，正在每秒重试。持续出现时请确认电脑容器在运行。",
+  if (f.statusError && f.link !== "connected") return blank("warn", "读不到浏览器状态", "每秒自动重试",
+    { icon: "alert", text: "Akashic 暂时没有返回浏览器状态，正在每秒重试。持续出现时请确认浏览器容器在运行。",
       actions: [], details: f.statusError });
-  if (f.restartRequested && f.runtime !== "ready") return blank("busy", "正在重启电脑", "会先结束卡住的进程，再重新启动",
-    { icon: "spinner", text: "正在结束卡住的进程并重新启动电脑…", actions: [] });
-  if (f.runtime === "failed") return blank("error", "电脑出错了", "可以重启电脑；反复出现时请复制详情",
-    { icon: "alert", text: "电脑的运行环境异常退出。重启电脑会结束卡住的进程再重新启动；出错前最后一刻的浏览器改动可能没有保存。如果反复出现，请把详情发给维护者。",
-      actions: [{ id: "restart", label: "重启电脑", emphasis: "primary" }, { id: "copy-error", label: "复制详情", emphasis: "plain" }],
+  if (f.restartRequested && f.runtime !== "ready") return blank("busy", "正在重启浏览器", "会先结束卡住的进程，再重新启动",
+    { icon: "spinner", text: "正在结束卡住的进程并重新启动浏览器…", actions: [] });
+  if (f.runtime === "failed") return blank("error", "浏览器出错了", "可以重启浏览器；反复出现时请复制详情",
+    { icon: "alert", text: "浏览器的运行环境异常退出。重启会结束卡住的进程再重新启动；出错前最后一刻的改动可能没有保存。如果反复出现，请把详情发给维护者。",
+      actions: [{ id: "restart", label: "重启浏览器", emphasis: "primary" }, { id: "copy-error", label: "复制详情", emphasis: "plain" }],
       details: f.runtimeError });
-  if (f.runtime === "loading") return blank("idle", "正在读取电脑状态", "",
-    { icon: "spinner", text: "正在读取电脑状态…", actions: [] });
+  if (f.runtime === "loading") return blank("idle", "正在读取浏览器状态", "",
+    { icon: "spinner", text: "正在读取浏览器状态…", actions: [] });
   if (f.runtime === "starting" || (f.wakeRequested && f.runtime === "sleeping" && !f.runtimeError))
-    return blank("busy", "正在唤醒", "通常需要几秒钟",
-      { icon: "spinner", text: "正在启动电脑和浏览器…", actions: [] });
-  if (f.runtime === "stopping") return blank("idle", "电脑正在休息", "",
-    { icon: "moon", text: "电脑正在进入休息状态…", actions: [] });
-  if (f.runtime === "sleeping" && f.runtimeError) return blank("error", "没能唤醒电脑", "可以重试；反复失败时请复制详情",
+    return blank("busy", "正在唤醒", "通常一秒左右",
+      { icon: "spinner", text: "正在启动浏览器…", actions: [] });
+  if (f.runtime === "stopping") return blank("idle", "浏览器正在休息", "",
+    { icon: "moon", text: "浏览器正在进入休息状态…", actions: [] });
+  if (f.runtime === "sleeping" && f.runtimeError) return blank("error", "没能唤醒浏览器", "可以重试；反复失败时请复制详情",
     { icon: "alert", text: "唤醒时出错了。可以重试；如果反复失败，请把详情发给维护者。",
       actions: [{ id: "wake", label: "重试", emphasis: "primary" }, { id: "copy-error", label: "复制详情", emphasis: "plain" }],
       details: f.runtimeError });
-  if (f.runtime === "sleeping") return blank("idle", "电脑在休息", "空闲 10 分钟后自动休息，登录过的网站都会保留",
+  if (f.runtime === "sleeping") return blank("idle", "浏览器在休息", "空闲 10 分钟后自动休息，登录过的网站都会保留",
     { icon: "moon", text: "空闲 10 分钟后自动休息。你登录过的网站都还在，Agent 需要时会自己唤醒。",
-      actions: [{ id: "wake", label: "唤醒电脑", emphasis: "primary" }] });
-  if (f.link === "ended") return blank("idle", "这个浏览器已关闭", "任务结束后，匿名浏览器会自动关闭",
-    { icon: "closed", text: "匿名浏览器只在一轮任务里存在，任务结束后会自动关闭。",
-      actions: [{ id: "home", label: "回到主桌面", emphasis: "primary" }] });
-  if (f.link === "failed") return blank("error", "画面连接失败", "电脑本身仍在运行",
-    { icon: "unplug", text: f.linkError || "没能连接到电脑画面。", actions: [{ id: "reconnect", label: "重新连接", emphasis: "primary" }] });
-  if (f.link === "lost") return blank("warn", "连接中断，正在重连", "电脑本身没有停止",
+      actions: [{ id: "wake", label: "唤醒浏览器", emphasis: "primary" }] });
+  if (f.link === "failed") return blank("error", "画面连接失败", "浏览器本身仍在运行",
+    { icon: "unplug", text: f.linkError || "没能连接到浏览器画面。", actions: [{ id: "reconnect", label: "重新连接", emphasis: "primary" }] });
+  if (f.link === "lost") return blank("warn", "连接中断，正在重连", "浏览器本身没有停止",
     { icon: "spinner", text: "画面连接中断，正在重新连接…", actions: [{ id: "reconnect", label: "立即重连", emphasis: "plain" }] });
   if ((f.link === "idle" || f.link === "connecting") && f.control === "taking")
     return blank("busy", "正在接管…", "Agent 做完当前这一步就会停下",
@@ -105,7 +101,7 @@ function blank(tone: Tone, title: string, detail: string, overlay: OverlayView):
 
 // 有画面时：状态胶囊说明谁在操作，外框颜色表达这是谁的浏览器、谁在操作；画面标题已在头部，不再重复。
 function withScreen(f: PanelFacts): PanelView {
-  const anonymous = f.targetKind === "browser";
+  const anonymous = f.anonymous;
   const who = anonymous ? "匿名浏览器 · " : "";
   if (f.control === "mine") return { tone: "you", title: "你正在操作",
     detail: anonymous ? "匿名浏览器 · Agent 已暂停" : "Agent 已暂停，交还后会继续", action: release, overlay: null,
@@ -117,7 +113,7 @@ function withScreen(f: PanelFacts): PanelView {
     action: { ...take, blockedBy: "等对方交还后才能接管" }, overlay: null, frame };
   if (f.agentActive) return { tone: "busy", title: "Agent 正在操作", detail: anonymous ? "匿名浏览器 · 不带你的登录" : "",
     action: take, overlay: null, frame };
-  return { tone: "ok", title: "只读观看", detail: `${who}点击和按键不会发送到电脑`, action: take, overlay: null, frame };
+  return { tone: "ok", title: "只读观看", detail: `${who}点击和按键不会发送到浏览器`, action: take, overlay: null, frame };
 }
 
 export function present(facts: PanelFacts): PanelView {

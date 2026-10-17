@@ -22,6 +22,15 @@ def _websocket_url(base_url: str) -> str:
     return urlunsplit((scheme, parsed.netloc, "/", "", ""))
 
 
+# 只读观看时只放行画面协商：分辨率、帧率、关键帧和帧确认；键鼠、剪贴板与上传一律丢弃。
+_VIEW_ONLY_PREFIXES = ("SETTINGS,", "r,", "s,", "_arg_fps,", "_f,", "START_VIDEO", "STOP_VIDEO",
+                       "REQUEST_KEYFRAME", "CLIENT_FRAME_ACK", "LOST_FRAME", "_gz,")
+
+
+def _view_only_allows(text: str) -> bool:
+    return text.startswith(_VIEW_ONLY_PREFIXES)
+
+
 def register(app: FastAPI, context: DashboardContext) -> httpx.Client:
     """Expose the exact generation's private Computer endpoint to its web tab."""
 
@@ -57,6 +66,11 @@ def register(app: FastAPI, context: DashboardContext) -> httpx.Client:
     @app.post("/api/dashboard/computer/restart")
     def restart() -> Response:
         result = forward("POST", "/restart", {})
+        return Response(result.content, media_type="application/json")
+
+    @app.post("/api/dashboard/computer/show")
+    def show(payload: dict[str, str]) -> Response:
+        result = forward("POST", "/view/show", {"target": payload.get("target", "")})
         return Response(result.content, media_type="application/json")
 
     @app.get("/api/dashboard/computer/stream-client")
@@ -110,13 +124,11 @@ def register(app: FastAPI, context: DashboardContext) -> httpx.Client:
             if socket.client_state is WebSocketState.CONNECTED:
                 await socket.close(code=1013, reason="Computer events are unavailable")
 
-    @app.websocket("/api/dashboard/computer/browser-stream")
     @app.websocket("/api/dashboard/computer/stream")
     async def computer_display(socket: WebSocket) -> None:
-        """把当前 generation 的浏览器连接转发到私有显示服务。"""
+        """把当前 generation 的浏览器画面连接转发到私有显示服务；接管时先把目标标签提到最前。"""
 
-        browser_view = socket.url.path.endswith("/browser-stream")
-        target = socket.query_params.get("target", "") if browser_view else "desktop"
+        target = socket.query_params.get("target", "")
         control_id = socket.query_params.get("control", "")
         if control_id and (len(control_id) > 128 or not control_id.isascii()):
             await socket.close(code=1008, reason="Invalid control identity")
@@ -137,48 +149,9 @@ def register(app: FastAPI, context: DashboardContext) -> httpx.Client:
             if control_id:
                 await control_request("take")
                 controlled = True
-            if browser_view:
-                await socket.accept()
-
-                async def send_frames() -> None:
-                    while True:
-                        response = await reader.get("/view/frame", params={"target": target})
-                        response.raise_for_status()
-                        await socket.send_bytes(response.content)
-                        await asyncio.sleep(0.15)
-
-                async def receive_input() -> None:
-                    while True:
-                        message = await socket.receive_json()
-                        if not control_id:
-                            await socket.close(code=1008, reason="Browser view is read-only")
-                            return
-                        response = await reader.post("/view/input", json={
-                            "target": target, "owner": control_id, "input": message["input"]})
-                        response.raise_for_status()
-                        await socket.send_json({"id": message["id"], "sent": True})
-
-                async def renew_browser_control() -> None:
-                    while True:
-                        await asyncio.sleep(5)
-                        await control_request("renew")
-
-                tasks = {asyncio.create_task(send_frames()), asyncio.create_task(receive_input())}
-                if control_id:
-                    tasks.add(asyncio.create_task(renew_browser_control()))
-                try:
-                    done, _ = await asyncio.wait(tasks, return_when=asyncio.FIRST_COMPLETED)
-                    for task in done:
-                        await task
-                finally:
-                    for task in tasks:
-                        task.cancel()
-                    for task in tasks:
-                        with suppress(asyncio.CancelledError):
-                            await task
-                return
             upstream_context = connect(
-                stream + ("?role=controller" if control_id else "?role=viewer"),
+                # 画面连接总以主控端身份接入，屏幕才会跟随面板尺寸；只读由下面的转发过滤保证。
+                stream + "?role=controller",
                 subprotocols=protocols,
                 compression=None,
                 open_timeout=10,
@@ -196,9 +169,11 @@ def register(app: FastAPI, context: DashboardContext) -> httpx.Client:
                             if message["type"] == "websocket.disconnect":
                                 return
                             if message.get("bytes") is not None:
-                                await upstream.send(message["bytes"])
-                            elif message.get("text") is not None:
-                                await upstream.send(message["text"])
+                                if control_id:
+                                    await upstream.send(message["bytes"])
+                            elif (text := message.get("text")) is not None:
+                                if control_id or _view_only_allows(text):
+                                    await upstream.send(text)
                     except WebSocketDisconnect:
                         return
 

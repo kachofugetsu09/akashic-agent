@@ -1,12 +1,14 @@
 // 面板的 DOM：只把 panel-state 给出的 PanelView 画出来，并把点击转成动作 ID。不做判断。
 import type { ActionId, ActionView, Icon, PanelView } from "./panel-state";
 
+/** 浏览器里的一个标签；front 是屏幕最前、正在画面里的那个。 */
 export interface Target {
   readonly id: string;
-  readonly label: string;
-  readonly kind: "desktop" | "browser";
-  readonly title?: string;
-  readonly url?: string;
+  readonly title: string;
+  readonly url: string;
+  readonly anonymous: boolean;
+  readonly agent: boolean;
+  readonly front: boolean;
 }
 
 export type ToolId = "shot" | "fullscreen" | "copy-url" | "open-url";
@@ -15,7 +17,6 @@ const ICONS: Record<Icon | "mask" | "hand" | "clipboard" | "expand" | "camera" |
   moon: `<path d="M20 14.5A8 8 0 0 1 9.5 4a8 8 0 1 0 10.5 10.5z"/>`,
   spinner: `<path d="M12 3a9 9 0 1 0 9 9"/>`,
   alert: `<path d="M12 4l9 16H3z"/><path d="M12 10v4M12 17.5v.01"/>`,
-  closed: `<rect x="3" y="4" width="18" height="14" rx="2"/><path d="M9 9l6 6M15 9l-6 6"/>`,
   refresh: `<path d="M20 11a8 8 0 1 0-2.3 5.7M20 4v7h-7"/>`,
   unplug: `<path d="M9 3v5M15 3v5M6 8h12v3a6 6 0 0 1-12 0zM12 17v4M4 4l16 16"/>`,
   mask: `<path d="M3 10c3-1.5 6-1.5 9 0 3-1.5 6-1.5 9 0-.5 4-2.5 6-5 6-2 0-3-1.5-4-3-1 1.5-2 3-4 3-2.5 0-4.5-2-5-6z"/><path d="M7.5 12h1.5M15 12h1.5"/>`,
@@ -47,11 +48,11 @@ function iconButton(label: string, name: keyof typeof ICONS, className = ""): HT
   return node;
 }
 
-const MENU: readonly { readonly id: ToolId; readonly label: string; readonly anonymous?: boolean }[] = [
+const MENU: readonly { readonly id: ToolId; readonly label: string; readonly link?: boolean }[] = [
   { id: "shot", label: "保存截图" },
   { id: "fullscreen", label: "全屏" },
-  { id: "copy-url", label: "复制链接", anonymous: true },
-  { id: "open-url", label: "在你的浏览器打开", anonymous: true },
+  { id: "copy-url", label: "复制链接", link: true },
+  { id: "open-url", label: "在你的浏览器打开", link: true },
 ];
 
 export class PanelSurface {
@@ -59,8 +60,7 @@ export class PanelSurface {
   readonly screen = element("div", "computer-screen");
   readonly stage = element("div", "computer-stage");
   readonly clipboardToggle = iconButton("剪贴板", "clipboard");
-  private readonly target = element("div", "computer-target");
-  private readonly picker = element("select", "computer-target-select");
+  private readonly tabs = element("div", "computer-tabs");
   private readonly address = element("div", "computer-address");
   private readonly addressText = element("span", "computer-address-text");
   private readonly moreToggle = iconButton("更多", "more", "computer-more");
@@ -78,17 +78,19 @@ export class PanelSurface {
 
   constructor(private readonly onAction: (id: ActionId) => void, private readonly onSelect: (id: string) => void,
     private readonly onTool: (id: ToolId) => void) {
-    // 1. 头部一行：观看目标、匿名页地址、工具按钮。面板开合属于宿主，这里不放关闭按钮。
+    // 1. 头部两行：本地绘制的标签条和工具，下面是当前标签的地址。面板开合属于宿主，这里不放关闭按钮。
     const head = element("div", "computer-head");
-    this.picker.setAttribute("aria-label", "观看的画面");
-    this.picker.addEventListener("change", () => this.onSelect(this.picker.value));
-    this.target.append(this.picker);
+    this.tabs.setAttribute("role", "tablist");
+    this.tabs.setAttribute("aria-label", "浏览器标签");
+    this.tabs.addEventListener("keydown", event => this.moveTab(event));
     this.addressText.setAttribute("dir", "ltr");
     this.address.append(this.addressText, this.tool("copy-url", "复制链接", "copy"), this.tool("open-url", "在你的浏览器打开", "external"));
     const tools = element("div", "computer-actions");
     tools.append(this.tool("shot", "保存截图", "camera", "computer-wide"), this.clipboardToggle,
       this.tool("fullscreen", "全屏", "expand", "computer-wide"), this.moreToggle);
-    head.append(this.target, this.address, tools, this.buildMenu());
+    const bar = element("div", "computer-bar");
+    bar.append(this.address);
+    head.append(this.tabs, tools, this.buildMenu(), bar);
     // 2. 画面：状态胶囊压在外框上沿，说明谁在操作并给出唯一主操作；遮罩只在没有画面时出现。
     this.status.setAttribute("role", "status");
     const dot = element("span", "computer-status-dot");
@@ -97,7 +99,7 @@ export class PanelSurface {
     this.status.append(dot, this.title, this.detail, this.action);
     this.screen.tabIndex = 0;
     this.screen.setAttribute("role", "region");
-    this.screen.setAttribute("aria-label", "电脑画面");
+    this.screen.setAttribute("aria-label", "浏览器画面");
     this.toast.setAttribute("aria-live", "polite");
     this.frame.append(this.screen, this.overlay);
     this.stage.append(this.frame, this.status, this.toast);
@@ -121,7 +123,7 @@ export class PanelSurface {
       node.textContent = item.label;
       node.setAttribute("role", "menuitem");
       node.tabIndex = -1;
-      if (item.anonymous) node.dataset.anonymous = "";
+      if (item.link) node.dataset.link = "";
       node.addEventListener("click", () => { this.closeMenu(true); this.onTool(item.id); });
       this.menu.append(node);
     }
@@ -232,30 +234,49 @@ export class PanelSurface {
     if (hadFocus) body.querySelector<HTMLElement>("button")?.focus();
   }
 
-  // 观看目标用原生下拉：键盘、读屏与触屏都由平台处理。只有主桌面时显示为纯文字。
+  // 标签条按 front 高亮；切换只是把那个标签提到屏幕最前，画面连接不断开，像本地切标签一样。
   renderTargets(targets: readonly Target[], selected: string) {
-    const names = targets.map(target => target.kind === "browser"
-      ? target.title || shortUrl(target.url) || "空白页" : target.label);
-    this.picker.replaceChildren(...targets.map((target, index) => {
-      // 两个匿名浏览器停在同名页面时，补上浏览器编号（与 runtime label 中的编号一致）。
-      const twin = target.kind === "browser" && names.some((name, other) => other !== index && name === names[index]);
-      const option = element("option", "");
-      option.value = target.id;
-      option.textContent = (target.kind === "browser" ? "匿名 · " : "") + names[index] + (twin ? ` · ${target.id.slice(0, 4)}` : "");
-      option.selected = target.id === selected;
-      return option;
+    const focused = this.tabs.contains(document.activeElement)
+      ? (document.activeElement as HTMLElement).dataset.id : undefined;
+    this.tabs.replaceChildren(...targets.map(target => {
+      const tab = element("button", "computer-tab");
+      tab.type = "button";
+      tab.dataset.id = target.id;
+      tab.setAttribute("role", "tab");
+      tab.setAttribute("aria-selected", String(target.id === selected));
+      tab.tabIndex = target.id === selected ? 0 : -1;
+      tab.toggleAttribute("data-anonymous", target.anonymous);
+      tab.toggleAttribute("data-agent", target.agent);
+      const name = target.url === "about:blank" || !target.url ? "新标签页" : target.title || shortUrl(target.url);
+      tab.title = `${target.anonymous ? "匿名 · 不带你的登录\n" : target.agent ? "Agent 打开的标签\n" : ""}${name}`;
+      if (target.anonymous) tab.insertAdjacentHTML("afterbegin", icon("mask"));
+      else if (target.agent) tab.append(element("span", "computer-tab-agent"));
+      const label = element("span", "computer-tab-label");
+      label.textContent = name;
+      tab.append(label);
+      tab.addEventListener("click", () => this.onSelect(target.id));
+      return tab;
     }));
+    if (focused) this.tabs.querySelector<HTMLElement>(`[data-id="${CSS.escape(focused)}"]`)?.focus();
+    this.tabs.querySelector<HTMLElement>("[aria-selected=true]")?.scrollIntoView({ block: "nearest", inline: "nearest" });
     const current = targets.find(target => target.id === selected);
-    const anonymous = current?.kind === "browser";
-    this.picker.disabled = targets.length < 2;
-    this.target.toggleAttribute("data-anonymous", anonymous);
-    this.target.querySelector(".computer-icon")?.remove();
-    if (anonymous) this.target.insertAdjacentHTML("afterbegin", icon("mask"));
-    this.target.title = anonymous ? "匿名浏览器：不带你的登录" : "";
-    this.address.hidden = !anonymous || !current.url;
+    this.address.hidden = !current?.url || current.url === "about:blank";
+    this.address.toggleAttribute("data-anonymous", Boolean(current?.anonymous));
     this.addressText.textContent = shortUrl(current?.url);
     this.address.title = current?.url ?? "";
-    for (const item of this.menu.querySelectorAll<HTMLElement>("[data-anonymous]")) item.hidden = this.address.hidden;
+    for (const item of this.menu.querySelectorAll<HTMLElement>("[data-link]")) item.hidden = this.address.hidden;
+  }
+
+  // 标签条是一组 tab：左右键在标签间移动并直接切换，Home/End 到两端。
+  private moveTab(event: KeyboardEvent) {
+    const tabs = [...this.tabs.querySelectorAll<HTMLElement>(".computer-tab")];
+    const index = tabs.indexOf(document.activeElement as HTMLElement);
+    const next = { ArrowRight: index + 1, ArrowLeft: index - 1, Home: 0, End: tabs.length - 1 }[event.key];
+    if (next === undefined || index < 0 || !tabs.length) return;
+    event.preventDefault();
+    const tab = tabs[(next + tabs.length) % tabs.length];
+    tab.focus();
+    this.onSelect(tab.dataset.id!);
   }
 }
 

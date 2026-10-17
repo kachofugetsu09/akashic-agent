@@ -1,4 +1,4 @@
-// 电脑面板唯一的状态来源：(重)连前用一次 HTTP 读取识别页面过期和接口错误，之后只收推送。
+// 浏览器面板唯一的状态来源：(重)连前用一次 HTTP 读取识别页面过期和接口错误，之后只收推送。
 // 状态与光标共用一条只读流；命令（唤醒、接管、交还）仍走各自的入口。
 import type { WebHostContextV1 } from "@akashic/web-ui-v1";
 import type { Target } from "./panel-view";
@@ -19,7 +19,8 @@ function checkState(value: Partial<ComputerState>): ComputerState {
   if (!Number.isInteger(value.noticeId) || typeof value.active !== "boolean"
     || !RUNTIME_STATES.includes(value.browser?.state ?? "") || typeof value.browser?.error !== "string"
     || !Array.isArray(value.targets) || typeof value.control !== "boolean"
-    || value.targets.some(target => !target.id || !target.label || !["desktop", "browser"].includes(target.kind)))
+    || value.targets.some(target => typeof target.id !== "string" || typeof target.title !== "string"
+      || typeof target.url !== "string" || typeof target.anonymous !== "boolean" || typeof target.front !== "boolean"))
     throw new Error("Computer 状态回执无效");
   return value as ComputerState;
 }

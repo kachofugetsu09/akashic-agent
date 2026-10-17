@@ -143,7 +143,7 @@ def _driver_context(generation_id: str, identity: ComputerCall, call_id: str) ->
 api_version = 3
 name = "computer"
 version = "2.0.0"
-desc = "Persistent Linux desktop, browser, and visual control"
+desc = "The user's logged-in browser: tabs, anonymous contexts, and visual control"
 author = "Akashic Core"
 inject = (UI,
     INSTALLED_ASSETS,
@@ -161,7 +161,7 @@ workspace_files = ()
 
 _IMAGE = (
     "ghcr.io/kachofugetsu09/akashic-computer@"
-    "sha256:6e8b7f5a211925888ececfc1dd24ec92b83b2d0c4a5062915249f619a61d07bb"
+    "sha256:b8ca37bad970478c46f7730ebd62a53fe915d125c34d4fc243366e10577d24ea"
 )
 
 
@@ -291,15 +291,15 @@ async def apply(ctx: Context) -> None:
         ctx,
         name="computer",
         description=(
-            "Read or operate browser and desktop UI in the persistent container. "
+            "Read or operate web pages in the user's logged-in browser. "
             "Prefer web_search/web_fetch for information available without UI interaction; "
             "use this for interactive or login-dependent pages, visual inspection, or when "
             "search/fetch fails or cannot provide the needed content. "
             "Prefer suitable dedicated skills, connectors, APIs or CLIs when available. "
-            "Run JavaScript with the initialized browser and desktop APIs. "
+            "Run JavaScript with the initialized browser APIs. "
             "Only documented APIs are available; this is not full Playwright. "
             "Use explicit nodeRepl.write/emitImage output; expression values are not echoed. "
-            "Use browser.tabs, tab.ax, tab.playwright, tab.dom_cua or sky. "
+            "Use browser.tabs, tab.ax, tab.playwright, tab.dom_cua or tab.cua. "
             "Use agent.browsers.create() for an anonymous BrowserContext and close() to release it. "
             "Reuse anonymous browser bindings across calls; browsers.get(browserId) reselects the same instance. "
             "Ordinary script errors keep pages and bindings when cleanup succeeds; the receipt says when reset. "
@@ -350,7 +350,6 @@ async def _register_workload(ctx: Context):
             command=("/opt/computer/start.sh",),
             ports=(
                 WorkloadPort("gateway", 8080),
-                WorkloadPort("display", 6080),
                 WorkloadPort("stream", 6081),
                 WorkloadPort("opencli", 19826, loopback=19825),
             ),

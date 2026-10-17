@@ -6,6 +6,8 @@
 
 用法：
     python -I scripts/computer_ui_fixture.py --socket ~/.cache/akashic-try-all/computer-fake/controller.sock
+    接真实容器时用 --endpoint 把端口指过去，例如经 ssh -L 转发的远端测试容器：
+    --endpoint gateway=http://127.0.0.1:18080 --endpoint stream=http://127.0.0.1:18081
     启用电脑插件：功能设置里打开，或用同一 workspace 执行 main.py plugin-enable computer@release
     AKASHIC_WORKLOAD_SOCKET=<同一 socket> python scripts/start.py --state <state> --port 4405
 """
@@ -44,8 +46,9 @@ class _Gateway(BaseHTTPRequestHandler):
 
 
 class FakeController:
-    def __init__(self, gateway_port: int) -> None:
+    def __init__(self, gateway_port: int, overrides: dict[str, str]) -> None:
         self._gateway = f"http://127.0.0.1:{gateway_port}"
+        self._overrides = overrides
         self._leases: dict[str, JsonObject] = {}
 
     # 按真实 Controller 的四个动作回执；start 记下 lease，stop 视为容器已删、挂载已释放。
@@ -65,10 +68,10 @@ class FakeController:
             return {"lease": lease, "container_absent": True, "mounts_released": True}
         raise ValueError(f"Controller action 无效: {action}")
 
-    # 每个声明的端口都映射到同一个假 gateway；端口在请求里是 [name, port, ...] 列表。
+    # 声明的端口默认映射到假 gateway，--endpoint 指定的改用真实地址；端口在请求里是 [name, port, ...] 列表。
     def _endpoints(self, body: JsonObject) -> list[JsonObject]:
         ports = cast(list[list[object]], body.get("ports", []))
-        return [{"name": str(port[0]), "url": self._gateway} for port in ports]
+        return [{"name": str(port[0]), "url": self._overrides.get(str(port[0]), self._gateway)} for port in ports]
 
     # 一行 JSON 请求、一行 JSON 回执，与 UnixWorkloadController 的协议一致。
     async def handle(self, reader: asyncio.StreamReader, writer: asyncio.StreamWriter) -> None:
@@ -83,14 +86,14 @@ class FakeController:
         writer.close()
 
 
-async def serve(socket_path: Path, gateway_port: int) -> None:
+async def serve(socket_path: Path, gateway_port: int, overrides: dict[str, str]) -> None:
     # 1. 假 gateway 在后台线程里跑，只给 Workloads 的健康检查用。
     gateway = ThreadingHTTPServer(("127.0.0.1", gateway_port), _Gateway)
     threading.Thread(target=gateway.serve_forever, daemon=True).start()
     # 2. 清掉上次留下的 socket 后监听；应用通过 AKASHIC_WORKLOAD_SOCKET 连过来。
     socket_path.parent.mkdir(parents=True, exist_ok=True)
     socket_path.unlink(missing_ok=True)
-    server = await asyncio.start_unix_server(FakeController(gateway_port).handle, str(socket_path))
+    server = await asyncio.start_unix_server(FakeController(gateway_port, overrides).handle, str(socket_path))
     print(f"Workload Controller 夹具：{socket_path}，gateway http://127.0.0.1:{gateway_port}", flush=True)
     async with server:
         await server.serve_forever()
@@ -100,8 +103,10 @@ def main() -> None:
     parser = argparse.ArgumentParser(description="没有 Docker 时让电脑插件在真实应用里加载")
     _ = parser.add_argument("--socket", type=Path, required=True)
     _ = parser.add_argument("--gateway-port", type=int, default=4417)
+    _ = parser.add_argument("--endpoint", action="append", default=[], help="name=url，可重复")
     arguments = parser.parse_args()
-    asyncio.run(serve(cast(Path, arguments.socket).expanduser(), cast(int, arguments.gateway_port)))
+    overrides = dict(cast(str, item).split("=", 1) for item in cast(list[str], arguments.endpoint))
+    asyncio.run(serve(cast(Path, arguments.socket).expanduser(), cast(int, arguments.gateway_port), overrides))
 
 
 if __name__ == "__main__":

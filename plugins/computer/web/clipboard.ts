@@ -40,14 +40,14 @@ export class ClipboardPopover {
     header.append(title, close);
     // 1. 未接管：说明原因并直接给出接管入口，而不是一排禁用按钮。
     const why = document.createElement("p");
-    why.textContent = "接管后才能把文字粘贴到电脑，或把电脑里复制的内容拿回本机。";
+    why.textContent = "接管后才能把文字粘贴到浏览器，或把浏览器里复制的内容拿回本机。";
     this.locked.className = "computer-clipboard-locked";
     this.locked.append(why, this.take);
     // 2. 已接管：文字框 + 两个方向的动作 + 就地回执。
     this.text.maxLength = 65536;
     this.text.rows = 5;
     this.text.setAttribute("aria-label", "剪贴板文字");
-    const send = button("粘贴到电脑", "is-primary");
+    const send = button("粘贴到浏览器", "is-primary");
     const copy = button("复制到本机");
     this.receipt.className = "computer-clipboard-status";
     this.receipt.setAttribute("role", "status");
@@ -85,7 +85,7 @@ export class ClipboardPopover {
     if (orphaned && !this.element.hidden) this.focusInside();
   }
 
-  /** 电脑里复制的新内容。 */
+  /** 浏览器里复制的新内容。 */
   receive(text: string) {
     this.text.value = text;
   }
