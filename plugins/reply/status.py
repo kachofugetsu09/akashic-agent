@@ -5,7 +5,7 @@ from collections.abc import AsyncGenerator, Callable, Generator
 from contextlib import AbstractContextManager, contextmanager
 from dataclasses import asdict, replace
 
-from plugins.models.contract import StreamCallback
+from plugins.models.contract import ModelAttemptStatus, StreamCallback
 from agent.plugin_composition.tasks import Task
 from plugins.reply.contract import (
     REPLY_STATUS as REPLY_STATUS,
@@ -125,11 +125,15 @@ class ReplyState:
                 if (value.get("retry_status")
                         or (draft.call_record_id is not None and call_id != draft.call_record_id)):
                     draft = replace(draft, text="", thinking="")
+                attempt = draft.attempt
+                if "attempt_status" in value:
+                    attempt = ModelAttemptStatus.decode(value["attempt_status"])
                 self._items[task.handle] = replace(current, preview=replace(
                     draft, text=draft.text + value.get("content_delta", ""),
                     thinking=draft.thinking + value.get("thinking_delta", ""),
                     call_record_id=call_id,
                     retry_status=value.get("retry_status", draft.retry_status),
+                    attempt=attempt,
                 ))
                 self._notify()
 

@@ -4,6 +4,7 @@ from __future__ import annotations
 import asyncio
 import base64
 import io
+import json
 import socket
 import ssl
 
@@ -11,6 +12,7 @@ import httpx
 from plugins.ledger.contract import detect_supported_image_mime
 from core.common.frozen_json import freeze_json
 from dataclasses import (
+    asdict,
     field,
     replace,
     dataclass,
@@ -110,6 +112,42 @@ class LLMResponse:
 
 
 StreamCallback: TypeAlias = Callable[[dict[str, str]], Awaitable[None]]
+
+
+@dataclass(frozen=True, slots=True)
+class ModelAttemptStatus:
+    """重试期间对用户可见的尝试进度；经 on_delta 的 attempt_status 键以 JSON 传递，空串表示清除。"""
+
+    attempt: int
+    limit: int | None
+    failing_since: float
+    last_failure: str
+    detail: str = ""
+    next_attempt_at: float | None = None
+
+    def encode(self) -> str:
+        return json.dumps(asdict(self), ensure_ascii=False)
+
+    # 解码并逐字段核对类型；不合格的载荷是程序错误，直接抛出。
+    @classmethod
+    def decode(cls, raw: str) -> ModelAttemptStatus | None:
+        if not raw:
+            return None
+        value = cast(object, json.loads(raw))
+        if not isinstance(value, dict):
+            raise ValueError("attempt_status 必须是 JSON 对象")
+        data = cast(dict[str, object], value)
+        attempt, limit = data.get("attempt"), data.get("limit")
+        since, next_at = data.get("failing_since"), data.get("next_attempt_at")
+        last, detail = data.get("last_failure"), data.get("detail", "")
+        if (not isinstance(attempt, int) or isinstance(attempt, bool)
+                or not (limit is None or (isinstance(limit, int) and not isinstance(limit, bool)))
+                or not isinstance(since, (int, float)) or isinstance(since, bool)
+                or not (next_at is None or (isinstance(next_at, (int, float)) and not isinstance(next_at, bool)))
+                or not isinstance(last, str) or not isinstance(detail, str)):
+            raise ValueError("attempt_status 字段无效")
+        return cls(attempt, limit, float(since), last, detail,
+                   None if next_at is None else float(next_at))
 
 
 @dataclass(frozen=True, slots=True)

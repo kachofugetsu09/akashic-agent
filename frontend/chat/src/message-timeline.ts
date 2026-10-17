@@ -43,12 +43,23 @@ export interface TimelineReply {
   preview: string;
 }
 
+/** 重试中的尝试进度：服务端时间戳为 Unix 秒，前端自己计时。 */
+export interface ModelAttempt {
+  attempt: number;
+  limit: number | null;
+  failing_since: number;
+  last_failure: string;
+  detail: string;
+  next_attempt_at: number | null;
+}
+
 export interface ReplyActivity {
   session_id: string;
   source: string;
   handle: string;
   active: boolean;
-  preview: { message_id: string; text: string; thinking: string; call_record_id?: string | null; retry_status?: string; truncated?: boolean } | null;
+  preview: { message_id: string; text: string; thinking: string; call_record_id?: string | null; retry_status?: string;
+    attempt?: ModelAttempt | null; truncated?: boolean } | null;
 }
 
 export type MessageLogFrame =
@@ -96,6 +107,7 @@ export function readMessageLogFrame(value: unknown): MessageLogFrame | null {
       if (item.preview !== null) {
         const preview = object(item.preview);
         if (preview?.retry_status !== undefined && typeof preview.retry_status !== "string") throw new Error("模型重试状态无效");
+        if (preview?.attempt !== undefined && preview.attempt !== null && !validAttempt(preview.attempt)) throw new Error("模型尝试进度无效");
         if (!item.active || !preview || !nonempty(preview.message_id) || typeof preview.text !== "string"
           || typeof preview.thinking !== "string" || (preview.call_record_id !== undefined && preview.call_record_id !== null && !nonempty(preview.call_record_id)) || (preview.truncated !== undefined && typeof preview.truncated !== "boolean") || previews.has(preview.message_id)) throw new Error("回复草稿无效");
         previews.add(preview.message_id);
@@ -103,6 +115,15 @@ export function readMessageLogFrame(value: unknown): MessageLogFrame | null {
     }
   }
   return frame as unknown as MessageLogFrame;
+}
+
+function validAttempt(value: unknown): boolean {
+  const item = object(value);
+  if (!item) return false;
+  const finite = (field: unknown) => typeof field === "number" && Number.isFinite(field);
+  return integer(item.attempt) && (item.limit === null || integer(item.limit))
+    && finite(item.failing_since) && (item.next_attempt_at === null || finite(item.next_attempt_at))
+    && typeof item.last_failure === "string" && typeof item.detail === "string";
 }
 
 /** 在 HTTP/桥接入口一次校验，组件只读取已验证的展示数据。 */

@@ -41,7 +41,7 @@ import type {
   MessageAttachment,
   ToolBlock,
 } from "./chat-message";
-import type { ReplyActivity, TimelineAttachment, TimelineMessage, TimelinePart } from "./message-timeline";
+import type { ModelAttempt, ReplyActivity, TimelineAttachment, TimelineMessage, TimelinePart } from "./message-timeline";
 import { timelineReply, timelineToolOutput, historyTranscript, isTimelinePartVisible, needsBeforeReasoningFallback } from "./message-timeline";
 import { MessageReplyReference } from "./message-actions";
 import { StaticMessageResponse } from "./static-message-response";
@@ -102,6 +102,9 @@ export function ReplyActivityView({ activity, committed, onError, onStop, proces
   if (preview && !draft && !processMessages.length) return null;
   const flow = timelineFlow(processMessages, undefined, toolResults);
   const text = draft?.text ?? "";
+  // 重试中的整次尝试都显示一行进度；退避等待仍由状态卡负责。
+  const attemptLine = activity.active && draft?.attempt && !draft.retry_status
+    ? <AttemptStatus attempt={draft.attempt} onStop={onStop} /> : null;
   const beforeReasoning = (message: TimelineMessage) => needsBeforeReasoningFallback(message, inputStarts)
     ? <PluginUiSlot name="turn.before_reasoning" sessionId={message.session_id} messageId={message.id}
       block={{ source: message.source }} refreshToken={refreshToken} /> : null;
@@ -109,11 +112,11 @@ export function ReplyActivityView({ activity, committed, onError, onStop, proces
     data-preview-message-id={draft?.message_id} aria-busy={activity.active}>
     <div className="agent-content">
       <TimelineProcess flow={flow} draftThinking={draft?.thinking} draftThinkingActive={activity.active && !text}
-        beforeReasoning={beforeReasoning}
+        draftLead={attemptLine} beforeReasoning={beforeReasoning}
         beforePart={(part, index, message) => part.kind === "tool_call" && !("display" in part) ? <PluginUiSlot
           name="turn.before_tool" sessionId={message.session_id} messageId={message.id}
           block={{ ...part, message_id: message.id, part_index: index }} /> : null} />
-      {activity.active && draft?.retry_status ? <RetryStatus text={draft.retry_status} onStop={onStop} /> : null}
+      {activity.active && draft?.retry_status ? <RetryStatus text={draft.retry_status} attempt={draft.attempt} onStop={onStop} /> : null}
       {activity.active && !draft?.retry_status && !text && !draft?.thinking && !flow.length ? <ThinkingPlaceholder /> : null}
       {text ? <MessageBody content={text} streaming={Boolean(draft?.text) && activity.active} deferRichContent onError={onError} /> : null}
     </div>
@@ -121,15 +124,57 @@ export function ReplyActivityView({ activity, committed, onError, onStop, proces
 }
 
 /** 重试与压缩进度共用一张状态卡：首行是状态，其余是原始原因，停止就在旁边。 */
-function RetryStatus({ text, onStop }: { text: string; onStop?: () => void }) {
-  const [headline, ...detail] = text.split("\n");
+function RetryStatus({ text, attempt, onStop }: { text: string; attempt?: ModelAttempt | null; onStop?: () => void }) {
+  const [serverHeadline, ...detail] = text.split("\n");
+  const now = useClock(attempt ? 1000 : null);
+  // 退避等待按服务端允许时间自己倒数，断线重连后也不显示过期的秒数。
+  const remaining = attempt?.next_attempt_at ? Math.max(0, Math.ceil(attempt.next_attempt_at - now / 1000)) : null;
+  const headline = attempt && remaining !== null
+    ? `模型暂时不可用，${remaining ? `约 ${remaining} 秒后` : "即将"}进行第 ${attemptLabel(attempt)} 次尝试`
+    : serverHeadline;
   return <div className="retry-status" role="status">
     <div className="retry-status__text">
       <strong>{headline}</strong>
+      {attempt ? <span>{elapsedLabel(now / 1000 - attempt.failing_since)} · 上次：{attempt.last_failure}</span> : null}
       {detail.length ? <code>{detail.join("\n")}</code> : null}
     </div>
     {onStop ? <button type="button" onClick={onStop}>停止</button> : null}
   </div>;
+}
+
+/** 重试中的尝试：草稿上方一行小字，持续到这次尝试结束；原始错误折叠起来。 */
+function AttemptStatus({ attempt, onStop }: { attempt: ModelAttempt; onStop?: () => void }) {
+  const now = useClock(15000);
+  return <div className="attempt-status" role="status">
+    <details>
+      <summary>上游不稳定 · 第 {attemptLabel(attempt)} 次尝试 · {elapsedLabel(now / 1000 - attempt.failing_since)} · 上次：{attempt.last_failure}</summary>
+      {attempt.detail ? <code>{attempt.detail}</code> : null}
+    </details>
+    {onStop ? <button type="button" onClick={onStop}>停止</button> : null}
+  </div>;
+}
+
+function attemptLabel(attempt: ModelAttempt): string {
+  return attempt.limit === null ? String(attempt.attempt) : `${attempt.attempt}/${attempt.limit}`;
+}
+
+// 面向用户的持续时长只精确到分钟，避免每秒改写状态文字。
+function elapsedLabel(seconds: number): string {
+  const minutes = Math.floor(Math.max(0, seconds) / 60);
+  if (minutes < 1) return "已持续不到 1 分钟";
+  if (minutes < 60) return `已持续 ${minutes} 分钟`;
+  return `已持续 ${Math.floor(minutes / 60)} 小时${minutes % 60 ? ` ${minutes % 60} 分钟` : ""}`;
+}
+
+// 按给定间隔刷新的当前时间；间隔为 null 时不挂定时器。
+function useClock(intervalMs: number | null): number {
+  const [now, setNow] = useState(() => Date.now());
+  useEffect(() => {
+    if (intervalMs === null) return;
+    const timer = window.setInterval(() => setNow(Date.now()), intervalMs);
+    return () => window.clearInterval(timer);
+  }, [intervalMs]);
+  return now;
 }
 
 export function ChatMessageView({
@@ -377,9 +422,11 @@ function CollapsedToolGroup({ count, durationMs, children }: {
 }
 
 /** 历史与实时回复共用一条流，过程项继续引用原消息和 part。 */
-function TimelineProcess({ flow, draftThinking = "", draftThinkingActive = false, groupTools = true, beforeReasoning, beforePart, onCopyToolDetail, partView }: {
+function TimelineProcess({ flow, draftThinking = "", draftThinkingActive = false, draftLead, groupTools = true, beforeReasoning, beforePart, onCopyToolDetail, partView }: {
   flow: FlowItem[];
   draftThinking?: string;
+  /** 紧贴在草稿思考之前的一行（重试进度），属于当前草稿而不是已提交的过程。 */
+  draftLead?: ReactNode;
   /** 草稿思考是否仍在进行：正文开始输出（或本轮已停）时思考已经结束，标题改成"已思考"，不再与正文同时显示"正在思考"。 */
   draftThinkingActive?: boolean;
   /** 本轮摘要里已经收过一次：展开后直接逐行，不再套一层"已执行 N 个工具"。 */
@@ -394,7 +441,7 @@ function TimelineProcess({ flow, draftThinking = "", draftThinkingActive = false
   const slotKey = (slotIndex >= 0 ? flow[slotIndex] : flow[0])?.key ?? null;
   const grouped = groupTools ? groupToolRuns(flow,
     (item) => item.kind === "tool" && item.block.status !== "input-available" ? item.block : null) : flow;
-  if (!flow.length && !draftThinking) return null;
+  if (!flow.length && !draftThinking && !draftLead) return null;
   return <>
     <div className="process-trace">
       {grouped.map((item) => "members" in item ? (
@@ -411,6 +458,7 @@ function TimelineProcess({ flow, draftThinking = "", draftThinkingActive = false
           <FlowItemView item={item} beforePart={beforePart} onCopyToolDetail={onCopyToolDetail} partView={partView} />
         </Fragment>
       ))}
+      {draftLead}
       {draftThinking ? <ThinkingRow content={draftThinking} streaming={draftThinkingActive} /> : null}
     </div>
   </>;

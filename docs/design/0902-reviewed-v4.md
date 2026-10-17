@@ -340,7 +340,7 @@ context.build → model.complete → content.decode
 transport retry 由 Model owner 实施；context overflow 是明确的可恢复错误，由 ReAct 请 context 用同一输入快照准备更小请求，最多按已声明预算重试；Tool effect 恢复由 Tool owner 实施。这三类重试不进入一个万能 RetryManager。
 
 Models 的模型生成恢复按 [0092](../decisions/0092-model-generation-recovers-until-output.md)：
-默认持续恢复暂时错误，显式 max_attempts 或 max_retries 仍限制次数。每次物理调用与
+默认最多重试 10 次暂时错误（共 11 次尝试），显式 max_attempts 或 max_retries 可改上限。每次物理调用与
 next_attempt_at 在原账本记录，driver 单次发送，ReAct 不重复 transport retry。
 失败流的瞬态草稿撤下，完整响应后才提交和分发工具；未知 usage 不等于零计费。
 
