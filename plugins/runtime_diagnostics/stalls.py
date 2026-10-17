@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import asyncio
+from collections import deque
 from collections.abc import Iterable
 from dataclasses import dataclass, field
 import logging
@@ -20,6 +21,8 @@ from .records import Records
 STALL_SECONDS = 2.0
 BEAT_SECONDS = 0.5
 CHECK_SECONDS = 0.25
+# 迟到超过半个阈值的心跳单独留底，后续健康心跳覆盖 _pulse 时仍能找回停顿真正的恢复时长。
+LATE_SECONDS = STALL_SECONDS / 2
 # 首次抓取后按约 3 倍间隔补抓两次，覆盖 #1455 的 10～31 秒停顿，区分单个长调用与接连阻塞。
 FOLLOW_UP_SECONDS = (6.0, 18.0)
 # 基线只用于对比停顿窗口内的 CPU 时间差；4 秒刷新一次，几十个线程时约 0.15ms/秒。
@@ -117,12 +120,13 @@ class StallWatch:
         self._loop_ident = 0
         self._watch_ident = 0
         self._pulse = (time.monotonic(), 0.0)
+        self._late: deque[tuple[float, float]] = deque(maxlen=8)
         self._cpu = _Cpu(time.monotonic(), {})
         self._open: _Stall | None = None
         self._reported_due = 0.0
 
     async def run(self) -> None:
-        """本任务拥有看门狗线程；取消或换代时线程同步退出。"""
+        """本任务拥有看门狗线程；线程确实退出后任务才结束。"""
         self._loop_ident = threading.get_ident()
         self._pulse = (time.monotonic(), 0.0)
         thread = threading.Thread(target=self._watch, name="diagnostics-stall-watch", daemon=True)
@@ -132,10 +136,29 @@ class StallWatch:
                 due = time.monotonic() + BEAT_SECONDS
                 await asyncio.sleep(BEAT_SECONDS)
                 now = time.monotonic()
-                self._pulse = (now, max(0.0, now - due))
+                self._beat(now, max(0.0, now - due))
         finally:
             self._stop.set()
-            thread.join(timeout=2)
+            await self._drain(thread)
+
+    # 先留迟到边界再更新心跳：看门狗读到新心跳时，这一拍的迟到量一定已在队列里。
+    def _beat(self, now: float, lag: float) -> None:
+        if lag >= LATE_SECONDS:
+            self._late.append((now, lag))
+        self._pulse = (now, lag)
+
+    # 在循环上轮询等线程退出，不阻塞循环、不占线程池；重复取消也继续等，不以超时冒充卸载成功。
+    async def _drain(self, thread: threading.Thread) -> None:
+        started = time.monotonic()
+        warned = False
+        while thread.is_alive():
+            if not warned and time.monotonic() - started >= STALL_SECONDS:
+                warned = True
+                self._logger.warning("停顿看门狗线程 %.0f 秒仍未退出，继续等待", STALL_SECONDS)
+            try:
+                await asyncio.sleep(0.01)
+            except asyncio.CancelledError:
+                continue
 
     def _watch(self) -> None:
         self._watch_ident = threading.get_ident()
@@ -156,10 +179,11 @@ class StallWatch:
         beat, lag = self._pulse
         due = beat + BEAT_SECONDS
         stall = self._open
-        # 1. 停顿进行中：心跳恢复即结束；否则到补抓时间点再抓一次。
+        # 1. 停顿进行中：心跳恢复即按恢复那一拍的迟到量结束；否则到补抓时间点再抓一次。
         if stall is not None:
             if beat >= stall.due:
-                self._close(stall, beat, lag)
+                recovered = next((row for row in self._late.copy() if row[0] >= stall.due), (beat, lag))
+                self._close(stall, *recovered)
             elif len(stall.captures) <= len(FOLLOW_UP_SECONDS) and \
                     now - stall.due >= FOLLOW_UP_SECONDS[len(stall.captures) - 1]:
                 self._capture(stall, now, delay)
@@ -170,7 +194,11 @@ class StallWatch:
             self._capture(self._open, now, delay)
             return
         # 3. 看门狗自己也被饿住（某线程长时间持有 GIL）且循环先恢复：事后补记，栈在 GIL 释放后抓取。
-        if delay >= STALL_SECONDS and lag >= STALL_SECONDS and beat - lag > self._reported_due:
+        #    从迟到留底里找，循环恢复后又走过几拍健康心跳也不漏。
+        missed = next((row for row in self._late.copy() if row[1] >= STALL_SECONDS
+                       and row[0] - row[1] > self._reported_due), None) if delay >= STALL_SECONDS else None
+        if missed is not None:
+            beat, lag = missed
             stall = _Stall(due=beat - lag, started_at=time.time() - (now - beat + lag), cpu=self._cpu)
             self._capture(stall, now, delay)
             self._close(stall, beat, lag)

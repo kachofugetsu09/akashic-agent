@@ -169,6 +169,9 @@ async def run(directory: Path, port: int | None) -> dict[str, bool]:
                                for frame in item["frames"])
                        for item in profile["allocations"]), profile
             assert not tracemalloc.is_tracing()
+            # mallinfo2 只在显式剖析首尾各读一次，两端都带分配器视图。
+            for allocator in (profile["allocator_start"], profile["allocator_end"]):
+                assert allocator["malloc_status"] == "unsupported" or allocator["malloc_in_use_bytes"] > 0, profile
             assert max(row["rss_bytes"] for row in report["samples"]) > baseline["samples"][-1]["rss_bytes"] + 16 * 1024 * 1024
             checks["allocation_site_and_auto_stop"] = True
             # 事件循环同步阻塞时，看门狗线程在停顿期间抓到循环线程正停在哪一行。
@@ -180,7 +183,7 @@ async def run(directory: Path, port: int | None) -> dict[str, bool]:
             assert 2500 <= stall["duration_ms"] < 4000, stall
             loop_thread = stall["captures"][0]["threads"][0]
             assert loop_thread["loop"] and loop_thread["frames"][0] == "diagnostics_probe_allocations.py:7 in block_loop", stall
-            assert "malloc_status" in next(row for row in (await get())["samples"] if "pss_status" in row)
+            assert not any("malloc_status" in row for row in (await get())["samples"])
             checks["stall_stack_and_allocator"] = True
             assert any(row.get("operation") == "scenario.allocate" for row in report["events"])
             await call("release")

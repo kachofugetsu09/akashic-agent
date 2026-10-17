@@ -40,7 +40,8 @@ def allocator_sample() -> dict[str, object]:
     """glibc 视图区分在用与已释放未归还；其余分配器只标记不支持。"""
     if _MALLINFO2 is None:
         return {"malloc_status": "unsupported"}
-    # ctypes 调用期间释放 GIL；glibc 逐个 arena 加锁遍历空闲块，耗时随碎片数量增长，交由调用方限频。
+    # glibc 逐个 arena 加锁遍历空闲块，期间同一 arena 上的 malloc 要排队，耗时随碎片增长；
+    # 释放 GIL 也挡不住这把锁，所以只在运维显式发起的剖析开始和结束时各读一次，不进周期采样。
     started = time.perf_counter()
     info = _MALLINFO2()
     return {"malloc_status": "ok", "malloc_arena_bytes": info.arena, "malloc_mmap_bytes": info.hblkhd,
@@ -49,12 +50,12 @@ def allocator_sample() -> dict[str, object]:
             "malloc_scan_ms": round((time.perf_counter() - started) * 1000, 3)}
 
 
-def memory_sample(*, detailed: bool, allocator: bool = False) -> dict[str, object]:
+def memory_sample(*, detailed: bool) -> dict[str, object]:
     """采集当前 Python 进程；cgroup v2 数据始终与进程字段分开。"""
-    result: dict[str, object] = allocator_sample() if allocator else {}
     if sys.platform != "linux":
-        return {**result, "process_status": "unsupported", "process_note": "当前平台没有 Linux /proc 指标",
+        return {"process_status": "unsupported", "process_note": "当前平台没有 Linux /proc 指标",
                 "cgroup_status": "unsupported"}
+    result: dict[str, object] = {}
     # 1. 常规驻留指标便宜；PSS 只在低频样本中读取。
     try:
         status = _fields(Path("/proc/self/status"), kib=True)

@@ -1,6 +1,6 @@
 # 运行诊断
 
-默认组合包含本插件，供 SRE 读取近期内存、分配器、任务数、GC、事件循环延迟与停顿现场、插件操作与测量。
+默认组合包含本插件，供 SRE 读取近期内存、任务数、GC、事件循环延迟与停顿现场、插件操作与测量。
 不提供前端页面或顶部导航，不需要 Loki、Grafana 或联网。无 UI 时采样和只读服务仍工作。
 最小组合停用本插件；headless 组合保留采样，消费者可以独立使用公共读接口。
 
@@ -9,17 +9,6 @@
 - 每 5 秒采集当前 Python 进程 RSS、匿名内存、Swap、任务数和事件循环延迟；
   每 30 秒读取 PSS。内存来自 Linux `/proc`，cgroup v2 单独记录总量、匿名内存、
   文件缓存、Swap、上限和 OOM kill 次数。缺席或权限拒绝显示不可用及原因，不填零。
-- PSS 样本同时读取 glibc `mallinfo2()`，区分「真在用」与「已释放未归还」：
-  `malloc_in_use_bytes`（arena 内在用，uordblks）+ `malloc_mmap_bytes`（大块 mmap，hblkhd）
-  是 C 层实际持有量；`malloc_free_bytes`（fordblks）是 arena 里已释放但未还给系统的空闲块，
-  `malloc_arena_bytes`（arena）是各 arena 向系统申请的总量，`malloc_top_releasable_bytes`
-  （keepcost）是主 arena 顶部可直接收缩的部分。这些都是地址空间口径：`malloc_trim`
-  用 madvise 归还物理页后 `malloc_free_bytes` 不变，物理是否驻留要看 `anonymous_bytes`
-  与「在用 + mmap」的差。pymalloc 的小对象 arena 直接 mmap，不计入这些字段。
-- `mallinfo2()` 逐个 arena 加锁遍历空闲块，耗时随碎片数量增长；调用期间释放 GIL，
-  但同一 arena 上的 malloc 会等锁。`malloc_scan_ms` 记录每次耗时，下一次至少间隔
-  「本次毫秒数」秒，占用不超过 0.1%。musl、macOS 等没有该函数时为
-  `malloc_status=unsupported`，不填零；未读取的样本不带这些字段。
 - 非 Linux 环境仍提供 GC、任务、延迟、操作和 Python 剖析，OS 内存指标明确不支持。
 - GC 次数、回收对象数和回调耗时从本次诊断实例开始累加；不强制 GC、不遍历对象堆。
 - 操作沿用 `ctx.diagnostics.operation/measure` 的日志，保留插件、generation、Fiber、
@@ -53,6 +42,11 @@
 
 循环线程 `cpu_ms` 接近 0 表示它在等待系统调用或锁；`hot` 线程与循环线程不同则说明是
 另一个线程占着 GIL。看门狗线程不出现在结果里。停顿未结束前进程退出则不留记录。
+
+`duration_ms` 取恢复那一拍心跳的迟到量：迟到超过 1 秒的心跳另外留底，看门狗处理前
+后续健康心跳不会把它覆盖成 0。停用或换代时先通知看门狗线程停止，再在循环上异步等它
+真正退出，任务才结束；等待不阻塞事件循环，重复取消也不会提前返回。线程 2 秒仍未退出
+（例如卡在 `/proc` 读取）时打一行 WARNING，继续等待，不当作卸载成功。
 
 cgroup 不一定专属于 Akashic；本地运行时可能包含同组其他程序。进程和 cgroup
 不能相加。同期操作只帮助定位，不能用并发操作前后的 RSS 差值计算插件独占内存。
@@ -101,6 +95,20 @@ HTTP 复用现有 UI 后端监听器，以无前端模块的 Dashboard 注册。
 30 组位置、大小、数量，以及追踪内存当前值、峰值和 tracer 自身内存。不是对象持有者
 分析，不包含启动追踪前的分配，也不保证覆盖原生扩展。记录的是期间峰值数值，
 最终调用栈对应结束快照，不能把二者混称为峰值的分配栈。
+
+剖析开始和结束时各读一次 glibc `mallinfo2()`，放在 `profile.allocator_start` 与
+`profile.allocator_end`（结束值只在 `complete` 时有），区分「真在用」与「已释放未归还」：
+`malloc_in_use_bytes`（arena 内在用，uordblks）+ `malloc_mmap_bytes`（大块 mmap，hblkhd）
+是 C 层实际持有量；`malloc_free_bytes`（fordblks）是 arena 里已释放但未还给系统的空闲块，
+`malloc_arena_bytes`（arena）是各 arena 向系统申请的总量，`malloc_top_releasable_bytes`
+（keepcost）是主 arena 顶部可直接收缩的部分，`malloc_scan_ms` 是这次读取的耗时。
+这些都是地址空间口径：`malloc_trim` 用 madvise 归还物理页后 `malloc_free_bytes` 不变，
+物理是否驻留要看同期样本的 `anonymous_bytes` 与「在用 + mmap」的差。pymalloc 的小对象
+arena 直接 mmap，不计入这些字段。musl、macOS 等没有该函数时为 `malloc_status=unsupported`，不填零。
+
+这项读取会逐个 arena 加锁遍历空闲块，持锁期间业务线程在同一 arena 上的 malloc/free
+都要排队；碎片严重时单次可达数百毫秒，释放 GIL 也挡不住这把锁，降频或换线程都不能
+限制单次持锁时长。所以周期采样从不调用它，只在运维显式发起剖析时读这两次。
 
 剖析额外占用 CPU 和内存；定时停止依赖进程仍能调度。汇总在 worker 线程执行，
 取消会等物理工作结束后停止本插件的 tracer。失败明确显示 `failed`，取消显示
