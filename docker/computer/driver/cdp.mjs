@@ -1,5 +1,36 @@
 import { EventEmitter, once } from "node:events";
 import { randomInt } from "node:crypto";
+import { connect } from "node:net";
+
+// 导航由参考实现自己的等待与 stopLoading 收尾掌管；CDP 层只兜底，不能抢先以 10 秒超时打断。
+const NAVIGATE_CEILING_MS = 120_000;
+const HOST_PROBE_MS = 2_000;
+const HOST_NAMES = new Set(["host.docker.internal", "gateway.docker.internal"]);
+
+/** 宿主别名与私网地址先试连：被丢包的端口会让 Chromium 挂到 CDP 超时，这里提前给出可操作的原因。 */
+async function probeLocalTarget(url) {
+  let target;
+  try { target = new URL(url); } catch { return; }
+  if (!["http:", "https:"].includes(target.protocol)) return;
+  const host = target.hostname.replace(/^\[|\]$/g, "");
+  if (!HOST_NAMES.has(host) && !/^(10\.|172\.(1[6-9]|2\d|3[01])\.|192\.168\.)/.test(host)) return;
+  const port = Number(target.port || (target.protocol === "https:" ? 443 : 80));
+  const outcome = await new Promise((resolve) => {
+    const socket = connect({ host, port });
+    const done = (value) => { socket.destroy(); resolve(value); };
+    socket.setTimeout(HOST_PROBE_MS, () => done("timeout"));
+    socket.once("connect", () => done("open"));
+    socket.once("error", (error) => done(error.code ?? "error"));
+  });
+  if (outcome !== "timeout") return;
+  throw new Error(
+    `Cannot reach ${host}:${port} from the browser: no answer within ${HOST_PROBE_MS / 1000}s. ` +
+    "The browser runs in its own container; the host firewall usually drops container connections " +
+    "to host ports, so a server started on the host is not visible to it. For static pages, write the " +
+    "files into the shared pages directory named in the computer tool description and open them " +
+    "with file:///data/pages/...; for a dev server, ask the user to allow this port. Nothing was opened.",
+  );
+}
 
 /** 每个 WebSocket 拥有自己的请求表；断连同时拒绝全部等待者。 */
 class CdpConnection extends EventEmitter {
@@ -251,10 +282,12 @@ export class BrowserBackend extends EventEmitter {
       const tab = this.tab(target.tabId);
       this.checkOwner(tab, context);
     }
+    if (method === "Page.navigate") await probeLocalTarget(commandParams.url);
     const result = await connection.send(
       method,
       commandParams,
       target.sessionId,
+      params.timeoutMs ?? (method === "Page.navigate" ? NAVIGATE_CEILING_MS : undefined),
     );
     if (
       method === "Input.dispatchMouseEvent" &&
