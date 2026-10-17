@@ -2,8 +2,6 @@
 from __future__ import annotations
 
 import asyncio
-from pathlib import Path
-
 from playwright.async_api import Browser, BrowserContext, Error, Playwright, async_playwright
 
 
@@ -30,9 +28,6 @@ class Preview:
         self._browser: Browser | None = None
         self._lock = asyncio.Lock()
         self._slots = asyncio.Semaphore(2)
-        root = Path(__file__).parent
-        self._template = (root / "frame.html").read_text().replace(
-            "/*visual-theme*/", (root / "preview-theme.css").read_text())
 
     async def close(self) -> None:
         """作用域收束后关闭所有预检资源。"""
@@ -64,23 +59,23 @@ class Preview:
                 raise
             return self._browser
 
-    async def check(self, html: str) -> None:
-        """以桌面和窄屏宽度检查真实脚本、布局及滑块边界。"""
+    async def check(self, document: str) -> None:
+        """以桌面和窄屏宽度检查将要保存的完整文档：真实脚本、布局及滑块边界。"""
         # 1. 不积累无界排队；整个调用有截止时间。
         if self._slots.locked():
             raise PreviewFailed("可视化预检繁忙，请稍后重试")
         async with self._slots:
             try:
                 async with asyncio.timeout(20):
-                    await self._check_document(html)
+                    await self._check_document(document)
             except (Error, TimeoutError) as error:
                 raise PreviewFailed(f"可视化预检失败：{error}") from error
 
-    async def _check_document(self, html: str) -> None:
+    async def _check_document(self, document: str) -> None:
         """每次调用创建新 context，不携带账号、缓存或持久存储。"""
         browser = await self._get_browser()
         context = await browser.new_context(viewport={"width": 720, "height": 900}, service_workers="block")
-        inspection = asyncio.create_task(self._inspect(context, html))
+        inspection = asyncio.create_task(self._inspect(context, document))
         try:
             # 先关闭 context 让浏览器调用真实结束，避免取消 Playwright RPC 留下未取异常。
             await asyncio.shield(inspection)
@@ -88,16 +83,16 @@ class Preview:
             await context.close()
             await asyncio.gather(inspection, return_exceptions=True)
 
-    async def _inspect(self, context: BrowserContext, html: str) -> None:
+    async def _inspect(self, context: BrowserContext, document: str) -> None:
         """检查真实页面；外层始终等待它随 context 关闭而结束。"""
         errors: list[str] = []
-        # 2. 服务端拒绝全部网络，预检和客户端使用同一文档外壳。
+        # 2. 服务端拒绝全部网络，预检的就是将要保存的同一份文件。
         await context.route("**/*", lambda route: route.abort())
         page = await context.new_page()
         page.on("pageerror", lambda error: errors.append(str(error)[:300]) if len(errors) < 8 else None)
         page.on("console", lambda message: errors.append(message.text[:300])
                 if message.type == "error" and len(errors) < 8 else None)
-        await page.set_content(self._template.replace("<!--visual-content-->", html), wait_until="load")
+        await page.set_content(document, wait_until="load")
         for width in (720, 280):
             await page.set_viewport_size({"width": width, "height": 900})
             await page.evaluate("() => new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)))")

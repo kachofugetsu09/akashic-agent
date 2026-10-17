@@ -136,7 +136,7 @@ async def run(directory: Path, executable_path: str | None) -> dict[str, object]
                 document = await lease.read_bytes(max_bytes=ref.size_bytes)
             finally:
                 await lease.aclose()
-        (directory / "document.json").write_bytes(document)
+        (directory / "document.html").write_bytes(document)
         async with root.context.open_service(PLUGIN_UI) as ui:
             catalog = await ui.catalog()
             item = next(item for item in cast(list[dict[str, str]], catalog["items"]) if item["id"] == "visuals@lab")
@@ -159,7 +159,7 @@ async def run(directory: Path, executable_path: str | None) -> dict[str, object]
             async with root.context.open_service(ARTIFACT_READ) as files:
                 lease = await files.acquire(attachment)
                 try:
-                    (directory / f"{attachment.artifact_id}.json").write_bytes(await lease.read_bytes(max_bytes=attachment.size_bytes))
+                    (directory / f"{attachment.artifact_id}.html").write_bytes(await lease.read_bytes(max_bytes=attachment.size_bytes))
                 finally:
                     await lease.aclose()
         before = rows(workspace)

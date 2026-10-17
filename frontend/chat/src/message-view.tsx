@@ -1,4 +1,4 @@
-import { PluginUiSlot } from "./plugin-ui-runtime";
+import { PluginUiSlot, pluginSlotAccepts, usePluginUiCatalogVersion } from "./plugin-ui-runtime";
 import { ThinkingPlaceholder } from "./thinking-placeholder";
 import { usePacedText } from "./stream-pace";
 import { SentAttachments, type MediaKind, type SentAttachmentItem } from "./attachment-card";
@@ -617,20 +617,28 @@ export function TimelineMessageView({ message, lookupMessage, toolResults, onNav
       streaming={false} deferRichContent onError={onError} /> : null)}
     {!body.parts.some(part => part.kind === "text" && !("display" in part) && part.value.trim())
       ? <p>{message.attachments[0].filename ?? "附件"}</p> : null}</div> : null;
+  // 插件认领的文件附件（例如网页）在任何消息里都作为插图展示，插件缺席时退回普通附件卡片。
+  usePluginUiCatalogVersion();
+  const figure = (ref: TimelineAttachment) => !renderAttachment && ref.kind === "file"
+    && pluginSlotAccepts("message.attachment", { ...ref, origin });
   const attachment = (id: string) => {
     const ref = message.attachments.find(item => item.artifact_id === id)!;
     if (renderAttachment) return renderAttachment(ref);
-    if (attachmentResult) return <MessageAttachmentFigure attachment={ref} origin={origin}
-      sessionId={message.session_id} messageId={message.id} fallback={fallback} />;
+    if (attachmentResult || figure(ref)) return <MessageAttachmentFigure attachment={ref} origin={origin}
+      sessionId={message.session_id} messageId={message.id}
+      fallback={attachmentResult ? fallback : <SentAttachments items={[timelineAttachmentItem(ref)]} />} />;
     return <SentAttachments items={[timelineAttachmentItem(ref)]} />;
   };
   // 与实时消息同一个容器；用户输入的附件（含正文里的 artifact_ref）全部收进气泡上方的附件条，发出时与刷新后位置一致。
   const input = body.kind === "input";
   const looseAttachments = input ? message.attachments : message.attachments.filter((ref) => !referencedArtifacts.has(ref.artifact_id));
-  // 工具结果插图沿正文宽度展示，不进附件条。
-  const attachmentList = !looseAttachments.length ? null : attachmentResult
-    ? looseAttachments.map((ref, index) => <Fragment key={`${ref.artifact_id}:${index}`}>{attachment(ref.artifact_id)}</Fragment>)
-    : <SentAttachments items={looseAttachments.map(timelineAttachmentItem)} />;
+  const figures = attachmentResult ? looseAttachments : looseAttachments.filter(figure);
+  const strip = looseAttachments.filter(ref => !figures.includes(ref));
+  // 插图沿正文宽度展示，不进附件条。
+  const attachmentList = !looseAttachments.length ? null : <>
+    {strip.length ? <SentAttachments items={strip.map(timelineAttachmentItem)} /> : null}
+    {figures.map((ref, index) => <Fragment key={`${ref.artifact_id}:${index}`}>{attachment(ref.artifact_id)}</Fragment>)}
+  </>;
   const emptyBubble = input && !leadingContent && !leadingProcess && !afterBody && body.parts.every((part) => !isTimelinePartVisible(part)
     || (!("display" in part) && (part.kind === "artifact_ref" || (part.kind === "text" && !part.value.trim()))));
   return <div className={`message-row timeline-message timeline-${body.kind}`}>

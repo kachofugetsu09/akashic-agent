@@ -3,6 +3,7 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width,initial-scale=1">
+  <title></title>
   <meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline'; img-src data:; font-src data:; connect-src 'none'; frame-src 'none'; object-src 'none'; base-uri 'none'; form-action 'none'">
   <style>
     :root {
@@ -148,38 +149,14 @@
   <script>/*visual-charts*/</script>
   <script>
     (() => {
-      const send = (type, value) => parent.postMessage({channel: 'akashic.visual.v1', type, value}, '*');
-      let queued = false, last = 0;
-      const measure = () => {
-        queued = false;
-        const height = Math.ceil(document.body.getBoundingClientRect().height);
-        if (height !== last) { last = height; send('height', height); }
-      };
-      const resize = () => {
-        if (!queued) { queued = true; requestAnimationFrame(measure); }
-      };
-      addEventListener('error', event => send('error', event.message));
-      addEventListener('unhandledrejection', event => send('error', String(event.reason)));
-      addEventListener('message', event => {
-        if (event.source !== parent || event.data?.channel !== 'akashic.visual.v1' || event.data.type !== 'theme') return;
-        document.getElementById('visual-theme').textContent = event.data.value;
-        dispatchEvent(new CustomEvent('akashic:theme'));
-        resize();
-      });
-      // 滑块已填充段跟随数值，模型脚本无需自己维护。
+      // 滑块已填充段跟随数值，模型脚本无需自己维护；尺寸、主题与错误汇报由聊天宿主在展示时注入。
       const fill = input => {
         if (!(input instanceof HTMLInputElement) || input.type !== 'range') return;
         const min = Number(input.min || 0), max = Number(input.max || 100);
         input.style.setProperty('--fill', `${max > min ? (input.valueAsNumber - min) / (max - min) * 100 : 0}%`);
       };
       addEventListener('input', event => fill(event.target), true);
-      addEventListener('DOMContentLoaded', () => {
-        document.querySelectorAll('input[type=range]').forEach(fill);
-        new ResizeObserver(resize).observe(document.body);
-        measure();
-        // 隐藏或屏外 iframe 的 rAF 可暂停；启动确认不能等待下一帧。
-        send('ready', true);
-      });
+      addEventListener('DOMContentLoaded', () => document.querySelectorAll('input[type=range]').forEach(fill));
     })();
   </script>
 </head>
