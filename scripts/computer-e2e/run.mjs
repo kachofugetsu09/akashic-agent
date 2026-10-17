@@ -157,7 +157,12 @@ try {
     if (!await page.locator(".computer-view").isVisible())
       await page.getByRole("button", { name: /^浏览器/ }).click();
   };
-  const connected = page => page.waitForFunction(() => document.querySelector(".computer-status")?.textContent?.startsWith("只读观看"));
+  // 连上且没人接管：Agent 空闲时不显示胶囊，Agent 回合进行中显示“Agent 正在使用浏览器”。
+  const connected = page => page.waitForFunction(() => {
+    const status = document.querySelector(".computer-status");
+    return document.querySelector(".computer-connection-state")?.hidden && status
+      && (status.hidden || status.textContent.startsWith("Agent 正在使用浏览器"));
+  });
   const videoReady = page => page.waitForFunction(() => {
     const frame = document.querySelector(".computer-stream");
     return frame?.contentWindow?.fps > 0 && frame.contentWindow.selkiesTransport.readyState === 1;
@@ -196,7 +201,7 @@ try {
   pass("explicit takeover pauses Agent clock and OpenCLI, refuses another controller, and release resumes them");
   await connected(first); await videoReady(first);
 
-  // 3. 标签展示真实匿名页面；只读、输入、键盘、关闭和释放均经生产路由。
+  // 3. 标签展示真实匿名页面；Agent 回合进行中挡住输入，接管、键盘、关闭和释放均经生产路由。
   const options = (page, path) => page.locator(".computer-tab")
     .evaluateAll((nodes, suffix) => nodes.filter(node => node.textContent === suffix).map(node => node.dataset.id), `/${path}`);
   const select = async (page, path) => {
@@ -236,7 +241,7 @@ try {
   });
   assert.equal(textResult(await action("nodeRepl.write(await pageA.playwright.getByRole('textbox').evaluate(el => el.value));")).trim(), "");
   assert.equal(textResult(await action("nodeRepl.write(await pageA.clipboard.readText());")), clipboardBefore);
-  pass("read-only proxy drops raw keyboard, clipboard and binary messages");
+  pass("while the Agent's turn is open the proxy drops raw keyboard, clipboard and binary messages");
   await first.getByRole("button", { name: "接管", exact: true }).click();
   await first.waitForFunction(() => document.querySelector(".computer-status").textContent.startsWith("你正在操作"));
   await videoReady(first);

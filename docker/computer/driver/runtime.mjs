@@ -180,6 +180,40 @@ export class ComputerDriver extends EventEmitter {
     this.emit("targets");
   }
 
+  /** 人工导航：在标签里打开地址、后退、前进或刷新；临时附着，用完就断开。 */
+  async navigate(id, action, url = "") {
+    const { targetId } = await this.viewTarget(id);
+    const connection = this.browser.browser;
+    const { sessionId } = await connection.send("Target.attachToTarget", { targetId, flatten: true });
+    try {
+      if (action === "go") await connection.send("Page.navigate", { url }, sessionId);
+      else if (action === "reload") await connection.send("Page.reload", {}, sessionId);
+      else {
+        const { currentIndex, entries } = await connection.send("Page.getNavigationHistory", {}, sessionId);
+        const entry = entries[currentIndex + (action === "back" ? -1 : 1)];
+        if (entry) await connection.send("Page.navigateToHistoryEntry", { entryId: entry.id }, sessionId);
+      }
+    } finally {
+      await connection.send("Target.detachFromTarget", { sessionId }).catch(() => {});
+    }
+  }
+
+  /** 人工新开标签：个人浏览器里开一个窗口并提到最前，返回它的观看 id。 */
+  async openPage(url = "about:blank") {
+    const connection = this.browser.browser;
+    const { targetId } = await connection.send("Target.createTarget", { url, newWindow: true });
+    await this.browser.screen.place(connection, targetId);
+    await this.browser.screen.show(connection, targetId);
+    const tab = (await this.browser.listTabs()).find(item => this.browser.tab(item.id).targetId === targetId);
+    this.emit("targets");
+    return tab ? `main:${tab.id}` : "";
+  }
+
+  async closePage(id) {
+    const { targetId } = await this.viewTarget(id);
+    await this.browser.browser.send("Target.closeTarget", { targetId });
+  }
+
   // 最前的标签被关掉时，把主浏览器的第一个标签提上来；一个都不剩就补开空白页，屏幕不会停在不可知的窗口。
   async recoverFront(targetId) {
     const screen = this.browser.screen;

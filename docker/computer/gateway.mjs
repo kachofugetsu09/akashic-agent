@@ -154,6 +154,22 @@ async function publishState() {
 }
 
 class InputError extends Error {}
+// The Agent is using the browser; a viewer must take control before acting.
+class BusyError extends InputError {}
+
+// 人工直接操作：有人接管时归接管者；Agent 没有进行中的回合和操作时，观看者可以直接用。
+function humanMayAct() {
+  return Boolean(driver?.control)
+    || (!activeOperations.size && !computer.turns.size && !driver?.actives.size);
+}
+
+// 地址栏只打开网页和空白页，不执行 javascript: 等会在页面里运行代码的地址。
+function pageUrl(value) {
+  const url = new URL(requiredString(value, "url", 8192));
+  if (!["http:", "https:"].includes(url.protocol) && url.href !== "about:blank")
+    throw new InputError("Only http, https and about:blank pages can be opened");
+  return url.href;
+}
 
 function json(response, status, value) {
   const body = Buffer.from(JSON.stringify(value));
@@ -685,6 +701,25 @@ const server = createServer(async (request, response) => {
       if (!driver || computer.state !== "ready") throw new InputError("Computer is not awake");
       await driver.show(requiredString(payload.target, "target", 128));
       json(response, 200, { shown: true });
+    } else if (request.method === "POST" && ["/view/navigate", "/view/open", "/view/close"].includes(url.pathname)) {
+      const payload = await body(request);
+      if (!driver || computer.state !== "ready") throw new InputError("Computer is not awake");
+      if (!humanMayAct()) throw new BusyError("The Agent is using the browser; take control first");
+      computer.touch();
+      if (url.pathname === "/view/open") {
+        json(response, 200, { target: await driver.openPage(payload.url ? pageUrl(payload.url) : "about:blank") });
+        return;
+      }
+      const target = requiredString(payload.target, "target", 128);
+      if (url.pathname === "/view/close") await driver.closePage(target);
+      else if (!["go", "back", "forward", "reload"].includes(payload.action))
+        throw new InputError("action must be go, back, forward or reload");
+      else await driver.navigate(target, payload.action, payload.action === "go" ? pageUrl(payload.url) : "");
+      json(response, 200, { done: true });
+    } else if (request.method === "POST" && url.pathname === "/view/touch") {
+      // 观看者直接操作页面不经过网关；面板代理转发输入时续期，人在用时不休眠。
+      if (computer.state === "ready") computer.touch();
+      json(response, 200, { touched: computer.state === "ready" });
     } else if (request.method === "GET" && url.pathname === "/activity") {
       json(response, 200, { ...activity, browser: computer.status(), control: driver?.control ? { active: true } : { active: false } });
     } else if (request.method === "POST" && url.pathname.startsWith("/control/")) {
@@ -747,8 +782,8 @@ const server = createServer(async (request, response) => {
     if (driver?.closed && computer.state === "ready") {
       computer.fail(error);
     }
-    const status =
-      error instanceof InputError || error instanceof SyntaxError ? 400 : 500;
+    const status = error instanceof BusyError ? 409
+      : error instanceof InputError || error instanceof SyntaxError ? 400 : 500;
     json(response, status, {
       error: error instanceof Error ? error.message : String(error),
     });

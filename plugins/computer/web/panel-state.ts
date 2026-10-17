@@ -12,6 +12,8 @@ export interface PanelFacts {
   readonly linkError: string;
   readonly control: ControlState;
   readonly agentActive: boolean;
+  /** Agent 有进行中的回合：回合结束前它随时会继续操作，人要先接管。 */
+  readonly agentTurn: boolean;
   /** 最前的标签属于匿名 Context：不带你的登录。 */
   readonly anonymous: boolean;
   readonly wakeRequested: boolean;
@@ -48,6 +50,13 @@ export interface PanelView {
   readonly action: ActionView | null;
   readonly overlay: OverlayView | null;
   readonly frame: { readonly kind: FrameKind };
+  /** 你可以直接操作：不显示状态胶囊，像本地浏览器一样。 */
+  readonly direct: boolean;
+}
+
+/** 画面已连上、没人接管、Agent 也不在用时，点击和按键直接送到浏览器（参考 Cursor：Agent 加锁时才挡住）。 */
+export function canInputDirectly(f: PanelFacts): boolean {
+  return f.link === "connected" && f.control === "none" && !f.agentActive && !f.agentTurn;
 }
 
 const take: ActionView = { id: "take", label: "接管", emphasis: "primary" };
@@ -96,24 +105,23 @@ function withoutScreen(f: PanelFacts): PanelView | null {
 }
 
 function blank(tone: Tone, title: string, detail: string, overlay: OverlayView): PanelView {
-  return { tone, title, detail, action: null, overlay, frame: NO_FRAME };
+  return { tone, title, detail, action: null, overlay, frame: NO_FRAME, direct: false };
 }
 
-// 有画面时：状态胶囊说明谁在操作，外框颜色表达这是谁的浏览器、谁在操作；画面标题已在头部，不再重复。
+// 有画面时：Agent 不在用就直接操作、不显示胶囊；Agent 在用时胶囊说明情况并给出接管。外框颜色表达谁在操作。
 function withScreen(f: PanelFacts): PanelView {
   const anonymous = f.anonymous;
-  const who = anonymous ? "匿名浏览器 · " : "";
   if (f.control === "mine") return { tone: "you", title: "你正在操作",
     detail: anonymous ? "匿名浏览器 · Agent 已暂停" : "Agent 已暂停，交还后会继续", action: release, overlay: null,
-    frame: { kind: "control" } };
+    frame: { kind: "control" }, direct: false };
   const frame = { kind: anonymous ? "anonymous" : "none" } as const;
   if (f.control === "taking") return { tone: "busy", title: "正在接管…", detail: "Agent 做完当前这一步就会停下",
-    action: { id: "cancel", label: "取消", emphasis: "plain" }, overlay: null, frame };
+    action: { id: "cancel", label: "取消", emphasis: "plain" }, overlay: null, frame, direct: false };
   if (f.control === "other") return { tone: "you", title: "另一个窗口正在操作", detail: "Agent 已暂停，你仍然可以观看",
-    action: { ...take, blockedBy: "等对方交还后才能接管" }, overlay: null, frame };
-  if (f.agentActive) return { tone: "busy", title: "Agent 正在操作", detail: anonymous ? "匿名浏览器 · 不带你的登录" : "",
-    action: take, overlay: null, frame };
-  return { tone: "ok", title: "只读观看", detail: `${who}点击和按键不会发送到浏览器`, action: take, overlay: null, frame };
+    action: { ...take, blockedBy: "等对方交还后才能接管" }, overlay: null, frame, direct: false };
+  if (f.agentActive || f.agentTurn) return { tone: "busy", title: "Agent 正在使用浏览器",
+    detail: anonymous ? "匿名浏览器 · 接管后 Agent 会暂停" : "接管后 Agent 会暂停", action: take, overlay: null, frame, direct: false };
+  return { tone: "ok", title: "", detail: "", action: null, overlay: null, frame, direct: true };
 }
 
 export function present(facts: PanelFacts): PanelView {

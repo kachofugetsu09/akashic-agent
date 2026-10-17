@@ -32,6 +32,8 @@ export class ComputerDisplay extends EventTarget {
   private connected = false;
   private closed = false;
   private inputReady = false;
+  // 接管时始终可输入；没接管时由面板按 Agent 是否空闲开关，不需要重连。
+  private inputEnabled: boolean;
   private transportWatched = false;
   private clipboardId = 0;
   private cursor: AgentCursor | null = null;
@@ -52,8 +54,8 @@ export class ComputerDisplay extends EventTarget {
     super();
     this.frame.className = "computer-stream";
     this.frame.title = "浏览器画面";
-    this.frame.tabIndex = this.control ? 0 : -1;
-    this.frame.style.pointerEvents = this.control ? "auto" : "none";
+    this.inputEnabled = !this.control;
+    this.setInput(Boolean(this.control));
     this.frame.allow = "clipboard-read; clipboard-write; fullscreen";
     this.frame.addEventListener("load", () => this.watch());
     // 获取脚本、iframe 启动和首帧共用一个期限，避免卡在 load 事件之前。
@@ -240,8 +242,15 @@ export class ComputerDisplay extends EventTarget {
     this.stream?.webrtcInput?.detach_context();
   }
 
+  setInput(enabled: boolean) {
+    if (enabled === this.inputEnabled) return;
+    this.inputEnabled = enabled;
+    this.frame.tabIndex = enabled ? 0 : -1;
+    this.frame.style.pointerEvents = enabled ? "auto" : "none";
+  }
+
   sendKey(keysym: number, code: string, down: boolean) {
-    if (this.control) this.stream?.webrtcInput?._sendKeyEvent(keysym, code, down);
+    if (this.inputEnabled) this.stream?.webrtcInput?._sendKeyEvent(keysym, code, down);
   }
 
   // 从流客户端正在显示的 video 或 canvas 取当前帧；两者都在同源 srcdoc 里，可以直接绘制。
@@ -264,7 +273,7 @@ export class ComputerDisplay extends EventTarget {
 
   /** 回执到达后才允许发送粘贴按键，断线或超时明确失败。 */
   clipboardPasteFrom(text: string): Promise<void> {
-    if (!this.control) return Promise.reject(new Error("请先接管操作"));
+    if (!this.inputEnabled) return Promise.reject(new Error("Agent 正在使用浏览器，先接管再粘贴"));
     if (!this.connected || this.closed) return Promise.reject(new Error("Computer 尚未连接"));
     const requestId = ++this.clipboardId;
     return new Promise((resolve, reject) => {

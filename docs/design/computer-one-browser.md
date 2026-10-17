@@ -37,15 +37,24 @@ Agent: browser.tabs.new()
   Agent 开始下一轮时恢复。同轮后续工具调用不恢复跟随；隐藏或被顶下来的面板不自动切页。
   空白页显示“新标签页”。
 
-## 3. 输入与只读
+## 3. 输入与接管
 
 ```text
 面板 ──WebSocket──> Dashboard 代理 ──> selkies（总是 role=controller）
                      │
                      ├─ 已接管：原样转发
-                     └─ 未接管：只放行 SETTINGS、r,、s,、_arg_fps、_f、START/STOP_VIDEO、
+                     ├─ 未接管、Agent 空闲：原样转发；每 30 秒向网关 /view/touch 续期
+                     └─ 未接管、Agent 在用：只放行 SETTINGS、r,、s,、_arg_fps、_f、START/STOP_VIDEO、
                                 REQUEST_KEYFRAME、CLIENT_FRAME_ACK、LOST_FRAME、_gz；其余丢弃
+                        （ku,、kr 松键总是放行）
 ```
+
+- “Agent 空闲”取自网关事件流：浏览器 ready，且没有进行中的回合（`turns`）、没有操作
+  （`active`）、没有人接管（`control`）。变成不空闲时代理先发 `kr` 和一次松开鼠标。
+- 面板据同一状态开关 iframe 的指针和键盘转发，不重连；被挡住时点画面，状态胶囊和画面闪一下。
+- 导航走网关：`/view/navigate`（go、back、forward、reload）、`/view/open`、`/view/close`。
+  只接受 http、https 和 about:blank；Agent 在用时返回 409。Ctrl/Cmd+L 聚焦地址栏，
+  Ctrl/Cmd+T 新建标签。
 
 - 屏幕尺寸由 selkies 按面板尺寸调整（`r,宽x高`），matchbox 让窗口跟着铺满。
 - 视口截图前记下 CSS 视口尺寸和像素比例（`innerWidth`、`innerHeight`、`devicePixelRatio`）。坐标动作执行前这些值已变，
@@ -82,7 +91,7 @@ Agent 调用时不清理。刷新与 Agent 调用可以并行。此前实测不�
 
 1. 容器内：`docker/computer/test/lifecycle.test.mjs`（每例前重启运行时）。
 2. 真实应用：本地应用 → `scripts/computer_ui_fixture.py --endpoint` → ssh 隧道 → 测试容器；
-   Playwright 打开工作台“浏览器”，检查标签条、尺寸跟随、只读、跟随 Agent。
+   Playwright 打开工作台“浏览器”，检查标签条、尺寸跟随、地址栏与直接操作、Agent 在用时挡住、跟随 Agent。
 3. 真实模型任务：dsv4.1 在应用里打开网页并读取内容、点进二级页面。
 4. MiniWoB 配对：`plugins/computer/bench/run.py`，同模型、同任务、同 seed，main 与本栈交替运行。
 
