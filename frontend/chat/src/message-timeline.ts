@@ -297,6 +297,11 @@ function hasReplyBody(message: TimelineMessage): boolean {
   return message.body.kind !== "control" && message.body.parts.some((part) => !PROCESS_PARTS.has(part.kind) && isTimelinePartVisible(part));
 }
 
+// 工具结果里的图片是给模型看的观察（截图、读图），跟随所属调用；文件附件才是交给用户的回复产物。
+export function timelineDeliversAttachment(message: TimelineMessage): boolean {
+  return message.body.kind === "tool_result" && message.attachments.some((ref) => ref.kind === "file");
+}
+
 export function isTimelineMessageVisible(message: TimelineMessage): boolean {
   return message.attachments.length > 0 || message.body.kind === "control"
     || message.body.kind === "tool_result" || message.body.parts.some(isTimelinePartVisible);
@@ -395,7 +400,7 @@ export function timelineReplyGroups(messages: TimelineMessage[], activities: Rep
       }
     } else if ((body.kind === "input" && message.author === "user")
       || (body.kind === "control" && body.action !== "resume")
-      || (body.kind === "tool_result" && message.attachments.length > 0)) {
+      || timelineDeliversAttachment(message)) {
       const throughSeq = body.kind === "control" ? body.through_seq : message.seq - 1;
       const members = pending.get(key) ?? [];
       const closed = members.filter((item) => item.seq <= throughSeq);
@@ -462,7 +467,7 @@ function timelineInlineReplies(messages: TimelineMessage[]) {
       const reply = pending.get(key) ?? { messages: [], attachment: false };
       reply.messages.push(message); pending.set(key, reply);
       if (body.finish !== "continue") save(key);
-    } else if (body.kind === "tool_result" && message.attachments.length) {
+    } else if (timelineDeliversAttachment(message)) {
       const reply = pending.get(key);
       if (reply) reply.attachment = true;
     }
@@ -480,8 +485,9 @@ export function timelineVisibleMessages(messages: TimelineMessage[], groups = ti
       && !(message.body.kind === "input" && message.author === "user")) return false;
     if (groups.hiddenBodies.has(message.id) && !message.attachments.length && message.body.kind === "output"
       && !message.body.parts.some((part) => part.kind !== "text" && isTimelinePartVisible(part))) return false;
-    if (message.body.kind !== "tool_result" || message.attachments.length) return true;
-    if (message.body.parts.some((part) => isTimelinePartVisible(part) && part.kind !== "text"
+    if (message.body.kind !== "tool_result" || timelineDeliversAttachment(message)) return true;
+    // 引用自身图片的 artifact_ref 随调用卡片展示，不单独成行。
+    if (message.body.parts.some((part) => isTimelinePartVisible(part) && part.kind !== "text" && part.kind !== "artifact_ref"
       && !("display" in part && part.display === "data"))) return true;
     const call = byId.get(message.body.call_ref.message_id);
     return call?.body.kind !== "output" || call.body.parts[message.body.call_ref.part_index]?.kind !== "tool_call";

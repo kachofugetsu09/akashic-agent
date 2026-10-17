@@ -1,4 +1,5 @@
 import type { FileUIPart } from "ai";
+import type { SentAttachmentItem } from "./attachment-card";
 
 export type ChatRole = "user" | "assistant";
 
@@ -16,6 +17,8 @@ export interface ToolBlock {
   output: unknown;
   errorText: string | undefined;
   durationMs?: number;
+  /** 结果附带的图片（截图、读图）；与文字结果一起在调用卡片里展示。 */
+  attachments?: SentAttachmentItem[];
 }
 
 export type AgentBlock = ThinkingBlock | ToolBlock;
