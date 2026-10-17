@@ -32,6 +32,7 @@ export class ComputerDriver extends EventEmitter {
   control = null;
   controlVersion = 0;
   agentJobs = new Set();
+  humanJobs = new Set();
 
   /** 人工接管先阻止新操作，再等待已发操作和输入释放。 */
   async takeControl(id, target = "", signal) {
@@ -46,7 +47,7 @@ export class ComputerDriver extends EventEmitter {
     this.emit("control");
     this.pauseClock();
     try {
-      await waitForSignal(Promise.allSettled([...this.agentJobs]), signal);
+      await waitForSignal(Promise.allSettled([...this.agentJobs, ...this.humanJobs]), signal);
       if (this.control !== control || control.release) throw new Error("Control request was cancelled");
       control.preparing = (async () => {
         await this.browser.releaseInputs();
@@ -99,7 +100,10 @@ export class ComputerDriver extends EventEmitter {
 
   /** 通用 CDP 可能执行脚本，所有 Agent RPC 都经过同一个权限边界。 */
   async agentOperation(task, signal) {
-    do { await this.waitForControl(signal); } while (this.control);
+    do {
+      await this.waitForControl(signal);
+      await waitForSignal(Promise.allSettled([...this.humanJobs]), signal);
+    } while (this.control || this.humanJobs.size);
     const work = task();
     this.agentJobs.add(work);
     // OpenCLI 刷新等不经 tracked 的操作也要让面板知道 Agent 在用。
@@ -188,7 +192,10 @@ export class ComputerDriver extends EventEmitter {
     const connection = this.browser.browser;
     const { sessionId } = await connection.send("Target.attachToTarget", { targetId, flatten: true });
     try {
-      if (action === "go") await connection.send("Page.navigate", { url }, sessionId);
+      if (action === "go") {
+        const result = await connection.send("Page.navigate", { url }, sessionId);
+        if (result.errorText) throw new Error(`Navigation failed: ${result.errorText}`);
+      }
       else if (action === "reload") await connection.send("Page.reload", {}, sessionId);
       else {
         const { currentIndex, entries } = await connection.send("Page.getNavigationHistory", {}, sessionId);
@@ -196,7 +203,7 @@ export class ComputerDriver extends EventEmitter {
         if (entry) await connection.send("Page.navigateToHistoryEntry", { entryId: entry.id }, sessionId);
       }
     } finally {
-      await connection.send("Target.detachFromTarget", { sessionId }).catch(() => {});
+      await connection.send("Target.detachFromTarget", { sessionId });
     }
   }
 
@@ -208,12 +215,14 @@ export class ComputerDriver extends EventEmitter {
     await this.browser.screen.show(connection, targetId);
     const tab = (await this.browser.listTabs()).find(item => this.browser.tab(item.id).targetId === targetId);
     this.emit("targets");
-    return tab ? `main:${tab.id}` : "";
+    if (!tab) throw new Error("The new browser page closed before it could be shown");
+    return `main:${tab.id}`;
   }
 
   async closePage(id) {
     const { targetId } = await this.viewTarget(id);
-    await this.browser.browser.send("Target.closeTarget", { targetId });
+    const result = await this.browser.browser.send("Target.closeTarget", { targetId });
+    if (!result.success) throw new Error("Browser page could not be closed");
   }
 
   // 最前的标签被关掉时，把主浏览器的第一个标签提上来；一个都不剩就补开空白页，屏幕不会停在不可知的窗口。
