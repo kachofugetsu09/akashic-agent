@@ -843,13 +843,25 @@
   .computer-status-detail { display: none; }
 }
 
+@container computer (max-width: 24rem) {
+  .computer-tabs { max-width: calc(100% - 50px); }
+  .computer-bar { flex-wrap: wrap; }
+  .computer-address { order: -1; flex-basis: 100%; margin-inline: 2px; }
+  .computer-actions { margin-inline-start: auto; }
+}
+
 @media (max-width: 38rem) {
   .computer-clipboard { inset-inline: 8px; width: auto; }
 }
 
 /* 触控（不论宽度）：可点区域至少 44px；胶囊里的"接管"保持紧凑外观，用伪元素扩大点击区 */
 @media (pointer: coarse) {
-  .computer-icon-button { width: 44px; height: 44px; }
+  .computer-icon-button,
+  .computer-tab-close.computer-icon-button { flex-shrink: 0; width: 44px; height: 44px; }
+  .computer-address { height: 44px; }
+  .computer-address-input,
+  .computer-address-shown { font-size: 1rem; }
+  .computer-address-shown { line-height: 44px; }
   .computer-tab,
   .computer-menu-item { min-height: 44px; }
   .computer-status .computer-action { position: relative; }

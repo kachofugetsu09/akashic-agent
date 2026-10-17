@@ -377,6 +377,45 @@ try {
   assert.ok((await (await fetch(gateway+"/targets")).json()).targets.every(t=>!t.anonymous));
   assert.match(textResult(await action("console.log(typeof progress);")),/undefined/);
   pass("call timeout resets bindings and disposes anonymous contexts after confirmed cleanup");
+  await action("", 60000, { endTurn: true });
+  // Idle users can start from a blank page without asking an Agent or taking control.
+  for (const width of [1440, 320]) {
+    const page = await createPage({viewport: {width, height: 900}, hasTouch: width === 320, isMobile: width === 320});
+    await open(page); await connected(page); await videoReady(page);
+    const address = page.getByRole("textbox", {name: "地址和搜索栏"});
+    await page.getByRole("button", {name: "新建标签页", exact: true}).click();
+    await page.waitForFunction(() => document.activeElement?.classList.contains("computer-address-input"));
+    await page.locator(".computer-blank").waitFor();
+    await page.screenshot({path: join(artifacts, `blank-${width}.png`)});
+    for (const name of ["main", "second"]) {
+      await address.fill(`http://127.0.0.1:8989/${name}`); await address.press("Enter");
+      await until(() => page.locator('.computer-tab[aria-selected="true"]').textContent(), title => title === `/${name}`, "address navigation");
+    }
+    await page.getByRole("button", {name: "后退（Alt+←）"}).click();
+    await until(() => page.locator('.computer-tab[aria-selected="true"]').textContent(), title => title === "/main", "back");
+    await page.getByRole("button", {name: "前进（Alt+→）"}).click();
+    await until(() => page.locator('.computer-tab[aria-selected="true"]').textContent(), title => title === "/second", "forward");
+    await page.getByRole("button", {name: "刷新", exact: true}).click();
+    await videoReady(page);
+    const front = (await (await fetch(gateway + "/targets")).json()).targets.find(t => t.front);
+    const point = JSON.parse(textResult(await action(`var direct = await browser.tabs.get(${JSON.stringify(front.id.slice(5))});
+      nodeRepl.write(JSON.stringify(await direct.playwright.evaluate(() => {const r=document.querySelector('#hit').getBoundingClientRect(); return {x:r.x+r.width/2,y:r.y+r.height/2,width:innerWidth,height:innerHeight};})));`)));
+    await action("", 60000, {endTurn: true});
+    await page.waitForFunction(() => document.querySelector(".computer-status")?.hidden === true);
+    const bounds = await page.locator(".computer-stream").boundingBox();
+    await page.mouse.click(bounds.x + point.x * bounds.width / point.width, bounds.y + point.y * bounds.height / point.height);
+    assert.match(textResult(await action(`nodeRepl.write(await direct.playwright.domSnapshot());`)), /CLICKED/);
+    await action("", 60000, {endTurn: true});
+    const geometry = await page.locator(".computer-view").evaluate(el => ({width: el.clientWidth, scroll: el.scrollWidth,
+      controls: [...el.querySelectorAll(".computer-icon-button, .computer-address-input")].map(e => e.getBoundingClientRect()).filter(r => r.width > 0).map(r => [r.width, r.height])}));
+    assert.ok(geometry.scroll <= geometry.width, JSON.stringify(geometry));
+    if (width === 320) assert.ok(geometry.controls.every(([w, h]) => w >= 44 && h >= 44), JSON.stringify(geometry));
+    await page.screenshot({path: join(artifacts, `navigation-${width}.png`)});
+    await page.locator('.computer-tab[aria-selected="true"]').getByRole("button", {name: "关闭 /second"}).click();
+    await until(async () => (await (await fetch(gateway + "/targets")).json()).targets, targets => !targets.some(t => t.id === front.id), "close tab");
+    await page.context().close();
+  }
+  pass("desktop and 320px touch users navigate, browse history, click and close from a blank tab");
   await action("var saved = await browser.tabs.new(); await saved.goto('http://127.0.0.1:8989/remember');");
   const beforeRestart = textResult(await action("nodeRepl.write(await saved.playwright.domSnapshot());"));
   assert.match(beforeRestart, /PROFILE/); assert.match(beforeRestart, /review=PROFILE/);

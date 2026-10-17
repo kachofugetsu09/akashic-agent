@@ -200,8 +200,8 @@ function renderComputer(ctx: WebHostContextV1, host: HTMLElement, rawView: unkno
       : { target: selected, action, ...(action === "go" ? { url: addressToUrl(value) } : {}) };
     try {
       const response = await ctx.http.request(`/api/dashboard/computer/${path}`, {
-        method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(body) });
-      if (response.status === 409) throw new Error("Agent 正在使用浏览器，先接管");
+        method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ ...body, ...(control ? { control } : {}) }) });
+      if (response.status === 409) throw new Error("浏览器正在被使用，请在此窗口接管后再操作");
       if (!response.ok) {
         const detail = await response.json().then((data: { detail?: unknown }) => data.detail, () => undefined);
         throw new Error(typeof detail === "string" && detail ? detail : `操作失败（${response.status}）`);

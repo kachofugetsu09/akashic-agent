@@ -159,6 +159,10 @@ export class PanelSurface {
     input.addEventListener("mouseup", event => { if (selecting) event.preventDefault(); selecting = false; });
     input.addEventListener("blur", () => { input.value = this.addressValue(); selecting = false; });
     input.addEventListener("keydown", event => {
+      if (event.isComposing) {
+        if (event.key === "Enter") event.preventDefault();
+        return;
+      }
       if (event.key !== "Escape") return;
       event.preventDefault();
       input.value = this.addressValue();
@@ -360,7 +364,8 @@ export class PanelSurface {
       tab.addEventListener("auxclick", event => { if (event.button === 1 && this.navEnabled) this.onNav("close", target.id); });
       return tab;
     }));
-    if (focused) this.tabs.querySelector<HTMLElement>(`[data-id="${CSS.escape(focused)}"]`)?.focus();
+    if (focused) (this.tabs.querySelector<HTMLElement>(`[data-id="${CSS.escape(focused)}"]`)
+      ?? this.tabs.querySelector<HTMLElement>("[aria-selected=true]"))?.focus();
     this.tabs.querySelector<HTMLElement>("[aria-selected=true]")?.scrollIntoView({ block: "nearest", inline: "nearest" });
     this.current = targets.find(target => target.id === selected);
     const blank = !this.addressValue();
