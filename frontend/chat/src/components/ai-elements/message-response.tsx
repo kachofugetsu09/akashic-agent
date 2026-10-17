@@ -26,6 +26,8 @@ export interface MessageResponseProps {
   className?: string;
   isAnimating?: boolean;
   streamBatchCharacters?: number;
+  /** 外层已按到达节奏放字（stream-pace），这里只保留贴身淡入和代码围栏的整体揭示。 */
+  paced?: boolean;
 }
 
 function KaomojiLiteral({ node }: NodeComponentProps<{ content?: string }>) {
@@ -105,11 +107,15 @@ const STREAM_PACE = {
   maxCharsPerCommit: 200,
 };
 
+// 外层放字后输入已经连续，渲染器只需紧跟：延迟压到一帧量级，避免两层平滑叠出 0.3 秒滞后。
+const PACED_STREAM = { ...STREAM_PACE, targetLatencyMs: 50, catchUpLatencyMs: 50, startDelayMs: 0 };
+
 /** Render complete or append-only Markdown with Markstream's incremental parser. */
 export const MessageResponse = memo(function MessageResponse({
   children,
   className,
   isAnimating = false,
+  paced = false,
 }: MessageResponseProps) {
   const reducedMotion = useReducedMotion();
   // markstream 的代码高亮按 isDark 选 light/dark 主题；不接入时暗色下代码块永远落在亮色分支。
@@ -130,7 +136,7 @@ export const MessageResponse = memo(function MessageResponse({
         fade={isAnimating && !reducedMotion}
         typewriter={false}
         smoothStreaming={isAnimating && !reducedMotion}
-        smoothStreamingOptions={STREAM_PACE}
+        smoothStreamingOptions={paced ? PACED_STREAM : STREAM_PACE}
         batchRendering={false}
         maxLiveNodes={0}
         viewportPriority
@@ -148,6 +154,7 @@ export const MessageResponse = memo(function MessageResponse({
   );
 }, (previous, next) => (
   previous.isAnimating === next.isAnimating
+  && previous.paced === next.paced
   && previous.className === next.className
   && previous.streamBatchCharacters === next.streamBatchCharacters
   && (

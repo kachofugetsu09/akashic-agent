@@ -161,7 +161,7 @@ workspace_files = ()
 
 _IMAGE = (
     "ghcr.io/kachofugetsu09/akashic-computer@"
-    "sha256:47218700300e419591135798e778bca1e1382369d3c819ec9e6a6d5d4d4affde"
+    "sha256:aaf9cf3c0b9cf08b8a88f2935e3be1ff47e1bac118610bdfe6bd2664ff07d3c9"
 )
 
 
@@ -285,6 +285,8 @@ async def apply(ctx: Context) -> None:
     )
     await ctx.require(INSTALLED_ASSETS).register(ctx, "skills", "skills")
     _ = await ctx.require(TOOLS).declare_group(ctx, description=desc)
+    # 浏览器容器只挂载 state 数据目录（Controller 负责创建与属主）；本地静态页放进其中的 pages。
+    pages = ctx.data_root / "state" / "pages"
     control = ComputerControl(ctx)
     _ = await ctx.provide(COMPUTER_CONTROL, control)
     await ctx.require(TOOLS).register(
@@ -305,7 +307,10 @@ async def apply(ctx: Context) -> None:
             "Ordinary script errors keep pages and bindings when cleanup succeeds; the receipt says when reset. "
             "Use var for reusable bindings, browser.tabs.list() and browser.tabs.new(); read API documentation before actions. "
             "Idle anonymous instances release after 10 minutes. Call nodeRepl.write(value) or "
-            "nodeRepl.emitImage(bytes) for output. Read the computer skill first."
+            "nodeRepl.emitImage(bytes) for output. Read the computer skill first. "
+            "The browser runs in its own container: localhost there is the container, and host ports "
+            f"are usually firewalled. To show a local static page, write it under {pages} (create it if needed) and open "
+            "file:///data/pages/<relative path>."
         ),
         parameters={
             "type": "object",

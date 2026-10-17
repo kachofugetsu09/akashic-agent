@@ -1,5 +1,6 @@
 import { PluginUiSlot } from "./plugin-ui-runtime";
 import { ThinkingPlaceholder } from "./thinking-placeholder";
+import { usePacedText } from "./stream-pace";
 import { SentAttachments, type MediaKind, type SentAttachmentItem } from "./attachment-card";
 import {
   Message,
@@ -54,11 +55,14 @@ const LazyMessageResponse = lazy(() =>
 const MessageBody = memo(function MessageBody({
   content,
   streaming,
+  paced = false,
   deferRichContent,
   onError,
 }: {
   content: string;
   streaming: boolean;
+  /** 外层已按节奏放字：渲染器只做贴身的淡入，不再叠一层延迟。 */
+  paced?: boolean;
   deferRichContent: boolean;
   onError?: (error: unknown) => void;
 }) {
@@ -78,7 +82,7 @@ const MessageBody = memo(function MessageBody({
   }
   return (
     <Suspense fallback={<p className="plain-message-response">{content}</p>}>
-      <LazyMessageResponse isAnimating={streaming}>{content}</LazyMessageResponse>
+      <LazyMessageResponse isAnimating={streaming} paced={paced}>{content}</LazyMessageResponse>
     </Suspense>
   );
 });
@@ -118,9 +122,21 @@ export function ReplyActivityView({ activity, committed, onError, onStop, proces
           block={{ ...part, message_id: message.id, part_index: index }} /> : null} />
       {activity.active && draft?.retry_status ? <RetryStatus text={draft.retry_status} attempt={draft.attempt} onStop={onStop} /> : null}
       {activity.active && !draft?.retry_status && !text && !draft?.thinking && !flow.length ? <ThinkingPlaceholder /> : null}
-      {text ? <MessageBody content={text} streaming={Boolean(draft?.text) && activity.active} deferRichContent onError={onError} /> : null}
+      {text ? <PacedMessageBody content={text} streaming={Boolean(draft?.text) && activity.active} onError={onError} />
+        : activity.active ? <RichMarkdownWarmup /> : null}
     </div>
   </div>;
+}
+
+/** 正文出字前先把富文本渲染器加载好：否则首段先以纯文本占位显示，渲染器就绪后又从头重打一遍。 */
+function RichMarkdownWarmup() {
+  return <div hidden><Suspense fallback={null}><LazyMessageResponse>{""}</LazyMessageResponse></Suspense></div>;
+}
+
+/** 草稿正文按到达节奏放字，结束时由 usePacedText 一次刷出剩余。 */
+function PacedMessageBody({ content, streaming, onError }: { content: string; streaming: boolean; onError?: (error: unknown) => void }) {
+  const paced = usePacedText(content, streaming);
+  return <MessageBody content={paced} streaming={streaming} paced deferRichContent onError={onError} />;
 }
 
 /** 重试与压缩进度共用一张状态卡：首行是状态，其余是原始原因，停止就在旁边。 */
@@ -1108,16 +1124,13 @@ const ThinkingRow = memo(function ThinkingRow({
   streaming: boolean;
   duration?: number;
 }) {
-  const latestLine = streaming
-    ? content.split("\n").map((line) => line.trim()).filter(Boolean).at(-1) ?? ""
-    : "";
   const features = streaming ? null : detectMessageRenderingFeatures(content);
   const needsRichContent = streaming || features?.math || features?.code;
   return (
     // 流式时只在标题行滚动最新一句，不自动展开：展开会与标题行重复同一句，结束时行重挂载又会瞬间收起。
     // Render ordinary Markdown right away; math and code still need the rich renderer.
     <Reasoning className="thinking-row" isStreaming={streaming} defaultOpen={false} duration={duration}>
-      <div className="process-trigger-sticky"><ThinkingRowTrigger summary={latestLine} /></div>
+      <div className="process-trigger-sticky"><ThinkingRowTrigger content={streaming ? content : ""} /></div>
       <CollapsibleContent className="process-content">
         <div className="process-text process-markdown">
           {needsRichContent ? <Suspense fallback={<span className="process-markdown-fallback">{content}</span>}>
@@ -1129,7 +1142,7 @@ const ThinkingRow = memo(function ThinkingRow({
   );
 });
 
-function ThinkingRowTrigger({ summary }: { summary: string }) {
+function ThinkingRowTrigger({ content }: { content: string }) {
   const { isOpen, isStreaming, duration } = useReasoning();
   // 收起长内容后视口可能跳离原位；结束后把行滚回最近可见位置。
   const handleClick = (event: ReactMouseEvent<HTMLButtonElement>) => {
@@ -1145,10 +1158,36 @@ function ThinkingRowTrigger({ summary }: { summary: string }) {
       <span className="process-trigger-label">
         {isStreaming ? "正在思考" : duration ? `已思考 ${duration}s` : "已思考"}
       </span>
-      {summary ? <span className="process-trigger-summary">{summary}</span> : null}
+      {content ? <ThinkingTail content={content} /> : null}
       <ChevronDown className={`process-chevron ${isOpen ? "open" : ""}`} size={13} aria-hidden="true" />
     </ReasoningTrigger>
   );
+}
+
+/** 流式思考只显示最新一行的末尾：长行写满一屏后仍能看到它在往前走，换行时接着从新行开始。 */
+function ThinkingTail({ content }: { content: string }) {
+  const paced = usePacedText(content, true);
+  const line = latestLine(paced);
+  const frame = useRef<HTMLSpanElement>(null);
+  // 必要 effect：只有排版后才知道这一行是否超出槽位，超出时左缘淡出、右端贴齐最新文字。
+  useLayoutEffect(() => {
+    const element = frame.current;
+    const text = element?.firstElementChild;
+    if (element && text) element.classList.toggle("is-clipped", text.scrollWidth > element.clientWidth);
+  }, [line]);
+  return <span ref={frame} className="process-trigger-summary is-tail"><span>{line}</span></span>;
+}
+
+// 从末尾往前找最后一个非空行，避免每帧把整段思考切成行数组。
+function latestLine(text: string): string {
+  let end = text.length;
+  while (end > 0) {
+    const start = text.lastIndexOf("\n", end - 1) + 1;
+    const line = text.slice(start, end).trim();
+    if (line) return line;
+    end = start - 1;
+  }
+  return "";
 }
 
 const ToolStep = memo(function ToolStep({

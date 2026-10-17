@@ -143,7 +143,27 @@ acquire fresh bindings. Saved screenshots keep their normal owner.
 ```js
 var testBrowser = await agent.browsers.create();
 var testTab = await testBrowser.tabs.new();
-await testTab.goto("http://localhost:3000");
+await testTab.goto("file:///data/pages/demo/index.html");
 await testTab.ax.write();
 await testBrowser.close();
 ```
+
+## Local pages
+
+The browser runs in its own container. `localhost` there is that container, not the machine where
+your shell commands run, and the host firewall usually drops connections from the container to host
+ports. A server you start on the host is therefore normally not reachable, even through
+`host.docker.internal`; `goto` fails within a few seconds and says so.
+
+To show or check a page you generated, write it (with its relative assets) into the shared pages
+directory named in the `computer` tool description, then open it with a `file://` URL:
+
+```js
+var tab = await browser.tabs.new();
+await tab.goto("file:///data/pages/demo/index.html");
+await tab.ax.write();
+```
+
+Create the directory first if it does not exist. Use a subdirectory per page and remove it when it is
+no longer needed. A dev server that needs a live port works only if the user allows that port; ask
+instead of retrying.
