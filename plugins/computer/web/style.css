@@ -1,5 +1,6 @@
 /* 浏览器面板。颜色跟随宿主 color-scheme：插件自有的语义色用 light-dark() 在这里定义一次。
-   外框（.computer-frame）表达"这是谁的浏览器、谁在操作"：你的浏览器只有细线；匿名标签是靛紫斜纹；你在操作是橙色实线。 */
+   画面贴边铺满（参考 Cursor）；"谁在操作"画成压在画面上的内圈，不占位置，切换时远端屏幕尺寸不变：
+   匿名标签是靛紫内圈；你在操作是橙色内圈；Agent 在用是蓝色微光。 */
 .computer-view {
   --computer-ok: light-dark(rgb(47 93 58), rgb(136 190 146));
   --computer-busy: light-dark(rgb(27 54 93), rgb(150 180 226));
@@ -71,15 +72,16 @@
   align-items: center;
   column-gap: 6px;
   min-width: 0;
-  padding: 4px 6px 0 6px;
+  padding: 4px 6px 0;
   border-block-end: 1px solid var(--ak-rule-subtle);
   background: var(--ak-paper-sheet);
 }
 
 /* 标签条：本地绘制，横向滚动，不换行；选中的标签与下方地址栏连成一片 */
+/* 标签条按内容收缩，“+”紧跟最后一个标签（像 Chrome），工具靠右 */
 .computer-tabs {
   display: flex;
-  flex: 1 1 0;
+  flex: 0 1 auto;
   gap: 2px;
   min-width: 0;
   overflow-x: auto;
@@ -92,20 +94,42 @@
   align-items: center;
   gap: 6px;
   min-width: 4.5rem;
-  height: 32px;
-  padding-inline: 10px;
-  border: 0;
-  border-radius: 8px 8px 0 0;
+  height: 30px;
+  padding-inline: 10px 4px;
+  border-radius: 6px;
   color: var(--ak-ink-secondary);
   background: transparent;
   font-size: 0.8125rem;
+  cursor: pointer;
+  user-select: none;
   transition: background-color 120ms var(--computer-ease), color 120ms var(--computer-ease);
 }
+
+.computer-tab-label { flex: 1 1 auto; }
+
+/* 关闭按钮：选中或悬停的标签才露出，触屏常显 */
+.computer-tab-close.computer-icon-button {
+  width: 20px;
+  height: 20px;
+  margin-inline-start: auto;
+  border-radius: 4px;
+  opacity: 0;
+}
+
+.computer-tab-close .computer-icon { width: 12px; height: 12px; }
+
+.computer-tab[aria-selected="true"] .computer-tab-close,
+.computer-tab:hover .computer-tab-close,
+.computer-tab:focus-within .computer-tab-close {
+  opacity: 1;
+}
+
+.computer-new-tab { flex: 0 0 auto; }
+.computer-fullscreen { margin-inline-start: auto; }
 
 .computer-tab[aria-selected="true"] {
   color: var(--ak-ink-primary);
   background: var(--ak-paper-raised);
-  font-weight: 600;
 }
 
 .computer-tab .computer-icon { width: 14px; height: 14px; }
@@ -132,39 +156,86 @@
   outline-offset: -2px;
 }
 
+/* 导航行：后退、前进、刷新和地址栏；kiosk 模式的 Chromium 没有自己的地址栏 */
 .computer-bar {
   display: flex;
   flex: 1 0 100%;
+  align-items: center;
+  gap: 2px;
   min-width: 0;
-  padding: 0 0 6px;
+  padding: 4px 0;
 }
-
-.computer-bar:has(.computer-address[hidden]) { display: none; }
 
 .computer-address[data-anonymous] {
   box-shadow: inset 3px 0 0 var(--computer-anonymous);
 }
 
+/* 地址栏平时是一行字，悬停才有底色，聚焦时变成输入框（参考 Cursor） */
 .computer-address {
   display: inline-flex;
   flex: 1 1 auto;
   align-items: center;
   min-width: 0;
   height: 28px;
+  margin-inline: 4px 2px;
   padding-inline-start: 8px;
   border-radius: 6px;
   color: var(--ak-ink-secondary);
-  background: var(--ak-paper-raised);
-  font-family: var(--ak-type-technical, ui-monospace, monospace);
-  font-size: 0.75rem;
+  background: transparent;
+  transition: background-color 120ms var(--computer-ease), box-shadow 120ms var(--computer-ease);
 }
 
-.computer-address-text {
+.computer-address:hover { background: var(--ak-paper-raised); }
+
+.computer-address:focus-within {
+  background: var(--ak-paper-editing);
+  box-shadow: 0 0 0 1px var(--ak-rule-focus);
+}
+
+.computer-address-field {
+  position: relative;
+  display: flex;
   flex: 1 1 auto;
   min-width: 0;
+  height: 100%;
+}
+
+.computer-address-input {
+  flex: 1 1 auto;
+  min-width: 0;
+  height: 100%;
+  padding: 0;
+  border: 0;
+  outline: 0;
+  color: var(--ak-ink-primary);
+  background: transparent;
+  font-size: 0.8125rem;
+  text-overflow: ellipsis;
+}
+
+/* 显示层与输入框同位同字号；编辑时隐藏，输入框的字才露出来 */
+.computer-address-shown {
+  position: absolute;
+  inset: 0;
   overflow: hidden;
+  font-size: 0.8125rem;
+  line-height: 28px;
   text-overflow: ellipsis;
   white-space: nowrap;
+  pointer-events: none;
+}
+
+.computer-address-field:has(.computer-address-shown:not(:empty)) .computer-address-input:not(:focus) { color: transparent; }
+.computer-address-input:focus + .computer-address-shown { display: none; }
+.computer-address-dim { color: var(--ak-ink-muted); }
+.computer-address-host { color: var(--ak-ink-primary); }
+
+.computer-address-input::placeholder { color: var(--ak-ink-muted); font-family: inherit; }
+.computer-address-input:disabled { color: var(--ak-ink-secondary); cursor: not-allowed; }
+
+.computer-icon-button:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
 }
 
 /* 地址上的复制与外部打开：悬停或键盘进入时才露出，触屏常显 */
@@ -183,7 +254,6 @@
   display: flex;
   flex: 0 0 auto;
   gap: 2px;
-  margin-inline-start: auto;
 }
 
 .computer-icon-button {
@@ -233,11 +303,11 @@
   outline-offset: -2px;
 }
 
-/* ───── 状态胶囊：压在画面外框上沿，说明谁在操作 + 唯一主操作 ───── */
+/* ───── 状态胶囊：浮在画面上沿，说明谁在操作 + 唯一主操作 ───── */
 .computer-status {
   position: absolute;
   z-index: 4;
-  inset-block-start: 6px;
+  inset-block-start: 10px;
   inset-inline-start: 50%;
   display: inline-flex;
   align-items: center;
@@ -248,7 +318,7 @@
   border: 1px solid var(--ak-rule-default);
   border-radius: 999px;
   background: var(--ak-paper-sheet);
-  box-shadow: 0 0 0 3px var(--ak-paper-canvas);
+  box-shadow: 0 4px 16px rgb(0 0 0 / 0.18);
   font-size: 0.8125rem;
   white-space: nowrap;
   translate: -50% 0;
@@ -324,50 +394,95 @@
   cursor: not-allowed;
 }
 
-/* ───── 画面区：外框 + 画面 + 遮罩 ───── */
+/* 画面被挡住时点它：胶囊轻轻放大并描蓝，随后回落（插件样式不能声明 @keyframes，用过渡实现） */
+.computer-status {
+  transition: scale 260ms var(--computer-ease), border-color 260ms var(--computer-ease);
+}
+
+.computer-status.computer-nudge {
+  border-color: var(--computer-agent);
+  scale: 1.06;
+  transition-duration: 80ms;
+}
+
+/* 画面被挡住时点它：画面上闪一层淡灰和内描边再淡出（Cursor 的锁定反馈） */
+.computer-frame::after {
+  position: absolute;
+  z-index: 3;
+  inset: 0;
+  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--ak-ink-primary) 25%, transparent);
+  background: hsl(0 0% 50% / 0.08);
+  content: "";
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity 500ms var(--computer-ease);
+}
+
+.computer-frame.computer-nudge::after {
+  opacity: 1;
+  transition-duration: 0ms;
+}
+
+/* 刷新图标每按一次多转一圈，角度由脚本累加 */
+.computer-bar .computer-icon {
+  transition: rotate 600ms var(--computer-ease);
+}
+
+/* 空白页引导：压在远端白页上，深色字，不接收点击 */
+.computer-blank {
+  position: absolute;
+  z-index: 1;
+  inset: 0;
+  display: grid;
+  place-content: center;
+  justify-items: center;
+  gap: 6px;
+  padding: 24px;
+  color: rgb(95 99 104);
+  font-size: 0.8125rem;
+  text-align: center;
+  pointer-events: none;
+}
+
+.computer-blank .computer-icon { width: 40px; height: 40px; margin-block-end: 6px; stroke-width: 1.2; opacity: 0.6; }
+.computer-blank strong { color: rgb(32 33 36); font-size: 1rem; font-weight: 600; }
+
+/* ───── 画面区：贴边的画面 + 内圈 + 遮罩 ───── */
 .computer-stage {
   position: relative;
   display: grid;
   min-width: 0;
   min-height: 0;
-  padding: 22px 12px 12px;
 }
 
 .computer-frame {
-  --frame-pad: 0px;
-
   position: relative;
   min-width: 0;
   min-height: 0;
-  padding: var(--frame-pad);
-  border-radius: calc(8px + var(--frame-pad));
-  box-shadow: 0 0 0 1px var(--ak-rule-subtle);
 }
 
-.computer-frame[data-frame="anonymous"] {
-  --frame-pad: 4px;
-
-  box-shadow: none;
-  /* 斜纹标的是"匿名身份"：不靠颜色也能和接管的实线外框区分开 */
-  /* deslop-ignore-next-line 06 */
-  background: repeating-linear-gradient(-45deg, var(--computer-anonymous) 0 7px,
-    color-mix(in srgb, var(--computer-anonymous) 38%, transparent) 7px 14px);
+/* 内圈压在画面上、不接收点击；尺寸固定为 0 占位，状态切换不改变画面大小 */
+.computer-frame::before {
+  position: absolute;
+  z-index: 3;
+  inset: 0;
+  content: "";
+  pointer-events: none;
+  transition: box-shadow 160ms var(--computer-ease);
 }
 
-.computer-frame[data-frame="control"] {
-  --frame-pad: 3px;
-
-  background: var(--computer-control);
+.computer-frame[data-frame="anonymous"]::before {
+  box-shadow: inset 0 0 0 3px color-mix(in srgb, var(--computer-anonymous) 70%, transparent);
 }
 
-/* Agent 正在操作：外圈一层静态微光，不闪烁 */
-.computer-frame[data-agent] {
-  box-shadow: 0 0 0 1px color-mix(in srgb, var(--computer-agent) 55%, transparent),
-    0 0 14px color-mix(in srgb, var(--computer-agent) 30%, transparent);
+.computer-frame[data-frame="control"]::before {
+  box-shadow: inset 0 0 0 3px var(--computer-control);
 }
 
-.computer-frame[data-agent][data-frame="anonymous"] {
-  box-shadow: 0 0 14px color-mix(in srgb, var(--computer-agent) 35%, transparent);
+/* Agent 正在操作：内侧一层静态蓝色微光，不闪烁 */
+.computer-frame[data-agent]::before {
+  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--computer-agent) 60%, transparent),
+    inset 0 0 18px color-mix(in srgb, var(--computer-agent) 28%, transparent);
 }
 
 .computer-toast {
@@ -391,7 +506,6 @@
   width: 100%;
   height: 100%;
   overflow: hidden;
-  border-radius: 8px;
   background: var(--computer-screen);
   outline: 0;
 }
@@ -400,10 +514,10 @@
   overflow: hidden !important;
 }
 
+/* 焦点进了画面就是在用这个网页：不画外框，网页自己的焦点样式就是提示（同本地浏览器与 Cursor） */
 .computer-screen:focus-visible,
 .computer-screen canvas:focus-visible {
-  outline: 2px solid var(--ak-rule-focus);
-  outline-offset: -2px;
+  outline: 0;
 }
 
 .computer-stream {
@@ -418,11 +532,10 @@
 .computer-connection-state {
   position: absolute;
   z-index: 2;
-  inset: var(--frame-pad);
+  inset: 0;
   display: grid;
   place-items: center;
   padding: 24px;
-  border-radius: 8px;
   color: rgb(236 235 228);
   background: var(--computer-screen);
   text-align: center;
@@ -717,24 +830,20 @@
 }
 
 @media (hover: none) {
-  .computer-address .computer-icon-button { opacity: 1; }
+  .computer-address .computer-icon-button,
+  .computer-tab-close.computer-icon-button { opacity: 1; }
 }
 
-/* 按面板宽度逐级收起：先收地址与说明，再把截图、全屏收进 ⋮ */
+/* 按面板宽度逐级收起：先收说明和地址上的小按钮，再把截图、全屏收进 ⋮；地址栏始终保留 */
 @container computer (max-width: 34rem) {
-  .computer-bar { display: none; }
+  .computer-address .computer-icon-button { display: none; }
   .computer-wide { display: none; }
   .computer-more { display: inline-grid; }
   .computer-tab { flex-basis: 8rem; }
   .computer-status-detail { display: none; }
 }
 
-/* 窄屏：外框贴边 */
 @media (max-width: 38rem) {
-  .computer-stage { padding: 22px 0 0; }
-  .computer-frame,
-  .computer-screen,
-  .computer-connection-state { border-radius: 0; }
   .computer-clipboard { inset-inline: 8px; width: auto; }
 }
 
