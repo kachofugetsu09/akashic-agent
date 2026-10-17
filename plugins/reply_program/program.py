@@ -18,7 +18,7 @@ from plugins.models.contract import (
 from agent.plugin_composition.tasks import Task
 from plugins.context.contract import MaterialView, ReductionStatus
 from plugins.models.contract import PrepareContent
-from plugins.ledger.contract import ContentPart, Input, Message, Output
+from plugins.ledger.contract import ContentPart, Control, Input, Message, Output
 
 from plugins.sources.contract import (
     SourceGuard,
@@ -68,9 +68,8 @@ async def run_reply(
     """普通组合拥有本次程序资源，Source 不必同步签发模型或内容 writer。"""
     mark = partial(log_timing, session_id=reader.session_id, source=source)
     mark("reply.begin")
-    if history == "own":
-        # 只看本来源：模型请求只由本来源的消息组成，不带会话摘要，也不压缩整个会话。
-        context = OwnHistory(context, source)
+    # 请求只看可见历史：其他来源未完成的轮次不进入请求；own 时只看本来源，不带会话摘要也不压缩整个会话。
+    context = RequestHistory(context, source, own=history == "own")
     if tool_names is not None:
         if tool_view is not None or fixed_bindings is None:
             raise ValueError("旧工具名称只可核对原固定 binding")
@@ -190,6 +189,10 @@ async def run_reply(
             model: BoundChatModel, projection: ContextModel, *, source: str, force: bool,
             on_status: ReductionStatus | None = None,
         ) -> SummaryData | None:
+            # 其他来源有未完成轮次时只压缩它之前的部分：摘要范围在真实日志和请求视图里都连续。
+            hidden = hidden_indexes(snapshot, source)
+            if hidden:
+                snapshot = snapshot[:min(hidden)]
             result = await material_view.reduce(snapshot, prepared, request, model, projection,
                                                 source=source, force=force, on_status=on_status)
             check()
@@ -213,20 +216,47 @@ def own_messages(messages: Sequence[Message], source: str) -> tuple[Message, ...
     return tuple(message for message in messages if message.source == source)
 
 
-class OwnHistory:
-    """只把本来源的消息交给请求组装；读面、提交与恢复仍使用整个会话的真实日志。"""
+# 其他来源最后一次结束之后的消息：那是仍在进行的轮次，工具调用可能尚未配对。
+def hidden_indexes(messages: Sequence[Message], source: str) -> set[int]:
+    finished: set[str] = set()
+    hidden: set[int] = set()
+    for index in range(len(messages) - 1, -1, -1):
+        message = messages[index]
+        if message.source == source or message.source in finished:
+            continue
+        body = message.body
+        if isinstance(body, Control) and body.action in {"failure", "abandon"} or isinstance(body, Output) and body.finish != "continue":
+            finished.add(message.source)
+        else:
+            hidden.add(index)
+    return hidden
 
-    def __init__(self, context: ContextBuilder, source: str):
+
+def visible_messages(messages: Sequence[Message], source: str) -> Sequence[Message]:
+    hidden = hidden_indexes(messages, source)
+    if not hidden:
+        return messages
+    return tuple(message for index, message in enumerate(messages) if index not in hidden)
+
+
+class RequestHistory:
+    """只改变交给请求组装的历史；读面、提交、竞争检查与恢复仍使用整个会话的真实日志。"""
+
+    def __init__(self, context: ContextBuilder, source: str, *, own: bool):
         self._context = context
         self._source = source
+        self._own = own
         self.check_summary = context.check_summary
         self.check_notice = context.check_notice
         self.summary_range = context.summary_range
         self.settled_prefixes = context.settled_prefixes
         self.reminder_content = context.reminder_content
 
+    def _view(self, snapshot: Sequence[Message]) -> Sequence[Message]:
+        return own_messages(snapshot, self._source) if self._own else visible_messages(snapshot, self._source)
+
     def build(self, snapshot: Sequence[Message], **options: Any) -> ModelRequest:
-        return self._context.build(own_messages(snapshot, self._source), **options)
+        return self._context.build(self._view(snapshot), **options)
 
     def build_attempt(self, snapshot: Sequence[Message], **options: Any) -> tuple[ModelRequest, str | None]:
-        return self._context.build_attempt(own_messages(snapshot, self._source), **options)
+        return self._context.build_attempt(self._view(snapshot), **options)

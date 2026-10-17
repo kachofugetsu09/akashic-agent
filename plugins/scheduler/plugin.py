@@ -35,6 +35,7 @@ from .contract import SCHEDULER_INSPECTION
 from .inspection import SchedulerInspectionProvider
 from .runtime import SchedulerRuntime
 from .store import Fire, JobStore
+from core.common.file_io import run_file_io
 from .tools import CancelInput, ListSchedules, ScheduleInput, ScheduleTool
 
 api_version = 3
@@ -79,11 +80,14 @@ async def apply(ctx: Context) -> None:
     catalog = ctx.require(TOOLS)
     _ = await catalog.declare_group(ctx, description=desc)
 
-    def target(source: CallSource | None) -> tuple[str, str, str] | None:
-        """任务属于发起调用的会话；投递渠道沿用该会话最近一条输入的来源。"""
+    async def target(source: CallSource | None) -> tuple[str, str, str] | None:
+        """任务属于发起调用的会话；投递渠道沿用该会话最近一条输入的来源，定时任务里沿用本次触发的目标。"""
         if source is None or not source.messages:
             return None
         message = source.messages[-1]
+        if message.source.startswith("scheduler:"):
+            fire = (await run_file_io(store.read)).fires.get(message.source.removeprefix("scheduler:"))
+            return None if fire is None else (fire.job.session_id, fire.job.channel, fire.job.chat_id)
         reader = ctx.require(MESSAGE_CATALOG).reader(message.session_id)
         route = ctx.require(INPUT_ORIGIN)(reader, message.source, through_seq=message.seq)
         return None if route is None else (message.session_id, *route)

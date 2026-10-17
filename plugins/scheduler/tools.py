@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import os
-from collections.abc import Callable, Mapping
+from collections.abc import Awaitable, Callable, Mapping
 from datetime import UTC, datetime
 from typing import Literal, Self, cast
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
@@ -34,7 +34,7 @@ class ScheduleInput(BaseModel):
 
 
 # 调用所在会话及其投递渠道：(session_id, channel, address)。
-Target = Callable[[CallSource | None], tuple[str, str, str] | None]
+Target = Callable[[CallSource | None], Awaitable[tuple[str, str, str] | None]]
 
 
 class CancelInput(BaseModel):
@@ -99,7 +99,7 @@ class ScheduleTool:
             ids = tuple(job.id for job in jobs if (
                 job.id.startswith(request.id) if request.id else job.name == request.name))
             return {"job_ids": ids}
-        target = self._target(source)
+        target = await self._target(source)
         if target is None:
             return "定时任务只能在有投递渠道的会话里创建"
         try:

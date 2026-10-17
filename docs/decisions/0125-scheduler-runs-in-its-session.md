@@ -25,8 +25,9 @@
    - `none`：模型请求只由本次触发来源的消息组成，不带会话摘要，也不触发整会话压缩；天气、新闻这类独立任务用它。
    - `session`：带上会话历史，与普通对话相同。
    范围只作用于请求组装（`REPLY_EXECUTE` 的 `history="own"`）；读面、提交、竞争检查和恢复仍使用整个会话的真实日志。
-6. 模型跟随会话当前选择；工具与会话一致，只去掉 `memorize`、`remember_memory`、`forget_memory`。
-7. 最终回复是本次来源最后一条结束的 Output，Delivery 直接投递这条原消息，不再复制通知。
+6. 任何回复的请求都不带其他来源仍在进行的轮次（该来源最后一次结束之后的消息；`failure`/`abandon` 也算结束）。用户在任务一批工具中途插话时，对话请求里不会出现未配对的调用；任务结束后，对话就能看到完整过程。此时压缩只覆盖第一条被隐藏消息之前的部分，保证摘要范围在真实日志和请求里都连续。
+7. 模型跟随会话当前选择；工具与会话一致，只去掉 `memorize`、`remember_memory`、`forget_memory`。任务里调用 `schedule` 创建后续任务时，目标沿用本次触发的会话与渠道。
+8. 最终回复是本次来源最后一条结束的 Output，Delivery 直接投递这条原消息，不再复制通知。
 
 ```text
 到点 ─▶ CONVERSATION_COMPLETE(目标会话)        用户插话：先回用户，再接着跑
@@ -41,7 +42,7 @@
 
 定时任务不会写脏长期记忆，依据都是现有机制：
 
-- akasha 与 markdown_memory 只学习配置里列出的来源（默认 `conversation`、`programmatic`、`legacy-unattributed`），`scheduler:*` 不在其中，连读取都不读。
+- akasha 与 markdown_memory 只把配置里列出的来源（默认 `conversation`、`programmatic`、`legacy-unattributed`）当作学习样本，`scheduler:*` 不在其中。markdown_memory 核对摘要覆盖范围时会读完整快照，但只抽取允许来源。
 - 兴趣原型只用 `conversation` 的完整轮次。
 - 任务里关闭三个写记忆工具；`recall_memory` 只读，保留。
 - 用户之后在对话里提到任务结果，是用户真实说过的话，照常学习。
@@ -51,20 +52,23 @@
 ## 已知限制
 
 - `none` 不压缩：单次任务超出上下文时明确报错结束，不截断。
+- 用户在任务一批工具执行中途取消该任务时，这轮过程停在未结束状态：之后的请求一直不带它，压缩也只覆盖它之前的消息。需要恰好在一批多个工具执行中途取消，概率很低，本次不另建放弃机制。
 - 普通对话之后会看到会话里的任务过程（与 subagent 回报相同）。若嫌占上下文，再单独设计“其他来源对对话只公开结论”。
 - 用户插话时，若任务的工具正在执行，用户的回复要等这次工具结束后才开始（与其他来源排空工具的规则一致）。
 - 目标会话不存在时 `run` 直接以失败结算；`notify` 照旧写入。
 
 ## 迁移
 
-`schedules.json` 升到 version 3。读取 version 2 时在内存中把 `tier/message/prompt` 换成 `action/text`，`context` 记为 `none`，目标会话取原 `channel:chat_id`；下一次任何提交写回 version 3，触发 key 不变。旧流程已发布的 `scheduler-notification:<key>` 仍被认作这次触发的最终消息，只补投递。旧内部 Session 原样保留。未接线的数组迁移脚本 `plugins/scheduler/migration.py` 删除。
+`schedules.json` 升到 version 3。读取 version 2 时在内存中把 `tier/message/prompt` 换成 `action/text`，`context` 记为 `none`，目标会话取原 `channel:chat_id`；下一次任何提交写回 version 3，触发 key 不变。旧流程已发布的 `scheduler-notification:<key>` 仍被认作这次触发的最终消息，只补投递；旧流程已在内部 Session 开始但还没发布通知的触发，以失败结算（“升级前未完成的旧触发，未续跑”），不在目标会话重复执行，周期任务的下一次触发走新流程。旧内部 Session 原样保留。未接线的数组迁移脚本 `plugins/scheduler/migration.py` 删除。
 
 ## 验收
 
 `scripts/scheduler_tools_scenario.py`（真实插件栈，本地 HTTP 模型）：
 
 - 任务消息写在目标会话，来源独占；`none` 的请求里没有会话历史，`session` 的请求里有。
-- 任务工具执行中用户发消息：先完成工具，回复用户，再继续任务；两边都完成，投递各一次。
+- 任务一批两个工具执行中用户发消息：先完成当前工具，回复用户（请求里不含进行中的任务），再继续任务；两边都完成，投递各一次。
+- 任务里调用 `schedule` 创建原文提醒，提醒写入同一会话并送达。
+- 旧流程已开始未发布的 pending 触发以失败结算，不发模型请求、不重复写 Input。
 - 晚注册、并发固定目录、卸载、禁用工具拒绝保持原行为。
 
 `scripts/timer_plugin_scenario.py`：`notify` 的取消、重启、换代与送达。

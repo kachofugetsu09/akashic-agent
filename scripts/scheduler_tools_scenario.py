@@ -19,7 +19,7 @@ sys.path.insert(0, str(ROOT))
 from agent.plugin_composition.config_input import save_config
 from plugins.channels.contract import CHANNEL_INPUT_V2 as CHANNEL_INPUT, ChannelInboundMessage
 from plugins.content.plugin import check_text
-from plugins.ledger.contract import ContentPart, Output, ToolResult
+from plugins.ledger.contract import ContentPart, Input, Output, ToolResult
 from plugins.scheduler.schedule import ScheduledJob
 from plugins.scheduler.store import JobStore, fire_key
 from tests.support.delivery_sources import sources as delivery_sources
@@ -113,13 +113,19 @@ async def run(directory: Path) -> dict[str, object]:
                 await release.wait()
             plugin = "extra@lab" if case in {"frozen", "fresh"} else "late@lab"
             name = "read_extra_sample" if case in {"frozen", "fresh"} else "read_late_sample"
-            steps: list[tuple[str, dict[str, object]]] = [("load_tools", {"plugin": plugin})]
-            if case not in {"frozen", "removed"}:
-                steps.append(("tool_call", {"name": name, "arguments": {}}))
-            steps.append(("tool_call", {"name": "memorize", "arguments": {}}))
+            steps: list[list[tuple[str, dict[str, object]]]] = [[("load_tools", {"plugin": plugin})]]
+            if case == "followup":
+                # 定时轮里再建一个原文提醒，目标沿用本次触发的会话。
+                steps = [[("load_tools", {"plugin": "scheduler"})], [("tool_call", {"name": "schedule", "arguments": {
+                    "action": "notify", "trigger": "after", "when": "1s", "text": "followup-notice", "timezone": "UTC"}})]]
+            elif case not in {"frozen", "removed"}:
+                # interrupt 一次提交两个调用：用户插话时第二个可能还没开始。
+                steps.append([("tool_call", {"name": name, "arguments": {}})] * (2 if case == "interrupt" else 1))
+            if case != "followup":
+                steps.append([("tool_call", {"name": "memorize", "arguments": {}})])
             if len(calls) <= len(steps):
-                tool, arguments = steps[len(calls) - 1]
-                result = {"calls": [{"id": f"{case}-{len(calls)}", "name": tool, "arguments": arguments}]}
+                result = {"calls": [{"id": f"{case}-{len(calls)}-{index}", "name": tool, "arguments": arguments}
+                                    for index, (tool, arguments) in enumerate(steps[len(calls) - 1])]}
             else:
                 result = {"text": "completed:" + case}
             body = json.dumps(result).encode()
@@ -233,8 +239,34 @@ async def run(directory: Path) -> dict[str, object]:
                 while not any(isinstance(row.body, Output) and row.source == "conversation" and "pong" in str(row.body.parts)
                               for row in log.reader("test:interrupt").snapshot()):
                     await asyncio.sleep(0.02)
-            assert "case:interrupt" in str(requests["ping"][0]["messages"]), "对话应看到会话里的定时任务"
+            # 进行中的任务轮次不进入对话请求；完成后对话能看到它。
+            assert "case:interrupt" not in str(requests["ping"][0]["messages"]), "进行中的任务不应进入对话请求"
             assert any(isinstance(message.body, Output) and message.body.finish == "complete" for message in interrupted)
+
+            # 定时轮里创建后续任务：目标沿用本次触发；原文提醒到点写入同一会话并送达。
+            await finish(await schedule("followup"))
+            async with asyncio.timeout(30):
+                while True:
+                    state = await asyncio.to_thread(store.read)
+                    notice = [fire for fire in state.fires.values() if fire.job.text == "followup-notice"]
+                    if notice and notice[0].status != "pending":
+                        break
+                    await asyncio.sleep(0.05)
+            assert notice[0].status == "delivered" and notice[0].job.session_id == "test:followup", notice
+
+            # 升级前旧流程已在内部会话开始的触发：明确结算为失败，不在目标会话重复写 Input。
+            legacy = ScheduledJob(id="legacy", action="run", trigger="at", channel="test", chat_id="legacy",
+                                  session_id="test:legacy", text="case:legacy", timezone="UTC",
+                                  fire_at=datetime.now(UTC) + timedelta(seconds=2))
+            seed(legacy.session_id)
+            log.writer("scheduler:" + fire_key(legacy), author="scheduler", source="scheduler", body_types=(Input,),
+                       content={"text": check_text}).append("scheduler-input:" + fire_key(legacy), Input((ContentPart("text", "old"),)))
+            await store.add("schedule:legacy", legacy, "legacy")
+            async with asyncio.timeout(30):
+                while (fire := (await asyncio.to_thread(store.read)).fires.get(fire_key(legacy))) is None or fire.status == "pending":
+                    await asyncio.sleep(0.05)
+            assert fire.status == "failed" and "旧触发" in str(fire.error), fire
+            assert "legacy" not in requests
             assert "sample:late" in str(first), "晚注册工具未进入定时任务"
             results = [message.body for message in first if isinstance(message.body, ToolResult)]
             assert all(result.outcome == "success" for result in results)
@@ -272,11 +304,11 @@ async def run(directory: Path) -> dict[str, object]:
                 assert all(call["system"] == calls[0]["system"] and call["tools"] == calls[0]["tools"] for call in calls), case
             for messages in (first, history, fresh, held, removed):
                 assert "model.tool_rejection" in str(messages), "禁用工具必须明确拒绝"
-            for name, count in (("late", 3), ("extra", 1)):
+            for name, count in (("late", 4), ("extra", 1)):
                 calls = (workspace / "plugin-data" / (name + "-lab") / "calls.jsonl").read_text().splitlines()
                 assert len(calls) == count, (name, calls)
             sent = (workspace / "plugin-data/test_sender-builtin/sent.jsonl").read_text().splitlines()
-            assert len(sent) == 7 and len(set(sent)) == 7
+            assert len(sent) == 9 and len(set(sent)) == 9
             with sqlite3.connect(workspace / "sessions.db") as connection:
                 assert connection.execute("PRAGMA integrity_check").fetchone() == ("ok",)
     finally:
@@ -287,7 +319,7 @@ async def run(directory: Path) -> dict[str, object]:
         (directory / "requests.json").write_text(json.dumps(requests, ensure_ascii=False, indent=2))
     return {"in_session": True, "history_none_isolated": True, "history_session_included": True,
             "late_registration": True, "concurrent_fixed_views": True, "uninstall": True,
-            "disabled_tools_rejected": True, "messages_preserved": True, "deliveries": 7, "user_preempts_task": True,
+            "disabled_tools_rejected": True, "messages_preserved": True, "deliveries": 9, "user_preempts_task": True, "followup_from_task": True, "legacy_pending_settled": True,
             "model_requests": {key: len(value) for key, value in requests.items()}}
 
 
