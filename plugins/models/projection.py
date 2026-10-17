@@ -348,13 +348,13 @@ class MessageProjection:
         continuation_seq = fold.cont_seq
         continuation_transformed = fold.cont_transformed
         # 摘要明确开启新请求；原 opaque 保存在日志，只续接同一摘要后的响应。
+        # 换模型、思考强度或注册表版本后 binding 不同：opaque 只属于原 binding，
+        # 按当前完整消息投影开始请求，不把用户的切换变成会话故障。
         if fresh or continuation_transformed or summary_reference is not None and (
             continuation_summary != summary_reference or continuation_seq <= after_seq
-        ):
+        ) or continuation is not None and continuation.binding_id != self._model.descriptor.binding_id:
             continuation = None
         if continuation is not None:
-            if continuation.binding_id != self._model.descriptor.binding_id:
-                raise ValueError("当前模型不能接续另一 binding 的 opaque 状态")
             if after_seq >= 0 and summary_reference is None:
                 raise ValueError(
                     "当前投影不能证明摘要与 opaque continuation 可共同重放"
