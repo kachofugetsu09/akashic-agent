@@ -102,7 +102,9 @@ export class ComputerDriver extends EventEmitter {
     do { await this.waitForControl(signal); } while (this.control);
     const work = task();
     this.agentJobs.add(work);
-    try { return await work; } finally { this.agentJobs.delete(work); }
+    // OpenCLI 刷新等不经 tracked 的操作也要让面板知道 Agent 在用。
+    this.emit("activity");
+    try { return await work; } finally { this.agentJobs.delete(work); this.emit("activity"); }
   }
 
   // 测试与诊断读取的单一视图；并发时返回任意一个正在执行的调用。

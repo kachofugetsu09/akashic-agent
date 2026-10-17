@@ -59,6 +59,7 @@ const computer = new ComputerLifecycle({
     driver = owner;
     owner.on("cursor", (state) => { if (driver === owner) publishCursor(state); });
     owner.on("control", () => { if (driver === owner) scheduleState(); });
+    owner.on("activity", () => { if (driver === owner) scheduleState(); });
     owner.on("targets", () => { if (driver === owner) scheduleState(); });
     driverReady = owner.start();
     await driverReady;
@@ -117,7 +118,7 @@ async function stateEvent() {
   const state = {
     type: "state",
     noticeId: activity.noticeId,
-    active: activity.active,
+    active: activity.active || Boolean(driver?.agentJobs.size),
     turns: [...new Set([...computer.turns, ...[...(driver?.actives.values() ?? [])]
       .map(call => JSON.stringify([call.context.session_id, call.context.turn_id]))])],
     browser: { state: computer.state, error: computer.error },
@@ -157,10 +158,17 @@ class InputError extends Error {}
 // The Agent is using the browser; a viewer must take control before acting.
 class BusyError extends InputError {}
 
-// 人工直接操作：有人接管时归接管者；Agent 没有进行中的回合和操作时，观看者可以直接用。
-function humanMayAct() {
-  return Boolean(driver?.control)
-    || (!activeOperations.size && !computer.turns.size && !driver?.actives.size);
+// 人工直接操作：接管就绪时记进接管的操作，交还前会等它做完；没人接管、Agent 也没有回合和操作时直接执行。
+async function humanAction(task) {
+  const control = driver.control;
+  if (control?.ready) {
+    const job = task();
+    control.jobs.add(job);
+    try { return await job; } finally { control.jobs.delete(job); }
+  }
+  if (control || activeOperations.size || computer.turns.size || driver.actives.size || driver.agentJobs.size)
+    throw new BusyError("The Agent is using the browser; take control first");
+  return await task();
 }
 
 // 地址栏只打开网页和空白页，不执行 javascript: 等会在页面里运行代码的地址。
@@ -204,6 +212,8 @@ function saveActivity(action, started) {
     action,
     updatedAt: new Date().toISOString(),
   };
+  // 状态事件立即排队，不等文件写完：面板和代理要尽早收回人的输入。
+  scheduleState();
   const saved = JSON.stringify(activity);
   // One writer owns the shared temporary file, even when Sessions run in parallel.
   activityWrites = activityWrites.then(async () => {
@@ -704,17 +714,20 @@ const server = createServer(async (request, response) => {
     } else if (request.method === "POST" && ["/view/navigate", "/view/open", "/view/close"].includes(url.pathname)) {
       const payload = await body(request);
       if (!driver || computer.state !== "ready") throw new InputError("Computer is not awake");
-      if (!humanMayAct()) throw new BusyError("The Agent is using the browser; take control first");
       computer.touch();
       if (url.pathname === "/view/open") {
-        json(response, 200, { target: await driver.openPage(payload.url ? pageUrl(payload.url) : "about:blank") });
+        const address = payload.url ? pageUrl(payload.url) : "about:blank";
+        json(response, 200, { target: await humanAction(() => driver.openPage(address)) });
         return;
       }
       const target = requiredString(payload.target, "target", 128);
-      if (url.pathname === "/view/close") await driver.closePage(target);
+      if (url.pathname === "/view/close") await humanAction(() => driver.closePage(target));
       else if (!["go", "back", "forward", "reload"].includes(payload.action))
         throw new InputError("action must be go, back, forward or reload");
-      else await driver.navigate(target, payload.action, payload.action === "go" ? pageUrl(payload.url) : "");
+      else {
+        const address = payload.action === "go" ? pageUrl(payload.url) : "";
+        await humanAction(() => driver.navigate(target, payload.action, address));
+      }
       json(response, 200, { done: true });
     } else if (request.method === "POST" && url.pathname === "/view/touch") {
       // 观看者直接操作页面不经过网关；面板代理转发输入时续期，人在用时不休眠。

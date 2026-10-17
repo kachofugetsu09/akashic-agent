@@ -209,12 +209,12 @@ def register(app: FastAPI, context: DashboardContext) -> httpx.Client:
                 async for line in response.aiter_lines():
                     if (state := _state_event(line)) is None:
                         continue
-                    now = _agent_idle(state)
-                    if idle and not now:
+                    was_idle, idle = idle, _agent_idle(state)
+                    # 先收回输入再松键：发送期间到达的按下不会再被转发。
+                    if was_idle and not idle:
                         await upstream.send("kr")
                         if len(last_pointer) == 4 and last_pointer[3] != "0":
                             await upstream.send(",".join([*last_pointer[:3], "0", "0"]))
-                    idle = now
 
         async def touch() -> None:
             # 人在直接操作时续期，浏览器不会在用户使用中途休眠。
