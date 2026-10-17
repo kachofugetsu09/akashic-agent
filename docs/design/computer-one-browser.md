@@ -34,7 +34,8 @@ Agent: browser.tabs.new()
 - 关掉最后一个个人标签时 `recoverFront` 补开空白页；Chromium 带 `--keep-alive-for-test`，
   不因窗口全关而退出。
 - 面板跟随 Agent：Agent 新开标签时画面切过去；用户手动选过标签后，本轮不再跟随，
-  Agent 开始下一轮时恢复。空白页显示“新标签页”。
+  Agent 开始下一轮时恢复。同轮后续工具调用不恢复跟随；隐藏或被顶下来的面板不自动切页。
+  空白页显示“新标签页”。
 
 ## 3. 输入与只读
 
@@ -47,8 +48,9 @@ Agent: browser.tabs.new()
 ```
 
 - 屏幕尺寸由 selkies 按面板尺寸调整（`r,宽x高`），matchbox 让窗口跟着铺满。
-- 视口截图前记下窗口尺寸（`Browser.getWindowForTarget`）。坐标动作执行前尺寸已变，
-  就报错并要求重新截图；没截过图的标签和按元素的动作不检查。
+- 视口截图前记下 CSS 视口尺寸和像素比例（`innerWidth`、`innerHeight`、`devicePixelRatio`）。坐标动作执行前这些值已变，
+  就报错并要求重新截图；没截过图的标签和按元素的动作不检查。尺寸查询失败也报错，
+  不把未知尺寸当作安全坐标。内部诊断截图不更新这条记录。
 - 第二个窗口连上后，selkies 断开前一个；前一个面板收到 `superseded`，
   提示“另一个窗口正在看这个浏览器”，不自动抢回。
 - 人工接管、暂停 Agent 的规则沿用 0092。人工键鼠经 selkies 送到屏幕最前的窗口；
@@ -67,11 +69,14 @@ Agent: browser.tabs.new()
 `actives` 按 Session 记录正在执行的调用：不同 Session 并行；同一 Session 第二个调用直接报
 “This Session already has a running Computer call”。暂停与恢复作用于全部调用。
 输入按 `owner = session_id` 记录，取消只释放该 Session 按住的键鼠。
+活动文件由一个写入队列保存，任何调用仍在执行时 `active` 都为真。
 
 ## 6. OpenCLI 刷新
 
-刷新经 `agentOperation` 等人工交还后开始，拿到后记下个人页面；结束时关闭新增、且不属于
-Agent 的个人页面，此时有人接管则不关。刷新与 Agent 调用可以并行。实测不关时，刷新留下 8 个站点页面，常驻内存从约 300MB 涨到 1.45GiB。
+刷新经 `agentOperation` 等人工交还后开始，拿到后记下个人页面和接管版本。结束时清理新增、
+且不属于 Agent 的普通页面，保留弹窗。刷新期间有人接管（即使已经交还）、或收尾时仍有
+Agent 调用时不清理。刷新与 Agent 调用可以并行。此前实测不关时，刷新留下 8 个站点页面，
+常驻内存从约 300MB 涨到 1.45GiB。
 
 ## 7. 验收方法
 
@@ -81,9 +86,12 @@ Agent 的个人页面，此时有人接管则不关。刷新与 Agent 调用可�
 3. 真实模型任务：dsv4.1 在应用里打开网页并读取内容、点进二级页面。
 4. MiniWoB 配对：`plugins/computer/bench/run.py`，同模型、同任务、同 seed，main 与本栈交替运行。
 
-`scripts/computer-e2e/*.mjs` 已按新语义更新（目标结构、单一观看窗口、去掉 `sky` 缩放），
-本栈未重跑；`benchmark/computer_driver` 的 `sky` 适配只适用于 0123 之前的镜像。
+`scripts/computer-e2e/run.mjs` 验证并发接纳、匿名隔离、真实 H.264 切页、只读过滤、接管、
+同 Turn 手动选择、窗口缩放和 profile 重启保留；`input.mjs` 验证拖拽、释放和截图，
+`idle.mjs` 验证闲置回收。运行方式见该目录的 README。
+`benchmark/computer_driver` 的 `sky` 适配只适用于 0123 之前的镜像。
 
 ## 8. 回退
 
-插件 `_IMAGE` 指回上一个 digest，插件代码回到上一版即可；profile 格式没有变化。
+回退使用上一版插件代码及其固定镜像。镜像同时升级 Chromium 时，旧浏览器可能不能安全读取
+新 profile；先停写并备份 Computer 的 `/data`，恢复旧镜像时按备份恢复该目录，不能在线覆盖。

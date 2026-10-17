@@ -157,10 +157,10 @@ test("cancel releases direct and emulated CDP touch inputs", async () => {
   const cdp = (method, commandParams) =>
     driver.browser.execute({ target, method, commandParams }, context);
   try {
-    const setup = await cdp("Runtime.evaluate", {
-      expression:
-        "document.body.style.height='2000px'; window.touchEvents=[]; for(const name of ['touchstart','touchend','touchcancel']) addEventListener(name,()=>touchEvents.push(name));",
-    });
+    // A reader must not become the owner of another Session's later input.
+    const setup = await driver.browser.execute({ target, method: "Runtime.evaluate", commandParams: {
+      expression: "document.body.style.height='2000px'; window.touchEvents=[]; for(const name of ['touchstart','touchend','touchcancel']) addEventListener(name,()=>touchEvents.push(name));",
+    } }, { ...context, session_id: "observer" });
     assert.equal(setup.exceptionDetails, undefined, JSON.stringify(setup));
     await cdp("Emulation.setTouchEmulationEnabled", {
       enabled: true,

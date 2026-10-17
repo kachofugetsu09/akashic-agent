@@ -30,6 +30,7 @@ export class ComputerDriver extends EventEmitter {
   closed = false;
   cancelledCalls = new Map();
   control = null;
+  controlVersion = 0;
   agentJobs = new Set();
 
   /** 人工接管先阻止新操作，再等待已发操作和输入释放。 */
@@ -41,6 +42,7 @@ export class ComputerDriver extends EventEmitter {
     control.instance = this.anonymous.instances.get(target.split(":")[0]);
     if (control.instance) this.anonymous.hold(control.instance);
     this.control = control;
+    this.controlVersion++;
     this.emit("control");
     this.pauseClock();
     try {
@@ -145,7 +147,9 @@ export class ComputerDriver extends EventEmitter {
         targets.push({ id: `${id}:${tab.id}`, title: tab.title, url: tab.url,
           anonymous: Boolean(instance), agent: Boolean(created), kept: Boolean(status),
           front: targetId === this.browser.screen.front,
-          sessionId: instance?.context.session_id ?? created?.session_id ?? null });
+          sessionId: instance?.context.session_id ?? created?.session_id ?? null,
+          turn: instance || created ? JSON.stringify([
+            (instance?.context ?? created).session_id, (instance?.context ?? created).turn_id]) : null });
       }
     return targets;
   }

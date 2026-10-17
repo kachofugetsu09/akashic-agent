@@ -44,7 +44,9 @@ try {
   const data = join(artifacts, "data");
   await mkdir(data); await chmod(data, 0o777);
   docker("run", "-d", "--name", container, "--security-opt", "seccomp=unconfined", "--shm-size=512m",
-    "-p", "127.0.0.1::8080", "-p", "127.0.0.1::6081", "-p", "127.0.0.1::19826", "-v", `${data}:/data`,
+    "-e", "OPENCLI_AUTH_REFRESH_SITES=",
+    "-p", `127.0.0.1:${await freePort()}:8080`, "-p", `127.0.0.1:${await freePort()}:6081`,
+    "-p", `127.0.0.1:${await freePort()}:19826`, "-v", `${data}:/data`,
     ...sourceMounts, image);
   started = true;
   const ports = JSON.parse(docker("inspect", container, "--format", "{{json .NetworkSettings.Ports}}"));
@@ -81,6 +83,23 @@ try {
   await until(async () => docker("exec", container, "node", "-e",
     "fetch('http://127.0.0.1:8989/main').then(r=>console.log(r.status)).catch(()=>console.log('starting'))"),
     value => value === "200", "Remote HTTP page startup");
+  // Hold six real navigations at the HTTP server so every Session overlaps.
+  const parallel = Promise.all(Array.from({length: 6}, (_, index) => post("/driver/run", {
+    context: {session_id: `parallel-${index}`, turn_id: "one", call_id: randomUUID()},
+    code: `var tab = await browser.tabs.new(); await tab.goto('http://127.0.0.1:8989/held?${index}');`,
+  })));
+  void parallel.catch(() => {});
+  await until(async () => JSON.parse(docker("exec", container, "node", "-e",
+    "fetch('http://127.0.0.1:8989/status').then(r=>r.text()).then(console.log)")),
+    value => value.held === 6, "six admitted Sessions");
+  assert.equal((await (await fetch(gateway + "/activity")).json()).active, true);
+  docker("exec", container, "node", "-e", "fetch('http://127.0.0.1:8989/release').then(r=>r.text()).then(console.log)");
+  await parallel;
+  assert.equal((await (await fetch(gateway + "/activity")).json()).active, false);
+  for (let index = 0; index < 6; index++) await post("/driver/run", {
+    context: {session_id: `parallel-${index}`, turn_id: "one", call_id: randomUUID()}, endTurn: true,
+  });
+  pass("concurrent gateway calls settle without losing activity writes");
   await action(`var main = await browser.tabs.new(); await main.goto('http://127.0.0.1:8989/main');
     var anonA = await agent.browsers.create(); var pageA = await anonA.tabs.new(); await pageA.goto('http://127.0.0.1:8989/a');
     var anonB = await agent.browsers.create(); var pageB = await anonB.tabs.new(); await pageB.goto('http://127.0.0.1:8989/b');
@@ -132,7 +151,11 @@ try {
     return page;
   };
   const first = await createPage(), second = await createPage();
-  const open = page => page.getByRole("button", { name: /^打开 浏览器/ }).click();
+  const open = async page => {
+    await page.getByRole("button", { name: /^打开工作台/ }).click();
+    if (!await page.locator(".computer-view").isVisible())
+      await page.getByRole("button", { name: /^浏览器/ }).click();
+  };
   const connected = page => page.waitForFunction(() => document.querySelector(".computer-status")?.textContent?.startsWith("只读观看"));
   const videoReady = page => page.waitForFunction(() => {
     const frame = document.querySelector(".computer-stream");
@@ -140,7 +163,7 @@ try {
   });
   await open(second); await connected(second); await videoReady(second);
   await open(first); await connected(first); await videoReady(first);
-  await second.getByText("另一个窗口正在看这个浏览器").waitFor();
+  await second.getByText(/另一个窗口正在看这个浏览器/).waitFor();
   assert.equal((await (await fetch(gateway + "/targets")).json()).control, false);
   pass("a second viewer takes the picture without taking input; the first explains why");
   await first.screenshot({ path: join(artifacts, "browser-viewer.png") });
@@ -151,11 +174,10 @@ try {
   pass("viewing pointer input does not claim control");
   await first.getByRole("button", { name: "接管", exact: true }).click();
   await first.waitForFunction(() => document.querySelector(".computer-status").textContent.startsWith("你正在操作"));
-  await videoReady(second);
-  await second.waitForFunction(() => document.querySelector(".computer-status").textContent.startsWith("另一个窗口正在操作"));
-  assert.equal(await second.getByRole("button", { name: "接管", exact: true }).isDisabled(), true);
+  await videoReady(first);
+  await second.getByText(/另一个窗口正在看这个浏览器/).waitFor();
   const conflicting = await fetch(gateway + "/control/take", {method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({id:randomUUID()})});
-  assert.equal(conflicting.status,500); assert.match((await conflicting.json()).error,/Another viewer/);
+  assert.equal(conflicting.status,400); assert.match((await conflicting.json()).error,/Another viewer/);
   let openCliFinished = false;
   const pendingOpenCli = fetch(openCli+"/health",{headers:{"x-opencli":"1"}}).then(response=>{
     openCliFinished=true; void response.body?.cancel(); return response.status;
@@ -171,33 +193,62 @@ try {
   assert.match(textResult(await paused), /RESUMED/);
   assert.ok((await pendingOpenCli) < 500);
   pass("explicit takeover pauses Agent clock and OpenCLI, refuses another controller, and release resumes them");
-  await connected(first); await videoReady(first); await videoReady(second);
+  await connected(first); await videoReady(first);
 
   // 3. 标签展示真实匿名页面；只读、输入、键盘、关闭和释放均经生产路由。
-  const options = (page, path) => page.getByRole("combobox", { name: "观看的画面" }).locator("option")
-    .evaluateAll((nodes, suffix) => nodes.filter(node => node.textContent.endsWith(suffix)).map(node => node.value), `/${path}`);
-  const select = async (page, path) => page.getByRole("combobox", { name: "观看的画面" }).selectOption((await options(page, path))[0]);
+  const options = (page, path) => page.locator(".computer-tab")
+    .evaluateAll((nodes, suffix) => nodes.filter(node => node.textContent === suffix).map(node => node.dataset.id), `/${path}`);
+  const select = async (page, path) => {
+    const id = (await options(page, path))[0];
+    await page.locator(`.computer-tab[data-id="${id}"]`).click();
+    await until(async () => (await (await fetch(gateway + "/targets")).json()).targets.find(t => t.front)?.id,
+      value => value === id, "selected page is visible");
+  };
+  await first.evaluate(() => { window.e2eStream = document.querySelector(".computer-stream").contentWindow.selkiesTransport; });
   await select(first, "a");
-  await first.locator(".computer-browser-screen").waitFor();
+  await select(first, "b");
+  await select(first, "a");
+  assert.equal(await first.evaluate(() => window.e2eStream === document.querySelector(".computer-stream").contentWindow.selkiesTransport), true);
+  const shot = await fetch(gateway + "/screenshot?quiet=1");
+  assert.equal(shot.status, 200); assert.equal(shot.headers.get("content-type"), "image/png");
+  await shot.arrayBuffer();
+  pass("tab switches retain the video connection and legacy capture supports the visible anonymous page");
   await connected(first);
-  await select(second, "b"); await connected(second);
   const before = textResult(await action(`console.log(await pageA.playwright.evaluate(() => document.querySelector('#hit').textContent));`));
   assert.match(before, /CLICK/);
+  const geometry = JSON.parse(textResult(await action(`console.log(JSON.stringify(await pageA.playwright.evaluate(() => {
+    const center = id => { const r = document.querySelector(id).getBoundingClientRect(); return {x:r.x+r.width/2,y:r.y+r.height/2}; };
+    return {width:innerWidth,height:innerHeight,input:center('#x'),hit:center('#hit')};
+  })));`)));
+  await action("await pageA.playwright.getByRole('textbox').click();");
+  await action("await pageA.clipboard.writeText('BEFORE_READ_ONLY');");
+  const clipboardBefore = textResult(await action("nodeRepl.write(await pageA.clipboard.readText());"));
+  await first.evaluate(async () => {
+    const socket = document.querySelector(".computer-stream").contentWindow.selkiesTransport;
+    // Bypass the UI's disabled input handlers and challenge the actual proxy.
+    socket.send("kd,120"); socket.send("ku,120"); socket.send("cw," + btoa("READ_ONLY"));
+    socket.send(new Uint8Array([1, 2, 3]));
+    await new Promise(resolve => {
+      const ack = event => { if (event.data === "_gz,1") { socket.removeEventListener("message", ack); resolve(); } };
+      socket.addEventListener("message", ack); socket.send("_gz,1");
+    });
+  });
+  assert.equal(textResult(await action("nodeRepl.write(await pageA.playwright.getByRole('textbox').evaluate(el => el.value));")).trim(), "");
+  assert.equal(textResult(await action("nodeRepl.write(await pageA.clipboard.readText());")), clipboardBefore);
+  pass("read-only proxy drops raw keyboard, clipboard and binary messages");
   await first.getByRole("button", { name: "接管", exact: true }).click();
   await first.waitForFunction(() => document.querySelector(".computer-status").textContent.startsWith("你正在操作"));
-  const imageNode = first.locator(".computer-browser-screen");
-  const size = await imageNode.evaluate(node => ({ width: node.naturalWidth, height: node.naturalHeight }));
-  const bounds = await imageNode.boundingBox();
-  const scale = Math.min(bounds.width / size.width, bounds.height / size.height);
-  const point = (x, y) => ({ x: bounds.x + (bounds.width - size.width * scale) / 2 + x * scale,
-    y: bounds.y + (bounds.height - size.height * scale) / 2 + y * scale });
-  const input = point(70, 90);
+  await videoReady(first);
+  const bounds = await first.locator(".computer-stream").boundingBox();
+  const point = ({x, y}) => ({ x: bounds.x + x * bounds.width / geometry.width,
+    y: bounds.y + y * bounds.height / geometry.height });
+  const input = point(geometry.input);
   await first.mouse.click(input.x, input.y);
   await first.keyboard.type("Human");
   await first.keyboard.press("Backspace");
   await first.keyboard.type("n");
   // main 页面默认字体下 input 位于 h1 之后；用真实 DOM 回执判断坐标是否命中。
-  const hit = point(230, 90);
+  const hit = point(geometry.hit);
   await first.mouse.click(hit.x, hit.y);
   await first.getByRole("button", { name: "剪贴板", exact: true }).click();
   await first.getByRole("textbox", { name: "剪贴板文字" }).fill(" Clipboard");
@@ -205,6 +256,7 @@ try {
   await first.mouse.click(input.x, input.y);
   await first.getByRole("button", { name: "粘贴到浏览器" }).click();
   await first.getByText("已粘贴", { exact: true }).waitFor();
+  await first.getByRole("button", {name: "关闭剪贴板", exact: true}).click();
   await first.getByRole("button", { name: "交还给 Agent" }).click();
   const changed = textResult(await action(`console.log(await pageA.playwright.evaluate(() => ({
     input: document.querySelector('#x').value, button: document.querySelector('#hit').textContent })));`));
@@ -212,10 +264,46 @@ try {
   assert.match(textResult(await action(`console.log(await pageB.playwright.evaluate(() => document.querySelector('#x').value));`)), /''|""|^\s*$/);
   pass("anonymous pointer, keyboard, Backspace and acknowledged paste affect only selected page");
   await first.screenshot({ path: join(artifacts, "anonymous-tabs.png") });
+  await select(first, "b");
   await action("await anonB.close();");
-  await until(() => second.locator(".computer-status").textContent(), value => value.includes("这个浏览器已关闭"), "closed context disappears");
+  await until(() => options(first, "b"), value => value.length === 0, "closed context disappears");
   assert.equal((await options(second, "b")).length, 0);
-  pass("closed anonymous contexts remove tabs and stop their display");
+  assert.ok((await (await fetch(gateway + "/targets")).json()).targets.some(t => t.front && !t.anonymous));
+  await videoReady(first);
+  pass("closing the visible anonymous Context removes its tabs and shows a personal page on the same stream");
+
+  await select(first, "a");
+  const manual = (await (await fetch(gateway + "/targets")).json()).targets.find(t => t.front).id;
+  await action("var later = await browser.tabs.new(); await later.goto('http://127.0.0.1:8989/later');");
+  await first.locator(".computer-tab").filter({hasText: "/later"}).waitFor();
+  assert.equal((await (await fetch(gateway + "/targets")).json()).targets.find(t => t.front).id, manual);
+  const nextTurn = code => post("/driver/run", {context: {session_id: "follow", turn_id: "next", call_id: randomUUID()}, code});
+  await nextTurn("var next = await browser.tabs.new(); await next.goto('http://127.0.0.1:8989/next');");
+  await until(async () => (await (await fetch(gateway + "/targets")).json()).targets.find(t => t.front)?.title,
+    title => title === "/next", "next Turn follows");
+  await first.getByRole("button", {name: "收起工具区", exact: true}).click();
+  const hiddenFront = (await (await fetch(gateway + "/targets")).json()).targets.find(t => t.front).id;
+  await nextTurn("var hidden = await browser.tabs.new(); await hidden.goto('http://127.0.0.1:8989/hidden');");
+  await second.locator(".computer-tab").filter({hasText: "/hidden"}).waitFor();
+  assert.equal((await (await fetch(gateway + "/targets")).json()).targets.find(t => t.front).id, hiddenFront);
+  pass("manual selection lasts through a Turn; hidden and superseded panels do not switch pages");
+  await open(first); await connected(first); await select(first, "a");
+  await action("await pageA.screenshot({});");
+  const oldWidth = Number(textResult(await action("nodeRepl.write(await pageA.playwright.evaluate(() => innerWidth));")));
+  await first.setViewportSize({width: 1000, height: 800});
+  await until(async () => Number(textResult(await action("nodeRepl.write(await pageA.playwright.evaluate(() => innerWidth));"))),
+    width => width !== oldWidth, "browser follows resized panel");
+  const staleClick = await fetch(gateway + "/driver/run", {method: "POST", headers: {"content-type": "application/json"},
+    body: JSON.stringify({context: {session_id: "computer-e2e", turn_id: "turn", call_id: randomUUID()},
+      code: "await pageA.cua.click({x:20,y:20});"})});
+  assert.equal(staleClick.status, 500); assert.match((await staleClick.json()).error, /take a new screenshot/);
+  await action("await pageA.playwright.getByRole('button', {name:'CLICKED'}).click(); await pageA.screenshot({});");
+  const clicks = Number(textResult(await action("nodeRepl.write(await pageA.playwright.evaluate(() => Number(document.querySelector('#hit').dataset.clicks)));")));
+  const fresh = JSON.parse(textResult(await action("nodeRepl.write(JSON.stringify(await pageA.playwright.evaluate(() => {const r=document.querySelector('#hit').getBoundingClientRect();return {x:r.x+r.width/2,y:r.y+r.height/2};})));")));
+  await action(`await pageA.cua.click(${JSON.stringify(fresh)});`);
+  assert.equal(Number(textResult(await action("nodeRepl.write(await pageA.playwright.evaluate(() => Number(document.querySelector('#hit').dataset.clicks)));"))), clicks + 1);
+  await first.screenshot({path: join(artifacts, "resized-browser.png")});
+  pass("resize rejects stale coordinates; element actions and a fresh screenshot still work");
 
   // 4. 手机活动仅增加徽标；手动打开、关闭与聊天输入保持独立。
   const mobile = await createPage({ viewport: { width: 320, height: 740 }, isMobile: true, hasTouch: true });
@@ -225,7 +313,7 @@ try {
   await mobile.frameLocator(".conversation-page-frame").getByRole("textbox", { name: "对话输入" }).fill("移动端继续输入");
   await mobile.screenshot({ path: join(artifacts, "mobile-activity-chat.png") });
   await open(mobile); await connected(mobile); await videoReady(mobile);
-  await mobile.getByRole("button", { name: "关闭工具区" }).click();
+  await mobile.getByRole("button", { name: "收起工具区", exact: true }).click();
   await action("console.log('AFTER_CLOSE');");
   await mobile.locator(".conversation-tools-toggle.has-attention").waitFor();
   assert.equal(await mobile.locator(".conversation-tools").isVisible(), false);
@@ -235,7 +323,7 @@ try {
   await first.getByRole("button", { name: "剪贴板", exact: true }).click();
   await first.getByRole("dialog", { name: "剪贴板" }).getByRole("button", { name: "接管操作", exact: true }).click();
   await first.waitForFunction(() => document.querySelector(".computer-status").textContent.startsWith("你正在操作"));
-  await first.getByRole("button", { name: "关闭工具区" }).click();
+  await first.getByRole("button", { name: "收起工具区", exact: true }).click();
   await until(async () => (await (await fetch(gateway + "/targets")).json()).control, value => !value, "closing panel releases control");
   pass("closing the panel releases its operation connection");
   await action("", 60000, { endTurn: true });
@@ -251,6 +339,19 @@ try {
   assert.ok((await (await fetch(gateway+"/targets")).json()).targets.every(t=>!t.anonymous));
   assert.match(textResult(await action("console.log(typeof progress);")),/undefined/);
   pass("call timeout resets bindings and disposes anonymous contexts after confirmed cleanup");
+  await action("var saved = await browser.tabs.new(); await saved.goto('http://127.0.0.1:8989/remember');");
+  docker("restart", container);
+  await until(async () => docker("exec", container, "node", "-e",
+    "fetch('http://127.0.0.1:8080/health').then(r=>console.log(r.status)).catch(()=>console.log('starting'))"),
+    value => value === "200", "restarted Computer health");
+  docker("exec", "-d", container, "node", "/tmp/remote-page.mjs");
+  await until(async () => docker("exec", container, "node", "-e",
+    "fetch('http://127.0.0.1:8989/main').then(r=>console.log(r.status)).catch(()=>console.log('starting'))"),
+    value => value === "200", "restarted remote HTTP page");
+  await action("var restored = await browser.tabs.new(); await restored.goto('http://127.0.0.1:8989/main'); nodeRepl.write(await restored.playwright.evaluate(() => ({storage:localStorage.getItem('identity'),cookie:document.cookie}))); ");
+  const retained = textResult(await action("nodeRepl.write(await restored.playwright.evaluate(() => ({storage:localStorage.getItem('identity'),cookie:document.cookie})));"));
+  assert.match(retained, /PROFILE/); assert.match(retained, /review=PROFILE/);
+  pass("runtime restart retains personal profile storage and cookies");
   for(const [label,viewport] of [["desktop",{width:1440,height:900}],["mobile",{width:320,height:740}]]) {
     const context=await browser.newContext({viewport}); const page=await context.newPage();
     page.on("pageerror",error=>errors.push(error.message)); await page.goto(origin+"/shell");
@@ -268,7 +369,7 @@ try {
   pass("actual Shell exposes settings at desktop and 320px root with existing routes and shortcut");
   assert.deepEqual(errors, []);
   const logs = docker("logs", container);
-  assert.doesNotMatch(logs, /Killing old client|UnhandledPromiseRejection/);
+  assert.doesNotMatch(logs, /UnhandledPromiseRejection|ENOENT.*activity/);
   await writeFile(join(artifacts, "computer.log"), logs);
   await writeFile(join(artifacts, "dashboard.log"), serverErrors);
   await writeFile(join(artifacts, "result.json"), JSON.stringify({ image, sourceMounted: sourceMounts.length > 0, checks, errors, artifacts }, null, 2));

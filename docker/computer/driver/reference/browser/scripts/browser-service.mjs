@@ -10241,25 +10241,22 @@ function vt(t, e) {
 // 屏幕跟随观看面板；截图后窗口尺寸变了，截图上的坐标已经对不上，坐标动作要求先重新截图。
 const akashicScreenshotWindows = new Map();
 async function akashicWindowSize(e, tabId) {
-  const { bounds } = await e.cdp.call(tabId, "Browser.getWindowForTarget");
-  return `${bounds.width}x${bounds.height}`;
+  // Fullscreen window bounds can lag RandR. innerWidth includes the scrollbar,
+  // so scrollbar changes do not invalidate otherwise usable CSS coordinates.
+  const { result, exceptionDetails } = await e.cdp.call(tabId, "Runtime.evaluate", {
+    expression: "JSON.stringify([innerWidth, innerHeight, devicePixelRatio])",
+    returnByValue: true,
+  });
+  if (exceptionDetails) throw new Error("Could not read the browser viewport");
+  return result.value;
 }
 async function akashicRememberScreenshotWindow(e, tabId) {
-  try {
-    akashicScreenshotWindows.set(tabId, await akashicWindowSize(e, tabId));
-  } catch {
-    akashicScreenshotWindows.delete(tabId);
-  }
+  akashicScreenshotWindows.set(tabId, await akashicWindowSize(e, tabId));
 }
 async function akashicCheckScreenshotWindow(name, e, tabId) {
   const before = akashicScreenshotWindows.get(tabId);
   if (before == null) return;
-  let now;
-  try {
-    now = await akashicWindowSize(e, tabId);
-  } catch {
-    return;
-  }
+  const now = await akashicWindowSize(e, tabId);
   if (now !== before)
     throw new Error(
       `${name}: the browser window changed from ${before} to ${now} since the last screenshot; take a new screenshot and use coordinates from it`,
@@ -28945,8 +28942,8 @@ async function zP(t, e, r) {
   let n = V(t.tab_id),
     o = { format: fr, quality: 80 },
     i = p9(t);
-  // 只有视口截图的坐标能直接用于点击；在截图之前记录，宁可多要一次截图也不点偏。
-  if (i == null && t.fullPage !== !0)
+  // 只记录公开的视口截图；内部 response metadata 截图不能使旧坐标重新生效。
+  if (r === "css" && i == null && t.fullPage !== !0)
     await akashicRememberScreenshotWindow(e, n);
   if (i != null) {
     let a = await bb(n, e, r);

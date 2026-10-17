@@ -8,6 +8,7 @@ export interface Target {
   readonly url: string;
   readonly anonymous: boolean;
   readonly agent: boolean;
+  readonly turn: string | null;
   readonly front: boolean;
 }
 
