@@ -84,7 +84,7 @@ async def run(directory: Path) -> dict[str, object]:
     sources = directory / "plugins"
     for name in ("ledger", "host_execution", "commands", "sources", "content", "context", "tools", "react", "models",
                  "turn_projection", "reply_program", "conversation", "delivery", "akashic_sender",
-                 "standard_tools", "assets", "scheduler", "tool_search"):
+                 "standard_tools", "assets", "scheduler", "tool_search", "delivery_policy"):
         shutil.copytree(ROOT / "plugins" / name, sources / name,
                         ignore=shutil.ignore_patterns("__pycache__"))
     provider = directory / "timer"
@@ -123,15 +123,15 @@ async def apply(ctx):
             return (await timer.schedule(datetime.now(UTC)).result()).status.value
     await ctx.provide(ServiceKey("scenario.timer.fire"), ctx.entrypoint(fire))
 ''')
-    # 所有插件使用实际实现；instant 任务不会调用未配置的模型。
+    # 所有插件使用实际实现；notify 任务不会调用未配置的模型。
     save_config(workspace / "plugin-data/context-builtin", {"prompt_sources": {"skills": "standard_tools"}})
     http = SharedHttpResources()
     config = Config(workspace_path=workspace)
     store = JobStore(workspace / "schedules.json")
 
     async def notice(runtime, identity: str) -> None:
-        job = ScheduledJob("after", "instant", datetime.now(UTC), "akashic", "scenario",
-                           message=identity, id=identity)
+        job = ScheduledJob("after", "notify", datetime.now(UTC), "akashic", "scenario", "akashic:scenario",
+                           identity, id=identity)
         await store.add(identity, job, identity)
         # 真实持久订阅是完成屏障；轮询只负责跨连接事实追赶。
         stream = log.catalog().follow(poll_interval=0.01)

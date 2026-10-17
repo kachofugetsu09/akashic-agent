@@ -1,4 +1,4 @@
-"""真实定时执行验证晚注册、并发目录、卸载和工具权限；模型对端为本地 HTTP。"""
+"""真实定时执行验证会话内执行、历史范围、晚注册、并发目录、卸载和工具权限；模型对端为本地 HTTP。"""
 from __future__ import annotations
 
 import argparse
@@ -17,7 +17,9 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 
 from agent.plugin_composition.config_input import save_config
-from plugins.ledger.contract import ToolResult
+from plugins.channels.contract import CHANNEL_INPUT_V2 as CHANNEL_INPUT, ChannelInboundMessage
+from plugins.content.plugin import check_text
+from plugins.ledger.contract import ContentPart, Output, ToolResult
 from plugins.scheduler.schedule import ScheduledJob
 from plugins.scheduler.store import JobStore, fire_key
 from tests.support.delivery_sources import sources as delivery_sources
@@ -39,6 +41,10 @@ async def apply(ctx):
         async def prepare(self, arguments, source=None):
             return arguments
         async def invoke(self, key, arguments):
+            import asyncio
+            while (ctx.data_root / "hold").exists():
+                (ctx.data_root / "holding").touch()
+                await asyncio.sleep(0.05)
             value = (ctx.data_root / "sample.txt").read_text()
             with (ctx.data_root / "calls.jsonl").open("a") as stream:
                 stream.write(key + "\\n")
@@ -91,6 +97,12 @@ async def run(directory: Path) -> dict[str, object]:
             request = json.loads(await reader.readexactly(length))
             request["system"] += "\n".join(str(message["content"]) for message in request["messages"]
                                            if message["role"] == "system")
+            if "user-ping" in str(request["messages"][-1]):
+                requests.setdefault("ping", []).append(request)
+                body = json.dumps({"text": "pong"}).encode()
+                writer.write(f"HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {len(body)}\r\nConnection: close\r\n\r\n".encode() + body)
+                await writer.drain()
+                return
             match = re.search(r"case:(\w+)", str(request["messages"]))
             assert match is not None, request
             case = match[1]
@@ -104,7 +116,7 @@ async def run(directory: Path) -> dict[str, object]:
             steps: list[tuple[str, dict[str, object]]] = [("load_tools", {"plugin": plugin})]
             if case not in {"frozen", "removed"}:
                 steps.append(("tool_call", {"name": name, "arguments": {}}))
-            steps.append(("tool_call", {"name": "message_push", "arguments": {}}))
+            steps.append(("tool_call", {"name": "memorize", "arguments": {}}))
             if len(calls) <= len(steps):
                 tool, arguments = steps[len(calls) - 1]
                 result = {"calls": [{"id": f"{case}-{len(calls)}", "name": tool, "arguments": arguments}]}
@@ -123,7 +135,7 @@ async def run(directory: Path) -> dict[str, object]:
 
     def configure(sources: Path) -> None:
         save_config(directory / "workspace/plugin-data/scheduler-builtin", {"max_output_tokens": 512})
-        for name in ("scheduler", "timer"):
+        for name in ("scheduler", "timer", "delivery_policy"):
             shutil.copytree(ROOT / "plugins" / name, sources / name, ignore=shutil.ignore_patterns("__pycache__"))
         delivery_sources(sources)
         entry = sources / "test_provider/plugin.py"
@@ -172,9 +184,12 @@ async def run(directory: Path) -> dict[str, object]:
 
             store = JobStore(workspace / "schedules.json")
 
-            async def schedule(case: str) -> ScheduledJob:
-                job = ScheduledJob(id=case, tier="soft", trigger="at", channel="test", chat_id="room",
-                                   timezone="UTC", fire_at=datetime.now(UTC) - timedelta(seconds=1), prompt="case:" + case)
+            async def schedule(case: str, context: str = "none") -> ScheduledJob:
+                # 每个任务落在自己的会话里；同一会话的任务与对话串行执行。
+                job = ScheduledJob(id=case, action="run", trigger="at", channel="test", chat_id=case,
+                                   session_id="test:" + case, text="case:" + case, context=context,
+                                   timezone="UTC", fire_at=datetime.now(UTC) - timedelta(seconds=1))
+                seed(job.session_id)
                 await store.add("schedule:" + case, job, case)
                 return job
 
@@ -185,19 +200,49 @@ async def run(directory: Path) -> dict[str, object]:
                         fire = state.fires.get(fire_key(job))
                         if fire is not None and fire.status != "pending":
                             assert fire.status == "delivered", fire
-                            return list(log.reader(fire.session_id).snapshot())
+                            messages = log.reader(job.session_id).snapshot()
+                            return [message for message in messages if message.source == fire.source]
                         await asyncio.sleep(0.02)
+
+            def seed(session_id: str) -> None:
+                log.writer(session_id, author="assistant", source="seed", body_types=(Output,),
+                           content={"text": check_text}).append(
+                    "seed:" + session_id, Output((ContentPart("text", "history-secret"),), "complete"))
 
             # 2. scheduler 已启动后安装 provider；真实模型加载并调用其工具。
             await install(late)
             first = await finish(await schedule("late"))
+            history = await finish(await schedule("history", "session"))
+            assert all("history-secret" not in str(call["messages"]) for call in requests["late"]), "context=none 不应看到会话历史"
+            assert "history-secret" in str(requests["history"][0]["messages"]), "context=session 应带会话历史"
+            assert any(isinstance(message.body, Output) and message.body.finish == "complete" for message in history)
+
+            # 任务的工具还在执行时用户发来消息：对话先等任务让出，两边都完成且互不破坏。
+            data = workspace / "plugin-data/late-lab"
+            (data / "hold").touch()
+            pending = await schedule("interrupt")
+            async with asyncio.timeout(10):
+                while not (data / "holding").exists():
+                    await asyncio.sleep(0.02)
+            await root.context.require(CHANNEL_INPUT)("test:interrupt", "u1", ChannelInboundMessage(
+                "test", "user", "interrupt", "user-ping", datetime.now(UTC), {}))
+            await asyncio.sleep(1)
+            (data / "hold").unlink()
+            interrupted = await finish(pending)
+            async with asyncio.timeout(30):
+                while not any(isinstance(row.body, Output) and row.source == "conversation" and "pong" in str(row.body.parts)
+                              for row in log.reader("test:interrupt").snapshot()):
+                    await asyncio.sleep(0.02)
+            assert "case:interrupt" in str(requests["ping"][0]["messages"]), "对话应看到会话里的定时任务"
+            assert any(isinstance(message.body, Output) and message.body.finish == "complete" for message in interrupted)
             assert "sample:late" in str(first), "晚注册工具未进入定时任务"
             results = [message.body for message in first if isinstance(message.body, ToolResult)]
             assert all(result.outcome == "success" for result in results)
             loaded_text = results[0].parts[0].value
             assert isinstance(loaded_text, str)
             loaded = json.loads(loaded_text)
-            assert [tool["function"]["name"] for tool in loaded["tools"]] == ["read_late_sample"]
+            # 与会话工具一致，只去掉写长期记忆的三个工具。
+            assert {tool["function"]["name"] for tool in loaded["tools"]} == {"read_late_sample", "message_push", "recall_memory"}
             assert results[1].parts[0].value == "sample:late"
             before = rows(workspace)
 
@@ -225,13 +270,13 @@ async def run(directory: Path) -> dict[str, object]:
             assert set(before).issubset(rows(workspace))
             for case, calls in requests.items():
                 assert all(call["system"] == calls[0]["system"] and call["tools"] == calls[0]["tools"] for call in calls), case
-            for messages in (first, fresh, held, removed):
+            for messages in (first, history, fresh, held, removed):
                 assert "model.tool_rejection" in str(messages), "禁用工具必须明确拒绝"
-            for name in ("late", "extra"):
+            for name, count in (("late", 3), ("extra", 1)):
                 calls = (workspace / "plugin-data" / (name + "-lab") / "calls.jsonl").read_text().splitlines()
-                assert len(calls) == 1, (name, calls)
+                assert len(calls) == count, (name, calls)
             sent = (workspace / "plugin-data/test_sender-builtin/sent.jsonl").read_text().splitlines()
-            assert len(sent) == 4 and len(set(sent)) == 4
+            assert len(sent) == 7 and len(set(sent)) == 7
             with sqlite3.connect(workspace / "sessions.db") as connection:
                 assert connection.execute("PRAGMA integrity_check").fetchone() == ("ok",)
     finally:
@@ -240,8 +285,9 @@ async def run(directory: Path) -> dict[str, object]:
         await server.wait_closed()
         await asyncio.gather(*handlers)
         (directory / "requests.json").write_text(json.dumps(requests, ensure_ascii=False, indent=2))
-    return {"late_registration": True, "concurrent_fixed_views": True, "uninstall": True,
-            "disabled_tools_rejected": True, "messages_preserved": True, "deliveries": 4,
+    return {"in_session": True, "history_none_isolated": True, "history_session_included": True,
+            "late_registration": True, "concurrent_fixed_views": True, "uninstall": True,
+            "disabled_tools_rejected": True, "messages_preserved": True, "deliveries": 7, "user_preempts_task": True,
             "model_requests": {key: len(value) for key, value in requests.items()}}
 
 

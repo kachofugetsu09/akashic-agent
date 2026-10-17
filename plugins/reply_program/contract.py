@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from collections.abc import Awaitable, Callable, Mapping, Sequence
 from contextlib import AbstractContextManager
-from typing import Protocol
+from typing import Literal, Protocol
 
 from agent.plugin_composition.context import Context
 from plugins.ledger.contract import MessageReader
@@ -22,7 +22,10 @@ from plugins.sources.contract import (
 
 
 class ReplyExecuteV4(Protocol):
-    """固定执行前提；输出预算 None 跟随模型上限，未知时用 32768，含推理。"""
+    """固定执行前提；输出预算 None 跟随模型上限，未知时用 32768，含推理。
+
+    history="own" 时模型只看到本来源的消息（例如一次定时任务），会话里其他对话与摘要不进入请求。
+    """
 
     async def __call__(
         self,
@@ -47,6 +50,7 @@ class ReplyExecuteV4(Protocol):
         reminders: Sequence[Mapping[str, object]] = (),
         terminal_tools: frozenset[str] = frozenset(),
         presentation: ToolPresentation | None = None,
+        history: Literal["session", "own"] = "session",
     ) -> Message: ...
 
 

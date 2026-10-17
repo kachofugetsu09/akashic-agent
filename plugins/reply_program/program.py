@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from collections.abc import Awaitable, Callable, Mapping, Sequence
-from typing import Any, cast
+from typing import Any, Literal, cast
 from contextlib import AbstractAsyncContextManager, AbstractContextManager
 
 from core.common.diagnostic_log import log_timing
@@ -63,10 +63,14 @@ async def run_reply(
     reminders: Sequence[Mapping[str, object]] = (),
     terminal_tools: frozenset[str] = frozenset(),
     presentation: ToolPresentation | None = None,
+    history: Literal["session", "own"] = "session",
 ) -> Message:
     """普通组合拥有本次程序资源，Source 不必同步签发模型或内容 writer。"""
     mark = partial(log_timing, session_id=reader.session_id, source=source)
     mark("reply.begin")
+    if history == "own":
+        # 只看本来源：模型请求只由本来源的消息组成，不带会话摘要，也不压缩整个会话。
+        context = OwnHistory(context, source)
     if tool_names is not None:
         if tool_view is not None or fixed_bindings is None:
             raise ValueError("旧工具名称只可核对原固定 binding")
@@ -153,9 +157,13 @@ async def run_reply(
         async def build_materials(messages: tuple[Message, ...]) -> MaterialData:
             nonlocal artifacts
             mark("materials.begin")
+            if history == "own":
+                messages = own_messages(messages, source)
             result = await material_view.prepare(
                 messages, source, caller=ctx, reminders=tuple(reminders),
             )
+            if history == "own":
+                result = {key: value for key, value in result.items() if key != "summary"}
             if render_content is None:
                 summary = cast(SummaryData | None, result.get("summary"))
                 start = 0 if summary is None else context.summary_range(messages, cast(tuple[str, ...], summary["source_message_ids"])).stop
@@ -192,10 +200,33 @@ async def run_reply(
                 reader, output, model=model, context=context, projection=projection,
                 materials=build_materials, content=view, tools=menu,
                 max_output_tokens=max_output_tokens, max_steps=max_steps,
-                reduce=reduce, preview=preview, terminal_tools=terminal_tools,
+                reduce=None if history == "own" else reduce, preview=preview, terminal_tools=terminal_tools,
                 max_parallel_calls=max_parallel_calls,
                 state=owner_state.open_scoped(ctx, "generation"),
                 check_start=check,
             )
         finally:
             output.expire()
+
+
+def own_messages(messages: Sequence[Message], source: str) -> tuple[Message, ...]:
+    return tuple(message for message in messages if message.source == source)
+
+
+class OwnHistory:
+    """只把本来源的消息交给请求组装；读面、提交与恢复仍使用整个会话的真实日志。"""
+
+    def __init__(self, context: ContextBuilder, source: str):
+        self._context = context
+        self._source = source
+        self.check_summary = context.check_summary
+        self.check_notice = context.check_notice
+        self.summary_range = context.summary_range
+        self.settled_prefixes = context.settled_prefixes
+        self.reminder_content = context.reminder_content
+
+    def build(self, snapshot: Sequence[Message], **options: Any) -> ModelRequest:
+        return self._context.build(own_messages(snapshot, self._source), **options)
+
+    def build_attempt(self, snapshot: Sequence[Message], **options: Any) -> tuple[ModelRequest, str | None]:
+        return self._context.build_attempt(own_messages(snapshot, self._source), **options)

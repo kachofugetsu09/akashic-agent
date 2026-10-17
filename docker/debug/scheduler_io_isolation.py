@@ -30,9 +30,9 @@ async def check(root: Path) -> None:
         return original(*args, **kwargs)
 
     async def add(store, key):
-        job = ScheduledJob(id=key, trigger="at", tier="instant", channel="web", chat_id="one",
-                           message=key, timezone="UTC", fire_at=datetime.now(UTC) + timedelta(hours=1))
-        tool = ScheduleTool(store, cast(TaskAdmission, None), "schedule")
+        job = ScheduledJob(id=key, trigger="at", action="notify", channel="web", chat_id="one", session_id="web:one",
+                           text=key, timezone="UTC", fire_at=datetime.now(UTC) + timedelta(hours=1))
+        tool = ScheduleTool(store, cast(TaskAdmission, None), "schedule", lambda _source: None)
         return await tool.invoke(key, {"job": store.encode_job(job), "response": key})
 
     with patch.object(store_module, "atomic_save_json", blocked):
