@@ -40,7 +40,7 @@ const imageInfo = result => JSON.parse(execFileSync(
 try {
   // 1. 独立桌面、数据目录和本地页面；不接触正式 workspace。
   docker("run", "-d", "--name", container, "--security-opt", "seccomp=unconfined",
-    "--shm-size=512m", "-v", `${artifacts}:/data`, ...sourceMounts, image);
+    "--shm-size=512m", "-v", `${artifacts}:/data`, ...sourceMounts, image, "/opt/computer/start.sh");
   started = true;
   const address = docker("inspect", container, "--format", "{{range .NetworkSettings.Networks}}{{.IPAddress}}{{end}}");
   const gateway = `http://${address}:8080`;

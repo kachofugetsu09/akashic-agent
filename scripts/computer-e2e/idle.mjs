@@ -27,7 +27,7 @@ try {
   const data = join(artifacts,"data"); await mkdir(data); await chmod(data,0o777);
   docker("run","-d","--name",name,"--security-opt","seccomp=unconfined","--shm-size=512m",
     "-e","COMPUTER_ANONYMOUS_IDLE_MS=1200","-e","COMPUTER_IDLE_MS=1200","-p","127.0.0.1::8080","-v",`${data}:/data`,
-    ...sourceMounts,image);
+    ...sourceMounts, image, "/opt/computer/start.sh");
   started = true;
   const port=JSON.parse(docker("inspect",name,"--format","{{json .NetworkSettings.Ports}}"))["8080/tcp"][0].HostPort;
   const origin=`http://127.0.0.1:${port}`;

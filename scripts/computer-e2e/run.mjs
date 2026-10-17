@@ -47,7 +47,7 @@ try {
     "-e", "OPENCLI_AUTH_REFRESH_SITES=",
     "-p", `127.0.0.1:${await freePort()}:8080`, "-p", `127.0.0.1:${await freePort()}:6081`,
     "-p", `127.0.0.1:${await freePort()}:19826`, "-v", `${data}:/data`,
-    ...sourceMounts, image);
+    ...sourceMounts, image, "/opt/computer/start.sh");
   started = true;
   const ports = JSON.parse(docker("inspect", container, "--format", "{{json .NetworkSettings.Ports}}"));
   const gateway = `http://127.0.0.1:${ports["8080/tcp"][0].HostPort}`;
@@ -340,6 +340,8 @@ try {
   assert.match(textResult(await action("console.log(typeof progress);")),/undefined/);
   pass("call timeout resets bindings and disposes anonymous contexts after confirmed cleanup");
   await action("var saved = await browser.tabs.new(); await saved.goto('http://127.0.0.1:8989/remember');");
+  const beforeRestart = textResult(await action("nodeRepl.write(await saved.playwright.domSnapshot());"));
+  assert.match(beforeRestart, /PROFILE/); assert.match(beforeRestart, /review=PROFILE/);
   docker("restart", container);
   await until(async () => docker("exec", container, "node", "-e",
     "fetch('http://127.0.0.1:8080/health').then(r=>console.log(r.status)).catch(()=>console.log('starting'))"),
@@ -348,8 +350,8 @@ try {
   await until(async () => docker("exec", container, "node", "-e",
     "fetch('http://127.0.0.1:8989/main').then(r=>console.log(r.status)).catch(()=>console.log('starting'))"),
     value => value === "200", "restarted remote HTTP page");
-  await action("var restored = await browser.tabs.new(); await restored.goto('http://127.0.0.1:8989/main'); nodeRepl.write(await restored.playwright.evaluate(() => ({storage:localStorage.getItem('identity'),cookie:document.cookie}))); ");
-  const retained = textResult(await action("nodeRepl.write(await restored.playwright.evaluate(() => ({storage:localStorage.getItem('identity'),cookie:document.cookie})));"));
+  await action("var restored = await browser.tabs.new(); await restored.goto('http://127.0.0.1:8989/main');");
+  const retained = textResult(await action("nodeRepl.write(await restored.playwright.domSnapshot());"));
   assert.match(retained, /PROFILE/); assert.match(retained, /review=PROFILE/);
   pass("runtime restart retains personal profile storage and cookies");
   for(const [label,viewport] of [["desktop",{width:1440,height:900}],["mobile",{width:320,height:740}]]) {

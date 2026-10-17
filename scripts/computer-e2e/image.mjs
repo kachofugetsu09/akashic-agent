@@ -10,4 +10,7 @@ export const image = process.env.COMPUTER_E2E_IMAGE ?? pin[1] + pin[2];
 export const sourceMounts = process.env.COMPUTER_E2E_SOURCE === "1" ? [
   "-v", `${root}/docker/computer/driver:/opt/computer/driver:ro`,
   "-v", `${root}/docker/computer/gateway.mjs:/opt/computer/gateway.mjs:ro`,
+  "-v", `${root}/docker/computer/lifecycle.mjs:/opt/computer/lifecycle.mjs:ro`,
+  "-v", `${root}/docker/computer/start.sh:/opt/computer/start.sh:ro`,
+  "--entrypoint", "/usr/bin/tini",
 ] : [];

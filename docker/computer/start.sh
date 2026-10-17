@@ -1,12 +1,6 @@
 #!/bin/sh
 set -eu
 
-# Chromium 和剪贴板共用一条会话总线；没有桌面环境，X server 只服务浏览器与画面编码。
-if [ "${1:-}" != "--browser-session" ]; then
-  exec dbus-run-session -- "$0" --browser-session
-fi
-shift
-
 if [ "${1:-}" != "--runtime" ]; then
   mkdir -p /data/cache /data/config /data/home /data/profile /data/state
   # The Workload owner proves the old container and mount are gone before start.
@@ -17,6 +11,11 @@ if [ "${1:-}" != "--runtime" ]; then
     /data/profile/SingletonLock \
     /data/profile/SingletonSocket
 
+  # The shell owns shutdown order. Keep D-Bus alive until Chromium flushes its profile.
+  export DBUS_SESSION_BUS_ADDRESS=unix:path=/tmp/computer-session-bus
+  rm -f /tmp/computer-session-bus
+  dbus-daemon --session --nofork --address="$DBUS_SESSION_BUS_ADDRESS" &
+  bus_pid=$!
   node /usr/local/lib/node_modules/@jackwener/opencli/dist/src/daemon.js &
   daemon_pid=$!
   node /opt/computer/gateway.mjs &
@@ -27,6 +26,8 @@ if [ "${1:-}" != "--runtime" ]; then
     wait "$gateway_pid" 2>/dev/null || true
     kill -TERM "$daemon_pid" 2>/dev/null || true
     wait "$daemon_pid" 2>/dev/null || true
+    kill -TERM "$bus_pid" 2>/dev/null || true
+    wait "$bus_pid" 2>/dev/null || true
   }
   trap cleanup_control TERM INT EXIT
   wait "$gateway_pid"
