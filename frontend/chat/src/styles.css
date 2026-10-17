@@ -98,6 +98,14 @@ input {
 :where(.chat-shell, [role="dialog"]) :where(button, a[href], summary, [role="button"], [tabindex]:not([tabindex="-1"])):focus-visible {
   outline: 2px solid var(--ak-rule-focus);
   outline-offset: 2px;
+  /* 实线保底对比度，外面再补一圈柔光：焦点在控件之间转移时是「长出来」而不是硬切。
+     --ak-rule-focus-soft 之前只有一处消费者，这里让它成为键盘焦点的一般表达。 */
+  box-shadow: 0 0 0 3px var(--ak-rule-focus-soft);
+}
+
+/* 只声明过渡本身，特异性为 0：自己写了过渡的组件照旧优先，这里不会替它们做决定。 */
+:where(.chat-shell, [role="dialog"]) :where(button, a[href], summary, [role="button"], [tabindex]:not([tabindex="-1"])) {
+  transition: box-shadow var(--ak-sys-duration-short) var(--ak-sys-motion-standard);
 }
 
 .chat-shell {
@@ -739,7 +747,8 @@ input {
   background: color-mix(in oklab, var(--ak-color-status-error) 8%, transparent);
 }
 
-/* 删除后的撤销窗口：导航区内一行就地提示，不是 toast，不遮挡消息区。 */
+/* 删除后的撤销窗口：导航区内一行就地提示，不是 toast，不遮挡消息区。
+   插入时抬起 6px 落定；一次性动画，不循环。 */
 .session-delete-notice {
   display: flex;
   min-width: 0;
@@ -750,6 +759,7 @@ input {
   border: 1px solid var(--ak-rule-subtle);
   border-radius: 8px;
   color: var(--chat-muted);
+  animation: ak-notice-in var(--ak-sys-duration-short) var(--ak-sys-motion-emphasized) both;
   font-size: 0.75rem;
 }
 
@@ -780,6 +790,23 @@ input {
   flex: 0 0 auto;
   place-items: center;
   text-decoration: none;
+}
+
+@keyframes ak-notice-in {
+  from {
+    opacity: 0;
+    translate: 0 6px;
+    scale: 0.985;
+  }
+}
+
+/* 减弱动效：留着「这里多了一行」的淡入，去掉位移与缩放。 */
+@media (prefers-reduced-motion: reduce) {
+  .session-delete-notice { animation-name: ak-notice-in-plain; }
+}
+
+@keyframes ak-notice-in-plain {
+  from { opacity: 0; }
 }
 
 .session-restore-button {
@@ -1812,7 +1839,7 @@ input {
   flex-basis: var(--composer-control-size);
 }
 
-.composer .composer-action-button > svg,
+.composer .composer-action-button .icon-swap__slot > svg,
 .composer .composer-tool > svg {
   width: 15px;
   height: 15px;
@@ -2512,6 +2539,133 @@ form.composer:focus-within [data-slot="input-group"] {
   }
 }
 
+/* —— 图标换挡：两枚图形叠在同一个格子，切到哪一枚另一枚就缩小、模糊着让位 ——
+   不改变控件尺寸与热区，也不参与布局；触碰不到 --chat-* 几何，只动 transform / opacity / filter。 */
+.icon-swap {
+  display: grid;
+  place-items: center;
+}
+
+.icon-swap__slot {
+  display: grid;
+  grid-area: 1 / 1;
+  place-items: center;
+  transition:
+    opacity var(--ak-sys-duration-short) var(--ak-sys-motion-standard),
+    scale var(--ak-sys-duration-short) var(--ak-sys-motion-standard),
+    filter var(--ak-sys-duration-short) var(--ak-sys-motion-standard);
+}
+
+.icon-swap[data-state="a"] > .icon-swap__slot:last-child,
+.icon-swap[data-state="b"] > .icon-swap__slot:first-child {
+  opacity: 0;
+  scale: 0.82;
+  filter: blur(3px);
+}
+
+/* 勾一次画完；动画重放由 React 重挂载触发，不额外加状态。 */
+.icon-swap__tick > path {
+  stroke-dasharray: 1;
+  stroke-dashoffset: 1;
+}
+
+.icon-swap[data-state="b"] .icon-swap__tick > path {
+  animation: ak-icon-tick 160ms var(--ak-sys-motion-standard) 50ms forwards;
+}
+
+@keyframes ak-icon-tick {
+  to { stroke-dashoffset: 0; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  /* 换挡与描线都只是「完成了」的说法，不是位移：保留结果，去掉过程。 */
+  .icon-swap__slot { transition: opacity var(--ak-sys-duration-short) linear; }
+  .icon-swap[data-state="a"] > .icon-swap__slot:last-child,
+  .icon-swap[data-state="b"] > .icon-swap__slot:first-child { scale: 1; filter: none; }
+  .icon-swap__tick > path { animation: none; stroke-dashoffset: 0; }
+}
+
+/* —— 纸气泡提示：挂在 document 上的单个浮层，控件只写 data-tip，不包 DOM ——
+   进入延迟与离开瞬时由 JS 控制（见 paper-tooltip.tsx），这里只管外观与入场那一帧。 */
+.paper-tooltip {
+  position: fixed;
+  z-index: 95;
+  max-inline-size: 22rem;
+  padding: 5px 10px;
+  border: 1px solid var(--ak-rule-default);
+  border-radius: 8px;
+  background: var(--ak-paper-raised);
+  color: var(--ak-ink-primary);
+  font-family: var(--ak-type-reading);
+  font-size: var(--md-sys-typescale-label-medium-size);
+  line-height: 1.35;
+  /* 未定位的那一帧只用来量尺寸。 */
+  visibility: hidden;
+  transform: translateX(-50%);
+  pointer-events: none;
+  box-shadow: 0 6px 16px color-mix(in srgb, var(--ak-ink-primary) 12%, transparent);
+}
+
+/* 定位与方向都由 JS 在同一次提交里定下，动画因此只跑一遍。 */
+.paper-tooltip[data-ready="true"] {
+  animation: ak-tooltip-in 120ms var(--ak-sys-motion-standard);
+}
+
+/* 位移朝目标的方向来：气泡在目标上方就往上落，翻到下方就往下落。 */
+@keyframes ak-tooltip-in {
+  from { opacity: 0; translate: 0 3px; }
+}
+
+.paper-tooltip[data-ready="true"][data-place="below"] {
+  animation-name: ak-tooltip-in-below;
+}
+
+@keyframes ak-tooltip-in-below {
+  from { opacity: 0; translate: 0 -3px; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .paper-tooltip[data-ready="true"],
+  .paper-tooltip[data-ready="true"][data-place="below"] { animation-name: ak-tooltip-in-plain; }
+}
+
+@keyframes ak-tooltip-in-plain {
+  from { opacity: 0; }
+}
+
+/* —— 文案换挡：同一格里的句子换手，旧句向上 4px 退场，新句从下方 4px 补上来 ——
+   位移只 4px，属于状态切换；reduced-motion 下只留淡入淡出。 */
+.swap-text {
+  display: inline-block;
+  transition:
+    opacity var(--ak-sys-duration-instant) var(--ak-sys-motion-standard),
+    translate var(--ak-sys-duration-instant) var(--ak-sys-motion-standard),
+    filter var(--ak-sys-duration-instant) linear;
+}
+
+.swap-text[data-swap="out"] {
+  opacity: 0;
+  translate: 0 -4px;
+  filter: blur(3px);
+}
+
+.swap-text[data-swap="in"] {
+  animation: ak-swap-text-in var(--ak-sys-duration-short) var(--ak-sys-motion-standard);
+}
+
+@keyframes ak-swap-text-in {
+  from {
+    opacity: 0;
+    translate: 0 4px;
+    filter: blur(3px);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .swap-text { translate: none; filter: none; }
+  .swap-text[data-swap="in"] { animation: none; }
+}
+
 /* —— 桌面 WebUI：非对称 Lucide 光学对齐 —— */
 .chat-sidebar__search > .lucide-search,
 .model-picker__search > .lucide-search {
@@ -2879,8 +3033,8 @@ form.composer:focus-within [data-slot="input-group"] {
     stroke-width: 2;
   }
 
-  .chat-main .composer.is-compact .composer-action-button[data-mode="send"] > svg,
-  .chat-main .composer.is-expanded .composer-action-button[data-mode="send"] > svg {
+  .chat-main .composer.is-compact .composer-action-button[data-mode="send"] .icon-swap__slot > svg,
+  .chat-main .composer.is-expanded .composer-action-button[data-mode="send"] .icon-swap__slot > svg {
     width: 16px;
     height: 16px;
     stroke-width: 2.4;
@@ -2952,6 +3106,28 @@ form.composer:focus-within [data-slot="input-group"] {
 .model-picker__copy strong { white-space: normal; overflow-wrap: anywhere; }
 
 .picker-sheet-scrim { display: none; }
+
+/* 浮层从触发点长出来：锚点写在 --ak-pop-origin（触发钮那条边上的水平中心，由定位代码算出），
+   和 Radix 下拉已有的 zoom-in 同一档观感，只是那两个面板此前没有任何入场。
+   窄屏走下面的底部抽屉 picker-sheet-in，本规则按源码顺序让位。 */
+@keyframes ak-panel-in {
+  from { opacity: 0; scale: 0.96; filter: blur(2px); }
+}
+
+.model-picker__panel,
+.model-effort__panel {
+  transform-origin: var(--ak-pop-origin, bottom center);
+  animation: ak-panel-in var(--ak-sys-duration-short) var(--ak-sys-motion-standard);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .model-picker__panel,
+  .model-effort__panel { animation-name: ak-panel-in-plain; }
+}
+
+@keyframes ak-panel-in-plain {
+  from { opacity: 0; }
+}
 
 /* 窄屏模型与思考强度面板是底部抽屉：贴底全宽、顶部圆角、遮罩压暗正文。
    内联定位来自宽屏贴触发器的算法，这里用 !important 统一覆盖。

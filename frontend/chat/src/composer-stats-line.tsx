@@ -1,6 +1,7 @@
 import { useEffect, useState } from "react";
 import type { ReplyActivity, TimelineMessage } from "./message-timeline";
 import { formatModelCallStats, loadWebModelCallStats, selectModelCall, type LoadModelCallStats, type ModelCallStats } from "./model-call-stats";
+import { SwapText } from "./swap-text";
 import type { ChatStatus } from "./web-chat-status";
 
 /** 终态摘要停留时长，到点后淡出收纳。 */
@@ -48,7 +49,7 @@ export function ComposerStatsLine({ messages, activities, connected, status = "i
     const label = stopping ? "正在停止…" : shown ? phaseLabel(shown.phase) : "";
     if (!label) return null;
     return <div className="composer-stats-line" data-reply-phase={stopping ? "stopping" : shown?.phase.kind}>
-      <span aria-live="polite">{label}</span>
+      <span aria-live="polite"><SwapText text={label} /></span>
       {!stopping && shown ? <PhaseDetail phase={shown.phase} firstTokenMs={live.firstTokenMs ?? shown.phase.firstTokenMs} since={shown.since} /> : null}
     </div>;
   }

@@ -995,11 +995,11 @@ function useSwipeStep(enabled: boolean, go: (delta: number) => void) {
 
 function MediaPager({ index, count, go }: { index: number; count: number; go: (delta: number) => void }) {
   return <div className="media-preview__pager">
-    <button type="button" aria-label="上一个" title="上一个（←）" disabled={index === 0} onClick={() => go(-1)}>
+    <button type="button" aria-label="上一个" data-tip="上一个（←）" disabled={index === 0} onClick={() => go(-1)}>
       <ChevronLeft size={18} aria-hidden="true" />
     </button>
     <span aria-live="polite">{index + 1} / {count}</span>
-    <button type="button" aria-label="下一个" title="下一个（→）" disabled={index === count - 1} onClick={() => go(1)}>
+    <button type="button" aria-label="下一个" data-tip="下一个（→）" disabled={index === count - 1} onClick={() => go(1)}>
       <ChevronRight size={18} aria-hidden="true" />
     </button>
   </div>;
@@ -1037,9 +1037,9 @@ function MediaViewer({ gallery, onStep, onClose }: { gallery: MediaGallery; onSt
         title={zoom.actual ? "适应窗口" : "原始尺寸"} onClick={() => zoom.toggle()}>
         {zoom.actual ? <ZoomOut size={18} aria-hidden="true" /> : <ZoomIn size={18} aria-hidden="true" />}
       </button> : null}
-      <a href={item.url} target="_blank" rel="noreferrer" aria-label="在新标签页打开" title="在新标签页打开"><ExternalLink size={18} aria-hidden="true" /></a>
-      <a href={item.url} download={item.label} aria-label={`下载 ${item.label}`} title="下载"><Download size={18} aria-hidden="true" /></a>
-      <DialogClose ref={closeRef} aria-label="关闭" title="关闭（Esc）"><X size={20} aria-hidden="true" /></DialogClose>
+      <a href={item.url} target="_blank" rel="noreferrer" aria-label="在新标签页打开" data-tip="在新标签页打开"><ExternalLink size={18} aria-hidden="true" /></a>
+      <a href={item.url} download={item.label} aria-label={`下载 ${item.label}`} data-tip="下载"><Download size={18} aria-hidden="true" /></a>
+      <DialogClose ref={closeRef} aria-label="关闭" data-tip="关闭（Esc）"><X size={20} aria-hidden="true" /></DialogClose>
     </div>
     {item.kind === "image"
       ? <div ref={zoom.frameRef} className={`media-preview__frame${zoom.actual ? " is-actual" : ""}`}>

@@ -288,7 +288,7 @@ export const DesktopComposer = memo(function DesktopComposer({
           <strong role="status">{followUp.stopped ? "已停止，结束后退回输入框" : "本轮结束后发送"}</strong>
           <span>{followUp.queued.text}</span>
         </div>
-        <button type="button" onClick={() => followUp.queued && followUp.restore(followUp.queued)} aria-label="撤回到输入框" title="撤回到输入框">
+        <button type="button" onClick={() => followUp.queued && followUp.restore(followUp.queued)} aria-label="撤回到输入框" data-tip="撤回到输入框">
           <Undo2 size={18} aria-hidden="true" />
         </button>
       </div> : null}
