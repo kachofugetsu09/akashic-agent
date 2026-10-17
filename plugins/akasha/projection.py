@@ -47,6 +47,11 @@ class SessionCursor:
     TurnProjection 合同允许输入"闭合 Turn 后的尾部"：工具结果只归属同段调用，
     闭段之后的投影不依赖更早的消息，所以从结束点续读与从头投影得到同样的后续
     闭段。续读点只是调用者的内存进度，缺失时退回从头投影。
+
+    续读成立的前提是已提交前缀只追加：Message 不可改写，软删保留正文，compaction
+    不改写 Message。head 只能发现倒退，发现不了同长度的改写或删后再追加；若将来
+    允许在 consumer 生命周期内硬改写前缀，须由 Ledger 提供前缀 revision 让续读点
+    失效。在那之前，任何硬修复都要停止并重启 consumer，重启后自然从头投影。
     """
 
     head: int
