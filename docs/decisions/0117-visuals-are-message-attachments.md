@@ -70,3 +70,24 @@ iframe 使用 opaque origin、`allow-scripts` sandbox 和 CSP；不给生成代�
 
 如果后续产品要求可恢复的交互状态，先定义明确的数据合同与保存动作；不抓取任意 DOM/JS heap。
 若要求严格网络与资源隔离，重新评估独立执行服务，不把 CSP 的局部限制描述成完整保证。
+
+## 2026-10-18 修订：可视化就是 HTML 文件
+
+线上定时任务把天气交互图转发回目标会话后不再执行：转发后的附件不是 `render_visual` 的工具结果。
+参照 t3code 的 `html_render`：页面就是原样的 `.html` 附件，安全由隔离容器负责，工具来源只决定是否自动显示。
+本节取代上文“发布不可变 JSON 文件”和“Visuals 只认领 `render_visual` 的结果”两处约束，其余决定不变。
+
+- `render_visual` 把 frame 模板、内联 `ak` 工具包、默认主题与文档合成为一个自包含 HTML，预检的就是这份文件。
+  默认主题位于 `@layer ak-default`，单独用浏览器打开可读；聊天宿主注入的主题始终优先。
+- 文件写入 workspace `visuals/` 后由 Ledger 导入为普通 FILE 附件（`text/html`）；工具结果带标题、摘要和文件路径，
+  模型可以把同一路径交给 `message_push` 等工具推送。非 Web 通道收到可在浏览器打开的 `.html` 文件。
+- 尺寸、就绪、错误与主题的宿主桥在展示时注入，不写进文件。
+- 聊天宿主对任何消息里的文件附件询问 `message.attachment` 插槽，不再只限工具结果；插件缺席时退回普通附件卡片。
+- Visuals 认领任何 HTML 文件附件，在同一 opaque origin、`allow-scripts` sandbox 和连接受限的 CSP 中运行。
+  作者不是 `user` 时自动运行；用户自己上传的网页先显示“运行网页”，点击后才运行。
+- 附件读取路由对 `text/html` 与 `image/svg+xml` 返回 `Content-Security-Policy: sandbox allow-scripts`，
+  直接打开下载链接时同样位于 opaque origin，拿不到聊天页的登录状态和接口。
+- 已保存的 `.akashic-visual.json` 仍按原规则展示，只认领 `render_visual` 的结果，不改写旧附件。
+
+持久化：Ledger 附件仍是唯一权威；`visuals/` 下的文件是供工具引用的工作副本，只增加、不自动清理，
+删除它不影响已发布消息的展示和下载。网络策略不变：预检与客户端均不允许外部连接，放开 CDN 需要先给服务端预检建立防 SSRF 的出站代理。

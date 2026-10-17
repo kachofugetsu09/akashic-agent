@@ -2,12 +2,12 @@
 from __future__ import annotations
 
 import asyncio
-import json
 import re
 from collections.abc import AsyncIterator, Mapping
 from contextlib import asynccontextmanager
+from hashlib import sha256
+from html import escape
 from pathlib import Path
-from tempfile import TemporaryDirectory
 
 from pydantic import BaseModel, ConfigDict, Field, ValidationError
 
@@ -22,8 +22,9 @@ from .preview import Preview, PreviewFailed, PreviewUnavailable
 api_version = 3
 name = "visuals"
 version = "1.0.0"
-desc = "生成可交互的图表、解释和模拟，作为消息附件保存"
+desc = "生成可交互的图表、解释和模拟，作为 HTML 消息附件保存"
 inject = (TOOLS, ARTIFACT_IMPORT)
+workspace_roots = ("visuals",)
 
 
 class Config(BaseModel):
@@ -66,9 +67,14 @@ class Visual(BaseModel):
 class VisualTool:
     idempotent = False
 
-    def __init__(self, preview: Preview, artifacts: ArtifactImport) -> None:
+    def __init__(self, preview: Preview, artifacts: ArtifactImport, root: Path) -> None:
         self._preview = preview
         self._artifacts = artifacts
+        self._root = root
+        # 默认主题放进 CSS layer：单独打开文件时可读，聊天宿主注入的主题始终优先。
+        plugin_dir = Path(__file__).parent
+        self._template = (plugin_dir / "frame.html").read_text(encoding="utf-8").replace(
+            "/*visual-theme*/", "@layer ak-default{" + (plugin_dir / "preview-theme.css").read_text(encoding="utf-8") + "}")
 
     async def prepare(self, arguments: Mapping[str, object], source: CallSource | None = None) -> Mapping[str, object] | str:
         try:
@@ -77,20 +83,23 @@ class VisualTool:
             return str(error)
 
     async def invoke(self, key: str, arguments: Mapping[str, object]) -> Result:
-        """预检完成后发布单个附件；失败沿普通工具结果返回模型。"""
+        """预检完成后保存自包含 HTML 文件并发布为附件；失败沿普通工具结果返回模型。"""
         visual = Visual.model_validate(json_value(arguments))
+        document = self._template.replace("<title></title>", f"<title>{escape(visual.title)}</title>", 1).replace(
+            "<!--visual-content-->", visual.html, 1)
         try:
-            await self._preview.check(visual.html)
+            await self._preview.check(document)
         except (PreviewFailed, PreviewUnavailable) as error:
             return Result("error", (ContentPart("text", str(error)),))
-        # 附件导入是唯一持久效果；插件没有消息改写或附件删除权限。
-        with TemporaryDirectory(prefix="akashic-visual-") as directory:
-            filename = re.sub(r'[\x00-\x1f<>:"/\\|?*]', "-", visual.title).strip(" .")[:60] or "visual"
-            path = Path(directory) / f"{filename}.akashic-visual.json"
-            content = json.dumps({"schema": "akashic.visual.v1", **visual.model_dump()}, ensure_ascii=False)
-            await asyncio.to_thread(path.write_text, content, encoding="utf-8")
-            artifact = await self._artifacts.import_source(str(path), AttachmentKind.FILE)
-        return Result("success", (ContentPart("text", f"### {visual.title}\n\n{visual.summary}"), ContentPart("artifact_ref", artifact.artifact_id)))
+        # 1. 文件留在 workspace，模型可以把同一路径交给其他工具推送或分享。
+        name = re.sub(r'[\x00-\x1f<>:"/\\|?*]', "-", visual.title).strip(" .")[:60] or "visual"
+        path = self._root / f"{name}-{sha256(key.encode()).hexdigest()[:8]}.html"
+        await asyncio.to_thread(path.write_text, document, encoding="utf-8")
+        artifact = await self._artifacts.import_source(str(path), AttachmentKind.FILE)
+        return Result("success", (
+            ContentPart("text", f"### {visual.title}\n\n{visual.summary}\n\nHTML 文件：{path}"),
+            ContentPart("artifact_ref", artifact.artifact_id),
+        ))
 
     async def query(self, key: str) -> Result | None:
         # 没有重放凭据时不重新发布；tools owner 负责保留已提交的结果。
@@ -102,7 +111,9 @@ async def apply(ctx: Context) -> None:
     config = Config.model_validate(ctx.config)
     preview = Preview(config.executable_path)
     await ctx.effect(lambda: preview.close, label="visual-preview")
-    tool = VisualTool(preview, ctx.require(ARTIFACT_IMPORT))
+    root = ctx.workspace_root("visuals")
+    await asyncio.to_thread(root.mkdir, parents=True, exist_ok=True)
+    tool = VisualTool(preview, ctx.require(ARTIFACT_IMPORT), root)
 
     @asynccontextmanager
     async def open_tool(_state: Mapping[str, object]) -> AsyncIterator[VisualTool]:
