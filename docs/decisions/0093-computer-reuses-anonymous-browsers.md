@@ -3,6 +3,7 @@
 - 状态：proposed（维护者要求改善 Agent 完成任务的流畅度并提交 PR）
 - 日期：2026-10-06
 - 关联：PLG-017、0084、0092
+- 部分 superseded by [0123](0123-computer-is-one-browser.md)：匿名 Context 改在主 Chromium 内，不再有独立 headless 进程与临时数据；复用、闲置回收规则不变
 
 ## 背景与决定
 

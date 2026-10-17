@@ -18,12 +18,12 @@
 | [0105](0105-ledger-owns-business-storage.md) | proposed / implemented for review | Ledger 插件拥有业务持久化与入站交接 | PLG、STA、SES、MIG |
 | [0092](0092-model-generation-recovers-until-output.md) | accepted | 模型生成持续恢复，工具效果按原回执处理 | OBJ-005、ERR-001、RUN-012 |
 | [0091](0091-skill-sources-are-layered-providers.md) | proposed | Skill 来源是分层 Provider，本地目录不必打包成插件 | PLG-009、PLG-014、PLG-016、CTX-004 |
-| [0092](0092-computer-viewing-and-control.md) | proposed | Computer 多目标观看与人工接管分开 | PLG-017、WEBUI-008 |
+| [0092](0092-computer-viewing-and-control.md) | proposed；多观看者部分由 0123 替代 | Computer 多目标观看与人工接管分开 | PLG-017、WEBUI-008 |
 | [0088](0088-computer-streams-h264-over-dashboard-websocket.md) | proposed | Computer 经现有 Dashboard WebSocket 传输 H.264 | PLG-017、RUN-016、WEBUI-008 |
 | [0086](0086-session-soft-delete-and-akasha-replay.md) | accepted | 会话软删除：逻辑失效可恢复，Akasha 学习与重放继续参与 | SES-003、SES-005、STA-003、MEM-009、WEBUI-009 |
 | [0087](0087-session-title-override.md) | proposed | 会话标题覆盖：显式管理状态，空值回到推导标题 | SES-003、WEBUI-009 |
 | [0085](0085-project-default-and-session-working-directory.md) | accepted | Project 固定默认目录，Session 独立当前目录与请求规则 | SES-011、SH-004、CTX-009 |
-| [0084](0084-computer-keeps-identity-without-an-idle-desktop.md) | accepted | Computer 保存身份、按需唤醒与空闲回收 | PLG-017、STA-003、BAK-001、ERR-001 |
+| [0084](0084-computer-keeps-identity-without-an-idle-desktop.md) | accepted；桌面部分由 0123 替代 | Computer 保存身份、按需唤醒与空闲回收 | PLG-017、STA-003、BAK-001、ERR-001 |
 | [0083](0083-short-workflow-preserves-design-intent.md) | accepted | 精简流程、短 PR、行为验证与按风险备份，保留设计意图 | WBK、GOV、BAK-001、TST-001～TST-006 |
 | [0079](0079-parallel-tool-calls-commit-in-model-order.md) | accepted | 并行工具调用重叠执行，按模型顺序提交 | PRM-004、SES-003～SES-005、RUN-003、STA-001 |
 | [0077](0077-trust-installed-runtime-inputs.md) | accepted | 信任已安装的运行材料，删除运行时摘要复验 | PLG-001、PLG-002、PLG-009、ERR-001 |
@@ -139,7 +139,7 @@
 | [0091](0091-shell-self-deployment.md) | accepted | Shell 提交宿主部署，正常回合与排空之后更新 Docker | RUN-004、SH-001、OUT-001、MIG-001 |
 
 | [0094](0094-plugin-runtime-uses-installed-files.md) | accepted | 插件使用安装文件与当前配置，取消强快照归档 | PLG-002、PLG-003、PLG-010、PLG-013、STA-003 |
-| [0093](0093-computer-reuses-anonymous-browsers.md) | proposed | 匿名实例稳定 ID、错误保留进度与闲置回收 | PLG-017 |
+| [0093](0093-computer-reuses-anonymous-browsers.md) | proposed；独立进程部分由 0123 替代 | 匿名实例稳定 ID、错误保留进度与闲置回收 | PLG-017 |
 
 | [0104](0104-public-codecs-without-ui-runtime.md) | proposed / implemented for review | 公共只读编码与类型同寿命，headless 不要求 UI runtime | PLG、CAP |
 
@@ -155,6 +155,7 @@
 | [0117](0117-visuals-are-message-attachments.md) | proposed / implemented for review | 可视化是普通消息附件，工具与可选展示分别拥有生命周期 | WEBUI、SES、PLG |
 | [0119](0119-local-runtime-diagnostics.md) | accepted；前端由 0120 替代 | 运行诊断本地可用，外部接入独立消费 | PLG-015、PLG-016、ERR-001 |
 | [0120](0120-runtime-diagnostics-is-operations-only.md) | accepted | 运行诊断只面向运维，不提供前端 | PLG-015、PLG-016 |
+| [0123](0123-computer-is-one-browser.md) | proposed / implemented for review | Computer 只剩一个浏览器，Agent 按标签操作，画面跟随面板 | PLG-017、WEBUI-008 |
 | [0122](0122-web-ingress-guard-plugin.md) | proposed / implemented for review | Web 入口守卫是可选插件，本机进程可信；修订 0017 的认证 non-goal | SEC、PLG、WEBUI |
 | [0122](0122-interactive-terminal.md) | proposed / implemented for review | 工作台终端是用户自己的交互 shell，PTY 归执行主机 | WEBUI、PLG |
 | [0121](0121-plugin-install-settles-from-disk.md) | proposed / implemented for review | 中断的插件安装按指针结算，启动以磁盘修正外置输入 | PLG-013、STA |

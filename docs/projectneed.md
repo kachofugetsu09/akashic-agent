@@ -845,24 +845,29 @@ Workload readiness 完成后，同一组合的 MCP 才能通过实际资源引�
 当前 release 中仍存在的内置插件，不能伪造 installed artifact pointer，也不能把缺少当前插件的状态记为
 成功。内置插件不得绕过该路径直接管理容器。
 
-默认 `computer` 插件通过这条普通边界提供一台持久 Linux 用户桌面。人工操作使用 generation-bound H.264 WebSocket
-通道操作同一 Xvnc display，Agent 的 Browser Use、Computer Use 和 OpenCLI 默认操作这台桌面及其唯一
-Chromium profile；Chat 不能用截图、方向按钮或独立文字表单伪装成桌面控制。
-持久身份由磁盘 profile 保存；首次使用按需启动桌面。无实际操作满 10 分钟且 Agent Turn 与
-身份刷新都结束后允许释放桌面；面板打开、轮询和自动重连不延长占用或唤醒。下一次使用恢复
+默认 `computer` 插件通过这条普通边界提供一个持久 Chromium（用户看到的名称是“浏览器”）。
+容器只运行这一个浏览器，没有桌面层；Agent 的 Browser Use 与 OpenCLI 都操作它及其唯一 profile，
+操作单位是标签。人工观看与操作使用 generation-bound H.264 WebSocket 通道；Chat 不能用截图、
+方向按钮或独立文字表单伪装成浏览器控制。
+持久身份由磁盘 profile 保存；首次使用按需启动浏览器。无实际操作满 10 分钟且 Agent Turn 与
+身份刷新都结束后允许释放；面板打开、轮询和自动重连不延长占用或唤醒。下一次使用恢复
 已保存身份，JS 绑定和页面运行状态重新初始化。启停与主 profile 的单 writer 由 Computer
-插件内唯一 owner 保证；释放失败不能继续启动第二个 writer。见 [0084](decisions/0084-computer-keeps-identity-without-an-idle-desktop.md)；显示选择见
+插件内唯一 owner 保证；释放失败不能继续启动第二个 writer。身份刷新结束后不留下它打开的页面。
+见 [0084](decisions/0084-computer-keeps-identity-without-an-idle-desktop.md)、
+[0123](decisions/0123-computer-is-one-browser.md)；显示选择见
 [0088](decisions/0088-computer-streams-h264-over-dashboard-websocket.md)。
-Agent 可另建匿名 BrowserContext 做 E2E，默认共享一份独立 headless Chromium。各 Context
-隔离身份和页面存储，不读取主 profile，不装 OpenCLI 扩展；面板按真实 Context 和页面显示独立标签。
-观看默认只读，多位观看者互不踢出。用户明确接管才获得输入权限，接管期间暂停 Computer Agent 操作；
-断开或主动释放后恢复。活动只提示，不打开工具区或改变用户当前标签，包括移动端。
-见 [0092](decisions/0092-computer-viewing-and-control.md)。
+Agent 可另建匿名 BrowserContext 做 E2E，与个人 profile 同进程但隔离身份和页面存储，
+不读取主 profile 的 cookie 与存储，不装 OpenCLI 扩展；面板标签条按真实 Context 和页面列出标签。
+画面同一时刻只给一个窗口，尺寸跟随该窗口；观看默认只读，未接管时键鼠、剪贴板与上传不送达浏览器。
+用户明确接管才获得输入权限，接管期间暂停 Computer Agent 操作；断开或主动释放后恢复。
+活动只提示，不打开工具区，包括移动端；工具区已打开时画面跟随 Agent 新开的标签，
+用户手动选过标签后本轮不再跟随。见 [0092](decisions/0092-computer-viewing-and-control.md)、
+[0123](decisions/0123-computer-is-one-browser.md)。
 匿名实例属于创建它的 Turn，最多同时八个；稳定 ID 可找回同一实例，不得误选主浏览器。
 完整结算且输入释放确认的脚本错误保留页面与 JS 绑定；取消、调用中断、Session 重置、
 Turn 结束或休眠时释放。匿名实例连续闲置 10 分钟且无正在执行操作或人工接管时释放；
 观看和目录轮询不延长期限。回收原因明确可查，失效 ID 不自动重建或切换主浏览器。
-最后一个关闭后停止 headless 进程并删除其临时数据，既有截图由原 owner 保留。
+关闭时销毁其 Context，页面一起消失，既有截图由原 owner 保留。
 见 [0093](decisions/0093-computer-reuses-anonymous-browsers.md)。
 
 ### PLG-018 工具依赖传递实际注册引用

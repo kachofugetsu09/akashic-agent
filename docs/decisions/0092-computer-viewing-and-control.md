@@ -2,6 +2,7 @@
 
 - 状态：proposed（维护者要求实现并提交 stacked PR，待代码评审）
 - 关联：PLG-017、WEBUI-008、0084、0088
+- 部分 superseded by [0123](0123-computer-is-one-browser.md)：画面同一时刻只给一个窗口并跟随其尺寸，不再保证多位观看者同时观看；接管与只读规则不变
 
 ## 背景与选择
 
