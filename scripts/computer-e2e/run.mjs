@@ -378,6 +378,7 @@ try {
   assert.match(textResult(await action("console.log(typeof progress);")),/undefined/);
   pass("call timeout resets bindings and disposes anonymous contexts after confirmed cleanup");
   await action("", 60000, { endTurn: true });
+  await post("/driver/run", {context: {session_id: "follow", turn_id: "next", call_id: randomUUID()}, endTurn: true});
   // Idle users can start from a blank page without asking an Agent or taking control.
   for (const width of [1440, 320]) {
     const page = await createPage({viewport: {width, height: 900}, hasTouch: width === 320, isMobile: width === 320});
