@@ -97,4 +97,3 @@ Agent 调用时不清理。刷新与 Agent 调用可以并行。此前实测不�
 新 profile；先停写并备份 Computer 的 `/data`，恢复旧镜像时按备份恢复该目录，不能在线覆盖。
 容器停止由 shell 统一收尾：tini 只通知 shell，shell 等 gateway 关闭 Chromium 并落盘后，
 才停止 OpenCLI 和 D-Bus。不能把停止信号同时发给整组进程，否则外层提前退出会丢失刚写入的登录数据。
-

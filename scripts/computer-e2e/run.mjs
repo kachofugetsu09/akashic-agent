@@ -1,6 +1,7 @@
 import { image, sourceMounts } from "./image.mjs";
 import assert from "node:assert/strict";
-import { spawn, execFileSync } from "node:child_process";
+import { spawn, execFile, execFileSync } from "node:child_process";
+import { promisify } from "node:util";
 import { mkdtemp, mkdir, chmod, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
@@ -239,6 +240,7 @@ try {
   await first.getByRole("button", { name: "接管", exact: true }).click();
   await first.waitForFunction(() => document.querySelector(".computer-status").textContent.startsWith("你正在操作"));
   await videoReady(first);
+  await first.screenshot({path: join(artifacts, "before-human-input.png")});
   const bounds = await first.locator(".computer-stream").boundingBox();
   const point = ({x, y}) => ({ x: bounds.x + x * bounds.width / geometry.width,
     y: bounds.y + y * bounds.height / geometry.height });
@@ -342,7 +344,7 @@ try {
   await action("var saved = await browser.tabs.new(); await saved.goto('http://127.0.0.1:8989/remember');");
   const beforeRestart = textResult(await action("nodeRepl.write(await saved.playwright.domSnapshot());"));
   assert.match(beforeRestart, /PROFILE/); assert.match(beforeRestart, /review=PROFILE/);
-  docker("restart", container);
+  await promisify(execFile)("docker", ["restart", container], {timeout: 60000});
   await until(async () => docker("exec", container, "node", "-e",
     "fetch('http://127.0.0.1:8080/health').then(r=>console.log(r.status)).catch(()=>console.log('starting'))"),
     value => value === "200", "restarted Computer health");
