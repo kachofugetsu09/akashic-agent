@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import os
-from collections.abc import Callable, Mapping
+from collections.abc import Awaitable, Callable, Mapping
 from datetime import UTC, datetime
 from typing import Literal, Self, cast
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
@@ -10,7 +10,7 @@ from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 from pydantic import BaseModel, ConfigDict, Field, ValidationError, model_validator
 
 from agent.plugin_composition.tasks import Task, TaskAdmission, TaskSlot
-from .inputs import Result
+from .inputs import CallSource, Result
 from plugins.ledger.contract import ContentPart
 
 from .schedule import ScheduledJob, compute_fire_at, is_cron_expr, parse_duration
@@ -20,22 +20,21 @@ from core.common.file_io import run_file_io
 
 class ScheduleInput(BaseModel):
     model_config = ConfigDict(extra="forbid", strict=True)
-    tier: Literal["instant", "soft"]
+    action: Literal["notify", "run"] = Field(description=(
+        "notify：到点把 text 原文推送给用户，不调用模型；run：到点在当前会话里按 text 执行一轮任务，"
+        "可以使用工具，最后一条回复作为通知推送"))
     trigger: Literal["at", "after", "every"]
     when: str = Field(min_length=1, description="at: 14:30 或 ISO 时间；after: 5m；every: 1h 或 cron")
-    channel: str = Field(min_length=1)
-    chat_id: str = Field(min_length=1)
+    text: str = Field(min_length=1, description="notify 的推送原文，或 run 的任务指令")
+    context: Literal["none", "session"] = Field(default="none", description=(
+        "run 是否带上本会话的聊天历史；天气、新闻这类独立任务用 none，需要参考之前对话时用 session"))
     timezone: str = Field(default_factory=lambda: os.environ.get("TZ", ""))
-    message: str | None = None
-    prompt: str | None = None
     name: str | None = None
     request_time: str | None = Field(default=None, description="原消息接收的 ISO 时间；after 从此刻计算延迟")
 
-    @model_validator(mode="after")
-    def check_payload(self) -> Self:
-        if not (self.message if self.tier == "instant" else self.prompt):
-            raise ValueError("instant 需要 message；soft 需要 prompt")
-        return self
+
+# 调用所在会话及其投递渠道：(session_id, channel, address)。
+Target = Callable[[CallSource | None], Awaitable[tuple[str, str, str] | None]]
 
 
 class CancelInput(BaseModel):
@@ -82,13 +81,14 @@ class ScheduleTool:
     idempotent = True
 
     def __init__(self, store: JobStore, tasks: TaskAdmission, kind: Literal["schedule", "cancel"],
-                 *, now: Callable[[], datetime] = lambda: datetime.now(UTC)):
+                 target: Target, *, now: Callable[[], datetime] = lambda: datetime.now(UTC)):
         self._store = store
         self._tasks = tasks
         self._kind = kind
+        self._target = target
         self._now = now
 
-    async def prepare(self, arguments: Mapping[str, object], source: object | None = None) -> Mapping[str, object] | str:
+    async def prepare(self, arguments: Mapping[str, object], source: CallSource | None = None) -> Mapping[str, object] | str:
         """最终 ID、时间与取消集合在 Tool 的 prepared 回执里固定，不在 invoke 重算。"""
         if self._kind == "cancel":
             try:
@@ -99,6 +99,9 @@ class ScheduleTool:
             ids = tuple(job.id for job in jobs if (
                 job.id.startswith(request.id) if request.id else job.name == request.name))
             return {"job_ids": ids}
+        target = await self._target(source)
+        if target is None:
+            return "定时任务只能在有投递渠道的会话里创建"
         try:
             request = ScheduleInput.model_validate(dict(arguments))
             _ = ZoneInfo(request.timezone)
@@ -110,9 +113,10 @@ class ScheduleTool:
                     cron = request.when.strip()
                 else:
                     interval = int(parse_duration(request.when).total_seconds())
-            job = ScheduledJob(trigger=request.trigger, tier=request.tier, fire_at=fire_at,
-                channel=request.channel, chat_id=request.chat_id, interval_seconds=interval,
-                cron_expr=cron, message=request.message, prompt=request.prompt, name=request.name,
+            session_id, channel, address = target
+            job = ScheduledJob(trigger=request.trigger, action=request.action, fire_at=fire_at,
+                channel=channel, chat_id=address, session_id=session_id, text=request.text,
+                interval_seconds=interval, cron_expr=cron, context=request.context, name=request.name,
                 timezone=request.timezone, created_at=self._now())
             payload = self._store.encode_job(job)
             _ = self._store.decode_job(payload)
@@ -158,7 +162,7 @@ class ListSchedules:
     def __init__(self, store: JobStore):
         self._store = store
 
-    async def prepare(self, arguments: Mapping[str, object], source: object | None = None) -> Mapping[str, object] | str:
+    async def prepare(self, arguments: Mapping[str, object], source: CallSource | None = None) -> Mapping[str, object] | str:
         if arguments:
             return 'list_schedules 不接收参数'
         return {}
@@ -167,11 +171,9 @@ class ListSchedules:
         jobs = [job for job in await run_file_io(self._store.load) if job.enabled]
         lines = [f"定时任务列表（共 {len(jobs)} 个）："] if jobs else ["当前没有待执行的定时任务"]
         for job in jobs:
-            action = job.message if job.tier == "instant" else f"[AI] {job.prompt}"
-            assert action is not None
             label = f"「{job.name}」" if job.name else job.id[:8]
             display = job.fire_at.astimezone(ZoneInfo(job.timezone)).strftime("%Y-%m-%d %H:%M:%S %Z")
-            lines.append(f"• {label} [{job.tier}/{job.trigger}] 下次: {display} 内容: {action[:40]} 已运行: {job.run_count}次")
+            lines.append(f"• {label} [{job.action}/{job.trigger}] 下次: {display} 内容: {job.text[:40]} 已运行: {job.run_count}次")
         return Result("success", (ContentPart("text", "\n".join(lines)),))
 
     async def query(self, key: str) -> Result | None:

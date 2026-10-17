@@ -52,8 +52,13 @@ class Fire:
         return fire_key(self.job)
 
     @property
-    def session_id(self) -> str:
+    def source(self) -> str:
+        """每次触发独占目标会话里的一个来源；过程、恢复与竞争都只认它。"""
         return "scheduler:" + self.key
+
+    @property
+    def input_id(self) -> str:
+        return "scheduler-input:" + self.key
 
     @property
     def notification_id(self) -> str:
@@ -99,12 +104,19 @@ class JobStore:
         return list(self.read().jobs.values())
 
     def read(self) -> ScheduleState:
-        """原子 replace 保证读到完整一版；只允许缺失文件表示空状态。"""
+        return self._load()[0]
+
+    # 原子 replace 保证读到完整一版；只允许缺失文件表示空状态。第二项表示文件仍是旧版本。
+    def _load(self) -> tuple[ScheduleState, bool]:
         try:
             text = self.path.read_text(encoding="utf-8")
         except FileNotFoundError:
-            return ScheduleState({}, {}, {})
-        return self.decode(self.parse(text))
+            return ScheduleState({}, {}, {}), False
+        raw: object = self.parse(text)
+        legacy = isinstance(raw, dict) and cast(dict[str, object], raw).get("version") == 2
+        if legacy:
+            raw = _upgrade(cast(dict[str, Any], raw))
+        return self.decode(raw), legacy
 
     def parse(self, raw: str | bytes) -> object:
         return json.loads(raw, object_pairs_hook=self._object)
@@ -123,7 +135,7 @@ class JobStore:
             raise ValueError(f"job_store schema 无效，请先迁移：path={self.path}")
         raw = cast(dict[str, Any], raw)
         if (set(raw) != {"version", "jobs", "operations", "fires"}
-                or type(raw["version"]) is not int or raw["version"] != 2):
+                or type(raw["version"]) is not int or raw["version"] != 3):
             raise ValueError(f"job_store schema 无效，请先迁移：path={self.path}")
         jobs = self.decode_jobs(raw["jobs"])
         operations: dict[str, Operation] = {}
@@ -189,7 +201,7 @@ class JobStore:
             self._validate_job(job, index=index)
             data.append(self.encode_job(job))
         value: dict[str, object] = {
-            "version": 2, "jobs": data,
+            "version": 3, "jobs": data,
             "operations": {key: operation.model_dump(mode="json") for key, operation in state.operations.items()},
             "fires": {key: {"job": self.encode_job(fire.job), "status": fire.status, "error": fire.error}
                       for key, fire in state.fires.items()},
@@ -206,11 +218,11 @@ class JobStore:
                     fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
                 except BlockingIOError:
                     return False, None
-                state = self.read()
+                state, legacy = self._load()
                 before = self.encode(state)
                 result = change(state)
                 after = self.encode(state)
-                if before != after or not self.path.exists():
+                if before != after or legacy or not self.path.exists():
                     atomic_save_json(self.path, after, domain="job_store")
                 return True, result
 
@@ -358,19 +370,23 @@ class JobStore:
         self._validate_job_schedule(job, index=index)
 
     def _validate_job_identity(self, job: ScheduledJob, *, index: int) -> None:
-        """校验任务身份、渠道和 IANA 时区。"""
+        """校验任务身份、动作、渠道和 IANA 时区。"""
 
         # 1. 校验基础字段和枚举
         if job.trigger not in ("at", "after", "every"):
             raise self._schema_error(index, "trigger 无效")
-        if job.tier not in ("instant", "soft"):
-            raise self._schema_error(index, "tier 无效")
+        if job.action not in ("notify", "run"):
+            raise self._schema_error(index, "action 无效")
+        if job.context not in ("none", "session"):
+            raise self._schema_error(index, "context 无效")
         if type(job.id) is not str or not job.id:
             raise self._schema_error(index, "id 无效")
         if type(job.channel) is not str or not job.channel:
             raise self._schema_error(index, "channel 无效")
         if type(job.chat_id) is not str or not job.chat_id:
             raise self._schema_error(index, "chat_id 无效")
+        if type(job.session_id) is not str or not job.session_id:
+            raise self._schema_error(index, "session_id 无效")
         if type(job.timezone) is not str or not job.timezone:
             raise self._schema_error(index, "timezone 无效")
         try:
@@ -381,17 +397,11 @@ class JobStore:
             ) from e
 
     def _validate_job_payload(self, job: ScheduledJob, *, index: int) -> None:
-        """校验消息载荷、运行计数和可选字段类型。"""
+        """校验任务正文、运行计数和可选字段类型。"""
 
         # 2. 校验消息、计数和可选字段类型
-        if job.tier == "instant" and (type(job.message) is not str or not job.message):
-            raise self._schema_error(index, "instant 任务缺少 message")
-        if job.tier == "soft" and (type(job.prompt) is not str or not job.prompt):
-            raise self._schema_error(index, "soft 任务缺少 prompt")
-        if job.message is not None and type(job.message) is not str:
-            raise self._schema_error(index, "message 类型无效")
-        if job.prompt is not None and type(job.prompt) is not str:
-            raise self._schema_error(index, "prompt 类型无效")
+        if type(job.text) is not str or not job.text.strip():
+            raise self._schema_error(index, "任务缺少 text")
         if job.name is not None and type(job.name) is not str:
             raise self._schema_error(index, "name 类型无效")
         if type(job.run_count) is not int or job.run_count < 0:
@@ -435,3 +445,26 @@ class JobStore:
                 f"path={self.path} index={index} field={field_name} value={s!r}"
             )
         return parsed
+
+
+def _upgrade_job(job: dict[str, Any]) -> dict[str, Any]:
+    """v2 的 instant/soft 改为 notify/run；正文合并成 text，目标会话按原渠道地址推出。"""
+    value = {key: item for key, item in job.items() if key not in {"tier", "message", "prompt"}}
+    instant = job.get("tier") == "instant"
+    return {**value, "action": "notify" if instant else "run",
+            "text": job.get("message") if instant else job.get("prompt"),
+            "session_id": f"{job.get('channel')}:{job.get('chat_id')}", "context": "none"}
+
+
+def _upgrade(raw: dict[str, Any]) -> dict[str, Any]:
+    """读取旧版本文件；下一次任何提交都写回当前版本，触发 key 不变。"""
+    jobs = raw.get("jobs")
+    fires = raw.get("fires")
+    if not isinstance(jobs, list) or not isinstance(fires, dict):
+        return raw
+    return {**raw, "version": 3,
+            "jobs": [_upgrade_job(cast(dict[str, Any], job)) if isinstance(job, dict) else job
+                     for job in cast(list[object], jobs)],
+            "fires": {key: ({**cast(dict[str, Any], fire), "job": _upgrade_job(cast(dict[str, Any], fire)["job"])}
+                            if isinstance(fire, dict) and isinstance(cast(dict[str, Any], fire).get("job"), dict) else fire)
+                      for key, fire in cast(dict[str, object], fires).items()}}

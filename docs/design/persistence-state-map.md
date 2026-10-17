@@ -667,7 +667,7 @@ H3 前的 `WakeStateStore` 保存以下表；H3 后旧 writer 已删除，H2 只
 
 ### 9.4 `schedules.json` 与 `proactive_quota.json`
 
-- `schedules.json` 由 `JobStore` 原子保存完整 `ScheduledJob` 集合。只有文件缺失能解释为空；JSON 或 schema 损坏会 fail-loud。
+- `schedules.json` 由 `JobStore` 原子保存完整 `ScheduledJob` 集合。只有文件缺失能解释为空；JSON 或 schema 损坏会 fail-loud。当前 version 3：每个 job 记录目标会话、`action`（notify/run）与历史范围；读取 version 2 时在内存中换算，下一次提交写回（[0125](../decisions/0125-scheduler-runs-in-its-session.md)）。任务过程写在目标会话里，来源 `scheduler:<fire_key>`。
 - `proactive_quota.json` 由 `QuotaStore` 保存每日窗口、已用次数和最后动作时间。损坏不会静默重置。
 
 **F-011：** 两者都会决定重启后的外部行为。它们是体积很小但不能随意丢弃的操作状态。

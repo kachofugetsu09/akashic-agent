@@ -1,6 +1,6 @@
 # 0055 · Scheduler 保留可恢复的内部消息
 
-- 状态：accepted
+- 状态：accepted；独立内部 Session 部分由 0125 替代
 - 日期：2026-09-06
 - 关联条款：SCH-001～SCH-003、SES-003～SES-005、MEM-001～MEM-002
 - supersedes：0041 对 Scheduler 采用 in_memory 的选择
