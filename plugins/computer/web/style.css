@@ -857,6 +857,7 @@
 /* 触控（不论宽度）：可点区域至少 44px；胶囊里的"接管"保持紧凑外观，用伪元素扩大点击区 */
 @media (pointer: coarse) {
   .computer-icon-button,
+  .computer-address .computer-icon-button,
   .computer-tab-close.computer-icon-button { flex-shrink: 0; width: 44px; height: 44px; }
   .computer-address { height: 44px; }
   .computer-address-input,
