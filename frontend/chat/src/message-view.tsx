@@ -246,6 +246,7 @@ function timelineFlow(messages: TimelineMessage[], finalId: string | undefined, 
         return [{ kind: "tool", key, origin, index, part, block: {
           kind: "tool", callId: key, name: part.name, input: part.arguments,
           output: result ? timelineToolOutput(result) : undefined,
+          attachments: toolImages(result),
           status: outcome === null ? "input-available" : outcome === "success" ? "output-available" : "output-error",
           errorText: outcome && outcome !== "success" ? outcomeLabels[outcome] : undefined } }];
       }
@@ -258,6 +259,12 @@ function timelineFlow(messages: TimelineMessage[], finalId: string | undefined, 
       }
       return [];
     }));
+}
+
+// 只有图片观察进调用卡片；文件附件仍作为回复插图展示，不在卡片里重复。
+function toolImages(result: TimelineMessage | undefined): SentAttachmentItem[] | undefined {
+  const images = result?.attachments.filter((ref) => ref.kind === "image") ?? [];
+  return images.length ? images.map(timelineAttachmentItem) : undefined;
 }
 
 function flowRank(part: TimelinePart): number {
@@ -1105,7 +1112,8 @@ const ToolStep = memo(function ToolStep({
 }) {
   const description = toolDescription(block.input);
   const resultValue = block.output === undefined ? block.errorText : block.output;
-  const hasDetails = toolHasParameters(block.input) || toolHasValue(resultValue);
+  const hasResult = toolHasValue(resultValue) || Boolean(block.attachments?.length);
+  const hasDetails = toolHasParameters(block.input) || hasResult;
   const { open, instant, rowRef, toggle } = useStickyDisclosure(block.status === "output-error");
   const parameters = useMemo(
     () => open ? toolParameters(block.input) : [],
@@ -1194,14 +1202,15 @@ const ToolStep = memo(function ToolStep({
                     </dl>
                   </section>
                 ) : null}
-                {open && toolHasValue(resultValue) ? (
+                {open && hasResult ? (
                   <section className={`tool-detail-section${block.status === "output-error" ? " is-error" : ""}`} aria-label={block.status === "output-error" ? "工具错误" : "工具结果"}>
                     <ToolDetailHeading
                       label={block.status === "output-error" ? "错误" : "结果"}
                       copied={copiedDetail?.section === "result" && copiedDetail.text === result}
                       onCopy={onCopyDetail ? () => copyDetail("result", result) : undefined}
                     />
-                    <ToolResultContent value={resultValue} error={block.status === "output-error"} />
+                    {toolHasValue(resultValue) ? <ToolResultContent value={resultValue} error={block.status === "output-error"} /> : null}
+                    {block.attachments?.length ? <SentAttachments items={block.attachments} /> : null}
                   </section>
                 ) : null}
             </div>
