@@ -470,6 +470,8 @@ class _BoundChat:
                     first_token_ms = (monotonic_ns() - started) / 1_000_000
                     first_token = True
                     log_timing("model.first_delta", operation_id=started_call_id, request_id=request_key)
+                    # 首字耗时随首段增量一起推给预览：与稍后落盘的统计同源，界面不必等结算或轮询。
+                    value = {**value, "first_token_ms": f"{first_token_ms:.1f}"}
                 await publish(value)
 
             try:

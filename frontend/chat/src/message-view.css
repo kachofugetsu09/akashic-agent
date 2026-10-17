@@ -1184,6 +1184,30 @@
   animation: process-trace-breathe 1.6s ease-in-out infinite;
 }
 
+/* 流式思考显示最新一行的末尾：短时靠左；写满槽位后右端贴齐最新文字，左缘淡出被推出去的部分。 */
+.process-trigger-summary.is-tail {
+  display: flex;
+  justify-content: flex-end;
+}
+
+.process-trigger.is-streaming .process-trigger-summary.is-tail {
+  mask-image: none;
+}
+
+.process-trigger-summary.is-tail > span {
+  flex: none;
+  white-space: nowrap;
+}
+
+.process-trigger-summary.is-tail::after {
+  content: "";
+  flex: 1 1 auto;
+}
+
+.process-trigger.is-streaming .process-trigger-summary.is-tail.is-clipped {
+  mask-image: linear-gradient(to right, transparent, black 48px);
+}
+
 @keyframes process-trace-breathe {
   0%, 100% { opacity: 0.55; }
   50% { opacity: 1; }

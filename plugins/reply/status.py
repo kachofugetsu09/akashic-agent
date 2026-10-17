@@ -124,16 +124,20 @@ class ReplyState:
                 # 新物理尝试撤下旧的瞬态草稿，不能把两次生成拼成一条回复。
                 if (value.get("retry_status")
                         or (draft.call_record_id is not None and call_id != draft.call_record_id)):
-                    draft = replace(draft, text="", thinking="")
+                    draft = replace(draft, text="", thinking="", first_token_ms=None)
                 attempt = draft.attempt
                 if "attempt_status" in value:
                     attempt = ModelAttemptStatus.decode(value["attempt_status"])
+                first_token_ms = draft.first_token_ms
+                if "first_token_ms" in value:
+                    first_token_ms = float(value["first_token_ms"])
                 self._items[task.handle] = replace(current, preview=replace(
                     draft, text=draft.text + value.get("content_delta", ""),
                     thinking=draft.thinking + value.get("thinking_delta", ""),
                     call_record_id=call_id,
                     retry_status=value.get("retry_status", draft.retry_status),
                     attempt=attempt,
+                    first_token_ms=first_token_ms,
                 ))
                 self._notify()
 
