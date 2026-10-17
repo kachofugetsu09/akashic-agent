@@ -5,15 +5,14 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { EventEmitter } from "node:events";
 import { BrowserBackend } from "./cdp.mjs";
-import { DesktopBackend } from "./desktop.mjs";
 import { AnonymousBrowsers } from "./anonymous.mjs";
 
-/** 一个容器拥有一份输入状态；各 Session 仅隔离 JS 绑定，不复制浏览器 profile。 */
+/** 一个容器只有一个带个人 profile 的浏览器；各 Session 隔离 JS 绑定并各自串行，Session 之间并行。 */
 export class ComputerDriver extends EventEmitter {
-  browser = new BrowserBackend();
   constructor({ anonymousIdleMs = 600000 } = {}) {
     super();
     this.anonymous = new AnonymousBrowsers(anonymousIdleMs);
+    this.browser = new BrowserBackend(undefined, undefined, null, this.anonymous.contexts);
     this.anonymous.on("targets", () => this.emit("targets"));
     this.anonymous.on("closed", ({ browserId, reason, context }) => {
       this.emit("targets");
@@ -21,20 +20,20 @@ export class ComputerDriver extends EventEmitter {
     });
     this.anonymous.on("cleanupError", error => {
       this.closed = true;
-      this.active?.reject(error);
+      this.rejectAll(error);
       console.error("Anonymous browser cleanup failed:", error.message);
     });
   }
-  desktop = new DesktopBackend();
   sessions = new Map();
-  active = null;
+  // session_id → 正在执行的调用；同一 Session 一次一个。
+  actives = new Map();
   closed = false;
   cancelledCalls = new Map();
   control = null;
   agentJobs = new Set();
 
   /** 人工接管先阻止新操作，再等待已发操作和输入释放。 */
-  async takeControl(id, target = "desktop", signal) {
+  async takeControl(id, target = "", signal) {
     if (this.closed) throw new Error("Computer driver is stopped");
     if (this.control) throw new Error("Another viewer controls this Computer");
     const control = { id, target, ready: false, jobs: new Set() };
@@ -48,9 +47,8 @@ export class ComputerDriver extends EventEmitter {
       await waitForSignal(Promise.allSettled([...this.agentJobs]), signal);
       if (this.control !== control || control.release) throw new Error("Control request was cancelled");
       control.preparing = (async () => {
-        await this.desktop.call("release");
         await this.browser.releaseInputs();
-        await this.anonymous.releaseInputs(this.active?.context ?? { session_id: "" });
+        for (const active of this.actives.values()) await this.anonymous.releaseInputs(active.context);
       })();
       await waitForSignal(control.preparing, signal);
       if (this.control !== control || control.release) throw new Error("Control request was cancelled");
@@ -85,7 +83,7 @@ export class ComputerDriver extends EventEmitter {
       this.resumeClock();
     })();
     try { await control.release; }
-    catch (error) { this.closed = true; this.active?.reject(error); throw error; }
+    catch (error) { this.closed = true; this.rejectAll(error); throw error; }
   }
 
   async waitForControl(signal) {
@@ -105,108 +103,120 @@ export class ComputerDriver extends EventEmitter {
     try { return await work; } finally { this.agentJobs.delete(work); }
   }
 
-  pauseClock() {
-    const active = this.active;
-    if (!active?.timer) return;
-    clearTimeout(active.timer);
-    active.remaining = Math.max(1, active.remaining - (Date.now() - active.startedAt));
-    active.timer = null;
+  // 测试与诊断读取的单一视图；并发时返回任意一个正在执行的调用。
+  get active() {
+    return this.actives.values().next().value ?? null;
   }
 
-  resumeClock() {
-    const active = this.active;
-    if (!active || this.control || active.timer || active.cancelled) return;
-    active.startedAt = Date.now();
-    active.timer = setTimeout(() => active.reject(new Error("Computer call timed out")), active.remaining);
+  findActive(callId) {
+    return [...this.actives.values()].find(active => active.context.call_id === callId) ?? null;
   }
-  /** 目录直接来自存活 Context 和页面，不复用个人 profile 或缓存旧目标。 */
-  async targets() {
-    const targets = [{ id: "desktop", label: "主桌面", kind: "desktop" }];
-    for (const instance of this.anonymous.instances.values()) {
-      if (!instance.backend || instance.closing) continue;
-      for (const tab of await instance.backend.listTabs())
-        targets.push({ id: `${instance.id}:${tab.id}`, kind: "browser",
-          browserId: instance.id, tabId: tab.id, title: tab.title, url: tab.url,
-          sessionId: instance.context.session_id, turnId: instance.context.turn_id,
-          label: `匿名 ${instance.id.slice(0, 4)} · ${tab.title || tab.url || "空白页"}` });
+
+  rejectAll(error) {
+    for (const active of this.actives.values()) active.reject(error);
+  }
+
+  // 人工接管期间暂停全部调用的计时，交还后从剩余时间继续。
+  pauseClock() {
+    for (const active of this.actives.values()) {
+      if (!active.timer) continue;
+      clearTimeout(active.timer);
+      active.remaining = Math.max(1, active.remaining - (Date.now() - active.startedAt));
+      active.timer = null;
     }
+  }
+
+  resumeClock(only) {
+    for (const active of only ? [only] : this.actives.values()) {
+      if (this.control || active.timer || active.cancelled) continue;
+      active.startedAt = Date.now();
+      active.timer = setTimeout(() => active.reject(new Error("Computer call timed out")), active.remaining);
+    }
+  }
+  /** 目录直接来自存活页面：主浏览器的标签在前，匿名 Context 的标签在后；front 是屏幕最前的那个。 */
+  async targets() {
+    const groups = [{ id: "main", backend: this.browser, instance: null }];
+    for (const instance of this.anonymous.instances.values())
+      if (instance.backend && !instance.closing) groups.push({ id: instance.id, backend: instance.backend, instance });
+    const targets = [];
+    for (const { id, backend, instance } of groups)
+      for (const tab of await backend.listTabs()) {
+        const { targetId, created, status } = backend.tab(tab.id);
+        targets.push({ id: `${id}:${tab.id}`, title: tab.title, url: tab.url,
+          anonymous: Boolean(instance), agent: Boolean(created), kept: Boolean(status),
+          front: targetId === this.browser.screen.front,
+          sessionId: instance?.context.session_id ?? created?.session_id ?? null });
+      }
     return targets;
   }
 
   async viewTarget(id) {
     if (typeof id !== "string" || id.length > 128) throw new TypeError("Invalid view target");
-    const [browserId, tabText] = id.split(":");
-    const instance = this.anonymous.instances.get(browserId);
-    if (!instance?.backend || instance.closing) throw new Error("Browser target has closed");
+    const [group, tabText] = id.split(":");
+    const instance = group === "main" ? null : this.anonymous.instances.get(group);
+    const backend = group === "main" ? this.browser : instance?.backend;
+    if (!backend || instance?.closing) throw new Error("Browser target has closed");
     const tabId = Number(tabText);
-    const tabs = await instance.backend.listTabs();
+    const tabs = await backend.listTabs();
     if (!tabs.some(tab => tab.id === tabId)) throw new Error("Browser page has closed");
-    return { backend: instance.backend, tabId };
+    return { backend, tabId, targetId: backend.tab(tabId).targetId };
   }
 
-  async viewFrame(id) {
-    const { backend, tabId } = await this.viewTarget(id);
-    const connection = await backend.attach(tabId);
-    const { data } = await connection.send("Page.captureScreenshot", {
-      format: "jpeg", quality: 70, captureBeyondViewport: false });
-    return Buffer.from(data, "base64");
+  /** 把一个标签提到屏幕最前；所有观看者看到的是同一块屏幕。 */
+  async show(id) {
+    const { targetId } = await this.viewTarget(id);
+    await this.browser.screen.show(this.browser.browser, targetId);
+    // 接管期间切到另一个匿名浏览器时，由接管持有它，人工操作不被闲置回收打断。
+    const control = this.control, instance = this.anonymous.instances.get(id.split(":")[0]);
+    if (control && control.instance !== instance) {
+      if (control.instance) this.anonymous.unhold(control.instance);
+      control.instance = instance;
+      if (instance) this.anonymous.hold(instance);
+    }
+    this.emit("targets");
   }
 
-  /** 人工输入只接受键鼠和文字，不能透传任意 CDP 或执行脚本。 */
-  async viewInput(id, owner, input) {
-    if (!this.control?.ready || this.control.id !== owner || this.control.target !== id)
-      throw new Error("This viewer does not control this target");
-    const control = this.control;
-    if (!input || typeof input !== "object") throw new TypeError("Invalid browser input");
-    let method, commandParams;
-    if (input.kind === "text") {
-      if (typeof input.text !== "string" || input.text.length > 65536) throw new TypeError("Invalid text input");
-      method = "Input.insertText";
-      commandParams = { text: input.text };
-    } else if (input.kind === "key") {
-      if (!["keyDown", "keyUp"].includes(input.type) || typeof input.key !== "string"
-          || typeof input.code !== "string" || input.key.length > 64 || input.code.length > 64
-          || !Number.isInteger(input.keyCode) || input.keyCode < 0 || input.keyCode > 255
-          || !Number.isInteger(input.modifiers) || input.modifiers < 0 || input.modifiers > 15)
-        throw new TypeError("Invalid key input");
-      method = "Input.dispatchKeyEvent";
-      commandParams = { type: input.type, key: input.key, code: input.code, modifiers: input.modifiers,
-        windowsVirtualKeyCode: input.keyCode,
-        text: input.type === "keyDown" && input.key.length === 1 && !(input.modifiers & 6) ? input.key : "" };
-    } else if (input.kind === "mouse") {
-      if (!["mousePressed", "mouseReleased", "mouseMoved", "mouseWheel"].includes(input.type)
-          || !["none", "left", "middle", "right"].includes(input.button)
-          || !Number.isInteger(input.buttons) || input.buttons < 0 || input.buttons > 7
-          || ![input.x, input.y, input.deltaX, input.deltaY].every(Number.isFinite)
-          || Math.abs(input.x) > 16384 || Math.abs(input.y) > 16384
-          || Math.abs(input.deltaX) > 100000 || Math.abs(input.deltaY) > 100000)
-        throw new TypeError("Invalid pointer input");
-      method = "Input.dispatchMouseEvent";
-      commandParams = { type: input.type, x: input.x, y: input.y, button: input.button, buttons: input.buttons,
-        clickCount: input.type === "mouseMoved" || input.type === "mouseWheel" ? 0 : 1,
-        deltaX: input.deltaX, deltaY: input.deltaY };
-    } else throw new TypeError("Unknown browser input");
-    const work = (async () => {
-      const { backend, tabId } = await this.viewTarget(id);
-      if (this.control !== control || !control.ready) throw new Error("Control connection has ended");
-      return backend.execute({ target: { tabId }, method, commandParams });
-    })();
-    control.jobs.add(work);
-    try { return await work; } finally { control.jobs.delete(work); }
+  // 最前的标签被关掉时，把主浏览器的第一个标签提上来；一个都不剩就补开空白页，屏幕不会停在不可知的窗口。
+  async recoverFront(targetId) {
+    const screen = this.browser.screen;
+    if (screen.front !== targetId) return;
+    screen.front = null;
+    try {
+      const connection = this.browser.browser;
+      const [first] = await this.browser.listTabs();
+      const next = first ? this.browser.tab(first.id).targetId
+        : (await connection.send("Target.createTarget", { url: "about:blank", newWindow: true })).targetId;
+      if (!first) await screen.place(connection, next);
+      await screen.show(connection, next);
+    } catch (error) {
+      console.error("Browser front recovery failed:", error.message);
+    }
+    this.emit("targets");
   }
 
   async start() {
-    this.desktop.on("cursor", (state) => this.emit("cursor", state));
     this.browser.on("cursor", (state) => this.emit("cursor", state));
     await this.browser.start();
-    await deadline(this.desktop.start(), 4000, "Native startup");
+    this.anonymous.main = this.browser;
+    // 1. 页面增删、换标题都要刷新目录；最前的页面关闭时补一个。
+    this.browser.browser.on("event", ({ method, params }) => {
+      if (!method?.startsWith("Target.target")) return;
+      if (method === "Target.targetDestroyed") void this.recoverFront(params.targetId);
+      if (method === "Target.targetCreated" && params.targetInfo.type === "page" && params.targetInfo.openerId)
+        this.browser.screen.front = params.targetInfo.targetId;
+      this.emit("targets");
+    });
+    await this.browser.browser.send("Target.setDiscoverTargets", { discover: true });
+    // 2. 启动时屏幕上只有个人 profile 的首个窗口。
+    const [first] = await this.browser.listTabs();
+    if (first) this.browser.screen.front = this.browser.tab(first.id).targetId;
     this.browser.on("event", (event) => {
       for (const session of this.sessions.values())
         session.worker.postMessage({ kind: "event", event });
     });
     this.browser.on("disconnected", () => {
       this.closed = true;
-      this.active?.reject(
+      this.rejectAll(
         new Error("Chromium disconnected; restart the Computer workload"),
       );
     });
@@ -227,16 +237,18 @@ export class ComputerDriver extends EventEmitter {
     this.sessions.set(id, session);
     worker.on("message", (message) => this.message(session, message));
     worker.on("error", (error) => {
-      if (this.active?.session === session) this.active.reject(error);
+      const active = this.actives.get(id);
+      if (active?.session === session) active.reject(error);
     });
     worker.on("exit", (code) => {
-      if (this.active?.session === session)
-        this.active.reject(new Error(`JS worker exited: ${code}`));
+      const active = this.actives.get(id);
+      if (active?.session === session)
+        active.reject(new Error(`JS worker exited: ${code}`));
     });
     return session;
   }
   message(session, message) {
-    const active = this.active;
+    const active = this.actives.get(session.id);
     if (message.kind === "ready" || message.kind === "metadata") return;
     if (message.kind === "result") {
       if (active?.session === session) {
@@ -251,7 +263,7 @@ export class ComputerDriver extends EventEmitter {
       }
       return;
     }
-    if (!["browser", "desktop"].includes(message.kind))
+    if (message.kind !== "browser")
       throw new Error(`Invalid worker message: ${message.kind}`);
     if (
       !active ||
@@ -267,9 +279,7 @@ export class ComputerDriver extends EventEmitter {
       return;
     }
     const work = this.agentOperation(() =>
-      message.kind === "browser"
-        ? this.browserCall(session, message, active.context)
-        : this.desktop.call(message.method, message.params, active.context),
+      this.browserCall(session, message, active.context),
       active.controller.signal);
     active.pending.add(work);
     work
@@ -305,14 +315,14 @@ export class ComputerDriver extends EventEmitter {
     signal,
   ) {
     if (endTurn) {
-      while (this.active)
-        await deadline(this.active.done, 145000, "Wait for active call");
+      while (this.actives.get(context?.session_id))
+        await deadline(this.actives.get(context.session_id).done, 145000, "Wait for active call");
       signal?.throwIfAborted();
       if (!this.sessions.has(context?.session_id)) task = async () => [];
     }
     if (this.closed) throw new Error("Computer driver is stopped");
-    if (this.active)
-      throw new Error("Computer is busy; retry after the current call settles");
+    if (this.actives.has(context?.session_id))
+      throw new Error("This Session already has a running Computer call; retry after it settles");
     if (
       !context ||
       !["session_id", "turn_id", "call_id"].every(
@@ -345,7 +355,7 @@ export class ComputerDriver extends EventEmitter {
       remaining: timeoutMs,
       timer: null,
     };
-    this.active = active;
+    this.actives.set(context.session_id, active);
     active.done = new Promise((resolve) => {
       active.finish = resolve;
     });
@@ -365,10 +375,10 @@ export class ComputerDriver extends EventEmitter {
       if (!task) active.session = await this.session(context.session_id);
       signal?.addEventListener("abort", abort, { once: true });
       if (signal?.aborted) abort();
-      this.resumeClock();
+      this.resumeClock(active);
       await this.waitForControl(active.controller.signal);
       if (task) {
-        const work = this.agentOperation(() => task(active.controller.signal), active.controller.signal);
+        const work = this.agentOperation(() => task(active.controller.signal, context), active.controller.signal);
         active.pending.add(work);
         work
           .then(active.resolve, active.reject)
@@ -392,13 +402,10 @@ export class ComputerDriver extends EventEmitter {
     } finally {
       clearTimeout(active.timer);
       signal?.removeEventListener("abort", abort);
-      // Native 先响应取消；浏览器已送出的 CDP 命令有自己的有界超时。
+      // 浏览器已送出的 CDP 命令有自己的有界超时；结算后松开仍按住的键鼠。
       try {
-        if (reset) await this.desktop.cancel();
         await Promise.allSettled([...active.pending]);
-        if (!reset)
-          await deadline(this.desktop.call("release"), 4000, "Native release");
-        await deadline(this.browser.releaseInputs(), 11000, "Browser release");
+        await deadline(this.browser.releaseInputs(context.session_id), 11000, "Browser release");
         await deadline(this.anonymous.releaseInputs(context), 11000, "Anonymous input release");
         if (endTurn)
           await deadline(this.browser.endTurn(context), 11000, "Turn cleanup");
@@ -411,7 +418,6 @@ export class ComputerDriver extends EventEmitter {
       } catch (error) {
         this.closed = true;
         reset = true;
-        await this.desktop.cancel().catch(() => {});
         this.browser.close();
         failure = new AggregateError(
           failure ? [failure, error] : [error],
@@ -423,18 +429,7 @@ export class ComputerDriver extends EventEmitter {
         this.sessions.delete(context.session_id);
         await rm(active.session.directory, { recursive: true, force: true });
       }
-      if (reset && !this.closed) {
-        try {
-          await deadline(this.desktop.start(), 4000, "Native restart");
-        } catch (error) {
-          this.closed = true;
-          failure = new AggregateError(
-            [failure, error],
-            "Native restart failed",
-          );
-        }
-      }
-      this.active = null;
+      this.actives.delete(context.session_id);
       active.finish();
     }
     if (failure) {
@@ -446,12 +441,12 @@ export class ComputerDriver extends EventEmitter {
     }
     return { content, call_id: context.call_id };
   }
-  async perform(task, signal, kind = "browser") {
+  async perform(task, signal) {
     const callId = randomUUID();
     const result = await this.run(
       {
         context: {
-          session_id: `legacy-${kind}`,
+          session_id: "legacy-page",
           turn_id: callId,
           call_id: callId,
         },
@@ -462,20 +457,13 @@ export class ComputerDriver extends EventEmitter {
     );
     return result.content;
   }
-  async input(method, input, signal) {
-    return this.perform(
-      () => this.desktop.call(method, input),
-      signal,
-      "desktop",
-    );
-  }
-
   async cancel(callId) {
     if (this.closed)
       throw new Error("Input release is uncertain; driver is stopped");
     if (typeof callId !== "string" || !callId.length || callId.length > 256)
       throw new TypeError("cancel requires a valid call_id");
-    if (this.active?.context.call_id !== callId) {
+    const active = this.findActive(callId);
+    if (!active) {
       const now = Date.now();
       for (const [id, until] of this.cancelledCalls)
         if (until < now) this.cancelledCalls.delete(id);
@@ -486,15 +474,14 @@ export class ComputerDriver extends EventEmitter {
       this.cancelledCalls.set(callId, now + 300000);
       return;
     }
-    const active = this.active;
     active.reject(new Error("Computer call cancelled"));
     await active.done;
     if (this.closed)
       throw new Error("Input release is uncertain; restart the workload");
   }
   async reset(sessionId) {
-    if (this.active)
-      throw new Error("Cannot reset while a Computer call is running");
+    if (this.actives.has(sessionId))
+      throw new Error("Cannot reset while this Session has a running Computer call");
     await this.anonymous.cleanup(
       (instance) => instance.context.session_id === sessionId,
     );
@@ -504,10 +491,10 @@ export class ComputerDriver extends EventEmitter {
     this.sessions.delete(sessionId);
     await rm(session.directory, { recursive: true, force: true });
   }
-  /** 0115：close 失败后由重启调用。只结束本 driver 创建的 worker、原生输入和匿名进程，不碰主 profile。 */
+  /** 0115：close 失败后由重启调用。只结束本 driver 创建的 worker 和匿名进程，不碰主 profile。 */
   async abandon() {
     this.closed = true;
-    this.active?.reject(new Error("Computer is restarting"));
+    this.rejectAll(new Error("Computer is restarting"));
     const control = this.control;
     this.control = null;
     this.emit("control");
@@ -517,7 +504,6 @@ export class ComputerDriver extends EventEmitter {
     releaseWorkload?.();
     control?.resume?.();
     for (const session of this.sessions.values()) await session.worker.terminate();
-    this.desktop.process?.kill("SIGKILL");
     await this.anonymous.abandon();
     this.browser.close();
     for (const session of this.sessions.values())
@@ -527,14 +513,13 @@ export class ComputerDriver extends EventEmitter {
 
   async close() {
     this.closed = true;
-    const active = this.active;
-    active?.reject(new Error("Computer driver is stopping"));
+    const actives = [...this.actives.values()];
+    this.rejectAll(new Error("Computer driver is stopping"));
     if (this.control) await this.releaseControl(this.control.id);
-    if (active) await active.done;
+    await Promise.all(actives.map(active => active.done));
     for (const session of this.sessions.values())
       await session.worker.terminate();
     await this.anonymous.cleanup(() => true);
-    await this.desktop.cancel();
     await deadline(this.browser.releaseInputs(), 11000, "Browser release");
     await this.browser.browser.send("Browser.close");
     this.browser.close();

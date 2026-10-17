@@ -75,17 +75,37 @@ class CdpConnection extends EventEmitter {
   }
 }
 
-/** 每个后端绑定一个浏览器端点，并可限制为一个匿名 Context。 */
+/** 每个标签都是同一块屏幕上的窗口：新窗口铺满屏幕，观看者正在看的窗口始终留在最前。 */
+export class Screen {
+  front = null;
+  // 全屏会把窗口提到最前；随后立即把观看者的窗口提回来，Agent 开标签不切走画面。
+  async place(connection, targetId) {
+    const { windowId } = await connection.send("Browser.getWindowForTarget", { targetId });
+    await connection.send("Browser.setWindowBounds", { windowId, bounds: { windowState: "fullscreen" } });
+    if (this.front && this.front !== targetId)
+      await connection.send("Target.activateTarget", { targetId: this.front }).catch(() => { this.front = null; });
+  }
+  async show(connection, targetId) {
+    await connection.send("Target.activateTarget", { targetId });
+    this.front = targetId;
+  }
+}
+
+/** 每个后端绑定一个浏览器端点，并可限制为一个匿名 Context；主后端排除全部匿名 Context。 */
 export class BrowserBackend extends EventEmitter {
   constructor(
     url = "http://127.0.0.1:9222",
     name = "Akashic Chromium",
     browserContextId = null,
+    excluded = new Set(),
+    screen = new Screen(),
   ) {
     super();
     this.url = url;
     this.name = name;
     this.browserContextId = browserContextId;
+    this.excluded = excluded;
+    this.screen = screen;
   }
   tabs = new Map();
   connections = new Map();
@@ -111,8 +131,9 @@ export class BrowserBackend extends EventEmitter {
     for (const target of targetInfos.filter(
       (item) =>
         item.type === "page" &&
-        (!this.browserContextId ||
-          item.browserContextId === this.browserContextId),
+        (this.browserContextId
+          ? item.browserContextId === this.browserContextId
+          : !this.excluded.has(item.browserContextId)),
     )) {
       live.add(target.targetId);
       let tab = this.tabs.get(target.targetId);
@@ -191,6 +212,7 @@ export class BrowserBackend extends EventEmitter {
     let input = this.inputs.get(key);
     if (!input) {
       input = {
+        owner: context?.session_id,
         target,
         buttons: new Map(),
         keys: new Map(),
@@ -359,12 +381,16 @@ export class BrowserBackend extends EventEmitter {
         };
       }
       case "createTab": {
+        // 每个 Agent 标签是独立窗口：互不遮挡渲染，也不切走用户正在看的标签。
         const { targetId } = await this.browser.send("Target.createTarget", {
           url: "about:blank",
+          newWindow: true,
+          background: true,
           ...(this.browserContextId
             ? { browserContextId: this.browserContextId }
             : {}),
         });
+        await this.screen.place(this.browser, targetId);
         await this.listTabs();
         const tab = this.tabs.get(targetId);
         tab.created = {
@@ -430,9 +456,11 @@ export class BrowserBackend extends EventEmitter {
       tab.status = null;
     }
   }
-  async releaseInputs() {
+  /** 只松开这个 Session 按住的键鼠；不给 Session 时松开全部（人工接管与关闭）。 */
+  async releaseInputs(sessionId) {
     const errors = [];
     for (const input of this.inputs.values()) {
+      if (sessionId !== undefined && input.owner !== sessionId) continue;
       const connection = this.connections.get(input.target.tabId);
       if (!connection) {
         if (

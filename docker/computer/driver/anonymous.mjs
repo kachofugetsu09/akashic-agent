@@ -1,57 +1,32 @@
 import { EventEmitter } from "node:events";
-import { spawn } from "node:child_process";
 import { randomUUID } from "node:crypto";
-import { mkdtemp, readFile, rm } from "node:fs/promises";
-import { tmpdir } from "node:os";
-import { join } from "node:path";
-import { setTimeout as sleep } from "node:timers/promises";
 import { BrowserBackend } from "./cdp.mjs";
 
-/** 匿名浏览器共享独立 headless 进程，各 Context 隔离身份与页面存储。 */
+/** 匿名浏览器是主 Chromium 里的隔离 BrowserContext：不带个人 profile 的 cookie 与存储，也不另起进程。 */
 export class AnonymousBrowsers extends EventEmitter {
   constructor(idleMs = 600000) {
     super();
     this.idleMs = idleMs;
   }
   instances = new Map();
-  engine = null;
-  starting = null;
-  stopping = null;
+  // 主浏览器的目录据此排除匿名标签。
+  contexts = new Set();
+  // 主后端：借它的浏览器级连接创建、销毁 Context，并共用同一块屏幕。
+  main = null;
 
   async create(context, onEvent) {
     if (this.instances.size >= 8)
       throw new Error("Computer has 8 anonymous browsers; close one first");
-    // 1. 先保留名额，并发创建也不能超过上限或重复启动 headless 进程。
+    // 1. 先保留名额，并发创建也不能超过上限。
     const id = randomUUID();
-    const instance = {
-      id,
-      context,
-      backend: null,
-      contextId: null,
-      closing: false,
-      busy: 0,
-      idleTimer: null,
-    };
+    const instance = { id, context, backend: null, contextId: null, closing: false, busy: 0, idleTimer: null };
     this.instances.set(id, instance);
     try {
-      if (this.stopping) await this.stopping;
-      if (!this.engine)
-        this.starting ??= this.startEngine().finally(() => {
-          this.starting = null;
-        });
-      if (this.starting) await this.starting;
-      const engine = this.engine;
-      if (this.exited()) throw new Error("Anonymous Chromium exited; close its browsers before recreating");
-      // 2. 创建空的隐身 Context，不读取或复制个人 profile 和扩展。
-      const { browserContextId } = await engine.backend.browser.send(
-        "Target.createBrowserContext",
-      );
+      // 2. 在主 Chromium 里建空的隔离 Context；扩展默认不进入这类 Context。
+      const { browserContextId } = await this.main.browser.send("Target.createBrowserContext", { disposeOnDetach: false });
       instance.contextId = browserContextId;
-      const backend = new BrowserBackend(
-        engine.url,
-        `Anonymous ${id}`,
-        browserContextId,
-      );
+      this.contexts.add(browserContextId);
+      const backend = new BrowserBackend(undefined, `Anonymous ${id}`, browserContextId, undefined, this.main.screen);
       instance.backend = backend;
       await backend.start();
       this.emit("targets");
@@ -69,87 +44,6 @@ export class AnonymousBrowsers extends EventEmitter {
     }
   }
 
-  /** 临时数据目录只属于这份 headless 进程；主 profile 始终由主 owner 管理。 */
-  async startEngine() {
-    const directory = await mkdtemp(join(tmpdir(), "akashic-anonymous-"));
-    const child = spawn(
-      "chromium",
-      [
-        "--headless=new",
-        `--user-data-dir=${directory}/profile`,
-        "--remote-debugging-address=127.0.0.1",
-        "--remote-debugging-port=0",
-        "--disable-setuid-sandbox",
-        "--disable-dev-shm-usage",
-        "--disable-gpu",
-        "--disable-quic",
-        "--no-first-run",
-        "--no-default-browser-check",
-        "about:blank",
-      ],
-      {
-        detached: true,
-        stdio: ["ignore", "ignore", "pipe"],
-        env: {
-          ...process.env,
-          HOME: directory,
-          XDG_CONFIG_HOME: `${directory}/config`,
-          XDG_CACHE_HOME: `${directory}/cache`,
-        },
-      },
-    );
-    const engine = { directory, child, backend: null, stderr: "" };
-    engine.exited = new Promise((resolve) => child.once("exit", resolve));
-    child.stderr.on("data", (chunk) => {
-      engine.stderr = (engine.stderr + chunk).slice(-4096);
-    });
-    this.engine = engine;
-    try {
-      await new Promise((resolve, reject) => {
-        child.once("spawn", resolve);
-        child.once("error", reject);
-      });
-      const deadline = Date.now() + 10000;
-      let port;
-      while (Date.now() < deadline) {
-        if (this.exited())
-          throw new Error(`Anonymous Chromium exited: ${engine.stderr}`);
-        try {
-          port = Number(
-            (
-              await readFile(`${directory}/profile/DevToolsActivePort`, "utf8")
-            ).split("\n")[0],
-          );
-          break;
-        } catch (error) {
-          if (error.code !== "ENOENT") throw error;
-        }
-        await sleep(50);
-      }
-      if (!Number.isInteger(port) || port < 1 || port > 65535)
-        throw new Error("Anonymous Chromium did not publish a CDP port");
-      engine.url = `http://127.0.0.1:${port}`;
-      const backend = new BrowserBackend(engine.url);
-      await backend.start();
-      // 标签页的创建、关闭、标题和网址变化都由 Chromium 推送，目录不靠轮询发现变化。
-      backend.browser.on("event", ({ method }) => {
-        if (method?.startsWith("Target.target")) this.emit("targets");
-      });
-      await backend.browser.send("Target.setDiscoverTargets", { discover: true });
-      engine.backend = backend;
-    } catch (error) {
-      await this.stopEngine();
-      throw error;
-    }
-  }
-
-  exited() {
-    return (
-      this.engine.child.exitCode !== null ||
-      this.engine.child.signalCode !== null
-    );
-  }
-
   get(id, context, allowClosing = false) {
     const instance = this.instances.get(id);
     if (!instance || (instance.closing && !allowClosing))
@@ -165,17 +59,14 @@ export class AnonymousBrowsers extends EventEmitter {
   async call(id, method, params, context) {
     if (method === "closeBrowser") return this.close(id, context);
     const instance = this.get(id, context);
-    if (this.exited())
-      throw new Error("Anonymous Chromium exited; close its browsers before recreating");
     this.hold(instance);
     try { return await instance.backend.call(method, params, context); }
     finally { this.unhold(instance); }
   }
 
   async releaseInputs(context) {
-    if (!this.engine || this.exited()) return;
     for (const instance of this.instances.values())
-      if (instance.context.session_id === context.session_id)
+      if (instance.context.session_id === context.session_id && instance.backend && !instance.closing)
         await instance.backend.releaseInputs();
   }
 
@@ -199,7 +90,7 @@ export class AnonymousBrowsers extends EventEmitter {
     instance.idleTimer.unref();
   }
 
-  /** 关闭 Context 不影响其他 Context；最后一个关闭时释放 headless 进程。 */
+  /** 关闭一个 Context 连同它的标签；不影响主 profile 和其他 Context。 */
   async close(id, context, reason = "closed") {
     const instance = this.get(id, context, true);
     if (instance.closing) return instance.done;
@@ -208,64 +99,35 @@ export class AnonymousBrowsers extends EventEmitter {
     this.emit("closed", { browserId: id, reason, context: instance.context });
     instance.done = (async () => {
       try {
-        if (instance.backend && !this.exited())
-          await instance.backend.releaseInputs();
+        if (instance.backend?.browser) await instance.backend.releaseInputs();
       } finally {
+        instance.backend?.close();
         try {
-          instance.backend?.close();
+          if (instance.contextId && this.main?.browser)
+            await this.main.browser.send("Target.disposeBrowserContext", { browserContextId: instance.contextId });
         } finally {
-          try {
-            if (instance.contextId && !this.exited())
-              await this.engine.backend.browser.send(
-                "Target.disposeBrowserContext",
-                { browserContextId: instance.contextId },
-              );
-          } finally {
-            this.instances.delete(id);
-            if (!this.instances.size && this.engine) {
-              this.stopping = this.stopEngine().finally(() => { this.stopping = null; });
-              await this.stopping;
-            }
-          }
+          this.contexts.delete(instance.contextId);
+          this.instances.delete(id);
+          this.emit("targets");
         }
       }
     })();
     return instance.done;
   }
 
-  async stopEngine() {
-    const engine = this.engine;
-    engine.backend?.close();
-    const child = engine.child;
-    if (child.pid && !this.exited()) {
-      process.kill(-child.pid, "SIGTERM");
-      const exited = await Promise.race([
-        engine.exited.then(() => true),
-        sleep(5000).then(() => false),
-      ]);
-      if (!exited) {
-        process.kill(-child.pid, "SIGKILL");
-        await engine.exited;
-      }
-    }
-    await rm(engine.directory, { recursive: true, force: true });
-    this.engine = null;
-  }
-
-  /** 正常关闭失败后的强制收尾：通知所属 Session，直接结束 headless 进程并删除临时目录。 */
+  /** 正常关闭失败后的强制收尾：通知所属 Session，丢掉连接；Context 随浏览器重启消失。 */
   async abandon() {
     for (const instance of this.instances.values()) {
       clearTimeout(instance.idleTimer);
       instance.closing = true;
+      instance.backend?.close();
       this.emit("closed", { browserId: instance.id, reason: "restart", context: instance.context });
     }
     this.instances.clear();
-    if (this.starting) await this.starting.catch(() => {});
-    if (this.engine) await this.stopEngine();
+    this.contexts.clear();
   }
 
   async cleanup(match) {
-    // 顺序关闭，最后一个 Context 独占 headless 的停机与目录删除。
     for (const instance of [...this.instances.values()].filter(match))
       await this.close(instance.id, instance.context);
   }

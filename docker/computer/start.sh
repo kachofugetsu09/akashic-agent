@@ -1,10 +1,9 @@
 #!/bin/sh
 set -eu
 
-# Every graphical process shares one session bus. This keeps Chromium, XFCE,
-# clipboard ownership, and desktop helpers on the same real user session.
-if [ "${1:-}" != "--desktop-session" ]; then
-  exec dbus-run-session -- "$0" --desktop-session
+# Chromium 和剪贴板共用一条会话总线；没有桌面环境，X server 只服务浏览器与画面编码。
+if [ "${1:-}" != "--browser-session" ]; then
+  exec dbus-run-session -- "$0" --browser-session
 fi
 shift
 
@@ -49,11 +48,13 @@ cleanup() {
   # 编码服务先释放 XShm 和输入连接，X server 仍在时才能完成清理。
   kill -TERM "${stream_pid:-}" 2>/dev/null || true
   wait "${stream_pid:-}" 2>/dev/null || true
-  kill -TERM "${desktop_pid:-}" "${display_pid:-}" "${xvnc_pid:-}" 2>/dev/null || true
+  kill -TERM "${wm_pid:-}" 2>/dev/null || true
+  kill -TERM "${xvnc_pid:-}" 2>/dev/null || true
   wait 2>/dev/null || true
 }
 trap cleanup TERM INT EXIT
 
+# 屏幕尺寸跟随观看面板（selkies 按 RandR 调整），这里只是还没人看时的初始值。
 rm -f /tmp/.X11-unix/X99 /tmp/.X99-lock
 Xvnc :99 \
   -geometry 1280x800 \
@@ -68,48 +69,46 @@ attempt=0
 while [ ! -S /tmp/.X11-unix/X99 ]; do
   attempt=$((attempt + 1))
   if [ "$attempt" -ge 100 ]; then
-    echo "Computer display did not create its X socket" >&2
+    echo "Browser display did not create its X socket" >&2
     exit 1
   fi
   sleep 0.1
 done
 
-websockify 0.0.0.0:6080 127.0.0.1:5999 &
-display_pid=$!
-
-# 视频与输入仍在同一 X11 / IPC namespace，随唯一桌面 owner 回收。
+# 有人看才编码：60fps、恒定质量，静止时补一帧高质量画面让文字清晰；光标由观看端本地绘制。
 /opt/computer/stream-venv/bin/python -m selkies \
   --addr 0.0.0.0 --port 6081 --mode websockets \
   --web-root /opt/computer/stream-web \
   --encoder h264enc --gpu-id=-1 \
-  --framerate 30-30 --video-bitrate 4000-4000 --rate-control-mode cbr \
+  --framerate 60,15-60 --rate-control-mode crf --video-crf 25,18-35 \
+  --video-paintover-crf 18 --video-fullcolor true \
+  --manual-resolution false --enable-resize true --use-css-scaling false \
+  --use-browser-cursors true \
   --audio-enabled false --microphone-enabled false --webcam-enabled false \
   --gamepad-enabled false --publish-input-devices false \
   --command-enabled false --file-transfers "" --printing-enabled false \
-  --enable-sharing false --enable-basic-auth false --enable-clipboard true \
-  --manual-resolution true --manual-width 1280 --manual-height 800 &
+  --enable-sharing false --enable-basic-auth false --enable-clipboard true &
 stream_pid=$!
 
-startxfce4 &
-desktop_pid=$!
+# matchbox 让每个窗口按当前屏幕尺寸铺满并跟随 RandR；没有标题栏，也不画光标。
+matchbox-window-manager -use_titlebar no -use_cursor no &
+wm_pid=$!
 
-attempt=0
-until xprop -root _NET_SUPPORTING_WM_CHECK 2>/dev/null | grep -q "window id # 0x"; do
-  attempt=$((attempt + 1))
-  if ! kill -0 "$desktop_pid" 2>/dev/null || [ "$attempt" -ge 100 ]; then
-    echo "Computer desktop did not start its window manager" >&2
-    exit 1
-  fi
-  sleep 0.1
-done
-
+# kiosk 不画标签条和地址栏，那些由观看面板本地绘制。
+# 每个 Agent 标签是独立窗口，被挡住的窗口和后台标签也照常渲染、计时。
+# 关掉最后一个窗口时浏览器不退出，由 driver 补开空白页；OpenCLI 扩展调试时不弹提示条占画面。
 chromium \
   --user-data-dir=/data/profile \
+  --password-store=basic \
   --load-extension=/opt/opencli-extension \
   --remote-debugging-address=127.0.0.1 \
   --remote-debugging-port=9222 \
-  --window-size=1280,800 \
-  --start-maximized \
+  --kiosk \
+  --keep-alive-for-test \
+  --silent-debugger-extension-api \
+  --disable-backgrounding-occluded-windows \
+  --disable-background-timer-throttling \
+  --disable-renderer-backgrounding \
   --disable-setuid-sandbox \
   --test-type \
   --disable-dev-shm-usage \

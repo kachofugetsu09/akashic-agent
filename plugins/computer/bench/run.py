@@ -20,7 +20,7 @@ from akashic_sdk import AsyncAkashic
 UPSTREAM = "a7658beb68e1d3572329e06734c5822bd284ddc8"
 PROMPT = """Complete this browser interaction task using the computer skill and computer tool.
 Use the existing task tab at {url}. Task: {instruction}
-Inspect visible UI and perform ordinary user input with the documented Browser API or sky.
+Inspect visible UI and perform ordinary user input with the documented Browser API.
 Do not reload, navigate away, create another task instance, or restart the episode.
 Do not read source files, scripts, hidden task state, reward globals, core, or genProblem.
 Do not use shell, HTTP requests, or direct JavaScript DOM mutation to solve the task.

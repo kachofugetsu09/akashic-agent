@@ -99,17 +99,13 @@ try {
     assert.equal(after.at(-1), 0);
     checks.push(`${mode}: explicit image output, held drag, released hover`);
     if (mode === "main") {
-      // 实际浏览器快捷键放大，验证 clip 仍指向同一个可见元素。
-      await action('for(var i=0;i<8;i++) await sky.press_key({key:"ctrl+plus"});');
+      // 没有桌面层后不再用浏览器快捷键放大；clip 与整页截图仍按 CSS 像素对齐。
       const crop = imageInfo(await action('await nodeRepl.emitImage(await tab.screenshot({clip:{x:20,y:20,width:80,height:80}}));'));
       assert.deepEqual(crop.size, [80,80]);
-      assert.ok(crop.center[0] > 240 && crop.center[1] > 145 && crop.center[1] < 185 && crop.center[2] < 20);
-      const bounds = JSON.parse(texts(await action('nodeRepl.write(await tab.playwright.evaluate(() => ({width:document.documentElement.scrollWidth,height:document.documentElement.scrollHeight,dpr:devicePixelRatio})));'))[0]);
-      assert.ok(bounds.dpr > 1);
+      const bounds = JSON.parse(texts(await action('nodeRepl.write(await tab.playwright.evaluate(() => ({width:document.documentElement.scrollWidth,height:document.documentElement.scrollHeight})));'))[0]);
       const full = imageInfo(await action('await nodeRepl.emitImage(await tab.screenshot({fullPage:true}));'));
       assert.deepEqual(full.size, [bounds.width,bounds.height]);
-      await action('await sky.press_key({key:"ctrl+0"});');
-      checks.push("zoom: CSS clip keeps size and target; full page keeps document bounds");
+      checks.push("clip keeps CSS size; full page keeps document bounds");
     }
     if (mode === "anonymous") await action("await owner.close();");
   }

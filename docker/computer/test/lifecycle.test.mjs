@@ -106,76 +106,42 @@ test("source driver: browser APIs, tab ownership, cancellation and stale work", 
       "JS errors must not become timeout",
     );
     await run('nodeRepl.write("ready");', "cancel");
-    const pid = driver.desktop.process.pid;
-    await assert.rejects(
-      run(
-        "var handle = sky.drag_handle(); await handle.start({x:300,y:300}); while(true) {}",
-        "cancel",
-        "one",
-        500,
-      ),
-      /timed out/,
-    );
+    await assert.rejects(run("while(true) {}", "cancel", "one", 500), /timed out/);
     assert.equal(driver.active, null);
     assert.equal(driver.closed, false);
-    assert.notEqual(driver.desktop.process.pid, pid);
+    // 超时重置的是 JS 绑定，浏览器和截图照常可用。
     assert.ok(
       (
         await run(
-          "await nodeRepl.emitImage((await sky.get_screenshot())[0].bytes);",
+          "var tab = await browser.tabs.new(); await nodeRepl.emitImage(await tab.screenshot({}));",
           "cancel",
         )
       ).content.some((x) => x.type === "image"),
     );
-    const calls = [];
-    const nativeCall = driver.desktop.call.bind(driver.desktop);
-    driver.desktop.call = (method, args) => {
-      calls.push(method);
-      return nativeCall(method, args);
-    };
-    await run(
-      "setTimeout(()=>sky.move({x:400,y:400}).catch(()=>{}),100); void 0;",
-      "late",
-    );
-    await run("await new Promise(resolve=>setTimeout(resolve,250));", "late");
-    assert.ok(
-      !calls.includes("move"),
-      "a timer from a settled call must not gain the next call identity",
-    );
+    // 不同 Session 并行；同一 Session 同时只有一个调用。
+    const slow = run("await new Promise(r => setTimeout(r, 800)); nodeRepl.write('slow');", "parallel-a");
+    assert.match(text(await run("nodeRepl.write('fast');", "parallel-b")), /fast/);
+    await assert.rejects(run("1;", "parallel-a"), /already has a running/);
+    assert.match(text(await slow), /slow/);
+    // 匿名浏览器是同一 Chromium 里的隔离 Context：不带个人 profile 的 cookie，也不出现在主目录里。
+    const cdp = (method, params) => driver.browser.browser.send(method, params);
+    await cdp("Storage.setCookies", { cookies: [{ name: "who", value: "profile", domain: "example.test", path: "/" }] });
+    const mainTabs = (await driver.browser.listTabs()).length;
+    await run("var anon = await agent.browsers.create(); var page = await anon.tabs.new();", "anon");
+    const [contextId] = driver.anonymous.contexts;
+    assert.ok(contextId);
+    assert.ok((await cdp("Storage.getCookies", {})).cookies.some((item) => item.name === "who"));
+    assert.equal((await cdp("Storage.getCookies", { browserContextId: contextId })).cookies.length, 0);
+    assert.equal((await driver.browser.listTabs()).length, mainTabs);
+    assert.ok((await driver.targets()).some((target) => target.anonymous));
+    await driver.run({ context: { session_id: "anon", turn_id: "one", call_id: String(++serial) }, endTurn: true });
+    assert.equal(driver.anonymous.contexts.size, 0);
   } catch (error) {
     console.error(error);
     throw error;
   } finally {
     await driver.close();
   }
-});
-
-test("unresponsive native release closes admission within its deadline", async () => {
-  const driver = new ComputerDriver();
-  await driver.start();
-  const child = driver.desktop.process;
-  child.kill("SIGSTOP");
-  const started = performance.now();
-  await assert.rejects(
-    driver.run({
-      context: { session_id: "stalled-native", turn_id: "one", call_id: "one" },
-      code: "42;",
-      timeoutMs: 15000,
-    }),
-    /release is uncertain/,
-  );
-  assert.ok(performance.now() - started < 11000);
-  assert.equal(driver.closed, true);
-  assert.equal(driver.active, null);
-  await assert.rejects(
-    driver.run({
-      context: { session_id: "next", turn_id: "one", call_id: "two" },
-      code: "42;",
-    }),
-    /stopped/,
-  );
-  await assert.rejects(driver.close(), /without a release receipt/);
-  assert.equal(child.signalCode, "SIGKILL");
 });
 
 test("cancel releases direct and emulated CDP touch inputs", async () => {
