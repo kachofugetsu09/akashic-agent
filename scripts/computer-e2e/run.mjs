@@ -84,6 +84,37 @@ try {
   await until(async () => docker("exec", container, "node", "-e",
     "fetch('http://127.0.0.1:8989/main').then(r=>console.log(r.status)).catch(()=>console.log('starting'))"),
     value => value === "200", "Remote HTTP page startup");
+  // Navigation uses the same control owner, and reports real browser failures.
+  const human = (await post("/view/open", {})).target;
+  const owner = randomUUID();
+  await post("/control/take", {id: owner, target: human});
+  for (const [path, body] of [["navigate", {target: human, action: "go", url: "http://127.0.0.1:8989/main"}],
+    ["open", {}], ["close", {target: human}]]) {
+    const response = await fetch(origin + `/api/dashboard/computer/${path}`, {method: "POST",
+      headers: {"content-type": "application/json"}, body: JSON.stringify(body)});
+    assert.equal(response.status, 409, path); await response.body.cancel();
+  }
+  await post("/view/navigate", {control: owner, target: human, action: "go", url: "http://127.0.0.1:8989/main"});
+  await post("/control/release", {id: owner});
+  for (const [url, expected] of [["http://", 400], ["javascript:alert(1)", 400], ["http://127.0.0.1:1/", 502]]) {
+    const response = await fetch(origin + "/api/dashboard/computer/navigate", {method: "POST",
+      headers: {"content-type": "application/json"}, body: JSON.stringify({target: human, action: "go", url})});
+    assert.equal(response.status, expected, url); await response.body.cancel();
+  }
+  pass("navigation checks control ownership and reports invalid URLs and failed loads");
+  const humanNavigation = post("/view/navigate", {target: human, action: "go", url: "http://127.0.0.1:8989/held?human"});
+  await until(async () => JSON.parse(docker("exec", container, "node", "-e",
+    "fetch('http://127.0.0.1:8989/status').then(r=>r.text()).then(console.log)")), v => v.held === 1, "human navigation admitted");
+  let agentFinished = false;
+  const afterHuman = post("/driver/run", {context: {session_id: "human-navigation", turn_id: "one", call_id: randomUUID()},
+    code: "console.log(await browser.tabs.list());"}).then(result => { agentFinished = true; return result; });
+  await until(async () => (await (await fetch(gateway + "/activity")).json()).active, Boolean, "Agent waits for navigation");
+  assert.equal(agentFinished, false);
+  docker("exec", container, "node", "-e", "fetch('http://127.0.0.1:8989/release').then(r=>r.text()).then(console.log)");
+  await humanNavigation; await afterHuman;
+  await post("/driver/run", {context: {session_id: "human-navigation", turn_id: "one", call_id: randomUUID()}, endTurn: true});
+  await post("/view/close", {target: human});
+  pass("Agent work waits for already admitted human navigation");
   // Hold six real navigations at the HTTP server so every Session overlaps.
   const parallel = Promise.all(Array.from({length: 6}, (_, index) => post("/driver/run", {
     context: {session_id: `parallel-${index}`, turn_id: "one", call_id: randomUUID()},

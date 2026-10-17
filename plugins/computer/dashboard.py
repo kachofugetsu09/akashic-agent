@@ -34,10 +34,6 @@ def _view_only_allows(text: str) -> bool:
     return text.startswith(_VIEW_ONLY_PREFIXES)
 
 
-# 松开按键和键盘复位任何时候都放行，输入权限收回时不会留下按住的键。
-_RELEASE_PREFIXES = ("ku,", "kr")
-
-
 def _state_event(line: str) -> dict[str, object] | None:
     if not line.startswith("data: "):
         return None
@@ -52,7 +48,7 @@ def _state_event(line: str) -> dict[str, object] | None:
 def _agent_idle(state: dict[str, object]) -> bool:
     browser = state.get("browser")
     ready = isinstance(browser, dict) and cast(dict[str, object], browser).get("state") == "ready"
-    return ready and not state.get("turns") and not state.get("active") and not state.get("control")
+    return ready and state.get("turns") == [] and state.get("active") is False and state.get("control") is False
 
 
 def _gateway_error(response: httpx.Response) -> str:
@@ -84,7 +80,7 @@ def register(app: FastAPI, context: DashboardContext) -> httpx.Client:
         if response.status_code >= 400:
             raise HTTPException(
                 status_code=502,
-                detail=f"Computer returned {response.status_code}",
+                detail=_gateway_error(response),
             )
         return response
 
@@ -110,18 +106,18 @@ def register(app: FastAPI, context: DashboardContext) -> httpx.Client:
 
     @app.post("/api/dashboard/computer/navigate")
     def navigate(payload: dict[str, str]) -> Response:
-        body = {key: payload[key] for key in ("target", "action", "url") if key in payload}
+        body = {key: payload[key] for key in ("target", "action", "url", "control") if key in payload}
         result = forward("POST", "/view/navigate", body)
         return Response(result.content, media_type="application/json")
 
     @app.post("/api/dashboard/computer/open")
     def open_page(payload: dict[str, str]) -> Response:
-        result = forward("POST", "/view/open", {"url": payload.get("url", "")})
+        result = forward("POST", "/view/open", {key: payload[key] for key in ("url", "control") if key in payload})
         return Response(result.content, media_type="application/json")
 
     @app.post("/api/dashboard/computer/close")
     def close_page(payload: dict[str, str]) -> Response:
-        result = forward("POST", "/view/close", {"target": payload.get("target", "")})
+        result = forward("POST", "/view/close", {key: payload[key] for key in ("target", "control") if key in payload})
         return Response(result.content, media_type="application/json")
 
     @app.get("/api/dashboard/computer/stream-client")
@@ -198,6 +194,7 @@ def register(app: FastAPI, context: DashboardContext) -> httpx.Client:
         controlled = False
         # 没接管时，Agent 空闲就可以直接操作；状态来自网关事件流，收回时先松开按住的键和鼠标。
         idle = False
+        held_keys: set[str] = set()
         last_pointer: list[str] = []
         touched = 0.0
 
@@ -212,9 +209,13 @@ def register(app: FastAPI, context: DashboardContext) -> httpx.Client:
                     was_idle, idle = idle, _agent_idle(state)
                     # 先收回输入再松键：发送期间到达的按下不会再被转发。
                     if was_idle and not idle:
-                        await upstream.send("kr")
+                        releasing = tuple(held_keys)
+                        held_keys.clear()
+                        for key in releasing:
+                            await upstream.send("ku," + key)
                         if len(last_pointer) == 4 and last_pointer[3] != "0":
                             await upstream.send(",".join([*last_pointer[:3], "0", "0"]))
+                            last_pointer.clear()
 
         async def touch() -> None:
             # 人在直接操作时续期，浏览器不会在用户使用中途休眠。
@@ -222,11 +223,11 @@ def register(app: FastAPI, context: DashboardContext) -> httpx.Client:
             if time.monotonic() - touched < 30:
                 return
             touched = time.monotonic()
-            with suppress(httpx.HTTPError):
-                _ = await reader.post("/view/touch", json={})
+            result = await reader.post("/view/touch", json={})
+            result.raise_for_status()
 
         def allowed(text: str) -> bool:
-            if control_id or _view_only_allows(text) or text.startswith(_RELEASE_PREFIXES):
+            if control_id or _view_only_allows(text):
                 return True
             return idle
 
@@ -257,6 +258,12 @@ def register(app: FastAPI, context: DashboardContext) -> httpx.Client:
                                 if control_id or idle:
                                     await upstream.send(message["bytes"])
                             elif (text := message.get("text")) is not None and allowed(text):
+                                if text.startswith("kd,"):
+                                    held_keys.add(text.split(",")[1])
+                                elif text.startswith("ku,"):
+                                    held_keys.discard(text.split(",")[1])
+                                elif text == "kr":
+                                    held_keys.clear()
                                 if text.startswith("m,"):
                                     last_pointer[:] = text.split(",")[:4]
                                 await upstream.send(text)

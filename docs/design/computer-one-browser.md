@@ -46,14 +46,16 @@ Agent: browser.tabs.new()
                      ├─ 未接管、Agent 空闲：原样转发；每 30 秒向网关 /view/touch 续期
                      └─ 未接管、Agent 在用：只放行 SETTINGS、r,、s,、_arg_fps、_f、START/STOP_VIDEO、
                                 REQUEST_KEYFRAME、CLIENT_FRAME_ACK、LOST_FRAME、_gz；其余丢弃
-                        （ku,、kr 松键总是放行）
+                        （收回权限时只释放这个连接曾按下的键鼠，不放行迟到的输入）
 ```
 
 - “Agent 空闲”取自网关事件流：浏览器 ready，且没有进行中的回合（`turns`）、没有操作
   （`active`）、没有人接管（`control`）。变成不空闲时代理先发 `kr` 和一次松开鼠标。
 - 面板据同一状态开关 iframe 的指针和键盘转发，不重连；被挡住时点画面，状态胶囊和画面闪一下。
 - 导航走网关：`/view/navigate`（go、back、forward、reload）、`/view/open`、`/view/close`。
-  只接受 http、https 和 about:blank；Agent 在用时返回 409。Ctrl/Cmd+L 聚焦地址栏，
+  只接受 http、https 和 about:blank；Agent 在用或请求不属于当前接管窗口时返回 409。
+  接管导航携带该窗口的控制身份；已接纳的人工导航完成后，才开始新的 Agent 操作或接管。
+  地址无效返回 400，浏览器导航失败返回真实错误。Ctrl/Cmd+L 聚焦地址栏，
   Ctrl/Cmd+T 新建标签。
 
 - 屏幕尺寸由 selkies 按面板尺寸调整（`r,宽x高`），matchbox 让窗口跟着铺满。

@@ -159,21 +159,27 @@ class InputError extends Error {}
 class BusyError extends InputError {}
 
 // 人工直接操作：接管就绪时记进接管的操作，交还前会等它做完；没人接管、Agent 也没有回合和操作时直接执行。
-async function humanAction(task) {
-  const control = driver.control;
-  if (control?.ready) {
-    const job = task();
-    control.jobs.add(job);
-    try { return await job; } finally { control.jobs.delete(job); }
-  }
-  if (control || activeOperations.size || computer.turns.size || driver.actives.size || driver.agentJobs.size)
-    throw new BusyError("The Agent is using the browser; take control first");
-  return await task();
+async function humanAction(id, task) {
+  const owner = driver, control = owner.control;
+  if (control ? !control.ready || control.id !== id
+    : id || activeOperations.size || computer.turns.size || owner.actives.size || owner.agentJobs.size)
+    throw new BusyError("The browser is in use; take control in this window first");
+  // Register before awaiting: Agent work and takeover must wait for admitted navigation.
+  const jobs = control ? control.jobs : owner.humanJobs;
+  const job = computer.use(task);
+  jobs.add(job);
+  try { return await job; } finally { jobs.delete(job); }
 }
 
 // 地址栏只打开网页和空白页，不执行 javascript: 等会在页面里运行代码的地址。
 function pageUrl(value) {
-  const url = new URL(requiredString(value, "url", 8192));
+  const text = requiredString(value, "url", 8192);
+  let url;
+  try { url = new URL(text); }
+  catch (error) {
+    if (error instanceof TypeError) throw new InputError("Invalid page URL");
+    throw error;
+  }
   if (!["http:", "https:"].includes(url.protocol) && url.href !== "about:blank")
     throw new InputError("Only http, https and about:blank pages can be opened");
   return url.href;
@@ -714,19 +720,19 @@ const server = createServer(async (request, response) => {
     } else if (request.method === "POST" && ["/view/navigate", "/view/open", "/view/close"].includes(url.pathname)) {
       const payload = await body(request);
       if (!driver || computer.state !== "ready") throw new InputError("Computer is not awake");
-      computer.touch();
+      const id = payload.control === undefined ? "" : requiredString(payload.control, "control", 128);
       if (url.pathname === "/view/open") {
-        const address = payload.url ? pageUrl(payload.url) : "about:blank";
-        json(response, 200, { target: await humanAction(() => driver.openPage(address)) });
+        const address = payload.url === undefined ? "about:blank" : pageUrl(payload.url);
+        json(response, 200, { target: await humanAction(id, () => driver.openPage(address)) });
         return;
       }
       const target = requiredString(payload.target, "target", 128);
-      if (url.pathname === "/view/close") await humanAction(() => driver.closePage(target));
+      if (url.pathname === "/view/close") await humanAction(id, () => driver.closePage(target));
       else if (!["go", "back", "forward", "reload"].includes(payload.action))
         throw new InputError("action must be go, back, forward or reload");
       else {
         const address = payload.action === "go" ? pageUrl(payload.url) : "";
-        await humanAction(() => driver.navigate(target, payload.action, address));
+        await humanAction(id, () => driver.navigate(target, payload.action, address));
       }
       json(response, 200, { done: true });
     } else if (request.method === "POST" && url.pathname === "/view/touch") {
