@@ -83,6 +83,9 @@ plugin = "assets@release"
 [rows."visuals"]
 plugin = "visuals@release"
 
+[rows."sites"]
+plugin = "sites@release"
+
 [rows."standard_tools"]
 plugin = "standard_tools@release"
 
