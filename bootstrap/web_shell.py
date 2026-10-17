@@ -380,7 +380,7 @@ async def _relay_while_admitted(websocket: WebSocket, relay: Awaitable[None],
             now = time.monotonic()
             if unavailable_since is None:
                 unavailable_since = now
-                logger.warning("Web Shell 复检暂时无法确认授权，保持连接至多 %.0f 秒", _WS_GUARD_GRACE_SECONDS)
+                logger.warning("Web Shell 复检暂时无法确认授权，保持连接；持续 %.0f 秒后的下一次失败才断开", _WS_GUARD_GRACE_SECONDS)
             if now - unavailable_since >= _WS_GUARD_GRACE_SECONDS:
                 logger.warning("Web Shell 入口守卫持续不可用 %.0f 秒，以 1013 断开", now - unavailable_since)
                 await _close_relay(websocket, task, 1013, "入口守卫不可用")
