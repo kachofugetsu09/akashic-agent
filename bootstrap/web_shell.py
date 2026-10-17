@@ -6,11 +6,13 @@ import logging
 import stat
 import socket
 import threading
+import time
 from collections.abc import AsyncIterable, AsyncIterator, Awaitable, Callable, Mapping
 from contextlib import AsyncExitStack, asynccontextmanager, suppress
 from dataclasses import dataclass
 from http.cookiejar import CookieJar, DefaultCookiePolicy
 from pathlib import Path
+from typing import Literal
 from urllib.parse import unquote, urlsplit
 
 import httpx
@@ -30,6 +32,10 @@ from core.common.file_io import run_file_io
 _SHELL_HEADERS = frozenset({"x-akashic-method", "x-akashic-uri", "x-akashic-upgrade", "x-akashic-peer", "x-akashic-host"})
 # 已建立的 WebSocket 每隔这么久重新问一次守卫；凭据失效后在此期限内断开。
 _WS_RECHECK_SECONDS = 5.0
+# 守卫暂不可用（超时、5xx、守卫缺席、plan 读不到）时，从首次复检失败起最多保持这么久，之后以 1013 断开让浏览器重连。
+# 一次循环停顿无论多长只让在途复检失败一次；要连续失败跨过宽限才断开，未经确认的转发最长约
+# 宽限 + 复检间隔 + 守卫超时（约 45 秒），不会无限放行。
+_WS_GUARD_GRACE_SECONDS = 30.0
 _GUARD_RESPONSE_HEADERS = {"content-type", "location", "cache-control", "retry-after", "www-authenticate"}
 
 _REQUEST_HEADERS_EXCLUDED = {
@@ -339,30 +345,62 @@ def create_web_shell_app(workspace: Path, *, wait_for_ready: bool = False) -> Fa
     return app
 
 
+_Recheck = Literal["admitted", "denied", "unavailable"]
+
+
+# 复检结论与握手一致：守卫的非 2xx、<500 响应或路由已撤回算拒绝；5xx 与 plan 读取失败算守卫暂不可用。
+async def _recheck(admit: Callable[[], Awaitable[Endpoint | Response | None]]) -> _Recheck:
+    try:
+        target = await admit()
+    except (OSError, ValueError) as error:
+        logger.warning("Web Shell 复检时 endpoint plan 无法读取", exc_info=error)
+        return "unavailable"
+    if isinstance(target, Endpoint):
+        return "admitted"
+    if isinstance(target, Response) and target.status_code >= 500:
+        return "unavailable"
+    return "denied"
+
+
 async def _relay_while_admitted(websocket: WebSocket, relay: Awaitable[None],
                                 admit: Callable[[], Awaitable[Endpoint | Response | None]]) -> None:
-    """长连接不止握手时授权一次：定期重问守卫，不再放行（会话失效、守卫缺席）即断开。"""
+    """长连接不止握手时授权一次：定期重问守卫；明确拒绝即 1008 断开，守卫持续不可用超过宽限则 1013 断开。"""
     task = asyncio.ensure_future(relay)
+    unavailable_since: float | None = None
     try:
         while not (await asyncio.wait({task}, timeout=_WS_RECHECK_SECONDS))[0]:
-            try:
-                admitted = isinstance(await admit(), Endpoint)
-            except (OSError, ValueError):
-                admitted = False
-            if admitted:
+            outcome = await _recheck(admit)
+            if outcome == "admitted":
+                unavailable_since = None
                 continue
-            # 先以 1008 告知浏览器授权失效，再停止转发；反过来会被转发清理抢先以 1000 关闭。
-            if websocket.client_state is WebSocketState.CONNECTED:
-                with suppress(RuntimeError, OSError):
-                    await websocket.close(code=1008, reason="授权已失效")
-            _ = task.cancel()
-            with suppress(asyncio.CancelledError):
-                await task
-            return
+            if outcome == "denied":
+                await _close_relay(websocket, task, 1008, "授权已失效")
+                return
+            # 守卫答不上来不等于撤权：保持转发，下一轮再问；连续失败跨过宽限才断开。
+            now = time.monotonic()
+            if unavailable_since is None:
+                unavailable_since = now
+                logger.warning("Web Shell 复检暂时无法确认授权，保持连接；持续 %.0f 秒后的下一次失败才断开", _WS_GUARD_GRACE_SECONDS)
+            if now - unavailable_since >= _WS_GUARD_GRACE_SECONDS:
+                logger.warning("Web Shell 入口守卫持续不可用 %.0f 秒，以 1013 断开", now - unavailable_since)
+                await _close_relay(websocket, task, 1013, "入口守卫不可用")
+                return
         await task
     finally:
         if not task.done():
             _ = task.cancel()
+            with suppress(asyncio.CancelledError):
+                await task
+
+
+# 先以关闭码告知浏览器，再停止转发；反过来会被转发清理抢先以 1000 关闭。
+async def _close_relay(websocket: WebSocket, task: asyncio.Future[None], code: int, reason: str) -> None:
+    if websocket.client_state is WebSocketState.CONNECTED:
+        with suppress(RuntimeError, OSError):
+            await websocket.close(code=code, reason=reason)
+    _ = task.cancel()
+    with suppress(asyncio.CancelledError):
+        await task
 
 
 def _canonical_path(raw_path: bytes) -> str | None:
@@ -535,35 +573,7 @@ async def _proxy_websocket(
             )
 
             # 2. Stop both directions as soon as either peer disconnects.
-            browser_to_gateway = asyncio.create_task(
-                _relay_browser_messages(websocket, upstream)
-            )
-            gateway_to_browser = asyncio.create_task(
-                _relay_gateway_messages(upstream, websocket)
-            )
-            done, pending = await asyncio.wait(
-                (browser_to_gateway, gateway_to_browser),
-                return_when=asyncio.FIRST_COMPLETED,
-            )
-            for task in pending:
-                _ = task.cancel()
-            for task in pending:
-                with suppress(asyncio.CancelledError):
-                    await task
-            for task in done:
-                task_name = (
-                    "browser->gateway"
-                    if task is browser_to_gateway
-                    else "gateway->browser"
-                )
-                exception = task.exception()
-                if exception is not None:
-                    logger.warning(
-                        "[web_shell.proxy] ws task failed ws_id=%s task=%s err=%r",
-                        websocket_id,
-                        task_name,
-                        exception,
-                    )
+            await _relay_both_directions(websocket, upstream, websocket_id)
             logger.info(
                 "[web_shell.proxy] ws flow complete ws_id=%s socket=%s target=%s",
                 websocket_id,
@@ -580,6 +590,24 @@ async def _proxy_websocket(
         )
         with suppress(OSError, RuntimeError, WebSocketDisconnect):
             await websocket.close(code=1013, reason="Runtime 连接不可用")
+
+
+# 任一方向结束即停止另一方向；外层取消（复检断开、外壳停止）时同样取消并等待两个方向，异常都在这里取走。
+async def _relay_both_directions(websocket: WebSocket, upstream: ClientConnection, websocket_id: str) -> None:
+    tasks = {
+        "browser->gateway": asyncio.create_task(_relay_browser_messages(websocket, upstream)),
+        "gateway->browser": asyncio.create_task(_relay_gateway_messages(upstream, websocket)),
+    }
+    try:
+        _ = await asyncio.wait(tasks.values(), return_when=asyncio.FIRST_COMPLETED)
+    finally:
+        for task in tasks.values():
+            _ = task.cancel()
+        results = await asyncio.gather(*tasks.values(), return_exceptions=True)
+        for name, result in zip(tasks, results):
+            if isinstance(result, Exception):
+                logger.warning("[web_shell.proxy] ws task failed ws_id=%s task=%s err=%r",
+                               websocket_id, name, result)
 
 
 async def _relay_browser_messages(
@@ -629,6 +657,9 @@ async def _relay_gateway_messages(
     except websockets.ConnectionClosed:
         pass  # 对端关闭已经结束流；下面转发其真实关闭码。
     except Exception as error:
+        # 外壳已向浏览器发出关闭帧（如复检断开）后，在途的 send 失败属于正常收尾。
+        if websocket.application_state is WebSocketState.DISCONNECTED:
+            return
         logger.debug(
             "[web_shell.proxy] gateway->browser closed ws=%s err=%r",
             f"ws-{id(websocket):x}",
@@ -640,7 +671,7 @@ async def _relay_gateway_messages(
         f"ws-{id(websocket):x}",
     )
 
-    if websocket.client_state is WebSocketState.DISCONNECTED:
+    if WebSocketState.DISCONNECTED in (websocket.client_state, websocket.application_state):
         return
     code = upstream.close_code
     assert code is not None
