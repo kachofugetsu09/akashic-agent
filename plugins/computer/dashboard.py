@@ -26,7 +26,7 @@ def _websocket_url(base_url: str) -> str:
 
 
 # 只读观看时只放行画面协商：分辨率、帧率、关键帧和帧确认；键鼠、剪贴板与上传一律丢弃。
-_VIEW_ONLY_PREFIXES = ("SETTINGS,", "r,", "s,", "_arg_fps,", "_f,", "START_VIDEO", "STOP_VIDEO",
+_VIEW_ONLY_PREFIXES = ("SETTINGS,", "r,", "s,", "_arg_fps,", "_crf,", "_f,", "START_VIDEO", "STOP_VIDEO",
                        "REQUEST_KEYFRAME", "CLIENT_FRAME_ACK", "LOST_FRAME", "_gz,")
 
 
@@ -200,6 +200,7 @@ def register(app: FastAPI, context: DashboardContext) -> httpx.Client:
         idle = False
         last_pointer: list[str] = []
         touched = 0.0
+        renewals: set[asyncio.Task[None]] = set()
 
         async def watch_idle(upstream: ClientConnection) -> None:
             nonlocal idle
@@ -216,14 +217,19 @@ def register(app: FastAPI, context: DashboardContext) -> httpx.Client:
                         if len(last_pointer) == 4 and last_pointer[3] != "0":
                             await upstream.send(",".join([*last_pointer[:3], "0", "0"]))
 
-        async def touch() -> None:
-            # 人在直接操作时续期，浏览器不会在用户使用中途休眠。
+        async def renew() -> None:
+            with suppress(httpx.HTTPError):
+                _ = await reader.post("/view/touch", json={})
+
+        def touch() -> None:
+            # 人在直接操作时续期，浏览器不会在用户使用中途休眠；放到后台，不拖慢输入转发。
             nonlocal touched
             if time.monotonic() - touched < 30:
                 return
             touched = time.monotonic()
-            with suppress(httpx.HTTPError):
-                _ = await reader.post("/view/touch", json={})
+            renewal = asyncio.create_task(renew())
+            renewals.add(renewal)
+            renewal.add_done_callback(renewals.discard)
 
         def allowed(text: str) -> bool:
             if control_id or _view_only_allows(text) or text.startswith(_RELEASE_PREFIXES):
@@ -261,7 +267,7 @@ def register(app: FastAPI, context: DashboardContext) -> httpx.Client:
                                     last_pointer[:] = text.split(",")[:4]
                                 await upstream.send(text)
                                 if idle and not control_id and not _view_only_allows(text):
-                                    await touch()
+                                    touch()
                     except WebSocketDisconnect:
                         return
 
