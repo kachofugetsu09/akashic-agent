@@ -34,19 +34,33 @@ try {
   browser = await chromium.launch({ executablePath: "/usr/bin/chromium", headless: true });
   const page = await browser.newPage();
   await page.clock.install();
+  // 每推进一个轮询周期都等真实响应落地，再判断提示。
+  const poll = async () => {
+    await Promise.all([page.waitForResponse("**/api/runtime/host-bridge"), page.clock.fastForward(5100)]);
+    await page.waitForTimeout(100);
+  };
+  const visible = text => page.getByRole("status").filter({ hasText: text }).count();
   await page.goto(`http://127.0.0.1:${server.address().port}`);
   await page.getByRole("status").filter({ hasText: "宿主执行暂时不可用" }).waitFor();
+  httpFailure = true;
+  await poll();
+  if (await visible("宿主执行暂时不可用") !== 1) throw new Error("单次失败不应覆盖已确认的降级提示");
+  httpFailure = false;
   state = "healthy";
-  await page.clock.fastForward(5100);
+  await poll();
   await page.getByRole("status").waitFor({ state: "detached" });
   httpFailure = true;
-  await page.clock.fastForward(5100);
+  for (let index = 0; index < 3; index += 1) {
+    await poll();
+    if (await visible("暂时无法确认") !== 0) throw new Error("宽限期内不应提示无法确认");
+  }
+  await poll();
   await page.getByRole("status").filter({ hasText: "暂时无法确认" }).waitFor();
   httpFailure = false;
   state = "disabled";
-  await page.clock.fastForward(5100);
+  await poll();
   await page.getByRole("status").waitFor({ state: "detached" });
-  console.log(JSON.stringify({ result: "passed", experiments: ["degraded_visible", "recovery_clears_notice", "unknown_is_not_healthy", "local_mode_no_notice"] }));
+  console.log(JSON.stringify({ result: "passed", experiments: ["degraded_visible", "single_failure_keeps_degraded", "recovery_clears_notice", "unknown_after_grace", "local_mode_no_notice"] }));
 } finally {
   await browser?.close();
   await new Promise(resolveClosed => server.close(resolveClosed));

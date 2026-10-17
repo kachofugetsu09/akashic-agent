@@ -60,8 +60,9 @@ AppRuntime monitor ──写入── HostBridgeStatus（内存）
 ```
 
 状态是 disabled/checking/healthy/degraded，包含连续失败数、最近错误分类和检查时间；
-不返回 token、路径或命令内容。浏览器每五秒查询，五秒内未取得响应显示“无法确认”；
-这与已知 Bridge 降级不同。状态恢复只代表传输与身份正常，不承诺旧 manager 仍存在。
+不返回 token、路径或命令内容。浏览器每五秒查询（单次五秒超时）；查询失败时保留上一次确认到的状态，
+从第一次失败的查询起连续失败满十五秒才显示“无法确认”，单次偶发失败不改变提示；
+这与已知 Bridge 降级不同，服务端明确返回 degraded/checking 时立即显示。状态恢复只代表传输与身份正常，不承诺旧 manager 仍存在。
 
 ## 本地证据
 
@@ -70,8 +71,8 @@ AppRuntime monitor ──写入── HostBridgeStatus（内存）
   包含实际 UDS 监听停止/重建、Core 主任务监督存活、公开 Web Shell 到 Dashboard UDS 的状态恢复、
   并发首次登记、心跳恢复、过期拒绝、真实命令响应丢失、业务错误后继续执行、四类文件操作、
   慢写入取消后同文件串行与 shutdown 排空，以及认证/boot fencing。
-- `node docker/debug/host_bridge_notice.mjs`：Chromium 加载实际 React 组件，验证降级提示、恢复清除、
-  HTTP 失败显示未知和 local mode 不显示。这里的 HTTP 状态由实验控制，不冒充完整在线对话验收。
+- `node docker/debug/host_bridge_notice.mjs`：Chromium 加载实际 React 组件，验证降级提示、单次失败保留降级提示、
+  恢复清除、持续 HTTP 失败满宽限后显示未知和 local mode 不显示。这里的 HTTP 状态由实验控制，不冒充完整在线对话验收。
 - 概念基线 44 项通过；源码/测试 pyright、前端 typecheck、plugin_boundary、yoyo、
   control schema 与 Host Bridge 生成物检查通过。
 
