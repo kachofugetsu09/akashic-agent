@@ -13,8 +13,11 @@ export interface Target {
 }
 
 export type ToolId = "shot" | "fullscreen" | "copy-url" | "open-url";
+/** 人工导航：地址栏打开、后退、前进、刷新，以及新开和关闭标签。 */
+export type NavAction = "go" | "back" | "forward" | "reload" | "open" | "close";
 
-const ICONS: Record<Icon | "mask" | "hand" | "clipboard" | "expand" | "camera" | "more" | "copy" | "external", string> = {
+const ICONS: Record<Icon | "mask" | "hand" | "clipboard" | "expand" | "camera" | "more" | "copy" | "external"
+  | "back" | "forward" | "plus" | "close", string> = {
   moon: `<path d="M20 14.5A8 8 0 0 1 9.5 4a8 8 0 1 0 10.5 10.5z"/>`,
   spinner: `<path d="M12 3a9 9 0 1 0 9 9"/>`,
   alert: `<path d="M12 4l9 16H3z"/><path d="M12 10v4M12 17.5v.01"/>`,
@@ -28,6 +31,10 @@ const ICONS: Record<Icon | "mask" | "hand" | "clipboard" | "expand" | "camera" |
   more: `<path d="M12 5v.01M12 12v.01M12 19v.01"/>`,
   copy: `<rect x="8" y="8" width="12" height="12" rx="2"/><path d="M16 8V5a1 1 0 0 0-1-1H5a1 1 0 0 0-1 1v10a1 1 0 0 0 1 1h3"/>`,
   external: `<path d="M14 4h6v6M20 4l-9 9M18 14v5a1 1 0 0 1-1 1H5a1 1 0 0 1-1-1V7a1 1 0 0 1 1-1h5"/>`,
+  back: `<path d="M19 12H5M11 6l-6 6 6 6"/>`,
+  forward: `<path d="M5 12h14M13 6l6 6-6 6"/>`,
+  plus: `<path d="M12 5v14M5 12h14"/>`,
+  close: `<path d="M7 7l10 10M17 7L7 17"/>`,
 };
 
 export function icon(name: keyof typeof ICONS): string {
@@ -62,8 +69,18 @@ export class PanelSurface {
   readonly stage = element("div", "computer-stage");
   readonly clipboardToggle = iconButton("剪贴板", "clipboard");
   private readonly tabs = element("div", "computer-tabs");
-  private readonly address = element("div", "computer-address");
-  private readonly addressText = element("span", "computer-address-text");
+  private readonly newTab = iconButton("新建标签页", "plus", "computer-new-tab");
+  private readonly back = iconButton("后退（Alt+←）", "back");
+  private readonly forward = iconButton("前进（Alt+→）", "forward");
+  private readonly reload = iconButton("刷新", "refresh");
+  private readonly address = element("form", "computer-address");
+  private readonly addressInput = element("input", "computer-address-input");
+  // 没在编辑时盖在输入框上：协议和路径淡、主机亮，一眼认出是哪个站（参考 Cursor）。
+  private readonly addressShown = element("span", "computer-address-shown");
+  private current: Target | undefined;
+  private navEnabled = true;
+  private spins = 0;
+  private nudgeTimer = 0;
   private readonly moreToggle = iconButton("更多", "more", "computer-more");
   private readonly menu = element("div", "computer-menu");
   private readonly status = element("div", "computer-status");
@@ -72,27 +89,36 @@ export class PanelSurface {
   private readonly action = element("button", "computer-action");
   private readonly frame = element("div", "computer-frame");
   private readonly overlay = element("div", "computer-connection-state");
+  // 空白页上的引导：远端 about:blank 是一整块白，参考 Cursor 的欢迎页告诉人可以做什么。不挡点击。
+  private readonly blank = element("div", "computer-blank");
   private readonly toast = element("div", "computer-toast");
   private actionId: ActionId | null = null;
   private restoreAction = false;
   private toastTimer = 0;
 
   constructor(private readonly onAction: (id: ActionId) => void, private readonly onSelect: (id: string) => void,
-    private readonly onTool: (id: ToolId) => void) {
-    // 1. 头部两行：本地绘制的标签条和工具，下面是当前标签的地址。面板开合属于宿主，这里不放关闭按钮。
+    private readonly onTool: (id: ToolId) => void, private readonly onNav: (action: NavAction, value?: string) => void) {
+    // 1. 头部两行（参考 Cursor）：标签条与全屏；下面一行是导航、地址栏和工具。面板开合属于宿主，这里不放关闭按钮。
     const head = element("div", "computer-head");
     this.tabs.setAttribute("role", "tablist");
     this.tabs.setAttribute("aria-label", "浏览器标签");
     this.tabs.addEventListener("keydown", event => this.moveTab(event));
-    this.addressText.setAttribute("dir", "ltr");
-    this.address.append(this.addressText, this.tool("copy-url", "复制链接", "copy"), this.tool("open-url", "在你的浏览器打开", "external"));
+    this.newTab.addEventListener("click", () => this.onNav("open"));
+    const fullscreen = this.tool("fullscreen", "全屏", "expand", "computer-wide computer-fullscreen");
     const tools = element("div", "computer-actions");
-    tools.append(this.tool("shot", "保存截图", "camera", "computer-wide"), this.clipboardToggle,
-      this.tool("fullscreen", "全屏", "expand", "computer-wide"), this.moreToggle);
+    tools.append(this.tool("shot", "保存截图", "camera", "computer-wide"), this.clipboardToggle, this.moreToggle);
     const bar = element("div", "computer-bar");
-    bar.append(this.address);
-    head.append(this.tabs, tools, this.buildMenu(), bar);
-    // 2. 画面：状态胶囊压在外框上沿，说明谁在操作并给出唯一主操作；遮罩只在没有画面时出现。
+    this.back.addEventListener("click", () => this.onNav("back"));
+    this.forward.addEventListener("click", () => this.onNav("forward"));
+    this.reload.addEventListener("click", () => {
+      // 刷新图标转一圈，确认按下去了；远端加载进度拿不到，不假装有进度条。
+      const svg = this.reload.querySelector<SVGElement>(".computer-icon");
+      if (svg) svg.style.rotate = `${++this.spins * 360}deg`;
+      this.onNav("reload");
+    });
+    bar.append(this.back, this.forward, this.reload, this.buildAddress(), tools);
+    head.append(this.tabs, this.newTab, fullscreen, this.buildMenu(), bar);
+    // 2. 画面贴边铺满；状态胶囊浮在画面上沿，说明谁在操作并给出唯一主操作；遮罩只在没有画面时出现。
     this.status.setAttribute("role", "status");
     const dot = element("span", "computer-status-dot");
     this.action.type = "button";
@@ -102,7 +128,11 @@ export class PanelSurface {
     this.screen.setAttribute("role", "region");
     this.screen.setAttribute("aria-label", "浏览器画面");
     this.toast.setAttribute("aria-live", "polite");
-    this.frame.append(this.screen, this.overlay);
+    this.blank.setAttribute("aria-hidden", "true");
+    this.blank.innerHTML = `<svg class="computer-icon" viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/>`
+      + `<path d="M3 12h18M12 3a14 14 0 0 1 0 18M12 3a14 14 0 0 0 0 18"/></svg><strong>新标签页</strong>`
+      + `<span>在上方输入网址或搜索，也可以让 Agent 帮你打开</span>`;
+    this.frame.append(this.screen, this.blank, this.overlay);
     this.stage.append(this.frame, this.status, this.toast);
     this.root.append(head, this.stage);
   }
@@ -111,6 +141,75 @@ export class PanelSurface {
     const node = iconButton(label, name, className);
     node.addEventListener("click", () => this.onTool(id));
     return node;
+  }
+
+  // 地址栏：显示完整地址；聚焦时全选，回车打开，Esc 放弃修改。没在编辑时随当前标签更新。
+  private buildAddress(): HTMLFormElement {
+    const input = this.addressInput;
+    input.type = "text";
+    input.dir = "ltr";
+    input.spellcheck = false;
+    input.autocomplete = "off";
+    input.enterKeyHint = "go";
+    input.placeholder = "搜索或输入网址";
+    input.setAttribute("aria-label", "地址和搜索栏");
+    // 点进来时全选；紧随其后的 mouseup 不能把选区清掉。
+    let selecting = false;
+    input.addEventListener("focus", () => { input.select(); selecting = true; });
+    input.addEventListener("mouseup", event => { if (selecting) event.preventDefault(); selecting = false; });
+    input.addEventListener("blur", () => { input.value = this.addressValue(); selecting = false; });
+    input.addEventListener("keydown", event => {
+      if (event.isComposing) {
+        if (event.key === "Enter") event.preventDefault();
+        return;
+      }
+      if (event.key !== "Escape") return;
+      event.preventDefault();
+      input.value = this.addressValue();
+      this.screen.focus();
+    });
+    this.address.addEventListener("submit", event => {
+      event.preventDefault();
+      const value = input.value.trim();
+      if (!value) return;
+      this.onNav("go", value);
+      this.screen.focus();
+    });
+    this.addressShown.setAttribute("aria-hidden", "true");
+    const field = element("span", "computer-address-field");
+    field.append(input, this.addressShown);
+    this.address.append(field, this.tool("copy-url", "复制链接", "copy"), this.tool("open-url", "在你的浏览器打开", "external"));
+    return this.address;
+  }
+
+  private addressValue(): string {
+    const url = this.current?.url ?? "";
+    return url === "about:blank" ? "" : url;
+  }
+
+  focusAddress() {
+    this.addressInput.focus();
+  }
+
+  // Agent 正在用浏览器时导航也要先接管：按钮置灰，悬停说明原因。
+  renderNav(enabled: boolean) {
+    this.navEnabled = enabled;
+    const reason = enabled ? "" : "Agent 正在使用浏览器，先接管";
+    for (const node of [this.back, this.forward, this.reload, this.newTab, this.addressInput]) {
+      node.disabled = !enabled;
+      if (node !== this.addressInput) node.title = reason || node.getAttribute("aria-label") || "";
+    }
+    this.addressInput.title = reason;
+    for (const close of this.tabs.querySelectorAll<HTMLButtonElement>(".computer-tab-close")) close.disabled = !enabled;
+  }
+
+  // 画面被挡住时有人点它：闪一下状态胶囊，告诉他要先接管（参考 Cursor 的锁定反馈）。
+  nudge() {
+    for (const node of [this.status, this.frame]) node.classList.add("computer-nudge");
+    window.clearTimeout(this.nudgeTimer);
+    this.nudgeTimer = window.setTimeout(() => {
+      for (const node of [this.status, this.frame]) node.classList.remove("computer-nudge");
+    }, 120);
   }
 
   // 窄宽度时收起的工具都在这里；菜单只做打开、关闭和方向键移动，动作仍交给 onTool。
@@ -242,8 +341,7 @@ export class PanelSurface {
     const focused = this.tabs.contains(document.activeElement)
       ? (document.activeElement as HTMLElement).dataset.id : undefined;
     this.tabs.replaceChildren(...targets.map(target => {
-      const tab = element("button", "computer-tab");
-      tab.type = "button";
+      const tab = element("div", "computer-tab");
       tab.dataset.id = target.id;
       tab.setAttribute("role", "tab");
       tab.setAttribute("aria-selected", String(target.id === selected));
@@ -256,24 +354,50 @@ export class PanelSurface {
       else if (target.agent) tab.append(element("span", "computer-tab-agent"));
       const label = element("span", "computer-tab-label");
       label.textContent = name;
-      tab.append(label);
+      const close = iconButton(`关闭 ${name}`, "close", "computer-tab-close");
+      close.tabIndex = -1;
+      close.disabled = !this.navEnabled;
+      close.addEventListener("click", event => { event.stopPropagation(); this.onNav("close", target.id); });
+      tab.append(label, close);
       tab.addEventListener("click", () => this.onSelect(target.id));
+      // 中键关闭，和本地浏览器一样。
+      tab.addEventListener("auxclick", event => { if (event.button === 1 && this.navEnabled) this.onNav("close", target.id); });
       return tab;
     }));
-    if (focused) this.tabs.querySelector<HTMLElement>(`[data-id="${CSS.escape(focused)}"]`)?.focus();
+    if (focused) (this.tabs.querySelector<HTMLElement>(`[data-id="${CSS.escape(focused)}"]`)
+      ?? this.tabs.querySelector<HTMLElement>("[aria-selected=true]"))?.focus();
     this.tabs.querySelector<HTMLElement>("[aria-selected=true]")?.scrollIntoView({ block: "nearest", inline: "nearest" });
-    const current = targets.find(target => target.id === selected);
-    this.address.hidden = !current?.url || current.url === "about:blank";
-    this.address.toggleAttribute("data-anonymous", Boolean(current?.anonymous));
-    this.addressText.textContent = shortUrl(current?.url);
-    this.address.title = current?.url ?? "";
-    for (const item of this.menu.querySelectorAll<HTMLElement>("[data-link]")) item.hidden = this.address.hidden;
+    this.current = targets.find(target => target.id === selected);
+    const blank = !this.addressValue();
+    this.blank.hidden = !this.current || !blank;
+    this.address.toggleAttribute("data-anonymous", Boolean(this.current?.anonymous));
+    if (document.activeElement !== this.addressInput) this.addressInput.value = this.addressValue();
+    this.renderShownAddress();
+    for (const node of this.address.querySelectorAll<HTMLElement>(".computer-icon-button")) node.hidden = blank;
+    for (const item of this.menu.querySelectorAll<HTMLElement>("[data-link]")) item.hidden = blank;
   }
 
-  // 标签条是一组 tab：左右键在标签间移动并直接切换，Home/End 到两端。
+  // 地址拆成协议、主机、其余三段；解析不了的原样显示。
+  private renderShownAddress() {
+    const value = this.addressValue();
+    const match = /^([a-z][a-z0-9+.-]*:\/\/)([^/?#]*)(.*)$/i.exec(value);
+    const parts = match ? [["dim", match[1]], ["host", match[2]], ["dim", match[3]]] : [["host", value]];
+    this.addressShown.replaceChildren(...parts.filter(([, text]) => text).map(([kind, text]) => {
+      const part = element("span", `computer-address-${kind}`);
+      part.textContent = text;
+      return part;
+    }));
+  }
+
+  // 标签条是一组 tab：左右键在标签间移动并直接切换，Home/End 到两端，Delete 关闭。
   private moveTab(event: KeyboardEvent) {
     const tabs = [...this.tabs.querySelectorAll<HTMLElement>(".computer-tab")];
     const index = tabs.indexOf(document.activeElement as HTMLElement);
+    if (event.key === "Delete" && index >= 0 && this.navEnabled) {
+      event.preventDefault();
+      this.onNav("close", tabs[index].dataset.id!);
+      return;
+    }
     const next = { ArrowRight: index + 1, ArrowLeft: index - 1, Home: 0, End: tabs.length - 1 }[event.key];
     if (next === undefined || index < 0 || !tabs.length) return;
     event.preventDefault();

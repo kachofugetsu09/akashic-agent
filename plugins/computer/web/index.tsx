@@ -4,12 +4,21 @@ import { ComputerDisplay } from "./display";
 import { ClipboardPopover } from "./clipboard";
 import { ComputerEvents, type ComputerState } from "./computer-events";
 import { canInputDirectly, present, type ActionId, type ControlState, type LinkState, type PanelFacts, type RuntimeState } from "./panel-state";
-import { PanelSurface, type Target, type ToolId } from "./panel-view";
+import { PanelSurface, type NavAction, type Target, type ToolId } from "./panel-view";
 import { keysymForKey } from "./remote-input.js";
 import "./style.css";
 
 // 这三种连接结果需要用户明确处理，轮询不自动重连。
 const SETTLED_LINKS: readonly LinkState[] = ["failed", "stale"];
+
+// 地址栏输入：带协议的地址原样打开；像域名、localhost 或 IP 的补上协议；其余当作搜索词。
+function addressToUrl(text: string): string {
+  const value = text.trim();
+  if (/^(https?:\/\/|about:blank$)/i.test(value)) return value;
+  if (/^(localhost|\d{1,3}(\.\d{1,3}){3}|\[[0-9a-f:]+\])(:\d+)?([/?#].*)?$/i.test(value)) return `http://${value}`;
+  if (!/\s/.test(value) && /^[^/?#]+\.[a-z]{2,}(:\d+)?([/?#].*)?$/i.test(value)) return `https://${value}`;
+  return `https://www.google.com/search?q=${encodeURIComponent(value)}`;
+}
 
 /** 控制器：采集事实、维持连接、执行动作。呈现规则在 panel-state，DOM 在 panel-view。 */
 function renderComputer(ctx: WebHostContextV1, host: HTMLElement, rawView: unknown): WebUiDisposer {
@@ -19,7 +28,7 @@ function renderComputer(ctx: WebHostContextV1, host: HTMLElement, rawView: unkno
   const surface = new PanelSurface(id => void perform(id), id => {
     for (const turn of turns) manualTurns.add(turn);
     void select(id);
-  }, id => void tool(id));
+  }, id => void tool(id), (action, value) => void navigate(action, value));
   const screen = surface.screen;
   const clipboard = new ClipboardPopover(surface.clipboardToggle, {
     paste: text => paste(text),
@@ -73,11 +82,14 @@ function renderComputer(ctx: WebHostContextV1, host: HTMLElement, rawView: unkno
     if (disposed) return;
     const current = facts();
     surface.render(present(current));
-    const next = (Boolean(control) && link === "connected") || canInputDirectly(current);
+    const direct = canInputDirectly(current);
+    const next = (Boolean(control) && link === "connected") || direct;
     // 输入权限收回前先松开按住的键，避免远端留下按下状态。
     if (inputOn && !next) releaseKeys();
     inputOn = next;
     display?.setInput(inputOn);
+    surface.renderNav(runtime === "ready" && (current.control === "mine" || (current.control === "none"
+      && !current.agentActive && !current.agentTurn)));
     clipboard.setCanPaste(inputOn);
   }
 
@@ -95,7 +107,21 @@ function renderComputer(ctx: WebHostContextV1, host: HTMLElement, rawView: unkno
   }
 
   function inputKey(event: KeyboardEvent) {
+    // Ctrl/Cmd+L 和本地浏览器一样聚焦地址栏；kiosk 模式的 Chromium 没有自己的地址栏。
+    if (event.type === "keydown" && (event.ctrlKey || event.metaKey) && event.key.toLowerCase() === "l") {
+      event.preventDefault();
+      releaseKeys();
+      surface.focusAddress();
+      return;
+    }
     if (!inputOn) return;
+    // Ctrl/Cmd+T 新建标签走面板，和标签条的“+”一致：新窗口铺满并聚焦地址栏。
+    if (event.type === "keydown" && (event.ctrlKey || event.metaKey) && event.key.toLowerCase() === "t") {
+      event.preventDefault();
+      releaseKeys();
+      void navigate("open");
+      return;
+    }
     event.preventDefault();
     if (event.type === "keydown" && (event.ctrlKey || event.metaKey) && event.key.toLowerCase() === "v") {
       releaseKeys();
@@ -165,6 +191,30 @@ function renderComputer(ctx: WebHostContextV1, host: HTMLElement, rawView: unkno
       retry = window.setTimeout(() => { if (link === "lost") connect(); }, 1000);
     });
     update();
+  }
+
+  // 地址栏、前进后退、新开和关闭标签：Agent 在用时后端返回 409，提示先接管。
+  async function navigate(action: NavAction, value = "") {
+    const path = action === "open" ? "open" : action === "close" ? "close" : "navigate";
+    const body = action === "open" ? {} : action === "close" ? { target: value }
+      : { target: selected, action, ...(action === "go" ? { url: addressToUrl(value) } : {}) };
+    try {
+      const response = await ctx.http.request(`/api/dashboard/computer/${path}`, {
+        method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ ...body, ...(control ? { control } : {}) }) });
+      if (response.status === 409) throw new Error("浏览器正在被使用，请在此窗口接管后再操作");
+      if (!response.ok) {
+        const detail = await response.json().then((data: { detail?: unknown }) => data.detail, () => undefined);
+        throw new Error(typeof detail === "string" && detail ? detail : `操作失败（${response.status}）`);
+      }
+      // 新开的标签立即选中并聚焦地址栏，像本地浏览器的 Ctrl+T。
+      if (action === "open") {
+        const { target } = await response.json() as { target?: string };
+        if (target) { selected = target; surface.renderTargets(targets, selected); }
+        surface.focusAddress();
+      }
+    } catch (error) {
+      surface.notify(error instanceof Error ? error.message : String(error));
+    }
   }
 
   // 切换标签只把它提到屏幕最前，画面连接不动；失败时回到状态流里的 front。
@@ -293,6 +343,8 @@ function renderComputer(ctx: WebHostContextV1, host: HTMLElement, rawView: unkno
 
   screen.addEventListener("keydown", inputKey, true);
   screen.addEventListener("keyup", inputKey, true);
+  // 画面被挡住时点它不会有任何效果：闪一下状态胶囊，说明 Agent 在用、要先接管。
+  screen.addEventListener("pointerdown", () => { if (!inputOn && link === "connected") surface.nudge(); });
   // 0084：人工打开面板唤醒一次。注册时的首次回调只报告现状，不算打开；
   // 之后保持打开不会再次唤醒，休眠后由用户点"唤醒浏览器"。
   function wakeIfSleeping() {
