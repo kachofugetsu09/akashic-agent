@@ -1,0 +1,170 @@
+/* 网站标签：一行工具条，下面是按所选宽度居中的页面；页面比面板宽时在舞台里横向滚动。 */
+.sites-root {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  min-width: 0;
+  container-type: inline-size;
+  background: var(--ak-paper-sheet);
+  color: var(--ak-ink-primary);
+  font-size: 13px;
+}
+
+.sites-bar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 4px 8px;
+  padding: 4px 6px 4px 10px;
+  border-bottom: 1px solid var(--ak-rule-subtle);
+}
+
+.sites-bar:empty { display: none; }
+
+.sites-name {
+  display: flex;
+  flex: 1 1 8rem;
+  min-width: 0;
+}
+
+.sites-title {
+  overflow: hidden;
+  font-weight: 600;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.sites-select {
+  min-width: 0;
+  max-width: 100%;
+  height: 28px;
+  padding: 0 6px;
+  border: 1px solid var(--ak-rule-default);
+  border-radius: 6px;
+  color: var(--ak-ink-primary);
+  background: var(--ak-paper-sheet);
+  font: inherit;
+  font-weight: 600;
+}
+
+.sites-meta {
+  color: var(--ak-ink-muted);
+  font-size: 12px;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+
+.sites-widths {
+  display: inline-flex;
+  padding: 2px;
+  border-radius: 7px;
+  background: var(--ak-paper-quiet);
+}
+
+.sites-width {
+  height: 24px;
+  padding: 0 8px;
+  border: 0;
+  border-radius: 5px;
+  color: var(--ak-ink-secondary);
+  background: transparent;
+  font: inherit;
+  font-size: 12px;
+  cursor: pointer;
+}
+
+.sites-width[aria-pressed="true"] {
+  color: var(--ak-ink-primary);
+  background: var(--ak-paper-sheet);
+  box-shadow: 0 0 0 1px var(--ak-rule-subtle);
+}
+
+.sites-icon {
+  display: inline-grid;
+  width: 28px;
+  height: 28px;
+  place-items: center;
+  padding: 0;
+  border: 0;
+  border-radius: 6px;
+  color: var(--ak-ink-secondary);
+  background: transparent;
+  cursor: pointer;
+}
+
+.sites-icon svg {
+  width: 16px;
+  height: 16px;
+  fill: none;
+  stroke: currentColor;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+  stroke-width: 1.8;
+}
+
+.sites-icon:hover, .sites-width:hover { color: var(--ak-ink-primary); background: var(--ak-paper-raised); }
+.sites-width[aria-pressed="true"]:hover { background: var(--ak-paper-sheet); }
+
+.sites-icon:focus-visible, .sites-width:focus-visible, .sites-select:focus-visible {
+  outline: 2px solid var(--ak-rule-focus);
+  outline-offset: 1px;
+}
+
+.sites-stage {
+  display: flex;
+  flex: 1;
+  min-height: 0;
+  overflow: auto;
+  background: var(--ak-paper-canvas);
+}
+
+/* 用自动外边距居中：页面比舞台宽时左边不会被裁掉，仍可滚到。 */
+.sites-device {
+  flex: 0 0 auto;
+  width: 100%;
+  margin-inline: auto;
+  height: 100%;
+}
+
+.sites-stage:not([data-width="auto"]) { padding: 12px; }
+.sites-stage[data-width="390"] .sites-device { width: 390px; }
+.sites-stage[data-width="768"] .sites-device { width: 768px; }
+
+.sites-stage:not([data-width="auto"]) .sites-device {
+  overflow: hidden;
+  border: 1px solid var(--ak-rule-default);
+  border-radius: 10px;
+}
+
+/* 网页自己决定配色；没写背景的页面与普通浏览器一样是白底。 */
+.sites-frame {
+  display: block;
+  width: 100%;
+  height: 100%;
+  border: 0;
+  background: #fff;
+}
+
+.sites-message {
+  align-self: center;
+  max-width: 28rem;
+  margin: 0;
+  padding: 24px;
+  color: var(--ak-ink-secondary);
+  line-height: 1.6;
+  text-align: center;
+}
+
+.sites-message.is-error { color: var(--ak-ink-primary); }
+
+/* 面板本身只有手机宽时，宽度切换没有意义：收起切换，页面铺满。 */
+@container (max-width: 30rem) {
+  .sites-widths { display: none; }
+  .sites-stage:not([data-width="auto"]) { padding: 0; }
+  .sites-stage:not([data-width="auto"]) .sites-device { width: 100%; border: 0; border-radius: 0; }
+}
+
+@media (pointer: coarse) {
+  .sites-icon { width: 44px; height: 44px; }
+  .sites-width { height: 36px; }
+}
