@@ -47,6 +47,8 @@ Agent: browser.tabs.new()
 ```
 
 - 屏幕尺寸由 selkies 按面板尺寸调整（`r,宽x高`），matchbox 让窗口跟着铺满。
+- 视口截图前记下窗口尺寸（`Browser.getWindowForTarget`）。坐标动作执行前尺寸已变，
+  就报错并要求重新截图；没截过图的标签和按元素的动作不检查。
 - 第二个窗口连上后，selkies 断开前一个；前一个面板收到 `superseded`，
   提示“另一个窗口正在看这个浏览器”，不自动抢回。
 - 人工接管、暂停 Agent 的规则沿用 0092。人工键鼠经 selkies 送到屏幕最前的窗口；

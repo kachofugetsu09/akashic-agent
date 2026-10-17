@@ -6,7 +6,8 @@
 恢复了原工程的类型、模块划分或构建系统。
 
 补丁接入源码 AX core、容器 CDP 地址与权限 owner、ZXing 公开依赖路径和输出通道，
-并保留原生 readonly 状态、将 CSS 截图矩形转换到 CDP 所需的 DIP 坐标。
+并保留原生 readonly 状态、将 CSS 截图矩形转换到 CDP 所需的 DIP 坐标；截图后窗口尺寸
+变化时拒绝坐标动作，要求重新截图。
 `akashic-container` 模式由外层 Akashic 的工具授权拥有权限，不依赖 Codex guardian/auth broker。
 需要原生客户端或审批提供者的可选功能不启用；API 清单逐项记录覆盖和差异。
 

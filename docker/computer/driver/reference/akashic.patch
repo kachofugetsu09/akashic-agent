@@ -14,7 +14,7 @@
 @@ -1,3 +1,4 @@
 +import { createAccessibilityCore } from "../../../accessibility.mjs";
  const listeners = new Map();
-
+ 
  const processShim = {
 @@ -8731,6 +8732,7 @@
    kr = ((n) => (
@@ -24,7 +24,81 @@
      (n.GaasBrowserEnvironment = "gaas-browser-environment"),
      n
    ))(kr || {}),
-@@ -22495,17 +22497,15 @@
+@@ -10236,6 +10238,33 @@
+   if (!Number.isFinite(e.x) || !Number.isFinite(e.y))
+     throw new Error(`${t} requires finite x and y coordinates`);
+ }
++// 屏幕跟随观看面板；截图后窗口尺寸变了，截图上的坐标已经对不上，坐标动作要求先重新截图。
++const akashicScreenshotWindows = new Map();
++async function akashicWindowSize(e, tabId) {
++  const { bounds } = await e.cdp.call(tabId, "Browser.getWindowForTarget");
++  return `${bounds.width}x${bounds.height}`;
++}
++async function akashicRememberScreenshotWindow(e, tabId) {
++  try {
++    akashicScreenshotWindows.set(tabId, await akashicWindowSize(e, tabId));
++  } catch {
++    akashicScreenshotWindows.delete(tabId);
++  }
++}
++async function akashicCheckScreenshotWindow(name, e, tabId) {
++  const before = akashicScreenshotWindows.get(tabId);
++  if (before == null) return;
++  let now;
++  try {
++    now = await akashicWindowSize(e, tabId);
++  } catch {
++    return;
++  }
++  if (now !== before)
++    throw new Error(
++      `${name}: the browser window changed from ${before} to ${now} since the last screenshot; take a new screenshot and use coordinates from it`,
++    );
++}
+ function tr(t, e) {
+   return Zn(t, e);
+ }
+@@ -10297,6 +10326,7 @@
+   let r = V(t.tab_id);
+   return (
+     vt("cua_click", t),
++    await akashicCheckScreenshotWindow("cua_click", e, r),
+     await e.cua.clickPoint({
+       button: Qv(t.button),
+       clickCount: 1,
+@@ -10313,6 +10343,7 @@
+   let r = V(t.tab_id);
+   return (
+     vt("cua_double_click", t),
++    await akashicCheckScreenshotWindow("cua_double_click", e, r),
+     await e.cua.clickPoint({
+       clickCount: 2,
+       modifiers: tr(t.keys, e.runtime.platform),
+@@ -10330,6 +10361,7 @@
+   if (t.path.length === 0)
+     throw new Error("cua_drag requires a non-empty path");
+   for (let o of t.path) vt("cua_drag", o);
++  await akashicCheckScreenshotWindow("cua_drag", e, r);
+   return (await e.cua.dragPath({ modifiers: n, path: t.path, tabId: r }), {});
+ });
+ l();
+@@ -11295,6 +11327,7 @@
+   let r = V(t.tab_id);
+   return (
+     vt("cua_move", t),
++    await akashicCheckScreenshotWindow("cua_move", e, r),
+     await e.cua.dispatchMouseMove(
+       r,
+       { x: t.x, y: t.y },
+@@ -11307,6 +11340,7 @@
+ var mx = M("cua_scroll", async (t, e) => {
+   let r = V(t.tab_id);
+   vt("cua_scroll", t);
++  await akashicCheckScreenshotWindow("cua_scroll", e, r);
+   let n = tr(t.keys, e.runtime.platform),
+     o = { x: t.x, y: t.y };
+   return (
+@@ -22495,17 +22529,15 @@
                (s, a) => s + +(a.getClientRects().length > 0),
                0,
              ),
@@ -51,7 +125,7 @@
            }),
            void 0,
            { timeoutMs: 1e3 },
-@@ -23885,6 +23885,10 @@
+@@ -23885,6 +23917,10 @@
      "page-asset-download",
    ]),
    NA = {
@@ -62,7 +136,7 @@
      "": { bypassedSecurityChecks: Jg, operationsWithoutUserConsent: Jg },
      "disabled-for-local-testing": {
        bypassedSecurityChecks: R5,
-@@ -28546,7 +28550,7 @@
+@@ -28546,7 +28582,7 @@
    } catch {
      return await t.filesystem.readBytes(
        new URL(
@@ -71,7 +145,17 @@
          import.meta.url,
        ),
      );
-@@ -28952,6 +28956,16 @@
+@@ -28909,6 +28945,9 @@
+   let n = V(t.tab_id),
+     o = { format: fr, quality: 80 },
+     i = p9(t);
++  // 只有视口截图的坐标能直接用于点击；在截图之前记录，宁可多要一次截图也不点偏。
++  if (i == null && t.fullPage !== !0)
++    await akashicRememberScreenshotWindow(e, n);
+   if (i != null) {
+     let a = await bb(n, e, r);
+     ((o.captureBeyondViewport = !0), (o.clip = { ...i, scale: a }));
+@@ -28952,6 +28991,16 @@
          scale: a,
        }));
    }
@@ -88,7 +172,7 @@
    let s = await e.cdp.call(n, "Page.captureScreenshot", o, {
      preserveDebuggerOnTimeout: !0,
      timeoutMs: r === "device" && i == null && t.fullPage !== !0 ? a9 : s9,
-@@ -33028,11 +33042,10 @@
+@@ -33028,11 +33077,10 @@
        return Zy.buildRevision(t, e, r);
      },
    };
@@ -96,15 +180,14 @@
 -  return (pG ??= Promise.resolve()
 -    .then(() => (y1(), b1))
 -    .then(async ({ loadBrowserAccessibilityWasm: r }) => mG(await r(t, e))));
--}
 +function _1() {
 +  return (pG ??= Promise.resolve(mG(createAccessibilityCore())));
-+}
+ }
 +
  function mG(t) {
    Zy = t;
  }
-@@ -33065,6 +33078,7 @@
+@@ -33065,6 +33113,7 @@
      "placeholder",
      "pressed",
      "radiogroup",
@@ -112,7 +195,19 @@
      "relevant",
      "required",
      "roledescription",
-@@ -45457,6 +45471,7 @@
+@@ -40241,8 +40290,9 @@
+   }
+ }
+ async function wm(t, e, r) {
+-  let n = UK(r),
+-    { cssVisualViewport: o } = await t.cdp.call(e, "Page.getLayoutMetrics");
++  let n = UK(r);
++  await akashicCheckScreenshotWindow("tab_ax_action", t, e);
++  let { cssVisualViewport: o } = await t.cdp.call(e, "Page.getLayoutMetrics");
+   if (n.x < 0 || n.y < 0 || n.x >= o.clientWidth || n.y >= o.clientHeight)
+     throw new Error("Coordinate is outside the active tab content viewport");
+   return { height: o.clientHeight, point: n, width: o.clientWidth };
+@@ -45457,6 +45507,7 @@
    return r != null ? Promise.resolve({ browser: r }) : EY(t, e, n, o);
  }
  async function TY(t) {
@@ -120,7 +215,7 @@
    try {
      return { error: null, pipes: await kY(t) };
    } catch (e) {
-@@ -45520,6 +45535,8 @@
+@@ -45520,6 +45571,8 @@
      : { ...e, capabilities: { ...e.capabilities, tab: [...n, ki.info] } };
  }
  function RY(t, e) {
@@ -129,7 +224,7 @@
    let r = gt(t, _v),
      n = "codex-browser-use-tinysky",
      o = !1;
-@@ -46743,13 +46760,11 @@
+@@ -46743,13 +46796,11 @@
      e.reverse(),
      dM.test(rf(e).function || "") &&
        (e.pop(), dM.test(rf(e).function || "") && e.pop()),
@@ -148,7 +243,7 @@
    );
  }
  function rf(t) {
-@@ -53296,15 +53311,13 @@
+@@ -53296,15 +53347,13 @@
              headers: r.headers,
              keepalive: r.keepAlive,
            };

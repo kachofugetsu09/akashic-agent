@@ -10238,6 +10238,33 @@ function vt(t, e) {
   if (!Number.isFinite(e.x) || !Number.isFinite(e.y))
     throw new Error(`${t} requires finite x and y coordinates`);
 }
+// 屏幕跟随观看面板；截图后窗口尺寸变了，截图上的坐标已经对不上，坐标动作要求先重新截图。
+const akashicScreenshotWindows = new Map();
+async function akashicWindowSize(e, tabId) {
+  const { bounds } = await e.cdp.call(tabId, "Browser.getWindowForTarget");
+  return `${bounds.width}x${bounds.height}`;
+}
+async function akashicRememberScreenshotWindow(e, tabId) {
+  try {
+    akashicScreenshotWindows.set(tabId, await akashicWindowSize(e, tabId));
+  } catch {
+    akashicScreenshotWindows.delete(tabId);
+  }
+}
+async function akashicCheckScreenshotWindow(name, e, tabId) {
+  const before = akashicScreenshotWindows.get(tabId);
+  if (before == null) return;
+  let now;
+  try {
+    now = await akashicWindowSize(e, tabId);
+  } catch {
+    return;
+  }
+  if (now !== before)
+    throw new Error(
+      `${name}: the browser window changed from ${before} to ${now} since the last screenshot; take a new screenshot and use coordinates from it`,
+    );
+}
 function tr(t, e) {
   return Zn(t, e);
 }
@@ -10299,6 +10326,7 @@ var ex = M("cua_click", async (t, e) => {
   let r = V(t.tab_id);
   return (
     vt("cua_click", t),
+    await akashicCheckScreenshotWindow("cua_click", e, r),
     await e.cua.clickPoint({
       button: Qv(t.button),
       clickCount: 1,
@@ -10315,6 +10343,7 @@ var tx = M("cua_double_click", async (t, e) => {
   let r = V(t.tab_id);
   return (
     vt("cua_double_click", t),
+    await akashicCheckScreenshotWindow("cua_double_click", e, r),
     await e.cua.clickPoint({
       clickCount: 2,
       modifiers: tr(t.keys, e.runtime.platform),
@@ -10332,6 +10361,7 @@ var rx = M("cua_drag", async (t, e) => {
   if (t.path.length === 0)
     throw new Error("cua_drag requires a non-empty path");
   for (let o of t.path) vt("cua_drag", o);
+  await akashicCheckScreenshotWindow("cua_drag", e, r);
   return (await e.cua.dragPath({ modifiers: n, path: t.path, tabId: r }), {});
 });
 l();
@@ -11297,6 +11327,7 @@ var px = M("cua_move", async (t, e) => {
   let r = V(t.tab_id);
   return (
     vt("cua_move", t),
+    await akashicCheckScreenshotWindow("cua_move", e, r),
     await e.cua.dispatchMouseMove(
       r,
       { x: t.x, y: t.y },
@@ -11309,6 +11340,7 @@ l();
 var mx = M("cua_scroll", async (t, e) => {
   let r = V(t.tab_id);
   vt("cua_scroll", t);
+  await akashicCheckScreenshotWindow("cua_scroll", e, r);
   let n = tr(t.keys, e.runtime.platform),
     o = { x: t.x, y: t.y };
   return (
@@ -28913,6 +28945,9 @@ async function zP(t, e, r) {
   let n = V(t.tab_id),
     o = { format: fr, quality: 80 },
     i = p9(t);
+  // 只有视口截图的坐标能直接用于点击；在截图之前记录，宁可多要一次截图也不点偏。
+  if (i == null && t.fullPage !== !0)
+    await akashicRememberScreenshotWindow(e, n);
   if (i != null) {
     let a = await bb(n, e, r);
     ((o.captureBeyondViewport = !0), (o.clip = { ...i, scale: a }));
@@ -40255,8 +40290,9 @@ async function Bn(t, e, r, n) {
   }
 }
 async function wm(t, e, r) {
-  let n = UK(r),
-    { cssVisualViewport: o } = await t.cdp.call(e, "Page.getLayoutMetrics");
+  let n = UK(r);
+  await akashicCheckScreenshotWindow("tab_ax_action", t, e);
+  let { cssVisualViewport: o } = await t.cdp.call(e, "Page.getLayoutMetrics");
   if (n.x < 0 || n.y < 0 || n.x >= o.clientWidth || n.y >= o.clientHeight)
     throw new Error("Coordinate is outside the active tab content viewport");
   return { height: o.clientHeight, point: n, width: o.clientWidth };
