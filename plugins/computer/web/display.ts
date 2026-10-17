@@ -5,14 +5,21 @@ import type { ComputerEvents } from "./computer-events";
 interface StreamWindow extends Window {
   computerInputHandlers?: InputHandlers & { touch(event: Event): void };
   fps?: number;
-  selkiesTransport?: { readonly readyState: number; close(): void;
-    addEventListener(type: "close" | "message", listener: (event: { reason?: string; data?: unknown }) => void): void };
+  selkiesTransport?: StreamTransport;
   webrtcInput?: {
     readonly element: HTMLElement;
     attach_context(): void;
     detach_context(): void;
     _sendKeyEvent(keysym: number, code: string, down: boolean): void;
   };
+}
+
+interface StreamTransport {
+  readonly readyState: number;
+  close(): void;
+  send(data: string): void;
+  addEventListener(type: "close" | "message", listener: (event: { reason?: string; data?: unknown }) => void): void;
+  removeEventListener(type: "message", listener: (event: { data?: unknown }) => void): void;
 }
 
 interface InputHandlers {
@@ -37,6 +44,7 @@ export class ComputerDisplay extends EventTarget {
   private transportWatched = false;
   private clipboardId = 0;
   private cursor: AgentCursor | null = null;
+  private governor: LinkGovernor | null = null;
   private readonly clipboardRequests = new Map<number, {
     resolve(): void;
     reject(error: Error): void;
@@ -222,6 +230,7 @@ export class ComputerDisplay extends EventTarget {
         this.connected = true;
         window.clearTimeout(this.startupTimer);
         this.cursor = new AgentCursor(this.host, this.events, () => this.viewport());
+        this.governor = new LinkGovernor(transport, this.frame);
         this.dispatchEvent(new Event("connect"));
       }
       if (transport?.readyState === WebSocket.CLOSED) {
@@ -309,10 +318,93 @@ export class ComputerDisplay extends EventTarget {
     window.clearTimeout(this.startupTimer);
     window.removeEventListener("message", this.onMessage);
     this.cursor?.destroy();
+    this.governor?.stop();
     this.blur();
     this.stream?.selkiesTransport?.close();
     this.frame.remove();
     for (const url of this.urls) URL.revokeObjectURL(url);
     this.dispatchEvent(new Event("disconnect"));
+  }
+}
+
+// 远程链路上，视频帧一旦塞满带宽，输入和回声都排在它们后面，延迟会累积到几秒。
+// 按回声往返相对近期最低值的膨胀判断拥塞：膨胀就降一档帧率和画质，持续畅通再升一档（同视频通话的拥塞控制）。
+// 局域网里往返不会膨胀，始终停在最高档。回声借用 `_gz,1`：服务端只是重复确认已开启的压缩，可以安全重发。
+// 最高档与 start.sh 的默认值一致；服务端会把帧率记成会话默认，所以每次连上都先回到最高档。
+const LEVELS = [{ fps: 60, crf: 25 }, { fps: 30, crf: 30 }, { fps: 20, crf: 35 }, { fps: 15, crf: 35 }] as const;
+const PROBE_MS = 500;
+const CONGESTED_MS = 150;
+const SEVERE_MS = 500;
+const CALM_MS = 40;
+const STEP_UP_AFTER_MS = 8000;
+const STEP_DOWN_GAP_MS = 1000;
+
+class LinkGovernor {
+  private readonly timer: number;
+  private readonly samples: number[] = [];
+  private level = 0;
+  private sentAt = 0;
+  private calmSince = performance.now();
+  private changedAt = 0;
+
+  // 当前档位和最近一次往返写在画面 iframe 的 data-link-* 上，排查远程卡顿时可以直接看。
+  constructor(private readonly transport: StreamTransport, private readonly report: HTMLElement) {
+    transport.addEventListener("message", this.onMessage);
+    this.timer = window.setInterval(this.probe, PROBE_MS);
+    this.apply(0, performance.now());
+  }
+
+  stop() {
+    window.clearInterval(this.timer);
+    this.transport.removeEventListener("message", this.onMessage);
+  }
+
+  // 上一次回声还没回来就不再发；等得太久本身就是拥塞的证据。
+  private readonly probe = () => {
+    if (this.transport.readyState !== WebSocket.OPEN) return;
+    const now = performance.now();
+    if (this.sentAt) {
+      const waited = now - this.sentAt - this.floor();
+      if (waited > CONGESTED_MS) this.congested(now, waited);
+      return;
+    }
+    this.sentAt = now;
+    this.transport.send("_gz,1");
+  };
+
+  private readonly onMessage = (event: { data?: unknown }) => {
+    if (event.data !== "_gz,1" || !this.sentAt) return;
+    const now = performance.now();
+    const rtt = now - this.sentAt;
+    this.sentAt = 0;
+    this.report.dataset.linkRtt = String(Math.round(rtt));
+    // 1. 最近 30 秒的最低往返当作链路本身的延迟。
+    this.samples.push(rtt);
+    if (this.samples.length > 30_000 / PROBE_MS) this.samples.shift();
+    // 2. 明显高于它就是在排队；一直贴着它就逐级恢复。
+    const inflation = rtt - this.floor();
+    if (inflation > CONGESTED_MS) this.congested(now, inflation);
+    else if (inflation > CALM_MS) this.calmSince = now;
+    else if (now - this.calmSince > STEP_UP_AFTER_MS && this.level > 0) this.apply(this.level - 1, now);
+  };
+
+  private floor(): number {
+    return this.samples.length ? Math.min(...this.samples) : 0;
+  }
+
+  // 严重排队一次降两档，尽快把积压的帧排空。
+  private congested(now: number, inflation: number) {
+    this.calmSince = now;
+    if (now - this.changedAt <= STEP_DOWN_GAP_MS || this.level === LEVELS.length - 1) return;
+    this.apply(Math.min(LEVELS.length - 1, this.level + (inflation > SEVERE_MS ? 2 : 1)), now);
+  }
+
+  private apply(level: number, now: number) {
+    this.level = level;
+    this.report.dataset.linkLevel = String(level);
+    this.changedAt = now;
+    this.calmSince = now;
+    this.transport.send(`_arg_fps,${LEVELS[level].fps}`);
+    this.transport.send(`_crf,${LEVELS[level].crf}`);
   }
 }

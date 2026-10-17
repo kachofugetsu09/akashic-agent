@@ -26,7 +26,7 @@ def _websocket_url(base_url: str) -> str:
 
 
 # 只读观看时只放行画面协商：分辨率、帧率、关键帧和帧确认；键鼠、剪贴板与上传一律丢弃。
-_VIEW_ONLY_PREFIXES = ("SETTINGS,", "r,", "s,", "_arg_fps,", "_f,", "START_VIDEO", "STOP_VIDEO",
+_VIEW_ONLY_PREFIXES = ("SETTINGS,", "r,", "s,", "_arg_fps,", "_crf,", "_f,", "START_VIDEO", "STOP_VIDEO",
                        "REQUEST_KEYFRAME", "CLIENT_FRAME_ACK", "LOST_FRAME", "_gz,")
 
 
@@ -197,6 +197,7 @@ def register(app: FastAPI, context: DashboardContext) -> httpx.Client:
         held_keys: set[str] = set()
         last_pointer: list[str] = []
         touched = 0.0
+        renew_wanted = asyncio.Event()
 
         async def watch_idle(upstream: ClientConnection) -> None:
             nonlocal idle
@@ -217,14 +218,21 @@ def register(app: FastAPI, context: DashboardContext) -> httpx.Client:
                             await upstream.send(",".join([*last_pointer[:3], "0", "0"]))
                             last_pointer.clear()
 
-        async def touch() -> None:
-            # 人在直接操作时续期，浏览器不会在用户使用中途休眠。
+        def touch() -> None:
+            # 人在直接操作时续期，浏览器不会在用户使用中途休眠；这里只做标记，请求由后台任务发，不拖慢输入转发。
             nonlocal touched
             if time.monotonic() - touched < 30:
                 return
             touched = time.monotonic()
-            result = await reader.post("/view/touch", json={})
-            result.raise_for_status()
+            renew_wanted.set()
+
+        async def renew_while_used() -> None:
+            # 续期失败和以前一样结束这条画面连接（关闭码 1013）。
+            while True:
+                _ = await renew_wanted.wait()
+                renew_wanted.clear()
+                result = await reader.post("/view/touch", json={})
+                _ = result.raise_for_status()
 
         def allowed(text: str) -> bool:
             if control_id or _view_only_allows(text):
@@ -268,7 +276,7 @@ def register(app: FastAPI, context: DashboardContext) -> httpx.Client:
                                     last_pointer[:] = text.split(",")[:4]
                                 await upstream.send(text)
                                 if idle and not control_id and not _view_only_allows(text):
-                                    await touch()
+                                    touch()
                     except WebSocketDisconnect:
                         return
 
@@ -295,6 +303,7 @@ def register(app: FastAPI, context: DashboardContext) -> httpx.Client:
                     tasks.add(asyncio.create_task(renew_control()))
                 else:
                     tasks.add(asyncio.create_task(watch_idle(upstream)))
+                    tasks.add(asyncio.create_task(renew_while_used()))
                 done, pending = await asyncio.wait(
                     tasks,
                     return_when=asyncio.FIRST_COMPLETED,
