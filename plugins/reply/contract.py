@@ -41,6 +41,8 @@ class ReplyPreview:
     retry_status: str = ""
     # 重试中的尝试进度；与 retry_status 分开，持续显示时不撤下本次尝试的草稿。
     attempt: ModelAttemptStatus | None = None
+    # 本次物理尝试的首字耗时（毫秒），由 Models 在首段增量时给出；尚未出字时为空。
+    first_token_ms: float | None = None
 
 
 @dataclass(frozen=True, slots=True)

@@ -59,7 +59,9 @@ export interface ReplyActivity {
   handle: string;
   active: boolean;
   preview: { message_id: string; text: string; thinking: string; call_record_id?: string | null; retry_status?: string;
-    attempt?: ModelAttempt | null; truncated?: boolean } | null;
+    attempt?: ModelAttempt | null; truncated?: boolean;
+    /** 本次尝试的首字耗时（毫秒），服务端在首段增量时给出；未出字时为空。 */
+    first_token_ms?: number | null } | null;
 }
 
 export type MessageLogFrame =
@@ -108,6 +110,8 @@ export function readMessageLogFrame(value: unknown): MessageLogFrame | null {
         const preview = object(item.preview);
         if (preview?.retry_status !== undefined && typeof preview.retry_status !== "string") throw new Error("模型重试状态无效");
         if (preview?.attempt !== undefined && preview.attempt !== null && !validAttempt(preview.attempt)) throw new Error("模型尝试进度无效");
+        if (preview?.first_token_ms !== undefined && preview.first_token_ms !== null
+          && !(typeof preview.first_token_ms === "number" && Number.isFinite(preview.first_token_ms) && preview.first_token_ms >= 0)) throw new Error("首字耗时无效");
         if (!item.active || !preview || !nonempty(preview.message_id) || typeof preview.text !== "string"
           || typeof preview.thinking !== "string" || (preview.call_record_id !== undefined && preview.call_record_id !== null && !nonempty(preview.call_record_id)) || (preview.truncated !== undefined && typeof preview.truncated !== "boolean") || previews.has(preview.message_id)) throw new Error("回复草稿无效");
         previews.add(preview.message_id);
