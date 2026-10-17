@@ -20,6 +20,7 @@ class Monitor:
         self._gc_started: dict[int, float] = {}
         self._gc_seconds = 0.0
         self._gc_baseline = gc.get_stats()
+        self._malloc_due = 0.0
         self._logger = logging.getLogger("akashic.plugin.diagnostics")
 
     def start(self):
@@ -50,7 +51,13 @@ class Monitor:
         count = 0
         while True:
             now = loop.time()
-            values = await run_file_io(lambda: memory_sample(detailed=count % 6 == 0))
+            detailed = count % 6 == 0
+            allocator = detailed and time.monotonic() >= self._malloc_due
+            values = await run_file_io(lambda: memory_sample(detailed=detailed, allocator=allocator))
+            scan_ms = values.get("malloc_scan_ms")
+            if isinstance(scan_ms, float):
+                # 下次至少间隔「本次毫秒数」秒，把 mallinfo2 的占用压在 0.1% 以内。
+                self._malloc_due = time.monotonic() + scan_ms
             with self._gc_lock:
                 gc_seconds = self._gc_seconds
             stats = gc.get_stats()
