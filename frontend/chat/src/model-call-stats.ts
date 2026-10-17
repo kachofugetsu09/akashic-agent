@@ -55,8 +55,8 @@ export function selectModelCall(messages: readonly TimelineMessage[], activities
   return { callId: null, active: false };
 }
 
-/** 仅完整真实用量参与速度计算；无流式首段时只显示总耗时。 */
-export function formatModelCallStats(stats: ModelCallStats, active: boolean): string {
+/** 结算后的摘要：仅完整真实用量参与速度计算；无流式首段时只显示总耗时。 */
+export function formatModelCallStats(stats: ModelCallStats): string {
   const parts: string[] = [];
   if (stats.first_token_ms !== null) parts.push(`首 token ${(stats.first_token_ms / 1000).toFixed(1)}s`);
   const usage = stats.usage;
@@ -65,9 +65,8 @@ export function formatModelCallStats(stats: ModelCallStats, active: boolean): st
     && usage.output_tokens !== null && usage.request_count > 0 && usage.covered_request_count === usage.request_count) {
     parts.push(`${(usage.output_tokens * 1000 / (stats.duration_ms - stats.first_token_ms)).toFixed(1)} tok/s`);
   } else if (stats.duration_ms !== null) parts.push(`耗时 ${formatCallDuration(stats.duration_ms)}`);
-  // 生成中用量本来就还没结算，不必再说一遍；只有结束后仍缺用量才值得提。
-  if (!active && (stats.state === "error" ? usage === null : stats.state === "started")) parts.push("用量未结算");
-  if (!parts.length) return active ? "等待首 token…" : "暂无耗时数据";
+  if (stats.state === "error" ? usage === null : stats.state === "started") parts.push("用量未结算");
+  if (!parts.length) return "暂无耗时数据";
   return parts.join(" · ");
 }
 
