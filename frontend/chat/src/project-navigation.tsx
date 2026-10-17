@@ -107,7 +107,7 @@ export function ProjectNavigation({
     <section className="project-navigation" aria-label="项目">
       <header className="project-navigation__header">
         <span>{heading}</span>
-        <button ref={createButtonRef} type="button" className="project-navigation__icon" aria-label="新建项目" title="新建项目"
+        <button ref={createButtonRef} type="button" className="project-navigation__icon" aria-label="新建项目" data-tip="新建项目"
           onClick={openCreate}>
           <Plus size={15} aria-hidden="true" />
         </button>
@@ -204,7 +204,7 @@ export function ProjectNavigationRow({
       </button>
       {/* 行菜单里有同一个"新建对话"：键盘用 Shift+F10 打开，不再每个项目多占一个 Tab 停靠点。 */}
       <button type="button" className="project-navigation__icon project-group__new-chat" aria-label={`在 ${project.name} 中新建对话`}
-        title="新建对话" tabIndex={-1} onClick={onNewChat}>
+        data-tip="新建对话" tabIndex={-1} onClick={onNewChat}>
         <Plus size={14} aria-hidden="true" />
       </button>
     </NavigationRowMenu>

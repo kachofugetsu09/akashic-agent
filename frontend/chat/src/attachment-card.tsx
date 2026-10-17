@@ -1,6 +1,8 @@
-import { Check, Copy, Download, ImageIcon, Pencil, Play, X } from "lucide-react";
+import { Copy, Download, ImageIcon, Pencil, Play, X } from "lucide-react";
 import { useEffect, useRef, useState, type CSSProperties, type KeyboardEvent as ReactKeyboardEvent, type ReactNode } from "react";
 import { Dialog, DialogClose, DialogContent, DialogDescription, DialogTitle } from "@/components/ui/dialog";
+
+import { CheckGlyph, IconSwap } from "./icon-swap";
 import { copyText } from "./copy-text";
 import "./attachment-card.css";
 
@@ -133,10 +135,10 @@ export function AttachmentCard({ data, pending = false, onOpen, openVerb = "预�
       </>}
     </button>
     {pending ? <span className="ak-attachment__skeleton" aria-hidden="true" /> : null}
-    {onEdit ? <button type="button" className="ak-attachment__edit" aria-label={`把 ${label} 还原成文字`} title="还原成文字" onClick={onEdit}>
+    {onEdit ? <button type="button" className="ak-attachment__edit" aria-label={`把 ${label} 还原成文字`} data-tip="还原成文字" onClick={onEdit}>
       <Pencil size={13} aria-hidden="true" />
     </button> : null}
-    {onRemove ? <button type="button" className="ak-attachment__remove" aria-label={`移除 ${label}`} title="移除" onClick={onRemove}>
+    {onRemove ? <button type="button" className="ak-attachment__remove" aria-label={`移除 ${label}`} data-tip="移除" onClick={onRemove}>
       <X size={11} strokeWidth={3} aria-hidden="true" />
     </button> : null}
   </div>;
@@ -388,11 +390,11 @@ function AttachmentPreviewContent({ state, onCloseAutoFocus }: { state: PreviewS
         <DialogDescription>{meta || "\u00a0"}</DialogDescription>
       </div>
       <button type="button" onClick={copy} disabled={!copyable} aria-label={copied ? "已复制" : "复制全文"}
-        title={text && !copyable ? "文件较大，请下载后复制" : "复制全文"}>
-        {copied ? <Check size={16} aria-hidden="true" /> : <Copy size={16} aria-hidden="true" />}
+        data-tip={text && !copyable ? "文件较大，请下载后复制" : "复制全文"}>
+        <IconSwap state={copied} a={<Copy size={16} aria-hidden="true" />} b={<CheckGlyph />} />
       </button>
-      <a href={target.url} download={target.name} aria-label={`下载 ${target.name}`} title="下载"><Download size={16} aria-hidden="true" /></a>
-      <DialogClose aria-label="关闭" title="关闭（Esc）"><X size={18} aria-hidden="true" /></DialogClose>
+      <a href={target.url} download={target.name} aria-label={`下载 ${target.name}`} data-tip="下载"><Download size={16} aria-hidden="true" /></a>
+      <DialogClose aria-label="关闭" data-tip="关闭（Esc）"><X size={18} aria-hidden="true" /></DialogClose>
     </header>
     {copyError ? <p className="attachment-preview__note" role="alert">{copyError}</p> : null}
     {columns.length > 1 ? <section className="attachment-preview__columns" aria-label="表格结构">

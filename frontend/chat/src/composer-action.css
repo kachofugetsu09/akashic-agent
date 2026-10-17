@@ -19,23 +19,21 @@
   cursor: pointer;
   appearance: none;
   transition-property: scale, color, background-color, opacity;
-  transition-duration: var(--ak-sys-duration-short);
-  transition-timing-function: var(--ak-sys-motion-standard);
+  /* 按下要立刻、回弹才慢慢来：进出两条时长与两条曲线分开写，索引与 transition-property 对齐。 */
+  transition-duration: 180ms, var(--ak-sys-duration-short), var(--ak-sys-duration-short), var(--ak-sys-duration-short);
+  transition-timing-function: var(--ak-sys-motion-emphasized), var(--ak-sys-motion-standard), var(--ak-sys-motion-standard), var(--ak-sys-motion-standard);
 }
 
-.composer-action-button > svg {
+/* 发送 / 停止两枚图形叠在同一个格子：尺寸由各自 svg 的 width/height 决定，这里只管不参与布局。 */
+.composer-action-button .icon-swap__slot > svg {
   display: block;
-  width: 20px;
-  height: 20px;
   flex: none;
   stroke-width: 2;
 }
 
-.composer-action-button[data-mode="send"] > svg {
-  width: 16px;
-  height: 16px;
+/* 箭头的线比停止方块粗一档（改版前由 .composer-action-button[data-mode="send"] > svg 承担）。 */
+.composer-action-button[data-mode="send"] .icon-swap__slot > svg {
   stroke-width: 2.4;
-  transform: none;
 }
 
 .composer-action-button[data-mode="stop"] {
@@ -53,6 +51,7 @@
 
 .composer-action-button:active:not(:disabled, [aria-disabled="true"]) {
   scale: 0.96;
+  transition-duration: var(--ak-sys-duration-instant), var(--ak-sys-duration-short), var(--ak-sys-duration-short), var(--ak-sys-duration-short);
 }
 
 .composer-action-button:focus-visible {
@@ -83,5 +82,6 @@
 }
 
 @media (prefers-reduced-motion: reduce) {
+  .composer-action-button:active:not(:disabled, [aria-disabled="true"]) { scale: 1; }
   .composer-action-button[data-mode="stop"][aria-disabled="true"]::after { animation: none; border-inline-end-color: currentColor; opacity: 0.4; }
 }

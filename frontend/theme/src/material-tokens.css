@@ -60,6 +60,7 @@
 
   --ak-sys-motion-standard: cubic-bezier(0.2, 0, 0, 1);
   --ak-sys-motion-emphasized: cubic-bezier(0.05, 0.7, 0.1, 1);
+  --ak-sys-duration-instant: 80ms;
   --ak-sys-duration-short: 150ms;
   --ak-sys-duration-medium: 300ms;
 
@@ -110,6 +111,7 @@
 
 @media (prefers-reduced-motion: reduce) {
   :root {
+    --ak-sys-duration-instant: 0ms;
     --ak-sys-duration-short: 0ms;
     --ak-sys-duration-medium: 0ms;
   }
