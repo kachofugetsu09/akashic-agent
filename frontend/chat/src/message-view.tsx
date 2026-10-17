@@ -722,15 +722,17 @@ export interface TimelineAttachmentOrigin {
   kind: TimelineMessage["body"]["kind"];
   author: string;
   tool: string | null;
+  /** 附件所在消息的时间（ISO 8601）。 */
+  at: string;
 }
 
 // 插件按来源决定是否认领附件；工具结果附带产生它的工具名，缺少调用记录时为 null。
 function attachmentOrigin(message: TimelineMessage, lookupMessage: (id: string) => TimelineMessage | undefined): TimelineAttachmentOrigin {
   const body = message.body;
-  if (body.kind !== "tool_result") return { kind: body.kind, author: message.author, tool: null };
+  if (body.kind !== "tool_result") return { kind: body.kind, author: message.author, tool: null, at: message.timestamp };
   const call = lookupMessage(body.call_ref.message_id);
   const part = call?.body.kind === "control" ? undefined : call?.body.parts[body.call_ref.part_index];
-  return { kind: body.kind, author: message.author, tool: part?.kind === "tool_call" && !("display" in part) ? part.name : null };
+  return { kind: body.kind, author: message.author, tool: part?.kind === "tool_call" && !("display" in part) ? part.name : null, at: message.timestamp };
 }
 
 /** 保留一个稳定的插图容器；插件退出后用原消息文字降级，平滑收起高度。 */

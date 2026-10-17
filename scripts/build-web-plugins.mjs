@@ -114,6 +114,13 @@ await bundle({
   outfile: resolve(pluginsRoot, "workspace_changes/message_ui.js"),
 });
 
+// 网站卡片经消息附件插槽挂载，与“网站”标签的 Web 模块分开打包。
+await bundle({
+  entryPoints: [resolve(repoRoot, "frontend/plugins/sites/src/message-ui.ts")],
+  bundle: true, format: "esm", target: "es2022", minify: true,
+  outfile: resolve(pluginsRoot, "sites/message_ui.js"),
+});
+
 // 可视化使用同一份 frame 模板完成服务端预检与浏览器展示；图表工具包内联进模板，不另开脚本入口。
 const visualCharts = await bundle({
   entryPoints: [resolve(repoRoot, "frontend/plugins/visuals/src/charts.ts")],
