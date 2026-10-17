@@ -1,8 +1,11 @@
 """只读操作系统计数；缺席和权限拒绝保留原因，不填造零值。"""
 from __future__ import annotations
 
+from collections.abc import Callable
+import ctypes
 from pathlib import Path
 import sys
+import time
 
 
 def _fields(path: Path, *, kib: bool = False) -> dict[str, int]:
@@ -12,6 +15,39 @@ def _fields(path: Path, *, kib: bool = False) -> dict[str, int]:
         if len(parts) >= 2 and parts[1].isdigit():
             values[parts[0].rstrip(":")] = int(parts[1]) * (1024 if kib else 1)
     return values
+
+
+class _MallInfo2(ctypes.Structure):
+    _fields_ = [(field, ctypes.c_size_t) for field in (
+        "arena", "ordblks", "smblks", "hblks", "hblkhd", "usmblks", "fsmblks", "uordblks", "fordblks", "keepcost")]
+
+
+# glibc 2.33+ 才有 mallinfo2；musl、macOS 与 Windows 没有该符号，按不支持处理。
+def _load_mallinfo2() -> Callable[[], _MallInfo2] | None:
+    try:
+        function = ctypes.CDLL(None).mallinfo2
+    except (OSError, AttributeError, TypeError):
+        return None
+    function.argtypes = []
+    function.restype = _MallInfo2
+    return function
+
+
+_MALLINFO2 = _load_mallinfo2() if sys.platform == "linux" else None
+
+
+def allocator_sample() -> dict[str, object]:
+    """glibc 视图区分在用与已释放未归还；其余分配器只标记不支持。"""
+    if _MALLINFO2 is None:
+        return {"malloc_status": "unsupported"}
+    # glibc 逐个 arena 加锁遍历空闲块，期间同一 arena 上的 malloc 要排队，耗时随碎片增长；
+    # 释放 GIL 也挡不住这把锁，所以只在运维显式发起的剖析开始和结束时各读一次，不进周期采样。
+    started = time.perf_counter()
+    info = _MALLINFO2()
+    return {"malloc_status": "ok", "malloc_arena_bytes": info.arena, "malloc_mmap_bytes": info.hblkhd,
+            "malloc_in_use_bytes": info.uordblks, "malloc_free_bytes": info.fordblks,
+            "malloc_top_releasable_bytes": info.keepcost,
+            "malloc_scan_ms": round((time.perf_counter() - started) * 1000, 3)}
 
 
 def memory_sample(*, detailed: bool) -> dict[str, object]:

@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 from collections import deque
+import copy
 import logging
 import math
 import os
@@ -27,16 +28,17 @@ class Records(logging.Handler):
         self.stream_id = uuid4().hex
         self._guard = threading.Lock()
         self._seq = 0
-        self._samples: deque[Record] = deque(maxlen=720)
-        self._events: deque[Record] = deque(maxlen=2048)
-        self._evicted = {"samples": 0, "events": 0}
-        self._last_evicted = {"samples": 0, "events": 0}
+        # 停顿记录带线程栈，体积远大于样本，只保留最近 8 次。
+        self._lanes: dict[str, deque[Record]] = {"samples": deque(maxlen=720), "events": deque(maxlen=2048),
+                                                 "stalls": deque(maxlen=8)}
+        self._evicted = dict.fromkeys(self._lanes, 0)
+        self._last_evicted = dict.fromkeys(self._lanes, 0)
 
     def append(self, kind: str, values: dict[str, object], *, timestamp: float | None = None) -> None:
         """锁内登记顺序；溢出只淘汰本插件的临时诊断记录。"""
-        lane = "samples" if kind == "sample" else "events"
+        lane = {"sample": "samples", "stall": "stalls"}.get(kind, "events")
         with self._guard:
-            target = self._samples if lane == "samples" else self._events
+            target = self._lanes[lane]
             if len(target) == target.maxlen:
                 self._evicted[lane] += 1
                 self._last_evicted[lane] = target[0]["seq"]
@@ -76,12 +78,13 @@ class Records(logging.Handler):
                     "pid": os.getpid(), "release_commit": os.environ.get("AKASHIC_RUNTIME_COMMIT", ""),
                     "through_seq": self._seq, "reset_required": after > self._seq,
                     "sample_interval_seconds": 5,
-                    "capacity": {"samples": 720, "events": 2048},
+                    "capacity": {lane: rows.maxlen for lane, rows in self._lanes.items()},
                     "evicted": dict(self._evicted),
                     "gap": {lane: after < seq for lane, seq in self._last_evicted.items()},
-                    "samples": [_row(row) for row in self._samples if row["seq"] > after],
-                    "events": [_row(row) for row in self._events if row["seq"] > after]}
+                    **{lane: [_row(row) for row in rows if row["seq"] > after] for lane, rows in self._lanes.items()}}
 
 
 def _row(row: Record) -> dict[str, object]:
-    return {"seq": row["seq"], "timestamp": row["timestamp"], "kind": row["kind"], **row["values"]}
+    # 停顿记录含嵌套线程栈，复制后消费者修改不会影响保留副本。
+    values = copy.deepcopy(row["values"]) if row["kind"] == "stall" else row["values"]
+    return {"seq": row["seq"], "timestamp": row["timestamp"], "kind": row["kind"], **values}

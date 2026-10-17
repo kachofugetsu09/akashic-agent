@@ -8,11 +8,12 @@ from . import dashboard
 from .profiling import PROFILES, Profiles
 from .records import Records
 from .runtime import Monitor
+from .stalls import StallWatch
 
 api_version = 3
 name = "runtime_diagnostics"
 version = "1.0.0"
-desc = "运行指标、插件操作与限时内存剖析，供运维读取"
+desc = "运行指标、事件循环停顿现场、插件操作与限时内存剖析，供运维读取"
 
 
 async def apply(ctx: Context) -> None:
@@ -25,6 +26,7 @@ async def apply(ctx: Context) -> None:
     await ctx.provide(DIAGNOSTICS, records)
     await ctx.provide(PROFILES, profiles)
     await ctx.spawn(monitor.run(), name="diagnostics-sampling")
+    await ctx.spawn(StallWatch(records).run(), name="diagnostics-stall-watch")
 
     async def register_http(child: Context) -> None:
         await child.require(UI).register(child, dashboard=lambda: dashboard)

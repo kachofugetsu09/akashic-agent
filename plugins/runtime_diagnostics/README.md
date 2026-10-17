@@ -1,6 +1,6 @@
 # 运行诊断
 
-默认组合包含本插件，供 SRE 读取近期内存、任务数、GC、事件循环延迟、插件操作与测量。
+默认组合包含本插件，供 SRE 读取近期内存、任务数、GC、事件循环延迟与停顿现场、插件操作与测量。
 不提供前端页面或顶部导航，不需要 Loki、Grafana 或联网。无 UI 时采样和只读服务仍工作。
 最小组合停用本插件；headless 组合保留采样，消费者可以独立使用公共读接口。
 
@@ -15,8 +15,38 @@
   父子 operation 和已有 Session/Turn 身份；不保存日志正文、异常正文、参数或对象值。
   INFO 被关闭时，样本的 `operations_enabled=false` 明确标记普通操作记录不可用。
   本插件自己的 Dashboard 轮询不进入事件窗口，避免查看诊断挤走目标操作。
-- 720 个样本和 2048 条事件分别保存在有界内存记录中。消费者不持有生产者回调，
+- 720 个样本、2048 条事件和 8 次停顿分别保存在有界内存记录中。消费者不持有生产者回调，
   慢读者只会漏读自身的诊断数据，不阻塞业务。插件换代或进程退出清空记录。
+
+## 事件循环停顿现场
+
+`loop_lag_ms` 只能在停顿结束后补记幅度。本插件另有一个看门狗线程，不依赖事件循环：
+循环上每 0.5 秒写一次心跳，线程每 0.25 秒比较一次时间戳。心跳迟到超过 2 秒时，立即
+用 `sys._current_frames()` 抓取全部 Python 线程的栈；同一次停顿在第 6、18 秒各补抓一次，
+区分单个长调用与接连的多处阻塞。心跳恢复后写入一条 `kind=stall` 记录，带实际停顿时长，
+并输出一行 WARNING 日志（循环线程与占用 CPU 线程的栈顶位置）。
+
+2 秒避开正常回调、大堆完整 GC 与偶发同步文件 I/O 的噪声，又远早于 Web 守卫 10 秒超时，
+阻塞代码仍在执行时就能拿到现场。栈只含与剖析相同脱敏规则的文件定位、行号和函数名，
+不读取局部变量或对象值。空闲时看门狗只读两个时间戳，每 4 秒读一次各线程 CPU 时间作为基线。
+
+| 字段 | 含义 |
+|---|---|
+| `started_at` / `duration_ms` | 停顿开始的 Unix 秒时间；心跳迟到时长，误差不超过心跳间隔 |
+| `threshold_ms` | 触发阈值 |
+| `captures[].elapsed_ms` | 抓取时停顿已持续的毫秒数 |
+| `captures[].watchdog_delay_ms` | 看门狗自身被推迟的时间。大于阈值说明整个解释器被占住（通常是某线程持有 GIL 的 C 调用），栈在 GIL 释放的瞬间抓取 |
+| `captures[].cpu_window_ms` | 计算线程 CPU 差值的窗口 |
+| `threads[]` | `name`、`native_id`、`loop`（事件循环所在线程，排在最前）、`cpu_ms`（窗口内 CPU 毫秒，Linux 以外为空）、`hot`（占满停顿期一半以上 CPU 的那个线程） |
+| `threads[].frames` | 由内向外最多 20 层 `文件:行 in 函数`，`frames_omitted` 为截掉的外层数；每次最多 48 个线程，`threads_omitted` 为其余数量 |
+
+循环线程 `cpu_ms` 接近 0 表示它在等待系统调用或锁；`hot` 线程与循环线程不同则说明是
+另一个线程占着 GIL。看门狗线程不出现在结果里。停顿未结束前进程退出则不留记录。
+
+`duration_ms` 取恢复那一拍心跳的迟到量：迟到超过 1 秒的心跳另外留底，看门狗处理前
+后续健康心跳不会把它覆盖成 0。停用或换代时先通知看门狗线程停止，再在循环上异步等它
+真正退出，任务才结束；等待不阻塞事件循环，重复取消也不会提前返回。线程 2 秒仍未退出
+（例如卡在 `/proc` 读取）时打一行 WARNING，继续等待，不当作卸载成功。
 
 cgroup 不一定专属于 Akashic；本地运行时可能包含同组其他程序。进程和 cgroup
 不能相加。同期操作只帮助定位，不能用并发操作前后的 RSS 差值计算插件独占内存。
@@ -31,8 +61,8 @@ cgroup 不一定专属于 Akashic；本地运行时可能包含同组其他程�
 |---|---|
 | `stream_id` | 本次记录实例身份；变化时丢弃旧游标，从 `after=0` 重读 |
 | `through_seq` | 本响应已读取的全局游标，供下次读取使用 |
-| `samples` / `events` | 各自按 seq 排序，只含 `seq > after` 的保留记录；两数组共用 seq |
-| `seq` / `timestamp` / `kind` | 单调递增序号、Unix 秒时间和 `sample` / `operation` 类型 |
+| `samples` / `events` / `stalls` | 各自按 seq 排序，只含 `seq > after` 的保留记录；三数组共用 seq |
+| `seq` / `timestamp` / `kind` | 单调递增序号、Unix 秒时间和 `sample` / `operation` / `stall` 类型 |
 | `capacity` | 各数组的最大条数 |
 | `evicted` | 各数组从本实例启动起淘汰的总条数 |
 | `gap` | 对应数组曾淘汰游标之后的记录；本次返回不完整，不假装已连续送达 |
@@ -65,6 +95,20 @@ HTTP 复用现有 UI 后端监听器，以无前端模块的 Dashboard 注册。
 30 组位置、大小、数量，以及追踪内存当前值、峰值和 tracer 自身内存。不是对象持有者
 分析，不包含启动追踪前的分配，也不保证覆盖原生扩展。记录的是期间峰值数值，
 最终调用栈对应结束快照，不能把二者混称为峰值的分配栈。
+
+剖析开始和结束时各读一次 glibc `mallinfo2()`，放在 `profile.allocator_start` 与
+`profile.allocator_end`（结束值只在 `complete` 时有），区分「真在用」与「已释放未归还」：
+`malloc_in_use_bytes`（arena 内在用，uordblks）+ `malloc_mmap_bytes`（大块 mmap，hblkhd）
+是 C 层实际持有量；`malloc_free_bytes`（fordblks）是 arena 里已释放但未还给系统的空闲块，
+`malloc_arena_bytes`（arena）是各 arena 向系统申请的总量，`malloc_top_releasable_bytes`
+（keepcost）是主 arena 顶部可直接收缩的部分，`malloc_scan_ms` 是这次读取的耗时。
+这些都是地址空间口径：`malloc_trim` 用 madvise 归还物理页后 `malloc_free_bytes` 不变，
+物理是否驻留要看同期样本的 `anonymous_bytes` 与「在用 + mmap」的差。pymalloc 的小对象
+arena 直接 mmap，不计入这些字段。musl、macOS 等没有该函数时为 `malloc_status=unsupported`，不填零。
+
+这项读取会逐个 arena 加锁遍历空闲块，持锁期间业务线程在同一 arena 上的 malloc/free
+都要排队；碎片严重时单次可达数百毫秒，释放 GIL 也挡不住这把锁，降频或换线程都不能
+限制单次持锁时长。所以周期采样从不调用它，只在运维显式发起剖析时读这两次。
 
 剖析额外占用 CPU 和内存；定时停止依赖进程仍能调度。汇总在 worker 线程执行，
 取消会等物理工作结束后停止本插件的 tracer。失败明确显示 `failed`，取消显示

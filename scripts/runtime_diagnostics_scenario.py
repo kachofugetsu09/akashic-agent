@@ -12,6 +12,7 @@ import shutil
 import subprocess
 import sys
 import tempfile
+import threading
 import tracemalloc
 
 import httpx
@@ -23,7 +24,7 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 
 PROBE = '''from agent.plugin_composition import ServiceKey
-from .diagnostics_probe_allocations import allocate_bytes
+from .diagnostics_probe_allocations import allocate_bytes, block_loop
 api_version = 3
 name = "diagnostics_probe"
 version = "1.0.0"
@@ -35,12 +36,15 @@ async def apply(ctx):
         ctx.diagnostics.measure("scenario.held", sum(map(len, held)), unit="bytes")
     async def release():
         held.clear()
+    async def stall():
+        block_loop()
     async def burst():
         for i in range(2300):
             ctx.diagnostics.measure("scenario.counter", i)
     await ctx.provide(ServiceKey("scenario.allocate"), ctx.entrypoint(allocate))
     await ctx.provide(ServiceKey("scenario.release"), ctx.entrypoint(release))
     await ctx.provide(ServiceKey("scenario.burst"), ctx.entrypoint(burst))
+    await ctx.provide(ServiceKey("scenario.stall"), ctx.entrypoint(stall))
 '''
 
 
@@ -82,7 +86,8 @@ async def run(directory: Path, port: int | None) -> dict[str, bool]:
     (probe / "plugin.py").write_text(PROBE)
     # 独立真实文件让脱敏后仍能精确定位本次分配，不依赖临时目录名。
     (probe / "diagnostics_probe_allocations.py").write_text(
-        "def allocate_bytes(megabytes):\n    return bytearray(megabytes * 1024 * 1024)\n"
+        "def allocate_bytes(megabytes):\n    return bytearray(megabytes * 1024 * 1024)\n\n\n"
+        "def block_loop():\n    import time\n    time.sleep(2.8)\n"
     )
     logging.getLogger("akashic.plugin.diagnostics").setLevel(logging.INFO)
     before_callbacks = tuple(gc.callbacks)
@@ -164,8 +169,22 @@ async def run(directory: Path, port: int | None) -> dict[str, bool]:
                                for frame in item["frames"])
                        for item in profile["allocations"]), profile
             assert not tracemalloc.is_tracing()
+            # mallinfo2 只在显式剖析首尾各读一次，两端都带分配器视图。
+            for allocator in (profile["allocator_start"], profile["allocator_end"]):
+                assert allocator["malloc_status"] == "unsupported" or allocator["malloc_in_use_bytes"] > 0, profile
             assert max(row["rss_bytes"] for row in report["samples"]) > baseline["samples"][-1]["rss_bytes"] + 16 * 1024 * 1024
             checks["allocation_site_and_auto_stop"] = True
+            # 事件循环同步阻塞时，看门狗线程在停顿期间抓到循环线程正停在哪一行。
+            await call("stall")
+            async with asyncio.timeout(5):
+                while not (stalls := (await get(report["through_seq"]))["stalls"]):
+                    await asyncio.sleep(.1)
+            stall = stalls[-1]
+            assert 2500 <= stall["duration_ms"] < 4000, stall
+            loop_thread = stall["captures"][0]["threads"][0]
+            assert loop_thread["loop"] and loop_thread["frames"][0] == "diagnostics_probe_allocations.py:7 in block_loop", stall
+            assert not any("malloc_status" in row for row in (await get())["samples"])
+            checks["stall_stack_and_allocator"] = True
             assert any(row.get("operation") == "scenario.allocate" for row in report["events"])
             await call("release")
             # 3. 外部慢读者沿公开只读接口得到缺口；导出不夹带日志正文。
@@ -202,6 +221,7 @@ async def run(directory: Path, port: int | None) -> dict[str, bool]:
             assert (await get())["stream_id"] != old_stream
             assert len(gc.callbacks) == len(before_callbacks) + 1
             assert len(logger.handlers) == len(before_handlers) + 1
+            assert [thread.name for thread in threading.enumerate()].count("diagnostics-stall-watch") == 1
             checks["installed_update_stops_old_profile"] = True
             await post("profile", {"seconds": 120})
             assert (await post("profile/stop"))["state"] == "complete"
@@ -214,6 +234,7 @@ async def run(directory: Path, port: int | None) -> dict[str, bool]:
         assert tuple(logger.handlers) == before_handlers
         assert not tracemalloc.is_tracing()
         assert not any(task.get_name() == "diagnostics-profile" for task in asyncio.all_tasks())
+        assert not any(thread.name == "diagnostics-stall-watch" for thread in threading.enumerate())
         assert not (workspace / "sessions.db").exists()
         checks["cleanup_without_business_database"] = True
         set_plugin_choice(workspace, "ui", enabled=False)

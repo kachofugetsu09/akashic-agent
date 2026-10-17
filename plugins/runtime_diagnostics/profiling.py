@@ -13,6 +13,7 @@ import tracemalloc
 
 from agent.plugin_composition.model import ServiceKey
 from core.common.file_io import run_file_io
+from .sampling import allocator_sample
 
 
 class ProfileBusy(RuntimeError):
@@ -72,10 +73,12 @@ class Profiles:
                 raise ProfileBusy("诊断服务正在关闭")
             if self._owned or tracemalloc.is_tracing():
                 raise ProfileBusy("已有内存剖析正在运行")
+            # mallinfo2 会持有分配器锁，只在运维发起的剖析首尾各读一次；先读，基线不含追踪器自身分配。
+            allocator = await run_file_io(allocator_sample)
             tracemalloc.start(5)
             self._owned = True
             self._result = {"state": "running", "started_at": time.time(),
-                            "ends_at": time.time() + seconds, "seconds": seconds}
+                            "ends_at": time.time() + seconds, "seconds": seconds, "allocator_start": allocator}
             self._timer = asyncio.create_task(self._finish_after(seconds), name="diagnostics-profile")
             return self.status()
 
@@ -116,6 +119,8 @@ class Profiles:
 
     def _summarize(self) -> dict[str, object]:
         """仅保留统计与文件位置；不读取对象值、源码正文或局部变量。"""
+        # 先读分配器视图再拍快照，结束值不含快照自身的分配。
+        allocator = allocator_sample()
         current, peak = tracemalloc.get_traced_memory()
         overhead = tracemalloc.get_tracemalloc_memory()
         snapshot = tracemalloc.take_snapshot()
@@ -125,7 +130,8 @@ class Profiles:
             for frame in stat.traceback:
                 frames.append({"file": _export_locator(frame.filename), "line": frame.lineno})
             rows.append({"bytes": stat.size, "count": stat.count, "frames": frames})
-        return {"traced_bytes": current, "peak_bytes": peak, "overhead_bytes": overhead, "allocations": rows}
+        return {"traced_bytes": current, "peak_bytes": peak, "overhead_bytes": overhead, "allocations": rows,
+                "allocator_end": allocator}
 
     async def close(self) -> None:
         """卸载取消定时器并等待正在汇总的线程，不终止其他追踪器。"""
