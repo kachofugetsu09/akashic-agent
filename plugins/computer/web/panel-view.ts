@@ -168,6 +168,8 @@ export class PanelSurface {
   }
 
   render(view: PanelView) {
+    // 只隐藏胶囊、不改留白：画面尺寸一变，远端屏幕就跟着变，Agent 的截图坐标会失效。
+    this.status.hidden = view.direct;
     this.status.dataset.tone = view.tone;
     this.status.classList.toggle("computer-visually-hidden", Boolean(view.overlay));
     this.title.textContent = view.title;

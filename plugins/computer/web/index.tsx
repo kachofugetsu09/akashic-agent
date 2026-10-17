@@ -3,7 +3,7 @@ import type { WebHostContextV1, WebUiDisposer } from "@akashic/web-ui-v1";
 import { ComputerDisplay } from "./display";
 import { ClipboardPopover } from "./clipboard";
 import { ComputerEvents, type ComputerState } from "./computer-events";
-import { present, type ActionId, type ControlState, type LinkState, type PanelFacts, type RuntimeState } from "./panel-state";
+import { canInputDirectly, present, type ActionId, type ControlState, type LinkState, type PanelFacts, type RuntimeState } from "./panel-state";
 import { PanelSurface, type Target, type ToolId } from "./panel-view";
 import { keysymForKey } from "./remote-input.js";
 import "./style.css";
@@ -51,6 +51,8 @@ function renderComputer(ctx: WebHostContextV1, host: HTMLElement, rawView: unkno
   let control = "";
   let busy = false;
   let agentActive = false;
+  // 当前键鼠是否送到浏览器：接管后始终可以；没接管时 Agent 空闲就可以直接操作。
+  let inputOn = false;
   let active = view.active;
   let disposed = false;
   let lastNotice: number | null = null;
@@ -64,13 +66,19 @@ function renderComputer(ctx: WebHostContextV1, host: HTMLElement, rawView: unkno
     const target = targets.find(item => item.id === selected);
     const controlState: ControlState = control ? (link === "connected" ? "mine" : "taking") : busy ? "other" : "none";
     return { runtime, runtimeError: runtimeError || wakeError, link, linkError, control: controlState, agentActive,
-      anonymous: target?.anonymous ?? false, wakeRequested, restartRequested, statusError };
+      agentTurn: turns.length > 0, anonymous: target?.anonymous ?? false, wakeRequested, restartRequested, statusError };
   }
 
   function update() {
     if (disposed) return;
-    surface.render(present(facts()));
-    clipboard.setCanPaste(Boolean(control) && link === "connected");
+    const current = facts();
+    surface.render(present(current));
+    const next = (Boolean(control) && link === "connected") || canInputDirectly(current);
+    // 输入权限收回前先松开按住的键，避免远端留下按下状态。
+    if (inputOn && !next) releaseKeys();
+    inputOn = next;
+    display?.setInput(inputOn);
+    clipboard.setCanPaste(inputOn);
   }
 
   function releaseKeys() {
@@ -87,7 +95,7 @@ function renderComputer(ctx: WebHostContextV1, host: HTMLElement, rawView: unkno
   }
 
   function inputKey(event: KeyboardEvent) {
-    if (!control || link !== "connected") return;
+    if (!inputOn) return;
     event.preventDefault();
     if (event.type === "keydown" && (event.ctrlKey || event.metaKey) && event.key.toLowerCase() === "v") {
       releaseKeys();
@@ -102,7 +110,7 @@ function renderComputer(ctx: WebHostContextV1, host: HTMLElement, rawView: unkno
   }
 
   async function paste(value: string) {
-    if (!control || !display || link !== "connected") throw new Error("请先接管操作");
+    if (!inputOn || !display) throw new Error("Agent 正在使用浏览器，先接管再粘贴");
     await display.clipboardPasteFrom(value);
     display.sendKey(0xffe3, "ControlLeft", true);
     display.sendKey(0x76, "KeyV", true);

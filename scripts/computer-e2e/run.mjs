@@ -84,6 +84,37 @@ try {
   await until(async () => docker("exec", container, "node", "-e",
     "fetch('http://127.0.0.1:8989/main').then(r=>console.log(r.status)).catch(()=>console.log('starting'))"),
     value => value === "200", "Remote HTTP page startup");
+  // Navigation uses the same control owner, and reports real browser failures.
+  const human = (await post("/view/open", {})).target;
+  const owner = randomUUID();
+  await post("/control/take", {id: owner, target: human});
+  for (const [path, body] of [["navigate", {target: human, action: "go", url: "http://127.0.0.1:8989/main"}],
+    ["open", {}], ["close", {target: human}]]) {
+    const response = await fetch(origin + `/api/dashboard/computer/${path}`, {method: "POST",
+      headers: {"content-type": "application/json"}, body: JSON.stringify(body)});
+    assert.equal(response.status, 409, path); await response.body.cancel();
+  }
+  await post("/view/navigate", {control: owner, target: human, action: "go", url: "http://127.0.0.1:8989/main"});
+  await post("/control/release", {id: owner});
+  for (const [url, expected] of [["http://", 400], ["javascript:alert(1)", 400], ["http://127.0.0.1:1/", 502]]) {
+    const response = await fetch(origin + "/api/dashboard/computer/navigate", {method: "POST",
+      headers: {"content-type": "application/json"}, body: JSON.stringify({target: human, action: "go", url})});
+    assert.equal(response.status, expected, url); await response.body.cancel();
+  }
+  pass("navigation checks control ownership and reports invalid URLs and failed loads");
+  const humanNavigation = post("/view/navigate", {target: human, action: "go", url: "http://127.0.0.1:8989/held?human"});
+  await until(async () => JSON.parse(docker("exec", container, "node", "-e",
+    "fetch('http://127.0.0.1:8989/status').then(r=>r.text()).then(console.log)")), v => v.held === 1, "human navigation admitted");
+  let agentFinished = false;
+  const afterHuman = post("/driver/run", {context: {session_id: "human-navigation", turn_id: "one", call_id: randomUUID()},
+    code: "console.log(await browser.tabs.list());"}).then(result => { agentFinished = true; return result; });
+  await until(async () => (await (await fetch(gateway + "/activity")).json()).active, Boolean, "Agent waits for navigation");
+  assert.equal(agentFinished, false);
+  docker("exec", container, "node", "-e", "fetch('http://127.0.0.1:8989/release').then(r=>r.text()).then(console.log)");
+  await humanNavigation; await afterHuman;
+  await post("/driver/run", {context: {session_id: "human-navigation", turn_id: "one", call_id: randomUUID()}, endTurn: true});
+  await post("/view/close", {target: human});
+  pass("Agent work waits for already admitted human navigation");
   // Hold six real navigations at the HTTP server so every Session overlaps.
   const parallel = Promise.all(Array.from({length: 6}, (_, index) => post("/driver/run", {
     context: {session_id: `parallel-${index}`, turn_id: "one", call_id: randomUUID()},
@@ -157,7 +188,12 @@ try {
     if (!await page.locator(".computer-view").isVisible())
       await page.getByRole("button", { name: /^浏览器/ }).click();
   };
-  const connected = page => page.waitForFunction(() => document.querySelector(".computer-status")?.textContent?.startsWith("只读观看"));
+  // 连上且没人接管：Agent 空闲时不显示胶囊，Agent 回合进行中显示“Agent 正在使用浏览器”。
+  const connected = page => page.waitForFunction(() => {
+    const status = document.querySelector(".computer-status");
+    return document.querySelector(".computer-connection-state")?.hidden && status
+      && (status.hidden || status.textContent.startsWith("Agent 正在使用浏览器"));
+  });
   const videoReady = page => page.waitForFunction(() => {
     const frame = document.querySelector(".computer-stream");
     return frame?.contentWindow?.fps > 0 && frame.contentWindow.selkiesTransport.readyState === 1;
@@ -196,7 +232,7 @@ try {
   pass("explicit takeover pauses Agent clock and OpenCLI, refuses another controller, and release resumes them");
   await connected(first); await videoReady(first);
 
-  // 3. 标签展示真实匿名页面；只读、输入、键盘、关闭和释放均经生产路由。
+  // 3. 标签展示真实匿名页面；Agent 回合进行中挡住输入，接管、键盘、关闭和释放均经生产路由。
   const options = (page, path) => page.locator(".computer-tab")
     .evaluateAll((nodes, suffix) => nodes.filter(node => node.textContent === suffix).map(node => node.dataset.id), `/${path}`);
   const select = async (page, path) => {
@@ -236,7 +272,7 @@ try {
   });
   assert.equal(textResult(await action("nodeRepl.write(await pageA.playwright.getByRole('textbox').evaluate(el => el.value));")).trim(), "");
   assert.equal(textResult(await action("nodeRepl.write(await pageA.clipboard.readText());")), clipboardBefore);
-  pass("read-only proxy drops raw keyboard, clipboard and binary messages");
+  pass("while the Agent's turn is open the proxy drops raw keyboard, clipboard and binary messages");
   await first.getByRole("button", { name: "接管", exact: true }).click();
   await first.waitForFunction(() => document.querySelector(".computer-status").textContent.startsWith("你正在操作"));
   await videoReady(first);

@@ -1,13 +1,16 @@
 from __future__ import annotations
 
 import asyncio
+import json
+import time
 from contextlib import suppress
+from typing import cast
 from urllib.parse import urlsplit, urlunsplit
 
 import httpx
 from fastapi import FastAPI, HTTPException, Response, WebSocket, WebSocketDisconnect
 from starlette.websockets import WebSocketState
-from websockets.asyncio.client import connect
+from websockets.asyncio.client import ClientConnection, connect
 from websockets.exceptions import ConnectionClosed, InvalidHandshake
 from websockets.typing import Subprotocol
 
@@ -31,6 +34,29 @@ def _view_only_allows(text: str) -> bool:
     return text.startswith(_VIEW_ONLY_PREFIXES)
 
 
+def _state_event(line: str) -> dict[str, object] | None:
+    if not line.startswith("data: "):
+        return None
+    value: object = json.loads(line[6:])
+    if not isinstance(value, dict):
+        return None
+    state = cast(dict[str, object], value)
+    return state if state.get("type") == "state" else None
+
+
+# Agent 没有进行中的回合和操作、也没人接管时，观看者可以直接操作。
+def _agent_idle(state: dict[str, object]) -> bool:
+    browser = state.get("browser")
+    ready = isinstance(browser, dict) and cast(dict[str, object], browser).get("state") == "ready"
+    return ready and state.get("turns") == [] and state.get("active") is False and state.get("control") is False
+
+
+def _gateway_error(response: httpx.Response) -> str:
+    value: object = response.json()
+    message = cast(dict[str, object], value).get("error") if isinstance(value, dict) else None
+    return message if isinstance(message, str) else f"Computer returned {response.status_code}"
+
+
 def register(app: FastAPI, context: DashboardContext) -> httpx.Client:
     """Expose the exact generation's private Computer endpoint to its web tab."""
 
@@ -46,10 +72,15 @@ def register(app: FastAPI, context: DashboardContext) -> httpx.Client:
             response = client.request(method, path, json=payload)
         except httpx.HTTPError as error:
             raise HTTPException(status_code=502, detail=str(error)) from error
+        if response.status_code == 409:
+            # Agent 正在使用浏览器：原样告诉面板，由它提示先接管。
+            raise HTTPException(status_code=409, detail="Agent is using the browser")
+        if response.status_code == 400:
+            raise HTTPException(status_code=400, detail=_gateway_error(response))
         if response.status_code >= 400:
             raise HTTPException(
                 status_code=502,
-                detail=f"Computer returned {response.status_code}",
+                detail=_gateway_error(response),
             )
         return response
 
@@ -71,6 +102,22 @@ def register(app: FastAPI, context: DashboardContext) -> httpx.Client:
     @app.post("/api/dashboard/computer/show")
     def show(payload: dict[str, str]) -> Response:
         result = forward("POST", "/view/show", {"target": payload.get("target", "")})
+        return Response(result.content, media_type="application/json")
+
+    @app.post("/api/dashboard/computer/navigate")
+    def navigate(payload: dict[str, str]) -> Response:
+        body = {key: payload[key] for key in ("target", "action", "url", "control") if key in payload}
+        result = forward("POST", "/view/navigate", body)
+        return Response(result.content, media_type="application/json")
+
+    @app.post("/api/dashboard/computer/open")
+    def open_page(payload: dict[str, str]) -> Response:
+        result = forward("POST", "/view/open", {key: payload[key] for key in ("url", "control") if key in payload})
+        return Response(result.content, media_type="application/json")
+
+    @app.post("/api/dashboard/computer/close")
+    def close_page(payload: dict[str, str]) -> Response:
+        result = forward("POST", "/view/close", {key: payload[key] for key in ("target", "control") if key in payload})
         return Response(result.content, media_type="application/json")
 
     @app.get("/api/dashboard/computer/stream-client")
@@ -145,6 +192,45 @@ def register(app: FastAPI, context: DashboardContext) -> httpx.Client:
         }
         protocols = [Subprotocol("binary")] if "binary" in requested else None
         controlled = False
+        # 没接管时，Agent 空闲就可以直接操作；状态来自网关事件流，收回时先松开按住的键和鼠标。
+        idle = False
+        held_keys: set[str] = set()
+        last_pointer: list[str] = []
+        touched = 0.0
+
+        async def watch_idle(upstream: ClientConnection) -> None:
+            nonlocal idle
+            timeout = httpx.Timeout(10.0, read=None)
+            async with reader.stream("GET", "/events", timeout=timeout) as response:
+                _ = response.raise_for_status()
+                async for line in response.aiter_lines():
+                    if (state := _state_event(line)) is None:
+                        continue
+                    was_idle, idle = idle, _agent_idle(state)
+                    # 先收回输入再松键：发送期间到达的按下不会再被转发。
+                    if was_idle and not idle:
+                        releasing = tuple(held_keys)
+                        held_keys.clear()
+                        for key in releasing:
+                            await upstream.send("ku," + key)
+                        if len(last_pointer) == 4 and last_pointer[3] != "0":
+                            await upstream.send(",".join([*last_pointer[:3], "0", "0"]))
+                            last_pointer.clear()
+
+        async def touch() -> None:
+            # 人在直接操作时续期，浏览器不会在用户使用中途休眠。
+            nonlocal touched
+            if time.monotonic() - touched < 30:
+                return
+            touched = time.monotonic()
+            result = await reader.post("/view/touch", json={})
+            result.raise_for_status()
+
+        def allowed(text: str) -> bool:
+            if control_id or _view_only_allows(text):
+                return True
+            return idle
+
         try:
             if control_id:
                 await control_request("take")
@@ -169,11 +255,20 @@ def register(app: FastAPI, context: DashboardContext) -> httpx.Client:
                             if message["type"] == "websocket.disconnect":
                                 return
                             if message.get("bytes") is not None:
-                                if control_id:
+                                if control_id or idle:
                                     await upstream.send(message["bytes"])
-                            elif (text := message.get("text")) is not None:
-                                if control_id or _view_only_allows(text):
-                                    await upstream.send(text)
+                            elif (text := message.get("text")) is not None and allowed(text):
+                                if text.startswith("kd,"):
+                                    held_keys.add(text.split(",")[1])
+                                elif text.startswith("ku,"):
+                                    held_keys.discard(text.split(",")[1])
+                                elif text == "kr":
+                                    held_keys.clear()
+                                if text.startswith("m,"):
+                                    last_pointer[:] = text.split(",")[:4]
+                                await upstream.send(text)
+                                if idle and not control_id and not _view_only_allows(text):
+                                    await touch()
                     except WebSocketDisconnect:
                         return
 
@@ -198,6 +293,8 @@ def register(app: FastAPI, context: DashboardContext) -> httpx.Client:
                 }
                 if control_id:
                     tasks.add(asyncio.create_task(renew_control()))
+                else:
+                    tasks.add(asyncio.create_task(watch_idle(upstream)))
                 done, pending = await asyncio.wait(
                     tasks,
                     return_when=asyncio.FIRST_COMPLETED,

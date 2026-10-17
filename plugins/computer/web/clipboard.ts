@@ -38,9 +38,9 @@ export class ClipboardPopover {
     close.setAttribute("aria-label", "关闭剪贴板");
     close.innerHTML = `<svg class="computer-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M6 6l12 12M18 6L6 18"/></svg>`;
     header.append(title, close);
-    // 1. 未接管：说明原因并直接给出接管入口，而不是一排禁用按钮。
+    // 1. Agent 在用、不能输入：说明原因并直接给出接管入口，而不是一排禁用按钮。
     const why = document.createElement("p");
-    why.textContent = "接管后才能把文字粘贴到浏览器，或把浏览器里复制的内容拿回本机。";
+    why.textContent = "Agent 正在使用浏览器。接管后才能把文字粘贴进去，或把浏览器里复制的内容拿回本机。";
     this.locked.className = "computer-clipboard-locked";
     this.locked.append(why, this.take);
     // 2. 已接管：文字框 + 两个方向的动作 + 就地回执。
