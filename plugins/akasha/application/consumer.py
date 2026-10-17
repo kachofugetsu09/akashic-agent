@@ -27,7 +27,7 @@ from ..infrastructure.persistence import load_consumption, load_memory_state, wr
 from .cycle import MemoryCycle
 
 if TYPE_CHECKING:
-    from ..projection import Sample
+    from ..projection import Sample, SessionCursor
     from ..learning import LearningConfig
 
 
@@ -56,6 +56,8 @@ class MessageConsumer:
         self._error: BaseException | None = None
         self._closed = False
         self._embedding_model: str | None = None
+        # 投影续读点只在一批成功消费后前进；换学习绑定或新实例都从头投影。
+        self._cursors: tuple[str, dict[str, SessionCursor]] = ("", {})
         self._lease = WriterLease(path)
         try:
             # 1. 恢复只能装载已发布图；缺图不能触发历史重学。
@@ -237,15 +239,22 @@ class MessageConsumer:
             cutover = dict(self.state.cutover_heads)
             applied = {entry.ending[1] for entry in self.state.applied}
             skipped = {item.ending[1] for item in self.state.skipped}
+
+            def fresh(sample: Sample) -> bool:
+                """切换上界之前、已学习或已明确跳过的闭段不再处理。"""
+                ending = sample.ending
+                return (ending.seq > cutover.get(ending.session_id, -1)
+                        and ending.message_id not in applied and ending.message_id not in skipped)
+
             records = embeddings.bind(learning.text)
             count = 0
-            # 投影会读取历史正文；与图发布共用排空后才取消的后台执行方式。
-            samples = await run_memory_job(partial(learning.samples, catalog, rule, heads=heads))
+            # 投影只读续读点之后的尾部；与图发布共用排空后才取消的后台执行方式。
+            known, cursors = self._cursors
+            samples, advanced = await run_memory_job(partial(
+                learning.samples_since, catalog, rule, heads=heads,
+                cursors=cursors if known == learning_binding else {}, keep=fresh,
+            ))
             for sample in samples:
-                if sample.ending.seq <= cutover.get(sample.ending.session_id, -1):
-                    continue
-                if sample.ending.message_id in applied or sample.ending.message_id in skipped:
-                    continue
                 inputs = [message for message in sample.messages if isinstance(message.body, Input)]
                 if not any(learning.text(message).strip() for message in inputs) or not learning.text(sample.ending).strip():
                     continue
@@ -263,7 +272,6 @@ class MessageConsumer:
                         count += await run_memory_job(partial(
                             self.skip, sample, reason="missing-embedding",
                         ))
-                        skipped.add(sample.ending.message_id)
                         continue
                     vectors = await embed_batch([learning.text(message) for message in missing])
                     if len(vectors) != len(missing) or any(len(vector) != rule.dimension for vector in vectors):
@@ -289,6 +297,8 @@ class MessageConsumer:
                 count += await run_memory_job(learn_sample)
             # 3. 本批学完统一发布一次；批内攒满 PUBLISH_EVERY 已在途中发布。
             await run_memory_job(self.flush)
+            # 4. 整批处理并发布后才前进续读点；失败或取消时下次仍从旧续读点重读。
+            self._cursors = (learning_binding, advanced)
             return count
 
     def publish_snapshot(self) -> str:

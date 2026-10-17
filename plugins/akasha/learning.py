@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from collections.abc import Mapping, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from datetime import datetime
 from typing import Annotated, Literal, cast
 
@@ -13,7 +13,9 @@ from plugins.ledger.contract import ContentPart, Input, Message, Output, ToolCal
 from ._boundaries import PostCommitReader, TOOLS, TurnProjection
 from .domain.model import Turn, TurnFeedback
 from .infrastructure.consumption import Applied, Consumption, message_nodes
-from .projection import Sample, dialogue_turn, project_samples, restore_sample
+from .projection import (
+    Sample, SessionCursor, dialogue_turn, project_session, restore_sample,
+)
 
 
 class LearningConfig(BaseModel):
@@ -53,18 +55,32 @@ class Learning:
     def samples(
         self, catalog: MessageCatalog, config: LearningConfig, *, heads: Mapping[str, int],
     ) -> tuple[Sample, ...]:
-        """先排除禁止学习的会话，再读取固定前缀并筛选样本。"""
-        # 1. 学习资格在 Session 接纳时固定，不必先解码禁止学习的正文。
-        eligible_heads = {
-            session: head for session, head in heads.items()
-            if catalog.attributes(session).learning == "eligible"
-        }
-        # 2. 来源和历史 effect 仍由原学习规则筛选。
-        samples = project_samples(
-            catalog, self.projection, heads=eligible_heads,
-            include=lambda session, source: source in config.sources,
-        )
-        return tuple(sample for sample in samples if self.accepts(sample))
+        """重放与兴趣评分没有续读点，每个 Session 都从头投影固定前缀。"""
+        return self.samples_since(catalog, config, heads=heads, cursors={}, keep=lambda _sample: True)[0]
+
+    def samples_since(
+        self, catalog: MessageCatalog, config: LearningConfig, *, heads: Mapping[str, int],
+        cursors: Mapping[str, SessionCursor], keep: Callable[[Sample], bool],
+    ) -> tuple[tuple[Sample, ...], dict[str, SessionCursor]]:
+        """只投影续读点之后的闭段；新续读点由调用者在成功消费后才采用。"""
+        found: list[Sample] = []
+        advanced: dict[str, SessionCursor] = {}
+        for session, head in heads.items():
+            cursor = cursors.get(session)
+            # 1. 没有新消息的 Session 连学习资格也不再读取；资格在接纳时固定，不必解码禁止学习的正文。
+            if cursor is not None and cursor.head == head:
+                advanced[session] = cursor
+                continue
+            if catalog.attributes(session).learning != "eligible":
+                advanced[session] = SessionCursor(head, {})
+                continue
+            samples, advanced[session] = project_session(
+                catalog, self.projection, session, head, cursor=cursor,
+                include=lambda _session, source: source in config.sources,
+            )
+            # 2. 来源和历史 effect 仍由原学习规则筛选；keep 只丢弃调用者本来就跳过的样本，不让其正文常驻。
+            found.extend(sample for sample in samples if self.accepts(sample) and keep(sample))
+        return tuple(sorted(found, key=lambda sample: sample.key)), advanced
 
     def accepts(self, sample: Sample) -> bool:
         """一条历史成员被禁止沉淀时，整个问答样本不成为学习材料。"""
