@@ -7,7 +7,7 @@ from plugins.ui.contract import UI
 from . import dashboard
 from .profiling import PROFILES, Profiles
 from .records import Records
-from .runtime import Monitor
+from .runtime import Monitor, StallWatch
 
 api_version = 3
 name = "runtime_diagnostics"
@@ -25,6 +25,7 @@ async def apply(ctx: Context) -> None:
     await ctx.provide(DIAGNOSTICS, records)
     await ctx.provide(PROFILES, profiles)
     await ctx.spawn(monitor.run(), name="diagnostics-sampling")
+    await ctx.spawn(StallWatch(records).run(), name="diagnostics-stall-watch")
 
     async def register_http(child: Context) -> None:
         await child.require(UI).register(child, dashboard=lambda: dashboard)
