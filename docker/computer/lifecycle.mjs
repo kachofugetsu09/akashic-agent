@@ -99,7 +99,7 @@ export class ComputerLifecycle {
   async start() {
     const child = spawn(
       "/opt/computer/start.sh",
-      ["--browser-session", "--runtime"],
+      ["--runtime"],
       {
         detached: true,
         stdio: "inherit",

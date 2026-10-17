@@ -208,7 +208,7 @@ export class BrowserBackend extends EventEmitter {
   async execute(params, context) {
     const { target, method, commandParams = {} } = params;
     const connection = await this.attach(target.tabId);
-    const key = `${target.tabId}:${target.sessionId ?? ""}`;
+    const key = JSON.stringify([context?.session_id, target.tabId, target.sessionId ?? ""]);
     let input = this.inputs.get(key);
     if (!input) {
       input = {
@@ -420,7 +420,7 @@ export class BrowserBackend extends EventEmitter {
         return;
       case "moveMouse": {
         // 浏览器 UI 的指针移动不能松开 CDP 已按住的键，否则网页会中断拖拽。
-        const held = this.inputs.get(`${params.tabId}:`)?.buttons;
+        const held = this.inputs.get(JSON.stringify([context?.session_id, params.tabId, ""]))?.buttons;
         const masks = { left: 1, right: 2, middle: 4, back: 8, forward: 16 };
         let buttons = 0;
         for (const button of held?.keys() ?? []) buttons |= masks[button];

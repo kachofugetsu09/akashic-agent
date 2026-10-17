@@ -83,6 +83,8 @@ const computer = new ComputerLifecycle({
 const activityPath = "/data/state/activity.json";
 const maxBodyBytes = 256 * 1024;
 let activity = { revision: 0, noticeId: 0, active: false, action: "", updatedAt: "" };
+const activeOperations = new Set();
+let activityWrites = Promise.resolve();
 const legacyCall = new AsyncLocalStorage();
 // 订阅者 → 它最近收到的状态快照；按订阅者去重，新订阅者也能补到最新状态。
 const eventClients = new Map();
@@ -116,6 +118,8 @@ async function stateEvent() {
     type: "state",
     noticeId: activity.noticeId,
     active: activity.active,
+    turns: [...new Set([...computer.turns, ...[...(driver?.actives.values() ?? [])]
+      .map(call => JSON.stringify([call.context.session_id, call.context.turn_id]))])],
     browser: { state: computer.state, error: computer.error },
     targets,
     control: Boolean(driver?.control),
@@ -176,26 +180,34 @@ async function body(request) {
   return value;
 }
 
-async function saveActivity(action, active) {
+function saveActivity(action, started) {
   activity = {
     revision: activity.revision + 1,
-    noticeId: active ? activity.noticeId + 1 : activity.noticeId,
-    active,
+    noticeId: started ? activity.noticeId + 1 : activity.noticeId,
+    active: activeOperations.size > 0,
     action,
     updatedAt: new Date().toISOString(),
   };
-  await mkdir("/data/state", { recursive: true });
-  const temporary = `${activityPath}.new`;
-  await writeFile(temporary, JSON.stringify(activity), { mode: 0o600 });
-  await rename(temporary, activityPath);
-  scheduleState();
+  const saved = JSON.stringify(activity);
+  // One writer owns the shared temporary file, even when Sessions run in parallel.
+  activityWrites = activityWrites.then(async () => {
+    await mkdir("/data/state", { recursive: true });
+    const temporary = `${activityPath}.new`;
+    await writeFile(temporary, saved, { mode: 0o600 });
+    await rename(temporary, activityPath);
+    scheduleState();
+  });
+  return activityWrites;
 }
 
 async function tracked(action, task) {
-  await saveActivity(action, true);
+  const operation = {};
+  activeOperations.add(operation);
   try {
+    await saveActivity(action, true);
     return await task();
   } finally {
+    activeOperations.delete(operation);
     await saveActivity(action, false);
   }
 }
@@ -326,33 +338,19 @@ async function health() {
   };
 }
 
-async function pageTargets() {
-  const response = await fetch("http://127.0.0.1:9222/json/list", {
-    signal: AbortSignal.timeout(3000),
-  });
-  if (!response.ok) throw new Error(`Chromium targets returned ${response.status}`);
-  const targets = (await response.json()).filter(
-    (target) => target.type === "page" && typeof target.webSocketDebuggerUrl === "string",
-  );
-  if (targets.length === 0) throw new Error("Chromium has no page target");
-  return targets;
-}
-
-// 坐标输入和截图对准屏幕最前的页面；还没有记录时退回第一个页面。
+// Resolve the visible page through its own Context, including anonymous pages.
 async function pageTarget() {
-  const targets = await pageTargets();
-  return targets.find((item) => item.id === driver?.browser.screen.front) ?? targets[0];
+  const targets = await driver.targets();
+  const target = targets.find(item => item.front);
+  if (!target) throw new InputError("No browser page is visible; select a tab first");
+  return driver.viewTarget(target.id);
 }
 
 async function cdp(target, method, params = {}) {
   await readyDriver();
   const call = legacyCall.getStore();
   call?.signal.throwIfAborted();
-  let tab = driver.browser.tabs.get(target.id);
-  if (!tab) { await driver.browser.listTabs(); tab = driver.browser.tabs.get(target.id); }
-  if (!tab) throw new InputError("Browser target closed; observe again");
-  call?.signal.throwIfAborted();
-  return driver.browser.execute({target: {tabId: tab.id}, method, commandParams: params}, call?.context);
+  return target.backend.execute({target: {tabId: target.tabId}, method, commandParams: params}, call?.context);
 }
 
 function requiredString(value, name, maxLength) {
@@ -457,7 +455,11 @@ function inputSteps(value) {
 async function pageOperation(task, signal) {
   await readyDriver();
   return driver.perform(
-    (inner) => legacyCall.run({ signal: inner, context: driver.active.context }, async () => task(await pageTarget())),
+    (inner, context) => legacyCall.run({ signal: inner, context }, async () => {
+      const target = await pageTarget();
+      try { return await task(target); }
+      finally { await target.backend.releaseInputs(context.session_id); }
+    }),
     signal,
   );
 }
@@ -633,7 +635,7 @@ const server = createServer(async (request, response) => {
       const payload = await body(request);
       const cancelled = driverCall(payload.call_id);
       cancelled.controller.abort(new Error("Computer call cancelled before admission; earlier effects may remain"));
-      if (driver?.active?.context.call_id === payload.call_id)
+      if (driver?.findActive(payload.call_id))
         await driver.cancel(payload.call_id);
       if (cancelled.done) await cancelled.done;
       json(response, 200, { released: true });
@@ -768,18 +770,17 @@ async function refreshIdentity() {
   try {
     const { stdout } = await computer.use(async () => {
       await readyDriver();
-      // OpenCLI 逐站打开页面且不关闭；结束后关掉它新开的站点页，免得常驻吃内存。
-      // 按 CDP 的真实 targetId 比较（站点跳转或预渲染激活会换 target）；刷新与 Agent 调用可以并行，
-      // 不关 Agent 的页面和匿名浏览器；结束时有人接管则一律不动。
+      // Keep existing pages, Agent pages and popups. Any human takeover during
+      // refresh makes ownership uncertain, so that refresh does not close pages.
       const pages = async () => (await driver.browser.browser.send("Target.getTargets")).targetInfos
-        .filter(target => target.type === "page" && !driver.anonymous.contexts.has(target.browserContextId))
-        .map(target => target.targetId);
-      const agentPages = async () => new Set(await Promise.all((await driver.targets())
-        .filter(target => target.agent && !target.anonymous)
-        .map(target => driver.viewTarget(target.id).then(view => view.targetId, () => ""))));
+        .filter(target => target.type === "page" && !driver.anonymous.contexts.has(target.browserContextId));
       let before = null;
+      let controlVersion;
       try {
-        return await driver.agentOperation(async () => { before = new Set(await pages()); return exec(
+        return await driver.agentOperation(async () => {
+          controlVersion = driver.controlVersion;
+          before = new Set((await pages()).map(page => page.targetId));
+          return exec(
           "opencli",
           [
             "auth",
@@ -797,13 +798,23 @@ async function refreshIdentity() {
           { timeout: 120000 },
         ); });
       } finally {
-        if (before && !driver.control) {
-          const agent = await agentPages();
-          const opened = (await pages()).filter(id => !before.has(id) && !agent.has(id));
-          for (const targetId of opened)
-            await driver.browser.browser.send("Target.closeTarget", { targetId })
-              .catch(error => console.error(`OpenCLI refresh page ${targetId} was not closed:`, error.message));
-          console.log(`OpenCLI refresh closed ${opened.length} pages; kept ${before.size}`);
+        if (before && driver.controlVersion === controlVersion && !driver.control) {
+          await driver.agentOperation(async () => {
+            await driver.browser.listTabs();
+            const agent = new Set([...driver.browser.tabs.values()]
+              .filter(tab => tab.created || tab.claimed).map(tab => tab.targetId));
+            const opened = (await pages()).filter(page => !before.has(page.targetId)
+              && !agent.has(page.targetId) && !page.openerId);
+            let closed = 0;
+            for (const { targetId } of opened) {
+              // A live Agent may still be assigning ownership to a new target.
+              if (driver.actives.size || driver.agentJobs.size > 1 || driver.controlVersion !== controlVersion) break;
+              const result = await driver.browser.browser.send("Target.closeTarget", { targetId });
+              if (!result.success) throw new Error(`OpenCLI refresh could not close page ${targetId}`);
+              closed++;
+            }
+            console.log(`OpenCLI refresh closed ${closed} pages; kept ${before.size}`);
+          });
         }
       }
     });

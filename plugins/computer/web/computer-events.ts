@@ -6,6 +6,7 @@ import type { Target } from "./panel-view";
 export interface ComputerState {
   readonly noticeId: number;
   readonly active: boolean;
+  readonly turns: readonly string[];
   readonly browser: { readonly state: string; readonly error: string };
   readonly targets: Target[];
   readonly control: boolean;
@@ -17,10 +18,12 @@ const RETRY_MS = 1000;
 // 格式不对就整体拒绝，不渲染半截状态。
 function checkState(value: Partial<ComputerState>): ComputerState {
   if (!Number.isInteger(value.noticeId) || typeof value.active !== "boolean"
+    || !Array.isArray(value.turns) || value.turns.some(turn => typeof turn !== "string")
     || !RUNTIME_STATES.includes(value.browser?.state ?? "") || typeof value.browser?.error !== "string"
     || !Array.isArray(value.targets) || typeof value.control !== "boolean"
     || value.targets.some(target => typeof target.id !== "string" || typeof target.title !== "string"
-      || typeof target.url !== "string" || typeof target.anonymous !== "boolean" || typeof target.front !== "boolean"))
+      || typeof target.url !== "string" || typeof target.anonymous !== "boolean" || typeof target.front !== "boolean"
+      || typeof target.agent !== "boolean" || (target.turn !== null && typeof target.turn !== "string")))
     throw new Error("Computer 状态回执无效");
   return value as ComputerState;
 }

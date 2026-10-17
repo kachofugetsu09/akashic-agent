@@ -16,7 +16,10 @@ function renderComputer(ctx: WebHostContextV1, host: HTMLElement, rawView: unkno
   const view = rawView as ConversationTabView;
   if (!view || typeof view.active !== "boolean" || typeof view.onActiveChange !== "function"
     || typeof view.requestAttention !== "function") throw new Error("Computer 缺少 conversation.tools.v2 view");
-  const surface = new PanelSurface(id => void perform(id), id => { follow = false; void select(id); }, id => void tool(id));
+  const surface = new PanelSurface(id => void perform(id), id => {
+    for (const turn of turns) manualTurns.add(turn);
+    void select(id);
+  }, id => void tool(id));
   const screen = surface.screen;
   const clipboard = new ClipboardPopover(surface.clipboardToggle, {
     paste: text => paste(text),
@@ -29,8 +32,10 @@ function renderComputer(ctx: WebHostContextV1, host: HTMLElement, rawView: unkno
   // 正在画面里的标签；以状态流里的 front 为准，点击切换时先乐观更新。
   let selected = "";
   // 跟随 Agent：它新开标签时画面切过去；你手动选过标签后本轮不再跟随，Agent 开始新一轮时恢复。
-  let follow = true;
+  const manualTurns = new Set<string>();
+  let turns: readonly string[] = [];
   let known = new Set<string>();
+  let receivedTargets = false;
   // 正在切换的标签；请求结束前状态流里的旧 front 不覆盖它。
   let showing = "";
   let runtime: RuntimeState = "loading";
@@ -216,22 +221,24 @@ function renderComputer(ctx: WebHostContextV1, host: HTMLElement, rawView: unkno
     runtime = state.browser.state as RuntimeState;
     runtimeError = state.browser.error;
     if (wakeOnState) { wakeOnState = false; wakeIfSleeping(); }
-    if (state.active && !agentActive) follow = true;
     agentActive = state.active;
+    turns = state.turns;
     busy = state.control;
     if ((lastNotice !== null && lastNotice !== state.noticeId) || (lastNotice === null && state.active))
       view.requestAttention(`computer:${state.noticeId}`);
     lastNotice = state.noticeId;
     const front = showing || (state.targets.find(target => target.front)?.id ?? selected);
     const opened = state.targets.filter(target => target.agent && !known.has(target.id)).at(-1);
-    const first = known.size === 0;
-    known = new Set(state.targets.map(target => target.id));
+    const first = !receivedTargets;
+    receivedTargets = true;
+    known = new Set(state.targets.filter(target => target.agent).map(target => target.id));
     if (JSON.stringify(targets) !== JSON.stringify(state.targets) || front !== selected) {
       targets = state.targets;
       selected = front;
       surface.renderTargets(targets, selected);
     }
-    if (opened && follow && !first && opened.id !== front) void select(opened.id);
+    if (active && link === "connected" && !busy && opened?.turn && !manualTurns.has(opened.turn)
+      && !first && opened.id !== front) void select(opened.id);
     if (runtime !== "ready") {
       if (display) disconnect();
       if (link !== "stale") link = "idle";
