@@ -38,6 +38,9 @@ services:
       HOME: /home/huashen
       TZ: "${TZ:-Asia/Shanghai}"
       PYTHONUNBUFFERED: "1"
+      # glibc 默认每个线程各有 arena，释放后不归还系统；后台线程轮流做大块临时分配会把 RSS
+      # 撑到约 线程数 × 峰值（#1455）。限为 2 个 arena，Python 线程本就受 GIL 串行，争用可忽略。
+      MALLOC_ARENA_MAX: "2"
     volumes:
       - type: bind
         source: "${AKASHIC_EXPERIMENT_ROOT:?AKASHIC_EXPERIMENT_ROOT is required}"

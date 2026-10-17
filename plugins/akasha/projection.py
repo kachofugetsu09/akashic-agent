@@ -14,7 +14,7 @@ import numpy as np
 from .domain.model import Turn, TurnFeedback
 from .infrastructure.consumption import Applied
 from .infrastructure.lexical import tokenize
-from ._boundaries import TurnProjection
+from ._boundaries import Turn as ProjectedTurn, TurnProjection
 
 
 type CausalKey = tuple[datetime, str, int, str]
@@ -40,39 +40,65 @@ class Sample:
         )
 
 
-def project_samples(
-    catalog: MessageCatalog,
-    projection: TurnProjection,
-    *,
-    include: Callable[[str, str], bool],
-    heads: Mapping[str, int] | None = None,
-) -> tuple[Sample, ...]:
-    """在线与重放共享固定 heads 的读取与全局排序，不持有 SQL 或第二份 Turn 库。"""
-    # 1. 先固定所有来源可见的日志上界，再分页取每个 Session 的完整前缀。
-    heads = catalog.snapshot_heads() if heads is None else dict(heads)
+@dataclass(frozen=True, slots=True)
+class SessionCursor:
+    """一个 Session 已投影到的固定 head，以及每个学习来源最后一个闭段的结束 seq。
+
+    TurnProjection 合同允许输入"闭合 Turn 后的尾部"：工具结果只归属同段调用，
+    闭段之后的投影不依赖更早的消息，所以从结束点续读与从头投影得到同样的后续
+    闭段。续读点只是调用者的内存进度，缺失时退回从头投影。
+    """
+
+    head: int
+    boundaries: Mapping[str, int]
+
+
+def project_session(
+    catalog: MessageCatalog, projection: TurnProjection, session_id: str, head: int, *,
+    include: Callable[[str, str], bool], cursor: SessionCursor | None = None,
+) -> tuple[list[Sample], SessionCursor]:
+    """只读取每个学习来源上次闭段之后的尾部；返回新闭段和前进后的续读点。"""
+    # 1. 倒退的 head 不可信，退回从头投影。
+    if cursor is not None and cursor.head > head:
+        cursor = None
+    reader = catalog.reader(session_id)
+    boundaries = {} if cursor is None else dict(cursor.boundaries)
     samples: list[Sample] = []
-    for session_id, head in heads.items():
-        messages = catalog.reader(session_id).snapshot(through_seq=head)
-        by_id = {message.message_id: message for message in messages}
-        for source in sorted({message.source for message in messages}):
-            if not include(session_id, source):
-                continue
-            # 2. 只有插件给出的闭段成为样本；open/abandoned 仍可读取但不学习。
-            for turn in projection.project(messages, source):
-                if turn.status not in {"complete", "quiet"}:
-                    continue
-                if turn.ending_message_id is None:
-                    raise ValueError("已结束投影缺少消息身份")
-                ending = by_id[turn.ending_message_id]
-                if not isinstance(ending.body, Output) or ending.body.finish != turn.status:
-                    raise ValueError("学习投影结束点不匹配实际 Output")
-                samples.append(Sample(
-                    ending,
-                    tuple(by_id[message_id] for message_id in turn.message_ids),
-                    tuple(by_id[message_id] for _, message_id in turn.observations),
-                ))
-    # 3. seq 只在会话内排序；跨会话采用真实接纳时间，不修改倒退的源时间。
-    return tuple(sorted(samples, key=lambda sample: sample.key))
+    for source in sorted(reader.source_names()):
+        if not include(session_id, source):
+            continue
+        # 2. 上次读取之后没有本来源消息时，它的闭段和开放尾部都没有变化。
+        if cursor is not None and reader.head(source=source) <= cursor.head:
+            continue
+        after = boundaries.get(source, -1)
+        messages = reader.scan(tuple, after_seq=after, through_seq=head, source=source)
+        turns = projection.project(messages, source, after_seq=after)
+        samples.extend(closed_samples(messages, turns))
+        # 3. 任一闭段（含 abandoned）的结束点都是投影合同允许的续读起点。
+        boundaries[source] = next(
+            (turn.through_seq for turn in reversed(turns) if turn.status != "open"), after,
+        )
+    return samples, SessionCursor(head, boundaries)
+
+
+def closed_samples(messages: Sequence[Message], turns: Sequence[ProjectedTurn]) -> list[Sample]:
+    """只有插件给出的 complete/quiet 闭段成为样本；open/abandoned 不学习。"""
+    by_id = {message.message_id: message for message in messages}
+    samples: list[Sample] = []
+    for turn in turns:
+        if turn.status not in {"complete", "quiet"}:
+            continue
+        if turn.ending_message_id is None:
+            raise ValueError("已结束投影缺少消息身份")
+        ending = by_id[turn.ending_message_id]
+        if not isinstance(ending.body, Output) or ending.body.finish != turn.status:
+            raise ValueError("学习投影结束点不匹配实际 Output")
+        samples.append(Sample(
+            ending,
+            tuple(by_id[message_id] for message_id in turn.message_ids),
+            tuple(by_id[message_id] for _, message_id in turn.observations),
+        ))
+    return samples
 
 
 def source_digest(sample: Sample) -> str:

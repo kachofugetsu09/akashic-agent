@@ -34,6 +34,8 @@ COPY --from=build /opt/distribution /opt/distribution
 COPY --from=build /opt/core /opt/core
 # 插件源码保留临时目录的 700 权限；运行用户需要读取，但不应改写镜像制品。
 RUN chmod -R a=rX /opt/distribution
+# 限制 glibc arena 数量，避免后台线程的大块临时分配把 RSS 撑到 线程数 × 峰值（#1455）。
+ENV MALLOC_ARENA_MAX=2
 ENV PATH=/opt/venv/bin:$PATH AKASHIC_EXECUTION_MODE=local PYTHONUNBUFFERED=1 AKASHIC_PLUGIN_DISTRIBUTION=/opt/distribution \
     AKASHIC_WORKSPACE=/data/workspace AKASHIC_PLUGIN_HOME=/data/plugin-home
 USER akashic
