@@ -16,7 +16,9 @@ from agent.plugin_composition import Context
 from plugins.ledger.contract import ARTIFACT_IMPORT, ArtifactImport, AttachmentKind, ContentPart, json_value
 from plugins.standard_tools.contract import WORKING_DIRECTORY, WorkingDirectories
 from plugins.tools.contract import TOOLS, CallSource, Result
+from plugins.ui.contract import UI, UI_SLOTS, PluginUiDefinition, PluginUiRpcInvalidRequest
 
+from . import dashboard
 from .snapshot import MAX_BYTES, SnapshotError, build
 
 api_version = 3
@@ -117,3 +119,16 @@ async def apply(ctx: Context) -> None:
     _ = await catalog.register(ctx, name="show_site", description=DESCRIPTION,
                                parameters=Site.model_json_schema(), open=open_tool, parallel=True)
 
+    # UI 缺席时工具照常发布：对话里保留结果文字与快照下载，只是没有卡片和隔离入口。
+    async def register_ui(child: Context) -> None:
+        _ = await child.require(UI).register(child, dashboard=lambda: dashboard)
+
+        def query(method: str, payload: dict[str, object], *, session_id: str | None, turn_id: str | None) -> object:
+            raise PluginUiRpcInvalidRequest("网站卡片只读取消息附件，不提供 UI RPC")
+
+        _ = await child.require(UI_SLOTS).register_plugin_ui(
+            child, PluginUiDefinition(module="message_ui.js", stylesheet="message_ui.css", slots=("message.attachment",)),
+            query=query,
+        )
+
+    _ = await ctx.inject((UI, UI_SLOTS), register_ui, name="sites-ui")
