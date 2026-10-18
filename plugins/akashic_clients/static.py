@@ -4,7 +4,7 @@ from hashlib import sha256
 from pathlib import Path
 import re
 from fastapi import FastAPI, HTTPException, Request
-from fastapi.responses import FileResponse, RedirectResponse
+from fastapi.responses import RedirectResponse, Response
 from fastapi.staticfiles import StaticFiles
 from core.common.file_io import run_file_io
 
@@ -32,21 +32,6 @@ def _cache_control_for(path: str) -> str:
 def register_chat_assets(app: FastAPI, static_dir: Path) -> None:
     """在客户端 owner 的监听器提供插件制品和既有缓存合同。"""
 
-    index_path = static_dir / "index.html"
-    import_maps: dict[tuple[int, int], str] = {}
-
-    # 按入口文件版本缓存 hash；入口缺失时只保留 'self'。
-    async def import_map_sources() -> str:
-        try:
-            info = await run_file_io(index_path.stat)
-        except FileNotFoundError:
-            return ""
-        version = (info.st_mtime_ns, info.st_size)
-        if version not in import_maps:
-            import_maps.clear()
-            import_maps[version] = _import_map_sources(await run_file_io(index_path.read_bytes))
-        return import_maps[version]
-
     @app.middleware("http")
     async def secure_static_response(request: Request, call_next):
         response = await call_next(request)
@@ -60,7 +45,8 @@ def register_chat_assets(app: FastAPI, static_dir: Path) -> None:
             del response.headers["Pragma"]
         response.headers["Referrer-Policy"] = "no-referrer"
         response.headers["X-Content-Type-Options"] = "nosniff"
-        scripts = await import_map_sources() if request.url.path in {"/", "/chat", "/chat/"} else ""
+        # 入口处理器把与正文同一次读取算出的 hash 放在 request.state，正文和 CSP 不会来自两个版本。
+        scripts = getattr(request.state, "import_map_sources", "")
         response.headers["Content-Security-Policy"] = (
             f"default-src 'self'; script-src 'self'{scripts}; style-src 'self' 'unsafe-inline'; "
             "img-src 'self' data: blob:; connect-src 'self' data: blob:; "
@@ -77,13 +63,16 @@ def register_chat_assets(app: FastAPI, static_dir: Path) -> None:
     @app.get("/")
     @app.get("/chat")
     @app.get("/chat/")
-    async def index() -> FileResponse:
-        path = static_dir / "index.html"
+    async def index(request: Request) -> Response:
         try:
-            info = await run_file_io(path.stat)
+            body = await run_file_io((static_dir / "index.html").read_bytes)
         except FileNotFoundError as error:
             raise HTTPException(503, "聊天前端资产尚未构建") from error
-        return FileResponse(path, stat_result=info)
+        request.state.import_map_sources = _import_map_sources(body)
+        etag = f'"{sha256(body).hexdigest()}"'
+        if request.headers.get("if-none-match") == etag:
+            return Response(status_code=304, headers={"ETag": etag})
+        return Response(body, media_type="text/html; charset=utf-8", headers={"ETag": etag})
 
     app.mount(
         "/assets",
