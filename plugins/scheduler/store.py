@@ -103,20 +103,13 @@ class JobStore:
     def load(self) -> list[ScheduledJob]:
         return list(self.read().jobs.values())
 
+    # 原子 replace 保证读到完整一版；只允许缺失文件表示空状态。
     def read(self) -> ScheduleState:
-        return self._load()[0]
-
-    # 原子 replace 保证读到完整一版；只允许缺失文件表示空状态。第二项表示文件仍是旧版本。
-    def _load(self) -> tuple[ScheduleState, bool]:
         try:
             text = self.path.read_text(encoding="utf-8")
         except FileNotFoundError:
-            return ScheduleState({}, {}, {}), False
-        raw: object = self.parse(text)
-        legacy = isinstance(raw, dict) and cast(dict[str, object], raw).get("version") == 2
-        if legacy:
-            raw = _upgrade(cast(dict[str, Any], raw))
-        return self.decode(raw), legacy
+            return ScheduleState({}, {}, {})
+        return self.decode(self.parse(text))
 
     def parse(self, raw: str | bytes) -> object:
         return json.loads(raw, object_pairs_hook=self._object)
@@ -218,11 +211,11 @@ class JobStore:
                     fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
                 except BlockingIOError:
                     return False, None
-                state, legacy = self._load()
+                state = self.read()
                 before = self.encode(state)
                 result = change(state)
                 after = self.encode(state)
-                if before != after or legacy or not self.path.exists():
+                if before != after or not self.path.exists():
                     atomic_save_json(self.path, after, domain="job_store")
                 return True, result
 
@@ -445,26 +438,3 @@ class JobStore:
                 f"path={self.path} index={index} field={field_name} value={s!r}"
             )
         return parsed
-
-
-def _upgrade_job(job: dict[str, Any]) -> dict[str, Any]:
-    """v2 的 instant/soft 改为 notify/run；正文合并成 text，目标会话按原渠道地址推出。"""
-    value = {key: item for key, item in job.items() if key not in {"tier", "message", "prompt"}}
-    instant = job.get("tier") == "instant"
-    return {**value, "action": "notify" if instant else "run",
-            "text": job.get("message") if instant else job.get("prompt"),
-            "session_id": f"{job.get('channel')}:{job.get('chat_id')}", "context": "none"}
-
-
-def _upgrade(raw: dict[str, Any]) -> dict[str, Any]:
-    """读取旧版本文件；下一次任何提交都写回当前版本，触发 key 不变。"""
-    jobs = raw.get("jobs")
-    fires = raw.get("fires")
-    if not isinstance(jobs, list) or not isinstance(fires, dict):
-        return raw
-    return {**raw, "version": 3,
-            "jobs": [_upgrade_job(cast(dict[str, Any], job)) if isinstance(job, dict) else job
-                     for job in cast(list[object], jobs)],
-            "fires": {key: ({**cast(dict[str, Any], fire), "job": _upgrade_job(cast(dict[str, Any], fire)["job"])}
-                            if isinstance(fire, dict) and isinstance(cast(dict[str, Any], fire).get("job"), dict) else fire)
-                      for key, fire in cast(dict[str, object], fires).items()}}

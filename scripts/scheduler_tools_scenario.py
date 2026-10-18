@@ -309,20 +309,6 @@ async def run(directory: Path) -> dict[str, object]:
                         break
                     await asyncio.sleep(0.05)
             assert notice[0].status == "delivered" and notice[0].job.session_id == "test:followup", notice
-
-            # 升级前旧流程已在内部会话开始的触发：明确结算为失败，不在目标会话重复写 Input。
-            legacy = ScheduledJob(id="legacy", action="run", trigger="at", channel="test", chat_id="legacy",
-                                  session_id="test:legacy", text="case:legacy", timezone="UTC",
-                                  fire_at=datetime.now(UTC) + timedelta(seconds=2))
-            seed(legacy.session_id)
-            log.writer("scheduler:" + fire_key(legacy), author="scheduler", source="scheduler", body_types=(Input,),
-                       content={"text": check_text}).append("scheduler-input:" + fire_key(legacy), Input((ContentPart("text", "old"),)))
-            await store.add("schedule:legacy", legacy, "legacy")
-            async with asyncio.timeout(30):
-                while (fire := (await asyncio.to_thread(store.read)).fires.get(fire_key(legacy))) is None or fire.status == "pending":
-                    await asyncio.sleep(0.05)
-            assert fire.status == "failed" and "旧触发" in str(fire.error), fire
-            assert "legacy" not in requests
             assert "sample:late" in str(first), "晚注册工具未进入定时任务"
             results = [message.body for message in first if isinstance(message.body, ToolResult)]
             assert all(result.outcome == "success" for result in results)
@@ -375,7 +361,7 @@ async def run(directory: Path) -> dict[str, object]:
         (directory / "requests.json").write_text(json.dumps(requests, ensure_ascii=False, indent=2))
     return {"in_session": True, "history_none_isolated": True, "history_session_included": True,
             "late_registration": True, "concurrent_fixed_views": True, "uninstall": True,
-            "disabled_tools_rejected": True, "messages_preserved": True, "deliveries": 10, "user_preempts_task": True, "cancelled_round_closed": True, "followup_from_task": True, "legacy_pending_settled": True,
+            "disabled_tools_rejected": True, "messages_preserved": True, "deliveries": 10, "user_preempts_task": True, "cancelled_round_closed": True, "followup_from_task": True,
             "model_failure_settled": True, "model_requests": {key: len(value) for key, value in requests.items()}}
 
 

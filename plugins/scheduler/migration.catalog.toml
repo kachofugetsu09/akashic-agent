@@ -1,0 +1,11 @@
+schema_version = 2
+bundle_id = "scheduler"
+version = "1.0.0"
+migration_root = "scheduler_migrations"
+package_name = "scheduler_migrations"
+
+[[migrations]]
+id = "20261018_01_schedules_v3"
+path = "20261018_01_schedules_v3.py"
+depends = []
+transactional = false
