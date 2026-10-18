@@ -60,7 +60,7 @@ note = "按实际 Context 应用自身固定输入；沿 selection CAS 与局部
 # 其余插件的功能由它自己的前端模块经 UI_SLOTS 贡献，宿主不点名。
 [ui_hosts]
 plugins = ["akashic_clients", "ui"]
-infrastructure = ["ledger", "channels", "gateway", "content", "tools", "workloads", "reply"]
+infrastructure = ["ui", "ledger", "channels", "gateway", "content", "tools", "workloads", "reply"]
 frontend = ["frontend/chat/src"]
 host_routes = ["/api/chat/sessions", "/api/chat/artifacts", "/api/chat/uploads", "/api/chat/plugin-ui",
                "/api/chat/navigation", "/api/shell/state"]
