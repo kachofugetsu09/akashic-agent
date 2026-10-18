@@ -16,7 +16,8 @@ from plugins.gateway.contract import RpcMethod
 from plugins.ui.contract import UI, UI_SLOTS, PluginUiDefinition, hidden_part, part_display_key
 from plugins.conversation.contract import input_part_key
 from plugins.ledger.contract import MESSAGE_CATALOG, ContentPart, ContentReferences, MessageReader
-from plugins.models.contract import ChatModelSelection
+from plugins.models.contract import ChatModelSelection, ModelError, ModelUnavailableError
+from plugins.channels.contract import InputPartRejected
 
 from .content import MODEL_CONTENT, ContentOwner
 from .views import CONTENT_VIEWS, ContentViews
@@ -110,10 +111,19 @@ async def apply(ctx: Context) -> None:
                          _register_ui, name="ui")
 
     # 客户端随消息附带的模型选择由本插件校验；持久化仍走会话来源的元数据更新。
+    # 客户端附带的模型选择：形状不对、模型不可用或强度不支持都是该请求的拒收，回给发送者而不是当程序错误。
     def check_input_selection(part: ContentPart, reader: MessageReader) -> ContentReferences:
-        references = check_selection(part)
-        value = cast(Mapping[str, str | None], part.value)
-        _ = state.catalog.validate_chat_selection(ChatModelSelection(value["model_id"], value["reasoning_effort"]))
+        try:
+            references = check_selection(part)
+            value = cast(Mapping[str, str | None], part.value)
+            _ = state.catalog.validate_chat_selection(ChatModelSelection(value["model_id"], value["reasoning_effort"]))
+        except (TypeError, ValueError) as error:
+            raise InputPartRejected(str(error)) from error
+        except RuntimeError as error:
+            unavailable = ModelError.read(error, ModelUnavailableError)
+            if unavailable is None:
+                raise
+            raise InputPartRejected(unavailable.message) from error
         return references
 
     _ = await ctx.provide(input_part_key("model.selection"), check_input_selection)
