@@ -201,10 +201,9 @@ class ContextBuilder:
         if model.max_tool_schemas is not None and len(tools) > model.max_tool_schemas:
             raise ValueError("可见工具数量超过模型容量")
         estimated = model.estimate(request)
-        reserve = output_reserve(max_output_tokens)
         window = model.context_window
-        if window is not None and estimated + reserve > window:
-            raise ContextOverflow(estimated, reserve, window, request=request)
+        if window is not None and estimated + output_reserve(max_output_tokens, window) > window:
+            raise ContextOverflow(estimated, output_reserve(max_output_tokens, window), window, request=request)
         # 与 Pi 的 clampMaxTokensToContext 一致：输入接近窗口时收紧本次输出上限，而不是缩输入。
         if window is not None and estimated + max_output_tokens > window:
             request = replace(request, max_output_tokens=window - estimated)

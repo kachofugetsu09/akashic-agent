@@ -45,17 +45,34 @@ class SummaryError(ValueError):
     """摘要不能满足完整前缀、容量或输出合同。"""
 
 
-# 同 Pi 的 TOOL_RESULT_MAX_CHARS：摘要只需工具结果的要点，原文仍留在日志可回读；
-# 否则一个巨大的已结算批次会让摘要请求本身放不下。
-TOOL_RESULT_SUMMARY_CHARS = 2000
+# 同 Pi 截断摘要资料中的工具结果，这里按整条消息限长，覆盖参数、多段结果与长回复；
+# 原文仍留在日志可回读，一条巨大的已结算消息不再让摘要请求放不下。
+MESSAGE_SUMMARY_CHARS = 4000
 
 
-def _clip(part: ContentPart) -> ContentPart:
-    text = part.value
-    if part.kind != "text" or not isinstance(text, str) or len(text) <= TOOL_RESULT_SUMMARY_CHARS:
-        return part
-    half = TOOL_RESULT_SUMMARY_CHARS // 2
-    return replace(part, value=f"{text[:half]}\n[…省略 {len(text) - 2 * half} 字符…]\n{text[-half:]}")
+def _excerpt(body: dict[str, object]) -> object:
+    text = json.dumps(body, ensure_ascii=False, separators=(",", ":"))
+    if len(text) <= MESSAGE_SUMMARY_CHARS:
+        return body
+    half = MESSAGE_SUMMARY_CHARS // 2
+    return {"excerpt": f"{text[:half]}\n[…省略 {len(text) - 2 * half} 字符，原文仍在日志…]\n{text[-half:]}"}
+
+
+def clip_summary(text: str, ratio: float) -> str:
+    """模型未守住长度时的最后一级：保留全部标题，每节正文只留前 ratio 比例。"""
+    sections: list[list[str]] = []
+    for line in text.splitlines():
+        if line.lstrip().startswith("#") or not sections:
+            sections.append([line])
+        else:
+            sections[-1].append(line)
+    clipped: list[str] = []
+    for heading, *body in sections:
+        content = "\n".join(body)
+        keep = content[:int(len(content) * ratio)]
+        clipped.append(heading if not content.strip() else
+                       heading + "\n" + (keep + "…（篇幅所限已截断）" if keep.strip() else "（篇幅所限已省略）"))
+    return "\n".join(clipped)
 
 
 def source_text(messages: Sequence[Message], *, clip: bool = False) -> str:
@@ -65,14 +82,14 @@ def source_text(messages: Sequence[Message], *, clip: bool = False) -> str:
         body = message.body
         if not isinstance(body, Control):
             body = replace(body, parts=tuple(
-                _clip(part) if clip and isinstance(body, ToolResult) and isinstance(part, ContentPart) else part
-                for part in body.parts
+                part for part in body.parts
                 if not isinstance(part, ContentPart) or part.kind not in {
                     "model.facts", "context.summary", "context.notice", "model.selection", "tool.selection",
                 }
             ))
+        data = body_to_dict(body)
         rows.append({"message_id": message.message_id, "source": message.source, "author": message.author,
-                     "seq": message.seq, "body": body_to_dict(body)})
+                     "seq": message.seq, "body": _excerpt(data) if clip else data})
     return json.dumps(rows, ensure_ascii=False, separators=(",", ":"))
 
 
@@ -167,6 +184,14 @@ def _request(model: BoundChatModel, summary: str, groups: Sequence[tuple[Message
     return ModelRequest(rows, max_output_tokens=0, disable_reasoning=True)
 
 
+def _fits(model: BoundChatModel, summary: str, groups: Sequence[tuple[Message, ...]], limit: int) -> bool:
+    try:
+        _ = _request(model, summary, groups, limit)
+    except SummaryError:
+        return False
+    return True
+
+
 async def _summarize(model: BoundChatModel, groups: tuple[tuple[Message, ...], ...],
                      previous: str, limit: int) -> tuple[str, tuple[str, ...], tuple[tuple[Message, ...], ...]]:
     """从尾部选一个可容纳窗口，只发出一次摘要请求。"""
@@ -174,18 +199,20 @@ async def _summarize(model: BoundChatModel, groups: tuple[tuple[Message, ...], .
     low, high, size = 1, len(groups), 0
     while low <= high:
         middle = (low + high) // 2
-        selected = groups[-middle:]
-        try:
-            _ = _request(model, previous, selected, limit)
-        except SummaryError:
-            high = middle - 1
-        else:
+        if _fits(model, previous, groups[-middle:], limit):
             size = middle
             low = middle + 1
-    # 没有新资料时只按 limit 缩写已有摘要。
+        else:
+            high = middle - 1
+    selected = groups[-size:] if size else ()
+    # 最近一组仍放不下时只取它能放下的消息后缀，其余记为 omitted；没有新资料时只缩写已有摘要。
     if size == 0 and groups:
-        raise SummaryError("一个完整消息组已超过摘要模型容量")
-    selected = groups[-size:]
+        last = groups[-1]
+        count = next((count for count in range(len(last) - 1, 0, -1)
+                      if _fits(model, previous, ((last[-count:]),), limit)), 0)
+        if count == 0:
+            raise SummaryError("已有摘要加一条消息摘录已超过摘要模型容量")
+        selected = (last[-count:],)
     response = await model.complete(_request(model, previous, selected, limit))
 
     # 2. 只接纳成功调用的真实正文；格式错误不会用空摘要掩盖。
