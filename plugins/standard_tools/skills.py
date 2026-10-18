@@ -3,7 +3,7 @@ from __future__ import annotations
 import asyncio
 import json
 import re
-from collections.abc import AsyncGenerator, Awaitable, Callable, Mapping
+from collections.abc import AsyncGenerator, Awaitable, Callable, Iterable, Mapping
 from contextlib import asynccontextmanager
 from typing import Literal, cast
 
@@ -82,38 +82,59 @@ class SkillTool:
         return None
 
 
-# 行首或空白后的 /技能名 是用户的显式选择；名称后不能紧跟路径字符，"/usr/bin" 不会被当成技能。
-SKILL_MENTION = re.compile(r"(?:^|(?<=\s))/([A-Za-z0-9][\w-]*(?:\.[\w-]+)*)(?![\w/-]|\.\w)")
+# 代码块与行内代码里的 /技能名 只是被引用的文字，不算选择。
+CODE_SPAN = re.compile(r"```[\s\S]*?(?:```|$)|`[^`\n]*`")
+MENTION_START = re.compile(r"(?:^|(?<=\s))/")
+MENTION_END = frozenset(",;:!?，。；：！？、)）\"'")
 
 
-# 当前轮用户输入点名的技能，按出现顺序去重；未知名称当普通文字。
-def mentioned_skills(snapshot: tuple[Message, ...]) -> tuple[str, ...]:
-    current = next((message for message in reversed(snapshot) if isinstance(message.body, Input)), None)
+# 名称之后是结尾、空白或标点才算提及；"/weather.md"、"/usr/bin" 不是。
+def ends_mention(text: str, end: int) -> bool:
+    if end == len(text) or text[end].isspace() or text[end] in MENTION_END:
+        return True
+    return text[end] == "." and (end + 1 == len(text) or not (text[end + 1].isalnum() or text[end + 1] == "_"))
+
+
+# 本来源最新输入里点名的已知技能，按出现顺序去重；同一位置取最长名称，未知名称当普通文字。
+def mentioned_skills(snapshot: tuple[Message, ...], source: str, names: Iterable[str]) -> tuple[str, ...]:
+    current = next((message for message in reversed(snapshot)
+                    if message.source == source and isinstance(message.body, Input)), None)
     if current is None:
         return ()
     assert isinstance(current.body, Input)
-    text = "\n".join(part.value for part in current.body.parts
-                     if part.kind == "text" and isinstance(part.value, str))
-    return tuple(dict.fromkeys(match.group(1) for match in SKILL_MENTION.finditer(text)))
+    text = CODE_SPAN.sub(" ", "\n".join(part.value for part in current.body.parts
+                                        if part.kind == "text" and isinstance(part.value, str)))
+    ordered = sorted(set(names), key=len, reverse=True)
+    found: list[str] = []
+    for match in MENTION_START.finditer(text):
+        start = match.end()
+        name = next((item for item in ordered
+                     if text.startswith(item, start) and ends_mention(text, start + len(item))), None)
+        if name is not None:
+            found.append(name)
+    return tuple(dict.fromkeys(found))
 
 
 # 用户点名的技能正文随本轮输入注入；可回放，后续轮次的历史里仍能看到这次选择。
-def selected_reminder(records: tuple[SkillRecord, ...], snapshot: tuple[Message, ...]) -> Mapping[str, object] | None:
+def selected_reminder(records: tuple[SkillRecord, ...], snapshot: tuple[Message, ...],
+                      source: str) -> Mapping[str, object] | None:
     sections: list[str] = []
-    for name in mentioned_skills(snapshot):
-        record = next((item for item in records if item.name == name), None)
-        if record is None:
-            continue
+    for name in mentioned_skills(snapshot, source, (item.name for item in records)):
+        record = next(item for item in records if item.name == name)
+        body = skill_body(record.content) if record.available else ""
         if not record.available:
             sections.append(f"### {name}\n不可用：{record.missing}。告诉用户缺少什么，不要假装已按它执行。")
-            continue
-        sections.append(f"### {name}\n来源：{record.source}/{record.source_id}\n"
-                        f"资源目录：{record.root_dir}\n\n{skill_body(record.content)}")
+        elif not body.strip():
+            sections.append(f"### {name}\n技能正文为空。告诉用户这个技能配置有误，不要假装已按它执行。")
+        else:
+            sections.append(f"### {name}\n来源：{record.source}/{record.source_id}\n"
+                            f"资源目录：{record.root_dir}\n\n{body}")
     if not sections:
         return None
     return {"name": "selected-skills", "priority": 250, "text": (
-        "## 用户本轮选择的技能\n用户在消息里用 /技能名 明确选择了以下技能，正文已加载，按它执行，"
-        "不必再调用技能读取工具。相对路径以各技能的资源目录为根。\n\n" + "\n\n".join(sections))}
+        "## 用户本轮选择的技能\n用户在消息里用 /技能名 明确选择了以下技能。附有正文的按它执行，"
+        "不必再调用技能读取工具，相对路径以该技能的资源目录为根；不可用或配置有误的写明了原因。\n\n"
+        + "\n\n".join(sections))}
 
 
 async def register_skills(ctx: Context) -> ToolRef:
@@ -162,7 +183,7 @@ async def register_skills(ctx: Context) -> ToolRef:
                 else:
                     prompt = build_prompt(catalog.records)
                     prompt_memo[:] = [(catalog, workspace_dir, prompt)]
-                selected = selected_reminder(catalog.records, snapshot)
+                selected = selected_reminder(catalog.records, snapshot, source)
                 return prompt if selected is None else {**prompt, "reminders": (selected,)}
 
             return await run_file_io(prepare_prompt)

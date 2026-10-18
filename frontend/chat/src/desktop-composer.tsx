@@ -314,6 +314,7 @@ export const DesktopComposer = memo(function DesktopComposer({
           onChange={onInputChange}
           onKeyDown={onComposerKeyDown}
           onSelect={syncMention}
+          {...mention.inputProps}
           onBlur={mention.close}
           pasteAsFile={pasteAsFile}
           aria-label="消息"
