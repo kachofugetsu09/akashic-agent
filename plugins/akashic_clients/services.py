@@ -19,10 +19,6 @@ from plugins.ledger.contract import (
     SessionDeleteResult,
     SessionTitleResult,
 )
-from plugins.models.contract import (
-    ChatModelSelection,
-    ModelCatalogSnapshot,
-)
 from plugins.ui.contract import (
     WebUiProvider as WebUiProvider,
 )
@@ -133,13 +129,8 @@ class MessageCatalogPort(Protocol):
 ReplyStatusPort = Callable[[str], AsyncGenerator[dict[str, object], None]]
 # 产出 None 表示回复插件未加载，无法判断哪些会话在运行。
 ActiveSessionsFollowPort = Callable[[], AsyncGenerator[frozenset[str] | None, None]]
-ModelCatalogReader = Callable[[], Awaitable[ModelCatalogSnapshot]]
-ModelSelectionReader = Callable[[Mapping[str, object]], Awaitable[ChatModelSelection]]
 
 
-
-
-class ModelCatalogUnavailable(RuntimeError): ...
 
 
 class RuntimeInspectionError(ValueError):
@@ -157,68 +148,10 @@ class RuntimeInspectionService(Protocol):
     async def get_mcp(self, owner_id: str, server_name: str) -> dict[str, object]: ...
 
 
-def default_chat_model_id(snapshot: ModelCatalogSnapshot) -> str:
-    """读取已声明的 default 绑定，不为客户端编造模型。"""
-    return str(snapshot.role_bindings.get("default", ""))
-
-
-def project_unavailable_chat_runtimes(snapshot: ModelCatalogSnapshot) -> list[dict[str, str]]:
-    """只读展示连接停用或驱动缺席，不把本地可用误称远端认证成功。"""
-    connections = {item.connection_id: item for item in snapshot.connections}
-    return [
-        {
-            "id": model.model_id,
-            "model": model.model,
-            "sourceName": connections[model.connection_id].name,
-            "availability": model.availability,
-        }
-        for model in snapshot.models
-        if model.kind == "chat" and model.availability != "available"
-    ]
-
-
-def project_chat_runtimes(snapshot: ModelCatalogSnapshot) -> list[dict[str, object]]:
-    """把公共模型目录投影为既有 Web DTO。"""
-    roles_by_model: dict[str, list[str]] = {}
-    for role, model_id in snapshot.role_bindings.items():
-        roles_by_model.setdefault(model_id, []).append(role)
-    connections = {item.connection_id: item for item in snapshot.connections}
-    result: list[dict[str, object]] = []
-    for model in snapshot.models:
-        if model.kind != "chat" or model.availability != "available":
-            continue
-        connection = connections[model.connection_id]
-        capabilities = model.capabilities
-        sources = model.capability_sources
-        result.append({
-            "id": model.model_id,
-            "provider": connection.driver_id,
-            "catalogProvider": connection.driver_id,
-            "model": model.model,
-            "reasoningEffort": model.default_reasoning_effort or "",
-            "supportedReasoningEfforts": list(capabilities.supported_reasoning_efforts),
-            "sourceId": connection.connection_id,
-            "sourceName": connection.name,
-            "contextWindow": capabilities.context_window or 0,
-            "maxOutputTokens": capabilities.max_output_tokens or 0,
-            "inputModalities": list(capabilities.input_modalities),
-            "capabilitySource": sources.context_window,
-            "capabilitySources": {
-                "contextWindow": sources.context_window,
-                "maxOutputTokens": sources.max_output_tokens,
-                "inputModalities": sources.input_modalities,
-            },
-            "roles": sorted(roles_by_model.get(model.model_id, [])),
-        })
-    return result
-
-
 __all__ = [
     "ArtifactReadLeasePort", "ArtifactStorePort", "AttachmentStorePort",
     "InvalidPage", "MessageCatalogPort", "MessageConflict", "MessageDisplayReader",
     "MessagePagePort", "MessageReaderPort", "SessionAdminPort",
     "SessionEntryPort", "SessionPagePort", "Message",
-    "ModelCatalogReader", "ModelCatalogSnapshot",
-    "ModelSelectionReader", "RuntimeInspectionError", "RuntimeInspectionService",
-    "default_chat_model_id", "project_chat_runtimes",
+    "RuntimeInspectionError", "RuntimeInspectionService",
 ]

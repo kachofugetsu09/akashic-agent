@@ -1,13 +1,5 @@
 from __future__ import annotations
 
-from plugins.models.contract import ModelError
-from plugins.models.contract import ModelUnavailableError
-from plugins.models.contract import (
-    MODEL_CALL_STATS,
-    ModelCallStats,
-)
-from plugins.models.contract import ModelControlUnavailable
-
 import asyncio
 import logging
 from collections.abc import AsyncGenerator, AsyncIterator, Mapping, Sequence
@@ -22,7 +14,6 @@ from agent.plugin_composition import (
     Context,
     Effect,
 )
-from plugins.models.contract import MODEL_CATALOG
 from plugins.channels.contract import (
     AttachmentKind,
     AttachmentReadLease,
@@ -41,7 +32,6 @@ from plugins.ledger.contract import MESSAGE_CATALOG, SESSION_ADMIN
 from .capabilities import (
     MESSAGE_DISPLAY,
     PLUGIN_UI,
-    MODEL_SELECTION,
     REPLY_STATUS,
     WEB_UI,
 )
@@ -55,8 +45,6 @@ from .runtime_inspection import ScopedRpcRuntimeInspection
 from .services import (
     ActiveSessionsFollowPort,
     MessageCatalogPort,
-    ModelCatalogReader,
-    ModelSelectionReader,
     ReplyStatusPort,
     SessionAdminPort,
 )
@@ -250,8 +238,6 @@ class _GenerationAkashicAdapter:
         self._workspace = state.workspace
         self._reply_status: ReplyStatusPort | None = None
         self._follow_active_sessions: ActiveSessionsFollowPort = self._follow_session_activity
-        self._model_catalog_reader: ModelCatalogReader | None = None
-        self._model_selection_reader: ModelSelectionReader | None = None
         self._runtime_inspection: ScopedRpcRuntimeInspection | None = None
         self._message_display: MessageDisplayReader = ScopedMessageDisplay(
             self._open_request_scope
@@ -285,8 +271,6 @@ class _GenerationAkashicAdapter:
         if open_scope is None:
             raise RuntimeError("akashic channel 缺少 host request scope")
         self._reply_status = self._follow_reply_status
-        self._model_catalog_reader = self._read_model_catalog
-        self._model_selection_reader = self._read_model_selection
         self._runtime_inspection = ScopedRpcRuntimeInspection(open_scope)
         async with self._open_request_scope() as scope:
             for key in (
@@ -407,34 +391,6 @@ class _GenerationAkashicAdapter:
                 logger.exception("plugin ui follow stopped: %s", session_id)
             await asyncio.sleep(delay)
 
-    async def _read_model_call_stats(self, call_id: str) -> ModelCallStats:
-        """借用实际统计 owner；缺席不关闭聊天，也不获取模型修改权限。"""
-        async with self._open_request_scope() as scope:
-            with scope.borrow(MODEL_CALL_STATS) as reader:
-                if reader is None:
-                    raise ModelControlUnavailable("模型调用统计不可用").exception()
-                return reader(call_id)
-
-    async def _read_model_catalog(self) -> Any:
-        open_scope = self._context.open_scope
-        if open_scope is None:
-            raise RuntimeError("akashic model catalog 缺少 host request scope")
-        async with open_scope() as scope:
-            return scope.require(MODEL_CATALOG).snapshot()
-
-    async def _read_model_selection(self, metadata: dict[str, object]) -> Any:
-        open_scope = self._context.open_scope
-        if open_scope is None:
-            raise RuntimeError("akashic model selection 缺少 host request scope")
-        async with open_scope() as scope:
-            selection = scope.require(MODEL_SELECTION).read_saved(metadata)
-            try:
-                return scope.require(MODEL_CATALOG).validate_chat_selection(selection)
-            except (RuntimeError, TimeoutError) as _model_error:
-                if not (ModelError.matches(_model_error, ModelUnavailableError)):
-                    raise
-                return selection
-
     def attach_runtime(self, ports: ChannelRuntimePorts) -> None:
         if self._stopped:
             raise RuntimeError("akashic channel 已停止")
@@ -485,9 +441,6 @@ class _GenerationAkashicAdapter:
             read_marks=self._state.read_marks,
             channel=self._web,
             runtime_inspection=self._runtime_inspection,
-            model_catalog_reader=self._model_catalog_reader,
-            model_call_stats_reader=self._read_model_call_stats,
-            model_selection_reader=self._model_selection_reader,
             message_display=self._message_display,
             plugin_ui_scope=self._plugin_ui_scope,
             web_ui_provider=self._web_ui_provider,

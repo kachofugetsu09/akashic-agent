@@ -1077,25 +1077,6 @@ class WebChatChannel:
         elif media:
             await self._send_error(websocket, request_id, "Web artifact store 尚未绑定")
             return session_key
-        if "model_runtime_id" in payload:
-            model_runtime_id = payload["model_runtime_id"]
-            if not isinstance(model_runtime_id, str):
-                await self._send_error(
-                    websocket,
-                    request_id,
-                    "model_runtime_id 必须是字符串",
-                )
-                return session_key
-            metadata["model_runtime_id"] = model_runtime_id.strip()
-            model_reasoning_effort = payload.get("model_reasoning_effort", "")
-            if not isinstance(model_reasoning_effort, str):
-                await self._send_error(
-                    websocket,
-                    request_id,
-                    "model_reasoning_effort 必须是字符串",
-                )
-                return session_key
-            metadata["model_reasoning_effort"] = model_reasoning_effort.strip()
         if "parts" in payload:
             try:
                 parts = read_input_parts(payload["parts"])

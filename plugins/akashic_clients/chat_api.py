@@ -1,8 +1,5 @@
 from __future__ import annotations
 
-from dataclasses import asdict
-from plugins.models.contract import ModelCallStats
-
 import asyncio
 import hashlib
 import json
@@ -17,11 +14,6 @@ from fastapi import FastAPI, HTTPException, Query, Request, WebSocket
 from fastapi.responses import FileResponse, JSONResponse, Response, StreamingResponse
 from pydantic import BaseModel, ConfigDict, Field
 
-from plugins.models.contract import (
-    ModelControlUnavailable,
-    ModelError,
-)
-
 from .static import register_chat_assets
 from plugins.ui.contract import PluginUiSlot, read_message_rows, session_row
 from .navigation import NavigationPreferences, PinUpdate, check_project_pin, session_pin_row
@@ -34,9 +26,6 @@ from .services import (
     InvalidPage,
     MessageCatalogPort as MessageCatalog,
     MessageDisplayReader,
-    ModelCatalogSnapshot,
-    ChatModelSelection,
-    ModelCatalogUnavailable,
     PluginUiPluginUnavailable,
     PluginUiProvider,
     PluginUiQueryOverloaded,
@@ -45,9 +34,6 @@ from .services import (
     PluginUiRpcInvalidRequest,
     PluginUiStaleRevision,
     SessionAdminPort,
-    default_chat_model_id,
-    project_chat_runtimes,
-    project_unavailable_chat_runtimes,
 )
 from .services import ArtifactStorePort as ChannelAttachmentArtifactStore
 from .web_chat import (
@@ -104,11 +90,6 @@ def create_chat_app(
     plugin_ui_provider: PluginUiProvider | None = None,
     plugin_ui_scope: Callable[[], Any] | None = None,
     web_ui_provider: WebUiProvider | None = None,
-    model_catalog_reader: Callable[[], Awaitable[ModelCatalogSnapshot]] | None = None,
-    model_call_stats_reader: Callable[[str], Awaitable[ModelCallStats]] | None = None,
-    model_selection_reader: Callable[
-        [Mapping[str, object]], Awaitable[ChatModelSelection]
-    ] | None = None,
     messages: MessageCatalog | None = None,
     reply_status: Callable[[str], AsyncGenerator[dict[str, object], None]] | None = None,
     follow_active_sessions: ActiveSessionsFollowPort | None = None,
@@ -379,46 +360,6 @@ def create_chat_app(
     def chat_navigation() -> dict[str, str]:
         return {"dashboard_path": "/"}
 
-    @app.get("/api/chat/models")
-    async def chat_models(session_key: str = Query(default="")) -> dict[str, object]:
-        if model_catalog_reader is None:
-            raise HTTPException(status_code=503, detail="模型注册表不可用")
-        session_override = ""
-        session_effort = ""
-        if session_key:
-            if model_selection_reader is None:
-                raise HTTPException(status_code=503, detail="模型选择服务不可用")
-            async with open_message_catalog() as catalog:
-                metadata = catalog.reader(session_key).metadata()
-            try:
-                selection = await model_selection_reader(
-                    metadata if metadata is not None else {}
-                )
-            except RuntimeError as error:
-                if not ModelError.matches(error, ModelControlUnavailable):
-                    raise
-                raise HTTPException(
-                    status_code=503,
-                    detail="模型选择服务不可用",
-                ) from error
-            session_override = selection.model_id or ""
-            session_effort = selection.reasoning_effort or ""
-        try:
-            current = await model_catalog_reader()
-        except ModelCatalogUnavailable as error:
-            raise HTTPException(status_code=503, detail="模型注册表不可用") from error
-        return {
-            "generationId": current.revision,
-            "defaultRuntime": default_chat_model_id(current),
-            "sessionOverride": session_override,
-            "sessionSelection": {
-                "modelRef": session_override,
-                "reasoningEffort": session_effort,
-            },
-            "runtimes": project_chat_runtimes(current),
-            "unavailableRuntimes": project_unavailable_chat_runtimes(current),
-        }
-
     @app.get("/api/chat/plugin-ui/catalog")
     async def plugin_ui_catalog() -> dict[str, object]:
         if plugin_ui_scope is not None:
@@ -504,19 +445,6 @@ def create_chat_app(
         ) as error:
             raise _plugin_ui_http_error(error) from error
 
-    @app.get("/api/chat/model-calls/{call_id}")
-    async def model_call_stats(call_id: str) -> dict[str, object]:
-        """只返回模型 owner 的公开统计，不转发模型管理命令。"""
-        if model_call_stats_reader is None:
-            raise HTTPException(status_code=503, detail="模型调用统计不可用")
-        try:
-            return asdict(await model_call_stats_reader(call_id))
-        except KeyError as error:
-            raise HTTPException(status_code=404, detail="模型调用记录不存在") from error
-        except RuntimeError as error:
-            if not ModelError.matches(error, ModelControlUnavailable):
-                raise
-            raise HTTPException(status_code=503, detail=str(error)) from error
 
     @app.get("/api/chat/runtime/documents")
     async def list_runtime_documents() -> dict[str, object]:
@@ -676,11 +604,6 @@ def build_chat_server(
     plugin_ui_provider: PluginUiProvider | None = None,
     plugin_ui_scope: Callable[[], Any] | None = None,
     web_ui_provider: WebUiProvider | None = None,
-    model_catalog_reader: Callable[[], Awaitable[ModelCatalogSnapshot]] | None = None,
-    model_call_stats_reader: Callable[[str], Awaitable[ModelCallStats]] | None = None,
-    model_selection_reader: Callable[
-        [Mapping[str, object]], Awaitable[ChatModelSelection]
-    ] | None = None,
     messages: MessageCatalog | None = None,
     reply_status: Callable[[str], AsyncGenerator[dict[str, object], None]] | None = None,
     follow_active_sessions: ActiveSessionsFollowPort | None = None,
@@ -701,9 +624,6 @@ def build_chat_server(
             plugin_ui_provider=plugin_ui_provider,
             plugin_ui_scope=plugin_ui_scope,
             web_ui_provider=web_ui_provider,
-            model_catalog_reader=model_catalog_reader,
-            model_call_stats_reader=model_call_stats_reader,
-            model_selection_reader=model_selection_reader,
             messages=messages,
             reply_status=reply_status,
             follow_active_sessions=follow_active_sessions,

@@ -17,12 +17,7 @@ R12 = [
     "frontend/chat/src/web-projects.ts -> MEMORY_PLUGIN",
     "frontend/chat/src/web-projects.ts -> PROJECTS_PLUGIN",
     "plugins/akashic_clients/capabilities.py -> mcp",
-    "plugins/akashic_clients/capabilities.py -> models",
-    "plugins/akashic_clients/channel.py -> models",
-    "plugins/akashic_clients/chat_api.py -> models",
     "plugins/akashic_clients/navigation.py -> projects",
-    "plugins/akashic_clients/plugin.py -> models",
     "plugins/akashic_clients/runtime_inspection.py -> mcp",
-    "plugins/akashic_clients/services.py -> models",
     "plugins/akashic_clients/web_chat.py -> message_push",
 ]
