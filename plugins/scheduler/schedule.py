@@ -2,19 +2,15 @@
 Scheduler: 定时任务核心模块
 
 组件：
-  LatencyTracker     — 自适应 P90 延迟估算（软实时预触发）
   parse_duration     — "30s" / "5m" / "2h" 等时长解析
   parse_when_at      — "14:30" / ISO datetime 解析
   is_cron_expr       — 判断是否是 cron 表达式
   compute_fire_at    — 计算首次触发时间（含 request_time 延迟补偿）
-  compute_actual_trigger — 计算实际触发时间（SOFT 提前 P90）
   ScheduledJob       — 任务数据类
 """
 
 import re
-import statistics
 import uuid
-from collections import deque
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
 from typing import Callable
@@ -25,27 +21,6 @@ from apscheduler.triggers.cron import CronTrigger
 
 
 SCHEDULE_MAX_ACTIVE_JOBS = 10
-
-
-# ── LatencyTracker ───────────────────────────────────────────────
-
-
-class LatencyTracker:
-    """滑动窗口 P90 延迟追踪，用于 SOFT tier 预触发偏移量自适应。"""
-
-    def __init__(self, default: float = 25.0, window: int = 20) -> None:
-        self._samples: deque[float] = deque(maxlen=window)
-        self.default = default
-
-    def record(self, elapsed: float) -> None:
-        self._samples.append(elapsed)
-
-    @property
-    def lead(self) -> float:
-        """返回 P90 估算值；样本不足 3 个时返回 default。"""
-        if len(self._samples) < 3:
-            return self.default
-        return statistics.quantiles(list(self._samples), n=10)[8]
 
 
 # ── 时间解析 ─────────────────────────────────────────────────
@@ -184,38 +159,22 @@ def compute_fire_at(
     raise ValueError(f"未知触发类型: {trigger!r}，须为 at/after/every")
 
 
-def compute_actual_trigger(
-    fire_at: datetime,
-    tier: str,
-    tracker: LatencyTracker,
-) -> datetime:
-    """
-    计算实际触发时刻。
-
-    INSTANT: 等于 fire_at（直接推送，无 AI 延迟）
-    SOFT:    fire_at - P90（提前触发 AI，让 AI 在 fire_at 前完成处理）
-    """
-    if tier == "instant":
-        return fire_at
-    return fire_at - timedelta(seconds=tracker.lead)
-
-
 # ── ScheduledJob ─────────────────────────────────────────────────
 
 
 @dataclass
 class ScheduledJob:
     trigger: str  # "at" | "after" | "every"
-    tier: str  # "instant" | "soft"
+    action: str  # "notify" 原文推送 | "run" 在目标会话里执行一轮
     fire_at: datetime  # 下次名义触发时间（UTC-aware）
     channel: str
     chat_id: str
+    session_id: str  # 目标会话；run 的过程与结论都写在这里
+    text: str  # notify 的推送原文，或 run 的任务指令
 
     interval_seconds: int | None = None  # every + interval 模式
     cron_expr: str | None = None  # every + cron 模式
-
-    message: str | None = None  # instant 层
-    prompt: str | None = None  # soft 层
+    context: str = "none"  # run 是否带会话历史："none" | "session"
 
     name: str | None = None
     timezone: str = "UTC"

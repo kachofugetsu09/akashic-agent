@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from collections.abc import Awaitable, Callable, Mapping, Sequence
-from typing import Any, cast
+from typing import Any, Literal, cast
 from contextlib import AbstractAsyncContextManager, AbstractContextManager
 
 from core.common.diagnostic_log import log_timing
@@ -18,7 +18,7 @@ from plugins.models.contract import (
 from agent.plugin_composition.tasks import Task
 from plugins.context.contract import MaterialView, ReductionStatus
 from plugins.models.contract import PrepareContent
-from plugins.ledger.contract import ContentPart, Input, Message, Output
+from plugins.ledger.contract import ContentPart, Control, Input, Message, Output
 
 from plugins.sources.contract import (
     SourceGuard,
@@ -63,10 +63,13 @@ async def run_reply(
     reminders: Sequence[Mapping[str, object]] = (),
     terminal_tools: frozenset[str] = frozenset(),
     presentation: ToolPresentation | None = None,
+    history: Literal["session", "own"] = "session",
 ) -> Message:
     """普通组合拥有本次程序资源，Source 不必同步签发模型或内容 writer。"""
     mark = partial(log_timing, session_id=reader.session_id, source=source)
     mark("reply.begin")
+    # 请求只看可见历史：其他来源未完成的轮次不进入请求；own 时只看本来源，不带会话摘要也不压缩整个会话。
+    context = RequestHistory(context, source, own=history == "own")
     if tool_names is not None:
         if tool_view is not None or fixed_bindings is None:
             raise ValueError("旧工具名称只可核对原固定 binding")
@@ -153,9 +156,13 @@ async def run_reply(
         async def build_materials(messages: tuple[Message, ...]) -> MaterialData:
             nonlocal artifacts
             mark("materials.begin")
+            if history == "own":
+                messages = own_messages(messages, source)
             result = await material_view.prepare(
                 messages, source, caller=ctx, reminders=tuple(reminders),
             )
+            if history == "own":
+                result = {key: value for key, value in result.items() if key != "summary"}
             if render_content is None:
                 summary = cast(SummaryData | None, result.get("summary"))
                 start = 0 if summary is None else context.summary_range(messages, cast(tuple[str, ...], summary["source_message_ids"])).stop
@@ -182,6 +189,10 @@ async def run_reply(
             model: BoundChatModel, projection: ContextModel, *, source: str, force: bool,
             on_status: ReductionStatus | None = None,
         ) -> SummaryData | None:
+            # 其他来源有未完成轮次时只压缩它之前的部分：摘要范围在真实日志和请求视图里都连续。
+            hidden = hidden_indexes(snapshot, source)
+            if hidden:
+                snapshot = snapshot[:min(hidden)]
             result = await material_view.reduce(snapshot, prepared, request, model, projection,
                                                 source=source, force=force, on_status=on_status)
             check()
@@ -192,10 +203,60 @@ async def run_reply(
                 reader, output, model=model, context=context, projection=projection,
                 materials=build_materials, content=view, tools=menu,
                 max_output_tokens=max_output_tokens, max_steps=max_steps,
-                reduce=reduce, preview=preview, terminal_tools=terminal_tools,
+                reduce=None if history == "own" else reduce, preview=preview, terminal_tools=terminal_tools,
                 max_parallel_calls=max_parallel_calls,
                 state=owner_state.open_scoped(ctx, "generation"),
                 check_start=check,
             )
         finally:
             output.expire()
+
+
+def own_messages(messages: Sequence[Message], source: str) -> tuple[Message, ...]:
+    return tuple(message for message in messages if message.source == source)
+
+
+# 其他来源最后一次结束之后的消息：那是仍在进行的轮次，工具调用可能尚未配对。
+def hidden_indexes(messages: Sequence[Message], source: str) -> set[int]:
+    finished: set[str] = set()
+    hidden: set[int] = set()
+    for index in range(len(messages) - 1, -1, -1):
+        message = messages[index]
+        if message.source == source or message.source in finished:
+            continue
+        body = message.body
+        if isinstance(body, Control) and body.action in {"failure", "abandon"} or isinstance(body, Output) and body.finish != "continue":
+            finished.add(message.source)
+        else:
+            hidden.add(index)
+    return hidden
+
+
+def visible_messages(messages: Sequence[Message], source: str) -> Sequence[Message]:
+    hidden = hidden_indexes(messages, source)
+    if not hidden:
+        return messages
+    return tuple(message for index, message in enumerate(messages) if index not in hidden)
+
+
+class RequestHistory:
+    """只改变交给请求组装的历史；读面、提交、竞争检查与恢复仍使用整个会话的真实日志。"""
+
+    def __init__(self, context: ContextBuilder, source: str, *, own: bool):
+        self._context = context
+        self._source = source
+        self._own = own
+        self.check_summary = context.check_summary
+        self.check_notice = context.check_notice
+        self.summary_range = context.summary_range
+        self.settled_prefixes = context.settled_prefixes
+        self.reminder_content = context.reminder_content
+
+    def _view(self, snapshot: Sequence[Message]) -> Sequence[Message]:
+        return own_messages(snapshot, self._source) if self._own else visible_messages(snapshot, self._source)
+
+    def build(self, snapshot: Sequence[Message], **options: Any) -> ModelRequest:
+        return self._context.build(self._view(snapshot), **options)
+
+    def build_attempt(self, snapshot: Sequence[Message], **options: Any) -> tuple[ModelRequest, str | None]:
+        return self._context.build_attempt(self._view(snapshot), **options)

@@ -21,8 +21,8 @@ async def check(root_path: Path) -> None:
     """慢 load 不冻结 RPC loop，取消后仍保留正在读取的 provider。"""
     root = CompositionRoot("scheduler-inspection-io")
     store = JobStore(root_path / "schedules.json")
-    job = ScheduledJob(id="job", tier="instant", trigger="at", channel="web", chat_id="one",
-                       message="hello", timezone="UTC", fire_at=datetime.now(UTC) + timedelta(hours=1))
+    job = ScheduledJob(id="job", action="notify", trigger="at", channel="web", chat_id="one", session_id="web:one",
+                       text="hello", timezone="UTC", fire_at=datetime.now(UTC) + timedelta(hours=1))
     await store.add("add", job, "created")
 
     @asynccontextmanager

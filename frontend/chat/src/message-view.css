@@ -2142,6 +2142,16 @@ button.tool-step-summary:active {
 /* Message 正文类型只决定布局；作者与来源由消息元数据呈现。 */
 .timeline-message { display: flex; flex-direction: column; gap: 0.5rem; }
 .timeline-input { align-items: flex-end; }
+.timeline-input.timeline-automatic { align-items: stretch; }
+.automatic-input {
+  min-width: 0;
+  border-inline-start: 2px solid var(--ak-rule-strong);
+  padding: 2px 0 2px 12px;
+  color: var(--ak-ink-secondary);
+  font-size: 0.875rem;
+  line-height: 1.5;
+  overflow-wrap: break-word;
+}
 .timeline-message .agent-content { min-width: 0; }
 .timeline-message .user-bubble { min-width: 0; }
 /* 气泡按内容收缩，而代码块、宽表、块公式的宽度又跟着容器走：两者互相依赖时气泡塌到最小内容宽度（只有代码时只剩一条缝）。

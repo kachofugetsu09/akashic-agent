@@ -641,9 +641,11 @@ export function TimelineMessageView({ message, lookupMessage, toolResults, onNav
   </>;
   const emptyBubble = input && !leadingContent && !leadingProcess && !afterBody && body.parts.every((part) => !isTimelinePartVisible(part)
     || (!("display" in part) && (part.kind === "artifact_ref" || (part.kind === "text" && !part.value.trim()))));
-  return <div className={`message-row timeline-message timeline-${body.kind}`}>
+  // 定时任务等自动发起的输入不是用户发言，靠左显示成一条事件行。
+  const automatic = input && message.author === "scheduler";
+  return <div className={`message-row timeline-message timeline-${body.kind}${automatic ? " timeline-automatic" : ""}`}>
     {input ? attachmentList : null}
-    {emptyBubble ? null : <div className={input ? "user-bubble" : "agent-content"}>
+    {emptyBubble ? null : <div className={automatic ? "automatic-input" : input ? "user-bubble" : "agent-content"}>
       {leadingContent}
       {leadingProcess ? <InlineReplyProcess messages={leadingProcess} toolResults={toolResults}
         beforeReasoning={beforeReasoning} beforePart={beforePart} /> : null}
