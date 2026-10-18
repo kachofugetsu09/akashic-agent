@@ -15,7 +15,7 @@ import { ComposerReply } from "./message-actions";
 import { ModelCapsulePicker, ModelEffortAction, resolveVisibleRuntime } from "./model-capsule-picker";
 import { compatibleEffort, type ChatModelRuntime } from "./model-capsule-data";
 import { isGeneratingChatStatus, type ChatStatus } from "./web-chat-status";
-import { useSkillMention } from "./skill-mention";
+import { useComposerSuggest } from "./composer-suggest";
 
 export type ComposerFile = { filename?: string; mediaType?: string; url?: string; sizeBytes?: number };
 
@@ -143,7 +143,7 @@ export const DesktopComposer = memo(function DesktopComposer({
     setInput(next);
     syncExpanded(textareaRef.current, next);
   }, [setInput, syncExpanded]);
-  const mention = useSkillMention({ value: input, textareaRef, setValue: writeMention });
+  const mention = useComposerSuggest({ value: input, scope: draftKey, textareaRef, setValue: writeMention });
   const syncMention = mention.sync;
   const onInputChange = useCallback((event: ChangeEvent<HTMLTextAreaElement>) => {
     const next = event.target.value;
@@ -260,7 +260,7 @@ export const DesktopComposer = memo(function DesktopComposer({
   return (
     <>
     {draftStorageError ? <p role="status">浏览器无法保存本页草稿。刷新前请复制已输入的文字。</p> : null}
-    {mention.menu ? <div className="skill-menu-anchor">{mention.menu}</div> : null}
+    {mention.menu ? <div className="composer-suggest-anchor">{mention.menu}</div> : null}
     <PromptInput
       className={`composer ${shellExpanded ? "is-expanded" : "is-compact"} ${input.trim() || replyTarget ? "has-text" : "empty"}${resting ? " is-resting" : ""}${fileDragActive ? " is-drop-target" : ""}`}
       multiple

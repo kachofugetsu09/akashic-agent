@@ -59,18 +59,6 @@ async def apply(ctx: Context) -> None:
         ctx, name="working-directory", kind="context", prepare=materials,
     )
 
-    async def directory_ui(child: Context) -> None:
-        async def query(method: str, payload: dict[str, object], *,
-                        session_id: str | None, turn_id: str | None) -> dict[str, object]:
-            if method != "directory.current" or payload or not session_id:
-                raise PluginUiRpcInvalidRequest("请选择 Session 读取当前目录")
-            return await directories.current_info(session_id)
-
-        _ = await child.require(UI_SLOTS).register_plugin_ui(
-            child, PluginUiDefinition(module="plugin_ui.js", slots=("header.end",)), query=query,
-        )
-
-    _ = await ctx.inject((UI_SLOTS,), directory_ui, name="directory-ui")
     _ = await catalog.declare_group(ctx, always_on=True, description=desc)
     await register_directory(ctx, directories)
     await register_vision(ctx, directories)
@@ -86,4 +74,20 @@ async def apply(ctx: Context) -> None:
             ),
         )
     await register_shell(ctx, directories)
-    await register_skills(ctx)
+    skills = await register_skills(ctx)
+
+    # 顶栏工作目录与输入框技能建议都是本插件自己的界面；宿主只提供插槽。
+    async def plugin_ui(child: Context) -> None:
+        async def query(method: str, payload: dict[str, object], *,
+                        session_id: str | None, turn_id: str | None) -> dict[str, object]:
+            if method == "skills.list" and not payload:
+                return {"items": list(await skills.list_skills())}
+            if method != "directory.current" or payload or not session_id:
+                raise PluginUiRpcInvalidRequest("请选择 Session 读取当前目录")
+            return await directories.current_info(session_id)
+
+        _ = await child.require(UI_SLOTS).register_plugin_ui(
+            child, PluginUiDefinition(module="plugin_ui.js", slots=("header.end", "composer.suggest")), query=query,
+        )
+
+    _ = await ctx.inject((UI_SLOTS,), plugin_ui, name="plugin-ui")

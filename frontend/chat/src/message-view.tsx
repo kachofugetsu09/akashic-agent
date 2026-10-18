@@ -1,6 +1,6 @@
 import { PluginUiSlot, pluginSlotAccepts, usePluginUiCatalogVersion } from "./plugin-ui-runtime";
 import { ThinkingPlaceholder } from "./thinking-placeholder";
-import { MentionText } from "./skill-mention";
+import { MentionText } from "./composer-suggest";
 import { usePacedText } from "./stream-pace";
 import { SentAttachments, type MediaKind, type SentAttachmentItem } from "./attachment-card";
 import {

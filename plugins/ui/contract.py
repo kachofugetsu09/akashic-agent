@@ -112,6 +112,7 @@ PluginUiSlot = Literal[
     "message.attachment",
     "chat.notice",
     "header.end",
+    "composer.suggest",
 ]
 
 PLUGIN_UI_SLOTS = frozenset(
@@ -123,6 +124,7 @@ PLUGIN_UI_SLOTS = frozenset(
         "message.attachment",
         "chat.notice",
         "header.end",
+        "composer.suggest",
     }
 )
 

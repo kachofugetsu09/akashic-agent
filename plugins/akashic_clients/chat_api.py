@@ -76,6 +76,7 @@ class WebPluginUiQueryPayload(BaseModel):
         "message.attachment",
         "chat.notice",
         "header.end",
+        "composer.suggest",
     ]
     session_id: str | None = Field(default=None, max_length=512)
     turn_id: str | None = Field(default=None, max_length=128)

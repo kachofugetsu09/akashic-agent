@@ -84,6 +84,8 @@ class SkillTool:
 
 # 行首或空白后的 /技能名 是用户的显式选择；名称后不能紧跟路径字符，"/usr/bin" 不会被当成技能。
 SKILL_MENTION = re.compile(r"(?:^|(?<=\s))/(\w[\w-]*(?:\.[\w-]+)*)(?![\w/-]|\.\w)")
+# 代码块与行内代码里的 /名称 是引用的文字，不是选择；与聊天气泡只在纯文本里显示提及一致。
+CODE_SPAN = re.compile(r"```[\s\S]*?(?:```|$)|`[^`\n]*`")
 
 
 def mentioned_skills(snapshot: tuple[Message, ...], source: str) -> tuple[str, ...]:
@@ -95,7 +97,7 @@ def mentioned_skills(snapshot: tuple[Message, ...], source: str) -> tuple[str, .
     assert isinstance(current.body, Input)
     text = "\n".join(part.value for part in current.body.parts
                      if part.kind == "text" and isinstance(part.value, str))
-    return tuple(dict.fromkeys(match.group(1) for match in SKILL_MENTION.finditer(text)))
+    return tuple(dict.fromkeys(match.group(1) for match in SKILL_MENTION.finditer(CODE_SPAN.sub(" ", text))))
 
 
 def selected_reminder(records: tuple[SkillRecord, ...], snapshot: tuple[Message, ...], source: str) -> Mapping[str, object] | None:
@@ -121,8 +123,8 @@ def selected_reminder(records: tuple[SkillRecord, ...], snapshot: tuple[Message,
         "不必再调用技能读取工具。相对路径以各技能的资源目录为根。\n\n" + "\n\n".join(sections))}
 
 
-async def register_skills(ctx: Context) -> ToolRef:
-    """从当前来源热读取 Skill，不复制目录或保留历史资源树。"""
+async def register_skills(ctx: Context) -> SkillInspectionProvider:
+    """从当前来源热读取 Skill，不复制目录或保留历史资源树；返回只读目录供本插件的界面查询。"""
     read_assets = ctx.require(INSTALLED_ASSETS)
     parser = SkillCatalogParser(ctx.require(PROCESSES))
     io_lock = asyncio.Lock()
@@ -138,7 +140,8 @@ async def register_skills(ctx: Context) -> ToolRef:
         async with io_lock, read_assets.open(ctx, category="skills") as assets:
             return await read_catalog(assets)
 
-    _ = await ctx.provide(SKILL_INSPECTION, SkillInspectionProvider(read_inspection_catalog))
+    inspection = SkillInspectionProvider(read_inspection_catalog)
+    _ = await ctx.provide(SKILL_INSPECTION, inspection)
 
     async def capture(configuration: Mapping[str, object]) -> Mapping[str, object]:
         if configuration:
@@ -201,8 +204,9 @@ async def register_skills(ctx: Context) -> ToolRef:
         return {"system_prompt": text, "reminders": ()}
 
     _ = await ctx.require(MATERIALS_V4).register(ctx, kind="context", name="skills", prepare=prepare, prompt=True, priority=300)
-    return cast(ToolRef, await ctx.require(TOOLS).register(
+    _ = cast(ToolRef, await ctx.require(TOOLS).register(
         ctx, name="load_skill", description="按技能名称热读取当前指令和实际资源目录；先读取再执行，相对资源以返回的 base_directory 为根。未知、不可用或空技能返回错误。",
         parameters=SkillQuery.model_json_schema(), open=open_tool, capture=capture,
         idempotent=True, parallel=True,
     ))
+    return inspection
