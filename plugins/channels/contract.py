@@ -5,14 +5,14 @@ import hashlib
 import json
 import math
 import re
-from collections.abc import Awaitable, Callable, Coroutine, Mapping
+from collections.abc import Awaitable, Callable, Coroutine, Mapping, Sequence
 from dataclasses import dataclass, field
 from datetime import date, datetime, time
 from contextlib import AbstractAsyncContextManager
 from pathlib import Path
 from enum import StrEnum
 from types import MappingProxyType
-from typing import Any, Literal, Protocol, TypeAlias
+from typing import Any, Literal, Protocol, TypeAlias, cast
 
 from plugins.ledger.contract import Message
 from plugins.ledger.contract import (
@@ -162,6 +162,15 @@ _INPUT_PART_KIND = re.compile(r"^[a-z][a-z0-9_]*(?:\.[a-z][a-z0-9_]*)*$")
 
 
 # metadata.input_parts 的统一形状：每个渠道与接纳它的来源都用同一份数量、kind 与字节上限。
+# 入站 metadata 已被冻结为只读映射与元组；片段值还原成普通 JSON 结构后再编码，交给 owner 的也是普通值。
+def _thaw_json(value: object) -> object:
+    if isinstance(value, Mapping):
+        return {key: _thaw_json(item) for key, item in cast(Mapping[object, object], value).items()}
+    if isinstance(value, (list, tuple)):
+        return [_thaw_json(item) for item in cast(Sequence[object], value)]
+    return value
+
+
 def read_input_parts(value: object) -> tuple[tuple[str, object], ...]:
     if value is None:
         return ()
@@ -174,7 +183,7 @@ def read_input_parts(value: object) -> tuple[tuple[str, object], ...]:
         kind = item["kind"]
         if not isinstance(kind, str) or not _INPUT_PART_KIND.match(kind) or any(other == kind for other, _ in items):
             raise InputPartRejected("parts 的 kind 无效或重复")
-        items.append((kind, item["value"]))
+        items.append((kind, _thaw_json(item["value"])))
     # 序列化与 UTF-8 编码同属输入校验：未配对的代理字符等编码失败也是该请求的拒收。
     try:
         encoded = json.dumps([{"kind": kind, "value": part} for kind, part in items], ensure_ascii=False, allow_nan=False).encode("utf-8")
