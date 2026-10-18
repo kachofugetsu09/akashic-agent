@@ -202,7 +202,7 @@ export function useSkillMention({ value, textareaRef, setValue }: {
 // 光标正好落在一个已知技能提及之后时返回它的起点。
 function mentionBefore(value: string, caret: number, skills: readonly SkillOption[]): number | null {
   const names = new Set(skills.map((skill) => skill.name));
-  for (const match of value.slice(0, caret).matchAll(MENTION)) {
+  for (const match of value.matchAll(MENTION)) {
     const start = (match.index ?? 0) + match[1].length;
     if (start + 1 + match[2].length === caret && names.has(match[2])) return start;
   }
