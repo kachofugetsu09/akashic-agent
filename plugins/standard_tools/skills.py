@@ -85,15 +85,44 @@ class SkillTool:
 # 行首或空白后的 /技能名 是用户的显式选择；名称后不能紧跟路径字符，"/usr/bin" 不会被当成技能。
 SKILL_MENTION = re.compile(r"(?:^|(?<=\s))/(\w[\w-]*(?:\.[\w-]+)*)(?![\w/-]|\.\w)")
 # 代码块与行内代码里的 /名称 是引用的文字，不是选择。按 CommonMark 先切块再看行内：行首 ``` 或 ~~~ 围栏到
-# 不短于它的同字符围栏（或文末）整块跳过；空行分段，段内先去掉反斜杠转义，再去掉等长反引号串之间的行内代码。
-# 缩进代码块不识别（与列表续行难以区分）。
+# 不短于它的同字符围栏（或文末）整块跳过；空行与 ATX 标题行切开段落；段内从左到右扫描，代码外的反斜杠转义
+# 跳过下一个字符，n 个反引号的串遇到下一个恰好 n 个的串才构成行内代码，否则是字面反引号。
+# 缩进代码块与列表、引用等其他块边界不识别（与续行难以区分），按同一段处理。
 _FENCE = re.compile(r"^ {0,3}(`{3,}|~{3,})")
-_INLINE_CODE = re.compile(r"(`+)(?!`)[\s\S]*?(?<!`)\1(?!`)")
+_HEADING = re.compile(r"^ {0,3}#{1,6}(?:[ \t]|$)")
+_TICKS = re.compile(r"`+")
 
 
-# 留下 /名称 可以算作选择的文字：围栏块整行清空，转义和行内代码换成空白。
+# 一段之内去掉行内代码：转义只在代码外生效，反引号串按长度配对。
+def _strip_inline_code(paragraph: str) -> str:
+    out: list[str] = []
+    index = 0
+    while index < len(paragraph):
+        char = paragraph[index]
+        if char == "\\" and index + 1 < len(paragraph):
+            out.append("  ")
+            index += 2
+            continue
+        if char != "`":
+            out.append(char)
+            index += 1
+            continue
+        opening = _TICKS.match(paragraph, index)
+        assert opening is not None
+        size = len(opening.group(0))
+        closing = next((match for match in _TICKS.finditer(paragraph, opening.end()) if len(match.group(0)) == size), None)
+        if closing is None:
+            out.append(opening.group(0))
+            index = opening.end()
+        else:
+            out.append(" ")
+            index = closing.end()
+    return "".join(out)
+
+
+# 留下 /名称 可以算作选择的文字：围栏块整行清空，段内的行内代码换成空白。
 def mention_text(text: str) -> str:
-    kept: list[str] = []
+    blocks: list[list[str]] = [[]]
     fence = ""
     for line in text.split("\n"):
         opened = _FENCE.match(line)
@@ -101,14 +130,17 @@ def mention_text(text: str) -> str:
             if opened and opened.group(1)[0] == fence[0] and len(opened.group(1)) >= len(fence) \
                     and not line[opened.end():].strip():
                 fence = ""
-            kept.append("")
+            blocks.append([])
         elif opened and not (opened.group(1)[0] == "`" and "`" in line[opened.end():]):
             fence = opened.group(1)
-            kept.append("")
+            blocks.append([])
+        elif not line.strip():
+            blocks.append([])
+        elif _HEADING.match(line):
+            blocks.extend(([line], []))
         else:
-            kept.append(line)
-    paragraphs = re.split(r"\n[ \t]*\n", "\n".join(kept))
-    return "\n\n".join(_INLINE_CODE.sub(" ", re.sub(r"\\.", "  ", paragraph)) for paragraph in paragraphs)
+            blocks[-1].append(line)
+    return "\n\n".join(_strip_inline_code("\n".join(block)) for block in blocks if block)
 
 
 def mentioned_skills(snapshot: tuple[Message, ...], source: str) -> tuple[str, ...]:
