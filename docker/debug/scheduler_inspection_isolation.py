@@ -9,12 +9,30 @@ import threading
 from unittest.mock import patch
 
 from agent.plugin_composition import CompositionRoot
-from plugins.akashic_clients.runtime_inspection import ScopedRpcRuntimeInspection
-from plugins.akashic_clients.services import RuntimeInspectionError
+from plugins.gateway.contract import RpcMethod
 from plugins.runtime_inspection import plugin as inspection
-from plugins.scheduler.inspection import SCHEDULER_INSPECTION, SchedulerInspectionProvider
+from plugins.scheduler.contract import SCHEDULER_INSPECTION
+from plugins.scheduler.inspection import SchedulerInspectionProvider
 from plugins.scheduler.schedule import ScheduledJob
 from plugins.scheduler.store import JobStore
+
+
+# 直接调用 runtime_inspection 发布的定时任务 RPC；不可用时返回 {"unavailable": {code, message}}。
+class _Jobs:
+    def __init__(self, open_scope) -> None:
+        self._open_scope = open_scope
+
+    async def _call(self, name: str, payload: dict[str, object]) -> dict[str, object]:
+        async with self._open_scope() as scope:
+            with scope.borrow(RpcMethod.key(name)) as method:
+                assert isinstance(method, RpcMethod), name
+                return dict(await method.invoke(method.params.model_validate(payload), None))
+
+    async def list_jobs(self) -> dict[str, object]:
+        return await self._call("inspection/jobs.list", {})
+
+    async def get_job(self, job_id: str) -> dict[str, object]:
+        return await self._call("inspection/jobs.get", {"job_id": job_id})
 
 
 async def check(root_path: Path) -> None:
@@ -30,7 +48,7 @@ async def check(root_path: Path) -> None:
         async with root.context.runtime_scope():
             yield root.context
 
-    client = ScopedRpcRuntimeInspection(scope)
+    client = _Jobs(scope)
     entered = asyncio.Event()
     release = threading.Event()
     loop = asyncio.get_running_loop()
@@ -47,12 +65,8 @@ async def check(root_path: Path) -> None:
 
     try:
         await root.mount(inspection.apply, name="inspection")
-        try:
-            await client.list_jobs()
-        except RuntimeInspectionError as error:
-            assert error.code == "scheduler_unavailable"
-        else:
-            raise AssertionError("缺少 provider 不能返回成功空列表")
+        missing = await client.list_jobs()
+        assert missing.get("unavailable", {}).get("code") == "scheduler_unavailable", missing
         owner = await root.mount(provide, name="schedules")
         items = (await client.list_jobs())["items"]
         assert isinstance(items, list) and len(items) == 1

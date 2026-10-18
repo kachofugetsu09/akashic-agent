@@ -133,25 +133,9 @@ ActiveSessionsFollowPort = Callable[[], AsyncGenerator[frozenset[str] | None, No
 
 
 
-class RuntimeInspectionError(ValueError):
-    def __init__(self, code: str, message: str) -> None:
-        super().__init__(message)
-        self.code = code
-
-
-class RuntimeInspectionService(Protocol):
-    async def list_documents(self) -> dict[str, object]: ...
-    async def get_document(self, document_id: str) -> dict[str, object]: ...
-    async def list_jobs(self) -> dict[str, object]: ...
-    async def get_job(self, job_id: str) -> dict[str, object]: ...
-    async def list_capabilities(self) -> dict[str, object]: ...
-    async def get_mcp(self, owner_id: str, server_name: str) -> dict[str, object]: ...
-
-
 __all__ = [
     "ArtifactReadLeasePort", "ArtifactStorePort", "AttachmentStorePort",
     "InvalidPage", "MessageCatalogPort", "MessageConflict", "MessageDisplayReader",
     "MessagePagePort", "MessageReaderPort", "SessionAdminPort",
     "SessionEntryPort", "SessionPagePort", "Message",
-    "RuntimeInspectionError", "RuntimeInspectionService",
 ]

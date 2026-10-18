@@ -744,12 +744,8 @@ class WebChatChannel:
             if result is None:
                 metadata = cast(dict[str, Any], _thaw_json(request.metadata))
                 metadata.pop("_channel_commit_role", None)
-                if request.commit_role.value != "passive":
-                    metadata.setdefault("source", "message_push")
-                independent_delivery = (
-                    request.commit_role is not ChannelCommitRole.PASSIVE
-                    or metadata.get("source") == "message_push"
-                )
+                # 被动最终帧属于某次回复执行；其余投递（主动推送等）各自独立成帧。
+                independent_delivery = request.commit_role is not ChannelCommitRole.PASSIVE
                 if not independent_delivery and (
                     request.execution_attempt_id is None
                     or request.control_turn_id is None

@@ -9,8 +9,6 @@ import { WebSocketServer } from "ws";
 import {
   desktopMessagesForSession,
   desktopModels,
-  desktopRuntimeDetail,
-  desktopRuntimeOverview,
   desktopSessions,
   fixtureSessionId,
 } from "./fixtures.mjs";
@@ -280,10 +278,6 @@ function fixtureApiResponse(url, messageCount) {
   if (pathname === "/api/chat/navigation/pins") return { pins: [], sessions: [] };
   if (pathname === "/api/chat/plugin-ui/catalog") return pluginUiCatalog;
   if (pathname === "/api/runtime/host-bridge") return { state: "healthy" };
-  const runtimeOverview = desktopRuntimeOverview(pathname);
-  if (runtimeOverview !== undefined) return runtimeOverview;
-  const runtimeDetail = desktopRuntimeDetail(url);
-  if (runtimeDetail !== undefined) return runtimeDetail;
   return undefined;
 }
 

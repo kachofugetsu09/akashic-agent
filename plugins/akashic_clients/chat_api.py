@@ -41,10 +41,6 @@ from .web_chat import (
     UploadTooLargeError,
     WebChatChannel,
 )
-from .runtime_inspection import (
-    RuntimeInspectionError,
-    RuntimeInspectionService,
-)
 
 
 class WebPluginUiQueryPayload(BaseModel):
@@ -85,7 +81,6 @@ def create_chat_app(
     channel: WebChatChannel,
     navigation: NavigationPreferences | None = None,
     read_marks: ReadMarks | None = None,
-    runtime_inspection: RuntimeInspectionService | None = None,
     message_display: MessageDisplayReader | None = None,
     plugin_ui_provider: PluginUiProvider | None = None,
     plugin_ui_scope: Callable[[], Any] | None = None,
@@ -445,59 +440,6 @@ def create_chat_app(
         ) as error:
             raise _plugin_ui_http_error(error) from error
 
-
-    @app.get("/api/chat/runtime/documents")
-    async def list_runtime_documents() -> dict[str, object]:
-        try:
-            return await _require_runtime_inspection(runtime_inspection).list_documents()
-        except RuntimeInspectionError as error:
-            raise _runtime_http_error(error) from error
-
-    @app.get("/api/chat/runtime/documents/{document_id}")
-    async def read_runtime_document(document_id: str) -> dict[str, object]:
-        try:
-            return await _require_runtime_inspection(runtime_inspection).get_document(
-                document_id
-            )
-        except RuntimeInspectionError as error:
-            raise _runtime_http_error(error) from error
-
-    @app.get("/api/chat/runtime/jobs")
-    async def list_runtime_jobs() -> dict[str, object]:
-        try:
-            return await _require_runtime_inspection(runtime_inspection).list_jobs()
-        except RuntimeInspectionError as error:
-            raise _runtime_http_error(error) from error
-
-    @app.get("/api/chat/runtime/jobs/{job_id}")
-    async def read_runtime_job(job_id: str) -> dict[str, object]:
-        try:
-            return await _require_runtime_inspection(runtime_inspection).get_job(job_id)
-        except RuntimeInspectionError as error:
-            raise _runtime_http_error(error) from error
-
-    @app.get("/api/chat/runtime/capabilities")
-    async def list_runtime_capabilities() -> dict[str, object]:
-        try:
-            return await _require_runtime_inspection(
-                runtime_inspection
-            ).list_capabilities()
-        except RuntimeInspectionError as error:
-            raise _runtime_http_error(error) from error
-
-    @app.get("/api/chat/runtime/mcp")
-    async def read_runtime_mcp(
-        owner_id: str = Query(...),
-        name: str = Query(...),
-    ) -> dict[str, object]:
-        try:
-            return await _require_runtime_inspection(runtime_inspection).get_mcp(
-                owner_id,
-                name,
-            )
-        except RuntimeInspectionError as error:
-            raise _runtime_http_error(error) from error
-
     @app.get("/api/chat/sessions/{session_key:path}/messages")
     async def list_messages(
         session_key: str,
@@ -599,7 +541,6 @@ def build_chat_server(
     channel: WebChatChannel,
     navigation: NavigationPreferences | None = None,
     read_marks: ReadMarks | None = None,
-    runtime_inspection: RuntimeInspectionService | None = None,
     message_display: MessageDisplayReader | None = None,
     plugin_ui_provider: PluginUiProvider | None = None,
     plugin_ui_scope: Callable[[], Any] | None = None,
@@ -619,7 +560,6 @@ def build_chat_server(
             channel=channel,
             navigation=navigation,
             read_marks=read_marks,
-            runtime_inspection=runtime_inspection,
             message_display=message_display,
             plugin_ui_provider=plugin_ui_provider,
             plugin_ui_scope=plugin_ui_scope,
@@ -676,14 +616,6 @@ class ChatApiServer(uvicorn.Server):
             should_exit = await self.on_tick(counter)
 
 
-def _require_runtime_inspection(
-    service: RuntimeInspectionService | None,
-) -> RuntimeInspectionService:
-    if service is None:
-        raise HTTPException(status_code=503, detail="运行时检查服务不可用")
-    return service
-
-
 def _require_plugin_ui_provider(
     provider: PluginUiProvider | None,
 ) -> PluginUiProvider:
@@ -708,13 +640,6 @@ def _plugin_ui_http_error(error: Exception) -> HTTPException:
     if isinstance(error, PluginUiRpcInvalidRequest):
         return HTTPException(status_code=400, detail=str(error))
     return HTTPException(status_code=502, detail=str(error))
-
-
-def _runtime_http_error(error: RuntimeInspectionError) -> HTTPException:
-    if error.code == "inspection_unavailable":
-        return HTTPException(status_code=503, detail=str(error))
-    status_code = 404 if error.code.endswith("_not_found") else 409
-    return HTTPException(status_code=status_code, detail=str(error))
 
 
 def _is_relative_to(path: Path, root: Path) -> bool:
