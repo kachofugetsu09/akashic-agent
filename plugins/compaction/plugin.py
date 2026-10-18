@@ -265,30 +265,31 @@ async def apply(ctx: Context) -> None:
         def fits(after: int) -> bool:
             return after < before and after + reserve <= window
 
-        # 嵌套 execution 复用调用者已经固定的角色，不重读模型配置。
-        async with ctx.require(CHAT_MODELS).execution() as execution:
-            async def report_fallback(text: str) -> None:
-                if on_status is not None:
-                    await on_status(text, True)
+        async def generate(groups: tuple[tuple[Message, ...], ...], previous: str,
+                           limit: int) -> tuple[str, tuple[str, ...], tuple[tuple[Message, ...], ...]]:
+            # 嵌套 execution 复用调用者已经固定的角色，不重读模型配置；
+            # 只包住模型调用，摘要 binding 必须回到 compaction 自己的调用方。
+            async with ctx.require(CHAT_MODELS).execution() as execution:
+                async def report_fallback(text: str) -> None:
+                    if on_status is not None:
+                        await on_status(text, True)
 
-            default = execution.chat("default")
-            limit = max(1, min(room, OUTPUT_RESERVE_TOKENS))
-            text, calls, summarized = await summarize(
-                inputs, previous="" if parent is None else parent.content, limit=limit,
-                model=model, fallback=default, on_fallback=report_fallback,
-            )
-            record, summary, after = measure(text, calls, summarized)
-            if not fits(after):
-                try:
-                    shorter, more, _ = await summarize((), previous=text, limit=max(1, limit // 2),
-                                                       model=model, fallback=default, on_fallback=report_fallback)
-                except (RuntimeError, TimeoutError, SummaryError) as failure:
-                    if not recoverable(failure):
-                        raise
-                    logger.warning("摘要缩写失败，改为按比例截断已有摘要: %s", failure)
-                else:
-                    text, calls = shorter, calls + more
-                    record, summary, after = measure(text, calls, summarized)
+                return await summarize(groups, previous=previous, limit=limit, model=model,
+                                       fallback=execution.chat("default"), on_fallback=report_fallback)
+
+        limit = max(1, min(room, OUTPUT_RESERVE_TOKENS))
+        text, calls, summarized = await generate(inputs, "" if parent is None else parent.content, limit)
+        record, summary, after = measure(text, calls, summarized)
+        if not fits(after):
+            try:
+                shorter, more, _ = await generate((), text, max(1, limit // 2))
+            except (RuntimeError, TimeoutError, SummaryError) as failure:
+                if not recoverable(failure):
+                    raise
+                logger.warning("摘要缩写失败，改为按比例截断已有摘要: %s", failure)
+            else:
+                text, calls = shorter, calls + more
+                record, summary, after = measure(text, calls, summarized)
         # 已有合法摘要时本地按比例截断各节正文，直到放得下；只剩标题仍放不下才是真正的容量边界。
         for ratio in (0.5, 0.25, 0.0):
             if fits(after):
