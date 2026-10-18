@@ -665,36 +665,6 @@ FRONTEND_NAMING = (
 )
 FRONTEND_ROUTE = re.compile(r"[\"'`](/api/[^\"'`$?#\s]*)")
 
-
-# 前端注释换成空白：按 JS 词法跳过字符串、模板字符串与正则字面量，注释标记出现在字符串里不算。
-def strip_comments(source: str) -> str:
-    out: list[str] = []
-    index, size, last = 0, len(source), ""
-    while index < size:
-        char, pair = source[index], source[index:index + 2]
-        if pair in ("//", "/*"):
-            end = source.find("\n" if pair == "//" else "*/", index + 2)
-            end = size if end < 0 else end + (0 if pair == "//" else 2)
-            out.append(re.sub(r"[^\n]", " ", source[index:end]))
-            index = end
-            continue
-        if char in "\"'`" or (char == "/" and (not last or last in "(,=:[!&|?{};+-*%<>~^")):
-            # 字符串到同一引号为止；正则到类外的 /；反斜杠转义下一个字符。
-            end, in_class = index + 1, False
-            while end < size and (source[end] != char or in_class) and not (char != "`" and source[end] == "\n"):
-                if source[end] == "\\":
-                    end += 1
-                elif char == "/" and source[end] in "[]":
-                    in_class = source[end] == "["
-                end += 1
-            out.append(source[index:end + 1])
-            index, last = end + 1, "a"
-            continue
-        out.append(char)
-        if not char.isspace():
-            last = char
-        index += 1
-    return "".join(out)
 UI_POLICY = "plugin_boundary.toml"
 
 
@@ -792,10 +762,10 @@ def ui_host_findings(files: dict[str, str], policy: dict[str, list[str]] | None 
     for rel, source in files.items():
         if not rel.startswith(tuple(f"{root}/" for root in policy["frontend"])) or not rel.endswith((".ts", ".tsx")):
             continue
-        text = strip_comments(source)
+        # 不剥注释：手写词法器追不全 TSX（正则、JSX 文本、模板嵌套），宁可把注释里写明的调用当违规，也不漏掉真实调用。
         for pattern in FRONTEND_NAMING:
-            findings.update(f"{rel} -> {match.group(1).strip(chr(34) + chr(39) + '`')}" for match in pattern.finditer(text))
-        for match in FRONTEND_ROUTE.finditer(text):
+            findings.update(f"{rel} -> {match.group(1).strip(chr(34) + chr(39) + '`')}" for match in pattern.finditer(source))
+        for match in FRONTEND_ROUTE.finditer(source):
             path = match.group(1)
             if not any(path == route or path.startswith(route + "/") for route in routes):
                 findings.add(f"{rel} -> {'/'.join(path.split('/')[:4])}")

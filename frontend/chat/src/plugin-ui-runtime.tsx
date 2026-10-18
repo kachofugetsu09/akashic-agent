@@ -318,7 +318,8 @@ export interface ComposerSuggestSource {
   /** 插件身份加版本；目录更新后变化。 */
   key: string;
   provider: ComposerSuggestProvider;
-  context: Pick<PluginUiContext, "query">;
+  /** 每次加载一个上下文；宿主撤下数据源或超时时经 signal 中止它的查询。 */
+  context(signal: AbortSignal): Pick<PluginUiContext, "query">;
 }
 
 /** 已加载的输入框建议数据源，按目录顺序；宿主不按插件名挑选。 */
@@ -327,12 +328,11 @@ export function composerSuggestSources(): ComposerSuggestSource[] {
   return catalog.plugins.flatMap((plugin) => {
     const loaded = definitions.get(plugin.id);
     const provider = loaded?.revision === plugin.revision ? loaded.definition.slots["composer.suggest"] : undefined;
-    return provider ? [{ key: `${plugin.id}:${plugin.revision}`, provider, context: {
+    return provider ? [{ key: `${plugin.id}:${plugin.revision}`, provider, context: (signal) => ({
       query: (method, payload = {}) => queryWebPluginUi({
-        pluginId: plugin.id, pluginRevision: plugin.revision, method, payload, slot: "composer.suggest",
-        signal: new AbortController().signal,
+        pluginId: plugin.id, pluginRevision: plugin.revision, method, payload, slot: "composer.suggest", signal,
       }),
-    } }] : [];
+    }) }] : [];
   });
 }
 

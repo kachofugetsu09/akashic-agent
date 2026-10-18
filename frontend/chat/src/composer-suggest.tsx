@@ -2,9 +2,10 @@ import { FileText } from "lucide-react";
 import { Fragment, useCallback, useEffect, useId, useLayoutEffect, useMemo, useRef, useState, useSyncExternalStore, type KeyboardEvent as ReactKeyboardEvent, type ReactNode, type RefObject } from "react";
 import { composerSuggestSources, usePluginUiCatalogVersion, type ComposerSuggestSource, type ComposerSuggestion } from "./plugin-ui-runtime";
 
-/** 菜单里的一项：插件给的建议加上宿主需要的身份与分组。 */
+/** 菜单里的一项：插件给的建议加上宿主需要的来源身份与分组。 */
 interface SuggestItem extends ComposerSuggestion {
   key: string;
+  source: string;
   prefix: "/" | "@";
   group: string;
 }
@@ -21,50 +22,73 @@ export interface MentionTrigger {
 const MENTION = /(^|\s)([/@])([\p{L}\p{N}_][\p{L}\p{N}_-]*(?:\.[\p{L}\p{N}_-]+)*)(?![\p{L}\p{N}_/-]|\.[\p{L}\p{N}_])/gu;
 const TRIGGER = /(^|\s)([/@])([^\s/@]{0,50})$/u;
 
-// 历史消息与输入框共享一份建议；加载中再要求刷新时排到这一轮之后，不丢。
-let catalog: { key: string; items: readonly SuggestItem[]; status: "idle" | "loading" | "ready" | "error"; error: string } = {
-  key: "", items: [], status: "idle", error: "",
-};
-let loading = false;
-let again = false;
+// 每个数据源单独加载、单独超时：一个源悬挂或出错不拖住其他源；加载中再要求刷新排到这一轮之后。
+const LOAD_TIMEOUT_MS = 8_000;
+interface SourceState { status: "loading" | "ready" | "error"; items: readonly SuggestItem[]; error: string; again: boolean; abort: () => void }
+let states: ReadonlyMap<string, SourceState> = new Map();
 const listeners = new Set<() => void>();
 const subscribe = (listener: () => void) => { listeners.add(listener); return () => { listeners.delete(listener); }; };
-const emit = () => listeners.forEach((listener) => listener());
+const setState = (key: string, next: SourceState | null) => {
+  const copy = new Map(states);
+  if (next) copy.set(key, next); else copy.delete(key);
+  states = copy;
+  listeners.forEach((listener) => listener());
+};
 
+// 外部数据边界：可选字段也要是字符串，格式错误只算这个源加载失败。
 function readItem(value: ComposerSuggestion, source: ComposerSuggestSource): SuggestItem {
+  const optional = (field: unknown) => field === undefined || typeof field === "string";
   if (!value || typeof value.token !== "string" || !value.token || typeof value.label !== "string"
-    || typeof value.description !== "string") throw new Error("建议条目格式错误");
-  return { ...value, key: `${source.key}:${value.badge ?? ""}:${value.token}`, prefix: source.provider.prefix, group: source.provider.label };
+    || typeof value.description !== "string" || !optional(value.unavailable) || !optional(value.badge)) throw new Error("建议条目格式错误");
+  return { token: value.token, label: value.label, description: value.description, unavailable: value.unavailable || undefined,
+    badge: value.badge, key: `${source.key}:${value.badge ?? ""}:${value.token}`, source: source.key,
+    prefix: source.provider.prefix, group: source.provider.label };
 }
 
+function loadSource(source: ComposerSuggestSource, refresh: boolean): void {
+  const current = states.get(source.key);
+  if (current?.status === "loading") { if (refresh && !current.again) setState(source.key, { ...current, again: true }); return; }
+  if (current && !refresh) return;
+  const controller = new AbortController();
+  const timer = window.setTimeout(() => controller.abort(new Error("读取超时")), LOAD_TIMEOUT_MS);
+  const loading: SourceState = { status: "loading", items: current?.items ?? [], error: "", again: false, abort: () => controller.abort() };
+  setState(source.key, loading);
+  const aborted = new Promise<never>((_, reject) => controller.signal.addEventListener("abort",
+    () => reject(controller.signal.reason instanceof Error ? controller.signal.reason : new Error("读取已取消")), { once: true }));
+  void Promise.race([source.provider.load(source.context(controller.signal)), aborted])
+    .then((rows) => ({ status: "ready" as const, items: rows.map((row) => readItem(row, source)), error: "" }),
+      (error: unknown) => ({ status: "error" as const, items: [], error: error instanceof Error ? error.message : String(error) }))
+    .then((settled) => {
+      window.clearTimeout(timer);
+      const latest = states.get(source.key);
+      // 撤下或被新一轮取代的加载不写回。
+      if (latest?.abort !== loading.abort) return;
+      setState(source.key, { ...settled, again: false, abort: () => undefined });
+      if (latest.again) loadSource(source, true);
+    });
+}
+
+// 只保留当前目录里的数据源；撤下的源中止在途加载并丢掉旧条目。
 function loadSuggestions(refresh = false): void {
   const sources = composerSuggestSources();
-  const key = sources.map((source) => source.key).join("|");
-  if (loading) { again ||= refresh || key !== catalog.key; return; }
-  if (!refresh && catalog.status !== "idle" && catalog.key === key) return;
-  loading = true;
-  // 刷新期间保留上一份条目，菜单不闪空。
-  catalog = { ...catalog, key, items: catalog.key === key ? catalog.items : [], status: "loading", error: "" };
-  emit();
-  void Promise.allSettled(sources.map(async (source) => (await source.provider.load(source.context)).map((item) => readItem(item, source))))
-    .then((results) => {
-      const items = results.flatMap((result) => result.status === "fulfilled" ? result.value : []);
-      const failed = results.find((result) => result.status === "rejected");
-      const error = failed ? (failed.reason instanceof Error ? failed.reason.message : String(failed.reason)) : "";
-      catalog = { key, items, status: failed && !items.length ? "error" : "ready", error };
-    })
-    .finally(() => {
-      loading = false;
-      emit();
-      if (again) { again = false; loadSuggestions(true); }
-    });
+  const keys = new Set(sources.map((source) => source.key));
+  for (const [key, state] of states) if (!keys.has(key)) { state.abort(); setState(key, null); }
+  sources.forEach((source) => loadSource(source, refresh));
 }
 
 function useSuggestions() {
   const { version } = usePluginUiCatalogVersion();
-  const state = useSyncExternalStore(subscribe, () => catalog);
+  const current = useSyncExternalStore(subscribe, () => states);
   const sources = useMemo(() => { void version; return composerSuggestSources(); }, [version]);
-  return { ...state, sources };
+  return useMemo(() => {
+    // 目录更新中或源已缺席时，旧缓存不参与菜单、提及与退格。
+    const live = sources.map((source) => current.get(source.key));
+    const items = live.flatMap((state) => state?.items ?? []);
+    const failed = live.find((state) => state?.status === "error");
+    const status = live.some((state) => !state) ? "idle" as const : live.some((state) => state?.status === "loading") ? "loading" as const
+      : failed && !items.length ? "error" as const : "ready" as const;
+    return { items, status, error: failed?.error ?? "", sources };
+  }, [current, sources]);
 }
 
 export function findTrigger(value: string, caret: number, sigils: ReadonlySet<string>): MentionTrigger | null {
@@ -73,8 +97,8 @@ export function findTrigger(value: string, caret: number, sigils: ReadonlySet<st
   return { sigil: match[2] as "/" | "@", query: match[3], start: caret - match[3].length - 1, end: caret };
 }
 
-// 名称或显示名前缀 > 包含 > 描述包含；不可用的照样列出，排在同分的后面；分组保持数据源顺序。
-function rank(items: readonly SuggestItem[], query: string, groups: readonly string[]): SuggestItem[] {
+// 名称或显示名前缀 > 包含 > 描述包含；不可用的照样列出，排在同分的后面；只取声明了该触发符的源，按源顺序分组。
+function rank(items: readonly SuggestItem[], query: string, sources: readonly string[]): SuggestItem[] {
   const q = query.toLowerCase();
   const score = (item: SuggestItem) => {
     const token = item.token.toLowerCase(), label = item.label.toLowerCase();
@@ -84,8 +108,8 @@ function rank(items: readonly SuggestItem[], query: string, groups: readonly str
     return item.description.toLowerCase().includes(q) ? 1 : 0;
   };
   return items.map((item) => ({ item, score: score(item) - (item.unavailable ? 0.5 : 0) }))
-    .filter((row) => row.score > 0 && groups.includes(row.item.group))
-    .sort((a, b) => groups.indexOf(a.item.group) - groups.indexOf(b.item.group) || b.score - a.score)
+    .filter((row) => row.score > 0 && sources.includes(row.item.source))
+    .sort((a, b) => sources.indexOf(a.item.source) - sources.indexOf(b.item.source) || b.score - a.score)
     .map((row) => row.item);
 }
 
@@ -114,7 +138,7 @@ export function useComposerSuggest({ value, scope, textareaRef, setValue }: {
   const query = trigger ? `${trigger.sigil}${trigger.start}:${trigger.query}` : "";
   const filter = trigger?.query ?? null;
   const items = useMemo(() => filter === null || !trigger ? [] : rank(all, filter,
-    sources.filter((source) => source.provider.sigils.includes(trigger.sigil)).map((source) => source.provider.label)), [all, filter, trigger, sources]);
+    sources.filter((source) => source.provider.sigils.includes(trigger.sigil)).map((source) => source.key)), [all, filter, trigger, sources]);
   const found = highlight.query === query ? items.findIndex((item) => item.key === highlight.key) : -1;
   const active = found >= 0 ? found : 0;
   const setActive = useCallback((index: number) => setHighlight({ query, key: items[index]?.key ?? "" }), [query, items]);
@@ -230,7 +254,7 @@ function SuggestMenu({ id, items, query, sigil, active, title, empty, status, er
   active: number;
   title: string;
   empty: string;
-  status: typeof catalog.status;
+  status: "idle" | "loading" | "ready" | "error";
   error: string;
   onHover: (index: number) => void;
   onPick: (item: SuggestItem) => void;
@@ -240,7 +264,7 @@ function SuggestMenu({ id, items, query, sigil, active, title, empty, status, er
   return <div id={id} className="composer-suggest" role="listbox" aria-label={title} data-escape-layer
     onMouseDown={(event) => event.preventDefault()}>
     {items.map((item, index) => <Fragment key={item.key}>
-      {item.group !== items[index - 1]?.group ? <div className="composer-suggest__section">{item.group}</div> : null}
+      {item.source !== items[index - 1]?.source ? <div className="composer-suggest__section">{item.group}</div> : null}
       <div id={`${id}-${index}`} role="option" aria-selected={index === active}
         aria-disabled={!!item.unavailable} className="composer-suggest__row" data-active={index === active || undefined}
         ref={index === active ? (node) => node?.scrollIntoView({ block: "nearest" }) : undefined}
