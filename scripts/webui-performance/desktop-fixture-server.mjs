@@ -384,7 +384,7 @@ function sendJson(response, payload, status = 200) {
 /** 与 plugins/akashic_clients/static.py 的缓存合同保持一致，确保实验测到生产行为。 */
 function staticCacheControl(pathname) {
   if (/\/assets\/[^/]*-[\w-]{8}\.[\w]+$/u.test(pathname)) return "public, max-age=31536000, immutable";
-  if (pathname.endsWith(".html") || pathname === "/") return "no-cache";
+  if (pathname.endsWith(".html") || pathname === "/" || /^\/assets\/sdk\/[\w-]+\.js$/u.test(pathname)) return "no-cache";
   return "no-store";
 }
 
