@@ -212,9 +212,8 @@
 }
 
 .onboarding-eyebrow {
-  font-family: var(--ak-type-technical, monospace);
-  font-size: 0.6875rem;
-  letter-spacing: 0.06em;
+  font-family: var(--ak-type-reading);
+  font-size: 0.78125rem;
   color: var(--ak-ink-muted);
 }
 
@@ -232,7 +231,7 @@
   min-width: 132px;
   padding-inline: 22px;
   border: 0;
-  border-radius: 10px;
+  border-radius: 8px;
   background: var(--ak-color-action-primary);
   color: var(--ak-paper-editing);
   font: inherit;
@@ -242,7 +241,7 @@
 }
 
 .onboarding-primary:disabled {
-  opacity: 0.38;
+  opacity: 0.45;
   cursor: not-allowed;
 }
 
@@ -301,7 +300,6 @@
 .onboarding-promise em,
 .onboarding-summary em {
   flex: 0 0 auto;
-  font-family: var(--ak-type-technical, monospace);
   font-size: 0.75rem;
   font-style: normal;
   color: var(--ak-ink-muted);
@@ -375,8 +373,8 @@
   grid-column: 2;
   grid-row: 1 / span 2;
   align-self: start;
-  width: 48px;
-  height: 28px;
+  width: 44px;
+  height: 26px;
   margin-top: 2px;
   padding: 0;
   border: 0;
@@ -398,12 +396,12 @@
   position: absolute;
   inset-block-start: 3px;
   inset-inline-start: 3px;
-  width: 22px;
-  height: 22px;
+  width: 20px;
+  height: 20px;
   border-radius: 50%;
   background: var(--ak-paper-editing);
   box-shadow: 0 1px 2px rgb(0 0 0 / 0.25);
-  transition: transform 200ms cubic-bezier(0.22, 1, 0.36, 1);
+  transition: transform 200ms var(--ak-sys-motion-standard, cubic-bezier(0.2, 0, 0, 1));
 }
 
 .onboarding-switch[aria-checked="true"] {
@@ -411,7 +409,7 @@
 }
 
 .onboarding-switch[aria-checked="true"]::after {
-  transform: translateX(20px);
+  transform: translateX(18px);
 }
 
 .onboarding-chip {
@@ -431,15 +429,13 @@
   gap: 8px;
   margin-top: 12px;
   padding: 12px 14px;
-  border: 1px dashed var(--ak-rule-strong);
   border-radius: 8px;
-  background: var(--ak-paper-canvas);
+  background: var(--ak-paper-quiet);
   font-size: 0.875rem;
 }
 
 .onboarding-preview span {
-  font-family: var(--ak-type-technical, monospace);
-  font-size: 0.6875rem;
+  font-size: 0.75rem;
   color: var(--ak-ink-muted);
 }
 
@@ -472,8 +468,7 @@
   gap: 4px;
   margin: 0;
   padding: 14px 16px;
-  border-inline-start: 3px solid rgb(var(--ak-color-status-warning-rgb));
-  border-radius: 4px 10px 10px 4px;
+  border-radius: 8px;
   background: rgb(var(--ak-color-status-warning-rgb) / 0.08);
   color: var(--ak-ink-secondary);
   font-size: 0.9375rem;

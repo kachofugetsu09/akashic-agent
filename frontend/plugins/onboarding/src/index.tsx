@@ -201,7 +201,7 @@ function Onboarding({ctx, renderRoute, exit, surfaceHost}: {
 function enterStep(element: HTMLDivElement | null): void {
   if (!element || window.matchMedia("(prefers-reduced-motion: reduce)").matches) return;
   element.animate([{opacity: 0.001, transform: "translateY(8px)"}, {opacity: 1, transform: "none"}],
-    {duration: 360, easing: "cubic-bezier(0.22, 1, 0.36, 1)"});
+    {duration: 360, easing: "cubic-bezier(0.05, 0.7, 0.1, 1)"});
 }
 
 // 整屏图层：原生模态对话框，压在设置工作区之上；Esc 等同“稍后再说”。
@@ -258,12 +258,12 @@ function Welcome({catalog, start, skip}: {catalog: Catalog; start: () => void; s
   </div>;
 }
 
-function Heading({eyebrow, title, lead}: {eyebrow: string; title: string; lead: string}) {
+function Heading({eyebrow, title, lead}: {eyebrow?: string; title: string; lead: string}) {
   const ref = useRef<HTMLHeadingElement>(null);
   // 换步后焦点落在新标题，读屏从这一步开始读。
   useEffect(() => { ref.current?.focus({preventScroll: true}); }, []);
   return <header className="onboarding-heading">
-    <span className="onboarding-eyebrow">{eyebrow}</span>
+    {eyebrow && <span className="onboarding-eyebrow">{eyebrow}</span>}
     <h2 ref={ref} tabIndex={-1}>{title}</h2>
     {lead && <p className="onboarding-lead">{lead}</p>}
   </header>;
@@ -298,7 +298,7 @@ function AbilityCard({group, on, done, blocked, toggle}: {group: Group; on: bool
     {done ? <span className="onboarding-chip">已开启</span>
       : <button type="button" role="switch" className="onboarding-switch" aria-checked={on} aria-labelledby={id} onClick={toggle} />}
     {group.benefit && <p>{group.benefit}</p>}
-    <div className="onboarding-source"><span>来自 {group.title}</span>{blocked && <span className="is-warning">{blocked}</span>}</div>
+    <div className="onboarding-source"><span>{group.key}</span>{blocked && <span className="is-warning">{blocked}</span>}</div>
     {(on || done) && group.preview.length > 0 && <div className="onboarding-preview" aria-label="示例">
       {group.preview.map((line, i) => <div key={i}><span>{line.speaker}</span><p>{line.text}</p></div>)}
     </div>}
@@ -342,7 +342,7 @@ function StepForm({route, intent, renderRoute, changed, markDirty}: {
 function Done({catalog, statuses, chosen}: {catalog: Catalog; statuses: Statuses; chosen: ReadonlySet<string>}) {
   const missing = catalog.groups.some(group => group.required && !groupReady(catalog, statuses, group.key));
   return <>
-    <Heading eyebrow="准备好了" title={missing ? "还差一步才能对话" : "说第一句话吧"}
+    <Heading title={missing ? "还差一步才能对话" : "说第一句话吧"}
       lead={missing ? "还没有可用的对话模型。可以随时在功能设置里连接。" : "这些设置都可以在功能设置里随时修改，新装的插件也会出现在那里。"} />
     <ul className="onboarding-summary">
       {catalog.groups.map(group => {

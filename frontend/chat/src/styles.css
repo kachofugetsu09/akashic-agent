@@ -415,7 +415,7 @@ input {
   min-width: 1.75rem;
   padding: 2px 6px;
   border: 1px solid var(--ak-rule-default);
-  border-radius: 5px;
+  border-radius: 4px;
   color: var(--ak-ink-secondary, var(--chat-muted));
   background: var(--ak-paper-canvas);
   font-family: var(--ak-type-technical);
@@ -480,7 +480,7 @@ input {
   place-items: center;
   margin-inline-end: -4px;
   border: 0;
-  border-radius: 6px;
+  border-radius: 8px;
   padding: 0;
   color: var(--chat-muted);
   background: transparent;
@@ -558,7 +558,7 @@ input {
 
 .chat-sidebar--entry .conversation-session {
   min-height: 34px;
-  border-radius: 7px;
+  border-radius: 8px;
   padding-block: 4px;
   padding-inline: 10px;
 }
@@ -684,7 +684,7 @@ input {
   height: 40px;
   place-items: center;
   border: 0;
-  border-radius: 6px;
+  border-radius: 8px;
   color: var(--ak-ink-secondary);
   /* 默认透明——它是行内的从属控件，不是浮在行上的独立纸块；行 padding 已为其留位。 */
   background: transparent;
@@ -862,7 +862,7 @@ input {
   flex: 0 0 auto;
   place-items: center;
   border: 0;
-  border-radius: 6px;
+  border-radius: 8px;
   color: var(--chat-muted);
   background: transparent;
   cursor: pointer;
@@ -898,7 +898,7 @@ input {
 .project-pending__item + .project-pending__item { border-top: 1px solid var(--chat-chip); }
 .project-pending__name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--chat-ink); }
 .project-pending__actions { display: flex; flex-wrap: wrap; gap: 6px; }
-.project-pending__actions button { min-height: 32px; padding-inline: 8px; border: 1px solid var(--chat-chip); border-radius: 6px; background: transparent; color: var(--chat-ink); cursor: pointer; }
+.project-pending__actions button { min-height: 32px; padding-inline: 8px; border: 1px solid var(--chat-chip); border-radius: 8px; background: transparent; color: var(--chat-ink); cursor: pointer; }
 .project-pending__actions button:disabled { opacity: 0.5; cursor: default; }
 .project-pending__error { margin: 4px 12px; font-size: 0.75rem; color: var(--md-sys-color-error); }
 
@@ -912,7 +912,7 @@ input {
   align-items: center;
   gap: 8px;
   border: 0;
-  border-radius: 7px;
+  border-radius: 8px;
   padding-inline: 10px;
   color: var(--chat-ink);
   background: transparent;
@@ -954,7 +954,7 @@ input {
   flex: 0 0 auto;
   place-items: center;
   border: 0;
-  border-radius: 6px;
+  border-radius: 8px;
   color: var(--chat-muted);
   background: transparent;
   cursor: pointer;
@@ -980,7 +980,7 @@ input {
 .project-group__toggle:disabled { cursor: default; }
 
 .project-group__open svg { flex: 0 0 auto; }
-.project-group.active > .project-group__row { background: var(--chat-chip); border-radius: 7px; }
+.project-group.active > .project-group__row { background: var(--chat-chip); border-radius: 8px; }
 
 @media (hover: hover) and (pointer: fine) {
   .project-group__new-chat {
@@ -1080,7 +1080,7 @@ input {
   max-width: 560px;
   gap: 0;
   border: 1px solid var(--ak-rule-subtle);
-  border-radius: 18px;
+  border-radius: 16px;
   padding: 26px;
   color: var(--ak-ink-primary);
   background: var(--ak-paper-canvas);
@@ -1091,7 +1091,7 @@ input {
 .project-dialog__field { display: grid; gap: 10px; font-size: 0.875rem; }
 .project-dialog__name-input { position: relative; display: flex; align-items: center; }
 .project-dialog__name-input > svg { position: absolute; left: 14px; color: var(--ak-ink-secondary); pointer-events: none; }
-.project-dialog__name-input input { height: 44px; padding-inline-start: 44px; border-radius: 10px; }
+.project-dialog__name-input input { height: 44px; padding-inline-start: 44px; border-radius: 8px; }
 .project-dialog__description {
   display: flex;
   align-items: center;
@@ -1148,7 +1148,7 @@ input {
   min-height: 40px;
   flex-shrink: 0;
   border: 0;
-  border-radius: 20px;
+  border-radius: 999px;
   padding-inline: 18px;
   font: inherit;
   font-size: 0.875rem;
@@ -1264,19 +1264,12 @@ input {
 }
 
 :root {
-  /* 抽屉遮罩只压暗、不提亮：用主题的阴影色 --ak-color-shadow（深色主题是黑），不能用墨色——深色下墨色是浅色，会把背景刷灰。
-     深色底本身暗，需要更高的不透明度才看得出层级；不支持 light-dark() 的浏览器统一 28%。
-     自定义属性不做语法校验，回退必须用 @supports，不能靠重复声明。 */
-  --chat-scrim: color-mix(in srgb, var(--ak-color-shadow) 28%, transparent);
+  /* 抽屉与弹窗共用同一层遮罩；深浅主题的取值在 brand-tokens 里定义一次。 */
+  --chat-scrim: var(--ak-scrim-overlay);
 }
 
-@supports (color: light-dark(#000, #fff)) {
-  :root {
-    --chat-scrim: light-dark(
-      color-mix(in srgb, var(--ak-color-shadow) 22%, transparent),
-      color-mix(in srgb, var(--ak-color-shadow) 45%, transparent)
-    );
-  }
+.ak-dialog-overlay {
+  background: var(--ak-scrim-overlay);
 }
 
 .chat-main {
@@ -1503,7 +1496,7 @@ input {
   min-height: 2rem;
   padding: 0 0.75rem;
   border: 0;
-  border-radius: 6px;
+  border-radius: 8px;
   background: transparent;
   color: var(--chat-muted);
   font: inherit;
@@ -1719,7 +1712,7 @@ input {
   max-height: min(320px, 46dvh);
   overflow-y: auto;
   padding: 4px;
-  border-radius: 14px;
+  border-radius: 12px;
   background: var(--chat-lift, var(--ak-paper-editing));
   box-shadow: 0 0 0 1px var(--ak-rule-subtle),
     0 8px 24px color-mix(in oklab, var(--ak-color-shadow) 12%, transparent),
@@ -1764,7 +1757,7 @@ input {
 .skill-mention {
   color: var(--ak-color-action-primary);
   font-weight: 500;
-  border-radius: 5px;
+  border-radius: 4px;
   cursor: default;
 }
 .skill-mention > span { opacity: 0.5; font-weight: 600; margin-inline-end: 1px; }
@@ -2168,15 +2161,14 @@ form.composer:focus-within [data-slot="input-group"] {
 
   .compact-navigation-overlay {
     background-color: var(--chat-scrim);
-    backdrop-filter: blur(3px);
   }
 
   .compact-navigation-overlay[data-state="open"] {
-    animation: chat-scrim-in 280ms cubic-bezier(0.22, 1, 0.36, 1) both;
+    animation: chat-scrim-in 280ms var(--ak-sys-motion-emphasized, cubic-bezier(0.05, 0.7, 0.1, 1)) both;
   }
 
   .compact-navigation-overlay[data-state="closed"] {
-    animation: chat-scrim-out 200ms cubic-bezier(0.22, 1, 0.36, 1) both;
+    animation: chat-scrim-out 200ms var(--ak-sys-motion-emphasized, cubic-bezier(0.05, 0.7, 0.1, 1)) both;
   }
 
   .compact-navigation-dialog {
@@ -2210,11 +2202,11 @@ form.composer:focus-within [data-slot="input-group"] {
   }
 
   .compact-navigation-dialog[data-state="open"] {
-    animation: chat-drawer-in 340ms cubic-bezier(0.22, 1, 0.36, 1) both;
+    animation: chat-drawer-in 340ms var(--ak-sys-motion-emphasized, cubic-bezier(0.05, 0.7, 0.1, 1)) both;
   }
 
   .compact-navigation-dialog[data-state="closed"] {
-    animation: chat-drawer-out 240ms cubic-bezier(0.22, 1, 0.36, 1) both;
+    animation: chat-drawer-out 240ms var(--ak-sys-motion-emphasized, cubic-bezier(0.05, 0.7, 0.1, 1)) both;
   }
 
   .compact-navigation-dialog .chat-sidebar {
@@ -2378,7 +2370,7 @@ form.composer:focus-within [data-slot="input-group"] {
   display: flex;
   align-items: flex-start;
   gap: 8px;
-  border-radius: 6px;
+  border-radius: 8px;
   padding: 6px 8px;
   cursor: pointer;
   outline: none;
@@ -3013,7 +3005,7 @@ form.composer:focus-within [data-slot="input-group"] {
   .chat-main .composer:is(.is-compact, .is-expanded) [data-slot="input-group"] > .composer-reply {
     width: auto;
     margin: -6px 4px -4px;
-    border-radius: 18px 18px 12px 12px;
+    border-radius: 16px 16px 12px 12px;
   }
 
   .chat-main .composer.is-compact textarea,
@@ -3070,7 +3062,7 @@ form.composer:focus-within [data-slot="input-group"] {
     grid-column: 3;
     grid-row: 1;
     /* 与 22px 外圆角同心：发送键离卡片外缘约 8px。 */
-    border-radius: 14px;
+    border-radius: 12px;
   }
 
   .chat-main .composer.is-compact .composer-action-button:disabled,
@@ -3312,7 +3304,7 @@ form.composer:focus-within [data-slot="input-group"] {
 /* 目录名短而信息量大：不与标题按比例分摊收缩，长标题先让；真超长时与标题同样右缘渐隐，不用省略号。
    上限放在参与标题栏 flex 的外层（含左内边距）：只限按钮时外层仍按目录全名的固有宽度占位，会把标题挤没。 */
 .directory-marker { position: relative; display: flex; min-width: 4.5rem; max-width: calc(14rem + 12px); flex: 0 0 auto; margin-inline-start: auto; padding-inline-start: 12px; font-size: var(--chat-type-caption, 0.75rem); }
-.directory-marker__trigger { display: inline-flex; max-width: 100%; min-height: 32px; align-items: center; gap: 6px; padding-inline: 8px; border: 0; border-radius: 6px; background: transparent; color: var(--chat-faint); font: inherit; cursor: pointer; transition: color var(--ak-sys-duration-short) var(--ak-sys-motion-standard); }
+.directory-marker__trigger { display: inline-flex; max-width: 100%; min-height: 32px; align-items: center; gap: 6px; padding-inline: 8px; border: 0; border-radius: 8px; background: transparent; color: var(--chat-faint); font: inherit; cursor: pointer; transition: color var(--ak-sys-duration-short) var(--ak-sys-motion-standard); }
 .directory-marker__trigger > span { min-width: 0; overflow: hidden; white-space: nowrap; }
 .directory-marker__trigger svg { flex: 0 0 auto; }
 
@@ -3322,11 +3314,11 @@ form.composer:focus-within [data-slot="input-group"] {
 }
 .directory-marker__trigger[data-alert] { color: var(--ak-color-status-error); }
 .directory-marker__trigger:focus-visible { outline: 2px solid var(--ak-rule-focus); outline-offset: 2px; }
-.directory-marker__panel { position: absolute; z-index: 20; inset-block-start: calc(100% + 4px); inset-inline-end: 0; display: grid; gap: 8px; inline-size: min(26rem, calc(100vw - 32px)); padding: 12px; border: 1px solid var(--chat-line); border-radius: 10px; background: var(--ak-paper-canvas); box-shadow: 0 8px 24px color-mix(in oklab, var(--ak-ink-primary) 12%, transparent); color: var(--chat-muted); line-height: 1.5; }
+.directory-marker__panel { position: absolute; z-index: 20; inset-block-start: calc(100% + 4px); inset-inline-end: 0; display: grid; gap: 8px; inline-size: min(26rem, calc(100vw - 32px)); padding: 12px; border: 1px solid var(--chat-line); border-radius: 12px; background: var(--ak-paper-canvas); box-shadow: 0 8px 24px color-mix(in oklab, var(--ak-ink-primary) 12%, transparent); color: var(--chat-muted); line-height: 1.5; }
 .directory-marker__panel p { margin: 0; text-wrap: pretty; }
-.directory-marker__panel code.directory-path { display: block; padding: 6px 8px; border-radius: 6px; background: var(--chat-chip); color: var(--chat-ink); }
+.directory-marker__panel code.directory-path { display: block; padding: 6px 8px; border-radius: 8px; background: var(--chat-chip); color: var(--chat-ink); }
 .directory-marker__actions { display: flex; gap: 4px; margin-inline-start: -8px; }
-.directory-marker__actions button { min-height: 32px; padding-inline: 8px; border: 0; border-radius: 6px; background: transparent; color: var(--chat-muted); font: inherit; cursor: pointer; }
+.directory-marker__actions button { min-height: 32px; padding-inline: 8px; border: 0; border-radius: 8px; background: transparent; color: var(--chat-muted); font: inherit; cursor: pointer; }
 @media (hover: hover) {
   .directory-marker__actions button:hover { background: var(--chat-chip); color: var(--chat-ink); }
 }

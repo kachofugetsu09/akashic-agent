@@ -77,7 +77,7 @@
   justify-content: center;
   gap: 0.5rem;
   border: 0;
-  border-radius: var(--md-sys-shape-corner-full);
+  border-radius: var(--md-sys-shape-corner-small, 8px);
   padding: 0 1.125rem;
   font-size: var(--md-sys-typescale-label-large-size);
   font-weight: var(--md-sys-typescale-label-large-weight);
@@ -93,14 +93,14 @@
 .settings-primary-button:hover { background: color-mix(in srgb, var(--md-sys-color-primary) 92%, var(--md-sys-color-on-primary) 8%); }
 .settings-secondary-button { border: 1px solid var(--md-sys-color-outline); color: var(--md-sys-color-primary); background: transparent; }
 .settings-secondary-button:hover { background: color-mix(in srgb, var(--md-sys-color-primary) 8%, transparent); }
-.settings-icon-button { width: 2.75rem; padding: 0; color: var(--md-sys-color-on-surface-variant); background: transparent; }
+.settings-icon-button { width: 2.75rem; border-radius: var(--md-sys-shape-corner-full); padding: 0; color: var(--md-sys-color-on-surface-variant); background: transparent; }
 .settings-icon-button:hover { color: var(--md-sys-color-on-surface); background: color-mix(in srgb, var(--md-sys-color-on-surface) 8%, transparent); }
 .settings-primary-button:active,
 .settings-secondary-button:active,
 .settings-icon-button:active,
 .settings-connection-card:active { scale: 0.96; }
 .settings-primary-button:disabled,
-.settings-secondary-button:disabled { cursor: default; opacity: 0.55; }
+.settings-secondary-button:disabled { cursor: default; opacity: 0.45; }
 .settings-primary-button:focus-visible,
 .settings-secondary-button:focus-visible,
 .settings-icon-button:focus-visible,
@@ -363,8 +363,7 @@
   place-items: center;
   padding: 1.4rem;
   box-sizing: border-box;
-  background: color-mix(in srgb, var(--md-sys-color-scrim) 32%, transparent);
-  backdrop-filter: blur(3px);
+  background: var(--ak-scrim-overlay);
 }
 dialog.settings-scrim {
   width: 100%;
@@ -387,12 +386,12 @@ dialog.settings-scrim::backdrop { background: transparent; }
   gap: 0;
   overflow: hidden;
   overscroll-behavior: contain;
-  border: 1px solid rgb(229 231 235);
-  border-radius: var(--md-sys-shape-corner-extra-large);
+  border: 1px solid var(--ak-rule-default);
+  border-radius: var(--md-sys-shape-corner-medium, 12px);
   padding: 0;
   color: var(--md-sys-color-on-surface);
   background: var(--md-sys-color-surface-container-high);
-  box-shadow: 0 0.75rem 1.75rem rgb(var(--md-sys-color-shadow-rgb) / 0.24), 0 0.25rem 0.625rem rgb(var(--md-sys-color-shadow-rgb) / 0.16);
+  box-shadow: var(--ak-elevation-overlay);
 }
 .settings-dialog-header { align-items: start; padding: 1.25rem 1.5rem 1rem; }
 .settings-dialog-heading { min-width: 0; }
@@ -539,12 +538,12 @@ dialog.settings-scrim::backdrop { background: transparent; }
   background: transparent;
 }
 .settings-discovery-status { margin-block: 0.75rem 0; }
-.settings-inline-error { margin: 0.8rem 0 0 !important; border-radius: var(--md-sys-shape-corner-medium); padding: 0.7rem 0.875rem; color: var(--md-sys-color-on-error-container); background: var(--md-sys-color-error-container); font-size: var(--md-sys-typescale-body-medium-size) !important; }
+.settings-inline-error { margin: 0.8rem 0 0 !important; border-radius: var(--md-sys-shape-corner-small, 8px); padding: 0.7rem 0.875rem; color: var(--md-sys-color-on-error-container); background: var(--md-sys-color-error-container); font-size: var(--md-sys-typescale-body-medium-size) !important; }
 .settings-dialog-footer { min-height: 4.5rem; margin: 0; border-block-start: 1px solid var(--md-sys-color-outline-variant); padding: 0.75rem 1.5rem calc(0.75rem + env(safe-area-inset-bottom)); background: var(--md-sys-color-surface-container-high); }
 .settings-dialog-footer-note { display: inline-flex; align-items: center; gap: 0.4rem; color: var(--md-sys-color-on-surface-variant); font-size: var(--md-sys-typescale-body-medium-size); }
 
 .settings-toast-region { position: fixed; z-index: 100; inset: auto 1.25rem 1.25rem auto; }
-.settings-toast { display: flex; min-width: min(22rem, calc(100vw - 2.5rem)); align-items: center; gap: 0.7rem; border-radius: var(--md-sys-shape-corner-small); padding: 0.75rem 0.875rem; color: var(--ak-sys-color-on-success-container); background: var(--ak-sys-color-success-container); box-shadow: 0 0.8rem 2.4rem oklch(0.2 0.03 260 / 0.18); }
+.settings-toast { display: flex; min-width: min(22rem, calc(100vw - 2.5rem)); align-items: center; gap: 0.7rem; border-radius: var(--md-sys-shape-corner-small); padding: 0.75rem 0.875rem; color: var(--ak-sys-color-on-success-container); background: var(--ak-sys-color-success-container); box-shadow: 0 0.8rem 2.4rem color-mix(in oklab, var(--ak-ink-primary) 14%, transparent); }
 .settings-toast > span { display: grid; flex: 1; }
 .settings-toast strong { font-size: var(--md-sys-typescale-body-medium-size); }
 .settings-toast button { display: grid; width: 2rem; height: 2rem; place-items: center; border: 0; border-radius: 50%; color: inherit; background: transparent; cursor: pointer; }
@@ -601,11 +600,11 @@ dialog.settings-scrim::backdrop { background: transparent; }
   --models-type-body: 0.875rem;
   --models-type-caption: 0.75rem;
   --models-weight-control: 500;
-  --models-radius-field: 0.25rem;
+  --models-radius-field: 0.5rem;
   --models-radius-row: 0.5rem;
   --models-radius-panel: 0.75rem;
   --models-radius-edge: 1rem;
-  --models-radius-sheet: 1.75rem;
+  --models-radius-sheet: 1rem;
   --models-radius-badge: 9999px;
   --models-shadow-sheet: 0 0.75rem 1.75rem rgb(var(--ak-color-shadow-rgb) / 0.24), 0 0.25rem 0.625rem rgb(var(--ak-color-shadow-rgb) / 0.16);
 }
