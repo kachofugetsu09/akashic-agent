@@ -1,4 +1,4 @@
-"""Project 是 Session 宽键中的 project 维度；只拥有项目记录，不解释记忆或展示。"""
+"""Project 是 Session 宽键中的 project 维度；拥有项目记录与侧栏项目分组，不解释记忆。"""
 from __future__ import annotations
 
 from datetime import UTC, datetime
@@ -144,7 +144,7 @@ def _project_row(project_id: str, value: dict[str, object]) -> dict[str, object]
 
 
 async def apply(ctx: Context) -> None:
-    """注册 project 维度的唯一 owner，并经插件查询通道提供项目增改。"""
+    """注册 project 维度的唯一 owner，并经 navigation.groups 提供侧栏项目分组与增改。"""
     projects = Projects(ctx.require(OWNER_STATE).open(ctx))
     def check_project(project_id: str) -> None:
         projects.check(project_id)
@@ -218,5 +218,5 @@ async def apply(ctx: Context) -> None:
         raise PluginUiRpcInvalidRequest(f"不支持的项目查询：{method}")
 
     _ = await ctx.require(UI_SLOTS).register_plugin_ui(
-        ctx, PluginUiDefinition(module="plugin_ui.js"), query=query,
+        ctx, PluginUiDefinition(module="plugin_ui.js", stylesheet="plugin_ui.css", slots=("navigation.groups",)), query=query,
     )
