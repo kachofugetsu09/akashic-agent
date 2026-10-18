@@ -49,7 +49,7 @@ R9 的领域词表与扫描范围都偏窄。
 本轮补上 **R12（UI 宿主不点名插件）**，现有 22 处记入基线：
 - `plugin_boundary.toml [ui_hosts]` 列出宿主插件（`akashic_clients`、`ui`）和它们可以依赖的基础设施合同；导入其他插件合同即违规（绝对、相对、普通 `import` 都算）。宿主名单只决定扫描范围，不豁免宿主之间的依赖。
 - 宿主里拿插件身份比较即违规：`plugin_id == "x"`、`id.split("@")[0] == "x"`、`source == "x"`、`plugin_id.startswith("x")`；身份包括目录名与 manifest 名。普通文件名或 kind 比较不算。
-- 聊天前端里 `queryHostPlugin(…)`、`.installed(…)` 传入静态 ID 或 `*_PLUGIN` 常量、定义 `*_PLUGIN = "x"`，以及访问 `host_routes` 以外的 `/api/…` 路由（按完整路径段比较），即违规；注释不算（按 JS 词法跳过字符串、模板与正则字面量里的注释标记）。
+- 聊天前端里 `queryHostPlugin(…)`、`.installed(…)` 传入静态 ID 或 `*_PLUGIN` 常量、定义 `*_PLUGIN = "x"`，以及访问 `host_routes` 以外的 `/api/…` 路由（按完整路径段比较），即违规；注释里写明的调用同样算违规（宁可误报不漏报，改注释措辞即可）。
 - **只许减少**：带 `--base` 时用同一规则扫描 base 快照，新增点名即使写进账本也失败；放宽 `infrastructure`、`host_routes`，或缩小 `plugins`、`frontend` 的扫描范围也失败。
 - 不覆盖：动态拼出的插件 ID 或路由、`RpcMethod.key(...)` 字符串在宿主里重复声明（`capabilities.py:45-49`，随第 8 步由 runtime_inspection 各 owner 发布合同时收掉）。
 
