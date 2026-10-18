@@ -74,6 +74,7 @@ class WebPluginUiQueryPayload(BaseModel):
         "turn.after_answer",
         "drawer.panel",
         "message.attachment",
+        "chat.notice",
     ]
     session_id: str | None = Field(default=None, max_length=512)
     turn_id: str | None = Field(default=None, max_length=128)

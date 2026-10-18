@@ -14,6 +14,7 @@
     "baseUrl": ".",
     "paths": {
       "@akashic/web-ui-v1": ["packages/akashic-web-ui-v1/index.d.ts"],
+      "@akashic/chat-ui-v1": ["packages/akashic-chat-ui-v1/index.d.ts"],
       "@akashic/shell-ui-v1": ["packages/akashic-shell-ui-v1/index.d.ts"],
       "@akashic/conversation-tools-v2": ["packages/akashic-conversation-tools-v2/index.d.ts"],
       "@/*": ["frontend/chat/src/*"]

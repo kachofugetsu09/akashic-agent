@@ -12,7 +12,7 @@ from core.common.file_io import run_file_io
 from infra.persistence.json_store import load_json, atomic_save_json
 from plugins.host_execution.contract import HOST_STATUS, WORKLOAD_CONTROLLER, PROCESSES, FILES, TERMINALS
 from .bridge.factory import HostBridgeRpcError, build_file_bridge
-from plugins.ui.contract import UI
+from plugins.ui.contract import UI, UI_SLOTS, PluginUiDefinition, PluginUiRpcInvalidRequest
 from .processes import PluginProcesses, PluginTerminals
 from .files import Files
 from .bridge.boot import claim_host_bridge_boot
@@ -94,3 +94,18 @@ async def start_monitor(ctx: Context) -> None:
         await child.require(UI).register(child, dashboard=lambda: dashboard)
 
     await ctx.inject((UI, HOST_STATUS), register_status, name="host-status-ui")
+
+    # 4. 聊天输入框上方的执行状态提示由本插件的界面模块经插件查询读取，宿主不认识这条路由。
+    async def register_notice(child: Context) -> None:
+        status = child.require(HOST_STATUS)
+
+        async def query(method: str, payload: dict[str, object], *,
+                        session_id: str | None, turn_id: str | None) -> dict[str, object]:
+            if method != "bridge.state" or payload:
+                raise PluginUiRpcInvalidRequest("宿主状态查询不接受参数")
+            return status.snapshot()
+
+        _ = await child.require(UI_SLOTS).register_plugin_ui(
+            child, PluginUiDefinition(module="plugin_ui.js", slots=("chat.notice",)), query=query)
+
+    _ = await ctx.inject((UI_SLOTS, HOST_STATUS), register_notice, name="host-status-notice")

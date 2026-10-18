@@ -11,7 +11,6 @@ R3 = [
 ]
 R9 = []
 R12 = [
-    "frontend/chat/src/host-bridge-notice.tsx -> /api/runtime/host-bridge",
     "frontend/chat/src/model-call-stats.ts -> /api/chat/model-calls",
     "frontend/chat/src/session-directory.tsx -> standard_tools",
     "frontend/chat/src/skill-mention.tsx -> /api/chat/runtime",

@@ -114,6 +114,13 @@ await bundle({
   outfile: resolve(pluginsRoot, "workspace_changes/message_ui.js"),
 });
 
+// 聊天插槽模块与宿主共用 React 与 @akashic/chat-ui-v1，由页面 import map 解析。
+const chatSlotModule = (source, outfile) => bundle({
+  entryPoints: [resolve(repoRoot, source)], bundle: true, format: "esm", target: "es2022", minify: true, jsx: "automatic",
+  external: ["react", "react/jsx-runtime", "react-dom/client", "@akashic/chat-ui-v1"], outfile: resolve(pluginsRoot, outfile),
+});
+await chatSlotModule("frontend/plugins/host_execution/src/plugin-ui.tsx", "host_execution/plugin_ui.js");
+
 // 网站卡片经消息附件插槽挂载，与“网站”标签的 Web 模块分开打包。
 await bundle({
   entryPoints: [resolve(repoRoot, "frontend/plugins/sites/src/message-ui.ts")],
