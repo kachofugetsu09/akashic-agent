@@ -130,6 +130,8 @@ async def run(directory: Path) -> dict[str, object]:
                                     for index, (tool, arguments) in enumerate(steps[len(calls) - 1])]}
             else:
                 result = {"text": "completed:" + case}
+            if case == "failed":
+                result = {"context_error": "scenario context limit"}
             body = json.dumps(result).encode()
             writer.write(f"HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {len(body)}\r\nConnection: close\r\n\r\n".encode() + body)
             await writer.drain()
@@ -162,6 +164,9 @@ async def run(directory: Path) -> dict[str, object]:
                     "tools": json_value(request.tools)}})
                 response.raise_for_status()
                 value = response.json()
+                if "context_error" in value:
+                    from plugins.models.contract import ContextLengthError
+                    raise ContextLengthError(value["context_error"]).exception()
                 return LLMResponse(value.get("text"), [ToolCall(**call) for call in value.get("calls", [])])
 ''' + source[end:]
         entry.write_text(source)
@@ -269,6 +274,31 @@ async def run(directory: Path) -> dict[str, object]:
                               for row in log.reader(cancelled.session_id).snapshot()):
                     await asyncio.sleep(0.02)
 
+            # A model capacity rejection must leave a saved failure, not a permanently pending round.
+            failed = await schedule("failed")
+            async with asyncio.timeout(10):
+                while (failure := (await asyncio.to_thread(store.read)).fires.get(fire_key(failed))) is None or failure.status == "pending":
+                    await asyncio.sleep(0.02)
+            assert failure.status == "failed" and "scenario context limit" in str(failure.error), failure
+            assert any(isinstance(row.body, Control) and row.body.action == "failure"
+                       for row in log.reader(failed.session_id).snapshot())
+
+            # Restore the crash window after saving a failure but before settling the fire.
+            recovery = ScheduledJob(id="failure-recovery", action="run", trigger="at", channel="test", chat_id="recovery",
+                                    session_id="test:recovery", text="case:recovery", timezone="UTC", fire_at=datetime.now(UTC))
+            seed(recovery.session_id)
+            key = fire_key(recovery)
+            writer = log.writer(recovery.session_id, author="scheduler", source="scheduler:" + key,
+                                body_types=(Input, Control), content={"text": check_text})
+            admitted = writer.append("scheduler-input:" + key, Input((ContentPart("text", recovery.text),)))
+            writer.append("scheduler-failure:" + key, Control("failure", admitted.seq, "saved capacity error"))
+            await store.add("schedule:recovery", recovery, "recovery")
+            async with asyncio.timeout(10):
+                while (restored := (await asyncio.to_thread(store.read)).fires.get(key)) is None or restored.status == "pending":
+                    await asyncio.sleep(0.02)
+            assert restored.status == "failed" and restored.error == "saved capacity error", restored
+            assert "recovery" not in requests
+
             # 定时轮里创建后续任务：目标沿用本次触发；原文提醒到点写入同一会话并送达。
             await finish(await schedule("followup"))
             async with asyncio.timeout(30):
@@ -346,7 +376,7 @@ async def run(directory: Path) -> dict[str, object]:
     return {"in_session": True, "history_none_isolated": True, "history_session_included": True,
             "late_registration": True, "concurrent_fixed_views": True, "uninstall": True,
             "disabled_tools_rejected": True, "messages_preserved": True, "deliveries": 10, "user_preempts_task": True, "cancelled_round_closed": True, "followup_from_task": True, "legacy_pending_settled": True,
-            "model_requests": {key: len(value) for key, value in requests.items()}}
+            "model_failure_settled": True, "model_requests": {key: len(value) for key, value in requests.items()}}
 
 
 if __name__ == "__main__":

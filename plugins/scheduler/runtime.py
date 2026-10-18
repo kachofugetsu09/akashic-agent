@@ -10,6 +10,7 @@ from plugins.ledger.contract import MESSAGE_CATALOG, MESSAGE_WRITERS
 from agent.plugin_composition.tasks import TASKS, Task, TaskSlot
 from plugins.timer.contract import TIMERS
 from plugins.sources.contract import SourceGuard
+from plugins.models.contract import ModelError
 from .inputs import CONTENT, CONVERSATION_COMPLETE, DELIVERY, DELIVERY_SENDERS
 from plugins.ledger.contract import BINDINGS
 from plugins.ledger.contract import MessageReader, MessageWriter
@@ -153,7 +154,7 @@ class SchedulerRuntime:
             # 写入授权属于 scheduler 自己的 Task；会话执行位里只使用已绑定的 writer。
             writer = ctx.require(MESSAGE_WRITERS).bind(
                 ctx, author="scheduler", source=fire.source,
-                body_types=(Output,) if fire.job.action == "notify" else (Input,),
+                body_types=(Output,) if fire.job.action == "notify" else (Input, Control),
                 content={"text": ctx.require(CONTENT).check_text},
             )(target.session_id)
             task.on_close(writer.expire)
@@ -163,7 +164,8 @@ class SchedulerRuntime:
         if not task.active:
             raise asyncio.CancelledError
         if not isinstance(final.body, Output) or final.body.finish != "complete":
-            await self.store.settle(key, "failed", now=self._now(), error="调度任务没有可发送的最终内容")
+            error = final.body.reason if isinstance(final.body, Control) else "调度任务没有可发送的最终内容"
+            await self.store.settle(key, "failed", now=self._now(), error=error)
             return
 
         # 2. 投递原消息；恢复时沿用已固定的选路，空集合不能冒称已送达。
@@ -207,13 +209,21 @@ class SchedulerRuntime:
                 label = f"「{fire.job.name}」" if fire.job.name else ""
                 text = f"⏰ 定时任务{label}自动触发（不是用户发言）：\n{fire.job.text}"
                 _ = await writer.append_async(fire.input_id, Input((ContentPart("text", text),)))
-            return await self._program(task, reader, check_admission, fire)
+            try:
+                return await self._program(task, reader, check_admission, fire)
+            except (RuntimeError, TimeoutError) as error:
+                if ModelError.read(error) is None:
+                    raise
+                # Save a model failure before settling the fire, so restart cannot repeat it.
+                check_admission()
+                return await writer.append_async("scheduler-failure:" + fire.key,
+                    Control("failure", reader.head(source=fire.source), str(error)))
         return run
 
 
 def _final(reader: MessageReader, fire: Fire) -> Message | None:
-    """本次触发的最终消息：原文提醒的固定 ID，或独占来源里最后一条结束的 Output。"""
-    notification = reader.get(fire.notification_id)
+    """读取原文提醒、已保存的模型失败，或本来源最后一条结束的 Output。"""
+    notification = reader.get(fire.notification_id) or reader.get("scheduler-failure:" + fire.key)
     if notification is not None:
         return notification
 
