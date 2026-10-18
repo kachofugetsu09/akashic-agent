@@ -100,12 +100,22 @@ class HistoryUnavailable extends Error {}
 const RECONNECTING_NOTICE = "连接已断开，正在重新连接…";
 const PAGE_BUILD = document.querySelector<HTMLMetaElement>('meta[name="akashic-build"]')?.content || null;
 
+const PAGE_BUILD_RETRY_MS = [2_000, 5_000, 15_000];
+
+function pageBuildOutdated(state: WebShellState): boolean {
+  return Boolean(PAGE_BUILD && state.build && state.build !== PAGE_BUILD);
+}
+
 // 服务端升级后旧页面的展示合同可能已过期：每次连上都对照页面自带的版本，变了就提示刷新。
-function checkPageBuild(outdated: () => void) {
+// 读取失败（重启中的短暂 503 等）按退避有限重试；live 为假时本次连接已结束，不再重试。
+function checkPageBuild(outdated: () => void, live: () => boolean, attempt = 0) {
   if (!PAGE_BUILD) return;
   void fetchChatJson<unknown>("/api/shell/state").then(webShellState).then((state) => {
-    if (state.build && state.build !== PAGE_BUILD) outdated();
-  }).catch(() => undefined);
+    if (pageBuildOutdated(state)) outdated();
+  }).catch(() => {
+    const delay = PAGE_BUILD_RETRY_MS[attempt];
+    if (delay !== undefined) window.setTimeout(() => { if (live()) checkPageBuild(outdated, live, attempt + 1); }, delay);
+  });
 }
 
 export function useDesktopChatController() {
@@ -538,7 +548,7 @@ export function useDesktopChatController() {
               setError("");
             }
             console.info("[chat-ui] ws connected", current.url);
-            checkPageBuild(() => setPageOutdated(true));
+            checkPageBuild(() => setPageOutdated(true), () => socketRef.current === current);
             const sessionId = activeSessionRef.current;
             if (sessionId) {
               if (followAfterRef.current === null) void loadMessagesSafely(sessionId);
@@ -601,7 +611,10 @@ export function useDesktopChatController() {
       try: (signal) => fetchChatJson<unknown>("/api/shell/state", { signal }).then(webShellState),
       catch: (error) => error,
     }).pipe(
-      Effect.tap((next) => Effect.sync(() => setShellState(next))),
+      Effect.tap((next) => Effect.sync(() => {
+        setShellState(next);
+        if (pageBuildOutdated(next)) setPageOutdated(true);
+      })),
       Effect.catchAll((error) => Effect.sync(() => reportError(error))),
       Effect.repeat({ schedule: Schedule.spaced("1200 millis"), until: (next) => next?.chatReady === true }),
     ));
