@@ -1722,8 +1722,8 @@ input {
   border-radius: 14px;
   background: var(--chat-lift, var(--ak-paper-editing));
   box-shadow: 0 0 0 1px var(--ak-rule-subtle),
-    0 8px 24px color-mix(in srgb, var(--ak-color-shadow) 12%, transparent),
-    0 2px 6px color-mix(in srgb, var(--ak-color-shadow) 8%, transparent);
+    0 8px 24px color-mix(in oklab, var(--ak-color-shadow) 12%, transparent),
+    0 2px 6px color-mix(in oklab, var(--ak-color-shadow) 8%, transparent);
   font-size: var(--chat-type-control);
   line-height: 18px;
   color: var(--chat-ink);
@@ -1743,7 +1743,7 @@ input {
   border-radius: 8px;
   cursor: pointer;
 }
-.skill-menu__row[data-active] { background: color-mix(in srgb, var(--chat-ink) 5%, transparent); }
+.skill-menu__row[data-active] { background: color-mix(in oklab, var(--chat-ink) 5%, transparent); }
 .skill-menu__row[aria-disabled="true"] { cursor: default; }
 .skill-menu__row > svg { width: 16px; height: 16px; flex: none; opacity: 0.5; }
 .skill-menu__row[aria-disabled="true"] > svg,
@@ -1755,8 +1755,9 @@ input {
 .skill-menu__source { flex: none; margin-inline-start: auto; font-size: var(--chat-type-micro); color: var(--chat-faint); }
 .skill-menu__empty { padding: 7px 8px; color: var(--chat-faint); }
 @media (max-width: 600px) {
-  .skill-menu__desc, .skill-menu__source { display: none; }
-  .skill-menu__label { max-width: none; }
+  .skill-menu__row { min-height: 44px; flex-wrap: wrap; }
+  .skill-menu__label { flex: 1; min-width: 0; max-width: calc(100% - 24px); }
+  .skill-menu__desc { flex-basis: calc(100% - 24px); margin-inline-start: 24px; white-space: normal; overflow-wrap: anywhere; }
 }
 
 /* 消息里的技能提及：强调色文字，悬停才出浅底（Claude Desktop skillChip）。 */
@@ -1768,8 +1769,8 @@ input {
 }
 .skill-mention > span { opacity: 0.5; font-weight: 600; margin-inline-end: 1px; }
 .skill-mention:hover {
-  background: color-mix(in srgb, var(--ak-color-action-primary) 14%, transparent);
-  box-shadow: 0 0 0 2px color-mix(in srgb, var(--ak-color-action-primary) 14%, transparent);
+  background: color-mix(in oklab, var(--ak-color-action-primary) 14%, transparent);
+  box-shadow: 0 0 0 2px color-mix(in oklab, var(--ak-color-action-primary) 14%, transparent);
 }
 
 /* 底部淡出带：滚动内容在 composer 上方 32px 内渐隐入纸色，以下实心。

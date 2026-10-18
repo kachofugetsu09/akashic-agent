@@ -315,6 +315,7 @@ export const DesktopComposer = memo(function DesktopComposer({
           onKeyDown={onComposerKeyDown}
           onSelect={syncMention}
           onBlur={mention.close}
+          {...mention.inputProps}
           pasteAsFile={pasteAsFile}
           aria-label="消息"
           aria-describedby={modelProblem ? "chat-model-reason" : undefined}

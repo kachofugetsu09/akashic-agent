@@ -1,5 +1,5 @@
 import { FileText } from "lucide-react";
-import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, useSyncExternalStore, type KeyboardEvent as ReactKeyboardEvent, type ReactNode, type RefObject } from "react";
+import { useCallback, useEffect, useId, useLayoutEffect, useMemo, useRef, useState, useSyncExternalStore, type KeyboardEvent as ReactKeyboardEvent, type ReactNode, type RefObject } from "react";
 import { fetchChatJson } from "./web-chat-data";
 
 /** 运行时技能目录里聊天菜单用到的字段（来自 /api/chat/runtime/capabilities）。 */
@@ -25,37 +25,43 @@ const MENTION = /(^|\s)\/([\p{L}\p{N}_][\p{L}\p{N}_-]*(?:\.[\p{L}\p{N}_-]+)*)(?!
 const TRIGGER = /(^|\s)([/@])([^\s/@]{0,50})$/u;
 const SOURCE_LABEL: Record<string, string> = { builtin: "内置", workspace: "工作区", user: "我的" };
 
-// 技能目录在页面内只读一次；失败时下次打开菜单再试。
-let catalog: readonly SkillOption[] = [];
+// 历史消息共享目录；每次重新打开菜单都刷新当前可用性。
+let catalog: { skills: readonly SkillOption[]; status: "idle" | "loading" | "ready" | "error"; error: string } = {
+  skills: [], status: "idle", error: "",
+};
 let loading: Promise<void> | null = null;
 const listeners = new Set<() => void>();
+const subscribe = (listener: () => void) => { listeners.add(listener); return () => { listeners.delete(listener); }; };
 
-function readSkill(row: unknown): SkillOption | null {
-  if (!row || typeof row !== "object") return null;
+function readSkill(row: unknown): SkillOption {
+  if (!row || typeof row !== "object") throw new Error("技能目录格式错误");
   const value = row as Record<string, unknown>;
-  if (typeof value.name !== "string" || !value.name) return null;
-  const text = (key: string) => typeof value[key] === "string" ? value[key] as string : "";
-  return { name: value.name, displayName: text("display_name") || value.name, description: text("description"),
-    source: text("source"), available: value.available !== false, missing: text("missing") };
+  if (typeof value.name !== "string" || !value.name || typeof value.available !== "boolean"
+    || !["display_name", "description", "source", "missing"].every((key) => typeof value[key] === "string")) {
+    throw new Error("技能目录格式错误");
+  }
+  return { name: value.name, displayName: value.display_name as string || value.name,
+    description: value.description as string, source: value.source as string,
+    available: value.available, missing: value.missing as string };
 }
 
-export function loadSkills(): void {
-  if (loading || catalog.length) return;
-  loading = fetchChatJson<{ skills?: unknown }>("/api/chat/runtime/capabilities")
+function loadSkills(refresh = false): void {
+  if (loading || (!refresh && catalog.status !== "idle")) return;
+  catalog = { skills: [], status: "loading", error: "" };
+  loading = fetchChatJson<{ skills: unknown }>("/api/chat/runtime/capabilities")
     .then((payload) => {
-      catalog = (Array.isArray(payload.skills) ? payload.skills : []).map(readSkill)
-        .filter((skill): skill is SkillOption => skill !== null);
-      listeners.forEach((listener) => listener());
+      if (!Array.isArray(payload.skills)) throw new Error("技能目录格式错误");
+      catalog = { skills: payload.skills.map(readSkill), status: "ready", error: "" };
     })
-    .catch(() => undefined)
-    .finally(() => { loading = null; });
+    .catch((error: unknown) => {
+      catalog = { skills: [], status: "error", error: error instanceof Error ? error.message : String(error) };
+    })
+    .finally(() => { loading = null; listeners.forEach((listener) => listener()); });
+  listeners.forEach((listener) => listener());
 }
 
-export function useSkills(): readonly SkillOption[] {
-  return useSyncExternalStore((listener) => {
-    listeners.add(listener);
-    return () => listeners.delete(listener);
-  }, () => catalog);
+function useSkills() {
+  return useSyncExternalStore(subscribe, () => catalog);
 }
 
 export function findTrigger(value: string, caret: number): MentionTrigger | null {
@@ -90,7 +96,7 @@ export function useSkillMention({ value, textareaRef, setValue }: {
   textareaRef: RefObject<HTMLTextAreaElement | null>;
   setValue: (next: string) => void;
 }) {
-  const skills = useSkills();
+  const { skills, status, error } = useSkills();
   const [caret, setCaret] = useState<number | null>(null);
   // 高亮项跟着触发词与查询走，换词即回到第一项。
   const [highlight, setHighlight] = useState({ query: "", index: 0 });
@@ -107,12 +113,15 @@ export function useSkillMention({ value, textareaRef, setValue }: {
   // 光标停在一个完整提及之后（刚插入或退格回来）不再弹出，退格改为整段选中。
   const complete = trigger?.sigil === "/" && skills.some((skill) => skill.name === trigger.query);
   const open = trigger !== null && !closed && !complete;
-  const triggered = trigger !== null;
-  useEffect(() => { if (triggered) loadSkills(); }, [triggered]);
+  const triggerStart = trigger?.start;
+  const triggerSigil = trigger?.sigil;
+  useEffect(() => { if (triggerStart !== undefined) loadSkills(true); }, [triggerStart, triggerSigil]);
+  const menuId = useId();
 
   const sync = useCallback(() => {
     const textarea = textareaRef.current;
     setCaret(textarea && textarea.selectionStart === textarea.selectionEnd ? textarea.selectionStart : null);
+    setDismissed((previous) => previous && textarea?.value[previous.start] === previous.sigil ? previous : null);
   }, [textareaRef]);
 
   const pending = useRef<{ value: string; position: number } | null>(null);
@@ -181,10 +190,13 @@ export function useSkillMention({ value, textareaRef, setValue }: {
     return false;
   }, [open, items, active, setActive, trigger, pick, value, skills]);
 
-  const menu = open && trigger ? <SkillMenu items={items} query={trigger.query} active={active}
-    loading={!skills.length} onHover={setActive} onPick={pick} /> : null;
+  const menu = open && trigger ? <SkillMenu id={menuId} items={items} query={trigger.query} active={active}
+    status={status} error={error} onHover={setActive} onPick={pick} /> : null;
   const close = useCallback(() => setCaret(null), []);
-  return { menu, sync, close, onKeyDown };
+  return { menu, sync, close, onKeyDown, inputProps: {
+    "aria-autocomplete": "list" as const, "aria-controls": open ? menuId : undefined,
+    "aria-activedescendant": open && items[active] ? `${menuId}-${active}` : undefined,
+  } };
 }
 
 // 光标正好落在一个已知技能提及之后时返回它的起点。
@@ -197,20 +209,22 @@ function mentionBefore(value: string, caret: number, skills: readonly SkillOptio
   return null;
 }
 
-function SkillMenu({ items, query, active, loading, onHover, onPick }: {
+function SkillMenu({ id, items, query, active, status, error, onHover, onPick }: {
+  id: string;
   items: SkillOption[];
   query: string;
   active: number;
-  loading: boolean;
+  status: typeof catalog.status;
+  error: string;
   onHover: (index: number) => void;
   onPick: (skill: SkillOption) => void;
 }) {
   const counts = new Map<string, number>();
   items.forEach((skill) => counts.set(skill.name, (counts.get(skill.name) ?? 0) + 1));
-  return <div className="skill-menu" role="listbox" aria-label="技能" data-escape-layer
+  return <div id={id} className="skill-menu" role="listbox" aria-label="技能" data-escape-layer
     onMouseDown={(event) => event.preventDefault()}>
     {items.length ? <div className="skill-menu__section">技能</div> : null}
-    {items.map((skill, index) => <div key={`${skill.source}:${skill.name}`} role="option" aria-selected={index === active}
+    {items.map((skill, index) => <div id={`${id}-${index}`} key={`${skill.source}:${skill.name}`} role="option" aria-selected={index === active}
       aria-disabled={!skill.available} className="skill-menu__row" data-active={index === active || undefined}
       ref={index === active ? (node) => node?.scrollIntoView({ block: "nearest" }) : undefined}
       onMouseMove={() => skill.available && index !== active && onHover(index)}
@@ -221,13 +235,14 @@ function SkillMenu({ items, query, active, loading, onHover, onPick }: {
       <span className="skill-menu__desc">{skill.available ? skill.description : `不可用：${skill.missing}`}</span>
       {(counts.get(skill.name) ?? 0) > 1 ? <span className="skill-menu__source">{SOURCE_LABEL[skill.source] ?? skill.source}</span> : null}
     </div>)}
-    {!items.length ? <div className="skill-menu__empty">{loading ? "正在读取技能…" : "没有匹配的技能"}</div> : null}
+    {!items.length ? <div className="skill-menu__empty">{status === "error" ? `没能读取技能：${error}。重新输入 / 可重试。`
+      : status === "loading" || status === "idle" ? "正在读取技能…" : query ? "没有匹配的技能" : "没有已安装的技能"}</div> : null}
   </div>;
 }
 
 /** 用户消息里的已知技能提及显示成强调色文字；未知的 /xxx 保持原样。 */
 export function MentionText({ text }: { text: string }) {
-  const skills = useSkills();
+  const { skills } = useSkills();
   useEffect(() => { if (text.includes("/")) loadSkills(); }, [text]);
   const byName = new Map(skills.map((skill) => [skill.name, skill]));
   const nodes: ReactNode[] = [];
