@@ -31,6 +31,18 @@ def _cache_control_for(path: str) -> str:
     return "no-store"
 
 
+# 页面版本取入口 HTML 的摘要：页面里嵌一份，/api/shell/state 给当前一份；两者不同说明服务端已换了前端。
+def _chat_build(body: bytes) -> str:
+    return sha256(body).hexdigest()[:16]
+
+
+async def current_chat_build(static_dir: Path) -> str | None:
+    try:
+        return _chat_build(await run_file_io((static_dir / "index.html").read_bytes))
+    except FileNotFoundError:
+        return None
+
+
 def register_chat_assets(app: FastAPI, static_dir: Path) -> None:
     """在客户端 owner 的监听器提供插件制品和既有缓存合同。"""
 
@@ -74,7 +86,8 @@ def register_chat_assets(app: FastAPI, static_dir: Path) -> None:
         etag = f'"{sha256(body).hexdigest()}"'
         if request.headers.get("if-none-match") == etag:
             return Response(status_code=304, headers={"ETag": etag})
-        return Response(body, media_type="text/html; charset=utf-8", headers={"ETag": etag})
+        build = f'<meta name="akashic-build" content="{_chat_build(body)}"></head>'.encode()
+        return Response(body.replace(b"</head>", build, 1), media_type="text/html; charset=utf-8", headers={"ETag": etag})
 
     app.mount(
         "/assets",

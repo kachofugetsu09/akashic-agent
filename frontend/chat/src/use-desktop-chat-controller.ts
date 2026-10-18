@@ -98,6 +98,15 @@ class SendFailed extends Error {}
 class HistoryUnavailable extends Error {}
 
 const RECONNECTING_NOTICE = "连接已断开，正在重新连接…";
+const PAGE_BUILD = document.querySelector<HTMLMetaElement>('meta[name="akashic-build"]')?.content || null;
+
+// 服务端升级后旧页面的展示合同可能已过期：每次连上都对照页面自带的版本，变了就提示刷新。
+function checkPageBuild(outdated: () => void) {
+  if (!PAGE_BUILD) return;
+  void fetchChatJson<unknown>("/api/shell/state").then(webShellState).then((state) => {
+    if (state.build && state.build !== PAGE_BUILD) outdated();
+  }).catch(() => undefined);
+}
 
 export function useDesktopChatController() {
   const [surface, setSurface] = useState<"chat" | "runtime">(
@@ -192,6 +201,7 @@ export function useDesktopChatController() {
   const [error, setError] = useState("");
   const [errorFromSend, setErrorFromSend] = useState(false);
   const [connectionError, setConnectionError] = useState("");
+  const [pageOutdated, setPageOutdated] = useState(false);
   const [shellState, setShellState] = useState<WebShellState | null>(null);
   const [replyTarget, setReplyTarget] = useState<TimelineReply | null>(null);
   // 引用目标与草稿一样按会话保留：切去别的会话查点东西再回来，引用条还在。
@@ -528,6 +538,7 @@ export function useDesktopChatController() {
               setError("");
             }
             console.info("[chat-ui] ws connected", current.url);
+            checkPageBuild(() => setPageOutdated(true));
             const sessionId = activeSessionRef.current;
             if (sessionId) {
               if (followAfterRef.current === null) void loadMessagesSafely(sessionId);
@@ -1078,7 +1089,7 @@ export function useDesktopChatController() {
     activeSessionDeleted, deletedNotice, deleteSession, restoreSession, dismissDeletedNotice, renameSession,
     // 自动重连是会自己恢复的临时状态，单独给视图一个安静的状态行；重连失败等才走错误行。
     reconnecting: !error && connectionError === RECONNECTING_NOTICE,
-    connectionLost: connectionError !== "",
+    connectionLost: connectionError !== "", pageOutdated,
     replyTarget, error: error || (connectionError === RECONNECTING_NOTICE ? "" : connectionError),
     // 发送失败时"重试"（重连并重新加载）不会重新发送，反而误导；发送钮就是重试入口，横幅不再给按钮。
     errorRetry: !error || !errorFromSend,
