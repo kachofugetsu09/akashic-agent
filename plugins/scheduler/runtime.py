@@ -146,10 +146,6 @@ class SchedulerRuntime:
             await self.store.settle(key, "failed", now=self._now(), error="目标会话不存在")
             return
         final = await run_file_io(lambda: _final(target, fire))
-        if final is None and await run_file_io(lambda: catalog.exists(fire.source)):
-            # 旧版本在内部会话 scheduler:<key> 里开始过这次触发；升级后不续跑旧过程，明确结算，下次触发走新流程。
-            await self.store.settle(key, "failed", now=self._now(), error="升级前未完成的旧触发，未续跑")
-            return
         if final is None:
             # 写入授权属于 scheduler 自己的 Task；会话执行位里只使用已绑定的 writer。
             writer = ctx.require(MESSAGE_WRITERS).bind(

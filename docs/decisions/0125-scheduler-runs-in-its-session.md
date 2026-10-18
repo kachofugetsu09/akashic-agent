@@ -60,7 +60,9 @@
 
 ## 迁移
 
-`schedules.json` 升到 version 3。读取 version 2 时在内存中把 `tier/message/prompt` 换成 `action/text`，`context` 记为 `none`，目标会话取原 `channel:chat_id`；下一次任何提交写回 version 3，触发 key 不变。旧流程已发布的 `scheduler-notification:<key>` 仍被认作这次触发的最终消息，只补投递；旧流程已在内部 Session 开始但还没发布通知的触发，以失败结算（“升级前未完成的旧触发，未续跑”），不在目标会话重复执行，周期任务的下一次触发走新流程。旧内部 Session 原样保留。未接线的数组迁移脚本 `plugins/scheduler/migration.py` 删除。
+`schedules.json` 升到 version 3，由 scheduler 自己的 Yoyo 迁移 `20261018_01_schedules_v3` 完成（`plugins/scheduler/migration.catalog.toml`），启动前在 workspace 锁内执行，失败阻止启动；运行时只认 v3，不保留读时换算。迁移先写 `schedules.json.pre-v3-<时间>` 备份再原子替换：`tier/message/prompt` 换成 `action/text`，`context` 记为 `none`，目标会话取原 `channel:chat_id`，触发 key 不变。旧流程未完成的 `run` 触发在内部 Session 开始过，以失败结算（“升级前未完成的旧触发，未续跑”），恢复阶段把仍指向已结算触发的周期任务推进到下一次、one-shot 停用；`notify` 的 pending 触发由新流程补完，已发布的 `scheduler-notification:<key>` 仍被认作最终消息。旧内部 Session 原样保留。未接线的数组迁移脚本 `plugins/scheduler/migration.py` 删除。
+
+回滚：v3 文件旧版本读不了。退回旧 release 前，用迁移留下的 `pre-v3` 备份替换 `schedules.json`，并删除迁移账本里的 `20261018_01_schedules_v3` 回执。
 
 ## 验收
 
