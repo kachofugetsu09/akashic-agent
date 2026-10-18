@@ -35,7 +35,8 @@ import { Folder } from "lucide-react";
 export interface DesktopSidebarSession extends Omit<ConversationSession, "active" | "state"> {
   active: boolean;
   projectId?: string;
-  projectScoped?: boolean;
+  /** 属于某个会话维度（如项目）的会话归在该分组下，不单独置顶。 */
+  scoped?: boolean;
   updatedAt?: string;
   createdAt?: string;
 }
@@ -391,7 +392,7 @@ export const DesktopSidebar = memo(function DesktopSidebar({
     const rows = new Map<string, DesktopSidebarSession>(navigationPins.sessions.map((session) => [session.key, {
       id: session.key, title: sessionLabel(session), preview: session.message_count === undefined ? "" : `${session.message_count} 条消息`,
       active: activeSessionId === session.key,
-      projectId: session.scope?.project, projectScoped: Object.hasOwn(session.scope ?? {}, "project"),
+      projectId: session.scope?.project, scoped: Object.keys(session.scope ?? {}).length > 0,
     }]));
     // 目录里的新鲜 metadata 优先；置顶解析补齐不在最近分页内的会话。
     for (const session of sessions) rows.set(session.id, session);
@@ -489,7 +490,7 @@ export const DesktopSidebar = memo(function DesktopSidebar({
       if (project) return visibleProject(project);
     } else {
       const session = allSessions.find((item) => item.id === pin.id);
-      if (session && !session.projectId && !session.projectScoped) {
+      if (session && !session.projectId && !session.scoped) {
         return `${session.title} ${session.preview}`.toLowerCase().includes(needle);
       }
     }
@@ -598,7 +599,7 @@ export const DesktopSidebar = memo(function DesktopSidebar({
             /> : null;
           } else {
             const session = allSessions.find((item) => item.id === pin.id);
-            if (session && !session.projectId && !session.projectScoped) return !needle
+            if (session && !session.projectId && !session.scoped) return !needle
               || `${session.title} ${session.preview}`.toLowerCase().includes(needle) ? <ConversationSessionRow
                 key={`session:${pin.id}`} session={sessionView(session)} pendingSessionId={pendingSessionId}
                 onActivate={onSelectSession} onPrefetch={onPrefetchSession}
@@ -608,7 +609,7 @@ export const DesktopSidebar = memo(function DesktopSidebar({
               /> : null;
           }
           if (needle && !pin.id.toLowerCase().includes(needle)) return null;
-          const title = pin.kind === "project" ? "项目暂不可用" : "会话暂不可用";
+          const title = pin.kind === "session" ? "会话暂不可用" : pin.kind === "project" ? "项目暂不可用" : "暂不可用";
           return <ConversationSessionRow key={`${pin.kind}:${pin.id}`}
             session={{ id: pin.id, title, preview: pin.id, active: false, unavailable: true }}
             onActivate={onSelectSession} actions={pinAction(pin, true)} />;
@@ -652,7 +653,7 @@ export const DesktopSidebar = memo(function DesktopSidebar({
         onSessionRename={onRenameSession ? (session, title) => onRenameSession(session.id, title) : undefined}
         sessionActions={(session) => {
           const row = allSessions.find((item) => item.id === session.id);
-          return row && !row.projectId && !row.projectScoped
+          return row && !row.projectId && !row.scoped
             ? pinAction({ kind: "session", id: row.id }, false) : [];
         }}
         onSessionActivate={onSelectSession}

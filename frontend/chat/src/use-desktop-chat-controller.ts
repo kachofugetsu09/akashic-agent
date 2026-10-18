@@ -1070,7 +1070,7 @@ export function useDesktopChatController() {
       active: activeSessionId === session.key,
       status: sessionStatuses.get(session.key),
       projectId: session.scope?.[PROJECT_DIMENSION] ?? "",
-      projectScoped: Object.hasOwn(session.scope ?? {}, PROJECT_DIMENSION),
+      scoped: Object.keys(session.scope ?? {}).length > 0,
     }));
   }, [activeSessionId, sessions, navigationPins.sessions, sessionStatuses]);
   // 新对话在首条消息进入目录前沿用发起时选定的项目。

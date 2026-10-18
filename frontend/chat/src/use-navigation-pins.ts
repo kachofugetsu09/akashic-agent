@@ -1,10 +1,13 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { errorMessage, fetchChatJson, sessionPage, type SessionRow } from "./web-chat-data";
 
+/** kind 为 "session" 时 id 是会话；否则 kind 是会话维度名、id 是该维度的值（如项目）。 */
 export interface NavigationPin {
-  kind: "project" | "session";
+  kind: string;
   id: string;
 }
+
+const PIN_KIND = /^[a-z][a-z0-9_]{0,31}$/;
 
 interface NavigationPinsSnapshot {
   pins: NavigationPin[];
@@ -20,7 +23,7 @@ function snapshot(payload: unknown): NavigationPinsSnapshot {
   if (!Array.isArray(row.pins) || row.pins.some((pin: unknown) => {
     if (!pin || typeof pin !== "object" || Array.isArray(pin)) return true;
     const item = pin as Record<string, unknown>;
-    return (item.kind !== "project" && item.kind !== "session") || typeof item.id !== "string" || !item.id;
+    return typeof item.kind !== "string" || !PIN_KIND.test(item.kind) || typeof item.id !== "string" || !item.id;
   })) throw new Error("置顶列表无效");
   const pins = row.pins as NavigationPin[];
   if (new Set(pins.map((pin) => `${pin.kind}:${pin.id}`)).size !== pins.length) throw new Error("置顶列表包含重复项目");

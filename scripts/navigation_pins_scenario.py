@@ -97,7 +97,7 @@ async def run(root: Path):
         check(response.json() == {"pins": [], "sessions": []}, "empty preferences do not create an owner record")
         check(store.list() == (), "read-only empty GET writes no record")
         check(response.headers["cache-control"] == "no-store", "pins are not cached")
-        for key in keys[6:]:
+        for key in keys[2:]:
             check((await update("session", key)).status_code in (400, 422), "reject ineligible session " + key)
         for invalid in ["default", "fake", "p_" + "3" * 32, archived_id]:
             check((await update("project", invalid)).status_code in (400, 422), "reject invalid/unavailable project " + invalid)
@@ -122,8 +122,8 @@ async def run(root: Path):
         provider.wait = None
         check(navigation.read() == previous, "cancel during project validation writes no preference")
         check((await update("project", project_id)).status_code == 200, "pin real project")
-        check((await update("session", keys[2])).status_code == 200, "scoped session remains eligible; grouping is a client concern")
-        expected = [{"kind": "session", "id": keys[0]}, {"kind": "project", "id": project_id}, {"kind": "session", "id": keys[2]}]
+        check((await update("session", keys[1])).status_code == 200, "unscoped session is eligible")
+        expected = [{"kind": "session", "id": keys[0]}, {"kind": "project", "id": project_id}, {"kind": "session", "id": keys[1]}]
         version = store.read("navigation:pins").version
         check((await update("session", keys[0])).json()["pins"] == expected, "retry preserves mixed stable order")
         check(store.read("navigation:pins").version == version, "retry has no redundant write")
