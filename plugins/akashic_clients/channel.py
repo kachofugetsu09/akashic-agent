@@ -27,7 +27,7 @@ from plugins.channels.contract import (
     ProviderDeliveryRequest,
     StopReceipt,
 )
-from plugins.ledger.contract import MESSAGE_CATALOG, SESSION_ADMIN
+from plugins.ledger.contract import MESSAGE_CATALOG, SESSION_ADMIN, SESSION_ADMISSION, SessionAdmission
 
 from .capabilities import (
     MESSAGE_DISPLAY,
@@ -318,6 +318,14 @@ class _GenerationAkashicAdapter:
         async with self._open_request_scope() as scope:
             yield cast(SessionAdminPort, scope.require(SESSION_ADMIN))
 
+    # 维度值置顶前短借 Core 接纳端口，由该维度 owner 判定当前是否可用。
+    async def _check_scope(self, dimension: str, value: str) -> None:
+        async with self._open_request_scope() as scope:
+            with scope.borrow(SESSION_ADMISSION) as admission:
+                if admission is None:
+                    raise PermissionError("会话接纳端口不可用")
+                cast(SessionAdmission, admission).check_scope(dimension, value)
+
     @asynccontextmanager
     async def _plugin_ui_scope(self) -> AsyncIterator[PluginUiProvider]:
         """Expose one exact Plugin UI provider to an HTTP operation."""
@@ -435,6 +443,7 @@ class _GenerationAkashicAdapter:
         server = build_chat_server(
             workspace=self._workspace,
             navigation=self._state.navigation,
+            check_scope=self._check_scope,
             read_marks=self._state.read_marks,
             channel=self._web,
             message_display=self._message_display,

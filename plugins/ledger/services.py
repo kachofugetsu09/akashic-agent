@@ -297,6 +297,9 @@ class SessionAdmission:
                 (store, initialize) for _, store, initialize in registered
             ))
 
+    def check_scope(self, dimension: str, value: str) -> None:
+        self._check_dimensions(SessionAttributes(scope=((dimension, value),)))
+
     def _check_dimensions(self, attributes: SessionAttributes) -> None:
         for name, value in attributes.scope:
             grant = self._dimensions.get(name)
