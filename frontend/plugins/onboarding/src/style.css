@@ -353,19 +353,9 @@
   font-size: 0.875rem;
 }
 
-.onboarding-source {
-  display: flex;
-  flex-wrap: wrap;
+.onboarding-ability > .onboarding-blocked {
   grid-column: 1 / -1;
-  gap: 4px 12px;
-  margin-top: 6px;
-  font-family: var(--ak-type-technical, monospace);
-  font-size: 0.6875rem;
-  color: var(--ak-ink-muted);
-}
-
-.onboarding-source .is-warning {
-  color: rgb(var(--ak-color-status-warning-rgb));
+  color: var(--ak-color-status-warning);
 }
 
 .onboarding-switch {
@@ -384,11 +374,11 @@
   transition: background-color 180ms ease;
 }
 
-/* 可点区域外扩到 44px，视觉仍是 28px 的开关。 */
+/* 26px 高的开关上下各扩 9px，保留 44px 触控热区。 */
 .onboarding-switch::before {
   content: "";
   position: absolute;
-  inset: -8px;
+  inset: -9px -8px;
 }
 
 .onboarding-switch::after {

@@ -3062,7 +3062,7 @@ form.composer:focus-within [data-slot="input-group"] {
     grid-column: 3;
     grid-row: 1;
     /* 与 22px 外圆角同心：发送键离卡片外缘约 8px。 */
-    border-radius: 12px;
+    border-radius: 14px;
   }
 
   .chat-main .composer.is-compact .composer-action-button:disabled,

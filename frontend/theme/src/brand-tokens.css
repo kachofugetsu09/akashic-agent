@@ -30,7 +30,7 @@
 
   /* Surfaces: one scrim and one overlay elevation for every dialog. */
   --ak-scrim-overlay: color-mix(in srgb, var(--ak-color-shadow) 28%, transparent);
-  --ak-elevation-overlay: 0 12px 32px color-mix(in oklab, var(--ak-ink-primary) 14%, transparent);
+  --ak-elevation-overlay: 0 12px 32px color-mix(in oklab, var(--ak-color-shadow) 14%, transparent);
 
   /* Typography: reading and technical content stay visibly distinct. */
   --ak-type-reading: var(--md-ref-typeface-plain);

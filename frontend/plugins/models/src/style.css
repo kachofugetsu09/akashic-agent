@@ -387,7 +387,7 @@ dialog.settings-scrim::backdrop { background: transparent; }
   overflow: hidden;
   overscroll-behavior: contain;
   border: 1px solid var(--ak-rule-default);
-  border-radius: var(--md-sys-shape-corner-medium, 12px);
+  border-radius: 12px;
   padding: 0;
   color: var(--md-sys-color-on-surface);
   background: var(--md-sys-color-surface-container-high);

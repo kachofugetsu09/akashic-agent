@@ -37,7 +37,9 @@ function markSeen(): void {
 async function readCatalog(ctx: WebHostContextV1): Promise<{catalog: Catalog; statuses: Statuses}> {
   const catalog = await request<Catalog>(ctx, "/api/dashboard/onboarding/catalog");
   const entries = await Promise.all(catalog.steps.map(async step => {
-    try { return [step.id, await request<StepStatus>(ctx, `/api/dashboard/onboarding/status/${encodeURIComponent(step.id)}`)] as const; }
+    // The entry proxy rejects encoded slashes; keep path separators literal.
+    const keyPath = step.id.split("/").map(encodeURIComponent).join("/");
+    try { return [step.id, await request<StepStatus>(ctx, `/api/dashboard/onboarding/status/${keyPath}`)] as const; }
     catch (reason) { return [step.id, {fault: reason instanceof Error ? reason.message : String(reason)}] as const; }
   }));
   return {catalog, statuses: Object.fromEntries(entries)};
@@ -298,7 +300,7 @@ function AbilityCard({group, on, done, blocked, toggle}: {group: Group; on: bool
     {done ? <span className="onboarding-chip">已开启</span>
       : <button type="button" role="switch" className="onboarding-switch" aria-checked={on} aria-labelledby={id} onClick={toggle} />}
     {group.benefit && <p>{group.benefit}</p>}
-    <div className="onboarding-source"><span>{group.key}</span>{blocked && <span className="is-warning">{blocked}</span>}</div>
+    {blocked && <p className="onboarding-blocked">{blocked}</p>}
     {(on || done) && group.preview.length > 0 && <div className="onboarding-preview" aria-label="示例">
       {group.preview.map((line, i) => <div key={i}><span>{line.speaker}</span><p>{line.text}</p></div>)}
     </div>}
