@@ -85,7 +85,7 @@ iframe 使用 opaque origin、`allow-scripts` sandbox 和 CSP；不给生成代�
 - 聊天宿主对任何消息里的文件附件询问 `message.attachment` 插槽，不再只限工具结果；插件缺席时退回普通附件卡片。
 - Visuals 认领任何 HTML 文件附件，在同一 opaque origin、`allow-scripts` sandbox 和连接受限的 CSP 中运行。
   作者不是 `user` 时自动运行；用户自己上传的网页先显示“运行网页”，点击后才运行。
-- 附件读取路由对 `text/html` 与 `image/svg+xml` 返回 `Content-Security-Policy: sandbox allow-scripts`，
+- 附件读取路由对所有附件返回 `Content-Security-Policy: sandbox allow-scripts` 与 `nosniff`，覆盖 XHTML/XML 等可执行文档，
   直接打开下载链接时同样位于 opaque origin，拿不到聊天页的登录状态和接口。
 - 已保存的 `.akashic-visual.json` 仍按原规则展示，只认领 `render_visual` 的结果，不改写旧附件。
 
