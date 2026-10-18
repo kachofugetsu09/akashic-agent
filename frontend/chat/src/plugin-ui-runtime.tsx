@@ -446,6 +446,11 @@ function slotMatches(name: InlineSlotName, block: unknown, prefetch: boolean): S
   });
 }
 
+/** 宿主据此决定附件交给插件插槽还是普通附件条；调用方需随目录版本重新渲染。 */
+export function pluginSlotAccepts(name: InlineSlotName, block: unknown): boolean {
+  return slotMatches(name, block, false).length > 0;
+}
+
 export function PluginUiSlot({
   name,
   sessionId,

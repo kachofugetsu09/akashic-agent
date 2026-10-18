@@ -30,11 +30,11 @@ const server = createServer(async (req, res) => {
     }
     if (url.pathname === "/api/chat/plugin-ui/catalog") { res.setHeader("content-type", "application/json"); res.end(catalog); return; }
     const route = url.pathname === "/api/chat/plugin-ui/asset" ? "module.js"
-      : url.pathname.startsWith("/api/chat/artifacts/") ? `${url.pathname.split("/").at(-1)}.json`
+      : url.pathname.startsWith("/api/chat/artifacts/") ? `${url.pathname.split("/").at(-1)}.html`
       : ["/messages.json", "/showcase-messages.json"].includes(url.pathname) ? url.pathname.slice(1) : null;
     const path = route ? join(evidence, route) : join(output, url.pathname);
     if (!path.startsWith(route ? evidence + "/" : output + "/")) { res.writeHead(403).end(); return; }
-    res.setHeader("content-type", ({ ".js": "text/javascript", ".css": "text/css", ".json": "application/json", ".woff2": "font/woff2" })[extname(path)] ?? "application/octet-stream");
+    res.setHeader("content-type", ({ ".js": "text/javascript", ".css": "text/css", ".json": "application/json", ".html": "text/html; charset=utf-8", ".woff2": "font/woff2" })[extname(path)] ?? "application/octet-stream");
     res.end(await readFile(path));
   } catch (error) { console.error(error); res.writeHead(500).end(String(error)); }
 });

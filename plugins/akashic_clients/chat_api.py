@@ -647,6 +647,9 @@ def create_chat_app(
                     if encoded_filename != safe_filename
                     else f'inline; filename="{safe_filename}"'
                 )
+        # Any attachment can be opened as a document, including XHTML and XML.
+        headers["Content-Security-Policy"] = "sandbox allow-scripts"
+        headers["X-Content-Type-Options"] = "nosniff"
         return Response(
             content=data,
             media_type=media_type or "application/octet-stream",

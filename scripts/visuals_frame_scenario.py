@@ -12,7 +12,7 @@ import time
 
 from fastapi.responses import HTMLResponse, Response
 from fastapi.routing import APIRoute
-from playwright.async_api import async_playwright
+from playwright.async_api import Browser, async_playwright
 import uvicorn
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -25,6 +25,38 @@ from plugins.ledger.artifact_store import ArtifactStore
 from plugins.ledger.attachments import ChannelAttachmentArtifactStore
 from plugins.ledger.contract import AttachmentKind
 from plugins.visuals import dashboard
+
+
+async def check_direct_artifacts(browser: Browser, files: ChannelAttachmentArtifactStore, base: str) -> None:
+    """Open active attachment formats and prove scripts cannot read the app origin."""
+    # 1. Seed private data through the real attachment owner and a browser cookie.
+    private = await files.import_bytes(b"private-artifact-marker", kind=AttachmentKind.FILE,
+                                       filename="private.txt", media_type="text/plain")
+    context = await browser.new_context()
+    await context.add_cookies([{"name": "private_marker", "value": "secret-cookie", "url": base}])
+    script = ("(async()=>{const result={};try{result.cookie=document.cookie}"
+              "catch(e){result.cookie=e.name}try{result.read=await(await fetch("
+              + json.dumps(base + "/api/chat/artifacts/" + private.artifact_id)
+              + ")).text()}catch(e){result.read=e.name}window.probe=result})()")
+    try:
+        # 2. MIME variants must keep scripts working while removing app privileges.
+        for filename, media_type in (("page.xhtml", "application/xhtml+xml"), ("page.xml", "text/xml"),
+                                     ("page.html", "text/html"), ("page.svg", "image/svg+xml")):
+            document = (f'<svg xmlns="http://www.w3.org/2000/svg"><script><![CDATA[{script}]]></script></svg>'
+                        if filename.endswith(".svg") else
+                        '<html xmlns="http://www.w3.org/1999/xhtml"><head><title>Probe</title></head>'
+                        f'<body><script>{script}</script></body></html>')
+            ref = await files.import_bytes(document.encode(), kind=AttachmentKind.FILE,
+                                           filename=filename, media_type=media_type)
+            page = await context.new_page()
+            await page.goto(base + "/api/chat/artifacts/" + ref.artifact_id)
+            await page.wait_for_function("window.probe !== undefined")
+            result = await page.evaluate("window.probe")
+            assert result == {"cookie": "SecurityError", "read": "TypeError"}, (filename, result)
+            print(json.dumps({"direct_attachment": filename, "app_origin_blocked": True}))
+            await page.close()
+    finally:
+        await context.close()
 
 
 async def run(workspace: Path, executable: str | None, artifact: Path | None) -> None:
@@ -44,7 +76,9 @@ async def run(workspace: Path, executable: str | None, artifact: Path | None) ->
     app = create_chat_app(workspace=workspace, channel=WebChatChannel(), artifact_store=files)
     dashboard.register(app, DashboardContext(plugin_id="visuals@scenario", plugin_dir=ROOT / "plugins/visuals",
                                              data_root=workspace, validation=True))
-    block = {"artifact_id": ref.artifact_id, "size_bytes": ref.size_bytes}
+    block = {"artifact_id": ref.artifact_id, "size_bytes": ref.size_bytes,
+             "kind": "file", "media_type": "application/json", "filename": ref.filename,
+             "origin": {"kind": "tool_result", "tool": "render_visual"}}
     page_html = ('<!doctype html><meta name="viewport" content="width=device-width,initial-scale=1">'
                  '<div id="host"></div><script type="module" src="/scenario-entry.js"></script>')
     app.router.routes.insert(0, APIRoute("/chat", lambda: HTMLResponse(page_html), methods=["GET"]))
@@ -73,6 +107,7 @@ async def run(workspace: Path, executable: str | None, artifact: Path | None) ->
         async with async_playwright() as playwright:
             browser = await playwright.chromium.launch(executable_path=executable)
             try:
+                await check_direct_artifacts(browser, files, f"http://127.0.0.1:{port}")
                 for width in (390, 1024):
                     page = await browser.new_page(viewport={"width": width, "height": 844})
                     errors = []

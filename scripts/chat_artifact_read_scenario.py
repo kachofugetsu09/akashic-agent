@@ -41,10 +41,16 @@ async def run(workspace: Path) -> None:
                 assert header.get_content_disposition() == "inline"
                 assert header.get_filename() == filename
                 assert files.resolve_refs((ref.artifact_id,)) == (ref,)
+            # 3. 直接打开的网页附件只能在 opaque origin 里运行，拿不到聊天页的 Cookie 与接口。
+            page = await files.import_bytes(b"<h2>page</h2><script>document.title='x'</script>", kind=AttachmentKind.FILE,
+                                            filename="page.html", media_type="text/html")
+            response = await client.get(f"/api/chat/artifacts/{page.artifact_id}")
+            assert response.headers["content-security-policy"] == "sandbox allow-scripts"
+            assert response.headers["x-content-type-options"] == "nosniff"
             assert (await client.get("/api/chat/artifacts/missing")).status_code == 404
     finally:
         metadata.close()
-    print(json.dumps({"http_read": "passed", "unicode_filename": "preserved", "artifact_bytes": "unchanged"}))
+    print(json.dumps({"http_read": "passed", "unicode_filename": "preserved", "artifact_bytes": "unchanged", "html_sandboxed": "passed"}))
 
 
 if __name__ == "__main__":
