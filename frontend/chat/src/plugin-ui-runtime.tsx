@@ -249,9 +249,11 @@ async function activateCatalog(next: PluginUiCatalog): Promise<boolean> {
     }
   }
   styleNodes.forEach((node) => node.remove());
+  const retired = new Set([...definitions].filter(([id, { revision }]) => nextDefinitions.get(id)?.revision !== revision)
+    .map(([id, { revision }]) => JSON.stringify([id, revision])));
   definitions.clear();
   nextDefinitions.forEach((definition, id) => definitions.set(id, definition));
-  prunePushes();
+  retirePushes(retired);
   styleNodes.clear();
   nextStyles.forEach((node, id) => {
     document.head.appendChild(node);
@@ -382,7 +384,7 @@ export async function queryHostPlugin(
 }
 
 // 插件推送按“插件|revision|会话”记住最新一帧，晚挂载的界面先拿到当前状态；换代后旧代的帧（包括它的 null）
-// 碰不到新代界面。新代帧可能先于新目录到达，先留着，目录切换时只保留与当前 revision 对得上的。
+// 碰不到新代界面。新代帧可能先于新目录到达，所以目录激活时只清掉被这次激活确认退役的 revision，其余留着。
 const pushed = new Map<string, Record<string, unknown>>();
 const pushListeners = new Map<string, Set<(value: Record<string, unknown> | null) => void>>();
 
@@ -390,10 +392,10 @@ function pushKey(pluginId: string, revision: string, sessionId: string): string 
   return JSON.stringify([pluginId, revision, sessionId]);
 }
 
-function prunePushes() {
+function retirePushes(retired: ReadonlySet<string>) {
   for (const key of pushed.keys()) {
     const [pluginId, revision] = JSON.parse(key) as [string, string, string];
-    if (definitions.get(pluginId)?.revision !== revision) pushed.delete(key);
+    if (retired.has(JSON.stringify([pluginId, revision]))) pushed.delete(key);
   }
 }
 

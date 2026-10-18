@@ -9,6 +9,7 @@ from plugins.models.contract import (
 from plugins.models.contract import ModelControlUnavailable
 
 import asyncio
+import logging
 from collections.abc import AsyncGenerator, AsyncIterator, Mapping, Sequence
 from contextlib import aclosing, asynccontextmanager
 from dataclasses import dataclass
@@ -67,6 +68,8 @@ from .scoped_capabilities import (
     ScopedWebUiProvider,
     open_request_scope,
 )
+
+logger = logging.getLogger(__name__)
 
 
 class _ChannelArtifactReadLease:
@@ -397,7 +400,11 @@ class _GenerationAkashicAdapter:
                 delay = min(delay * 2, _PLUGIN_UI_RETRY_MAX_S)
                 continue
             delay = _PLUGIN_UI_RETRY_MIN_S
-            await provider.follow(session_id, emit)
+            # 插件推送是可选界面：跟随出错只记录并退避重借，不连累同一连接上的消息订阅。
+            try:
+                await provider.follow(session_id, emit)
+            except Exception:
+                logger.exception("plugin ui follow stopped: %s", session_id)
             await asyncio.sleep(delay)
 
     async def _read_model_call_stats(self, call_id: str) -> ModelCallStats:

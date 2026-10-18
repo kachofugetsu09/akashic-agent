@@ -10,7 +10,7 @@ from collections.abc import Awaitable, Coroutine, Mapping
 from concurrent.futures import ThreadPoolExecutor
 from contextlib import aclosing, suppress
 from contextvars import copy_context
-from typing import Any, cast
+from typing import Any, Literal, cast
 
 from core.error_context import running_turn_id
 from agent.plugin_composition import (
@@ -374,12 +374,13 @@ class LivePluginUiProvider:
         # 撤下的流仍归这里所有，直到它真正结束，退出时一并排空。
         retiring: set[asyncio.Task[None]] = set()
         closed = asyncio.ensure_future(self._closed.wait())
+        changed: asyncio.Task[Literal[True]] | None = None
         try:
             while not self._closed.is_set():
                 changed = asyncio.ensure_future(self._slots.changed().wait())
+                waiting = changed
                 current = await self._follow_bindings()
                 if current is None:
-                    _ = changed.cancel()
                     return
                 for key in [key for key in streams if key not in current]:
                     task = streams.pop(key)
@@ -389,10 +390,13 @@ class LivePluginUiProvider:
                 for key, binding in current.items():
                     if key not in streams:
                         streams[key] = asyncio.create_task(self._pump(binding, session_id, emit))
-                _ = await asyncio.wait((changed, closed), return_when=asyncio.FIRST_COMPLETED)
-                _ = changed.cancel()
+                _ = await asyncio.wait((waiting, closed), return_when=asyncio.FIRST_COMPLETED)
+                _ = waiting.cancel()
         finally:
-            _ = closed.cancel()
+            # 任何出口（取消、枚举出错）都收掉等待者与流。
+            for waiter in (closed, changed):
+                if waiter is not None:
+                    _ = waiter.cancel()
             tasks = (*streams.values(), *retiring)
             for task in tasks:
                 _ = task.cancel()
@@ -416,7 +420,7 @@ class LivePluginUiProvider:
         finally:
             await ui_scope.__aexit__(None, None, None)
 
-    # 在注册者自己的作用域里问它当前是否可见；作用域已失效算不可见。
+    # 在注册者自己的作用域里问它当前是否可见；作用域已失效或回调抛错都算不可见，坏插件不拖累目录和其他插件的流。
     async def _available(self, binding: PluginUiBinding) -> bool:
         target_scope = binding.context.runtime_scope()
         try:
@@ -429,6 +433,9 @@ class LivePluginUiProvider:
             with plugin_entrypoint(plugin_id=binding.descriptor.owner, generation_id=binding.context.runtime.generation_id,
                                    fiber=binding.context.fiber.name, operation="plugin_ui.available"):
                 return binding.available()
+        except Exception:
+            logger.exception("plugin ui available failed: %s", binding.descriptor.owner)
+            return False
         finally:
             await target_scope.__aexit__(None, None, None)
 
