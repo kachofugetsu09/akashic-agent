@@ -45,6 +45,8 @@ PLUGIN_UI_QUERY_QUEUE_LIMIT = 16
 PLUGIN_UI_QUERY_WORKERS_PER_PLUGIN = 4
 PLUGIN_UI_QUERY_LIMIT_PER_PLUGIN = 12
 PLUGIN_UI_FINAL_FRAME_SECONDS = 2.0
+PLUGIN_UI_AVAILABLE_RETRY_MIN_SECONDS = 1.0
+PLUGIN_UI_AVAILABLE_RETRY_MAX_SECONDS = 30.0
 logger = logging.getLogger(__name__)
 
 
@@ -375,13 +377,15 @@ class LivePluginUiProvider:
         retiring: set[asyncio.Task[None]] = set()
         closed = asyncio.ensure_future(self._closed.wait())
         changed: asyncio.Task[Literal[True]] | None = None
+        retry = PLUGIN_UI_AVAILABLE_RETRY_MIN_SECONDS
         try:
             while not self._closed.is_set():
                 changed = asyncio.ensure_future(self._slots.changed().wait())
                 waiting = changed
-                current = await self._follow_bindings()
-                if current is None:
+                found = await self._follow_bindings()
+                if found is None:
                     return
+                current, failed = found
                 for key in [key for key in streams if key not in current]:
                     task = streams.pop(key)
                     _ = task.cancel()
@@ -390,8 +394,11 @@ class LivePluginUiProvider:
                 for key, binding in current.items():
                     if key not in streams:
                         streams[key] = asyncio.create_task(self._pump(binding, session_id, emit))
-                _ = await asyncio.wait((waiting, closed), return_when=asyncio.FIRST_COMPLETED)
+                # available 回调出错的插件没有变化通知可等，按退避重新检查，恢复后重开它的流。
+                _ = await asyncio.wait((waiting, closed), timeout=retry if failed else None,
+                                       return_when=asyncio.FIRST_COMPLETED)
                 _ = waiting.cancel()
+                retry = min(retry * 2, PLUGIN_UI_AVAILABLE_RETRY_MAX_SECONDS) if failed else PLUGIN_UI_AVAILABLE_RETRY_MIN_SECONDS
         finally:
             # 任何出口（取消、枚举出错）都收掉等待者与流。
             for waiter in (closed, changed):
@@ -402,8 +409,9 @@ class LivePluginUiProvider:
                 _ = task.cancel()
             _ = await asyncio.gather(*tasks, return_exceptions=True)
 
-    # 当前 Root 下注册了 follow、已 ACTIVE 且 available 的插件，与目录可见条件一致；UI owner 已失效时返回 None。
-    async def _follow_bindings(self) -> dict[str, PluginUiBinding] | None:
+    # 当前 Root 下注册了 follow、已 ACTIVE 且 available 的插件，与目录可见条件一致，并报告是否有 available 回调出错；
+    # UI owner 已失效时返回 None。
+    async def _follow_bindings(self) -> tuple[dict[str, PluginUiBinding], bool] | None:
         ui_scope = self._ctx.runtime_scope()
         try:
             await ui_scope.__aenter__()
@@ -413,15 +421,21 @@ class LivePluginUiProvider:
             raise
         try:
             visible: dict[str, PluginUiBinding] = {}
+            failed = False
             for binding in self._slots.bindings():
-                if binding.follow is not None and self._binding_is_active(binding) and await self._available(binding):
+                if binding.follow is None or not self._binding_is_active(binding):
+                    continue
+                available = await self._available(binding)
+                failed |= available is None
+                if available:
                     visible[binding.registration_uuid] = binding
-            return visible
+            return visible, failed
         finally:
             await ui_scope.__aexit__(None, None, None)
 
-    # 在注册者自己的作用域里问它当前是否可见；作用域已失效或回调抛错都算不可见，坏插件不拖累目录和其他插件的流。
-    async def _available(self, binding: PluginUiBinding) -> bool:
+    # 在注册者自己的作用域里问它当前是否可见；作用域已失效算不可见，回调抛错返回 None（同样不可见），
+    # 坏插件不拖累目录和其他插件的流。
+    async def _available(self, binding: PluginUiBinding) -> bool | None:
         target_scope = binding.context.runtime_scope()
         try:
             await target_scope.__aenter__()
@@ -435,7 +449,7 @@ class LivePluginUiProvider:
                 return binding.available()
         except Exception:
             logger.exception("plugin ui available failed: %s", binding.descriptor.owner)
-            return False
+            return None
         finally:
             await target_scope.__aexit__(None, None, None)
 
