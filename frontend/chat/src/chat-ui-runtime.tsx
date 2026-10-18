@@ -56,10 +56,14 @@ function HeaderMarkerActions({ children }: { children: ReactNode }) {
 const ChatUi = {
   // 在插槽元素里挂一个 React 根；返回的卸载函数可直接作为 mount() 的返回值。
   render(host: HTMLElement, node: ReactNode): () => void {
-    const root = ReactDOMClient.createRoot(host);
+    // 根挂在自己的容器里：宿主清理时会清空插槽元素，推迟的卸载只动这个已摘下的容器。
+    const box = document.createElement("div");
+    box.style.display = "contents";
+    host.append(box);
+    const root = ReactDOMClient.createRoot(box);
     root.render(node);
     // 插槽清理发生在宿主提交期间，推迟一拍卸载，避免嵌套同步卸载。
-    return () => { queueMicrotask(() => root.unmount()); };
+    return () => { box.remove(); queueMicrotask(() => root.unmount()); };
   },
   // 输入框上方的一行状态提示，与宿主自己的连接、上传提示同一外观。
   Notice({ children }: { children: ReactNode }) {
