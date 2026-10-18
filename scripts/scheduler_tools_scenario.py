@@ -17,11 +17,13 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 
 from agent.plugin_composition.config_input import save_config
+from agent.plugin_composition.tasks import TASKS
 from plugins.channels.contract import CHANNEL_INPUT_V2 as CHANNEL_INPUT, ChannelInboundMessage
 from plugins.content.plugin import check_text
-from plugins.ledger.contract import ContentPart, Input, Output, ToolResult
+from plugins.ledger.contract import ContentPart, Control, Input, Output, ToolResult
 from plugins.scheduler.schedule import ScheduledJob
 from plugins.scheduler.store import JobStore, fire_key
+from plugins.scheduler.tools import cancel_fires
 from tests.support.delivery_sources import sources as delivery_sources
 from tests.test_default_reply import application
 
@@ -120,7 +122,7 @@ async def run(directory: Path) -> dict[str, object]:
                     "action": "notify", "trigger": "after", "when": "1s", "text": "followup-notice", "timezone": "UTC"}})]]
             elif case not in {"frozen", "removed"}:
                 # interrupt 一次提交两个调用：用户插话时第二个可能还没开始。
-                steps.append([("tool_call", {"name": name, "arguments": {}})] * (2 if case == "interrupt" else 1))
+                steps.append([("tool_call", {"name": name, "arguments": {}})] * (2 if case in {"interrupt", "cancelled"} else 1))
             if case != "followup":
                 steps.append([("tool_call", {"name": "memorize", "arguments": {}})])
             if len(calls) <= len(steps):
@@ -243,6 +245,30 @@ async def run(directory: Path) -> dict[str, object]:
             assert "case:interrupt" not in str(requests["ping"][0]["messages"]), "进行中的任务不应进入对话请求"
             assert any(isinstance(message.body, Output) and message.body.finish == "complete" for message in interrupted)
 
+            # Cancel during a tool batch, then verify the saved round closes and later input still runs.
+            (data / "holding").unlink()
+            (data / "hold").touch()
+            cancelled = await schedule("cancelled")
+            async with asyncio.timeout(10):
+                while not (data / "holding").exists():
+                    await asyncio.sleep(0.02)
+            before_cancel = rows(workspace)
+            async with scheduler_context.runtime_scope():
+                await store.cancel("cancel:running", (cancelled.id,))
+                await cancel_fires(store, scheduler_context.require(TASKS).open(scheduler_context), (cancelled.id,))
+            (data / "hold").unlink()
+            async with asyncio.timeout(10):
+                while not any(isinstance(row.body, Control) and row.body.action == "abandon"
+                              for row in log.reader(cancelled.session_id).snapshot()):
+                    await asyncio.sleep(0.02)
+            assert set(before_cancel).issubset(rows(workspace))
+            await root.context.require(CHANNEL_INPUT)(cancelled.session_id, "after-cancel", ChannelInboundMessage(
+                "test", "user", "cancelled", "user-ping", datetime.now(UTC), {}))
+            async with asyncio.timeout(30):
+                while not any(isinstance(row.body, Output) and row.source == "conversation" and "pong" in str(row.body.parts)
+                              for row in log.reader(cancelled.session_id).snapshot()):
+                    await asyncio.sleep(0.02)
+
             # 定时轮里创建后续任务：目标沿用本次触发；原文提醒到点写入同一会话并送达。
             await finish(await schedule("followup"))
             async with asyncio.timeout(30):
@@ -304,11 +330,11 @@ async def run(directory: Path) -> dict[str, object]:
                 assert all(call["system"] == calls[0]["system"] and call["tools"] == calls[0]["tools"] for call in calls), case
             for messages in (first, history, fresh, held, removed):
                 assert "model.tool_rejection" in str(messages), "禁用工具必须明确拒绝"
-            for name, count in (("late", 4), ("extra", 1)):
+            for name, count in (("late", 5), ("extra", 1)):
                 calls = (workspace / "plugin-data" / (name + "-lab") / "calls.jsonl").read_text().splitlines()
                 assert len(calls) == count, (name, calls)
             sent = (workspace / "plugin-data/test_sender-builtin/sent.jsonl").read_text().splitlines()
-            assert len(sent) == 9 and len(set(sent)) == 9
+            assert len(sent) == 10 and len(set(sent)) == 10
             with sqlite3.connect(workspace / "sessions.db") as connection:
                 assert connection.execute("PRAGMA integrity_check").fetchone() == ("ok",)
     finally:
@@ -319,7 +345,7 @@ async def run(directory: Path) -> dict[str, object]:
         (directory / "requests.json").write_text(json.dumps(requests, ensure_ascii=False, indent=2))
     return {"in_session": True, "history_none_isolated": True, "history_session_included": True,
             "late_registration": True, "concurrent_fixed_views": True, "uninstall": True,
-            "disabled_tools_rejected": True, "messages_preserved": True, "deliveries": 9, "user_preempts_task": True, "followup_from_task": True, "legacy_pending_settled": True,
+            "disabled_tools_rejected": True, "messages_preserved": True, "deliveries": 10, "user_preempts_task": True, "cancelled_round_closed": True, "followup_from_task": True, "legacy_pending_settled": True,
             "model_requests": {key: len(value) for key, value in requests.items()}}
 
 

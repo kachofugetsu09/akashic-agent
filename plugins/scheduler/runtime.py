@@ -13,7 +13,7 @@ from plugins.sources.contract import SourceGuard
 from .inputs import CONTENT, CONVERSATION_COMPLETE, DELIVERY, DELIVERY_SENDERS
 from plugins.ledger.contract import BINDINGS
 from plugins.ledger.contract import MessageReader, MessageWriter
-from plugins.ledger.contract import ContentPart, Input, Message, Output
+from plugins.ledger.contract import ContentPart, Control, Input, Message, Output
 
 from .store import Fire, JobStore, aware, fire_key
 from .tools import drain
@@ -118,6 +118,19 @@ class SchedulerRuntime:
         target = ctx.require(MESSAGE_CATALOG).reader(fire.job.session_id)
         if fire.status == "cancelled":
             final = await run_file_io(lambda: _final(target, fire))
+            # The old fire has drained before this task starts. Close its round so
+            # unfinished tool calls cannot block later session compaction.
+            if final is None:
+                control_id = "scheduler-cancelled:" + fire.key
+                if target.get(control_id) is None:
+                    head = target.head(source=fire.source)
+                    if head:
+                        writer = ctx.require(MESSAGE_WRITERS).bind(
+                            ctx, author="scheduler", source=fire.source, body_types=(Control,), content={},
+                        )(target.session_id)
+                        task.on_close(writer.expire)
+                        await writer.append_async(control_id, Control("abandon", head, fire.error),
+                                                  expected_source_head=head)
             selected = None if final is None else delivery.selection(final.message_id)
             if final is not None and selected is not None:
                 for sink in selected.sinks:
