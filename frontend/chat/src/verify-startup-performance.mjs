@@ -66,7 +66,8 @@ async function measureLoad(context, url) {
     if (request.startTime >= previousEnd) serialHops += 1;
     previousEnd = Math.max(previousEnd, request.startTime + request.duration);
   }
-  const assets = measured.resources.filter((entry) => new URL(entry.name).pathname.startsWith("/assets/"));
+  // 只统计带内容哈希的产物；插件共享运行时（/assets/sdk/）是稳定 URL，按 ETag 校验，不属于“必须零传输”的范围。
+  const assets = measured.resources.filter((entry) => /^\/assets\/[^/]*-[\w-]{8}\.[\w]+$/u.test(new URL(entry.name).pathname));
   return {
     firstContentfulPaintMs: measured.paints["first-contentful-paint"] ?? null,
     domContentLoadedMs: measured.navigation.domContentLoadedEventEnd,
@@ -110,28 +111,28 @@ async function instrumentContext(context) {
 async function verifyStartupRecovery(browserInstance, origin, failInitial) {
   const context = await browserInstance.newContext();
   const page = await context.newPage();
-  const attempts = { sessions: 0, models: 0 };
+  const attempts = { sessions: 0 };
   const pending = new Map();
   const started = Promise.withResolvers();
   const deadline = setTimeout(() => started.reject(new Error("启动请求未全部到达")), 10_000);
   const errors = [];
   page.on("pageerror", (error) => errors.push(error.message));
   try {
-    // 1. 扣住首次请求，shell 只在两项都已发起后才发布 ready。
+    // 1. 扣住首次请求，shell 只在两项都已发起后才发布 ready；模型数据由 models 插件在目录加载后自行查询，不在启动屏障里。
     await page.route("**/api/**", async (route) => {
       const path = new URL(route.request().url()).pathname;
-      const key = path === "/api/chat/sessions" ? "sessions" : path === "/api/chat/models" ? "models" : null;
+      const key = path === "/api/chat/sessions" ? "sessions" : null;
       if (key) {
         attempts[key] += 1;
         if (attempts[key] === 1) {
           pending.set(key, route);
-          if (pending.size === 3) started.resolve();
+          if (pending.size === 2) started.resolve();
           return;
         }
       }
       if (path === "/api/shell/state") {
         pending.set("shell", route);
-        if (pending.size === 3) started.resolve();
+        if (pending.size === 2) started.resolve();
         return;
       }
       await route.continue();
@@ -140,7 +141,7 @@ async function verifyStartupRecovery(browserInstance, origin, failInitial) {
     // 浏览器事件作为屏障，不用固定 sleep 猜测 React 是否已经处理 ready。
     await started.promise;
     clearTimeout(deadline);
-    assert.equal(pending.size, 3, "启动必须并行发起 shell、目录与模型请求");
+    assert.equal(pending.size, 2, "启动必须并行发起 shell 与目录请求");
     const readyApplied = page.waitForRequest("**/api/chat/plugin-ui/catalog");
     await pending.get("shell").fulfill({
       status: 200, contentType: "application/json",
@@ -149,7 +150,7 @@ async function verifyStartupRecovery(browserInstance, origin, failInitial) {
     await readyApplied;
 
     // 2. 就绪 effect 已运行；再完成旧请求，后续请求由正常夹具成功响应。
-    for (const key of ["sessions", "models"]) {
+    for (const key of ["sessions"]) {
       if (failInitial) {
         await pending.get(key).fulfill({
           status: 503, contentType: "application/json", body: JSON.stringify({ message: "gateway starting" }),
@@ -158,11 +159,9 @@ async function verifyStartupRecovery(browserInstance, origin, failInitial) {
         await pending.get(key).continue();
       }
     }
-    await page.getByRole("button", { name: /性能基线会话/u }).waitFor({ timeout: 10_000 });
-    await page.locator(".model-capsule__trigger").click();
-    await page.locator(".model-capsule__option").first().waitFor();
+    await page.getByRole("button", { name: "性能基线会话", exact: true }).waitFor({ timeout: 10_000 });
     const expected = failInitial ? 2 : 1;
-    assert.deepEqual(attempts, { sessions: expected, models: expected });
+    assert.deepEqual(attempts, { sessions: expected });
     assert.deepEqual(errors, []);
     assert.deepEqual(await page.getByRole("alert").allTextContents(), []);
     console.log(`启动就绪与在途${failInitial ? "失败" : "成功"}交错场景通过`);

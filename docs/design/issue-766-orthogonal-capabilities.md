@@ -168,6 +168,8 @@ Bus 不再定义第二个 AttachmentKind，而是继续从原 import 路径导�
 
 ### 模型统计与管理各走自己的窄入口
 
+> 勘误（2026-10，插件边界收口）：下文的 `/api/chat/model-calls/{id}` 和 Channel 借用 `MODEL_CALL_STATS` 已删除。调用统计现在由 models 插件经插件界面查询（`call.latest`）提供给 `composer.status` 插槽，akashic_clients 不再依赖 models 合同。
+
 聊天输入栏原来仍请求已断开接线的 /api/settings/model/calls/{id}。现在改为
 /api/chat/model-calls/{id}；Channel 声明 MODEL_CALL_STATS 可选能力，在当前请求 scope
 借用实际 owner，只序列化已有 ModelCallStats。缺 owner 返回 503，未知调用返回 404；
