@@ -4,7 +4,7 @@
 - 日期：2026-10-06
 - 关联条款：CTX-001、CTX-003、CTX-007、MEM-011、MEM-012
 - 部分 supersedes：0030、0052、0068 的整 Turn 请求切点与 20K 最低保留量；原数据、插件 owner 和单窗口摘要合同不变。
-- 勘误（2026-10-18）：第 4 条此前实现为只接受软水位以下的切点，当前输入本身较大时直接阻断；现按原意执行，并补充图片估算规则（第 7 条）。
+- 勘误（2026-10-18）：第 4 条此前实现为只接受软水位以下的切点，当前输入本身较大时直接阻断；现按原意执行，并补充图片估算规则（第 7 条）与输出余量（第 8 条，修订 0030 的 `context_window - request_max_output_tokens`）。
 
 ## 背景
 
@@ -39,6 +39,13 @@
    各驱动共用 `plugins/models/contract.py` 的 `estimate_tokens`。base64 正文长度与模型实际
    计费无关；按字符计时三张手机截图即可把估算推过窗口。Codex、Claude Code、Pi、DSH
    都按固定或按尺寸计价，不按编码长度。
+
+8. `context_window` 是输入上限（与 `litellm_capabilities` 的口径一致）。硬容量为
+   `context_window - output_reserve`，余量取 `min(max_output_tokens, 16384)`，输出上限为 0
+   时取 16384，同 Pi 的 `reserveTokens`。不再整段扣除模型最大输出：272K 窗口扣 128K 后
+   硬容量只剩 144K，低于 74% 软水位，软水位形同虚设。会发送输出上限的驱动由 Context
+   把本次上限收紧到剩余窗口（Pi `clampMaxTokensToContext`）；Codex 驱动与 Codex CLI、
+   Pi 一致不发送输出上限。
 
 ```text
 完整 Message 日志 ──只读──┬── 已结算批次 → 一份摘要 + 近期原文 → 模型请求

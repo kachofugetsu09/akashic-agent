@@ -20,7 +20,7 @@ from plugins.models.contract import (
     RateLimitError,
     TransportError,
 )
-from plugins.context.contract import CONTEXT, MATERIALS_V4, MaterialData, ReductionStatus
+from plugins.context.contract import CONTEXT, MATERIALS_V4, MaterialData, ReductionStatus, output_reserve
 from plugins.ledger.contract import BINDINGS
 from plugins.ledger.contract import MESSAGE_CATALOG, OWNER_STATE
 from plugins.ledger.contract import Input, Message
@@ -270,7 +270,7 @@ async def apply(ctx: Context) -> None:
         after = projection.estimate(after_request)
         if after >= before:
             raise SummaryError("摘要没有降低本次完整请求容量")
-        if after + request.max_output_tokens > window:
+        if after + output_reserve(request.max_output_tokens) > window:
             raise SummaryError(f"摘要后的输入约 {after:,} tokens，加输出预留仍超过硬容量")
         record = record.model_copy(update={"tokens_after": after})
         # 3. binding 可以先固定，但读者只有在摘要事务成功后才取得此引用。
@@ -289,7 +289,7 @@ async def apply(ctx: Context) -> None:
         if window is None or not snapshot or (not force and before < int(window * 0.74)):
             return None
         budget = (f"模型 {model.descriptor.model_id}；窗口 {window:,}；输入估算 {before:,}；"
-                  f"输出预留 {request.max_output_tokens:,}；原文目标 {config.keep_recent_tokens:,} tokens")
+                  f"输出预留 {output_reserve(request.max_output_tokens):,}；原文目标 {config.keep_recent_tokens:,} tokens")
         if on_status is not None:
             await on_status("正在压缩上下文：" + budget, False)
         notices: list[str] = []
@@ -306,7 +306,7 @@ async def apply(ctx: Context) -> None:
             if not (ModelError.matches(error, ContextLengthError, ModelTimeoutError, RateLimitError, TransportError) or isinstance(error, SummaryError)):
                 raise
             detail = f"上下文压缩失败：{type(error).__name__}: {error}。{budget}。"
-            if force or before + request.max_output_tokens > window:
+            if force or before + output_reserve(request.max_output_tokens) > window:
                 raise SummaryError("\n".join((*notices, detail + "本次请求被阻断，未继续业务生成。"))) from error
             if on_status is not None:
                 await on_status(detail + "原请求仍满足硬容量，本次继续生成。", True)

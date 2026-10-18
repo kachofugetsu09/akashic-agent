@@ -188,8 +188,7 @@ class CodexResponses:
             "stream": True,
             "include": ["reasoning.encrypted_content"],
         }
-        if request.max_output_tokens > 0:
-            payload["max_output_tokens"] = request.max_output_tokens
+        # 与 Codex CLI、Pi 一致不发送输出上限：窗口是输入上限，输出由模型自身上限约束。
         reasoning: dict[str, str] = {}
         if self._descriptor.reasoning_effort and not request.disable_reasoning:
             reasoning["effort"] = _normalize_effort(

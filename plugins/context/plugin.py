@@ -15,6 +15,7 @@ from plugins.ledger.contract import (
     Message,
 )
 from plugins.context.contract import (
+    output_reserve,
     CONTEXT as CONTEXT,
     CONTEXT_NOTICE_DISPLAY,
     MATERIALS_V4,
@@ -200,11 +201,13 @@ class ContextBuilder:
         if model.max_tool_schemas is not None and len(tools) > model.max_tool_schemas:
             raise ValueError("可见工具数量超过模型容量")
         estimated = model.estimate(request)
-        if (
-            model.context_window is not None
-            and estimated + max_output_tokens > model.context_window
-        ):
-            raise ContextOverflow(estimated, max_output_tokens, model.context_window, request=request)
+        reserve = output_reserve(max_output_tokens)
+        window = model.context_window
+        if window is not None and estimated + reserve > window:
+            raise ContextOverflow(estimated, reserve, window, request=request)
+        # 与 Pi 的 clampMaxTokensToContext 一致：输入接近窗口时收紧本次输出上限，而不是缩输入。
+        if window is not None and estimated + max_output_tokens > window:
+            request = replace(request, max_output_tokens=window - estimated)
         return request
 
     def build_attempt(
