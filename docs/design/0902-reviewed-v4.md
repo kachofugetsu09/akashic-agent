@@ -1570,6 +1570,8 @@ Mobile 启动只接收 MessageBus 与上传存储；目录及恢复读已绑定�
 
 两端输入框优先显示当前活动调用，空闲时读取最后一条模型 Output 的调用 ID。流式生成期间每秒刷新同一记录；完整且准确的 usage 才以 `output_tokens / ((duration_ms - first_token_ms) / 1000)` 显示平均速度。缺失、部分用量、未结算或非正生成时长不估算速度；旧记录不从秒级时间戳推算耗时。切会话、断线和组件卸载取消旧查询，迟到结果不能显示到另一会话。原 ClientTurnMetricsTracker 已无活跃 UI 调用，留待统一清理。
 
+> 勘误（2026-10，插件边界收口）：`/api/chat/model-calls/{call_id}` 已删除。聊天状态行改为 `composer.status` 插件插槽，由 models 插件经插件界面查询 `call.latest` 读取最近一次执行的调用统计；宿主不再解析 `model.facts`，也不借用 `MODEL_CALL_STATS`。
+
 本分项增加 yoyo `20260906_06_model_call_timing`，旧 `model_calls` 只加两列，已有行均为 NULL；未知 schema 或额外索引/触发器拒绝迁移。先建立 SQLite 恢复副本，再原子执行 DDL，提交前核对旧字段与最终 schema。新库与已迁移库使用同一个 schema，重复迁移不增加备份或改写旧记录。Models owner 仍只 INSERT 新调用、原位结算该调用；没有失效或自动删除协议，历史 Message、模型设置 revision 与 credential 保持不变。源码恢复点为 `/tmp/model-call-stats-backup-20260906/`。
 
 Mobile WebUI v9 增加 `readModelCallStats(requestId, callId)` 与 `receiveModelCallStats(requestId, value)`；原生负责把前者转换为 `model.call.get`，按 request ID 转交成功 payload 或失败结果。Android 的 transport allowlist/dispatch/bridge、RealtimeSession 查询关联、协议 JSON 与 source pin 尚未配套；当前只验收仓库内协议与受控桥接，不能宣称真机可用或可部署。正式 AppRuntime 仍待整体接线，原生配套仍是发布前提。
