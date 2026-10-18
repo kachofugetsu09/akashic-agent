@@ -879,29 +879,6 @@ input {
   }
 }
 
-.project-pending {
-  display: grid;
-  gap: 6px;
-  max-height: 160px;
-  overflow-y: auto;
-  margin: 4px 6px 10px;
-  padding: 10px;
-  border: 1px solid var(--chat-chip);
-  border-radius: 8px;
-  font-size: 0.75rem;
-  color: var(--chat-muted);
-}
-
-.project-pending strong { color: var(--chat-ink); }
-.project-pending p { margin: 0; line-height: 1.4; }
-.project-pending__item { display: grid; gap: 3px; padding-block: 5px; }
-.project-pending__item + .project-pending__item { border-top: 1px solid var(--chat-chip); }
-.project-pending__name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--chat-ink); }
-.project-pending__actions { display: flex; flex-wrap: wrap; gap: 6px; }
-.project-pending__actions button { min-height: 32px; padding-inline: 8px; border: 1px solid var(--chat-chip); border-radius: 6px; background: transparent; color: var(--chat-ink); cursor: pointer; }
-.project-pending__actions button:disabled { opacity: 0.5; cursor: default; }
-.project-pending__error { margin: 4px 12px; font-size: 0.75rem; color: var(--md-sys-color-error); }
-
 .project-navigation__empty,
 .project-group__open,
 .project-session {
@@ -1078,23 +1055,6 @@ input {
 
 .project-dialog form { display: grid; gap: 22px; }
 .project-dialog__header { padding-inline-end: 24px; text-align: start; }
-.project-dialog__field { display: grid; gap: 10px; font-size: 0.875rem; }
-.project-dialog__name-input { position: relative; display: flex; align-items: center; }
-.project-dialog__name-input > svg { position: absolute; left: 14px; color: var(--ak-ink-secondary); pointer-events: none; }
-.project-dialog__name-input input { height: 44px; padding-inline-start: 44px; border-radius: 10px; }
-.project-dialog__description {
-  display: flex;
-  align-items: center;
-  gap: 12px;
-  margin: 0;
-  border-radius: 12px;
-  padding: 14px;
-  color: var(--ak-ink-secondary);
-  background: var(--ak-paper-sheet);
-  font-size: 0.875rem;
-  line-height: 1.6;
-}
-.project-dialog__description svg { flex: 0 0 auto; }
 .project-dialog__footer { flex-flow: row wrap; align-items: center; justify-content: space-between; gap: 12px; }
 .project-dialog__footer > :first-child { margin-inline-end: auto; }
 .choice-menu__trigger {
@@ -1149,7 +1109,6 @@ input {
 @media (max-width: 480px) {
   .project-dialog { padding: 20px; }
   .project-dialog form { gap: 18px; }
-  .directory-dialog { padding: 20px; }
 }
 
 .compact-navigation-trigger,
@@ -2818,20 +2777,6 @@ form.composer:focus-within [data-slot="input-group"] {
 }
 
 /* Execution paths wrap fully; only the directory list owns scrolling. */
-.directory-dialog { min-width: 0; color: var(--ak-ink-primary); background: var(--ak-paper-canvas); }
-.directory-dialog__header { padding-inline-end: 44px; text-align: start; }
-.directory-path { overflow-wrap: anywhere; font-family: var(--ak-type-technical); font-size: var(--chat-type-control); }
-.directory-open { display: grid; gap: 8px; }
-.directory-open > div { display: flex; gap: 8px; min-width: 0; }
-.directory-open input { min-width: 0; flex: 1; }
-.directory-dialog button { min-height: 44px; padding: 8px 12px; border: 1px solid var(--ak-rule-default); border-radius: 8px; font-size: var(--chat-type-control); }
-.directory-dialog button:disabled { opacity: 0.5; }
-.directory-browser { display: grid; max-height: 12rem; overflow-y: auto; gap: 4px; }
-.directory-browser button { text-align: start; overflow-wrap: anywhere; }
-.directory-error { color: var(--ak-color-status-error); overflow-wrap: anywhere; }
-.directory-notice { color: var(--ak-ink-secondary); }
-.directory-notice strong { display: block; color: var(--ak-ink-primary); }
-.directory-actions { display: flex; flex-flow: row wrap; gap: 8px; }
 /* 目录名短而信息量大：不与标题按比例分摊收缩，长标题先让；真超长时与标题同样右缘渐隐，不用省略号。
    上限放在参与标题栏 flex 的外层（含左内边距）：只限按钮时外层仍按目录全名的固有宽度占位，会把标题挤没。 */
 .plugin-ui-slot[data-slot="header.end"] { display: flex; min-width: 0; flex: 0 0 auto; align-items: center; gap: 2px; margin-inline-start: auto; }
@@ -2882,12 +2827,6 @@ form.composer:focus-within [data-slot="input-group"] {
   .reading-return__live { position: absolute; inset-block-start: 3px; inset-inline-end: 3px; }
 }
 
-/* Creation keeps the selected path readable at narrow widths and large text. */
-.project-dialog__directory { display: grid; gap: 8px; margin-block: 16px; }
-.project-dialog__directory p { margin: 0; color: var(--ak-ink-secondary); font-size: var(--chat-type-control); }
-.project-dialog__directory-choice { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; min-width: 0; }
-.project-dialog__directory-choice > span { flex-basis: 100%; }
-.project-dialog__directory-choice button { min-height: 44px; padding: 8px 12px; border: 1px solid var(--ak-rule-default); border-radius: 8px; color: inherit; background: transparent; }
 
 /* 强制颜色（Windows 高对比度）下背景色统一换成系统底色：只靠底色表达的东西会整片消失。
    标记类图形（品牌、会话状态、轮次刻度）保留形状，用文本色画；当前行、用户气泡改用系统色的描边；

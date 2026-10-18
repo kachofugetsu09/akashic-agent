@@ -21,8 +21,8 @@ import ${JSON.stringify(resolve(repo, 'frontend/chat/src/styles.css'))};
 initializeTheme();
 const nothing = () => {}; const resolved = async () => {};
 const sessions = [
- { id:'p1', title:'命中 项目一', projectId:'project', scoped:true },
- { id:'p2', title:'命中 项目二', projectId:'project', scoped:true },
+ { id:'p1', title:'命中 项目一', scope:{project:'project'}, scoped:true },
+ { id:'p2', title:'命中 项目二', scope:{project:'project'}, scoped:true },
  { id:'r1', title:'命中 最近会话' },
 ].map(s=>({...s, preview:'', active:false}));
 function App(){
@@ -31,8 +31,8 @@ function App(){
  return <TooltipProvider><div className="chat-shell-body" style={{height:'100vh'}}>
  <DesktopSidebar embeddedShell={false} surface="chat" sessions={sessions} activeSessionId={selected}
  pendingSessionId="" chatReady={true} themeLabel="纸感" onSelectSession={setSelected} onNewChat={nothing} onCycleTheme={nothing}
- navigationPins={{pins:pinned?[{kind:'project',id:'project'},{kind:'session',id:'r1'}]:[],sessions:[],ready:true,pending:false,error:'',reload:resolved,setPinned:resolved,expandedProjects:new Set(),toggleProject:nothing,expandProject:nothing}}
- projects={{items:[{id:'project',name:'命中 项目',archived:false,createdAt:'2026-10-15T00:00:00Z',directory:null}],pending:[],pendingError:'',activeProjectId:'',memoryInstalled:false,onNewChat:nothing,onCreate:resolved,onContinue:resolved,onStop:nothing,onBindDirectory:resolved}} />
+ navigationPins={{pins:pinned?[{kind:'project',id:'project'},{kind:'session',id:'r1'}]:[],sessions:[],ready:true,pending:false,error:'',reload:resolved,setPinned:resolved,expandedGroups:new Set(),toggleGroup:nothing,expandGroup:nothing}}
+ groups={{sections:[{source:{key:'projects:r1',pluginId:'projects',pluginRevision:'r1',provider:{dimension:'project',label:'项目',load:async()=>[]},context:()=>({query:resolved})},groups:[{id:'project',label:'命中 项目'}]}],revision:0,active:null,reload:nothing,startChat:nothing}} />
  <output id="selected">{selected}</output></div></TooltipProvider>;
 }
 createRoot(document.getElementById('root')).render(<App />);
@@ -49,19 +49,22 @@ try {
   await page.goto(server.origin + '/?pinned=' + Number(pinned));
   const search=page.getByRole('textbox',{name:'搜索会话'});await search.fill('命中');
   await page.locator('.project-session').first().waitFor();
-  // 1. 按可见顺序跨分区移动，不能跳过项目内会话。
+  // 1. 按可见顺序跨分区移动：先到分组行，再到组内会话，不能跳过。
   await search.press('ArrowDown');
+  assert.equal(await page.evaluate(()=>document.activeElement?.getAttribute('title')), '收起 命中 项目');
+  await page.keyboard.press('ArrowDown');
   assert.equal(await page.evaluate(()=>document.activeElement?.getAttribute('title')), '命中 项目一');
   await page.keyboard.press('ArrowDown');
   assert.equal(await page.evaluate(()=>document.activeElement?.getAttribute('title')), '命中 项目二');
   await page.keyboard.press('ArrowDown');
   assert.ok((await page.evaluate(()=>document.activeElement?.textContent)).includes('命中 最近会话'));
-  for(let i=0;i<3;i++)await page.keyboard.press('ArrowUp');
+  for(let i=0;i<4;i++)await page.keyboard.press('ArrowUp');
   assert.equal(await search.evaluate(node=>node===document.activeElement),true);
-  // 2. 回车选择首条项目会话，高亮覆盖项目名和两种会话行。
-  await search.press('Enter');await page.waitForFunction(()=>document.querySelector('#selected')?.textContent==='p1');
+  // 2. 高亮覆盖分组名和两种会话行；回车打开首条组内会话并清掉筛选。
   const highlight=await page.evaluate(()=>Array.from(CSS.highlights.get('sidebar-search')??[]).map(range=>range.toString()));
   assert.equal(highlight.length,4);assert.ok(highlight.every(text=>text==='命中'));
+  await search.press('Enter');await page.waitForFunction(()=>document.querySelector('#selected')?.textContent==='p1');
+  assert.equal(await search.inputValue(),'');
   await search.fill('项目');
   await page.waitForFunction(()=>CSS.highlights.get('sidebar-search')?.size===3);
   await search.press('Escape');assert.equal(await search.inputValue(),'');

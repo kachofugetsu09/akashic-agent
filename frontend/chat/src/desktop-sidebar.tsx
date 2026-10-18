@@ -19,7 +19,10 @@ import { ConversationNavigation, ConversationSessionRow, type ConversationRowDra
 import { PluginUiSlot } from "./plugin-ui-runtime";
 import akashicBrandIcon from "../../theme/src/akashic-brand.svg";
 import { activateShellRailAction, useShellRailActions } from "./shell-rail-actions";
-import { ProjectNavigation, ProjectNavigationRow, type CreateProject, type ProjectSessionItem } from "./project-navigation";
+import {
+  GroupFormDialog, GroupNavigation, GroupNavigationRow, groupFormActions, groupKey,
+  type GroupFormRequest, type GroupSessionItem, type NavigationGroupsState,
+} from "./navigation-groups";
 import { sessionLabel } from "./web-chat-message-data";
 import type { NavigationPin, NavigationPinsState } from "./use-navigation-pins";
 import {
@@ -27,14 +30,12 @@ import {
   type SidebarRailControl,
 } from "./use-sidebar-rail";
 import type { NavigationRowAction } from "./navigation-row-menu";
-import type { PendingProjectRow, ProjectRow } from "./web-projects";
-import { ProjectDirectoryDialog } from "./project-directory-dialog";
 import { getHostShortcuts } from "./shell-workbench";
-import { Folder } from "lucide-react";
 
 export interface DesktopSidebarSession extends Omit<ConversationSession, "active" | "state"> {
   active: boolean;
-  projectId?: string;
+  /** 会话的维度取值；属于已知分组的会话列在该分组下。 */
+  scope?: Readonly<Record<string, string>>;
   /** 属于某个会话维度（如项目）的会话归在该分组下，不单独置顶。 */
   scoped?: boolean;
   updatedAt?: string;
@@ -108,7 +109,7 @@ const SEARCH_HIGHLIGHT = "sidebar-search";
 
 const NAVIGATION_ROW = "button.conversation-session, button.project-session, button.project-group__open";
 
-// 侧栏里可见、可用的导航行主按钮，按文档顺序：置顶、项目（含项目内会话）、最近会话。
+// 侧栏里可见、可用的导航行主按钮，按文档顺序：置顶、插件分组（含组内会话）、最近会话。
 function sessionRows(root: HTMLElement | null): HTMLButtonElement[] {
   return Array.from(root?.querySelector(".chat-sidebar__navigation")?.querySelectorAll<HTMLButtonElement>(NAVIGATION_ROW) ?? [])
     .filter((row) => row.offsetParent !== null && !row.disabled);
@@ -285,17 +286,9 @@ function sortSessions(rows: DesktopSidebarSession[], sort: SessionSortId, order:
   return [...rows].sort((a, b) => compareSessionTime(a.updatedAt, b.updatedAt));
 }
 
-export interface DesktopSidebarProjects {
-  items: ProjectRow[];
-  pending: PendingProjectRow[];
-  pendingError: string;
-  activeProjectId: string;
-  onNewChat: (projectId: string) => void;
-  onCreate: CreateProject;
-  onContinue: (key: string) => Promise<void>;
-  onStop: (key: string) => void;
-  onOpenCreate?: () => void;
-  onBindDirectory: (projectId: string, path: string) => Promise<void>;
+/** 插件分组；抽屉里先关抽屉再由抽屉打开对话框，常驻侧栏自己打开。 */
+export interface DesktopSidebarGroups extends NavigationGroupsState {
+  onOpenForm?: (request: GroupFormRequest) => void;
 }
 
 export interface DesktopSidebarProps {
@@ -306,7 +299,7 @@ export interface DesktopSidebarProps {
   pendingSessionId: string;
   chatReady: boolean;
   themeLabel: string;
-  projects?: DesktopSidebarProjects;
+  groups?: DesktopSidebarGroups;
   navigationPins: NavigationPinsState;
   onSelectSession: (sessionId: string) => void;
   onPrefetchSession?: (sessionId: string) => void;
@@ -336,7 +329,7 @@ export const DesktopSidebar = memo(function DesktopSidebar({
   activeSessionId,
   pendingSessionId,
   themeLabel,
-  projects,
+  groups,
   navigationPins,
   onSelectSession,
   onPrefetchSession,
@@ -371,18 +364,13 @@ export const DesktopSidebar = memo(function DesktopSidebar({
     }
   }, []);
   useSidebarShortcuts(sidebarRef, searchRef, onNewChat, openShortcuts);
-  const [directoryProjectId, setDirectoryProjectId] = useState("");
+  const [formRequest, setFormRequest] = useState<GroupFormRequest | null>(null);
   const [sessionSort, setSessionSort] = useState(readSessionSort);
   const [sessionOrder, setSessionOrder] = useState(readSessionOrder);
   // 行拖拽的瞬态：被拖源 id + 当前插入指示（目标行 id 与上/下半）。提交时写入
   // sessionOrder 并把排序切到「手动排序」——拖拽本身就是选择手动模式的意图。
   const [drag, setDrag] = useState<{ id: string; over: { id: string; half: "before" | "after" } | null } | null>(null);
-  const directoryProject = projects?.items.find((project) => project.id === directoryProjectId);
-  const directoryAction = (project: ProjectRow): NavigationRowAction => ({
-    label: project.directory ? "查看固定目录" : "选择目录",
-    icon: <Folder size={18} aria-hidden="true" />,
-    onSelect: () => setDirectoryProjectId(project.id),
-  });
+  const openForm = groups?.onOpenForm ?? setFormRequest;
   const needle = query.trim().toLowerCase();
   const searching = Boolean(needle);
   useSearchHighlight(sidebarRef, needle);
@@ -391,7 +379,7 @@ export const DesktopSidebar = memo(function DesktopSidebar({
     const rows = new Map<string, DesktopSidebarSession>(navigationPins.sessions.map((session) => [session.key, {
       id: session.key, title: sessionLabel(session), preview: session.message_count === undefined ? "" : `${session.message_count} 条消息`,
       active: activeSessionId === session.key,
-      projectId: session.scope?.project, scoped: Object.keys(session.scope ?? {}).length > 0,
+      scope: session.scope, scoped: Object.keys(session.scope ?? {}).length > 0,
     }]));
     // 目录里的新鲜 metadata 优先；置顶解析补齐不在最近分页内的会话。
     for (const session of sessions) rows.set(session.id, session);
@@ -457,45 +445,51 @@ export const DesktopSidebar = memo(function DesktopSidebar({
     },
   });
   // 目录未解析/归档不改变 Session.scope；回退到最近会话也不获得置顶资格。
-  const { expandProject } = navigationPins;
-  const activeProjectId = projects?.activeProjectId ?? "";
-  useEffect(() => { if (activeProjectId) expandProject(activeProjectId); }, [activeProjectId, expandProject]);
-  const knownProjects = useMemo(() => new Map(projects?.items.map((project) => [project.id, project])), [projects?.items]);
-  const sessionsByProject = useMemo(() => {
-    const groups = new Map<string, ProjectSessionItem[]>();
+  const { expandGroup } = navigationPins;
+  const activeGroupKey = groups?.active ? groupKey(groups.active) : "";
+  useEffect(() => { if (activeGroupKey) expandGroup(activeGroupKey); }, [activeGroupKey, expandGroup]);
+  const sections = useMemo(() => groups?.sections ?? [], [groups?.sections]);
+  const knownGroups = useMemo(() => new Map(sections.flatMap((section) => section.groups.map((group) =>
+    [groupKey({ dimension: section.source.provider.dimension, id: group.id }), { section, group }] as const))), [sections]);
+  // 会话归入第一个认得它取值的分区；都不认得时留在最近会话。
+  const groupOf = useCallback((session: DesktopSidebarSession) => sections
+    .map(({ source }) => session.scope?.[source.provider.dimension] ? groupKey({ dimension: source.provider.dimension, id: session.scope[source.provider.dimension] }) : "")
+    .find((key) => key && knownGroups.has(key)) ?? "", [sections, knownGroups]);
+  const sessionsByGroup = useMemo(() => {
+    const byGroup = new Map<string, GroupSessionItem[]>();
     for (const session of sortedSessions) {
-      if (!session.projectId || !knownProjects.has(session.projectId)) continue;
-      const group = groups.get(session.projectId) ?? [];
-      group.push({
-        id: session.id, title: session.title,
-        active: surface === "chat" && session.active,
-        status: session.status,
-      });
-      groups.set(session.projectId, group);
+      const key = groupOf(session);
+      if (!key) continue;
+      byGroup.set(key, [...byGroup.get(key) ?? [], {
+        id: session.id, title: session.title, active: surface === "chat" && session.active, status: session.status,
+      }]);
     }
-    return groups;
-  }, [sortedSessions, knownProjects, surface]);
-  const pinnedProjects = new Set(navigationPins.pins.filter((pin) => pin.kind === "project").map((pin) => pin.id));
+    return byGroup;
+  }, [sortedSessions, groupOf, surface]);
+  const pinnedGroups = new Set(navigationPins.pins.filter((pin) => pin.kind !== "session").map((pin) => groupKey({ dimension: pin.kind, id: pin.id })));
   const pinnedSessions = new Set(navigationPins.pins.filter((pin) => pin.kind === "session").map((pin) => pin.id));
-  const recentSessions = sortedSessions.filter((session) => !pinnedSessions.has(session.id)
-    && (!session.projectId || !knownProjects.has(session.projectId)));
-  const visibleProject = (project: ProjectRow) => !needle || project.name.toLowerCase().includes(needle)
-    || Boolean(sessionsByProject.get(project.id)?.length);
-  const otherProjects = projects?.items.filter((project) => !pinnedProjects.has(project.id) && visibleProject(project)) ?? [];
+  const recentSessions = sortedSessions.filter((session) => !pinnedSessions.has(session.id) && !groupOf(session));
+  const visibleGroup = (key: string, label: string) => !needle || label.toLowerCase().includes(needle)
+    || Boolean(sessionsByGroup.get(key)?.length);
+  const sectionGroups = sections.map((section) => section.groups.filter((group) => {
+    const key = groupKey({ dimension: section.source.provider.dimension, id: group.id });
+    return !pinnedGroups.has(key) && visibleGroup(key, group.label);
+  }));
   // 搜索时只留有匹配行的置顶分组，空分组标题一起收起。
   const visiblePins = navigationPins.pins.filter((pin) => {
-    if (pin.kind === "project") {
-      const project = knownProjects.get(pin.id);
-      if (project) return visibleProject(project);
+    if (pin.kind !== "session") {
+      const key = groupKey({ dimension: pin.kind, id: pin.id });
+      const known = knownGroups.get(key);
+      if (known) return visibleGroup(key, known.group.label);
     } else {
       const session = allSessions.find((item) => item.id === pin.id);
-      if (session && !session.projectId && !session.scoped) {
+      if (session && !session.scoped) {
         return `${session.title} ${session.preview}`.toLowerCase().includes(needle);
       }
     }
     return pin.id.toLowerCase().includes(needle);
   });
-  const hasMatches = recentSessions.length > 0 || otherProjects.length > 0 || visiblePins.length > 0;
+  const hasMatches = recentSessions.length > 0 || sectionGroups.some((items) => items.length > 0) || visiblePins.length > 0;
   const pinAction = (pin: NavigationPin, pinned: boolean): NavigationRowAction[] => [{
     label: pinned ? "取消置顶" : "置顶",
     icon: pinned ? <PinOff size={18} aria-hidden="true" /> : <Pin size={18} aria-hidden="true" />,
@@ -569,7 +563,7 @@ export const DesktopSidebar = memo(function DesktopSidebar({
       </div>
 
       <div className="chat-sidebar__navigation" onKeyDown={moveSessionFocus}>
-      {searching && !hasMatches ? <p className="navigation-search-empty" role="status">没有匹配的会话或项目</p> : null}
+      {searching && !hasMatches ? <p className="navigation-search-empty" role="status">没有匹配的会话或分组</p> : null}
       {navigationPins.error ? <div className="navigation-pins-error" role="alert">
         <span>{navigationPins.error}</span>
         <button type="button" disabled={navigationPins.pending} onClick={() => { void navigationPins.reload(); }}>刷新置顶列表</button>
@@ -584,21 +578,22 @@ export const DesktopSidebar = memo(function DesktopSidebar({
       {visiblePins.length ? <section className="pinned-navigation" aria-label="置顶">
         <header className="project-navigation__header"><span>置顶</span></header>
         {visiblePins.map((pin) => {
-          if (pin.kind === "project") {
-            const project = knownProjects.get(pin.id);
-            if (project && projects) return visibleProject(project) ? <ProjectNavigationRow
-              key={`project:${pin.id}`} project={project}
-              items={sessionsByProject.get(pin.id) ?? []}
-              open={searching || navigationPins.expandedProjects.has(pin.id)}
-              active={projects.activeProjectId === pin.id} pendingSessionId={pendingSessionId}
-              onToggle={() => navigationPins.toggleProject(pin.id)}
-              onNewChat={() => projects.onNewChat(pin.id)}
+          if (pin.kind !== "session") {
+            const ref = { dimension: pin.kind, id: pin.id };
+            const known = knownGroups.get(groupKey(ref));
+            if (known && groups) return visibleGroup(groupKey(ref), known.group.label) ? <GroupNavigationRow
+              key={groupKey(ref)} groupRef={ref} group={known.group}
+              items={sessionsByGroup.get(groupKey(ref)) ?? []}
+              open={searching || navigationPins.expandedGroups.has(groupKey(ref))}
+              active={activeGroupKey === groupKey(ref)} pendingSessionId={pendingSessionId}
+              onToggle={() => navigationPins.toggleGroup(groupKey(ref))}
+              onNewChat={() => groups.startChat(ref)}
               onSelectSession={onSelectSession} onPrefetchSession={onPrefetchSession}
-              actions={[directoryAction(project), ...pinAction(pin, true)]} searching={searching}
+              actions={[...groupFormActions(known.section.source, known.group, openForm), ...pinAction(pin, true)]} searching={searching}
             /> : null;
           } else {
             const session = allSessions.find((item) => item.id === pin.id);
-            if (session && !session.projectId && !session.scoped) return !needle
+            if (session && !session.scoped) return !needle
               || `${session.title} ${session.preview}`.toLowerCase().includes(needle) ? <ConversationSessionRow
                 key={`session:${pin.id}`} session={sessionView(session)} pendingSessionId={pendingSessionId}
                 onActivate={onSelectSession} onPrefetch={onPrefetchSession}
@@ -614,26 +609,16 @@ export const DesktopSidebar = memo(function DesktopSidebar({
             onActivate={onSelectSession} actions={pinAction(pin, true)} />;
         })}
       </section> : null}
-      {projects ? <ProjectNavigation
-        projects={otherProjects}
-        pending={projects.pending}
-        pendingError={projects.pendingError}
-        sessionsByProject={sessionsByProject}
-        activeProjectId={projects.activeProjectId}
-        pendingSessionId={pendingSessionId}
-        onSelectSession={onSelectSession}
-        onPrefetchSession={onPrefetchSession}
-        onNewProjectChat={projects.onNewChat}
-        onCreateProject={projects.onCreate}
-        onContinueProject={projects.onContinue}
-        onStopProject={projects.onStop}
-        onOpenCreateProject={projects.onOpenCreate}
-        expandedProjects={navigationPins.expandedProjects}
-        onToggleProject={navigationPins.toggleProject}
-        projectActions={(project) => [directoryAction(project), ...pinAction({ kind: "project", id: project.id }, false)]}
-        searching={searching}
-        heading={pinnedProjects.size ? "其他项目" : "项目"}
-      /> : null}
+      {groups ? sections.map((section, index) => {
+        const { dimension, label } = section.source.provider;
+        return <GroupNavigation key={section.source.key} section={section} groups={sectionGroups[index]}
+          revision={groups.revision} sessionsByGroup={sessionsByGroup} active={groups.active}
+          pendingSessionId={pendingSessionId} expanded={navigationPins.expandedGroups} searching={searching}
+          heading={navigationPins.pins.some((pin) => pin.kind === dimension) ? `其他${label}` : label}
+          onToggle={navigationPins.toggleGroup} onSelectSession={onSelectSession} onPrefetchSession={onPrefetchSession}
+          onOpenForm={openForm} onNewChat={groups.startChat} onReload={groups.reload}
+          actions={(group) => [...groupFormActions(section.source, group, openForm), ...pinAction({ kind: dimension, id: group.id }, false)]} />;
+      }) : null}
 
       <ConversationNavigation
         destinationHeading={false}
@@ -651,7 +636,7 @@ export const DesktopSidebar = memo(function DesktopSidebar({
         onSessionRename={onRenameSession ? (session, title) => onRenameSession(session.id, title) : undefined}
         sessionActions={(session) => {
           const row = allSessions.find((item) => item.id === session.id);
-          return row && !row.projectId && !row.scoped
+          return row && !row.scoped
             ? pinAction({ kind: "session", id: row.id }, false) : [];
         }}
         onSessionActivate={onSelectSession}
@@ -692,13 +677,21 @@ export const DesktopSidebar = memo(function DesktopSidebar({
       </div>
       <ShortcutsDialog open={shortcutsOpen} onOpenChange={setShortcutsOpen} returnFocus={returnShortcutsFocus} />
       {rail ? <SidebarRailResizer rail={rail} sidebarRef={sidebarRef} /> : null}
-      {directoryProject && projects ? <ProjectDirectoryDialog project={directoryProject}
-        onClose={() => setDirectoryProjectId("")} onChoose={(path) => projects.onBindDirectory(directoryProject.id, path)}
-        onCloseFocus={() => Array.from(sidebarRef.current?.querySelectorAll<HTMLElement>("[data-project-id]") ?? [])
-          .find((row) => row.dataset.projectId === directoryProject.id)?.querySelector<HTMLButtonElement>(".navigation-menu-trigger")?.focus()} /> : null}
+      {formRequest && groups ? <GroupFormDialog request={formRequest} groups={groups} onClose={() => setFormRequest(null)}
+        onCloseFocus={() => groupFormFocus(sidebarRef.current, formRequest)} /> : null}
     </aside>
   );
 });
+
+// 对话框关闭后回到打开它的地方：分组动作回到该行的菜单按钮，新建回到分区的新建按钮。
+function groupFormFocus(root: HTMLElement | null, request: GroupFormRequest) {
+  const { dimension, label } = request.source.provider;
+  const target = request.group
+    ? Array.from(root?.querySelectorAll<HTMLElement>("[data-group-key]") ?? [])
+      .find((row) => row.dataset.groupKey === groupKey({ dimension, id: request.group!.id }))?.querySelector<HTMLElement>(".navigation-menu-trigger")
+    : root?.querySelector<HTMLElement>(`.project-navigation[aria-label="${CSS.escape(label)}"] .project-navigation__header button`);
+  target?.focus();
+}
 
 /** "最近会话"分组标题行的排序入口；选中项持久化，菜单复用行菜单的浮层样式。 */
 function SessionSortMenu({ sort, onSort }: { sort: SessionSortId; onSort: (sort: SessionSortId) => void }) {
