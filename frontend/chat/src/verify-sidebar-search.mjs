@@ -21,8 +21,8 @@ import ${JSON.stringify(resolve(repo, 'frontend/chat/src/styles.css'))};
 initializeTheme();
 const nothing = () => {}; const resolved = async () => {};
 const sessions = [
- { id:'p1', title:'命中 项目一', projectId:'project', projectScoped:true },
- { id:'p2', title:'命中 项目二', projectId:'project', projectScoped:true },
+ { id:'p1', title:'命中 项目一', projectId:'project', scoped:true },
+ { id:'p2', title:'命中 项目二', projectId:'project', scoped:true },
  { id:'r1', title:'命中 最近会话' },
 ].map(s=>({...s, preview:'', active:false}));
 function App(){
