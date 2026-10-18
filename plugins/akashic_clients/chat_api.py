@@ -647,10 +647,9 @@ def create_chat_app(
                     if encoded_filename != safe_filename
                     else f'inline; filename="{safe_filename}"'
                 )
-        # 直接打开的网页附件在独立 opaque origin 里运行，拿不到聊天页的登录和接口。
-        if media_type in {"text/html", "image/svg+xml"}:
-            headers["Content-Security-Policy"] = "sandbox allow-scripts"
-            headers["X-Content-Type-Options"] = "nosniff"
+        # Any attachment can be opened as a document, including XHTML and XML.
+        headers["Content-Security-Policy"] = "sandbox allow-scripts"
+        headers["X-Content-Type-Options"] = "nosniff"
         return Response(
             content=data,
             media_type=media_type or "application/octet-stream",
