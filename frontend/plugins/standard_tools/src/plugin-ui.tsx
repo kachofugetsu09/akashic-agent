@@ -36,14 +36,16 @@ function SessionDirectory({ context }: { context: PluginUiContext }) {
   const [error, setError] = useState("");
   const [retry, setRetry] = useState(0);
   useEffect(() => {
-    let active = true;
+    // 只采纳最后一次发出的读取；较早的响应晚到时不能把标记退回旧目录。
+    let latest = 0;
     const refresh = async () => {
       if (document.visibilityState === "hidden") return;
+      const request = ++latest;
       try {
         const next = currentDirectory(await context.query("directory.current", {}, { cache: "none" }));
-        if (active) { setCurrent(next); setError(""); }
+        if (request === latest) { setCurrent(next); setError(""); }
       } catch (reason) {
-        if (active) setError(reason instanceof Error ? reason.message : "目录状态未能刷新");
+        if (request === latest) setError(reason instanceof Error ? reason.message : "目录状态未能刷新");
       }
     };
     void refresh();
@@ -53,7 +55,7 @@ function SessionDirectory({ context }: { context: PluginUiContext }) {
     window.addEventListener("focus", onVisible);
     document.addEventListener("visibilitychange", onVisible);
     return () => {
-      active = false;
+      latest = -1;
       unsubscribe();
       window.clearInterval(timer);
       window.removeEventListener("focus", onVisible);
