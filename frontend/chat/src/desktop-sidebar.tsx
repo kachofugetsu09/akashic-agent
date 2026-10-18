@@ -603,7 +603,9 @@ export const DesktopSidebar = memo(function DesktopSidebar({
               /> : null;
           }
           if (needle && !pin.id.toLowerCase().includes(needle)) return null;
-          const title = pin.kind === "session" ? "会话暂不可用" : pin.kind === "project" ? "项目暂不可用" : "暂不可用";
+          // 分组取值已不存在或其插件不在：有该维度的分区时用它的名称，否则只说暂不可用。
+          const label = pin.kind === "session" ? "会话" : sections.find((section) => section.source.provider.dimension === pin.kind)?.source.provider.label ?? "";
+          const title = `${label}暂不可用`;
           return <ConversationSessionRow key={`${pin.kind}:${pin.id}`}
             session={{ id: pin.id, title, preview: pin.id, active: false, unavailable: true }}
             onActivate={onSelectSession} actions={pinAction(pin, true)} />;
