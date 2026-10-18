@@ -46,36 +46,42 @@ class SummaryError(ValueError):
 
 
 # 同 Pi 截断摘要资料中的工具结果，这里按整条消息限长，覆盖参数、多段结果与长回复；
-# 原文仍留在日志可回读，一条巨大的已结算消息不再让摘要请求放不下。
-MESSAGE_SUMMARY_CHARS = 4000
+# 放不下时逐级缩短。原文仍留在日志可回读，任何一条已结算消息都不会让摘要请求放不下。
+EXCERPT_CHARS = (4000, 1000, 200)
 
 
-def _excerpt(body: dict[str, object]) -> object:
+def _excerpt(body: dict[str, object], chars: int) -> object:
     text = json.dumps(body, ensure_ascii=False, separators=(",", ":"))
-    if len(text) <= MESSAGE_SUMMARY_CHARS:
+    if len(text) <= chars:
         return body
-    half = MESSAGE_SUMMARY_CHARS // 2
+    half = chars // 2
     return {"excerpt": f"{text[:half]}\n[…省略 {len(text) - 2 * half} 字符，原文仍在日志…]\n{text[-half:]}"}
 
 
 def clip_summary(text: str, ratio: float) -> str:
-    """模型未守住长度时的最后一级：保留全部标题，每节正文只留前 ratio 比例。"""
-    sections: list[list[str]] = []
+    """按固定标题重建摘要，每节正文（含标题前的正文）只留前 ratio 比例；0 时只剩标题。"""
+    bodies: list[list[str]] = [[] for _ in HEADINGS]
+    index = 0
     for line in text.splitlines():
-        if line.lstrip().startswith("#") or not sections:
-            sections.append([line])
+        if line.strip() in HEADINGS:
+            index = HEADINGS.index(line.strip())
         else:
-            sections[-1].append(line)
-    clipped: list[str] = []
-    for heading, *body in sections:
-        content = "\n".join(body)
-        keep = content[:int(len(content) * ratio)]
-        clipped.append(heading if not content.strip() else
-                       heading + "\n" + (keep + "…（篇幅所限已截断）" if keep.strip() else "（篇幅所限已省略）"))
-    return "\n".join(clipped)
+            bodies[index].append(line)
+    sections: list[str] = []
+    for heading, body in zip(HEADINGS, bodies):
+        content = "\n".join(body).strip()
+        keep = content[:int(len(content) * ratio)].rstrip()
+        sections.append(heading + ("\n" + keep if keep else "") + ("…（篇幅所限已截断）" if keep != content else ""))
+    return "\n".join(sections)
 
 
-def source_text(messages: Sequence[Message], *, clip: bool = False) -> str:
+def recoverable(error: BaseException) -> bool:
+    """摘要层可以降级处理的失败：格式/容量不合，或 provider 的可恢复错误。"""
+    return isinstance(error, SummaryError) or ModelError.matches(
+        error, ContextLengthError, ModelTimeoutError, RateLimitError, TransportError)
+
+
+def source_text(messages: Sequence[Message], *, excerpt: int | None = None) -> str:
     """把精确原文作为低信任资料；不把模型私有 replay 当成待学习正文。"""
     rows: list[dict[str, object]] = []
     for message in messages:
@@ -89,7 +95,7 @@ def source_text(messages: Sequence[Message], *, clip: bool = False) -> str:
             ))
         data = body_to_dict(body)
         rows.append({"message_id": message.message_id, "source": message.source, "author": message.author,
-                     "seq": message.seq, "body": _excerpt(data) if clip else data})
+                     "seq": message.seq, "body": data if excerpt is None else _excerpt(data, excerpt)})
     return json.dumps(rows, ensure_ascii=False, separators=(",", ":"))
 
 
@@ -169,10 +175,10 @@ def summary_groups(groups: tuple[tuple[Message, ...], ...],
 
 
 def _request(model: BoundChatModel, summary: str, groups: Sequence[tuple[Message, ...]],
-             limit: int) -> ModelRequest:
+             limit: int, excerpt: int) -> ModelRequest:
     text = PROMPT + f"摘要正文不超过约 {limit:,} tokens。\n"
     text += "\n[Previous summary]\n" + summary + "\n[Source messages]\n"
-    text += source_text(tuple(message for group in groups for message in group), clip=True)
+    text += source_text(tuple(message for group in groups for message in group), excerpt=excerpt)
     rows = ({"role": "user", "content": text},)
     window = model.descriptor.capabilities.context_window
     if window is None:
@@ -184,38 +190,51 @@ def _request(model: BoundChatModel, summary: str, groups: Sequence[tuple[Message
     return ModelRequest(rows, max_output_tokens=0, disable_reasoning=True)
 
 
-def _fits(model: BoundChatModel, summary: str, groups: Sequence[tuple[Message, ...]], limit: int) -> bool:
+def _fits(model: BoundChatModel, summary: str, groups: Sequence[tuple[Message, ...]],
+          limit: int, excerpt: int) -> bool:
     try:
-        _ = _request(model, summary, groups, limit)
+        _ = _request(model, summary, groups, limit, excerpt)
     except SummaryError:
         return False
     return True
 
 
+# 发请求前把输入缩进摘要模型：优先保留已有摘要，其次缩短消息摘录，再取近期后缀。
+def _fit_inputs(model: BoundChatModel, groups: tuple[tuple[Message, ...], ...], previous: str,
+                limit: int) -> tuple[str, tuple[tuple[Message, ...], ...], int]:
+    for ratio in (1.0, 0.5, 0.25, 0.0):
+        summary = previous if ratio == 1.0 or not previous else clip_summary(previous, ratio)
+        for excerpt in EXCERPT_CHARS:
+            if not groups:
+                if _fits(model, summary, (), limit, excerpt):
+                    return summary, (), excerpt
+                continue
+            # 1. 二分选择最大近期后缀；更老的积压不再触发串行摘要。
+            low, high, size = 1, len(groups), 0
+            while low <= high:
+                middle = (low + high) // 2
+                if _fits(model, summary, groups[-middle:], limit, excerpt):
+                    size, low = middle, middle + 1
+                else:
+                    high = middle - 1
+            if size:
+                return summary, groups[-size:], excerpt
+            # 2. 最近一组仍放不下时只取它能放下的消息后缀，其余记为 omitted。
+            last = groups[-1]
+            count = next((count for count in range(len(last) - 1, 0, -1)
+                          if _fits(model, summary, (last[-count:],), limit, excerpt)), 0)
+            if count:
+                return summary, (last[-count:],), excerpt
+    raise SummaryError("摘要提示加一条最短消息摘录已超过摘要模型容量")
+
+
 async def _summarize(model: BoundChatModel, groups: tuple[tuple[Message, ...], ...],
                      previous: str, limit: int) -> tuple[str, tuple[str, ...], tuple[tuple[Message, ...], ...]]:
-    """从尾部选一个可容纳窗口，只发出一次摘要请求。"""
-    # 1. 二分选择最大近期后缀；更老的积压不再触发串行摘要。
-    low, high, size = 1, len(groups), 0
-    while low <= high:
-        middle = (low + high) // 2
-        if _fits(model, previous, groups[-middle:], limit):
-            size = middle
-            low = middle + 1
-        else:
-            high = middle - 1
-    selected = groups[-size:] if size else ()
-    # 最近一组仍放不下时只取它能放下的消息后缀，其余记为 omitted；没有新资料时只缩写已有摘要。
-    if size == 0 and groups:
-        last = groups[-1]
-        count = next((count for count in range(len(last) - 1, 0, -1)
-                      if _fits(model, previous, ((last[-count:]),), limit)), 0)
-        if count == 0:
-            raise SummaryError("已有摘要加一条消息摘录已超过摘要模型容量")
-        selected = (last[-count:],)
-    response = await model.complete(_request(model, previous, selected, limit))
+    """输入先缩进摘要模型，再只发出一次摘要请求。"""
+    summary, selected, excerpt = _fit_inputs(model, groups, previous, limit)
+    response = await model.complete(_request(model, summary, selected, limit, excerpt))
 
-    # 2. 只接纳成功调用的真实正文；格式错误不会用空摘要掩盖。
+    # 只接纳成功调用的真实正文；格式错误不会用空摘要掩盖。
     text = (response.content or "").strip()
     headings = tuple(line.strip() for line in text.splitlines() if line.lstrip().startswith("#"))
     if response.tool_calls or headings != HEADINGS:
@@ -233,7 +252,7 @@ async def summarize(groups: tuple[tuple[Message, ...], ...], *, previous: str, l
     try:
         return await _summarize(model, groups, previous, limit)
     except (RuntimeError, TimeoutError, SummaryError) as failure:
-        if not (ModelError.matches(failure, ContextLengthError, ModelTimeoutError, RateLimitError, TransportError) or isinstance(failure, SummaryError)):
+        if not recoverable(failure):
             raise
         if fallback.descriptor.binding_id == model.descriptor.binding_id:
             raise

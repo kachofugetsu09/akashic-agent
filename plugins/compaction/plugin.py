@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 from collections.abc import Callable, Mapping, Sequence
+import logging
 from uuid import uuid4
 
 from core.common.file_io import run_file_io
@@ -26,9 +27,11 @@ from plugins.ledger.contract import MESSAGE_CATALOG, OWNER_STATE
 from plugins.ledger.contract import Input, Message
 
 from .records import StoredSummary, SummaryLookup, SummaryRecord, SummaryRecords
-from .message_summary import SummaryError, clip_summary, closed_groups, source_text, summarize, summary_groups, window_starts
+from .message_summary import SummaryError, clip_summary, closed_groups, recoverable, source_text, summarize, summary_groups, window_starts
 from plugins.compaction.contract import COMPACTION_READER, COMPACTION_SUMMARIES
 from plugins.turn_projection.contract import TURN_PROJECTION, TurnProjection
+
+logger = logging.getLogger(__name__)
 
 api_version = 3
 name = "compaction"
@@ -259,6 +262,9 @@ async def apply(ctx: Context) -> None:
             )
             return record, summary, projection.estimate(after_request)
 
+        def fits(after: int) -> bool:
+            return after < before and after + reserve <= window
+
         # 嵌套 execution 复用调用者已经固定的角色，不重读模型配置。
         async with ctx.require(CHAT_MODELS).execution() as execution:
             async def report_fallback(text: str) -> None:
@@ -272,20 +278,22 @@ async def apply(ctx: Context) -> None:
                 model=model, fallback=default, on_fallback=report_fallback,
             )
             record, summary, after = measure(text, calls, summarized)
-            if after + reserve > window:
+            if not fits(after):
                 try:
                     shorter, more, _ = await summarize((), previous=text, limit=max(1, limit // 2),
                                                        model=model, fallback=default, on_fallback=report_fallback)
-                except SummaryError:
-                    pass
+                except (RuntimeError, TimeoutError, SummaryError) as failure:
+                    if not recoverable(failure):
+                        raise
+                    logger.warning("摘要缩写失败，改为按比例截断已有摘要: %s", failure)
                 else:
                     text, calls = shorter, calls + more
                     record, summary, after = measure(text, calls, summarized)
-            for ratio in (0.5, 0.25, 0.0):
-                if after + reserve <= window:
-                    break
-                text = clip_summary(text, ratio)
-                record, summary, after = measure(text, calls, summarized)
+        # 已有合法摘要时本地按比例截断各节正文，直到放得下；只剩标题仍放不下才是真正的容量边界。
+        for ratio in (0.5, 0.25, 0.0):
+            if fits(after):
+                break
+            record, summary, after = measure(clip_summary(text, ratio), calls, summarized)
         if after >= before:
             raise SummaryError("摘要没有降低本次完整请求容量")
         if after + reserve > window:
