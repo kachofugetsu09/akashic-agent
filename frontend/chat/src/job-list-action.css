@@ -1,6 +1,6 @@
 /* 后台任务标记与目录标记同属标题行右侧的安静入口：平时淡墨，展开或有任务运行时才提亮。 */
 .job-list { position: relative; flex: 0 0 auto; margin-inline-start: auto; padding-inline-start: 4px; font-size: var(--chat-type-caption, 0.75rem); }
-.directory-marker + .job-list { margin-inline-start: 0; }
+.plugin-ui-slot[data-slot="header.end"] + .job-list { margin-inline-start: 0; }
 .job-list + .conversation-heading__new { margin-inline-start: 0; }
 
 .job-list__trigger { display: inline-flex; min-height: 32px; align-items: center; gap: 6px; padding-inline: 8px; border: 0; border-radius: 6px; background: transparent; color: var(--chat-faint); font: inherit; cursor: pointer; transition: color var(--ak-sys-duration-short) var(--ak-sys-motion-standard); }

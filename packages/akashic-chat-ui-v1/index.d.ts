@@ -8,6 +8,7 @@ export type PluginUiSlotName =
   | "message.attachment"
   | "drawer.panel"
   | "chat.notice"
+  | "header.end"
   | "dashboard.main";
 
 export type WorkbenchIntentStatus = "handled" | "unhandled" | "invalid" | "failed";
@@ -57,6 +58,20 @@ export interface PluginUiDefinition {
 export function render(host: HTMLElement, node: ReactNode): () => void;
 /** 输入框上方的一行状态提示。 */
 export const Notice: ComponentType<{ children: ReactNode }>;
+/**
+ * 顶栏右侧的标记：图标加短名，alert 时变色；点开显示 children 面板，点外部或 Esc 收起。
+ * 面板里的 code 显示为整块路径，带 data-tone="error" 的元素显示为错误色。
+ */
+export const HeaderMarker: ComponentType<{
+  icon: ReactNode;
+  label: string;
+  alert?: boolean;
+  ariaLabel: string;
+  panelLabel: string;
+  children: ReactNode;
+}>;
+/** 标记面板底部的一排文字按钮。 */
+export const HeaderMarkerActions: ComponentType<{ children: ReactNode }>;
 /** 过长时滚动显示的单行文字。 */
 export const MarqueeText: ComponentType<{ children: ReactNode; still?: boolean }>;
 export function copyText(text: string): Promise<void>;
