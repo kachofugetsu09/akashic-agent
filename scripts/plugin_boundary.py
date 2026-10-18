@@ -16,11 +16,12 @@ R7～R8 Core key 只能由 Core 提供；Core 不导入插件合同。
 R9  Core 装配/宿主没有领域标识符或运行时字面量。
 R10 Core 固定为九个中立 key，均由 Core 独占。
 R11 SQLite 只由中立宿主/迁移函数打开；Web 框架只在 web_shell。
+R12 UI 宿主不点名插件：宿主插件只导入基础设施合同，聊天前端与宿主不按插件 ID 取用功能。
 
 比较 Git 基线时，公开模块清单与 Core 字面 key 声明只允许减少；
 不能通过扩大允许清单或登记新角色来绕过已有边界。
 
-R1～R3 的既有欠账记在 `plugin_boundary_baseline.toml` 中，只允许减少。
+R1～R3、R9、R12 的既有欠账记在 `plugin_boundary_baseline.toml` 中，只允许减少。
 R4、R5 没有基线；本门不证明角色归属、原子性或运行时隔离。
 
 用法
@@ -656,6 +657,78 @@ def check_core_ownership(imports: list[Import], sources: dict[str, str], previou
     return errors
 
 
+# 前端以插件 ID 取用功能的写法：直接查询、按安装与否分支、把 ID 存成常量。
+FRONTEND_NAMING = (
+    re.compile(r"queryHostPlugin\(\s*[\"']([a-z_][a-z0-9_]*)[\"']"),
+    re.compile(r"\.installed\(\s*[\"']([a-z_][a-z0-9_]*)[\"']"),
+    re.compile(r"\b[A-Z_]+_PLUGIN\s*=\s*[\"']([a-z_][a-z0-9_]*)[\"']"),
+)
+
+
+FRONTEND_ROUTE = re.compile(r"[\"'`](/api/[a-z0-9_-]+/[a-z0-9_-]+)")
+
+
+def plugin_ids() -> set[str]:
+    return {path.parent.name for path in (REPO_ROOT / "plugins").glob("*/plugin.py")}
+
+
+# 宿主里与插件 ID 比较（`id.split("@")[0] == "x"`、`startswith("x")`）即点名。
+def _names_plugin(node: ast.AST, ids: set[str]) -> str | None:
+    if isinstance(node, ast.Compare):
+        for side in (node.left, *node.comparators):
+            if isinstance(side, ast.Constant) and side.value in ids:
+                others = (node.left, *node.comparators)
+                if any(isinstance(other, (ast.Call, ast.Subscript)) for other in others):
+                    return str(side.value)
+    if (isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute) and node.func.attr == "startswith"
+            and node.args and isinstance(node.args[0], ast.Constant) and node.args[0].value in ids):
+        return str(node.args[0].value)
+    return None
+
+
+def ui_host_findings(policy: dict[str, object], sources: dict[str, str]) -> set[str]:
+    """UI 宿主（插件与聊天前端）对具体插件的点名，键为 `文件 -> 插件`。"""
+    hosts = cast_strings(policy.get("ui_hosts", {}), "plugins")
+    infrastructure = set(cast_strings(policy.get("ui_hosts", {}), "infrastructure"))
+    ids = plugin_ids()
+    findings: set[str] = set()
+    # 1. 宿主插件导入非基础设施插件的合同，或按 ID 比较插件。
+    for rel, source in sources.items():
+        owner = plugin_package(rel)
+        if owner is None or owner.removeprefix("plugins.") not in hosts:
+            continue
+        tree = ast.parse(source, filename=rel)
+        for node in ast.walk(tree):
+            target = None
+            if isinstance(node, ast.ImportFrom) and node.module:
+                match = re.fullmatch(r"plugins\.([a-z_][a-z0-9_]*)\.contract", node.module)
+                if match and match.group(1) not in infrastructure | set(hosts):
+                    target = match.group(1)
+            else:
+                target = _names_plugin(node, ids - set(hosts))
+            if target is not None:
+                findings.add(f"{rel} -> {target}")
+    # 2. 聊天前端以插件 ID 取用功能，或访问通用宿主路由以外的插件专属路由。
+    routes = tuple(cast_strings(policy.get("ui_hosts", {}), "host_routes"))
+    for root in cast_strings(policy.get("ui_hosts", {}), "frontend"):
+        for path in sorted((REPO_ROOT / root).rglob("*.ts*")):
+            text = path.read_text(encoding="utf-8")
+            rel = path.relative_to(REPO_ROOT)
+            for pattern in FRONTEND_NAMING:
+                findings.update(f"{rel} -> {match.group(1)}"
+                                for match in pattern.finditer(text) if match.group(1) in ids)
+            findings.update(f"{rel} -> {match.group(1)}" for match in FRONTEND_ROUTE.finditer(text)
+                            if not match.group(1).startswith(routes))
+    return findings
+
+
+def cast_strings(table: object, key: str) -> list[str]:
+    value = table.get(key, []) if isinstance(table, dict) else []
+    if not isinstance(value, list) or not all(isinstance(item, str) for item in value):
+        raise ValueError(f"plugin_boundary.toml ui_hosts.{key} 必须是字符串列表")
+    return value
+
+
 def run_check(base: str | None = None) -> int:
     policy = load_policy()
     baseline = load_baseline()
@@ -692,6 +765,11 @@ def run_check(base: str | None = None) -> int:
     errors.extend(check_phantom_names(policy))
     current_sources = {rel: (REPO_ROOT / rel).read_text(encoding="utf-8") for rel in source_python_files()}
     errors.extend(check_core_ownership(imports, current_sources, sources))
+    ui_findings = ui_host_findings(policy, current_sources)
+    ui_known = set(baseline.get("R12", []))
+    errors.extend(f"R12: UI 宿主点名插件: {item}" for item in sorted(ui_findings - ui_known))
+    errors.extend(f"baseline-R12: 账本条目已不再是违规，请从 plugin_boundary_baseline.toml 删除: {item}"
+                  for item in sorted(ui_known - ui_findings))
 
     if errors:
         print("插件边界门未通过：", file=sys.stderr)
@@ -706,7 +784,7 @@ def run_check(base: str | None = None) -> int:
         f"R2={counts['R2']}/{len(baseline.get('R2', []))} "
         f"R3={counts['R3']}/{len(baseline.get('R3', []))} "
         f"R7=0 R8=0 R9={len(core_domain_findings(current_sources))}/{len(baseline.get('R9', []))} "
-        "R10=9 R11=0（静态约束；不替代运行验收）"
+        f"R10=9 R11=0 R12={len(ui_findings)}/{len(ui_known)}（静态约束；不替代运行验收）"
     )
     return 0
 
@@ -730,6 +808,9 @@ def print_baseline() -> int:
     current = {rel: (REPO_ROOT / rel).read_text(encoding="utf-8") for rel in source_python_files()}
     lines.append("R9 = [")
     lines.extend(f"    {json.dumps(item, ensure_ascii=False)}," for item in sorted(core_domain_findings(current)))
+    lines.append("]")
+    lines.append("R12 = [")
+    lines.extend(f"    {json.dumps(item, ensure_ascii=False)}," for item in sorted(ui_host_findings(load_policy(), current)))
     lines.append("]")
     print("\n".join(lines))
     return 0
