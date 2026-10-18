@@ -84,14 +84,31 @@ class SkillTool:
 
 # 行首或空白后的 /技能名 是用户的显式选择；名称后不能紧跟路径字符，"/usr/bin" 不会被当成技能。
 SKILL_MENTION = re.compile(r"(?:^|(?<=\s))/(\w[\w-]*(?:\.[\w-]+)*)(?![\w/-]|\.\w)")
-# 代码块与行内代码里的 /名称 是引用的文字，不是选择。按 CommonMark：行首 ``` 或 ~~~ 围栏到不短于它的同字符围栏
-# （或文末）；行内代码是等长反引号串之间，反斜杠转义的反引号不开启代码。缩进代码块不识别（与列表续行难以区分）。
-CODE_SPAN = re.compile(
-    r"^ {0,3}(?P<bt>`{3,})[^`\n]*\n[\s\S]*?(?:^ {0,3}(?P=bt)`*[ \t]*$|\Z)"
-    r"|^ {0,3}(?P<tl>~{3,})[^\n]*\n[\s\S]*?(?:^ {0,3}(?P=tl)~*[ \t]*$|\Z)"
-    r"|(?<![\\`])(?P<ticks>`+)(?!`)[\s\S]*?(?<!`)(?P=ticks)(?!`)",
-    re.M,
-)
+# 代码块与行内代码里的 /名称 是引用的文字，不是选择。按 CommonMark 先切块再看行内：行首 ``` 或 ~~~ 围栏到
+# 不短于它的同字符围栏（或文末）整块跳过；空行分段，段内先去掉反斜杠转义，再去掉等长反引号串之间的行内代码。
+# 缩进代码块不识别（与列表续行难以区分）。
+_FENCE = re.compile(r"^ {0,3}(`{3,}|~{3,})")
+_INLINE_CODE = re.compile(r"(`+)(?!`)[\s\S]*?(?<!`)\1(?!`)")
+
+
+# 留下 /名称 可以算作选择的文字：围栏块整行清空，转义和行内代码换成空白。
+def mention_text(text: str) -> str:
+    kept: list[str] = []
+    fence = ""
+    for line in text.split("\n"):
+        opened = _FENCE.match(line)
+        if fence:
+            if opened and opened.group(1)[0] == fence[0] and len(opened.group(1)) >= len(fence) \
+                    and not line[opened.end():].strip():
+                fence = ""
+            kept.append("")
+        elif opened and not (opened.group(1)[0] == "`" and "`" in line[opened.end():]):
+            fence = opened.group(1)
+            kept.append("")
+        else:
+            kept.append(line)
+    paragraphs = re.split(r"\n[ \t]*\n", "\n".join(kept))
+    return "\n\n".join(_INLINE_CODE.sub(" ", re.sub(r"\\.", "  ", paragraph)) for paragraph in paragraphs)
 
 
 def mentioned_skills(snapshot: tuple[Message, ...], source: str) -> tuple[str, ...]:
@@ -103,7 +120,7 @@ def mentioned_skills(snapshot: tuple[Message, ...], source: str) -> tuple[str, .
     assert isinstance(current.body, Input)
     text = "\n".join(part.value for part in current.body.parts
                      if part.kind == "text" and isinstance(part.value, str))
-    return tuple(dict.fromkeys(match.group(1) for match in SKILL_MENTION.finditer(CODE_SPAN.sub(" ", text))))
+    return tuple(dict.fromkeys(match.group(1) for match in SKILL_MENTION.finditer(mention_text(text))))
 
 
 def selected_reminder(records: tuple[SkillRecord, ...], snapshot: tuple[Message, ...], source: str) -> Mapping[str, object] | None:
