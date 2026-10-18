@@ -394,6 +394,15 @@ function pushKey(pluginId: string, revision: string, sessionId: string): string 
   return JSON.stringify([pluginId, revision, sessionId]);
 }
 
+// 结束帧是尽力送达的：同一插件与会话只留当前 revision 和最新到达的一个未确认 revision，丢了 null 也不会越攒越多。
+function capPushes(pluginId: string, latest: string, sessionId: string) {
+  const current = definitions.get(pluginId)?.revision;
+  for (const key of pushed.keys()) {
+    const [id, revision, session] = JSON.parse(key) as [string, string, string];
+    if (id === pluginId && session === sessionId && revision !== latest && revision !== current) pushed.delete(key);
+  }
+}
+
 function retirePushes(retired: ReadonlySet<string>) {
   for (const key of pushed.keys()) {
     const [pluginId, revision] = JSON.parse(key) as [string, string, string];
@@ -418,7 +427,10 @@ export function receivePluginUiEvent(value: unknown): boolean {
   const key = pushKey(frame.plugin_id, frame.plugin_revision, frame.session_id);
   // null 表示流已结束，直接忘掉这个键，长连接跨会话不会越攒越多。
   if (state === null) pushed.delete(key);
-  else pushed.set(key, state as Record<string, unknown>);
+  else {
+    pushed.set(key, state as Record<string, unknown>);
+    capPushes(frame.plugin_id, frame.plugin_revision, frame.session_id);
+  }
   deliverPush(key, state as Record<string, unknown> | null);
   return true;
 }
