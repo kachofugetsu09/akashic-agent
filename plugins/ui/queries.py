@@ -8,6 +8,7 @@ import logging
 import math
 from collections.abc import Awaitable, Coroutine, Mapping
 from concurrent.futures import ThreadPoolExecutor
+from contextlib import aclosing, suppress
 from contextvars import copy_context
 from typing import Any, cast
 
@@ -22,6 +23,8 @@ from plugins.ui.contract import (
     UI_SLOTS,
     PluginUiAsset,
     PluginUiBinding,
+    PluginUiEmit,
+    PluginUiFollowHandler,
     PluginUiPluginUnavailable,
     PluginUiQueryOverloaded,
     PluginUiQueryTimeout,
@@ -378,6 +381,62 @@ class LivePluginUiProvider:
             return binding
         finally:
             await ui_scope.__aexit__(None, None, None)
+
+    async def follow(self, session_id: str, emit: PluginUiEmit) -> None:
+        """One stream per active registration; realign whenever the registrations change."""
+
+        streams: dict[str, asyncio.Task[None]] = {}
+        try:
+            while True:
+                changed = self._slots.changed()
+                current = await self._follow_bindings()
+                if current is None:
+                    return
+                for key in [key for key in streams if key not in current]:
+                    _ = streams.pop(key).cancel()
+                for key, binding in current.items():
+                    if key not in streams:
+                        streams[key] = asyncio.create_task(self._pump(binding, session_id, emit))
+                _ = await changed.wait()
+        finally:
+            for task in streams.values():
+                _ = task.cancel()
+            _ = await asyncio.gather(*streams.values(), return_exceptions=True)
+
+    # 当前 Root 下注册了 follow 的插件；注册发生在 LOADING，之后转 ACTIVE 不会再触发注册表变化，所以两者都接。
+    # UI owner 已失效时返回 None 结束跟随。
+    async def _follow_bindings(self) -> dict[str, PluginUiBinding] | None:
+        ui_scope = self._ctx.runtime_scope()
+        try:
+            await ui_scope.__aenter__()
+        except CompositionError as error:
+            if error.code in {"STALE_ACTIVATION", "OWNER_UNAVAILABLE"}:
+                return None
+            raise
+        try:
+            return {binding.registration_uuid: binding for binding in self._slots.bindings()
+                    if binding.follow is not None and binding.context.root_instance_token is self._ctx.root_instance_token
+                    and binding.context.fiber.state in (FiberState.LOADING, FiberState.ACTIVE)}
+        finally:
+            await ui_scope.__aexit__(None, None, None)
+
+    # 转发一个插件的会话流；结束、出错或被撤下时补一帧 None，让界面丢弃旧状态。
+    async def _pump(self, binding: PluginUiBinding, session_id: str, emit: PluginUiEmit) -> None:
+        owner = binding.descriptor.owner
+        frame: dict[str, object] = {"plugin_id": owner, "plugin_revision": self._plugin_revision(binding)}
+        follow = cast(PluginUiFollowHandler, binding.follow)
+        try:
+            with plugin_entrypoint(plugin_id=owner, generation_id=binding.context.runtime.generation_id,
+                                   fiber=binding.context.fiber.name, operation="plugin_ui.follow"):
+                stream = follow(session_id)
+            async with aclosing(stream) as values:
+                async for value in values:
+                    await emit({**frame, "value": dict(value)})
+        except Exception:
+            logger.exception("plugin ui follow failed: %s", owner)
+        finally:
+            with suppress(Exception):
+                await emit({**frame, "value": None})
 
     @staticmethod
     def _find_binding(slots: UiSlots, plugin_id: str) -> PluginUiBinding:

@@ -36,7 +36,6 @@ from plugins.channels.contract import (
     StopReceipt,
 )
 from plugins.ledger.contract import MESSAGE_CATALOG, SESSION_ADMIN
-from plugins.jobs.contract import JOB_NOTICES, JobNotices
 
 from .capabilities import (
     MESSAGE_DISPLAY,
@@ -61,7 +60,7 @@ from .services import (
     SessionAdminPort,
 )
 from .services import ArtifactReadLeasePort, PluginUiProvider, WebUiProvider
-from plugins.ui.contract import MessageDisplayReader
+from plugins.ui.contract import MessageDisplayReader, PluginUiEmit
 from .scoped_capabilities import (
     ScopedMessageDisplay,
     ScopedPluginUiProvider,
@@ -226,8 +225,8 @@ def build_akashic_channel_factory(owner: Context, config: AkashicClientsConfig, 
     return build
 
 
-_JOBS_RETRY_MIN_S = 1.0
-_JOBS_RETRY_MAX_S = 30.0
+_PLUGIN_UI_RETRY_MIN_S = 1.0
+_PLUGIN_UI_RETRY_MAX_S = 30.0
 
 
 class _GenerationAkashicAdapter:
@@ -302,8 +301,7 @@ class _GenerationAkashicAdapter:
         self._web.bind_message_scope(
             self._message_scope,
             reply_status=self._reply_status,
-            jobs=self._follow_jobs,
-            stop_job=self._stop_job,
+            plugin_events=self._follow_plugin_ui,
         )
         self._web.bind_message_display(self._message_display)
 
@@ -386,31 +384,21 @@ class _GenerationAkashicAdapter:
                     "items": [dict(item) for item in frame],
                 }
 
-    # 1. 每代 jobs owner 借一次订阅并长跟随；2. owner 关闭时 follow 结束，先发空快照让前端失效；
-    # 3. 再重新借用，插件缺席期间退避等待，新一代出现后从其基线继续。
-    async def _follow_jobs(self, session_id: str) -> AsyncGenerator[dict[str, object], None]:
-        delay = _JOBS_RETRY_MIN_S
+    # 1. 每代 UI owner 借一次查询目录并长跟随，插件推给自己界面的会话状态原样转发；
+    # 2. owner 关闭时跟随结束，退避后重新借用新一代。宿主不认识任何具体插件的状态。
+    async def _follow_plugin_ui(self, session_id: str, emit: PluginUiEmit) -> None:
+        delay = _PLUGIN_UI_RETRY_MIN_S
         while True:
             async with self._open_request_scope() as scope:
-                with scope.borrow(JOB_NOTICES) as service:
-                    notices = None if service is None else cast(JobNotices, service)
-            if notices is None:
+                with scope.borrow(PLUGIN_UI) as service:
+                    provider = None if service is None else cast(PluginUiProvider, service)
+            if provider is None:
                 await asyncio.sleep(delay)
-                delay = min(delay * 2, _JOBS_RETRY_MAX_S)
+                delay = min(delay * 2, _PLUGIN_UI_RETRY_MAX_S)
                 continue
-            delay = _JOBS_RETRY_MIN_S
-            async with aclosing(notices.follow_jobs(session_id)) as snapshots:
-                async for snapshot in snapshots:
-                    yield {"session_id": session_id, "jobs": [job.to_wire() for job in snapshot]}
-            yield {"session_id": session_id, "jobs": []}
+            delay = _PLUGIN_UI_RETRY_MIN_S
+            await provider.follow(session_id, emit)
             await asyncio.sleep(delay)
-
-    async def _stop_job(self, session_id: str, job_id: str) -> bool:
-        async with self._open_request_scope() as scope:
-            with scope.borrow(JOB_NOTICES) as service:
-                if service is None:
-                    return False
-                return await cast(JobNotices, service).stop_job(session_id, job_id)
 
     async def _read_model_call_stats(self, call_id: str) -> ModelCallStats:
         """借用实际统计 owner；缺席不关闭聊天，也不获取模型修改权限。"""

@@ -374,6 +374,54 @@ export async function queryHostPlugin(
   });
 }
 
+// 插件推送按“插件|会话”记住最新一帧，晚挂载的界面先拿到当前状态。
+const pushed = new Map<string, Record<string, unknown> | null>();
+const pushListeners = new Map<string, Set<(value: Record<string, unknown> | null) => void>>();
+
+function pushKey(pluginId: string, sessionId: string): string {
+  return `${pluginId}|${sessionId}`;
+}
+
+function deliverPush(key: string, value: Record<string, unknown> | null) {
+  for (const listener of pushListeners.get(key) ?? []) {
+    try { listener(value); }
+    catch (error) { console.error(`[plugin-ui] push listener failed: ${key}`, error); }
+  }
+}
+
+/** WebSocket 上的插件推送帧；不是该帧时返回 false，交给其他解析器。 */
+export function receivePluginUiEvent(value: unknown): boolean {
+  if (typeof value !== "object" || value === null || (value as { type?: unknown }).type !== "plugin_ui.event") return false;
+  const frame = value as Record<string, unknown>;
+  const state = frame.value;
+  if (typeof frame.plugin_id !== "string" || typeof frame.session_id !== "string"
+    || (state !== null && (typeof state !== "object" || Array.isArray(state)))) throw new Error("插件推送帧无效");
+  const key = pushKey(frame.plugin_id, frame.session_id);
+  pushed.set(key, state as Record<string, unknown> | null);
+  deliverPush(key, state as Record<string, unknown> | null);
+  return true;
+}
+
+/** 连接结束时全部推送状态失效；重连后的基线帧再装回。 */
+export function resetPluginUiEvents() {
+  const keys = [...pushed.keys()];
+  pushed.clear();
+  keys.forEach((key) => deliverPush(key, null));
+}
+
+function subscribePush(pluginId: string, sessionId: string | undefined, callback: (value: Record<string, unknown> | null) => void): () => void {
+  if (!sessionId) return () => undefined;
+  const key = pushKey(pluginId, sessionId);
+  const listeners = pushListeners.get(key) ?? new Set();
+  pushListeners.set(key, listeners);
+  listeners.add(callback);
+  if (pushed.has(key)) callback(pushed.get(key) ?? null);
+  return () => {
+    listeners.delete(callback);
+    if (!listeners.size) pushListeners.delete(key);
+  };
+}
+
 export function receivePluginUiResult(response: PluginUiResult) {
   const request = pendingQueries.get(response.requestId);
   if (!request) return;
@@ -528,7 +576,7 @@ function MountedPlugin({
   pluginRevision: string;
   renderer: PluginUiRenderer;
   prefetch?: boolean;
-  context: Omit<PluginUiContext, "query" | "capabilities" | "onInvalidate" | "reportError" | "workbench">;
+  context: Omit<PluginUiContext, "query" | "capabilities" | "onInvalidate" | "reportError" | "subscribe" | "workbench">;
   refreshToken?: string | number;
 }) {
   const hostRef = React.useRef<HTMLDivElement>(null);
@@ -559,6 +607,7 @@ function MountedPlugin({
     invalidatorsRef.current = invalidators;
     let cleanup: void | (() => void);
     let live = true;
+    const stopPushes = new Set<() => void>();
     setError(null);
     const stopIntents = subscribeWorkbenchIntents(() => {
       for (const callback of invalidators) {
@@ -574,6 +623,11 @@ function MountedPlugin({
           return () => { invalidators.delete(callback); };
         },
         reportError: (message) => { if (live) setError(message); },
+        subscribe: (callback) => {
+          const stop = subscribePush(pluginId, sessionId, (value) => { if (live) callback(value); });
+          stopPushes.add(stop);
+          return () => { stop(); stopPushes.delete(stop); };
+        },
         capabilities: { queryCacheModes: ["none", "memory", "immutable"] },
         query: (method, payload = {}, options = {}) => queryPlugin({
           pluginId, pluginRevision, ownerId, slot, sessionId, messageId, turnId, method, payload, options, prefetch,
@@ -595,6 +649,7 @@ function MountedPlugin({
     }
     return () => {
       live = false;
+      stopPushes.forEach((stop) => stop());
       stopIntents();
       invalidators.clear();
       invalidatorsRef.current = null;

@@ -34,6 +34,11 @@ export interface PluginUiContext {
   capabilities: {
     queryCacheModes?: readonly ("none" | "memory" | "immutable")[];
   };
+  /**
+   * 本插件后端 follow 推送的当前会话状态：先回放最近一帧，之后每帧回调；
+   * null 表示旧状态已失效（断线、插件换代），插件应丢弃它。返回取消订阅。
+   */
+  subscribe(callback: (value: Record<string, unknown> | null) => void): () => void;
   /** 只查询本插件注册的方法；宿主不替插件选择其他插件。 */
   query(method: string, payload?: Record<string, unknown>, options?: PluginUiQueryOptions): Promise<Record<string, unknown>>;
   /**

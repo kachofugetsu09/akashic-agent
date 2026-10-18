@@ -3311,7 +3311,7 @@ form.composer:focus-within [data-slot="input-group"] {
 .directory-actions { display: flex; flex-flow: row wrap; gap: 8px; }
 /* 目录名短而信息量大：不与标题按比例分摊收缩，长标题先让；真超长时与标题同样右缘渐隐，不用省略号。
    上限放在参与标题栏 flex 的外层（含左内边距）：只限按钮时外层仍按目录全名的固有宽度占位，会把标题挤没。 */
-.plugin-ui-slot[data-slot="header.end"] { display: flex; min-width: 0; flex: 0 0 auto; align-items: center; margin-inline-start: auto; }
+.plugin-ui-slot[data-slot="header.end"] { display: flex; min-width: 0; flex: 0 0 auto; align-items: center; gap: 2px; margin-inline-start: auto; }
 /* 插槽按可见性懒挂载，宿主元素必须有布局盒子，不能用 display: contents。 */
 .plugin-ui-slot[data-slot="header.end"] > .plugin-ui-host { display: flex; min-width: 0; }
 .header-marker { position: relative; display: flex; min-width: 4.5rem; max-width: calc(14rem + 12px); flex: 0 0 auto; padding-inline-start: 12px; font-size: var(--chat-type-caption, 0.75rem); }
