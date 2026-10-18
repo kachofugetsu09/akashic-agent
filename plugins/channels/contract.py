@@ -152,6 +152,38 @@ class ChannelInboundMessage:
         )
 
 
+class InputPartRejected(ValueError):
+    """客户端附带的片段被拒收；渠道把它作为该请求的错误回给发送者。"""
+
+
+INPUT_PARTS_MAX_ITEMS = 8
+INPUT_PARTS_MAX_BYTES = 16 * 1024
+_INPUT_PART_KIND = re.compile(r"^[a-z][a-z0-9_]*(?:\.[a-z][a-z0-9_]*)*$")
+
+
+# metadata.input_parts 的统一形状：每个渠道与接纳它的来源都用同一份数量、kind 与字节上限。
+def read_input_parts(value: object) -> tuple[tuple[str, object], ...]:
+    if value is None:
+        return ()
+    if not isinstance(value, (list, tuple)) or len(value) > INPUT_PARTS_MAX_ITEMS:
+        raise InputPartRejected(f"parts 必须是至多 {INPUT_PARTS_MAX_ITEMS} 项的数组")
+    items: list[tuple[str, object]] = []
+    for item in value:
+        if not isinstance(item, Mapping) or set(item) != {"kind", "value"}:
+            raise InputPartRejected("parts 每项必须是 {kind, value}")
+        kind = item["kind"]
+        if not isinstance(kind, str) or not _INPUT_PART_KIND.match(kind) or any(other == kind for other, _ in items):
+            raise InputPartRejected("parts 的 kind 无效或重复")
+        items.append((kind, item["value"]))
+    try:
+        encoded = json.dumps([{"kind": kind, "value": part} for kind, part in items], ensure_ascii=False, allow_nan=False)
+    except (TypeError, ValueError) as error:
+        raise InputPartRejected("parts 必须是 JSON 值") from error
+    if len(encoded.encode("utf-8")) > INPUT_PARTS_MAX_BYTES:
+        raise InputPartRejected(f"parts 合计不能超过 {INPUT_PARTS_MAX_BYTES // 1024} KiB")
+    return tuple(items)
+
+
 # 来源插件接纳已验证的传输输入；不获得 Channel lease 或发送权。
 
 CHANNEL_INPUT_V2 = ServiceKey[
