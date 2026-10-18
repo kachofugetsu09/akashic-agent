@@ -46,11 +46,12 @@
 （`installed("x")`、`queryHostPlugin("x", …)`、`*_PLUGIN = "x"`）；`RpcMethod.key(...)` 字符串重复声明；
 R9 的领域词表与扫描范围都偏窄。
 
-本轮补上 **R12（UI 宿主不点名插件）**，现有 19 处记入基线，只许减少：
-- `plugin_boundary.toml [ui_hosts]` 列出宿主插件（`akashic_clients`、`ui`）和它们可以依赖的基础设施合同；导入其他插件合同即违规。
-- 宿主里按插件 ID 比较（`id.split("@")[0] == "projects"`、`startswith("x")`）即违规。
-- 聊天前端里 `queryHostPlugin("x")`、`.installed("x")`、`X_PLUGIN = "x"`，以及访问 `host_routes` 以外的 `/api/…` 路由，即违规。
-- 内容类型的中央名单暂未纳入，随第 2 步一起收掉。
+本轮补上 **R12（UI 宿主不点名插件）**，现有 22 处记入基线：
+- `plugin_boundary.toml [ui_hosts]` 列出宿主插件（`akashic_clients`、`ui`）和它们可以依赖的基础设施合同；导入其他插件合同即违规（绝对、相对、普通 `import` 都算）。
+- 宿主里拿插件身份比较即违规：`plugin_id == "x"`、`id.split("@")[0] == "x"`、`source == "x"`、`plugin_id.startswith("x")`；身份包括目录名与 manifest 名。普通文件名或 kind 比较不算。
+- 聊天前端里 `queryHostPlugin(…)`、`.installed(…)` 传入静态 ID 或 `*_PLUGIN` 常量、定义 `*_PLUGIN = "x"`，以及访问 `host_routes` 以外的 `/api/…` 路由（按完整路径段比较），即违规；注释不算。
+- **只许减少**：带 `--base` 时用同一规则扫描 base 快照，新增点名即使写进账本也失败；放宽 `infrastructure`、`host_routes`，或缩小 `plugins`、`frontend` 的扫描范围也失败。
+- 不覆盖：动态拼出的插件 ID 或路由、`RpcMethod.key(...)` 字符串在宿主里重复声明（`capabilities.py:45-49`，随第 8 步由 runtime_inspection 各 owner 发布合同时收掉）。
 
 ## 目标扩展点
 
@@ -63,7 +64,7 @@ R9 的领域词表与扫描范围都偏窄。
 | `composer.toolbar` | 挂载 | 输入框工具条位置 | 模型胶囊、后台任务 |
 | `chat.notice` | 挂载 | 通知条位置与层级 | 宿主执行桥 |
 | `navigation.section` | 挂载 + 置顶引用 `(plugin_id, ref)` | 侧栏分区顺序、折叠、置顶存储 | 项目 |
-| 内容类型显示策略 | 后端 `CONTENT.register` 定义里声明 `display: hidden | notice | archive` | 时间线按策略隐藏或用通用行呈现 | 所有内容类型 |
+| 内容类型显示策略 | owner 为自己的内部内容注册 `message.display:<kind>` = `hidden_part` | 时间线隐藏 owner 声明的内部材料；展示方缺席的仍显示“无法展示此内容” | 所有内容类型 |
 | 插件推送 | `ctx.subscribe(topic)`，经现有 WebSocket 复用 | 连接、重连、背压 | 后台任务 |
 
 插件前端模块通过页面 import map 共享宿主的 React 与 `@akashic/chat-ui-v1`（类型包 + 少量基础组件与令牌，
@@ -71,7 +72,7 @@ R9 的领域词表与扫描范围都偏窄。
 
 ## 收口顺序（每个 PR 新增 ≤500 行，删除不计）
 
-1. 本文档 + 边界门 R12（宿主与聊天前端不点名插件、RPC 键不重复）带基线，只许减少。
+1. 本文档 + 边界门 R12（宿主与聊天前端不点名插件）带基线，只许减少。
 2. 内容类型显示策略：owner 声明，删掉中央隐藏名单与 `context.notice`/`history.*`/`scheduler` 特判。
 3. `chat.notice` + `composer.status` + import map 与 `@akashic/chat-ui-v1`；迁走宿主执行桥告警、工作目录。
 4. `composer.suggest`；技能列表改由技能 owner 的插件查询提供，迁走 `skill-mention.tsx`。

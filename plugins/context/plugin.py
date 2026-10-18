@@ -9,6 +9,7 @@ from typing import Any
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 from agent.plugin_composition import Context
+from plugins.ui.contract import hidden_part, part_display_key
 from plugins.ledger.contract import MessageSnapshot
 from plugins.models.contract import ContextModel, ModelRequest
 from plugins.ledger.contract import (
@@ -239,5 +240,7 @@ async def apply(ctx: Context) -> None:
         return {"text": part.value}
 
     _ = await ctx.provide(CONTEXT_NOTICE_DISPLAY, display_notice)
+    # 自己写入的内部材料不进聊天正文；宿主不维护按插件列举的隐藏名单。
+    _ = await ctx.provide(part_display_key("context.summary"), hidden_part)
     materials = ContextMaterials(ctx, prompt_sources=config.prompt_sources, summary_source=config.summary_source or None)
     _ = await ctx.provide(MATERIALS_V4, materials, binding_contributors=materials.binding_contributors)

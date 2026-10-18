@@ -4,6 +4,7 @@ from core.common.file_io import run_file_io
 from core.common.diagnostic_log import log_timing
 
 from agent.plugin_composition import Context
+from plugins.ui.contract import hidden_part, part_display_key
 from plugins.ledger.contract import ARTIFACT_READ
 from plugins.ledger.contract import BINDINGS
 from plugins.channels.contract import ChannelInboundMessage
@@ -177,6 +178,9 @@ async def apply(ctx: Context) -> None:
         return await open(session_id).complete(program)
 
     _ = await ctx.provide(CHECK_ORIGIN, check_origin)
+    # 自己写入的内部材料不进聊天正文；宿主不维护按插件列举的隐藏名单。
+    for kind in ("channel.origin", "command.result"):
+        _ = await ctx.provide(part_display_key(kind), hidden_part)
     _ = await ctx.provide(CONVERSATION_COMMANDS, command)
     _ = await ctx.provide(CONVERSATION_COMPLETE, complete)
     _ = await ctx.require(SOURCES).register(ctx, name="conversation", open=open, accept=accept, channels=None,

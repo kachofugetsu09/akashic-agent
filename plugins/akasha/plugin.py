@@ -20,6 +20,8 @@ from plugins.akasha.contract import EMBEDDING_MEMORY_PLUGIN
 from plugins.models.contract import EMBEDDINGS
 from plugins.ui.contract import (
     UI_SLOTS,
+    hidden_part,
+    part_display_key,
     PluginUiDefinition,
     PluginUiNavigation,
     PluginUiRpcInvalidRequest,
@@ -186,6 +188,9 @@ async def run(ctx: Context, interest: Interest) -> None:
         "name": "akasha",
         "content": {"akasha.feedback": check_feedback, "akasha.recall": check_recall},
     })
+    # 自己写入的内部材料不进聊天正文；宿主不维护按插件列举的隐藏名单。
+    for kind in ("akasha.feedback", "akasha.recall"):
+        _ = await ctx.provide(part_display_key(kind), hidden_part)
     # 同一 Root 只允许一个 embedding 记忆系统；一个 Akasha 实例管理全部图。
     _ = await ctx.provide(EMBEDDING_MEMORY_PLUGIN, object())
     memories: dict[str, MessageMemory] = {}
