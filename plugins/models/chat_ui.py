@@ -7,7 +7,7 @@ from typing import Protocol, cast
 from urllib.parse import quote
 
 from core.common.file_io import run_file_io
-from plugins.ledger.contract import ContentPart, Message, MessageCatalog, Output
+from plugins.ledger.contract import ContentPart, Input, Message, MessageCatalog, Output
 from plugins.models.contract import (
     ChatModelSelection,
     ModelCallStats,
@@ -80,12 +80,15 @@ class ChatUiQueries:
             "unavailableRuntimes": project_unavailable_chat_runtimes(snapshot),
         }
 
-    # 会话里最后一条带模型事实的回复对应的调用统计；尾部找不到或记录已清理时为空。
+    # 会话最近一轮里最后一条带模型事实的回复对应的调用统计；本轮没有、尾部找不到或记录已清理时为空。
     def _latest_call(self, session_id: str) -> dict[str, object] | None:
         reader = self.messages.reader(session_id)
         with reader.read_snapshot():
             page = reader.read_tail(limit=_LATEST_CALL_WINDOW)
         for message in reversed(page.messages):
+            # 最近一轮的 Input 之后没有模型产出（失败或产出前停止）时为空，不回退到上一轮的调用。
+            if isinstance(message.body, Input):
+                return None
             call_id = _model_call_id(message)
             if call_id is None:
                 continue
