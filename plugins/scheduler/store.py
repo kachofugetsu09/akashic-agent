@@ -306,15 +306,17 @@ class JobStore:
         await self._change(update)
 
     async def recover(self, now: datetime) -> ScheduleState:
-        """已有触发先恢复；尚未触发的旧周期跳到未来，过期 one-shot 逻辑失效。"""
+        """已有触发先恢复；尚未触发的旧周期跳到未来，过期 one-shot 逻辑失效。
+        任务仍指向已结算的触发（例如升级迁移结算的旧触发）时同样推进，否则它不会再触发。"""
         now = aware(now)
         def update(state: ScheduleState) -> ScheduleState:
             for identity, job in state.jobs.items():
-                if not job.enabled or aware(job.fire_at) > now or fire_key(job) in state.fires:
+                fire = state.fires.get(fire_key(job))
+                if not job.enabled or aware(job.fire_at) > now or fire is not None and fire.status == "pending":
                     continue
                 if job.trigger == "every":
                     state.jobs[identity] = replace(job, fire_at=advance(job, now))
-                elif (now - aware(job.fire_at)).total_seconds() > 300:
+                elif fire is not None or (now - aware(job.fire_at)).total_seconds() > 300:
                     state.jobs[identity] = replace(job, enabled=False)
             return state
         return await self._change(update)
