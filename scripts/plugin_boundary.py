@@ -658,10 +658,13 @@ def check_core_ownership(imports: list[Import], sources: dict[str, str], previou
 
 
 # 前端以插件身份取用功能的写法：静态 ID 或 *_PLUGIN 常量传给查询/安装判断，或把 ID 存成常量。
+# token 之间允许空白和注释（TS 合法的 trivia），注释隔开调用不能绕过。
+_GAP = r"(?:\s|/\*[\s\S]*?\*/|//[^\n]*\n)*"
+_TARGET = r"([\"'`][^\"'`$]+[\"'`]|[A-Z][A-Z0-9_]*_PLUGIN\b)"
 FRONTEND_NAMING = (
-    re.compile(r"queryHostPlugin\s*\(\s*([\"'`][^\"'`$]+[\"'`]|[A-Z][A-Z0-9_]*_PLUGIN\b)"),
-    re.compile(r"\.installed\s*\(\s*([\"'`][^\"'`$]+[\"'`]|[A-Z][A-Z0-9_]*_PLUGIN\b)"),
-    re.compile(r"\b([A-Z][A-Z0-9_]*_PLUGIN)\s*=\s*[\"'`]"),
+    re.compile(rf"queryHostPlugin{_GAP}\({_GAP}{_TARGET}"),
+    re.compile(rf"\.{_GAP}installed{_GAP}\({_GAP}{_TARGET}"),
+    re.compile(rf"\b([A-Z][A-Z0-9_]*_PLUGIN){_GAP}={_GAP}[\"'`]"),
 )
 FRONTEND_ROUTE = re.compile(r"[\"'`](/api/[^\"'`$?#\s]*)")
 
