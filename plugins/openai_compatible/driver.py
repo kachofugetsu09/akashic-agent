@@ -8,6 +8,7 @@ from core.common.diagnostic_log import log_timing
 # narrowed key/value types of arbitrary Mapping and list payloads.
 # pyright: reportUnknownVariableType=false, reportUnknownMemberType=false, reportUnknownArgumentType=false
 
+from pathlib import Path
 import asyncio
 import json
 import zlib
@@ -339,7 +340,15 @@ def definition() -> ModelDriverDefinition:
         discover=_discover,
         probe=_probe,
         probe_embedding=_probe_embedding,
+        icon=_icon,
     )
+
+
+# 同一驱动接多家服务：按目录身份、地址、名称认出已知品牌，认不出就不显示图标。
+def _icon(descriptor: DriverConnectionDescriptor) -> str | None:
+    identity = " ".join((str(descriptor.config.get("catalog_provider_id") or ""), descriptor.endpoint, descriptor.name)).lower()
+    brand = next((name for name in ("deepseek", "openrouter") if name in identity), None)
+    return None if brand is None else (Path(__file__).parent / "icons" / f"{brand}.svg").read_text(encoding="utf-8")
 
 
 async def _open(

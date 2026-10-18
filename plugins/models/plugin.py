@@ -1,6 +1,8 @@
 from __future__ import annotations
 
+from collections.abc import Mapping
 from importlib import import_module
+from typing import cast
 
 from agent.plugin_composition import Context
 from plugins.models.contract import EMBEDDINGS
@@ -11,7 +13,10 @@ from plugins.models.contract import (
 )
 from plugins.models.contract import MODEL_CACHE_USAGE, MODEL_CALL_STATS
 from plugins.gateway.contract import RpcMethod
-from plugins.ui.contract import UI, UI_SLOTS, PluginUiDefinition, PluginUiRpcInvalidRequest, hidden_part, part_display_key
+from plugins.ui.contract import UI, UI_SLOTS, PluginUiDefinition, hidden_part, part_display_key
+from plugins.conversation.contract import input_part_key
+from plugins.ledger.contract import MESSAGE_CATALOG, ContentPart, ContentReferences, MessageReader
+from plugins.models.contract import ChatModelSelection
 
 from .content import MODEL_CONTENT, ContentOwner
 from .views import CONTENT_VIEWS, ContentViews
@@ -26,7 +31,8 @@ from .projection import (
     ProjectionOwner,
     display_facts,
 )
-from .selection import MODEL_SELECTION, SelectionOwner
+from .chat_ui import ChatUiQueries
+from .selection import MODEL_SELECTION, SelectionOwner, check_selection
 from .settings import MODEL_SETTINGS
 from .state import ModelsState
 from .store import ModelsStore
@@ -103,21 +109,24 @@ async def apply(ctx: Context) -> None:
     _ = await ctx.inject((UI, MODEL_CATALOG, MODEL_CALL_STATS, MODEL_SETTINGS, MODEL_SELECTION, MODEL_CACHE_USAGE),
                          _register_ui, name="ui")
 
-    # 回答尾注只读本插件的用量视图；聊天界面经插件界面插槽查询。
-    async def message_ui(child: Context) -> None:
-        async def query(method: str, payload: dict[str, object], *,
-                        session_id: str | None, turn_id: str | None) -> dict[str, object]:
-            message_id = payload.get("message_id")
-            if method != "usage.message" or set(payload) != {"message_id"} or not session_id \
-                    or not isinstance(message_id, str) or not message_id:
-                raise PluginUiRpcInvalidRequest("用量查询需要会话与消息")
-            return {"output_tokens": await usage.message_output_tokens(session_id, message_id)}
+    # 客户端随消息附带的模型选择由本插件校验；持久化仍走会话来源的元数据更新。
+    def check_input_selection(part: ContentPart, reader: MessageReader) -> ContentReferences:
+        references = check_selection(part)
+        value = cast(Mapping[str, str | None], part.value)
+        _ = state.catalog.validate_chat_selection(ChatModelSelection(value["model_id"], value["reasoning_effort"]))
+        return references
 
+    _ = await ctx.provide(input_part_key("model.selection"), check_input_selection)
+
+    # 回答尾注与聊天里的模型数据都只读本插件的视图；聊天界面经插件界面插槽查询。
+    async def message_ui(child: Context) -> None:
+        query = ChatUiQueries(catalog=state.catalog, messages=child.require(MESSAGE_CATALOG), call_stats=store.read_call_stats,
+                              message_tokens=usage.message_output_tokens, icon=state.connection_icon)
         _ = await child.require(UI_SLOTS).register_plugin_ui(
             child, PluginUiDefinition(module="message_ui.js", stylesheet="message_ui.css",
                                       slots=("turn.after_answer",)), query=query)
 
-    _ = await ctx.inject((UI_SLOTS,), message_ui, name="message-ui")
+    _ = await ctx.inject((UI_SLOTS, MESSAGE_CATALOG), message_ui, name="message-ui")
 
 
 async def _register_ui(ctx: Context) -> None:

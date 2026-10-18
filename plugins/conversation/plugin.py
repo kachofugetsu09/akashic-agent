@@ -199,7 +199,7 @@ async def apply(ctx: Context) -> None:
 
 
 # 来源自己写入的片段不能由客户端冒充。
-OWN_INPUT_KINDS = frozenset({"text", "artifact_ref", "channel.origin", "reply_ref", "model.selection", "command.result"})
+OWN_INPUT_KINDS = frozenset({"text", "artifact_ref", "channel.origin", "reply_ref", "command.result"})
 
 
 # 渠道已校验过形状；这里再收紧一次，元数据来自其他渠道时同样安全。

@@ -722,6 +722,8 @@ class ModelDriverDefinition:
     start_auth: DriverAuthHandler | None = None
     finish_auth: DriverAuthHandler | None = None
     cancel_auth: DriverAuthHandler | None = None
+    # 连接的品牌图标（SVG 文本，≤16 KiB）；聊天里的模型选择按连接分组时显示。
+    icon: Callable[[DriverConnectionDescriptor], str | None] | None = None
 
 
 class ModelDrivers(Protocol):
