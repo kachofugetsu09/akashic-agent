@@ -1,6 +1,6 @@
 import { FileText } from "lucide-react";
 import { Fragment, useCallback, useEffect, useId, useLayoutEffect, useMemo, useRef, useState, useSyncExternalStore, type KeyboardEvent as ReactKeyboardEvent, type ReactNode, type RefObject } from "react";
-import { composerSuggestSources, usePluginUiCatalogVersion, type ComposerSuggestSource, type ComposerSuggestion } from "./plugin-ui-runtime";
+import { composerSuggestSources, subscribePluginUiCatalog, usePluginUiCatalogVersion, type ComposerSuggestSource, type ComposerSuggestion } from "./plugin-ui-runtime";
 
 /** 菜单里的一项：插件给的建议加上宿主需要的来源身份与分组。 */
 interface SuggestItem extends ComposerSuggestion {
@@ -50,30 +50,40 @@ function loadSource(source: ComposerSuggestSource, refresh: boolean): void {
   if (current?.status === "loading") { if (refresh && !current.again) setState(source.key, { ...current, again: true }); return; }
   if (current && !refresh) return;
   const controller = new AbortController();
-  const timer = window.setTimeout(() => controller.abort(new Error("读取超时")), LOAD_TIMEOUT_MS);
   const loading: SourceState = { status: "loading", items: current?.items ?? [], error: "", again: false, abort: () => controller.abort() };
   setState(source.key, loading);
-  const aborted = new Promise<never>((_, reject) => controller.signal.addEventListener("abort",
-    () => reject(controller.signal.reason instanceof Error ? controller.signal.reason : new Error("读取已取消")), { once: true }));
-  void Promise.race([source.provider.load(source.context(controller.signal)), aborted])
-    .then((rows) => ({ status: "ready" as const, items: rows.map((row) => readItem(row, source)), error: "" }),
-      (error: unknown) => ({ status: "error" as const, items: [], error: error instanceof Error ? error.message : String(error) }))
-    .then((settled) => {
+  void (async () => {
+    // 调用、等待、条目校验在同一个边界里：同步抛错、超时、格式错误都只算这个源失败。
+    const timer = window.setTimeout(() => controller.abort(new Error("读取超时")), LOAD_TIMEOUT_MS);
+    const aborted = new Promise<never>((_, reject) => controller.signal.addEventListener("abort",
+      () => reject(controller.signal.reason instanceof Error ? controller.signal.reason : new Error("读取已取消")), { once: true }));
+    let settled: Pick<SourceState, "status" | "items" | "error">;
+    try {
+      const rows = await Promise.race([source.provider.load(source.context(controller.signal)), aborted]);
+      settled = { status: "ready", items: rows.map((row) => readItem(row, source)), error: "" };
+    } catch (error) {
+      settled = { status: "error", items: [], error: error instanceof Error ? error.message : String(error) };
+    } finally {
       window.clearTimeout(timer);
-      const latest = states.get(source.key);
-      // 撤下或被新一轮取代的加载不写回。
-      if (latest?.abort !== loading.abort) return;
-      setState(source.key, { ...settled, again: false, abort: () => undefined });
-      if (latest.again) loadSource(source, true);
-    });
+    }
+    const latest = states.get(source.key);
+    // 撤下或被新一轮取代的加载不写回。
+    if (latest?.abort !== loading.abort) return;
+    setState(source.key, { ...settled, again: false, abort: () => undefined });
+    if (latest.again) loadSource(source, true);
+  })();
 }
 
-// 只保留当前目录里的数据源；撤下的源中止在途加载并丢掉旧条目。
-function loadSuggestions(refresh = false): void {
-  const sources = composerSuggestSources();
-  const keys = new Set(sources.map((source) => source.key));
+// 目录一变就对齐：撤下的源中止在途加载并丢掉旧条目，不等菜单或消息再用到建议。
+function pruneSources(): void {
+  const keys = new Set(composerSuggestSources().map((source) => source.key));
   for (const [key, state] of states) if (!keys.has(key)) { state.abort(); setState(key, null); }
-  sources.forEach((source) => loadSource(source, refresh));
+}
+subscribePluginUiCatalog(pruneSources);
+
+function loadSuggestions(refresh = false): void {
+  pruneSources();
+  composerSuggestSources().forEach((source) => loadSource(source, refresh));
 }
 
 function useSuggestions() {

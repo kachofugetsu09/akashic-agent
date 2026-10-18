@@ -92,6 +92,12 @@ const SLOT_NAMES = new Set<Exclude<PluginUiSlotName, "dashboard.main">>([
   "composer.suggest",
 ]);
 
+/** 目录或模块变化时通知；宿主内的数据型扩展点据此对齐自己的缓存。 */
+export function subscribePluginUiCatalog(listener: () => void): () => void {
+  listeners.add(listener);
+  return () => { listeners.delete(listener); };
+}
+
 function emitChange() {
   registryVersion += 1;
   listeners.forEach((listener) => listener());
