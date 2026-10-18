@@ -115,10 +115,10 @@ export function GroupNavigation({
   // 搜索没有命中任何分组时整节收起；插件提示只在非搜索时显示。
   if (searching && groups.length === 0) return null;
   const openCreate = create ? () => onOpenForm({ source: section.source, form: create }) : undefined;
-  return <section className="project-navigation" aria-label={provider.label}>
-    <header className="project-navigation__header">
+  return <section className="navigation-section" aria-label={provider.label}>
+    <header className="navigation-section__header">
       <span>{heading}</span>
-      {openCreate ? <button type="button" className="project-navigation__icon" aria-label={`新建${provider.label}`}
+      {openCreate ? <button type="button" className="navigation-section__icon" aria-label={`新建${provider.label}`}
         data-tip={`新建${provider.label}`} onClick={openCreate}>
         <Plus size={15} aria-hidden="true" />
       </button> : null}
@@ -126,7 +126,7 @@ export function GroupNavigation({
     {!searching && provider.notice ? <NavigationGroupMount source={section.source} renderer={provider.notice}
       extra={extra} scope={{ dimension: provider.dimension }} refreshToken={revision} /> : null}
     {groups.length === 0 && !searching && openCreate && heading === provider.label ? (
-      <button type="button" className="project-navigation__empty" onClick={openCreate}>
+      <button type="button" className="navigation-section__empty" onClick={openCreate}>
         <FolderPlus size={16} aria-hidden="true" />
         <span>新建{provider.label}</span>
       </button>
@@ -174,38 +174,38 @@ export function GroupNavigationRow({
 }) {
   // 折叠时分组行汇总会话状态，展开后状态回到各自的会话前。
   const collapsedStatus = open ? undefined : summarizeStatus(items.map((item) => item.status));
-  return <div className={`project-group ${active ? "active" : ""}`} data-group-key={groupKey(groupRef)}>
-    <NavigationRowMenu title={group.label} className="project-group__row" actions={[
+  return <div className={`navigation-group ${active ? "active" : ""}`} data-group-key={groupKey(groupRef)}>
+    <NavigationRowMenu title={group.label} className="navigation-group__row" actions={[
       { label: "新建对话", icon: <Plus size={18} aria-hidden="true" />, onSelect: onNewChat },
       ...(actions ?? []),
     ]}>
       {/* 与右侧名称按钮做同一件事，键盘只停名称一处。 */}
-      <button type="button" className="project-group__toggle" tabIndex={-1}
+      <button type="button" className="navigation-group__toggle" tabIndex={-1}
         aria-label={`${open ? "收起" : "展开"} ${group.label} 的对话`} aria-expanded={open}
         onClick={onToggle} disabled={searching}>
-        <ChevronRight size={14} aria-hidden="true" className="project-group__chevron" />
+        <ChevronRight size={14} aria-hidden="true" className="navigation-group__chevron" />
       </button>
       {/* 搜索时只停用折叠，不禁用按钮：它是这一行唯一的键盘入口，行菜单（含"新建对话"）要靠它 Shift+F10 打开。 */}
-      <button type="button" className="project-group__open" data-row-primary="" onClick={searching ? undefined : onToggle}
+      <button type="button" className="navigation-group__open" data-row-primary="" onClick={searching ? undefined : onToggle}
         aria-expanded={open} aria-disabled={searching || undefined}
         title={`${open ? "收起" : "展开"} ${group.label}${group.detail ? ` · ${group.detail}` : ""}`}>
         {collapsedStatus
-          ? <span className="project-group__icon"><SessionStatusMark status={collapsedStatus} /></span>
+          ? <span className="navigation-group__icon"><SessionStatusMark status={collapsedStatus} /></span>
           : <Folder size={18} strokeWidth={1.75} aria-hidden="true" />}
-        <span className="project-group__name"><MarqueeText>{group.label}</MarqueeText></span>
+        <span className="navigation-group__name"><MarqueeText>{group.label}</MarqueeText></span>
         {/* 其他插件给这个取值的短标签，例如记忆范围；只放文字，没有插件时不占位。 */}
         <PluginUiSlot name="scope.badge" scope={{ dimension: groupRef.dimension, value: groupRef.id }} quiet />
       </button>
       {/* 行菜单里有同一个"新建对话"：键盘用 Shift+F10 打开，不再每个分组多占一个 Tab 停靠点。 */}
-      <button type="button" className="project-navigation__icon project-group__new-chat" aria-label={`在 ${group.label} 中新建对话`}
+      <button type="button" className="navigation-section__icon navigation-group__new-chat" aria-label={`在 ${group.label} 中新建对话`}
         data-tip="新建对话" tabIndex={-1} onClick={onNewChat}>
         <Plus size={14} aria-hidden="true" />
       </button>
     </NavigationRowMenu>
-    {open ? <nav className="project-group__sessions" aria-label={`${group.label} 的对话`}>
-      {items.length === 0 ? <small className="project-group__hint">{searching ? "没有匹配的对话" : "还没有对话"}</small> : null}
+    {open ? <nav className="navigation-group__sessions" aria-label={`${group.label} 的对话`}>
+      {items.length === 0 ? <small className="navigation-group__hint">{searching ? "没有匹配的对话" : "还没有对话"}</small> : null}
       {items.map((session) => <button key={session.id} type="button"
-        className={`project-session ${session.active ? "active" : ""}`}
+        className={`group-session ${session.active ? "active" : ""}`}
         aria-current={session.active ? "true" : undefined}
         aria-busy={pendingSessionId === session.id || undefined}
         title={session.title}
@@ -213,7 +213,7 @@ export function GroupNavigationRow({
         onPointerEnter={() => onPrefetchSession?.(session.id)}
         onFocus={() => onPrefetchSession?.(session.id)}>
         <SessionStatusMark status={session.status} />
-        <span className="project-session__title"><MarqueeText>{session.title}</MarqueeText></span>
+        <span className="group-session__title"><MarqueeText>{session.title}</MarqueeText></span>
       </button>)}
     </nav> : null}
   </div>;
@@ -269,20 +269,20 @@ export function GroupFormDialog({ request, groups, onClose, onCloseFocus }: {
     }
   };
   return <Dialog open onOpenChange={(open) => { if (!open && !busyRef.current) onClose(); }}>
-    <DialogContent className="project-dialog" overlayClassName="project-dialog-overlay" aria-describedby={undefined}
+    <DialogContent className="group-dialog" overlayClassName="group-dialog-overlay" aria-describedby={undefined}
       onCloseAutoFocus={onCloseFocus ? (event) => { event.preventDefault(); onCloseFocus(); } : undefined}>
       <form onSubmit={(event) => void submit(event)}>
-        <DialogHeader className="project-dialog__header"><DialogTitle>{form.title}</DialogTitle></DialogHeader>
+        <DialogHeader className="group-dialog__header"><DialogTitle>{form.title}</DialogTitle></DialogHeader>
         <NavigationGroupMount source={source} renderer={form} extra={extra}
           scope={{ dimension, ...(group ? { value: group.id } : {}) }} refreshToken={busy ? 1 : 0} />
-        {error ? <p className="project-dialog__error" role="alert">{error}</p> : null}
-        <DialogFooter className="project-dialog__footer">
+        {error ? <p className="group-dialog__error" role="alert">{error}</p> : null}
+        <DialogFooter className="group-dialog__footer">
           {/* 其他插件的附加设置（例如记忆范围）；没有插件时这里为空，按钮仍靠右。 */}
           {group ? <span /> : <PluginUiSlot name="scope.fields" scope={{ dimension }} fields={fields}
             refreshToken={busy ? 1 : 0} quiet fallback={<span />} />}
-          {form.submitLabel ? <button type="submit" className="project-dialog__button primary" disabled={!ready || busy}>
+          {form.submitLabel ? <button type="submit" className="group-dialog__button primary" disabled={!ready || busy}>
             {busy ? "正在提交…" : form.submitLabel}
-          </button> : <button type="button" className="project-dialog__button" onClick={onClose}>关闭</button>}
+          </button> : <button type="button" className="group-dialog__button" onClick={onClose}>关闭</button>}
         </DialogFooter>
       </form>
     </DialogContent>

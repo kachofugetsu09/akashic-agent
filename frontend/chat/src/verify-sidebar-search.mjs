@@ -48,7 +48,7 @@ try {
   page.on('pageerror', error=>errors.push(error.message));
   await page.goto(server.origin + '/?pinned=' + Number(pinned));
   const search=page.getByRole('textbox',{name:'搜索会话'});await search.fill('命中');
-  await page.locator('.project-session').first().waitFor();
+  await page.locator('.group-session').first().waitFor();
   // 1. 按可见顺序跨分区移动：先到分组行，再到组内会话，不能跳过。
   await search.press('ArrowDown');
   assert.equal(await page.evaluate(()=>document.activeElement?.getAttribute('title')), '收起 命中 项目');

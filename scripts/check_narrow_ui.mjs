@@ -374,7 +374,7 @@ async function chat(page, prefix, narrow) {
     await create.click();
     const dialog = frame.getByRole("dialog", { name: "创建项目", exact: true });
     await dialog.waitFor();
-    await measure(page, `${prefix}-project-dialog`);
+    await measure(page, `${prefix}-group-dialog`);
     const memory = dialog.getByRole("button", { name: /记忆设置/ });
     if (await memory.count()) {
       await memory.click();
