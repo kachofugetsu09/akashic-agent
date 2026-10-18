@@ -1,4 +1,4 @@
-from collections.abc import Awaitable, Callable, Mapping, Sequence
+from collections.abc import Awaitable, Callable, Mapping
 from contextlib import ExitStack
 from functools import partial
 from typing import cast
@@ -9,7 +9,7 @@ from agent.plugin_composition import Context
 from plugins.ui.contract import hidden_part, part_display_key
 from plugins.ledger.contract import ARTIFACT_READ
 from plugins.ledger.contract import BINDINGS
-from plugins.channels.contract import ChannelInboundMessage
+from plugins.channels.contract import ChannelInboundMessage, InputPartRejected, read_input_parts
 from plugins.commands.contract import COMMANDS
 from plugins.ledger.contract import (
     MESSAGE_CATALOG,
@@ -166,13 +166,14 @@ async def apply(ctx: Context) -> None:
                 "model_id": model_id.strip() or None, "reasoning_effort": effort.strip() or None,
             }),)
         # 3. 客户端附带的片段交给声明了该 kind 的 owner 校验；Input 与全部引用原子提交，传输时间、handoff 和重复 ID 不进入正文。
+        #    owner 缺席时只拒收新内容：账本先核对同一 message_id 的不可变内容，已提交输入仍能重放收据。
         with ExitStack() as scopes:
             extra: dict[str, Callable[[ContentPart], ContentReferences]] = {}
-            for kind, value in input_parts(message.metadata.get("input_parts")):
+            for kind, value in read_input_parts(message.metadata.get("input_parts")):
+                if kind in OWN_INPUT_KINDS:
+                    raise InputPartRejected(f"输入片段 {kind} 只能由来源自己写入")
                 check = scopes.enter_context(ctx.borrow(input_part_key(kind)))
-                if kind in OWN_INPUT_KINDS or check is None:
-                    raise ValueError(f"没有插件接收输入片段: {kind}")
-                extra[kind] = partial(check, reader=reader)
+                extra[kind] = partial(reject_input_part, kind) if check is None else partial(check, reader=reader)
                 parts += (ContentPart(kind, value),)
             accepted = await open(session_id, extra).accept(message_id, Input(parts))
         log_timing("input.committed", session_id=session_id, request_id=message_id, counts={"seq": accepted.seq})
@@ -198,25 +199,12 @@ async def apply(ctx: Context) -> None:
         needs_reply=lambda reader: ctx.require(SOURCE_SESSION).needs_reply(reader, "conversation"))
 
 
+def reject_input_part(kind: str, part: ContentPart) -> ContentReferences:
+    raise InputPartRejected(f"没有插件接收输入片段: {kind}")
+
+
 # 来源自己写入的片段不能由客户端冒充。
 OWN_INPUT_KINDS = frozenset({"text", "artifact_ref", "channel.origin", "reply_ref", "model.selection", "command.result"})
-
-
-# 渠道已校验过形状；这里再收紧一次，元数据来自其他渠道时同样安全。
-def input_parts(value: object) -> tuple[tuple[str, object], ...]:
-    if value is None:
-        return ()
-    if not isinstance(value, (list, tuple)):
-        raise ValueError("input_parts 必须是数组")
-    items: list[tuple[str, object]] = []
-    for item in cast(Sequence[object], value):
-        if not isinstance(item, Mapping) or set(cast(Mapping[str, object], item)) != {"kind", "value"}:
-            raise ValueError("input_parts 每项必须是 {kind, value}")
-        kind = cast(Mapping[str, object], item)["kind"]
-        if not isinstance(kind, str) or not kind or any(other == kind for other, _ in items):
-            raise ValueError("input_parts kind 无效或重复")
-        items.append((kind, cast(Mapping[str, object], item)["value"]))
-    return tuple(items)
 
 
 def check_origin(part: ContentPart) -> ContentReferences:

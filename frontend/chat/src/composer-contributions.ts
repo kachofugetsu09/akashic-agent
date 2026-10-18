@@ -12,13 +12,14 @@ interface Contribution {
 }
 
 // 输入框工具位里每个挂载各占一份：卸载即撤回，没有插件时发送不受影响。
-let entries: ReadonlyMap<string, Contribution> = new Map();
+type Owner = object;
+let entries: ReadonlyMap<Owner, Contribution> = new Map();
 let busy = false;
 const listeners = new Set<() => void>();
-const sentListeners = new Map<string, Set<() => void>>();
+const sentListeners = new Map<Owner, Set<() => void>>();
 const subscribe = (listener: () => void) => { listeners.add(listener); return () => { listeners.delete(listener); }; };
 
-function update(owner: string, next: Partial<Contribution> | null) {
+function update(owner: Owner, next: Partial<Contribution> | null) {
   const copy = new Map(entries);
   if (next) copy.set(owner, { parts: [], block: null, ...copy.get(owner), ...next });
   else copy.delete(owner);
@@ -26,32 +27,36 @@ function update(owner: string, next: Partial<Contribution> | null) {
   listeners.forEach((listener) => listener());
 }
 
-/** 给 composer.toolbar 挂载的宿主能力；owner 是挂载身份。 */
-export function composerControls(owner: string) {
-  return {
+/** 给 composer.toolbar 每次挂载一份宿主能力；release 后句柄整体失效，晚到的回调不能重新登记片段或阻止发送。 */
+export function composerControls() {
+  const owner: Owner = {};
+  let live = true;
+  const controls = {
     busy: () => busy,
     contribute(parts: readonly ComposerInputPart[]) {
       if (!Array.isArray(parts) || parts.some((part) => !part || typeof part.kind !== "string" || !part.kind)) {
         throw new Error("输入片段格式错误");
       }
-      update(owner, { parts: parts.map((part) => ({ kind: part.kind, value: part.value })) });
+      if (live) update(owner, { parts: parts.map((part) => ({ kind: part.kind, value: part.value })) });
     },
     block(reason: string | null) {
       if (reason !== null && typeof reason !== "string") throw new Error("阻止发送的原因必须是字符串");
-      update(owner, { block: reason || null });
+      if (live) update(owner, { block: reason || null });
     },
     onSent(callback: () => void): () => void {
+      if (!live) return () => {};
       const set = sentListeners.get(owner) ?? new Set();
       sentListeners.set(owner, set);
       set.add(callback);
       return () => { set.delete(callback); };
     },
   };
-}
-
-export function releaseComposerControls(owner: string) {
-  sentListeners.delete(owner);
-  if (entries.has(owner)) update(owner, null);
+  const release = () => {
+    live = false;
+    sentListeners.delete(owner);
+    if (entries.has(owner)) update(owner, null);
+  };
+  return { controls, release };
 }
 
 /** 生成中由宿主设置；插件经 busy() 读取，并在 onInvalidate 时重新判断。 */
@@ -59,7 +64,7 @@ export function setComposerBusy(value: boolean) {
   busy = value;
 }
 
-function snapshot(current: ReadonlyMap<string, Contribution>) {
+function snapshot(current: ReadonlyMap<Owner, Contribution>) {
   const values = [...current.values()];
   return { parts: values.flatMap((value) => value.parts), blockReason: values.find((value) => value.block)?.block ?? "" };
 }
