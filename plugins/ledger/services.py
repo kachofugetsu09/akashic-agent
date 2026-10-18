@@ -109,7 +109,11 @@ class MessageWriters:
         def project_metadata(body: Body) -> Mapping[str, object | None]:
             if any(self._metadata.get(key) is not grant for key, grant in grants.items()):
                 raise WriterExpired("metadata 授权已释放")
+            # 1. 普通回调只能写自己登记的键；片段 owner 的键只能由对应片段派生。
             changes = dict(update_metadata(body)) if update_metadata is not None else {}
+            if not changes.keys() <= grants.keys():
+                raise PermissionError(f"metadata 投影写入了未授权的键: {sorted(changes.keys() - grants.keys())}")
+            # 2. 片段投影各自校验 owner 授权与键集合。
             changes.update(self._project_parts(parts, body))
             return changes
         projected = update_metadata is not None or bool(parts)

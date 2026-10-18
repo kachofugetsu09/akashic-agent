@@ -14,7 +14,7 @@ from fastapi import FastAPI, HTTPException, Query, Request, WebSocket
 from fastapi.responses import FileResponse, JSONResponse, Response, StreamingResponse
 from pydantic import BaseModel, ConfigDict, Field
 
-from .static import register_chat_assets
+from .static import current_chat_build, register_chat_assets
 from plugins.ui.contract import PluginUiSlot, read_message_rows, session_row
 from .navigation import NavigationPreferences, PinUpdate, check_project_pin, session_pin_row
 from .notifications import NotificationFeed, NotificationRequest, notification_events
@@ -165,7 +165,8 @@ def create_chat_app(
         async with session_admin_scope() as admin:
             yield cast(SessionAdminPort, admin)
 
-    register_chat_assets(app, Path(__file__).resolve().parent / "static/chat")
+    static_dir = Path(__file__).resolve().parent / "static/chat"
+    register_chat_assets(app, static_dir)
 
     @app.get("/api/shell/state")
     async def client_state() -> dict[str, object]:
@@ -175,7 +176,7 @@ def create_chat_app(
         except RuntimeError:
             ready = False
         return {"status": "ready" if ready else "unavailable",
-                "configured": True, "chatReady": ready}
+                "configured": True, "chatReady": ready, "build": await current_chat_build(static_dir)}
 
     @app.get("/api/chat/health")
     async def chat_health() -> dict[str, str]:
