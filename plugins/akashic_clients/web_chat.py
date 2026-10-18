@@ -2,9 +2,11 @@ from __future__ import annotations
 
 import asyncio
 from core.common.diagnostic_log import log_timing
+import json
 import logging
 import mimetypes
 import os
+import re
 from datetime import datetime, timezone
 from pathlib import Path
 from collections.abc import AsyncGenerator, AsyncIterable, AsyncIterator, Callable, Coroutine, Mapping
@@ -55,6 +57,27 @@ logger = logging.getLogger(__name__)
 MAX_UPLOAD_BYTES = 50 * 1024 * 1024
 MAX_WEB_INBOUND_ID_LENGTH = 256
 
+
+_INPUT_PART_KIND = re.compile(r"^[a-z][a-z0-9_]*(?:\.[a-z][a-z0-9_]*)*$")
+
+
+# 插件随消息附带的片段：渠道只管形状与大小，kind 由会话来源交给声明它的 owner 校验。
+def _input_parts(value: object) -> list[dict[str, object]] | None:
+    if not isinstance(value, list) or len(cast(list[object], value)) > 8:
+        return None
+    parts: list[dict[str, object]] = []
+    for item in cast(list[object], value):
+        if not isinstance(item, dict) or set(cast(dict[str, object], item)) != {"kind", "value"}:
+            return None
+        kind = cast(dict[str, object], item)["kind"]
+        if not isinstance(kind, str) or not _INPUT_PART_KIND.match(kind) or any(part["kind"] == kind for part in parts):
+            return None
+        parts.append({"kind": kind, "value": cast(dict[str, object], item)["value"]})
+    try:
+        encoded = json.dumps(parts, ensure_ascii=False, allow_nan=False).encode("utf-8")
+    except ValueError:
+        return None
+    return parts if len(encoded) <= 16 * 1024 else None
 
 class UploadTooLargeError(ValueError):
     """上传内容超过单文件上限。"""
@@ -1094,6 +1117,13 @@ class WebChatChannel:
                 )
                 return session_key
             metadata["model_reasoning_effort"] = model_reasoning_effort.strip()
+        if "parts" in payload:
+            parts = _input_parts(payload["parts"])
+            if parts is None:
+                await self._send_error(websocket, request_id, "parts 必须是至多 8 项、kind 不重复的 {kind, value} 数组，合计不超过 16 KiB")
+                return session_key
+            if parts:
+                metadata["input_parts"] = parts
         if reply_to_message_id is not None:
             if not isinstance(reply_to_message_id, str) or not reply_to_message_id.strip():
                 await self._send_error(

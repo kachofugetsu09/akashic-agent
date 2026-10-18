@@ -1,4 +1,6 @@
-from collections.abc import Awaitable, Callable, Mapping
+from collections.abc import Awaitable, Callable, Mapping, Sequence
+from contextlib import ExitStack
+from functools import partial
 from typing import cast
 from core.common.file_io import run_file_io
 from core.common.diagnostic_log import log_timing
@@ -42,6 +44,7 @@ from plugins.conversation.contract import (
     CHECK_ORIGIN as CHECK_ORIGIN,
     CONVERSATION_COMPLETE_V2 as CONVERSATION_COMPLETE,
     ConversationCompleteV2 as ConversationComplete,
+    input_part_key,
 )
 from plugins.sources.contract import (
     SOURCE_CHANGED_V3 as SOURCE_CHANGED,
@@ -80,7 +83,7 @@ async def apply(ctx: Context) -> None:
     def changed(reader: MessageReader, source: str, pending: bool) -> None:
         ctx.emit(SOURCE_CHANGED, SourceChanged(reader, source, pending))
 
-    def open(session_id: str) -> SourceSession:
+    def open(session_id: str, extra: Mapping[str, Callable[[ContentPart], ContentReferences]] | None = None) -> SourceSession:
         def check_model(part: ContentPart) -> ContentReferences:
             references = ctx.require(MODEL_SELECTION).check(part)
             value = cast(Mapping[str, str | None], part.value)
@@ -103,7 +106,7 @@ async def apply(ctx: Context) -> None:
         inputs = writers.bind(
             ctx, author="user", source="conversation", body_types=(Input,),
             content={"text": ctx.require(CONTENT).check_text, "artifact_ref": ctx.require(CONTENT).check_artifact, "channel.origin": check_origin,
-                     "reply_ref": check_reply_target, "model.selection": check_model},
+                     "reply_ref": check_reply_target, "model.selection": check_model, **(extra or {})},
             update_metadata=update_metadata,
         )
         controls = writers.bind(
@@ -162,8 +165,16 @@ async def apply(ctx: Context) -> None:
             parts += (ContentPart("model.selection", {
                 "model_id": model_id.strip() or None, "reasoning_effort": effort.strip() or None,
             }),)
-        # 3. Input 与全部引用原子提交；传输时间、handoff 和重复 ID 不进入正文。
-        accepted = await open(session_id).accept(message_id, Input(parts))
+        # 3. 客户端附带的片段交给声明了该 kind 的 owner 校验；Input 与全部引用原子提交，传输时间、handoff 和重复 ID 不进入正文。
+        with ExitStack() as scopes:
+            extra: dict[str, Callable[[ContentPart], ContentReferences]] = {}
+            for kind, value in input_parts(message.metadata.get("input_parts")):
+                check = scopes.enter_context(ctx.borrow(input_part_key(kind)))
+                if kind in OWN_INPUT_KINDS or check is None:
+                    raise ValueError(f"没有插件接收输入片段: {kind}")
+                extra[kind] = partial(check, reader=reader)
+                parts += (ContentPart(kind, value),)
+            accepted = await open(session_id, extra).accept(message_id, Input(parts))
         log_timing("input.committed", session_id=session_id, request_id=message_id, counts={"seq": accepted.seq})
         return accepted
 
@@ -185,6 +196,27 @@ async def apply(ctx: Context) -> None:
     _ = await ctx.provide(CONVERSATION_COMPLETE, complete)
     _ = await ctx.require(SOURCES).register(ctx, name="conversation", open=open, accept=accept, channels=None,
         needs_reply=lambda reader: ctx.require(SOURCE_SESSION).needs_reply(reader, "conversation"))
+
+
+# 来源自己写入的片段不能由客户端冒充。
+OWN_INPUT_KINDS = frozenset({"text", "artifact_ref", "channel.origin", "reply_ref", "model.selection", "command.result"})
+
+
+# 渠道已校验过形状；这里再收紧一次，元数据来自其他渠道时同样安全。
+def input_parts(value: object) -> tuple[tuple[str, object], ...]:
+    if value is None:
+        return ()
+    if not isinstance(value, (list, tuple)):
+        raise ValueError("input_parts 必须是数组")
+    items: list[tuple[str, object]] = []
+    for item in cast(Sequence[object], value):
+        if not isinstance(item, Mapping) or set(cast(Mapping[str, object], item)) != {"kind", "value"}:
+            raise ValueError("input_parts 每项必须是 {kind, value}")
+        kind = cast(Mapping[str, object], item)["kind"]
+        if not isinstance(kind, str) or not kind or any(other == kind for other, _ in items):
+            raise ValueError("input_parts kind 无效或重复")
+        items.append((kind, cast(Mapping[str, object], item)["value"]))
+    return tuple(items)
 
 
 def check_origin(part: ContentPart) -> ContentReferences:

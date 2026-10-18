@@ -3314,6 +3314,10 @@ form.composer:focus-within [data-slot="input-group"] {
 .plugin-ui-slot[data-slot="header.end"] { display: flex; min-width: 0; flex: 0 0 auto; align-items: center; gap: 2px; margin-inline-start: auto; }
 /* 插槽按可见性懒挂载，宿主元素必须有布局盒子，不能用 display: contents。 */
 .plugin-ui-slot[data-slot="header.end"] > .plugin-ui-host { display: flex; min-width: 0; }
+/* 输入框工具位与宿主自己的工具同排；没有插件时不占位置。 */
+.plugin-ui-slot[data-slot="composer.toolbar"],
+.plugin-ui-slot[data-slot="composer.toolbar"] > .plugin-ui-host { display: flex; min-width: 0; align-items: center; gap: 2px; }
+.plugin-ui-slot[data-slot="composer.toolbar"]:empty { display: none; }
 .header-marker { position: relative; display: flex; min-width: 4.5rem; max-width: calc(14rem + 12px); flex: 0 0 auto; padding-inline-start: 12px; font-size: var(--chat-type-caption, 0.75rem); }
 .header-marker__trigger { display: inline-flex; max-width: 100%; min-height: 32px; align-items: center; gap: 6px; padding-inline: 8px; border: 0; border-radius: 6px; background: transparent; color: var(--chat-faint); font: inherit; cursor: pointer; transition: color var(--ak-sys-duration-short) var(--ak-sys-motion-standard); }
 .header-marker__trigger > span { min-width: 0; overflow: hidden; white-space: nowrap; }

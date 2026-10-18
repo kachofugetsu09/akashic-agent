@@ -23,7 +23,7 @@ from plugins.models.contract import (
 )
 
 from .static import register_chat_assets
-from plugins.ui.contract import read_message_rows, session_row
+from plugins.ui.contract import PluginUiSlot, read_message_rows, session_row
 from .navigation import NavigationPreferences, PinUpdate, check_project_pin, session_pin_row
 from .notifications import NotificationFeed, NotificationRequest, notification_events
 from .read_marks import ReadMarks
@@ -68,16 +68,7 @@ class WebPluginUiQueryPayload(BaseModel):
     plugin_revision: str = Field(min_length=1, max_length=128)
     method: str = Field(pattern=r"^[a-z][a-z0-9_.-]{0,255}$")
     payload: dict[str, object]
-    slot: Literal[
-        "turn.before_reasoning",
-        "turn.before_tool",
-        "turn.after_answer",
-        "drawer.panel",
-        "message.attachment",
-        "chat.notice",
-        "header.end",
-        "composer.suggest",
-    ]
+    slot: PluginUiSlot
     session_id: str | None = Field(default=None, max_length=512)
     turn_id: str | None = Field(default=None, max_length=128)
 
