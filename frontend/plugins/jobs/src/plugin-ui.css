@@ -43,6 +43,11 @@
 .job-list__row[data-status="failed"] .job-list__meta,
 .job-list__row[data-status="timeout"] .job-list__meta { color: var(--ak-color-status-error); }
 
+/* 强制颜色下背景会被换成系统底色，状态点保留形状，用文本色画。 */
+@media (forced-colors: active) {
+  .job-list__dot { forced-color-adjust: none; background: CanvasText; }
+}
+
 @media (prefers-reduced-motion: no-preference) {
   .job-list__trigger .job-list__dot[data-status="running"] { animation: job-list-breathe 2.4s ease-in-out infinite; }
 }

@@ -118,10 +118,17 @@ class PluginUiSlots:
             registration_uuid=uuid4().hex,
             follow=follow,
         )
-        return await ctx.effect(
+        undo = await ctx.effect(
             lambda: self._register(ctx, binding),
             label=f"ui-slot:plugin:{definition.module}",
         )
+        # LOADING 期间登记的界面在 activation 就绪后才可见；就绪时再通知一次，跟随方据此开流。
+        if ctx.fiber.state is FiberState.LOADING:
+            _ = await ctx.spawn(self._announce_active(), name="plugin-ui-active")
+        return undo
+
+    async def _announce_active(self) -> None:
+        self._notify()
 
     def _register(
         self,

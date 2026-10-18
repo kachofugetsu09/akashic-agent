@@ -3363,15 +3363,14 @@ form.composer:focus-within [data-slot="input-group"] {
 .project-dialog__directory-choice button { min-height: 44px; padding: 8px 12px; border: 1px solid var(--ak-rule-default); border-radius: 8px; color: inherit; background: transparent; }
 
 /* 强制颜色（Windows 高对比度）下背景色统一换成系统底色：只靠底色表达的东西会整片消失。
-   标记类图形（品牌、会话状态、轮次刻度、后台任务点）保留形状，用文本色画；当前行、用户气泡改用系统色的描边；
+   标记类图形（品牌、会话状态、轮次刻度）保留形状，用文本色画；当前行、用户气泡改用系统色的描边；
    输入卡外框本身是边框，内层输入组那圈多出来的描边去掉，聚焦改由外框的高亮描边表达。 */
 @media (forced-colors: active) {
   .chat-sidebar__mark,
   .session-status-dot,
   .session-swirl > i,
   .turn-rail__ticks i,
-  .turn-rail:hover .turn-rail__ticks i,
-  .job-list__dot {
+  .turn-rail:hover .turn-rail__ticks i {
     forced-color-adjust: none;
     background: CanvasText;
   }

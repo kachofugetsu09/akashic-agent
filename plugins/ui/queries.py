@@ -44,6 +44,7 @@ PLUGIN_UI_QUERY_WORKERS = 8
 PLUGIN_UI_QUERY_QUEUE_LIMIT = 16
 PLUGIN_UI_QUERY_WORKERS_PER_PLUGIN = 4
 PLUGIN_UI_QUERY_LIMIT_PER_PLUGIN = 12
+PLUGIN_UI_FINAL_FRAME_SECONDS = 2.0
 logger = logging.getLogger(__name__)
 
 
@@ -68,12 +69,15 @@ class LivePluginUiProvider:
         self._plugin_workers: dict[str, asyncio.Semaphore] = {}
         self._accepting = True
         self._executor_closed = False
+        self._closed = asyncio.Event()
 
     async def aclose(self) -> None:
         """Close admission, settle physical queries, then shut down workers."""
 
         async with self._admission_lock:
             self._accepting = False
+        # owner 关闭也唤醒跟随方，让它们结束并去借新的 owner。
+        self._closed.set()
         cancelled = False
         _result, phase_cancelled = await _finish_work(self._wait_for_queries())
         cancelled |= phase_cancelled
@@ -115,27 +119,8 @@ class LivePluginUiProvider:
             raise
         try:
             for binding in slots.bindings():
-                if not self._binding_is_active(binding):
-                    continue
-                target_scope = binding.context.runtime_scope()
-                try:
-                    await target_scope.__aenter__()
-                except CompositionError as error:
-                    if error.code in {"STALE_ACTIVATION", "OWNER_UNAVAILABLE"}:
-                        continue
-                    raise
-                try:
-                    with plugin_entrypoint(
-                        plugin_id=binding.descriptor.owner,
-                        generation_id=binding.context.runtime.generation_id,
-                        fiber=binding.context.fiber.name,
-                        operation="plugin_ui.available",
-                    ):
-                        if not binding.available():
-                            continue
+                if self._binding_is_active(binding) and await self._available(binding):
                     items.append(self._catalog_item(binding))
-                finally:
-                    await target_scope.__aexit__(None, None, None)
         finally:
             await ui_scope.__aexit__(None, None, None)
         encoded = json.dumps(
@@ -383,28 +368,37 @@ class LivePluginUiProvider:
             await ui_scope.__aexit__(None, None, None)
 
     async def follow(self, session_id: str, emit: PluginUiEmit) -> None:
-        """One stream per active registration; realign whenever the registrations change."""
+        """One stream per visible registration; realign whenever the registrations change."""
 
         streams: dict[str, asyncio.Task[None]] = {}
+        # 撤下的流仍归这里所有，直到它真正结束，退出时一并排空。
+        retiring: set[asyncio.Task[None]] = set()
+        closed = asyncio.ensure_future(self._closed.wait())
         try:
-            while True:
-                changed = self._slots.changed()
+            while not self._closed.is_set():
+                changed = asyncio.ensure_future(self._slots.changed().wait())
                 current = await self._follow_bindings()
                 if current is None:
+                    _ = changed.cancel()
                     return
                 for key in [key for key in streams if key not in current]:
-                    _ = streams.pop(key).cancel()
+                    task = streams.pop(key)
+                    _ = task.cancel()
+                    retiring.add(task)
+                    task.add_done_callback(retiring.discard)
                 for key, binding in current.items():
                     if key not in streams:
                         streams[key] = asyncio.create_task(self._pump(binding, session_id, emit))
-                _ = await changed.wait()
+                _ = await asyncio.wait((changed, closed), return_when=asyncio.FIRST_COMPLETED)
+                _ = changed.cancel()
         finally:
-            for task in streams.values():
+            _ = closed.cancel()
+            tasks = (*streams.values(), *retiring)
+            for task in tasks:
                 _ = task.cancel()
-            _ = await asyncio.gather(*streams.values(), return_exceptions=True)
+            _ = await asyncio.gather(*tasks, return_exceptions=True)
 
-    # 当前 Root 下注册了 follow 的插件；注册发生在 LOADING，之后转 ACTIVE 不会再触发注册表变化，所以两者都接。
-    # UI owner 已失效时返回 None 结束跟随。
+    # 当前 Root 下注册了 follow、已 ACTIVE 且 available 的插件，与目录可见条件一致；UI owner 已失效时返回 None。
     async def _follow_bindings(self) -> dict[str, PluginUiBinding] | None:
         ui_scope = self._ctx.runtime_scope()
         try:
@@ -414,29 +408,55 @@ class LivePluginUiProvider:
                 return None
             raise
         try:
-            return {binding.registration_uuid: binding for binding in self._slots.bindings()
-                    if binding.follow is not None and binding.context.root_instance_token is self._ctx.root_instance_token
-                    and binding.context.fiber.state in (FiberState.LOADING, FiberState.ACTIVE)}
+            visible: dict[str, PluginUiBinding] = {}
+            for binding in self._slots.bindings():
+                if binding.follow is not None and self._binding_is_active(binding) and await self._available(binding):
+                    visible[binding.registration_uuid] = binding
+            return visible
         finally:
             await ui_scope.__aexit__(None, None, None)
 
+    # 在注册者自己的作用域里问它当前是否可见；作用域已失效算不可见。
+    async def _available(self, binding: PluginUiBinding) -> bool:
+        target_scope = binding.context.runtime_scope()
+        try:
+            await target_scope.__aenter__()
+        except CompositionError as error:
+            if error.code in {"STALE_ACTIVATION", "OWNER_UNAVAILABLE"}:
+                return False
+            raise
+        try:
+            with plugin_entrypoint(plugin_id=binding.descriptor.owner, generation_id=binding.context.runtime.generation_id,
+                                   fiber=binding.context.fiber.name, operation="plugin_ui.available"):
+                return binding.available()
+        finally:
+            await target_scope.__aexit__(None, None, None)
+
     # 转发一个插件的会话流；结束、出错或被撤下时补一帧 None，让界面丢弃旧状态。
+    # 发送本身失败（连接已断）就不再补发；补发有期限，慢连接不会拖住撤下与会话切换。
     async def _pump(self, binding: PluginUiBinding, session_id: str, emit: PluginUiEmit) -> None:
         owner = binding.descriptor.owner
         frame: dict[str, object] = {"plugin_id": owner, "plugin_revision": self._plugin_revision(binding)}
         follow = cast(PluginUiFollowHandler, binding.follow)
+        broken = False
         try:
             with plugin_entrypoint(plugin_id=owner, generation_id=binding.context.runtime.generation_id,
                                    fiber=binding.context.fiber.name, operation="plugin_ui.follow"):
                 stream = follow(session_id)
             async with aclosing(stream) as values:
                 async for value in values:
-                    await emit({**frame, "value": dict(value)})
+                    try:
+                        await emit({**frame, "value": dict(value)})
+                    except Exception:
+                        broken = True
+                        raise
         except Exception:
-            logger.exception("plugin ui follow failed: %s", owner)
+            if not broken:
+                logger.exception("plugin ui follow failed: %s", owner)
         finally:
-            with suppress(Exception):
-                await emit({**frame, "value": None})
+            if not broken:
+                with suppress(Exception):
+                    await asyncio.wait_for(emit({**frame, "value": None}), PLUGIN_UI_FINAL_FRAME_SECONDS)
 
     @staticmethod
     def _find_binding(slots: UiSlots, plugin_id: str) -> PluginUiBinding:

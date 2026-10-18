@@ -245,6 +245,7 @@ async function activateCatalog(next: PluginUiCatalog): Promise<boolean> {
   styleNodes.forEach((node) => node.remove());
   definitions.clear();
   nextDefinitions.forEach((definition, id) => definitions.set(id, definition));
+  prunePushes();
   styleNodes.clear();
   nextStyles.forEach((node, id) => {
     document.head.appendChild(node);
@@ -374,12 +375,20 @@ export async function queryHostPlugin(
   });
 }
 
-// 插件推送按“插件|会话”记住最新一帧，晚挂载的界面先拿到当前状态。
-const pushed = new Map<string, Record<string, unknown> | null>();
+// 插件推送按“插件|revision|会话”记住最新一帧，晚挂载的界面先拿到当前状态；换代后旧代的帧（包括它的 null）
+// 碰不到新代界面。新代帧可能先于新目录到达，先留着，目录切换时只保留与当前 revision 对得上的。
+const pushed = new Map<string, Record<string, unknown>>();
 const pushListeners = new Map<string, Set<(value: Record<string, unknown> | null) => void>>();
 
-function pushKey(pluginId: string, sessionId: string): string {
-  return `${pluginId}|${sessionId}`;
+function pushKey(pluginId: string, revision: string, sessionId: string): string {
+  return JSON.stringify([pluginId, revision, sessionId]);
+}
+
+function prunePushes() {
+  for (const key of pushed.keys()) {
+    const [pluginId, revision] = JSON.parse(key) as [string, string, string];
+    if (definitions.get(pluginId)?.revision !== revision) pushed.delete(key);
+  }
 }
 
 function deliverPush(key: string, value: Record<string, unknown> | null) {
@@ -394,10 +403,12 @@ export function receivePluginUiEvent(value: unknown): boolean {
   if (typeof value !== "object" || value === null || (value as { type?: unknown }).type !== "plugin_ui.event") return false;
   const frame = value as Record<string, unknown>;
   const state = frame.value;
-  if (typeof frame.plugin_id !== "string" || typeof frame.session_id !== "string"
+  if (typeof frame.plugin_id !== "string" || typeof frame.plugin_revision !== "string" || typeof frame.session_id !== "string"
     || (state !== null && (typeof state !== "object" || Array.isArray(state)))) throw new Error("插件推送帧无效");
-  const key = pushKey(frame.plugin_id, frame.session_id);
-  pushed.set(key, state as Record<string, unknown> | null);
+  const key = pushKey(frame.plugin_id, frame.plugin_revision, frame.session_id);
+  // null 表示流已结束，直接忘掉这个键，长连接跨会话不会越攒越多。
+  if (state === null) pushed.delete(key);
+  else pushed.set(key, state as Record<string, unknown>);
   deliverPush(key, state as Record<string, unknown> | null);
   return true;
 }
@@ -409,13 +420,14 @@ export function resetPluginUiEvents() {
   keys.forEach((key) => deliverPush(key, null));
 }
 
-function subscribePush(pluginId: string, sessionId: string | undefined, callback: (value: Record<string, unknown> | null) => void): () => void {
+function subscribePush(pluginId: string, revision: string, sessionId: string | undefined, callback: (value: Record<string, unknown> | null) => void): () => void {
   if (!sessionId) return () => undefined;
-  const key = pushKey(pluginId, sessionId);
+  const key = pushKey(pluginId, revision, sessionId);
   const listeners = pushListeners.get(key) ?? new Set();
   pushListeners.set(key, listeners);
   listeners.add(callback);
-  if (pushed.has(key)) callback(pushed.get(key) ?? null);
+  const latest = pushed.get(key);
+  if (latest) callback(latest);
   return () => {
     listeners.delete(callback);
     if (!listeners.size) pushListeners.delete(key);
@@ -624,7 +636,7 @@ function MountedPlugin({
         },
         reportError: (message) => { if (live) setError(message); },
         subscribe: (callback) => {
-          const stop = subscribePush(pluginId, sessionId, (value) => { if (live) callback(value); });
+          const stop = subscribePush(pluginId, pluginRevision, sessionId, (value) => { if (live) callback(value); });
           stopPushes.add(stop);
           return () => { stop(); stopPushes.delete(stop); };
         },
