@@ -1,6 +1,6 @@
 import { useEffect, useState } from "react";
 import type { ReplyActivity, TimelineMessage } from "./message-timeline";
-import { formatModelCallStats, loadWebModelCallStats, selectModelCall, type LoadModelCallStats, type ModelCallStats } from "./model-call-stats";
+import { PluginUiSlot } from "./plugin-ui-runtime";
 import { SwapText } from "./swap-text";
 import type { ChatStatus } from "./web-chat-status";
 
@@ -21,28 +21,26 @@ interface ReplyPhase {
   /** 阶段身份：换了工具也算新阶段。 */
   key: string;
   tool?: string;
-  callId: string | null;
   firstTokenMs: number | null;
 }
 
-/** 生成中按阶段显示，结束后按调用 ID 读取一次服务端统计给出终态摘要。 */
-export function ComposerStatsLine({ messages, activities, connected, status = "idle", stopping = false, load = loadWebModelCallStats }: {
+/** 生成中按阶段显示；看着一轮跑完后由 composer.status 插槽的插件给出终态摘要（例如模型调用统计）。 */
+export function ComposerStatsLine({ sessionId, messages, activities, connected, status = "idle", stopping = false }: {
+  sessionId: string;
   messages: readonly TimelineMessage[];
   activities: readonly ReplyActivity[];
   connected: boolean;
   status?: ChatStatus;
   /** 已请求停止、本轮还没停下（当前工具跑完才停）：与停止钮的"正在停止"同一说法。 */
   stopping?: boolean;
-  load?: LoadModelCallStats;
 }) {
   const live = replyPhase(activities, messages, status);
   const active = live !== null;
   const shown = useSteadyPhase(live);
-  // 终态摘要只给看着它跑完的那次调用；打开旧会话不回放上一轮的统计。
-  const [watchedCallId, setWatchedCallId] = useState("");
-  if (live?.callId && watchedCallId !== live.callId) setWatchedCallId(live.callId);
-  const settledCallId = active ? null : selectModelCall(messages, activities).callId;
-  const summary = useSettledStats(connected ? settledCallId : null, load);
+  // 终态摘要只给看着它跑完的那一轮；打开旧会话不回放上一轮的统计。每轮重新挂载插槽。
+  const [watched, setWatched] = useState({ sessionId: "", turns: 0, active: false });
+  if (active && (!watched.active || watched.sessionId !== sessionId)) setWatched({ sessionId, turns: watched.turns + 1, active: true });
+  if (!active && watched.active) setWatched({ ...watched, active: false });
   const phase = useSettledPhase(active);
   if (!connected || phase === "gone") return null;
   if (active) {
@@ -53,11 +51,9 @@ export function ComposerStatsLine({ messages, activities, connected, status = "i
       {!stopping && shown ? <PhaseDetail phase={shown.phase} firstTokenMs={live.firstTokenMs ?? shown.phase.firstTokenMs} since={shown.since} /> : null}
     </div>;
   }
-  if (!summary || summary.callId !== settledCallId || watchedCallId !== settledCallId) return null;
-  // 统计读取失败只影响遥测，不向用户报错。
-  const text = formatModelCallStats(summary.stats);
-  return <div className={`composer-stats-line${phase === "fading" ? " is-fading" : ""}`} title={`${text} · ${summary.stats.model}`}>
-    <span aria-live="polite">{text}</span>
+  if (!sessionId || watched.sessionId !== sessionId || !watched.turns) return null;
+  return <div className={`composer-stats-line${phase === "fading" ? " is-fading" : ""}`}>
+    <PluginUiSlot key={`${sessionId}:${watched.turns}`} name="composer.status" sessionId={sessionId} quiet />
   </div>;
 }
 
@@ -67,7 +63,7 @@ function replyPhase(activities: readonly ReplyActivity[], messages: readonly Tim
   if (!activity) return status === "submitted" ? phaseOf("queued") : null;
   const preview = activity.preview;
   if (preview) {
-    const facts = { callId: preview.call_record_id ?? null, firstTokenMs: preview.first_token_ms ?? null };
+    const facts = { firstTokenMs: preview.first_token_ms ?? null };
     // 1. 退避等待由重试卡讲原因和倒计时，这里只报阶段。
     if (preview.retry_status) return phaseOf("retry", facts);
     if (preview.text) return phaseOf("output", facts);
@@ -79,7 +75,7 @@ function replyPhase(activities: readonly ReplyActivity[], messages: readonly Tim
   return tool === null ? phaseOf("preparing") : { ...phaseOf("tool"), key: `tool:${tool}`, tool };
 }
 
-function phaseOf(kind: ReplyPhaseKind, facts: { callId: string | null; firstTokenMs: number | null } = { callId: null, firstTokenMs: null }): ReplyPhase {
+function phaseOf(kind: ReplyPhaseKind, facts: { firstTokenMs: number | null } = { firstTokenMs: null }): ReplyPhase {
   return { kind, key: kind, ...facts };
 }
 
@@ -154,20 +150,6 @@ function useSteadyPhase(live: ReplyPhase | null): { phase: ReplyPhase; since: nu
   // 出字阶段不显示时长，since 用不到。
   if (live && immediate && steady?.phase.key !== key) return { phase: live, since: 0 };
   return steady;
-}
-
-// 结束后按调用 ID 读取一次统计；切页立即撤销旧读取。
-function useSettledStats(callId: string | null, load: LoadModelCallStats): { callId: string; stats: ModelCallStats } | null {
-  const [result, setResult] = useState<{ callId: string; stats: ModelCallStats } | null>(null);
-  useEffect(() => {
-    if (!callId) return;
-    const controller = new AbortController();
-    load(callId, controller.signal).then((stats) => {
-      if (!controller.signal.aborted) setResult({ callId, stats });
-    }, () => undefined);
-    return () => controller.abort();
-  }, [callId, load]);
-  return result;
 }
 
 // 活动状态切换驱动收纳节奏：终态摘要停留 3 秒，淡出过渡后移出渲染。

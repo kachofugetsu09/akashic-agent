@@ -2,6 +2,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { render, type ComposerControls, type PluginUiContext, type PluginUiDefinition } from "@akashic/chat-ui-v1";
 import { compatibleEffort, chatModelState, modelProblem, type ChatModelState } from "./capsule-data";
 import { ModelCapsulePicker, ModelEffortAction, resolveVisibleRuntime } from "./capsule-picker";
+import { formatModelCallStats, readModelCallStats } from "./call-stats";
 import "./message-ui.css";
 
 const number = (value: unknown) => new Intl.NumberFormat("zh-CN").format(Number(value || 0));
@@ -23,6 +24,23 @@ function answerUsage(host: HTMLElement, context: PluginUiContext) {
     host.classList.add("models-usage-tail-host--error");
     host.textContent = error instanceof Error ? `Token 统计不可用：${error.message}` : "Token 统计不可用";
   });
+  return () => { active = false; };
+}
+
+// 输入框下方状态行：宿主在看着一轮跑完时挂载，这里读该会话最近一次调用给出终态摘要；读取失败只影响遥测，不报错。
+function callSummary(host: HTMLElement, context: PluginUiContext) {
+  let active = true;
+  if (!context.sessionId) return () => {};
+  context.query("call.latest").then((result) => {
+    if (!active || result.call === null) return;
+    const stats = readModelCallStats(result.call);
+    const text = formatModelCallStats(stats);
+    const line = document.createElement("span");
+    line.setAttribute("aria-live", "polite");
+    line.title = `${text} · ${stats.model}`;
+    line.textContent = text;
+    host.replaceChildren(line);
+  }).catch(() => undefined);
   return () => { active = false; };
 }
 
@@ -116,6 +134,7 @@ function ModelCapsule({ context, composer }: { context: PluginUiContext; compose
 const definition: PluginUiDefinition = {
   slots: {
     "turn.after_answer": { mount: answerUsage },
+    "composer.status": { mount: callSummary },
     "composer.toolbar": {
       mount: (host, context) => {
         if (!context.composer) throw new Error("输入框工具位缺少宿主能力");

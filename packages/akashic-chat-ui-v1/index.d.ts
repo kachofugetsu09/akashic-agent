@@ -10,6 +10,7 @@ export type PluginUiSlotName =
   | "chat.notice"
   | "header.end"
   | "composer.toolbar"
+  | "composer.status"
   | "composer.suggest"
   | "dashboard.main";
 

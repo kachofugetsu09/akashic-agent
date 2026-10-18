@@ -2071,6 +2071,10 @@ form.composer:focus-within [data-slot="input-group"] {
   }
 }
 
+/* 终态摘要由 composer.status 插槽的插件给出；包装沿用本行的基线排版（宿主元素要有盒子，插槽按可见性挂载）。 */
+.composer-stats-line > .plugin-ui-slot,
+.composer-stats-line > .plugin-ui-slot > .plugin-ui-host { display: flex; align-items: baseline; gap: inherit; min-width: 0; }
+
 /* 终态摘要 3 秒后淡出收纳；reduced-motion 下过渡归零，直接隐藏。 */
 .composer-stats-line.is-fading {
   opacity: 0;

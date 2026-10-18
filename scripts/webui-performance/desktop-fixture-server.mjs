@@ -15,7 +15,7 @@ import {
   fixtureSessionId,
 } from "./fixtures.mjs";
 
-// 模型胶囊是 models 插件的输入框工具位：夹具用仓库里构建好的真实插槽模块；回答尾注的用量查询回空，不占位。
+// 模型胶囊是 models 插件的输入框工具位：夹具用仓库里构建好的真实插槽模块；回答尾注与调用统计的查询回空，不占位。
 const modelsDirectory = resolve(dirname(fileURLToPath(import.meta.url)), "../../plugins/models");
 const modelsAssets = Object.fromEntries([["module", "plugin_ui.js", "text/javascript"], ["stylesheet", "plugin_ui.css", "text/css"]]
   .map(([kind, file, type]) => {
@@ -25,7 +25,7 @@ const modelsAssets = Object.fromEntries([["module", "plugin_ui.js", "text/javasc
 const pluginUiCatalog = {
   catalog_revision: "1".repeat(64),
   items: [{ id: "models", revision: "fixture", module_sha256: modelsAssets.module.sha256,
-    stylesheet_sha256: modelsAssets.stylesheet.sha256, slots: ["turn.after_answer", "composer.toolbar"], navigation: null }],
+    stylesheet_sha256: modelsAssets.stylesheet.sha256, slots: ["turn.after_answer", "composer.toolbar", "composer.status"], navigation: null }],
 };
 
 /** Serve the production desktop bundle with deterministic HTTP and real WebSocket fixtures. */
@@ -169,7 +169,7 @@ export async function startDesktopFixtureServer(root, { port = 0, historyCount =
 
     if (request.method === "POST" && url.pathname === "/api/chat/plugin-ui/query") {
       const { method } = await readJson(request);
-      return sendJson(response, method === "chat.models" ? desktopModels() : {});
+      return sendJson(response, method === "chat.models" ? desktopModels() : method === "call.latest" ? { call: null } : {});
     }
     if (url.pathname === "/api/chat/plugin-ui/asset") {
       const asset = modelsAssets[url.searchParams.get("kind")];
