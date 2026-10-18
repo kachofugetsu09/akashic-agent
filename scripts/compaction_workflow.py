@@ -47,8 +47,12 @@ async def run(folder: Path, case: str, *, second_provider: bool = False) -> dict
             request = json.loads(await reader.readexactly(length))
             requests.append(request)
             summary = "[Source messages]" in str(request["messages"])
+            # long_summary 首次摘要超出剩余空间，只有缩写请求（没有新资料）返回短摘要。
+            rewrite = str(request["messages"][-1].get("content", "")).endswith("[Source messages]\n[]")
+            filler = " p" * 4000 * (case == "long_summary" and not rewrite)
             text = ("invalid summary" if case.endswith("failure") else
-                    "\n".join(heading + "\nRecorded progress." for heading in HEADINGS)) if summary else "work completed"
+                    "\n".join(heading + "\nRecorded progress." + filler for heading in HEADINGS[:1]) + "\n"
+                    + "\n".join(heading + "\nRecorded progress." for heading in HEADINGS[1:])) if summary else "work completed"
             body = json.dumps({"text": text}).encode()
             writer.write(f"HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {len(body)}\r\nConnection: close\r\n\r\n".encode() + body)
             await writer.drain()
@@ -100,21 +104,21 @@ async def run(folder: Path, case: str, *, second_provider: bool = False) -> dict
                 writer(Input).append("earlier-input", Input((ContentPart("text", "earlier task"),)))
                 writer(Output).append("earlier-final", Output((ContentPart("text", "earlier finished"),), "complete"))
             writer(Input).append("old-input", Input((ContentPart("text", "original task"),)))
-            padding = 6500 if case == "hard_failure" else 5500
-            for index in range(6):
+            padding = {"hard_failure": 6500, "huge_batch": 45_000}.get(case, 5500)
+            for index in range(1 if case == "huge_batch" else 6):
                 identity = f"old-call-{index}"
                 writer(Output).append(identity, Output((ToolCall(binding, {}),), "continue"))
                 ref = CallRef(identity, 0)
                 writer(ToolResult, ref).append(f"old-result-{index}", ToolResult(
                     call_ref=ref, parts=(ContentPart("text", f"evidence {index}:" + "x" * padding),), outcome="success"))
-            if case != "open_turn":
+            if case not in {"open_turn", "huge_batch"}:
                 writer(Output).append("old-final", Output((ContentPart("text", "old task finished"),), "complete"))
             before = tuple(log.reader("test:room").snapshot())
             with sqlite3.connect(folder / "workspace/sessions.db") as connection:
                 original_rows = connection.execute("SELECT * FROM messages ORDER BY seq").fetchall()
             accept = root.context.require(CHANNEL_INPUT_V2)
             accepted = await accept("test:room", "current-input", ChannelInboundMessage(
-                "test", "user", "room", "implement now" + " z" * 15_500 * (case == "deep_cut"), datetime.now(UTC), {}))
+                "test", "user", "room", "implement now" + " z" * 15_500 * (case in {"deep_cut", "long_summary"}), datetime.now(UTC), {}))
             async def finish():
                 async for _ in log.catalog().follow():
                     rows = log.reader("test:room").snapshot()
@@ -150,8 +154,10 @@ async def run(folder: Path, case: str, *, second_provider: bool = False) -> dict
                     assert len(summaries) == 1
                     record = summaries[0]
                     assert "current-input" not in record["source_message_ids"]
-                    if case not in {"short_tail", "deep_cut"}:
+                    if case not in {"short_tail", "deep_cut", "long_summary"}:
                         assert "old-final" not in record["source_message_ids"]
+                    if case == "long_summary":
+                        assert len(record["model_call_ids"]) == 2 and len(record["content"]) < 1000
                     if case == "deep_cut":
                         # 当前输入本身高于软水位：仍摘要全部已结算内容，而不是阻断。
                         assert "old-final" in record["source_message_ids"]
@@ -223,7 +229,8 @@ async def run(folder: Path, case: str, *, second_provider: bool = False) -> dict
 
 async def main() -> None:
     with tempfile.TemporaryDirectory(prefix="compaction-workflow-") as path:
-        for case in ("split_turn", "open_turn", "short_tail", "deep_cut", "soft_failure", "hard_failure"):
+        for case in ("split_turn", "open_turn", "short_tail", "deep_cut", "long_summary", "huge_batch",
+                     "soft_failure", "hard_failure"):
             folder = Path(path) / case
             folder.mkdir()
             print(json.dumps(await run(folder, case), ensure_ascii=False), flush=True)

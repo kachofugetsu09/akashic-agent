@@ -45,14 +45,28 @@ class SummaryError(ValueError):
     """摘要不能满足完整前缀、容量或输出合同。"""
 
 
-def source_text(messages: Sequence[Message]) -> str:
+# 同 Pi 的 TOOL_RESULT_MAX_CHARS：摘要只需工具结果的要点，原文仍留在日志可回读；
+# 否则一个巨大的已结算批次会让摘要请求本身放不下。
+TOOL_RESULT_SUMMARY_CHARS = 2000
+
+
+def _clip(part: ContentPart) -> ContentPart:
+    text = part.value
+    if part.kind != "text" or not isinstance(text, str) or len(text) <= TOOL_RESULT_SUMMARY_CHARS:
+        return part
+    half = TOOL_RESULT_SUMMARY_CHARS // 2
+    return replace(part, value=f"{text[:half]}\n[…省略 {len(text) - 2 * half} 字符…]\n{text[-half:]}")
+
+
+def source_text(messages: Sequence[Message], *, clip: bool = False) -> str:
     """把精确原文作为低信任资料；不把模型私有 replay 当成待学习正文。"""
     rows: list[dict[str, object]] = []
     for message in messages:
         body = message.body
         if not isinstance(body, Control):
             body = replace(body, parts=tuple(
-                part for part in body.parts
+                _clip(part) if clip and isinstance(body, ToolResult) and isinstance(part, ContentPart) else part
+                for part in body.parts
                 if not isinstance(part, ContentPart) or part.kind not in {
                     "model.facts", "context.summary", "context.notice", "model.selection", "tool.selection",
                 }
@@ -137,9 +151,11 @@ def summary_groups(groups: tuple[tuple[Message, ...], ...],
     return tuple(group for group in selected if group)
 
 
-def _request(model: BoundChatModel, summary: str, groups: Sequence[tuple[Message, ...]]) -> ModelRequest:
-    text = PROMPT + "\n[Previous summary]\n" + summary + "\n[Source messages]\n"
-    text += source_text(tuple(message for group in groups for message in group))
+def _request(model: BoundChatModel, summary: str, groups: Sequence[tuple[Message, ...]],
+             limit: int) -> ModelRequest:
+    text = PROMPT + f"摘要正文不超过约 {limit:,} tokens。\n"
+    text += "\n[Previous summary]\n" + summary + "\n[Source messages]\n"
+    text += source_text(tuple(message for group in groups for message in group), clip=True)
     rows = ({"role": "user", "content": text},)
     window = model.descriptor.capabilities.context_window
     if window is None:
@@ -152,7 +168,7 @@ def _request(model: BoundChatModel, summary: str, groups: Sequence[tuple[Message
 
 
 async def _summarize(model: BoundChatModel, groups: tuple[tuple[Message, ...], ...],
-                     previous: str) -> tuple[str, tuple[str, ...], tuple[tuple[Message, ...], ...]]:
+                     previous: str, limit: int) -> tuple[str, tuple[str, ...], tuple[tuple[Message, ...], ...]]:
     """从尾部选一个可容纳窗口，只发出一次摘要请求。"""
     # 1. 二分选择最大近期后缀；更老的积压不再触发串行摘要。
     low, high, size = 1, len(groups), 0
@@ -160,16 +176,17 @@ async def _summarize(model: BoundChatModel, groups: tuple[tuple[Message, ...], .
         middle = (low + high) // 2
         selected = groups[-middle:]
         try:
-            _ = _request(model, previous, selected)
+            _ = _request(model, previous, selected, limit)
         except SummaryError:
             high = middle - 1
         else:
             size = middle
             low = middle + 1
-    if size == 0:
+    # 没有新资料时只按 limit 缩写已有摘要。
+    if size == 0 and groups:
         raise SummaryError("一个完整消息组已超过摘要模型容量")
     selected = groups[-size:]
-    response = await model.complete(_request(model, previous, selected))
+    response = await model.complete(_request(model, previous, selected, limit))
 
     # 2. 只接纳成功调用的真实正文；格式错误不会用空摘要掩盖。
     text = (response.content or "").strip()
@@ -181,13 +198,13 @@ async def _summarize(model: BoundChatModel, groups: tuple[tuple[Message, ...], .
     return text, (response.call_record_id,), selected
 
 
-async def summarize(groups: tuple[tuple[Message, ...], ...], *, previous: str,
+async def summarize(groups: tuple[tuple[Message, ...], ...], *, previous: str, limit: int,
                     model: BoundChatModel, fallback: BoundChatModel,
                     on_fallback: Callable[[str], Awaitable[None]] | None = None,
                     ) -> tuple[str, tuple[str, ...], tuple[tuple[Message, ...], ...]]:
     """主模型在本层可恢复的生成失败后，使用本次作用域已固定的 DEFAULT。"""
     try:
-        return await _summarize(model, groups, previous)
+        return await _summarize(model, groups, previous, limit)
     except (RuntimeError, TimeoutError, SummaryError) as failure:
         if not (ModelError.matches(failure, ContextLengthError, ModelTimeoutError, RateLimitError, TransportError) or isinstance(failure, SummaryError)):
             raise
@@ -198,4 +215,4 @@ async def summarize(groups: tuple[tuple[Message, ...], ...], *, previous: str,
         if on_fallback is not None:
             await on_fallback(f"摘要模型 {model.descriptor.model_id} 失败：{failure}；"
                               f"改用 {fallback.descriptor.model_id}")
-        return await _summarize(fallback, groups, previous)
+        return await _summarize(fallback, groups, previous, limit)

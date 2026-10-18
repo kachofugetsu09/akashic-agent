@@ -20,7 +20,7 @@ from plugins.models.contract import (
     RateLimitError,
     TransportError,
 )
-from plugins.context.contract import CONTEXT, MATERIALS_V4, MaterialData, ReductionStatus, output_reserve
+from plugins.context.contract import CONTEXT, MATERIALS_V4, OUTPUT_RESERVE_TOKENS, MaterialData, ReductionStatus, output_reserve
 from plugins.ledger.contract import BINDINGS
 from plugins.ledger.contract import MESSAGE_CATALOG, OWNER_STATE
 from plugins.ledger.contract import Input, Message
@@ -182,6 +182,7 @@ async def apply(ctx: Context) -> None:
         fallback: tuple[tuple[Message, ...], ...] = ()
         deepest: tuple[tuple[Message, ...], ...] = ()
         retained_tokens = deepest_tokens = 0
+        planned_tokens: dict[int, int] = {}
         # 原文保留量来自实际 Model 投影，包含尚未闭合的尾部与当前输入。
         for size in range(len(groups), 0, -1):
             after_seq = groups[size - 1][-1].seq
@@ -203,6 +204,8 @@ async def apply(ctx: Context) -> None:
                 max_output_tokens=request.max_output_tokens,
                 current_reminder_input_id=reminder_input_id,
             )
+            if error is None:
+                planned_tokens[size] = projection.estimate(candidate)
             if error is None and not deepest:
                 deepest = groups[:size]
                 deepest_tokens = projection.estimate(tail)
@@ -222,55 +225,59 @@ async def apply(ctx: Context) -> None:
                                 f"（目标 {config.keep_recent_tokens:,}），更早的内容改用摘要。"
                                 "当前输入和进行中的工具调用完整保留。", True)
         if not selected:
-            raise SummaryError("即使摘要全部已结算内容，当前输入和进行中的工具调用仍超出容量")
+            raise SummaryError("即使摘要全部已结算内容，当前输入、进行中的工具调用与已有摘要仍超出容量")
         inputs = summary_groups(selected, snapshot)
         if not inputs:
             raise SummaryError("可选范围没有可用于摘要的资料")
-        # 2. 嵌套 execution 复用调用者已经固定的角色，不重读模型配置。
+        # 2. 摘要长度受剩余空间约束（同 Pi 以 reserve 约束摘要）；过长时再缩写一次。
+        reserve = output_reserve(request.max_output_tokens)
+        limit = max(256, min(window - reserve - planned_tokens[len(selected)], OUTPUT_RESERVE_TOKENS))
+        count = start + sum(len(group) for group in selected)
+        added = snapshot[start:count]
+
+        def measure(text: str, calls: tuple[str, ...],
+                    summarized: tuple[tuple[Message, ...], ...]) -> tuple[SummaryRecord, MaterialData, int]:
+            summary_ids = tuple(message.message_id for group in summarized for message in group)
+            record = SummaryRecord(
+                reference=uuid4().hex, session_id=snapshot[0].session_id,
+                generation=1 if parent is None else parent.generation + 1,
+                parent=None if parent is None else parent.reference,
+                source_message_ids=tuple(message.message_id for message in snapshot[origin:count]),
+                summary_message_ids=summary_ids,
+                omitted_message_ids=tuple(
+                    message.message_id for message in added if message.message_id not in set(summary_ids)
+                ),
+                content=text, model_call_ids=calls, trigger="context_overflow" if force else "soft_limit",
+                context_window=window, max_output_tokens=request.max_output_tokens,
+                keep_recent_tokens=config.keep_recent_tokens, tokens_before=before, tokens_after=0,
+            )
+            summary = material(record)
+            after_request, error = context.build_attempt(
+                snapshot, materials={**materials, "summary": summary}, model=projection,
+                tools=request.tools, max_output_tokens=request.max_output_tokens,
+                current_reminder_input_id=reminder_input_id,
+            )
+            return record, summary, window if error is not None else projection.estimate(after_request)
+
+        # 嵌套 execution 复用调用者已经固定的角色，不重读模型配置。
         async with ctx.require(CHAT_MODELS).execution() as execution:
             async def report_fallback(text: str) -> None:
                 if on_status is not None:
                     await on_status(text, True)
 
+            default = execution.chat("default")
             text, calls, summarized = await summarize(
-                inputs, previous="" if parent is None else parent.content,
-                model=model, fallback=execution.chat("default"),
-                on_fallback=report_fallback,
+                inputs, previous="" if parent is None else parent.content, limit=limit,
+                model=model, fallback=default, on_fallback=report_fallback,
             )
-        count = start + sum(len(group) for group in selected)
-        summary_message_ids = tuple(
-            message.message_id for group in summarized for message in group
-        )
-        summary_id_set = set(summary_message_ids)
-        added = snapshot[start:count]
-        record = SummaryRecord(
-            reference=uuid4().hex, session_id=snapshot[0].session_id,
-            generation=1 if parent is None else parent.generation + 1,
-            parent=None if parent is None else parent.reference,
-            source_message_ids=tuple(message.message_id for message in snapshot[origin:count]),
-            summary_message_ids=summary_message_ids,
-            omitted_message_ids=tuple(
-                message.message_id for message in added
-                if message.message_id not in summary_id_set
-            ),
-            content=text, model_call_ids=calls, trigger="context_overflow" if force else "soft_limit",
-            context_window=window, max_output_tokens=request.max_output_tokens,
-            keep_recent_tokens=config.keep_recent_tokens, tokens_before=before, tokens_after=0,
-        )
-        summary = material(record)
-        after_materials = dict(materials)
-        after_materials["summary"] = summary
-        after_request, error = ctx.require(CONTEXT).build_attempt(
-            snapshot, materials=after_materials, model=projection,
-            tools=request.tools, max_output_tokens=request.max_output_tokens,
-            current_reminder_input_id=reminder_input_id,
-        )
-        if error is not None:
-            raise SummaryError(error)
-        after = projection.estimate(after_request)
+            record, summary, after = measure(text, calls, summarized)
+            if after + reserve > window:
+                text, more, _ = await summarize((), previous=text, limit=max(128, limit // 2),
+                                                model=model, fallback=default, on_fallback=report_fallback)
+                record, summary, after = measure(text, calls + more, summarized)
         if after >= before:
             raise SummaryError("摘要没有降低本次完整请求容量")
-        if after + output_reserve(request.max_output_tokens) > window:
+        if after + reserve > window:
             raise SummaryError(f"摘要后的输入约 {after:,} tokens，加输出预留仍超过硬容量")
         record = record.model_copy(update={"tokens_after": after})
         # 3. binding 可以先固定，但读者只有在摘要事务成功后才取得此引用。
