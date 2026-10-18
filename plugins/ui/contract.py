@@ -283,7 +283,14 @@ MESSAGE_DISPLAY = ServiceKey[MessageDisplayReader]("ui.messages.v1")
 PLUGIN_UI = ServiceKey[PluginUiProvider]("ui.plugin.v1")
 
 
-PartDisplayProvider = Callable[[ContentPart], Mapping[str, object]]
+# owner 把某段内容声明为思考过程：宿主按通用的思考行展示 text，value 是 owner 公开给其他客户端的字段。
+@dataclass(frozen=True, slots=True)
+class ThinkingDisplay:
+    text: str | None
+    value: Mapping[str, object]
+
+
+PartDisplayProvider = Callable[[ContentPart], Mapping[str, object] | ThinkingDisplay]
 
 
 # 内容 owner 以 message.display:<kind> 提供展示回调；没有 owner 回调的内容显示为“无法展示”。
@@ -453,7 +460,10 @@ def _part(
     if provider is hidden_part:
         return {"kind": part.kind, "display": "hidden"}
     if provider is not None:
-        value = json_value(provider(part))
+        shown = provider(part)
+        if isinstance(shown, ThinkingDisplay):
+            return {"kind": part.kind, "display": "thinking", "text": shown.text, "value": json_value(shown.value)}
+        value = json_value(shown)
         return {"kind": part.kind, "value": value, **({"display": "data"} if tool_result else {})}
     # 2. 展示端保留原 part 下标；不可展示的归档只传类型，权威正文不变。
     if display_only and part.kind in {"history.provenance", "history.record", "history.turn_input"}:

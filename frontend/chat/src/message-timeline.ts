@@ -12,10 +12,11 @@ export interface TimelineAttachment {
 export type TimelinePart =
   | { kind: "text" | "artifact_ref" | "reply_ref"; value: string }
   | { kind: "tool_call"; binding_id: string; name: string; arguments: Record<string, unknown> }
-  | { kind: "model.facts"; value: { call_record_id: string; thinking: string | null } }
   | { kind: "context.notice"; value: { text: string } }
   | { kind: "history.provenance" | "history.transcript" | "history.record" | "history.turn_input"; archive: unknown }
   | { kind: string; display: "unavailable" | "hidden" }
+  // owner 声明的思考过程：宿主只按通用思考行展示 text，不解读 owner 的 kind 与字段。
+  | { kind: string; display: "thinking"; text: string | null }
   | { kind: string; display: "data"; value: unknown; rendered?: unknown };
 
 export type TimelineBody =
@@ -231,19 +232,18 @@ export function timelineReply(message: TimelineMessage): TimelineReply {
       || (message.attachments.length ? "[附件]" : "[无文字消息]") };
 }
 
+const BUILTIN_PARTS: readonly unknown[] = ["text", "artifact_ref", "reply_ref", "tool_call"];
+
 function validPart(value: unknown): boolean {
   const part = object(value);
   if (!part || !nonempty(part.kind)) return false;
   if (part.display === "data") return "value" in part && part.kind !== "tool_call";
-  if (part.display === "unavailable" || part.display === "hidden") return !["text", "artifact_ref", "reply_ref", "tool_call", "model.facts"].includes(part.kind);
+  if (part.display === "thinking") return nullableText(part.text) && !BUILTIN_PARTS.includes(part.kind);
+  if (part.display === "unavailable" || part.display === "hidden") return !BUILTIN_PARTS.includes(part.kind);
   switch (part.kind) {
     case "text": return typeof part.value === "string";
     case "artifact_ref": case "reply_ref": return nonempty(part.value);
     case "tool_call": return nonempty(part.binding_id) && nonempty(part.name) && object(part.arguments) !== null;
-    case "model.facts": {
-      const facts = object(part.value);
-      return facts !== null && nonempty(facts.call_record_id) && nullableText(facts.thinking);
-    }
     case "context.notice": return nonempty(object(part.value)?.text);
     case "history.provenance": case "history.transcript": case "history.record": case "history.turn_input":
       return "archive" in part;
@@ -305,22 +305,22 @@ export function historyTranscript(archive: unknown): HistoryTranscriptGroup[] | 
 /** 聊天可见性只影响布局，原始 Message、part index 和同步 seq 不变。 */
 export function isTimelinePartVisible(part: TimelinePart): boolean {
   // owner 声明为内部材料（hidden）的不显示；展示方缺席（unavailable）仍占一行“无法展示”，保留诊断线索。
-  if ("display" in part) return part.display !== "hidden";
+  if ("display" in part) return part.display === "thinking" ? Boolean(part.text) : part.display !== "hidden";
   if ("archive" in part) {
     if (part.kind !== "history.transcript") return false;
     const groups = historyTranscript(part.archive);
     return groups === null || groups.some((group) => group.text || group.thinking || group.calls.length);
   }
   if (part.kind === "text") return part.value.length > 0;
-  if (part.kind === "model.facts") return Boolean(part.value.thinking);
   return true;
 }
 
 // 过程与指针类 part（工具调用、思考、上下文提示、回复引用）不算正文；附件与其它可见 part 都算。
-const PROCESS_PARTS = new Set(["tool_call", "model.facts", "context.notice", "reply_ref"]);
+const PROCESS_PARTS = new Set(["tool_call", "context.notice", "reply_ref"]);
 function hasReplyBody(message: TimelineMessage): boolean {
   if (message.attachments.length > 0) return true;
-  return message.body.kind !== "control" && message.body.parts.some((part) => !PROCESS_PARTS.has(part.kind) && isTimelinePartVisible(part));
+  return message.body.kind !== "control" && message.body.parts.some((part) =>
+    !PROCESS_PARTS.has(part.kind) && !("display" in part && part.display === "thinking") && isTimelinePartVisible(part));
 }
 
 // 工具结果里的图片是给模型看的观察（截图、读图），跟随所属调用；文件附件才是交给用户的回复产物。

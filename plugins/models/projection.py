@@ -36,6 +36,7 @@ from plugins.models.contract import (
     MODEL_CHECKS as MODEL_MESSAGE_CHECKS,  # noqa: F401 - 显式再导出给本插件消费者。
     MODEL_PROJECTION as MODEL_PROJECTION,
 )
+from plugins.ui.contract import ThinkingDisplay
 
 from .store import ModelCallReader
 
@@ -189,11 +190,13 @@ def check_facts(part: ContentPart) -> ContentReferences:
     return ContentReferences()
 
 
-def display_facts(part: ContentPart) -> dict[str, object]:
-    """页面只取得调用记录与思考文本，不能取得 provider continuation。"""
+def display_facts(part: ContentPart) -> ThinkingDisplay:
+    """页面只取得调用记录与思考文本，不能取得 provider continuation；思考文本按宿主通用的思考行展示。"""
     _ = check_facts(part)
     value = cast(Mapping[str, object], part.value)
-    return {"call_record_id": value["call_record_id"], "thinking": value["thinking"]}
+    thinking = value["thinking"]
+    return ThinkingDisplay(thinking if isinstance(thinking, str) else None,
+                           {"call_record_id": value["call_record_id"], "thinking": thinking})
 
 
 class MessageProjection:
