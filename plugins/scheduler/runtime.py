@@ -124,7 +124,7 @@ class SchedulerRuntime:
                 control_id = "scheduler-cancelled:" + fire.key
                 if target.get(control_id) is None:
                     head = target.head(source=fire.source)
-                    if head:
+                    if head >= 0:
                         writer = ctx.require(MESSAGE_WRITERS).bind(
                             ctx, author="scheduler", source=fire.source, body_types=(Control,), content={},
                         )(target.session_id)
