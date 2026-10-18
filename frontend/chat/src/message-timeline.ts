@@ -304,7 +304,8 @@ export function historyTranscript(archive: unknown): HistoryTranscriptGroup[] | 
 
 /** 聊天可见性只影响布局，原始 Message、part index 和同步 seq 不变。 */
 export function isTimelinePartVisible(part: TimelinePart): boolean {
-  if ("display" in part) return part.display === "data" || !["channel.origin", "context.summary", "tool.selection", "model.selection", "command.result", "akasha.recall", "akasha.feedback"].includes(part.kind);
+  // owner 没有公开展示的内部材料（unavailable）不是聊天内容；宿主不维护按插件列举的隐藏名单。
+  if ("display" in part) return part.display === "data";
   if ("archive" in part) {
     if (part.kind !== "history.transcript") return false;
     const groups = historyTranscript(part.archive);
