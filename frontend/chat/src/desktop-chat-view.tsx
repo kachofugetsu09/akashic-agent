@@ -142,7 +142,7 @@ export function DesktopChatView({ embeddedShell, controller }: DesktopChatViewPr
             refreshKey={Array.from(toolResults.keys()).join("|")} /> : null}
           <JobListAction key={`jobs:${activeSessionId}`} jobs={controller.activeSessionJobs} onStop={controller.stopJob} />
           {/* 窄屏没有常驻侧栏：新会话留在拇指可达的标题行，不必先打开抽屉。 */}
-          {conversationLayout ? <button type="button" className="conversation-heading__new" aria-label="新会话" title="新会话"
+          {conversationLayout ? <button type="button" className="conversation-heading__new" aria-label="新会话" data-tip="新会话"
             onClick={() => startNewChat()}>
             <MessageSquarePlus size={20} strokeWidth={1.75} aria-hidden="true" />
           </button> : null}

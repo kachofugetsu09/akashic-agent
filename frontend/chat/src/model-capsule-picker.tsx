@@ -92,9 +92,12 @@ function readFavorites(): string[] {
   }
 }
 
+/** 面板几何 + 缩放锚点：锚点走自定义属性，和 Radix 浮层用的是同一套表达。 */
+type PanelStyle = CSSProperties & Record<"--ak-pop-origin", string>;
+
 // 紧凑浮层贴触发器定位：上下择宽处展开，横向钳在视口内边距里。
 function useFixedPanelStyle(open: boolean, triggerRef: RefObject<HTMLElement | null>, width: number) {
-  const [style, setStyle] = useState<CSSProperties | undefined>();
+  const [style, setStyle] = useState<PanelStyle | undefined>();
   useLayoutEffect(() => {
     if (!open) {
       setStyle(undefined);
@@ -109,10 +112,13 @@ function useFixedPanelStyle(open: boolean, triggerRef: RefObject<HTMLElement | n
       const openUp = spaceAbove >= Math.min(PANEL_MAX_HEIGHT, 280) || spaceAbove >= spaceBelow;
       const maxHeight = Math.min(PANEL_MAX_HEIGHT, Math.max(spaceAbove, spaceBelow));
       const left = Math.max(PANEL_MARGIN, Math.min(rect.left, window.innerWidth - width - PANEL_MARGIN));
+      // 面板就近的那条边与触发钮对齐，缩放锚点取触发钮的水平中心：
+      // 面板从这里长出来，人的眼睛才接得上「点的是这个，开的是它」。
+      const originX = Math.max(8, Math.min(rect.left + rect.width / 2 - left, width - 8));
       setStyle(
         openUp
-          ? { left, width, maxHeight, bottom: window.innerHeight - rect.top + PANEL_GAP, top: "auto" }
-          : { left, width, maxHeight, top: rect.bottom + PANEL_GAP, bottom: "auto" },
+          ? { left, width, maxHeight, bottom: window.innerHeight - rect.top + PANEL_GAP, top: "auto", "--ak-pop-origin": `${originX}px bottom` }
+          : { left, width, maxHeight, top: rect.bottom + PANEL_GAP, bottom: "auto", "--ak-pop-origin": `${originX}px top` },
       );
     }
     place();

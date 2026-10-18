@@ -1237,7 +1237,7 @@
 }
 
 .process-chevron {
-  transition: transform var(--ak-sys-duration-short) var(--ak-sys-motion-standard);
+  transition: translate var(--ak-sys-duration-short) var(--ak-sys-motion-standard), transform var(--ak-sys-duration-short) var(--ak-sys-motion-standard);
 }
 
 .process-chevron.open {
@@ -1251,12 +1251,14 @@
   .process-trigger:not(.inline-reply-process > details > summary) .process-chevron:not(.open),
   .tool-step-summary:not(.turn-process-summary, .tool-group-summary) .tool-step-chevron:not(.open) {
     opacity: 0;
-    transition: opacity var(--ak-sys-duration-short) var(--ak-sys-motion-standard), transform var(--ak-sys-duration-short) var(--ak-sys-motion-standard);
+    transition: opacity var(--ak-sys-duration-short) var(--ak-sys-motion-standard), translate var(--ak-sys-duration-short) var(--ak-sys-motion-standard), transform var(--ak-sys-duration-short) var(--ak-sys-motion-standard);
   }
   .context-notice[open] > .process-trigger .process-chevron,
   .process-trigger:is(:hover, :focus-visible) .process-chevron:not(.open),
   .tool-step-summary:is(:hover, :focus-visible) .tool-step-chevron:not(.open) {
     opacity: 1;
+    /* 箭头先朝「将要打开」的方向挪 2px：点击之前，行就说清按下会发生什么。 */
+    translate: 0 2px;
   }
 }
 
@@ -1273,7 +1275,8 @@
   animation: thinking-content-in var(--ak-sys-duration-short) ease-out;
 }
 
-@keyframes thinking-content-in { from { opacity: 0; } }
+@keyframes thinking-content-in { from { opacity: 0; translate: 0 2px; filter: blur(3px); } }
+@media (prefers-reduced-motion: reduce) { .thinking-row > .process-content[data-state="open"] { animation-name: none; } }
 
 /* 同轮中途回复：正常流出但字色更淡，最终回复保持墨色。 */
 .timeline-narration {
@@ -1434,7 +1437,7 @@ button.tool-step-summary:active {
 }
 
 .tool-step-chevron {
-  transition: transform var(--ak-sys-duration-short) var(--ak-sys-motion-standard);
+  transition: translate var(--ak-sys-duration-short) var(--ak-sys-motion-standard), transform var(--ak-sys-duration-short) var(--ak-sys-motion-standard);
 }
 
 .tool-step-chevron.open {
@@ -2025,11 +2028,13 @@ button.tool-step-summary:active {
 }
 
 /* 发送确认通常在一秒内到达：短暂停留时不闪"发送中"，超过 1.2 秒才淡入。 */
+/* 落纸：新挂载的块抬 2px 并带一点模糊落定，只在挂载那一次跑，不逐 token 重放。
+   逐词 cross-blur 会在每个token 上重跑滤镜，成本乘上长回复的长度。 */
 .shared-message-delivery { padding-inline: 4px; color: var(--ak-ink-muted); }
 @media (prefers-reduced-motion: no-preference) {
-  .shared-message-delivery { animation: shared-delivery-reveal 160ms ease-out 1.2s both; }
+  .shared-message-delivery { animation: shared-delivery-reveal 160ms var(--ak-sys-motion-standard) 1.2s both; }
 }
-@keyframes shared-delivery-reveal { from { opacity: 0; } }
+@keyframes shared-delivery-reveal { from { opacity: 0; translate: 0 2px; filter: blur(3px); } }
 
 /* 热区与视觉尺寸的唯一 owner；窄屏断点只改这两个变量（触控目标 ≥44px，视觉仍 24px）。 */
 .shared-message-actions {

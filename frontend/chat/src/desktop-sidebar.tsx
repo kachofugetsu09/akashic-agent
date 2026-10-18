@@ -561,7 +561,7 @@ export const DesktopSidebar = memo(function DesktopSidebar({
           />
           <kbd className="chat-sidebar__search-key" aria-hidden="true">{SHORTCUT_MOD === "⌘" ? "⌘K" : "Ctrl K"}</kbd>
           {/* 触屏没有 Esc：有输入时给一个清除钮，清完焦点留在框里接着搜。 */}
-          {query ? <button type="button" className="chat-sidebar__search-clear" aria-label="清除搜索" title="清除搜索"
+          {query ? <button type="button" className="chat-sidebar__search-clear" aria-label="清除搜索" data-tip="清除搜索"
             onClick={() => { setQuery(""); searchRef.current?.focus(); }}>
             <X size={14} aria-hidden="true" />
           </button> : null}
@@ -707,7 +707,7 @@ function SessionSortMenu({ sort, onSort }: { sort: SessionSortId; onSort: (sort:
   return <DropdownMenu modal={false}>
     <DropdownMenuTrigger asChild>
       <button type="button" className="project-navigation__icon conversation-sort-trigger"
-        aria-label={`会话排序：${current.label}`} title="会话排序">
+        aria-label={`会话排序：${current.label}`} data-tip="会话排序">
         <ArrowUpDown size={15} aria-hidden="true" />
       </button>
     </DropdownMenuTrigger>

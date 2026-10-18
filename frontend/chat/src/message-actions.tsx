@@ -1,4 +1,6 @@
-import { Check, Copy, PencilLine, Reply, X } from "lucide-react";
+import { Copy, PencilLine, Reply, X } from "lucide-react";
+
+import { CheckGlyph, IconSwap } from "./icon-swap";
 
 export type ReplyRole = "user" | "assistant";
 
@@ -21,7 +23,7 @@ export function SharedMessageActions({
   return (
     <div className="shared-message-actions">
       {onEdit ? (
-        <button type="button" onClick={onEdit} aria-label="放回输入框编辑" title="放回输入框编辑">
+        <button type="button" onClick={onEdit} aria-label="放回输入框编辑" data-tip="放回输入框编辑">
           <PencilLine size={16} aria-hidden="true" />
         </button>
       ) : null}
@@ -32,7 +34,7 @@ export function SharedMessageActions({
       ) : null}
       {canCopy ? (
         <button className={copied ? "copied" : ""} type="button" onClick={onCopy} aria-label={copied ? "已复制" : "复制消息"}>
-          {copied ? <Check size={16} aria-hidden="true" /> : <Copy size={16} aria-hidden="true" />}
+          <IconSwap state={copied} a={<Copy size={16} aria-hidden="true" />} b={<CheckGlyph />} />
         </button>
       ) : null}
     </div>
