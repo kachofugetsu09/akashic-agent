@@ -11,7 +11,7 @@ from plugins.models.contract import (
 )
 from plugins.models.contract import MODEL_CACHE_USAGE, MODEL_CALL_STATS
 from plugins.gateway.contract import RpcMethod
-from plugins.ui.contract import UI, UI_SLOTS, PluginUiDefinition, PluginUiRpcInvalidRequest
+from plugins.ui.contract import UI, UI_SLOTS, PluginUiDefinition, PluginUiRpcInvalidRequest, hidden_part, part_display_key
 
 from .content import MODEL_CONTENT, ContentOwner
 from .views import CONTENT_VIEWS, ContentViews
@@ -73,6 +73,9 @@ async def apply(ctx: Context) -> None:
     usage = CacheUsage(ctx, store)
     _ = await ctx.provide(MODEL_CACHE_USAGE, usage)
     _ = await ctx.provide(MODEL_DISPLAY, display_facts)
+    # 自己写入的内部材料不进聊天正文；宿主不维护按插件列举的隐藏名单。
+    for kind in ("model.selection", "tool.selection"):
+        _ = await ctx.provide(part_display_key(kind), hidden_part)
     _ = await ctx.provide(MODEL_PROJECTION, ProjectionOwner())
     _ = await ctx.provide(MODEL_MESSAGE_CHECKS, MessageChecksOwner())
     _ = await ctx.provide(MODEL_CONTENT, ContentOwner())
