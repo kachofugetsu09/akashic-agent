@@ -28,7 +28,7 @@ try {
       resolveDir: repo, loader: "tsx",
     },
     bundle: true, platform: "node", format: "esm", packages: "external",
-    alias: { "@": resolve(repo, "frontend/chat/src") }, loader: { ".css": "empty" },
+    alias: { "@": resolve(repo, "frontend/chat/src") }, loader: { ".css": "empty", ".svg": "dataurl" },
     define: { "import.meta.env.DEV": "false" }, outfile: resolve(temporary, "navigation.mjs"),
   });
   dom = new JSDOM('<!doctype html><html><body><div id="root"></div></body></html>', {
@@ -116,7 +116,7 @@ try {
       chatReady: true, themeLabel: "Light", navigationPins: nav, onSelectSession: (id) => selected.push(id),
       onCycleTheme() {}, onNewChat: () => drafts.push("default"),
       projects: projectsInstalled ? {
-        items: [alpha], pending: [], pendingError: "", activeProjectId: projectId, memoryInstalled: true,
+        items: [alpha], pending: [], pendingError: "", activeProjectId: projectId,
         onNewChat: (id) => drafts.push(id), onCreate: async () => {}, onContinue: async () => {}, onStop() {},
       } : undefined,
     };

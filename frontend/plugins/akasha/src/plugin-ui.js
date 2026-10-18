@@ -1,4 +1,5 @@
 import "./plugin-ui.css";
+import { mountMemoryBadge, mountMemoryField } from "./scope-ui.tsx";
 
 const escapeHtml = (value) => String(value ?? "").replace(/[&<>"']/g, (character) => ({
   "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;",
@@ -251,6 +252,10 @@ export function mountRecall(host, context) {
 }
 
 export default {
-  slots: { "turn.before_reasoning": { mount: mountRecall } },
+  slots: {
+    "turn.before_reasoning": { mount: mountRecall },
+    "scope.fields": { mount: mountMemoryField },
+    "scope.badge": { mount: mountMemoryBadge },
+  },
   dashboard: { mount },
 };

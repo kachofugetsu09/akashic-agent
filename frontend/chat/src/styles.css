@@ -1014,19 +1014,9 @@ input {
   font-weight: 550;
 }
 
-.project-group__memory {
-  min-width: 0;
-  max-width: 45%;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-  border-radius: 999px;
-  padding-inline: 6px;
-  color: var(--chat-muted);
-  background: var(--chat-chip);
-  font-size: 0.6875rem;
-  line-height: 1.6;
-}
+/* 名字后的插件短标签；插槽按可见性懒挂载，宿主元素要有布局盒子。 */
+.plugin-ui-slot[data-slot="scope.badge"] { display: flex; min-width: 0; max-width: 45%; }
+.plugin-ui-slot[data-slot="scope.badge"] > .plugin-ui-host { display: flex; min-width: 0; }
 
 .project-group__sessions {
   display: grid;
@@ -1107,7 +1097,7 @@ input {
 .project-dialog__description svg { flex: 0 0 auto; }
 .project-dialog__footer { flex-flow: row wrap; align-items: center; justify-content: space-between; gap: 12px; }
 .project-dialog__footer > :first-child { margin-inline-end: auto; }
-.project-dialog__memory-trigger {
+.choice-menu__trigger {
   display: inline-flex;
   flex-shrink: 0;
   min-height: 40px;
@@ -1122,11 +1112,11 @@ input {
   font-size: 0.875rem;
   cursor: pointer;
 }
-.project-dialog__memory-trigger[data-state="open"] { background: var(--ak-paper-sheet); }
+.choice-menu__trigger[data-state="open"] { background: var(--ak-paper-sheet); }
 @media (hover: hover) {
-  .project-dialog__memory-trigger:hover { background: var(--ak-paper-sheet); }
+  .choice-menu__trigger:hover { background: var(--ak-paper-sheet); }
 }
-.project-memory-menu {
+.choice-menu {
   width: min(340px, calc(100vw - 32px));
   z-index: 60;
   border: 1px solid var(--ak-rule-subtle);
@@ -1135,14 +1125,13 @@ input {
   color: var(--ak-ink-primary);
   background: var(--ak-paper-canvas);
 }
-.project-memory-menu__choice { align-items: flex-start; border-radius: 8px; padding-block: 10px; padding-inline-end: 12px; }
-.project-memory-menu__choice[data-highlighted] { color: var(--ak-ink-primary); background: var(--ak-paper-sheet); }
-.project-memory-menu__choice > span:last-child { display: grid; gap: 4px; }
-.project-memory-menu__choice strong { font-size: 0.875rem; font-weight: 550; }
-.project-memory-menu__choice small,
-.project-memory-menu__note,
-.project-dialog__no-memory { color: var(--ak-ink-secondary); font-size: 0.75rem; line-height: 1.5; }
-.project-memory-menu__note { margin: 4px 8px 2px; border-top: 1px solid var(--ak-rule-subtle); padding-block-start: 10px; }
+.choice-menu__choice { align-items: flex-start; border-radius: 8px; padding-block: 10px; padding-inline-end: 12px; }
+.choice-menu__choice[data-highlighted] { color: var(--ak-ink-primary); background: var(--ak-paper-sheet); }
+.choice-menu__choice > span:last-child { display: grid; gap: 4px; }
+.choice-menu__choice strong { font-size: 0.875rem; font-weight: 550; }
+.choice-menu__choice small,
+.choice-menu__note { color: var(--ak-ink-secondary); font-size: 0.75rem; line-height: 1.5; }
+.choice-menu__note { margin: 4px 8px 2px; border-top: 1px solid var(--ak-rule-subtle); padding-block-start: 10px; }
 .project-dialog__error { margin: 0; color: var(--md-sys-color-error); font-size: 0.8125rem; }
 .project-dialog__button {
   min-height: 40px;

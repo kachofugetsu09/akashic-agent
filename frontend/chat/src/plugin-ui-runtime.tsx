@@ -4,6 +4,7 @@ import { createUuid as createRequestId } from "./browser-uuid.ts";
 import { PluginUiQueryQueue } from "./plugin-ui-query-queue";
 import { PluginUiResultCache } from "./plugin-ui-result-cache";
 import { composerControls } from "./composer-contributions";
+import type { ScopeFields } from "./scope-fields";
 import { openInWorkbench, subscribeWorkbenchIntents, workbenchAccepts } from "./shell-workbench";
 
 import type { ComposerSuggestProvider, PluginUiContext, PluginUiDefinition, PluginUiMountSlotName, PluginUiQueryOptions, PluginUiRenderer, PluginUiSlotName } from "@akashic/chat-ui-v1";
@@ -93,6 +94,8 @@ const SLOT_NAMES = new Set<Exclude<PluginUiSlotName, "dashboard.main">>([
   "composer.toolbar",
   "composer.status",
   "composer.suggest",
+  "scope.fields",
+  "scope.badge",
 ]);
 
 /** 目录或模块变化时通知；宿主内的数据型扩展点据此对齐自己的缓存。 */
@@ -529,6 +532,8 @@ export function PluginUiSlot({
   messageId,
   turnId,
   block,
+  scope,
+  fields,
   refreshToken,
   prefetch = false,
   quiet = false,
@@ -540,6 +545,10 @@ export function PluginUiSlot({
   messageId?: string;
   turnId?: string;
   block?: unknown;
+  /** scope.fields 与 scope.badge：所属的会话维度与取值。 */
+  scope?: { dimension: string; value?: string };
+  /** scope.fields：表单的附加设置登记处。 */
+  fields?: ScopeFields;
   refreshToken?: string | number;
   /** 宿主另有降级展示时不显示目录更新和卸载提示。 */
   quiet?: boolean;
@@ -550,7 +559,7 @@ export function PluginUiSlot({
   // 目录加载失败时保留本页已经挂载的卡片；新页面不会执行旧模块。
   const previous = React.useRef<typeof renderers>([]);
   const hadRenderer = React.useRef(false);
-  const contextKey = JSON.stringify([name, prefetch, sessionId, messageId, turnId, block]);
+  const contextKey = JSON.stringify([name, prefetch, sessionId, messageId, turnId, block, scope]);
   const previousContext = React.useRef(contextKey);
   const waiting = slotWaiting(name);
   const keepPrevious = waiting && previousContext.current === contextKey && previous.current.length > 0
@@ -574,7 +583,8 @@ export function PluginUiSlot({
           fallback={fallback}
           prefetch={prefetch}
           refreshToken={refreshToken}
-          context={{ slot: name, sessionId, messageId, turnId, block }}
+          fields={fields}
+          context={{ slot: name, sessionId, messageId, turnId, block, scope }}
         />
       ))}
     </div>
@@ -605,13 +615,15 @@ function MountedPlugin({
   refreshToken,
   prefetch = false,
   fallback,
+  fields,
 }: {
   fallback?: React.ReactNode;
   pluginId: string;
   pluginRevision: string;
   renderer: PluginUiRenderer;
   prefetch?: boolean;
-  context: Omit<PluginUiContext, "query" | "capabilities" | "onInvalidate" | "reportError" | "subscribe" | "workbench">;
+  fields?: ScopeFields;
+  context: Omit<PluginUiContext, "query" | "capabilities" | "onInvalidate" | "reportError" | "subscribe" | "workbench" | "fields">;
   refreshToken?: string | number;
 }) {
   const hostRef = React.useRef<HTMLDivElement>(null);
@@ -620,6 +632,8 @@ function MountedPlugin({
   const invalidatorsRef = React.useRef<Set<() => void> | null>(null);
   const previousRefreshToken = React.useRef(refreshToken);
   const { block, messageId, sessionId, slot, turnId } = context;
+  const dimension = context.scope?.dimension;
+  const scopeValue = context.scope?.value;
   const blockRevision = block === undefined ? undefined : JSON.stringify(block);
   const stableBlock = useMemo(
     () => blockRevision === undefined ? undefined : JSON.parse(blockRevision) as unknown,
@@ -644,6 +658,7 @@ function MountedPlugin({
     let live = true;
     const stopPushes = new Set<() => void>();
     const composer = slot === "composer.toolbar" ? composerControls() : null;
+    const scopeFields = slot === "scope.fields" && fields ? fields.controls() : null;
     setError(null);
     const stopIntents = subscribeWorkbenchIntents(() => {
       for (const callback of invalidators) {
@@ -673,6 +688,8 @@ function MountedPlugin({
           open: (name, payload) => live ? openInWorkbench(name, sessionId ?? "", payload) : Promise.resolve("invalid"),
         },
         ...(composer ? { composer: composer.controls } : {}),
+        ...(dimension ? { scope: { dimension, ...(scopeValue ? { value: scopeValue } : {}) } } : {}),
+        ...(scopeFields ? { fields: scopeFields.controls } : {}),
       };
       if (prefetch) {
         void renderer.prefetch!(queryContext).catch((error: unknown) => {
@@ -692,6 +709,7 @@ function MountedPlugin({
       invalidatorsRef.current = null;
       releaseQueryOwner(ownerId);
       composer?.release();
+      scopeFields?.release();
       try {
         cleanup?.();
       } catch (error) {
@@ -699,7 +717,7 @@ function MountedPlugin({
       }
       host.replaceChildren();
     };
-  }, [messageId, pluginId, pluginRevision, renderer, sessionId, slot, stableBlock, turnId, prefetch]);
+  }, [messageId, pluginId, pluginRevision, renderer, sessionId, slot, stableBlock, turnId, prefetch, dimension, scopeValue, fields]);
   return <><div ref={hostRef} className="plugin-ui-host" data-plugin={pluginId} hidden={error !== null} />
     {error !== null && <><p role="status">交互内容暂不可用：{error}</p>{fallback}</>}</>;
 }

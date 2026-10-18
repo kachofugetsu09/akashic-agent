@@ -66,7 +66,7 @@ export function DesktopChatView({ embeddedShell, controller }: DesktopChatViewPr
     activeSessionDeleted, deletedNotice, deleteSession, restoreSession, dismissDeletedNotice, renameSession,
     activateSession, prefetchSessionTail, startNewChat, handleReplyMessage, handleCopiedMessage,
     reportError, cancelReply, sendMessage, stopTurn, retry,
-    projects, pendingProjects, pendingProjectsError, projectsInstalled, memoryInstalled, activeProject,
+    projects, pendingProjects, pendingProjectsError, projectsInstalled, activeProject,
     startProjectChat, createProject, continueProject, stopProject, bindDirectory,
   } = controller;
   const inputResult = useMemo(() => lastInputResult(timelineMessages), [timelineMessages]);
@@ -86,10 +86,10 @@ export function DesktopChatView({ embeddedShell, controller }: DesktopChatViewPr
   }, [handleReplyMessage]);
   const sidebarProjects = useMemo(() => projectsInstalled ? {
     items: projects, pending: pendingProjects, pendingError: pendingProjectsError,
-    activeProjectId: activeProject?.id ?? "", memoryInstalled,
+    activeProjectId: activeProject?.id ?? "",
     onNewChat: startProjectChat, onCreate: createProject, onContinue: continueProject, onStop: stopProject,
     onBindDirectory: bindDirectory,
-  } : undefined, [activeProject?.id, bindDirectory, createProject, continueProject, memoryInstalled, pendingProjects,
+  } : undefined, [activeProject?.id, bindDirectory, createProject, continueProject, pendingProjects,
     pendingProjectsError, projects, projectsInstalled, startProjectChat, stopProject]);
   const activeTitle = sidebarSessions.find((session) => session.active)?.title || "新会话";
   const headingTitle = activeProject ? `${activeProject.name} / ${activeTitle}` : activeTitle;

@@ -6,7 +6,6 @@ import type { ChatMessage } from "./chat-message";
 import type { ComposerFile } from "./desktop-composer";
 import { loadWebPluginCatalog, receivePluginUiEvent, resetPluginUiEvents, usePluginUiCatalogVersion } from "./plugin-ui-runtime";
 import {
-  MEMORY_PLUGIN,
   PROJECT_DIMENSION,
   PROJECTS_PLUGIN,
   bindProjectDirectory,
@@ -15,7 +14,6 @@ import {
   listPendingProjects,
   loadProjects,
   stopProject as stopProjectRecord,
-  type ProjectMemory,
   type ProjectRow,
   type PendingProjectRow,
 } from "./web-projects";
@@ -122,7 +120,6 @@ export function useDesktopChatController() {
   const newChatScopeRef = useRef<Record<string, string> | null>(null);
   const pluginCatalog = usePluginUiCatalogVersion();
   const projectsInstalled = pluginCatalog.installed(PROJECTS_PLUGIN);
-  const memoryInstalled = pluginCatalog.installed(MEMORY_PLUGIN);
   const [activeSessionId, setActiveSessionId] = useState("");
   const [pendingSessionId, setPendingSessionId] = useState("");
   // 通知入口统一使用网页导航，会话参数在 chatReady 后消费一次。
@@ -677,9 +674,9 @@ export function useDesktopChatController() {
       setProjects([]);
       return;
     }
-    const next = await loadProjects(memoryInstalled, signal);
+    const next = await loadProjects(signal);
     if (!signal?.aborted) setProjects(next);
-  }, [memoryInstalled, projectsInstalled, refreshPendingProjects]);
+  }, [projectsInstalled, refreshPendingProjects]);
 
   useEffect(() => {
     if (!chatReady) return;
@@ -896,25 +893,25 @@ export function useDesktopChatController() {
     setNewChatProjectId(projectId);
   }, [startNewChat]);
 
-  const createProject = useCallback(async (name: string, memory: ProjectMemory, directory: string | null) => {
+  const createProject = useCallback(async (name: string, directory: string | null, commitFields: (projectId: string) => Promise<void>) => {
     try {
-      const project = await createProjectRecord(name, memory, memoryInstalled, directory);
+      const project = await createProjectRecord(name, directory, commitFields);
       setProjects((current) => [...current.filter((item) => item.id !== project.id), project]);
       startProjectChat(project.id);
     } finally {
       refreshPendingProjects();
     }
-  }, [memoryInstalled, refreshPendingProjects, startProjectChat]);
+  }, [refreshPendingProjects, startProjectChat]);
 
   const continueProject = useCallback(async (key: string) => {
     try {
-      const project = await continueProjectRecord(key, memoryInstalled);
+      const project = await continueProjectRecord(key);
       setProjects((current) => [...current.filter((item) => item.id !== project.id), project]);
       startProjectChat(project.id);
     } finally {
       refreshPendingProjects();
     }
-  }, [memoryInstalled, refreshPendingProjects, startProjectChat]);
+  }, [refreshPendingProjects, startProjectChat]);
 
   const stopProject = useCallback((key: string) => {
     stopProjectRecord(key);
@@ -1095,7 +1092,7 @@ export function useDesktopChatController() {
     errorRetry: !error || !errorFromSend,
     activateSession, prefetchSessionTail, startNewChat, handleReplyMessage, handleCopiedMessage,
     reportError, cancelReply, sendMessage, stopTurn, retry,
-    projects, pendingProjects, pendingProjectsError, projectsInstalled, memoryInstalled, activeProject, navigationPins, bindDirectory,
+    projects, pendingProjects, pendingProjectsError, projectsInstalled, activeProject, navigationPins, bindDirectory,
     startProjectChat, createProject, continueProject, stopProject,
   };
 }
