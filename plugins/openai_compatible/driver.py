@@ -52,7 +52,7 @@ from plugins.models.contract import (
     RateLimitError,
     TransportError,
 )
-from plugins.models.contract import ModelDriverDefinition
+from plugins.models.contract import ModelDriverDefinition, message_size
 
 _THINK_RE = re.compile(r"<think>(.*?)</think>", re.DOTALL)
 
@@ -269,7 +269,7 @@ class _BoundChat:
         for frozen, identity in zip(frozen_rows, frozen_ids):
             saved = previous.get(identity)
             if saved is None or saved[0] is not frozen:
-                chars, images = _message_size(frozen)
+                chars, images = message_size(frozen)
                 saved = (frozen, chars, images)
             sizes[identity] = saved
         # 窗口只追加时合计只算尾部；前缀身份逐位一致才能沿用旧合计。
@@ -1476,42 +1476,6 @@ def _compile_chat_row(message: Mapping[str, Any], fill_reasoning: bool) -> _Chat
             item = dict(message)
         item["reasoning_content"] = ""
     return _ChatRow(message, fill_reasoning, _json_dumps_bytes(message if item is None else item), images)
-
-
-def _message_size(message: Mapping[str, Any]) -> tuple[int, int]:
-    """统计一条消息的字符与图片成本；调用方统一取整，保持容量边界。"""
-    text_chars = image_tokens = 0
-    content = message.get("content")
-    if isinstance(content, Sequence) and not isinstance(content, (str, bytes)):
-        for block in content:
-            if isinstance(block, Mapping) and block.get("type") in {
-                "image_url",
-                "input_image",
-            }:
-                detail = block.get("detail")
-                image = block.get("image_url")
-                if isinstance(image, Mapping):
-                    detail = image.get("detail", detail)
-                image_tokens += 1024 if detail == "low" else 8192
-                continue
-            text_chars += len(
-                json.dumps(block, ensure_ascii=False, separators=(",", ":"), default=dict)
-            )
-    elif content is not None:
-        text_chars += len(str(content))
-    text_chars += len(
-        json.dumps(
-            {
-                key: value
-                for key, value in message.items()
-                if key != "content"
-            },
-            ensure_ascii=False,
-            separators=(",", ":"),
-            default=dict,
-        )
-    )
-    return text_chars, image_tokens
 
 
 def _required_string(value: object, name: str) -> str:

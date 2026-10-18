@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from plugins.models.contract import describe_transport_error
+from plugins.models.contract import describe_transport_error, estimate_tokens
 
 # Provider JSON is validated at this boundary. Pyright cannot retain all narrowing.
 # pyright: reportUnknownVariableType=false, reportUnknownMemberType=false, reportUnknownArgumentType=false
@@ -213,13 +213,13 @@ class CodexResponses:
         messages: Sequence[Mapping[str, Any]],
         tools: Sequence[Mapping[str, Any]] = (),
     ) -> int:
-        return max(1, len(json.dumps([messages, tools], ensure_ascii=False)) // 4)
+        return max(1, estimate_tokens(messages, tools, chars_per_token=4))
 
     def estimate_appended_message_tokens(
         self,
         messages: Sequence[Mapping[str, Any]],
     ) -> int:
-        return max(1, len(json.dumps(list(messages), ensure_ascii=False)) // 4)
+        return max(1, estimate_tokens(messages, chars_per_token=4))
 
 
 class _CallbackError(RuntimeError):

@@ -180,7 +180,8 @@ async def apply(ctx: Context) -> None:
         )
         selected: tuple[tuple[Message, ...], ...] = ()
         fallback: tuple[tuple[Message, ...], ...] = ()
-        retained_tokens = 0
+        deepest: tuple[tuple[Message, ...], ...] = ()
+        retained_tokens = deepest_tokens = 0
         # 原文保留量来自实际 Model 投影，包含尚未闭合的尾部与当前输入。
         for size in range(len(groups), 0, -1):
             after_seq = groups[size - 1][-1].seq
@@ -202,6 +203,9 @@ async def apply(ctx: Context) -> None:
                 max_output_tokens=request.max_output_tokens,
                 current_reminder_input_id=reminder_input_id,
             )
+            if error is None and not deepest:
+                deepest = groups[:size]
+                deepest_tokens = projection.estimate(tail)
             if error is not None or projection.estimate(candidate) > int(window * 0.74):
                 continue
             if not fallback:
@@ -211,13 +215,14 @@ async def apply(ctx: Context) -> None:
                 selected = groups[:size]
                 break
         if not selected:
-            selected = fallback
+            # 没有切点能回到软水位时仍摘要全部已结算内容；是否放得下交给下面的硬容量核对。
+            selected, retained_tokens = (fallback, retained_tokens) if fallback else (deepest, deepest_tokens)
             if selected and on_status is not None:
                 await on_status(f"上下文空间不足，这一轮只保留了最近约 {retained_tokens:,} tokens 的原文"
                                 f"（目标 {config.keep_recent_tokens:,}），更早的内容改用摘要。"
                                 "当前输入和进行中的工具调用完整保留。", True)
         if not selected:
-            raise SummaryError("没有能降低完整请求容量的已结算工具批次切点")
+            raise SummaryError("即使摘要全部已结算内容，当前输入和进行中的工具调用仍超出容量")
         inputs = summary_groups(selected, snapshot)
         if not inputs:
             raise SummaryError("可选范围没有可用于摘要的资料")

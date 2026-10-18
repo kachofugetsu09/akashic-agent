@@ -114,7 +114,7 @@ async def run(folder: Path, case: str, *, second_provider: bool = False) -> dict
                 original_rows = connection.execute("SELECT * FROM messages ORDER BY seq").fetchall()
             accept = root.context.require(CHANNEL_INPUT_V2)
             accepted = await accept("test:room", "current-input", ChannelInboundMessage(
-                "test", "user", "room", "implement now", datetime.now(UTC), {}))
+                "test", "user", "room", "implement now" + " z" * 15_500 * (case == "deep_cut"), datetime.now(UTC), {}))
             async def finish():
                 async for _ in log.catalog().follow():
                     rows = log.reader("test:room").snapshot()
@@ -150,12 +150,16 @@ async def run(folder: Path, case: str, *, second_provider: bool = False) -> dict
                     assert len(summaries) == 1
                     record = summaries[0]
                     assert "current-input" not in record["source_message_ids"]
-                    if case != "short_tail":
+                    if case not in {"short_tail", "deep_cut"}:
                         assert "old-final" not in record["source_message_ids"]
+                    if case == "deep_cut":
+                        # 当前输入本身高于软水位：仍摘要全部已结算内容，而不是阻断。
+                        assert "old-final" in record["source_message_ids"]
+                        assert any("上下文空间不足" in notice for notice in notices)
                     if case == "open_turn":
                         assert "original task" in str(business[0])
                     if case == "short_tail":
-                        assert any("原文目标 20,000" in notice for notice in notices)
+                        assert any("目标 20,000" in notice for notice in notices)
                     pending: set[str] = set()
                     for message in business[0]["messages"]:
                         if message["role"] == "assistant":
@@ -219,7 +223,7 @@ async def run(folder: Path, case: str, *, second_provider: bool = False) -> dict
 
 async def main() -> None:
     with tempfile.TemporaryDirectory(prefix="compaction-workflow-") as path:
-        for case in ("split_turn", "open_turn", "short_tail", "soft_failure", "hard_failure"):
+        for case in ("split_turn", "open_turn", "short_tail", "deep_cut", "soft_failure", "hard_failure"):
             folder = Path(path) / case
             folder.mkdir()
             print(json.dumps(await run(folder, case), ensure_ascii=False), flush=True)

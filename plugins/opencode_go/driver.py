@@ -48,7 +48,7 @@ from plugins.models.contract import (
     RateLimitError,
     TransportError,
 )
-from plugins.models.contract import ModelDriverDefinition
+from plugins.models.contract import ModelDriverDefinition, estimate_tokens
 
 
 _DRIVER_ID = "opencode-go"
@@ -136,13 +136,13 @@ class _BoundChat:
         messages: Sequence[Mapping[str, Any]],
         tools: Sequence[Mapping[str, Any]] = (),
     ) -> int:
-        return _estimate_context_tokens("", messages, tools)
+        return max(1, estimate_tokens(messages, tools, chars_per_token=3))
 
     def estimate_appended_message_tokens(
         self,
         messages: Sequence[Mapping[str, Any]],
     ) -> int:
-        return _estimate_message_tokens(messages)
+        return max(1, estimate_tokens(messages, chars_per_token=3)) if messages else 0
 
 
 def definition() -> ModelDriverDefinition:
@@ -1207,18 +1207,6 @@ def _normalize_base_url(value: str) -> str:
     return urlunsplit((parsed.scheme, parsed.netloc, path, "", ""))
 
 
-def _estimate_context_tokens(
-    system_prompt: str,
-    messages: Sequence[Mapping[str, Any]],
-    tools: Sequence[Mapping[str, Any]],
-) -> int:
-    complete = list(messages)
-    if system_prompt and not (complete and complete[0].get("role") == "system"):
-        complete.insert(0, {"role": "system", "content": system_prompt})
-    fixed_chars = len(json.dumps(tools, ensure_ascii=False, separators=(",", ":"), default=dict))
-    return max(1, fixed_chars // 3 + _estimate_message_tokens(complete))
-
-
 def _normalize_messages(
     messages: Sequence[Mapping[str, Any]],
 ) -> list[dict[str, Any]]:
@@ -1264,39 +1252,6 @@ def _merge_leading_system_messages(
     # 行已由 _normalize_messages 新建，无需再次复制正文。
     result.extend(messages[index:])
     return result if result else messages
-
-
-def _estimate_message_tokens(messages: Sequence[Mapping[str, Any]]) -> int:
-    text_chars = 0
-    image_tokens = 0
-    for message in messages:
-        content = message.get("content")
-        if isinstance(content, Sequence) and not isinstance(content, (str, bytes)):
-            for block in content:
-                if isinstance(block, Mapping) and block.get("type") in {
-                    "image_url",
-                    "input_image",
-                }:
-                    detail = block.get("detail")
-                    image = block.get("image_url")
-                    if isinstance(image, Mapping):
-                        detail = image.get("detail", detail)
-                    image_tokens += 1024 if detail == "low" else 8192
-                    continue
-                text_chars += len(json.dumps(block, ensure_ascii=False, separators=(",", ":"), default=dict))
-        elif content is not None:
-            text_chars += len(str(content))
-        text_chars += len(
-            json.dumps(
-                {key: value for key, value in message.items() if key != "content"},
-                ensure_ascii=False,
-                separators=(",", ":"),
-                default=dict,
-            )
-        )
-    if not messages:
-        return 0
-    return max(1, text_chars // 3 + image_tokens)
 
 
 def _thaw_mapping(value: Mapping[str, Any]) -> dict[str, Any]:
