@@ -175,11 +175,12 @@ def read_input_parts(value: object) -> tuple[tuple[str, object], ...]:
         if not isinstance(kind, str) or not _INPUT_PART_KIND.match(kind) or any(other == kind for other, _ in items):
             raise InputPartRejected("parts 的 kind 无效或重复")
         items.append((kind, item["value"]))
+    # 序列化与 UTF-8 编码同属输入校验：未配对的代理字符等编码失败也是该请求的拒收。
     try:
-        encoded = json.dumps([{"kind": kind, "value": part} for kind, part in items], ensure_ascii=False, allow_nan=False)
+        encoded = json.dumps([{"kind": kind, "value": part} for kind, part in items], ensure_ascii=False, allow_nan=False).encode("utf-8")
     except (TypeError, ValueError) as error:
-        raise InputPartRejected("parts 必须是 JSON 值") from error
-    if len(encoded.encode("utf-8")) > INPUT_PARTS_MAX_BYTES:
+        raise InputPartRejected("parts 必须是可编码为 UTF-8 的 JSON 值") from error
+    if len(encoded) > INPUT_PARTS_MAX_BYTES:
         raise InputPartRejected(f"parts 合计不能超过 {INPUT_PARTS_MAX_BYTES // 1024} KiB")
     return tuple(items)
 
