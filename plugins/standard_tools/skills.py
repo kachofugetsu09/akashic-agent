@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import re
 from collections.abc import AsyncGenerator, Awaitable, Callable, Mapping
 from contextlib import asynccontextmanager
 from typing import Literal, cast
@@ -13,7 +14,7 @@ from core.common.file_io import run_file_io
 from plugins.host_execution.contract import PROCESSES
 from agent.plugin_composition import Context
 from plugins.assets.contract import INSTALLED_ASSETS, InstalledAsset
-from plugins.ledger.contract import ContentPart, Message, json_value
+from plugins.ledger.contract import ContentPart, Input, Message, json_value
 
 from plugins.context.contract import MATERIALS_V4
 from ._tool_boundary import TOOLS, CallSource, ToolRef, ToolResultValue
@@ -81,6 +82,40 @@ class SkillTool:
         return None
 
 
+# 行首或空白后的 /技能名 是用户的显式选择；名称后不能紧跟路径字符，"/usr/bin" 不会被当成技能。
+SKILL_MENTION = re.compile(r"(?:^|(?<=\s))/([A-Za-z0-9][\w-]*(?:\.[\w-]+)*)(?![\w/-]|\.\w)")
+
+
+# 当前轮用户输入点名的技能，按出现顺序去重；未知名称当普通文字。
+def mentioned_skills(snapshot: tuple[Message, ...]) -> tuple[str, ...]:
+    current = next((message for message in reversed(snapshot) if isinstance(message.body, Input)), None)
+    if current is None:
+        return ()
+    assert isinstance(current.body, Input)
+    text = "\n".join(part.value for part in current.body.parts
+                     if part.kind == "text" and isinstance(part.value, str))
+    return tuple(dict.fromkeys(match.group(1) for match in SKILL_MENTION.finditer(text)))
+
+
+# 用户点名的技能正文随本轮输入注入；可回放，后续轮次的历史里仍能看到这次选择。
+def selected_reminder(records: tuple[SkillRecord, ...], snapshot: tuple[Message, ...]) -> Mapping[str, object] | None:
+    sections: list[str] = []
+    for name in mentioned_skills(snapshot):
+        record = next((item for item in records if item.name == name), None)
+        if record is None:
+            continue
+        if not record.available:
+            sections.append(f"### {name}\n不可用：{record.missing}。告诉用户缺少什么，不要假装已按它执行。")
+            continue
+        sections.append(f"### {name}\n来源：{record.source}/{record.source_id}\n"
+                        f"资源目录：{record.root_dir}\n\n{skill_body(record.content)}")
+    if not sections:
+        return None
+    return {"name": "selected-skills", "priority": 250, "text": (
+        "## 用户本轮选择的技能\n用户在消息里用 /技能名 明确选择了以下技能，正文已加载，按它执行，"
+        "不必再调用技能读取工具。相对路径以各技能的资源目录为根。\n\n" + "\n\n".join(sections))}
+
+
 async def register_skills(ctx: Context) -> ToolRef:
     """从当前来源热读取 Skill，不复制目录或保留历史资源树。"""
     read_assets = ctx.require(INSTALLED_ASSETS)
@@ -123,10 +158,12 @@ async def register_skills(ctx: Context) -> ToolRef:
             def prepare_prompt() -> Mapping[str, object]:
                 catalog = parser.parse(assets, workspace_dir=workspace_dir)
                 if prompt_memo and prompt_memo[0][0] is catalog and prompt_memo[0][1] == workspace_dir:
-                    return prompt_memo[0][2]
-                prompt = build_prompt(catalog.records)
-                prompt_memo[:] = [(catalog, workspace_dir, prompt)]
-                return prompt
+                    prompt = prompt_memo[0][2]
+                else:
+                    prompt = build_prompt(catalog.records)
+                    prompt_memo[:] = [(catalog, workspace_dir, prompt)]
+                selected = selected_reminder(catalog.records, snapshot)
+                return prompt if selected is None else {**prompt, "reminders": (selected,)}
 
             return await run_file_io(prepare_prompt)
 

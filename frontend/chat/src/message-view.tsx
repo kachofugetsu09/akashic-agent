@@ -1,5 +1,6 @@
 import { PluginUiSlot, pluginSlotAccepts, usePluginUiCatalogVersion } from "./plugin-ui-runtime";
 import { ThinkingPlaceholder } from "./thinking-placeholder";
+import { MentionText } from "./skill-mention";
 import { usePacedText } from "./stream-pace";
 import { SentAttachments, type MediaKind, type SentAttachmentItem } from "./attachment-card";
 import {
@@ -230,12 +231,14 @@ export function ChatMessageView({
           {leadingContent}
           {message.content ? (
             <UserTextClamp enabled>
-              <MessageBody
-                content={message.content}
-                streaming={message.streaming === true}
-                deferRichContent={deferRichContent}
-                onError={onError}
-              />
+              {message.streaming !== true && !messageNeedsMarkdown(message.content)
+                ? <UserPlainText text={message.content} />
+                : <MessageBody
+                  content={message.content}
+                  streaming={message.streaming === true}
+                  deferRichContent={deferRichContent}
+                  onError={onError}
+                />}
             </UserTextClamp>
           ) : null}
         </MessageContent> : null}
@@ -674,7 +677,7 @@ export function TimelineMessageView({ message, lookupMessage, toolResults, onNav
           - flowRank(left.part) - Number(left.part.kind === "history.transcript"))
           .map(({ part, index }) => isTimelinePartVisible(part) && !(input && part.kind === "artifact_ref") && !((hideBody || (attachmentResult && !renderAttachment)) && part.kind === "text") && !((hideProcess || inlineReply) && (part.kind === "model.facts" || part.kind === "tool_call" || part.kind === "history.transcript")) ? <div key={index} data-part-index={index} tabIndex={-1}>
           {beforePart?.(part, index, message)}
-          <TimelinePartView part={part} toolResult={body.kind === "tool_result" && !attachmentResult} attachment={attachment} lookupMessage={lookupMessage} canLoadReferences={canLoadReferences}
+          <TimelinePartView part={part} toolResult={body.kind === "tool_result" && !attachmentResult} userInput={input} attachment={attachment} lookupMessage={lookupMessage} canLoadReferences={canLoadReferences}
             onNavigate={onNavigate} onError={onError} processStartContent={leadingContent} />
         </div> : null)}</UserTextClamp>
       </>}
@@ -786,9 +789,15 @@ function MessageAttachmentFigure({ attachment, origin, sessionId, messageId, fal
   </section>;
 }
 
-function TimelinePartView({ part, toolResult = false, attachment, lookupMessage, onNavigate, onError, processStartContent, canLoadReferences }: {
+// 用户的纯文本输入：已知技能的 /名称 显示成提及。
+function UserPlainText({ text }: { text: string }) {
+  return <p className="plain-message-response"><MentionText text={text} /></p>;
+}
+
+function TimelinePartView({ part, toolResult = false, userInput = false, attachment, lookupMessage, onNavigate, onError, processStartContent, canLoadReferences }: {
   canLoadReferences: boolean;
   toolResult?: boolean;
+  userInput?: boolean;
   processStartContent?: ReactNode;
   part: TimelinePart;
   attachment: (id: string) => ReactNode;
@@ -802,7 +811,9 @@ function TimelinePartView({ part, toolResult = false, attachment, lookupMessage,
   if ("archive" in part) return part.kind === "history.transcript" ? <TimelineTranscript archive={part.archive} startContent={processStartContent} onError={onError} /> : null;
   switch (part.kind) {
     case "context.notice": return <ContextNoticeRow text={part.value.text} />;
-    case "text": return toolResult ? <ToolResultContent value={"rendered" in part ? part.rendered : part.value} /> : <MessageBody content={part.value} streaming={false} deferRichContent onError={onError} />;
+    case "text": return toolResult ? <ToolResultContent value={"rendered" in part ? part.rendered : part.value} />
+      : userInput && !messageNeedsMarkdown(part.value) ? <UserPlainText text={part.value} />
+      : <MessageBody content={part.value} streaming={false} deferRichContent onError={onError} />;
     case "artifact_ref": return attachment(part.value);
     case "reply_ref": {
       const source = lookupMessage(part.value);

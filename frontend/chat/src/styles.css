@@ -1704,6 +1704,74 @@ input {
   overflow: visible;
 }
 
+/* 技能菜单：贴在输入卡上方同宽（Claude Desktop / Codex 的建议菜单）；4px 内衬，32px 单行，
+   选中只有一层淡墨底，命中字加粗。锚点高度为 0，并抵掉 wrap 的纵向间距，不改变输入卡位置。 */
+.skill-menu-anchor {
+  position: relative;
+  height: 0;
+  margin-block-end: calc(0px - var(--composer-dock-gap, 0px));
+}
+.skill-menu {
+  position: absolute;
+  inset-inline: 0;
+  bottom: 8px;
+  z-index: 6;
+  max-height: min(320px, 46dvh);
+  overflow-y: auto;
+  padding: 4px;
+  border-radius: 14px;
+  background: var(--chat-lift, var(--ak-paper-editing));
+  box-shadow: 0 0 0 1px var(--ak-rule-subtle),
+    0 8px 24px color-mix(in srgb, var(--ak-color-shadow) 12%, transparent),
+    0 2px 6px color-mix(in srgb, var(--ak-color-shadow) 8%, transparent);
+  font-size: var(--chat-type-control);
+  line-height: 18px;
+  color: var(--chat-ink);
+}
+.skill-menu__section {
+  padding: 6px 8px 4px;
+  font-size: var(--chat-type-caption);
+  font-weight: 500;
+  color: var(--chat-faint);
+}
+.skill-menu__row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-height: 32px;
+  padding: 5px 8px;
+  border-radius: 8px;
+  cursor: pointer;
+}
+.skill-menu__row[data-active] { background: color-mix(in srgb, var(--chat-ink) 5%, transparent); }
+.skill-menu__row[aria-disabled="true"] { cursor: default; }
+.skill-menu__row > svg { width: 16px; height: 16px; flex: none; opacity: 0.5; }
+.skill-menu__row[aria-disabled="true"] > svg,
+.skill-menu__row[aria-disabled="true"] .skill-menu__label { opacity: 0.4; }
+.skill-menu__label { flex: none; max-width: 60%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.skill-menu__label code { margin-inline-start: 6px; font-size: var(--chat-type-caption); color: var(--chat-faint); }
+.skill-menu__row b { font-weight: 600; }
+.skill-menu__desc { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--chat-faint); }
+.skill-menu__source { flex: none; margin-inline-start: auto; font-size: var(--chat-type-micro); color: var(--chat-faint); }
+.skill-menu__empty { padding: 7px 8px; color: var(--chat-faint); }
+@media (max-width: 600px) {
+  .skill-menu__desc, .skill-menu__source { display: none; }
+  .skill-menu__label { max-width: none; }
+}
+
+/* 消息里的技能提及：强调色文字，悬停才出浅底（Claude Desktop skillChip）。 */
+.skill-mention {
+  color: var(--ak-color-action-primary);
+  font-weight: 500;
+  border-radius: 5px;
+  cursor: default;
+}
+.skill-mention > span { opacity: 0.5; font-weight: 600; margin-inline-end: 1px; }
+.skill-mention:hover {
+  background: color-mix(in srgb, var(--ak-color-action-primary) 14%, transparent);
+  box-shadow: 0 0 0 2px color-mix(in srgb, var(--ak-color-action-primary) 14%, transparent);
+}
+
 /* 底部淡出带：滚动内容在 composer 上方 32px 内渐隐入纸色，以下实心。
    附在 wrap 上而非滚动区，draft 变高时淡入带随 composer 顶缘一起上移。 */
 .composer-wrap::before {
