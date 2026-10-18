@@ -15,6 +15,7 @@ import { ComposerReply } from "./message-actions";
 import { ModelCapsulePicker, ModelEffortAction, resolveVisibleRuntime } from "./model-capsule-picker";
 import { compatibleEffort, type ChatModelRuntime } from "./model-capsule-data";
 import { isGeneratingChatStatus, type ChatStatus } from "./web-chat-status";
+import { useSkillMention } from "./skill-mention";
 
 export type ComposerFile = { filename?: string; mediaType?: string; url?: string; sizeBytes?: number };
 
@@ -138,11 +139,18 @@ export const DesktopComposer = memo(function DesktopComposer({
       });
     },
   }), [draftKey, setDraft, syncExpanded]);
+  const writeMention = useCallback((next: string) => {
+    setInput(next);
+    syncExpanded(textareaRef.current, next);
+  }, [setInput, syncExpanded]);
+  const mention = useSkillMention({ value: input, textareaRef, setValue: writeMention });
+  const syncMention = mention.sync;
   const onInputChange = useCallback((event: ChangeEvent<HTMLTextAreaElement>) => {
     const next = event.target.value;
     setInput(next);
     syncExpanded(event.target, next);
-  }, [setInput, syncExpanded]);
+    syncMention();
+  }, [setInput, syncExpanded, syncMention]);
   const readDraft = useCallback((key: string) => drafts.current.get(key) ?? "", []);
   const followUp = useFollowUpQueue({ draftKey, status, stopPending, stopCount, inputId, turnCompleted, canSend: canSend && !replyTarget, readDraft, setDraft, queuedDrafts, onSend });
   const moveQueue = followUp.move;
@@ -203,6 +211,7 @@ export const DesktopComposer = memo(function DesktopComposer({
   const pasteAsFile = { bytes: PASTE_AS_FILE_BYTES, filename: PASTED_TEXT_NAME,
     onConverted: (lines: number) => setNotice({ text: `${lines} 行文本已作为附件（按住 Shift 粘贴可直接插入）`, ms: 3200 }) };
   const onComposerKeyDown = (event: ReactKeyboardEvent<HTMLTextAreaElement>) => {
+    if (mention.onKeyDown(event)) return;
     const native = event.nativeEvent;
     // 生成中在输入框按 Esc 停止本轮（coding 工具的中断习惯）；输入法组合中的 Esc 属于输入法。
     // 有浮层开着时 Esc 先关浮层（浮层在 document 上自己监听），这一下不能顺带停掉生成。
@@ -251,6 +260,7 @@ export const DesktopComposer = memo(function DesktopComposer({
   return (
     <>
     {draftStorageError ? <p role="status">浏览器无法保存本页草稿。刷新前请复制已输入的文字。</p> : null}
+    {mention.menu ? <div className="skill-menu-anchor">{mention.menu}</div> : null}
     <PromptInput
       className={`composer ${shellExpanded ? "is-expanded" : "is-compact"} ${input.trim() || replyTarget ? "has-text" : "empty"}${resting ? " is-resting" : ""}${fileDragActive ? " is-drop-target" : ""}`}
       multiple
@@ -303,6 +313,9 @@ export const DesktopComposer = memo(function DesktopComposer({
           value={input}
           onChange={onInputChange}
           onKeyDown={onComposerKeyDown}
+          onSelect={syncMention}
+          onBlur={mention.close}
+          {...mention.inputProps}
           pasteAsFile={pasteAsFile}
           aria-label="消息"
           aria-describedby={modelProblem ? "chat-model-reason" : undefined}
