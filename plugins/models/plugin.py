@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from collections.abc import Mapping
+from collections.abc import Awaitable, Callable, Mapping
 from importlib import import_module
 from typing import cast
 
@@ -15,7 +15,7 @@ from plugins.models.contract import MODEL_CACHE_USAGE, MODEL_CALL_STATS
 from plugins.gateway.contract import RpcMethod
 from plugins.ui.contract import UI, UI_SLOTS, PluginUiDefinition, hidden_part, part_display_key
 from plugins.conversation.contract import input_part_key
-from plugins.ledger.contract import MESSAGE_CATALOG, ContentPart, ContentReferences, MessageReader
+from plugins.ledger.contract import MESSAGE_CATALOG, MESSAGE_WRITERS, ContentPart, ContentReferences, MessageReader
 from plugins.models.contract import ChatModelSelection, ModelError, ModelUnavailableError
 from plugins.channels.contract import InputPartRejected
 
@@ -33,7 +33,7 @@ from .projection import (
     display_facts,
 )
 from .chat_ui import ChatUiQueries
-from .selection import MODEL_SELECTION, SelectionOwner, check_selection
+from .selection import MODEL_SELECTION, SAVED_SELECTION_KEYS, SelectionOwner, check_selection, saved_from_part
 from .settings import MODEL_SETTINGS
 from .state import ModelsState
 from .store import ModelsStore
@@ -110,9 +110,23 @@ async def apply(ctx: Context) -> None:
     _ = await ctx.inject((UI, MODEL_CATALOG, MODEL_CALL_STATS, MODEL_SETTINGS, MODEL_SELECTION, MODEL_CACHE_USAGE),
                          _register_ui, name="ui")
 
-    # 客户端随消息附带的模型选择由本插件校验；持久化仍走会话来源的元数据更新。
-    # 客户端附带的模型选择：形状不对、模型不可用或强度不支持都是该请求的拒收，回给发送者而不是当程序错误。
-    def check_input_selection(part: ContentPart, reader: MessageReader) -> ContentReferences:
+    _ = await ctx.inject((MESSAGE_WRITERS,), _input_selection(state), name="input-selection")
+
+    # 回答尾注与输入框模型胶囊都只读本插件的视图；聊天界面经插件界面插槽查询，选择随消息作为 model.selection 片段回来。
+    async def message_ui(child: Context) -> None:
+        query = ChatUiQueries(catalog=state.catalog, messages=child.require(MESSAGE_CATALOG), call_stats=store.read_call_stats,
+                              message_tokens=usage.message_output_tokens, icon=state.connection_icon)
+        _ = await child.require(UI_SLOTS).register_plugin_ui(
+            child, PluginUiDefinition(module="plugin_ui.js", stylesheet="plugin_ui.css",
+                                      slots=("turn.after_answer", "composer.toolbar", "composer.status")), query=query)
+
+    _ = await ctx.inject((UI_SLOTS, MESSAGE_CATALOG), message_ui, name="message-ui")
+
+
+# 客户端随消息附带的模型选择：校验与会话保存都归本插件，二者随消息写入能力一起出现，没有只校验不保存的窗口。
+def _input_selection(state: ModelsState) -> Callable[[Context], Awaitable[None]]:
+    # 形状不对、模型不可用或强度不支持都是该请求的拒收，回给发送者而不是当程序错误。
+    def check(part: ContentPart, reader: MessageReader) -> ContentReferences:
         try:
             references = check_selection(part)
             value = cast(Mapping[str, str | None], part.value)
@@ -126,17 +140,13 @@ async def apply(ctx: Context) -> None:
             raise InputPartRejected(unavailable.message) from error
         return references
 
-    _ = await ctx.provide(input_part_key("model.selection"), check_input_selection)
+    async def install(ctx: Context) -> None:
+        _ = await ctx.require(MESSAGE_WRITERS).register_part_metadata(
+            ctx, kind="model.selection", keys=SAVED_SELECTION_KEYS, update=saved_from_part,
+        )
+        _ = await ctx.provide(input_part_key("model.selection"), check)
 
-    # 回答尾注与输入框模型胶囊都只读本插件的视图；聊天界面经插件界面插槽查询，选择随消息作为 model.selection 片段回来。
-    async def message_ui(child: Context) -> None:
-        query = ChatUiQueries(catalog=state.catalog, messages=child.require(MESSAGE_CATALOG), call_stats=store.read_call_stats,
-                              message_tokens=usage.message_output_tokens, icon=state.connection_icon)
-        _ = await child.require(UI_SLOTS).register_plugin_ui(
-            child, PluginUiDefinition(module="plugin_ui.js", stylesheet="plugin_ui.css",
-                                      slots=("turn.after_answer", "composer.toolbar", "composer.status")), query=query)
-
-    _ = await ctx.inject((UI_SLOTS, MESSAGE_CATALOG), message_ui, name="message-ui")
+    return install
 
 
 async def _register_ui(ctx: Context) -> None:

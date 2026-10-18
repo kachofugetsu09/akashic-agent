@@ -26,17 +26,12 @@ from agent.plugin_composition.tasks import (
     Task,
 )
 from plugins.ledger.contract import (
-    Body,
     ContentPart,
     ContentReferences,
     Control,
     Input,
     Message,
     Output,
-)
-from plugins.models.contract import (
-    MODEL_SELECTION as MODEL_SELECTION,
-    ModelSelection as ModelSelection,
 )
 from plugins.conversation.contract import (
     CHECK_ORIGIN as CHECK_ORIGIN,
@@ -55,7 +50,6 @@ from plugins.sources.contract import (
 )
 
 from .commands import CONTENT, CONVERSATION_COMMANDS, SOURCE_CHECK, run_commands
-from .source import update_selection
 
 api_version = 3
 name = "conversation"
@@ -64,20 +58,12 @@ desc = "接纳和控制同一来源的消息，程序由调用者另行选择"
 inject = (
     BINDINGS, OWNER_STATE, TASKS, ARTIFACT_READ, COMMANDS, CONTENT, SOURCE_CHECK,
     MESSAGE_WRITERS, SESSION_ADMISSION, SOURCES, SOURCE_SESSION, RESTART_GATE,
-    MODEL_SELECTION, MESSAGE_CATALOG,
+    MESSAGE_CATALOG,
 )
 
 
 async def apply(ctx: Context) -> None:
-    """来源只使用模型选择校验与持久化能力，不持有模型执行权。"""
-    model_selection = ctx.require(MODEL_SELECTION)
-
-    def update_metadata(body: Body) -> Mapping[str, object | None]:
-        return update_selection(body, write_saved=model_selection.write_saved)
-
-    _ = await ctx.require(MESSAGE_WRITERS).register_metadata(
-        ctx, keys=frozenset({"model_selection", "model_runtime_override"}), update=update_metadata,
-    )
+    """接纳同一来源的输入与控制；客户端片段的校验和由它派生的会话状态都归片段 owner。"""
     def changed(reader: MessageReader, source: str, pending: bool) -> None:
         ctx.emit(SOURCE_CHANGED, SourceChanged(reader, source, pending))
 
@@ -94,7 +80,7 @@ async def apply(ctx: Context) -> None:
             ctx, author="user", source="conversation", body_types=(Input,),
             content={"text": ctx.require(CONTENT).check_text, "artifact_ref": ctx.require(CONTENT).check_artifact, "channel.origin": check_origin,
                      "reply_ref": check_reply_target, **(extra or {})},
-            update_metadata=update_metadata,
+            part_metadata=True,
         )
         controls = writers.bind(
             ctx, author="app", source="conversation", body_types=(Control,), content={},

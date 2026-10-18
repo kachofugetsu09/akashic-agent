@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from collections.abc import Callable, Mapping
 from contextlib import ExitStack, AsyncExitStack
+from dataclasses import dataclass
 
 from core.common.file_io import run_file_io
 
@@ -58,6 +59,7 @@ class MessageWriters:
     def __init__(self, log: _MessageLog):
         self._log = log
         self._metadata: dict[str, tuple[Context, Callable[[Body], Mapping[str, object | None]]]] = {}
+        self._part_metadata: dict[str, _PartMetadataGrant] = {}
 
     async def register_metadata(
         self, ctx: Context, *, keys: frozenset[str],
@@ -69,7 +71,7 @@ class MessageWriters:
         if not keys:
             raise ValueError("metadata 注册需要明确的键")
         def setup():
-            conflicts = keys & self._metadata.keys()
+            conflicts = keys & (self._metadata.keys() | self._part_metadata_keys())
             if conflicts:
                 raise ValueError(f"Session metadata 已有 owner: {sorted(conflicts)}")
             grant = (ctx, update)
@@ -92,6 +94,7 @@ class MessageWriters:
         check_call: Callable[[ToolCall], None] | None = None,
         update_metadata: Callable[[Body], Mapping[str, object | None]] | None = None,
         check_metadata: Callable[[Mapping[str, object]], None] | None = None,
+        part_metadata: bool = False,
     ) -> Callable[..., MessageWriter]:
         """固定身份、类型和检查器；打开时只选择 Session 和可选 exact call。"""
         log = self._log
@@ -102,11 +105,15 @@ class MessageWriters:
         }
         if update_metadata is not None and not grants:
             raise PermissionError("metadata 投影未登记给当前 owner")
+        parts = dict(self._part_metadata) if part_metadata else {}
         def project_metadata(body: Body) -> Mapping[str, object | None]:
             if any(self._metadata.get(key) is not grant for key, grant in grants.items()):
                 raise WriterExpired("metadata 授权已释放")
-            assert update_metadata is not None
-            return update_metadata(body)
+            changes = dict(update_metadata(body)) if update_metadata is not None else {}
+            changes.update(self._project_parts(parts, body))
+            return changes
+        projected = update_metadata is not None or bool(parts)
+        metadata_keys = frozenset(grants).union(*(grant.keys for grant in parts.values()))
         content = dict(content)
         body_types = tuple(body_types)
 
@@ -115,13 +122,65 @@ class MessageWriters:
             return log.writer(
                 session_id, author=author, source=source, body_types=body_types,
                 content=content, call_ref=call_ref, check_call=check_call,
-                metadata_keys=frozenset(grants),
-                update_metadata=project_metadata if update_metadata is not None else None,
+                metadata_keys=metadata_keys,
+                update_metadata=project_metadata if projected else None,
                 message_metadata_keys=frozenset({owner}),
                 check_metadata=check_metadata,
             )
 
         return open
+
+    async def register_part_metadata(
+        self, ctx: Context, *, kind: str, keys: frozenset[str],
+        update: Callable[[ContentPart], Mapping[str, object | None]],
+    ) -> Effect:
+        """登记某个 kind 片段的会话元数据投影；卸载只释放内存登记。"""
+        if ctx.require(MESSAGE_WRITERS) is not self:
+            raise PermissionError("metadata 注册不属于当前 MessageWriters")
+        if not kind or not keys:
+            raise ValueError("片段 metadata 注册需要 kind 和明确的键")
+        def setup():
+            if kind in self._part_metadata:
+                raise ValueError(f"片段 metadata 已有 owner: {kind}")
+            conflicts = keys & (self._metadata.keys() | self._part_metadata_keys())
+            if conflicts:
+                raise ValueError(f"Session metadata 已有 owner: {sorted(conflicts)}")
+            grant = _PartMetadataGrant(keys, update)
+            self._part_metadata[kind] = grant
+            def cleanup() -> None:
+                if self._part_metadata.get(kind) is grant:
+                    del self._part_metadata[kind]
+            return cleanup
+        return await ctx.effect(setup, label="session-part-metadata:" + kind)
+
+    def _part_metadata_keys(self) -> frozenset[str]:
+        empty: frozenset[str] = frozenset()
+        return empty.union(*(grant.keys for grant in self._part_metadata.values()))
+
+    # 写入者 bind 时取到的片段投影：owner 已卸载则写入失效，投影越权写键则拒绝。
+    def _project_parts(
+        self, parts: Mapping[str, _PartMetadataGrant], body: Body,
+    ) -> Mapping[str, object | None]:
+        if not parts or not isinstance(body, Input):
+            return {}
+        changes: dict[str, object | None] = {}
+        for part in body.parts:
+            grant = parts.get(part.kind)
+            if grant is None:
+                continue
+            if self._part_metadata.get(part.kind) is not grant:
+                raise WriterExpired("片段 metadata 授权已释放")
+            delta = grant.update(part)
+            if not set(delta) <= grant.keys:
+                raise PermissionError(f"片段 metadata 投影越权: {part.kind}")
+            changes.update(delta)
+        return changes
+
+
+@dataclass(frozen=True, slots=True)
+class _PartMetadataGrant:
+    keys: frozenset[str]
+    update: Callable[[ContentPart], Mapping[str, object | None]]
 
 
 class OwnerState:
