@@ -664,7 +664,37 @@ FRONTEND_NAMING = (
     re.compile(r"\b([A-Z][A-Z0-9_]*_PLUGIN)\s*=\s*[\"'`]"),
 )
 FRONTEND_ROUTE = re.compile(r"[\"'`](/api/[^\"'`$?#\s]*)")
-FRONTEND_COMMENT = re.compile(r"/\*[\s\S]*?\*/|(?<![:\"'`\\])//[^\n]*")
+
+
+# 前端注释换成空白：按 JS 词法跳过字符串、模板字符串与正则字面量，注释标记出现在字符串里不算。
+def strip_comments(source: str) -> str:
+    out: list[str] = []
+    index, size, last = 0, len(source), ""
+    while index < size:
+        char, pair = source[index], source[index:index + 2]
+        if pair in ("//", "/*"):
+            end = source.find("\n" if pair == "//" else "*/", index + 2)
+            end = size if end < 0 else end + (0 if pair == "//" else 2)
+            out.append(re.sub(r"[^\n]", " ", source[index:end]))
+            index = end
+            continue
+        if char in "\"'`" or (char == "/" and (not last or last in "(,=:[!&|?{};+-*%<>~^")):
+            # 字符串到同一引号为止；正则到类外的 /；反斜杠转义下一个字符。
+            end, in_class = index + 1, False
+            while end < size and (source[end] != char or in_class) and not (char != "`" and source[end] == "\n"):
+                if source[end] == "\\":
+                    end += 1
+                elif char == "/" and source[end] in "[]":
+                    in_class = source[end] == "["
+                end += 1
+            out.append(source[index:end + 1])
+            index, last = end + 1, "a"
+            continue
+        out.append(char)
+        if not char.isspace():
+            last = char
+        index += 1
+    return "".join(out)
 UI_POLICY = "plugin_boundary.toml"
 
 
@@ -740,20 +770,21 @@ def ui_host_findings(files: dict[str, str], policy: dict[str, list[str]] | None 
     hosts = set(policy["plugins"])
     identities = plugin_identities(files)
     findings: set[str] = set()
-    # 1. 宿主插件导入非基础设施插件的合同（含相对导入与普通 import），或按身份比较插件。
+    # 1. 宿主插件导入非基础设施插件的合同（含相对导入与普通 import），或按身份比较插件；
+    #    宿主名单只决定扫描范围，不豁免宿主之间的依赖。
     python = sorted(rel for rel in files if rel.endswith(".py"))
     for item in collect_imports(python, files):
         owner = plugin_package(item.importer)
         match = re.match(r"plugins\.([a-z_][a-z0-9_]*)\.contract\b", item.module)
         if owner and owner.removeprefix("plugins.") in hosts and match \
-                and match.group(1) not in set(policy["infrastructure"]) | hosts:
+                and match.group(1) not in set(policy["infrastructure"]):
             findings.add(f"{item.importer} -> {match.group(1)}")
     for rel in python:
         owner = plugin_package(rel)
         if owner is None or owner.removeprefix("plugins.") not in hosts:
             continue
         for node in ast.walk(ast.parse(files[rel], filename=rel)):
-            target = _names_plugin(node, identities - hosts)
+            target = _names_plugin(node, identities - set(policy["infrastructure"]) - {owner.removeprefix("plugins.")})
             if target is not None:
                 findings.add(f"{rel} -> {target}")
     # 2. 聊天前端以插件身份取用功能，或访问通用宿主路由以外的路由（按完整路径段比较）。
@@ -761,7 +792,7 @@ def ui_host_findings(files: dict[str, str], policy: dict[str, list[str]] | None 
     for rel, source in files.items():
         if not rel.startswith(tuple(f"{root}/" for root in policy["frontend"])) or not rel.endswith((".ts", ".tsx")):
             continue
-        text = FRONTEND_COMMENT.sub("", source)
+        text = strip_comments(source)
         for pattern in FRONTEND_NAMING:
             findings.update(f"{rel} -> {match.group(1).strip(chr(34) + chr(39) + '`')}" for match in pattern.finditer(text))
         for match in FRONTEND_ROUTE.finditer(text):
