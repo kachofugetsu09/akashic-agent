@@ -257,6 +257,16 @@ PLUGIN_UI = ServiceKey[PluginUiProvider]("ui.plugin.v1")
 PartDisplayProvider = Callable[[ContentPart], Mapping[str, object]]
 
 
+# 内容 owner 以 message.display:<kind> 提供展示回调；没有 owner 回调的内容显示为“无法展示”。
+def part_display_key(kind: str) -> ServiceKey[PartDisplayProvider]:
+    return ServiceKey[PartDisplayProvider](f"message.display:{kind}")
+
+
+# owner 把自己的内部材料声明为不进聊天正文：`ctx.provide(part_display_key(kind), hidden_part)`。
+def hidden_part(part: ContentPart) -> Mapping[str, object]:
+    return {}
+
+
 @dataclass(frozen=True, slots=True)
 class MessageDisplayProviders:
     """一次页面投影使用的只读回调；调用者负责同代 lease。"""
@@ -411,6 +421,8 @@ def _part(
     """工具结果保留通用数据；其他内部内容只公开 owner 允许的字段。"""
     # 1. 业务字段由插件 callback 选择；Core 不识别模型或工具的字段名。
     provider = providers.part_display.get(part.kind)
+    if provider is hidden_part:
+        return {"kind": part.kind, "display": "hidden"}
     if provider is not None:
         value = json_value(provider(part))
         return {"kind": part.kind, "value": value, **({"display": "data"} if tool_result else {})}
