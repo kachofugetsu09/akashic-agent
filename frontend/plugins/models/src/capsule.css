@@ -482,3 +482,23 @@
     outline-offset: -2px;
   }
 }
+
+/* 模型不可用或目录读取失败时，工具位里留一个去处理的入口；与输入框工具同一行高。 */
+.models-capsule-settings,
+.models-capsule-retry {
+  display: inline-flex;
+  align-items: center;
+  min-height: 28px;
+  padding: 0 6px;
+  border: 0;
+  background: none;
+  color: var(--ak-color-text-secondary, inherit);
+  font: inherit;
+  font-size: 13px;
+  text-decoration: underline;
+  text-underline-offset: 3px;
+  cursor: pointer;
+}
+
+.models-capsule-settings:focus-visible,
+.models-capsule-retry:focus-visible { outline: 2px solid currentColor; outline-offset: 2px; border-radius: 4px; }

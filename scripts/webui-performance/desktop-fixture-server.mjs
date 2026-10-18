@@ -1,6 +1,8 @@
-import { createReadStream, existsSync, statSync } from "node:fs";
+import { createHash } from "node:crypto";
+import { createReadStream, existsSync, readFileSync, statSync } from "node:fs";
 import { createServer } from "node:http";
-import { extname, resolve, sep } from "node:path";
+import { dirname, extname, resolve, sep } from "node:path";
+import { fileURLToPath } from "node:url";
 
 import { WebSocketServer } from "ws";
 
@@ -12,6 +14,19 @@ import {
   desktopSessions,
   fixtureSessionId,
 } from "./fixtures.mjs";
+
+// 模型胶囊是 models 插件的输入框工具位：夹具用仓库里构建好的真实插槽模块；回答尾注的用量查询回空，不占位。
+const modelsDirectory = resolve(dirname(fileURLToPath(import.meta.url)), "../../plugins/models");
+const modelsAssets = Object.fromEntries([["module", "plugin_ui.js", "text/javascript"], ["stylesheet", "plugin_ui.css", "text/css"]]
+  .map(([kind, file, type]) => {
+    const body = readFileSync(resolve(modelsDirectory, file));
+    return [kind, { body, type, sha256: createHash("sha256").update(body).digest("hex") }];
+  }));
+const pluginUiCatalog = {
+  catalog_revision: "1".repeat(64),
+  items: [{ id: "models", revision: "fixture", module_sha256: modelsAssets.module.sha256,
+    stylesheet_sha256: modelsAssets.stylesheet.sha256, slots: ["turn.after_answer", "composer.toolbar"], navigation: null }],
+};
 
 /** Serve the production desktop bundle with deterministic HTTP and real WebSocket fixtures. */
 export async function startDesktopFixtureServer(root, { port = 0, historyCount = 100, replayTurn = null } = {}) {
@@ -152,6 +167,15 @@ export async function startDesktopFixtureServer(root, { port = 0, historyCount =
       return sendJson(response, { sessionId, draftId, count, delta, intervalMs, terminal: terminal === 1 });
     }
 
+    if (request.method === "POST" && url.pathname === "/api/chat/plugin-ui/query") {
+      const { method } = await readJson(request);
+      return sendJson(response, method === "chat.models" ? desktopModels() : {});
+    }
+    if (url.pathname === "/api/chat/plugin-ui/asset") {
+      const asset = modelsAssets[url.searchParams.get("kind")];
+      response.writeHead(200, { "content-type": asset.type, "cache-control": "no-store" });
+      return response.end(asset.body);
+    }
     const api = fixtureApiResponse(url, messageCount);
     if (api !== undefined) return sendJson(response, api);
     let requested = url.pathname === "/" || url.pathname === "/settings" ? "index.html" : url.pathname.replace(/^\//u, "");
@@ -254,8 +278,7 @@ function fixtureApiResponse(url, messageCount) {
   if (pathname === "/api/shell/state") return { status: "ready", configured: true, chatReady: true };
   if (pathname === "/api/chat/sessions") return desktopSessions(messageCount);
   if (pathname === "/api/chat/navigation/pins") return { pins: [], sessions: [] };
-  if (pathname === "/api/chat/models") return desktopModels();
-  if (pathname === "/api/chat/plugin-ui/catalog") return { catalog_revision: "0".repeat(64), items: [] };
+  if (pathname === "/api/chat/plugin-ui/catalog") return pluginUiCatalog;
   if (pathname === "/api/runtime/host-bridge") return { state: "healthy" };
   const runtimeOverview = desktopRuntimeOverview(pathname);
   if (runtimeOverview !== undefined) return runtimeOverview;

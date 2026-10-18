@@ -2810,12 +2810,8 @@ form.composer:focus-within [data-slot="input-group"] {
   .chat-main .home-state { padding: 16px; }
 }
 
-/* 模型前置属于当前输入区，窄屏换行仍可键盘到达恢复入口。 */
-.chat-model-notice { color: var(--ak-color-text-primary); padding: 12px; border: 1px solid var(--md-sys-color-outline-variant); border-radius: 8px; margin-bottom: 10px; overflow-wrap: anywhere; }
-.chat-model-notice p { margin: 0 0 8px; }
-.chat-model-notice > div { display: flex; flex-wrap: wrap; gap: 12px; }
-.chat-model-notice a, .chat-model-notice button { color: inherit; text-decoration: underline; min-height: 32px; }
-.chat-model-notice a:focus-visible, .chat-model-notice button:focus-visible { outline: 2px solid currentColor; outline-offset: 3px; }
+/* 不能发送的原因属于当前输入区：插件经工具位说明，宿主只负责显示并关联到输入框。 */
+.chat-send-notice { color: var(--ak-color-text-primary); padding: 12px; border: 1px solid var(--md-sys-color-outline-variant); border-radius: 8px; margin: 0 0 10px; overflow-wrap: anywhere; }
 
 /* shadcn overlay 进出动画（tailwindcss-animate）在 reduced-motion 下归零。 */
 @media (prefers-reduced-motion: reduce) {
@@ -2850,7 +2846,7 @@ form.composer:focus-within [data-slot="input-group"] {
 .plugin-ui-slot[data-slot="header.end"] > .plugin-ui-host { display: flex; min-width: 0; }
 /* 输入框工具位与宿主自己的工具同排；没有插件时不占位置。 */
 .plugin-ui-slot[data-slot="composer.toolbar"],
-.plugin-ui-slot[data-slot="composer.toolbar"] > .plugin-ui-host { display: flex; min-width: 0; align-items: center; gap: 2px; }
+.plugin-ui-slot[data-slot="composer.toolbar"] > .plugin-ui-host { display: flex; min-width: 0; align-items: center; gap: 4px; }
 .plugin-ui-slot[data-slot="composer.toolbar"]:empty { display: none; }
 .header-marker { position: relative; display: flex; min-width: 4.5rem; max-width: calc(14rem + 12px); flex: 0 0 auto; padding-inline-start: 12px; font-size: var(--chat-type-caption, 0.75rem); }
 .header-marker__trigger { display: inline-flex; max-width: 100%; min-height: 32px; align-items: center; gap: 6px; padding-inline: 8px; border: 0; border-radius: 6px; background: transparent; color: var(--chat-faint); font: inherit; cursor: pointer; transition: color var(--ak-sys-duration-short) var(--ak-sys-motion-standard); }
