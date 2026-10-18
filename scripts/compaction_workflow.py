@@ -47,10 +47,24 @@ async def run(folder: Path, case: str, *, second_provider: bool = False) -> dict
             request = json.loads(await reader.readexactly(length))
             requests.append(request)
             summary = "[Source messages]" in str(request["messages"])
-            text = ("invalid summary" if case.endswith("failure") else
-                    "\n".join(heading + "\nRecorded progress." for heading in HEADINGS)) if summary else "work completed"
+            # long_summary 首次摘要超出剩余空间，只有缩写请求（没有新资料）返回短摘要；
+            # stubborn_summary 始终忽略长度要求；parent_only 只有首个摘要较长。
+            rewrite = str(request["messages"][-1].get("content", "")).endswith("[Source messages]\n[]")
+            earlier = sum("[Source messages]" in str(row["messages"]) for row in requests[:-1])
+            # rewrite_failure 首次摘要过长且缩写请求不可用；stubborn_summary 的长正文写在标题之前。
+            filler = " p" * ({"long_summary": 4000 * (not rewrite), "rewrite_failure": 4000,
+                              "parent_only": 4000 * (earlier == 0)}.get(case, 0))
+            preamble = "p" * 36_000 + "\n" if case == "stubborn_summary" else ""
+            text = ("invalid summary" if case in {"soft_failure", "hard_failure"} else preamble
+                    + "\n".join(heading + "\nRecorded progress." + filler for heading in HEADINGS[:1]) + "\n"
+                    + "\n".join(heading + "\nRecorded progress." for heading in HEADINGS[1:])) if summary else "work completed"
             body = json.dumps({"text": text}).encode()
-            writer.write(f"HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {len(body)}\r\nConnection: close\r\n\r\n".encode() + body)
+            # parent_only 的首个业务请求失败，留下一个没有新已结算批次的会话尾部；
+            # provider_rejection 的首个业务请求被 provider 以容量明确拒绝。
+            first = not summary and len(requests) - earlier == 1
+            status = (500 if case == "parent_only" and first else 400 if case == "provider_rejection" and first
+                      else 503 if case == "rewrite_failure" and rewrite else 200)
+            writer.write(f"HTTP/1.1 {status} OK\r\nContent-Type: application/json\r\nContent-Length: {len(body)}\r\nConnection: close\r\n\r\n".encode() + body)
             await writer.drain()
         finally:
             writer.close()
@@ -78,6 +92,12 @@ async def run(folder: Path, case: str, *, second_provider: bool = False) -> dict
             from plugins.ledger.contract import json_value
             async with httpx.AsyncClient(trust_env=False) as client:
                 result = await client.post({url!r}, json={{"messages": json_value(request.messages)}})
+                # 与正式驱动同一合同：400 是明确容量拒绝，503 是可恢复传输失败。
+                from plugins.models.contract import ContextLengthError, TransportError
+                if result.status_code == 400:
+                    raise ContextLengthError("fixture rejected", send_evidence="rejected").exception()
+                if result.status_code == 503:
+                    raise TransportError("fixture unavailable").exception()
                 result.raise_for_status()
                 return LLMResponse(result.json()["text"])
 ''' + source[end:]
@@ -85,7 +105,7 @@ async def run(folder: Path, case: str, *, second_provider: bool = False) -> dict
 
     try:
         async with application(folder, replying=True, compaction=True,
-                               output_tokens=512, keep_recent_tokens=20_000 if case == "short_tail" else 2000,
+                               output_tokens=32_768 if case == "small_window" else 512, keep_recent_tokens=20_000 if case == "short_tail" else 2000,
                                extra_sources=configure) as (log, host):
             root = host.live_root
             assert root is not None
@@ -96,25 +116,32 @@ async def run(folder: Path, case: str, *, second_provider: bool = False) -> dict
                 return log.writer("test:room", author="user" if body is Input else "assistant",
                                   source="conversation", body_types=(body,), call_ref=ref,
                                   content={"text": check_text, "context.notice": check_notice}, check_call=lambda call: None)
-            if case == "split_turn":
+            if case in {"split_turn", "huge_batch"}:
                 writer(Input).append("earlier-input", Input((ContentPart("text", "earlier task"),)))
-                writer(Output).append("earlier-final", Output((ContentPart("text", "earlier finished"),), "complete"))
+                writer(Output).append("earlier-final", Output((ContentPart(
+                    "text", "earlier finished" + "o" * 45_000 * (case == "huge_batch")),), "complete"))
             writer(Input).append("old-input", Input((ContentPart("text", "original task"),)))
-            padding = 6500 if case == "hard_failure" else 5500
-            for index in range(6):
+            padding = {"hard_failure": 6500, "provider_rejection": 500}.get(case, 5500)
+            for index in range(1 if case == "huge_batch" else 6):
                 identity = f"old-call-{index}"
-                writer(Output).append(identity, Output((ToolCall(binding, {}),), "continue"))
+                # huge_batch：巨大参数、多段结果与巨大历史回复各一，摘要资料都须有界。
+                arguments = {"text": "a" * 45_000} if case == "huge_batch" else {}
+                writer(Output).append(identity, Output((ToolCall(binding, arguments),), "continue"))
                 ref = CallRef(identity, 0)
+                parts = (tuple(ContentPart("text", "m" * 2000) for _ in range(23)) if case == "huge_batch"
+                         else (ContentPart("text", f"evidence {index}:" + "x" * padding),))
                 writer(ToolResult, ref).append(f"old-result-{index}", ToolResult(
-                    call_ref=ref, parts=(ContentPart("text", f"evidence {index}:" + "x" * padding),), outcome="success"))
-            if case != "open_turn":
+                    call_ref=ref, parts=parts, outcome="success"))
+            if case not in {"open_turn", "huge_batch"}:
                 writer(Output).append("old-final", Output((ContentPart("text", "old task finished"),), "complete"))
             before = tuple(log.reader("test:room").snapshot())
             with sqlite3.connect(folder / "workspace/sessions.db") as connection:
                 original_rows = connection.execute("SELECT * FROM messages ORDER BY seq").fetchall()
             accept = root.context.require(CHANNEL_INPUT_V2)
             accepted = await accept("test:room", "current-input", ChannelInboundMessage(
-                "test", "user", "room", "implement now", datetime.now(UTC), {}))
+                "test", "user", "room", "implement now" + " z" * {"deep_cut": 15_500, "long_summary": 15_500, "stubborn_summary": 15_500,
+                                                       "rewrite_failure": 15_500,
+                                                       "parent_only": 6000}.get(case, 0), datetime.now(UTC), {}))
             async def finish():
                 async for _ in log.catalog().follow():
                     rows = log.reader("test:room").snapshot()
@@ -124,6 +151,37 @@ async def run(folder: Path, case: str, *, second_provider: bool = False) -> dict
                         return rows
             rows = await asyncio.wait_for(finish(), 15)
             assert rows is not None
+            if case == "parent_only":
+                # 摘要已覆盖全部已结算内容，新输入后只能重写父摘要本身。
+                accepted = await accept("test:room", "next-input", ChannelInboundMessage(
+                    "test", "user", "room", "retry now" + " y" * 8000, datetime.now(UTC), {}))
+                rows = await asyncio.wait_for(finish(), 15)
+                with sqlite3.connect(folder / "workspace/sessions.db") as connection:
+                    records = sorted((json.loads(row[0]) for row in connection.execute(
+                        "SELECT value FROM owner_records WHERE owner='plugin:compaction' AND key LIKE 'summary:%'")),
+                        key=lambda record: record["generation"])
+                assert [record["generation"] for record in records] == [1, 2]
+                assert records[1]["source_message_ids"] == records[0]["source_message_ids"]
+                assert records[1]["summary_message_ids"] == [] and records[1]["omitted_message_ids"] == []
+                assert isinstance(rows[-1].body, Output) and rows[-1].body.finish == "complete"
+                with sqlite3.connect(folder / "workspace/sessions.db") as connection:
+                    assert connection.execute("PRAGMA integrity_check").fetchall() == [("ok",)]
+                    assert connection.execute("SELECT * FROM messages ORDER BY seq").fetchall()[:len(original_rows)] == original_rows
+                # 只重写父摘要的一代没有新增资料：应用上一代后不再学习任何消息。
+                store = MarkdownProfileStore(folder / "learning", folder / "learning/receipts.db")
+                lookup = root.context.require(COMPACTION_SUMMARIES)
+                store.write_draft(records[0]["reference"], {"version": 3, "scope": None, "ops": []},
+                                  session_key="test:room", generation=1)
+                store.apply(records[0]["reference"])
+                head = lookup.head("test:room")
+                assert head is not None and head.generation == 2
+                assert not await _unapplied_groups(
+                    head, lookup, log.reader("test:room"), store, ("conversation",),
+                    root.context.require(TURN_PROJECTION), compaction=root.context.require(COMPACTION_READER),
+                    post_commit_effect=root.context.require(CONTENT).legacy_post_commit_effect,
+                    summary_range=root.context.require(CONTEXT).summary_range,
+                )
+                return {"case": case, "http_requests": len(requests), "summaries": len(records), "result": "passed"}
             with sqlite3.connect(folder / "workspace/sessions.db") as connection:
                 after_rows = connection.execute("SELECT * FROM messages ORDER BY seq").fetchall()
                 summaries = [json.loads(row[0]) for row in connection.execute(
@@ -138,7 +196,7 @@ async def run(folder: Path, case: str, *, second_provider: bool = False) -> dict
                 assert reason is not None
                 assert "本次请求被阻断" in reason and "窗口 10,000" in reason
             else:
-                assert len(business) == 1 and "implement now" in str(business[0])
+                assert len(business) == 1 + (case == "provider_rejection") and "implement now" in str(business[-1])
                 assert "context.notice" not in str(business[0]) and "上下文压缩失败" not in str(business[0])
                 assert isinstance(rows[-1].body, Output) and rows[-1].body.finish == "complete"
                 notices = [part.value for part in rows[-1].body.parts if isinstance(part, ContentPart) and part.kind == "context.notice"]
@@ -150,12 +208,21 @@ async def run(folder: Path, case: str, *, second_provider: bool = False) -> dict
                     assert len(summaries) == 1
                     record = summaries[0]
                     assert "current-input" not in record["source_message_ids"]
-                    if case != "short_tail":
+                    if case not in {"short_tail", "deep_cut", "long_summary", "stubborn_summary", "rewrite_failure",
+                                    "provider_rejection"}:
                         assert "old-final" not in record["source_message_ids"]
+                    if case in {"stubborn_summary", "rewrite_failure"}:
+                        assert "篇幅所限" in record["content"] and len(record["content"]) < 20_000
+                    if case == "long_summary":
+                        assert len(record["model_call_ids"]) == 2 and len(record["content"]) < 1000
+                    if case == "deep_cut":
+                        # 当前输入本身高于软水位：仍摘要全部已结算内容，而不是阻断。
+                        assert "old-final" in record["source_message_ids"]
+                        assert any("上下文空间不足" in notice for notice in notices)
                     if case == "open_turn":
                         assert "original task" in str(business[0])
                     if case == "short_tail":
-                        assert any("原文目标 20,000" in notice for notice in notices)
+                        assert any("目标 20,000" in notice for notice in notices)
                     pending: set[str] = set()
                     for message in business[0]["messages"]:
                         if message["role"] == "assistant":
@@ -219,7 +286,9 @@ async def run(folder: Path, case: str, *, second_provider: bool = False) -> dict
 
 async def main() -> None:
     with tempfile.TemporaryDirectory(prefix="compaction-workflow-") as path:
-        for case in ("split_turn", "open_turn", "short_tail", "soft_failure", "hard_failure"):
+        for case in ("split_turn", "open_turn", "short_tail", "deep_cut", "long_summary", "stubborn_summary",
+                     "rewrite_failure", "huge_batch", "parent_only", "small_window", "provider_rejection",
+                     "soft_failure", "hard_failure"):
             folder = Path(path) / case
             folder.mkdir()
             print(json.dumps(await run(folder, case), ensure_ascii=False), flush=True)

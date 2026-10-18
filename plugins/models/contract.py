@@ -916,6 +916,64 @@ class ModelControlUnavailable(ModelError):
 @dataclass(frozen=True, slots=True)
 class RevisionConflictError(ModelError): ...
 
+# 图片按固定成本计入估算：base64 正文长度与模型实际看到的图片 token 无关，
+# 按字符计会让几张截图就把估算推到窗口以上，压缩也无从切起。
+IMAGE_TOKENS = 8192
+LOW_DETAIL_IMAGE_TOKENS = 1024
+
+
+def message_size(message: Mapping[str, Any]) -> tuple[int, int]:
+    """统计一条消息的字符与图片成本；调用方按各自字符比取整，保持容量边界。"""
+    text_chars = image_tokens = 0
+    content: object = message.get("content")
+    if isinstance(content, Sequence) and not isinstance(content, (str, bytes)):
+        for block in cast(Sequence[object], content):
+            if isinstance(block, Mapping) and cast(Mapping[str, object], block).get("type") in {
+                "image_url",
+                "input_image",
+            }:
+                fields = cast(Mapping[str, object], block)
+                detail = fields.get("detail")
+                image = fields.get("image_url")
+                if isinstance(image, Mapping):
+                    detail = cast(Mapping[str, object], image).get("detail", detail)
+                image_tokens += LOW_DETAIL_IMAGE_TOKENS if detail == "low" else IMAGE_TOKENS
+                continue
+            text_chars += len(
+                json.dumps(block, ensure_ascii=False, separators=(",", ":"), default=dict)
+            )
+    elif content is not None:
+        text_chars += len(str(content))
+    text_chars += len(
+        json.dumps(
+            {
+                key: value
+                for key, value in message.items()
+                if key != "content"
+            },
+            ensure_ascii=False,
+            separators=(",", ":"),
+            default=dict,
+        )
+    )
+    return text_chars, image_tokens
+
+
+def estimate_tokens(
+    messages: Sequence[Mapping[str, Any]],
+    tools: Sequence[Mapping[str, Any]] = (),
+    *,
+    chars_per_token: int,
+) -> int:
+    text_chars = len(json.dumps(tools, ensure_ascii=False, separators=(",", ":"), default=dict)) if tools else 0
+    image_tokens = 0
+    for message in messages:
+        chars, images = message_size(message)
+        text_chars += chars
+        image_tokens += images
+    return text_chars // chars_per_token + image_tokens
+
+
 MAX_IMAGE_FILE_BYTES = 20 * 1024 * 1024
 MAX_IMAGE_TOTAL_BYTES = 40 * 1024 * 1024
 MAX_IMAGE_DATA_URI_BYTES = 8 * 1024 * 1024

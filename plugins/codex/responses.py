@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from plugins.models.contract import describe_transport_error
+from plugins.models.contract import describe_transport_error, estimate_tokens
 
 # Provider JSON is validated at this boundary. Pyright cannot retain all narrowing.
 # pyright: reportUnknownVariableType=false, reportUnknownMemberType=false, reportUnknownArgumentType=false
@@ -188,8 +188,7 @@ class CodexResponses:
             "stream": True,
             "include": ["reasoning.encrypted_content"],
         }
-        if request.max_output_tokens > 0:
-            payload["max_output_tokens"] = request.max_output_tokens
+        # 与 Codex CLI、Pi 一致不发送输出上限：窗口是输入上限，输出由模型自身上限约束。
         reasoning: dict[str, str] = {}
         if self._descriptor.reasoning_effort and not request.disable_reasoning:
             reasoning["effort"] = _normalize_effort(
@@ -213,13 +212,13 @@ class CodexResponses:
         messages: Sequence[Mapping[str, Any]],
         tools: Sequence[Mapping[str, Any]] = (),
     ) -> int:
-        return max(1, len(json.dumps([messages, tools], ensure_ascii=False)) // 4)
+        return max(1, estimate_tokens(messages, tools, chars_per_token=4))
 
     def estimate_appended_message_tokens(
         self,
         messages: Sequence[Mapping[str, Any]],
     ) -> int:
-        return max(1, len(json.dumps(list(messages), ensure_ascii=False)) // 4)
+        return max(1, estimate_tokens(messages, chars_per_token=4))
 
 
 class _CallbackError(RuntimeError):

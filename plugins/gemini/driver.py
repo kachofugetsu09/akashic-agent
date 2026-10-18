@@ -39,7 +39,7 @@ from plugins.models.contract import (
     RateLimitError,
     TransportError,
 )
-from plugins.models.contract import ModelDriverDefinition
+from plugins.models.contract import ModelDriverDefinition, estimate_tokens
 
 
 def definition() -> ModelDriverDefinition:
@@ -153,8 +153,8 @@ class _Chat:
         return None
 
     def estimate_context_tokens(self, messages: Sequence[Mapping[str, Any]], tools: Sequence[Mapping[str, Any]] = ()) -> int:
-        # 与通用驱动一样使用保守文本估计；原生协议状态也计入预算。
-        return max(1, len(json.dumps(_json([messages, tools]), ensure_ascii=False)) // 3)
+        # 与通用驱动一样使用保守文本估计；原生协议状态也计入预算，图片按固定成本。
+        return max(1, estimate_tokens(messages, tools, chars_per_token=3))
 
     def estimate_appended_message_tokens(self, messages: Sequence[Mapping[str, Any]]) -> int:
         return self.estimate_context_tokens(messages)

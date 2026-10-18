@@ -111,6 +111,15 @@ class ContextMaterialsV4(Protocol):
     ) -> AbstractAsyncContextManager[MaterialView]: ...
 
 
+# 参考 Pi 的 reserveTokens：context_window 是输入上限，容量判断只为本次回复留有限余量，
+# 不按模型最大输出整段扣除（272K 窗口扣 128K 会让可用输入只剩一半）；小窗口按比例留。
+OUTPUT_RESERVE_TOKENS = 16_384
+
+
+def output_reserve(max_output_tokens: int, context_window: int) -> int:
+    return min(max_output_tokens or OUTPUT_RESERVE_TOKENS, OUTPUT_RESERVE_TOKENS, context_window // 4)
+
+
 CONTEXT = ServiceKey[ContextBuilder]("context.v2")
 MATERIALS_V4 = ServiceKey[ContextMaterialsV4]("context.materials.v4")
 # UI.message_display 按 Message 内容 kind 拼接 message.display:<kind> 后借用 renderer。
