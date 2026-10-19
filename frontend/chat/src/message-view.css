@@ -2049,8 +2049,7 @@ button.tool-step-summary:active {
   color: var(--ak-color-status-error);
 }
 
-.plugin-ui-slot[data-slot="turn.before_reasoning"],
-.plugin-ui-slot[data-slot="turn.before_tool"] {
+.plugin-ui-slot[data-slot="turn.before_reasoning"] {
   display: grid;
   min-width: 0;
   gap: 2px;
@@ -2061,17 +2060,6 @@ button.tool-step-summary:active {
   min-width: 0;
   gap: 12px;
   margin-top: 12px;
-}
-
-.plugin-ui-slot[data-slot="drawer.panel"] {
-  position: absolute;
-  inset-inline: 0;
-  inset-block-end: 0;
-  display: grid;
-  min-width: 0;
-  gap: 12px;
-  padding: 8px 10px 0;
-  background: var(--ak-color-bg-canvas);
 }
 
 /* Message 正文类型只决定布局；作者与来源由消息元数据呈现。 */

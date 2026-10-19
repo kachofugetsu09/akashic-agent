@@ -3,11 +3,9 @@ import type { ComponentType, ReactNode } from "react";
 /** 聊天宿主提供的插槽；插件只在目录声明过的插槽里挂载。 */
 export type PluginUiSlotName =
   | "turn.before_reasoning"
-  | "turn.before_tool"
   | "turn.after_answer"
   | "tool.result"
   | "message.attachment"
-  | "drawer.panel"
   | "chat.notice"
   | "header.end"
   | "composer.toolbar"

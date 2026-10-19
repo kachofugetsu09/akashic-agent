@@ -117,10 +117,7 @@ export function ReplyActivityView({ activity, committed, onError, onStop, proces
     data-preview-message-id={draft?.message_id} aria-busy={activity.active}>
     <div className="agent-content">
       <TimelineProcess flow={flow} draftThinking={draft?.thinking} draftThinkingActive={activity.active && !text}
-        draftLead={attemptLine} beforeReasoning={beforeReasoning}
-        beforePart={(part, index, message) => part.kind === "tool_call" && !("display" in part) ? <PluginUiSlot
-          name="turn.before_tool" sessionId={message.session_id} messageId={message.id}
-          block={{ ...part, message_id: message.id, part_index: index }} /> : null} />
+        draftLead={attemptLine} beforeReasoning={beforeReasoning} />
       {activity.active && draft?.retry_status ? <RetryStatus text={draft.retry_status} attempt={draft.attempt} onStop={onStop} /> : null}
       {activity.active && !draft?.retry_status && !text && !draft?.thinking && !flow.length ? <ThinkingPlaceholder /> : null}
       {text ? <PacedMessageBody content={text} streaming={Boolean(draft?.text) && activity.active} onError={onError} />
@@ -355,9 +352,8 @@ interface FlowPartViewProps {
   canLoadReferences: boolean;
 }
 
-function FlowItemView({ item, beforePart, onCopyToolDetail, partView }: {
+function FlowItemView({ item, onCopyToolDetail, partView }: {
   item: FlowItem;
-  beforePart?: (part: TimelinePart, index: number, message: TimelineMessage) => ReactNode;
   onCopyToolDetail?: (text: string) => void;
   partView?: FlowPartViewProps;
 }) {
@@ -371,7 +367,6 @@ function FlowItemView({ item, beforePart, onCopyToolDetail, partView }: {
   return (
     <div className={`flow-item flow-${item.kind}`} data-process-message-id={item.origin.id}
       data-part-index={item.index} tabIndex={-1}>
-      {beforePart?.(item.part, item.index, item.origin)}
       {content}
     </div>
   );
@@ -440,7 +435,7 @@ function CollapsedToolGroup({ count, durationMs, children }: {
 }
 
 /** 历史与实时回复共用一条流，过程项继续引用原消息和 part。 */
-function TimelineProcess({ flow, draftThinking = "", draftThinkingActive = false, draftLead, groupTools = true, beforeReasoning, beforePart, onCopyToolDetail, partView }: {
+function TimelineProcess({ flow, draftThinking = "", draftThinkingActive = false, draftLead, groupTools = true, beforeReasoning, onCopyToolDetail, partView }: {
   flow: FlowItem[];
   draftThinking?: string;
   /** 紧贴在草稿思考之前的一行（重试进度），属于当前草稿而不是已提交的过程。 */
@@ -450,7 +445,6 @@ function TimelineProcess({ flow, draftThinking = "", draftThinkingActive = false
   /** 本轮摘要里已经收过一次：展开后直接逐行，不再套一层"已执行 N 个工具"。 */
   groupTools?: boolean;
   beforeReasoning?: (message: TimelineMessage) => ReactNode;
-  beforePart?: (part: TimelinePart, index: number, message: TimelineMessage) => ReactNode;
   onCopyToolDetail?: (text: string) => void;
   partView?: FlowPartViewProps;
 }) {
@@ -466,14 +460,13 @@ function TimelineProcess({ flow, draftThinking = "", draftThinkingActive = false
         <Fragment key={`toolgroup-${item.members[0].key}`}>
           {item.members.some((member) => member.key === slotKey) ? beforeReasoning?.(item.members[0].origin) : null}
           <CollapsedToolGroup count={item.members.length} durationMs={item.durationMs}>
-            {item.members.map((member) => <FlowItemView key={member.key} item={member}
-              beforePart={beforePart} onCopyToolDetail={onCopyToolDetail} partView={partView} />)}
+            {item.members.map((member) => <FlowItemView key={member.key} item={member} onCopyToolDetail={onCopyToolDetail} partView={partView} />)}
           </CollapsedToolGroup>
         </Fragment>
       ) : (
         <Fragment key={item.key}>
           {item.key === slotKey ? beforeReasoning?.(item.origin) : null}
-          <FlowItemView item={item} beforePart={beforePart} onCopyToolDetail={onCopyToolDetail} partView={partView} />
+          <FlowItemView item={item} onCopyToolDetail={onCopyToolDetail} partView={partView} />
         </Fragment>
       ))}
       {draftLead}
@@ -483,28 +476,27 @@ function TimelineProcess({ flow, draftThinking = "", draftThinkingActive = false
 }
 
 /** 一轮结束后，思考、工具与中途旁白收进一行摘要；正文、附件和仍在运行的工具留在外面。 */
-function SettledTurnFlow({ flow, startedAt, endedAt, beforeReasoning, beforePart, partView }: {
+function SettledTurnFlow({ flow, startedAt, endedAt, beforeReasoning, partView }: {
   flow: FlowItem[];
   startedAt?: string;
   endedAt: string;
   beforeReasoning?: (message: TimelineMessage) => ReactNode;
-  beforePart?: (part: TimelinePart, index: number, message: TimelineMessage) => ReactNode;
   partView: FlowPartViewProps;
 }) {
   const process = flow.filter((item) => item.kind !== "part");
   const running = process.some((item) => item.kind === "tool" && item.block.status === "input-available");
   const worthSummary = process.some((item) => item.kind === "tool") || process.length >= 2;
   if (running || !worthSummary) {
-    return <TimelineProcess flow={flow} beforeReasoning={beforeReasoning} beforePart={beforePart} partView={partView} />;
+    return <TimelineProcess flow={flow} beforeReasoning={beforeReasoning} partView={partView} />;
   }
   // 1. 召回等插件槽位属于本轮开头，留在摘要外保持可见。
   // 2. 摘要内复用逐行过程视图，展开后与运行时看到的一致。
   return <>
     {beforeReasoning?.(process[0].origin)}
     <TurnProcessSummary items={process} durationMs={turnDurationMs(startedAt, endedAt)}>
-      <TimelineProcess flow={process} groupTools={false} beforePart={beforePart} />
+      <TimelineProcess flow={process} groupTools={false} />
     </TurnProcessSummary>
-    <TimelineProcess flow={flow.filter((item) => item.kind === "part")} beforePart={beforePart} partView={partView} />
+    <TimelineProcess flow={flow.filter((item) => item.kind === "part")} partView={partView} />
   </>;
 }
 
@@ -558,10 +550,9 @@ function TurnProcessSummary({ items, durationMs, children }: {
 }
 
 /** 图文回复只收纳思考与已完成工具；正文和仍在执行的工具保持可见。 */
-function InlineReplyProcess({ messages, toolResults, beforeReasoning, beforePart }: {
+function InlineReplyProcess({ messages, toolResults, beforeReasoning }: {
   messages: TimelineMessage[]; toolResults: ReadonlyMap<string, TimelineMessage>;
   beforeReasoning?: (message: TimelineMessage) => ReactNode;
-  beforePart?: (part: TimelinePart, index: number, message: TimelineMessage) => ReactNode;
 }) {
   const flow = timelineFlow(messages, undefined, toolResults).filter(item => item.kind === "tool" || item.kind === "thinking");
   const running = flow.filter(item => item.kind === "tool" && item.block.status === "input-available");
@@ -574,14 +565,14 @@ function InlineReplyProcess({ messages, toolResults, beforeReasoning, beforePart
       <span className="process-trigger-summary">{count ? `思考并调用 ${count} 个工具` : "思考过程"}</span>
       <ChevronDown className="process-chevron" size={13} aria-hidden="true" />
     </summary>
-      <TimelineProcess flow={settled} beforeReasoning={beforeReasoning} beforePart={beforePart} />
+      <TimelineProcess flow={settled} beforeReasoning={beforeReasoning} />
     </details> : null}
-    <TimelineProcess flow={running} beforeReasoning={beforeReasoning} beforePart={beforePart} />
+    <TimelineProcess flow={running} beforeReasoning={beforeReasoning} />
   </div>;
 }
 
 /** 保留消息引用与 part 位置，复用原聊天的过程和正文组件。 */
-export function TimelineMessageView({ message, lookupMessage, toolResults, onNavigate, onError, beforeReasoning, beforePart, afterBody, renderAttachment, hideBody = false, processMessages = [message], hideProcess = false, inlineReply = false, leadingProcess, canLoadReferences = false, turnStartedAt, turnOpen = false }: {
+export function TimelineMessageView({ message, lookupMessage, toolResults, onNavigate, onError, beforeReasoning, afterBody, renderAttachment, hideBody = false, processMessages = [message], hideProcess = false, inlineReply = false, leadingProcess, canLoadReferences = false, turnStartedAt, turnOpen = false }: {
   message: TimelineMessage;
   /** 本轮用户输入的时间；摘要行据此给出整轮用时。 */
   turnStartedAt?: string;
@@ -596,7 +587,6 @@ export function TimelineMessageView({ message, lookupMessage, toolResults, onNav
   hideProcess?: boolean;
   inlineReply?: boolean;
   leadingProcess?: TimelineMessage[];
-  beforePart?: (part: TimelinePart, index: number, message: TimelineMessage) => ReactNode;
   afterBody?: ReactNode;
   lookupMessage: (id: string) => TimelineMessage | undefined;
   onNavigate: (id: string, partIndex?: number) => void;
@@ -650,12 +640,12 @@ export function TimelineMessageView({ message, lookupMessage, toolResults, onNav
     {emptyBubble ? null : <div className={automatic ? "automatic-input" : input ? "user-bubble" : "agent-content"}>
       {leadingContent}
       {leadingProcess ? <InlineReplyProcess messages={leadingProcess} toolResults={toolResults}
-        beforeReasoning={beforeReasoning} beforePart={beforePart} /> : null}
+        beforeReasoning={beforeReasoning} /> : null}
       {hasFlow ? turnOpen
-        ? <TimelineProcess flow={flow} beforeReasoning={beforeReasoning} beforePart={beforePart}
+        ? <TimelineProcess flow={flow} beforeReasoning={beforeReasoning}
           partView={{ attachment, lookupMessage, onNavigate, onError, canLoadReferences }} />
         : <SettledTurnFlow flow={flow} startedAt={turnStartedAt} endedAt={message.timestamp}
-          beforeReasoning={beforeReasoning} beforePart={beforePart}
+          beforeReasoning={beforeReasoning}
           partView={{ attachment, lookupMessage, onNavigate, onError, canLoadReferences }} /> : null}
       {body.kind === "control" ? body.action === "failure" ? <div className="timeline-control-summary">
         <strong>{controlLabels[body.action]}</strong>
@@ -675,7 +665,6 @@ export function TimelineMessageView({ message, lookupMessage, toolResults, onNav
           flowRank(right.part) + Number(right.part.kind === "history.transcript")
           - flowRank(left.part) - Number(left.part.kind === "history.transcript"))
           .map(({ part, index }) => isTimelinePartVisible(part) && !(input && part.kind === "artifact_ref") && !((hideBody || (attachmentResult && !renderAttachment)) && part.kind === "text") && !((hideProcess || inlineReply) && (("display" in part && part.display === "thinking") || part.kind === "tool_call" || part.kind === "history.transcript")) ? <div key={index} data-part-index={index} tabIndex={-1}>
-          {beforePart?.(part, index, message)}
           <TimelinePartView part={part} toolResult={body.kind === "tool_result" && !attachmentResult} userInput={input} attachment={attachment} lookupMessage={lookupMessage} canLoadReferences={canLoadReferences}
             onNavigate={onNavigate} onError={onError} processStartContent={leadingContent} />
         </div> : null)}</UserTextClamp>

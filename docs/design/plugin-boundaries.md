@@ -55,7 +55,7 @@ R9 的领域词表与扫描范围都偏窄。
 
 ## 目标扩展点
 
-聊天前端补一组通用槽位，与现有 `turn.*`、`message.attachment`、`drawer.panel` 同一套目录、资产与查询协议：
+聊天前端补一组通用槽位，与现有 `turn.before_reasoning`、`turn.after_answer`、`message.attachment` 同一套目录、资产与查询协议（没有使用者的 `turn.before_tool`、`drawer.panel` 已删除）：
 
 | 扩展点 | 形态 | 宿主负责 | 首个使用者 |
 |---|---|---|---|
@@ -63,6 +63,7 @@ R9 的领域词表与扫描范围都偏窄。
 | `composer.status` | 挂载 | 输入框下方状态行的布局与收起 | 工作目录、调用统计 |
 | `composer.toolbar` | 挂载 | 输入框工具条位置 | 模型胶囊、后台任务 |
 | `chat.notice` | 挂载 | 通知条位置与层级 | 宿主执行桥 |
+| `tool.result` | 挂载，只交给工具 owner | 通用数据展示兜底；其他插件不能认领别人的工具结果 | shell 命令块 |
 | `navigation.section` | 挂载 + 置顶引用 `(plugin_id, ref)` | 侧栏分区顺序、折叠、置顶存储 | 项目 |
 | 内容类型显示策略 | owner 为自己的内部内容注册 `message.display:<kind>` = `hidden_part` | 时间线隐藏 owner 声明的内部材料；展示方缺席的仍显示“无法展示此内容” | 所有内容类型 |
 | 插件推送 | `ctx.subscribe(topic)`，经现有 WebSocket 复用 | 连接、重连、背压 | 后台任务 |

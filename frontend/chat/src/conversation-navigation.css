@@ -171,13 +171,6 @@
   overscroll-behavior: contain;
 }
 
-.conversation-navigation__auxiliary {
-  position: relative;
-  z-index: 2;
-  height: 80px;
-  flex: 0 0 80px;
-}
-
 .conversation-session {
   display: grid;
   width: 100%;

@@ -85,10 +85,8 @@ const quarantinedRevisions = new Map<string, Error>();
 const MODULE_LOAD_TIMEOUT_MS = 5_000;
 const SLOT_NAMES = new Set<Exclude<PluginUiSlotName, "dashboard.main">>([
   "turn.before_reasoning",
-  "turn.before_tool",
   "turn.after_answer",
   "tool.result",
-  "drawer.panel",
   "message.attachment",
   "chat.notice",
   "header.end",
@@ -989,7 +987,7 @@ function completePending(requestId: string, request: PendingQuery, shouldDrain =
 }
 
 function isInteractiveSlot(slot: PluginUiSlotName): boolean {
-  return slot === "dashboard.main" || slot === "drawer.panel";
+  return slot === "dashboard.main";
 }
 
 function createOwnerId(): string {

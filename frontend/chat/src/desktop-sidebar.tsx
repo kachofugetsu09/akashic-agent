@@ -16,7 +16,6 @@ import {
 } from "@/components/ui/dropdown-menu";
 import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { ConversationNavigation, ConversationSessionRow, type ConversationRowDrag, type ConversationSession } from "./conversation-navigation";
-import { PluginUiSlot } from "./plugin-ui-runtime";
 import akashicBrandIcon from "../../theme/src/akashic-brand.svg";
 import { activateShellRailAction, useShellRailActions } from "./shell-rail-actions";
 import {
@@ -644,9 +643,6 @@ export const DesktopSidebar = memo(function DesktopSidebar({
         onSessionActivate={onSelectSession}
         onSessionPrefetch={onPrefetchSession}
         pendingSessionId={pendingSessionId}
-        sessionAfterContent={surface === "chat" && activeSessionId ? (
-          <PluginUiSlot name="drawer.panel" sessionId={activeSessionId} />
-        ) : undefined}
       />
       </div>
       <div className="chat-sidebar__footer">

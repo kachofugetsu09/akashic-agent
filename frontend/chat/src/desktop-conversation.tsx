@@ -410,8 +410,6 @@ export const DesktopTimelineMessages = React.memo(function DesktopTimelineMessag
       beforeReasoning={(origin) => needsBeforeReasoningFallback(origin, inputStarts) ? <PluginUiSlot name="turn.before_reasoning"
         sessionId={origin.session_id} messageId={origin.id} block={{ source: origin.source }}
         refreshToken={refreshTokens.get(timelineSourceKey(origin))} /> : null}
-      beforePart={(part, index, origin) => part.kind === "tool_call" && !("display" in part) ? <PluginUiSlot
-        name="turn.before_tool" sessionId={origin.session_id} messageId={origin.id} block={{ ...part, message_id: origin.id, part_index: index }} /> : null}
       afterBody={message.body.kind === "output" && message.body.finish === "complete" ? <PluginUiSlot
         name="turn.after_answer" sessionId={message.session_id} messageId={message.id} /> : undefined} />
     {/* 轮次未结束的输出还会接着长，时间与复制等落定后挂在末条上，和实时视图一致。 */}
