@@ -39,7 +39,7 @@
   grid-template-columns: 0 0 minmax(0, 1fr);
 }
 
-.conversation-page.tools-maximized .conversation-page-chat,
+.conversation-page.tools-maximized .conversation-page-chat:not(:has([role="dialog"])),
 .conversation-page.tools-maximized .conversation-tools-splitter {
   visibility: hidden;
 }
@@ -470,8 +470,9 @@
     display: block;
   }
 
-  /* 工作台整块盖住聊天：与铺满一样隐藏聊天，保留挂载与草稿，聊天也不再接 body 上的快捷键。 */
-  .conversation-page.tools-open .conversation-page-chat {
+  /* 工作台整块盖住聊天：与铺满一样隐藏聊天，保留挂载与草稿，聊天也不再接 body 上的快捷键。
+     聊天对话框开着时（例如宽屏打开后再缩窄）先不隐藏，免得对话框跟着消失、页面却仍被模态锁住。 */
+  .conversation-page.tools-open .conversation-page-chat:not(:has([role="dialog"])) {
     visibility: hidden;
   }
 
