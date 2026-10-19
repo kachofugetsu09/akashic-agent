@@ -413,13 +413,25 @@ export function useDesktopChatController() {
   useEffect(() => () => streamStore.clear(), [streamStore]);
 
   const loadSessionsSafely = useCallback(() => loadSessions().catch((error: unknown) => reportError(error)), [loadSessions, reportError]);
+  // 实时帧驱动的目录刷新很密（启动基线帧、流式追加、活动状态都触发）：合并成尾随一次执行，
+  // 避免每个帧中止重发一次全量目录读。显式数据操作（改名/删除）仍立即刷新，不走这里。
+  const sessionsRefreshTimerRef = useRef<number | null>(null);
+  const scheduleSessionsRefresh = useCallback((): Promise<void> => {
+    if (sessionsRefreshTimerRef.current !== null) return Promise.resolve();
+    return new Promise((resolve) => {
+      sessionsRefreshTimerRef.current = window.setTimeout(() => {
+        sessionsRefreshTimerRef.current = null;
+        resolve(loadSessionsSafely());
+      }, 300);
+    });
+  }, [loadSessionsSafely]);
   const sessionHeads = useMemo<SessionHead[]>(() => {
     const rows = new Map([...navigationPins.sessions, ...sessions].map((session) => [session.key, session]));
     return [...rows.values()].map((session) => ({ key: session.key, headSeq: session.head_seq }));
   }, [sessions, navigationPins.sessions]);
   const { statuses: sessionStatuses, receive: receiveSessionActivity, disconnect: disconnectSessionActivity } = useSessionActivity(
     sessionHeads, activeSessionId, historyLoading ? null : followAfter,
-    surface === "chat", loadSessionsSafely,
+    surface === "chat", scheduleSessionsRefresh,
   );
   // 读取失败已由读取失败视图展示，其它错误照常进全局错误行。
   const reportHistoryError = useCallback((error: unknown) => {
@@ -497,7 +509,7 @@ export function useDesktopChatController() {
                   for (const id of saved) ackWaitersRef.current.get(id)?.();
                   setMessages((currentMessages) => currentMessages.filter((item) => !saved.has(item.id)));
                   if (statusLiveRef.current !== "uploading") setStatusLive(replyChatStatus(replyActivitiesRef.current, messagesRef.current.length + Number(sendRequestRef.current !== null), timelineRef.current, replyAvailableRef.current));
-                  void loadSessionsSafely();
+                  scheduleSessionsRefresh();
                 } else if (frame.type === "reply.status") {
                   replyActivitiesRef.current = frame.items;
                   setReplyActivities(frame.items);
@@ -508,7 +520,7 @@ export function useDesktopChatController() {
               }
               const other = parseChatFrame(value);
               if (other.type === "sessions.changed") {
-                void loadSessionsSafely();
+                scheduleSessionsRefresh();
                 void reloadPinsRef.current();
               } else if (other.type === "message.accepted") {
                 ackWaitersRef.current.get(other.request_id)?.();
@@ -576,7 +588,7 @@ export function useDesktopChatController() {
       }
     }).pipe(Effect.catchAll(() => Effect.sync(() => setConnectionError("暂时无法连接，请重试")))));
     return first;
-  }, [cacheSessionTail, closeConnection, disconnectSessionActivity, loadMessagesSafely, loadSessionsSafely,
+  }, [cacheSessionTail, closeConnection, disconnectSessionActivity, loadMessagesSafely, scheduleSessionsRefresh,
     receiveSessionActivity, reconnect, reportError, setFollowAfter, setMessages, setReplyAvailable, setStatusLive, setTimelineMessages]);
 
   // 手机从后台回来或网络切换后，旧连接常常已经半开；立刻探测一次，不等下一轮心跳。
@@ -657,6 +669,7 @@ export function useDesktopChatController() {
       stopRequestRef.current?.abort();
       tailRequestsRef.current.forEach((request) => request.controller.abort());
       window.clearTimeout(deletedNoticeTimerRef.current);
+      window.clearTimeout(sessionsRefreshTimerRef.current ?? undefined);
   }, []);
 
   useEffect(() => {
