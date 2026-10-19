@@ -74,10 +74,10 @@
     max-height: none;
     padding: 0;
     border: 1px solid var(--ak-rule-default);
-    border-radius: 16px;
+    border-radius: 12px;
     background: var(--ak-paper-sheet);
     color: var(--ak-ink-primary);
-    box-shadow: 0 24px 80px color-mix(in oklab, var(--ak-ink-primary) 16%, transparent);
+    box-shadow: var(--ak-elevation-overlay);
     overflow: hidden;
   }
 
@@ -87,8 +87,7 @@
   }
 
   .shell-settings-dialog::backdrop {
-    background: color-mix(in oklab, var(--ak-ink-primary) 24%, transparent);
-    backdrop-filter: blur(3px);
+    background: var(--ak-scrim-overlay);
   }
 
   .shell-settings-dialog:focus {
@@ -125,7 +124,7 @@
     font: inherit;
     font-size: 14px;
     border: 0;
-    border-radius: 10px;
+    border-radius: 12px;
     background: transparent;
     color: inherit;
     text-align: start;
@@ -281,7 +280,7 @@
     font: inherit;
     text-align: start;
     border: 0;
-    border-radius: 18px;
+    border-radius: 16px;
     background: transparent;
     color: inherit;
     cursor: pointer;
@@ -303,7 +302,7 @@
     place-items: center;
     box-sizing: border-box;
     border: 0.5px solid color-mix(in oklab, var(--ak-ink-primary) 22%, transparent);
-    border-radius: 10px;
+    border-radius: 12px;
     color: var(--ak-ink-secondary);
   }
 
@@ -539,7 +538,7 @@
       font: inherit;
       font-size: 15px;
       border: 0;
-      border-radius: 10px;
+      border-radius: 12px;
       background: transparent;
       color: var(--ak-ink-secondary);
       cursor: pointer;
