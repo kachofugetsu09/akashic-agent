@@ -223,7 +223,7 @@ try {
   checks.push({ label: "120 token updates", queries: queries.length - before });
   preserve("after tokens");
   stage = "first-tool";
-  append(output("output-A", 21, [{ kind: "model.facts", value: { call_record_id: "record-A", thinking: "Fixture thinking" } }, call()]));
+  append(output("output-A", 21, [{ kind: "model.facts", display: "thinking", text: "Fixture thinking", value: { call_record_id: "record-A", thinking: "Fixture thinking" } }, call()]));
   await sleep(200);
   snap("first-tool-delay-200ms");
   checks.push({label:"first-tool refresh loading marker",visible:[...document.querySelectorAll(".akasha-plugin-ui-query-status")].some(n=>!n.hidden&&n.textContent.includes("正在读取"))});

@@ -867,8 +867,12 @@ async def _invoke_capability(
             ):
                 raise ValueError("model.facts oracle input 必须是 {kind,value} ContentPart")
             from plugins.ledger.contract import ContentPart
+            from plugins.ui.contract import ThinkingDisplay
 
             actual = value(ContentPart(input_value["kind"], input_value["value"]))
+            # 思考展示的公开字段仍是原来的 {call_record_id, thinking}，oracle 只比较这部分。
+            if isinstance(actual, ThinkingDisplay):
+                actual = dict(actual.value)
         elif service in {
             "acceptance.messages.roundtrip.v1",
             "acceptance.consumer.roundtrip.v1",

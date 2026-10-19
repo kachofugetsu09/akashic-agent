@@ -291,11 +291,10 @@ function timelineFlow(messages: TimelineMessage[], finalId: string | undefined, 
     // 上下文提示发生在生成之前，排在思考之前；思考再排在正文之前。
     .sort((left, right) => flowRank(right.part) - flowRank(left.part))
     .flatMap(({ part, index }): FlowItem[] => {
-      if ("display" in part) return [];
       const key = `${origin.id}:${index}`;
-      if (part.kind === "model.facts") {
-        return part.value.thinking
-          ? [{ kind: "thinking", key, origin, index, part, content: part.value.thinking }] : [];
+      if ("display" in part) {
+        return part.display === "thinking" && part.text
+          ? [{ kind: "thinking", key, origin, index, part, content: part.text }] : [];
       }
       if ("archive" in part) {
         return part.kind === "history.transcript"
@@ -332,8 +331,8 @@ function toolImages(result: TimelineMessage | undefined): SentAttachmentItem[] |
 }
 
 function flowRank(part: TimelinePart): number {
-  if ("display" in part) return 0;
-  return part.kind === "context.notice" ? 2 : part.kind === "model.facts" ? 1 : 0;
+  if ("display" in part) return part.display === "thinking" ? 1 : 0;
+  return part.kind === "context.notice" ? 2 : 0;
 }
 
 /** 上下文提示是本轮请求的诊断，与思考行同级：收起时一行摘要，展开看全文。 */
@@ -675,7 +674,7 @@ export function TimelineMessageView({ message, lookupMessage, toolResults, onNav
         <UserTextClamp enabled={body.kind === "input"}>{body.parts.map((part, index) => ({ part, index })).sort((left, right) =>
           flowRank(right.part) + Number(right.part.kind === "history.transcript")
           - flowRank(left.part) - Number(left.part.kind === "history.transcript"))
-          .map(({ part, index }) => isTimelinePartVisible(part) && !(input && part.kind === "artifact_ref") && !((hideBody || (attachmentResult && !renderAttachment)) && part.kind === "text") && !((hideProcess || inlineReply) && (part.kind === "model.facts" || part.kind === "tool_call" || part.kind === "history.transcript")) ? <div key={index} data-part-index={index} tabIndex={-1}>
+          .map(({ part, index }) => isTimelinePartVisible(part) && !(input && part.kind === "artifact_ref") && !((hideBody || (attachmentResult && !renderAttachment)) && part.kind === "text") && !((hideProcess || inlineReply) && (("display" in part && part.display === "thinking") || part.kind === "tool_call" || part.kind === "history.transcript")) ? <div key={index} data-part-index={index} tabIndex={-1}>
           {beforePart?.(part, index, message)}
           <TimelinePartView part={part} toolResult={body.kind === "tool_result" && !attachmentResult} userInput={input} attachment={attachment} lookupMessage={lookupMessage} canLoadReferences={canLoadReferences}
             onNavigate={onNavigate} onError={onError} processStartContent={leadingContent} />
@@ -807,6 +806,8 @@ function TimelinePartView({ part, toolResult = false, userInput = false, attachm
 }) {
   if ("display" in part) return part.display === "data"
     ? <ToolResultContent value={"rendered" in part ? part.rendered : part.value} />
+    : part.display === "thinking" ? part.text ? <ProcessTrace blocks={[{ kind: "thinking", content: part.text }]} streaming={false}
+      interrupted={false} startContent={processStartContent} /> : null
     : <p className="timeline-state">无法展示此内容</p>;
   if ("archive" in part) return part.kind === "history.transcript" ? <TimelineTranscript archive={part.archive} startContent={processStartContent} onError={onError} /> : null;
   switch (part.kind) {
@@ -821,9 +822,6 @@ function TimelinePartView({ part, toolResult = false, userInput = false, attachm
         preview={source ? timelineReply(source).preview : ""} unavailable={!source} canLoad={canLoadReferences}
         onNavigate={() => onNavigate(part.value)} />;
     }
-    case "model.facts": return part.value.thinking ? <ProcessTrace
-      blocks={[{ kind: "thinking", content: part.value.thinking }]} streaming={false}
-      interrupted={false} startContent={processStartContent} /> : null;
     case "tool_call": return <details className="timeline-details timeline-tool-call">
       <summary>工具调用 · {part.name}</summary>
       <pre tabIndex={0}>{JSON.stringify(part.arguments, null, 2)}</pre>
