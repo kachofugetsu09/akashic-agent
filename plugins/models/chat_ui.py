@@ -3,7 +3,7 @@ from __future__ import annotations
 
 from collections.abc import Awaitable, Callable, Mapping
 from dataclasses import asdict, dataclass
-from typing import Protocol, cast
+from typing import cast
 from urllib.parse import quote
 
 from core.common.file_io import run_file_io
@@ -20,15 +20,11 @@ from plugins.ui.contract import PluginUiRpcInvalidRequest
 from .selection import read_saved
 
 
-class _Catalog(Protocol):
-    def snapshot(self) -> ModelCatalogSnapshot: ...
-    def validate_chat_selection(self, selection: ChatModelSelection) -> ChatModelSelection: ...
-
-
 # 聊天界面经插件界面查询读模型数据；宿主不再持有模型目录与会话选择的投影。
 @dataclass(frozen=True)
 class ChatUiQueries:
-    catalog: _Catalog
+    catalog: Callable[[], Awaitable[ModelCatalogSnapshot]]
+    selection: Callable[[ChatModelSelection], Awaitable[ChatModelSelection]]
     messages: MessageCatalog
     call_stats: Callable[[str], ModelCallStats]
     message_tokens: Callable[[str, str], Awaitable[int | None]]
@@ -54,7 +50,7 @@ class ChatUiQueries:
             if set(payload) != {"call_id"} or not isinstance(call_id, str) or not call_id:
                 raise PluginUiRpcInvalidRequest("调用统计查询需要 call_id")
             try:
-                return asdict(self.call_stats(call_id))
+                return asdict(await run_file_io(lambda: self.call_stats(call_id)))
             except KeyError as error:
                 raise PluginUiRpcInvalidRequest("模型调用记录不存在") from error
         raise PluginUiRpcInvalidRequest(f"未知查询: {method}")
@@ -65,11 +61,11 @@ class ChatUiQueries:
         if session_id:
             saved = read_saved(await run_file_io(lambda: self._metadata(session_id)))
             try:
-                saved = self.catalog.validate_chat_selection(saved)
+                saved = await self.selection(saved)
             except (RuntimeError, TimeoutError) as error:
                 if not ModelError.matches(error, ModelUnavailableError):
                     raise
-        snapshot = self.catalog.snapshot()
+        snapshot = await self.catalog()
         icons = {item.connection_id: await self.icon(item.connection_id) for item in snapshot.connections}
         return {
             "generationId": snapshot.revision,
