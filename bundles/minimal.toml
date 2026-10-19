@@ -220,3 +220,27 @@ disabled = true
 [rows."ledger_invariants"]
 plugin = "ledger_invariants@release"
 disabled = true
+
+[rows."sites"]
+plugin = "sites@release"
+disabled = true
+
+[rows."sites_tab"]
+plugin = "sites_tab@release"
+disabled = true
+
+[rows."terminal"]
+plugin = "terminal@release"
+disabled = true
+
+[rows."visuals"]
+plugin = "visuals@release"
+disabled = true
+
+[rows."web-auth"]
+plugin = "web-auth@release"
+disabled = true
+
+[rows."workspace_changes"]
+plugin = "workspace_changes@release"
+disabled = true
