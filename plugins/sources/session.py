@@ -281,6 +281,33 @@ class SourceSession:
                     raise
         return message
 
+    # 仍持有本来源提交权的回复任务；没有或已撤权时为 None。
+    async def active_task(self) -> Task | None:
+        def current(slot: TaskSlot) -> Task | None:
+            task = slot.current
+            return task if task is not None and task.active else None
+        return await self._tasks.admit(self._key, current)
+
+    # 插话由正在回复的任务在步骤之间写入：不撤权，边界随之前移，守卫不再把它当成抢占。
+    async def steer(self, message_id: str, body: Input, task: Task) -> Message:
+        async def admit(slot: TaskSlot) -> Message:
+            # 1. 只有仍持有提交权的同一任务能接收插话；否则留给调用方按普通输入处理。
+            if slot.current is not task or not task.active:
+                raise MessageConflict("插话只能写入仍在回复的任务")
+            head = await self._reader.read_async(lambda reader: reader.head(source=self._source))
+            if slot.current is not task or not task.active:
+                raise MessageConflict("插话只能写入仍在回复的任务")
+            if self._restart_gate is not None:
+                self._restart_gate.check_open()
+            # 2. 以同一来源 head 为前提追加；通知不占待回复位置，当前任务就是它的回复。
+            message = await self._inputs.append_async(
+                message_id, body, expected_source_head=head,
+                on_commit=lambda message, created: self._changed(message, False) if created else None,
+            )
+            task.boundary_hint = message.seq
+            return message
+        return await self._tasks.admit_async(self._key, admit)
+
     async def resume(self, message_id: str, input_id: str) -> Message:
         """显式重试恢复原输入；只读 worker 不改变最新输入、控制与 CAS 规则。"""
         def read(reader: MessageReader) -> tuple[Control, int | None]:

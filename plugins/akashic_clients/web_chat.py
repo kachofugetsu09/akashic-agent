@@ -50,6 +50,7 @@ from plugins.ui.contract import MessageDisplayReader, PluginUiEmit, follow_messa
 from .services import (
     MessageCatalogPort as MessageCatalog,
     MessageConflict,
+    SteerPort,
 )
 
 logger = logging.getLogger(__name__)
@@ -224,6 +225,10 @@ class WebChatChannel:
         self._client_sessions: dict[str, str] = {}
         self._turn_sessions: dict[str, str] = {}
         self._turn_contents: dict[str, str] = {}
+        self._steer: SteerPort | None = None
+
+    def bind_steer(self, steer: SteerPort) -> None:
+        self._steer = steer
 
     def bind_session_activity(self, follow: Callable[[], AsyncGenerator[dict[str, object], None]]) -> None:
         """每条连接只拥有一个通道级摘要订阅，与当前会话的正文跟随独立。"""
@@ -888,6 +893,10 @@ class WebChatChannel:
             return await self._follow_session(websocket, request_id, payload, tasks)
         if frame_type == "message.send":
             return await self._send_user_message(websocket, request_id, payload)
+        if frame_type == "message.steer":
+            return await self._steer_message(websocket, request_id, payload)
+        if frame_type == "message.steer.withdraw":
+            return await self._withdraw_steer(websocket, request_id, payload)
         if frame_type == "ping":
             await websocket.send_json({"type": "pong", "request_id": request_id})
             return ""
@@ -1006,6 +1015,38 @@ class WebChatChannel:
             return ""
         await self._add_connection(session_key, websocket)
         return session_key
+
+    # 生成中的插话：有回复在进行就暂存到下一步；否则按普通消息发送，客户端照常等 message.accepted。
+    async def _steer_message(self, websocket: WebSocket, request_id: str, payload: dict[str, Any]) -> str:
+        # 1. 插话只带正文；附件、引用和输入片段仍走普通发送。
+        try:
+            session_key = self._normalize_session_id(payload.get("session_id"))
+        except ValueError as error:
+            await self._send_error(websocket, request_id, str(error))
+            return ""
+        text = payload.get("text")
+        if not session_key or not isinstance(text, str) or not text.strip():
+            await self._send_error(websocket, request_id, "插话需要会话和非空正文")
+            return session_key
+        chat_id = self._chat_id(session_key)
+        message = ChannelInboundMessage(
+            channel=self.name, sender="web", chat_id=chat_id, content=_normalize_v3_content(text),
+            timestamp=datetime.now(timezone.utc), metadata=cast(Any, {"client_request_id": request_id}),
+        )
+        # 2. 暂存成功即确认；没有可接纳插话的回复时只回 staged=false，由客户端走普通发送并等它的确认。
+        staged = self._steer is not None and await self._steer.stage(session_key, request_id, message)
+        await websocket.send_json({"type": "message.steer.result", "request_id": request_id, "staged": staged})
+        return session_key
+
+    async def _withdraw_steer(self, websocket: WebSocket, request_id: str, payload: dict[str, Any]) -> str:
+        session_id = payload.get("session_id")
+        message_id = payload.get("message_id")
+        withdrawn = (
+            self._steer is not None and isinstance(session_id, str) and isinstance(message_id, str)
+            and await self._steer.withdraw(session_id, message_id)
+        )
+        await websocket.send_json({"type": "message.steer.result", "request_id": request_id, "withdrawn": withdrawn})
+        return ""
 
     async def _send_user_message(
         self,

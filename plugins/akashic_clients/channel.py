@@ -19,6 +19,7 @@ from plugins.channels.contract import (
     AttachmentReadLease,
     AttachmentRef,
     ChannelFactoryContext,
+    ChannelInboundMessage,
     ChannelPresentationPorts,
     ChannelReady,
     ChannelRuntimePorts,
@@ -30,7 +31,9 @@ from plugins.channels.contract import (
 from plugins.ledger.contract import MESSAGE_CATALOG, SESSION_ADMIN, SESSION_ADMISSION, SessionAdmission
 
 from .capabilities import (
+    CHANNEL_STEER,
     MESSAGE_DISPLAY,
+    ChannelSteer,
     PLUGIN_UI,
     REPLY_STATUS,
     WEB_UI,
@@ -287,6 +290,7 @@ class _GenerationAkashicAdapter:
             plugin_events=self._follow_plugin_ui,
         )
         self._web.bind_message_display(self._message_display)
+        self._web.bind_steer(self)
 
     @asynccontextmanager
     async def _open_request_scope(self) -> AsyncIterator[Any]:
@@ -331,6 +335,19 @@ class _GenerationAkashicAdapter:
 
         async with self._open_request_scope() as scope:
             yield cast(PluginUiProvider, scope.require(PLUGIN_UI))
+
+    # 插话是可选能力：对话插件缺席时 stage 返回 False，Web 改走普通发送。
+    async def stage(self, session_id: str, message_id: str, message: ChannelInboundMessage) -> bool:
+        async with self._open_request_scope() as scope:
+            with scope.borrow(CHANNEL_STEER) as service:
+                if service is None:
+                    return False
+                return await cast(ChannelSteer, service).stage(session_id, message_id, message)
+
+    async def withdraw(self, session_id: str, message_id: str) -> bool:
+        async with self._open_request_scope() as scope:
+            with scope.borrow(CHANNEL_STEER) as service:
+                return service is not None and cast(ChannelSteer, service).withdraw(session_id, message_id)
 
     async def _follow_session_activity(self) -> AsyncGenerator[frozenset[str] | None, None]:
         """短借当代 reader，订阅自己拥有生命周期；缺席明确返回不可用。"""

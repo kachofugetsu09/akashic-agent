@@ -201,6 +201,19 @@ CHANNEL_INPUT_V2 = ServiceKey[
 ]("channel.input.v2")
 
 
+class ChannelSteer(Protocol):
+    """生成中的插话：先暂存，回复在下一步模型请求之前写入；回合结束仍未写入的转成普通输入。"""
+
+    # 有可接纳插话的回复在进行时暂存并返回 True；否则返回 False，由渠道按普通输入发送。
+    async def stage(self, session_id: str, message_id: str, message: ChannelInboundMessage) -> bool: ...
+
+    # 撤回尚未写入的插话；已经交给模型的返回 False。
+    def withdraw(self, session_id: str, message_id: str) -> bool: ...
+
+
+CHANNEL_STEER = ServiceKey[ChannelSteer]("channel.steer.v1")
+
+
 class ChannelBindingLease(Protocol):
     @property
     def snapshot_id(self) -> str: ...
@@ -1069,6 +1082,8 @@ __all__ = [
     "ChannelTerminalStatus",
     "ChannelPresentationPorts",
     "ChannelInboundMessage",
+    "ChannelSteer",
+    "CHANNEL_STEER",
     "AttachmentKind",
     "AttachmentReadLease",
     "AttachmentRef",
