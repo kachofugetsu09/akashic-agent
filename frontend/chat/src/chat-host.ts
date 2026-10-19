@@ -28,8 +28,13 @@ export function hostLink(): ChatHostLink | null {
 // 页面上还有工作台等区域：window 级的按键与拖放只接发生在聊天里的事件；页面没有焦点（body）时，只在聊天可见时接。
 export function inChat(target: EventTarget | null): boolean {
   if (keyScope === null) return true;
-  if (!keyScope.isConnected || !keyScope.checkVisibility()) return false;
+  if (!shown(keyScope)) return false;
   return !(target instanceof Node) || target === document.body || keyScope.contains(target);
+}
+
+// 外壳换页（display:none）与工作台铺满（visibility:hidden）都保留聊天挂载；visibility 会继承，读根节点即可。
+function shown(scope: HTMLElement): boolean {
+  return scope.isConnected && scope.getClientRects().length > 0 && getComputedStyle(scope).visibility !== "hidden";
 }
 
 // 聊天自己的对话框、菜单、选择器（都挂在聊天根节点里）；工作台等区域的常驻列表不算。

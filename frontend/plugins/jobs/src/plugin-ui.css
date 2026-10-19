@@ -58,18 +58,17 @@
 }
 
 /* 窄屏标题行只留圆点和数字，触控热区放大到 44px。宽度断点按聊天根节点（ADR 0126），属性由 chat-layout 写入。 */
-:where([data-chat-width~="820"], [data-chat-touch]) {
-  .job-list__trigger { min-width: 44px; min-height: 44px; justify-content: center; }
-  .job-list__fold,
-  .job-list__clear { min-height: 40px; }
-}
+:where([data-chat-width~="820"], [data-chat-touch]) .job-list__trigger { min-width: 44px; min-height: 44px; justify-content: center; }
+
+:where([data-chat-width~="820"], [data-chat-touch]) .job-list__fold,
+:where([data-chat-width~="820"], [data-chat-touch]) .job-list__clear { min-height: 40px; }
 
 /* 窄屏标记不在行尾，面板改为贴视口两侧展开，避免向左溢出。 */
-:where([data-chat-width~="820"], [data-chat-short]) {
-  .job-list__summary { display: none; }
-  .job-list__count { display: inline; }
-  .job-list__panel { position: fixed; inset-block-start: calc(52px + env(safe-area-inset-top, 0px)); inset-inline: 12px; inline-size: auto; }
-}
+:where([data-chat-width~="820"], [data-chat-short]) .job-list__summary { display: none; }
+
+:where([data-chat-width~="820"], [data-chat-short]) .job-list__count { display: inline; }
+
+:where([data-chat-width~="820"], [data-chat-short]) .job-list__panel { position: fixed; inset-block-start: calc(52px + env(safe-area-inset-top, 0px)); inset-inline: 12px; inline-size: auto; }
 
 /* 停止按钮：平时是安静的方块，武装后展开成带字的确认胶囊，免得只靠颜色区分。 */
 .job-list__stop { display: inline-flex; grid-row: 1 / span 2; grid-column: 4; align-self: center; min-width: 28px; min-height: 28px; align-items: center; justify-content: center; gap: 4px; margin-left: 4px; padding: 0 6px; border: 1px solid transparent; border-radius: 999px; background: transparent; color: var(--chat-faint); font: inherit; font-size: var(--chat-type-caption, 0.75rem); cursor: pointer; }
@@ -79,6 +78,4 @@
 .job-list__stop:disabled { opacity: 0.5; cursor: progress; }
 .job-list__stop:focus-visible { outline: 2px solid var(--ak-rule-focus); outline-offset: 2px; }
 .job-list__dot[data-status="stopping"] { background: var(--ak-color-status-warning); }
-:where([data-chat-width~="820"], [data-chat-touch]) {
-  .job-list__stop { min-width: 40px; min-height: 40px; }
-}
+:where([data-chat-width~="820"], [data-chat-touch]) .job-list__stop { min-width: 40px; min-height: 40px; }
