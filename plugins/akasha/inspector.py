@@ -14,7 +14,7 @@ from plugins.ledger.contract import MessageCatalog
 from plugins.ledger.contract import CallRef, ContentPart, Input, Message, Output, ToolCall, ToolResult, json_value
 from plugins.tools.contract import durable_call_key
 from ._boundaries import Turn, TurnProjection
-from .contract import ContextSource, ProgramSource, Recall, ToolSource
+from .contract import ContextSource, Recall, ToolSource
 from .recalls import context_identity
 from .recall_tool import RecallReference
 
@@ -39,11 +39,9 @@ class RecallInspector:
     """只读查询事实与原消息，不把学习读出重算成实际召回。"""
 
     def __init__(self, *, read: Callable[[str], Recall | None],
-                 list_records: Callable[[], tuple[tuple[str, Recall], ...]],
                  legacy_page: Callable[[str], tuple[tuple[tuple[str, Recall], ...], str | None]],
                  catalog: MessageCatalog):
         self._read = read
-        self._list = list_records
         self._legacy_page = legacy_page
         self._catalog = catalog
         self._turns: _SourceTurns | None = None
@@ -107,14 +105,6 @@ class RecallInspector:
             earliest = min((item for item in self._legacy.get((session_id, source), ())
                             if after <= item[2] <= through), default=None)
             return (None if earliest is None else earliest[1]), False
-
-    def recent(self, *, page: int = 1, page_size: int = 30, session_id: str = "") -> dict[str, object]:
-        rows = tuple((identity, recall) for identity, recall in self._list()
-                     if not session_id or (not isinstance(recall.source, ProgramSource)
-                                           and recall.source.session_id == session_id))
-        start = (page - 1) * page_size
-        return self._ui_result({"items": [self._summary(identity, recall) for identity, recall in rows[start:start + page_size]],
-                                    "total": len(rows), "page": page, "page_size": page_size})
 
     def for_turn(self, session_id: str, message_id: str, source: str,
                  projection: TurnProjection, *, offset: int = 0) -> dict[str, object]:
@@ -236,13 +226,7 @@ class RecallInspector:
                 "ts": recall.timestamp.isoformat(), "source": origin, "graph_version": recall.graph_version,
                 "hit_count": len(recall.hits), "presented_count": len(recall.presented_message_ids)}
 
-    def plugin_detail(self, identity: str) -> dict[str, object] | None:
-        """命中和实际呈现分开显示；正文只从查询记录指向的原消息读取。"""
-        recall = self._read(identity)
-        if recall is None:
-            return None
-        return self._detail(identity, recall)
-
+    # 命中和实际呈现分开显示；正文只从查询记录指向的原消息读取。
     def _detail(self, identity: str, recall: Recall) -> dict[str, object]:
         hits: list[dict[str, object]] = []
         for hit in recall.hits:

@@ -24,11 +24,7 @@ export interface PluginUiCatalogItem {
   revision: string;
   moduleUrl: string;
   stylesheetUrl?: string;
-  navigation?: {
-    label: string;
-    description: string;
-  };
-  slots: Exclude<PluginUiSlotName, "dashboard.main">[];
+  slots: PluginUiSlotName[];
 }
 
 export interface PluginUiResult {
@@ -83,7 +79,7 @@ let staleCatalogRead: Promise<void> | null = null;
 let staleRecoveryAttempted = false;
 const quarantinedRevisions = new Map<string, Error>();
 const MODULE_LOAD_TIMEOUT_MS = 5_000;
-const SLOT_NAMES = new Set<Exclude<PluginUiSlotName, "dashboard.main">>([
+const SLOT_NAMES = new Set<PluginUiSlotName>([
   "turn.before_reasoning",
   "turn.after_answer",
   "tool.result",
@@ -158,9 +154,6 @@ function parseWebPluginCatalog(value: unknown): PluginUiCatalog {
       ? undefined
       : requireDigest(item.stylesheet_sha256, `plugins[${index}].stylesheet_sha256`);
     const slots = requireSlots(item.slots, index);
-    const navigation = item.navigation === null
-      ? undefined
-      : parseNavigation(item.navigation, index);
     return {
       id,
       revision: pluginRevision,
@@ -168,7 +161,6 @@ function parseWebPluginCatalog(value: unknown): PluginUiCatalog {
       stylesheetUrl: stylesheetSha256
         ? webPluginAssetUrl(id, pluginRevision, "stylesheet", stylesheetSha256)
         : undefined,
-      navigation,
       slots,
     } satisfies PluginUiCatalogItem;
   });
@@ -210,22 +202,14 @@ function requireDigest(value: unknown, label: string): string {
 function requireSlots(
   value: unknown,
   pluginIndex: number,
-): Exclude<PluginUiSlotName, "dashboard.main">[] {
+): PluginUiSlotName[] {
   if (!Array.isArray(value)) throw new Error(`plugins[${pluginIndex}].slots 无效`);
   return value.map((slot, slotIndex) => {
-    if (typeof slot !== "string" || !SLOT_NAMES.has(slot as Exclude<PluginUiSlotName, "dashboard.main">)) {
+    if (typeof slot !== "string" || !SLOT_NAMES.has(slot as PluginUiSlotName)) {
       throw new Error(`plugins[${pluginIndex}].slots[${slotIndex}] 无效`);
     }
-    return slot as Exclude<PluginUiSlotName, "dashboard.main">;
+    return slot as PluginUiSlotName;
   });
-}
-
-function parseNavigation(value: unknown, pluginIndex: number): PluginUiCatalogItem["navigation"] {
-  const navigation = requireRecord(value, `plugins[${pluginIndex}].navigation`);
-  return {
-    label: requireString(navigation.label, `plugins[${pluginIndex}].navigation.label`),
-    description: requireString(navigation.description, `plugins[${pluginIndex}].navigation.description`),
-  };
 }
 
 async function activateCatalog(next: PluginUiCatalog): Promise<boolean> {
@@ -283,13 +267,13 @@ function parseDefinition(value: unknown, plugin: PluginUiCatalogItem): PluginUiD
   if (!value || typeof value !== "object") {
     throw new Error(`插件界面必须默认导出定义对象: ${plugin.id}`);
   }
-  const raw = value as { slots?: unknown; dashboard?: unknown };
+  const raw = value as { slots?: unknown };
   const slots = raw.slots ?? {};
   if (!slots || typeof slots !== "object" || Array.isArray(slots)) {
     throw new Error(`插件界面 slots 无效: ${plugin.id}`);
   }
   for (const [name, renderer] of Object.entries(slots)) {
-    if (!SLOT_NAMES.has(name as Exclude<PluginUiSlotName, "dashboard.main">)) {
+    if (!SLOT_NAMES.has(name as PluginUiSlotName)) {
       throw new Error(`插件界面 slot 无效: ${plugin.id}.${name}`);
     }
     const valid = name === "composer.suggest" ? isSuggestProvider(renderer)
@@ -302,17 +286,7 @@ function parseDefinition(value: unknown, plugin: PluginUiCatalogItem): PluginUiD
   if (declaredSlots !== [...plugin.slots].sort().join("|")) {
     throw new Error(`插件界面 slots 与 catalog 不一致: ${plugin.id}`);
   }
-  const dashboard = raw.dashboard;
-  if (dashboard !== undefined && !isRenderer(dashboard)) {
-    throw new Error(`插件界面 dashboard renderer 无效: ${plugin.id}`);
-  }
-  if ((dashboard !== undefined) !== (plugin.navigation !== undefined)) {
-    throw new Error(`插件界面 dashboard 与 catalog navigation 不一致: ${plugin.id}`);
-  }
-  return {
-    slots: slots as PluginUiDefinition["slots"],
-    dashboard: dashboard as PluginUiRenderer | undefined,
-  };
+  return { slots: slots as PluginUiDefinition["slots"] };
 }
 
 function isRenderer(value: unknown): value is PluginUiRenderer {
@@ -802,7 +776,7 @@ function queryPlugin({ pluginId, pluginRevision, ownerId, slot, sessionId, messa
     const request: PendingQuery = {
       resolve, reject, ownerId: requestOwnerId, cacheKey, sharedKey, slot, started: false, abort,
       pluginId, method, sessionId, messageId, queuedAt: performance.now(),
-      interactive: isInteractiveSlot(slot) || (sharedKey !== undefined && !prefetch),
+      interactive: sharedKey !== undefined && !prefetch,
       send: () => {
         tracePluginQuery(requestId, request, "sent");
         request.timeout = window.setTimeout(() => {
@@ -868,7 +842,6 @@ async function queryWebPluginUi({
   turnId?: string;
   signal: AbortSignal;
 }): Promise<Record<string, unknown>> {
-  if (slot === "dashboard.main") throw new Error("Web 不开放插件独立面板");
   const response = await fetch("/api/chat/plugin-ui/query", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
@@ -984,10 +957,6 @@ function completePending(requestId: string, request: PendingQuery, shouldDrain =
   if (request.sharedKey) sharedQueries.delete(request.sharedKey);
   window.clearTimeout(request.timeout);
   if (shouldDrain) drainQueryQueue();
-}
-
-function isInteractiveSlot(slot: PluginUiSlotName): boolean {
-  return slot === "dashboard.main";
 }
 
 function createOwnerId(): string {

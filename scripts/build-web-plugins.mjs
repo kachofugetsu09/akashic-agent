@@ -113,7 +113,7 @@ await chatSlotModule("frontend/plugins/shell/src/plugin-ui.tsx", "shell/plugin_u
 await chatSlotModule("frontend/plugins/models/src/plugin-ui.tsx", "models/plugin_ui.js");
 // 项目的侧栏分组、新建表单与目录选择。
 await chatSlotModule("frontend/plugins/projects/src/plugin-ui.tsx", "projects/plugin_ui.js");
-// Akasha 的检索卡片、Inspector 与项目记忆设置共用一个模块。
+// Akasha 的每轮检索卡片与项目记忆设置共用一个模块。
 await chatSlotModule("frontend/plugins/akasha/src/plugin-ui.js", "akasha/message_ui.js");
 
 // 网站卡片经消息附件插槽挂载，与“网站”标签的 Web 模块分开打包。

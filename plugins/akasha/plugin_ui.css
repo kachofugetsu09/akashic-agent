@@ -1,5 +1,4 @@
-.akasha-plugin-ui-recall-group,
-.akasha-plugin-ui-inspector {
+.akasha-plugin-ui-recall-group {
   --akasha-plugin-ui-rule:
     color-mix(in oklch, var(--ak-color-text-primary) 12%, transparent);
   --akasha-plugin-ui-rule-strong:
@@ -254,113 +253,6 @@
   color: var(--ak-color-status-error);
 }
 
-.akasha-plugin-ui-inspector {
-  display: flex;
-  min-height: 100%;
-  flex-direction: column;
-  gap: 14px;
-  padding: 4px 2px 24px;
-}
-
-.akasha-plugin-ui-inspector > header {
-  padding: 14px 16px;
-  border-radius: var(--akasha-plugin-ui-radius);
-  background: var(--ak-color-bg-surface);
-  box-shadow: var(--akasha-plugin-ui-shadow);
-}
-
-.akasha-plugin-ui-inspector h2 {
-  margin: 0;
-  color: var(--ak-color-text-primary);
-  font-size: 1.125rem;
-  font-weight: 650;
-  line-height: 1.2;
-  letter-spacing: -0.02em;
-  overflow-wrap: anywhere;
-  text-wrap: balance;
-}
-
-.akasha-plugin-ui-inspector header > p {
-  margin: 6px 0 0;
-  color: var(--ak-color-text-secondary);
-  font-size: 0.8125rem;
-  line-height: 1.5;
-  text-wrap: pretty;
-}
-
-.akasha-plugin-ui-inspector header .akasha-plugin-ui-time {
-  margin: 0 0 6px;
-  color: var(--akasha-plugin-ui-accent);
-  font-size: 0.75rem;
-  font-variant-numeric: tabular-nums;
-  font-weight: 500;
-  letter-spacing: 0.01em;
-}
-
-.akasha-plugin-ui-turns {
-  margin: 0;
-  overflow: hidden;
-  padding: 0;
-  border-radius: var(--akasha-plugin-ui-radius);
-  background: var(--ak-color-bg-surface);
-  box-shadow: var(--akasha-plugin-ui-shadow);
-  list-style: none;
-}
-
-.akasha-plugin-ui-turns li {
-  border-bottom: 1px solid var(--akasha-plugin-ui-rule);
-}
-
-.akasha-plugin-ui-turns li:last-child {
-  border-bottom: 0;
-}
-
-.akasha-plugin-ui-turns button {
-  display: grid;
-  width: 100%;
-  min-height: 56px;
-  gap: 5px;
-  padding: 12px 14px;
-  border: 0;
-  color: var(--ak-color-text-primary);
-  background: transparent;
-  cursor: pointer;
-  font: inherit;
-  text-align: start;
-  transition-property: background-color, scale;
-  transition-duration: 150ms;
-  transition-timing-function: var(--akasha-plugin-ui-ease);
-}
-
-.akasha-plugin-ui-turns button:hover {
-  background: var(--akasha-plugin-ui-accent-soft);
-}
-
-.akasha-plugin-ui-turns button:active {
-  scale: 0.96;
-}
-
-.akasha-plugin-ui-turns button:focus-visible {
-  outline: 2px solid var(--akasha-plugin-ui-accent);
-  outline-offset: -2px;
-}
-
-.akasha-plugin-ui-turns button > span {
-  display: -webkit-box;
-  overflow: hidden;
-  font-size: 0.875rem;
-  line-height: 1.45;
-  -webkit-box-orient: vertical;
-  -webkit-line-clamp: 2;
-}
-
-.akasha-plugin-ui-turns button small {
-  color: var(--ak-color-text-secondary);
-  font-size: 0.75rem;
-  font-variant-numeric: tabular-nums;
-  line-height: 1.35;
-}
-
 .akasha-plugin-ui-back {
   width: fit-content;
   min-height: 44px;
@@ -485,7 +377,6 @@
 
 @media (prefers-reduced-motion: reduce) {
   .akasha-plugin-ui-recall summary,
-  .akasha-plugin-ui-turns button,
   .akasha-plugin-ui-back {
     transition-duration: 0ms;
   }

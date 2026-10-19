@@ -13,7 +13,7 @@ from uuid import uuid4
 from agent.plugin_composition import Context, CompositionError, Effect, FiberState
 from plugins.ui.contract import (
     UI_SLOTS, PLUGIN_UI_SLOTS, PluginUiAsset, PluginUiBinding, PluginUiDefinition,
-    PluginUiDescriptor, PluginUiFollowHandler, PluginUiNavigation, PluginUiQueryHandler,
+    PluginUiDescriptor, PluginUiFollowHandler, PluginUiQueryHandler,
 )
 
 
@@ -81,9 +81,6 @@ class PluginUiSlots:
             raise TypeError("插件 Plugin UI follow 必须可调用")
         if available is not None:
             _validate_sync_callable(available, "available")
-        navigation = definition.navigation
-        if navigation is not None and not isinstance(navigation, PluginUiNavigation):
-            raise TypeError("插件 Plugin UI navigation 必须是 PluginUiNavigation")
         runtime = ctx.runtime
         if ctx.fiber.state is not FiberState.LOADING and ctx.fiber.state is not FiberState.ACTIVE:
             raise CompositionError(
@@ -94,10 +91,6 @@ class PluginUiSlots:
             runtime.plugin_dir,
             module=definition.module,
             stylesheet=definition.stylesheet,
-            navigation_label=None if navigation is None else navigation.label,
-            navigation_description=(
-                None if navigation is None else navigation.description
-            ),
             slots=tuple(definition.slots),
         )
         binding = PluginUiBinding(
@@ -107,8 +100,6 @@ class PluginUiSlots:
                 module_bytes=asset.module_bytes,
                 stylesheet_sha256=asset.stylesheet_sha256,
                 stylesheet_bytes=asset.stylesheet_bytes,
-                navigation_label=asset.navigation_label,
-                navigation_description=asset.navigation_description,
                 slots=asset.slots,
             ),
             asset=asset,
@@ -168,8 +159,6 @@ def resolve_plugin_ui_asset(
     *,
     module: str,
     stylesheet: str | None,
-    navigation_label: str | None,
-    navigation_description: str | None,
     slots: tuple[str, ...],
 ) -> PluginUiAsset:
     """Validate and freeze plugin-owned plugin UI static assets."""
@@ -178,8 +167,6 @@ def resolve_plugin_ui_asset(
     _validate_plugin_ui_metadata(
         module=module,
         stylesheet=stylesheet,
-        navigation_label=navigation_label,
-        navigation_description=navigation_description,
         slots=slots,
     )
 
@@ -199,8 +186,6 @@ def resolve_plugin_ui_asset(
     return _build_plugin_ui_asset(
         module_path,
         stylesheet_path,
-        navigation_label=navigation_label,
-        navigation_description=navigation_description,
         slots=slots,
     )
 
@@ -209,8 +194,6 @@ def _validate_plugin_ui_metadata(
     *,
     module: str,
     stylesheet: str | None,
-    navigation_label: str | None,
-    navigation_description: str | None,
     slots: tuple[str, ...],
 ) -> None:
     if (
@@ -227,17 +210,6 @@ def _validate_plugin_ui_metadata(
         or Path(stylesheet).is_absolute()
     ):
         raise RuntimeError("插件 UI stylesheet 必须是非空相对路径")
-    if (navigation_label is None) != (navigation_description is None):
-        raise RuntimeError("插件 UI navigation 无效")
-    if navigation_label is not None and (
-        not isinstance(navigation_label, str)
-        or not navigation_label.strip()
-        or len(navigation_label) > 64
-        or not isinstance(navigation_description, str)
-        or not navigation_description.strip()
-        or len(navigation_description) > 160
-    ):
-        raise RuntimeError("插件 UI navigation 无效")
     if not isinstance(slots, tuple) or any(
         not isinstance(slot, str) or slot not in PLUGIN_UI_SLOTS for slot in slots
     ):
@@ -250,8 +222,6 @@ def _build_plugin_ui_asset(
     module_path: Path,
     stylesheet_path: Path | None,
     *,
-    navigation_label: str | None,
-    navigation_description: str | None,
     slots: tuple[str, ...],
 ) -> PluginUiAsset:
     """Read validated assets and attach content hashes and byte sizes."""
@@ -275,14 +245,6 @@ def _build_plugin_ui_asset(
             else None
         ),
         stylesheet_bytes=len(stylesheet_encoded),
-        navigation_label=(
-            None if navigation_label is None else navigation_label.strip()
-        ),
-        navigation_description=(
-            None
-            if navigation_description is None
-            else navigation_description.strip()
-        ),
         slots=slots,
     )
 
