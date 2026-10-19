@@ -34,7 +34,7 @@ class ReadFileTool(_FileTool):
     def description(self) -> str:
         return (
             "读取文件内容。文本文件输出带行号格式（如 '     1→内容'），便于 edit_file 精确定位。"
-            "图片文件由多模态模型直接查看；若非多模态，会提示使用 read_image_vision 工具。\n"
+            "图片文件由多模态模型直接查看；若非多模态，结果会提示未提供图片内容。\n"
             "文本读取默认受 400 行和 10KB 双重上限保护；大文件须用 limit 分页，不要依赖自动截断后的续读。\n\n"
             "推荐策略：先 limit=50 预览文件结构，再按需读取目标行段（offset=N limit=M）。\n"
             "明显二进制文件不会按文本硬解码，会提示改用 shell 查看。\n"

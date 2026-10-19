@@ -92,6 +92,9 @@ plugin = "sites_tab@release"
 [rows."standard_tools"]
 plugin = "standard_tools@release"
 
+[rows."vision"]
+plugin = "vision@release"
+
 # Web 工具与提供方默认关闭：启用 standard_web 后，再启用一个搜索提供方和一个读取提供方。
 [rows."standard_web"]
 plugin = "standard_web@release"

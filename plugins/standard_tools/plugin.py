@@ -21,8 +21,6 @@ from .shell import register_shell
 from .skills import register_skills
 from .working_directory import WorkingDirectories
 from .directory_tool import register_directory
-from .vision import register_vision
-from plugins.models.contract import CHAT_MODELS
 from .agents import read_agents, directory_material
 from plugins.ledger.contract import Message
 
@@ -31,7 +29,7 @@ name = "standard_tools"
 version = "1.0.0"
 desc = "提供文件、命令与技能读取工具"
 inject = (BINDINGS, TASKS, TOOLS, PROCESSES, FILES, ARTIFACT_IMPORT, MATERIALS_V4, INSTALLED_ASSETS,
-          OWNER_STATE, SESSION_ADMISSION, CHAT_MODELS)
+          OWNER_STATE, SESSION_ADMISSION)
 
 
 
@@ -61,7 +59,6 @@ async def apply(ctx: Context) -> None:
 
     _ = await catalog.declare_group(ctx, always_on=True, description=desc)
     await register_directory(ctx, directories)
-    await register_vision(ctx, directories)
     for backend in (ReadFileTool, ListDirTool, WriteFileTool, EditFileTool):
         await register_file(
             ctx,

@@ -13,8 +13,9 @@ from plugins.host_execution.contract import FILES, FileError, FileImage
 from plugins.ledger.contract import ContentPart, json_value
 from plugins.models.contract import CHAT_MODELS, ModelError, ModelRequest
 
+from plugins.standard_tools.contract import WorkingDirectories
+
 from ._tool_boundary import TOOLS, CallSource, ToolResultValue
-from .working_directory import WorkingDirectories
 
 
 class VisionInput(BaseModel):
@@ -87,6 +88,6 @@ async def register_vision(ctx: Context, directories: WorkingDirectories) -> None
 
     await ctx.require(TOOLS).register(
         ctx, name="read_image_vision",
-        description="主模型无法直接看图时，通过 vision 角色读取图片并返回文本。提供图片 path 和具体 prompt；没有可用视觉模型会明确失败。",
+        description="主模型无法直接看图（结果提示未提供图片内容）时，通过 vision 角色读取图片并返回文本。提供图片 path 和具体 prompt；没有可用视觉模型会明确失败。",
         parameters=VisionInput.model_json_schema(), open=open_tool,
     )
