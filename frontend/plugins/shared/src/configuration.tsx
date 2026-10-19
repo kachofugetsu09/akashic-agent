@@ -273,7 +273,7 @@ function Configuration({ctx, definition, embed}: {ctx: WebHostContextV1; definit
     } finally { if (inFlightRequest.current === id) inFlightRequest.current = null; }
   };
   return <article ref={article} className={`config-form ${embed.embedded ? "is-embedded" : ""}`} aria-busy={busy}>
-    {!embed.embedded && <header><span className="config-kicker">功能设置</span><h1>{definition.title}</h1><p>{definition.description}</p></header>}
+    {!embed.embedded && <header><h1>{definition.title}</h1><p>{definition.description}</p></header>}
     {error && <div className="config-error" role="alert"><p>{error}</p><button type="button" disabled={busy && !sessionStorage.getItem(pendingKey) && !sessionStorage.getItem(lastKey)} onClick={() => { const id = sessionStorage.getItem(pendingKey) ?? sessionStorage.getItem(lastKey); if (busy && id) { void poll(id); return; } if (dirty) setLeave(() => () => { void load(); }); else void load(); }}>重新加载</button></div>}
     {!status ? !error && <p role="status">正在读取配置…</p> : <form onSubmit={event => void save(event)}>
       {/* 引导（intent="enable"）自己说明阻塞原因；设置详情页照常显示原因与禁用的开关。 */}
