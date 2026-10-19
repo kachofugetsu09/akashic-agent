@@ -127,8 +127,8 @@ function useCapsuleState(context: PluginUiContext<"composer.toolbar">, composer:
 function useCapsuleSubscriptions(context: PluginUiContext<"composer.toolbar">, composer: ComposerControls, load: () => Promise<void>, sent: () => void): boolean {
   const [busy, setBusy] = useState(() => composer.busy());
   useEffect(() => {
-    void load();
     const stopShown = context.onShown(() => void load());
+    void load();
     const stopInvalidate = context.onInvalidate(() => setBusy(composer.busy()));
     const stopSent = composer.onSent(sent);
     return () => {

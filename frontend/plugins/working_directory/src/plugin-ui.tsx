@@ -48,11 +48,12 @@ function SessionDirectory({ context }: { context: PluginUiContext }) {
         if (request === latest) setError(reason instanceof Error ? reason.message : "目录状态未能刷新");
       }
     };
-    void refresh();
+    // 先订阅宿主能力再建计时器：宿主缺少能力时在这里失败，不留下无人清理的轮询。
     const onVisible = () => { void refresh(); };
-    const timer = window.setInterval(onVisible, 15000);
-    const unsubscribe = context.onInvalidate(onVisible);
     const stopShown = context.onShown(onVisible);
+    const unsubscribe = context.onInvalidate(onVisible);
+    const timer = window.setInterval(onVisible, 15000);
+    void refresh();
     return () => {
       latest = -1;
       unsubscribe();
