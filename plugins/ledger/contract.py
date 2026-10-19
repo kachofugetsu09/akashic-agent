@@ -457,6 +457,13 @@ class MessageWriters(Protocol):
         update: Callable[[Body], Mapping[str, object | None]],
     ) -> Effect: ...
 
+    # 片段 owner 登记由自己 kind 的片段派生的会话元数据；只有 bind 时声明 part_metadata 的写入者，
+    # 写入含该片段的 Input 时才在同一事务里应用。投影只能写登记的键，且不能与其他 owner 的键重叠。
+    async def register_part_metadata(
+        self, ctx: Context, *, kind: str, keys: frozenset[str],
+        update: Callable[[ContentPart], Mapping[str, object | None]],
+    ) -> Effect: ...
+
     def bind(
         self,
         ctx: Context,
@@ -468,6 +475,7 @@ class MessageWriters(Protocol):
         check_call: Callable[[ToolCall], None] | None = None,
         update_metadata: Callable[[Body], Mapping[str, object | None]] | None = None,
         check_metadata: Callable[[Mapping[str, object]], None] | None = None,
+        part_metadata: bool = False,
     ) -> Callable[..., MessageWriter]: ...
 
 

@@ -7,6 +7,7 @@ from plugins.models.contract import MODEL_SELECTION as MODEL_SELECTION
 
 SESSION_MODEL_SELECTION_KEY = "model_selection"
 LEGACY_MODEL_OVERRIDE_KEY = "model_runtime_override"
+SAVED_SELECTION_KEYS = frozenset({SESSION_MODEL_SELECTION_KEY, LEGACY_MODEL_OVERRIDE_KEY})
 
 
 def check_selection(part: ContentPart) -> ContentReferences:
@@ -74,6 +75,14 @@ def write_saved(
         "model_ref": selection.model_id,
         "reasoning_effort": selection.reasoning_effort or "",
     }
+
+
+# 会话接纳的 model.selection 片段就是新的保存选择；与正文同事务写入，旧的 runtime override 一并清除。
+def saved_from_part(part: ContentPart) -> Mapping[str, object | None]:
+    value = cast(Mapping[str, str | None], part.value)
+    selected: dict[str, object] = {}
+    write_saved(selected, ChatModelSelection(value["model_id"], value["reasoning_effort"]))
+    return {SESSION_MODEL_SELECTION_KEY: selected.get(SESSION_MODEL_SELECTION_KEY), LEGACY_MODEL_OVERRIDE_KEY: None}
 
 
 class SelectionOwner:
