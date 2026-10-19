@@ -110,8 +110,9 @@ def _read_pause(reader: MessageReader, source: str, hint: object) -> Message | N
     head = reader.head(source=source)
     if not isinstance(hint, int) or hint < 0 or head <= hint:
         return None
+    # 暂停之后可能紧接着又有新输入（停止后马上发送），只看任务边界之后最近的控制是不是暂停。
     latest = reader.latest_control(source, through_seq=head)
-    if latest is not None and latest.seq == head and isinstance(latest.body, Control) and latest.body.action == "pause":
+    if latest is not None and latest.seq > hint and isinstance(latest.body, Control) and latest.body.action == "pause":
         return latest
     return None
 
