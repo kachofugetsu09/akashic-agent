@@ -34,9 +34,10 @@
 | 用户气泡上限 | `.chat-main` 的 `--chat-bubble-max` | `.user-bubble` |
 | 输入卡文字 inset | `.chat-main` 的 `--composer-text-inset` | composer padding、stats 行 |
 | 侧栏留白 | `--chat-rail-inline` | 侧栏所有行的左竖线 |
-| 抽屉遮罩 | `:root` 的 `--chat-scrim` | 窄屏侧栏抽屉、模型/思考强度底部抽屉 |
+| 浮层遮罩 | `:root` 的 `--ak-scrim-overlay` | 设置弹窗、模型弹窗、窄屏侧栏与模型/思考强度抽屉（`--chat-scrim` 转接） |
+| 浮层阴影 | `:root` 的 `--ak-elevation-overlay` | 设置弹窗、模型弹窗、配置确认弹窗 |
 
-遮罩只压暗、不提亮：基于 `--ak-color-shadow`（深色主题为黑），不得用墨色混色——深色主题的墨色是浅色，会把背景刷灰。深色底需要更高不透明度（22% / 45%，`light-dark()`，不支持时 28%）。
+遮罩只压暗、不提亮：基于 `--ak-color-shadow`（深色主题为黑），不得用墨色混色——深色主题的墨色是浅色，会把背景刷灰。深色底需要更高不透明度（22% / 45%，`light-dark()`，不支持时 28%）。浮层阴影同样基于 `--ak-color-shadow`，深色主题不产生浅色光晕。
 
 新组件不得新增 `--md-sys-*` 直接依赖（旧 namespace 是迁移期 transport alias）；不得为设想中的组件提前发布 token；同一几何值出现在两处时，先收进上表的某个 owner。
 
