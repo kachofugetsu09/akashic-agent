@@ -29,6 +29,7 @@ import {
 } from "./use-sidebar-rail";
 import type { NavigationRowAction } from "./navigation-row-menu";
 import { getHostShortcuts } from "./shell-workbench";
+import { PluginUiSlot } from "./plugin-ui-runtime";
 import { chatLayerOpen, keyForChat } from "./chat-host";
 
 export interface DesktopSidebarSession extends Omit<ConversationSession, "active" | "state"> {
@@ -642,6 +643,7 @@ export const DesktopSidebar = memo(function DesktopSidebar({
         onSessionPrefetch={onPrefetchSession}
         pendingSessionId={pendingSessionId}
       />
+      {activeSessionId && <PluginUiSlot name="drawer.panel" sessionId={activeSessionId} quiet />}
       </div>
       <div className="chat-sidebar__footer">
         {railActions.map((action) => (

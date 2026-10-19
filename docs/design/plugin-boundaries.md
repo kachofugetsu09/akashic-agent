@@ -55,7 +55,7 @@ R9 的领域词表与扫描范围都偏窄。
 
 ## 目标扩展点
 
-聊天前端补一组通用槽位，与现有 `turn.before_reasoning`、`turn.after_answer`、`message.attachment` 同一套目录、资产与查询协议（没有使用者的 `turn.before_tool`、`drawer.panel` 已删除）：
+聊天前端补一组通用槽位，与现有 `turn.before_reasoning`、`turn.after_answer`、`message.attachment` 同一套目录、资产与查询协议（没有使用者的 `turn.before_tool` 已删除；`drawer.panel` 仍由受支持的外部 status_commands 插件使用）：
 
 | 扩展点 | 形态 | 宿主负责 | 首个使用者 |
 |---|---|---|---|

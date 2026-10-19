@@ -4,6 +4,7 @@ import type { ComponentType, ReactNode } from "react";
 export type PluginUiSlotName =
   | "turn.before_reasoning"
   | "turn.after_answer"
+  | "drawer.panel"
   | "tool.result"
   | "message.attachment"
   | "chat.notice"
@@ -74,6 +75,8 @@ export interface PluginUiSlotFacts {
   /** 输入框工具位；新会话还没有 sessionId。 */
   "composer.toolbar": { sessionId?: string; composer: ComposerControls };
   "composer.status": { sessionId: string };
+  /** 会话导航下的插件面板；没有会话时不挂载。 */
+  "drawer.panel": { sessionId: string };
   /** 新建某个维度取值的表单里的附加设置；取值尚未产生。 */
   "scope.fields": { scope: { dimension: string }; fields: ScopeFieldControls };
   /** 跟在某个取值名字后面，位于可点击的行里，只放不可交互的短文字。 */

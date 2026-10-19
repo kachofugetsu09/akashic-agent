@@ -416,3 +416,11 @@
     animation: marquee-pingpong var(--marquee-duration, 4s) linear 0.35s infinite;
   }
 }
+
+/* Only a mounted plugin reserves space below the session list. */
+.plugin-ui-slot[data-slot="drawer.panel"] {
+  position: relative;
+  z-index: 2;
+  min-height: 80px;
+  flex: 0 0 auto;
+}
