@@ -444,7 +444,7 @@ export const DesktopSidebar = memo(function DesktopSidebar({
       setDrag(null);
     },
   });
-  // 目录未解析/归档不改变 Session.scope；回退到最近会话也不获得置顶资格。
+  // 目录未解析/归档不改变 Session.scope；这类会话回退到最近会话，仍可在全局置顶。
   const { expandGroup } = navigationPins;
   const activeGroupKey = groups?.active ? groupKey(groups.active) : "";
   useEffect(() => { if (activeGroupKey) expandGroup(activeGroupKey); }, [activeGroupKey, expandGroup]);
@@ -653,8 +653,8 @@ export const DesktopSidebar = memo(function DesktopSidebar({
         onSessionRename={onRenameSession ? (session, title) => onRenameSession(session.id, title) : undefined}
         sessionActions={(session) => {
           const row = allSessions.find((item) => item.id === session.id);
-          return row && !row.scoped
-            ? pinAction({ kind: "session", id: row.id }, false) : [];
+          // 分组已不在的会话也落在这里，同样可以置顶（后端已接受带分组的会话）。
+          return row ? pinAction({ kind: "session", id: row.id }, false) : [];
         }}
         onSessionActivate={onSelectSession}
         onSessionPrefetch={onPrefetchSession}
