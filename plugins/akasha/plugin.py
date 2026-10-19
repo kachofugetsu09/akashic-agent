@@ -127,9 +127,6 @@ class RecallBinding(BaseModel):
         return self
 
 
-AKASHA_MEMORY_PATH = ServiceKey[Callable[[], Path]]("akasha.memory-path.v1")
-
-
 async def _register_ui(ctx: Context) -> None:
     await ctx.require(UI).register(
         ctx, web="web_module.js",
@@ -760,10 +757,8 @@ async def apply(ctx: Context) -> None:
     await ctx.provide(SEMANTIC_INTEREST, interest)
     state = ctx.require(OWNER_STATE).open(ctx)
     await ctx.provide(AKASHA_RECORDS_VIEW, lambda: RecallRecordsRead(state))
-    path = resolve_memory_path(ctx.workspace_root("memory"), config.settings().db_path)
-    await ctx.provide(AKASHA_MEMORY_PATH, lambda: path)
     async def worker(child: Context):
         await run(child, interest)
     function = await ctx.inject(function_inject, worker, name="function")
     await mount(ctx, Config, function)
-    await ctx.inject((UI, AKASHA_RECORDS_VIEW, AKASHA_MEMORY_PATH, MESSAGE_CATALOG, SETTINGS), _register_ui, name="ui")
+    await ctx.inject((UI, SETTINGS), _register_ui, name="ui")
