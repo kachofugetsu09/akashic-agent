@@ -992,6 +992,22 @@ input {
 .plugin-ui-slot[data-slot="scope.badge"] { display: flex; min-width: 0; max-width: 45%; }
 .plugin-ui-slot[data-slot="scope.badge"] > .plugin-ui-host { display: flex; min-width: 0; }
 
+/* 分组图标的线型：实线是默认；标签声明 data-scope-line 后，双线、虚线、点线画在文件夹上，不再多占一枚文字标签。
+   点线用圆端点、间距不小于 2.4，低分屏上也不会糊成实线。 */
+.folder-mark { flex: 0 0 auto; }
+.folder-mark__inner { display: none; }
+:is(.navigation-group__open, .new-chat-scope__option):has([data-scope-line="double"]) .folder-mark__inner { display: inline; }
+:is(.navigation-group__open, .new-chat-scope__option):has([data-scope-line="dashed"]) .folder-mark { stroke-dasharray: 3.2 2.6; }
+:is(.navigation-group__open, .new-chat-scope__option):has([data-scope-line="dotted"]) .folder-mark { stroke-dasharray: 0 2.8; stroke-width: 2.1; }
+.navigation-group__open [data-scope-line] {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  overflow: hidden;
+  clip-path: inset(50%);
+  white-space: nowrap;
+}
+
 .navigation-group__sessions {
   display: grid;
   min-width: 0;
@@ -1024,7 +1040,8 @@ input {
 }
 
 :where([data-chat-width~="820"], [data-chat-touch]) {
-  .navigation-group__new-chat { display: none; }
+  /* 触屏没有悬停：项目行的新建对话常驻，一次点按就在项目里开新会话。 */
+  .navigation-group__new-chat { width: 44px; height: 44px; }
   .navigation-group { --group-toggle-width: 44px; }
   .navigation-group__toggle { width: 44px; }
   .navigation-group__row,
@@ -1036,6 +1053,36 @@ input {
   /* 排序钮放到 44px 后，分组标题行不再叠 18px 上内边距：热区不变，搜索框到"最近会话"文字的空白 62→44px。 */
   .conversation-navigation__heading--section:has(.conversation-sort-trigger) { padding-block: 4px 0; }
 }
+
+/* 新会话空态的分组条：只在窄屏出现（宽屏有常驻侧栏），首条消息发出后随空态一起消失。 */
+.new-chat-scope { display: none; }
+:where([data-chat-width~="820"], [data-chat-touch]) .new-chat-scope {
+  display: inline-flex;
+  max-width: 100%;
+  min-height: 44px;
+  align-self: flex-start;
+  align-items: center;
+  gap: 8px;
+  border: 0;
+  border-radius: 999px;
+  padding-inline: 12px 10px;
+  color: var(--ak-ink-primary);
+  background: transparent;
+  font: inherit;
+  font-size: 0.875rem;
+  cursor: pointer;
+}
+.new-chat-scope[data-state="open"] { background: var(--ak-paper-sheet); }
+.new-chat-scope__dimension { color: var(--chat-muted); }
+.new-chat-scope__option { display: flex; min-width: 0; align-items: center; gap: 8px; }
+.new-chat-scope__option strong { min-width: 0; font-weight: 550; }
+.new-chat-scope__option > span { display: grid; min-width: 0; gap: 2px; }
+.new-chat-scope__option small { color: var(--ak-ink-secondary); font-size: 0.75rem; overflow-wrap: anywhere; }
+.new-chat-scope__blank { width: 18px; flex: 0 0 18px; }
+.new-chat-scope__menu { max-height: min(60vh, 420px); overflow-y: auto; }
+.new-chat-scope__menu .choice-menu__choice { justify-content: space-between; min-height: 44px; }
+.new-chat-scope__menu .choice-menu__choice > .new-chat-scope__option { display: flex; }
+.new-chat-scope__menu .plugin-ui-slot[data-slot="scope.badge"] { max-width: 100%; }
 
 .group-dialog-overlay { background: rgb(var(--ak-color-shadow-rgb) / 0.32); }
 

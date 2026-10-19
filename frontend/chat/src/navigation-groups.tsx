@@ -1,4 +1,4 @@
-import { ChevronRight, Folder, FolderPlus, Plus, SlidersHorizontal } from "lucide-react";
+import { ChevronRight, FolderPlus, Plus, SlidersHorizontal } from "lucide-react";
 import { useCallback, useEffect, useMemo, useRef, useState, type FormEvent } from "react";
 import type { NavigationControls, NavigationForm, NavigationFormControls, NavigationGroup } from "@akashic/chat-ui-v1";
 import { Dialog, DialogContent, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog";
@@ -163,6 +163,15 @@ export function GroupNavigation({
   </section>;
 }
 
+/** 分组图标。scope.badge 的标签带 data-scope-line（double / dashed / dotted）时，样式把线型换到这枚图标上，标签文字只留给读屏。 */
+export function FolderMark() {
+  return <svg className="folder-mark" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+    strokeWidth="1.75" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+    <path d="M20 20a2 2 0 0 0 2-2V8a2 2 0 0 0-2-2h-7.9a2 2 0 0 1-1.69-.9L9.6 3.9A2 2 0 0 0 7.93 3H4a2 2 0 0 0-2 2v13a2 2 0 0 0 2 2Z" />
+    <rect className="folder-mark__inner" x="5.5" y="9.5" width="13" height="7" rx="1" />
+  </svg>;
+}
+
 /** 插件给分组行的动作，每项打开一个宿主对话框。 */
 export function groupFormActions(source: NavigationGroupSource, group: NavigationGroup,
   onOpenForm: (request: GroupFormRequest) => void): NavigationRowAction[] {
@@ -210,7 +219,7 @@ export function GroupNavigationRow({
         title={`${open ? "收起" : "展开"} ${group.label}${group.detail ? ` · ${group.detail}` : ""}`}>
         {collapsedStatus
           ? <span className="navigation-group__icon"><SessionStatusMark status={collapsedStatus} /></span>
-          : <Folder size={18} strokeWidth={1.75} aria-hidden="true" />}
+          : <FolderMark />}
         <span className="navigation-group__name"><MarqueeText>{group.label}</MarqueeText></span>
         {/* 其他插件给这个取值的短标签，例如记忆范围；只放文字，没有插件时不占位。 */}
         <PluginUiSlot name="scope.badge" scope={{ dimension: groupRef.dimension, value: groupRef.id }} quiet />
