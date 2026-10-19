@@ -7,7 +7,7 @@ const UNCONFIRMED_GRACE_MS = 15_000;
 const UNCONFIRMED_NOTICE = "暂时无法确认宿主执行状态，正在重新检查。";
 
 // 只显示宿主执行连接状态；恢复连接不会恢复已经失效的命令句柄。
-function HostBridgeNotice({ context }: { context: PluginUiContext }) {
+function HostBridgeNotice({ context }: { context: PluginUiContext<"chat.notice"> }) {
   const [notice, setNotice] = useState("");
   useEffect(() => {
     let active = true;

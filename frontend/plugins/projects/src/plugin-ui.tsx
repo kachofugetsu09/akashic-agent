@@ -1,10 +1,11 @@
 import "./plugin-ui.css";
 import { useEffect, useRef, useState, type ReactNode } from "react";
 import {
-  render, type NavigationForm, type NavigationGroup, type NavigationGroupsProvider, type PluginUiContext,
+  render, type NavigationForm, type NavigationGroup, type NavigationGroupsProvider, type PluginUiHostContext,
+  type PluginUiNavigationContext, type PluginUiNavigationFormContext,
 } from "@akashic/chat-ui-v1";
 
-type Query = PluginUiContext["query"];
+type Query = PluginUiHostContext["query"];
 
 interface Project {
   id: string;
@@ -169,14 +170,14 @@ function DirectoryBrowser({ query, busy, onPage, children }: {
 }
 
 // 表单的提交状态由宿主持有，变化时经 onInvalidate 通知。
-function useBusy(context: PluginUiContext): boolean {
-  const [busy, setBusy] = useState(() => context.form?.busy() ?? false);
-  useEffect(() => context.onInvalidate?.(() => setBusy(context.form?.busy() ?? false)), [context]);
+function useBusy(context: PluginUiNavigationFormContext): boolean {
+  const [busy, setBusy] = useState(() => context.form.busy());
+  useEffect(() => context.onInvalidate(() => setBusy(context.form.busy())), [context]);
   return busy;
 }
 
 // 新建项目：名称与可选的默认目录；宿主按钮提交，scope.fields 的附加设置随 commitFields 在创建前保存。
-function CreateProject({ context }: { context: PluginUiContext }) {
+function CreateProject({ context }: { context: PluginUiNavigationFormContext }) {
   const [name, setName] = useState("");
   const [directory, setDirectory] = useState<string | null>(null);
   const [browsing, setBrowsing] = useState(false);
@@ -184,9 +185,9 @@ function CreateProject({ context }: { context: PluginUiContext }) {
   const busy = useBusy(context);
   const latest = useRef({ name, directory });
   latest.current = { name, directory };
-  useEffect(() => context.form?.onSubmit((commitFields) =>
+  useEffect(() => context.form.onSubmit((commitFields) =>
     createProject(context.query, latest.current.name.trim(), latest.current.directory, commitFields)), [context]);
-  useEffect(() => context.form?.setReady(Boolean(name.trim())), [context, name]);
+  useEffect(() => context.form.setReady(Boolean(name.trim())), [context, name]);
   return <div className="projects-ui-form">
     <label className="projects-ui-field">
       <span>项目名称</span>
@@ -211,21 +212,21 @@ function CreateProject({ context }: { context: PluginUiContext }) {
 }
 
 // 绑定目录：首次绑定由插件原子提交，不提供重绑或清空。
-function BindDirectory({ context, projectId }: { context: PluginUiContext; projectId: string }) {
+function BindDirectory({ context, projectId }: { context: PluginUiNavigationFormContext; projectId: string }) {
   const busy = useBusy(context);
   const page = useRef<string | null>(null);
-  useEffect(() => context.form?.onSubmit(async () => {
+  useEffect(() => context.form.onSubmit(async () => {
     if (!page.current) throw new Error("请先打开一个目录");
     projectOf(await context.query("project.bind_directory", { project_id: projectId, path: page.current }));
   }), [context, projectId]);
   return <div className="projects-ui-form">
     <p className="projects-ui-muted">目录可不设置。首次绑定后不可更改或清空；已有对话不变。</p>
-    <DirectoryBrowser query={context.query} busy={busy} onPage={(path) => { page.current = path; context.form?.setReady(Boolean(path)); }} />
+    <DirectoryBrowser query={context.query} busy={busy} onPage={(path) => { page.current = path; context.form.setReady(Boolean(path)); }} />
   </div>;
 }
 
 // 固定目录只读：显示执行主机上的当前状态。
-function FixedDirectory({ context, group }: { context: PluginUiContext; group: NavigationGroup }) {
+function FixedDirectory({ context, group }: { context: PluginUiNavigationFormContext; group: NavigationGroup }) {
   const [state, setState] = useState("正在检查执行主机…");
   const [error, setError] = useState("");
   useEffect(() => {
@@ -246,17 +247,17 @@ function FixedDirectory({ context, group }: { context: PluginUiContext; group: N
 }
 
 // 未确认的新建请求：仅在用户点“继续创建”时重试；没有请求时不渲染任何东西。
-function PendingProjects({ context }: { context: PluginUiContext }) {
+function PendingProjects({ context }: { context: PluginUiNavigationContext }) {
   const [snapshot, setSnapshot] = useState(listPending);
   const [busyKey, setBusyKey] = useState("");
   const [error, setError] = useState("");
-  useEffect(() => context.onInvalidate?.(() => setSnapshot(listPending())), [context]);
-  const settle = () => { setSnapshot(listPending()); context.navigation?.reload(); };
+  useEffect(() => context.onInvalidate(() => setSnapshot(listPending())), [context]);
+  const settle = () => { setSnapshot(listPending()); context.navigation.reload(); };
   const resume = async (item: PendingRow) => {
     setBusyKey(item.key); setError("");
     try {
       const id = await finishProject(context.query, parsePending(item.key, localStorage.getItem(item.key)));
-      context.navigation?.startChat(id);
+      context.navigation.startChat(id);
     } catch (reason) {
       setError(message(reason, "继续创建失败"));
     } finally {
@@ -282,12 +283,12 @@ function PendingProjects({ context }: { context: PluginUiContext }) {
   </div>;
 }
 
-const mountWith = (view: (context: PluginUiContext) => ReactNode) =>
-  (host: HTMLElement, context: PluginUiContext) => render(host, view(context));
+const mountWith = <C,>(view: (context: C) => ReactNode) =>
+  (host: HTMLElement, context: C) => render(host, view(context));
 
 const directoryForm = (group: NavigationGroup): NavigationForm => group.detail
-  ? { title: "固定目录", mount: mountWith((context) => <FixedDirectory context={context} group={group} />) }
-  : { title: "选择执行主机目录", submitLabel: "绑定此目录", mount: mountWith((context) => <BindDirectory context={context} projectId={group.id} />) };
+  ? { title: "固定目录", mount: mountWith((context: PluginUiNavigationFormContext) => <FixedDirectory context={context} group={group} />) }
+  : { title: "选择执行主机目录", submitLabel: "绑定此目录", mount: mountWith((context: PluginUiNavigationFormContext) => <BindDirectory context={context} projectId={group.id} />) };
 
 const groups: NavigationGroupsProvider = {
   dimension: "project",
@@ -298,9 +299,9 @@ const groups: NavigationGroupsProvider = {
     return result.items.map(projectOf).filter((project) => !project.archived)
       .map((project) => ({ id: project.id, label: project.name, ...(project.directory ? { detail: project.directory } : {}) }));
   },
-  create: { title: "创建项目", submitLabel: "创建项目", mount: mountWith((context) => <CreateProject context={context} />) },
+  create: { title: "创建项目", submitLabel: "创建项目", mount: mountWith((context: PluginUiNavigationFormContext) => <CreateProject context={context} />) },
   actions: (group) => [{ label: group.detail ? "查看固定目录" : "选择目录", form: directoryForm(group) }],
-  notice: { mount: mountWith((context) => <PendingProjects context={context} />) },
+  notice: { mount: mountWith((context: PluginUiNavigationContext) => <PendingProjects context={context} />) },
 };
 
 export default { slots: { "navigation.groups": groups } };

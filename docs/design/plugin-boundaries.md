@@ -68,6 +68,8 @@ R9 的领域词表与扫描范围都偏窄。
 | 内容类型显示策略 | owner 为自己的内部内容注册 `message.display:<kind>` = `hidden_part` | 时间线隐藏 owner 声明的内部材料；展示方缺席的仍显示“无法展示此内容” | 所有内容类型 |
 | 插件推送 | `ctx.subscribe(topic)`，经现有 WebSocket 复用 | 连接、重连、背压 | 后台任务 |
 
+每个挂载插槽在 `@akashic/chat-ui-v1` 的 `PluginUiSlotFacts` 里登记宿主保证提供的事实（会话、消息、block、输入框或表单控制）。插件写 `PluginUiContext<"composer.toolbar">` 就拿到该插槽的必需字段，不再自己检查；宿主的 `PluginUiSlot` 按同一份类型要求挂载点传值，漏传或传错插槽的字段在编译期报错。
+
 插件前端模块通过页面 import map 共享宿主的 React 与 `@akashic/chat-ui-v1`（类型包 + 少量基础组件与令牌，
 与 Dashboard 的 `@akashic/web-ui-v1` 同一做法），保证视觉一致，也避免每个插件各打一份 React。
 

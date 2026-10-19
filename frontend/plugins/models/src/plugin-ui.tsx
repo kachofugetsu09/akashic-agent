@@ -8,9 +8,8 @@ import "./message-ui.css";
 const number = (value: unknown) => new Intl.NumberFormat("zh-CN").format(Number(value || 0));
 
 // 回答尾注：显示本轮全部模型调用的真实输出 token；没有完整用量时不占位。
-function answerUsage(host: HTMLElement, context: PluginUiContext) {
+function answerUsage(host: HTMLElement, context: PluginUiContext<"turn.after_answer">) {
   let active = true;
-  if (!context.messageId || !context.sessionId) throw new Error("Turn token 统计缺少消息上下文");
   host.classList.add("models-usage-tail-host");
   context.query("usage.message", { message_id: context.messageId }, { cache: "immutable" }).then((result) => {
     if (!active || typeof result.output_tokens !== "number") return;
@@ -28,9 +27,8 @@ function answerUsage(host: HTMLElement, context: PluginUiContext) {
 }
 
 // 输入框下方状态行：宿主在看着一轮跑完时挂载，这里读该会话最近一次调用给出终态摘要；读取失败只影响遥测，不报错。
-function callSummary(host: HTMLElement, context: PluginUiContext) {
+function callSummary(host: HTMLElement, context: PluginUiContext<"composer.status">) {
   let active = true;
-  if (!context.sessionId) return () => {};
   context.query("call.latest").then((result) => {
     if (!active || result.call === null) return;
     const stats = readModelCallStats(result.call);
@@ -68,7 +66,7 @@ interface CapsuleState {
 }
 
 // 胶囊的目录与选择：从同会话缓存或新对话交接恢复，读取结果按选择编辑版本取舍。
-function useCapsuleState(context: PluginUiContext, composer: ComposerControls): CapsuleState {
+function useCapsuleState(context: PluginUiContext<"composer.toolbar">, composer: ComposerControls): CapsuleState {
   const key = context.sessionId ?? "";
   const [adopted] = useState(() => {
     const taken = context.sessionId && !lastState.has(key) ? carried : null;
@@ -126,7 +124,7 @@ function useCapsuleState(context: PluginUiContext, composer: ComposerControls): 
 }
 
 // 回到页面或模型设置变更时重读；生成状态变化时刷新禁用态；宿主确认送达后交接选择。
-function useCapsuleSubscriptions(context: PluginUiContext, composer: ComposerControls, load: () => Promise<void>, sent: () => void): boolean {
+function useCapsuleSubscriptions(context: PluginUiContext<"composer.toolbar">, composer: ComposerControls, load: () => Promise<void>, sent: () => void): boolean {
   const [busy, setBusy] = useState(() => composer.busy());
   useEffect(() => {
     void load();
@@ -152,7 +150,7 @@ function useCapsuleSubscriptions(context: PluginUiContext, composer: ComposerCon
 }
 
 // 输入框里的模型胶囊：改过的选择随下一条消息作为 model.selection 片段发出，当前模型不可用时阻止发送并说明原因。
-function ModelCapsule({ context, composer }: { context: PluginUiContext; composer: ComposerControls }) {
+function ModelCapsule({ context, composer }: { context: PluginUiContext<"composer.toolbar">; composer: ComposerControls }) {
   const { state, error, selection, busy, load, choose } = useCapsuleState(context, composer);
   const errorId = useId();
   const modelId = (selection.dirty ? selection.runtimeId : selection.runtimeId || state?.sessionOverride) || state?.defaultRuntime || "";
@@ -185,10 +183,7 @@ const definition: PluginUiDefinition = {
     "turn.after_answer": { mount: answerUsage },
     "composer.status": { mount: callSummary },
     "composer.toolbar": {
-      mount: (host, context) => {
-        if (!context.composer) throw new Error("输入框工具位缺少宿主能力");
-        return render(host, <ModelCapsule context={context} composer={context.composer} />);
-      },
+      mount: (host, context) => render(host, <ModelCapsule context={context} composer={context.composer} />),
     },
   },
 };
