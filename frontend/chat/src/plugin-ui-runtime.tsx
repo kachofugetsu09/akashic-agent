@@ -83,6 +83,7 @@ const MODULE_LOAD_TIMEOUT_MS = 5_000;
 const SLOT_NAMES = new Set<PluginUiSlotName>([
   "turn.before_reasoning",
   "turn.after_answer",
+  "drawer.panel",
   "tool.result",
   "message.attachment",
   "chat.notice",

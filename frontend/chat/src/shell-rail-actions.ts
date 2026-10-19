@@ -22,7 +22,7 @@ function isRailAction(entry: unknown): entry is ShellRailActionItem {
     && candidate.iconSvg.startsWith("<svg");
 }
 
-/** 宿主下发的底栏动作投影；独立页面没有宿主，永远为空。 */
+/** 宿主下发的底栏动作投影；夹具页面没有宿主，永远为空。 */
 export function setShellRailActions(value: unknown): void {
   if (!Array.isArray(value)) return;
   current = value.filter(isRailAction);
@@ -44,13 +44,13 @@ export function activateShellRailAction(id: string): void {
   hostLink()?.activateRailAction(id);
 }
 
-/** 当前会话交给宿主转交工具区标签；新建对话尚未发送时为 null。独立页面没有宿主，静默。 */
+/** 当前会话交给宿主转交工具区标签；新建对话尚未发送时为 null。夹具页面没有宿主，静默。 */
 export function reportShellSession(sessionId: string): void {
   setWorkbenchSession(sessionId);
   hostLink()?.reportSession(sessionId || null);
 }
 
-/** 模态层开合时告知宿主，让它收起浮在页面上的控件。独立页面没有宿主，静默。 */
+/** 模态层开合时告知宿主，让它收起浮在页面上的控件。夹具页面没有宿主，静默。 */
 export function reportShellOverlay(open: boolean): void {
   hostLink()?.reportOverlay(open);
 }

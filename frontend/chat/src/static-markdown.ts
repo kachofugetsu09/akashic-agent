@@ -18,7 +18,7 @@ export function renderStaticMarkdown(markdown: string) {
   template.innerHTML = html;
   const root = template.content;
 
-  // 与流式正文一致，网页链接在新标签页打开，避免替换对话 iframe。
+  // 与流式正文一致，网页链接在新标签页打开，不离开当前页面。
   for (const link of root.querySelectorAll<HTMLAnchorElement>("a[href]")) {
     const href = link.getAttribute("href")!;
     if (!href || href.startsWith("#") || /^(?:mailto|tel):/iu.test(href)) continue;

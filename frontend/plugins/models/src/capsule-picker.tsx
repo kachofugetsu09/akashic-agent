@@ -102,12 +102,17 @@ function useFixedPanelStyle(open: boolean, triggerRef: RefObject<HTMLElement | n
     }
     place();
     window.addEventListener("resize", place);
+    // 聊天与工作台同页：拖动分隔条改变聊天宽度时窗口不 resize，跟随聊天根节点的尺寸重定位。
+    const chat = triggerRef.current?.closest(".akashic-chat");
+    const observer = chat ? new ResizeObserver(place) : null;
+    if (chat) observer?.observe(chat);
     // 非捕获：只跟随文档级滚动重定位。面板内部列表滚动不触发，
     // 否则每个滚轮帧都 setState 重渲染，长列表里滚动会被打断。
     window.addEventListener("scroll", place);
     return () => {
       window.removeEventListener("resize", place);
       window.removeEventListener("scroll", place);
+      observer?.disconnect();
     };
   }, [open, triggerRef, width]);
   return style;
@@ -127,9 +132,11 @@ function useDismissLayer(open: boolean, rootRef: RefObject<HTMLElement | null>, 
     function closeOnPointer(event: PointerEvent) {
       if (!rootRef.current?.contains(event.target as Node)) onClose(false);
     }
+    // 同一页面上还有工作台：焦点已经离开菜单时 Esc 只收起菜单，不把焦点抢回触发按钮。
     function closeOnEscape(event: KeyboardEvent) {
-      if (event.key !== "Escape") return;
-      onClose(true);
+      if (event.key !== "Escape" || event.defaultPrevented) return;
+      const active = document.activeElement;
+      onClose(active === document.body || !!rootRef.current?.contains(active));
     }
     document.addEventListener("pointerdown", closeOnPointer);
     document.addEventListener("keydown", closeOnEscape);

@@ -1,7 +1,7 @@
 import { micromark } from "micromark";
 import { useEffect, useRef, useState } from "react";
 import { copyText } from "./copy-text";
-import { keyForChat } from "./chat-host";
+import { chatLayerOpen, keyForChat } from "./chat-host";
 
 type CodeBlock = { code: string; language: string };
 const NOTICE_MS = 1800;
@@ -43,7 +43,7 @@ export function useCopyLastCode(replies: readonly string[], onError: (error: unk
     const onKeyDown = (event: KeyboardEvent) => {
       if (!(event.metaKey || event.ctrlKey) || !event.shiftKey || event.altKey || event.isComposing) return;
       if (event.code !== "Semicolon" || !keyForChat(event)) return;
-      if (document.querySelector("[role='dialog'], [role='menu'], [role='listbox'], [data-radix-popper-content-wrapper]")) return;
+      if (chatLayerOpen()) return;
       event.preventDefault();
       // 1. 找代码块；没有也给提示，免得按了没反应
       const block = lastCodeBlock(latest.current);

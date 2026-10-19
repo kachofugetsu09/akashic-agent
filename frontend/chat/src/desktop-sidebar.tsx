@@ -29,7 +29,8 @@ import {
 } from "./use-sidebar-rail";
 import type { NavigationRowAction } from "./navigation-row-menu";
 import { getHostShortcuts } from "./shell-workbench";
-import { keyForChat } from "./chat-host";
+import { PluginUiSlot } from "./plugin-ui-runtime";
+import { chatLayerOpen, keyForChat } from "./chat-host";
 
 export interface DesktopSidebarSession extends Omit<ConversationSession, "active" | "state"> {
   active: boolean;
@@ -213,7 +214,7 @@ function useSidebarShortcuts(sidebarRef: RefObject<HTMLElement | null>, searchRe
       if (!sidebar || sidebar.closest("[role='dialog']")) return;
       if (!(event.metaKey || event.ctrlKey) || event.altKey || event.isComposing || !keyForChat(event)) return;
       // 对话框、菜单、选择器打开时按键属于它们，不把焦点抢到背后或在背后开新会话。
-      if (document.querySelector("[role='dialog'], [role='menu'], [role='listbox'], [data-radix-popper-content-wrapper]")) return;
+      if (chatLayerOpen()) return;
       const key = event.key.toLowerCase();
       if (key === "k" && !event.shiftKey) {
         if (sidebar.offsetParent === null) return;
@@ -642,6 +643,7 @@ export const DesktopSidebar = memo(function DesktopSidebar({
         onSessionPrefetch={onPrefetchSession}
         pendingSessionId={pendingSessionId}
       />
+      {activeSessionId && <PluginUiSlot name="drawer.panel" sessionId={activeSessionId} quiet />}
       </div>
       <div className="chat-sidebar__footer">
         {railActions.map((action) => (

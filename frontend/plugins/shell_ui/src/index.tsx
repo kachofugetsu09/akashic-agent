@@ -297,7 +297,7 @@ function Shell({ pages, railActions, settings, settingsPlugins, http }: {
     };
   }, [settingsOpen, openSettings, closeSettings]);
 
-  // React 状态是对话框唯一 owner；原生 Esc 经 onCancel 走 closeSettings 的守卫。
+  // React 状态拥有开关；Esc 经 onCancel 走守卫，不让迟到的原生 close 事件关闭已重开的面板。
   useEffect(() => {
     const dialog = settingsDialog.current;
     if (!dialog) return;
@@ -493,7 +493,6 @@ function Shell({ pages, railActions, settings, settingsPlugins, http }: {
       tabIndex={-1}
       data-pane={settingsPane}
       onCancel={(event) => { event.preventDefault(); closeSettings(); }}
-      onClose={() => setSettingsOpen(false)}
     >
       <nav className="shell-settings-nav" aria-label="设置分节">
         <h2>功能设置</h2>

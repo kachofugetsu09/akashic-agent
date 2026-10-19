@@ -42,6 +42,10 @@ function stampChatBuild(): Plugin {
   return {
     name: "stamp-chat-build",
     apply: "build",
+    // watch 模式复用同一插件实例，每轮输出从零计数。
+    renderStart() {
+      stamped = 0;
+    },
     buildEnd() {
       const hash = createHash("sha256");
       for (const id of [...this.getModuleIds()].map((id) => id.split("?")[0]).sort()) {
