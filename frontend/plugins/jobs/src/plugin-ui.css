@@ -57,15 +57,15 @@
   50% { opacity: 0.35; }
 }
 
-/* 窄屏标题行只留圆点和数字，触控热区放大到 44px。 */
-@media (max-width: 820px), (hover: none) {
+/* 窄屏标题行只留圆点和数字，触控热区放大到 44px。宽度断点按聊天根节点（ADR 0126），属性由 chat-layout 写入。 */
+:where([data-chat-width~="820"], [data-chat-touch]) {
   .job-list__trigger { min-width: 44px; min-height: 44px; justify-content: center; }
   .job-list__fold,
   .job-list__clear { min-height: 40px; }
 }
 
 /* 窄屏标记不在行尾，面板改为贴视口两侧展开，避免向左溢出。 */
-@media (max-width: 820px), (max-height: 30rem) and (pointer: coarse) {
+:where([data-chat-width~="820"], [data-chat-short]) {
   .job-list__summary { display: none; }
   .job-list__count { display: inline; }
   .job-list__panel { position: fixed; inset-block-start: calc(52px + env(safe-area-inset-top, 0px)); inset-inline: 12px; inline-size: auto; }
@@ -79,6 +79,6 @@
 .job-list__stop:disabled { opacity: 0.5; cursor: progress; }
 .job-list__stop:focus-visible { outline: 2px solid var(--ak-rule-focus); outline-offset: 2px; }
 .job-list__dot[data-status="stopping"] { background: var(--ak-color-status-warning); }
-@media (max-width: 820px), (hover: none) {
+:where([data-chat-width~="820"], [data-chat-touch]) {
   .job-list__stop { min-width: 40px; min-height: 40px; }
 }

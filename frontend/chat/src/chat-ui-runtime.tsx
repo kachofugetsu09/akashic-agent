@@ -31,9 +31,11 @@ function HeaderMarker({ icon, label, alert = false, ariaLabel, panelLabel, child
       if (!rootRef.current?.contains(event.target as Node)) setOpen(false);
     };
     const onKey = (event: KeyboardEvent) => {
-      if (event.key !== "Escape") return;
+      if (event.key !== "Escape" || event.defaultPrevented) return;
       setOpen(false);
-      triggerRef.current?.focus();
+      // 焦点已经离开面板（例如在工作台里）时不抢回。
+      const active = document.activeElement;
+      if (active === document.body || rootRef.current?.contains(active)) triggerRef.current?.focus();
     };
     document.addEventListener("pointerdown", onPointer);
     document.addEventListener("keydown", onKey);

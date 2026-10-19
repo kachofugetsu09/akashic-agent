@@ -371,7 +371,8 @@
   translate: 0.5px -0.5px;
 }
 
-@media (max-width: 36rem) {
+/* 宽度断点按聊天根节点（ADR 0126：聊天与工作台同页，窗口宽度不等于聊天宽度），属性由 chat-layout 写入。 */
+:where([data-chat-width~="36rem"]) {
   .chat-main .model-picker {
     min-width: 0;
     max-width: 100%;
@@ -421,7 +422,7 @@
 /* 窄屏模型与思考强度面板是底部抽屉：贴底全宽、顶部圆角、遮罩压暗正文。
    内联定位来自宽屏贴触发器的算法，这里用 !important 统一覆盖。
    横屏或软键盘把视口压到 30rem 以下时仍是 inset 8px 的浮动盒子，抽屉外观只给常规高度。 */
-@media (max-width: 820px) and (min-height: 30.01rem) {
+:where([data-chat-width~="820"]:not([data-chat-low])) {
   .model-picker__panel,
   .model-effort__panel {
     inset: auto 0 0 0 !important;
@@ -435,7 +436,7 @@
   }
 }
 
-@media (max-width: 820px), (max-height: 30rem) and (pointer: coarse) {
+:where([data-chat-width~="820"], [data-chat-short]) {
   .model-picker__panel,
   .model-effort__panel {
     display: block;
@@ -464,7 +465,7 @@
   .model-picker__panel, .model-effort__panel, .picker-sheet-scrim { animation: none; }
 }
 
-@media (max-width: 820px) and (max-height: 30rem), (max-height: 30rem) and (pointer: coarse) {
+:where([data-chat-width~="820"][data-chat-low], [data-chat-short]) {
   .model-picker__panel,
   .model-effort__panel {
     inset: 8px !important;

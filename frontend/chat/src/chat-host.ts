@@ -1,4 +1,4 @@
-// 聊天与所在宿主之间的接口。外壳同文档挂载时由 conversation_ui 直接实现；iframe 里由消息适配实现；独立页面没有宿主。
+// 聊天与所在宿主之间的接口：conversation_ui 在外壳页面里挂载聊天时实现（ADR 0126）；夹具页面给空实现。
 import type { WorkbenchIntentStatus } from "./shell-workbench";
 
 /** 聊天到宿主：会话、遮罩、底栏动作激活与工具区意图。 */
@@ -25,16 +25,25 @@ export function hostLink(): ChatHostLink | null {
   return link;
 }
 
-// 同文档挂载时页面上还有工作台等区域：window 级的按键与拖放只接发生在聊天里（或页面没有焦点）的事件。
+// 页面上还有工作台等区域：window 级的按键与拖放只接发生在聊天里的事件；页面没有焦点（body）时，只在聊天可见时接。
 export function inChat(target: EventTarget | null): boolean {
-  return keyScope === null || !(target instanceof Node) || target === document.body || keyScope.contains(target);
+  if (keyScope === null) return true;
+  if (!keyScope.isConnected || !keyScope.checkVisibility()) return false;
+  return !(target instanceof Node) || target === document.body || keyScope.contains(target);
+}
+
+// 聊天自己的对话框、菜单、选择器（都挂在聊天根节点里）；工作台等区域的常驻列表不算。
+export const CHAT_LAYERS = "[role='dialog'], [role='menu'], [role='listbox'], [data-radix-popper-content-wrapper]";
+
+export function chatLayerOpen(selector: string = CHAT_LAYERS): boolean {
+  return (keyScope ?? document).querySelector(selector) !== null;
 }
 
 export function keyForChat(event: KeyboardEvent): boolean {
   return inChat(event.target);
 }
 
-// 独立页面与 iframe 里整页都是聊天，不设范围。
+// 聊天根节点即按键与浮层的范围；未挂载时不设范围。
 export function setKeyScope(scope: HTMLElement | null): () => void {
   keyScope = scope;
   return () => { if (keyScope === scope) keyScope = null; };

@@ -1,4 +1,4 @@
-// 聊天端与宿主工具区的意图、引用。只在有宿主时工作；独立页面没有接受者，调用方回到原有行为。
+// 聊天端与宿主工具区的意图、引用。只在有宿主时工作；夹具页面没有接受者，调用方回到原有行为。
 import { useSyncExternalStore } from "react";
 
 import { hostLink } from "./chat-host";

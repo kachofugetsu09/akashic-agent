@@ -16,7 +16,7 @@ import { isGeneratingChatStatus, type ChatStatus } from "./web-chat-status";
 import { useComposerSuggest } from "./composer-suggest";
 import { setComposerBusy } from "./composer-contributions";
 import { PluginUiSlot } from "./plugin-ui-runtime";
-import { inChat, keyForChat } from "./chat-host";
+import { CHAT_LAYERS, chatLayerOpen, inChat, keyForChat } from "./chat-host";
 import { chatPortalRoot } from "./chat-layout";
 
 export type ComposerFile = { filename?: string; mediaType?: string; url?: string; sizeBytes?: number };
@@ -30,11 +30,9 @@ export interface ComposerApi {
 }
 
 /** Own transient editor state while the app controller owns transport and durable chat state. */
-// 浮层打开时按键与拖放都属于浮层：读回复打字、窗口拖放都让路。
-const FLOATING_LAYER = "[role='dialog'], [role='menu'], [role='listbox'], [data-radix-popper-content-wrapper]";
-
+// 浮层打开时按键与拖放都属于浮层（chatLayerOpen）：读回复打字、窗口拖放都让路。
 // 自己在 document 上处理 Esc 的浮层：对话框、菜单、列表，以及标了 data-escape-layer 的非模态面板。
-const ESCAPE_LAYERS = "[role='dialog'], [role='menu'], [role='listbox'], [data-radix-popper-content-wrapper], [data-escape-layer]";
+const ESCAPE_LAYERS = `${CHAT_LAYERS}, [data-escape-layer]`;
 // 与服务端单个上传上限（web_chat.MAX_UPLOAD_BYTES）一致。
 const MAX_ATTACHMENT_MB = 50;
 // 一条消息最多带的附件数（与 Desktop 相同）。
@@ -218,7 +216,7 @@ export const DesktopComposer = memo(function DesktopComposer({
     // 生成中在输入框按 Esc 停止本轮（coding 工具的中断习惯）；输入法组合中的 Esc 属于输入法。
     // 有浮层开着时 Esc 先关浮层（浮层在 document 上自己监听），这一下不能顺带停掉生成。
     if (event.key === "Escape" && !native.isComposing && native.keyCode !== 229
-      && isGeneratingChatStatus(status) && !stopPending && !document.querySelector(ESCAPE_LAYERS)) {
+      && isGeneratingChatStatus(status) && !stopPending && !chatLayerOpen(ESCAPE_LAYERS)) {
       event.preventDefault();
       onStop();
       return;
@@ -434,7 +432,7 @@ function useTypeToCompose(textareaRef: { current: HTMLTextAreaElement | null }, 
       // 2. 焦点已在可编辑处，或有对话框/菜单/浮层打开时，按键属于它们。
       const active = document.activeElement;
       if (active instanceof HTMLElement && active.closest("input, textarea, select, [contenteditable]:not([contenteditable='false'])")) return;
-      if (document.querySelector(FLOATING_LAYER)) return;
+      if (chatLayerOpen()) return;
       const textarea = textareaRef.current;
       if (!textarea || textarea.disabled) return;
       textarea.focus();
@@ -586,7 +584,7 @@ function WindowFileDrop({ enabled, onActiveChange }: { enabled: boolean; onActiv
     let depth = 0;
     const isFileDrag = (event: DragEvent) => Array.from(event.dataTransfer?.types ?? []).includes("Files")
       && inChat(event.target);
-    const accepting = () => enabled && !document.querySelector(FLOATING_LAYER);
+    const accepting = () => enabled && !chatLayerOpen();
     const reset = () => { depth = 0; onActiveChange(false); };
     const onEnter = (event: DragEvent) => {
       if (!isFileDrag(event)) return void onActiveChange(false);

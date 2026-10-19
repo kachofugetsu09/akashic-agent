@@ -85,8 +85,8 @@ class SendFailed extends Error {}
 class HistoryUnavailable extends Error {}
 
 const RECONNECTING_NOTICE = "连接已断开，正在重新连接…";
-// 页面版本：独立页面由服务端注入 meta；同文档挂载时由挂载入口给出构建时写入的版本。
-let pageBuild = document.querySelector<HTMLMetaElement>('meta[name="akashic-build"]')?.content || null;
+// 页面版本：挂载入口给出构建时写入的版本；夹具页面没有，不做版本核对。
+let pageBuild: string | null = null;
 
 export function setPageBuild(build: string): void {
   pageBuild = build;
