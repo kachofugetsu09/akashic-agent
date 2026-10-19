@@ -171,14 +171,7 @@ def _shell_sources(sources: Path) -> None:
         'ToolCall("provider-call", "start_job", {})',
         'ToolCall("provider-call", "shell", {"command": "sleep 1; echo background-done", '
         '"description": "fixture background", "run_in_background": True, "yield_time_ms": 250})',
-    ).replace(_FIXTURE_CLEANUP, ""))
-
-
-# 真实 standard_tools 提供回合清理；夹具 provider 的同名服务会冲突。
-_FIXTURE_CLEANUP = '''    await ctx.provide(ServiceKey("tools.cleanup.v1"), partial(
-        shell_cleanup, ctx, ShellOwners(ctx), ctx.require(TASKS).open(ctx),
     ))
-'''
 
 
 def _collecting_shell_sources(sources: Path, *, tool: str, chain: bool) -> None:

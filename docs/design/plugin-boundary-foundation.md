@@ -221,9 +221,11 @@ reply 或 react 实现。客户端线上 JSON 字段不变；Python 服务 ABI �
 
 ### 9.4 回复收尾输入
 
-`run_reply` 的工具收尾由调用者显式注入；标准工具插件提供 `tools.cleanup.v1`。
-回复、调度、子任务、Wake 和候选验证各自在其消费位置声明窄 callable，不再由回复程序
-导入 shell 实现。资源清理仍由标准工具原 owner 执行，取消和失败沿既有 finally 路径收尾。
+`run_reply` 的工具收尾由调用者显式注入；`tools.cleanup.v1` 归工具 owner（tools 插件）提供：
+它划定本程序的工具调用、排空，再交给各工具注册时声明的 `release`。没有声明 `release`
+的工具不参与释放，因此回复程序不依赖任何具体工具插件。回复、调度、子任务、Wake 和候选
+验证各自在其消费位置声明窄 callable，不导入 shell 实现。资源清理仍由工具原 owner 执行
+（shell 的 `release` 终止回合分区进程），取消和失败沿既有 finally 路径收尾。
 来源插件只使用本地 SourceSession 结构，不导入 conversation 实现。
 `MessageReader` 通过既有公开 messages 模块提供；它读取 Core 权威 Message 日志，
 不授予任意 SQL、删除或外部发送能力，也不包含业务投影。

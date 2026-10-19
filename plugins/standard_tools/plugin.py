@@ -2,8 +2,6 @@ from plugins.host_execution.contract import PROCESSES, FILES
 from agent.plugin_composition import Context
 from plugins.ui.contract import UI_SLOTS, PluginUiDefinition, PluginUiRpcInvalidRequest
 from plugins.ledger.contract import ARTIFACT_IMPORT
-from plugins.ledger.contract import BINDINGS
-from agent.plugin_composition.tasks import TASKS
 from plugins.ledger.contract import OWNER_STATE, SESSION_ADMISSION
 from plugins.standard_tools.contract import WORKING_DIRECTORY
 
@@ -26,7 +24,7 @@ api_version = 3
 name = "standard_tools"
 version = "1.0.0"
 desc = "提供文件与命令工具"
-inject = (BINDINGS, TASKS, TOOLS, PROCESSES, FILES, ARTIFACT_IMPORT, MATERIALS_V4,
+inject = (TOOLS, PROCESSES, FILES, ARTIFACT_IMPORT, MATERIALS_V4,
           OWNER_STATE, SESSION_ADMISSION)
 
 
