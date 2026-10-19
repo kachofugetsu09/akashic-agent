@@ -740,6 +740,8 @@ class MessageReader(Protocol):
         self, source: str, *, after_seq: int, through_seq: int,
     ) -> int | None: ...
 
+    def result_committed(self, call: CallRef) -> bool: ...
+
     def scan_controls(
         self, consume: Callable[[Iterable[tuple[int, Control]]], _T], *,
         source: str, after_seq: int, through_seq: int,

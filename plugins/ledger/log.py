@@ -1364,6 +1364,19 @@ class MessageReader:
             ).fetchone()
         return None if row is None else row[0]
 
+    def result_committed(self, call: CallRef) -> bool:
+        """本调用的 ToolResult 是否已落盘；走 call_ref 唯一索引，不全前缀扫描。"""
+        with self._log._read(snapshot=False):
+            row = self._log._connection.execute(
+                "SELECT 1 FROM messages INDEXED BY message_call_result "
+                "WHERE json_extract(body,'$.kind')='tool_result' "
+                "AND json_extract(body,'$.call_ref.message_id')=? "
+                "AND json_extract(body,'$.call_ref.part_index')=? "
+                "AND session_key=? LIMIT 1",
+                (call.message_id, call.part_index, self._session_id),
+            ).fetchone()
+        return row is not None
+
     def scan_controls(
         self, consume: Callable[[Iterable[tuple[int, Control]]], _T], *,
         source: str, after_seq: int, through_seq: int,
@@ -1415,7 +1428,7 @@ class MessageReader:
             def messages() -> Generator[Message, None, None]:
                 cursor = after_seq
                 while cursor < head:
-                    page = self.read(after_seq=cursor, through_seq=head, source=source, limit=256)
+                    page = self.read(after_seq=cursor, through_seq=head, source=source, limit=1024)
                     if not page:
                         break
                     yield from page

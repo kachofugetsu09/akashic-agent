@@ -272,10 +272,7 @@ def _parallel(reader: MessageReader, tools: ToolMenu, call: CallRef) -> bool:
 
 def _committed(reader: MessageReader, call: CallRef) -> bool:
     """本调用的 ToolResult 已经在日志里；错误回执也算提交完成。"""
-    return reader.scan(lambda rows: any(
-        isinstance(message.body, ToolResult) and message.body.call_ref == call
-        for message in rows
-    ))
+    return reader.result_committed(call)
 
 
 async def _run_ordered(
