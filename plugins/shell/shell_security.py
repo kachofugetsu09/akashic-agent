@@ -25,17 +25,13 @@ _BANNED = frozenset(
     }
 )
 _NETWORK_CMDS = frozenset({"curl", "wget", "http", "httpie", "xh"})
-_NET_WRITE_FLAGS_CASE_SENSITIVE = frozenset({"-o", "-O", "-T", "-F"})
-_NET_WRITE_FLAGS_LOWER = frozenset(
+_NET_BLOCKED_FLAGS_CASE_SENSITIVE = frozenset({"-T", "-F"})
+_NET_BLOCKED_FLAGS_LOWER = frozenset(
     {
-        "--output",
-        "--remote-name",
         "--upload-file",
         "--form",
         "--form-string",
-        "--output-document",
         "--post-file",
-        "--download",
         "--offline",
         "@",
     }
@@ -95,7 +91,7 @@ def validate_network_command(
     *,
     tokens: list[str] | None = None,
 ) -> str | None:
-    """仅允许网络命令访问公网 HTTP(S)，并禁止本地文件传输。"""
+    """校验公网 HTTP(S) 和上传限制；下载遵循已有文件访问边界。"""
 
     if tokens is None:
         try:
@@ -108,16 +104,16 @@ def validate_network_command(
     if command_name not in _NETWORK_CMDS:
         return None
 
-    # 1. 拒绝写文件和上传参数。
+    # 1. 输出文件是下载，不是上传；目录约束由 restricted_dir 统一检查。
     for token in tokens[1:]:
         lowered = token.lower()
         if (
-            token in _NET_WRITE_FLAGS_CASE_SENSITIVE
-            or lowered in _NET_WRITE_FLAGS_LOWER
+            token in _NET_BLOCKED_FLAGS_CASE_SENSITIVE
+            or lowered in _NET_BLOCKED_FLAGS_LOWER
         ):
-            return f"网络命令参数 '{token}' 不被允许（禁止上传/写文件）"
-        if any(lowered.startswith(flag + "=") for flag in _NET_WRITE_FLAGS_LOWER):
-            return f"网络命令参数 '{token}' 不被允许（禁止上传/写文件）"
+            return f"网络命令参数 '{token}' 不被允许"
+        if any(lowered.startswith(flag + "=") for flag in _NET_BLOCKED_FLAGS_LOWER):
+            return f"网络命令参数 '{token}' 不被允许"
         if "=@" in token or token.startswith("@"):
             return f"网络命令参数 '{token}' 不被允许（禁止本地文件上传）"
 
@@ -157,6 +153,11 @@ def _validate_restricted_command(tokens: list[str], restricted_dir: Path) -> str
     if command_name in _RESTRICTED_SHELL_RUNNERS:
         return f"受限 shell 禁止启动解释器或二级 shell：{command_name}"
     for token in tokens[1:]:
+        # 带等号的输出参数也必须经过同一目录检查。
+        if command_name in _NETWORK_CMDS and token.startswith(("--output=", "--output-document=")):
+            token = token.split("=", 1)[1]
+        elif command_name == "curl" and token.startswith("-o"):
+            token = token[2:]
         if token.startswith("-") or token == "--":
             continue
         error = _validate_restricted_token(token, restricted_dir)

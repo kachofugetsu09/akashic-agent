@@ -12,6 +12,8 @@ from core.net.http import (
     HttpRequester,
     RequestBudget,
     get_default_http_requester,
+    http_error_detail,
+    redact_http_urls,
 )
 
 _MAX_BYTES = 5 * 1024 * 1024  # 5MB，与 OpenCode 一致
@@ -55,12 +57,8 @@ class HttpFetch:
                     "Accept-Language": "zh-CN,zh;q=0.9,en;q=0.8",
                 },
             )
-        except httpx.TimeoutException:
-            return _err(url, f"请求超时（>{timeout}s）")
-        except httpx.ConnectError:
-            return _err(url, "无法建立连接")
         except httpx.RequestError as exc:
-            return _err(url, f"请求失败：{exc}")
+            return _err(url, f"请求失败：{http_error_detail(exc)}")
 
         if resp.status_code != 200:
             return _err(url, f"HTTP {resp.status_code}")
@@ -134,7 +132,7 @@ class HttpFetch:
 
 
 def _err(url: str, msg: str) -> dict[str, object]:
-    return {"error": msg, "url": url}
+    return {"error": msg, "url": redact_http_urls(url)}
 
 
 def _to_markdown(raw_html: str) -> str:
