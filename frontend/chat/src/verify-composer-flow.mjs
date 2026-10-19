@@ -1,5 +1,5 @@
-/** 真实 Chromium/HTTP/WebSocket 验证输入区键盘与阅读交互：Esc 停止并退回排队、↑ 取回、引用回复聚焦、切回会话回到原位。
- * 排队本身的各种结局由 verify-follow-up-queue.mjs 覆盖。回合由脚本显式结束，不依赖定时器；
+/** 真实 Chromium/HTTP/WebSocket 验证输入区键盘与阅读交互：Esc 停止并退回插话、↑ 取回、引用回复聚焦、切回会话回到原位。
+ * 回合由脚本显式结束，不依赖定时器；
  * 用法：node frontend/chat/src/verify-composer-flow.mjs [--source <repo>] */
 import assert from 'node:assert/strict';
 import { createServer } from 'node:http';
@@ -98,6 +98,9 @@ ws.on('connection', socket => {
         through_seq: sessions.get(frame.session_id).items.length - 1, request_id: frame.request_id }));
       return replyStatus(frame.session_id, turns.has(frame.session_id));
     }
+    // 生成中的插话：夹具只暂存不写入，撤回总是成功。
+    if (frame.type === 'message.steer') return socket.send(JSON.stringify({ type: 'message.steer.result', request_id: frame.request_id, staged: true }));
+    if (frame.type === 'message.steer.withdraw') return socket.send(JSON.stringify({ type: 'message.steer.result', request_id: frame.request_id, withdrawn: true }));
     if (frame.type !== 'message.send') return;
     if (frame.text === '/stop') return turns.has(frame.session_id) && endTurn(frame.session_id, true);
     socket.send(JSON.stringify({ type: 'message.accepted', request_id: frame.request_id, session_id: frame.session_id }));
@@ -128,10 +131,10 @@ async function startTurn(page, text) {
   await waitFor(() => sent(text), '发送 ' + text);
   await page.waitForSelector('.composer-action-button[data-mode="stop"]');
 }
-async function queue(page, text) {
+async function steer(page, text) {
   await page.locator('.composer textarea').fill(text);
   await page.keyboard.press('Enter');
-  await page.locator('.composer-queued').filter({ hasText: text }).waitFor();
+  await page.locator('.steer-card').filter({ hasText: text }).waitFor();
 }
 const draft = page => page.locator('.composer textarea').inputValue();
 
@@ -143,15 +146,15 @@ try {
   await page.goto(origin + '/?session=' + encodeURIComponent('akashic:long'));
   await page.waitForSelector('.web-message-anchor');
 
-  // 3. 生成中 Esc 停止：发出 /stop，排队内容退回输入框且不发送。
+  // 3. 生成中 Esc 停止：发出 /stop，尚未交给模型的插话退回输入框且不发送。
   await startTurn(page, '第一问');
-  await queue(page, '退回的话');
+  await steer(page, '退回的话');
   await page.keyboard.press('Escape');
   await waitFor(() => sent('/stop'), 'Esc 发出 /stop');
-  await page.waitForSelector('.composer-queued', { state: 'detached' });
+  await page.waitForSelector('.steer-card', { state: 'detached' });
   assert.equal(await draft(page), '退回的话');
-  assert.ok(!sent('退回的话'), '停止后排队内容仍被发出');
-  report.checks.push({ case: 'escape stops and restores queue' });
+  assert.ok(!sent('退回的话'), '停止后插话仍被发出');
+  report.checks.push({ case: 'escape stops and restores steer' });
 
   // 4. 引用一条回复：焦点进输入框，引用条显示给人看的名字。
   const reply = page.locator('.web-message-anchor.timeline-output').last();

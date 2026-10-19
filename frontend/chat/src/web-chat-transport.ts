@@ -26,6 +26,7 @@ export type ChatFrame =
   | { type: "turn.output.completed"; session_id: string; turn_id: string; client_message_id?: string }
   | { type: "turn.interrupted"; request_id: string; session_id: string; status: string; message: string }
   | { type: "message.accepted"; request_id: string; session_id: string }
+  | { type: "message.steer.result"; request_id: string; staged?: boolean; withdrawn?: boolean }
   | { type: "error"; request_id: string; message: string }
   | { type: "pong"; request_id: string };
 
@@ -109,6 +110,11 @@ export function parseChatFrame(value: unknown): ChatFrame {
       break;
     case "message.accepted":
       requireStrings(frame, ["request_id", "session_id"]);
+      break;
+    case "message.steer.result":
+      requireStrings(frame, ["request_id"]);
+      if (frame.staged !== undefined && typeof frame.staged !== "boolean") throw new Error("message.steer.result.staged 格式无效");
+      if (frame.withdrawn !== undefined && typeof frame.withdrawn !== "boolean") throw new Error("message.steer.result.withdrawn 格式无效");
       break;
     case "error":
       requireStrings(frame, ["request_id", "message"]);
