@@ -505,6 +505,9 @@ class SessionAdmission(Protocol):
 
     def ensure(self, ctx: Context, session_id: str, attributes: SessionAttributes) -> SessionAttributes: ...
 
+    # 外部引用一个 scope 值（如置顶）前，用维度 owner 的接纳判定确认它当前可用；没有 owner 抛 PermissionError。
+    def check_scope(self, dimension: str, value: str) -> None: ...
+
     async def ensure_async(self, ctx: Context, session_id: str, attributes: SessionAttributes) -> SessionAttributes: ...
 
 

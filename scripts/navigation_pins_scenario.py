@@ -31,7 +31,6 @@ from plugins.ledger.contract import ContentPart, ContentReferences, Input
 from plugins.akashic_clients.chat_api import create_chat_app
 from plugins.akashic_clients.navigation import NavigationPreferences, PinReference
 from plugins.akashic_clients.web_chat import WebChatChannel
-from plugins.ui.contract import PluginUiStaleRevision, PluginUiRpcExecutionError
 from plugins.projects.plugin import Projects
 from plugins.ledger.log import MessageLog, SessionAttributes
 
@@ -41,26 +40,21 @@ def check(condition: bool, description: str) -> None:
     checks.append(description)
 
 
-class ProjectsQuery:
-    """HTTP provider fixture delegates the actual project.list to its real owner."""
+class ScopeCheck:
+    """Admission fixture: the project dimension delegates to the real Projects owner check."""
     def __init__(self, projects: Projects):
         self.projects = projects
         self.available = True
-        self.failure = None
         self.wait = None
         self.entered = None
 
-    async def catalog(self):
-        return {"items": [{"id": "projects", "revision": "fixture"}] if self.available else []}
-
-    async def query(self, plugin_id, revision, method, payload, **kwargs):
+    async def __call__(self, dimension, value):
         if self.wait is not None:
             self.entered.set()
             await self.wait.wait()
-        if self.failure is not None:
-            raise self.failure
-        assert (plugin_id, revision, method, payload) == ("projects", "fixture", "project.list", {})
-        return {"items": self.projects.list()}
+        if dimension != "project" or not self.available:
+            raise PermissionError(f"Session 维度没有 owner: {dimension}")
+        self.projects.check(value)
 
 
 def protected(path: Path):
@@ -92,9 +86,9 @@ async def run(root: Path):
     projects_before = log.owner("plugin:projects").list()
     store = log.owner("plugin:akashic_clients")
     navigation = NavigationPreferences(lambda: store)
-    provider = ProjectsQuery(projects)
+    provider = ScopeCheck(projects)
     app = create_chat_app(workspace=root, channel=WebChatChannel("akashic"), messages=log.catalog(),
-                          navigation=navigation, plugin_ui_provider=provider)
+                          navigation=navigation, check_scope=provider)
     transport = httpx.ASGITransport(app=app)
     async with httpx.AsyncClient(transport=transport, base_url="http://scenario") as client:
         async def update(kind, id, pinned=True):
@@ -103,17 +97,18 @@ async def run(root: Path):
         check(response.json() == {"pins": [], "sessions": []}, "empty preferences do not create an owner record")
         check(store.list() == (), "read-only empty GET writes no record")
         check(response.headers["cache-control"] == "no-store", "pins are not cached")
-        for key in keys[3:]:
+        for key in keys[2:]:
             check((await update("session", key)).status_code in (400, 422), "reject ineligible session " + key)
         for invalid in ["default", "fake", "p_" + "3" * 32, archived_id]:
             check((await update("project", invalid)).status_code in (400, 422), "reject invalid/unavailable project " + invalid)
+        check((await update("computer", "desk")).status_code == 400 and store.list() == (), "dimension without owner is rejected")
+        check((await update("Project", project_id)).status_code == 422, "dimension name follows the session scope grammar")
         check((await update("session", keys[0])).status_code == 200, "pin old session")
         previous = navigation.read()
-        for failure, status in ((PluginUiStaleRevision("changed"), 409), (PluginUiRpcExecutionError("failed"), 502)):
-            provider.failure = failure
-            check((await update("project", project_id)).status_code == status and navigation.read() == previous,
-                  "project provider " + type(failure).__name__ + " preserves existing preferences")
-        provider.failure = None
+        provider.available = False
+        check((await update("project", project_id)).status_code == 400 and navigation.read() == previous,
+              "dimension owner absence preserves existing preferences")
+        provider.available = True
         provider.wait, provider.entered = asyncio.Event(), asyncio.Event()
         pending_pin = asyncio.create_task(update("project", project_id))
         await provider.entered.wait()
@@ -127,8 +122,8 @@ async def run(root: Path):
         provider.wait = None
         check(navigation.read() == previous, "cancel during project validation writes no preference")
         check((await update("project", project_id)).status_code == 200, "pin real project")
-        check((await update("session", keys[2])).status_code == 200, "non-project scope dimension remains eligible")
-        expected = [{"kind": "session", "id": keys[0]}, {"kind": "project", "id": project_id}, {"kind": "session", "id": keys[2]}]
+        check((await update("session", keys[1])).status_code == 200, "unscoped session is eligible")
+        expected = [{"kind": "session", "id": keys[0]}, {"kind": "project", "id": project_id}, {"kind": "session", "id": keys[1]}]
         version = store.read("navigation:pins").version
         check((await update("session", keys[0])).json()["pins"] == expected, "retry preserves mixed stable order")
         check(store.read("navigation:pins").version == version, "retry has no redundant write")
@@ -230,6 +225,7 @@ async def composition(root_path: Path):
     adapter = declarations[-1].factory(ChannelFactoryContext("scenario", "scenario", "boot", "binding", {}, None, None,
                                                              data_root=root_path, open_scope=scope))
     app = create_chat_app(workspace=root_path, channel=adapter._web, navigation=adapter._state.navigation,
+                          check_scope=adapter._check_scope,
                           message_scope=adapter._message_scope, plugin_ui_scope=adapter._plugin_ui_scope)
     log.ensure_session("akashic:scoped", SessionAttributes())
     project_id = "p_" + "a" * 32
@@ -269,6 +265,6 @@ files = ["plugins/akashic_clients/" + name for name in ("navigation.py", "plugin
 report = {"head": subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=args.source, text=True).strip(),
           "source_sha256": {file: hashlib.sha256((args.source/file).read_bytes()).hexdigest() for file in files},
           "scenario_sha256": hashlib.sha256(Path(__file__).read_bytes()).hexdigest(), "checks": checks,
-          "limitations": ["ASGI in-process, no real browser/device or network listener", "Projects query transport is fixture delegating actual Projects owner", "CompositionRoot uses a registrar fixture; no formal installed distribution or network Channel start/stop"]}
+          "limitations": ["ASGI in-process, no real browser/device or network listener", "run() admission is a fixture delegating the actual Projects owner check; composition() uses the real SessionAdmission", "CompositionRoot uses a registrar fixture; no formal installed distribution or network Channel start/stop"]}
 args.output.write_text(json.dumps(report, ensure_ascii=False, indent=2) + "\n")
 print(f"{len(checks)} checks passed: {args.output}")

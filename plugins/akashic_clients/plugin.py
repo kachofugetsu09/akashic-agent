@@ -12,7 +12,7 @@ from plugins.channels.contract import CHANNEL_INPUT_V2 as CHANNEL_INPUT
 from .config import AkashicClientsConfig
 from .navigation import NavigationPreferences
 from .read_marks import ReadMarks
-from plugins.ledger.contract import OWNER_STATE, OwnerStore
+from plugins.ledger.contract import OWNER_STATE, SESSION_ADMISSION, OwnerStore
 
 api_version = 3
 name = "akashic_clients"
@@ -56,7 +56,7 @@ async def apply(ctx: Context) -> None:
                 ReadMarks(read_store),
             ),
             inbound_identity=InboundIdentity.PROVIDER_MESSAGE_ID,
-            optional_services=frozenset((REPLY_STATUS,)),
+            optional_services=frozenset((REPLY_STATUS, SESSION_ADMISSION)),
         ),
     )
 

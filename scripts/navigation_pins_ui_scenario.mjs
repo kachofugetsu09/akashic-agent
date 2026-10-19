@@ -71,8 +71,8 @@ try {
   const absentProjectId = "p_" + "b".repeat(32);
   const alpha = { id: projectId, name: "Alpha", archived: false, createdAt: "2026-09-30", memory: "global" };
   const ordinary = { id: "akashic:ordinary", title: "Ordinary", preview: "2 条消息", active: false };
-  const child = { id: "akashic:child", title: "Needle project chat", preview: "1 条消息", active: true, projectId, projectScoped: true };
-  const orphan = { id: "akashic:orphan", title: "Orphan project chat", preview: "1 条消息", active: false, projectId: absentProjectId, projectScoped: true };
+  const child = { id: "akashic:child", title: "Needle project chat", preview: "1 条消息", active: true, projectId, scoped: true };
+  const orphan = { id: "akashic:orphan", title: "Orphan project chat", preview: "1 条消息", active: false, projectId: absentProjectId, scoped: true };
   const old = { key: "akashic:old", first_message_content: "Older pinned chat", scope: {} };
   const missingPin = { kind: "project", id: "p_" + "c".repeat(32) };
   let serverPins = [{ kind: "session", id: old.key }, { kind: "project", id: projectId }];

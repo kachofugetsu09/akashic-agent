@@ -16,7 +16,7 @@ from pydantic import BaseModel, ConfigDict, Field
 
 from .static import current_chat_build, register_chat_assets
 from plugins.ui.contract import PluginUiSlot, read_message_rows, session_row
-from .navigation import NavigationPreferences, PinUpdate, check_project_pin, session_pin_row
+from .navigation import NavigationPreferences, PinUpdate, session_pin_row
 from .notifications import NotificationFeed, NotificationRequest, notification_events
 from .read_marks import ReadMarks
 from .session_activity import follow_session_activity
@@ -80,6 +80,7 @@ def create_chat_app(
     workspace: Path,
     channel: WebChatChannel,
     navigation: NavigationPreferences | None = None,
+    check_scope: Callable[[str, str], Awaitable[None]] | None = None,
     read_marks: ReadMarks | None = None,
     message_display: MessageDisplayReader | None = None,
     plugin_ui_provider: PluginUiProvider | None = None,
@@ -336,19 +337,9 @@ def create_chat_app(
             if request.pinned and reference not in navigation.read():
                 if reference.kind == "session":
                     if session_pin_row(catalog, reference.id) is None:
-                        raise HTTPException(status_code=400, detail="只能置顶没有项目归属的可见会话")
+                        raise HTTPException(status_code=400, detail="只能置顶不属于任何分组的可见会话")
                 else:
-                    try:
-                        if plugin_ui_scope is not None:
-                            async with plugin_ui_scope() as provider:
-                                await check_project_pin(provider, reference.id)
-                        else:
-                            await check_project_pin(_require_plugin_ui_provider(plugin_ui_provider), reference.id)
-                    except ValueError as error:
-                        raise HTTPException(status_code=400, detail=str(error)) from error
-                    except (PluginUiPluginUnavailable, PluginUiStaleRevision, PluginUiQueryOverloaded,
-                            PluginUiQueryTimeout, PluginUiRpcInvalidRequest, PluginUiRpcExecutionError) as error:
-                        raise _plugin_ui_http_error(error) from error
+                    await _check_scope_pin(check_scope, reference.kind, reference.id)
             navigation.update(reference, pinned=request.pinned)
         return await read_pins()
 
@@ -541,6 +532,7 @@ def build_chat_server(
     workspace: Path,
     channel: WebChatChannel,
     navigation: NavigationPreferences | None = None,
+    check_scope: Callable[[str, str], Awaitable[None]] | None = None,
     read_marks: ReadMarks | None = None,
     message_display: MessageDisplayReader | None = None,
     plugin_ui_provider: PluginUiProvider | None = None,
@@ -560,6 +552,7 @@ def build_chat_server(
             workspace=workspace,
             channel=channel,
             navigation=navigation,
+            check_scope=check_scope,
             read_marks=read_marks,
             message_display=message_display,
             plugin_ui_provider=plugin_ui_provider,
@@ -615,6 +608,20 @@ class ChatApiServer(uvicorn.Server):
             except TimeoutError:
                 pass
             should_exit = await self.on_tick(counter)
+
+
+# 维度值置顶交给该维度 owner 的接纳判定；owner 缺席或判定拒绝都不写入偏好。
+async def _check_scope_pin(
+    check: Callable[[str, str], Awaitable[None]] | None, dimension: str, value: str,
+) -> None:
+    if check is None:
+        raise HTTPException(status_code=503, detail="会话维度判定暂不可用")
+    try:
+        await check(dimension, value)
+    except PermissionError as error:
+        raise HTTPException(status_code=400, detail=f"没有插件负责这个维度: {dimension}") from error
+    except ValueError as error:
+        raise HTTPException(status_code=400, detail=str(error)) from error
 
 
 def _require_plugin_ui_provider(
