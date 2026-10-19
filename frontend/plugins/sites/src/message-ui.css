@@ -5,7 +5,7 @@
   gap: 12px;
   padding: 10px 52px 10px 14px;
   border: 1px solid var(--ak-rule-default);
-  border-radius: 10px;
+  border-radius: 12px;
   background: var(--ak-paper-sheet);
 }
 
