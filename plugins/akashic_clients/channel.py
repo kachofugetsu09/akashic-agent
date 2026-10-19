@@ -215,8 +215,7 @@ def build_akashic_channel_factory(owner: Context, config: AkashicClientsConfig, 
     return build
 
 
-_PLUGIN_UI_RETRY_MIN_S = 1.0
-_PLUGIN_UI_RETRY_MAX_S = 30.0
+_PLUGIN_UI_RETRY_S = 1.0
 
 
 class _GenerationAkashicAdapter:
@@ -376,25 +375,20 @@ class _GenerationAkashicAdapter:
                     "items": [dict(item) for item in frame],
                 }
 
-    # 1. 每代 UI owner 借一次查询目录并长跟随，插件推给自己界面的会话状态原样转发；
-    # 2. owner 关闭时跟随结束，退避后重新借用新一代。宿主不认识任何具体插件的状态。
+    # 1. 每代 UI owner 取一次查询目录并长跟随，插件推给自己界面的会话状态原样转发；
+    # 2. owner 关闭时跟随结束，稍等后重新取新一代。宿主不认识任何具体插件的状态。
+    # PLUGIN_UI 是本插件的必需能力（见 _resolve_capabilities），请求作用域里只能 require；
+    # borrow 只接受声明为可选的能力，误用会让整条 websocket 以 SERVICE_UNDECLARED 结束。
     async def _follow_plugin_ui(self, session_id: str, emit: PluginUiEmit) -> None:
-        delay = _PLUGIN_UI_RETRY_MIN_S
         while True:
             async with self._open_request_scope() as scope:
-                with scope.borrow(PLUGIN_UI) as service:
-                    provider = None if service is None else cast(PluginUiProvider, service)
-            if provider is None:
-                await asyncio.sleep(delay)
-                delay = min(delay * 2, _PLUGIN_UI_RETRY_MAX_S)
-                continue
-            delay = _PLUGIN_UI_RETRY_MIN_S
-            # 插件推送是可选界面：跟随出错只记录并退避重借，不连累同一连接上的消息订阅。
+                provider = cast(PluginUiProvider, scope.require(PLUGIN_UI))
+            # 插件推送是可选界面：跟随出错只记录并稍后重取，不连累同一连接上的消息订阅。
             try:
                 await provider.follow(session_id, emit)
             except Exception:
                 logger.exception("plugin ui follow stopped: %s", session_id)
-            await asyncio.sleep(delay)
+            await asyncio.sleep(_PLUGIN_UI_RETRY_S)
 
     def attach_runtime(self, ports: ChannelRuntimePorts) -> None:
         if self._stopped:
