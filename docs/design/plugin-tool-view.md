@@ -112,8 +112,8 @@ Output 仍为 continue 并计入原步数上限，所以取消、重启或新输
 | Plugin validation | 请求显式 `validation_tools`，未声明时为候选 Root 的完整 view | 只在候选隔离 Session 执行 |
 | Programmatic | 作为普通 Source 进入 reply，复用同一 presentation | 不新建独立工具池或来源特判 |
 
-conversation 的 always-on provider 是 `standard_tools`、`standard_web`、`tool_search` 和
-`message_push`；`tool_search` 提供 `load_tools`。`standard_tools` 拥有会话工作目录（`set_working_directory`、`standard_tools.working_directory.v1`、顶栏目录）；`files` 拥有 `read_file`、`list_dir`、`write_file`、`edit_file`（2026-10 拆出，工作目录在调用时借用，缺席时按配置目录访问）；`shell` 拥有 `shell`、`write_stdin`、`task_stop`（2026-10 拆出：进程归 host_execution，工作目录与后台作业通知在调用时借用，缺席时退回配置目录、不提供后台运行；收尾经 tools 的 `release`）；`skills` 拥有 `load_skill`、技能目录与 `prompt_sources.skills`（2026-10 按业务含义从 standard_tools 拆回，context 自带迁移把旧授权改给 `skills`）；`vision` 拥有 `read_image_vision`；
+conversation 的 always-on provider 是 `working_directory`、`files`、`shell`、`standard_web`、`tool_search` 和
+`message_push`；`tool_search` 提供 `load_tools`。`working_directory` 拥有会话工作目录（`set_working_directory`、`working_directory.v1`、顶栏目录；2026-10 由只剩工作目录的 standard_tools 改名，ledger 迁移把 owner state 改归新身份）；`files` 拥有 `read_file`、`list_dir`、`write_file`、`edit_file`（2026-10 拆出，工作目录在调用时借用，缺席时按配置目录访问）；`shell` 拥有 `shell`、`write_stdin`、`task_stop`（2026-10 拆出：进程归 host_execution，工作目录与后台作业通知在调用时借用，缺席时退回配置目录、不提供后台运行；收尾经 tools 的 `release`）；`skills` 拥有 `load_skill`、技能目录与 `prompt_sources.skills`（2026-10 按业务含义从 standard_tools 拆回，context 自带迁移把旧授权改给 `skills`）；`vision` 拥有 `read_image_vision`；
 `standard_web` 拥有 `web_fetch/web_search` 的参数形状与提供方选择，实际请求由 `web_search_exa`、`web_fetch_http` 等提供方插件经 `WEB_PROVIDERS` 登记完成；未配置时恰好一个提供方才自动选用，多个时要求在 `standard_web` 配置 `search_provider`/`fetch_provider`。`agent_restart` 是 `message_push` 在 supervised
 runtime 且完整送达依赖就绪时挂载的可选 child，因此沿用 `message_push` provider 组，不建立
 第二个插件 ID。Akasha 和外部公开 provider 默认只在按插件加载的结果中展示。

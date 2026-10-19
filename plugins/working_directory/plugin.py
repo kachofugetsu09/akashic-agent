@@ -2,7 +2,7 @@ from plugins.host_execution.contract import FILES
 from agent.plugin_composition import Context
 from plugins.ui.contract import UI_SLOTS, PluginUiDefinition, PluginUiRpcInvalidRequest
 from plugins.ledger.contract import OWNER_STATE, SESSION_ADMISSION
-from plugins.standard_tools.contract import WORKING_DIRECTORY
+from plugins.working_directory.contract import WORKING_DIRECTORY
 
 from plugins.context.contract import MATERIALS_V4
 from ._tool_boundary import TOOLS
@@ -12,7 +12,7 @@ from .agents import read_agents, directory_material
 from plugins.ledger.contract import Message
 
 api_version = 3
-name = "standard_tools"
+name = "working_directory"
 version = "1.0.0"
 desc = "管理会话工作目录"
 inject = (TOOLS, FILES, MATERIALS_V4,

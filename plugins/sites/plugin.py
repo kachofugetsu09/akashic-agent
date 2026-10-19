@@ -14,7 +14,7 @@ from pydantic import BaseModel, ConfigDict, Field, ValidationError
 
 from agent.plugin_composition import Context
 from plugins.ledger.contract import ARTIFACT_IMPORT, ArtifactImport, AttachmentKind, ContentPart, json_value
-from plugins.standard_tools.contract import WORKING_DIRECTORY, WorkingDirectories
+from plugins.working_directory.contract import WORKING_DIRECTORY, WorkingDirectories
 from plugins.tools.contract import TOOLS, CallSource, Result
 from plugins.ui.contract import UI, UI_SLOTS, PluginUiDefinition, PluginUiRpcInvalidRequest
 

@@ -664,7 +664,7 @@ def _build_stack(
             "react",
             "reply_program",
             "sources",
-            "standard_tools",
+            "working_directory",
             "tools",
             "turn_projection",
             "ui",

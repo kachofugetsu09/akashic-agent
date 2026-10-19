@@ -89,8 +89,8 @@ plugin = "sites@release"
 [rows."sites_tab"]
 plugin = "sites_tab@release"
 
-[rows."standard_tools"]
-plugin = "standard_tools@release"
+[rows."working_directory"]
+plugin = "working_directory@release"
 
 [rows."vision"]
 plugin = "vision@release"

@@ -104,7 +104,7 @@ const chatSlotModule = (source, outfile) => bundle({
   external: ["react", "react/jsx-runtime", "react-dom/client", "@akashic/chat-ui-v1"], outfile: resolve(pluginsRoot, outfile),
 });
 await chatSlotModule("frontend/plugins/host_execution/src/plugin-ui.tsx", "host_execution/plugin_ui.js");
-await chatSlotModule("frontend/plugins/standard_tools/src/plugin-ui.tsx", "standard_tools/plugin_ui.js");
+await chatSlotModule("frontend/plugins/working_directory/src/plugin-ui.tsx", "working_directory/plugin_ui.js");
 await chatSlotModule("frontend/plugins/skills/src/plugin-ui.tsx", "skills/plugin_ui.js");
 await chatSlotModule("frontend/plugins/jobs/src/plugin-ui.tsx", "jobs/plugin_ui.js");
 // Models 的回答尾注与输入框模型胶囊经插件界面插槽挂载，与设置页 Web 模块分开打包。

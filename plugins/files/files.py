@@ -26,7 +26,7 @@ from plugins.ledger.contract import ContentPart
 from plugins.ledger.contract import json_value
 
 from ._tool_boundary import CallSource, TOOLS, ToolRef, ToolResultValue
-from plugins.standard_tools.contract import WORKING_DIRECTORY
+from plugins.working_directory.contract import WORKING_DIRECTORY
 
 FileBackend = ReadFileTool | ListDirTool | WriteFileTool | EditFileTool
 

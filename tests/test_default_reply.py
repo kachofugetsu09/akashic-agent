@@ -40,7 +40,7 @@ async def application(tmp_path, *, replying, missing_tool=False, discovery=False
         "reply_program",
         "models",
         "reply",
-        "standard_tools",
+        "working_directory",
         "shell",
         "files",
         *(("tool_search",) if replying else ()),
@@ -189,7 +189,7 @@ async def apply(ctx):
     if extra_sources is not None:
         extra_sources(sources)
     from agent.plugins.bundles import set_plugin_choice
-    for name in {"models", *(() if shell else ("standard_tools", "shell", "files")), *(() if replying else ("reply",))}:
+    for name in {"models", *(() if shell else ("working_directory", "shell", "files")), *(() if replying else ("reply",))}:
         set_plugin_choice(workspace, name, enabled=False)
     host = PluginManager(
         [sources],

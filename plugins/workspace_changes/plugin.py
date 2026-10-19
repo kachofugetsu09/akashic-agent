@@ -5,7 +5,7 @@ from agent.plugin_composition import Context
 from plugins.host_execution.contract import PROCESSES
 from plugins.ledger.contract import MESSAGE_CATALOG, OWNER_STATE
 from plugins.sources.contract import SOURCE_CHANGED_V3
-from plugins.standard_tools.contract import WORKING_DIRECTORY
+from plugins.working_directory.contract import WORKING_DIRECTORY
 from plugins.turn_projection.contract import TURN_PROJECTION
 from plugins.ui.contract import UI, UI_SLOTS, PluginUiDefinition, PluginUiRpcInvalidRequest
 

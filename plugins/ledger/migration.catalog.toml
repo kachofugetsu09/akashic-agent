@@ -39,3 +39,9 @@ id = "20261011_01_derived_storage"
 path = "20261011_01_derived_storage.py"
 depends = ["20261007_01_message_prefix_revision"]
 transactional = true
+
+[[migrations]]
+id = "20261019_01_working_directory_owner"
+path = "20261019_01_working_directory_owner.py"
+depends = ["20261011_01_derived_storage"]
+transactional = true
