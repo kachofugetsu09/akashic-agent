@@ -5,6 +5,7 @@ import { useEffect, useRef, useState, type ReactNode } from "react";
 import { ChevronDown } from "lucide-react";
 import { copyText } from "./copy-text";
 import { MarqueeText } from "./marquee-text";
+import { formatToolDuration, PreviewText, ToolDataValue } from "./tool-result-view";
 import {
   DropdownMenu, DropdownMenuContent, DropdownMenuRadioGroup,
   DropdownMenuRadioItem, DropdownMenuTrigger,
@@ -107,6 +108,9 @@ const ChatUi = {
   MarqueeText,
   ChoiceMenu,
   copyText,
+  ToolText: PreviewText,
+  ToolData: ToolDataValue,
+  formatDuration: formatToolDuration,
 };
 
 export type ChatUiRuntime = typeof ChatUi;

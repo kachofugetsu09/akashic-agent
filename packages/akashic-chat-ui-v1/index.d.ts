@@ -5,6 +5,7 @@ export type PluginUiSlotName =
   | "turn.before_reasoning"
   | "turn.before_tool"
   | "turn.after_answer"
+  | "tool.result"
   | "message.attachment"
   | "drawer.panel"
   | "chat.notice"
@@ -151,6 +152,17 @@ export interface ComposerControls {
   onSent(callback: () => void): () => void;
 }
 
+/**
+ * tool.result 插槽的 block：一次调用的名称、参数和已解析的结果值。
+ * 宿主只把它交给注册该工具的插件；accepts 返回 false 时退回通用数据展示。
+ */
+export interface ToolResultFacts {
+  name: string;
+  arguments: unknown;
+  value: unknown;
+  error: boolean;
+}
+
 export interface PluginUiRenderer {
   accepts?(block: unknown): boolean;
   prefetch?(context: PluginUiContext): Promise<void>;
@@ -220,4 +232,9 @@ export const ChoiceMenu: ComponentType<{
 }>;
 /** 过长时滚动显示的单行文字。 */
 export const MarqueeText: ComponentType<{ children: ReactNode; still?: boolean }>;
+/** 工具结果里的长文本：先给预览（tail 看末尾，否则看开头），可原地展开全文。 */
+export const ToolText: ComponentType<{ text: string; tail: boolean; className: string }>;
+/** 工具结果的通用数据展示：结构可展开，标量保留原文。 */
+export const ToolData: ComponentType<{ value: unknown }>;
+export function formatDuration(durationMs: number): string;
 export function copyText(text: string): Promise<void>;

@@ -14,7 +14,7 @@
 | `programmatic.v1` | Fleet Proactive Feedback/GitHub Watch 调用程序入口 |
 | `subagent.program.v1` | 私有程序 binding；Tools 固定，Subagents 恢复时打开 |
 | `wake.program.v1` | 私有程序 binding；Wake runtime 固定，source 恢复时打开 |
-| `tools.display-name.v1` | ContentView 读取工具显示名，静态目录可见 |
+| `tools.display.v2` | 聊天消息投影读取工具名与注册它的插件（owner），owner 决定谁能渲染结果 |
 | `shell.owners.v1` | 无消费者，删除服务；实际 ShellOwners 资源清理仍保留 |
 | `standard_tools.skill_inspection.v1` | RuntimeInspection `_bind_optional` 装配可选读取子 Fiber，目录记录 helper 实参 |
 | `message.display:*` | UI 按内容 kind 动态借用 Context/Models renderer |

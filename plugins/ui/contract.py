@@ -22,6 +22,7 @@ from agent.plugin_composition.model import ServiceKey
 
 from plugins.ledger.contract import MessagePage, MessageReader, SessionEntry
 from plugins.ledger.contract import ContentPart, Control, Input, Message, Output, ToolCall, ToolResult, json_value
+from plugins.tools.contract import ToolDisplay
 
 DashboardRoute = APIRoute | WebSocketRoute
 
@@ -109,6 +110,7 @@ PluginUiSlot = Literal[
     "turn.before_reasoning",
     "turn.before_tool",
     "turn.after_answer",
+    "tool.result",
     "drawer.panel",
     "message.attachment",
     "chat.notice",
@@ -126,6 +128,7 @@ PLUGIN_UI_SLOTS = frozenset(
         "turn.before_reasoning",
         "turn.before_tool",
         "turn.after_answer",
+        "tool.result",
         "drawer.panel",
         "message.attachment",
         "chat.notice",
@@ -313,7 +316,7 @@ def hidden_part(part: ContentPart) -> Mapping[str, object]:
 class MessageDisplayProviders:
     """一次页面投影使用的只读回调；调用者负责同代 lease。"""
 
-    tool_name: Callable[[str], str] | None = None
+    tool_display: Callable[[str], ToolDisplay] | None = None
     part_display: Mapping[str, PartDisplayProvider] = field(default_factory=dict)
     result_values: Mapping[tuple[str, int], object] = field(default_factory=dict)
 
@@ -437,18 +440,20 @@ def _message_row(
 
 
 def _tool_call(part: ToolCall, *, providers: MessageDisplayProviders) -> dict[str, object]:
-    """只通过工具 owner 的名称回调展示 binding，不解析或重开工具。"""
-    name_reader = providers.tool_name
-    if name_reader is None:
+    """只通过 tools 的展示回调读取名称与 owner，不解析或重开工具；owner 决定谁能渲染结果。"""
+    reader = providers.tool_display
+    if reader is None:
         return {
             "kind": "tool_call",
             "binding_id": part.binding_id,
             "display": "unavailable",
         }
+    display = reader(part.binding_id)
     return {
         "kind": "tool_call",
         "binding_id": part.binding_id,
-        "name": name_reader(part.binding_id),
+        "name": display.name,
+        **({"owner": display.owner} if display.owner is not None else {}),
         "arguments": json_value(part.arguments),
     }
 

@@ -38,7 +38,8 @@ from plugins.tools.contract import (
     ALL_TOOLS as ALL_TOOLS,
     TOOL_BIND_SAVED as TOOL_BIND_SAVED,
     TOOL_CLEANUP as TOOL_CLEANUP,
-    TOOL_DISPLAY_NAME as TOOL_DISPLAY_NAME,
+    TOOL_DISPLAY as TOOL_DISPLAY,
+    ToolDisplay,
     TOOLS as TOOLS,
     ToolRef as ToolRef,
     ToolRelease,
@@ -55,7 +56,7 @@ from .api import (
     ProviderBoundTool,
     Result,
     coerce_result,
-    display_name,
+    display_tool,
     result_message_id,
 )
 from .cleanup import Release, tool_cleanup
@@ -600,11 +601,11 @@ async def apply(ctx: Context) -> None:
     _ = await ctx.provide(TOOL_PROGRAM, ToolProgramFactory(ctx, catalog))
     _ = await ctx.provide(ALL_TOOLS, catalog._all_view)
 
-    def read_name(binding_id: str) -> str:
-        """只读原 binding 的名称；诊断消费者不能打开或执行工具。"""
-        return display_name(ctx.require(BINDINGS).describe(binding_id, TOOLS))
+    def read_display(binding_id: str) -> ToolDisplay:
+        """只读原 binding 的名称与 owner；展示消费者不能打开或执行工具。"""
+        return display_tool(ctx.require(BINDINGS).describe(binding_id, TOOLS))
 
-    _ = await ctx.provide(TOOL_DISPLAY_NAME, read_name)
+    _ = await ctx.provide(TOOL_DISPLAY, read_display)
     watcher: asyncio.Task[None] | None = None
 
     async def start(_event: object) -> None:

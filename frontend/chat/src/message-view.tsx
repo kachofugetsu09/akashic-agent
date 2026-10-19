@@ -307,7 +307,7 @@ function timelineFlow(messages: TimelineMessage[], finalId: string | undefined, 
         const result = toolResults.get(key);
         const outcome = result?.body.kind === "tool_result" ? result.body.outcome : null;
         return [{ kind: "tool", key, origin, index, part, block: {
-          kind: "tool", callId: key, name: part.name, input: part.arguments,
+          kind: "tool", callId: key, name: part.name, owner: part.owner, input: part.arguments,
           output: result ? timelineToolOutput(result) : undefined,
           attachments: toolImages(result),
           status: outcome === null ? "input-available" : outcome === "success" ? "output-available" : "output-error",
@@ -1317,7 +1317,8 @@ const ToolStep = memo(function ToolStep({
                       copied={copiedDetail?.section === "result" && copiedDetail.text === result}
                       onCopy={onCopyDetail ? () => copyDetail("result", result) : undefined}
                     />
-                    {toolHasValue(resultValue) ? <ToolResultContent value={resultValue} error={block.status === "output-error"} /> : null}
+                    {toolHasValue(resultValue) ? <ToolResultContent value={resultValue} error={block.status === "output-error"}
+                      tool={{ owner: block.owner, name: block.name, arguments: block.input }} /> : null}
                     {block.attachments?.length ? <SentAttachments items={block.attachments} /> : null}
                   </section>
                 ) : null}

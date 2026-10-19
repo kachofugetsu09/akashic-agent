@@ -7,7 +7,7 @@ from contextlib import ExitStack
 from agent.plugin_composition import Context, ServiceKey
 from plugins.ledger.contract import MESSAGE_CATALOG, MessageReader
 from plugins.ui.contract import MessageDisplayProviders, PartDisplayProvider, message_rows, part_display_key
-from plugins.tools.contract import TOOL_DISPLAY_NAME
+from plugins.tools.contract import TOOL_DISPLAY
 from plugins.ui.contract import ToolResultDisplayProvider, MessagePage
 from plugins.ledger.contract import ContentPart, Control, Message, ToolCall, ToolResult
 
@@ -39,7 +39,7 @@ async def project_message_rows(
             result_display = scopes.enter_context(ctx.borrow(ServiceKey[ToolResultDisplayProvider](f"message.result_display:{kind}")))
             if result_display is not None:
                 result_providers[kind] = result_display
-        tool_name = scopes.enter_context(ctx.borrow(TOOL_DISPLAY_NAME)) if has_tool_call else None
+        tool_display = scopes.enter_context(ctx.borrow(TOOL_DISPLAY)) if has_tool_call else None
         result_values: dict[tuple[str, int], object] = {}
         if result_providers:
             catalog = scopes.enter_context(ctx.borrow(MESSAGE_CATALOG))
@@ -54,7 +54,7 @@ async def project_message_rows(
                     if provider is not None:
                         result_values[message.message_id, index] = await provider(part, read_message)
         return message_rows(page, display_only=display_only, providers=MessageDisplayProviders(
-            tool_name=tool_name, part_display=providers, result_values=result_values,
+            tool_display=tool_display, part_display=providers, result_values=result_values,
         ))
 
 

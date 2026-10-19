@@ -232,7 +232,15 @@ class ToolCatalog(Protocol):
 
 TOOLS = ServiceKey[ToolCatalog]("tools.v1")
 ALL_TOOLS = ServiceKey[Callable[[], ToolView]]("tools.all.v1")
-TOOL_DISPLAY_NAME = ServiceKey[Callable[[str], str]]("tools.display-name.v1")
+@dataclass(frozen=True, slots=True)
+class ToolDisplay:
+    """聊天展示一次调用所需的身份：工具名与注册它的插件；没有记录 owner 的旧 binding 为 None。"""
+
+    name: str
+    owner: str | None
+
+
+TOOL_DISPLAY = ServiceKey[Callable[[str], ToolDisplay]]("tools.display.v2")
 
 
 class DecodedCall(Protocol):
