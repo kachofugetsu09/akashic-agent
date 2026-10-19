@@ -1088,7 +1088,8 @@ class ModelsState:
 
     # 驱动为连接声明的图标；驱动缺席、未声明、出错或内容不像 SVG 时没有图标。
     async def connection_icon(self, connection_id: str) -> str | None:
-        connection = self._snapshot_required().connections.get(connection_id)
+        snapshot = await run_file_io(self._snapshot_required)
+        connection = snapshot.connections.get(connection_id)
         record = None if connection is None else self._registrations.get(connection.driver_id)
         if connection is None or record is None or record.definition.icon is None:
             return None
@@ -1104,7 +1105,16 @@ class ModelsState:
 
     def catalog_snapshot(self) -> ModelCatalogSnapshot:
         self._check_snapshot_service(MODEL_CATALOG, self.catalog)
-        snapshot = self._snapshot_or_empty()
+        return self._catalog_snapshot(self._snapshot_or_empty())
+
+    async def read_catalog(self) -> ModelCatalogSnapshot:
+        """Read storage in a worker, then project live driver state on the loop."""
+        self._check_snapshot_service(MODEL_CATALOG, self.catalog)
+        snapshot = await run_file_io(self._snapshot_or_empty)
+        return self._catalog_snapshot(snapshot)
+
+    def _catalog_snapshot(self, snapshot: StoredSnapshot) -> ModelCatalogSnapshot:
+        """Project a saved catalog with the current driver availability."""
         connections = tuple(
             ConnectionDescriptor(
                 connection_id=item.connection_id,
@@ -1131,11 +1141,24 @@ class ModelsState:
         selection: ChatModelSelection,
     ) -> ChatModelSelection:
         self._check_snapshot_service(CHAT_MODELS, self.chat_models)
+        snapshot = self._snapshot_required() if selection.model_id is not None else None
+        return self._validate_chat_selection(selection, snapshot)
+
+    async def read_chat_selection(self, selection: ChatModelSelection) -> ChatModelSelection:
+        """Validate a chat preference after its storage read has drained."""
+        self._check_snapshot_service(CHAT_MODELS, self.chat_models)
+        snapshot = await run_file_io(self._snapshot_required) if selection.model_id is not None else None
+        return self._validate_chat_selection(selection, snapshot)
+
+    def _validate_chat_selection(
+        self, selection: ChatModelSelection, snapshot: StoredSnapshot | None,
+    ) -> ChatModelSelection:
+        """Check the saved model and live driver without doing storage work."""
         if selection.reasoning_effort and selection.model_id is None:
             raise ValueError("推理强度必须绑定显式模型")
         if selection.model_id is None:
             return ChatModelSelection()
-        snapshot = self._snapshot_required()
+        assert snapshot is not None
         model = snapshot.models.get(selection.model_id)
         if model is None:
             # 已移除的会话偏好跟随 default，旧型号的推理强度不能带到替代模型。

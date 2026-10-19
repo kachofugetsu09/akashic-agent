@@ -17,8 +17,10 @@ const DialogOverlay = React.forwardRef<
   React.ElementRef<typeof DialogPrimitive.Overlay>,
   React.ComponentPropsWithoutRef<typeof DialogPrimitive.Overlay>
 >(({ className, ...props }, ref) => (
+  // data-chat-modal：告诉宿主聊天正开着锁页面的模态层（ADR 0126），隐藏聊天前要先保留它。
   <DialogPrimitive.Overlay
     ref={ref}
+    data-chat-modal=""
     className={cn(
       "ak-dialog-overlay fixed inset-0 z-50 data-[state=open]:animate-in data-[state=closed]:animate-out data-[state=closed]:fade-out-0 data-[state=open]:fade-in-0",
       className

@@ -1,6 +1,6 @@
 import type { ReplyActivity, TimelineMessage } from "./message-timeline";
 
-export type ChatStatus = "idle" | "uploading" | "submitted" | "streaming" | "finalizing" | "error";
+export type ChatStatus = "idle" | "uploading" | "submitted" | "streaming" | "error";
 
 export function isGeneratingChatStatus(status: ChatStatus): boolean {
   return status === "uploading" || status === "submitted" || status === "streaming";
@@ -32,31 +32,10 @@ export function replyChatStatus(
       } else input.paused = Math.max(input.paused, body.through_seq);
     }
   }
-  // 2. 撤权活动只等清理；未被终结的其他输入继续显示等待。
+  // 2. 撤权活动只剩后台清理，不挡新输入；未被终结的其他输入继续显示等待。
   for (const [source, input] of inputs) {
     if (input.seq > Math.max(input.boundary, input.paused)
       && !activities.some((item) => item.source === source)) return "submitted";
   }
-  return activities.length ? "finalizing" : "idle";
-}
-
-/** 排队发送只跟随本来源正常完成的输入；暂停、失败与能力撤回不算完成。 */
-export function lastInputResult(messages: TimelineMessage[]): { id: string; completed: boolean } {
-  let input: TimelineMessage | undefined;
-  for (let index = messages.length - 1; index >= 0; index -= 1) {
-    if (messages[index].body.kind === "input" && messages[index].author === "user") {
-      input = messages[index];
-      break;
-    }
-  }
-  if (!input) return { id: "", completed: false };
-  // 从后往前找覆盖这次输入的最终事实，其他来源不能替它结算。
-  for (let index = messages.length - 1; index >= 0; index -= 1) {
-    const message = messages[index];
-    if (message.seq <= input.seq) break;
-    if (message.source !== input.source) continue;
-    if (message.body.kind === "control" && message.body.through_seq >= input.seq) return { id: input.id, completed: false };
-    if (message.body.kind === "output" && message.body.finish !== "continue") return { id: input.id, completed: true };
-  }
-  return { id: input.id, completed: false };
+  return "idle";
 }

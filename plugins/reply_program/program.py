@@ -64,6 +64,7 @@ async def run_reply(
     terminal_tools: frozenset[str] = frozenset(),
     presentation: ToolPresentation | None = None,
     history: Literal["session", "own"] = "session",
+    before_step: Callable[[], Awaitable[None]] | None = None,
 ) -> Message:
     """普通组合拥有本次程序资源，Source 不必同步签发模型或内容 writer。"""
     mark = partial(log_timing, session_id=reader.session_id, source=source)
@@ -207,6 +208,7 @@ async def run_reply(
                 max_parallel_calls=max_parallel_calls,
                 state=owner_state.open_scoped(ctx, "generation"),
                 check_start=check,
+                before_step=before_step,
             )
         finally:
             output.expire()

@@ -105,6 +105,18 @@ def _read_boundary(reader: MessageReader, source: str, hint: object) -> bool:
     ), after_seq=hint, source=source)
 
 
+# 撤权后来源最后一条若是暂停，说明是用户停止而非新输入抢占。
+def _read_pause(reader: MessageReader, source: str, hint: object) -> Message | None:
+    head = reader.head(source=source)
+    if not isinstance(hint, int) or hint < 0 or head <= hint:
+        return None
+    # 暂停之后可能紧接着又有新输入（停止后马上发送），只看任务边界之后最近的控制是不是暂停。
+    latest = reader.latest_control(source, through_seq=head)
+    if latest is not None and latest.seq > hint and isinstance(latest.body, Control) and latest.body.action == "pause":
+        return latest
+    return None
+
+
 class SourceSession:
     """一个已获授权来源的接纳与控制；活动任务短命，重启只重读日志。"""
 
@@ -269,6 +281,33 @@ class SourceSession:
                     raise
         return message
 
+    # 仍持有本来源提交权的回复任务；没有或已撤权时为 None。
+    async def active_task(self) -> Task | None:
+        def current(slot: TaskSlot) -> Task | None:
+            task = slot.current
+            return task if task is not None and task.active else None
+        return await self._tasks.admit(self._key, current)
+
+    # 插话由正在回复的任务在步骤之间写入：不撤权，边界随之前移，守卫不再把它当成抢占。
+    async def steer(self, message_id: str, body: Input, task: Task) -> Message:
+        async def admit(slot: TaskSlot) -> Message:
+            # 1. 只有仍持有提交权的同一任务能接收插话；否则留给调用方按普通输入处理。
+            if slot.current is not task or not task.active:
+                raise MessageConflict("插话只能写入仍在回复的任务")
+            head = await self._reader.read_async(lambda reader: reader.head(source=self._source))
+            if slot.current is not task or not task.active:
+                raise MessageConflict("插话只能写入仍在回复的任务")
+            if self._restart_gate is not None:
+                self._restart_gate.check_open()
+            # 2. 以同一来源 head 为前提追加；通知不占待回复位置，当前任务就是它的回复。
+            message = await self._inputs.append_async(
+                message_id, body, expected_source_head=head,
+                on_commit=lambda message, created: self._changed(message, False) if created else None,
+            )
+            task.boundary_hint = message.seq
+            return message
+        return await self._tasks.admit_async(self._key, admit)
+
     async def resume(self, message_id: str, input_id: str) -> Message:
         """显式重试恢复原输入；只读 worker 不改变最新输入、控制与 CAS 规则。"""
         def read(reader: MessageReader) -> tuple[Control, int | None]:
@@ -355,6 +394,13 @@ class SourceSession:
                                     except asyncio.CancelledError:
                                         continue
                             raise
+                        # 用户停止的就是这次程序：不替用户重开，返回停止记录。
+                        if owned:
+                            hint = task.boundary_hint
+                            paused = await self._reader.read_async(
+                                lambda reader: _read_pause(reader, self._source, hint))
+                            if paused is not None:
+                                return paused
                         # 新输入已同步撤权；先让用户回复运行，再从原消息继续。
                     except Exception:
                         if owned:

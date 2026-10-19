@@ -31,6 +31,7 @@ import {
   uploadedFileToAttachment,
 } from "./web-chat-message-data";
 import { parseChatFrame, sendWhenOpen } from "./web-chat-transport";
+import { useSteers, type SteerResult } from "./use-steers";
 import { webTurnTrace } from "./web-turn-trace";
 import { composerContributions, notifyComposerSent, useComposerContributions } from "./composer-contributions";
 
@@ -194,7 +195,6 @@ export function useDesktopChatController() {
     setStatus(next);
   }, [setStatus]);
   const [stopPending, setStopPending] = useState(false);
-  const [stopCount, setStopCount] = useState(0);
   const [error, setError] = useState("");
   const [errorFromSend, setErrorFromSend] = useState(false);
   const [connectionError, setConnectionError] = useState("");
@@ -222,6 +222,7 @@ export function useDesktopChatController() {
   const sendRequestRef = useRef<AbortController | null>(null);
   const stopRequestRef = useRef<AbortController | null>(null);
   const ackWaitersRef = useRef(new Map<string, (error?: Error) => void>());
+  const steerResultRef = useRef<(requestId: string, result: SteerResult) => void>(() => undefined);
   const probeRef = useRef<(() => void) | null>(null);
   const tailCacheRef = useRef(new Map<string, SessionTail>());
   const tailRequestsRef = useRef(new Map<string, { controller: AbortController; promise: Promise<SessionTail> }>());
@@ -511,6 +512,8 @@ export function useDesktopChatController() {
                 void reloadPinsRef.current();
               } else if (other.type === "message.accepted") {
                 ackWaitersRef.current.get(other.request_id)?.();
+              } else if (other.type === "message.steer.result") {
+                steerResultRef.current(other.request_id, other);
               } else if (other.type === "error") {
                 const waiter = ackWaitersRef.current.get(other.request_id);
                 if (waiter) {
@@ -809,8 +812,11 @@ export function useDesktopChatController() {
     }
   }, [canSend, deliverMessage, reportError, setStatusLive]);
 
+  const sendSteerFrame = useCallback((payload: Record<string, unknown>) => sendWhenOpen(connect(), payload), [connect]);
+  const steers = useSteers({ sessionId: activeSessionId, timeline: timelineMessages, send: sendSteerFrame });
+  useEffect(() => { steerResultRef.current = steers.onResult; }, [steers.onResult]);
+
   const stopTurn = useCallback(() => {
-    setStopCount((version) => version + 1);
     if (sendRequestRef.current) {
       sendRequestRef.current.abort();
       if (socketRef.current?.readyState === WebSocket.CONNECTING) {
@@ -1059,7 +1065,7 @@ export function useDesktopChatController() {
 
   return {
     surface, sidebarSessions, activeSessionId, pendingSessionId, chatReady, messages, timelineMessages, timelineRefresh, replyActivities, replyAvailable, status,
-    streamStore, messageElementsRef, copiedMessageId, shellState, stopPending, stopCount,
+    streamStore, messageElementsRef, copiedMessageId, shellState, stopPending,
     canSend, sendProblem, draftKey: activeSessionId || `new:${newChatGroup ? groupKey(newChatGroup) : ""}`,
     historyHasMore, historyLoading, historyLoadingOlder, loadOlderMessages, sessionRequested: requestedSessionId !== "",
     historyFailure: activeSessionId !== "" && historyFailure?.sessionId === activeSessionId ? historyFailure.reason : null, retryHistory,
@@ -1072,6 +1078,8 @@ export function useDesktopChatController() {
     errorRetry: !error || !errorFromSend,
     activateSession, prefetchSessionTail, startNewChat, handleReplyMessage, handleCopiedMessage,
     reportError, cancelReply, sendMessage, retryTurn, stopTurn, retry,
+
+    steers: steers.items, steerMessage: steers.steer, withdrawSteer: steers.withdraw, takeSteers: steers.take,
     navigationGroups, navigationPins,
   };
 }

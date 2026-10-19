@@ -470,6 +470,7 @@ async def react(
     state: OwnerStore | None = None,
     max_parallel_calls: int = 1,
     check_start: StartCheck | None = None,
+    before_step: Callable[[], Awaitable[None]] | None = None,
 ) -> Message:
     """先结算已提交调用，再读日志推理并逐条提交；没有 Turn、Attempt 或历史副本。"""
     if type(max_steps) is not int or max_steps < 0:
@@ -499,6 +500,9 @@ async def react(
             reader, tools, pending, max_parallel_calls, capture_scope,
         )
         mark("tools.settled")
+        # 工具结果都已提交、下一次请求之前：调用方在这里写入插话，下面的重读会带上它。
+        if before_step is not None:
+            await before_step()
         if pending or abandoned or reader.head() != head_before:
             snapshot = await reader.committed_snapshot_async()
         else:

@@ -21,6 +21,9 @@ interface ReplyPhase {
   /** 阶段身份：换了工具也算新阶段。 */
   key: string;
   tool?: string;
+  /** 本次物理尝试已到达的增量数与解码时长；按调用换手，不跨轮累加。 */
+  outputDeltas: number;
+  decodeMs: number | null;
   firstTokenMs: number | null;
 }
 
@@ -37,6 +40,7 @@ export function ComposerStatsLine({ sessionId, messages, activities, connected, 
   const live = replyPhase(activities, messages, status);
   const active = live !== null;
   const shown = useSteadyPhase(live);
+  const liveRate = liveRateOf(live);
   // 终态摘要只给看着它跑完的那一轮；打开旧会话不回放上一轮的统计。每轮重新挂载插槽。
   const [watched, setWatched] = useState({ sessionId: "", turns: 0, active: false });
   if (active && (!watched.active || watched.sessionId !== sessionId)) setWatched({ sessionId, turns: watched.turns + 1, active: true });
@@ -48,7 +52,7 @@ export function ComposerStatsLine({ sessionId, messages, activities, connected, 
     if (!label) return null;
     return <div className="composer-stats-line" data-reply-phase={stopping ? "stopping" : shown?.phase.kind}>
       <span aria-live="polite"><SwapText text={label} /></span>
-      {!stopping && shown ? <PhaseDetail phase={shown.phase} firstTokenMs={live.firstTokenMs ?? shown.phase.firstTokenMs} since={shown.since} /> : null}
+      {!stopping && shown ? <PhaseDetail phase={shown.phase} firstTokenMs={live.firstTokenMs ?? shown.phase.firstTokenMs} since={shown.since} rate={liveRate} /> : null}
     </div>;
   }
   if (!sessionId || watched.sessionId !== sessionId || !watched.turns) return null;
@@ -63,7 +67,11 @@ function replyPhase(activities: readonly ReplyActivity[], messages: readonly Tim
   if (!activity) return status === "submitted" ? phaseOf("queued") : null;
   const preview = activity.preview;
   if (preview) {
-    const facts = { firstTokenMs: preview.first_token_ms ?? null };
+    const facts = {
+      outputDeltas: preview.output_deltas ?? 0,
+      decodeMs: preview.decode_ms ?? null,
+      firstTokenMs: preview.first_token_ms ?? null,
+    };
     // 1. 退避等待由重试卡讲原因和倒计时，这里只报阶段。
     if (preview.retry_status) return phaseOf("retry", facts);
     if (preview.text) return phaseOf("output", facts);
@@ -75,7 +83,10 @@ function replyPhase(activities: readonly ReplyActivity[], messages: readonly Tim
   return tool === null ? phaseOf("preparing") : { ...phaseOf("tool"), key: `tool:${tool}`, tool };
 }
 
-function phaseOf(kind: ReplyPhaseKind, facts: { firstTokenMs: number | null } = { firstTokenMs: null }): ReplyPhase {
+function phaseOf(
+  kind: ReplyPhaseKind,
+  facts: Omit<ReplyPhase, "kind" | "key"> = { outputDeltas: 0, decodeMs: null, firstTokenMs: null },
+): ReplyPhase {
   return { kind, key: kind, ...facts };
 }
 
@@ -110,13 +121,32 @@ function phaseLabel(phase: ReplyPhase): string {
   }
 }
 
-/** 出字阶段给首字耗时（服务端事实）；等待类阶段给已等多久，帮助判断是不是卡住了。 */
-function PhaseDetail({ phase, firstTokenMs, since }: { phase: ReplyPhase; firstTokenMs: number | null; since: number }) {
+/** 出字阶段给首字耗时与服务端增量估算的解码速度；等待类阶段给已等多久，帮助判断是不是卡住了。 */
+function PhaseDetail({ phase, firstTokenMs, since, rate }: {
+  phase: ReplyPhase; firstTokenMs: number | null; since: number; rate: number | null;
+}) {
   if (phase.kind === "thinking" || phase.kind === "output") {
-    return firstTokenMs === null ? null : <span aria-hidden="true">· 首 token {(firstTokenMs / 1000).toFixed(1)}s</span>;
+    if (firstTokenMs === null && rate === null) return null;
+    return <>
+      {firstTokenMs === null ? null
+        : <span aria-hidden="true">· 首 token {(firstTokenMs / 1000).toFixed(1)}s</span>}
+      {rate === null ? null
+        : <span aria-hidden="true" title="按流式增量估算，结算后以 provider 用量为准"> · ≈ {formatRate(rate)} tok/s</span>}
+    </>;
   }
   if (phase.kind === "queued" || phase.kind === "retry") return null;
   return <span aria-hidden="true">· <ElapsedText since={since} /></span>;
+}
+
+/** 生成中的解码速度：增量数 / 首段到最近一段的服务端单调时长；样本不足时不给读数。 */
+function liveRateOf(phase: ReplyPhase | null): number | null {
+  if (!phase || phase.outputDeltas < 2 || phase.decodeMs === null || phase.decodeMs < 500) return null;
+  return phase.outputDeltas / (phase.decodeMs / 1000);
+}
+
+/** 生成中的速度读数：与结算摘要同一口径，十以上取整，十以下保留一位小数。 */
+function formatRate(rate: number): string {
+  return rate >= 10 ? String(Math.round(rate)) : (Math.round(rate * 10) / 10).toFixed(1);
 }
 
 /** 已持续秒数；每秒只重渲染这一小段文字。 */

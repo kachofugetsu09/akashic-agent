@@ -23,6 +23,16 @@ CONVERSATION_COMMANDS = ServiceKey[
 ]("conversation.commands.v1")
 
 
+class ConversationSteer(Protocol):
+    """回复程序一侧的插话：只有登记过的任务接纳插话，渠道一侧见 CHANNEL_STEER。"""
+
+    # 登记本任务可接纳插话，返回每一步模型请求之前调用的注入函数。
+    def bind(self, task: Task, session_id: str) -> Callable[[], Awaitable[None]]: ...
+
+
+CONVERSATION_STEER = ServiceKey[ConversationSteer]("conversation.steer.v1")
+
+
 class OriginCheck(Protocol):
     def __call__(self, part: ContentPart) -> ContentReferences: ...
 
