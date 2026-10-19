@@ -63,7 +63,7 @@ input {
 
 .webui-fatal-error {
   display: grid;
-  min-height: 100vh;
+  min-height: 100%;
   place-items: center;
   padding: 24px;
   color: var(--md-sys-color-on-surface);
@@ -129,9 +129,8 @@ input {
   grid-template-columns: minmax(0, 1fr);
   grid-template-rows: minmax(0, 1fr);
   width: 100%;
-  height: 100dvh;
-  /* 没有顶栏承接刘海区：独立打开时外壳自己让出；嵌入 iframe 内 env 恒为 0，由宿主外框让出。 */
-  padding-block-start: env(safe-area-inset-top, 0px);
+  /* 高度与刘海区都归承载聊天的页面：外壳按有无顶栏让出顶部，聊天只占给它的区域。 */
+  height: 100%;
   overflow: hidden;
   color: var(--chat-ink);
   /* Paper fiber fill comes from paper-surface.css */

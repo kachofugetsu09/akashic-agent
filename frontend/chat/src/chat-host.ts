@@ -25,10 +25,13 @@ export function hostLink(): ChatHostLink | null {
   return link;
 }
 
-// 同文档挂载时页面上还有工作台等区域：document 级快捷键只接焦点在聊天里、或页面没有焦点时的按键。
-export function keyForChat(event: KeyboardEvent): boolean {
-  const target = event.target;
+// 同文档挂载时页面上还有工作台等区域：window 级的按键与拖放只接发生在聊天里（或页面没有焦点）的事件。
+export function inChat(target: EventTarget | null): boolean {
   return keyScope === null || !(target instanceof Node) || target === document.body || keyScope.contains(target);
+}
+
+export function keyForChat(event: KeyboardEvent): boolean {
+  return inChat(event.target);
 }
 
 // 独立页面与 iframe 里整页都是聊天，不设范围。

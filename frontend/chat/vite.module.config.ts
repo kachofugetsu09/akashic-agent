@@ -1,13 +1,18 @@
 import { createHash } from "node:crypto";
 import { existsSync, readFileSync } from "node:fs";
+import { createRequire } from "node:module";
 import { dirname, relative, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import react from "@vitejs/plugin-react";
+import autoprefixer from "autoprefixer";
+import tailwindcss from "tailwindcss";
 import { defineConfig, type Plugin } from "vite";
+
 
 // 聊天的同文档挂载模块：conversation_ui 在外壳页面里 import 它。React、外壳运行时与聊天公开运行时
 // 都经外壳 import map 取同一份，不打进本包；产物与 iframe 版同目录发布，入口和样式用稳定文件名。
 const here = dirname(fileURLToPath(import.meta.url));
+const require = createRequire(import.meta.url);
 const repoRoot = resolve(here, "..", "..");
 const shellOwned = new Set(["theme-runtime.ts", "material-react.tsx"].map((name) => resolve(repoRoot, "frontend", "theme", "src", name)));
 const shellTheme = resolve(here, "src", "shell-theme.ts");
@@ -58,6 +63,8 @@ export default defineConfig({
   root: here,
   base: "/assets/",
   plugins: [react(), useShellTheme(), stampChatBuild()],
+  // 与外壳同一文档：样式只作用于聊天根节点（见 postcss-scope-chat.cjs）。
+  css: { postcss: { plugins: [tailwindcss(require("./tailwind.config.cjs")), autoprefixer(), require("./postcss-scope-chat.cjs")()] } },
   resolve: {
     dedupe: ["@pierre/diffs"],
     alias: {

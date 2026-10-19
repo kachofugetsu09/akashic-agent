@@ -32,9 +32,17 @@ export function mountChat(host: HTMLElement, link: ChatHostLink): MountedChat {
   host.replaceChildren(frame);
   const disconnect = connectHost(link);
   const chat = renderChat(frame, frame, true);
+  // 宿主投影（底栏动作、工作台意图与快捷键）是模块级状态，上一次挂载可能留下：每次挂载从空开始，卸载时撤回。
+  const clearProjection = () => {
+    chat.handle.setRailActions([]);
+    chat.handle.setTools(false, []);
+    chat.handle.setWorkbenchIntents([]);
+  };
+  clearProjection();
   return {
     ...chat.handle,
     dispose() {
+      clearProjection();
       chat.unmount();
       disconnect();
       frame.remove();

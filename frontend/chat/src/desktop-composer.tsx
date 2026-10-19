@@ -16,7 +16,7 @@ import { isGeneratingChatStatus, type ChatStatus } from "./web-chat-status";
 import { useComposerSuggest } from "./composer-suggest";
 import { setComposerBusy } from "./composer-contributions";
 import { PluginUiSlot } from "./plugin-ui-runtime";
-import { keyForChat } from "./chat-host";
+import { inChat, keyForChat } from "./chat-host";
 import { chatPortalRoot } from "./chat-layout";
 
 export type ComposerFile = { filename?: string; mediaType?: string; url?: string; sizeBytes?: number };
@@ -582,13 +582,14 @@ function WindowFileDrop({ enabled, onActiveChange }: { enabled: boolean; onActiv
   const attachments = usePromptInputAttachments();
   const add = attachments.add;
   useEffect(() => {
-    // 1. dragenter/dragleave 在每个元素上成对出入，用深度计数判断是否还在窗口内。
+    // 1. dragenter/dragleave 在每个元素上成对出入，用深度计数判断是否还在窗口内；拖到聊天以外（工作台等）不接。
     let depth = 0;
-    const isFileDrag = (event: DragEvent) => Array.from(event.dataTransfer?.types ?? []).includes("Files");
+    const isFileDrag = (event: DragEvent) => Array.from(event.dataTransfer?.types ?? []).includes("Files")
+      && inChat(event.target);
     const accepting = () => enabled && !document.querySelector(FLOATING_LAYER);
     const reset = () => { depth = 0; onActiveChange(false); };
     const onEnter = (event: DragEvent) => {
-      if (!isFileDrag(event)) return;
+      if (!isFileDrag(event)) return void onActiveChange(false);
       depth += 1;
       onActiveChange(accepting());
     };
