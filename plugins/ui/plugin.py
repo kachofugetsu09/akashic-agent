@@ -76,6 +76,8 @@ class Ui:
         self._ctx = ctx
         self._routes = routes
         self._entries: dict[str, Registration] = {}
+        # bootstrap 字节只随目录或 generation 变化；每次请求重编码 1MB JSON 会占住事件循环。
+        self._bootstrap_cache: tuple[tuple[str, str], bytes] | None = None
 
     def register_configuration(
         self, app: FastAPI, context: RequestContext,
@@ -226,7 +228,13 @@ class Ui:
         async with self._ctx.runtime_scope():
             self._ctx.require_runtime_identity(WEB_UI, self)
             # catalog 只含已激活并初始化的贡献；无关管理操作不关闭读取。
-            return encode_web_ui_bootstrap(self.catalog(), self._ctx.generation_id)
+            catalog = self.catalog()
+            key = (catalog.identity, self._ctx.generation_id)
+            if self._bootstrap_cache is not None and self._bootstrap_cache[0] == key:
+                return self._bootstrap_cache[1]
+            payload = encode_web_ui_bootstrap(catalog, self._ctx.generation_id)
+            self._bootstrap_cache = (key, payload)
+            return payload
 
     async def state(self) -> dict[str, str | bool]:
         async with self._ctx.runtime_scope():
