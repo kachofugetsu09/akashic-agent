@@ -18,6 +18,7 @@ from plugins.tools.contract import (
     CallSource as CallSource,
     ProviderBoundTool as ProviderBoundTool,
     Result as Result,
+    ToolDisplay as ToolDisplay,
     ResultLike as ResultLike,
     durable_call_key as durable_call_key,
     StartCheck,
@@ -113,15 +114,17 @@ class MessageReply:
         return Result(body.outcome, body.parts)
 
 
-def display_name(metadata: Mapping[str, object]) -> str:
-    """从原 binding 读取工具名称，不打开工具或暴露其恢复配置。"""
+def display_tool(metadata: Mapping[str, object]) -> ToolDisplay:
+    """从原 binding 读取工具名称与 owner，不打开工具或暴露其恢复配置。"""
     tool = metadata.get("tool")
     if not isinstance(tool, Mapping):
         raise ValueError("工具 binding 描述无效")
-    name = cast(Mapping[str, object], tool).get("name")
+    description = cast(Mapping[str, object], tool)
+    name = description.get("name")
     if not isinstance(name, str) or not name:
         raise ValueError("工具 binding 缺少工具名")
-    return name
+    owner = description.get("owner")
+    return ToolDisplay(name, owner if isinstance(owner, str) and owner else None)
 
 
 class InvalidArguments(ValueError):

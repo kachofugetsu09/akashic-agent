@@ -1,6 +1,6 @@
-import { Check, X } from "lucide-react";
 import { type ReactNode, type RefObject, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { readToolData } from "@/message-rendering-policy";
+import { PluginUiSlot, pluginSlotAccepts, usePluginUiCatalogVersion } from "./plugin-ui-runtime";
 
 const PREVIEW_LINES = 12;
 // 只多出几行时直接全显，避免“显示全部”只换来两三行。
@@ -104,7 +104,7 @@ export function Disclosure({ open, instant = false, children }: {
 }
 
 // 长文本先给预览：命令输出看末尾，其它看开头；显示全部原地铺开，流里不出现内部滚动。
-function PreviewText({ text, tail, className }: { text: string; tail: boolean; className: string }) {
+export function PreviewText({ text, tail, className }: { text: string; tail: boolean; className: string }) {
   const lines = useMemo(() => text.split("\n"), [text]);
   const [full, setFull] = useState(false);
   const preRef = useRef<HTMLPreElement>(null);
@@ -162,66 +162,28 @@ function diffLineKind(line: string): string {
   return "";
 }
 
-interface ShellResult {
-  command: string;
-  output: string;
-  exitCode?: number;
-  wallTimeMs?: number;
-  status?: string;
-  rest: Record<string, unknown>;
+/** 一次调用的身份：结果只交给注册该工具的插件（owner）渲染。 */
+export interface ToolIdentity {
+  owner?: string;
+  name: string;
+  arguments: unknown;
 }
 
-// 识别命令执行结果：至少带命令与输出字符串；其余字段收进原始数据。
-function readShellResult(value: unknown): ShellResult | null {
-  if (value === null || typeof value !== "object" || Array.isArray(value)) return null;
-  const { command, output, exit_code: exitCode, wall_time_ms: wallTimeMs, process_status: status, ...rest } = value as Record<string, unknown>;
-  if (typeof command !== "string" || typeof output !== "string") return null;
-  return {
-    command,
-    output,
-    exitCode: typeof exitCode === "number" ? exitCode : undefined,
-    wallTimeMs: typeof wallTimeMs === "number" ? wallTimeMs : undefined,
-    status: typeof status === "string" ? status : undefined,
-    rest: { ...rest, ...(typeof status === "string" ? { process_status: status } : {}) },
-  };
-}
-
-// 命令块：$ 命令 → 输出（预览看末尾）→ 底栏结果与耗时。
-function ShellResultView({ result }: { result: ShellResult }) {
-  const failed = result.exitCode !== undefined && result.exitCode !== 0;
-  return <>
-    <div className="tool-shell">
-      <div className="tool-shell-command"><span aria-hidden="true">$</span><span>{result.command}</span></div>
-      {result.output.trim()
-        ? <PreviewText text={result.output} tail className="tool-result tool-shell-output" />
-        : <p className="tool-shell-empty">无输出</p>}
-      <div className="tool-shell-foot">
-        {result.exitCode === undefined ? <span>{result.status ?? "运行中"}</span>
-          : <span className={`tool-shell-exit${failed ? " is-failed" : ""}`}>
-            {failed ? <X size={13} aria-hidden="true" /> : <Check size={13} aria-hidden="true" />}
-            {failed ? `退出码 ${result.exitCode}` : "成功"}
-          </span>}
-        {result.wallTimeMs !== undefined ? <span>{formatToolDuration(result.wallTimeMs)}</span> : null}
-      </div>
-    </div>
-    {Object.keys(result.rest).length ? <details className="tool-result-raw">
-      <summary>原始数据</summary>
-      <ToolDataValue value={result.rest} />
-    </details> : null}
-  </>;
-}
-
-/** 所有工具共用字面文本和数据展示；复制仍使用原始值。 */
-export function ToolResultContent({ value, error = false }: { value: unknown; error?: boolean }) {
+/** 所有工具共用字面文本和数据展示；工具 owner 的插件认领时改由它渲染，复制仍使用原始值。 */
+export function ToolResultContent({ value, error = false, tool }: { value: unknown; error?: boolean; tool?: ToolIdentity }) {
   const parsed = useMemo(() => readToolData(value), [value]);
-  const shell = useMemo(() => readShellResult(parsed), [parsed]);
+  usePluginUiCatalogVersion();
+  const generic = <ToolDataValue value={parsed} />;
+  const facts = tool?.owner ? { name: tool.name, arguments: tool.arguments, value: parsed, error } : null;
   return <div className={`tool-result-data${error ? " error" : ""}`}>
-    {shell ? <ShellResultView result={shell} /> : <ToolDataValue value={parsed} />}
+    {facts && pluginSlotAccepts("tool.result", facts, tool?.owner)
+      ? <PluginUiSlot name="tool.result" owner={tool?.owner} block={facts} quiet fallback={generic} />
+      : generic}
   </div>;
 }
 
 /** 结构可以展开；标量始终保留原始文字，不解释 Markdown 或 HTML。 */
-function ToolDataValue({ value }: { value: unknown }) {
+export function ToolDataValue({ value }: { value: unknown }) {
   if (value !== null && typeof value === "object") {
     const entries = Object.entries(value);
     if (!entries.length) return <pre className="tool-result">{Array.isArray(value) ? "[]" : "{}"}</pre>;

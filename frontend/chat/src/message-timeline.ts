@@ -11,7 +11,7 @@ export interface TimelineAttachment {
 
 export type TimelinePart =
   | { kind: "text" | "artifact_ref" | "reply_ref"; value: string }
-  | { kind: "tool_call"; binding_id: string; name: string; arguments: Record<string, unknown> }
+  | { kind: "tool_call"; binding_id: string; name: string; owner?: string; arguments: Record<string, unknown> }
   | { kind: "context.notice"; value: { text: string } }
   | { kind: "history.provenance" | "history.transcript" | "history.record" | "history.turn_input"; archive: unknown }
   | { kind: string; display: "unavailable" | "hidden" }
@@ -243,7 +243,8 @@ function validPart(value: unknown): boolean {
   switch (part.kind) {
     case "text": return typeof part.value === "string";
     case "artifact_ref": case "reply_ref": return nonempty(part.value);
-    case "tool_call": return nonempty(part.binding_id) && nonempty(part.name) && object(part.arguments) !== null;
+    case "tool_call": return nonempty(part.binding_id) && nonempty(part.name) && object(part.arguments) !== null
+      && (part.owner === undefined || nonempty(part.owner));
     case "context.notice": return nonempty(object(part.value)?.text);
     case "history.provenance": case "history.transcript": case "history.record": case "history.turn_input":
       return "archive" in part;

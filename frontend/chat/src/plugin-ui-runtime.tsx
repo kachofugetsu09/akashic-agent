@@ -87,6 +87,7 @@ const SLOT_NAMES = new Set<Exclude<PluginUiSlotName, "dashboard.main">>([
   "turn.before_reasoning",
   "turn.before_tool",
   "turn.after_answer",
+  "tool.result",
   "drawer.panel",
   "message.attachment",
   "chat.notice",
@@ -532,8 +533,13 @@ function slotWaiting(name: InlineSlotName): boolean {
 }
 
 // 选出已加载且认领该 block 的 renderer；accepts 抛错只成为该插件的局部错误。
-function slotMatches(name: InlineSlotName, block: unknown, prefetch: boolean): SlotMatch[] {
+// 只属于某个 owner 的插槽（工具结果）只问该插件；没有 owner 时谁也不认领。
+const OWNED_SLOTS = new Set<InlineSlotName>(["tool.result"]);
+
+function slotMatches(name: InlineSlotName, block: unknown, prefetch: boolean, owner?: string): SlotMatch[] {
+  if (OWNED_SLOTS.has(name) && !owner) return [];
   return catalog.plugins.flatMap((plugin) => {
+    if (owner !== undefined && plugin.id !== owner) return [];
     const loaded = definitions.get(plugin.id);
     const renderer = loaded?.revision === plugin.revision
       ? loaded.definition.slots[name]
@@ -547,12 +553,13 @@ function slotMatches(name: InlineSlotName, block: unknown, prefetch: boolean): S
 }
 
 /** 宿主据此决定附件交给插件插槽还是普通附件条；调用方需随目录版本重新渲染。 */
-export function pluginSlotAccepts(name: InlineSlotName, block: unknown): boolean {
-  return slotMatches(name, block, false).length > 0;
+export function pluginSlotAccepts(name: InlineSlotName, block: unknown, owner?: string): boolean {
+  return slotMatches(name, block, false, owner).length > 0;
 }
 
 export function PluginUiSlot({
   name,
+  owner,
   sessionId,
   messageId,
   turnId,
@@ -565,6 +572,8 @@ export function PluginUiSlot({
   fallback = null,
 }: {
   name: InlineSlotName;
+  /** 只挂这个插件的渲染器；tool.result 必须提供。 */
+  owner?: string;
   prefetch?: boolean;
   sessionId?: string;
   messageId?: string;
@@ -580,7 +589,7 @@ export function PluginUiSlot({
   fallback?: React.ReactNode;
 }) {
   const version = useRegistryVersion();
-  const renderers = slotMatches(name, block, prefetch);
+  const renderers = slotMatches(name, block, prefetch, owner);
   // 目录加载失败时保留本页已经挂载的卡片；新页面不会执行旧模块。
   const previous = React.useRef<typeof renderers>([]);
   const hadRenderer = React.useRef(false);

@@ -1,0 +1,64 @@
+/* 命令块：$ 命令 → 输出 → 底栏结果与耗时；内部字段收进原始数据。 */
+.shell-result {
+  display: grid;
+  gap: 4px;
+  min-width: 0;
+  border-radius: 8px;
+  padding: 8px 10px 4px;
+  background: color-mix(in oklab, var(--ak-ink-primary) 4%, transparent);
+}
+
+.shell-result-command {
+  display: flex;
+  gap: 1ch;
+  overflow-wrap: anywhere;
+  color: var(--ak-color-text-primary);
+  font-family: var(--ak-type-technical, ui-monospace, SFMono-Regular, Menlo, Consolas, monospace);
+  font-size: 0.75rem;
+  line-height: 1.5;
+}
+
+.shell-result-command > span:first-child {
+  color: var(--ak-color-text-secondary);
+  user-select: none;
+}
+
+.shell-result-empty {
+  margin: 0;
+  color: var(--ak-color-text-secondary);
+  font-size: 0.75rem;
+}
+
+.shell-result-foot {
+  display: flex;
+  min-height: 28px;
+  align-items: center;
+  gap: 10px;
+  border-top: 1px solid var(--ak-rule-subtle);
+  color: var(--ak-color-text-secondary);
+  font-size: 0.75rem;
+}
+
+.shell-result-exit {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  color: var(--ak-sys-color-success);
+}
+
+.shell-result-exit.is-failed {
+  color: var(--ak-color-status-error);
+}
+
+.shell-result-raw {
+  margin-top: 6px;
+  color: var(--ak-color-text-secondary);
+  font-size: 0.75rem;
+}
+
+.shell-result-raw > summary {
+  width: fit-content;
+  min-height: 28px;
+  padding-block: 4px;
+  cursor: pointer;
+}
