@@ -101,8 +101,6 @@ class PluginUiAsset:
     stylesheet: str
     stylesheet_sha256: str | None
     stylesheet_bytes: int
-    navigation_label: str | None
-    navigation_description: str | None
     slots: tuple[str, ...]
 
 
@@ -179,15 +177,9 @@ class PluginUiRpcExecutionError(RuntimeError):
     """Signal that a Plugin UI handler failed while executing its RPC."""
 
 @dataclass(frozen=True, slots=True)
-class PluginUiNavigation:
-    label: str
-    description: str
-
-@dataclass(frozen=True, slots=True)
 class PluginUiDefinition:
     module: str
     stylesheet: str | None = None
-    navigation: PluginUiNavigation | None = None
     slots: tuple[PluginUiSlot, ...] = ()
 
 @dataclass(frozen=True, slots=True)
@@ -199,8 +191,6 @@ class PluginUiDescriptor:
     module_bytes: int
     stylesheet_sha256: str | None
     stylesheet_bytes: int
-    navigation_label: str | None
-    navigation_description: str | None
     slots: tuple[str, ...]
 
 @dataclass(frozen=True, slots=True)

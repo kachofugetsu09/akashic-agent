@@ -510,12 +510,6 @@ class LivePluginUiProvider:
 
     def _catalog_item(self, binding: PluginUiBinding) -> dict[str, object]:
         asset = binding.asset
-        navigation: dict[str, object] | None = None
-        if asset.navigation_label is not None:
-            navigation = {
-                "label": asset.navigation_label,
-                "description": asset.navigation_description,
-            }
         return {
             "id": binding.descriptor.owner,
             "revision": self._plugin_revision(binding),
@@ -523,7 +517,6 @@ class LivePluginUiProvider:
             "module_bytes": asset.module_bytes,
             "stylesheet_sha256": asset.stylesheet_sha256,
             "stylesheet_bytes": asset.stylesheet_bytes,
-            "navigation": navigation,
             "slots": list(asset.slots),
         }
 

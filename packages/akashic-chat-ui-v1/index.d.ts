@@ -13,11 +13,10 @@ export type PluginUiSlotName =
   | "composer.suggest"
   | "scope.fields"
   | "scope.badge"
-  | "navigation.groups"
-  | "dashboard.main";
+  | "navigation.groups";
 
 /** 宿主挂载插件元素的插槽；composer.suggest 与 navigation.groups 是数据源，不挂载。 */
-export type PluginUiMountSlotName = Exclude<PluginUiSlotName, "dashboard.main" | "composer.suggest" | "navigation.groups">;
+export type PluginUiMountSlotName = Exclude<PluginUiSlotName, "composer.suggest" | "navigation.groups">;
 
 export type WorkbenchIntentStatus = "handled" | "unhandled" | "invalid" | "failed";
 
@@ -198,7 +197,6 @@ export interface PluginUiDefinition {
     "composer.suggest"?: ComposerSuggestProvider;
     "navigation.groups"?: NavigationGroupsProvider;
   };
-  dashboard?: PluginUiRenderer;
 }
 
 /** 在插槽元素里挂一个共享 React 的根；返回值可直接作为 mount() 的清理函数。 */

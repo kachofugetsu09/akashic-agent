@@ -55,8 +55,6 @@ class SerialPluginUiProvider:
                         "id": binding.descriptor.owner, "revision": self._revision(binding),
                         "module_sha256": asset.module_sha256, "module_bytes": asset.module_bytes,
                         "stylesheet_sha256": asset.stylesheet_sha256, "stylesheet_bytes": asset.stylesheet_bytes,
-                        "navigation": None if asset.navigation_label is None else {
-                            "label": asset.navigation_label, "description": asset.navigation_description},
                         "slots": list(asset.slots),
                     })
         return {"items": items, "catalog_revision": hashlib.sha256(json.dumps(items, sort_keys=True).encode()).hexdigest()}

@@ -13,7 +13,7 @@ from importlib import import_module
 from pathlib import Path
 from typing import Literal, Self, cast
 
-from pydantic import BaseModel, ConfigDict, Field, ValidationError, model_validator
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from agent.plugin_composition import RUNTIME_STARTED, RUNTIME_STOPPING, Context, ServiceKey
 from plugins.akasha.contract import EMBEDDING_MEMORY_PLUGIN
@@ -23,7 +23,6 @@ from plugins.ui.contract import (
     hidden_part,
     part_display_key,
     PluginUiDefinition,
-    PluginUiNavigation,
     PluginUiRpcInvalidRequest,
 )
 from plugins.ledger.contract import BINDINGS
@@ -114,12 +113,6 @@ class Config(BaseModel):
         settings = AkashaConfig(**self.model_dump(exclude={"sources", "enabled"}))
         settings.validate()
         return settings
-
-
-class InspectorPage(BaseModel):
-    model_config = ConfigDict(extra="forbid", strict=True)
-    page: int = Field(default=1, ge=1, le=1000000)
-    page_size: int = Field(default=30, ge=1, le=100)
 
 
 class RecallBinding(BaseModel):
@@ -309,28 +302,13 @@ async def run(ctx: Context, interest: Interest) -> None:
                 raise PluginUiRpcInvalidRequest("检索卡片缺少消息或会话")
             return inspector.for_turn(session_id, payload["message_id"], payload["source"],
                                       ctx.require(TURN_PROJECTION), offset=offset)
-        if method == "inspector.recent":
-            try:
-                page = InspectorPage.model_validate(payload)
-            except ValidationError as error:
-                raise PluginUiRpcInvalidRequest("检索页码或每页数量无效") from error
-            return inspector.recent(page=page.page, page_size=page.page_size)
-        if method == "inspector.detail":
-            if set(payload) != {"query_id"} or not isinstance(payload["query_id"], str):
-                raise PluginUiRpcInvalidRequest("请选择一条检索记录")
-            detail = inspector.plugin_detail(payload["query_id"])
-            if detail is None:
-                raise PluginUiRpcInvalidRequest("检索记录不存在，请刷新列表")
-            return detail
         raise PluginUiRpcInvalidRequest(f"不支持的 Akasha 查询：{method}")
 
     async def register_plugin_ui(child: Context) -> None:
         # UI provider 在事件循环持有调用作用域，线程回调不能再次进入 entrypoint。
         _ = await child.require(UI_SLOTS).register_plugin_ui(
             child, PluginUiDefinition(module="message_ui.js", stylesheet="message_ui.css",
-                                    slots=("turn.before_reasoning", "scope.fields", "scope.badge"),
-                                    navigation=PluginUiNavigation(label="Akasha Inspector",
-                                        description="查看实际检索及呈现的原消息")), query=query,
+                                    slots=("turn.before_reasoning", "scope.fields", "scope.badge")), query=query,
         )
     _ = await ctx.inject((UI_SLOTS, AKASHA_RECORDS_VIEW), register_plugin_ui, name="plugin-ui")
 
@@ -719,7 +697,7 @@ async def run(ctx: Context, interest: Interest) -> None:
         async with ctx.runtime_scope():
             # Inspector 只读已保存查询和 Message；它不需要 embedding 或学习 writer。
             runtime_records = records()
-            inspector = RecallInspector(read=runtime_records.read, list_records=runtime_records.list,
+            inspector = RecallInspector(read=runtime_records.read,
                                         legacy_page=runtime_records.legacy_page,
                                         catalog=ctx.require(MESSAGE_CATALOG))
             await run_pending_rebuild()

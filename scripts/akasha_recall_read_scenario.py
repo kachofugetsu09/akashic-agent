@@ -99,8 +99,8 @@ def inspector(log,records,baseline=False):
         counts['legacy_pages']=counts.get('legacy_pages',0)+1
         return records.legacy_page(before)
     cls=old_module.RecallInspector if baseline else RecallInspector
-    kw={} if baseline else {'legacy_page':page}
-    return cls(read=read,list_records=listing,catalog=log.catalog(),**kw)
+    kw={'list_records':listing} if baseline else {'legacy_page':page}
+    return cls(read=read,catalog=log.catalog(),**kw)
 def query(view,log,sid,mid,*,source='',offset=0):
     before=digest(log)
     counts.clear()
@@ -252,7 +252,7 @@ with tempfile.TemporaryDirectory(prefix='issue909-') as root:
     oversized=recall(ContextSource(session_id='s',source='conversation',through_seq=a.seq),hits=(
         Hit(node_id=1,session_id='hits',message_ids=tuple(f'h-{i:04}' for i in range(900)),score=.2,lane='dense',sources=('x'*200000,)),))
     records.save('oversize',oversized)
-    try:view.plugin_detail('oversize')
+    try:view._detail('oversize',oversized)
     except PluginUiRpcInvalidRequest:pass
     else:raise AssertionError('oversized detail silently truncated')
     summary['checks'].append({'case':'response-pagination','records':5,'page_bytes':page_sizes,'members_per_record':900,'oversize':'explicit failure'})
