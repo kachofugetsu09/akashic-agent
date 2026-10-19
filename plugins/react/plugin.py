@@ -213,7 +213,7 @@ async def _settle(
     commit_after: _OrderGate | None = None,
     scope: RuntimeScope | None = None,
 ) -> None:
-    """普通取消等待原调用；明确放弃由 Tools 提交终态并释放等待者。"""
+    """取消传给当前工具调用，再等待 Tools 保存终态并释放资源。"""
     # scope 由 owner task 预先取得；子任务里再取 lease 会丢失授权。
     if scope is None and capture_scope is not None:
         scope = capture_scope()
@@ -238,6 +238,8 @@ async def _settle(
         try:
             _ = await asyncio.shield(work)
         except asyncio.CancelledError as cancellation:
+            # 只取消一次；后续取消不能打断 Tools 的回执提交和 owner 收尾。
+            _ = work.cancel()
             while not work.done():
                 try:
                     _ = await asyncio.shield(work)
@@ -327,9 +329,12 @@ async def _settle_group(
             in_flight.add(task)
         for task in tasks:
             await task
-    finally:
+    except asyncio.CancelledError:
         for task in tasks:
             _ = task.cancel()
+        raise
+    finally:
+        # 普通失败仍收集同批已启动调用；只有来源取消才中断它们。
         if tasks:
             _ = await asyncio.gather(*tasks, return_exceptions=True)
 
