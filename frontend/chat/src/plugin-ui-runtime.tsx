@@ -7,7 +7,7 @@ import { composerControls } from "./composer-contributions";
 import type { ScopeFields } from "./scope-fields";
 import { openInWorkbench, subscribeWorkbenchIntents, workbenchAccepts } from "./shell-workbench";
 
-import type { ComposerControls, ComposerSuggestProvider, NavigationControls, NavigationFormControls, NavigationGroupsProvider, PluginUiDefinition, PluginUiHostContext, PluginUiMountSlotName, PluginUiQueryOptions, PluginUiSlotFacts, PluginUiSlotName, ScopeFieldControls } from "@akashic/chat-ui-v1";
+import type { ComposerControls, ComposerSuggestProvider, NavigationControls, NavigationForm, NavigationFormControls, NavigationGroupsProvider, NavigationNotice, PluginUiDefinition, PluginUiHostContext, PluginUiMountSlotName, PluginUiQueryOptions, PluginUiSlotFacts, PluginUiSlotName, ScopeFieldControls } from "@akashic/chat-ui-v1";
 
 // 插槽合同由 @akashic/chat-ui-v1 发布，宿主与插件共用同一份类型。
 export type { ComposerSuggestProvider, ComposerSuggestion, PluginUiContext, PluginUiDefinition, PluginUiQueryOptions, PluginUiRenderer, PluginUiSlotName } from "@akashic/chat-ui-v1";
@@ -344,16 +344,16 @@ function groupSource(plugin: PluginUiCatalogItem, provider: NavigationGroupsProv
     }) };
 }
 
-/** 在宿主外框里挂分组数据源的表单或提示；form 与 navigation 由外框提供。 */
+/** 在宿主外框里挂分组数据源的表单或提示：表单配表单控制，提示配导航能力，类型上不能混用。 */
 export function NavigationGroupMount({ source, renderer, extra, scope, refreshToken }: {
   source: NavigationGroupSource;
-  renderer: HostRenderer;
-  extra: Pick<HostMountContext, "form" | "navigation">;
-  scope: { dimension: string };
   /** 变化时通知插件重新读取宿主状态（例如表单 busy）。 */
   refreshToken?: string | number;
-}) {
-  return <MountedPlugin pluginId={source.pluginId} pluginRevision={source.pluginRevision} renderer={renderer}
+} & (
+  | { renderer: NavigationForm; extra: { form: NavigationFormControls }; scope: { dimension: string; value?: string } }
+  | { renderer: NavigationNotice; extra: { navigation: NavigationControls }; scope: { dimension: string } }
+)) {
+  return <MountedPlugin pluginId={source.pluginId} pluginRevision={source.pluginRevision} renderer={renderer as HostRenderer}
     extra={extra} refreshToken={refreshToken} context={{ slot: "navigation.groups", scope }} />;
 }
 

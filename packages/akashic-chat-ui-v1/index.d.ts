@@ -95,8 +95,10 @@ export interface PluginUiNavigationContext extends PluginUiHostContext {
   navigation: NavigationControls;
 }
 
-/** 分组对话框表单里的挂载。 */
-export interface PluginUiNavigationFormContext extends PluginUiNavigationContext {
+/** 分组对话框表单里的挂载；从某个分组的菜单打开时 scope 带上该分组的取值。 */
+export interface PluginUiNavigationFormContext extends PluginUiHostContext {
+  slot: "navigation.groups";
+  scope: { dimension: string; value?: string };
   form: NavigationFormControls;
 }
 
@@ -114,6 +116,11 @@ export interface NavigationForm {
   /** 提交按钮文字；没有时对话框只读，只有关闭按钮。 */
   submitLabel?: string;
   mount(host: HTMLElement, context: PluginUiNavigationFormContext): void | (() => void);
+}
+
+/** 分组区顶部的提示。 */
+export interface NavigationNotice {
+  mount(host: HTMLElement, context: PluginUiNavigationContext): void | (() => void);
 }
 
 /** 对话框表单的宿主能力。 */
@@ -152,7 +159,7 @@ export interface NavigationGroupsProvider {
   /** 分组行菜单里的额外动作，每项打开一个对话框。 */
   actions?(group: NavigationGroup): readonly { label: string; form: NavigationForm }[];
   /** 分区顶部的提示，例如未确认的新建请求；没有内容时插件不渲染任何东西。 */
-  notice?: { mount(host: HTMLElement, context: PluginUiNavigationContext): void | (() => void) };
+  notice?: NavigationNotice;
 }
 
 /** 新建表单里的附加设置：表单确定了新取值、在它被创建之前，宿主依次调用各插件登记的提交。 */
