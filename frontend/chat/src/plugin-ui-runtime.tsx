@@ -7,7 +7,7 @@ import { composerControls } from "./composer-contributions";
 import type { ScopeFields } from "./scope-fields";
 import { openInWorkbench, subscribeWorkbenchIntents, workbenchAccepts } from "./shell-workbench";
 
-import type { ComposerSuggestProvider, PluginUiContext, PluginUiDefinition, PluginUiMountSlotName, PluginUiQueryOptions, PluginUiRenderer, PluginUiSlotName } from "@akashic/chat-ui-v1";
+import type { ComposerSuggestProvider, NavigationGroupsProvider, PluginUiContext, PluginUiDefinition, PluginUiMountSlotName, PluginUiQueryOptions, PluginUiRenderer, PluginUiSlotName } from "@akashic/chat-ui-v1";
 
 // 插槽合同由 @akashic/chat-ui-v1 发布，宿主与插件共用同一份类型。
 export type { ComposerSuggestProvider, ComposerSuggestion, PluginUiContext, PluginUiDefinition, PluginUiQueryOptions, PluginUiRenderer, PluginUiSlotName } from "@akashic/chat-ui-v1";
@@ -96,6 +96,7 @@ const SLOT_NAMES = new Set<Exclude<PluginUiSlotName, "dashboard.main">>([
   "composer.suggest",
   "scope.fields",
   "scope.badge",
+  "navigation.groups",
 ]);
 
 /** 目录或模块变化时通知；宿主内的数据型扩展点据此对齐自己的缓存。 */
@@ -292,7 +293,9 @@ function parseDefinition(value: unknown, plugin: PluginUiCatalogItem): PluginUiD
     if (!SLOT_NAMES.has(name as Exclude<PluginUiSlotName, "dashboard.main">)) {
       throw new Error(`插件界面 slot 无效: ${plugin.id}.${name}`);
     }
-    if (name === "composer.suggest" ? !isSuggestProvider(renderer) : !isRenderer(renderer)) {
+    const valid = name === "composer.suggest" ? isSuggestProvider(renderer)
+      : name === "navigation.groups" ? isGroupsProvider(renderer) : isRenderer(renderer);
+    if (!valid) {
       throw new Error(`插件界面 renderer 无效: ${plugin.id}.${name}`);
     }
   }
@@ -327,6 +330,57 @@ function isSuggestProvider(value: unknown): value is ComposerSuggestProvider {
   return typeof provider.label === "string" && typeof provider.empty === "string" && typeof provider.load === "function"
     && (provider.prefix === "/" || provider.prefix === "@") && Array.isArray(provider.sigils)
     && provider.sigils.every((sigil) => sigil === "/" || sigil === "@");
+}
+
+function isGroupsProvider(value: unknown): value is NavigationGroupsProvider {
+  if (!value || typeof value !== "object") return false;
+  const provider = value as Partial<Record<keyof NavigationGroupsProvider, unknown>>;
+  const form = (item: unknown) => item === undefined || (typeof item === "object" && item !== null
+    && typeof (item as { title?: unknown }).title === "string" && typeof (item as { mount?: unknown }).mount === "function");
+  return typeof provider.dimension === "string" && typeof provider.label === "string" && typeof provider.load === "function"
+    && form(provider.create) && (provider.actions === undefined || typeof provider.actions === "function")
+    && (provider.notice === undefined || isRenderer(provider.notice));
+}
+
+/** 已加载的侧栏分组数据源，按目录顺序；宿主不按插件名挑选。 */
+export interface NavigationGroupSource {
+  /** 插件身份加版本；目录更新后变化。 */
+  key: string;
+  pluginId: string;
+  pluginRevision: string;
+  provider: NavigationGroupsProvider;
+  context(signal: AbortSignal): Pick<PluginUiContext, "query">;
+}
+
+export function navigationGroupSources(): NavigationGroupSource[] {
+  if (catalog.updating) return [];
+  return catalog.plugins.flatMap((plugin) => {
+    const loaded = definitions.get(plugin.id);
+    const provider = loaded?.revision === plugin.revision ? loaded.definition.slots["navigation.groups"] : undefined;
+    return provider ? [groupSource(plugin, provider)] : [];
+  });
+}
+
+function groupSource(plugin: PluginUiCatalogItem, provider: NavigationGroupsProvider): NavigationGroupSource {
+  return { key: `${plugin.id}:${plugin.revision}`, pluginId: plugin.id, pluginRevision: plugin.revision, provider,
+    context: (signal) => ({
+      query: (method, payload = {}) => queryWebPluginUi({
+        pluginId: plugin.id, pluginRevision: plugin.revision, method, payload, slot: "navigation.groups", signal,
+      }),
+    }) };
+}
+
+/** 在宿主外框里挂分组数据源的表单或提示；form 与 navigation 由外框提供。 */
+export function NavigationGroupMount({ source, renderer, extra, scope, refreshToken }: {
+  source: NavigationGroupSource;
+  renderer: PluginUiRenderer;
+  extra: Pick<PluginUiContext, "form" | "navigation">;
+  scope?: { dimension: string; value?: string };
+  /** 变化时通知插件重新读取宿主状态（例如表单 busy）。 */
+  refreshToken?: string | number;
+}) {
+  return <MountedPlugin pluginId={source.pluginId} pluginRevision={source.pluginRevision} renderer={renderer}
+    extra={extra} refreshToken={refreshToken} context={{ slot: "navigation.groups", scope }} />;
 }
 
 export interface ComposerSuggestSource {
@@ -616,6 +670,7 @@ function MountedPlugin({
   prefetch = false,
   fallback,
   fields,
+  extra,
 }: {
   fallback?: React.ReactNode;
   pluginId: string;
@@ -623,7 +678,9 @@ function MountedPlugin({
   renderer: PluginUiRenderer;
   prefetch?: boolean;
   fields?: ScopeFields;
-  context: Omit<PluginUiContext, "query" | "capabilities" | "onInvalidate" | "reportError" | "subscribe" | "workbench" | "fields">;
+  /** 宿主外框给这次挂载的额外能力（分组表单与提示）；身份变化即重新挂载。 */
+  extra?: Pick<PluginUiContext, "form" | "navigation">;
+  context: Omit<PluginUiContext, "query" | "capabilities" | "onInvalidate" | "reportError" | "subscribe" | "workbench" | "fields" | "form" | "navigation">;
   refreshToken?: string | number;
 }) {
   const hostRef = React.useRef<HTMLDivElement>(null);
@@ -690,6 +747,7 @@ function MountedPlugin({
         ...(composer ? { composer: composer.controls } : {}),
         ...(dimension ? { scope: { dimension, ...(scopeValue ? { value: scopeValue } : {}) } } : {}),
         ...(scopeFields ? { fields: scopeFields.controls } : {}),
+        ...extra,
       };
       if (prefetch) {
         void renderer.prefetch!(queryContext).catch((error: unknown) => {
@@ -717,7 +775,7 @@ function MountedPlugin({
       }
       host.replaceChildren();
     };
-  }, [messageId, pluginId, pluginRevision, renderer, sessionId, slot, stableBlock, turnId, prefetch, dimension, scopeValue, fields]);
+  }, [messageId, pluginId, pluginRevision, renderer, sessionId, slot, stableBlock, turnId, prefetch, dimension, scopeValue, fields, extra]);
   return <><div ref={hostRef} className="plugin-ui-host" data-plugin={pluginId} hidden={error !== null} />
     {error !== null && <><p role="status">交互内容暂不可用：{error}</p>{fallback}</>}</>;
 }

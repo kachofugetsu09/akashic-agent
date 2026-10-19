@@ -14,10 +14,11 @@ export type PluginUiSlotName =
   | "composer.suggest"
   | "scope.fields"
   | "scope.badge"
+  | "navigation.groups"
   | "dashboard.main";
 
-/** 宿主挂载插件元素的插槽；composer.suggest 是数据源，不挂载。 */
-export type PluginUiMountSlotName = Exclude<PluginUiSlotName, "dashboard.main" | "composer.suggest">;
+/** 宿主挂载插件元素的插槽；composer.suggest 与 navigation.groups 是数据源，不挂载。 */
+export type PluginUiMountSlotName = Exclude<PluginUiSlotName, "dashboard.main" | "composer.suggest" | "navigation.groups">;
 
 export type WorkbenchIntentStatus = "handled" | "unhandled" | "invalid" | "failed";
 
@@ -63,6 +64,65 @@ export interface PluginUiContext {
   scope?: { dimension: string; value?: string };
   /** 只在 scope.fields 插槽里提供。 */
   fields?: ScopeFieldControls;
+  /** 只在侧栏分组的表单（NavigationForm）里提供。 */
+  form?: NavigationFormControls;
+  /** 只在侧栏分组的表单与提示（notice）里提供。 */
+  navigation?: NavigationControls;
+}
+
+/** 侧栏分组的一项：会话维度的一个取值，例如一个项目。 */
+export interface NavigationGroup {
+  id: string;
+  label: string;
+  /** 悬停时的补充说明，例如固定目录。 */
+  detail?: string;
+}
+
+/** 分组新建或分组动作的对话框：宿主给外框、标题与按钮，插件在表单区挂自己的内容。 */
+export interface NavigationForm {
+  title: string;
+  /** 提交按钮文字；没有时对话框只读，只有关闭按钮。 */
+  submitLabel?: string;
+  mount(host: HTMLElement, context: PluginUiContext): void | (() => void);
+}
+
+/** 对话框表单的宿主能力。 */
+export interface NavigationFormControls {
+  /**
+   * 登记提交：宿主按钮调用，抛错时表单保持打开并显示原因。
+   * 新建时 commitFields 让 scope.fields 插件为新取值保存设置，须在创建前调用；返回新分组 id，宿主随即在其中开始新对话。
+   */
+  onSubmit(submit: (commitFields: (value: string) => Promise<void>) => Promise<string | void>): () => void;
+  /** 提交按钮是否可用，例如名称为空时不可用。 */
+  setReady(ready: boolean): void;
+  /** 正在提交；变化时经 onInvalidate 通知。 */
+  busy(): boolean;
+  close(): void;
+}
+
+/** 分组区的宿主导航能力。 */
+export interface NavigationControls {
+  /** 重读本插件的分组。 */
+  reload(): void;
+  /** 在这个分组里开始新对话。 */
+  startChat(groupId: string): void;
+}
+
+/**
+ * 侧栏分组的数据源：会话按 dimension 维度归类，分组 id 即维度取值。
+ * 分组行、展开、置顶、搜索、键盘与“新建对话”都由宿主负责，插件只给数据、表单与提示。
+ */
+export interface NavigationGroupsProvider {
+  dimension: string;
+  /** 分区标题，例如“项目”。 */
+  label: string;
+  /** 目录变化、提交表单或插件请求时重读；只经 query 访问本插件。 */
+  load(context: Pick<PluginUiContext, "query">): Promise<readonly NavigationGroup[]>;
+  create?: NavigationForm;
+  /** 分组行菜单里的额外动作，每项打开一个对话框。 */
+  actions?(group: NavigationGroup): readonly { label: string; form: NavigationForm }[];
+  /** 分区顶部的提示，例如未确认的新建请求；没有内容时插件不渲染任何东西。 */
+  notice?: PluginUiRenderer;
 }
 
 /** 新建表单里的附加设置：表单确定了新取值、在它被创建之前，宿主依次调用各插件登记的提交。 */
@@ -124,7 +184,10 @@ export interface ComposerSuggestProvider {
 
 /** 插件界面模块的默认导出。 */
 export interface PluginUiDefinition {
-  slots: Partial<Record<PluginUiMountSlotName, PluginUiRenderer>> & { "composer.suggest"?: ComposerSuggestProvider };
+  slots: Partial<Record<PluginUiMountSlotName, PluginUiRenderer>> & {
+    "composer.suggest"?: ComposerSuggestProvider;
+    "navigation.groups"?: NavigationGroupsProvider;
+  };
   dashboard?: PluginUiRenderer;
 }
 
