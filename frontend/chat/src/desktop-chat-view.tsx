@@ -24,13 +24,17 @@ import { PluginUiSlot } from "./plugin-ui-runtime";
 import { SelectionQuote } from "./selection-quote";
 import { MarqueeText } from "./marquee-text";
 import { CopyNotice, useCopyLastCode } from "./copy-last-code";
-import { isGeneratingChatStatus, lastInputResult } from "./web-chat-status";
+import { isGeneratingChatStatus } from "./web-chat-status";
+import { SteerCards } from "./steer-cards";
 
 interface DesktopChatViewProps {
   controller: DesktopChatController;
 }
 
 // 当前会话最后一条用户提问的正文。
+// 本轮停下后等这么久，服务端仍没把插话写进对话就退回输入框（正常结束时它会转成新一轮输入）。
+const STEER_SETTLE_MS = 4000;
+
 function lastUserInput(messages: readonly TimelineMessage[]): string {
   for (let index = messages.length - 1; index >= 0; index -= 1) {
     const message = messages[index];
@@ -58,8 +62,8 @@ export function DesktopChatView({ controller }: DesktopChatViewProps) {
   const toolResults = useMemo(() => timelineToolResults(controller.timelineMessages), [controller.timelineMessages]);
   const {
     surface, sidebarSessions, activeSessionId, pendingSessionId, chatReady, messages, timelineMessages, replyActivities, replyAvailable, status,
-    streamStore, messageElementsRef, copiedMessageId, shellState, stopPending, stopCount,
-    replyTarget, error,
+    streamStore, messageElementsRef, copiedMessageId, shellState, stopPending,
+    replyTarget, error, steers, steerMessage, withdrawSteer, takeSteers,
     canSend, sendProblem, draftKey,
     historyHasMore, historyLoading, historyLoadingOlder, loadOlderMessages, sessionRequested,
     activeSessionDeleted, deletedNotice, deleteSession, restoreSession, dismissDeletedNotice, renameSession,
@@ -67,10 +71,29 @@ export function DesktopChatView({ controller }: DesktopChatViewProps) {
     reportError, cancelReply, sendMessage, stopTurn, retry,
     navigationGroups,
   } = controller;
-  const inputResult = useMemo(() => lastInputResult(timelineMessages), [timelineMessages]);
+  // 停止时尚未交给模型的插话退回输入框，不替用户变成新的一轮。
+  const returnSteers = useCallback(() => {
+    const texts = takeSteers();
+    if (texts.length) composerApi.current?.insertDraft(texts.join("\n\n"), { append: true });
+  }, [takeSteers]);
+  const stopWithSteers = useCallback(() => {
+    returnSteers();
+    stopTurn();
+  }, [returnSteers, stopTurn]);
+  const withdrawToDraft = useCallback((id: string) => {
+    withdrawSteer(id).then((text) => {
+      if (text !== null) composerApi.current?.insertDraft(text, { append: true });
+    }).catch((error: unknown) => reportError(error));
+  }, [withdrawSteer, reportError]);
+  // 断线或重启后服务端的暂存已不在：本轮停下一段时间仍没写进对话的插话退回输入框。
+  const generating = isGeneratingChatStatus(status);
+  useEffect(() => {
+    if (generating || !steers.length) return;
+    const timer = window.setTimeout(returnSteers, STEER_SETTLE_MS);
+    return () => window.clearTimeout(timer);
+  }, [generating, steers.length, returnSteers]);
   const pagedTimeline = useMemo(() => withoutLeadingOrphanResults(timelineMessages, historyHasMore),
     [historyHasMore, timelineMessages]);
-  const inputId = messages.filter((message) => message.role === "user").at(-1)?.id ?? inputResult.id;
   // 已落定的回复原文，按时间顺序：时间线在前，本地仍在补齐的消息在后（与渲染顺序一致）。
   const replyTexts = useMemo(() => [
     ...timelineMessages.filter((message) => message.body.kind === "output").map(timelineText),
@@ -189,12 +212,12 @@ export function DesktopChatView({ controller }: DesktopChatViewProps) {
           </p> : null}
           {/* 输入框工具位的插件说明为什么现在不能发；处理入口在插件自己的工具里。 */}
           {chatReady && sendProblem ? <p className="chat-send-notice" id="chat-send-reason" role="status">{sendProblem}</p> : null}
+          <SteerCards items={steers} onWithdraw={withdrawToDraft} />
           <DesktopComposer
             ref={composerApi}
-            chatReady={chatReady} canSend={canSend} sendProblem={sendProblem} draftKey={draftKey} autoFocus={!conversationLayout && chatReady} fresh={!conversationLayout} status={status} stopPending={stopPending} stopCount={stopCount}
-            inputId={inputId} turnCompleted={replyAvailable !== false && inputResult.completed}
+            chatReady={chatReady} canSend={canSend} sendProblem={sendProblem} draftKey={draftKey} autoFocus={!conversationLayout && chatReady} fresh={!conversationLayout} status={status} stopPending={stopPending}
             replyTarget={replyTarget} onCancelReply={cancelReply}
-            onSend={sendMessage} onStop={stopTurn} lastInput={lastInput}
+            onSend={sendMessage} onSteer={steerMessage} onStop={stopWithSteers} lastInput={lastInput}
           />
           <CopyNotice text={copyNotice} />
           <ComposerStatsLine sessionId={activeSessionId} messages={timelineMessages} activities={replyActivities} connected={replyAvailable !== null} status={status} stopping={stopPending} />
