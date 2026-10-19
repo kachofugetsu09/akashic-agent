@@ -14,7 +14,7 @@ from uuid import uuid4
 from .protocol.errors import JsonRpcError, UNAUTHORIZED
 from .protocol.models import InitializeParams, MessageSendParams
 from .contract import RpcMethod
-from plugins.channels.contract import ChannelInboundMessage
+from plugins.channels.contract import ChannelInboundMessage, JsonValue
 from plugins.ui.contract import (
     MessageDisplayReader,
     follow_messages,
@@ -125,14 +125,19 @@ class ControlService:
             raise ValueError("重试只引用原 Input，不能同时修改正文或模型")
         if request.reasoning_effort is not None and request.model_id is None:
             raise ValueError("reasoning_effort 必须与 model_id 一起提交")
-        metadata: dict[str, str] = {}
+        metadata: dict[str, JsonValue] = {}
         if request.retry_of is not None:
             metadata["retry_of_client_message_id"] = request.retry_of
         if request.reply_to_message_id is not None:
             metadata["reply_to_message_id"] = request.reply_to_message_id
+        # 模型选择与 Web 一样作为 model.selection 片段，由声明它的 owner 校验；没装模型插件时该请求被拒收。
         if request.model_id is not None:
-            metadata["model_runtime_id"] = request.model_id
-            metadata["model_reasoning_effort"] = request.reasoning_effort or ""
+            selection: dict[str, JsonValue] = {
+                "model_id": request.model_id.strip() or None,
+                "reasoning_effort": (request.reasoning_effort or "").strip() or None,
+            }
+            part: dict[str, JsonValue] = {"kind": "model.selection", "value": selection}
+            metadata["input_parts"] = (part,)
         refs = self._attachments(tuple(request.attachment_ids)) if request.attachment_ids else ()
         incoming = ChannelInboundMessage(
             channel="akashic", sender="control", chat_id=request.session_id[8:],

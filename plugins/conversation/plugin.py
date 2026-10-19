@@ -20,8 +20,6 @@ from plugins.ledger.contract import (
     MessageReader,
     SessionAttributes,
 )
-from plugins.models.contract import ChatModelSelection
-from plugins.models.contract import MODEL_CATALOG
 from agent.plugin_composition.tasks import (
     RESTART_GATE,
     TASKS,
@@ -84,17 +82,6 @@ async def apply(ctx: Context) -> None:
         ctx.emit(SOURCE_CHANGED, SourceChanged(reader, source, pending))
 
     def open(session_id: str, extra: Mapping[str, Callable[[ContentPart], ContentReferences]] | None = None) -> SourceSession:
-        def check_model(part: ContentPart) -> ContentReferences:
-            references = ctx.require(MODEL_SELECTION).check(part)
-            value = cast(Mapping[str, str | None], part.value)
-            with ctx.borrow(MODEL_CATALOG) as catalog:
-                if catalog is None:
-                    raise ValueError("当前组合不提供模型选择目录")
-                _ = catalog.validate_chat_selection(
-                    ChatModelSelection(value["model_id"], value["reasoning_effort"]),
-                )
-            return references
-
         def check_reply_target(part: ContentPart) -> ContentReferences:
             references = check_reply(part)
             target = ctx.require(MESSAGE_CATALOG).reader(session_id).get(cast(str, part.value))
@@ -106,7 +93,7 @@ async def apply(ctx: Context) -> None:
         inputs = writers.bind(
             ctx, author="user", source="conversation", body_types=(Input,),
             content={"text": ctx.require(CONTENT).check_text, "artifact_ref": ctx.require(CONTENT).check_artifact, "channel.origin": check_origin,
-                     "reply_ref": check_reply_target, "model.selection": check_model, **(extra or {})},
+                     "reply_ref": check_reply_target, **(extra or {})},
             update_metadata=update_metadata,
         )
         controls = writers.bind(
@@ -157,14 +144,6 @@ async def apply(ctx: Context) -> None:
         reply = message.metadata.get("reply_to_message_id")
         if reply is not None:
             parts += (ContentPart("reply_ref", reply),)
-        if "model_runtime_id" in message.metadata:
-            model_id = message.metadata["model_runtime_id"]
-            effort = message.metadata.get("model_reasoning_effort", "")
-            if not isinstance(model_id, str) or not isinstance(effort, str):
-                raise TypeError("模型选择必须是字符串")
-            parts += (ContentPart("model.selection", {
-                "model_id": model_id.strip() or None, "reasoning_effort": effort.strip() or None,
-            }),)
         # 3. 客户端附带的片段交给声明了该 kind 的 owner 校验；Input 与全部引用原子提交，传输时间、handoff 和重复 ID 不进入正文。
         #    owner 缺席时只拒收新内容：账本先核对同一 message_id 的不可变内容，已提交输入仍能重放收据。
         with ExitStack() as scopes:

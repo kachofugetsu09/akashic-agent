@@ -40,7 +40,11 @@ try {
   const source = Buffer.concat([Buffer.from(
     "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+aRZkAAAAASUVORK5CYII=", "base64"), Buffer.alloc(2_978_300)]);
   const file = { name: "photo.png", mimeType: "image/png", buffer: source };
-  await page.route("**/api/chat/models*", (route) => { models.push(route); });
+  // 模型目录读取（models 插件的 chat.models 查询）一直挂起，验证它不阻塞发送。
+  await page.route("**/api/chat/plugin-ui/query*", (route) => {
+    if (route.request().postData()?.includes('"chat.models"')) models.push(route);
+    else return route.fallback();
+  });
   await page.route("**/api/chat/uploads*", (route) => { uploads.push(route); });
   await page.route("**/api/chat/artifacts/*", (route) => route.fulfill({ contentType: "image/png", body: source }));
   const editor = page.getByRole("textbox", { name: "消息", exact: true });

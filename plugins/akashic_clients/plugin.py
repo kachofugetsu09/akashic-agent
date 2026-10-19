@@ -7,7 +7,6 @@ from agent.plugin_composition import Context
 from plugins.channels.contract import CHANNELS, ChannelCapability, ChannelDefinition, InboundIdentity
 
 from .capabilities import CLIENT_CAPABILITIES, INSPECTION_RPC_KEYS, REPLY_STATUS, MCP_DETAIL, MCP_SERVERS
-from plugins.models.contract import MODEL_CALL_STATS
 from .channel import build_akashic_channel_factory
 from plugins.channels.contract import CHANNEL_INPUT_V2 as CHANNEL_INPUT
 from .config import AkashicClientsConfig
@@ -57,7 +56,7 @@ async def apply(ctx: Context) -> None:
                 ReadMarks(read_store),
             ),
             inbound_identity=InboundIdentity.PROVIDER_MESSAGE_ID,
-            optional_services=frozenset((*INSPECTION_RPC_KEYS, MODEL_CALL_STATS, REPLY_STATUS, MCP_DETAIL, MCP_SERVERS)),
+            optional_services=frozenset((*INSPECTION_RPC_KEYS, REPLY_STATUS, MCP_DETAIL, MCP_SERVERS)),
         ),
     )
 

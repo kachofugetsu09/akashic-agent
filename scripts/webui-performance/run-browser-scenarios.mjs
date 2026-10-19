@@ -117,9 +117,9 @@ async function measureDesktopSessionSwitch(browserInstance, origin) {
   const requests = [];
   page.on("request", (request) => {
     const url = new URL(request.url());
-    if (/^\/api\/chat\/sessions\/[^/]+\/messages$/u.test(url.pathname) || url.pathname === "/api/chat/models") {
-      requests.push(url.pathname + url.search);
-    }
+    if (/^\/api\/chat\/sessions\/[^/]+\/messages$/u.test(url.pathname)) requests.push(url.pathname + url.search);
+    // 模型目录由 models 插件经插件查询读取。
+    if (url.pathname === "/api/chat/plugin-ui/query" && request.postData()?.includes('"chat.models"')) requests.push("chat.models");
   });
   await installPerformanceProbe(page);
   await page.goto(`${origin}?akashic_perf=1`, { waitUntil: "networkidle" });
@@ -130,12 +130,12 @@ async function measureDesktopSessionSwitch(browserInstance, origin) {
   await page.locator('[data-message-id="desktop-plain-99"]').waitFor();
   const metric = await readPerformanceProbe(page, startedAt, ".web-message-anchor");
   metric.messageRequests = requests.filter((request) => request.includes("/messages")).length;
-  metric.modelRequests = requests.filter((request) => request.startsWith("/api/chat/models")).length;
+  metric.modelRequests = requests.filter((request) => request === "chat.models").length;
   requests.length = 0;
   await page.getByRole("button", { name: /纯文本性能会话/u }).click();
   await page.waitForTimeout(100);
   metric.repeatMessageRequests = requests.filter((request) => request.includes("/messages")).length;
-  metric.repeatModelRequests = requests.filter((request) => request.startsWith("/api/chat/models")).length;
+  metric.repeatModelRequests = requests.filter((request) => request === "chat.models").length;
   metric.sessionRows = await page.locator(".conversation-session").count();
   if (metric.repeatMessageRequests !== 0 || metric.repeatModelRequests !== 0) {
     throw new Error(`active session repeated requests: messages=${metric.repeatMessageRequests}, models=${metric.repeatModelRequests}`);

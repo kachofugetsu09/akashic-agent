@@ -9,7 +9,6 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING
 
-from plugins.models.contract import MODEL_CATALOG
 from plugins.ledger.contract import MESSAGE_CATALOG, SESSION_ADMIN
 from plugins.gateway.contract import RpcMethod
 from agent.plugin_composition.runtime_catalog import (
@@ -18,10 +17,6 @@ from agent.plugin_composition.runtime_catalog import (
 from plugins.mcp.contract import MCP_DETAIL, MCP_SERVERS
 from plugins.ui.contract import (
     WEB_UI as WEB_UI,
-)
-from plugins.models.contract import (
-    MODEL_SELECTION as MODEL_SELECTION,
-    ModelSelection as ModelSelectionReader,
 )
 from plugins.reply.contract import (
     REPLY_STATUS as REPLY_STATUS,
@@ -55,15 +50,13 @@ INSPECTION_RPC_KEYS = (
     INSPECTION_SKILLS_LIST,
 )
 
-# 聊天启动只等待基础能力；诊断 RPC 在请求中借用，未接线的旧模型 RPC 不阻塞启动。
+# 聊天启动只等待基础能力；诊断 RPC 在请求中借用。模型由 models 插件经插件界面自带，不是聊天的启动依赖。
 CLIENT_CAPABILITIES = (
     RUNTIME_CATALOG,
     MESSAGE_CATALOG,
     MESSAGE_DISPLAY,
     PLUGIN_UI,
     WEB_UI,
-    MODEL_CATALOG,
-    MODEL_SELECTION,
     SESSION_ADMIN,
 )
 
@@ -76,14 +69,11 @@ __all__ = [
     "INSPECTION_JOBS_LIST",
     "INSPECTION_RPC_KEYS",
     "INSPECTION_SKILLS_LIST",
-    "MODEL_CATALOG",
-    "MODEL_SELECTION",
     "MESSAGE_DISPLAY",
     "PLUGIN_UI",
     "SESSION_ADMIN",
     "WEB_UI",
     "ReplyStatusReader",
-    "ModelSelectionReader",
     "REPLY_STATUS",
     "RUNTIME_CATALOG",
     "MCP_DETAIL",
