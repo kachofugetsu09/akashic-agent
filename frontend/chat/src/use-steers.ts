@@ -15,15 +15,9 @@ export interface SteerResult {
 
 const STEER_ACK_TIMEOUT_MS = 10_000;
 
-// 生成中的插话：服务端暂存到本轮下一步；写进对话后卡片消失，本轮恰好结束时服务端改按普通消息发送。
-export function useSteers({ sessionId, timeline, send }: {
-  sessionId: string;
-  timeline: TimelineMessage[];
-  send: (payload: Record<string, unknown>) => Promise<void>;
-}) {
-  const [steers, setSteers] = useState<StagedSteer[]>([]);
+// 插话帧的请求与回执：按 request_id 配对，超时视为没有送达。
+function useSteerRequests(send: (payload: Record<string, unknown>) => Promise<void>) {
   const waiters = useRef(new Map<string, (result: SteerResult) => void>());
-
   const request = useCallback((requestId: string, payload: Record<string, unknown>) => new Promise<SteerResult>((resolve, reject) => {
     const finish = () => { window.clearTimeout(timer); waiters.current.delete(requestId); };
     const timer = window.setTimeout(() => {
@@ -33,19 +27,30 @@ export function useSteers({ sessionId, timeline, send }: {
     waiters.current.set(requestId, (result) => { finish(); resolve(result); });
     send(payload).catch((error: unknown) => { finish(); reject(error); });
   }), [send]);
-
   const onResult = useCallback((requestId: string, result: SteerResult) => {
     waiters.current.get(requestId)?.(result);
   }, []);
+  return { request, onResult };
+}
 
-  const steer = useCallback(async (text: string) => {
-    if (!sessionId) throw new Error("没有进行中的会话");
+// 生成中的插话：服务端暂存到本轮下一步，写进对话后卡片消失；不接纳时返回 false，由输入框走普通发送。
+export function useSteers({ sessionId, timeline, send }: {
+  sessionId: string;
+  timeline: TimelineMessage[];
+  send: (payload: Record<string, unknown>) => Promise<void>;
+}) {
+  const [steers, setSteers] = useState<StagedSteer[]>([]);
+  const { request, onResult } = useSteerRequests(send);
+
+  const steer = useCallback(async (text: string): Promise<boolean> => {
+    if (!sessionId) return false;
     const id = createUuidV7();
     const drop = () => setSteers((current) => current.filter((item) => item.id !== id));
     setSteers((current) => [...current, { id, sessionId, text }]);
     try {
       const result = await request(id, { type: "message.steer", request_id: id, session_id: sessionId, text });
       if (!result.staged) drop();
+      return Boolean(result.staged);
     } catch (error) {
       drop();
       throw error;

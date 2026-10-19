@@ -59,7 +59,8 @@ export const DesktopComposer = memo(function DesktopComposer({
   onCancelReply: () => void;
   onSend: (text: string, files: ComposerFile[]) => Promise<string | undefined>;
   /** 生成中发出的纯文字：不打断本轮，下一步交给模型。 */
-  onSteer: (text: string) => Promise<void>;
+  /** 返回 false 表示服务端此刻不接纳插话（回合已结束或是后台回调），改走普通发送。 */
+  onSteer: (text: string) => Promise<boolean>;
   onStop: () => void;
   /** 当前会话最后一条用户提问；空输入框按 ↑ 取回编辑。 */
   lastInput?: string;
@@ -155,10 +156,7 @@ export const DesktopComposer = memo(function DesktopComposer({
     setInput("");
     setExpanded(false);
     try {
-      if (steerable && !files.length) {
-        await onSteer(text);
-        return undefined;
-      }
+      if (steerable && !files.length && await onSteer(text)) return undefined;
       const sessionId = await onSend(text, files);
       // 首次接纳只是给同一编辑位置确定会话身份，后写的草稿随它保留。
       if (sessionId && draftKey.startsWith("new:")) {
