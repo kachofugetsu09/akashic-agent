@@ -5,6 +5,17 @@
     <link rel="icon" type="image/svg+xml" sizes="any" href="../theme/src/akashic-brand.svg" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0, interactive-widget=resizes-content" />
     <title>Akashic Chat</title>
+    <!-- 插件界面模块与宿主共用同一份 React 与聊天基础件；必须早于任何模块脚本。 -->
+    <script type="importmap">
+    {
+      "imports": {
+        "react": "/assets/sdk/react.js",
+        "react/jsx-runtime": "/assets/sdk/jsx-runtime.js",
+        "react-dom/client": "/assets/sdk/react-dom-client.js",
+        "@akashic/chat-ui-v1": "/assets/sdk/chat-ui-v1.js"
+      }
+    }
+    </script>
     <style>
       /* 启动壳：在 JS 下载与执行前先画出应用外形，React 首次提交时整棵替换。
          几何镜像真实布局（owner 在 styles.css）：侧栏 clamp(17rem,23vw,20rem) 通高、

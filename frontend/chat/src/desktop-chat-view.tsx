@@ -8,7 +8,6 @@ import {
   ConversationContent,
   ConversationEmptyState,
 } from "@/components/ai-elements/conversation";
-import { HostBridgeNotice } from "./host-bridge-notice";
 import { DesktopAutoScroll, ComposerPageKeys, NarrowReadingChrome, ReadingReturnButton, SessionReadingMemory, TurnRail } from "./desktop-auto-scroll";
 import { ComposerStatsLine } from "./composer-stats-line";
 import { ThinkingPlaceholder } from "./thinking-placeholder";
@@ -22,6 +21,7 @@ import { CompactNavigation } from "./compact-navigation";
 import { DesktopSidebar } from "./desktop-sidebar";
 import { useSidebarRail } from "./use-sidebar-rail";
 import type { DesktopChatController } from "./use-desktop-chat-controller";
+import { PluginUiSlot } from "./plugin-ui-runtime";
 import { SessionDirectory } from "./session-directory";
 import { SelectionQuote } from "./selection-quote";
 import { MarqueeText } from "./marquee-text";
@@ -222,7 +222,8 @@ export function DesktopChatView({ embeddedShell, controller }: DesktopChatViewPr
             <i aria-hidden="true" />连接已断开，正在重新连接…
             <button type="button" onClick={retry}>立即重试</button>
           </p> : null}
-          <HostBridgeNotice paused={controller.connectionLost} />
+          {/* 插件的状态提示；聊天连接断开时由上面的连接行统一说明，插件提示让位。 */}
+          {controller.connectionLost ? null : <PluginUiSlot name="chat.notice" sessionId={activeSessionId ?? undefined} quiet />}
           {/* 已有消息（旧记录或先到的实时回复）时读取失败不占阅读区：正文保留，失败与重试放在输入框下的错误行。 */}
           {controller.historyFailure !== null && hasMessages ? <div className="error-line" role="alert">
             <span>没能读取这段对话的完整记录：{controller.historyFailure}</span>

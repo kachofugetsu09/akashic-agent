@@ -3,58 +3,12 @@ import React, { useEffect, useMemo, useState, useSyncExternalStore } from "react
 import { createUuid as createRequestId } from "./browser-uuid.ts";
 import { PluginUiQueryQueue } from "./plugin-ui-query-queue";
 import { PluginUiResultCache } from "./plugin-ui-result-cache";
-import { openInWorkbench, subscribeWorkbenchIntents, workbenchAccepts, type WorkbenchIntentStatus } from "./shell-workbench";
+import { openInWorkbench, subscribeWorkbenchIntents, workbenchAccepts } from "./shell-workbench";
 
-export type PluginUiSlotName =
-  | "turn.before_reasoning"
-  | "turn.before_tool"
-  | "turn.after_answer"
-  | "message.attachment"
-  | "drawer.panel"
-  | "dashboard.main";
+import type { PluginUiContext, PluginUiDefinition, PluginUiQueryOptions, PluginUiRenderer, PluginUiSlotName } from "@akashic/chat-ui-v1";
 
-export interface PluginUiContext {
-  slot: PluginUiSlotName;
-  sessionId?: string;
-  messageId?: string;
-  turnId?: string;
-  block?: unknown;
-  /** 挂载内的事实失效提示；不改变挂载身份。 */
-  onInvalidate(callback: () => void): () => void;
-  /** 异步展示失败时交还宿主降级内容；不改变消息。 */
-  reportError(message: string): void;
-  capabilities: {
-    queryCacheModes?: readonly ("none" | "memory" | "immutable")[];
-  };
-  query(
-    method: string,
-    payload?: Record<string, unknown>,
-    options?: PluginUiQueryOptions,
-  ): Promise<Record<string, unknown>>;
-  /**
-   * 在右侧工具区打开：只在点击或键盘激活的处理函数里调用；没有接受者时得到 unhandled，插件回到自己的原有行为。
-   * accepts 的结果会随宿主广播变化，变化时经 onInvalidate 通知，插件在回调里重新判断是否显示入口。
-   */
-  workbench: {
-    accepts(name: string): boolean;
-    open(name: string, payload: unknown): Promise<WorkbenchIntentStatus>;
-  };
-}
-
-export interface PluginUiQueryOptions {
-  cache?: "none" | "memory" | "immutable";
-}
-
-export interface PluginUiRenderer {
-  accepts?(block: unknown): boolean;
-  prefetch?(context: PluginUiContext): Promise<void>;
-  mount(host: HTMLElement, context: PluginUiContext): void | (() => void);
-}
-
-export interface PluginUiDefinition {
-  slots: Partial<Record<Exclude<PluginUiSlotName, "dashboard.main">, PluginUiRenderer>>;
-  dashboard?: PluginUiRenderer;
-}
+// 插槽合同由 @akashic/chat-ui-v1 发布，宿主与插件共用同一份类型。
+export type { PluginUiContext, PluginUiDefinition, PluginUiQueryOptions, PluginUiRenderer, PluginUiSlotName } from "@akashic/chat-ui-v1";
 
 export interface PluginUiCatalog {
   catalogRevision: string;
@@ -133,6 +87,7 @@ const SLOT_NAMES = new Set<Exclude<PluginUiSlotName, "dashboard.main">>([
   "turn.after_answer",
   "drawer.panel",
   "message.attachment",
+  "chat.notice",
 ]);
 
 function emitChange() {

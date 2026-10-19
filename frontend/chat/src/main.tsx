@@ -2,6 +2,7 @@ import { Suspense } from "react";
 import { createRoot } from "react-dom/client";
 import { initializeTheme, setTheme, startCrossPortThemeSync } from "../../theme/src/theme-runtime";
 import { TooltipProvider } from "@/components/ui/tooltip";
+import { exposeChatRuntime } from "./chat-ui-runtime";
 import { DesktopChatApp } from "./desktop-chat-app";
 import { setShellRailActions } from "./shell-rail-actions";
 import { receiveWorkbenchQuote, setHostShortcuts, setWorkbenchIntents, settleWorkbenchIntent } from "./shell-workbench";
@@ -12,6 +13,7 @@ export type { AgentBlock, ChatMessage, MessageAttachment, ThinkingBlock, ToolBlo
 const entryParams = new URLSearchParams(window.location.search);
 const embeddedShell = entryParams.get("embedded") === "1";
 if (embeddedShell) document.documentElement.dataset.embeddedShell = "true";
+exposeChatRuntime();
 initializeTheme();
 startCrossPortThemeSync();
 if (embeddedShell) {
