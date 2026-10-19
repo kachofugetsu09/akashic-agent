@@ -28,9 +28,23 @@
   /* 柔光环向纸面混色而不是向固定深色混色，暗色主题下不再偏黑。 */
   --ak-rule-focus-soft: color-mix(in oklab, var(--ak-rule-focus) 55%, var(--ak-paper-canvas));
 
+  /* Surfaces: one scrim and one overlay elevation for every dialog. */
+  --ak-scrim-overlay: color-mix(in srgb, var(--ak-color-shadow) 28%, transparent);
+  --ak-elevation-overlay: 0 12px 32px color-mix(in oklab, var(--ak-color-shadow) 14%, transparent);
+
   /* Typography: reading and technical content stay visibly distinct. */
   --ak-type-reading: var(--md-ref-typeface-plain);
   --ak-type-technical: var(--md-ref-typeface-mono);
+}
+
+/* 深色底本身暗，同样的 28% 压不出层级；沿用聊天抽屉的取值。 */
+@supports (color: light-dark(#000, #fff)) {
+  :root {
+    --ak-scrim-overlay: light-dark(
+      color-mix(in srgb, var(--ak-color-shadow) 22%, transparent),
+      color-mix(in srgb, var(--ak-color-shadow) 45%, transparent)
+    );
+  }
 }
 
 @media (prefers-contrast: more) {
