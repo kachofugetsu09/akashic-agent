@@ -1,6 +1,6 @@
 # Builtin Skills Index
 
-本目录是随 Core 发布的内置 Skill：发行版把 `skills/` 打进 Core 制品，`standard_tools` 的 Skill 目录把它作为 `builtin` 来源读取。优先级从低到高：插件随包资产 < 内置 `skills/` < `~/.akashic/skills` < `<workspace>/skills`，高层同名覆盖低层。
+本目录是随 Core 发布的内置 Skill：发行版把 `skills/` 打进 Core 制品，`skills` 插件的技能目录把它作为 `builtin` 来源读取。优先级从低到高：插件随包资产 < 内置 `skills/` < `~/.akashic/skills` < `<workspace>/skills`，高层同名覆盖低层。
 
 ## 目录与格式
 

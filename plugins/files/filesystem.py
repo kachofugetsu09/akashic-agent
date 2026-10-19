@@ -1,4 +1,4 @@
-"""standard_tools 拥有的模型文件工具 schema。"""
+"""files 插件拥有的模型文件工具 schema。"""
 
 from pathlib import Path
 from typing import Any
