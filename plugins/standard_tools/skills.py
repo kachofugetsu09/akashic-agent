@@ -84,6 +84,63 @@ class SkillTool:
 
 # 行首或空白后的 /技能名 是用户的显式选择；名称后不能紧跟路径字符，"/usr/bin" 不会被当成技能。
 SKILL_MENTION = re.compile(r"(?:^|(?<=\s))/(\w[\w-]*(?:\.[\w-]+)*)(?![\w/-]|\.\w)")
+# 代码块与行内代码里的 /名称 是引用的文字，不是选择。按 CommonMark 先切块再看行内：行首 ``` 或 ~~~ 围栏到
+# 不短于它的同字符围栏（或文末）整块跳过；空行与 ATX 标题行切开段落；段内从左到右扫描，代码外的反斜杠转义
+# 跳过下一个字符，n 个反引号的串遇到下一个恰好 n 个的串才构成行内代码，否则是字面反引号。
+# 缩进代码块与列表、引用等其他块边界不识别（与续行难以区分），按同一段处理。
+_FENCE = re.compile(r"^ {0,3}(`{3,}|~{3,})")
+_HEADING = re.compile(r"^ {0,3}#{1,6}(?:[ \t]|$)")
+_TICKS = re.compile(r"`+")
+
+
+# 一段之内去掉行内代码：转义只在代码外生效，反引号串按长度配对。
+def _strip_inline_code(paragraph: str) -> str:
+    out: list[str] = []
+    index = 0
+    while index < len(paragraph):
+        char = paragraph[index]
+        if char == "\\" and index + 1 < len(paragraph):
+            out.append("  ")
+            index += 2
+            continue
+        if char != "`":
+            out.append(char)
+            index += 1
+            continue
+        opening = _TICKS.match(paragraph, index)
+        assert opening is not None
+        size = len(opening.group(0))
+        closing = next((match for match in _TICKS.finditer(paragraph, opening.end()) if len(match.group(0)) == size), None)
+        if closing is None:
+            out.append(opening.group(0))
+            index = opening.end()
+        else:
+            out.append(" ")
+            index = closing.end()
+    return "".join(out)
+
+
+# 留下 /名称 可以算作选择的文字：围栏块整行清空，段内的行内代码换成空白。
+def mention_text(text: str) -> str:
+    blocks: list[list[str]] = [[]]
+    fence = ""
+    for line in text.split("\n"):
+        opened = _FENCE.match(line)
+        if fence:
+            if opened and opened.group(1)[0] == fence[0] and len(opened.group(1)) >= len(fence) \
+                    and not line[opened.end():].strip():
+                fence = ""
+            blocks.append([])
+        elif opened and not (opened.group(1)[0] == "`" and "`" in line[opened.end():]):
+            fence = opened.group(1)
+            blocks.append([])
+        elif not line.strip():
+            blocks.append([])
+        elif _HEADING.match(line):
+            blocks.extend(([line], []))
+        else:
+            blocks[-1].append(line)
+    return "\n\n".join(_strip_inline_code("\n".join(block)) for block in blocks if block)
 
 
 def mentioned_skills(snapshot: tuple[Message, ...], source: str) -> tuple[str, ...]:
@@ -95,7 +152,7 @@ def mentioned_skills(snapshot: tuple[Message, ...], source: str) -> tuple[str, .
     assert isinstance(current.body, Input)
     text = "\n".join(part.value for part in current.body.parts
                      if part.kind == "text" and isinstance(part.value, str))
-    return tuple(dict.fromkeys(match.group(1) for match in SKILL_MENTION.finditer(text)))
+    return tuple(dict.fromkeys(match.group(1) for match in SKILL_MENTION.finditer(mention_text(text))))
 
 
 def selected_reminder(records: tuple[SkillRecord, ...], snapshot: tuple[Message, ...], source: str) -> Mapping[str, object] | None:
@@ -121,8 +178,8 @@ def selected_reminder(records: tuple[SkillRecord, ...], snapshot: tuple[Message,
         "不必再调用技能读取工具。相对路径以各技能的资源目录为根。\n\n" + "\n\n".join(sections))}
 
 
-async def register_skills(ctx: Context) -> ToolRef:
-    """从当前来源热读取 Skill，不复制目录或保留历史资源树。"""
+async def register_skills(ctx: Context) -> SkillInspectionProvider:
+    """从当前来源热读取 Skill，不复制目录或保留历史资源树；返回只读目录供本插件的界面查询。"""
     read_assets = ctx.require(INSTALLED_ASSETS)
     parser = SkillCatalogParser(ctx.require(PROCESSES))
     io_lock = asyncio.Lock()
@@ -138,7 +195,8 @@ async def register_skills(ctx: Context) -> ToolRef:
         async with io_lock, read_assets.open(ctx, category="skills") as assets:
             return await read_catalog(assets)
 
-    _ = await ctx.provide(SKILL_INSPECTION, SkillInspectionProvider(read_inspection_catalog))
+    inspection = SkillInspectionProvider(read_inspection_catalog)
+    _ = await ctx.provide(SKILL_INSPECTION, inspection)
 
     async def capture(configuration: Mapping[str, object]) -> Mapping[str, object]:
         if configuration:
@@ -201,8 +259,9 @@ async def register_skills(ctx: Context) -> ToolRef:
         return {"system_prompt": text, "reminders": ()}
 
     _ = await ctx.require(MATERIALS_V4).register(ctx, kind="context", name="skills", prepare=prepare, prompt=True, priority=300)
-    return cast(ToolRef, await ctx.require(TOOLS).register(
+    _ = cast(ToolRef, await ctx.require(TOOLS).register(
         ctx, name="load_skill", description="按技能名称热读取当前指令和实际资源目录；先读取再执行，相对资源以返回的 base_directory 为根。未知、不可用或空技能返回错误。",
         parameters=SkillQuery.model_json_schema(), open=open_tool, capture=capture,
         idempotent=True, parallel=True,
     ))
+    return inspection

@@ -5,10 +5,10 @@ import { PluginUiQueryQueue } from "./plugin-ui-query-queue";
 import { PluginUiResultCache } from "./plugin-ui-result-cache";
 import { openInWorkbench, subscribeWorkbenchIntents, workbenchAccepts } from "./shell-workbench";
 
-import type { PluginUiContext, PluginUiDefinition, PluginUiQueryOptions, PluginUiRenderer, PluginUiSlotName } from "@akashic/chat-ui-v1";
+import type { ComposerSuggestProvider, PluginUiContext, PluginUiDefinition, PluginUiMountSlotName, PluginUiQueryOptions, PluginUiRenderer, PluginUiSlotName } from "@akashic/chat-ui-v1";
 
 // 插槽合同由 @akashic/chat-ui-v1 发布，宿主与插件共用同一份类型。
-export type { PluginUiContext, PluginUiDefinition, PluginUiQueryOptions, PluginUiRenderer, PluginUiSlotName } from "@akashic/chat-ui-v1";
+export type { ComposerSuggestProvider, ComposerSuggestion, PluginUiContext, PluginUiDefinition, PluginUiQueryOptions, PluginUiRenderer, PluginUiSlotName } from "@akashic/chat-ui-v1";
 
 export interface PluginUiCatalog {
   catalogRevision: string;
@@ -89,7 +89,14 @@ const SLOT_NAMES = new Set<Exclude<PluginUiSlotName, "dashboard.main">>([
   "message.attachment",
   "chat.notice",
   "header.end",
+  "composer.suggest",
 ]);
+
+/** 目录或模块变化时通知；宿主内的数据型扩展点据此对齐自己的缓存。 */
+export function subscribePluginUiCatalog(listener: () => void): () => void {
+  listeners.add(listener);
+  return () => { listeners.delete(listener); };
+}
 
 function emitChange() {
   registryVersion += 1;
@@ -276,7 +283,9 @@ function parseDefinition(value: unknown, plugin: PluginUiCatalogItem): PluginUiD
     if (!SLOT_NAMES.has(name as Exclude<PluginUiSlotName, "dashboard.main">)) {
       throw new Error(`插件界面 slot 无效: ${plugin.id}.${name}`);
     }
-    if (!isRenderer(renderer)) throw new Error(`插件界面 renderer 无效: ${plugin.id}.${name}`);
+    if (name === "composer.suggest" ? !isSuggestProvider(renderer) : !isRenderer(renderer)) {
+      throw new Error(`插件界面 renderer 无效: ${plugin.id}.${name}`);
+    }
   }
   const declaredSlots = Object.keys(slots).sort().join("|");
   if (declaredSlots !== [...plugin.slots].sort().join("|")) {
@@ -301,6 +310,36 @@ function isRenderer(value: unknown): value is PluginUiRenderer {
   return typeof renderer.mount === "function"
     && (renderer.accepts === undefined || typeof renderer.accepts === "function")
     && (renderer.prefetch === undefined || typeof renderer.prefetch === "function");
+}
+
+function isSuggestProvider(value: unknown): value is ComposerSuggestProvider {
+  if (!value || typeof value !== "object") return false;
+  const provider = value as Partial<Record<keyof ComposerSuggestProvider, unknown>>;
+  return typeof provider.label === "string" && typeof provider.empty === "string" && typeof provider.load === "function"
+    && (provider.prefix === "/" || provider.prefix === "@") && Array.isArray(provider.sigils)
+    && provider.sigils.every((sigil) => sigil === "/" || sigil === "@");
+}
+
+export interface ComposerSuggestSource {
+  /** 插件身份加版本；目录更新后变化。 */
+  key: string;
+  provider: ComposerSuggestProvider;
+  /** 每次加载一个上下文；宿主撤下数据源或超时时经 signal 中止它的查询。 */
+  context(signal: AbortSignal): Pick<PluginUiContext, "query">;
+}
+
+/** 已加载的输入框建议数据源，按目录顺序；宿主不按插件名挑选。 */
+export function composerSuggestSources(): ComposerSuggestSource[] {
+  if (catalog.updating) return [];
+  return catalog.plugins.flatMap((plugin) => {
+    const loaded = definitions.get(plugin.id);
+    const provider = loaded?.revision === plugin.revision ? loaded.definition.slots["composer.suggest"] : undefined;
+    return provider ? [{ key: `${plugin.id}:${plugin.revision}`, provider, context: (signal) => ({
+      query: (method, payload = {}) => queryWebPluginUi({
+        pluginId: plugin.id, pluginRevision: plugin.revision, method, payload, slot: "composer.suggest", signal,
+      }),
+    }) }] : [];
+  });
 }
 
 /** 宿主按插件名找能力；调用时保留目录中的完整 name@marketplace 身份。 */
@@ -366,7 +405,7 @@ export function receivePluginUiResult(response: PluginUiResult) {
   }
 }
 
-type InlineSlotName = Exclude<PluginUiSlotName, "dashboard.main">;
+type InlineSlotName = PluginUiMountSlotName;
 
 interface SlotMatch {
   plugin: PluginUiCatalogItem;

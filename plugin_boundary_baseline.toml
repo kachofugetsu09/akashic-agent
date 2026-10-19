@@ -13,7 +13,6 @@ R9 = []
 R12 = [
     "frontend/chat/src/model-call-stats.ts -> /api/chat/model-calls",
     "frontend/chat/src/project-directory-dialog.tsx -> PROJECTS_PLUGIN",
-    "frontend/chat/src/skill-mention.tsx -> /api/chat/runtime",
     "frontend/chat/src/use-desktop-chat-controller.ts -> /api/chat/models",
     "frontend/chat/src/use-desktop-chat-controller.ts -> MEMORY_PLUGIN",
     "frontend/chat/src/use-desktop-chat-controller.ts -> PROJECTS_PLUGIN",
