@@ -57,6 +57,7 @@ async def run(directory: Path, port: int | None) -> dict[str, bool]:
     from agent.plugins.selection import PluginSelection
     from agent.plugins.static_manifest import load_static_plugin_manifest
     from plugins.runtime_diagnostics.contract import DIAGNOSTICS
+    from plugins.runtime_diagnostics.stalls import BEAT_SECONDS
     from plugins.ui.contract import WEB_UI
 
     # 1. 提供完整合同源码，只启用诊断、UI 和场景负载；不打开正式数据。
@@ -180,7 +181,8 @@ async def run(directory: Path, port: int | None) -> dict[str, bool]:
                 while not (stalls := (await get(report["through_seq"]))["stalls"]):
                     await asyncio.sleep(.1)
             stall = stalls[-1]
-            assert 2500 <= stall["duration_ms"] < 4000, stall
+            # The record measures heartbeat delay; the next beat can be up to one interval away.
+            assert (2.8 - BEAT_SECONDS) * 1000 <= stall["duration_ms"] < 4000, stall
             loop_thread = stall["captures"][0]["threads"][0]
             assert loop_thread["loop"] and loop_thread["frames"][0] == "diagnostics_probe_allocations.py:7 in block_loop", stall
             assert not any("malloc_status" in row for row in (await get())["samples"])
