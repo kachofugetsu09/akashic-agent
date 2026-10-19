@@ -13,12 +13,10 @@
   grid-template-columns: minmax(26rem, 1fr) 1px minmax(22.5rem, var(--conversation-tools-width));
 }
 
-/* 聊天的层级（标题栏、弹层）封在承载区域里，和 iframe 时一样不越过外壳控件（工作台开关）。 */
 .conversation-page-chat {
   grid-column: 1;
   grid-row: 1;
   position: relative;
-  isolation: isolate;
   min-width: 0;
   height: 100%;
   overflow: hidden;
@@ -382,10 +380,11 @@
   cursor: default;
 }
 
-/* 工作台开关：与标题栏图标按钮同一形态，名称在提示里；有活动时右上角一个点 */
+/* 工作台开关：与标题栏图标按钮同一形态，名称在提示里；有活动时右上角一个点。
+   聊天同文档挂载：开关在聊天的普通层级（标题栏、目录轨，≤6）之上，在聊天弹层（≥50）之下。 */
 .conversation-tools-toggle {
   position: absolute;
-  z-index: 5;
+  z-index: 10;
   inset-block-start: 10px;
   inset-inline-end: 12px;
   display: inline-grid;
