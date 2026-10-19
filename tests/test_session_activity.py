@@ -224,3 +224,42 @@ def test_snapshot_heads_cache_is_per_filter_and_follows_new_commits(tmp_path) ->
         assert catalog.snapshot_heads(prefix="telegram:", visibility="listed") == {}
     finally:
         log.close()
+
+
+@pytest.mark.asyncio
+async def test_catalog_follow_filters_heads_off_loop_and_keeps_unfiltered_fast_path(tmp_path, monkeypatch) -> None:
+    """目录筛选订阅的每次水位重读在 worker 排水；无筛选订阅复用已提交水位不跑 SQL。"""
+    import threading
+    from plugins.ledger.log import MessageCatalog
+
+    log = MessageLog(tmp_path / "sessions.db")
+    loop_thread = threading.get_ident()
+    calls: list[tuple[str, bool]] = []
+    original = MessageCatalog.snapshot_heads
+
+    def probe(self, *, prefix: str = "", visibility=None):
+        calls.append((prefix, threading.get_ident() == loop_thread))
+        return original(self, prefix=prefix, visibility=visibility)
+
+    monkeypatch.setattr(MessageCatalog, "snapshot_heads", probe)
+    try:
+        _append(log, "akashic:a", "a1")
+        catalog = log.catalog()
+        unfiltered = catalog.follow()
+        assert await asyncio.wait_for(anext(unfiltered), 1) == {"akashic:a": 0}
+        # 冷缓存装载仍在事件循环上（快路径语义不变）；装载后写入进程内已提交水位。
+        assert calls == [("", True)]
+
+        filtered = catalog.follow(prefix="akashic:")
+        assert await asyncio.wait_for(anext(filtered), 1) == {"akashic:a": 0}
+        assert calls == [("", True), ("akashic:", False)]
+
+        _append(log, "akashic:a", "a2")
+        assert await asyncio.wait_for(anext(unfiltered), 1) == {"akashic:a": 1}
+        assert calls == [("", True), ("akashic:", False)]
+        assert await asyncio.wait_for(anext(filtered), 1) == {"akashic:a": 1}
+        assert calls == [("", True), ("akashic:", False), ("akashic:", False)]
+        await unfiltered.aclose()
+        await filtered.aclose()
+    finally:
+        log.close()

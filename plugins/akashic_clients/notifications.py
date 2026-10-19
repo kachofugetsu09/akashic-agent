@@ -78,7 +78,7 @@ class NotificationFeed:
         after: tuple[str, str] | None = None
         while True:
             async with self._open_catalog() as catalog:
-                page = catalog.sessions(prefix=self._prefix, visibility="listed", after=after, limit=_PAGE_SIZE)
+                page = await catalog.sessions_async(prefix=self._prefix, visibility="listed", after=after, limit=_PAGE_SIZE)
             for entry in page.items:
                 yield entry
             if page.next_cursor is None:
@@ -92,7 +92,8 @@ class NotificationFeed:
         """页面使用当前 head；会话被用户删除时本轮跳过，绝不写回消息。"""
         async with self._open_catalog() as catalog:
             try:
-                return catalog.reader(entry.session_id).read_page(after_seq=after, limit=_PAGE_SIZE)
+                return await catalog.reader(entry.session_id).read_async(
+                    lambda reader: reader.read_page(after_seq=after, limit=_PAGE_SIZE))
             except KeyError:
                 return None
 

@@ -610,3 +610,23 @@ MessageLog 的单条查询使用 SQLite 隐式读取快照；查询在归还连�
 绑定模型复用当前深冻结消息和工具 schema 的 JSON 编码来计算请求摘要。
 摘要仍使用原字段、排序、UTF-8 和分隔符；同 key 的内容冲突与恢复判断不变。
 每次只保留当前请求引用的编码，历史缩短、模型 scope 结束后释放旧引用。
+
+## Chat 目录与消息页读取（#1522 同款排水）
+
+Chat HTTP API 的目录页、消息尾页、软删标记与会话水位读取一律经 `run_file_io`
+在 worker 内完成：`MessageCatalog.sessions_async`/`snapshot_heads_async` 与
+`MessageReader.read_tail_async`/`deleted_async`/`head_async` 是同步版的异步孪生，
+读取内容、分页、失效语义和逐字节结果与同步版一致；调用线程持有未提交事务时
+`_check_async_operation` 先行拒绝。取消已开始的读取仍先排空物理工作再归还连接。
+
+`MessageCatalog.follow` 的目录筛选与周期核对分支改用 `snapshot_heads_async` 排水，
+每个 websocket 客户端的目录通知不再把全会话水位查询留在事件循环上；
+无筛选订阅复用已提交水位的快路径保持不动（装载后不再跑 SQL）。
+`NavigationFeed` 的目录遍历与消息页、`session_pin_row` 的四项点读合并进同一
+worker 行程；`_reads` 的线程局部性保证 worker 只按所借用连接自己的
+`data_version` 复用每连接缓存，不跨线程共享事务状态。
+
+`scripts/chat_catalog_io_scenario.py` 用 ReadBarrier 断言真实 HTTP 接口的读取
+不在事件循环线程执行且读取前心跳可落地，`--baseline` 在旧码上抓住循环内读取；
+`tests/test_storage_read_execution.py` 与 `tests/test_session_activity.py`
+覆盖孪生等价、取消排空、事务拒绝与 follow 两条分支的排水行为。
