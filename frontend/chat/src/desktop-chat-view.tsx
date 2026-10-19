@@ -69,6 +69,12 @@ export function DesktopChatView({ controller }: DesktopChatViewProps) {
     navigationGroups,
   } = controller;
   const inputResult = useMemo(() => lastInputResult(timelineMessages), [timelineMessages]);
+  // 改的是这条未发送草稿的归属，而不是换一份草稿：切过去后把原文接到目标位置已有草稿之后。
+  const moveDraft = useCallback((switchScope: () => void) => {
+    const text = composerApi.current?.takeDraft() ?? "";
+    switchScope();
+    if (text) window.setTimeout(() => composerApi.current?.insertDraft(text, { append: true }), 0);
+  }, []);
   const pagedTimeline = useMemo(() => withoutLeadingOrphanResults(timelineMessages, historyHasMore),
     [historyHasMore, timelineMessages]);
   const inputId = messages.filter((message) => message.role === "user").at(-1)?.id ?? inputResult.id;
@@ -192,7 +198,7 @@ export function DesktopChatView({ controller }: DesktopChatViewProps) {
           {/* 输入框工具位的插件说明为什么现在不能发；处理入口在插件自己的工具里。 */}
           {chatReady && sendProblem ? <p className="chat-send-notice" id="chat-send-reason" role="status">{sendProblem}</p> : null}
           {!conversationLayout && !activeSessionId ? <NewChatScope groups={navigationGroups}
-            onStart={navigationGroups.startChat} onUngrouped={startNewChat} /> : null}
+            onStart={(ref) => moveDraft(() => navigationGroups.startChat(ref))} onUngrouped={() => moveDraft(startNewChat)} /> : null}
           <DesktopComposer
             ref={composerApi}
             chatReady={chatReady} canSend={canSend} sendProblem={sendProblem} draftKey={draftKey} autoFocus={!conversationLayout && chatReady} fresh={!conversationLayout} status={status} stopPending={stopPending} stopCount={stopCount}

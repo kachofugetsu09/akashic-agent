@@ -27,6 +27,8 @@ export interface ComposerApi {
   insertDraft: (text: string, options?: { append?: boolean }) => void;
   /** 把焦点交给输入框并把光标放到末尾（如选择回复引用之后）。 */
   focus: () => void;
+  /** 取走当前草稿并清空它，用于把未发送的草稿带到另一个编辑位置。 */
+  takeDraft: () => string;
 }
 
 /** Own transient editor state while the app controller owns transport and durable chat state. */
@@ -107,6 +109,11 @@ export const DesktopComposer = memo(function DesktopComposer({
     ));
   }, []);
   useImperativeHandle(ref, () => ({
+    takeDraft: () => {
+      const text = drafts.current.get(draftKey) ?? "";
+      if (text) setDraft(draftKey, "");
+      return text;
+    },
     focus: () => window.requestAnimationFrame(() => {
       const textarea = textareaRef.current;
       if (!textarea) return;
