@@ -118,7 +118,6 @@ export function CompactNavigation(props: DesktopSidebarProps) {
     </Dialog>
     {lastProjects.current ? <NewProjectDialog
       open={projectDialogOpen}
-      memoryInstalled={lastProjects.current.memoryInstalled}
       onOpenChange={setProjectDialogOpen}
       onCreate={lastProjects.current.onCreate}
       onCloseFocus={() => {

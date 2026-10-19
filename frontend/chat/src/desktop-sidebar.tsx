@@ -19,7 +19,7 @@ import { ConversationNavigation, ConversationSessionRow, type ConversationRowDra
 import { PluginUiSlot } from "./plugin-ui-runtime";
 import akashicBrandIcon from "../../theme/src/akashic-brand.svg";
 import { activateShellRailAction, useShellRailActions } from "./shell-rail-actions";
-import { ProjectNavigation, ProjectNavigationRow, type ProjectSessionItem } from "./project-navigation";
+import { ProjectNavigation, ProjectNavigationRow, type CreateProject, type ProjectSessionItem } from "./project-navigation";
 import { sessionLabel } from "./web-chat-message-data";
 import type { NavigationPin, NavigationPinsState } from "./use-navigation-pins";
 import {
@@ -27,7 +27,7 @@ import {
   type SidebarRailControl,
 } from "./use-sidebar-rail";
 import type { NavigationRowAction } from "./navigation-row-menu";
-import type { PendingProjectRow, ProjectMemory, ProjectRow } from "./web-projects";
+import type { PendingProjectRow, ProjectRow } from "./web-projects";
 import { ProjectDirectoryDialog } from "./project-directory-dialog";
 import { getHostShortcuts } from "./shell-workbench";
 import { Folder } from "lucide-react";
@@ -290,9 +290,8 @@ export interface DesktopSidebarProjects {
   pending: PendingProjectRow[];
   pendingError: string;
   activeProjectId: string;
-  memoryInstalled: boolean;
   onNewChat: (projectId: string) => void;
-  onCreate: (name: string, memory: ProjectMemory, directory: string | null) => Promise<void>;
+  onCreate: CreateProject;
   onContinue: (key: string) => Promise<void>;
   onStop: (key: string) => void;
   onOpenCreate?: () => void;
@@ -622,7 +621,6 @@ export const DesktopSidebar = memo(function DesktopSidebar({
         sessionsByProject={sessionsByProject}
         activeProjectId={projects.activeProjectId}
         pendingSessionId={pendingSessionId}
-        memoryInstalled={projects.memoryInstalled}
         onSelectSession={onSelectSession}
         onPrefetchSession={onPrefetchSession}
         onNewProjectChat={projects.onNewChat}

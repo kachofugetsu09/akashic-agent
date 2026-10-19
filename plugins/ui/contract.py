@@ -116,6 +116,8 @@ PluginUiSlot = Literal[
     "composer.toolbar",
     "composer.status",
     "composer.suggest",
+    "scope.fields",
+    "scope.badge",
 ]
 
 PLUGIN_UI_SLOTS = frozenset(
@@ -130,6 +132,8 @@ PLUGIN_UI_SLOTS = frozenset(
         "composer.toolbar",
         "composer.status",
         "composer.suggest",
+        "scope.fields",
+        "scope.badge",
     }
 )
 

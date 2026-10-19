@@ -2,8 +2,13 @@ import * as React from "react";
 import * as ReactJSXRuntime from "react/jsx-runtime";
 import * as ReactDOMClient from "react-dom/client";
 import { useEffect, useRef, useState, type ReactNode } from "react";
+import { ChevronDown } from "lucide-react";
 import { copyText } from "./copy-text";
 import { MarqueeText } from "./marquee-text";
+import {
+  DropdownMenu, DropdownMenuContent, DropdownMenuRadioGroup,
+  DropdownMenuRadioItem, DropdownMenuTrigger,
+} from "@/components/ui/dropdown-menu";
 
 // 顶栏右侧的安静标记：平时只是"图标 + 短名"，异常时变色；点开是一块说明面板。
 function HeaderMarker({ icon, label, alert = false, ariaLabel, panelLabel, children }: {
@@ -47,6 +52,34 @@ function HeaderMarker({ icon, label, alert = false, ariaLabel, panelLabel, child
   </div>;
 }
 
+// 单选菜单：触发按钮显示当前项，展开后每项带一行说明，底部可附一句提示。
+function ChoiceMenu({ ariaLabel, value, choices, note, disabled = false, onChange }: {
+  ariaLabel: string;
+  value: string;
+  choices: readonly { value: string; label: string; description?: string }[];
+  note?: string;
+  disabled?: boolean;
+  onChange(value: string): void;
+}) {
+  const current = choices.find((choice) => choice.value === value);
+  return <DropdownMenu>
+    <DropdownMenuTrigger asChild>
+      <button type="button" className="choice-menu__trigger" disabled={disabled} aria-label={`${ariaLabel}：${current?.label ?? ""}`}>
+        {current?.label} <ChevronDown size={15} aria-hidden="true" />
+      </button>
+    </DropdownMenuTrigger>
+    <DropdownMenuContent className="choice-menu" align="start" sideOffset={8} collisionPadding={16}>
+      <DropdownMenuRadioGroup value={value} aria-label={ariaLabel}>
+        {choices.map((choice) => <DropdownMenuRadioItem key={choice.value} value={choice.value}
+          className="choice-menu__choice" onSelect={() => onChange(choice.value)}>
+          <span><strong>{choice.label}</strong>{choice.description ? <small>{choice.description}</small> : null}</span>
+        </DropdownMenuRadioItem>)}
+      </DropdownMenuRadioGroup>
+      {note ? <p className="choice-menu__note">{note}</p> : null}
+    </DropdownMenuContent>
+  </DropdownMenu>;
+}
+
 // 面板底部的一排文字按钮。
 function HeaderMarkerActions({ children }: { children: ReactNode }) {
   return <div className="header-marker__actions">{children}</div>;
@@ -72,6 +105,7 @@ const ChatUi = {
   HeaderMarker,
   HeaderMarkerActions,
   MarqueeText,
+  ChoiceMenu,
   copyText,
 };
 

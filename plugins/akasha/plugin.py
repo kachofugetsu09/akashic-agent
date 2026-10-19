@@ -328,7 +328,7 @@ async def run(ctx: Context, interest: Interest) -> None:
         # UI provider 在事件循环持有调用作用域，线程回调不能再次进入 entrypoint。
         _ = await child.require(UI_SLOTS).register_plugin_ui(
             child, PluginUiDefinition(module="message_ui.js", stylesheet="message_ui.css",
-                                    slots=("turn.before_reasoning",),
+                                    slots=("turn.before_reasoning", "scope.fields", "scope.badge"),
                                     navigation=PluginUiNavigation(label="Akasha Inspector",
                                         description="查看实际检索及呈现的原消息")), query=query,
         )

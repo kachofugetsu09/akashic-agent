@@ -12,8 +12,6 @@ R3 = [
 R9 = []
 R12 = [
     "frontend/chat/src/project-directory-dialog.tsx -> PROJECTS_PLUGIN",
-    "frontend/chat/src/use-desktop-chat-controller.ts -> MEMORY_PLUGIN",
     "frontend/chat/src/use-desktop-chat-controller.ts -> PROJECTS_PLUGIN",
-    "frontend/chat/src/web-projects.ts -> MEMORY_PLUGIN",
     "frontend/chat/src/web-projects.ts -> PROJECTS_PLUGIN",
 ]

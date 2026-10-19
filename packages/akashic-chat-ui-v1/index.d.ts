@@ -12,6 +12,8 @@ export type PluginUiSlotName =
   | "composer.toolbar"
   | "composer.status"
   | "composer.suggest"
+  | "scope.fields"
+  | "scope.badge"
   | "dashboard.main";
 
 /** 宿主挂载插件元素的插槽；composer.suggest 是数据源，不挂载。 */
@@ -53,6 +55,22 @@ export interface PluginUiContext {
   };
   /** 只在 composer.toolbar 插槽里提供。 */
   composer?: ComposerControls;
+  /**
+   * scope.fields 与 scope.badge 插槽里提供：会话的一个 scope 维度，例如项目。
+   * scope.fields 是新建该维度取值的表单，取值尚未产生，value 为空；
+   * scope.badge 跟在某个取值的名字后面，位于可点击的行里，只放不可交互的短文字。
+   */
+  scope?: { dimension: string; value?: string };
+  /** 只在 scope.fields 插槽里提供。 */
+  fields?: ScopeFieldControls;
+}
+
+/** 新建表单里的附加设置：表单确定了新取值、在它被创建之前，宿主依次调用各插件登记的提交。 */
+export interface ScopeFieldControls {
+  /** 登记本挂载的提交；拒绝时整次新建失败，表单保持打开。返回取消登记。 */
+  onCommit(commit: (value: string) => Promise<void>): () => void;
+  /** 表单正在提交；变化时经 onInvalidate 通知。 */
+  busy(): boolean;
 }
 
 /** 插件随下一条消息附带的片段；后端由声明了 `input_part_key(kind)` 的 owner 校验，没有 owner 的 kind 会被拒收。 */
@@ -128,6 +146,15 @@ export const HeaderMarker: ComponentType<{
 }>;
 /** 标记面板底部的一排文字按钮。 */
 export const HeaderMarkerActions: ComponentType<{ children: ReactNode }>;
+/** 单选菜单：触发按钮显示当前项，展开后每项带说明，可在底部附一句提示。 */
+export const ChoiceMenu: ComponentType<{
+  ariaLabel: string;
+  value: string;
+  choices: readonly { value: string; label: string; description?: string }[];
+  note?: string;
+  disabled?: boolean;
+  onChange(value: string): void;
+}>;
 /** 过长时滚动显示的单行文字。 */
 export const MarqueeText: ComponentType<{ children: ReactNode; still?: boolean }>;
 export function copyText(text: string): Promise<void>;

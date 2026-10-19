@@ -90,15 +90,6 @@ for (const plugin of modules) {
   });
 }
 
-// 新 Message Inspector 的源文件与其他前端一样保存在 frontend 下。
-await bundle({
-  entryPoints: [resolve(repoRoot, "frontend/plugins/akasha/src/plugin-ui.js")],
-  bundle: true,
-  format: "esm",
-  target: "es2022",
-  minify: true,
-  outfile: resolve(pluginsRoot, "akasha/message_ui.js"),
-});
 
 // 改动摘要经回答尾注插槽挂载，与“改动”标签的 Web 模块分开打包。
 await bundle({
@@ -117,6 +108,8 @@ await chatSlotModule("frontend/plugins/standard_tools/src/plugin-ui.tsx", "stand
 await chatSlotModule("frontend/plugins/jobs/src/plugin-ui.tsx", "jobs/plugin_ui.js");
 // Models 的回答尾注与输入框模型胶囊经插件界面插槽挂载，与设置页 Web 模块分开打包。
 await chatSlotModule("frontend/plugins/models/src/plugin-ui.tsx", "models/plugin_ui.js");
+// Akasha 的检索卡片、Inspector 与项目记忆设置共用一个模块。
+await chatSlotModule("frontend/plugins/akasha/src/plugin-ui.js", "akasha/message_ui.js");
 
 // 网站卡片经消息附件插槽挂载，与“网站”标签的 Web 模块分开打包。
 await bundle({

@@ -64,3 +64,17 @@
   outline: 2px solid var(--akasha-plugin-ui-accent);
   outline-offset: 2px;
 }
+
+/* 项目名后的记忆范围标签。 */
+.akasha-scope-badge {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  border-radius: 999px;
+  padding-inline: 6px;
+  color: var(--chat-muted);
+  background: var(--chat-chip);
+  font-size: 0.6875rem;
+  line-height: 1.6;
+}

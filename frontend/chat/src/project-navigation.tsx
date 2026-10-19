@@ -1,5 +1,5 @@
-import { ChevronDown, ChevronRight, Folder, FolderPlus, Lightbulb, Plus } from "lucide-react";
-import { useRef, useState, type FormEvent } from "react";
+import { ChevronRight, Folder, FolderPlus, Lightbulb, Plus } from "lucide-react";
+import { useMemo, useRef, useState, type FormEvent } from "react";
 import { NavigationRowMenu, type NavigationRowAction } from "./navigation-row-menu";
 import {
   Dialog,
@@ -12,18 +12,13 @@ import {
 import { SessionStatusMark, summarizeStatus, type SessionStatus } from "./session-status-mark";
 import { ProjectDirectoryDialog } from "./project-directory-dialog";
 import { Input } from "@/components/ui/input";
-import {
-  DropdownMenu, DropdownMenuContent, DropdownMenuRadioGroup,
-  DropdownMenuRadioItem, DropdownMenuTrigger,
-} from "@/components/ui/dropdown-menu";
 import { MarqueeText } from "./marquee-text";
-import {
-  PROJECT_MEMORY_CHOICES,
-  projectMemoryLabel,
-  type PendingProjectRow,
-  type ProjectMemory,
-  type ProjectRow,
-} from "./web-projects";
+import { PluginUiSlot } from "./plugin-ui-runtime";
+import { createScopeFields } from "./scope-fields";
+import { PROJECT_DIMENSION, type PendingProjectRow, type ProjectRow } from "./web-projects";
+
+/** 新建项目：名称、目录与保存其他插件附加设置的回调（在项目创建前调用）。 */
+export type CreateProject = (name: string, directory: string | null, commitFields: (projectId: string) => Promise<void>) => Promise<void>;
 
 export interface ProjectSessionItem {
   id: string;
@@ -40,7 +35,6 @@ export function ProjectNavigation({
   sessionsByProject,
   activeProjectId,
   pendingSessionId,
-  memoryInstalled,
   onSelectSession,
   onPrefetchSession,
   onNewProjectChat,
@@ -60,11 +54,10 @@ export function ProjectNavigation({
   sessionsByProject: ReadonlyMap<string, ProjectSessionItem[]>;
   activeProjectId: string;
   pendingSessionId: string;
-  memoryInstalled: boolean;
   onSelectSession: (sessionId: string) => void;
   onPrefetchSession?: (sessionId: string) => void;
   onNewProjectChat: (projectId: string) => void;
-  onCreateProject: (name: string, memory: ProjectMemory, directory: string | null) => Promise<void>;
+  onCreateProject: CreateProject;
   onContinueProject: (key: string) => Promise<void>;
   onStopProject: (key: string) => void;
   onOpenCreateProject?: () => void;
@@ -119,7 +112,7 @@ export function ProjectNavigation({
         {pending.map((item) => <div key={item.key} className="project-pending__item">
           <span className="project-pending__name" title={item.name}>{item.name}</span>
           <small>{item.invalid ? "本地请求损坏，无法继续" : projects.some((project) => item.id === project.id)
-            ? "项目已在列表中，本地请求仍未确认" : `创建结果未确认 · ${projectMemoryLabel(item.memory)}`}</small>
+            ? "项目已在列表中，本地请求仍未确认" : "创建结果未确认"}</small>
           {item.directory ? <small className="directory-path">默认目录：{item.directory}</small> : null}
           <div className="project-pending__actions">
             {!item.invalid ? <button type="button" disabled={Boolean(busyKey)} onClick={() => void continuePending(item.key)}>
@@ -152,7 +145,6 @@ export function ProjectNavigation({
       />)}
       {!onOpenCreateProject ? <NewProjectDialog
         open={dialogOpen}
-        memoryInstalled={memoryInstalled}
         onOpenChange={setDialogOpen}
         onCreate={onCreateProject}
       /> : null}
@@ -198,9 +190,8 @@ export function ProjectNavigationRow({
           ? <span className="project-group__icon"><SessionStatusMark status={collapsedStatus} /></span>
           : <Folder size={18} strokeWidth={1.75} aria-hidden="true" />}
         <span className="project-group__name"><MarqueeText>{project.name}</MarqueeText></span>
-        {project.memory && project.memory !== "global" ? (
-          <small className="project-group__memory">{projectMemoryLabel(project.memory)}</small>
-        ) : project.memoryUnreadable ? <small className="project-group__memory">当前策略未能读取</small> : null}
+        {/* 其他插件给这个项目的短标签，例如记忆范围；只放文字，没有插件时不占位。 */}
+        <PluginUiSlot name="scope.badge" scope={{ dimension: PROJECT_DIMENSION, value: project.id }} quiet />
       </button>
       {/* 行菜单里有同一个"新建对话"：键盘用 Shift+F10 打开，不再每个项目多占一个 Tab 停靠点。 */}
       <button type="button" className="project-navigation__icon project-group__new-chat" aria-label={`在 ${project.name} 中新建对话`}
@@ -225,26 +216,26 @@ export function ProjectNavigationRow({
   </div>;
 }
 
-/** 创建时一次选定记忆策略；之后改变需要显式重建学习图。 */
+/** 新建项目；其他插件经 scope.fields 在表单里附加自己的设置，随创建一起保存。 */
 export function NewProjectDialog({
   open,
-  memoryInstalled,
   onOpenChange,
   onCreate,
   onCloseFocus,
 }: {
   open: boolean;
-  memoryInstalled: boolean;
   onOpenChange: (open: boolean) => void;
-  onCreate: (name: string, memory: ProjectMemory, directory: string | null) => Promise<void>;
+  onCreate: CreateProject;
   onCloseFocus?: () => void;
 }) {
   const [name, setName] = useState("");
   const [directory, setDirectory] = useState<string | null>(null);
   const [choosingDirectory, setChoosingDirectory] = useState(false);
   const directoryButton = useRef<HTMLButtonElement>(null);
-  const [memory, setMemory] = useState<ProjectMemory>("global");
   const [submitting, setSubmitting] = useState(false);
+  const submittingRef = useRef(false);
+  submittingRef.current = submitting;
+  const fields = useMemo(() => createScopeFields(() => submittingRef.current), []);
   const [error, setError] = useState("");
 
   const reset = (nextOpen: boolean) => {
@@ -253,7 +244,6 @@ export function NewProjectDialog({
       setName("");
       setDirectory(null);
       setChoosingDirectory(false);
-      setMemory("global");
       setError("");
     }
     onOpenChange(nextOpen);
@@ -265,7 +255,7 @@ export function NewProjectDialog({
     setSubmitting(true);
     setError("");
     try {
-      await onCreate(name.trim(), memory, directory);
+      await onCreate(name.trim(), directory, (projectId) => fields.commit(projectId));
       setSubmitting(false);
       reset(false);
     } catch (reason: unknown) {
@@ -295,7 +285,7 @@ export function NewProjectDialog({
           </label>
           <DialogDescription className="project-dialog__description">
             <Lightbulb size={22} strokeWidth={1.5} aria-hidden="true" />
-            <span>把相关对话放在一起，方便持续开展同一项工作。创建时可以选择记忆范围。</span>
+            <span>把相关对话放在一起，方便持续开展同一项工作。</span>
           </DialogDescription>
           <div className="project-dialog__directory">
             <strong>默认目录（可选）</strong>
@@ -311,25 +301,9 @@ export function NewProjectDialog({
           </div>
           {error ? <p className="project-dialog__error" role="alert">{error}。若项目栏出现未确认请求，可在那里继续创建或停止尝试。</p> : null}
           <DialogFooter className="project-dialog__footer">
-            {memoryInstalled ? <DropdownMenu>
-              <DropdownMenuTrigger asChild>
-                <button type="button" className="project-dialog__memory-trigger" disabled={submitting}
-                  aria-label={`记忆设置：${projectMemoryLabel(memory)}`}>
-                  {projectMemoryLabel(memory)} <ChevronDown size={15} aria-hidden="true" />
-                </button>
-              </DropdownMenuTrigger>
-              <DropdownMenuContent className="project-memory-menu" align="start" sideOffset={8} collisionPadding={16}>
-                <DropdownMenuRadioGroup value={memory} aria-label="项目记忆">
-                  {PROJECT_MEMORY_CHOICES.map((choice) => (
-                    <DropdownMenuRadioItem key={choice.value} value={choice.value}
-                      className="project-memory-menu__choice" onSelect={() => setMemory(choice.value)}>
-                      <span><strong>{choice.label}</strong><small>{choice.description}</small></span>
-                    </DropdownMenuRadioItem>
-                  ))}
-                </DropdownMenuRadioGroup>
-                <p className="project-memory-menu__note">创建后，记忆选项将固定。</p>
-              </DropdownMenuContent>
-            </DropdownMenu> : <span className="project-dialog__no-memory">记忆功能未启用</span>}
+            {/* 其他插件的附加设置（例如记忆范围）；没有插件时这里为空，创建按钮仍靠右。 */}
+            <PluginUiSlot name="scope.fields" scope={{ dimension: PROJECT_DIMENSION }} fields={fields}
+              refreshToken={submitting ? 1 : 0} quiet fallback={<span />} />
             <button type="submit" className="project-dialog__button primary" disabled={!name.trim() || submitting}>
               {submitting ? "正在创建…" : "创建项目"}
             </button>
