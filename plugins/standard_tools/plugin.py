@@ -67,7 +67,7 @@ async def apply(ctx: Context) -> None:
             return await directories.current_info(session_id)
 
         _ = await child.require(UI_SLOTS).register_plugin_ui(
-            child, PluginUiDefinition(module="plugin_ui.js"), query=query,
+            child, PluginUiDefinition(module="plugin_ui.js", slots=("header.end",)), query=query,
         )
 
     _ = await ctx.inject((UI_SLOTS,), directory_ui, name="directory-ui")

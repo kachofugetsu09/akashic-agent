@@ -88,6 +88,7 @@ const SLOT_NAMES = new Set<Exclude<PluginUiSlotName, "dashboard.main">>([
   "drawer.panel",
   "message.attachment",
   "chat.notice",
+  "header.end",
 ]);
 
 function emitChange() {

@@ -22,7 +22,6 @@ import { DesktopSidebar } from "./desktop-sidebar";
 import { useSidebarRail } from "./use-sidebar-rail";
 import type { DesktopChatController } from "./use-desktop-chat-controller";
 import { PluginUiSlot } from "./plugin-ui-runtime";
-import { SessionDirectory } from "./session-directory";
 import { SelectionQuote } from "./selection-quote";
 import { MarqueeText } from "./marquee-text";
 import { CopyNotice, useCopyLastCode } from "./copy-last-code";
@@ -138,8 +137,9 @@ export function DesktopChatView({ embeddedShell, controller }: DesktopChatViewPr
           {/* 同一父节点下的兄弟 key 必须互不相同；共用会话 ID 会让 React 留下旧标题节点。 */}
           <SessionHeadingTitle key={`title:${activeSessionId}`} heading={headingTitle} value={activeTitle}
             onRename={activeSessionId && !activeSessionDeleted ? (title) => renameSession(activeSessionId, title) : undefined} />
-          {activeSessionId ? <SessionDirectory key={`directory:${activeSessionId}`} sessionId={activeSessionId}
-            refreshKey={Array.from(toolResults.keys()).join("|")} /> : null}
+          {/* 插件在标题行右侧的标记；新的工具结果到达时通知插件重新读取会话状态。 */}
+          {activeSessionId ? <PluginUiSlot key={`header:${activeSessionId}`} name="header.end" sessionId={activeSessionId}
+            refreshToken={Array.from(toolResults.keys()).join("|")} quiet /> : null}
           <JobListAction key={`jobs:${activeSessionId}`} jobs={controller.activeSessionJobs} onStop={controller.stopJob} />
           {/* 窄屏没有常驻侧栏：新会话留在拇指可达的标题行，不必先打开抽屉。 */}
           {conversationLayout ? <button type="button" className="conversation-heading__new" aria-label="新会话" data-tip="新会话"
