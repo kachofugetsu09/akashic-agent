@@ -2086,7 +2086,38 @@ button.tool-step-summary:active {
 .timeline-result-heading button:focus-visible { outline: 2px solid var(--ak-rule-focus); outline-offset: 3px; }
 .timeline-details pre { white-space: pre-wrap; overflow-wrap: anywhere; font-size: 0.8125rem; }
 .timeline-details p { overflow-wrap: anywhere; }
-.timeline-control-summary, .timeline-result-heading { border-inline-start: 2px solid var(--ak-color-border-default); padding-inline-start: 0.875rem; }
+.timeline-result-heading { border-inline-start: 2px solid var(--ak-color-border-default); padding-inline-start: 0.875rem; }
+/* 失败与回答占同一位置：不画旁注竖线，原因按原样分行，动作是文字按钮。 */
+.timeline-failure {
+  margin: 0;
+  color: var(--ak-ink-secondary);
+  font-size: 0.875rem;
+  line-height: 1.55;
+  white-space: pre-line;
+  overflow-wrap: anywhere;
+  text-wrap: pretty;
+}
+.timeline-failure strong { margin-inline-end: 0.5em; color: var(--ak-color-status-error); font-weight: 600; }
+.timeline-failure-actions { display: flex; flex-wrap: wrap; column-gap: 20px; }
+.timeline-failure-actions button {
+  min-height: 2.25rem; padding: 0; border: 0; background: none; font: inherit; font-size: 0.875rem; cursor: pointer;
+  color: var(--ak-ink-primary);
+  text-decoration-line: underline; text-decoration-color: var(--ak-rule-strong);
+  text-decoration-thickness: from-font; text-underline-offset: 4px;
+}
+.timeline-failure-actions button:hover,
+.timeline-failure-actions button:focus-visible { text-decoration-color: currentColor; }
+.timeline-failure-actions button:focus-visible,
+.timeline-failure-history summary:focus-visible { outline: 2px solid var(--ak-rule-focus); outline-offset: 3px; border-radius: 4px; }
+.timeline-failure-actions button:disabled { color: var(--ak-ink-muted); text-decoration-line: none; cursor: default; }
+.timeline-failure-history { color: var(--ak-ink-muted); font-size: 0.8125rem; }
+.timeline-failure-history summary { min-height: 2.25rem; display: inline-flex; align-items: center; cursor: pointer; list-style: none; }
+.timeline-failure-history summary::-webkit-details-marker { display: none; }
+.timeline-failure-history ol { margin: 0; padding: 0; list-style: none; line-height: 1.6; }
+.timeline-failure-history time { margin-inline-end: 0.75em; font-variant-numeric: tabular-nums; }
+@media (max-width: 820px), (hover: none) {
+  .timeline-failure-actions button, .timeline-failure-history summary { min-height: 2.75rem; }
+}
 /* 与落定后的消息同一节奏：只靠列表 gap 分隔，结束换成历史消息时不跳行。 */
 .reply-activity { overflow-wrap: anywhere; }
 .timeline-control-note {
@@ -2112,7 +2143,7 @@ button.tool-step-summary:active {
 .connection-status button:focus-visible { outline: 2px solid var(--ak-rule-focus); outline-offset: 2px; border-radius: 4px; }
 @keyframes connection-breathe { 50% { opacity: 0.35; } }
 @media (prefers-reduced-motion: reduce) { .connection-status > i { animation: none; } }
-.timeline-control-summary strong, .timeline-result-heading strong { font-size: 0.875rem; }
+.timeline-result-heading strong { font-size: 0.875rem; }
 .timeline-result-heading button { display: block; min-height: 2.75rem; color: var(--ak-ink-secondary); font-size: 0.8125rem; }
 @media (hover: hover) {
   .timeline-result-heading button:hover { color: var(--ak-ink-primary); }

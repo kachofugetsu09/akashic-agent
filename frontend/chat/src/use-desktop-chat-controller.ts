@@ -791,6 +791,27 @@ export function useDesktopChatController() {
     }
   }, [canSend, sendProblem, deliverMessage, ensureSession, replyTarget, reportError, setMessages, setStatusLive]);
 
+  // 重跑失败的这一轮：只引用原输入，服务端追加恢复记录，不新增用户消息。
+  const retryTurn = useCallback(async (inputId: string) => {
+    const sessionId = activeSessionRef.current;
+    if (!sessionId || !canSend || sendRequestRef.current) return;
+    setError("");
+    const controller = new AbortController();
+    sendRequestRef.current = controller;
+    setStatusLive("submitted");
+    const requestId = createUuidV7();
+    try {
+      await deliverMessage(requestId, {
+        type: "message.send", request_id: requestId, session_id: sessionId, text: "", media: [], retry_of: inputId,
+      }, controller.signal, () => undefined);
+    } catch (error) {
+      if (sendRequestRef.current === controller) setStatusLive("idle");
+      if (!isAbortError(error)) reportError(error, "error");
+    } finally {
+      if (sendRequestRef.current === controller) sendRequestRef.current = null;
+    }
+  }, [canSend, deliverMessage, reportError, setStatusLive]);
+
   const sendSteerFrame = useCallback((payload: Record<string, unknown>) => sendWhenOpen(connect(), payload), [connect]);
   const steers = useSteers({ sessionId: activeSessionId, timeline: timelineMessages, send: sendSteerFrame });
   useEffect(() => { steerResultRef.current = steers.onResult; }, [steers.onResult]);
@@ -1056,7 +1077,8 @@ export function useDesktopChatController() {
     // 发送失败时"重试"（重连并重新加载）不会重新发送，反而误导；发送钮就是重试入口，横幅不再给按钮。
     errorRetry: !error || !errorFromSend,
     activateSession, prefetchSessionTail, startNewChat, handleReplyMessage, handleCopiedMessage,
-    reportError, cancelReply, sendMessage, stopTurn, retry,
+    reportError, cancelReply, sendMessage, retryTurn, stopTurn, retry,
+
     steers: steers.items, steerMessage: steers.steer, withdrawSteer: steers.withdraw, takeSteers: steers.take,
     navigationGroups, navigationPins,
   };

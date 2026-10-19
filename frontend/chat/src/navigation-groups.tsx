@@ -1,5 +1,5 @@
-import { ChevronRight, Folder, FolderPlus, Plus, SlidersHorizontal } from "lucide-react";
-import { useCallback, useEffect, useMemo, useRef, useState, type FormEvent } from "react";
+import { ChevronRight, FolderPlus, Plus, SlidersHorizontal } from "lucide-react";
+import { Fragment, useCallback, useEffect, useMemo, useRef, useState, type FormEvent, type ReactNode } from "react";
 import type { NavigationControls, NavigationForm, NavigationFormControls, NavigationGroup } from "@akashic/chat-ui-v1";
 import { Dialog, DialogContent, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { NavigationRowMenu, type NavigationRowAction } from "./navigation-row-menu";
@@ -34,7 +34,11 @@ export interface GroupSessionItem {
   title: string;
   active: boolean;
   status?: SessionStatus;
+  pinned?: boolean;
 }
+
+/** 由侧栏提供的分组内会话行（带行菜单）；label 是分区名，例如“项目”。 */
+export type GroupSessionRenderer = (item: GroupSessionItem, label: string) => ReactNode;
 
 /** 侧栏分组的宿主状态与动作；分组数据全部来自插件的 navigation.groups。 */
 export interface NavigationGroupsState {
@@ -104,7 +108,7 @@ export function useNavigationGroupSections(enabled: boolean, catalogVersion: num
 /** 一个分区：标题与新建入口、插件提示、分组行；分组行与会话、展开、置顶都由宿主负责。 */
 export function GroupNavigation({
   section, groups, revision, sessionsByGroup, active, pendingSessionId, expanded, searching, heading,
-  onToggle, onSelectSession, onPrefetchSession, onOpenForm, onNewChat, onReload, actions,
+  onToggle, onSelectSession, onPrefetchSession, onOpenForm, onNewChat, onReload, actions, renderSession,
 }: {
   section: GroupSection;
   groups: readonly NavigationGroup[];
@@ -122,6 +126,7 @@ export function GroupNavigation({
   onNewChat: (ref: GroupRef) => void;
   onReload: () => void;
   actions: (group: NavigationGroup) => NavigationRowAction[];
+  renderSession?: GroupSessionRenderer;
 }) {
   const { provider } = section.source;
   const create = provider.create;
@@ -158,9 +163,19 @@ export function GroupNavigation({
         active={active?.dimension === ref.dimension && active.id === ref.id}
         pendingSessionId={pendingSessionId} searching={searching}
         onToggle={() => onToggle(groupKey(ref))} onNewChat={() => onNewChat(ref)}
-        onSelectSession={onSelectSession} onPrefetchSession={onPrefetchSession} actions={actions(group)} />;
+        onSelectSession={onSelectSession} onPrefetchSession={onPrefetchSession} actions={actions(group)}
+        renderSession={renderSession && ((item) => renderSession(item, provider.label))} />;
     })}
   </section>;
+}
+
+/** 分组图标。scope.badge 的标签带 data-scope-line（double / dashed / dotted）时，样式把线型换到这枚图标上，标签文字只留给读屏。 */
+export function FolderMark() {
+  return <svg className="folder-mark" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+    strokeWidth="1.75" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+    <path d="M20 20a2 2 0 0 0 2-2V8a2 2 0 0 0-2-2h-7.9a2 2 0 0 1-1.69-.9L9.6 3.9A2 2 0 0 0 7.93 3H4a2 2 0 0 0-2 2v13a2 2 0 0 0 2 2Z" />
+    <rect className="folder-mark__inner" x="5.5" y="9.5" width="13" height="7" rx="1" />
+  </svg>;
 }
 
 /** 插件给分组行的动作，每项打开一个宿主对话框。 */
@@ -176,7 +191,7 @@ export function groupFormActions(source: NavigationGroupSource, group: Navigatio
 /** 同一个分组行用于置顶和分区，展开状态由导航层按 groupKey 持有。 */
 export function GroupNavigationRow({
   groupRef, group, items, open, active, pendingSessionId, onToggle, onNewChat,
-  onSelectSession, onPrefetchSession, actions, searching = false,
+  onSelectSession, onPrefetchSession, actions, searching = false, renderSession,
 }: {
   groupRef: GroupRef;
   group: NavigationGroup;
@@ -190,6 +205,7 @@ export function GroupNavigationRow({
   onPrefetchSession?: (sessionId: string) => void;
   actions?: NavigationRowAction[];
   searching?: boolean;
+  renderSession?: (item: GroupSessionItem) => ReactNode;
 }) {
   // 折叠时分组行汇总会话状态，展开后状态回到各自的会话前。
   const collapsedStatus = open ? undefined : summarizeStatus(items.map((item) => item.status));
@@ -210,20 +226,25 @@ export function GroupNavigationRow({
         title={`${open ? "收起" : "展开"} ${group.label}${group.detail ? ` · ${group.detail}` : ""}`}>
         {collapsedStatus
           ? <span className="navigation-group__icon"><SessionStatusMark status={collapsedStatus} /></span>
-          : <Folder size={18} strokeWidth={1.75} aria-hidden="true" />}
+          : <FolderMark />}
         <span className="navigation-group__name"><MarqueeText>{group.label}</MarqueeText></span>
         {/* 其他插件给这个取值的短标签，例如记忆范围；只放文字，没有插件时不占位。 */}
         <PluginUiSlot name="scope.badge" scope={{ dimension: groupRef.dimension, value: groupRef.id }} quiet />
       </button>
-      {/* 行菜单里有同一个"新建对话"：键盘用 Shift+F10 打开，不再每个分组多占一个 Tab 停靠点。 */}
+      {/* 触屏没有悬停，项目行常驻这一枚；宽屏改用展开后的“新对话”行。键盘走行菜单（Shift+F10），不多占 Tab 停靠点。 */}
       <button type="button" className="navigation-section__icon navigation-group__new-chat" aria-label={`在 ${group.label} 中新建对话`}
         data-tip="新建对话" tabIndex={-1} onClick={onNewChat}>
         <Plus size={14} aria-hidden="true" />
       </button>
     </NavigationRowMenu>
     {open ? <nav className="navigation-group__sessions" aria-label={`${group.label} 的对话`}>
-      {items.length === 0 ? <small className="navigation-group__hint">{searching ? "没有匹配的对话" : "还没有对话"}</small> : null}
-      {items.map((session) => <button key={session.id} type="button"
+      {/* 新对话是列表里的第一行，与会话标题左对齐，不浮在项目行上。 */}
+      {searching ? null : <button type="button" className="group-session group-session--new" onClick={onNewChat}>
+        <Plus size={14} aria-hidden="true" />
+        <span>新对话</span>
+      </button>}
+      {searching && items.length === 0 ? <small className="navigation-group__hint">没有匹配的对话</small> : null}
+      {items.map((session) => renderSession ? <Fragment key={session.id}>{renderSession(session)}</Fragment> : <button key={session.id} type="button"
         className={`group-session ${session.active ? "active" : ""}`}
         aria-current={session.active ? "true" : undefined}
         aria-busy={pendingSessionId === session.id || undefined}

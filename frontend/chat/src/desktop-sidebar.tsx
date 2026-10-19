@@ -19,7 +19,7 @@ import akashicBrandIcon from "../../theme/src/akashic-brand.svg";
 import { activateShellRailAction, useShellRailActions } from "./shell-rail-actions";
 import {
   GroupFormDialog, GroupNavigation, GroupNavigationRow, groupFormActions, groupKey,
-  type GroupFormRequest, type GroupSessionItem, type NavigationGroupsState,
+  type GroupFormRequest, type GroupSessionRenderer, type GroupSessionItem, type NavigationGroupsState,
 } from "./navigation-groups";
 import { sessionLabel } from "./web-chat-message-data";
 import type { NavigationPin, NavigationPinsState } from "./use-navigation-pins";
@@ -361,7 +361,9 @@ export const DesktopSidebar = memo(function DesktopSidebar({
       target.element.setSelectionRange(...target.selection);
     }
   }, []);
-  useSidebarShortcuts(sidebarRef, searchRef, onNewChat, openShortcuts);
+  // 新会话继承当前所在的分组；要不归属任何分组，在新会话的分组条里改。
+  const newChat = useCallback(() => groups?.active ? groups.startChat(groups.active) : onNewChat(), [groups, onNewChat]);
+  useSidebarShortcuts(sidebarRef, searchRef, newChat, openShortcuts);
   const [formRequest, setFormRequest] = useState<GroupFormRequest | null>(null);
   const [sessionSort, setSessionSort] = useState(readSessionSort);
   const [sessionOrder, setSessionOrder] = useState(readSessionOrder);
@@ -442,7 +444,7 @@ export const DesktopSidebar = memo(function DesktopSidebar({
       setDrag(null);
     },
   });
-  // 目录未解析/归档不改变 Session.scope；回退到最近会话也不获得置顶资格。
+  // 目录未解析/归档不改变 Session.scope；这类会话回退到最近会话，仍可在全局置顶。
   const { expandGroup } = navigationPins;
   const activeGroupKey = groups?.active ? groupKey(groups.active) : "";
   useEffect(() => { if (activeGroupKey) expandGroup(activeGroupKey); }, [activeGroupKey, expandGroup]);
@@ -453,6 +455,9 @@ export const DesktopSidebar = memo(function DesktopSidebar({
   const groupOf = useCallback((session: DesktopSidebarSession) => sections
     .map(({ source }) => session.scope?.[source.provider.dimension] ? groupKey({ dimension: source.provider.dimension, id: session.scope[source.provider.dimension] }) : "")
     .find((key) => key && knownGroups.has(key)) ?? "", [sections, knownGroups]);
+  const pinnedSessions = useMemo(() => new Set(navigationPins.pins.filter((pin) => pin.kind === "session").map((pin) => pin.id)),
+    [navigationPins.pins]);
+  // 分组内置顶的会话排在所在文件夹最前面，其余保持当前排序。
   const sessionsByGroup = useMemo(() => {
     const byGroup = new Map<string, GroupSessionItem[]>();
     for (const session of sortedSessions) {
@@ -460,12 +465,13 @@ export const DesktopSidebar = memo(function DesktopSidebar({
       if (!key) continue;
       byGroup.set(key, [...byGroup.get(key) ?? [], {
         id: session.id, title: session.title, active: surface === "chat" && session.active, status: session.status,
+        pinned: pinnedSessions.has(session.id),
       }]);
     }
+    for (const [key, items] of byGroup) byGroup.set(key, [...items.filter((item) => item.pinned), ...items.filter((item) => !item.pinned)]);
     return byGroup;
-  }, [sortedSessions, groupOf, surface]);
+  }, [sortedSessions, groupOf, surface, pinnedSessions]);
   const pinnedGroups = new Set(navigationPins.pins.filter((pin) => pin.kind !== "session").map((pin) => groupKey({ dimension: pin.kind, id: pin.id })));
-  const pinnedSessions = new Set(navigationPins.pins.filter((pin) => pin.kind === "session").map((pin) => pin.id));
   const recentSessions = sortedSessions.filter((session) => !pinnedSessions.has(session.id) && !groupOf(session));
   const visibleGroup = (key: string, label: string) => !needle || label.toLowerCase().includes(needle)
     || Boolean(sessionsByGroup.get(key)?.length);
@@ -481,7 +487,9 @@ export const DesktopSidebar = memo(function DesktopSidebar({
       if (known) return visibleGroup(key, known.group.label);
     } else {
       const session = allSessions.find((item) => item.id === pin.id);
-      if (session && !session.scoped) {
+      // 分组里的会话置顶在自己的文件夹内，不进全局置顶区；分组已不在时仍按普通置顶显示。
+      if (session && groupOf(session)) return false;
+      if (session) {
         return `${session.title} ${session.preview}`.toLowerCase().includes(needle);
       }
     }
@@ -495,6 +503,14 @@ export const DesktopSidebar = memo(function DesktopSidebar({
     onSelect: () => { void navigationPins.setPinned(pin, !pinned); },
   }];
   const sessionById = useMemo(() => new Map(allSessions.map((session) => [session.id, session])), [allSessions]);
+  // 分组内的会话行：与最近会话同一套行菜单，置顶只在所在分组内生效。
+  const groupSessionRow: GroupSessionRenderer = (item, label) => <ConversationSessionRow
+    session={{ id: item.id, title: item.title, preview: "", active: item.active, status: item.status, pinned: item.pinned }}
+    pendingSessionId={pendingSessionId} onActivate={onSelectSession} onPrefetch={onPrefetchSession}
+    actions={[{ ...pinAction({ kind: "session", id: item.id }, Boolean(item.pinned))[0],
+      label: item.pinned ? `取消${label}内置顶` : `在${label}内置顶` }]}
+    onDelete={onDeleteSession ? () => onDeleteSession(item.id, item.title) : undefined}
+    onRename={onRenameSession ? (title: string) => onRenameSession(item.id, title) : undefined} />;
   // 分组只按渲染时刻的日期，跨午夜后随下一次列表更新重算即可。
   const groupNow = new Date();
   const sessionView = (session: DesktopSidebarSession): ConversationSession => ({
@@ -513,7 +529,7 @@ export const DesktopSidebar = memo(function DesktopSidebar({
             <span className="chat-sidebar__mark" style={brandMask} aria-hidden="true" />
             <strong>Akashic</strong>
           </span>
-          <button type="button" className="chat-sidebar__new" aria-label="新会话" title={`新会话（${SHORTCUT_MOD}+Shift+O）`} onClick={() => onNewChat()}>
+          <button type="button" className="chat-sidebar__new" aria-label="新会话" title={`新会话（${SHORTCUT_MOD}+Shift+O）`} onClick={newChat}>
             <MessageSquarePlus size={18} strokeWidth={1.75} aria-hidden="true" />
           </button>
         </div>
@@ -588,10 +604,11 @@ export const DesktopSidebar = memo(function DesktopSidebar({
               onNewChat={() => groups.startChat(ref)}
               onSelectSession={onSelectSession} onPrefetchSession={onPrefetchSession}
               actions={[...groupFormActions(known.section.source, known.group, openForm), ...pinAction(pin, true)]} searching={searching}
+              renderSession={(item) => groupSessionRow(item, known.section.source.provider.label)}
             /> : null;
           } else {
             const session = allSessions.find((item) => item.id === pin.id);
-            if (session && !session.scoped) return !needle
+            if (session && !groupOf(session)) return !needle
               || `${session.title} ${session.preview}`.toLowerCase().includes(needle) ? <ConversationSessionRow
                 key={`session:${pin.id}`} session={sessionView(session)} pendingSessionId={pendingSessionId}
                 onActivate={onSelectSession} onPrefetch={onPrefetchSession}
@@ -616,7 +633,7 @@ export const DesktopSidebar = memo(function DesktopSidebar({
           pendingSessionId={pendingSessionId} expanded={navigationPins.expandedGroups} searching={searching}
           heading={navigationPins.pins.some((pin) => pin.kind === dimension) ? `其他${label}` : label}
           onToggle={navigationPins.toggleGroup} onSelectSession={onSelectSession} onPrefetchSession={onPrefetchSession}
-          onOpenForm={openForm} onNewChat={groups.startChat} onReload={groups.reload}
+          onOpenForm={openForm} onNewChat={groups.startChat} onReload={groups.reload} renderSession={groupSessionRow}
           actions={(group) => [...groupFormActions(section.source, group, openForm), ...pinAction({ kind: dimension, id: group.id }, false)]} />;
       }) : null}
 
@@ -636,8 +653,8 @@ export const DesktopSidebar = memo(function DesktopSidebar({
         onSessionRename={onRenameSession ? (session, title) => onRenameSession(session.id, title) : undefined}
         sessionActions={(session) => {
           const row = allSessions.find((item) => item.id === session.id);
-          return row && !row.scoped
-            ? pinAction({ kind: "session", id: row.id }, false) : [];
+          // 分组已不在的会话也落在这里，同样可以置顶（后端已接受带分组的会话）。
+          return row ? pinAction({ kind: "session", id: row.id }, false) : [];
         }}
         onSessionActivate={onSelectSession}
         onSessionPrefetch={onPrefetchSession}
