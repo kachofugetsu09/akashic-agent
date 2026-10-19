@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import weakref
 from collections.abc import Awaitable, Callable
 from contextlib import AbstractAsyncContextManager
 from dataclasses import dataclass
@@ -42,6 +43,8 @@ class Steers:
         self._body = body
         self._staged: dict[str, list[_Staged]] = {}
         self._watched: dict[str, Task] = {}
+        # 只有回复程序登记过的任务会在步间注入；后台回调等其他程序不接纳插话。
+        self._bound: weakref.WeakSet[Task] = weakref.WeakSet()
         self._queue: asyncio.Queue[tuple[str, Task]] = asyncio.Queue()
 
     # 插件任务持有全部等待者；卸载时一并取消。
@@ -61,9 +64,13 @@ class Steers:
         except Exception:
             logger.exception("插话收尾失败 session=%s", session_id)
 
+    def bind(self, task: Task, session_id: str) -> Callable[[], Awaitable[None]]:
+        self._bound.add(task)
+        return lambda: self.inject(task, session_id)
+
     async def stage(self, session_id: str, message_id: str, message: ChannelInboundMessage) -> bool:
         task = await self._open(session_id).active_task()
-        if task is None:
+        if task is None or task not in self._bound:
             return False
         items = self._staged.setdefault(session_id, [])
         if all(item.message_id != message_id for item in items):
@@ -92,6 +99,10 @@ class Steers:
                 logger.info("插话未能在本步写入 session=%s", session_id, exc_info=True)
                 self._staged.setdefault(session_id, [])[:0] = items[index:]
                 return
+            except BaseException:
+                # 取消时同样交还未写入的余项，再继续传播取消。
+                self._staged.setdefault(session_id, [])[:0] = items[index:]
+                raise
 
     # 回复任务结束后：停止的回合丢弃暂存（前端已把文字退回输入框）；另一轮已在进行就跟随它；否则转成普通输入开启下一轮。
     async def _settle(self, session_id: str, task: Task) -> None:

@@ -1033,14 +1033,10 @@ class WebChatChannel:
             channel=self.name, sender="web", chat_id=chat_id, content=_normalize_v3_content(text),
             timestamp=datetime.now(timezone.utc), metadata=cast(Any, {"client_request_id": request_id}),
         )
-        # 2. 暂存成功即确认；没有进行中的回复时退回普通发送。
+        # 2. 暂存成功即确认；没有可接纳插话的回复时只回 staged=false，由客户端走普通发送并等它的确认。
         staged = self._steer is not None and await self._steer.stage(session_key, request_id, message)
         await websocket.send_json({"type": "message.steer.result", "request_id": request_id, "staged": staged})
-        if staged:
-            return session_key
-        return await self._send_user_message(websocket, request_id, {
-            "type": "message.send", "request_id": request_id, "session_id": session_key, "text": text, "media": [],
-        })
+        return session_key
 
     async def _withdraw_steer(self, websocket: WebSocket, request_id: str, payload: dict[str, Any]) -> str:
         session_id = payload.get("session_id")

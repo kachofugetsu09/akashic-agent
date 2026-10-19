@@ -9,7 +9,7 @@ from agent.plugin_composition import Context
 from plugins.ui.contract import hidden_part, part_display_key
 from plugins.ledger.contract import ARTIFACT_READ
 from plugins.ledger.contract import BINDINGS
-from plugins.channels.contract import ChannelInboundMessage, InputPartRejected, read_input_parts
+from plugins.channels.contract import CHANNEL_STEER, ChannelInboundMessage, InputPartRejected, read_input_parts
 from plugins.commands.contract import COMMANDS
 from plugins.ledger.contract import (
     MESSAGE_CATALOG,
@@ -166,6 +166,7 @@ async def apply(ctx: Context) -> None:
     )
     _ = await ctx.spawn(steers.run(), name="conversation-steers")
     _ = await ctx.provide(CONVERSATION_STEER, steers)
+    _ = await ctx.provide(CHANNEL_STEER, steers)
     _ = await ctx.require(SOURCES).register(ctx, name="conversation", open=open, accept=accept, channels=None,
         needs_reply=lambda reader: ctx.require(SOURCE_SESSION).needs_reply(reader, "conversation"))
 

@@ -7,7 +7,6 @@ from typing import Protocol
 from agent.plugin_composition import ServiceKey
 from plugins.ledger.contract import MessageReader
 from agent.plugin_composition.tasks import Task
-from plugins.channels.contract import ChannelInboundMessage
 from plugins.ledger.contract import ContentPart, ContentReferences, Message
 from plugins.sources.contract import CompletionProgram
 
@@ -25,16 +24,10 @@ CONVERSATION_COMMANDS = ServiceKey[
 
 
 class ConversationSteer(Protocol):
-    """生成中的插话：先暂存，回复任务在下一步之前写入；回合结束仍未写入的转成普通输入。"""
+    """回复程序一侧的插话：只有登记过的任务接纳插话，渠道一侧见 CHANNEL_STEER。"""
 
-    # 有回复在进行时暂存并返回 True；空闲时返回 False，由调用方按普通输入发送。
-    async def stage(self, session_id: str, message_id: str, message: ChannelInboundMessage) -> bool: ...
-
-    # 撤回尚未写入的插话；已经交给模型的返回 False。
-    def withdraw(self, session_id: str, message_id: str) -> bool: ...
-
-    # 回复任务在每一步模型请求之前调用。
-    async def inject(self, task: Task, session_id: str) -> None: ...
+    # 登记本任务可接纳插话，返回每一步模型请求之前调用的注入函数。
+    def bind(self, task: Task, session_id: str) -> Callable[[], Awaitable[None]]: ...
 
 
 CONVERSATION_STEER = ServiceKey[ConversationSteer]("conversation.steer.v1")

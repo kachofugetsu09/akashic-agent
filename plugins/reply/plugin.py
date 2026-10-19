@@ -181,7 +181,7 @@ async def apply(ctx: Context) -> None:
             ):
                 # 运行活动已取得后再释放输入占位，中间没有空闲窗口。
                 release(reader, source)
-                before_step = None if steers is None or source != "conversation" else partial(steers.inject, task, reader.session_id)
+                before_step = None if steers is None or source != "conversation" else steers.bind(task, reader.session_id)
                 with status.open(task, reader.session_id, source) as preview:
                     return await respond(task, reader, source, preview, check_admission=check_admission,
                                          before_step=before_step)

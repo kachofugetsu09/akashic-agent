@@ -31,9 +31,9 @@ from plugins.channels.contract import (
 from plugins.ledger.contract import MESSAGE_CATALOG, SESSION_ADMIN, SESSION_ADMISSION, SessionAdmission
 
 from .capabilities import (
-    CONVERSATION_STEER,
+    CHANNEL_STEER,
     MESSAGE_DISPLAY,
-    ConversationSteer,
+    ChannelSteer,
     PLUGIN_UI,
     REPLY_STATUS,
     WEB_UI,
@@ -339,15 +339,15 @@ class _GenerationAkashicAdapter:
     # 插话是可选能力：对话插件缺席时 stage 返回 False，Web 改走普通发送。
     async def stage(self, session_id: str, message_id: str, message: ChannelInboundMessage) -> bool:
         async with self._open_request_scope() as scope:
-            with scope.borrow(CONVERSATION_STEER) as service:
+            with scope.borrow(CHANNEL_STEER) as service:
                 if service is None:
                     return False
-                return await cast(ConversationSteer, service).stage(session_id, message_id, message)
+                return await cast(ChannelSteer, service).stage(session_id, message_id, message)
 
     async def withdraw(self, session_id: str, message_id: str) -> bool:
         async with self._open_request_scope() as scope:
-            with scope.borrow(CONVERSATION_STEER) as service:
-                return service is not None and cast(ConversationSteer, service).withdraw(session_id, message_id)
+            with scope.borrow(CHANNEL_STEER) as service:
+                return service is not None and cast(ChannelSteer, service).withdraw(session_id, message_id)
 
     async def _follow_session_activity(self) -> AsyncGenerator[frozenset[str] | None, None]:
         """短借当代 reader，订阅自己拥有生命周期；缺席明确返回不可用。"""
