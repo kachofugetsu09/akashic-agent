@@ -144,7 +144,7 @@
   display: flex;
   align-items: flex-start;
   gap: 8px;
-  border-radius: 6px;
+  border-radius: 8px;
   padding: 6px 8px;
   cursor: pointer;
   outline: none;
