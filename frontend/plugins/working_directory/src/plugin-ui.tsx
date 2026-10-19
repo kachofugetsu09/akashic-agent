@@ -48,18 +48,17 @@ function SessionDirectory({ context }: { context: PluginUiContext }) {
         if (request === latest) setError(reason instanceof Error ? reason.message : "目录状态未能刷新");
       }
     };
-    void refresh();
+    // 先订阅宿主能力再建计时器：宿主缺少能力时在这里失败，不留下无人清理的轮询。
     const onVisible = () => { void refresh(); };
-    const timer = window.setInterval(onVisible, 15000);
+    const stopShown = context.onShown(onVisible);
     const unsubscribe = context.onInvalidate(onVisible);
-    window.addEventListener("focus", onVisible);
-    document.addEventListener("visibilitychange", onVisible);
+    const timer = window.setInterval(onVisible, 15000);
+    void refresh();
     return () => {
       latest = -1;
       unsubscribe();
+      stopShown();
       window.clearInterval(timer);
-      window.removeEventListener("focus", onVisible);
-      document.removeEventListener("visibilitychange", onVisible);
     };
   }, [context, retry]);
   // 目录未设置属于常态，不占位置；已设置或出现异常才显示标记。
