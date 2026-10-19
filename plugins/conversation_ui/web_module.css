@@ -13,10 +13,12 @@
   grid-template-columns: minmax(26rem, 1fr) 1px minmax(22.5rem, var(--conversation-tools-width));
 }
 
+/* 聊天的层级（标题栏、弹层）封在承载区域里，和 iframe 时一样不越过外壳控件（工作台开关）。 */
 .conversation-page-chat {
   grid-column: 1;
   grid-row: 1;
   position: relative;
+  isolation: isolate;
   min-width: 0;
   height: 100%;
   overflow: hidden;
