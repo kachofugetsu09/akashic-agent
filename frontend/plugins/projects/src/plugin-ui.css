@@ -6,7 +6,7 @@
   min-width: 0;
   height: 44px;
   border: 1px solid var(--ak-rule-default);
-  border-radius: 10px;
+  border-radius: 8px;
   padding-inline: 12px;
   color: inherit;
   background: var(--ak-paper-canvas);
