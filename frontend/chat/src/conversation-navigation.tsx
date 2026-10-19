@@ -65,7 +65,6 @@ export function ConversationNavigation({
   pendingSessionId,
   actions,
   closeAction,
-  sessionAfterContent,
   panelRef,
   dialog,
   destinationHeading,
@@ -85,7 +84,6 @@ export function ConversationNavigation({
   pendingSessionId?: string;
   actions: ConversationAction[];
   closeAction?: ReactNode;
-  sessionAfterContent?: ReactNode;
   panelRef?: React.Ref<HTMLElement>;
   dialog?: boolean;
   destinationHeading?: string | false;
@@ -150,12 +148,6 @@ export function ConversationNavigation({
           /></Fragment>)}
         </nav>
       </section>
-
-      {sessionAfterContent ? (
-        <div className="conversation-navigation__auxiliary">
-          {sessionAfterContent}
-        </div>
-      ) : null}
 
       {actions.length ? <div className="conversation-navigation__actions">
         {actions.map((action) => (
