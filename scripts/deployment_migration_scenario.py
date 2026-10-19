@@ -200,5 +200,68 @@ async def check_contract_restart():
     print('PASS contract restart migration retained rows/backup/reapply', flush=True)
 
 
+async def check_web_providers():
+    """Publish an old explicit Web choice through the real preflight and migration path."""
+    import tomlkit
+    from agent.plugins.bundles import load_bundle, plugin_choices
+    from scripts.install_plugin_distribution import publish_distribution
+
+    for mode in ('enabled', 'disabled', 'explicit-provider'):
+        root, repo, old, work, home, config, receipt = await setup('review-web-split-')
+        # 1. The previous default bundle omitted Web tools; enabling them used a plugin-ID row.
+        plugin(repo, 'standard_web')
+        old = distribution(repo, root / 'old-web', ['alpha', 'standard_web'], ['alpha'])
+        set_plugin_choice(work, 'standard_web@release', enabled=mode != 'disabled', distribution=old)
+        ensure_bundle(old, old / 'bundles/base.toml', workspace=work, plugins_home=home,
+                      config_path=config, receipt_path=receipt)
+        patch = work / 'bundle.patch.toml'
+        original_row = tomlkit.parse(patch.read_text())['rows']['standard_web@release'].unwrap()
+        if mode == 'explicit-provider':
+            set_plugin_choice(work, 'web_search_exa@release', enabled=False)
+        # This fixture represents the ledger just before the new upgrade step existed.
+        with sqlite3.connect(work / 'migrations.sqlite3') as connection:
+            connection.execute("DELETE FROM _yoyo_migration WHERE migration_id='20261019_06_web_provider_split'")
+        for name in ('web_search_exa', 'web_fetch_http'):
+            plugin(repo, name)
+        target = distribution(repo, root / 'new-web',
+                              ['alpha', 'standard_web', 'web_search_exa', 'web_fetch_http'], ['alpha'])
+        # Use the product's actual defaults, including each row ID and disabled state.
+        bundle = target / 'bundles/base.toml'
+        document = tomlkit.parse(bundle.read_text())
+        for row in load_bundle(ROOT / 'bundles/base.toml'):
+            if row.plugin in {'standard_web@release', 'web_search_exa@release', 'web_fetch_http@release'}:
+                document['rows'][row.id] = {'plugin': row.plugin, 'disabled': row.disabled}
+        bundle.write_text(tomlkit.dumps(document))
+        report_path = target / 'distribution.json'
+        report = json.loads(report_path.read_text())
+        report['bundles'][0]['sha256'] = hashlib.sha256(bundle.read_bytes()).hexdigest()
+        report_path.write_text(json.dumps(report))
+        plan = root / 'plan.json'
+        plan.write_text(json.dumps({'schema_version': 1, 'expected_root_ref': PluginSelection(work).read(), 'targets': []}))
+        options = dict(distribution=target, workspace=work, plugins_home=home,
+                       config_path=config, plan=plan, inputs=root)
+        # 2. Online preflight must preserve choices; actual publication runs the upgrade.
+        before = snapshot(work)
+        assert publish_distribution(**options, preflight_only=True)['status'] == 'preflight_ok'
+        assert snapshot(work) == before
+        assert publish_distribution(**options)['status'] == 'selected_not_started'
+        choices = plugin_choices(work, target)
+        expected = mode != 'disabled'
+        assert choices['standard_web@release'] == expected
+        assert choices['web_fetch_http@release'] == expected
+        assert choices['web_search_exa@release'] == (expected and mode != 'explicit-provider')
+        assert tomlkit.parse(patch.read_text())['rows']['standard_web@release'].unwrap() == original_row
+        runtime = await manager(work, home, target)
+        try:
+            for name in ('standard_web', 'web_search_exa', 'web_fetch_http'):
+                assert (name + '@release' in selected(work)) == choices[name + '@release']
+        finally:
+            await runtime.terminate_all()
+        print('PASS Web provider upgrade', mode, flush=True)
+
+
 if __name__ == '__main__':
-    asyncio.run(check_contract_restart() if sys.argv[1:] == ["--contract-restart"] else main())
+    if sys.argv[1:] == ["--web-providers"]:
+        asyncio.run(check_web_providers())
+    else:
+        asyncio.run(check_contract_restart() if sys.argv[1:] == ["--contract-restart"] else main())
