@@ -1,6 +1,5 @@
 import { readTimelineMessage, type TimelineMessage } from "./message-timeline.ts";
 import type { ComposerFile } from "./desktop-composer";
-import type { ChatModelRuntime } from "./model-capsule-data";
 
 export interface SessionRow {
   key: string;
@@ -24,15 +23,6 @@ export interface ChatHistoryPage {
   beforeSeq: number | null;
   /** 会话已软删时为 true；消息仍物理保留，按只读展示。 */
   deleted: boolean;
-}
-
-export interface ChatModelState {
-  generationId: number;
-  defaultRuntime: string;
-  sessionOverride: string;
-  sessionSelection: { modelRef: string; reasoningEffort: string };
-  runtimes: ChatModelRuntime[];
-  unavailableRuntimes: { id: string; model: string; sourceName: string; availability: "disabled" | "driver_unavailable" }[];
 }
 
 export interface WebShellState {
@@ -142,66 +132,6 @@ export function webShellState(payload: unknown): WebShellState {
     throw new Error("/api/shell/state 返回了无效状态");
   }
   return body as unknown as WebShellState;
-}
-
-export function chatModelState(payload: unknown): ChatModelState {
-  const body = recordValue(payload);
-  if (!body || !Number.isInteger(body.generationId)
-    || typeof body.defaultRuntime !== "string"
-    || typeof body.sessionOverride !== "string"
-    || !recordValue(body.sessionSelection)
-    || !Array.isArray(body.runtimes) || !Array.isArray(body.unavailableRuntimes)) {
-    throw new Error("/api/chat/models 返回了无效模型注册表");
-  }
-  const runtimes = body.runtimes.map((value) => {
-    const item = recordValue(value);
-    if (!item || typeof item.id !== "string" || typeof item.provider !== "string"
-      || typeof item.model !== "string" || typeof item.sourceId !== "string"
-      || typeof item.sourceName !== "string" || typeof item.reasoningEffort !== "string"
-      || !Array.isArray(item.supportedReasoningEfforts)
-      || !item.supportedReasoningEfforts.every((effort) => typeof effort === "string")
-      || !Array.isArray(item.roles)
-      || !item.roles.every((role) => typeof role === "string")) {
-      throw new Error("/api/chat/models 返回了无效 runtime");
-    }
-    const contextWindow = typeof item.contextWindow === "number" && Number.isFinite(item.contextWindow)
-      ? item.contextWindow : 0;
-    const inputModalities = Array.isArray(item.inputModalities)
-      ? item.inputModalities.filter((modality): modality is string => typeof modality === "string") : [];
-    return {
-      id: item.id,
-      provider: item.provider,
-      model: item.model,
-      sourceId: item.sourceId,
-      sourceName: item.sourceName,
-      reasoningEffort: item.reasoningEffort,
-      supportedReasoningEfforts: item.supportedReasoningEfforts as string[],
-      roles: item.roles as string[],
-      contextWindow,
-      inputModalities,
-    };
-  });
-  const unavailableRuntimes = body.unavailableRuntimes.map<ChatModelState["unavailableRuntimes"][number]>((value) => {
-    const item = recordValue(value);
-    if (!item || typeof item.id !== "string" || typeof item.model !== "string"
-      || typeof item.sourceName !== "string"
-      || (item.availability !== "disabled" && item.availability !== "driver_unavailable")) {
-      throw new Error("/api/chat/models 返回了无效不可用模型");
-    }
-    return { id: item.id, model: item.model, sourceName: item.sourceName, availability: item.availability };
-  });
-  const selection = recordValue(body.sessionSelection);
-  if (!selection || typeof selection.modelRef !== "string" || typeof selection.reasoningEffort !== "string") {
-    throw new Error("/api/chat/models 返回了无效会话模型选择");
-  }
-  return {
-    generationId: Number(body.generationId),
-    defaultRuntime: body.defaultRuntime,
-    sessionOverride: body.sessionOverride,
-    sessionSelection: { modelRef: selection.modelRef, reasoningEffort: selection.reasoningEffort },
-    runtimes,
-    unavailableRuntimes,
-  };
 }
 
 /** 软删/恢复是显式数据管理操作；返回值校验 key 与结果标记一致，防止对错会话生效。 */

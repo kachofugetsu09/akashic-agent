@@ -12,8 +12,6 @@ import type { TimelineReply } from "./message-timeline";
 import { nextComposerExpanded } from "./composer-layout";
 import { ComposerActionButton } from "./composer-action";
 import { ComposerReply } from "./message-actions";
-import { ModelCapsulePicker, ModelEffortAction, resolveVisibleRuntime } from "./model-capsule-picker";
-import { compatibleEffort, type ChatModelRuntime } from "./model-capsule-data";
 import { isGeneratingChatStatus, type ChatStatus } from "./web-chat-status";
 import { useComposerSuggest } from "./composer-suggest";
 import { setComposerBusy } from "./composer-contributions";
@@ -43,8 +41,8 @@ const MAX_ATTACHMENTS = 20;
 const PASTE_AS_FILE_BYTES = 4096;
 
 export const DesktopComposer = memo(function DesktopComposer({
-  chatReady, canSend, sendProblem, draftKey, autoFocus = false, fresh = false, status, stopPending, stopCount, inputId, turnCompleted, modelState, selectedRuntimeId, selectedEffort, replyTarget,
-  onModelChange, onCancelReply, onSend, onStop, lastInput = "", ref,
+  chatReady, canSend, sendProblem, draftKey, autoFocus = false, fresh = false, status, stopPending, stopCount, inputId, turnCompleted, replyTarget,
+  onCancelReply, onSend, onStop, lastInput = "", ref,
 }: {
   chatReady: boolean;
   canSend: boolean;
@@ -60,11 +58,7 @@ export const DesktopComposer = memo(function DesktopComposer({
   stopCount: number;
   inputId: string;
   turnCompleted: boolean;
-  modelState: { defaultRuntime: string; runtimes: ChatModelRuntime[] } | null;
-  selectedRuntimeId: string;
-  selectedEffort: string;
   replyTarget: TimelineReply | null;
-  onModelChange: (runtimeId: string, effort: string) => void;
   onCancelReply: () => void;
   onSend: (text: string, files: ComposerFile[]) => Promise<string | undefined>;
   onStop: () => void;
@@ -331,25 +325,6 @@ export const DesktopComposer = memo(function DesktopComposer({
       </PromptInputBody>
       <PromptInputFooter className="composer__bar">
         <PromptInputTools className="composer__lead">
-          {modelState ? (
-            <>
-              <ModelCapsulePicker
-                defaultRuntime={modelState.defaultRuntime}
-                runtimes={modelState.runtimes}
-                selectedRuntimeId={selectedRuntimeId}
-                selectedEffort={selectedEffort}
-                disabled={isGeneratingChatStatus(status)}
-                onChange={onModelChange}
-              />
-              <ComposerEffortAction
-                modelState={modelState}
-                selectedRuntimeId={selectedRuntimeId}
-                selectedEffort={selectedEffort}
-                disabled={isGeneratingChatStatus(status)}
-                onChange={onModelChange}
-              />
-            </>
-          ) : null}
           {/* 插件的输入框工具（随草稿重新挂载，不同新对话的选择互不串）。 */}
           <PluginUiSlot key={draftKey} name="composer.toolbar" sessionId={draftKey.startsWith("new:") ? undefined : draftKey}
             refreshToken={generating ? 1 : 0} quiet />
@@ -466,26 +441,6 @@ function useTypeToCompose(textareaRef: { current: HTMLTextAreaElement | null }, 
     document.addEventListener("keydown", onKeyDown);
     return () => document.removeEventListener("keydown", onKeyDown);
   }, [enabled, textareaRef]);
-}
-
-function ComposerEffortAction({ modelState, selectedRuntimeId, selectedEffort, disabled, onChange }: {
-  modelState: { defaultRuntime: string; runtimes: ChatModelRuntime[] };
-  selectedRuntimeId: string;
-  selectedEffort: string;
-  disabled: boolean;
-  onChange: (runtimeId: string, effort: string) => void;
-}) {
-  const { visibleModel, explicitModel } = resolveVisibleRuntime(modelState.runtimes, selectedRuntimeId, modelState.defaultRuntime);
-  if (!visibleModel) return null;
-  return (
-    <ModelEffortAction
-      runtime={visibleModel}
-      effort={compatibleEffort(visibleModel, selectedEffort)}
-      explicit={Boolean(explicitModel)}
-      disabled={disabled}
-      onChange={onChange}
-    />
-  );
 }
 
 function ComposerAttachmentButton() {

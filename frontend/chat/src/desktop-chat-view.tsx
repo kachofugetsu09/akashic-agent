@@ -59,13 +59,13 @@ export function DesktopChatView({ embeddedShell, controller }: DesktopChatViewPr
   const toolResults = useMemo(() => timelineToolResults(controller.timelineMessages), [controller.timelineMessages]);
   const {
     surface, sidebarSessions, activeSessionId, pendingSessionId, chatReady, messages, timelineMessages, replyActivities, replyAvailable, status,
-    streamStore, messageElementsRef, copiedMessageId, shellState, stopPending, stopCount, modelState,
-    selectedRuntimeId, selectedReasoningEffort, replyTarget, error,
-    canSend, sendProblem, blockReason, modelProblem, modelsError, retryModels, draftKey,
+    streamStore, messageElementsRef, copiedMessageId, shellState, stopPending, stopCount,
+    replyTarget, error,
+    canSend, sendProblem, draftKey,
     historyHasMore, historyLoading, historyLoadingOlder, loadOlderMessages, sessionRequested,
     activeSessionDeleted, deletedNotice, deleteSession, restoreSession, dismissDeletedNotice, renameSession,
     activateSession, prefetchSessionTail, startNewChat, handleReplyMessage, handleCopiedMessage,
-    reportError, handleModelChange, cancelReply, sendMessage, stopTurn, retry,
+    reportError, cancelReply, sendMessage, stopTurn, retry,
     projects, pendingProjects, pendingProjectsError, projectsInstalled, memoryInstalled, activeProject,
     startProjectChat, createProject, continueProject, stopProject, bindDirectory,
   } = controller;
@@ -152,7 +152,7 @@ export function DesktopChatView({ embeddedShell, controller }: DesktopChatViewPr
               <button type="button" onClick={controller.retryHistory}>重试</button>
             </div>
               : !hasMessages && sessionOpening ? <p className="history-switch-loading" role="status">正在读取消息</p>
-              : !hasMessages ? <DesktopEmptyState shellStatus={shellStatus} modelProblem={modelProblem} /> : (
+              : !hasMessages ? <DesktopEmptyState shellStatus={shellStatus} sendProblem={sendProblem} /> : (
               <MessageRendererErrorBoundary>
                 <DesktopHistoryLoader
                   firstMessageId={timelineMessages[0]?.id ?? messages[0]?.id}
@@ -197,21 +197,13 @@ export function DesktopChatView({ embeddedShell, controller }: DesktopChatViewPr
             此会话已删除，内容只读保留。
             <button type="button" className="session-restore-button" onClick={() => { void restoreSession(activeSessionId); }}>恢复会话</button>
           </p> : null}
-          {chatReady && (modelProblem || modelsError) ? <div className="chat-model-notice" role="status">
-            {modelProblem ? <p id="chat-send-reason">{modelProblem}</p> : null}
-            {modelsError ? <p>{modelsError}</p> : null}
-            <div>
-              {modelProblem ? <a href="/#models" target="_blank" rel="noopener">打开模型设置</a> : null}
-              {modelsError ? <button type="button" onClick={retryModels}>重试加载模型列表</button> : null}
-            </div>
-          </div> : null}
-          {chatReady && !modelProblem && blockReason ? <p className="reply-unavailable" id="chat-send-reason" role="status">{blockReason}</p> : null}
+          {/* 输入框工具位的插件说明为什么现在不能发；处理入口在插件自己的工具里。 */}
+          {chatReady && sendProblem ? <p className="chat-send-notice" id="chat-send-reason" role="status">{sendProblem}</p> : null}
           <DesktopComposer
             ref={composerApi}
             chatReady={chatReady} canSend={canSend} sendProblem={sendProblem} draftKey={draftKey} autoFocus={!conversationLayout && chatReady} fresh={!conversationLayout} status={status} stopPending={stopPending} stopCount={stopCount}
-            inputId={inputId} turnCompleted={replyAvailable !== false && inputResult.completed} modelState={modelState}
-            selectedRuntimeId={selectedRuntimeId} selectedEffort={selectedReasoningEffort}
-            replyTarget={replyTarget} onModelChange={handleModelChange} onCancelReply={cancelReply}
+            inputId={inputId} turnCompleted={replyAvailable !== false && inputResult.completed}
+            replyTarget={replyTarget} onCancelReply={cancelReply}
             onSend={sendMessage} onStop={stopTurn} lastInput={lastInput}
           />
           <CopyNotice text={copyNotice} />
@@ -383,7 +375,7 @@ function greetingFor(hour: number): string {
   return "晚上好";
 }
 
-function DesktopEmptyState({ shellStatus, modelProblem }: { shellStatus: string | null; modelProblem: string }) {
+function DesktopEmptyState({ shellStatus, sendProblem }: { shellStatus: string | null; sendProblem: string }) {
   return <ConversationEmptyState className="home-state">
     {shellStatus === "needs_setup" ? <div className="model-connection-state">
       <span>对话尚未就绪</span><h1>请完成所需配置</h1>
@@ -402,8 +394,8 @@ function DesktopEmptyState({ shellStatus, modelProblem }: { shellStatus: string 
         <strong>正在连接</strong>
         <span>稍等，工作区马上就绪</span>
       </div>
-    ) : modelProblem ? (
-      <div className="home-state__ready"><strong>准备对话</strong><span>下方会说明模型状态；你可以先写下想说的话</span></div>
+    ) : sendProblem ? (
+      <div className="home-state__ready"><strong>准备对话</strong><span>下方会说明还差什么；你可以先写下想说的话</span></div>
     ) : (
       <div className="home-hero">
         <p className="home-hero__greeting">{greetingFor(new Date().getHours())}</p>

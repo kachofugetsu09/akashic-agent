@@ -1,18 +1,14 @@
 import { Check, ChevronDown, Eye, Search, Sparkles, Star } from "lucide-react";
 import { useEffect, useId, useLayoutEffect, useMemo, useRef, useState, type CSSProperties, type RefObject } from "react";
-import codexIcon from "./assets/provider-icons/codex.svg";
-import deepseekIcon from "./assets/provider-icons/deepseek.svg";
-import opencodeIcon from "./assets/provider-icons/opencode.svg";
-import openrouterIcon from "./assets/provider-icons/openrouter.svg";
-import { compatibleEffort, EFFORT_LABELS, groupModelRuntimes, type ChatModelRuntime } from "./model-capsule-data";
-import "./model-capsule.css";
+import { compatibleEffort, EFFORT_LABELS, groupModelRuntimes, type ChatModelRuntime } from "./capsule-data";
+import "./capsule.css";
 
 const PANEL_GAP = 8;
 const PANEL_MARGIN = 12;
 const PANEL_MAX_HEIGHT = 380;
 const FAVORITES_KEY = "akashic.chat.model-favorites";
 
-export type { ChatModelRuntime } from "./model-capsule-data";
+export type { ChatModelRuntime } from "./capsule-data";
 
 interface ModelCapsulePickerProps {
   defaultRuntime: string;
@@ -31,27 +27,9 @@ interface ModelEffortActionProps {
   onChange: (runtimeId: string, effort: string) => void;
 }
 
-const PROVIDER_ICONS: Record<string, string> = {
-  codex: codexIcon,
-  deepseek: deepseekIcon,
-  "opencode-go": opencodeIcon,
-  opencode: opencodeIcon,
-  openrouter: openrouterIcon,
-};
-
-function sourceIcon(runtime: ChatModelRuntime): string {
-  const provider = runtime.provider.toLowerCase();
-  const source = `${runtime.sourceName} ${runtime.sourceId}`.toLowerCase();
-  if (provider.includes("codex") || source.includes("codex")) return codexIcon;
-  if (provider.includes("opencode") || source.includes("opencode")) return opencodeIcon;
-  if (provider.includes("deepseek") || source.includes("deepseek")) return deepseekIcon;
-  if (provider.includes("openrouter") || source.includes("openrouter")) return openrouterIcon;
-  return PROVIDER_ICONS[provider] || "";
-}
-
-// 分组头只放真实品牌 SVG；未知来源不留字母占位块，避免与来源名重复表达。
+// 分组头只放驱动声明的品牌 SVG；未声明的来源不留字母占位块，避免与来源名重复表达。
 function GroupIcon({ runtime }: { runtime: ChatModelRuntime }) {
-  const icon = sourceIcon(runtime);
+  const icon = runtime.icon;
   if (!icon) return null;
   return <img className="model-picker__group-icon" src={icon} alt="" aria-hidden="true" />;
 }

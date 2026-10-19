@@ -128,13 +128,13 @@ async def apply(ctx: Context) -> None:
 
     _ = await ctx.provide(input_part_key("model.selection"), check_input_selection)
 
-    # 回答尾注与聊天里的模型数据都只读本插件的视图；聊天界面经插件界面插槽查询。
+    # 回答尾注与输入框模型胶囊都只读本插件的视图；聊天界面经插件界面插槽查询，选择随消息作为 model.selection 片段回来。
     async def message_ui(child: Context) -> None:
         query = ChatUiQueries(catalog=state.catalog, messages=child.require(MESSAGE_CATALOG), call_stats=store.read_call_stats,
                               message_tokens=usage.message_output_tokens, icon=state.connection_icon)
         _ = await child.require(UI_SLOTS).register_plugin_ui(
-            child, PluginUiDefinition(module="message_ui.js", stylesheet="message_ui.css",
-                                      slots=("turn.after_answer",)), query=query)
+            child, PluginUiDefinition(module="plugin_ui.js", stylesheet="plugin_ui.css",
+                                      slots=("turn.after_answer", "composer.toolbar")), query=query)
 
     _ = await ctx.inject((UI_SLOTS, MESSAGE_CATALOG), message_ui, name="message-ui")
 

@@ -55,7 +55,7 @@ try {
   };
   await page.goto(fixture.origin, { waitUntil: "domcontentloaded" });
   await editor.fill("解释这张图");
-  assert.equal(await page.locator(".chat-model-notice").count(), 0);
+  assert.equal(await page.locator(".chat-send-notice").count(), 0);
   assert.equal(await page.getByRole("button", { name: "发送消息", exact: true }).isEnabled(), true);
   checks.push("首次模型读取尚未结束，已就绪的聊天仍可发送，没有核对提示");
 
