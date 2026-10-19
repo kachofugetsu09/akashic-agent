@@ -325,9 +325,9 @@ class ToolCatalog:
 
         return await ctx.effect(setup, label=f"tool-authorize:{name}")
 
-    # 收尾入口固定当时声明了 release 的注册；之后换代或撤下不改变本次释放对象。
+    # 收尾入口固定当时声明了 release 的注册及其 Context；之后换代或撤下不改变本次释放对象。
     def releases(self) -> dict[str, Release]:
-        return {name: Release(item.context.runtime.plugin_id, item.release)
+        return {name: Release(item.context.runtime.plugin_id, item.release, item.context, item.capture is not None)
                 for name, item in self._tools.items() if item.release is not None}
 
     def allows_parallel(self, name: str) -> bool:
