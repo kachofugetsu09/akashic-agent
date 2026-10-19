@@ -6,7 +6,7 @@ from contextlib import ExitStack
 
 from agent.plugin_composition import Context, ServiceKey
 from plugins.ledger.contract import MESSAGE_CATALOG, MessageReader
-from plugins.ui.contract import MessageDisplayProviders, PartDisplayProvider, message_rows
+from plugins.ui.contract import MessageDisplayProviders, PartDisplayProvider, message_rows, part_display_key
 from plugins.tools.contract import TOOL_DISPLAY_NAME
 from plugins.ui.contract import ToolResultDisplayProvider, MessagePage
 from plugins.ledger.contract import ContentPart, Control, Message, ToolCall, ToolResult
@@ -33,7 +33,7 @@ async def project_message_rows(
     # 2. 借用从唯一 provider 目录取得真实 scope，不持有或查询 Root。
     with ExitStack() as scopes:
         for kind in kinds:
-            display = scopes.enter_context(ctx.borrow(ServiceKey[PartDisplayProvider](f"message.display:{kind}")))
+            display = scopes.enter_context(ctx.borrow(part_display_key(kind)))
             if display is not None:
                 providers[kind] = display
             result_display = scopes.enter_context(ctx.borrow(ServiceKey[ToolResultDisplayProvider](f"message.result_display:{kind}")))

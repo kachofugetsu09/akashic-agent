@@ -15,7 +15,7 @@ export type TimelinePart =
   | { kind: "model.facts"; value: { call_record_id: string; thinking: string | null } }
   | { kind: "context.notice"; value: { text: string } }
   | { kind: "history.provenance" | "history.transcript" | "history.record" | "history.turn_input"; archive: unknown }
-  | { kind: string; display: "unavailable" }
+  | { kind: string; display: "unavailable" | "hidden" }
   | { kind: string; display: "data"; value: unknown; rendered?: unknown };
 
 export type TimelineBody =
@@ -235,7 +235,7 @@ function validPart(value: unknown): boolean {
   const part = object(value);
   if (!part || !nonempty(part.kind)) return false;
   if (part.display === "data") return "value" in part && part.kind !== "tool_call";
-  if (part.display === "unavailable") return !["text", "artifact_ref", "reply_ref", "tool_call", "model.facts"].includes(part.kind);
+  if (part.display === "unavailable" || part.display === "hidden") return !["text", "artifact_ref", "reply_ref", "tool_call", "model.facts"].includes(part.kind);
   switch (part.kind) {
     case "text": return typeof part.value === "string";
     case "artifact_ref": case "reply_ref": return nonempty(part.value);
@@ -304,7 +304,8 @@ export function historyTranscript(archive: unknown): HistoryTranscriptGroup[] | 
 
 /** 聊天可见性只影响布局，原始 Message、part index 和同步 seq 不变。 */
 export function isTimelinePartVisible(part: TimelinePart): boolean {
-  if ("display" in part) return part.display === "data" || !["channel.origin", "context.summary", "tool.selection", "model.selection", "command.result", "akasha.recall", "akasha.feedback"].includes(part.kind);
+  // owner 声明为内部材料（hidden）的不显示；展示方缺席（unavailable）仍占一行“无法展示”，保留诊断线索。
+  if ("display" in part) return part.display !== "hidden";
   if ("archive" in part) {
     if (part.kind !== "history.transcript") return false;
     const groups = historyTranscript(part.archive);

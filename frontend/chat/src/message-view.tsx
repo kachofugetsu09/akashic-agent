@@ -644,8 +644,8 @@ export function TimelineMessageView({ message, lookupMessage, toolResults, onNav
   </>;
   const emptyBubble = input && !leadingContent && !leadingProcess && !afterBody && body.parts.every((part) => !isTimelinePartVisible(part)
     || (!("display" in part) && (part.kind === "artifact_ref" || (part.kind === "text" && !part.value.trim()))));
-  // 定时任务等自动发起的输入不是用户发言，靠左显示成一条事件行。
-  const automatic = input && message.author === "scheduler";
+  // 不是用户写下的输入（定时任务、唤醒、子代理等任何插件发起）靠左显示成一条事件行。
+  const automatic = input && message.author !== "user" && message.author !== "legacy-attribution-unknown";
   return <div className={`message-row timeline-message timeline-${body.kind}${automatic ? " timeline-automatic" : ""}`}>
     {input ? attachmentList : null}
     {emptyBubble ? null : <div className={automatic ? "automatic-input" : input ? "user-bubble" : "agent-content"}>
