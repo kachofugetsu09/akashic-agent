@@ -466,9 +466,8 @@
 }
 
 /* 聊天的模态对话框打开时（宽屏打开后再缩窄或铺满），聊天先不隐藏，对话框才看得见、关得掉。
-   模态层会把工作台标成 aria-hidden，模型面板等非模态弹层不会，因此不豁免。
-   本样式在外壳的 @scope 里，看不到 body 上的滚动锁，只能看本页内的标记。 */
-.conversation-page.tools-open:has(> .conversation-tools[aria-hidden="true"]) > .conversation-page-chat {
+   只认聊天自己声明的 data-chat-modal（ADR 0126）；模型面板等非模态弹层不豁免。 */
+.conversation-page.tools-open > .conversation-page-chat:has([data-chat-modal]) {
   visibility: visible;
 }
 
