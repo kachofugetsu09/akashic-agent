@@ -55,3 +55,12 @@ note = "插件手册与 skill 文档仍在教学使用；代码中无此 Service
 [capabilities."core.plugin_config.v1"]
 role = "core"
 note = "按实际 Context 应用自身固定输入；沿 selection CAS 与局部换代，不解释业务字段"
+
+# R12：UI 宿主只提供通用扩展点。宿主插件可以导入的只有基础设施合同；
+# 其余插件的功能由它自己的前端模块经 UI_SLOTS 贡献，宿主不点名。
+[ui_hosts]
+plugins = ["akashic_clients", "ui"]
+infrastructure = ["ui", "ledger", "channels", "gateway", "content", "tools", "workloads", "reply"]
+frontend = ["frontend/chat/src"]
+host_routes = ["/api/chat/sessions", "/api/chat/artifacts", "/api/chat/uploads", "/api/chat/plugin-ui",
+               "/api/chat/navigation", "/api/shell/state"]
