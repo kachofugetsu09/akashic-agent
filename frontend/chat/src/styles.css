@@ -956,21 +956,20 @@ input {
 .navigation-group__open svg { flex: 0 0 auto; }
 .navigation-group.active > .navigation-group__row { background: var(--chat-chip); border-radius: 8px; }
 
+/* 有悬停的指针不在项目行上冒出带框的“+”：展开后第一行就是“新对话”。 */
 @media (hover: hover) and (pointer: fine) {
-  .navigation-group__new-chat {
-    position: absolute;
-    inset-inline-end: 42px;
-    width: 40px;
-    height: 40px;
-    background: var(--ak-paper-canvas);
-    opacity: 0;
-    pointer-events: none;
-  }
-  .navigation-group__row:hover .navigation-group__new-chat,
-  .navigation-group__row:has(:focus-visible) .navigation-group__new-chat { opacity: 1; pointer-events: auto; }
-  .navigation-group__row:hover .navigation-group__open,
-  .navigation-group__row:has(:focus-visible) .navigation-group__open { padding-inline-end: 84px; }
+  .navigation-group__new-chat { display: none; }
 }
+
+.group-session--new { color: var(--chat-muted); }
+.group-session--new > svg { width: 18px; flex: 0 0 18px; }
+/* 会话行的标题前有状态槽位，“新对话”的文字与它对齐。 */
+.group-session--new > span { padding-inline-start: 3px; }
+
+/* 分组内置顶：行尾一枚小图钉，悬停或聚焦时让位给行菜单。 */
+.conversation-session__pin { flex: 0 0 auto; color: var(--chat-faint); }
+.navigation-menu-row:is(:hover, :has(:focus-visible), [data-menu-open]) .conversation-session__pin { visibility: hidden; }
+.navigation-group__sessions .conversation-session { min-height: 32px; }
 
 .navigation-group__chevron {
   flex: 0 0 auto;
@@ -1054,9 +1053,8 @@ input {
   .conversation-navigation__heading--section:has(.conversation-sort-trigger) { padding-block: 4px 0; }
 }
 
-/* 新会话空态的分组条：只在窄屏出现（宽屏有常驻侧栏），首条消息发出后随空态一起消失。 */
-.new-chat-scope { display: none; }
-:where([data-chat-width~="820"], [data-chat-touch]) .new-chat-scope {
+/* 新会话空态的分组条：新会话继承当前分组，这里可以换到另一个或不归属；首条消息发出后随空态一起消失。 */
+.new-chat-scope {
   display: inline-flex;
   max-width: 100%;
   min-height: 44px;
