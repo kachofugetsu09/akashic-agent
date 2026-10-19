@@ -444,9 +444,9 @@ input {
   flex: none;
 }
 
-@media (hover: hover) and (pointer: fine) and (min-width: 820.02px) {
+@media (hover: hover) and (pointer: fine) { :where([data-chat-width]:not([data-chat-width~="820"])) {
   .chat-sidebar__search:not(:focus-within):has(input:placeholder-shown) .chat-sidebar__search-key { display: inline; }
-}
+} }
 
 .chat-sidebar__search {
   display: flex;
@@ -734,7 +734,7 @@ input {
   .navigation-menu-row:has(:focus-visible) > .conversation-session { padding-inline-end: 44px; }
 }
 
-@media (max-width: 820px), (hover: none) {
+:where([data-chat-width~="820"], [data-chat-touch]) {
   .navigation-menu-trigger { width: 44px; height: 44px; }
   .chat-sidebar__brand-row,
   .chat-sidebar__search,
@@ -1027,7 +1027,7 @@ input {
   background: color-mix(in oklab, var(--ak-ink-primary) 8%, transparent);
 }
 
-@media (max-width: 820px), (hover: none) {
+:where([data-chat-width~="820"], [data-chat-touch]) {
   .navigation-group__new-chat { display: none; }
   .navigation-group { --group-toggle-width: 44px; }
   .navigation-group__toggle { width: 44px; }
@@ -1107,7 +1107,7 @@ input {
 .group-dialog__button.primary { color: var(--md-sys-color-on-primary); background: var(--md-sys-color-primary); }
 .group-dialog__button:disabled { opacity: 0.5; cursor: default; }
 
-@media (max-width: 480px) {
+:where([data-chat-width~="480"]) {
   .group-dialog { padding: 20px; }
   .group-dialog form { gap: 18px; }
 }
@@ -1360,7 +1360,7 @@ input {
 }
 
 /* 宽屏元信息行固定 28px；40px 操作热区向上下透明溢出，不再撑高每条消息。 */
-@media (min-width: 36.0625rem) {
+:where([data-chat-width]:not([data-chat-width~="576"])) {
   .web-message-anchor .shared-message-meta {
     block-size: 28px;
     min-height: 0;
@@ -1703,7 +1703,7 @@ input {
 .composer-suggest__desc { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--chat-faint); }
 .composer-suggest__source { flex: none; margin-inline-start: auto; font-size: var(--chat-type-micro); color: var(--chat-faint); }
 .composer-suggest__empty { padding: 7px 8px; color: var(--chat-faint); }
-@media (max-width: 600px) {
+:where([data-chat-width~="600"]) {
   .composer-suggest__row { min-height: 44px; flex-wrap: wrap; }
   .composer-suggest__label { flex: 1; min-width: 0; max-width: calc(100% - 24px); }
   .composer-suggest__desc { flex-basis: calc(100% - 24px); margin-inline-start: 24px; white-space: normal; overflow-wrap: anywhere; }
@@ -1760,7 +1760,7 @@ input {
 .chat-main.is-empty .conversation-heading.is-blank { border-block-end-color: transparent; }
 .chat-main.is-empty .conversation-heading.is-blank h1 { visibility: hidden; }
 
-@media (max-width: 820px), (max-height: 30rem) and (pointer: coarse) {
+:where([data-chat-width~="820"], [data-chat-short]) {
   .chat-main.is-empty .conversation-heading.is-blank h1 { visibility: visible; }
 }
 
@@ -1794,7 +1794,7 @@ input {
   padding: 16px 24px 12px;
 }
 
-@media (max-width: 820px), (max-height: 30rem) and (pointer: coarse) {
+:where([data-chat-width~="820"], [data-chat-short]) {
   .chat-main.is-empty .composer-wrap.home {
     margin-inline: var(--chat-dock-inset);
     inline-size: auto;
@@ -2006,7 +2006,7 @@ form.composer:focus-within [data-slot="input-group"] {
 
 /* 窄屏底距只有 8px 放不下，停止钮与"运行中"已说明在生成；矮屏触屏输入区回到文档流，也不显示。
    只在视觉上收起（不用 display:none）：开始与终态的 aria-live 播报仍要留在无障碍树里。 */
-@media (max-width: 36rem), (max-height: 30rem) and (pointer: coarse) {
+:where([data-chat-width~="576"], [data-chat-short]) {
   .composer-stats-line,
   .composer-wrap > .composer-stats-line {
     position: absolute;
@@ -2077,9 +2077,9 @@ form.composer:focus-within [data-slot="input-group"] {
 
 /* 紧凑外壳（抽屉导航）：窄屏，或手机横屏——触屏且高度不足 30rem 时宽度虽超过 820px，常驻侧栏也会把对话挤窄。
    平板高度都在 48rem 以上，不会命中第二个条件。同一条件用于触控尺寸与矮屏规则，改动时一并修改。 */
-@media (max-width: 820px), (max-height: 30rem) and (pointer: coarse) {
+:where([data-chat-width~="820"], [data-chat-short]) {
   .chat-shell-body,
-  [data-embedded-shell="true"] .chat-shell-body {
+  &[data-embedded-shell="true"] .chat-shell-body {
     grid-template-columns: minmax(0, 1fr);
   }
 
@@ -2188,8 +2188,8 @@ form.composer:focus-within [data-slot="input-group"] {
 }
 
 /* 手机宽度下工具区开关只剩 44px 图标，标题带只需让出图标与右侧边距。 */
-@media (max-width: 32rem) {
-  [data-shell-tools="true"] .conversation-heading {
+:where([data-chat-width~="512"]) {
+  &[data-shell-tools="true"] .conversation-heading {
     padding-inline-end: 4.5rem;
   }
 }
@@ -2367,7 +2367,7 @@ form.composer:focus-within [data-slot="input-group"] {
    收起时是每轮一道 2px 刻度，当前一轮更长更深；悬停或键盘聚焦展开为提问列表，浮在正文上。 */
 .turn-rail { display: none; }
 
-@media (hover: hover) and (pointer: fine) and (min-width: 1200px) {
+@media (hover: hover) and (pointer: fine) { :where([data-chat-wide]) {
   .turn-rail {
     position: absolute;
     inset-inline-end: 12px;
@@ -2444,7 +2444,7 @@ form.composer:focus-within [data-slot="input-group"] {
   .turn-rail__list button:hover { color: var(--ak-ink-primary); background: var(--ak-paper-quiet); }
   .turn-rail__list button[aria-current] { color: var(--ak-ink-primary); font-weight: 600; }
   .turn-rail__list button:focus-visible { outline: 2px solid var(--ak-rule-focus); outline-offset: -2px; }
-}
+} }
 
 /* 返回按钮浮在正文上：与输入卡同一层纸（编辑面）加轻阴影，压在气泡或正文上也认得出边缘。 */
 .reading-return {
@@ -2511,7 +2511,7 @@ form.composer:focus-within [data-slot="input-group"] {
     calc(var(--chat-column) - 2 * var(--chat-dock-inset) + 2 * var(--composer-text-inset))
   );
 }
-@media (max-width: 820px), (max-height: 30rem) and (pointer: coarse) {
+:where([data-chat-width~="820"], [data-chat-short]) {
   .chat-sidebar__search input { font-size: 1rem; }
   .chat-main {
     --chat-type-body: 1rem;
@@ -2533,7 +2533,7 @@ form.composer:focus-within [data-slot="input-group"] {
 /* 手机宽度上的输入卡。几何来自 DeepSeek 输入卡（22px 圆角、文字在上、工具行在下、
    左右 16px、底 8px）和 Beautiful UI 宽输入条（加号在左、模型与发送在右）。
    触控目标放到 44px；布局跟随 CSS 视口宽度，不依赖设备型号或像素密度。 */
-@media (max-width: 36rem) {
+:where([data-chat-width~="576"]) {
   .chat-main {
     --chat-dock-inset: 16px;
     --chat-concept-columns: minmax(0, 1fr);
@@ -2741,13 +2741,13 @@ form.composer:focus-within [data-slot="input-group"] {
 
 
 /* 键盘和横屏下保持原消息滚动 owner，输入区回到文档流，不盖住导航。 */
-@media (max-width: 820px) and (max-height: 30rem), (max-height: 30rem) and (pointer: coarse) {
+:where([data-chat-width~="820"][data-chat-low], [data-chat-short]) {
   .compact-navigation-dialog { overflow-y: auto; }
   .compact-navigation-dialog .chat-sidebar { height: auto; min-height: 100%; }
   .compact-navigation-dialog .conversation-navigation { flex: none; overflow: visible; }
   .compact-navigation-dialog .conversation-navigation__sessions { overflow: visible; }
   .chat-main,
-  [data-embedded-shell="true"] .chat-main { overflow-y: auto; }
+  &[data-embedded-shell="true"] .chat-main { overflow-y: auto; }
   .chat-main .conversation { flex: none; block-size: max(120px, 60dvh); }
   /* 输入区已在文档流里，不再浮在消息上：底部不必再给它预留一张卡的高度，矮屏每一行都要省。 */
   .chat-main .conversation-content { padding-block-end: 1rem; }
@@ -2810,7 +2810,7 @@ form.composer:focus-within [data-slot="input-group"] {
 .header-marker__actions button:focus-visible { outline: 2px solid var(--ak-rule-focus); outline-offset: 2px; }
 
 /* 紧凑外壳标题优先（放在目录标记全部基础规则之后，同特异性靠顺序覆盖）：工作目录只留文件夹图标（点开仍看完整路径），标题拿走剩余宽度。 */
-@media (max-width: 820px), (max-height: 30rem) and (pointer: coarse) {
+:where([data-chat-width~="820"], [data-chat-short]) {
   .conversation-heading h1 { flex: 1 1 auto; }
   .plugin-ui-slot[data-slot="header.end"] { margin-inline-start: 0; }
   .header-marker { min-width: 0; flex: 0 0 auto; padding-inline-start: 0; }

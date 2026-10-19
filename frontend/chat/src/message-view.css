@@ -503,7 +503,7 @@
   border-block-end: 0 !important;
 }
 
-@media (min-width: 36.0625rem) {
+:where([data-chat-width]:not([data-chat-width~="576"])) {
   :where(.agent-content, .process-markdown, .user-bubble) .code-header-actions .code-action-btn {
     min-width: 36px;
     min-height: 36px;
@@ -787,7 +787,7 @@
 
 /* 紧凑外壳（触屏为主）列多时宁可横滚，也不把每列挤成三四个字一行；宽屏鼠标横滚别扭，仍以折行为主。 */
 /* 条件与 COMPACT_SHELL 一致：含横屏触屏的矮视口。 */
-@media (max-width: 820px), (max-height: 30rem) and (pointer: coarse) {
+:where([data-chat-width~="820"], [data-chat-short]) {
   :is(.agent-content, .process-markdown, .user-bubble) .markdown-reading :where(th, td) { min-width: 8.5em; }
   /* 三列以内本来放得下（390 宽每列约 6 个字）：不为每列 8.5em 的下限去横滚，只防把列挤成两三个字。
      有合并单元格时每行元素数不等于逻辑列数，保留原下限。 */
@@ -1951,7 +1951,7 @@ button.tool-step-summary:active {
 }
 
 /* 有悬停的宽屏：只有最新一条常驻时间与操作，更早的消息悬停或聚焦时整行显现，行高不变、不推动正文。 */
-@media (hover: hover) and (min-width: 36.0625rem) {
+@media (hover: hover) { :where([data-chat-width]:not([data-chat-width~="576"])) {
   .web-message-anchor .shared-message-meta {
     transition: opacity var(--ak-sys-duration-short) var(--ak-sys-motion-standard);
   }
@@ -1960,7 +1960,7 @@ button.tool-step-summary:active {
   .web-message-anchor:not(:nth-last-child(1 of .web-message-anchor), :hover, :focus-within) .shared-message-meta {
     opacity: 0;
   }
-}
+} }
 
 /* 发送确认通常在一秒内到达：短暂停留时不闪"发送中"，超过 1.2 秒才淡入。 */
 /* 落纸：新挂载的块抬 2px 并带一点模糊落定，只在挂载那一次跑，不逐 token 重放。
@@ -1988,7 +1988,7 @@ button.tool-step-summary:active {
 }
 
 /* 触控断点没有 hover：次要操作常驻可见；热区扩到 44px，图形不变。 */
-@media (max-width: 820px), (hover: none) {
+:where([data-chat-width~="820"], [data-chat-touch]) {
   .shared-message-actions {
     --shared-action-hit: 44px;
     --shared-action-inset: 10px;
@@ -2279,7 +2279,7 @@ button.tool-step-summary:active {
 
 .attempt-status > button:focus-visible { outline: 2px solid var(--ak-rule-focus); outline-offset: 2px; }
 
-@media (max-width: 36rem) {
+:where([data-chat-width~="576"]) {
   .web-message-anchor:not(:nth-last-child(1 of .web-message-anchor)):not(.is-revealed) .shared-message-meta {
     display: none;
   }
@@ -2297,13 +2297,13 @@ button.tool-step-summary:active {
 }
 .message-figure-download:focus-visible { outline: 2px solid var(--ak-color-action-primary); outline-offset: 2px; }
 .attachment-description p:last-child { margin-bottom: 0; }
-@media (hover: none), (max-width: 820px) { .message-figure-download { width: 44px; min-height: 44px; opacity: 1; } }
+:where([data-chat-width~="820"], [data-chat-touch]) { .message-figure-download { width: 44px; min-height: 44px; opacity: 1; } }
 @media (prefers-reduced-motion: reduce) { .message-figure, .message-figure-download { transition: none; } }
 
 .inline-reply-process { margin-bottom: 1rem; color: var(--ak-color-text-secondary); }
 .inline-reply-process > details > summary { min-height: 40px; }
 .attachment-description h3 { padding-inline-end: 44px; }
-@media (max-width: 820px), (max-height: 30rem) and (pointer: coarse) { .inline-reply-process > details > summary { min-height: 44px; } }
+:where([data-chat-width~="820"], [data-chat-short]) { .inline-reply-process > details > summary { min-height: 44px; } }
 
 /* 选中回复里一段文字后浮出的"引用"：墨色反白小药丸，深浅主题随墨色与底色自动反转。 */
 .selection-quote {

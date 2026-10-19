@@ -6,6 +6,7 @@ import type { ChatMessage } from "./chat-message";
 import { MarqueeText } from "./marquee-text";
 import type { StreamProjectionStore } from "./stream-projection";
 import { isGeneratingChatStatus, type ChatStatus } from "./web-chat-status";
+import { chatLayout, subscribeChatLayout } from "./chat-layout";
 import type { ReplyActivity, TimelineMessage } from "./message-timeline";
 
 export function DesktopAutoScroll({
@@ -95,8 +96,6 @@ export function DesktopAutoScroll({
   return null;
 }
 
-const NARROW_READING = "(max-width: 36rem)";
-
 // MediaQueryList 的 matches 是实时的；每个滚动帧重新 matchMedia 会重复解析查询，这里只建一次。
 const mediaLists = new Map<string, MediaQueryList>();
 function media(query: string): MediaQueryList {
@@ -122,7 +121,7 @@ function offsetToReadingTop(scroller: HTMLElement, element: HTMLElement): number
 
 // 跟随停在哪里：窄屏屏幕小，停在回答开头；宽屏停在本轮提问，问题与回答开头同屏。
 function currentAnswer(scroller: HTMLElement) {
-  const element = media(NARROW_READING).matches
+  const element = chatLayout().narrow
     ? Array.from(scroller.querySelectorAll<HTMLElement>(".reply-activity, .web-message-anchor.streaming")).at(-1)
     : latestTurnStart(scroller);
   const key = element?.dataset.replyHandle ?? element?.dataset.messageId ?? "";
@@ -226,7 +225,6 @@ export function NarrowReadingChrome() {
     const scroller = scrollRef.current;
     const main = scroller?.closest(".chat-main");
     if (!scroller || !main) return;
-    const narrow = media(NARROW_READING);
     let last = scroller.scrollTop;
     let touchedAt = Number.NEGATIVE_INFINITY;
     // 只认用户手势带来的滚动（含松手后的惯性）；贴底跟随、加载定位等程序滚动不收起标题栏。
@@ -235,7 +233,7 @@ export function NarrowReadingChrome() {
       const top = scroller.scrollTop;
       const delta = top - last;
       last = top;
-      if (!narrow.matches || top < 64) main.classList.remove("is-reading");
+      if (!chatLayout().narrow || top < 64) main.classList.remove("is-reading");
       else if (performance.now() - touchedAt > 1200) return;
       else if (delta > 8) main.classList.add("is-reading");
       else if (delta < -8) main.classList.remove("is-reading");
@@ -276,13 +274,14 @@ interface TurnSegment {
   anchor: HTMLElement;
 }
 
-// 提问目录只在右侧留白放得下刻度的宽屏指针设备上出现，与样式表的媒体查询同一条件。
-const TURN_RAIL_MEDIA = "(hover: hover) and (pointer: fine) and (min-width: 1200px)";
+// 提问目录只在右侧留白放得下刻度的宽屏指针设备上出现，与样式表同一条件（指针设备 + 聊天宽度至少 1200px）。
+const TURN_RAIL_POINTER = "(hover: hover) and (pointer: fine)";
 
 function subscribeTurnRailMedia(onChange: () => void): () => void {
-  const list = media(TURN_RAIL_MEDIA);
+  const list = media(TURN_RAIL_POINTER);
   list.addEventListener("change", onChange);
-  return () => list.removeEventListener("change", onChange);
+  const stopLayout = subscribeChatLayout(onChange);
+  return () => { list.removeEventListener("change", onChange); stopLayout(); };
 }
 
 // 当前已载入的每一轮提问，按文档顺序；预览取气泡文字的第一行。
@@ -322,7 +321,7 @@ export function TurnRail({ revision }: { revision: string }) {
   const [active, setActive] = useState("");
   const [open, setOpen] = useState(false);
   const closeTimer = useRef(0);
-  const wide = useSyncExternalStore(subscribeTurnRailMedia, () => media(TURN_RAIL_MEDIA).matches);
+  const wide = useSyncExternalStore(subscribeTurnRailMedia, () => media(TURN_RAIL_POINTER).matches && chatLayout().wide);
 
   // 必要 effect：消息变化后从 DOM 取提问列表，并随滚动同步当前所在的一轮；窄屏与触屏不挂监听
   useEffect(() => {
