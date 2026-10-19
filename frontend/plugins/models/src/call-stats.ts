@@ -1,5 +1,3 @@
-import type { ReplyActivity, TimelineMessage } from "./message-timeline.ts";
-
 export interface ModelCallStats {
   call_record_id: string;
   model: string;
@@ -14,12 +12,10 @@ export interface ModelCallStats {
   } | null;
 }
 
-export type LoadModelCallStats = (callId: string, signal: AbortSignal) => Promise<ModelCallStats>;
-
-/** 校验 Web 返回值；缺失用量与耗时不补成零。 */
-export function readModelCallStats(value: unknown, callId: string): ModelCallStats {
+/** 校验 call.latest 返回的调用统计；缺失用量与耗时不补成零。 */
+export function readModelCallStats(value: unknown): ModelCallStats {
   const raw = record(value);
-  if (!raw || raw.call_record_id !== callId || typeof raw.model !== "string" || !raw.model
+  if (!raw || typeof raw.call_record_id !== "string" || !raw.call_record_id || typeof raw.model !== "string" || !raw.model
     || !["started", "success", "error"].includes(String(raw.state))
     || !nullableTime(raw.first_token_ms) || !nullableTime(raw.duration_ms)
     || (typeof raw.first_token_ms === "number" && typeof raw.duration_ms === "number" && raw.duration_ms < raw.first_token_ms)) {
@@ -35,24 +31,6 @@ export function readModelCallStats(value: unknown, callId: string): ModelCallSta
     }
   }
   return raw as unknown as ModelCallStats;
-}
-
-/** 活动调用优先；空闲时显示最后一条模型输出，绝不混入另一会话。 */
-export function selectModelCall(messages: readonly TimelineMessage[], activities: readonly ReplyActivity[]) {
-  for (let index = activities.length - 1; index >= 0; index--) {
-    const item = activities[index];
-    if (item.active) return { callId: item.preview?.call_record_id ?? null, active: true };
-  }
-  for (let index = messages.length - 1; index >= 0; index--) {
-    const body = messages[index].body;
-    if (body.kind !== "output") continue;
-    for (const part of body.parts) {
-      if (!("display" in part) && part.kind === "model.facts" && "value" in part && typeof part.value !== "string") {
-        return { callId: part.value.call_record_id, active: false };
-      }
-    }
-  }
-  return { callId: null, active: false };
 }
 
 /** 结算后的摘要：仅完整真实用量参与速度计算；无流式首段时只显示总耗时。 */
@@ -76,12 +54,6 @@ function formatCallDuration(durationMs: number): string {
   const seconds = Math.round(durationMs / 1000);
   return `${Math.floor(seconds / 60)}m ${seconds % 60}s`;
 }
-
-export const loadWebModelCallStats: LoadModelCallStats = async (callId, signal) => {
-  const response = await fetch(`/api/chat/model-calls/${encodeURIComponent(callId)}`, { signal });
-  if (!response.ok) throw new Error("统计暂不可用");
-  return readModelCallStats(await response.json(), callId);
-};
 
 function record(value: unknown): Record<string, unknown> | null {
   return value !== null && typeof value === "object" && !Array.isArray(value) ? value as Record<string, unknown> : null;

@@ -3,11 +3,11 @@ from __future__ import annotations
 
 from collections.abc import Awaitable, Callable, Mapping
 from dataclasses import asdict, dataclass
-from typing import Protocol
+from typing import Protocol, cast
 from urllib.parse import quote
 
 from core.common.file_io import run_file_io
-from plugins.ledger.contract import MessageCatalog
+from plugins.ledger.contract import ContentPart, Control, Input, Message, MessageCatalog, Output
 from plugins.models.contract import (
     ChatModelSelection,
     ModelCallStats,
@@ -45,6 +45,10 @@ class ChatUiQueries:
             if payload:
                 raise PluginUiRpcInvalidRequest("模型列表查询不接受参数")
             return await self.chat_models(session_id)
+        if method == "call.latest":
+            if payload or not session_id:
+                raise PluginUiRpcInvalidRequest("最近调用查询需要会话且不接受参数")
+            return {"call": await run_file_io(lambda: self._latest_call(session_id))}
         if method == "call.stats":
             call_id = payload.get("call_id")
             if set(payload) != {"call_id"} or not isinstance(call_id, str) or not call_id:
@@ -76,10 +80,42 @@ class ChatUiQueries:
             "unavailableRuntimes": project_unavailable_chat_runtimes(snapshot),
         }
 
+    # 会话最近一次执行里最后一条带模型事实的回复对应的调用统计；本次没有、尾部找不到或记录已清理时为空。
+    def _latest_call(self, session_id: str) -> dict[str, object] | None:
+        reader = self.messages.reader(session_id)
+        with reader.read_snapshot():
+            page = reader.read_tail(limit=_LATEST_CALL_WINDOW)
+        for message in reversed(page.messages):
+            # 最近一次执行（新 Input 或 resume 起算）以失败、停止收尾或尚无模型产出时为空，不回退到更早的调用。
+            if isinstance(message.body, (Input, Control)):
+                return None
+            call_id = _model_call_id(message)
+            if call_id is None:
+                continue
+            try:
+                return asdict(self.call_stats(call_id))
+            except KeyError:
+                return None
+        return None
+
     def _metadata(self, session_id: str) -> Mapping[str, object]:
         reader = self.messages.reader(session_id)
         with reader.read_snapshot():
             return reader.metadata() or {}
+
+
+_LATEST_CALL_WINDOW = 50
+
+
+def _model_call_id(message: Message) -> str | None:
+    if not isinstance(message.body, Output):
+        return None
+    for part in message.body.parts:
+        raw: object = part.value if isinstance(part, ContentPart) and part.kind == "model.facts" else None
+        if isinstance(raw, Mapping):
+            call_id = cast(Mapping[str, object], raw).get("call_record_id")
+            return call_id if isinstance(call_id, str) and call_id else None
+    return None
 
 
 # 连接停用或驱动缺席的模型只读展示，不把本地可用误称远端认证成功。

@@ -91,6 +91,7 @@ const SLOT_NAMES = new Set<Exclude<PluginUiSlotName, "dashboard.main">>([
   "chat.notice",
   "header.end",
   "composer.toolbar",
+  "composer.status",
   "composer.suggest",
 ]);
 

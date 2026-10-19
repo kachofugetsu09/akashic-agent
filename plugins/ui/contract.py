@@ -114,6 +114,7 @@ PluginUiSlot = Literal[
     "chat.notice",
     "header.end",
     "composer.toolbar",
+    "composer.status",
     "composer.suggest",
 ]
 
@@ -127,6 +128,7 @@ PLUGIN_UI_SLOTS = frozenset(
         "chat.notice",
         "header.end",
         "composer.toolbar",
+        "composer.status",
         "composer.suggest",
     }
 )
