@@ -72,6 +72,8 @@ async def run(state: Path, port: int) -> None:
     )
     # Computer 需要独立 Workload Controller；本基准只测 Web 启动与历史阅读。
     set_plugin_choice(workspace, "computer", enabled=False)
+    # web-auth 的入口门禁与登录页不属于启动性能输入；卸载后恢复无门状态。
+    set_plugin_choice(workspace, "web-auth", enabled=False)
     log = MessageLog(workspace / "sessions.db")
     try:
         log.ensure_session("akashic:startup-benchmark", SessionAttributes(learning="excluded"))

@@ -122,8 +122,27 @@ class BrowserCatalogSession implements WebHostSession {
   }
 
   async activateModules(): Promise<void> {
-    for (const module of activationOrder(this.bootstrap.modules)) {
-      await this.activateModule(module);
+    const ordered = activationOrder(this.bootstrap.modules);
+    // 模块字节的完整性校验先行、import 并行预取：下载与编译在浏览器后台线程重叠，
+    // activate 调用仍按挂载依赖顺序串行。校验失败的模块不进 import，单模块失败不影响其余。
+    const preimported = new Map<string, Promise<WebModuleExports>>();
+    for (const module of ordered) {
+      try {
+        verifyModuleAssets(module);
+      } catch (reason) {
+        const error = asError(reason);
+        console.error(`[web-host] failed to activate ${module.pluginId}`, error);
+        this.errors.set(module.pluginId, error);
+        continue;
+      }
+      const imported = importModule(module.module);
+      // 拒绝在轮到该模块 activate 前可能先落地；统一由 activateModule 的 catch 记账。
+      imported.catch(() => undefined);
+      preimported.set(module.pluginId, imported);
+    }
+    for (const module of ordered) {
+      const imported = preimported.get(module.pluginId);
+      if (imported) await this.activateModule(module, imported);
     }
     this.flushInjections();
     this.rejectUnresolvedInjections();
@@ -179,7 +198,7 @@ class BrowserCatalogSession implements WebHostSession {
     this.closing = false;
   }
 
-  private async activateModule(module: WebModulePayload): Promise<void> {
+  private async activateModule(module: WebModulePayload, imported: Promise<WebModuleExports>): Promise<void> {
     const activation: ModuleActivation = {
       module,
       effects: [],
@@ -188,11 +207,11 @@ class BrowserCatalogSession implements WebHostSession {
     };
     this.activations.push(activation);
     try {
-      verifyModuleAssets(module);
+      // 字节已在 activateModules 里统一校验过；这里不重复。
       if (module.stylesheetSha256 !== null) {
         activation.effects.push(installStyle(module));
       }
-      const exports = await importModule(module.module);
+      const exports = await imported;
       if (typeof exports.activate !== "function") {
         throw new Error("web module does not export activate(ctx)");
       }

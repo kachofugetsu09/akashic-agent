@@ -95,7 +95,10 @@ export default defineConfig({
       external: ["react", "react/jsx-runtime", "react-dom", "react-dom/client", "@akashic/web-ui-v1", "@akashic/chat-ui-v1"],
       output: {
         entryFileNames: "[name].js",
-        chunkFileNames: "chat-app-[name]-[hash].js",
+        // 入口唯一的静态依赖分块（mount.tsx 本体）用稳定文件名：外壳 index.html 直接 modulepreload 它
+        // （浏览器的 modulepreload 不抓依赖分块，带哈希的名字外壳无从得知）。缓存合同与入口/样式一致
+        // （ETag 校验，见 plugins/akashic_clients/static.py 的 _STABLE_ENTRY）。懒加载分块仍带内容哈希。
+        chunkFileNames: (chunk) => chunk.name === "mount" ? "chat-app-mount.js" : "chat-app-[name]-[hash].js",
         // 合并出的样式在 Vite 里叫 style.css；按 ?url 引用的样式（如 katex）保留带哈希的文件名，由使用处自己加载。
         assetFileNames: (asset) => asset.names.includes("style.css") ? "chat-app.css" : "[name]-[hash][extname]",
       },

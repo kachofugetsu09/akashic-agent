@@ -18,6 +18,15 @@
     }
   }
   </script>
+  <!-- 聊天挂载图提前到首波下载：静态 modulepreload 让浏览器解析 head 时就发出请求，与 bootstrap
+       并行；modulepreload 不抓依赖分块，所以入口 facade 与它的静态分块都要列出（分块稳定文件名
+       由 frontend/chat/vite.config.ts 拥有）。不用提前 import 执行：聊天模块依赖
+       window.__akashicRuntime（SDK 垫片顶层解引用），在外壳运行时发布前执行会失败并被模块图缓存住。
+       三个 URL 都是稳定名，缓存合同为 ETag 校验（plugins/akashic_clients/static.py），
+       暖启动只付一次 304。样式只暖缓存不应用，挂载入口 ensureStylesheet 按 href 去重。 -->
+  <link rel="modulepreload" href="/assets/chat-app.js">
+  <link rel="modulepreload" href="/assets/chat-app-mount.js">
+  <link rel="preload" as="style" href="/assets/chat-app.css">
 </head>
 <body>
   <div id="root"></div>

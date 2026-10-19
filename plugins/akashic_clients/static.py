@@ -8,8 +8,8 @@ from core.common.file_io import run_file_io
 
 # Vite 产物文件名内嵌内容哈希，命中后才允许永久缓存。
 _HASHED_ASSET = re.compile(r"/assets/[^/]*-[\w-]{8}\.[\w]+$")
-# 聊天挂载入口与样式用稳定 URL 引用，内容随版本变化；可以缓存，但每次按 ETag 校验。
-_STABLE_ENTRY = re.compile(r"^/assets/chat-app\.(?:js|css)$")
+# 聊天挂载入口、其唯一静态依赖分块与样式用稳定 URL 引用，内容随版本变化；可以缓存，但每次按 ETag 校验。
+_STABLE_ENTRY = re.compile(r"^/assets/chat-app(?:-mount)?\.(?:js|css)$")
 
 
 def _cache_control_for(path: str) -> str:
