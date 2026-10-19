@@ -97,7 +97,7 @@ async def run(root: Path):
         check(response.json() == {"pins": [], "sessions": []}, "empty preferences do not create an owner record")
         check(store.list() == (), "read-only empty GET writes no record")
         check(response.headers["cache-control"] == "no-store", "pins are not cached")
-        for key in keys[2:]:
+        for key in keys[6:]:
             check((await update("session", key)).status_code in (400, 422), "reject ineligible session " + key)
         for invalid in ["default", "fake", "p_" + "3" * 32, archived_id]:
             check((await update("project", invalid)).status_code in (400, 422), "reject invalid/unavailable project " + invalid)
@@ -123,6 +123,11 @@ async def run(root: Path):
         check(navigation.read() == previous, "cancel during project validation writes no preference")
         check((await update("project", project_id)).status_code == 200, "pin real project")
         check((await update("session", keys[1])).status_code == 200, "unscoped session is eligible")
+        # 分组内的会话也能置顶，前端把它排在所在文件夹的最前面。
+        check((await update("session", keys[3])).status_code == 200, "project session is eligible")
+        scoped = (await client.get("/api/chat/navigation/pins")).json()["sessions"]
+        check(any(row["key"] == keys[3] and row["scope"] == {"project": project_id} for row in scoped), "scoped pin resolves with its scope")
+        check((await update("session", keys[3], pinned=False)).status_code == 200, "project session unpins")
         expected = [{"kind": "session", "id": keys[0]}, {"kind": "project", "id": project_id}, {"kind": "session", "id": keys[1]}]
         version = store.read("navigation:pins").version
         check((await update("session", keys[0])).json()["pins"] == expected, "retry preserves mixed stable order")

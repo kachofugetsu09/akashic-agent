@@ -80,8 +80,8 @@ def session_pin_row(catalog: MessageCatalogPort, session_id: str) -> dict[str, o
     except KeyError:
         return None
     attributes = reader.attributes
-    # 带会话维度（如项目）的会话归在该维度的分组下，不单独置顶。
-    if reader.deleted or attributes.visibility != "listed" or attributes.scope:
+    # 带会话维度（如项目）的会话也可置顶：前端把它排在所在分组内，scope 随行返回。
+    if reader.deleted or attributes.visibility != "listed":
         return None
     first = first_page.messages[0] if first_page.messages else None
     text = "" if first is None or isinstance(first.body, Control) else "\n".join(

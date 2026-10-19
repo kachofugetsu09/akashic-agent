@@ -337,7 +337,7 @@ def create_chat_app(
             if request.pinned and reference not in navigation.read():
                 if reference.kind == "session":
                     if session_pin_row(catalog, reference.id) is None:
-                        raise HTTPException(status_code=400, detail="只能置顶不属于任何分组的可见会话")
+                        raise HTTPException(status_code=400, detail="只能置顶可见的会话")
                 else:
                     await _check_scope_pin(check_scope, reference.kind, reference.id)
             navigation.update(reference, pinned=request.pinned)

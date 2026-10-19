@@ -1,4 +1,4 @@
-import { ChevronRight, PenLine, Trash2 } from "lucide-react";
+import { ChevronRight, PenLine, Pin, Trash2 } from "lucide-react";
 import { Fragment, useEffect, useRef, useState, type ReactNode } from "react";
 import "./conversation-navigation.css";
 import { SessionStatusMark, type SessionStatus } from "./session-status-mark";
@@ -25,6 +25,8 @@ export interface ConversationSession {
   active: boolean;
   status?: SessionStatus;
   unavailable?: boolean;
+  /** 在所在分组内置顶：行尾一枚小图钉，悬停时让位给行菜单。 */
+  pinned?: boolean;
 }
 
 export interface ConversationAction {
@@ -344,6 +346,7 @@ export function ConversationSessionRow({ session, pendingSessionId, onActivate, 
         </span>
         <small><MarqueeText still>{session.preview}</MarqueeText></small>
       </span>
+      {session.pinned ? <Pin size={13} className="conversation-session__pin" aria-label="已置顶" /> : null}
     </button>;
 
   return <NavigationRowMenu title={session.title} actions={rowActions}
