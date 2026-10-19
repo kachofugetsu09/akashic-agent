@@ -19,8 +19,8 @@ Web 外壳（`frontend/dashboard`，Host SDK `@akashic/web-ui-v1`）用递归挂
 | 全局样式与启动壳 | `frontend/dashboard` | `frontend/chat/index.html`、`styles.css` |
 | 插件组合 | 递归挂载 | 插槽，按插槽给出有类型的事实（#1508） |
 
-conversation_ui 的 `web_module.js`（约 1200 行）负责两边之间的桥。它使用 12 种 postMessage
-（主题、页面重新可见、会话与覆盖层状态、工作台标签与意图、底栏动作、引用到输入框），以及 2 个 localStorage 键。
+conversation_ui 的 `web_module.js`（约 1200 行）负责两边之间的桥，共 11 种 postMessage：主题、页面重新可见、
+会话与覆盖层状态、工作台标签与意图（含结果回传）、底栏动作（含激活回传）、引用到输入框。
 
 `web-ui-plugin-composition.md` §13.3 已经写明：iframe 不作为长期默认的插件隔离，只当迁移适配层。
 
