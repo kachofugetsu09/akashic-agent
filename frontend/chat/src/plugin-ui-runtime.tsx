@@ -39,6 +39,7 @@ const definitions = new Map<string, {
 }>();
 const styleNodes = new Map<string, HTMLLinkElement>();
 const listeners = new Set<() => void>();
+const shownListeners = new Set<() => void>();
 interface PendingQuery {
   pluginId: string;
   method: string;
@@ -485,6 +486,23 @@ export function receivePluginUiResult(response: PluginUiResult) {
 
 type InlineSlotName = PluginUiMountSlotName;
 
+// 页面重新可见的三种来源合成一个信号：标签切回、窗口获得焦点、外层页面重新显示本页框架。
+function notifyShown(): void {
+  for (const listener of [...shownListeners]) {
+    try { listener(); }
+    catch (error) { console.error("[plugin-ui] shown callback failed", error); }
+  }
+}
+
+if (typeof window !== "undefined") {
+  window.addEventListener("focus", notifyShown);
+  document.addEventListener("visibilitychange", () => { if (document.visibilityState === "visible") notifyShown(); });
+  window.addEventListener("message", (event: MessageEvent<unknown>) => {
+    const data = event.data as { type?: unknown } | null;
+    if (event.origin === window.location.origin && event.source === window.parent && data?.type === "akashic.frame.shown") notifyShown();
+  });
+}
+
 // 宿主内部组装挂载上下文用的松散形状；各挂载点必须给出的事实由 PluginUiSlot 的属性类型保证。
 type HostMountContext = PluginUiHostContext & {
   slot: InlineSlotName | "navigation.groups";
@@ -671,6 +689,7 @@ function MountedPlugin({
     let cleanup: void | (() => void);
     let live = true;
     const stopPushes = new Set<() => void>();
+    const shown = new Set<() => void>();
     const composer = slot === "composer.toolbar" ? composerControls() : null;
     const scopeFields = slot === "scope.fields" && fields ? fields.controls() : null;
     setError(null);
@@ -688,6 +707,12 @@ function MountedPlugin({
           return () => { invalidators.delete(callback); };
         },
         reportError: (message) => { if (live) setError(message); },
+        onShown: (callback) => {
+          const listener = () => { if (live) callback(); };
+          shown.add(listener);
+          shownListeners.add(listener);
+          return () => { shown.delete(listener); shownListeners.delete(listener); };
+        },
         subscribe: (callback) => {
           const stop = subscribePush(pluginId, pluginRevision, sessionId, (value) => { if (live) callback(value); });
           stopPushes.add(stop);
@@ -719,6 +744,7 @@ function MountedPlugin({
     return () => {
       live = false;
       stopPushes.forEach((stop) => stop());
+      shown.forEach((listener) => shownListeners.delete(listener));
       stopIntents();
       invalidators.clear();
       invalidatorsRef.current = null;

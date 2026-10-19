@@ -52,14 +52,12 @@ function SessionDirectory({ context }: { context: PluginUiContext }) {
     const onVisible = () => { void refresh(); };
     const timer = window.setInterval(onVisible, 15000);
     const unsubscribe = context.onInvalidate(onVisible);
-    window.addEventListener("focus", onVisible);
-    document.addEventListener("visibilitychange", onVisible);
+    const stopShown = context.onShown(onVisible);
     return () => {
       latest = -1;
       unsubscribe();
+      stopShown();
       window.clearInterval(timer);
-      window.removeEventListener("focus", onVisible);
-      document.removeEventListener("visibilitychange", onVisible);
     };
   }, [context, retry]);
   // 目录未设置属于常态，不占位置；已设置或出现异常才显示标记。

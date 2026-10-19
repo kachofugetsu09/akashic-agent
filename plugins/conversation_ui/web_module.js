@@ -6,10 +6,10 @@ const MIN_PANEL_WIDTH = 360;
 const MIN_CHAT_WIDTH = 420;
 
 function syncFrameTheme(frame) {
-  // iframe 隐藏后再返回时核对能力，不重建 iframe 或清空编辑器。
+  // iframe 隐藏后再返回时告诉聊天页"重新显示了"，由聊天宿主通知各插件重读；不重建 iframe 或清空编辑器。
   const observer = new IntersectionObserver((entries) => {
     if (entries.some((entry) => entry.isIntersecting)) frame.contentWindow?.postMessage(
-      { type: "akashic.models.changed" }, window.location.origin,
+      { type: "akashic.frame.shown" }, window.location.origin,
     );
   });
   observer.observe(frame);

@@ -128,22 +128,13 @@ function useCapsuleSubscriptions(context: PluginUiContext<"composer.toolbar">, c
   const [busy, setBusy] = useState(() => composer.busy());
   useEffect(() => {
     void load();
-    const visible = () => { if (document.visibilityState === "visible") void load(); };
-    const changed = (event: MessageEvent<unknown>) => {
-      const data = event.data as { type?: unknown } | null;
-      if (event.origin === window.location.origin && event.source === window.parent && data?.type === "akashic.models.changed") void load();
-    };
+    const stopShown = context.onShown(() => void load());
     const stopInvalidate = context.onInvalidate(() => setBusy(composer.busy()));
     const stopSent = composer.onSent(sent);
-    window.addEventListener("focus", visible);
-    document.addEventListener("visibilitychange", visible);
-    window.addEventListener("message", changed);
     return () => {
+      stopShown();
       stopInvalidate();
       stopSent();
-      window.removeEventListener("focus", visible);
-      document.removeEventListener("visibilitychange", visible);
-      window.removeEventListener("message", changed);
     };
   }, [composer, context, load, sent]);
   return busy;

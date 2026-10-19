@@ -30,6 +30,11 @@ export interface PluginUiHostContext {
   onInvalidate(callback: () => void): () => void;
   /** 异步展示失败时交还宿主降级内容；不改变消息。 */
   reportError(message: string): void;
+  /**
+   * 页面重新可见时回调：切回标签页、窗口重新获得焦点、外层页面重新显示聊天。
+   * 插件据此重读可能在别处改过的数据，不必自己监听窗口事件。返回取消订阅。
+   */
+  onShown(callback: () => void): () => void;
   capabilities: {
     queryCacheModes?: readonly ("none" | "memory" | "immutable")[];
   };
