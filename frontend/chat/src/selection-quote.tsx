@@ -1,6 +1,7 @@
 import { Quote } from "lucide-react";
 import { useEffect, useState } from "react";
 import { createPortal } from "react-dom";
+import { chatPortalRoot } from "./chat-layout";
 
 const POINTER_FINE = "(hover: hover) and (pointer: fine)";
 const MESSAGE = ".web-message-anchor";
@@ -59,7 +60,7 @@ export function SelectionQuote({ onQuote }: { onQuote: (markdown: string) => voi
     }}>
     <Quote size={14} aria-hidden="true" />
     <span>引用</span>
-  </button>, document.body);
+  </button>, chatPortalRoot());
 }
 
 type Endpoints = Pick<StaticRange, "startContainer" | "startOffset" | "endContainer" | "endOffset">;

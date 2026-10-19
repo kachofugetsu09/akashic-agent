@@ -13,14 +13,13 @@
   grid-template-columns: minmax(26rem, 1fr) 1px minmax(22.5rem, var(--conversation-tools-width));
 }
 
-.conversation-page-frame {
+.conversation-page-chat {
   grid-column: 1;
   grid-row: 1;
-  display: block;
+  position: relative;
   min-width: 0;
-  width: 100%;
   height: 100%;
-  border: 0;
+  overflow: hidden;
   background: var(--ak-paper-canvas);
 }
 
@@ -35,12 +34,12 @@
   background: var(--ak-paper-sheet);
 }
 
-/* 铺满：对话列收起但保留 iframe，不重载、不丢草稿 */
+/* 铺满：对话列收起但保留挂载，不丢草稿与滚动位置 */
 .conversation-page.tools-maximized {
   grid-template-columns: 0 0 minmax(0, 1fr);
 }
 
-.conversation-page.tools-maximized .conversation-page-frame,
+.conversation-page.tools-maximized .conversation-page-chat,
 .conversation-page.tools-maximized .conversation-tools-splitter {
   visibility: hidden;
 }

@@ -16,6 +16,8 @@ import { isGeneratingChatStatus, type ChatStatus } from "./web-chat-status";
 import { useComposerSuggest } from "./composer-suggest";
 import { setComposerBusy } from "./composer-contributions";
 import { PluginUiSlot } from "./plugin-ui-runtime";
+import { keyForChat } from "./chat-host";
+import { chatPortalRoot } from "./chat-layout";
 
 export type ComposerFile = { filename?: string; mediaType?: string; url?: string; sizeBytes?: number };
 
@@ -427,7 +429,7 @@ function useTypeToCompose(textareaRef: { current: HTMLTextAreaElement | null }, 
     if (!enabled || !window.matchMedia("(hover: hover) and (pointer: fine)").matches) return;
     const onKeyDown = (event: KeyboardEvent) => {
       // 1. 只接普通可见字符；组合键、输入法组合中与已被处理的按键都不碰。
-      if (event.defaultPrevented || event.isComposing || event.ctrlKey || event.metaKey || event.altKey) return;
+      if (event.defaultPrevented || event.isComposing || event.ctrlKey || event.metaKey || event.altKey || !keyForChat(event)) return;
       if (event.key.length !== 1 || event.key === " ") return;
       // 2. 焦点已在可编辑处，或有对话框/菜单/浮层打开时，按键属于它们。
       const active = document.activeElement;
@@ -569,7 +571,7 @@ function ComposerDropScrim() {
       <span className="composer-drop-scrim__icons"><ImageIcon /><FileText /><FolderOpen /></span>
       松开以添加文件
     </div>
-  </div>, document.body);
+  </div>, chatPortalRoot());
 }
 
 // 文件拖进窗口任意位置都由输入区接住：卡片显示"松开以添加文件"，松开即入列（与粘贴、选择器同一条 add 路径）。

@@ -4,6 +4,7 @@ import { Dialog, DialogContent, DialogTitle } from "./components/ui/dialog";
 import { DesktopSidebar, type DesktopSidebarProps } from "./desktop-sidebar";
 import { GroupFormDialog, type GroupFormRequest } from "./navigation-groups";
 import { reportShellOverlay } from "./shell-rail-actions";
+import { keyForChat } from "./chat-host";
 import { chatLayout, subscribeChatLayout } from "./chat-layout";
 
 // 与 styles.css 紧凑外壳媒体块同一条件：不再满足时常驻侧栏回来，抽屉没有存在的理由。
@@ -29,7 +30,7 @@ export function CompactNavigation(props: DesktopSidebarProps) {
   // 必要 effect：常驻侧栏被隐藏时 Ctrl/⌘+K 没有可见的搜索框，改为打开抽屉并聚焦其中的搜索（平板竖屏接键盘）。
   useEffect(() => {
     const onKeyDown = (event: KeyboardEvent) => {
-      if (!chatLayout().compact || !(event.metaKey || event.ctrlKey) || event.altKey || event.shiftKey || event.isComposing) return;
+      if (!keyForChat(event) || !chatLayout().compact || !(event.metaKey || event.ctrlKey) || event.altKey || event.shiftKey || event.isComposing) return;
       if (event.key.toLowerCase() !== "k") return;
       if (document.querySelector("[role='dialog'], [role='menu'], [role='listbox'], [data-radix-popper-content-wrapper]")) return;
       event.preventDefault();

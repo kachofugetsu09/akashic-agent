@@ -1,7 +1,7 @@
 import { Suspense } from "react";
 import { createRoot } from "react-dom/client";
 import { TooltipProvider } from "@/components/ui/tooltip";
-import type { ChatHandle } from "./chat-host";
+import { setKeyScope, type ChatHandle } from "./chat-host";
 import { observeChatLayout } from "./chat-layout";
 import { exposeChatRuntime } from "./chat-ui-runtime";
 import { DesktopChatApp } from "./desktop-chat-app";
@@ -14,6 +14,7 @@ import { WebUiErrorBoundary } from "./webui-error-boundary";
 export function renderChat(container: HTMLElement, frame: HTMLElement, embeddedShell: boolean): { handle: ChatHandle; unmount(): void } {
   exposeChatRuntime();
   const stopLayout = observeChatLayout(frame);
+  const stopKeys = setKeyScope(frame === document.documentElement ? null : frame);
   const root = createRoot(container);
   root.render(
     <WebUiErrorBoundary>
@@ -36,5 +37,5 @@ export function renderChat(container: HTMLElement, frame: HTMLElement, embeddedS
     },
     shown: notifyShown,
   };
-  return { handle, unmount: () => { root.unmount(); stopLayout(); } };
+  return { handle, unmount: () => { root.unmount(); stopLayout(); stopKeys(); } };
 }

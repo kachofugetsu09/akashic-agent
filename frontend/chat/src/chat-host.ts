@@ -19,9 +19,22 @@ export interface ChatHandle {
 }
 
 let link: ChatHostLink | null = null;
+let keyScope: HTMLElement | null = null;
 
 export function hostLink(): ChatHostLink | null {
   return link;
+}
+
+// 同文档挂载时页面上还有工作台等区域：document 级快捷键只接焦点在聊天里、或页面没有焦点时的按键。
+export function keyForChat(event: KeyboardEvent): boolean {
+  const target = event.target;
+  return keyScope === null || !(target instanceof Node) || target === document.body || keyScope.contains(target);
+}
+
+// 独立页面与 iframe 里整页都是聊天，不设范围。
+export function setKeyScope(scope: HTMLElement | null): () => void {
+  keyScope = scope;
+  return () => { if (keyScope === scope) keyScope = null; };
 }
 
 // 同一文档只有一个聊天；后连上的宿主取代前一个，断开时只撤自己。
