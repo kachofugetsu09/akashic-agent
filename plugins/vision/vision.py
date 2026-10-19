@@ -13,7 +13,7 @@ from plugins.host_execution.contract import FILES, FileError, FileImage
 from plugins.ledger.contract import ContentPart, json_value
 from plugins.models.contract import CHAT_MODELS, ModelError, ModelRequest
 
-from plugins.working_directory.contract import WorkingDirectories
+from plugins.working_directory.contract import WORKING_DIRECTORY
 
 from ._tool_boundary import TOOLS, CallSource, ToolResultValue
 
@@ -27,18 +27,20 @@ class VisionInput(BaseModel):
 class VisionTool:
     idempotent = False
 
-    def __init__(self, ctx: Context, directories: WorkingDirectories):
+    def __init__(self, ctx: Context):
         self._ctx = ctx
-        self._directories = directories
 
     async def prepare(self, arguments: Mapping[str, object], source: CallSource | None = None) -> Mapping[str, object] | str:
-        """在输入边界检查参数，路径交给现有目录 owner 解析。"""
+        """在输入边界检查参数；有工作目录插件时按会话目录解析，否则交给 Files 按 workspace 解析。"""
         try:
             values = VisionInput.model_validate(json_value(arguments))
             session = None if source is None else source.messages[-1].session_id
-            path, _ = await self._directories.resolve_target(
-                session, values.path, legacy_base=str(self._ctx.runtime.workspace),
-            )
+            with self._ctx.borrow(WORKING_DIRECTORY) as directories:
+                if directories is None:
+                    return {"path": values.path, "prompt": values.prompt}
+                path, _ = await directories.resolve_target(
+                    session, values.path, legacy_base=str(self._ctx.runtime.workspace),
+                )
             return {"path": path, "prompt": values.prompt}
         except (ValidationError, ValueError) as error:
             return str(error)
@@ -81,10 +83,10 @@ class VisionTool:
         return None
 
 
-async def register_vision(ctx: Context, directories: WorkingDirectories) -> None:
+async def register_vision(ctx: Context) -> None:
     @asynccontextmanager
     async def open_tool(_state: Mapping[str, object]) -> AsyncIterator[VisionTool]:
-        yield VisionTool(ctx, directories)
+        yield VisionTool(ctx)
 
     await ctx.require(TOOLS).register(
         ctx, name="read_image_vision",

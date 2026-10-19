@@ -141,10 +141,11 @@ class _Cleanup:
         self._drain = drain
         self._started = False
 
-    # 清理没能启动时释放入口固定的 owner 许可，避免 owner 永远等不到排空。
+    # 清理没能启动时释放入口固定的 owner 许可，避免 owner 永远等不到排空；已启动时由 __call__ 负责。
     def discard(self) -> None:
         if not self._started:
-            for held in self._owners:
+            owners, self._owners = self._owners, []
+            for held in owners:
                 held.discard()
 
     async def __call__(self, _task: Task | None) -> None:
@@ -212,6 +213,8 @@ async def _settle(tasks: TaskAdmission, run: _Cleanup, reader: MessageReader,
             raise
         if permit is not None:
             owned.on_done(permit.release)
+        # 接纳后、首次执行前就被取消时 __call__ 不会运行，由终态回调释放入口固定的 owner 许可。
+        owned.on_done(run.discard)
         return owned
 
     owned = await tasks.admit(("tool-cleanup", reader.session_id, source, from_seq, plan.end), admit)
