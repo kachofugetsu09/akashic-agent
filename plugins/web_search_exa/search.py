@@ -5,7 +5,7 @@ from collections.abc import Awaitable, Callable, Iterator
 from typing import Any, Literal, cast
 
 import httpx
-from pydantic import BaseModel, ConfigDict, Field, HttpUrl
+from pydantic import BaseModel, ConfigDict, Field, HttpUrl, field_validator
 
 from agent.plugin_composition import CredentialRef
 from plugins.standard_web.contract import SearchRequest
@@ -23,6 +23,14 @@ class ExaConfig(BaseModel):
     search_type: Literal["auto", "fast", "deep"] = "auto"
     livecrawl: Literal["fallback", "preferred"] = "fallback"
     timeout_seconds: float = Field(default=25.0, gt=0, le=120, allow_inf_nan=False)
+
+    # key 只能存为凭据；端点里带账号或查询参数会把秘密写进普通配置。
+    @field_validator("endpoint")
+    @classmethod
+    def check_endpoint(cls, value: HttpUrl) -> HttpUrl:
+        if value.username or value.password or value.query or value.fragment:
+            raise ValueError("endpoint 必须是不含账号、查询参数的 HTTP(S) 地址；API key 请填在 API key 字段")
+        return value
 
 
 class ExaSearch:

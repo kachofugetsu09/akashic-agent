@@ -9,7 +9,8 @@ export interface Status {
   values: Record<string, unknown>; targets?: {channel: string; recipient: string; session_id: string; label: string}[];
 }
 export interface FormProps { values: Record<string, unknown>; change: (key: string, value: unknown) => void; status: Status; }
-export interface FormDefinition { id: string; title: string; description: string; family?: string; familyLabel?: string; fields?: (props: FormProps) => ReactNode; }
+// switchable=false：启用由插件行决定，表单不再放第二个开关，字段始终可编辑。
+export interface FormDefinition { id: string; title: string; description: string; family?: string; familyLabel?: string; switchable?: boolean; fields?: (props: FormProps) => ReactNode; }
 // intent="enable"：嵌入方已替用户决定开启（如引导的能力卡），表单预选开启并收起开关。
 export interface EmbedProps { embedded?: boolean; changed?: () => void; dirty?: (value: boolean) => void; intent?: "enable"; mode?: "summary"; }
 
@@ -278,7 +279,7 @@ function Configuration({ctx, definition, embed}: {ctx: WebHostContextV1; definit
       {/* 引导（intent="enable"）自己说明阻塞原因；设置详情页照常显示原因与禁用的开关。 */}
       {status.reason && !(embed.intent === "enable" && status.blocked) && <p className="config-hint" role="status">{status.reason}</p>}
       {!(embed.intent === "enable" && status.blocked) && <>
-        {!(embed.intent === "enable" && status.can_enable !== false) && <label className="config-toggle">
+        {definition.switchable !== false && !(embed.intent === "enable" && status.can_enable !== false) && <label className="config-toggle">
           <span><strong>启用{/^[A-Za-z0-9]/.test(definition.title) ? " " : ""}{definition.title}</strong><small>{status.can_enable === false ? "前置条件满足后才能开启" : "关闭后停用，已有数据保留"}</small></span>
           <input type="checkbox" role="switch" checked={enabled === true} disabled={busy || (enabled !== true && status.can_enable === false)}
             onChange={event => { edits.current += 1; setEnabled(event.target.checked); markDirty(true); setPreset(false); }} />
