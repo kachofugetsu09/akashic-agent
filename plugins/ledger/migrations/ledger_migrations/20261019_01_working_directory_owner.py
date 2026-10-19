@@ -15,7 +15,19 @@ _PREDECESSOR = "plugin:standard_tools"
 _SUCCESSOR = "plugin:working_directory"
 
 
-# 1. 只改 plugin:standard_tools 与其市场后缀；2. 新 owner 已有同键记录时保留新的，旧记录删除。
+# 只认 plugin:standard_tools 本身与 "@市场" 后缀；用 substr 精确比较，插件名里的 "_" 不能当 LIKE 通配符。
+_ARGUMENTS = (_PREDECESSOR, len(_PREDECESSOR) + 1, _PREDECESSOR + "@")
+
+
+def _match(column: str) -> str:
+    return f"({column} = ? OR substr({column}, 1, ?) = ?)"
+
+
+def _renamed(column: str) -> str:
+    return f"? || substr({column}, {len(_PREDECESSOR) + 1})"
+
+
+# 1. 只改前任 owner；2. 新 owner 已有同键记录时，内容相同才去重，不同就失败并回滚，两边都保留。
 def upgrade(connection: sqlite3.Connection) -> None:
     path = current_migration_context().workspace / "sessions.db"
     if not path.exists():
@@ -24,14 +36,20 @@ def upgrade(connection: sqlite3.Connection) -> None:
         if messages.execute("SELECT 1 FROM sqlite_master WHERE name='owner_records'").fetchone() is None:
             return
         with measure("migration.working_directory_owner"):
-            match = "owner = ? OR owner LIKE ?"
-            arguments = (_PREDECESSOR, _PREDECESSOR + "@%")
-            successor = f"? || substr(owner, {len(_PREDECESSOR) + 1})"
-            messages.execute(
-                f"UPDATE OR IGNORE owner_records SET owner = {successor} WHERE {match}",
-                (_SUCCESSOR, *arguments),
+            conflicts = messages.execute(
+                f"""SELECT old.owner, old.key FROM owner_records AS old
+                    JOIN owner_records AS new ON new.owner = {_renamed("old.owner")} AND new.key = old.key
+                    WHERE {_match("old.owner")}
+                      AND (new.version IS NOT old.version OR new.value IS NOT old.value)""",
+                (_SUCCESSOR, *_ARGUMENTS),
+            ).fetchall()
+            if conflicts:
+                raise RuntimeError(f"working_directory 已有不同内容的同键记录，拒绝覆盖: {conflicts}")
+            _ = messages.execute(
+                f"UPDATE OR IGNORE owner_records SET owner = {_renamed('owner')} WHERE {_match('owner')}",
+                (_SUCCESSOR, *_ARGUMENTS),
             )
-            messages.execute(f"DELETE FROM owner_records WHERE {match}", arguments)
+            _ = messages.execute(f"DELETE FROM owner_records WHERE {_match('owner')}", _ARGUMENTS)
 
 
 steps = [step(upgrade, None)]
