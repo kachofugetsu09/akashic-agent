@@ -113,7 +113,7 @@ Output 仍为 continue 并计入原步数上限，所以取消、重启或新输
 | Programmatic | 作为普通 Source 进入 reply，复用同一 presentation | 不新建独立工具池或来源特判 |
 
 conversation 的 always-on provider 是 `standard_tools`、`standard_web`、`tool_search` 和
-`message_push`；`tool_search` 提供 `load_tools`。`standard_tools` 拥有文件、编辑、shell、`write_stdin` 与 `load_skill`；
+`message_push`；`tool_search` 提供 `load_tools`。`standard_tools` 拥有文件、编辑、shell 与 `write_stdin`；`skills` 拥有 `load_skill`、技能目录与 `prompt_sources.skills`（2026-10 按业务含义从 standard_tools 拆回，context 自带迁移把旧授权改给 `skills`）；`vision` 拥有 `read_image_vision`；
 `standard_web` 拥有 `web_fetch/web_search` 的参数形状与提供方选择，实际请求由 `web_search_exa`、`web_fetch_http` 等提供方插件经 `WEB_PROVIDERS` 登记完成；未配置时恰好一个提供方才自动选用，多个时要求在 `standard_web` 配置 `search_provider`/`fetch_provider`。`agent_restart` 是 `message_push` 在 supervised
 runtime 且完整送达依赖就绪时挂载的可选 child，因此沿用 `message_push` provider 组，不建立
 第二个插件 ID。Akasha 和外部公开 provider 默认只在按插件加载的结果中展示。

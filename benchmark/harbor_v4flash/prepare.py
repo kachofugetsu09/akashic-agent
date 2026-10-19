@@ -22,7 +22,7 @@ def prepare(workspace: Path) -> None:
     save_config(data / "gateway-builtin", {"enabled": True, "listen": ""})
     save_config(data / "context-builtin", {
         "prompt_sources": {"default_prompt": "prompt", "markdown_memory": "markdown_memory",
-                           "skills": "standard_tools"},
+                           "skills": "skills"},
         "summary_source": ["compaction", "compaction"],
     })
 

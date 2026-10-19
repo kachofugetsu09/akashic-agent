@@ -486,7 +486,7 @@ def _write_bootstrap_config(
     save_config(context_data, {
         "prompt_sources": {"default_prompt": f"prompt@{marketplace}",
                            "markdown_memory": f"markdown_memory@{marketplace}",
-                           "skills": f"standard_tools@{marketplace}"},
+                           "skills": f"skills@{marketplace}"},
         "summary_source": ["compaction", f"compaction@{marketplace}"],
     })
     save_config(workspace / "plugin-data" / f"akashic_clients-{marketplace}", {

@@ -50,7 +50,7 @@ async def runtime(directory: Path, *, max_steps: int, endpoint: str, model: str,
     save_config(data / "gateway-builtin", {"enabled": True, "listen": str(socket_dir / "rpc.sock")})
     save_config(data / "context-builtin", {
         "prompt_sources": {"default_prompt": "prompt", "markdown_memory": "markdown_memory",
-                           "skills": "standard_tools"}, "summary_source": ["compaction", "compaction"]})
+                           "skills": "skills"}, "summary_source": ["compaction", "compaction"]})
     (workspace / "runtime/plugin-validation").mkdir(parents=True, exist_ok=True)
     docker("network", "create", network)
     controller = WorkloadControllerServer(workspace=workspace, socket_path=socket,

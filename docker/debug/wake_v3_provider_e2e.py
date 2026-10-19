@@ -963,7 +963,7 @@ def _write_plugin_configs(workspace: Path, receipt_db: Path) -> None:
     wake.mkdir(parents=True)
     context.mkdir(parents=True)
     recording.mkdir(parents=True)
-    save_config(context, {"prompt_sources": {"skills": "standard_tools"}})
+    save_config(context, {"prompt_sources": {"skills": "skills"}})
     save_config(wake, {"delivery": {"channel": "recording", "recipient": "fixture-recipient",
                                     "session_id": "wake-provider-e2e"}})
     save_config(recording, {"receipt_db": str(receipt_db),

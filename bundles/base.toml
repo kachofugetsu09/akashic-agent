@@ -63,7 +63,7 @@ plugin = "content@release"
 
 [rows."context"]
 plugin = "context@release"
-config = { "prompt_sources" = { "default_prompt" = "prompt@release", "markdown_memory" = "markdown_memory@release", "skills" = "standard_tools@release" }, "summary_source" = ["compaction", "compaction@release"] }
+config = { "prompt_sources" = { "default_prompt" = "prompt@release", "markdown_memory" = "markdown_memory@release", "skills" = "skills@release" }, "summary_source" = ["compaction", "compaction@release"] }
 
 [rows."turn_projection"]
 plugin = "turn_projection@release"
@@ -94,6 +94,9 @@ plugin = "standard_tools@release"
 
 [rows."vision"]
 plugin = "vision@release"
+
+[rows."skills"]
+plugin = "skills@release"
 
 # Web 工具与提供方默认关闭：启用 standard_web 后，再启用一个搜索提供方和一个读取提供方。
 [rows."standard_web"]

@@ -31,14 +31,3 @@ class WorkingDirectories(Protocol):
 
 WORKING_DIRECTORY = ServiceKey[WorkingDirectories]("standard_tools.working_directory.v1")
 
-
-class SkillReader(Protocol):
-    """技能目录只读投影的窄输入。"""
-
-    async def list_skills(self) -> tuple[Mapping[str, object], ...]: ...
-
-    async def list_sources(self) -> tuple[Mapping[str, object], ...]: ...
-
-
-# RuntimeInspection._bind_optional 将此 key 传给 ctx.inject 的技能目录子 Fiber。
-SKILL_INSPECTION = ServiceKey[SkillReader]("standard_tools.skill_inspection.v1")

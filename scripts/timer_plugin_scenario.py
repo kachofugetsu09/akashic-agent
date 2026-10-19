@@ -124,7 +124,7 @@ async def apply(ctx):
     await ctx.provide(ServiceKey("scenario.timer.fire"), ctx.entrypoint(fire))
 ''')
     # 所有插件使用实际实现；notify 任务不会调用未配置的模型。
-    save_config(workspace / "plugin-data/context-builtin", {"prompt_sources": {"skills": "standard_tools"}})
+    save_config(workspace / "plugin-data/context-builtin", {"prompt_sources": {"skills": "skills"}})
     http = SharedHttpResources()
     config = Config(workspace_path=workspace)
     store = JobStore(workspace / "schedules.json")
