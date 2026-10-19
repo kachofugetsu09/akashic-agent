@@ -372,24 +372,22 @@
 }
 
 /* 宽度断点按聊天根节点（ADR 0126：聊天与工作台同页，窗口宽度不等于聊天宽度），属性由 chat-layout 写入。 */
-:where([data-chat-width~="36rem"]) {
-  .chat-main .model-picker {
-    min-width: 0;
-    max-width: 100%;
-  }
+:where([data-chat-width~="36rem"]) .chat-main .model-picker {
+  min-width: 0;
+  max-width: 100%;
+}
 
-  .chat-main .model-picker__trigger {
-    height: 28px;
-    max-width: min(11rem, 100%);
-  }
+:where([data-chat-width~="36rem"]) .chat-main .model-picker__trigger {
+  height: 28px;
+  max-width: min(11rem, 100%);
+}
 
-  .chat-main .model-picker__trigger::before,
-  .chat-main .model-effort__trigger::before {
-    content: "";
-    position: absolute;
-    inset-block: -8px;
-    inset-inline: -4px;
-  }
+:where([data-chat-width~="36rem"]) .chat-main .model-picker__trigger::before,
+:where([data-chat-width~="36rem"]) .chat-main .model-effort__trigger::before {
+  content: "";
+  position: absolute;
+  inset-block: -8px;
+  inset-inline: -4px;
 }
 
 /* 模型名必须能区分版本，不能在选择列表里只留下相同的省略前缀。 */
@@ -422,41 +420,37 @@
 /* 窄屏模型与思考强度面板是底部抽屉：贴底全宽、顶部圆角、遮罩压暗正文。
    内联定位来自宽屏贴触发器的算法，这里用 !important 统一覆盖。
    横屏或软键盘把视口压到 30rem 以下时仍是 inset 8px 的浮动盒子，抽屉外观只给常规高度。 */
-:where([data-chat-width~="820"]:not([data-chat-low])) {
-  .model-picker__panel,
-  .model-effort__panel {
-    inset: auto 0 0 0 !important;
-    width: auto !important;
-    max-height: min(70dvh, 32rem) !important;
-    border-width: 1px 0 0;
-    border-radius: 16px 16px 0 0;
-    padding-block-end: env(safe-area-inset-bottom, 0px);
-    box-shadow: 0 -8px 24px color-mix(in srgb, var(--ak-ink-primary) 10%, transparent);
-    animation: picker-sheet-in 180ms cubic-bezier(0.2, 0, 0, 1);
-  }
+:where([data-chat-width~="820"]:not([data-chat-low])) .model-picker__panel,
+:where([data-chat-width~="820"]:not([data-chat-low])) .model-effort__panel {
+  inset: auto 0 0 0 !important;
+  width: auto !important;
+  max-height: min(70dvh, 32rem) !important;
+  border-width: 1px 0 0;
+  border-radius: 16px 16px 0 0;
+  padding-block-end: env(safe-area-inset-bottom, 0px);
+  box-shadow: 0 -8px 24px color-mix(in srgb, var(--ak-ink-primary) 10%, transparent);
+  animation: picker-sheet-in 180ms cubic-bezier(0.2, 0, 0, 1);
 }
 
-:where([data-chat-width~="820"], [data-chat-short]) {
-  .model-picker__panel,
-  .model-effort__panel {
-    display: block;
-    overflow-y: auto;
-  }
-
-  .picker-sheet-scrim {
-    position: fixed;
-    inset: 0;
-    z-index: 79;
-    display: block;
-    background: var(--chat-scrim);
-    animation: picker-scrim-in 180ms ease-out;
-  }
-
-  /* 面板与遮罩在输入区的层叠上下文里；打开时把输入区抬到浮动标题条（z 6）之上，遮罩才能盖住整屏。 */
-  .chat-main .composer-wrap:has(.model-picker.is-open, .model-effort.is-open) { z-index: 7; }
-
-  .model-picker__search input { font-size: 16px; }
+:where([data-chat-width~="820"], [data-chat-short]) .model-picker__panel,
+:where([data-chat-width~="820"], [data-chat-short]) .model-effort__panel {
+  display: block;
+  overflow-y: auto;
 }
+
+:where([data-chat-width~="820"], [data-chat-short]) .picker-sheet-scrim {
+  position: fixed;
+  inset: 0;
+  z-index: 79;
+  display: block;
+  background: var(--chat-scrim);
+  animation: picker-scrim-in 180ms ease-out;
+}
+
+/* 面板与遮罩在输入区的层叠上下文里；打开时把输入区抬到浮动标题条（z 6）之上，遮罩才能盖住整屏。 */
+:where([data-chat-width~="820"], [data-chat-short]) .chat-main .composer-wrap:has(.model-picker.is-open, .model-effort.is-open) { z-index: 7; }
+
+:where([data-chat-width~="820"], [data-chat-short]) .model-picker__search input { font-size: 16px; }
 
 @keyframes picker-sheet-in { from { transform: translateY(24px); opacity: 0; } }
 @keyframes picker-scrim-in { from { opacity: 0; } }
@@ -465,16 +459,14 @@
   .model-picker__panel, .model-effort__panel, .picker-sheet-scrim { animation: none; }
 }
 
-:where([data-chat-width~="820"][data-chat-low], [data-chat-short]) {
-  .model-picker__panel,
-  .model-effort__panel {
-    inset: 8px !important;
-    width: auto !important;
-    height: auto !important;
-    max-height: none;
-    display: block;
-    overflow-y: auto;
-  }
+:where([data-chat-width~="820"][data-chat-low], [data-chat-short]) .model-picker__panel,
+:where([data-chat-width~="820"][data-chat-low], [data-chat-short]) .model-effort__panel {
+  inset: 8px !important;
+  width: auto !important;
+  height: auto !important;
+  max-height: none;
+  display: block;
+  overflow-y: auto;
 }
 
 @media (forced-colors: active) {
