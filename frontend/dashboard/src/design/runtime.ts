@@ -1,5 +1,6 @@
 import * as React from "react";
 import * as ReactJSXRuntime from "react/jsx-runtime";
+import * as ReactDOM from "react-dom";
 import * as ReactDOMClient from "react-dom/client";
 import {
   currentTheme,
@@ -31,6 +32,7 @@ const WebUi = {
 export interface AkashicRuntime {
   React: typeof React;
   ReactJSXRuntime: typeof ReactJSXRuntime;
+  ReactDOM: typeof ReactDOM;
   ReactDOMClient: typeof ReactDOMClient;
   WebUi: typeof WebUi;
 }
@@ -43,5 +45,5 @@ declare global {
 
 // Publish the runtime before any plugin is imported.
 export function exposeRuntime(): void {
-  window.__akashicRuntime = { React, ReactJSXRuntime, ReactDOMClient, WebUi };
+  window.__akashicRuntime = { React, ReactJSXRuntime, ReactDOM, ReactDOMClient, WebUi };
 }

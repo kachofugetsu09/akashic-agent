@@ -115,7 +115,8 @@ const ChatUi = {
 
 export type ChatUiRuntime = typeof ChatUi;
 
-// 必须在任何插件模块导入之前发布。
+// 必须在任何插件模块导入之前发布。同文档挂载时外壳已登记 React 等共享运行时（与本模块用的是同一份），只追加 ChatUi。
 export function exposeChatRuntime(): void {
-  Object.assign(window, { __akashicRuntime: { React, ReactJSXRuntime, ReactDOMClient, ChatUi } });
+  const host = window as unknown as { __akashicRuntime?: Record<string, unknown> };
+  host.__akashicRuntime = { React, ReactJSXRuntime, ReactDOMClient, ...host.__akashicRuntime, ChatUi };
 }

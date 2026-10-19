@@ -486,8 +486,8 @@ export function receivePluginUiResult(response: PluginUiResult) {
 
 type InlineSlotName = PluginUiMountSlotName;
 
-// 页面重新可见的三种来源合成一个信号：标签切回、窗口获得焦点、外层页面重新显示本页框架。
-function notifyShown(): void {
+// 页面重新可见的三种来源合成一个信号：标签切回、窗口获得焦点、宿主重新显示聊天（经 ChatHandle.shown）。
+export function notifyShown(): void {
   for (const listener of [...shownListeners]) {
     try { listener(); }
     catch (error) { console.error("[plugin-ui] shown callback failed", error); }
@@ -497,10 +497,6 @@ function notifyShown(): void {
 if (typeof window !== "undefined") {
   window.addEventListener("focus", notifyShown);
   document.addEventListener("visibilitychange", () => { if (document.visibilityState === "visible") notifyShown(); });
-  window.addEventListener("message", (event: MessageEvent<unknown>) => {
-    const data = event.data as { type?: unknown } | null;
-    if (event.origin === window.location.origin && event.source === window.parent && data?.type === "akashic.frame.shown") notifyShown();
-  });
 }
 
 // 一次挂载登记的"重新可见"回调；挂载卸载时一并撤销，卸载后不再回调。

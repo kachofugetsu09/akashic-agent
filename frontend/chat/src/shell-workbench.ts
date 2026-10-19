@@ -1,7 +1,7 @@
-// 聊天端与宿主工具区的意图、引用桥。只在嵌入宿主时工作；standalone 下没有接受者，调用方回到原有行为。
+// 聊天端与宿主工具区的意图、引用。只在有宿主时工作；独立页面没有接受者，调用方回到原有行为。
 import { useSyncExternalStore } from "react";
 
-import { createUuid } from "./browser-uuid.ts";
+import { hostLink } from "./chat-host";
 
 export type WorkbenchIntentStatus = "handled" | "unhandled" | "invalid" | "failed";
 
@@ -11,11 +11,8 @@ export interface WorkbenchQuote {
   source: string;
 }
 
-const RESULT_TIMEOUT_MS = 12_000;
-const STATUSES: readonly WorkbenchIntentStatus[] = ["handled", "unhandled", "invalid", "failed"];
 let accepted: ReadonlySet<string> = new Set();
 const listeners = new Set<() => void>();
-const pending = new Map<string, (status: WorkbenchIntentStatus) => void>();
 let quoteHandler: ((quote: WorkbenchQuote) => void) | null = null;
 let currentSession = "";
 /** 打开会话工作目录里的一个文件：{ path, line? }，path 相对工作目录；由声明接受它的工具决定怎么打开（如“改动”定位到该文件）。 */
@@ -89,27 +86,13 @@ export function getHostShortcuts(): readonly HostShortcut[] {
 
 /**
  * 只在用户点击或键盘激活的处理函数里同步调用；Agent 侧事件不走这里，这是“只有用户能打开工具区”的保证。
- * 没有宿主或没有接受者时立即返回 unhandled，超时按 failed。
+ * 没有宿主或没有接受者时立即返回 unhandled。
  */
 export function openInWorkbench(name: string, session: string, payload: unknown): Promise<WorkbenchIntentStatus> {
-  if (window.parent === window || !accepted.has(name)) return Promise.resolve("unhandled");
+  const link = hostLink();
+  if (!link || !accepted.has(name)) return Promise.resolve("unhandled");
   if (!session) return Promise.resolve("invalid");
-  const id = createUuid();
-  return new Promise((resolve) => {
-    const timer = window.setTimeout(() => settle("failed"), RESULT_TIMEOUT_MS);
-    function settle(status: WorkbenchIntentStatus) {
-      window.clearTimeout(timer);
-      pending.delete(id);
-      resolve(status);
-    }
-    pending.set(id, settle);
-    window.parent.postMessage({ type: "akashic.workbench-intent", id, name, session, payload }, window.location.origin);
-  });
-}
-
-export function settleWorkbenchIntent(message: Record<string, unknown>): void {
-  if (typeof message.id !== "string" || !STATUSES.includes(message.status as WorkbenchIntentStatus)) return;
-  pending.get(message.id)?.(message.status as WorkbenchIntentStatus);
+  return link.requestIntent(name, session, payload);
 }
 
 /** 输入框登记引用的落点；同一时刻只有当前对话视图一个。 */

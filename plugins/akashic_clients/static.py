@@ -10,8 +10,8 @@ from core.common.file_io import run_file_io
 
 # Vite 产物文件名内嵌内容哈希，命中后才允许永久缓存；入口 HTML 仍需每次校验。
 _HASHED_ASSET = re.compile(r"/assets/[^/]*-[\w-]{8}\.[\w]+$")
-# 插件共享运行时经 import map 用稳定 URL 引用，内容随版本变化；可以缓存，但每次按 ETag 校验。
-_SHARED_RUNTIME = re.compile(r"^/assets/sdk/[\w-]+\.js$")
+# 插件共享运行时与聊天挂载入口用稳定 URL 引用，内容随版本变化；可以缓存，但每次按 ETag 校验。
+_SHARED_RUNTIME = re.compile(r"^/assets/(?:sdk/[\w-]+\.js|chat-app\.(?:js|css))$")
 
 
 # 聊天入口唯一的内联脚本是插件共享运行时的 import map；按实际产物内容放行它的 hash，不放宽为 unsafe-inline。

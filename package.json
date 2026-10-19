@@ -6,7 +6,7 @@
     "build": "npm run build:dashboard && npm run build:chat && npm run build:web-plugins",
     "build:dashboard": "vite build --config frontend/dashboard/vite.config.ts",
     "build:dashboard:watch": "vite build --config frontend/dashboard/vite.config.ts --watch",
-    "build:chat": "vite build --config frontend/chat/vite.config.ts",
+    "build:chat": "vite build --config frontend/chat/vite.config.ts && vite build --config frontend/chat/vite.module.config.ts",
     "build:web-plugins": "node scripts/build-web-plugins.mjs",
     "build:chat:watch": "vite build --config frontend/chat/vite.config.ts --watch",
     "dev": "vite --config frontend/dashboard/vite.config.ts",

@@ -1,5 +1,6 @@
 import { useSyncExternalStore } from "react";
 
+import { hostLink } from "./chat-host";
 import { setWorkbenchSession } from "./shell-workbench";
 
 export interface ShellRailActionItem {
@@ -21,7 +22,7 @@ function isRailAction(entry: unknown): entry is ShellRailActionItem {
     && candidate.iconSvg.startsWith("<svg");
 }
 
-/** 宿主 Shell 经 postMessage 下发的底栏动作投影；standalone 模式下永远为空。 */
+/** 宿主下发的底栏动作投影；独立页面没有宿主，永远为空。 */
 export function setShellRailActions(value: unknown): void {
   if (!Array.isArray(value)) return;
   current = value.filter(isRailAction);
@@ -38,20 +39,18 @@ export function useShellRailActions(): readonly ShellRailActionItem[] {
   );
 }
 
-/** 激活回宿主域：函数不跨 realm,chat 只回传动作 id。 */
+/** 激活交回宿主：动作的处理函数留在宿主，聊天只回传动作 id。 */
 export function activateShellRailAction(id: string): void {
-  window.parent.postMessage({ type: "akashic.rail-action-activate", id }, window.location.origin);
+  hostLink()?.activateRailAction(id);
 }
 
-/** 当前会话交给宿主转交工具区标签；新建对话尚未发送时为 null。standalone 下无宿主，静默。 */
+/** 当前会话交给宿主转交工具区标签；新建对话尚未发送时为 null。独立页面没有宿主，静默。 */
 export function reportShellSession(sessionId: string): void {
   setWorkbenchSession(sessionId);
-  if (window.parent === window) return;
-  window.parent.postMessage({ type: "akashic.chat-session", sessionId: sessionId || null }, window.location.origin);
+  hostLink()?.reportSession(sessionId || null);
 }
 
-/** iframe 内的遮罩盖不住宿主 chrome：模态层开合时告知宿主，让它收起浮在页面上的控件。standalone 下无宿主，静默。 */
+/** 模态层开合时告知宿主，让它收起浮在页面上的控件。独立页面没有宿主，静默。 */
 export function reportShellOverlay(open: boolean): void {
-  if (window.parent === window) return;
-  window.parent.postMessage({ type: "akashic.chat-overlay", open }, window.location.origin);
+  hostLink()?.reportOverlay(open);
 }
