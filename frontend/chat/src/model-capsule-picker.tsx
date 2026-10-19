@@ -5,6 +5,7 @@ import deepseekIcon from "./assets/provider-icons/deepseek.svg";
 import opencodeIcon from "./assets/provider-icons/opencode.svg";
 import openrouterIcon from "./assets/provider-icons/openrouter.svg";
 import { compatibleEffort, EFFORT_LABELS, groupModelRuntimes, type ChatModelRuntime } from "./model-capsule-data";
+import "./model-capsule.css";
 
 const PANEL_GAP = 8;
 const PANEL_MARGIN = 12;
