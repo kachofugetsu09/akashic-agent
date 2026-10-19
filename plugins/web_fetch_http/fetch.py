@@ -1,8 +1,5 @@
-"""
-WebFetch 工具
-"""
+"""HTTP 抓取提供方：直接请求 URL，按格式转换并截断正文。"""
 
-import json
 from typing import Any
 
 import html2text
@@ -10,6 +7,7 @@ import httpx
 from lxml import html as lxml_html
 from lxml.etree import ParserError
 
+from plugins.standard_web.contract import FetchRequest
 from core.net.http import (
     HttpRequester,
     RequestBudget,
@@ -17,8 +15,6 @@ from core.net.http import (
 )
 
 _MAX_BYTES = 5 * 1024 * 1024  # 5MB，与 OpenCode 一致
-_DEFAULT_TIMEOUT = 30  # 秒
-_MAX_TIMEOUT = 120  # 秒，与 OpenCode 一致
 _USER_AGENT = "akashic/1.0"
 _MAX_TEXT_CHARS = 50_000  # 返回给 LLM 的文本字符上限（约 ~12K tokens）
 
@@ -30,44 +26,14 @@ _ACCEPT = {
 }
 
 
-class WebFetchTool:
-    """抓取 URL 内容，支持 text / markdown / html 三种格式输出"""
-
-    name = "web_fetch"
-    description = (
-        "抓取指定 URL 的内容并返回。"
-        "支持 text（纯文本）、markdown（转换后的 Markdown，默认）、html（原始 HTML）三种格式。"
-        "仅支持 HTTP/HTTPS，响应上限 5MB。"
-    )
-    parameters = {
-        "type": "object",
-        "properties": {
-            "url": {
-                "type": "string",
-                "description": "要抓取的完整 URL，必须以 http:// 或 https:// 开头",
-            },
-            "format": {
-                "type": "string",
-                "enum": ["text", "markdown", "html"],
-                "description": "返回格式：text 纯文本 / markdown 转换后的 Markdown / html 原始 HTML。默认 markdown",
-            },
-            "timeout": {
-                "type": "integer",
-                "description": f"超时秒数，默认 {_DEFAULT_TIMEOUT}，最大 {_MAX_TIMEOUT}",
-                "minimum": 1,
-                "maximum": _MAX_TIMEOUT,
-            },
-        },
-        "required": ["url"],
-    }
+class HttpFetch:
+    """直接 HTTP(S) 抓取，支持 text / markdown / html 三种格式输出。"""
 
     def __init__(self, requester: HttpRequester | None = None) -> None:
         self._requester = requester or get_default_http_requester("external_default")
 
-    async def execute(self, **kwargs: Any) -> str:
-        url: str = kwargs["url"]
-        fmt: str = kwargs.get("format", "markdown")
-        timeout: int = min(int(kwargs.get("timeout", _DEFAULT_TIMEOUT)), _MAX_TIMEOUT)
+    async def fetch(self, request: FetchRequest) -> dict[str, object]:
+        url, fmt, timeout = request.url, request.format, request.timeout_s
 
         # URL 结构校验；允许访问本机和内网 HTTP 服务。
         try:
@@ -161,14 +127,14 @@ class WebFetchTool:
                 f"内容已截断至 {_MAX_TEXT_CHARS} 字符，如需更多内容请缩小范围或使用其他工具"
             )
 
-        return json.dumps(result, ensure_ascii=False)
+        return result
 
 
 # ── 模块级工具函数 ────────────────────────────────────────────
 
 
-def _err(url: str, msg: str) -> str:
-    return json.dumps({"error": msg, "url": url}, ensure_ascii=False)
+def _err(url: str, msg: str) -> dict[str, object]:
+    return {"error": msg, "url": url}
 
 
 def _to_markdown(raw_html: str) -> str:
