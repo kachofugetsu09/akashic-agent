@@ -7,18 +7,18 @@ import { defineConfig, type Plugin } from "vite";
 // 都经外壳 import map 取同一份，不打进本包；产物与 iframe 版同目录发布，入口和样式用稳定文件名。
 const here = dirname(fileURLToPath(import.meta.url));
 const repoRoot = resolve(here, "..", "..");
-const themeRuntime = resolve(repoRoot, "frontend", "theme", "src", "theme-runtime.ts");
+const shellOwned = new Set(["theme-runtime.ts", "material-react.tsx"].map((name) => resolve(repoRoot, "frontend", "theme", "src", name)));
 const shellTheme = resolve(here, "src", "shell-theme.ts");
 
-// 任何解析到主题运行时的导入都改用外壳那一份，避免同一文档里两份主题状态。
+// 主题状态与 Material 组件（自定义元素全文档只能登记一次）归外壳所有：解析到它们的导入都改用外壳运行时那一份。
 function useShellTheme(): Plugin {
   return {
     name: "use-shell-theme",
     enforce: "pre",
     async resolveId(source, importer, options) {
-      if (!source.includes("theme-runtime") || importer === shellTheme) return null;
+      if (!/theme-runtime|material-react/u.test(source) || importer === shellTheme) return null;
       const resolved = await this.resolve(source, importer, { ...options, skipSelf: true });
-      return resolved?.id === themeRuntime ? shellTheme : null;
+      return resolved && shellOwned.has(resolved.id) ? shellTheme : null;
     },
   };
 }
