@@ -405,42 +405,13 @@ export function composerSuggestSources(): ComposerSuggestSource[] {
   });
 }
 
-/** 宿主按插件名找能力；调用时保留目录中的完整 name@marketplace 身份。 */
-function hostPlugins(pluginName: string): PluginUiCatalogItem[] {
-  return catalog.updating ? [] : catalog.plugins.filter((plugin) => plugin.id.split("@")[0] === pluginName);
-}
-
-/** 宿主自身的导航按插件名组合能力；目录变化时返回新版本号以便重读。 */
-export function usePluginUiCatalogVersion(): {
-  version: number; catalogRevision: string; installed: (pluginName: string) => boolean;
-} {
+/** 宿主据目录变化重读插件数据源；宿主不按插件名挑选插件。 */
+export function usePluginUiCatalogVersion(): { version: number; catalogRevision: string } {
   const version = useSyncExternalStore(
     (listener) => { listeners.add(listener); return () => listeners.delete(listener); },
     () => registryVersion,
   );
-  return {
-    version,
-    catalogRevision: catalog.catalogRevision,
-    installed: (pluginName) => hostPlugins(pluginName).length > 0,
-  };
-}
-
-/** 宿主侧栏直接调用插件查询；插件缺失或目录更新中都作为普通错误返回。 */
-export async function queryHostPlugin(
-  pluginName: string,
-  method: string,
-  payload: Record<string, unknown> = {},
-  signal?: AbortSignal,
-  sessionId?: string,
-): Promise<Record<string, unknown>> {
-  const matches = hostPlugins(pluginName);
-  if (matches.length > 1) throw new Error(`存在多个同名插件，无法选择: ${matches.map((plugin) => plugin.id).join(", ")}`);
-  const plugin = matches[0];
-  if (!plugin) throw new Error(`插件未安装或正在更新: ${pluginName}`);
-  return queryWebPluginUi({
-    pluginId: plugin.id, pluginRevision: plugin.revision, method, payload, slot: "drawer.panel", sessionId,
-    signal: signal ?? new AbortController().signal,
-  });
+  return { version, catalogRevision: catalog.catalogRevision };
 }
 
 // 插件推送按“插件|revision|会话”记住最新一帧，晚挂载的界面先拿到当前状态；换代后旧代的帧（包括它的 null）

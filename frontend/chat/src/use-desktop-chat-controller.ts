@@ -5,18 +5,7 @@ import { createUuid, createUuidV7 } from "./browser-uuid.ts";
 import type { ChatMessage } from "./chat-message";
 import type { ComposerFile } from "./desktop-composer";
 import { loadWebPluginCatalog, receivePluginUiEvent, resetPluginUiEvents, usePluginUiCatalogVersion } from "./plugin-ui-runtime";
-import {
-  PROJECT_DIMENSION,
-  PROJECTS_PLUGIN,
-  bindProjectDirectory,
-  createProject as createProjectRecord,
-  continueProject as continueProjectRecord,
-  listPendingProjects,
-  loadProjects,
-  stopProject as stopProjectRecord,
-  type ProjectRow,
-  type PendingProjectRow,
-} from "./web-projects";
+import { groupKey, useNavigationGroupSections, type GroupRef, type NavigationGroupsState } from "./navigation-groups";
 import { useNavigationPins } from "./use-navigation-pins";
 import { readSessionActivityFrame, useSessionActivity, type SessionHead } from "./use-session-activity";
 import { StreamProjectionStore } from "./stream-projection";
@@ -121,15 +110,11 @@ export function useDesktopChatController() {
     () => new URLSearchParams(window.location.search).get("surface") === "runtime" ? "runtime" : "chat",
   );
   const [sessions, setSessions] = useState<SessionRow[]>([]);
-  const [projects, setProjects] = useState<ProjectRow[]>([]);
-  const [pendingProjects, setPendingProjects] = useState<PendingProjectRow[]>([]);
-  const [pendingProjectsError, setPendingProjectsError] = useState("");
-  const [newChatProjectId, setNewChatProjectId] = useState("");
+  const [newChatGroup, setNewChatGroup] = useState<GroupRef | null>(null);
   // Session 宽键在首条消息接纳时固定；之后每次发送重复声明只是幂等核对。
   const sessionScopesRef = useRef(new Map<string, Record<string, string>>());
   const newChatScopeRef = useRef<Record<string, string> | null>(null);
   const pluginCatalog = usePluginUiCatalogVersion();
-  const projectsInstalled = pluginCatalog.installed(PROJECTS_PLUGIN);
   const [activeSessionId, setActiveSessionId] = useState("");
   const [pendingSessionId, setPendingSessionId] = useState("");
   // 通知入口统一使用网页导航，会话参数在 chatReady 后消费一次。
@@ -675,30 +660,7 @@ export function useDesktopChatController() {
     return () => controller.abort();
   }, [chatReady, reportError]);
 
-  const refreshPendingProjects = useCallback(() => {
-    const snapshot = listPendingProjects();
-    setPendingProjects(snapshot.items);
-    setPendingProjectsError(snapshot.error);
-  }, []);
-
-  const refreshProjects = useCallback(async (signal?: AbortSignal) => {
-    refreshPendingProjects();
-    if (!projectsInstalled) {
-      setProjects([]);
-      return;
-    }
-    const next = await loadProjects(signal);
-    if (!signal?.aborted) setProjects(next);
-  }, [projectsInstalled, refreshPendingProjects]);
-
-  useEffect(() => {
-    if (!chatReady) return;
-    const controller = new AbortController();
-    void refreshProjects(controller.signal).catch((error: unknown) => {
-      if (!isAbortError(error)) reportError(error);
-    });
-    return () => controller.abort();
-  }, [chatReady, pluginCatalog.version, refreshProjects, reportError]);
+  const groupSections = useNavigationGroupSections(chatReady, pluginCatalog.version, reportError);
 
   const ensureSession = useCallback(async () => {
     if (activeSessionRef.current) {
@@ -895,55 +857,25 @@ export function useDesktopChatController() {
     setStatus("idle");
     setStopPending(false);
     newChatScopeRef.current = null;
-    setNewChatProjectId("");
+    setNewChatGroup(null);
     // 空白页仍订阅侧栏摘要；旧会话已清空，重连不会继续跟随旧正文。
     connect();
   }, [closeConnection, connect, setFollowAfter, setMessages, setReplyAvailable, setTimelineMessages]);
 
-  const startProjectChat = useCallback((projectId: string) => {
+  const startGroupChat = useCallback((ref: GroupRef) => {
     startNewChat();
-    newChatScopeRef.current = { [PROJECT_DIMENSION]: projectId };
-    setNewChatProjectId(projectId);
+    newChatScopeRef.current = { [ref.dimension]: ref.id };
+    setNewChatGroup(ref);
   }, [startNewChat]);
-
-  const createProject = useCallback(async (name: string, directory: string | null, commitFields: (projectId: string) => Promise<void>) => {
-    try {
-      const project = await createProjectRecord(name, directory, commitFields);
-      setProjects((current) => [...current.filter((item) => item.id !== project.id), project]);
-      startProjectChat(project.id);
-    } finally {
-      refreshPendingProjects();
-    }
-  }, [refreshPendingProjects, startProjectChat]);
-
-  const continueProject = useCallback(async (key: string) => {
-    try {
-      const project = await continueProjectRecord(key);
-      setProjects((current) => [...current.filter((item) => item.id !== project.id), project]);
-      startProjectChat(project.id);
-    } finally {
-      refreshPendingProjects();
-    }
-  }, [refreshPendingProjects, startProjectChat]);
-
-  const stopProject = useCallback((key: string) => {
-    stopProjectRecord(key);
-    refreshPendingProjects();
-  }, [refreshPendingProjects]);
-
-  const bindDirectory = useCallback(async (projectId: string, path: string) => {
-    const project = await bindProjectDirectory(projectId, path);
-    setProjects((current) => current.map((item) => item.id === project.id ? { ...item, directory: project.directory } : item));
-  }, []);
 
   const activateSession = useCallback((sessionId: string) => {
     if (surface === "chat" && activeSessionRef.current === sessionId) return;
     const row = sessions.find((session) => session.key === sessionId)
       ?? navigationPins.sessions.find((session) => session.key === sessionId);
     if (row) sessionScopesRef.current.set(sessionId, row.scope ?? {});
-    // 置顶解析可能早于完整目录；打开已有会话不能沿用先前项目草稿的 scope。
+    // 置顶解析可能早于完整目录；打开已有会话不能沿用先前分组草稿的 scope。
     newChatScopeRef.current = null;
-    setNewChatProjectId("");
+    setNewChatGroup(null);
     setSurface("chat");
     clearChatRoute();
     // 空白页只订阅目录，没有旧正文跟随；首次进入会话可以复用已有连接。
@@ -1066,15 +998,24 @@ export function useDesktopChatController() {
       createdAt: session.created_at,
       active: activeSessionId === session.key,
       status: sessionStatuses.get(session.key),
-      projectId: session.scope?.[PROJECT_DIMENSION] ?? "",
+      scope: session.scope ?? {},
       scoped: Object.keys(session.scope ?? {}).length > 0,
     }));
   }, [activeSessionId, sessions, navigationPins.sessions, sessionStatuses]);
-  // 新对话在首条消息进入目录前沿用发起时选定的项目。
+  // 新对话在首条消息进入目录前沿用发起时选定的分组。
   const activeRow = activeSessionId ? sessions.find((session) => session.key === activeSessionId)
     ?? navigationPins.sessions.find((session) => session.key === activeSessionId) : undefined;
-  const activeProjectId = activeRow ? activeRow.scope?.[PROJECT_DIMENSION] ?? "" : newChatProjectId;
-  const activeProject = projects.find((project) => project.id === activeProjectId) ?? null;
+  const activeScope = useMemo(() => activeRow ? activeRow.scope
+    : newChatGroup ? { [newChatGroup.dimension]: newChatGroup.id } : undefined, [activeRow, newChatGroup]);
+  const navigationGroups = useMemo((): NavigationGroupsState => {
+    // 当前会话归入第一个认得它取值的分区，与侧栏的归类一致。
+    const active = groupSections.sections.flatMap(({ source, groups }) => {
+      const id = activeScope?.[source.provider.dimension];
+      const group = id ? groups.find((item) => item.id === id) : undefined;
+      return group ? [{ dimension: source.provider.dimension, id: group.id, label: group.label }] : [];
+    })[0] ?? null;
+    return { ...groupSections, active, startChat: startGroupChat };
+  }, [activeScope, groupSections, startGroupChat]);
   const retryHistory = useCallback(() => {
     if (activeSessionRef.current) void loadMessagesSafely(activeSessionRef.current);
   }, [loadMessagesSafely]);
@@ -1093,7 +1034,7 @@ export function useDesktopChatController() {
   return {
     surface, sidebarSessions, activeSessionId, pendingSessionId, chatReady, messages, timelineMessages, timelineRefresh, replyActivities, replyAvailable, status,
     streamStore, messageElementsRef, copiedMessageId, shellState, stopPending, stopCount,
-    canSend, sendProblem, draftKey: activeSessionId || `new:${newChatProjectId}`,
+    canSend, sendProblem, draftKey: activeSessionId || `new:${newChatGroup ? groupKey(newChatGroup) : ""}`,
     historyHasMore, historyLoading, historyLoadingOlder, loadOlderMessages, sessionRequested: requestedSessionId !== "",
     historyFailure: activeSessionId !== "" && historyFailure?.sessionId === activeSessionId ? historyFailure.reason : null, retryHistory,
     activeSessionDeleted, deletedNotice, deleteSession, restoreSession, dismissDeletedNotice, renameSession,
@@ -1105,8 +1046,7 @@ export function useDesktopChatController() {
     errorRetry: !error || !errorFromSend,
     activateSession, prefetchSessionTail, startNewChat, handleReplyMessage, handleCopiedMessage,
     reportError, cancelReply, sendMessage, stopTurn, retry,
-    projects, pendingProjects, pendingProjectsError, projectsInstalled, activeProject, navigationPins, bindDirectory,
-    startProjectChat, createProject, continueProject, stopProject,
+    navigationGroups, navigationPins,
   };
 }
 

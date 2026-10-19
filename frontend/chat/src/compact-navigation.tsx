@@ -2,7 +2,7 @@ import { Menu } from "lucide-react";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { Dialog, DialogContent, DialogTitle } from "./components/ui/dialog";
 import { DesktopSidebar, type DesktopSidebarProps } from "./desktop-sidebar";
-import { NewProjectDialog } from "./project-navigation";
+import { GroupFormDialog, type GroupFormRequest } from "./navigation-groups";
 import { reportShellOverlay } from "./shell-rail-actions";
 
 // 与 styles.css 紧凑外壳媒体块同一条件：不再满足时常驻侧栏回来，抽屉没有存在的理由。
@@ -13,17 +13,16 @@ const shown = (element: HTMLElement | null): element is HTMLElement => element !
 /** Expose the desktop navigation contract as a modal drawer on narrow viewports. */
 export function CompactNavigation(props: DesktopSidebarProps) {
   const [open, setOpen] = useState(false);
-  const [projectDialogOpen, setProjectDialogOpen] = useState(false);
+  const [formRequest, setFormRequest] = useState<GroupFormRequest | null>(null);
   const triggerRef = useRef<HTMLButtonElement>(null);
-  const openProjectAfterClose = useRef(false);
-  const lastProjects = useRef(props.projects);
-  if (props.projects) lastProjects.current = props.projects;
-  const navigationProjects = props.projects;
+  // 分组对话框不叠在抽屉上：先关抽屉，关完再打开。
+  const formAfterClose = useRef<GroupFormRequest | null>(null);
+  const navigationGroups = props.groups;
   const closeThen = useCallback((action: () => void) => {
     setOpen(false);
     action();
   }, []);
-  const overlayOpen = open || projectDialogOpen;
+  const overlayOpen = open || formRequest !== null;
   const searchOnOpen = useRef(false);
   // 关闭后回到打开前的位置：快捷键打开时是当时的焦点（输入框里写到一半的草稿，光标位置由 textarea 自己保留），点按钮打开时是按钮。
   const returnFocus = useRef<HTMLElement | null>(null);
@@ -78,9 +77,9 @@ export function CompactNavigation(props: DesktopSidebarProps) {
         }}
         onCloseAutoFocus={(event) => {
           event.preventDefault();
-          if (openProjectAfterClose.current) {
-            openProjectAfterClose.current = false;
-            setProjectDialogOpen(true);
+          if (formAfterClose.current) {
+            setFormRequest(formAfterClose.current);
+            formAfterClose.current = null;
           } else {
             // 打开期间拉宽离开紧凑断点时原目标可能已隐藏：依次退到打开按钮、输入框。
             const composer = document.querySelector<HTMLElement>(".chat-main .composer textarea");
@@ -92,21 +91,11 @@ export function CompactNavigation(props: DesktopSidebarProps) {
         <DialogTitle className="sr-only">Akashic 导航</DialogTitle>
         <DesktopSidebar
           {...props}
-          projects={navigationProjects ? {
-            ...navigationProjects,
-            onNewChat: (projectId) => {
-              closeThen(() => navigationProjects.onNewChat(projectId));
-            },
-            onContinue: async (key) => {
-              await navigationProjects.onContinue(key);
-              setOpen(false);
-            },
-            onStop: (key) => {
-              navigationProjects.onStop(key);
-              setOpen(false);
-            },
-            onOpenCreate: () => {
-              openProjectAfterClose.current = true;
+          groups={navigationGroups ? {
+            ...navigationGroups,
+            startChat: (ref) => closeThen(() => navigationGroups.startChat(ref)),
+            onOpenForm: (request) => {
+              formAfterClose.current = request;
               setOpen(false);
             },
           } : undefined}
@@ -116,14 +105,7 @@ export function CompactNavigation(props: DesktopSidebarProps) {
         />
       </DialogContent>
     </Dialog>
-    {lastProjects.current ? <NewProjectDialog
-      open={projectDialogOpen}
-      onOpenChange={setProjectDialogOpen}
-      onCreate={lastProjects.current.onCreate}
-      onCloseFocus={() => {
-        if (lastProjects.current?.pending.length) setOpen(true);
-        else triggerRef.current?.focus();
-      }}
-    /> : null}
+    {formRequest && navigationGroups ? <GroupFormDialog request={formRequest} groups={navigationGroups}
+      onClose={() => setFormRequest(null)} onCloseFocus={() => triggerRef.current?.focus()} /> : null}
   </>;
 }

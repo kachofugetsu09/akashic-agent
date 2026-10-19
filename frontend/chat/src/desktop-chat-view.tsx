@@ -66,8 +66,7 @@ export function DesktopChatView({ embeddedShell, controller }: DesktopChatViewPr
     activeSessionDeleted, deletedNotice, deleteSession, restoreSession, dismissDeletedNotice, renameSession,
     activateSession, prefetchSessionTail, startNewChat, handleReplyMessage, handleCopiedMessage,
     reportError, cancelReply, sendMessage, stopTurn, retry,
-    projects, pendingProjects, pendingProjectsError, projectsInstalled, activeProject,
-    startProjectChat, createProject, continueProject, stopProject, bindDirectory,
+    navigationGroups,
   } = controller;
   const inputResult = useMemo(() => lastInputResult(timelineMessages), [timelineMessages]);
   const pagedTimeline = useMemo(() => withoutLeadingOrphanResults(timelineMessages, historyHasMore),
@@ -84,16 +83,10 @@ export function DesktopChatView({ embeddedShell, controller }: DesktopChatViewPr
     handleReplyMessage(reply);
     composerApi.current?.focus();
   }, [handleReplyMessage]);
-  const sidebarProjects = useMemo(() => projectsInstalled ? {
-    items: projects, pending: pendingProjects, pendingError: pendingProjectsError,
-    activeProjectId: activeProject?.id ?? "",
-    onNewChat: startProjectChat, onCreate: createProject, onContinue: continueProject, onStop: stopProject,
-    onBindDirectory: bindDirectory,
-  } : undefined, [activeProject?.id, bindDirectory, createProject, continueProject, pendingProjects,
-    pendingProjectsError, projects, projectsInstalled, startProjectChat, stopProject]);
   const activeTitle = sidebarSessions.find((session) => session.active)?.title || "新会话";
-  const headingTitle = activeProject ? `${activeProject.name} / ${activeTitle}` : activeTitle;
-  useDocumentTitle(activeSessionId || activeProject ? headingTitle : "", isGeneratingChatStatus(status));
+  const activeGroup = navigationGroups.active;
+  const headingTitle = activeGroup ? `${activeGroup.label} / ${activeTitle}` : activeTitle;
+  useDocumentTitle(activeSessionId || activeGroup ? headingTitle : "", isGeneratingChatStatus(status));
   const composerWrapRef = useRef<HTMLDivElement>(null);
   useComposerClearance(composerWrapRef);
   const committed = new Set(timelineMessages.map((message) => message.id));
@@ -113,7 +106,7 @@ export function DesktopChatView({ embeddedShell, controller }: DesktopChatViewPr
         <DesktopSidebar
             embeddedShell={embeddedShell} surface={surface} sessions={sidebarSessions}
             activeSessionId={activeSessionId} pendingSessionId={pendingSessionId} chatReady={chatReady}
-            themeLabel={theme.label} projects={sidebarProjects} navigationPins={controller.navigationPins} onSelectSession={activateSession}
+            themeLabel={theme.label} groups={navigationGroups} navigationPins={controller.navigationPins} onSelectSession={activateSession}
             onPrefetchSession={prefetchSessionTail}
             onCycleTheme={cycleTheme} onNewChat={startNewChat} rail={rail}
             onDeleteSession={deleteSession} deletedNotice={deletedNotice}
@@ -122,11 +115,11 @@ export function DesktopChatView({ embeddedShell, controller }: DesktopChatViewPr
           />
 
         <section className={`chat-main${conversationLayout ? "" : " is-empty"}`}>
-        <header className={`conversation-heading${!activeSessionId && !activeProject ? " is-blank" : ""}`}>
+        <header className={`conversation-heading${!activeSessionId && !activeGroup ? " is-blank" : ""}`}>
           <CompactNavigation
             embeddedShell={embeddedShell} surface={surface} sessions={sidebarSessions}
             activeSessionId={activeSessionId} pendingSessionId={pendingSessionId} chatReady={chatReady}
-            themeLabel={theme.label} projects={sidebarProjects} navigationPins={controller.navigationPins} onSelectSession={activateSession}
+            themeLabel={theme.label} groups={navigationGroups} navigationPins={controller.navigationPins} onSelectSession={activateSession}
             onPrefetchSession={prefetchSessionTail}
             onCycleTheme={cycleTheme} onNewChat={startNewChat}
             onDeleteSession={deleteSession} deletedNotice={deletedNotice}
