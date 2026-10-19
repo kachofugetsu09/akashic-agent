@@ -41,7 +41,6 @@ from .read_marks import ReadMarks
 from .attachments import AttachmentStore
 from .web_chat import WebChatChannel
 from .chat_api import build_chat_server
-from .runtime_inspection import ScopedRpcRuntimeInspection
 from .services import (
     ActiveSessionsFollowPort,
     MessageCatalogPort,
@@ -237,7 +236,6 @@ class _GenerationAkashicAdapter:
         self._workspace = state.workspace
         self._reply_status: ReplyStatusPort | None = None
         self._follow_active_sessions: ActiveSessionsFollowPort = self._follow_session_activity
-        self._runtime_inspection: ScopedRpcRuntimeInspection | None = None
         self._message_display: MessageDisplayReader = ScopedMessageDisplay(
             self._open_request_scope
         )
@@ -270,7 +268,6 @@ class _GenerationAkashicAdapter:
         if open_scope is None:
             raise RuntimeError("akashic channel 缺少 host request scope")
         self._reply_status = self._follow_reply_status
-        self._runtime_inspection = ScopedRpcRuntimeInspection(open_scope)
         async with self._open_request_scope() as scope:
             for key in (
                 MESSAGE_CATALOG,
@@ -434,7 +431,6 @@ class _GenerationAkashicAdapter:
             navigation=self._state.navigation,
             read_marks=self._state.read_marks,
             channel=self._web,
-            runtime_inspection=self._runtime_inspection,
             message_display=self._message_display,
             plugin_ui_scope=self._plugin_ui_scope,
             web_ui_provider=self._web_ui_provider,
