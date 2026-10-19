@@ -58,5 +58,6 @@ def test_core_only_cli_restarts_after_creating_runtime_data(
         "20261006_01_config_update_receipts",
         "20261011_01_plugin_contract_restart",
         "20261019_01_vision_split",
+        "20261019_02_skills_split",
     }
     assert not (workspace / "sessions.db").exists()

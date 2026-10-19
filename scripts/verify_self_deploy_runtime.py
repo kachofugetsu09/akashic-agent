@@ -28,7 +28,7 @@ def prepare_workspace() -> tuple[Path, Path, Path]:
     sources = sandbox / "plugins"
     work = sandbox / "state/workspace"
     config = sandbox / "state/config.toml"
-    names = "gateway ui channels commands sources content context tools conversation react turn_projection reply_program reply tool_search assets standard_tools models openai_compatible delivery delivery_policy programmatic message_push".split()
+    names = "gateway ui channels commands sources content context tools conversation react turn_projection reply_program reply tool_search assets standard_tools skills models openai_compatible delivery delivery_policy programmatic message_push".split()
     for name in names:
         shutil.copytree(
             ROOT / "plugins" / name,
@@ -58,7 +58,7 @@ def prepare_workspace() -> tuple[Path, Path, Path]:
     )
     save_config(
         work / "plugin-data/context-builtin",
-        {"prompt_sources": {"skills": "standard_tools"}},
+        {"prompt_sources": {"skills": "skills"}},
     )
     return sandbox, work, config
 

@@ -183,7 +183,7 @@ async def apply(ctx):
             business.append(request)
             if len(business) == 1:''').replace("Preserved facts.", "Preserved facts." + "z" * summary_padding))
     if shell:
-        save_config(workspace / "plugin-data/context-builtin", {"prompt_sources": {"skills": "standard_tools"}})
+        save_config(workspace / "plugin-data/context-builtin", {"prompt_sources": {"skills": "skills"}})
         for name in ("host_execution", "assets"):
             if not (sources / name).exists():
                 shutil.copytree(Path(__file__).parents[1] / "plugins" / name, sources / name,

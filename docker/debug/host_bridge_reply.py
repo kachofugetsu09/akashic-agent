@@ -37,7 +37,7 @@ def add_skills(sources: Path, *, files: int, always: bool) -> None:
     module.write_text(source.replace("if len(calls) == 1:", "if False:"))
     save_config(sources.parent / "workspace/plugin-data/context-builtin",
                 {"prompt_sources": {"skills": "skill_probe"}})
-    for source_name, target in (("assets", "assets"), ("standard_tools", "skill_probe")):
+    for source_name, target in (("assets", "assets"), ("skills", "skill_probe")):
         shutil.copytree(ROOT / "plugins" / source_name, sources / target,
                         ignore=shutil.ignore_patterns("__pycache__"))
     (sources / "skill_probe/plugin.py").write_text('''from plugins.assets.contract import INSTALLED_ASSETS

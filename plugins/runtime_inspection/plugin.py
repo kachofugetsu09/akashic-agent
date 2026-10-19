@@ -9,7 +9,7 @@ from plugins.gateway.contract import RpcMethod
 from plugins.runtime_inspection.contract import DOCUMENTS
 from .rpc import rpc_methods
 
-from plugins.standard_tools.contract import SKILL_INSPECTION
+from plugins.skills.contract import SKILL_INSPECTION
 from .inspection import (
     RuntimeInspectionProvider,
 )

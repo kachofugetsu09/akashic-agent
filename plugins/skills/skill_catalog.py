@@ -1,4 +1,4 @@
-"""standard_tools 拥有的 Skill 解析与可用性判断。"""
+"""skills 插件拥有的 Skill 解析与可用性判断。"""
 
 from __future__ import annotations
 

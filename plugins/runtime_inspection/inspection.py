@@ -9,7 +9,7 @@ from agent.plugin_composition import Context, Effect
 
 from plugins.runtime_inspection.contract import Document
 from plugins.scheduler.contract import SCHEDULER_INSPECTION
-from plugins.standard_tools.contract import SkillReader
+from plugins.skills.contract import SkillReader
 
 _MAX_DOCUMENT_BYTES = 192 * 1024
 
