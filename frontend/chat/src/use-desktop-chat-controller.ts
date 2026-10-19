@@ -85,18 +85,23 @@ class SendFailed extends Error {}
 class HistoryUnavailable extends Error {}
 
 const RECONNECTING_NOTICE = "连接已断开，正在重新连接…";
-const PAGE_BUILD = document.querySelector<HTMLMetaElement>('meta[name="akashic-build"]')?.content || null;
+// 页面版本：独立页面由服务端注入 meta；同文档挂载时由挂载入口给出构建时写入的版本。
+let pageBuild = document.querySelector<HTMLMetaElement>('meta[name="akashic-build"]')?.content || null;
+
+export function setPageBuild(build: string): void {
+  pageBuild = build;
+}
 
 const PAGE_BUILD_RETRY_MS = [2_000, 5_000, 15_000];
 
 function pageBuildOutdated(state: WebShellState): boolean {
-  return Boolean(PAGE_BUILD && state.build && state.build !== PAGE_BUILD);
+  return Boolean(pageBuild && state.build && state.build !== pageBuild);
 }
 
 // 服务端升级后旧页面的展示合同可能已过期：每次连上都对照页面自带的版本，变了就提示刷新。
 // 读取失败（重启中的短暂 503 等）按退避有限重试；live 为假时本次连接已结束，不再重试。
 function checkPageBuild(outdated: () => void, live: () => boolean, attempt = 0) {
-  if (!PAGE_BUILD) return;
+  if (!pageBuild) return;
   void fetchChatJson<unknown>("/api/shell/state").then(webShellState).then((state) => {
     if (pageBuildOutdated(state)) outdated();
   }).catch(() => {

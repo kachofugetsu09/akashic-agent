@@ -32,13 +32,15 @@ DSH 的浏览器侧只有一个文档：外壳提供 React、Cordis 与静态 UI
 ## 决定
 
 1. 聊天应用改为 conversation_ui 的普通挂载：`mountChat(host, 宿主接口)`。外壳文档里只保留一份 React，聊天和聊天插件模块都经外壳的
-   import map 取得 `react`、`react-dom`、`@akashic/web-ui-v1` 与 `@akashic/chat-ui-v1`。
+   import map 取得 `react`、`react-dom`、`@akashic/web-ui-v1` 与 `@akashic/chat-ui-v1`。`mountChat` 本身也是 Host SDK
+   `@akashic/chat-app-v1`：插件 web module 仍只能静态 import Host SDK，conversation_ui 不靠动态加载取得聊天。
 2. 原来的 11 种桥消息改为有类型的宿主接口：宿主到聊天的方向用句柄方法（底栏动作、工具区是否在场、工作台意图与引用），
    聊天到宿主的方向用回调（当前会话、覆盖层、意图请求、底栏动作激活）。主题直接读外壳的 `@akashic/web-ui-v1`，不再同步。
 3. 同一文档里的约束：
    - 聊天的全局样式（`html/body/#root`）收进聊天根节点之下；
    - `window.__akashicRuntime` 只追加 `ChatUi`，不覆盖外壳已登记的运行时；
-   - 聊天的 document 级快捷键不处理来自其他区域（工作台面板）的按键。
+   - 聊天的 document 级快捷键不处理来自其他区域（工作台面板）的按键；
+   - 聊天的响应式断点按聊天根节点自身的宽度判断，不按窗口宽度。
 4. 拆除顺序（每步一个 PR）：
    1. 聊天可挂载：增加模块入口与共享 React 的构建，桥改成接口；iframe 仍用同一接口的消息适配；
    2. conversation_ui 直接挂载聊天，删除 iframe 与桥；

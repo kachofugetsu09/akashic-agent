@@ -28,6 +28,7 @@ _WEB_MODULE_IMPORTS = frozenset(
         "react/jsx-runtime",
         "react-dom/client",
         "@akashic/web-ui-v1",
+        "@akashic/chat-app-v1",
     }
 )
 

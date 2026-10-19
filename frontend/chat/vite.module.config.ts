@@ -1,11 +1,18 @@
-import { dirname, resolve } from "node:path";
+import { createHash } from "node:crypto";
+import { existsSync, readFileSync } from "node:fs";
+import { createRequire } from "node:module";
+import { dirname, relative, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import react from "@vitejs/plugin-react";
+import autoprefixer from "autoprefixer";
+import tailwindcss from "tailwindcss";
 import { defineConfig, type Plugin } from "vite";
+
 
 // 聊天的同文档挂载模块：conversation_ui 在外壳页面里 import 它。React、外壳运行时与聊天公开运行时
 // 都经外壳 import map 取同一份，不打进本包；产物与 iframe 版同目录发布，入口和样式用稳定文件名。
 const here = dirname(fileURLToPath(import.meta.url));
+const require = createRequire(import.meta.url);
 const repoRoot = resolve(here, "..", "..");
 const shellOwned = new Set(["theme-runtime.ts", "material-react.tsx"].map((name) => resolve(repoRoot, "frontend", "theme", "src", name)));
 const shellTheme = resolve(here, "src", "shell-theme.ts");
@@ -23,10 +30,41 @@ function useShellTheme(): Plugin {
   };
 }
 
+// 构建版本：参与构建的全部源文件（相对路径与内容）的摘要，写进挂载代码并另存 chat-app.build；服务端读后者，页面对照前者，
+// 不同就提示刷新。在 renderChunk 里替换：Rollup 之后才按最终内容算文件名哈希，所在分块会随版本换名，不会命中旧的永久缓存。
+const BUILD_PLACEHOLDER = "__AKASHIC_CHAT_BUILD__";
+
+function stampChatBuild(): Plugin {
+  let build = "";
+  let stamped = 0;
+  return {
+    name: "stamp-chat-build",
+    apply: "build",
+    buildEnd() {
+      const hash = createHash("sha256");
+      for (const id of [...this.getModuleIds()].map((id) => id.split("?")[0]).sort()) {
+        hash.update(relative(repoRoot, id)).update(existsSync(id) ? readFileSync(id) : this.getModuleInfo(id)?.code ?? "");
+      }
+      build = hash.digest("hex").slice(0, 16);
+    },
+    renderChunk(code) {
+      if (!code.includes(BUILD_PLACEHOLDER)) return null;
+      stamped += 1;
+      return { code: code.replaceAll(BUILD_PLACEHOLDER, build), map: null };
+    },
+    generateBundle() {
+      if (stamped !== 1) throw new Error(`构建版本占位应只出现在一个分块里，实际 ${stamped} 个`);
+      this.emitFile({ type: "asset", fileName: "chat-app.build", source: build });
+    },
+  };
+}
+
 export default defineConfig({
   root: here,
   base: "/assets/",
-  plugins: [react(), useShellTheme()],
+  plugins: [react(), useShellTheme(), stampChatBuild()],
+  // 与外壳同一文档：样式只作用于聊天根节点（见 postcss-scope-chat.cjs）。
+  css: { postcss: { plugins: [tailwindcss(require("./tailwind.config.cjs")), autoprefixer(), require("./postcss-scope-chat.cjs")()] } },
   resolve: {
     dedupe: ["@pierre/diffs"],
     alias: {

@@ -1,28 +1,25 @@
-import { currentTheme, subscribeTheme } from "@akashic/web-ui-v1";
+import { mountChat } from "@akashic/chat-app-v1";
 
 const WIDTH_KEY = "akashic.conversation.tools.width";
 const DEFAULT_WIDTH_RATIO = 0.42;
 const MIN_PANEL_WIDTH = 360;
 const MIN_CHAT_WIDTH = 420;
 
-function syncFrameTheme(frame) {
-  // iframe 隐藏后再返回时告诉聊天页"重新显示了"，由聊天宿主通知各插件重读；不重建 iframe 或清空编辑器。
-  const observer = new IntersectionObserver((entries) => {
-    if (entries.some((entry) => entry.isIntersecting)) frame.contentWindow?.postMessage(
-      { type: "akashic.frame.shown" }, window.location.origin,
-    );
+// 聊天由 Host SDK 挂进同一文档（ADR 0126）。聊天发来的事件经 hooks 转给工作台，没有工作台时取默认值。
+function connectChat(chatHost, railActions) {
+  const hooks = { session() {}, overlay() {}, intent: async () => "unhandled" };
+  const handle = mountChat(chatHost, {
+    activateRailAction: (id) => railActions.find((entry) => entry.id === id)?.onActivate(),
+    reportSession: (sessionId) => hooks.session(sessionId),
+    reportOverlay: (open) => hooks.overlay(open),
+    requestIntent: (name, session, payload) => hooks.intent(name, session, payload),
   });
-  observer.observe(frame);
-  const send = () => frame.contentWindow?.postMessage(
-    { type: "akashic.theme", themeId: currentTheme().id },
-    window.location.origin,
-  );
-  frame.addEventListener("load", send);
-  const unsubscribe = subscribeTheme(send);
-  return () => {
-    observer.disconnect();
-    unsubscribe();
-    frame.removeEventListener("load", send);
+  handle.setRailActions(railActions.map(({ id, order, label, iconSvg }) => ({ id, order, label, iconSvg })));
+  return {
+    handle,
+    hooks,
+    // 收起工具区后焦点回到输入框；聊天还没渲染出输入框时交给默认目标。
+    focusTarget: () => chatHost.querySelector("textarea") ?? undefined,
   };
 }
 
@@ -52,7 +49,7 @@ function checkTabs(entries) {
     (left.order ?? 0) - (right.order ?? 0) || left.id.localeCompare(right.id));
 }
 
-// Shell 底栏动作：声明式投影跨 iframe 传给 chat 渲染，onActivate 留在宿主域。
+// Shell 底栏动作：声明式投影交给聊天渲染，onActivate 留在宿主这边。
 function checkRailActions(value) {
   if (value === undefined || value === null) return [];
   if (!Array.isArray(value)) throw new Error("对话底栏动作必须是数组");
@@ -74,26 +71,6 @@ function checkRailActions(value) {
   }
   return [...actions].sort((left, right) =>
     (left.order ?? 0) - (right.order ?? 0) || left.id.localeCompare(right.id));
-}
-
-function connectRailActions(frame, actions) {
-  const projection = actions.map(({ id, order, label, iconSvg }) => ({ id, order, label, iconSvg }));
-  const send = () => frame.contentWindow?.postMessage(
-    { type: "akashic.rail-actions", actions: projection }, window.location.origin,
-  );
-  frame.addEventListener("load", send);
-  const onMessage = (event) => {
-    if (event.source !== frame.contentWindow || event.origin !== window.location.origin) return;
-    const message = event.data;
-    if (!message || typeof message !== "object" || message.type !== "akashic.rail-action-activate") return;
-    if (typeof message.id !== "string") return;
-    actions.find((entry) => entry.id === message.id)?.onActivate();
-  };
-  window.addEventListener("message", onMessage);
-  return () => {
-    frame.removeEventListener("load", send);
-    window.removeEventListener("message", onMessage);
-  };
 }
 
 function storedWidth() {
@@ -122,45 +99,13 @@ function toolIcon() {
   return icon;
 }
 
-// 告知 chat 宿主右上角有工具区开关，标题带据此让出开关所占的位置；快捷键列给 chat 的快捷键面板。
-function announceTools(frame, entries) {
-  const shortcuts = [
+// 告知聊天右上角有工具区开关，标题带据此让出开关所占的位置；快捷键列给聊天的快捷键面板。
+function toolShortcuts(entries) {
+  return [
     { label: "打开或收起工作台", keys: shortcutKeys(HOST_SHORTCUTS.toggle) },
     { label: "工作台上下分屏", keys: shortcutKeys(HOST_SHORTCUTS.split) },
     ...entries.filter((entry) => entry.shortcut).map((entry) => ({ label: `打开${entry.label}`, keys: shortcutKeys(entry.shortcut) })),
   ];
-  const send = () => frame.contentWindow?.postMessage(
-    { type: "akashic.chat-tools", present: true, shortcuts }, window.location.origin,
-  );
-  frame.addEventListener("load", send);
-  return () => frame.removeEventListener("load", send);
-}
-
-// 通知入口的 ?session= 只消费一次，避免刷新后反复跳回同一会话。
-function takeRequestedSession() {
-  const url = new URL(window.location.href);
-  const sessionId = url.searchParams.get("session");
-  if (!sessionId) return "";
-  url.searchParams.delete("session");
-  window.history.replaceState(window.history.state, "", url);
-  return sessionId;
-}
-
-function frameSource(sessionId) {
-  return sessionId ? `/chat?embedded=1&session=${encodeURIComponent(sessionId)}` : "/chat?embedded=1";
-}
-
-// chat iframe 报告当前会话；宿主只转交给标签，不保存、不推导。
-function followChatSession(frame, onSession) {
-  const onMessage = (event) => {
-    if (event.source !== frame.contentWindow || event.origin !== window.location.origin) return;
-    const message = event.data;
-    if (!message || typeof message !== "object" || message.type !== "akashic.chat-session") return;
-    if (message.sessionId !== null && typeof message.sessionId !== "string") return;
-    onSession(message.sessionId || null);
-  };
-  window.addEventListener("message", onMessage);
-  return () => window.removeEventListener("message", onMessage);
 }
 
 const NARROW_QUERY = "(max-width: 68rem)";
@@ -244,33 +189,19 @@ function newInstanceId() {
   return [...bytes].map((value) => value.toString(16).padStart(2, "0")).join("");
 }
 
-// 告知 chat 哪些意图有接受者，chat 据此决定是否显示“在侧栏打开”；不代表一定成功。
-function announceIntents(frame, entries) {
-  const names = [...new Set(entries.flatMap((entry) => entry.accepts ?? []))];
-  const send = () => frame.contentWindow?.postMessage(
-    { type: "akashic.workbench-intents", names }, window.location.origin,
-  );
-  frame.addEventListener("load", send);
-  send();
-  return () => frame.removeEventListener("load", send);
+// 告知聊天哪些意图有接受者，聊天据此决定是否显示“在侧栏打开”；不代表一定成功。
+function intentNames(entries) {
+  return [...new Set(entries.flatMap((entry) => entry.accepts ?? []))];
 }
 
-// 外层校验：只认自己 chat iframe 发来的、当前会话的、大小合规的意图；领域 payload 由接收标签校验。
-function readIntent(event, frame, session) {
-  if (event.source !== frame.contentWindow || event.origin !== window.location.origin) return null;
-  const message = event.data;
-  if (!message || typeof message !== "object" || message.type !== "akashic.workbench-intent") return null;
-  if (typeof message.id !== "string" || !message.id || message.id.length > 64) return null;
+// 外层校验：只认当前会话的、大小合规的意图；领域 payload 由接收标签校验。
+function readIntent(name, session, payload, current) {
   let size = Infinity;
   // 上限按 UTF-8 字节计（合同写的是 16 KiB）；不可序列化（循环引用、BigInt）按超限处理。
-  try { size = new TextEncoder().encode(JSON.stringify(message.payload ?? null)).byteLength; } catch { /* 见上 */ }
-  const valid = typeof message.name === "string" && INTENT_NAME.test(message.name)
-    && typeof message.session === "string" && message.session === session && size <= INTENT_LIMIT;
-  return { id: message.id, valid, intent: { id: message.id, name: message.name, session: message.session, payload: message.payload ?? null } };
-}
-
-function replyIntent(frame, id, status) {
-  frame.contentWindow?.postMessage({ type: "akashic.workbench-intent-result", id, status }, window.location.origin);
+  try { size = new TextEncoder().encode(JSON.stringify(payload ?? null)).byteLength; } catch { /* 见上 */ }
+  const valid = typeof name === "string" && INTENT_NAME.test(name)
+    && typeof session === "string" && session === current && size <= INTENT_LIMIT;
+  return valid ? { id: newInstanceId(), name, session, payload: payload ?? null } : null;
 }
 
 // 每个会话各记一份分组（上下最多两组，每组的标签与当前标签）与展开状态；只是视图偏好，读写失败时退回新标签页。
@@ -653,14 +584,14 @@ function readIndicator(value) {
 
 // 工具区状态的唯一 owner：本会话的分组（上下最多两组，各自的标签顺序与当前标签）、展开与铺满。
 // 标签只经 view 读到可见事实与当前会话。
-function mountTools(root, frame, tools, entries) {
+function mountTools(root, chat, tools, entries) {
   const chrome = buildChrome();
   const sizing = createSizing(root, chrome.splitter);
   const narrow = window.matchMedia(NARROW_QUERY);
   const records = createRecords(entries, chrome.groups[0].content);
   const state = {
     open: false, maximized: false, session: null, groups: [newGroup([records.launch()])], focus: 0,
-    // chat 的模态层（窄屏导航抽屉等）在 iframe 内，盖不住宿主的浮动开关；打开期间收起开关。
+    // 聊天的模态层（窄屏导航抽屉等）盖不住宿主的浮动开关；打开期间收起开关。
     chatOverlay: false,
     // 窄屏恢复布局时只是暂不展开；记下的仍是用户的展开偏好，用户自己开关后清除。
     held: false,
@@ -997,23 +928,21 @@ function mountTools(root, frame, tools, entries) {
     return records.single(entry);
   }
 
-  // 7. 意图交给第一个声明 accepts 的工具：先展开并激活（多开工具取本会话最近的实例），再投递；结果异步回执给 chat。
-  async function routeIntent(event) {
-    const request = readIntent(event, frame, state.session);
-    if (!request) return;
-    if (!request.valid) return replyIntent(frame, request.id, "invalid");
-    const target = entries.find((entry) => entry.accepts?.includes(request.intent.name));
+  // 7. 意图交给第一个声明 accepts 的工具：先展开并激活（多开工具取本会话最近的实例），再投递；结果异步回给聊天。
+  async function routeIntent(name, session, payload) {
+    const intent = readIntent(name, session, payload, state.session);
+    if (!intent) return "invalid";
+    const target = entries.find((entry) => entry.accepts?.includes(intent.name));
     const existing = target?.multiple ? allTabs().findLast((record) => record.entry === target) : null;
     const record = existing ? activate(existing.key) : target ? openTool(target) : null;
-    if (!record) return replyIntent(frame, request.id, "unhandled");
-    const listener = lifecycle.intentListener(record.key);
-    if (!listener) return replyIntent(frame, request.id, "unhandled");
+    const listener = record ? lifecycle.intentListener(record.key) : null;
+    if (!listener) return "unhandled";
     let timer = 0;
     const timeout = new Promise((resolve) => { timer = window.setTimeout(() => resolve("failed"), INTENT_TIMEOUT_MS); });
-    const status = await Promise.race([Promise.resolve().then(() => listener(request.intent)), timeout])
+    const status = await Promise.race([Promise.resolve().then(() => listener(intent)), timeout])
       .catch((error) => { console.error("[conversation-ui] intent failed", error); return "failed"; });
     window.clearTimeout(timer);
-    replyIntent(frame, request.id, ["handled", "invalid", "failed"].includes(status) ? status : "failed");
+    return ["handled", "invalid", "failed"].includes(status) ? status : "failed";
   }
 
   // 8. 引用只进发起时的那个会话：会话已切走、工具区已卸载或超长都拒绝，chat 收到后再核对一次。
@@ -1023,12 +952,12 @@ function mountTools(root, frame, tools, entries) {
     if (typeof text !== "string" || !text || text.length > QUOTE_LIMIT) return "rejected";
     if (typeof source !== "string" || !source || source.length > SOURCE_LIMIT) return "rejected";
     if (typeof session !== "string" || session !== state.session) return "stale";
-    frame.contentWindow?.postMessage({ type: "akashic.composer-quote", session, text, source }, window.location.origin);
+    chat.handle.quote({ session, text, source });
     return "inserted";
   }
 
   // 9. 快捷键：Mod+J 开关工具区，Mod+\ 分屏，工具声明的组合切到（或打开）该工具并把焦点移进去。
-  //    chat iframe 同源，直接在它的 window 上监听；页面不可见、浮层占着键盘、标签自己处理过的按键（如终端里）都不接。
+  //    聊天与工具区同一文档，在 window 上监听；页面不可见、浮层占着键盘、标签自己处理过的按键（如终端里）都不接。
   //    按住不放的自动重复只吞掉，不反复开合。
   function onShortcut(event) {
     const spec = event.defaultPrevented || root.offsetParent === null ? null : shortcutOf(event);
@@ -1038,7 +967,7 @@ function mountTools(root, frame, tools, entries) {
     event.preventDefault();
     if (event.repeat) return;
     if (spec === HOST_SHORTCUTS.toggle) {
-      if (state.open) closePanel(frame);
+      if (state.open) closePanel(chat.focusTarget());
       else openPanel(true);
     } else if (spec === HOST_SHORTCUTS.split) toggleSplit();
     else focusTool(entry);
@@ -1070,19 +999,10 @@ function mountTools(root, frame, tools, entries) {
     event.preventDefault();
   }
 
-  function followChatOverlay(event) {
-    if (event.source !== frame.contentWindow || event.origin !== window.location.origin) return;
-    const message = event.data;
-    if (!message || typeof message !== "object" || message.type !== "akashic.chat-overlay") return;
-    state.chatOverlay = message.open === true;
+  function followChatOverlay(open) {
+    state.chatOverlay = open === true;
     update();
   }
-  // iframe 重载时旧的打开状态作废，键盘监听重新挂到新的 window 上。
-  const onFrameLoad = () => {
-    state.chatOverlay = false;
-    update();
-    frame.contentWindow?.addEventListener("keydown", onShortcut);
-  };
 
   // 标签条的指针与键盘：点选、中键关闭、关闭按钮；方向键与 Home/End 在本组里换标签，Delete 关闭。
   function onStripClick(event) {
@@ -1174,13 +1094,10 @@ function mountTools(root, frame, tools, entries) {
   root.append(chrome.splitter, chrome.panel, chrome.toggle);
   root.addEventListener("keydown", onKeydown);
   window.addEventListener("keydown", onShortcut);
-  window.addEventListener("message", followChatOverlay);
-  frame.addEventListener("load", onFrameLoad);
   window.addEventListener("resize", sizing.fit);
-  const stopSession = followChatSession(frame, applySession);
-  const stopIntents = announceIntents(frame, entries);
-  const onIntent = (event) => void routeIntent(event);
-  window.addEventListener("message", onIntent);
+  Object.assign(chat.hooks, { session: applySession, overlay: followChatOverlay, intent: routeIntent });
+  chat.handle.setTools(true, toolShortcuts(entries));
+  chat.handle.setWorkbenchIntents(intentNames(entries));
   for (const record of records.singles()) if (record.entry.background) lifecycle.mount(record);
   return {
     start() {
@@ -1189,14 +1106,8 @@ function mountTools(root, frame, tools, entries) {
     },
     dispose() {
       disposed = true;
-      stopSession();
-      stopIntents();
-      window.removeEventListener("message", onIntent);
       root.removeEventListener("keydown", onKeydown);
       window.removeEventListener("keydown", onShortcut);
-      frame.contentWindow?.removeEventListener("keydown", onShortcut);
-      window.removeEventListener("message", followChatOverlay);
-      frame.removeEventListener("load", onFrameLoad);
       window.removeEventListener("resize", sizing.fit);
       lifecycle.dispose();
     },
@@ -1207,24 +1118,22 @@ function renderConversation(host, view, props) {
   const tools = view.child("conversation.tools.v2");
   const entries = checkTabs(tools.entries);
   const railActions = checkRailActions(props?.railActions);
-  const root = document.createElement("div");
-  root.className = "conversation-page";
-  const frame = document.createElement("iframe");
-  frame.className = "conversation-page-frame";
-  frame.title = "Akashic 对话";
-  frame.src = frameSource(takeRequestedSession());
-  root.appendChild(frame);
-  const workbench = entries.length ? mountTools(root, frame, tools, entries) : null;
+  const root = element("div", "conversation-page");
+  const chatHost = element("div", "conversation-page-chat");
+  root.appendChild(chatHost);
   host.replaceChildren(root);
-  const stopThemeSync = syncFrameTheme(frame);
-  const stopRailActions = connectRailActions(frame, railActions);
-  const stopToolsNotice = workbench ? announceTools(frame, entries) : () => {};
+  const chat = connectChat(chatHost, railActions);
+  const workbench = entries.length ? mountTools(root, chat, tools, entries) : null;
+  // 页面隐藏后再返回时告诉聊天"重新显示了"，由聊天通知各插件重读；不重建聊天、不清空编辑器。
+  const visibility = new IntersectionObserver((records) => {
+    if (records.some((record) => record.isIntersecting)) chat.handle.shown();
+  });
+  visibility.observe(chatHost);
   workbench?.start();
   return () => {
+    visibility.disconnect();
     workbench?.dispose();
-    stopToolsNotice();
-    stopRailActions();
-    stopThemeSync();
+    chat.handle.dispose();
     host.replaceChildren();
   };
 }

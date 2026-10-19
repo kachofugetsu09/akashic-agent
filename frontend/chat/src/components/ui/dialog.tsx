@@ -2,6 +2,7 @@ import * as React from "react"
 import * as DialogPrimitive from "@radix-ui/react-dialog"
 import { X } from "lucide-react"
 
+import { chatPortalRoot } from "@/chat-layout"
 import { cn } from "@/lib/utils"
 
 const Dialog = DialogPrimitive.Root
@@ -36,7 +37,7 @@ const DialogContent = React.forwardRef<
   React.ElementRef<typeof DialogPrimitive.Content>,
   DialogContentProps
 >(({ className, children, showCloseButton = true, overlayClassName, ...props }, ref) => (
-  <DialogPortal>
+  <DialogPortal container={chatPortalRoot()}>
     <DialogOverlay className={overlayClassName} />
     <DialogPrimitive.Content
       ref={ref}

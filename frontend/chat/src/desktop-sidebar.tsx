@@ -30,6 +30,7 @@ import {
 } from "./use-sidebar-rail";
 import type { NavigationRowAction } from "./navigation-row-menu";
 import { getHostShortcuts } from "./shell-workbench";
+import { keyForChat } from "./chat-host";
 
 export interface DesktopSidebarSession extends Omit<ConversationSession, "active" | "state"> {
   active: boolean;
@@ -211,7 +212,7 @@ function useSidebarShortcuts(sidebarRef: RefObject<HTMLElement | null>, searchRe
       // 搜索要先有可见的搜索框，交给抽屉（compact-navigation.tsx）打开后聚焦。
       const sidebar = sidebarRef.current;
       if (!sidebar || sidebar.closest("[role='dialog']")) return;
-      if (!(event.metaKey || event.ctrlKey) || event.altKey || event.isComposing) return;
+      if (!(event.metaKey || event.ctrlKey) || event.altKey || event.isComposing || !keyForChat(event)) return;
       // 对话框、菜单、选择器打开时按键属于它们，不把焦点抢到背后或在背后开新会话。
       if (document.querySelector("[role='dialog'], [role='menu'], [role='listbox'], [data-radix-popper-content-wrapper]")) return;
       const key = event.key.toLowerCase();

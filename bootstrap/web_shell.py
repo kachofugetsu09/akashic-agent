@@ -162,10 +162,12 @@ _WEB_CONTENT_SECURITY_POLICY = "; ".join((
     "style-src 'self' 'unsafe-inline'",
     "img-src 'self' data: blob:",
     "font-src 'self' data:",
-    "connect-src 'self'",
+    # 聊天上传前读取本页生成的附件 Blob，文本附件预览也读 data/blob。
+    "connect-src 'self' data: blob:",
     "frame-src 'self'",
     # 浏览器模块的媒体缓冲与解码 worker 不取得外部网络来源；代码高亮 worker 是同源的构建产物。
-    "media-src blob:",
+    # 聊天里已发送的视频是同源制品地址。
+    "media-src 'self' blob:",
     "worker-src 'self' blob:",
     "object-src 'none'",
     "base-uri 'none'",

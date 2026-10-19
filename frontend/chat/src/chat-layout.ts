@@ -19,10 +19,16 @@ export interface ChatLayout {
 }
 
 let current: ChatLayout = { compact: false, narrow: false, wide: true };
+let portalRoot: HTMLElement | null = null;
 const listeners = new Set<() => void>();
 
 export function chatLayout(): ChatLayout {
   return current;
+}
+
+// 弹层（对话框、菜单、浮动按钮）挂进聊天根节点：同文档挂载时才能命中按根节点写的布局与作用域样式。
+export function chatPortalRoot(): HTMLElement {
+  return portalRoot ?? document.body;
 }
 
 export function subscribeChatLayout(listener: () => void): () => void {
@@ -37,6 +43,7 @@ function toggle(frame: HTMLElement, name: string, on: boolean): void {
 
 // frame 是 html 时（独立页面与 iframe）按视口宽度算，与原来的媒体查询一致；否则按聊天根节点的宽度。
 export function observeChatLayout(frame: HTMLElement): () => void {
+  portalRoot = frame === document.documentElement ? document.body : frame;
   const low = window.matchMedia(LOW);
   const shortCoarse = window.matchMedia(SHORT_COARSE);
   const touch = window.matchMedia(TOUCH);
@@ -63,5 +70,6 @@ export function observeChatLayout(frame: HTMLElement): () => void {
     observer.disconnect();
     for (const query of queries) query.removeEventListener("change", apply);
     window.removeEventListener("resize", apply);
+    if (portalRoot === frame) portalRoot = null;
   };
 }
