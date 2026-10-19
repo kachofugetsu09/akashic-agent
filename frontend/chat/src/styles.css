@@ -833,7 +833,7 @@ input {
 .navigation-pins-error { display: grid; gap: 5px; padding: 8px 16px; font-size: 0.75rem; color: var(--ak-color-status-error); }
 .navigation-pins-error button { justify-self: start; border: 0; background: transparent; color: var(--chat-ink); text-decoration: underline; cursor: pointer; }
 
-.project-navigation {
+.navigation-section {
   display: grid;
   min-width: 0;
   flex: 0 0 auto;
@@ -843,7 +843,7 @@ input {
   padding-inline: var(--chat-rail-inline);
 }
 
-.project-navigation__header {
+.navigation-section__header {
   display: flex;
   min-height: 32px;
   align-items: center;
@@ -855,7 +855,7 @@ input {
   font-weight: 600;
 }
 
-.project-navigation__icon {
+.navigation-section__icon {
   display: grid;
   width: 26px;
   height: 26px;
@@ -868,20 +868,20 @@ input {
   cursor: pointer;
 }
 
-.project-navigation__icon:focus-visible {
+.navigation-section__icon:focus-visible {
   color: var(--chat-ink);
   background: color-mix(in oklab, var(--ak-ink-primary) 5%, transparent);
 }
 @media (hover: hover) {
-  .project-navigation__icon:hover {
+  .navigation-section__icon:hover {
     color: var(--chat-ink);
     background: color-mix(in oklab, var(--ak-ink-primary) 5%, transparent);
   }
 }
 
-.project-navigation__empty,
-.project-group__open,
-.project-session {
+.navigation-section__empty,
+.navigation-group__open,
+.group-session {
   display: flex;
   width: 100%;
   min-width: 0;
@@ -899,32 +899,32 @@ input {
   cursor: pointer;
 }
 
-.project-navigation__empty {
+.navigation-section__empty {
   color: var(--chat-muted);
 }
 
-.project-navigation__empty:focus-visible,
-.project-group__open:focus-visible,
-.project-session:focus-visible {
+.navigation-section__empty:focus-visible,
+.navigation-group__open:focus-visible,
+.group-session:focus-visible {
   background: color-mix(in oklab, var(--ak-ink-primary) 5%, transparent);
 }
 @media (hover: hover) {
-  .project-navigation__empty:hover,
-  .project-group__open:hover,
-  .project-session:hover {
+  .navigation-section__empty:hover,
+  .navigation-group__open:hover,
+  .group-session:hover {
     background: color-mix(in oklab, var(--ak-ink-primary) 5%, transparent);
   }
 }
 
-.project-group__row {
+.navigation-group__row {
   display: flex;
   align-items: center;
   gap: 2px;
 }
 
-.project-group { min-width: 0; }
+.navigation-group { min-width: 0; }
 
-.project-group__toggle {
+.navigation-group__toggle {
   display: grid;
   width: 28px;
   min-height: 36px;
@@ -937,30 +937,30 @@ input {
   cursor: pointer;
 }
 
-.project-group__toggle:focus-visible {
+.navigation-group__toggle:focus-visible {
   background: var(--chat-chip);
 }
 @media (hover: hover) {
-  .project-group__toggle:hover {
+  .navigation-group__toggle:hover {
     background: var(--chat-chip);
   }
 }
 
-.project-group__open {
+.navigation-group__open {
   width: auto;
   min-height: 36px;
   flex: 1;
   padding-inline: 4px;
 }
 
-.project-group__open[aria-disabled="true"],
-.project-group__toggle:disabled { cursor: default; }
+.navigation-group__open[aria-disabled="true"],
+.navigation-group__toggle:disabled { cursor: default; }
 
-.project-group__open svg { flex: 0 0 auto; }
-.project-group.active > .project-group__row { background: var(--chat-chip); border-radius: 8px; }
+.navigation-group__open svg { flex: 0 0 auto; }
+.navigation-group.active > .navigation-group__row { background: var(--chat-chip); border-radius: 8px; }
 
 @media (hover: hover) and (pointer: fine) {
-  .project-group__new-chat {
+  .navigation-group__new-chat {
     position: absolute;
     inset-inline-end: 42px;
     width: 40px;
@@ -969,23 +969,23 @@ input {
     opacity: 0;
     pointer-events: none;
   }
-  .project-group__row:hover .project-group__new-chat,
-  .project-group__row:has(:focus-visible) .project-group__new-chat { opacity: 1; pointer-events: auto; }
-  .project-group__row:hover .project-group__open,
-  .project-group__row:has(:focus-visible) .project-group__open { padding-inline-end: 84px; }
+  .navigation-group__row:hover .navigation-group__new-chat,
+  .navigation-group__row:has(:focus-visible) .navigation-group__new-chat { opacity: 1; pointer-events: auto; }
+  .navigation-group__row:hover .navigation-group__open,
+  .navigation-group__row:has(:focus-visible) .navigation-group__open { padding-inline-end: 84px; }
 }
 
-.project-group__chevron {
+.navigation-group__chevron {
   flex: 0 0 auto;
   color: var(--chat-muted);
   transition: rotate var(--ak-sys-duration-short) var(--ak-sys-motion-standard);
 }
 
-.project-group__toggle[aria-expanded="true"] .project-group__chevron {
+.navigation-group__toggle[aria-expanded="true"] .navigation-group__chevron {
   rotate: 90deg;
 }
 
-.project-group__name {
+.navigation-group__name {
   min-width: 0;
   flex: 1;
   font-weight: 550;
@@ -995,54 +995,54 @@ input {
 .plugin-ui-slot[data-slot="scope.badge"] { display: flex; min-width: 0; max-width: 45%; }
 .plugin-ui-slot[data-slot="scope.badge"] > .plugin-ui-host { display: flex; min-width: 0; }
 
-.project-group__sessions {
+.navigation-group__sessions {
   display: grid;
   min-width: 0;
   gap: 1px;
   /* 与项目行的展开箭头同宽：状态槽位落在文件夹图标正下方，会话标题与项目名左对齐。 */
-  padding-inline-start: var(--project-toggle-width, 28px);
+  padding-inline-start: var(--group-toggle-width, 28px);
 }
 
-.project-group__icon { display: grid; width: 18px; height: 18px; flex: 0 0 18px; place-items: center; }
+.navigation-group__icon { display: grid; width: 18px; height: 18px; flex: 0 0 18px; place-items: center; }
 
-.project-group__hint {
+.navigation-group__hint {
   padding-block: 4px;
   padding-inline: 10px;
   color: var(--chat-faint);
   font-size: 0.75rem;
 }
 
-.project-session > span:not(.session-status-slot) {
+.group-session > span:not(.session-status-slot) {
   min-width: 0;
   flex: 1;
 }
 
-.project-session {
+.group-session {
   gap: 10px;
   padding-inline: 4px 10px;
 }
 
-.project-session.active {
+.group-session.active {
   background: color-mix(in oklab, var(--ak-ink-primary) 8%, transparent);
 }
 
 @media (max-width: 820px), (hover: none) {
-  .project-group__new-chat { display: none; }
-  .project-group { --project-toggle-width: 44px; }
-  .project-group__toggle { width: 44px; }
-  .project-group__row,
-  .project-group__open,
-  .project-group__toggle,
-  .project-session,
-  .project-navigation__icon { min-height: 44px; }
-  .project-navigation__header > .project-navigation__icon { width: 44px; }
+  .navigation-group__new-chat { display: none; }
+  .navigation-group { --group-toggle-width: 44px; }
+  .navigation-group__toggle { width: 44px; }
+  .navigation-group__row,
+  .navigation-group__open,
+  .navigation-group__toggle,
+  .group-session,
+  .navigation-section__icon { min-height: 44px; }
+  .navigation-section__header > .navigation-section__icon { width: 44px; }
   /* 排序钮放到 44px 后，分组标题行不再叠 18px 上内边距：热区不变，搜索框到"最近会话"文字的空白 62→44px。 */
   .conversation-navigation__heading--section:has(.conversation-sort-trigger) { padding-block: 4px 0; }
 }
 
-.project-dialog-overlay { background: rgb(var(--ak-color-shadow-rgb) / 0.32); }
+.group-dialog-overlay { background: rgb(var(--ak-color-shadow-rgb) / 0.32); }
 
-.project-dialog {
+.group-dialog {
   width: min(calc(100vw - 32px), 560px);
   max-width: 560px;
   gap: 0;
@@ -1053,10 +1053,10 @@ input {
   background: var(--ak-paper-canvas);
 }
 
-.project-dialog form { display: grid; gap: 22px; }
-.project-dialog__header { padding-inline-end: 24px; text-align: start; }
-.project-dialog__footer { flex-flow: row wrap; align-items: center; justify-content: space-between; gap: 12px; }
-.project-dialog__footer > :first-child { margin-inline-end: auto; }
+.group-dialog form { display: grid; gap: 22px; }
+.group-dialog__header { padding-inline-end: 24px; text-align: start; }
+.group-dialog__footer { flex-flow: row wrap; align-items: center; justify-content: space-between; gap: 12px; }
+.group-dialog__footer > :first-child { margin-inline-end: auto; }
 .choice-menu__trigger {
   display: inline-flex;
   flex-shrink: 0;
@@ -1092,8 +1092,8 @@ input {
 .choice-menu__choice small,
 .choice-menu__note { color: var(--ak-ink-secondary); font-size: 0.75rem; line-height: 1.5; }
 .choice-menu__note { margin: 4px 8px 2px; border-top: 1px solid var(--ak-rule-subtle); padding-block-start: 10px; }
-.project-dialog__error { margin: 0; color: var(--md-sys-color-error); font-size: 0.8125rem; }
-.project-dialog__button {
+.group-dialog__error { margin: 0; color: var(--md-sys-color-error); font-size: 0.8125rem; }
+.group-dialog__button {
   min-height: 40px;
   flex-shrink: 0;
   border: 0;
@@ -1103,12 +1103,12 @@ input {
   font-size: 0.875rem;
   cursor: pointer;
 }
-.project-dialog__button.primary { color: var(--md-sys-color-on-primary); background: var(--md-sys-color-primary); }
-.project-dialog__button:disabled { opacity: 0.5; cursor: default; }
+.group-dialog__button.primary { color: var(--md-sys-color-on-primary); background: var(--md-sys-color-primary); }
+.group-dialog__button:disabled { opacity: 0.5; cursor: default; }
 
 @media (max-width: 480px) {
-  .project-dialog { padding: 20px; }
-  .project-dialog form { gap: 18px; }
+  .group-dialog { padding: 20px; }
+  .group-dialog form { gap: 18px; }
 }
 
 .compact-navigation-trigger,
@@ -2835,8 +2835,8 @@ form.composer:focus-within [data-slot="input-group"] {
   /* 悬停规则的特异性更高，这里按同一选择器再写一遍，否则悬停时当前刻度回到半透明墨色、在系统黑底上看不见。 */
   .turn-rail__ticks i[data-active],
   .turn-rail:hover .turn-rail__ticks i[data-active] { background: Highlight; }
-  :is(.conversation-session, .project-session, .conversation-destination).active,
-  .project-group.active > .project-group__row {
+  :is(.conversation-session, .group-session, .conversation-destination).active,
+  .navigation-group.active > .navigation-group__row {
     outline: 2px solid Highlight;
     outline-offset: -2px;
   }

@@ -107,7 +107,7 @@ const SHORTCUT_MOD = typeof navigator !== "undefined" && /Mac|iPhone|iPad/.test(
 // 抽屉里的侧栏副本与被隐藏的常驻侧栏不挂监听，避免同一按键触发两次。
 const SEARCH_HIGHLIGHT = "sidebar-search";
 
-const NAVIGATION_ROW = "button.conversation-session, button.project-session, button.project-group__open";
+const NAVIGATION_ROW = "button.conversation-session, button.group-session, button.navigation-group__open";
 
 // 侧栏里可见、可用的导航行主按钮，按文档顺序：置顶、插件分组（含组内会话）、最近会话。
 function sessionRows(root: HTMLElement | null): HTMLButtonElement[] {
@@ -180,7 +180,7 @@ function useSearchHighlight(rootRef: RefObject<HTMLElement | null>, needle: stri
     // 1. 列表随会话推送重渲染，标题文本节点会被替换；观察子树变化后重新取范围。
     const collect = () => {
       mine.clear();
-      for (const title of root.querySelectorAll(".conversation-session__title, .project-session__title, .project-group__name")) {
+      for (const title of root.querySelectorAll(".conversation-session__title, .group-session__title, .navigation-group__name")) {
         const walker = document.createTreeWalker(title, NodeFilter.SHOW_TEXT);
         for (let node = walker.nextNode(); node; node = walker.nextNode()) {
           const text = (node.textContent ?? "").toLowerCase();
@@ -537,7 +537,7 @@ export const DesktopSidebar = memo(function DesktopSidebar({
               if (event.key !== "Enter" && event.key !== "ArrowDown") return;
               // 回车只打开会话，跳过项目标题行；↓ 落到列表首行（可能是项目）。
               const rows = sessionRows(sidebarRef.current);
-              const first = event.key === "Enter" ? rows.find((row) => !row.matches(".project-group__open")) : rows[0];
+              const first = event.key === "Enter" ? rows.find((row) => !row.matches(".navigation-group__open")) : rows[0];
               if (!first || (event.key === "Enter" && !searching)) return;
               event.preventDefault();
               if (event.key !== "Enter") { first.focus(); return; }
@@ -576,7 +576,7 @@ export const DesktopSidebar = memo(function DesktopSidebar({
         </button>
       </div> : null}
       {visiblePins.length ? <section className="pinned-navigation" aria-label="置顶">
-        <header className="project-navigation__header"><span>置顶</span></header>
+        <header className="navigation-section__header"><span>置顶</span></header>
         {visiblePins.map((pin) => {
           if (pin.kind !== "session") {
             const ref = { dimension: pin.kind, id: pin.id };
@@ -691,7 +691,7 @@ function groupFormFocus(root: HTMLElement | null, request: GroupFormRequest) {
   const target = request.group
     ? Array.from(root?.querySelectorAll<HTMLElement>("[data-group-key]") ?? [])
       .find((row) => row.dataset.groupKey === groupKey({ dimension, id: request.group!.id }))?.querySelector<HTMLElement>(".navigation-menu-trigger")
-    : root?.querySelector<HTMLElement>(`.project-navigation[aria-label="${CSS.escape(label)}"] .project-navigation__header button`);
+    : root?.querySelector<HTMLElement>(`.navigation-section[aria-label="${CSS.escape(label)}"] .navigation-section__header button`);
   target?.focus();
 }
 
@@ -700,7 +700,7 @@ function SessionSortMenu({ sort, onSort }: { sort: SessionSortId; onSort: (sort:
   const current = SESSION_SORT_CHOICES.find((choice) => choice.id === sort) ?? SESSION_SORT_CHOICES[0];
   return <DropdownMenu modal={false}>
     <DropdownMenuTrigger asChild>
-      <button type="button" className="project-navigation__icon conversation-sort-trigger"
+      <button type="button" className="navigation-section__icon conversation-sort-trigger"
         aria-label={`会话排序：${current.label}`} data-tip="会话排序">
         <ArrowUpDown size={15} aria-hidden="true" />
       </button>

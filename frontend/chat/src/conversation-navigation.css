@@ -415,8 +415,8 @@
   :is(
     .conversation-session-row:hover,
     .conversation-session:focus-visible,
-    .project-session:is(:hover, :focus-visible),
-    .project-group__open:is(:hover, :focus-visible),
+    .group-session:is(:hover, :focus-visible),
+    .navigation-group__open:is(:hover, :focus-visible),
     .conversation-heading h1:hover,
     .turn-rail__list button:is(:hover, :focus-visible)
   ) .marquee.is-truncated.is-animatable:not(.is-still) {
