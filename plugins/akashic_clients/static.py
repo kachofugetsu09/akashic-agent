@@ -3,8 +3,8 @@ from pathlib import Path
 import re
 from fastapi import FastAPI, Request
 from fastapi.responses import RedirectResponse
-from fastapi.staticfiles import StaticFiles
 from core.common.file_io import run_file_io
+from plugins.ui.contract import CompressedStaticFiles
 
 # Vite 产物文件名内嵌内容哈希，命中后才允许永久缓存。
 _HASHED_ASSET = re.compile(r"/assets/[^/]*-[\w-]{8}\.[\w]+$")
@@ -61,6 +61,6 @@ def register_chat_assets(app: FastAPI, static_dir: Path) -> None:
 
     app.mount(
         "/assets",
-        StaticFiles(directory=static_dir, check_dir=False),
+        CompressedStaticFiles(directory=static_dir, check_dir=False),
         name="chat_assets",
     )

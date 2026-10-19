@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import asyncio
+import gzip
+import os
 from collections.abc import AsyncGenerator, Awaitable, Callable, Mapping
 from contextlib import aclosing
 from dataclasses import asdict, dataclass, field
@@ -13,7 +15,13 @@ from typing import Literal, Protocol, cast
 
 from fastapi import FastAPI
 from fastapi.routing import APIRoute
+from starlette.datastructures import Headers, MutableHeaders
+from starlette.responses import FileResponse, Response
 from starlette.routing import WebSocketRoute
+from starlette.staticfiles import NotModifiedResponse, StaticFiles
+from starlette.types import Receive, Scope, Send
+
+from core.common.file_io import run_file_io
 
 from agent.plugin_composition.context import Context
 from agent.plugin_composition.requests import RequestContext
@@ -478,4 +486,82 @@ def _part(
     return {"kind": part.kind, "display": "unavailable"}
 
 # message_display.py 按内容 kind 借用 message.display:* 与 message.result_display:*。
+
+# ---- 压缩静态资产 ----
+#
+# 浏览器到插件监听器的带宽是冷启动瀑布的主体（入口 JS/CSS 合计约 1.5MB 未压缩），
+# StaticFiles 不支持内容编码。这里按 (路径, mtime, 大小) 缓存 gzip 变体：哈希产物
+# 内容不变可永久命中，稳定入口随构建换 key 自然失效。首次压缩排水到文件 worker，
+# 不占事件循环；范围请求与不接受 gzip 的客户端走父类原路径，304 语义不变。
+_COMPRESSIBLE_SUFFIXES = (".css", ".html", ".js", ".json", ".map", ".svg", ".txt", ".wasm")
+_GZIP_MIN_BYTES = 8 * 1024
+_STATIC_GZIP_CACHE_LIMIT = 64
+_static_gzip_cache: dict[str, bytes] = {}
+
+
+def accepts_gzip_header(value: str) -> bool:
+    """Accept-Encoding 里 gzip 未被 q=0 显式拒绝即视为接受。"""
+    for token in value.split(","):
+        parts = token.split(";")
+        if parts[0].strip().lower() != "gzip":
+            continue
+        for parameter in parts[1:]:
+            name, _, parameter_value = parameter.partition("=")
+            if name.strip() == "q" and float(parameter_value.strip() or "1") == 0:
+                return False
+        return True
+    return False
+
+
+def _accepts_gzip(scope: Scope) -> bool:
+    return accepts_gzip_header(Headers(scope=scope).get("accept-encoding", ""))
+
+
+class CompressedFileResponse(FileResponse):
+    """接受 gzip 时送缓存的压缩变体；ETag/Last-Modified 仍按原文件签发。"""
+
+    async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
+        stat_result = self.stat_result
+        if (
+            scope["type"] != "http"
+            or stat_result is None
+            or stat_result.st_size < _GZIP_MIN_BYTES
+            or not str(self.path).endswith(_COMPRESSIBLE_SUFFIXES)
+            or "range" in Headers(scope=scope)
+            or not _accepts_gzip(scope)
+        ):
+            await super().__call__(scope, receive, send)
+            return
+        cache_key = f"{self.path}:{stat_result.st_mtime_ns}:{stat_result.st_size}"
+        body = _static_gzip_cache.get(cache_key)
+        if body is None:
+            body = await run_file_io(lambda: gzip.compress(Path(self.path).read_bytes(), compresslevel=9))
+            _static_gzip_cache[cache_key] = body
+            while len(_static_gzip_cache) > _STATIC_GZIP_CACHE_LIMIT:
+                del _static_gzip_cache[next(iter(_static_gzip_cache))]
+        headers = MutableHeaders(raw=list(self.raw_headers))
+        headers["content-length"] = str(len(body))
+        headers["content-encoding"] = "gzip"
+        headers.add_vary_header("Accept-Encoding")
+        await send({"type": "http.response.start", "status": self.status_code, "headers": headers.raw})
+        payload = b"" if scope["method"].upper() == "HEAD" else body
+        await send({"type": "http.response.body", "body": payload, "more_body": False})
+        if self.background is not None:
+            await self.background()
+
+
+class CompressedStaticFiles(StaticFiles):
+    """StaticFiles 外加按文件身份缓存的 gzip 变体；缓存头与 304 行为与父类一致。"""
+
+    def file_response(
+        self,
+        full_path: os.PathLike[str] | str,
+        stat_result: os.stat_result,
+        scope: Scope,
+        status_code: int = 200,
+    ) -> Response:
+        response = CompressedFileResponse(full_path, status_code=status_code, stat_result=stat_result)
+        if self.is_not_modified(response.headers, Headers(scope=scope)):
+            return NotModifiedResponse(response.headers)
+        return response
 # Context、Models 与 ContentView 分别拥有自己的 renderer；没有中央 key 列表或默认补位。
