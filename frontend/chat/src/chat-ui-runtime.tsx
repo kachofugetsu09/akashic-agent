@@ -66,7 +66,7 @@ function ChoiceMenu({ ariaLabel, value, choices, note, disabled = false, onChang
   onChange(value: string): void;
 }) {
   const current = choices.find((choice) => choice.value === value);
-  return <DropdownMenu modal={false}>
+  return <DropdownMenu>
     <DropdownMenuTrigger asChild>
       <button type="button" className="choice-menu__trigger" disabled={disabled} aria-label={`${ariaLabel}：${current?.label ?? ""}`}>
         {current?.label} <ChevronDown size={15} aria-hidden="true" />

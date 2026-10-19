@@ -7,7 +7,12 @@ import { Check, ChevronRight, Circle } from "lucide-react"
 import { chatPortalRoot } from "@/chat-layout"
 import { cn } from "@/lib/utils"
 
-const DropdownMenu = DropdownMenuPrimitive.Root
+// 菜单是否模态（Radix 默认模态）：模态菜单锁住页面，内容要带 data-chat-modal 告诉宿主（ADR 0126）。
+const MenuModal = React.createContext(true)
+
+function DropdownMenu({ modal = true, ...props }: React.ComponentProps<typeof DropdownMenuPrimitive.Root>) {
+  return <MenuModal.Provider value={modal}><DropdownMenuPrimitive.Root modal={modal} {...props} /></MenuModal.Provider>
+}
 
 const DropdownMenuTrigger = DropdownMenuPrimitive.Trigger
 
@@ -65,6 +70,7 @@ const DropdownMenuContent = React.forwardRef<
     <DropdownMenuPrimitive.Content
       ref={ref}
       sideOffset={sideOffset}
+      data-chat-modal={React.useContext(MenuModal) ? "" : undefined}
       className={cn(
         "z-50 max-h-[var(--radix-dropdown-menu-content-available-height)] min-w-[8rem] overflow-y-auto overflow-x-hidden rounded-md border bg-popover p-1 text-popover-foreground shadow-md",
         "data-[state=open]:animate-in data-[state=closed]:animate-out data-[state=closed]:fade-out-0 data-[state=open]:fade-in-0 data-[state=closed]:zoom-out-95 data-[state=open]:zoom-in-95 data-[side=bottom]:slide-in-from-top-2 data-[side=left]:slide-in-from-right-2 data-[side=right]:slide-in-from-left-2 data-[side=top]:slide-in-from-bottom-2 origin-[--radix-dropdown-menu-content-transform-origin]",
