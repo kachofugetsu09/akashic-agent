@@ -4,13 +4,9 @@ import { PaperTooltipLayer } from "./paper-tooltip";
 import "./styles.css";
 import "./message-view.css";
 
-interface DesktopChatAppProps {
-  embeddedShell: boolean;
-}
-
-export function DesktopChatApp(props: DesktopChatAppProps) {
+export function DesktopChatApp() {
   return <>
-    <DesktopChatView {...props} controller={useDesktopChatController()} />
+    <DesktopChatView controller={useDesktopChatController()} />
     <PaperTooltipLayer />
   </>;
 }

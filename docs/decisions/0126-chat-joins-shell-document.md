@@ -44,7 +44,9 @@ DSH 的浏览器侧只有一个文档：外壳提供 React、Cordis 与静态 UI
 4. 拆除顺序（每步一个 PR）：
    1. 聊天可挂载：增加模块入口与共享 React 的构建，桥改成接口；iframe 仍用同一接口的消息适配；
    2. conversation_ui 直接挂载聊天，删除 iframe 与桥；
-   3. 删除独立 `/chat` 页面、embedded 模式和 iframe 构建，更新依赖 iframe 的脚本。
+   3. 删除独立 `/chat` 页面、embedded 模式和 iframe 构建（`/chat` 带查询参数 308 回外壳）；夹具脚本改用
+      `vite.harness.config.ts` 的独立夹具页面，它同样经 `mountChat` 挂载，只用于本地开发与验收，不发布。
+      插件共享运行时的垫片（含 `chat-ui-v1.js`）归外壳的 `frontend/dashboard/public/sdk`。
 5. 插槽与递归挂载两种组合方式继续并存：聊天页是一个插件页面，它的平铺插槽属于这个页面自己的扩展点，不升格为外壳的全局插槽。
 
 ## 后果

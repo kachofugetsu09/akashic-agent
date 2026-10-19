@@ -27,7 +27,7 @@ try {
   await mkdir(output, { recursive: true, mode: 0o700 });
   const bundle = resolve(temporary, "bundle");
   const built = spawnSync(process.execPath, [resolve(repo, "node_modules/vite/bin/vite.js"),
-    "build", "--config", "frontend/chat/vite.config.ts", "--outDir", bundle, "--emptyOutDir"],
+    "build", "--config", "frontend/chat/vite.harness.config.ts", "--outDir", bundle, "--emptyOutDir"],
   { cwd: repo, encoding: "utf8" });
   assert.equal(built.status, 0, built.stderr);
   fixture = await startDesktopFixtureServer(bundle, { historyCount: 20 });

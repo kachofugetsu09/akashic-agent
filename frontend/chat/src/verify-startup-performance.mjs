@@ -176,7 +176,7 @@ try {
     cwd: repo, stdio: "inherit",
   });
   const build = spawnSync(process.execPath, [resolve(repo, "node_modules/vite/bin/vite.js"), "build",
-    "--config", "frontend/chat/vite.config.ts", "--outDir", `${root}/dist`, "--emptyOutDir"], {
+    "--config", "frontend/chat/vite.harness.config.ts", "--outDir", `${root}/dist`, "--emptyOutDir"], {
     cwd: repo, encoding: "utf8",
   });
   if (build.status !== 0) throw new Error(`vite 构建失败\n${build.stdout}\n${build.stderr}`);

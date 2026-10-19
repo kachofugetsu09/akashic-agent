@@ -25,7 +25,7 @@ let browser;
 let ownsBrowser = false;
 
 try {
-  const desktopOutput = buildTarget("frontend/chat/vite.config.ts", resolve(buildRoot, "desktop"));
+  const desktopOutput = buildTarget("frontend/chat/vite.harness.config.ts", resolve(buildRoot, "desktop"));
   const desktopServer = await startDesktopFixtureServer(desktopOutput);
   try {
     const cdpEndpoint = process.env.AKASHIC_PLAYWRIGHT_CDP;

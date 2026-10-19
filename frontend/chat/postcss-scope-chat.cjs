@@ -4,7 +4,8 @@
 // - :root 上的主题变量（自定义属性）与外壳同源，保持全局；其余声明是页面级排版，移到聊天根节点；
 // - 以 :root / html / body / .dark 开头再接后代的选择器（按主题切换），根节点插在第一段之后；
 // - 已经锚定在聊天根节点上的（.akashic-chat 与其上的布局属性）不再加前缀；
-// - 嵌套规则由外层决定，@keyframes 里的帧选择器不动。
+// - 嵌套规则由外层决定，@keyframes 里的帧选择器不动；
+// - 页面 HTML 里的内联 <style>（夹具页面自己的 html/body）属于承载页面，不改写。
 const ROOT = ":where(.akashic-chat)";
 const PAGE = /^(?:html|body|#root)$/u;
 const PAGE_ANCESTOR = /^((?::root|html|body|\.dark)(?:[[:.][^\s>+~]*)?)\s+(.+)$/u;
@@ -41,6 +42,7 @@ function insideRuleOrKeyframes(node) {
 module.exports = () => ({
   postcssPlugin: "scope-chat-css",
   OnceExit(root) {
+    if ((root.source?.input.file ?? "").includes("html-proxy")) return;
     root.walkRules((rule) => {
       if (insideRuleOrKeyframes(rule)) return;
       moveRootDeclarations(rule);

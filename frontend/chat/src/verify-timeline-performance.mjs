@@ -33,7 +33,7 @@ mkdirSync(output, { recursive: true });
 
 try {
   // 1. 只在实验构建插入计数器；生产源码和正常 bundle 不包含该计数器。
-  await build({ root: repo + '/frontend/chat', configFile: repo + '/frontend/chat/vite.config.ts', logLevel: 'warn',
+  await build({ configFile: repo + '/frontend/chat/vite.harness.config.ts', logLevel: 'warn',
     build: { outDir: root + '/dist', emptyOutDir: true }, plugins: [{
       name: 'count-timeline-renders', enforce: 'pre', transform(code, id) {
         if (!id.endsWith('/desktop-conversation.tsx')) return;

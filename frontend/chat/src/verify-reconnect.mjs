@@ -17,7 +17,7 @@ const baseline = process.argv.includes('--baseline');
 const root = mkdtempSync(resolve(tmpdir(), 'akashic-reconnect-'));
 console.info('artifact: ' + root);
 const build = spawnSync(process.execPath, [resolve(repo, 'node_modules/vite/bin/vite.js'),
-  'build', '--config', 'frontend/chat/vite.config.ts', '--outDir', root + '/dist'],
+  'build', '--config', 'frontend/chat/vite.harness.config.ts', '--outDir', root + '/dist'],
 { cwd: repo, encoding: 'utf8' });
 writeFileSync(root + '/build.log', build.stdout + build.stderr);
 assert.equal(build.status, 0, '前端构建失败：' + root + '/build.log');

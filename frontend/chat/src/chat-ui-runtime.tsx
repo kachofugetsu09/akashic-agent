@@ -1,5 +1,6 @@
 import * as React from "react";
 import * as ReactJSXRuntime from "react/jsx-runtime";
+import * as ReactDOM from "react-dom";
 import * as ReactDOMClient from "react-dom/client";
 import { useEffect, useRef, useState, type ReactNode } from "react";
 import { ChevronDown } from "lucide-react";
@@ -86,7 +87,7 @@ function HeaderMarkerActions({ children }: { children: ReactNode }) {
   return <div className="header-marker__actions">{children}</div>;
 }
 
-// 插件模块经 import map 取用 /assets/sdk/*.js，这些文件从这里读出宿主的同一份 React 与聊天基础件。
+// 插件模块经外壳 import map 取用 /dashboard/assets/sdk/*.js，其中 chat-ui-v1.js 从这里读出聊天基础件。
 const ChatUi = {
   // 在插槽元素里挂一个 React 根；返回的卸载函数可直接作为 mount() 的返回值。
   render(host: HTMLElement, node: ReactNode): () => void {
@@ -118,5 +119,5 @@ export type ChatUiRuntime = typeof ChatUi;
 // 必须在任何插件模块导入之前发布。同文档挂载时外壳已登记 React 等共享运行时（与本模块用的是同一份），只追加 ChatUi。
 export function exposeChatRuntime(): void {
   const host = window as unknown as { __akashicRuntime?: Record<string, unknown> };
-  host.__akashicRuntime = { React, ReactJSXRuntime, ReactDOMClient, ...host.__akashicRuntime, ChatUi };
+  host.__akashicRuntime = { React, ReactJSXRuntime, ReactDOM, ReactDOMClient, ...host.__akashicRuntime, ChatUi };
 }

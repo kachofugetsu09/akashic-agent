@@ -1,0 +1,27 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, interactive-widget=resizes-content" />
+    <title>Akashic Chat 夹具</title>
+    <!-- 聊天插件模块与外壳里一样经 import map 取共享运行时；必须早于任何模块脚本。 -->
+    <script type="importmap">
+    {
+      "imports": {
+        "react": "/assets/sdk/react.js",
+        "react/jsx-runtime": "/assets/sdk/jsx-runtime.js",
+        "react-dom": "/assets/sdk/react-dom.js",
+        "react-dom/client": "/assets/sdk/react-dom-client.js",
+        "@akashic/chat-ui-v1": "/assets/sdk/chat-ui-v1.js"
+      }
+    }
+    </script>
+    <style>
+      html, body, #chat { height: 100%; margin: 0; }
+    </style>
+  </head>
+  <body>
+    <div id="chat"></div>
+    <script type="module" src="./main.tsx"></script>
+  </body>
+</html>
