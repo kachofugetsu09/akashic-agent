@@ -45,6 +45,14 @@ async function measureLoad(context, url) {
     await page.waitForFunction(() => "message" in (window.__startupMarks ?? {}), null, { timeout: 30_000 });
   }
   // 节流网络下 networkidle 可能永不满足；里程碑达标后固定等一拍收集资源计时。
+  // 字体按 unicode-range 惰性加载：字片只在首次排版到它的字时请求，可能落在收集
+  // 窗口之外。先等 fonts.ready 与一帧排版，让当页所需字片在收集前取完；暖启动的
+  // 同片请求才会稳定命中 HTTP 缓存，“哈希资产零传输”断言才与时序无关。
+  await page.evaluate(async () => {
+    await document.fonts.ready;
+    await new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(() => resolve())));
+    await document.fonts.ready;
+  });
   await page.waitForTimeout(500);
   const measured = await page.evaluate(() => ({
     marks: window.__startupMarks,
@@ -76,6 +84,10 @@ async function measureLoad(context, url) {
     composerMs: measured.marks.composer ?? null,
     messageMs: measured.marks.message ?? null,
     assetRequests: assets.length,
+    assets: assets.map((entry) => ({
+      path: new URL(entry.name).pathname,
+      transferSize: entry.transferSize, decodedBodySize: entry.decodedBodySize,
+    })),
     assetCacheHits: assets.filter((entry) => entry.transferSize === 0 && entry.decodedBodySize > 0).length,
     assetTransferBytes: assets.reduce((sum, entry) => sum + entry.transferSize, 0),
     apiRequests: api.length,
@@ -259,7 +271,15 @@ try {
   console.log(JSON.stringify(summary, null, 2));
   if (!baseline) {
     // 暖启动时哈希资产必须命中缓存；悬停预取与回访激活不再重复拉取尾页。
-    assert.ok(summary.warm.assetBytes === 0, `暖启动仍传输 ${summary.warm.assetBytes}B 哈希资产`);
+    // “重取”只计冷启动已经取过的资产:unicode-range 字片按首次排版惰性加载,
+    // 冷启动窗口内未用到的片在暖启动首次请求属于惰性加载,不是缓存失效。
+    const coldAssetPaths = new Set(coldRows.flatMap((row) => row.assets.map((asset) => asset.path)));
+    const warmRefetchBytes = medianOf(warmRows.map((row) => ({
+      refetchBytes: row.assets
+        .filter((asset) => coldAssetPaths.has(asset.path))
+        .reduce((sum, asset) => sum + asset.transferSize, 0),
+    })), "refetchBytes");
+    assert.ok(warmRefetchBytes === 0, `暖启动仍传输 ${warmRefetchBytes}B 哈希资产`);
     assert.ok(summary.warm.assetCacheHits >= 1, "暖启动没有命中任何资产缓存");
     assert.ok(summary.prefetched.messageRequests === 0, `预取命中后激活仍请求 ${summary.prefetched.messageRequests} 次历史`);
     assert.ok(summary.revisit.messageRequests === 0, `回访会话仍请求 ${summary.revisit.messageRequests} 次历史`);
