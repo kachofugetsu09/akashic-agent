@@ -40,7 +40,7 @@
   height: 28px;
   padding: 0 6px;
   border: 1px solid var(--ak-rule-default);
-  border-radius: 6px;
+  border-radius: 8px;
   color: var(--ak-ink-primary);
   background: var(--ak-paper-sheet);
   font: inherit;
@@ -57,7 +57,7 @@
 .sites-widths {
   display: inline-flex;
   padding: 2px;
-  border-radius: 7px;
+  border-radius: 8px;
   background: var(--ak-paper-quiet);
 }
 
@@ -65,7 +65,7 @@
   height: 24px;
   padding: 0 8px;
   border: 0;
-  border-radius: 5px;
+  border-radius: 4px;
   color: var(--ak-ink-secondary);
   background: transparent;
   font: inherit;
@@ -86,7 +86,7 @@
   place-items: center;
   padding: 0;
   border: 0;
-  border-radius: 6px;
+  border-radius: 8px;
   color: var(--ak-ink-secondary);
   background: transparent;
   cursor: pointer;
@@ -133,7 +133,7 @@
 .sites-stage:not([data-width="auto"]) .sites-device {
   overflow: hidden;
   border: 1px solid var(--ak-rule-default);
-  border-radius: 10px;
+  border-radius: 12px;
 }
 
 /* 网页自己决定配色；没写背景的页面与普通浏览器一样是白底。 */

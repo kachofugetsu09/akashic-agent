@@ -1664,7 +1664,7 @@ button.tool-step-summary:active {
   width: fit-content;
   min-height: 32px;
   border: 0;
-  border-radius: 6px;
+  border-radius: 8px;
   padding: 0 8px;
   margin-inline-start: -8px;
   color: var(--ak-color-action-primary);
@@ -1739,7 +1739,7 @@ button.tool-step-summary:active {
   height: 40px;
   flex: 0 0 40px;
   place-items: center;
-  border-radius: 10px;
+  border-radius: 12px;
   color: inherit;
   opacity: 0.82;
 }
@@ -1760,7 +1760,7 @@ button.tool-step-summary:active {
   display: block;
   max-width: 100%;
   max-height: 100%;
-  border-radius: 10px;
+  border-radius: 12px;
   object-fit: contain;
 }
 
@@ -1791,7 +1791,7 @@ button.tool-step-summary:active {
   height: 100%;
   grid-template: minmax(0, 1fr) / minmax(0, 1fr);
   overflow: hidden;
-  border-radius: 10px;
+  border-radius: 12px;
 }
 .media-preview__frame > .media-preview__media { margin: auto; }
 /* 横滑交给页面脚本切换上一个/下一个；原始像素画框本身是滚动容器，
@@ -2191,7 +2191,7 @@ button.tool-step-summary:active {
   gap: 12px;
   padding: 10px 12px;
   border: 1px solid var(--ak-rule-subtle);
-  border-radius: 10px;
+  border-radius: 12px;
   background: var(--ak-paper-quiet);
   font-size: 0.8125rem;
   line-height: 1.5;
