@@ -8,6 +8,7 @@ import httpx
 from pydantic import BaseModel, ConfigDict, Field, HttpUrl, field_validator
 
 from agent.plugin_composition import CredentialRef
+from core.net.http import http_error_detail
 from plugins.standard_web.contract import SearchRequest
 
 DEFAULT_ENDPOINT = "https://mcp.exa.ai/mcp"
@@ -71,8 +72,7 @@ class ExaSearch:
                 )
                 _ = response.raise_for_status()
         except (httpx.RequestError, httpx.HTTPStatusError) as e:
-            # 错误文本只带状态与端点主机，不回显带 key 的完整 URL。
-            reason = f"HTTP {e.response.status_code}" if isinstance(e, httpx.HTTPStatusError) else type(e).__name__
+            reason = http_error_detail(e, secrets=() if key is None else (key,))
             return {"error": f"搜索失败：{reason}（{self._config.endpoint.host}）", "query": request.query}
 
         # 2. JSON 与 SSE 都必须给出本次调用的明确结果；坏响应不是空搜索。

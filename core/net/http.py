@@ -4,6 +4,7 @@ import asyncio
 import random
 import logging
 import math
+import re
 import time
 from datetime import timezone
 from email.utils import parsedate_to_datetime
@@ -17,6 +18,37 @@ import httpx
 
 
 logger = logging.getLogger(__name__)
+
+
+def redact_http_urls(text: str) -> str:
+    """Remove URL credentials, queries and fragments from diagnostic text."""
+    def clean_url(match: re.Match[str]) -> str:
+        try:
+            url = httpx.URL(match.group())
+        except httpx.InvalidURL:
+            return "[URL]"
+        return str(url.copy_with(username="", password="", query=None, fragment=None))
+
+    return re.sub(r"https?://[^\s<>\"']+", clean_url, text, flags=re.IGNORECASE)
+
+
+def http_error_detail(error: Exception, *, secrets: tuple[str, ...] = ()) -> str:
+    """Describe the real HTTP failure chain without URL credentials or supplied secrets."""
+    # 1. Keep nested transport and OS errors, including empty wrapper messages.
+    details: list[str] = []
+    seen: set[int] = set()
+    current: BaseException | None = error
+    while current is not None and id(current) not in seen:
+        seen.add(id(current))
+        message = redact_http_urls(str(current))
+        details.append(f"{type(current).__name__}: {message}" if message else type(current).__name__)
+        current = current.__cause__ or (None if current.__suppress_context__ else current.__context__)
+    # 2. Some providers include a key outside the URL in their error text.
+    detail = " <- ".join(details)
+    for secret in secrets:
+        if secret:
+            detail = detail.replace(secret, "[redacted]")
+    return detail
 
 
 def retry_after_time(value: str | None) -> float | None:
