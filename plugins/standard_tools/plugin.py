@@ -1,4 +1,4 @@
-from plugins.host_execution.contract import PROCESSES, FILES
+from plugins.host_execution.contract import FILES
 from agent.plugin_composition import Context
 from plugins.ui.contract import UI_SLOTS, PluginUiDefinition, PluginUiRpcInvalidRequest
 from plugins.ledger.contract import ARTIFACT_IMPORT
@@ -14,7 +14,6 @@ from .filesystem import (
     ReadFileTool,
     WriteFileTool,
 )
-from .shell import register_shell
 from .working_directory import WorkingDirectories
 from .directory_tool import register_directory
 from .agents import read_agents, directory_material
@@ -23,8 +22,8 @@ from plugins.ledger.contract import Message
 api_version = 3
 name = "standard_tools"
 version = "1.0.0"
-desc = "提供文件与命令工具"
-inject = (TOOLS, PROCESSES, FILES, ARTIFACT_IMPORT, MATERIALS_V4,
+desc = "提供文件与工作目录工具"
+inject = (TOOLS, FILES, ARTIFACT_IMPORT, MATERIALS_V4,
           OWNER_STATE, SESSION_ADMISSION)
 
 
@@ -65,7 +64,6 @@ async def apply(ctx: Context) -> None:
                 else None
             ),
         )
-    await register_shell(ctx, directories)
 
     # 顶栏工作目录是本插件自己的界面；宿主只提供插槽。
     async def plugin_ui(child: Context) -> None:

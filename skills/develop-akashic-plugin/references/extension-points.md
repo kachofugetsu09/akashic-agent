@@ -13,7 +13,7 @@
 | 需要关闭的资源（连接、文件、线程） | `await ctx.effect(lambda: close, label=...)`：setup 返回清理函数 | 同上 | `timer/plugin.py` |
 | 给别的插件提供服务 | 在自己的 `contract.py` 定义 `ServiceKey[协议]("名字.v1")`，`await ctx.provide(KEY, impl)` | 同上 | `timer/contract.py` + `timer/plugin.py` |
 | 定时或延时 | `TIMERS` | `timer/contract.py` | `scheduler/plugin.py` |
-| 执行 shell 命令、读写文件 | `PROCESSES`、`FILES`，不要自己 `subprocess` | `host_execution/contract.py` | `standard_tools/shell.py` |
+| 执行 shell 命令、读写文件 | `PROCESSES`、`FILES`，不要自己 `subprocess` | `host_execution/contract.py` | `shell/shell.py` |
 | 主动给用户发消息 | 优先用已有 `message_push` 工具；实现发送者或送达流程时分别核对 `DELIVERY_SENDERS`、`DELIVERY_GUARDED_START` | `delivery/contract.py` | `message_push/plugin.py`、`message_push/boundary.py` |
 | 插件自己的配置和数据 | `ctx.config`（固定输入，空时为 `{}`），`ctx.data_root`（持久目录） | `agent/plugin_composition/context.py` | `akasha/plugin.py` |
 
