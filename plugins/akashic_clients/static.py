@@ -31,16 +31,13 @@ def _cache_control_for(path: str) -> str:
     return "no-store"
 
 
-# 页面版本取入口 HTML 的摘要：页面里嵌一份，/api/shell/state 给当前一份；两者不同说明服务端已换了前端。
-def _chat_build(body: bytes) -> str:
-    return sha256(body).hexdigest()[:16]
-
-
+# 页面版本取挂载模块构建时写下的版本：页面里有一份，/api/shell/state 给当前一份；两者不同说明服务端已换了前端。
 async def current_chat_build(static_dir: Path) -> str | None:
     try:
-        return _chat_build(await run_file_io((static_dir / "index.html").read_bytes))
+        build = await run_file_io(lambda: (static_dir / "chat-app.build").read_text(encoding="ascii"))
     except FileNotFoundError:
         return None
+    return build.strip() or None
 
 
 def register_chat_assets(app: FastAPI, static_dir: Path) -> None:
@@ -86,8 +83,10 @@ def register_chat_assets(app: FastAPI, static_dir: Path) -> None:
         etag = f'"{sha256(body).hexdigest()}"'
         if request.headers.get("if-none-match") == etag:
             return Response(status_code=304, headers={"ETag": etag})
-        build = f'<meta name="akashic-build" content="{_chat_build(body)}"></head>'.encode()
-        return Response(body.replace(b"</head>", build, 1), media_type="text/html; charset=utf-8", headers={"ETag": etag})
+        build = await current_chat_build(static_dir)
+        if build is not None:
+            body = body.replace(b"</head>", f'<meta name="akashic-build" content="{build}"></head>'.encode(), 1)
+        return Response(body, media_type="text/html; charset=utf-8", headers={"ETag": etag})
 
     app.mount(
         "/assets",
