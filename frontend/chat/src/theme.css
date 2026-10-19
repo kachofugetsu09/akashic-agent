@@ -2,7 +2,7 @@
 @import "../../theme/src/brand-tokens.css";
 @import "../../theme/src/paper-surface.css";
 
-:root {
+.akashic-chat {
   font-family: var(--ak-type-reading);
   font-synthesis: none;
   letter-spacing: normal;

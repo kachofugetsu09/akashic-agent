@@ -406,7 +406,7 @@ def extract_core(
         raise ValueError("Core artifact 缺少 config.example.toml")
     web = core_data.get("web")
     if isinstance(web, dict) and web.get("enabled") is True:
-        for relative in ("static/chat/index.html", "static/dashboard/index.html"):
+        for relative in ("static/chat/chat-app.js", "static/dashboard/index.html"):
             if not (target / relative).is_file():
                 raise ValueError(f"Core artifact 缺少 Web 静态产物: {relative}")
     return target

@@ -5,7 +5,6 @@ import {
   PinOff,
   ArrowUpDown,
   Keyboard,
-  Settings,
   SunMoon,
   X,
 } from "lucide-react";
@@ -292,7 +291,6 @@ export interface DesktopSidebarGroups extends NavigationGroupsState {
 }
 
 export interface DesktopSidebarProps {
-  embeddedShell: boolean;
   surface: "chat" | "runtime";
   sessions: DesktopSidebarSession[];
   activeSessionId: string;
@@ -323,7 +321,6 @@ export interface DesktopSidebarProps {
 const brandMask = { WebkitMaskImage: `url(${akashicBrandIcon})`, maskImage: `url(${akashicBrandIcon})` };
 
 export const DesktopSidebar = memo(function DesktopSidebar({
-  embeddedShell,
   surface,
   sessions,
   activeSessionId,
@@ -655,11 +652,6 @@ export const DesktopSidebar = memo(function DesktopSidebar({
             <span>{action.label}</span>
           </button>
         ))}
-        {/* 独立打开时没有宿主 Shell 下发动作：设置是 Shell 的对话框，经深链回到完整界面打开。 */}
-        {embeddedShell ? null : <a className="chat-sidebar__action" href="/#models">
-          <Settings size={18} aria-hidden="true" />
-          <span>功能设置</span>
-        </a>}
         <div className="chat-sidebar__footer-row">
           <button type="button" className="chat-sidebar__action"
             onClick={() => onCycleTheme()}

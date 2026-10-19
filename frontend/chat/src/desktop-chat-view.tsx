@@ -27,7 +27,6 @@ import { CopyNotice, useCopyLastCode } from "./copy-last-code";
 import { isGeneratingChatStatus, lastInputResult } from "./web-chat-status";
 
 interface DesktopChatViewProps {
-  embeddedShell: boolean;
   controller: DesktopChatController;
 }
 
@@ -40,7 +39,7 @@ function lastUserInput(messages: readonly TimelineMessage[]): string {
   return "";
 }
 
-export function DesktopChatView({ embeddedShell, controller }: DesktopChatViewProps) {
+export function DesktopChatView({ controller }: DesktopChatViewProps) {
   const theme = useTheme();
   const rail = useSidebarRail();
   const composerApi = useRef<ComposerApi | null>(null);
@@ -98,13 +97,11 @@ export function DesktopChatView({ embeddedShell, controller }: DesktopChatViewPr
   const historyFailed = controller.historyFailure !== null && !hasMessages;
   const conversationLayout = hasMessages || sessionOpening || historyFailed;
 
-  const shellClass = embeddedShell ? "chat-shell is-embedded" : "chat-shell";
-
   return (
-    <main className={shellClass}>
+    <main className="chat-shell">
       <div className="chat-shell-body" style={rail.style}>
         <DesktopSidebar
-            embeddedShell={embeddedShell} surface={surface} sessions={sidebarSessions}
+            surface={surface} sessions={sidebarSessions}
             activeSessionId={activeSessionId} pendingSessionId={pendingSessionId} chatReady={chatReady}
             themeLabel={theme.label} groups={navigationGroups} navigationPins={controller.navigationPins} onSelectSession={activateSession}
             onPrefetchSession={prefetchSessionTail}
@@ -117,7 +114,7 @@ export function DesktopChatView({ embeddedShell, controller }: DesktopChatViewPr
         <section className={`chat-main${conversationLayout ? "" : " is-empty"}`}>
         <header className={`conversation-heading${!activeSessionId && !activeGroup ? " is-blank" : ""}`}>
           <CompactNavigation
-            embeddedShell={embeddedShell} surface={surface} sessions={sidebarSessions}
+            surface={surface} sessions={sidebarSessions}
             activeSessionId={activeSessionId} pendingSessionId={pendingSessionId} chatReady={chatReady}
             themeLabel={theme.label} groups={navigationGroups} navigationPins={controller.navigationPins} onSelectSession={activateSession}
             onPrefetchSession={prefetchSessionTail}

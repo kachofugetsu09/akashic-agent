@@ -20,7 +20,7 @@ const asset = resolve(state, "plugins/projects/plugin_ui.js");
 const saved = readFileSync(asset);
 writeFileSync(resolve(output, "project_ui.before-reload.js"), saved, { flag: "wx" });
 process.env.AKASHIC_API_ORIGIN = values.url;
-const server = await createServer({ configFile: resolve("frontend/chat/vite.config.ts"),
+const server = await createServer({ configFile: resolve("frontend/chat/vite.harness.config.ts"),
   server: { host: "127.0.0.1", port: 0, hmr: false }, logLevel: "error" });
 await server.listen();
 const browser = await chromium.launch({ executablePath: values.browser, headless: true });

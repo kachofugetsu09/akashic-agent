@@ -50,6 +50,7 @@ async def run(base: Path) -> dict[str, bool]:
             assets.mkdir(parents=True)
             (assets / "index.html").write_text(f"<!doctype html><title>{name}</title>")
             (assets / "probe-12345678.js").write_text("export {};\n")
+            (assets / "chat-app.build").write_text(f"{name}-1")
         subprocess.run(["git", "init", "-q", "--initial-branch=source", str(path)], check=True)
         commit(path)
         install_git_plugin(workspace=workspace, source=str(path), marketplace="lab", plugins_home=home)
@@ -89,16 +90,16 @@ async def apply(ctx):
         origin = f"http://127.0.0.1:{address[1]}"
         async with httpx.AsyncClient(base_url=origin, trust_env=False) as client:
             assert (await client.get("/dashboard")).text == "<!doctype html><title>ui</title>"
-            page = await client.get("/chat")
-            assert page.text == "<!doctype html><title>akashic_clients</title>"
-            assert "frame-ancestors" in page.headers["content-security-policy"]
-            assert page.headers["referrer-policy"] == "no-referrer"
+            # 聊天并入外壳后 /chat 只把旧链接带着查询参数送回外壳。
+            page = await client.get("/chat?session=akashic%3Aold")
+            assert page.status_code == 308 and page.headers["location"] == "/?session=akashic%3Aold"
             asset = await client.get("/assets/probe-12345678.js")
             assert asset.status_code == 200 and asset.headers["cache-control"].endswith("immutable")
             redirect = await client.get("/settings")
             assert redirect.status_code == 308 and redirect.headers["location"] == "/#models"
             assert redirect.headers["pragma"] == "no-cache"
-            assert (await client.get("/api/shell/state")).json()["chatReady"] is True
+            state = (await client.get("/api/shell/state")).json()
+            assert state["chatReady"] is True and state["build"] == "akashic_clients-1"
             async with websockets.connect(origin.replace("http:", "ws:") + "/ws?watch_sessions=true", proxy=None) as ws:
                 assert json.loads(await ws.recv()) == {"type": "sessions.changed", "version": 2}
                 # 无回复 provider 的真实子组合仍能阅读历史，不能在跟随后进入断线循环。
@@ -118,7 +119,7 @@ async def apply(ctx):
                             assert frame["request_id"] == "still-connected"
                             break
                 path = sources / "akashic_clients"
-                (path / "static/chat/index.html").write_text("<!doctype html><title>new client</title>")
+                (path / "static/chat/chat-app.build").write_text("akashic_clients-2")
                 commit(path)
                 await core.plugin_manager.install(source=str(path), marketplace="lab", ref_name="",
                     sparse_paths=[], update_id="client-assets-update")
@@ -132,7 +133,7 @@ async def apply(ctx):
                             assert event["type"] in {"sessions.changed", "sessions.activity"}, event
                 except ConnectionClosed as error:
                     assert error.rcvd is not None and error.rcvd.code == 1012
-            assert (await client.get("/chat")).text == "<!doctype html><title>new client</title>"
+            assert (await client.get("/api/shell/state")).json()["build"] == "akashic_clients-2"
             assert observer_fiber.context is observer_context
             assert (observer_context.data_root / "applies").read_text() == "apply\n"
             assert log.reader("akashic:read-only").snapshot() == before
@@ -142,7 +143,7 @@ async def apply(ctx):
             damaged = await client.get("/chat")
             assert damaged.status_code == 503 and damaged.json()["code"] == "endpoint_plan_unavailable"
             plan.write_bytes(saved)
-            assert (await client.get("/chat")).status_code == 200
+            assert (await client.get("/chat")).status_code == 308
             await core.stop()
             stopped = True
             page = await client.get("/", headers={"accept": "text/html"})

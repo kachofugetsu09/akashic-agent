@@ -18,7 +18,7 @@ const buildRoot = mkdtempSync(resolve(tmpdir(), "akashic-webui-build-"));
 
 try {
   const targets = {
-    desktop: buildTarget("frontend/chat/vite.config.ts", "index.html", resolve(buildRoot, "desktop")),
+    desktop: buildTarget("frontend/chat/vite.harness.config.ts", "index.html", resolve(buildRoot, "desktop")),
   };
   const toolchain = readToolchain();
   if (updateBaseline) {

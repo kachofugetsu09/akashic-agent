@@ -28,16 +28,16 @@ const sessions = [
 function App(){
  const [selected,setSelected]=useState('');
  const pinned=new URLSearchParams(location.search).get('pinned')==='1';
- return <TooltipProvider><div className="chat-shell-body" style={{height:'100vh'}}>
- <DesktopSidebar embeddedShell={false} surface="chat" sessions={sessions} activeSessionId={selected}
+ return <TooltipProvider><div className="akashic-chat"><div className="chat-shell-body" style={{height:'100vh'}}>
+ <DesktopSidebar surface="chat" sessions={sessions} activeSessionId={selected}
  pendingSessionId="" chatReady={true} themeLabel="纸感" onSelectSession={setSelected} onNewChat={nothing} onCycleTheme={nothing}
  navigationPins={{pins:pinned?[{kind:'project',id:'project'},{kind:'session',id:'r1'}]:[],sessions:[],ready:true,pending:false,error:'',reload:resolved,setPinned:resolved,expandedGroups:new Set(),toggleGroup:nothing,expandGroup:nothing}}
  groups={{sections:[{source:{key:'projects:r1',pluginId:'projects',pluginRevision:'r1',provider:{dimension:'project',label:'项目',load:async()=>[]},context:()=>({query:resolved})},groups:[{id:'project',label:'命中 项目'}]}],revision:0,active:null,reload:nothing,startChat:nothing}} />
- <output id="selected">{selected}</output></div></TooltipProvider>;
+ <output id="selected">{selected}</output></div></div></TooltipProvider>;
 }
 createRoot(document.getElementById('root')).render(<App />);
 `);
-await build({ configFile: resolve(repo, 'frontend/chat/vite.config.ts'), root, logLevel: 'warn', css: { postcss: resolve(repo, 'frontend/chat') }, build: { outDir: root + '/dist', emptyOutDir: true } });
+await build({ configFile: resolve(repo, 'frontend/chat/vite.harness.config.ts'), root, logLevel: 'warn', css: { postcss: resolve(repo, 'frontend/chat') }, build: { outDir: root + '/dist', emptyOutDir: true } });
 const server = await startDesktopFixtureServer(root + '/dist');
 const browser = await chromium.launch({ executablePath: process.env.CHROMIUM_PATH ?? '/usr/bin/chromium', headless: true });
 const results = [];

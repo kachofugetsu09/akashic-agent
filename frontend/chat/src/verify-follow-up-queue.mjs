@@ -11,7 +11,7 @@ import { chromium } from 'playwright-core';
 import { desktopModels } from '../../../scripts/webui-performance/fixtures.mjs';
 const repo = resolve(dirname(fileURLToPath(import.meta.url)), '../../..');
 const root = mkdtempSync(resolve(tmpdir(), 'akashic-follow-up-review-'));
-const build = spawnSync(process.execPath, [resolve(repo, 'node_modules/vite/bin/vite.js'), 'build', '--config', 'frontend/chat/vite.config.ts', '--outDir', root + '/dist'], { cwd: repo, encoding: 'utf8' });
+const build = spawnSync(process.execPath, [resolve(repo, 'node_modules/vite/bin/vite.js'), 'build', '--config', 'frontend/chat/vite.harness.config.ts', '--outDir', root + '/dist'], { cwd: repo, encoding: 'utf8' });
 writeFileSync(root + '/build.log', build.stdout + build.stderr);
 assert.equal(build.status, 0, '前端构建失败，见 ' + root + '/build.log');
 const sockets = new Set(); const events = []; const histories = new Map();

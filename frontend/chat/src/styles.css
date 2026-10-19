@@ -19,9 +19,6 @@
 *::-webkit-scrollbar-thumb { border-radius: 4px; background: color-mix(in oklab, var(--ak-ink-primary) 22%, transparent); }
 *::-webkit-scrollbar-thumb:hover { background: color-mix(in oklab, var(--ak-ink-primary) 34%, transparent); }
 
-html,
-body,
-#root,
 .akashic-chat {
   width: 100%;
   height: 100%;
@@ -29,7 +26,7 @@ body,
   background: var(--ak-color-bg-canvas);
 }
 
-body {
+.akashic-chat {
   color: var(--ak-color-text-primary);
 }
 
@@ -1249,25 +1246,25 @@ input {
   --composer-dock-end: max(20px, env(safe-area-inset-bottom, 0px));
 }
 
-[data-embedded-shell="true"] .chat-shell {
+.akashic-chat .chat-shell {
   grid-template-columns: minmax(0, 1fr);
   grid-template-rows: minmax(0, 1fr);
   gap: 0;
   padding: 0;
 }
 
-[data-embedded-shell="true"] .chat-shell-body {
+.akashic-chat .chat-shell-body {
   grid-template-columns: var(--chat-rail-width) minmax(0, 1fr);
 }
 
-[data-embedded-shell="true"] .chat-sidebar {
+.akashic-chat .chat-sidebar {
   overflow: hidden;
   border-inline-end: 1px solid var(--chat-line);
   border-radius: 0;
   box-shadow: none;
 }
 
-[data-embedded-shell="true"] .chat-main {
+.akashic-chat .chat-main {
   overflow: hidden;
   border-radius: 0;
   box-shadow: none;
@@ -2071,7 +2068,7 @@ form.composer:focus-within [data-slot="input-group"] {
    平板高度都在 48rem 以上，不会命中第二个条件。同一条件用于触控尺寸与矮屏规则，改动时一并修改。 */
 :where([data-chat-width~="820"], [data-chat-short]) {
   .chat-shell-body,
-  &[data-embedded-shell="true"] .chat-shell-body {
+  &.akashic-chat .chat-shell-body {
     grid-template-columns: minmax(0, 1fr);
   }
 
@@ -2738,7 +2735,7 @@ form.composer:focus-within [data-slot="input-group"] {
   .compact-navigation-dialog .conversation-navigation { flex: none; overflow: visible; }
   .compact-navigation-dialog .conversation-navigation__sessions { overflow: visible; }
   .chat-main,
-  &[data-embedded-shell="true"] .chat-main { overflow-y: auto; }
+  &.akashic-chat .chat-main { overflow-y: auto; }
   .chat-main .conversation { flex: none; block-size: max(120px, 60dvh); }
   /* 输入区已在文档流里，不再浮在消息上：底部不必再给它预留一张卡的高度，矮屏每一行都要省。 */
   .chat-main .conversation-content { padding-block-end: 1rem; }
