@@ -23,6 +23,7 @@ async def verify(root: Path) -> None:
     assets = root / "static/chat"
     assets.mkdir(parents=True)
     (assets / "chat-app.js").write_text("export {};", encoding="utf-8")
+    (assets / "chat-app-mount.js").write_text("export {};", encoding="utf-8")
     (assets / "index-12345678.js").write_text("export {};", encoding="utf-8")
     (assets / "theme.json").write_text("{}", encoding="utf-8")
     app = FastAPI()
@@ -39,6 +40,7 @@ async def verify(root: Path) -> None:
             assert response.headers["cache-control"] == "no-store", path
         for path, cache in (
             ("/assets/chat-app.js", "no-cache"),
+            ("/assets/chat-app-mount.js", "no-cache"),
             ("/assets/index-12345678.js", "public, max-age=31536000, immutable"),
             ("/assets/theme.json", "no-store"),
         ):
