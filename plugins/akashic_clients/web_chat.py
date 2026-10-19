@@ -1053,11 +1053,18 @@ class WebChatChannel:
                 return session_key
             if item.strip():
                 media.append(item)
-        if not text.strip() and not media:
+        try:
+            retry_of = _read_retry_of(payload)
+        except ValueError as error:
+            await self._send_error(websocket, request_id, str(error))
+            return session_key
+        if not text.strip() and not media and retry_of is None:
             await self._send_error(websocket, request_id, "text 和 media 不能同时为空")
             return session_key
         reply_to_message_id = payload.get("reply_to_message_id")
         metadata: dict[str, object] = {"client_request_id": request_id}
+        if retry_of is not None:
+            metadata["retry_of_client_message_id"] = retry_of
         attachments: tuple[AttachmentRef, ...] = ()
         if media and self._artifact_store is not None:
             try:
@@ -1311,6 +1318,20 @@ def _thaw_json(value: object) -> object:
     if isinstance(value, tuple):
         return [_thaw_json(item) for item in value]
     return value
+
+
+# 重试只引用原 Input 的消息 ID；正文、附件、引用和输入片段都沿用原输入，不能顺带修改。
+def _read_retry_of(payload: Mapping[str, object]) -> str | None:
+    value = payload.get("retry_of")
+    if value is None:
+        return None
+    if not isinstance(value, str) or not value.strip():
+        raise ValueError("retry_of 必须是非空字符串")
+    text = payload.get("text")
+    if (isinstance(text, str) and text.strip()) or payload.get("media") or payload.get("parts") \
+            or payload.get("reply_to_message_id") is not None:
+        raise ValueError("重试只引用原 Input，不能同时修改正文、附件或引用")
+    return value.strip()
 
 
 def _normalize_web_request_id(value: object) -> str:

@@ -470,6 +470,54 @@ export function timelineReplyGroups(messages: TimelineMessage[], activities: Rep
   return { completed, active, moved, hiddenBodies, joined, inline, unsettled };
 }
 
+export interface TimelineFailureRetries {
+  /** 仍显示的失败 → 同一条输入上更早、已被重试取代的失败。 */
+  earlier: Map<string, TimelineMessage[]>;
+  /** 被重试取代或已被回答替换的失败，以及失败后的恢复记录：都不单独成行。 */
+  superseded: Set<string>;
+  /** 来源停在失败上：失败 id → 可以重跑的原用户输入 id。 */
+  retryable: Map<string, string>;
+}
+
+type FailureRun = { input: TimelineMessage | null; failures: TimelineMessage[]; tail: TimelineMessage };
+
+// 同一条输入反复失败时只留最后一次，答出来后连这一次也收起；来源末尾停在失败上时，它指向可以重跑的原输入。
+export function timelineFailureRetries(messages: TimelineMessage[]): TimelineFailureRetries {
+  const earlier = new Map<string, TimelineMessage[]>();
+  const superseded = new Set<string>();
+  const runs = new Map<string, FailureRun>();
+  for (const message of messages) {
+    const key = timelineSourceKey(message), body = message.body;
+    const run = runs.get(key) ?? { input: null, failures: [], tail: message };
+    runs.set(key, run);
+    run.tail = message;
+    // 1. 新输入或放弃开始新的一段；自动输入不能由用户重跑。
+    if (body.kind === "input") Object.assign(run, { input: message.author === "user" ? message : null, failures: [] });
+    else if (body.kind === "control" && body.action === "abandon") run.failures = [];
+    // 2. 重试最终答出来了：回答替换掉这一轮的失败。
+    else if (body.kind === "output" && body.finish !== "continue") {
+      for (const item of run.failures) superseded.add(item.id);
+      run.failures = [];
+    } else if (body.kind === "control" && body.action === "resume") {
+      // 3. 失败之后的恢复就是重试本身，失败块已说明，不再单独成行。
+      if (run.failures.length) superseded.add(message.id);
+    } else if (body.kind === "control" && body.action === "failure") {
+      // 4. 再次失败时，之前的失败收进这一次。
+      if (run.failures.length) {
+        for (const item of run.failures) superseded.add(item.id);
+        earlier.set(message.id, [...run.failures]);
+      }
+      run.failures.push(message);
+    }
+  }
+  // 5. 只有来源最后一条仍是失败时才可重试；正在恢复或已有新输入都不再提供。
+  const retryable = new Map<string, string>();
+  for (const run of runs.values()) {
+    if (run.input && run.tail.body.kind === "control" && run.tail.body.action === "failure") retryable.set(run.tail.id, run.input.id);
+  }
+  return { earlier, superseded, retryable };
+}
+
 /** 从已提交消息识别图文回复；不依赖插件是否启用，也不改写消息顺序。 */
 function timelineInlineReplies(messages: TimelineMessage[]) {
   const pending = new Map<string, { messages: TimelineMessage[]; attachment: boolean }>();
@@ -506,7 +554,9 @@ function timelineInlineReplies(messages: TimelineMessage[]) {
 /** 已加载的工具结果在原调用面板中展示；缺少调用的分页仍保留结果行。 */
 export function timelineVisibleMessages(messages: TimelineMessage[], groups = timelineReplyGroups(messages)): TimelineMessage[] {
   const byId = new Map(messages.map((message) => [message.id, message]));
+  const { superseded } = timelineFailureRetries(messages);
   return messages.filter((message) => {
+    if (superseded.has(message.id)) return false;
     if (groups.moved.has(message.id) && !message.attachments.length) return false;
     if (!isTimelineMessageVisible(message) && !groups.completed.has(message.id)
       && !(message.body.kind === "input" && message.author === "user")) return false;

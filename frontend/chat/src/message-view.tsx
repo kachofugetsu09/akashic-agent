@@ -647,10 +647,10 @@ export function TimelineMessageView({ message, lookupMessage, toolResults, onNav
         : <SettledTurnFlow flow={flow} startedAt={turnStartedAt} endedAt={message.timestamp}
           beforeReasoning={beforeReasoning}
           partView={{ attachment, lookupMessage, onNavigate, onError, canLoadReferences }} /> : null}
-      {body.kind === "control" ? body.action === "failure" ? <div className="timeline-control-summary">
-        <strong>{controlLabels[body.action]}</strong>
-        {body.reason !== null ? <p className="plain-message-response">{body.reason}</p> : null}
-      </div> : <p className="timeline-control-note">
+      {body.kind === "control" ? body.action === "failure" ? <p className="timeline-failure">
+        {/* 失败就是这一轮的结果：一段话，句首小标题是全块唯一的错误色。 */}
+        <strong>{controlLabels[body.action]}</strong>{body.reason}
+      </p> : <p className="timeline-control-note">
         {/* 暂停、恢复、放弃是轮次里的一个事件，不是一段回复：一行次级小字即可。 */}
         {controlLabels[body.action]}{body.reason ? ` · ${body.reason}` : ""}
       </p> : hasFlow ? null : <>

@@ -64,7 +64,7 @@ export function DesktopChatView({ controller }: DesktopChatViewProps) {
     historyHasMore, historyLoading, historyLoadingOlder, loadOlderMessages, sessionRequested,
     activeSessionDeleted, deletedNotice, deleteSession, restoreSession, dismissDeletedNotice, renameSession,
     activateSession, prefetchSessionTail, startNewChat, handleReplyMessage, handleCopiedMessage,
-    reportError, cancelReply, sendMessage, stopTurn, retry,
+    reportError, cancelReply, sendMessage, retryTurn, stopTurn, retry,
     navigationGroups,
   } = controller;
   const inputResult = useMemo(() => lastInputResult(timelineMessages), [timelineMessages]);
@@ -152,7 +152,7 @@ export function DesktopChatView({ controller }: DesktopChatViewProps) {
                 />
                 <DesktopTimelineMessages messages={pagedTimeline} activities={replyActivities} replySynced={replyAvailable !== null} refresh={controller.timelineRefresh} status={status}
                   messageElementsRef={messageElementsRef} copiedMessageId={copiedMessageId}
-                  onReply={replyTo} onEditInput={editInput} onCopied={handleCopiedMessage} onError={reportError} />
+                  onReply={replyTo} onEditInput={editInput} onRetry={retryTurn} onCopied={handleCopiedMessage} onError={reportError} />
                 <DesktopConversationMessages
                   messages={messages} status={status}
                   carryDayKey={timelineMessages.length

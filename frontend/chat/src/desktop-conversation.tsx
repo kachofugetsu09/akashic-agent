@@ -1,6 +1,6 @@
 import { focusMessagePart } from "./message-actions";
 import { copyText } from "./copy-text";
-import { timelineVisibleMessages, timelineToolResults, timelineReplyGroups, timelineAnchorIndexes, timelineInputStarts, timelineSourceKey, timelineSourceRefreshTokens, needsBeforeReasoningFallback, type ReplyActivity } from "./message-timeline";
+import { timelineVisibleMessages, timelineFailureRetries, timelineToolResults, timelineReplyGroups, timelineAnchorIndexes, timelineInputStarts, timelineSourceKey, timelineSourceRefreshTokens, needsBeforeReasoningFallback, type ReplyActivity } from "./message-timeline";
 import { timelineReply, timelineText, type TimelineMessage, type TimelineReply } from "./message-timeline";
 import React, { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, useSyncExternalStore } from "react";
 import { useStickToBottomContext } from "use-stick-to-bottom";
@@ -330,7 +330,7 @@ function DaySeparator({ label }: { label: string }) {
 }
 
 /** 展示完整日志，引用只定位原消息，不给工具结果补造助手身份。 */
-export const DesktopTimelineMessages = React.memo(function DesktopTimelineMessages({ messages, activities, replySynced, refresh = 0, status, messageElementsRef, copiedMessageId, onReply, onEditInput, onCopied, onError }: {
+export const DesktopTimelineMessages = React.memo(function DesktopTimelineMessages({ messages, activities, replySynced, refresh = 0, status, messageElementsRef, copiedMessageId, onReply, onEditInput, onRetry, onCopied, onError }: {
   messages: TimelineMessage[];
   activities: ReplyActivity[];
   /** 本会话的回复状态已同步（收到 reply.status）：之后没有实时活动的未收尾轮次按已结束显示。 */
@@ -341,6 +341,7 @@ export const DesktopTimelineMessages = React.memo(function DesktopTimelineMessag
   copiedMessageId: string;
   onReply: (reply: TimelineReply) => void;
   onEditInput: (text: string) => void;
+  onRetry: (inputId: string) => Promise<void>;
   onCopied: (id: string) => void;
   onError: (error: unknown) => void;
 }) {
@@ -357,6 +358,7 @@ export const DesktopTimelineMessages = React.memo(function DesktopTimelineMessag
   const inputStarts = useMemo(() => timelineInputStarts(messages), [messages]);
   const refreshTokens = useMemo(() => timelineSourceRefreshTokens(messages, activities, refresh), [messages, activities, refresh]);
   const visibleMessages = useMemo(() => timelineVisibleMessages(messages, groups), [messages, groups]);
+  const failures = useMemo(() => timelineFailureRetries(messages), [messages]);
   const dayBreaks = useMemo(() => {
     const breaks = new Map<string, string>();
     let previous = "";
@@ -412,7 +414,10 @@ export const DesktopTimelineMessages = React.memo(function DesktopTimelineMessag
         sessionId={origin.session_id} messageId={origin.id} block={{ source: origin.source }}
         refreshToken={refreshTokens.get(timelineSourceKey(origin))} /> : null}
       afterBody={message.body.kind === "output" && message.body.finish === "complete" ? <PluginUiSlot
-        name="turn.after_answer" sessionId={message.session_id} messageId={message.id} /> : undefined} />
+        name="turn.after_answer" sessionId={message.session_id} messageId={message.id} />
+        : message.body.kind === "control" && message.body.action === "failure" ? <FailureRetry
+          inputId={failures.retryable.get(message.id)} earlier={failures.earlier.get(message.id)}
+          disabled={status !== "idle"} onRetry={onRetry} /> : undefined} />
     {/* 轮次未结束的输出还会接着长，时间与复制等落定后挂在末条上，和实时视图一致。 */}
     {!groups.hiddenBodies.has(message.id) && !groups.moved.has(message.id) && !groups.joined.has(message.id) && !groups.unsettled.has(message.id) ? <div className={`shared-message-meta timeline-meta ${message.body.kind === "input" ? "user" : "assistant"}`}>
       <time dateTime={message.timestamp}>{formatMessageTime(message.timestamp)}</time>
@@ -441,6 +446,7 @@ export const DesktopTimelineMessages = React.memo(function DesktopTimelineMessag
     && previous.copiedMessageId === next.copiedMessageId
     && previous.onReply === next.onReply
     && previous.onEditInput === next.onEditInput
+    && previous.onRetry === next.onRetry
     && previous.onCopied === next.onCopied
     && previous.onError === next.onError
     && previous.activities.length === next.activities.length
@@ -453,6 +459,32 @@ export const DesktopTimelineMessages = React.memo(function DesktopTimelineMessag
         && activity.preview?.message_id === other.preview?.message_id;
     });
 });
+
+/** 失败块的收尾：重跑这一轮的文字按钮，以及收起的此前失败。 */
+function FailureRetry({ inputId, earlier = [], disabled, onRetry }: {
+  inputId?: string;
+  earlier?: TimelineMessage[];
+  disabled: boolean;
+  onRetry: (inputId: string) => Promise<void>;
+}) {
+  const [pending, setPending] = useState(false);
+  if (!inputId && !earlier.length) return null;
+  return <>
+    {inputId ? <div className="timeline-failure-actions">
+      <button type="button" disabled={disabled || pending} aria-busy={pending || undefined}
+        onClick={() => { setPending(true); void onRetry(inputId).finally(() => setPending(false)); }}>
+        {pending ? "正在重试…" : "重试"}
+      </button>
+    </div> : null}
+    {earlier.length ? <details className="timeline-failure-history">
+      <summary>此前失败 {earlier.length} 次</summary>
+      <ol>{earlier.map((item) => <li key={item.id}>
+        <time dateTime={item.timestamp}>{formatMessageTime(item.timestamp)}</time>
+        {item.body.kind === "control" ? item.body.reason?.split("\n")[0] : null}
+      </li>)}</ol>
+    </details> : null}
+  </>;
+}
 
 type TouchGesture = { x: number; y: number; anchor: HTMLElement | null; fromEdge: boolean; axis: "x" | "y" | null; dx: number };
 
