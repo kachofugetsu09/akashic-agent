@@ -6,7 +6,7 @@ import re
 
 from agent.plugin_composition import Context, ServiceKey
 from core.common.file_io import run_file_io
-from plugins.standard_tools.contract import WORKING_DIRECTORY
+from plugins.working_directory.contract import WORKING_DIRECTORY
 
 from .git import Git, GitUnavailable, Repo
 from .turns import TurnWindows

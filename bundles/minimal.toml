@@ -101,8 +101,8 @@ disabled = true
 plugin = "assets@release"
 disabled = true
 
-[rows."standard_tools"]
-plugin = "standard_tools@release"
+[rows."working_directory"]
+plugin = "working_directory@release"
 disabled = true
 
 [rows."vision"]

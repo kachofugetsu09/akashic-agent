@@ -5,7 +5,7 @@ from pathlib import Path
 
 from agent.plugin_composition import Context, ServiceKey
 from plugins.host_execution.contract import TERMINALS, TerminalInfo, TerminalOutput
-from plugins.standard_tools.contract import WORKING_DIRECTORY
+from plugins.working_directory.contract import WORKING_DIRECTORY
 
 # 浏览器长轮询一次最多等这么久；断线时最多晚这么久释放 generation 借用。
 READ_WAIT_MS = 15_000

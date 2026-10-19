@@ -2,7 +2,7 @@
 from agent.plugin_composition import Context
 from plugins.host_execution.contract import FILES
 from plugins.models.contract import CHAT_MODELS
-from plugins.standard_tools.contract import WORKING_DIRECTORY
+from plugins.working_directory.contract import WORKING_DIRECTORY
 
 from ._tool_boundary import TOOLS
 from .vision import register_vision

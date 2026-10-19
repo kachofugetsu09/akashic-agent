@@ -10,16 +10,16 @@ Projects 的 owner_records 保存默认目录，创建项目可选目录，记�
 
 SessionAdmission 注册普通 owner 初始化函数。MessageLog 只有插入新 Session 时才在同一个 SQL 事务内执行各 owner 初始化；失败回滚 Session 和 owner 记录，重试已有 Session 不再次初始化。旧 Session 缺少目录记录表示旧的未指定状态，不运行全库迁移。Web scoped 输入、CLI conversation、programmatic、scheduler、wake 和 subagent 仍走各自既有接纳路径，不由 scope 校验函数写 cwd。
 
-standard_tools 拥有 Session 当前目录；Projects 只注册默认取值查询。Core 不解释 Project、路径或 AGENTS。文件 backend 提供路径解析、探测、目录页和有界原文读取，业务规则发现由工具插件组合。
+working_directory 插件拥有 Session 当前目录；Projects 只注册默认取值查询。Core 不解释 Project、路径或 AGENTS。文件 backend 提供路径解析、探测、目录页和有界原文读取，业务规则发现由工具插件组合。
 
 ```text
 ┌─ SessionAdmission 创建 ─┐    ┌─ Projects 默认查询 ─┐
 └───────────┬───────────┘    └──────────┬──────────┘
             └────────────┬────────────┘
                          ▼
-┌─ standard_tools：Session 目录唯一 owner ─┐
-│ 请求材料       工具 prepare       只读 UI │
-└────────────────────────────────────────┘
+┌─ working_directory：Session 目录唯一 owner ─┐
+│ 请求材料        工具 prepare         只读 UI │
+└───────────────────────────────────────────┘
 ```
 
 ## 持久状态和失败
@@ -43,7 +43,7 @@ standard_tools 拥有 Session 当前目录；Projects 只注册默认取值查�
 
 ## API 与工具合同
 
-`standard_tools.working_directory.v1` 是普通插件能力。Projects 可独立加载；没有目录能力时仍能创建未绑定项目，绑定入口明确报错。已绑定项目不能在缺少目录 owner 的组合里新建 Session，以免丢失默认目录。运行 workspace 仍保存聊天、记忆、artifact 和回执，不被代码目录替换。
+`working_directory.v1` 是普通插件能力，文件和命令工具在调用时借用。Projects 可独立加载；没有目录能力时仍能创建未绑定项目，绑定入口明确报错。已绑定项目不能在缺少目录 owner 的组合里新建 Session，以免丢失默认目录。运行 workspace 仍保存聊天、记忆、artifact 和回执，不被代码目录替换。
 
 Project UI 查询 `project.bind_directory` 接受 Project ID 和执行主机的绝对路径。backend 规范化并校验已有可访问目录后，Projects 在一个事务内执行 null → path；竞争提交只有一个值获胜。同值重试返回原记录，不再次改写。`project.directory` 返回路径和实时状态，`directory.browse` 只返回一页直接子目录。
 

@@ -29,5 +29,5 @@ class WorkingDirectories(Protocol):
     ) -> tuple[str, str | None]: ...
 
 
-WORKING_DIRECTORY = ServiceKey[WorkingDirectories]("standard_tools.working_directory.v1")
+WORKING_DIRECTORY = ServiceKey[WorkingDirectories]("working_directory.v1")
 

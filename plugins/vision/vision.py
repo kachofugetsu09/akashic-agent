@@ -13,7 +13,7 @@ from plugins.host_execution.contract import FILES, FileError, FileImage
 from plugins.ledger.contract import ContentPart, json_value
 from plugins.models.contract import CHAT_MODELS, ModelError, ModelRequest
 
-from plugins.standard_tools.contract import WorkingDirectories
+from plugins.working_directory.contract import WorkingDirectories
 
 from ._tool_boundary import TOOLS, CallSource, ToolResultValue
 

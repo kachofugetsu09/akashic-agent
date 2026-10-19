@@ -1,4 +1,4 @@
-"""standard_tools 与 tools owner 之间的最小本地边界。"""
+"""working_directory 与 tools owner 之间的最小本地边界。"""
 
 from __future__ import annotations
 
@@ -19,7 +19,7 @@ ToolOutcome = Literal["success", "denied", "error", "interrupted"]
 
 @dataclass(frozen=True, slots=True)
 class ToolResultValue:
-    """standard_tools 的本地结果；tools owner 在执行边界重新校验。"""
+    """working_directory 的本地结果；tools owner 在执行边界重新校验。"""
 
     outcome: ToolOutcome
     parts: tuple[ContentPart, ...]

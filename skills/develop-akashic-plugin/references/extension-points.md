@@ -8,7 +8,7 @@
 | 给模型加一个可调用的工具 | `TOOLS`：`declare_group` 后 `register` | `tools/contract.py`（`ProviderBoundTool`、`ResultLike`） | 模板 `templates/tool/plugin.py`；`message_push/plugin.py` |
 | 随插件发布 Skill | `INSTALLED_ASSETS.register(ctx, "skills", "skills")`，插件根目录放 `skills/<名>/SKILL.md` | `assets/contract.py` | `plugin_update/plugin.py` |
 | WebUI 加页面、底栏动作、设置分节 | `UI.register(ctx, web="web_module.js", requires=(挂载点,))` | `ui/contract.py`；浏览器侧见 `references/web-ui.md` | 模板 `templates/page/` |
-| 每轮往提示词里加一段上下文 | `MATERIALS_V4.register(ctx, name=..., kind="context", prepare=...)`，`prepare(messages, source)` 返回 `{"reminders": ({"name", "priority", "replay", "text"},)}` | `context/contract.py` | `standard_tools/plugin.py` 的 working-directory |
+| 每轮往提示词里加一段上下文 | `MATERIALS_V4.register(ctx, name=..., kind="context", prepare=...)`，`prepare(messages, source)` 返回 `{"reminders": ({"name", "priority", "replay", "text"},)}` | `context/contract.py` | `working_directory/plugin.py` 的 working-directory |
 | 后台常驻任务 | `await ctx.spawn(coro, name=...)`，随插件卸载取消 | `agent/plugin_composition/context.py` | `jobs/plugin.py` |
 | 需要关闭的资源（连接、文件、线程） | `await ctx.effect(lambda: close, label=...)`：setup 返回清理函数 | 同上 | `timer/plugin.py` |
 | 给别的插件提供服务 | 在自己的 `contract.py` 定义 `ServiceKey[协议]("名字.v1")`，`await ctx.provide(KEY, impl)` | 同上 | `timer/contract.py` + `timer/plugin.py` |

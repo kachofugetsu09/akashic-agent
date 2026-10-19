@@ -84,7 +84,7 @@ async def run(directory: Path) -> dict[str, object]:
     sources = directory / "plugins"
     for name in ("ledger", "host_execution", "commands", "sources", "content", "context", "tools", "react", "models",
                  "turn_projection", "reply_program", "conversation", "delivery", "akashic_sender",
-                 "standard_tools", "assets", "scheduler", "tool_search", "delivery_policy"):
+                 "working_directory", "assets", "scheduler", "tool_search", "delivery_policy"):
         shutil.copytree(ROOT / "plugins" / name, sources / name,
                         ignore=shutil.ignore_patterns("__pycache__"))
     provider = directory / "timer"
