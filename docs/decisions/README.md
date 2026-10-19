@@ -156,6 +156,7 @@
 | [0119](0119-local-runtime-diagnostics.md) | accepted；前端由 0120 替代 | 运行诊断本地可用，外部接入独立消费 | PLG-015、PLG-016、ERR-001 |
 | [0120](0120-runtime-diagnostics-is-operations-only.md) | accepted | 运行诊断只面向运维，不提供前端 | PLG-015、PLG-016 |
 | [0125](0125-scheduler-runs-in-its-session.md) | proposed / implemented for review | 定时任务在创建它的会话里执行，历史范围按任务选择 | SCH-003、MEM-001～MEM-002 |
+| [0126](0126-chat-joins-shell-document.md) | accepted / implementing | 聊天页并入外壳文档，拆除 iframe | WEBUI-008 |
 | [0123](0123-computer-is-one-browser.md) | proposed / implemented for review | Computer 只剩一个浏览器，Agent 按标签操作，画面跟随面板 | PLG-017、WEBUI-008 |
 | [0122](0122-web-ingress-guard-plugin.md) | proposed / implemented for review | Web 入口守卫是可选插件，本机进程可信；修订 0017 的认证 non-goal | SEC、PLG、WEBUI |
 | [0122](0122-interactive-terminal.md) | proposed / implemented for review | 工作台终端是用户自己的交互 shell，PTY 归执行主机 | WEBUI、PLG |
