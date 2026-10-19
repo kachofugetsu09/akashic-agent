@@ -345,7 +345,9 @@ class SourceSession:
             if closed:
                 raise MessageConflict("已关闭的输入不能重试")
             control = reader.latest_control(self._source, through_seq=through)
-            if control is None or cast(Control, control.body).action not in {"failure", "pause"}:
+            stopped = None if control is None else cast(Control, control.body)
+            # 停止只覆盖旧回合时，其后排队的输入仍待回复，不能当作暂停的输入恢复。
+            if stopped is None or stopped.action not in {"failure", "pause"} or stopped.through_seq < target.seq:
                 raise MessageConflict("输入没有等待恢复的失败或暂停")
             head = reader.head(source=self._source)
             return Control("resume", head), head

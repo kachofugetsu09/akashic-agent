@@ -64,7 +64,7 @@ export function DesktopChatView({ controller }: DesktopChatViewProps) {
   const {
     surface, sidebarSessions, activeSessionId, pendingSessionId, chatReady, messages, timelineMessages, replyActivities, replyAvailable, status,
     streamStore, messageElementsRef, copiedMessageId, shellState, stopPending,
-    replyTarget, error, steers, steerMessage, withdrawSteer, takeSteers,
+    replyTarget, error, steers, steerMessage, withdrawSteer, reclaimSteers,
     canSend, sendProblem, draftKey,
     historyHasMore, historyLoading, historyLoadingOlder, loadOlderMessages, sessionRequested,
     activeSessionDeleted, deletedNotice, deleteSession, restoreSession, dismissDeletedNotice, renameSession,
@@ -79,17 +79,18 @@ export function DesktopChatView({ controller }: DesktopChatViewProps) {
     if (text) window.setTimeout(() => composerApi.current?.insertDraft(text, { append: true }), 0);
   }, []);
 
-  // 只在服务端暂存已不在时（断线或重启）把插话退回输入框；用户停止时插话由服务端作为下一轮输入送出。
+  // 用户停止时插话由服务端作为下一轮输入送出；本轮停下一段时间仍没进入对话的才退回输入框。
   const returnSteers = useCallback(() => {
-    const texts = takeSteers();
-    if (texts.length) composerApi.current?.insertDraft(texts.join("\n\n"), { append: true });
-  }, [takeSteers]);
+    reclaimSteers(STEER_SETTLE_MS).then((texts) => {
+      if (texts.length) composerApi.current?.insertDraft(texts.join("\n\n"), { append: true });
+    }).catch((error: unknown) => reportError(error));
+  }, [reclaimSteers, reportError]);
   const withdrawToDraft = useCallback((id: string) => {
     withdrawSteer(id).then((text) => {
       if (text !== null) composerApi.current?.insertDraft(text, { append: true });
     }).catch((error: unknown) => reportError(error));
   }, [withdrawSteer, reportError]);
-  // 断线或重启后服务端的暂存已不在：本轮停下一段时间仍没写进对话的插话退回输入框。
+  // 本轮停下后定时核对仍挂着的插话：服务端还暂存（等不到下一步）或重启丢失的才退回输入框。
   const generating = isGeneratingChatStatus(status);
   useEffect(() => {
     if (generating || !steers.length) return;
