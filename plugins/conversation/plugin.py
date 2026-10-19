@@ -204,7 +204,7 @@ def reject_input_part(kind: str, part: ContentPart) -> ContentReferences:
 
 
 # 来源自己写入的片段不能由客户端冒充。
-OWN_INPUT_KINDS = frozenset({"text", "artifact_ref", "channel.origin", "reply_ref", "model.selection", "command.result"})
+OWN_INPUT_KINDS = frozenset({"text", "artifact_ref", "channel.origin", "reply_ref", "command.result"})
 
 
 def check_origin(part: ContentPart) -> ContentReferences:

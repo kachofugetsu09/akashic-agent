@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from pathlib import Path
 import math
 
 from collections.abc import Awaitable, Callable, Mapping
@@ -50,6 +51,7 @@ def definition(read_version: Callable[[], Awaitable[str]]) -> ModelDriverDefinit
         probe=partial(_probe, read_version=read_version),
         start_auth=start_auth,
         finish_auth=finish_auth,
+        icon=lambda _descriptor: (Path(__file__).parent / "icon.svg").read_text(encoding="utf-8"),
     )
 
 

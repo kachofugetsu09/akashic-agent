@@ -156,6 +156,7 @@ def definition() -> ModelDriverDefinition:
         probe=_probe,
         start_auth=_start_auth,
         finish_auth=_finish_auth,
+        icon=lambda _descriptor: (Path(__file__).parent / "icon.svg").read_text(encoding="utf-8"),
     )
 
 

@@ -1086,6 +1086,22 @@ class ModelsState:
         if failures:
             raise BaseExceptionGroup("model auth attempt 清理失败", failures)
 
+    # 驱动为连接声明的图标；驱动缺席、未声明、出错或内容不像 SVG 时没有图标。
+    async def connection_icon(self, connection_id: str) -> str | None:
+        connection = self._snapshot_required().connections.get(connection_id)
+        record = None if connection is None else self._registrations.get(connection.driver_id)
+        if connection is None or record is None or record.definition.icon is None:
+            return None
+        try:
+            async with record.context.runtime_scope():
+                icon = record.definition.icon(_driver_connection_descriptor(connection))
+        except Exception:
+            logger.exception("model driver icon failed: %s", connection.driver_id)
+            return None
+        if not isinstance(icon, str) or not icon.lstrip().startswith("<svg") or len(icon.encode()) > 16 * 1024:
+            return None
+        return icon
+
     def catalog_snapshot(self) -> ModelCatalogSnapshot:
         self._check_snapshot_service(MODEL_CATALOG, self.catalog)
         snapshot = self._snapshot_or_empty()
