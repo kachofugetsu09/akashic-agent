@@ -4,7 +4,7 @@ import { Duration, Effect, Fiber, Schedule } from "effect";
 import { createUuid, createUuidV7 } from "./browser-uuid.ts";
 import type { ChatMessage } from "./chat-message";
 import type { ComposerFile } from "./desktop-composer";
-import { loadWebPluginCatalog, usePluginUiCatalogVersion } from "./plugin-ui-runtime";
+import { loadWebPluginCatalog, receivePluginUiEvent, resetPluginUiEvents, usePluginUiCatalogVersion } from "./plugin-ui-runtime";
 import {
   MEMORY_PLUGIN,
   PROJECT_DIMENSION,
@@ -21,7 +21,6 @@ import {
 } from "./web-projects";
 import { useNavigationPins } from "./use-navigation-pins";
 import { readSessionActivityFrame, useSessionActivity, type SessionHead } from "./use-session-activity";
-import { readJobStopResult, readJobsFrame, type JobView, type SessionJobs } from "./job-list-action";
 import { StreamProjectionStore } from "./stream-projection";
 import { canProjectWebStreamWithoutRoot, publishWebStreamChanges } from "./web-stream-projection";
 import { isGeneratingChatStatus, replyChatStatus, type ChatStatus } from "./web-chat-status";
@@ -74,8 +73,6 @@ const SEND_ATTEMPTS = 3;
 
 // 服务端明确拒绝的发送不重试，直接把原因交给用户。
 class SendRejected extends Error {}
-const NO_JOBS: readonly JobView[] = [];
-const JOB_STOP_TIMEOUT_MS = 10_000;
 
 function followSession(socket: WebSocket | null, sessionId: string, afterSeq: number): void {
   if (!sessionId || socket?.readyState !== WebSocket.OPEN) return;
@@ -120,8 +117,6 @@ export function useDesktopChatController() {
   const memoryInstalled = pluginCatalog.installed(MEMORY_PLUGIN);
   const [activeSessionId, setActiveSessionId] = useState("");
   const [pendingSessionId, setPendingSessionId] = useState("");
-  const [sessionJobs, setSessionJobs] = useState<SessionJobs | null>(null);
-  const jobStopsRef = useRef(new Map<string, (accepted: boolean) => void>());
   // 通知入口统一使用网页导航，会话参数在 chatReady 后消费一次。
   const [requestedSessionId, setRequestedSessionId] = useState(
     () => {
@@ -520,7 +515,7 @@ export function useDesktopChatController() {
   const closeConnection = useCallback(() => {
     // React 可立即重新挂载；先撤销旧连接，不能等异步 finalizer 才清引用。
     socketRef.current = null;
-    setSessionJobs(null);
+    resetPluginUiEvents();
     if (connectionTaskRef.current) Effect.runFork(Fiber.interrupt(connectionTaskRef.current));
     connectionTaskRef.current = null;
     disconnectSessionActivity();
@@ -565,16 +560,7 @@ export function useDesktopChatController() {
                 receiveSessionActivity(activity);
                 return;
               }
-              const jobs = readJobsFrame(value);
-              if (jobs) {
-                if (jobs.sessionId === activeSessionRef.current) setSessionJobs(jobs);
-                return;
-              }
-              const stopped = readJobStopResult(value);
-              if (stopped) {
-                jobStopsRef.current.get(stopped.requestId)?.(stopped.accepted);
-                return;
-              }
+              if (receivePluginUiEvent(value)) return;
               const frame = readMessageLogFrame(value);
               if (frame) {
                 if (frame.session_id !== activeSessionRef.current) return;
@@ -657,9 +643,8 @@ export function useDesktopChatController() {
         disconnectSessionActivity();
         setReplyActivities([]);
         setReplyAvailable(null);
-        // 任务镜像属于这一代连接：断线即失效，重连后的基线帧再装回；jobs 缺席时就保持为空。
-        setSessionJobs(null);
-        for (const settle of jobStopsRef.current.values()) settle(false);
+        // 插件推送的会话状态属于这一代连接：断线即失效，重连后的基线帧再装回。
+        resetPluginUiEvents();
         setStatusLive(replyChatStatus([], messagesRef.current.length, [], false));
         if (event.code !== 1000 && event.code !== 1013) setConnectionError(RECONNECTING_NOTICE);
         yield* reconnect.next(undefined);
@@ -1211,27 +1196,7 @@ export function useDesktopChatController() {
     }
   }, [closeConnection, connect, loadMessagesSafely, loadModels, loadSessionsSafely, reportError, setReplyAvailable, shellState?.chatReady]);
 
-  // 用户停止后台任务：只回答服务端是否受理；行状态由 session.jobs 帧收敛，断线或超时视为未受理。
-  const stopJob = useCallback((jobId: string): Promise<boolean> => {
-    const socket = socketRef.current;
-    const sessionId = activeSessionRef.current;
-    if (!sessionId || socket?.readyState !== WebSocket.OPEN) return Promise.resolve(false);
-    const requestId = createUuid();
-    return new Promise<boolean>((resolve) => {
-      const timer = window.setTimeout(() => settle(false), JOB_STOP_TIMEOUT_MS);
-      const settle = (accepted: boolean) => {
-        window.clearTimeout(timer);
-        jobStopsRef.current.delete(requestId);
-        resolve(accepted);
-      };
-      jobStopsRef.current.set(requestId, settle);
-      socket.send(JSON.stringify({ type: "job.stop", request_id: requestId, session_id: sessionId, job_id: jobId }));
-    });
-  }, []);
-
   return {
-    activeSessionJobs: sessionJobs?.sessionId === activeSessionId ? sessionJobs.jobs : NO_JOBS,
-    stopJob,
     surface, sidebarSessions, activeSessionId, pendingSessionId, chatReady, messages, timelineMessages, timelineRefresh, replyActivities, replyAvailable, status,
     streamStore, messageElementsRef, copiedMessageId, shellState, stopPending, stopCount, modelState,
     canSend, modelProblem, modelsPhase, modelsError, retryModels, draftKey: activeSessionId || `new:${newChatProjectId}`,

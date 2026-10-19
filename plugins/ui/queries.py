@@ -8,8 +8,9 @@ import logging
 import math
 from collections.abc import Awaitable, Coroutine, Mapping
 from concurrent.futures import ThreadPoolExecutor
+from contextlib import aclosing, suppress
 from contextvars import copy_context
-from typing import Any, cast
+from typing import Any, Literal, cast
 
 from core.error_context import running_turn_id
 from agent.plugin_composition import (
@@ -22,6 +23,8 @@ from plugins.ui.contract import (
     UI_SLOTS,
     PluginUiAsset,
     PluginUiBinding,
+    PluginUiEmit,
+    PluginUiFollowHandler,
     PluginUiPluginUnavailable,
     PluginUiQueryOverloaded,
     PluginUiQueryTimeout,
@@ -41,6 +44,9 @@ PLUGIN_UI_QUERY_WORKERS = 8
 PLUGIN_UI_QUERY_QUEUE_LIMIT = 16
 PLUGIN_UI_QUERY_WORKERS_PER_PLUGIN = 4
 PLUGIN_UI_QUERY_LIMIT_PER_PLUGIN = 12
+PLUGIN_UI_FINAL_FRAME_SECONDS = 2.0
+PLUGIN_UI_AVAILABLE_RETRY_MIN_SECONDS = 1.0
+PLUGIN_UI_AVAILABLE_RETRY_MAX_SECONDS = 30.0
 logger = logging.getLogger(__name__)
 
 
@@ -65,12 +71,15 @@ class LivePluginUiProvider:
         self._plugin_workers: dict[str, asyncio.Semaphore] = {}
         self._accepting = True
         self._executor_closed = False
+        self._closed = asyncio.Event()
 
     async def aclose(self) -> None:
         """Close admission, settle physical queries, then shut down workers."""
 
         async with self._admission_lock:
             self._accepting = False
+        # owner 关闭也唤醒跟随方，让它们结束并去借新的 owner。
+        self._closed.set()
         cancelled = False
         _result, phase_cancelled = await _finish_work(self._wait_for_queries())
         cancelled |= phase_cancelled
@@ -112,27 +121,8 @@ class LivePluginUiProvider:
             raise
         try:
             for binding in slots.bindings():
-                if not self._binding_is_active(binding):
-                    continue
-                target_scope = binding.context.runtime_scope()
-                try:
-                    await target_scope.__aenter__()
-                except CompositionError as error:
-                    if error.code in {"STALE_ACTIVATION", "OWNER_UNAVAILABLE"}:
-                        continue
-                    raise
-                try:
-                    with plugin_entrypoint(
-                        plugin_id=binding.descriptor.owner,
-                        generation_id=binding.context.runtime.generation_id,
-                        fiber=binding.context.fiber.name,
-                        operation="plugin_ui.available",
-                    ):
-                        if not binding.available():
-                            continue
+                if self._binding_is_active(binding) and await self._available(binding):
                     items.append(self._catalog_item(binding))
-                finally:
-                    await target_scope.__aexit__(None, None, None)
         finally:
             await ui_scope.__aexit__(None, None, None)
         encoded = json.dumps(
@@ -378,6 +368,116 @@ class LivePluginUiProvider:
             return binding
         finally:
             await ui_scope.__aexit__(None, None, None)
+
+    async def follow(self, session_id: str, emit: PluginUiEmit) -> None:
+        """One stream per visible registration; realign whenever the registrations change."""
+
+        streams: dict[str, asyncio.Task[None]] = {}
+        # 撤下的流仍归这里所有，直到它真正结束，退出时一并排空。
+        retiring: set[asyncio.Task[None]] = set()
+        closed = asyncio.ensure_future(self._closed.wait())
+        changed: asyncio.Task[Literal[True]] | None = None
+        retry = PLUGIN_UI_AVAILABLE_RETRY_MIN_SECONDS
+        try:
+            while not self._closed.is_set():
+                changed = asyncio.ensure_future(self._slots.changed().wait())
+                waiting = changed
+                found = await self._follow_bindings()
+                if found is None:
+                    return
+                current, failed = found
+                for key in [key for key in streams if key not in current]:
+                    task = streams.pop(key)
+                    _ = task.cancel()
+                    retiring.add(task)
+                    task.add_done_callback(retiring.discard)
+                for key, binding in current.items():
+                    if key not in streams:
+                        streams[key] = asyncio.create_task(self._pump(binding, session_id, emit))
+                # available 回调出错的插件没有变化通知可等，按退避重新检查，恢复后重开它的流。
+                _ = await asyncio.wait((waiting, closed), timeout=retry if failed else None,
+                                       return_when=asyncio.FIRST_COMPLETED)
+                _ = waiting.cancel()
+                retry = min(retry * 2, PLUGIN_UI_AVAILABLE_RETRY_MAX_SECONDS) if failed else PLUGIN_UI_AVAILABLE_RETRY_MIN_SECONDS
+        finally:
+            # 任何出口（取消、枚举出错）都收掉等待者与流。
+            for waiter in (closed, changed):
+                if waiter is not None:
+                    _ = waiter.cancel()
+            tasks = (*streams.values(), *retiring)
+            for task in tasks:
+                _ = task.cancel()
+            _ = await asyncio.gather(*tasks, return_exceptions=True)
+
+    # 当前 Root 下注册了 follow、已 ACTIVE 且 available 的插件，与目录可见条件一致，并报告是否有 available 回调出错；
+    # UI owner 已失效时返回 None。
+    async def _follow_bindings(self) -> tuple[dict[str, PluginUiBinding], bool] | None:
+        ui_scope = self._ctx.runtime_scope()
+        try:
+            await ui_scope.__aenter__()
+        except CompositionError as error:
+            if error.code in {"STALE_ACTIVATION", "OWNER_UNAVAILABLE"}:
+                return None
+            raise
+        try:
+            visible: dict[str, PluginUiBinding] = {}
+            failed = False
+            for binding in self._slots.bindings():
+                if binding.follow is None or not self._binding_is_active(binding):
+                    continue
+                available = await self._available(binding)
+                failed |= available is None
+                if available:
+                    visible[binding.registration_uuid] = binding
+            return visible, failed
+        finally:
+            await ui_scope.__aexit__(None, None, None)
+
+    # 在注册者自己的作用域里问它当前是否可见；作用域已失效算不可见，回调抛错返回 None（同样不可见），
+    # 坏插件不拖累目录和其他插件的流。
+    async def _available(self, binding: PluginUiBinding) -> bool | None:
+        target_scope = binding.context.runtime_scope()
+        try:
+            await target_scope.__aenter__()
+        except CompositionError as error:
+            if error.code in {"STALE_ACTIVATION", "OWNER_UNAVAILABLE"}:
+                return False
+            raise
+        try:
+            with plugin_entrypoint(plugin_id=binding.descriptor.owner, generation_id=binding.context.runtime.generation_id,
+                                   fiber=binding.context.fiber.name, operation="plugin_ui.available"):
+                return binding.available()
+        except Exception:
+            logger.exception("plugin ui available failed: %s", binding.descriptor.owner)
+            return None
+        finally:
+            await target_scope.__aexit__(None, None, None)
+
+    # 转发一个插件的会话流；结束、出错或被撤下时补一帧 None，让界面丢弃旧状态。
+    # 发送本身失败（连接已断）就不再补发；补发有期限，慢连接不会拖住撤下与会话切换。
+    async def _pump(self, binding: PluginUiBinding, session_id: str, emit: PluginUiEmit) -> None:
+        owner = binding.descriptor.owner
+        frame: dict[str, object] = {"plugin_id": owner, "plugin_revision": self._plugin_revision(binding)}
+        follow = cast(PluginUiFollowHandler, binding.follow)
+        broken = False
+        try:
+            with plugin_entrypoint(plugin_id=owner, generation_id=binding.context.runtime.generation_id,
+                                   fiber=binding.context.fiber.name, operation="plugin_ui.follow"):
+                stream = follow(session_id)
+            async with aclosing(stream) as values:
+                async for value in values:
+                    try:
+                        await emit({**frame, "value": dict(value)})
+                    except Exception:
+                        broken = True
+                        raise
+        except Exception:
+            if not broken:
+                logger.exception("plugin ui follow failed: %s", owner)
+        finally:
+            if not broken:
+                with suppress(Exception):
+                    await asyncio.wait_for(emit({**frame, "value": None}), PLUGIN_UI_FINAL_FRAME_SECONDS)
 
     @staticmethod
     def _find_binding(slots: UiSlots, plugin_id: str) -> PluginUiBinding:

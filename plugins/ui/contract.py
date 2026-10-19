@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 from collections.abc import AsyncGenerator, Awaitable, Callable, Mapping
 from contextlib import aclosing
 from dataclasses import asdict, dataclass, field
@@ -140,6 +141,16 @@ class PluginUiQueryHandler(Protocol):
         """Sync handlers run in bounded workers; async handlers keep the owner scope."""
         ...
 
+class PluginUiFollowHandler(Protocol):
+    def __call__(self, session_id: str) -> AsyncGenerator[Mapping[str, object], None]:
+        """Yield this plugin's latest session state; ending means the state is no longer valid."""
+        ...
+
+
+# 插件推给自己界面的一帧：value 为 None 表示该插件的会话状态已失效（插件卸载或代际结束）。
+PluginUiEmit = Callable[[dict[str, object]], Awaitable[None]]
+
+
 class PluginUiRpcInvalidRequest(ValueError):
     """Signal a request rejected by the plugin-owned UI projection."""
 
@@ -193,6 +204,7 @@ class PluginUiBinding:
     available: Callable[[], bool]
     context: Context
     registration_uuid: str
+    follow: PluginUiFollowHandler | None = None
 
 class UiSlots(Protocol):
     """Expose the current plugin registrations owned by the UI provider."""
@@ -203,9 +215,14 @@ class UiSlots(Protocol):
     async def register_plugin_ui(
         self, ctx: Context, definition: PluginUiDefinition, *,
         query: PluginUiQueryHandler, available: Callable[[], bool] | None = None,
+        follow: PluginUiFollowHandler | None = None,
     ) -> Effect: ...
 
     def bindings(self) -> tuple[PluginUiBinding, ...]: ...
+
+    def changed(self) -> asyncio.Event:
+        """Set once when the registrations change; read it again for the next change."""
+        ...
 
 
 UI_SLOTS = ServiceKey[UiSlots]("ui.slots.v1")
@@ -252,6 +269,10 @@ class PluginUiProvider(Protocol):
         session_id: str | None,
         turn_id: str | None,
     ) -> dict[str, object]: ...
+
+    async def follow(self, session_id: str, emit: PluginUiEmit) -> None:
+        """Forward every plugin's session stream until cancelled or the UI owner closes."""
+        ...
 
 
 MESSAGE_DISPLAY = ServiceKey[MessageDisplayReader]("ui.messages.v1")

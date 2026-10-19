@@ -1,6 +1,7 @@
 import { useEffect, useId, useMemo, useRef, useState } from "react";
 import { ChevronDown, Square } from "lucide-react";
-import "./job-list-action.css";
+import { render, type PluginUiContext, type PluginUiDefinition } from "@akashic/chat-ui-v1";
+import "./plugin-ui.css";
 
 export type JobStatus = "running" | "stopping" | "completed" | "failed" | "timeout" | "killed";
 
@@ -14,11 +15,6 @@ export interface JobView {
   started_at: number;
   finished_at: number | null;
   stoppable: boolean;
-}
-
-export interface SessionJobs {
-  sessionId: string;
-  jobs: JobView[];
 }
 
 const STATUS_LABEL: Record<JobStatus, string> = {
@@ -40,23 +36,6 @@ const isJob = (value: unknown): value is JobView => {
     && (row.finished_at === null || Number.isSafeInteger(row.finished_at))
     && typeof row.stoppable === "boolean";
 };
-
-/** 只在 WebSocket 边界检查后台任务快照；其他消息继续交给原协议解析器。 */
-export function readJobsFrame(value: unknown): SessionJobs | null {
-  if (typeof value !== "object" || value === null || !("type" in value) || value.type !== "session.jobs") return null;
-  const row = value as Record<string, unknown>;
-  if (typeof row.session_id !== "string" || !Array.isArray(row.jobs) || !row.jobs.every(isJob)) {
-    throw new Error("后台任务快照无效");
-  }
-  return { sessionId: row.session_id, jobs: row.jobs };
-}
-
-export function readJobStopResult(value: unknown): { requestId: string; accepted: boolean } | null {
-  if (typeof value !== "object" || value === null || !("type" in value) || value.type !== "job.stop.result") return null;
-  const frame = value as Record<string, unknown>;
-  if (typeof frame.request_id !== "string" || typeof frame.accepted !== "boolean") return null;
-  return { requestId: frame.request_id, accepted: frame.accepted };
-}
 
 function formatDuration(elapsedMs: number): string {
   const total = Math.max(0, Math.floor(elapsedMs / 1000));
@@ -149,7 +128,7 @@ function JobPanel({ id, live, settled, now, settledOpen, onToggleSettled, onClea
 }
 
 // 标题行右侧的安静标记：有任务运行时显示呼吸点和数量，只剩已结束任务时退为淡色计数。
-export function JobListAction({ jobs, onStop }: { jobs: readonly JobView[]; onStop: (jobId: string) => Promise<boolean> }) {
+function JobListAction({ jobs, onStop }: { jobs: readonly JobView[]; onStop: (jobId: string) => Promise<boolean> }) {
   const [open, setOpen] = useState(false);
   const [now, setNow] = useState(() => Date.now());
   const [settledOpen, setSettledOpen] = useState<boolean | undefined>(undefined);
@@ -212,3 +191,25 @@ export function JobListAction({ jobs, onStop }: { jobs: readonly JobView[]; onSt
       }} /> : null}
   </div>;
 }
+
+const NO_JOBS: readonly JobView[] = [];
+
+// 会话任务镜像来自本插件后端的 follow 推送；null（断线、插件换代）即旧镜像失效，按空列表处理。
+function SessionJobs({ context }: { context: PluginUiContext }) {
+  const [jobs, setJobs] = useState<readonly JobView[]>(NO_JOBS);
+  useEffect(() => context.subscribe((value) => {
+    const rows = value?.jobs;
+    setJobs(Array.isArray(rows) && rows.every(isJob) ? rows : NO_JOBS);
+  }), [context]);
+  // 停止只回答是否受理；行状态由推送的快照收敛（停止中 → 已停止）。
+  const stop = async (jobId: string) => {
+    try { return (await context.query("job.stop", { job_id: jobId }, { cache: "none" })).accepted === true; }
+    catch { return false; }
+  };
+  return <JobListAction jobs={jobs} onStop={stop} />;
+}
+
+const definition: PluginUiDefinition = {
+  slots: { "header.end": { mount: (host, context) => render(host, <SessionJobs context={context} />) } },
+};
+export default definition;

@@ -1,7 +1,7 @@
 /* 后台任务标记与目录标记同属标题行右侧的安静入口：平时淡墨，展开或有任务运行时才提亮。 */
-.job-list { position: relative; flex: 0 0 auto; margin-inline-start: auto; padding-inline-start: 4px; font-size: var(--chat-type-caption, 0.75rem); }
-.plugin-ui-slot[data-slot="header.end"] + .job-list { margin-inline-start: 0; }
-.job-list + .conversation-heading__new { margin-inline-start: 0; }
+.job-list { position: relative; flex: 0 0 auto; padding-inline-start: 4px; font-size: var(--chat-type-caption, 0.75rem); }
+/* 同一插槽里排在目录标记之后。 */
+.plugin-ui-slot[data-slot="header.end"] > .plugin-ui-host:is([data-plugin="jobs"], [data-plugin^="jobs@"]) { order: 1; }
 
 .job-list__trigger { display: inline-flex; min-height: 32px; align-items: center; gap: 6px; padding-inline: 8px; border: 0; border-radius: 8px; background: transparent; color: var(--chat-faint); font: inherit; cursor: pointer; transition: color var(--ak-sys-duration-short) var(--ak-sys-motion-standard); }
 .job-list__trigger[data-live] { color: var(--chat-muted); }
@@ -42,6 +42,11 @@
 .job-list__meta { grid-column: 2 / 4; min-width: 0; overflow: hidden; color: var(--chat-faint); text-overflow: ellipsis; white-space: nowrap; }
 .job-list__row[data-status="failed"] .job-list__meta,
 .job-list__row[data-status="timeout"] .job-list__meta { color: var(--ak-color-status-error); }
+
+/* 强制颜色下背景会被换成系统底色，状态点保留形状，用文本色画。 */
+@media (forced-colors: active) {
+  .job-list__dot { forced-color-adjust: none; background: CanvasText; }
+}
 
 @media (prefers-reduced-motion: no-preference) {
   .job-list__trigger .job-list__dot[data-status="running"] { animation: job-list-breathe 2.4s ease-in-out infinite; }

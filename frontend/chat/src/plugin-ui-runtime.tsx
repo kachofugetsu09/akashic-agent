@@ -249,8 +249,11 @@ async function activateCatalog(next: PluginUiCatalog): Promise<boolean> {
     }
   }
   styleNodes.forEach((node) => node.remove());
+  const retired = new Set([...definitions].filter(([id, { revision }]) => nextDefinitions.get(id)?.revision !== revision)
+    .map(([id, { revision }]) => JSON.stringify([id, revision])));
   definitions.clear();
   nextDefinitions.forEach((definition, id) => definitions.set(id, definition));
+  retirePushes(retired);
   styleNodes.clear();
   nextStyles.forEach((node, id) => {
     document.head.appendChild(node);
@@ -378,6 +381,77 @@ export async function queryHostPlugin(
     pluginId: plugin.id, pluginRevision: plugin.revision, method, payload, slot: "drawer.panel", sessionId,
     signal: signal ?? new AbortController().signal,
   });
+}
+
+// 插件推送按“插件|revision|会话”记住最新一帧，晚挂载的界面先拿到当前状态；换代后旧代的帧（包括它的 null）
+// 碰不到新代界面。新代帧可能先于新目录到达，所以目录激活时只清掉被这次激活确认退役的 revision，其余留着。
+const pushed = new Map<string, Record<string, unknown>>();
+const pushListeners = new Map<string, Set<(value: Record<string, unknown> | null) => void>>();
+
+function pushKey(pluginId: string, revision: string, sessionId: string): string {
+  return JSON.stringify([pluginId, revision, sessionId]);
+}
+
+// 结束帧是尽力送达的：同一插件与会话只留当前 revision 和最新到达的一个未确认 revision，丢了 null 也不会越攒越多。
+function capPushes(pluginId: string, latest: string, sessionId: string) {
+  const current = definitions.get(pluginId)?.revision;
+  for (const key of pushed.keys()) {
+    const [id, revision, session] = JSON.parse(key) as [string, string, string];
+    if (id === pluginId && session === sessionId && revision !== latest && revision !== current) pushed.delete(key);
+  }
+}
+
+function retirePushes(retired: ReadonlySet<string>) {
+  for (const key of pushed.keys()) {
+    const [pluginId, revision] = JSON.parse(key) as [string, string, string];
+    if (retired.has(JSON.stringify([pluginId, revision]))) pushed.delete(key);
+  }
+}
+
+function deliverPush(key: string, value: Record<string, unknown> | null) {
+  for (const listener of pushListeners.get(key) ?? []) {
+    try { listener(value); }
+    catch (error) { console.error(`[plugin-ui] push listener failed: ${key}`, error); }
+  }
+}
+
+/** WebSocket 上的插件推送帧；不是该帧时返回 false，交给其他解析器。 */
+export function receivePluginUiEvent(value: unknown): boolean {
+  if (typeof value !== "object" || value === null || (value as { type?: unknown }).type !== "plugin_ui.event") return false;
+  const frame = value as Record<string, unknown>;
+  const state = frame.value;
+  if (typeof frame.plugin_id !== "string" || typeof frame.plugin_revision !== "string" || typeof frame.session_id !== "string"
+    || (state !== null && (typeof state !== "object" || Array.isArray(state)))) throw new Error("插件推送帧无效");
+  const key = pushKey(frame.plugin_id, frame.plugin_revision, frame.session_id);
+  // null 表示流已结束，直接忘掉这个键，长连接跨会话不会越攒越多。
+  if (state === null) pushed.delete(key);
+  else {
+    pushed.set(key, state as Record<string, unknown>);
+    capPushes(frame.plugin_id, frame.plugin_revision, frame.session_id);
+  }
+  deliverPush(key, state as Record<string, unknown> | null);
+  return true;
+}
+
+/** 连接结束时全部推送状态失效；重连后的基线帧再装回。 */
+export function resetPluginUiEvents() {
+  const keys = [...pushed.keys()];
+  pushed.clear();
+  keys.forEach((key) => deliverPush(key, null));
+}
+
+function subscribePush(pluginId: string, revision: string, sessionId: string | undefined, callback: (value: Record<string, unknown> | null) => void): () => void {
+  if (!sessionId) return () => undefined;
+  const key = pushKey(pluginId, revision, sessionId);
+  const listeners = pushListeners.get(key) ?? new Set();
+  pushListeners.set(key, listeners);
+  listeners.add(callback);
+  const latest = pushed.get(key);
+  if (latest) callback(latest);
+  return () => {
+    listeners.delete(callback);
+    if (!listeners.size) pushListeners.delete(key);
+  };
 }
 
 export function receivePluginUiResult(response: PluginUiResult) {
@@ -534,7 +608,7 @@ function MountedPlugin({
   pluginRevision: string;
   renderer: PluginUiRenderer;
   prefetch?: boolean;
-  context: Omit<PluginUiContext, "query" | "capabilities" | "onInvalidate" | "reportError" | "workbench">;
+  context: Omit<PluginUiContext, "query" | "capabilities" | "onInvalidate" | "reportError" | "subscribe" | "workbench">;
   refreshToken?: string | number;
 }) {
   const hostRef = React.useRef<HTMLDivElement>(null);
@@ -565,6 +639,7 @@ function MountedPlugin({
     invalidatorsRef.current = invalidators;
     let cleanup: void | (() => void);
     let live = true;
+    const stopPushes = new Set<() => void>();
     setError(null);
     const stopIntents = subscribeWorkbenchIntents(() => {
       for (const callback of invalidators) {
@@ -580,6 +655,11 @@ function MountedPlugin({
           return () => { invalidators.delete(callback); };
         },
         reportError: (message) => { if (live) setError(message); },
+        subscribe: (callback) => {
+          const stop = subscribePush(pluginId, pluginRevision, sessionId, (value) => { if (live) callback(value); });
+          stopPushes.add(stop);
+          return () => { stop(); stopPushes.delete(stop); };
+        },
         capabilities: { queryCacheModes: ["none", "memory", "immutable"] },
         query: (method, payload = {}, options = {}) => queryPlugin({
           pluginId, pluginRevision, ownerId, slot, sessionId, messageId, turnId, method, payload, options, prefetch,
@@ -601,6 +681,7 @@ function MountedPlugin({
     }
     return () => {
       live = false;
+      stopPushes.forEach((stop) => stop());
       stopIntents();
       invalidators.clear();
       invalidatorsRef.current = null;

@@ -12,7 +12,6 @@ import { DesktopAutoScroll, ComposerPageKeys, NarrowReadingChrome, ReadingReturn
 import { ComposerStatsLine } from "./composer-stats-line";
 import { ThinkingPlaceholder } from "./thinking-placeholder";
 import { DesktopComposer, type ComposerApi } from "./desktop-composer";
-import { JobListAction } from "./job-list-action";
 import { onWorkbenchQuote } from "./shell-workbench";
 import { DesktopConversationMessages, DesktopTimelineMessages, messageDayKey, withoutLeadingOrphanResults } from "./desktop-conversation";
 import { MediaGalleryViewer, ReplyActivityView } from "./message-view";
@@ -140,7 +139,6 @@ export function DesktopChatView({ embeddedShell, controller }: DesktopChatViewPr
           {/* 插件在标题行右侧的标记；新的工具结果到达时通知插件重新读取会话状态。 */}
           {activeSessionId ? <PluginUiSlot key={`header:${activeSessionId}`} name="header.end" sessionId={activeSessionId}
             refreshToken={Array.from(toolResults.keys()).join("|")} quiet /> : null}
-          <JobListAction key={`jobs:${activeSessionId}`} jobs={controller.activeSessionJobs} onStop={controller.stopJob} />
           {/* 窄屏没有常驻侧栏：新会话留在拇指可达的标题行，不必先打开抽屉。 */}
           {conversationLayout ? <button type="button" className="conversation-heading__new" aria-label="新会话" data-tip="新会话"
             onClick={() => startNewChat()}>

@@ -9,6 +9,7 @@ from plugins.models.contract import (
 from plugins.models.contract import ModelControlUnavailable
 
 import asyncio
+import logging
 from collections.abc import AsyncGenerator, AsyncIterator, Mapping, Sequence
 from contextlib import aclosing, asynccontextmanager
 from dataclasses import dataclass
@@ -36,7 +37,6 @@ from plugins.channels.contract import (
     StopReceipt,
 )
 from plugins.ledger.contract import MESSAGE_CATALOG, SESSION_ADMIN
-from plugins.jobs.contract import JOB_NOTICES, JobNotices
 
 from .capabilities import (
     MESSAGE_DISPLAY,
@@ -61,13 +61,15 @@ from .services import (
     SessionAdminPort,
 )
 from .services import ArtifactReadLeasePort, PluginUiProvider, WebUiProvider
-from plugins.ui.contract import MessageDisplayReader
+from plugins.ui.contract import MessageDisplayReader, PluginUiEmit
 from .scoped_capabilities import (
     ScopedMessageDisplay,
     ScopedPluginUiProvider,
     ScopedWebUiProvider,
     open_request_scope,
 )
+
+logger = logging.getLogger(__name__)
 
 
 class _ChannelArtifactReadLease:
@@ -226,8 +228,7 @@ def build_akashic_channel_factory(owner: Context, config: AkashicClientsConfig, 
     return build
 
 
-_JOBS_RETRY_MIN_S = 1.0
-_JOBS_RETRY_MAX_S = 30.0
+_PLUGIN_UI_RETRY_S = 1.0
 
 
 class _GenerationAkashicAdapter:
@@ -302,8 +303,7 @@ class _GenerationAkashicAdapter:
         self._web.bind_message_scope(
             self._message_scope,
             reply_status=self._reply_status,
-            jobs=self._follow_jobs,
-            stop_job=self._stop_job,
+            plugin_events=self._follow_plugin_ui,
         )
         self._web.bind_message_display(self._message_display)
 
@@ -386,31 +386,20 @@ class _GenerationAkashicAdapter:
                     "items": [dict(item) for item in frame],
                 }
 
-    # 1. 每代 jobs owner 借一次订阅并长跟随；2. owner 关闭时 follow 结束，先发空快照让前端失效；
-    # 3. 再重新借用，插件缺席期间退避等待，新一代出现后从其基线继续。
-    async def _follow_jobs(self, session_id: str) -> AsyncGenerator[dict[str, object], None]:
-        delay = _JOBS_RETRY_MIN_S
+    # 1. 每代 UI owner 取一次查询目录并长跟随，插件推给自己界面的会话状态原样转发；
+    # 2. owner 关闭时跟随结束，稍等后重新取新一代。宿主不认识任何具体插件的状态。
+    # PLUGIN_UI 是本插件的必需能力（见 _resolve_capabilities），请求作用域里只能 require；
+    # borrow 只接受声明为可选的能力，误用会让整条 websocket 以 SERVICE_UNDECLARED 结束。
+    async def _follow_plugin_ui(self, session_id: str, emit: PluginUiEmit) -> None:
         while True:
             async with self._open_request_scope() as scope:
-                with scope.borrow(JOB_NOTICES) as service:
-                    notices = None if service is None else cast(JobNotices, service)
-            if notices is None:
-                await asyncio.sleep(delay)
-                delay = min(delay * 2, _JOBS_RETRY_MAX_S)
-                continue
-            delay = _JOBS_RETRY_MIN_S
-            async with aclosing(notices.follow_jobs(session_id)) as snapshots:
-                async for snapshot in snapshots:
-                    yield {"session_id": session_id, "jobs": [job.to_wire() for job in snapshot]}
-            yield {"session_id": session_id, "jobs": []}
-            await asyncio.sleep(delay)
-
-    async def _stop_job(self, session_id: str, job_id: str) -> bool:
-        async with self._open_request_scope() as scope:
-            with scope.borrow(JOB_NOTICES) as service:
-                if service is None:
-                    return False
-                return await cast(JobNotices, service).stop_job(session_id, job_id)
+                provider = cast(PluginUiProvider, scope.require(PLUGIN_UI))
+            # 插件推送是可选界面：跟随出错只记录并稍后重取，不连累同一连接上的消息订阅。
+            try:
+                await provider.follow(session_id, emit)
+            except Exception:
+                logger.exception("plugin ui follow stopped: %s", session_id)
+            await asyncio.sleep(_PLUGIN_UI_RETRY_S)
 
     async def _read_model_call_stats(self, call_id: str) -> ModelCallStats:
         """借用实际统计 owner；缺席不关闭聊天，也不获取模型修改权限。"""

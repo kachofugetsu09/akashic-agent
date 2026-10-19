@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import hashlib
 import inspect
 from collections.abc import Callable
@@ -12,7 +13,7 @@ from uuid import uuid4
 from agent.plugin_composition import Context, CompositionError, Effect, FiberState
 from plugins.ui.contract import (
     UI_SLOTS, PLUGIN_UI_SLOTS, PluginUiAsset, PluginUiBinding, PluginUiDefinition,
-    PluginUiDescriptor, PluginUiNavigation, PluginUiQueryHandler,
+    PluginUiDescriptor, PluginUiFollowHandler, PluginUiNavigation, PluginUiQueryHandler,
 )
 
 
@@ -22,6 +23,7 @@ class PluginUiSlots:
     def __init__(self, ctx: Context) -> None:
         self._ctx = ctx
         self._registrations: dict[str, PluginUiBinding] = {}
+        self._changed = asyncio.Event()
 
     def contributors(self) -> tuple[Context, ...]:
         self._ctx._require_current()  # pyright: ignore[reportPrivateUsage]
@@ -33,6 +35,14 @@ class PluginUiSlots:
     def root_instance_token(self) -> object:
         self._ctx._require_current()  # pyright: ignore[reportPrivateUsage]
         return self._ctx.root_instance_token
+
+    def changed(self) -> asyncio.Event:
+        return self._changed
+
+    # 唤醒等待者并换一个新事件，下一次变化重新等待。
+    def _notify(self) -> None:
+        self._changed.set()
+        self._changed = asyncio.Event()
 
     def bindings(self) -> tuple[PluginUiBinding, ...]:
         """Return the current registration projection without running callbacks."""
@@ -52,6 +62,7 @@ class PluginUiSlots:
         *,
         query: PluginUiQueryHandler,
         available: Callable[[], bool] | None = None,
+        follow: PluginUiFollowHandler | None = None,
     ) -> Effect:
         """Register one plugin UI declaration as an Effect of the calling Fiber."""
 
@@ -66,6 +77,8 @@ class PluginUiSlots:
             raise TypeError("插件 Plugin UI 声明必须是 PluginUiDefinition")
         if not callable(query):
             raise TypeError("插件 Plugin UI query 必须可调用")
+        if follow is not None and not callable(follow):
+            raise TypeError("插件 Plugin UI follow 必须可调用")
         if available is not None:
             _validate_sync_callable(available, "available")
         navigation = definition.navigation
@@ -103,11 +116,19 @@ class PluginUiSlots:
             available=_always_available if available is None else available,
             context=ctx,
             registration_uuid=uuid4().hex,
+            follow=follow,
         )
-        return await ctx.effect(
+        undo = await ctx.effect(
             lambda: self._register(ctx, binding),
             label=f"ui-slot:plugin:{definition.module}",
         )
+        # LOADING 期间登记的界面在 activation 就绪后才可见；就绪时再通知一次，跟随方据此开流。
+        if ctx.fiber.state is FiberState.LOADING:
+            _ = await ctx.spawn(self._announce_active(), name="plugin-ui-active")
+        return undo
+
+    async def _announce_active(self) -> None:
+        self._notify()
 
     def _register(
         self,
@@ -133,9 +154,11 @@ class PluginUiSlots:
 
         # 2. 每个 owner 只持有一条注册，Effect 关闭后解除归属。
         self._registrations[plugin_id] = binding
+        self._notify()
 
         def cleanup() -> None:
             del self._registrations[plugin_id]
+            self._notify()
 
         return cleanup
 

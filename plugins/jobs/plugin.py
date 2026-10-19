@@ -4,6 +4,7 @@ from __future__ import annotations
 import asyncio
 import logging
 from collections.abc import AsyncGenerator, Mapping, Sequence
+from contextlib import aclosing
 from typing import Literal, cast
 
 from pydantic import BaseModel, ConfigDict, Field
@@ -17,6 +18,7 @@ from plugins.delivery.contract import DELIVERY_SENDERS
 from plugins.ledger.contract import BINDINGS, MESSAGE_CATALOG, Input, Message, MessageReader, json_value
 from plugins.reply.contract import REPLY_PROGRAM_V3 as REPLY_PROGRAM
 from plugins.sources.contract import SourceGuard
+from plugins.ui.contract import UI_SLOTS, PluginUiDefinition, PluginUiRpcInvalidRequest
 
 from .board import JobBoard, JobMirror, Notice
 from .contract import JOB_NOTICES, JobOutcome, JobSnapshot, JobWatch
@@ -215,3 +217,24 @@ async def apply(ctx: Context) -> None:
     _ = await ctx.effect(lambda: jobs.close, label="job-mirror")
     _ = await ctx.provide(JOB_NOTICES, jobs)
     _ = await ctx.require(MATERIALS).register(ctx, name="job-notices", kind="context", prepare=jobs.materials)
+    _ = await ctx.inject((UI_SLOTS,), lambda child: register_ui(child, jobs), name="plugin-ui")
+
+
+# 后台任务列表是本插件自己的界面：会话快照经 follow 推送，停止经界面查询，宿主不认识任务。
+async def register_ui(ctx: Context, jobs: Jobs) -> None:
+    async def query(method: str, payload: dict[str, object], *,
+                    session_id: str | None, turn_id: str | None) -> dict[str, object]:
+        job_id = payload.get("job_id")
+        if method != "job.stop" or set(payload) != {"job_id"} or not isinstance(job_id, str) or not job_id or not session_id:
+            raise PluginUiRpcInvalidRequest("停止任务需要会话与 job_id")
+        return {"accepted": await jobs.stop_job(session_id, job_id)}
+
+    async def follow(session_id: str) -> AsyncGenerator[Mapping[str, object], None]:
+        async with aclosing(jobs.follow_jobs(session_id)) as snapshots:
+            async for snapshot in snapshots:
+                yield {"jobs": [job.to_wire() for job in snapshot]}
+
+    _ = await ctx.require(UI_SLOTS).register_plugin_ui(
+        ctx, PluginUiDefinition(module="plugin_ui.js", stylesheet="plugin_ui.css", slots=("header.end",)),
+        query=query, follow=follow,
+    )

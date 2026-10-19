@@ -481,6 +481,9 @@ def create_chat_app(
             raise HTTPException(status_code=400, detail="插件参数不是有效 JSON") from error
         if len(encoded) > 64 * 1024:
             raise HTTPException(status_code=413, detail="插件参数超过 64 KiB")
+        # 插件按 session_id 读写会话数据；入口先把它限定在本通道，插件不必各自重做通道授权。
+        if request.session_id and not request.session_id.startswith(f"{channel.name}:"):
+            raise HTTPException(status_code=400, detail="插件查询只能指向本通道的会话")
         try:
             if plugin_ui_scope is not None:
                 async with plugin_ui_scope() as provider:

@@ -3303,7 +3303,7 @@ form.composer:focus-within [data-slot="input-group"] {
 .directory-actions { display: flex; flex-flow: row wrap; gap: 8px; }
 /* 目录名短而信息量大：不与标题按比例分摊收缩，长标题先让；真超长时与标题同样右缘渐隐，不用省略号。
    上限放在参与标题栏 flex 的外层（含左内边距）：只限按钮时外层仍按目录全名的固有宽度占位，会把标题挤没。 */
-.plugin-ui-slot[data-slot="header.end"] { display: flex; min-width: 0; flex: 0 0 auto; align-items: center; margin-inline-start: auto; }
+.plugin-ui-slot[data-slot="header.end"] { display: flex; min-width: 0; flex: 0 0 auto; align-items: center; gap: 2px; margin-inline-start: auto; }
 /* 插槽按可见性懒挂载，宿主元素必须有布局盒子，不能用 display: contents。 */
 .plugin-ui-slot[data-slot="header.end"] > .plugin-ui-host { display: flex; min-width: 0; }
 .header-marker { position: relative; display: flex; min-width: 4.5rem; max-width: calc(14rem + 12px); flex: 0 0 auto; padding-inline-start: 12px; font-size: var(--chat-type-caption, 0.75rem); }
@@ -3355,15 +3355,14 @@ form.composer:focus-within [data-slot="input-group"] {
 .project-dialog__directory-choice button { min-height: 44px; padding: 8px 12px; border: 1px solid var(--ak-rule-default); border-radius: 8px; color: inherit; background: transparent; }
 
 /* 强制颜色（Windows 高对比度）下背景色统一换成系统底色：只靠底色表达的东西会整片消失。
-   标记类图形（品牌、会话状态、轮次刻度、后台任务点）保留形状，用文本色画；当前行、用户气泡改用系统色的描边；
+   标记类图形（品牌、会话状态、轮次刻度）保留形状，用文本色画；当前行、用户气泡改用系统色的描边；
    输入卡外框本身是边框，内层输入组那圈多出来的描边去掉，聚焦改由外框的高亮描边表达。 */
 @media (forced-colors: active) {
   .chat-sidebar__mark,
   .session-status-dot,
   .session-swirl > i,
   .turn-rail__ticks i,
-  .turn-rail:hover .turn-rail__ticks i,
-  .job-list__dot {
+  .turn-rail:hover .turn-rail__ticks i {
     forced-color-adjust: none;
     background: CanvasText;
   }
