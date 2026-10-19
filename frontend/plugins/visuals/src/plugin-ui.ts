@@ -1,11 +1,8 @@
 import template from "./frame.html?raw";
-import type { PluginUiDefinition, PluginUiContext } from "../../../chat/src/plugin-ui-runtime";
-import type { TimelineAttachmentOrigin } from "../../../chat/src/message-view";
-import type { TimelineAttachment } from "../../../chat/src/message-timeline";
+import type { MessageAttachmentFacts, PluginUiDefinition, PluginUiContext } from "@akashic/chat-ui-v1";
 
 const CHANNEL = "akashic.visual.v1";
 const MAX_BYTES = 5_000_000;
-type VisualAttachment = TimelineAttachment & { origin: TimelineAttachmentOrigin };
 const TOKENS = ["type-reading", "color-action-primary", "color-text-muted", "color-text-primary", "color-text-secondary", "color-bg-canvas", "color-bg-surface", "color-border-default", "color-border-strong",
   ...[1, 2, 3, 4, 5, 6].map(index => `chart-${index}`)];
 // 展示时注入的宿主桥：只汇报尺寸、就绪和错误，并接收主题；不提供查询或执行能力。
@@ -34,19 +31,17 @@ const BRIDGE = `<script>(() => {
   });
 })();</` + `script>`;
 
-function isHtml(attachment: TimelineAttachment): boolean {
+function isHtml(attachment: MessageAttachmentFacts): boolean {
   return attachment.media_type === "text/html" || /\.html?$/i.test(attachment.filename ?? "");
 }
 
 // 旧版 render_visual 保存的 JSON 文档；新文档就是普通 HTML 文件。
-function isLegacy(attachment: VisualAttachment): boolean {
+function isLegacy(attachment: MessageAttachmentFacts): boolean {
   return attachment.origin?.kind === "tool_result" && attachment.origin.tool === "render_visual"
     && attachment.media_type === "application/json" && !!attachment.filename?.endsWith(".akashic-visual.json");
 }
 
-function accepts(block: unknown): block is VisualAttachment {
-  if (!block || typeof block !== "object") return false;
-  const attachment = block as VisualAttachment;
+function accepts(attachment: MessageAttachmentFacts): boolean {
   return attachment.kind === "file" && (isHtml(attachment) || isLegacy(attachment));
 }
 
@@ -68,7 +63,7 @@ function withBridge(html: string, theme: string): string {
   return themed.slice(0, at) + inject + themed.slice(at);
 }
 
-async function readDocument(attachment: VisualAttachment, host: HTMLElement, signal: AbortSignal): Promise<{ title: string; html: string }> {
+async function readDocument(attachment: MessageAttachmentFacts, host: HTMLElement, signal: AbortSignal): Promise<{ title: string; html: string }> {
   if (attachment.size_bytes > MAX_BYTES) throw new Error("附件超过大小限制");
   const response = await fetch(`/api/chat/artifacts/${encodeURIComponent(attachment.artifact_id)}`, { signal });
   if (!response.ok) throw new Error(`读取失败 (${response.status})`);
@@ -79,9 +74,9 @@ async function readDocument(attachment: VisualAttachment, host: HTMLElement, sig
 }
 
 /** 每次挂载只读一次不可变附件；主题改变不重建文档。 */
-function mount(host: HTMLElement, context: PluginUiContext): () => void {
+function mount(host: HTMLElement, context: PluginUiContext<"message.attachment">): () => void {
   // 1. 文档在独立 sandbox 文档里运行；用户自己上传的网页先点击再运行。
-  const attachment = context.block as VisualAttachment;
+  const attachment = context.block;
   const abort = new AbortController();
   const status = document.createElement("p");
   status.setAttribute("role", "status");

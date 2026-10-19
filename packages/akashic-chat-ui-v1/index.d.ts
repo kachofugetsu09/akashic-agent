@@ -24,12 +24,8 @@ export interface PluginUiQueryOptions {
   cache?: "none" | "memory" | "immutable";
 }
 
-export interface PluginUiContext {
-  slot: PluginUiSlotName;
-  sessionId?: string;
-  messageId?: string;
-  turnId?: string;
-  block?: unknown;
+/** 每次挂载都有的宿主能力，与插槽无关。 */
+export interface PluginUiHostContext {
   /** 挂载内的事实失效提示；不改变挂载身份。 */
   onInvalidate(callback: () => void): () => void;
   /** 异步展示失败时交还宿主降级内容；不改变消息。 */
@@ -52,20 +48,51 @@ export interface PluginUiContext {
     accepts(name: string): boolean;
     open(name: string, payload: unknown): Promise<WorkbenchIntentStatus>;
   };
-  /** 只在 composer.toolbar 插槽里提供。 */
-  composer?: ComposerControls;
-  /**
-   * scope.fields 与 scope.badge 插槽里提供：会话的一个 scope 维度，例如项目。
-   * scope.fields 是新建该维度取值的表单，取值尚未产生，value 为空；
-   * scope.badge 跟在某个取值的名字后面，位于可点击的行里，只放不可交互的短文字。
-   */
-  scope?: { dimension: string; value?: string };
-  /** 只在 scope.fields 插槽里提供。 */
-  fields?: ScopeFieldControls;
-  /** 只在侧栏分组的表单（NavigationForm）里提供。 */
-  form?: NavigationFormControls;
-  /** 只在侧栏分组的表单与提示（notice）里提供。 */
-  navigation?: NavigationControls;
+}
+
+/**
+ * 每个挂载插槽里宿主保证提供的事实：字段在这里写成必需的，插件就不必再自己检查。
+ * 新增插槽时在这里登记它的事实，宿主的挂载点按同一份类型传值。
+ */
+export interface PluginUiSlotFacts {
+  /** 一轮回答开始前；source 是这轮输入所在的会话来源。 */
+  "turn.before_reasoning": { sessionId: string; messageId: string; block: { source: string } };
+  /** 完整回答之后。 */
+  "turn.after_answer": { sessionId: string; messageId: string };
+  /** 本插件注册的工具的一次结果；只交给工具 owner。 */
+  "tool.result": { block: ToolResultFacts };
+  /** 消息里的一个附件；插件按文件名、媒体类型在 accepts 里认领。 */
+  "message.attachment": { sessionId: string; messageId: string; block: MessageAttachmentFacts };
+  /** 输入框上方的通知；还没有会话时 sessionId 为空。 */
+  "chat.notice": { sessionId?: string };
+  "header.end": { sessionId: string };
+  /** 输入框工具位；新会话还没有 sessionId。 */
+  "composer.toolbar": { sessionId?: string; composer: ComposerControls };
+  "composer.status": { sessionId: string };
+  /** 新建某个维度取值的表单里的附加设置；取值尚未产生。 */
+  "scope.fields": { scope: { dimension: string }; fields: ScopeFieldControls };
+  /** 跟在某个取值名字后面，位于可点击的行里，只放不可交互的短文字。 */
+  "scope.badge": { scope: { dimension: string; value: string } };
+}
+
+/** 某个挂载插槽的完整上下文；不带参数时是所有插槽上下文的联合，按 slot 收窄。 */
+export type PluginUiContext<S extends PluginUiMountSlotName = PluginUiMountSlotName> = {
+  [K in S]: PluginUiHostContext & { slot: K } & PluginUiSlotFacts[K];
+}[S];
+
+/** 插槽交给 accepts 判断的数据；没有 block 的插槽为 undefined。 */
+export type PluginUiSlotBlock<S extends PluginUiMountSlotName> = PluginUiSlotFacts[S] extends { block: infer B } ? B : undefined;
+
+/** 侧栏分组区里的挂载（分区提示）：所属维度与宿主导航能力。 */
+export interface PluginUiNavigationContext extends PluginUiHostContext {
+  slot: "navigation.groups";
+  scope: { dimension: string };
+  navigation: NavigationControls;
+}
+
+/** 分组对话框表单里的挂载。 */
+export interface PluginUiNavigationFormContext extends PluginUiNavigationContext {
+  form: NavigationFormControls;
 }
 
 /** 侧栏分组的一项：会话维度的一个取值，例如一个项目。 */
@@ -81,7 +108,7 @@ export interface NavigationForm {
   title: string;
   /** 提交按钮文字；没有时对话框只读，只有关闭按钮。 */
   submitLabel?: string;
-  mount(host: HTMLElement, context: PluginUiContext): void | (() => void);
+  mount(host: HTMLElement, context: PluginUiNavigationFormContext): void | (() => void);
 }
 
 /** 对话框表单的宿主能力。 */
@@ -115,12 +142,12 @@ export interface NavigationGroupsProvider {
   /** 分区标题，例如“项目”。 */
   label: string;
   /** 目录变化、提交表单或插件请求时重读；只经 query 访问本插件。 */
-  load(context: Pick<PluginUiContext, "query">): Promise<readonly NavigationGroup[]>;
+  load(context: Pick<PluginUiHostContext, "query">): Promise<readonly NavigationGroup[]>;
   create?: NavigationForm;
   /** 分组行菜单里的额外动作，每项打开一个对话框。 */
   actions?(group: NavigationGroup): readonly { label: string; form: NavigationForm }[];
   /** 分区顶部的提示，例如未确认的新建请求；没有内容时插件不渲染任何东西。 */
-  notice?: PluginUiRenderer;
+  notice?: { mount(host: HTMLElement, context: PluginUiNavigationContext): void | (() => void) };
 }
 
 /** 新建表单里的附加设置：表单确定了新取值、在它被创建之前，宿主依次调用各插件登记的提交。 */
@@ -160,10 +187,28 @@ export interface ToolResultFacts {
   error: boolean;
 }
 
-export interface PluginUiRenderer {
-  accepts?(block: unknown): boolean;
-  prefetch?(context: PluginUiContext): Promise<void>;
-  mount(host: HTMLElement, context: PluginUiContext): void | (() => void);
+/** message.attachment 插槽的 block：附件的不可变描述，以及它所在消息的出处。 */
+export interface MessageAttachmentFacts {
+  artifact_id: string;
+  kind: "file" | "image";
+  filename: string | null;
+  media_type: string | null;
+  size_bytes: number;
+  sha256: string;
+  origin: {
+    kind: "input" | "output" | "tool_result" | "control";
+    author: string;
+    /** 附件来自工具结果时的工具名。 */
+    tool: string | null;
+    /** 附件所在消息的时间（ISO 8601）。 */
+    at: string;
+  };
+}
+
+export interface PluginUiRenderer<S extends PluginUiMountSlotName = PluginUiMountSlotName> {
+  accepts?(block: PluginUiSlotBlock<S>): boolean;
+  prefetch?(context: PluginUiContext<S>): Promise<void>;
+  mount(host: HTMLElement, context: PluginUiContext<S>): void | (() => void);
 }
 
 /** 输入框建议的一项：选中后写入 `${prefix}${token} `；发出的消息里同样写法显示为提及。 */
@@ -188,12 +233,12 @@ export interface ComposerSuggestProvider {
   /** 没有任何条目时的说明。 */
   empty: string;
   /** 每次打开菜单重新读取；只经 query 访问本插件。 */
-  load(context: Pick<PluginUiContext, "query">): Promise<readonly ComposerSuggestion[]>;
+  load(context: Pick<PluginUiHostContext, "query">): Promise<readonly ComposerSuggestion[]>;
 }
 
 /** 插件界面模块的默认导出。 */
 export interface PluginUiDefinition {
-  slots: Partial<Record<PluginUiMountSlotName, PluginUiRenderer>> & {
+  slots: { [S in PluginUiMountSlotName]?: PluginUiRenderer<S> } & {
     "composer.suggest"?: ComposerSuggestProvider;
     "navigation.groups"?: NavigationGroupsProvider;
   };

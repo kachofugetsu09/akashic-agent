@@ -1,5 +1,5 @@
 import { Check, X } from "lucide-react";
-import { formatDuration, render, ToolData, ToolText, type PluginUiDefinition, type ToolResultFacts } from "@akashic/chat-ui-v1";
+import { formatDuration, render, ToolData, ToolText, type PluginUiDefinition } from "@akashic/chat-ui-v1";
 import "./plugin-ui.css";
 
 interface ShellResult {
@@ -55,9 +55,9 @@ const definition: PluginUiDefinition = {
   slots: {
     // 宿主只把本插件注册的工具结果交过来；不是命令结果形状时退回通用展示。
     "tool.result": {
-      accepts: (block) => readShellResult((block as ToolResultFacts).value) !== null,
+      accepts: (block) => readShellResult(block.value) !== null,
       mount(host, context) {
-        const result = readShellResult((context.block as ToolResultFacts).value);
+        const result = readShellResult(context.block.value);
         return result ? render(host, <ShellResultView result={result} />) : undefined;
       },
     },

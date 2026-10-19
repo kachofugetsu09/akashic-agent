@@ -1,19 +1,14 @@
 import "./message-ui.css";
-import type { PluginUiContext, PluginUiDefinition } from "../../../chat/src/plugin-ui-runtime";
-import type { TimelineAttachmentOrigin } from "../../../chat/src/message-view";
-import type { TimelineAttachment } from "../../../chat/src/message-timeline";
+import type { MessageAttachmentFacts, PluginUiContext, PluginUiDefinition } from "@akashic/chat-ui-v1";
 
 const OPEN_INTENT = "site.open.v1";
 const SUFFIX = ".akashic-site.json";
 const OPENED_KEY = "akashic.sites.opened";
 // 刚发布的快照才自动打开：消息时间在这个窗口内（容忍少量时钟差），且本页还没自动打开过它。
 const FRESH_MS = 2 * 60_000;
-type SiteAttachment = TimelineAttachment & { origin: TimelineAttachmentOrigin };
-
-function accepts(block: unknown): block is SiteAttachment {
-  if (!block || typeof block !== "object") return false;
-  const attachment = block as SiteAttachment;
-  return attachment.origin?.kind === "tool_result" && attachment.origin.tool === "show_site"
+// 只认领 show_site 工具产出的网站文件。
+function accepts(attachment: MessageAttachmentFacts): boolean {
+  return attachment.origin.kind === "tool_result" && attachment.origin.tool === "show_site"
     && attachment.kind === "file" && !!attachment.filename?.endsWith(SUFFIX);
 }
 
@@ -39,8 +34,8 @@ function timeLabel(iso: string): string {
   return Number.isNaN(time.getTime()) ? "" : time.toLocaleString("zh-CN", { month: "numeric", day: "numeric", hour: "2-digit", minute: "2-digit" });
 }
 
-function mount(host: HTMLElement, context: PluginUiContext): () => void {
-  const attachment = context.block as SiteAttachment;
+function mount(host: HTMLElement, context: PluginUiContext<"message.attachment">): () => void {
+  const attachment = context.block;
   const title = attachment.filename!.slice(0, -SUFFIX.length) || "网页";
   const card = document.createElement("div");
   card.className = "site-card";

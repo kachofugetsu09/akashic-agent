@@ -7,7 +7,7 @@ import { composerControls } from "./composer-contributions";
 import type { ScopeFields } from "./scope-fields";
 import { openInWorkbench, subscribeWorkbenchIntents, workbenchAccepts } from "./shell-workbench";
 
-import type { ComposerSuggestProvider, NavigationGroupsProvider, PluginUiContext, PluginUiDefinition, PluginUiMountSlotName, PluginUiQueryOptions, PluginUiRenderer, PluginUiSlotName } from "@akashic/chat-ui-v1";
+import type { ComposerControls, ComposerSuggestProvider, NavigationControls, NavigationFormControls, NavigationGroupsProvider, PluginUiDefinition, PluginUiHostContext, PluginUiMountSlotName, PluginUiQueryOptions, PluginUiSlotFacts, PluginUiSlotName, ScopeFieldControls } from "@akashic/chat-ui-v1";
 
 // 插槽合同由 @akashic/chat-ui-v1 发布，宿主与插件共用同一份类型。
 export type { ComposerSuggestProvider, ComposerSuggestion, PluginUiContext, PluginUiDefinition, PluginUiQueryOptions, PluginUiRenderer, PluginUiSlotName } from "@akashic/chat-ui-v1";
@@ -289,7 +289,7 @@ function parseDefinition(value: unknown, plugin: PluginUiCatalogItem): PluginUiD
   return { slots: slots as PluginUiDefinition["slots"] };
 }
 
-function isRenderer(value: unknown): value is PluginUiRenderer {
+function isRenderer(value: unknown): value is HostRenderer {
   if (!value || typeof value !== "object") return false;
   const renderer = value as { mount?: unknown; prefetch?: unknown; accepts?: unknown };
   return typeof renderer.mount === "function"
@@ -322,7 +322,7 @@ export interface NavigationGroupSource {
   pluginId: string;
   pluginRevision: string;
   provider: NavigationGroupsProvider;
-  context(signal: AbortSignal): Pick<PluginUiContext, "query">;
+  context(signal: AbortSignal): Pick<PluginUiHostContext, "query">;
 }
 
 export function navigationGroupSources(): NavigationGroupSource[] {
@@ -346,9 +346,9 @@ function groupSource(plugin: PluginUiCatalogItem, provider: NavigationGroupsProv
 /** 在宿主外框里挂分组数据源的表单或提示；form 与 navigation 由外框提供。 */
 export function NavigationGroupMount({ source, renderer, extra, scope, refreshToken }: {
   source: NavigationGroupSource;
-  renderer: PluginUiRenderer;
-  extra: Pick<PluginUiContext, "form" | "navigation">;
-  scope?: { dimension: string; value?: string };
+  renderer: HostRenderer;
+  extra: Pick<HostMountContext, "form" | "navigation">;
+  scope: { dimension: string };
   /** 变化时通知插件重新读取宿主状态（例如表单 busy）。 */
   refreshToken?: string | number;
 }) {
@@ -361,7 +361,7 @@ export interface ComposerSuggestSource {
   key: string;
   provider: ComposerSuggestProvider;
   /** 每次加载一个上下文；宿主撤下数据源或超时时经 signal 中止它的查询。 */
-  context(signal: AbortSignal): Pick<PluginUiContext, "query">;
+  context(signal: AbortSignal): Pick<PluginUiHostContext, "query">;
 }
 
 /** 已加载的输入框建议数据源，按目录顺序；宿主不按插件名挑选。 */
@@ -485,9 +485,33 @@ export function receivePluginUiResult(response: PluginUiResult) {
 
 type InlineSlotName = PluginUiMountSlotName;
 
+// 宿主内部组装挂载上下文用的松散形状；各挂载点必须给出的事实由 PluginUiSlot 的属性类型保证。
+type HostMountContext = PluginUiHostContext & {
+  slot: InlineSlotName | "navigation.groups";
+  sessionId?: string;
+  messageId?: string;
+  block?: unknown;
+  scope?: { dimension: string; value?: string };
+  composer?: ComposerControls;
+  fields?: ScopeFieldControls;
+  form?: NavigationFormControls;
+  navigation?: NavigationControls;
+};
+type HostMountFacts = Pick<HostMountContext, "slot" | "sessionId" | "messageId" | "block" | "scope">;
+
+interface HostRenderer {
+  accepts?(block: unknown): boolean;
+  prefetch?(context: HostMountContext): Promise<void>;
+  mount(host: HTMLElement, context: HostMountContext): void | (() => void);
+}
+
+// 挂载点按插槽给出的事实：插件合同里的事实去掉宿主自己构造的输入框与表单控制。
+type HostSlotFacts<S extends InlineSlotName> = Omit<PluginUiSlotFacts[S], "composer" | "fields">
+  & (S extends "scope.fields" ? { fields: ScopeFields } : unknown);
+
 interface SlotMatch {
   plugin: PluginUiCatalogItem;
-  renderer: PluginUiRenderer;
+  renderer: HostRenderer;
   error?: string;
 }
 
@@ -514,7 +538,7 @@ function slotMatches(name: InlineSlotName, block: unknown, prefetch: boolean, ow
     if (owner !== undefined && plugin.id !== owner) return [];
     const loaded = definitions.get(plugin.id);
     const renderer = loaded?.revision === plugin.revision
-      ? loaded.definition.slots[name]
+      ? loaded.definition.slots[name] as HostRenderer | undefined
       : undefined;
     let accepted = true;
     let error: string | undefined;
@@ -529,43 +553,24 @@ export function pluginSlotAccepts(name: InlineSlotName, block: unknown, owner?: 
   return slotMatches(name, block, false, owner).length > 0;
 }
 
-export function PluginUiSlot({
-  name,
-  owner,
-  sessionId,
-  messageId,
-  turnId,
-  block,
-  scope,
-  fields,
-  refreshToken,
-  prefetch = false,
-  quiet = false,
-  fallback = null,
-}: {
-  name: InlineSlotName;
+export function PluginUiSlot<S extends InlineSlotName>(props: {
+  name: S;
   /** 只挂这个插件的渲染器；tool.result 必须提供。 */
   owner?: string;
   prefetch?: boolean;
-  sessionId?: string;
-  messageId?: string;
-  turnId?: string;
-  block?: unknown;
-  /** scope.fields 与 scope.badge：所属的会话维度与取值。 */
-  scope?: { dimension: string; value?: string };
-  /** scope.fields：表单的附加设置登记处。 */
-  fields?: ScopeFields;
   refreshToken?: string | number;
   /** 宿主另有降级展示时不显示目录更新和卸载提示。 */
   quiet?: boolean;
   fallback?: React.ReactNode;
-}) {
+} & HostSlotFacts<S>) {
+  const { name, owner, refreshToken, prefetch = false, quiet = false, fallback = null } = props;
+  const { sessionId, messageId, block, scope, fields } = props as unknown as Omit<HostMountFacts, "slot"> & { fields?: ScopeFields };
   const version = useRegistryVersion();
   const renderers = slotMatches(name, block, prefetch, owner);
   // 目录加载失败时保留本页已经挂载的卡片；新页面不会执行旧模块。
   const previous = React.useRef<typeof renderers>([]);
   const hadRenderer = React.useRef(false);
-  const contextKey = JSON.stringify([name, prefetch, sessionId, messageId, turnId, block, scope]);
+  const contextKey = JSON.stringify([name, prefetch, sessionId, messageId, block, scope]);
   const previousContext = React.useRef(contextKey);
   const waiting = slotWaiting(name);
   const keepPrevious = waiting && previousContext.current === contextKey && previous.current.length > 0
@@ -590,7 +595,7 @@ export function PluginUiSlot({
           prefetch={prefetch}
           refreshToken={refreshToken}
           fields={fields}
-          context={{ slot: name, sessionId, messageId, turnId, block, scope }}
+          context={{ slot: name, sessionId, messageId, block, scope }}
         />
       ))}
     </div>
@@ -627,12 +632,12 @@ function MountedPlugin({
   fallback?: React.ReactNode;
   pluginId: string;
   pluginRevision: string;
-  renderer: PluginUiRenderer;
+  renderer: HostRenderer;
   prefetch?: boolean;
   fields?: ScopeFields;
   /** 宿主外框给这次挂载的额外能力（分组表单与提示）；身份变化即重新挂载。 */
-  extra?: Pick<PluginUiContext, "form" | "navigation">;
-  context: Omit<PluginUiContext, "query" | "capabilities" | "onInvalidate" | "reportError" | "subscribe" | "workbench" | "fields" | "form" | "navigation">;
+  extra?: Pick<HostMountContext, "form" | "navigation">;
+  context: HostMountFacts;
   refreshToken?: string | number;
 }) {
   const hostRef = React.useRef<HTMLDivElement>(null);
@@ -640,7 +645,7 @@ function MountedPlugin({
   const ownerIdRef = React.useRef(createOwnerId());
   const invalidatorsRef = React.useRef<Set<() => void> | null>(null);
   const previousRefreshToken = React.useRef(refreshToken);
-  const { block, messageId, sessionId, slot, turnId } = context;
+  const { block, messageId, sessionId, slot } = context;
   const dimension = context.scope?.dimension;
   const scopeValue = context.scope?.value;
   const blockRevision = block === undefined ? undefined : JSON.stringify(block);
@@ -676,8 +681,8 @@ function MountedPlugin({
       }
     });
     try {
-      const queryContext: PluginUiContext = {
-        slot, sessionId, messageId, turnId, block: stableBlock,
+      const queryContext: HostMountContext = {
+        slot, sessionId, messageId, block: stableBlock,
         onInvalidate: (callback) => {
           invalidators.add(callback);
           return () => { invalidators.delete(callback); };
@@ -690,7 +695,7 @@ function MountedPlugin({
         },
         capabilities: { queryCacheModes: ["none", "memory", "immutable"] },
         query: (method, payload = {}, options = {}) => queryPlugin({
-          pluginId, pluginRevision, ownerId, slot, sessionId, messageId, turnId, method, payload, options, prefetch,
+          pluginId, pluginRevision, ownerId, slot, sessionId, messageId, method, payload, options, prefetch,
         }),
         workbench: {
           accepts: workbenchAccepts,
@@ -727,15 +732,15 @@ function MountedPlugin({
       }
       host.replaceChildren();
     };
-  }, [messageId, pluginId, pluginRevision, renderer, sessionId, slot, stableBlock, turnId, prefetch, dimension, scopeValue, fields, extra]);
+  }, [messageId, pluginId, pluginRevision, renderer, sessionId, slot, stableBlock, prefetch, dimension, scopeValue, fields, extra]);
   return <><div ref={hostRef} className="plugin-ui-host" data-plugin={pluginId} hidden={error !== null} />
     {error !== null && <><p role="status">交互内容暂不可用：{error}</p>{fallback}</>}</>;
 }
 
 /** 页面缓存查询拥有独立请求，折叠只释放订阅，不打断已经发出的读取。 */
-function queryPlugin({ pluginId, pluginRevision, ownerId, slot, sessionId, messageId, turnId, method, payload, options, prefetch }: {
+function queryPlugin({ pluginId, pluginRevision, ownerId, slot, sessionId, messageId, method, payload, options, prefetch }: {
   pluginId: string; pluginRevision: string; ownerId: string; slot: PluginUiSlotName;
-  sessionId?: string; messageId?: string; turnId?: string; method: string; payload: Record<string, unknown>;
+  sessionId?: string; messageId?: string; method: string; payload: Record<string, unknown>;
   options: PluginUiQueryOptions; prefetch: boolean;
 }): Promise<Record<string, unknown>> {
   // 1. 已读卡片可暂留；旧上下文不能发送请求或读取新版本缓存。
@@ -755,7 +760,7 @@ function queryPlugin({ pluginId, pluginRevision, ownerId, slot, sessionId, messa
     return Promise.reject(new Error("插件参数超过 64 KiB"));
   }
   const cacheKey = options.cache === "immutable" || options.cache === "memory"
-    ? pluginQueryCacheKey(pluginId, pluginRevision, method, encoded, sessionId, turnId) : undefined;
+    ? pluginQueryCacheKey(pluginId, pluginRevision, method, encoded, sessionId) : undefined;
   const cachedJson = cacheKey === undefined ? undefined : immutableResults.get(cacheKey);
   if (cachedJson !== undefined) return Promise.resolve(JSON.parse(cachedJson) as Record<string, unknown>);
   const sharedKey = options.cache === "memory" ? cacheKey : undefined;
@@ -783,7 +788,7 @@ function queryPlugin({ pluginId, pluginRevision, ownerId, slot, sessionId, messa
           tracePluginQuery(requestId, request, "timeout");
           rejectOwnerPending(requestOwnerId, "插件请求超时");
         }, 30_000);
-        void queryWebPluginUi({ pluginId, pluginRevision, method, payload, slot, sessionId, turnId,
+        void queryWebPluginUi({ pluginId, pluginRevision, method, payload, slot, sessionId,
           signal: abort.signal }).then(
           (result) => receivePluginUiResult({ requestId, resultJson: JSON.stringify(result) }),
           (error: unknown) => {
@@ -830,7 +835,6 @@ async function queryWebPluginUi({
   payload,
   slot,
   sessionId,
-  turnId,
   signal,
 }: {
   pluginId: string;
@@ -839,7 +843,6 @@ async function queryWebPluginUi({
   payload: Record<string, unknown>;
   slot: PluginUiSlotName;
   sessionId?: string;
-  turnId?: string;
   signal: AbortSignal;
 }): Promise<Record<string, unknown>> {
   const response = await fetch("/api/chat/plugin-ui/query", {
@@ -852,7 +855,6 @@ async function queryWebPluginUi({
       payload,
       slot,
       session_id: sessionId ?? null,
-      turn_id: turnId ?? null,
     }),
     signal,
   });
@@ -909,9 +911,8 @@ function pluginQueryCacheKey(
   method: string,
   payloadJson: string,
   sessionId?: string,
-  turnId?: string,
 ): string {
-  return [pluginId, pluginRevision, method, sessionId ?? "", turnId ?? "", payloadJson].join("\n");
+  return [pluginId, pluginRevision, method, sessionId ?? "", payloadJson].join("\n");
 }
 
 function rejectOwnerPending(ownerId: string, message: string) {

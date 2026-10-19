@@ -23,19 +23,14 @@ function memoryOf(result: Record<string, unknown>): Memory {
   throw new Error("记忆策略无效");
 }
 
-function scopeOf(context: PluginUiContext): { dimension: string; value?: string } {
-  if (!context.scope?.dimension) throw new Error("记忆设置缺少会话维度");
-  return context.scope;
-}
-
 // 新建表单里的记忆范围：创建前由宿主调用提交，策略在第一个会话出现前固定。
-function MemoryField({ context, fields }: { context: PluginUiContext; fields: ScopeFieldControls }) {
+function MemoryField({ context, fields }: { context: PluginUiContext<"scope.fields">; fields: ScopeFieldControls }) {
   const [memory, setMemory] = useState<Memory>("global");
   const [busy, setBusy] = useState(() => fields.busy());
   const chosen = useRef(memory);
   chosen.current = memory;
   useEffect(() => {
-    const { dimension } = scopeOf(context);
+    const { dimension } = context.scope;
     const stopBusy = context.onInvalidate(() => setBusy(fields.busy()));
     const stopCommit = fields.onCommit(async (value) => {
       const wanted = chosen.current;
@@ -48,15 +43,13 @@ function MemoryField({ context, fields }: { context: PluginUiContext; fields: Sc
     disabled={busy} onChange={(value) => setMemory(value as Memory)} />;
 }
 
-export function mountMemoryField(host: HTMLElement, context: PluginUiContext) {
-  if (!context.fields) throw new Error("记忆设置缺少表单能力");
+export function mountMemoryField(host: HTMLElement, context: PluginUiContext<"scope.fields">) {
   return render(host, <MemoryField context={context} fields={context.fields} />);
 }
 
 // 名字后的记忆标签：共享全局时不显示，读不出时如实说明。
-export function mountMemoryBadge(host: HTMLElement, context: PluginUiContext) {
-  const { dimension, value } = scopeOf(context);
-  if (!value) throw new Error("记忆标签缺少取值");
+export function mountMemoryBadge(host: HTMLElement, context: PluginUiContext<"scope.badge">) {
+  const { dimension, value } = context.scope;
   let active = true;
   const show = (text: string) => {
     const badge = document.createElement("small");
