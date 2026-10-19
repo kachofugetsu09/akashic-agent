@@ -39,7 +39,7 @@
   grid-template-columns: 0 0 minmax(0, 1fr);
 }
 
-.conversation-page.tools-maximized .conversation-page-chat:not(:has([role="dialog"])),
+.conversation-page.tools-maximized .conversation-page-chat,
 .conversation-page.tools-maximized .conversation-tools-splitter {
   visibility: hidden;
 }
@@ -465,14 +465,20 @@
   visibility: hidden;
 }
 
+/* 聊天的模态对话框打开时（宽屏打开后再缩窄或铺满），聊天先不隐藏，对话框才看得见、关得掉。
+   模态层会把工作台标成 aria-hidden，模型面板等非模态弹层不会，因此不豁免。
+   本样式在外壳的 @scope 里，看不到 body 上的滚动锁，只能看本页内的标记。 */
+.conversation-page.tools-open:has(> .conversation-tools[aria-hidden="true"]) > .conversation-page-chat {
+  visibility: visible;
+}
+
 @media (max-width: 68rem) {
   .conversation-page.tools-open {
     display: block;
   }
 
-  /* 工作台整块盖住聊天：与铺满一样隐藏聊天，保留挂载与草稿，聊天也不再接 body 上的快捷键。
-     聊天对话框开着时（例如宽屏打开后再缩窄）先不隐藏，免得对话框跟着消失、页面却仍被模态锁住。 */
-  .conversation-page.tools-open .conversation-page-chat:not(:has([role="dialog"])) {
+  /* 工作台整块盖住聊天：与铺满一样隐藏聊天，保留挂载与草稿，聊天也不再接 body 上的快捷键。 */
+  .conversation-page.tools-open .conversation-page-chat {
     visibility: hidden;
   }
 
