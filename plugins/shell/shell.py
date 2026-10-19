@@ -183,45 +183,51 @@ class ShellTool:
 
     async def prepare(self, arguments: Mapping[str, object], source: CallSource | None = None) -> Mapping[str, object] | str:
         """校验最终命令并固定进程 owner；恢复不重选目录、shell 或默认参数。"""
-        owner = (
-            self._settings.owner_key or "standalone" if source is None
-            else _owner_key(
-                self._settings, source.messages[-1].session_id, source.messages[-1].source,
-                _abandon_before(source.messages, source.messages[-1].source, source.messages[-1].seq),
-            )
-        )
-        background_owner = None
-        background_source = None
-        if source is not None and self._settings.owner_key is None:
-            latest = source.messages[-1]
-            with self._ctx.borrow(JOB_NOTICES) as notices:
-                background_source = (latest.source if notices is None
-                                     else notices.origin_source(latest.session_id, latest.source))
-            background_owner = _background_owner(self._settings, latest.session_id, background_source)
+        owner, background_owner, background_source = self._owners(source)
         raw = json_value(arguments)
         try:
-            if self._name == "task_stop":
-                return PreparedStop(**Stop.model_validate(raw).model_dump(), owner_key=owner,
-                                    background_owner_key=background_owner).model_dump()
-            if self._name == "write_stdin":
-                args = Stdin.model_validate(raw)
-                default = 5000 if not args.chars else 250
-                args.yield_time_ms = clamp_write_stdin_yield_time(
-                    default if args.yield_time_ms is None else args.yield_time_ms, has_input=bool(args.chars),
-                )
-                return PreparedStdin(**args.model_dump(), owner_key=owner,
-                                     background_owner_key=background_owner).model_dump()
+            if self._name != "shell":
+                return self._prepare_control(raw, owner, background_owner)
             command = Command.model_validate(raw)
         except ValidationError as error:
             return str(error)
+        return await self._prepare_command(command, source, owner, background_owner, background_source)
+
+    # 回合分区按会话来源与放弃边界固定；后台分区按 jobs 登记时的原来源固定，没有 jobs 时用当前来源。
+    def _owners(self, source: CallSource | None) -> tuple[str, str | None, str | None]:
+        if source is None:
+            return self._settings.owner_key or "standalone", None, None
+        latest = source.messages[-1]
+        owner = _owner_key(self._settings, latest.session_id, latest.source,
+                           _abandon_before(source.messages, latest.source, latest.seq))
+        if self._settings.owner_key is not None:
+            return owner, None, None
+        with self._ctx.borrow(JOB_NOTICES) as notices:
+            origin = latest.source if notices is None else notices.origin_source(latest.session_id, latest.source)
+        return owner, _background_owner(self._settings, latest.session_id, origin), origin
+
+    # write_stdin / task_stop 只携带两个分区；执行时先查回合分区再查后台分区。
+    def _prepare_control(self, raw: object, owner: str, background_owner: str | None) -> Mapping[str, object]:
+        if self._name == "task_stop":
+            return PreparedStop(**Stop.model_validate(raw).model_dump(), owner_key=owner,
+                                background_owner_key=background_owner).model_dump()
+        args = Stdin.model_validate(raw)
+        default = 5000 if not args.chars else 250
+        args.yield_time_ms = clamp_write_stdin_yield_time(
+            default if args.yield_time_ms is None else args.yield_time_ms, has_input=bool(args.chars),
+        )
+        return PreparedStdin(**args.model_dump(), owner_key=owner,
+                             background_owner_key=background_owner).model_dump()
+
+    # 1. 解析 shell 与目录；2. 安全检查；3. 后台运行改用后台分区；4. 固定完整执行参数。
+    async def _prepare_command(self, command: Command, source: CallSource | None, owner: str,
+                               background_owner: str | None, background_source: str | None,
+                               ) -> Mapping[str, object] | str:
         text = command.command.strip()
         if not text:
             return '命令不能为空'
         try:
             shell = self._ctx.require(PROCESSES).resolve_shell(command.shell)
-        except ValueError as error:
-            return str(error)
-        try:
             cwd = await self._resolve_cwd(command, source)
         except ValueError as error:
             return str(error)
