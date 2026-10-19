@@ -1,4 +1,6 @@
 from collections.abc import Awaitable, Callable, Mapping
+from contextlib import ExitStack
+from functools import partial
 from typing import cast
 from core.common.file_io import run_file_io
 from core.common.diagnostic_log import log_timing
@@ -7,7 +9,7 @@ from agent.plugin_composition import Context
 from plugins.ui.contract import hidden_part, part_display_key
 from plugins.ledger.contract import ARTIFACT_READ
 from plugins.ledger.contract import BINDINGS
-from plugins.channels.contract import ChannelInboundMessage
+from plugins.channels.contract import ChannelInboundMessage, InputPartRejected, read_input_parts
 from plugins.commands.contract import COMMANDS
 from plugins.ledger.contract import (
     MESSAGE_CATALOG,
@@ -42,6 +44,7 @@ from plugins.conversation.contract import (
     CHECK_ORIGIN as CHECK_ORIGIN,
     CONVERSATION_COMPLETE_V2 as CONVERSATION_COMPLETE,
     ConversationCompleteV2 as ConversationComplete,
+    input_part_key,
 )
 from plugins.sources.contract import (
     SOURCE_CHANGED_V3 as SOURCE_CHANGED,
@@ -80,7 +83,7 @@ async def apply(ctx: Context) -> None:
     def changed(reader: MessageReader, source: str, pending: bool) -> None:
         ctx.emit(SOURCE_CHANGED, SourceChanged(reader, source, pending))
 
-    def open(session_id: str) -> SourceSession:
+    def open(session_id: str, extra: Mapping[str, Callable[[ContentPart], ContentReferences]] | None = None) -> SourceSession:
         def check_model(part: ContentPart) -> ContentReferences:
             references = ctx.require(MODEL_SELECTION).check(part)
             value = cast(Mapping[str, str | None], part.value)
@@ -103,7 +106,7 @@ async def apply(ctx: Context) -> None:
         inputs = writers.bind(
             ctx, author="user", source="conversation", body_types=(Input,),
             content={"text": ctx.require(CONTENT).check_text, "artifact_ref": ctx.require(CONTENT).check_artifact, "channel.origin": check_origin,
-                     "reply_ref": check_reply_target, "model.selection": check_model},
+                     "reply_ref": check_reply_target, "model.selection": check_model, **(extra or {})},
             update_metadata=update_metadata,
         )
         controls = writers.bind(
@@ -162,8 +165,17 @@ async def apply(ctx: Context) -> None:
             parts += (ContentPart("model.selection", {
                 "model_id": model_id.strip() or None, "reasoning_effort": effort.strip() or None,
             }),)
-        # 3. Input 与全部引用原子提交；传输时间、handoff 和重复 ID 不进入正文。
-        accepted = await open(session_id).accept(message_id, Input(parts))
+        # 3. 客户端附带的片段交给声明了该 kind 的 owner 校验；Input 与全部引用原子提交，传输时间、handoff 和重复 ID 不进入正文。
+        #    owner 缺席时只拒收新内容：账本先核对同一 message_id 的不可变内容，已提交输入仍能重放收据。
+        with ExitStack() as scopes:
+            extra: dict[str, Callable[[ContentPart], ContentReferences]] = {}
+            for kind, value in read_input_parts(message.metadata.get("input_parts")):
+                if kind in OWN_INPUT_KINDS:
+                    raise InputPartRejected(f"输入片段 {kind} 只能由来源自己写入")
+                check = scopes.enter_context(ctx.borrow(input_part_key(kind)))
+                extra[kind] = partial(reject_input_part, kind) if check is None else partial(check, reader=reader)
+                parts += (ContentPart(kind, value),)
+            accepted = await open(session_id, extra).accept(message_id, Input(parts))
         log_timing("input.committed", session_id=session_id, request_id=message_id, counts={"seq": accepted.seq})
         return accepted
 
@@ -185,6 +197,14 @@ async def apply(ctx: Context) -> None:
     _ = await ctx.provide(CONVERSATION_COMPLETE, complete)
     _ = await ctx.require(SOURCES).register(ctx, name="conversation", open=open, accept=accept, channels=None,
         needs_reply=lambda reader: ctx.require(SOURCE_SESSION).needs_reply(reader, "conversation"))
+
+
+def reject_input_part(kind: str, part: ContentPart) -> ContentReferences:
+    raise InputPartRejected(f"没有插件接收输入片段: {kind}")
+
+
+# 来源自己写入的片段不能由客户端冒充。
+OWN_INPUT_KINDS = frozenset({"text", "artifact_ref", "channel.origin", "reply_ref", "model.selection", "command.result"})
 
 
 def check_origin(part: ContentPart) -> ContentReferences:

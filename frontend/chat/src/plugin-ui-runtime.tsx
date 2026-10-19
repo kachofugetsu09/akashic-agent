@@ -3,6 +3,7 @@ import React, { useEffect, useMemo, useState, useSyncExternalStore } from "react
 import { createUuid as createRequestId } from "./browser-uuid.ts";
 import { PluginUiQueryQueue } from "./plugin-ui-query-queue";
 import { PluginUiResultCache } from "./plugin-ui-result-cache";
+import { composerControls } from "./composer-contributions";
 import { openInWorkbench, subscribeWorkbenchIntents, workbenchAccepts } from "./shell-workbench";
 
 import type { ComposerSuggestProvider, PluginUiContext, PluginUiDefinition, PluginUiMountSlotName, PluginUiQueryOptions, PluginUiRenderer, PluginUiSlotName } from "@akashic/chat-ui-v1";
@@ -89,6 +90,7 @@ const SLOT_NAMES = new Set<Exclude<PluginUiSlotName, "dashboard.main">>([
   "message.attachment",
   "chat.notice",
   "header.end",
+  "composer.toolbar",
   "composer.suggest",
 ]);
 
@@ -640,6 +642,7 @@ function MountedPlugin({
     let cleanup: void | (() => void);
     let live = true;
     const stopPushes = new Set<() => void>();
+    const composer = slot === "composer.toolbar" ? composerControls() : null;
     setError(null);
     const stopIntents = subscribeWorkbenchIntents(() => {
       for (const callback of invalidators) {
@@ -668,6 +671,7 @@ function MountedPlugin({
           accepts: workbenchAccepts,
           open: (name, payload) => live ? openInWorkbench(name, sessionId ?? "", payload) : Promise.resolve("invalid"),
         },
+        ...(composer ? { composer: composer.controls } : {}),
       };
       if (prefetch) {
         void renderer.prefetch!(queryContext).catch((error: unknown) => {
@@ -686,6 +690,7 @@ function MountedPlugin({
       invalidators.clear();
       invalidatorsRef.current = null;
       releaseQueryOwner(ownerId);
+      composer?.release();
       try {
         cleanup?.();
       } catch (error) {

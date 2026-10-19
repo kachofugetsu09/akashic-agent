@@ -28,3 +28,13 @@ class OriginCheck(Protocol):
 
 
 CHECK_ORIGIN = ServiceKey[OriginCheck]("conversation.check_origin.v1")
+
+
+class InputPartCheck(Protocol):
+    def __call__(self, part: ContentPart, reader: MessageReader) -> ContentReferences: ...
+
+
+# 客户端随输入附带的片段（例如模型选择）由片段 owner 声明并在目标会话里校验；没有 owner 的 kind 一律拒收。
+# 值不合格时 owner 抛 plugins.channels.contract.InputPartRejected，渠道把它作为该请求的错误回给发送者；其他异常按程序错误处理。
+def input_part_key(kind: str) -> ServiceKey[InputPartCheck]:
+    return ServiceKey[InputPartCheck](f"conversation.input_part:{kind}")

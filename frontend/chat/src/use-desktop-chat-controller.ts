@@ -47,6 +47,7 @@ import {
 } from "./web-chat-message-data";
 import { parseChatFrame, sendWhenOpen } from "./web-chat-transport";
 import { webTurnTrace } from "./web-turn-trace";
+import { composerContributions, notifyComposerSent, useComposerContributions } from "./composer-contributions";
 
 /** 回访会话时先展示的尾页快照；只做展示缓存，事实仍以服务端分页与实时帧为准。 */
 interface SessionTail {
@@ -509,7 +510,10 @@ export function useDesktopChatController() {
     : modelState?.runtimes.length ? "还没选择默认对话模型。请在下方选择模型，或在模型设置中设为默认。"
     : modelState?.unavailableRuntimes.length ? "已保存的对话连接当前不可用，请在模型设置中恢复连接。"
     : "先连接一个对话模型，之后就可以发送消息。你可以先写下想说的话。";
-  const canSend = chatReady && !modelProblem && !activeSessionDeleted;
+  // 输入框工具位的插件可以阻止发送（例如所选模型不可用）；宿主只显示原因。
+  const { blockReason } = useComposerContributions();
+  const sendProblem = modelProblem || blockReason;
+  const canSend = chatReady && !sendProblem && !activeSessionDeleted;
   const retryModels = useCallback(() => { void loadModels(activeSessionRef.current, true); }, [loadModels]);
 
   const closeConnection = useCallback(() => {
@@ -829,7 +833,7 @@ export function useDesktopChatController() {
   const sendMessage = useCallback(async (text: string, files: ComposerFile[]) => {
     const cleanText = text.trim();
     if (!cleanText && files.length === 0) return;
-    if (!canSend) throw new Error(modelProblem || "聊天服务暂不可用，请稍后重试。");
+    if (!canSend) throw new Error(sendProblem || "聊天服务暂不可用，请稍后重试。");
     if (sendRequestRef.current) throw new Error("消息正在发送，请稍等。");
     setError("");
     setStatusLive(files.length ? "uploading" : "submitted");
@@ -876,6 +880,8 @@ export function useDesktopChatController() {
         payload.model_runtime_id = selectedRuntimeId;
         payload.model_reasoning_effort = selectedReasoningEffort;
       }
+      const { parts } = composerContributions();
+      if (parts.length) payload.parts = parts;
       const markDelivery = (delivery: ChatMessage["delivery"]) => setMessages((current) => current.map((item) => item.id === clientMessageId ? { ...item, delivery } : item));
       await deliverMessage(clientMessageId, payload, controller.signal, () => markDelivery("retrying"));
       controller.signal.throwIfAborted();
@@ -884,6 +890,7 @@ export function useDesktopChatController() {
       console.debug("[chat-ui] send frame delivered", { sessionId });
       modelDirtyRef.current = false;
       setModelSelectionDirty(false);
+      notifyComposerSent();
       for (const [key, value] of replyTargetsRef.current) if (value === reply) replyTargetsRef.current.delete(key);
       setReplyTarget(null);
       return sessionId;
@@ -899,7 +906,7 @@ export function useDesktopChatController() {
     } finally {
       if (sendRequestRef.current === controller) sendRequestRef.current = null;
     }
-  }, [canSend, modelProblem, deliverMessage, ensureSession, modelSelectionDirty, replyTarget, reportError, selectedReasoningEffort, selectedRuntimeId, setMessages, setStatusLive]);
+  }, [canSend, sendProblem, deliverMessage, ensureSession, modelSelectionDirty, replyTarget, reportError, selectedReasoningEffort, selectedRuntimeId, setMessages, setStatusLive]);
 
   const stopTurn = useCallback(() => {
     setStopCount((version) => version + 1);
@@ -1199,7 +1206,7 @@ export function useDesktopChatController() {
   return {
     surface, sidebarSessions, activeSessionId, pendingSessionId, chatReady, messages, timelineMessages, timelineRefresh, replyActivities, replyAvailable, status,
     streamStore, messageElementsRef, copiedMessageId, shellState, stopPending, stopCount, modelState,
-    canSend, modelProblem, modelsPhase, modelsError, retryModels, draftKey: activeSessionId || `new:${newChatProjectId}`,
+    canSend, sendProblem, blockReason, modelProblem, modelsPhase, modelsError, retryModels, draftKey: activeSessionId || `new:${newChatProjectId}`,
     historyHasMore, historyLoading, historyLoadingOlder, loadOlderMessages, sessionRequested: requestedSessionId !== "",
     historyFailure: activeSessionId !== "" && historyFailure?.sessionId === activeSessionId ? historyFailure.reason : null, retryHistory,
     activeSessionDeleted, deletedNotice, deleteSession, restoreSession, dismissDeletedNotice, renameSession,

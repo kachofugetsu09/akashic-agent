@@ -9,6 +9,7 @@ export type PluginUiSlotName =
   | "drawer.panel"
   | "chat.notice"
   | "header.end"
+  | "composer.toolbar"
   | "composer.suggest"
   | "dashboard.main";
 
@@ -49,6 +50,26 @@ export interface PluginUiContext {
     accepts(name: string): boolean;
     open(name: string, payload: unknown): Promise<WorkbenchIntentStatus>;
   };
+  /** 只在 composer.toolbar 插槽里提供。 */
+  composer?: ComposerControls;
+}
+
+/** 插件随下一条消息附带的片段；后端由声明了 `input_part_key(kind)` 的 owner 校验，没有 owner 的 kind 会被拒收。 */
+export interface ComposerInputPart {
+  kind: string;
+  value: unknown;
+}
+
+/** 输入框工具位的宿主能力：挂载卸载时宿主自动撤回片段与阻止原因。 */
+export interface ComposerControls {
+  /** 正在生成回复；变化时经 onInvalidate 通知。 */
+  busy(): boolean;
+  /** 替换本挂载要附带的片段；传 [] 撤回。 */
+  contribute(parts: readonly ComposerInputPart[]): void;
+  /** 阻止发送并说明原因（宿主显示在输入框下方并作为发送失败的提示）；null 解除。 */
+  block(reason: string | null): void;
+  /** 服务端确认收到一条消息后回调。 */
+  onSent(callback: () => void): () => void;
 }
 
 export interface PluginUiRenderer {

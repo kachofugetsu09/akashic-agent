@@ -17,6 +17,8 @@ from plugins.channels.contract import (
     AttachmentReadLease,
     AttachmentRef,
     ChannelInboundMessage,
+    InputPartRejected,
+    read_input_parts,
     ChannelAttachmentReadPort,
     ChannelCommitRole,
     ChannelFactoryContext,
@@ -1017,7 +1019,7 @@ class WebChatChannel:
     ) -> str:
         try:
             return await self._send_user_message_in_binding(websocket, request_id, payload)
-        except MessageConflict as error:
+        except (MessageConflict, InputPartRejected) as error:
             await self._send_error(websocket, request_id, str(error))
             return ""
 
@@ -1094,6 +1096,14 @@ class WebChatChannel:
                 )
                 return session_key
             metadata["model_reasoning_effort"] = model_reasoning_effort.strip()
+        if "parts" in payload:
+            try:
+                parts = read_input_parts(payload["parts"])
+            except InputPartRejected as error:
+                await self._send_error(websocket, request_id, str(error))
+                return session_key
+            if parts:
+                metadata["input_parts"] = [{"kind": kind, "value": value} for kind, value in parts]
         if reply_to_message_id is not None:
             if not isinstance(reply_to_message_id, str) or not reply_to_message_id.strip():
                 await self._send_error(

@@ -61,7 +61,7 @@ export function DesktopChatView({ embeddedShell, controller }: DesktopChatViewPr
     surface, sidebarSessions, activeSessionId, pendingSessionId, chatReady, messages, timelineMessages, replyActivities, replyAvailable, status,
     streamStore, messageElementsRef, copiedMessageId, shellState, stopPending, stopCount, modelState,
     selectedRuntimeId, selectedReasoningEffort, replyTarget, error,
-    canSend, modelProblem, modelsError, retryModels, draftKey,
+    canSend, sendProblem, blockReason, modelProblem, modelsError, retryModels, draftKey,
     historyHasMore, historyLoading, historyLoadingOlder, loadOlderMessages, sessionRequested,
     activeSessionDeleted, deletedNotice, deleteSession, restoreSession, dismissDeletedNotice, renameSession,
     activateSession, prefetchSessionTail, startNewChat, handleReplyMessage, handleCopiedMessage,
@@ -198,16 +198,17 @@ export function DesktopChatView({ embeddedShell, controller }: DesktopChatViewPr
             <button type="button" className="session-restore-button" onClick={() => { void restoreSession(activeSessionId); }}>恢复会话</button>
           </p> : null}
           {chatReady && (modelProblem || modelsError) ? <div className="chat-model-notice" role="status">
-            {modelProblem ? <p id="chat-model-reason">{modelProblem}</p> : null}
+            {modelProblem ? <p id="chat-send-reason">{modelProblem}</p> : null}
             {modelsError ? <p>{modelsError}</p> : null}
             <div>
               {modelProblem ? <a href="/#models" target="_blank" rel="noopener">打开模型设置</a> : null}
               {modelsError ? <button type="button" onClick={retryModels}>重试加载模型列表</button> : null}
             </div>
           </div> : null}
+          {chatReady && !modelProblem && blockReason ? <p className="reply-unavailable" id="chat-send-reason" role="status">{blockReason}</p> : null}
           <DesktopComposer
             ref={composerApi}
-            chatReady={chatReady} canSend={canSend} modelProblem={modelProblem} draftKey={draftKey} autoFocus={!conversationLayout && chatReady} fresh={!conversationLayout} status={status} stopPending={stopPending} stopCount={stopCount}
+            chatReady={chatReady} canSend={canSend} sendProblem={sendProblem} draftKey={draftKey} autoFocus={!conversationLayout && chatReady} fresh={!conversationLayout} status={status} stopPending={stopPending} stopCount={stopCount}
             inputId={inputId} turnCompleted={replyAvailable !== false && inputResult.completed} modelState={modelState}
             selectedRuntimeId={selectedRuntimeId} selectedEffort={selectedReasoningEffort}
             replyTarget={replyTarget} onModelChange={handleModelChange} onCancelReply={cancelReply}

@@ -16,6 +16,8 @@ import { ModelCapsulePicker, ModelEffortAction, resolveVisibleRuntime } from "./
 import { compatibleEffort, type ChatModelRuntime } from "./model-capsule-data";
 import { isGeneratingChatStatus, type ChatStatus } from "./web-chat-status";
 import { useComposerSuggest } from "./composer-suggest";
+import { setComposerBusy } from "./composer-contributions";
+import { PluginUiSlot } from "./plugin-ui-runtime";
 
 export type ComposerFile = { filename?: string; mediaType?: string; url?: string; sizeBytes?: number };
 
@@ -41,12 +43,13 @@ const MAX_ATTACHMENTS = 20;
 const PASTE_AS_FILE_BYTES = 4096;
 
 export const DesktopComposer = memo(function DesktopComposer({
-  chatReady, canSend, modelProblem, draftKey, autoFocus = false, fresh = false, status, stopPending, stopCount, inputId, turnCompleted, modelState, selectedRuntimeId, selectedEffort, replyTarget,
+  chatReady, canSend, sendProblem, draftKey, autoFocus = false, fresh = false, status, stopPending, stopCount, inputId, turnCompleted, modelState, selectedRuntimeId, selectedEffort, replyTarget,
   onModelChange, onCancelReply, onSend, onStop, lastInput = "", ref,
 }: {
   chatReady: boolean;
   canSend: boolean;
-  modelProblem: string;
+  /** 不能发送的原因；输入框以 #chat-send-reason 关联它。 */
+  sendProblem: string;
   draftKey: string;
   /** 空态（新会话/无消息）时输入框接收焦点。 */
   autoFocus?: boolean;
@@ -151,11 +154,14 @@ export const DesktopComposer = memo(function DesktopComposer({
     syncExpanded(event.target, next);
     syncMention();
   }, [setInput, syncExpanded, syncMention]);
+  const generating = isGeneratingChatStatus(status);
+  // 布局阶段先写入，工具位插件在随后的失效回调里读到的就是新状态。
+  useLayoutEffect(() => { setComposerBusy(generating); }, [generating]);
   const readDraft = useCallback((key: string) => drafts.current.get(key) ?? "", []);
   const followUp = useFollowUpQueue({ draftKey, status, stopPending, stopCount, inputId, turnCompleted, canSend: canSend && !replyTarget, readDraft, setDraft, queuedDrafts, onSend });
   const moveQueue = followUp.move;
   const submit = useCallback(async (text: string, files: ComposerFile[]) => {
-    if (!canSend) throw new Error(modelProblem || "聊天服务暂不可用，请稍后重试。");
+    if (!canSend) throw new Error(sendProblem || "聊天服务暂不可用，请稍后重试。");
     const wasExpanded = expanded;
     setInput("");
     setExpanded(false);
@@ -176,7 +182,7 @@ export const DesktopComposer = memo(function DesktopComposer({
       setExpanded(wasExpanded);
       throw error;
     }
-  }, [canSend, modelProblem, expanded, onSend, setInput, setDraft, draftKey, moveQueue]);
+  }, [canSend, sendProblem, expanded, onSend, setInput, setDraft, draftKey, moveQueue]);
   // 输入卡内一行轻提示（排队被拒、附件超限），自动消失；同一时间只有一条。
   const [notice, setNotice] = useState<{ text: string; ms: number; title?: string } | null>(null);
   useEffect(() => {
@@ -318,7 +324,7 @@ export const DesktopComposer = memo(function DesktopComposer({
           {...mention.inputProps}
           pasteAsFile={pasteAsFile}
           aria-label="消息"
-          aria-describedby={modelProblem ? "chat-model-reason" : undefined}
+          aria-describedby={sendProblem ? "chat-send-reason" : undefined}
           disabled={!chatReady}
           placeholder={!canSend ? "先写下想说的话…" : fresh ? "说说想做什么…" : "继续…"}
         />
@@ -344,6 +350,9 @@ export const DesktopComposer = memo(function DesktopComposer({
               />
             </>
           ) : null}
+          {/* 插件的输入框工具（随草稿重新挂载，不同新对话的选择互不串）。 */}
+          <PluginUiSlot key={draftKey} name="composer.toolbar" sessionId={draftKey.startsWith("new:") ? undefined : draftKey}
+            refreshToken={generating ? 1 : 0} quiet />
         </PromptInputTools>
         <PromptInputTools className="composer__trail">
           <ComposerAttachmentButton />
