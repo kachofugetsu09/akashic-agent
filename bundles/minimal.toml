@@ -117,6 +117,10 @@ disabled = true
 plugin = "shell@release"
 disabled = true
 
+[rows."files"]
+plugin = "files@release"
+disabled = true
+
 [rows."runtime_inspection"]
 plugin = "runtime_inspection@release"
 disabled = true

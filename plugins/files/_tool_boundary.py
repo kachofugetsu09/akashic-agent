@@ -1,0 +1,25 @@
+"""files 与 tools owner 之间的最小本地边界。"""
+
+from __future__ import annotations
+
+from dataclasses import dataclass
+from typing import Literal
+
+from plugins.ledger.contract import ContentPart
+from plugins.tools.contract import (
+    TOOLS as TOOLS,
+    CallSource as CallSource,
+    ToolCatalog as ToolCatalog,
+    ToolRef as ToolRef,
+    ToolView as ToolView,
+)
+
+ToolOutcome = Literal["success", "denied", "error", "interrupted"]
+
+
+@dataclass(frozen=True, slots=True)
+class ToolResultValue:
+    """files 的本地结果；tools owner 在执行边界重新校验。"""
+
+    outcome: ToolOutcome
+    parts: tuple[ContentPart, ...]

@@ -1,4 +1,4 @@
-"""Narrow directory capability provided by the ordinary file tools plugin."""
+"""会话工作目录的窄能力；文件、命令等工具在调用时借用，缺席时按各自配置目录工作。"""
 
 from __future__ import annotations
 
