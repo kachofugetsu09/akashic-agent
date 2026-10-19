@@ -62,7 +62,11 @@ export interface ReplyActivity {
   preview: { message_id: string; text: string; thinking: string; call_record_id?: string | null; retry_status?: string;
     attempt?: ModelAttempt | null; truncated?: boolean;
     /** 本次尝试的首字耗时（毫秒），服务端在首段增量时给出；未出字时为空。 */
-    first_token_ms?: number | null } | null;
+    first_token_ms?: number | null;
+    /** 本次尝试已到达的非空正文/思考增量数；生成中按它估算速度。 */
+    output_deltas?: number;
+    /** 从首段增量到最近一次增量的解码时长（毫秒）；未出字时为空。 */
+    decode_ms?: number | null } | null;
 }
 
 export type MessageLogFrame =
@@ -113,6 +117,10 @@ export function readMessageLogFrame(value: unknown): MessageLogFrame | null {
         if (preview?.attempt !== undefined && preview.attempt !== null && !validAttempt(preview.attempt)) throw new Error("模型尝试进度无效");
         if (preview?.first_token_ms !== undefined && preview.first_token_ms !== null
           && !(typeof preview.first_token_ms === "number" && Number.isFinite(preview.first_token_ms) && preview.first_token_ms >= 0)) throw new Error("首字耗时无效");
+        if (preview?.output_deltas !== undefined
+          && !(typeof preview.output_deltas === "number" && Number.isSafeInteger(preview.output_deltas) && preview.output_deltas >= 0)) throw new Error("输出增量无效");
+        if (preview?.decode_ms !== undefined && preview.decode_ms !== null
+          && !(typeof preview.decode_ms === "number" && Number.isFinite(preview.decode_ms) && preview.decode_ms >= 0)) throw new Error("解码时长无效");
         if (!item.active || !preview || !nonempty(preview.message_id) || typeof preview.text !== "string"
           || typeof preview.thinking !== "string" || (preview.call_record_id !== undefined && preview.call_record_id !== null && !nonempty(preview.call_record_id)) || (preview.truncated !== undefined && typeof preview.truncated !== "boolean") || previews.has(preview.message_id)) throw new Error("回复草稿无效");
         previews.add(preview.message_id);

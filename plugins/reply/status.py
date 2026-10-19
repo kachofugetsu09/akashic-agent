@@ -4,6 +4,7 @@ import asyncio
 from collections.abc import AsyncGenerator, Callable, Generator
 from contextlib import AbstractContextManager, contextmanager
 from dataclasses import asdict, replace
+from time import monotonic
 
 from plugins.models.contract import ModelAttemptStatus, StreamCallback
 from agent.plugin_composition.tasks import Task
@@ -113,7 +114,11 @@ class ReplyState:
             self._items[task.handle] = replace(item, preview=ReplyPreview(message_id))
             self._notify()
 
+            # 本次物理尝试首段增量的单调时钟；重试清空草稿时一起作废。
+            decode_started: float | None = None
+
             async def delta(value: dict[str, str]) -> None:
+                nonlocal decode_started
                 if not task.active:
                     raise asyncio.CancelledError
                 current = self._items[task.handle]
@@ -124,13 +129,20 @@ class ReplyState:
                 # 新物理尝试撤下旧的瞬态草稿，不能把两次生成拼成一条回复。
                 if (value.get("retry_status")
                         or (draft.call_record_id is not None and call_id != draft.call_record_id)):
-                    draft = replace(draft, text="", thinking="", first_token_ms=None)
+                    draft = replace(draft, text="", thinking="", first_token_ms=None, output_deltas=0, decode_ms=None)
+                    decode_started = None
                 attempt = draft.attempt
                 if "attempt_status" in value:
                     attempt = ModelAttemptStatus.decode(value["attempt_status"])
                 first_token_ms = draft.first_token_ms
                 if "first_token_ms" in value:
                     first_token_ms = float(value["first_token_ms"])
+                # 每个非空增量是一条真实到达的流片段；生成中用它估算速度，结算后由 usage 取代。
+                streamed = bool(value.get("content_delta") or value.get("thinking_delta"))
+                if streamed and decode_started is None:
+                    decode_started = monotonic()
+                output_deltas = draft.output_deltas + (1 if streamed else 0)
+                decode_ms = None if decode_started is None else (monotonic() - decode_started) * 1000
                 self._items[task.handle] = replace(current, preview=replace(
                     draft, text=draft.text + value.get("content_delta", ""),
                     thinking=draft.thinking + value.get("thinking_delta", ""),
@@ -138,6 +150,8 @@ class ReplyState:
                     retry_status=value.get("retry_status", draft.retry_status),
                     attempt=attempt,
                     first_token_ms=first_token_ms,
+                    output_deltas=output_deltas,
+                    decode_ms=decode_ms,
                 ))
                 self._notify()
 
