@@ -1360,7 +1360,7 @@ input {
 }
 
 /* 宽屏元信息行固定 28px；40px 操作热区向上下透明溢出，不再撑高每条消息。 */
-:where([data-chat-width]:not([data-chat-width~="576"])) {
+:where([data-chat-width]:not([data-chat-width~="36rem"])) {
   .web-message-anchor .shared-message-meta {
     block-size: 28px;
     min-height: 0;
@@ -2006,7 +2006,7 @@ form.composer:focus-within [data-slot="input-group"] {
 
 /* 窄屏底距只有 8px 放不下，停止钮与"运行中"已说明在生成；矮屏触屏输入区回到文档流，也不显示。
    只在视觉上收起（不用 display:none）：开始与终态的 aria-live 播报仍要留在无障碍树里。 */
-:where([data-chat-width~="576"], [data-chat-short]) {
+:where([data-chat-width~="36rem"], [data-chat-short]) {
   .composer-stats-line,
   .composer-wrap > .composer-stats-line {
     position: absolute;
@@ -2188,7 +2188,7 @@ form.composer:focus-within [data-slot="input-group"] {
 }
 
 /* 手机宽度下工具区开关只剩 44px 图标，标题带只需让出图标与右侧边距。 */
-:where([data-chat-width~="512"]) {
+:where([data-chat-width~="32rem"]) {
   &[data-shell-tools="true"] .conversation-heading {
     padding-inline-end: 4.5rem;
   }
@@ -2533,7 +2533,7 @@ form.composer:focus-within [data-slot="input-group"] {
 /* 手机宽度上的输入卡。几何来自 DeepSeek 输入卡（22px 圆角、文字在上、工具行在下、
    左右 16px、底 8px）和 Beautiful UI 宽输入条（加号在左、模型与发送在右）。
    触控目标放到 44px；布局跟随 CSS 视口宽度，不依赖设备型号或像素密度。 */
-:where([data-chat-width~="576"]) {
+:where([data-chat-width~="36rem"]) {
   .chat-main {
     --chat-dock-inset: 16px;
     --chat-concept-columns: minmax(0, 1fr);

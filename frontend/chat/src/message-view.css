@@ -503,7 +503,7 @@
   border-block-end: 0 !important;
 }
 
-:where([data-chat-width]:not([data-chat-width~="576"])) {
+:where([data-chat-width]:not([data-chat-width~="36rem"])) {
   :where(.agent-content, .process-markdown, .user-bubble) .code-header-actions .code-action-btn {
     min-width: 36px;
     min-height: 36px;
@@ -1951,7 +1951,7 @@ button.tool-step-summary:active {
 }
 
 /* 有悬停的宽屏：只有最新一条常驻时间与操作，更早的消息悬停或聚焦时整行显现，行高不变、不推动正文。 */
-@media (hover: hover) { :where([data-chat-width]:not([data-chat-width~="576"])) {
+@media (hover: hover) { :where([data-chat-width]:not([data-chat-width~="36rem"])) {
   .web-message-anchor .shared-message-meta {
     transition: opacity var(--ak-sys-duration-short) var(--ak-sys-motion-standard);
   }
@@ -2279,7 +2279,7 @@ button.tool-step-summary:active {
 
 .attempt-status > button:focus-visible { outline: 2px solid var(--ak-rule-focus); outline-offset: 2px; }
 
-:where([data-chat-width~="576"]) {
+:where([data-chat-width~="36rem"]) {
   .web-message-anchor:not(:nth-last-child(1 of .web-message-anchor)):not(.is-revealed) .shared-message-meta {
     display: none;
   }
