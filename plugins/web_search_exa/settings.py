@@ -4,6 +4,8 @@ from __future__ import annotations
 from importlib import import_module
 from typing import Any, cast
 
+from pydantic import ValidationError
+
 from agent.plugin_composition import Context, ServiceKey
 from agent.plugin_composition.config_input import save_credential
 from agent.plugin_composition.context import FiberHandle
@@ -47,7 +49,7 @@ class Settings:
                 raise ValueError("API key 必须是字符串")
             config = dict(self.ctx.config)
             config.update({name: value for name, value in values.items() if name in FIELDS})
-            ExaConfig.model_validate(config)
+            check(config)
             if key and key.strip():
                 config["api_key"] = save_credential(self.ctx.data_root, key.strip())
             checked = ExaConfig.model_validate(config)
@@ -59,6 +61,14 @@ class Settings:
 
     def receipt(self, request_id: str) -> dict[str, object]:
         return self.ctx.entrypoint(lambda: self.ctx.require(PLUGIN_CONFIG).receipt(self.ctx, request_id))()
+
+
+# 表单只显示校验原因，不带 pydantic 的错误类型前缀。
+def check(config: dict[str, object]) -> None:
+    try:
+        _ = ExaConfig.model_validate(config)
+    except ValidationError as error:
+        raise ValueError("；".join(str(item["msg"]).removeprefix("Value error, ") for item in error.errors())) from None
 
 
 async def mount(ctx: Context, function: FiberHandle) -> None:
