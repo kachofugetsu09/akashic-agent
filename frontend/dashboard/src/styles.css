@@ -87,7 +87,7 @@ body {
   inset: 12px 12px auto auto;
   padding: 10px 14px;
   border: 1px solid var(--ak-rule-default);
-  border-radius: 10px;
+  border-radius: 12px;
   color: var(--ak-ink-primary);
   background: var(--ak-paper-raised);
 }

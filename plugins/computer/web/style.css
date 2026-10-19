@@ -8,7 +8,7 @@
   --computer-error: light-dark(rgb(150 48 40), rgb(232 140 128));
   --computer-control: light-dark(rgb(176 92 36), rgb(232 150 96));
   --computer-on-control: light-dark(rgb(255 255 255), rgb(30 18 10));
-  --computer-anonymous: light-dark(rgb(92 84 140), rgb(176 168 226));
+  --computer-anonymous: light-dark(rgb(107 106 100), rgb(176 174 167));
   --computer-on-anonymous: light-dark(rgb(255 255 255), rgb(20 20 19));
   --computer-agent: light-dark(rgb(37 99 205), rgb(98 150 236));
   --computer-screen: rgb(18 18 18);
@@ -96,7 +96,7 @@
   min-width: 4.5rem;
   height: 30px;
   padding-inline: 10px 4px;
-  border-radius: 6px;
+  border-radius: 8px;
   color: var(--ak-ink-secondary);
   background: transparent;
   font-size: 0.8125rem;
@@ -179,7 +179,7 @@
   height: 28px;
   margin-inline: 4px 2px;
   padding-inline-start: 8px;
-  border-radius: 6px;
+  border-radius: 8px;
   color: var(--ak-ink-secondary);
   background: transparent;
   transition: background-color 120ms var(--computer-ease), box-shadow 120ms var(--computer-ease);
@@ -263,7 +263,7 @@
   place-items: center;
   padding: 0;
   border: 0;
-  border-radius: 6px;
+  border-radius: 8px;
   color: var(--ak-ink-secondary);
   background: transparent;
 }
@@ -286,14 +286,14 @@
   border: 1px solid var(--ak-rule-default);
   border-radius: 8px;
   background: var(--ak-paper-sheet);
-  box-shadow: 0 8px 24px rgb(0 0 0 / 0.14);
+  box-shadow: 0 8px 24px color-mix(in oklab, var(--ak-color-shadow) 12%, transparent);
 }
 
 .computer-menu-item {
   min-height: 32px;
   padding-inline: 10px;
   border: 0;
-  border-radius: 6px;
+  border-radius: 8px;
   background: transparent;
   font-size: 0.8125rem;
   text-align: start;
@@ -318,7 +318,7 @@
   border: 1px solid var(--ak-rule-default);
   border-radius: 999px;
   background: var(--ak-paper-sheet);
-  box-shadow: 0 4px 16px rgb(0 0 0 / 0.18);
+  box-shadow: 0 4px 16px color-mix(in oklab, var(--ak-color-shadow) 14%, transparent);
   font-size: 0.8125rem;
   white-space: nowrap;
   translate: -50% 0;
@@ -410,7 +410,7 @@
   position: absolute;
   z-index: 3;
   inset: 0;
-  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--ak-ink-primary) 25%, transparent);
+  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--ak-color-shadow) 25%, transparent);
   background: hsl(0 0% 50% / 0.08);
   content: "";
   opacity: 0;
@@ -601,7 +601,7 @@
 .computer-connection-details pre {
   margin: 6px 0 0;
   padding: 8px;
-  border-radius: 6px;
+  border-radius: 8px;
   background: rgb(0 0 0 / 35%);
   font: 0.75rem/1.5 var(--ak-type-technical);
   white-space: pre-wrap;
@@ -625,7 +625,7 @@
   border-radius: 12px;
   color: var(--ak-ink-primary);
   background: var(--ak-paper-raised);
-  box-shadow: 0 4px 12px rgb(0 0 0 / 12%);
+  box-shadow: 0 4px 12px color-mix(in oklab, var(--ak-color-shadow) 10%, transparent);
 }
 
 .computer-clipboard-header {
@@ -773,7 +773,7 @@
   border-radius: 999px;
   color: rgb(255 255 255);
   background: var(--computer-agent);
-  box-shadow: 0 2px 8px rgb(0 0 0 / 25%);
+  box-shadow: 0 2px 8px color-mix(in oklab, var(--ak-color-shadow) 16%, transparent);
   font-size: 0.75rem;
   line-height: 18px;
   white-space: nowrap;
@@ -800,7 +800,7 @@
   inset: auto 8px 8px;
   z-index: 1;
   padding: 4px 8px;
-  border-radius: 6px;
+  border-radius: 8px;
   color: var(--ak-ink-primary);
   background: var(--ak-paper-raised);
   font-size: 0.75rem;
