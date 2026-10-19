@@ -41,6 +41,7 @@ async def application(tmp_path, *, replying, missing_tool=False, discovery=False
         "models",
         "reply",
         "standard_tools",
+        "shell",
         *(("tool_search",) if replying else ()),
     ):
         shutil.copytree(
@@ -187,7 +188,7 @@ async def apply(ctx):
     if extra_sources is not None:
         extra_sources(sources)
     from agent.plugins.bundles import set_plugin_choice
-    for name in {"models", *(() if shell else ("standard_tools",)), *(() if replying else ("reply",))}:
+    for name in {"models", *(() if shell else ("standard_tools", "shell")), *(() if replying else ("reply",))}:
         set_plugin_choice(workspace, name, enabled=False)
     host = PluginManager(
         [sources],

@@ -31,7 +31,7 @@ from plugins.context.contract import MATERIALS_V4
 from plugins.jobs.contract import JOB_NOTICES, JobOutcome, JobWatch
 from .shell_backend import _log_shell_execution, _shell_env
 from .shell_security import validate_command
-from .working_directory import WorkingDirectories
+from plugins.standard_tools.contract import WORKING_DIRECTORY
 
 
 _SETTLE_POLL_S = 1.0
@@ -176,12 +176,10 @@ class ShellOwners:
 class ShellTool:
     idempotent = False
 
-    def __init__(self, ctx: Context, name: Literal["shell", "write_stdin", "task_stop"], settings: ShellSettings,
-                 directories: WorkingDirectories | None = None):
+    def __init__(self, ctx: Context, name: Literal["shell", "write_stdin", "task_stop"], settings: ShellSettings):
         self._ctx = ctx
         self._name = name
         self._settings = settings
-        self._directories = directories
 
     async def prepare(self, arguments: Mapping[str, object], source: CallSource | None = None) -> Mapping[str, object] | str:
         """校验最终命令并固定进程 owner；恢复不重选目录、shell 或默认参数。"""
@@ -223,18 +221,10 @@ class ShellTool:
             shell = self._ctx.require(PROCESSES).resolve_shell(command.shell)
         except ValueError as error:
             return str(error)
-        cwd = command.cwd or self._settings.working_dir or self._settings.restricted_dir
-        if self._directories is not None:
-            session_id = None if source is None else source.messages[-1].session_id
-            if command.cwd is None and self._settings.working_dir is None and session_id is not None:
-                current = self._directories.snapshot(session_id)
-                if current.path is not None:
-                    cwd = current.path
-            try:
-                cwd, _ = await self._directories.resolve_target(session_id, cwd or ".")
-                _ = await self._directories.check_directory(cwd)
-            except ValueError as error:
-                return str(error)
+        try:
+            cwd = await self._resolve_cwd(command, source)
+        except ValueError as error:
+            return str(error)
         directory = None if cwd is None else Path(cwd).expanduser().absolute()
         denied = validate_command(
             text, allow_network=self._settings.allow_network,
@@ -265,6 +255,21 @@ class ShellTool:
                 "boot_id": os.environ.get("AKASHIC_BOOT_ID", ""),
             },
         ).model_dump()
+
+    # 显式 cwd 与工具配置优先；否则用会话当前工作目录。没有工作目录插件时不做会话目录解析。
+    async def _resolve_cwd(self, command: Command, source: CallSource | None) -> str | None:
+        cwd = command.cwd or self._settings.working_dir or self._settings.restricted_dir
+        with self._ctx.borrow(WORKING_DIRECTORY) as directories:
+            if directories is None:
+                return cwd
+            session_id = None if source is None else source.messages[-1].session_id
+            if command.cwd is None and self._settings.working_dir is None and session_id is not None:
+                current = directories.snapshot(session_id)
+                if current.path is not None:
+                    cwd = current.path
+            cwd, _ = await directories.resolve_target(session_id, cwd or ".")
+            _ = await directories.check_directory(cwd)
+            return cwd
 
     async def invoke(self, key: str, arguments: Mapping[str, object]) -> ToolResultValue:
         """执行与续接只访问同一个物理进程 owner，失败不伪装为成功。"""
@@ -389,7 +394,7 @@ async def _settled(ctx: Context, owner_key: str, execution_id: int) -> JobOutcom
         await asyncio.sleep(_SETTLE_POLL_S)
 
 
-async def register_shell(ctx: Context, directories: WorkingDirectories | None = None) -> tuple[ToolRef, ...]:
+async def register_shell(ctx: Context) -> tuple[ToolRef, ...]:
     """配置由 Shell owner 校验，所有操作与作业释放共用此插件身份。"""
     owners = ShellOwners(ctx)
 
@@ -414,7 +419,7 @@ async def register_shell(ctx: Context, directories: WorkingDirectories | None = 
     )
     refs: list[ToolRef] = []
     for name, schema, description in definitions:
-        refs.append(await _register(ctx, name, schema, description, directories, owners))
+        refs.append(await _register(ctx, name, schema, description, owners))
     return tuple(refs)
 
 
@@ -423,7 +428,6 @@ async def _register(
     name: Literal["shell", "write_stdin", "task_stop"],
     schema: type[BaseModel],
     description: str,
-    directories: WorkingDirectories | None,
     owners: ShellOwners,
 ) -> ToolRef:
     def capture(configuration: Mapping[str, object]) -> Mapping[str, object]:
@@ -431,7 +435,7 @@ async def _register(
 
     @asynccontextmanager
     async def open_tool(state: Mapping[str, object]) -> AsyncGenerator[ShellTool]:
-        yield ShellTool(ctx, name, ShellSettings.model_validate(json_value(state)), directories)
+        yield ShellTool(ctx, name, ShellSettings.model_validate(json_value(state)))
 
     return cast(ToolRef, await ctx.require(TOOLS).register(
         ctx,
