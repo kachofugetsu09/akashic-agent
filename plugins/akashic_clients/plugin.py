@@ -6,7 +6,7 @@ from contextlib import contextmanager
 from agent.plugin_composition import Context
 from plugins.channels.contract import CHANNELS, ChannelCapability, ChannelDefinition, InboundIdentity
 
-from .capabilities import CLIENT_CAPABILITIES, REPLY_STATUS
+from .capabilities import CLIENT_CAPABILITIES, CONVERSATION_STEER, REPLY_STATUS
 from .channel import build_akashic_channel_factory
 from plugins.channels.contract import CHANNEL_INPUT_V2 as CHANNEL_INPUT
 from .config import AkashicClientsConfig
@@ -56,7 +56,7 @@ async def apply(ctx: Context) -> None:
                 ReadMarks(read_store),
             ),
             inbound_identity=InboundIdentity.PROVIDER_MESSAGE_ID,
-            optional_services=frozenset((REPLY_STATUS, SESSION_ADMISSION)),
+            optional_services=frozenset((REPLY_STATUS, SESSION_ADMISSION, CONVERSATION_STEER)),
         ),
     )
 

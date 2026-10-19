@@ -10,7 +10,7 @@ from collections.abc import AsyncGenerator, Awaitable, Callable, Mapping
 from pathlib import Path
 from typing import Literal, Protocol, runtime_checkable
 
-from plugins.channels.contract import AttachmentRef
+from plugins.channels.contract import AttachmentRef, ChannelInboundMessage
 from plugins.ui.contract import MessageDisplayReader
 from plugins.ledger.contract import (
     InvalidPage,
@@ -64,6 +64,14 @@ class SessionPagePort(Protocol):
     items: tuple[SessionEntryPort, ...]
     total: int
     next_cursor: tuple[str, str] | None
+
+
+class SteerPort(Protocol):
+    """生成中的插话；对话插件缺席时 stage 返回 False，客户端按普通消息发送。"""
+
+    async def stage(self, session_id: str, message_id: str, message: ChannelInboundMessage) -> bool: ...
+
+    async def withdraw(self, session_id: str, message_id: str) -> bool: ...
 
 
 class AttachmentStorePort(Protocol):

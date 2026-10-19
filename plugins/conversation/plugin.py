@@ -36,6 +36,7 @@ from plugins.ledger.contract import (
 from plugins.conversation.contract import (
     CHECK_ORIGIN as CHECK_ORIGIN,
     CONVERSATION_COMPLETE_V2 as CONVERSATION_COMPLETE,
+    CONVERSATION_STEER,
     ConversationCompleteV2 as ConversationComplete,
     input_part_key,
 )
@@ -50,6 +51,7 @@ from plugins.sources.contract import (
 )
 
 from .commands import CONTENT, CONVERSATION_COMMANDS, SOURCE_CHECK, run_commands
+from .steer import Steers
 
 api_version = 3
 name = "conversation"
@@ -120,10 +122,7 @@ async def apply(ctx: Context) -> None:
                 lease = await artifacts.acquire(ref)
                 await lease.aclose()
         parts = (
-            ContentPart("channel.origin", {
-                "channel": message.channel, "chat_id": message.chat_id,
-                "sender": message.sender,
-            }),
+            origin_part(message),
             ContentPart("text", message.content),
             *(ContentPart("artifact_ref", ref.artifact_id) for ref in message.attachments),
         )
@@ -160,8 +159,22 @@ async def apply(ctx: Context) -> None:
         _ = await ctx.provide(part_display_key(kind), hidden_part)
     _ = await ctx.provide(CONVERSATION_COMMANDS, command)
     _ = await ctx.provide(CONVERSATION_COMPLETE, complete)
+    steers = Steers(
+        open_session=open, reader=lambda session_id: ctx.require(MESSAGE_CATALOG).reader(session_id),
+        accept=accept, body=lambda message: Input((origin_part(message), ContentPart("text", message.content))),
+        scope=ctx.runtime_scope,
+    )
+    _ = await ctx.spawn(steers.run(), name="conversation-steers")
+    _ = await ctx.provide(CONVERSATION_STEER, steers)
     _ = await ctx.require(SOURCES).register(ctx, name="conversation", open=open, accept=accept, channels=None,
         needs_reply=lambda reader: ctx.require(SOURCE_SESSION).needs_reply(reader, "conversation"))
+
+
+# 渠道来源只记录回传地址，不进入模型正文。
+def origin_part(message: ChannelInboundMessage) -> ContentPart:
+    return ContentPart("channel.origin", {
+        "channel": message.channel, "chat_id": message.chat_id, "sender": message.sender,
+    })
 
 
 def reject_input_part(kind: str, part: ContentPart) -> ContentReferences:

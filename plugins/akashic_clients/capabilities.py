@@ -15,6 +15,10 @@ from plugins.reply.contract import (
     REPLY_STATUS as REPLY_STATUS,
     ReplyStatus as ReplyStatusReader,
 )
+from plugins.conversation.contract import (
+    CONVERSATION_STEER as CONVERSATION_STEER,
+    ConversationSteer as ConversationSteer,
+)
 from plugins.ui.contract import (
     MESSAGE_DISPLAY as MESSAGE_DISPLAY,
     PLUGIN_UI as PLUGIN_UI,
@@ -32,6 +36,8 @@ CLIENT_CAPABILITIES = (
 
 __all__ = [
     "CLIENT_CAPABILITIES",
+    "CONVERSATION_STEER",
+    "ConversationSteer",
     "MESSAGE_DISPLAY",
     "PLUGIN_UI",
     "SESSION_ADMIN",

@@ -51,6 +51,8 @@ class ReplyExecuteV4(Protocol):
         terminal_tools: frozenset[str] = frozenset(),
         presentation: ToolPresentation | None = None,
         history: Literal["session", "own"] = "session",
+        # 每一步模型请求之前调用；对话来源用它写入用户的插话。
+        before_step: Callable[[], Awaitable[None]] | None = None,
     ) -> Message: ...
 
 
