@@ -11,6 +11,7 @@ import type { ChatMessage } from "./chat-message";
 import { ChatMessageView, TimelineMessageView } from "./message-view";
 import { StreamProjectionStore } from "./stream-projection";
 import type { ChatStatus } from "./web-chat-status";
+import { chatLayout } from "./chat-layout";
 import { webTurnTrace } from "./web-turn-trace";
 
 const LIVE_TAIL_MESSAGES = 120;
@@ -464,13 +465,12 @@ function useNarrowMessageGestures(scrollRef: React.RefObject<HTMLElement | null>
   useEffect(() => {
     const scroller = scrollRef.current;
     if (!scroller) return;
-    const narrow = window.matchMedia("(max-width: 36rem)");
     let gesture: TouchGesture | null = null;
     // 1. 代码块和表格保留自己的横向滚动，不参与手势。
     const onStart = (event: TouchEvent) => {
       const target = event.target instanceof Element ? event.target : null;
       gesture = null;
-      if (!narrow.matches || event.touches.length !== 1 || !target || target.closest("pre, table, .reading-table, input, textarea")) return;
+      if (!chatLayout().narrow || event.touches.length !== 1 || !target || target.closest("pre, table, .reading-table, input, textarea")) return;
       const touch = event.touches[0];
       gesture = { x: touch.clientX, y: touch.clientY, anchor: target.closest<HTMLElement>(".web-message-anchor"),
         fromEdge: touch.clientX < 24, axis: null, dx: 0 };
@@ -504,7 +504,7 @@ function useNarrowMessageGestures(scrollRef: React.RefObject<HTMLElement | null>
     // 4. 点在正文上切换该条的时间与操作；可交互元素和选中文字不受影响。
     const onClick = (event: MouseEvent) => {
       const target = event.target instanceof Element ? event.target : null;
-      if (!narrow.matches || !target || window.getSelection()?.toString()) return;
+      if (!chatLayout().narrow || !target || window.getSelection()?.toString()) return;
       if (target.closest("a, button, summary, input, textarea, [role='button'], .shared-message-meta")) return;
       const anchor = target.closest<HTMLElement>(".web-message-anchor");
       for (const open of scroller.querySelectorAll(".web-message-anchor.is-revealed")) if (open !== anchor) open.classList.remove("is-revealed");

@@ -228,7 +228,7 @@ video.ak-attachment__image { opacity: 1; }
 ::view-transition-old(*.attachment):only-child { animation: ak-attachment-out 130ms cubic-bezier(0.55, 0.055, 0.675, 0.19) both; }
 @keyframes ak-attachment-out { to { opacity: 0; scale: 0.5; } }
 
-@media (max-width: 480px) {
+:where([data-chat-width~="480"]) {
   .composer-tray .ak-attachment.is-file { width: 184px; }
 }
 

@@ -4,9 +4,9 @@ import { Dialog, DialogContent, DialogTitle } from "./components/ui/dialog";
 import { DesktopSidebar, type DesktopSidebarProps } from "./desktop-sidebar";
 import { GroupFormDialog, type GroupFormRequest } from "./navigation-groups";
 import { reportShellOverlay } from "./shell-rail-actions";
+import { chatLayout, subscribeChatLayout } from "./chat-layout";
 
 // 与 styles.css 紧凑外壳媒体块同一条件：不再满足时常驻侧栏回来，抽屉没有存在的理由。
-const COMPACT_SHELL = "(max-width: 820px), (max-height: 30rem) and (pointer: coarse)";
 
 const shown = (element: HTMLElement | null): element is HTMLElement => element !== null && element.isConnected && element.getClientRects().length > 0;
 
@@ -28,9 +28,8 @@ export function CompactNavigation(props: DesktopSidebarProps) {
   const returnFocus = useRef<HTMLElement | null>(null);
   // 必要 effect：常驻侧栏被隐藏时 Ctrl/⌘+K 没有可见的搜索框，改为打开抽屉并聚焦其中的搜索（平板竖屏接键盘）。
   useEffect(() => {
-    const compact = window.matchMedia(COMPACT_SHELL);
     const onKeyDown = (event: KeyboardEvent) => {
-      if (!compact.matches || !(event.metaKey || event.ctrlKey) || event.altKey || event.shiftKey || event.isComposing) return;
+      if (!chatLayout().compact || !(event.metaKey || event.ctrlKey) || event.altKey || event.shiftKey || event.isComposing) return;
       if (event.key.toLowerCase() !== "k") return;
       if (document.querySelector("[role='dialog'], [role='menu'], [role='listbox'], [data-radix-popper-content-wrapper]")) return;
       event.preventDefault();
@@ -44,10 +43,7 @@ export function CompactNavigation(props: DesktopSidebarProps) {
   // 必要 effect：平板旋转、分屏拖宽时视口离开紧凑断点，抽屉藏了但模态遮罩还压着整页，必须跟着关掉。
   useEffect(() => {
     if (!open) return;
-    const compact = window.matchMedia(COMPACT_SHELL);
-    const onChange = () => { if (!compact.matches) setOpen(false); };
-    compact.addEventListener("change", onChange);
-    return () => compact.removeEventListener("change", onChange);
+    return subscribeChatLayout(() => { if (!chatLayout().compact) setOpen(false); });
   }, [open]);
   useEffect(() => {
     if (!overlayOpen) return;
