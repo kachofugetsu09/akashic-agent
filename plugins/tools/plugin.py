@@ -21,7 +21,7 @@ from plugins.ledger.contract import (
     OWNER_STATE,
     MessageReader,
 )
-from agent.plugin_composition.tasks import TASKS, ExternalRootPermit, TaskAdmission
+from agent.plugin_composition.tasks import TASKS, ExternalRootPermit, Task, TaskAdmission
 from plugins.ledger.contract import (
     CallRef,
     ContentPart,
@@ -37,9 +37,11 @@ from plugins.content.contract import (
 from plugins.tools.contract import (
     ALL_TOOLS as ALL_TOOLS,
     TOOL_BIND_SAVED as TOOL_BIND_SAVED,
+    TOOL_CLEANUP as TOOL_CLEANUP,
     TOOL_DISPLAY_NAME as TOOL_DISPLAY_NAME,
     TOOLS as TOOLS,
     ToolRef as ToolRef,
+    ToolRelease,
     ToolView as ToolView,
     tool_key,
 )
@@ -56,6 +58,7 @@ from .api import (
     display_name,
     result_message_id,
 )
+from .cleanup import Release, tool_cleanup
 from .execution import ToolExecution
 from .api import CallSource
 from .program import TOOL_PROGRAM, ToolProgramFactory
@@ -114,6 +117,7 @@ class _Registration:
     preparation: _Preparation | None = None
     authorization: _Authorization | None = None
     parallel: bool = False
+    release: ToolRelease | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -216,6 +220,7 @@ class ToolCatalog:
         idempotent: bool = False,
         parallel: bool = False,
         exclusive_batch: bool = False,
+        release: ToolRelease | None = None,
     ) -> ToolRef:
         """目标自行校验参数 schema；注册表固定发现描述与真实资源入口。"""
         self._check_context(ctx)
@@ -230,6 +235,8 @@ class ToolCatalog:
             raise TypeError("工具执行选项必须是 bool")
         if capture is not None and not callable(capture):
             raise TypeError("工具 capture 必须是可调用对象")
+        if release is not None and not callable(release):
+            raise TypeError("工具 release 必须是可调用对象")
         descriptor = cast(
             Mapping[str, object],
             freeze_json(
@@ -246,7 +253,7 @@ class ToolCatalog:
         )
 
         reference = ToolRef(name, descriptor)
-        registration = _Registration(reference, ctx, open, capture, parallel=parallel)
+        registration = _Registration(reference, ctx, open, capture, parallel=parallel, release=release)
 
         def setup() -> Callable[[], None]:
             if name in self._tools:
@@ -317,6 +324,11 @@ class ToolCatalog:
             return cleanup
 
         return await ctx.effect(setup, label=f"tool-authorize:{name}")
+
+    # 收尾入口固定当时声明了 release 的注册；之后换代或撤下不改变本次释放对象。
+    def releases(self) -> dict[str, Release]:
+        return {name: Release(item.context.runtime.plugin_id, item.release)
+                for name, item in self._tools.items() if item.release is not None}
 
     def allows_parallel(self, name: str) -> bool:
         """调度只读取 owner 声明；未知工具一律不能重叠。"""
@@ -577,6 +589,13 @@ async def apply(ctx: Context) -> None:
     task_admission = ctx.require(TASKS).open(ctx)
     catalog = ToolCatalog(ctx, task_admission)
     _ = await ctx.provide(TOOL_BIND_SAVED, bind_saved_tool)
+
+    def cleanup_entry(reader: MessageReader, source: str, from_seq: int, *, task: Task | None = None,
+                      drain: Callable[[tuple[CallRef, ...]], Awaitable[None]] | None = None,
+                      ) -> AbstractAsyncContextManager[None]:
+        return tool_cleanup(ctx, task_admission, catalog.releases(), reader, source, from_seq, task=task, drain=drain)
+
+    _ = await ctx.provide(TOOL_CLEANUP, cleanup_entry)
     _ = await ctx.provide(TOOLS, catalog)
     _ = await ctx.provide(TOOL_PROGRAM, ToolProgramFactory(ctx, catalog))
     _ = await ctx.provide(ALL_TOOLS, catalog._all_view)

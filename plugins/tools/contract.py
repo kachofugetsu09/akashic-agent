@@ -147,6 +147,14 @@ class BoundTool(Protocol):
         ...
 
 
+class ToolRelease(Protocol):
+    """工具提供方释放某次调用占用的外部资源；返回失败说明，空表示已释放。"""
+
+    async def __call__(
+        self, state: Mapping[str, object], session_id: str, source: str, boundary: str | None,
+    ) -> tuple[str, ...]: ...
+
+
 class ToolCatalog(Protocol):
     """注册表拥有真实引用；消费者只选择本次允许的目录。"""
 
@@ -168,6 +176,7 @@ class ToolCatalog(Protocol):
         idempotent: bool = False,
         parallel: bool = False,
         exclusive_batch: bool = False,
+        release: ToolRelease | None = None,
     ) -> ToolRef: ...
     async def register_prepare(
         self,
@@ -254,7 +263,7 @@ class StartCheck(Protocol):
 
 
 class ToolCleanup(Protocol):
-    """程序消费者提供本次工具 owner 的真实收尾边界。"""
+    """tools 提供的程序收尾边界：排空本程序的调用，再按注册时声明的 release 释放资源。"""
 
     def __call__(
         self,

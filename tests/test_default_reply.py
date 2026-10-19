@@ -93,7 +93,6 @@ from plugins.models.state import _BoundChat, ModelsState
 from plugins.models.settings import MODEL_SETTINGS
 from plugins.models.store import ModelsStore
 from plugins.tools.api import Result
-from plugins.standard_tools.shell import ShellOwners, shell_cleanup
 from agent.plugin_composition.tasks import TASKS
 from plugins.ledger.contract import BINDINGS
 from plugins.tools.plugin import TOOLS
@@ -148,9 +147,6 @@ async def apply(ctx):
     await ctx.require(TOOLS).declare_group(ctx, always_on=True)
     await ctx.require(TOOLS).register(ctx, name="write_evidence", description="record local test evidence",
         parameters={"type":"object"}, open=open)
-    await ctx.provide(ServiceKey("tools.cleanup.v1"), partial(
-        shell_cleanup, ctx, ShellOwners(ctx), ctx.require(TASKS).open(ctx),
-    ))
     await ctx.provide(CHAT_MODELS, Models())
     await ctx.provide(MODEL_CALLS, store.read_call)
     await ctx.provide(MODEL_PROJECTION, ProjectionOwner())
