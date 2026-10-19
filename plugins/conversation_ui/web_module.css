@@ -460,9 +460,19 @@
   content: "";
 }
 
+/* 聊天窄宽（ADR 0126 的根属性）时模型抽屉等弹层留在输入区的层级里，压不过开关；弹层打开时收起开关。 */
+.conversation-page:has(.akashic-chat:is([data-chat-width~="820"], [data-chat-short]) [role="dialog"]) .conversation-tools-toggle {
+  visibility: hidden;
+}
+
 @media (max-width: 68rem) {
   .conversation-page.tools-open {
     display: block;
+  }
+
+  /* 工作台整块盖住聊天：与铺满一样隐藏聊天，保留挂载与草稿，聊天也不再接 body 上的快捷键。 */
+  .conversation-page.tools-open .conversation-page-chat {
+    visibility: hidden;
   }
 
   .conversation-tools {
