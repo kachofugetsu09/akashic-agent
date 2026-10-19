@@ -3,7 +3,7 @@
 .directory-marker + .job-list { margin-inline-start: 0; }
 .job-list + .conversation-heading__new { margin-inline-start: 0; }
 
-.job-list__trigger { display: inline-flex; min-height: 32px; align-items: center; gap: 6px; padding-inline: 8px; border: 0; border-radius: 6px; background: transparent; color: var(--chat-faint); font: inherit; cursor: pointer; transition: color var(--ak-sys-duration-short) var(--ak-sys-motion-standard); }
+.job-list__trigger { display: inline-flex; min-height: 32px; align-items: center; gap: 6px; padding-inline: 8px; border: 0; border-radius: 8px; background: transparent; color: var(--chat-faint); font: inherit; cursor: pointer; transition: color var(--ak-sys-duration-short) var(--ak-sys-motion-standard); }
 .job-list__trigger[data-live] { color: var(--chat-muted); }
 .job-list__trigger:hover,
 .job-list__trigger[aria-expanded="true"] { color: var(--chat-ink); }
@@ -16,14 +16,14 @@
 .job-list__dot[data-status="timeout"] { background: var(--ak-color-status-error); opacity: 1; }
 .job-list__dot[data-status="killed"] { background: var(--ak-color-status-warning); opacity: 1; }
 
-.job-list__panel { position: absolute; z-index: 20; inset-block-start: calc(100% + 4px); inset-inline-end: 0; inline-size: min(24rem, calc(100vw - 32px)); max-block-size: min(26rem, calc(100dvh - 8rem)); overflow: auto; padding: 6px; border: 1px solid var(--chat-line); border-radius: 10px; background: var(--ak-paper-canvas); box-shadow: 0 8px 24px color-mix(in oklab, var(--ak-ink-primary) 12%, transparent); color: var(--chat-muted); }
+.job-list__panel { position: absolute; z-index: 20; inset-block-start: calc(100% + 4px); inset-inline-end: 0; inline-size: min(24rem, calc(100vw - 32px)); max-block-size: min(26rem, calc(100dvh - 8rem)); overflow: auto; padding: 6px; border: 1px solid var(--chat-line); border-radius: 12px; background: var(--ak-paper-canvas); box-shadow: 0 8px 24px color-mix(in oklab, var(--ak-ink-primary) 12%, transparent); color: var(--chat-muted); }
 .job-list__panel ul { display: grid; gap: 2px; margin: 0; padding: 0; list-style: none; }
 
 /* 分组标题：进行中只是标签；已结束可折叠，右侧是清空。 */
 .job-list__section { display: flex; min-height: 28px; align-items: center; justify-content: space-between; margin: 0; padding: 4px 10px 2px; color: var(--chat-faint); font-size: var(--chat-type-caption, 0.75rem); }
 .job-list__section:not(:first-child) { margin-top: 4px; border-top: 1px solid var(--chat-line); padding-top: 8px; }
 .job-list__fold,
-.job-list__clear { display: inline-flex; min-height: 28px; align-items: center; gap: 4px; margin-inline: -6px; padding-inline: 6px; border: 0; border-radius: 6px; background: transparent; color: inherit; font: inherit; cursor: pointer; }
+.job-list__clear { display: inline-flex; min-height: 28px; align-items: center; gap: 4px; margin-inline: -6px; padding-inline: 6px; border: 0; border-radius: 8px; background: transparent; color: inherit; font: inherit; cursor: pointer; }
 .job-list__fold svg { transition: transform var(--ak-sys-duration-short) var(--ak-sys-motion-standard); }
 .job-list__fold[aria-expanded="false"] svg { transform: rotate(-90deg); }
 .job-list__fold:hover,
@@ -32,7 +32,7 @@
 .job-list__clear:focus-visible { outline: 2px solid var(--ak-rule-focus); outline-offset: 2px; }
 
 /* 两行：标签与耗时一行，种类与结果一行；圆点对齐第一行。 */
-.job-list__row { display: grid; grid-template-columns: 6px minmax(0, 1fr) auto; column-gap: 10px; row-gap: 2px; align-items: center; padding: 8px 10px; border-radius: 6px; line-height: 1.4; }
+.job-list__row { display: grid; grid-template-columns: 6px minmax(0, 1fr) auto; column-gap: 10px; row-gap: 2px; align-items: center; padding: 8px 10px; border-radius: 8px; line-height: 1.4; }
 .job-list__row[data-stoppable] { grid-template-columns: 6px minmax(0, 1fr) auto auto; }
 .job-list__row[data-status="running"],
 .job-list__row[data-status="stopping"] { background: var(--chat-chip); }
