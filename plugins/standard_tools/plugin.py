@@ -1,19 +1,11 @@
 from plugins.host_execution.contract import FILES
 from agent.plugin_composition import Context
 from plugins.ui.contract import UI_SLOTS, PluginUiDefinition, PluginUiRpcInvalidRequest
-from plugins.ledger.contract import ARTIFACT_IMPORT
 from plugins.ledger.contract import OWNER_STATE, SESSION_ADMISSION
 from plugins.standard_tools.contract import WORKING_DIRECTORY
 
 from plugins.context.contract import MATERIALS_V4
 from ._tool_boundary import TOOLS
-from .files import register_file
-from .filesystem import (
-    EditFileTool,
-    ListDirTool,
-    ReadFileTool,
-    WriteFileTool,
-)
 from .working_directory import WorkingDirectories
 from .directory_tool import register_directory
 from .agents import read_agents, directory_material
@@ -22,8 +14,8 @@ from plugins.ledger.contract import Message
 api_version = 3
 name = "standard_tools"
 version = "1.0.0"
-desc = "提供文件与工作目录工具"
-inject = (TOOLS, FILES, ARTIFACT_IMPORT, MATERIALS_V4,
+desc = "管理会话工作目录"
+inject = (TOOLS, FILES, MATERIALS_V4,
           OWNER_STATE, SESSION_ADMISSION)
 
 
@@ -53,17 +45,6 @@ async def apply(ctx: Context) -> None:
 
     _ = await catalog.declare_group(ctx, always_on=True, description=desc)
     await register_directory(ctx, directories)
-    for backend in (ReadFileTool, ListDirTool, WriteFileTool, EditFileTool):
-        await register_file(
-            ctx,
-            backend,
-            directories=directories,
-            allowed_dir=(
-                ctx.runtime.workspace
-                if backend in (ReadFileTool, ListDirTool)
-                else None
-            ),
-        )
 
     # 顶栏工作目录是本插件自己的界面；宿主只提供插槽。
     async def plugin_ui(child: Context) -> None:

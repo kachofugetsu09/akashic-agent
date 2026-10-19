@@ -32,7 +32,7 @@ from plugins.openai_compatible.driver import _BoundChat as PhysicalChat, _Connec
 from plugins.react.plugin import react
 from plugins.reply.status import ReplyState
 from plugins.sources.session import SourceSession
-from plugins.standard_tools.filesystem import WriteFileTool
+from plugins.files.filesystem import WriteFileTool
 from plugins.tools.execution import MessageReply, Result, ToolExecution
 from plugins.tools.menu import ToolCallDecode
 from scripts.check_model_retry import Credential, GeminiCredential

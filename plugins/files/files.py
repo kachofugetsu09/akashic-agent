@@ -26,7 +26,7 @@ from plugins.ledger.contract import ContentPart
 from plugins.ledger.contract import json_value
 
 from ._tool_boundary import CallSource, TOOLS, ToolRef, ToolResultValue
-from .working_directory import WorkingDirectories
+from plugins.standard_tools.contract import WORKING_DIRECTORY
 
 FileBackend = ReadFileTool | ListDirTool | WriteFileTool | EditFileTool
 
@@ -67,29 +67,31 @@ def prepare_arguments(tool: _FileBackend, arguments: Mapping[str, object]) -> Ma
 class FileTool:
     idempotent = False
 
-    def __init__(self, ctx: Context, backend: FileBackend, *,
-                 directories: WorkingDirectories | None = None, settings: FileSettings | None = None):
+    def __init__(self, ctx: Context, backend: FileBackend, *, settings: FileSettings | None = None):
         self._ctx = ctx
         self._backend = backend
-        self._directories = directories
         self._settings = settings or FileSettings()
 
+    # 有工作目录插件时按会话目录固定目标路径；没有时只按配置的 allowed_dir 访问。
     async def prepare(self, arguments: Mapping[str, object], source: CallSource | None = None) -> Mapping[str, object] | str:
         prepared = prepare_arguments(self._backend, arguments)
-        if isinstance(prepared, str) or self._directories is None:
+        if isinstance(prepared, str):
             return prepared
-        session_id = None if source is None else source.messages[-1].session_id
-        allowed = self._settings.allowed_dir
-        if session_id is not None and self._settings.session_base:
-            current = self._directories.snapshot(session_id)
-            if current.path is not None:
-                allowed = current.path
-        try:
-            target, required_dir = await self._directories.resolve_target(
-                session_id, cast(str, prepared["path"]), legacy_base=allowed,
-            )
-        except ValueError as error:
-            return str(error)
+        with self._ctx.borrow(WORKING_DIRECTORY) as directories:
+            if directories is None:
+                return prepared
+            session_id = None if source is None else source.messages[-1].session_id
+            allowed = self._settings.allowed_dir
+            if session_id is not None and self._settings.session_base:
+                current = directories.snapshot(session_id)
+                if current.path is not None:
+                    allowed = current.path
+            try:
+                target, required_dir = await directories.resolve_target(
+                    session_id, cast(str, prepared["path"]), legacy_base=allowed,
+                )
+            except ValueError as error:
+                return str(error)
         return {**prepared, "path": target, "_allowed_dir": allowed,
                 **({"required_dir": required_dir} if isinstance(self._backend, WriteFileTool) and required_dir is not None else {})}
 
@@ -128,7 +130,6 @@ class FileTool:
 
 async def register_file(
     ctx: Context, backend_type: type[FileBackend], *, allowed_dir: Path | None,
-    directories: WorkingDirectories | None = None,
 ) -> ToolRef:
     """注册 schema 和配置；实际文件/Bridge 只在已打开工具中访问。"""
     prototype = backend_type(ctx.require(FILES))
@@ -144,7 +145,7 @@ async def register_file(
         settings = FileSettings.model_validate(json_value(state))
         backend = backend_type(ctx.require(FILES), allowed_dir=None if settings.allowed_dir is None else Path(settings.allowed_dir))
         try:
-            yield FileTool(ctx, backend, directories=directories, settings=settings)
+            yield FileTool(ctx, backend, settings=settings)
         finally:
             await backend.aclose()
 
