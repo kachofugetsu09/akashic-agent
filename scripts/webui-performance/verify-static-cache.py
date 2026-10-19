@@ -56,6 +56,40 @@ async def verify(root: Path) -> None:
     print("真实 ASGI 静态缓存场景通过")
 
 
+async def verify_dashboard(root: Path) -> None:
+    """外壳(dashboard)的静态资产与聊天同一缓存合同:哈希产物永久缓存,稳定 URL 按 ETag 校验。"""
+    source = Path(__file__).resolve().parents[2] / "plugins/ui/dashboard_app.py"
+    module = root / "plugins/ui/dashboard_app.py"
+    module.parent.mkdir(parents=True, exist_ok=True)
+    shutil.copyfile(source, module)
+    static_dir = root / "static/dashboard"
+    (static_dir / "sdk").mkdir(parents=True)
+    (static_dir / "index.html").write_text("<html></html>", encoding="utf-8")
+    (static_dir / "index-12345678.js").write_text("export {};", encoding="utf-8")
+    (static_dir / "sdk/react.js").write_text("export {};", encoding="utf-8")
+    app = runpy.run_path(str(module))["create_dashboard_app"](static_dir)
+
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://cache-scenario.local"
+    ) as client:
+        # 带内容哈希的产物永久缓存;稳定 URL(sdk、入口 HTML)不设显式头部,
+        # 保持既有启发式缓存行为(强制校验会让模块图每个稳定分块等一次 304)。
+        for path, cache in (
+            ("/dashboard/assets/index-12345678.js", "public, max-age=31536000, immutable"),
+            ("/assets/index-12345678.js", "public, max-age=31536000, immutable"),
+        ):
+            response = await client.get(path)
+            assert response.status_code == 200, (path, response.status_code)
+            assert response.headers["cache-control"] == cache, (path, response.headers.get("cache-control"))
+        for path in ("/", "/dashboard", "/dashboard/assets/sdk/react.js"):
+            response = await client.get(path)
+            assert response.status_code == 200, (path, response.status_code)
+            assert "cache-control" not in response.headers, (path, response.headers.get("cache-control"))
+    print("真实 ASGI 外壳静态缓存场景通过")
+
+
 if __name__ == "__main__":
     with tempfile.TemporaryDirectory(prefix="akashic-static-cache-") as directory:
         asyncio.run(verify(Path(directory)))
+    with tempfile.TemporaryDirectory(prefix="akashic-dashboard-cache-") as directory:
+        asyncio.run(verify_dashboard(Path(directory)))
