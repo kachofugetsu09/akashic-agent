@@ -17,6 +17,7 @@ import { DesktopConversationMessages, DesktopTimelineMessages, messageDayKey, wi
 import { MediaGalleryViewer, ReplyActivityView } from "./message-view";
 import { MessageSquarePlus } from "lucide-react";
 import { CompactNavigation } from "./compact-navigation";
+import { NewChatScope } from "./new-chat-scope";
 import { DesktopSidebar } from "./desktop-sidebar";
 import { useSidebarRail } from "./use-sidebar-rail";
 import type { DesktopChatController } from "./use-desktop-chat-controller";
@@ -68,6 +69,12 @@ export function DesktopChatView({ controller }: DesktopChatViewProps) {
     navigationGroups,
   } = controller;
   const inputResult = useMemo(() => lastInputResult(timelineMessages), [timelineMessages]);
+  // 改的是这条未发送草稿的归属，而不是换一份草稿：切过去后把原文接到目标位置已有草稿之后。
+  const moveDraft = useCallback((switchScope: () => void) => {
+    const text = composerApi.current?.takeDraft() ?? "";
+    switchScope();
+    if (text) window.setTimeout(() => composerApi.current?.insertDraft(text, { append: true }), 0);
+  }, []);
   const pagedTimeline = useMemo(() => withoutLeadingOrphanResults(timelineMessages, historyHasMore),
     [historyHasMore, timelineMessages]);
   const inputId = messages.filter((message) => message.role === "user").at(-1)?.id ?? inputResult.id;
@@ -129,9 +136,10 @@ export function DesktopChatView({ controller }: DesktopChatViewProps) {
           {/* 插件在标题行右侧的标记；新的工具结果到达时通知插件重新读取会话状态。 */}
           {activeSessionId ? <PluginUiSlot key={`header:${activeSessionId}`} name="header.end" sessionId={activeSessionId}
             refreshToken={Array.from(toolResults.keys()).join("|")} quiet /> : null}
-          {/* 窄屏没有常驻侧栏：新会话留在拇指可达的标题行，不必先打开抽屉。 */}
-          {conversationLayout ? <button type="button" className="conversation-heading__new" aria-label="新会话" data-tip="新会话"
-            onClick={() => startNewChat()}>
+          {/* 窄屏没有常驻侧栏：新会话留在拇指可达的标题行，不必先打开抽屉；继承当前会话所在的分组。 */}
+          {conversationLayout ? <button type="button" className="conversation-heading__new"
+            aria-label={activeGroup ? `在 ${activeGroup.label} 中新建会话` : "新会话"} data-tip="新会话"
+            onClick={() => activeGroup ? navigationGroups.startChat(activeGroup) : startNewChat()}>
             <MessageSquarePlus size={20} strokeWidth={1.75} aria-hidden="true" />
           </button> : null}
         </header>
@@ -189,6 +197,8 @@ export function DesktopChatView({ controller }: DesktopChatViewProps) {
           </p> : null}
           {/* 输入框工具位的插件说明为什么现在不能发；处理入口在插件自己的工具里。 */}
           {chatReady && sendProblem ? <p className="chat-send-notice" id="chat-send-reason" role="status">{sendProblem}</p> : null}
+          {!conversationLayout && !activeSessionId ? <NewChatScope groups={navigationGroups}
+            onStart={(ref) => moveDraft(() => navigationGroups.startChat(ref))} onUngrouped={() => moveDraft(startNewChat)} /> : null}
           <DesktopComposer
             ref={composerApi}
             chatReady={chatReady} canSend={canSend} sendProblem={sendProblem} draftKey={draftKey} autoFocus={!conversationLayout && chatReady} fresh={!conversationLayout} status={status} stopPending={stopPending} stopCount={stopCount}

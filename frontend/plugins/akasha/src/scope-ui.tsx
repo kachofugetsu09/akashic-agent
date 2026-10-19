@@ -47,19 +47,25 @@ export function mountMemoryField(host: HTMLElement, context: PluginUiContext<"sc
   return render(host, <MemoryField context={context} fields={context.fields} />);
 }
 
-// 名字后的记忆标签：共享全局时不显示，读不出时如实说明。
+// 偏离共享全局的策略各用一种图标线型：自成一圈是双线，只读不写是虚线，不留痕是点线。
+const LINES: Partial<Record<Memory, string>> = { isolated: "double", off: "dashed", none: "dotted" };
+
+// 名字后的记忆标签：共享全局时不显示，读不出时如实说明；带线型时宿主把它画到分组图标上。
 export function mountMemoryBadge(host: HTMLElement, context: PluginUiContext<"scope.badge">) {
   const { dimension, value } = context.scope;
   let active = true;
-  const show = (text: string) => {
+  const show = (text: string, memory?: Memory) => {
     const badge = document.createElement("small");
     badge.className = "akasha-scope-badge";
     badge.textContent = text;
+    const choice = CHOICES.find((item) => item.value === memory);
+    if (memory && LINES[memory]) badge.dataset.scopeLine = LINES[memory];
+    if (choice) badge.title = `${choice.label}：${choice.description}`;
     host.replaceChildren(badge);
   };
   context.query("scope.policy.get", { dimension, value }).then((result) => {
     const memory = memoryOf(result);
-    if (active && memory !== "global") show(CHOICES.find((choice) => choice.value === memory)?.label ?? "");
+    if (active && memory !== "global") show(CHOICES.find((choice) => choice.value === memory)?.label ?? "", memory);
   }).catch(() => { if (active) show("当前策略未能读取"); });
   return () => { active = false; };
 }
