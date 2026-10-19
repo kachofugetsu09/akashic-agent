@@ -92,6 +92,19 @@ plugin = "sites_tab@release"
 [rows."standard_tools"]
 plugin = "standard_tools@release"
 
+# Web 工具与提供方默认关闭：启用 standard_web 后，再启用一个搜索提供方和一个读取提供方。
+[rows."standard_web"]
+plugin = "standard_web@release"
+disabled = true
+
+[rows."web_search_exa"]
+plugin = "web_search_exa@release"
+disabled = true
+
+[rows."web_fetch_http"]
+plugin = "web_fetch_http@release"
+disabled = true
+
 [rows."terminal"]
 plugin = "terminal@release"
 

@@ -1,59 +1,46 @@
-"""
-WebSearch 工具 — 基于 Exa MCP 公开端点，无需 API Key
-"""
+"""Exa 搜索：经 Exa MCP 端点调用 web_search_exa；端点与可选 API key 由本插件配置。"""
 
 import json
-from collections.abc import Iterator
-from typing import Any, cast
+from collections.abc import Awaitable, Callable, Iterator
+from typing import Any, Literal, cast
 
 import httpx
+from pydantic import BaseModel, ConfigDict, Field, HttpUrl, field_validator
 
-_MCP_URL = "https://mcp.exa.ai/mcp"
-_DEFAULT_NUM_RESULTS = 8
+from agent.plugin_composition import CredentialRef
+from plugins.standard_web.contract import SearchRequest
+
+DEFAULT_ENDPOINT = "https://mcp.exa.ai/mcp"
 
 
-class WebSearchTool:
-    """用关键词通过 Exa 搜索互联网，返回标题、内容摘要、URL 列表"""
+class ExaConfig(BaseModel):
+    """endpoint 可换成自建或代理的 Exa MCP；api_key 为空时使用公开额度。"""
 
-    name = "web_search"
-    description = (
-        "用关键词搜索互联网，返回最新的搜索结果（标题 + 摘要 + URL）。"
-        "适合查询时效性信息：新闻、产品发布、价格、人物动态等。"
-        "拿到 URL 后可用 web_fetch 获取完整内容。"
-    )
-    parameters = {
-        "type": "object",
-        "properties": {
-            "query": {
-                "type": "string",
-                "description": "搜索关键词",
-            },
-            "num_results": {
-                "type": "integer",
-                "description": f"返回结果数量，默认 {_DEFAULT_NUM_RESULTS}，最大 20",
-                "minimum": 1,
-                "maximum": 20,
-            },
-            "livecrawl": {
-                "type": "string",
-                "enum": ["fallback", "preferred"],
-                "description": "实时抓取模式：fallback（缓存优先）或 preferred（优先实时），默认 fallback",
-            },
-            "type": {
-                "type": "string",
-                "enum": ["auto", "fast", "deep"],
-                "description": "搜索类型：auto（均衡）、fast（快速）、deep（深度），默认 auto",
-            },
-        },
-        "required": ["query"],
-    }
+    model_config = ConfigDict(extra="forbid", frozen=True)
 
-    async def execute(self, **kwargs: Any) -> str:
-        query: str = kwargs["query"]
-        num_results: int = min(int(kwargs.get("num_results", _DEFAULT_NUM_RESULTS)), 20)
-        livecrawl: str = kwargs.get("livecrawl", "fallback")
-        search_type: str = kwargs.get("type", "auto")
+    endpoint: HttpUrl = HttpUrl(DEFAULT_ENDPOINT)
+    api_key: CredentialRef | None = None
+    search_type: Literal["auto", "fast", "deep"] = "auto"
+    livecrawl: Literal["fallback", "preferred"] = "fallback"
+    timeout_seconds: float = Field(default=25.0, gt=0, le=120, allow_inf_nan=False)
 
+    # key 只能存为凭据；端点里带账号或查询参数会把秘密写进普通配置。
+    @field_validator("endpoint")
+    @classmethod
+    def check_endpoint(cls, value: HttpUrl) -> HttpUrl:
+        if value.username or value.password or value.query or value.fragment:
+            raise ValueError("endpoint 必须是不含账号、查询参数的 HTTP(S) 地址；API key 请填在 API key 字段")
+        return value
+
+
+class ExaSearch:
+    """一次搜索一个 JSON-RPC 请求；API key 只在请求时读取，不进入结果或日志。"""
+
+    def __init__(self, config: ExaConfig, read_key: Callable[[], Awaitable[str | None]]):
+        self._config = config
+        self._read_key = read_key
+
+    async def search(self, request: SearchRequest) -> dict[str, object]:
         payload: dict[str, Any] = {
             "jsonrpc": "2.0",
             "id": 1,
@@ -61,18 +48,21 @@ class WebSearchTool:
             "params": {
                 "name": "web_search_exa",
                 "arguments": {
-                    "query": query,
-                    "numResults": num_results,
-                    "livecrawl": livecrawl,
-                    "type": search_type,
+                    "query": request.query,
+                    "numResults": request.num_results,
+                    "livecrawl": self._config.livecrawl,
+                    "type": self._config.search_type,
                 },
             },
         }
-
+        # 1. Exa MCP 以 exaApiKey 查询参数接收 key；没有 key 时走公开端点额度。
+        key = await self._read_key()
+        params = {"exaApiKey": key} if key else None
         try:
-            async with httpx.AsyncClient(timeout=25.0) as client:
+            async with httpx.AsyncClient(timeout=self._config.timeout_seconds) as client:
                 response = await client.post(
-                    _MCP_URL,
+                    str(self._config.endpoint),
+                    params=params,
                     json=payload,
                     headers={
                         "accept": "application/json, text/event-stream",
@@ -81,15 +71,15 @@ class WebSearchTool:
                 )
                 _ = response.raise_for_status()
         except (httpx.RequestError, httpx.HTTPStatusError) as e:
-            return json.dumps(
-                {"error": f"搜索失败：{e}", "query": query}, ensure_ascii=False
-            )
+            # 错误文本只带状态与端点主机，不回显带 key 的完整 URL。
+            reason = f"HTTP {e.response.status_code}" if isinstance(e, httpx.HTTPStatusError) else type(e).__name__
+            return {"error": f"搜索失败：{reason}（{self._config.endpoint.host}）", "query": request.query}
 
         # 2. JSON 与 SSE 都必须给出本次调用的明确结果；坏响应不是空搜索。
         try:
-            return json.dumps({"query": query, **_read_response(response)}, ensure_ascii=False)
+            return {"query": request.query, **_read_response(response)}
         except (ValueError, TypeError) as error:
-            return json.dumps({"error": f"搜索响应无效：{error}", "query": query}, ensure_ascii=False)
+            return {"error": f"搜索响应无效：{error}", "query": request.query}
 
 
 def _read_response(response: httpx.Response) -> dict[str, object]:
