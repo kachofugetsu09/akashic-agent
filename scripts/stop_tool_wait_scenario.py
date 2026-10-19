@@ -1,4 +1,4 @@
-"""Stop a real Shell wait through channel input and verify the next reply and process owners."""
+"""Drive stop, new input and steer against a real Shell wait; verify interrupts, next replies and process owners."""
 from __future__ import annotations
 
 import asyncio
@@ -9,6 +9,7 @@ import os
 from pathlib import Path
 import shlex
 import shutil
+import signal
 import sqlite3
 import sys
 import tempfile
@@ -17,7 +18,7 @@ import time
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 
-from plugins.channels.contract import CHANNEL_INPUT_V2 as CHANNEL_INPUT, ChannelInboundMessage
+from plugins.channels.contract import CHANNEL_INPUT_V2 as CHANNEL_INPUT, CHANNEL_STEER, ChannelInboundMessage
 from plugins.ledger.contract import Output, ToolResult
 from tests.support.delivery_sources import sources as delivery_sources
 from tests.test_default_reply import application
@@ -56,7 +57,8 @@ def configure(sources: Path, directory: Path) -> None:
                 identity = int(re.findall(r'"execution_id": ([0-9]+)', str(request.messages))[-1])
                 return LLMResponse(None, [ToolCall("wait", "write_stdin", {
                     "execution_id": identity, "chars": "wait\\n", "yield_time_ms": 30000})])
-            return LLMResponse("next input answered")
+            text = str(request.messages)
+            return LLMResponse("next input answered" if "answer the next input" in text else "no next input")
 '''.replace("COMMANDS", repr(commands)) + text[end:]
     provider.write_text(text)
 
@@ -69,8 +71,16 @@ async def wait_file(path: Path) -> int:
         return int(path.read_text())
 
 
-async def run(directory: Path, *, pause: bool) -> dict[str, object]:
-    """Exercise real channel cancellation, process cleanup and append-only message history."""
+def alive(pid: int) -> bool:
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        return False
+    return True
+
+
+async def run(directory: Path, *, mode: str) -> dict[str, object]:
+    """stop / input / input-stop / steer-stop: only a user stop interrupts the running tool."""
     directory.mkdir()
     workspace = directory / "workspace"
     async with application(directory, replying=True, shell=True,
@@ -79,9 +89,11 @@ async def run(directory: Path, *, pause: bool) -> dict[str, object]:
         assert root is not None
         accept = root.context.require(CHANNEL_INPUT)
 
+        def message(text: str) -> ChannelInboundMessage:
+            return ChannelInboundMessage("test", "user", "room", text, datetime.now(UTC), {})
+
         async def send(identity: str, text: str):
-            return await accept("test:room", identity, ChannelInboundMessage(
-                "test", "user", "room", text, datetime.now(UTC), {}))
+            return await accept("test:room", identity, message(text))
 
         # 1. A real stdin acknowledgement proves the long wait is running.
         await send("first", "start the work")
@@ -90,11 +102,26 @@ async def run(directory: Path, *, pause: bool) -> dict[str, object]:
         before = stored_rows(workspace)
         started = time.monotonic()
 
-        # 2. Stop and new input must not wait for the 30-second tool timeout.
+        # 2. A new input queues behind the running tool; only /stop interrupts it.
         async with asyncio.timeout(5):
-            if pause:
+            if mode == "stop":
                 await send("stop", "/stop")
-            await send("next", "answer the next input")
+                await send("next", "answer the next input")
+            elif mode == "steer-stop":
+                with root.context.borrow(CHANNEL_STEER) as steers:
+                    assert steers is not None and await steers.stage("test:room", "next", message("answer the next input"))
+                await send("stop", "/stop")
+            else:
+                await send("next", "answer the next input")
+                await asyncio.sleep(1)
+                assert alive(foreground), "new input interrupted the running tool"
+                assert not any(isinstance(row.body, Output) and row.body.finish == "complete"
+                               for row in log.reader("test:room").snapshot()), "replied before the tool result"
+                if mode == "input-stop":
+                    await send("stop", "/stop")
+                else:
+                    # The tool finishes on its own; its result and the new input reach the next request together.
+                    os.kill(foreground, signal.SIGKILL)
 
         async def completed():
             async for _ in log.catalog().follow():
@@ -106,23 +133,21 @@ async def run(directory: Path, *, pause: bool) -> dict[str, object]:
         rows = await asyncio.wait_for(completed(), 5)
         elapsed = time.monotonic() - started
         assert elapsed < 5, elapsed
+        answers = [row.body for row in rows if isinstance(row.body, Output) and row.body.finish == "complete"]
+        assert "next input answered" in str(answers[-1]), answers[-1]
         receipts = [row.body for row in rows if isinstance(row.body, ToolResult)]
         assert len(receipts) == 3, receipts
         assert len({receipt.call_ref for receipt in receipts}) == 3
-        assert receipts[-1].outcome == "interrupted", receipts[-1]
+        assert (receipts[-1].outcome == "interrupted") == (mode != "input"), receipts[-1]
         after = stored_rows(workspace)
         assert after[:len(before)] == before, "existing message rows changed"
 
         # 3. Foreground cleanup runs before the next reply; explicit background work survives.
-        try:
-            os.kill(foreground, 0)
-        except ProcessLookupError:
-            pass
-        else:
-            raise AssertionError("foreground process survived stop")
-        os.kill(background, 0)
+        assert not alive(foreground), "foreground process survived stop"
+        assert alive(background), "background process was stopped"
     assert stored_rows(workspace) == after, "shutdown changed message history"
-    return {"pause": pause, "next_reply_seconds": round(elapsed, 3), "receipts": len(receipts),
+    return {"mode": mode, "next_reply_seconds": round(elapsed, 3), "receipts": len(receipts),
+            "tool_outcome": receipts[-1].outcome, "next_input_answered": True,
             "foreground_stopped": True, "background_survived": True, "history_preserved": True}
 
 
@@ -160,10 +185,10 @@ async def main(directory: Path):
     """Check both execution backends with isolated homes, databases and child processes."""
     os.environ.update(HOME=str(directory / "home"), AKASHIC_PLUGIN_HOME=str(directory / "home"),
                       AKASHIC_PLUGIN_DISTRIBUTION="", AKASHIC_EXECUTION_MODE="local", AKASHIC_WORKLOAD_SOCKET="")
-    cases = (("stop", True), ("input", False))
-    results = {"local": [await run(directory / name, pause=pause) for name, pause in cases]}
+    modes = ("stop", "input", "input-stop", "steer-stop")
+    results = {"local": [await run(directory / mode, mode=mode) for mode in modes]}
     async with bridge(directory):
-        results["host-bridge"] = [await run(directory / ("bridge-" + name), pause=pause) for name, pause in cases]
+        results["host-bridge"] = [await run(directory / ("bridge-" + mode), mode=mode) for mode in modes]
     return results
 
 

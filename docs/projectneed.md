@@ -625,7 +625,7 @@ Linux 上无子命令执行 `python main.py` 是正式服务入口，必须先�
 
 ### RUN-008 来源内输入与控制按序收束
 
-来源 owner 在活动 Task scope 上按 source 顺序接纳普通 Input：Input 先追加到 Message 日志，再取消并替换旧 scope；旧 scope 的 Output writer 以旧 `expected_source_head` 提交时必须冲突。控制只接受 `pause`、`resume`、`abandon` 和 `failure`，通过明确 `source` 与 `through_seq` 追加到 Message 日志，再按 owner 规则取消 scope；`/stop` 入口映射为 `pause`；来源取消必须传给正在执行的工具，再等待原 owner 保存终态和清理前台资源，不能只屏蔽取消并等待工具自然结束。显式后台任务继续由后台 owner 管理。取消不撤销已发生的外部效果，也不跳过不响应取消的工具收尾。Output 只允许 `continue`、`complete` 或 `quiet`，失败由 `Control.failure` 或 owner receipt 追加一次。下一条普通 Input 是否续接开放 Turn 由来源插件决定，不建立 Core 专属执行记录。
+来源 owner 在活动 Task scope 上按 source 顺序接纳普通 Input：Input 先追加到 Message 日志，再取消并替换旧 scope；旧 scope 的 Output writer 以旧 `expected_source_head` 提交时必须冲突。控制只接受 `pause`、`resume`、`abandon` 和 `failure`，通过明确 `source` 与 `through_seq` 追加到 Message 日志，再按 owner 规则取消 scope；`/stop` 入口映射为 `pause`；`pause` 的取消必须作为中断传给正在执行的工具，再等待原 owner 保存终态和清理前台资源，不能只屏蔽取消并等待工具自然结束；普通 Input 的撤权不中断已开始的工具，工具结果提交后新回复连同新输入一起推理，撤权后再 `pause` 时升级为中断。回复进行中的插话在下一步模型请求前写入；回复结束或被停止时尚未写入的插话转为普通 Input。显式后台任务继续由后台 owner 管理。取消不撤销已发生的外部效果，也不跳过不响应取消的工具收尾。Output 只允许 `continue`、`complete` 或 `quiet`，失败由 `Control.failure` 或 owner receipt 追加一次。下一条普通 Input 是否续接开放 Turn 由来源插件决定，不建立 Core 专属执行记录。
 
 明确 `abandon` 的接纳不等待工具执行或物理清理。Tools 对被放弃前缀内的调用保留已提交结果；未启动的结算为 `denied`，已启动但未提交结果的结算为 `interrupted`。每个调用仍只有一个 ToolResult；迟到返回不覆盖它，也不唤醒下一轮推理。`interrupted` 只表示已停止等待，不证明外部效果撤销，不授予重跑权限。实际工具与清理 owner 继续持有资源及必要的重启许可；新工作不等待旧工具退出，旧清理不得影响新工作的资源。暂停、恢复和普通新输入不自动采用放弃语义。
 

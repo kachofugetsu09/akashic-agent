@@ -79,15 +79,11 @@ export function DesktopChatView({ controller }: DesktopChatViewProps) {
     if (text) window.setTimeout(() => composerApi.current?.insertDraft(text, { append: true }), 0);
   }, []);
 
-  // 停止时尚未交给模型的插话退回输入框，不替用户变成新的一轮。
+  // 只在服务端暂存已不在时（断线或重启）把插话退回输入框；用户停止时插话由服务端作为下一轮输入送出。
   const returnSteers = useCallback(() => {
     const texts = takeSteers();
     if (texts.length) composerApi.current?.insertDraft(texts.join("\n\n"), { append: true });
   }, [takeSteers]);
-  const stopWithSteers = useCallback(() => {
-    returnSteers();
-    stopTurn();
-  }, [returnSteers, stopTurn]);
   const withdrawToDraft = useCallback((id: string) => {
     withdrawSteer(id).then((text) => {
       if (text !== null) composerApi.current?.insertDraft(text, { append: true });
@@ -229,7 +225,7 @@ export function DesktopChatView({ controller }: DesktopChatViewProps) {
             ref={composerApi}
             chatReady={chatReady} canSend={canSend} sendProblem={sendProblem} draftKey={draftKey} autoFocus={!conversationLayout && chatReady} fresh={!conversationLayout} status={status} stopPending={stopPending}
             replyTarget={replyTarget} onCancelReply={cancelReply}
-            onSend={sendMessage} onSteer={steerMessage} onStop={stopWithSteers} lastInput={lastInput}
+            onSend={sendMessage} onSteer={steerMessage} onStop={stopTurn} lastInput={lastInput}
           />
           <CopyNotice text={copyNotice} />
           <ComposerStatsLine sessionId={activeSessionId} messages={timelineMessages} activities={replyActivities} connected={replyAvailable !== null} status={status} stopping={stopPending} />

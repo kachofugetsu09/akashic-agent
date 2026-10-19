@@ -10,6 +10,7 @@ from uuid import uuid4
 
 from core.common.diagnostic_log import log_timing
 from agent.plugin_composition import Context, RuntimeScope
+from agent.plugin_composition.tasks import TASK_INTERRUPT, interrupt_requested
 from plugins.ledger.contract import (
     MessageConflict,
     MessageReader,
@@ -213,7 +214,7 @@ async def _settle(
     commit_after: _OrderGate | None = None,
     scope: RuntimeScope | None = None,
 ) -> None:
-    """取消传给当前工具调用，再等待 Tools 保存终态并释放资源。"""
+    """普通撤权等工具自然结束；用户停止的中断才传给工具，再等待 Tools 保存终态并释放资源。"""
     # scope 由 owner task 预先取得；子任务里再取 lease 会丢失授权。
     if scope is None and capture_scope is not None:
         scope = capture_scope()
@@ -238,12 +239,19 @@ async def _settle(
         try:
             _ = await asyncio.shield(work)
         except asyncio.CancelledError as cancellation:
-            # 只取消一次；后续取消不能打断 Tools 的回执提交和 owner 收尾。
-            _ = work.cancel()
+            # 中断只传给工具一次；之后的取消不能打断 Tools 的回执提交和 owner 收尾。
+            interrupted = interrupt_requested(cancellation)
+            if interrupted:
+                _ = work.cancel()
             while not work.done():
                 try:
                     _ = await asyncio.shield(work)
-                except asyncio.CancelledError:
+                except asyncio.CancelledError as again:
+                    # 新输入撤权后用户又点停止：等待中升级为中断。
+                    if not interrupted and interrupt_requested(again):
+                        interrupted = True
+                        cancellation = again
+                        _ = work.cancel()
                     continue
                 except Exception as failure:
                     raise cancellation from failure
@@ -329,14 +337,29 @@ async def _settle_group(
             in_flight.add(task)
         for task in tasks:
             await task
-    except asyncio.CancelledError:
+    except asyncio.CancelledError as cancellation:
+        # 取消原因（普通撤权或中断）原样转给同组调用。
+        message = TASK_INTERRUPT if interrupt_requested(cancellation) else None
         for task in tasks:
-            _ = task.cancel()
+            _ = task.cancel(message)
+        if tasks:
+            await _drain_group(tasks)
         raise
     finally:
-        # 普通失败仍收集同批已启动调用；只有来源取消才中断它们。
+        # 普通失败仍收集同批已启动调用。
         if tasks:
             _ = await asyncio.gather(*tasks, return_exceptions=True)
+
+
+# 同组调用排空期间又收到中断时继续转给它们；排空完成前不离开。
+async def _drain_group(tasks: Sequence[asyncio.Task[None]]) -> None:
+    while not all(task.done() for task in tasks):
+        try:
+            _ = await asyncio.shield(asyncio.gather(*tasks, return_exceptions=True))
+        except asyncio.CancelledError as again:
+            if interrupt_requested(again):
+                for task in tasks:
+                    _ = task.cancel(TASK_INTERRUPT)
 
 
 async def _settle_pending(

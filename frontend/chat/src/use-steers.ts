@@ -68,7 +68,7 @@ export function useSteers({ sessionId, timeline, send }: {
     return item.text;
   }, [steers, request]);
 
-  // 停止或本轮已结束时一次取回全部插话：先退回输入框，再尽力撤回；服务端在暂停后也会丢弃未写入的。
+  // 断线或重启后一次取回全部插话：先退回输入框，再尽力撤回，避免服务端仍把它送出。
   const take = useCallback((): string[] => {
     const own = steers.filter((item) => item.sessionId === sessionId);
     if (!own.length) return [];
