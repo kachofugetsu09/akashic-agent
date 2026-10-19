@@ -54,12 +54,16 @@ _RESPONSE_HEADERS_ALLOWED = {
     "accept-ranges",
     "cache-control",
     "content-disposition",
+    # 上游按 Accept-Encoding 压缩的响应原样转发(代理走 aiter_raw,不解码),
+    # 编码与协商头必须随行,否则客户端会把 gzip 字节当裸正文。
+    "content-encoding",
     "content-length",
     "content-range",
     "content-type",
     "content-security-policy",
     "pragma",
     "referrer-policy",
+    "vary",
     "x-content-type-options",
     "etag",
     "last-modified",
@@ -476,6 +480,9 @@ async def _proxy_http(
     }
     headers["x-akashic-peer"] = request.client.host if request.client else ""
     headers["x-akashic-host"] = request.headers.get("host", "")
+    # httpx 默认自带 accept-encoding: gzip,deflate,br;代理走 aiter_raw 不解码,
+    # 上游只能按浏览器真实接受度压缩——浏览器没声明时显式 identity,不替它表态。
+    headers["accept-encoding"] = request.headers.get("accept-encoding", "identity")
 
     # 2. 借用跨越整个流式响应；异常、取消和浏览器断连都先关闭响应再归还借用。
     async with AsyncExitStack() as lifetime:

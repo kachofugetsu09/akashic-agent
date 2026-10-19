@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import gzip
 import hashlib
 import json
 from collections.abc import AsyncGenerator, Awaitable, Callable, Mapping
@@ -13,6 +14,8 @@ import uvicorn
 from fastapi import FastAPI, HTTPException, Query, Request, WebSocket
 from fastapi.responses import FileResponse, JSONResponse, Response, StreamingResponse
 from pydantic import BaseModel, ConfigDict, Field
+
+from core.common.file_io import run_file_io
 
 from .static import current_chat_build, register_chat_assets
 from plugins.ui.contract import PluginUiSlot, read_message_rows, session_row
@@ -67,6 +70,21 @@ class WebUiProvider(Protocol):
     async def bootstrap(self) -> bytes: ...
 
     async def state(self) -> dict[str, str | bool]: ...
+
+
+# bootstrap 载荷按目录身份缓存(plugins/ui/plugin.py);同一载荷的 gzip 结果也缓存,
+# 只留最近几份,目录更新后旧条目随即被淘汰。
+_gzip_cache: dict[str, bytes] = {}
+
+
+def _gzip_cached(payload_sha256: str, payload: bytes) -> bytes:
+    body = _gzip_cache.get(payload_sha256)
+    if body is None:
+        body = gzip.compress(payload, compresslevel=6)
+        _gzip_cache[payload_sha256] = body
+        while len(_gzip_cache) > 4:
+            del _gzip_cache[next(iter(_gzip_cache))]
+    return body
 
 
 class ReadMarkUpdate(BaseModel):
@@ -203,13 +221,24 @@ def create_chat_app(
         headers = {
             "Cache-Control": "private, no-cache",
             "ETag": etag,
+            "Vary": "Accept-Encoding",
             "X-Content-Type-Options": "nosniff",
         }
         # 压缩代理可能把强 ETag 改为弱 ETag；GET 的条件校验按弱比较匹配。
         validators = request.headers.get("if-none-match", "").split(",")
         if any(value.strip().removeprefix("W/") in {"*", etag} for value in validators):
             return Response(status_code=304, headers=headers)
-        return Response(content=payload, media_type="application/json", headers=headers)
+        # 目录字节是 JSON 内嵌的压缩模块,线上约 1MB;gzip 后约剩 1/4。
+        # ETag 仍按未压缩载荷签发,条件校验与编码无关;压缩结果按载荷哈希缓存。
+        body = payload
+        if "gzip" in {
+            token.split(";")[0].strip().lower()
+            for token in request.headers.get("accept-encoding", "").split(",")
+        }:
+            # 首次压缩约 35ms,排水到文件 worker,不占用事件循环;命中缓存的线程往返可忽略。
+            body = await run_file_io(lambda: _gzip_cached(etag[1:-1], payload))
+            headers["Content-Encoding"] = "gzip"
+        return Response(content=body, media_type="application/json", headers=headers)
 
     @app.get("/api/chat/web-ui/state")
     async def web_ui_state() -> Response:
