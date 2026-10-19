@@ -239,7 +239,8 @@ def create_chat_app(
         after = None if after_time is None or after_key is None else (after_time, after_key)
         async with open_message_catalog() as catalog:
             try:
-                page = catalog.sessions(prefix=f"{channel.name}:", visibility="listed", after=after, limit=page_size)
+                page = await catalog.sessions_async(
+                    prefix=f"{channel.name}:", visibility="listed", after=after, limit=page_size)
             except InvalidPage as error:
                 raise HTTPException(status_code=422, detail=str(error)) from error
         return {"items": [session_row(cast(Any, entry)) for entry in page.items], "total": page.total,
@@ -306,7 +307,8 @@ def create_chat_app(
         async with open_message_catalog() as catalog:
             try:
                 reader = catalog.reader(payload.session_id)
-                deleted, head = reader.deleted, reader.head()
+                deleted = await reader.deleted_async()
+                head = await reader.head_async()
             except (KeyError, ValueError) as error:
                 raise HTTPException(status_code=404, detail="会话不存在") from error
             if deleted:
@@ -320,7 +322,7 @@ def create_chat_app(
         async with open_message_catalog() as catalog:
             refs = navigation.read()
             sessions = [row for ref in refs if ref.kind == "session"
-                        if (row := session_pin_row(catalog, ref.id)) is not None]
+                        if (row := await session_pin_row(catalog, ref.id)) is not None]
         return {"pins": [ref.model_dump() for ref in refs], "sessions": sessions}
 
     @app.get("/api/chat/navigation/pins")
@@ -336,7 +338,7 @@ def create_chat_app(
             # Replaying an already committed pin must not revalidate a temporarily missing target.
             if request.pinned and reference not in navigation.read():
                 if reference.kind == "session":
-                    if session_pin_row(catalog, reference.id) is None:
+                    if await session_pin_row(catalog, reference.id) is None:
                         raise HTTPException(status_code=400, detail="只能置顶可见的会话")
                 else:
                     await _check_scope_pin(check_scope, reference.kind, reference.id)
@@ -442,7 +444,7 @@ def create_chat_app(
         async with open_message_catalog() as catalog:
             try:
                 reader = catalog.reader(session_key)
-                page = reader.read_tail(
+                page = await reader.read_tail_async(
                     before_seq=before_seq, through_seq=through_seq, limit=page_size)
                 items = await read_message_rows(
                     cast(Any, page),
@@ -450,7 +452,7 @@ def create_chat_app(
                     reader=channel.message_display,
                 )
                 # 软删会话仍物理存在：如实返回消息并标记 deleted，供前端只读展示。
-                deleted = reader.deleted
+                deleted = await reader.deleted_async()
             except KeyError as error:
                 raise HTTPException(status_code=404, detail="会话不存在") from error
             except InvalidPage as error:

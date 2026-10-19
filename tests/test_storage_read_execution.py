@@ -311,3 +311,87 @@ async def test_committed_read_does_not_wait_for_another_threads_write(tmp_path, 
         gate.release.set()
         await asyncio.gather(job, return_exceptions=True)
         log.close()
+
+
+@pytest.mark.asyncio
+async def test_catalog_page_async_twins_match_sync_reads(tmp_path):
+    """目录页、水位、消息尾页与软删标记的异步孪生和同步版结果一致。"""
+    from plugins.ledger.contract import ContentPart
+
+    log = MessageLog(tmp_path / "sessions.db")
+    try:
+        writer(log).append("first", Input((ContentPart("text", "hello"),)))
+        writer(log).append("second", Input((ContentPart("text", "world"),)))
+        catalog = log.catalog()
+        assert await catalog.sessions_async() == catalog.sessions()
+        assert await catalog.sessions_async(prefix="other:") == catalog.sessions(prefix="other:")
+        assert await catalog.snapshot_heads_async() == catalog.snapshot_heads()
+        assert await catalog.snapshot_heads_async(prefix="other:") == catalog.snapshot_heads(prefix="other:")
+        reader = catalog.reader("s")
+        assert await reader.read_tail_async(limit=1) == reader.read_tail(limit=1)
+        assert await reader.read_tail_async(before_seq=1) == reader.read_tail(before_seq=1)
+        assert await reader.deleted_async() is reader.deleted is False
+        assert await reader.head_async() == reader.head() == 1
+    finally:
+        log.close()
+
+
+@pytest.mark.asyncio
+async def test_read_tail_async_cancel_drains_physical_read(tmp_path, monkeypatch):
+    """取消 read_tail_async 后，worker 内的实际读取排空前任务不结束、连接不归还。"""
+    from plugins.ledger.log import MessageReader
+
+    log = MessageLog(tmp_path / "sessions.db")
+    writer(log).append("first", Input(()))
+    gate = WorkerGate()
+    original = MessageReader._page
+
+    def blocked(reader, **kwargs):
+        gate.stop()
+        return original(reader, **kwargs)
+
+    monkeypatch.setattr(MessageReader, "_page", blocked)
+    job = asyncio.create_task(log.catalog().reader("s").read_tail_async(limit=50))
+    try:
+        await gate.wait(job)
+        job.cancel()
+        tick = asyncio.Event()
+        asyncio.get_running_loop().call_soon(tick.set)
+        await tick.wait()
+        assert not job.done(), "取消未等待实际读取排空"
+        gate.release.set()
+        try:
+            await asyncio.wait_for(job, 5)
+        except asyncio.CancelledError:
+            pass
+        else:
+            raise AssertionError("读取未经取消语义结束")
+        monkeypatch.setattr(MessageReader, "_page", original)
+        assert [m.message_id for m in log.catalog().reader("s").read_tail(limit=50).messages] == ["first"]
+        with closing(sqlite3.connect(tmp_path / "sessions.db")) as raw:
+            assert raw.execute("PRAGMA integrity_check").fetchone()[0] == "ok"
+    finally:
+        gate.release.set()
+        await asyncio.gather(job, return_exceptions=True)
+        log.close()
+
+
+@pytest.mark.asyncio
+async def test_async_page_reads_reject_caller_transaction(tmp_path):
+    """调用线程自己持有未提交事务时，异步孪生拒绝读取；事务结束后恢复。"""
+    log = MessageLog(tmp_path / "sessions.db")
+    writer(log).append("first", Input(()))
+    catalog = log.catalog()
+    try:
+        with log._writer_lock, log._writer_connection:  # pyright: ignore[reportPrivateUsage]
+            log._writer_connection.execute("BEGIN IMMEDIATE")  # pyright: ignore[reportPrivateUsage]
+            with pytest.raises(RuntimeError, match="active storage transaction"):
+                await catalog.sessions_async()
+            with pytest.raises(RuntimeError, match="active storage transaction"):
+                await catalog.snapshot_heads_async()
+            with pytest.raises(RuntimeError, match="active storage transaction"):
+                await catalog.reader("s").read_tail_async()
+        assert (await catalog.sessions_async()).total == 1
+        assert await catalog.reader("s").head_async() == 0
+    finally:
+        log.close()

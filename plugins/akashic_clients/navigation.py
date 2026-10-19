@@ -72,20 +72,24 @@ class NavigationPreferences:
         self._open_store().transact(save)
 
 
-def session_pin_row(catalog: MessageCatalogPort, session_id: str) -> dict[str, object] | None:
-    """Point-read the real scope and first Message, independent of recent paging."""
+async def session_pin_row(catalog: MessageCatalogPort, session_id: str) -> dict[str, object] | None:
+    """Point-read the real scope and first Message, independent of recent paging.
+
+    四项点读合并进一次可排空 worker 行程，不占用事件循环；结果与同快照的
+    同步逐项读取一致。
+    """
     reader = catalog.reader(session_id)
     try:
-        first_page = reader.read_page(limit=1)
+        first_page, attributes, deleted, title = await reader.read_async(
+            lambda row: (row.read_page(limit=1), row.attributes, row.deleted, row.title))
     except KeyError:
         return None
-    attributes = reader.attributes
     # 带会话维度（如项目）的会话也可置顶：前端把它排在所在分组内，scope 随行返回。
-    if reader.deleted or attributes.visibility != "listed":
+    if deleted or attributes.visibility != "listed":
         return None
     first = first_page.messages[0] if first_page.messages else None
     text = "" if first is None or isinstance(first.body, Control) else "\n".join(
         str(part.value) for part in first.body.parts if isinstance(part, ContentPart) and part.kind == "text"
     )
     return {"key": session_id, "first_message_content": text, "scope": dict(attributes.scope),
-            "title": reader.title}
+            "title": title}

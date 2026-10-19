@@ -964,6 +964,10 @@ class MessageCatalog:
         key = (prefix, visibility)
         with log._read(snapshot=False) as connection:
             # 1. data_version 只可在同一连接上比较；writer 未提交视图不能复用。
+            # _reads 是 threading.local：run_file_io worker 里该线程的 current
+            # 指向自己借用的连接，缓存仍只按该连接自己的 data_version 命中，
+            # 不跨线程共享事务状态；worker 外（如事件循环直接调用）current 为
+            # None 时退化为每次真实查询，两种分支都保持同一语义。
             read = log._reads.current
             current = None if read is None else connection.execute("PRAGMA data_version").fetchone()[0]
             if read is not None:
@@ -991,6 +995,26 @@ class MessageCatalog:
                     read.heads.clear()
                 read.heads[key] = heads
             return heads
+
+    async def sessions_async(
+        self, *, prefix: str = "", visibility: Literal["listed", "internal"] | None = None,
+        after: tuple[str, str] | None = None, limit: int = 50,
+    ) -> SessionPage:
+        """sessions 的异步孪生：同一真实 SQL 在可排空 worker 内执行，取消先排空。
+
+        结果、分页与失效语义和同步版完全一致，只是把磁盘读取移出事件循环。
+        """
+        self._log._check_async_operation()
+        return await run_file_io(
+            lambda: self.sessions(prefix=prefix, visibility=visibility, after=after, limit=limit)
+        )
+
+    async def snapshot_heads_async(
+        self, *, prefix: str = "", visibility: Literal["listed", "internal"] | None = None,
+    ) -> Mapping[str, int]:
+        """snapshot_heads 的异步孪生：目录水位读取在 worker 内完成，取消先排空。"""
+        self._log._check_async_operation()
+        return await run_file_io(lambda: self.snapshot_heads(prefix=prefix, visibility=visibility))
 
     def reader(self, session_id: str) -> MessageReader:
         return self._log.reader(session_id)
@@ -1117,8 +1141,9 @@ class MessageCatalog:
                 event.clear()
                 if self._log._closed:
                     return
-                # 无筛选订阅复用已提交水位；目录筛选与周期核对读取当前 SQL。
-                heads = (self.snapshot_heads(prefix=prefix, visibility=visibility)
+                # 无筛选订阅复用已提交水位；目录筛选与周期核对读取当前 SQL，
+                # 这段全会话水位查询在 worker 内排水，不阻塞事件循环上的其他订阅者。
+                heads = (await self.snapshot_heads_async(prefix=prefix, visibility=visibility)
                          if polled or prefix or visibility is not None
                          else self._log.committed_heads(self.snapshot_heads))
                 if heads != previous:
@@ -1457,6 +1482,28 @@ class MessageReader:
     ) -> MessagePage:
         """取结尾或更早的一页，始终按原始 seq 升序返回。"""
         return self._page(after_seq=-1, before_seq=before_seq, through_seq=through_seq, limit=limit, tail=True)
+
+    async def read_tail_async(
+        self, *, before_seq: int | None = None, through_seq: int | None = None, limit: int = 50,
+    ) -> MessagePage:
+        """read_tail 的异步孪生：同一真实 SQL 在可排空 worker 内执行，取消先排空。
+
+        结果与同步版逐字节一致，只是把磁盘读取移出事件循环。
+        """
+        self._check_async_snapshot()
+        return await run_file_io(
+            lambda: self.read_tail(before_seq=before_seq, through_seq=through_seq, limit=limit)
+        )
+
+    async def deleted_async(self) -> bool:
+        """deleted 属性的异步孪生：软删标记的点查询在 worker 内完成。"""
+        self._check_async_snapshot()
+        return await run_file_io(lambda: self.deleted)
+
+    async def head_async(self, *, source: str | None = None) -> int:
+        """head 的异步孪生：水位点查询在 worker 内完成，取消先排空。"""
+        self._check_async_snapshot()
+        return await run_file_io(lambda: self.head(source=source))
 
     def _page(
         self, *, after_seq: int, before_seq: int | None, through_seq: int | None, limit: int, tail: bool,

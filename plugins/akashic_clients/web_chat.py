@@ -917,7 +917,7 @@ class WebChatChannel:
             if type(after_seq) is not int or after_seq < -1:
                 raise ValueError("after_seq 必须是大于等于 -1 的整数")
             async with self._open_message_catalog() as messages:
-                head = messages.reader(session_id).head()
+                head = await messages.reader(session_id).head_async()
             if after_seq > head:
                 raise ValueError("after_seq 超过当前消息 head")
         except ValueError as error:
