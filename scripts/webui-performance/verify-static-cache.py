@@ -22,7 +22,7 @@ async def verify(root: Path) -> None:
     shutil.copyfile(source, module)
     assets = root / "static/chat"
     assets.mkdir(parents=True)
-    (assets / "index.html").write_text("<html>chat</html>", encoding="utf-8")
+    (assets / "chat-app.js").write_text("export {};", encoding="utf-8")
     (assets / "index-12345678.js").write_text("export {};", encoding="utf-8")
     (assets / "theme.json").write_text("{}", encoding="utf-8")
     app = FastAPI()
@@ -32,10 +32,13 @@ async def verify(root: Path) -> None:
     async with httpx.AsyncClient(
         transport=httpx.ASGITransport(app=app), base_url="http://cache-scenario.local"
     ) as client:
+        # 聊天并入外壳后 /chat 只把旧链接送回外壳，重定向本身不缓存。
+        for path in ("/chat", "/chat/"):
+            response = await client.get(path + "?session=s")
+            assert response.status_code == 308 and response.headers["location"] == "/?session=s", path
+            assert response.headers["cache-control"] == "no-store", path
         for path, cache in (
-            ("/chat", "no-cache"),
-            ("/chat/", "no-cache"),
-            ("/assets/index.html", "no-cache"),
+            ("/assets/chat-app.js", "no-cache"),
             ("/assets/index-12345678.js", "public, max-age=31536000, immutable"),
             ("/assets/theme.json", "no-store"),
         ):

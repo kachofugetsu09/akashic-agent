@@ -1,4 +1,4 @@
-/** 在真实首页、聊天 iframe、历史和 WebSocket 边界测量冷/热启动。 */
+/** 在真实首页、同文档挂载的聊天、历史和 WebSocket 边界测量冷/热启动。 */
 import { createHash } from "node:crypto";
 import { execFileSync } from "node:child_process";
 import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
@@ -37,10 +37,12 @@ const html = await fetch(values.url).then(r => {
 const entry = html.match(/<script[^>]*src="([^"]+)"/u)?.[1];
 if (!entry) throw new Error("首页缺少生产入口脚本");
 const entryBytes = await fetch(new URL(entry, values.url)).then(r => r.arrayBuffer());
-const chatHtml = await fetch(new URL('/chat', values.url)).then(r => r.text());
-const chatEntry = chatHtml.match(/<script[^>]*src="([^"]+)"/u)?.[1];
-if (!chatEntry) throw new Error("聊天页缺少生产入口脚本");
-const chatEntryBytes = await fetch(new URL(chatEntry, values.url)).then(r => r.arrayBuffer());
+// 聊天挂载模块用稳定 URL 发布（ADR 0126），内容随版本变化，按字节摘要区分构建。
+const chatEntry = "/assets/chat-app.js";
+const chatEntryBytes = await fetch(new URL(chatEntry, values.url)).then(r => {
+  if (!r.ok) throw new Error(`聊天挂载模块 ${r.status}`);
+  return r.arrayBuffer();
+});
 const report = {
   schemaVersion: 1, label: values.label, sourceCommit: git("rev-parse", "HEAD"),
   sourceDiffSha256: hash(git("diff", "HEAD", "--", "frontend")),
@@ -168,7 +170,7 @@ async function measurePage(page, context, profile, cache) {
   try {
     // query 让 conversation-ui 按正式入口恢复同一个 Session。
     await page.goto(new URL("/?session=akashic%3Astartup-benchmark", values.url).href, { waitUntil: "commit", timeout: remaining() });
-    const frame = page.frameLocator("iframe.conversation-page-frame");
+    const frame = page.locator(".conversation-page-chat .akashic-chat");
     await frame.locator('[data-message-id="startup-099"] .message-row').waitFor({ timeout: remaining() });
     const editor = frame.locator('textarea[name="message"]');
     await editor.fill("启动基准草稿", { timeout: remaining() });
@@ -204,9 +206,8 @@ async function measurePage(page, context, profile, cache) {
   for (const frame of page.frames()) await frame.waitForFunction(() => document.fonts.status === "loaded");
   let health = null;
   try {
-    const chat = page.frames().find(frame => new URL(frame.url()).pathname === "/chat");
-    if (!chat) throw new Error("聊天 frame 已丢失");
-    health = await chat.evaluate(async () => {
+    // 聊天与外壳同一文档，探测在主 frame 里进行。
+    health = await page.mainFrame().evaluate(async () => {
       const started = performance.now(), deadline = started + 10000;
       let probes = 0;
       // 在浏览器同一事件循环内选择和探测，避免 Node 检查后连接恰好被界面重新创建。

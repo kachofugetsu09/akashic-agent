@@ -55,10 +55,17 @@ def theme():
     return PlainTextResponse('export const currentTheme=()=>({id:"paper"}); export const subscribeTheme=()=>()=>{};', media_type="text/javascript")
 
 
-@app.get("/chat")
-def chat():
-    # 这里只提供聊天占位入口；不伪造 Computer 或网络回执。
-    return HTMLResponse('<textarea aria-label="对话输入">继续当前任务</textarea>')
+@app.get("/chat-app.js")
+def chat_app():
+    # 这里只提供聊天挂载占位（Host SDK @akashic/chat-app-v1）；不伪造 Computer 或网络回执。
+    return PlainTextResponse(
+        "export function mountChat(host) {"
+        " host.innerHTML = '<textarea aria-label=\"对话输入\">继续当前任务</textarea>';"
+        " const nothing = () => {};"
+        " return { setRailActions: nothing, setTools: nothing, setWorkbenchIntents: nothing, quote: nothing,"
+        " shown: nothing, dispose: () => host.replaceChildren() }; }",
+        media_type="text/javascript",
+    )
 
 
 @app.get("/modules/{plugin}/{name}")
