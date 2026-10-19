@@ -21,7 +21,8 @@
 
 html,
 body,
-#root {
+#root,
+.akashic-chat {
   width: 100%;
   height: 100%;
   margin: 0;
@@ -1249,25 +1250,25 @@ input {
   --composer-dock-end: max(20px, env(safe-area-inset-bottom, 0px));
 }
 
-:root[data-embedded-shell="true"] .chat-shell {
+[data-embedded-shell="true"] .chat-shell {
   grid-template-columns: minmax(0, 1fr);
   grid-template-rows: minmax(0, 1fr);
   gap: 0;
   padding: 0;
 }
 
-:root[data-embedded-shell="true"] .chat-shell-body {
+[data-embedded-shell="true"] .chat-shell-body {
   grid-template-columns: var(--chat-rail-width) minmax(0, 1fr);
 }
 
-:root[data-embedded-shell="true"] .chat-sidebar {
+[data-embedded-shell="true"] .chat-sidebar {
   overflow: hidden;
   border-inline-end: 1px solid var(--chat-line);
   border-radius: 0;
   box-shadow: none;
 }
 
-:root[data-embedded-shell="true"] .chat-main {
+[data-embedded-shell="true"] .chat-main {
   overflow: hidden;
   border-radius: 0;
   box-shadow: none;
@@ -1295,7 +1296,7 @@ input {
   line-height: 1.5;
 }
 
-:root[data-shell-tools="true"] .conversation-heading {
+[data-shell-tools="true"] .conversation-heading {
   /* 外层对话插件的工具入口位于同一条标题带；没有工具时不预留。 */
   padding-inline-end: 10rem;
 }
@@ -2071,7 +2072,7 @@ form.composer:focus-within [data-slot="input-group"] {
    平板高度都在 48rem 以上，不会命中第二个条件。同一条件用于触控尺寸与矮屏规则，改动时一并修改。 */
 @media (max-width: 820px), (max-height: 30rem) and (pointer: coarse) {
   .chat-shell-body,
-  :root[data-embedded-shell="true"] .chat-shell-body {
+  [data-embedded-shell="true"] .chat-shell-body {
     grid-template-columns: minmax(0, 1fr);
   }
 
@@ -2180,7 +2181,7 @@ form.composer:focus-within [data-slot="input-group"] {
 
 /* 手机宽度下工具区开关只剩 44px 图标，标题带只需让出图标与右侧边距。 */
 @media (max-width: 32rem) {
-  :root[data-shell-tools="true"] .conversation-heading {
+  [data-shell-tools="true"] .conversation-heading {
     padding-inline-end: 4.5rem;
   }
 }
@@ -2738,7 +2739,7 @@ form.composer:focus-within [data-slot="input-group"] {
   .compact-navigation-dialog .conversation-navigation { flex: none; overflow: visible; }
   .compact-navigation-dialog .conversation-navigation__sessions { overflow: visible; }
   .chat-main,
-  :root[data-embedded-shell="true"] .chat-main { overflow-y: auto; }
+  [data-embedded-shell="true"] .chat-main { overflow-y: auto; }
   .chat-main .conversation { flex: none; block-size: max(120px, 60dvh); }
   /* 输入区已在文档流里，不再浮在消息上：底部不必再给它预留一张卡的高度，矮屏每一行都要省。 */
   .chat-main .conversation-content { padding-block-end: 1rem; }

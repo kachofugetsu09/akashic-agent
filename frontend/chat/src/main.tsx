@@ -1,66 +1,15 @@
-import { Suspense } from "react";
-import { createRoot } from "react-dom/client";
-import { initializeTheme, setTheme, startCrossPortThemeSync } from "../../theme/src/theme-runtime";
-import { TooltipProvider } from "@/components/ui/tooltip";
-import { exposeChatRuntime } from "./chat-ui-runtime";
-import { DesktopChatApp } from "./desktop-chat-app";
-import { setShellRailActions } from "./shell-rail-actions";
-import { receiveWorkbenchQuote, setHostShortcuts, setWorkbenchIntents, settleWorkbenchIntent } from "./shell-workbench";
-import { WebUiErrorBoundary } from "./webui-error-boundary";
+import { initializeTheme, startCrossPortThemeSync } from "../../theme/src/theme-runtime";
+import { connectHost } from "./chat-host";
+import { renderChat } from "./chat-entry";
+import { frameLink, listenFrameHost } from "./frame-link";
 
 export type { AgentBlock, ChatMessage, MessageAttachment, ThinkingBlock, ToolBlock } from "./chat-message";
 
-const entryParams = new URLSearchParams(window.location.search);
-const embeddedShell = entryParams.get("embedded") === "1";
+// 独立页面与 iframe 入口；iframe 里经消息适配连上父页面的宿主。
+const embeddedShell = new URLSearchParams(window.location.search).get("embedded") === "1";
 if (embeddedShell) document.documentElement.dataset.embeddedShell = "true";
-exposeChatRuntime();
 initializeTheme();
 startCrossPortThemeSync();
-if (embeddedShell) {
-  const parentOrigins = new Set([
-    window.location.origin,
-    `${window.location.protocol}//${window.location.hostname}:5173`,
-  ]);
-  window.addEventListener("message", (event: MessageEvent<unknown>) => {
-    if (!parentOrigins.has(event.origin) || typeof event.data !== "object" || event.data === null) return;
-    const message = event.data as Record<string, unknown>;
-    if (message.type === "akashic.rail-actions") {
-      setShellRailActions(message.actions);
-      return;
-    }
-    // 工具区的意图回执与引用只认直接父窗口。
-    if (event.source === window.parent && message.type === "akashic.workbench-intents") {
-      setWorkbenchIntents(message.names);
-      return;
-    }
-    if (event.source === window.parent && message.type === "akashic.workbench-intent-result") {
-      settleWorkbenchIntent(message);
-      return;
-    }
-    if (event.source === window.parent && message.type === "akashic.composer-quote") {
-      receiveWorkbenchQuote(message);
-      return;
-    }
-    if (message.type === "akashic.chat-tools") {
-      document.documentElement.dataset.shellTools = message.present === true ? "true" : "false";
-      setHostShortcuts(message.shortcuts);
-      return;
-    }
-    if (message.type !== "akashic.theme" || typeof message.themeId !== "string") return;
-    setTheme(message.themeId, false);
-  });
-}
-
-function rootContent() {
-  return <DesktopChatApp embeddedShell={embeddedShell} />;
-}
-
-createRoot(document.getElementById("root")!).render(
-  <WebUiErrorBoundary>
-    <TooltipProvider>
-      <Suspense fallback={<div className="webui-entry-loading">正在载入界面…</div>}>
-        {rootContent()}
-      </Suspense>
-    </TooltipProvider>
-  </WebUiErrorBoundary>,
-);
+if (embeddedShell) connectHost(frameLink);
+const chat = renderChat(document.getElementById("root")!, document.documentElement, embeddedShell);
+if (embeddedShell) listenFrameHost(chat.handle);
