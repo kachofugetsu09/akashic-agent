@@ -42,16 +42,16 @@ try {
         });
         await page.goto(new URL("/?session=akashic%3Astartup-benchmark", values.url).href, { waitUntil: "commit" });
         await page.getByRole("button", { name: "重新加载", exact: true }).click();
-        await page.locator("iframe.conversation-page-frame").waitFor();
+        await page.locator(".conversation-page-chat .akashic-chat").waitFor();
         assert.equal(attempts, 2, "一次原页重试只读取一次新目录");
       }
       // 2. 确认仍只有一个聊天实例，真实历史和输入框可用。
-      const chat = page.frameLocator("iframe.conversation-page-frame");
+      const chat = page.locator(".conversation-page-chat .akashic-chat");
       await chat.locator('[data-message-id="startup-099"] .message-row').waitFor();
       const editor = chat.locator('textarea[name="message"]');
       await editor.fill("网络恢复草稿");
       assert.equal(await editor.inputValue(), "网络恢复草稿");
-      assert.equal(await page.locator("iframe.conversation-page-frame").count(), 1);
+      assert.equal(await page.locator(".akashic-chat").count(), 1);
       assert.deepEqual(errors, []);
       await page.screenshot({ path: resolve(values.output, `${name}.png`) });
       results.push({ name, success: true });

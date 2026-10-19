@@ -62,15 +62,23 @@ function readQuery(query) {
     return false;
   if (plugin === "projects" && query.method === "project.list")
     return Object.keys(payload).length === 0;
+  // 只读投影：宿主执行状态快照、会话当前目录与一轮回答的改动摘要（各插件 plugin.py 的 query）。
+  if (plugin === "host_execution" && query.method === "bridge.state")
+    return Object.keys(payload).length === 0;
+  if (plugin === "working_directory" && query.method === "directory.current")
+    return Object.keys(payload).length === 0;
+  if (plugin === "workspace_changes" && query.method === "turn.message")
+    return Object.keys(payload).join() === "message_id";
   // plugins/akasha/plugin.py 的策略读取与召回记录投影。
   if (plugin === "akasha")
     return (
       query.method === "scope.policy.get" || query.method === "recall.turn"
     );
-  // 外部插件源码的只读 Message/Compaction 与 plugins/models 的回答用量尾注。
+  // 外部插件源码的只读 Message/Compaction 与 plugins/models/chat_ui.py 的只读查询（用量尾注、模型胶囊目录与调用统计）。
   return (
     (plugin === "status_commands" && query.method === "memory.status") ||
-    (plugin === "models" && query.method === "usage.message")
+    (plugin === "models" &&
+      ["usage.message", "chat.models", "call.latest", "call.stats"].includes(query.method))
   );
 }
 
@@ -122,7 +130,7 @@ async function measure(page, label) {
         .filter((e) => {
           if (
             e.closest(
-              ".product-band__nav,.onboarding-progress,.meme-dashboard__sidebar,.model-capsule__rails",
+              ".product-band__nav,.onboarding-progress,.meme-dashboard__sidebar,.model-picker__group-rail",
             )
           )
             return false;
@@ -288,7 +296,7 @@ async function onboarding(page, prefix) {
   await measure(page, `${prefix}-onboarding-welcome`);
   await surface.getByRole("button", { name: "开始", exact: true }).click();
   await surface
-    .locator(".onboarding-column .settings-connection-card,.onboarding-column .config-form form")
+    .locator(".onboarding-column .settings-provider-head:visible,.onboarding-column .settings-connection-card:visible,.onboarding-column .config-form form:visible")
     .first()
     .waitFor();
   await measure(page, `${prefix}-onboarding-step`);
@@ -321,11 +329,12 @@ async function customPanel(page, prefix, id) {
 
 /** 检查真实聊天、只读历史、弹窗和工具，不发送输入。 */
 async function chat(page, prefix, narrow) {
-  await main(page, "对话", "iframe");
-  const frame = page.frameLocator(".shell-view.is-active iframe");
+  await main(page, "对话", ".akashic-chat");
+  // 聊天挂在外壳文档里（ADR 0126）：按聊天根节点定位，字号与书写方向改在同一文档的根上。
+  const frame = page.locator(".shell-view.is-active .akashic-chat");
   await frame.locator("textarea:not([disabled])").waitFor();
   if (values.large || values.rtl)
-    await frame.locator("html").evaluate(
+    await page.locator("html").evaluate(
       (root, { large, rtl }) => {
         if (large) root.style.fontSize = "200%";
         if (rtl) root.dir = "rtl";
@@ -338,38 +347,35 @@ async function chat(page, prefix, narrow) {
     "真实聊天页出现错误提示",
   );
   await measure(page, `${prefix}-chat`);
-  const model = frame.locator(".model-capsule__trigger");
+  // 模型选择与思考强度由 models 插件的输入框工具位提供（plugins/models/plugin_ui.js）。
+  // 窄屏输入框收起时不显示工具位，先像用户一样点进输入框。
+  await frame.locator("textarea:not([disabled])").click();
+  const model = frame.locator(".model-picker__trigger");
   await model.click();
   const picker = frame.getByRole("dialog", { name: "选择模型", exact: true });
   await picker.waitFor();
   await measure(page, `${prefix}-chat-model-picker`);
-  const tabs = picker.getByRole("tab");
-  for (let i = 0; i < (await tabs.count()); i++) {
-    await tabs.nth(i).click();
-    assert(await hit(tabs.nth(i)));
-  }
-  const choices = picker.locator(".model-capsule__option");
+  const choices = picker.locator(".model-picker__option");
   assert(await hit(choices.first()), "模型首项不可达");
   assert(await hit(choices.last()), "模型末项不可达");
   await measure(page, `${prefix}-chat-model-last`);
-  const effort = picker.locator(".model-capsule__effort-entry");
+  await page.keyboard.press("Escape");
+  await picker.waitFor({ state: "detached" });
+  const effort = frame.locator(".model-effort__trigger");
   if (await effort.count()) {
     await effort.click();
     await measure(page, `${prefix}-chat-effort-picker`);
+    await effort.click();
   }
-  await frame
-    .getByRole("button", { name: "关闭模型选择", exact: true })
-    .click();
   if (narrow)
     await frame.getByRole("button", { name: "打开导航", exact: true }).click();
   await measure(page, `${prefix}-chat-navigation`);
   const navigation = narrow
     ? frame.locator(".compact-navigation-dialog")
     : frame.locator(".chat-sidebar").first();
-  const create = navigation.getByRole("button", {
-    name: "新建项目",
-    exact: true,
-  });
+  const create = navigation
+    .getByRole("button", { name: "新建项目", exact: true })
+    .first();
   if (await create.count()) {
     await create.click();
     const dialog = frame.getByRole("dialog", { name: "创建项目", exact: true });
@@ -379,9 +385,11 @@ async function chat(page, prefix, narrow) {
     if (await memory.count()) {
       await memory.click();
       await measure(page, `${prefix}-project-memory-menu`);
-      await frame.locator("body").press("Escape");
+      await page.keyboard.press("Escape");
+      // 菜单退场动画期间仍是最上层，等它卸载后下一次 Escape 才轮到对话框。
+      await page.getByRole("menu").waitFor({ state: "detached" });
     }
-    await frame.locator("body").press("Escape");
+    await page.keyboard.press("Escape");
     if (narrow)
       await frame
         .getByRole("button", { name: "打开导航", exact: true })
@@ -392,7 +400,7 @@ async function chat(page, prefix, narrow) {
     await recent.click();
     await frame.locator(".message-row").first().waitFor();
     await measure(page, `${prefix}-chat-history`);
-  } else if (narrow) await frame.locator("body").press("Escape");
+  } else if (narrow) await page.keyboard.press("Escape");
   // 工具只展开与关闭；不点击远程桌面，不发送按键或剪贴板。
   const toggle = page.locator(
     ".shell-view.is-active .conversation-tools-toggle",
@@ -422,7 +430,7 @@ async function chat(page, prefix, narrow) {
       }
     }
     const close = tools.getByRole("button", {
-      name: "关闭工具区",
+      name: "收起工具区",
       exact: true,
     });
     assert(await hit(close));
@@ -436,13 +444,13 @@ async function models(page, prefix) {
   await page.evaluate(() => { window.location.hash = "models"; });
   const view = page.locator("dialog.shell-settings-dialog[open]");
   await view.locator(".settings-page").waitFor();
-  await view.locator(".settings-connection-card").first().waitFor();
+  await view.locator(".settings-provider-head").first().waitFor();
   await measure(page, `${prefix}-models`);
-  const cards = view.locator("button.settings-connection-card");
+  const cards = view.locator("button.settings-provider-head:not(:disabled)");
   const count = await cards.count();
   for (let i = 0; i < count; i++) {
     await cards.nth(i).click();
-    const dialog = page.locator("dialog.settings-scrim[open]");
+    const dialog = view.locator(".settings-provider-editor:not([hidden])");
     await dialog.waitFor();
     await measure(page, `${prefix}-connection-${i}`);
     const summaries = dialog.locator("summary");
@@ -462,13 +470,16 @@ async function models(page, prefix) {
       await measure(page, `${prefix}-connection-${i}-manual`);
     }
     const controls = dialog.locator("input,select,textarea,button");
-    for (let j = 0; j < (await controls.count()); j++)
-      if (await controls.nth(j).isVisible())
+    for (let j = 0; j < (await controls.count()); j++) {
+      if (await controls.nth(j).isVisible()) {
+        await controls.nth(j).scrollIntoViewIfNeeded();
         assert(await hit(controls.nth(j)), `连接 ${i}: 表单控件不可达`);
-    await page.keyboard.press("Escape");
+      }
+    }
+    await cards.nth(i).click();
     await dialog.waitFor({ state: "hidden" });
   }
-  await view.getByRole("button", { name: "添加向量模型", exact: true }).click();
+  await view.getByRole("button", { name: "+ 添加向量模型", exact: true }).click();
   const dialog = page.getByRole("dialog", {
     name: "添加向量模型",
     exact: true,
@@ -516,20 +527,12 @@ try {
         });
         return route.abort();
       }
-      const chatDocument =
-        url.pathname === "/chat" || url.pathname === "/chat/";
-      const chatAsset =
-        url.pathname.startsWith("/assets/") &&
-        new URL(req.frame().url()).pathname.replace(/\/$/, "") === "/chat";
-      if (values.candidate && (chatDocument || chatAsset)) {
-        const file = chatDocument
-          ? "index.html"
-          : url.pathname.slice("/assets/".length);
+      // /assets/ 只发布聊天挂载模块（外壳在 /dashboard/assets/）。
+      if (values.candidate && url.pathname.startsWith("/assets/")) {
+        const file = url.pathname.slice("/assets/".length);
         assert(!file.includes("/"), "候选资源必须是构建目录的单个文件");
         const body = await readFile(resolve(root, "static/chat", file));
-        const type = file.endsWith(".html")
-          ? "text/html"
-          : file.endsWith(".css")
+        const type = file.endsWith(".css")
             ? "text/css"
             : file.endsWith(".js")
               ? "text/javascript"

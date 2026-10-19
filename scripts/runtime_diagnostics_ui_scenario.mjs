@@ -41,7 +41,7 @@ try {
   page.setDefaultTimeout(20_000);
   await page.goto(base + "/dashboard");
   await page.locator(".unified-shell").waitFor();
-  await page.locator("iframe").waitFor();
+  await page.locator(".conversation-page-chat .akashic-chat").waitFor();
   assert.equal(await page.getByRole("heading", { name: "运行诊断", exact: true }).count(), 0);
   assert.equal(await page.locator(".product-band").count(), 0);
   const catalog = await (await fetch(base + "/api/chat/web-ui/bootstrap")).json();

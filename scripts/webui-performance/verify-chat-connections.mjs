@@ -66,7 +66,7 @@ async function openPage() {
   });
   pages.push(record);
   await page.goto(`${origin}/?session=akashic%3Astartup-benchmark`);
-  await page.frameLocator("iframe.conversation-page-frame").locator('[data-message-id="startup-099"] .message-row').waitFor();
+  await page.locator(".conversation-page-chat .akashic-chat").locator('[data-message-id="startup-099"] .message-row').waitFor();
   await waitFor(() => record.follows > 0 && record.activity > 0, "消息与摘要基线");
   for (const frame of page.frames()) await frame.waitForFunction(() => document.fonts.status === "loaded");
   return record;
@@ -79,7 +79,7 @@ try {
   await waitFor(() => chatConnections.size === 5, "五个页面各一条聊天连接");
   results.startupSockets = pages.map(row => row.sockets);
   assert.ok(results.startupSockets.every(count => count <= 2), JSON.stringify(results.startupSockets));
-  const frame = first.page.frameLocator("iframe.conversation-page-frame");
+  const frame = first.page.locator(".conversation-page-chat .akashic-chat");
   const editor = frame.locator('textarea[name="message"]');
   await editor.fill("断线前保留的草稿");
 

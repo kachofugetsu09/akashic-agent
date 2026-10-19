@@ -13,7 +13,7 @@ activate({ui:{inject:(point,mount)=>mount({register:entry=>{
 const iconSvg='<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><circle cx="12" cy="12" r="8"/></svg>';
 // 页面目录是 fixture；外框、设置路由、dialog 与交互均来自实际 Shell。
 entries.set('shell.pages.v1',[{id:'chat',label:'对话',route:'',iconSvg,render:host=>{
-  host.innerHTML='<iframe title="对话页面" src="/chat"></iframe>';return ()=>{};
+  host.innerHTML='<textarea aria-label="对话输入">继续当前任务</textarea>';return ()=>{};
 }},{id:'workbench',label:'工作台',route:'workbench',iconSvg,render:host=>{host.textContent='工作台';return ()=>{};}}]);
 entries.set('shell.settings.v1',[{id:'models',label:'模型',route:'settings/models',iconSvg,render:host=>{
   host.innerHTML='<h1>模型设置入口</h1>';return ()=>{};

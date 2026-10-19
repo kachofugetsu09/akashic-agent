@@ -348,7 +348,7 @@ try {
   await action("console.log('MOBILE_NOTICE');");
   await mobile.locator(".conversation-tools-toggle.has-attention").waitFor();
   assert.equal(await mobile.locator(".conversation-tools").isVisible(), false);
-  await mobile.frameLocator(".conversation-page-frame").getByRole("textbox", { name: "对话输入" }).fill("移动端继续输入");
+  await mobile.locator(".conversation-page-chat").getByRole("textbox", { name: "对话输入" }).fill("移动端继续输入");
   await mobile.screenshot({ path: join(artifacts, "mobile-activity-chat.png") });
   await open(mobile); await connected(mobile); await videoReady(mobile);
   await mobile.getByRole("button", { name: "收起工具区", exact: true }).click();

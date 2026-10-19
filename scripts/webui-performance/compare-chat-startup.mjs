@@ -22,7 +22,7 @@ const builds = {
 };
 // output 尚不存在，先锚定到已存在父目录的真实路径，创建前即可做位置校验。
 const output = resolve(realpathSync(dirname(resolve(values.output))), basename(resolve(values.output)));
-assert.ok(Object.values(builds).every(path => existsSync(resolve(path, "index.html"))));
+assert.ok(Object.values(builds).every(path => existsSync(resolve(path, "chat-app.js"))));
 
 // 一次性 fixture 身份：目标真实路径必须落在一个由本次运行创建、带隔离标记的
 // workspace 内，并且与任何被测构建目录不相同、不互相嵌套。目录名后缀或

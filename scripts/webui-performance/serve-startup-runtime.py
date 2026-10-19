@@ -27,9 +27,9 @@ async def run(state: Path, port: int) -> None:
     state.mkdir(parents=True, exist_ok=False)
     plugins = state / "plugins"
     shutil.copytree(ROOT / "plugins", plugins, ignore=shutil.ignore_patterns("__pycache__", "static"))
-    for plugin, name in (("ui", "dashboard"), ("akashic_clients", "chat")):
+    for plugin, name, entry in (("ui", "dashboard", "index.html"), ("akashic_clients", "chat", "chat-app.js")):
         assets = ROOT / "static" / name
-        if not (assets / "index.html").is_file():
+        if not (assets / entry).is_file():
             raise RuntimeError("请先运行 npm run build")
         destination = plugins / plugin / "static"
         destination.mkdir()
