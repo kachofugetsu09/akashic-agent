@@ -40,6 +40,8 @@ export function useSteers({ sessionId, timeline, send }: {
   send: (payload: Record<string, unknown>) => Promise<void>;
 }) {
   const [steers, setSteers] = useState<StagedSteer[]>([]);
+  const latest = useRef(steers);
+  useEffect(() => { latest.current = steers; }, [steers]);
   const { request, onResult } = useSteerRequests(send);
 
   const steer = useCallback(async (text: string): Promise<boolean> => {
@@ -68,23 +70,27 @@ export function useSteers({ sessionId, timeline, send }: {
     return item.text;
   }, [steers, request]);
 
-  // 停止或本轮已结束时一次取回全部插话：先退回输入框，再尽力撤回；服务端在暂停后也会丢弃未写入的。
-  const take = useCallback((): string[] => {
-    const own = steers.filter((item) => item.sessionId === sessionId);
-    if (!own.length) return [];
-    setSteers((current) => current.filter((item) => !own.includes(item)));
-    for (const item of own) {
+  // 本轮停下后仍未进入对话的插话：服务端仍暂存的撤回后退回输入框；已被取走的再等 graceMs，
+  // 仍未进入对话（重启丢失）才退回。只按撤回回执与时间线判断，避免抢走停止后排队的插话或重复成草稿。
+  const reclaim = useCallback(async (graceMs: number): Promise<string[]> => {
+    const own = latest.current.filter((item) => item.sessionId === sessionId);
+    const results = await Promise.all(own.map((item) => {
       const requestId = createUuidV7();
-      void request(requestId, { type: "message.steer.withdraw", request_id: requestId, session_id: item.sessionId, message_id: item.id })
-        .catch(() => undefined);
-    }
-    return own.map((item) => item.text);
-  }, [steers, sessionId, request]);
+      return request(requestId, { type: "message.steer.withdraw", request_id: requestId, session_id: item.sessionId, message_id: item.id })
+        .then((result) => Boolean(result.withdrawn), () => false);
+    }));
+    const taken = own.filter((_, index) => !results[index]);
+    if (taken.length) await new Promise((resolve) => window.setTimeout(resolve, graceMs));
+    const back = own.filter((item, index) => results[index] || latest.current.some((current) => current.id === item.id));
+    if (!back.length) return [];
+    setSteers((current) => current.filter((item) => !back.some((other) => other.id === item.id)));
+    return back.map((item) => item.text);
+  }, [sessionId, request]);
 
   useEffect(() => {
     const ids = new Set(timeline.map((message) => message.id));
     setSteers((current) => current.some((item) => ids.has(item.id)) ? current.filter((item) => !ids.has(item.id)) : current);
   }, [timeline]);
 
-  return { items: steers.filter((item) => item.sessionId === sessionId), onResult, steer, withdraw, take };
+  return { items: steers.filter((item) => item.sessionId === sessionId), onResult, steer, withdraw, reclaim };
 }

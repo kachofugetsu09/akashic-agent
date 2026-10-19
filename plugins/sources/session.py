@@ -166,10 +166,14 @@ class SourceSession:
             _ = self._changed(message, pending)
         finally:
             current = slot.current
-            if current is not None and current.active:
+            if current is not None and isinstance(message.body, Control) and message.body.action == "pause":
+                # 用户停止中断正在执行的工具，已被新输入撤权、仍在等工具的旧回合同样中断。
+                current.cancel(interrupt=True)
+            elif current is not None and current.active:
                 if isinstance(message.body, Control) and message.body.action == "abandon":
                     current.supersede()
                 elif not isinstance(message.body, Control) or message.body.action != "resume":
+                    # 普通新输入只撤权，已开始的工具照常出结果，下一轮连同新输入一起推理。
                     current.cancel()
 
     async def accept(self, message_id: str, body: Input) -> Message:
@@ -242,17 +246,18 @@ class SourceSession:
 
     async def pause(self, message_id: str) -> Message:
         """停止当前来源；只读判定与条件提交沿同一准入排序。"""
-        def read(reader: MessageReader) -> tuple[Control | None, int]:
+        def read(reader: MessageReader) -> tuple[Control | None, int, int]:
             existing = reader.get(message_id)
-            if existing is not None:
-                if not isinstance(existing.body, Control) or existing.body.action != "pause":
-                    raise MessageConflict("停止身份已被其他消息使用")
-                return existing.body, reader.head(source=self._source)
-            return None, reader.head(source=self._source)
+            body = None if existing is None else existing.body
+            if existing is not None and (not isinstance(body, Control) or body.action != "pause"):
+                raise MessageConflict("停止身份已被其他消息使用")
+            head = reader.head(source=self._source)
+            latest = reader.latest_input_seq(self._source, through_seq=head)
+            return body if isinstance(body, Control) else None, head, -1 if latest is None else latest
 
         async def admit(slot: TaskSlot) -> tuple[Message, Task | None]:
             while True:
-                existing, head = await self._reader.read_async(read)
+                existing, head, latest_input = await self._reader.read_async(read)
                 current = slot.current
                 if existing is not None:
                     message = await self._controls.append_async(
@@ -263,9 +268,13 @@ class SourceSession:
                     raise MessageConflict("当前来源没有可暂停的消息")
                 if current is not None and current.active:
                     _ = slot.require(current.handle)
+                # 新输入已撤权旧回合、旧回合仍在等工具：停止只结束旧回合，排队的输入照常作为下一轮。
+                through = head
+                if current is not None and not current.active and latest_input > current.boundary_hint >= 0:
+                    through = current.boundary_hint
                 try:
                     message = await self._controls.append_async(
-                        message_id, Control("pause", head), expected_source_head=head,
+                        message_id, Control("pause", through), expected_source_head=head,
                         on_commit=lambda message, created: self._committed(slot, message, created, False),
                     )
                 except SourceHeadConflict:
@@ -336,7 +345,9 @@ class SourceSession:
             if closed:
                 raise MessageConflict("已关闭的输入不能重试")
             control = reader.latest_control(self._source, through_seq=through)
-            if control is None or cast(Control, control.body).action not in {"failure", "pause"}:
+            stopped = None if control is None else cast(Control, control.body)
+            # 停止只覆盖旧回合时，其后排队的输入仍待回复，不能当作暂停的输入恢复。
+            if stopped is None or stopped.action not in {"failure", "pause"} or stopped.through_seq < target.seq:
                 raise MessageConflict("输入没有等待恢复的失败或暂停")
             head = reader.head(source=self._source)
             return Control("resume", head), head

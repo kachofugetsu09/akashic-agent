@@ -11,12 +11,10 @@ from dataclasses import dataclass
 
 from agent.plugin_composition.tasks import Task, independent_task_context
 from plugins.channels.contract import ChannelInboundMessage
-from plugins.ledger.contract import Control, Input, Message, MessageReader
+from plugins.ledger.contract import Input, Message
 from plugins.sources.contract import GuardedSourceSession as SourceSession
 
 logger = logging.getLogger(__name__)
-
-_CONVERSATION = "conversation"
 
 
 @dataclass(frozen=True, slots=True)
@@ -26,19 +24,17 @@ class _Staged:
 
 
 class Steers:
-    """暂存只在内存里：回合结束、停止或重启时由回复任务的结局决定去向，不另存第二份事实。"""
+    """暂存只在内存里：回合结束或停止时转成普通输入开启下一轮；重启时由前端退回输入框，不另存第二份事实。"""
 
     def __init__(
         self, *,
         open_session: Callable[[str], SourceSession],
-        reader: Callable[[str], MessageReader],
         accept: Callable[[str, str, ChannelInboundMessage], Awaitable[Message]],
         body: Callable[[ChannelInboundMessage], Input],
         scope: Callable[[], AbstractAsyncContextManager[object]],
     ):
         self._open = open_session
         self._scope = scope
-        self._reader = reader
         self._accept = accept
         self._body = body
         self._staged: dict[str, list[_Staged]] = {}
@@ -104,7 +100,7 @@ class Steers:
                 self._staged.setdefault(session_id, [])[:0] = items[index:]
                 raise
 
-    # 回复任务结束后：停止的回合丢弃暂存（前端已把文字退回输入框）；另一轮已在进行就跟随它；否则转成普通输入开启下一轮。
+    # 回复任务结束后：另一轮已在进行就跟随它；否则（含用户停止）转成普通输入开启下一轮。
     async def _settle(self, session_id: str, task: Task) -> None:
         # 1. 等原任务真实结束；自己被取消时照常退出。
         try:
@@ -120,25 +116,15 @@ class Steers:
         if not self._staged.get(session_id):
             return
         async with self._scope():
-            # 2. 用户停止的回合不替用户把插话变成新请求。
-            if await self._paused(session_id):
-                del self._staged[session_id]
-                return
-            # 3. 新一轮已经开始：插话留给它的下一步。
+            # 2. 新一轮已经开始：插话留给它的下一步。
             current = await self._open(session_id).active_task()
             if current is not None:
                 self._watched[session_id] = current
                 self._queue.put_nowait((session_id, current))
                 return
+            # 3. 本轮结束或被停止：插话直接作为下一轮的输入。
             for item in self._staged.pop(session_id, []):
                 try:
                     _ = await self._accept(session_id, item.message_id, item.message)
                 except Exception:
                     logger.exception("插话转为普通输入失败 session=%s", session_id)
-
-    async def _paused(self, session_id: str) -> bool:
-        def read(reader: MessageReader) -> bool:
-            head = reader.head(source=_CONVERSATION)
-            latest = reader.latest_control(_CONVERSATION, through_seq=head)
-            return latest is not None and latest.seq == head and isinstance(latest.body, Control) and latest.body.action == "pause"
-        return await self._reader(session_id).read_async(read)

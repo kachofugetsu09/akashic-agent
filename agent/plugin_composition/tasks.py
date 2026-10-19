@@ -30,6 +30,15 @@ from agent.plugin_composition.model import ServiceKey
 _T = TypeVar("_T")
 logger = logging.getLogger(__name__)
 
+# 当前 Task 是否要求中断正在执行的工作；普通撤权不要求，已开始的工作照常收尾。
+# 状态记在 Task 上而不是取消消息里：同一轮里连续两次取消只会交付第一条消息。
+_CURRENT_TASK: ContextVar["Task | None"] = ContextVar("akashic_current_task", default=None)
+
+
+def interrupt_requested() -> bool:
+    task = _CURRENT_TASK.get()
+    return task is not None and task._interrupt_requested
+
 _TASK_BOUND_VARS: list[tuple[ContextVar[Any], Callable[[Any], None] | None]] = []
 
 
@@ -88,6 +97,7 @@ class Task:
         self._active = True
         self._superseded = False
         self._cancel_requested = False
+        self._interrupt_requested = False
         self._running = False
         self._child_permit = child_permit
         self._cleanup: list[Callable[[], None]] = []
@@ -175,15 +185,18 @@ class Task:
         if failures:
             raise ExceptionGroup("任务资源撤销失败", failures)
 
-    def cancel(self) -> None:
-        """先撤销提交权，再通知协作取消；外部效果由各 owner 如实结算。"""
-        if self._cancel_requested:
+    def cancel(self, *, interrupt: bool = False) -> None:
+        """先撤销提交权，再通知协作取消；interrupt 还要求正在执行的工具停下，可在普通撤权之后升级。"""
+        if self._cancel_requested and (self._interrupt_requested or not interrupt):
             return
+        first = not self._cancel_requested
         self._cancel_requested = True
+        self._interrupt_requested = self._interrupt_requested or interrupt
         try:
-            self._close()
+            if first:
+                self._close()
         finally:
-            # 尚未运行的 coroutine 也要在取消结算时归还捕获的局部 scope。
+            # 尚未运行的 coroutine 也要在取消结算时归还捕获的局部 scope；升级中断时再唤醒一次等待者。
             if self._running:
                 _ = self._task.cancel()
 
@@ -202,6 +215,7 @@ class Task:
             _ = await admitted.wait()
             if self._scope is not None:
                 await self._scope.__aenter__()
+            _ = _CURRENT_TASK.set(self)
             return await operation(self)
         finally:
             try:

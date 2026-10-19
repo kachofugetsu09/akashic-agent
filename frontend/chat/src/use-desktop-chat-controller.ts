@@ -1079,7 +1079,7 @@ export function useDesktopChatController() {
     activateSession, prefetchSessionTail, startNewChat, handleReplyMessage, handleCopiedMessage,
     reportError, cancelReply, sendMessage, retryTurn, stopTurn, retry,
 
-    steers: steers.items, steerMessage: steers.steer, withdrawSteer: steers.withdraw, takeSteers: steers.take,
+    steers: steers.items, steerMessage: steers.steer, withdrawSteer: steers.withdraw, reclaimSteers: steers.reclaim,
     navigationGroups, navigationPins,
   };
 }

@@ -171,7 +171,7 @@ async def apply(ctx: Context) -> None:
     _ = await ctx.provide(CONVERSATION_COMMANDS, command)
     _ = await ctx.provide(CONVERSATION_COMPLETE, complete)
     steers = Steers(
-        open_session=open, reader=lambda session_id: ctx.require(MESSAGE_CATALOG).reader(session_id),
+        open_session=open,
         accept=accept, body=lambda message: Input((origin_part(message), ContentPart("text", message.content))),
         scope=ctx.runtime_scope,
     )

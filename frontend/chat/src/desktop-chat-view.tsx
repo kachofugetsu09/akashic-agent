@@ -64,7 +64,7 @@ export function DesktopChatView({ controller }: DesktopChatViewProps) {
   const {
     surface, sidebarSessions, activeSessionId, pendingSessionId, chatReady, messages, timelineMessages, replyActivities, replyAvailable, status,
     streamStore, messageElementsRef, copiedMessageId, shellState, stopPending,
-    replyTarget, error, steers, steerMessage, withdrawSteer, takeSteers,
+    replyTarget, error, steers, steerMessage, withdrawSteer, reclaimSteers,
     canSend, sendProblem, draftKey,
     historyHasMore, historyLoading, historyLoadingOlder, loadOlderMessages, sessionRequested,
     activeSessionDeleted, deletedNotice, deleteSession, restoreSession, dismissDeletedNotice, renameSession,
@@ -79,21 +79,18 @@ export function DesktopChatView({ controller }: DesktopChatViewProps) {
     if (text) window.setTimeout(() => composerApi.current?.insertDraft(text, { append: true }), 0);
   }, []);
 
-  // 停止时尚未交给模型的插话退回输入框，不替用户变成新的一轮。
+  // 用户停止时插话由服务端作为下一轮输入送出；本轮停下一段时间仍没进入对话的才退回输入框。
   const returnSteers = useCallback(() => {
-    const texts = takeSteers();
-    if (texts.length) composerApi.current?.insertDraft(texts.join("\n\n"), { append: true });
-  }, [takeSteers]);
-  const stopWithSteers = useCallback(() => {
-    returnSteers();
-    stopTurn();
-  }, [returnSteers, stopTurn]);
+    reclaimSteers(STEER_SETTLE_MS).then((texts) => {
+      if (texts.length) composerApi.current?.insertDraft(texts.join("\n\n"), { append: true });
+    }).catch((error: unknown) => reportError(error));
+  }, [reclaimSteers, reportError]);
   const withdrawToDraft = useCallback((id: string) => {
     withdrawSteer(id).then((text) => {
       if (text !== null) composerApi.current?.insertDraft(text, { append: true });
     }).catch((error: unknown) => reportError(error));
   }, [withdrawSteer, reportError]);
-  // 断线或重启后服务端的暂存已不在：本轮停下一段时间仍没写进对话的插话退回输入框。
+  // 本轮停下后定时核对仍挂着的插话：服务端还暂存（等不到下一步）或重启丢失的才退回输入框。
   const generating = isGeneratingChatStatus(status);
   useEffect(() => {
     if (generating || !steers.length) return;
@@ -229,7 +226,7 @@ export function DesktopChatView({ controller }: DesktopChatViewProps) {
             ref={composerApi}
             chatReady={chatReady} canSend={canSend} sendProblem={sendProblem} draftKey={draftKey} autoFocus={!conversationLayout && chatReady} fresh={!conversationLayout} status={status} stopPending={stopPending}
             replyTarget={replyTarget} onCancelReply={cancelReply}
-            onSend={sendMessage} onSteer={steerMessage} onStop={stopWithSteers} lastInput={lastInput}
+            onSend={sendMessage} onSteer={steerMessage} onStop={stopTurn} lastInput={lastInput}
           />
           <CopyNotice text={copyNotice} />
           <ComposerStatsLine sessionId={activeSessionId} messages={timelineMessages} activities={replyActivities} connected={replyAvailable !== null} status={status} stopping={stopPending} />
