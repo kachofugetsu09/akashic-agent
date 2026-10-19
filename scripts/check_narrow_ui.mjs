@@ -296,7 +296,7 @@ async function onboarding(page, prefix) {
   await measure(page, `${prefix}-onboarding-welcome`);
   await surface.getByRole("button", { name: "开始", exact: true }).click();
   await surface
-    .locator(".onboarding-column .settings-connection-card,.onboarding-column .config-form form")
+    .locator(".onboarding-column .settings-provider-head:visible,.onboarding-column .settings-connection-card:visible,.onboarding-column .config-form form:visible")
     .first()
     .waitFor();
   await measure(page, `${prefix}-onboarding-step`);
@@ -444,13 +444,13 @@ async function models(page, prefix) {
   await page.evaluate(() => { window.location.hash = "models"; });
   const view = page.locator("dialog.shell-settings-dialog[open]");
   await view.locator(".settings-page").waitFor();
-  await view.locator(".settings-connection-card").first().waitFor();
+  await view.locator(".settings-provider-head").first().waitFor();
   await measure(page, `${prefix}-models`);
-  const cards = view.locator("button.settings-connection-card");
+  const cards = view.locator("button.settings-provider-head:not(:disabled)");
   const count = await cards.count();
   for (let i = 0; i < count; i++) {
     await cards.nth(i).click();
-    const dialog = page.locator("dialog.settings-scrim[open]");
+    const dialog = view.locator(".settings-provider-editor:not([hidden])");
     await dialog.waitFor();
     await measure(page, `${prefix}-connection-${i}`);
     const summaries = dialog.locator("summary");
@@ -470,13 +470,16 @@ async function models(page, prefix) {
       await measure(page, `${prefix}-connection-${i}-manual`);
     }
     const controls = dialog.locator("input,select,textarea,button");
-    for (let j = 0; j < (await controls.count()); j++)
-      if (await controls.nth(j).isVisible())
+    for (let j = 0; j < (await controls.count()); j++) {
+      if (await controls.nth(j).isVisible()) {
+        await controls.nth(j).scrollIntoViewIfNeeded();
         assert(await hit(controls.nth(j)), `连接 ${i}: 表单控件不可达`);
-    await page.keyboard.press("Escape");
+      }
+    }
+    await cards.nth(i).click();
     await dialog.waitFor({ state: "hidden" });
   }
-  await view.getByRole("button", { name: "添加向量模型", exact: true }).click();
+  await view.getByRole("button", { name: "+ 添加向量模型", exact: true }).click();
   const dialog = page.getByRole("dialog", {
     name: "添加向量模型",
     exact: true,
