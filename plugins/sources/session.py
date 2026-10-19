@@ -105,6 +105,17 @@ def _read_boundary(reader: MessageReader, source: str, hint: object) -> bool:
     ), after_seq=hint, source=source)
 
 
+# 撤权后来源最后一条若是暂停，说明是用户停止而非新输入抢占。
+def _read_pause(reader: MessageReader, source: str, hint: object) -> Message | None:
+    head = reader.head(source=source)
+    if not isinstance(hint, int) or hint < 0 or head <= hint:
+        return None
+    latest = reader.latest_control(source, through_seq=head)
+    if latest is not None and latest.seq == head and isinstance(latest.body, Control) and latest.body.action == "pause":
+        return latest
+    return None
+
+
 class SourceSession:
     """一个已获授权来源的接纳与控制；活动任务短命，重启只重读日志。"""
 
@@ -355,6 +366,13 @@ class SourceSession:
                                     except asyncio.CancelledError:
                                         continue
                             raise
+                        # 用户停止的就是这次程序：不替用户重开，返回停止记录。
+                        if owned:
+                            hint = task.boundary_hint
+                            paused = await self._reader.read_async(
+                                lambda reader: _read_pause(reader, self._source, hint))
+                            if paused is not None:
+                                return paused
                         # 新输入已同步撤权；先让用户回复运行，再从原消息继续。
                     except Exception:
                         if owned:

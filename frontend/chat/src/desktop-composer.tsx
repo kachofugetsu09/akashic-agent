@@ -41,7 +41,7 @@ const MAX_ATTACHMENTS = 20;
 const PASTE_AS_FILE_BYTES = 4096;
 
 export const DesktopComposer = memo(function DesktopComposer({
-  chatReady, canSend, sendProblem, draftKey, autoFocus = false, fresh = false, status, stopPending, stopCount, inputId, turnCompleted, replyTarget,
+  chatReady, canSend, sendProblem, draftKey, autoFocus = false, fresh = false, status, settling, stopPending, stopCount, inputId, turnCompleted, replyTarget,
   onCancelReply, onSend, onStop, lastInput = "", ref,
 }: {
   chatReady: boolean;
@@ -54,6 +54,8 @@ export const DesktopComposer = memo(function DesktopComposer({
   /** 会话还没有消息；占位文案邀请开场，而不是"继续"。 */
   fresh?: boolean;
   status: ChatStatus;
+  /** 回复已停止或写完，只剩后台清理：不挡新输入，但排队的内容等它结束再发。 */
+  settling: boolean;
   stopPending: boolean;
   stopCount: number;
   inputId: string;
@@ -152,7 +154,7 @@ export const DesktopComposer = memo(function DesktopComposer({
   // 布局阶段先写入，工具位插件在随后的失效回调里读到的就是新状态。
   useLayoutEffect(() => { setComposerBusy(generating); }, [generating]);
   const readDraft = useCallback((key: string) => drafts.current.get(key) ?? "", []);
-  const followUp = useFollowUpQueue({ draftKey, status, stopPending, stopCount, inputId, turnCompleted, canSend: canSend && !replyTarget, readDraft, setDraft, queuedDrafts, onSend });
+  const followUp = useFollowUpQueue({ draftKey, status, settling, stopPending, stopCount, inputId, turnCompleted, canSend: canSend && !replyTarget, readDraft, setDraft, queuedDrafts, onSend });
   const moveQueue = followUp.move;
   const submit = useCallback(async (text: string, files: ComposerFile[]) => {
     if (!canSend) throw new Error(sendProblem || "聊天服务暂不可用，请稍后重试。");
@@ -236,11 +238,11 @@ export const DesktopComposer = memo(function DesktopComposer({
     queueOnEnter(event);
   };
   const queueOnEnter = (event: ReactKeyboardEvent<HTMLTextAreaElement>) => {
-    // 本轮未落定时，桌面键盘按回车把纯文字排到本轮之后。
+    // 生成中按回车把纯文字排到本轮之后；已有排队时接在它后面，不能抢先发出。
     const native = event.nativeEvent;
     if (event.key !== "Enter" || event.shiftKey || native.isComposing || native.keyCode === 229 || touchOnly()) return;
     const text = input.trim();
-    if (!turnBusy(status) || !text) return;
+    if (!(isGeneratingChatStatus(status) || followUp.queued) || !text) return;
     event.preventDefault();
     if (hasAttachments || replyTarget) return setNotice({ text: "带附件或引用的消息，本轮结束后再发送", ms: 2400 });
     followUp.enqueue(text);
@@ -348,15 +350,12 @@ interface QueuedFollowUp {
   stopCount: number;
 }
 
-// 排队入口与落定判定共用本轮是否结束的规则。
-function turnBusy(status: ChatStatus): boolean {
-  return isGeneratingChatStatus(status) || status === "finalizing";
-}
 
 // 本轮未落定时按回车把文字排进本轮之后；本轮正常落定再发出，停止、出错或切走会话则退回草稿。
-function useFollowUpQueue({ draftKey, status, stopPending, stopCount, inputId, turnCompleted, canSend, readDraft, setDraft, queuedDrafts, onSend }: {
+function useFollowUpQueue({ draftKey, status, settling, stopPending, stopCount, inputId, turnCompleted, canSend, readDraft, setDraft, queuedDrafts, onSend }: {
   draftKey: string;
   status: ChatStatus;
+  settling: boolean;
   stopPending: boolean;
   stopCount: number;
   inputId: string;
@@ -405,7 +404,7 @@ function useFollowUpQueue({ draftKey, status, stopPending, stopCount, inputId, t
       setQueued({ ...queued, stopped: true });
       return;
     }
-    if (turnBusy(status)) return;
+    if (isGeneratingChatStatus(status) || settling) return;
     // 2. 用户停止、本轮出错或暂不可发：不替用户做决定。
     if (stopped || status === "error" || !canSend || !turnCompleted) return restore(queued);
     // 3. 正常落定：发出；失败同样退回草稿。
@@ -416,7 +415,7 @@ function useFollowUpQueue({ draftKey, status, stopPending, stopCount, inputId, t
       // 发送失败可能晚于下一条入队，不能清掉新的排队意图。
       setDraft(queued.key, [queued.text, readDraft(queued.key)].filter(Boolean).join("\n\n"));
     });
-  }, [queued, draftKey, inputId, status, stopped, turnCompleted, canSend, onSend, restore, queuedDrafts, setDraft, readDraft]);
+  }, [queued, draftKey, inputId, status, settling, stopped, turnCompleted, canSend, onSend, restore, queuedDrafts, setDraft, readDraft]);
   return { queued, stopped, enqueue, restore, move };
 }
 
@@ -635,7 +634,7 @@ function ComposerSubmit({ input, status, stopPending, onStop, disabled }: { inpu
   const stopping = generating && stopPending;
   return <ComposerActionButton
     mode={generating ? "stop" : "send"}
-    label={stopPending ? "正在停止" : status === "finalizing" ? "正在收尾" : status === "uploading" ? "取消上传" : generating ? "中止回答" : "发送消息"}
+    label={stopPending ? "正在停止" : status === "uploading" ? "取消上传" : generating ? "中止回答" : "发送消息"}
     type={generating ? "button" : "submit"}
     title={generating && !stopping ? "中止回答（Esc）" : undefined}
     aria-keyshortcuts={generating ? "Escape" : undefined}
@@ -645,6 +644,6 @@ function ComposerSubmit({ input, status, stopPending, onStop, disabled }: { inpu
       event.preventDefault();
       if (!stopping) onStop();
     } : undefined}
-    disabled={!generating && (status === "finalizing" || stopPending || disabled || (!input.trim() && attachments.files.length === 0))}
+    disabled={!generating && (stopPending || disabled || (!input.trim() && attachments.files.length === 0))}
   />;
 }

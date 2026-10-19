@@ -191,7 +191,7 @@ export function DesktopChatView({ controller }: DesktopChatViewProps) {
           {chatReady && sendProblem ? <p className="chat-send-notice" id="chat-send-reason" role="status">{sendProblem}</p> : null}
           <DesktopComposer
             ref={composerApi}
-            chatReady={chatReady} canSend={canSend} sendProblem={sendProblem} draftKey={draftKey} autoFocus={!conversationLayout && chatReady} fresh={!conversationLayout} status={status} stopPending={stopPending} stopCount={stopCount}
+            chatReady={chatReady} canSend={canSend} sendProblem={sendProblem} draftKey={draftKey} autoFocus={!conversationLayout && chatReady} fresh={!conversationLayout} status={status} settling={replyActivities.length > 0} stopPending={stopPending} stopCount={stopCount}
             inputId={inputId} turnCompleted={replyAvailable !== false && inputResult.completed}
             replyTarget={replyTarget} onCancelReply={cancelReply}
             onSend={sendMessage} onStop={stopTurn} lastInput={lastInput}

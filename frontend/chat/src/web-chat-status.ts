@@ -1,6 +1,6 @@
 import type { ReplyActivity, TimelineMessage } from "./message-timeline";
 
-export type ChatStatus = "idle" | "uploading" | "submitted" | "streaming" | "finalizing" | "error";
+export type ChatStatus = "idle" | "uploading" | "submitted" | "streaming" | "error";
 
 export function isGeneratingChatStatus(status: ChatStatus): boolean {
   return status === "uploading" || status === "submitted" || status === "streaming";
@@ -32,12 +32,12 @@ export function replyChatStatus(
       } else input.paused = Math.max(input.paused, body.through_seq);
     }
   }
-  // 2. 撤权活动只等清理；未被终结的其他输入继续显示等待。
+  // 2. 撤权活动只剩后台清理，不挡新输入；未被终结的其他输入继续显示等待。
   for (const [source, input] of inputs) {
     if (input.seq > Math.max(input.boundary, input.paused)
       && !activities.some((item) => item.source === source)) return "submitted";
   }
-  return activities.length ? "finalizing" : "idle";
+  return "idle";
 }
 
 /** 排队发送只跟随本来源正常完成的输入；暂停、失败与能力撤回不算完成。 */
