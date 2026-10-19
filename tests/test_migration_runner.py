@@ -62,5 +62,17 @@ def test_core_only_cli_restarts_after_creating_runtime_data(
         "20261019_03_shell_split",
         "20261019_04_files_split",
         "20261019_05_working_directory_rename",
+        "20261019_06_web_provider_split",
     }
     assert not (workspace / "sessions.db").exists()
+
+
+def test_web_provider_upgrade_preserves_explicit_choices() -> None:
+    """An old Web tools install must pass preflight and retain search/fetch providers."""
+    environment = {**os.environ, "PYTHONPATH": os.pathsep.join(
+        (str(_PROJECT_ROOT / "sdk/python/src"), str(_PROJECT_ROOT)))}
+    result = subprocess.run(
+        [sys.executable, str(_PROJECT_ROOT / "scripts/deployment_migration_scenario.py"), "--web-providers"],
+        cwd=_PROJECT_ROOT, env=environment, capture_output=True, text=True, timeout=90,
+    )
+    assert result.returncode == 0, result.stdout + result.stderr
