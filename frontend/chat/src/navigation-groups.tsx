@@ -5,7 +5,7 @@ import { Dialog, DialogContent, DialogFooter, DialogHeader, DialogTitle } from "
 import { NavigationRowMenu, type NavigationRowAction } from "./navigation-row-menu";
 import { SessionStatusMark, summarizeStatus, type SessionStatus } from "./session-status-mark";
 import { MarqueeText } from "./marquee-text";
-import { NavigationGroupMount, PluginUiSlot, navigationGroupSources, type NavigationGroupSource } from "./plugin-ui-runtime";
+import { NavigationGroupMount, PluginUiSlot, navigationGroupSources, usePluginUiCatalogVersion, type NavigationGroupSource } from "./plugin-ui-runtime";
 import { createScopeFields } from "./scope-fields";
 
 /** 会话所在的分组：会话维度名与它的一个取值。 */
@@ -56,28 +56,47 @@ function checkGroups(value: unknown): NavigationGroup[] {
   });
 }
 
-// 目录或重读请求变化时按目录顺序读取各分区；单个分区失败只报错并保留它上次的分组。
+// 单个分区的读取期限；插件永不返回时只影响它自己的分区。
+const LOAD_TIMEOUT_MS = 20_000;
+
+const abortion = (signal: AbortSignal) => new Promise<never>((_, reject) => {
+  signal.addEventListener("abort", () => reject(signal.reason instanceof Error ? signal.reason : new Error("读取已取消")), { once: true });
+});
+
+// 目录或重读请求变化时按目录顺序读取各分区；每个分区读完即显示，失败只报错并保留它上次的分组。
 export function useNavigationGroupSections(enabled: boolean, catalogVersion: number, reportError: (error: unknown) => void) {
-  const [sections, setSections] = useState<GroupSection[]>([]);
+  const [sources, setSources] = useState<NavigationGroupSource[]>([]);
+  const [loaded, setLoaded] = useState<ReadonlyMap<string, readonly NavigationGroup[]>>(new Map());
   const [revision, setRevision] = useState(0);
   useEffect(() => {
-    const sources = enabled ? navigationGroupSources() : [];
+    const next = enabled ? navigationGroupSources() : [];
+    const keys = new Set(next.map((source) => source.key));
+    setSources(next);
+    setLoaded((current) => new Map([...current].filter(([key]) => keys.has(key))));
     const controller = new AbortController();
-    void Promise.all(sources.map(async (source) => {
-      try {
-        return { source, groups: checkGroups(await source.provider.load(source.context(controller.signal))) };
-      } catch (error) {
-        if (!controller.signal.aborted) reportError(new Error(`${source.provider.label}读取失败：${error instanceof Error ? error.message : String(error)}`));
-        return { source, groups: null };
-      }
-    })).then((next) => {
-      if (controller.signal.aborted) return;
-      setSections((current) => next.map(({ source, groups }) => ({
-        source, groups: groups ?? current.find((section) => section.source.key === source.key)?.groups ?? [],
-      })));
-    });
+    const publish = (key: string, groups: readonly NavigationGroup[] | null) => {
+      if (!controller.signal.aborted) setLoaded((current) => new Map(current).set(key, groups ?? current.get(key) ?? []));
+    };
+    for (const source of next) {
+      const own = new AbortController();
+      const stop = () => own.abort();
+      controller.signal.addEventListener("abort", stop, { once: true });
+      const timer = window.setTimeout(() => own.abort(new Error("读取超时")), LOAD_TIMEOUT_MS);
+      void Promise.race([source.provider.load(source.context(own.signal)), abortion(own.signal)])
+        .then((groups) => publish(source.key, checkGroups(groups)))
+        .catch((error: unknown) => {
+          if (controller.signal.aborted) return;
+          reportError(new Error(`${source.provider.label}读取失败：${error instanceof Error ? error.message : String(error)}`));
+          publish(source.key, null);
+        })
+        .finally(() => { window.clearTimeout(timer); controller.signal.removeEventListener("abort", stop); });
+    }
     return () => controller.abort();
   }, [enabled, catalogVersion, revision, reportError]);
+  const sections = useMemo(() => sources.flatMap((source) => {
+    const groups = loaded.get(source.key);
+    return groups ? [{ source, groups }] : [];
+  }), [sources, loaded]);
   const reload = useCallback(() => setRevision((value) => value + 1), []);
   return { sections, revision, reload };
 }
@@ -238,6 +257,10 @@ export function GroupFormDialog({ request, groups, onClose, onCloseFocus }: {
   const closeRef = useRef(onClose);
   closeRef.current = onClose;
   const fields = useMemo(() => createScopeFields(() => busyRef.current), []);
+  // 所属插件换代或撤下后，旧表单不再挂载、不能提交，避免先写入其他插件的附加设置再失败。
+  const { version } = usePluginUiCatalogVersion();
+  const isLive = () => navigationGroupSources().some((item) => item.key === source.key);
+  const live = useMemo(isLive, [version, source.key]); // eslint-disable-line react-hooks/exhaustive-deps
   const extra = useMemo((): { form: NavigationFormControls } => ({ form: {
     onSubmit(submit) {
       submitRef.current = submit;
@@ -252,6 +275,10 @@ export function GroupFormDialog({ request, groups, onClose, onCloseFocus }: {
     event.preventDefault();
     const handler = submitRef.current;
     if (!handler || !ready || busyRef.current) return;
+    if (!isLive()) {
+      setError("这个表单所属的插件已更新或撤下，请关闭后重新打开。");
+      return;
+    }
     settle(true);
     setError("");
     try {
@@ -273,14 +300,15 @@ export function GroupFormDialog({ request, groups, onClose, onCloseFocus }: {
       onCloseAutoFocus={onCloseFocus ? (event) => { event.preventDefault(); onCloseFocus(); } : undefined}>
       <form onSubmit={(event) => void submit(event)}>
         <DialogHeader className="group-dialog__header"><DialogTitle>{form.title}</DialogTitle></DialogHeader>
-        <NavigationGroupMount source={source} renderer={form} extra={extra}
+        {live ? <NavigationGroupMount source={source} renderer={form} extra={extra}
           scope={{ dimension, ...(group ? { value: group.id } : {}) }} refreshToken={busy ? 1 : 0} />
+          : <p role="status">这个表单所属的插件已更新或撤下，请关闭后重新打开。</p>}
         {error ? <p className="group-dialog__error" role="alert">{error}</p> : null}
         <DialogFooter className="group-dialog__footer">
           {/* 其他插件的附加设置（例如记忆范围）；没有插件时这里为空，按钮仍靠右。 */}
-          {group ? <span /> : <PluginUiSlot name="scope.fields" scope={{ dimension }} fields={fields}
+          {group || !live ? <span /> : <PluginUiSlot name="scope.fields" scope={{ dimension }} fields={fields}
             refreshToken={busy ? 1 : 0} quiet fallback={<span />} />}
-          {form.submitLabel ? <button type="submit" className="group-dialog__button primary" disabled={!ready || busy}>
+          {form.submitLabel && live ? <button type="submit" className="group-dialog__button primary" disabled={!ready || busy}>
             {busy ? "正在提交…" : form.submitLabel}
           </button> : <button type="button" className="group-dialog__button" onClick={onClose}>关闭</button>}
         </DialogFooter>
