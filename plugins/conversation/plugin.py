@@ -92,6 +92,15 @@ async def apply(ctx: Context) -> None:
             restart_gate=ctx.require(RESTART_GATE),
         )
 
+    # 前端只读了末尾一页时用 RETRY_LATEST_INPUT 指代最新输入；resume 仍会核对它就是最新且等待恢复。
+    def latest_input_id(session_id: str) -> str:
+        reader = ctx.require(MESSAGE_CATALOG).reader(session_id)
+        with reader.read_snapshot():
+            latest = reader.latest_input("conversation", through_seq=reader.head())
+        if latest is None:
+            raise ValueError("没有可重试的输入")
+        return latest.message_id
+
     async def accept(session_id: str, message_id: str, message: ChannelInboundMessage) -> Message:
         log_timing("input.received", session_id=session_id, request_id=message_id)
         command = message.content.strip().split(maxsplit=1)
@@ -101,6 +110,8 @@ async def apply(ctx: Context) -> None:
         if retry is not None:
             if not isinstance(retry, str) or not retry:
                 raise ValueError("重试必须引用已有 Input")
+            if retry == RETRY_LATEST_INPUT:
+                retry = await run_file_io(lambda: latest_input_id(session_id))
             return await open(session_id).resume(message_id, retry)
         # 1. 每条首次输入都接纳 Session；省略维度的续聊保留已有固定属性。
         dimensions = session_dimensions(message.metadata)
@@ -162,6 +173,10 @@ async def apply(ctx: Context) -> None:
     _ = await ctx.provide(CONVERSATION_COMPLETE, complete)
     _ = await ctx.require(SOURCES).register(ctx, name="conversation", open=open, accept=accept, channels=None,
         needs_reply=lambda reader: ctx.require(SOURCE_SESSION).needs_reply(reader, "conversation"))
+
+
+# 与前端 message-timeline.ts 的 RETRY_LATEST_INPUT 一致。
+RETRY_LATEST_INPUT = "latest"
 
 
 def reject_input_part(kind: str, part: ContentPart) -> ContentReferences:

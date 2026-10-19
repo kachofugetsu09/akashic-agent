@@ -479,7 +479,11 @@ export interface TimelineFailureRetries {
   retryable: Map<string, string>;
 }
 
-type FailureRun = { input: TimelineMessage | null; failures: TimelineMessage[]; tail: TimelineMessage };
+// input 为 undefined 表示这一段的输入在已加载页之前（长回合只读了末尾一页）。
+type FailureRun = { input: TimelineMessage | null | undefined; failures: TimelineMessage[]; tail: TimelineMessage };
+
+// 输入不在已加载页时，重试引用来源的最新输入；服务端解析，重试本来也只允许最新输入。
+export const RETRY_LATEST_INPUT = "latest";
 
 // 同一条输入反复失败时只留最后一次，答出来后连这一次也收起；来源末尾停在失败上时，它指向可以重跑的原输入。
 export function timelineFailureRetries(messages: TimelineMessage[]): TimelineFailureRetries {
@@ -488,7 +492,7 @@ export function timelineFailureRetries(messages: TimelineMessage[]): TimelineFai
   const runs = new Map<string, FailureRun>();
   for (const message of messages) {
     const key = timelineSourceKey(message), body = message.body;
-    const run = runs.get(key) ?? { input: null, failures: [], tail: message };
+    const run = runs.get(key) ?? { input: undefined, failures: [], tail: message };
     runs.set(key, run);
     run.tail = message;
     // 1. 新输入或放弃开始新的一段；自动输入不能由用户重跑。
@@ -513,7 +517,9 @@ export function timelineFailureRetries(messages: TimelineMessage[]): TimelineFai
   // 5. 只有来源最后一条仍是失败时才可重试；正在恢复或已有新输入都不再提供。
   const retryable = new Map<string, string>();
   for (const run of runs.values()) {
-    if (run.input && run.tail.body.kind === "control" && run.tail.body.action === "failure") retryable.set(run.tail.id, run.input.id);
+    if (run.tail.body.kind !== "control" || run.tail.body.action !== "failure") continue;
+    if (run.input) retryable.set(run.tail.id, run.input.id);
+    else if (run.input === undefined && run.tail.source === "conversation") retryable.set(run.tail.id, RETRY_LATEST_INPUT);
   }
   return { earlier, superseded, retryable };
 }
