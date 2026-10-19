@@ -43,6 +43,12 @@ class ReplyPreview:
     attempt: ModelAttemptStatus | None = None
     # 本次物理尝试的首字耗时（毫秒），由 Models 在首段增量时给出；尚未出字时为空。
     first_token_ms: float | None = None
+    # 本次物理尝试已到达的非空正文/思考增量数；生成中按它估算解码速度，
+    # 结算后由 provider 上报的 usage 精确值取代，不参与持久化。
+    output_deltas: int = 0
+    # 从首段增量到本次增量到达的解码时长（毫秒），由 status 用单调时钟测量；
+    # 尚未出字时为空。与 output_deltas 一起给出生成中的估算速度。
+    decode_ms: float | None = None
 
 
 @dataclass(frozen=True, slots=True)
