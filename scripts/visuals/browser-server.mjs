@@ -1,4 +1,5 @@
 // 仅回放 visuals_scenario.py 导出的实际消息、附件和安装资产。
+import { existsSync } from "node:fs";
 import { createServer } from "node:http";
 import { readFile, mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
@@ -32,9 +33,12 @@ const server = createServer(async (req, res) => {
     const route = url.pathname === "/api/chat/plugin-ui/asset" ? "module.js"
       : url.pathname.startsWith("/api/chat/artifacts/") ? `${url.pathname.split("/").at(-1)}.html`
       : ["/messages.json", "/showcase-messages.json"].includes(url.pathname) ? url.pathname.slice(1) : null;
-    const path = route ? join(evidence, route) : join(output, url.pathname);
+    // 预检截图按 .png 导出；同名 HTML 不存在时取它。
+    const artifact = route?.endsWith(".html") && url.pathname.startsWith("/api/chat/artifacts/");
+    const path = artifact && !existsSync(join(evidence, route)) ? join(evidence, route.replace(/\.html$/, ".png"))
+      : route ? join(evidence, route) : join(output, url.pathname);
     if (!path.startsWith(route ? evidence + "/" : output + "/")) { res.writeHead(403).end(); return; }
-    res.setHeader("content-type", ({ ".js": "text/javascript", ".css": "text/css", ".json": "application/json", ".html": "text/html; charset=utf-8", ".woff2": "font/woff2" })[extname(path)] ?? "application/octet-stream");
+    res.setHeader("content-type", ({ ".js": "text/javascript", ".css": "text/css", ".json": "application/json", ".html": "text/html; charset=utf-8", ".woff2": "font/woff2", ".png": "image/png" })[extname(path)] ?? "application/octet-stream");
     res.end(await readFile(path));
   } catch (error) { console.error(error); res.writeHead(500).end(String(error)); }
 });

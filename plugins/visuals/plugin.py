@@ -8,10 +8,12 @@ from contextlib import asynccontextmanager
 from hashlib import sha256
 from html import escape
 from pathlib import Path
+from tempfile import TemporaryDirectory
 
 from pydantic import BaseModel, ConfigDict, Field, ValidationError
 
 from agent.plugin_composition import Context
+from plugins.assets.contract import INSTALLED_ASSETS
 from plugins.ledger.contract import ARTIFACT_IMPORT, ArtifactImport, AttachmentKind, ContentPart, json_value
 from plugins.tools.contract import TOOLS, CallSource, Result
 from plugins.ui.contract import UI, UI_SLOTS, PluginUiDefinition, PluginUiRpcInvalidRequest
@@ -21,9 +23,9 @@ from .preview import Preview, PreviewFailed, PreviewUnavailable
 
 api_version = 3
 name = "visuals"
-version = "1.0.0"
+version = "1.1.0"
 desc = "生成可交互的图表、解释和模拟，作为 HTML 消息附件保存"
-inject = (TOOLS, ARTIFACT_IMPORT)
+inject = (TOOLS, ARTIFACT_IMPORT, INSTALLED_ASSETS)
 workspace_roots = ("visuals",)
 
 
@@ -36,31 +38,13 @@ class Visual(BaseModel):
     model_config = ConfigDict(extra="forbid", strict=True)
     title: str = Field(min_length=1, max_length=120, description="简短中文标题")
     summary: str = Field(min_length=1, max_length=2000, description="一两句话的结论，只在无法显示交互图时代替图出现；不要写成后文正文")
+    # 写法随 visualize 技能按需读取，不常驻工具 schema。
     html: str = Field(min_length=1, max_length=200_000, description=(
-        "完整 HTML body 片段，可含内联 style/script、SVG 和 Canvas；不得依赖网络、外部库、宿主 API、iframe、表单提交或导航。"
-        "背景透明、不加卡片外框，不重复正文标题；适应 280px 与 720px 宽度，不横向溢出。"
-        "回答涉及具体数字时写编辑式数据图：h3.headline 标题直接写结论（结论词用 em），可选 p.dek 一句补充；"
-        "1–4 个关键数字用 div.hero > div > b.v（单位放 small）+ span.k 短标签 + span.d 说明，只有一两个数时只用 hero 不画图；"
-        "每张图上方 p.chart-title（可加 p.chart-sub），峰值、拐点和阈值直接注释在图上；明细用 table.dtable（数字列的 th 和 td 都加 n，合计放 tfoot），"
-        "div.split 左图右表，p.foot 写口径与来源。"
-        "数据图用宿主内置的 ak，不要自己画坐标轴：放空 div，在最后的 script 里调用。"
-        "ak.bars('#id', {x, series:[{name, values}], stack, annotate:[{at, text, sub}], refLine:{value, label}}) 画分类或按天计数，默认堆叠；"
-        "加 horizontal:true、sub、range:[{lo, hi}] 画估计区间与阈值。"
-        "ak.line('#id', {x, series, milestones:[{at, text, sub}], spans:[{from, to, label}], annotate:[{at, text, series}], projectFrom, yMin}) 画趋势，"
-        "多系列在线尾自动标名，projectFrom 之后画虚线外推。ak.share('#id', {x, series, annotate}) 画构成随时间的 100% 份额。"
-        "ak.scatter('#id', {points:[{x, y, label, size, group}], xTitle, yTitle, xFmt, yFmt, highlight, refX, refY, trend}) 画两个量的关系，size 变气泡；"
-        "ak.dumbbell('#id', {x, from:{name, values}, to:{name, values}}) 画每行前后或两种口径的对比；"
-        "ak.heatmap('#id', {rows, cols, values}) 画星期 × 小时这类两个维度的规律；ak.treemap('#id', {nodes:[{name, value, group}]}) 画层级与大小；"
-        "ak.barlist('#id', {items:[{label, value, note}], limit}) 画排名；ak.spark('#id', values) 是放进 hero 或表格的小趋势线。通用参数 fmt 取 'raw'、'%'、'wan'、'si' 或函数，unit 是单位，label 是可访问名称；"
-        "series 可写 color: 1–6、'gray' 或 'hot'。x 写 YYYY-MM-DD 会自动缩写；ak.fmt(value, fmt, unit) 让 hero 和表格用同一格式。"
-        "ak 对不一致的数据直接报错，按报错修正。"
-        "原理、机制、流程和参数试验自己编写 HTML/CSS/JavaScript，按内容选择 SVG、Canvas 或普通 DOM，可用默认样式："
-        "h2 图标题，p.caption 副标题，svg.chart 图区（默认高 280px），.grid/.axis 网格与轴线，"
-        "div.legend > span > i[style=--series:var(--k1)] 图例，label.param（文字 + output + input[type=range]）参数行，"
-        "div.controls 按钮组，button.primary 主按钮，p.readout 当前读数，p.note 注释；边缘刻度用 text-anchor start/end 留在图内。"
-        "系列色按顺序用 --k1 到 --k6，--k-gray 表示其他，最多 4 类；文字和线条用 --ak-color-text-primary/secondary/muted、--ak-color-border-default。"
-        "图形和读数必须由真实数据或公式计算，参数改变立即更新；每图最多 12 个滑块，必须带可访问名称和当前值；文本用 textContent，避免 NaN/Infinity。"
-        "静态解释先输出正文，再调用本工具，返回后继续说明含义，不复述摘要。每一步最多并行调用两次。"
+        "完整 HTML body 片段，可含内联 style/script、SVG 和 Canvas；不依赖网络与外部库。"
+        "写法见 visualize 技能：数据图读 charts.md，示意图读 diagrams.md，交互讲解与卡片读 interactive.md。"
+    ))
+    draft: bool = Field(default=False, description=(
+        "true 时只渲染并回传截图，不发布给用户；看过截图、改好后再省略本参数正式发布。正式发布后用户就会看到这张图，再调用会多出一张。"
     ))
 
 
@@ -83,23 +67,42 @@ class VisualTool:
             return str(error)
 
     async def invoke(self, key: str, arguments: Mapping[str, object]) -> Result:
-        """预检完成后保存自包含 HTML 文件并发布为附件；失败沿普通工具结果返回模型。"""
+        """预检完成后保存自包含 HTML 文件并发布为附件；草稿只回传截图；失败沿普通工具结果返回模型。"""
         visual = Visual.model_validate(json_value(arguments))
         document = self._template.replace("<title></title>", f"<title>{escape(visual.title)}</title>", 1).replace(
             "<!--visual-content-->", visual.html, 1)
         try:
-            await self._preview.check(document)
+            screenshot = await self._preview.check(document)
         except (PreviewFailed, PreviewUnavailable) as error:
             return Result("error", (ContentPart("text", str(error)),))
-        # 1. 文件留在 workspace，模型可以把同一路径交给其他工具推送或分享。
         name = re.sub(r'[\x00-\x1f<>:"/\\|?*]', "-", visual.title).strip(" .")[:60] or "visual"
-        path = self._root / f"{name}-{sha256(key.encode()).hexdigest()[:8]}.html"
+        stem = f"{name}-{sha256(key.encode()).hexdigest()[:8]}"
+        # 1. 草稿不写文件也不交付附件：结果里只有截图，宿主把它留在调用卡片，用户界面不多出一张图。
+        image = await self._import_screenshot(stem, screenshot)
+        if visual.draft:
+            return Result("success", (
+                ContentPart("text", f"### 草稿：{visual.title}\n\n草稿没有展示给用户。附图是 720px 宽的渲染截图；"
+                            "按 visualize 技能的清单检查，改好后省略 draft 正式发布同一张图。"),
+                ContentPart("artifact_ref", image),
+            ))
+        # 2. 文件留在 workspace，模型可以把同一路径交给其他工具推送或分享。
+        path = self._root / f"{stem}.html"
         await asyncio.to_thread(path.write_text, document, encoding="utf-8")
         artifact = await self._artifacts.import_source(str(path), AttachmentKind.FILE)
         return Result("success", (
-            ContentPart("text", f"### {visual.title}\n\n{visual.summary}\n\nHTML 文件：{path}"),
+            ContentPart("text", f"### {visual.title}\n\n{visual.summary}\n\nHTML 文件：{path}\n\n"
+                        "交互图已显示给用户，正文不要复述图里已有的数字和标签，只补充图外的含义。"
+                        "附图是 720px 宽的预检截图；不要为改善外观再次发布，否则用户会看到两张图。"),
             ContentPart("artifact_ref", artifact.artifact_id),
+            ContentPart("artifact_ref", image),
         ))
+
+    # 预检截图是给模型自检的观察；宿主把同一结果里的图片留在调用卡片，用户只看到交互图。
+    async def _import_screenshot(self, stem: str, screenshot: bytes) -> str:
+        with TemporaryDirectory(prefix="akashic-visual-") as directory:
+            shot = Path(directory) / f"{stem}.png"
+            await asyncio.to_thread(shot.write_bytes, screenshot)
+            return (await self._artifacts.import_source(str(shot), AttachmentKind.IMAGE)).artifact_id
 
     async def query(self, key: str) -> Result | None:
         # 没有重放凭据时不重新发布；tools owner 负责保留已提交的结果。
@@ -119,9 +122,13 @@ async def apply(ctx: Context) -> None:
     async def open_tool(_state: Mapping[str, object]) -> AsyncIterator[VisualTool]:
         yield tool
 
+    # 工具组按需解锁：visualize 技能说明什么时候画、怎么画，用到时再 load_tools。
+    await ctx.require(INSTALLED_ASSETS).register(ctx, "skills", "skills")
     catalog = ctx.require(TOOLS)
-    await catalog.declare_group(ctx, always_on=True, description=desc)
-    await catalog.register(ctx, name="render_visual", description="在图表、关系或参数试验能帮助理解时，生成可交互附件。先解释直觉，再调用；成功后可继续说明。" + desc,
+    await catalog.declare_group(ctx, description=desc)
+    await catalog.register(ctx, name="render_visual", description=(
+        "在图表、关系或参数试验能帮助理解时，生成可交互附件。先读 visualize 技能，先解释直觉再调用；"
+        "成功后可继续说明。" + desc),
                            parameters=Visual.model_json_schema(), open=open_tool, parallel=True)
 
     async def register_ui(child: Context) -> None:

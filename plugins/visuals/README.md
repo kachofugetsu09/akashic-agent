@@ -1,6 +1,9 @@
 # Visuals
 
 通过 `render_visual` 生成普通消息附件；可选聊天 UI 显示可交互的 HTML、SVG 和 Canvas。
+工具组不常驻：插件随附 `visualize` 技能（`skills/visualize/`），说明什么时候画、按意图选形式和各类写法；
+模型按需 `load_skill` 读取，再用 `load_tools` 解锁 `render_visual`。写法按形式拆成 `charts.md`、`diagrams.md`、
+`interactive.md`，只读用得上的那份。
 架构与保留边界见 [0117](../../docs/decisions/0117-visuals-are-message-attachments.md)。
 
 ## 运行条件
@@ -33,7 +36,9 @@ Workload Controller 仍用 Docker 默认策略。上游 Apache-2.0 许可保存�
 
 输入包含标题、纯文本摘要和完整 body HTML，最多 200,000 个字符。
 使用内联脚本和样式，不依赖 CDN、外部请求、导航、宿主接口或动态导入。
-文档自行编写 HTML/CSS/JavaScript，按内容选择 SVG、Canvas 或普通 DOM。
+文档自行编写 HTML/CSS/JavaScript，按内容选择 SVG、Canvas 或普通 DOM。frame 预置示意图类（`t`/`th`/`ts` 文字、
+`box`、`arr`、`leader`、`node`、按系列色上色的 `d1`…`d6`/`d-gray`）、卡片与指标类（`cards`/`card`/`metric`）
+和颜色随连线的 `url(#arrow)` 箭头，颜色都取主题 token。
 数据图调用 frame 内联的 `window.ak`（源码 `frontend/plugins/visuals/src/charts.ts`）：柱、折线、份额、散点、哑铃、
 热力图、矩形树图、排行和迷你趋势线，配合 `.headline`、`.hero`、`.dtable`、`.foot` 等编辑式版式类。
 其余图由文档自己实现坐标、图例、读数与交互。API 只增不改，因为已保存附件会在新 frame 中重新执行。
@@ -44,7 +49,10 @@ Workload Controller 仍用 Docker 默认策略。上游 Apache-2.0 许可保存�
 脚本异常、空白内容、横向溢出或数值输出中的非有限数值会阻止发布；滑块会触发真实 input/change。
 错误交回当前模型的正常工具循环；插件不会另调模型或伪造成功。
 
-成功返回标题、摘要、workspace `visuals/` 下的文件路径和普通 `artifact_ref`。文件是自包含 HTML
+成功返回标题、摘要、workspace `visuals/` 下的文件路径、HTML 文件的 `artifact_ref`，以及一张 720px 宽的预检截图
+（IMAGE 附件）。截图只给模型自检；宿主把同一结果里的图片留在调用卡片，正文只显示交互图。
+`draft: true` 只预检并回传截图，不写文件、不交付附件，用户界面不出现新图；模型看截图改好后再正式发布，
+避免发布后为外观重画而出现第二张图。文件是自包含 HTML
 （frame 模板、内联 `ak` 与默认主题），由 Ledger 以不可变附件保存，单独用浏览器打开也能运行；
 模型可以把同一路径交给 `message_push` 推送。旧版 `.akashic-visual.json` 仍可展示。
 历史页面只读文件，不重新运行工具或请求模型。图中操作只改变当前页面的临时状态。
@@ -56,7 +64,7 @@ Workload Controller 仍用 Docker 默认策略。上游 Apache-2.0 许可保存�
 后续交互都没有错误。服务端断网与客户端 sandbox/CSP 的保证不同，详见架构决定。
 
 入选模型上下文的工具调用仍携带原 HTML 参数；不另建历史裁剪机制。
-模型收到标题、摘要与附件引用，不会自动看到截图；预检耗时不代表完整模型生成耗时。
+模型收到标题、摘要、附件引用和预检截图（模型不接收图片时宿主只给说明）；预检耗时不代表完整模型生成耗时。
 
 ## 验收
 
