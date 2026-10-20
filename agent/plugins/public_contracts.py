@@ -6,18 +6,81 @@ import hashlib
 import importlib.abc
 import importlib.machinery
 import importlib.util
+import os
 import sys
 from dataclasses import dataclass
+from functools import lru_cache
 from pathlib import Path
 from collections.abc import Iterable
 
 from agent.plugins.importer import FreshSourceLoader
+from agent.plugins.manifest import plugins_root
 from agent.plugins.source_resolver import ResolvedPluginSource
+
+
+# 摘要算法指纹：同一源码只在算法与 Python 实现不变时复用缓存摘要。
+@lru_cache(maxsize=1)
+def _digest_fingerprint() -> str | None:
+    try:
+        parser = Path(__file__).read_bytes()
+    except OSError:
+        return None
+    return hashlib.sha256(sys.implementation.cache_tag.encode() + b"\0" + parser).hexdigest()[:16]
+
+
+def _digest_fact_path(source: bytes) -> Path | None:
+    fingerprint = _digest_fingerprint()
+    if fingerprint is None:
+        return None
+    try:
+        root = plugins_root()
+    except ValueError:
+        return None
+    digest = hashlib.sha256(source).hexdigest()
+    return root / "contract-digests" / fingerprint / f"{digest}.json"
+
+
+def _read_digest_fact(source: bytes) -> bytes | None:
+    """读回的内容必须是合法摘要；任何损坏都当作未命中重新计算。"""
+    path = _digest_fact_path(source)
+    if path is None:
+        return None
+    try:
+        value = path.read_text(encoding="ascii").strip()
+    except (OSError, UnicodeDecodeError):
+        return None
+    if len(value) != 64:
+        return None
+    try:
+        digest = bytes.fromhex(value)
+    except ValueError:
+        return None
+    return digest if len(digest) == 32 else None
+
+
+# 只读安装目录或并发写失败时静默放弃缓存，摘要仍然每次现算。
+def _write_digest_fact(source: bytes, digest: bytes) -> None:
+    path = _digest_fact_path(source)
+    if path is None or sys.dont_write_bytecode:
+        return
+    temporary = path.with_name(f"{path.name}.{os.getpid()}.tmp")
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        _ = temporary.write_text(digest.hex(), encoding="ascii")
+        os.replace(temporary, path)
+    except OSError:
+        try:
+            temporary.unlink(missing_ok=True)
+        except OSError:
+            pass
 
 
 # 只对会影响类型身份的结构取摘要；注释、空白和 docstring 改动不要求重启进程。
 def _contract_digest(path: Path) -> bytes:
     source = path.read_bytes()
+    cached = _read_digest_fact(source)
+    if cached is not None:
+        return cached
     try:
         tree = ast.parse(source, filename=str(path))
     except SyntaxError:
@@ -30,7 +93,9 @@ def _contract_digest(path: Path) -> bytes:
         if body and isinstance(body[0], ast.Expr) and isinstance(body[0].value, ast.Constant) \
                 and isinstance(body[0].value.value, str):
             node.body = body[1:] or [ast.Pass()]
-    return hashlib.sha256(ast.dump(tree).encode()).digest()
+    digest = hashlib.sha256(ast.dump(tree).encode()).digest()
+    _write_digest_fact(source, digest)
+    return digest
 
 
 @dataclass(frozen=True)
