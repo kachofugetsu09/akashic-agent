@@ -83,8 +83,10 @@ export function mountChat(host: HTMLElement, link: ChatHostLink): MountedChat {
   );
   // 5. 空闲预热富文本渲染分块(见 message-view.tsx 的 warmMessageRenderer),
   // 首个含代码/数学的会话不再在切换关键路径上等这份下载与求值。
+  // rIC 加 timeout 兜底：挂载繁忙期一直抢不到空闲时，3s 后仍强制预热，
+  // 否则挂载完立刻切换会话的用户仍要在关键路径上付整笔加载。
   const idle = window.requestIdleCallback
-    ? window.requestIdleCallback(warmMessageRenderer)
+    ? window.requestIdleCallback(warmMessageRenderer, { timeout: 3000 })
     : window.setTimeout(warmMessageRenderer, 2000);
   const cancelWarmup = () => window.cancelIdleCallback
     ? window.cancelIdleCallback(idle)
