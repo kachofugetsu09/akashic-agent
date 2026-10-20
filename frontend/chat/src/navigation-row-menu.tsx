@@ -1,4 +1,3 @@
-import { Ellipsis } from "lucide-react";
 import { useEffect, useRef, useState, type ReactNode } from "react";
 import {
   DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger,
@@ -47,7 +46,7 @@ export function NavigationRowMenu({ title, actions = [], className, children, on
     // 键盘在行上按菜单键或 Shift+F10 打开，不再为每行多占一个 Tab 停靠点。
     <button type="button" className="navigation-menu-trigger" aria-label={`${title} 的操作`} tabIndex={-1}
       aria-haspopup="menu" aria-expanded={open} onClick={armed ? undefined : () => setMenuOpen(true)}>
-      <Ellipsis size={18} aria-hidden="true" />
+      {/* ⋯ 图形由 CSS mask 绘制（与 Lucide ellipsis 同一矢量）：不再为每行挂 svg+circle 子树。 */}
     </button>
   );
   return <div ref={rowRef} className={`navigation-menu-row ${className}`} data-menu-open={open || undefined}

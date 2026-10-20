@@ -692,6 +692,16 @@ input {
   pointer-events: none;
 }
 
+/* ⋯ 用 mask 绘制：与 Lucide ellipsis 同一矢量图形、跟随 currentColor，
+   但不为每行挂 svg+circle 子树（目录规模下约占行 DOM 的 25%、样式重算访问的 30%）。 */
+.navigation-menu-trigger::before {
+  content: "";
+  width: 18px;
+  height: 18px;
+  background: currentColor;
+  mask: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='black' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Ccircle cx='12' cy='12' r='1'/%3E%3Ccircle cx='19' cy='12' r='1'/%3E%3Ccircle cx='5' cy='12' r='1'/%3E%3C/svg%3E") center / contain no-repeat;
+}
+
 .navigation-menu-trigger:focus-visible,
 .navigation-menu-row[data-menu-open] > .navigation-menu-trigger {
   opacity: 1;
