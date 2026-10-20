@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import importlib.abc
 import importlib.util
+import hashlib
 import marshal
 import os
 import sys
@@ -27,6 +28,51 @@ def _compile_source(source: bytes, filename: str) -> CodeType:
     code = compile(source, filename, "exec")
     _write_cached_code(cache_path, source_hash, code)
     return code
+
+
+def ensure_source_compiles(source: bytes, filename: str) -> None:
+    """校验源码可编译；PEP 552 缓存命中即证明同一内容此前编译通过。
+
+    与插件导入共用同一份字节码缓存：安装校验期写下的 pyc 在真正导入时
+    直接复用，换代重载也不再为未变化的源码重复编译。
+    """
+    _compile_source(source, filename)
+
+
+# 编译校验事实按内容寻址：同一源码只需真正编译一次，命中只付一次哈希。
+def _compile_fact_path(source: bytes) -> Path | None:
+    tag = sys.implementation.cache_tag
+    if tag is None:
+        return None
+    try:
+        root = Path(sys.pycache_prefix) if sys.pycache_prefix else plugins_root() / "bytecode"
+    except ValueError:
+        return None
+    digest = hashlib.sha256(source).hexdigest()
+    return root / "compile-facts" / f"{digest}.{tag}.json"
+
+
+def source_compile_verified(source: bytes) -> bool:
+    """同一 Python 实现是否已编译通过这份源码；只读事实，不验证文件路径。"""
+    path = _compile_fact_path(source)
+    return path is not None and path.is_file()
+
+
+def record_source_compile(source: bytes) -> None:
+    """记录编译通过事实；只读安装目录或并发写失败时静默放弃，下次重新编译。"""
+    path = _compile_fact_path(source)
+    if path is None or sys.dont_write_bytecode:
+        return
+    temporary = path.with_name(f"{path.name}.{os.getpid()}.tmp")
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        _ = temporary.write_bytes(b"1")
+        os.replace(temporary, path)
+    except OSError:
+        try:
+            temporary.unlink(missing_ok=True)
+        except OSError:
+            pass
 
 
 # 字节码属于宿主缓存，镜像源码绝对路径放在插件 home 下，不写入插件制品目录。

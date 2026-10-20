@@ -12,6 +12,11 @@ from pathlib import Path
 from typing import Literal, cast
 
 from agent.plugin_composition.config_input import load_config, config_bytes, CONFIG_INPUT
+from agent.plugins.importer import (
+    ensure_source_compiles,
+    record_source_compile,
+    source_compile_verified,
+)
 from agent.plugins.selection import PluginSelection
 from agent.plugins.manifest import (
     validate_workspace_plugin_data_path,
@@ -85,8 +90,13 @@ def prepare_plugin_input(
         if any(part in {"__pycache__", ".venv", "node_modules"} for part in source_path.parts):
             continue
         try:
-            source_text = source_path.read_text(encoding="utf-8")
-            compile(source_text, str(source_path), "exec")
+            source_bytes = source_path.read_bytes()
+            # UTF-8 严格性保持不变；同一内容只在首次真正编译，之后以内容哈希
+            # 事实命中；未命中时经与导入共用的 PEP 552 缓存编译，同时温暖导入。
+            source_bytes.decode("utf-8")
+            if not source_compile_verified(source_bytes):
+                ensure_source_compiles(source_bytes, str(source_path))
+                record_source_compile(source_bytes)
         except (SyntaxError, UnicodeError) as error:
             raise PluginSourceCompileError(
                 f"插件源码无法编译: {source_path}"
