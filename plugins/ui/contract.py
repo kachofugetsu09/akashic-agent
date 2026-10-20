@@ -500,15 +500,20 @@ _static_gzip_cache: dict[str, bytes] = {}
 
 
 def accepts_gzip_header(value: str) -> bool:
-    """Accept-Encoding 里 gzip 未被 q=0 显式拒绝即视为接受。"""
+    """Accept-Encoding 明确接受 gzip 时压缩；无效权重按不接受处理。"""
     for token in value.split(","):
         parts = token.split(";")
         if parts[0].strip().lower() != "gzip":
             continue
         for parameter in parts[1:]:
             name, _, parameter_value = parameter.partition("=")
-            if name.strip() == "q" and float(parameter_value.strip() or "1") == 0:
-                return False
+            if name.strip().lower() == "q":
+                try:
+                    quality = float(parameter_value.strip())
+                except ValueError:
+                    return False
+                if not 0 < quality <= 1:
+                    return False
         return True
     return False
 
@@ -518,31 +523,23 @@ def _accepts_gzip(scope: Scope) -> bool:
 
 
 class CompressedFileResponse(FileResponse):
-    """接受 gzip 时送缓存的压缩变体；ETag/Last-Modified 仍按原文件签发。"""
+    """发送已选定的 gzip 变体；协商和条件校验由静态路由完成。"""
 
     async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
-        stat_result = self.stat_result
-        if (
-            scope["type"] != "http"
-            or stat_result is None
-            or stat_result.st_size < _GZIP_MIN_BYTES
-            or not str(self.path).endswith(_COMPRESSIBLE_SUFFIXES)
-            or "range" in Headers(scope=scope)
-            or not _accepts_gzip(scope)
-        ):
+        if self.headers.get("content-encoding") != "gzip":
             await super().__call__(scope, receive, send)
             return
+        stat_result = self.stat_result
+        assert stat_result is not None
         cache_key = f"{self.path}:{stat_result.st_mtime_ns}:{stat_result.st_size}"
         body = _static_gzip_cache.get(cache_key)
         if body is None:
-            body = await run_file_io(lambda: gzip.compress(Path(self.path).read_bytes(), compresslevel=9))
+            body = await run_file_io(lambda: gzip.compress(Path(self.path).read_bytes(), compresslevel=9, mtime=0))
             _static_gzip_cache[cache_key] = body
             while len(_static_gzip_cache) > _STATIC_GZIP_CACHE_LIMIT:
                 del _static_gzip_cache[next(iter(_static_gzip_cache))]
         headers = MutableHeaders(raw=list(self.raw_headers))
         headers["content-length"] = str(len(body))
-        headers["content-encoding"] = "gzip"
-        headers.add_vary_header("Accept-Encoding")
         await send({"type": "http.response.start", "status": self.status_code, "headers": headers.raw})
         payload = b"" if scope["method"].upper() == "HEAD" else body
         await send({"type": "http.response.body", "body": payload, "more_body": False})
@@ -561,6 +558,13 @@ class CompressedStaticFiles(StaticFiles):
         status_code: int = 200,
     ) -> Response:
         response = CompressedFileResponse(full_path, status_code=status_code, stat_result=stat_result)
+        # 条件校验先选表示：不同编码不能共用强 ETag，否则 gzip 的 If-Range
+        # 会错误命中 identity 的字节范围。所有变体（含 304）均声明 Vary。
+        if stat_result.st_size >= _GZIP_MIN_BYTES and str(full_path).endswith(_COMPRESSIBLE_SUFFIXES):
+            response.headers.add_vary_header("Accept-Encoding")
+            if "range" not in Headers(scope=scope) and _accepts_gzip(scope):
+                response.headers["content-encoding"] = "gzip"
+                response.headers["etag"] = response.headers["etag"][:-1] + '-gzip"'
         if self.is_not_modified(response.headers, Headers(scope=scope)):
             return NotModifiedResponse(response.headers)
         return response

@@ -81,7 +81,7 @@ _gzip_cache: dict[str, bytes] = {}
 def _gzip_cached(payload_sha256: str, payload: bytes) -> bytes:
     body = _gzip_cache.get(payload_sha256)
     if body is None:
-        body = gzip.compress(payload, compresslevel=6)
+        body = gzip.compress(payload, compresslevel=6, mtime=0)
         _gzip_cache[payload_sha256] = body
         while len(_gzip_cache) > 24:
             del _gzip_cache[next(iter(_gzip_cache))]
@@ -218,7 +218,9 @@ def create_chat_app(
                 detail="Web 插件界面服务暂不可用",
             ) from error
         # 每次仍读取当前 snapshot；只有完整响应字节相同才复用浏览器缓存。
-        etag = f'"{hashlib.sha256(payload).hexdigest()}"'
+        payload_sha256 = hashlib.sha256(payload).hexdigest()
+        compressed = accepts_gzip_header(request.headers.get("accept-encoding", ""))
+        etag = f'"{payload_sha256}{"-gzip" if compressed else ""}"'
         headers = {
             "Cache-Control": "private, no-cache",
             "ETag": etag,
@@ -230,11 +232,11 @@ def create_chat_app(
         if any(value.strip().removeprefix("W/") in {"*", etag} for value in validators):
             return Response(status_code=304, headers=headers)
         # 目录字节是 JSON 内嵌的压缩模块,线上约 1MB;gzip 后约剩 1/4。
-        # ETag 仍按未压缩载荷签发,条件校验与编码无关;压缩结果按载荷哈希缓存。
+        # 强 ETag 区分编码；固定 gzip 时间戳，让相同载荷跨进程仍得到相同字节。
         body = payload
-        if accepts_gzip_header(request.headers.get("accept-encoding", "")):
+        if compressed:
             # 首次压缩约 35ms,排水到文件 worker,不占用事件循环;命中缓存的线程往返可忽略。
-            body = await run_file_io(lambda: _gzip_cached(etag[1:-1], payload))
+            body = await run_file_io(lambda: _gzip_cached(payload_sha256, payload))
             headers["Content-Encoding"] = "gzip"
         return Response(content=body, media_type="application/json", headers=headers)
 
@@ -414,9 +416,10 @@ def create_chat_app(
             "Vary": "Accept-Encoding",
         }
         # 模块字节以 sha256 参数为内容指纹且 immutable;接受 gzip 时送缓存的压缩变体。
-        body: str | bytes = str(asset["content"])
+        content = str(asset["content"])
+        body: str | bytes = content
         if accepts_gzip_header(request.headers.get("accept-encoding", "")):
-            body = await run_file_io(lambda: _gzip_cached(sha256, body.encode("utf-8")))
+            body = await run_file_io(lambda: _gzip_cached(sha256, content.encode("utf-8")))
             headers["Content-Encoding"] = "gzip"
         return Response(
             content=body,

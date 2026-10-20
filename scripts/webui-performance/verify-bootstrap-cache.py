@@ -22,7 +22,7 @@ class CatalogFixture:
             raise RuntimeError("catalog unavailable")
         return json.dumps({"snapshotId": self.snapshot, "modules": []}).encode()
 
-    async def state(self) -> dict[str, str]:
+    async def state(self) -> dict[str, str | bool]:
         return {"snapshotId": self.snapshot, "catalogId": "fixture"}
 
 
@@ -41,6 +41,17 @@ async def verify(workspace: Path) -> None:
         assert same.headers["etag"] == etag
         compressed = await client.get("/api/chat/web-ui/bootstrap", headers={"If-None-Match": f'"older", W/{etag}'})
         assert compressed.status_code == 304 and compressed.content == b""
+
+        # 编码变体使用独立强 ETag；无效客户端权重不应变成服务器错误。
+        plain = await client.get("/api/chat/web-ui/bootstrap", headers={"Accept-Encoding": "identity"})
+        assert first.headers["content-encoding"] == "gzip"
+        assert plain.content == first.content and plain.headers["etag"] != etag
+        for encoding in ("identity", "gzip;q=0", "gzip;q=bad"):
+            response = await client.get("/api/chat/web-ui/bootstrap", headers={
+                "Accept-Encoding": encoding, "If-None-Match": etag,
+            })
+            assert response.status_code == 200 and "content-encoding" not in response.headers
+            assert response.headers["vary"] == "Accept-Encoding"
 
         # 2. snapshot 变化不能复用旧字节；不可用不能伪装成缓存命中。
         catalog.snapshot = "second"
