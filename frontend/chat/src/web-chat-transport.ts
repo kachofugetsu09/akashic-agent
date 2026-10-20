@@ -1,5 +1,3 @@
-import { Cause, Effect, Exit } from "effect";
-
 export type ChatFrame =
   | { type: "sessions.changed"; version: 2 }
   | { type: "session.created"; request_id: string; session_id: string }
@@ -155,7 +153,7 @@ function artifactDescriptor(value: unknown): value is ArtifactDescriptor {
     && item.url.startsWith("/api/chat/artifacts/");
 }
 
-/** 等待连接后发送一次；Effect 负责超时、取消和竞争结果。 */
+/** 等待连接后发送一次；超时、取消和竞争结果都由这里的等待逻辑负责。 */
 export async function sendWhenOpen(
   socket: WebSocket,
   payload: Record<string, unknown>,
@@ -163,16 +161,24 @@ export async function sendWhenOpen(
   timeoutMs = 10_000,
 ): Promise<void> {
   if (signal?.aborted) throw new DOMException("请求已取消", "AbortError");
-  const wait = Effect.async<void, Error>((resume) => {
+  const wait = new Promise<void>((resolve, reject) => {
     // timeout 的竞争任务开始前，浏览器可能已经发出了 open 或 close。
     if (socket.readyState !== WebSocket.CONNECTING) {
-      resume(socket.readyState === WebSocket.OPEN ? Effect.void : Effect.fail(new Error("聊天连接尚未建立")));
+      if (socket.readyState === WebSocket.OPEN) resolve();
+      else reject(new Error("聊天连接尚未建立"));
       return;
     }
-    const finish = (result: Effect.Effect<void, Error>) => { cleanup(); resume(result); };
-    const onOpen = () => finish(Effect.void);
-    const onError = () => finish(Effect.fail(new Error("聊天连接失败")));
-    const onClose = () => finish(Effect.fail(new Error("聊天连接在发送前关闭")));
+    const finish = (error?: Error) => {
+      cleanup();
+      window.clearTimeout(timer);
+      signal?.removeEventListener("abort", onAbort);
+      if (error) reject(error);
+      else resolve();
+    };
+    const onOpen = () => finish();
+    const onError = () => finish(new Error("聊天连接失败"));
+    const onClose = () => finish(new Error("聊天连接在发送前关闭"));
+    const onAbort = () => finish(new DOMException("请求已取消", "AbortError"));
     const cleanup = () => {
       socket.removeEventListener("open", onOpen);
       socket.removeEventListener("error", onError);
@@ -181,24 +187,17 @@ export async function sendWhenOpen(
     socket.addEventListener("open", onOpen);
     socket.addEventListener("error", onError);
     socket.addEventListener("close", onClose);
-    return Effect.sync(cleanup);
-  }).pipe(Effect.timeoutFail({
-    duration: timeoutMs,
-    onTimeout: () => {
+    const timer = window.setTimeout(() => {
       if (socket.readyState === WebSocket.CONNECTING) socket.close();
-      return new Error("聊天连接超时");
-    },
-  }));
-  const sent = await Effect.runPromiseExit((socket.readyState === WebSocket.OPEN ? Effect.void : wait).pipe(
-    Effect.andThen(Effect.try({ try: () => {
-      if (socket.readyState !== WebSocket.OPEN) throw new Error("聊天连接未能打开");
-      socket.send(JSON.stringify(payload));
-    }, catch: (error) => error })),
-  ), { signal });
-  if (Exit.isFailure(sent)) {
-    if (signal?.aborted && Cause.isInterruptedOnly(sent.cause)) throw new DOMException("请求已取消", "AbortError");
-    throw Cause.squash(sent.cause);
-  }
+      finish(new Error("聊天连接超时"));
+    }, timeoutMs);
+    signal?.addEventListener("abort", onAbort, { once: true });
+  });
+  await (socket.readyState === WebSocket.OPEN ? Promise.resolve() : wait);
+  // 等待结束到发送之间仍可能被中止,与原先 runPromiseExit 的 signal 覆盖整段一致。
+  if (signal?.aborted) throw new DOMException("请求已取消", "AbortError");
+  if (socket.readyState !== WebSocket.OPEN) throw new Error("聊天连接未能打开");
+  socket.send(JSON.stringify(payload));
 }
 
 function recordValue(value: unknown): Record<string, unknown> | null {
