@@ -135,6 +135,10 @@ class ScopedWebUiProvider:
         async with _request_scope(self._opener) as scope:
             return await cast(WebUiProvider, scope.require(WEB_UI)).state()
 
+    async def module_asset(self, plugin_id: str, sha256: str) -> str:
+        async with _request_scope(self._opener) as scope:
+            return await cast(WebUiProvider, scope.require(WEB_UI)).module_asset(plugin_id, sha256)
+
 
 __all__ = [
     "RequestScopeOpener",

@@ -71,6 +71,8 @@ class WebUiProvider(Protocol):
 
     async def state(self) -> dict[str, str | bool]: ...
 
+    async def module_asset(self, plugin_id: str, sha256: str) -> str: ...
+
 
 # bootstrap 载荷按目录身份缓存(plugins/ui/plugin.py);同一载荷的 gzip 结果也缓存。
 # plugin-ui 模块同样按内容哈希(sha256 参数即内容指纹)缓存压缩结果。
@@ -239,6 +241,31 @@ def create_chat_app(
             body = await run_file_io(lambda: _gzip_cached(payload_sha256, payload))
             headers["Content-Encoding"] = "gzip"
         return Response(content=body, media_type="application/json", headers=headers)
+
+    @app.get("/api/chat/web-ui/module")
+    async def web_ui_module(
+        request: Request,
+        plugin_id: str = Query(..., min_length=1, max_length=128),
+        sha256: str = Query(..., pattern=r"^[0-9a-f]{64}$"),
+    ) -> Response:
+        if web_ui_provider is None:
+            raise HTTPException(status_code=503, detail="Web 插件界面服务不可用")
+        try:
+            content = await web_ui_provider.module_asset(plugin_id, sha256)
+        except KeyError:
+            # 目录换代或摘要篡改都按不存在处理;页面由 stale 核对流程刷新。
+            raise HTTPException(status_code=404, detail="Web 模块不存在或已更新") from None
+        headers = {
+            "Cache-Control": "private, max-age=31536000, immutable",
+            "Vary": "Accept-Encoding",
+            "X-Content-Type-Options": "nosniff",
+        }
+        # 模块字节以 sha256 参数为内容指纹且 immutable;接受 gzip 时送缓存的压缩变体。
+        body: str | bytes = content
+        if accepts_gzip_header(request.headers.get("accept-encoding", "")):
+            body = await run_file_io(lambda: _gzip_cached(sha256, content.encode("utf-8")))
+            headers["Content-Encoding"] = "gzip"
+        return Response(content=body, media_type="text/javascript", headers=headers)
 
     @app.get("/api/chat/web-ui/state")
     async def web_ui_state() -> Response:
