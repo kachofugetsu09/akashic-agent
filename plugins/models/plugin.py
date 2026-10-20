@@ -77,7 +77,7 @@ async def apply(ctx: Context) -> None:
     _ = await ctx.provide(MODEL_SETTINGS, state.settings)
     _ = await ctx.provide(MODEL_CALLS, store.read_call)
     _ = await ctx.provide(MODEL_CALL_STATS, store.read_call_stats)
-    usage = CacheUsage(ctx, store)
+    usage = CacheUsage(ctx, store, ctx.data_root / "cache-usage.sqlite3")
     _ = await ctx.provide(MODEL_CACHE_USAGE, usage)
     _ = await ctx.provide(MODEL_DISPLAY, display_facts)
     # 自己写入的内部材料不进聊天正文；宿主不维护按插件列举的隐藏名单。

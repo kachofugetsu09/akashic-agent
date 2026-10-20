@@ -1,12 +1,17 @@
-"""按需从模型调用账与消息 Turn 计算 KV Cache 用量，不另建投影库。"""
+"""从模型调用账与消息 Turn 增量计算 KV Cache 用量；已闭合 Turn 的累计量落在可重建的检查点里。"""
 from __future__ import annotations
 
 import heapq
+import json
+import logging
+import sqlite3
 import threading
 import time
 from collections import deque
 from collections.abc import Iterable, Iterator, Mapping
-from dataclasses import dataclass, field
+from contextlib import closing
+from dataclasses import asdict, dataclass, field
+from pathlib import Path
 from typing import cast
 
 from agent.plugin_composition import Context
@@ -21,6 +26,10 @@ _RECENT_TURNS = 50
 _RECENT_PASSIVE_TURNS = 10
 _PREVIEW_CHARS = 90
 _SCAN_SECONDS = 2.0
+# 检查点里存的是按当前计数规则算好的结果：改了计数规则（什么算计入、主动来源集合、预览）必须加一，旧结果随之丢弃重算。
+_CHECKPOINT_SCHEMA = 1
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass(frozen=True, slots=True)
@@ -60,23 +69,94 @@ class _Totals:
 
 @dataclass(slots=True)
 class _SourceState:
-    """一个 Session 来源已闭合 Turn 的累计量；进程内缓存，重启后按需重算。"""
+    """一个 Session 来源已闭合 Turn 的累计量；由检查点跨重启保留。"""
 
     after_seq: int = -1
     totals: _Totals = field(default_factory=_Totals)
     recent: deque[TurnUsage] = field(default_factory=lambda: deque(maxlen=_RECENT_TURNS))
     outputs: dict[str, int] = field(default_factory=dict[str, int])
+    # 以下两项只在内存：尚未写入检查点的输出用量，以及检查点里这个来源的旧输出是否作废。
+    unsaved: dict[str, int] = field(default_factory=dict[str, int])
+    reset: bool = False
+
+
+class _Checkpoint:
+    """派生检查点：只存已闭合 Turn 的消费位置与累计量，删除文件即从头重扫。"""
+
+    def __init__(self, path: Path) -> None:
+        self._path = path
+
+    # 版本不符或文件损坏时丢弃整份检查点，由下一次扫描重建。
+    def load(self) -> tuple[dict[str, int], dict[tuple[str, str], _SourceState]]:
+        if not self._path.exists():
+            return {}, {}
+        try:
+            with closing(sqlite3.connect(self._path)) as connection:
+                version = connection.execute("PRAGMA user_version").fetchone()[0]
+                if version != _CHECKPOINT_SCHEMA:
+                    raise sqlite3.DatabaseError(f"checkpoint schema {version}")
+                heads = dict(connection.execute("SELECT session_id, head FROM heads"))
+                sources: dict[tuple[str, str], _SourceState] = {}
+                for session_id, source, after, turns, prompt, hit, recent in connection.execute(
+                        "SELECT session_id, source, after_seq, turns, prompt_tokens, hit_tokens, recent FROM sources"):
+                    sources[(session_id, source)] = _SourceState(
+                        after, _Totals(turns, prompt, hit),
+                        deque((TurnUsage(**item) for item in json.loads(recent)), maxlen=_RECENT_TURNS))
+                for session_id, source, message_id, tokens in connection.execute(
+                        "SELECT session_id, source, message_id, tokens FROM outputs"):
+                    state = sources.get((session_id, source))
+                    if state is not None:
+                        state.outputs[message_id] = tokens
+            return heads, sources
+        except (sqlite3.DatabaseError, ValueError, TypeError) as error:
+            logger.warning("cache usage checkpoint discarded: %s", error)
+            self._path.unlink(missing_ok=True)
+            return {}, {}
+
+    # 1. 被移除的 Session 整体删除；2. 变化的来源整行替换，重置过的先删旧输出，输出只追加未写入的；
+    # 3. head 最后写，保证不越过已写入的累计量。
+    def save(self, heads: Mapping[str, int], sources: Mapping[tuple[str, str], _SourceState],
+             removed: Iterable[str]) -> None:
+        self._path.parent.mkdir(parents=True, exist_ok=True)
+        with closing(sqlite3.connect(self._path)) as connection, connection:
+            _ = connection.executescript(f"""
+                CREATE TABLE IF NOT EXISTS heads (session_id TEXT PRIMARY KEY, head INTEGER NOT NULL);
+                CREATE TABLE IF NOT EXISTS sources (session_id TEXT, source TEXT, after_seq INTEGER NOT NULL,
+                    turns INTEGER NOT NULL, prompt_tokens INTEGER NOT NULL, hit_tokens INTEGER NOT NULL,
+                    recent TEXT NOT NULL, PRIMARY KEY (session_id, source));
+                CREATE TABLE IF NOT EXISTS outputs (session_id TEXT, source TEXT, message_id TEXT,
+                    tokens INTEGER NOT NULL, PRIMARY KEY (session_id, message_id));
+                PRAGMA user_version = {_CHECKPOINT_SCHEMA};
+            """)
+            for session_id in removed:
+                for table in ("heads", "sources", "outputs"):
+                    _ = connection.execute(f"DELETE FROM {table} WHERE session_id = ?", (session_id,))
+            for (session_id, source), state in sources.items():
+                if state.reset:
+                    _ = connection.execute("DELETE FROM outputs WHERE session_id = ? AND source = ?", (session_id, source))
+                _ = connection.execute("INSERT OR REPLACE INTO sources VALUES (?, ?, ?, ?, ?, ?, ?)", (
+                    session_id, source, state.after_seq, state.totals.turns, state.totals.prompt_tokens,
+                    state.totals.hit_tokens, json.dumps([asdict(turn) for turn in state.recent], ensure_ascii=False)))
+                _ = connection.executemany("INSERT OR REPLACE INTO outputs VALUES (?, ?, ?, ?)",
+                                       ((session_id, source, message_id, tokens)
+                                        for message_id, tokens in state.unsaved.items()))
+            _ = connection.executemany("INSERT OR REPLACE INTO heads VALUES (?, ?)", heads.items())
 
 
 class CacheUsage:
     """Turn 引用的模型调用用量；消息与 Turn 投影在每次调用时借用。"""
 
-    def __init__(self, ctx: Context, store: ModelsStore) -> None:
+    def __init__(self, ctx: Context, store: ModelsStore, checkpoint: Path) -> None:
         self._ctx = ctx
         self._store = store
         self._lock = threading.Lock()
+        self._checkpoint = _Checkpoint(checkpoint)
+        self._restored = False
         self._heads: dict[str, int] = {}
         self._sources: dict[tuple[str, str], _SourceState] = {}
+        self._dirty_heads: set[str] = set()
+        self._dirty_sources: set[tuple[str, str]] = set()
+        self._removed: set[str] = set()
 
     async def overview(self) -> dict[str, object]:
         with self._ctx.borrow(MESSAGE_CATALOG) as catalog, self._ctx.borrow(TURN_PROJECTION) as projection:
@@ -94,9 +174,12 @@ class CacheUsage:
     def _overview(self, catalog: MessageCatalog, projection: TurnProjection) -> dict[str, object]:
         """按需推进扫描，所有当前 Session 完成后才返回完整统计。"""
         with self._lock:
+            self._restore()
             # 无过滤目录保留软删 Session；按两种可见性读取才是当前有效集合。
             heads = dict(catalog.snapshot_heads(visibility="listed"))
             heads.update(catalog.snapshot_heads(visibility="internal"))
+            self._removed.update(key for key in self._heads if key not in heads)
+            self._removed.update(key[0] for key in self._sources if key[0] not in heads)
             self._heads = {key: head for key, head in self._heads.items() if key in heads}
             self._sources = {key: state for key, state in self._sources.items() if key[0] in heads}
             # 冷读在闭合 Turn 边界让出请求；下一次接着已有消费位置继续。
@@ -106,6 +189,7 @@ class CacheUsage:
                 if time.monotonic() >= deadline:
                     break
             scanned = sum(self._heads.get(session_id) == head for session_id, head in heads.items())
+            self._flush()
             if scanned < len(heads):
                 return {"complete": False, "scanned_sessions": scanned, "total_sessions": len(heads)}
             states = tuple((source in _PROACTIVE_SOURCES, state) for (_, source), state in self._sources.items())
@@ -140,7 +224,9 @@ class CacheUsage:
         if message is None or message.source in _PROACTIVE_SOURCES:
             return None
         with self._lock:
+            self._restore()
             self._refresh(catalog, projection, session_id, reader.head())
+            self._flush()
             state = self._sources.get((session_id, message.source))
             return None if state is None else state.outputs.get(message_id)
 
@@ -150,11 +236,18 @@ class CacheUsage:
         *, deadline: float | None = None,
     ) -> None:
         """从上次闭合位置读取；时间预算只在完整 Turn 边界生效。"""
-        if self._heads.get(session_id) == head:
+        stored = self._heads.get(session_id)
+        if stored == head:
             return
+        # 账本回退到检查点之前（恢复备份或替换）：整个 Session 重算，已消失的来源一并清掉。
+        if stored is not None and head < stored:
+            self._drop_session(session_id)
         reader = catalog.reader(session_id)
         for source in sorted(reader.source_names()):
             state = self._sources.setdefault((session_id, source), _SourceState())
+            # 账本被替换或回退到检查点之前：这个来源从头重算。
+            if state.after_seq > head:
+                state = self._sources[(session_id, source)] = _SourceState(reset=True)
             facts: dict[str, _Fact] = {}
             after = state.after_seq
             stopped = False
@@ -178,9 +271,47 @@ class CacheUsage:
             usages = self._store.read_call_usages([identity for identity in call_ids if identity is not None])
             for turn in turns:
                 _record(state, session_id, source, turn, facts, usages)
+            if turns or state.reset:
+                self._dirty_sources.add((session_id, source))
             if stopped:
                 return
         self._heads[session_id] = head
+        self._dirty_heads.add(session_id)
+
+    # 内存与检查点里都丢掉这个 Session，之后按新账本重建。
+    def _drop_session(self, session_id: str) -> None:
+        self._removed.add(session_id)
+        _ = self._heads.pop(session_id, None)
+        self._dirty_heads.discard(session_id)
+        for key in [key for key in self._sources if key[0] == session_id]:
+            del self._sources[key]
+            self._dirty_sources.discard(key)
+
+    # 首次访问时从检查点恢复；之后只在内存推进。
+    def _restore(self) -> None:
+        if self._restored:
+            return
+        self._restored = True
+        self._heads, self._sources = self._checkpoint.load()
+
+    # 写入本轮变化；失败只记日志，内存结果仍然有效，下次再写。
+    def _flush(self) -> None:
+        if not (self._dirty_heads or self._dirty_sources or self._removed):
+            return
+        sources = {key: self._sources[key] for key in self._dirty_sources if key in self._sources}
+        try:
+            self._checkpoint.save(
+                {key: self._heads[key] for key in self._dirty_heads if key in self._heads}, sources, self._removed,
+            )
+        except (sqlite3.Error, OSError):
+            logger.exception("cache usage checkpoint write failed")
+            return
+        for state in sources.values():
+            state.unsaved.clear()
+            state.reset = False
+        self._dirty_heads.clear()
+        self._dirty_sources.clear()
+        self._removed.clear()
 
 
 # 1. 闭合 Turn 的全部调用都有 exact 用量才计入；未知不能当零。
@@ -199,7 +330,7 @@ def _record(
         return
     prompt, hit, output = (_sum(exact, name) for name in ("input_tokens", "cached_input_tokens", "output_tokens"))
     if output is not None and outputs and source not in _PROACTIVE_SOURCES:
-        state.outputs[outputs[-1][0]] = output
+        state.outputs[outputs[-1][0]] = state.unsaved[outputs[-1][0]] = output
     if prompt is None:
         return
     final = outputs[-1][1] if outputs else members[-1][1]
