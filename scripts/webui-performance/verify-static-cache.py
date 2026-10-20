@@ -26,6 +26,8 @@ async def verify(root: Path) -> None:
     (assets / "chat-app-mount.js").write_text("export {};", encoding="utf-8")
     (assets / "index-12345678.js").write_text("export {};", encoding="utf-8")
     (assets / "theme.json").write_text("{}", encoding="utf-8")
+    large_body = "/* compression scenario */" + "x" * 10000
+    (assets / "large-12345678.js").write_text(large_body, encoding="utf-8")
     app = FastAPI()
     runpy.run_path(str(module))["register_chat_assets"](app, assets)
 
@@ -53,6 +55,38 @@ async def verify(root: Path) -> None:
         assert response.status_code == 308
         assert response.headers["location"] == "/#models"
         assert response.headers["cache-control"] == "no-store"
+
+        # 3. 编码变体与条件请求必须保持一致，gzip 的校验器不能续传原文字节。
+        path = "/assets/large-12345678.js"
+        plain = await client.get(path, headers={"Accept-Encoding": "identity"})
+        zipped = await client.get(path, headers={"Accept-Encoding": "gzip"})
+        assert plain.text == zipped.text == large_body
+        assert "content-encoding" not in plain.headers
+        assert zipped.headers["content-encoding"] == "gzip"
+        assert plain.headers["etag"] != zipped.headers["etag"]
+        for response in (plain, zipped):
+            assert response.headers["vary"] == "Accept-Encoding"
+        for encoding, original in (("identity", plain), ("gzip", zipped)):
+            same = await client.get(path, headers={"Accept-Encoding": encoding,
+                                                  "If-None-Match": original.headers["etag"]})
+            assert same.status_code == 304 and not same.content
+            assert same.headers["vary"] == "Accept-Encoding"
+        changed_encoding = await client.get(path, headers={"Accept-Encoding": "gzip",
+                                                          "If-None-Match": plain.headers["etag"]})
+        assert changed_encoding.status_code == 200 and changed_encoding.text == large_body
+        for quality in ("0", "bad", "", "NaN", "2"):
+            refused = await client.get(path, headers={"Accept-Encoding": f"gzip;q={quality}"})
+            assert refused.status_code == 200 and "content-encoding" not in refused.headers
+        head = await client.head(path, headers={"Accept-Encoding": "gzip"})
+        assert head.status_code == 200 and not head.content
+        assert head.headers["etag"] == zipped.headers["etag"]
+        assert head.headers["content-length"] == zipped.headers["content-length"]
+        for validator, expected in ((plain.headers["etag"], 206), (zipped.headers["etag"], 200)):
+            resumed = await client.get(path, headers={"Accept-Encoding": "gzip", "Range": "bytes=0-15",
+                                                     "If-Range": validator})
+            assert resumed.status_code == expected
+            assert "content-encoding" not in resumed.headers
+            assert resumed.text == (large_body[:16] if expected == 206 else large_body)
     print("真实 ASGI 静态缓存场景通过")
 
 

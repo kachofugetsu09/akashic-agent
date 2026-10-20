@@ -6,8 +6,8 @@ import re
 
 from fastapi import FastAPI, Request
 from fastapi.responses import Response
-from fastapi.staticfiles import StaticFiles
 from core.common.file_io import run_file_io
+from plugins.ui.contract import CompressedStaticFiles
 
 logger = logging.getLogger(__name__)
 
@@ -73,11 +73,11 @@ def create_dashboard_app(static_dir: Path) -> FastAPI:
     # Vite 构建产物被 gitignore，新 clone 或 CI 环境可能没有该目录。
     # 挂载时不写代码目录，避免 app 创建依赖构建是否执行；
     # dashboard_index() 会在入口文件缺失时报告错误。
-    app.mount("/dashboard/assets", StaticFiles(directory=static_dir, check_dir=False),
+    app.mount("/dashboard/assets", CompressedStaticFiles(directory=static_dir, check_dir=False),
               name="dashboard-public-assets")
     app.mount(
         "/assets",
-        StaticFiles(directory=static_dir, check_dir=False),
+        CompressedStaticFiles(directory=static_dir, check_dir=False),
         name="dashboard-assets",
     )
     # Vite 会在 /assets 下生成带内容哈希的资源 URL,因此直接原样提供 index.html;
