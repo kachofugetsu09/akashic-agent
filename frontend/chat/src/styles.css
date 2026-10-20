@@ -739,8 +739,10 @@ input {
 .navigation-row-menu__item[data-highlighted] { background: var(--ak-paper-sheet); }
 
 @media (hover: hover) and (pointer: fine) {
+  /* 会话行的 ⋯ 与主按钮紧邻用 +；项目行的 ⋯ 与项目名之间隔着新建钮，用 ~。 */
   .navigation-menu-row:hover > .navigation-menu-trigger,
-  .navigation-menu-row > .conversation-session:focus-visible ~ .navigation-menu-trigger { opacity: 1; pointer-events: auto; }
+  .navigation-menu-row > .conversation-session:focus-visible + .navigation-menu-trigger,
+  .navigation-menu-row > .navigation-group__open:focus-visible ~ .navigation-menu-trigger { opacity: 1; pointer-events: auto; }
   .navigation-menu-row:hover > .conversation-session,
   .navigation-menu-row > .conversation-session:focus-visible { padding-inline-end: 44px; }
 }
