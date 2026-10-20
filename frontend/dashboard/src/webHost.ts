@@ -879,12 +879,32 @@ function importModule(
   return importModuleFromBytes(module);
 }
 
+// 不同模块常携带字节相同的样式表（共享底包分别打包）：按样式哈希引用计数共享同一个
+// <style>，最后一个使用者释放才移除。@scope 锚点是内容哈希，宿主元素本就各自带同一哈希。
+const installedStyles = new Map<string, { element: HTMLStyleElement; users: number }>();
+
 function installStyle(module: WebModulePayload): Disposer {
+  const scope = styleScopeId(module);
+  const existing = installedStyles.get(scope);
+  if (existing && existing.element.isConnected) {
+    existing.users += 1;
+    return once(() => releaseStyle(scope));
+  }
   const style = document.createElement("style");
   style.dataset.akashicModuleStyle = module.pluginId;
-  style.textContent = `@scope ([data-akashic-style="${styleScopeId(module)}"]) {\n${module.stylesheet}\n}`;
+  style.textContent = `@scope ([data-akashic-style="${scope}"]) {\n${module.stylesheet}\n}`;
   document.head.appendChild(style);
-  return once(() => style.remove());
+  installedStyles.set(scope, { element: style, users: 1 });
+  return once(() => releaseStyle(scope));
+}
+
+function releaseStyle(scope: string): void {
+  const installed = installedStyles.get(scope);
+  if (!installed) return;
+  installed.users -= 1;
+  if (installed.users > 0) return;
+  installedStyles.delete(scope);
+  installed.element.remove();
 }
 
 function styleScopeId(module: WebModulePayload): string {
