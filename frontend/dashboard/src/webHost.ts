@@ -9,6 +9,7 @@ import type {
 } from "@akashic/web-ui-v1";
 import { sha256 } from "@noble/hashes/sha2.js";
 import { bytesToHex } from "@noble/hashes/utils.js";
+import { WebDataRegistry } from "./webData";
 
 type Disposer = WebUiDisposer;
 type MountCardinality = WebMountCardinality;
@@ -81,6 +82,7 @@ class BrowserCatalogSession implements WebHostSession {
   private closed = false;
   private staleCatalog = false;
   private staleNotice: HTMLElement | null = null;
+  private readonly data = new WebDataRegistry();
 
   constructor(readonly bootstrap: WebUiBootstrap) {
     this.mounts.set("web.root.v1", {
@@ -151,6 +153,7 @@ class BrowserCatalogSession implements WebHostSession {
     this.rejectUnresolvedInjections();
     this.verifyContractUse();
     this.admissionOpen = false;
+    this.data.warmWhenIdle();
   }
 
   renderRoot(host: HTMLElement): Disposer {
@@ -238,7 +241,19 @@ class BrowserCatalogSession implements WebHostSession {
   }
 
   private contextFor(owner: ModuleActivation): WebHostContextV1 {
+    const keys = new Set<string>();
     return {
+      data: {
+        resource: (key, load, options) => {
+          if (owner.disposed) throw new Error("web module is disposed");
+          if (keys.has(key)) throw new Error(`duplicate resource ${key}`);
+          keys.add(key);
+          // 快照按模块字节区分：换了代码就不读旧形状的数据。
+          const created = this.data.create(`${owner.module.pluginId}:${owner.module.moduleSha256}`, key, load, options);
+          owner.effects.push(once(created.dispose));
+          return created.resource;
+        },
+      },
       http: {
         request: (path, init) => this.request(owner, path, init),
         webSocketUrl: (path) => this.webSocketUrl(owner, path),

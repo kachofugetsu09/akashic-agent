@@ -18,6 +18,7 @@
 
 - `ctx.ui.inject(挂载点, mount => mount.register(entry))`：向挂载点登记一项，返回清理函数。
 - `ctx.http.request(path, init)`：请求本插件后端路由；`ctx.http.webSocketUrl(path)` 构造 WebSocket 地址。
+- `ctx.data.resource(key, load, { warm })`：模块自己拥有的数据，在 `activate` 里创建，生命周期与模块相同。`render` 先画 `resource.current`，再调 `resource.refresh()` 在后台核对；`subscribe` 在值变化时通知（内容没变不通知）。`warm: true` 让宿主空闲时预取，首次打开也不必等网络；成功值留在本标签页，刷新后先画上次的结果。不要在 `render` 里直接 `fetch` 后再画，见 [0127](../../../docs/decisions/0127-web-modules-own-their-data.md)。
 - `entry.render(host, view, props)`：把内容画进 `host`，返回清理函数。
 
 ## 挂载点

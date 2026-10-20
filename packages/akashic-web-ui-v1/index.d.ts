@@ -89,7 +89,32 @@ export interface WebMountRegistration {
   register(entry: WebEntry): WebUiDisposer;
 }
 
+export interface WebResourceOptions {
+  /** The host reads it once while idle after startup, so the first page open already has a value. */
+  warm?: boolean;
+}
+
+/**
+ * Data owned by a web module rather than by one rendered page: create it in `activate(ctx)`,
+ * read `current` synchronously in `render`, and call `refresh()` to revalidate in the background.
+ */
+export interface WebResource<T> {
+  /** Last successful value, restored from this tab's snapshot after a reload; undefined before the first read. */
+  readonly current: T | undefined;
+  /** Error of the latest failed read; cleared by the next success. `current` keeps the previous value. */
+  readonly error: Error | undefined;
+  subscribe(listener: () => void): WebUiDisposer;
+  /** Joins a read already in flight; `current` keeps its value until the read succeeds. */
+  refresh(): Promise<T>;
+  /** Accept a value the module already holds (for example a write's response) without reading again. */
+  set(value: T): void;
+}
+
 export interface WebHostContextV1 {
+  readonly data: {
+    /** `key` is unique within the module; `load` receives a signal aborted when the module is disposed. */
+    resource<T>(key: string, load: (signal: AbortSignal) => Promise<T>, options?: WebResourceOptions): WebResource<T>;
+  };
   readonly http: {
     request(path: string, init?: RequestInit): Promise<Response>;
     /** Build one exact-generation WebSocket URL for this module's dashboard route. */
