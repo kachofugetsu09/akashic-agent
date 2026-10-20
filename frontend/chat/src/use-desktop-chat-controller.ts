@@ -627,11 +627,21 @@ export function useDesktopChatController() {
     connectRef.current = connect;
   }, [connect]);
 
+  // 只有真正换代（已有非空目录变成新修订）才重建传输：旧代推送状态随之失效、
+  // 基线帧重取。首次目录到达（"" → 首个修订）时连接上的基线帧仍然有效——插件推送按
+  // (plugin, revision, session) 键入 pushed，订阅端自取最新值——这时重建只是重复一轮
+  // 握手、基线订阅与目录取证，慢链路下每次启动白付一整波重复请求与 RTT。
+  // 卸载断连由独立的 cleanup 负责，目录到达不再经过 effect 反跑误杀健康连接。
+  const catalogRevisionRef = useRef<string | null>(null);
   useEffect(() => {
-    // 首次目录和真正换代都重取 reader，覆盖启动中途换代；界面激活进度不重建传输。
-    connect();
-    return closeConnection;
+    const revision = pluginCatalog.catalogRevision;
+    const previous = catalogRevisionRef.current;
+    catalogRevisionRef.current = revision;
+    if (previous !== null && previous !== "" && previous !== revision) closeConnection();
+    if (!socketRef.current && !connectionTaskRef.current) connect();
   }, [closeConnection, connect, pluginCatalog.catalogRevision]);
+
+  useEffect(() => () => closeConnection(), [closeConnection]);
 
   // 就绪后继续等待在途请求；只有旧请求失败才补发一次，成功结果直接复用。
   const startupRequestsRef = useRef<Partial<Record<"sessions", Promise<void>>>>({});

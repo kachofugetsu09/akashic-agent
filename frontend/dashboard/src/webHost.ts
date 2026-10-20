@@ -618,9 +618,14 @@ export async function startWebHost(host: HTMLElement): Promise<WebHostSession> {
   // 运行时下载与目录读取彼此独立；插件执行仍等共享运行时发布完成。
   const runtimeReady = import("./design/runtime").then((runtime) => runtime.exposeRuntime());
   const open = async (): Promise<BrowserCatalogSession> => {
+    // 消费 index.html 内联脚本的预热请求（一次性钩子，取走即删；重试与无钩子的
+    // 夹具/桌面页面自行 fetch）。响应体只读一次，不能共享已消费的 Response。
+    const windowWithPrefetch = window as { __akashicWebUiBootstrap?: Promise<Response> };
+    const prefetched = windowWithPrefetch.__akashicWebUiBootstrap;
+    delete windowWithPrefetch.__akashicWebUiBootstrap;
     const [, response] = await Promise.all([
       runtimeReady,
-      fetch("/api/chat/web-ui/bootstrap", {headers: {Accept: "application/json"}, cache: "no-cache"}),
+      prefetched ?? fetch("/api/chat/web-ui/bootstrap", {headers: {Accept: "application/json"}, cache: "no-cache"}),
     ]);
     if (!response.ok) throw new Error(`界面目录暂时不可用（${response.status}）`);
     const next = new BrowserCatalogSession(parseBootstrap(await response.json()));

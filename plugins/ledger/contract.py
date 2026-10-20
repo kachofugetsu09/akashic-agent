@@ -3,7 +3,7 @@ from __future__ import annotations
 
 import json
 import re
-from collections.abc import AsyncGenerator, Awaitable, Callable, Coroutine, Iterable, Iterator, Mapping, Sequence
+from collections.abc import AsyncGenerator, Awaitable, Callable, Coroutine, Iterable, Iterator, Mapping, Sequence, Set as AbstractSet
 from contextlib import AbstractAsyncContextManager, AbstractContextManager
 from dataclasses import dataclass, field
 from datetime import datetime
@@ -194,9 +194,11 @@ class Message:
             raise type(error)(
                 f"Session {self.session_id} Message {self.message_id} metadata 损坏: {error}"
             ) from error
-        if not all(
-            isinstance(value, str) and value
-            for value in (self.message_id, self.session_id, self.author, self.source)
+        if not (
+            isinstance(self.message_id, str) and self.message_id
+            and isinstance(self.session_id, str) and self.session_id
+            and isinstance(self.author, str) and self.author
+            and isinstance(self.source, str) and self.source
         ):
             raise ValueError("消息身份、Session、作者和来源不能为空")
         if type(self.seq) is not int or self.seq < 0:
@@ -268,7 +270,12 @@ def encode_body(body: Body, *, allow_legacy: bool = True) -> str:
     )
 
 
-def _object(value: object, fields: set[str]) -> dict[str, object]:
+_CALL_REF_FIELDS = frozenset({"message_id", "part_index"})
+_PART_CONTENT_FIELDS = frozenset({"kind", "value"})
+_PART_TOOL_CALL_FIELDS = frozenset({"kind", "binding_id", "arguments"})
+
+
+def _object(value: object, fields: AbstractSet[str]) -> dict[str, object]:
     if not isinstance(value, dict) or set(cast(dict[object, object], value)) != fields:
         raise ValueError(f"消息对象字段必须为 {sorted(fields)}")
     return cast(dict[str, object], value)
@@ -279,11 +286,11 @@ def _part(value: object) -> Part:
         raise ValueError("消息 part 必须是对象")
     raw = cast(dict[str, object], value)
     if raw.get("kind") == "tool_call":
-        data = _object(raw, {"kind", "binding_id", "arguments"})
+        data = _object(raw, _PART_TOOL_CALL_FIELDS)
         return ToolCall(
             cast(str, data["binding_id"]), cast(Mapping[str, object], data["arguments"])
         )
-    data = _object(raw, {"kind", "value"})
+    data = _object(raw, _PART_CONTENT_FIELDS)
     return ContentPart(cast(str, data["kind"]), data["value"])
 
 
@@ -296,28 +303,34 @@ def _unique_fields(pairs: list[tuple[str, object]]) -> dict[str, object]:
     return result
 
 
+_BODY_JSON = json.JSONDecoder(object_pairs_hook=_unique_fields)
+
+_CONTROL_FIELDS = frozenset({"kind", "action", "through_seq", "reason"})
+_BODY_FIELDS = {
+    "input": frozenset({"kind", "parts"}),
+    "output": frozenset({"kind", "parts", "finish"}),
+    "tool_result": frozenset({"kind", "parts", "call_ref", "outcome"}),
+}
+
+
 def decode_body(payload: str) -> Body:
     """在持久化边界拒绝未知结构；值域与不变量归消息构造函数。"""
-    raw: object = json.loads(payload, object_pairs_hook=_unique_fields)
+    # 共享 decoder 不持有解析状态；长会话整段恢复时避免逐条重建。
+    raw: object = _BODY_JSON.decode(payload)
     if not isinstance(raw, dict):
         raise ValueError("消息 body 必须是对象")
     data = cast(dict[str, object], raw)
     kind = data.get("kind")
     if kind == "control":
-        row = _object(data, {"kind", "action", "through_seq", "reason"})
+        row = _object(data, _CONTROL_FIELDS)
         return Control(
             cast(Literal["pause", "resume", "abandon", "failure"], row["action"]),
             cast(int, row["through_seq"]),
             cast(str | None, row["reason"]),
         )
-    fields = {
-        "input": {"kind", "parts"},
-        "output": {"kind", "parts", "finish"},
-        "tool_result": {"kind", "parts", "call_ref", "outcome"},
-    }
-    if not isinstance(kind, str) or kind not in fields:
+    if not isinstance(kind, str) or kind not in _BODY_FIELDS:
         raise ValueError("消息 body kind 无效")
-    row = _object(data, fields[kind])
+    row = _object(data, _BODY_FIELDS[kind])
     raw_parts = row["parts"]
     if not isinstance(raw_parts, list):
         raise ValueError("消息 parts 必须是数组")
@@ -329,7 +342,7 @@ def decode_body(payload: str) -> Body:
             parts,
             cast(Literal["continue", "complete", "quiet"], row["finish"]),
         )
-    call = _object(row["call_ref"], {"message_id", "part_index"})
+    call = _object(row["call_ref"], _CALL_REF_FIELDS)
     result = ToolResult(
         CallRef(cast(str, call["message_id"]), cast(int, call["part_index"])),
         cast(Literal["success", "denied", "error", "interrupted"],

@@ -144,7 +144,8 @@ async def apply(ctx: Context) -> None:
 
     async def compact(snapshot: tuple[Message, ...], materials: MaterialData, request: ModelRequest,
                       model: BoundChatModel, projection: ContextModel, *, source: str, force: bool,
-                      on_status: ReductionStatus | None = None) -> MaterialData | None:
+                      on_status: ReductionStatus | None = None,
+                      summary_limit: int | None = None) -> MaterialData | None:
         """按已结算工具批次选旧前缀，再原子发布一份真实摘要。"""
         # 1. 容量与近期保留均按当前已固定的业务模型判断。
         reminder = context.reminder_content(materials)
@@ -178,8 +179,10 @@ async def apply(ctx: Context) -> None:
         else:
             covered = context.summary_range(snapshot, parent.source_message_ids)
             origin, start = covered.start, covered.stop
+        # 摘要候选只取 summary_limit 之前的前缀；容量估算与原文尾部仍用完整请求视图。
         groups = closed_groups(
-            snapshot, turns, settled_prefixes=context.settled_prefixes, after=start,
+            snapshot if summary_limit is None else snapshot[:summary_limit],
+            turns, settled_prefixes=context.settled_prefixes, after=start,
         )
         # 没有新的已结算批次时，0 表示只重写父摘要本身。
         sizes = range(len(groups), 0, -1) if groups else range(0 if parent is not None else -1, -1, -1)
@@ -309,7 +312,8 @@ async def apply(ctx: Context) -> None:
 
     async def reduce(snapshot: tuple[Message, ...], materials: MaterialData, request: ModelRequest,
                      model: BoundChatModel, projection: ContextModel, *, source: str, force: bool,
-                     on_status: ReductionStatus | None = None) -> MaterialData | None:
+                     on_status: ReductionStatus | None = None,
+                     summary_limit: int | None = None) -> MaterialData | None:
         """软水位失败可继续；硬容量或 provider 明确拒绝必须保留失败原因。"""
         window = projection.context_window
         before = projection.estimate(request)
@@ -328,7 +332,7 @@ async def apply(ctx: Context) -> None:
 
         try:
             return await compact(snapshot, materials, request, model, projection,
-                                 source=source, force=force, on_status=report)
+                                 source=source, force=force, on_status=report, summary_limit=summary_limit)
         except (RuntimeError, TimeoutError, SummaryError) as error:
             if not (ModelError.matches(error, ContextLengthError, ModelTimeoutError, RateLimitError, TransportError) or isinstance(error, SummaryError)):
                 raise
