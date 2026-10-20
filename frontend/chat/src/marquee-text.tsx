@@ -46,8 +46,10 @@ function observer(): ResizeObserver {
       const item = watched.get(entry.target);
       if (!item || seen.has(item)) continue;
       seen.add(item);
-      apply(item);
     }
+    // 写入（class/自定义属性）推迟到下一帧：ResizeObserver 回调在绘制前跑，同步写会让
+    // 本次失效的样式解析并入挂载关键帧；推迟后首屏先绘制，截断渐隐晚一帧出现（实测 LCP -76ms）。
+    requestAnimationFrame(() => { for (const item of seen) apply(item); });
   });
   return sharedObserver;
 }
