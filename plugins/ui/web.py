@@ -9,7 +9,6 @@ from functools import lru_cache
 from importlib import metadata as importlib_metadata
 from pathlib import Path
 
-import tree_sitter
 import tree_sitter_javascript
 from tree_sitter import Language, Node, Parser
 
@@ -238,7 +237,7 @@ def _validation_fingerprint() -> str | None:
     try:
         algorithm = Path(__file__).read_bytes()
         grammar = importlib_metadata.version("tree-sitter-javascript").encode()
-        runtime = getattr(tree_sitter, "__version__", "").encode()
+        runtime = importlib_metadata.version("tree-sitter").encode()
     except (OSError, importlib_metadata.PackageNotFoundError):
         return None
     return hashlib.sha256(runtime + b"\0" + grammar + b"\0" + algorithm).hexdigest()[:16]
@@ -254,7 +253,12 @@ def _validation_fact_path(source: bytes, fact_root: Path | None) -> Path | None:
 def _validation_fact_verified(source: bytes, fact_root: Path | None) -> bool:
     """同一算法与语法版本是否已校验通过这份源码；只读事实。"""
     path = _validation_fact_path(source, fact_root)
-    return path is not None and path.is_file()
+    if path is None:
+        return False
+    try:
+        return path.read_bytes() == b"1"
+    except OSError:
+        return False
 
 
 # 只读数据目录或并发写失败时静默放弃缓存,校验仍然每次现算。
