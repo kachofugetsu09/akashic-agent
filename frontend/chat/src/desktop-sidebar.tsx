@@ -778,14 +778,18 @@ function SidebarRailResizer({ rail, sidebarRef }: {
       setDragging(true);
     }}
     onPointerMove={(event) => {
-      if (dragging) rail.dragTo(event.clientX);
+      if (!dragging) return;
+      // 拖拽中宽度不经过 React state（见 use-sidebar-rail），aria-valuenow 直写保持同步。
+      const next = rail.dragTo(event.clientX);
+      if (next !== null) event.currentTarget.setAttribute("aria-valuenow", String(Math.round(next * 2) / 2));
     }}
     onPointerUp={(event) => {
       if (!dragging) return;
       event.currentTarget.releasePointerCapture(event.pointerId);
       setDragging(false);
+      rail.dragEnd();
     }}
-    onPointerCancel={() => setDragging(false)}
+    onPointerCancel={() => { setDragging(false); rail.dragEnd(); }}
     onDoubleClick={(event) => {
       event.preventDefault();
       rail.reset();

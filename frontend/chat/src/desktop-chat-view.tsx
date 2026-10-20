@@ -46,8 +46,10 @@ function lastUserInput(messages: readonly TimelineMessage[]): string {
 
 export function DesktopChatView({ controller }: DesktopChatViewProps) {
   const theme = useTheme();
-  const rail = useSidebarRail();
+  
   const composerApi = useRef<ComposerApi | null>(null);
+  const shellRef = useRef<HTMLDivElement | null>(null);
+  const rail = useSidebarRail(shellRef);
   // 键盘模态标记：替代目录行 CSS 里的 :has(:focus-visible)。Blink 每次按键都会为
   // :focus-visible 试探重算所有带该 :has() 的行（行数级成本），而模态类只在键鼠切换时翻转一次。
   useEffect(() => {
@@ -141,7 +143,7 @@ export function DesktopChatView({ controller }: DesktopChatViewProps) {
 
   return (
     <main className="chat-shell">
-      <div className="chat-shell-body" style={rail.style}>
+      <div className="chat-shell-body" ref={shellRef} style={rail.style}>
         <DesktopSidebar
             surface={surface} sessions={sidebarSessions}
             activeSessionId={activeSessionId} pendingSessionId={pendingSessionId} chatReady={chatReady}
