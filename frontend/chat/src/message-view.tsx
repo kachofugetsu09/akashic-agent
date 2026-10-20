@@ -714,22 +714,19 @@ function UserTextClamp({ enabled, children }: { enabled: boolean; children: Reac
     // 明显不到 12 行的短输入不读几何、不挂观察器：补载历史时这些消息多在跳过渲染的区域里，逐条读 scrollHeight
     // 会逐条强制布局；历史消息带 content-visibility:auto，逐条观察会让长会话滚动多跑布局。
     if (!mayExceedClamp(element)) return;
-    let frame = 0;
     const measure = () => {
-      frame = 0;
       setOverflowing(element.scrollHeight - element.clientHeight > 1);
     };
-    const schedule = () => { if (!frame) frame = window.requestAnimationFrame(measure); };
-    measure();
+    // 首帧的裁剪由 CSS 无条件保证（.user-text-clamp:not([data-state="open"]) 恒裁 12 行），
+    // 本处只决定“展开全部”按钮与末两行渐隐，所以不在注册时同步测量：ResizeObserver 回调在
+    // 布局之后、绘制之前跑，此时读 scrollHeight 不再强制重排（design.md 3.18），零强制布局且首帧完成。
+    // 曾经同步测量，切入长会话时可见区每条长提问一次，实测占切换 CPU 的 ~19%（measure，CPU×4）。
     // 可能超出的这一小部分观察折叠框与里面不限高的内容层：窗口变宽变窄、字体换用、图片加载、富渲染逐步换出
     // （源码→高亮代码块）都会改内容层高度。只看框不够：恰好 12 行的正文再晚到一张图，框仍是 12 行高，变的只有内容。
-    const observer = new ResizeObserver(schedule);
+    const observer = new ResizeObserver(measure);
     observer.observe(element);
     observer.observe(inner);
-    return () => {
-      observer.disconnect();
-      window.cancelAnimationFrame(frame);
-    };
+    return () => observer.disconnect();
   }, [enabled, expanded]);
   if (!enabled) return <>{children}</>;
   const onToggle = () => {
