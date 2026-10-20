@@ -740,9 +740,9 @@ input {
 
 @media (hover: hover) and (pointer: fine) {
   .navigation-menu-row:hover > .navigation-menu-trigger,
-  html.ak-modality-keyboard .navigation-menu-row:focus-within > .navigation-menu-trigger { opacity: 1; pointer-events: auto; }
+  .navigation-menu-row > .conversation-session:focus-visible ~ .navigation-menu-trigger { opacity: 1; pointer-events: auto; }
   .navigation-menu-row:hover > .conversation-session,
-  html.ak-modality-keyboard .navigation-menu-row:focus-within > .conversation-session { padding-inline-end: 44px; }
+  .navigation-menu-row > .conversation-session:focus-visible { padding-inline-end: 44px; }
 }
 
 :where([data-chat-width~="820"], [data-chat-touch]) {
@@ -982,10 +982,11 @@ input {
 .group-session--new > span { padding-inline-start: 3px; }
 
 /* 分组内置顶：行尾一枚小图钉，悬停或聚焦时让位给行菜单。
-   键盘聚焦经 .ak-modality-keyboard:focus-within 表达：:has(:focus-visible) 会让 Blink 每次按键重算全部行。 */
+   键盘聚焦直接用 :focus-visible（原生键盘语义，只重算焦点行）：祖先模态类翻转会
+   全树重算（2002 行实测约 1.1s），:has(:focus-visible) 则每次按键重算全部行。 */
 .conversation-session__pin { flex: 0 0 auto; color: var(--chat-faint); }
 .navigation-menu-row:is(:hover, [data-menu-open]) .conversation-session__pin,
-html.ak-modality-keyboard .navigation-menu-row:focus-within .conversation-session__pin { visibility: hidden; }
+.navigation-menu-row > .conversation-session:focus-visible .conversation-session__pin { visibility: hidden; }
 .navigation-group__sessions .conversation-session { min-height: 32px; }
 
 .navigation-group__chevron {
