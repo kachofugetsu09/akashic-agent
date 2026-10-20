@@ -1,6 +1,5 @@
 import { mergeTimelineMessages, readMessageLogFrame, type ReplyActivity, type TimelineMessage, type TimelineReply } from "./message-timeline";
 import { useCallback, useEffect, useMemo, useRef, useState, type SetStateAction } from "react";
-import { Duration, Effect, Fiber, Schedule } from "effect";
 import { createUuid, createUuidV7 } from "./browser-uuid.ts";
 import type { ChatMessage } from "./chat-message";
 import type { ComposerFile } from "./desktop-composer";
@@ -57,6 +56,44 @@ const HEARTBEAT_INTERVAL_MS = 25_000;
 const HEARTBEAT_TIMEOUT_MS = 10_000;
 const SEND_ACK_TIMEOUT_MS = 10_000;
 const SEND_ATTEMPTS = 3;
+
+/** 连接任务被中断时等待/sleep 抛出的记号；外层 catch 识别后直接退出，不提示连接错误。 */
+const CONNECTION_ABORTED = Symbol("connection-aborted");
+
+/** 可被 AbortSignal 中断的睡眠；中断时 reject 出 CONNECTION_ABORTED 记号。 */
+function sleepInterruptible(ms: number, signal: AbortSignal | undefined): Promise<void> {
+  return new Promise((resolve, reject) => {
+    if (signal?.aborted) { reject(CONNECTION_ABORTED); return; }
+    const onAbort = () => {
+      window.clearTimeout(timer);
+      reject(CONNECTION_ABORTED);
+    };
+    const timer = window.setTimeout(() => {
+      signal?.removeEventListener("abort", onAbort);
+      resolve();
+    }, ms);
+    signal?.addEventListener("abort", onAbort, { once: true });
+  });
+}
+
+/**
+ * 原生重连退避驱动，等价原 Schedule.exponential(1s) 封顶 30s、jitteredWith(0..1)、
+ * intersect(recurs(12))：第 n 次基础延迟 min(1000*2^n, 封顶) 再乘 [0,1) 随机抖动；
+ * 成功 12 次后第 13 次立即 reject；reset 把计数归零。
+ */
+function createReconnectScheduler(maxDelayMs: number, signal: AbortSignal): { reset(): void; next(): Promise<void> } {
+  let attempts = 0;
+  return {
+    reset(): void { attempts = 0; },
+    next(): Promise<void> {
+      const attempt = attempts;
+      if (attempt >= 12) return Promise.reject(new Error("重连次数已用尽"));
+      attempts = attempt + 1;
+      const base = Math.min(1000 * 2 ** attempt, maxDelayMs);
+      return sleepInterruptible(base * Math.random(), signal);
+    },
+  };
+}
 
 // 服务端明确拒绝的发送不重试，直接把原因交给用户。
 class SendRejected extends Error {}
@@ -205,13 +242,8 @@ export function useDesktopChatController() {
   const replyTargetsRef = useRef(new Map<string, TimelineReply>());
   const [copiedMessageId, setCopiedMessageId] = useState("");
   const socketRef = useRef<WebSocket | null>(null);
-  const connectionTaskRef = useRef<Fiber.RuntimeFiber<void> | null>(null);
+  const connectionTaskRef = useRef<AbortController | null>(null);
   const connectRef = useRef<(() => WebSocket) | null>(null);
-  const [reconnect] = useState(() => Effect.runSync(Schedule.driver(Schedule.exponential("1 second").pipe(
-    Schedule.modifyDelay((_, delay) => Math.min(Duration.toMillis(delay), RECONNECT_MAX_DELAY_MS)),
-    Schedule.jitteredWith({ min: 0, max: 1 }),
-    Schedule.intersect(Schedule.recurs(12)),
-  ))));
   const messageElementsRef = useRef(new Map<string, HTMLDivElement>());
   const activeSessionRef = useRef("");
   const statusRef = useRef<ChatStatus>("idle");
@@ -448,7 +480,7 @@ export function useDesktopChatController() {
     // React 可立即重新挂载；先撤销旧连接，不能等异步 finalizer 才清引用。
     socketRef.current = null;
     resetPluginUiEvents();
-    if (connectionTaskRef.current) Effect.runFork(Fiber.interrupt(connectionTaskRef.current));
+    connectionTaskRef.current?.abort();
     connectionTaskRef.current = null;
     disconnectSessionActivity();
   }, [disconnectSessionActivity]);
@@ -457,139 +489,164 @@ export function useDesktopChatController() {
   const connect = useCallback(() => {
     if (socketRef.current && socketRef.current.readyState <= WebSocket.OPEN) return socketRef.current;
     closeConnection();
-    Effect.runSync(reconnect.reset);
     const protocol = window.location.protocol === "https:" ? "wss" : "ws";
     const url = `${protocol}://${window.location.host}/ws?watch_sessions=true`;
     const first = new WebSocket(url);
     socketRef.current = first;
-    connectionTaskRef.current = Effect.runFork(Effect.gen(function*() {
+    const controller = new AbortController();
+    connectionTaskRef.current = controller;
+    // 退避驱动绑定这一代连接的固定信号：不复读 connectionTaskRef,abort 与 ref 置空之间没有可乘的间隙。
+    const reconnect = createReconnectScheduler(RECONNECT_MAX_DELAY_MS, controller.signal);
+    const run = async (): Promise<void> => {
       let socket = first;
-      while (true) {
-        const current = socket;
-        let openedAt: number | null = null;
-        let heartbeat: number | undefined;
-        let probeTimer: number | undefined;
-        let probe: (() => void) | null = null;
-        const event = yield* Effect.async<CloseEvent>((resume) => {
-          // 任何入站帧都证明连接活着；ping 超时不等浏览器的关闭握手，直接按断线进入重连。
-          probe = () => {
-            if (current.readyState !== WebSocket.OPEN || probeTimer !== undefined) return;
-            current.send(JSON.stringify({ type: "ping", request_id: createUuid() }));
-            probeTimer = window.setTimeout(() => {
-              console.warn("[chat-ui] ws heartbeat timeout");
-              resume(Effect.succeed(new CloseEvent("close", { code: 4000, reason: "heartbeat timeout" })));
-            }, HEARTBEAT_TIMEOUT_MS);
-          };
-          current.onmessage = (event) => {
-            if (socketRef.current !== current) return;
+      try {
+        while (true) {
+          const current = socket;
+          let openedAt: number | null = null;
+          let heartbeat: number | undefined;
+          let probeTimer: number | undefined;
+          let probe: (() => void) | null = null;
+          let event: CloseEvent;
+          try {
+            // 等待关闭事件：正常 close、心跳超时合成事件或被中断，三者只有一个兑现。
+            event = await new Promise<CloseEvent>((resolve, reject) => {
+              const onAbort = () => reject(CONNECTION_ABORTED);
+              controller.signal.addEventListener("abort", onAbort, { once: true });
+              const finish = (closeEvent: CloseEvent) => {
+                controller.signal.removeEventListener("abort", onAbort);
+                resolve(closeEvent);
+              };
+              // 任何入站帧都证明连接活着；ping 超时不等浏览器的关闭握手，直接按断线进入重连。
+              probe = () => {
+                if (current.readyState !== WebSocket.OPEN || probeTimer !== undefined) return;
+                current.send(JSON.stringify({ type: "ping", request_id: createUuid() }));
+                probeTimer = window.setTimeout(() => {
+                  console.warn("[chat-ui] ws heartbeat timeout");
+                  finish(new CloseEvent("close", { code: 4000, reason: "heartbeat timeout" }));
+                }, HEARTBEAT_TIMEOUT_MS);
+              };
+              current.onmessage = (event) => {
+                if (socketRef.current !== current) return;
+                window.clearTimeout(probeTimer);
+                probeTimer = undefined;
+                console.debug("[chat-ui] ws message", typeof event.data);
+                try {
+                  const value: unknown = JSON.parse(String(event.data));
+                  const activity = readSessionActivityFrame(value);
+                  if (activity) {
+                    receiveSessionActivity(activity);
+                    return;
+                  }
+                  if (receivePluginUiEvent(value)) return;
+                  const frame = readMessageLogFrame(value);
+                  if (frame) {
+                    if (frame.session_id !== activeSessionRef.current) return;
+                    if (frame.type === "session.following") {
+                      setTimelineRefresh((revision) => revision + 1);
+                    } else if (frame.type === "messages.appended") {
+                      if (frame.after_seq !== followAfterRef.current) throw new Error("实时消息游标不连续，请重新连接");
+                      const merged = mergeTimelineMessages(timelineRef.current, frame.items);
+                      setTimelineMessages(merged);
+                      const cached = tailCacheRef.current.get(frame.session_id);
+                      if (cached) cacheSessionTail(frame.session_id, { ...cached, items: merged, throughSeq: frame.next_after_seq, fetchedAt: Date.now() });
+                      setFollowAfter(frame.next_after_seq);
+                      const saved = new Set(frame.items.map((item) => item.id));
+                      for (const id of saved) ackWaitersRef.current.get(id)?.();
+                      setMessages((currentMessages) => currentMessages.filter((item) => !saved.has(item.id)));
+                      if (statusLiveRef.current !== "uploading") setStatusLive(replyChatStatus(replyActivitiesRef.current, messagesRef.current.length + Number(sendRequestRef.current !== null), timelineRef.current, replyAvailableRef.current));
+                      scheduleSessionsRefresh();
+                    } else if (frame.type === "reply.status") {
+                      replyActivitiesRef.current = frame.items;
+                      setReplyActivities(frame.items);
+                      setReplyAvailable(frame.available);
+                      if (statusLiveRef.current !== "uploading") setStatusLive(replyChatStatus(frame.items, messagesRef.current.length + Number(sendRequestRef.current !== null), timelineRef.current, frame.available));
+                    }
+                    return;
+                  }
+                  const other = parseChatFrame(value);
+                  if (other.type === "sessions.changed") {
+                    scheduleSessionsRefresh();
+                    void reloadPinsRef.current();
+                  } else if (other.type === "message.accepted") {
+                    ackWaitersRef.current.get(other.request_id)?.();
+                  } else if (other.type === "message.steer.result") {
+                    steerResultRef.current(other.request_id, other);
+                  } else if (other.type === "error") {
+                    const waiter = ackWaitersRef.current.get(other.request_id);
+                    if (waiter) {
+                      waiter(new SendRejected(other.message));
+                      return;
+                    }
+                    setMessages((currentMessages) => currentMessages.filter((item) => item.id !== other.request_id));
+                    reportError(new Error(other.message), "error");
+                  }
+                } catch (error) {
+                  reportError(error, "error");
+                }
+              };
+              current.onopen = () => {
+                if (socketRef.current !== current) return;
+                openedAt = performance.now();
+                heartbeat = window.setInterval(() => probe?.(), HEARTBEAT_INTERVAL_MS);
+                probeRef.current = probe;
+                setConnectionError("");
+                if (deliveryErrorRef.current) {
+                  deliveryErrorRef.current = false;
+                  setError("");
+                }
+                console.info("[chat-ui] ws connected", current.url);
+                checkPageBuild(() => setPageOutdated(true), () => socketRef.current === current);
+                const sessionId = activeSessionRef.current;
+                if (sessionId) {
+                  if (followAfterRef.current === null) void loadMessagesSafely(sessionId);
+                  else followSession(current, sessionId, followAfterRef.current);
+                }
+              };
+              current.onerror = () => current.close();
+              current.onclose = (closeEvent) => {
+                // 短连仍属于同一次中断，不能凭握手成功刷新退避和预算。
+                if (openedAt !== null && performance.now() - openedAt >= RECONNECT_MAX_DELAY_MS) {
+                  reconnect.reset();
+                }
+                finish(closeEvent);
+              };
+            });
+          } finally {
+            // 对应原 Effect.ensuring：关闭事件返回与连接任务被中断，两种结束都执行且只执行一次。
+            current.onmessage = current.onopen = current.onerror = current.onclose = null;
+            window.clearInterval(heartbeat);
             window.clearTimeout(probeTimer);
-            probeTimer = undefined;
-            console.debug("[chat-ui] ws message", typeof event.data);
-            try {
-              const value: unknown = JSON.parse(String(event.data));
-              const activity = readSessionActivityFrame(value);
-              if (activity) {
-                receiveSessionActivity(activity);
-                return;
-              }
-              if (receivePluginUiEvent(value)) return;
-              const frame = readMessageLogFrame(value);
-              if (frame) {
-                if (frame.session_id !== activeSessionRef.current) return;
-                if (frame.type === "session.following") {
-                  setTimelineRefresh((revision) => revision + 1);
-                } else if (frame.type === "messages.appended") {
-                  if (frame.after_seq !== followAfterRef.current) throw new Error("实时消息游标不连续，请重新连接");
-                  const merged = mergeTimelineMessages(timelineRef.current, frame.items);
-                  setTimelineMessages(merged);
-                  const cached = tailCacheRef.current.get(frame.session_id);
-                  if (cached) cacheSessionTail(frame.session_id, { ...cached, items: merged, throughSeq: frame.next_after_seq, fetchedAt: Date.now() });
-                  setFollowAfter(frame.next_after_seq);
-                  const saved = new Set(frame.items.map((item) => item.id));
-                  for (const id of saved) ackWaitersRef.current.get(id)?.();
-                  setMessages((currentMessages) => currentMessages.filter((item) => !saved.has(item.id)));
-                  if (statusLiveRef.current !== "uploading") setStatusLive(replyChatStatus(replyActivitiesRef.current, messagesRef.current.length + Number(sendRequestRef.current !== null), timelineRef.current, replyAvailableRef.current));
-                  scheduleSessionsRefresh();
-                } else if (frame.type === "reply.status") {
-                  replyActivitiesRef.current = frame.items;
-                  setReplyActivities(frame.items);
-                  setReplyAvailable(frame.available);
-                  if (statusLiveRef.current !== "uploading") setStatusLive(replyChatStatus(frame.items, messagesRef.current.length + Number(sendRequestRef.current !== null), timelineRef.current, frame.available));
-                }
-                return;
-              }
-              const other = parseChatFrame(value);
-              if (other.type === "sessions.changed") {
-                scheduleSessionsRefresh();
-                void reloadPinsRef.current();
-              } else if (other.type === "message.accepted") {
-                ackWaitersRef.current.get(other.request_id)?.();
-              } else if (other.type === "message.steer.result") {
-                steerResultRef.current(other.request_id, other);
-              } else if (other.type === "error") {
-                const waiter = ackWaitersRef.current.get(other.request_id);
-                if (waiter) {
-                  waiter(new SendRejected(other.message));
-                  return;
-                }
-                setMessages((currentMessages) => currentMessages.filter((item) => item.id !== other.request_id));
-                reportError(new Error(other.message), "error");
-              }
-            } catch (error) {
-              reportError(error, "error");
-            }
-          };
-          current.onopen = () => {
-            if (socketRef.current !== current) return;
-            openedAt = performance.now();
-            heartbeat = window.setInterval(() => probe?.(), HEARTBEAT_INTERVAL_MS);
-            probeRef.current = probe;
-            setConnectionError("");
-            if (deliveryErrorRef.current) {
-              deliveryErrorRef.current = false;
-              setError("");
-            }
-            console.info("[chat-ui] ws connected", current.url);
-            checkPageBuild(() => setPageOutdated(true), () => socketRef.current === current);
-            const sessionId = activeSessionRef.current;
-            if (sessionId) {
-              if (followAfterRef.current === null) void loadMessagesSafely(sessionId);
-              else followSession(current, sessionId, followAfterRef.current);
-            }
-          };
-          current.onerror = () => current.close();
-          current.onclose = (event) => {
-            // 短连仍属于同一次中断，不能凭握手成功刷新退避和预算。
-            if (openedAt !== null && performance.now() - openedAt >= RECONNECT_MAX_DELAY_MS) {
-              Effect.runSync(reconnect.reset);
-            }
-            resume(Effect.succeed(event));
-          };
-        }).pipe(Effect.ensuring(Effect.sync(() => {
-          current.onmessage = current.onopen = current.onerror = current.onclose = null;
-          window.clearInterval(heartbeat);
-          window.clearTimeout(probeTimer);
-          if (probeRef.current === probe) probeRef.current = null;
-          if (socketRef.current === current) socketRef.current = null;
-          current.close(1000, "connection released");
-        })));
-        console.warn("[chat-ui] ws close", { code: event.code, reason: event.reason });
-        replyActivitiesRef.current = [];
-        disconnectSessionActivity();
-        setReplyActivities([]);
-        setReplyAvailable(null);
-        // 插件推送的会话状态属于这一代连接：断线即失效，重连后的基线帧再装回。
-        resetPluginUiEvents();
-        setStatusLive(replyChatStatus([], messagesRef.current.length, [], false));
-        if (event.code !== 1000 && event.code !== 1013) setConnectionError(RECONNECTING_NOTICE);
-        yield* reconnect.next(undefined);
-        socket = yield* Effect.sync(() => new WebSocket(url));
-        socketRef.current = socket;
+            if (probeRef.current === probe) probeRef.current = null;
+            if (socketRef.current === current) socketRef.current = null;
+            current.close(1000, "connection released");
+          }
+          console.warn("[chat-ui] ws close", { code: event.code, reason: event.reason });
+          replyActivitiesRef.current = [];
+          disconnectSessionActivity();
+          setReplyActivities([]);
+          setReplyAvailable(null);
+          // 插件推送的会话状态属于这一代连接：断线即失效，重连后的基线帧再装回。
+          resetPluginUiEvents();
+          setStatusLive(replyChatStatus([], messagesRef.current.length, [], false));
+          if (event.code !== 1000 && event.code !== 1013) setConnectionError(RECONNECTING_NOTICE);
+          await reconnect.next();
+          // 退避结束后 abort 可能刚好落在微任务间隙：建 socket 前再核一次,避免给已撤销的一代接出活连接。
+          if (controller.signal.aborted) return;
+          socket = new WebSocket(url);
+          socketRef.current = socket;
+        }
+      } catch (error) {
+        // 中断记号：连接已被 closeConnection 撤销，对应原 Fiber.interrupt——不走 catchAll，不提示错误。
+        if (error === CONNECTION_ABORTED) return;
+        // 对应原 Effect.catchAll：退避预算耗尽等失败统一落到错误行。
+        setConnectionError("暂时无法连接，请重试");
       }
-    }).pipe(Effect.catchAll(() => Effect.sync(() => setConnectionError("暂时无法连接，请重试")))));
+    };
+    // 兜底:finally/catch 内部一旦抛错(如组件已卸载后的 setState 边界),不外泄成 unhandled rejection。
+    void run().catch((error) => console.error("[chat-ui] connection loop escaped", error));
     return first;
   }, [cacheSessionTail, closeConnection, disconnectSessionActivity, loadMessagesSafely, scheduleSessionsRefresh,
-    receiveSessionActivity, reconnect, reportError, setFollowAfter, setMessages, setReplyAvailable, setStatusLive, setTimelineMessages]);
+    receiveSessionActivity, reportError, setFollowAfter, setMessages, setReplyAvailable, setStatusLive, setTimelineMessages]);
 
   // 手机从后台回来或网络切换后，旧连接常常已经半开；立刻探测一次，不等下一轮心跳。
   // 已断开、正在退避等待时直接重连并重置退避：网络回来了不必再等最长 30 秒。
@@ -609,18 +666,29 @@ export function useDesktopChatController() {
 
   useEffect(() => {
     // 只等待首次启动就绪；此后的断线与恢复由聊天连接负责。
-    const task = Effect.runFork(Effect.tryPromise({
-      try: (signal) => fetchChatJson<unknown>("/api/shell/state", { signal }).then(webShellState),
-      catch: (error) => error,
-    }).pipe(
-      Effect.tap((next) => Effect.sync(() => {
-        setShellState(next);
-        if (pageBuildOutdated(next)) setPageOutdated(true);
-      })),
-      Effect.catchAll((error) => Effect.sync(() => reportError(error))),
-      Effect.repeat({ schedule: Schedule.spaced("1200 millis"), until: (next) => next?.chatReady === true }),
-    ));
-    return () => { Effect.runFork(Fiber.interrupt(task)); };
+    const controller = new AbortController();
+    const run = async (): Promise<void> => {
+      while (true) {
+        try {
+          const next = await fetchChatJson<unknown>("/api/shell/state", { signal: controller.signal }).then(webShellState);
+          setShellState(next);
+          if (pageBuildOutdated(next)) setPageOutdated(true);
+          if (next?.chatReady === true) return;
+        } catch (error) {
+          // 中断直接退出（对应原 Fiber.interrupt 不进 catchAll）；其余失败照原样上报后继续下一轮。
+          if (controller.signal.aborted || error === CONNECTION_ABORTED) return;
+          reportError(error);
+        }
+        try {
+          await sleepInterruptible(1200, controller.signal);
+        } catch {
+          // 中断（含睡眠中）：轮询结束，不再上报。
+          return;
+        }
+      }
+    };
+    void run();
+    return () => { controller.abort(); };
   }, [reportError]);
 
   useEffect(() => {

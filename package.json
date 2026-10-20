@@ -75,7 +75,6 @@
     "clsx": "^2.1.1",
     "cmdk": "^1.1.1",
     "core-js": "3.49.0",
-    "effect": "3.22.1",
     "katex": "0.16.47",
     "lucide-react": "^1.23.0",
     "markstream-react": "2.0.6",
