@@ -242,6 +242,19 @@ class Ui:
             return {"snapshotId": self._ctx.generation_id, "catalogId": self.catalog().identity,
                     "updating": bool(self._ctx.require(RUNTIME_CATALOG)(self._ctx)["updating"])}
 
+    async def module_asset(self, plugin_id: str, sha256: str) -> str:
+        """内容寻址模块字节:摘要只与当前已激活目录比对,不匹配即拒绝。"""
+        async with self._ctx.runtime_scope():
+            self._ctx.require_runtime_identity(WEB_UI, self)
+            entry = self._entries.get(plugin_id)
+            if (entry is None or entry.web is None or not entry.initialized
+                    or entry.ctx.fiber.state is not FiberState.ACTIVE):
+                raise KeyError(plugin_id)
+            asset = entry.web.asset
+            if asset.module_sha256 != sha256:
+                raise KeyError(plugin_id)
+            return asset.module
+
 
 def _contracts(value: tuple[str, ...]) -> tuple[str, ...]:
     if not isinstance(value, tuple) or any(not isinstance(item, str) or not item or item.strip() != item for item in value):

@@ -59,6 +59,12 @@ def check_web(origin: str) -> list[str]:
     assert modules, '默认插件没有提供 Web 模块'
     for module in modules:
         assert module['module'], module['pluginId']
+        # 内容寻址端点按当前目录校验摘要,字节必须与描述符一致。
+        with opener.open(origin + '/api/chat/web-ui/module?plugin_id='
+                         + module['pluginId'] + '&sha256=' + module['moduleSha256'],
+                         timeout=10) as asset:
+            body = asset.read()
+        assert hashlib.sha256(body).hexdigest() == module['moduleSha256'], module['pluginId']
     plugins = sorted(module['pluginId'] for module in modules)
     names = {plugin.split('@', 1)[0] for plugin in plugins}
     assert {'onboarding', 'conversation-ui', 'shell-ui'} <= names, plugins

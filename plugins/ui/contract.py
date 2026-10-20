@@ -97,6 +97,10 @@ class WebUiProvider(Protocol):
 
     async def state(self) -> dict[str, str | bool]: ...
 
+    async def module_asset(self, plugin_id: str, sha256: str) -> str:
+        """返回当前目录中该插件的 web module 源码；插件缺失或摘要不匹配时抛 KeyError。"""
+        ...
+
 
 UI = ServiceKey[UiRegistry]("ui.v1")
 WEB_UI = ServiceKey[WebUiProvider]("ui.web.v1")
