@@ -21,7 +21,7 @@ def message_digest(workspace: Path) -> str:
     return hashlib.sha256(json.dumps(rows, ensure_ascii=False).encode()).hexdigest()
 
 
-async def run(state: Path, port: int, switch_messages: int = 0) -> None:
+async def run(state: Path, port: int, switch_messages: int = 0, sessions: int = 0) -> None:
     """创建固定数据后启动正式应用和 Web Shell，退出时核对历史。"""
     # 1. 只接受新目录；所有配置、插件状态和消息都属于本次测试。
     state.mkdir(parents=True, exist_ok=False)
@@ -99,6 +99,15 @@ async def run(state: Path, port: int, switch_messages: int = 0) -> None:
                 log.writer("akashic:switch-benchmark", author="user" if index % 2 == 0 else "assistant",
                            source="benchmark", body_types=(type(body),), content={"text": check_text}).append(
                                f"switch-{index:04d}", body)
+        if sessions:
+            # 目录规模基准：大量单条会话，让会话列表的分页拉取与侧栏渲染计入测量。
+            for index in range(sessions):
+                key = f"akashic:catalog-{index:05d}"
+                log.ensure_session(key, SessionAttributes(learning="excluded"))
+                part = ContentPart("text", f"目录基准会话 {index:05d}")
+                log.writer(key, author="user", source="benchmark",
+                           body_types=(type(Input((part,))),), content={"text": check_text}).append(
+                               f"catalog-{index:05d}", Input((part,)))
     finally:
         log.close()
     before = message_digest(workspace)
@@ -137,5 +146,7 @@ if __name__ == "__main__":
     parser.add_argument("--port", type=int, default=24137)
     parser.add_argument("--switch-session-messages", type=int, default=0,
                         help="额外灌入 akashic:switch-benchmark 长会话的消息数(默认不灌)")
+    parser.add_argument("--sessions", type=int, default=0,
+                        help="额外灌入的目录会话数(每会话 1 条消息,默认不灌)")
     args = parser.parse_args()
-    asyncio.run(run(args.state.resolve(), args.port, args.switch_session_messages))
+    asyncio.run(run(args.state.resolve(), args.port, args.switch_session_messages, args.sessions))

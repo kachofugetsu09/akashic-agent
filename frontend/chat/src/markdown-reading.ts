@@ -96,13 +96,26 @@ export async function copyReadingCode(code: string) {
   await copyText(code);
 }
 
+/** 一次溢出测量的读相快照：渐隐状态与滚动元素（无横向溢出时为 null）。 */
+export interface OverflowEdges { overflow: string; scroller: HTMLElement | null }
+
 /** 横滚块两侧哪边还藏着内容，写到 data-overflow（start / end），样式在对应边缘渐隐。 */
 export function writeOverflowEdges(target: HTMLElement, scroller: HTMLElement | null): void {
+  applyOverflowEdges(target, readOverflowEdges(scroller));
+}
+
+/** 只读几何：批处理队列的读相用（scheduleOverflowJob），读必须早于同帧的任意写。 */
+export function readOverflowEdges(scroller: HTMLElement | null): OverflowEdges {
   const start = scroller !== null && scroller.scrollLeft > 1;
   const end = scroller !== null && scroller.scrollLeft + scroller.clientWidth < scroller.scrollWidth - 1;
-  const next = [start ? "start" : "", end ? "end" : ""].filter(Boolean).join(" ");
-  if (target.dataset.overflow !== next) target.dataset.overflow = next;
-  syncScrollStop(target, start || end ? scroller : null);
+  return { overflow: [start ? "start" : "", end ? "end" : ""].filter(Boolean).join(" "),
+    scroller: start || end ? scroller : null };
+}
+
+/** 只写回：把读相算出的渐隐与 Tab 序应用到 DOM，不读任何几何。 */
+export function applyOverflowEdges(target: HTMLElement, { overflow, scroller }: OverflowEdges): void {
+  if (target.dataset.overflow !== overflow) target.dataset.overflow = overflow;
+  syncScrollStop(target, scroller);
 }
 
 const scrollStops = new WeakMap<HTMLElement, HTMLElement>();
@@ -141,6 +154,40 @@ export function watchOverflowEdges(scroller: HTMLElement): () => void {
     resize.disconnect();
     scroller.removeEventListener("scroll", measure);
   };
+}
+
+// 同一帧里多个代码块的溢出测量合并成一批、读写分相：先全部读几何，再全部写回。
+// 逐块各自 rAF 时，前一块写回的 data-overflow/tabindex 会让后一块的读取重新强制布局；
+// 一批只付一次布局（design.md 3.18 的同一原则，批量版）。切入富会话时可见区每块各排一次，
+// 合并前该测量占稳态切换 CPU 的 ~43%（probe-switch-cpu，CPU×4）。
+// 成立前提（改动 [data-overflow] / [data-scroll-stop] 样式前必读）：写相不得改变任何几何——
+// 目前写相只碰 dataset.overflow 与 tabindex/role/aria-label/data-scroll-stop，
+// 对应样式只有 mask-image（绘制属性，不参与布局）。若将来加了影响布局的规则，
+// 批处理会退化成一帧陈旧，且很难查。
+// 单个 job 的读写各自包 try/catch：一个块抛错只跳过自己，不带走整批
+// （job 已从 Set 摘除，失败后等下一次 mutation/resize/scroll 重新调度，自行恢复）。
+export interface OverflowJob { read: () => void; write: () => void }
+const overflowJobs = new Set<OverflowJob>();
+let overflowFrame = 0;
+
+export function scheduleOverflowJob(job: OverflowJob): void {
+  overflowJobs.add(job);
+  if (overflowFrame) return;
+  overflowFrame = requestAnimationFrame(() => {
+    overflowFrame = 0;
+    const jobs = [...overflowJobs];
+    overflowJobs.clear();
+    for (const job of jobs) {
+      try { job.read(); } catch (error) { console.error("溢出测量读相失败", error); }
+    }
+    for (const job of jobs) {
+      try { job.write(); } catch (error) { console.error("溢出测量写相失败", error); }
+    }
+  });
+}
+
+export function cancelOverflowJob(job: OverflowJob): void {
+  overflowJobs.delete(job);
 }
 
 const FOOTNOTE_LINK = "a[data-footnote-ref], a[data-footnote-backref], a.footnote-link, a.footnote-anchor";

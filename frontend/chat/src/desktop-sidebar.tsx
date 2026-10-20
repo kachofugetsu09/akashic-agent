@@ -14,7 +14,7 @@ import {
   DropdownMenuRadioItem, DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
 import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from "@/components/ui/dialog";
-import { ConversationNavigation, ConversationSessionRow, type ConversationRowDrag, type ConversationSession } from "./conversation-navigation";
+import { ConversationNavigation, ConversationSessionRow, type ConversationRowDragHandlers, type ConversationRowDragState, type ConversationSession } from "./conversation-navigation";
 import akashicBrandIcon from "../../theme/src/akashic-brand.svg";
 import { activateShellRailAction, useShellRailActions } from "./shell-rail-actions";
 import {
@@ -429,20 +429,25 @@ export const DesktopSidebar = memo(function DesktopSidebar({
     setSessionOrder([...order, ...offscreen]);
     setSessionSort("manual");
   };
-  const sessionDrag = searching ? undefined : (session: ConversationSession): ConversationRowDrag => ({
+  // 行 memo 要求拖拽处理函数身份稳定：经 ref 取最新提交逻辑，处理函数本身永不重建。
+  const commitManualDropRef = useRef(commitManualDrop);
+  useEffect(() => { commitManualDropRef.current = commitManualDrop; });
+  const dragHandlers = useMemo<ConversationRowDragHandlers>(() => ({
+    start: (id) => setDrag({ id, over: null }),
+    end: () => setDrag(null),
+    hover: (id, half) => setDrag((current) => current
+      && (current.over?.id !== id || current.over.half !== half)
+      ? { ...current, over: { id, half } }
+      : current),
+    drop: (id, half) => {
+      commitManualDropRef.current(id, half);
+      setDrag(null);
+    },
+  }), []);
+  const sessionDrag = searching ? undefined : (session: ConversationSession): ConversationRowDragState => ({
     active: drag !== null,
     source: drag?.id === session.id,
     marker: drag?.over?.id === session.id ? drag.over.half : undefined,
-    start: () => setDrag({ id: session.id, over: null }),
-    end: () => setDrag(null),
-    hover: (half) => setDrag((current) => current
-      && (current.over?.id !== session.id || current.over.half !== half)
-      ? { ...current, over: { id: session.id, half } }
-      : current),
-    drop: (half) => {
-      commitManualDrop(session.id, half);
-      setDrag(null);
-    },
   });
   // 目录未解析/归档不改变 Session.scope；这类会话回退到最近会话，仍可在全局置顶。
   const { expandGroup } = navigationPins;
@@ -457,6 +462,17 @@ export const DesktopSidebar = memo(function DesktopSidebar({
     .find((key) => key && knownGroups.has(key)) ?? "", [sections, knownGroups]);
   const pinnedSessions = useMemo(() => new Set(navigationPins.pins.filter((pin) => pin.kind === "session").map((pin) => pin.id)),
     [navigationPins.pins]);
+  // 行 memo 以会话对象身份为凭：展示投影（surface 折叠进 active）缓存成图，
+  // 目录不变时身份不变，流式帧不再重建 2000 行视图对象。
+  const sessionViews = useMemo(() => {
+    const views = new Map<string, ConversationSession>();
+    for (const session of allSessions) views.set(session.id, { ...session, active: surface === "chat" && session.active });
+    return views;
+  }, [allSessions, surface]);
+  const recentSessions = useMemo(
+    () => sortedSessions.filter((session) => !pinnedSessions.has(session.id) && !groupOf(session))
+      .map((session) => sessionViews.get(session.id) ?? session),
+    [sortedSessions, pinnedSessions, groupOf, sessionViews]);
   // 分组内置顶的会话排在所在文件夹最前面，其余保持当前排序。
   const sessionsByGroup = useMemo(() => {
     const byGroup = new Map<string, GroupSessionItem[]>();
@@ -472,7 +488,6 @@ export const DesktopSidebar = memo(function DesktopSidebar({
     return byGroup;
   }, [sortedSessions, groupOf, surface, pinnedSessions]);
   const pinnedGroups = new Set(navigationPins.pins.filter((pin) => pin.kind !== "session").map((pin) => groupKey({ dimension: pin.kind, id: pin.id })));
-  const recentSessions = sortedSessions.filter((session) => !pinnedSessions.has(session.id) && !groupOf(session));
   const visibleGroup = (key: string, label: string) => !needle || label.toLowerCase().includes(needle)
     || Boolean(sessionsByGroup.get(key)?.length);
   const sectionGroups = sections.map((section) => section.groups.filter((group) => {
@@ -496,29 +511,42 @@ export const DesktopSidebar = memo(function DesktopSidebar({
     return pin.id.toLowerCase().includes(needle);
   });
   const hasMatches = recentSessions.length > 0 || sectionGroups.some((items) => items.length > 0) || visiblePins.length > 0;
-  const pinAction = (pin: NavigationPin, pinned: boolean): NavigationRowAction[] => [{
+  const sessionById = useMemo(() => new Map(allSessions.map((session) => [session.id, session])), [allSessions]);
+  // 行 memo 需要稳定身份：navigationPins 对象每渲染新建，只取字段级依赖。
+  const { ready: pinsReady, pending: pinsPending, setPinned } = navigationPins;
+  const pinAction = useCallback((pin: NavigationPin, pinned: boolean): NavigationRowAction[] => [{
     label: pinned ? "取消置顶" : "置顶",
     icon: pinned ? <PinOff size={18} aria-hidden="true" /> : <Pin size={18} aria-hidden="true" />,
-    disabled: !navigationPins.ready || navigationPins.pending,
-    onSelect: () => { void navigationPins.setPinned(pin, !pinned); },
-  }];
-  const sessionById = useMemo(() => new Map(allSessions.map((session) => [session.id, session])), [allSessions]);
+    disabled: !pinsReady || pinsPending,
+    onSelect: () => { void setPinned(pin, !pinned); },
+  }], [pinsReady, pinsPending, setPinned]);
   // 分组内的会话行：与最近会话同一套行菜单，置顶只在所在分组内生效。
   const groupSessionRow: GroupSessionRenderer = (item, label) => <ConversationSessionRow
     session={{ id: item.id, title: item.title, preview: "", active: item.active, status: item.status, pinned: item.pinned }}
     pendingSessionId={pendingSessionId} onActivate={onSelectSession} onPrefetch={onPrefetchSession}
     actions={[{ ...pinAction({ kind: "session", id: item.id }, Boolean(item.pinned))[0],
       label: item.pinned ? `取消${label}内置顶` : `在${label}内置顶` }]}
-    onDelete={onDeleteSession ? () => onDeleteSession(item.id, item.title) : undefined}
-    onRename={onRenameSession ? (title: string) => onRenameSession(item.id, title) : undefined} />;
-  // 分组只按渲染时刻的日期，跨午夜后随下一次列表更新重算即可。
-  const groupNow = new Date();
-  const sessionView = (session: DesktopSidebarSession): ConversationSession => ({
-    ...session, active: surface === "chat" && session.active,
-  });
-  const deleteHandler = onDeleteSession
-    ? (session: ConversationSession) => onDeleteSession(session.id, session.title)
-    : undefined;
+    onDelete={onDeleteSession ? (session) => onDeleteSession(session.id, session.title) : undefined}
+    onRename={onRenameSession ? (session, title) => onRenameSession(session.id, title) : undefined} />;
+  // 分组只按调用时刻的日期，跨午夜后随下一次列表更新重算即可。
+  const sessionDayGroupOf = useCallback((session: ConversationSession) => {
+    const row = sessionById.get(session.id);
+    return sessionDayGroup(sessionSort === "created" ? row?.createdAt : row?.updatedAt, new Date());
+  }, [sessionSort, sessionById]);
+  const deleteHandler = useCallback((session: ConversationSession) => onDeleteSession?.(session.id, session.title) ?? Promise.resolve(),
+    [onDeleteSession]);
+  const renameHandler = useCallback(
+    (session: ConversationSession, title: string) => onRenameSession?.(session.id, title) ?? Promise.resolve(),
+    [onRenameSession]);
+  // 目录重拉只换 Map 身份、不换行内容：工厂经 ref 读最新映射，身份不随重拉变化,
+  // 否则每次目录刷新都会以 actions 身份变化击穿全部行的 memo。
+  const sessionByIdRef = useRef(sessionById);
+  useEffect(() => { sessionByIdRef.current = sessionById; });
+  const sessionPinActions = useCallback((session: ConversationSession): NavigationRowAction[] => {
+    const row = sessionByIdRef.current.get(session.id);
+    // 分组已不在的会话也落在这里，同样可以置顶（后端已接受带分组的会话）。
+    return row ? pinAction({ kind: "session", id: row.id }, false) : [];
+  }, [pinAction]);
   const railActions = useShellRailActions();
 
   return (
@@ -610,11 +638,11 @@ export const DesktopSidebar = memo(function DesktopSidebar({
             const session = allSessions.find((item) => item.id === pin.id);
             if (session && !groupOf(session)) return !needle
               || `${session.title} ${session.preview}`.toLowerCase().includes(needle) ? <ConversationSessionRow
-                key={`session:${pin.id}`} session={sessionView(session)} pendingSessionId={pendingSessionId}
+                key={`session:${pin.id}`} session={sessionViews.get(session.id) ?? session} pendingSessionId={pendingSessionId}
                 onActivate={onSelectSession} onPrefetch={onPrefetchSession}
                 actions={pinAction(pin, true)}
-                onDelete={onDeleteSession ? () => onDeleteSession(session.id, session.title) : undefined}
-                onRename={onRenameSession ? (title: string) => onRenameSession(session.id, title) : undefined}
+                onDelete={onDeleteSession ? deleteHandler : undefined}
+                onRename={onRenameSession ? renameHandler : undefined}
               /> : null;
           }
           if (needle && !pin.id.toLowerCase().includes(needle)) return null;
@@ -643,19 +671,13 @@ export const DesktopSidebar = memo(function DesktopSidebar({
         sessionHeadingAction={searching ? undefined : <SessionSortMenu sort={sessionSort} onSort={setSessionSort} />}
         destinations={[]}
         actions={[]}
-        sessions={recentSessions.map(sessionView)}
-        sessionGroup={sessionSort === "activity" || sessionSort === "created" ? (session) => {
-          const row = sessionById.get(session.id);
-          return sessionDayGroup(sessionSort === "created" ? row?.createdAt : row?.updatedAt, groupNow);
-        } : undefined}
+        sessions={recentSessions}
+        sessionGroup={sessionSort === "activity" || sessionSort === "created" ? sessionDayGroupOf : undefined}
         sessionDrag={sessionDrag}
-        onSessionDelete={deleteHandler}
-        onSessionRename={onRenameSession ? (session, title) => onRenameSession(session.id, title) : undefined}
-        sessionActions={(session) => {
-          const row = allSessions.find((item) => item.id === session.id);
-          // 分组已不在的会话也落在这里，同样可以置顶（后端已接受带分组的会话）。
-          return row ? pinAction({ kind: "session", id: row.id }, false) : [];
-        }}
+        dragHandlers={dragHandlers}
+        onSessionDelete={onDeleteSession ? deleteHandler : undefined}
+        onSessionRename={onRenameSession ? renameHandler : undefined}
+        sessionActions={sessionPinActions}
         onSessionActivate={onSelectSession}
         onSessionPrefetch={onPrefetchSession}
         pendingSessionId={pendingSessionId}

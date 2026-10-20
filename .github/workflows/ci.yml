@@ -87,3 +87,27 @@ jobs:
               resolve_web_module(path.parent, path.name)
               print(f"Loaded {path}")
           PY
+
+  chat-reconnect:
+    # 聊天重连行为(短连预算/手动重试/预算重置/stop 帧走新 socket)只能在真实
+    # Chromium + 真实 HTTP/WS 下验证,脚本自带 fixture,独立于 check-and-test 单独成job。
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+
+      - name: Install Node dependencies
+        run: npm ci
+
+      - name: Install Chromium
+        run: npx playwright-core install --with-deps chromium
+
+      - name: Verify chat reconnect scenarios
+        run: CHROMIUM_PATH="$(node -e 'console.log(require("playwright-core").chromium.executablePath())')" node frontend/chat/src/verify-reconnect.mjs

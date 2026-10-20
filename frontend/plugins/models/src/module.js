@@ -1,4 +1,4 @@
-import { cacheUsageSection } from "./cache-usage.js";
+import { cacheUsageResource, cacheUsageSection } from "./cache-usage.js";
 
 const SEARCH_ICON = `<svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="lucide lucide-search" aria-hidden="true"><circle cx="11" cy="11" r="8"></circle><path d="m21 21-4.3-4.3"></path></svg>`;
 const CHEVRON_ICON = `<svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="lucide lucide-chevron-right" aria-hidden="true"><path d="m9 18 6-6-6-6"></path></svg>`;
@@ -34,14 +34,18 @@ export async function readJsonResponse(response) {
 }
 
 export function activate(ctx) {
+  // 目录归模块所有：宿主空闲时预热，设置页挂载先画上次的目录，再在后台核对。
+  const catalog = ctx.data.resource("catalog", async (signal) =>
+    readJsonResponse(await ctx.http.request("/api/dashboard/models/catalog", {signal})), {warm: true});
+  const usage = cacheUsageResource(ctx);
   return ctx.ui.inject("shell.settings.v1", (mount) => {
-    const releaseUsage = mount.register(cacheUsageSection(ctx));
-    const releaseModels = registerModels(ctx, mount);
+    const releaseUsage = mount.register(cacheUsageSection(usage));
+    const releaseModels = registerModels(ctx, mount, catalog);
     return () => { releaseModels(); releaseUsage(); };
   });
 }
 
-function registerModels(ctx, mount) {
+function registerModels(ctx, mount, catalogResource) {
   return mount.register({
     id: "models",
     label: "模型",
@@ -118,10 +122,13 @@ function registerModels(ctx, mount) {
         const response = await ctx.http.request(path, init);
         return readJsonResponse(response);
       };
+      // 普通核对并入模块资源里进行中的读取；写入之后的核对另起一次，不读到写入前的目录。
       const reads = createLatestCatalogRead(
-        (signal) => request("/api/dashboard/models/catalog", {signal}),
+        (_signal, fresh) => catalogResource.refresh({fresh}),
         (nextCatalog) => {
           if (bindingSave?.saving) return;
+          // 核对结果与正在显示的是同一份目录：不重绘，避免打断阅读与展开状态。
+          if (nextCatalog === catalog && !bindingSave && errorMessage.hidden) return;
           const settledBinding = bindingSave;
           bindingSave = null;
           catalog = nextCatalog;
@@ -134,7 +141,7 @@ function registerModels(ctx, mount) {
           props.changed?.();
         },
       );
-      const load = () => reads.run();
+      const load = () => reads.run(undefined, true);
       // 返回设置只读核对目录；弹窗开启后，迟到的后台结果不能替换其依据。
       const canRefresh = () => !bindingSave?.saving && !page.querySelector("dialog[open]");
       const refreshVisible = () => {
@@ -1360,7 +1367,7 @@ function registerModels(ctx, mount) {
             }
             // 与旧弹窗 close 触发回读一致：关闭编辑器即核对权威目录，
             // 覆盖「写入已提交但读取失败」后内存旧值的不确定性。
-            if (!closed) report(reads.run(canRefresh));
+            if (!closed) report(reads.run(canRefresh, true));
             restoreFocus(trigger);
           },
         };
@@ -1445,7 +1452,11 @@ function registerModels(ctx, mount) {
         query = searchInput.value;
         if (catalog) renderCatalog();
       });
-      report(load());
+      if (catalogResource.current) {
+        catalog = catalogResource.current;
+        renderCatalog();
+      }
+      report(reads.run());
 
       return () => {
         closed = true;
@@ -1510,13 +1521,13 @@ export function createLatestCatalogRead(read, apply) {
   let active = null;
   let closed = false;
   return {
-    async run(canApply = () => true) {
+    async run(canApply = () => true, fresh = false) {
       if (closed) return;
       active?.abort();
       const controller = new AbortController();
       active = controller;
       try {
-        const value = await read(controller.signal);
+        const value = await read(controller.signal, fresh);
         if (!closed && active === controller && canApply()) apply(value);
       } catch (error) {
         if (!controller.signal.aborted) throw error;
