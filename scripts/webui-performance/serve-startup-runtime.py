@@ -21,7 +21,7 @@ def message_digest(workspace: Path) -> str:
     return hashlib.sha256(json.dumps(rows, ensure_ascii=False).encode()).hexdigest()
 
 
-async def run(state: Path, port: int) -> None:
+async def run(state: Path, port: int, switch_messages: int = 0) -> None:
     """创建固定数据后启动正式应用和 Web Shell，退出时核对历史。"""
     # 1. 只接受新目录；所有配置、插件状态和消息都属于本次测试。
     state.mkdir(parents=True, exist_ok=False)
@@ -83,6 +83,22 @@ async def run(state: Path, port: int) -> None:
             log.writer("akashic:startup-benchmark", author="user" if index % 2 == 0 else "assistant",
                        source="benchmark", body_types=(type(body),), content={"text": check_text}).append(
                            f"startup-{index:03d}", body)
+        if switch_messages:
+            # 会话切换基准的长历史：混入代码块、列表与内联格式，让 markdown 渲染
+            # 计入测量；内容逐条确定，保证重复运行的渲染成本一致。
+            log.ensure_session("akashic:switch-benchmark", SessionAttributes(learning="excluded"))
+            markdown = (
+                "切换基准消息 {index:04d}：含**加粗**、`inline_code()` 与[链接](https://example.com)。\n\n"
+                "- 第一项 `x = {index}`\n- 第二项\n\n"
+                "```python\ndef handle_{index:04d}(payload):\n"
+                "    return {{'index': {index}, 'ok': True}}  # 切换基准\n```"
+            )
+            for index in range(switch_messages):
+                part = ContentPart("text", markdown.format(index=index))
+                body = Input((part,)) if index % 2 == 0 else Output((part,), "complete")
+                log.writer("akashic:switch-benchmark", author="user" if index % 2 == 0 else "assistant",
+                           source="benchmark", body_types=(type(body),), content={"text": check_text}).append(
+                               f"switch-{index:04d}", body)
     finally:
         log.close()
     before = message_digest(workspace)
@@ -119,5 +135,7 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--state", type=Path, required=True)
     parser.add_argument("--port", type=int, default=24137)
+    parser.add_argument("--switch-session-messages", type=int, default=0,
+                        help="额外灌入 akashic:switch-benchmark 长会话的消息数(默认不灌)")
     args = parser.parse_args()
-    asyncio.run(run(args.state.resolve(), args.port))
+    asyncio.run(run(args.state.resolve(), args.port, args.switch_session_messages))
