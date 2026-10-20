@@ -3,6 +3,7 @@ import { dirname, resolve } from "node:path";
 import { defineConfig } from "vite";
 import react from "@vitejs/plugin-react";
 import { emitThemeCatalog } from "../theme/src/vite-theme-plugin";
+import { injectEntrySplash } from "./vite-splash-plugin";
 
 const here = dirname(fileURLToPath(import.meta.url));
 const repoRoot = resolve(here, "..", "..");
@@ -13,7 +14,7 @@ const repoRoot = resolve(here, "..", "..");
 export default defineConfig({
   root: here,
   base: "/dashboard/assets/",
-  plugins: [react(), emitThemeCatalog()],
+  plugins: [react(), emitThemeCatalog(), injectEntrySplash()],
   build: {
     outDir: resolve(repoRoot, "static", "dashboard"),
     emptyOutDir: true,

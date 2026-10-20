@@ -4,6 +4,7 @@
   <meta charset="UTF-8">
   <link rel="icon" type="image/svg+xml" sizes="any" href="../theme/src/akashic-brand.svg">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <meta name="color-scheme" content="light">
   <title>Akashic Dashboard</title>
   <script type="importmap">
   {
@@ -29,7 +30,10 @@
   <link rel="preload" as="style" href="/assets/chat-app.css">
 </head>
 <body>
-  <div id="root"></div>
+  <!-- splash 样式与主题预解析由构建期插件注入 head(vite-splash-plugin.ts,镜像
+       frontend/chat/src/styles.css 的 .webui-entry-loading 观感);React 首个 commit
+       或 webHost.renderRoot 的 replaceChildren 落地真实 UI 时它才被清掉。 -->
+  <div id="root"><p class="akashic-entry-splash">正在载入界面…</p></div>
   <script type="module" src="/src/main.tsx"></script>
 </body>
 </html>

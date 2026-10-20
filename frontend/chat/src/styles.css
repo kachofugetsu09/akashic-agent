@@ -48,6 +48,8 @@ input {
   color: inherit;
 }
 
+/* 观感被外壳首帧 splash 镜像：frontend/dashboard/vite-splash-plugin.ts 构建期注入的
+   .akashic-entry-splash（主题变量未安装前的 JS 前窗口）。改这里时同步看那边。 */
 .webui-entry-loading {
   display: grid;
   width: 100%;
