@@ -165,7 +165,7 @@ export function ConversationNavigation({
               ? <div className="conversation-session-group">{sessionGroup?.(session)}</div> : null}
             <ConversationSessionRow
             session={session}
-            hidden={hiddenSessions?.has(session.id)}
+            hidden={hiddenSessions?.has(session.id) || undefined}
             pendingSessionId={pendingSessionId}
             onActivate={onSessionActivate}
             onPrefetch={onSessionPrefetch}

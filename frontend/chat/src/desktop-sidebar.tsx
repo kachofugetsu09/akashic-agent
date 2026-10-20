@@ -389,9 +389,12 @@ export const DesktopSidebar = memo(function DesktopSidebar({
   // 卸载上千行，React commitDeletion 的单行成本远高于属性翻转（2002 行实测 5.6s → 0.5s）。
   const sessionMatches = useCallback((session: DesktopSidebarSession) =>
     `${session.title} ${session.preview}`.toLowerCase().includes(needle), [needle]);
-  const hiddenIds = useMemo(() => needle
-    ? new Set(allSessions.filter((session) => !sessionMatches(session)).map((session) => session.id))
-    : undefined, [allSessions, needle, sessionMatches]);
+  const hiddenIds = useMemo(() => {
+    if (!needle) return undefined;
+    const ids = new Set(allSessions.filter((session) => !sessionMatches(session)).map((session) => session.id));
+    // 全部匹配时保持 undefined：行 hidden 与分组标签的依赖身份不变，memo 不受搜索进出影响。
+    return ids.size ? ids : undefined;
+  }, [allSessions, needle, sessionMatches]);
   // 排序只重排展示顺序：最近会话区与项目内子列表共享同一份投影，置顶区不经过它。
   const mergedOrder = useMemo(
     () => mergeSessionOrder(sessionOrder, allSessions.map((session) => session.id)),
