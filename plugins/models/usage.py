@@ -26,6 +26,7 @@ _RECENT_TURNS = 50
 _RECENT_PASSIVE_TURNS = 10
 _PREVIEW_CHARS = 90
 _SCAN_SECONDS = 2.0
+# 检查点里存的是按当前计数规则算好的结果：改了计数规则（什么算计入、主动来源集合、预览）必须加一，旧结果随之丢弃重算。
 _CHECKPOINT_SCHEMA = 1
 
 logger = logging.getLogger(__name__)
@@ -74,6 +75,9 @@ class _SourceState:
     totals: _Totals = field(default_factory=_Totals)
     recent: deque[TurnUsage] = field(default_factory=lambda: deque(maxlen=_RECENT_TURNS))
     outputs: dict[str, int] = field(default_factory=dict[str, int])
+    # 以下两项只在内存：尚未写入检查点的输出用量，以及检查点里这个来源的旧输出是否作废。
+    unsaved: dict[str, int] = field(default_factory=dict[str, int])
+    reset: bool = False
 
 
 class _Checkpoint:
@@ -109,7 +113,8 @@ class _Checkpoint:
             self._path.unlink(missing_ok=True)
             return {}, {}
 
-    # 1. 被移除的 Session 整体删除；2. 变化的来源整行替换；3. head 最后写，保证不越过已写入的累计量。
+    # 1. 被移除的 Session 整体删除；2. 变化的来源整行替换，重置过的先删旧输出，输出只追加未写入的；
+    # 3. head 最后写，保证不越过已写入的累计量。
     def save(self, heads: Mapping[str, int], sources: Mapping[tuple[str, str], _SourceState],
              removed: Iterable[str]) -> None:
         self._path.parent.mkdir(parents=True, exist_ok=True)
@@ -127,12 +132,14 @@ class _Checkpoint:
                 for table in ("heads", "sources", "outputs"):
                     _ = connection.execute(f"DELETE FROM {table} WHERE session_id = ?", (session_id,))
             for (session_id, source), state in sources.items():
+                if state.reset:
+                    _ = connection.execute("DELETE FROM outputs WHERE session_id = ? AND source = ?", (session_id, source))
                 _ = connection.execute("INSERT OR REPLACE INTO sources VALUES (?, ?, ?, ?, ?, ?, ?)", (
                     session_id, source, state.after_seq, state.totals.turns, state.totals.prompt_tokens,
                     state.totals.hit_tokens, json.dumps([asdict(turn) for turn in state.recent], ensure_ascii=False)))
                 _ = connection.executemany("INSERT OR REPLACE INTO outputs VALUES (?, ?, ?, ?)",
                                        ((session_id, source, message_id, tokens)
-                                        for message_id, tokens in state.outputs.items()))
+                                        for message_id, tokens in state.unsaved.items()))
             _ = connection.executemany("INSERT OR REPLACE INTO heads VALUES (?, ?)", heads.items())
 
 
@@ -229,14 +236,18 @@ class CacheUsage:
         *, deadline: float | None = None,
     ) -> None:
         """从上次闭合位置读取；时间预算只在完整 Turn 边界生效。"""
-        if self._heads.get(session_id) == head:
+        stored = self._heads.get(session_id)
+        if stored == head:
             return
+        # 账本回退到检查点之前（恢复备份或替换）：整个 Session 重算，已消失的来源一并清掉。
+        if stored is not None and head < stored:
+            self._drop_session(session_id)
         reader = catalog.reader(session_id)
         for source in sorted(reader.source_names()):
             state = self._sources.setdefault((session_id, source), _SourceState())
             # 账本被替换或回退到检查点之前：这个来源从头重算。
             if state.after_seq > head:
-                state = self._sources[(session_id, source)] = _SourceState()
+                state = self._sources[(session_id, source)] = _SourceState(reset=True)
             facts: dict[str, _Fact] = {}
             after = state.after_seq
             stopped = False
@@ -260,12 +271,21 @@ class CacheUsage:
             usages = self._store.read_call_usages([identity for identity in call_ids if identity is not None])
             for turn in turns:
                 _record(state, session_id, source, turn, facts, usages)
-            if turns:
+            if turns or state.reset:
                 self._dirty_sources.add((session_id, source))
             if stopped:
                 return
         self._heads[session_id] = head
         self._dirty_heads.add(session_id)
+
+    # 内存与检查点里都丢掉这个 Session，之后按新账本重建。
+    def _drop_session(self, session_id: str) -> None:
+        self._removed.add(session_id)
+        _ = self._heads.pop(session_id, None)
+        self._dirty_heads.discard(session_id)
+        for key in [key for key in self._sources if key[0] == session_id]:
+            del self._sources[key]
+            self._dirty_sources.discard(key)
 
     # 首次访问时从检查点恢复；之后只在内存推进。
     def _restore(self) -> None:
@@ -278,15 +298,17 @@ class CacheUsage:
     def _flush(self) -> None:
         if not (self._dirty_heads or self._dirty_sources or self._removed):
             return
+        sources = {key: self._sources[key] for key in self._dirty_sources if key in self._sources}
         try:
             self._checkpoint.save(
-                {key: self._heads[key] for key in self._dirty_heads if key in self._heads},
-                {key: self._sources[key] for key in self._dirty_sources if key in self._sources},
-                self._removed,
+                {key: self._heads[key] for key in self._dirty_heads if key in self._heads}, sources, self._removed,
             )
-        except sqlite3.Error:
+        except (sqlite3.Error, OSError):
             logger.exception("cache usage checkpoint write failed")
             return
+        for state in sources.values():
+            state.unsaved.clear()
+            state.reset = False
         self._dirty_heads.clear()
         self._dirty_sources.clear()
         self._removed.clear()
@@ -308,7 +330,7 @@ def _record(
         return
     prompt, hit, output = (_sum(exact, name) for name in ("input_tokens", "cached_input_tokens", "output_tokens"))
     if output is not None and outputs and source not in _PROACTIVE_SOURCES:
-        state.outputs[outputs[-1][0]] = output
+        state.outputs[outputs[-1][0]] = state.unsaved[outputs[-1][0]] = output
     if prompt is None:
         return
     final = outputs[-1][1] if outputs else members[-1][1]
