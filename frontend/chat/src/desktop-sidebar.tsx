@@ -385,15 +385,19 @@ export const DesktopSidebar = memo(function DesktopSidebar({
     for (const session of sessions) rows.set(session.id, session);
     return [...rows.values()];
   }, [navigationPins.sessions, sessions, activeSessionId]);
-  const filteredSessions = useMemo(() => needle
-    ? allSessions.filter((session) => `${session.title} ${session.preview}`.toLowerCase().includes(needle))
-    : allSessions, [allSessions, needle]);
+  // 搜索收窄不卸载行：不匹配的行保留挂载、以 hidden 隐藏。大目录下逐键收窄会成批
+  // 卸载上千行，React commitDeletion 的单行成本远高于属性翻转（2002 行实测 5.6s → 0.5s）。
+  const sessionMatches = useCallback((session: DesktopSidebarSession) =>
+    `${session.title} ${session.preview}`.toLowerCase().includes(needle), [needle]);
+  const hiddenIds = useMemo(() => needle
+    ? new Set(allSessions.filter((session) => !sessionMatches(session)).map((session) => session.id))
+    : undefined, [allSessions, needle, sessionMatches]);
   // 排序只重排展示顺序：最近会话区与项目内子列表共享同一份投影，置顶区不经过它。
   const mergedOrder = useMemo(
     () => mergeSessionOrder(sessionOrder, allSessions.map((session) => session.id)),
     [sessionOrder, allSessions],
   );
-  const sortedSessions = useMemo(() => sortSessions(filteredSessions, sessionSort, mergedOrder), [filteredSessions, sessionSort, mergedOrder]);
+  const sortedSessions = useMemo(() => sortSessions(allSessions, sessionSort, mergedOrder), [allSessions, sessionSort, mergedOrder]);
   useEffect(() => {
     try { localStorage.setItem(SESSION_SORT_KEY, sessionSort); }
     catch { /* 禁用存储时仍允许本次浏览的排序选择。 */ }
@@ -473,10 +477,15 @@ export const DesktopSidebar = memo(function DesktopSidebar({
     () => sortedSessions.filter((session) => !pinnedSessions.has(session.id) && !groupOf(session))
       .map((session) => sessionViews.get(session.id) ?? session),
     [sortedSessions, pinnedSessions, groupOf, sessionViews]);
+  // 搜索时行不卸载，"匹配的会话"语义落在可见数上。
+  const visibleRecentCount = useMemo(() => hiddenIds
+    ? recentSessions.reduce((count, session) => count + (hiddenIds.has(session.id) ? 0 : 1), 0)
+    : recentSessions.length, [recentSessions, hiddenIds]);
   // 分组内置顶的会话排在所在文件夹最前面，其余保持当前排序。
   const sessionsByGroup = useMemo(() => {
     const byGroup = new Map<string, GroupSessionItem[]>();
     for (const session of sortedSessions) {
+      if (hiddenIds?.has(session.id)) continue;
       const key = groupOf(session);
       if (!key) continue;
       byGroup.set(key, [...byGroup.get(key) ?? [], {
@@ -486,7 +495,7 @@ export const DesktopSidebar = memo(function DesktopSidebar({
     }
     for (const [key, items] of byGroup) byGroup.set(key, [...items.filter((item) => item.pinned), ...items.filter((item) => !item.pinned)]);
     return byGroup;
-  }, [sortedSessions, groupOf, surface, pinnedSessions]);
+  }, [sortedSessions, groupOf, surface, pinnedSessions, hiddenIds]);
   const pinnedGroups = new Set(navigationPins.pins.filter((pin) => pin.kind !== "session").map((pin) => groupKey({ dimension: pin.kind, id: pin.id })));
   const visibleGroup = (key: string, label: string) => !needle || label.toLowerCase().includes(needle)
     || Boolean(sessionsByGroup.get(key)?.length);
@@ -510,7 +519,7 @@ export const DesktopSidebar = memo(function DesktopSidebar({
     }
     return pin.id.toLowerCase().includes(needle);
   });
-  const hasMatches = recentSessions.length > 0 || sectionGroups.some((items) => items.length > 0) || visiblePins.length > 0;
+  const hasMatches = visibleRecentCount > 0 || sectionGroups.some((items) => items.length > 0) || visiblePins.length > 0;
   const sessionById = useMemo(() => new Map(allSessions.map((session) => [session.id, session])), [allSessions]);
   // 行 memo 需要稳定身份：navigationPins 对象每渲染新建，只取字段级依赖。
   const { ready: pinsReady, pending: pinsPending, setPinned } = navigationPins;
@@ -667,11 +676,12 @@ export const DesktopSidebar = memo(function DesktopSidebar({
 
       <ConversationNavigation
         destinationHeading={false}
-        sessionHeading={!searching ? "最近会话" : recentSessions.length ? "匹配的会话" : ""}
+        sessionHeading={!searching ? "最近会话" : visibleRecentCount ? "匹配的会话" : ""}
         sessionHeadingAction={searching ? undefined : <SessionSortMenu sort={sessionSort} onSort={setSessionSort} />}
         destinations={[]}
         actions={[]}
         sessions={recentSessions}
+        hiddenSessions={hiddenIds}
         sessionGroup={sessionSort === "activity" || sessionSort === "created" ? sessionDayGroupOf : undefined}
         sessionDrag={sessionDrag}
         dragHandlers={dragHandlers}

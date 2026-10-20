@@ -14,13 +14,15 @@ export interface NavigationRowAction {
 }
 
 /** 导航行共享操作菜单；长按不打开会话，滑动仍交给目录滚动。 */
-export function NavigationRowMenu({ title, actions = [], className, children, onOpenChange }: {
+export function NavigationRowMenu({ title, actions = [], className, children, onOpenChange, hidden }: {
   title: string;
   actions?: NavigationRowAction[];
   className: string;
   children: ReactNode;
   /** 菜单开合通知；行内确认态等在菜单关闭时复位。 */
   onOpenChange?: (open: boolean) => void;
+  /** 搜索隐藏：行保留挂载但整行 display:none，避免大目录逐键收窄时的成批卸载。 */
+  hidden?: boolean;
 }) {
   const [open, setOpen] = useState(false);
   // Radix Menu 根一挂载就在 document 上常驻一个 capture keydown 监听（只用于判断键盘使用）；
@@ -50,6 +52,7 @@ export function NavigationRowMenu({ title, actions = [], className, children, on
     </button>
   );
   return <div ref={rowRef} className={`navigation-menu-row ${className}`} data-menu-open={open || undefined}
+      hidden={hidden}
       onPointerDown={(event) => {
         // 1. 一次新触摸开始计时；第二根手指、鼠标和菜单按钮不参与长按。
         cancelPress();

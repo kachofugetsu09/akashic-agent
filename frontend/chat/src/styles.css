@@ -676,6 +676,11 @@ input {
   touch-action: pan-y pinch-zoom;
 }
 
+/* 搜索隐藏的行保留挂载：类上的 display:flex/grid 会压过 UA 的 [hidden]，显式压回去。 */
+.navigation-menu-row[hidden] {
+  display: none;
+}
+
 .navigation-menu-trigger {
   position: absolute;
   inset-inline-end: 2px;
