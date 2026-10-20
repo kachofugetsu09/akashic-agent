@@ -50,7 +50,8 @@ export interface ConversationRowDragState {
 
 /** 拖拽处理函数全列表共享一份稳定实例（按会话 id 寻址），行组件才能靠 memo 跳出无关重渲染。 */
 export interface ConversationRowDragHandlers {
-  start: (id: string) => void;
+  /** 返回 false 表示当下拒绝拖拽（如搜索中），行会把 dragstart preventDefault 掉。 */
+  start: (id: string) => boolean | void;
   end: () => void;
   hover: (id: string, half: "before" | "after") => void;
   drop: (id: string, half: "before" | "after") => void;
@@ -348,9 +349,12 @@ export const ConversationSessionRow = memo(function ConversationSessionRow({ ses
       title={session.preview ? `${session.title} · ${session.preview}` : session.title}
       draggable={drag !== undefined}
       onDragStart={drag === undefined ? undefined : (event) => {
+        if (dragHandlers?.start(session.id) === false) {
+          event.preventDefault();
+          return;
+        }
         event.dataTransfer.setData("text/plain", session.id);
         event.dataTransfer.effectAllowed = "move";
-        dragHandlers?.start(session.id);
       }}
       onDragEnd={drag === undefined ? undefined : () => dragHandlers?.end()}
       onDragOver={drag === undefined ? undefined : (event) => {
