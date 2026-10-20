@@ -42,8 +42,11 @@ input {
   font-variant-ligatures: none;
 }
 
-/* 选区跟随主色的淡底、保留原文字色：浏览器默认的亮蓝白字在纸面上太刺眼。 */
-::selection {
+/* 选区跟随主色的淡底、保留原文字色：浏览器默认的亮蓝白字在纸面上太刺眼。
+   只挂在供阅读的容器上：Chromium 选区继承模型下，元素命中的非 UA 高亮规则会让
+   作用域内每个元素都逐元素解析一次高亮样式；挂在聊天根上等于目录每行白付一次
+   解析（2004 行实测 +18k 次）。目录行本就 user-select:none，收窄后视觉不变。 */
+:where(.agent-content, .process-markdown, .user-bubble, .conversation-heading, .day-separator, textarea, input)::selection {
   background: color-mix(in oklab, var(--ak-rule-focus) 22%, transparent);
   color: inherit;
 }

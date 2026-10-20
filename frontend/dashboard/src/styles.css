@@ -61,7 +61,10 @@ body {
   box-sizing: border-box;
 }
 
-::selection {
+/* 选区染色排除内嵌聊天子树：通用 ::selection 命中聊天全部元素后，每个元素都
+   要逐元素解析一次高亮样式，大行数目录下是全文档重算里最大的冗余；聊天根内
+   由聊天自己的 scoped 选区规则接管（frontend/chat/src/styles.css）。 */
+:where(:not(.akashic-chat, .akashic-chat *))::selection {
   color: var(--ak-color-on-action-primary);
   background: var(--ak-color-action-primary);
 }
