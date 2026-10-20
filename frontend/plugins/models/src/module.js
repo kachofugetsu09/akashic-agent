@@ -122,9 +122,9 @@ function registerModels(ctx, mount, catalogResource) {
         const response = await ctx.http.request(path, init);
         return readJsonResponse(response);
       };
-      // 同时发起的核对共用模块资源里的同一次读取。
+      // 普通核对并入模块资源里进行中的读取；写入之后的核对另起一次，不读到写入前的目录。
       const reads = createLatestCatalogRead(
-        () => catalogResource.refresh(),
+        (_signal, fresh) => catalogResource.refresh({fresh}),
         (nextCatalog) => {
           if (bindingSave?.saving) return;
           // 核对结果与正在显示的是同一份目录：不重绘，避免打断阅读与展开状态。
@@ -141,7 +141,7 @@ function registerModels(ctx, mount, catalogResource) {
           props.changed?.();
         },
       );
-      const load = () => reads.run();
+      const load = () => reads.run(undefined, true);
       // 返回设置只读核对目录；弹窗开启后，迟到的后台结果不能替换其依据。
       const canRefresh = () => !bindingSave?.saving && !page.querySelector("dialog[open]");
       const refreshVisible = () => {
@@ -1367,7 +1367,7 @@ function registerModels(ctx, mount, catalogResource) {
             }
             // 与旧弹窗 close 触发回读一致：关闭编辑器即核对权威目录，
             // 覆盖「写入已提交但读取失败」后内存旧值的不确定性。
-            if (!closed) report(reads.run(canRefresh));
+            if (!closed) report(reads.run(canRefresh, true));
             restoreFocus(trigger);
           },
         };
@@ -1456,7 +1456,7 @@ function registerModels(ctx, mount, catalogResource) {
         catalog = catalogResource.current;
         renderCatalog();
       }
-      report(load());
+      report(reads.run());
 
       return () => {
         closed = true;
@@ -1521,13 +1521,13 @@ export function createLatestCatalogRead(read, apply) {
   let active = null;
   let closed = false;
   return {
-    async run(canApply = () => true) {
+    async run(canApply = () => true, fresh = false) {
       if (closed) return;
       active?.abort();
       const controller = new AbortController();
       active = controller;
       try {
-        const value = await read(controller.signal);
+        const value = await read(controller.signal, fresh);
         if (!closed && active === controller && canApply()) apply(value);
       } catch (error) {
         if (!controller.signal.aborted) throw error;

@@ -94,19 +94,29 @@ export interface WebResourceOptions {
   warm?: boolean;
 }
 
+export interface WebRefreshOptions {
+  /**
+   * Start a new read instead of joining one already in flight. Use it after a write: a read that began
+   * before the write could return the old state. Superseded reads never replace `current`.
+   */
+  fresh?: boolean;
+}
+
 /**
  * Data owned by a web module rather than by one rendered page: create it in `activate(ctx)`,
  * read `current` synchronously in `render`, and call `refresh()` to revalidate in the background.
+ * Values are kept in memory only; a read whose JSON equals the current value keeps the old object and does not notify.
  */
 export interface WebResource<T> {
-  /** Last successful value, restored from this tab's snapshot after a reload; undefined before the first read. */
+  /** Last successful value; undefined before the first read. */
   readonly current: T | undefined;
   /** Error of the latest failed read; cleared by the next success. `current` keeps the previous value. */
   readonly error: Error | undefined;
+  /** Notified when `current` or `error` changes. */
   subscribe(listener: () => void): WebUiDisposer;
-  /** Joins a read already in flight; `current` keeps its value until the read succeeds. */
-  refresh(): Promise<T>;
-  /** Accept a value the module already holds (for example a write's response) without reading again. */
+  /** Joins a read already in flight unless `fresh`; `current` keeps its value until a read succeeds. */
+  refresh(options?: WebRefreshOptions): Promise<T>;
+  /** Accept a value the module already holds (for example a write's response); it supersedes reads in flight. */
   set(value: T): void;
 }
 

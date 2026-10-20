@@ -67,7 +67,10 @@ function render(page, usage) {
   else list.innerHTML = '<p class="models-cache-empty">暂无 KV Cache 记录。</p>';
 }
 
-// 用量归模块所有：宿主空闲时预热，冷扫描分多次请求推进；进度只给正在看的页面。
+// 没有页面在看时停在当前进度；下次打开从服务端已推进的位置继续。
+class ScanPaused extends Error {}
+
+// 用量归模块所有：宿主空闲时预热；冷扫描分多次请求推进，只在有页面在看时继续，进度只给这个页面。
 export function cacheUsageResource(ctx) {
   const progress = {text: "", listener: null};
   const resource = ctx.data.resource("cache-usage", async (signal) => {
@@ -76,14 +79,15 @@ export function cacheUsageResource(ctx) {
       if (!response.ok) throw new Error(`读取失败（${response.status}）`);
       const usage = await response.json();
       if (usage.complete) return usage;
+      if (!progress.listener) throw new ScanPaused("历史记录尚未读完");
       progress.text = `正在读取历史记录（${number(usage.scanned_sessions)} / ${number(usage.total_sessions)} 个会话）…`;
-      progress.listener?.();
+      progress.listener();
     }
   }, {warm: true});
   return {resource, progress};
 }
 
-// 设置中的“缓存效率”分节：先画模块里已有的用量，再在后台核对。
+// 设置中的“缓存效率”分节：先画模块里已有的用量，再在后台核对；核对失败时保留旧内容并提示。
 export function cacheUsageSection({resource, progress}) {
   return {
     id: "models.cache-usage", label: "缓存效率", iconSvg: ICON, route: "cache-usage", order: 31,
@@ -92,7 +96,7 @@ export function cacheUsageSection({resource, progress}) {
       page.className = "settings-page models-cache";
       page.innerHTML = `<div class="settings-shell">
         <header class="settings-header"><div><h1>缓存效率</h1><p>按 Turn 汇总模型调用的 KV Cache 命中，数据来自模型调用记录。</p></div></header>
-        <p class="models-cache-status" role="status">正在读取 KV Cache…</p>
+        <p class="models-cache-status" role="status"></p>
         <div data-content hidden>
           <section class="models-cache-overview" aria-label="KV Cache 概览">
             <div class="models-cache-current"><div class="models-cache-ring"><strong>—</strong></div><span>近期被动复用</span></div>
@@ -104,22 +108,34 @@ export function cacheUsageSection({resource, progress}) {
       host.replaceChildren(page);
       const status = page.querySelector(".models-cache-status");
       const content = page.querySelector("[data-content]");
+      const retry = document.createElement("button");
+      retry.type = "button";
+      retry.textContent = "重试";
+      retry.addEventListener("click", () => load());
+      let drawn = null;
+      // 1. 有数据就画（同一份不重画）；2. 失败单独提示，旧内容保留；3. 尚无数据时显示读取进度。
       const update = () => {
-        if (resource.current) {
+        const failed = resource.error && !(resource.error instanceof ScanPaused) ? resource.error : null;
+        if (resource.current && resource.current !== drawn) {
           render(page, resource.current);
-          status.remove();
+          drawn = resource.current;
           content.hidden = false;
-        } else if (resource.error) {
-          status.classList.add("error");
-          status.textContent = `KV Cache 读取失败：${resource.error.message}`;
-        } else if (progress.text) {
-          status.textContent = progress.text;
         }
+        status.classList.toggle("error", !!failed);
+        if (failed) {
+          status.replaceChildren(`${drawn ? "未能更新，显示的是上次结果：" : "KV Cache 读取失败："}${failed.message} `, retry);
+        } else if (!drawn) {
+          status.textContent = progress.text || "正在读取 KV Cache…";
+        } else {
+          status.replaceChildren();
+        }
+        status.hidden = status.childNodes.length === 0;
       };
+      const load = () => { resource.refresh().catch(() => undefined); };
       progress.listener = update;
       const release = resource.subscribe(update);
       update();
-      resource.refresh().catch(() => undefined);
+      load();
       return () => {
         release();
         if (progress.listener === update) progress.listener = null;

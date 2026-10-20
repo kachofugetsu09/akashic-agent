@@ -1,10 +1,6 @@
-import type { WebResource, WebResourceOptions, WebUiDisposer } from "@akashic/web-ui-v1";
+import type { WebRefreshOptions, WebResource, WebResourceOptions, WebUiDisposer } from "@akashic/web-ui-v1";
 
 type Load<T> = (signal: AbortSignal) => Promise<T>;
-
-// 快照只在同一标签页内跨刷新复用；超过上限的值只留在内存里。
-const SNAPSHOT_LIMIT = 256 * 1024;
-const SNAPSHOT_PREFIX = "akashic.web-data.v1:";
 
 /** 一个模块拥有的数据资源：生命周期与模块激活相同，页面挂载只读不取。 */
 class ModuleResource<T> implements WebResource<T> {
@@ -12,19 +8,13 @@ class ModuleResource<T> implements WebResource<T> {
   error: Error | undefined;
   private readonly listeners = new Set<() => void>();
   private readonly controller = new AbortController();
+  // 最新一次读取或写入的代次；被取代的读取不得覆盖当前值。
+  private generation = 0;
   private inflight: Promise<T> | null = null;
   private loaded = false;
   private serialized: string | undefined;
 
-  constructor(
-    private readonly load: Load<T>,
-    private readonly snapshotKey: string,
-    readonly warm: boolean,
-  ) {
-    const snapshot = readSnapshot<T>(snapshotKey);
-    this.serialized = snapshot?.raw;
-    this.current = snapshot?.value;
-  }
+  constructor(private readonly load: Load<T>, readonly warm: boolean) {}
 
   get settled(): boolean {
     return this.loaded;
@@ -36,26 +26,34 @@ class ModuleResource<T> implements WebResource<T> {
     return () => { this.listeners.delete(listener); };
   };
 
-  // 1. 进行中的读取直接复用；2. 读取期间 current 保持旧值；3. 成功后写快照并通知。
-  refresh(): Promise<T> {
+  // 1. 普通刷新并入进行中的读取；2. fresh 另起一次，旧读取作废；3. 作废的读取跟随最新结果。
+  refresh(options?: WebRefreshOptions): Promise<T> {
     if (this.controller.signal.aborted) return Promise.reject(new Error("web module is disposed"));
-    this.inflight ??= this.load(this.controller.signal).then((value) => {
+    if (this.inflight && options?.fresh !== true) return this.inflight;
+    const generation = ++this.generation;
+    const read = this.load(this.controller.signal).then((value) => {
+      if (this.controller.signal.aborted) throw new Error("web module is disposed");
+      if (generation !== this.generation) return this.latest();
       this.inflight = null;
       this.loaded = true;
       return this.accept(value);
     }, (reason: unknown) => {
+      if (this.controller.signal.aborted) throw reason;
+      if (generation !== this.generation) return this.latest();
       this.inflight = null;
-      if (!this.controller.signal.aborted) {
-        this.error = reason instanceof Error ? reason : new Error(String(reason));
-        this.notify();
-      }
+      this.error = reason instanceof Error ? reason : new Error(String(reason));
+      this.notify();
       throw reason;
     });
-    return this.inflight;
+    this.inflight = read;
+    return read;
   }
 
+  // 写操作的结果取代所有在途读取。
   set(value: T): void {
     if (this.controller.signal.aborted) return;
+    this.generation += 1;
+    this.inflight = null;
     this.loaded = true;
     this.accept(value);
   }
@@ -65,6 +63,10 @@ class ModuleResource<T> implements WebResource<T> {
     this.listeners.clear();
   }
 
+  private latest(): Promise<T> {
+    return this.inflight ?? Promise.resolve(this.current as T);
+  }
+
   // 内容未变时保留原对象且不通知：后台核对不引起重绘。
   private accept(value: T): T {
     const serialized = serialize(value);
@@ -72,7 +74,6 @@ class ModuleResource<T> implements WebResource<T> {
     this.current = value;
     this.serialized = serialized;
     this.error = undefined;
-    writeSnapshot(this.snapshotKey, serialized);
     this.notify();
     return value;
   }
@@ -86,13 +87,13 @@ class ModuleResource<T> implements WebResource<T> {
 export class WebDataRegistry {
   private readonly resources = new Set<ModuleResource<unknown>>();
 
-  create<T>(scope: string, key: string, load: Load<T>, options: WebResourceOptions | undefined): {
+  create<T>(key: string, load: Load<T>, options: WebResourceOptions | undefined): {
     resource: WebResource<T>;
     dispose: WebUiDisposer;
   } {
     if (typeof key !== "string" || key === "") throw new Error("resource key must be a non-empty string");
     if (typeof load !== "function") throw new Error(`resource ${key} load must be a function`);
-    const resource = new ModuleResource<T>(load, `${SNAPSHOT_PREFIX}${scope}:${key}`, options?.warm === true);
+    const resource = new ModuleResource<T>(load, options?.warm === true);
     this.resources.add(resource as ModuleResource<unknown>);
     return {
       resource,
@@ -125,23 +126,5 @@ function serialize(value: unknown): string | undefined {
     return JSON.stringify(value);
   } catch {
     return undefined;
-  }
-}
-
-function readSnapshot<T>(key: string): { raw: string; value: T } | undefined {
-  try {
-    const raw = window.sessionStorage.getItem(key);
-    return raw === null ? undefined : { raw, value: JSON.parse(raw) as T };
-  } catch {
-    return undefined;
-  }
-}
-
-function writeSnapshot(key: string, serialized: string | undefined): void {
-  try {
-    if (serialized === undefined || serialized.length > SNAPSHOT_LIMIT) window.sessionStorage.removeItem(key);
-    else window.sessionStorage.setItem(key, serialized);
-  } catch {
-    // 存储不可用或已满时只保留内存值。
   }
 }

@@ -85,8 +85,9 @@ export function PluginInventory({ http, inventory, active }: {
     } catch (error) {
       note({ kind: "error", text: error instanceof Error ? error.message : String(error) });
     }
-    await load();
-  }, [http, load]);
+    // 启停之后另起一次读取，不并入启停之前发出的轮询。
+    await inventory.refresh({ fresh: true }).catch(() => undefined);
+  }, [http, inventory]);
 
   const all = rows ?? [];
   const attention = all.filter(needsAttention).length;

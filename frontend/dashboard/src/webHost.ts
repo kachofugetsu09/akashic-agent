@@ -248,8 +248,7 @@ class BrowserCatalogSession implements WebHostSession {
           if (owner.disposed) throw new Error("web module is disposed");
           if (keys.has(key)) throw new Error(`duplicate resource ${key}`);
           keys.add(key);
-          // 快照按模块字节区分：换了代码就不读旧形状的数据。
-          const created = this.data.create(`${owner.module.pluginId}:${owner.module.moduleSha256}`, key, load, options);
+          const created = this.data.create(key, load, options);
           owner.effects.push(once(created.dispose));
           return created.resource;
         },
