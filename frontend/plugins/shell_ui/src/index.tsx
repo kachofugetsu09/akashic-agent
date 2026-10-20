@@ -1,8 +1,8 @@
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type KeyboardEvent } from "react";
 import { createRoot } from "react-dom/client";
 import "./style.css";
-import { akashicBrandIcon } from "./brand";
-import { PluginInventory } from "./plugin-inventory";
+import { akashicBrandIcon, markup } from "./brand";
+import { PluginInventory, inventoryResource, type InventoryResource } from "./plugin-inventory";
 import type {
   WebEntry,
   WebHostContextV1,
@@ -94,6 +94,7 @@ const settingsLauncher = { open: () => {} };
 
 /** Register the ordinary Shell plugin as the only owner of the outer frame. */
 export function activate(ctx: WebHostContextV1): WebUiDisposer {
+  const inventory = inventoryResource(ctx);
   const disposers = [
     ctx.ui.inject("web.root.v1", (mount) => mount.register({
       id: "shell",
@@ -111,6 +112,7 @@ export function activate(ctx: WebHostContextV1): WebUiDisposer {
           settings={view.child(SETTINGS_MOUNT)}
           settingsPlugins={view.child(SETTINGS_PLUGINS_MOUNT)}
           http={ctx.http}
+          inventory={inventory}
         />);
         return () => root.unmount();
       },
@@ -128,12 +130,13 @@ export function activate(ctx: WebHostContextV1): WebUiDisposer {
   };
 }
 
-function Shell({ pages, railActions, settings, settingsPlugins, http }: {
+function Shell({ pages, railActions, settings, settingsPlugins, http, inventory }: {
   pages: WebMountView;
   railActions: WebMountView;
   settings: WebMountView;
   settingsPlugins: WebMountView;
   http: WebHostContextV1["http"];
+  inventory: InventoryResource;
 }): React.ReactElement {
   const bandEntries = useMemo(() => checkPages(pages.entries), [pages.entries]);
   const railActionEntries = useMemo(() => checkRailActions(railActions.entries), [railActions.entries]);
@@ -215,6 +218,10 @@ function Shell({ pages, railActions, settings, settingsPlugins, http }: {
   const [settingsPane, setSettingsPane] = useState<"nav" | "content">("content");
   // 插件分节的两个 tab：插件列表管理启停，插件配置是成员自己的设置表单。
   const [pluginsTab, setPluginsTab] = useState<"list" | "config">("list");
+  // 插件列表是只读页：首次进入后保活，离开只隐藏，再进不重建也保留搜索与展开状态。
+  const inventoryVisible = settingsOpen && currentTarget?.kind === "plugins" && currentTarget.memberId === null && pluginsTab === "list";
+  const inventoryKept = useRef(false);
+  if (inventoryVisible) inventoryKept.current = true;
 
   const openPage = useCallback((entry: ShellPage): void => {
     if (entry.id === activeId) { setWithdrawn(false); setSettingsOpen(false); return; }
@@ -468,7 +475,7 @@ function Shell({ pages, railActions, settings, settingsPlugins, http }: {
             aria-current={activeId === entry.id ? "page" : undefined}
             onClick={() => openPage(entry)}
           >
-            <span className="shell-page-icon" aria-hidden="true" dangerouslySetInnerHTML={{ __html: entry.iconSvg }} />
+            <span className="shell-page-icon" aria-hidden="true" dangerouslySetInnerHTML={markup(entry.iconSvg)} />
             <span>{entry.label}</span>
           </button>)}
           <div className="product-band__indicator" aria-hidden="true" />
@@ -483,7 +490,7 @@ function Shell({ pages, railActions, settings, settingsPlugins, http }: {
         title="功能设置 (Ctrl+,)"
         onClick={() => openSettings()}
       >
-        <span className="shell-page-icon" aria-hidden="true" dangerouslySetInnerHTML={{ __html: SETTINGS_ICON }} />
+        <span className="shell-page-icon" aria-hidden="true" dangerouslySetInnerHTML={markup(SETTINGS_ICON)} />
       </button>}
     </header>}
     <dialog
@@ -505,23 +512,23 @@ function Shell({ pages, railActions, settings, settingsPlugins, http }: {
             aria-current={current ? "true" : undefined}
             onClick={() => openSettings(plugins ? { kind: "plugins", memberId: null } : { kind: "section", id: item.entry.id })}
           >
-            <span className="shell-page-icon" aria-hidden="true" dangerouslySetInnerHTML={{ __html: plugins ? SETTINGS_PLUGINS_ICON : item.entry.iconSvg }} />
+            <span className="shell-page-icon" aria-hidden="true" dangerouslySetInnerHTML={markup(plugins ? SETTINGS_PLUGINS_ICON : item.entry.iconSvg)} />
             <span className="shell-settings-nav-label">{plugins ? SETTINGS_PLUGINS_LABEL : item.entry.label}</span>
-            <span className="shell-settings-nav-chevron" aria-hidden="true" dangerouslySetInnerHTML={{ __html: CHEVRON_ICON }} />
+            <span className="shell-settings-nav-chevron" aria-hidden="true" dangerouslySetInnerHTML={markup(CHEVRON_ICON)} />
           </button>;
         })}
       </nav>
       <button type="button" className="shell-settings-close" onClick={closeSettings} aria-label="关闭设置" title="关闭 (Esc)">
-        <span aria-hidden="true" dangerouslySetInnerHTML={{ __html: CLOSE_ICON }} />
+        <span aria-hidden="true" dangerouslySetInnerHTML={markup(CLOSE_ICON)} />
       </button>
       <div className="shell-settings-body">
         {/* 窄屏左上返回：插件详情回到插件列表，其余回到分节列表。 */}
         {activeCard
           ? <button type="button" className="shell-settings-back" onClick={() => openSettings({ kind: "plugins", memberId: null })}>
-            <span aria-hidden="true" dangerouslySetInnerHTML={{ __html: BACK_ICON }} />{SETTINGS_PLUGINS_LABEL}
+            <span aria-hidden="true" dangerouslySetInnerHTML={markup(BACK_ICON)} />{SETTINGS_PLUGINS_LABEL}
           </button>
           : <button type="button" className="shell-settings-back" onClick={() => setSettingsPane("nav")}>
-            <span aria-hidden="true" dangerouslySetInnerHTML={{ __html: BACK_ICON }} />功能设置
+            <span aria-hidden="true" dangerouslySetInnerHTML={markup(BACK_ICON)} />功能设置
           </button>}
         <div className="shell-settings-page">
           <SettingsHeading
@@ -535,7 +542,7 @@ function Shell({ pages, railActions, settings, settingsPlugins, http }: {
               <button type="button" role="tab" aria-selected={pluginsTab === "list"} onClick={() => setPluginsTab("list")}>插件列表</button>
               <button type="button" role="tab" aria-selected={pluginsTab === "config"} onClick={() => setPluginsTab("config")}>插件配置</button>
             </div>
-            {pluginsTab === "list" ? <PluginInventory http={http} /> : pluginCards.length === 0
+            {pluginsTab === "list" ? null : pluginCards.length === 0
               ? <p className="shell-inventory-empty">已启用的插件都没有设置项</p> : <PluginCardList
               cards={pluginCards}
               view={settingsPlugins}
@@ -543,6 +550,9 @@ function Shell({ pages, railActions, settings, settingsPlugins, http }: {
               open={(card) => openSettings({ kind: "plugins", memberId: card.entries[0].id })}
             />}
           </>}
+          {inventoryKept.current && <div hidden={!inventoryVisible}>
+            <PluginInventory http={http} inventory={inventory} active={inventoryVisible} />
+          </div>}
           <div ref={settingsContent} className="shell-settings-mount" />
         </div>
       </div>
@@ -576,10 +586,10 @@ function SettingsHeading({ target, sections, card, back }: {
   if (!card) return <header className="shell-settings-heading"><h3>{SETTINGS_PLUGINS_LABEL}</h3></header>;
   return <header className="shell-settings-heading">
     <button type="button" className="shell-settings-crumb" onClick={back}>
-      <span aria-hidden="true" dangerouslySetInnerHTML={{ __html: BACK_ICON }} />{SETTINGS_PLUGINS_LABEL}
+      <span aria-hidden="true" dangerouslySetInnerHTML={markup(BACK_ICON)} />{SETTINGS_PLUGINS_LABEL}
     </button>
     <div className="shell-settings-detail-head">
-      <span className="shell-plugin-mark" aria-hidden="true" dangerouslySetInnerHTML={{ __html: SETTINGS_PLUGINS_ICON }} />
+      <span className="shell-plugin-mark" aria-hidden="true" dangerouslySetInnerHTML={markup(SETTINGS_PLUGINS_ICON)} />
       <h3>{card.label}</h3>
     </div>
     {card.description && <p>{card.description}</p>}
@@ -608,7 +618,7 @@ function PluginCardList({ cards, view, railActions, open }: {
   return <ul className="shell-plugin-cards">
     {cards.map((card) => <li key={card.id}>
       <button type="button" className="shell-plugin-card" onClick={() => open(card)}>
-        <span className="shell-plugin-mark" aria-hidden="true" dangerouslySetInnerHTML={{ __html: SETTINGS_PLUGINS_ICON }} />
+        <span className="shell-plugin-mark" aria-hidden="true" dangerouslySetInnerHTML={markup(SETTINGS_PLUGINS_ICON)} />
         <span className="shell-plugin-main">
           <strong>{card.label}</strong>
           {card.description && <span className="shell-plugin-desc">{card.description}</span>}
@@ -619,7 +629,7 @@ function PluginCardList({ cards, view, railActions, open }: {
             </span>)}
           </span>
         </span>
-        <span className="shell-plugin-chevron" aria-hidden="true" dangerouslySetInnerHTML={{ __html: CHEVRON_ICON }} />
+        <span className="shell-plugin-chevron" aria-hidden="true" dangerouslySetInnerHTML={markup(CHEVRON_ICON)} />
       </button>
     </li>)}
   </ul>;

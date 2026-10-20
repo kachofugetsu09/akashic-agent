@@ -6,6 +6,7 @@
 
 | ID | 状态 | 主题 | 关联条款 |
 |---|---|---|---|
+| [0127](0127-web-modules-own-their-data.md) | accepted / implemented for review | Web 模块拥有自己的数据，页面挂载只读不取 | WEBUI-008 |
 | [0121](0121-conversation-workbench-tabs.md) | proposed | 对话工具区升级为按会话组织的工作台：会话上下文、意图路由、正交标签 | WEBUI-008、PLG-014、PLG-016、SES-009 |
 | [0118](0118-akasha-publishes-trajectory-checkpoints.md) | proposed / implemented for review | Akasha 按批发布轨迹检查点，可重建性由重放等价守护 | MEM-009、MEM-013、ERR-001 |
 | [0115](0115-computer-manual-restart-from-failed.md) | proposed / implemented for review | Computer 出错后由用户重启电脑，整组结束旧运行时再唤醒 | PLG-017、ERR-001、STA-003 |
