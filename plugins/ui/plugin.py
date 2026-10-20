@@ -140,7 +140,8 @@ class Ui:
         if web is not None:
             _path(root, web, ".js")
             asset = resolve_web_module(root, web, requires=requires, provides=provides,
-                                       contract_digests=tuple(sorted(digests.items())))
+                                       contract_digests=tuple(sorted(digests.items())),
+                                       fact_root=ctx.runtime.data_dir / "web-module-facts")
             assert asset is not None
             module = WebModuleDescriptor(
                 owner, registration_uuid, ctx.runtime.generation_id, asset,

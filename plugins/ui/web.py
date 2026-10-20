@@ -2,7 +2,11 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
 import re
+import sys
+from functools import lru_cache
+from importlib import metadata as importlib_metadata
 from pathlib import Path
 
 import tree_sitter_javascript
@@ -40,6 +44,7 @@ def resolve_web_module(
     requires: tuple[str, ...] = (),
     provides: tuple[str, ...] = (),
     contract_digests: tuple[tuple[str, str], ...] = (),
+    fact_root: Path | None = None,
 ) -> WebModuleAsset | None:
     """Freeze one browser module and its Host SDK imports inside the artifact."""
 
@@ -55,7 +60,7 @@ def resolve_web_module(
     ):
         raise RuntimeError(f"插件 web module 无效: {declared}")
     module = _read_text(module_path, WEB_MODULE_MAX_BYTES, "web module")
-    _validate_javascript_module(module)
+    _validate_javascript_module(module, fact_root=fact_root)
 
     stylesheet_path = raw_module.with_suffix(".css")
     stylesheet = ""
@@ -226,10 +231,60 @@ def _validate_stylesheet_namespace(stylesheet: str) -> None:
         raise RuntimeError("插件 web stylesheet 不得声明全局命名 at-rule")
 
 
-def _validate_javascript_module(source: str) -> None:
+# 校验事实按内容寻址：同一源码只在算法与语法版本不变时复用"校验通过"结论。
+@lru_cache(maxsize=1)
+def _validation_fingerprint() -> str | None:
+    try:
+        algorithm = Path(__file__).read_bytes()
+        grammar = importlib_metadata.version("tree-sitter-javascript").encode()
+        runtime = importlib_metadata.version("tree-sitter").encode()
+    except (OSError, importlib_metadata.PackageNotFoundError):
+        return None
+    return hashlib.sha256(runtime + b"\0" + grammar + b"\0" + algorithm).hexdigest()[:16]
+
+
+def _validation_fact_path(source: bytes, fact_root: Path | None) -> Path | None:
+    fingerprint = _validation_fingerprint()
+    if fingerprint is None or fact_root is None:
+        return None
+    return fact_root / fingerprint / f"{hashlib.sha256(source).hexdigest()}.json"
+
+
+def _validation_fact_verified(source: bytes, fact_root: Path | None) -> bool:
+    """同一算法与语法版本是否已校验通过这份源码；只读事实。"""
+    path = _validation_fact_path(source, fact_root)
+    if path is None:
+        return False
+    try:
+        return path.read_bytes() == b"1"
+    except OSError:
+        return False
+
+
+# 只读数据目录或并发写失败时静默放弃缓存,校验仍然每次现算。
+def _record_validation_fact(source: bytes, fact_root: Path | None) -> None:
+    path = _validation_fact_path(source, fact_root)
+    if path is None or sys.dont_write_bytecode:
+        return
+    temporary = path.with_name(f"{path.name}.{os.getpid()}.tmp")
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        _ = temporary.write_bytes(b"1")
+        os.replace(temporary, path)
+    except OSError:
+        try:
+            temporary.unlink(missing_ok=True)
+        except OSError:
+            pass
+
+
+def _validate_javascript_module(source: str, *, fact_root: Path | None = None) -> None:
     """Require one synchronous activate export and only Host SDK imports."""
 
-    tree = Parser(_JAVASCRIPT).parse(source.encode("utf-8"))
+    source_bytes = source.encode("utf-8")
+    if _validation_fact_verified(source_bytes, fact_root):
+        return
+    tree = Parser(_JAVASCRIPT).parse(source_bytes)
     if tree.root_node.has_error:
         raise RuntimeError("插件 web module 不是有效的 JavaScript ESM")
 
@@ -264,6 +319,7 @@ def _validate_javascript_module(source: str) -> None:
 
     if activate_exports != 1:
         raise RuntimeError("插件 web module 必须导出一个同步 activate(ctx)")
+    _record_validation_fact(source_bytes, fact_root)
 
 
 def _is_sync_activate_export(node: Node, source: str) -> int:
