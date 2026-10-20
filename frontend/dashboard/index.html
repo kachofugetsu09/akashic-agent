@@ -5,6 +5,14 @@
   <link rel="icon" type="image/svg+xml" sizes="any" href="../theme/src/akashic-brand.svg">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>Akashic Dashboard</title>
+  <script>
+    // bootstrap 预热：HTML 解析到这里就发请求，与整个模块图的下载求值并行，不再等
+    // dashboard 入口 eval 完才发起（慢链路下省一个多 RTT 的串行段）。消费方是
+    // startWebHost（frontend/dashboard/src/webHost.ts），一次性取用后即删除钩子，
+    // 重试与夹具页面回退到自行 fetch，语义不变。
+    window.__akashicWebUiBootstrap = fetch("/api/chat/web-ui/bootstrap", {headers: {Accept: "application/json"}, cache: "no-cache"});
+    window.__akashicWebUiBootstrap.catch(() => {});
+  </script>
   <script type="importmap">
   {
     "imports": {
