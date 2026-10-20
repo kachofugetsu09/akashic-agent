@@ -71,6 +71,8 @@ class WebUiProvider(Protocol):
 
     async def state(self) -> dict[str, str | bool]: ...
 
+    async def module_asset(self, plugin_id: str, sha256: str) -> str: ...
+
 
 # bootstrap 载荷按目录身份缓存(plugins/ui/plugin.py);同一载荷的 gzip 结果也缓存。
 # plugin-ui 模块同样按内容哈希(sha256 参数即内容指纹)缓存压缩结果。

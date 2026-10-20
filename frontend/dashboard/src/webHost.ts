@@ -122,7 +122,7 @@ class BrowserCatalogSession implements WebHostSession {
   }
 
   async activateModules(
-    speculative: Map<string, { sha256: string; imported: Promise<WebModuleExports> }> = new Map(),
+    cached: ReadonlyMap<string, string>,
   ): Promise<void> {
     const ordered = activationOrder(this.bootstrap.modules);
     // 描述符完整性校验先行、import 并行预取：下载与编译在浏览器后台线程重叠，
@@ -138,7 +138,7 @@ class BrowserCatalogSession implements WebHostSession {
         this.errors.set(module.pluginId, error);
         continue;
       }
-      const imported = importModule(module, speculative);
+      const imported = importModule(module, cached);
       // 拒绝在轮到该模块 activate 前可能先落地；统一由 activateModule 的 catch 记账。
       imported.catch(() => undefined);
       preimported.set(module.pluginId, imported);
@@ -620,28 +620,25 @@ export async function startWebHost(host: HTMLElement): Promise<WebHostSession> {
   const preloads = preloadHostModules();
   // 运行时下载与目录读取彼此独立；插件执行仍等共享运行时发布完成。
   const runtimeReady = import("./design/runtime").then((runtime) => runtime.exposeRuntime());
-  // 投机 import 也必须等共享 runtime 就绪:SDK 模块在 evaluate 时读取 runtime,
-  // 提前求值会把未初始化的读取固化进模块记录。命中时代码缓存与目录读取仍完全重叠。
-  const speculativeReady = runtimeReady.then(() => speculativeImports());
+  const cached = loadCachedDigests();
   const open = async (): Promise<BrowserCatalogSession> => {
     // 消费 index.html 内联脚本的预热请求（一次性钩子，取走即删；重试与无钩子的
     // 夹具/桌面页面自行 fetch）。响应体只读一次，不能共享已消费的 Response。
     const windowWithPrefetch = window as { __akashicWebUiBootstrap?: Promise<Response> };
     const prefetched = windowWithPrefetch.__akashicWebUiBootstrap;
     delete windowWithPrefetch.__akashicWebUiBootstrap;
-    const [, response, speculative] = await Promise.all([
+    const [, response] = await Promise.all([
       runtimeReady,
       prefetched ?? fetch("/api/chat/web-ui/bootstrap", {headers: {Accept: "application/json"}, cache: "no-cache"}),
-      speculativeReady,
     ]);
     if (!response.ok) throw new Error(`界面目录暂时不可用（${response.status}）`);
     const next = new BrowserCatalogSession(parseBootstrap(await response.json()));
     try {
-      await next.activateModules(speculative);
+      await next.activateModules(cached);
       rememberCatalogDigests(next.bootstrap);
       // 经内联字节激活的模块还没有 URL 缓存;空闲时补齐,不占用启动关键路径。
       const missed = next.bootstrap.modules.filter(
-        (module) => speculative.get(module.pluginId)?.sha256 !== module.moduleSha256,
+        (module) => cached.get(module.pluginId) !== module.moduleSha256,
       );
       if (missed.length && !next.errors.size) warmModuleCache(missed);
       return next;
@@ -793,7 +790,9 @@ function digestRecord(value: unknown): value is Record<string, string> {
 // 模块 import 双通道:暖启动按内容寻址 URL import,V8 code cache 以 URL 为身份
 // 跨重启复用编译结果;首访、目录换代或缓存失效时回落到 bootstrap 内联字节的
 // blob import,冷启动网络量与字节围栏不变。
-const speculativeCatalogKey = "akashic.webui.modules.v1";
+const cachedCatalogKey = "akashic.webui.modules.v1";
+// A URL module is evaluated once per document; later catalogs need fresh instances.
+const importedModuleUrls = new Set<string>();
 
 function moduleUrl(pluginId: string, sha256: string): string {
   return `/api/chat/web-ui/module?plugin_id=${encodeURIComponent(pluginId)}&sha256=${sha256}`;
@@ -810,31 +809,29 @@ async function importModuleFromBytes(module: WebModulePayload): Promise<WebModul
   }
 }
 
-/** 页面加载即按上次目录摘要投机 import;摘要命中即代码缓存命中,不中也不阻塞激活。 */
-function speculativeImports(): Map<string, { sha256: string; imported: Promise<WebModuleExports> }> {
-  const imports = new Map<string, { sha256: string; imported: Promise<WebModuleExports> }>();
+/** Load cache hints without executing code from an old catalog. */
+function loadCachedDigests(): Map<string, string> {
+  const digests = new Map<string, string>();
   try {
-    const stored = JSON.parse(localStorage.getItem(speculativeCatalogKey) ?? "") as unknown;
-    if (!isRecord(stored) || !isRecord(stored.modules)) return imports;
+    const stored = JSON.parse(localStorage.getItem(cachedCatalogKey) ?? "null") as unknown;
+    if (!isRecord(stored) || !isRecord(stored.modules)) return digests;
     for (const [pluginId, sha256] of Object.entries(stored.modules)) {
-      if (typeof sha256 !== "string" || !/^[0-9a-f]{64}$/.test(sha256)) continue;
-      // 拒绝在激活前可能先落地;统一由 activateModules 的回落路径记账。
-      const imported = import(/* @vite-ignore */ moduleUrl(pluginId, sha256)) as Promise<WebModuleExports>;
-      imported.catch(() => undefined);
-      imports.set(pluginId, { sha256, imported });
+      if (typeof sha256 === "string" && /^[0-9a-f]{64}$/.test(sha256)) digests.set(pluginId, sha256);
     }
-  } catch {
-    // 存储不可读(隐私模式等)时放弃投机导入,冷路径不变。
+  } catch (error) {
+    if (!(error instanceof SyntaxError) && !(error instanceof DOMException)) throw error;
+    // Unavailable or damaged cache hints leave the inline path available.
   }
-  return imports;
+  return digests;
 }
 
 function rememberCatalogDigests(bootstrap: WebUiBootstrap): void {
   try {
     const modules: Record<string, string> = {};
     for (const module of bootstrap.modules) modules[module.pluginId] = module.moduleSha256;
-    localStorage.setItem(speculativeCatalogKey, JSON.stringify({ modules }));
-  } catch {
+    localStorage.setItem(cachedCatalogKey, JSON.stringify({ modules }));
+  } catch (error) {
+    if (!(error instanceof DOMException)) throw error;
     // 存储不可写时下一次启动退回内联字节路径。
   }
 }
@@ -855,12 +852,15 @@ function warmModuleCache(modules: WebModulePayload[]): void {
 
 function importModule(
   module: WebModulePayload,
-  speculative: Map<string, { sha256: string; imported: Promise<WebModuleExports> }>,
+  cached: ReadonlyMap<string, string>,
 ): Promise<WebModuleExports> {
-  const hit = speculative.get(module.pluginId);
-  if (hit && hit.sha256 === module.moduleSha256) {
-    // URL 身份与描述符一致才复用;失败(缓存失效/弱网)回落内联字节,不额外请求。
-    return hit.imported.catch(() => importModuleFromBytes(module));
+  const url = moduleUrl(module.pluginId, module.moduleSha256);
+  if (cached.get(module.pluginId) === module.moduleSha256 && !importedModuleUrls.has(url)) {
+    // The current catalog has approved this module. Reuse code cache across pages,
+    // but never reuse module-level state between catalog sessions in this document.
+    importedModuleUrls.add(url);
+    return (import(/* @vite-ignore */ url) as Promise<WebModuleExports>)
+      .catch(() => importModuleFromBytes(module));
   }
   return importModuleFromBytes(module);
 }
