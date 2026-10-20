@@ -790,6 +790,8 @@ function SidebarRailResizer({ rail, sidebarRef }: {
       rail.dragEnd();
     }}
     onPointerCancel={() => { setDragging(false); rail.dragEnd(); }}
+    // capture 丢失而 pointerup/pointercancel 没到时兜底：清掉直写列宽，按最后位置收尾。
+    onLostPointerCapture={() => { if (dragging) { setDragging(false); rail.dragEnd(); } }}
     onDoubleClick={(event) => {
       event.preventDefault();
       rail.reset();

@@ -47,7 +47,7 @@ export interface SidebarRailControl {
 /** 侧栏宽度偏好：静置时只写 --chat-rail-width 一个值；首次渲染前同步读取，挂载无回跳。 */
 export function useSidebarRail(shellRef: RefObject<HTMLDivElement | null>): SidebarRailControl {
   const [widthRem, setWidthRem] = useState<number | null>(readRailWidth);
-  const drag = useRef<{ x: number; widthPx: number; next: number } | null>(null);
+  const drag = useRef<{ x: number; widthPx: number; initial: number; next: number | null } | null>(null);
 
   const commit = useCallback((next: number | null) => {
     setWidthRem(next);
@@ -59,8 +59,14 @@ export function useSidebarRail(shellRef: RefObject<HTMLDivElement | null>): Side
     }
   }, []);
 
+  // 清拖拽期直写的列宽：dragEnd 与 reset 共用，pointer capture 丢失时也走这里兜底。
+  const clearDirect = useCallback(() => {
+    const shell = shellRef.current;
+    if (shell) shell.style.gridTemplateColumns = "";
+  }, [shellRef]);
+
   const dragStart = useCallback((clientX: number, widthPx: number) => {
-    drag.current = { x: clientX, widthPx, next: snapRail(widthPx / rootFontPx()) };
+    drag.current = { x: clientX, widthPx, initial: snapRail(widthPx / rootFontPx()), next: null };
   }, []);
 
   const dragTo = useCallback((clientX: number): number | null => {
@@ -74,16 +80,16 @@ export function useSidebarRail(shellRef: RefObject<HTMLDivElement | null>): Side
     const shell = shellRef.current;
     if (shell) shell.style.gridTemplateColumns = `${next}rem minmax(0, 1fr)`;
     return next;
-  }, []);
+  }, [shellRef]);
 
   const dragEnd = useCallback(() => {
     const start = drag.current;
     if (!start) return;
     drag.current = null;
-    const shell = shellRef.current;
-    if (shell) shell.style.gridTemplateColumns = "";
-    commit(start.next);
-  }, [commit]);
+    clearDirect();
+    // 只在真的拖到了新值才提交：8px 热区上单击（或亚档抖动）不得把当前 clamp 档冻成持久偏好。
+    if (start.next !== null && start.next !== start.initial) commit(start.next);
+  }, [commit, clearDirect]);
 
   const stepBy = useCallback((deltaRem: number, widthPx: number) => {
     commit(snapRail(widthPx / rootFontPx() + deltaRem));
@@ -91,8 +97,9 @@ export function useSidebarRail(shellRef: RefObject<HTMLDivElement | null>): Side
 
   const reset = useCallback(() => {
     drag.current = null;
+    clearDirect();
     commit(null);
-  }, [commit]);
+  }, [commit, clearDirect]);
 
   const style = useMemo<CSSProperties | undefined>(() => widthRem === null
     ? undefined

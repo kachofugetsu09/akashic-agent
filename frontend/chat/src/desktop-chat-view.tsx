@@ -46,7 +46,7 @@ function lastUserInput(messages: readonly TimelineMessage[]): string {
 
 export function DesktopChatView({ controller }: DesktopChatViewProps) {
   const theme = useTheme();
-  
+
   const composerApi = useRef<ComposerApi | null>(null);
   const shellRef = useRef<HTMLDivElement | null>(null);
   const rail = useSidebarRail(shellRef);
