@@ -37,8 +37,9 @@ export function subscribeChatLayout(listener: () => void): () => void {
 }
 
 function toggle(frame: HTMLElement, name: string, on: boolean): void {
-  if (on) frame.dataset[name] = "";
-  else delete frame.dataset[name];
+  // 同值写入也会触发属性失效，让挂在根节点断点属性上的所有规则全子树重匹配。
+  if (on) { if (!(name in frame.dataset)) frame.dataset[name] = ""; }
+  else if (name in frame.dataset) delete frame.dataset[name];
 }
 
 export function observeChatLayout(frame: HTMLElement): () => void {
@@ -49,7 +50,8 @@ export function observeChatLayout(frame: HTMLElement): () => void {
   const apply = () => {
     const width = frame.getBoundingClientRect().width;
     const rem = Number.parseFloat(getComputedStyle(document.documentElement).fontSize) || 16;
-    frame.dataset.chatWidth = MAX_WIDTHS.filter(([, px]) => width <= px(rem)).map(([token]) => token).join(" ");
+    const tokens = MAX_WIDTHS.filter(([, px]) => width <= px(rem)).map(([token]) => token).join(" ");
+    if (frame.dataset.chatWidth !== tokens) frame.dataset.chatWidth = tokens;
     toggle(frame, "chatWide", width >= WIDE);
     toggle(frame, "chatLow", low.matches);
     toggle(frame, "chatShort", shortCoarse.matches);
