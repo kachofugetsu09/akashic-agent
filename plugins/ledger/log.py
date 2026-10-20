@@ -2469,6 +2469,13 @@ def _message_metadata(raw: str, session_id: str, message_id: str) -> Mapping[str
 
 
 def _message(row: sqlite3.Row) -> Message:
+    try:
+        raw_metadata = row["metadata"]
+    except IndexError:
+        # 窄列查询没有 metadata 列；列存在但为 NULL 仍按损坏处理。
+        metadata: Mapping[str, object] = {}
+    else:
+        metadata = _message_metadata(raw_metadata, row["session_key"], row["id"])
     return Message(
         row["id"],
         row["session_key"],
@@ -2477,7 +2484,7 @@ def _message(row: sqlite3.Row) -> Message:
         row["author"],
         row["source"],
         decode_body(row["body"]),
-        _message_metadata(row["metadata"], row["session_key"], row["id"]) if "metadata" in row.keys() else {},
+        metadata,
     )
 
 
