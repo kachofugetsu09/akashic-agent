@@ -21,7 +21,10 @@ Prepare = Callable[[tuple[Message, ...], str], Awaitable[MaterialData]]
 
 
 class SummaryReducer(Protocol):
-    """摘要 owner 先持久发布再返回；None 表示保留已有摘要，不做缩减。"""
+    """摘要 owner 先持久发布再返回；None 表示保留已有摘要，不做缩减。
+
+    summary_limit 限定只有 snapshot 前若干条能进摘要；之后的消息仍属于请求视图，原文保留。
+    """
 
     async def __call__(
         self,
@@ -34,6 +37,7 @@ class SummaryReducer(Protocol):
         source: str,
         force: bool,
         on_status: ReductionStatus | None = None,
+        summary_limit: int | None = None,
     ) -> SummaryData | None: ...
 
 
@@ -89,6 +93,7 @@ class MaterialView(Protocol):
         source: str,
         force: bool,
         on_status: ReductionStatus | None = None,
+        summary_limit: int | None = None,
     ) -> SummaryData | None: ...
 
 

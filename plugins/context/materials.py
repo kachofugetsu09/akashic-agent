@@ -124,6 +124,7 @@ class MaterialView:
         self, snapshot: tuple[Message, ...], materials: MaterialData,
         request: ModelRequest, model: BoundChatModel, projection: ContextModel,
         *, source: str, force: bool, on_status: ReductionStatus | None = None,
+        summary_limit: int | None = None,
     ) -> SummaryData | None:
         """只有同一个摘要 owner 能缩减；其余已取得材料保持原样。"""
         self._check_active()
@@ -134,7 +135,7 @@ class MaterialView:
                     summary_value = await owner.reduce(
                         snapshot, material_data(current), request, model, projection,
                         source=source, force=force,
-                        **({"on_status": on_status} if on_status is not None else {}),
+                        on_status=on_status, summary_limit=summary_limit,
                     )
                 self._check_active()
                 summary = decode_summary(summary_value)
