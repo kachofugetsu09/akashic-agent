@@ -125,7 +125,8 @@ function useRovingTabStop(sidebarRef: RefObject<HTMLElement | null>) {
     let last: HTMLButtonElement | null = null;
     const sync = () => {
       const rows = [...navigation.querySelectorAll<HTMLButtonElement>(NAVIGATION_ROW)];
-      const usable = rows.filter((row) => !row.disabled);
+      // 搜索隐藏（hidden 属性）的行不可聚焦，不能继续持 tabindex="0"，否则列表掉出 Tab 序列。
+      const usable = rows.filter((row) => !row.disabled && row.offsetParent !== null);
       const stop = (last && usable.includes(last) ? last : null)
         ?? usable.find((row) => row.getAttribute("aria-current") === "true") ?? usable[0];
       // 显式写属性：没写 tabindex 的按钮本身就是 0，按属性比较才不会漏掉。
@@ -143,7 +144,7 @@ function useRovingTabStop(sidebarRef: RefObject<HTMLElement | null>) {
       last = event.target;
       sync();
     };
-    observer.observe(navigation, { childList: true, subtree: true, attributes: true, attributeFilter: ["aria-current", "disabled"] });
+    observer.observe(navigation, { childList: true, subtree: true, attributes: true, attributeFilter: ["aria-current", "disabled", "hidden"] });
     navigation.addEventListener("focusin", onFocus);
     sync();
     return () => {
@@ -485,15 +486,15 @@ export const DesktopSidebar = memo(function DesktopSidebar({
     ? recentSessions.reduce((count, session) => count + (hiddenIds.has(session.id) ? 0 : 1), 0)
     : recentSessions.length, [recentSessions, hiddenIds]);
   // 分组内置顶的会话排在所在文件夹最前面，其余保持当前排序。
+  // 分组内会话同样只隐藏不卸载：hidden 随逐键过滤翻转，行身份保持稳定。
   const sessionsByGroup = useMemo(() => {
     const byGroup = new Map<string, GroupSessionItem[]>();
     for (const session of sortedSessions) {
-      if (hiddenIds?.has(session.id)) continue;
       const key = groupOf(session);
       if (!key) continue;
       byGroup.set(key, [...byGroup.get(key) ?? [], {
         id: session.id, title: session.title, active: surface === "chat" && session.active, status: session.status,
-        pinned: pinnedSessions.has(session.id),
+        pinned: pinnedSessions.has(session.id), hidden: hiddenIds?.has(session.id) || undefined,
       }]);
     }
     for (const [key, items] of byGroup) byGroup.set(key, [...items.filter((item) => item.pinned), ...items.filter((item) => !item.pinned)]);
@@ -501,7 +502,7 @@ export const DesktopSidebar = memo(function DesktopSidebar({
   }, [sortedSessions, groupOf, surface, pinnedSessions, hiddenIds]);
   const pinnedGroups = new Set(navigationPins.pins.filter((pin) => pin.kind !== "session").map((pin) => groupKey({ dimension: pin.kind, id: pin.id })));
   const visibleGroup = (key: string, label: string) => !needle || label.toLowerCase().includes(needle)
-    || Boolean(sessionsByGroup.get(key)?.length);
+    || Boolean(sessionsByGroup.get(key)?.some((item) => !item.hidden));
   const sectionGroups = sections.map((section) => section.groups.filter((group) => {
     const key = groupKey({ dimension: section.source.provider.dimension, id: group.id });
     return !pinnedGroups.has(key) && visibleGroup(key, group.label);
@@ -535,6 +536,7 @@ export const DesktopSidebar = memo(function DesktopSidebar({
   // 分组内的会话行：与最近会话同一套行菜单，置顶只在所在分组内生效。
   const groupSessionRow: GroupSessionRenderer = (item, label) => <ConversationSessionRow
     session={{ id: item.id, title: item.title, preview: "", active: item.active, status: item.status, pinned: item.pinned }}
+    hidden={item.hidden}
     pendingSessionId={pendingSessionId} onActivate={onSelectSession} onPrefetch={onPrefetchSession}
     actions={[{ ...pinAction({ kind: "session", id: item.id }, Boolean(item.pinned))[0],
       label: item.pinned ? `取消${label}内置顶` : `在${label}内置顶` }]}
@@ -629,9 +631,10 @@ export const DesktopSidebar = memo(function DesktopSidebar({
           <X size={14} aria-hidden="true" />
         </button>
       </div> : null}
-      {visiblePins.length ? <section className="pinned-navigation" aria-label="置顶">
+      {navigationPins.pins.length && (!searching || visiblePins.length) ? <section className="pinned-navigation" aria-label="置顶">
         <header className="navigation-section__header"><span>置顶</span></header>
-        {visiblePins.map((pin) => {
+        {/* 行按全量置顶渲染、用 hidden 收窄；visiblePins 只决定搜索时整个分区是否保留。 */}
+        {navigationPins.pins.map((pin) => {
           if (pin.kind !== "session") {
             const ref = { dimension: pin.kind, id: pin.id };
             const known = knownGroups.get(groupKey(ref));
@@ -648,21 +651,23 @@ export const DesktopSidebar = memo(function DesktopSidebar({
             /> : null;
           } else {
             const session = allSessions.find((item) => item.id === pin.id);
-            if (session && !groupOf(session)) return !needle
-              || `${session.title} ${session.preview}`.toLowerCase().includes(needle) ? <ConversationSessionRow
-                key={`session:${pin.id}`} session={sessionViews.get(session.id) ?? session} pendingSessionId={pendingSessionId}
-                onActivate={onSelectSession} onPrefetch={onPrefetchSession}
-                actions={pinAction(pin, true)}
-                onDelete={onDeleteSession ? deleteHandler : undefined}
-                onRename={onRenameSession ? renameHandler : undefined}
-              /> : null;
+            // 置顶区会话行同样只隐藏不卸载：逐键过滤只翻转 hidden，行身份与内部状态保持。
+            if (session && !groupOf(session)) return <ConversationSessionRow
+              key={`session:${pin.id}`} session={sessionViews.get(session.id) ?? session} pendingSessionId={pendingSessionId}
+              hidden={Boolean(needle) && !`${session.title} ${session.preview}`.toLowerCase().includes(needle) || undefined}
+              onActivate={onSelectSession} onPrefetch={onPrefetchSession}
+              actions={pinAction(pin, true)}
+              onDelete={onDeleteSession ? deleteHandler : undefined}
+              onRename={onRenameSession ? renameHandler : undefined}
+            />;
           }
-          if (needle && !pin.id.toLowerCase().includes(needle)) return null;
+          const unavailableHidden = Boolean(needle) && !pin.id.toLowerCase().includes(needle);
           // 分组取值已不存在或其插件不在：有该维度的分区时用它的名称，否则只说暂不可用。
           const label = pin.kind === "session" ? "会话" : sections.find((section) => section.source.provider.dimension === pin.kind)?.source.provider.label ?? "";
           const title = `${label}暂不可用`;
           return <ConversationSessionRow key={`${pin.kind}:${pin.id}`}
             session={{ id: pin.id, title, preview: pin.id, active: false, unavailable: true }}
+            hidden={unavailableHidden || undefined}
             onActivate={onSelectSession} actions={pinAction(pin, true)} />;
         })}
       </section> : null}
