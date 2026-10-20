@@ -188,14 +188,18 @@ async def run_reply(
         async def reduce(
             snapshot: tuple[Message, ...], prepared: MaterialData, request: ModelRequest,
             model: BoundChatModel, projection: ContextModel, *, source: str, force: bool,
-            on_status: ReductionStatus | None = None,
+            on_status: ReductionStatus | None = None, summary_limit: int | None = None,
         ) -> SummaryData | None:
-            # 其他来源有未完成轮次时只压缩它之前的部分：摘要范围在真实日志和请求视图里都连续。
+            # 摘要按请求视图估算，当前输入等尾部原文保留；其他来源有未完成轮次时只摘要它之前的前缀，
+            # 该前缀在真实日志和请求视图里相同，摘要范围两边都连续。
             hidden = hidden_indexes(snapshot, source)
             if hidden:
-                snapshot = snapshot[:min(hidden)]
+                first = min(hidden)
+                summary_limit = first if summary_limit is None else min(summary_limit, first)
+                snapshot = tuple(visible_messages(snapshot, source))
             result = await material_view.reduce(snapshot, prepared, request, model, projection,
-                                                source=source, force=force, on_status=on_status)
+                                                source=source, force=force, on_status=on_status,
+                                                summary_limit=summary_limit)
             check()
             return result
 
