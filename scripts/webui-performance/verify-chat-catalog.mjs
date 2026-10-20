@@ -43,11 +43,14 @@ try {
   });
   await page.goto(`http://127.0.0.1:${server.httpServer.address().port}/assets/?session=akashic%3Astartup-benchmark`);
   await page.locator('[data-message-id="startup-099"] .message-row').waitFor();
-  const refresh = () => page.evaluate(async () => {
-    const ui = await import("/assets/src/plugin-ui-runtime.tsx");
+  // 夹具 root 是 frontend/chat/harness,聊天源码在 root 之外,经 vite 的 @fs 前缀取
+  // (#1515 删独立聊天页后 /assets/src/... 落到 SPA fallback,动态导入拿到 HTML)。
+  const runtimeModule = `/assets/@fs${resolve("frontend/chat/src/plugin-ui-runtime.tsx")}`;
+  const refresh = () => page.evaluate(async (moduleUrl) => {
+    const ui = await import(moduleUrl);
     await ui.loadWebPluginCatalog();
     await new Promise(done => requestAnimationFrame(() => requestAnimationFrame(done)));
-  });
+  }, runtimeModule);
   await refresh();
   const initial = sockets;
   for (let index = 0; index < 3; index++) await refresh();
