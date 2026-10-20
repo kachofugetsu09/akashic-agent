@@ -46,13 +46,14 @@ def test_digest_ignores_docstring_and_comment_changes(contract_file):
     assert _digest(contract_file) == first
 
 
-def test_corrupt_digest_fact_falls_back_to_parse(contract_file):
+@pytest.mark.parametrize("corrupt", [b"garbage", b"\xff", b"aa" * 15 + b"  " + b"aa" * 16])
+def test_corrupt_digest_fact_falls_back_to_parse(contract_file, corrupt):
     contract_file.write_text("VALUE = 3\n")
     assert public_contracts._read_digest_fact(b"VALUE = 3\n") is None
     _digest(contract_file)
     fact = public_contracts._digest_fact_path(contract_file.read_bytes())
     assert fact is not None
-    fact.write_text("garbage", encoding="ascii")
+    fact.write_bytes(corrupt)
     assert public_contracts._read_digest_fact(contract_file.read_bytes()) is None
     assert _digest(contract_file) == public_contracts._read_digest_fact(
         contract_file.read_bytes()

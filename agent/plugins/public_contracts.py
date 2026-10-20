@@ -47,14 +47,15 @@ def _read_digest_fact(source: bytes) -> bytes | None:
         return None
     try:
         value = path.read_text(encoding="ascii").strip()
-    except OSError:
+    except (OSError, UnicodeDecodeError):
         return None
     if len(value) != 64:
         return None
     try:
-        return bytes.fromhex(value)
+        digest = bytes.fromhex(value)
     except ValueError:
         return None
+    return digest if len(digest) == 32 else None
 
 
 # 只读安装目录或并发写失败时静默放弃缓存，摘要仍然每次现算。
