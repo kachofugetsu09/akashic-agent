@@ -85,12 +85,17 @@ export function mountChat(host: HTMLElement, link: ChatHostLink): MountedChat {
   // 首个含代码/数学的会话不再在切换关键路径上等这份下载与求值。
   // rIC 加 timeout 兜底：挂载繁忙期一直抢不到空闲时，3s 后仍强制预热，
   // 否则挂载完立刻切换会话的用户仍要在关键路径上付整笔加载。
-  const idle = window.requestIdleCallback
-    ? window.requestIdleCallback(warmMessageRenderer, { timeout: 3000 })
-    : window.setTimeout(warmMessageRenderer, 2000);
-  const cancelWarmup = () => window.cancelIdleCallback
-    ? window.cancelIdleCallback(idle)
-    : window.clearTimeout(idle);
+  // 不支持 rIC 的环境用同一时长的 setTimeout 兜底；调度与取消按同一套 API 配对，
+  // 不拿 clearTimeout 去清 idle id（两套 id 命名空间，误清会伤到别的定时器）。
+  const WARMUP_TIMEOUT_MS = 3000;
+  const useIdle = typeof window.requestIdleCallback === "function" && typeof window.cancelIdleCallback === "function";
+  const idle = useIdle
+    ? window.requestIdleCallback(warmMessageRenderer, { timeout: WARMUP_TIMEOUT_MS })
+    : window.setTimeout(warmMessageRenderer, WARMUP_TIMEOUT_MS);
+  const cancelWarmup = () => {
+    if (useIdle) window.cancelIdleCallback(idle as number);
+    else window.clearTimeout(idle as number);
+  };
   return {
     ...handle,
     dispose() {
