@@ -6,6 +6,7 @@ import { connectHost, setKeyScope, type ChatHandle, type ChatHostLink } from "./
 import { observeChatLayout } from "./chat-layout";
 import { exposeChatRuntime } from "./chat-ui-runtime";
 import { DesktopChatApp } from "./desktop-chat-app";
+import { warmMessageRenderer } from "./message-view";
 import { notifyShown } from "./plugin-ui-runtime";
 import { setShellRailActions } from "./shell-rail-actions";
 import { receiveWorkbenchQuote, setHostShortcuts, setWorkbenchIntents } from "./shell-workbench";
@@ -80,9 +81,18 @@ export function mountChat(host: HTMLElement, link: ChatHostLink): MountedChat {
       </TooltipProvider>
     </WebUiErrorBoundary>,
   );
+  // 5. 空闲预热富文本渲染分块(见 message-view.tsx 的 warmMessageRenderer),
+  // 首个含代码/数学的会话不再在切换关键路径上等这份下载与求值。
+  const idle = window.requestIdleCallback
+    ? window.requestIdleCallback(warmMessageRenderer)
+    : window.setTimeout(warmMessageRenderer, 2000);
+  const cancelWarmup = () => window.cancelIdleCallback
+    ? window.cancelIdleCallback(idle)
+    : window.clearTimeout(idle);
   return {
     ...handle,
     dispose() {
+      cancelWarmup();
       clearProjection();
       root.unmount();
       stopKeys();

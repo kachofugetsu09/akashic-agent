@@ -18,6 +18,8 @@ const { values } = parseArgs({ options: {
   from: { type: "string", default: "akashic:startup-benchmark" },
   target: { type: "string", default: "akashic:switch-benchmark" },
   targetRows: { type: "string", default: "50" },
+  // 点击前的停留毫秒:模拟真实阅读时间,让空闲预热(requestIdleCallback)有机会落地;默认 0 保持原口径。
+  dwellMs: { type: "string", default: "0" },
 } });
 if (!values.url || !values.output || !values.browser) throw new Error("需要 --url、--output 和 --browser");
 const profiles = {
@@ -28,8 +30,10 @@ const profiles = {
 const selected = values.profiles.split(",");
 const runCount = Number(values.runs);
 const targetRows = Number(values.targetRows);
-if (!Number.isSafeInteger(runCount) || runCount < 1 || selected.some(name => !profiles[name])) {
-  throw new Error("无效的 runs 或 profiles");
+const dwellMs = Number(values.dwellMs);
+if (!Number.isSafeInteger(runCount) || runCount < 1 || selected.some(name => !profiles[name])
+  || !Number.isSafeInteger(dwellMs) || dwellMs < 0) {
+  throw new Error("无效的 runs、profiles 或 dwellMs");
 }
 const output = resolve(values.output);
 mkdirSync(output, { recursive: false });
@@ -39,7 +43,7 @@ const report = {
   schemaVersion: 1, label: values.label, sourceCommit: git("rev-parse", "HEAD"),
   sourceDiffSha256: hash(git("diff", "HEAD", "--", "frontend")),
   harnessSha256: hash(readFileSync(new URL(import.meta.url))),
-  from: values.from, target: values.target, targetRows,
+  from: values.from, target: values.target, targetRows, dwellMs,
   profiles, runCount, viewport: { width: 412, height: 915 }, cpuRate: 4,
   timeoutMs: 45_000, startedAt: new Date().toISOString(), runs: [],
 };
@@ -88,7 +92,7 @@ report.summary = Object.fromEntries(selected.map(profile => {
   };
   return [profile, { n: rows.length, successes: rows.filter(r => r.success).length,
     readyMs: metric("readyMs"), messagesResponseMs: metric("messagesResponseMs"),
-    rowsMs: metric("rowsMs"), paintedMs: metric("paintedMs") }];
+    rowsMs: metric("rowsMs"), richMs: metric("richMs"), paintedMs: metric("paintedMs") }];
 }));
 writeFileSync(resolve(output, "report.json"), JSON.stringify(report, null, 2));
 console.log(JSON.stringify(report.summary, null, 2));
@@ -138,6 +142,7 @@ async function measure(context, profile) {
     await frame.locator('[data-message-id="startup-099"] .message-row').waitFor({ timeout: remaining() });
     await following;
     const readyMs = performance.now() - started;
+    if (dwellMs > 0) await page.waitForTimeout(dwellMs);
 
     // 2. 点击侧边栏目标行;dispatchEvent 不经过 hover,排除预取干扰。
     //    目标会话标题回退到首条消息正文,以"切换基准消息"开头。
@@ -150,7 +155,11 @@ async function measure(context, profile) {
     const rowLocator = frame.locator(`[data-message-id="${lastMessageId}"] .message-row`);
     await rowLocator.waitFor({ timeout: remaining() });
     const rowsMs = performance.now() - switchStart;
-    // 3. 行出现后等两帧,确保 markdown 正文真正绘制。
+    // 3. 富文本门槛:目标消息含围栏代码块时,等真正的 markdown 渲染器就位
+    //    (懒分块未到前是 Suspense 纯文本兜底,行可见不代表富内容可读)。
+    await rowLocator.locator("pre").first().waitFor({ timeout: remaining() });
+    const richMs = performance.now() - switchStart;
+    // 4. 行出现后等两帧,确保 markdown 正文真正绘制。
     await page.evaluate(() => new Promise(resolve =>
       requestAnimationFrame(() => requestAnimationFrame(resolve))));
     const paintedMs = performance.now() - switchStart;
@@ -160,7 +169,7 @@ async function measure(context, profile) {
     return { success: true, readyMs: Math.round(readyMs * 10) / 10,
       messagesRequestMs: messagesRequestAt === null ? null : Math.round((messagesRequestAt - switchStart) * 10) / 10,
       messagesResponseMs: messagesResponseAt === null ? null : Math.round((messagesResponseAt - switchStart) * 10) / 10,
-      rowsMs: Math.round(rowsMs * 10) / 10, paintedMs: Math.round(paintedMs * 10) / 10,
+      rowsMs: Math.round(rowsMs * 10) / 10, richMs: Math.round(richMs * 10) / 10, paintedMs: Math.round(paintedMs * 10) / 10,
       renderedRows, switchRequests,
       longTasks: longTasks.filter(task => task.start * 1 >= 0)
         .map(task => Math.round(task.duration)) };

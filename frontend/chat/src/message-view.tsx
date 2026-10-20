@@ -53,6 +53,17 @@ const LazyMessageResponse = lazy(() =>
   import("@/components/ai-elements/message-response").then(({ MessageResponse }) => ({ default: MessageResponse })),
 );
 
+// 富文本渲染器是懒加载分块(950KB / 307KB gzip):首个含代码或数学的消息出现时才取,
+// 慢链路上打开或切入富会话要在关键路径上付这笔传输与求值。挂载后空闲预热一次;
+// 省流模式不预热；其他会话会在空闲时下载这份分块。
+export function warmMessageRenderer(): void {
+  const connection = (navigator as { connection?: { saveData?: boolean } }).connection;
+  if (connection?.saveData) return;
+  void import("@/components/ai-elements/message-response").catch((error: unknown) => {
+    console.warn("Message renderer preload failed; rendering will report any loading failure.", error);
+  });
+}
+
 const MessageBody = memo(function MessageBody({
   content,
   streaming,
