@@ -65,10 +65,65 @@ function stampChatBuild(): Plugin {
   };
 }
 
+// 阅读字体在聊天与外壳是同一批源文件、同一内容哈希(见 frontend/theme/src/fonts):
+// 同一文档里外壳先加载字体,聊天产物把共享字体的 src 写成多源列表——外壳 URL 在前、本地 URL 兜底,
+// 浏览器按 URL 去重,首个可用源命中后不再请求后面的源,首访不再为同一份字体付两次下载(约 1.7MB)。
+// 本地副本保留:外壳产物缺失或哈希漂移(单独 build:chat、构建升级、按插件粒度部署)时,
+// 运行时经第二个源回退,字体不会静默退回系统字体。npm run build 的顺序是外壳先于聊天;
+// 外壳产物缺失时本插件打印一行,不再静默退回单源。
+function shareShellFonts(): Plugin {
+  return {
+    name: "share-shell-fonts",
+    apply: "build",
+    enforce: "post",
+    generateBundle(_options, bundle) {
+      const shellDir = resolve(repoRoot, "static", "dashboard");
+      const textOf = (item: (typeof bundle)[string]): string | undefined =>
+        item.type === "chunk" ? item.code : typeof item.source === "string" ? item.source : undefined;
+      const missed: string[] = [];
+      for (const item of Object.values(bundle)) {
+        if (item.type !== "asset" || !item.fileName.endsWith(".woff2")) continue;
+        if (!existsSync(resolve(shellDir, item.fileName))) {
+          missed.push(item.fileName);
+          continue;
+        }
+        const local = `/assets/${item.fileName}`;
+        const shared = `/dashboard/assets/${item.fileName}`;
+        // 只改 url(...) 引用(兼容引号与否),改成「外壳源在前、本地源兜底」的多源列表。
+        const pattern = new RegExp(`url\\((['"]?)${local.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}\\1\\)`, "gu");
+        for (const text of Object.values(bundle)) {
+          const source = textOf(text);
+          if (source === undefined || !source.includes(local)) continue;
+          let hits = 0;
+          const next = source.replace(pattern, (_match, quote: string) => {
+            hits += 1;
+            return `url(${quote}${shared}${quote}) format("woff2"),url(${quote}${local}${quote})`;
+          });
+          if (hits > 0) {
+            if (text.type === "chunk") text.code = next;
+            else text.source = next;
+          }
+          // 每次改写会补回一个本地兜底源;扣除后仍有剩余说明存在不在 url() 里的裸引用,无法安全改写。
+          const bare = next.split(local).length - 1 - hits;
+          if (bare > 0) this.warn(`share-shell-fonts: ${text.fileName} 里 ${item.fileName} 有 ${bare} 处不在 url() 里的引用,未改写`);
+        }
+      }
+      if (missed.length > 0) this.warn(`share-shell-fonts: 外壳产物缺少 ${missed.length} 个字体(${missed.join(", ")}),保留本地单源;先跑 build:dashboard 可恢复共享`);
+    },
+  };
+}
+
 export default defineConfig({
   root: here,
   base: "/assets/",
-  plugins: [react(), useShellTheme(), stampChatBuild(), emitThemeCatalog()],
+  plugins: [
+    react(),
+    useShellTheme(),
+    stampChatBuild(),
+    emitThemeCatalog(),
+    // 扫描全部产物改写字体引用,必须排在所有会 emit 资产的插件(如 emitThemeCatalog)之后。
+    shareShellFonts(),
+  ],
   // 与外壳同一文档：样式只作用于聊天根节点（见 postcss-scope-chat.cjs）。
   css: { postcss: { plugins: [tailwindcss(require("./tailwind.config.cjs")), autoprefixer(), require("./postcss-scope-chat.cjs")()] } },
   resolve: {
