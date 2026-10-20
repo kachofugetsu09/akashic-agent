@@ -1,7 +1,7 @@
 import { createHash } from "node:crypto";
 import { existsSync, readFileSync } from "node:fs";
 import { createRequire } from "node:module";
-import { dirname, relative, resolve } from "node:path";
+import { dirname, isAbsolute, relative, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import react from "@vitejs/plugin-react";
 import autoprefixer from "autoprefixer";
@@ -36,6 +36,13 @@ function useShellTheme(): Plugin {
 // 不同就提示刷新。在 renderChunk 里替换：Rollup 之后才按最终内容算文件名哈希，所在分块会随版本换名，不会命中旧的永久缓存。
 const BUILD_PLACEHOLDER = "__AKASHIC_CHAT_BUILD__";
 
+// 模块在版本摘要里的名字：rollup 虚拟模块以 \0 开头，CommonJS 代理还带着依赖的绝对路径；
+// 去掉前缀再按仓库相对路径记，发行构建每次换临时目录时版本才不会无故变化。
+function moduleKey(id: string): string {
+  const bare = id.startsWith("\0") ? id.slice(1) : id;
+  return isAbsolute(bare) ? relative(repoRoot, bare) : bare;
+}
+
 function stampChatBuild(): Plugin {
   let build = "";
   let stamped = 0;
@@ -48,8 +55,9 @@ function stampChatBuild(): Plugin {
     },
     buildEnd() {
       const hash = createHash("sha256");
-      for (const id of [...this.getModuleIds()].map((id) => id.split("?")[0]).sort()) {
-        hash.update(relative(repoRoot, id)).update(existsSync(id) ? readFileSync(id) : this.getModuleInfo(id)?.code ?? "");
+      const ids = [...this.getModuleIds()].map((id) => id.split("?")[0]);
+      for (const [key, id] of ids.map((id) => [moduleKey(id), id] as const).sort(([a], [b]) => a < b ? -1 : a > b ? 1 : 0)) {
+        hash.update(key).update(existsSync(id) ? readFileSync(id) : this.getModuleInfo(id)?.code ?? "");
       }
       build = hash.digest("hex").slice(0, 16);
     },
