@@ -612,14 +612,16 @@ export function TimelineMessageView({ message, lookupMessage, toolResults, onNav
     !("display" in part) && part.kind === "artifact_ref" ? [part.value] : []));
   const origin = attachmentOrigin(message, lookupMessage);
   // 单文件成功结果作为回复插图；原始工具数据仍可从过程行查看。
-  const attachmentResult = body.kind === "tool_result" && body.outcome === "success"
-    && message.attachments.length === 1 && message.attachments[0].kind === "file"
+  // 同一结果里的图片是给模型自检的观察（如渲染截图），已在调用卡片里展示，不再进正文。
+  const deliveredFiles = message.attachments.filter(ref => ref.kind === "file");
+  const attachmentResult = body.kind === "tool_result" && body.outcome === "success" && deliveredFiles.length === 1
     && body.parts.every(part => !("display" in part) && (part.kind === "text" || part.kind === "artifact_ref"));
+  const observation = (ref: TimelineAttachment) => attachmentResult && ref.kind === "image";
   const fallback = attachmentResult ? <div className="attachment-description">{body.parts.map((part, index) =>
     part.kind === "text" && !("display" in part) ? <MessageBody key={index} content={part.value}
       streaming={false} deferRichContent onError={onError} /> : null)}
     {!body.parts.some(part => part.kind === "text" && !("display" in part) && part.value.trim())
-      ? <p>{message.attachments[0].filename ?? "附件"}</p> : null}</div> : null;
+      ? <p>{deliveredFiles[0].filename ?? "附件"}</p> : null}</div> : null;
   // 插件认领的文件附件（例如网页）在任何消息里都作为插图展示，插件缺席时退回普通附件卡片。
   usePluginUiCatalogVersion();
   const figure = (ref: TimelineAttachment) => !renderAttachment && ref.kind === "file"
@@ -627,6 +629,7 @@ export function TimelineMessageView({ message, lookupMessage, toolResults, onNav
   const attachment = (id: string) => {
     const ref = message.attachments.find(item => item.artifact_id === id)!;
     if (renderAttachment) return renderAttachment(ref);
+    if (observation(ref)) return null;
     if (attachmentResult || figure(ref)) return <MessageAttachmentFigure attachment={ref} origin={origin}
       sessionId={message.session_id} messageId={message.id}
       fallback={attachmentResult ? fallback : <SentAttachments items={[timelineAttachmentItem(ref)]} />} />;
@@ -634,7 +637,8 @@ export function TimelineMessageView({ message, lookupMessage, toolResults, onNav
   };
   // 与实时消息同一个容器；用户输入的附件（含正文里的 artifact_ref）全部收进气泡上方的附件条，发出时与刷新后位置一致。
   const input = body.kind === "input";
-  const looseAttachments = input ? message.attachments : message.attachments.filter((ref) => !referencedArtifacts.has(ref.artifact_id));
+  const looseAttachments = input ? message.attachments
+    : message.attachments.filter((ref) => !referencedArtifacts.has(ref.artifact_id) && !observation(ref));
   const figures = attachmentResult ? looseAttachments : looseAttachments.filter(figure);
   const strip = looseAttachments.filter(ref => !figures.includes(ref));
   // 插图沿正文宽度展示，不进附件条。
