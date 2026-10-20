@@ -296,9 +296,13 @@ def _unique_fields(pairs: list[tuple[str, object]]) -> dict[str, object]:
     return result
 
 
+_BODY_JSON = json.JSONDecoder(object_pairs_hook=_unique_fields)
+
+
 def decode_body(payload: str) -> Body:
     """在持久化边界拒绝未知结构；值域与不变量归消息构造函数。"""
-    raw: object = json.loads(payload, object_pairs_hook=_unique_fields)
+    # 共享 decoder 不持有解析状态；长会话整段恢复时避免逐条重建。
+    raw: object = _BODY_JSON.decode(payload)
     if not isinstance(raw, dict):
         raise ValueError("消息 body 必须是对象")
     data = cast(dict[str, object], raw)
