@@ -48,6 +48,20 @@ export function DesktopChatView({ controller }: DesktopChatViewProps) {
   const theme = useTheme();
   const rail = useSidebarRail();
   const composerApi = useRef<ComposerApi | null>(null);
+  // 键盘模态标记：替代目录行 CSS 里的 :has(:focus-visible)。Blink 每次按键都会为
+  // :focus-visible 试探重算所有带该 :has() 的行（行数级成本），而模态类只在键鼠切换时翻转一次。
+  useEffect(() => {
+    const root = document.documentElement;
+    const onKey = () => root.classList.add("ak-modality-keyboard");
+    const onPointer = () => root.classList.remove("ak-modality-keyboard");
+    window.addEventListener("keydown", onKey, true);
+    window.addEventListener("pointerdown", onPointer, true);
+    return () => {
+      window.removeEventListener("keydown", onKey, true);
+      window.removeEventListener("pointerdown", onPointer, true);
+      root.classList.remove("ak-modality-keyboard");
+    };
+  }, []);
   // 空输入框按 ↑ 取回的上一条提问。
   const lastInput = useMemo(() => lastUserInput(controller.timelineMessages), [controller.timelineMessages]);
   // 改一改再问：原文接在已有草稿之后，不覆盖用户正在写的内容。
