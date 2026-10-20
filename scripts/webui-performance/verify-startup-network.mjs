@@ -10,6 +10,11 @@ const { values } = parseArgs({ options: {
 } });
 if (!values.url || !values.browser || !values.output) throw new Error("需要 --url、--browser 和 --output");
 mkdirSync(values.output);
+// Check the served build: early module parsing must see the import map first.
+const html = await (await fetch(values.url)).text();
+const importMap = html.search(/<script\b[^>]*type=["']importmap["']/i);
+const moduleLoad = html.search(/<(?:script\b[^>]*type=["']module["']|link\b[^>]*rel=["']modulepreload["'])/i);
+assert.ok(importMap >= 0 && moduleLoad > importMap, "构建产物必须先声明 import map，再预加载或执行模块");
 const browser = await chromium.launch({ executablePath: values.browser, headless: true });
 const results = [];
 try {

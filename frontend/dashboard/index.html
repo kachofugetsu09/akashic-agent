@@ -33,8 +33,9 @@
        window.__akashicRuntime（SDK 垫片顶层解引用），在外壳运行时发布前执行会失败并被模块图缓存住。
        三个 URL 都是稳定名，缓存合同为 ETag 校验（plugins/akashic_clients/static.py），
        暖启动只付一次 304。样式只暖缓存不应用，挂载入口 ensureStylesheet 按 href 去重。 -->
-  <link rel="modulepreload" href="/assets/chat-app.js">
-  <link rel="modulepreload" href="/assets/chat-app-mount.js">
+  <!-- Vite 6 recognizes self-closing preload tags when placing the import map. -->
+  <link rel="modulepreload" href="/assets/chat-app.js" />
+  <link rel="modulepreload" href="/assets/chat-app-mount.js" />
   <link rel="preload" as="style" href="/assets/chat-app.css">
 </head>
 <body>
