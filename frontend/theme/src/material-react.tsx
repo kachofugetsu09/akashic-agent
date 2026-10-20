@@ -1,5 +1,9 @@
 import { createElement, type MouseEvent, type ReactNode } from "react";
-import "./material-components";
+
+// md-* 自定义元素全文档只登记一次，仍归这份模块所有；登记改为异步：外壳运行时发布
+// （聊天挂载的前置）不再等 @material/web 的下载与求值。登记前渲染的 md-* 元素在
+// define 落地时原地升级，React 不需要重渲染；登记与首个插件模块下载并行，先于插件 UI 上屏。
+void import("./material-components");
 
 export type MaterialButtonVariant = "filled" | "tonal" | "outlined" | "text" | "danger";
 
