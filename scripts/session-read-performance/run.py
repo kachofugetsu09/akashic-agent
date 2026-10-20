@@ -63,9 +63,9 @@ sqlite3.connect = _counting_connect
 _real_decode = MessageLog._decode
 
 
-def _counting_decode(self, row):
+def _counting_decode(self, row, **kwargs):
     DECODES[0] += 1
-    return _real_decode(self, row)
+    return _real_decode(self, row, **kwargs)
 
 
 MessageLog._decode = _counting_decode

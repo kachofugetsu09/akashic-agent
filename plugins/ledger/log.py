@@ -498,8 +498,15 @@ class MessageLog:
         read = self._reads.current
         return self._writer_lock if read is None else read.lock
 
-    def _decode(self, row: sqlite3.Row) -> Message:
-        """查询仍读真实行；解码结果先进弱引用共享，小行另有有界强缓存。"""
+    def _decode(self, row: sqlite3.Row, *, cache: bool = True) -> Message:
+        """查询仍读真实行；解码结果先进弱引用共享，小行另有有界强缓存。
+
+        cache=False 供共享前缀的整段填充使用：前缀自身就是该读面的复用机制，
+        冷恢复长会话时不查也不写缓存，避免为每条消息支付键构造与弱引用记账。
+        前缀外的点查仍走缓存。
+        """
+        if not cache:
+            return _message(row)
         key = tuple(row)
         # 独立只读连接共享解码结果；此短锁不等待 writer 的事务或磁盘操作。
         with self._decode_lock:
@@ -1207,7 +1214,8 @@ class MessageReader:
                 prefix = _MessagePrefix(self._session_id, revision)
             previous = prefix.seqs[-1] if prefix.seqs else -1
             if upper > previous:
-                tail = MessageReader.scan(self, tuple, after_seq=previous, through_seq=upper)
+                # 填充段由前缀自身持有并共享，不回填解码缓存（长会话冷恢复的主路径）。
+                tail = MessageReader.scan(self, tuple, after_seq=previous, through_seq=upper, _cache=False)
                 prefix.messages.extend(tail)
                 prefix.seqs.extend(message.seq for message in tail)
             # 3. 只有真实提交后的读取进入共享读面，不依赖 observer 唤醒。
@@ -1330,6 +1338,7 @@ class MessageReader:
         through_seq: int | None = None,
         source: str | None = None,
         limit: int = 1000,
+        _cache: bool = True,
     ) -> tuple[Message, ...]:
         """读取固定序号范围，不创建 Session，也不持有修改或发送能力。"""
         if limit < 1 or after_seq < -1:
@@ -1346,7 +1355,7 @@ class MessageReader:
         values.append(limit)
         with self._log._read(snapshot=False):
             rows = self._log._connection.execute(sql, values).fetchall()
-            return tuple(self._log._decode(row) for row in rows)
+            return tuple(self._log._decode(row, cache=_cache) for row in rows)
 
     def source_names(self) -> frozenset[str]:
         """只读取本 Session 中出现过的来源，不解码消息正文。"""
@@ -1445,6 +1454,7 @@ class MessageReader:
     def scan(
         self, consume: Callable[[Iterable[Message]], _T], *, after_seq: int = -1,
         through_seq: int | None = None, source: str | None = None,
+        _cache: bool = True,
     ) -> _T:
         """在同一读快照内分页消费；回调必须同步完成，不能保留迭代器。"""
         with self._log._read():
@@ -1453,7 +1463,7 @@ class MessageReader:
             def messages() -> Generator[Message, None, None]:
                 cursor = after_seq
                 while cursor < head:
-                    page = self.read(after_seq=cursor, through_seq=head, source=source, limit=1024)
+                    page = self.read(after_seq=cursor, through_seq=head, source=source, limit=1024, _cache=_cache)
                     if not page:
                         break
                     yield from page
@@ -2459,6 +2469,13 @@ def _message_metadata(raw: str, session_id: str, message_id: str) -> Mapping[str
 
 
 def _message(row: sqlite3.Row) -> Message:
+    try:
+        raw_metadata = row["metadata"]
+    except IndexError:
+        # 窄列查询没有 metadata 列；列存在但为 NULL 仍按损坏处理。
+        metadata: Mapping[str, object] = {}
+    else:
+        metadata = _message_metadata(raw_metadata, row["session_key"], row["id"])
     return Message(
         row["id"],
         row["session_key"],
@@ -2467,7 +2484,7 @@ def _message(row: sqlite3.Row) -> Message:
         row["author"],
         row["source"],
         decode_body(row["body"]),
-        _message_metadata(row["metadata"], row["session_key"], row["id"]) if "metadata" in row.keys() else {},
+        metadata,
     )
 
 
