@@ -612,7 +612,7 @@ export const DesktopSidebar = memo(function DesktopSidebar({
         </label>
       </div>
 
-      <div className="chat-sidebar__navigation" onKeyDown={moveSessionFocus}>
+      <div className="chat-sidebar__navigation" data-searching={searching || undefined} onKeyDown={moveSessionFocus}>
       {searching && !hasMatches ? <p className="navigation-search-empty" role="status">没有匹配的会话或分组</p> : null}
       {navigationPins.error ? <div className="navigation-pins-error" role="alert">
         <span>{navigationPins.error}</span>
