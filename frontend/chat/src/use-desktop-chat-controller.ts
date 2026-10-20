@@ -30,6 +30,7 @@ import {
   uploadedFileToAttachment,
 } from "./web-chat-message-data";
 import { parseChatFrame, sendWhenOpen } from "./web-chat-transport";
+import type { DesktopSidebarSession } from "./desktop-sidebar";
 import { useSteers, type SteerResult } from "./use-steers";
 import { webTurnTrace } from "./web-turn-trace";
 import { composerContributions, notifyComposerSent, useComposerContributions } from "./composer-contributions";
@@ -123,6 +124,31 @@ class SendFailed extends Error {}
 class HistoryUnavailable extends Error {}
 
 const RECONNECTING_NOTICE = "连接已断开，正在重新连接…";
+
+function sameScope(a: Readonly<Record<string, string>> | undefined, b: Readonly<Record<string, string>> | undefined): boolean {
+  if (a === b) return true;
+  const aEntries = Object.entries(a ?? {});
+  const bRecord = b ?? {};
+  const bEntries = Object.entries(bRecord);
+  return aEntries.length === bEntries.length && aEntries.every(([key, value]) => bRecord[key] === value);
+}
+
+/** 目录行的结构共享缓存：字段全等的会话跨渲染复用同一对象，侧栏行 memo 才能命中。 */
+const sidebarRowCache = new Map<string, DesktopSidebarSession>();
+
+function shareSidebarRows(rows: DesktopSidebarSession[]): DesktopSidebarSession[] {
+  const shared = rows.map((row) => {
+    const kept = sidebarRowCache.get(row.id);
+    const reusable = kept && kept.title === row.title && kept.preview === row.preview
+      && kept.updatedAt === row.updatedAt && kept.createdAt === row.createdAt
+      && kept.active === row.active && kept.status === row.status && kept.scoped === row.scoped
+      && sameScope(kept.scope, row.scope);
+    return reusable ? kept : row;
+  });
+  sidebarRowCache.clear();
+  for (const row of shared) sidebarRowCache.set(row.id, row);
+  return shared;
+}
 // 页面版本：挂载入口给出构建时写入的版本；夹具页面没有，不做版本核对。
 let pageBuild: string | null = null;
 
@@ -1110,10 +1136,14 @@ export function useDesktopChatController() {
     setCopiedMessageId(messageId);
     window.setTimeout(() => setCopiedMessageId(""), 1200);
   }, []);
+  // 侧栏行 memo 以会话对象身份为凭：目录重拉（流式追加、活动状态都会触发）后字段不变的
+  // 会话复用上一份对象，整表身份稳定，未变化的行不重渲染。按值比较，复用总是安全；
+  // 每次重建整表替换，不积累已删除会话。
   const sidebarSessions = useMemo(() => {
     const known = new Set(sessions.map((session) => session.key));
     // 补齐已解析置顶的标题/身份，不改变现有最近目录的自然顺序。
-    return [...sessions, ...navigationPins.sessions.filter((session) => !known.has(session.key))].map((session) => ({
+    const source = [...sessions, ...navigationPins.sessions.filter((session) => !known.has(session.key))];
+    return shareSidebarRows(source.map((session) => ({
       id: session.key,
       title: sessionLabel(session),
       preview: session.message_count === undefined ? "" : `${session.message_count} 条消息`,
@@ -1123,7 +1153,7 @@ export function useDesktopChatController() {
       status: sessionStatuses.get(session.key),
       scope: session.scope ?? {},
       scoped: Object.keys(session.scope ?? {}).length > 0,
-    }));
+    })));
   }, [activeSessionId, sessions, navigationPins.sessions, sessionStatuses]);
   // 新对话在首条消息进入目录前沿用发起时选定的分组。
   const activeRow = activeSessionId ? sessions.find((session) => session.key === activeSessionId)
