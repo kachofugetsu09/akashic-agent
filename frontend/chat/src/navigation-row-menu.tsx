@@ -24,11 +24,15 @@ export function NavigationRowMenu({ title, actions = [], className, children, on
   onOpenChange?: (open: boolean) => void;
 }) {
   const [open, setOpen] = useState(false);
+  // Radix Menu 根一挂载就在 document 上常驻一个 capture keydown 监听（只用于判断键盘使用）；
+  // 目录里每行一个菜单时每次按键都是 O(行数)，所以首次打开意图前不挂 Radix，只渲染等价的静态按钮。
+  const [armed, setArmed] = useState(false);
   const rowRef = useRef<HTMLDivElement>(null);
   const timer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const press = useRef<{ id: number; x: number; y: number } | null>(null);
   const held = useRef(false);
   const setMenuOpen = (next: boolean) => {
+    if (next) setArmed(true);
     setOpen(next);
     if (!next) onOpenChange?.(next);
   };
@@ -39,8 +43,14 @@ export function NavigationRowMenu({ title, actions = [], className, children, on
   };
   useEffect(() => cancelPress, []);
 
-  return <DropdownMenu open={open} onOpenChange={setMenuOpen} modal={false}>
-    <div ref={rowRef} className={`navigation-menu-row ${className}`} data-menu-open={open || undefined}
+  const trigger = (
+    // 键盘在行上按菜单键或 Shift+F10 打开，不再为每行多占一个 Tab 停靠点。
+    <button type="button" className="navigation-menu-trigger" aria-label={`${title} 的操作`} tabIndex={-1}
+      aria-haspopup="menu" aria-expanded={open} onClick={armed ? undefined : () => setMenuOpen(true)}>
+      <Ellipsis size={18} aria-hidden="true" />
+    </button>
+  );
+  return <div ref={rowRef} className={`navigation-menu-row ${className}`} data-menu-open={open || undefined}
       onPointerDown={(event) => {
         // 1. 一次新触摸开始计时；第二根手指、鼠标和菜单按钮不参与长按。
         cancelPress();
@@ -51,7 +61,7 @@ export function NavigationRowMenu({ title, actions = [], className, children, on
         timer.current = setTimeout(() => {
           timer.current = null;
           held.current = true;
-          setOpen(true);
+          setMenuOpen(true);
         }, 500);
       }}
       onPointerMove={(event) => {
@@ -75,22 +85,17 @@ export function NavigationRowMenu({ title, actions = [], className, children, on
         if (!actions.length) return;
         event.preventDefault();
         cancelPress();
-        setOpen(true);
+        setMenuOpen(true);
       }}
       onKeyDown={(event) => {
         if (actions.length && (event.key === "ContextMenu" || (event.shiftKey && event.key === "F10"))) {
           event.preventDefault();
-          setOpen(true);
+          setMenuOpen(true);
         }
       }}>
       {children}
-      {actions.length ? <>
-        <DropdownMenuTrigger asChild>
-          {/* 键盘在行上按菜单键或 Shift+F10 打开，不再为每行多占一个 Tab 停靠点。 */}
-          <button type="button" className="navigation-menu-trigger" aria-label={`${title} 的操作`} tabIndex={-1}>
-            <Ellipsis size={18} aria-hidden="true" />
-          </button>
-        </DropdownMenuTrigger>
+      {actions.length ? (armed ? <DropdownMenu open={open} onOpenChange={setMenuOpen} modal={false}>
+        <DropdownMenuTrigger asChild>{trigger}</DropdownMenuTrigger>
         <DropdownMenuContent className="navigation-row-menu" align="end" sideOffset={4} collisionPadding={12}
           aria-label={`${title} 的操作`} onCloseAutoFocus={(event) => {
             event.preventDefault();
@@ -108,7 +113,6 @@ export function NavigationRowMenu({ title, actions = [], className, children, on
             {action.icon}<span>{action.label}</span>
           </DropdownMenuItem>)}
         </DropdownMenuContent>
-      </> : null}
-    </div>
-  </DropdownMenu>;
+      </DropdownMenu> : trigger) : null}
+    </div>;
 }

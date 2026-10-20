@@ -3,7 +3,7 @@ import { CheckIcon, CopyIcon } from "lucide-react";
 import { createContext, useContext, useEffect, useLayoutEffect, useRef, useState, type RefObject } from "react";
 import { CodeBlockNode, FootnoteNode as FootnoteRenderer, InlineCodeNode, LinkNode as LinkRenderer, ListNode, ParagraphNode as ParagraphRenderer, PreCodeNode, languageMap, normalizeLanguageIdentifier, resolveLanguageId, type CodeBlockOptions, type NodeComponentProps } from "markstream-react";
 import type { CodeBlockNode as CodeData, FootnoteAnchorNode as FootnoteAnchorData, FootnoteNode as FootnoteData, FootnoteReferenceNode as FootnoteReferenceData, LinkNode as LinkData, ListNode as ListData, ParagraphNode, ParsedNode, TableNode as TableData } from "stream-markdown-parser";
-import { copyReadingCode, isConceptLabel, isNumericColumn, isPlainTextLanguage, stripConceptSeparator, watchOverflowEdges, writeOverflowEdges } from "./markdown-reading";
+import { copyReadingCode, isConceptLabel, isNumericColumn, isPlainTextLanguage, stripConceptSeparator, watchOverflowEdges, readOverflowEdges, applyOverflowEdges, scheduleOverflowJob, cancelOverflowJob, type OverflowJob, type OverflowEdges } from "./markdown-reading";
 import { renderStaticMarkdown } from "./static-markdown";
 import { loadKatex } from "./reading-math";
 import { DiffLines } from "./tool-result-view";
@@ -229,21 +229,25 @@ function useCodeOverflowEdges(ref: RefObject<HTMLDivElement | null>): void {
     const wrapper = ref.current;
     if (!wrapper) return;
     let root: ShadowRoot | null = null;
-    let scroller: HTMLElement | null = null;
-    let frame = 0;
-    // 测量要读 scrollWidth（强制布局）：流式时每次字符变化都会触发观察者，合并到下一帧只量一次（见 design.md 3.18）。
-    // 曾经同步测量，一段带代码的回复生成期间在这里累计约 130ms 强制布局。
-    const schedule = () => {
-      if (frame === 0) frame = requestAnimationFrame(() => { frame = 0; measure(); });
+    let edges: OverflowEdges = { overflow: "", scroller: null };
+    // 测量要读 scrollWidth（强制布局）：流式时每次字符变化都会触发观察者，经共享队列
+    // 合并到下一帧、读写分相，一批块只付一次布局（markdown-reading.ts 的 scheduleOverflowJob，
+    // 见 design.md 3.18）。曾经同步测量，一段带代码的回复生成期间在这里累计约 130ms 强制布局。
+    // 1. 每次测量都重新找滚动元素：高亮完成前后 shadow 里的节点会被替换；没有高亮宿主时量自身的 pre。
+    //    读相里完成全部几何读取（找滚动元素 + readOverflowEdges），写相只写回，不写相读几何重新强制布局。
+    const job: OverflowJob = {
+      read() {
+        const scope: ParentNode = root ?? wrapper;
+        const scroller = [...scope.querySelectorAll<HTMLElement>("pre, code")].find((el) => el.scrollWidth > el.clientWidth + 1) ?? null;
+        edges = readOverflowEdges(scroller);
+      },
+      write() {
+        applyOverflowEdges(wrapper, edges);
+      },
     };
+    const schedule = () => scheduleOverflowJob(job);
     const resize = new ResizeObserver(() => schedule());
     const contents = new MutationObserver(() => schedule());
-    // 1. 每次测量都重新找滚动元素：高亮完成前后 shadow 里的节点会被替换；没有高亮宿主时量自身的 pre。
-    const measure = () => {
-      const scope: ParentNode = root ?? wrapper;
-      scroller = [...scope.querySelectorAll<HTMLElement>("pre, code")].find((el) => el.scrollWidth > el.clientWidth + 1) ?? null;
-      writeOverflowEdges(wrapper, scroller);
-    };
     const onScroll = () => schedule();
     // 2. 高亮组件可能晚于本组件挂载，等宿主出现再接上滚动与尺寸监听。
     const attach = () => {
@@ -274,7 +278,7 @@ function useCodeOverflowEdges(ref: RefObject<HTMLDivElement | null>): void {
     attach();
     schedule();
     return () => {
-      cancelAnimationFrame(frame);
+      cancelOverflowJob(job);
       mounts.disconnect();
       wrapper.removeEventListener("scroll", onScroll, true);
       contents.disconnect();
