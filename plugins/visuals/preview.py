@@ -6,7 +6,7 @@ from playwright.async_api import Browser, BrowserContext, Error, Playwright, asy
 
 
 _PAGE_PROBLEM = """() => {
-    if (!document.body.innerText.trim() && !document.body.querySelector('svg,canvas')) return '文档没有可见内容';
+    if (!document.body.innerText.trim() && !document.body.querySelector('svg:not(#ak-defs),canvas')) return '文档没有可见内容';
     if (document.documentElement.scrollWidth > innerWidth + 1) return '内容超出可用宽度';
     if ([...document.querySelectorAll('output,[data-numeric]')].some(node => /\\b(?:NaN|Infinity)\\b/.test(node.textContent))) return '数值输出出现非有限数值';
     return null;
@@ -59,31 +59,31 @@ class Preview:
                 raise
             return self._browser
 
-    async def check(self, document: str) -> None:
-        """以桌面和窄屏宽度检查将要保存的完整文档：真实脚本、布局及滑块边界。"""
+    async def check(self, document: str) -> bytes:
+        """以桌面和窄屏宽度检查将要保存的完整文档：真实脚本、布局及滑块边界；通过后返回桌面宽度截图。"""
         # 1. 不积累无界排队；整个调用有截止时间。
         if self._slots.locked():
             raise PreviewFailed("可视化预检繁忙，请稍后重试")
         async with self._slots:
             try:
                 async with asyncio.timeout(20):
-                    await self._check_document(document)
+                    return await self._check_document(document)
             except (Error, TimeoutError) as error:
                 raise PreviewFailed(f"可视化预检失败：{error}") from error
 
-    async def _check_document(self, document: str) -> None:
+    async def _check_document(self, document: str) -> bytes:
         """每次调用创建新 context，不携带账号、缓存或持久存储。"""
         browser = await self._get_browser()
         context = await browser.new_context(viewport={"width": 720, "height": 900}, service_workers="block")
         inspection = asyncio.create_task(self._inspect(context, document))
         try:
             # 先关闭 context 让浏览器调用真实结束，避免取消 Playwright RPC 留下未取异常。
-            await asyncio.shield(inspection)
+            return await asyncio.shield(inspection)
         finally:
             await context.close()
             await asyncio.gather(inspection, return_exceptions=True)
 
-    async def _inspect(self, context: BrowserContext, document: str) -> None:
+    async def _inspect(self, context: BrowserContext, document: str) -> bytes:
         """检查真实页面；外层始终等待它随 context 关闭而结束。"""
         errors: list[str] = []
         # 2. 服务端拒绝全部网络，预检的就是将要保存的同一份文件。
@@ -117,3 +117,8 @@ class Preview:
                     errors.append(f"滑块 {index} ({edge}): {problem}")
         if errors:
             raise PreviewFailed("；".join(errors[:8]))
+        # 4. 滑块已回到初始值；按桌面宽度截整页给模型自检，超长页面只截前 2400px。
+        await page.set_viewport_size({"width": 720, "height": 900})
+        await page.evaluate("() => new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)))")
+        height = min(2400, await page.evaluate("() => Math.ceil(document.documentElement.scrollHeight)"))
+        return await page.screenshot(type="png", clip={"x": 0, "y": 0, "width": 720, "height": max(1, height)}, full_page=True)

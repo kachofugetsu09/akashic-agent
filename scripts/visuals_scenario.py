@@ -92,7 +92,7 @@ async def run(directory: Path, executable_path: str | None) -> dict[str, object]
     from agent.plugins.install import install_git_plugin
     from agent.plugins.manager import PluginManager
     from agent.plugins.selection import PluginSelection
-    from plugins.ledger.contract import ARTIFACT_READ, MESSAGE_CATALOG
+    from plugins.ledger.contract import ARTIFACT_READ, MESSAGE_CATALOG, AttachmentKind
     from plugins.ui.contract import PLUGIN_UI, MESSAGE_DISPLAY
 
     workspace, home, sources = directory / "workspace", directory / "home", directory / "sources"
@@ -100,7 +100,7 @@ async def run(directory: Path, executable_path: str | None) -> dict[str, object]
     home.mkdir()
     PluginSelection(workspace).initialize()
     os.environ.update(HOME=str(home), AKASHIC_PLUGIN_HOME=str(home), AKASHIC_PLUGIN_DISTRIBUTION="")
-    for name in ("ledger", "content", "tools", "ui"):
+    for name in ("ledger", "content", "tools", "ui", "assets"):
         shutil.copytree(ROOT / "plugins" / name, sources / name, ignore=shutil.ignore_patterns("__pycache__"))
     probe = sources / "visual_probe"
     probe.mkdir()
@@ -128,8 +128,10 @@ async def run(directory: Path, executable_path: str | None) -> dict[str, object]
             assert result.outcome == "success", result
         reader = root.context.require(MESSAGE_CATALOG).reader("visual:scenario")
         attachments = reader.attachments_for(tuple(message.message_id for message in reader.snapshot()))
-        assert len(attachments) == 2
-        ref = attachments[0]
+        # 每次成功调用交付一个 HTML 文件，另附一张只给模型自检的预检截图。
+        files = [item for item in attachments if item.kind is AttachmentKind.FILE]
+        assert len(files) == 2 and len(attachments) == 4
+        ref = files[0]
         async with root.context.open_service(ARTIFACT_READ) as files:
             lease = await files.acquire(ref)
             try:
@@ -159,7 +161,8 @@ async def run(directory: Path, executable_path: str | None) -> dict[str, object]
             async with root.context.open_service(ARTIFACT_READ) as files:
                 lease = await files.acquire(attachment)
                 try:
-                    (directory / f"{attachment.artifact_id}.html").write_bytes(await lease.read_bytes(max_bytes=attachment.size_bytes))
+                    suffix = ".png" if attachment.kind is AttachmentKind.IMAGE else ".html"
+                    (directory / f"{attachment.artifact_id}{suffix}").write_bytes(await lease.read_bytes(max_bytes=attachment.size_bytes))
                 finally:
                     await lease.aclose()
         before = rows(workspace)

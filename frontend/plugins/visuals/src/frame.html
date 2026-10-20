@@ -137,6 +137,30 @@
     .ak-v { text-align: end; font-weight: 600; font-variant-numeric: lining-nums tabular-nums; }
     .ak-chart:has(> .ak-spark) { display: inline-block; margin: 0; vertical-align: middle; }
     .ak-chart svg.ak-spark { width: 96px; }
+    /* 示意图：文字、方框、连线和按系列色上色的节点；颜色取主题 token，深浅色自动适配。 */
+    svg .t, svg .th { font: 14px/1 var(--ak-type-ui); fill: var(--ak-color-text-primary); }
+    svg .th { font-weight: 600; }
+    svg .ts { font: 12px/1 var(--ak-type-ui); fill: var(--ak-color-text-secondary); }
+    svg .box { fill: var(--ak-color-bg-surface); stroke: var(--ak-color-border-strong); stroke-width: .5; }
+    svg .arr { stroke: var(--ak-color-text-muted); stroke-width: 1.5; fill: none; }
+    svg .leader { stroke: var(--ak-color-text-muted); stroke-width: .5; stroke-dasharray: 3 3; fill: none; }
+    svg .node { cursor: pointer; }
+    svg .node:hover { opacity: .82; }
+    :is(.d1, .d2, .d3, .d4, .d5, .d6, .d-gray) { --d: var(--k1); }
+    .d2 { --d: var(--k2); } .d3 { --d: var(--k3); } .d4 { --d: var(--k4); } .d5 { --d: var(--k5); } .d6 { --d: var(--k6); } .d-gray { --d: var(--k-gray); }
+    svg :is(.d1, .d2, .d3, .d4, .d5, .d6, .d-gray) > :is(rect, circle, ellipse, polygon),
+    svg :is(rect, circle, ellipse, polygon):is(.d1, .d2, .d3, .d4, .d5, .d6, .d-gray) {
+      fill: color-mix(in oklab, var(--d) 14%, var(--ak-color-bg-canvas)); stroke: var(--d); stroke-width: .5;
+    }
+    svg :is(.d1, .d2, .d3, .d4, .d5, .d6, .d-gray) > :is(.t, .th, .ts) { fill: color-mix(in oklab, var(--d) 55%, var(--ak-color-text-primary)); }
+    /* 卡片与指标：比较方案、数据记录和汇总数字。 */
+    .cards { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 180px), 1fr)); gap: 12px; }
+    .card { padding: 14px 16px; border: .5px solid var(--ak-color-border-default); border-radius: 12px; background: var(--ak-color-bg-surface); }
+    .card.featured { border: 2px solid var(--ak-color-action-primary); }
+    .metric { padding: 12px 14px; border-radius: 8px; background: color-mix(in oklab, var(--ak-color-text-primary) 4%, transparent); font-family: var(--ak-type-ui); }
+    .metric span { display: block; font-size: .8125rem; color: var(--ak-color-text-secondary); }
+    .metric b { display: block; margin-top: 2px; font-size: 1.5rem; font-weight: 600; font-variant-numeric: tabular-nums; }
+    .sr-only { position: absolute; width: 1px; height: 1px; overflow: hidden; clip-path: inset(50%); white-space: nowrap; }
     @media (prefers-reduced-motion: reduce) {
       *, *::before, *::after {
         animation: none !important;
@@ -156,7 +180,12 @@
         input.style.setProperty('--fill', `${max > min ? (input.valueAsNumber - min) / (max - min) * 100 : 0}%`);
       };
       addEventListener('input', event => fill(event.target), true);
-      addEventListener('DOMContentLoaded', () => document.querySelectorAll('input[type=range]').forEach(fill));
+      // 预置 url(#arrow) 箭头：头部颜色随所在连线（context-stroke），文档自带同名标记时不覆盖。
+      const arrow = () => {
+        if (document.getElementById('arrow')) return;
+        document.body.insertAdjacentHTML('afterbegin', '<svg id="ak-defs" aria-hidden="true" style="position:absolute;width:0;height:0"><defs><marker id="arrow" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse"><path d="M2 1L8 5L2 9" fill="none" stroke="context-stroke" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></marker></defs></svg>');
+      };
+      addEventListener('DOMContentLoaded', () => { arrow(); document.querySelectorAll('input[type=range]').forEach(fill); });
     })();
   </script>
 </head>
