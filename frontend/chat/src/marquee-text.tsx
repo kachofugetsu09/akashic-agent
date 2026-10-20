@@ -14,9 +14,10 @@ let sharedObserver: ResizeObserver | null = null;
 
 // 测量结果直接写 DOM（class 与自定义属性），不走 React state：目录规模下每行一次
 // setState 会汇成整列重渲染， marquee 子树在高亮继承之外再付一整轮样式解析。
-// React 之后重渲染时 style/className prop 始终是同一引用，不会覆盖这里写下的值。
-function apply(item: Measured): void {
-  const overflow = item.content.offsetWidth - item.viewport.clientWidth;
+// React 重渲染按值比较 className：两个调用点（标题、预览）都是字面量，值不变就不重写
+// class，这里写下的 is-truncated/is-animatable 不会被覆盖；若将来某个调用点把 className
+// 变成动态值，被抹掉的 class 会在下一次 RO 投递时补回（间隔最多一帧）。
+function apply(item: Measured, overflow: number): void {
   const truncated = overflow > 1;
   const viewport = item.viewport;
   // 拖拽侧栏等连续 resize 里同一元素每帧都会回报，值没变就不写：同值写
@@ -49,7 +50,13 @@ function observer(): ResizeObserver {
     }
     // 写入（class/自定义属性）推迟到下一帧：ResizeObserver 回调在绘制前跑，同步写会让
     // 本次失效的样式解析并入挂载关键帧；推迟后首屏先绘制，截断渐隐晚一帧出现（实测 LCP -76ms）。
-    requestAnimationFrame(() => { for (const item of seen) apply(item); });
+    requestAnimationFrame(() => {
+      // 先读完所有条目的布局再统一写：读写交错会让后一个条目的读强制结算前一个
+      // 条目刚写下的样式脏位，一次投递（挂载期上千条）退化成逐条 flush。
+      const pending: Array<{ item: Measured; overflow: number }> = [];
+      for (const item of seen) pending.push({ item, overflow: item.content.offsetWidth - item.viewport.clientWidth });
+      for (const { item, overflow } of pending) apply(item, overflow);
+    });
   });
   return sharedObserver;
 }
