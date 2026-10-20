@@ -5,6 +5,7 @@ import asyncio
 from collections.abc import AsyncIterator, Mapping
 from contextlib import AsyncExitStack, asynccontextmanager
 from dataclasses import dataclass
+from typing import TypedDict
 
 from agent.plugin_composition import Context, Effect
 from agent.plugin_composition.model import FiberState
@@ -131,11 +132,16 @@ class MaterialView:
         current = decode_material(materials)
         for _, owner in self._sources:
             if owner.reduce is not None:
+                # 可选参数只在有值时传入，未声明它们的旧摘要 owner 照常可用。
+                options: _ReduceOptions = {}
+                if on_status is not None:
+                    options["on_status"] = on_status
+                if summary_limit is not None:
+                    options["summary_limit"] = summary_limit
                 async with owner.context.runtime_scope():
                     summary_value = await owner.reduce(
                         snapshot, material_data(current), request, model, projection,
-                        source=source, force=force,
-                        on_status=on_status, summary_limit=summary_limit,
+                        source=source, force=force, **options,
                     )
                 self._check_active()
                 summary = decode_summary(summary_value)
@@ -155,6 +161,11 @@ class MaterialView:
                     "content": summary.content,
                 }
         return None
+
+
+class _ReduceOptions(TypedDict, total=False):
+    on_status: ReductionStatus
+    summary_limit: int
 
 
 class ContextMaterials:
