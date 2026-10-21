@@ -7,7 +7,7 @@ import { composerControls } from "./composer-contributions";
 import type { ScopeFields } from "./scope-fields";
 import { openInWorkbench, subscribeWorkbenchIntents, workbenchAccepts } from "./shell-workbench";
 
-import type { ComposerControls, ComposerSuggestProvider, NavigationControls, NavigationForm, NavigationFormControls, NavigationGroupsProvider, NavigationNotice, PluginUiDefinition, PluginUiHostContext, PluginUiMountSlotName, PluginUiQueryOptions, PluginUiSlotFacts, PluginUiSlotName, ScopeFieldControls } from "@akashic/chat-ui-v1";
+import type { ComposerControls, ComposerSuggestProvider, NavigationControls, NavigationForm, NavigationFormControls, NavigationGroupsProvider, NavigationNotice, PluginUiDefinition, PluginUiHostContext, PluginUiMountSlotName, PluginUiQueryOptions, PluginUiSlotFacts, PluginUiSlotName, ScopeFieldControls, SidebarPanelControls, SidebarPanelProvider } from "@akashic/chat-ui-v1";
 
 // 插槽合同由 @akashic/chat-ui-v1 发布，宿主与插件共用同一份类型。
 export type { ComposerSuggestProvider, ComposerSuggestion, PluginUiContext, PluginUiDefinition, PluginUiQueryOptions, PluginUiRenderer, PluginUiSlotName } from "@akashic/chat-ui-v1";
@@ -94,6 +94,7 @@ const SLOT_NAMES = new Set<PluginUiSlotName>([
   "scope.fields",
   "scope.badge",
   "navigation.groups",
+  "sidebar.panels",
 ]);
 
 /** 目录或模块变化时通知；宿主内的数据型扩展点据此对齐自己的缓存。 */
@@ -279,7 +280,8 @@ function parseDefinition(value: unknown, plugin: PluginUiCatalogItem): PluginUiD
       throw new Error(`插件界面 slot 无效: ${plugin.id}.${name}`);
     }
     const valid = name === "composer.suggest" ? isSuggestProvider(renderer)
-      : name === "navigation.groups" ? isGroupsProvider(renderer) : isRenderer(renderer);
+      : name === "navigation.groups" ? isGroupsProvider(renderer)
+      : name === "sidebar.panels" ? isPanelProvider(renderer) : isRenderer(renderer);
     if (!valid) {
       throw new Error(`插件界面 renderer 无效: ${plugin.id}.${name}`);
     }
@@ -315,6 +317,51 @@ function isGroupsProvider(value: unknown): value is NavigationGroupsProvider {
   return typeof provider.dimension === "string" && typeof provider.label === "string" && typeof provider.load === "function"
     && form(provider.create) && (provider.actions === undefined || typeof provider.actions === "function")
     && (provider.notice === undefined || isRenderer(provider.notice));
+}
+
+function isPanelProvider(value: unknown): value is SidebarPanelProvider {
+  if (!value || typeof value !== "object") return false;
+  const provider = value as Partial<Record<keyof SidebarPanelProvider, unknown>>;
+  return typeof provider.label === "string" && typeof provider.iconSvg === "string" && typeof provider.mount === "function"
+    && (provider.status === undefined || typeof provider.status === "function");
+}
+
+/** 已加载的侧栏面板，按目录顺序；宿主不按插件名挑选。 */
+export interface SidebarPanelSource {
+  /** 插件身份加版本；目录更新后变化。 */
+  key: string;
+  pluginId: string;
+  pluginRevision: string;
+  provider: SidebarPanelProvider;
+  context(signal: AbortSignal, sessionId: string | undefined): Pick<PluginUiHostContext, "query">;
+}
+
+export function sidebarPanelSources(): SidebarPanelSource[] {
+  if (catalog.updating) return [];
+  return catalog.plugins.flatMap((plugin) => {
+    const loaded = definitions.get(plugin.id);
+    const provider = loaded?.revision === plugin.revision ? loaded.definition.slots["sidebar.panels"] : undefined;
+    return provider ? [{ key: `${plugin.id}:${plugin.revision}`, pluginId: plugin.id, pluginRevision: plugin.revision, provider,
+      context: (signal: AbortSignal, sessionId: string | undefined) => ({
+        query: (method: string, payload: Record<string, unknown> = {}) => queryWebPluginUi({
+          pluginId: plugin.id, pluginRevision: plugin.revision, method, payload, slot: "sidebar.panels", sessionId, signal,
+        }),
+      }) }] : [];
+  });
+}
+
+/** 在宿主外框里挂侧栏面板；size 变化经 refreshToken 通知插件，不重新挂载。 */
+export function SidebarPanelMount({ source, sessionId, panel, size }: {
+  source: SidebarPanelSource;
+  sessionId?: string;
+  panel: SidebarPanelControls;
+  size: string;
+}) {
+  // extra 进挂载 effect 的依赖：每次渲染给新对象会拆掉重挂，插件页内状态随之丢失。
+  const extra = React.useMemo(() => ({ panel }), [panel]);
+  return <MountedPlugin pluginId={source.pluginId} pluginRevision={source.pluginRevision}
+    renderer={source.provider as HostRenderer} extra={extra} refreshToken={size}
+    context={{ slot: "sidebar.panels", sessionId }} />;
 }
 
 /** 已加载的侧栏分组数据源，按目录顺序；宿主不按插件名挑选。 */
@@ -528,7 +575,7 @@ function shownSubscriptions(isLive: () => boolean): { onShown(callback: () => vo
 
 // 宿主内部组装挂载上下文用的松散形状；各挂载点必须给出的事实由 PluginUiSlot 的属性类型保证。
 type HostMountContext = PluginUiHostContext & {
-  slot: InlineSlotName | "navigation.groups";
+  slot: InlineSlotName | "navigation.groups" | "sidebar.panels";
   sessionId?: string;
   messageId?: string;
   block?: unknown;
@@ -537,6 +584,7 @@ type HostMountContext = PluginUiHostContext & {
   fields?: ScopeFieldControls;
   form?: NavigationFormControls;
   navigation?: NavigationControls;
+  panel?: SidebarPanelControls;
 };
 type HostMountFacts = Pick<HostMountContext, "slot" | "sessionId" | "messageId" | "block" | "scope">;
 
@@ -677,7 +725,7 @@ function MountedPlugin({
   prefetch?: boolean;
   fields?: ScopeFields;
   /** 宿主外框给这次挂载的额外能力（分组表单与提示）；身份变化即重新挂载。 */
-  extra?: Pick<HostMountContext, "form" | "navigation">;
+  extra?: Pick<HostMountContext, "form" | "navigation" | "panel">;
   context: HostMountFacts;
   refreshToken?: string | number;
 }) {

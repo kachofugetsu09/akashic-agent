@@ -30,6 +30,7 @@ import {
 import type { NavigationRowAction } from "./navigation-row-menu";
 import { getHostShortcuts } from "./shell-workbench";
 import { PluginUiSlot } from "./plugin-ui-runtime";
+import { SidebarPanelLauncher } from "./sidebar-panels";
 import { chatLayerOpen, keyForChat } from "./chat-host";
 
 export interface DesktopSidebarSession extends Omit<ConversationSession, "active" | "state"> {
@@ -319,6 +320,8 @@ export interface DesktopSidebarProps {
   onDismissDeletedNotice?: () => void;
   /** 宽屏侧栏的宽度控制；抽屉（compact）不带此 prop，因此不渲染拖拽柄。 */
   rail?: SidebarRailControl;
+  /** 手机抽屉里打开插件面板：抽屉先关，关完再弹底部抽屉；常驻侧栏不带此 prop，面板锚在启动器下方。 */
+  onOpenPanels?: (open: () => void) => void;
 }
 
 /** 会话导航竖栏；底部动作由宿主 Shell 经 shell.rail-actions.v1 桥下发，主题行是 chat 域原生。 */
@@ -343,6 +346,7 @@ export const DesktopSidebar = memo(function DesktopSidebar({
   deletedNotice,
   onRestoreSession,
   onDismissDeletedNotice,
+  onOpenPanels,
   rail,
 }: DesktopSidebarProps) {
   const [query, setQuery] = useState("");
@@ -593,9 +597,12 @@ export const DesktopSidebar = memo(function DesktopSidebar({
             <span className="chat-sidebar__mark" style={brandMask} aria-hidden="true" />
             <strong>Akashic</strong>
           </span>
-          <button type="button" className="chat-sidebar__new" aria-label="新会话" title={`新会话（${SHORTCUT_MOD}+Shift+O）`} onClick={newChat}>
-            <MessageSquarePlus size={18} strokeWidth={1.75} aria-hidden="true" />
-          </button>
+          <span className="chat-sidebar__brand-actions">
+            <SidebarPanelLauncher sheet={!!onOpenPanels} onOpenSheet={onOpenPanels} />
+            <button type="button" className="chat-sidebar__new" aria-label="新会话" title={`新会话（${SHORTCUT_MOD}+Shift+O）`} onClick={newChat}>
+              <MessageSquarePlus size={18} strokeWidth={1.75} aria-hidden="true" />
+            </button>
+          </span>
         </div>
         <label className="chat-sidebar__search">
           <Search size={14} aria-hidden="true" />

@@ -133,6 +133,7 @@ PluginUiSlot = Literal[
     "scope.fields",
     "scope.badge",
     "navigation.groups",
+    "sidebar.panels",
 ]
 
 PLUGIN_UI_SLOTS = frozenset(
@@ -150,6 +151,7 @@ PLUGIN_UI_SLOTS = frozenset(
         "scope.fields",
         "scope.badge",
         "navigation.groups",
+        "sidebar.panels",
     }
 )
 

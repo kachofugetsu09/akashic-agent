@@ -14,10 +14,11 @@ export type PluginUiSlotName =
   | "composer.suggest"
   | "scope.fields"
   | "scope.badge"
-  | "navigation.groups";
+  | "navigation.groups"
+  | "sidebar.panels";
 
-/** 宿主挂载插件元素的插槽；composer.suggest 与 navigation.groups 是数据源，不挂载。 */
-export type PluginUiMountSlotName = Exclude<PluginUiSlotName, "composer.suggest" | "navigation.groups">;
+/** 宿主挂载插件元素的插槽；composer.suggest、navigation.groups 与 sidebar.panels 是数据源，由宿主外框挂载。 */
+export type PluginUiMountSlotName = Exclude<PluginUiSlotName, "composer.suggest" | "navigation.groups" | "sidebar.panels">;
 
 export type WorkbenchIntentStatus = "handled" | "unhandled" | "invalid" | "failed";
 
@@ -165,6 +166,42 @@ export interface NavigationGroupsProvider {
   notice?: NavigationNotice;
 }
 
+/** 侧栏面板菜单行的短值；alert 时宿主在启动器（手机上还有导航按钮）挂一个提醒点。 */
+export interface SidebarPanelStatus {
+  text: string;
+  alert?: boolean;
+}
+
+/** 面板外框的宿主能力：插件只决定内容，摆放、焦点、Esc 与手机抽屉由宿主负责。 */
+export interface SidebarPanelControls {
+  /** compact 是启动器旁的小浮层（手机为中档抽屉），expanded 是大面板（手机为高档抽屉）；变化时经 onInvalidate 通知。 */
+  size(): "compact" | "expanded";
+  setSize(size: "compact" | "expanded"): void;
+  /** 手机底部抽屉里：宽度按屏幕、热区至少 44px。 */
+  sheet: boolean;
+  close(): void;
+}
+
+/** 侧栏面板的挂载：当前会话（新会话时为空）与外框能力。 */
+export interface PluginUiSidebarPanelContext extends PluginUiHostContext {
+  slot: "sidebar.panels";
+  sessionId?: string;
+  panel: SidebarPanelControls;
+}
+
+/**
+ * 侧栏顶部启动器里的一个面板：插件越多菜单越长，侧栏不多占位置。
+ * 菜单、筛选、浮层、展开与手机抽屉都由宿主负责，插件只给名字、图标、短值和面板内容。
+ */
+export interface SidebarPanelProvider {
+  label: string;
+  /** 16px 线性图标的 SVG 源码，描边用 currentColor。 */
+  iconSvg: string;
+  /** 切换会话、一轮回答结束、页面重新可见与面板关闭后重读；没有短值时返回 null。 */
+  status?(context: Pick<PluginUiHostContext, "query"> & { sessionId?: string }): Promise<SidebarPanelStatus | null>;
+  mount(host: HTMLElement, context: PluginUiSidebarPanelContext): void | (() => void);
+}
+
 /** 新建表单里的附加设置：表单确定了新取值、在它被创建之前，宿主依次调用各插件登记的提交。 */
 export interface ScopeFieldControls {
   /** 登记本挂载的提交；拒绝时整次新建失败，表单保持打开。返回取消登记。 */
@@ -256,6 +293,7 @@ export interface PluginUiDefinition {
   slots: { [S in PluginUiMountSlotName]?: PluginUiRenderer<S> } & {
     "composer.suggest"?: ComposerSuggestProvider;
     "navigation.groups"?: NavigationGroupsProvider;
+    "sidebar.panels"?: SidebarPanelProvider;
   };
 }
 
