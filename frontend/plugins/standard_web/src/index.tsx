@@ -14,8 +14,8 @@ export function activate(ctx: WebHostContextV1) {
       return <>
         <Select label="搜索提供方" name="search_provider" value={values.search_provider} change={change} options={search} fallbackLabel={automatic(search)} hint="想换搜索服务，先在插件列表启用对应的提供方插件" />
         <Select label="网页读取提供方" name="fetch_provider" value={values.fetch_provider} change={change} options={fetch} fallbackLabel={automatic(fetch)} />
-        <Field label="默认搜索结果数" name="default_results" type="number" inputMode="numeric" value={values.default_results} fallback={status.defaults?.default_results} change={change} hint="1–20；模型可按需要另行指定" />
-        <Field label="默认读取超时（秒）" name="default_fetch_timeout" type="number" inputMode="numeric" value={values.default_fetch_timeout} fallback={status.defaults?.default_fetch_timeout} change={change} hint="1–120；模型可按需要另行指定" />
+        <Field label="默认搜索结果数" name="default_results" type="number" min={1} max={20} step={1} inputMode="numeric" value={values.default_results} fallback={status.defaults?.default_results} change={change} hint="1–20；模型可按需要另行指定" />
+        <Field label="默认读取超时（秒）" name="default_fetch_timeout" type="number" min={1} max={120} step={1} inputMode="numeric" value={values.default_fetch_timeout} fallback={status.defaults?.default_fetch_timeout} change={change} hint="1–120；模型可按需要另行指定" />
       </>;
     },
   });

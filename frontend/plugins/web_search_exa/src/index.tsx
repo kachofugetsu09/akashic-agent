@@ -15,7 +15,7 @@ export function activate(ctx: WebHostContextV1) {
       <details><summary>高级网络设置</summary>
         <Field label="端点" name="endpoint" type="url" inputMode="url" value={values.endpoint} fallback={status.defaults?.endpoint} change={change} hint="Exa MCP 地址；留空使用官方端点" />
         <Select label="实时抓取" name="livecrawl" value={values.livecrawl} change={change} options={LIVECRAWL} fallbackLabel={named(LIVECRAWL, status.defaults?.livecrawl)} />
-        <Field label="超时时间（秒）" name="timeout_seconds" type="number" inputMode="decimal" value={values.timeout_seconds} fallback={status.defaults?.timeout_seconds} change={change} />
+        <Field label="超时时间（秒）" name="timeout_seconds" type="number" min={1} max={120} step="any" inputMode="decimal" value={values.timeout_seconds} fallback={status.defaults?.timeout_seconds} change={change} />
       </details></>,
   });
 }

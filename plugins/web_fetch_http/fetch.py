@@ -6,7 +6,7 @@ import html2text
 import httpx
 from lxml import html as lxml_html
 from lxml.etree import ParserError
-from pydantic import BaseModel, ConfigDict, Field, HttpUrl, field_validator
+from pydantic import AnyUrl, BaseModel, ConfigDict, Field, field_validator
 
 from plugins.standard_web.contract import FetchRequest
 from core.net.http import (
@@ -29,11 +29,11 @@ class FetchConfig(BaseModel):
     max_text_chars: int = Field(default=50_000, ge=1_000, le=1_000_000)
     user_agent: str = Field(default="akashic/1.0", min_length=1, max_length=300)
     accept_language: str = Field(default="zh-CN,zh;q=0.9,en;q=0.8", min_length=1, max_length=200)
-    proxy: HttpUrl | None = None
+    proxy: AnyUrl | None = None
 
     @field_validator("proxy")
     @classmethod
-    def check_proxy(cls, value: HttpUrl | None) -> HttpUrl | None:
+    def check_proxy(cls, value: AnyUrl | None) -> AnyUrl | None:
         if value is not None and value.scheme not in {"http", "https", "socks5", "socks5h"}:
             raise ValueError("代理地址必须以 http://、https:// 或 socks5:// 开头")
         return value

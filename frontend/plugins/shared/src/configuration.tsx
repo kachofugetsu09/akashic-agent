@@ -41,13 +41,14 @@ export function Confirm({ title, children, accept, cancel, busy = false }: {titl
 }
 
 // fallback 是留空时生效的默认值：占位符直接显示它，清空并保存即回到默认。
-export function Field({label, name, value, change, type = "text", hint, required = false, inputMode, fallback}: {
+// min/max/step 交给浏览器在提交前就地提示越界；服务端仍会再校验。
+export function Field({label, name, value, change, type = "text", hint, required = false, inputMode, fallback, min, max, step}: {
   label: string; name: string; value: unknown; change: FormProps["change"]; type?: string; hint?: string; required?: boolean;
-  inputMode?: "text" | "numeric" | "decimal" | "tel" | "url" | "email"; fallback?: unknown;
+  inputMode?: "text" | "numeric" | "decimal" | "tel" | "url" | "email"; fallback?: unknown; min?: number; max?: number; step?: number | "any";
 }) {
   const shown = typeof value === "string" || (typeof value === "number" && !Number.isNaN(value)) ? value : "";
   return <label className="config-field"><span>{label}</span><input name={name} type={type} inputMode={inputMode} autoComplete={type === "password" ? "new-password" : "off"} required={required}
-    value={shown} placeholder={fallback === undefined || fallback === null ? undefined : `默认：${String(fallback)}`}
+    min={min} max={max} step={step} value={shown} placeholder={fallback === undefined || fallback === null ? undefined : `默认：${String(fallback)}`}
     onChange={event => change(name, type === "number" ? (event.target.value === "" ? null : event.target.valueAsNumber) : event.target.value)} />{hint && <small>{hint}</small>}</label>;
 }
 
