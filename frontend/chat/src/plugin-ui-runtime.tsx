@@ -825,7 +825,8 @@ function queryPlugin({ pluginId, pluginRevision, ownerId, slot, sessionId, messa
     const request: PendingQuery = {
       resolve, reject, ownerId: requestOwnerId, cacheKey, sharedKey, slot, started: false, abort,
       pluginId, method, sessionId, messageId, queuedAt: performance.now(),
-      interactive: sharedKey !== undefined && !prefetch,
+      // 已挂载的槽位是用户正在看的内容，走交互通道；只有预取占后台名额。
+      interactive: !prefetch,
       send: () => {
         tracePluginQuery(requestId, request, "sent");
         request.timeout = window.setTimeout(() => {
