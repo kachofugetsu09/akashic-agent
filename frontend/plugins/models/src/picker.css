@@ -1,0 +1,272 @@
+/* 模型选择器主体：聊天胶囊与设置页场景选择共用；这里不放动画与全局命名规则，设置页样式表才能引入。 */
+.model-picker__group-icon {
+  width: 14px;
+  height: 14px;
+  flex: 0 0 auto;
+  object-fit: contain;
+}
+
+/* 选择器主体：搜索行横跨两列，下方左侧来源栏、右侧列表；只有一个来源时没有来源栏。 */
+.model-picker__body {
+  display: grid;
+  flex: 1;
+  min-height: 0;
+  grid-template-columns: minmax(0, 1fr);
+  grid-template-rows: auto minmax(0, 1fr);
+}
+
+.model-picker__body.has-rail {
+  grid-template-columns: auto minmax(0, 1fr);
+}
+
+.model-picker__body.has-rail .model-picker__search {
+  grid-column: 1 / -1;
+}
+
+.model-picker__rail {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 2px;
+  overflow-y: auto;
+  border-inline-end: 1px solid var(--ak-rule-default);
+  padding: 6px 5px;
+  scrollbar-width: none;
+}
+
+.model-picker__rail-item {
+  display: grid;
+  width: 32px;
+  height: 32px;
+  flex: 0 0 auto;
+  place-items: center;
+  border: 0;
+  border-radius: 8px;
+  color: var(--ak-ink-secondary);
+  background: transparent;
+  font: inherit;
+  font-size: var(--chat-type-caption);
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.model-picker__rail-item img {
+  width: 16px;
+  height: 16px;
+  object-fit: contain;
+}
+
+.model-picker__rail-item[aria-pressed="true"] {
+  color: var(--ak-ink-primary);
+  background: color-mix(in oklab, var(--ak-ink-primary) 8%, transparent);
+}
+@media (hover: hover) {
+  .model-picker__rail-item:hover { color: var(--ak-ink-primary); background: color-mix(in oklab, var(--ak-ink-primary) 5%, transparent); }
+}
+
+.model-picker__rail-item:focus-visible {
+  outline: 2px solid var(--ak-rule-focus);
+  outline-offset: -2px;
+}
+
+.model-picker__rail-rule {
+  width: 18px;
+  flex: 0 0 auto;
+  margin: 3px 0;
+  border-top: 1px solid var(--ak-rule-default);
+}
+
+.model-picker__search {
+  display: flex;
+  height: 2.5rem;
+  align-items: center;
+  gap: 8px;
+  border-bottom: 1px solid var(--ak-rule-default);
+  padding: 0 12px;
+  color: var(--ak-ink-secondary);
+  background: var(--ak-paper-raised);
+}
+
+.model-picker__search input {
+  width: 100%;
+  border: 0;
+  color: var(--ak-ink-primary);
+  background: transparent;
+  font: inherit;
+  font-size: 0.8125rem;
+  outline: none;
+}
+
+.model-picker__list {
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  padding: 4px;
+  scrollbar-color: var(--ak-rule-strong) transparent;
+  scrollbar-width: thin;
+}
+
+/* 跟随默认不属于任何来源，和下面的来源分组隔开一点。 */
+.model-picker__follow {
+  margin-block-end: 4px;
+}
+
+.model-picker__group + .model-picker__group {
+  margin-block-start: 6px;
+}
+
+.model-picker__group-title {
+  display: flex;
+  min-height: 1.5rem;
+  align-items: center;
+  gap: 6px;
+  padding: 0.15rem 8px;
+  color: var(--ak-ink-secondary);
+  font-size: var(--chat-type-caption);
+  font-weight: 600;
+  letter-spacing: 0.02em;
+}
+
+.model-picker__option {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  border-radius: 8px;
+  padding: 6px 8px;
+  cursor: pointer;
+  outline: none;
+  user-select: none;
+}
+
+.model-picker__option + .model-picker__option {
+  margin-block-start: 1px;
+}
+
+.model-picker__option:focus-visible {
+  background: color-mix(in oklab, var(--ak-ink-primary) 5%, transparent);
+}
+@media (hover: hover) {
+  .model-picker__option:hover {
+    background: color-mix(in oklab, var(--ak-ink-primary) 5%, transparent);
+  }
+}
+
+.model-picker__option.is-selected:not(:hover):not(:focus-visible) {
+  background: color-mix(in oklab, var(--ak-ink-primary) 6%, transparent);
+}
+
+.model-picker__check {
+  flex: 0 0 auto;
+  margin-block-start: 3px;
+  color: var(--ak-ink-primary);
+  opacity: 0;
+}
+
+.model-picker__option.is-selected .model-picker__check {
+  opacity: 0.8;
+}
+
+.model-picker__copy {
+  display: grid;
+  min-width: 0;
+  flex: 1;
+  gap: 1px;
+  text-align: start;
+}
+
+.model-picker__copy strong {
+  overflow: hidden;
+  font-size: 0.8125rem;
+  font-weight: 500;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.model-picker__option.is-selected .model-picker__copy strong {
+  font-weight: 650;
+}
+
+.model-picker__meta {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.model-picker__meta em,
+.model-picker__meta i {
+  color: var(--md-sys-color-on-surface-variant);
+  font-size: var(--chat-type-micro);
+  font-style: normal;
+}
+
+.model-picker__meta i {
+  font-weight: 500;
+  opacity: 0.8;
+}
+
+.model-picker__meta svg {
+  color: var(--ak-ink-secondary);
+  opacity: 0.55;
+}
+
+.model-picker__star {
+  flex: 0 0 auto;
+  margin-block-start: 1px;
+  border: 0;
+  border-radius: 4px;
+  padding: 2px;
+  color: var(--md-sys-color-on-surface-variant);
+  background: transparent;
+  cursor: pointer;
+  opacity: 0;
+  transition-property: opacity, color;
+  transition-duration: var(--ak-sys-duration-short);
+}
+
+.model-picker__option:focus-within .model-picker__star,
+.model-picker__star:focus-visible,
+.model-picker__star.is-favorite {
+  opacity: 1;
+}
+@media (hover: hover) {
+  .model-picker__option:hover .model-picker__star {
+    opacity: 1;
+  }
+}
+
+@media (hover: hover) {
+  .model-picker__star:hover {
+    color: var(--md-sys-color-on-surface);
+  }
+}
+
+.model-picker__star.is-favorite svg {
+  fill: currentColor;
+}
+/* 触屏没有悬停，未收藏的星淡显（不是藏起来）才找得到收藏入口；热区放大到约 36px，负边距不撑高行。 */
+@media (hover: none) {
+  .model-picker__star:not(.is-favorite) { opacity: 0.45; }
+}
+@media (pointer: coarse) {
+  .model-picker__star { padding: 10px; margin: -9px -10px -9px -4px; }
+}
+
+.model-picker__empty {
+  margin: 1.25rem 0;
+  color: var(--md-sys-color-on-surface-variant);
+  font-size: 0.8125rem;
+  text-align: center;
+}
+
+.model-picker__search > .lucide-search {
+  translate: 0.5px -0.5px;
+}
+
+/* 模型名必须能区分版本，不能在选择列表里只留下相同的省略前缀。 */
+.model-picker__copy strong { white-space: normal; overflow-wrap: anywhere; }
+
+@media (forced-colors: active) {
+  .model-picker__option.is-selected {
+    outline: 2px solid Highlight;
+    outline-offset: -2px;
+  }
+}

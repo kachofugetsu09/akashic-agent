@@ -1,4 +1,5 @@
 import { cacheUsageResource, cacheUsageSection } from "./cache-usage.js";
+import { mountModelPicker } from "./picker-mount";
 
 const SEARCH_ICON = `<svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="lucide lucide-search" aria-hidden="true"><circle cx="11" cy="11" r="8"></circle><path d="m21 21-4.3-4.3"></path></svg>`;
 const CHEVRON_ICON = `<svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="lucide lucide-chevron-right" aria-hidden="true"><path d="m9 18 6-6-6-6"></path></svg>`;
@@ -339,6 +340,7 @@ function registerModels(ctx, mount, catalogResource) {
             detail,
             models: availableModels,
             value: bound,
+            follow: role === "default" ? null : followDefault(),
             change(modelId) {
               return sendCommand({type: "set_default", expected_revision: catalog.revision, role, model_id: modelId});
             },
@@ -509,7 +511,14 @@ function registerModels(ctx, mount, catalogResource) {
         disposeDialog = () => { closed = true; closeOverlays(); controller?.abort(); sequence += 1; stopGuard(); props.dirty?.(false); dialog.removeEventListener("close", close); dialog.close(); dialog.remove(); restoreFocus(trigger); disposeDialog = () => {}; };
       }
 
-      function bindingRow({label, detail, models, value, change}) {
+      // 未单独指定的场景跟随全局默认；选择器首行与按钮文字都写明当前实际用的是哪个模型。
+      function followDefault() {
+        const model = catalog.models.find((item) => item.id === catalog.roleBindings.default);
+        const connection = model && catalog.connections.find((item) => item.id === model.connectionId);
+        return {label: "跟随全局默认模型", detail: model ? `${model.model} · ${connection?.name ?? model.connectionId}` : "全局默认尚未配置"};
+      }
+
+      function bindingRow({label, detail, models, value, follow = null, change}) {
         const row = document.createElement("div");
         row.className = "settings-binding";
         const copy = document.createElement("span");
@@ -530,13 +539,14 @@ function registerModels(ctx, mount, catalogResource) {
         pickText.className = "settings-role-pick-value";
         pickText.textContent = current
           ? `${current.model} · ${currentConnection?.name ?? current.connectionId}`
-          : "尚未配置";
+          : follow ? `跟随默认 · ${follow.detail}` : "尚未配置";
+        if (!current && follow) pick.classList.add("is-following");
         pick.append(pickText);
         pick.insertAdjacentHTML("beforeend", CHEVRON_ICON);
         pick.addEventListener("click", async () => {
           if (bindingSave || closed) return;
           if (!models.length) { feedback.textContent = "没有可用模型。"; return; }
-          const picked = await modelPickSheet({title: label, models, currentId: value});
+          const picked = await modelPickSheet({title: label, models, currentId: value, follow});
           if (closed || bindingSave || picked === null || picked === value) return;
           saveBinding({label, modelId: picked, change, feedback});
         });
@@ -566,29 +576,33 @@ function registerModels(ctx, mount, catalogResource) {
         })();
       }
 
-      function modelPickSheet({title, models, currentId}) {
-        const groups = [];
-        for (const connection of catalog.connections) {
-          const rows = models
-            .filter((model) => model.connectionId === connection.id)
-            .map((model) => ({
-              data: model.id,
-              primary: model.model,
-              badges: capabilityBadges(model.capabilities),
-              current: model.id === currentId,
-            }));
-          if (rows.length) groups.push({label: connection.name, rows});
-        }
-        const orphans = models
-          .filter((model) => !catalog.connections.some((item) => item.id === model.connectionId))
-          .map((model) => ({data: model.id, primary: model.model, badges: capabilityBadges(model.capabilities), current: model.id === currentId}));
-        if (orphans.length) groups.push({label: "其他", rows: orphans});
-        return modelSheet({title, multiple: false, groups});
+      // 场景选择与聊天胶囊共用选择器：搜索、来源栏、收藏与键盘操作一致。
+      function modelPickSheet({title, models, currentId, follow}) {
+        const order = new Map(catalog.connections.map((connection, index) => [connection.id, index]));
+        const runtimes = [...models]
+          .sort((a, b) => (order.get(a.connectionId) ?? Infinity) - (order.get(b.connectionId) ?? Infinity))
+          .map((model) => {
+            const connection = catalog.connections.find((item) => item.id === model.connectionId);
+            const entry = providerEntries.find((candidate) => candidate.id === connection?.driverId);
+            const caps = model.capabilities ?? {};
+            const icon = typeof entry?.connectionIcon === "string" && entry.connectionIcon.startsWith("data:image/svg+xml,") ? entry.connectionIcon : "";
+            return {
+              id: model.id, provider: connection?.driverId ?? "", model: model.model,
+              sourceId: model.connectionId, sourceName: connection?.name ?? "其他", icon,
+              reasoningEffort: "", supportedReasoningEfforts: caps.supportedReasoningEfforts ?? [], roles: [],
+              contextWindow: caps.contextWindow ?? 0, inputModalities: caps.inputModalities ?? [],
+            };
+          });
+        return modelSheet({
+          title, groups: [],
+          mount: (host, settle) => mountModelPicker(host, {runtimes, selectedId: currentId, follow, onChoose: settle}),
+        });
       }
 
       // 统一的小型浮层：multiple=true 是候选勾选（复选 + 底部确认），false 是单选列表（点击即选）。
       // 解析单选行 data、复选行 data 数组；取消一律解析 null。
-      function modelSheet({title, hint, multiple = false, confirmLabel = "确定", groups}) {
+      // mount 给出时由它渲染列表区（返回卸载函数），用于单选的模型选择器。
+      function modelSheet({title, hint, multiple = false, confirmLabel = "确定", groups, mount = null}) {
         return new Promise((resolve) => {
           const scrim = document.createElement("dialog");
           scrim.className = "settings-scrim settings-sheet-scrim";
@@ -678,6 +692,11 @@ function registerModels(ctx, mount, catalogResource) {
             }
           }
           sheet.append(list);
+          let unmount = null;
+          if (mount) {
+            sheet.classList.add("settings-sheet--picker");
+            list.className = "settings-sheet-picker";
+          }
           let okButton = null;
           if (multiple) {
             const foot = document.createElement("footer");
@@ -704,6 +723,7 @@ function registerModels(ctx, mount, catalogResource) {
           let settled = false;
           const release = () => settle(null);
           const close = () => {
+            unmount?.();
             openOverlays.delete(release);
             scrim.removeEventListener("cancel", onCancel);
             window.removeEventListener("akashic:before-navigate", onNavigate);
@@ -729,6 +749,7 @@ function registerModels(ctx, mount, catalogResource) {
           openOverlays.add(release);
           page.appendChild(scrim);
           scrim.showModal();
+          if (mount) unmount = mount(list, settle);
         });
       }
 

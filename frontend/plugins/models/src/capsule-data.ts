@@ -33,17 +33,6 @@ export function compatibleEffort(runtime: ChatModelRuntime | undefined, current:
   return supported[0] || "";
 }
 
-export function groupModelRuntimes(runtimes: ChatModelRuntime[]) {
-  const grouped = new Map<string, Array<{ runtime: ChatModelRuntime; index: number }>>();
-  runtimes.forEach((runtime, index) => {
-    const source = runtime.sourceName || runtime.provider;
-    const items = grouped.get(source);
-    if (items) items.push({ runtime, index });
-    else grouped.set(source, [{ runtime, index }]);
-  });
-  return [...grouped.entries()];
-}
-
 export interface ChatModelState {
   generationId: number;
   defaultRuntime: string;
