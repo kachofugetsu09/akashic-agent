@@ -1079,12 +1079,10 @@
   min-width: 0;
 }
 
-/* 折叠入口是「箭头 + 计数」，不是一条工具记录：三列栅格（箭头、文字、耗时），
+/* 折叠入口是「箭头 + 计数」，不是一条工具记录：箭头排在标题内、走 .tool-step-title
+   的 flex 与 6px 间距，所以文字和工具行图标后的标题对齐在同一列；这里不要另设栅格
+   列数，否则标题会被挤进首列的图标宽度里、文字被 overflow 切成 0 宽。
    箭头随展开转 180°，与工具行自己的 chevron 同一动效语言。 */
-.tool-group-summary .tool-step-heading {
-  grid-template-columns: 13px minmax(0, 1fr) auto;
-}
-
 .tool-group-caret {
   flex: none;
   width: 13px;
