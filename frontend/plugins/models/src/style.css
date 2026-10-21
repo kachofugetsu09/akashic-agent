@@ -860,3 +860,8 @@ dialog.settings-scrim::backdrop { background: transparent; }
 .settings-binding strong { font-size: var(--models-type-body); font-weight: 600; }
 .settings-binding small { margin-block-start: 0.1rem; font-size: var(--models-type-caption); }
 .settings-role-pick { min-height: 2rem; }
+/* 查找框的焦点由外框表示，内部输入框不再画第二道焦点环。 */
+.settings-find input:focus,
+.settings-find input:focus-visible,
+.settings-model-filter input:focus-visible { outline: none; box-shadow: none; }
+.settings-dialog--inline .settings-dialog-footer > [data-disable-conn] { min-height: 2.25rem; padding-inline: 0; font-size: var(--models-type-caption); }
