@@ -82,7 +82,8 @@ try {
     await page.getByText("模型选择已保存。", {exact: true}).waitFor();
     catalog = await get("/api/dashboard/models/catalog");
     assert.deepEqual(catalog.models.map(model => model.model).sort(), ["local-codex", "local-codex-standard"]);
-    await page.locator(".settings-dialog--inline").getByRole("button", {name: "关闭", exact: true}).click();
+    await page.screenshot({path: join(output, "before-close.png"), fullPage: true});
+    await page.getByRole("button", {name: "编辑连接 Codex", exact: true}).click();
     checks.push("目录中的 Lite 与标准模型均通过真实验证请求并保存");
 
     // 4. 重新登录保留连接身份；取消下一次登录不改变已保存连接。
@@ -99,13 +100,13 @@ try {
     await page.getByText("LOCAL-CODE", {exact: true}).waitFor();
     const cancelled = page.waitForResponse(response => response.url().endsWith("/command")
       && response.request().postDataJSON().type === "cancel_auth");
-    await page.locator(".settings-dialog--inline").getByRole("button", {name: "关闭", exact: true}).click();
+    await page.getByRole("button", {name: "编辑连接 Codex", exact: true}).click();
     assert.equal((await cancelled).status(), 200);
     assert.deepEqual((await get("/api/dashboard/models/catalog")).connections, catalog.connections);
     checks.push("取消登录不改变已有连接");
 
     // 5. OpenCode 使用驱动自身默认身份，API Key 路径不依赖表单注入。
-    await page.getByRole("button", {name: "+ 添加新服务商连接", exact: true}).click();
+    await page.getByRole("button", {name: "+ 添加服务商", exact: true}).click();
     await page.getByRole("button", {name: /^OpenCode Go/}).click();
     await page.locator('input[name="endpoint"]').fill(base + "/upstream/opencode/v1");
     await page.getByLabel("API Key", {exact: true}).fill("local-fixture-key");
@@ -119,6 +120,20 @@ try {
     assert.ok(starts.every(item => !item.input_keys.includes("auth_identity") && item.status === 200));
     assert.deepEqual(errors, []);
     checks.push("OpenCode API Key 连接成功；所有登录请求只传递驱动参数");
+    // 6. 场景选择穿过共享 React 选择器并落库，清除指定后跟随默认。
+    const agent = page.locator(".settings-binding").filter({hasText: "智能体主模型"});
+    await agent.getByRole("button").click();
+    await page.getByRole("option").filter({hasText: "local-codex-standard"}).click();
+    await page.waitForFunction(async () => Boolean((await fetch("/api/dashboard/models/catalog").then(r => r.json())).roleBindings.agent));
+    await agent.getByRole("button").click();
+    await page.getByRole("option").filter({hasText: "跟随全局默认模型"}).click();
+    await page.waitForFunction(async () => !(await fetch("/api/dashboard/models/catalog").then(r => r.json())).roleBindings.agent);
+    checks.push("场景模型指定与跟随默认均已通过真实目录读回确认");
+    await page.setViewportSize({width: 390, height: 844});
+    await agent.getByRole("button").click();
+    assert.equal(await page.evaluate(() => document.documentElement.scrollWidth > innerWidth), false);
+    await page.screenshot({path: join(output, "narrow-picker.png"), fullPage: true});
+    await page.getByRole("dialog").getByRole("button", {name: "关闭", exact: true}).click();
   }
   await page.screenshot({path: join(output, "result.png"), fullPage: true});
   const receipt = {baseline, checks, output};

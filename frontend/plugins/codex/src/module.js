@@ -25,7 +25,7 @@ export function activate(ctx) {
         </div><div class="settings-device-login" data-challenge role="status" aria-live="polite" hidden></div>
         <section class="settings-model-discovery settings-model-discovery--automatic"><header><div><h3>可用模型列表</h3><p>勾选需要开启的模型；后续可随时重新探测与增减。</p></div></header></section>
         <p class="settings-inline-error" data-error role="alert" hidden></p></div>
-        <footer class="settings-dialog-footer"><span class="settings-dialog-footer-note">${SHIELD_ICON(15)}授权凭据保存后不会在页面中明文回显</span><button type="submit" class="settings-primary-button">探测并选择模型</button></footer></form>`;
+        <footer class="settings-dialog-footer"><span></span><button type="submit" class="settings-primary-button">探测并选择模型</button></footer></form>`;
       let timer = 0;
       let ticker = 0;
       let attemptId = "";
@@ -60,13 +60,16 @@ export function activate(ctx) {
         stopWaiting();
         const abandoned = attemptId;
         attemptId = "";
-        if (abandoned) void props.actions.cancelAuth(abandoned).catch(() => {});
+        if (abandoned) void props.actions.cancelAuth(abandoned).catch(report);
         showLogin({kind: "failed", expired, message: expired
           ? "验证码已过期，没有完成授权。重新开始会生成新的验证码。"
           : reason instanceof Error ? reason.message : String(reason)});
       };
       const poll = (interval) => {
-        timer = window.setTimeout(() => finish().catch(retryOrFail), interval * 1000);
+        const currentAttempt = attemptId;
+        timer = window.setTimeout(() => finish().catch((reason) => {
+          if (attemptId === currentAttempt) retryOrFail(reason);
+        }), interval * 1000);
       };
       // 网络抖动或服务端 5xx 不算登录失败，最多连续重试三次；尝试已不存在说明已过期。
       const retryOrFail = (reason) => {
@@ -82,7 +85,9 @@ export function activate(ctx) {
       };
       const finish = async () => {
         if (disposed) return;
-        const receipt = await props.actions.finishAuth(attemptId);
+        const currentAttempt = attemptId;
+        const receipt = await props.actions.finishAuth(currentAttempt);
+        if (attemptId !== currentAttempt) return;
         if (disposed) {
           if (receipt.status === "pending") await props.actions.cancelAuth(attemptId);
           return;
@@ -142,7 +147,7 @@ export function activate(ctx) {
         else if (target.hasAttribute("data-cancel")) {
           const abandoned = attemptId;
           attemptId = "";
-          if (abandoned) void props.actions.cancelAuth(abandoned).catch(() => {});
+          if (abandoned) void props.actions.cancelAuth(abandoned).catch(report);
           resetLogin();
         } else if (target.dataset.copy) void copyText(target);
       });

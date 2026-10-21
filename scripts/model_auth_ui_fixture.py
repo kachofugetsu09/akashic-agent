@@ -6,6 +6,7 @@ import argparse
 import base64
 import json
 import sys
+import subprocess
 import tempfile
 from contextlib import asynccontextmanager
 from pathlib import Path
@@ -32,16 +33,25 @@ from plugins.models.store import ModelsStore
 from plugins.opencode_go.driver import definition as opencode_definition
 
 PAGE = """<!doctype html><meta charset="utf-8"><title>模型登录验收</title>
+<link rel="stylesheet" href="/frontend/theme/src/material-tokens.css">
+<link rel="stylesheet" href="/frontend/theme/src/brand-tokens.css">
+<link rel="stylesheet" href="/frontend/theme/src/paper-surface.css">
 <link rel="stylesheet" href="/frontend/plugins/models/src/style.css">
-<style>body{background:#f5f4ee;color:#222;margin:32px} [hidden]{display:none!important}</style>
+<link rel="stylesheet" href="/fixture/plugins/models/src/module.css">
+<style>body{background:var(--ak-paper-canvas);color:var(--ak-ink-primary);margin:0;font-family:var(--ak-type-reading)} *{box-sizing:border-box} [hidden]{display:none!important}</style>
 <main id="host"></main><script type="module">
-import {activate as models} from '/frontend/plugins/models/src/module.js';
+import {activate as models} from '/fixture/plugins/models/src/module.js';
+import {WebDataRegistry} from '/fixture/dashboard/src/webData.js';
+import {initializeTheme} from '/fixture/theme/src/theme-runtime.js';
+initializeTheme();
+const registry = new WebDataRegistry();
 import {activate as codex} from '/frontend/plugins/codex/src/module.js';
 import {activate as opencode} from '/frontend/plugins/opencode_go/src/module.js';
 const providers = [];
 const providerContext = {ui:{inject:(_, mount)=>mount({register(entry){providers.push(entry);return ()=>{};}})}};
 codex(providerContext);opencode(providerContext);
-models({ui:{inject:(_, mount)=>mount({register(entry){
+models({data:{resource:(key, load, options)=>registry.create(key, load, options).resource},ui:{inject:(_, mount)=>mount({register(entry){
+  if (entry.id !== 'models') return ()=>{};
   return entry.render(document.querySelector('#host'), {child:()=>({
     entries:providers,
     render(id, host, props){return providers.find(entry=>entry.id===id).render(host, {}, props);},
@@ -61,6 +71,15 @@ def create_app(port: int, frontend: Path) -> FastAPI:
     async def lifespan(app: FastAPI):
         # 1. 独立目录保存真实 SQLite 与凭据，结束后由各自 owner 关闭。
         with tempfile.TemporaryDirectory(prefix="akashic-auth-ui-") as directory:
+            assets = Path(directory) / "assets"
+            subprocess.run([
+                str(ROOT / "node_modules/.bin/esbuild"),
+                str(frontend / "plugins/models/src/module.js"),
+                str(frontend / "dashboard/src/webData.ts"),
+                str(frontend / "theme/src/theme-runtime.ts"),
+                "--bundle", "--format=esm", "--outdir=" + str(assets), "--outbase=" + str(frontend),
+            ], check=True, capture_output=True)
+            app.mount("/fixture", StaticFiles(directory=assets))
             root = CompositionRoot("auth-ui-fixture")
 
             async def models(ctx):

@@ -109,29 +109,13 @@
 .settings-form-grid select:focus-visible,
 .settings-discovery-result select:focus-visible,
 .settings-discovery-manual input:focus-visible,
-.settings-role-grid select:focus-visible,
-.settings-search:focus-within {
+.settings-role-grid select:focus-visible {
   outline: 2px solid var(--md-sys-color-primary);
   outline-offset: 2px;
 }
 
 .settings-dialog-actions { display: flex; align-items: center; gap: 0.75rem; }
 
-.settings-search {
-  display: flex;
-  width: min(24rem, 100%);
-  min-height: 2.75rem;
-  align-items: center;
-  gap: 0.625rem;
-  margin-block-end: 2rem;
-  border: 0;
-  border-radius: var(--md-sys-shape-corner-full);
-  padding-inline: 1rem;
-  color: var(--md-sys-color-on-surface-variant);
-  background: var(--md-sys-color-surface-container-high);
-}
-.settings-search input { width: 100%; min-width: 0; border: 0; outline: 0; color: var(--md-sys-color-on-surface); background: transparent; font-size: var(--md-sys-typescale-body-large-size); }
-.settings-search input::placeholder { color: var(--md-sys-color-on-surface-variant); }
 
 .settings-section + .settings-section { margin-block-start: 2rem; }
 .settings-section > header { align-items: end; margin-block-end: 0.75rem; }
@@ -140,20 +124,20 @@
 .settings-section > header > span { color: var(--md-sys-color-on-surface-variant); font-size: var(--md-sys-typescale-label-medium-size); }
 
 /* 添加服务商：按接入方式分组，组内一格一种方式；图标、名称与一句说明，已连接的在右侧标出。 */
-.settings-template-group + .settings-template-group { margin-block-start: 0.75rem; }
+.settings-template-group + .settings-template-group { margin-block-start: 1rem; }
 .settings-template-group h3 { display: flex; align-items: baseline; gap: 0.5rem; margin: 0.375rem 0.625rem 0.25rem; font-size: var(--models-type-body); font-weight: 650; }
 .settings-template-group h3 small { color: var(--ak-ink-secondary); font-size: var(--models-type-caption); font-weight: 400; }
-.settings-template-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(min(15rem, 100%), 1fr)); gap: 2px; }
+.settings-template-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(min(max(12rem, 30%), 100%), 1fr)); gap: 0 0.5rem; }
 .settings-template-tile {
   display: grid;
   width: 100%;
-  min-height: 3.5rem;
-  grid-template-columns: 2.25rem minmax(0, 1fr) auto;
+  min-height: 2.5rem;
+  grid-template-columns: 1.25rem minmax(0, max-content) 1fr;
   align-items: center;
-  gap: 0.75rem;
+  gap: 0.625rem;
   border: 0;
   border-radius: var(--models-radius-row);
-  padding: 0.5rem 0.625rem;
+  padding: 0.25rem 0.625rem;
   color: inherit;
   text-align: start;
   background: transparent;
@@ -163,34 +147,18 @@
   transition-timing-function: var(--ak-sys-motion-standard);
 }
 .settings-template-tile:hover { background: color-mix(in srgb, var(--md-sys-color-on-surface) 6%, transparent); }
-.settings-template-tile .settings-connection-mark { width: 2.25rem; height: 2.25rem; font-size: var(--models-type-body); }
-.settings-template-tile .settings-card-copy strong { font-size: var(--models-type-body); }
-.settings-template-tile .settings-card-copy small { font-size: var(--models-type-caption); }
-.settings-template-added { display: inline-flex; align-items: center; gap: 0.3rem; color: var(--ak-ink-secondary); font-size: var(--models-type-caption); font-style: normal; }
-.settings-template-added::before { width: 0.4375rem; height: 0.4375rem; border-radius: 50%; background: var(--ak-sys-color-success); content: ""; }
+.settings-template-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: var(--models-type-body); }
+.settings-template-added { width: 0.4375rem; height: 0.4375rem; justify-self: start; border-radius: 50%; background: var(--ak-sys-color-success); }
 
-.settings-search > .lucide-search {
-  translate: 0.5px -0.5px;
-}
-
-.settings-connection-mark {
-  display: grid;
-  width: 2.5rem;
-  height: 2.5rem;
-  place-items: center;
-  overflow: hidden;
-  border-radius: 50%;
-  background: var(--md-sys-color-surface-container-high);
-  box-shadow: inset 0 0 0 1px var(--md-sys-color-outline-variant);
-  font-size: var(--md-sys-typescale-title-medium-size);
-  font-weight: 700;
-}
-.settings-connection-mark img { width: 1.375rem; height: 1.375rem; object-fit: contain; }
+/* 服务商标识就是图标本身：不加底、不加框，没有品牌图标时用中性的服务器图标。 */
+.settings-connection-mark { display: grid; width: 1.25rem; height: 1.25rem; place-items: center; color: var(--ak-ink-secondary); }
+.settings-connection-mark img { width: 1.25rem; height: 1.25rem; object-fit: contain; }
+.settings-connection-mark svg { width: 1.125rem; height: 1.125rem; }
 .settings-card-copy { display: grid; min-width: 0; }
 .settings-card-copy strong,
 .settings-card-copy small { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.settings-card-copy strong { font-size: var(--md-sys-typescale-body-large-size); font-weight: 600; }
-.settings-card-copy small { margin-block-start: 0.15rem; color: var(--md-sys-color-on-surface-variant); font-size: var(--md-sys-typescale-body-medium-size); }
+.settings-card-copy strong { font-size: var(--models-type-body); font-weight: 600; }
+.settings-card-copy small { margin-block-start: 0.1rem; color: var(--md-sys-color-on-surface-variant); font-size: var(--models-type-caption); }
 
 /* 连接卡片列表：一连接一卡，编辑器就地展开在卡片内，布局参考 DSH 的 provider 卡片流。 */
 /* 分组列表：所有服务商同在一张卡里，行间发丝线分隔；展开的编辑器就地出现在所属行下。 */
@@ -211,13 +179,13 @@
 .settings-provider-head {
   display: grid;
   width: 100%;
-  min-height: 4rem;
-  grid-template-columns: 2.25rem minmax(0, 1fr) auto auto;
+  min-height: 3.25rem;
+  grid-template-columns: 1.25rem minmax(0, 1fr) auto auto;
   align-items: center;
-  gap: 0.875rem;
+  gap: 0.75rem;
   border: 0;
   border-radius: 0;
-  padding: 0.625rem 1rem;
+  padding: 0.5rem 0.875rem 0.5rem 1rem;
   color: inherit;
   text-align: start;
   background: transparent;
@@ -285,17 +253,17 @@
   outline: 2px solid var(--md-sys-color-primary);
   outline-offset: 2px;
 }
-.settings-add-panel {
-  border: 1px solid var(--ak-rule-subtle);
-  border-radius: var(--md-sys-shape-corner-large);
-  padding: 0.375rem;
-  background: var(--ak-paper-sheet);
-}
+/* 添加面板不再是一张卡：组标题和格子直接排在页面上，正在新建时才给编辑器一个表面。 */
+.settings-add-panel { margin-block-end: 2rem; }
+/* 新建表单展开在所选格子那一组下方，只有它有表面。 */
+.settings-template-group > .settings-provider-editor { margin: 0.375rem 0 0.5rem; border: 1px solid var(--ak-rule-subtle); border-radius: var(--md-sys-shape-corner-large); background: var(--ak-paper-sheet); }
+.settings-template-tile[aria-expanded="true"] { background: color-mix(in srgb, var(--ak-color-action-primary) 9%, transparent); }
 .settings-add-panel .settings-provider-editor { border-block-start: 0; }
-.settings-add-list { display: grid; padding: 0.25rem; }
+.settings-add-list { display: grid; }
 
 /* 场景模型：一张分组卡，每行左侧是场景与用途，右侧是紧凑的模型选择器。 */
 .settings-roles { margin-block-start: 2.5rem; container-type: inline-size; }
+.settings-roles .settings-section-bar { margin-block-end: 0.5rem; }
 
 .settings-role-grid {
   display: grid;
@@ -591,7 +559,8 @@ dialog.settings-scrim::backdrop { background: transparent; }
   .settings-form-grid select,
   .settings-discovery-result select,
   .settings-discovery-manual input,
-  .settings-search input { font-size: 1rem; }
+  .settings-find input,
+  .settings-model-filter input { font-size: 1rem; }
 }
 
 @media (max-width: 30rem) {
@@ -630,7 +599,7 @@ dialog.settings-scrim::backdrop { background: transparent; }
 /* 连接工作区里的模型管理面：逐模型开放/停用、验证、探测差异采纳。 */
 .settings-model-manage { margin-block-start: 1.5rem; border-block-start: 1px solid var(--ak-rule-subtle); padding-block-start: 1.25rem; }
 .settings-model-manage-head { display: flex; align-items: center; justify-content: space-between; gap: 1rem; margin-block-end: 0.5rem; }
-.settings-model-manage-head h3 { margin: 0; font-size: var(--models-type-title); font-weight: 600; line-height: 1.3; }
+.settings-model-manage-head h3 { margin: 0; color: var(--ak-ink-secondary); font-size: var(--models-type-caption); font-weight: 600; letter-spacing: 0.04em; line-height: 1.3; }
 .settings-model-manage-head p { margin: 0.2rem 0 0; color: var(--ak-ink-secondary); font-size: var(--models-type-body); font-variant-numeric: tabular-nums; }
 .settings-model-manage-actions { display: flex; flex-wrap: wrap; justify-content: end; gap: 0.375rem; }
 .settings-model-manage-actions .settings-secondary-button,
@@ -639,12 +608,12 @@ dialog.settings-scrim::backdrop { background: transparent; }
 .settings-model-manual input { flex: 1; min-width: 0; min-height: 2.75rem; border: 1px solid var(--ak-rule-default); border-radius: var(--models-radius-field); padding-inline: 0.75rem; color: var(--ak-ink-primary); background: var(--ak-paper-editing); font: inherit; font-size: var(--models-type-body); }
 .settings-model-manual .settings-primary-button { min-height: 2.75rem; }
 .settings-model-rows { display: grid; gap: 2px; margin-block-start: 0.25rem; }
-.settings-model-row { display: flex; min-height: 2.9rem; align-items: center; gap: 0.625rem; border-radius: var(--models-radius-row); padding: 0.3rem 0.4rem; }
+.settings-model-row { display: flex; min-height: 2.5rem; align-items: center; gap: 0.625rem; border-radius: var(--models-radius-row); padding: 0.3rem 0.4rem; }
 .settings-model-row:hover { background: var(--ak-paper-quiet); }
 .settings-model-row.is-disabled .settings-model-main { opacity: 0.55; }
 .settings-model-main { display: flex; min-width: 0; flex: 1; flex-wrap: wrap; align-items: center; gap: 0.25rem 0.625rem; padding-inline-start: 0.375rem; }
-.settings-model-main .settings-sheet-flags { margin: 0; }
-.settings-model-use { flex: none; border-radius: var(--models-radius-badge); padding: 0.05rem 0.5rem; font-size: var(--models-type-caption); color: var(--ak-color-action-primary); background: color-mix(in srgb, var(--ak-color-action-primary) 9%, transparent); }
+.settings-model-flags { color: var(--ak-ink-secondary); font-size: var(--models-type-caption); font-variant-numeric: tabular-nums; }
+.settings-model-use { flex: none; color: var(--ak-color-action-primary); font-size: var(--models-type-caption); font-weight: 600; }
 .settings-model-remove { width: var(--models-hit-target); min-height: var(--models-hit-target); flex: none; color: var(--ak-ink-secondary); }
 .settings-model-remove:hover { color: var(--md-sys-color-error); }
 .settings-model-manage-head h3 span { color: var(--ak-ink-secondary); font-weight: 500; font-variant-numeric: tabular-nums; }
@@ -653,7 +622,10 @@ dialog.settings-scrim::backdrop { background: transparent; }
 .settings-model-filter input { min-height: 2.25rem; flex: 1; border: 0; color: var(--ak-ink-primary); background: transparent; font: inherit; font-size: var(--models-type-body); outline: none; }
 .settings-model-filter:focus-within { border-color: var(--ak-rule-focus); }
 /* 编辑已有连接时，卡片头已写明连接名；宿主的模型管理取代插件表单里的模型候选段。 */
-.settings-provider-card .settings-dialog-title { display: none; }
+.settings-provider-card .settings-dialog-title,
+.settings-provider-card .settings-dialog-header [data-close],
+.settings-provider-card .settings-credential-note,
+.settings-provider-card .settings-dialog-footer-note { display: none; }
 .settings-provider-editor:has(.settings-model-manage) .settings-model-discovery--automatic { display: none; }
 .settings-model-main strong { overflow-wrap: anywhere; white-space: normal; font-family: var(--ak-type-technical); font-size: var(--models-type-body); font-weight: 500; letter-spacing: -0.01em; }
 .settings-model-row .settings-text-button { min-height: var(--models-hit-target); font-size: var(--models-type-caption); }
@@ -707,8 +679,11 @@ dialog.settings-scrim::backdrop { background: transparent; }
 .settings-sheet-main { display: grid; min-width: 0; flex: 1; }
 .settings-sheet-main strong { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-family: var(--ak-type-technical); font-size: var(--models-type-body); font-weight: 500; letter-spacing: -0.01em; }
 .settings-sheet-flags { display: flex; flex-wrap: wrap; gap: 0.25rem; margin-block-start: 0.2rem; }
-.settings-sheet-flags i { border-radius: var(--models-radius-badge); padding: 0.02rem 0.45rem; color: var(--ak-ink-secondary); background: var(--ak-paper-sheet); font-size: var(--models-type-caption); font-style: normal; line-height: 1.7; }
-.settings-sheet-flags i.is-mark { color: var(--ak-color-action-primary); background: color-mix(in srgb, var(--ak-color-action-primary) 10%, transparent); font-weight: 650; }
+/* 能力与状态是一行灰字，用间隔点分开；只有「新」这类标记用强调色。 */
+.settings-sheet-flags { gap: 0 0.375rem; }
+.settings-sheet-flags i { color: var(--ak-ink-secondary); font-size: var(--models-type-caption); font-style: normal; line-height: 1.6; }
+.settings-sheet-flags i + i::before { margin-inline-end: 0.375rem; content: "·"; }
+.settings-sheet-flags i.is-mark { color: var(--ak-color-action-primary); font-weight: 650; }
 .settings-sheet-tail { flex: none; color: var(--ak-ink-secondary); font-size: var(--models-type-caption); }
 .settings-sheet-row[aria-current] .settings-sheet-tail { color: var(--ak-color-action-primary); font-weight: 650; }
 /* 场景选模型：与聊天胶囊同一个选择器主体，浮层给固定高度，列表在里面滚动，模型少时不留大片空白也不跳高。 */
@@ -828,3 +803,68 @@ dialog.settings-scrim::backdrop { background: transparent; }
 .models-cache-turn dt { color: var(--md-sys-color-on-surface-variant); }
 .models-cache-turn dd { margin: 0; overflow-wrap: anywhere; }
 .models-cache-empty { color: var(--md-sys-color-on-surface-variant); }
+
+/* 就地编辑器：标签在左、字段在右的两列表单，行距收紧；窄屏退回上下堆叠。 */
+.settings-dialog--inline .settings-dialog-header { padding: 0.875rem 1rem 0.25rem; }
+.settings-dialog--inline .settings-dialog-description { font-size: var(--models-type-caption); }
+.settings-dialog--inline .settings-dialog-body { padding: 0.5rem 1rem 1rem; }
+.settings-dialog--inline .settings-dialog-footer { gap: 0.75rem; border-block-start: 1px solid var(--ak-rule-subtle); padding: 0.625rem 1rem; }
+.settings-dialog--inline .settings-dialog-footer .settings-primary-button,
+.settings-dialog--inline .settings-dialog-footer .settings-secondary-button { min-height: 2.25rem; padding-inline: 0.875rem; }
+.settings-dialog--inline .settings-dialog-footer > [data-disable-conn] { margin-inline-end: auto; color: var(--ak-ink-secondary); }
+.settings-dialog--inline .settings-dialog-body > .settings-form-grid { grid-template-columns: minmax(0, 1fr); gap: 0.5rem; }
+.settings-dialog--inline .settings-dialog-body > .settings-form-grid > label { grid-template-columns: 6rem minmax(0, 1fr); align-items: center; gap: 1rem; }
+.settings-dialog--inline .settings-dialog-body > .settings-form-grid > label > span { color: var(--ak-ink-secondary); font-weight: 500; text-align: end; }
+.settings-dialog--inline .settings-dialog-body > .settings-form-grid input,
+.settings-dialog--inline .settings-dialog-body > .settings-form-grid select { min-height: 2.25rem; }
+.settings-dialog--inline .settings-dialog-body > .settings-form-grid > .settings-secret > button { inset: 50% 0.125rem auto auto; width: 2rem; height: 2rem; translate: 0 -50%; }
+.settings-dialog--inline .settings-model-manage { margin-block-start: 1rem; padding-block-start: 0.75rem; }
+@media (max-width: 640px) {
+  .settings-dialog--inline .settings-dialog-body > .settings-form-grid > label { grid-template-columns: minmax(0, 1fr); gap: 0.3rem; }
+  .settings-dialog--inline .settings-dialog-body > .settings-form-grid > label > span { text-align: start; }
+  .settings-dialog--inline .settings-dialog-body > .settings-form-grid > .settings-secret > button { inset: auto 0.125rem 0.125rem auto; translate: none; }
+}
+
+/* 节标题栏：小号灰字标题，右侧是查找框与文字操作；不用大号标题加说明段落。 */
+.settings-section-bar { display: flex; min-height: 2.25rem; align-items: center; gap: 0.75rem; margin-block-end: 0.5rem; padding-inline: 0.125rem; }
+.settings-section-label { margin: 0; color: var(--ak-ink-secondary); font-size: var(--models-type-caption); font-weight: 600; letter-spacing: 0.04em; }
+.settings-section-hint { color: var(--ak-ink-tertiary, var(--ak-ink-secondary)); font-size: var(--models-type-caption); }
+.settings-find { display: flex; width: min(15rem, 50%); min-height: 2rem; align-items: center; gap: 0.4rem; margin-inline-start: auto; border: 1px solid var(--ak-rule-default); border-radius: var(--models-radius-field); padding-inline: 0.625rem; color: var(--ak-ink-secondary); background: var(--ak-paper-editing); }
+.settings-find:focus-within { border-color: var(--ak-rule-focus); }
+.settings-find > svg { flex: none; width: 0.875rem; height: 0.875rem; }
+.settings-find input { width: 100%; min-width: 0; border: 0; outline: 0; color: var(--ak-ink-primary); background: transparent; font: inherit; font-size: var(--models-type-caption); }
+.settings-section-bar > .settings-text-button { min-height: 2rem; padding-inline: 0.5rem; font-size: var(--models-type-caption); }
+.settings-template-empty { display: flex; flex-wrap: wrap; align-items: center; gap: 0.25rem; margin: 0.5rem 0.125rem; color: var(--ak-ink-secondary); font-size: var(--models-type-body); }
+.settings-template-empty .settings-text-button { min-height: 2rem; padding-inline: 0.25rem; }
+/* 折叠入口：一行灰字加小箭头，展开后箭头朝上。 */
+.settings-disclosure { display: flex; min-height: 2.25rem; align-items: center; gap: 0.3rem; margin-inline: auto; border: 0; padding-inline: 0.5rem; color: var(--ak-ink-secondary); background: transparent; font: inherit; font-size: var(--models-type-caption); cursor: pointer; }
+.settings-disclosure:hover { color: var(--ak-ink-primary); }
+.settings-disclosure::after { width: 0.35rem; height: 0.35rem; border-block-end: 1.5px solid currentColor; border-inline-end: 1.5px solid currentColor; rotate: 45deg; translate: 0 -0.1rem; content: ""; }
+.settings-disclosure[aria-expanded="true"]::after { rotate: -135deg; translate: 0 0.1rem; }
+.settings-model-manage-actions .settings-text-button { font-size: var(--models-type-caption); }
+@media (max-width: 640px) {
+  .settings-section-bar { flex-wrap: wrap; }
+  .settings-find { width: 100%; order: 3; }
+}
+
+/* 统一小号节标题：覆盖旧的 h2/h3 字阶。 */
+.settings-section .settings-section-label,
+.settings-dialog--inline .settings-model-discovery h3 { color: var(--ak-ink-secondary); font-size: var(--models-type-caption); font-weight: 600; letter-spacing: 0.04em; }
+.settings-dialog--inline .settings-model-discovery header p,
+.settings-dialog--inline .settings-credential-note { font-size: var(--models-type-caption); }
+/* 新建表单挂在所选格子下面，格子已写明服务商，表单不再重复大标题。 */
+.settings-template-group .settings-dialog-title { display: none; }
+/* 高级设置：小三角加灰字，默认折叠。 */
+.settings-dialog--inline .settings-advanced summary { min-height: 2rem; color: var(--ak-ink-secondary); font-size: var(--models-type-caption); font-weight: 500; }
+.settings-dialog--inline .settings-primary-button,
+.settings-dialog--inline .settings-secondary-button { min-height: 2.25rem; padding-inline: 0.875rem; font-size: var(--models-type-body); }
+/* 场景行：名称与用途一行半，选择器收窄。 */
+.settings-binding { min-height: 3.25rem; padding-block: 0.5rem; }
+.settings-binding strong { font-size: var(--models-type-body); font-weight: 600; }
+.settings-binding small { margin-block-start: 0.1rem; font-size: var(--models-type-caption); }
+.settings-role-pick { min-height: 2rem; }
+/* 查找框的焦点由外框表示，内部输入框不再画第二道焦点环。 */
+.settings-find input:focus,
+.settings-find input:focus-visible,
+.settings-model-filter input:focus-visible { outline: none; box-shadow: none; }
+.settings-dialog--inline .settings-dialog-footer > [data-disable-conn] { min-height: 2.25rem; padding-inline: 0; font-size: var(--models-type-caption); }
