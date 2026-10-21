@@ -80,7 +80,7 @@ workspace_files = ("memory/SELF.md", "memory/spawn_trace.jsonl")
 
 
 SETTINGS = ServiceKey[Configuration]("subagent.settings.v1")
-SETTING_FIELDS = ("max_steps", "max_output_tokens", "max_active")
+SETTING_FIELDS = ("max_steps", "max_output_tokens", "max_active", "result_chars")
 
 
 class Config(BaseModel):
@@ -88,6 +88,7 @@ class Config(BaseModel):
     max_steps: int = Field(default=40, gt=0)
     max_output_tokens: int | None = Field(default=None, gt=0)
     max_active: int = Field(default=3, ge=1, le=20)
+    result_chars: int = Field(default=100_000, ge=1000, le=1_000_000)
 
 
 async def apply(ctx: Context) -> None:

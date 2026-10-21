@@ -2,10 +2,19 @@
 from fastapi import FastAPI
 from fastapi.responses import HTMLResponse
 
-from agent.plugin_composition import DashboardContext
+from agent.plugin_composition import DashboardContext, ServiceKey
+from plugins.ui.contract import UI, Configuration
+
+SETTINGS = ServiceKey[Configuration]("visuals.settings.v1")
+inject = (UI, SETTINGS)
 
 
 def register(app: FastAPI, context: DashboardContext) -> None:
+    context.require(UI).register_configuration(app, context, SETTINGS, "/api/dashboard/visuals/config")
+    register_frame(app, context)
+
+
+def register_frame(app: FastAPI, context: DashboardContext) -> None:
     """由插件 UI 生命周期发布静态入口，响应自身强制脚本沙箱。"""
     document = (context.plugin_dir / "bootstrap.html").read_text(encoding="utf-8")
 

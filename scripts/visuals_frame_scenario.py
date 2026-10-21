@@ -74,7 +74,7 @@ async def run(workspace: Path, executable: str | None, artifact: Path | None) ->
     ref = await files.import_bytes(content, kind=AttachmentKind.FILE,
                                    filename=document["title"] + ".akashic-visual.json", media_type="application/json")
     app = create_chat_app(workspace=workspace, channel=WebChatChannel(), artifact_store=files)
-    dashboard.register(app, DashboardContext(plugin_id="visuals@scenario", plugin_dir=ROOT / "plugins/visuals",
+    dashboard.register_frame(app, DashboardContext(plugin_id="visuals@scenario", plugin_dir=ROOT / "plugins/visuals",
                                              data_root=workspace, validation=True))
     block = {"artifact_id": ref.artifact_id, "size_bytes": ref.size_bytes,
              "kind": "file", "media_type": "application/json", "filename": ref.filename,

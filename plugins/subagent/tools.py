@@ -132,7 +132,7 @@ class Spawn:
         if outcome is None:
             raise ValueError("子任务结算记录缺少消息终态")
         return Result("success" if outcome[0] == "completed" else "error",
-                      (ContentPart("text", completion(request, outcome, limit=100_000)),))
+                      (ContentPart("text", completion(request, outcome, limit=self.jobs.result_chars)),))
 
 
 class Manage:

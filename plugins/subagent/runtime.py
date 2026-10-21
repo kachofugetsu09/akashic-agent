@@ -31,6 +31,7 @@ logger = logging.getLogger(__name__)
 # 私有程序 binding：tools.py 固定身份，恢复路径经 Bindings.open 读取，不提供外部 SDK。
 SUBAGENT_PROGRAM = ServiceKey[Callable[[Task, MessageReader, Request], Awaitable[Message]]]("subagent.program.v1")
 DEFAULT_MAX_ACTIVE = 3
+DEFAULT_RESULT_CHARS = 100_000
 
 
 class SubagentBusy(RuntimeError):
@@ -44,6 +45,7 @@ class Subagents:
         self.ctx = ctx
         # 上限归本插件设置；apply 已按 Config 校验过它。
         self.max_active = cast(int, ctx.config.get("max_active", DEFAULT_MAX_ACTIVE))
+        self.result_chars = cast(int, ctx.config.get("result_chars", DEFAULT_RESULT_CHARS))
 
     def read(self, key: str) -> tuple[OwnerRecord, Request, MessageReader] | None:
         record = self.ctx.require(OWNER_STATE).open(self.ctx).read(key)

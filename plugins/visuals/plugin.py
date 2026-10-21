@@ -13,10 +13,11 @@ from tempfile import TemporaryDirectory
 from pydantic import BaseModel, ConfigDict, Field, ValidationError
 
 from agent.plugin_composition import Context
+from agent.plugin_composition.plugin_config import PLUGIN_CONFIG
 from plugins.assets.contract import INSTALLED_ASSETS
 from plugins.ledger.contract import ARTIFACT_IMPORT, ArtifactImport, AttachmentKind, ContentPart, json_value
 from plugins.tools.contract import TOOLS, CallSource, Result
-from plugins.ui.contract import UI, UI_SLOTS, PluginUiDefinition, PluginUiRpcInvalidRequest
+from plugins.ui.contract import SETTINGS_SLOT, UI, UI_SLOTS, ModelSettings, PluginUiDefinition, PluginUiRpcInvalidRequest
 
 from . import dashboard
 from .preview import Preview, PreviewFailed, PreviewUnavailable
@@ -25,7 +26,7 @@ api_version = 3
 name = "visuals"
 version = "1.1.0"
 desc = "生成可交互的图表、解释和模拟，作为 HTML 消息附件保存"
-inject = (TOOLS, ARTIFACT_IMPORT, INSTALLED_ASSETS)
+inject = (PLUGIN_CONFIG, TOOLS, ARTIFACT_IMPORT, INSTALLED_ASSETS)
 workspace_roots = ("visuals",)
 
 
@@ -113,6 +114,7 @@ async def apply(ctx: Context) -> None:
     """工具依赖附件导入；聊天 UI 可单独出现、卸载和重新出现。"""
     config = Config.model_validate(ctx.config)
     preview = Preview(config.executable_path)
+    await ctx.provide(dashboard.SETTINGS, ModelSettings(ctx, Config, ("executable_path",)))
     await ctx.effect(lambda: preview.close, label="visual-preview")
     root = ctx.workspace_root("visuals")
     await asyncio.to_thread(root.mkdir, parents=True, exist_ok=True)
@@ -132,7 +134,8 @@ async def apply(ctx: Context) -> None:
                            parameters=Visual.model_json_schema(), open=open_tool, parallel=True)
 
     async def register_ui(child: Context) -> None:
-        await child.require(UI).register(child, dashboard=lambda: dashboard)
+        await child.require(UI).register(child, web="web_module.js", dashboard=lambda: dashboard,
+                                         requires=("shell.settings-plugins.v1",), contract_digests=SETTINGS_SLOT)
 
         def query(method: str, payload: dict[str, object], *, session_id: str | None, turn_id: str | None) -> object:
             raise PluginUiRpcInvalidRequest("可视化只读取消息附件，不提供 UI RPC")
@@ -140,4 +143,4 @@ async def apply(ctx: Context) -> None:
         await child.require(UI_SLOTS).register_plugin_ui(child,
             PluginUiDefinition(module="message_ui.js", slots=("message.attachment",)), query=query)
 
-    await ctx.inject((UI, UI_SLOTS), register_ui, name="visual-ui")
+    await ctx.inject((UI, UI_SLOTS, dashboard.SETTINGS), register_ui, name="visual-ui")
