@@ -3,7 +3,7 @@ import { useCallback, useEffect, useMemo, useRef, useState, type SetStateAction 
 import { createUuid, createUuidV7 } from "./browser-uuid.ts";
 import type { ChatMessage } from "./chat-message";
 import type { ComposerFile } from "./desktop-composer";
-import { loadWebPluginCatalog, receivePluginUiEvent, resetPluginUiEvents, usePluginUiCatalogVersion } from "./plugin-ui-runtime";
+import { invalidatePluginUiSession, loadWebPluginCatalog, receivePluginUiEvent, resetPluginUiEvents, usePluginUiCatalogVersion } from "./plugin-ui-runtime";
 import { groupKey, useNavigationGroupSections, type GroupRef, type NavigationGroupsState } from "./navigation-groups";
 import { useNavigationPins } from "./use-navigation-pins";
 import { readSessionActivityFrame, useSessionActivity, type SessionHead } from "./use-session-activity";
@@ -263,6 +263,9 @@ export function useDesktopChatController() {
   const [connectionError, setConnectionError] = useState("");
   const [pageOutdated, setPageOutdated] = useState(false);
   const [shellState, setShellState] = useState<WebShellState | null>(null);
+  // 就绪轮询是否已见到 chatReady、最近一次拿到 shell state 的时刻（onopen 据此去重 build 核对，见下）。
+  const chatReadyRef = useRef(false);
+  const shellStateFreshAtRef = useRef(0);
   const [replyTarget, setReplyTarget] = useState<TimelineReply | null>(null);
   // 引用目标与草稿一样按会话保留：切去别的会话查点东西再回来，引用条还在。
   const replyTargetsRef = useRef(new Map<string, TimelineReply>());
@@ -369,11 +372,26 @@ export function useDesktopChatController() {
     try {
       const items = new Map<string, SessionRow>();
       const cursors = new Set<string>();
+      let published = false;
       let query = "page_size=200";
       while (true) {
         const page = sessionPage(await fetchChatJson<unknown>(`/api/chat/sessions?${query}`, { signal: controller.signal }));
         if (controller.signal.aborted) return;
         page.items.forEach((session) => { if (!items.has(session.key)) items.set(session.key, session); });
+        if (!published && items.size > 0) {
+          // 首页先行渲染:大目录的其余页还在游标链上串行到达(每页一次 RTT),
+          // 先挂最新一页让用户能看能点;全部到齐后再一次性替换为完整目录。
+          // 经 requestIdleCallback 让出主线程:消息首屏的就绪路径优先,
+          // 空闲或 1.5s 兜底后再挂首批目录,不把就绪时间往后推。
+          const first = [...items.values()];
+          const publish = () => {
+            if (sessionsRequestRef.current !== controller) return;
+            setSessions((current) => current.length ? current : first);
+          };
+          if (typeof window.requestIdleCallback === "function") window.requestIdleCallback(publish, { timeout: 1500 });
+          else window.setTimeout(publish, 0);
+          published = true;
+        }
         if (!page.nextCursor) break;
         query = `page_size=200&after_time=${encodeURIComponent(page.nextCursor.updated_at)}&after_key=${encodeURIComponent(page.nextCursor.session_id)}`;
         if (cursors.has(query)) throw new Error("会话目录游标未前进");
@@ -477,10 +495,18 @@ export function useDesktopChatController() {
   const scheduleSessionsRefresh = useCallback((): Promise<void> => {
     if (sessionsRefreshTimerRef.current !== null) return Promise.resolve();
     return new Promise((resolve) => {
-      sessionsRefreshTimerRef.current = window.setTimeout(() => {
+      const fire = () => {
         sessionsRefreshTimerRef.current = null;
+        // 全量目录读取在飞时不中止重发：大目录要 10 页串行，启动与流式期间活动帧密集，
+        // 中止重启会让读取反复归零（每次回复落定都白拉一遍，见 #1563）。顺延到它读完再
+        // 重新拉一轮，变更仍然最终可见。
+        if (sessionsRequestRef.current) {
+          sessionsRefreshTimerRef.current = window.setTimeout(fire, 300);
+          return;
+        }
         resolve(loadSessionsSafely());
-      }, 300);
+      };
+      sessionsRefreshTimerRef.current = window.setTimeout(fire, 300);
     });
   }, [loadSessionsSafely]);
   const sessionHeads = useMemo<SessionHead[]>(() => {
@@ -563,7 +589,7 @@ export function useDesktopChatController() {
                     receiveSessionActivity(activity);
                     return;
                   }
-                  if (receivePluginUiEvent(value)) return;
+                  if (receivePluginUiEvent(value, activeSessionRef.current)) return;
                   const frame = readMessageLogFrame(value);
                   if (frame) {
                     if (frame.session_id !== activeSessionRef.current) return;
@@ -621,7 +647,10 @@ export function useDesktopChatController() {
                   setError("");
                 }
                 console.info("[chat-ui] ws connected", current.url);
-                checkPageBuild(() => setPageOutdated(true), () => socketRef.current === current);
+                // 就绪前轮询仍在跑（每轮已核对 build），或几秒内刚核对过：跳过这次重复取证（#1556）。
+                // 只有轮询退出且结果已变旧的重连才需要补查——断连期间服务端可能已升级换代。
+                const shellStateStale = Date.now() - shellStateFreshAtRef.current > 5000;
+                if (chatReadyRef.current && shellStateStale) checkPageBuild(() => setPageOutdated(true), () => socketRef.current === current);
                 const sessionId = activeSessionRef.current;
                 if (sessionId) {
                   if (followAfterRef.current === null) void loadMessagesSafely(sessionId);
@@ -703,8 +732,12 @@ export function useDesktopChatController() {
         try {
           const next = await fetchChatJson<unknown>("/api/shell/state", { signal: controller.signal }).then(webShellState);
           setShellState(next);
+          shellStateFreshAtRef.current = Date.now();
           if (pageBuildOutdated(next)) setPageOutdated(true);
-          if (next?.chatReady === true) return;
+          if (next?.chatReady === true) {
+            chatReadyRef.current = true;
+            return;
+          }
         } catch (error) {
           // 中断直接退出（对应原 Fiber.interrupt 不进 catchAll）；其余失败照原样上报后继续下一轮。
           if (controller.signal.aborted || error === CONNECTION_ABORTED) return;
@@ -1035,7 +1068,12 @@ export function useDesktopChatController() {
     setSurface("chat");
     clearChatRoute();
     // 空白页只订阅目录，没有旧正文跟随；首次进入会话可以复用已有连接。
-    if (activeSessionRef.current) closeConnection();
+    // 连接健康时会话间切换也只换跟随：服务端收到新 session.follow 会先排空上一会话的订阅
+    // （web_chat._follow_session），整链重连会把目录刷新、插件基线与活动订阅全部重取一遍。
+    if (activeSessionRef.current) {
+      if (socketRef.current?.readyState === WebSocket.OPEN) invalidatePluginUiSession(activeSessionRef.current);
+      else closeConnection();
+    }
     activeSessionRef.current = sessionId;
     sendRequestRef.current?.abort();
     stopRequestRef.current?.abort();
