@@ -3,7 +3,8 @@
 @import "../../theme/src/paper-surface.css";
 
 .akashic-chat {
-  font-family: var(--ak-type-reading);
+  /* 宿主默认界面字体；阅读衬线只由正文容器显式取用。 */
+  font-family: var(--ak-type-ui);
   font-synthesis: none;
   letter-spacing: normal;
   -webkit-font-smoothing: antialiased;

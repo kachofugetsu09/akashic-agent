@@ -70,11 +70,12 @@ PR #500 已经统一桌面 Chat、Dashboard 的暖纸颜色和霞鹜文楷，但
 
 ## 5. 字体
 
-- 阅读正文使用仓库随附的 `LXGW WenKai GB Screen` v1.522；浏览器运行时由四个 `unicode-range` WOFF2 分片组合为同一字体，正文不低于 16 px，三行以上正文行高不低于 1.4。
+- 阅读正文使用仓库随附的 `Source Serif 4`（英文）与 `Noto Serif SC`（中文）；正文不低于 16 px，三行以上正文行高不低于 1.4。
 - 代码、时间、运行身份和短技术标签使用 `JetBrains Mono`。
-- 最多同时出现阅读与技术两种字体；不能为单一组件增加第三种品牌字体。
-- 中文字体的权威源文件约 9.7 MiB。运行时四分片合计约 10.2 MiB，最大单片约 3.4 MiB，完整保留源字体 cmap，同时满足 Mobile WebUI 8 MiB 单文件合同。Android OTA 会在激活 generation 前下载所有文件，因此不采用普通网站常见的数百个小分片；浏览器仍可按 `unicode-range` 只请求当前文本所需分片。
-- `scripts/split-paper-font.py` 固定源文件摘要与 FontTools 版本，在原子替换运行时文件前验证完整 cmap 和单片大小。更新字体时必须更新源摘要、重新生成并通过 Mobile WebUI publication build，不能只以普通 Vite 构建作为发布证据。
+- 界面文字使用系统 sans 栈（`--ak-type-ui`），不随包分发 web font；界面默认用它，阅读衬线由正文容器显式声明。
+- 三种角色各管一件事：阅读字体只给模型输出的自然语言，界面字体给控件与状态，技术字体给字面量；不为单一组件增加第四种品牌字体。
+- Noto Serif SC 的权威源文件约 9.7 MiB。运行时按字频分层切成多个 WOFF2 分片，最大单片约 3.4 MiB，完整保留源字体 cmap，同时满足 Mobile WebUI 8 MiB 单文件合同。Android OTA 会在激活 generation 前下载所有文件，因此不采用普通网站常见的数百个小分片；浏览器仍可按 `unicode-range` 只请求当前文本所需分片。
+- `scripts/split-reading-font.py` 固定源文件摘要与 FontTools 版本，在原子替换运行时文件前验证完整 cmap 和单片大小。更新字体时必须更新源摘要、重新生成并通过 Mobile WebUI publication build，不能只以普通 Vite 构建作为发布证据。
 
 ## 6. 主题与兼容边界
 
