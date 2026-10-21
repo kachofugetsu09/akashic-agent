@@ -41,11 +41,11 @@ class SubagentBusy(RuntimeError):
 class Subagents:
     """来源拥有准入和回传；Task、模型、工具与消息分别由既有能力执行。"""
 
-    def __init__(self, ctx: Context):
+    def __init__(self, ctx: Context, *, max_active: int = DEFAULT_MAX_ACTIVE,
+                 result_chars: int = DEFAULT_RESULT_CHARS):
         self.ctx = ctx
-        # 上限归本插件设置；apply 已按 Config 校验过它。
-        self.max_active = cast(int, ctx.config.get("max_active", DEFAULT_MAX_ACTIVE))
-        self.result_chars = cast(int, ctx.config.get("result_chars", DEFAULT_RESULT_CHARS))
+        self.max_active = max_active
+        self.result_chars = result_chars
 
     def read(self, key: str) -> tuple[OwnerRecord, Request, MessageReader] | None:
         record = self.ctx.require(OWNER_STATE).open(self.ctx).read(key)

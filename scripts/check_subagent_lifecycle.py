@@ -34,7 +34,7 @@ from plugins.content.plugin import Content
 from plugins.conversation.plugin import check_origin
 from plugins.subagent.inputs import CONTENT, CHECK_ORIGIN
 from plugins.subagent.request import PROFILE_TOOLS, Request
-from plugins.subagent.runtime import SUBAGENT_PROGRAM
+from plugins.subagent.runtime import SUBAGENT_PROGRAM, Subagents
 from plugins.subagent.tools import Prepared, Spawn
 from plugins.tools.execution import Result, ToolExecution
 from plugins.ledger.log import MessageLog
@@ -81,7 +81,7 @@ class Fixture:
                                retry_count=0, parent_session_id='parent', parent_message_id='parent-message',
                                parent_part_index=0, origin=None, sink=None, program_binding=identity,
                                tools={name: identity for name in PROFILE_TOOLS['research']})
-        self.spawn = Spawn(self.ctx, {}, {})
+        self.spawn = Spawn(self.ctx, {}, {}, Subagents(self.ctx))
         return self
 
     async def program(self, task, reader, request):
