@@ -241,10 +241,7 @@ class CacheUsage:
             states = tuple((source in _PROACTIVE_SOURCES, state) for (_, source), state in self._sources.items())
             passive, proactive = _Totals(), _Totals()
             for is_proactive, state in states:
-                target = proactive if is_proactive else passive
-                target.turns += state.totals.turns
-                target.prompt_tokens += state.totals.prompt_tokens
-                target.hit_tokens += state.totals.hit_tokens
+                (proactive if is_proactive else passive).merge(state.totals)
             recent = _latest((state.recent for _, state in states), _RECENT_TURNS)
             recent_passive = _Totals()
             for turn in _latest((state.recent for is_proactive, state in states if not is_proactive),
@@ -299,7 +296,8 @@ class CacheUsage:
             return None
         with self._lock:
             self._restore()
-            self._refresh(catalog, projection, session_id, reader.head(), deadline=time.monotonic() + _STATUS_SECONDS)
+            complete = self._refresh(catalog, projection, session_id, reader.head(),
+                                     deadline=time.monotonic() + _STATUS_SECONDS)
             self._flush()
             latest = _latest((state.recent for (key, _), state in self._sources.items() if key == session_id), 1)
             totals = _Totals()
@@ -308,8 +306,9 @@ class CacheUsage:
                     totals.merge(state.totals)
         if not latest:
             return None
-        return {"context_tokens": latest[0].context_tokens, "context_window": latest[0].context_window,
-                "prompt_tokens": totals.prompt_tokens}
+        # 没扫到 head 时最近一轮可能是几天前的，context_tokens 不能当作当前占用。
+        return {"complete": complete, "context_tokens": latest[0].context_tokens,
+                "context_window": latest[0].context_window, "prompt_tokens": totals.prompt_tokens}
 
     # 只推进这一个会话；逐轮用量取各来源最近 50 轮按时间合并。
     def _session(self, catalog: MessageCatalog, projection: TurnProjection, session_id: str) -> dict[str, object]:
@@ -320,7 +319,7 @@ class CacheUsage:
             return {"session": None, "turns": []}
         with self._lock:
             self._restore()
-            self._refresh(catalog, projection, session_id, reader.head())
+            _ = self._refresh(catalog, projection, session_id, reader.head())
             self._flush()
             owned = [(source, state) for (key, source), state in self._sources.items() if key == session_id and state.totals.turns]
             if not owned:
@@ -342,7 +341,7 @@ class CacheUsage:
         # 冷读在闭合 Turn 边界让出请求；下一次接着已有消费位置继续。
         deadline = time.monotonic() + _SCAN_SECONDS
         for session_id, head in heads.items():
-            self._refresh(catalog, projection, session_id, head, deadline=deadline)
+            _ = self._refresh(catalog, projection, session_id, head, deadline=deadline)
             if time.monotonic() >= deadline:
                 break
         scanned = sum(self._heads.get(session_id) == head for session_id, head in heads.items())
@@ -363,7 +362,7 @@ class CacheUsage:
             return None
         with self._lock:
             self._restore()
-            self._refresh(catalog, projection, session_id, reader.head())
+            _ = self._refresh(catalog, projection, session_id, reader.head())
             self._flush()
             state = self._sources.get((session_id, message.source))
             return None if state is None else state.outputs.get(message_id)
@@ -372,11 +371,11 @@ class CacheUsage:
     def _refresh(
         self, catalog: MessageCatalog, projection: TurnProjection, session_id: str, head: int,
         *, deadline: float | None = None,
-    ) -> None:
-        """从上次闭合位置读取；时间预算只在完整 Turn 边界生效。"""
+    ) -> bool:
+        """从上次闭合位置读取；时间预算只在完整 Turn 边界生效。返回是否已读到 head。"""
         stored = self._heads.get(session_id)
         if stored == head:
-            return
+            return True
         # 账本回退到检查点之前（恢复备份或替换）：整个 Session 重算，已消失的来源一并清掉。
         if stored is not None and head < stored:
             self._drop_session(session_id)
@@ -412,9 +411,10 @@ class CacheUsage:
             if turns or state.reset:
                 self._dirty_sources.add((session_id, source))
             if stopped:
-                return
+                return False
         self._heads[session_id] = head
         self._dirty_heads.add(session_id)
+        return True
 
     # 内存与检查点里都丢掉这个 Session，之后按新账本重建。
     def _drop_session(self, session_id: str) -> None:

@@ -274,8 +274,10 @@ export const usagePanel: SidebarPanelProvider = {
   // 只读已扫描的结果，不为一个短值推进扫描；还没扫到的会话没有短值。
   async status({ query, sessionId }) {
     if (!sessionId) return null;
-    const { status } = await query("usage.status", {}, { cache: "none" }) as { status: { context_tokens: number; context_window: number; prompt_tokens: number } | null };
+    const { status } = await query("usage.status", {}, { cache: "none" }) as { status: { complete: boolean; context_tokens: number; context_window: number; prompt_tokens: number } | null };
     if (!status) return null;
+    // 还没扫到最新一轮：已扫到的最后一轮可能很旧，不拿它当当前占用。
+    if (!status.complete) return { text: "统计中" };
     const ratio = fill(status);
     return ratio === null ? { text: `本会话 ${fmt(status.prompt_tokens)}` } : { text: `上下文 ${pct(ratio)}`, alert: ratio >= HOT };
   },
