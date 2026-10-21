@@ -104,6 +104,9 @@ button.usage-item { cursor: pointer; }
 .usage-stack > span.free { background: transparent; }
 .usage-legend-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(11rem, 1fr)); gap: 4px 12px; font-size: var(--chat-type-caption); }
 .usage-legend-grid[data-compact] { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+/* 带来源明细的图例按列流式排，展开一类不会在网格里留空洞。 */
+.usage-legend-grid:not([data-compact]) { display: block; columns: 3 12rem; column-gap: 16px; }
+.usage-legend-grid:not([data-compact]) > .usage-lg { break-inside: avoid; margin-bottom: 4px; }
 .usage-lg > summary, div.usage-lg { display: flex; align-items: center; gap: 6px; min-width: 0; }
 .usage-lg > summary { cursor: pointer; list-style: none; }
 .usage-lg > summary::-webkit-details-marker { display: none; }
