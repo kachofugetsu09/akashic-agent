@@ -692,8 +692,13 @@ export function useDesktopChatController() {
 
   useEffect(() => {
     // 只等待首次启动就绪；此后的断线与恢复由聊天连接负责。
+    // 就绪发现延迟 = 轮询间隔：固定 1.2s 时平均白等 600ms（冷启动尾段正是等它，见 #1556）。
+    // 在首个 1.2s 窗口内加插 150/450/1050ms 三次早探（之后节奏与原调度逐点相同），
+    // 任何就绪时刻都不比原调度更差，期望发现延迟 600ms → ~200ms；代价只是启动期三个小包。
+    const READY_POLL_BACKOFF_MS = [150, 300, 600, 150];
     const controller = new AbortController();
     const run = async (): Promise<void> => {
+      let attempt = 0;
       while (true) {
         try {
           const next = await fetchChatJson<unknown>("/api/shell/state", { signal: controller.signal }).then(webShellState);
@@ -706,7 +711,9 @@ export function useDesktopChatController() {
           reportError(error);
         }
         try {
-          await sleepInterruptible(1200, controller.signal);
+          const delay = attempt < READY_POLL_BACKOFF_MS.length ? READY_POLL_BACKOFF_MS[attempt] : 1200;
+          attempt += 1;
+          await sleepInterruptible(delay, controller.signal);
         } catch {
           // 中断（含睡眠中）：轮询结束，不再上报。
           return;
