@@ -679,8 +679,11 @@ dialog.settings-scrim::backdrop { background: transparent; }
 .settings-sheet-main { display: grid; min-width: 0; flex: 1; }
 .settings-sheet-main strong { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-family: var(--ak-type-technical); font-size: var(--models-type-body); font-weight: 500; letter-spacing: -0.01em; }
 .settings-sheet-flags { display: flex; flex-wrap: wrap; gap: 0.25rem; margin-block-start: 0.2rem; }
-.settings-sheet-flags i { border-radius: var(--models-radius-badge); padding: 0.02rem 0.45rem; color: var(--ak-ink-secondary); background: var(--ak-paper-sheet); font-size: var(--models-type-caption); font-style: normal; line-height: 1.7; }
-.settings-sheet-flags i.is-mark { color: var(--ak-color-action-primary); background: color-mix(in srgb, var(--ak-color-action-primary) 10%, transparent); font-weight: 650; }
+/* 能力与状态是一行灰字，用间隔点分开；只有「新」这类标记用强调色。 */
+.settings-sheet-flags { gap: 0 0.375rem; }
+.settings-sheet-flags i { color: var(--ak-ink-secondary); font-size: var(--models-type-caption); font-style: normal; line-height: 1.6; }
+.settings-sheet-flags i + i::before { margin-inline-end: 0.375rem; content: "·"; }
+.settings-sheet-flags i.is-mark { color: var(--ak-color-action-primary); font-weight: 650; }
 .settings-sheet-tail { flex: none; color: var(--ak-ink-secondary); font-size: var(--models-type-caption); }
 .settings-sheet-row[aria-current] .settings-sheet-tail { color: var(--ak-color-action-primary); font-weight: 650; }
 /* 场景选模型：与聊天胶囊同一个选择器主体，浮层给固定高度，列表在里面滚动，模型少时不留大片空白也不跳高。 */
