@@ -201,14 +201,14 @@ def _login_url(core: Path, python: Path, state: Path, url: str) -> str:
 
 def run_service(preparation: Preparation, core: Path, python: Path,
                 state: Path, port: int, container: bool, open_browser: bool,
-                distribution: Path) -> int:
+                distribution: Path, host: str = "127.0.0.1") -> int:
     """Wait for loaded Web modules, then keep the Supervisor attached to this launch."""
     environment = dict(os.environ, AKASHIC_PLUGIN_HOME=str(state / "plugin-home"),
                        AKASHIC_PLUGIN_DISTRIBUTION=str(distribution),
                        AKASHIC_WEB_PORT=str(port),
-                       AKASHIC_WEB_HOST="0.0.0.0" if container else "127.0.0.1",
-                       AKASHIC_WEB_ALLOW_NON_LOOPBACK="1" if container else "0")
-    url = f"http://127.0.0.1:{port}"
+                       AKASHIC_WEB_HOST="0.0.0.0" if container else host,
+                       AKASHIC_WEB_ALLOW_NON_LOOPBACK="1" if container or host != "127.0.0.1" else "0")
+    url = f"http://{'127.0.0.1' if container or host == '0.0.0.0' else host}:{port}"
     # 1. The Supervisor alone owns HTTP; the launcher only observes readiness.
     preparation.step("启动服务并加载插件")
     with preparation.log.open("ab") as stream:
@@ -244,6 +244,9 @@ def run_service(preparation: Preparation, core: Path, python: Path,
                 preparation.step("WebUI 已就绪。请打开 Compose 映射的本机地址（默认 http://localhost:2236）。")
             else:
                 preparation.step(f"WebUI 已就绪：{url}")
+                # 绑在非回环地址时多半是给别处的浏览器（如 computer 容器）用：直接给一条一次性登录链接，换成对方能访问的主机名即可。
+                if host != "127.0.0.1":
+                    print(f"一次性登录链接：{_login_url(core, python, state, url)}", flush=True)
                 if open_browser:
                     try:
                         webbrowser.open(_login_url(core, python, state, url))
@@ -270,6 +273,8 @@ def main() -> int:
     parser.add_argument("--port", type=int, default=int(os.environ.get("AKASHIC_WEB_PORT", "2236")))
     parser.add_argument("--no-browser", action="store_true")
     parser.add_argument("--distribution", type=Path, help="Use the distribution shipped in the container")
+    parser.add_argument("--host", default="127.0.0.1",
+                        help="监听地址；开发实例给 computer 容器看时用 workloads 网关地址（需防火墙放行，见 develop-akashic skill）")
     args = parser.parse_args()
     if not 1 <= args.port <= 65535:
         parser.error("--port 必须在 1 到 65535 之间")
@@ -301,14 +306,14 @@ def main() -> int:
             # Reserve the port during slow builds, then release it for Supervisor.
             with socket.socket() as reservation:
                 reservation.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-                reservation.bind(("0.0.0.0" if args.distribution else "127.0.0.1", args.port))
+                reservation.bind(("0.0.0.0" if args.distribution else args.host, args.port))
                 if args.distribution:
                     core, distribution, python = ROOT, args.distribution.resolve(), Path(sys.executable)
                 else:
                     core, distribution, python = prepare_source(preparation, args.cache.expanduser().resolve())
                 prepare_install(preparation, core, distribution, python, state)
             return run_service(preparation, core, python, state, args.port,
-                               args.distribution is not None, not args.no_browser, distribution)
+                               args.distribution is not None, not args.no_browser, distribution, args.host)
         except (OSError, ValueError, RuntimeError, subprocess.CalledProcessError) as error:
             print(f"启动失败：{error}\n日志：{preparation.log}\n处理原因后重新运行同一启动命令。", file=sys.stderr, flush=True)
             return 1

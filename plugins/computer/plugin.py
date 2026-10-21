@@ -308,8 +308,10 @@ async def apply(ctx: Context) -> None:
             "Use var for reusable bindings, browser.tabs.list() and browser.tabs.new(); read API documentation before actions. "
             "Idle anonymous instances release after 10 minutes. Call nodeRepl.write(value) or "
             "nodeRepl.emitImage(bytes) for output. Read the computer skill first. "
-            "The browser runs in its own container: localhost there is the container, and host ports "
-            f"are usually firewalled. To show a local static page, write it under {pages} (create it if needed) and open "
+            "The browser runs in its own container: localhost there is the container, not the Akashic host. "
+            "A service on the host is reachable at the container network's gateway (usually http://172.26.0.1:<port>) "
+            "only if it listens on 0.0.0.0 and the host firewall admits the port (see the computer skill). "
+            f"To show a local static page, write it under {pages} (create it if needed) and open "
             "file:///data/pages/<relative path>."
         ),
         parameters={
