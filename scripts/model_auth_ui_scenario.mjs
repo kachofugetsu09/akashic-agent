@@ -75,7 +75,7 @@ try {
 
     // 目录返回的 Lite 配置必须穿过实际选择、关闭推理的验证请求与保存。
     await page.getByRole("button", {name: "编辑连接 Codex", exact: true}).click();
-    await page.getByRole("button", {name: "探测目录", exact: true}).click();
+    await page.getByRole("button", {name: "从服务目录选择", exact: true}).click();
     const selection = page.getByRole("dialog");
     await selection.getByRole("button", {name: "全选", exact: true}).click();
     await selection.getByRole("button", {name: /^保存选择/}).click();

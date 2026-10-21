@@ -659,6 +659,7 @@ def _catalog_payload(snapshot: ModelCatalogSnapshot) -> dict[str, object]:
                 "driverId": item.driver_id,
                 "authIdentity": item.auth_identity,
                 "availability": item.availability,
+                "endpointHost": item.endpoint_host,
             }
             for item in snapshot.connections
         ],

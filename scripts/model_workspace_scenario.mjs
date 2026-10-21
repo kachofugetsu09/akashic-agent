@@ -169,7 +169,7 @@ for (const manual of [false, true]) {
       document.querySelector("[data-connections] .settings-provider-head").click();
       await settle();
       assert.ok(document.querySelector("[data-sync]"), "selected unknown-purpose directory entries support refresh");
-      document.querySelector(".settings-model-toggle").click();
+      document.querySelector(".settings-model-remove").click();
       await settle();
       document.querySelector("[data-probe]").click();
       await settle();
@@ -205,12 +205,10 @@ try {
   checks.push("Role chooser preserves cancelled navigation and releases accepted navigation without writing a binding");
   document.querySelector("[data-connections] .settings-provider-head").click();
   await settle();
-  const toggleTarget = document.querySelector(".settings-model-toggle");
-  const toggle = toggleTarget.querySelector("input");
-  assert.equal(toggle.labels[0], toggleTarget, "the full target labels only its checkbox");
-  assert.equal(toggle.getAttribute("aria-label"), "选择 saved-chat");
+  const remove = document.querySelector(".settings-model-remove");
+  assert.equal(remove.getAttribute("aria-label"), "移除 saved-chat");
   const verify = document.querySelector(".settings-model-row button");
-  assert.equal(toggleTarget.contains(verify), false);
+  assert.notEqual(verify, remove);
   verify.click();
   await settle();
   assert.equal(toggle.checked, true, "verification must not toggle availability");
@@ -362,8 +360,8 @@ try {
   const unload = new Event("beforeunload", {cancelable: true});
   window.dispatchEvent(unload);
   assert.ok(unload.defaultPrevented);
-  editors[1].querySelector('.settings-model-toggle input').click();
-  assert.ok(editors[1].querySelector('.settings-model-toggle input').checked, "cancelled removal keeps the dirty row");
+  editors[1].querySelector(".settings-model-remove").click();
+  assert.ok(editors[1].isConnected, "cancelled removal keeps the dirty row");
   save(editors[0]).click();
   assert.ok(context(editors[0]).disabled, "submitted values cannot change during the write");
   fill(context(editors[1]), "888K");
@@ -450,7 +448,7 @@ const selectorStyle = selector => {
 };
 assert.equal(selectorStyle(".settings-page")["--models-hit-target"], "44px");
 for (const [selector, properties] of [
-  [".settings-model-toggle", ["min-width", "min-height"]],
+  [".settings-model-remove", ["width", "min-height"]],
   [".settings-sheet-row", ["min-height"]],
 ]) {
   for (const property of properties) assert.equal(selectorStyle(selector)[property], "var(--models-hit-target)");
