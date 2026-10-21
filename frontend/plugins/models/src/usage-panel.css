@@ -73,7 +73,8 @@ button.usage-item { cursor: pointer; }
 .usage-columns { display: grid; grid-template-columns: repeat(auto-fit, minmax(16rem, 1fr)); gap: 16px; }
 .usage-split { display: grid; min-height: 0; grid-template-columns: minmax(14rem, 20rem) minmax(0, 1fr); gap: 16px; }
 /* 定高后网格行不能被压缩，按内容高度排，多出的部分滚动。 */
-.usage-split > .usage-pane { min-height: 0; grid-auto-rows: max-content; overflow-y: auto; overscroll-behavior: contain; }
+.usage-pane { grid-auto-rows: max-content; }
+.usage-split > .usage-pane { min-height: 0; overflow-y: auto; overscroll-behavior: contain; }
 /* 展开态占满面板高度：标签一行，下面一格内容各自滚动，分栏左右独立滚动。 */
 .usage-expanded { height: 100%; min-height: 0; box-sizing: border-box; grid-template-rows: auto minmax(0, 1fr); }
 .usage-expanded > :last-child { min-height: 0; overflow-y: auto; }

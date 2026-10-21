@@ -24,6 +24,8 @@ from .composition import Parts, bounded, totals
 from .store import CallUsage, ModelsStore
 
 _PROACTIVE_SOURCES = frozenset({"wake", "drift"})
+# 概览构成只读最近这么多次调用：解析量有上限，30 天按目前的量约是最近一周。
+_SPREAD_CALLS = 3000
 _RECENT_TURNS = 50
 _RECENT_PASSIVE_TURNS = 10
 _PREVIEW_CHARS = 90
@@ -305,7 +307,6 @@ class CacheUsage:
             "sources": [{"source": key, **item.body()} for key, item in sorted(sources.items(), key=lambda e: -e[1].prompt_tokens)],
             "models": [{"model": key, **item.body()} for key, item in sorted(models.items(), key=lambda e: -e[1].prompt_tokens)],
             "sessions": self._composed_rows(_titled(catalog, rows[:limit])), "total_sessions": len(rows),
-            **self._spread(since),
         }
 
     # 会话行带最近一轮的六类合计，列表里直接画细条。
@@ -316,22 +317,27 @@ class CacheUsage:
             row["composition"] = _scaled(totals(parts), cast(int, row["context_tokens"])) if parts else None
         return rows
 
-    # 1. 取范围内记录过构成的调用；2. 各按自己的实报输入分摊；3. 加总后按明细预算截断。
+    async def spread(self, since: str | None) -> dict[str, object]:
+        """范围内输入花在哪：单独查询，只在概览展示时读构成，不占会话列表的回包预算。"""
+        return await run_file_io(lambda: self._spread(since))
+
+    # 1. 取范围内最近至多 _SPREAD_CALLS 次记录过构成的调用；2. 只算用量 exact 的调用，各按实报输入分摊；3. 加总后按明细预算截断。
     def _spread(self, since: str | None) -> dict[str, object]:
         log = self._store.composition
         if log is None:
-            return {"spread": None, "spread_calls": 0, "spread_from": None}
+            return {"spread": None, "spread_calls": 0, "spread_from": None, "spread_capped": False}
         try:
-            rows, first = log.since(_utc(since) if since else ""), log.first()
+            rows, first = log.since(_utc(since) if since else "", _SPREAD_CALLS), log.first()
         except (sqlite3.Error, OSError, ValueError):
             logger.warning("context composition spread failed", exc_info=True)
-            return {"spread": None, "spread_calls": 0, "spread_from": None, "composition_error": True}
+            return {"spread": None, "spread_calls": 0, "spread_from": None, "spread_capped": False, "composition_error": True}
         usages = self._store.read_call_usages([call_id for call_id, _ in rows]) if rows else {}
         merged: Parts = {}
         calls = 0
         for call_id, parts in rows:
             call = usages.get(call_id)
-            prompt = call.usage.get("input_tokens") if call is not None and call.usage is not None else None
+            exact = call is not None and call.usage is not None and call.usage.get("coverage") == "exact"
+            prompt = call.usage.get("input_tokens") if exact and call is not None and call.usage is not None else None
             scaled = _scaled(parts, prompt) if type(prompt) is int else None
             if scaled is None:
                 continue
@@ -340,7 +346,8 @@ class CacheUsage:
                 into = merged.setdefault(category, {})
                 for label, value in group.items():
                     into[label] = into.get(label, 0) + value
-        return {"spread": bounded(merged) if merged else None, "spread_calls": calls, "spread_from": first}
+        return {"spread": bounded(merged) if merged else None, "spread_calls": calls, "spread_from": first,
+                "spread_capped": len(rows) >= _SPREAD_CALLS}
 
     def _status(self, catalog: MessageCatalog, projection: TurnProjection, session_id: str) -> dict[str, object] | None:
         if not catalog.exists(session_id):

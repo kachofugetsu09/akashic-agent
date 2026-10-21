@@ -111,15 +111,17 @@ class CompositionLog:
     def first(self) -> str | None:
         if not self._path.exists():
             return None
-        with self._lock, closing(self._connect()) as connection:
+        with closing(sqlite3.connect(f"file:{self._path}?mode=ro", uri=True)) as connection:
             return cast(str | None, connection.execute("SELECT min(recorded_at) FROM composition").fetchone()[0])
 
-    # 某时刻之后记录的全部构成。
-    def since(self, moment: str) -> list[tuple[str, Parts]]:
+    # 某时刻之后最近的至多 limit 条构成；只读不持写锁，面板查询不拖住调用结算时的 put()。
+    def since(self, moment: str, limit: int) -> list[tuple[str, Parts]]:
         if not self._path.exists():
             return []
-        with self._lock, closing(self._connect()) as connection:
-            rows = connection.execute("SELECT call_id, parts FROM composition WHERE recorded_at >= ?", (moment,))
+        with closing(sqlite3.connect(f"file:{self._path}?mode=ro", uri=True)) as connection:
+            rows = connection.execute(
+                "SELECT call_id, parts FROM composition WHERE recorded_at >= ? ORDER BY recorded_at DESC LIMIT ?",
+                (moment, limit))
             return [(call_id, cast(Parts, json.loads(parts))) for call_id, parts in rows]
 
     def get(self, call_ids: Iterable[str]) -> dict[str, Parts]:

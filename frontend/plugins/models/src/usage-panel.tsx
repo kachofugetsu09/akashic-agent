@@ -13,7 +13,7 @@ interface SessionRow {
 }
 interface Insights {
   hours: [string, number, number, number, number, number][]; sources: Group[]; models: Group[]; sessions: SessionRow[]; total_sessions: number;
-  spread?: Composition | null; spread_calls?: number; spread_from?: string | null;
+
 }
 interface TurnRow {
   call_id: string; recorded_at: string; preview: string; prompt_tokens: number; hit_tokens: number; output_tokens: number; calls: number;
@@ -169,7 +169,7 @@ function Overview({ query, days, setDays, onPick }: { query: Query; days: number
     </div>
     <Bars label={hourly ? "今天按小时的输入" : `近 ${days} 天按天的输入`} items={buckets.map((item, index) => ({ ...item, title: `${hourly ? `${index} 时` : `${days - 1 - index} 天前`} · ${fmt(item.hit + item.miss)}` }))} />
     <div className="usage-legend"><span><i />未命中</span><span><i className="soft" />命中</span><span>按{hourly ? "小时" : "天"}，只画输入</span></div>
-    <Spread data={data} />
+    <Spread query={query} since={start.toISOString()} />
     <div className="usage-columns">
       <div className="usage-list">
         <div className="usage-row muted"><span className="usage-seg" role="group" aria-label="分组">
@@ -189,14 +189,21 @@ function Overview({ query, days, setDays, onPick }: { query: Query; days: number
   </div>;
 }
 
-// 范围内输入花在哪：每次记录过构成的调用按自己的实报输入分摊，再加总。
-function Spread({ data }: { data: Insights }) {
-  const from = data.spread_from ? stamp(data.spread_from) : null;
+interface SpreadData { spread: Composition | null; spread_calls: number; spread_from: string | null; spread_capped: boolean; composition_error?: boolean }
+
+// 范围内输入花在哪：单独查询；每次记录过构成、用量完整的调用按自己的实报输入分摊，再加总。
+function Spread({ query, since }: { query: Query; since: string }) {
+  const { data, error } = useQuery<SpreadData>(query, "usage.spread", { since }, "");
+  const from = data?.spread_from ? stamp(data.spread_from) : null;
+  const note = !data ? error || "正在读取…"
+    : data.composition_error ? "构成记录暂时读不到。"
+      : from ? `这段时间没有记录构成的调用；构成自 ${from} 起记录。` : "还没有记录构成的调用。新版本上线后的每次调用都会记录。";
   return <section className="usage-spread" aria-label="输入构成">
     <div className="usage-row"><b>输入花在哪</b>
-      <span className="muted">{data.spread ? `${data.spread_calls} 次调用 · 构成自 ${from} 起记录` : ""}</span></div>
-    {data.spread ? <><CompositionBar parts={data.spread} /><CompositionLegend parts={data.spread} /></>
-      : <p className="usage-note">{from ? `这段时间没有记录构成的调用；构成自 ${from} 起记录。` : "还没有记录构成的调用。新版本上线后的每次调用都会记录。"}</p>}
+      <span className="muted">{data?.spread ? `${data.spread_capped ? "最近 " : ""}${data.spread_calls} 次调用 · 构成自 ${from} 起记录` : ""}</span></div>
+    {data?.spread ? <><CompositionBar parts={data.spread} /><CompositionLegend parts={data.spread} />
+      <p className="usage-note">按调用口径（含标题、摘要等旁路调用），与上方按轮次的总量不必相等。</p></>
+      : <p className="usage-note">{note}</p>}
   </section>;
 }
 

@@ -46,6 +46,11 @@ class ChatUiQueries:
             if type(limit) is not int or not 1 <= limit <= INSIGHT_SESSIONS or order not in ("input", "context", "recent"):
                 raise PluginUiRpcInvalidRequest(f"会话行数须为 1–{INSIGHT_SESSIONS}，排序只有 input、context 与 recent")
             return await self.usage.insights(cast(str | None, since), limit, cast(InsightOrder, order))
+        if method == "usage.spread":
+            since = payload.get("since")
+            if set(payload) - {"since"} or not (since is None or _instant(since)):
+                raise PluginUiRpcInvalidRequest("构成概览查询只接受 since")
+            return await self.usage.spread(cast(str | None, since))
         if method == "usage.status":
             if payload or not session_id:
                 raise PluginUiRpcInvalidRequest("用量短值查询需要会话且不接受参数")
