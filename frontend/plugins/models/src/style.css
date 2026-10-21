@@ -468,13 +468,35 @@ dialog.settings-scrim::backdrop { background: transparent; }
 }
 .settings-login-card > span { display: grid; }
 .settings-login-card small { margin-block-start: 0.2rem; color: var(--md-sys-color-on-surface-variant); font-size: var(--md-sys-typescale-body-medium-size); }
-.settings-login-card button,
-.settings-device-login a { min-height: 2.5rem; margin-inline-start: auto; border: 0; border-radius: var(--md-sys-shape-corner-full); padding: 0 0.875rem; color: var(--md-sys-color-primary); background: transparent; font-size: var(--md-sys-typescale-label-large-size); font-weight: var(--md-sys-typescale-label-large-weight); text-decoration: none; cursor: pointer; }
-.settings-login-card button:hover,
-.settings-device-login a:hover { background: color-mix(in srgb, var(--md-sys-color-primary) 10%, transparent); }
-.settings-device-login { margin-block-start: 0.8rem; }
-.settings-device-login strong { color: var(--md-sys-color-primary); font-size: 1.1rem; letter-spacing: 0.12em; font-variant-numeric: tabular-nums; }
-.settings-device-login a { display: inline-flex; align-items: center; }
+.settings-login-card button { min-height: 2.5rem; margin-inline-start: auto; border: 0; border-radius: var(--md-sys-shape-corner-full); padding: 0 0.875rem; color: var(--md-sys-color-primary); background: transparent; font-size: var(--md-sys-typescale-label-large-size); font-weight: var(--md-sys-typescale-label-large-weight); cursor: pointer; }
+.settings-login-card button:hover { background: color-mix(in srgb, var(--md-sys-color-primary) 10%, transparent); }
+
+/* 登录状态卡：顶行是状态图标、现状与下一步；等待授权时下面是验证码、登录链接与剩余时间。 */
+.settings-device-login { display: block; margin-block-start: 0.8rem; padding: 0.875rem 1rem; }
+.settings-device-login[data-state="failed"] { border-color: color-mix(in srgb, var(--md-sys-color-error) 45%, transparent); }
+.settings-device-wait { display: grid; gap: 0.75rem; }
+.settings-device-head { display: flex; align-items: center; gap: 0.75rem; }
+.settings-device-head > svg { flex: none; color: var(--ak-ink-secondary); }
+.settings-device-head.is-done > svg { color: var(--ak-sys-color-success); }
+.settings-device-head.is-failed > svg { color: var(--md-sys-color-error); }
+.settings-device-head > span { display: grid; min-width: 0; flex: 1; gap: 0.15rem; }
+.settings-device-head small { color: var(--ak-ink-secondary); font-size: var(--models-type-caption); line-height: 1.5; overflow-wrap: anywhere; }
+.settings-device-head > button,
+.settings-device-link > a,
+.settings-device-login [data-copy] { display: inline-flex; flex: none; min-height: 2.25rem; align-items: center; gap: 0.375rem; border: 0; border-radius: var(--models-radius-field); padding: 0 0.75rem; color: var(--ak-color-action-primary); background: transparent; font: inherit; font-size: var(--models-type-caption); font-weight: 600; text-decoration: none; cursor: pointer; }
+.settings-device-head > button:hover,
+.settings-device-link > a:hover,
+.settings-device-login [data-copy]:hover { background: color-mix(in srgb, var(--ak-color-action-primary) 10%, transparent); }
+.settings-device-code { display: flex; align-items: center; justify-content: space-between; gap: 0.75rem; border-radius: var(--models-radius-field); padding: 0.625rem 0.5rem 0.625rem 1rem; background: var(--ak-paper-sheet); }
+.settings-device-code strong { font-family: var(--ak-type-technical); font-size: 1.5rem; font-weight: 600; letter-spacing: 0.16em; font-variant-numeric: tabular-nums; user-select: all; white-space: nowrap; }
+.settings-device-link { display: flex; align-items: center; gap: 0.5rem; min-width: 0; }
+.settings-device-link > a { border: 1px solid var(--ak-rule-default); }
+.settings-device-link code { min-width: 0; flex: 1; overflow: hidden; color: var(--ak-ink-secondary); font-family: var(--ak-type-technical); font-size: var(--models-type-caption); text-overflow: ellipsis; white-space: nowrap; user-select: all; }
+.settings-device-note { color: var(--ak-ink-secondary); font-size: var(--models-type-caption); font-variant-numeric: tabular-nums; }
+@media (max-width: 34rem) {
+  .settings-device-link { flex-wrap: wrap; }
+  .settings-device-link code { flex-basis: 100%; order: 3; }
+}
 
 .settings-model-discovery { margin-block-start: 1.5rem; border-block-start: 1px solid var(--md-sys-color-outline-variant); padding-block-start: 1.25rem; }
 .settings-model-discovery > header { align-items: center; margin-block-end: 1rem; }

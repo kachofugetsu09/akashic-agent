@@ -21,18 +21,65 @@ export function activate(ctx) {
         <button type="button" class="settings-icon-button" aria-label="关闭" data-close>${CLOSE_ICON}</button></header>
         <form class="settings-dialog-form"><div class="settings-dialog-body"><div class="settings-form-grid">
           <label class="is-wide"><span>连接名称</span><input name="name" aria-label="连接名称" disabled value="Codex"></label>
-          <div class="settings-login-card is-wide">${SHIELD_ICON(20)}<span><strong>${existing ? "Codex 已授权连接" : "使用 ChatGPT 订阅授权登录"}</strong><small>授权凭据保存在本地运行环境中，不会在页面中明文回显。</small></span><button type="button" data-start>${existing ? "重新授权" : "前往授权"}</button></div>
-        </div><div class="settings-device-login" data-challenge role="status" hidden></div>
+          <div class="settings-login-card is-wide" data-login-card>${SHIELD_ICON(20)}<span><strong>${existing ? "Codex 已授权连接" : "使用 ChatGPT 订阅授权登录"}</strong><small>授权凭据保存在本地运行环境中，不会在页面中明文回显。</small></span><button type="button" data-start>${existing ? "重新授权" : "前往授权"}</button></div>
+        </div><div class="settings-device-login" data-challenge role="status" aria-live="polite" hidden></div>
         <section class="settings-model-discovery settings-model-discovery--automatic"><header><div><h3>可用模型列表</h3><p>勾选需要开启的模型；后续可随时重新探测与增减。</p></div></header></section>
         <p class="settings-inline-error" data-error role="alert" hidden></p></div>
         <footer class="settings-dialog-footer"><span class="settings-dialog-footer-note">${SHIELD_ICON(15)}授权凭据保存后不会在页面中明文回显</span><button type="submit" class="settings-primary-button">探测并选择模型</button></footer></form>`;
       let timer = 0;
+      let ticker = 0;
       let attemptId = "";
+      let deadline = 0;
+      let transientFailures = 0;
       let disposed = false;
       const form = host.querySelector("form");
       const error = host.querySelector("[data-error]");
       const start = host.querySelector("[data-start]");
+      const card = host.querySelector("[data-login-card]");
+      const challenge = host.querySelector("[data-challenge]");
       const submit = form.querySelector("[type=submit]");
+      const stopWaiting = () => {
+        window.clearTimeout(timer);
+        window.clearInterval(ticker);
+      };
+      const showLogin = (state) => {
+        challenge.hidden = false;
+        card.hidden = true;
+        challenge.dataset.state = state.kind;
+        challenge.replaceChildren(loginView(state));
+      };
+      const resetLogin = () => {
+        stopWaiting();
+        challenge.hidden = true;
+        card.hidden = false;
+        start.disabled = false;
+        start.focus();
+      };
+      // 失败停在状态卡里：写明原因并给出重新开始；过期与取消都会通知后端放弃这次尝试。
+      const fail = (reason, expired = false) => {
+        stopWaiting();
+        const abandoned = attemptId;
+        attemptId = "";
+        if (abandoned) void props.actions.cancelAuth(abandoned).catch(() => {});
+        showLogin({kind: "failed", expired, message: expired
+          ? "验证码已过期，没有完成授权。重新开始会生成新的验证码。"
+          : reason instanceof Error ? reason.message : String(reason)});
+      };
+      const poll = (interval) => {
+        timer = window.setTimeout(() => finish().catch(retryOrFail), interval * 1000);
+      };
+      // 网络抖动或服务端 5xx 不算登录失败，最多连续重试三次；尝试已不存在说明已过期。
+      const retryOrFail = (reason) => {
+        if (disposed || !attemptId) return;
+        const status = reason?.status ?? 0;
+        if (String(reason?.message ?? "").includes("auth attempt 不存在")) return fail(reason, true);
+        if ((status === 0 || status >= 500) && transientFailures < 3) {
+          transientFailures += 1;
+          poll(5);
+          return;
+        }
+        fail(reason);
+      };
       const finish = async () => {
         if (disposed) return;
         const receipt = await props.actions.finishAuth(attemptId);
@@ -40,40 +87,64 @@ export function activate(ctx) {
           if (receipt.status === "pending") await props.actions.cancelAuth(attemptId);
           return;
         }
+        transientFailures = 0;
         if (receipt.status === "pending") {
-          timer = window.setTimeout(() => finish().catch(report), Number(receipt.challenge?.interval ?? 5) * 1000);
+          poll(Number(receipt.challenge?.interval ?? 5));
           return;
         }
+        stopWaiting();
         attemptId = "";
-        const selected = await props.actions.selectModels();
+        showLogin({kind: "done"});
+        let selected = false;
+        try {
+          selected = await props.actions.selectModels();
+        } catch (reason) {
+          report(new Error(`Codex 已登录，但模型选择未完成：${reason instanceof Error ? reason.message : String(reason)} 可以点“探测并选择模型”重试。`));
+          return;
+        }
         props.changed(selected ? "Codex 登录完成，模型选择已保存" : "Codex 登录完成，模型选择未改动");
+      };
+      const tick = () => {
+        const left = Math.max(0, deadline - Date.now());
+        const remaining = challenge.querySelector("[data-remaining]");
+        if (remaining) remaining.textContent = `验证码 ${formatClock(left)} 后过期`;
+        if (!left) fail(null, true);
       };
       const report = (reason) => {
         error.textContent = reason instanceof Error ? reason.message : String(reason);
         error.hidden = false;
         start.disabled = false;
       };
-      start.addEventListener("click", () => {
+      const begin = () => {
         start.disabled = true;
+        error.hidden = true;
+        showLogin({kind: "starting"});
         props.actions.startAuth({})
           .then((receipt) => {
             attemptId = receipt.attemptId;
             props.dirty(true);
             if (disposed) return props.actions.cancelAuth(attemptId);
-            const challenge = host.querySelector("[data-challenge]");
-            challenge.hidden = false;
-            challenge.replaceChildren(document.createTextNode("验证码"));
-            const code = document.createElement("strong");
-            code.textContent = receipt.challenge?.user_code ?? "";
-            const link = document.createElement("a");
-            link.href = receipt.challenge?.verification_uri ?? "#";
-            link.target = "_blank";
-            link.rel = "noreferrer";
-            link.textContent = "打开登录页面";
-            challenge.append(code, link);
-            timer = window.setTimeout(() => finish().catch(report), Number(receipt.challenge?.interval ?? 5) * 1000);
+            deadline = Date.now() + LOGIN_TTL_MS;
+            transientFailures = 0;
+            showLogin({kind: "waiting", code: receipt.challenge?.user_code ?? "", uri: receipt.challenge?.verification_uri ?? ""});
+            challenge.querySelector("[data-open]")?.focus();
+            ticker = window.setInterval(tick, 1000);
+            tick();
+            poll(Number(receipt.challenge?.interval ?? 5));
           })
-          .catch(report);
+          .catch((reason) => fail(reason));
+      };
+      start.addEventListener("click", begin);
+      challenge.addEventListener("click", (event) => {
+        const target = event.target instanceof Element ? event.target.closest("button") : null;
+        if (!target) return;
+        if (target.hasAttribute("data-restart")) begin();
+        else if (target.hasAttribute("data-cancel")) {
+          const abandoned = attemptId;
+          attemptId = "";
+          if (abandoned) void props.actions.cancelAuth(abandoned).catch(() => {});
+          resetLogin();
+        } else if (target.dataset.copy) void copyText(target);
       });
       host.querySelector("[data-close]").addEventListener("click", props.close);
       form.addEventListener("submit", (event) => {
@@ -92,7 +163,7 @@ export function activate(ctx) {
       queueMicrotask(() => start.focus());
       return () => {
         disposed = true;
-        window.clearTimeout(timer);
+        stopWaiting();
         if (attemptId) void props.actions.cancelAuth(attemptId).catch((reason) => {
           console.error("取消 Codex 登录失败", reason);
         });
@@ -100,6 +171,61 @@ export function activate(ctx) {
       };
     },
   }));
+}
+
+// 后端放弃未完成登录的时限（models 插件 _AUTH_ATTEMPT_TTL_SECONDS），倒计时按它显示。
+const LOGIN_TTL_MS = 15 * 60 * 1000;
+const COPY_ICON = `<svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect width="14" height="14" x="8" y="8" rx="2"></rect><path d="M4 16c-1.1 0-2-.9-2-2V4c0-1.1.9-2 2-2h10c1.1 0 2 .9 2 2"></path></svg>`;
+const ALERT_ICON = `<svg xmlns="http://www.w3.org/2000/svg" width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="10"></circle><path d="M12 8v4"></path><path d="M12 16h.01"></path></svg>`;
+const CHECK_ICON = `<svg xmlns="http://www.w3.org/2000/svg" width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M20 6 9 17l-5-5"></path></svg>`;
+
+// 登录状态卡：发起中、等待授权、已授权、失败各给一句现状和下一步，取消与重新开始都在卡内。
+function loginView(state) {
+  if (state.kind === "starting") {
+    return htmlNode(`<div class="settings-device-head">${SPINNER_ICON}<span><strong>正在向 ChatGPT 申请验证码…</strong></span></div>`);
+  }
+  if (state.kind === "done") {
+    return htmlNode(`<div class="settings-device-head is-done">${CHECK_ICON}<span><strong>ChatGPT 账号已授权</strong><small>正在读取可用模型，稍后请勾选要开启的模型。</small></span></div>`);
+  }
+  if (state.kind === "failed") {
+    return htmlNode(`<div class="settings-device-head is-failed">${ALERT_ICON}<span><strong>${state.expired ? "验证码已过期" : "登录未完成"}</strong><small>${escapeHtml(state.message)}</small></span><button type="button" data-restart>重新开始</button></div>`);
+  }
+  const attr = (value) => escapeHtml(value).replaceAll('"', "&quot;");
+  const uri = attr(state.uri);
+  return htmlNode(`<div class="settings-device-wait">
+    <div class="settings-device-head">${SPINNER_ICON}<span><strong>在 ChatGPT 页面输入验证码</strong><small>打开登录页并输入下面的验证码；授权完成后这里会自动继续。</small></span><button type="button" data-cancel>取消</button></div>
+    <div class="settings-device-code"><strong>${escapeHtml(state.code)}</strong><button type="button" data-copy="${attr(state.code)}" aria-label="复制验证码">${COPY_ICON}<span>复制</span></button></div>
+    <div class="settings-device-link"><a href="${uri}" target="_blank" rel="noreferrer" data-open>打开登录页面</a><code title="${uri}">${uri}</code><button type="button" data-copy="${uri}" aria-label="复制登录链接">${COPY_ICON}<span>复制链接</span></button></div>
+    <small class="settings-device-note"><span data-remaining></span> · 在另一台设备上打开链接也可以</small>
+  </div>`);
+}
+
+function formatClock(ms) {
+  const seconds = Math.ceil(ms / 1000);
+  return `${Math.floor(seconds / 60)}:${String(seconds % 60).padStart(2, "0")}`;
+}
+
+// 远程以 http 访问时没有剪贴板 API，退回选中文本复制；按钮文字短暂改为“已复制”。
+async function copyText(button) {
+  const value = button.dataset.copy ?? "";
+  try {
+    await navigator.clipboard.writeText(value);
+  } catch {
+    const field = document.createElement("textarea");
+    field.value = value;
+    field.setAttribute("readonly", "");
+    field.style.position = "fixed";
+    field.style.opacity = "0";
+    document.body.append(field);
+    field.select();
+    document.execCommand("copy");
+    field.remove();
+  }
+  const label = button.querySelector("span");
+  if (!label) return;
+  const original = label.textContent;
+  label.textContent = "已复制";
+  window.setTimeout(() => { label.textContent = original; }, 1500);
 }
 
 function htmlNode(markup) {
