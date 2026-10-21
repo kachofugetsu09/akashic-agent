@@ -155,7 +155,7 @@ function Summary({ctx, definition}: {ctx: WebHostContextV1; definition: FormDefi
   return <span className={`config-status is-${label?.tone ?? "off"}`}>{label?.text ?? "…"}</span>;
 }
 
-function Configuration({ctx, definition, embed}: {ctx: WebHostContextV1; definition: FormDefinition; embed: EmbedProps}) {
+export function Configuration({ctx, definition, embed}: {ctx: WebHostContextV1; definition: FormDefinition; embed: EmbedProps}) {
   const [status, setStatus] = useState<Status | null>(null);
   const [enabled, setEnabled] = useState<boolean | null>(null);
   const [values, setValues] = useState<Record<string, unknown>>({});

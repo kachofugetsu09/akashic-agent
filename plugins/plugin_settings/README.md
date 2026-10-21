@@ -2,13 +2,13 @@
 
 Declarative settings forms for plugins that do not ship their own Web module,
 external plugins in particular. A plugin declares its fields in Python and the
-host renders them under **Settings › Plugins › Plugin config**:
+host renders them in the **Plugin settings** card under **Settings › Plugins › Plugin config**:
 
 ```python
 from plugins.plugin_settings.contract import SETTINGS_FORMS, SettingsField, SettingsForm, declare_settings
 
 FORM = SettingsForm(
-    title="GitHub Watch", description="...", family="github", family_label="GitHub",
+    title="GitHub Watch", description="...",
     fields=(
         SettingsField("model", "Review model", kind="model", use=REVIEW_MODEL),
         SettingsField("poll_seconds", "Poll interval (seconds)", kind="number"),
@@ -27,5 +27,5 @@ saved to the plugin's own config through `ModelSettings`: an empty value removes
 the override and the config model's default applies. Saving takes effect through
 the normal plugin config generation change.
 
-Each plugin may register one form. Plugins that need richer interaction (OAuth,
+Each plugin may register one form. The host Web contract only accepts registrations made synchronously during activation, so all declared forms share one settings card that loads the list when opened; a plugin that needs its own card or family still ships a Web module. Plugins that need richer interaction (OAuth,
 previews, custom validation flows) still ship their own Web module.

@@ -43,16 +43,11 @@ class SettingsForm:
     title: str
     description: str
     fields: tuple[SettingsField, ...]
-    # 插件配置页里的分组；同组的表单排在一张卡里。
-    family: str = "plugins"
-    family_label: str = "其他插件"
 
     def __post_init__(self) -> None:
         names = [field.name for field in self.fields]
         if not names or len(set(names)) != len(names):
             raise ValueError("设置表单至少一个字段，且字段名不能重复")
-        if not _KEY.fullmatch(self.family):
-            raise ValueError(f"设置分组无效: {self.family}")
 
 
 @dataclass(frozen=True, slots=True)
@@ -66,7 +61,6 @@ class SettingsEntry:
     def body(self) -> dict[str, object]:
         form = self.form
         return {"id": self.key, "owner": self.owner, "title": form.title, "description": form.description,
-                "family": form.family, "family_label": form.family_label,
                 "fields": [field.body() for field in form.fields]}
 
 

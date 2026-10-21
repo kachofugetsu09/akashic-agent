@@ -41,3 +41,7 @@
 /* 按表单自身宽度换行：嵌入引导或窄屏时，控件落到说明下方占满整行。 */
 .config-fields{container-type:inline-size}
 @container (max-width:34rem){.config-field,.config-field:has(>input:not([type=number])){grid-template-columns:minmax(0,1fr);grid-template-areas:"label" "hint" "control"}.config-field>input,.config-field>select,.config-model-control{margin-top:6px}}
+/* 声明式插件设置：一张卡片里多张表单，各自带标题与保存。 */
+.declared-form+.declared-form{margin-top:28px}
+.declared-form>h2{margin:0;font-size:17px;font-weight:600}
+.declared-form>p{margin:2px 0 12px;font-size:14px;color:var(--ak-ink-muted,#6b6a64)}
