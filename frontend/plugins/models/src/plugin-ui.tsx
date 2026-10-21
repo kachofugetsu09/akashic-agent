@@ -5,6 +5,7 @@ import { ModelCapsulePicker, ModelEffortAction, resolveVisibleRuntime } from "./
 import { formatModelCallStats, readModelCallStats } from "./call-stats";
 import "./capsule.css";
 import "./message-ui.css";
+import { usagePanel } from "./usage-panel";
 
 const number = (value: unknown) => new Intl.NumberFormat("zh-CN").format(Number(value || 0));
 
@@ -177,6 +178,7 @@ const definition: PluginUiDefinition = {
     "composer.toolbar": {
       mount: (host, context) => render(host, <ModelCapsule context={context} composer={context.composer} />),
     },
+    "sidebar.panels": usagePanel,
   },
 };
 
