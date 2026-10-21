@@ -997,7 +997,7 @@ function registerModels(ctx, mount, catalogResource) {
           remove.innerHTML = TRASH_ICON;
           remove.addEventListener("click", () => {
             // 移除需要重新验证才能加回；在用或有未保存参数时先说明后果。
-            const consequence = inUseLabel.includes("全局默认") ? "移除后需要另选全局默认模型"
+            const consequence = inUseLabel.includes("全局默认") ? "移除后会改用其他可用模型；没有可用模型时需重新配置全局默认"
               : inUseLabel.includes("向量") ? "移除后使用此向量空间的任务需要重新配置"
               : "移除后这些场景改用全局默认模型";
             const warning = inUseLabel
