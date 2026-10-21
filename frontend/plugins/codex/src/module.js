@@ -60,13 +60,16 @@ export function activate(ctx) {
         stopWaiting();
         const abandoned = attemptId;
         attemptId = "";
-        if (abandoned) void props.actions.cancelAuth(abandoned).catch(() => {});
+        if (abandoned) void props.actions.cancelAuth(abandoned).catch(report);
         showLogin({kind: "failed", expired, message: expired
           ? "验证码已过期，没有完成授权。重新开始会生成新的验证码。"
           : reason instanceof Error ? reason.message : String(reason)});
       };
       const poll = (interval) => {
-        timer = window.setTimeout(() => finish().catch(retryOrFail), interval * 1000);
+        const currentAttempt = attemptId;
+        timer = window.setTimeout(() => finish().catch((reason) => {
+          if (attemptId === currentAttempt) retryOrFail(reason);
+        }), interval * 1000);
       };
       // 网络抖动或服务端 5xx 不算登录失败，最多连续重试三次；尝试已不存在说明已过期。
       const retryOrFail = (reason) => {
@@ -82,7 +85,9 @@ export function activate(ctx) {
       };
       const finish = async () => {
         if (disposed) return;
-        const receipt = await props.actions.finishAuth(attemptId);
+        const currentAttempt = attemptId;
+        const receipt = await props.actions.finishAuth(currentAttempt);
+        if (attemptId !== currentAttempt) return;
         if (disposed) {
           if (receipt.status === "pending") await props.actions.cancelAuth(attemptId);
           return;
@@ -142,7 +147,7 @@ export function activate(ctx) {
         else if (target.hasAttribute("data-cancel")) {
           const abandoned = attemptId;
           attemptId = "";
-          if (abandoned) void props.actions.cancelAuth(abandoned).catch(() => {});
+          if (abandoned) void props.actions.cancelAuth(abandoned).catch(report);
           resetLogin();
         } else if (target.dataset.copy) void copyText(target);
       });
