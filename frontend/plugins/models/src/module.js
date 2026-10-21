@@ -3,9 +3,9 @@ import { mountModelPicker } from "./picker-mount";
 
 const SEARCH_ICON = `<svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="lucide lucide-search" aria-hidden="true"><circle cx="11" cy="11" r="8"></circle><path d="m21 21-4.3-4.3"></path></svg>`;
 const CHEVRON_ICON = `<svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="lucide lucide-chevron-right" aria-hidden="true"><path d="m9 18 6-6-6-6"></path></svg>`;
-const KEY_ICON = `<svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M2.586 17.414A2 2 0 0 0 2 18.828V21a1 1 0 0 0 1 1h3a1 1 0 0 0 1-1v-1a1 1 0 0 1 1-1h1a1 1 0 0 0 1-1v-1a1 1 0 0 1 1-1h.172a2 2 0 0 0 1.414-.586l.814-.814a6.5 6.5 0 1 0-4-4z"></path><circle cx="16.5" cy="7.5" r=".5" fill="currentColor"></circle></svg>`;
 const TRASH_ICON = `<svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M3 6h18"></path><path d="M19 6v14c0 1-1 2-2 2H7c-1 0-2-1-2-2V6"></path><path d="M8 6V4c0-1 1-2 2-2h4c1 0 2 1 2 2v2"></path></svg>`;
 const REFRESH_ICON = `<svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M3 12a9 9 0 0 1 9-9 9.75 9.75 0 0 1 6.74 2.74L21 8"></path><path d="M21 3v5h-5"></path><path d="M21 12a9 9 0 0 1-9 9 9.75 9.75 0 0 1-6.74-2.74L3 16"></path><path d="M8 16H3v5"></path></svg>`;
+const SERVER_ICON = `<svg xmlns="http://www.w3.org/2000/svg" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect width="20" height="8" x="2" y="2" rx="2"></rect><rect width="20" height="8" x="2" y="14" rx="2"></rect><path d="M6 6h.01"></path><path d="M6 18h.01"></path></svg>`;
 const CLOSE_ICON = `<svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M18 6 6 18"></path><path d="m6 6 12 12"></path></svg>`;
 const SPINNER_ICON = `<svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="is-spinning" aria-hidden="true"><path d="M21 12a9 9 0 1 1-6.219-8.56"></path></svg>`;
 
@@ -249,14 +249,12 @@ function registerModels(ctx, mount, catalogResource) {
         button.type = "button";
         button.className = "settings-template-tile";
         button.appendChild(providerMark(template));
-        const copy = document.createElement("span");
-        copy.className = "settings-card-copy";
-        const title = document.createElement("strong");
-        const detail = document.createElement("small");
+        // 格子只写名称；一句说明放进提示，组标题已经说明了接入方式。
+        const title = document.createElement("span");
+        title.className = "settings-template-name";
         title.textContent = template.label;
-        detail.textContent = template.detail;
-        copy.append(title, detail);
-        button.append(copy);
+        if (template.detail) button.title = template.detail;
+        button.append(title);
         // 只有一种模板的接入方式（Codex、OpenCode Go）一个账号一条连接：已连接时标出，再点打开它而不是新建。
         const existing = (template.owner.templates?.length ?? 0) < 2 && catalog
           ? catalog.connections.find((connection) => connection.driverId === template.owner.id)
@@ -338,7 +336,7 @@ function registerModels(ctx, mount, catalogResource) {
         status.className = "settings-provider-status";
         status.dataset.status = "";
         status.innerHTML = "<i aria-hidden=\"true\"></i><span></span>";
-        head.append(connectionMark(entry, connection.name), copy, status);
+        head.append(connectionMark(entry), copy, status);
         head.insertAdjacentHTML("beforeend", CHEVRON_ICON);
         fillProviderHead(head, entry, connection);
         if (!entry || connection.availability === "disabled") {
@@ -364,7 +362,9 @@ function registerModels(ctx, mount, catalogResource) {
         head.querySelector("[data-detail]").textContent = connection.availability === "disabled" || !paused
           ? `${where} · ${models.length} 个模型`
           : `${where} · ${models.length} 个模型，${paused} 个已停用`;
+        // 正常是常态，不占位；只有停用或驱动异常才标出。
         const status = head.querySelector("[data-status]");
+        status.hidden = connection.availability === "available";
         status.classList.toggle("is-unavailable", connection.availability !== "available");
         const AVAILABILITY_LABELS = { available: "正常可用", disabled: "已停用", driver_unavailable: "驱动异常" };
         status.querySelector("span").textContent = AVAILABILITY_LABELS[connection.availability] ?? connection.availability;
@@ -858,7 +858,7 @@ function registerModels(ctx, mount, catalogResource) {
           <label class="settings-model-filter" data-filter hidden>${SEARCH_ICON}<input aria-label="筛选已添加的模型" placeholder="筛选已添加的模型"></label>
           <div class="settings-model-rows" data-rows></div>
           <p class="settings-inline-error" data-manage-error role="alert" hidden></p>
-          <button type="button" class="settings-text-button" data-disable-conn>停用此连接（保留数据）</button>
+          <button type="button" class="settings-text-button" data-disable-conn>停用此连接</button>
           <p class="settings-inline-error" data-disable-error role="alert" hidden></p>`;
         const status = section.querySelector("[data-manage-status]");
         const count = section.querySelector("[data-manage-count]");
@@ -966,7 +966,7 @@ function registerModels(ctx, mount, catalogResource) {
           const modelId = document.createElement("strong");
           modelId.textContent = model.model;
           const flags = document.createElement("span");
-          flags.className = "settings-sheet-flags";
+          flags.className = "settings-model-flags";
           const use = document.createElement("span");
           use.className = "settings-model-use";
           main.append(modelId, flags, use);
@@ -1018,13 +1018,7 @@ function registerModels(ctx, mount, catalogResource) {
               verify.hidden = model.availability === "disabled";
               use.textContent = [inUse, model.availability !== "available" ? "暂不可用" : ""].filter(Boolean).join(" · ");
               use.hidden = !use.textContent;
-              flags.replaceChildren();
-              for (const badge of [model.kind === "embedding" ? "向量" : "", ...capabilityBadges(model.capabilities)].filter(Boolean)) {
-                const chip = document.createElement("i");
-                chip.textContent = badge;
-                if (badge === "向量") chip.className = "is-mark";
-                flags.append(chip);
-              }
+              flags.textContent = [model.kind === "embedding" ? "向量" : "", ...capabilityBadges(model.capabilities)].filter(Boolean).join(" · ");
               editor?.update(model.capabilities ?? {});
             },
           };
@@ -1530,6 +1524,10 @@ function registerModels(ctx, mount, catalogResource) {
             },
           });
           dialogBody.appendChild(modelManager.element);
+          // 停用是对整条连接的操作，和保存并列放在底栏左侧，而不是挂在模型列表末尾。
+          const footer = dialogHost.querySelector(".settings-dialog-footer");
+          const disable = modelManager.element.querySelector("[data-disable-conn]");
+          if (footer && disable) footer.prepend(disable);
         }
         const leaveDocument = event => { if (!event.persisted) report(auth.close()); };
         window.addEventListener("pagehide", leaveDocument);
@@ -1602,11 +1600,12 @@ function editTemplate(entry) {
   return templates.find((template) => template.id === entry.editTemplateId) ?? templates[0];
 }
 
-function connectionMark(entry, fallback) {
-  return providerMark({icon: entry?.connectionIcon}, fallback);
+function connectionMark(entry) {
+  return providerMark({icon: entry?.connectionIcon});
 }
 
-function providerMark(entry, fallback) {
+// 有插件声明的品牌图标就用它；没有时用中性的服务器图标，不拿首字母充当标识。
+function providerMark(entry) {
   const mark = document.createElement("span");
   mark.className = "settings-connection-mark";
   mark.setAttribute("aria-hidden", "true");
@@ -1615,10 +1614,8 @@ function providerMark(entry, fallback) {
     image.src = entry.icon;
     image.alt = "";
     mark.appendChild(image);
-  } else if (fallback) {
-    mark.textContent = String(fallback).slice(0, 1).toUpperCase();
   } else {
-    mark.innerHTML = KEY_ICON;
+    mark.innerHTML = SERVER_ICON;
   }
   return mark;
 }

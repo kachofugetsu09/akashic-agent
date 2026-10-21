@@ -25,7 +25,7 @@ export function activate(ctx) {
         </div><div class="settings-device-login" data-challenge role="status" aria-live="polite" hidden></div>
         <section class="settings-model-discovery settings-model-discovery--automatic"><header><div><h3>可用模型列表</h3><p>勾选需要开启的模型；后续可随时重新探测与增减。</p></div></header></section>
         <p class="settings-inline-error" data-error role="alert" hidden></p></div>
-        <footer class="settings-dialog-footer"><span class="settings-dialog-footer-note">${SHIELD_ICON(15)}授权凭据保存后不会在页面中明文回显</span><button type="submit" class="settings-primary-button">探测并选择模型</button></footer></form>`;
+        <footer class="settings-dialog-footer"><span></span><button type="submit" class="settings-primary-button">探测并选择模型</button></footer></form>`;
       let timer = 0;
       let ticker = 0;
       let attemptId = "";
