@@ -325,8 +325,19 @@ function Shell({ pages, railActions, settings, settingsPlugins, http, inventory 
     if (!settingsOpen) return;
     // 焦点可能因内容重渲染落回 body：和原生模态一样在文档层收按键，不要求焦点在面板里。
     const onKeyDown = (event: globalThis.KeyboardEvent) => onSettingsKeyDown(event, dialog, () => closeSettingsRef.current());
+    // 背后应用里被程序聚焦（如输入框的打字监听）时拉回面板；挂在 body 上的图层与原生模态不归这里管。
+    const background = dialog.parentElement;
+    const onFocusIn = (event: FocusEvent) => {
+      const target = event.target;
+      if (!(target instanceof Element) || !background?.contains(target) || dialog.contains(target) || target.closest("dialog:modal")) return;
+      dialog.focus({ preventScroll: true });
+    };
     document.addEventListener("keydown", onKeyDown);
-    return () => document.removeEventListener("keydown", onKeyDown);
+    document.addEventListener("focusin", onFocusIn);
+    return () => {
+      document.removeEventListener("keydown", onKeyDown);
+      document.removeEventListener("focusin", onFocusIn);
+    };
   }, [settingsOpen]);
 
   // 设置工作区内的跨目录渲染：初始配置按 route 内嵌任意分节的表单，不关心它属于哪个目录。
@@ -739,7 +750,7 @@ function pageFromLocation(entries: ShellPage[], fallback: ShellPage | undefined)
   return entries.find((entry) => entry.route === route) ?? fallback;
 }
 
-const SETTINGS_TABBABLE = "a[href], button:not([disabled]), input:not([disabled]):not([type=hidden]), select:not([disabled]), textarea:not([disabled]), summary, [tabindex]:not([tabindex='-1'])";
+const SETTINGS_TABBABLE = "a[href], button, input:not([type=hidden]), select, textarea, summary, [tabindex]";
 
 // 非模态设置面板补回模态语义：Esc 关闭（子控件 preventDefault 时让位），Tab 在面板内首尾循环不落回背景。
 function onSettingsKeyDown(event: globalThis.KeyboardEvent, dialog: HTMLDialogElement, close: () => void): void {
@@ -752,7 +763,9 @@ function onSettingsKeyDown(event: globalThis.KeyboardEvent, dialog: HTMLDialogEl
   }
   if (event.key !== "Tab") return;
   // 2. 只在越过首尾时接管，面板内部的 Tab 顺序仍交给浏览器。
-  const items = [...dialog.querySelectorAll<HTMLElement>(SETTINGS_TABBABLE)].filter((item) => item.getClientRects().length > 0);
+  // fieldset 禁用的后代自身没有 disabled 属性：按实际 :disabled 状态与 tabIndex 判断能否聚焦。
+  const items = [...dialog.querySelectorAll<HTMLElement>(SETTINGS_TABBABLE)]
+    .filter((item) => !item.matches(":disabled") && item.tabIndex >= 0 && item.getClientRects().length > 0);
   const first = items[0];
   const last = items[items.length - 1];
   if (!first || !last) return;
