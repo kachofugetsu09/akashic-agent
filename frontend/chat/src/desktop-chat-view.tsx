@@ -505,16 +505,19 @@ function SessionHeadingTitle({ heading, value, onRename }: {
 }
 
 // 标题行插件只在会话里出现新的工具结果时重新读取；切到会话后随历史加载出现的结果算基线，不触发重读。
+// 基线只在提交后推进（layout effect）：被放弃的并发渲染不能把真实新增的结果吞进基线。
 function useLiveToolResultToken(sessionId: string, toolResults: ReadonlyMap<string, unknown>, historyLoading: boolean): string {
-  const baseline = useRef<{ sessionId: string; loading: boolean; keys: ReadonlySet<string> } | null>(null);
-  const current = baseline.current;
-  // 1. 换会话、仍在加载或刚加载完的这一帧，都以当前已有结果为基线。
-  if (!current || current.sessionId !== sessionId || historyLoading || current.loading) {
-    baseline.current = { sessionId, loading: historyLoading, keys: new Set(toolResults.keys()) };
-    return "";
-  }
-  // 2. 之后只把基线之外的新结果编进令牌。
-  return Array.from(toolResults.keys()).filter((key) => !current.keys.has(key)).join("|");
+  const [baseline, setBaseline] = useState<{ sessionId: string; keys: ReadonlySet<string> } | null>(null);
+  const latest = useRef(toolResults);
+  useLayoutEffect(() => { latest.current = toolResults; });
+  useLayoutEffect(() => {
+    // 1. 加载中不设基线；加载完或换会话后，以提交时已有的结果为基线。
+    if (historyLoading) setBaseline(null);
+    else setBaseline((current) => current?.sessionId === sessionId ? current : { sessionId, keys: new Set(latest.current.keys()) });
+  }, [historyLoading, sessionId]);
+  // 2. 基线未就绪或属于别的会话时不出令牌；之后只把基线之外的新结果编进令牌。
+  if (!baseline || baseline.sessionId !== sessionId || historyLoading) return "";
+  return Array.from(toolResults.keys()).filter((key) => !baseline.keys.has(key)).join("|");
 }
 
 class MessageRendererErrorBoundary extends React.Component<
