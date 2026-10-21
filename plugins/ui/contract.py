@@ -14,6 +14,7 @@ from types import ModuleType
 from typing import Literal, Protocol, cast
 
 from fastapi import FastAPI
+from pydantic import BaseModel, ValidationError
 from fastapi.routing import APIRoute
 from starlette.datastructures import Headers, MutableHeaders
 from starlette.responses import FileResponse, Response
@@ -27,6 +28,8 @@ from agent.plugin_composition.context import Context
 from agent.plugin_composition.requests import RequestContext
 from agent.plugin_composition.effect import Effect
 from agent.plugin_composition.model import ServiceKey
+from agent.plugin_composition.config_input import save_credential
+from agent.plugin_composition.plugin_config import PLUGIN_CONFIG
 
 from plugins.ledger.contract import MessagePage, MessageReader, SessionEntry
 from plugins.ledger.contract import ContentPart, Control, Input, Message, Output, ToolCall, ToolResult, json_value
@@ -573,3 +576,101 @@ class CompressedStaticFiles(StaticFiles):
             return NotModifiedResponse(response.headers)
         return response
 # Context、Models 与 ContentView 分别拥有自己的 renderer；没有中央 key 列表或默认补位。
+
+
+# ---- 插件行启用即开启的设置页：字段取自插件自己的配置模型，留空即用默认值，保存经宿主换代生效。
+
+SETTINGS_SLOT = {"shell.settings-plugins.v1": "1823b19c778297893495ca9193d688e24c99d079effbaf5ecf0d1148ae0a1aa2"}
+# 运行状态补充：ready、reason、choices 等只读信息，由插件按自己的运行情况给出。
+StatusReader = Callable[[], Awaitable[Mapping[str, object]]]
+
+
+class ModelSettings:
+    """values 只含用户显式设置的字段，defaults 给出模型默认值；空值删除覆盖，回到默认。"""
+
+    def __init__(self, ctx: Context, model: type[BaseModel], fields: tuple[str, ...], *,
+                 secret: str | None = None, status: StatusReader | None = None):
+        self.ctx, self.model, self.fields, self.secret, self.status = ctx, model, fields, secret, status
+
+    async def read(self) -> dict[str, object]:
+        async with self.ctx.runtime_scope():
+            config = self.model.model_validate(self.ctx.config)
+            explicit = config.model_dump(mode="json", exclude_unset=True)
+            defaults = self.model.model_validate({}).model_dump(mode="json")
+            extra = dict(await self.status()) if self.status else {}
+            return {**self.ctx.require(PLUGIN_CONFIG).read(self.ctx), "enabled": True, "ready": True,
+                    "can_enable": True, "blocked": False, "reason": "", **extra,
+                    "values": {key: explicit[key] for key in self.fields if key in explicit},
+                    "defaults": {key: defaults[key] for key in self.fields},
+                    "has_token": self.secret is not None and getattr(config, self.secret) is not None}
+
+    # 1. 只接受已知字段；2. 空值回到默认，空凭据保留原值；3. 校验通过后只保存显式设置的字段。
+    async def save(self, request_id: str, expected_input: str, values: dict[str, object]) -> dict[str, object]:
+        async with self.ctx.runtime_scope():
+            allowed = {*self.fields, "enabled", *((self.secret,) if self.secret else ())}
+            if set(values) - allowed or values.get("enabled", True) is not True:
+                raise ValueError("配置包含不支持的字段")
+            config = dict(self.ctx.config)
+            for name in self.fields:
+                if name not in values:
+                    continue
+                value = values[name]
+                if value is None or (isinstance(value, str) and not value.strip()):
+                    config.pop(name, None)
+                else:
+                    config[name] = value.strip() if isinstance(value, str) else value
+            check(self.model, config)
+            secret = values.get(self.secret) if self.secret else None
+            if secret is not None and not isinstance(secret, str):
+                raise ValueError("凭据必须是字符串")
+            if self.secret and secret and secret.strip():
+                config[self.secret] = save_credential(self.ctx.data_root, secret.strip())
+            checked = self.model.model_validate(config)
+            excluded = {self.secret} if self.secret else set()
+            stored: dict[str, object] = checked.model_dump(mode="json", exclude_unset=True, exclude=excluded)
+            if self.secret and getattr(checked, self.secret) is not None:
+                stored[self.secret] = getattr(checked, self.secret)
+            return await self.ctx.require(PLUGIN_CONFIG).apply(
+                self.ctx, request_id=request_id, expected_input=expected_input, config=stored)
+
+    def receipt(self, request_id: str) -> dict[str, object]:
+        return self.ctx.entrypoint(lambda: self.ctx.require(PLUGIN_CONFIG).receipt(self.ctx, request_id))()
+
+
+# 常见校验错误换成中文；插件自己写的 ValueError 原样显示。
+_ERROR_TEXT: dict[str, Callable[[Mapping[str, object]], str]] = {
+    "greater_than": lambda limit: f"必须大于 {limit['gt']}",
+    "greater_than_equal": lambda limit: f"不能小于 {limit['ge']}",
+    "less_than": lambda limit: f"必须小于 {limit['lt']}",
+    "less_than_equal": lambda limit: f"不能大于 {limit['le']}",
+    "int_parsing": lambda _: "必须是整数", "int_type": lambda _: "必须是整数", "int_from_float": lambda _: "必须是整数",
+    "float_parsing": lambda _: "必须是数字", "float_type": lambda _: "必须是数字",
+    "string_too_short": lambda limit: f"至少 {limit['min_length']} 个字符",
+    "string_too_long": lambda limit: f"最多 {limit['max_length']} 个字符",
+    "literal_error": lambda _: "不是可选的值", "url_parsing": lambda _: "不是有效的网址", "url_scheme": lambda _: "网址协议不受支持",
+}
+
+
+# 表单显示“字段：原因”，不带 pydantic 的错误类型前缀。
+def check(model: type[BaseModel], config: Mapping[str, object]) -> None:
+    try:
+        _ = model.model_validate(config)
+    except ValidationError as error:
+        reasons: list[str] = []
+        for item in error.errors():
+            text = _ERROR_TEXT.get(item["type"])
+            reason = text(item.get("ctx") or {}) if text else str(item["msg"]).removeprefix("Value error, ")
+            field = ".".join(str(part) for part in item["loc"])
+            reasons.append(f"{field}：{reason}" if field and text else reason)
+        raise ValueError("；".join(reasons)) from None
+
+
+# 提供设置服务并登记设置页；dashboard 加载函数须写在插件自己的代码里，模块把同一 key 挂到 /api/dashboard/<插件>/config。
+async def mount_settings(ctx: Context, key: ServiceKey[Configuration], settings: Configuration,
+                         dashboard: Callable[[], ModuleType]) -> None:
+    await ctx.provide(key, settings)
+
+    async def ui(child: Context) -> None:
+        await child.require(UI).register(child, web="web_module.js", dashboard=dashboard,
+                                         requires=("shell.settings-plugins.v1",), contract_digests=SETTINGS_SLOT)
+    await ctx.inject((UI, key), ui, name="settings-ui")

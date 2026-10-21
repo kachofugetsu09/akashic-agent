@@ -6,8 +6,9 @@ import "./configuration.css";
 export interface Status {
   input_ref: string; enabled: boolean | null; ready: boolean; blocked: boolean;
   can_enable?: boolean; reason: string; has_token?: boolean;
-  values: Record<string, unknown>; targets?: {channel: string; recipient: string; session_id: string; label: string}[];
+  values: Record<string, unknown>; defaults?: Record<string, unknown>; choices?: Record<string, Choice[]>; targets?: {channel: string; recipient: string; session_id: string; label: string}[];
 }
+export interface Choice { value: string; label: string; }
 export interface FormProps { values: Record<string, unknown>; change: (key: string, value: unknown) => void; status: Status; }
 // switchable=false：启用由插件行决定，表单不再放第二个开关，字段始终可编辑。
 export interface FormDefinition { id: string; title: string; description: string; family?: string; familyLabel?: string; switchable?: boolean; fields?: (props: FormProps) => ReactNode; }
@@ -39,13 +40,27 @@ export function Confirm({ title, children, accept, cancel, busy = false }: {titl
   </dialog>;
 }
 
-export function Field({label, name, value, change, type = "text", hint, required = false, inputMode}: {
+// fallback 是留空时生效的默认值：占位符直接显示它，清空并保存即回到默认。
+// min/max/step 交给浏览器在提交前就地提示越界；服务端仍会再校验。
+export function Field({label, name, value, change, type = "text", hint, required = false, inputMode, fallback, min, max, step}: {
   label: string; name: string; value: unknown; change: FormProps["change"]; type?: string; hint?: string; required?: boolean;
-  inputMode?: "text" | "numeric" | "decimal" | "tel" | "url" | "email";
+  inputMode?: "text" | "numeric" | "decimal" | "tel" | "url" | "email"; fallback?: unknown; min?: number; max?: number; step?: number | "any";
 }) {
+  const shown = typeof value === "string" || (typeof value === "number" && !Number.isNaN(value)) ? value : "";
   return <label className="config-field"><span>{label}</span><input name={name} type={type} inputMode={inputMode} autoComplete={type === "password" ? "new-password" : "off"} required={required}
-    value={typeof value === "string" || typeof value === "number" ? value : ""}
-    onChange={event => change(name, type === "number" ? event.target.valueAsNumber : event.target.value)} />{hint && <small>{hint}</small>}</label>;
+    min={min} max={max} step={step} value={shown} placeholder={fallback === undefined || fallback === null ? undefined : `默认：${String(fallback)}`}
+    onChange={event => change(name, type === "number" ? (event.target.value === "" ? null : event.target.valueAsNumber) : event.target.value)} />{hint && <small>{hint}</small>}</label>;
+}
+
+// 下拉选择；fallbackLabel 给出时首项为“默认”，选它即删除覆盖。
+export function Select({label, name, value, change, options, hint, fallbackLabel}: {
+  label: string; name: string; value: unknown; change: FormProps["change"]; options: Choice[]; hint?: string; fallbackLabel?: string;
+}) {
+  return <label className="config-field"><span>{label}</span><select name={name} value={typeof value === "string" ? value : ""}
+    onChange={event => change(name, event.target.value === "" ? null : event.target.value)}>
+    {fallbackLabel !== undefined && <option value="">{fallbackLabel}</option>}
+    {options.map(option => <option key={option.value} value={option.value}>{option.label}</option>)}
+  </select>{hint && <small>{hint}</small>}</label>;
 }
 
 export function registerForm(ctx: WebHostContextV1, definition: FormDefinition): WebUiDisposer {

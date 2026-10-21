@@ -23,7 +23,7 @@ async def run(ctx: Context) -> None:
         async with ctx.require(CREDENTIALS).open(ctx, {"api_key": config.api_key}) as client:
             return client.credential(config.api_key)
 
-    _ = await ctx.require(WEB_PROVIDERS).register_search(ctx, ExaSearch(config, read_key))
+    _ = await ctx.require(WEB_PROVIDERS).register_search(ctx, ExaSearch(config, read_key), label="Exa")
 
 
 async def apply(ctx: Context) -> None:
