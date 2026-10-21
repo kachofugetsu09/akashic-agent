@@ -320,7 +320,7 @@ class ConnectionDescriptor:
     driver_id: str
     auth_identity: str
     availability: ModelAvailability
-    # 只含主机名，供设置页说明“连的是哪里”；完整地址与凭据不进目录。
+    # 只含主机名，供设置页说明连的是哪里；完整地址与凭据不进目录。
     endpoint_host: str = ""
 
 
