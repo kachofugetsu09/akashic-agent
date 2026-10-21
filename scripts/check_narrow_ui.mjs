@@ -296,7 +296,7 @@ async function onboarding(page, prefix) {
   await measure(page, `${prefix}-onboarding-welcome`);
   await surface.getByRole("button", { name: "开始", exact: true }).click();
   await surface
-    .locator(".onboarding-column .settings-provider-head:visible,.onboarding-column .settings-connection-card:visible,.onboarding-column .config-form form:visible")
+    .locator(".onboarding-column .settings-provider-head:visible,.onboarding-column .settings-template-tile:visible,.onboarding-column .config-form form:visible")
     .first()
     .waitFor();
   await measure(page, `${prefix}-onboarding-step`);

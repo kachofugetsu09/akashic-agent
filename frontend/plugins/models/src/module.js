@@ -221,6 +221,63 @@ function registerModels(ctx, mount, catalogResource) {
       function setAddPanel(open) {
         addPanel.hidden = !open;
         addToggle.setAttribute("aria-expanded", String(open));
+        if (open) renderTemplates();
+      }
+
+      // 添加面板按接入方式分组：订阅登录、厂商 API、自定义；每组一格一种方式，已添加的单实例方式标出并直接打开它。
+      function renderTemplates() {
+        addList.replaceChildren();
+        for (const [group, label, hint] of TEMPLATE_GROUPS) {
+          const items = providerTemplates.filter((template) => templateGroup(template) === group);
+          if (!items.length) continue;
+          const section = document.createElement("section");
+          section.className = "settings-template-group";
+          section.innerHTML = "<h3><span></span><small></small></h3><div class=\"settings-template-grid\"></div>";
+          section.querySelector("h3 span").textContent = label;
+          section.querySelector("h3 small").textContent = hint;
+          const grid = section.querySelector(".settings-template-grid");
+          for (const template of items) grid.appendChild(templateTile(template));
+          addList.appendChild(section);
+        }
+        if (!providerTemplates.length) addList.textContent = "没有 Provider 插件提供连接方式。";
+      }
+
+      function templateTile(template) {
+        const button = document.createElement("button");
+        button.type = "button";
+        button.className = "settings-template-tile";
+        button.appendChild(providerMark(template));
+        const copy = document.createElement("span");
+        copy.className = "settings-card-copy";
+        const title = document.createElement("strong");
+        const detail = document.createElement("small");
+        title.textContent = template.label;
+        detail.textContent = template.detail;
+        copy.append(title, detail);
+        button.append(copy);
+        // 只有一种模板的接入方式（Codex、OpenCode Go）一个账号一条连接：已连接时标出，再点打开它而不是新建。
+        const existing = (template.owner.templates?.length ?? 0) < 2 && catalog
+          ? catalog.connections.find((connection) => connection.driverId === template.owner.id)
+          : null;
+        if (existing) {
+          const mark = document.createElement("i");
+          mark.className = "settings-template-added";
+          mark.textContent = "已连接";
+          button.append(mark);
+          button.setAttribute("aria-label", `${template.label}，已连接，打开 ${existing.name}`);
+          button.addEventListener("click", () => openExisting(existing));
+        } else {
+          button.addEventListener("click", () => startCreate(template, button));
+        }
+        return button;
+      }
+
+      function openExisting(connection) {
+        const head = connections.querySelector(`[data-connection-id="${CSS.escape(connection.id)}"] .settings-provider-head`);
+        if (!head || head.disabled) { showNotice(`${connection.name} 已停用，请先在连接列表里启用。`); return; }
+        setAddPanel(false);
+        if (head.getAttribute("aria-expanded") !== "true") head.click();
+        head.scrollIntoView({block: "start", behavior: "smooth"});
       }
 
       function renderConnections(allConnections) {
@@ -267,6 +324,7 @@ function registerModels(ctx, mount, catalogResource) {
         const entry = providerEntries.find((candidate) => candidate.id === connection.driverId);
         const card = document.createElement("li");
         card.className = "settings-provider-card";
+        card.dataset.connectionId = connection.id;
         const head = document.createElement("button");
         head.type = "button";
         head.className = "settings-provider-head";
@@ -1445,24 +1503,7 @@ function registerModels(ctx, mount, catalogResource) {
         window.addEventListener("pagehide", leaveDocument);
       }
 
-      for (const template of providerTemplates) {
-        const button = document.createElement("button");
-        button.type = "button";
-        button.className = "settings-connection-card";
-        button.appendChild(providerMark(template));
-        const copy = document.createElement("span");
-        copy.className = "settings-card-copy";
-        const title = document.createElement("strong");
-        const detail = document.createElement("small");
-        title.textContent = template.label;
-        detail.textContent = template.detail;
-        copy.append(title, detail);
-        button.append(copy);
-        button.insertAdjacentHTML("beforeend", CHEVRON_ICON);
-        button.lastElementChild.classList.add("settings-template-action");
-        button.addEventListener("click", () => startCreate(template, button));
-        addList.appendChild(button);
-      }
+      renderTemplates();
       if (!providerTemplates.length) addList.textContent = "没有 Provider 插件提供连接方式。";
       addToggle.addEventListener("click", () => {
         if (addPanel.hidden) { setAddPanel(true); return; }
@@ -1500,6 +1541,18 @@ function requireProviderEntry(entry) {
     throw new Error("models.connection-types.v1 entry 无效");
   }
   return entry;
+}
+
+// 接入方式分组；模板或连接类型用 group 声明，未声明的归入厂商 API。
+const TEMPLATE_GROUPS = [
+  ["subscription", "订阅与本机登录", "登录即可，无需密钥"],
+  ["provider", "厂商 API", "填入官方密钥"],
+  ["custom", "自定义", "任意 OpenAI 或 Gemini 兼容地址"],
+];
+
+function templateGroup(template) {
+  const group = template.group ?? template.owner.group;
+  return TEMPLATE_GROUPS.some(([id]) => id === group) ? group : "provider";
 }
 
 function templatesFor(entry) {

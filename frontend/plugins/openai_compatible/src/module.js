@@ -32,6 +32,7 @@ export function activate(ctx) {
         id: "custom-api",
         label: "自定义 API",
         detail: "连接任意兼容服务",
+        group: "custom",
         order: 40,
         defaults: {name: "", endpoint: "", provider: "openai"},
       },
