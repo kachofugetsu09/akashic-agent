@@ -400,8 +400,10 @@ function Shell({ pages, railActions, settings, settingsPlugins, http, inventory 
     if (!settingsOpen || currentTarget?.kind !== "plugins" || currentTarget.memberId === null || settingsMembers.length < 2) return;
     const memberId = currentTarget.memberId;
     const scroll = () => {
-      const target = settingsContent.current?.querySelector(`[data-settings-member="${CSS.escape(memberId)}"]`);
-      target?.scrollIntoView({ block: "start" });
+      const target = settingsContent.current?.querySelector<HTMLElement>(`[data-settings-member="${CSS.escape(memberId)}"]`);
+      // 只滚分节页自己：scrollIntoView 会连带滚动 overflow:hidden 的对话框，手机上顶部返回和关闭被推出屏幕。
+      const page = target?.closest<HTMLElement>(".shell-settings-page");
+      if (target && page) page.scrollTop += target.getBoundingClientRect().top - page.getBoundingClientRect().top;
     };
     scroll();
     const timer = window.setTimeout(scroll, 800);
