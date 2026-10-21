@@ -8,6 +8,7 @@ from pathlib import Path
 import shutil
 import signal
 import sqlite3
+import time
 import sys
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -21,7 +22,7 @@ def message_digest(workspace: Path) -> str:
     return hashlib.sha256(json.dumps(rows, ensure_ascii=False).encode()).hexdigest()
 
 
-async def run(state: Path, port: int, switch_messages: int = 0, sessions: int = 0) -> None:
+async def run(state: Path, port: int, switch_messages: int = 0, sessions: int = 0, chat_ready_delay_ms: int = 0) -> None:
     """创建固定数据后启动正式应用和 Web Shell，退出时核对历史。"""
     # 1. 只接受新目录；所有配置、插件状态和消息都属于本次测试。
     state.mkdir(parents=True, exist_ok=False)
@@ -122,7 +123,10 @@ async def run(state: Path, port: int, switch_messages: int = 0, sessions: int = 
         # 自动扫描停止后仍允许显式 SIGHUP，供独立的真实换代验收使用。
         app.plugin_watcher = None
         print(json.dumps({"origin": f"http://127.0.0.1:{port}", "messagesSha256": before}), flush=True)
-        server = uvicorn.Server(uvicorn.Config(create_web_shell_app(workspace), host="127.0.0.1",
+        asgi = create_web_shell_app(workspace)
+        if chat_ready_delay_ms:
+            asgi = _ChatReadyDelay(asgi, chat_ready_delay_ms)
+        server = uvicorn.Server(uvicorn.Config(asgi, host="127.0.0.1",
                                               port=port, log_level="warning"))
         # Uvicorn 退出后会重放信号；由本次服务接收，避免取消后续 Runtime 清理。
         for sig in (signal.SIGINT, signal.SIGTERM):
@@ -140,6 +144,39 @@ async def run(state: Path, port: int, switch_messages: int = 0, sessions: int = 
                 raise RuntimeError("启动基准改变了消息历史")
 
 
+class _ChatReadyDelay:
+    """ready_at 之前把 /api/shell/state 的 chatReady 改写成 false：模拟真实冷启动里
+    HTTP 已开始服务、聊天目录尚未就绪的窗口，让就绪轮询的调度计入测量。"""
+
+    def __init__(self, app: object, delay_ms: int) -> None:
+        self._app = app
+        self._ready_at = time.monotonic() + delay_ms / 1000
+
+    async def __call__(self, scope: dict, receive: object, send: object) -> None:
+        if scope["type"] != "http" or scope.get("path") != "/api/shell/state" or time.monotonic() >= self._ready_at:
+            await self._app(scope, receive, send)
+            return
+        messages = []
+
+        async def capture(message: dict) -> None:
+            messages.append(message)
+
+        await self._app(scope, receive, capture)
+        start = next(m for m in messages if m["type"] == "http.response.start")
+        body = b"".join(m.get("body", b"") for m in messages if m["type"] == "http.response.body")
+        try:
+            payload = json.loads(body)
+            payload["chatReady"] = False
+            payload["status"] = "unavailable"
+            body = json.dumps(payload).encode()
+        except (ValueError, UnicodeDecodeError):
+            pass
+        headers = [(k, v) for k, v in start["headers"] if k.lower() != b"content-length"]
+        headers.append((b"content-length", str(len(body)).encode()))
+        await send({"type": "http.response.start", "status": start["status"], "headers": headers})
+        await send({"type": "http.response.body", "body": body})
+
+
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--state", type=Path, required=True)
@@ -148,5 +185,8 @@ if __name__ == "__main__":
                         help="额外灌入 akashic:switch-benchmark 长会话的消息数(默认不灌)")
     parser.add_argument("--sessions", type=int, default=0,
                         help="额外灌入的目录会话数(每会话 1 条消息,默认不灌)")
+    parser.add_argument("--chat-ready-delay-ms", type=int, default=0,
+                        help="模拟冷启动就绪窗口:该毫秒数内 /api/shell/state 回报 chatReady=false(默认 0)")
     args = parser.parse_args()
-    asyncio.run(run(args.state.resolve(), args.port, args.switch_session_messages, args.sessions))
+    args_ready_delay = args.chat_ready_delay_ms
+    asyncio.run(run(args.state.resolve(), args.port, args.switch_session_messages, args.sessions, args_ready_delay))
