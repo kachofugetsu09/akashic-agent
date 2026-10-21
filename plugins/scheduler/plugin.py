@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from importlib import import_module
 import asyncio
 from collections.abc import AsyncGenerator, Mapping
 from contextlib import asynccontextmanager
@@ -34,8 +35,12 @@ from .inputs import (
 from .contract import SCHEDULER_INSPECTION
 from .inspection import SchedulerInspectionProvider
 from .runtime import SchedulerRuntime
+from .schedule import SCHEDULE_MAX_ACTIVE_JOBS
 from .store import Fire, JobStore
 from core.common.file_io import run_file_io
+from agent.plugin_composition.plugin_config import PLUGIN_CONFIG
+from agent.plugin_composition.model import ServiceKey
+from plugins.ui.contract import Configuration, ModelSettings, mount_settings
 from .tools import CancelInput, ListSchedules, ScheduleInput, ScheduleTool
 
 api_version = 3
@@ -45,7 +50,7 @@ desc = "持久调度：到点在创建任务的会话里执行，最终回复按
 
 
 inject = (
-    BINDINGS, TASKS, MESSAGE_CATALOG, MESSAGE_WRITERS, OWNER_STATE,
+    PLUGIN_CONFIG, BINDINGS, TASKS, MESSAGE_CATALOG, MESSAGE_WRITERS, OWNER_STATE,
     CONTENT,
     CONVERSATION_COMPLETE,
     DELIVERY_SENDERS,
@@ -65,16 +70,23 @@ _MODE_PROMPT = (
 )
 
 
+SETTINGS = ServiceKey[Configuration]("scheduler.settings.v1")
+SETTING_FIELDS = ("max_steps", "max_output_tokens", "max_active_jobs")
+
+
 class Config(BaseModel):
     model_config = ConfigDict(extra="forbid")
     max_steps: int = Field(default=40, gt=0)
     max_output_tokens: int | None = Field(default=None, gt=0)
+    max_active_jobs: int = Field(default=SCHEDULE_MAX_ACTIVE_JOBS, ge=1, le=200)
 
 
 async def apply(ctx: Context) -> None:
     """注册工具不启动调度；旧 binding 直接重读同一文件，不依赖当前 runtime 指针。"""
     config = Config.model_validate(ctx.config)
-    store = JobStore(ctx.workspace_file("schedules.json"))
+    await mount_settings(ctx, SETTINGS, ModelSettings(ctx, Config, SETTING_FIELDS),
+                         lambda: import_module(".settings_ui", __package__))
+    store = JobStore(ctx.workspace_file("schedules.json"), max_active=config.max_active_jobs)
     _ = await ctx.provide(SCHEDULER_INSPECTION, SchedulerInspectionProvider(store))
     watcher: asyncio.Task[None] | None = None
     catalog = ctx.require(TOOLS)

@@ -1,6 +1,7 @@
 """候选 Message 摘要入口；正式 manifest 在完整迁移验收后切换。"""
 from __future__ import annotations
 
+from importlib import import_module
 from collections.abc import Callable, Mapping, Sequence
 import logging
 from uuid import uuid4
@@ -30,6 +31,9 @@ from .records import StoredSummary, SummaryLookup, SummaryRecord, SummaryRecords
 from .message_summary import SummaryError, clip_summary, closed_groups, recoverable, source_text, summarize, summary_groups, window_starts
 from plugins.compaction.contract import COMPACTION_READER, COMPACTION_SUMMARIES
 from plugins.turn_projection.contract import TURN_PROJECTION, TurnProjection
+from agent.plugin_composition.plugin_config import PLUGIN_CONFIG
+from agent.plugin_composition.model import ServiceKey
+from plugins.ui.contract import Configuration, ModelSettings, mount_settings
 
 logger = logging.getLogger(__name__)
 
@@ -37,7 +41,11 @@ api_version = 3
 name = "compaction"
 version = "4.1.0"
 desc = "按不可变消息前缀发布摘要，并为已使用的摘要保留原始读取口"
-inject = (MATERIALS_V4, CONTEXT, OWNER_STATE, BINDINGS, MESSAGE_CATALOG, CHAT_MODELS, TURN_PROJECTION)
+inject = (PLUGIN_CONFIG, MATERIALS_V4, CONTEXT, OWNER_STATE, BINDINGS, MESSAGE_CATALOG, CHAT_MODELS, TURN_PROJECTION)
+
+
+SETTINGS = ServiceKey[Configuration]("compaction.settings.v1")
+SETTING_FIELDS = ("keep_recent_tokens",)
 
 
 class Config(BaseModel):
@@ -68,6 +76,8 @@ class _CompactionReader:
 async def apply(ctx: Context) -> None:
     """注册只读材料和归档解析；apply 不打开 writer 或调用模型。"""
     config = Config.model_validate(ctx.config)
+    await mount_settings(ctx, SETTINGS, ModelSettings(ctx, Config, SETTING_FIELDS),
+                         lambda: import_module(".dashboard", __package__))
     context = ctx.require(CONTEXT)
 
     def records() -> SummaryRecords:
