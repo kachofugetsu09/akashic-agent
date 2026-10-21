@@ -5,10 +5,10 @@ from importlib import import_module
 import asyncio
 import logging
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 from agent.plugin_composition import Context
-from plugins.models.contract import CHAT_MODELS
+from plugins.models.contract import CHAT_MODELS, MODEL_CATALOG, ModelChoice, ModelUse, model_options
 from plugins.ledger.contract import SESSION_ADMIN, MessageReader
 from plugins.models.contract import ModelRequest
 from plugins.models.contract import ModelError
@@ -26,17 +26,25 @@ api_version = 3
 name = "session_title"
 version = "1.0.0"
 desc = "首条用户消息自动生成短标题，保留用户改名"
-inject = (PLUGIN_CONFIG, SESSION_ADMIN, CHAT_MODELS)
+inject = (PLUGIN_CONFIG, SESSION_ADMIN, CHAT_MODELS, MODEL_CATALOG)
 
 
 SETTINGS = ServiceKey[Configuration]("session_title.settings.v1")
-SETTING_FIELDS = ("max_title_chars",)
+SETTING_FIELDS = ("model", "max_title_chars")
+# 起标题在会话之外的后台跑，只能跟随默认或指定一个便宜模型。
+TITLE_MODEL = ModelUse("session_title", "会话标题")
 
 
 class Config(BaseModel):
     model_config = ConfigDict(extra="forbid")
     sources: tuple[str, ...] = Field(default=("conversation",), min_length=1)
     max_title_chars: int = Field(default=24, gt=0, le=200)
+    model: ModelChoice = ModelChoice(follow="default")
+
+    @field_validator("model")
+    @classmethod
+    def _check_model(cls, value: ModelChoice) -> ModelChoice:
+        return TITLE_MODEL.check(value)
 
 
 TITLE_PROMPT = (
@@ -61,7 +69,8 @@ def _first_text(reader: MessageReader, source: str) -> str:
 async def apply(ctx: Context) -> None:
     """同步通知只筛选首条输入，Fiber 拥有并排空全部后台生成。"""
     config = Config.model_validate(ctx.config)
-    await mount_settings(ctx, SETTINGS, ModelSettings(ctx, Config, SETTING_FIELDS),
+    await mount_settings(ctx, SETTINGS, ModelSettings(ctx, Config, SETTING_FIELDS,
+                         status=model_options(ctx, {"model": TITLE_MODEL})),
                          lambda: import_module(".dashboard", __package__))
     admin = ctx.require(SESSION_ADMIN)
     models = ctx.require(CHAT_MODELS)
@@ -77,9 +86,10 @@ async def apply(ctx: Context) -> None:
                 return
             title = ""
             try:
-                # 2. 小任务使用 fast 角色和局部预算，不占用会话的模型执行。
+                # 2. 小任务用插件自己选的模型和局部预算，不占用会话的模型执行。
                 async with asyncio.timeout(15), models.independent_execution() as execution:
-                    response = await execution.chat("fast").complete(ModelRequest(
+                    model = await execution.use(TITLE_MODEL, config.model)
+                    response = await model.complete(ModelRequest(
                         messages=(
                             {"role": "system", "content": TITLE_PROMPT},
                             {"role": "user", "content": text[:2000]},

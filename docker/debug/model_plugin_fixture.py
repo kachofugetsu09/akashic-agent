@@ -113,7 +113,7 @@ def add_openai_models(
             },
         )
         revision = int(receipt["revision"])
-        for role in ("default", "fast", "agent"):
+        for role in ("default",):
             receipt = _request(
                 control_endpoint,
                 "models/command",

@@ -699,7 +699,6 @@ dialog.settings-scrim::backdrop { background: transparent; }
 .settings-sheet-picker .model-picker__check { margin-block-start: 0; }
 .settings-sheet-picker .model-picker__copy strong { font-size: var(--models-type-body); }
 .settings-sheet-picker .model-picker__group-title { font-size: var(--models-type-caption); padding-inline: 0.625rem; }
-.settings-role-pick.is-following .settings-role-pick-value { color: var(--ak-ink-secondary); }
 .settings-sheet-foot { display: flex; justify-content: end; gap: 0.625rem; border-block-start: 1px solid var(--ak-rule-subtle); padding: 0.625rem 1.25rem calc(0.625rem + env(safe-area-inset-bottom)); }
 
 .settings-add-embedding {

@@ -324,7 +324,7 @@ async def run(mode, count, full_history=False):
                 assert len(created_stores) == 1
                 model_store = created_stores[0]
                 async with context.runtime_scope(), chat_models.execution() as execution:
-                    model_descriptor = execution.chat("agent").descriptor
+                    model_descriptor = execution.chat().descriptor
             seed(log, count, model_store, model_descriptor)
             # 排空启动追赶，让订阅进入等待；启动耗时不计入本次请求。
             for _ in range(30):

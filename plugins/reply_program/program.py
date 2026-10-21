@@ -122,7 +122,7 @@ async def run_reply(
         models.execution(model_id=chosen.model_id, reasoning_effort=chosen.reasoning_effort) as execution,
         materials as material_view,
     ):
-        model = execution.chat("agent")
+        model = execution.chat()
         # 推理与正文共用输出额度；在冻结请求前确定预算，Context 同样预留它。
         if max_output_tokens is None:
             max_output_tokens = model.descriptor.capabilities.max_output_tokens or 32768

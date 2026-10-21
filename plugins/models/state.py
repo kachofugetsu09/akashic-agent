@@ -46,6 +46,9 @@ from plugins.models.contract import (
 from plugins.models.contract import (
     BoundModelDescriptor,
     ChatModelSelection,
+    MODEL_NEED_LABELS,
+    ModelChoice,
+    ModelUse,
     ConnectionDescriptor,
     CredentialHandle,
     DiscoveredModel,
@@ -105,7 +108,6 @@ from .settings import (
     VerifyModel,
 )
 from .store import (
-    MODEL_ROLES,
     ModelsStore,
     StoredConnection,
     StoredModel,
@@ -124,8 +126,8 @@ _AUTH_ATTEMPT_TTL_SECONDS = 15 * 60
 _SETTINGS_MAX_MODEL_PROBES = 16
 _SETTINGS_MODEL_PROBE_SECONDS = 60
 _DEFAULT_ROLE = "default"
-_AGENT_ROLE = "agent"
-_VISION_ROLE = "vision"
+# 主模型的调用出处名；插件经 use() 取的模型记为各自的 use_id。
+_MAIN_ROLE = "chat"
 
 
 class _CapabilityCatalog(Protocol):
@@ -743,6 +745,24 @@ class _DriverScope:
             raise errors[0]
         raise BaseExceptionGroup("model driver scope 清理失败", errors)
 
+    # 执行中途追加一个连接：同样先进入 owner 作用域并登记关闭 Effect，再允许打开。
+    async def add(self, item: _SelectedDriver) -> None:
+        if item.connection_id in self.selected:
+            return
+        context = item.registration.context
+        if not any(existing.registration.context is context for existing in self.selected.values()):
+            scope = context.runtime_scope()
+            await scope.__aenter__()
+            self._runtime_scopes.append(scope)
+        holder = _ConnectionHolder()
+        effect = await context.effect(
+            lambda holder=holder: lambda: _close_connection(holder),
+            label=f"model-connection:{item.connection_id}",
+        )
+        self._effects.append(effect)
+        self.selected[item.connection_id] = item
+        self._holders[item.connection_id] = holder
+
     def holder(self, connection_id: str) -> _ConnectionHolder:
         """Return the pre-registered holder for one selected connection."""
 
@@ -779,7 +799,8 @@ class _Execution:
         snapshot: StoredSnapshot,
         model_id: str | None,
         reasoning_effort: str | None,
-        chat: Mapping[str, BoundChatModel],
+        main: BoundChatModel,
+        scope: _DriverScope,
     ) -> None:
         self.owner_task = asyncio.current_task()
         self.state = state
@@ -787,13 +808,32 @@ class _Execution:
         self.snapshot = snapshot
         self.model_id = model_id
         self.reasoning_effort = reasoning_effort
-        self._chat = MappingProxyType(dict(chat))
+        self._main = main
+        self._scope = scope
+        self._uses: dict[tuple[str, str, str | None], BoundChatModel] = {}
+        self._lock = asyncio.Lock()
 
-    def chat(self, role: str) -> BoundChatModel:
-        try:
-            return self._chat[role]
-        except KeyError as exc:
-            raise ModelUnavailableError(f"模型角色不可用: {role}").exception() from exc
+    def chat(self) -> BoundChatModel:
+        return self._main
+
+    # 插件按自己的配置取模型：同一冻结目录里解析，按 use_id 记出处，同一选择只绑定一次。
+    async def use(self, use: ModelUse, choice: ModelChoice) -> BoundChatModel:
+        if self.owner_task is not asyncio.current_task():
+            raise RuntimeError("model execution 不能由子 task 继承")
+        main = self._main.descriptor
+        requested = (
+            (main.model_id, main.reasoning_effort)
+            if use.check(choice).follow == "session"
+            else None if choice.model_id is None else (choice.model_id, choice.reasoning_effort)
+        )
+        model_id, effort = self.state.pick_chat(self.snapshot, use, requested)
+        key = (use.use_id, model_id, effort)
+        async with self._lock:
+            bound = self._uses.get(key)
+            if bound is None:
+                bound = await self.state.bind_use(self, model_id, use.use_id, effort, self._scope)
+                self._uses[key] = bound
+            return bound
 
 
 _CURRENT_EXECUTION: ContextVar[_Execution | None] = ContextVar(
@@ -836,24 +876,6 @@ register_task_bound_context(_CURRENT_MODEL_SELECTION, copy_to_child=_copy_model_
 register_task_bound_context(_CURRENT_EXECUTION, copy_to_child=_copy_execution_selection)
 
 
-def _check_vision_binding(snapshot: StoredSnapshot) -> None:
-    """Reject a corrupt historical vision binding before any driver opens."""
-
-    model_id = snapshot.role_bindings.get(_VISION_ROLE)
-    if model_id is None:
-        return
-    model = snapshot.models.get(model_id)
-    if model is None or model.kind != 'chat' or not model.enabled:
-        raise ModelUnavailableError(f"vision model 不可用: {model_id}").exception()
-    connection = snapshot.connections.get(model.connection_id)
-    if connection is None or not connection.enabled:
-        raise ModelUnavailableError(
-            f"vision model connection 不可用: {model.connection_id}"
-        ).exception()
-    if "image" not in model.capabilities.input_modalities:
-        raise ModelUnavailableError("vision role requires an image-capable model").exception()
-
-
 class _DriversView:
     def __init__(self, state: ModelsState) -> None:
         self._state = state
@@ -885,6 +907,12 @@ class _ChatModelsView:
         reasoning_effort: str | None = None,
     ):
         return self._state.independent_execution(model_id, reasoning_effort)
+
+    async def resolve(
+        self, use: ModelUse, choice: ModelChoice, session: ChatModelSelection = ChatModelSelection(),
+    ) -> ChatModelSelection:
+        async with self._state.context.runtime_scope():
+            return await self._state.resolve(use, choice, session)
 
 
 class _EmbeddingsView:
@@ -1183,45 +1211,76 @@ class ModelsState:
             raise ValueError(f"模型不支持推理强度: {selection.reasoning_effort}")
         return selection
 
-    def _select_chat_models(
+    def _select_main(
         self,
         snapshot: StoredSnapshot,
         explicit_model_id: str | None,
         reasoning_effort: str | None,
-    ) -> tuple[_SelectedChat, ...]:
-        """Freeze role-to-model choices before any driver connection can await."""
+    ) -> _SelectedChat:
+        """Freeze the execution's main model before any driver connection can await."""
 
-        _check_vision_binding(snapshot)
-        selected: list[_SelectedChat] = []
-        for role in MODEL_ROLES:
-            model_id = snapshot.role_bindings.get(role)
-            binding_role = role
-            if explicit_model_id is not None and role == _AGENT_ROLE:
-                model_id = explicit_model_id
-            if model_id is None:
-                # 已验证的会话选择直接供 agent 使用，不要求另存系统默认。
-                if role == _DEFAULT_ROLE and explicit_model_id is None:
-                    raise ModelUnavailableError("尚未配置 default 聊天模型").exception()
-                default_id = snapshot.role_bindings.get(_DEFAULT_ROLE)
-                if role == _VISION_ROLE:
-                    if (
-                        default_id is None
-                        or "image"
-                        not in snapshot.models[default_id].capabilities.input_modalities
-                    ):
-                        continue
-                model_id = default_id
-                binding_role = _DEFAULT_ROLE
-            if model_id is None:
-                continue
-            effort = (
-                reasoning_effort
-                if explicit_model_id and role == _AGENT_ROLE
-                else snapshot.role_reasoning_efforts.get(binding_role)
-                or snapshot.models[model_id].default_reasoning_effort
-            )
-            selected.append(_SelectedChat(role, model_id, effort))
-        return tuple(selected)
+        if explicit_model_id is not None:
+            return _SelectedChat(_MAIN_ROLE, explicit_model_id, reasoning_effort)
+        model_id, effort = self._default_chat(snapshot)
+        return _SelectedChat(_MAIN_ROLE, model_id, effort)
+
+    def _default_chat(self, snapshot: StoredSnapshot) -> tuple[str, str | None]:
+        model_id = snapshot.role_bindings.get(_DEFAULT_ROLE)
+        if model_id is None:
+            raise ModelUnavailableError("尚未配置 default 聊天模型").exception()
+        return model_id, (snapshot.role_reasoning_efforts.get(_DEFAULT_ROLE)
+                          or snapshot.models[model_id].default_reasoning_effort)
+
+    # 插件选择落到冻结目录：请求的模型可用且满足能力门槛时用它，否则回到默认模型；默认也不满足则明确失败。
+    def pick_chat(
+        self, snapshot: StoredSnapshot, use: ModelUse, requested: tuple[str, str | None] | None,
+    ) -> tuple[str, str | None]:
+        if requested is not None:
+            model = snapshot.models.get(requested[0])
+            connection = None if model is None else snapshot.connections.get(model.connection_id)
+            if (model is not None and connection is not None and model.kind == 'chat' and model.enabled
+                    and self._availability(connection) == 'available' and use.accepts(model.capabilities)):
+                effort = requested[1]
+                if effort is None or effort not in model.capabilities.supported_reasoning_efforts:
+                    effort = model.default_reasoning_effort
+                return model.model_id, effort
+            logger.warning("模型用途 %s 请求的 %s 不可用，改用默认模型", use.use_id, requested[0])
+        model_id, effort = self._default_chat(snapshot)
+        if not use.accepts(snapshot.models[model_id].capabilities):
+            raise ModelUnavailableError(
+                f"默认模型不满足「{use.label}」的要求（需要{'、'.join(MODEL_NEED_LABELS[need] for need in sorted(use.needs))}），"
+                "请在该插件设置里指定模型"
+            ).exception()
+        return model_id, effort
+
+    # 执行中途绑定另一个模型：连接按需追加进本次执行的驱动作用域，随执行一起关闭。
+    async def bind_use(
+        self, execution: _Execution, model_id: str, role: str, effort: str | None, scope: _DriverScope,
+    ) -> BoundChatModel:
+        connection = execution.snapshot.connections[execution.snapshot.models[model_id].connection_id]
+        (selected,) = self._select_driver_records((connection,))
+        await scope.add(selected)
+        return await self._bind_chat(
+            self._runtime_namespace((selected,)), execution.snapshot, model_id, role, effort, scope,
+        )
+
+    # 交给另一回合的选择：跟随对话用调用方读到的会话选择；回到默认时给空选择，让那一回合自己冻结默认模型。
+    async def resolve(
+        self, use: ModelUse, choice: ModelChoice, session: ChatModelSelection,
+    ) -> ChatModelSelection:
+        if use.check(choice).follow == "session":
+            requested = None if session.model_id is None else (session.model_id, session.reasoning_effort)
+        else:
+            requested = None if choice.model_id is None else (choice.model_id, choice.reasoning_effort)
+        if requested is None and not use.needs:
+            return ChatModelSelection()
+        snapshot = await run_file_io(self._snapshot_required)
+        model_id, effort = self.pick_chat(snapshot, use, requested)
+        if choice.follow == "session" and model_id == session.model_id:
+            return session
+        if (model_id, effort) == self._default_chat(snapshot):
+            return ChatModelSelection()
+        return ChatModelSelection(model_id, effort)
 
     @asynccontextmanager
     async def execution(
@@ -1263,27 +1322,22 @@ class ModelsState:
                     ChatModelSelection(model_id, reasoning_effort)
                 )
                 snapshot = self._snapshot_required()
-            selected_models = self._select_chat_models(
+            main = self._select_main(
                 snapshot,
                 selection.model_id,
                 selection.reasoning_effort,
             )
-            connections = tuple(
-                snapshot.connections[snapshot.models[item.model_id].connection_id]
-                for item in selected_models
-            )
-            selected_drivers = self._select_driver_records(connections)
+            connection = snapshot.connections[snapshot.models[main.model_id].connection_id]
+            selected_drivers = self._select_driver_records((connection,))
             namespace = self._runtime_namespace(selected_drivers)
             async with _driver_scope(
-                self, connections, selected=selected_drivers
+                self, (connection,), selected=selected_drivers
             ) as opened:
-                execution = await self._build_execution(
-                    namespace,
-                    snapshot,
-                    selection.model_id,
-                    selection.reasoning_effort,
-                    selected_models,
-                    opened,
+                bound = await self._bind_chat(
+                    namespace, snapshot, main.model_id, main.role, main.effort, opened,
+                )
+                execution = _Execution(
+                    self, namespace, snapshot, selection.model_id, selection.reasoning_effort, bound, opened,
                 )
                 token = _CURRENT_EXECUTION.set(execution)
                 try:
@@ -1421,34 +1475,6 @@ class ModelsState:
         if not connection.enabled:
             raise ModelUnavailableError(f"模型连接已禁用: {connection.connection_id}").exception()
         return connection
-
-    async def _build_execution(
-        self,
-        plugin_snapshot_id: str,
-        snapshot: StoredSnapshot,
-        explicit_model_id: str | None,
-        reasoning_effort: str | None,
-        selected: tuple[_SelectedChat, ...],
-        opened: _DriverScope,
-    ) -> _Execution:
-        chat: dict[str, BoundChatModel] = {}
-        for item in selected:
-            chat[item.role] = await self._bind_chat(
-                plugin_snapshot_id,
-                snapshot,
-                item.model_id,
-                item.role,
-                item.effort,
-                opened,
-            )
-        return _Execution(
-            self,
-            plugin_snapshot_id,
-            snapshot,
-            explicit_model_id,
-            reasoning_effort,
-            chat,
-        )
 
     async def _bind_chat(
         self,

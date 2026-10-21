@@ -49,7 +49,8 @@ from plugins.models.contract import (
 from plugins.models.contract import BoundModelDescriptor
 from plugins.models.contract import ModelCallStats
 
-MODEL_ROLES = ("default", "fast", "agent", "vision")
+# 只剩全局默认；旧库里的 fast/agent/vision 行不再读取，保留原样便于回滚。
+MODEL_ROLES = ("default",)
 _LEGACY_OPENAI_DRIVER_IDS = ("openai", "deepseek", "qwen")
 
 logger = logging.getLogger(__name__)
@@ -365,7 +366,7 @@ class ModelsStore:
             ).fetchall()
             role_rows = connection.execute(
                 "SELECT role, model_id, reasoning_effort "
-                "FROM model_role_bindings ORDER BY role"
+                "FROM model_role_bindings WHERE role = 'default'"
             ).fetchall()
 
         connections = {
@@ -837,12 +838,6 @@ class ModelsStore:
             if command.image_input and "image" not in modalities:
                 modalities.append("image")
             if not command.image_input:
-                # 与能力写入共用 CAS 事务，不能留下会阻断所有聊天的视觉绑定。
-                if connection.execute(
-                    "SELECT 1 FROM model_role_bindings WHERE role = 'vision' AND model_id = ?",
-                    (model_id,),
-                ).fetchone() is not None:
-                    raise ValueError("此模型正在用于视觉角色，请先更换视觉模型，再关闭可看图。")
                 modalities = [item for item in modalities if item != "image"]
             if not modalities:
                 modalities = ["text"]
@@ -911,16 +906,6 @@ class ModelsStore:
         role = command.role
         if role is not None and type(role) is not str:
             raise ValueError("model role must be a string")
-        if command.model_id == "" and role in MODEL_ROLES and role != "default":
-            # 清除单独指定：该场景回到全局默认模型。
-            return self._domain_write(
-                command.expected_revision,
-                "set-default",
-                lambda connection: connection.execute(
-                    "DELETE FROM model_role_bindings WHERE role = ?", (role,)
-                ).rowcount
-                > 0,
-            )
         model_id = _required(command.model_id, "model_id")
 
         def write(connection: sqlite3.Connection) -> None:
@@ -954,20 +939,6 @@ class ModelsStore:
             ).fetchone()
             if row is None:
                 raise ValueError(f"chat model is unavailable: {model_id}")
-            if role == "vision":
-                payload = _decode_model_payload(row["capabilities_json"], f"model {model_id}")
-                modalities = (
-                    payload[0].input_modalities
-                    if payload is not None
-                    else tuple(
-                        _decode_string_list(
-                            str(row["input_modalities"]),
-                            f"model {model_id} modalities",
-                        )
-                    )
-                )
-                if "image" not in modalities:
-                    raise ValueError("vision role requires an image-capable model")
             connection.execute(
                 """
                 INSERT INTO model_role_bindings(role, model_id, reasoning_effort)

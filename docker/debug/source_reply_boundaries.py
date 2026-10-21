@@ -203,7 +203,7 @@ async def check(directory: Path, kind: str, mode: str):
     class Models:
         @asynccontextmanager
         async def execution(self, **_options):
-            yield SimpleNamespace(chat=lambda _role: bound)
+            yield SimpleNamespace(chat=lambda: bound)
 
     async def reply(task, reader, source):
         # This runs after the owner's admission and before the actual reply guard.

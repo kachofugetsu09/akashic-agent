@@ -123,7 +123,7 @@ async def check(directory: Path, stage: str, control: bool, *, boundary_source: 
     class Models:
         @asynccontextmanager
         async def execution(self, **_kwargs):
-            yield SimpleNamespace(chat=lambda _role: bound)
+            yield SimpleNamespace(chat=lambda: bound)
 
     class Content(fixture.TextContent):
         async def decode(self, text, references=()):
