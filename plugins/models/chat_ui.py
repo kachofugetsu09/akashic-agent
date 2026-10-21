@@ -19,7 +19,7 @@ from plugins.models.contract import (
 from plugins.ui.contract import PluginUiRpcInvalidRequest
 
 from .selection import read_saved
-from .usage import CacheUsage
+from .usage import INSIGHT_SESSIONS, CacheUsage, InsightOrder
 
 
 # 聊天界面经插件界面查询读模型数据；宿主不再持有模型目录与会话选择的投影。
@@ -40,10 +40,12 @@ class ChatUiQueries:
                 raise PluginUiRpcInvalidRequest("用量查询需要会话与消息")
             return {"output_tokens": await self.usage.message_output_tokens(session_id, message_id)}
         if method == "usage.insights":
-            since = payload.get("since")
-            if set(payload) - {"since"} or not (since is None or _instant(since)):
+            since, limit, order = payload.get("since"), payload.get("limit", 6), payload.get("order", "input")
+            if set(payload) - {"since", "limit", "order"} or not (since is None or _instant(since)):
                 raise PluginUiRpcInvalidRequest("用量洞察只接受带时区的 since 时刻")
-            return await self.usage.insights(cast(str | None, since))
+            if type(limit) is not int or not 1 <= limit <= INSIGHT_SESSIONS or order not in ("input", "context"):
+                raise PluginUiRpcInvalidRequest(f"会话行数须为 1–{INSIGHT_SESSIONS}，排序只有 input 与 context")
+            return await self.usage.insights(cast(str | None, since), limit, cast(InsightOrder, order))
         if method == "usage.status":
             if payload or not session_id:
                 raise PluginUiRpcInvalidRequest("用量短值查询需要会话且不接受参数")

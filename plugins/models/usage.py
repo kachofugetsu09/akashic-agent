@@ -13,7 +13,7 @@ from contextlib import closing
 from dataclasses import asdict, dataclass, field
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
-from typing import Any, cast
+from typing import Any, Literal, cast
 
 from agent.plugin_composition import Context
 from core.common.file_io import run_file_io
@@ -29,7 +29,11 @@ _PREVIEW_CHARS = 90
 _SCAN_SECONDS = 2.0
 _STATUS_SECONDS = 0.5
 _HOUR_DAYS = 31
-_INSIGHT_SESSIONS = 1000
+# 插件查询回包上限 192 KiB：一行会话最多约 0.8 KiB（标题已截断），31 天小时桶约 40 KiB，100 行留足余量。
+INSIGHT_SESSIONS = 100
+_TITLE_CHARS = 80
+# input 按范围内输入排行；context 按最近一轮上下文占比排行，未知窗口排最后。
+InsightOrder = Literal["input", "context"]
 # 检查点里存的是按当前计数规则算好的结果：改了计数规则（什么算计入、主动来源集合、预览、分桶）必须加一，旧结果随之丢弃重算。
 _CHECKPOINT_SCHEMA = 2
 
@@ -210,12 +214,12 @@ class CacheUsage:
                 raise RuntimeError("消息账本或 Turn 投影不可用")
             return await run_file_io(lambda: self._message_output(catalog, projection, session_id, message_id))
 
-    async def insights(self, since: str | None) -> dict[str, object]:
+    async def insights(self, since: str | None, limit: int, order: InsightOrder) -> dict[str, object]:
         """全部会话的小时桶、来源、模型与会话排行；since 之后的用量另算一列（界面传本地零点）。"""
         with self._ctx.borrow(MESSAGE_CATALOG) as catalog, self._ctx.borrow(TURN_PROJECTION) as projection:
             if catalog is None or projection is None:
                 raise RuntimeError("消息账本或 Turn 投影不可用")
-            return await run_file_io(lambda: self._insights(catalog, projection, since))
+            return await run_file_io(lambda: self._insights(catalog, projection, since, limit, order))
 
     async def status(self, session_id: str) -> dict[str, object] | None:
         """菜单短值：只在 0.5 秒预算内推进这个会话，冷的长会话先给已扫到的部分，下次接着扫。"""
@@ -257,7 +261,8 @@ class CacheUsage:
         }
 
     # 1. 小时桶全量给出，界面按范围切；2. 来源与模型只合并 since 之后的桶；3. 会话按 since 之后的输入排行。
-    def _insights(self, catalog: MessageCatalog, projection: TurnProjection, since: str | None) -> dict[str, object]:
+    def _insights(self, catalog: MessageCatalog, projection: TurnProjection, since: str | None,
+                  limit: int, order: InsightOrder) -> dict[str, object]:
         cutoff = _ceil_hour_key(since) if since else ""
         with self._lock:
             progress = self._advance(catalog, projection)
@@ -280,12 +285,14 @@ class CacheUsage:
             rows = [_session_row(session_id, owned, cutoff) for session_id, owned in sessions.items()]
             rows = [row for row in rows if not cutoff or cast(Mapping[str, int], row["recent"])["turns"]]
             rows.sort(key=lambda row: -cast(Mapping[str, int], row["recent" if cutoff else "totals"])["prompt_tokens"])
+            if order == "context":
+                rows.sort(key=_fill, reverse=True)
         return {
             "complete": True,
             "hours": [[key, *item.row()] for key, item in sorted(hours.items())],
             "sources": [{"source": key, **item.body()} for key, item in sorted(sources.items(), key=lambda e: -e[1].prompt_tokens)],
             "models": [{"model": key, **item.body()} for key, item in sorted(models.items(), key=lambda e: -e[1].prompt_tokens)],
-            "sessions": _titled(catalog, rows[:_INSIGHT_SESSIONS]), "total_sessions": len(rows),
+            "sessions": _titled(catalog, rows[:limit]), "total_sessions": len(rows),
         }
 
     def _status(self, catalog: MessageCatalog, projection: TurnProjection, session_id: str) -> dict[str, object] | None:
@@ -538,10 +545,16 @@ def _session_row(session_id: str, owned: list[tuple[str, _SourceState]], cutoff:
     }
 
 
+def _fill(row: Mapping[str, object]) -> float:
+    window = cast(int, row["context_window"])
+    return cast(int, row["context_tokens"]) / window if window else -1.0
+
+
 # 只给要返回的行读标题：每个标题是一次账本查询，不能在排序截断前对全部会话做。
 def _titled(catalog: MessageCatalog, rows: list[dict[str, object]]) -> list[dict[str, object]]:
     for row in rows:
-        row["title"] = catalog.reader(cast(str, row["session_id"])).title or row["title"]
+        title = catalog.reader(cast(str, row["session_id"])).title or cast(str, row["title"])
+        row["title"] = title if len(title) <= _TITLE_CHARS else title[:_TITLE_CHARS - 1] + "…"
     return rows
 
 

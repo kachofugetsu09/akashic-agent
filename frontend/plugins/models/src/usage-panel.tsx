@@ -21,6 +21,7 @@ type Query = PluginUiSidebarPanelContext["query"];
 
 const HOT = 0.8;
 const SOURCE_LABEL: Record<string, string> = { conversation: "对话", programmatic: "程序调用", wake: "主动消息", drift: "漫游", subagent: "子智能体" };
+const SESSION_ROWS = 100;
 const RANGES = [[1, "今天"], [7, "7 天"], [30, "30 天"]] as const;
 const ICON = '<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"><path d="M2.5 13.5h11M4.5 11V7.5M8 11V3.5M11.5 11V6"/></svg>';
 
@@ -109,7 +110,7 @@ function todayBuckets(hours: Insights["hours"]) {
 function Summary({ query, sessionId, open, sheet }: { query: Query; sessionId?: string; open: (tab: Tab, session?: string) => void; sheet: boolean }) {
   const start = rangeStart(1);
   const own = useQuery<SessionDetail>(query, "usage.session", sessionId ? { session_id: sessionId } : {}, sessionId ?? "none");
-  const all = useQuery<Insights>(query, "usage.insights", { since: start.toISOString() }, "");
+  const all = useQuery<Insights>(query, "usage.insights", { since: start.toISOString(), limit: 3 }, "");
   const row = sessionId ? own.data?.session ?? null : null;
   const today = all.data ? since(all.data.hours, start) : null;
   return <div className="usage-summary" data-sheet={sheet || undefined}>
@@ -138,7 +139,7 @@ function Summary({ query, sessionId, open, sheet }: { query: Query; sessionId?: 
 
 function Overview({ query, days, setDays, onPick }: { query: Query; days: number; setDays: (days: number) => void; onPick: (id: string) => void }) {
   const start = rangeStart(days);
-  const { data, error } = useQuery<Insights>(query, "usage.insights", { since: start.toISOString() }, "");
+  const { data, error } = useQuery<Insights>(query, "usage.insights", { since: start.toISOString(), limit: 6 }, "");
   const [group, setGroup] = useState<"source" | "model">("source");
   if (!data) return <p className="usage-note">{error || "正在读取…"}</p>;
   const total = since(data.hours, start);
@@ -190,18 +191,19 @@ function RangeSwitch({ days, setDays }: { days: number; setDays: (days: number) 
 function SessionsPage({ query, days, setDays, selected, setSelected, sheet, context }: {
   query: Query; days: number; setDays: (days: number) => void; selected: string; setSelected: (id: string) => void; sheet: boolean; context: boolean;
 }) {
-  const { data, error } = useQuery<Insights>(query, "usage.insights", { since: rangeStart(context ? 30 : days).toISOString() }, "");
+  // 回包有 192 KiB 上限：只取排行前 SESSION_ROWS 个；上下文页按占比在服务端排好再截。
+  const { data, error } = useQuery<Insights>(query, "usage.insights",
+    { since: rangeStart(context ? 30 : days).toISOString(), limit: SESSION_ROWS, order: context ? "context" : "input" }, "");
   const [filter, setFilter] = useState("");
   const [pushed, setPushed] = useState(false);
   const needle = filter.trim().toLowerCase();
   const rows = (data?.sessions ?? []).filter((row) => !needle || sessionTitle(row).toLowerCase().includes(needle) || row.sources.some((source) => sourceLabel(source).includes(needle)));
-  if (context) rows.sort((a, b) => (fill(b) ?? -1) - (fill(a) ?? -1));
   const active = selected || rows[0]?.session_id || "";
   const list = <div className="usage-pane">
     {context ? null : <RangeSwitch days={days} setDays={setDays} />}
     <input className="usage-filter" type="search" value={filter} placeholder="按标题或来源筛选" aria-label="筛选会话" onChange={(event) => setFilter(event.target.value)} />
     {!data ? <p className="usage-note">{error || "正在读取…"}</p> : null}
-    {data && data.total_sessions > data.sessions.length ? <p className="usage-note">只列出输入最多的 {data.sessions.length} 个会话（共 {data.total_sessions} 个）。</p> : null}
+    {data && data.total_sessions > data.sessions.length ? <p className="usage-note">只列出{context ? "上下文占用最高" : "输入最多"}的 {data.sessions.length} 个会话（共 {data.total_sessions} 个），筛选只在其中查找。</p> : null}
     {rows.map((row) => <button key={row.session_id} type="button" className="usage-item" aria-current={row.session_id === active || undefined}
       onClick={() => { setSelected(row.session_id); setPushed(true); }}>
       <span className="t">{sessionTitle(row)}</span>
