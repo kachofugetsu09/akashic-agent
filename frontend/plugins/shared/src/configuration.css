@@ -25,8 +25,11 @@
 .config-field:has(>input:not([type=number])){grid-template-columns:minmax(0,1fr) minmax(12rem,17rem)}
 .config-field>span{grid-area:label}
 .config-field>small{grid-area:hint;font-size:13px;font-weight:400;line-height:1.45;color:var(--ak-ink-muted,#6b6a64)}
-.config-field>input,.config-field>select{grid-area:control;box-sizing:border-box;width:100%;min-height:36px;padding:6px 10px;font:inherit;font-size:14px;font-weight:400;border:1px solid var(--ak-rule-default,#d9d6c9);border-radius:8px;background:var(--ak-paper-editing,#faf9f5);color:inherit}
+.config-field>input,.config-field>select,.config-field>textarea{grid-area:control;box-sizing:border-box;width:100%;min-height:36px;padding:6px 10px;font:inherit;font-size:14px;font-weight:400;border:1px solid var(--ak-rule-default,#d9d6c9);border-radius:8px;background:var(--ak-paper-editing,#faf9f5);color:inherit}
 .config-field>input::placeholder{color:var(--ak-ink-muted,#8a887f)}
+/* 多行列表：每行一项，等宽字体便于核对 owner/repo 这类标识。 */
+.config-field>textarea{resize:vertical;font-family:var(--ak-type-technical,monospace);font-size:13px;line-height:1.5}
+.config-field:has(>textarea){grid-template-columns:minmax(0,1fr) minmax(12rem,17rem)}
 /* 模型字段：来源与思考强度上下排列，占同一控件列；警示文字替换说明。 */
 .config-model-control{grid-area:control;display:grid;gap:6px;min-width:0}
 .config-model-control>select{box-sizing:border-box;width:100%;min-height:36px;padding:6px 10px;font:inherit;font-size:14px;font-weight:400;border:1px solid var(--ak-rule-default,#d9d6c9);border-radius:8px;background:var(--ak-paper-editing,#faf9f5);color:inherit}

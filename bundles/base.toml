@@ -95,6 +95,9 @@ plugin = "working_directory@release"
 [rows."vision"]
 plugin = "vision@release"
 
+[rows."plugin_settings"]
+plugin = "plugin_settings@release"
+
 [rows."skills"]
 plugin = "skills@release"
 

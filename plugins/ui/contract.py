@@ -15,6 +15,7 @@ from typing import Literal, Protocol, cast
 
 from fastapi import FastAPI
 from pydantic import BaseModel, ValidationError
+from pydantic_core import to_jsonable_python
 from fastapi.routing import APIRoute
 from starlette.datastructures import Headers, MutableHeaders
 from starlette.responses import FileResponse, Response
@@ -610,12 +611,12 @@ class ModelSettings:
         async with self.ctx.runtime_scope():
             config = self.model.model_validate(self.ctx.config)
             explicit = config.model_dump(mode="json", exclude_unset=True)
-            defaults = self.model.model_validate({}).model_dump(mode="json")
+            defaults = _field_defaults(self.model, self.fields)
             extra = dict(await self.status()) if self.status else {}
             return {**self.ctx.require(PLUGIN_CONFIG).read(self.ctx), "enabled": True, "ready": True,
                     "can_enable": True, "blocked": False, "reason": "", **extra,
                     "values": {key: explicit[key] for key in self.fields if key in explicit},
-                    "defaults": {key: defaults[key] for key in self.fields},
+                    "defaults": defaults,
                     "has_token": self.secret is not None and getattr(config, self.secret) is not None}
 
     # 1. 只接受已知字段；2. 空值回到默认，空凭据保留原值；3. 校验通过后只保存显式设置的字段。
@@ -649,6 +650,13 @@ class ModelSettings:
 
     def receipt(self, request_id: str) -> dict[str, object]:
         return self.ctx.entrypoint(lambda: self.ctx.require(PLUGIN_CONFIG).receipt(self.ctx, request_id))()
+
+
+# 只取有默认值的字段：配置模型里可以有不在表单上的必填项（如外置插件的凭据路径）。
+def _field_defaults(model: type[BaseModel], fields: tuple[str, ...]) -> dict[str, object]:
+    values = {name: model.model_fields[name].get_default(call_default_factory=True)
+              for name in fields if not model.model_fields[name].is_required()}
+    return cast(dict[str, object], to_jsonable_python(values))
 
 
 # 常见校验错误换成中文；插件自己写的 ValueError 原样显示。
