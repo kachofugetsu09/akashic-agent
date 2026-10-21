@@ -19,6 +19,7 @@ import { MessageSquarePlus } from "lucide-react";
 import { CompactNavigation } from "./compact-navigation";
 import { NewChatScope } from "./new-chat-scope";
 import { DesktopSidebar } from "./desktop-sidebar";
+import { SidebarPanelHost } from "./sidebar-panels";
 import { useSidebarRail } from "./use-sidebar-rail";
 import type { DesktopChatController } from "./use-desktop-chat-controller";
 import { PluginUiSlot } from "./plugin-ui-runtime";
@@ -141,6 +142,8 @@ export function DesktopChatView({ controller }: DesktopChatViewProps) {
             onRestoreSession={(key) => { void restoreSession(key); }} onDismissDeletedNotice={dismissDeletedNotice}
             onRenameSession={renameSession}
           />
+        {/* 面板外框挂在侧栏之外：手机上侧栏随导航抽屉卸载，面板仍要留着；短值随一轮回答结束重读。 */}
+        <SidebarPanelHost sessionId={activeSessionId || undefined} refreshToken={generating ? "busy" : "idle"} />
 
         <section className={`chat-main${conversationLayout ? "" : " is-empty"}`}>
         <header className={`conversation-heading${!activeSessionId && !activeGroup ? " is-blank" : ""}`}>
