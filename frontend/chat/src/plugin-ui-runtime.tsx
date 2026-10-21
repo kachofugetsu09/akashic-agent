@@ -2,6 +2,7 @@ import React, { useEffect, useMemo, useState, useSyncExternalStore } from "react
 
 import { createUuid as createRequestId } from "./browser-uuid.ts";
 import { PluginUiQueryQueue } from "./plugin-ui-query-queue";
+import { takeStartupResponse } from "./web-chat-data";
 import { PluginUiResultCache } from "./plugin-ui-result-cache";
 import { composerControls } from "./composer-contributions";
 import type { ScopeFields } from "./scope-fields";
@@ -136,7 +137,8 @@ export function receivePluginUiCatalog(next: PluginUiCatalog): Promise<void> {
 
 /** 通过桌面适配器加载同一份内容寻址插件界面。 */
 export async function loadWebPluginCatalog(signal?: AbortSignal): Promise<void> {
-  const response = await fetch("/api/chat/plugin-ui/catalog", { signal });
+  const response = await takeStartupResponse("/api/chat/plugin-ui/catalog") ?? await fetch("/api/chat/plugin-ui/catalog", { signal });
+  signal?.throwIfAborted();
   if (!response.ok) throw await webPluginError(response);
   await receivePluginUiCatalog(parseWebPluginCatalog(await response.json()));
 }

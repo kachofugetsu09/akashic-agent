@@ -59,8 +59,22 @@ export class ChatRequestError extends Error {
   constructor(readonly status: number, message: string) { super(message); }
 }
 
+// 预热响应只在页面打开后这段时间内复用：首跑引导期间聊天迟迟未就绪，期间的变化会让早先的读取过时。
+const STARTUP_READ_MAX_AGE_MS = 10_000;
+
+// index.html 内联脚本按 URL 预热的启动读取，一次性取用；失败、过时或没有预热时返回 null，由调用方正常请求。
+export async function takeStartupResponse(url: string): Promise<Response | null> {
+  const reads = (window as { __akashicStartupReads?: Map<string, Promise<Response | null>> }).__akashicStartupReads;
+  const prefetched = reads?.get(url);
+  reads?.delete(url);
+  if (!prefetched || performance.now() > STARTUP_READ_MAX_AGE_MS) return null;
+  const response = await prefetched;
+  return response?.ok ? response : null;
+}
+
 export async function fetchChatJson<T>(url: string, options: RequestInit = {}): Promise<T> {
-  const response = await fetch(url, options);
+  const response = await takeStartupResponse(url) ?? await fetch(url, options);
+  options.signal?.throwIfAborted();
   const text = await response.text();
   let payload: unknown = null;
   if (text) {
