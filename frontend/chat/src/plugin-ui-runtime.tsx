@@ -422,12 +422,14 @@ function deliverPush(key: string, value: Record<string, unknown> | null) {
 }
 
 /** WebSocket 上的插件推送帧；不是该帧时返回 false，交给其他解析器。 */
-export function receivePluginUiEvent(value: unknown): boolean {
+export function receivePluginUiEvent(value: unknown, activeSessionId: string): boolean {
   if (typeof value !== "object" || value === null || (value as { type?: unknown }).type !== "plugin_ui.event") return false;
   const frame = value as Record<string, unknown>;
   const state = frame.value;
   if (typeof frame.plugin_id !== "string" || typeof frame.plugin_revision !== "string" || typeof frame.session_id !== "string"
     || (state !== null && (typeof state !== "object" || Array.isArray(state)))) throw new Error("插件推送帧无效");
+  // 已换会话时，旧订阅在途的帧不能重新填回被清空的状态。
+  if (frame.session_id !== activeSessionId) return true;
   const key = pushKey(frame.plugin_id, frame.plugin_revision, frame.session_id);
   // null 表示流已结束，直接忘掉这个键，长连接跨会话不会越攒越多。
   if (state === null) pushed.delete(key);

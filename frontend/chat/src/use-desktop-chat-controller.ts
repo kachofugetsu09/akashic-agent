@@ -563,7 +563,7 @@ export function useDesktopChatController() {
                     receiveSessionActivity(activity);
                     return;
                   }
-                  if (receivePluginUiEvent(value)) return;
+                  if (receivePluginUiEvent(value, activeSessionRef.current)) return;
                   const frame = readMessageLogFrame(value);
                   if (frame) {
                     if (frame.session_id !== activeSessionRef.current) return;
