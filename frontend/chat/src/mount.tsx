@@ -25,7 +25,9 @@ const MODULE_BUILD = "__AKASHIC_CHAT_BUILD__";
 // 样式与本模块同目录发布；同一文档只插一次。开发服务器经模块注入样式，没有这份文件。
 function ensureStylesheet(): void {
   if (import.meta.env.DEV) return;
-  const href = new URL(/* @vite-ignore */ `./chat-app.css?v=${MODULE_BUILD}`, import.meta.url).href;
+  const stylesheet = new URL(/* @vite-ignore */ "./chat-app.css", import.meta.url);
+  stylesheet.search = new URL(import.meta.url).search;
+  const href = stylesheet.href;
   if ([...document.querySelectorAll<HTMLLinkElement>("link[rel=stylesheet]")].some((link) => link.href === href)) return;
   const link = document.createElement("link");
   link.rel = "stylesheet";
