@@ -1074,10 +1074,34 @@
   min-width: 0;
 }
 
-/* 连续完成的工具收成一行摘要；展开后成员恢复普通行距。 */
+/* 连续完成的工具：尾部 3 个逐行，更早的收进一行；展开后成员恢复普通行距。 */
 .tool-group {
   min-width: 0;
 }
+
+/* 折叠入口是「箭头 + 计数」，不是一条工具记录：三列栅格（箭头、文字、耗时），
+   箭头随展开转 180°，与工具行自己的 chevron 同一动效语言。 */
+.tool-group-summary .tool-step-heading {
+  grid-template-columns: 13px minmax(0, 1fr) auto;
+}
+
+.tool-group-caret {
+  flex: none;
+  width: 13px;
+  color: var(--ak-color-text-secondary);
+  transition: translate var(--ak-sys-duration-short) var(--ak-sys-motion-standard), transform var(--ak-sys-duration-short) var(--ak-sys-motion-standard);
+}
+
+.tool-group-caret.open {
+  transform: rotate(180deg);
+}
+
+/* 悬停或键盘聚焦时箭头与文字一起提到主墨色，表示这一整行可点。 */
+@media (hover: hover) {
+  .tool-group-summary:hover .tool-group-caret { color: var(--ak-ink-primary); }
+}
+
+.tool-group-summary:focus-visible .tool-group-caret { color: var(--ak-ink-primary); }
 
 .tool-group-items {
   display: grid;
