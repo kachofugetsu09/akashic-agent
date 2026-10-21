@@ -2,6 +2,7 @@ import React, { useEffect, useMemo, useState, useSyncExternalStore } from "react
 
 import { createUuid as createRequestId } from "./browser-uuid.ts";
 import { PluginUiQueryQueue } from "./plugin-ui-query-queue";
+import { takeStartupResponse } from "./web-chat-data";
 import { PluginUiResultCache } from "./plugin-ui-result-cache";
 import { composerControls } from "./composer-contributions";
 import type { ScopeFields } from "./scope-fields";
@@ -137,9 +138,12 @@ export function receivePluginUiCatalog(next: PluginUiCatalog): Promise<void> {
 
 /** 通过桌面适配器加载同一份内容寻址插件界面。 */
 export async function loadWebPluginCatalog(signal?: AbortSignal): Promise<void> {
-  const response = await fetch("/api/chat/plugin-ui/catalog", { signal });
+  const response = await takeStartupResponse("/api/chat/plugin-ui/catalog", signal) ?? await fetch("/api/chat/plugin-ui/catalog", { signal });
   if (!response.ok) throw await webPluginError(response);
-  await receivePluginUiCatalog(parseWebPluginCatalog(await response.json()));
+  const catalog = parseWebPluginCatalog(await response.json());
+  // 预热响应的正文读取不受 signal 约束：失去 owner 的旧目录不能再发布。
+  signal?.throwIfAborted();
+  await receivePluginUiCatalog(catalog);
 }
 
 function parseWebPluginCatalog(value: unknown): PluginUiCatalog {
@@ -873,7 +877,8 @@ function queryPlugin({ pluginId, pluginRevision, ownerId, slot, sessionId, messa
     const request: PendingQuery = {
       resolve, reject, ownerId: requestOwnerId, cacheKey, sharedKey, slot, started: false, abort,
       pluginId, method, sessionId, messageId, queuedAt: performance.now(),
-      interactive: sharedKey !== undefined && !prefetch,
+      // 已挂载的槽位是用户正在看的内容，走交互通道；只有预取占后台名额。
+      interactive: !prefetch,
       send: () => {
         tracePluginQuery(requestId, request, "sent");
         request.timeout = window.setTimeout(() => {

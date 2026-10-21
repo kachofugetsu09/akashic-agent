@@ -30,7 +30,7 @@ class ChatUiQueries:
     messages: MessageCatalog
     call_stats: Callable[[str], ModelCallStats]
     usage: CacheUsage
-    icon: Callable[[str], Awaitable[str | None]]
+    icons: Callable[[], Awaitable[Mapping[str, str | None]]]
 
     async def __call__(self, method: str, payload: dict[str, object], *,
                        session_id: str | None, turn_id: str | None) -> dict[str, object]:
@@ -82,7 +82,8 @@ class ChatUiQueries:
                 if not ModelError.matches(error, ModelUnavailableError):
                     raise
         snapshot = await self.catalog()
-        icons = {item.connection_id: await self.icon(item.connection_id) for item in snapshot.connections}
+        stored_icons = await self.icons()
+        icons = {item.connection_id: stored_icons.get(item.connection_id) for item in snapshot.connections}
         return {
             "generationId": snapshot.revision,
             "defaultRuntime": str(snapshot.role_bindings.get("default", "")),

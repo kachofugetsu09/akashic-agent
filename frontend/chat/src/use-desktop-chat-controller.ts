@@ -1020,8 +1020,17 @@ export function useDesktopChatController() {
   const startNewChat = useCallback(() => {
     setSurface("chat");
     clearChatRoute();
+    // 连接健康时只放下正文跟随：整链重连会把侧栏目录、置顶与插件基线全部重取一遍。
+    const previous = activeSessionRef.current;
+    const socket = socketRef.current;
+    const keepSocket = socket?.readyState === WebSocket.OPEN;
     activeSessionRef.current = "";
-    closeConnection();
+    if (keepSocket) {
+      if (previous) {
+        invalidatePluginUiSession(previous);
+        socket.send(JSON.stringify({ type: "session.unfollow", request_id: createUuid() }));
+      }
+    } else closeConnection();
     messagesRequestRef.current?.abort();
     olderMessagesRequestRef.current?.abort();
     sendRequestRef.current?.abort();
@@ -1048,7 +1057,7 @@ export function useDesktopChatController() {
     newChatScopeRef.current = null;
     setNewChatGroup(null);
     // 空白页仍订阅侧栏摘要；旧会话已清空，重连不会继续跟随旧正文。
-    connect();
+    if (!keepSocket) connect();
   }, [closeConnection, connect, setFollowAfter, setMessages, setReplyAvailable, setTimelineMessages]);
 
   const startGroupChat = useCallback((ref: GroupRef) => {

@@ -64,6 +64,7 @@ export function DesktopChatView({ controller }: DesktopChatViewProps) {
   const inputStarts = useMemo(() => timelineInputStarts(controller.timelineMessages), [controller.timelineMessages]);
   const refreshTokens = timelineSourceRefreshTokens(controller.timelineMessages, controller.replyActivities, controller.timelineRefresh);
   const toolResults = useMemo(() => timelineToolResults(controller.timelineMessages), [controller.timelineMessages]);
+  const liveToolToken = useLiveToolResultToken(controller.activeSessionId, toolResults, controller.historyLoading);
   const {
     surface, sidebarSessions, activeSessionId, pendingSessionId, chatReady, messages, timelineMessages, replyActivities, replyAvailable, status,
     streamStore, messageElementsRef, copiedMessageId, shellState, stopPending,
@@ -161,7 +162,7 @@ export function DesktopChatView({ controller }: DesktopChatViewProps) {
             onRename={activeSessionId && !activeSessionDeleted ? (title) => renameSession(activeSessionId, title) : undefined} />
           {/* 插件在标题行右侧的标记；新的工具结果到达时通知插件重新读取会话状态。 */}
           {activeSessionId ? <PluginUiSlot key={`header:${activeSessionId}`} name="header.end" sessionId={activeSessionId}
-            refreshToken={Array.from(toolResults.keys()).join("|")} quiet /> : null}
+            refreshToken={liveToolToken} quiet /> : null}
           {/* 窄屏没有常驻侧栏：新会话留在拇指可达的标题行，不必先打开抽屉；继承当前会话所在的分组。 */}
           {conversationLayout ? <button type="button" className="conversation-heading__new"
             aria-label={activeGroup ? `在 ${activeGroup.label} 中新建会话` : "新会话"} data-tip="新会话"
@@ -504,6 +505,22 @@ function SessionHeadingTitle({ heading, value, onRename }: {
     }}
     onBlur={() => void commit()}
   />;
+}
+
+// 标题行插件只在会话里出现新的工具结果时重新读取；切到会话后随历史加载出现的结果算基线，不触发重读。
+// 基线只在提交后推进（layout effect）：被放弃的并发渲染不能把真实新增的结果吞进基线。
+function useLiveToolResultToken(sessionId: string, toolResults: ReadonlyMap<string, unknown>, historyLoading: boolean): string {
+  const [baseline, setBaseline] = useState<{ sessionId: string; keys: ReadonlySet<string> } | null>(null);
+  const latest = useRef(toolResults);
+  useLayoutEffect(() => { latest.current = toolResults; });
+  useLayoutEffect(() => {
+    // 1. 加载中不设基线；加载完或换会话后，以提交时已有的结果为基线。
+    if (historyLoading) setBaseline(null);
+    else setBaseline((current) => current?.sessionId === sessionId ? current : { sessionId, keys: new Set(latest.current.keys()) });
+  }, [historyLoading, sessionId]);
+  // 2. 基线未就绪或属于别的会话时不出令牌；之后只把基线之外的新结果编进令牌。
+  if (!baseline || baseline.sessionId !== sessionId || historyLoading) return "";
+  return Array.from(toolResults.keys()).filter((key) => !baseline.keys.has(key)).join("|");
 }
 
 class MessageRendererErrorBoundary extends React.Component<
