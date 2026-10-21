@@ -46,22 +46,10 @@ function lastUserInput(messages: readonly TimelineMessage[]): string {
 
 export function DesktopChatView({ controller }: DesktopChatViewProps) {
   const theme = useTheme();
-  const rail = useSidebarRail();
+
   const composerApi = useRef<ComposerApi | null>(null);
-  // 键盘模态标记：替代目录行 CSS 里的 :has(:focus-visible)。Blink 每次按键都会为
-  // :focus-visible 试探重算所有带该 :has() 的行（行数级成本），而模态类只在键鼠切换时翻转一次。
-  useEffect(() => {
-    const root = document.documentElement;
-    const onKey = () => root.classList.add("ak-modality-keyboard");
-    const onPointer = () => root.classList.remove("ak-modality-keyboard");
-    window.addEventListener("keydown", onKey, true);
-    window.addEventListener("pointerdown", onPointer, true);
-    return () => {
-      window.removeEventListener("keydown", onKey, true);
-      window.removeEventListener("pointerdown", onPointer, true);
-      root.classList.remove("ak-modality-keyboard");
-    };
-  }, []);
+  const shellRef = useRef<HTMLDivElement | null>(null);
+  const rail = useSidebarRail(shellRef);
   // 空输入框按 ↑ 取回的上一条提问。
   const lastInput = useMemo(() => lastUserInput(controller.timelineMessages), [controller.timelineMessages]);
   // 改一改再问：原文接在已有草稿之后，不覆盖用户正在写的内容。
@@ -141,7 +129,7 @@ export function DesktopChatView({ controller }: DesktopChatViewProps) {
 
   return (
     <main className="chat-shell">
-      <div className="chat-shell-body" style={rail.style}>
+      <div className="chat-shell-body" ref={shellRef} style={rail.style}>
         <DesktopSidebar
             surface={surface} sessions={sidebarSessions}
             activeSessionId={activeSessionId} pendingSessionId={pendingSessionId} chatReady={chatReady}
@@ -364,6 +352,9 @@ function useComposerClearance(wrapRef: React.RefObject<HTMLDivElement | null>): 
     let pinned = true;
     const onScroll = () => { pinned = scroller.scrollHeight - scroller.scrollTop - scroller.clientHeight <= 4; };
     scroller.addEventListener("scroll", onScroll, { passive: true });
+    // 同值守护：输入卡高度不变时不重复写自定义属性，避免多余的失效与样式重算；
+    // 0 与未设置等价（消费端 var(--composer-grown, 0px) 兜底），初始紧凑态不写。
+    let lastGrown = 0;
     const sync = () => {
       const style = getComputedStyle(main);
       const rem = parseFloat(getComputedStyle(document.documentElement).fontSize) || 16;
@@ -372,8 +363,12 @@ function useComposerClearance(wrapRef: React.RefObject<HTMLDivElement | null>): 
         return value.endsWith("rem") ? parseFloat(value) * rem : parseFloat(value) || 0;
       };
       // 生成中的统计行本来就在预算里，不重复计入。
-      const grown = wrap.offsetHeight - length("--composer-compact-h") - length("--composer-stats-line");
-      main.style.setProperty("--composer-grown", `${Math.max(0, Math.round(grown))}px`);
+      const grown = Math.max(0, Math.round(wrap.offsetHeight - length("--composer-compact-h") - length("--composer-stats-line")));
+      if (grown !== lastGrown) {
+        lastGrown = grown;
+        if (grown === 0) main.style.removeProperty("--composer-grown");
+        else main.style.setProperty("--composer-grown", `${grown}px`);
+      }
       // 2. 紧凑高度本身也会随聚焦态变化（窄屏），所以无论哪种长高，贴底时都把底部重新露出来。
       if (pinned) scroller.scrollTop = scroller.scrollHeight;
     };

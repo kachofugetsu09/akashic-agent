@@ -603,10 +603,12 @@
 /* 两条渲染路径共用阅读结构，源 Markdown 与 DOM 中的文字保持原样。 */
 /* 只清整段回复首块的上边距（标题、表格、代码、引用都算）。富渲染路径每个块都包在 node-slot > node-content 里，
    按 :first-child 写会命中每一个标题，让标题上方比下方还窄。 */
-:is(.agent-content, .process-markdown, .user-bubble) :is(
-  .markdown-reading .markdown-renderer > .node-slot:first-child > .node-content,
-  .static-message-response
-) > :first-child {
+/* 不要用 :is() 合并这两条参数，也不要在中间复合体用 .node-slot:first-child：Blink 无法为
+   「中间位置伪类 + 最右裸 :first-child」提取精确 feature，会退化成文档级「兄弟变化失效全部后代」集合，
+   侧栏任何增删（如搜索进出卸载分组区）都触发整树样式重算（#1586）。首个槽位改用 markstream 固有的
+   data-node-index="0" 标识（两条渲染路径都带，同文件脚注规则已依赖 data-node-type）。 */
+:is(.agent-content, .process-markdown, .user-bubble) .markdown-reading .markdown-renderer > .node-slot[data-node-index="0"] > .node-content > :first-child,
+:is(.agent-content, .process-markdown, .user-bubble) .static-message-response > :first-child {
   margin-block-start: 0;
 }
 /* 首块是代码、Mermaid、公式或数学兜底时，真实边距在框上（多为 !important）：框可能是首块本身（流式数学兜底），也可能在包裹层里面，

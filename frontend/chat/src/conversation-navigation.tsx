@@ -50,7 +50,8 @@ export interface ConversationRowDragState {
 
 /** 拖拽处理函数全列表共享一份稳定实例（按会话 id 寻址），行组件才能靠 memo 跳出无关重渲染。 */
 export interface ConversationRowDragHandlers {
-  start: (id: string) => void;
+  /** 只有严格返回 false 才算当下拒绝拖拽（如搜索中），行会把 dragstart preventDefault 掉；void 放行。 */
+  start: (id: string) => boolean | void;
   end: () => void;
   hover: (id: string, half: "before" | "after") => void;
   drop: (id: string, half: "before" | "after") => void;
@@ -83,6 +84,7 @@ export function ConversationNavigation({
   onSessionDelete,
   onSessionRename,
   sessionGroup,
+  hiddenSessions,
 }: {
   destinations: ConversationDestination[];
   sessions: ConversationSession[];
@@ -99,7 +101,7 @@ export function ConversationNavigation({
   sessionHeadingAction?: ReactNode;
   className?: string;
   sessionActions?: (session: ConversationSession) => NavigationRowAction[];
-  /** 提供后会话行可拖拽排序；返回 undefined 的行不参与拖拽。处理函数由 dragHandlers 共享。 */
+  /** 提供后会话行可拖拽排序；行只表达拖拽态（进行中/来源/落点），当下能否拖拽由 dragHandlers.start 决定。 */
   sessionDrag?: (session: ConversationSession) => ConversationRowDragState | undefined;
   /** sessionDrag 的处理函数：必须是渲染之间稳定的同一实例（如 useMemo([])）。 */
   dragHandlers?: ConversationRowDragHandlers;
@@ -107,11 +109,27 @@ export function ConversationNavigation({
   onSessionDelete?: (session: ConversationSession) => Promise<void>;
   /** 提供后会话行获得双击/菜单行内重命名；Promise 拒绝时编辑态保留。 */
   onSessionRename?: (session: ConversationSession, title: string) => Promise<void>;
+  /** 提供后这些 id 的行保留挂载但 hidden：搜索收窄不再成批卸载行。 */
+  hiddenSessions?: ReadonlySet<string>;
   /** 提供后在组名变化处插入一行安静的分组标签（如按时间排序时的"今天""昨天"）。 */
   sessionGroup?: (session: ConversationSession) => string | undefined;
 }) {
   const featuredDestinations = destinations.filter((destination) => destination.featured);
   const standardDestinations = destinations.filter((destination) => !destination.featured);
+  // 分组标签只贴在可见行的边界上：hidden 行不参与组名比较，
+  // 否则整组被隐藏时标签悬空、组内首行被隐藏时标签又跟着消失。
+  const groupHeaderIds = useMemo(() => {
+    if (!sessionGroup) return undefined;
+    const ids = new Set<string>();
+    let last: string | undefined;
+    for (const session of sessions) {
+      if (hiddenSessions?.has(session.id)) continue;
+      const label = sessionGroup(session);
+      if (label && label !== last) ids.add(session.id);
+      last = label;
+    }
+    return ids;
+  }, [sessions, sessionGroup, hiddenSessions]);
 
   return (
     <aside
@@ -143,10 +161,12 @@ export function ConversationNavigation({
 
       <section className="conversation-navigation__sessions">
         <nav className="conversation-session-list" aria-label="最近会话">
-          {sessions.map((session, index) => <Fragment key={session.id}>
-            {groupLabel(sessions, index, sessionGroup)}
+          {sessions.map((session) => <Fragment key={session.id}>
+            {groupHeaderIds?.has(session.id)
+              ? <div className="conversation-session-group">{sessionGroup?.(session)}</div> : null}
             <ConversationSessionRow
             session={session}
+            hidden={hiddenSessions?.has(session.id) || undefined}
             pendingSessionId={pendingSessionId}
             onActivate={onSessionActivate}
             onPrefetch={onSessionPrefetch}
@@ -177,14 +197,6 @@ export function ConversationNavigation({
   );
 }
 
-// 只在组名与上一行不同时出标签；拖拽与菜单仍挂在会话行上，标签不参与。
-function groupLabel(sessions: ConversationSession[], index: number, group?: (session: ConversationSession) => string | undefined) {
-  if (!group) return null;
-  const label = group(sessions[index]);
-  if (!label || (index > 0 && group(sessions[index - 1]) === label)) return null;
-  return <div className="conversation-session-group">{label}</div>;
-}
-
 function sameSessionView(a: ConversationSession, b: ConversationSession): boolean {
   return a === b || (a.id === b.id && a.title === b.title && a.preview === b.preview
     && a.active === b.active && a.status === b.status && a.unavailable === b.unavailable && a.pinned === b.pinned);
@@ -200,8 +212,9 @@ function sameDragState(a?: ConversationRowDragState, b?: ConversationRowDragStat
  * 会话行按值记忆：流式帧、目录全量重拉都不该让未变化的行重渲染（2000 行目录实测每帧约 480ms）。
  * 调用方须保证会话对象结构共享（字段不变则身份不变）、回调与 dragHandlers 身份稳定。
  */
-export const ConversationSessionRow = memo(function ConversationSessionRow({ session, pendingSessionId, onActivate, onPrefetch, actions, drag, dragHandlers, onDelete, onRename }: {
+export const ConversationSessionRow = memo(function ConversationSessionRow({ session, pendingSessionId, onActivate, onPrefetch, actions, drag, dragHandlers, onDelete, onRename, hidden }: {
   session: ConversationSession;
+  hidden?: boolean;
   pendingSessionId?: string;
   onActivate: (sessionId: string) => void;
   onPrefetch?: (sessionId: string) => void;
@@ -348,9 +361,12 @@ export const ConversationSessionRow = memo(function ConversationSessionRow({ ses
       title={session.preview ? `${session.title} · ${session.preview}` : session.title}
       draggable={drag !== undefined}
       onDragStart={drag === undefined ? undefined : (event) => {
+        if (dragHandlers?.start(session.id) === false) {
+          event.preventDefault();
+          return;
+        }
         event.dataTransfer.setData("text/plain", session.id);
         event.dataTransfer.effectAllowed = "move";
-        dragHandlers?.start(session.id);
       }}
       onDragEnd={drag === undefined ? undefined : () => dragHandlers?.end()}
       onDragOver={drag === undefined ? undefined : (event) => {
@@ -378,7 +394,7 @@ export const ConversationSessionRow = memo(function ConversationSessionRow({ ses
       {session.pinned ? <Pin size={13} className="conversation-session__pin" aria-label="已置顶" /> : null}
     </button>;
 
-  return <NavigationRowMenu title={session.title} actions={rowActions}
+  return <NavigationRowMenu title={session.title} actions={rowActions} hidden={hidden}
     className={`conversation-session-row ${session.active ? "active" : ""}${drag?.source ? " session-row-drag-source" : ""}${drag?.marker ? ` session-row-drop-${drag.marker}` : ""}`}
     onOpenChange={(open) => { if (!open) disarm(); }}>
     {body}
@@ -391,7 +407,8 @@ export const ConversationSessionRow = memo(function ConversationSessionRow({ ses
   && sameDragState(prev.drag, next.drag)
   && prev.dragHandlers === next.dragHandlers
   && prev.onDelete === next.onDelete
-  && prev.onRename === next.onRename);
+  && prev.onRename === next.onRename
+  && prev.hidden === next.hidden);
 
 function DestinationList({ destinations, featured = false }: { destinations: ConversationDestination[]; featured?: boolean }) {
   if (destinations.length === 0) return null;

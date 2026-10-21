@@ -35,6 +35,8 @@ export interface GroupSessionItem {
   active: boolean;
   status?: SessionStatus;
   pinned?: boolean;
+  /** 搜索收窄时置位：行保留挂载但 hidden，不逐键卸载。 */
+  hidden?: boolean;
 }
 
 /** 由侧栏提供的分组内会话行（带行菜单）；label 是分区名，例如“项目”。 */
@@ -243,9 +245,10 @@ export function GroupNavigationRow({
         <Plus size={14} aria-hidden="true" />
         <span>新对话</span>
       </button>}
-      {searching && items.length === 0 ? <small className="navigation-group__hint">没有匹配的对话</small> : null}
+      {searching && !items.some((item) => !item.hidden) ? <small className="navigation-group__hint">没有匹配的对话</small> : null}
       {items.map((session) => renderSession ? <Fragment key={session.id}>{renderSession(session)}</Fragment> : <button key={session.id} type="button"
         className={`group-session ${session.active ? "active" : ""}`}
+        hidden={session.hidden || undefined}
         aria-current={session.active ? "true" : undefined}
         aria-busy={pendingSessionId === session.id || undefined}
         title={session.title}

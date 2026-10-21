@@ -48,7 +48,7 @@ try {
   page.on('pageerror', error=>errors.push(error.message));
   await page.goto(server.origin + '/?pinned=' + Number(pinned));
   const search=page.getByRole('textbox',{name:'搜索会话'});await search.fill('命中');
-  await page.locator('.group-session').first().waitFor();
+  await page.locator('.navigation-group__sessions .conversation-session').first().waitFor();
   // 1. 按可见顺序跨分区移动：先到分组行，再到组内会话，不能跳过。
   await search.press('ArrowDown');
   assert.equal(await page.evaluate(()=>document.activeElement?.getAttribute('title')), '收起 命中 项目');
@@ -68,6 +68,19 @@ try {
   await search.fill('项目');
   await page.waitForFunction(()=>CSS.highlights.get('sidebar-search')?.size===3);
   await search.press('Escape');assert.equal(await search.inputValue(),'');
+  // 3. roving 停靠点不留在隐藏行：先停靠"命中 最近会话"，再把它搜隐藏。
+  await page.locator('.conversation-session[title="命中 最近会话"]').click();
+  await search.fill('项目');
+  await page.waitForFunction(()=>document.querySelector('.conversation-session[title="命中 最近会话"]')?.closest('.navigation-menu-row')?.hasAttribute('hidden'));
+  // 隐藏行不得持 tabindex="0"，且当前停靠点必须是可见行。
+  assert.equal(await page.evaluate(()=>document.querySelector('.conversation-session[title="命中 最近会话"]')?.getAttribute('tabindex')),'-1');
+  assert.equal(await page.evaluate(()=>document.querySelectorAll('.chat-sidebar__navigation [hidden] [tabindex="0"]').length),0);
+  // Tab 离开搜索框后落到可见行（有输入时中间隔一枚清除钮），不能停在 [hidden] 行上。
+  await search.press('Tab');
+  if(await page.evaluate(()=>document.activeElement?.classList.contains('chat-sidebar__search-clear')))await page.keyboard.press('Tab');
+  const stop=await page.evaluate(()=>{const el=document.activeElement;return {hidden:!(el instanceof HTMLElement)||el.offsetParent===null||el.closest('[hidden]')!==null,tab:el?.getAttribute('tabindex')};});
+  assert.deepEqual(stop,{hidden:false,tab:'0'});
+  await search.press('Escape');
   assert.deepEqual(errors,[]);await page.screenshot({path:root+'/pinned-'+pinned+'.png',animations:'disabled'});
   results.push({pinned,errors,highlight});console.log('PASS',pinned?'pinned-project':'project-and-recent');await ctx.close();
  }
