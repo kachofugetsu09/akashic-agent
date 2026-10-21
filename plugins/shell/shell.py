@@ -60,6 +60,13 @@ class ShellSettings(BaseModel):
         return value
 
 
+# 插件设置：模型不指定 timeout、max_output_tokens 时用的默认值。
+class Config(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    timeout: int = Field(default=DEFAULT_HARD_TIMEOUT_S, ge=1, le=MAX_HARD_TIMEOUT_S)
+    max_output_tokens: int = Field(default=DEFAULT_MAX_OUTPUT_TOKENS, ge=100, le=200_000)
+
+
 class Command(BaseModel):
     model_config = ConfigDict(extra="forbid", strict=True)
     command: str = Field(min_length=1, description="要执行的命令；需要观察长任务时避免等待 EOF 的过滤器。")
@@ -176,15 +183,20 @@ class ShellOwners:
 class ShellTool:
     idempotent = False
 
-    def __init__(self, ctx: Context, name: Literal["shell", "write_stdin", "task_stop"], settings: ShellSettings):
+    def __init__(self, ctx: Context, name: Literal["shell", "write_stdin", "task_stop"], settings: ShellSettings,
+                 defaults: Config | None = None):
         self._ctx = ctx
         self._name = name
         self._settings = settings
+        self._defaults = defaults or Config()
 
     async def prepare(self, arguments: Mapping[str, object], source: CallSource | None = None) -> Mapping[str, object] | str:
         """校验最终命令并固定进程 owner；恢复不重选目录、shell 或默认参数。"""
         owner, background_owner, background_source = self._owners(source)
         raw = json_value(arguments)
+        if isinstance(raw, dict) and self._name != "task_stop":
+            fallback = self._defaults.model_dump(include={"max_output_tokens"} if self._name == "write_stdin" else None)
+            raw = {**fallback, **raw}
         try:
             if self._name != "shell":
                 return self._prepare_control(raw, owner, background_owner)
@@ -400,7 +412,7 @@ async def _settled(ctx: Context, owner_key: str, execution_id: int) -> JobOutcom
         await asyncio.sleep(_SETTLE_POLL_S)
 
 
-async def register_shell(ctx: Context) -> tuple[ToolRef, ...]:
+async def register_shell(ctx: Context, config: Config | None = None) -> tuple[ToolRef, ...]:
     """配置由 Shell owner 校验，所有操作与作业释放共用此插件身份。"""
     owners = ShellOwners(ctx)
 
@@ -425,7 +437,7 @@ async def register_shell(ctx: Context) -> tuple[ToolRef, ...]:
     )
     refs: list[ToolRef] = []
     for name, schema, description in definitions:
-        refs.append(await _register(ctx, name, schema, description, owners))
+        refs.append(await _register(ctx, name, schema, description, owners, config or Config()))
     return tuple(refs)
 
 
@@ -435,19 +447,26 @@ async def _register(
     schema: type[BaseModel],
     description: str,
     owners: ShellOwners,
+    config: Config,
 ) -> ToolRef:
     def capture(configuration: Mapping[str, object]) -> Mapping[str, object]:
         return ShellSettings.model_validate(json_value(configuration)).model_dump()
 
     @asynccontextmanager
     async def open_tool(state: Mapping[str, object]) -> AsyncGenerator[ShellTool]:
-        yield ShellTool(ctx, name, ShellSettings.model_validate(json_value(state)))
+        yield ShellTool(ctx, name, ShellSettings.model_validate(json_value(state)), config)
+
+    # 工具说明里的默认值跟随设置，模型看到的就是实际生效的默认值。
+    parameters = schema.model_json_schema()
+    for key, value in config.model_dump().items():
+        if key in parameters.get("properties", {}):
+            parameters["properties"][key]["default"] = value
 
     return cast(ToolRef, await ctx.require(TOOLS).register(
         ctx,
         name=name,
         description=description,
-        parameters=schema.model_json_schema(),
+        parameters=parameters,
         open=open_tool,
         capture=capture,
         release=owners.release_call,

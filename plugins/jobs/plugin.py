@@ -3,13 +3,15 @@ from __future__ import annotations
 
 import asyncio
 import logging
+from importlib import import_module
 from collections.abc import AsyncGenerator, Mapping, Sequence
 from contextlib import aclosing
 from typing import Literal, cast
 
 from pydantic import BaseModel, ConfigDict, Field
 
-from agent.plugin_composition import CompositionError, Context
+from agent.plugin_composition import CompositionError, Context, ServiceKey
+from agent.plugin_composition.plugin_config import PLUGIN_CONFIG
 from agent.plugin_composition.tasks import Task, independent_task_context
 from plugins.context.contract import MATERIALS_V4 as MATERIALS
 from plugins.conversation.contract import CONVERSATION_COMPLETE_V2 as CONVERSATION_COMPLETE
@@ -18,7 +20,7 @@ from plugins.delivery.contract import DELIVERY_SENDERS
 from plugins.ledger.contract import BINDINGS, MESSAGE_CATALOG, Input, Message, MessageReader, json_value
 from plugins.reply.contract import REPLY_PROGRAM_V3 as REPLY_PROGRAM
 from plugins.sources.contract import SourceGuard
-from plugins.ui.contract import UI_SLOTS, PluginUiDefinition, PluginUiRpcInvalidRequest
+from plugins.ui.contract import UI_SLOTS, Configuration, ModelSettings, PluginUiDefinition, PluginUiRpcInvalidRequest, mount_settings
 
 from .board import JobBoard, JobMirror, Notice
 from .contract import JOB_NOTICES, JobOutcome, JobSnapshot, JobWatch
@@ -29,9 +31,13 @@ api_version = 3
 name = "jobs"
 version = "1.0.0"
 desc = "后台任务完成通知：忙时注入当前回合，闲时唤醒原会话"
-inject = (MESSAGE_CATALOG, MATERIALS, CONVERSATION_COMPLETE, REPLY_PROGRAM, DELIVERY, DELIVERY_SENDERS, BINDINGS)
+inject = (PLUGIN_CONFIG, MESSAGE_CATALOG, MATERIALS, CONVERSATION_COMPLETE, REPLY_PROGRAM, DELIVERY, DELIVERY_SENDERS, BINDINGS)
 
 _CONVERSATION = "conversation"
+
+
+SETTINGS = ServiceKey[Configuration]("jobs.settings.v1")
+SETTING_FIELDS = ("completion_delivery", "max_consecutive_wakes")
 
 
 class Config(BaseModel):
@@ -213,6 +219,8 @@ def _stopped_outcome(outcome: JobOutcome | None) -> JobOutcome | None:
 async def apply(ctx: Context) -> None:
     config = Config.model_validate(ctx.config)
     jobs = Jobs(ctx, config)
+    await mount_settings(ctx, SETTINGS, ModelSettings(ctx, Config, SETTING_FIELDS),
+                         lambda: import_module(".settings_ui", __package__))
     _ = await ctx.spawn(jobs.run(), name="job-notices")
     _ = await ctx.effect(lambda: jobs.close, label="job-mirror")
     _ = await ctx.provide(JOB_NOTICES, jobs)

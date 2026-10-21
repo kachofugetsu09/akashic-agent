@@ -35,11 +35,11 @@ class Spawn:
 
     idempotent = True
 
-    def __init__(self, ctx: Context, targets: Mapping[str, str], senders: Mapping[str, str]):
+    def __init__(self, ctx: Context, targets: Mapping[str, str], senders: Mapping[str, str], jobs: Subagents):
         self.ctx = ctx
         self.targets = targets
         self.senders = senders
-        self.jobs = Subagents(ctx)
+        self.jobs = jobs
 
     async def prepare(self, arguments: Mapping[str, object], source: CallSource | None = None) -> Mapping[str, object] | str:
         # 1. 只有实际父调用能建立回传关系，模型参数不能伪造父 Session。
@@ -132,14 +132,14 @@ class Spawn:
         if outcome is None:
             raise ValueError("子任务结算记录缺少消息终态")
         return Result("success" if outcome[0] == "completed" else "error",
-                      (ContentPart("text", completion(request, outcome, limit=100_000)),))
+                      (ContentPart("text", completion(request, outcome, limit=self.jobs.result_chars)),))
 
 
 class Manage:
     idempotent = True
 
-    def __init__(self, ctx: Context):
-        self.jobs = Subagents(ctx)
+    def __init__(self, jobs: Subagents):
+        self.jobs = jobs
 
     async def prepare(self, arguments: Mapping[str, object], source: CallSource | None = None) -> Mapping[str, object] | str:
         try:

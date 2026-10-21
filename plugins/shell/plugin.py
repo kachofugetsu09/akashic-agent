@@ -1,22 +1,29 @@
-from agent.plugin_composition import Context
+from importlib import import_module
+
+from agent.plugin_composition import Context, ServiceKey
+from agent.plugin_composition.plugin_config import PLUGIN_CONFIG
 from plugins.context.contract import MATERIALS_V4
 from plugins.host_execution.contract import PROCESSES
-from plugins.ui.contract import UI_SLOTS, PluginUiDefinition, PluginUiRpcInvalidRequest
+from plugins.ui.contract import UI_SLOTS, Configuration, ModelSettings, PluginUiDefinition, PluginUiRpcInvalidRequest, mount_settings
 
 from ._tool_boundary import TOOLS
-from .shell import register_shell
+from .shell import Config, register_shell
 
 api_version = 3
 name = "shell"
 version = "1.0.0"
 desc = "执行命令并管理其进程"
-inject = (TOOLS, PROCESSES, MATERIALS_V4)
+inject = (PLUGIN_CONFIG, TOOLS, PROCESSES, MATERIALS_V4)
+SETTINGS = ServiceKey[Configuration]("shell.settings.v1")
 
 
 # 工作目录与后台作业通知都在调用时借用：缺席时退回配置目录、不提供后台运行。
 async def apply(ctx: Context) -> None:
     _ = await ctx.require(TOOLS).declare_group(ctx, always_on=True, description=desc)
-    _ = await register_shell(ctx)
+    config = Config.model_validate(ctx.config)
+    _ = await register_shell(ctx, config)
+    await mount_settings(ctx, SETTINGS, ModelSettings(ctx, Config, ("timeout", "max_output_tokens")),
+                         lambda: import_module(".dashboard", __package__))
 
     # 命令块是本插件工具结果的展示；宿主只把本插件注册的工具结果交给它，没有界面服务时不影响命令执行。
     async def plugin_ui(child: Context) -> None:
