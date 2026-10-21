@@ -262,7 +262,7 @@ function registerModels(ctx, mount, catalogResource) {
         if (existing) {
           const mark = document.createElement("i");
           mark.className = "settings-template-added";
-          mark.textContent = "已连接";
+          mark.title = "已连接";
           button.append(mark);
           button.setAttribute("aria-label", `${template.label}，已连接，打开 ${existing.name}`);
           button.addEventListener("click", () => openExisting(existing));
