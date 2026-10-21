@@ -838,7 +838,7 @@ function registerModels(ctx, mount, catalogResource) {
         const map = new Map();
         for (const [role, label] of ROLE_LABELS) {
           const bound = catalog.roleBindings?.[role];
-          if (bound) map.set(bound, label.replace("模型", "").trim());
+          if (bound) map.set(bound, [map.get(bound), label.replace("模型", "").trim()].filter(Boolean).join("、"));
         }
         if (catalog.defaultEmbeddingModelId) map.set(catalog.defaultEmbeddingModelId, "默认向量");
         return map;
@@ -939,8 +939,11 @@ function registerModels(ctx, mount, catalogResource) {
           remove.innerHTML = TRASH_ICON;
           remove.addEventListener("click", () => {
             // 移除需要重新验证才能加回；在用或有未保存参数时先说明后果。
+            const consequence = inUseLabel.includes("全局默认") ? "移除后需要另选全局默认模型"
+              : inUseLabel.includes("向量") ? "移除后使用此向量空间的任务需要重新配置"
+              : "移除后这些场景改用全局默认模型";
             const warning = inUseLabel
-              ? `${model.model} 正用作「${inUseLabel}」，移除后该场景改用全局默认模型。确定移除？`
+              ? `${model.model} 正用作「${inUseLabel}」，${consequence}。确定移除？`
               : editor?.isDirty() ? `移除 ${model.model} 并放弃该行尚未保存的参数？` : "";
             if (warning && !window.confirm(warning)) return;
             remove.disabled = true;
