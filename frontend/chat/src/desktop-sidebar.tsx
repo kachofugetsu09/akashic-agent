@@ -554,11 +554,21 @@ export const DesktopSidebar = memo(function DesktopSidebar({
       label: item.pinned ? `取消${label}内置顶` : `在${label}内置顶` }]}
     onDelete={onDeleteSession ? (session) => onDeleteSession(session.id, session.title) : undefined}
     onRename={onRenameSession ? (session, title) => onRenameSession(session.id, title) : undefined} />;
-  // 分组只按调用时刻的日期，跨午夜后随下一次列表更新重算即可。
-  const sessionDayGroupOf = useCallback((session: ConversationSession) => {
-    const row = sessionById.get(session.id);
-    return sessionDayGroup(sessionSort === "created" ? row?.createdAt : row?.updatedAt, new Date());
+  // 日分组标签一次投影成 Map：时间戳解析与"今天/昨天"判定只在目录或排序键变化时算一遍，
+  // 行渲染只查表。否则每次侧栏渲染（含搜索逐键）都是每行一次 Date.parse + new Date()，
+  // groupLabel 与上一行比较时再翻一倍。投影只按构建时刻的日期，跨午夜后随下一次列表更新重算即可。
+  const dayGroupLabels = useMemo(() => {
+    if (sessionSort !== "activity" && sessionSort !== "created") return null;
+    const now = new Date();
+    const labels = new Map<string, string>();
+    for (const [id, row] of sessionById) {
+      const label = sessionDayGroup(sessionSort === "created" ? row.createdAt : row.updatedAt, now);
+      if (label) labels.set(id, label);
+    }
+    return labels;
   }, [sessionSort, sessionById]);
+  const sessionDayGroupOf = useCallback((session: ConversationSession) =>
+    dayGroupLabels?.get(session.id), [dayGroupLabels]);
   const deleteHandler = useCallback((session: ConversationSession) => onDeleteSession?.(session.id, session.title) ?? Promise.resolve(),
     [onDeleteSession]);
   const renameHandler = useCallback(
