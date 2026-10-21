@@ -366,6 +366,9 @@ function useComposerClearance(wrapRef: React.RefObject<HTMLDivElement | null>): 
     let pinned = true;
     const onScroll = () => { pinned = scroller.scrollHeight - scroller.scrollTop - scroller.clientHeight <= 4; };
     scroller.addEventListener("scroll", onScroll, { passive: true });
+    // 同值守护：输入卡高度不变时不重复写自定义属性，避免多余的失效与样式重算；
+    // 0 与未设置等价（消费端 var(--composer-grown, 0px) 兜底），初始紧凑态不写。
+    let lastGrown = 0;
     const sync = () => {
       const style = getComputedStyle(main);
       const rem = parseFloat(getComputedStyle(document.documentElement).fontSize) || 16;
@@ -374,8 +377,12 @@ function useComposerClearance(wrapRef: React.RefObject<HTMLDivElement | null>): 
         return value.endsWith("rem") ? parseFloat(value) * rem : parseFloat(value) || 0;
       };
       // 生成中的统计行本来就在预算里，不重复计入。
-      const grown = wrap.offsetHeight - length("--composer-compact-h") - length("--composer-stats-line");
-      main.style.setProperty("--composer-grown", `${Math.max(0, Math.round(grown))}px`);
+      const grown = Math.max(0, Math.round(wrap.offsetHeight - length("--composer-compact-h") - length("--composer-stats-line")));
+      if (grown !== lastGrown) {
+        lastGrown = grown;
+        if (grown === 0) main.style.removeProperty("--composer-grown");
+        else main.style.setProperty("--composer-grown", `${grown}px`);
+      }
       // 2. 紧凑高度本身也会随聚焦态变化（窄屏），所以无论哪种长高，贴底时都把底部重新露出来。
       if (pinned) scroller.scrollTop = scroller.scrollHeight;
     };
