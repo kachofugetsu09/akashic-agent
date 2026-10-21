@@ -103,7 +103,7 @@ composer 统计行浮在输入卡下方的底距里（绝对定位，不占流�
 
 ### 3.10 侧栏宽度拖拽合同
 
-宽屏（>820px）侧栏右缘提供 8px 透明拖拽热区，hover/drag/focus 显 1px `var(--ak-rule-strong)` 竖向强调线。拖拽只写 `--chat-rail-width` 一个值，写在被消费的 grid 容器（`.chat-shell-body`）inline style 上，范围钳制 15–26rem；双击复位（移除 inline 覆盖，回到 CSS clamp 默认）。拖拽柄同时是键盘 separator（`role="separator"`、`aria-orientation="vertical"`、左右方向键步进 0.5rem）。偏好持久化 localStorage（`akashic.chat.rail-width`），首次渲染前同步读取。窄屏（≤820px）与抽屉内不渲染拖拽柄。导航抽屉打开期间视口离开紧凑断点（平板旋转、分屏拖宽）时抽屉自动关闭：常驻侧栏已经回来，不能留一层模态遮罩压住整页。
+宽屏（>820px）侧栏右缘提供 8px 透明拖拽热区，hover/drag/focus 显 1px `var(--ak-rule-strong)` 竖向强调线。拖拽分两阶段写入：移动中直写 grid 容器（`.chat-shell-body`）的 `grid-template-columns` inline style（列宽只被容器自己消费；不写可被后代继承的 `--chat-rail-width`，避免每帧触发后代全量样式重解析），抬起时清掉直写、把最终值一次性提交到 `--chat-rail-width` 与持久偏好，范围钳制 15–26rem；只有真的拖到新值才提交，热区上单击或亚档抖动不写偏好；pointer capture 丢失按最后位置收尾并清掉直写。双击复位（移除 inline 覆盖与存储偏好，回到 CSS clamp 默认）。拖拽柄同时是键盘 separator（`role="separator"`、`aria-orientation="vertical"`、左右方向键步进 0.5rem）。偏好持久化 localStorage（`akashic.chat.rail-width`），首次渲染前同步读取。窄屏（≤820px）与抽屉内不渲染拖拽柄。导航抽屉打开期间视口离开紧凑断点（平板旋转、分屏拖宽）时抽屉自动关闭：常驻侧栏已经回来，不能留一层模态遮罩压住整页。
 
 ### 3.11 会话排序投影合同
 

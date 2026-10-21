@@ -125,7 +125,8 @@ function useRovingTabStop(sidebarRef: RefObject<HTMLElement | null>) {
     let last: HTMLButtonElement | null = null;
     const sync = () => {
       const rows = [...navigation.querySelectorAll<HTMLButtonElement>(NAVIGATION_ROW)];
-      const usable = rows.filter((row) => !row.disabled);
+      // 搜索隐藏（hidden 属性）的行不可聚焦，不能继续持 tabindex="0"，否则列表掉出 Tab 序列。
+      const usable = rows.filter((row) => !row.disabled && row.offsetParent !== null);
       const stop = (last && usable.includes(last) ? last : null)
         ?? usable.find((row) => row.getAttribute("aria-current") === "true") ?? usable[0];
       // 显式写属性：没写 tabindex 的按钮本身就是 0，按属性比较才不会漏掉。
@@ -143,7 +144,7 @@ function useRovingTabStop(sidebarRef: RefObject<HTMLElement | null>) {
       last = event.target;
       sync();
     };
-    observer.observe(navigation, { childList: true, subtree: true, attributes: true, attributeFilter: ["aria-current", "disabled"] });
+    observer.observe(navigation, { childList: true, subtree: true, attributes: true, attributeFilter: ["aria-current", "disabled", "hidden"] });
     navigation.addEventListener("focusin", onFocus);
     sync();
     return () => {
@@ -385,15 +386,22 @@ export const DesktopSidebar = memo(function DesktopSidebar({
     for (const session of sessions) rows.set(session.id, session);
     return [...rows.values()];
   }, [navigationPins.sessions, sessions, activeSessionId]);
-  const filteredSessions = useMemo(() => needle
-    ? allSessions.filter((session) => `${session.title} ${session.preview}`.toLowerCase().includes(needle))
-    : allSessions, [allSessions, needle]);
+  // 搜索收窄不卸载行：不匹配的行保留挂载、以 hidden 隐藏。大目录下逐键收窄会成批
+  // 卸载上千行，React commitDeletion 的单行成本远高于属性翻转（2002 行实测 5.6s → 0.5s）。
+  const sessionMatches = useCallback((session: DesktopSidebarSession) =>
+    `${session.title} ${session.preview}`.toLowerCase().includes(needle), [needle]);
+  const hiddenIds = useMemo(() => {
+    if (!needle) return undefined;
+    const ids = new Set(allSessions.filter((session) => !sessionMatches(session)).map((session) => session.id));
+    // 全部匹配时保持 undefined：行 hidden 与分组标签的依赖身份不变，memo 不受搜索进出影响。
+    return ids.size ? ids : undefined;
+  }, [allSessions, needle, sessionMatches]);
   // 排序只重排展示顺序：最近会话区与项目内子列表共享同一份投影，置顶区不经过它。
   const mergedOrder = useMemo(
     () => mergeSessionOrder(sessionOrder, allSessions.map((session) => session.id)),
     [sessionOrder, allSessions],
   );
-  const sortedSessions = useMemo(() => sortSessions(filteredSessions, sessionSort, mergedOrder), [filteredSessions, sessionSort, mergedOrder]);
+  const sortedSessions = useMemo(() => sortSessions(allSessions, sessionSort, mergedOrder), [allSessions, sessionSort, mergedOrder]);
   useEffect(() => {
     try { localStorage.setItem(SESSION_SORT_KEY, sessionSort); }
     catch { /* 禁用存储时仍允许本次浏览的排序选择。 */ }
@@ -432,8 +440,16 @@ export const DesktopSidebar = memo(function DesktopSidebar({
   // 行 memo 要求拖拽处理函数身份稳定：经 ref 取最新提交逻辑，处理函数本身永不重建。
   const commitManualDropRef = useRef(commitManualDrop);
   useEffect(() => { commitManualDropRef.current = commitManualDrop; });
+  // 搜索中拒绝拖拽改在 start 入口按 ref 拒绝：若用 drag=undefined 撤能力，
+  // 全部行的 memo 会在进出搜索时失效重渲染（2002 行实测首键 1.4s）。
+  const searchingRef = useRef(searching);
+  useEffect(() => { searchingRef.current = searching; });
   const dragHandlers = useMemo<ConversationRowDragHandlers>(() => ({
-    start: (id) => setDrag({ id, over: null }),
+    start: (id) => {
+      if (searchingRef.current) return false;
+      setDrag({ id, over: null });
+      return true;
+    },
     end: () => setDrag(null),
     hover: (id, half) => setDrag((current) => current
       && (current.over?.id !== id || current.over.half !== half)
@@ -444,7 +460,7 @@ export const DesktopSidebar = memo(function DesktopSidebar({
       setDrag(null);
     },
   }), []);
-  const sessionDrag = searching ? undefined : (session: ConversationSession): ConversationRowDragState => ({
+  const sessionDrag = (session: ConversationSession): ConversationRowDragState => ({
     active: drag !== null,
     source: drag?.id === session.id,
     marker: drag?.over?.id === session.id ? drag.over.half : undefined,
@@ -473,7 +489,12 @@ export const DesktopSidebar = memo(function DesktopSidebar({
     () => sortedSessions.filter((session) => !pinnedSessions.has(session.id) && !groupOf(session))
       .map((session) => sessionViews.get(session.id) ?? session),
     [sortedSessions, pinnedSessions, groupOf, sessionViews]);
+  // 搜索时行不卸载，"匹配的会话"语义落在可见数上。
+  const visibleRecentCount = useMemo(() => hiddenIds
+    ? recentSessions.reduce((count, session) => count + (hiddenIds.has(session.id) ? 0 : 1), 0)
+    : recentSessions.length, [recentSessions, hiddenIds]);
   // 分组内置顶的会话排在所在文件夹最前面，其余保持当前排序。
+  // 分组内会话同样只隐藏不卸载：hidden 随逐键过滤翻转，行身份保持稳定。
   const sessionsByGroup = useMemo(() => {
     const byGroup = new Map<string, GroupSessionItem[]>();
     for (const session of sortedSessions) {
@@ -481,15 +502,15 @@ export const DesktopSidebar = memo(function DesktopSidebar({
       if (!key) continue;
       byGroup.set(key, [...byGroup.get(key) ?? [], {
         id: session.id, title: session.title, active: surface === "chat" && session.active, status: session.status,
-        pinned: pinnedSessions.has(session.id),
+        pinned: pinnedSessions.has(session.id), hidden: hiddenIds?.has(session.id) || undefined,
       }]);
     }
     for (const [key, items] of byGroup) byGroup.set(key, [...items.filter((item) => item.pinned), ...items.filter((item) => !item.pinned)]);
     return byGroup;
-  }, [sortedSessions, groupOf, surface, pinnedSessions]);
+  }, [sortedSessions, groupOf, surface, pinnedSessions, hiddenIds]);
   const pinnedGroups = new Set(navigationPins.pins.filter((pin) => pin.kind !== "session").map((pin) => groupKey({ dimension: pin.kind, id: pin.id })));
   const visibleGroup = (key: string, label: string) => !needle || label.toLowerCase().includes(needle)
-    || Boolean(sessionsByGroup.get(key)?.length);
+    || Boolean(sessionsByGroup.get(key)?.some((item) => !item.hidden));
   const sectionGroups = sections.map((section) => section.groups.filter((group) => {
     const key = groupKey({ dimension: section.source.provider.dimension, id: group.id });
     return !pinnedGroups.has(key) && visibleGroup(key, group.label);
@@ -510,7 +531,7 @@ export const DesktopSidebar = memo(function DesktopSidebar({
     }
     return pin.id.toLowerCase().includes(needle);
   });
-  const hasMatches = recentSessions.length > 0 || sectionGroups.some((items) => items.length > 0) || visiblePins.length > 0;
+  const hasMatches = visibleRecentCount > 0 || sectionGroups.some((items) => items.length > 0) || visiblePins.length > 0;
   const sessionById = useMemo(() => new Map(allSessions.map((session) => [session.id, session])), [allSessions]);
   // 行 memo 需要稳定身份：navigationPins 对象每渲染新建，只取字段级依赖。
   const { ready: pinsReady, pending: pinsPending, setPinned } = navigationPins;
@@ -523,6 +544,7 @@ export const DesktopSidebar = memo(function DesktopSidebar({
   // 分组内的会话行：与最近会话同一套行菜单，置顶只在所在分组内生效。
   const groupSessionRow: GroupSessionRenderer = (item, label) => <ConversationSessionRow
     session={{ id: item.id, title: item.title, preview: "", active: item.active, status: item.status, pinned: item.pinned }}
+    hidden={item.hidden}
     pendingSessionId={pendingSessionId} onActivate={onSelectSession} onPrefetch={onPrefetchSession}
     actions={[{ ...pinAction({ kind: "session", id: item.id }, Boolean(item.pinned))[0],
       label: item.pinned ? `取消${label}内置顶` : `在${label}内置顶` }]}
@@ -604,7 +626,7 @@ export const DesktopSidebar = memo(function DesktopSidebar({
         </label>
       </div>
 
-      <div className="chat-sidebar__navigation" onKeyDown={moveSessionFocus}>
+      <div className="chat-sidebar__navigation" data-searching={searching || undefined} onKeyDown={moveSessionFocus}>
       {searching && !hasMatches ? <p className="navigation-search-empty" role="status">没有匹配的会话或分组</p> : null}
       {navigationPins.error ? <div className="navigation-pins-error" role="alert">
         <span>{navigationPins.error}</span>
@@ -617,9 +639,10 @@ export const DesktopSidebar = memo(function DesktopSidebar({
           <X size={14} aria-hidden="true" />
         </button>
       </div> : null}
-      {visiblePins.length ? <section className="pinned-navigation" aria-label="置顶">
+      {navigationPins.pins.length && (!searching || visiblePins.length) ? <section className="pinned-navigation" aria-label="置顶">
         <header className="navigation-section__header"><span>置顶</span></header>
-        {visiblePins.map((pin) => {
+        {/* 行按全量置顶渲染、用 hidden 收窄；visiblePins 只决定搜索时整个分区是否保留。 */}
+        {navigationPins.pins.map((pin) => {
           if (pin.kind !== "session") {
             const ref = { dimension: pin.kind, id: pin.id };
             const known = knownGroups.get(groupKey(ref));
@@ -636,21 +659,23 @@ export const DesktopSidebar = memo(function DesktopSidebar({
             /> : null;
           } else {
             const session = allSessions.find((item) => item.id === pin.id);
-            if (session && !groupOf(session)) return !needle
-              || `${session.title} ${session.preview}`.toLowerCase().includes(needle) ? <ConversationSessionRow
-                key={`session:${pin.id}`} session={sessionViews.get(session.id) ?? session} pendingSessionId={pendingSessionId}
-                onActivate={onSelectSession} onPrefetch={onPrefetchSession}
-                actions={pinAction(pin, true)}
-                onDelete={onDeleteSession ? deleteHandler : undefined}
-                onRename={onRenameSession ? renameHandler : undefined}
-              /> : null;
+            // 置顶区会话行同样只隐藏不卸载：逐键过滤只翻转 hidden，行身份与内部状态保持。
+            if (session && !groupOf(session)) return <ConversationSessionRow
+              key={`session:${pin.id}`} session={sessionViews.get(session.id) ?? session} pendingSessionId={pendingSessionId}
+              hidden={Boolean(needle) && !`${session.title} ${session.preview}`.toLowerCase().includes(needle) || undefined}
+              onActivate={onSelectSession} onPrefetch={onPrefetchSession}
+              actions={pinAction(pin, true)}
+              onDelete={onDeleteSession ? deleteHandler : undefined}
+              onRename={onRenameSession ? renameHandler : undefined}
+            />;
           }
-          if (needle && !pin.id.toLowerCase().includes(needle)) return null;
+          const unavailableHidden = Boolean(needle) && !pin.id.toLowerCase().includes(needle);
           // 分组取值已不存在或其插件不在：有该维度的分区时用它的名称，否则只说暂不可用。
           const label = pin.kind === "session" ? "会话" : sections.find((section) => section.source.provider.dimension === pin.kind)?.source.provider.label ?? "";
           const title = `${label}暂不可用`;
           return <ConversationSessionRow key={`${pin.kind}:${pin.id}`}
             session={{ id: pin.id, title, preview: pin.id, active: false, unavailable: true }}
+            hidden={unavailableHidden || undefined}
             onActivate={onSelectSession} actions={pinAction(pin, true)} />;
         })}
       </section> : null}
@@ -667,11 +692,12 @@ export const DesktopSidebar = memo(function DesktopSidebar({
 
       <ConversationNavigation
         destinationHeading={false}
-        sessionHeading={!searching ? "最近会话" : recentSessions.length ? "匹配的会话" : ""}
+        sessionHeading={!searching ? "最近会话" : visibleRecentCount ? "匹配的会话" : ""}
         sessionHeadingAction={searching ? undefined : <SessionSortMenu sort={sessionSort} onSort={setSessionSort} />}
         destinations={[]}
         actions={[]}
         sessions={recentSessions}
+        hiddenSessions={hiddenIds}
         sessionGroup={sessionSort === "activity" || sessionSort === "created" ? sessionDayGroupOf : undefined}
         sessionDrag={sessionDrag}
         dragHandlers={dragHandlers}
@@ -778,14 +804,20 @@ function SidebarRailResizer({ rail, sidebarRef }: {
       setDragging(true);
     }}
     onPointerMove={(event) => {
-      if (dragging) rail.dragTo(event.clientX);
+      if (!dragging) return;
+      // 拖拽中宽度不经过 React state（见 use-sidebar-rail），aria-valuenow 直写保持同步。
+      const next = rail.dragTo(event.clientX);
+      if (next !== null) event.currentTarget.setAttribute("aria-valuenow", String(Math.round(next * 2) / 2));
     }}
     onPointerUp={(event) => {
       if (!dragging) return;
       event.currentTarget.releasePointerCapture(event.pointerId);
       setDragging(false);
+      rail.dragEnd();
     }}
-    onPointerCancel={() => setDragging(false)}
+    onPointerCancel={() => { setDragging(false); rail.dragEnd(); }}
+    // capture 丢失而 pointerup/pointercancel 没到时兜底：清掉直写列宽，按最后位置收尾。
+    onLostPointerCapture={() => { if (dragging) { setDragging(false); rail.dragEnd(); } }}
     onDoubleClick={(event) => {
       event.preventDefault();
       rail.reset();

@@ -46,8 +46,10 @@ function lastUserInput(messages: readonly TimelineMessage[]): string {
 
 export function DesktopChatView({ controller }: DesktopChatViewProps) {
   const theme = useTheme();
-  const rail = useSidebarRail();
+
   const composerApi = useRef<ComposerApi | null>(null);
+  const shellRef = useRef<HTMLDivElement | null>(null);
+  const rail = useSidebarRail(shellRef);
   // 空输入框按 ↑ 取回的上一条提问。
   const lastInput = useMemo(() => lastUserInput(controller.timelineMessages), [controller.timelineMessages]);
   // 改一改再问：原文接在已有草稿之后，不覆盖用户正在写的内容。
@@ -127,7 +129,7 @@ export function DesktopChatView({ controller }: DesktopChatViewProps) {
 
   return (
     <main className="chat-shell">
-      <div className="chat-shell-body" style={rail.style}>
+      <div className="chat-shell-body" ref={shellRef} style={rail.style}>
         <DesktopSidebar
             surface={surface} sessions={sidebarSessions}
             activeSessionId={activeSessionId} pendingSessionId={pendingSessionId} chatReady={chatReady}

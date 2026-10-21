@@ -667,6 +667,9 @@ input {
 .conversation-session-row.session-row-drop-after > .conversation-session { box-shadow: inset 0 -1px 0 var(--ak-rule-focus); }
 .conversation-session[draggable="true"] { cursor: grab; }
 .conversation-session[draggable="true"]:active { cursor: grabbing; }
+/* 搜索中拖拽在 start 入口被拒绝（为保行 memo 不撤 draggable 属性），光标不能还暗示可拖。 */
+.chat-sidebar__navigation[data-searching] .conversation-session[draggable="true"],
+.chat-sidebar__navigation[data-searching] .conversation-session[draggable="true"]:active { cursor: default; }
 
 .navigation-menu-row {
   position: relative;
@@ -674,6 +677,11 @@ input {
   user-select: none;
   -webkit-touch-callout: none;
   touch-action: pan-y pinch-zoom;
+}
+
+/* 搜索隐藏的行保留挂载：类上的 display:flex/grid 会压过 UA 的 [hidden]，显式压回去。 */
+.navigation-menu-row[hidden] {
+  display: none;
 }
 
 .navigation-menu-trigger {

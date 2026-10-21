@@ -83,12 +83,21 @@ export function mountChat(host: HTMLElement, link: ChatHostLink): MountedChat {
   );
   // 5. 空闲预热富文本渲染分块(见 message-view.tsx 的 warmMessageRenderer),
   // 首个含代码/数学的会话不再在切换关键路径上等这份下载与求值。
-  const idle = window.requestIdleCallback
-    ? window.requestIdleCallback(warmMessageRenderer)
-    : window.setTimeout(warmMessageRenderer, 2000);
-  const cancelWarmup = () => window.cancelIdleCallback
-    ? window.cancelIdleCallback(idle)
-    : window.clearTimeout(idle);
+  // rIC 加 timeout 兜底：挂载繁忙期一直抢不到空闲时，超时后仍强制预热，
+  // 否则挂载完立刻切换会话的用户仍要在关键路径上付整笔加载。
+  // 5s 取值压在慢网启动 ready（limited 档实测约 3.8s）之后：更早的强制预热会
+  // 在启动关键路径上抢带宽与主线程（3s 档实测 limited warm ready +72ms）。
+  // 不支持 rIC 的环境用同一时长的 setTimeout 兜底；调度与取消按同一套 API 配对，
+  // 不拿 clearTimeout 去清 idle id（两套 id 命名空间，误清会伤到别的定时器）。
+  const WARMUP_TIMEOUT_MS = 5000;
+  const useIdle = typeof window.requestIdleCallback === "function" && typeof window.cancelIdleCallback === "function";
+  const idle = useIdle
+    ? window.requestIdleCallback(warmMessageRenderer, { timeout: WARMUP_TIMEOUT_MS })
+    : window.setTimeout(warmMessageRenderer, WARMUP_TIMEOUT_MS);
+  const cancelWarmup = () => {
+    if (useIdle) window.cancelIdleCallback(idle as number);
+    else window.clearTimeout(idle as number);
+  };
   return {
     ...handle,
     dispose() {
