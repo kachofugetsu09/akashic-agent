@@ -3,6 +3,7 @@ from __future__ import annotations
 
 from collections.abc import Awaitable, Callable, Mapping
 from dataclasses import asdict, dataclass
+from datetime import datetime
 from typing import cast
 from urllib.parse import quote
 
@@ -18,6 +19,7 @@ from plugins.models.contract import (
 from plugins.ui.contract import PluginUiRpcInvalidRequest
 
 from .selection import read_saved
+from .usage import CacheUsage
 
 
 # 聊天界面经插件界面查询读模型数据；宿主不再持有模型目录与会话选择的投影。
@@ -27,7 +29,7 @@ class ChatUiQueries:
     selection: Callable[[ChatModelSelection], Awaitable[ChatModelSelection]]
     messages: MessageCatalog
     call_stats: Callable[[str], ModelCallStats]
-    message_tokens: Callable[[str, str], Awaitable[int | None]]
+    usage: CacheUsage
     icon: Callable[[str], Awaitable[str | None]]
 
     async def __call__(self, method: str, payload: dict[str, object], *,
@@ -36,7 +38,21 @@ class ChatUiQueries:
             message_id = payload.get("message_id")
             if set(payload) != {"message_id"} or not session_id or not isinstance(message_id, str) or not message_id:
                 raise PluginUiRpcInvalidRequest("用量查询需要会话与消息")
-            return {"output_tokens": await self.message_tokens(session_id, message_id)}
+            return {"output_tokens": await self.usage.message_output_tokens(session_id, message_id)}
+        if method == "usage.insights":
+            since = payload.get("since")
+            if set(payload) - {"since"} or not (since is None or _instant(since)):
+                raise PluginUiRpcInvalidRequest("用量洞察只接受带时区的 since 时刻")
+            return await self.usage.insights(cast(str | None, since))
+        if method == "usage.status":
+            if payload or not session_id:
+                raise PluginUiRpcInvalidRequest("用量短值查询需要会话且不接受参数")
+            return {"status": await self.usage.status(session_id)}
+        if method == "usage.session":
+            target = payload.get("session_id", session_id)
+            if set(payload) - {"session_id"} or not isinstance(target, str) or not target:
+                raise PluginUiRpcInvalidRequest("会话用量查询需要会话")
+            return await self.usage.session(target)
         if method == "chat.models":
             if payload:
                 raise PluginUiRpcInvalidRequest("模型列表查询不接受参数")
@@ -101,6 +117,15 @@ class ChatUiQueries:
 
 
 _LATEST_CALL_WINDOW = 50
+
+
+def _instant(value: object) -> bool:
+    if not isinstance(value, str) or len(value) > 40:
+        return False
+    try:
+        return datetime.fromisoformat(value).tzinfo is not None
+    except ValueError:
+        return False
 
 
 def _model_call_id(message: Message) -> str | None:

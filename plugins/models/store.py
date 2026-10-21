@@ -218,6 +218,15 @@ class ModelCallReader:
 _PROCESS_HOST_LOCKS: dict[Path, tuple[int, int]] = {}
 
 
+
+@dataclass(frozen=True, slots=True)
+class CallUsage:
+    """用量统计需要的一次调用：结算用量，以及绑定时的模型名与上下文窗口（未知为 0）。"""
+
+    usage: Mapping[str, object] | None
+    model: str
+    context_window: int
+
 class ModelsStore:
     """Own the ordinary models plugin's durable registry and write protocol."""
 
@@ -571,23 +580,28 @@ class ModelsStore:
             ).fetchall()
         return tuple(_decode_call(row) for row in rows)
 
-    def read_call_usages(self, call_ids: list[str]) -> dict[str, Mapping[str, object] | None]:
-        """批量读取调用用量；未成功结算的调用为 None，未知身份不出现在结果中。"""
-        result: dict[str, Mapping[str, object] | None] = {}
+    def read_call_usages(self, call_ids: list[str]) -> dict[str, CallUsage]:
+        """批量读取调用用量与绑定的模型；未成功结算的调用 usage 为 None，未知身份不出现在结果中。"""
+        result: dict[str, CallUsage] = {}
         unique = list(dict.fromkeys(call_ids))
         with self._connect(read_only=True) as connection:
             _ = require_model_calls_schema(connection)
             for start in range(0, len(unique), 500):
                 chunk = unique[start:start + 500]
                 rows = connection.execute(
-                    f"SELECT id, state, usage_json FROM model_calls WHERE id IN ({','.join('?' * len(chunk))})",
+                    "SELECT id, state, usage_json, json_extract(binding_json, '$.model') AS model, "
+                    "json_extract(binding_json, '$.capabilities.context_window') AS context_window "
+                    f"FROM model_calls WHERE id IN ({','.join('?' * len(chunk))})",
                     chunk,
                 ).fetchall()
                 for row in rows:
                     usage = row["usage_json"]
-                    result[str(row["id"])] = (
+                    model, window = row["model"], row["context_window"]
+                    result[str(row["id"])] = CallUsage(
                         cast(Mapping[str, object], json.loads(usage))
-                        if row["state"] == "success" and usage is not None else None
+                        if row["state"] == "success" and usage is not None else None,
+                        model if isinstance(model, str) else "",
+                        window if type(window) is int and window > 0 else 0,
                     )
         return result
 
