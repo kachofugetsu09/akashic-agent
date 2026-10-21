@@ -20,6 +20,7 @@ from core.common.file_io import run_file_io
 from plugins.ledger.contract import MESSAGE_CATALOG, ContentPart, Input, Message, MessageCatalog, Output
 from plugins.turn_projection.contract import TURN_PROJECTION, Turn, TurnProjection
 
+from .composition import Parts, bounded, totals
 from .store import CallUsage, ModelsStore
 
 _PROACTIVE_SOURCES = frozenset({"wake", "drift"})
@@ -67,6 +68,8 @@ class TurnUsage:
     context_window: int
     model: str
     compacted: bool
+    # 最后一次调用的记录 ID：上下文构成按它查。
+    call_id: str = ""
 
 
 @dataclass(slots=True)
@@ -228,6 +231,13 @@ class CacheUsage:
                 raise RuntimeError("消息账本或 Turn 投影不可用")
             return await run_file_io(lambda: self._status(catalog, projection, session_id))
 
+    async def composition(self, session_id: str, call_id: str) -> dict[str, object]:
+        """一轮上下文的来源明细（按预算截断）；逐轮趋势只带六类合计。"""
+        with self._ctx.borrow(MESSAGE_CATALOG) as catalog, self._ctx.borrow(TURN_PROJECTION) as projection:
+            if catalog is None or projection is None:
+                raise RuntimeError("消息账本或 Turn 投影不可用")
+            return await run_file_io(lambda: self._composition(catalog, projection, session_id, call_id))
+
     async def session(self, session_id: str) -> dict[str, object]:
         """一个会话的累计量与最近逐轮用量；只推进这个会话，不等全量扫描。"""
         with self._ctx.borrow(MESSAGE_CATALOG) as catalog, self._ctx.borrow(TURN_PROJECTION) as projection:
@@ -333,7 +343,34 @@ class CacheUsage:
                 return {"session": None, "turns": []}
             turns = sorted(_latest((state.recent for _, state in owned), _RECENT_TURNS), key=lambda turn: turn.recorded_at)
             row = _titled(catalog, [_session_row(session_id, owned, "")])[0]
-        return {"session": row, "turns": [asdict(turn) for turn in turns]}
+        shares, broken = self._shares(turn.call_id for turn in turns if turn.call_id)
+        return {"session": row, "composition_error": broken,
+                "turns": [{**asdict(turn), "composition": _scaled(_folded(shares.get(turn.call_id)), turn.context_tokens)}
+                          for turn in turns]}
+
+    # 一轮的来源明细；call_id 必须是这个会话最近逐轮里的一轮，按它的实报上下文换算。
+    def _composition(self, catalog: MessageCatalog, projection: TurnProjection,
+                     session_id: str, call_id: str) -> dict[str, object]:
+        detail = self._session(catalog, projection, session_id)
+        turns = cast(list[Mapping[str, object]], detail["turns"])
+        turn = next((item for item in turns if item.get("call_id") == call_id), None)
+        if turn is None:
+            return {"composition": None, "composition_error": False}
+        shares, broken = self._shares((call_id,))
+        parts = shares.get(call_id)
+        return {"composition": _scaled(bounded(parts), cast(int, turn["context_tokens"])) if parts else None,
+                "composition_error": broken}
+
+    # 构成是旁路记录：读失败时总量照常返回，另外标出构成不可用，不拿空构成冒充正常。
+    def _shares(self, call_ids: Iterable[str]) -> tuple[dict[str, Parts], bool]:
+        log = self._store.composition
+        if log is None:
+            return {}, False
+        try:
+            return log.get(call_ids), False
+        except (sqlite3.Error, OSError, ValueError):
+            logger.warning("context composition read failed", exc_info=True)
+            return {}, True
 
     # 1. 丢掉已删除的 Session；2. 在时间预算内推进扫描；未扫完时返回进度，扫完返回 None。
     def _advance(self, catalog: MessageCatalog, projection: TurnProjection) -> dict[str, object] | None:
@@ -488,6 +525,7 @@ def _record(
     usage = TurnUsage(
         session_id, source in _PROACTIVE_SOURCES, final.recorded_at, preview, prompt, hit or 0, output or 0,
         len(calls), context if type(context) is int else 0, last.context_window, last.model, compacted,
+        next((fact.call_id for _, fact in reversed(outputs) if fact.call_id), ""),
     )
     if summaries:
         state.summary = summaries[-1]
@@ -564,6 +602,19 @@ def _ceil_hour_key(value: str) -> str:
     moment = (moment if moment.tzinfo else moment.replace(tzinfo=UTC)).astimezone(UTC)
     floor = moment.replace(minute=0, second=0, microsecond=0)
     return (floor if floor == moment else floor + timedelta(hours=1)).strftime("%Y-%m-%dT%H")
+
+
+def _folded(parts: Parts | None) -> Parts | None:
+    return totals(parts) if parts else None
+
+
+# 估算份额按实报输入换算成 token（类别 -> 来源 -> token）；没有记录（旧调用或未统计）时为 None。
+def _scaled(parts: Mapping[str, Mapping[str, int]] | None, total: int) -> dict[str, dict[str, int]] | None:
+    weight = sum(value for group in (parts or {}).values() for value in group.values())
+    if not parts or not weight or total <= 0:
+        return None
+    return {category: {label: round(value * total / weight) for label, value in group.items()}
+            for category, group in parts.items()}
 
 
 def _hour_key(value: str) -> str:

@@ -85,3 +85,57 @@ button.usage-item { cursor: pointer; }
 [data-sheet] .usage-item, [data-sheet] .usage-tabs button, [data-sheet] .usage-seg button, [data-sheet] .usage-row button, [data-sheet] .usage-back { min-height: 44px; }
 [data-sheet] .usage-filter { min-height: 44px; font-size: 16px; }
 [data-sheet] .usage-columns { grid-template-columns: minmax(0, 1fr); }
+
+/* 构成六类色（已过色觉校验），随宿主 color-scheme 切换；命中与未命中只用墨色深浅与主蓝。 */
+.usage-summary, .usage-expanded {
+  --usage-system: light-dark(#2a78d6, #3987e5); --usage-tools: light-dark(#eb6834, #d95926);
+  --usage-user: light-dark(#1baf7a, #199e70); --usage-injected: light-dark(#eda100, #c98500);
+  --usage-assistant: light-dark(#e87ba4, #d55181); --usage-tool_results: light-dark(#6250d6, #9085e9);
+  --usage-miss: var(--usage-system); --usage-hit: color-mix(in oklab, var(--chat-ink) 22%, transparent);
+}
+[data-cat="system"] { --cat: var(--usage-system); } [data-cat="tools"] { --cat: var(--usage-tools); }
+[data-cat="user"] { --cat: var(--usage-user); } [data-cat="injected"] { --cat: var(--usage-injected); }
+[data-cat="assistant"] { --cat: var(--usage-assistant); } [data-cat="tool_results"] { --cat: var(--usage-tool_results); }
+.usage-bars i { background: var(--usage-miss); opacity: 1; }
+.usage-bars i.soft, .usage-legend i.soft { background: var(--usage-hit); opacity: 1; }
+
+.usage-stack { display: flex; height: 8px; gap: 2px; overflow: hidden; border-radius: 4px; background: var(--chat-chip); }
+.usage-stack > span { min-width: 2px; background: var(--cat); }
+.usage-stack > span.free { background: transparent; }
+.usage-legend-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(11rem, 1fr)); gap: 4px 12px; font-size: var(--chat-type-caption); }
+.usage-legend-grid[data-compact] { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+/* 带来源明细的图例按列流式排，展开一类不会在网格里留空洞。 */
+.usage-legend-grid:not([data-compact]) { display: block; columns: 3 12rem; column-gap: 16px; }
+.usage-legend-grid:not([data-compact]) > .usage-lg { break-inside: avoid; margin-bottom: 4px; }
+.usage-lg > summary, div.usage-lg { display: flex; align-items: center; gap: 6px; min-width: 0; }
+.usage-lg > summary { cursor: pointer; list-style: none; }
+.usage-lg > summary::-webkit-details-marker { display: none; }
+.usage-lg i { flex: none; width: 8px; height: 8px; border-radius: 2px; background: var(--cat); }
+.usage-lg em { overflow: hidden; font-style: normal; text-overflow: ellipsis; white-space: nowrap; }
+.usage-lg summary > span, div.usage-lg > span { margin-inline-start: auto; color: var(--chat-faint); font-variant-numeric: tabular-nums; white-space: nowrap; }
+.usage-lg ul { margin: 2px 0 6px 14px; padding: 0; list-style: none; color: var(--chat-faint); }
+.usage-lg li { display: flex; justify-content: space-between; gap: 8px; }
+.usage-lg li span:first-child { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+
+.usage-context-head { display: grid; grid-template-columns: auto minmax(0, 1fr); align-items: center; gap: 16px; }
+.usage-donut { position: relative; width: 112px; height: 112px; }
+.usage-donut svg { width: 100%; height: 100%; }
+.usage-donut circle { stroke: var(--cat); }
+.usage-donut-mid { position: absolute; inset: 0; display: grid; place-content: center; text-align: center; }
+.usage-donut-mid b { font-size: 1.125rem; font-variant-numeric: tabular-nums; }
+.usage-donut-mid span { color: var(--chat-faint); font-size: var(--chat-type-caption); }
+
+.usage-trend { display: grid; gap: 8px; min-width: 0; }
+.usage-trend-bars { display: flex; height: 120px; align-items: flex-end; gap: 2px; }
+.usage-trend-bars button { display: flex; height: 100%; max-width: 14px; min-width: 3px; flex: 1 1 0; align-items: flex-end; padding: 0; border: 0; background: none; cursor: pointer; }
+.usage-trend-bars button[aria-pressed="true"] { outline: 1px solid var(--chat-faint); outline-offset: 1px; }
+.usage-trend-bars button > span { display: flex; width: 100%; flex-direction: column-reverse; gap: 1px; overflow: hidden; border-radius: 2px 2px 0 0; }
+.usage-trend-bars i { display: block; min-height: 1px; background: var(--cat); }
+.usage-trend-bars i.unknown { background: var(--chat-ink); opacity: 0.22; }
+/* 命中率点排：与柱同样的宽度与间距，逐轮对齐；上下两条细线是 100% 与 0。 */
+.usage-trend-hit { display: flex; height: 40px; gap: 2px; padding: 4px 0; border-block: 1px solid var(--chat-chip); }
+.usage-trend-hit > span { position: relative; max-width: 14px; min-width: 3px; flex: 1 1 0; }
+.usage-trend-hit i { position: absolute; left: 50%; width: 8px; height: 8px; margin: 0 0 -4px -4px; border-radius: 50%; background: var(--usage-miss); box-shadow: 0 0 0 2px var(--chat-surface, transparent); }
+.usage-trend-hit > span[data-picked] i { outline: 1px solid var(--chat-faint); outline-offset: 1px; }
+.usage-step { display: grid; gap: 8px; padding-top: 8px; border-top: 1px solid var(--chat-chip); }
+@media (max-width: 520px) { .usage-context-head { grid-template-columns: 1fr; justify-items: center; } .usage-legend-grid[data-compact] { grid-template-columns: repeat(2, minmax(0, 1fr)); } }

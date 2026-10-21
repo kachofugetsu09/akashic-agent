@@ -97,10 +97,14 @@ class Reminder:
     text: str
     priority: int
     replay: bool = True
+    # 贡献这条提醒的插件；由材料汇总按实际 owner 填写，只用于上下文构成统计。
+    owner: str = ""
 
     def __post_init__(self) -> None:
         if not isinstance(self.name, str) or not self.name.strip():
             raise ValueError("提醒必须有稳定的局部名称")
+        if not isinstance(self.owner, str):
+            raise TypeError("提醒 owner 必须是字符串")
         if not isinstance(self.text, str):
             raise TypeError("提醒正文必须是字符串")
         if type(self.priority) is not int:
@@ -118,10 +122,14 @@ class Materials:
     summary: Summary | None = None
     references: tuple[Mapping[str, object], ...] = ()
     notices: tuple[str, ...] = ()
+    # system_prompt 按贡献材料拆开的 (材料名, 正文)；只用于上下文构成统计，拼接仍以 system_prompt 为准。
+    prompt_sections: tuple[tuple[str, str], ...] = ()
 
     def __post_init__(self) -> None:
         if not isinstance(self.system_prompt, str):
             raise TypeError("system Prompt 必须是字符串")
+        if any(len(item) != 2 or not all(isinstance(value, str) for value in item) for item in self.prompt_sections):
+            raise TypeError("prompt_sections 必须是 (名称, 正文) 字符串对")
         if any(not isinstance(item, str) or not item.strip() for item in self.notices):
             raise ValueError("上下文诊断必须是非空正文")
         parts = tuple(self.reminders)
@@ -180,7 +188,7 @@ def _summary(value: object) -> Summary | None:
 
 def _reminder(value: object) -> Reminder:
     data = _object(value, "reminder")
-    if set(data) not in ({"name", "text", "priority"}, {"name", "text", "priority", "replay"}):
+    if not {"name", "text", "priority"} <= set(data) <= {"name", "text", "priority", "replay", "owner"}:
         raise ValueError("reminder 字段无效")
     name, text, priority = data["name"], data["text"], data["priority"]
     if not isinstance(name, str) or not isinstance(text, str) or type(priority) is not int:
@@ -188,13 +196,16 @@ def _reminder(value: object) -> Reminder:
     replay = data.get("replay", True)
     if type(replay) is not bool:
         raise TypeError("reminder.replay 必须是 bool")
-    return Reminder(name, text, priority, replay)
+    owner = data.get("owner", "")
+    if not isinstance(owner, str):
+        raise TypeError("reminder.owner 必须是字符串")
+    return Reminder(name, text, priority, replay, owner)
 
 
 def decode_material(value: object) -> Materials:
     """在 Context 边界把 provider 的普通映射转换为内部材料值。"""
     data = _object(value, "materials")
-    unknown = set(data) - {"system_prompt", "reminders", "summary", "references", "notices"}
+    unknown = set(data) - {"system_prompt", "reminders", "summary", "references", "notices", "prompt_sections"}
     if unknown:
         raise ValueError(f"materials 包含未知字段: {sorted(unknown)}")
     prompt = data.get("system_prompt", "")
@@ -206,7 +217,11 @@ def decode_material(value: object) -> Materials:
     notices = _sequence(data.get("notices", ()), "materials.notices")
     if any(not isinstance(item, str) for item in notices):
         raise TypeError("materials.notices 必须是字符串数组")
-    return Materials(prompt, reminders, summary, references, cast(tuple[str, ...], notices))
+    sections = tuple(tuple(cast(Sequence[object], item)) for item in _sequence(data.get("prompt_sections", ()), "materials.prompt_sections"))
+    if any(len(item) != 2 or not all(isinstance(value, str) for value in item) for item in sections):
+        raise TypeError("materials.prompt_sections 必须是 [名称, 正文] 字符串对")
+    return Materials(prompt, reminders, summary, references, cast(tuple[str, ...], notices),
+                     cast(tuple[tuple[str, str], ...], sections))
 
 
 def material_data(materials: Materials) -> MaterialData:
@@ -219,10 +234,12 @@ def material_data(materials: Materials) -> MaterialData:
     return {
         "system_prompt": materials.system_prompt,
         "reminders": tuple({"name": item.name, "text": item.text, "priority": item.priority,
-                            **({"replay": False} if not item.replay else {})} for item in materials.reminders),
+                            **({"replay": False} if not item.replay else {}),
+                            **({"owner": item.owner} if item.owner else {})} for item in materials.reminders),
         "summary": summary,
         "references": tuple(dict(item) for item in materials.references),
         **({"notices": materials.notices} if materials.notices else {}),
+        **({"prompt_sections": materials.prompt_sections} if materials.prompt_sections else {}),
     }
 
 

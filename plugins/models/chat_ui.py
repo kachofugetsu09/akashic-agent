@@ -55,6 +55,12 @@ class ChatUiQueries:
             if set(payload) - {"session_id"} or not isinstance(target, str) or not target:
                 raise PluginUiRpcInvalidRequest("会话用量查询需要会话")
             return await self.usage.session(target)
+        if method == "usage.composition":
+            target, call_id = payload.get("session_id", session_id), payload.get("call_id")
+            if set(payload) - {"session_id", "call_id"} or not isinstance(target, str) or not target \
+                    or not isinstance(call_id, str) or not call_id:
+                raise PluginUiRpcInvalidRequest("构成明细查询需要会话与 call_id")
+            return await self.usage.composition(target, call_id)
         if method == "chat.models":
             if payload:
                 raise PluginUiRpcInvalidRequest("模型列表查询不接受参数")

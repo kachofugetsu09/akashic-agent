@@ -19,6 +19,7 @@ from plugins.ledger.contract import MESSAGE_CATALOG, MESSAGE_WRITERS, ContentPar
 from plugins.models.contract import ChatModelSelection, ModelError, ModelUnavailableError
 from plugins.channels.contract import InputPartRejected
 
+from .composition import CompositionLog
 from .content import MODEL_CONTENT, ContentOwner
 from .views import CONTENT_VIEWS, ContentViews
 from .litellm_catalog import LiteLlmCapabilityCatalog
@@ -57,6 +58,7 @@ async def apply(ctx: Context) -> None:
         ctx.workspace_file("model-registry.sqlite3"),
         backup_dir=ctx.runtime.workspace / "runtime" / "model-backups",
         writable=True,
+        composition=CompositionLog(ctx.data_root / "composition.sqlite3"),
     )
     store.initialize()
     # 宿主租约在本 Root 退役时最后释放：effect 清理按注册逆序执行，

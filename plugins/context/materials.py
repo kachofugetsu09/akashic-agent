@@ -4,7 +4,7 @@ import asyncio
 
 from collections.abc import AsyncIterator, Mapping
 from contextlib import AsyncExitStack, asynccontextmanager
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from typing import TypedDict
 
 from agent.plugin_composition import Context, Effect
@@ -71,7 +71,7 @@ class MaterialView:
                 key = (plugin_id, item.name)
                 if key in blocks:
                     raise ValueError(f"提醒身份重复: {key}")
-                blocks[key] = item
+                blocks[key] = replace(item, owner=plugin_id)
 
         if reminders:
             if caller is None or caller.root_instance_token is not self._ctx.root_instance_token:
@@ -119,7 +119,9 @@ class MaterialView:
         ordered = tuple(block for _, block in sorted(
             blocks.items(), key=lambda item: (item[1].priority, item[0][0].encode("utf-8"), item[0][1].encode("utf-8")),
         ))
-        return material_data(Materials("\n\n".join(item[3] for item in sorted(prompts)), ordered, summary, tuple(references.values())))
+        sections = tuple((item[2].decode("utf-8"), item[3]) for item in sorted(prompts))
+        return material_data(Materials("\n\n".join(text for _, text in sections), ordered, summary,
+                                       tuple(references.values()), prompt_sections=sections))
 
     async def reduce(
         self, snapshot: tuple[Message, ...], materials: MaterialData,

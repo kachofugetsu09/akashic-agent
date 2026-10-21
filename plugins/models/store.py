@@ -48,6 +48,7 @@ from plugins.models.contract import (
 )
 from plugins.models.contract import BoundModelDescriptor
 from plugins.models.contract import ModelCallStats
+from plugins.models.composition import CompositionLog
 
 # 只剩全局默认；旧库里的 fast/agent/vision 行不再读取，保留原样便于回滚。
 MODEL_ROLES = ("default",)
@@ -231,10 +232,13 @@ class CallUsage:
 class ModelsStore:
     """Own the ordinary models plugin's durable registry and write protocol."""
 
-    def __init__(self, path: Path, backup_dir: Path, writable: bool = True) -> None:
+    def __init__(self, path: Path, backup_dir: Path, writable: bool = True,
+                 composition: CompositionLog | None = None) -> None:
         self.path = path
         self.backup_dir = backup_dir
         self.writable = writable
+        # 上下文构成另存一个文件，归 models 插件数据目录；没有时不统计构成。
+        self.composition = composition
         self.read_call = ModelCallReader(lambda: self._connect(read_only=True), self._replay_connection)
         self._host_epoch: int | None = None
         self._write_connection: sqlite3.Connection | None = None
