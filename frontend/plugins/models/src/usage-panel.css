@@ -129,8 +129,10 @@ button.usage-item { cursor: pointer; }
 .usage-trend-bars button > span { display: flex; width: 100%; flex-direction: column-reverse; gap: 1px; overflow: hidden; border-radius: 2px 2px 0 0; }
 .usage-trend-bars i { display: block; min-height: 1px; background: var(--cat); }
 .usage-trend-bars i.unknown { background: var(--chat-ink); opacity: 0.22; }
-.usage-trend-hit { width: 100%; height: 44px; overflow: visible; }
-.usage-trend-hit line { stroke: var(--chat-chip); stroke-width: 1; vector-effect: non-scaling-stroke; }
-.usage-trend-hit polyline { fill: none; stroke: var(--usage-miss); stroke-width: 2; stroke-linejoin: round; }
+/* 命中率点排：与柱同样的宽度与间距，逐轮对齐；上下两条细线是 100% 与 0。 */
+.usage-trend-hit { display: flex; height: 40px; gap: 2px; padding: 4px 0; border-block: 1px solid var(--chat-chip); }
+.usage-trend-hit > span { position: relative; max-width: 14px; min-width: 3px; flex: 1 1 0; }
+.usage-trend-hit i { position: absolute; left: 50%; width: 8px; height: 8px; margin: 0 0 -4px -4px; border-radius: 50%; background: var(--usage-miss); box-shadow: 0 0 0 2px var(--chat-surface, transparent); }
+.usage-trend-hit > span[data-picked] i { outline: 1px solid var(--chat-faint); outline-offset: 1px; }
 .usage-step { display: grid; gap: 8px; padding-top: 8px; border-top: 1px solid var(--chat-chip); }
 @media (max-width: 520px) { .usage-context-head { grid-template-columns: 1fr; justify-items: center; } .usage-legend-grid[data-compact] { grid-template-columns: repeat(2, minmax(0, 1fr)); } }

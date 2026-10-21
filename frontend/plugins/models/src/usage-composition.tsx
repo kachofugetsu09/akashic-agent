@@ -59,12 +59,11 @@ export function Donut({ parts, center, sub }: { parts: Composition; center: stri
   </div>;
 }
 
-// 逐轮趋势：柱按构成堆叠（没有构成记录的旧轮次画成灰柱），命中率单独一条线，不和 token 共用纵轴；点柱看这一轮明细。
+// 逐轮趋势：柱按构成堆叠（没有构成记录的旧轮次画成灰柱），命中率单独一排点、与柱逐轮对齐，不和 token 共用纵轴；点柱看这一轮明细。
 export function ContextTrend({ turns }: { turns: ComposedTurn[] }) {
   const [picked, setPicked] = useState(turns.length - 1);
   const max = Math.max(1, ...turns.map((turn) => turn.context_tokens));
   const turn = turns[Math.min(picked, turns.length - 1)];
-  const points = turns.map((item, index) => `${(index + 0.5) / turns.length * 100},${item.prompt_tokens ? (1 - item.hit_tokens / item.prompt_tokens) * 100 : 100}`).join(" ");
   return <div className="usage-trend">
     <div className="usage-trend-bars" role="group" aria-label="逐轮上下文构成">
       {turns.map((item, index) => {
@@ -78,10 +77,11 @@ export function ContextTrend({ turns }: { turns: ComposedTurn[] }) {
         </button>;
       })}
     </div>
-    <svg className="usage-trend-hit" viewBox="0 0 100 100" preserveAspectRatio="none" role="img" aria-label="逐轮缓存命中率">
-      <line x1="0" x2="100" y1="0" y2="0" /><line x1="0" x2="100" y1="100" y2="100" />
-      <polyline points={points} vectorEffect="non-scaling-stroke" />
-    </svg>
+    <div className="usage-trend-hit" role="img" aria-label="逐轮缓存命中率">
+      {turns.map((item, index) => <span key={item.recorded_at} data-picked={index === picked || undefined}>
+        {item.prompt_tokens ? <i style={{ bottom: `${item.hit_tokens / item.prompt_tokens * 100}%` }} /> : null}
+      </span>)}
+    </div>
     <div className="usage-row muted"><span>缓存命中率（上 100% · 下 0）</span><span>柱高为每轮最后一次请求的实报输入</span></div>
     {turn ? <div className="usage-step">
       <div className="usage-row"><b>{new Date(turn.recorded_at).toLocaleString("zh-CN", { month: "numeric", day: "numeric", hour: "2-digit", minute: "2-digit" })}</b>
