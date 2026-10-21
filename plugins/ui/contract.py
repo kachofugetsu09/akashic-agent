@@ -342,14 +342,16 @@ async def read_message_rows(
 SESSION_PREVIEW_CHARS = 400
 
 
-# 首条消息的文字部分，截到列表需要的长度；无文字（控制消息、纯附件）时为空串。
+# 首条消息的文字部分按列表标题的规则压成一行再限长；无文字（控制消息、纯附件）时为空串。
 def session_preview(first: Message | None) -> str:
     if first is None or isinstance(first.body, Control):
         return ""
-    return "\n".join(
+    text = "\n".join(
         cast(str, part.value) for part in first.body.parts
         if isinstance(part, ContentPart) and part.kind == "text"
-    )[:SESSION_PREVIEW_CHARS]
+    )
+    # 先合并空白再截：长段缩进或空行不能吃掉预算，让后面的标题文字消失。
+    return " ".join(text.split())[:SESSION_PREVIEW_CHARS]
 
 
 def session_row(entry: SessionEntry) -> dict[str, object]:
