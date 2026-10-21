@@ -116,6 +116,7 @@ try {
   await settle(() => newB.resolve(page("akashic:B", [5])));
   await settle();
   assert.deepEqual(seqs(), [5]);
+  assert.equal(sockets.length, 1, "healthy session switches reuse the open socket");
   checks.push("A→B→A→B creates a fresh owner; cancelled same-session success cannot render stale history or clear current loading");
 
   await settle(() => controller.activateSession("akashic:C"));
@@ -208,7 +209,7 @@ try {
   await settle(() => controller.activateSession("akashic:E"));
   assert.equal(histories.length, pendingCount);
   await settle(() => pendingE.resolve({ detail: "active history unavailable" }, 503));
-  assert.equal(controller.error, "active history unavailable");
+  assert.equal(controller.historyFailure, "active history unavailable");
   await settle(() => controller.retry());
   await settle();
   assert.equal(histories.length, pendingCount + 1);
