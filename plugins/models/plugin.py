@@ -118,7 +118,7 @@ async def apply(ctx: Context) -> None:
                               usage=usage, icon=state.connection_icon)
         _ = await child.require(UI_SLOTS).register_plugin_ui(
             child, PluginUiDefinition(module="plugin_ui.js", stylesheet="plugin_ui.css",
-                                      slots=("turn.after_answer", "composer.toolbar", "composer.status")), query=query)
+                                      slots=("turn.after_answer", "composer.toolbar", "composer.status", "sidebar.panels")), query=query)
 
     _ = await ctx.inject((UI_SLOTS, MESSAGE_CATALOG), message_ui, name="message-ui")
 
