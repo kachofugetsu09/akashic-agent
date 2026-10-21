@@ -23,7 +23,7 @@ from agent.plugin_composition.tasks import TASKS
 from plugins.timer.contract import TIMERS
 from plugins.ui.contract import UI
 from plugins.models.contract import MODEL_CONTENT, MODEL_SELECTION
-from plugins.models.contract import MODEL_CATALOG
+from plugins.models.contract import CHAT_MODELS, MODEL_CATALOG
 
 from ._boundary import (
     ALL_TOOLS,
@@ -53,7 +53,7 @@ name = "wake"
 version = "4.0.0"
 desc = "内部消息完成初筛、调查与告警，真实送达后确认原职责"
 function_inject = (
-    MODEL_SELECTION, MODEL_CONTENT, MODEL_CATALOG,
+    MODEL_SELECTION, MODEL_CONTENT, MODEL_CATALOG, CHAT_MODELS,
     REPLY_EXECUTE, SOURCE_CHECK,
     BINDINGS,
     TASKS,

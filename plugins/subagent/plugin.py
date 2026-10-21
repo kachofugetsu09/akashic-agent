@@ -8,7 +8,7 @@ from collections.abc import AsyncGenerator, Mapping
 from contextlib import asynccontextmanager
 from typing import cast
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 from agent.plugin_composition import (
     RUNTIME_STARTED,
@@ -33,6 +33,9 @@ from plugins.reply_program.contract import (
 )
 from agent.plugin_composition.plugin_config import PLUGIN_CONFIG
 from agent.plugin_composition.model import ServiceKey
+from plugins.models.contract import (
+    CHAT_MODELS, MODEL_CATALOG, MODEL_SELECTION, ChatModelSelection, ModelChoice, ModelUse, model_options,
+)
 from plugins.ui.contract import Configuration, ModelSettings, mount_settings
 
 from .inputs import (
@@ -59,6 +62,7 @@ desc = "独立内部消息任务，固定工具权限并向父会话回传"
 
 inject = (
     PLUGIN_CONFIG, CONTENT,
+    CHAT_MODELS, MODEL_CATALOG, MODEL_SELECTION,
     CHECK_ORIGIN,
     TOOL_BIND_SAVED,
     BINDINGS,
@@ -80,7 +84,9 @@ workspace_files = ("memory/SELF.md", "memory/spawn_trace.jsonl")
 
 
 SETTINGS = ServiceKey[Configuration]("subagent.settings.v1")
-SETTING_FIELDS = ("max_steps", "max_output_tokens", "max_active", "result_chars")
+# 子任务默认沿用派出它的那轮对话的模型；也可固定跟随默认或指定一个模型。
+SUBAGENT_MODEL = ModelUse("subagent", "子任务", follows=("session", "default"))
+SETTING_FIELDS = ("model", "max_steps", "max_output_tokens", "max_active", "result_chars")
 
 
 class Config(BaseModel):
@@ -89,17 +95,33 @@ class Config(BaseModel):
     max_output_tokens: int | None = Field(default=None, gt=0)
     max_active: int = Field(default=DEFAULT_MAX_ACTIVE, ge=1, le=20)
     result_chars: int = Field(default=DEFAULT_RESULT_CHARS, ge=1000, le=1_000_000)
+    model: ModelChoice = ModelChoice(follow="session")
+
+    @field_validator("model")
+    @classmethod
+    def _check_model(cls, value: ModelChoice) -> ModelChoice:
+        return SUBAGENT_MODEL.check(value)
 
 
 async def apply(ctx: Context) -> None:
     """工具提交请求，正式订阅者启动工作；归档只提供原程序和工具入口。"""
     config = Config.model_validate(ctx.config)
-    await mount_settings(ctx, SETTINGS, ModelSettings(ctx, Config, SETTING_FIELDS),
+    await mount_settings(ctx, SETTINGS, ModelSettings(ctx, Config, SETTING_FIELDS,
+                                                       status=model_options(ctx, {"model": SUBAGENT_MODEL})),
                          lambda: import_module(".dashboard", __package__))
     watcher: asyncio.Task[None] | None = None
     jobs = Subagents(ctx, max_active=config.max_active, result_chars=config.result_chars)
     catalog = ctx.require(TOOLS)
     _ = await catalog.declare_group(ctx, description=desc)
+
+    # 子任务的「跟随对话」= 父回合用的选择：父调用前缀里最后一次 model.selection，否则父会话保存的选择。
+    async def child_model(messages: tuple[Message, ...]) -> ChatModelSelection:
+        selection = ctx.require(MODEL_SELECTION)
+        session = selection.read(messages)
+        if session is None:
+            metadata = ctx.require(MESSAGE_CATALOG).reader(messages[-1].session_id).metadata()
+            session = selection.read_saved(metadata if metadata is not None else {})
+        return await ctx.require(CHAT_MODELS).resolve(SUBAGENT_MODEL, config.model, session)
 
     @asynccontextmanager
     async def open_spawn(state: Mapping[str, object]) -> AsyncGenerator[Spawn]:
@@ -108,7 +130,8 @@ async def apply(ctx: Context) -> None:
         for value in state.values():
             if not isinstance(value, Mapping) or any(not isinstance(identity, str) or not identity for identity in cast(Mapping[object, object], value).values()):
                 raise ValueError("子任务原能力目录损坏")
-        yield Spawn(ctx, cast(Mapping[str, str], state["tools"]), cast(Mapping[str, str], state["senders"]), jobs)
+        yield Spawn(ctx, cast(Mapping[str, str], state["tools"]), cast(Mapping[str, str], state["senders"]), jobs,
+                    model=child_model)
 
     async def capture(configuration: Mapping[str, object]) -> Mapping[str, object]:
         if configuration:

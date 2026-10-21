@@ -20,6 +20,7 @@ from plugins.ledger.contract import (
 from plugins.timer.contract import TIMERS, TimerReceipt, TimerStatus
 from plugins.ledger.contract import Message, body_to_dict
 from plugins.models.contract import (
+    CHAT_MODELS,
     MODEL_SELECTION as MODEL_SELECTION,
     ModelSelection as ModelSelection,
 )
@@ -35,7 +36,7 @@ from ._boundary import (
     ToolView,
 )
 from .admission import Admission, Duties
-from .api import DRIFT_WAKE, EVENTMAIL_WAKE, Config, DeliveryTarget
+from .api import DRIFT_WAKE, EVENTMAIL_WAKE, WAKE_MODEL, Config, DeliveryTarget
 from .legacy_rules import read_archived_rules
 from .messages import recent_context
 from .request import TOOLS as WAKE_TOOLS, WAKE_PROGRAM, Request
@@ -176,7 +177,9 @@ class Runtime:
             "binding_id": ctx.require(DELIVERY_SENDERS).bind(target.channel, bindings),
         }
         metadata = ctx.require(MESSAGE_CATALOG).reader(target.session_id).metadata()
-        model = ctx.require(MODEL_SELECTION).read_saved(metadata if metadata is not None else {})
+        # 跟随对话即沿用接收对话保存的选择；由 Models 统一解析，选中的模型不可用时回到默认。
+        saved = ctx.require(MODEL_SELECTION).read_saved(metadata if metadata is not None else {})
+        model = await ctx.require(CHAT_MODELS).resolve(WAKE_MODEL, self.config.model, saved)
         catalog = ctx.require(TOOLS)
         allowed = set(self.config.investigation_tools) if owner == "content" else set()
         view: ToolView = catalog.view(

@@ -8,6 +8,7 @@ from agent.plugin_composition import Context, ServiceKey
 from agent.plugin_composition.context import FiberHandle
 from plugins.models.contract import ModelCatalogSnapshot
 from plugins.models.contract import MODEL_CATALOG
+from .api import WAKE_MODEL
 from plugins.ledger.contract import MESSAGE_CATALOG
 from agent.plugin_composition.plugin_config import PLUGIN_CONFIG
 from agent.plugin_composition.runtime_catalog import RUNTIME_CATALOG
@@ -85,12 +86,16 @@ class Settings:
             return {**self.ctx.require(PLUGIN_CONFIG).read(self.ctx), "enabled": enabled,
                 "ready": enabled is True and not reason and self.function.state.value == "active",
                 "can_enable": can_enable, "blocked": blocked, "reason": reason or fiber["error"] or "",
-                "values": {"delivery": config["delivery"], "timezone": config["timezone"]}, "targets": self.targets()}
+                "values": {"delivery": config["delivery"], "timezone": config["timezone"],
+                           **({"model": config["model"]} if "model" in self.ctx.config else {})},
+                "defaults": {"model": self.model.model_validate({}).model_dump(mode="json")["model"]},
+                "model_options": {} if model is None else {"model": WAKE_MODEL.options(model)},
+                "targets": self.targets()}
 
     async def save(self, request_id: str, expected_input: str, values: dict[str, object]) -> dict[str, object]:
         """只接受用户决定与本插件字段，启用前重新核对前置。"""
         async with self.ctx.runtime_scope():
-            if set(values) - {"enabled", "delivery", "timezone"} or type(values.get("enabled")) is not bool:
+            if set(values) - {"enabled", "delivery", "timezone", "model"} or type(values.get("enabled")) is not bool:
                 raise ValueError("配置字段无效，请选择开启或关闭")
             current = await self.read()
             if values["enabled"] and not current["can_enable"]:
@@ -100,7 +105,11 @@ class Settings:
                 choices = [{key: value for key, value in item.items() if key != "label"} for item in self.targets()]
                 if target not in choices:
                     raise ValueError("请选择现有对话的可用发送目标")
-            config = self.model.model_validate({**self.ctx.config, **values}).model_dump()
+            # 模型留空即删除覆盖，回到默认的跟随方式。
+            merged = {**self.ctx.config, **values}
+            if merged.get("model") is None:
+                merged.pop("model", None)
+            config = self.model.model_validate(merged).model_dump(exclude_unset=True)
             return await self.ctx.require(PLUGIN_CONFIG).apply(self.ctx, request_id=request_id,
                 expected_input=expected_input, config=config)
 
