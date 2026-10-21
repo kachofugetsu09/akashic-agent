@@ -1,5 +1,6 @@
 import { useEffect, useState } from "react";
 import { render, type PluginUiSidebarPanelContext, type SidebarPanelProvider } from "@akashic/chat-ui-v1";
+import { CompositionBar, CompositionLegend, ContextTrend, Donut, type Composition } from "./usage-composition";
 import "./usage-panel.css";
 
 // 侧栏「用量」面板：小浮层是本会话摘要，展开后分概览、会话、上下文三页；数据全部来自 provider 实报。
@@ -13,7 +14,7 @@ interface SessionRow {
 interface Insights { hours: [string, number, number, number, number, number][]; sources: Group[]; models: Group[]; sessions: SessionRow[]; total_sessions: number }
 interface TurnRow {
   recorded_at: string; preview: string; prompt_tokens: number; hit_tokens: number; output_tokens: number; calls: number;
-  context_tokens: number; context_window: number; model: string; compacted: boolean;
+  context_tokens: number; context_window: number; model: string; compacted: boolean; composition: Composition | null;
 }
 interface SessionDetail { session: SessionRow | null; turns: TurnRow[] }
 type Tab = "overview" | "sessions" | "context";
@@ -86,12 +87,14 @@ function Metric({ value, label, warn = false }: { value: string; label: string; 
   return <div className="usage-metric"><b data-warn={warn || undefined}>{value}</b><span>{label}</span></div>;
 }
 
-function ContextLine({ row }: { row: SessionRow }) {
+// 有构成记录时上下文条按类别上色，否则退回单色占比条。
+function ContextLine({ row, parts }: { row: SessionRow; parts?: Composition | null }) {
   const ratio = fill(row);
   return <div className="usage-context">
     <div className="usage-row"><span>上下文 <b data-warn={ratio !== null && ratio >= HOT || undefined}>{pct(ratio)}</b></span>
       <span>{fmt(row.context_tokens)}{row.context_window ? ` / ${fmt(row.context_window)}` : ""}</span></div>
-    <div className="usage-meter"><i style={{ width: `${Math.min(1, ratio ?? 0) * 100}%` }} data-hot={ratio !== null && ratio >= HOT || undefined} /></div>
+    {parts ? <><CompositionBar parts={parts} window={row.context_window} /><CompositionLegend parts={parts} compact /></>
+      : <div className="usage-meter"><i style={{ width: `${Math.min(1, ratio ?? 0) * 100}%` }} data-hot={ratio !== null && ratio >= HOT || undefined} /></div>}
     {ratio !== null && ratio >= HOT ? <p className="usage-note">接近上限，下一次请求可能触发压缩。</p> : null}
   </div>;
 }
@@ -120,7 +123,7 @@ function Summary({ query, sessionId, open, sheet }: { query: Query; sessionId?: 
         <Metric value={pct(rate(row.totals))} label="缓存命中" />
         <Bars turns label="本会话逐轮输入" items={(own.data?.turns ?? []).slice(-40).map((turn) => ({ hit: turn.hit_tokens, miss: turn.prompt_tokens - turn.hit_tokens }))} />
       </div>
-      <ContextLine row={row} />
+      <ContextLine row={row} parts={own.data?.turns.at(-1)?.composition} />
       <div className="usage-row muted"><span>{row.totals.turns} 轮 · {row.totals.calls} 次调用 · 压缩 {row.compactions} 次</span>
         <button type="button" onClick={() => open("context")}>上下文</button></div>
     </> : <p className="usage-note">{sessionId ? own.error || (own.data ? "这个会话还没有完整的用量记录。" : "正在读取…") : "新会话发出第一条消息后才有用量。"}</p>}
@@ -226,10 +229,12 @@ function SessionDetailView({ query, sessionId, context }: { query: Query; sessio
     <div><div className="usage-title">{sessionTitle(row)}</div>
       <div className="usage-note">{row.sources.map(sourceLabel).join(" · ")} · {row.model || "未知模型"}</div></div>
     {context ? <>
-      <ContextLine row={row} />
-      <Bars turns label="逐轮上下文占用" items={turns.map((turn) => ({ hit: 0, miss: turn.context_tokens, hot: turn.context_window ? turn.context_tokens / turn.context_window >= HOT : false,
-        title: `${turn.compacted ? "压缩 · " : ""}${fmt(turn.context_tokens)}${turn.context_window ? ` / ${fmt(turn.context_window)}` : ""}` }))} />
-      <p className="usage-note">柱高是每轮最后一次请求的实报输入，最近 {turns.length} 轮。各部分（系统提示词、工具、记忆、文件……）的构成之后提供。</p>
+      <div className="usage-context-head">
+        {turns.at(-1)?.composition ? <Donut parts={turns.at(-1)!.composition!} center={fmt(row.context_tokens)} sub="最近一轮" /> : null}
+        <ContextLine row={row} parts={turns.at(-1)?.composition} />
+      </div>
+      <ContextTrend turns={turns} />
+      <p className="usage-note">构成是装配请求时按来源（插件材料、提醒块、工具）的估算，按实报输入换算；最近 {turns.length} 轮。</p>
     </> : <>
       <div className="usage-kpis">
         <Metric value={fmt(row.totals.prompt_tokens)} label={`输入 · 输出 ${fmt(row.totals.output_tokens)}`} />
