@@ -68,7 +68,7 @@ export function activate(ctx) {
             try {
               await props.actions.selectModels();
             } catch (error) {
-              throw new Error(`连接已保存，但模型选择未完成。${error instanceof Error ? error.message : String(error)} 请重新探测目录后选择。`);
+              throw new Error(`连接已保存，但模型选择未完成。${error instanceof Error ? error.message : String(error)} 请点「从服务目录选择」重新选择。`);
             }
             props.changed("OpenCode Go 连接已更新");
           }));

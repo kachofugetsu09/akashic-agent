@@ -69,7 +69,7 @@ export function activate(ctx) {
         const selected = manual ? [{kind: "chat", model: form.elements.manualModel.value.trim()}] : discovery.pickedModels();
         if (!selected.length || !selected[0].model) {
           const error = host.querySelector("[data-error]");
-          error.textContent = "请先探测目录并勾选型号，或手动填写型号。";
+          error.textContent = "请先从服务目录勾选型号，或手动填写型号。";
           error.hidden = false;
           return;
         }
