@@ -1,5 +1,5 @@
 import { createHash } from "node:crypto";
-import { existsSync, readFileSync } from "node:fs";
+import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import { createRequire } from "node:module";
 import { dirname, isAbsolute, relative, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -33,7 +33,7 @@ function useShellTheme(): Plugin {
 }
 
 // 构建版本：参与构建的全部源文件（相对路径与内容）的摘要，写进挂载代码并另存 chat-app.build；服务端读后者，页面对照前者，
-// 不同就提示刷新。在 renderChunk 里替换：Rollup 之后才按最终内容算文件名哈希，所在分块会随版本换名，不会命中旧的永久缓存。
+// 不同就提示刷新。稳定入口的 URL 也带同一版本，避免 CDN 改写缓存头后刷新仍复用旧模块。
 const BUILD_PLACEHOLDER = "__AKASHIC_CHAT_BUILD__";
 
 // 模块在版本摘要里的名字：rollup 虚拟模块以 \0 开头，CommonJS 代理还带着依赖的绝对路径；
@@ -62,13 +62,21 @@ function stampChatBuild(): Plugin {
       build = hash.digest("hex").slice(0, 16);
     },
     renderChunk(code) {
-      if (!code.includes(BUILD_PLACEHOLDER)) return null;
-      stamped += 1;
-      return { code: code.replaceAll(BUILD_PLACEHOLDER, build), map: null };
+      if (code.includes(BUILD_PLACEHOLDER)) stamped += 1;
+      // 入口与 HTML 预加载必须引用同一个模块 URL，否则浏览器会执行两份挂载模块。
+      return { code: code.replaceAll(BUILD_PLACEHOLDER, build)
+        .replaceAll("./chat-app-mount.js", `./chat-app-mount.js?v=${build}`), map: null };
     },
     generateBundle() {
       if (stamped !== 1) throw new Error(`构建版本占位应只出现在一个分块里，实际 ${stamped} 个`);
       this.emitFile({ type: "asset", fileName: "chat-app.build", source: build });
+    },
+    writeBundle() {
+      // 发布构建先生成外壳，再生成聊天；只在聊天产物完成后写入它的版本。
+      const index = resolve(repoRoot, "static/dashboard/index.html");
+      const html = readFileSync(index, "utf8");
+      const entries = /\/assets\/chat-app(?:-mount)?\.(?:js|css)(?:\?v=[a-f0-9]+)?/g;
+      writeFileSync(index, html.replace(entries, (url) => `${url.split("?")[0]}?v=${build}`));
     },
   };
 }
