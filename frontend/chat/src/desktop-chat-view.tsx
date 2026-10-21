@@ -63,6 +63,7 @@ export function DesktopChatView({ controller }: DesktopChatViewProps) {
   const inputStarts = useMemo(() => timelineInputStarts(controller.timelineMessages), [controller.timelineMessages]);
   const refreshTokens = timelineSourceRefreshTokens(controller.timelineMessages, controller.replyActivities, controller.timelineRefresh);
   const toolResults = useMemo(() => timelineToolResults(controller.timelineMessages), [controller.timelineMessages]);
+  const liveToolToken = useLiveToolResultToken(controller.activeSessionId, toolResults, controller.historyLoading);
   const {
     surface, sidebarSessions, activeSessionId, pendingSessionId, chatReady, messages, timelineMessages, replyActivities, replyAvailable, status,
     streamStore, messageElementsRef, copiedMessageId, shellState, stopPending,
@@ -158,7 +159,7 @@ export function DesktopChatView({ controller }: DesktopChatViewProps) {
             onRename={activeSessionId && !activeSessionDeleted ? (title) => renameSession(activeSessionId, title) : undefined} />
           {/* 插件在标题行右侧的标记；新的工具结果到达时通知插件重新读取会话状态。 */}
           {activeSessionId ? <PluginUiSlot key={`header:${activeSessionId}`} name="header.end" sessionId={activeSessionId}
-            refreshToken={Array.from(toolResults.keys()).join("|")} quiet /> : null}
+            refreshToken={liveToolToken} quiet /> : null}
           {/* 窄屏没有常驻侧栏：新会话留在拇指可达的标题行，不必先打开抽屉；继承当前会话所在的分组。 */}
           {conversationLayout ? <button type="button" className="conversation-heading__new"
             aria-label={activeGroup ? `在 ${activeGroup.label} 中新建会话` : "新会话"} data-tip="新会话"
@@ -501,6 +502,19 @@ function SessionHeadingTitle({ heading, value, onRename }: {
     }}
     onBlur={() => void commit()}
   />;
+}
+
+// 标题行插件只在会话里出现新的工具结果时重新读取；切到会话后随历史加载出现的结果算基线，不触发重读。
+function useLiveToolResultToken(sessionId: string, toolResults: ReadonlyMap<string, unknown>, historyLoading: boolean): string {
+  const baseline = useRef<{ sessionId: string; loading: boolean; keys: ReadonlySet<string> } | null>(null);
+  const current = baseline.current;
+  // 1. 换会话、仍在加载或刚加载完的这一帧，都以当前已有结果为基线。
+  if (!current || current.sessionId !== sessionId || historyLoading || current.loading) {
+    baseline.current = { sessionId, loading: historyLoading, keys: new Set(toolResults.keys()) };
+    return "";
+  }
+  // 2. 之后只把基线之外的新结果编进令牌。
+  return Array.from(toolResults.keys()).filter((key) => !current.keys.has(key)).join("|");
 }
 
 class MessageRendererErrorBoundary extends React.Component<
