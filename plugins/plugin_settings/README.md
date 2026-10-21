@@ -27,5 +27,9 @@ saved to the plugin's own config through `ModelSettings`: an empty value removes
 the override and the config model's default applies. Saving takes effect through
 the normal plugin config generation change.
 
+A `model` field's `use` only decides which options the picker offers. Config can
+also be written elsewhere, so the plugin's config model must validate the field
+itself, e.g. `field_validator("model")` calling `REVIEW_MODEL.check(value)`.
+
 Each plugin may register one form. The host Web contract only accepts registrations made synchronously during activation, so all declared forms share one settings card that loads the list when opened; a plugin that needs its own card or family still ships a Web module. Plugins that need richer interaction (OAuth,
 previews, custom validation flows) still ship their own Web module.

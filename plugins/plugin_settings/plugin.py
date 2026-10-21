@@ -1,6 +1,5 @@
 """收集各插件声明的设置表单，由一个通用 Web 模块渲染、一组路由读写。"""
 
-import re
 from collections.abc import Callable
 from importlib import import_module
 
@@ -23,12 +22,12 @@ class Forms:
         self._ctx = ctx
         self._entries: dict[str, SettingsEntry] = {}
 
-    # 1. 只接受同一 Root 的贡献方；2. 键取插件 ID 去掉来源后缀；3. Effect 撤销即移除。
+    # 1. 只接受同一 Root 的贡献方；2. 键就是完整插件 ID（无损，不同插件不会撞键）；3. Effect 撤销即移除。
     async def register(self, ctx: Context, form: SettingsForm, settings: Configuration) -> Effect:
         if ctx.root_instance_token is not self._ctx.root_instance_token or ctx.require(SETTINGS_FORMS) is not self:
             raise ValueError("设置表单注册不能跨 composition Root")
         owner = ctx.runtime.plugin_id
-        key = re.sub(r"[^a-z0-9_]", "_", owner.split("@", 1)[0].lower())
+        key = owner
         entry = SettingsEntry(key, owner, form, settings, ctx)
 
         def setup() -> Callable[[], None]:

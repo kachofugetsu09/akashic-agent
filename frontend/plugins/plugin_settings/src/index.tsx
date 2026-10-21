@@ -9,14 +9,22 @@ interface DeclaredForm { id: string; title: string; description: string; fields:
 const ENDPOINT = "/api/dashboard/plugin_settings";
 
 // 每行一项的列表字段：输入框保留原文便于编辑，提交的值去掉空行；全部清空即回到默认。
+const parseLines = (text: string) => { const items = text.split("\n").map(item => item.trim()).filter(Boolean); return items.length ? items : null; };
+const joinLines = (value: unknown) => Array.isArray(value) ? value.join("\n") : "";
+
 function Lines({field, values, change, status}: {field: DeclaredField} & FormProps) {
-  const value = values[field.name] ?? status.defaults?.[field.name];
-  const [text, setText] = useState(() => Array.isArray(value) ? value.join("\n") : "");
+  const own = values[field.name] ?? null;
+  const [text, setText] = useState(() => joinLines(own ?? status.defaults?.[field.name]));
+  // 外部换了值（重新加载、放弃草稿、保存后核对）且与原文解析结果不同，才用新值覆盖原文；自己的输入总与解析结果一致，空行不会被吃掉。
+  const external = JSON.stringify(own);
+  useEffect(() => {
+    if (JSON.stringify(parseLines(text)) === external) return;
+    const next = joinLines(own ?? status.defaults?.[field.name]);
+    if (next !== text) setText(next);
+  }, [external]);
   return <label className="config-field"><span>{field.label}</span>
     <textarea name={field.name} rows={Math.min(Math.max(text.split("\n").length, 2), 8)} value={text}
-      onChange={event => { setText(event.target.value);
-        const items = event.target.value.split("\n").map(item => item.trim()).filter(Boolean);
-        change(field.name, items.length ? items : null); }} />
+      onChange={event => { setText(event.target.value); change(field.name, parseLines(event.target.value)); }} />
     {field.hint && <small>{field.hint}</small>}</label>;
 }
 
@@ -54,7 +62,7 @@ function DeclaredForms({ctx, embed}: {ctx: WebHostContextV1; embed: EmbedProps})
       if (value) dirty.current.add(form.id); else dirty.current.delete(form.id);
       embed.dirty?.(dirty.current.size > 0);
     }}} definition={{id: form.id, title: form.title, description: form.description, switchable: false,
-      endpoint: `${ENDPOINT}/${form.id}/config`, fields: props => <>{form.fields.map(field => renderField(field, props))}</>}} />
+      endpoint: `${ENDPOINT}/${encodeURIComponent(form.id)}/config`, fields: props => <>{form.fields.map(field => renderField(field, props))}</>}} />
   </section>)}</>;
 }
 

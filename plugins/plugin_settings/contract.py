@@ -78,6 +78,7 @@ SETTINGS_FORMS = ServiceKey[SettingsForms]("plugin_settings.forms.v1")
 
 
 # 常见用法：字段取自插件自己的配置模型，读写与校验复用 ModelSettings；有 model 字段时需注入 MODEL_CATALOG。
+# 字段的 use 只决定下拉里列哪些选项；配置也可能从别处写入，插件的配置模型要自己用 use.check 校验该字段。
 async def declare_settings(ctx: Context, config: type[BaseModel], form: SettingsForm) -> Effect:
     uses = {field.name: field.use for field in form.fields if field.use is not None}
     settings = ModelSettings(ctx, config, tuple(field.name for field in form.fields),
