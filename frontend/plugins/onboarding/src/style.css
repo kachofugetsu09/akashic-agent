@@ -14,13 +14,20 @@
   font-size: 0.875rem;
 }
 
+/* 能力状态同设置其他页一样收进分组卡，行间发丝线。 */
 .onboarding-overview-list {
   display: grid;
   width: 100%;
   margin: 8px 0 0;
   padding: 0;
+  overflow: hidden;
   list-style: none;
+  border: 1px solid var(--ak-rule-subtle);
+  border-radius: 12px;
+  background: var(--ak-paper-sheet);
 }
+
+.onboarding-overview-list li + li { border-block-start: 1px solid var(--ak-rule-subtle); }
 
 .onboarding-overview-list a {
   display: flex;
@@ -28,20 +35,15 @@
   align-items: center;
   justify-content: space-between;
   gap: 16px;
-  padding: 10px 4px;
-  border-block-end: 1px solid var(--ak-rule-subtle);
+  padding: 10px 16px;
   color: inherit;
   text-decoration: none;
 }
 
-.onboarding-overview-list li:first-child a {
-  border-block-start: 1px solid var(--ak-rule-subtle);
-}
+.onboarding-overview-list a:hover { background: color-mix(in oklab, var(--ak-ink-primary) 4%, transparent); }
+.onboarding-overview-list a:focus-visible { outline: 2px solid var(--ak-rule-focus); outline-offset: -2px; }
 
-.onboarding-overview-list a:hover strong {
-  text-decoration: underline;
-  text-underline-offset: 3px;
-}
+.onboarding-overview .onboarding-primary { min-width: 0; min-height: 36px; padding-inline: 16px; font-size: 14px; }
 
 .onboarding-overview-list span {
   display: grid;
@@ -50,7 +52,8 @@
 }
 
 .onboarding-overview-list strong {
-  font-weight: 600;
+  font-size: 14px;
+  font-weight: 500;
 }
 
 .onboarding-overview-list small {

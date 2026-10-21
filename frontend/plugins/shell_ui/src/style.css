@@ -261,26 +261,30 @@
     display: contents;
   }
 
-  /* 插件列表：与 DSH 一样是无边框的行，悬停才出底色；行的悬停面向两侧外扩 8px，
-     内容仍与分节标题对齐。左侧是统一的插件图标格，插件不需要自带图标。 */
+  /* 插件配置列表：一张分组卡，行间发丝线，右侧箭头进详情；同 magpie 的服务商列表。 */
   .shell-plugin-cards {
     display: grid;
-    gap: 2px;
-    margin: 0 -8px;
+    margin: 0;
     padding: 0;
+    overflow: hidden;
     list-style: none;
+    border: 1px solid var(--ak-rule-subtle);
+    border-radius: 12px;
+    background: var(--ak-paper-sheet);
   }
+
+  .shell-plugin-cards > li + li { border-block-start: 1px solid var(--ak-rule-subtle); }
 
   .shell-plugin-card {
     display: flex;
     width: 100%;
     align-items: center;
     gap: 14px;
-    padding: 8px;
+    padding: 12px 16px;
     font: inherit;
     text-align: start;
     border: 0;
-    border-radius: 16px;
+    border-radius: 0;
     background: transparent;
     color: inherit;
     cursor: pointer;
@@ -290,27 +294,10 @@
   }
 
   .shell-plugin-card:hover {
-    background: color-mix(in oklab, var(--ak-ink-primary) 5%, transparent);
+    background: color-mix(in oklab, var(--ak-ink-primary) 4%, transparent);
   }
 
-  /* 图标格：发丝线方框 + 次级墨色线性图标；行圆角 18 = 方框圆角 10 + 行内边距 8，保持同心。 */
-  .shell-plugin-mark {
-    display: grid;
-    width: 48px;
-    height: 48px;
-    flex: 0 0 auto;
-    place-items: center;
-    box-sizing: border-box;
-    border: 0.5px solid color-mix(in oklab, var(--ak-ink-primary) 22%, transparent);
-    border-radius: 12px;
-    color: var(--ak-ink-secondary);
-  }
-
-  .shell-plugin-mark svg {
-    width: 22px;
-    height: 22px;
-    stroke-width: 1.5;
-  }
+  .shell-plugin-card:focus-visible { outline: 2px solid var(--ak-rule-focus); outline-offset: -2px; }
 
   .shell-plugin-main {
     display: grid;
@@ -351,16 +338,14 @@
   }
 
   .shell-plugin-chevron {
-    display: none;
+    display: inline-flex;
     flex: 0 0 auto;
     color: var(--ak-ink-muted);
   }
 
   /* family 组合页：成员表单上下排进同一滚动页，小标题标示成员，发丝线分隔。 */
   .shell-settings-family-member + .shell-settings-family-member {
-    margin-block-start: 24px;
-    border-block-start: 1px solid var(--ak-rule-subtle);
-    padding-block-start: 20px;
+    margin-block-start: 28px;
   }
 
   .shell-settings-member-title {
@@ -384,14 +369,20 @@
   .shell-inventory-empty button { padding: 4px 0; font: inherit; font-size: 13px; border: 0; background: transparent; color: var(--ak-ink-muted); cursor: pointer; }
   .shell-inventory-filter button[aria-pressed="true"] { color: var(--ak-ink-primary); font-weight: 600; }
   .shell-inventory-group h4,
-  .shell-inventory-sub-head { margin: 0 0 4px; font-size: 13px; font-weight: 600; color: var(--ak-ink-secondary); }
+  .shell-inventory-sub-head { margin: 0 0 8px; font-size: 13px; font-weight: 600; color: var(--ak-ink-secondary); }
   .shell-inventory-group h4 span,
   .shell-inventory-sub-head > span:not(.shell-inventory-chevron) { margin-inline-start: 4px; font-weight: 400; color: var(--ak-ink-muted); font-variant-numeric: tabular-nums; }
-  .shell-inventory-rows { margin: 0; padding: 0; list-style: none; }
-  .shell-inventory-row { border-block-end: 1px solid var(--ak-rule-subtle); }
+  /* 插件列表同样收进分组卡：名称下一行是说明，展开的详情就地出现在行内。 */
+  .shell-inventory-rows { margin: 0; padding: 0; overflow: hidden; list-style: none; border: 1px solid var(--ak-rule-subtle); border-radius: 12px; background: var(--ak-paper-sheet); }
+  .shell-inventory-row + .shell-inventory-row { border-block-start: 1px solid var(--ak-rule-subtle); }
+  .shell-inventory-name { display: grid; flex: 1 1 auto; min-width: 0; gap: 1px; padding-block: 8px; }
+  .shell-inventory-name small { overflow: hidden; font-size: 13px; line-height: 18px; color: var(--ak-ink-muted); text-overflow: ellipsis; white-space: nowrap; }
   .shell-inventory-head,
   .shell-inventory-sub-head { display: flex; width: 100%; min-height: 44px; align-items: center; gap: 10px; padding: 0; font: inherit; text-align: start; border: 0; background: transparent; color: inherit; cursor: pointer; }
-  .shell-inventory-head strong { flex: 1 1 auto; min-width: 0; overflow-wrap: anywhere; font-size: 14px; font-weight: 500; }
+  .shell-inventory-head { padding-inline: 16px; }
+  .shell-inventory-head:hover { background: color-mix(in oklab, var(--ak-ink-primary) 4%, transparent); }
+  .shell-inventory-head:focus-visible { outline: 2px solid var(--ak-rule-focus); outline-offset: -2px; }
+  .shell-inventory-head strong { min-width: 0; overflow-wrap: anywhere; font-size: 14px; font-weight: 500; }
   .shell-inventory-status { font-size: 13px; color: var(--ak-ink-muted); }
   .shell-inventory-row[data-phase="failed"] .shell-inventory-status { color: var(--ak-color-status-error); }
   .shell-inventory-row[data-phase="pending"] .shell-inventory-status { color: var(--ak-color-status-warning); }
@@ -403,7 +394,7 @@
   .shell-inventory-sub { margin-block-start: 12px; }
   .shell-inventory-sub-head { min-height: 36px; margin: 0; }
   .shell-inventory-sub-head small { margin-inline-start: auto; font-weight: 400; color: var(--ak-ink-muted); }
-  .shell-inventory-body { display: grid; gap: 10px; max-width: 44em; padding: 0 0 16px; font-size: 13px; line-height: 20px; color: var(--ak-ink-secondary); }
+  .shell-inventory-body { display: grid; gap: 10px; max-width: 44em; padding: 0 16px 16px; font-size: 13px; line-height: 20px; color: var(--ak-ink-secondary); }
   .shell-inventory-body p { margin: 0; }
   .shell-inventory-error { margin: 0; white-space: pre-wrap; color: var(--ak-color-status-error); }
   .shell-inventory-hint, .shell-inventory-switch small { color: var(--ak-ink-muted); }

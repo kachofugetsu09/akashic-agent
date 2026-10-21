@@ -191,30 +191,31 @@
 .settings-template-action { color: var(--md-sys-color-on-surface-variant); }
 
 /* 连接卡片列表：一连接一卡，编辑器就地展开在卡片内，布局参考 DSH 的 provider 卡片流。 */
+/* 分组列表：所有服务商同在一张卡里，行间发丝线分隔；展开的编辑器就地出现在所属行下。 */
 .settings-provider-list {
   display: grid;
-  gap: 0.5rem;
   margin: 0;
   padding: 0;
+  overflow: hidden;
   list-style: none;
-}
-
-.settings-provider-card {
-  border: 1px solid var(--md-sys-color-outline-variant);
+  border: 1px solid var(--ak-rule-subtle);
   border-radius: var(--md-sys-shape-corner-large);
-  background: var(--md-sys-color-surface-container-low);
+  background: var(--ak-paper-sheet);
 }
+.settings-provider-list:empty { display: none; }
+
+.settings-provider-card + .settings-provider-card { border-block-start: 1px solid var(--ak-rule-subtle); }
 
 .settings-provider-head {
   display: grid;
   width: 100%;
-  min-height: 4.5rem;
-  grid-template-columns: 2.5rem minmax(0, 1fr) auto auto;
+  min-height: 4rem;
+  grid-template-columns: 2.25rem minmax(0, 1fr) auto auto;
   align-items: center;
   gap: 0.875rem;
   border: 0;
-  border-radius: var(--md-sys-shape-corner-large);
-  padding: 0.625rem 0.875rem;
+  border-radius: 0;
+  padding: 0.625rem 1rem;
   color: inherit;
   text-align: start;
   background: transparent;
@@ -237,38 +238,33 @@
   transition: rotate var(--ak-sys-duration-short) var(--ak-sys-motion-standard);
 }
 .settings-provider-head[aria-expanded="true"] > .lucide-chevron-right { rotate: 90deg; }
-/* 展开时头部底部圆角清零：hover 底色与卡片本体不再把圆角压到编辑器分隔线上。 */
-.settings-provider-head[aria-expanded="true"] {
-  border-end-start-radius: 0;
-  border-end-end-radius: 0;
-}
 
 .settings-provider-status {
   display: inline-flex;
   align-items: center;
   gap: 0.35rem;
-  color: var(--ak-sys-color-success);
+  color: var(--ak-ink-secondary);
   font-size: var(--md-sys-typescale-label-medium-size);
-  font-weight: 650;
+  font-weight: 500;
   white-space: nowrap;
 }
 .settings-provider-status.is-unavailable { color: var(--md-sys-color-on-surface-variant); font-weight: 500; }
-.settings-provider-status > i { width: 0.5rem; height: 0.5rem; border-radius: 50%; background: currentColor; }
+.settings-provider-status > i { width: 0.4375rem; height: 0.4375rem; border-radius: 50%; background: var(--ak-sys-color-success); }
+.settings-provider-status.is-unavailable > i { background: currentColor; opacity: 0.6; }
 
 .settings-provider-editor { border-block-start: 1px solid var(--md-sys-color-outline-variant); }
 
-/* 添加入口：虚线专表「空位/添加」；展开后列出插件贡献的连接方式，选定后就地变编辑器。 */
-.settings-add-provider { margin-block-start: 0.5rem; }
+/* 添加入口：列表下方一行轻量文字按钮；展开后列出插件贡献的连接方式，选定后就地变编辑器。 */
+.settings-add-provider { margin-block-start: 0.375rem; }
 .settings-add-button {
   display: flex;
-  width: 100%;
-  min-height: 3rem;
+  min-height: 2.5rem;
   align-items: center;
-  justify-content: center;
   gap: 0.5rem;
-  border: 1px dashed var(--md-sys-color-outline);
-  border-radius: var(--md-sys-shape-corner-large);
-  color: var(--md-sys-color-primary);
+  border: 0;
+  border-radius: var(--md-sys-shape-corner-medium);
+  padding-inline: 0.5rem;
+  color: var(--ak-ink-secondary);
   background: transparent;
   font: inherit;
   font-size: var(--md-sys-typescale-label-large-size);
@@ -279,8 +275,8 @@
   transition-timing-function: var(--ak-sys-motion-standard);
 }
 .settings-add-button:hover:not(:disabled) {
-  border-color: var(--md-sys-color-primary);
-  background: color-mix(in srgb, var(--md-sys-color-primary) 6%, transparent);
+  color: var(--ak-ink-primary);
+  background: color-mix(in srgb, var(--ak-ink-primary) 5%, transparent);
 }
 .settings-add-button:disabled { cursor: default; opacity: 0.55; }
 .settings-add-button:focus-visible {
@@ -288,36 +284,35 @@
   outline-offset: 2px;
 }
 .settings-add-panel {
-  border: 1px solid var(--md-sys-color-outline-variant);
+  border: 1px solid var(--ak-rule-subtle);
   border-radius: var(--md-sys-shape-corner-large);
   padding: 0.375rem;
-  background: var(--md-sys-color-surface-container-low);
+  background: var(--ak-paper-sheet);
 }
 .settings-add-panel .settings-provider-editor { border-block-start: 0; }
 .settings-add-list { display: grid; gap: 2px; }
 
-.settings-roles { margin-block-start: 2rem; }
+/* 场景模型：一张分组卡，每行左侧是场景与用途，右侧是紧凑的模型选择器。 */
+.settings-roles { margin-block-start: 2.5rem; container-type: inline-size; }
 
-.settings-roles {
+.settings-role-grid {
+  display: grid;
+  overflow: hidden;
+  border: 1px solid var(--ak-rule-subtle);
   border-radius: var(--md-sys-shape-corner-large);
-  padding: 1.25rem;
-  background: var(--md-sys-color-surface-container-low);
-}
-
-.settings-role-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 0.625rem; }
-/* 场景网格按自身容器宽度换列：嵌入引导等窄容器时，不因视口很宽而挤成单字换行。 */
-.settings-roles { container-type: inline-size; }
-@container (max-width: 40rem) {
-  .settings-role-grid { grid-template-columns: minmax(0, 1fr); }
+  background: var(--ak-paper-sheet);
 }
 .settings-binding {
   display: grid;
-  grid-template-columns: minmax(0, 1fr) minmax(10rem, 46%);
+  grid-template-columns: minmax(0, 1fr) minmax(11rem, 17rem);
   align-items: center;
-  gap: 0.75rem;
+  gap: 1rem;
   min-height: 3.75rem;
-  border-radius: var(--md-sys-shape-corner-medium);
-  padding: 0.5rem 0.625rem;
+  padding: 0.625rem 1rem;
+}
+.settings-role-grid > * + * { border-block-start: 1px solid var(--ak-rule-subtle); }
+@container (max-width: 34rem) {
+  .settings-binding { grid-template-columns: minmax(0, 1fr); gap: 0.5rem; }
 }
 .settings-binding > span { display: grid; min-width: 0; }
 .settings-binding small { margin-block-start: 0.2rem; color: var(--md-sys-color-on-surface-variant); font-size: var(--md-sys-typescale-label-medium-size); }
@@ -325,13 +320,13 @@
   display: flex;
   min-width: 0;
   width: 100%;
-  min-height: 2.75rem;
+  min-height: 2.25rem;
   align-items: center;
   justify-content: space-between;
   gap: 0.5rem;
   border: 1px solid var(--ak-rule-default);
   border-radius: var(--models-radius-field);
-  padding-inline: 0.75rem;
+  padding-inline: 0.75rem 0.5rem;
   color: var(--ak-ink-primary);
   background: var(--ak-paper-editing);
   font: inherit;
@@ -689,17 +684,19 @@ dialog.settings-scrim::backdrop { background: transparent; }
 .settings-sheet-foot { display: flex; justify-content: end; gap: 0.625rem; border-block-start: 1px solid var(--ak-rule-subtle); padding: 0.625rem 1.25rem calc(0.625rem + env(safe-area-inset-bottom)); }
 
 .settings-add-embedding {
-  min-height: 3.75rem;
-  border: 1px dashed var(--ak-rule-subtle);
-  border-radius: var(--models-radius-panel);
-  color: var(--ak-color-action-primary);
+  min-height: 3rem;
+  border: 0;
+  border-radius: 0;
+  padding-inline: 1rem;
+  text-align: start;
+  color: var(--ak-ink-secondary);
   background: transparent;
   font: inherit;
   font-size: var(--models-type-body);
   font-weight: var(--models-weight-control);
   cursor: pointer;
 }
-.settings-add-embedding:hover { background: color-mix(in srgb, var(--ak-color-action-primary) 6%, transparent); }
+.settings-add-embedding:hover { color: var(--ak-ink-primary); background: color-mix(in srgb, var(--ak-ink-primary) 5%, transparent); }
 
 @media (max-width: 50rem) {
   .settings-binding { grid-template-columns: minmax(0, 1fr); }
