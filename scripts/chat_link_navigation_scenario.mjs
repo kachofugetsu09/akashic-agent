@@ -25,7 +25,7 @@ const browser = await chromium.launch({ executablePath: values.browser, headless
 const checks = [];
 const errors = [];
 const destination = `${fixture.origin}/blocked-destination`;
-const markdown = `**PR 地址：** [查看 PR](${destination})\n\n<${destination}?autolink=1>\n\n[邮件](mailto:reader@example.com) · [页内](#reading)`;
+const markdown = `**PR 地址：** [查看 PR](${destination})\n\n<${destination}?autolink=1>\n\n[邮件](mailto:reader@example.com) · [页内](#reading)` + "\n\n```javascript\nconsole.log(1);\n```";
 try {
   // 1. 聊天与宿主同一文档，HTTP 历史和 WebSocket 来自一次性夹具；目标网页禁止被嵌入，也不影响新页打开。
   const context = await browser.newContext({ viewport: { width: 1365, height: 914 } });
@@ -52,6 +52,18 @@ try {
   await chat.getByRole("button", { name: "性能基线会话", exact: true }).click();
   const link = chat.getByRole("link", { name: "查看 PR", exact: true });
   await link.waitFor();
+  // markstream 的链接预览挂在 body，聊天作用域外的隐藏样式曾失效，移开后仍悬浮遮住正文。
+  await chat.locator("a.link-node", { hasText: "查看 PR" }).waitFor();
+  await link.hover();
+  await page.waitForTimeout(250); // 经过第三方预览的 80ms 显示延迟。
+  await page.mouse.move(5, 5);
+  await page.waitForTimeout(200); // 经过第三方预览的 120ms 隐藏延迟。
+  await page.screenshot({ path: resolve(output, "after-link-hover.png") });
+  const floating = await page.locator('body > [role="tooltip"]').evaluateAll((nodes) => nodes
+    .filter((node) => getComputedStyle(node).visibility !== "hidden" && getComputedStyle(node).display !== "none" && node.getClientRects().length)
+    .map((node) => ({ text: node.textContent, visible: node.getAttribute("data-visible") })));
+  assert.deepEqual(floating, [], "移开链接后不得留下遮住正文的浮层");
+  checks.push("正文链接悬停后移开，不留下作用域外的悬浮文字");
   await page.screenshot({ path: resolve(output, "before-link.png") });
   const originalPageUrl = page.url();
   const popupPromise = context.waitForEvent("page");
