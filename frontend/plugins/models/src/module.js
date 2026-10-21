@@ -964,10 +964,10 @@ function registerModels(ctx, mount, catalogResource) {
           modelId.textContent = model.model;
           const flags = document.createElement("span");
           flags.className = "settings-sheet-flags";
-          main.append(modelId, flags);
           const use = document.createElement("span");
           use.className = "settings-model-use";
-          row.append(main, use);
+          main.append(modelId, flags, use);
+          row.append(main);
           const verify = document.createElement("button");
           verify.type = "button";
           verify.className = "settings-text-button";
