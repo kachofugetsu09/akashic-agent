@@ -381,7 +381,10 @@ export function useDesktopChatController() {
           // 经 requestIdleCallback 让出主线程:消息首屏的就绪路径优先,
           // 空闲或 1.5s 兜底后再挂首批目录,不把就绪时间往后推。
           const first = [...items.values()];
-          const publish = () => { if (!controller.signal.aborted) setSessions(first); };
+          const publish = () => {
+            if (sessionsRequestRef.current !== controller) return;
+            setSessions((current) => current.length ? current : first);
+          };
           if (typeof window.requestIdleCallback === "function") window.requestIdleCallback(publish, { timeout: 1500 });
           else window.setTimeout(publish, 0);
           published = true;
