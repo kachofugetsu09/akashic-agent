@@ -422,12 +422,14 @@ function deliverPush(key: string, value: Record<string, unknown> | null) {
 }
 
 /** WebSocket 上的插件推送帧；不是该帧时返回 false，交给其他解析器。 */
-export function receivePluginUiEvent(value: unknown): boolean {
+export function receivePluginUiEvent(value: unknown, activeSessionId: string): boolean {
   if (typeof value !== "object" || value === null || (value as { type?: unknown }).type !== "plugin_ui.event") return false;
   const frame = value as Record<string, unknown>;
   const state = frame.value;
   if (typeof frame.plugin_id !== "string" || typeof frame.plugin_revision !== "string" || typeof frame.session_id !== "string"
     || (state !== null && (typeof state !== "object" || Array.isArray(state)))) throw new Error("插件推送帧无效");
+  // 已换会话时，旧订阅在途的帧不能重新填回被清空的状态。
+  if (frame.session_id !== activeSessionId) return true;
   const key = pushKey(frame.plugin_id, frame.plugin_revision, frame.session_id);
   // null 表示流已结束，直接忘掉这个键，长连接跨会话不会越攒越多。
   if (state === null) pushed.delete(key);
@@ -444,6 +446,16 @@ export function resetPluginUiEvents() {
   const keys = [...pushed.keys()];
   pushed.clear();
   keys.forEach((key) => deliverPush(key, null));
+}
+
+/** 连接保留、只换跟随的会话切换：旧会话的推送状态即刻失效，回到它时由新跟随的基线帧重建。 */
+export function invalidatePluginUiSession(sessionId: string) {
+  const keys = [...pushed.keys()]
+    .filter((key) => (JSON.parse(key) as [string, string, string])[2] === sessionId);
+  for (const key of keys) {
+    pushed.delete(key);
+    deliverPush(key, null);
+  }
 }
 
 function subscribePush(pluginId: string, revision: string, sessionId: string | undefined, callback: (value: Record<string, unknown> | null) => void): () => void {
