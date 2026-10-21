@@ -780,6 +780,19 @@ function verifyAsset(content: string, bytes: number, digest: string): void {
   if (actual !== digest) throw new Error("Web UI asset digest mismatch");
 }
 
+// 大字节校验优先用原生 SubtleCrypto：纯 JS noble 在降速设备上哈希整段模块要花
+// 数百毫秒主线程；subtle 在浏览器内部线程算且不阻塞激活链。非安全上下文
+// （如局域网裸 HTTP 入口）没有 subtle，回落 noble，校验语义不变。
+async function verifyAssetAsync(content: string, bytes: number, digest: string): Promise<void> {
+  const encoded = new TextEncoder().encode(content);
+  if (encoded.byteLength !== bytes) throw new Error("Web UI asset byte count mismatch");
+  const subtle = globalThis.crypto?.subtle;
+  const actual = subtle
+    ? bytesToHex(new Uint8Array(await subtle.digest("SHA-256", encoded)))
+    : bytesToHex(sha256(encoded));
+  if (actual !== digest) throw new Error("Web UI asset digest mismatch");
+}
+
 function verifyModuleDescriptor(module: WebModulePayload): void {
   if (module.stylesheetSha256 !== null) {
     verifyAsset(module.stylesheet, module.stylesheetBytes, module.stylesheetSha256);
@@ -814,7 +827,7 @@ function moduleUrl(pluginId: string, sha256: string): string {
 
 async function importModuleFromBytes(module: WebModulePayload): Promise<WebModuleExports> {
   // 只有真正执行内联字节时才支付整模块哈希;URL import 的字节由服务端按摘要围栏。
-  verifyAsset(module.module, module.moduleBytes, module.moduleSha256);
+  await verifyAssetAsync(module.module, module.moduleBytes, module.moduleSha256);
   const url = URL.createObjectURL(new Blob([module.module], { type: "text/javascript" }));
   try {
     return await import(/* @vite-ignore */ url) as WebModuleExports;

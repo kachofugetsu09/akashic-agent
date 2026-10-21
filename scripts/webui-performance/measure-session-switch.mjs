@@ -155,9 +155,9 @@ async function measure(context, profile) {
     const rowLocator = frame.locator(`[data-message-id="${lastMessageId}"] .message-row`);
     await rowLocator.waitFor({ timeout: remaining() });
     const rowsMs = performance.now() - switchStart;
-    // 3. 富文本门槛:目标消息含围栏代码块时,等真正的 markdown 渲染器就位
-    //    (懒分块未到前是 Suspense 纯文本兜底,行可见不代表富内容可读)。
-    await rowLocator.locator("pre").first().waitFor({ timeout: remaining() });
+    // 3. 富文本门槛:目标消息含围栏代码块时,等真正的富渲染升级就位。
+    //    静态首帧也产出 pre(static-code-block),只有富渲染的代码块带 .reading-code-scroll。
+    await rowLocator.locator(".reading-code-scroll").first().waitFor({ timeout: remaining() });
     const richMs = performance.now() - switchStart;
     // 4. 行出现后等两帧,确保 markdown 正文真正绘制。
     await page.evaluate(() => new Promise(resolve =>
