@@ -13,6 +13,11 @@
     // 重试与夹具页面回退到自行 fetch，语义不变。
     window.__akashicWebUiBootstrap = fetch("/api/chat/web-ui/bootstrap", {headers: {Accept: "application/json"}, cache: "no-cache"});
     window.__akashicWebUiBootstrap.catch(() => {});
+    // 聊天启动读取同样预热：就绪状态、插件目录、会话目录首页按 URL 登记，聊天挂载后
+    // 由 takeStartupResponse（frontend/chat/src/web-chat-data.ts）按同一 URL 一次性取用；
+    // 失败、过时或未被取用的响应都回退到正常请求，语义不变。
+    window.__akashicStartupReads = new Map(["/api/shell/state", "/api/chat/plugin-ui/catalog", "/api/chat/sessions?page_size=200"]
+      .map((url) => [url, fetch(url, {headers: {Accept: "application/json"}}).catch(() => null)]));
   </script>
   <script type="importmap">
   {

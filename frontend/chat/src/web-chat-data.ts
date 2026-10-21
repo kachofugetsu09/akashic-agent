@@ -59,9 +59,32 @@ export class ChatRequestError extends Error {
   constructor(readonly status: number, message: string) { super(message); }
 }
 
+// 预热响应只在页面打开后这段时间内复用：首跑引导期间聊天迟迟未就绪，期间的变化会让早先的读取过时。
+const STARTUP_READ_MAX_AGE_MS = 10_000;
+
+// index.html 内联脚本按 URL 预热的启动读取，一次性取用；失败、过时或没有预热时返回 null，由调用方正常请求。
+// 预热请求不认识调用方的 signal：等待期间中止直接以 AbortError 结束，不退回成一次新请求；
+// 读完正文后调用方还要再核一次 signal（见 fetchChatJson、loadWebPluginCatalog）。
+export async function takeStartupResponse(url: string, signal?: AbortSignal | null): Promise<Response | null> {
+  const reads = (window as { __akashicStartupReads?: Map<string, Promise<Response | null>> }).__akashicStartupReads;
+  const prefetched = reads?.get(url);
+  reads?.delete(url);
+  if (!prefetched || performance.now() > STARTUP_READ_MAX_AGE_MS) return null;
+  signal?.throwIfAborted();
+  const response = await new Promise<Response | null>((resolve, reject) => {
+    const abort = () => reject(signal?.reason);
+    signal?.addEventListener("abort", abort, { once: true });
+    void prefetched.then(resolve).finally(() => signal?.removeEventListener("abort", abort));
+  });
+  // 1. 新鲜度按响应真正到达的时刻判断，不只看取用时刻。
+  return response?.ok && performance.now() <= STARTUP_READ_MAX_AGE_MS ? response : null;
+}
+
 export async function fetchChatJson<T>(url: string, options: RequestInit = {}): Promise<T> {
-  const response = await fetch(url, options);
+  const response = await takeStartupResponse(url, options.signal) ?? await fetch(url, options);
   const text = await response.text();
+  // 预热响应的正文读取不受 signal 约束：读完再核一次，中止后的结果不交给调用方。
+  options.signal?.throwIfAborted();
   let payload: unknown = null;
   if (text) {
     try {
