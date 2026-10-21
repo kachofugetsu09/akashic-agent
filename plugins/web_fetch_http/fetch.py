@@ -6,6 +6,7 @@ import html2text
 import httpx
 from lxml import html as lxml_html
 from lxml.etree import ParserError
+from pydantic import BaseModel, ConfigDict, Field, HttpUrl, field_validator
 
 from plugins.standard_web.contract import FetchRequest
 from core.net.http import (
@@ -16,9 +17,27 @@ from core.net.http import (
     redact_http_urls,
 )
 
-_MAX_BYTES = 5 * 1024 * 1024  # 5MB，与 OpenCode 一致
-_USER_AGENT = "akashic/1.0"
-_MAX_TEXT_CHARS = 50_000  # 返回给 LLM 的文本字符上限（约 ~12K tokens）
+
+
+class FetchConfig(BaseModel):
+    """读取上限、请求头与代理；proxy 为空时沿用系统 HTTP(S)_PROXY 环境变量。"""
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    max_response_mb: float = Field(default=5, gt=0, le=100, allow_inf_nan=False)
+    # 返回给模型的文本字符上限；默认约 12K tokens。
+    max_text_chars: int = Field(default=50_000, ge=1_000, le=1_000_000)
+    user_agent: str = Field(default="akashic/1.0", min_length=1, max_length=300)
+    accept_language: str = Field(default="zh-CN,zh;q=0.9,en;q=0.8", min_length=1, max_length=200)
+    proxy: HttpUrl | None = None
+
+    @field_validator("proxy")
+    @classmethod
+    def check_proxy(cls, value: HttpUrl | None) -> HttpUrl | None:
+        if value is not None and value.scheme not in {"http", "https", "socks5", "socks5h"}:
+            raise ValueError("代理地址必须以 http://、https:// 或 socks5:// 开头")
+        return value
+
 
 # 根据 format 设置 Accept header，引导服务端返回更合适的格式
 _ACCEPT = {
@@ -31,11 +50,14 @@ _ACCEPT = {
 class HttpFetch:
     """直接 HTTP(S) 抓取，支持 text / markdown / html 三种格式输出。"""
 
-    def __init__(self, requester: HttpRequester | None = None) -> None:
+    def __init__(self, requester: HttpRequester | None = None, config: FetchConfig | None = None) -> None:
         self._requester = requester or get_default_http_requester("external_default")
+        self._config = config or FetchConfig()
 
     async def fetch(self, request: FetchRequest) -> dict[str, object]:
         url, fmt, timeout = request.url, request.format, request.timeout_s
+        limit, max_chars = int(self._config.max_response_mb * 1024 * 1024), self._config.max_text_chars
+        too_large = f"响应过大（超过 {self._config.max_response_mb:g}MB 限制）"
 
         # URL 结构校验；允许访问本机和内网 HTTP 服务。
         try:
@@ -52,9 +74,9 @@ class HttpFetch:
                 timeout_s=timeout,
                 budget=RequestBudget(total_timeout_s=float(timeout)),
                 headers={
-                    "User-Agent": _USER_AGENT,
+                    "User-Agent": self._config.user_agent,
                     "Accept": _ACCEPT[fmt],
-                    "Accept-Language": "zh-CN,zh;q=0.9,en;q=0.8",
+                    "Accept-Language": self._config.accept_language,
                 },
             )
         except httpx.RequestError as exc:
@@ -63,17 +85,17 @@ class HttpFetch:
         if resp.status_code != 200:
             return _err(url, f"HTTP {resp.status_code}")
 
-        # 5MB 双重检查：先校验 Content-Length header，再检查实际 body。
+        # 大小双重检查：先校验 Content-Length header，再检查实际 body。
         content_length = resp.headers.get("content-length")
         if content_length is not None:
             if not content_length.isascii() or not content_length.isdecimal():
                 return _err(url, "响应 Content-Length 无效")
-            if int(content_length) > _MAX_BYTES:
-                return _err(url, "响应过大（超过 5MB 限制）")
+            if int(content_length) > limit:
+                return _err(url, too_large)
 
         body = resp.content
-        if len(body) > _MAX_BYTES:
-            return _err(url, "响应过大（超过 5MB 限制）")
+        if len(body) > limit:
+            return _err(url, too_large)
 
         content_type = resp.headers.get("content-type", "")
         encoding = resp.encoding or "utf-8"
@@ -106,8 +128,8 @@ class HttpFetch:
 
         # 截断过长文本，避免撑爆 LLM 上下文
         truncated = False
-        if len(text) > _MAX_TEXT_CHARS:
-            text = text[:_MAX_TEXT_CHARS]
+        if len(text) > max_chars:
+            text = text[:max_chars]
             truncated = True
 
         result: dict[str, Any] = {
@@ -122,7 +144,7 @@ class HttpFetch:
         if truncated:
             result["truncated"] = True
             result["note"] = (
-                f"内容已截断至 {_MAX_TEXT_CHARS} 字符，如需更多内容请缩小范围或使用其他工具"
+                f"内容已截断至 {max_chars} 字符，如需更多内容请缩小范围或使用其他工具"
             )
 
         return result

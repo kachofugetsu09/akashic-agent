@@ -5,7 +5,7 @@ from contextlib import asynccontextmanager
 import json
 from typing import Any, Literal, cast
 
-from pydantic import BaseModel, ConfigDict
+from pydantic import BaseModel, ConfigDict, Field
 
 from agent.plugin_composition import Context, Effect
 from plugins.tools.contract import (
@@ -22,8 +22,7 @@ from .contract import (
 
 Kind = Literal["search", "fetch"]
 _KIND_LABEL = {"search": "搜索", "fetch": "读取"}
-_DEFAULT_RESULTS = 8
-_DEFAULT_TIMEOUT = 30
+_MAX_RESULTS = 20
 _MAX_TIMEOUT = 120
 
 
@@ -34,6 +33,9 @@ class WebConfig(BaseModel):
 
     search_provider: str | None = None
     fetch_provider: str | None = None
+    # 模型不指定时的默认值；模型仍可在上限内按需调整。
+    default_results: int = Field(default=8, ge=1, le=_MAX_RESULTS)
+    default_fetch_timeout: int = Field(default=30, ge=1, le=_MAX_TIMEOUT)
 
 
 class Providers:
@@ -43,15 +45,21 @@ class Providers:
         self._ctx = ctx
         self._config = config
         self._entries: dict[tuple[Kind, str], tuple[Context, WebSearchProvider | WebFetchProvider]] = {}
+        self._labels: dict[tuple[Kind, str], str] = {}
 
-    async def register_search(self, ctx: Context, provider: WebSearchProvider) -> Effect:
-        return await self._register(ctx, "search", provider)
+    async def register_search(self, ctx: Context, provider: WebSearchProvider, label: str = "") -> Effect:
+        return await self._register(ctx, "search", provider, label)
 
-    async def register_fetch(self, ctx: Context, provider: WebFetchProvider) -> Effect:
-        return await self._register(ctx, "fetch", provider)
+    async def register_fetch(self, ctx: Context, provider: WebFetchProvider, label: str = "") -> Effect:
+        return await self._register(ctx, "fetch", provider, label)
+
+    # 设置页的选项：插件短名与显示名，按当前已登记的提供方列出。
+    def choices(self, kind: Kind) -> list[dict[str, str]]:
+        return sorted(({"value": plugin.split("@")[0], "label": self._labels[(item, plugin)] or plugin.split("@")[0]}
+                       for item, plugin in self._entries if item == kind), key=lambda choice: choice["label"])
 
     # 身份取自贡献方 Context，不接受调用方指定其他插件。
-    async def _register(self, ctx: Context, kind: Kind, provider: WebSearchProvider | WebFetchProvider) -> Effect:
+    async def _register(self, ctx: Context, kind: Kind, provider: WebSearchProvider | WebFetchProvider, label: str) -> Effect:
         if ctx.root_instance_token is not self._ctx.root_instance_token or ctx.require(WEB_PROVIDERS) is not self:
             raise ValueError("Web 提供方必须登记到本组合的 standard_web")
         key = (kind, ctx.runtime.plugin_id)
@@ -60,9 +68,11 @@ class Providers:
             if key in self._entries:
                 raise ValueError(f"Web {_KIND_LABEL[kind]}提供方重复登记: {key[1]}")
             self._entries[key] = (ctx, provider)
+            self._labels[key] = label
 
             def cleanup() -> None:
                 del self._entries[key]
+                del self._labels[key]
 
             return cleanup
 
@@ -80,7 +90,7 @@ class Providers:
             return f"没有启用的 Web {label}提供方，请启用一个提供方插件"
         if len(entries) > 1:
             names = "、".join(sorted(plugin.split("@")[0] for plugin in entries))
-            return f"有多个 Web {label}提供方（{names}），请在 standard_web 配置 {kind}_provider 选择一个"
+            return f"有多个 Web {label}提供方（{names}），请在设置页「Web 工具」里选择一个"
         return next(iter(entries.values()))
 
     async def search(self, request: SearchRequest) -> dict[str, object]:
@@ -100,33 +110,37 @@ class Providers:
             return await cast(WebFetchProvider, provider).fetch(request)
 
 
-SEARCH_PARAMETERS: dict[str, object] = {
-    "type": "object",
-    "properties": {
-        "query": {"type": "string", "description": "搜索关键词"},
-        "num_results": {
-            "type": "integer", "minimum": 1, "maximum": 20,
-            "description": f"返回结果数量，默认 {_DEFAULT_RESULTS}，最大 20",
+# 参数说明里的默认值随设置变化，注册工具时按当前配置生成。
+def search_parameters(config: WebConfig) -> dict[str, object]:
+    return {
+        "type": "object",
+        "properties": {
+            "query": {"type": "string", "description": "搜索关键词"},
+            "num_results": {
+                "type": "integer", "minimum": 1, "maximum": _MAX_RESULTS,
+                "description": f"返回结果数量，默认 {config.default_results}，最大 {_MAX_RESULTS}",
+            },
         },
-    },
-    "required": ["query"],
-}
+        "required": ["query"],
+    }
 
-FETCH_PARAMETERS: dict[str, object] = {
-    "type": "object",
-    "properties": {
-        "url": {"type": "string", "description": "要抓取的完整 URL，必须以 http:// 或 https:// 开头"},
-        "format": {
-            "type": "string", "enum": ["text", "markdown", "html"],
-            "description": "返回格式：text 纯文本 / markdown 转换后的 Markdown / html 原始 HTML。默认 markdown",
+
+def fetch_parameters(config: WebConfig) -> dict[str, object]:
+    return {
+        "type": "object",
+        "properties": {
+            "url": {"type": "string", "description": "要抓取的完整 URL，必须以 http:// 或 https:// 开头"},
+            "format": {
+                "type": "string", "enum": ["text", "markdown", "html"],
+                "description": "返回格式：text 纯文本 / markdown 转换后的 Markdown / html 原始 HTML。默认 markdown",
+            },
+            "timeout": {
+                "type": "integer", "minimum": 1, "maximum": _MAX_TIMEOUT,
+                "description": f"超时秒数，默认 {config.default_fetch_timeout}，最大 {_MAX_TIMEOUT}",
+            },
         },
-        "timeout": {
-            "type": "integer", "minimum": 1, "maximum": _MAX_TIMEOUT,
-            "description": f"超时秒数，默认 {_DEFAULT_TIMEOUT}，最大 {_MAX_TIMEOUT}",
-        },
-    },
-    "required": ["url"],
-}
+        "required": ["url"],
+    }
 
 
 class WebTool:
@@ -156,24 +170,24 @@ class WebTool:
         return None
 
 
-async def register_web(ctx: Context, providers: Providers) -> tuple[ToolRef, ...]:
+async def register_web(ctx: Context, providers: Providers, config: WebConfig) -> tuple[ToolRef, ...]:
     """工具只负责参数与结果形状；实际请求交给当前选中的提供方。"""
     async def search(arguments: dict[str, Any]) -> dict[str, object]:
-        count = min(int(arguments.get("num_results", _DEFAULT_RESULTS)), 20)
+        count = min(int(arguments.get("num_results", config.default_results)), _MAX_RESULTS)
         return await providers.search(SearchRequest(arguments["query"], count))
 
     async def fetch(arguments: dict[str, Any]) -> dict[str, object]:
-        timeout = min(int(arguments.get("timeout", _DEFAULT_TIMEOUT)), _MAX_TIMEOUT)
+        timeout = min(int(arguments.get("timeout", config.default_fetch_timeout)), _MAX_TIMEOUT)
         fmt = cast(FetchFormat, arguments.get("format", "markdown"))
         return await providers.fetch(FetchRequest(arguments["url"], fmt, timeout))
 
     tools = (
         ("web_search", "用关键词搜索互联网，返回最新的搜索结果（标题 + 摘要 + URL）。"
          "适合查询时效性信息：新闻、产品发布、价格、人物动态等。拿到 URL 后可用 web_fetch 获取完整内容。",
-         SEARCH_PARAMETERS, search),
+         search_parameters(config), search),
         ("web_fetch", "抓取指定 URL 的内容并返回。支持 text（纯文本）、markdown（转换后的 Markdown，默认）、"
          "html（原始 HTML）三种格式。仅支持 HTTP/HTTPS。",
-         FETCH_PARAMETERS, fetch),
+         fetch_parameters(config), fetch),
     )
     refs: list[ToolRef] = []
     for name, description, parameters, run in tools:
