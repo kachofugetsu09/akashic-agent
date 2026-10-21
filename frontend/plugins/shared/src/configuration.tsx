@@ -18,7 +18,9 @@ type ModelFollow = "default" | "session";
 type ModelChoice = {follow?: ModelFollow | null; model_id?: string | null; reasoning_effort?: string | null};
 export interface FormProps { values: Record<string, unknown>; change: (key: string, value: unknown) => void; status: Status; }
 // switchable=false：启用由插件行决定，表单不再放第二个开关，字段始终可编辑。
-export interface FormDefinition { id: string; title: string; description: string; family?: string; familyLabel?: string; switchable?: boolean; fields?: (props: FormProps) => ReactNode; }
+// endpoint 给出时读写走它，否则走插件自己的 /api/dashboard/<id>/config（声明式表单由 plugin_settings 代管）。
+export interface FormDefinition { id: string; title: string; description: string; family?: string; familyLabel?: string; switchable?: boolean; endpoint?: string; fields?: (props: FormProps) => ReactNode; }
+const configPath = (definition: FormDefinition) => definition.endpoint ?? `/api/dashboard/${definition.id}/config`;
 // intent="enable"：嵌入方已替用户决定开启（如引导的能力卡），表单预选开启并收起开关。
 export interface EmbedProps { embedded?: boolean; changed?: () => void; dirty?: (value: boolean) => void; intent?: "enable"; mode?: "summary"; }
 
@@ -143,7 +145,7 @@ function Summary({ctx, definition}: {ctx: WebHostContextV1; definition: FormDefi
   const [label, setLabel] = useState<ReturnType<typeof statusLabel> | null>(null);
   useEffect(() => {
     let alive = true;
-    const load = () => { void request<Status>(ctx, `/api/dashboard/${definition.id}/config`)
+    const load = () => { void request<Status>(ctx, configPath(definition))
       .then(next => { if (alive) setLabel(statusLabel(next)); })
       .catch(() => { if (alive) setLabel({text: "状态读取失败", tone: "attention"}); }); };
     load();
@@ -153,7 +155,7 @@ function Summary({ctx, definition}: {ctx: WebHostContextV1; definition: FormDefi
   return <span className={`config-status is-${label?.tone ?? "off"}`}>{label?.text ?? "…"}</span>;
 }
 
-function Configuration({ctx, definition, embed}: {ctx: WebHostContextV1; definition: FormDefinition; embed: EmbedProps}) {
+export function Configuration({ctx, definition, embed}: {ctx: WebHostContextV1; definition: FormDefinition; embed: EmbedProps}) {
   const [status, setStatus] = useState<Status | null>(null);
   const [enabled, setEnabled] = useState<boolean | null>(null);
   const [values, setValues] = useState<Record<string, unknown>>({});
@@ -164,7 +166,7 @@ function Configuration({ctx, definition, embed}: {ctx: WebHostContextV1; definit
   const [error, setError] = useState("");
   const [notice, setNotice] = useState("");
   const [leave, setLeave] = useState<(() => void) | null>(null);
-  const path = `/api/dashboard/${definition.id}/config`;
+  const path = configPath(definition);
   const alive = useRef(true);
   const article = useRef<HTMLElement>(null);
   const draftEditing = useRef(dirty); draftEditing.current = dirty;

@@ -7,6 +7,7 @@
 | ID | 状态 | 主题 | 关联条款 |
 |---|---|---|---|
 | [0131](0131-context-composition.md) | proposed / implemented for review | 上下文构成按装配来源记账 | WEBUI-008 |
+| [0130](0130-declarative-plugin-settings.md) | proposed / implemented for review | 插件声明设置字段，宿主统一渲染 | PLG-014 |
 | [0129](0129-plugins-choose-their-models.md) | proposed / implemented for review | 模型只留全局默认，插件在自己的设置里选模型 | RUN-010 |
 | [0128](0128-cache-usage-checkpoint.md) | accepted / implemented for review | 缓存效率用量落可重建检查点，重启后只扫新增 Turn | STA、WEBUI-008 |
 | [0127](0127-web-modules-own-their-data.md) | accepted / implemented for review | Web 模块拥有自己的数据，页面挂载只读不取 | WEBUI-008 |

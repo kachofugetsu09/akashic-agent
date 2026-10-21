@@ -109,6 +109,9 @@ disabled = true
 plugin = "vision@release"
 disabled = true
 
+[rows."plugin_settings"]
+plugin = "plugin_settings@release"
+
 [rows."skills"]
 plugin = "skills@release"
 disabled = true
