@@ -70,205 +70,21 @@
   translate: 0 0.5px;
 }
 
-.model-picker__group-icon {
-  width: 14px;
-  height: 14px;
-  flex: 0 0 auto;
-  object-fit: contain;
-}
-
-/* 整块面板自己是滚动容器：触控板落在任何位置都滚列表；
-   搜索行 sticky 钉在顶端，视觉与 Alma 的固定搜索行一致。 */
+/* 面板只是外框；搜索行固定在顶，来源栏与列表各自滚动。 */
 .model-picker__panel {
   position: fixed;
   inset: auto;
   z-index: 80;
-  display: block;
-  width: 300px;
+  display: flex;
+  flex-direction: column;
+  width: 320px;
   max-height: min(23.75rem, calc(100vh - 1.5rem));
-  overflow-x: hidden;
-  overflow-y: auto;
-  overscroll-behavior: contain;
+  overflow: hidden;
   border: 1px solid var(--md-sys-color-outline-variant);
   border-radius: 12px;
   background: var(--md-sys-color-surface-container-high);
   scrollbar-color: var(--ak-rule-strong) transparent;
   scrollbar-width: thin;
-}
-
-.model-picker__search {
-  position: sticky;
-  z-index: 2;
-  top: 0;
-  display: flex;
-  height: 2.5rem;
-  align-items: center;
-  gap: 8px;
-  border-bottom: 1px solid var(--ak-rule-default);
-  padding: 0 12px;
-  color: var(--ak-ink-secondary);
-  background: var(--ak-paper-raised);
-}
-
-.model-picker__search input {
-  width: 100%;
-  border: 0;
-  color: var(--ak-ink-primary);
-  background: transparent;
-  font: inherit;
-  font-size: 0.8125rem;
-  outline: none;
-}
-
-.model-picker__list {
-  padding: 4px;
-}
-
-.model-picker__group + .model-picker__group {
-  margin-block-start: 6px;
-}
-
-.model-picker__group-title {
-  display: flex;
-  min-height: 1.5rem;
-  align-items: center;
-  gap: 6px;
-  padding: 0.15rem 8px;
-  color: var(--ak-ink-secondary);
-  font-size: var(--chat-type-caption);
-  font-weight: 600;
-  letter-spacing: 0.02em;
-}
-
-.model-picker__option {
-  display: flex;
-  align-items: flex-start;
-  gap: 8px;
-  border-radius: 8px;
-  padding: 6px 8px;
-  cursor: pointer;
-  outline: none;
-  user-select: none;
-}
-
-.model-picker__option + .model-picker__option {
-  margin-block-start: 1px;
-}
-
-.model-picker__option:focus-visible {
-  background: color-mix(in oklab, var(--ak-ink-primary) 5%, transparent);
-}
-@media (hover: hover) {
-  .model-picker__option:hover {
-    background: color-mix(in oklab, var(--ak-ink-primary) 5%, transparent);
-  }
-}
-
-.model-picker__option.is-selected:not(:hover):not(:focus-visible) {
-  background: color-mix(in oklab, var(--ak-ink-primary) 6%, transparent);
-}
-
-.model-picker__check {
-  flex: 0 0 auto;
-  margin-block-start: 3px;
-  color: var(--ak-ink-primary);
-  opacity: 0;
-}
-
-.model-picker__option.is-selected .model-picker__check {
-  opacity: 0.8;
-}
-
-.model-picker__copy {
-  display: grid;
-  min-width: 0;
-  flex: 1;
-  gap: 1px;
-  text-align: start;
-}
-
-.model-picker__copy strong {
-  overflow: hidden;
-  font-size: 0.8125rem;
-  font-weight: 500;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-.model-picker__option.is-selected .model-picker__copy strong {
-  font-weight: 650;
-}
-
-.model-picker__meta {
-  display: flex;
-  align-items: center;
-  gap: 6px;
-}
-
-.model-picker__meta em,
-.model-picker__meta i {
-  color: var(--md-sys-color-on-surface-variant);
-  font-size: var(--chat-type-micro);
-  font-style: normal;
-}
-
-.model-picker__meta i {
-  font-weight: 500;
-  opacity: 0.8;
-}
-
-.model-picker__meta svg {
-  color: var(--ak-ink-secondary);
-  opacity: 0.55;
-}
-
-.model-picker__star {
-  flex: 0 0 auto;
-  margin-block-start: 1px;
-  border: 0;
-  border-radius: 4px;
-  padding: 2px;
-  color: var(--md-sys-color-on-surface-variant);
-  background: transparent;
-  cursor: pointer;
-  opacity: 0;
-  transition-property: opacity, color;
-  transition-duration: var(--ak-sys-duration-short);
-}
-
-.model-picker__option:focus-within .model-picker__star,
-.model-picker__star:focus-visible,
-.model-picker__star.is-favorite {
-  opacity: 1;
-}
-@media (hover: hover) {
-  .model-picker__option:hover .model-picker__star {
-    opacity: 1;
-  }
-}
-
-@media (hover: hover) {
-  .model-picker__star:hover {
-    color: var(--md-sys-color-on-surface);
-  }
-}
-
-.model-picker__star.is-favorite svg {
-  fill: currentColor;
-}
-/* 触屏没有悬停，未收藏的星淡显（不是藏起来）才找得到收藏入口；热区放大到约 36px，负边距不撑高行。 */
-@media (hover: none) {
-  .model-picker__star:not(.is-favorite) { opacity: 0.45; }
-}
-@media (pointer: coarse) {
-  .model-picker__star { padding: 10px; margin: -9px -10px -9px -4px; }
-}
-
-.model-picker__empty {
-  margin: 1.25rem 0;
-  color: var(--md-sys-color-on-surface-variant);
-  font-size: 0.8125rem;
-  text-align: center;
 }
 
 /* —— 思考强度：与模型选择解耦的独立工具行控件 —— */
@@ -347,6 +163,7 @@
 @media (pointer: coarse) { .model-effort__option { min-height: 44px; } }
 
 .model-effort__list {
+  min-height: 0;
   overflow-y: auto;
   overscroll-behavior: contain;
   padding: 4px;
@@ -367,10 +184,6 @@
   .model-effort__trigger { transition-duration: 0.01ms; }
 }
 
-.model-picker__search > .lucide-search {
-  translate: 0.5px -0.5px;
-}
-
 /* 宽度断点按聊天根节点（ADR 0126：聊天与工作台同页，窗口宽度不等于聊天宽度），属性由 chat-layout 写入。 */
 :where([data-chat-width~="36rem"]) .chat-main .model-picker {
   min-width: 0;
@@ -389,9 +202,6 @@
   inset-block: -8px;
   inset-inline: -4px;
 }
-
-/* 模型名必须能区分版本，不能在选择列表里只留下相同的省略前缀。 */
-.model-picker__copy strong { white-space: normal; overflow-wrap: anywhere; }
 
 .picker-sheet-scrim { display: none; }
 
@@ -434,8 +244,9 @@
 
 :where([data-chat-width~="820"], [data-chat-short]) .model-picker__panel,
 :where([data-chat-width~="820"], [data-chat-short]) .model-effort__panel {
-  display: block;
-  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
 }
 
 :where([data-chat-width~="820"], [data-chat-short]) .picker-sheet-scrim {
@@ -465,15 +276,9 @@
   width: auto !important;
   height: auto !important;
   max-height: none;
-  display: block;
-  overflow-y: auto;
-}
-
-@media (forced-colors: active) {
-  .model-picker__option.is-selected {
-    outline: 2px solid Highlight;
-    outline-offset: -2px;
-  }
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
 }
 
 /* 模型不可用或目录读取失败时，工具位里留一个去处理的入口；与输入框工具同一行高。 */

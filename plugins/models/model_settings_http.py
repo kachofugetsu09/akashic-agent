@@ -224,13 +224,16 @@ class SetDefaultPayload(_Payload):
     type: Literal["set_default"]
     expected_revision: int = Field(ge=0)
     role: Literal["default", "fast", "agent", "vision"] | None
-    model_id: str = Field(min_length=1, max_length=128)
+    # 空串表示清除该场景的单独指定，改为跟随全局默认模型。
+    model_id: str = Field(max_length=128)
     verify_embedding: bool = False
 
     @model_validator(mode="after")
     def check_verification_kind(self) -> SetDefaultPayload:
         if self.verify_embedding and self.role is not None:
             raise ValueError("向量重验只能用于默认向量模型。")
+        if not self.model_id and self.role in (None, "default"):
+            raise ValueError("全局默认模型与默认向量模型不能清空。")
         return self
 
 

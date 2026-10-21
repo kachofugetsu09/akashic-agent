@@ -894,10 +894,20 @@ class ModelsStore:
     def set_default(self, command: SetDefaultModel) -> int:
         """Set one chat role or the workspace default embedding model."""
 
-        model_id = _required(command.model_id, "model_id")
         role = command.role
         if role is not None and type(role) is not str:
             raise ValueError("model role must be a string")
+        if command.model_id == "" and role in MODEL_ROLES and role != "default":
+            # 清除单独指定：该场景回到全局默认模型。
+            return self._domain_write(
+                command.expected_revision,
+                "set-default",
+                lambda connection: connection.execute(
+                    "DELETE FROM model_role_bindings WHERE role = ?", (role,)
+                ).rowcount
+                > 0,
+            )
+        model_id = _required(command.model_id, "model_id")
 
         def write(connection: sqlite3.Connection) -> None:
             if role is None:

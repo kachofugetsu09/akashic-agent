@@ -3,6 +3,7 @@ import { render, type ComposerControls, type PluginUiContext, type PluginUiDefin
 import { compatibleEffort, chatModelState, modelProblem, type ChatModelState } from "./capsule-data";
 import { ModelCapsulePicker, ModelEffortAction, resolveVisibleRuntime } from "./capsule-picker";
 import { formatModelCallStats, readModelCallStats } from "./call-stats";
+import "./capsule.css";
 import "./message-ui.css";
 
 const number = (value: unknown) => new Intl.NumberFormat("zh-CN").format(Number(value || 0));
