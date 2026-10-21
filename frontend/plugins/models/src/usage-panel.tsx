@@ -9,14 +9,17 @@ interface Totals { turns: number; prompt_tokens: number; hit_tokens: number; out
 interface Group extends Totals { source?: string; model?: string }
 interface SessionRow {
   session_id: string; title: string; sources: string[]; last_at: string; model: string; compactions: number;
-  context_tokens: number; context_window: number; recent: Totals; totals: Totals;
+  context_tokens: number; context_window: number; recent: Totals; totals: Totals; composition?: Composition | null;
 }
-interface Insights { hours: [string, number, number, number, number, number][]; sources: Group[]; models: Group[]; sessions: SessionRow[]; total_sessions: number }
+interface Insights {
+  hours: [string, number, number, number, number, number][]; sources: Group[]; models: Group[]; sessions: SessionRow[]; total_sessions: number;
+
+}
 interface TurnRow {
   call_id: string; recorded_at: string; preview: string; prompt_tokens: number; hit_tokens: number; output_tokens: number; calls: number;
   context_tokens: number; context_window: number; model: string; compacted: boolean; composition: Composition | null;
 }
-interface SessionDetail { session: SessionRow | null; turns: TurnRow[]; composition_error?: boolean }
+interface SessionDetail { session: SessionRow | null; turns: TurnRow[]; composition_error?: boolean; composition_from?: string | null }
 interface TurnDetail { composition: Composition | null; composition_error: boolean }
 type Tab = "overview" | "sessions" | "context";
 type Query = PluginUiSidebarPanelContext["query"];
@@ -166,6 +169,7 @@ function Overview({ query, days, setDays, onPick }: { query: Query; days: number
     </div>
     <Bars label={hourly ? "今天按小时的输入" : `近 ${days} 天按天的输入`} items={buckets.map((item, index) => ({ ...item, title: `${hourly ? `${index} 时` : `${days - 1 - index} 天前`} · ${fmt(item.hit + item.miss)}` }))} />
     <div className="usage-legend"><span><i />未命中</span><span><i className="soft" />命中</span><span>按{hourly ? "小时" : "天"}，只画输入</span></div>
+    <Spread query={query} since={start.toISOString()} />
     <div className="usage-columns">
       <div className="usage-list">
         <div className="usage-row muted"><span className="usage-seg" role="group" aria-label="分组">
@@ -185,6 +189,24 @@ function Overview({ query, days, setDays, onPick }: { query: Query; days: number
   </div>;
 }
 
+interface SpreadData { spread: Composition | null; spread_calls: number; spread_from: string | null; spread_capped: boolean; composition_error?: boolean }
+
+// 范围内输入花在哪：单独查询；每次记录过构成、用量完整的调用按自己的实报输入分摊，再加总。
+function Spread({ query, since }: { query: Query; since: string }) {
+  const { data, error } = useQuery<SpreadData>(query, "usage.spread", { since }, "");
+  const from = data?.spread_from ? stamp(data.spread_from) : null;
+  const note = !data ? error || "正在读取…"
+    : data.composition_error ? "构成记录暂时读不到。"
+      : from ? `这段时间没有记录构成的调用；构成自 ${from} 起记录。` : "还没有记录构成的调用。新版本上线后的每次调用都会记录。";
+  return <section className="usage-spread" aria-label="输入构成">
+    <div className="usage-row"><b>输入花在哪</b>
+      <span className="muted">{data?.spread ? `${data.spread_capped ? "最近 " : ""}${data.spread_calls} 次调用 · 构成自 ${from} 起记录` : ""}</span></div>
+    {data?.spread ? <><CompositionBar parts={data.spread} /><CompositionLegend parts={data.spread} />
+      <p className="usage-note">按调用口径（含标题、摘要等旁路调用），与上方按轮次的总量不必相等。</p></>
+      : <p className="usage-note">{note}</p>}
+  </section>;
+}
+
 function RangeSwitch({ days, setDays }: { days: number; setDays: (days: number) => void }) {
   return <div className="usage-seg" role="group" aria-label="时间范围">
     {RANGES.map(([value, label]) => <button key={value} type="button" aria-pressed={days === value} onClick={() => setDays(value)}>{label}</button>)}
@@ -195,9 +217,9 @@ function RangeSwitch({ days, setDays }: { days: number; setDays: (days: number) 
 function SessionsPage({ query, days, setDays, selected, setSelected, sheet, context }: {
   query: Query; days: number; setDays: (days: number) => void; selected: string; setSelected: (id: string) => void; sheet: boolean; context: boolean;
 }) {
-  // 回包有 192 KiB 上限：只取排行前 SESSION_ROWS 个；上下文页按占比在服务端排好再截。
+  // 回包有 192 KiB 上限：只取前 SESSION_ROWS 个；上下文页按最近活跃在服务端排好再截，当前会话自然在前。
   const { data, error } = useQuery<Insights>(query, "usage.insights",
-    { since: rangeStart(context ? 30 : days).toISOString(), limit: SESSION_ROWS, order: context ? "context" : "input" }, "");
+    { since: rangeStart(context ? 30 : days).toISOString(), limit: SESSION_ROWS, order: context ? "recent" : "input" }, "");
   const [filter, setFilter] = useState("");
   const [pushed, setPushed] = useState(false);
   const needle = filter.trim().toLowerCase();
@@ -207,13 +229,14 @@ function SessionsPage({ query, days, setDays, selected, setSelected, sheet, cont
     {context ? null : <RangeSwitch days={days} setDays={setDays} />}
     <input className="usage-filter" type="search" value={filter} placeholder="按标题或来源筛选" aria-label="筛选会话" onChange={(event) => setFilter(event.target.value)} />
     {!data ? <p className="usage-note">{error || "正在读取…"}</p> : null}
-    {data && data.total_sessions > data.sessions.length ? <p className="usage-note">只列出{context ? "上下文占用最高" : "输入最多"}的 {data.sessions.length} 个会话（共 {data.total_sessions} 个），筛选只在其中查找。</p> : null}
+    {data && data.total_sessions > data.sessions.length ? <p className="usage-note">只列出{context ? "最近活跃" : "输入最多"}的 {data.sessions.length} 个会话（共 {data.total_sessions} 个），筛选只在其中查找。</p> : null}
     {rows.map((row) => <button key={row.session_id} type="button" className="usage-item" aria-current={row.session_id === active || undefined}
       onClick={() => { setSelected(row.session_id); setPushed(true); }}>
       <span className="t">{sessionTitle(row)}</span>
       <span className="n">{context ? pct(fill(row)) : fmt(row.recent.prompt_tokens)}</span>
       <span className="s">{row.sources.map(sourceLabel).join(" · ")} · {context ? row.model || "未知模型" : `${row.recent.turns} 轮`}</span>
       <span className="n">{context ? `压缩 ${row.compactions}` : pct(rate(row.recent))}</span>
+      {row.composition ? <span className="usage-item-bar"><CompositionBar parts={row.composition} window={context ? row.context_window : 0} /></span> : null}
     </button>)}
   </div>;
   const detail = active ? <SessionDetailView key={active} query={query} sessionId={active} context={context} /> : null;
@@ -229,6 +252,25 @@ function TurnComposition({ query, sessionId, turn }: { query: Query; sessionId: 
     {error || data?.composition_error ? <p className="usage-note">来源明细暂时读不到{error ? `：${error}` : ""}。</p> : null}</>;
 }
 
+const stamp = (value: string) => new Date(value).toLocaleString("zh-CN", { month: "numeric", day: "numeric", hour: "2-digit", minute: "2-digit" });
+
+// 会话里还没有记录构成的轮次时，说明从何时开始有、何时会出现。
+function NoComposition({ data }: { data: SessionDetail }) {
+  const last = data.turns.at(-1);
+  return <p className="usage-note">{data.composition_error ? "构成记录暂时读不到。"
+    : `构成${data.composition_from ? `自 ${stamp(data.composition_from)} 起` : "从新版本上线后"}才记录${last ? `，这个会话最近一轮在 ${stamp(last.recorded_at)}` : ""}；再发一条消息就会出现。`}</p>;
+}
+
+// 会话页也看得到最近一次有构成的轮次，不用切到上下文页。
+function LatestComposition({ query, sessionId, data }: { query: Query; sessionId: string; data: SessionDetail }) {
+  const turn = data.turns.slice().reverse().find((item) => item.composition);
+  if (!turn) return <NoComposition data={data} />;
+  return <section className="usage-spread" aria-label="上下文构成">
+    <div className="usage-row"><b>上下文构成</b><span className="muted">{stamp(turn.recorded_at)} 这一轮 · {fmt(turn.context_tokens)}</span></div>
+    <TurnComposition query={query} sessionId={sessionId} turn={turn} />
+  </section>;
+}
+
 function SessionDetailView({ query, sessionId, context }: { query: Query; sessionId: string; context: boolean }) {
   const { data, error } = useQuery<SessionDetail>(query, "usage.session", { session_id: sessionId }, "");
   const row = data?.session;
@@ -242,6 +284,7 @@ function SessionDetailView({ query, sessionId, context }: { query: Query; sessio
         {turns.at(-1)?.composition ? <Donut parts={turns.at(-1)!.composition!} center={fmt(row.context_tokens)} sub="最近一轮" /> : null}
         <ContextLine row={row} parts={turns.at(-1)?.composition} />
       </div>
+      {turns.some((turn) => turn.composition) ? null : <NoComposition data={data} />}
       <ContextTrend turns={turns} detail={(turn) => <TurnComposition key={turn.call_id} query={query} sessionId={sessionId} turn={turn} />} />
       <p className="usage-note">{data.composition_error ? "构成记录暂时读不到，只显示总量。" : `构成是装配请求时按来源（插件材料、提醒块、工具）的估算，按实报输入换算；最近 ${turns.length} 轮。`}</p>
     </> : <>
@@ -252,6 +295,7 @@ function SessionDetailView({ query, sessionId, context }: { query: Query; sessio
         <Metric value={String(row.compactions)} label="次压缩（累计）" />
       </div>
       <Bars turns label="逐轮输入" items={turns.map((turn) => ({ hit: turn.hit_tokens, miss: turn.prompt_tokens - turn.hit_tokens }))} />
+      <LatestComposition query={query} sessionId={sessionId} data={data} />
       <div className="usage-list">
         {turns.slice().reverse().map((turn) => <div key={turn.recorded_at} className="usage-item">
           <span className="t">{turn.preview || "（无文字）"}{turn.compacted ? <em>压缩</em> : null}</span>
