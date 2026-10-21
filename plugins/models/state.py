@@ -8,6 +8,7 @@ import math
 import random
 import re
 import secrets
+from urllib.parse import urlsplit
 import threading
 import time
 from contextlib import asynccontextmanager
@@ -1122,6 +1123,7 @@ class ModelsState:
                 driver_id=item.driver_id,
                 auth_identity=item.auth_identity,
                 availability=self._availability(item),
+                endpoint_host=urlsplit(item.endpoint).hostname or "",
             )
             for item in snapshot.connections.values()
         )

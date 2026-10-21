@@ -22,7 +22,7 @@ export function activate(ctx) {
         <button type="button" class="settings-icon-button" aria-label="关闭" data-close>${CLOSE_ICON}</button></header>
         <form class="settings-dialog-form"><div class="settings-dialog-body"><div class="settings-form-grid">
           <label class="is-wide"><span>连接名称</span><input name="name" aria-label="连接名称" required autocomplete="organization"></label>
-          <label class="is-wide"><span>Base URL</span><input name="endpoint" aria-label="Base URL" ${existing ? "" : "required"} type="url" placeholder="${existing ? "留空则保持原地址" : "https://opencode.ai/zen/go/v1"}"></label>
+          <label class="is-wide"><span>Base URL</span><input name="endpoint" aria-label="Base URL" ${existing ? "" : "required"} type="url" placeholder="${existing ? existing.endpointHost ? `当前 ${existing.endpointHost.replace(/[^a-z0-9.:-]/giu, "")}，填写新地址才会更换` : "留空则保持原地址" : "https://opencode.ai/zen/go/v1"}"></label>
           <label class="settings-secret is-wide"><span>API Key（${existing ? "留空保留现有密钥" : "可留空直接使用本机登录态"}）</span><input name="apiKey" aria-label="API Key" type="password" autocomplete="off" placeholder="sk-…"><button type="button" data-show-key aria-label="显示 API Key">${EYE_ICON}</button></label>
         </div>
         <section class="settings-model-discovery settings-model-discovery--automatic"><header><div><h3>选择模型</h3><p>探测到的模型仅作为候选，保存后即可用于日常对话与任务。</p></div></header></section>

@@ -4,6 +4,8 @@ import { mountModelPicker } from "./picker-mount";
 const SEARCH_ICON = `<svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="lucide lucide-search" aria-hidden="true"><circle cx="11" cy="11" r="8"></circle><path d="m21 21-4.3-4.3"></path></svg>`;
 const CHEVRON_ICON = `<svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="lucide lucide-chevron-right" aria-hidden="true"><path d="m9 18 6-6-6-6"></path></svg>`;
 const KEY_ICON = `<svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M2.586 17.414A2 2 0 0 0 2 18.828V21a1 1 0 0 0 1 1h3a1 1 0 0 0 1-1v-1a1 1 0 0 1 1-1h1a1 1 0 0 0 1-1v-1a1 1 0 0 1 1-1h.172a2 2 0 0 0 1.414-.586l.814-.814a6.5 6.5 0 1 0-4-4z"></path><circle cx="16.5" cy="7.5" r=".5" fill="currentColor"></circle></svg>`;
+const TRASH_ICON = `<svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M3 6h18"></path><path d="M19 6v14c0 1-1 2-2 2H7c-1 0-2-1-2-2V6"></path><path d="M8 6V4c0-1 1-2 2-2h4c1 0 2 1 2 2v2"></path></svg>`;
+const REFRESH_ICON = `<svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M3 12a9 9 0 0 1 9-9 9.75 9.75 0 0 1 6.74 2.74L21 8"></path><path d="M21 3v5h-5"></path><path d="M21 12a9 9 0 0 1-9 9 9.75 9.75 0 0 1-6.74-2.74L3 16"></path><path d="M8 16H3v5"></path></svg>`;
 const CLOSE_ICON = `<svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M18 6 6 18"></path><path d="m6 6 12 12"></path></svg>`;
 const SPINNER_ICON = `<svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="is-spinning" aria-hidden="true"><path d="M21 12a9 9 0 1 1-6.219-8.56"></path></svg>`;
 
@@ -356,9 +358,12 @@ function registerModels(ctx, mount, catalogResource) {
         const models = catalog.models.filter((model) => model.connectionId === connection.id);
         const openCount = models.filter((model) => model.availability !== "disabled").length;
         head.querySelector("[data-name]").textContent = connection.name;
-        head.querySelector("[data-detail]").textContent = connection.availability === "disabled"
-          ? `${entry?.label ?? connection.driverId} · ${models.length} 个模型`
-          : `${entry?.label ?? connection.driverId} · ${openCount}/${models.length} 开放`;
+        // 副标题说明连的是哪里、有几个模型；地址只给主机名，没有时退回连接类型名。
+        const where = connection.endpointHost || entry?.label || connection.driverId;
+        const paused = models.length - openCount;
+        head.querySelector("[data-detail]").textContent = connection.availability === "disabled" || !paused
+          ? `${where} · ${models.length} 个模型`
+          : `${where} · ${models.length} 个模型，${paused} 个已停用`;
         const status = head.querySelector("[data-status]");
         status.classList.toggle("is-unavailable", connection.availability !== "available");
         const AVAILABILITY_LABELS = { available: "正常可用", disabled: "已停用", driver_unavailable: "驱动异常" };
@@ -843,18 +848,22 @@ function registerModels(ctx, mount, catalogResource) {
       function buildModelManager({connection, entry, actions, dialogClosed, dirty, finishDisable}) {
         const section = document.createElement("section");
         section.className = "settings-model-manage";
-        section.innerHTML = `<header class="settings-model-manage-head"><div><h3>模型</h3><p data-manage-status role="status"></p></div>
+        section.innerHTML = `<header class="settings-model-manage-head"><div><h3>模型 <span data-manage-count></span></h3><p data-manage-status role="status"></p></div>
           <div class="settings-model-manage-actions">
-            <button type="button" class="settings-secondary-button" data-probe>探测目录</button>
-            ${entry.catalogSync ? '<button type="button" class="settings-secondary-button" data-sync>刷新已选能力</button>' : ""}
+            <button type="button" class="settings-secondary-button" data-probe>从服务目录选择</button>
             <button type="button" class="settings-text-button" data-manual-toggle>手动添加</button>
+            ${entry.catalogSync ? `<button type="button" class="settings-icon-button" data-sync aria-label="重新读取已添加模型的能力" title="重新读取已添加模型的能力">${REFRESH_ICON}</button>` : ""}
           </div></header>
           <div class="settings-model-manual" data-manual hidden><input aria-label="模型型号" maxlength="256" placeholder="型号，例如 gpt-5"><button type="button" class="settings-primary-button" data-manual-add>验证并添加</button></div>
+          <label class="settings-model-filter" data-filter hidden>${SEARCH_ICON}<input aria-label="筛选已添加的模型" placeholder="筛选已添加的模型"></label>
           <div class="settings-model-rows" data-rows></div>
           <p class="settings-inline-error" data-manage-error role="alert" hidden></p>
           <button type="button" class="settings-text-button" data-disable-conn>停用此连接（保留数据）</button>
           <p class="settings-inline-error" data-disable-error role="alert" hidden></p>`;
         const status = section.querySelector("[data-manage-status]");
+        const count = section.querySelector("[data-manage-count]");
+        const filter = section.querySelector("[data-filter]");
+        const filterInput = filter.querySelector("input");
         const error = section.querySelector("[data-manage-error]");
         const rowsElement = section.querySelector("[data-rows]");
         const manual = section.querySelector("[data-manual]");
@@ -870,6 +879,14 @@ function registerModels(ctx, mount, catalogResource) {
           error.hidden = false;
         };
         const clearManageError = () => { error.hidden = true; error.textContent = ""; };
+        // 操作结果暂时占用状态行，之后回到数量与停用说明。
+        let sayTimer = 0;
+        const say = (message) => {
+          window.clearTimeout(sayTimer);
+          status.dataset.message = "1";
+          status.textContent = message;
+          sayTimer = window.setTimeout(() => { delete status.dataset.message; refreshRows(); }, 6000);
+        };
         const connectionModels = () => catalog.models.filter((model) => model.connectionId === connection.id);
 
         const rows = new Map();
@@ -886,7 +903,13 @@ function registerModels(ctx, mount, catalogResource) {
           const used = usedByMap();
           const models = connectionModels();
           const open = models.filter((model) => model.availability !== "disabled").length;
-          status.textContent = `${models.length} 个已选，${open} 个可用`;
+          count.textContent = models.length ? `${models.length}` : "";
+          if (!status.dataset.message) status.textContent = models.length
+            ? open === models.length ? "" : `${models.length - open} 个已停用`
+            : "还没有模型；从服务目录选择，或手动填写型号。";
+          // 模型多时才给筛选框，只在已添加的模型里按名称过滤。
+          filter.hidden = models.length <= 6;
+          const needle = filter.hidden ? "" : filterInput.value.trim().toLowerCase();
           const selected = new Set(models.map((model) => model.id));
           for (const [id, row] of rows) {
             if (selected.has(id)) continue;
@@ -898,36 +921,39 @@ function registerModels(ctx, mount, catalogResource) {
             if (!rows.has(model.id)) rows.set(model.id, modelRow(model));
             const row = rows.get(model.id);
             row.update(model, used.get(model.id) ?? "");
+            row.element.hidden = Boolean(needle) && !model.model.toLowerCase().includes(needle);
             if (row.element !== next) rowsElement.insertBefore(row.element, next);
             next = row.element.nextSibling;
           }
           reportDirty();
         };
 
+        // 一行一个已添加的模型：名称与能力、在用场景、验证、移除；对话模型可展开参数。
         function modelRow(model) {
           const row = document.createElement("div");
           row.className = "settings-model-row";
-          const toggleTarget = document.createElement("label");
-          toggleTarget.className = "settings-model-toggle";
-          const toggle = document.createElement("input");
-          toggle.type = "checkbox";
-          toggle.checked = true;
-          toggle.setAttribute("aria-label", `选择 ${model.model}`);
-          toggle.addEventListener("change", () => {
-            if (editor?.isDirty() && !window.confirm(`移除 ${model.model} 并放弃该行尚未保存的参数？`)) {
-              toggle.checked = true;
-              return;
-            }
-            toggle.disabled = true;
+          let inUseLabel = "";
+          const remove = document.createElement("button");
+          remove.type = "button";
+          remove.className = "settings-icon-button settings-model-remove";
+          remove.innerHTML = TRASH_ICON;
+          remove.addEventListener("click", () => {
+            // 移除需要重新验证才能加回；在用或有未保存参数时先说明后果。
+            const warning = inUseLabel
+              ? `${model.model} 正用作「${inUseLabel}」，移除后该场景改用全局默认模型。确定移除？`
+              : editor?.isDirty() ? `移除 ${model.model} 并放弃该行尚未保存的参数？` : "";
+            if (warning && !window.confirm(warning)) return;
+            remove.disabled = true;
             clearManageError();
             actions.removeModel(model.id).then(() => {
               if (dialogClosed()) return;
               refreshRows();
-              status.textContent = model.kind === "embedding"
+              say(model.kind === "embedding"
                 ? `${model.model} 已移除；使用此向量空间的任务需要重新配置。`
-                : `${model.model} 已移除；聊天引用将跟随默认模型，历史记录保留。`;
+                : `${model.model} 已移除；聊天引用将跟随默认模型，历史记录保留。`);
             }).catch((reason) => {
               if (dialogClosed()) return;
+              remove.disabled = false;
               showManageError(reason);
               refreshRows();
             });
@@ -941,8 +967,7 @@ function registerModels(ctx, mount, catalogResource) {
           main.append(modelId, flags);
           const use = document.createElement("span");
           use.className = "settings-model-use";
-          toggleTarget.append(toggle);
-          row.append(toggleTarget, main, use);
+          row.append(main, use);
           const verify = document.createElement("button");
           verify.type = "button";
           verify.className = "settings-text-button";
@@ -951,12 +976,12 @@ function registerModels(ctx, mount, catalogResource) {
             verify.disabled = true;
             clearManageError();
             actions.verifyModel(model.id).then(() => {
-              if (!dialogClosed()) status.textContent = `${model.model} 验证通过`;
+              if (!dialogClosed()) say(`${model.model} 验证通过`);
             }).catch((reason) => {
               if (!dialogClosed()) showManageError(reason);
             }).finally(() => { verify.disabled = false; });
           });
-          row.append(verify);
+          row.append(verify, remove);
           const editor = model.kind === "chat" ? buildModelDetail(model) : null;
           let element = row;
           if (editor) {
@@ -982,11 +1007,14 @@ function registerModels(ctx, mount, catalogResource) {
             isDirty: () => editor?.isDirty() ?? false,
             update(next, inUse) {
               model = next;
-              toggle.checked = true;
-              toggle.disabled = false;
+              inUseLabel = inUse;
+              remove.disabled = false;
+              remove.setAttribute("aria-label", `移除 ${model.model}`);
+              remove.title = "移除";
               row.classList.toggle("is-disabled", model.availability === "disabled");
               verify.hidden = model.availability === "disabled";
-              use.textContent = [inUse ? `在用 · ${inUse}` : "", model.availability !== "available" ? "暂不可用" : ""].filter(Boolean).join(" · ");
+              use.textContent = [inUse, model.availability !== "available" ? "暂不可用" : ""].filter(Boolean).join(" · ");
+              use.hidden = !use.textContent;
               flags.replaceChildren();
               for (const badge of [model.kind === "embedding" ? "向量" : "", ...capabilityBadges(model.capabilities)].filter(Boolean)) {
                 const chip = document.createElement("i");
@@ -1093,15 +1121,15 @@ function registerModels(ctx, mount, catalogResource) {
         probe.addEventListener("click", () => {
           probe.disabled = true;
           clearManageError();
-          status.textContent = "正在读取服务目录…";
+          say("正在读取服务目录…");
           actions.selectModels().then((selected) => {
             if (dialogClosed()) return;
             refreshRows();
-            status.textContent = selected ? "模型选择已保存。" : "未改动模型选择。";
+            say(selected ? "模型选择已保存。" : "未改动模型选择。");
           }).catch((reason) => {
             if (dialogClosed()) return;
             showManageError(reason);
-            status.textContent = "探测未完成。";
+            say("没有读到服务目录。");
           }).finally(() => { probe.disabled = false; });
         });
 
@@ -1110,13 +1138,14 @@ function registerModels(ctx, mount, catalogResource) {
           clearManageError();
           actions.sync().then(() => {
             if (dialogClosed()) return;
-            status.textContent = "已选模型的能力已刷新。";
+            say("已添加模型的能力已刷新。");
             refreshRows();
           }).catch((reason) => {
             if (!dialogClosed()) showManageError(reason);
           }).finally(() => { sync.disabled = false; });
         });
 
+        filterInput.addEventListener("input", refreshRows);
         manualToggle.addEventListener("click", () => {
           manual.hidden = !manual.hidden;
           if (!manual.hidden) manualInput.focus();
@@ -1130,7 +1159,7 @@ function registerModels(ctx, mount, catalogResource) {
             if (dialogClosed()) return;
             manualInput.value = "";
             manual.hidden = true;
-            status.textContent = `${name} 已验证并开放。`;
+            say(`${name} 已验证并添加。`);
             refreshRows();
           }).catch((reason) => {
             if (!dialogClosed()) showManageError(reason);
