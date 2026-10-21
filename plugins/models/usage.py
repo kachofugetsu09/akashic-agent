@@ -34,7 +34,7 @@ _HOUR_DAYS = 31
 INSIGHT_SESSIONS = 100
 _TITLE_CHARS = 80
 # input 按范围内输入排行；context 按最近一轮上下文占比排行，未知窗口排最后。
-InsightOrder = Literal["input", "context"]
+InsightOrder = Literal["input", "context", "recent"]
 # 检查点里存的是按当前计数规则算好的结果：改了计数规则（什么算计入、主动来源集合、预览、分桶）必须加一，旧结果随之丢弃重算。
 _CHECKPOINT_SCHEMA = 2
 
@@ -297,13 +297,50 @@ class CacheUsage:
             rows.sort(key=lambda row: -cast(Mapping[str, int], row["recent" if cutoff else "totals"])["prompt_tokens"])
             if order == "context":
                 rows.sort(key=_fill, reverse=True)
+            elif order == "recent":
+                rows.sort(key=lambda row: cast(str, row["last_at"]), reverse=True)
         return {
             "complete": True,
             "hours": [[key, *item.row()] for key, item in sorted(hours.items())],
             "sources": [{"source": key, **item.body()} for key, item in sorted(sources.items(), key=lambda e: -e[1].prompt_tokens)],
             "models": [{"model": key, **item.body()} for key, item in sorted(models.items(), key=lambda e: -e[1].prompt_tokens)],
-            "sessions": _titled(catalog, rows[:limit]), "total_sessions": len(rows),
+            "sessions": self._composed_rows(_titled(catalog, rows[:limit])), "total_sessions": len(rows),
+            **self._spread(since),
         }
+
+    # 会话行带最近一轮的六类合计，列表里直接画细条。
+    def _composed_rows(self, rows: list[dict[str, object]]) -> list[dict[str, object]]:
+        shares, _ = self._shares(cast(str, row["call_id"]) for row in rows if row["call_id"])
+        for row in rows:
+            parts = shares.get(cast(str, row["call_id"]))
+            row["composition"] = _scaled(totals(parts), cast(int, row["context_tokens"])) if parts else None
+        return rows
+
+    # 1. 取范围内记录过构成的调用；2. 各按自己的实报输入分摊；3. 加总后按明细预算截断。
+    def _spread(self, since: str | None) -> dict[str, object]:
+        log = self._store.composition
+        if log is None:
+            return {"spread": None, "spread_calls": 0, "spread_from": None}
+        try:
+            rows, first = log.since(_utc(since) if since else ""), log.first()
+        except (sqlite3.Error, OSError, ValueError):
+            logger.warning("context composition spread failed", exc_info=True)
+            return {"spread": None, "spread_calls": 0, "spread_from": None, "composition_error": True}
+        usages = self._store.read_call_usages([call_id for call_id, _ in rows]) if rows else {}
+        merged: Parts = {}
+        calls = 0
+        for call_id, parts in rows:
+            call = usages.get(call_id)
+            prompt = call.usage.get("input_tokens") if call is not None and call.usage is not None else None
+            scaled = _scaled(parts, prompt) if type(prompt) is int else None
+            if scaled is None:
+                continue
+            calls += 1
+            for category, group in scaled.items():
+                into = merged.setdefault(category, {})
+                for label, value in group.items():
+                    into[label] = into.get(label, 0) + value
+        return {"spread": bounded(merged) if merged else None, "spread_calls": calls, "spread_from": first}
 
     def _status(self, catalog: MessageCatalog, projection: TurnProjection, session_id: str) -> dict[str, object] | None:
         if not catalog.exists(session_id):
@@ -344,7 +381,7 @@ class CacheUsage:
             turns = sorted(_latest((state.recent for _, state in owned), _RECENT_TURNS), key=lambda turn: turn.recorded_at)
             row = _titled(catalog, [_session_row(session_id, owned, "")])[0]
         shares, broken = self._shares(turn.call_id for turn in turns if turn.call_id)
-        return {"session": row, "composition_error": broken,
+        return {"session": row, "composition_error": broken, "composition_from": self._first(),
                 "turns": [{**asdict(turn), "composition": _scaled(_folded(shares.get(turn.call_id)), turn.context_tokens)}
                           for turn in turns]}
 
@@ -360,6 +397,13 @@ class CacheUsage:
         parts = shares.get(call_id)
         return {"composition": _scaled(bounded(parts), cast(int, turn["context_tokens"])) if parts else None,
                 "composition_error": broken}
+
+    def _first(self) -> str | None:
+        log = self._store.composition
+        try:
+            return None if log is None else log.first()
+        except (sqlite3.Error, OSError):
+            return None
 
     # 构成是旁路记录：读失败时总量照常返回，另外标出构成不可用，不拿空构成冒充正常。
     def _shares(self, call_ids: Iterable[str]) -> tuple[dict[str, Parts], bool]:
@@ -579,7 +623,7 @@ def _session_row(session_id: str, owned: list[tuple[str, _SourceState]], cutoff:
         "sources": sorted(source for source, _ in owned), "last_at": latest.recorded_at,
         "context_tokens": latest.context_tokens, "context_window": latest.context_window, "model": latest.model,
         "compactions": sum(state.compactions for _, state in owned),
-        "recent": recent.body(), "totals": totals.body(),
+        "recent": recent.body(), "totals": totals.body(), "call_id": latest.call_id,
     }
 
 
@@ -602,6 +646,11 @@ def _ceil_hour_key(value: str) -> str:
     moment = (moment if moment.tzinfo else moment.replace(tzinfo=UTC)).astimezone(UTC)
     floor = moment.replace(minute=0, second=0, microsecond=0)
     return (floor if floor == moment else floor + timedelta(hours=1)).strftime("%Y-%m-%dT%H")
+
+
+def _utc(value: str) -> str:
+    moment = datetime.fromisoformat(value)
+    return (moment if moment.tzinfo else moment.replace(tzinfo=UTC)).astimezone(UTC).isoformat()
 
 
 def _folded(parts: Parts | None) -> Parts | None:

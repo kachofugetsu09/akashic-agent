@@ -43,8 +43,8 @@ class ChatUiQueries:
             since, limit, order = payload.get("since"), payload.get("limit", 6), payload.get("order", "input")
             if set(payload) - {"since", "limit", "order"} or not (since is None or _instant(since)):
                 raise PluginUiRpcInvalidRequest("用量洞察只接受带时区的 since 时刻")
-            if type(limit) is not int or not 1 <= limit <= INSIGHT_SESSIONS or order not in ("input", "context"):
-                raise PluginUiRpcInvalidRequest(f"会话行数须为 1–{INSIGHT_SESSIONS}，排序只有 input 与 context")
+            if type(limit) is not int or not 1 <= limit <= INSIGHT_SESSIONS or order not in ("input", "context", "recent"):
+                raise PluginUiRpcInvalidRequest(f"会话行数须为 1–{INSIGHT_SESSIONS}，排序只有 input、context 与 recent")
             return await self.usage.insights(cast(str | None, since), limit, cast(InsightOrder, order))
         if method == "usage.status":
             if payload or not session_id:
