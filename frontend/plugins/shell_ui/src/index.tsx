@@ -269,6 +269,7 @@ function Shell({ pages, railActions, settings, settingsPlugins, http, inventory 
 
   // 分节拿到的 close 保持同一身份，Shell 路由变化不应重挂载正在编辑的分节。
   const closeSettingsRef = useRef(closeSettings);
+  const settingsReturnFocus = useRef<HTMLElement | null>(null);
   closeSettingsRef.current = closeSettings;
 
   useLayoutEffect(() => {
@@ -304,13 +305,39 @@ function Shell({ pages, railActions, settings, settingsPlugins, http, inventory 
     };
   }, [settingsOpen, openSettings, closeSettings]);
 
-  // React 状态拥有开关；Esc 经 onCancel 走守卫，不让迟到的原生 close 事件关闭已重开的面板。
+  // React 状态拥有开关。面板用非模态 show() 加自管遮罩：showModal 把整页置为 inert，开关各触发一次
+  // 全文档样式重算（侧栏加正文约 2000 节点时约 40ms，随页面规模增长）；Esc 与 Tab 在文档层接管。
   useEffect(() => {
     const dialog = settingsDialog.current;
     if (!dialog) return;
     // 打开后焦点落在面板本身而非首个导航项：Tab 仍从导航开始，但不在打开瞬间画出焦点环。
-    if (settingsOpen && !dialog.open) { dialog.showModal(); dialog.focus(); }
-    else if (!settingsOpen && dialog.open) dialog.close();
+    if (settingsOpen && !dialog.open) {
+      settingsReturnFocus.current = document.activeElement instanceof HTMLElement ? document.activeElement : null;
+      dialog.show();
+      dialog.focus();
+    } else if (!settingsOpen && dialog.open) {
+      // 非模态 close 只在焦点仍在面板内时归还；焦点已掉到 body 时按原生模态的习惯回到触发处。
+      const lost = document.activeElement === document.body || dialog.contains(document.activeElement);
+      dialog.close();
+      if (lost) settingsReturnFocus.current?.focus();
+      settingsReturnFocus.current = null;
+    }
+    if (!settingsOpen) return;
+    // 焦点可能因内容重渲染落回 body：和原生模态一样在文档层收按键，不要求焦点在面板里。
+    const onKeyDown = (event: globalThis.KeyboardEvent) => onSettingsKeyDown(event, dialog, () => closeSettingsRef.current());
+    // 背后应用里被程序聚焦（如输入框的打字监听）时拉回面板；挂在 body 上的图层与原生模态不归这里管。
+    const background = dialog.parentElement;
+    const onFocusIn = (event: FocusEvent) => {
+      const target = event.target;
+      if (!(target instanceof Element) || !background?.contains(target) || dialog.contains(target) || target.closest("dialog:modal")) return;
+      dialog.focus({ preventScroll: true });
+    };
+    document.addEventListener("keydown", onKeyDown);
+    document.addEventListener("focusin", onFocusIn);
+    return () => {
+      document.removeEventListener("keydown", onKeyDown);
+      document.removeEventListener("focusin", onFocusIn);
+    };
   }, [settingsOpen]);
 
   // 设置工作区内的跨目录渲染：初始配置按 route 内嵌任意分节的表单，不关心它属于哪个目录。
@@ -493,13 +520,14 @@ function Shell({ pages, railActions, settings, settingsPlugins, http, inventory 
         <span className="shell-page-icon" aria-hidden="true" dangerouslySetInnerHTML={markup(SETTINGS_ICON)} />
       </button>}
     </header>}
+    <div className="shell-settings-scrim" hidden={!settingsOpen} aria-hidden="true" />
     <dialog
       ref={settingsDialog}
       className="shell-settings-dialog"
       aria-label="功能设置"
       tabIndex={-1}
       data-pane={settingsPane}
-      onCancel={(event) => { event.preventDefault(); closeSettings(); }}
+      aria-modal="true"
     >
       <nav className="shell-settings-nav" aria-label="设置分节">
         <h2>功能设置</h2>
@@ -720,4 +748,36 @@ function checkRailActions(entries: readonly WebEntry[]): ShellRailAction[] {
 function pageFromLocation(entries: ShellPage[], fallback: ShellPage | undefined): ShellPage | undefined {
   const route = window.location.hash.slice(1);
   return entries.find((entry) => entry.route === route) ?? fallback;
+}
+
+const SETTINGS_TABBABLE = "a[href], button, input:not([type=hidden]), select, textarea, summary, [tabindex]";
+
+// 非模态设置面板补回模态语义：Esc 关闭（子控件 preventDefault 时让位），Tab 在面板内首尾循环不落回背景。
+function onSettingsKeyDown(event: globalThis.KeyboardEvent, dialog: HTMLDialogElement, close: () => void): void {
+  // 1. 面板内再开的模态表单（如模型选择）自己处理按键。
+  if (event.defaultPrevented || event.isComposing || (event.target instanceof Element && event.target.closest("dialog:modal"))) return;
+  if (event.key === "Escape") {
+    event.preventDefault();
+    close();
+    return;
+  }
+  if (event.key !== "Tab") return;
+  // 2. 只在越过首尾时接管，面板内部的 Tab 顺序仍交给浏览器。
+  // fieldset 禁用的后代自身没有 disabled 属性：按实际 :disabled 状态与 tabIndex 判断能否聚焦。
+  const items = [...dialog.querySelectorAll<HTMLElement>(SETTINGS_TABBABLE)]
+    .filter((item) => !item.matches(":disabled") && item.tabIndex >= 0 && item.getClientRects().length > 0);
+  const first = items[0];
+  const last = items[items.length - 1];
+  if (!first || !last) return;
+  const active = document.activeElement;
+  if (!active || !dialog.contains(active)) {
+    event.preventDefault();
+    (event.shiftKey ? last : first).focus();
+  } else if (event.shiftKey && (active === first || active === dialog)) {
+    event.preventDefault();
+    last.focus();
+  } else if (!event.shiftKey && active === last) {
+    event.preventDefault();
+    first.focus();
+  }
 }

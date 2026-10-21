@@ -1,5 +1,6 @@
 export const PLUGIN_UI_QUERY_MAX_PENDING = 128;
-export const PLUGIN_UI_QUERY_MAX_ACTIVE = 4;
+// 与服务端插件查询 worker 数一致：同屏槽位一轮发完，不再按 4 个一批排队。
+export const PLUGIN_UI_QUERY_MAX_ACTIVE = 8;
 export const PLUGIN_UI_QUERY_MAX_BACKGROUND = 2;
 
 export interface PluginUiQueuedRequest {
