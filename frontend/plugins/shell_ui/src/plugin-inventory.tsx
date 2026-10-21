@@ -161,14 +161,13 @@ function InventoryRow({ row, rows, open, note, flip, toggle }: {
     : `停用后，${waiting.slice(0, 2).join("、")}${waiting.length > 2 ? ` 等 ${waiting.length} 个插件` : ""}会等待依赖`;
   return <li className="shell-inventory-row" data-phase={row.phase === "stopping" && row.error ? "failed" : row.phase}>
     <button type="button" className="shell-inventory-head" aria-expanded={open} onClick={flip}>
-      <strong>{row.name}</strong>
+      <span className="shell-inventory-name"><strong>{row.name}</strong>{row.description && <small>{row.description}</small>}</span>
       {status
         ? <span className="shell-inventory-status">{status}</span>
         : <span className="shell-inventory-dot" role="img" aria-label="运行中" />}
       <span className="shell-inventory-chevron" aria-hidden="true" dangerouslySetInnerHTML={markup(CHEVRON)} />
     </button>
     {open && <div className="shell-inventory-body">
-      {row.description && <p>{row.description}</p>}
       {row.error && <p className="shell-inventory-error">{row.error}</p>}
       {note?.kind === "error" && <p className="shell-inventory-error" role="alert">{note.text}</p>}
       {row.missing_services.length > 0 && <p>缺少 <code>{row.missing_services.join("、")}</code>，依赖恢复后自动运行。</p>}

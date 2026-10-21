@@ -589,7 +589,6 @@ function SettingsHeading({ target, sections, card, back }: {
       <span aria-hidden="true" dangerouslySetInnerHTML={markup(BACK_ICON)} />{SETTINGS_PLUGINS_LABEL}
     </button>
     <div className="shell-settings-detail-head">
-      <span className="shell-plugin-mark" aria-hidden="true" dangerouslySetInnerHTML={markup(SETTINGS_PLUGINS_ICON)} />
       <h3>{card.label}</h3>
     </div>
     {card.description && <p>{card.description}</p>}
@@ -618,7 +617,6 @@ function PluginCardList({ cards, view, railActions, open }: {
   return <ul className="shell-plugin-cards">
     {cards.map((card) => <li key={card.id}>
       <button type="button" className="shell-plugin-card" onClick={() => open(card)}>
-        <span className="shell-plugin-mark" aria-hidden="true" dangerouslySetInnerHTML={markup(SETTINGS_PLUGINS_ICON)} />
         <span className="shell-plugin-main">
           <strong>{card.label}</strong>
           {card.description && <span className="shell-plugin-desc">{card.description}</span>}
