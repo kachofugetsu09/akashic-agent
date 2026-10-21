@@ -223,8 +223,8 @@ class AddModelPayload(ModelInput):
 class SetDefaultPayload(_Payload):
     type: Literal["set_default"]
     expected_revision: int = Field(ge=0)
-    role: Literal["default", "fast", "agent", "vision"] | None
-    # 空串表示清除该场景的单独指定，改为跟随全局默认模型。
+    # 聊天只有全局默认一个绑定，各插件在自己的设置里指定；None 表示默认向量模型。
+    role: Literal["default"] | None
     model_id: str = Field(max_length=128)
     verify_embedding: bool = False
 
@@ -232,7 +232,7 @@ class SetDefaultPayload(_Payload):
     def check_verification_kind(self) -> SetDefaultPayload:
         if self.verify_embedding and self.role is not None:
             raise ValueError("向量重验只能用于默认向量模型。")
-        if not self.model_id and self.role in (None, "default"):
+        if not self.model_id:
             raise ValueError("全局默认模型与默认向量模型不能清空。")
         return self
 

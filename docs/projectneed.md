@@ -633,15 +633,15 @@ Linux 上无子命令执行 `python main.py` 是正式服务入口，必须先�
 
 Turn、proactive tick、schedule、plugin job、compaction 和 Markdown profile projection 等独立推理单元在真正开始执行时，由普通 `models` 插件复制一份不可变 `ModelExecution`。它冻结完整 provider artifact、model、connection ID、auth identity、窄 `CredentialHandle`、能力和角色映射，并保持到该模型执行结束；同一 auth identity 的 token payload 可以由该 handle 原位刷新。执行期间修改角色绑定、连接配置或重装插件只服务后续执行；已经开始的执行及其工具循环、重试和上下文压缩继续使用旧绑定。模型固定不扩展为整 Turn 占用：该执行的工具目录与后续调用不固定所有插件，每次实际调用按目标 owner 的当前 activation 取得保护；排队但尚未开始的执行读取开始时的当前运行实例与模型 revision。Core 不再维护模型专用 generation manager、retired generation 或第二套 lease。
 
-### RUN-010 默认模型和模型角色可在运行时修改
+### RUN-010 默认模型和插件模型选择可在运行时修改
 
-`default`、`fast`、`agent` 和 `vision` 角色引用 named model。普通 `models` 插件对候选连接和模型完成真实校验并原子持久化后，下一次 admission 读取新 revision；它不停止 admission、不排空无关 turn，也不请求 Supervisor 重启。候选校验或配置提交失败时不增加 revision，并向设置调用方返回明确失败。
+`models` 只保存一个全局 `default` 聊天绑定。其余调用模型的插件在自己的配置里声明模型选择（跟随默认、跟随当前对话或指定 named model），由 `models` 在执行内按同一冻结目录解析；指定模型不可用或不满足该用途声明的能力时回到 default（见 ADR 0129）。普通 `models` 插件对候选连接和模型完成真实校验并原子持久化后，下一次 admission 读取新 revision；它不停止 admission、不排空无关 turn，也不请求 Supervisor 重启。候选校验或配置提交失败时不增加 revision，并向设置调用方返回明确失败。
 
-角色绑定和 Provider/model 目录的权威当前值保存在 workspace 模型注册库，成功事务增加单调 revision。该状态由普通 `models` 插件唯一拥有。完整 passive ReAct、proactive ReAct、schedule SOFT、compaction、Markdown profile projection、plugin job 和其他独立推理单元在入口读取最新 revision，并冻结整组角色直到执行结束；没有外层执行单元的单次调用在调用前读取最新 revision。普通模型设置不得通过改写 `config.toml`、重启进程或 Core 私有 provider locator 传播。
+角色绑定和 Provider/model 目录的权威当前值保存在 workspace 模型注册库，成功事务增加单调 revision。该状态由普通 `models` 插件唯一拥有。完整 passive ReAct、proactive ReAct、schedule SOFT、compaction、Markdown profile projection、plugin job 和其他独立推理单元在入口读取最新 revision，并冻结目录与主模型直到执行结束，执行内按插件选择补绑的模型取自同一冻结目录；没有外层执行单元的单次调用在调用前读取最新 revision。普通模型设置不得通过改写 `config.toml`、重启进程或 Core 私有 provider locator 传播。
 
 Provider connection 的 Base URL、API Key、Codex access/refresh token 与账号路由字段由同一个 workspace 模型注册库拥有，数据库及其备份按 secret 使用 `0600`。设置状态、日志、Observe 和会话 metadata 只返回 credential 状态或引用，不得返回 secret。已迁移模型不得回退读取全局 HOME credential；旧 credential 文件只保留为迁移输入、恢复证据或非模型兼容状态。Codex token refresh 可以原位更新 credential payload，不改变当前模型 revision；来源、模型、角色和显式 key 设置变化仍按完整候选事务增加 revision。
 
-对话模型选择按“本次消息显式 model ref/effort → session selection → 当前 default”解析。Session selection 以版本化对象持久化后跨 Gateway 重启保留；清除后重新跟随动态 default。显式 effort 只属于显式选择的 default/agent 主推理，不传播给 fast、vision 等内部角色；不受支持的值明确失败。实际执行绑定写入 turn 诊断元数据，不得反向改写既有消息。旧字符串 override 只读兼容，并在下一次显式选择时升级。
+对话模型选择按“本次消息显式 model ref/effort → session selection → 当前 default”解析。Session selection 以版本化对象持久化后跨 Gateway 重启保留；清除后重新跟随动态 default。显式 effort 只属于本次对话的主推理，不传播给压缩、看图等插件用途（跟随当前对话的用途沿用同一选择）；不受支持的值明确失败。实际执行绑定写入 turn 诊断元数据，不得反向改写既有消息。旧字符串 override 只读兼容，并在下一次显式选择时升级。
 
 用户取消模型选择时物理移除该模型配置；既有消息和会话引用在后续执行时回到当前 default，清除旧型号的显式 effort。删除 default 时按 model ID 选择一个仍可用的已选聊天模型；无候选时明确报未配置。在途执行继续使用冻结绑定，历史消息、调用账和凭据不减少。向量模型删除不得替换既有向量空间。目录探测只产生候选，只有用户显式勾选才增加配置；同步只刷新已选模型的可用性与能力。
 

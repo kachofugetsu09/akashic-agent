@@ -169,7 +169,7 @@ async def scenario(workspace: Path) -> None:
                 raise AssertionError("取消图像能力留下了失效的视觉角色绑定")
             assert snapshot() == before, "拒绝修改必须保留全部配置和 revision"
             async with models.chat_models.execution() as execution:
-                response = await execution.chat("agent").complete(
+                response = await execution.chat().complete(
                     ModelRequest(messages=({"role": "user", "content": "hello"},)))
                 assert response.call_record_id is not None
                 assert models.store.read_call(response.call_record_id)["state"] == "success"
@@ -184,7 +184,7 @@ async def scenario(workspace: Path) -> None:
 
             # 2. 删除有 CAS、真实备份；在途绑定及调用账不依赖被删配置行。
             async with models.chat_models.execution(model_id="extra") as execution:
-                old = execution.chat("agent")
+                old = execution.chat()
                 old_revision = snapshot().revision
                 await remove("extra")
                 try:
@@ -221,7 +221,7 @@ async def scenario(workspace: Path) -> None:
             selected = models.state.validate_chat_selection(ChatModelSelection("extra", "high"))
             assert selected == ChatModelSelection(CHAT, None)
             async with models.chat_models.execution(model_id="extra", reasoning_effort="high") as execution:
-                assert execution.chat("agent").descriptor.model_id == CHAT
+                assert execution.chat().descriptor.model_id == CHAT
             await remove(CHAT)
             assert snapshot().role_bindings["default"] == "replacement"
             await remove("replacement")

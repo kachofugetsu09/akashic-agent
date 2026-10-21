@@ -13,7 +13,7 @@ from dataclasses import dataclass, replace
 from typing import TYPE_CHECKING, AsyncGenerator, cast
 from collections.abc import Callable, Mapping
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 from agent.plugin_composition import (
     RUNTIME_STARTED,
@@ -24,7 +24,7 @@ from agent.plugin_composition import (
     ServiceKey,
 )
 from plugins.models.contract import ModelRequest
-from plugins.models.contract import CHAT_MODELS
+from plugins.models.contract import CHAT_MODELS, MODEL_CATALOG, ModelChoice, ModelUse, model_options
 from plugins.ledger.contract import BINDINGS, Bindings
 from plugins.ledger.contract import MESSAGE_CATALOG
 from plugins.models.contract import LLMResponse
@@ -75,13 +75,17 @@ workspace_files = (
 )
 
 MaterialData = Mapping[str, object]
-inject = (PLUGIN_CONFIG, CHAT_MODELS, MATERIALS_V4, BINDINGS, MESSAGE_CATALOG, CONTENT, CONTEXT,
+inject = (PLUGIN_CONFIG, CHAT_MODELS, MODEL_CATALOG, MATERIALS_V4, BINDINGS, MESSAGE_CATALOG, CONTENT, CONTEXT,
           TURN_PROJECTION, COMPACTION_SUMMARIES, COMPACTION_READER)
 
 
 SETTINGS = ServiceKey[Configuration]("markdown_memory.settings.v1")
-SETTING_FIELDS = ("memory_budget", "surface_limit", "surface_min_score", "surface_chars",
+SETTING_FIELDS = ("model", "memory_budget", "surface_limit", "surface_min_score", "surface_chars",
                   "consolidate", "consolidate_hours", "consolidate_min_drafts")
+
+
+# 提炼、合并与精简都在对话之外的后台跑，只能跟随默认或指定模型。
+MEMORY_MODEL = ModelUse("markdown_memory", "长期记忆")
 
 
 class Config(BaseModel):
@@ -95,6 +99,12 @@ class Config(BaseModel):
     consolidate: bool = True
     consolidate_hours: int = Field(default=24, ge=1)
     consolidate_min_drafts: int = Field(default=5, ge=1)
+    model: ModelChoice = ModelChoice(follow="default")
+
+    @field_validator("model")
+    @classmethod
+    def _check_model(cls, value: ModelChoice) -> ModelChoice:
+        return MEMORY_MODEL.check(value)
 
 
 @dataclass(frozen=True, slots=True)
@@ -171,7 +181,7 @@ async def prepare_profile_draft(
     ops: list[Op] = []
     offset = 0
     async with chat_models.independent_execution() as execution:
-        provider = execution.chat("default")
+        provider = await execution.use(MEMORY_MODEL, config.model)
         initial = await _prune_workspace(current, provider, config)
         current.apply(initial, strict=True)
         ops.extend(initial)
@@ -285,7 +295,7 @@ async def consolidate(store: MarkdownProfileStore, models: ChatModels, lock_path
         return
     stamp = datetime.now(UTC).strftime("%Y%m%dT%H%M%S")
     async with models.independent_execution() as execution:
-        provider = execution.chat("default")
+        provider = await execution.use(MEMORY_MODEL, config.model)
         for scope in scopes:
             # 1. 更新锁覆盖模型等待，期间后台提炼不会改写同一批文件。
             async with profile_lock(lock_path.with_name(_UPDATE_LOCK_NAME)):
@@ -392,7 +402,7 @@ async def prune_memory(store: MarkdownProfileStore, models: ChatModels, lock_pat
         if not _over_budget(workspace, config):
             return
         async with models.independent_execution() as execution:
-            ops = await _prune_workspace(workspace, execution.chat("default"), config)
+            ops = await _prune_workspace(workspace, await execution.use(MEMORY_MODEL, config.model), config)
         reference = f"consolidation:budget:{datetime.now(UTC).isoformat()}"
         draft: dict[str, object] = {"version": 3, "scope": None, "ops": [op.to_json() for op in ops]}
         # 2. 复用写前副本和 applied receipt；并发改动使文件仍超额时由 follower 延时重试。
@@ -673,7 +683,8 @@ async def project(
 async def apply(ctx: Context) -> None:
     """启动后才创建文件与跟随日志；归档 apply 不写入正式记忆。"""
     config = Config.model_validate(ctx.config)
-    await mount_settings(ctx, SETTINGS, ModelSettings(ctx, Config, SETTING_FIELDS),
+    await mount_settings(ctx, SETTINGS, ModelSettings(ctx, Config, SETTING_FIELDS,
+                                                         status=model_options(ctx, {"model": MEMORY_MODEL})),
                          lambda: import_module(".dashboard", __package__))
     context = ctx.require(CONTEXT)
     store: MarkdownProfileStore | None = None

@@ -132,7 +132,7 @@ async def apply(ctx):
         async def execution(self, *, model_id=None, reasoning_effort=None):
             # 与正式 models 一致：执行期间调用方切换为提供者自己的 Context。
             async with ctx.runtime_scope():
-                yield SimpleNamespace(chat=lambda role: model)
+                yield SimpleNamespace(chat=lambda: model)
     class Target:
         idempotent = False
         async def prepare(self, args, source=None):

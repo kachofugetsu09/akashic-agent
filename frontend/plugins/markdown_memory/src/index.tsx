@@ -1,11 +1,12 @@
 import type { WebHostContextV1 } from "@akashic/web-ui-v1";
-import { registerForm, Field, Check } from "../../shared/src/configuration";
+import { registerForm, Field, Check, ModelField } from "../../shared/src/configuration";
 
 // MEMORY.md / SELF.md 的篇幅、按话题浮现与定期整理；留空即用默认值。
 export function activate(ctx: WebHostContextV1) {
   return registerForm(ctx, {id: "markdown_memory", title: "长期记忆文档", description: "把对话里值得长期记住的事提炼进 MEMORY.md、SELF.md 和主题文档。", family: "memory", familyLabel: "记忆",
     switchable: false,
     fields: ({values, change, status}) => <>
+      <ModelField label="整理记忆的模型" name="model" value={values.model} change={change} status={status} hint="提炼、合并与精简记忆时使用，都在对话之外的后台进行" />
       <Field label="用户记忆篇幅（字）" name="memory_budget" type="number" inputMode="numeric" min={1} step={1} value={values.memory_budget} fallback={status.defaults?.memory_budget} change={change} hint="MEMORY.md 三个用户章节合计；超出时会合并精简旧条目" />
       <Field label="每轮最多浮现的主题文档" name="surface_limit" type="number" inputMode="numeric" min={0} step={1} value={values.surface_limit} fallback={status.defaults?.surface_limit} change={change} hint="和当前话题相关的主题文档会自动带进上下文；填 0 关闭" />
       <details><summary>浮现与整理</summary>

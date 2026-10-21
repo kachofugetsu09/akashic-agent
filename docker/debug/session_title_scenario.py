@@ -47,8 +47,8 @@ class LocalModels:
     async def independent_execution(self):
         yield self
 
-    def chat(self, role):
-        assert role == "fast"
+    async def use(self, use, choice):
+        assert use.use_id == "session_title" and choice.follow == "default"
         return self
 
     async def complete(self, request):

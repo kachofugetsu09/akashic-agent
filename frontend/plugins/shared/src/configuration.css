@@ -27,10 +27,14 @@
 .config-field>small{grid-area:hint;font-size:13px;font-weight:400;line-height:1.45;color:var(--ak-ink-muted,#6b6a64)}
 .config-field>input,.config-field>select{grid-area:control;box-sizing:border-box;width:100%;min-height:36px;padding:6px 10px;font:inherit;font-size:14px;font-weight:400;border:1px solid var(--ak-rule-default,#d9d6c9);border-radius:8px;background:var(--ak-paper-editing,#faf9f5);color:inherit}
 .config-field>input::placeholder{color:var(--ak-ink-muted,#8a887f)}
+/* 模型字段：来源与思考强度上下排列，占同一控件列；警示文字替换说明。 */
+.config-model-control{grid-area:control;display:grid;gap:6px;min-width:0}
+.config-model-control>select{box-sizing:border-box;width:100%;min-height:36px;padding:6px 10px;font:inherit;font-size:14px;font-weight:400;border:1px solid var(--ak-rule-default,#d9d6c9);border-radius:8px;background:var(--ak-paper-editing,#faf9f5);color:inherit}
+.config-field>small.is-warning{color:var(--ak-color-status-warning,#8a5a12)}
 .config-fields .config-toggle{margin:0;min-height:0;padding:12px 16px;border:0;border-radius:0;background:transparent;font-size:14px}
 .config-fields .config-toggle strong{font-weight:500}
 .config-fields details>summary{display:list-item;line-height:44px;padding:0 16px;font-size:14px;color:var(--ak-ink-secondary,#55544e);cursor:pointer}
 .config-fields>details:first-child>summary{border-radius:12px 12px 0 0}
 /* 按表单自身宽度换行：嵌入引导或窄屏时，控件落到说明下方占满整行。 */
 .config-fields{container-type:inline-size}
-@container (max-width:34rem){.config-field,.config-field:has(>input:not([type=number])){grid-template-columns:minmax(0,1fr);grid-template-areas:"label" "hint" "control"}.config-field>input,.config-field>select{margin-top:6px}}
+@container (max-width:34rem){.config-field,.config-field:has(>input:not([type=number])){grid-template-columns:minmax(0,1fr);grid-template-areas:"label" "hint" "control"}.config-field>input,.config-field>select,.config-model-control{margin-top:6px}}

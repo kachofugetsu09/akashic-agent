@@ -38,6 +38,7 @@ from typing import (
     Any,
     Protocol,
 )
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 from plugins.ledger.contract import Bindings
 from agent.plugin_composition import (
     Context,
@@ -359,6 +360,65 @@ class ChatModelSelection:
     reasoning_effort: str | None = None
 
 
+ModelFollow: TypeAlias = Literal["default", "session"]
+ModelNeed: TypeAlias = Literal["image", "context_window"]
+MODEL_NEED_LABELS: Mapping[ModelNeed, str] = {"image": "接收图片", "context_window": "已确认的上下文窗口"}
+
+
+class ModelChoice(BaseModel):
+    """插件配置里的一处模型选择：跟随默认模型、跟随当前对话，或指定一个已注册模型。"""
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+    follow: ModelFollow | None = None
+    model_id: str | None = Field(default=None, min_length=1)
+    reasoning_effort: str | None = Field(default=None, min_length=1)
+
+    @model_validator(mode="after")
+    def _one_source(self) -> "ModelChoice":
+        if (self.follow is None) == (self.model_id is None):
+            raise ValueError("模型选择必须是跟随或指定模型之一")
+        if self.reasoning_effort is not None and self.model_id is None:
+            raise ValueError("推理强度只能配合指定模型")
+        return self
+
+
+@dataclass(frozen=True, slots=True)
+class ModelUse:
+    """插件声明的一个模型用途：use_id 记进调用出处，label 用于提示，follows 是允许的跟随方式，needs 是模型必须具备的能力。"""
+
+    use_id: str
+    label: str
+    follows: tuple[ModelFollow, ...] = ("default",)
+    needs: frozenset[ModelNeed] = frozenset()
+
+    # 配置校验：只允许本用途声明过的跟随方式。
+    def check(self, choice: ModelChoice) -> ModelChoice:
+        if choice.follow is not None and choice.follow not in self.follows:
+            raise ValueError(f"「{self.label}」不支持{'跟随当前对话' if choice.follow == 'session' else '跟随默认模型'}")
+        return choice
+
+    # 能力门槛：看图要求 image 输入，压缩要求已确认的上下文窗口。
+    def accepts(self, capabilities: ModelCapabilities) -> bool:
+        if "image" in self.needs and "image" not in capabilities.input_modalities:
+            return False
+        return not ("context_window" in self.needs and capabilities.context_window is None)
+
+    # 设置页的候选：允许的跟随方式、默认模型与满足能力门槛的可用聊天模型。
+    def options(self, snapshot: "ModelCatalogSnapshot") -> dict[str, object]:
+        names = {item.connection_id: item.name for item in snapshot.connections}
+        models = [
+            {"id": item.model_id, "model": item.model, "connection": names.get(item.connection_id, ""),
+             "efforts": list(item.capabilities.supported_reasoning_efforts)}
+            for item in snapshot.models
+            if item.kind == "chat" and item.availability == "available" and self.accepts(item.capabilities)
+        ]
+        default_id = snapshot.role_bindings.get("default")
+        default = next((item for item in snapshot.models if item.model_id == default_id), None)
+        return {"follows": list(self.follows), "models": models,
+                "default_model": None if default is None else default.model,
+                "default_fits": default is not None and self.accepts(default.capabilities)}
+
+
 @dataclass(frozen=True, slots=True)
 class ModelCatalogSnapshot:
     revision: int
@@ -658,7 +718,11 @@ class BoundChatModel(Protocol):
 
 
 class ModelExecution(Protocol):
-    def chat(self, role: str) -> BoundChatModel: ...
+    # 本次执行的主模型：显式会话选择，否则是默认模型。
+    def chat(self) -> BoundChatModel: ...
+
+    # 按插件配置在同一冻结目录里取模型；指定模型不可用或能力不足时回到默认模型。
+    async def use(self, use: ModelUse, choice: ModelChoice) -> BoundChatModel: ...
 
 
 class ChatModels(Protocol):
@@ -678,6 +742,12 @@ class ChatModels(Protocol):
         """Open a model execution without a parent task's model binding."""
 
         ...
+
+    # 把插件配置解析成交给另一回合的显式选择：session 是调用方从所属对话读到的选择（MODEL_SELECTION），
+    # 跟随对话时沿用它；跟随默认或回到默认时给空选择。
+    async def resolve(
+        self, use: ModelUse, choice: ModelChoice, session: ChatModelSelection = ChatModelSelection(),
+    ) -> ChatModelSelection: ...
 
 
 class ModelCatalog(Protocol):
@@ -1119,3 +1189,11 @@ def describe_transport_error(error: Exception) -> str:
             details.append(f"{type(cause).__name__}: {cause.strerror}")
         cause = cause.__cause__ or cause.__context__
     return f"{reason}（{'；'.join(dict.fromkeys(details))}）"
+
+
+# 插件设置页的状态补充：各模型字段的候选，取自 models 当前目录；字段名对应插件配置里的 ModelChoice。
+def model_options(ctx: Context, uses: Mapping[str, ModelUse]) -> Callable[[], Awaitable[Mapping[str, object]]]:
+    async def read() -> Mapping[str, object]:
+        snapshot = ctx.require(MODEL_CATALOG).snapshot()
+        return {"model_options": {name: use.options(snapshot) for name, use in uses.items()}}
+    return read

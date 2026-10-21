@@ -6,6 +6,7 @@
 
 | ID | 状态 | 主题 | 关联条款 |
 |---|---|---|---|
+| [0129](0129-plugins-choose-their-models.md) | proposed / implemented for review | 模型只留全局默认，插件在自己的设置里选模型 | RUN-010 |
 | [0128](0128-cache-usage-checkpoint.md) | accepted / implemented for review | 缓存效率用量落可重建检查点，重启后只扫新增 Turn | STA、WEBUI-008 |
 | [0127](0127-web-modules-own-their-data.md) | accepted / implemented for review | Web 模块拥有自己的数据，页面挂载只读不取 | WEBUI-008 |
 | [0121](0121-conversation-workbench-tabs.md) | proposed | 对话工具区升级为按会话组织的工作台：会话上下文、意图路由、正交标签 | WEBUI-008、PLG-014、PLG-016、SES-009 |

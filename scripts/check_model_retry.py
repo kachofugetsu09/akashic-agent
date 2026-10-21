@@ -300,7 +300,7 @@ async def run(args: argparse.Namespace) -> dict:
                 server.received = []
                 async with state.chat_models.execution() as execution:
                     try:
-                        response = await execution.chat("default").complete(ModelRequest(
+                        response = await execution.chat().complete(ModelRequest(
                             [{"role": "user", "content": "scenario"}], request_key="public",
                         ))
                     except (RuntimeError, TimeoutError) as _model_error:

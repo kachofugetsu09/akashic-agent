@@ -584,7 +584,7 @@ async def run_suite(
             model_context, chat_models = live_root._service_provider(CHAT_MODELS)
             async with model_context.runtime_scope():
                 async with chat_models.execution() as execution:
-                    selected_model = execution.chat("default")
+                    selected_model = execution.chat()
                     model_evidence = {
                         "revision": catalog_revision,
                         "model_id": selected_model.descriptor.model_id,
@@ -782,7 +782,7 @@ from tests.model_plugin_fakes import _MODEL_PROVIDERS
         @asynccontextmanager
         async def execution(self, *, model_id=None, reasoning_effort=None):
             del model_id, reasoning_effort
-            yield SimpleNamespace(chat=lambda role: model)
+            yield SimpleNamespace(chat=lambda: model)
     await ctx.provide(CHAT_MODELS, Models())
     await ctx.provide(MODEL_CALLS, store.read_call)
     await ctx.provide(MODEL_PROJECTION, ProjectionOwner())
@@ -943,7 +943,7 @@ async def _configure_selected_model(manager: PluginManager) -> None:
         },
         "capability_sources": {"context_window": "e2e-profile"},
     })
-    for role in ("default", "fast", "agent"):
+    for role in ("default",):
         receipt = await command({
             "type": "set_default",
             "expected_revision": receipt["revision"],

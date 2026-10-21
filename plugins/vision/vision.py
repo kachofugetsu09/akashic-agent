@@ -1,4 +1,4 @@
-"""让只接收文本的主模型通过已配置的 vision 角色查看图片。"""
+"""让只接收文本的主模型通过插件自己选的看图模型查看图片。"""
 from __future__ import annotations
 
 import base64
@@ -6,16 +6,30 @@ from collections.abc import AsyncIterator, Mapping
 from contextlib import asynccontextmanager
 from pathlib import Path
 
-from pydantic import BaseModel, ConfigDict, Field, ValidationError
+from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_validator
 
 from agent.plugin_composition import Context
 from plugins.host_execution.contract import FILES, FileError, FileImage
 from plugins.ledger.contract import ContentPart, json_value
-from plugins.models.contract import CHAT_MODELS, ModelError, ModelRequest
+from plugins.models.contract import CHAT_MODELS, ModelChoice, ModelError, ModelRequest, ModelUse
 
 from plugins.working_directory.contract import WORKING_DIRECTORY
 
 from ._tool_boundary import TOOLS, CallSource, ToolResultValue
+
+
+# 看图模型必须接收 image；跟随当前对话没有意义（对话模型能看图就不会调用这个工具）。
+VISION_MODEL = ModelUse("vision", "看图", needs=frozenset({"image"}))
+
+
+class Config(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    model: ModelChoice = ModelChoice(follow="default")
+
+    @field_validator("model")
+    @classmethod
+    def _check_model(cls, value: ModelChoice) -> ModelChoice:
+        return VISION_MODEL.check(value)
 
 
 class VisionInput(BaseModel):
@@ -27,8 +41,8 @@ class VisionInput(BaseModel):
 class VisionTool:
     idempotent = False
 
-    def __init__(self, ctx: Context):
-        self._ctx = ctx
+    def __init__(self, ctx: Context, config: Config):
+        self._ctx, self._config = ctx, config
 
     async def prepare(self, arguments: Mapping[str, object], source: CallSource | None = None) -> Mapping[str, object] | str:
         """在输入边界检查参数；有工作目录插件时按会话目录解析，否则交给 Files 按 workspace 解析。"""
@@ -59,10 +73,11 @@ class VisionTool:
         if not isinstance(image, FileImage):
             return ToolResultValue("error", (ContentPart("text", "该文件不是图片，请使用 read_file 查看文本。"),))
         uri = f"data:{image.mime_type};base64,{base64.b64encode(image.data).decode()}"
-        # 2. 沿用 Models 冻结的角色选择；没有可用视觉模型时明确失败。
+        # 2. 在 Models 冻结的目录里取看图模型；指定的不可用时回到默认，默认也不能看图就明确失败。
         try:
             async with self._ctx.require(CHAT_MODELS).execution() as execution:
-                response = await execution.chat("vision").complete(ModelRequest(
+                model = await execution.use(VISION_MODEL, self._config.model)
+                response = await model.complete(ModelRequest(
                     messages=({"role": "user", "content": [
                         {"type": "text", "text": values.prompt},
                         {"type": "image_url", "image_url": {"url": uri}},
@@ -83,13 +98,13 @@ class VisionTool:
         return None
 
 
-async def register_vision(ctx: Context) -> None:
+async def register_vision(ctx: Context, config: Config) -> None:
     @asynccontextmanager
     async def open_tool(_state: Mapping[str, object]) -> AsyncIterator[VisionTool]:
-        yield VisionTool(ctx)
+        yield VisionTool(ctx, config)
 
     await ctx.require(TOOLS).register(
         ctx, name="read_image_vision",
-        description="主模型无法直接看图（结果提示未提供图片内容）时，通过 vision 角色读取图片并返回文本。提供图片 path 和具体 prompt；没有可用视觉模型会明确失败。",
+        description="主模型无法直接看图（结果提示未提供图片内容）时，通过看图模型读取图片并返回文本。提供图片 path 和具体 prompt；没有可用视觉模型会明确失败。",
         parameters=VisionInput.model_json_schema(), open=open_tool,
     )

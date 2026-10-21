@@ -6,9 +6,16 @@ import "./configuration.css";
 export interface Status {
   input_ref: string; enabled: boolean | null; ready: boolean; blocked: boolean;
   can_enable?: boolean; reason: string; has_token?: boolean;
-  values: Record<string, unknown>; defaults?: Record<string, unknown>; choices?: Record<string, Choice[]>; targets?: {channel: string; recipient: string; session_id: string; label: string}[];
+  values: Record<string, unknown>; defaults?: Record<string, unknown>; choices?: Record<string, Choice[]>; model_options?: Record<string, ModelOptions>; targets?: {channel: string; recipient: string; session_id: string; label: string}[];
 }
 export interface Choice { value: string; label: string; }
+// 插件模型字段的候选由 models 目录给出：允许的跟随方式、满足能力门槛的模型与默认模型是否够用。
+export interface ModelOptions {
+  follows: ModelFollow[]; default_model: string | null; default_fits: boolean;
+  models: {id: string; model: string; connection: string; efforts: string[]}[];
+}
+type ModelFollow = "default" | "session";
+type ModelChoice = {follow?: ModelFollow | null; model_id?: string | null; reasoning_effort?: string | null};
 export interface FormProps { values: Record<string, unknown>; change: (key: string, value: unknown) => void; status: Status; }
 // switchable=false：启用由插件行决定，表单不再放第二个开关，字段始终可编辑。
 export interface FormDefinition { id: string; title: string; description: string; family?: string; familyLabel?: string; switchable?: boolean; fields?: (props: FormProps) => ReactNode; }
@@ -70,6 +77,45 @@ export function Select({label, name, value, change, options, hint, fallbackLabel
     {fallbackLabel !== undefined && <option value="">{fallbackLabel}</option>}
     {options.map(option => <option key={option.value} value={option.value}>{option.label}</option>)}
   </select>{hint && <small>{hint}</small>}</label>;
+}
+
+const FOLLOW_LABEL: Record<ModelFollow, string> = {session: "跟随当前对话的模型", default: "跟随默认模型"};
+const EFFORT_LABEL: Record<string, string> = {minimal: "最低", low: "低", medium: "中", high: "高", xhigh: "超高"};
+const choiceKey = (choice: ModelChoice) => choice.model_id ? `model:${choice.model_id}` : `follow:${choice.follow ?? "default"}`;
+
+// 插件自己的模型选择：跟随当前对话、跟随默认模型或指定模型；选回默认值即删除覆盖。
+export function ModelField({label, name, value, change, status, hint}: {
+  label: string; name: string; value: unknown; change: FormProps["change"]; status: Status; hint?: string;
+}) {
+  const fallback = (status.defaults?.[name] ?? {follow: "default"}) as ModelChoice;
+  const current = value && typeof value === "object" ? value as ModelChoice : fallback;
+  const options = status.model_options?.[name] ?? {follows: [fallback.follow ?? "default"], models: [], default_model: null, default_fits: true};
+  const picked = current.model_id ? options.models.find(model => model.id === current.model_id) : undefined;
+  const commit = (next: ModelChoice) => change(name, choiceKey(next) === choiceKey(fallback) && !next.reasoning_effort ? null : next);
+  const warning = current.model_id && !picked ? "指定的模型已不可用，运行时会改用默认模型"
+    : current.follow === "default" && !options.default_fits ? "默认模型不满足这里的要求，请指定一个模型" : "";
+  return <div className="config-field config-model">
+    <span>{label}</span>
+    {(warning || hint) && <small className={warning ? "is-warning" : undefined}>{warning || hint}</small>}
+    <div className="config-model-control">
+      <select name={name} aria-label={label} value={choiceKey(current)} onChange={event => {
+        const [kind, id] = [event.target.value.slice(0, event.target.value.indexOf(":")), event.target.value.slice(event.target.value.indexOf(":") + 1)];
+        commit(kind === "model" ? {model_id: id} : {follow: id as ModelFollow});
+      }}>
+        {options.follows.map(follow => <option key={follow} value={`follow:${follow}`}>
+          {FOLLOW_LABEL[follow]}{follow === "default" && options.default_model ? `（${options.default_model}）` : ""}</option>)}
+        {current.model_id && !picked && <option value={choiceKey(current)}>{current.model_id}（不可用）</option>}
+        {options.models.length > 0 && <optgroup label="指定模型">
+          {options.models.map(model => <option key={model.id} value={`model:${model.id}`}>{model.model} · {model.connection}</option>)}
+        </optgroup>}
+      </select>
+      {picked && picked.efforts.length > 0 && <select aria-label={`${label}的思考强度`} value={current.reasoning_effort ?? ""}
+        onChange={event => commit({model_id: picked.id, reasoning_effort: event.target.value || null})}>
+        <option value="">思考强度：模型默认</option>
+        {picked.efforts.map(effort => <option key={effort} value={effort}>思考强度：{EFFORT_LABEL[effort] ?? effort}</option>)}
+      </select>}
+    </div>
+  </div>;
 }
 
 export function registerForm(ctx: WebHostContextV1, definition: FormDefinition): WebUiDisposer {

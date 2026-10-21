@@ -2,13 +2,13 @@
 from __future__ import annotations
 
 from importlib import import_module
-from collections.abc import Callable, Mapping, Sequence
+from collections.abc import Awaitable, Callable, Mapping, Sequence
 import logging
 from uuid import uuid4
 
 from core.common.file_io import run_file_io
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 from agent.plugin_composition import (
     RUNTIME_STARTED,
@@ -16,7 +16,8 @@ from agent.plugin_composition import (
     Context,
 )
 from plugins.models.contract import (
-    CHAT_MODELS, BoundChatModel, ContextModel, ModelError, ModelRequest,
+    CHAT_MODELS, MODEL_CATALOG, BoundChatModel, ContextModel, ModelChoice, ModelError, ModelExecution,
+    ModelRequest, ModelUnavailableError, ModelUse, model_options,
     ContextLengthError,
     ModelTimeoutError,
     RateLimitError,
@@ -41,16 +42,25 @@ api_version = 3
 name = "compaction"
 version = "4.1.0"
 desc = "按不可变消息前缀发布摘要，并为已使用的摘要保留原始读取口"
-inject = (PLUGIN_CONFIG, MATERIALS_V4, CONTEXT, OWNER_STATE, BINDINGS, MESSAGE_CATALOG, CHAT_MODELS, TURN_PROJECTION)
+inject = (PLUGIN_CONFIG, MATERIALS_V4, CONTEXT, OWNER_STATE, BINDINGS, MESSAGE_CATALOG, CHAT_MODELS, MODEL_CATALOG, TURN_PROJECTION)
 
 
 SETTINGS = ServiceKey[Configuration]("compaction.settings.v1")
-SETTING_FIELDS = ("keep_recent_tokens",)
+SETTING_FIELDS = ("model", "keep_recent_tokens")
+# 摘要默认跟随本轮对话的模型（窗口与业务一致）；也可跟随默认或指定一个更便宜的模型。
+# 摘要输入按摘要模型自己的窗口裁剪，所以必须是上下文窗口已确认的模型。
+SUMMARY_MODEL = ModelUse("compaction", "上下文压缩", follows=("session", "default"), needs=frozenset({"context_window"}))
 
 
 class Config(BaseModel):
     model_config = ConfigDict(extra="forbid")
     keep_recent_tokens: int = Field(default=20_000, gt=0, strict=True)
+    model: ModelChoice = ModelChoice(follow="session")
+
+    @field_validator("model")
+    @classmethod
+    def _check_model(cls, value: ModelChoice) -> ModelChoice:
+        return SUMMARY_MODEL.check(value)
 
 
 class _CompactionReader:
@@ -73,10 +83,33 @@ class _CompactionReader:
         return summary_groups(groups, snapshot)
 
 
+# 摘要模型按插件配置取；回退目标是本轮业务模型与默认模型中与主选不同的那个。
+# 1. 配置的模型取不到（含默认模型窗口未确认）时直接用本轮业务模型，并留下提示。
+# 2. 主选是业务模型时回退默认模型，否则回退业务模型；两者相同则 summarize 不再回退。
+async def summary_models(execution: ModelExecution, business: BoundChatModel, choice: ModelChoice,
+                         report: Callable[[str], Awaitable[None]]) -> tuple[BoundChatModel, BoundChatModel]:
+    try:
+        chosen = await execution.use(SUMMARY_MODEL, choice)
+    except (RuntimeError, TimeoutError) as failure:
+        if not ModelError.matches(failure, ModelUnavailableError):
+            raise
+        await report(f"摘要模型不可用：{ModelError.read(failure)}；改用本轮模型 {business.descriptor.model_id}")
+        return business, business
+    if chosen.descriptor.model_id != business.descriptor.model_id:
+        return chosen, business
+    try:
+        return chosen, await execution.use(SUMMARY_MODEL, ModelChoice(follow="default"))
+    except (RuntimeError, TimeoutError) as failure:
+        if not ModelError.matches(failure, ModelUnavailableError):
+            raise
+        return chosen, chosen
+
+
 async def apply(ctx: Context) -> None:
     """注册只读材料和归档解析；apply 不打开 writer 或调用模型。"""
     config = Config.model_validate(ctx.config)
-    await mount_settings(ctx, SETTINGS, ModelSettings(ctx, Config, SETTING_FIELDS),
+    await mount_settings(ctx, SETTINGS, ModelSettings(ctx, Config, SETTING_FIELDS,
+                                                       status=model_options(ctx, {"model": SUMMARY_MODEL})),
                          lambda: import_module(".dashboard", __package__))
     context = ctx.require(CONTEXT)
 
@@ -287,8 +320,9 @@ async def apply(ctx: Context) -> None:
                     if on_status is not None:
                         await on_status(text, True)
 
-                return await summarize(groups, previous=previous, limit=limit, model=model,
-                                       fallback=execution.chat("default"), on_fallback=report_fallback)
+                chosen, fallback = await summary_models(execution, model, config.model, report_fallback)
+                return await summarize(groups, previous=previous, limit=limit, model=chosen,
+                                       fallback=fallback, on_fallback=report_fallback)
 
         limit = max(1, min(room, OUTPUT_RESERVE_TOKENS))
         text, calls, summarized = await generate(inputs, "" if parent is None else parent.content, limit)

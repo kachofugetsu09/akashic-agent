@@ -141,7 +141,7 @@ async def test_material_models_keep_parent_revision_and_open_own_bindings(tmp_pa
                 # Nested joined children carry data, never the parent's driver.
                 await asyncio.create_task(embed(), context=task_runtime.child_task_context())
                 async with models.chat_models.execution() as execution:
-                    model = execution.chat("agent")
+                    model = execution.chat()
                     seen.append(model.descriptor.model_revision)
                     assert model is not parent_models[0]
                 return {"reminders": ({"name": "a", "text": "A", "priority": 20},)}
@@ -159,7 +159,7 @@ async def test_material_models_keep_parent_revision_and_open_own_bindings(tmp_pa
 
         async def run():
             async with models.chat_models.execution() as execution, service.bind() as view:
-                parent_models.append(execution.chat("agent"))
+                parent_models.append(execution.chat())
                 return await view.prepare((), "conversation")
 
         job = asyncio.create_task(run())
@@ -191,7 +191,7 @@ async def test_raw_model_children_reject_borrowed_execution_and_independent_task
                 return model.descriptor.model_revision
 
         async with models.chat_models.execution() as execution:
-            parent = execution.chat("agent").descriptor
+            parent = execution.chat().descriptor
             with pytest.raises(RuntimeError, match="不能由子 task 继承"):
                 await asyncio.create_task(embed())
             changed = await models.settings.apply(UpdateConnection(
@@ -206,12 +206,12 @@ async def test_raw_model_children_reject_borrowed_execution_and_independent_task
                     task = await tasks.admit("embedding", lambda slot: slot.start(lambda _: embed()))
                     assert await task.join() == changed.revision
                     async with models.chat_models.independent_execution() as independent:
-                        assert independent.chat("agent").descriptor.model_revision == changed.revision
+                        assert independent.chat().descriptor.model_revision == changed.revision
                 finally:
                     await tasks.close()
 
             await asyncio.create_task(joined(), context=task_runtime.child_task_context())
-            assert execution.chat("agent").descriptor.model_revision == parent.model_revision
+            assert execution.chat().descriptor.model_revision == parent.model_revision
         assert models.driver.closed == len(models.driver.opened)
 
 

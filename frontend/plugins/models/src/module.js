@@ -9,11 +9,9 @@ const SERVER_ICON = `<svg xmlns="http://www.w3.org/2000/svg" width="18" height="
 const CLOSE_ICON = `<svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M18 6 6 18"></path><path d="m6 6 12 12"></path></svg>`;
 const SPINNER_ICON = `<svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="is-spinning" aria-hidden="true"><path d="M21 12a9 9 0 1 1-6.219-8.56"></path></svg>`;
 
+// 聊天只保留全局默认；压缩、看图、标题等各自在插件设置里选模型，留空跟随这里。
 const ROLE_LABELS = [
-  ["default", "全局默认模型", "用于普通对话交互与未单独指定场景"],
-  ["agent", "智能体主模型", "用于复杂工具调用、代码编写与多步规划"],
-  ["fast", "轻量快速模型", "用于总结提炼、分类打标与后台小任务"],
-  ["vision", "多模态视觉模型", "用于图像理解与带图对话"],
+  ["default", "全局默认模型", "对话默认使用它；各插件未单独指定时也跟随它"],
 ];
 
 export async function readJsonResponse(response) {
@@ -88,7 +86,7 @@ function registerModels(ctx, mount, catalogResource) {
           </section>
         </div>
         <section class="settings-section settings-roles" data-roles>
-          <div class="settings-section-bar"><h2 class="settings-section-label">各场景指定模型</h2><span class="settings-section-hint">未单独指定的场景跟随全局默认，切换立即生效</span></div>
+          <div class="settings-section-bar"><h2 class="settings-section-label">默认模型</h2><span class="settings-section-hint">压缩、看图、子任务等在各自的插件设置里可另选模型，未指定时跟随这里</span></div>
           <div class="settings-role-grid" data-bindings></div>
         </section>
       </div>
@@ -443,14 +441,13 @@ function registerModels(ctx, mount, catalogResource) {
         bindings.replaceChildren();
         for (const [role, label, detail] of ROLE_LABELS) {
           const bound = catalog.roleBindings[role] ?? "";
-          const availableModels = modelsForRole(chatModels, role)
+          const availableModels = chatModels
             .filter((model) => model.availability === "available" || model.id === bound);
           bindings.appendChild(bindingRow({
             label,
             detail,
             models: availableModels,
             value: bound,
-            follow: role === "default" ? null : followDefault(),
             change(modelId) {
               return sendCommand({type: "set_default", expected_revision: catalog.revision, role, model_id: modelId});
             },
@@ -621,14 +618,7 @@ function registerModels(ctx, mount, catalogResource) {
         disposeDialog = () => { closed = true; closeOverlays(); controller?.abort(); sequence += 1; stopGuard(); props.dirty?.(false); dialog.removeEventListener("close", close); dialog.close(); dialog.remove(); restoreFocus(trigger); disposeDialog = () => {}; };
       }
 
-      // 未单独指定的场景跟随全局默认；选择器首行与按钮文字都写明当前实际用的是哪个模型。
-      function followDefault() {
-        const model = catalog.models.find((item) => item.id === catalog.roleBindings.default);
-        const connection = model && catalog.connections.find((item) => item.id === model.connectionId);
-        return {label: "跟随全局默认模型", detail: model ? `${model.model} · ${connection?.name ?? model.connectionId}` : "全局默认尚未配置"};
-      }
-
-      function bindingRow({label, detail, models, value, follow = null, change}) {
+      function bindingRow({label, detail, models, value, change}) {
         const row = document.createElement("div");
         row.className = "settings-binding";
         const copy = document.createElement("span");
@@ -649,14 +639,13 @@ function registerModels(ctx, mount, catalogResource) {
         pickText.className = "settings-role-pick-value";
         pickText.textContent = current
           ? `${current.model} · ${currentConnection?.name ?? current.connectionId}`
-          : follow ? `跟随默认 · ${follow.detail}` : "尚未配置";
-        if (!current && follow) pick.classList.add("is-following");
+          : "尚未配置";
         pick.append(pickText);
         pick.insertAdjacentHTML("beforeend", CHEVRON_ICON);
         pick.addEventListener("click", async () => {
           if (bindingSave || closed) return;
           if (!models.length) { feedback.textContent = "没有可用模型。"; return; }
-          const picked = await modelPickSheet({title: label, models, currentId: value, follow});
+          const picked = await modelPickSheet({title: label, models, currentId: value});
           if (closed || bindingSave || picked === null || picked === value) return;
           saveBinding({label, modelId: picked, change, feedback});
         });
@@ -687,7 +676,7 @@ function registerModels(ctx, mount, catalogResource) {
       }
 
       // 场景选择与聊天胶囊共用选择器：搜索、来源栏、收藏与键盘操作一致。
-      function modelPickSheet({title, models, currentId, follow}) {
+      function modelPickSheet({title, models, currentId}) {
         const order = new Map(catalog.connections.map((connection, index) => [connection.id, index]));
         const runtimes = [...models]
           .sort((a, b) => (order.get(a.connectionId) ?? Infinity) - (order.get(b.connectionId) ?? Infinity))
@@ -705,7 +694,7 @@ function registerModels(ctx, mount, catalogResource) {
           });
         return modelSheet({
           title, groups: [],
-          mount: (host, settle) => mountModelPicker(host, {runtimes, selectedId: currentId, follow, onChoose: settle}),
+          mount: (host, settle) => mountModelPicker(host, {runtimes, selectedId: currentId, follow: null, onChoose: settle}),
         });
       }
 
@@ -1757,11 +1746,6 @@ export function capabilitySummary(models) {
     visionCount ? `${visionCount} 个可看图` : "",
     unknownCount ? `${unknownCount} 个待识别` : "",
   ].filter(Boolean).join(" · ");
-}
-
-export function modelsForRole(models, role) {
-  if (role !== "vision") return models;
-  return models.filter((model) => model.capabilities.inputModalities.includes("image"));
 }
 
 // 模型与探测候选共享同一组能力徽标：上下文、多模态、开放强度。
