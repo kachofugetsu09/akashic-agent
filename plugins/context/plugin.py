@@ -91,7 +91,7 @@ def _sources(materials: Materials, summary: tuple[Mapping[str, Any], ...],
     if summary:
         items.append(RequestSource("injected", "历史摘要", summary))
     items.extend(history)
-    items.extend(RequestSource("injected", f"{item.owner or '?'} · {item.name}", ({"role": "user", "content": item.text},))
+    items.extend(RequestSource("injected", f"{item.owner.split('@', 1)[0] or '?'} · {item.name}", ({"role": "user", "content": item.text},))
                  for item in materials.reminders if item.text.strip())
     items.extend(RequestSource("tools", str(tool.get("function", {}).get("name") or tool.get("name") or "?"), tools=(tool,))
                  for tool in tools)
