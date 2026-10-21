@@ -146,6 +146,39 @@ for (let run = 0; run < Number(values.runs); run += 1) {
       window.__probe.frames.push([now, now - last]);
       last = now;
     })();
+    // 里程碑打点用 MutationObserver 直接记 DOM 变更时刻：waitForFunction 的 raf 轮询
+    // 在 CPU 节流下会给每个里程碑加 ~200ms 检测噪声。观察全程挂着，谓词保持 O(1) 选择器。
+    window.__marks = { activity: null, draft: null, settled: null, rich: null };
+    window.__marksArmed = false;
+    const checkMarks = () => {
+      if (!window.__marksArmed) return;
+      const m = window.__marks;
+      if (m.activity === null && document.querySelector(".reply-activity")) m.activity = performance.now();
+      if (m.draft === null) {
+        const draft = document.querySelector(".reply-activity[data-preview-message-id]");
+        if (draft && (draft.textContent?.length ?? 0) > 0) m.draft = performance.now();
+      }
+      if (m.settled === null || m.rich === null) {
+        const output = [...document.querySelectorAll(".web-message-anchor.timeline-output")]
+          .find((el) => el.textContent.includes("quicksort"));
+        if (output) {
+          if (m.settled === null && !document.querySelector(".reply-activity[data-preview-message-id]")) {
+            m.settled = performance.now();
+          }
+          if (m.rich === null && output.querySelectorAll(".reading-code-scroll").length === 8) {
+            m.rich = performance.now();
+          }
+        }
+      }
+    };
+    window.__checkMarks = checkMarks;
+    const observer = new MutationObserver(checkMarks);
+    const startObserving = () => {
+      if (!document.documentElement) return requestAnimationFrame(startObserving);
+      observer.observe(document.documentElement,
+        { subtree: true, childList: true, attributes: true, characterData: true });
+    };
+    startObserving();
   });
   await page.goto(origin + "/", { waitUntil: "commit" });
   await page.getByText("流式基准", { exact: true }).click();
@@ -156,23 +189,17 @@ for (let run = 0; run < Number(values.runs); run += 1) {
   await cdp.send("Profiler.start");
   await page.locator(".composer textarea").fill("开始");
   await page.keyboard.press("Enter");
+  // 武装后立即补查一次：竞态下已落地的 DOM 变更也能盖戳。
+  await page.evaluate(() => { window.__marksArmed = true; window.__checkMarks(); });
   const epochOffset = await page.evaluate(() => Date.now() - performance.now());
+  // 等待仍用 waitForFunction（不触碰页面），时刻取 MutationObserver 的精确打点。
   // 草稿行出现（thinking 占位，还不要求出字）
-  await page.waitForFunction(() => Boolean(document.querySelector(".reply-activity")), null, { timeout: 30000 });
-  const tActivity = await page.evaluate(() => performance.now());
+  await page.waitForFunction(() => window.__marks.activity !== null, null, { timeout: 30000 });
   // 草稿开始出字
-  await page.waitForFunction(() => {
-    const draft = document.querySelector(".reply-activity[data-preview-message-id]");
-    return draft && (draft.textContent?.length ?? 0) > 0;
-  }, null, { timeout: 30000 });
-  const tDraft = await page.evaluate(() => performance.now());
+  await page.waitForFunction(() => window.__marks.draft !== null, null, { timeout: 30000 });
   // 落定：出现含完整正文的输出行，且草稿活动行已撤下
   try {
-    await page.waitForFunction(() => {
-      const output = [...document.querySelectorAll(".web-message-anchor.timeline-output")]
-        .find((el) => el.textContent.includes("quicksort"));
-      return Boolean(output) && !document.querySelector(".reply-activity[data-preview-message-id]");
-    }, null, { timeout: 60000 });
+    await page.waitForFunction(() => window.__marks.settled !== null, null, { timeout: 60000 });
   } catch (error) {
     const dump = await page.evaluate(() => ({
       anchors: [...document.querySelectorAll(".web-message-anchor")].map((el) => ({
@@ -183,14 +210,9 @@ for (let run = 0; run < Number(values.runs); run += 1) {
     console.info("DUMP", JSON.stringify(dump, null, 1));
     throw error;
   }
-  const tSettled = await page.evaluate(() => performance.now());
   // 落定消息 8 个代码块全部进入高亮路径
-  await page.waitForFunction(() => {
-    const output = [...document.querySelectorAll(".web-message-anchor.timeline-output")]
-      .find((el) => el.textContent.includes("quicksort"));
-    return output?.querySelectorAll(".reading-code-scroll").length === 8;
-  }, null, { timeout: 60000 });
-  const tRich = await page.evaluate(() => performance.now());
+  await page.waitForFunction(() => window.__marks.rich !== null, null, { timeout: 60000 });
+  const { activity: tActivity, draft: tDraft, settled: tSettled, rich: tRich } = await page.evaluate(() => window.__marks);
   if (!sendReceivedAt) throw new Error("夹具未收到 message.send");
   const tSend = sendReceivedAt - epochOffset;
   const { profile } = await cdp.send("Profiler.stop");
