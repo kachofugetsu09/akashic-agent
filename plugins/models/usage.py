@@ -13,7 +13,7 @@ from contextlib import closing
 from dataclasses import asdict, dataclass, field
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
-from typing import Any, cast
+from typing import Any, Literal, cast
 
 from agent.plugin_composition import Context
 from core.common.file_io import run_file_io
@@ -29,7 +29,11 @@ _PREVIEW_CHARS = 90
 _SCAN_SECONDS = 2.0
 _STATUS_SECONDS = 0.5
 _HOUR_DAYS = 31
-_INSIGHT_SESSIONS = 1000
+# 插件查询回包上限 192 KiB：一行会话最多约 0.8 KiB（标题已截断），31 天小时桶约 40 KiB，100 行留足余量。
+INSIGHT_SESSIONS = 100
+_TITLE_CHARS = 80
+# input 按范围内输入排行；context 按最近一轮上下文占比排行，未知窗口排最后。
+InsightOrder = Literal["input", "context"]
 # 检查点里存的是按当前计数规则算好的结果：改了计数规则（什么算计入、主动来源集合、预览、分桶）必须加一，旧结果随之丢弃重算。
 _CHECKPOINT_SCHEMA = 2
 
@@ -210,12 +214,12 @@ class CacheUsage:
                 raise RuntimeError("消息账本或 Turn 投影不可用")
             return await run_file_io(lambda: self._message_output(catalog, projection, session_id, message_id))
 
-    async def insights(self, since: str | None) -> dict[str, object]:
+    async def insights(self, since: str | None, limit: int, order: InsightOrder) -> dict[str, object]:
         """全部会话的小时桶、来源、模型与会话排行；since 之后的用量另算一列（界面传本地零点）。"""
         with self._ctx.borrow(MESSAGE_CATALOG) as catalog, self._ctx.borrow(TURN_PROJECTION) as projection:
             if catalog is None or projection is None:
                 raise RuntimeError("消息账本或 Turn 投影不可用")
-            return await run_file_io(lambda: self._insights(catalog, projection, since))
+            return await run_file_io(lambda: self._insights(catalog, projection, since, limit, order))
 
     async def status(self, session_id: str) -> dict[str, object] | None:
         """菜单短值：只在 0.5 秒预算内推进这个会话，冷的长会话先给已扫到的部分，下次接着扫。"""
@@ -241,10 +245,7 @@ class CacheUsage:
             states = tuple((source in _PROACTIVE_SOURCES, state) for (_, source), state in self._sources.items())
             passive, proactive = _Totals(), _Totals()
             for is_proactive, state in states:
-                target = proactive if is_proactive else passive
-                target.turns += state.totals.turns
-                target.prompt_tokens += state.totals.prompt_tokens
-                target.hit_tokens += state.totals.hit_tokens
+                (proactive if is_proactive else passive).merge(state.totals)
             recent = _latest((state.recent for _, state in states), _RECENT_TURNS)
             recent_passive = _Totals()
             for turn in _latest((state.recent for is_proactive, state in states if not is_proactive),
@@ -260,7 +261,8 @@ class CacheUsage:
         }
 
     # 1. 小时桶全量给出，界面按范围切；2. 来源与模型只合并 since 之后的桶；3. 会话按 since 之后的输入排行。
-    def _insights(self, catalog: MessageCatalog, projection: TurnProjection, since: str | None) -> dict[str, object]:
+    def _insights(self, catalog: MessageCatalog, projection: TurnProjection, since: str | None,
+                  limit: int, order: InsightOrder) -> dict[str, object]:
         cutoff = _ceil_hour_key(since) if since else ""
         with self._lock:
             progress = self._advance(catalog, projection)
@@ -283,12 +285,14 @@ class CacheUsage:
             rows = [_session_row(session_id, owned, cutoff) for session_id, owned in sessions.items()]
             rows = [row for row in rows if not cutoff or cast(Mapping[str, int], row["recent"])["turns"]]
             rows.sort(key=lambda row: -cast(Mapping[str, int], row["recent" if cutoff else "totals"])["prompt_tokens"])
+            if order == "context":
+                rows.sort(key=_fill, reverse=True)
         return {
             "complete": True,
             "hours": [[key, *item.row()] for key, item in sorted(hours.items())],
             "sources": [{"source": key, **item.body()} for key, item in sorted(sources.items(), key=lambda e: -e[1].prompt_tokens)],
             "models": [{"model": key, **item.body()} for key, item in sorted(models.items(), key=lambda e: -e[1].prompt_tokens)],
-            "sessions": _titled(catalog, rows[:_INSIGHT_SESSIONS]), "total_sessions": len(rows),
+            "sessions": _titled(catalog, rows[:limit]), "total_sessions": len(rows),
         }
 
     def _status(self, catalog: MessageCatalog, projection: TurnProjection, session_id: str) -> dict[str, object] | None:
@@ -299,7 +303,8 @@ class CacheUsage:
             return None
         with self._lock:
             self._restore()
-            self._refresh(catalog, projection, session_id, reader.head(), deadline=time.monotonic() + _STATUS_SECONDS)
+            complete = self._refresh(catalog, projection, session_id, reader.head(),
+                                     deadline=time.monotonic() + _STATUS_SECONDS)
             self._flush()
             latest = _latest((state.recent for (key, _), state in self._sources.items() if key == session_id), 1)
             totals = _Totals()
@@ -308,8 +313,9 @@ class CacheUsage:
                     totals.merge(state.totals)
         if not latest:
             return None
-        return {"context_tokens": latest[0].context_tokens, "context_window": latest[0].context_window,
-                "prompt_tokens": totals.prompt_tokens}
+        # 没扫到 head 时最近一轮可能是几天前的，context_tokens 不能当作当前占用。
+        return {"complete": complete, "context_tokens": latest[0].context_tokens,
+                "context_window": latest[0].context_window, "prompt_tokens": totals.prompt_tokens}
 
     # 只推进这一个会话；逐轮用量取各来源最近 50 轮按时间合并。
     def _session(self, catalog: MessageCatalog, projection: TurnProjection, session_id: str) -> dict[str, object]:
@@ -320,7 +326,7 @@ class CacheUsage:
             return {"session": None, "turns": []}
         with self._lock:
             self._restore()
-            self._refresh(catalog, projection, session_id, reader.head())
+            _ = self._refresh(catalog, projection, session_id, reader.head())
             self._flush()
             owned = [(source, state) for (key, source), state in self._sources.items() if key == session_id and state.totals.turns]
             if not owned:
@@ -342,7 +348,7 @@ class CacheUsage:
         # 冷读在闭合 Turn 边界让出请求；下一次接着已有消费位置继续。
         deadline = time.monotonic() + _SCAN_SECONDS
         for session_id, head in heads.items():
-            self._refresh(catalog, projection, session_id, head, deadline=deadline)
+            _ = self._refresh(catalog, projection, session_id, head, deadline=deadline)
             if time.monotonic() >= deadline:
                 break
         scanned = sum(self._heads.get(session_id) == head for session_id, head in heads.items())
@@ -363,7 +369,7 @@ class CacheUsage:
             return None
         with self._lock:
             self._restore()
-            self._refresh(catalog, projection, session_id, reader.head())
+            _ = self._refresh(catalog, projection, session_id, reader.head())
             self._flush()
             state = self._sources.get((session_id, message.source))
             return None if state is None else state.outputs.get(message_id)
@@ -372,11 +378,11 @@ class CacheUsage:
     def _refresh(
         self, catalog: MessageCatalog, projection: TurnProjection, session_id: str, head: int,
         *, deadline: float | None = None,
-    ) -> None:
-        """从上次闭合位置读取；时间预算只在完整 Turn 边界生效。"""
+    ) -> bool:
+        """从上次闭合位置读取；时间预算只在完整 Turn 边界生效。返回是否已读到 head。"""
         stored = self._heads.get(session_id)
         if stored == head:
-            return
+            return True
         # 账本回退到检查点之前（恢复备份或替换）：整个 Session 重算，已消失的来源一并清掉。
         if stored is not None and head < stored:
             self._drop_session(session_id)
@@ -412,9 +418,10 @@ class CacheUsage:
             if turns or state.reset:
                 self._dirty_sources.add((session_id, source))
             if stopped:
-                return
+                return False
         self._heads[session_id] = head
         self._dirty_heads.add(session_id)
+        return True
 
     # 内存与检查点里都丢掉这个 Session，之后按新账本重建。
     def _drop_session(self, session_id: str) -> None:
@@ -538,10 +545,16 @@ def _session_row(session_id: str, owned: list[tuple[str, _SourceState]], cutoff:
     }
 
 
+def _fill(row: Mapping[str, object]) -> float:
+    window = cast(int, row["context_window"])
+    return cast(int, row["context_tokens"]) / window if window else -1.0
+
+
 # 只给要返回的行读标题：每个标题是一次账本查询，不能在排序截断前对全部会话做。
 def _titled(catalog: MessageCatalog, rows: list[dict[str, object]]) -> list[dict[str, object]]:
     for row in rows:
-        row["title"] = catalog.reader(cast(str, row["session_id"])).title or row["title"]
+        title = catalog.reader(cast(str, row["session_id"])).title or cast(str, row["title"])
+        row["title"] = title if len(title) <= _TITLE_CHARS else title[:_TITLE_CHARS - 1] + "…"
     return rows
 
 
