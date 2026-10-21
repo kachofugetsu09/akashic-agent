@@ -1,8 +1,8 @@
-import { useState } from "react";
+import { useState, type ReactNode } from "react";
 
 // 上下文构成：类别 -> 来源 -> token（按 provider 实报输入换算的估算）；颜色只给色块，文字保持正文墨色。
 export type Composition = Record<string, Record<string, number>>;
-export interface ComposedTurn { recorded_at: string; context_tokens: number; context_window: number; prompt_tokens: number; hit_tokens: number; output_tokens: number; compacted: boolean; composition: Composition | null }
+export interface ComposedTurn { call_id: string; recorded_at: string; context_tokens: number; context_window: number; prompt_tokens: number; hit_tokens: number; output_tokens: number; compacted: boolean; composition: Composition | null }
 
 export const CATEGORIES = [
   ["system", "系统提示"], ["tools", "工具定义"], ["user", "用户消息"], ["injected", "注入材料"], ["assistant", "助手消息"], ["tool_results", "工具结果"],
@@ -59,8 +59,9 @@ export function Donut({ parts, center, sub }: { parts: Composition; center: stri
   </div>;
 }
 
-// 逐轮趋势：柱按构成堆叠（没有构成记录的旧轮次画成灰柱），命中率单独一排点、与柱逐轮对齐，不和 token 共用纵轴；点柱看这一轮明细。
-export function ContextTrend({ turns }: { turns: ComposedTurn[] }) {
+// 逐轮趋势：柱按六类合计堆叠（没有构成记录的旧轮次画成灰柱），命中率单独一排点、与柱逐轮对齐，不和 token 共用纵轴；
+// 点柱看这一轮明细，来源明细由调用方按需读取。
+export function ContextTrend({ turns, detail }: { turns: ComposedTurn[]; detail: (turn: ComposedTurn) => ReactNode }) {
   const [picked, setPicked] = useState(turns.length - 1);
   const max = Math.max(1, ...turns.map((turn) => turn.context_tokens));
   const turn = turns[Math.min(picked, turns.length - 1)];
@@ -86,8 +87,7 @@ export function ContextTrend({ turns }: { turns: ComposedTurn[] }) {
     {turn ? <div className="usage-step">
       <div className="usage-row"><b>{new Date(turn.recorded_at).toLocaleString("zh-CN", { month: "numeric", day: "numeric", hour: "2-digit", minute: "2-digit" })}</b>
         <span>上下文 {fmt(turn.context_tokens)} · 命中 {turn.prompt_tokens ? pct(turn.hit_tokens / turn.prompt_tokens) : "—"} · 输出 {fmt(turn.output_tokens)}{turn.compacted ? " · 压缩" : ""}</span></div>
-      {turn.composition ? <><CompositionBar parts={turn.composition} /><CompositionLegend parts={turn.composition} /></>
-        : <p className="usage-note">这一轮在开始记录构成之前，只有总量。</p>}
+      {turn.composition ? detail(turn) : <p className="usage-note">这一轮在开始记录构成之前，只有总量。</p>}
     </div> : null}
   </div>;
 }

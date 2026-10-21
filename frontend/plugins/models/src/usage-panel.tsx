@@ -1,6 +1,6 @@
 import { useEffect, useState } from "react";
 import { render, type PluginUiSidebarPanelContext, type SidebarPanelProvider } from "@akashic/chat-ui-v1";
-import { CompositionBar, CompositionLegend, ContextTrend, Donut, type Composition } from "./usage-composition";
+import { CompositionBar, CompositionLegend, ContextTrend, Donut, type ComposedTurn, type Composition } from "./usage-composition";
 import "./usage-panel.css";
 
 // 侧栏「用量」面板：小浮层是本会话摘要，展开后分概览、会话、上下文三页；数据全部来自 provider 实报。
@@ -13,10 +13,11 @@ interface SessionRow {
 }
 interface Insights { hours: [string, number, number, number, number, number][]; sources: Group[]; models: Group[]; sessions: SessionRow[]; total_sessions: number }
 interface TurnRow {
-  recorded_at: string; preview: string; prompt_tokens: number; hit_tokens: number; output_tokens: number; calls: number;
+  call_id: string; recorded_at: string; preview: string; prompt_tokens: number; hit_tokens: number; output_tokens: number; calls: number;
   context_tokens: number; context_window: number; model: string; compacted: boolean; composition: Composition | null;
 }
-interface SessionDetail { session: SessionRow | null; turns: TurnRow[] }
+interface SessionDetail { session: SessionRow | null; turns: TurnRow[]; composition_error?: boolean }
+interface TurnDetail { composition: Composition | null; composition_error: boolean }
 type Tab = "overview" | "sessions" | "context";
 type Query = PluginUiSidebarPanelContext["query"];
 
@@ -220,6 +221,14 @@ function SessionsPage({ query, days, setDays, selected, setSelected, sheet, cont
   return <div className="usage-split">{list}<div className="usage-pane">{detail}</div></div>;
 }
 
+// 一轮的来源明细按需读取；读到之前先画六类合计。
+function TurnComposition({ query, sessionId, turn }: { query: Query; sessionId: string; turn: ComposedTurn }) {
+  const { data, error } = useQuery<TurnDetail>(query, "usage.composition", { session_id: sessionId, call_id: turn.call_id }, "");
+  const parts = data?.composition ?? turn.composition!;
+  return <><CompositionBar parts={parts} /><CompositionLegend parts={parts} />
+    {error || data?.composition_error ? <p className="usage-note">来源明细暂时读不到{error ? `：${error}` : ""}。</p> : null}</>;
+}
+
 function SessionDetailView({ query, sessionId, context }: { query: Query; sessionId: string; context: boolean }) {
   const { data, error } = useQuery<SessionDetail>(query, "usage.session", { session_id: sessionId }, "");
   const row = data?.session;
@@ -233,8 +242,8 @@ function SessionDetailView({ query, sessionId, context }: { query: Query; sessio
         {turns.at(-1)?.composition ? <Donut parts={turns.at(-1)!.composition!} center={fmt(row.context_tokens)} sub="最近一轮" /> : null}
         <ContextLine row={row} parts={turns.at(-1)?.composition} />
       </div>
-      <ContextTrend turns={turns} />
-      <p className="usage-note">构成是装配请求时按来源（插件材料、提醒块、工具）的估算，按实报输入换算；最近 {turns.length} 轮。</p>
+      <ContextTrend turns={turns} detail={(turn) => <TurnComposition key={turn.call_id} query={query} sessionId={sessionId} turn={turn} />} />
+      <p className="usage-note">{data.composition_error ? "构成记录暂时读不到，只显示总量。" : `构成是装配请求时按来源（插件材料、提醒块、工具）的估算，按实报输入换算；最近 ${turns.length} 轮。`}</p>
     </> : <>
       <div className="usage-kpis">
         <Metric value={fmt(row.totals.prompt_tokens)} label={`输入 · 输出 ${fmt(row.totals.output_tokens)}`} />

@@ -16,9 +16,11 @@
    - 本轮材料按提醒块拆（`prompt · environment`、akasha 召回…），提醒带上实际 owner；
    - 历史由投影拆：用户、助手、按工具名的工具结果、回放的旧提醒；历史摘要单列；
    - 工具定义按工具。
-2. **models 统一估算并存档。** 调用成功后用该模型 driver 的估算器逐来源估算，按调用记录 ID 写入
-   `plugin-data/models-release/composition.sqlite3`，保留 31 天。界面按 provider 实报输入等比换算。
-3. 旁路调用（标题、看图、记忆整理、压缩摘要）不经装配，没有 `sources`，按消息角色粗分。
+2. **models 统一估算并存档。** 调用成功后用无状态的字符粗估逐来源估算（不借 driver 估算器，免得覆盖它为在线预算留的增量缓存），
+   按调用记录 ID 写入 `plugin-data/models-release/composition.sqlite3`，保留 31 天。界面按 provider 实报输入等比换算。
+3. **回包分两级。** `usage.session` 的逐轮只带六类合计；点开某一轮再用 `usage.composition` 读来源明细，
+   每类最多 30 个来源、其余合成一项，来源名截到 60 字。构成读不到时总量照常返回，并标出 `composition_error`。
+4. 旁路调用（标题、看图、记忆整理、压缩摘要）不经装配，没有 `sources`，按消息角色粗分。
 
 ## 取舍
 

@@ -255,7 +255,7 @@ class _BoundChat:
         if log is None or call_id is None:
             return response
         try:
-            parts = measure(request, self._driver.estimate_context_tokens)
+            parts = measure(request)
             await run_file_io(lambda: log.put(call_id, parts))
         except (sqlite3.Error, OSError, ValueError, TypeError):
             logger.warning("context composition record failed call=%s", call_id, exc_info=True)
