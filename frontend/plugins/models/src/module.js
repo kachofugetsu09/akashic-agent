@@ -69,18 +69,26 @@ function registerModels(ctx, mount, catalogResource) {
           <div><h1 data-title>模型连接</h1><p data-description>管理各模型服务商连接与密钥；未探测到的能力不会被默认开启。</p></div>
           <div class="settings-header-actions"></div>
         </header>
-        <label class="settings-search" data-search>${SEARCH_ICON}<span class="sr-only">搜索模型连接</span><input placeholder="搜索服务商连接或模型名称"></label>
         <p class="settings-inline-error" data-error role="alert" hidden></p>
+        <div class="settings-section-bar" data-list-bar>
+          <h2 class="settings-section-label">服务商连接</h2>
+          <label class="settings-find" data-search>${SEARCH_ICON}<span class="sr-only">查找连接或模型</span><input placeholder="查找连接或模型"></label>
+        </div>
         <ul class="settings-provider-list" data-connections></ul>
         <div class="settings-add-provider">
-          <button type="button" class="settings-add-button" data-add-toggle aria-expanded="false" disabled></button>
-          <div class="settings-add-panel" data-add-panel hidden>
+          <button type="button" class="settings-add-button" data-add-toggle aria-expanded="false" disabled>+ 添加服务商</button>
+          <section class="settings-add-panel" data-add-panel hidden>
+            <div class="settings-section-bar">
+              <h2 class="settings-section-label" data-add-title>添加服务商</h2>
+              <label class="settings-find">${SEARCH_ICON}<span class="sr-only">查找服务商</span><input data-template-search placeholder="查找服务商…"></label>
+              <button type="button" class="settings-text-button" data-add-close>关闭</button>
+            </div>
             <div class="settings-add-list" data-add-list></div>
             <div class="settings-provider-editor" data-add-editor hidden></div>
-          </div>
+          </section>
         </div>
         <section class="settings-section settings-roles" data-roles>
-          <header><div><h2>各场景指定模型</h2><p>切换立即生效；若某一场景未单独配置，自动使用全局默认模型。</p></div></header>
+          <div class="settings-section-bar"><h2 class="settings-section-label">各场景指定模型</h2><span class="settings-section-hint">未单独指定的场景跟随全局默认，切换立即生效</span></div>
           <div class="settings-role-grid" data-bindings></div>
         </section>
       </div>
@@ -97,6 +105,10 @@ function registerModels(ctx, mount, catalogResource) {
       const addPanel = page.querySelector("[data-add-panel]");
       const addList = page.querySelector("[data-add-list]");
       const addEditor = page.querySelector("[data-add-editor]");
+      const addTitle = page.querySelector("[data-add-title]");
+      const addClose = page.querySelector("[data-add-close]");
+      const templateSearch = page.querySelector("[data-template-search]");
+      const listBar = page.querySelector("[data-list-bar]");
       const roles = page.querySelector("[data-roles]");
       const bindings = page.querySelector("[data-bindings]");
       const toastRegion = page.querySelector("[data-toast-region]");
@@ -210,27 +222,39 @@ function registerModels(ctx, mount, catalogResource) {
         description.textContent = hasConnections
           ? "已配置的服务商连接如下；点击展开卡片可管理可用模型。"
           : "请先添加模型连接，支持 ChatGPT 订阅、DeepSeek、Gemini 及兼容 API。";
-        search.hidden = !hasConnections;
         roles.hidden = false;
         addToggle.disabled = false;
-        addToggle.textContent = hasConnections ? "+ 添加新服务商连接" : "选择服务商开始连接";
-        // 首次配置没有连接时直接展开连接方式列表；编辑器打开期间不抢面板状态。
+        // 首次配置没有连接时直接进入添加目录且不能关闭；编辑器打开期间不抢面板状态。
+        addTitle.textContent = hasConnections ? "添加服务商" : "添加第一个服务商";
+        addClose.hidden = !hasConnections;
         if (!hasConnections && !activeEditor) setAddPanel(true);
+        else if (!addPanel.hidden) listBar.hidden = connections.hidden = true;
         renderConnections(chatConnections);
         renderBindings(chatModels);
       }
 
+      // 添加是页面的另一种状态：打开时连接列表让位给服务商目录，关闭后回到列表。
       function setAddPanel(open) {
         addPanel.hidden = !open;
+        listBar.hidden = open;
+        connections.hidden = open;
+        addToggle.hidden = open;
         addToggle.setAttribute("aria-expanded", String(open));
-        if (open) renderTemplates();
+        if (!open) return;
+        templateSearch.value = "";
+        renderTemplates();
+        queueMicrotask(() => templateSearch.focus());
       }
 
       // 添加面板按接入方式分组：订阅登录、厂商 API、自定义；每组一格一种方式，已添加的单实例方式标出并直接打开它。
       function renderTemplates() {
+        // 正在新建的编辑器挂在某一组下面，重绘目录前先收回来，避免随旧节点一起丢掉。
+        addPanel.appendChild(addEditor);
         addList.replaceChildren();
+        const needle = templateSearch.value.trim().toLocaleLowerCase();
+        const matches = (template) => !needle || `${template.label} ${template.detail ?? ""}`.toLocaleLowerCase().includes(needle);
         for (const [group, label, hint] of TEMPLATE_GROUPS) {
-          const items = providerTemplates.filter((template) => templateGroup(template) === group);
+          const items = providerTemplates.filter((template) => templateGroup(template) === group && matches(template));
           if (!items.length) continue;
           const section = document.createElement("section");
           section.className = "settings-template-group";
@@ -242,12 +266,35 @@ function registerModels(ctx, mount, catalogResource) {
           addList.appendChild(section);
         }
         if (!providerTemplates.length) addList.textContent = "没有 Provider 插件提供连接方式。";
+        else if (!addList.childElementCount) addList.appendChild(noTemplateMatch(templateSearch.value.trim()));
+      }
+
+      // 查找无结果时给出去路：按自定义兼容地址添加。
+      function noTemplateMatch(name) {
+        const empty = document.createElement("p");
+        empty.className = "settings-template-empty";
+        empty.append(`没有叫“${name}”的服务商。`);
+        const custom = providerTemplates.find((template) => templateGroup(template) === "custom");
+        if (custom) {
+          const link = document.createElement("button");
+          link.type = "button";
+          link.className = "settings-text-button";
+          link.textContent = "用自定义 API 添加";
+          link.addEventListener("click", () => {
+            templateSearch.value = "";
+            renderTemplates();
+            addList.querySelector(`[data-template-id="${CSS.escape(custom.id)}"]`)?.click();
+          });
+          empty.append(link);
+        }
+        return empty;
       }
 
       function templateTile(template) {
         const button = document.createElement("button");
         button.type = "button";
         button.className = "settings-template-tile";
+        button.dataset.templateId = template.id;
         button.appendChild(providerMark(template));
         // 格子只写名称；一句说明放进提示，组标题已经说明了接入方式。
         const title = document.createElement("span");
@@ -383,10 +430,10 @@ function registerModels(ctx, mount, catalogResource) {
       function startCreate(template, trigger) {
         if (bindingSave) { showNotice("请先等待模型选择保存或核对完成，再添加连接。"); return; }
         if (!closeActiveEditor()) return;
-        addList.hidden = true;
-        addEditor.hidden = false;
+        // 新建表单展开在所选格子那一组的下方，目录其余部分保持原位。
+        trigger.closest(".settings-template-group")?.appendChild(addEditor);
         openProvider(template.owner, trigger, null, template, {
-          kind: "create", card: addPanel, head: addToggle, host: addEditor,
+          kind: "create", card: addPanel, head: trigger, host: addEditor,
         });
       }
 
@@ -850,13 +897,14 @@ function registerModels(ctx, mount, catalogResource) {
         section.className = "settings-model-manage";
         section.innerHTML = `<header class="settings-model-manage-head"><div><h3>模型 <span data-manage-count></span></h3><p data-manage-status role="status"></p></div>
           <div class="settings-model-manage-actions">
-            <button type="button" class="settings-secondary-button" data-probe>从服务目录选择</button>
+            <button type="button" class="settings-text-button" data-probe>从服务目录选择</button>
             <button type="button" class="settings-text-button" data-manual-toggle>手动添加</button>
             ${entry.catalogSync ? `<button type="button" class="settings-icon-button" data-sync aria-label="重新读取已添加模型的能力" title="重新读取已添加模型的能力">${REFRESH_ICON}</button>` : ""}
           </div></header>
           <div class="settings-model-manual" data-manual hidden><input aria-label="模型型号" maxlength="256" placeholder="型号，例如 gpt-5"><button type="button" class="settings-primary-button" data-manual-add>验证并添加</button></div>
           <label class="settings-model-filter" data-filter hidden>${SEARCH_ICON}<input aria-label="筛选已添加的模型" placeholder="筛选已添加的模型"></label>
           <div class="settings-model-rows" data-rows></div>
+          <button type="button" class="settings-disclosure" data-more aria-expanded="false" hidden></button>
           <p class="settings-inline-error" data-manage-error role="alert" hidden></p>
           <button type="button" class="settings-text-button" data-disable-conn>停用此连接</button>
           <p class="settings-inline-error" data-disable-error role="alert" hidden></p>`;
@@ -864,6 +912,10 @@ function registerModels(ctx, mount, catalogResource) {
         const count = section.querySelector("[data-manage-count]");
         const filter = section.querySelector("[data-filter]");
         const filterInput = filter.querySelector("input");
+        const more = section.querySelector("[data-more]");
+        // 模型多时默认只露出前几个，其余折叠在「显示其余 N 个」后面；筛选时显示全部命中。
+        const FOLDED_ROWS = 5;
+        let showAll = false;
         const error = section.querySelector("[data-manage-error]");
         const rowsElement = section.querySelector("[data-rows]");
         const manual = section.querySelector("[data-manual]");
@@ -917,14 +969,20 @@ function registerModels(ctx, mount, catalogResource) {
             rows.delete(id);
           }
           let next = rowsElement.firstChild;
+          let index = 0;
           for (const model of models) {
             if (!rows.has(model.id)) rows.set(model.id, modelRow(model));
             const row = rows.get(model.id);
             row.update(model, used.get(model.id) ?? "");
-            row.element.hidden = Boolean(needle) && !model.model.toLowerCase().includes(needle);
+            row.element.hidden = needle ? !model.model.toLowerCase().includes(needle) : !showAll && index >= FOLDED_ROWS;
+            index += 1;
             if (row.element !== next) rowsElement.insertBefore(row.element, next);
             next = row.element.nextSibling;
           }
+          const folded = models.length - FOLDED_ROWS;
+          more.hidden = Boolean(needle) || folded <= 0;
+          more.textContent = showAll ? "收起" : `显示其余 ${folded} 个`;
+          more.setAttribute("aria-expanded", String(showAll));
           reportDirty();
         };
 
@@ -1143,6 +1201,7 @@ function registerModels(ctx, mount, catalogResource) {
         });
 
         filterInput.addEventListener("input", refreshRows);
+        more.addEventListener("click", () => { showAll = !showAll; refreshRows(); });
         manualToggle.addEventListener("click", () => {
           manual.hidden = !manual.hidden;
           if (!manual.hidden) manualInput.focus();
@@ -1463,11 +1522,7 @@ function registerModels(ctx, mount, catalogResource) {
             session.head.setAttribute("aria-expanded", "false");
             session.host.hidden = true;
             session.host.replaceChildren();
-            if (session.kind === "create") {
-              addList.hidden = false;
-              // 新建成功后已有连接，添加面板收回虚线入口；取消则保留方式列表。
-              if (catalog?.connections.length) setAddPanel(false);
-            } else if (catalog) {
+            if (session.kind !== "create" && catalog) {
               renderConnections(catalog.connections);
             }
             // 与旧弹窗 close 触发回读一致：关闭编辑器即核对权威目录，
@@ -1496,6 +1551,8 @@ function registerModels(ctx, mount, catalogResource) {
               reportDirty();
               showNotice(message);
               closeActiveEditor(true);
+              // 新建成功回到连接列表；取消新建则留在目录里继续挑。
+              if (session.kind === "create") setAddPanel(false);
             },
           });
         } catch (error) {
@@ -1504,7 +1561,6 @@ function registerModels(ctx, mount, catalogResource) {
           session.head.setAttribute("aria-expanded", "false");
           session.host.hidden = true;
           session.host.replaceChildren();
-          if (session.kind === "create") addList.hidden = false;
           showError(error);
           return;
         }
@@ -1536,9 +1592,16 @@ function registerModels(ctx, mount, catalogResource) {
       renderTemplates();
       if (!providerTemplates.length) addList.textContent = "没有 Provider 插件提供连接方式。";
       addToggle.addEventListener("click", () => {
-        if (addPanel.hidden) { setAddPanel(true); return; }
+        if (activeEditor && !closeActiveEditor()) return;
+        setAddPanel(true);
+      });
+      addClose.addEventListener("click", () => {
         if (activeEditor?.kind === "create" && !closeActiveEditor()) return;
         setAddPanel(false);
+      });
+      templateSearch.addEventListener("input", () => {
+        if (activeEditor?.kind === "create" && !closeActiveEditor()) return;
+        renderTemplates();
       });
       searchInput.addEventListener("input", () => {
         query = searchInput.value;

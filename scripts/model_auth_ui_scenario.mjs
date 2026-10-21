@@ -105,7 +105,7 @@ try {
     checks.push("取消登录不改变已有连接");
 
     // 5. OpenCode 使用驱动自身默认身份，API Key 路径不依赖表单注入。
-    await page.getByRole("button", {name: "+ 添加新服务商连接", exact: true}).click();
+    await page.getByRole("button", {name: "+ 添加服务商", exact: true}).click();
     await page.getByRole("button", {name: /^OpenCode Go/}).click();
     await page.locator('input[name="endpoint"]').fill(base + "/upstream/opencode/v1");
     await page.getByLabel("API Key", {exact: true}).fill("local-fixture-key");
