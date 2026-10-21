@@ -338,13 +338,25 @@ async def read_message_rows(
     return await reader(page, display_only=display_only)
 
 
-def session_row(entry: SessionEntry) -> dict[str, object]:
-    """列表只读首条消息；无文字的会话也保留入口。"""
-    first = entry.first_message
-    text = "" if first is None or isinstance(first.body, Control) else "\n".join(
+# 列表行只用首条消息做标题兜底，前端按单行截到 200 字；整段粘贴的首条消息不该随每次侧栏刷新整体下发。
+SESSION_PREVIEW_CHARS = 400
+
+
+# 首条消息的文字部分按列表标题的规则压成一行再限长；无文字（控制消息、纯附件）时为空串。
+def session_preview(first: Message | None) -> str:
+    if first is None or isinstance(first.body, Control):
+        return ""
+    text = "\n".join(
         cast(str, part.value) for part in first.body.parts
         if isinstance(part, ContentPart) and part.kind == "text"
     )
+    # 先合并空白再截：长段缩进或空行不能吃掉预算，让后面的标题文字消失。
+    return " ".join(text.split())[:SESSION_PREVIEW_CHARS]
+
+
+def session_row(entry: SessionEntry) -> dict[str, object]:
+    """列表只读首条消息；无文字的会话也保留入口。"""
+    text = session_preview(entry.first_message)
     return {
         "key": entry.session_id,
         "created_at": entry.created_at.isoformat(),
