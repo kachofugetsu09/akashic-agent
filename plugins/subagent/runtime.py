@@ -26,6 +26,7 @@ from plugins.sources.contract import (
 )
 
 from .request import Request, check_request
+from plugins.models.contract import MODEL_SELECTION
 
 logger = logging.getLogger(__name__)
 # 私有程序 binding：tools.py 固定身份，恢复路径经 Bindings.open 读取，不提供外部 SDK。
@@ -81,8 +82,12 @@ class Subagents:
                 SessionAttributes(visibility="internal", learning="excluded"))
             writer = ctx.require(MESSAGE_WRITERS).bind(ctx, author="subagent", source="subagent",
                 body_types=(Input,), content={"text": ctx.require(CONTENT).check_text,
+                    "model.selection": ctx.require(MODEL_SELECTION).check,
                     "subagent.request": partial(check_request, check_origin=ctx.require(CHECK_ORIGIN))})(request.session_id)
-            body = Input((ContentPart("text", text), ContentPart("subagent.request", request.model_dump())))
+            # 子回合按原输入里的 model.selection 冻结模型，与会话里手选模型走同一条路径。
+            selection = () if request.model_id is None else (ContentPart("model.selection", {
+                "model_id": request.model_id, "reasoning_effort": request.reasoning_effort}),)
+            body = Input((ContentPart("text", text), *selection, ContentPart("subagent.request", request.model_dump())))
             created = False
 
             def committed(value: bool) -> None:

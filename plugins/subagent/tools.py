@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import json
-from collections.abc import Mapping
+from collections.abc import Awaitable, Callable, Mapping
 from typing import Literal, cast
 from uuid import uuid4
 
@@ -11,8 +11,9 @@ from pydantic import BaseModel, ConfigDict, Field, ValidationError
 from agent.plugin_composition import Context
 from plugins.ledger.contract import BINDINGS
 from .inputs import CallSource, Result, TOOL_BIND_SAVED
-from plugins.ledger.contract import ContentPart, Input
+from plugins.ledger.contract import ContentPart, Input, Message
 from plugins.ledger.contract import json_value
+from plugins.models.contract import ChatModelSelection
 
 from .request import PROFILE_TOOLS, Request, SpawnInput, SinkInput
 from .runtime import SUBAGENT_PROGRAM, SubagentBusy, Subagents, completion
@@ -35,11 +36,13 @@ class Spawn:
 
     idempotent = True
 
-    def __init__(self, ctx: Context, targets: Mapping[str, str], senders: Mapping[str, str], jobs: Subagents):
+    def __init__(self, ctx: Context, targets: Mapping[str, str], senders: Mapping[str, str], jobs: Subagents,
+                 *, model: Callable[[tuple[Message, ...]], Awaitable[ChatModelSelection]]):
         self.ctx = ctx
         self.targets = targets
         self.senders = senders
         self.jobs = jobs
+        self.model = model
 
     async def prepare(self, arguments: Mapping[str, object], source: CallSource | None = None) -> Mapping[str, object] | str:
         # 1. 只有实际父调用能建立回传关系，模型参数不能伪造父 Session。
@@ -89,11 +92,14 @@ class Spawn:
                     self.targets[name],
                     configuration=configuration,
                 )
+        # 3. 模型在父调用里解析并随请求固定：跟随对话取父回合冻结的选择，恢复时不重选。
+        model = await self.model(source.messages)
         request = Request(job_id=job_id, label=(args.label or args.task[:30]).strip(), profile=args.profile,
             background=args.run_in_background, retry_count=args.retry_count,
             parent_session_id=source.messages[-1].session_id, parent_message_id=source.call_ref.message_id,
             parent_part_index=source.call_ref.part_index,
-            origin=origin, sink=sink, program_binding=bindings.bind(SUBAGENT_PROGRAM, {}), tools=fixed)
+            origin=origin, sink=sink, program_binding=bindings.bind(SUBAGENT_PROGRAM, {}), tools=fixed,
+            model_id=model.model_id, reasoning_effort=model.reasoning_effort)
         return Prepared(task=args.task, request=request).model_dump()
 
     async def invoke(self, key: str, arguments: Mapping[str, object]) -> Result:

@@ -49,6 +49,9 @@ class Request(BaseModel):
     sink: SinkInput | None
     program_binding: str = Field(min_length=1)
     tools: dict[str, str]
+    # 为空时子任务用默认模型；旧请求没有这两个字段，恢复时同样回到默认。
+    model_id: str | None = Field(default=None, min_length=1)
+    reasoning_effort: str | None = Field(default=None, min_length=1)
 
     @property
     def session_id(self) -> str:
