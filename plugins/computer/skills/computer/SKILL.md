@@ -148,15 +148,13 @@ await testTab.ax.write();
 await testBrowser.close();
 ```
 
-## Local pages
+## Local pages and host servers
 
 The browser runs in its own container. `localhost` there is that container, not the machine where
-your shell commands run, and the host firewall usually drops connections from the container to host
-ports. A server you start on the host is therefore normally not reachable, even through
-`host.docker.internal`; `goto` fails within a few seconds and says so.
+your shell commands run.
 
-To show or check a page you generated, write it (with its relative assets) into the shared pages
-directory named in the `computer` tool description, then open it with a `file://` URL:
+**Static pages.** Write the page (with its relative assets) into the shared pages directory named in
+the `computer` tool description, then open it with a `file://` URL:
 
 ```js
 var tab = await browser.tabs.new();
@@ -165,5 +163,26 @@ await tab.ax.write();
 ```
 
 Create the directory first if it does not exist. Use a subdirectory per page and remove it when it is
-no longer needed. A dev server that needs a live port works only if the user allows that port; ask
-instead of retrying.
+no longer needed.
+
+**A server on the host** (a dev instance of Akashic, a dev server) is reachable at the gateway of the
+container network, normally `http://172.26.0.1:<port>`, when all of these hold:
+
+- it listens on that gateway address (`docker network inspect akashic-workloads` shows it), not only on
+  `127.0.0.1`; for Akashic: `scripts/start.py --host <gateway> --port <port> --state <own dir>`;
+- the port is one the host firewall admits for containers; on the reference deployment that is
+  44100-44199;
+- it stays running: start it as a managed process, not a shell background job that ends with the command.
+
+```js
+var tab = await browser.tabs.new();
+await tab.goto("http://172.26.0.1:44101/");
+await tab.ax.write();
+```
+
+If `goto` times out, the port is not admitted: ask the user to allow it instead of retrying. If it
+reports `ERR_BLOCKED_BY_CLIENT`, the connection worked but the response is not a page: top-level
+navigation renders only HTML, PDF, images and video and treats anything else as a blocked download.
+Read JSON or text endpoints with `fetch()` from a page of the same origin, or with `curl` in the shell.
+
+For the whole develop-run-verify loop (isolated worktree, fake upstreams, before/after screenshots), load the `develop-and-verify` skill.

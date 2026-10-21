@@ -48,7 +48,7 @@ from plugins.models.contract import (
 )
 from plugins.models.contract import BoundModelDescriptor
 from plugins.models.contract import ModelCallStats
-from plugins.models.composition import CompositionLog
+from .composition import CompositionLog
 
 # 只剩全局默认；旧库里的 fast/agent/vision 行不再读取，保留原样便于回滚。
 MODEL_ROLES = ("default",)
