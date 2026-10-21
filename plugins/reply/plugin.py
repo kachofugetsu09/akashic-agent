@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from importlib import import_module
 import asyncio
 import logging
 from time import monotonic
@@ -54,13 +55,16 @@ Preview = Callable[[str], AbstractContextManager[StreamCallback]]
 from plugins.sources.contract import (
     SOURCE_CHANGED_V3 as SOURCE_CHANGED,
 )
+from agent.plugin_composition.plugin_config import PLUGIN_CONFIG
+from agent.plugin_composition.model import ServiceKey
+from plugins.ui.contract import Configuration, ModelSettings, mount_settings
 
 api_version = 3
 name = "reply"
 version = "1.0.0"
 desc = "跟随日志并组合默认回复；接纳、材料、模型与工具各有独立 owner"
 inject = (
-    MESSAGE_CATALOG, MESSAGE_WRITERS, OWNER_STATE,
+    PLUGIN_CONFIG, MESSAGE_CATALOG, MESSAGE_WRITERS, OWNER_STATE,
     SOURCES,
     SOURCE_CHECK,
     CONVERSATION_COMMANDS,
@@ -68,6 +72,10 @@ inject = (
     RESTART_GATE,
     REPLY_EXECUTE,
 )
+
+
+SETTINGS = ServiceKey[Configuration]("reply.settings.v1")
+SETTING_FIELDS = ("max_steps", "max_output_tokens")
 
 
 class Config(BaseModel):
@@ -130,6 +138,8 @@ async def _prepare_pending(
 async def apply(ctx: Context) -> None:
     """自动回复是普通可移除插件；正式启动后才读日志和接纳任务。"""
     config = Config.model_validate(ctx.config)
+    await mount_settings(ctx, SETTINGS, ModelSettings(ctx, Config, SETTING_FIELDS),
+                         lambda: import_module(".dashboard", __package__))
     watcher: asyncio.Task[None] | None = None
     pending: dict[tuple[str, str], AbstractContextManager[None]] = {}
     running = False

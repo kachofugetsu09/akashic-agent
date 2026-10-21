@@ -1,6 +1,7 @@
 """首条用户输入生成短标题；后台生成，空标题条件写入。"""
 from __future__ import annotations
 
+from importlib import import_module
 import asyncio
 import logging
 
@@ -16,13 +17,20 @@ from plugins.sources.contract import (
     SOURCE_CHANGED_V3,
     SourceChangedV3,
 )
+from agent.plugin_composition.plugin_config import PLUGIN_CONFIG
+from agent.plugin_composition.model import ServiceKey
+from plugins.ui.contract import Configuration, ModelSettings, mount_settings
 
 logger = logging.getLogger(__name__)
 api_version = 3
 name = "session_title"
 version = "1.0.0"
 desc = "首条用户消息自动生成短标题，保留用户改名"
-inject = (SESSION_ADMIN, CHAT_MODELS)
+inject = (PLUGIN_CONFIG, SESSION_ADMIN, CHAT_MODELS)
+
+
+SETTINGS = ServiceKey[Configuration]("session_title.settings.v1")
+SETTING_FIELDS = ("max_title_chars",)
 
 
 class Config(BaseModel):
@@ -53,6 +61,8 @@ def _first_text(reader: MessageReader, source: str) -> str:
 async def apply(ctx: Context) -> None:
     """同步通知只筛选首条输入，Fiber 拥有并排空全部后台生成。"""
     config = Config.model_validate(ctx.config)
+    await mount_settings(ctx, SETTINGS, ModelSettings(ctx, Config, SETTING_FIELDS),
+                         lambda: import_module(".dashboard", __package__))
     admin = ctx.require(SESSION_ADMIN)
     models = ctx.require(CHAT_MODELS)
     queue: asyncio.Queue[tuple[MessageReader, str]] = asyncio.Queue()

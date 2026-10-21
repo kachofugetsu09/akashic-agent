@@ -97,8 +97,9 @@ def advance(job: ScheduledJob, after: datetime) -> datetime:
 class JobStore:
     """Scheduler 独占任务、操作和触发事实；查询不迁移或修改文件。"""
 
-    def __init__(self, path: Path) -> None:
+    def __init__(self, path: Path, max_active: int = SCHEDULE_MAX_ACTIVE_JOBS) -> None:
         self.path = path
+        self.max_active = max_active
 
     def load(self) -> list[ScheduledJob]:
         return list(self.read().jobs.values())
@@ -242,10 +243,10 @@ class JobStore:
             if job.id in state.jobs:
                 raise ValueError("新增调度任务 ID 已存在")
             active = sum(job.enabled for job in state.jobs.values())
-            if active >= SCHEDULE_MAX_ACTIVE_JOBS:
+            if active >= self.max_active:
                 operation = Operation(kind="schedule", digest=digest, job_ids=(), outcome="error", response=(
                     f"schedule_capacity_reached：当前已有 {active} 个活动定时任务，"
-                    f"默认上限为 {SCHEDULE_MAX_ACTIVE_JOBS} 个。请先确认要移除的任务。"))
+                    f"上限为 {self.max_active} 个（可在设置里调整）。请先确认要移除的任务。"))
             else:
                 state.jobs[job.id] = job
                 operation = Operation(kind="schedule", digest=digest, job_ids=(job.id,),
