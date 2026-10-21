@@ -446,6 +446,16 @@ export function resetPluginUiEvents() {
   keys.forEach((key) => deliverPush(key, null));
 }
 
+/** 连接保留、只换跟随的会话切换：旧会话的推送状态即刻失效，回到它时由新跟随的基线帧重建。 */
+export function invalidatePluginUiSession(sessionId: string) {
+  const keys = [...pushed.keys()]
+    .filter((key) => (JSON.parse(key) as [string, string, string])[2] === sessionId);
+  for (const key of keys) {
+    pushed.delete(key);
+    deliverPush(key, null);
+  }
+}
+
 function subscribePush(pluginId: string, revision: string, sessionId: string | undefined, callback: (value: Record<string, unknown> | null) => void): () => void {
   if (!sessionId) return () => undefined;
   const key = pushKey(pluginId, revision, sessionId);

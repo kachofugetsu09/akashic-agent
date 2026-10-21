@@ -3,7 +3,7 @@ import { useCallback, useEffect, useMemo, useRef, useState, type SetStateAction 
 import { createUuid, createUuidV7 } from "./browser-uuid.ts";
 import type { ChatMessage } from "./chat-message";
 import type { ComposerFile } from "./desktop-composer";
-import { loadWebPluginCatalog, receivePluginUiEvent, resetPluginUiEvents, usePluginUiCatalogVersion } from "./plugin-ui-runtime";
+import { invalidatePluginUiSession, loadWebPluginCatalog, receivePluginUiEvent, resetPluginUiEvents, usePluginUiCatalogVersion } from "./plugin-ui-runtime";
 import { groupKey, useNavigationGroupSections, type GroupRef, type NavigationGroupsState } from "./navigation-groups";
 import { useNavigationPins } from "./use-navigation-pins";
 import { readSessionActivityFrame, useSessionActivity, type SessionHead } from "./use-session-activity";
@@ -1035,7 +1035,12 @@ export function useDesktopChatController() {
     setSurface("chat");
     clearChatRoute();
     // 空白页只订阅目录，没有旧正文跟随；首次进入会话可以复用已有连接。
-    if (activeSessionRef.current) closeConnection();
+    // 连接健康时会话间切换也只换跟随：服务端收到新 session.follow 会先排空上一会话的订阅
+    // （web_chat._follow_session），整链重连会把目录刷新、插件基线与活动订阅全部重取一遍。
+    if (activeSessionRef.current) {
+      if (socketRef.current?.readyState === WebSocket.OPEN) invalidatePluginUiSession(activeSessionRef.current);
+      else closeConnection();
+    }
     activeSessionRef.current = sessionId;
     sendRequestRef.current?.abort();
     stopRequestRef.current?.abort();
