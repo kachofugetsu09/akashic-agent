@@ -891,6 +891,11 @@ class WebChatChannel:
             if tasks is None:
                 raise RuntimeError("消息订阅需要 WebSocket 任务 scope")
             return await self._follow_session(websocket, request_id, payload, tasks)
+        if frame_type == "session.unfollow":
+            # 回到空白页时只放下正文跟随，连接与侧栏订阅照旧；之后的 session.follow 会重新绑定。
+            await self._cancel_follow(websocket)
+            await self._remove_connection(websocket)
+            return ""
         if frame_type == "message.send":
             return await self._send_user_message(websocket, request_id, payload)
         if frame_type == "message.steer":

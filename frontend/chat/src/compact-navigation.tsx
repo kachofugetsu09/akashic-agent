@@ -6,6 +6,7 @@ import { GroupFormDialog, type GroupFormRequest } from "./navigation-groups";
 import { reportShellOverlay } from "./shell-rail-actions";
 import { chatLayerOpen, keyForChat } from "./chat-host";
 import { chatLayout, subscribeChatLayout } from "./chat-layout";
+import { useSidebarPanelAlert } from "./sidebar-panels";
 
 // 与 styles.css 紧凑外壳媒体块同一条件：不再满足时常驻侧栏回来，抽屉没有存在的理由。
 
@@ -18,6 +19,9 @@ export function CompactNavigation(props: DesktopSidebarProps) {
   const triggerRef = useRef<HTMLButtonElement>(null);
   // 分组对话框不叠在抽屉上：先关抽屉，关完再打开。
   const formAfterClose = useRef<GroupFormRequest | null>(null);
+  // 插件面板同理：底部抽屉等导航抽屉关完、焦点处理完再弹出。
+  const panelsAfterClose = useRef<(() => void) | null>(null);
+  const panelAlert = useSidebarPanelAlert();
   const navigationGroups = props.groups;
   const closeThen = useCallback((action: () => void) => {
     setOpen(false);
@@ -53,7 +57,8 @@ export function CompactNavigation(props: DesktopSidebarProps) {
   }, [overlayOpen]);
 
   return <>
-    <button ref={triggerRef} className="compact-navigation-trigger" type="button" aria-label="打开导航" onClick={() => {
+    <button ref={triggerRef} className="compact-navigation-trigger" type="button" data-alert={panelAlert || undefined}
+      aria-label={panelAlert ? "打开导航，插件面板有提醒" : "打开导航"} onClick={() => {
       returnFocus.current = triggerRef.current;
       setOpen(true);
     }}>
@@ -77,6 +82,10 @@ export function CompactNavigation(props: DesktopSidebarProps) {
           if (formAfterClose.current) {
             setFormRequest(formAfterClose.current);
             formAfterClose.current = null;
+          } else if (panelsAfterClose.current) {
+            triggerRef.current?.focus({ preventScroll: true });
+            panelsAfterClose.current();
+            panelsAfterClose.current = null;
           } else {
             // 打开期间拉宽离开紧凑断点时原目标可能已隐藏：依次退到打开按钮、输入框。
             const composer = document.querySelector<HTMLElement>(".chat-main .composer textarea");
@@ -99,6 +108,10 @@ export function CompactNavigation(props: DesktopSidebarProps) {
           onSelectSession={(sessionId) => closeThen(() => props.onSelectSession(sessionId))}
           onCycleTheme={() => closeThen(props.onCycleTheme)}
           onNewChat={() => closeThen(props.onNewChat)}
+          onOpenPanels={(openPanels) => {
+            panelsAfterClose.current = openPanels;
+            setOpen(false);
+          }}
         />
       </DialogContent>
     </Dialog>

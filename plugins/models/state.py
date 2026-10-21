@@ -1087,12 +1087,16 @@ class ModelsState:
         if failures:
             raise BaseExceptionGroup("model auth attempt 清理失败", failures)
 
+    # 全部连接的驱动图标只读一次目录；逐连接读取在几十个连接时会把聊天模型列表拖到数百毫秒。
+    async def connection_icons(self) -> dict[str, str | None]:
+        snapshot = await run_file_io(self._snapshot_or_empty)
+        return {connection_id: await self._connection_icon(connection)
+                for connection_id, connection in snapshot.connections.items()}
+
     # 驱动为连接声明的图标；驱动缺席、未声明、出错或内容不像 SVG 时没有图标。
-    async def connection_icon(self, connection_id: str) -> str | None:
-        snapshot = await run_file_io(self._snapshot_required)
-        connection = snapshot.connections.get(connection_id)
-        record = None if connection is None else self._registrations.get(connection.driver_id)
-        if connection is None or record is None or record.definition.icon is None:
+    async def _connection_icon(self, connection: StoredConnection) -> str | None:
+        record = self._registrations.get(connection.driver_id)
+        if record is None or record.definition.icon is None:
             return None
         try:
             async with record.context.runtime_scope():
