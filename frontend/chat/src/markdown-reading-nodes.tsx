@@ -113,7 +113,8 @@ export function ReadingLink(props: NodeComponentProps<LinkData>) {
     if (named) link.removeAttribute("aria-label");
     else link.setAttribute("aria-label", link.getAttribute("href") ?? "链接");
   });
-  return <InsideLink.Provider value={true}><span ref={ref}><LinkRenderer {...props} /></span></InsideLink.Provider>;
+  // 自定义预览挂在 body，越过聊天样式作用域后无法隐藏；使用链接原生 title，不另建浮层。
+  return <InsideLink.Provider value={true}><span ref={ref}><LinkRenderer {...props} showTooltip={false} /></span></InsideLink.Provider>;
 }
 
 /** 脚注引用写成真正的链接（markstream 的是带点击的 span，键盘按不到），显示与静态路径同样的上标数字；跳转见 jumpToFootnote。 */
