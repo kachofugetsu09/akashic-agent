@@ -263,6 +263,9 @@ export function useDesktopChatController() {
   const [connectionError, setConnectionError] = useState("");
   const [pageOutdated, setPageOutdated] = useState(false);
   const [shellState, setShellState] = useState<WebShellState | null>(null);
+  // 就绪轮询是否已见到 chatReady、最近一次拿到 shell state 的时刻（onopen 据此去重 build 核对，见下）。
+  const chatReadyRef = useRef(false);
+  const shellStateFreshAtRef = useRef(0);
   const [replyTarget, setReplyTarget] = useState<TimelineReply | null>(null);
   // 引用目标与草稿一样按会话保留：切去别的会话查点东西再回来，引用条还在。
   const replyTargetsRef = useRef(new Map<string, TimelineReply>());
@@ -477,10 +480,18 @@ export function useDesktopChatController() {
   const scheduleSessionsRefresh = useCallback((): Promise<void> => {
     if (sessionsRefreshTimerRef.current !== null) return Promise.resolve();
     return new Promise((resolve) => {
-      sessionsRefreshTimerRef.current = window.setTimeout(() => {
+      const fire = () => {
         sessionsRefreshTimerRef.current = null;
+        // 全量目录读取在飞时不中止重发：大目录要 10 页串行，启动与流式期间活动帧密集，
+        // 中止重启会让读取反复归零（每次回复落定都白拉一遍，见 #1563）。顺延到它读完再
+        // 重新拉一轮，变更仍然最终可见。
+        if (sessionsRequestRef.current) {
+          sessionsRefreshTimerRef.current = window.setTimeout(fire, 300);
+          return;
+        }
         resolve(loadSessionsSafely());
-      }, 300);
+      };
+      sessionsRefreshTimerRef.current = window.setTimeout(fire, 300);
     });
   }, [loadSessionsSafely]);
   const sessionHeads = useMemo<SessionHead[]>(() => {
@@ -621,7 +632,10 @@ export function useDesktopChatController() {
                   setError("");
                 }
                 console.info("[chat-ui] ws connected", current.url);
-                checkPageBuild(() => setPageOutdated(true), () => socketRef.current === current);
+                // 就绪前轮询仍在跑（每轮已核对 build），或几秒内刚核对过：跳过这次重复取证（#1556）。
+                // 只有轮询退出且结果已变旧的重连才需要补查——断连期间服务端可能已升级换代。
+                const shellStateStale = Date.now() - shellStateFreshAtRef.current > 5000;
+                if (chatReadyRef.current && shellStateStale) checkPageBuild(() => setPageOutdated(true), () => socketRef.current === current);
                 const sessionId = activeSessionRef.current;
                 if (sessionId) {
                   if (followAfterRef.current === null) void loadMessagesSafely(sessionId);
@@ -698,8 +712,12 @@ export function useDesktopChatController() {
         try {
           const next = await fetchChatJson<unknown>("/api/shell/state", { signal: controller.signal }).then(webShellState);
           setShellState(next);
+          shellStateFreshAtRef.current = Date.now();
           if (pageBuildOutdated(next)) setPageOutdated(true);
-          if (next?.chatReady === true) return;
+          if (next?.chatReady === true) {
+            chatReadyRef.current = true;
+            return;
+          }
         } catch (error) {
           // 中断直接退出（对应原 Fiber.interrupt 不进 catchAll）；其余失败照原样上报后继续下一轮。
           if (controller.signal.aborted || error === CONNECTION_ABORTED) return;
