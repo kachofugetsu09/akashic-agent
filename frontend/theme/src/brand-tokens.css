@@ -32,8 +32,14 @@
   --ak-scrim-overlay: color-mix(in srgb, var(--ak-color-shadow) 28%, transparent);
   --ak-elevation-overlay: 0 12px 32px color-mix(in oklab, var(--ak-color-shadow) 14%, transparent);
 
-  /* Typography: reading and technical content stay visibly distinct. */
-  --ak-type-reading: var(--md-ref-typeface-plain);
+  /* Typography: three roles, each owning one job.
+     - reading: 模型输出的自然语言。只有回复正文与页面标题用它。
+     - ui: 界面自己在报告状态——侧栏、工具行、状态、控件、标签。
+     - technical: 命令、路径、代码等字面量。
+     阅读字体是 opt-in：默认字体是界面字体，正文容器显式声明 reading。 */
+  --ak-type-reading: var(--md-ref-typeface-brand);
+  --ak-type-ui: -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC",
+    "Noto Sans SC", "Microsoft YaHei", Roboto, "Helvetica Neue", Arial, sans-serif;
   --ak-type-technical: var(--md-ref-typeface-mono);
 }
 

@@ -73,6 +73,8 @@
   /* 阅读列宽度由宿主的 --chat-column 拥有；缺省值供未定义它的宿主。 */
   width: min(100%, var(--chat-column, 52rem));
   color: var(--ak-ink-primary);
+  /* 模型输出的自然语言：这一层显式取回阅读衬线，外壳默认是界面字体。 */
+  font-family: var(--ak-type-reading);
   font-size: max(1rem, var(--chat-type-body, 1rem));
   line-height: var(--chat-response-leading, 1.5);
   overflow-wrap: break-word;
@@ -1296,6 +1298,8 @@
 .process-text {
   max-width: 72ch;
   color: color-mix(in oklab, var(--ak-color-text-primary) 46%, transparent);
+  /* 思考正文是模型写的自然语言，展开后要读：归阅读字体。 */
+  font-family: var(--ak-type-reading);
   font-size: 0.75rem;
   line-height: 1.55;
   overflow-wrap: break-word;
@@ -1310,6 +1314,8 @@
 
 .process-markdown {
   min-width: 0;
+  /* 展开的思考可能是 Markdown：与正文同一阅读字体。 */
+  font-family: var(--ak-type-reading);
   overflow-wrap: break-word;
   white-space: normal;
 }
@@ -1342,7 +1348,9 @@
   align-items: center;
   gap: 6px;
   color: color-mix(in oklab, var(--ak-color-text-primary) 60%, transparent);
-  font-family: var(--ak-type-technical, ui-monospace, SFMono-Regular, Menlo, Consolas, monospace);
+  /* 工具行是界面在报告一次调用，不是内容：界面字体，不吃衬线也不吃等宽
+     （等宽会把中文短语拉宽，留给命令与输出）。 */
+  font-family: var(--ak-type-ui);
   font-size: 0.75rem;
   font-weight: 500;
 }
@@ -1353,9 +1361,8 @@
   white-space: nowrap;
 }
 
-/* 本轮与工具组摘要是中文句子（"思考 3 次，调用 5 个工具"），不是工具名：用正文字体，数字等宽。 */
+/* 本轮与工具组摘要是中文句子（"思考 3 次，调用 5 个工具"），不是工具名：与工具行同族，数字等宽。 */
 :is(.turn-process-summary, .tool-group-summary) .tool-step-title {
-  font-family: var(--ak-type-reading);
   font-variant-numeric: tabular-nums;
 }
 
@@ -1520,7 +1527,8 @@ button.tool-step-summary:active {
 
 .tool-step-collapse-hint {
   color: var(--ak-color-text-secondary);
-  font-family: var(--ak-type-reading, inherit);
+  /* 收起提示是控件文字，跟着工具行走界面字体。 */
+  font-family: var(--ak-type-ui);
   font-size: 0.6875rem;
   font-weight: 400;
 }

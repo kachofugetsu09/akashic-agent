@@ -136,7 +136,9 @@ input {
   overflow: hidden;
   color: var(--chat-ink);
   /* Paper fiber fill comes from paper-surface.css */
-  font-family: var(--ak-type-reading);
+  /* 外壳默认界面字体：侧栏、工具行、状态、控件都继承它。
+     阅读衬线由正文容器自己声明（见 message-view.css 的正文白名单）。 */
+  font-family: var(--ak-type-ui);
   -webkit-font-smoothing: antialiased;
 }
 
@@ -733,7 +735,8 @@ input {
   padding: 6px;
   color: var(--ak-ink-primary);
   background: var(--ak-paper-raised);
-  font-family: var(--ak-type-reading);
+  /* 行菜单是控件：界面字体，不继承阅读衬线。 */
+  font-family: var(--ak-type-ui);
 }
 
 .navigation-row-menu__item {
@@ -2366,7 +2369,8 @@ form.composer:focus-within [data-slot="input-group"] {
   border-radius: 8px;
   background: var(--ak-paper-raised);
   color: var(--ak-ink-primary);
-  font-family: var(--ak-type-reading);
+  /* 悬停提示是控件文字：界面字体。 */
+  font-family: var(--ak-type-ui);
   font-size: var(--md-sys-typescale-label-medium-size);
   line-height: 1.35;
   /* 未定位的那一帧只用来量尺寸。 */
