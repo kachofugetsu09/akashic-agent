@@ -13,7 +13,9 @@ from plugins.ledger.contract import MessageSnapshot
 from plugins.models.contract import (
     LLMResponse,
     ModelContinuation,
+    ContextCategory,
     ModelRequest,
+    RequestSource,
 )
 from plugins.models.contract import BoundChatModel
 from plugins.ledger.contract import (
@@ -365,7 +367,7 @@ class MessageProjection:
 
         # 2. 渲染读面只重编译变化；失败后丢弃未完成的派生状态，下次仍如实校验。
         try:
-            rows, content_refs, changed_content = self._render_rows(
+            rows, content_refs, changed_content, sources = self._render_rows(
                 messages, fold, after_seq=after_seq,
                 current_reminder=current_reminder,
                 current_reminder_identity=current_reminder_identity,
@@ -373,7 +375,7 @@ class MessageProjection:
             )
             request = ModelRequest(
                 messages=rows, continuation=None if changed_content else continuation,
-                content_refs=content_refs, content_transformed=changed_content,
+                content_refs=content_refs, content_transformed=changed_content, sources=sources,
             )
         except BaseException:
             self._view = None
@@ -386,7 +388,7 @@ class MessageProjection:
         current_reminder: str | None,
         current_reminder_identity: tuple[str, str] | None,
         current_context: str | None,
-    ) -> tuple[list[Mapping[str, Any]], tuple[tuple[str, int], ...], bool]:
+    ) -> tuple[list[Mapping[str, Any]], tuple[tuple[str, int], ...], bool, tuple[RequestSource, ...]]:
         """维护当前窗口的有序分段；日志变化编译正文，实时材料只在装配时插入。"""
         # 1. 窗口或日志前缀改变时重建同一读面，旧工具结果也重新检查可见调用。
         view = self._view
@@ -459,18 +461,28 @@ class MessageProjection:
         carrier = (view.reminders.get(current_reminder_identity)
                    if current_reminder_identity is not None else fold.latest_input)
         context_unit = None if carrier is None else view.units.get(carrier)
+        live: list[Mapping[str, Any]] = []
+        # 本轮提醒已随 Input 存过时在历史单元首行；它仍是本轮材料，由装配方按材料拆分。
+        current = view.reminders.get(current_reminder_identity) if current_reminder_identity is not None else None
+        if current is not None and current in view.units and view.units[current].rows:
+            live.append(view.units[current].rows[0])
         if current_context is not None and context_unit is not None:
             position = 1 if current_reminder_identity is not None else len(context_unit.rows)
             unit_rows = context_unit.rows
-            groups[context_unit.index] = (*unit_rows[:position],
-                {"role": "user", "content": current_context}, *unit_rows[position:])
+            live.append({"role": "user", "content": current_context})
+            groups[context_unit.index] = (*unit_rows[:position], live[-1], *unit_rows[position:])
         rows = list(chain.from_iterable(groups))
         if current_reminder is not None and current_reminder_identity not in view.reminders:
-            rows.append({"role": "user", "content": current_reminder})
+            live.append({"role": "user", "content": current_reminder})
+            rows.append(live[-1])
         if current_context is not None and context_unit is None:
-            rows.append({"role": "user", "content": current_context})
+            live.append({"role": "user", "content": current_context})
+            rows.append(live[-1])
         view.count = len(messages)
-        return rows, tuple(refs), changed_content
+        injected = tuple(index for index, row in enumerate(rows) if any(row is item for item in live))
+        carriers = set(view.reminders.values()) - {current}
+        replayed = [unit.rows[0] for key, unit in view.units.items() if key in carriers and unit.rows]
+        return rows, tuple(refs), changed_content, _history_sources(rows, set(injected), replayed)
 
     def _compile_unit(
         self, message: Message, fold: _Fold, transform: ContentTransform | None, *,
@@ -867,6 +879,26 @@ class _RenderedMessage:
     used: tuple[str, ...]
     transformed: bool
     dynamic: bool
+
+
+# 历史行按出处归类：回放的旧提醒单列，工具结果按工具名分；本轮实时材料由装配方按材料拆分，这里跳过。
+def _history_sources(rows: Sequence[Mapping[str, Any]], live: set[int],
+                     replayed: Sequence[Mapping[str, Any]]) -> tuple[RequestSource, ...]:
+    names: dict[str, str] = {}
+    for row in rows:
+        for call in row.get("tool_calls") or ():
+            names[str(call.get("id"))] = str(call.get("function", {}).get("name") or "")
+    groups: dict[tuple[ContextCategory, str], list[Mapping[str, Any]]] = {}
+    for index, row in enumerate(rows):
+        if index in live:
+            continue
+        role = row.get("role")
+        key: tuple[ContextCategory, str] = (
+            ("injected", "历史提醒") if any(row is item for item in replayed)
+            else ("tool_results", names.get(str(row.get("tool_call_id")), "")) if role == "tool"
+            else ("assistant", "") if role == "assistant" else ("user", ""))
+        groups.setdefault(key, []).append(row)
+    return tuple(RequestSource(category, label, tuple(items)) for (category, label), items in groups.items())
 
 
 class _RenderView:

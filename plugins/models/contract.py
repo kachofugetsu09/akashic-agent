@@ -151,6 +151,20 @@ class ModelAttemptStatus:
                    None if next_at is None else float(next_at))
 
 
+# 上下文构成的六类；injected 是装配时插入的材料（记忆、环境、提醒、历史摘要）。
+ContextCategory = Literal["system", "tools", "user", "assistant", "tool_results", "injected"]
+
+
+@dataclass(frozen=True, slots=True)
+class RequestSource:
+    """请求里一段内容的出处：类别、来源名（插件材料、工具名等），以及它占的行或工具定义。"""
+
+    category: ContextCategory
+    label: str
+    rows: tuple[Mapping[str, Any], ...] = ()
+    tools: tuple[Mapping[str, Any], ...] = ()
+
+
 @dataclass(frozen=True, slots=True)
 class ModelRequest:
     messages: Sequence[Mapping[str, Any]]
@@ -166,6 +180,8 @@ class ModelRequest:
     # 本次完整展示、尚无成功展示回执的消息内容位置；不发送给 provider。
     content_refs: tuple[tuple[str, int], ...] = ()
     content_transformed: bool = False
+    # 装配方给出的逐来源拆分，只用于上下文构成统计，不发送给 provider。
+    sources: tuple[RequestSource, ...] = ()
 
     @staticmethod
     def read_content_refs(value: object) -> tuple[tuple[str, int], ...]:

@@ -8,6 +8,7 @@ import math
 import random
 import re
 import secrets
+import sqlite3
 from urllib.parse import urlsplit
 import threading
 import time
@@ -107,6 +108,7 @@ from .settings import (
     UpdateModel,
     VerifyModel,
 )
+from .composition import measure
 from .store import (
     ModelsStore,
     StoredConnection,
@@ -205,9 +207,9 @@ class _BoundChat:
         digest = _request_digest(request, self._request_encodings)
         if request.request_key is None:
             # 无 key 调用是独立效果身份：单次尝试记账，不共享回执也不占用重试预算。
-            return await self._attempts(
+            return await self._composed(request, await self._attempts(
                 request, f"anonymous:{secrets.token_hex(8)}", digest, budget=1
-            )
+            ))
         request_key = request.request_key
         # 同一 Store 合并活等待者；不同 Store 仍由共同账本的事务核对准入。
         live_runs = cast(
@@ -243,9 +245,21 @@ class _BoundChat:
         else:
             if not shared.done():
                 shared.set_result(result)
-            return result
+            return await self._composed(request, result)
         finally:
             live_runs.pop(run_key, None)
+
+    # 成功调用记下各部分份额；纯估算加一次小写入，失败只记日志，不影响回答。
+    async def _composed(self, request: ModelRequest, response: LLMResponse) -> LLMResponse:
+        log, call_id = self._store.composition, response.call_record_id
+        if log is None or call_id is None:
+            return response
+        try:
+            parts = measure(request, self._driver.estimate_context_tokens)
+            await run_file_io(lambda: log.put(call_id, parts))
+        except (sqlite3.Error, OSError, ValueError, TypeError):
+            logger.warning("context composition record failed call=%s", call_id, exc_info=True)
+        return response
 
     def key_recovery(self, request_key: str) -> str:
         """同 key 最近耐久记录的恢复裁决，Models 独占分类、调用方只消费决定：

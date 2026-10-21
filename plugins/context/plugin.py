@@ -11,7 +11,7 @@ from pydantic import BaseModel, ConfigDict, Field, field_validator
 from agent.plugin_composition import Context
 from plugins.ui.contract import hidden_part, part_display_key
 from plugins.ledger.contract import MessageSnapshot
-from plugins.models.contract import ContextModel, ModelRequest
+from plugins.models.contract import ContextModel, ModelRequest, RequestSource
 from plugins.ledger.contract import (
     Message,
 )
@@ -81,6 +81,21 @@ def _summary_cutoff(snapshot: Sequence[Message], summary: Summary | None) -> int
     if covered.stop not in ends or covered.start and covered.start not in ends:
         raise ValueError("摘要不能覆盖尚未结算的工具调用")
     return snapshot[covered.stop - 1].seq
+
+
+# 上下文构成的逐来源拆分：System Prompt 按贡献材料、本轮材料按提醒块、工具定义按工具；历史行由投影拆好。
+def _sources(materials: Materials, summary: tuple[Mapping[str, Any], ...],
+             history: tuple[RequestSource, ...], tools: Sequence[Mapping[str, Any]]) -> tuple[RequestSource, ...]:
+    sections = materials.prompt_sections or ((("system_prompt", materials.system_prompt),) if materials.system_prompt else ())
+    items = [RequestSource("system", name, ({"role": "system", "content": text},)) for name, text in sections if text]
+    if summary:
+        items.append(RequestSource("injected", "历史摘要", summary))
+    items.extend(history)
+    items.extend(RequestSource("injected", f"{item.owner or '?'} · {item.name}", ({"role": "user", "content": item.text},))
+                 for item in materials.reminders if item.text.strip())
+    items.extend(RequestSource("tools", str(tool.get("function", {}).get("name") or tool.get("name") or "?"), tools=(tool,))
+                 for tool in tools)
+    return tuple(items)
 
 
 class ContextBuilder:
@@ -183,6 +198,7 @@ class ContextBuilder:
                     ),
                 }
             )
+        summary_rows = tuple(rows[1:] if decoded_materials.system_prompt else rows)
         rows.extend(rendered.messages)
         if reminder is not None and replay_reminder is None:
             rows.append({"role": "user", "content": reminder})
@@ -192,6 +208,7 @@ class ContextBuilder:
         request = replace(
             rendered,
             messages=rows,
+            sources=_sources(decoded_materials, summary_rows, rendered.sources, tools),
             # Opaque provider sessions can retain rules omitted from replay facts.
             continuation=None if current_context is not None else rendered.continuation,
             tools=tools,
