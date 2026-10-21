@@ -372,11 +372,26 @@ export function useDesktopChatController() {
     try {
       const items = new Map<string, SessionRow>();
       const cursors = new Set<string>();
+      let published = false;
       let query = "page_size=200";
       while (true) {
         const page = sessionPage(await fetchChatJson<unknown>(`/api/chat/sessions?${query}`, { signal: controller.signal }));
         if (controller.signal.aborted) return;
         page.items.forEach((session) => { if (!items.has(session.key)) items.set(session.key, session); });
+        if (!published && items.size > 0) {
+          // 首页先行渲染:大目录的其余页还在游标链上串行到达(每页一次 RTT),
+          // 先挂最新一页让用户能看能点;全部到齐后再一次性替换为完整目录。
+          // 经 requestIdleCallback 让出主线程:消息首屏的就绪路径优先,
+          // 空闲或 1.5s 兜底后再挂首批目录,不把就绪时间往后推。
+          const first = [...items.values()];
+          const publish = () => {
+            if (sessionsRequestRef.current !== controller) return;
+            setSessions((current) => current.length ? current : first);
+          };
+          if (typeof window.requestIdleCallback === "function") window.requestIdleCallback(publish, { timeout: 1500 });
+          else window.setTimeout(publish, 0);
+          published = true;
+        }
         if (!page.nextCursor) break;
         query = `page_size=200&after_time=${encodeURIComponent(page.nextCursor.updated_at)}&after_key=${encodeURIComponent(page.nextCursor.session_id)}`;
         if (cursors.has(query)) throw new Error("会话目录游标未前进");
