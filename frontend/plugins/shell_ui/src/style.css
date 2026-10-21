@@ -67,7 +67,19 @@
   /* 功能设置：居中面板，左栏分节导航与右栏内容同一张纸，不另铺底色；
      右上角图标关闭，内容区独立滚动。布局与使用方式对齐 DSH 设置面板。
      窄屏改为整屏两级页面：先选分节，再进内容。 */
+  /* 非模态面板不进顶层，自己居中并压在遮罩之上；页面其余层级最高 95。 */
+  .shell-settings-scrim {
+    position: fixed;
+    inset: 0;
+    z-index: 1000;
+    background: var(--ak-scrim-overlay);
+  }
+
   .shell-settings-dialog {
+    position: fixed;
+    inset: 0;
+    z-index: 1001;
+    margin: auto;
     width: min(820px, calc(100vw - 48px));
     height: min(760px, calc(100dvh - 48px));
     max-width: none;
@@ -84,10 +96,6 @@
   .shell-settings-dialog[open] {
     display: grid;
     grid-template-columns: 196px minmax(0, 1fr);
-  }
-
-  .shell-settings-dialog::backdrop {
-    background: var(--ak-scrim-overlay);
   }
 
   .shell-settings-dialog:focus {
@@ -418,7 +426,7 @@
     opacity: 0;
     transform: translateY(6px) scale(0.98);
     transition: opacity 180ms ease, transform 180ms ease,
-      display 180ms allow-discrete, overlay 180ms allow-discrete;
+      display 180ms allow-discrete;
   }
 
   .shell-settings-dialog[open] {
@@ -426,14 +434,12 @@
     transform: none;
   }
 
-  .shell-settings-dialog::backdrop {
-    opacity: 0;
-    transition: opacity 180ms ease, display 180ms allow-discrete,
-      overlay 180ms allow-discrete;
+  .shell-settings-scrim {
+    transition: opacity 180ms ease, display 180ms allow-discrete;
   }
 
-  .shell-settings-dialog[open]::backdrop {
-    opacity: 1;
+  .shell-settings-scrim[hidden] {
+    opacity: 0;
   }
 
   @starting-style {
@@ -441,7 +447,7 @@
       opacity: 0;
       transform: translateY(10px) scale(0.98);
     }
-    .shell-settings-dialog[open]::backdrop {
+    .shell-settings-scrim:not([hidden]) {
       opacity: 0;
     }
   }
