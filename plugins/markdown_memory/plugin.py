@@ -5,6 +5,7 @@ import asyncio
 import fcntl
 import json
 import logging
+from importlib import import_module
 from datetime import UTC, datetime
 from contextlib import aclosing, asynccontextmanager
 from pathlib import Path
@@ -20,6 +21,7 @@ from agent.plugin_composition import (
     Context,
     CompositionError,
     FiberState,
+    ServiceKey,
 )
 from plugins.models.contract import ModelRequest
 from plugins.models.contract import CHAT_MODELS
@@ -44,6 +46,8 @@ from plugins.compaction.contract import (
 from plugins.content.contract import CONTENT, Content
 from plugins.context.contract import CONTEXT, MATERIALS_V4, ContextBuilder
 from plugins.turn_projection.contract import TURN_PROJECTION, TurnProjection
+from agent.plugin_composition.plugin_config import PLUGIN_CONFIG
+from plugins.ui.contract import Configuration, ModelSettings, mount_settings
 from .llm_json import load_json_object_loose
 
 if TYPE_CHECKING:
@@ -71,8 +75,13 @@ workspace_files = (
 )
 
 MaterialData = Mapping[str, object]
-inject = (CHAT_MODELS, MATERIALS_V4, BINDINGS, MESSAGE_CATALOG, CONTENT, CONTEXT,
+inject = (PLUGIN_CONFIG, CHAT_MODELS, MATERIALS_V4, BINDINGS, MESSAGE_CATALOG, CONTENT, CONTEXT,
           TURN_PROJECTION, COMPACTION_SUMMARIES, COMPACTION_READER)
+
+
+SETTINGS = ServiceKey[Configuration]("markdown_memory.settings.v1")
+SETTING_FIELDS = ("memory_budget", "surface_limit", "surface_min_score", "surface_chars",
+                  "consolidate", "consolidate_hours", "consolidate_min_drafts")
 
 
 class Config(BaseModel):
@@ -664,6 +673,8 @@ async def project(
 async def apply(ctx: Context) -> None:
     """启动后才创建文件与跟随日志；归档 apply 不写入正式记忆。"""
     config = Config.model_validate(ctx.config)
+    await mount_settings(ctx, SETTINGS, ModelSettings(ctx, Config, SETTING_FIELDS),
+                         lambda: import_module(".dashboard", __package__))
     context = ctx.require(CONTEXT)
     store: MarkdownProfileStore | None = None
     watcher: asyncio.Task[None] | None = None

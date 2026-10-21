@@ -52,6 +52,15 @@ export function Field({label, name, value, change, type = "text", hint, required
     onChange={event => change(name, type === "number" ? (event.target.value === "" ? null : event.target.valueAsNumber) : event.target.value)} />{hint && <small>{hint}</small>}</label>;
 }
 
+// 开关型字段；fallback 是未设置时的默认状态。
+export function Check({label, name, value, change, hint, fallback}: {
+  label: string; name: string; value: unknown; change: FormProps["change"]; hint?: string; fallback?: unknown;
+}) {
+  return <label className="config-toggle"><span><strong>{label}</strong>{hint && <small>{hint}</small>}</span>
+    <input type="checkbox" role="switch" name={name} checked={typeof value === "boolean" ? value : fallback === true}
+      onChange={event => change(name, event.target.checked)} /></label>;
+}
+
 // 下拉选择；fallbackLabel 给出时首项为“默认”，选它即删除覆盖。
 export function Select({label, name, value, change, options, hint, fallbackLabel}: {
   label: string; name: string; value: unknown; change: FormProps["change"]; options: Choice[]; hint?: string; fallbackLabel?: string;
