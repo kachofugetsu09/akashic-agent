@@ -1,6 +1,6 @@
 /** 流式长回复渲染基准：真实 Chromium 经 harness 构建 + 夹具 WS 推流，测流式期间主线程占用与落定延迟。
- * 指标：streamLongTasksMs（流式窗口长任务总量/最大）、settleRowsMs（末个增量→落定行出现）、
- * settleRichMs（末个增量→落定消息全部代码块进入高亮路径）、profile（CDP self time 归因用）。
+ * 指标：streamLongTasksMs（流式窗口长任务总量/最大）、settleRowsMs（发送→落定行出现）、
+ * settleRichMs（发送→落定消息全部代码块进入高亮路径）、profile（CDP self time 归因用）。
  * 用法：node scripts/webui-performance/measure-stream-reply.mjs --browser <chromium> --runs 3 --output <dir> */
 import { createServer } from "node:http";
 import { mkdtempSync, mkdirSync, readFileSync, existsSync, writeFileSync } from "node:fs";
@@ -124,6 +124,8 @@ let sendReceivedAt = 0;
 const browser = await chromium.launch({ executablePath: values.browser, headless: true, args: ["--no-sandbox"] });
 const results = [];
 for (let run = 0; run < Number(values.runs); run += 1) {
+  items.splice(60);
+  sendReceivedAt = 0;
   const context = await browser.newContext({ viewport: { width: 1365, height: 860 }, serviceWorkers: "block" });
   const page = await context.newPage();
   page.on("console", (msg) => { if (msg.type() === "error" || msg.type() === "warning") console.info("[page]", msg.type(), msg.text().slice(0, 200)); });
@@ -188,9 +190,8 @@ for (let run = 0; run < Number(values.runs); run += 1) {
   await page.waitForTimeout(6000);
   await cdp.send("Profiler.start");
   await page.locator(".composer textarea").fill("开始");
+  await page.evaluate(() => { window.__marksArmed = true; });
   await page.keyboard.press("Enter");
-  // 武装后立即补查一次：竞态下已落地的 DOM 变更也能盖戳。
-  await page.evaluate(() => { window.__marksArmed = true; window.__checkMarks(); });
   const epochOffset = await page.evaluate(() => Date.now() - performance.now());
   // 等待仍用 waitForFunction（不触碰页面），时刻取 MutationObserver 的精确打点。
   // 草稿行出现（thinking 占位，还不要求出字）
@@ -244,6 +245,7 @@ for (let run = 0; run < Number(values.runs); run += 1) {
   await context.close();
 }
 await browser.close();
+ws.close();
 server.close();
 const median = (list) => list.sort((a, b) => a - b)[Math.floor(list.length / 2)];
 const summary = Object.fromEntries(Object.keys(results[0]).map((key) => [key, median(results.map((r) => r[key]))]));
