@@ -20,12 +20,17 @@ export function CompactNavigation(props: DesktopSidebarProps) {
   // 分组对话框不叠在抽屉上：先关抽屉，关完再打开。
   const formAfterClose = useRef<GroupFormRequest | null>(null);
   // 插件面板同理：底部抽屉等导航抽屉关完、焦点处理完再弹出。
-  const panelsAfterClose = useRef<(() => void) | null>(null);
+  const actionAfterClose = useRef<(() => void) | null>(null);
   const panelAlert = useSidebarPanelAlert();
   const navigationGroups = props.groups;
   const closeThen = useCallback((action: () => void) => {
     setOpen(false);
     action();
+  }, []);
+  // 抽屉关完（焦点回到打开按钮）再执行：插件面板、功能设置这类压在页面上的层要等模态遮罩撤掉才能点。
+  const afterClose = useCallback((action: () => void) => {
+    actionAfterClose.current = action;
+    setOpen(false);
   }, []);
   const overlayOpen = open || formRequest !== null;
   const searchOnOpen = useRef(false);
@@ -82,10 +87,10 @@ export function CompactNavigation(props: DesktopSidebarProps) {
           if (formAfterClose.current) {
             setFormRequest(formAfterClose.current);
             formAfterClose.current = null;
-          } else if (panelsAfterClose.current) {
+          } else if (actionAfterClose.current) {
             triggerRef.current?.focus({ preventScroll: true });
-            panelsAfterClose.current();
-            panelsAfterClose.current = null;
+            actionAfterClose.current();
+            actionAfterClose.current = null;
           } else {
             // 打开期间拉宽离开紧凑断点时原目标可能已隐藏：依次退到打开按钮、输入框。
             const composer = document.querySelector<HTMLElement>(".chat-main .composer textarea");
@@ -108,10 +113,8 @@ export function CompactNavigation(props: DesktopSidebarProps) {
           onSelectSession={(sessionId) => closeThen(() => props.onSelectSession(sessionId))}
           onCycleTheme={() => closeThen(props.onCycleTheme)}
           onNewChat={() => closeThen(props.onNewChat)}
-          onOpenPanels={(openPanels) => {
-            panelsAfterClose.current = openPanels;
-            setOpen(false);
-          }}
+          onOpenPanels={afterClose}
+          onRailAction={afterClose}
         />
       </DialogContent>
     </Dialog>

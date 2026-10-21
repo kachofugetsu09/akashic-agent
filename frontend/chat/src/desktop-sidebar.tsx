@@ -322,6 +322,8 @@ export interface DesktopSidebarProps {
   rail?: SidebarRailControl;
   /** 手机抽屉里打开插件面板：抽屉先关，关完再弹底部抽屉；常驻侧栏不带此 prop，面板锚在启动器下方。 */
   onOpenPanels?: (open: () => void) => void;
+  /** 手机抽屉里点底部动作（如功能设置）：抽屉先关再执行。抽屉是模态框，开着时 body 不接收指针，压在上面的设置页点不动。 */
+  onRailAction?: (activate: () => void) => void;
 }
 
 /** 会话导航竖栏；底部动作由宿主 Shell 经 shell.rail-actions.v1 桥下发，主题行是 chat 域原生。 */
@@ -347,6 +349,7 @@ export const DesktopSidebar = memo(function DesktopSidebar({
   onRestoreSession,
   onDismissDeletedNotice,
   onOpenPanels,
+  onRailAction,
   rail,
 }: DesktopSidebarProps) {
   const [query, setQuery] = useState("");
@@ -734,7 +737,10 @@ export const DesktopSidebar = memo(function DesktopSidebar({
       <div className="chat-sidebar__footer">
         {railActions.map((action) => (
           <button key={action.id} type="button" className="chat-sidebar__action"
-            onClick={() => activateShellRailAction(action.id)}>
+            onClick={() => {
+              const activate = () => activateShellRailAction(action.id);
+              if (onRailAction) onRailAction(activate); else activate();
+            }}>
             <span className="chat-sidebar__action-icon" aria-hidden="true"
               dangerouslySetInnerHTML={{ __html: action.iconSvg }} />
             <span>{action.label}</span>
