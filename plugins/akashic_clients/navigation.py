@@ -6,7 +6,7 @@ from collections.abc import Callable, Mapping
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from plugins.ledger.contract import OwnerStore, OwnerTransaction
-from plugins.ledger.contract import ContentPart, Control
+from plugins.ui.contract import session_preview
 from .services import MessageCatalogPort
 
 _KEY = "navigation:pins"
@@ -87,9 +87,6 @@ async def session_pin_row(catalog: MessageCatalogPort, session_id: str) -> dict[
     # 带会话维度（如项目）的会话也可置顶：前端把它排在所在分组内，scope 随行返回。
     if deleted or attributes.visibility != "listed":
         return None
-    first = first_page.messages[0] if first_page.messages else None
-    text = "" if first is None or isinstance(first.body, Control) else "\n".join(
-        str(part.value) for part in first.body.parts if isinstance(part, ContentPart) and part.kind == "text"
-    )
+    text = session_preview(first_page.messages[0] if first_page.messages else None)
     return {"key": session_id, "first_message_content": text, "scope": dict(attributes.scope),
             "title": title}
