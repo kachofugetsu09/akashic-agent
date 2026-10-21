@@ -109,29 +109,13 @@
 .settings-form-grid select:focus-visible,
 .settings-discovery-result select:focus-visible,
 .settings-discovery-manual input:focus-visible,
-.settings-role-grid select:focus-visible,
-.settings-search:focus-within {
+.settings-role-grid select:focus-visible {
   outline: 2px solid var(--md-sys-color-primary);
   outline-offset: 2px;
 }
 
 .settings-dialog-actions { display: flex; align-items: center; gap: 0.75rem; }
 
-.settings-search {
-  display: flex;
-  width: min(24rem, 100%);
-  min-height: 2.75rem;
-  align-items: center;
-  gap: 0.625rem;
-  margin-block-end: 2rem;
-  border: 0;
-  border-radius: var(--md-sys-shape-corner-full);
-  padding-inline: 1rem;
-  color: var(--md-sys-color-on-surface-variant);
-  background: var(--md-sys-color-surface-container-high);
-}
-.settings-search input { width: 100%; min-width: 0; border: 0; outline: 0; color: var(--md-sys-color-on-surface); background: transparent; font-size: var(--md-sys-typescale-body-large-size); }
-.settings-search input::placeholder { color: var(--md-sys-color-on-surface-variant); }
 
 .settings-section + .settings-section { margin-block-start: 2rem; }
 .settings-section > header { align-items: end; margin-block-end: 0.75rem; }
@@ -165,10 +149,6 @@
 .settings-template-tile:hover { background: color-mix(in srgb, var(--md-sys-color-on-surface) 6%, transparent); }
 .settings-template-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: var(--models-type-body); }
 .settings-template-added { width: 0.4375rem; height: 0.4375rem; justify-self: start; border-radius: 50%; background: var(--ak-sys-color-success); }
-
-.settings-search > .lucide-search {
-  translate: 0.5px -0.5px;
-}
 
 /* 服务商标识就是图标本身：不加底、不加框，没有品牌图标时用中性的服务器图标。 */
 .settings-connection-mark { display: grid; width: 1.25rem; height: 1.25rem; place-items: center; color: var(--ak-ink-secondary); }
@@ -579,7 +559,8 @@ dialog.settings-scrim::backdrop { background: transparent; }
   .settings-form-grid select,
   .settings-discovery-result select,
   .settings-discovery-manual input,
-  .settings-search input { font-size: 1rem; }
+  .settings-find input,
+  .settings-model-filter input { font-size: 1rem; }
 }
 
 @media (max-width: 30rem) {
@@ -862,3 +843,20 @@ dialog.settings-scrim::backdrop { background: transparent; }
   .settings-section-bar { flex-wrap: wrap; }
   .settings-find { width: 100%; order: 3; }
 }
+
+/* 统一小号节标题：覆盖旧的 h2/h3 字阶。 */
+.settings-section .settings-section-label,
+.settings-dialog--inline .settings-model-discovery h3 { color: var(--ak-ink-secondary); font-size: var(--models-type-caption); font-weight: 600; letter-spacing: 0.04em; }
+.settings-dialog--inline .settings-model-discovery header p,
+.settings-dialog--inline .settings-credential-note { font-size: var(--models-type-caption); }
+/* 新建表单挂在所选格子下面，格子已写明服务商，表单不再重复大标题。 */
+.settings-template-group .settings-dialog-title { display: none; }
+/* 高级设置：小三角加灰字，默认折叠。 */
+.settings-dialog--inline .settings-advanced summary { min-height: 2rem; color: var(--ak-ink-secondary); font-size: var(--models-type-caption); font-weight: 500; }
+.settings-dialog--inline .settings-primary-button,
+.settings-dialog--inline .settings-secondary-button { min-height: 2.25rem; padding-inline: 0.875rem; font-size: var(--models-type-body); }
+/* 场景行：名称与用途一行半，选择器收窄。 */
+.settings-binding { min-height: 3.25rem; padding-block: 0.5rem; }
+.settings-binding strong { font-size: var(--models-type-body); font-weight: 600; }
+.settings-binding small { margin-block-start: 0.1rem; font-size: var(--models-type-caption); }
+.settings-role-pick { min-height: 2rem; }
