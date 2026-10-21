@@ -310,7 +310,7 @@ async def apply(ctx: Context) -> None:
             "nodeRepl.emitImage(bytes) for output. Read the computer skill first. "
             "The browser runs in its own container: localhost there is the container, not the Akashic host. "
             "A service on the host is reachable at the container network's gateway (usually http://172.26.0.1:<port>) "
-            "only if it listens on 0.0.0.0 and the host firewall admits the port (see the computer skill). "
+            "only if it listens on that gateway address and the host firewall admits the port (see the computer skill). "
             f"To show a local static page, write it under {pages} (create it if needed) and open "
             "file:///data/pages/<relative path>."
         ),

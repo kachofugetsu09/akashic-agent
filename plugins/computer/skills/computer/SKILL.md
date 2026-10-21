@@ -168,7 +168,8 @@ no longer needed.
 **A server on the host** (a dev instance of Akashic, a dev server) is reachable at the gateway of the
 container network, normally `http://172.26.0.1:<port>`, when all of these hold:
 
-- it listens on `0.0.0.0`, not `127.0.0.1` (for Akashic: `scripts/start.py --host 0.0.0.0 --port <port> --state <own dir>`);
+- it listens on that gateway address (`docker network inspect akashic-workloads` shows it), not only on
+  `127.0.0.1`; for Akashic: `scripts/start.py --host <gateway> --port <port> --state <own dir>`;
 - the port is one the host firewall admits for containers; on the reference deployment that is
   44100-44199;
 - it stays running: start it as a managed process, not a shell background job that ends with the command.
@@ -178,9 +179,6 @@ var tab = await browser.tabs.new();
 await tab.goto("http://172.26.0.1:44101/");
 await tab.ax.write();
 ```
-
-`start.py` prints a one-time login link once the instance is ready; open it with the host part
-replaced by the gateway address.
 
 If `goto` times out, the port is not admitted: ask the user to allow it instead of retrying. If it
 reports `ERR_BLOCKED_BY_CLIENT`, the connection worked but the response is not a page: top-level

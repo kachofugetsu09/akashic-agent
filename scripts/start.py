@@ -244,9 +244,6 @@ def run_service(preparation: Preparation, core: Path, python: Path,
                 preparation.step("WebUI 已就绪。请打开 Compose 映射的本机地址（默认 http://localhost:2236）。")
             else:
                 preparation.step(f"WebUI 已就绪：{url}")
-                # 绑在非回环地址时多半是给别处的浏览器（如 computer 容器）用：直接给一条一次性登录链接，换成对方能访问的主机名即可。
-                if host != "127.0.0.1":
-                    print(f"一次性登录链接：{_login_url(core, python, state, url)}", flush=True)
                 if open_browser:
                     try:
                         webbrowser.open(_login_url(core, python, state, url))

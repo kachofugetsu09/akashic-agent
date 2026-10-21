@@ -9,7 +9,7 @@ description: 改任何带界面或服务的项目（网页、前端、后端、A
 只跑 typecheck / build、手写一段 DOM 拼成截图、假后端吐一份手编 JSON，都只能当辅助，不能当验收。
 
 ```text
-隔离工作区 → 起服务(0.0.0.0:441xx，托管进程) → 假掉外部依赖 → computer 打开 http://172.26.0.1:441xx
+隔离工作区 → 起服务($GW:441xx，托管进程) → 假掉外部依赖 → computer 打开 http://$GW:441xx
       ↑                                                                        ↓
       └─────────────── 改代码 → 重启服务 ←──────────── 真实操作、截图、对照
 ```
@@ -19,7 +19,7 @@ description: 改任何带界面或服务的项目（网页、前端、后端、A
 - **只删自己建的东西。** 开工时在 `$DEV/created.txt` 记下建的目录、进程 PID、容器、分支；收尾只清这张单。
   不碰 `/tmp` 里别人的目录，不对 `..`、`~`、通配符 `rm -rf`；删之前先 `ls`。当前目录不要删，先 `cd` 出去。
 - **停进程用精确 PID**（`ss -ltnp | grep :<端口>` 取 pid）。`pkill -f <端口号>` 会匹配到执行它的 shell 自己。
-- **不另起容器当浏览器或 curl 跳板。** 页面用 computer 看；接口在宿主 shell 里 `curl http://127.0.0.1:<端口>`。
+- **不另起容器当浏览器或 curl 跳板。** 页面用 computer 看；接口在宿主 shell 里直接 `curl`。
 - **不碰生产**：不改正在服务的数据目录，不重启生产服务；合并、部署要用户明确授权。
 - 临时文件放 `~/.cache/<项目>-dev/<任务>/`（下文记作 `$DEV`），并 `export TMPDIR=$DEV/tmp`。`/tmp` 是很小的 tmpfs，满了构建会报莫名错误。
 
@@ -36,15 +36,21 @@ cd "$DEV/src" && npm ci        # 或该项目自己的依赖安装；不要把 n
 ## 2. 起服务，让 computer 看得到
 
 computer 的浏览器在 `akashic-workloads` 网络的容器里：它眼中的 `localhost` 是容器自己。
-宿主对它来说是网关 **`http://172.26.0.1:<端口>`**（不是 `host.docker.internal`）。能连上要同时满足：
+宿主对它来说是这个网络的网关（参考部署是 `172.26.0.1`；不是 `host.docker.internal`，那个指向默认 bridge）：
+
+```sh
+GW=$(docker network inspect akashic-workloads --format '{{(index .IPAM.Config 0).Gateway}}')
+```
+
+能连上要同时满足：
 
 | 条件 | 做法 |
 |---|---|
-| 监听 `0.0.0.0` | dev server 加 `--host 0.0.0.0`；只绑 `127.0.0.1` 的服务容器永远连不上 |
-| 端口在 44100–44199 | 宿主防火墙只给容器网段放行这一段；局域网和公网仍然进不来 |
-| 进程一直活着 | 用 managed_processes / jobs 托管；shell 末尾的 `&` 会随命令结束被回收 |
+| 监听网关地址 | dev server 用 `--host $GW`；只绑 `127.0.0.1` 的服务容器永远连不上。绑 `$GW` 只有容器网络够得着；不要图省事绑 `0.0.0.0`，那会把服务开到所有网卡，安全全靠宿主防火墙 |
+| 端口在放行段 | 宿主防火墙要放行容器网段访问这段端口（参考部署：44100–44199）。没放行时 `goto` 会超时：停下来请用户加规则，不要自己绕 |
+| 进程一直活着 | 用 shell 工具的后台运行（`run_in_background`）或 managed_processes 托管；命令末尾的 `&` 会在命令结束时被回收 |
 
-先用宿主 shell 确认 `curl -sI http://127.0.0.1:<端口>/` 有响应，再去 computer 里开。
+先用宿主 shell 确认 `curl -sI http://$GW:<端口>/` 有响应，再去 computer 里开。
 
 在 computer 里的现象怎么读：
 
