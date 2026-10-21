@@ -440,8 +440,16 @@ export const DesktopSidebar = memo(function DesktopSidebar({
   // 行 memo 要求拖拽处理函数身份稳定：经 ref 取最新提交逻辑，处理函数本身永不重建。
   const commitManualDropRef = useRef(commitManualDrop);
   useEffect(() => { commitManualDropRef.current = commitManualDrop; });
+  // 搜索中拒绝拖拽改在 start 入口按 ref 拒绝：若用 drag=undefined 撤能力，
+  // 全部行的 memo 会在进出搜索时失效重渲染（2002 行实测首键 1.4s）。
+  const searchingRef = useRef(searching);
+  useEffect(() => { searchingRef.current = searching; });
   const dragHandlers = useMemo<ConversationRowDragHandlers>(() => ({
-    start: (id) => setDrag({ id, over: null }),
+    start: (id) => {
+      if (searchingRef.current) return false;
+      setDrag({ id, over: null });
+      return true;
+    },
     end: () => setDrag(null),
     hover: (id, half) => setDrag((current) => current
       && (current.over?.id !== id || current.over.half !== half)
@@ -452,7 +460,7 @@ export const DesktopSidebar = memo(function DesktopSidebar({
       setDrag(null);
     },
   }), []);
-  const sessionDrag = searching ? undefined : (session: ConversationSession): ConversationRowDragState => ({
+  const sessionDrag = (session: ConversationSession): ConversationRowDragState => ({
     active: drag !== null,
     source: drag?.id === session.id,
     marker: drag?.over?.id === session.id ? drag.over.half : undefined,
@@ -618,7 +626,7 @@ export const DesktopSidebar = memo(function DesktopSidebar({
         </label>
       </div>
 
-      <div className="chat-sidebar__navigation" onKeyDown={moveSessionFocus}>
+      <div className="chat-sidebar__navigation" data-searching={searching || undefined} onKeyDown={moveSessionFocus}>
       {searching && !hasMatches ? <p className="navigation-search-empty" role="status">没有匹配的会话或分组</p> : null}
       {navigationPins.error ? <div className="navigation-pins-error" role="alert">
         <span>{navigationPins.error}</span>

@@ -50,7 +50,8 @@ export interface ConversationRowDragState {
 
 /** 拖拽处理函数全列表共享一份稳定实例（按会话 id 寻址），行组件才能靠 memo 跳出无关重渲染。 */
 export interface ConversationRowDragHandlers {
-  start: (id: string) => void;
+  /** 只有严格返回 false 才算当下拒绝拖拽（如搜索中），行会把 dragstart preventDefault 掉；void 放行。 */
+  start: (id: string) => boolean | void;
   end: () => void;
   hover: (id: string, half: "before" | "after") => void;
   drop: (id: string, half: "before" | "after") => void;
@@ -100,7 +101,7 @@ export function ConversationNavigation({
   sessionHeadingAction?: ReactNode;
   className?: string;
   sessionActions?: (session: ConversationSession) => NavigationRowAction[];
-  /** 提供后会话行可拖拽排序；返回 undefined 的行不参与拖拽。处理函数由 dragHandlers 共享。 */
+  /** 提供后会话行可拖拽排序；行只表达拖拽态（进行中/来源/落点），当下能否拖拽由 dragHandlers.start 决定。 */
   sessionDrag?: (session: ConversationSession) => ConversationRowDragState | undefined;
   /** sessionDrag 的处理函数：必须是渲染之间稳定的同一实例（如 useMemo([])）。 */
   dragHandlers?: ConversationRowDragHandlers;
@@ -360,9 +361,12 @@ export const ConversationSessionRow = memo(function ConversationSessionRow({ ses
       title={session.preview ? `${session.title} · ${session.preview}` : session.title}
       draggable={drag !== undefined}
       onDragStart={drag === undefined ? undefined : (event) => {
+        if (dragHandlers?.start(session.id) === false) {
+          event.preventDefault();
+          return;
+        }
         event.dataTransfer.setData("text/plain", session.id);
         event.dataTransfer.effectAllowed = "move";
-        dragHandlers?.start(session.id);
       }}
       onDragEnd={drag === undefined ? undefined : () => dragHandlers?.end()}
       onDragOver={drag === undefined ? undefined : (event) => {
