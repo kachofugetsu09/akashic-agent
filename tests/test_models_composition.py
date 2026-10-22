@@ -15,4 +15,6 @@ def test_remainder_label_collision_preserves_category_shares() -> None:
     assert totals(detail) == totals(parts)
     assert detail["injected"]["其余 1 项"] == 101
     assert len(detail["injected"]) <= 31
-    assert totals(_scaled(detail, 782)) == _scaled(totals(parts), 782)
+    scaled = _scaled(detail, 782)
+    assert scaled is not None
+    assert totals(scaled) == _scaled(totals(parts), 782)
