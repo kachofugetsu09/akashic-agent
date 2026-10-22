@@ -17,6 +17,7 @@ from typing import Literal, TypeVar, cast
 from uuid import uuid4
 
 from core.common.file_io import run_file_io
+from utils.timing import measure
 
 from agent.plugins.execution import (
     CodeOwner,
@@ -575,7 +576,8 @@ class PluginManager:
 
     async def _load_all(self) -> None:
         """从唯一完整选择启动；null 只允许首次固定安装输入。"""
-        discovered = self.discover()
+        with measure("plugins.discover"):
+            discovered = self.discover()
         self._recover_config_updates()
         for update_id, plugin_id, outcome in self._reload_journal.settle_orphaned_installs(self.installed_plugins_home):
             logger.warning("启动按磁盘指针结算中断安装: %s %s -> %s", update_id, plugin_id, outcome)
@@ -596,7 +598,8 @@ class PluginManager:
                 cleanup_receipt=receipts.get(action.tx_id),
             )
         if selection_ref is not None:
-            selection_ref = await self._adopt_installed_inputs(selection_ref, discovered)
+            with measure("plugins.adopt"):
+                selection_ref = await self._adopt_installed_inputs(selection_ref, discovered)
             components = self._selection_components(selection_ref)
             await self._load_live_initial(components, expected_ref=selection_ref)
             return
@@ -743,9 +746,10 @@ class PluginManager:
         self._building_roots[root] = ()
         try:
             if not prepared:
-                loaded = self._selected_generations(
-                    components, root, workspace=self._workspace, sources={},
-                )
+                with measure("plugins.select", components=len(components)):
+                    loaded = self._selected_generations(
+                        components, root, workspace=self._workspace, sources={},
+                    )
                 generations = tuple(loaded.values())
                 cleanup_generations = generations
             else:
@@ -768,26 +772,28 @@ class PluginManager:
                 operation.committed = committed
                 self._bind_installed_inputs(committed)
             runnable_items: list[PluginGeneration] = []
-            for generation in generations:
-                if not (generation.data_dir / CONFIG_INPUT).exists() and generation.config_projection:
-                    save_config(generation.data_dir, generation.config_projection)
-                try:
-                    await self._load_live_generation(generation)
-                except Exception:
-                    await self._retain_pre_fiber_failure(generation)
-                    continue
-                current = self._active_generations.get(generation.plugin_id)
-                if current is not None and current is not generation:
-                    raise RuntimeError(f"live generation owner 已存在: {generation.plugin_id}")
-                self._active_generations[generation.plugin_id] = generation
-                runnable_items.append(generation)
-                ensure_workspace_plugin_data_dir(generation.data_dir, self._workspace)
+            with measure("plugins.import", generations=len(generations)):
+                for generation in generations:
+                    if not (generation.data_dir / CONFIG_INPUT).exists() and generation.config_projection:
+                        save_config(generation.data_dir, generation.config_projection)
+                    try:
+                        await self._load_live_generation(generation)
+                    except Exception:
+                        await self._retain_pre_fiber_failure(generation)
+                        continue
+                    current = self._active_generations.get(generation.plugin_id)
+                    if current is not None and current is not generation:
+                        raise RuntimeError(f"live generation owner 已存在: {generation.plugin_id}")
+                    self._active_generations[generation.plugin_id] = generation
+                    runnable_items.append(generation)
+                    ensure_workspace_plugin_data_dir(generation.data_dir, self._workspace)
             runnable = tuple(runnable_items)
             self._building_roots[root] = runnable
             await self._provide_composition_services(root, runnable)
             check_host_dependencies(root, runnable)
-            for generation in runnable:
-                await self._mount_generation_composition(root, generation)
+            with measure("plugins.mount", generations=len(runnable)):
+                for generation in runnable:
+                    await self._mount_generation_composition(root, generation)
             # Receipt readiness is diagnostic; each Fiber owns its local failure state.
             for generation in runnable:
                 generation.state = "active"
