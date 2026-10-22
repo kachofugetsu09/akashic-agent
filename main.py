@@ -319,6 +319,9 @@ async def inspect_modules(config_path: str, workspace: Path) -> None:
         )
 
 
+_GIL_SWITCH_INTERVAL = 0.001
+
+
 async def serve(config_path: str, workspace: Path) -> int:
     # Web shell 与 FastAPI 只属于 gateway；插件命令客户端不加载它们。
     from agent.restart import RestartGate, SupervisorCommitChannel
@@ -326,6 +329,10 @@ async def serve(config_path: str, workspace: Path) -> int:
     from bootstrap.app import build_app_runtime
     from bootstrap.runtime_readiness import RuntimeReadiness
 
+    # 事件循环上的 SQLite 与文件系统调用每次都要重新取 GIL；后台线程占满 CPU 时，
+    # 默认 5ms 交接间隔让一次几十行的读取排上数秒（生产开机实测停顿 2.5–15s）。
+    # 1ms 把排队压到约五分之一，纯计算线程吞吐只少约 3%。
+    sys.setswitchinterval(_GIL_SWITCH_INTERVAL)
     commit_channel = SupervisorCommitChannel.from_environment()
     if commit_channel is not None:
         commit_channel.stage("gateway.starting")
