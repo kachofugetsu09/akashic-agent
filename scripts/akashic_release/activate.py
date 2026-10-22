@@ -405,6 +405,9 @@ def activate_release(
     if self_deploy is not None:
         self_deploy["activationAttempt"] = str(attempt_path)
         write_json(Path(str(self_deploy["recordPath"])), self_deploy)
+    # 预热有界等待放在关闭准入之前：旧服务等它时仍照常接纳工作。
+    if warmer is not None:
+        warmer.wait()
     stop_ack = None
     if self_deploy is not None:
         from scripts.akashic_release.self_deploy import wait_for_stop
@@ -415,8 +418,6 @@ def activate_release(
             attempt.update(status="failed", phase="waiting_for_turn", detail=str(error))
             write_json(attempt_path, attempt)
             raise
-    if warmer is not None:
-        warmer.wait()
     attempt["phase"] = "stopping"
     write_json(attempt_path, attempt)
     # 2. 从停机开始保留失败现场；安装、迁移、Root CAS 由目标镜像统一执行。
