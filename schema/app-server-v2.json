@@ -439,11 +439,28 @@
     },
     "programmatic/session/admit": {
       "additionalProperties": false,
+      "description": "程序 Session 的创建参数；scope 决定记忆策略落在哪个范围。\n\nscope 是宽键中已声明的维度（如 ``{\"project\": \"github-review\"}``）。同一维度值的\n记忆策略由 Akasha 的 scope 策略决定，所以程序来源可以把自己放进一个既不学习、\n也不召回的范围内，而不必改动 learning 轴——learning 只控制「写」，控制不了「读」。",
       "properties": {
         "persist_memory": {
           "default": false,
           "title": "Persist Memory",
           "type": "boolean"
+        },
+        "scope": {
+          "anyOf": [
+            {
+              "additionalProperties": {
+                "type": "string"
+              },
+              "maxProperties": 16,
+              "type": "object"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Scope"
         },
         "session_id": {
           "maxLength": 512,

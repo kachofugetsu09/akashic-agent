@@ -13,6 +13,7 @@ from uuid import uuid4
 
 from akashic_sdk import AsyncAkashic, RemoteError
 from agent.plugin_composition import load_endpoint_plan
+from plugins.programmatic.contract import parse_scope_pairs
 from core.common.file_io import run_file_io
 from .endpoint import is_tcp_endpoint
 from .token import read_secret
@@ -102,7 +103,7 @@ async def _exec_until_stop(client: AsyncAkashic, session_id: str, input_id: str,
 
 async def run_exec(args: list[str], workspace: Path) -> int:
     """通过普通程序来源提交 Message，按原 Input 的持久结果退出。"""
-    # 1. 每个可重试写入都有调用方身份；CLI 不接受来源或学习属性覆盖。
+    # 1. 每个可重试写入都有调用方身份；学习资格与记忆范围只能在 --new 准入时定。
     parser = argparse.ArgumentParser(prog="exec")
     _ = parser.add_argument("prompt", nargs="?")
     _ = parser.add_argument("--new", action="store_true")
@@ -110,6 +111,10 @@ async def run_exec(args: list[str], workspace: Path) -> int:
     _ = parser.add_argument("--message-id")
     _ = parser.add_argument("--resume")
     _ = parser.add_argument("--persist-memory", action="store_true")
+    _ = parser.add_argument(
+        "--scope", action="append", default=[], metavar="DIM=VALUE",
+        help="把 Session 放进记忆范围，可重复；如 --scope project=github-review",
+    )
     _ = parser.add_argument("--detach", action="store_true")
     output = parser.add_mutually_exclusive_group()
     _ = output.add_argument("--json", action="store_true")
@@ -120,6 +125,8 @@ async def run_exec(args: list[str], workspace: Path) -> int:
         raise ValueError("exec 需要 --new 或 --session ID")
     if options.persist_memory and not options.new:
         raise ValueError("--persist-memory 只能在 --new 准入时选择")
+    if options.scope and not options.new:
+        raise ValueError("--scope 只能在 --new 准入时选择")
     if options.detach and options.final_only:
         raise ValueError("--detach 不能与 --final-only 一起使用")
     if options.resume is not None:
@@ -143,6 +150,7 @@ async def run_exec(args: list[str], workspace: Path) -> int:
         if options.new:
             _ = await client.request("programmatic/session/admit", {
                 "session_id": session_id, "persist_memory": options.persist_memory,
+                "scope": parse_scope_pairs(options.scope),
             })
         if options.resume is not None:
             receipt = await client.request("programmatic/message/resume", identity)
