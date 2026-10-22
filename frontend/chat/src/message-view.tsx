@@ -389,7 +389,8 @@ function FlowItemView({ item, onCopyToolDetail, partView }: {
 const VISIBLE_STEP_TAIL = 3;
 
 /** 运行中的工具不能收：它自己要保持可见，也切断折叠区间，避免把「正在跑」藏进计数里。
-    返回值同时给出该步耗时（只汇总被折叠的那些，不把尾部已展开的算进去）。 */
+    耗时只汇总被折叠的那些，且要求它们全都有耗时——思考块没有耗时字段，只加部分成员的
+    ms 会让「4 个更早步骤 120ms」读成整组只花了 120ms。 */
 function groupProcessSteps<T>(
   items: T[],
   step: (item: T) => { foldable: boolean; ms?: number },
@@ -399,10 +400,10 @@ function groupProcessSteps<T>(
   const flush = () => {
     if (run.length > VISIBLE_STEP_TAIL) {
       const head = run.slice(0, run.length - VISIBLE_STEP_TAIL);
-      const counted = head.filter((entry) => entry.ms !== undefined);
+      const allTimed = head.every((entry) => entry.ms !== undefined);
       result.push({
         members: head.map((entry) => entry.item),
-        durationMs: counted.length ? counted.reduce((total, entry) => total + (entry.ms ?? 0), 0) : undefined,
+        durationMs: allTimed ? head.reduce((total, entry) => total + (entry.ms ?? 0), 0) : undefined,
       });
       result.push(...run.slice(-VISIBLE_STEP_TAIL).map((entry) => entry.item));
     } else {

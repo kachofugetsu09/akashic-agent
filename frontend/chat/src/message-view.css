@@ -1133,6 +1133,18 @@
   top: calc(var(--heading-cover, 0px) + 2 * var(--tool-sticky-h));
 }
 
+/* 思考进了工具组之后，组内展开的思考行会和组头抢同一个吸附位：组头 z-index 3 且带纸面
+   底色，会把思考的标题行（也就是点回收起的地方）压在下面。让位规则要与工具行同构。 */
+.tool-group.is-open .tool-group-items .thinking-row[data-state="open"] .process-trigger-sticky {
+  top: calc(var(--heading-cover, 0px) + var(--tool-sticky-h));
+  z-index: 2;
+}
+
+.turn-process.is-open .turn-process-items .tool-group.is-open .tool-group-items
+  .thinking-row[data-state="open"] .process-trigger-sticky {
+  top: calc(var(--heading-cover, 0px) + 2 * var(--tool-sticky-h));
+}
+
 /* 跨天分隔：居中日期两侧各一条发丝线，与消息行同色阶。 */
 .day-separator {
   display: flex;
