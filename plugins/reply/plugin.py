@@ -141,6 +141,7 @@ async def apply(ctx: Context) -> None:
     await mount_settings(ctx, SETTINGS, ModelSettings(ctx, Config, SETTING_FIELDS),
                          lambda: import_module(".dashboard", __package__))
     watcher: asyncio.Task[None] | None = None
+    scan: asyncio.Task[None] | None = None
     pending: dict[tuple[str, str], AbstractContextManager[None]] = {}
     running = False
     status = ReplyState()
@@ -245,10 +246,15 @@ async def apply(ctx: Context) -> None:
 
     _ = await ctx.provide(REPLY_PROGRAM, report)
 
+    # 待回复占位在后台扫描：上千个 Session 的来源判定不挡插件激活与 ready；
+    # 扫描期间的新提交照常经 changed 同步占位，扫描结果靠来源 head CAS 不覆盖更新的事实。
     async def prepare(_event: object) -> None:
-        nonlocal running
+        nonlocal running, scan
         running = True
-        await _prepare_pending(ctx.require(MESSAGE_CATALOG), partial(ctx.require, SOURCES), changed)
+        scan = await ctx.spawn(
+            _prepare_pending(ctx.require(MESSAGE_CATALOG), partial(ctx.require, SOURCES), changed),
+            name="reply-prepare",
+        )
 
     async def start(_event: object) -> None:
         nonlocal watcher
@@ -260,12 +266,13 @@ async def apply(ctx: Context) -> None:
 
     async def stop(_event: object) -> None:
         try:
-            if watcher is not None:
-                _ = watcher.cancel()
-                try:
-                    await watcher
-                except asyncio.CancelledError:
-                    pass
+            for task in (scan, watcher):
+                if task is not None:
+                    _ = task.cancel()
+                    try:
+                        await task
+                    except asyncio.CancelledError:
+                        pass
         finally:
             close_pending()
 
