@@ -75,7 +75,9 @@ def bounded(parts: Mapping[str, Mapping[str, int]]) -> Parts:
             kept[name] = kept.get(name, 0) + value
         rest = ranked[_SOURCES_PER_CATEGORY:]
         if rest:
-            kept[f"其余 {len(rest)} 项"] = sum(value for _, value in rest)
+            name = f"其余 {len(rest)} 项"
+            # A real source may already use this display label.
+            kept[name] = kept.get(name, 0) + sum(value for _, value in rest)
         result[category] = kept
     return result
 
