@@ -46,6 +46,7 @@ class InotifyTreeWatcher:
     - 文件目标：监听其父目录，但只有目标文件名的事件才计为变化
       （数据目录可能有高频运行时写入，不能整目录计入）。
     - 暂不存在的根：退化为监听其父目录（不递归），等待其出现。
+    - 浅目录（如内容寻址的 artifact 容器）：只监听自身条目增删，不逐层下钻。
 
     回调在创建 watcher 的事件循环上执行；队列溢出同样只表现为一次回调。
     """
@@ -55,9 +56,11 @@ class InotifyTreeWatcher:
         on_change: Callable[[], None],
         *,
         exclude: Callable[[str], bool],
+        shallow: Callable[[str], bool] = lambda _name: False,
     ) -> None:
         self._on_change = on_change
         self._exclude = exclude
+        self._shallow = shallow
         self._libc: ctypes.CDLL | None = None
         self._fd: int | None = None
         # wd -> 绝对路径；三种目标各一张表区分事件语义。
@@ -195,6 +198,9 @@ class InotifyTreeWatcher:
             except OSError:
                 continue
             if real in self._covered:
+                continue
+            if self._shallow(os.path.basename(current)):
+                self._add_flat(real)
                 continue
             wd = self._add_watch(real, only_dir=True)
             if wd is None:
