@@ -15,6 +15,7 @@ from scripts.akashic_release.manifest import activation_receipt, atomic_write, r
 from scripts.akashic_release.model import ReleasePaths
 from scripts.akashic_release.systemd import install_units, install_operator_entrypoint
 from scripts.akashic_release.systemd import start_bridge, start_core, stop_runtime
+from scripts.akashic_release.warm import StateCacheWarmer
 from utils.timing import measure
 
 Run = Callable[..., subprocess.CompletedProcess[str]]
@@ -353,6 +354,7 @@ def activate_release(
     inputs: Path | None = None, backup: bool = False,
     unit_root: Path = Path("/etc/systemd/system"), cli_path: Path = Path.home() / ".local/bin/akashic-release",
     self_deploy: dict[str, object] | None = None,
+    warmer: StateCacheWarmer | None = None,
 ) -> str:
     """按部署者清单停机发布；默认只更新 Core/Bridge，不执行待迁移。"""
 
@@ -403,6 +405,9 @@ def activate_release(
     if self_deploy is not None:
         self_deploy["activationAttempt"] = str(attempt_path)
         write_json(Path(str(self_deploy["recordPath"])), self_deploy)
+    # 预热有界等待放在关闭准入之前：旧服务等它时仍照常接纳工作。
+    if warmer is not None:
+        warmer.wait()
     stop_ack = None
     if self_deploy is not None:
         from scripts.akashic_release.self_deploy import wait_for_stop
