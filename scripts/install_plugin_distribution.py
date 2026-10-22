@@ -944,16 +944,18 @@ def publish_distribution(
                 raise SelectionConflictError("取得发布锁期间 Root 改变")
             with tempfile.TemporaryDirectory(prefix="akashic-deploy-") as temporary:
                 staged = Path(temporary)
-                report = verify_distribution(distribution)
+                with measure("publish.verify"):
+                    report = verify_distribution(distribution)
                 if adoption is not None and adoption["distribution_source_commit"] != report["source_commit"]:
                     raise SelectionConflictError("历史归属转换的目标发行版不符")
                 components, selected = _selected_components(selection, expected_root, replacing_distribution=True)
-                available, candidate = _distribution_candidate(
-                    distribution=distribution, workspace=workspace, plugins_home=plugins_home, selected=selected,
-                    replacement_ids=frozenset(item["plugin_id"] for item in requested),
-                    adoption=adoption,
-                )
-                _prepare_distribution_environments(available, distribution, workspace, selected)
+                with measure("publish.candidate"):
+                    available, candidate = _distribution_candidate(
+                        distribution=distribution, workspace=workspace, plugins_home=plugins_home, selected=selected,
+                        replacement_ids=frozenset(item["plugin_id"] for item in requested),
+                        adoption=adoption,
+                    )
+                    _prepare_distribution_environments(available, distribution, workspace, selected)
                 external_requests = [item for item in requested if not (
                     item.get("bundled") and item["plugin_id"] in candidate
                     and candidate[item["plugin_id"]].source_type == "builtin")]
@@ -963,8 +965,9 @@ def publish_distribution(
                     workspace=workspace, plugins_home=plugins_home,
                 )
                 replacements = {item["plugin_id"]: item["code"] for item in targets}
-                migration_sources = distribution_migration_sources(workspace, plugins_home, distribution,
-                                                                    adoption=adoption, replacing_distribution=True)
+                with measure("publish.migration_sources"):
+                    migration_sources = distribution_migration_sources(workspace, plugins_home, distribution,
+                                                                        adoption=adoption, replacing_distribution=True)
                 reserved_ids = {f"{item.plugin_name}@{item.marketplace}" for item in migration_sources}
                 reserved_ids.update(available.legacy_ids)
                 if reserved_ids.intersection(replacements):
@@ -976,7 +979,8 @@ def publish_distribution(
                 runner = MigrationRunner(repo_root=_SOURCE_ROOT, config_path=config_path,
                                      plugins_home=plugins_home, bundle_directory=distribution / "bundles",
                                          workspace=workspace, fixed_sources=migration_sources)
-                pending = runner.check()
+                with measure("publish.migrations.check"):
+                    pending = runner.check()
                 result: dict[str, Any] = {
                     "status": "preflight_ok", "plan_sha256": digest,
                     "old_root_ref": expected_root, "migration_ids": list(pending),
@@ -993,15 +997,17 @@ def publish_distribution(
                     backup_release_state(state, backup_dir)
                     result["backup_dir"] = str(backup_dir)
                 # Core 先更新自己的账本结构，业务 step 只由相应插件执行。
-                runner.run_under_maintenance(maintenance, core_only=True)
-                check_pending_publication(workspace)
-                runner.run_under_maintenance(maintenance)
+                with measure("publish.migrations.run"):
+                    runner.run_under_maintenance(maintenance, core_only=True)
+                    check_pending_publication(workspace)
+                    runner.run_under_maintenance(maintenance)
                 # 迁移可能改变声明输入；只按迁移后的选择提交，显式外置目标重新核对启停。
-                available, candidate = _distribution_candidate(
-                    distribution=distribution, workspace=workspace, plugins_home=plugins_home, selected=selected,
-                    replacement_ids=frozenset(replacements), adoption=adoption,
-                )
-                choices = plugin_choices(workspace, distribution)
+                with measure("publish.candidate.migrated"):
+                    available, candidate = _distribution_candidate(
+                        distribution=distribution, workspace=workspace, plugins_home=plugins_home, selected=selected,
+                        replacement_ids=frozenset(replacements), adoption=adoption,
+                    )
+                    choices = plugin_choices(workspace, distribution)
                 for plugin_id, code in replacements.items():
                     if not choices.get(plugin_id, False):
                         raise SelectionConflictError(f"迁移后的外置目标未启用: {plugin_id}")
@@ -1033,10 +1039,11 @@ def publish_distribution(
                     prepared_selected[plugin_id] = (
                         prepared.input_ref, selection.read_input(prepared.input_ref), prepared.code_dir,
                     )
-                new_components = _prepare_distribution_inputs(
-                    available=available, candidate=candidate, selected=prepared_selected,
-                    distribution=distribution, workspace=workspace, plugins_home=plugins_home, selection=selection,
-                )
+                with measure("publish.inputs"):
+                    new_components = _prepare_distribution_inputs(
+                        available=available, candidate=candidate, selected=prepared_selected,
+                        distribution=distribution, workspace=workspace, plugins_home=plugins_home, selection=selection,
+                    )
                 new_root = (selection.commit(new_components, expected_ref=expected_root,
                                              distribution_adoption=adoption)
                             if new_components != components or adoption is not None else expected_root)
