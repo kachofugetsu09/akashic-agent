@@ -6,6 +6,9 @@
 `interactive.md`，只读用得上的那份。
 架构与保留边界见 [0117](../../docs/decisions/0117-visuals-are-message-attachments.md)。
 
+静态入口 `/visuals/frame.html` 通过 `UI.register(navigation_paths=(...))` 声明为可直接导航的页面；
+设置 API 仍要求 Web 模块身份。加载失败时聊天显示错误与可下载附件，原始工具结果保留在过程记录中。
+
 ## 运行条件
 
 插件依赖 `tools.v1` 和 `ledger.artifact_import.v1`；`ui.slots.v1` 仅用于可选展示。
@@ -59,7 +62,7 @@ Workload Controller 仍用 Docker 默认策略。上游 Apache-2.0 许可保存�
 禁用后摘要与下载链接保留；重新启用、刷新或打开另一页面会从文档初始参数开始。
 
 任何消息中的 HTML 文件附件都由本插件在同一 sandbox 中展示；用户自己上传的网页点击“运行网页”后才执行。
-加载失败、禁用或缺少插件时，宿主保留消息中的标题、摘要和下载入口。
+加载失败时显示错误和文件卡片，原始工具文字留在过程记录中；禁用或缺少插件时保留原有摘要和下载入口。
 已打开的图发生交互错误时保留原 iframe 与参数，并在图旁说明错误；原始文件仍可下载。预检不是数学正确性证明，也不能保证任意
 后续交互都没有错误。服务端断网与客户端 sandbox/CSP 的保证不同，详见架构决定。
 
@@ -73,6 +76,8 @@ Workload Controller 仍用 Docker 默认策略。上游 Apache-2.0 许可保存�
 ```sh
 .venv/bin/python scripts/visuals_scenario.py --output /tmp/visuals-acceptance
 node scripts/visuals/browser-server.mjs /tmp/visuals-acceptance
+# 自动检查窄屏/桌面交互、沙箱与 HTTP 403 失败展示；可用 CHROMIUM_PATH 指定浏览器。
+node scripts/visuals/browser-server.mjs /tmp/visuals-acceptance 4330 --check
 ```
 
 浏览器打开 `http://127.0.0.1:4330`。该页用实际聊天组件回放上一命令导出的真实消息、附件与安装资产。

@@ -471,6 +471,8 @@ JS 语法、首次 `activate`、mount 冲突、首屏 render 和 disposer 由生
 不再把 `frontend/dashboard/src` 或 Dashboard 私有配置当作隐藏输入。面板迁为只依赖 Host SDK 的 Web module 后，旧 Shell dashboard 分支、浏览器 panel adapter、源码扫描和请求期编译一起删除；插件自己的 Dashboard
 HTTP/data ABI 继续由 `UI.register(..., dashboard=loader)` 拥有。
 
+需要普通浏览器导航的页面可显式声明 `navigation_paths=("/plugin/page.html",)`。这些路径必须是已注册、无路径参数、仅支持 GET/HEAD 的页面，不能位于 `/api/dashboard` 命名空间。只有这些页面的 GET/HEAD 请求可省略 Web 模块身份；已有登录校验、owner 生命周期及携带身份时的目录校验仍然适用。其余路由保持原身份要求。
+
 ### 阶段 3：迁移模型页和 Provider 子 UI
 
 - `models` 注册设置分节、声明 `models.connection-types.v1`，拥有 catalog/default/embedding/Connection 布局。

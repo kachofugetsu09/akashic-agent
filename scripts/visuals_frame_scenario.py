@@ -1,4 +1,4 @@
-"""在真实聊天 CSP、附件 HTTP 接口和插件文档入口下检查图表启动。"""
+"""在严格父页面 CSP、真实附件 HTTP 接口和插件文档入口下检查图表启动。"""
 from __future__ import annotations
 
 import argparse
@@ -81,7 +81,10 @@ async def run(workspace: Path, executable: str | None, artifact: Path | None) ->
              "origin": {"kind": "tool_result", "tool": "render_visual"}}
     page_html = ('<!doctype html><meta name="viewport" content="width=device-width,initial-scale=1">'
                  '<div id="host"></div><script type="module" src="/scenario-entry.js"></script>')
-    app.router.routes.insert(0, APIRoute("/chat", lambda: HTMLResponse(page_html), methods=["GET"]))
+    # Chat now mounts in the shell; this standalone page owns its strict CSP.
+    page_headers = {"Content-Security-Policy":
+                    "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; frame-src 'self'"}
+    app.router.routes.insert(0, APIRoute("/chat", lambda: HTMLResponse(page_html, headers=page_headers), methods=["GET"]))
 
     @app.get("/scenario-entry.js")
     async def entry() -> Response:

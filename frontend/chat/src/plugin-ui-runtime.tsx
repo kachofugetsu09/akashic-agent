@@ -655,8 +655,10 @@ export function PluginUiSlot<S extends InlineSlotName>(props: {
   /** 宿主另有降级展示时不显示目录更新和卸载提示。 */
   quiet?: boolean;
   fallback?: React.ReactNode;
+  /** Mount failures can use a shorter fallback than an absent renderer. */
+  errorFallback?: React.ReactNode;
 } & HostSlotFacts<S>) {
-  const { name, owner, refreshToken, prefetch = false, quiet = false, fallback = null } = props;
+  const { name, owner, refreshToken, prefetch = false, quiet = false, fallback = null, errorFallback = fallback } = props;
   const { sessionId, messageId, block, scope, fields } = props as unknown as Omit<HostMountFacts, "slot"> & { fields?: ScopeFields };
   const version = useRegistryVersion();
   const renderers = slotMatches(name, block, prefetch, owner);
@@ -677,14 +679,14 @@ export function PluginUiSlot<S extends InlineSlotName>(props: {
     <div className={prefetch ? "plugin-ui-prefetch" : "plugin-ui-slot"} data-slot={name} data-version={version}>
       {notice && !prefetch && <p role="status">{notice} <button type="button" onClick={() => window.location.reload()}>刷新页面</button></p>}
       {shown.map(({ plugin, renderer, error }) => error ? (
-        <div key={plugin.id}><p role="alert">插件界面错误：{error}</p>{fallback}</div>
+        <div key={plugin.id}><p role="alert">插件界面错误：{error}</p>{errorFallback}</div>
       ) : (
         <ViewportMountedPlugin
           key={`${plugin.id}:${plugin.revision}:${name}`}
           pluginId={plugin.id}
           pluginRevision={plugin.revision}
           renderer={renderer}
-          fallback={fallback}
+          fallback={errorFallback}
           prefetch={prefetch}
           refreshToken={refreshToken}
           fields={fields}

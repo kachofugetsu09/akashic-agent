@@ -4,6 +4,7 @@ from __future__ import annotations
 import argparse
 import asyncio
 import json
+import httpx
 import os
 from pathlib import Path
 import shutil
@@ -93,7 +94,7 @@ async def run(directory: Path, executable_path: str | None) -> dict[str, object]
     from agent.plugins.manager import PluginManager
     from agent.plugins.selection import PluginSelection
     from plugins.ledger.contract import ARTIFACT_READ, MESSAGE_CATALOG, AttachmentKind
-    from plugins.ui.contract import PLUGIN_UI, MESSAGE_DISPLAY
+    from plugins.ui.contract import PLUGIN_UI, MESSAGE_DISPLAY, WEB_UI
 
     workspace, home, sources = directory / "workspace", directory / "home", directory / "sources"
     workspace.mkdir(parents=True)
@@ -120,6 +121,20 @@ async def run(directory: Path, executable_path: str | None) -> dict[str, object]
         await host.load_all()
         root = host.live_root
         assert root is not None
+        # Exercise the installed plugin through its real UI identity middleware.
+        endpoint = next(item for item in root.endpoints() if item.name == "dashboard")
+        async with httpx.AsyncClient(transport=httpx.AsyncHTTPTransport(uds=endpoint.address), base_url="http://local") as web:
+            browser_headers = {"sec-fetch-site": "same-origin", "sec-fetch-mode": "navigate", "sec-fetch-dest": "iframe"}
+            frame = await web.get("/visuals/frame.html", headers=browser_headers)
+            assert frame.status_code == 200, frame.text
+            assert "sandbox allow-scripts;" in frame.headers["content-security-policy"]
+            config_path = "/api/dashboard/visuals/config"
+            assert (await web.get(config_path, headers=browser_headers)).status_code == 403
+            catalog = json.loads(await root.context.require(WEB_UI).bootstrap())
+            module = next(item for item in catalog["modules"] if item["pluginId"] == "visuals@lab")
+            headers = dict(zip(("x-akashic-web-snapshot", "x-akashic-web-catalog", "x-akashic-web-module", "x-akashic-web-generation"),
+                               (catalog["snapshotId"], catalog["catalogId"], module["pluginId"], module["generationId"])))
+            assert (await web.get(config_path, headers=headers)).status_code == 200
         for identity in ("first", "warm"):
             start = time.monotonic()
             async with root.context.open_service(ServiceKey("scenario.visual.call")) as call:

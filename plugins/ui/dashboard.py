@@ -49,10 +49,12 @@ class DashboardResources:
         *,
         has_web: bool,
         registry: object,
+        navigation_paths: tuple[str, ...] = (),
     ) -> None:
         self.ctx = ctx
         self.loader = loader
         self.has_web = has_web
+        self.navigation_paths = navigation_paths
         self._registry = registry
         self.closeables: list[Closeable] = []
         self._started = False
@@ -172,6 +174,8 @@ class DashboardResources:
         if app.router.on_startup or app.router.on_shutdown:
             raise RuntimeError("dashboard module 不支持 startup/shutdown hook")
         routes = _plugin_routes(app.routes)
+        navigation_paths = self.navigation_paths if enabled_result else ()
+        _check_navigation_paths(navigation_paths, routes)
         binding = DashboardBinding(
             plugin_id=runtime.plugin_id,
             app=app,
@@ -182,9 +186,23 @@ class DashboardResources:
             module_name=module.__name__,
             generation_id=runtime.generation_id,
             has_web=self.has_web,
+            navigation_paths=navigation_paths,
         )
         _require_routes_available(binding, occupied)
         return binding
+
+
+def _check_navigation_paths(paths: tuple[str, ...], routes: tuple[DashboardRoute, ...]) -> None:
+    """Only explicit, read-only page routes may omit the Web module identity."""
+    for path in paths:
+        matches = [route for route in routes if route.path == path]
+        if (not isinstance(path, str) or not path.startswith("/")
+                or path == "/api/dashboard" or path.startswith("/api/dashboard/")
+                or not matches or any(
+                    not isinstance(route, APIRoute) or route.param_convertors
+                    or not route.methods or not route.methods <= {"GET", "HEAD"}
+                    for route in matches)):
+            raise ValueError(f"Navigation path must name a GET/HEAD page route: {path!r}")
 
 
 def _reject_dashboard_awaitable(value: object, *, operation: str) -> None:

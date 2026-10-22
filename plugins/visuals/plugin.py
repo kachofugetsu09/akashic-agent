@@ -135,7 +135,8 @@ async def apply(ctx: Context) -> None:
 
     async def register_ui(child: Context) -> None:
         await child.require(UI).register(child, web="web_module.js", dashboard=lambda: dashboard,
-                                         requires=("shell.settings-plugins.v1",), contract_digests=SETTINGS_SLOT)
+                                         requires=("shell.settings-plugins.v1",), contract_digests=SETTINGS_SLOT,
+                                         navigation_paths=("/visuals/frame.html",))
 
         def query(method: str, payload: dict[str, object], *, session_id: str | None, turn_id: str | None) -> object:
             raise PluginUiRpcInvalidRequest("可视化只读取消息附件，不提供 UI RPC")
