@@ -4,6 +4,7 @@ import asyncio
 import logging
 from collections.abc import Awaitable, Callable
 
+from agent.plugins.artifacts import ARTIFACTS_DIR
 from agent.plugins.fs_watch import InotifyTreeWatcher
 from agent.plugins.input_preparation import SOURCE_EXCLUDED_NAMES
 from agent.plugins.manager import PluginManager
@@ -62,9 +63,12 @@ class PluginWatcher:
         pending_ids: frozenset[str] = frozenset()
         full_pending = False
         if self._fs_events:
+            # 已安装版本按内容寻址、装好即不变；换版只新增目录并改 pointer，
+            # 不下钻历史版本，生产上万个目录的监听不再撑满预算、阻塞事件循环。
             events = InotifyTreeWatcher(
                 self._on_fs_event,
                 exclude=lambda name: name in SOURCE_EXCLUDED_NAMES,
+                shallow=lambda name: name == ARTIFACTS_DIR,
             )
             # 平台不支持或监听预算耗尽时回退到纯轮询。
             self._events = events if events.start() else None

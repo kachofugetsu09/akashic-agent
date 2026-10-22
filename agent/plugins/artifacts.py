@@ -9,6 +9,7 @@ from agent.plugins.static_manifest import load_static_plugin_manifest
 from infra.persistence.json_store import atomic_save_json, load_json
 
 _SAFE_SEGMENT = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]*")
+ARTIFACTS_DIR = ".artifacts"
 
 
 @dataclass(frozen=True)
@@ -91,7 +92,7 @@ def resolve_pointer(
     relative = PurePosixPath(pointer.path)
     parts = relative.parts
     valid_artifact = (
-        len(parts) == 2 and parts[0] == ".artifacts" and _safe_segment(parts[1])
+        len(parts) == 2 and parts[0] == ARTIFACTS_DIR and _safe_segment(parts[1])
     )
     if relative.is_absolute() or not valid_artifact:
         raise ValueError(f"插件 artifact pointer 越界: {pointer.path}")
