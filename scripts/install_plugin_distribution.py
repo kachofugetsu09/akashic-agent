@@ -1093,19 +1093,22 @@ def ensure_bundle(
                                           initialize_workspace=False)
                 # Keep the first receipt unchanged, including retired bootstrap sources.
                 _write_receipt(receipt_path, receipt)
-            receipt = _read_json(receipt_path)
-            _validate_receipt_state(receipt, workspace=workspace, plugins_home=plugins_home)
-            selection = PluginSelection(workspace)
-            expected = selection.read()
-            components, selected = ((), {}) if expected is None else _selected_components(selection, expected)
+            with measure("inputs.selection"):
+                receipt = _read_json(receipt_path)
+                _validate_receipt_state(receipt, workspace=workspace, plugins_home=plugins_home)
+                selection = PluginSelection(workspace)
+                expected = selection.read()
+                components, selected = ((), {}) if expected is None else _selected_components(selection, expected)
             runner = MigrationRunner(repo_root=_SOURCE_ROOT, config_path=config_path,
                                      plugins_home=plugins_home, bundle_directory=distribution / "bundles", workspace=workspace,
                                      fixed_sources=distribution_migration_sources(workspace, plugins_home, distribution))
-            pending = runner.check()
-            runner.run_under_maintenance(maintenance, core_only=True)
-            available, candidate = _distribution_candidate(
-                distribution=distribution, workspace=workspace, plugins_home=plugins_home, selected=selected,
-            )
+            with measure("inputs.migrations.core"):
+                pending = runner.check()
+                runner.run_under_maintenance(maintenance, core_only=True)
+            with measure("inputs.candidate"):
+                available, candidate = _distribution_candidate(
+                    distribution=distribution, workspace=workspace, plugins_home=plugins_home, selected=selected,
+                )
             try:
                 check_pending_publication(workspace)
             except PendingPublicationError:
@@ -1116,11 +1119,13 @@ def ensure_bundle(
                     raise
                 return {**receipt, "status": "existing", "new_root_ref": expected,
                         "recovery_pending": True}
-            runner.run_under_maintenance(maintenance)
-            new_components = _prepare_distribution_inputs(
-                available=available, candidate=candidate, selected=selected,
-                distribution=distribution, workspace=workspace, plugins_home=plugins_home, selection=selection,
-            )
+            with measure("inputs.migrations"):
+                runner.run_under_maintenance(maintenance)
+            with measure("inputs.prepare"):
+                new_components = _prepare_distribution_inputs(
+                    available=available, candidate=candidate, selected=selected,
+                    distribution=distribution, workspace=workspace, plugins_home=plugins_home, selection=selection,
+                )
             # 空组合也必须提交，首次启动不能重新发现并启用全部制品。
             new_root = expected
             if expected is None or new_components != components:
