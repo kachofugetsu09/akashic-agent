@@ -156,16 +156,15 @@ def _adopted_distribution_roots(
         base = plugins_home / "cache" / marketplace / name
         if any(path.is_symlink() for path in (plugins_home / "cache", base.parent, base)):
             raise SelectionConflictError(f"历史归属 cache 路径包含链接: {plugin_id}")
-        pointers = read_pointers(base)
+        # stable 必须等于 latest，下面的 manifest 读取即是唯一目标的内容校验。
+        pointers = read_pointers(base, validate_content=False)
         if (pointers is None or pointers.stable != pointers.latest
             or pointers.stable.path != row["artifact_pointer"]):
             raise SelectionConflictError(f"历史归属 cache pointer 已变化: {plugin_id}")
-        artifact = resolve_pointer(base, pointers.stable)
+        artifact = resolve_pointer(base, pointers.stable, validate_content=False)
         assert artifact is not None
         identity = load_static_plugin_manifest(artifact)
-        revision = subprocess.check_output(
-            ["git", "--no-optional-locks", "-C", str(artifact), "rev-parse", "HEAD"], text=True,
-        ).strip()
+        revision = _head_revision(artifact)
         code = hashlib.sha256(encode_tree(tree_entries(
             artifact, exclude=frozenset({".venv", "node_modules", ENVIRONMENT_FILE}),
         ))).hexdigest()
@@ -188,6 +187,19 @@ def _adopted_distribution_roots(
         ignored.add(artifact)
         historical.add(plugin_id)
     return ignored, historical
+
+
+# 已安装制品是 detached checkout：HEAD 直接是提交号时不起 git 子进程，其余形态仍交给 git。
+def _head_revision(artifact: Path) -> str:
+    try:
+        head = (artifact / ".git" / "HEAD").read_text().strip()
+    except OSError:
+        head = ""
+    if re.fullmatch(r"[0-9a-f]{40}|[0-9a-f]{64}", head) is not None:
+        return head
+    return subprocess.check_output(
+        ["git", "--no-optional-locks", "-C", str(artifact), "rev-parse", "HEAD"], text=True,
+    ).strip()
 
 
 def distribution_sources(
@@ -224,16 +236,14 @@ def distribution_sources(
             continue
         if pointers.stable != pointers.latest:
             raise RuntimeError(f"unsettled installed pointers: {plugin_id}")
-        artifact = resolve_pointer(base, pointers.stable)
+        artifact = resolve_pointer(base, pointers.stable, validate_content=False)
         if artifact is None or artifact != Path(row["installed_path"]):
             continue
         provenance_path = artifact / ".akashic-source.json"
         if not provenance_path.is_file():
             continue
         provenance = json.loads(provenance_path.read_text())
-        revision = subprocess.check_output(
-            ["git", "--no-optional-locks", "-C", str(artifact), "rev-parse", "HEAD"], text=True,
-        ).strip()
+        revision = _head_revision(artifact)
         if (revision == row["source_revision"]
             and provenance.get("commit") == receipt["distribution_source_commit"]
             and isinstance(provenance.get("path"), str)
