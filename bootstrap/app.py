@@ -16,6 +16,7 @@ from bootstrap.cleanup import run_cleanup_steps
 from bootstrap.runtime_readiness import RuntimeReadiness
 from bootstrap.tools import CoreRuntime, build_core_runtime
 from bootstrap.workspace_lock import WorkspaceInstanceLock
+from utils.timing import measure
 from agent.plugins.watcher import PluginWatcher
 from core.net.http import (
     SharedHttpResources,
@@ -138,14 +139,16 @@ class AppRuntime:
             self.readiness.mark_stage("workspace.locked")
         try:
             configure_default_shared_http_resources(self.http_resources)
-            self.core = build_core_runtime(
-                self.config,
-                self.workspace,
-                self.http_resources,
-                restart_gate=self.restart_gate,
-                host_ready=(lambda: self.readiness.ready) if self.readiness else None,
-            )
-            await self.core.start()
+            with measure("core.build"):
+                self.core = build_core_runtime(
+                    self.config,
+                    self.workspace,
+                    self.http_resources,
+                    restart_gate=self.restart_gate,
+                    host_ready=(lambda: self.readiness.ready) if self.readiness else None,
+                )
+            with measure("core.start"):
+                await self.core.start()
             if self.readiness is not None:
                 self.readiness.mark_stage("core.ready")
             plugin_manager = getattr(self.core, "plugin_manager", None)

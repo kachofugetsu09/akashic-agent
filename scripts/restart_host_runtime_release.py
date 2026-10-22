@@ -66,7 +66,8 @@ def wait_for_core_health(container_name: str, timeout_sec: float) -> None:
             raise RuntimeError(f"Core healthcheck 未通过: {status}")
         if time.monotonic() >= deadline:
             raise TimeoutError(f"等待 Core healthy 超时: {status}")
-        time.sleep(2)
+        # healthcheck 开机期间每秒探测一次；部署器按半个间隔读取，翻转后最多再等 0.5s。
+        time.sleep(0.5)
 
 
 def run_release_restart(
