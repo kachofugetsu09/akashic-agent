@@ -82,9 +82,10 @@ services:
         max-size: "50m"
         max-file: "5"
     restart: "no"
+    # Core 开机到首次使用 Controller 要数秒；并行启动，host_execution 首次使用前自己等 socket。
     depends_on:
       workload-controller:
-        condition: service_healthy
+        condition: service_started
     networks:
       - default
       - akashic-workloads

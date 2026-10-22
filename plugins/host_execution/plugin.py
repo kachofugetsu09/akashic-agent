@@ -52,6 +52,7 @@ async def apply(ctx: Context) -> None:
         if previous is not missing and (not isinstance(previous, str) or not previous or previous.strip() != previous):
             raise ValueError("宿主执行启动清理标记损坏")
         if previous != boot_id:
+            await controller.wait_ready()
             await cleanup_workloads_for_boot(controller, workspace_id)
             await run_file_io(lambda: atomic_save_json(marker, boot_id))
     await ctx.provide(WORKLOAD_CONTROLLER, ControllerAccess(ctx, controller, workspace_id))
