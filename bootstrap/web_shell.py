@@ -216,11 +216,11 @@ _WEB_CONTENT_SECURITY_POLICY = "; ".join((
 class WebShellServer(uvicorn.Server):
     """在线程和进程入口之间发布确定的监听启动结果。"""
 
-    def __init__(self, config: uvicorn.Config, streams_stopping: asyncio.Event) -> None:
+    def __init__(self, config: uvicorn.Config, streams_stopping: asyncio.Event | None = None) -> None:
         self._exit_loop: asyncio.AbstractEventLoop | None = None
         self._exit_event: asyncio.Event | None = None
         self._exit_requested = False
-        self._streams_stopping = streams_stopping
+        self._streams_stopping = streams_stopping or asyncio.Event()
         super().__init__(config)
         self.startup_event = threading.Event()
 
