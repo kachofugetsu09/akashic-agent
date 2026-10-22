@@ -16,6 +16,7 @@ from typing import Literal, Self, cast
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from agent.plugin_composition import RUNTIME_STARTED, RUNTIME_STOPPING, Context, ServiceKey
+from agent.plugin_composition.host import HOST_INFO
 from plugins.akasha.contract import EMBEDDING_MEMORY_PLUGIN
 from plugins.models.contract import EMBEDDINGS
 from plugins.ui.contract import (
@@ -87,7 +88,7 @@ MaterialData = Mapping[str, object]
 
 
 function_inject = (TURN_PROJECTION, CONTENT, MATERIALS, TOOLS, EMBEDDINGS,
-          BINDINGS, MESSAGE_CATALOG, MESSAGE_EMBEDDINGS, OWNER_STATE, COMMANDS)
+          BINDINGS, MESSAGE_CATALOG, MESSAGE_EMBEDDINGS, OWNER_STATE, COMMANDS, HOST_INFO)
 
 
 class Config(BaseModel):
@@ -657,6 +658,8 @@ async def run(ctx: Context, interest: Interest) -> None:
     # 3. 通知只唤醒消费者；模型后配时下一条输入也会经过同一启动边界。
     async def follow() -> None:
         """Coalesce notifications per graph; a slow graph owns only its own wait."""
+        # 图恢复按已学 Turn 线性增长；宿主就绪后再追赶，就绪前的召回仍按需装载。
+        await ctx.require(HOST_INFO).settled()
         pending: dict[str, asyncio.Event] = {}
 
         async def consume_graph(key: str, changed: asyncio.Event) -> None:
