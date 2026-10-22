@@ -46,7 +46,7 @@ export function DesktopAutoScroll({
     lastMessage?.id ?? "",
     lastMessage?.content.length ?? 0,
     lastMessage?.blocks.length ?? 0,
-    lastBlock?.kind === "thinking" ? lastBlock.content.length : "",
+    lastBlock && lastBlock.kind !== "tool" ? lastBlock.content.length : "",
     timelineMessages.at(-1)?.id ?? "",
     ...replyActivities.map((item) => `${item.handle}:${item.preview?.message_id}:${item.preview?.text.length}:${item.preview?.thinking.length}`),
   ].join(":");
