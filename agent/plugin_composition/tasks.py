@@ -308,6 +308,7 @@ class Tasks:
         self._groups_drained = asyncio.Event()
         self._groups_drained.set()
         self._closed = False
+        self._failures: list[Exception] = []
 
     def _release(self, key: Hashable, task: Task) -> None:
         if self._tasks.get(key) is task:
@@ -476,19 +477,24 @@ class Tasks:
             group.notify()
             self._release_group(key, group)
 
+    # 撤销当前全部任务但保持准入，返回需要等待的任务；撤销失败留给 close 一并报告。
+    def cancel_running(self) -> tuple[Task, ...]:
+        tasks = (*self._tasks.values(), *self._residual)
+        for task in tasks:
+            try:
+                task.cancel()
+            except Exception as exc:
+                self._failures.append(exc)
+        return tasks
+
     async def close(self) -> None:
         """停止准入，撤销并等待全部任务，保持真实失败可见。"""
         self._closed = True
         for group in self._groups.values():
             group.notify()
         self._capacity.set()
-        tasks = (*self._tasks.values(), *self._residual)
-        failures: list[Exception] = []
-        for task in tasks:
-            try:
-                task.cancel()
-            except Exception as exc:
-                failures.append(exc)
+        tasks = self.cancel_running()
+        failures, self._failures = self._failures, []
         results = await asyncio.gather(
             *(task.join() for task in tasks), return_exceptions=True
         )
@@ -543,6 +549,13 @@ class PluginTasks:
         if owner not in self._owners:
             self._owners[owner] = Tasks(max_resident=self._max_resident)
         return self._owners[owner]
+
+    # 卸载插件前撤销并等待当前全部任务；准入保持开放，回合取消时的工具清理仍要接纳独立任务。
+    async def drain(self) -> None:
+        running = [(tasks, tasks.cancel_running()) for tasks in tuple(self._owners.values())]
+        for tasks, owned in running:
+            results = await asyncio.gather(*(task.join() for task in owned), return_exceptions=True)
+            tasks._failures.extend(result for result in results if isinstance(result, Exception))
 
     async def close(self) -> None:
         """关闭属于本 runtime 的全部 owner，逐一排空并保留真实错误。"""
