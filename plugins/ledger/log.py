@@ -2295,6 +2295,21 @@ class OwnerTransaction:
             lambda: self._save(key, value, expected_version=expected_version)
         )
 
+    def delete(self, key: str, *, expected_version: int) -> None:
+        """删除 owner 自有的派生索引项；与保存相同的版本 CAS，事实记录不应删除。"""
+        self._perform(lambda: self._delete(key, expected_version=expected_version))
+
+    def _delete(self, key: str, *, expected_version: int) -> None:
+        self._check_active()
+        if type(expected_version) is not int or expected_version < 0:
+            raise ValueError("状态版本必须是非负整数")
+        cursor = self._store._log._connection.execute(
+            "DELETE FROM owner_records WHERE owner=? AND key=? AND version=?",
+            (self._store._owner, key, expected_version),
+        )
+        if cursor.rowcount != 1:
+            raise MessageConflict("owner 记录版本已变化")
+
     def _save(
         self, key: str, value: Mapping[str, object], *, expected_version: int | None
     ) -> OwnerRecord:

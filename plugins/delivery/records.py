@@ -67,6 +67,28 @@ def delivery_key(message_id: str, sink: str) -> str:
     return "delivery:" + json.dumps([message_id, sink], ensure_ascii=False, separators=(",", ":"))
 
 
+# 未终结发送的索引与发送记录同事务维护；恢复只读这个小区间，不随历史增长。
+_OPEN_PREFIX = "open:"
+_OPEN_STOP = "open;"
+_OPEN_INDEX = "open-index"
+_TERMINAL = frozenset({"delivered", "rejected", "failed"})
+
+
+def _open_key(message_id: str, sink: str) -> str:
+    return _OPEN_PREFIX + json.dumps([message_id, sink], ensure_ascii=False, separators=(",", ":"))
+
+
+def _identity(key: str, prefix: str) -> tuple[str, str]:
+    identities: object = json.loads(key[len(prefix):])
+    if not isinstance(identities, list):
+        raise ValueError("发送记录身份损坏")
+    values = cast(list[object], identities)
+    if len(values) != 2 or any(not isinstance(value, str) or not value for value in values):
+        raise ValueError("发送记录身份损坏")
+    message_id, sink = cast(list[str], identities)
+    return message_id, sink
+
+
 class DeliveryRecords:
     """选路、prepared 与消费进度同事务提交；正文只按 Message 引用读取。"""
 
@@ -272,6 +294,17 @@ class DeliveryRecords:
             return
         value = Delivery(sink=sink, phase="prepared")
         _ = tx.save(key, value.model_dump(mode="json"), expected_version=None)
+        self._sync_open(tx, message_id, sink.name, value.phase)
+
+    # 索引项只表达"该发送尚未终结"；重试回到 prepared 时重新加入。
+    def _sync_open(self, tx: OwnerTransaction, message_id: str, sink: str, phase: str) -> None:
+        key = _open_key(message_id, sink)
+        row = tx.read(key)
+        if phase in _TERMINAL:
+            if row is not None:
+                tx.delete(key, expected_version=row.version)
+        elif row is None:
+            _ = tx.save(key, {}, expected_version=None)
 
 
     async def save_async(self, message_id: str, previous: OwnerRecord, delivery: Delivery, *,
@@ -303,6 +336,7 @@ class DeliveryRecords:
         row = tx.save(delivery_key(message_id, delivery.sink.name),
                       cast(Mapping[str, object], delivery.model_dump(mode="json")),
                       expected_version=previous.version)
+        self._sync_open(tx, message_id, delivery.sink.name, delivery.phase)
         key = "confirmed-message:" + message_id
         if delivery.confirmed_at is not None and tx.read(key) is None:
             confirmation = Confirmation(message_id=message_id, session_id=selection.session_id,
@@ -314,26 +348,37 @@ class DeliveryRecords:
 
     def pending(self) -> tuple[tuple[str, str], ...]:
         """恢复只枚举已固定的效果；不因新策略新增目的地。"""
+        # 1. 升级后首次恢复按全部发送记录补齐索引，此后只读索引区间。
+        if self._state.read(_OPEN_INDEX) is None:
+            self._state.transact(self._backfill_open)
+        keys: list[str] = []
+        stop = _OPEN_STOP
+        while page := self._state.scan(start=_OPEN_PREFIX, stop=stop, limit=1000):
+            keys.extend(key for key, _row in page)
+            stop = page[-1][0]
+        # 2. 索引只缩小候选；归属与阶段仍以原记录为准。
         pending: list[tuple[str, str]] = []
-        for key, _row in self._state.list():
-            if not key.startswith("delivery:"):
-                continue
-            identities: object = json.loads(key[len("delivery:"):])
-            if not isinstance(identities, list):
-                raise ValueError("发送记录身份损坏")
-            values = cast(list[object], identities)
-            if len(values) != 2 or any(not isinstance(value, str) or not value for value in values):
-                raise ValueError("发送记录身份损坏")
-            message_id, sink = cast(list[str], identities)
+        for key in sorted(keys):
+            message_id, sink = _identity(key, _OPEN_PREFIX)
             selection = self.selection(message_id)
             if selection is None:
                 raise ValueError("发送缺少首次选择")
             if selection.recovery_owner != self.recovery_owner:
                 continue
             _, delivery = self.read(message_id, sink)
-            if delivery.phase not in {"delivered", "rejected", "failed"}:
+            if delivery.phase not in _TERMINAL:
                 pending.append((message_id, sink))
         return tuple(pending)
+
+    # 在写事务内按全部发送记录重建索引，并以标记记录宣告索引完整。
+    def _backfill_open(self, tx: OwnerTransaction) -> None:
+        if tx.read(_OPEN_INDEX) is not None:
+            return
+        for key, row in self._state.list():
+            if key.startswith("delivery:"):
+                message_id, sink = _identity(key, "delivery:")
+                self._sync_open(tx, message_id, sink, read_delivery(row.value).phase)
+        _ = tx.save(_OPEN_INDEX, {"version": 1}, expected_version=None)
 
 
 @runtime_checkable

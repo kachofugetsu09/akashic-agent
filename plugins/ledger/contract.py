@@ -866,6 +866,8 @@ class OwnerTransaction(Protocol):
         self, key: str, value: Mapping[str, object], *, expected_version: int | None
     ) -> OwnerRecord: ...
 
+    def delete(self, key: str, *, expected_version: int) -> None: ...
+
     def append(
         self,
         writer: MessageWriter,
