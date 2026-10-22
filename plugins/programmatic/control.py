@@ -185,13 +185,17 @@ class Programmatic:
 
         ctx = self.ctx
         # 1. 创建时提交不可变资格；ACK 丢失可用调用方原身份幂等重试。
+        #    scope 让程序来源把记忆策略交给范围内的策略决定（可同时关掉学习与召回）；
+        #    不传 scope 时与旧的 SessionAttributes(...) 行为完全一致。
         if method == "programmatic/session/admit":
             create = cast(AdmitParams, params)
-            attributes = await ctx.require(SESSION_ADMISSION).ensure_async(ctx, session_id, SessionAttributes(
-                visibility="internal", learning="eligible" if create.persist_memory else "excluded",
-            ))
+            learning = "eligible" if create.persist_memory else "excluded"
+            attributes = await ctx.require(SESSION_ADMISSION).ensure_async(
+                ctx, session_id,
+                SessionAttributes.scoped(create.scope or {}, visibility="internal", learning=learning),
+            )
             return {"version": 2, "session_id": session_id, "visibility": attributes.visibility,
-                    "learning": attributes.learning}
+                    "learning": attributes.learning, "scope": dict(attributes.scope)}
 
         # 2. 来源只读取已创建属性，后续输入无改变学习资格的字段。
         if method == "programmatic/message/result":

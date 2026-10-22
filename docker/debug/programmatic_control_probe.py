@@ -128,14 +128,17 @@ class JsonRpcSocketClient:
         return cast(dict[str, Any], result)
 
     def admit_programmatic(
-        self, session_id: str, *, persist_memory: bool = False
+        self, session_id: str, *, persist_memory: bool = False,
+        scope: dict[str, str] | None = None,
     ) -> dict[str, Any]:
         """接纳一个属性不可变的程序 Session。"""
 
-        return self.request_result(
-            "programmatic/session/admit",
-            {"session_id": session_id, "persist_memory": persist_memory},
-        )
+        params: dict[str, Any] = {
+            "session_id": session_id, "persist_memory": persist_memory,
+        }
+        if scope is not None:
+            params["scope"] = scope
+        return self.request_result("programmatic/session/admit", params)
 
     def send_programmatic(
         self, session_id: str, message_id: str, text: str
