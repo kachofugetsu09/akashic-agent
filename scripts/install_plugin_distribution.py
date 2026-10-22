@@ -882,7 +882,7 @@ def _same_selected_sources(
 
 
 def _check_distribution_sources(distribution: Path, report: dict[str, Any]) -> None:
-    """Check unpacked code against its bundle at preparation, not on runtime reads."""
+    """镜像构建时核对解包源码与 bundle；镜像只读，开机和发布不再重复（ADR 0077）。"""
     for row in report["plugins"]:
         with measure("distribution.source", plugin=row["name"]):
             source = distribution / "sources" / row["name"]
@@ -945,7 +945,6 @@ def publish_distribution(
             with tempfile.TemporaryDirectory(prefix="akashic-deploy-") as temporary:
                 staged = Path(temporary)
                 report = verify_distribution(distribution)
-                _check_distribution_sources(distribution, report)
                 if adoption is not None and adoption["distribution_source_commit"] != report["source_commit"]:
                     raise SelectionConflictError("历史归属转换的目标发行版不符")
                 components, selected = _selected_components(selection, expected_root, replacing_distribution=True)
@@ -1071,7 +1070,6 @@ def ensure_bundle(
     if not config_path.is_file():
         raise ValueError(f"runtime config 必须是普通文件: {config_path}")
     report = verify_distribution(distribution)
-    _check_distribution_sources(distribution, report)
     if not receipt_path.exists():
         selection = PluginSelection(workspace)
         if selection.path.exists() and selection.read() is not None:
@@ -1189,6 +1187,7 @@ def main() -> None:
         return
     if args.verify_only:
         report = verify_distribution(args.distribution)
+        _check_distribution_sources(args.distribution, report)
         result: dict[str, Any] = {
             "status": "verified",
             "distribution_source_commit": report["source_commit"],
