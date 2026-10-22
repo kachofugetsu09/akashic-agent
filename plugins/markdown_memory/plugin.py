@@ -628,10 +628,11 @@ async def project(
 ) -> None:
     """只处理已提交的模型 Output；操作先落 receipt，再幂等叠加到当前文件。"""
     sources = config.sources
-    if reader.attributes.learning != "eligible" or message.source not in sources or not isinstance(message.body, Output):
+    # 开机按全部历史重放：先做内存判断，只有引用摘要的 Output 才查会话属性。
+    if message.source not in sources or not isinstance(message.body, Output):
         return
     refs = [part for part in message.body.parts if isinstance(part, ContentPart) and part.kind == "context.summary"]
-    if not refs:
+    if not refs or reader.attributes.learning != "eligible":
         return
     if len(refs) != 1:
         raise ValueError("一个 Output 只能声明实际使用的一份摘要")
@@ -640,7 +641,6 @@ async def project(
     reference = context.check_summary(refs[0]).binding_ids[0]
     user_input = content.is_user_input
     post_commit_effect = content.legacy_post_commit_effect
-    scope = _scope_key(reader)
     # 1. Binding 固定原始记录身份；receipt 只增，开机重放历史时已叠加的摘要不取锁、不读父链。
     #    同一批 Output 读到的是同一份当前会话快照，同一摘要只评估一次。
     metadata = bindings.describe(reference, COMPACTION_SUMMARIES)
@@ -650,6 +650,7 @@ async def project(
     evaluated.add(record_ref)
     if await run_file_io(lambda: store.is_applied(record_ref)):
         return
+    scope = _scope_key(reader)
     # 2. 更新串行；文件锁只保护已提交档案的读取和安装，不覆盖模型等待。
     async with profile_lock(lock_path.with_name(_UPDATE_LOCK_NAME)):
         async with profile_lock(lock_path):
