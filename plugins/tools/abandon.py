@@ -82,6 +82,17 @@ async def abandon_call(
     return await tasks.admit_async((task_key, key), settle)
 
 
+# 区间内任一来源出现 abandon Control；按来源走 kind 索引，只解码 Control。
+def _has_abandon(reader: MessageReader, after_seq: int, through_seq: int) -> bool:
+    return any(
+        reader.scan_controls(
+            lambda rows: any(body.action == "abandon" for _, body in rows),
+            source=source, after_seq=after_seq, through_seq=through_seq,
+        )
+        for source in reader.source_names()
+    )
+
+
 async def follow_abandon(
     catalog: MessageCatalog, state: OwnerStore, tasks: TaskAdmission,
     reply: Callable[[MessageReader, str, CallRef], AbstractAsyncContextManager[MessageReply]], *, task_key: Hashable,
@@ -133,7 +144,11 @@ async def follow_abandon(
                     continue
                 ok = True
                 try:
-                    changed = await asyncio.to_thread(reader.snapshot, after_seq=previous, through_seq=head)
+                    # 启动时 seen 为空，窗口是整段历史；先走 Control 索引判断，没有 abandon 就不解码正文。
+                    changed = (
+                        await asyncio.to_thread(reader.snapshot, after_seq=previous, through_seq=head)
+                        if await asyncio.to_thread(_has_abandon, reader, previous, head) else ()
+                    )
                     controls = [message for message in changed
                                 if isinstance(message.body, Control) and message.body.action == "abandon"]
                     messages = await asyncio.to_thread(reader.snapshot, through_seq=head) if controls else ()
