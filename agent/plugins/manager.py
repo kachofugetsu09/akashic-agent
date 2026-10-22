@@ -2426,7 +2426,11 @@ class PluginManager:
         """Close the one live Root and each retained resource owner."""
 
         # The shutdown task owns all resources after the previous operation exits.
-        externally_cancelled = False
+        # Fiber unload waits for in-flight calls: close new work at the gate, then cancel
+        # and drain the running Tasks before any provider unloads under them.
+        if self._restart_gate.accepting:
+            self._restart_gate.prepare_stop("shutdown-" + uuid4().hex)
+        _, externally_cancelled = await _complete_critical(self._plugin_tasks.drain())
         live_root = self._live_root
         for generation in tuple(reversed(tuple(self._active_generations.values()))):
             _, cancelled = await _complete_critical(
