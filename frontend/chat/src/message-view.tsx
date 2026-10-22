@@ -308,6 +308,8 @@ function timelineFlow(messages: TimelineMessage[], finalId: string | undefined, 
         return part.kind === "history.transcript"
           ? historyBlocks(part.archive).flatMap((block, blockIndex): FlowItem[] => block.kind === "thinking"
             ? [{ kind: "thinking", key: `${key}:h${blockIndex}`, origin, index, part, content: block.content }]
+            : block.kind === "text"
+            ? [{ kind: "narration", key: `${key}:h${blockIndex}`, origin, index, part, text: block.content }]
             : [{ kind: "tool", key: `${key}:h${blockIndex}`, origin, index, part, block }])
           : [];
       }
@@ -512,7 +514,7 @@ function TimelineProcess({ flow, draftThinking = "", draftThinkingActive = false
   </>;
 }
 
-/** 一轮结束后，思考、工具与中途旁白收进一行摘要；正文、附件和仍在运行的工具留在外面。 */
+/** 结束后只收起连续的过程项，正文切断摘要区间，保持原来的阅读顺序。 */
 function SettledTurnFlow({ flow, startedAt, endedAt, beforeReasoning, partView }: {
   flow: FlowItem[];
   startedAt?: string;
@@ -520,20 +522,31 @@ function SettledTurnFlow({ flow, startedAt, endedAt, beforeReasoning, partView }
   beforeReasoning?: (message: TimelineMessage) => ReactNode;
   partView: FlowPartViewProps;
 }) {
-  const process = flow.filter((item) => item.kind !== "part");
+  const isBody = (item: FlowItem) => item.kind === "part" || item.kind === "narration";
+  const process = flow.filter((item) => !isBody(item));
   const running = process.some((item) => item.kind === "tool" && item.block.status === "input-available");
   const worthSummary = process.some((item) => item.kind === "tool") || process.length >= 2;
   if (running || !worthSummary) {
     return <TimelineProcess flow={flow} beforeReasoning={beforeReasoning} partView={partView} />;
   }
-  // 1. 召回等插件槽位属于本轮开头，留在摘要外保持可见。
-  // 2. 摘要内复用逐行过程视图，展开后与运行时看到的一致。
+  // 1. 正文是可见回复，不因后面还有工具调用而并入过程摘要。
+  const groups: { body: boolean; items: FlowItem[] }[] = [];
+  for (const item of flow) {
+    const body = isBody(item);
+    const previous = groups.at(-1);
+    if (previous?.body === body) previous.items.push(item);
+    else groups.push({ body, items: [item] });
+  }
+  const processGroups = groups.filter((group) => !group.body);
+  // 2. 召回槽位只出现一次；整轮用时不能重复标在每段过程上。
   return <>
     {beforeReasoning?.(process[0].origin)}
-    <TurnProcessSummary items={process} durationMs={turnDurationMs(startedAt, endedAt)}>
-      <TimelineProcess flow={process} groupTools={false} />
-    </TurnProcessSummary>
-    <TimelineProcess flow={flow.filter((item) => item.kind === "part")} partView={partView} />
+    {groups.map((group) => group.body || (group.items.length === 1 && group.items[0].kind !== "tool")
+      ? <TimelineProcess key={group.items[0].key} flow={group.items} partView={partView} />
+      : <TurnProcessSummary key={group.items[0].key} items={group.items}
+          durationMs={processGroups.length === 1 ? turnDurationMs(startedAt, endedAt) : undefined}>
+          <TimelineProcess flow={group.items} groupTools={false} />
+        </TurnProcessSummary>)}
   </>;
 }
 
@@ -633,7 +646,7 @@ export function TimelineMessageView({ message, lookupMessage, toolResults, onNav
   onError?: (error: unknown) => void;
 }) {
   const body = message.body;
-  // 未结束轮次里的输出都是 finish=continue，文字后面还有工具调用，是旁白而不是最终回答。
+  // 未结束轮次仍可有正文；是否最终完成不改变文字的展示类别。
   const flow = hideProcess || inlineReply ? [] : timelineFlow(processMessages, turnOpen ? "" : message.id, toolResults);
   const hasFlow = body.kind === "output" && flow.length > 0;
   const leadingContent = hideProcess || hasFlow || inlineReply ? null : beforeReasoning?.(message);
@@ -708,9 +721,9 @@ export function TimelineMessageView({ message, lookupMessage, toolResults, onNav
         <UserTextClamp enabled={body.kind === "input"}>{body.parts.map((part, index) => ({ part, index })).sort((left, right) =>
           flowRank(right.part) + Number(right.part.kind === "history.transcript")
           - flowRank(left.part) - Number(left.part.kind === "history.transcript"))
-          .map(({ part, index }) => isTimelinePartVisible(part) && !(input && part.kind === "artifact_ref") && !((hideBody || (attachmentResult && !renderAttachment)) && part.kind === "text") && !((hideProcess || inlineReply) && (("display" in part && part.display === "thinking") || part.kind === "tool_call" || part.kind === "history.transcript")) ? <div key={index} data-part-index={index} tabIndex={-1}>
+          .map(({ part, index }) => isTimelinePartVisible(part) && !(input && part.kind === "artifact_ref") && !((hideBody || (attachmentResult && !renderAttachment)) && part.kind === "text") && !((hideProcess || inlineReply) && (("display" in part && part.display === "thinking") || part.kind === "tool_call")) && !(hideProcess && part.kind === "history.transcript") ? <div key={index} data-part-index={index} tabIndex={-1}>
           <TimelinePartView part={part} toolResult={body.kind === "tool_result" && !attachmentResult} userInput={input} attachment={attachment} lookupMessage={lookupMessage} canLoadReferences={canLoadReferences}
-            onNavigate={onNavigate} onError={onError} processStartContent={leadingContent} />
+            onNavigate={onNavigate} onError={onError} processStartContent={leadingContent} hideTranscriptProcess={inlineReply} />
         </div> : null)}</UserTextClamp>
       </>}
       {afterBody}
@@ -823,11 +836,12 @@ function UserPlainText({ text }: { text: string }) {
   return <p className="plain-message-response"><MentionText text={text} /></p>;
 }
 
-function TimelinePartView({ part, toolResult = false, userInput = false, attachment, lookupMessage, onNavigate, onError, processStartContent, canLoadReferences }: {
+function TimelinePartView({ part, toolResult = false, userInput = false, attachment, lookupMessage, onNavigate, onError, processStartContent, canLoadReferences, hideTranscriptProcess = false }: {
   canLoadReferences: boolean;
   toolResult?: boolean;
   userInput?: boolean;
   processStartContent?: ReactNode;
+  hideTranscriptProcess?: boolean;
   part: TimelinePart;
   attachment: (id: string) => ReactNode;
   lookupMessage: (id: string) => TimelineMessage | undefined;
@@ -839,7 +853,7 @@ function TimelinePartView({ part, toolResult = false, userInput = false, attachm
     : part.display === "thinking" ? part.text ? <ProcessTrace blocks={[{ kind: "thinking", content: part.text }]} streaming={false}
       interrupted={false} startContent={processStartContent} /> : null
     : <p className="timeline-state">无法展示此内容</p>;
-  if ("archive" in part) return part.kind === "history.transcript" ? <TimelineTranscript archive={part.archive} startContent={processStartContent} onError={onError} /> : null;
+  if ("archive" in part) return part.kind === "history.transcript" ? <TimelineTranscript archive={part.archive} hideProcess={hideTranscriptProcess} /> : null;
   switch (part.kind) {
     case "context.notice": return <ContextNoticeRow text={part.value.text} />;
     case "text": return toolResult ? <ToolResultContent value={"rendered" in part ? part.rendered : part.value} />
@@ -864,16 +878,16 @@ function historyBlocks(archive: unknown): AgentBlock[] {
   const groups = historyTranscript(archive);
   return groups?.flatMap((group, index): AgentBlock[] => [
     ...(group.thinking ? [{ kind: "thinking" as const, content: group.thinking }] : []),
-    ...(group.text ? [{ kind: "thinking" as const, content: group.text }] : []),
+    ...(group.text ? [{ kind: "text" as const, content: group.text }] : []),
     ...group.calls.map((call, callIndex) => ({ kind: "tool" as const,
       callId: `history-${index}-${callIndex}`, name: call.name, input: call.arguments,
       output: call.result, status: "output-available" as const, errorText: undefined })),
   ]) ?? [];
 }
 
-function TimelineTranscript({ archive }: { archive: unknown; startContent?: ReactNode; onError?: (error: unknown) => void }) {
+function TimelineTranscript({ archive, hideProcess = false }: { archive: unknown; hideProcess?: boolean }) {
   if (historyTranscript(archive) === null) return <p>这段历史过程暂无法展示。</p>;
-  const blocks = historyBlocks(archive);
+  const blocks = historyBlocks(archive).filter((block) => !hideProcess || block.kind === "text");
   return blocks.length ? <ProcessTrace blocks={blocks} streaming={false} interrupted={false} /> : null;
 }
 
@@ -1128,7 +1142,9 @@ const ProcessTrace = memo(function ProcessTrace({
   const grouped = groupProcessSteps(blocks.map((block, index) => ({ block, index })), (entry) =>
     entry.block.kind === "thinking"
       ? { foldable: true }
-      : { foldable: entry.block.status !== "input-available", ms: entry.block.durationMs },
+      : entry.block.kind === "tool"
+      ? { foldable: entry.block.status !== "input-available", ms: entry.block.durationMs }
+      : { foldable: false },
   );
   const renderBlock = (block: AgentBlock, index: number) => block.kind === "thinking" ? (
     <ThinkingRow
@@ -1137,6 +1153,8 @@ const ProcessTrace = memo(function ProcessTrace({
       duration={index === lastThinkingIndex && durationMs
         ? Math.max(1, Math.round(durationMs / 1000)) : undefined}
     />
+  ) : block.kind === "text" ? (
+    <div className="timeline-narration"><MessageBody content={block.content} streaming={streaming} deferRichContent /></div>
   ) : (
     <ToolStep
       block={block}
@@ -1157,7 +1175,7 @@ const ProcessTrace = memo(function ProcessTrace({
           ))}
         </CollapsedToolGroup>
       ) : (
-        <Fragment key={entry.block.kind === "thinking" ? `thinking-${entry.index}` : entry.block.callId}>
+        <Fragment key={entry.block.kind === "tool" ? entry.block.callId : `${entry.block.kind}-${entry.index}`}>
           {beforeBlock?.(entry.block, entry.index)}
           {renderBlock(entry.block, entry.index)}
         </Fragment>

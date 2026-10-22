@@ -225,7 +225,7 @@ function DesktopMessagePlaceholder({ message }: { message: ChatMessage }) {
         {message.reply ? <p className="plain-message-response">回复 · {message.reply.preview}</p> : null}
         {message.blocks.map((block, index) => (
           <p className="plain-message-response" key={block.kind === "tool" ? block.callId : `thinking-${index}`}>
-            {block.kind === "thinking"
+            {block.kind !== "tool"
               ? block.content
               : `工具 · ${block.name} · ${JSON.stringify(block.input)} · ${JSON.stringify(block.output)} · ${block.errorText ?? ""}`}
           </p>

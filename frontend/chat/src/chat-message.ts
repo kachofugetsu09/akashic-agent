@@ -23,7 +23,7 @@ export interface ToolBlock {
   attachments?: SentAttachmentItem[];
 }
 
-export type AgentBlock = ThinkingBlock | ToolBlock;
+export type AgentBlock = ThinkingBlock | ToolBlock | { kind: "text"; content: string };
 
 export type MessageAttachment = FileUIPart & {
   id: string;
