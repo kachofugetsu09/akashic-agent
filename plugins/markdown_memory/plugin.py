@@ -762,9 +762,14 @@ async def apply(ctx: Context) -> None:
 
     async def follow(catalog: MessageCatalog) -> None:
         """模型暂时失败时保留原游标，关闭订阅后延时重读，其他会话继续处理。"""
-        cursor: dict[str, int] = {}
+        # 游标从持久检查点恢复：开机只追赶检查点之后的尾部，不重放整段历史。
+        checkpoints = store
+        assert checkpoints is not None
+        fingerprint = json.dumps({"version": 1, "sources": sorted(config.sources)}, separators=(",", ":"))
+        cursor: dict[str, int] = await run_file_io(lambda: checkpoints.read_cursors(fingerprint))
         while True:
             retry = False
+            advanced: dict[str, int] = {}
             # 1. 每次重新订阅都先读完整 heads，不依赖失败后恰好出现新消息。
             # 投影按游标读取；只在 Output 或 Control 可能结束 turn 时唤醒。
             async with aclosing(catalog.follow(wake_on=(Output, Control))) as updates:
@@ -777,7 +782,7 @@ async def apply(ctx: Context) -> None:
                                 assert store is not None
                                 reader = catalog.reader(session)
                                 if reader.attributes.learning != "eligible":
-                                    cursor[session] = head
+                                    cursor[session] = advanced[session] = head
                                     continue
                                 messages = await run_file_io(lambda: reader.snapshot(
                                     after_seq=cursor.get(session, -1), through_seq=head,
@@ -803,11 +808,14 @@ async def apply(ctx: Context) -> None:
                                         )
                                         retry = True
                                         break
-                                    cursor[session] = message.seq
+                                    cursor[session] = advanced[session] = message.seq
                         except CompositionError as error:
                             if error.code != "OWNER_UNAVAILABLE" or ctx.fiber.state not in {FiberState.UNLOADING, FiberState.DISPOSED}:
                                 raise
                             return
+                    # 已处理完的位置才落盘；崩溃只会让检查点落后，receipt 保证重放幂等。
+                    pending, advanced = advanced, {}
+                    await run_file_io(lambda: checkpoints.save_cursors(fingerprint, pending))
                     if retry:
                         break
                     try:
