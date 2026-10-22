@@ -1003,6 +1003,26 @@ class MessageCatalog:
                 read.heads[key] = heads
             return heads
 
+    async def open_input_sources_async(self) -> frozenset[tuple[str, str]]:
+        """最后一条 Input 晚于最后一条完结 Output 的（会话，来源）；待回复集合的超集。
+
+        单条聚合只走 (session, source, kind, seq, finish) 覆盖索引，不解码正文，
+        让启动全量核对只碰可能待回复的来源，而不是逐会话读取。
+        """
+        self._log._check_async_operation()
+
+        def query() -> frozenset[tuple[str, str]]:
+            with self._log._read(snapshot=False) as connection:
+                rows = connection.execute(
+                    "SELECT session_key, source FROM messages GROUP BY session_key, source "
+                    "HAVING MAX(CASE WHEN json_extract(body,'$.kind')='input' THEN seq END) > "
+                    "COALESCE(MAX(CASE WHEN json_extract(body,'$.kind')='output' "
+                    "AND json_extract(body,'$.finish') IN ('complete','quiet') THEN seq END), -1)"
+                ).fetchall()
+            return frozenset((row[0], row[1]) for row in rows)
+
+        return await run_file_io(query)
+
     async def sessions_async(
         self, *, prefix: str = "", visibility: Literal["listed", "internal"] | None = None,
         after: tuple[str, str] | None = None, limit: int = 50,

@@ -89,17 +89,20 @@ async def _prepare_pending(
     changed: Callable[[MessageReader, str, bool], None],
 ) -> None:
     """Prepare independent Sessions with bounded reads and unchanged source CAS."""
-    # 1. Share one Session iterator across four loop-owned workers, matching file I/O capacity.
+    # 1. Only (session, source) pairs whose last Input is unanswered can be pending;
+    #    one indexed aggregate replaces per-Session reads, shared across four workers.
     started = monotonic()
-    heads = catalog.snapshot_heads()
-    sessions = iter(heads)
-    counts = {"sessions": len(heads), "checks": 0, "retries": 0, "workers": 4}
+    candidates = sorted(await catalog.open_input_sources_async())
+    pairs = iter(candidates)
+    counts = {"candidates": len(candidates), "checks": 0, "retries": 0, "workers": 4}
     seconds = {"head_reads": 0.0, "needs_reply": 0.0, "changed": 0.0}
 
     async def read_sessions() -> None:
-        for session_id in sessions:
+        for session_id, source_name in pairs:
             reader = catalog.reader(session_id)
             for source in get_sources().entries():
+                if source.name != source_name:
+                    continue
                 while True:
                     stamp = monotonic()
                     head = reader.head(source=source.name)

@@ -273,8 +273,15 @@ class _Follower:
                 self._wake_event.clear()
                 if self._catalog_closed or self._sources_closed:
                     break
-                if self._latest_heads is not None:
-                    self._dispatch_changes(self._latest_heads)
+                heads = self._latest_heads
+                if heads is not None:
+                    # 全量核对（启动或来源身份变化）先固定 heads 再取候选：之后到达的输入
+                    # 必然推进 head，下一轮按增量变化唤醒，不会落在两次读取之间。
+                    candidates = (
+                        await self._catalog.open_input_sources_async()
+                        if self._sources_changed() else None
+                    )
+                    self._dispatch_changes(heads, candidates)
             for task in (catalog_task, source_task, *self._drive_tasks):
                 if not task.done():
                     task.cancel()
@@ -305,7 +312,16 @@ class _Follower:
     def _current_source(self, name: str) -> Source | None:
         return next((item for item in self._sources.entries() if item.name == name), None)
 
-    def _dispatch_changes(self, heads: dict[str, int]) -> None:
+    # 当前注册的来源与上次分派时不同（含启动时的空集），需要全量核对。
+    def _sources_changed(self) -> bool:
+        current = {source.name: source for source in self._sources.entries()}
+        return current.keys() != self._previous_sources.keys() or any(
+            self._previous_sources[name] is not source for name, source in current.items()
+        )
+
+    def _dispatch_changes(
+        self, heads: dict[str, int], candidates: frozenset[tuple[str, str]] | None = None,
+    ) -> None:
         current_sources = {source.name: source for source in self._sources.entries()}
         source_names = set(self._previous_sources) | set(current_sources)
         changed_source_names = {
@@ -323,20 +339,26 @@ class _Follower:
                 wake.source = current_sources.get(source_name)
                 wake.changed = True
 
+        previous_heads = self._previous_heads
         changed_sessions = {
             session_id for session_id, head in heads.items()
-            if self._previous_heads.get(session_id) != head
+            if previous_heads.get(session_id) != head
         }
         self._previous_heads = dict(heads)
         self._previous_sources = current_sources
 
         # 2. One scan handles changed sessions and genuine identity changes.
-        session_ids = (
-            heads
-            if current_identity_changes
-            else (session_id for session_id in heads if session_id in changed_sessions)
-        )
-        for session_id in session_ids:
+        #    With candidates, a full check only visits possibly pending or active pairs;
+        #    sessions without a known previous head are covered by the candidates.
+        checked = None if candidates is None else candidates | self._active.keys()
+        known_changed = {session_id for session_id in changed_sessions if session_id in previous_heads}
+        if checked is not None:
+            session_ids = {session_id for session_id, _ in checked if session_id in heads} | known_changed
+        elif current_identity_changes:
+            session_ids = set(heads)
+        else:
+            session_ids = changed_sessions
+        for session_id in sorted(session_ids):
             reader = self._catalog.reader(session_id)
             present = reader.source_names()
             session_changed = session_id in changed_sessions
@@ -345,7 +367,13 @@ class _Follower:
                 if source_name not in present:
                     continue
                 identity_changed = source_name in current_identity_changes
-                if not session_changed and not identity_changed:
+                if checked is None:
+                    due = session_changed or identity_changed
+                else:
+                    due = session_id in known_changed or (
+                        (session_id, source_name) in checked and (session_changed or identity_changed)
+                    )
+                if not due:
                     continue
                 source_head = reader.head(source=source_name)
                 key = (session_id, source_name)
