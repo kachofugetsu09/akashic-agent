@@ -11,12 +11,14 @@ from datetime import UTC, datetime
 from functools import partial
 from importlib import import_module
 from pathlib import Path
+from time import monotonic
 from typing import Literal, Self, cast
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from agent.plugin_composition import RUNTIME_STARTED, RUNTIME_STOPPING, Context, ServiceKey
 from agent.plugin_composition.host import HOST_INFO
+from core.common.diagnostic_log import log_event
 from plugins.akasha.contract import EMBEDDING_MEMORY_PLUGIN
 from plugins.models.contract import EMBEDDINGS
 from plugins.ui.contract import (
@@ -147,6 +149,7 @@ async def run(ctx: Context, interest: Interest) -> None:
         return
     catalog: ToolCatalog = ctx.require(TOOLS)
     content: ContentCapability = ctx.require(CONTENT)
+    host = ctx.require(HOST_INFO)
     _ = await catalog.declare_group(ctx, description=desc)
 
     async def request_reindex(invocation: CommandInvocation) -> CommandResult:
@@ -534,6 +537,7 @@ async def run(ctx: Context, interest: Interest) -> None:
         if key in memories:
             return key not in graph_errors
         starting_rules[key] = rule
+        started, before_ready = monotonic(), not host.ready()
         try:
             try:
                 consumer = await MessageConsumer.load(
@@ -566,6 +570,11 @@ async def run(ctx: Context, interest: Interest) -> None:
                 raise
             memories[key], memory_rule = prepared, rule
             set_graph_error(key, None)
+            # 装载代价随已学 Turn 增长；记录它发生在宿主就绪前还是后。
+            log_event(logger, logging.INFO, "akasha.restore.timing", source=key,
+                      phase="before_ready" if before_ready else "after_ready",
+                      duration_ms=round((monotonic() - started) * 1000, 3),
+                      counts={"turns": len(consumer.cycle.turns)})
             return True
         finally:
             del starting_rules[key]
@@ -659,7 +668,7 @@ async def run(ctx: Context, interest: Interest) -> None:
     async def follow() -> None:
         """Coalesce notifications per graph; a slow graph owns only its own wait."""
         # 图恢复按已学 Turn 线性增长；宿主就绪后再追赶，就绪前的召回仍按需装载。
-        await ctx.require(HOST_INFO).settled()
+        await host.settled()
         pending: dict[str, asyncio.Event] = {}
 
         async def consume_graph(key: str, changed: asyncio.Event) -> None:
