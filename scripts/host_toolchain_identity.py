@@ -6,6 +6,7 @@ import json
 import re
 import subprocess
 import tomllib
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from typing import Any
 
@@ -71,9 +72,14 @@ def resolve_toolchain_identity(repository: Path, mise: Path) -> dict[str, Any]:
     identity = declared_toolchain_identity(commit, config_bytes)
     declared = identity["tools"]
 
-    # 3. Resolve every command through mise and prove the observed version.
-    for tool, command in _VERSION_COMMANDS.items():
-        output = _run(str(mise), "exec", "--", *command, cwd=repository)
+    # 3. Resolve every command through mise and prove the observed version;
+    #    the probes are independent subprocesses, so they run side by side.
+    with ThreadPoolExecutor(max_workers=len(_VERSION_COMMANDS)) as pool:
+        outputs = dict(zip(_VERSION_COMMANDS, pool.map(
+            lambda command: _run(str(mise), "exec", "--", *command, cwd=repository),
+            _VERSION_COMMANDS.values(),
+        )))
+    for tool, output in outputs.items():
         if declared[tool] not in output:
             raise RuntimeError(
                 f"Host Bridge tool version 不一致: {tool}={output!r}, "
