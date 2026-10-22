@@ -319,6 +319,29 @@ async def inspect_modules(config_path: str, workspace: Path) -> None:
         )
 
 
+# 停机收尾分段计时：serve 返回到事件循环关闭（默认线程池、异步生成器），再到解释器等完非守护线程。
+def _serve_gateway(config_path: str, workspace: Path) -> int:
+    import atexit
+    import time
+    from utils.timing import report
+
+    returned: list[float] = []
+
+    async def run() -> int:
+        try:
+            return await serve(config_path, workspace)
+        finally:
+            returned.append(time.monotonic())
+
+    code = asyncio.run(run())
+    closed = time.monotonic()
+    if returned:
+        report("gateway.loop_close", closed - returned[0])
+    # 解释器先 join 非守护线程再执行 atexit，所以这一段只含线程收尾。
+    _ = atexit.register(lambda: report("gateway.thread_join", time.monotonic() - closed))
+    return code
+
+
 async def serve(config_path: str, workspace: Path) -> int:
     # Web shell 与 FastAPI 只属于 gateway；插件命令客户端不加载它们。
     from agent.restart import RestartGate, SupervisorCommitChannel
@@ -698,7 +721,7 @@ if __name__ == "__main__":
         )
 
     if args and args[0] == "gateway":
-        sys.exit(asyncio.run(serve(config_path, workspace)))
+        sys.exit(_serve_gateway(config_path, workspace))
 
     if args and not args[0].startswith("--") and args[0] != "gateway":
         command_args = list(args[1:])
@@ -731,7 +754,7 @@ if __name__ == "__main__":
             "agent_restart、设置重启和 boot 进程树清理不可用。",
             file=sys.stderr,
         )
-        sys.exit(asyncio.run(serve(config_path, workspace)))
+        sys.exit(_serve_gateway(config_path, workspace))
     else:
         from agent.supervisor import run_supervisor
 
