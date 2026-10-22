@@ -824,7 +824,8 @@ function MessageAttachmentFigure({ attachment, origin, sessionId, messageId, fal
   return <section ref={box} className="message-figure" aria-label="回复附件">
     <div ref={content}>
       <PluginUiSlot name="message.attachment" quiet sessionId={sessionId} messageId={messageId}
-        block={{ ...attachment, origin }} fallback={fallback} />
+        block={{ ...attachment, origin }} fallback={fallback}
+        errorFallback={<SentAttachments items={[timelineAttachmentItem(attachment)]} />} />
       <a className="message-figure-download" href={`/api/chat/artifacts/${encodeURIComponent(attachment.artifact_id)}`}
         download={attachment.filename ?? "附件"} aria-label={`下载源文件 ${attachment.filename ?? "附件"}`}><Download size={16} aria-hidden="true" /></a>
     </div>

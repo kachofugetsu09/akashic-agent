@@ -89,7 +89,9 @@ class LiveDashboardMiddleware:
                             rejection = (403, "forbidden_contract")
                         else:
                             ui_passthrough = True
-                    elif binding.has_web and identity is None:
+                    elif (binding.has_web and identity is None
+                          and not (scope_type == "http" and scope.get("method") in {"GET", "HEAD"}
+                                   and scope.get("path") in binding.navigation_paths)):
                         rejection = (403, "forbidden_contract")
                     elif identity is not None and binding.plugin_id != identity[2]:
                         rejection = (403, "forbidden_contract")

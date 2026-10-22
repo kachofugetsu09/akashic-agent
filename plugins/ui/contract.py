@@ -75,6 +75,7 @@ class DashboardBinding:
     runtime_workspace: Path
     runtime_data_root: Path
     module_name: str
+    navigation_paths: tuple[str, ...] = ()
 
 
 class UiRegistry(Protocol):
@@ -85,6 +86,7 @@ class UiRegistry(Protocol):
         self, ctx: Context, *, web: str | None = None, dashboard: Callable[[], ModuleType] | None = None,
         requires: tuple[str, ...] = (), provides: tuple[str, ...] = (),
         contract_digests: Mapping[str, str] | None = None,
+        navigation_paths: tuple[str, ...] = (),
     ) -> Effect: ...
 
     def register_configuration(

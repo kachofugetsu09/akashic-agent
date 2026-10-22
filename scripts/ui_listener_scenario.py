@@ -82,14 +82,24 @@ async def apply(ctx):
     visual.mkdir()
     for name in ("dashboard.py", "bootstrap.html"):
         shutil.copyfile(ROOT / "plugins/visuals" / name, visual / name)
+    (visual / "panel.js").write_text("export function activate(ctx) { return () => {}; }\n")
+    (visual / "pages.py").write_text('''from .dashboard import register_frame
+inject = ()
+def register(app, context):
+    register_frame(app, context)
+    @app.get("/private-page")
+    async def private_page():
+        return {"private": True}
+''')
     (visual / "plugin.py").write_text('''from plugins.ui.contract import UI
-from . import dashboard
+from . import pages
 api_version = 3
 name = "visual_frame"
 version = "1.0.0"
 inject = (UI,)
 async def apply(ctx):
-    await ctx.require(UI).register(ctx, dashboard=lambda: dashboard)
+    await ctx.require(UI).register(ctx, web="panel.js", dashboard=lambda: pages,
+                                   navigation_paths=("/visuals/frame.html",))
 ''')
     host = None
     address = ""
@@ -119,6 +129,9 @@ async def apply(ctx):
                 browser_headers = {"sec-fetch-site": "same-origin", "sec-fetch-mode": "navigate", "sec-fetch-dest": "iframe"}
                 frame = await web.get("/visuals/frame.html", headers=browser_headers)
                 assert frame.status_code == 200, frame.text
+                assert (await web.get("/visuals/frame.html", headers=headers)).status_code == 403
+                assert (await web.get("/private-page", headers=browser_headers)).status_code == 403
+                assert (await web.post("/visuals/frame.html", headers=browser_headers)).status_code != 200
                 assert "sandbox allow-scripts;" in frame.headers["content-security-policy"]
                 assert frame.text == (ROOT / "plugins/visuals/bootstrap.html").read_text()
                 assert (await web.get("/api/dashboard/probe", headers=browser_headers)).status_code == 403
@@ -135,6 +148,7 @@ async def apply(ctx):
                         await host.wait_idle()
                         assert host.read_update("listener-update").state == "active"
                         assert (await web.get("/api/dashboard/probe", headers=headers)).status_code == 409
+                        assert (await web.get("/visuals/frame.html", headers=headers)).status_code == 409
                         current = await identity()
                         assert (await web.get("/api/dashboard/probe", headers={
                             "x-akashic-web-" + key: value for key, value in current.items()})).status_code == 200

@@ -112,6 +112,7 @@ class Ui:
         self, ctx: Context, *, web: str | None = None, dashboard: Callable[[], ModuleType] | None = None,
         requires: tuple[str, ...] = (), provides: tuple[str, ...] = (),
         contract_digests: Mapping[str, str] | None = None,
+        navigation_paths: tuple[str, ...] = (),
     ) -> Effect:
         """从实际贡献 Context 固定身份和代码路径，再取得注册 Effect。"""
         # 1. provider 只接受同一 Root 的贡献方，不接受自报 owner 或 generation。
@@ -122,6 +123,8 @@ class Ui:
             raise ValueError(f"UI owner 重复注册: {owner}")
         if web is None and dashboard is None:
             raise ValueError("UI 注册必须包含 Web 或 Dashboard")
+        if navigation_paths and dashboard is None:
+            raise ValueError("Navigation paths require a Dashboard")
         requires = _contracts(requires)
         provides = _contracts(provides)
         digests = {} if contract_digests is None else dict(contract_digests)
@@ -153,7 +156,7 @@ class Ui:
             if not loader_path.is_relative_to(root):
                 raise ValueError("Dashboard loader 不属于贡献方代码制品")
         resources = None if dashboard is None else DashboardResources(
-            ctx, dashboard, has_web=module is not None, registry=self,
+            ctx, dashboard, has_web=module is not None, registry=self, navigation_paths=navigation_paths,
         )
         registration = Registration(ctx, module, resources, registration_uuid)
 
