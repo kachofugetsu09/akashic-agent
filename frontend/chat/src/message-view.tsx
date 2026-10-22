@@ -383,38 +383,56 @@ function FlowItemView({ item, onCopyToolDetail, partView }: {
   );
 }
 
-/** 连续 ≥3 个已完成工具收成一行摘要；运行中的工具不参与折叠，保持逐行可见。 */
-function groupToolRuns<T>(items: T[], settledTool: (item: T) => ToolBlock | null): (T | { members: T[]; durationMs?: number })[] {
+/** 过程按「步骤」折叠，思考也算一步：思考/shell/思考/read/思考/write 只留最后三步，
+    前三个（含思考）收进一行可展开的计数。运行中的工具不参与折叠，保持逐行可见——
+    注意力总在最近发生的事上。 */
+const VISIBLE_STEP_TAIL = 3;
+
+/** 运行中的工具不能收：它自己要保持可见，也切断折叠区间，避免把「正在跑」藏进计数里。
+    耗时只汇总被折叠的那些，且要求它们全都有耗时——思考块没有耗时字段，只加部分成员的
+    ms 会让「4 个更早步骤 120ms」读成整组只花了 120ms。 */
+function groupProcessSteps<T>(
+  items: T[],
+  step: (item: T) => { foldable: boolean; ms?: number },
+): (T | { members: T[]; durationMs?: number })[] {
   const result: (T | { members: T[]; durationMs?: number })[] = [];
-  let run: T[] = [];
-  let runMs = 0;
-  let runCounted = false;
+  let run: { item: T; ms?: number }[] = [];
   const flush = () => {
-    if (run.length >= 3) result.push({ members: run, durationMs: runCounted ? runMs : undefined });
-    else result.push(...run);
+    if (run.length > VISIBLE_STEP_TAIL) {
+      const head = run.slice(0, run.length - VISIBLE_STEP_TAIL);
+      const allTimed = head.every((entry) => entry.ms !== undefined);
+      result.push({
+        members: head.map((entry) => entry.item),
+        durationMs: allTimed ? head.reduce((total, entry) => total + (entry.ms ?? 0), 0) : undefined,
+      });
+      result.push(...run.slice(-VISIBLE_STEP_TAIL).map((entry) => entry.item));
+    } else {
+      result.push(...run.map((entry) => entry.item));
+    }
     run = [];
-    runMs = 0;
-    runCounted = false;
   };
   for (const item of items) {
-    const block = settledTool(item);
-    if (block === null) { flush(); result.push(item); continue; }
-    run.push(item);
-    if (block.durationMs !== undefined) { runMs += block.durationMs; runCounted = true; }
+    const info = step(item);
+    if (!info.foldable) { flush(); result.push(item); continue; }
+    run.push({ item, ms: info.ms });
   }
   flush();
   return result;
 }
 
-/** 收起的工具组摘要行复用工具行栅格；展开后逐行恢复原行和详情。 */
+/** 收起的工具组：一行 caret + 计数，语序跟 Claude 的 "Show N earlier steps" 一致；
+    展开后逐行恢复原行和详情，再收起时同一行回到原处。 */
 function CollapsedToolGroup({ count, durationMs, children }: {
   count: number;
   durationMs?: number;
   children: ReactNode;
 }) {
   const { open, instant, rowRef, toggle } = useStickyDisclosure();
-  // 成员首次展开后保持挂载，收起时才有高度过渡可走。
+  // 成员要先进 DOM 才有 0fr 的起始高度可过渡：等到点击那一帧再挂载，首帧就已经是 1fr，
+  // 高度是直接跳上去的。悬停或聚焦时就先挂进来（此时还是 0fr、inert），点下去就有得动。
+  // 触屏没有悬停，首次点开仍是直接到位——按 3.16，点击引起的布局变化本就在 click 之后提交。
   const [mounted, setMounted] = useState(false);
+  const prefetch = () => setMounted(true);
   return (
     <div className={`tool-group${open ? " is-open" : ""}`}>
       <div ref={rowRef} className={`tool-step-sticky${open ? " is-open" : ""}`}>
@@ -422,19 +440,20 @@ function CollapsedToolGroup({ count, durationMs, children }: {
           type="button"
           className="tool-step-summary tool-group-summary"
           aria-expanded={open}
+          onPointerEnter={prefetch}
+          onFocus={prefetch}
           onClick={() => { setMounted(true); toggle(); }}
         >
           <span className="tool-step-heading">
             <span className="tool-step-title">
-              <Wrench className="tool-step-icon" size={13} aria-hidden="true" />
-              <span>已执行 {count} 个工具</span>
+              {/* 箭头在前、计数在后：一眼看出这一行是折叠入口，而不是一条已完成记录。 */}
+              <ChevronDown className={`tool-group-caret ${open ? "open" : ""}`} size={13} aria-hidden="true" />
+              <span>{count} 个更早步骤</span>
             </span>
             <span className="tool-step-description" />
             <span className="tool-step-state">
               {durationMs !== undefined ? formatToolDuration(durationMs) : ""}
-              <CollapseHint open={open} lead={durationMs !== undefined} />
             </span>
-            <ChevronDown className={`tool-step-chevron ${open ? "open" : ""}`} size={13} aria-hidden="true" />
           </span>
         </button>
       </div>
@@ -462,8 +481,15 @@ function TimelineProcess({ flow, draftThinking = "", draftThinkingActive = false
   // 槽位锚在首个过程项之前；纯文本输出没有过程项时退到流开头，仍由提交消息提供上下文。
   const slotIndex = flow.findIndex((item) => item.kind === "thinking" || item.kind === "tool");
   const slotKey = (slotIndex >= 0 ? flow[slotIndex] : flow[0])?.key ?? null;
-  const grouped = groupTools ? groupToolRuns(flow,
-    (item) => item.kind === "tool" && item.block.status !== "input-available" ? item.block : null) : flow;
+  const grouped = groupTools ? groupProcessSteps(flow, (item) => {
+    // 思考也能收：它和工具一样是过程里的一步，展开后照样逐行恢复。
+    if (item.kind === "thinking") return { foldable: true };
+    if (item.kind === "tool") {
+      return { foldable: item.block.status !== "input-available", ms: item.block.durationMs };
+    }
+    // 旁白与正文不是可折叠的步骤：它们切断折叠区间，自己原样留在流里。
+    return { foldable: false };
+  }) : flow;
   if (!flow.length && !draftThinking && !draftLead) return null;
   return <>
     <div className="process-trace">
@@ -527,7 +553,9 @@ function TurnProcessSummary({ items, durationMs, children }: {
   children: ReactNode;
 }) {
   const { open, instant, rowRef, toggle } = useStickyDisclosure();
+  // 同 CollapsedToolGroup：先挂进来才有 0fr 起始高度，否则首次展开是直接跳高。
   const [mounted, setMounted] = useState(false);
+  const prefetch = () => setMounted(true);
   const thinking = items.filter((item) => item.kind === "thinking").length;
   const tools = items.filter((item) => item.kind === "tool");
   const failed = tools.filter((item) => item.kind === "tool" && item.block.status === "output-error").length;
@@ -538,6 +566,7 @@ function TurnProcessSummary({ items, durationMs, children }: {
     <div className={`turn-process${open ? " is-open" : ""}`}>
       <div ref={rowRef} className={`tool-step-sticky${open ? " is-open" : ""}`}>
         <button type="button" className="tool-step-summary turn-process-summary" aria-expanded={open}
+          onPointerEnter={prefetch} onFocus={prefetch}
           onClick={() => { setMounted(true); toggle(); }}>
           <span className="tool-step-heading">
             <span className="tool-step-title">
@@ -1096,8 +1125,11 @@ const ProcessTrace = memo(function ProcessTrace({
   onCopyToolDetail?: (text: string) => void;
 }) {
   const lastThinkingIndex = blocks.reduce((last, block, index) => block.kind === "thinking" ? index : last, -1);
-  const grouped = groupToolRuns(blocks.map((block, index) => ({ block, index })),
-    (entry) => entry.block.kind === "tool" && entry.block.status !== "input-available" ? entry.block : null);
+  const grouped = groupProcessSteps(blocks.map((block, index) => ({ block, index })), (entry) =>
+    entry.block.kind === "thinking"
+      ? { foldable: true }
+      : { foldable: entry.block.status !== "input-available", ms: entry.block.durationMs },
+  );
   const renderBlock = (block: AgentBlock, index: number) => block.kind === "thinking" ? (
     <ThinkingRow
       content={block.content}

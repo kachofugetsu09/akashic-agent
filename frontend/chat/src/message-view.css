@@ -1074,10 +1074,32 @@
   min-width: 0;
 }
 
-/* 连续完成的工具收成一行摘要；展开后成员恢复普通行距。 */
+/* 连续完成的工具：尾部 3 个逐行，更早的收进一行；展开后成员恢复普通行距。 */
 .tool-group {
   min-width: 0;
 }
+
+/* 折叠入口是「箭头 + 计数」，不是一条工具记录：箭头排在标题内、走 .tool-step-title
+   的 flex 与 6px 间距，所以文字和工具行图标后的标题对齐在同一列；这里不要另设栅格
+   列数，否则标题会被挤进首列的图标宽度里、文字被 overflow 切成 0 宽。
+   箭头随展开转 180°，与工具行自己的 chevron 同一动效语言。 */
+.tool-group-caret {
+  flex: none;
+  width: 13px;
+  color: var(--ak-color-text-secondary);
+  transition: translate var(--ak-sys-duration-short) var(--ak-sys-motion-standard), transform var(--ak-sys-duration-short) var(--ak-sys-motion-standard);
+}
+
+.tool-group-caret.open {
+  transform: rotate(180deg);
+}
+
+/* 悬停或键盘聚焦时箭头与文字一起提到主墨色，表示这一整行可点。 */
+@media (hover: hover) {
+  .tool-group-summary:hover .tool-group-caret { color: var(--ak-ink-primary); }
+}
+
+.tool-group-summary:focus-visible .tool-group-caret { color: var(--ak-ink-primary); }
 
 .tool-group-items {
   display: grid;
@@ -1108,6 +1130,18 @@
 }
 
 .turn-process.is-open .turn-process-items .tool-group.is-open .tool-group-items .tool-step-sticky.is-open {
+  top: calc(var(--heading-cover, 0px) + 2 * var(--tool-sticky-h));
+}
+
+/* 思考进了工具组之后，组内展开的思考行会和组头抢同一个吸附位：组头 z-index 3 且带纸面
+   底色，会把思考的标题行（也就是点回收起的地方）压在下面。让位规则要与工具行同构。 */
+.tool-group.is-open .tool-group-items .thinking-row[data-state="open"] .process-trigger-sticky {
+  top: calc(var(--heading-cover, 0px) + var(--tool-sticky-h));
+  z-index: 2;
+}
+
+.turn-process.is-open .turn-process-items .tool-group.is-open .tool-group-items
+  .thinking-row[data-state="open"] .process-trigger-sticky {
   top: calc(var(--heading-cover, 0px) + 2 * var(--tool-sticky-h));
 }
 
@@ -1461,16 +1495,19 @@ button.tool-step-summary:active {
   color: var(--ak-color-status-error);
 }
 
-/* 展开区：grid 行过渡高度，内层淡入并下移 4px；收起淡出更快。
+/* 展开区：grid 行过渡高度，内层淡入并下移 4px。
+   展开比收起慢：展开是「我要读」，用 --ak-sys-duration-expand（200ms）走完全程；
+   收起是「读完了」，用 --ak-sys-duration-snap（120ms）迅速让位，与桌面端同一不对称口径。
    内层只能用 overflow: clip，hidden 会建立滚动容器，让嵌套行的 sticky 失效。 */
 .tool-step-disclosure {
   display: grid;
   grid-template-rows: 0fr;
-  transition: grid-template-rows var(--ak-sys-duration-medium) var(--ak-sys-motion-standard);
+  transition: grid-template-rows var(--ak-sys-duration-snap) var(--ak-sys-motion-standard);
 }
 
 .tool-step-disclosure.open {
   grid-template-rows: 1fr;
+  transition-duration: var(--ak-sys-duration-expand);
 }
 
 /* grid 子项默认 min-width:auto 会被不折行的 diff 撑开（实测一行 1500 字撑到 1 万多像素）；归零后横滚留在结果区内。 */
@@ -1485,14 +1522,14 @@ button.tool-step-summary:active {
   opacity: 0;
   translate: 0 -4px;
   transition-property: opacity, translate;
-  transition-duration: var(--ak-sys-duration-short), var(--ak-sys-duration-medium);
+  transition-duration: var(--ak-sys-duration-snap), var(--ak-sys-duration-snap);
   transition-timing-function: ease-out, var(--ak-sys-motion-standard);
 }
 
 .tool-step-disclosure.open > .tool-step-disclosure-inner {
   opacity: 1;
   translate: 0 0;
-  transition-duration: var(--ak-sys-duration-medium), var(--ak-sys-duration-medium);
+  transition-duration: var(--ak-sys-duration-expand), var(--ak-sys-duration-expand);
 }
 
 /* 吸顶状态下的收起瞬间完成，由脚本把行放回原位后再淡入下方内容。 */
