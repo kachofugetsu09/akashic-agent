@@ -624,13 +624,15 @@ async def project(
     context: ContextBuilder,
     summaries: SummaryLookup,
     compaction: CompactionReader | None,
+    evaluated: set[str],
 ) -> None:
     """只处理已提交的模型 Output；操作先落 receipt，再幂等叠加到当前文件。"""
     sources = config.sources
-    if reader.attributes.learning != "eligible" or message.source not in sources or not isinstance(message.body, Output):
+    # 开机按全部历史重放：先做内存判断，只有引用摘要的 Output 才查会话属性。
+    if message.source not in sources or not isinstance(message.body, Output):
         return
     refs = [part for part in message.body.parts if isinstance(part, ContentPart) and part.kind == "context.summary"]
-    if not refs:
+    if not refs or reader.attributes.learning != "eligible":
         return
     if len(refs) != 1:
         raise ValueError("一个 Output 只能声明实际使用的一份摘要")
@@ -639,13 +641,21 @@ async def project(
     reference = context.check_summary(refs[0]).binding_ids[0]
     user_input = content.is_user_input
     post_commit_effect = content.legacy_post_commit_effect
+    # 1. Binding 固定原始记录身份；receipt 只增，开机重放历史时已叠加的摘要不取锁、不读父链。
+    #    同一批 Output 读到的是同一份当前会话快照，同一摘要只评估一次。
+    metadata = bindings.describe(reference, COMPACTION_SUMMARIES)
+    record_ref = summaries.reference(metadata, session_id=message.session_id)
+    if record_ref in evaluated:
+        return
+    evaluated.add(record_ref)
+    if await run_file_io(lambda: store.is_applied(record_ref)):
+        return
     scope = _scope_key(reader)
-    # 1. 更新串行；文件锁只保护已提交档案的读取和安装，不覆盖模型等待。
+    # 2. 更新串行；文件锁只保护已提交档案的读取和安装，不覆盖模型等待。
     async with profile_lock(lock_path.with_name(_UPDATE_LOCK_NAME)):
         async with profile_lock(lock_path):
             workspace = await run_file_io(lambda: _recover_profile(store, scope))
-        # 2. Binding 固定原始记录身份；当前 compaction 读取该记录及其 v0/v1/v2 父链。
-        metadata = bindings.describe(reference, COMPACTION_SUMMARIES)
+        # 3. 当前 compaction 读取该记录及其 v0/v1/v2 父链；锁内重查 receipt，并发叠加只做一次。
         record = summaries.resolve(metadata, session_id=message.session_id)
         applied, draft = await run_file_io(lambda: (
             store.is_applied(record.reference), store.read_draft(record.reference),
@@ -671,7 +681,7 @@ async def project(
             # 草稿中的维护操作在生成时已按超额档案校验；只有提炼操作引用本批 Message。
             evidence_ops = tuple(op for op in parse_ops({"ops": draft.get("ops")}) if op.op not in {"merge", "prune"})
             check_evidence(evidence_ops, workspace.texts, selected, is_user_input=user_input)
-        # 2. 操作先落盘，再叠加到锁内读取的当前文件；agent 与人工的并发修改不会被覆盖。
+        # 4. 操作先落盘，再叠加到锁内读取的当前文件；agent 与人工的并发修改不会被覆盖。
         async with profile_lock(lock_path):
             def install() -> None:
                 assert draft is not None
@@ -772,6 +782,7 @@ async def apply(ctx: Context) -> None:
                                 messages = await run_file_io(lambda: reader.snapshot(
                                     after_seq=cursor.get(session, -1), through_seq=head,
                                 ))
+                                evaluated: set[str] = set()
                                 for message in messages:
                                     try:
                                         compaction = ctx.get(COMPACTION_READER)
@@ -780,7 +791,7 @@ async def apply(ctx: Context) -> None:
                                         config=config, projection=ctx.require(TURN_PROJECTION),
                                         content=ctx.require(CONTENT), context=context,
                                         summaries=ctx.require(COMPACTION_SUMMARIES),
-                                        compaction=compaction)
+                                        compaction=compaction, evaluated=evaluated)
                                     except (RuntimeError, TimeoutError) as error:
                                         failure = ModelError.read(error)
                                         if not isinstance(error, ConcurrentChange) and (

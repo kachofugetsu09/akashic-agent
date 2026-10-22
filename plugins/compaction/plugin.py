@@ -1,6 +1,7 @@
 """候选 Message 摘要入口；正式 manifest 在完整迁移验收后切换。"""
 from __future__ import annotations
 
+from functools import partial
 from importlib import import_module
 from collections.abc import Awaitable, Callable, Mapping, Sequence
 import logging
@@ -130,11 +131,22 @@ async def apply(ctx: Context) -> None:
             raise RuntimeError("摘要状态读取口尚未启动")
         return read_current(session_id)
 
+    # head 行版本不变时复用已核对的完整 lineage；发布走 records().head/publish 原路径，缓存只服务读取。
+    head_cache: dict[str, tuple[int, StoredSummary]] = {}
+
+    def current_head(state: SummaryRecords, session_id: str) -> StoredSummary | None:
+        head = state.read_head(session_id, known=head_cache.get(session_id))
+        if head is None:
+            _ = head_cache.pop(session_id, None)
+            return None
+        head_cache[session_id] = head
+        return head[1]
+
     async def start(_event: object) -> None:
         nonlocal read_current, read_record
         state = records()
         read_record = state.read
-        read_current = state.head
+        read_current = partial(current_head, state)
 
     async def stop(_event: object) -> None:
         nonlocal read_current, read_record
@@ -159,28 +171,14 @@ async def apply(ctx: Context) -> None:
             "content": record.content,
         }
 
-    # prepare 的只读缓存：head 行版本不变时复用已核对的完整 lineage；
-    # 发布走 records().head/publish 原路径，缓存只服务材料读取。
-    head_cache: dict[str, tuple[int, StoredSummary]] = {}
-
     async def prepare(snapshot: tuple[Message, ...], source: str) -> MaterialData:
         if not snapshot:
             return {}
         session_id = snapshot[0].session_id
         state = records()
-
-        def load() -> StoredSummary | None:
-            head = state.read_head(session_id, known=head_cache.get(session_id))
-            if head is None:
-                head_cache.pop(session_id, None)
-                return None
-            version, record = head
-            head_cache[session_id] = (version, record)
-            return record
-
         # 命中与未命中都要读 head 行版本（SQL），恢复在文件线程完成；
         # 只有纯内存命中才值得省 executor 往返，这里不是（评审 #1142）。
-        record = await run_file_io(load)
+        record = await run_file_io(lambda: current_head(state, session_id))
         if record is None:
             return {}
         return {"summary": material(record)}
