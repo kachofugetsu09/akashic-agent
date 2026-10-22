@@ -75,6 +75,8 @@ services:
       timeout: 5s
       retries: 3
       start_period: "${AKASHIC_READINESS_TIMEOUT_S:-120}s"
+      # 启动期每秒探测：就绪后最多晚 1s 被发布器看到，而不是一个完整 interval。
+      start_interval: 1s
     stop_grace_period: 60s
     logging:
       driver: local
@@ -164,6 +166,9 @@ services:
       interval: 5s
       timeout: 2s
       retries: 12
+      # Core 依赖它 healthy 才启动；socket 出现后 1s 内放行。
+      start_period: 60s
+      start_interval: 1s
     stop_grace_period: 45s
     restart: "no"
 

@@ -66,6 +66,7 @@ class RestartGate:
         self._request_id: str | None = None
         self._permits = 0
         self._accepting = True
+        self._closed = False
         self._drained = asyncio.Event()
         self._drained.set()
         self._open_changed = asyncio.Event()
@@ -89,7 +90,11 @@ class RestartGate:
 
     @property
     def accepting(self) -> bool:
-        return self._accepting and not self._shutdown_requested.is_set()
+        return self._accepting and not self._closed and not self._shutdown_requested.is_set()
+
+    # 宿主进入停机：永久关闭新工作准入，业务重启请求的 abort 不会再打开。
+    def close(self) -> None:
+        self._closed = True
 
     @property
     def permit_count(self) -> int:
