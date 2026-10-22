@@ -54,6 +54,10 @@ RUN printf '%s\n' \
 WORKDIR /opt/akashic
 
 COPY requirements.lock /opt/akashic/distribution/requirements.lock
+# 浏览器版本由锁定的 playwright 决定、与源码无关；放在依赖层跨发布复用，不必每次从境外 CDN 重下。
+# 目录在 /opt/akashic 之外：源码层的递归 chmod 不会把浏览器整份复制进每个发布层。
+# 在这里覆盖而不改开头的 ENV：开头一变，系统包层缓存全部失效，要从 Arch 归档重下。
+ENV PLAYWRIGHT_BROWSERS_PATH=/opt/playwright
 ARG AKASHIC_PYPI_INDEX_URL=https://pypi.org/simple
 ARG AKASHIC_REQUIREMENTS_SHA256
 RUN --mount=type=cache,target=/root/.cache/pip \
@@ -64,7 +68,9 @@ RUN --mount=type=cache,target=/root/.cache/pip \
         --index-url "${AKASHIC_PYPI_INDEX_URL}" \
         --require-hashes \
         -r /opt/akashic/distribution/requirements.lock \
-    && /opt/venv/bin/python -c "import site; from pathlib import Path; Path(site.getsitepackages()[0], 'akashic-sdk.pth').write_text('/opt/akashic/source/sdk/python/src\\n')"
+    && /opt/venv/bin/python -c "import site; from pathlib import Path; Path(site.getsitepackages()[0], 'akashic-sdk.pth').write_text('/opt/akashic/source/sdk/python/src\\n')" \
+    && /opt/venv/bin/python -m playwright install --only-shell chromium \
+    && chmod -R a=rX /opt/playwright
 
 # 源码变化不应使前面的依赖层失效。
 ARG AKASHIC_SOURCE_COMMIT
@@ -97,7 +103,6 @@ RUN --mount=type=cache,target=/root/.cache/pip \
     && mkdir -p /tmp/akashic-distribution-workspace /tmp/akashic-distribution-plugins \
     && /opt/venv/bin/python /opt/akashic/source/scripts/distribution_runtime.py prepare-wheels \
         --distribution /opt/akashic/distribution \
-    && /opt/venv/bin/python -m playwright install --only-shell chromium \
     && /opt/venv/bin/python /opt/akashic/source/scripts/install_plugin_distribution.py \
         --distribution /opt/akashic/distribution \
         --bundle /opt/akashic/distribution/bundles/base.toml \

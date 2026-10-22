@@ -15,6 +15,7 @@ from scripts.akashic_release.manifest import activation_receipt, atomic_write, r
 from scripts.akashic_release.model import ReleasePaths
 from scripts.akashic_release.systemd import install_units, install_operator_entrypoint
 from scripts.akashic_release.systemd import start_bridge, start_core, stop_runtime
+from scripts.akashic_release.warm import StateCacheWarmer
 from utils.timing import measure
 
 Run = Callable[..., subprocess.CompletedProcess[str]]
@@ -353,6 +354,7 @@ def activate_release(
     inputs: Path | None = None, backup: bool = False,
     unit_root: Path = Path("/etc/systemd/system"), cli_path: Path = Path.home() / ".local/bin/akashic-release",
     self_deploy: dict[str, object] | None = None,
+    warmer: StateCacheWarmer | None = None,
 ) -> str:
     """按部署者清单停机发布；默认只更新 Core/Bridge，不执行待迁移。"""
 
@@ -413,6 +415,8 @@ def activate_release(
             attempt.update(status="failed", phase="waiting_for_turn", detail=str(error))
             write_json(attempt_path, attempt)
             raise
+    if warmer is not None:
+        warmer.wait()
     attempt["phase"] = "stopping"
     write_json(attempt_path, attempt)
     # 2. 从停机开始保留失败现场；安装、迁移、Root CAS 由目标镜像统一执行。
