@@ -428,8 +428,11 @@ function CollapsedToolGroup({ count, durationMs, children }: {
   children: ReactNode;
 }) {
   const { open, instant, rowRef, toggle } = useStickyDisclosure();
-  // 成员首次展开后保持挂载，收起时才有高度过渡可走。
+  // 成员要先进 DOM 才有 0fr 的起始高度可过渡：等到点击那一帧再挂载，首帧就已经是 1fr，
+  // 高度是直接跳上去的。悬停或聚焦时就先挂进来（此时还是 0fr、inert），点下去就有得动。
+  // 触屏没有悬停，首次点开仍是直接到位——按 3.16，点击引起的布局变化本就在 click 之后提交。
   const [mounted, setMounted] = useState(false);
+  const prefetch = () => setMounted(true);
   return (
     <div className={`tool-group${open ? " is-open" : ""}`}>
       <div ref={rowRef} className={`tool-step-sticky${open ? " is-open" : ""}`}>
@@ -437,6 +440,8 @@ function CollapsedToolGroup({ count, durationMs, children }: {
           type="button"
           className="tool-step-summary tool-group-summary"
           aria-expanded={open}
+          onPointerEnter={prefetch}
+          onFocus={prefetch}
           onClick={() => { setMounted(true); toggle(); }}
         >
           <span className="tool-step-heading">
@@ -548,7 +553,9 @@ function TurnProcessSummary({ items, durationMs, children }: {
   children: ReactNode;
 }) {
   const { open, instant, rowRef, toggle } = useStickyDisclosure();
+  // 同 CollapsedToolGroup：先挂进来才有 0fr 起始高度，否则首次展开是直接跳高。
   const [mounted, setMounted] = useState(false);
+  const prefetch = () => setMounted(true);
   const thinking = items.filter((item) => item.kind === "thinking").length;
   const tools = items.filter((item) => item.kind === "tool");
   const failed = tools.filter((item) => item.kind === "tool" && item.block.status === "output-error").length;
@@ -559,6 +566,7 @@ function TurnProcessSummary({ items, durationMs, children }: {
     <div className={`turn-process${open ? " is-open" : ""}`}>
       <div ref={rowRef} className={`tool-step-sticky${open ? " is-open" : ""}`}>
         <button type="button" className="tool-step-summary turn-process-summary" aria-expanded={open}
+          onPointerEnter={prefetch} onFocus={prefetch}
           onClick={() => { setMounted(true); toggle(); }}>
           <span className="tool-step-heading">
             <span className="tool-step-title">

@@ -1495,16 +1495,19 @@ button.tool-step-summary:active {
   color: var(--ak-color-status-error);
 }
 
-/* 展开区：grid 行过渡高度，内层淡入并下移 4px；收起淡出更快。
+/* 展开区：grid 行过渡高度，内层淡入并下移 4px。
+   展开比收起慢：展开是「我要读」，用 --ak-sys-duration-expand（200ms）走完全程；
+   收起是「读完了」，用 --ak-sys-duration-snap（120ms）迅速让位，与桌面端同一不对称口径。
    内层只能用 overflow: clip，hidden 会建立滚动容器，让嵌套行的 sticky 失效。 */
 .tool-step-disclosure {
   display: grid;
   grid-template-rows: 0fr;
-  transition: grid-template-rows var(--ak-sys-duration-medium) var(--ak-sys-motion-standard);
+  transition: grid-template-rows var(--ak-sys-duration-snap) var(--ak-sys-motion-standard);
 }
 
 .tool-step-disclosure.open {
   grid-template-rows: 1fr;
+  transition-duration: var(--ak-sys-duration-expand);
 }
 
 /* grid 子项默认 min-width:auto 会被不折行的 diff 撑开（实测一行 1500 字撑到 1 万多像素）；归零后横滚留在结果区内。 */
@@ -1519,14 +1522,14 @@ button.tool-step-summary:active {
   opacity: 0;
   translate: 0 -4px;
   transition-property: opacity, translate;
-  transition-duration: var(--ak-sys-duration-short), var(--ak-sys-duration-medium);
+  transition-duration: var(--ak-sys-duration-snap), var(--ak-sys-duration-snap);
   transition-timing-function: ease-out, var(--ak-sys-motion-standard);
 }
 
 .tool-step-disclosure.open > .tool-step-disclosure-inner {
   opacity: 1;
   translate: 0 0;
-  transition-duration: var(--ak-sys-duration-medium), var(--ak-sys-duration-medium);
+  transition-duration: var(--ak-sys-duration-expand), var(--ak-sys-duration-expand);
 }
 
 /* 吸顶状态下的收起瞬间完成，由脚本把行放回原位后再淡入下方内容。 */
