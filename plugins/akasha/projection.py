@@ -13,7 +13,7 @@ import numpy as np
 
 from .domain.model import Turn, TurnFeedback
 from .infrastructure.consumption import Applied
-from .infrastructure.lexical import tokenize
+from .infrastructure.lexical import Terms, terms as lexical_terms
 from ._boundaries import Turn as ProjectedTurn, TurnProjection
 
 
@@ -159,6 +159,7 @@ def dialogue_turn(
     sample: Sample, *, node_id: int, previous: datetime | None,
     text: Callable[[Message], str], embeddings: EmbeddingRecords,
     embedding_model: str, dimension: int, feedback: TurnFeedback = TurnFeedback(),
+    terms: Callable[[str], Terms] = lexical_terms,
 ) -> Turn | None:
     """默认学习完整问答；多输入共享一个样本，向量缺口明确失败。"""
     # 1. 选择学习材料的职责属于 Akasha，投影插件仍返回所有闭段。
@@ -185,8 +186,7 @@ def dialogue_turn(
         started_at=users[0].recorded_at.astimezone(UTC).isoformat(),
         committed_at=committed.isoformat(), user_text=joined, assistant_text=answer,
         user_dense=user_dense, assistant_dense=assistant_dense,
-        user_terms=tuple(sorted(tokenize(joined).items())),
-        assistant_terms=tuple(sorted(tokenize(answer).items())),
+        user_terms=terms(joined), assistant_terms=terms(answer),
         inter_gap_seconds=gap, feedback=feedback,
     )
 

@@ -3,7 +3,7 @@ from __future__ import annotations
 
 from dataclasses import replace
 import asyncio
-from collections.abc import Awaitable, Callable
+from collections.abc import Awaitable, Callable, Mapping, Sequence
 from datetime import datetime
 from itertools import groupby
 from functools import partial
@@ -11,7 +11,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING
 
 from plugins.ledger.contract import Bindings
-from plugins.ledger.contract import MessageCatalog, MessageEmbeddings, Message, Input
+from plugins.ledger.contract import EmbeddingRecords, MessageCatalog, MessageEmbeddings, Message, Input
 
 from ..domain.features import BurstAwareFeaturePool
 from ..domain.model import (
@@ -23,6 +23,7 @@ from ..domain.model import (
 )
 from ..infrastructure.consumption import Applied, Consumption, Skipped
 from ..infrastructure.lease import WriterLease
+from ..infrastructure.lexical import TermCache, terms as lexical_terms
 from ..infrastructure.persistence import load_consumption, load_memory_state, write_memory_database
 from .cycle import MemoryCycle
 
@@ -116,6 +117,7 @@ class MessageConsumer:
         embeddings: MessageEmbeddings, bindings: Bindings,
         config: MemoryConfig, cutover: bool = True,
         restore_embeddings: RestoreEmbeddings | None = None,
+        term_cache: Path | None = None,
     ) -> MessageConsumer:
         """先按原绑定还原材料，再取得唯一 writer 装载图；缺失来源不自动重学。"""
         from ..learning import AKASHA_LEARNING, LearningConfig
@@ -130,6 +132,11 @@ class MessageConsumer:
         if state is None:
             raise MemoryRebuildRequiredError("学习图缺少当前消费出处，需要显式重建")
         # 2. 按原算法验证出处，缺失向量由明确的模型端口补算；不调用学习 commit。
+        #    分词是纯函数，按正文哈希复用上次结果，只有新正文现场切分。
+        cache = None if term_cache is None else TermCache(term_cache)
+        if cache is not None:
+            await run_memory_job(cache.load)
+        terms = lexical_terms if cache is None else cache.terms
         turns: list[Turn] = []
         space: str | None = None
         for identity, grouped in groupby(state.applied, key=lambda entry: entry.learning_binding):
@@ -143,12 +150,21 @@ class MessageConsumer:
                     learning.load_sample(catalog, rule, entry) for entry in entries
                 ))
                 records = embeddings.bind(learning.text)
+                verified: dict[str, tuple[float, ...]] = {}
                 def missing_vectors() -> list[Message]:
                     messages = {message.message_id: message for sample in samples
                                 for message in sample.messages
                                 if isinstance(message.body, Input) or message == sample.ending}
-                    return [message for message in messages.values() if learning.text(message).strip()
-                            and records.read(message, model=rule.embedding_model, dimension=rule.dimension) is None]
+                    missing: list[Message] = []
+                    for message in messages.values():
+                        if not learning.text(message).strip():
+                            continue
+                        vector = records.read(message, model=rule.embedding_model, dimension=rule.dimension)
+                        if vector is None:
+                            missing.append(message)
+                        else:
+                            verified[message.message_id] = vector
+                    return missing
                 missing = await run_memory_job(missing_vectors)
                 if missing:
                     if restore_embeddings is None:
@@ -164,11 +180,15 @@ class MessageConsumer:
                     """按原前缀逐条恢复；后一条只能读取已完成的 previous。"""
                     for sample in samples:
                         turns.append(learning.restore(
-                            sample, embeddings, rule, previous=turns, state=state, bindings=bindings,
+                            sample, _VerifiedVectors(embeddings, verified), rule,
+                            previous=turns, state=state, bindings=bindings, terms=terms,
                         ))
 
                 await run_memory_job(restore_entries)
                 space = rule.embedding_model
+        if cache is not None:
+            cache.release()
+            await run_memory_job(cache.save)
         consumer = await cls.create(path, turns=turns, state=state, config=config)
         consumer._embedding_model = space
         return consumer
@@ -397,6 +417,31 @@ def _check_embedding_space(model: str, dimension: int, previous_model: str | Non
     if any(len(vector) != dimension for turn in turns
            for vector in (turn.user_dense, turn.assistant_dense) if vector is not None):
         raise EmbeddingSpaceMismatchError("新学习 binding 的维度不匹配已有图，需显式重建")
+
+
+# 恢复复用刚核对过正文出处的向量，不再逐条重读；未命中（如刚补算的）仍走原存储与校验。
+class _VerifiedVectors:
+    def __init__(self, embeddings: MessageEmbeddings, vectors: Mapping[str, tuple[float, ...]]):
+        self._embeddings = embeddings
+        self._vectors = vectors
+
+    def bind(self, text: Callable[[Message], str]) -> EmbeddingRecords:
+        return _VerifiedRecords(self._embeddings.bind(text), self._vectors)
+
+
+class _VerifiedRecords:
+    def __init__(self, records: EmbeddingRecords, vectors: Mapping[str, tuple[float, ...]]):
+        self._records = records
+        self._vectors = vectors
+
+    def read(self, message: Message, *, model: str, dimension: int) -> tuple[float, ...] | None:
+        vector = self._vectors.get(message.message_id)
+        if vector is not None and len(vector) == dimension:
+            return vector
+        return self._records.read(message, model=model, dimension=dimension)
+
+    def save(self, message: Message, *, model: str, embedding: Sequence[float]) -> None:
+        self._records.save(message, model=model, embedding=embedding)
 
 
 async def run_memory_job[T](work: Callable[[], T]) -> T:
