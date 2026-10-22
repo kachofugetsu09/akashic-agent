@@ -248,6 +248,8 @@ class ModelsStore:
         self._host_lock_file: object | None = None
         # descriptor 冻结且整个绑定周期不变；binding JSON 只随 descriptor 变化。
         self._binding_cache: dict[BoundModelDescriptor, str] = {}
+        # 快照只随 meta 行变化：领域写入递增 revision，宿主接管的升级递增 host_epoch。
+        self._snapshot_cache: tuple[tuple[object, ...], StoredSnapshot] | None = None
 
     @property
     def host_epoch(self) -> int | None:
@@ -307,6 +309,8 @@ class ModelsStore:
                             "WHERE singleton = 1"
                         )
                     connection.commit()
+                    # 同进程收养租约的升级不递增 epoch，旧快照不能再按 meta 行复用。
+                    self._snapshot_cache = None
                 self._host_epoch = int(
                     connection.execute(
                         "SELECT host_epoch FROM model_registry_meta WHERE singleton = 1"
@@ -326,52 +330,65 @@ class ModelsStore:
         with self._connect(read_only=True) as connection:
             connection.execute("BEGIN")
             _require_base_schema(connection)
-            meta_columns = _columns(connection, "model_registry_meta")
-            connection_columns = _columns(connection, "model_connections")
-            model_columns = _columns(connection, "model_definitions")
-            embedding_columns = _columns(connection, "embedding_models")
-            default_column = (
-                ", default_embedding_model_id"
-                if "default_embedding_model_id" in meta_columns
-                else ""
-            )
-            meta = connection.execute(
-                f"SELECT revision{default_column} FROM model_registry_meta "
-                "WHERE singleton = 1"
-            ).fetchone()
-            if meta is None:
-                raise RuntimeError("model registry is missing revision metadata")
-            config_column = (
-                "driver_config_json"
-                if "driver_config_json" in connection_columns
-                else "'{}'"
-            )
-            connection_rows = connection.execute(
-                "SELECT id, name, provider, catalog_provider_id, base_url, auth_id, "
-                f"{config_column}, enabled FROM model_connections ORDER BY created_at, id"
-            ).fetchall()
-            chat_rows = connection.execute(
-                _SELECT_CHAT_MODELS.format(
-                    capabilities_json=(
-                        "capabilities_json"
-                        if "capabilities_json" in model_columns
-                        else "NULL"
-                    )
+            # 每次绑定都读完整注册表；meta 行未变时复用同一份不可变快照，只付一次单行查询。
+            meta_row = tuple(connection.execute(
+                "SELECT * FROM model_registry_meta WHERE singleton = 1"
+            ).fetchone() or ())
+            cached = self._snapshot_cache
+            if cached is not None and cached[0] == meta_row:
+                return cached[1]
+            snapshot = self._read_snapshot(connection)
+        self._snapshot_cache = (meta_row, snapshot)
+        return snapshot
+
+    # 在调用方的读事务内解码完整注册表。
+    def _read_snapshot(self, connection: sqlite3.Connection) -> StoredSnapshot:
+        meta_columns = _columns(connection, "model_registry_meta")
+        connection_columns = _columns(connection, "model_connections")
+        model_columns = _columns(connection, "model_definitions")
+        embedding_columns = _columns(connection, "embedding_models")
+        default_column = (
+            ", default_embedding_model_id"
+            if "default_embedding_model_id" in meta_columns
+            else ""
+        )
+        meta = connection.execute(
+            f"SELECT revision{default_column} FROM model_registry_meta "
+            "WHERE singleton = 1"
+        ).fetchone()
+        if meta is None:
+            raise RuntimeError("model registry is missing revision metadata")
+        config_column = (
+            "driver_config_json"
+            if "driver_config_json" in connection_columns
+            else "'{}'"
+        )
+        connection_rows = connection.execute(
+            "SELECT id, name, provider, catalog_provider_id, base_url, auth_id, "
+            f"{config_column}, enabled FROM model_connections ORDER BY created_at, id"
+        ).fetchall()
+        chat_rows = connection.execute(
+            _SELECT_CHAT_MODELS.format(
+                capabilities_json=(
+                    "capabilities_json"
+                    if "capabilities_json" in model_columns
+                    else "NULL"
                 )
-            ).fetchall()
-            embedding_rows = connection.execute(
-                _SELECT_EMBEDDING_MODELS.format(
-                    capabilities_json=(
-                        "capabilities_json"
-                        if "capabilities_json" in embedding_columns
-                        else "NULL"
-                    )
+            )
+        ).fetchall()
+        embedding_rows = connection.execute(
+            _SELECT_EMBEDDING_MODELS.format(
+                capabilities_json=(
+                    "capabilities_json"
+                    if "capabilities_json" in embedding_columns
+                    else "NULL"
                 )
-            ).fetchall()
-            role_rows = connection.execute(
-                "SELECT role, model_id, reasoning_effort "
-                "FROM model_role_bindings WHERE role = 'default'"
-            ).fetchall()
+            )
+        ).fetchall()
+        role_rows = connection.execute(
+            "SELECT role, model_id, reasoning_effort "
+            "FROM model_role_bindings WHERE role = 'default'"
+        ).fetchall()
 
         connections = {
             item.connection_id: item
