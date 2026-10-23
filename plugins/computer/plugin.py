@@ -36,7 +36,10 @@ from .inputs import CallSource, Result, TOOLS, TURN_PROJECTION, TurnProjection
 from plugins.ledger.contract import MessageCatalog, OwnerRecord, OwnerStore
 from plugins.ledger.contract import ARTIFACT_IMPORT, AttachmentKind, ContentPart, Input, Message, Output, ToolCall
 
+from agent.plugin_composition.plugin_config import PLUGIN_CONFIG
+from plugins.plugin_settings.contract import SETTINGS_FORMS, declare_settings
 from .control import ComputerDriverError, endpoint_name, request
+from .stream import MEDIA_PORT, STREAM_CONFIG, STREAM_FORM, StreamConfig
 
 # 私有耐久 control binding；工具的 freeze/open 在本插件内保存并打开同一个 key。
 COMPUTER_CONTROL = ServiceKey["ComputerControl"]("computer.control.v1")
@@ -161,7 +164,7 @@ workspace_files = ()
 
 _IMAGE = (
     "ghcr.io/kachofugetsu09/akashic-computer@"
-    "sha256:aaf9cf3c0b9cf08b8a88f2935e3be1ff47e1bac118610bdfe6bd2664ff07d3c9"
+    "sha256:21f92ee1201cdb45623948d58df91fbce1e247b009515f82d797614e53b16598"
 )
 
 
@@ -284,6 +287,9 @@ async def apply(ctx: Context) -> None:
         },
     )
     await ctx.require(INSTALLED_ASSETS).register(ctx, "skills", "skills")
+    _ = await ctx.provide(STREAM_CONFIG, StreamConfig.model_validate(ctx.config))
+    _ = await ctx.inject((SETTINGS_FORMS, PLUGIN_CONFIG),
+                         lambda child: declare_settings(child, StreamConfig, STREAM_FORM), name="settings")
     _ = await ctx.require(TOOLS).declare_group(ctx, description=desc)
     # 浏览器容器只挂载 state 数据目录（Controller 负责创建与属主）；本地静态页放进其中的 pages。
     pages = ctx.data_root / "state" / "pages"
@@ -364,6 +370,7 @@ async def _register_workload(ctx: Context):
             health=WorkloadHealth("gateway", "/health", 90.0),
             limits=WorkloadLimits(0, 0.0, 0),
             user_namespaces=True,
+            udp_ports=(MEDIA_PORT,),
         ),
     )
 

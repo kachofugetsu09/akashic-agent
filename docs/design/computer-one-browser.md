@@ -69,6 +69,29 @@ Agent: browser.tabs.new()
 - 接管期间切到另一个匿名浏览器的标签，接管改为持有那个实例，不被闲置回收。
 - 页面自己弹出的窗口（`window.open`、OAuth）成为 `Screen.front`。
 
+### 3.1 传输：WebRTC 优先，WebSocket 回退
+
+差链路（500ms 往返 + 0.2% 丢包）上 WebSocket 掉到个位数帧率并整页重载，同条件 WebRTC 稳定
+54fps；局域网和普通远程两者都在 54fps 左右。所以能直连时走 WebRTC，连不通回退 WebSocket。
+
+```text
+面板 ──POST stream-session──> Core：设置里填了宿主局域网地址 → webrtc，否则 websockets；
+                              并把 selkies 切到该模式（同一时刻只服务一种，切换约 15ms）
+WebRTC：面板 ──信令 WS──> Dashboard ──> selkies /api/webrtc/signaling/
+          HELLO 由 Core 填入会话令牌；offer 后补一条 <局域网地址> 30000 的 host 候选
+        浏览器 ══UDP 30000（ICE-lite、单端口复用）══> 容器（画面、键鼠数据通道）
+```
+
+- 媒体端口由 Workload `udp_ports` 按原端口号发布到宿主网卡；容器自报的是桥接网段地址，
+  浏览器连不到，所以由 Core 补宿主地址。selkies 用 ICE-lite，不向公网 STUN 收集候选。
+- WebRTC 的键鼠走数据通道，不经 Dashboard 代理，只读改由 selkies 令牌保证：每条画面连接一个
+  会话令牌，最新且可操作（已接管或 Agent 空闲）的连接持有键鼠（`mk_control`），否则由占位令牌持有，
+  selkies 丢弃其余连接的输入。WebSocket 连接的令牌始终持有键鼠，仍由代理过滤。
+- 首帧前 4 秒连不上（不在局域网、UDP 被拦）就回退 WebSocket，10 分钟内直接用 WebSocket。
+- 链路调档（`_gz` 回声测往返、`_arg_fps`/`_crf` 降档）在 WebRTC 下走数据通道，与画面同一路径。
+- 已知限制：WebRTC 下收回键鼠权限时 selkies 只在连接断开时释放已按下的键（WebSocket 下代理会补 `kr`）。
+  人正按着键的瞬间 Agent 开始操作，这个键会保持按下，直到人再次获得权限或连接断开；场景很窄，暂不处理。
+
 ## 4. 匿名浏览器
 
 `agent.browsers.create()` → 主连接上 `Target.createBrowserContext` → 新 `BrowserBackend`

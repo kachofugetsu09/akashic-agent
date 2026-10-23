@@ -16,6 +16,10 @@ from websockets.typing import Subprotocol
 
 from agent.plugin_composition import DashboardContext
 
+from .stream import STREAM_CONFIG, StreamAccess, StreamMode, lan_candidate, signaling_hello
+
+inject = (STREAM_CONFIG,)
+
 
 def _websocket_url(base_url: str) -> str:
     parsed = urlsplit(base_url)
@@ -63,7 +67,9 @@ def register(app: FastAPI, context: DashboardContext) -> httpx.Client:
     gateway = context.workload_url("computer", "gateway")
     stream_http = context.workload_url("computer", "stream")
     stream = _websocket_url(stream_http).rstrip("/") + "/api/websockets"
+    signaling = _websocket_url(stream_http).rstrip("/") + "/api/webrtc/signaling/"
     client = httpx.Client(base_url=gateway, timeout=125.0)
+    access = StreamAccess(gateway, stream_http)
 
     def forward(
         method: str, path: str, payload: object | None = None
@@ -127,7 +133,7 @@ def register(app: FastAPI, context: DashboardContext) -> httpx.Client:
 
     @app.get("/api/dashboard/computer/stream-source/{name}")
     def stream_source(name: str) -> Response:
-        if name not in {"selkies-ws-core.js", "util.js", "LICENSE"}:
+        if name not in {"selkies-ws-core.js", "selkies-wr-core.js", "util.js", "LICENSE"}:
             raise HTTPException(status_code=404, detail="Unknown Computer stream source")
         result = forward("GET", stream_http.rstrip("/") + "/source/" + name)
         return Response(result.content, media_type="text/plain")
@@ -171,150 +177,54 @@ def register(app: FastAPI, context: DashboardContext) -> httpx.Client:
             if socket.client_state is WebSocketState.CONNECTED:
                 await socket.close(code=1013, reason="Computer events are unavailable")
 
+    @app.post("/api/dashboard/computer/stream-session")
+    async def stream_session(prefer: str = "") -> dict[str, object]:
+        """选定这次连接的传输：配置了直连地址就用 WebRTC；面板回退时改用 WebSocket。"""
+        config = context.require(STREAM_CONFIG)
+        mode: StreamMode = "webrtc" if config.lan_address and prefer != "websockets" else "websockets"
+        try:
+            await access.use(mode)
+        except httpx.HTTPError as error:
+            raise HTTPException(status_code=502, detail=str(error)) from error
+        return {"mode": mode, "rtcConfig": {"iceServers": []}}
+
+    @app.post("/api/dashboard/computer/touch")
+    def touch_view() -> Response:
+        # WebRTC 的键鼠不经 Core，由面板在人直接操作时续期。
+        result = forward("POST", "/view/touch", {})
+        return Response(result.content, media_type="application/json")
+
     @app.websocket("/api/dashboard/computer/stream")
     async def computer_display(socket: WebSocket) -> None:
-        """把当前 generation 的浏览器画面连接转发到私有显示服务；接管时先把目标标签提到最前。"""
+        await _serve(_View(socket, gateway, access, "websockets"))
 
-        target = socket.query_params.get("target", "")
-        control_id = socket.query_params.get("control", "")
-        if control_id and (len(control_id) > 128 or not control_id.isascii()):
+    @app.websocket("/api/dashboard/computer/signaling")
+    async def computer_signaling(socket: WebSocket) -> None:
+        await _serve(_View(socket, gateway, access, "webrtc"))
+
+    async def _serve(view: _View) -> None:
+        """把当前 generation 的画面连接转发到私有流服务；接管时先把目标标签提到最前。"""
+        socket = view.socket
+        if view.control_id and (len(view.control_id) > 128 or not view.control_id.isascii()):
             await socket.close(code=1008, reason="Invalid control identity")
             return
-        reader = httpx.AsyncClient(base_url=gateway, timeout=40.0)
-        async def control_request(action: str) -> None:
-            result = await reader.post("/control/" + action, json={"id": control_id, "target": target})
-            result.raise_for_status()
-
-        requested = {
-            item.strip()
-            for item in socket.headers.get("sec-websocket-protocol", "").split(",")
-            if item.strip()
-        }
-        protocols = [Subprotocol("binary")] if "binary" in requested else None
-        controlled = False
-        # 没接管时，Agent 空闲就可以直接操作；状态来自网关事件流，收回时先松开按住的键和鼠标。
-        idle = False
-        held_keys: set[str] = set()
-        last_pointer: list[str] = []
-        touched = 0.0
-        renew_wanted = asyncio.Event()
-
-        async def watch_idle(upstream: ClientConnection) -> None:
-            nonlocal idle
-            timeout = httpx.Timeout(10.0, read=None)
-            async with reader.stream("GET", "/events", timeout=timeout) as response:
-                _ = response.raise_for_status()
-                async for line in response.aiter_lines():
-                    if (state := _state_event(line)) is None:
-                        continue
-                    was_idle, idle = idle, _agent_idle(state)
-                    # 先收回输入再松键：发送期间到达的按下不会再被转发。
-                    if was_idle and not idle:
-                        releasing = tuple(held_keys)
-                        held_keys.clear()
-                        for key in releasing:
-                            await upstream.send("ku," + key)
-                        if len(last_pointer) == 4 and last_pointer[3] != "0":
-                            await upstream.send(",".join([*last_pointer[:3], "0", "0"]))
-                            last_pointer.clear()
-
-        def touch() -> None:
-            # 人在直接操作时续期，浏览器不会在用户使用中途休眠；这里只做标记，请求由后台任务发，不拖慢输入转发。
-            nonlocal touched
-            if time.monotonic() - touched < 30:
-                return
-            touched = time.monotonic()
-            renew_wanted.set()
-
-        async def renew_while_used() -> None:
-            # 续期失败和以前一样结束这条画面连接（关闭码 1013）。
-            while True:
-                _ = await renew_wanted.wait()
-                renew_wanted.clear()
-                result = await reader.post("/view/touch", json={})
-                _ = result.raise_for_status()
-
-        def allowed(text: str) -> bool:
-            if control_id or _view_only_allows(text):
-                return True
-            return idle
-
         try:
-            if control_id:
-                await control_request("take")
-                controlled = True
-            upstream_context = connect(
-                # 画面连接总以主控端身份接入，屏幕才会跟随面板尺寸；只读由下面的转发过滤保证。
-                stream + "?role=controller",
-                subprotocols=protocols,
-                compression=None,
-                open_timeout=10,
-                close_timeout=5,
-                max_size=None,
-                proxy=None,
-            )
+            # 1. 先取得接管和会话令牌，流服务才接受这条连接的输入。
+            if view.control_id:
+                await view.control("take")
+                view.controlled = True
+            # WebSocket 的输入经下面的转发过滤；WebRTC 的键鼠直达流服务，只能靠令牌权限挡住。
+            view.token = await access.open(bool(view.control_id) or view.mode == "websockets")
+            url = f"{stream}?role=controller&token={view.token}" if view.mode == "websockets" else signaling
+            # 2. 画面连接总以主控端身份接入，屏幕才会跟随面板尺寸；只读由令牌和转发过滤保证。
+            upstream_context = connect(url, subprotocols=view.protocols(), compression=None, open_timeout=10,
+                                       close_timeout=5, max_size=None, proxy=None)
             async with upstream_context as upstream:
                 await socket.accept(subprotocol=upstream.subprotocol)
-
-                async def send_to_display() -> None:
-                    try:
-                        while True:
-                            message = await socket.receive()
-                            if message["type"] == "websocket.disconnect":
-                                return
-                            if message.get("bytes") is not None:
-                                if control_id or idle:
-                                    await upstream.send(message["bytes"])
-                            elif (text := message.get("text")) is not None and allowed(text):
-                                if text.startswith("kd,"):
-                                    held_keys.add(text.split(",")[1])
-                                elif text.startswith("ku,"):
-                                    held_keys.discard(text.split(",")[1])
-                                elif text == "kr":
-                                    held_keys.clear()
-                                if text.startswith("m,"):
-                                    last_pointer[:] = text.split(",")[:4]
-                                await upstream.send(text)
-                                if idle and not control_id and not _view_only_allows(text):
-                                    touch()
-                    except WebSocketDisconnect:
-                        return
-
-                async def send_to_browser() -> None:
-                    try:
-                        async for message in upstream:
-                            if isinstance(message, bytes):
-                                await socket.send_bytes(message)
-                            else:
-                                await socket.send_text(message)
-                    except ConnectionClosed:
-                        return
-
-                async def renew_control() -> None:
-                    while True:
-                        await asyncio.sleep(5)
-                        await control_request("renew")
-
-                tasks = {
-                    asyncio.create_task(send_to_display()),
-                    asyncio.create_task(send_to_browser()),
-                }
-                if control_id:
-                    tasks.add(asyncio.create_task(renew_control()))
-                else:
-                    tasks.add(asyncio.create_task(watch_idle(upstream)))
-                    tasks.add(asyncio.create_task(renew_while_used()))
-                done, pending = await asyncio.wait(
-                    tasks,
-                    return_when=asyncio.FIRST_COMPLETED,
-                )
-                for task in pending:
-                    task.cancel()
-                for task in pending:
-                    with suppress(asyncio.CancelledError):
-                        await task
-                for task in done:
-                    await task
+                await _pump(view, upstream)
+            # 3. 别的窗口换了传输方式，等同于它接管了画面。
+            if socket.client_state is WebSocketState.CONNECTED and view.switched:
+                await socket.close(code=4001, reason="superseded by another window")
         except WebSocketDisconnect:
             return
         except (OSError, TimeoutError, InvalidHandshake, httpx.HTTPError):
@@ -323,10 +233,182 @@ def register(app: FastAPI, context: DashboardContext) -> httpx.Client:
             if socket.client_state is WebSocketState.CONNECTED:
                 await socket.close(code=1013, reason="Computer display or control is unavailable")
         finally:
-            try:
-                if controlled:
-                    await control_request("release")
-            finally:
-                await reader.aclose()
+            await view.close()
+
+    async def _pump(view: _View, upstream: ClientConnection) -> None:
+        if view.mode == "websockets":
+            tasks = {_display_up(view, upstream), _display_down(view, upstream)}
+        else:
+            lan = context.require(STREAM_CONFIG).lan_address
+            tasks = {_signal_up(view, upstream), _signal_down(view, upstream, lan)}
+        if view.control_id:
+            tasks.add(view.renew_control())
+        else:
+            tasks.add(view.watch_idle(upstream))
+            if view.mode == "websockets":
+                tasks.add(view.renew_while_used())
+        running = {asyncio.create_task(task) for task in tasks}
+        done, pending = await asyncio.wait(running, return_when=asyncio.FIRST_COMPLETED)
+        for task in pending:
+            task.cancel()
+        for task in pending:
+            with suppress(asyncio.CancelledError):
+                await task
+        for task in done:
+            await task
 
     return client
+
+
+class _View:
+    """一条画面连接：接管身份、会话令牌，以及没接管时随 Agent 空闲与否开关的输入权限。"""
+
+    def __init__(self, socket: WebSocket, gateway: str, access: StreamAccess, mode: StreamMode) -> None:
+        self.socket = socket
+        self.mode: StreamMode = mode
+        self.target = socket.query_params.get("target", "")
+        self.control_id = socket.query_params.get("control", "")
+        self.reader = httpx.AsyncClient(base_url=gateway, timeout=40.0)
+        self.access = access
+        self.switches = access.switches
+        self.token = ""
+        self.controlled = False
+        # 没接管时，Agent 空闲就可以直接操作；状态来自网关事件流，收回时先松开按住的键和鼠标。
+        self.idle = False
+        self.held_keys: set[str] = set()
+        self.last_pointer: list[str] = []
+        self.touched = 0.0
+        self.renew_wanted = asyncio.Event()
+
+    @property
+    def switched(self) -> bool:
+        return self.access.switches != self.switches
+
+    def protocols(self) -> list[Subprotocol] | None:
+        requested = {item.strip() for item in self.socket.headers.get("sec-websocket-protocol", "").split(",")}
+        return [Subprotocol("binary")] if "binary" in requested else None
+
+    async def control(self, action: str) -> None:
+        result = await self.reader.post("/control/" + action, json={"id": self.control_id, "target": self.target})
+        _ = result.raise_for_status()
+
+    async def renew_control(self) -> None:
+        while True:
+            await asyncio.sleep(5)
+            await self.control("renew")
+
+    async def watch_idle(self, upstream: ClientConnection) -> None:
+        timeout = httpx.Timeout(10.0, read=None)
+        async with self.reader.stream("GET", "/events", timeout=timeout) as response:
+            _ = response.raise_for_status()
+            async for line in response.aiter_lines():
+                if (state := _state_event(line)) is None:
+                    continue
+                was_idle, self.idle = self.idle, _agent_idle(state)
+                # 先停止转发再松键，最后收回令牌：发送期间到达的按下不会再被转发，松键也不会被流服务丢弃。
+                if self.mode == "webrtc":
+                    await self.access.allow(self.token, self.idle)
+                elif was_idle and not self.idle:
+                    await self._release(upstream)
+
+    async def _release(self, upstream: ClientConnection) -> None:
+        releasing = tuple(self.held_keys)
+        self.held_keys.clear()
+        for key in releasing:
+            await upstream.send("ku," + key)
+        if len(self.last_pointer) == 4 and self.last_pointer[3] != "0":
+            await upstream.send(",".join([*self.last_pointer[:3], "0", "0"]))
+            self.last_pointer.clear()
+
+    def touch(self) -> None:
+        # 人在直接操作时续期，浏览器不会在用户使用中途休眠；这里只做标记，请求由后台任务发，不拖慢输入转发。
+        if time.monotonic() - self.touched < 30:
+            return
+        self.touched = time.monotonic()
+        self.renew_wanted.set()
+
+    async def renew_while_used(self) -> None:
+        # 续期失败和以前一样结束这条画面连接（关闭码 1013）。
+        while True:
+            _ = await self.renew_wanted.wait()
+            self.renew_wanted.clear()
+            result = await self.reader.post("/view/touch", json={})
+            _ = result.raise_for_status()
+
+    def allowed(self, text: str) -> bool:
+        return bool(self.control_id) or _view_only_allows(text) or self.idle
+
+    async def close(self) -> None:
+        try:
+            if self.controlled:
+                await self.control("release")
+            if self.token:
+                with suppress(httpx.HTTPError):
+                    await self.access.close(self.token)
+        finally:
+            await self.reader.aclose()
+
+
+async def _display_up(view: _View, upstream: ClientConnection) -> None:
+    try:
+        while True:
+            message = await view.socket.receive()
+            if message["type"] == "websocket.disconnect":
+                return
+            if message.get("bytes") is not None:
+                if view.control_id or view.idle:
+                    await upstream.send(message["bytes"])
+            elif (text := message.get("text")) is not None and view.allowed(text):
+                if text.startswith("kd,"):
+                    view.held_keys.add(text.split(",")[1])
+                elif text.startswith("ku,"):
+                    view.held_keys.discard(text.split(",")[1])
+                elif text == "kr":
+                    view.held_keys.clear()
+                if text.startswith("m,"):
+                    view.last_pointer[:] = text.split(",")[:4]
+                await upstream.send(text)
+                if view.idle and not view.control_id and not _view_only_allows(text):
+                    view.touch()
+    except WebSocketDisconnect:
+        return
+
+
+async def _display_down(view: _View, upstream: ClientConnection) -> None:
+    try:
+        async for message in upstream:
+            if isinstance(message, bytes):
+                await view.socket.send_bytes(message)
+            else:
+                await view.socket.send_text(message)
+    except ConnectionClosed:
+        return
+
+
+async def _signal_up(view: _View, upstream: ClientConnection) -> None:
+    try:
+        while True:
+            message = await view.socket.receive()
+            if message["type"] == "websocket.disconnect":
+                return
+            if (text := message.get("text")) is not None:
+                await upstream.send(signaling_hello(text, view.token))
+    except WebSocketDisconnect:
+        return
+
+
+async def _signal_down(view: _View, upstream: ClientConnection, lan: str | None) -> None:
+    try:
+        async for message in upstream:
+            text = message if isinstance(message, str) else message.decode()
+            await view.socket.send_text(text)
+            if (extra := lan_candidate(text, lan)) is not None:
+                await view.socket.send_text(extra)
+    except ConnectionClosed:
+        pass
+    # 别的窗口换了传输时流服务以 4000 关掉信令，改报顶替（4001）；其余应用关闭码原样交给面板。
+    code = upstream.close_code
+    if view.switched:
+        await view.socket.close(code=4001, reason="superseded by another window")
+    elif code is not None and 4000 <= code < 5000:
+        await view.socket.close(code=code, reason=upstream.close_reason or "")
