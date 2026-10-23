@@ -33,6 +33,7 @@ export class ComputerDriver extends EventEmitter {
   controlVersion = 0;
   agentJobs = new Set();
   humanJobs = new Set();
+  interceptionSync = Promise.resolve();
 
   /** 人工接管先阻止新操作，再等待已发操作和输入释放。 */
   async takeControl(id, target = "", signal) {
@@ -46,6 +47,7 @@ export class ComputerDriver extends EventEmitter {
     this.controlVersion++;
     this.emit("control");
     this.pauseClock();
+    await this.syncInterception();
     try {
       await waitForSignal(Promise.allSettled([...this.agentJobs, ...this.humanJobs]), signal);
       if (this.control !== control || control.release) throw new Error("Control request was cancelled");
@@ -80,6 +82,7 @@ export class ComputerDriver extends EventEmitter {
       if (this.control !== control) throw new Error("Computer control owner changed during release");
       this.control = null;
       this.emit("control");
+      await this.syncInterception();
       if (control.instance) this.anonymous.unhold(control.instance);
       control.releaseWorkload?.();
       control.resume();
@@ -87,6 +90,20 @@ export class ComputerDriver extends EventEmitter {
     })();
     try { await control.release; }
     catch (error) { this.closed = true; this.rejectAll(error); throw error; }
+  }
+
+  // 拦截只在 Agent 持有浏览器时生效：有进行中的调用且无人接管。调用之间和接管期间没人能放行
+  // 暂停的文档响应，iframe、跳转和点击会一直挂住，所以这时关掉拦截，已暂停的响应随之放行。
+  syncInterception() {
+    const work = this.interceptionSync.then(() => {
+      const on = this.actives.size > 0 && !this.control;
+      const backends = [this.browser];
+      for (const instance of this.anonymous.instances.values())
+        if (instance.backend && !instance.closing) backends.push(instance.backend);
+      return Promise.all(backends.map(backend => backend.setInterception(on)));
+    });
+    this.interceptionSync = work.catch(() => {});
+    return this.interceptionSync;
   }
 
   async waitForControl(signal) {
@@ -426,6 +443,7 @@ export class ComputerDriver extends EventEmitter {
       if (signal?.aborted) abort();
       this.resumeClock(active);
       await this.waitForControl(active.controller.signal);
+      await this.syncInterception();
       if (task) {
         const work = this.agentOperation(() => task(active.controller.signal, context), active.controller.signal);
         active.pending.add(work);
@@ -479,6 +497,7 @@ export class ComputerDriver extends EventEmitter {
         await rm(active.session.directory, { recursive: true, force: true });
       }
       this.actives.delete(context.session_id);
+      await this.syncInterception();
       active.finish();
     }
     if (failure) {

@@ -145,6 +145,8 @@ export class BrowserBackend extends EventEmitter {
   inputs = new Map();
   expressions = new Map();
   sessionNames = new Map();
+  interceptions = new Map();
+  intercepting = true;
   async start() {
     const response = await fetch(`${this.url}/json/version`, {
       signal: AbortSignal.timeout(5000),
@@ -232,8 +234,30 @@ export class BrowserBackend extends EventEmitter {
     );
     connection.on("close", () => {
       if (this.connections.get(id) === connection) this.connections.delete(id);
+      for (const [key, record] of this.interceptions)
+        if (record.connection === connection) this.interceptions.delete(key);
     });
     return connection;
+  }
+  // Agent 开的 Fetch 拦截按标签和子 session 记下；暂停期间新开的拦截立即关掉，恢复时按原参数重开。
+  async recordInterception(target, method, params, connection) {
+    const key = JSON.stringify([target.tabId, target.sessionId ?? ""]);
+    if (method === "Fetch.disable") return void this.interceptions.delete(key);
+    this.interceptions.set(key, { connection, sessionId: target.sessionId, params });
+    if (!this.intercepting) await connection.send("Fetch.disable", {}, target.sessionId);
+  }
+  // 关掉拦截会放行全部已暂停的响应；关不掉就断开连接，Chromium 同样会放行。
+  async setInterception(on) {
+    if (this.intercepting === on) return;
+    this.intercepting = on;
+    await Promise.all([...this.interceptions.values()].map(async ({ connection, sessionId, params }) => {
+      try {
+        await connection.send(on ? "Fetch.enable" : "Fetch.disable", on ? params : {}, sessionId, 2000);
+      } catch (error) {
+        console.error("Computer request interception switch failed:", error.message);
+        connection.close();
+      }
+    }));
   }
   /** 记录已送出的输入，取消后用相同 CDP target 发送 release。 */
   async execute(params, context) {
@@ -289,6 +313,8 @@ export class BrowserBackend extends EventEmitter {
       target.sessionId,
       params.timeoutMs ?? (method === "Page.navigate" ? NAVIGATE_CEILING_MS : undefined),
     );
+    if (method === "Fetch.enable" || method === "Fetch.disable")
+      await this.recordInterception(target, method, commandParams, connection);
     if (
       method === "Input.dispatchMouseEvent" &&
       commandParams.type === "mouseReleased"
