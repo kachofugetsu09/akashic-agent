@@ -62,6 +62,20 @@ class UnixWorkloadController:
         """读取当前 Controller 身份，供宿主核对精确停止证据。"""
         return await self._call("status", {})
 
+    # Controller 与 Core 并行启动；首次使用前用只读 status 等到 socket 接受连接。
+    async def wait_ready(self, timeout_seconds: float = 60.0) -> None:
+        loop = asyncio.get_running_loop()
+        deadline = loop.time() + timeout_seconds
+        while True:
+            try:
+                _ = await self.status()
+                return
+            except WorkloadEffectUnknown as error:
+                not_listening = isinstance(error.__cause__, (FileNotFoundError, ConnectionRefusedError))
+                if not not_listening or loop.time() >= deadline:
+                    raise
+            await asyncio.sleep(0.1)
+
     async def stop(self, lease: WorkloadLease) -> WorkloadStopReceipt:
         payload = await self._call("stop", {"lease": _lease_dict(lease)})
         return WorkloadStopReceipt(
