@@ -14,6 +14,8 @@ from tempfile import TemporaryDirectory
 from typing import cast
 
 from agent.plugin_composition import (
+    CREDENTIALS,
+    CredentialRef,
     RUNTIME_STARTED,
     ServiceKey,
     Context,
@@ -39,7 +41,7 @@ from plugins.ledger.contract import ARTIFACT_IMPORT, AttachmentKind, ContentPart
 from agent.plugin_composition.plugin_config import PLUGIN_CONFIG
 from plugins.plugin_settings.contract import SETTINGS_FORMS, declare_settings
 from .control import ComputerDriverError, endpoint_name, request
-from .stream import MEDIA_PORT, STREAM_CONFIG, STREAM_FORM, StreamConfig
+from .stream import MEDIA_PORT, STREAM_CONFIG, STREAM_FORM, StreamConfig, StreamSettings
 
 # 私有耐久 control binding；工具的 freeze/open 在本插件内保存并打开同一个 key。
 COMPUTER_CONTROL = ServiceKey["ComputerControl"]("computer.control.v1")
@@ -158,6 +160,7 @@ inject = (UI,
     OWNER_STATE,
     ARTIFACT_IMPORT,
     TURN_PROJECTION,
+    CREDENTIALS,
 )
 workspace_roots = ()
 workspace_files = ()
@@ -287,7 +290,15 @@ async def apply(ctx: Context) -> None:
         },
     )
     await ctx.require(INSTALLED_ASSETS).register(ctx, "skills", "skills")
-    _ = await ctx.provide(STREAM_CONFIG, StreamConfig.model_validate(ctx.config))
+    stream = StreamConfig.model_validate(ctx.config)
+
+    # 每次申请中继凭据时才读 API Token，不在插件内常驻明文。
+    async def read_turn_token() -> str:
+        token = cast(CredentialRef, stream.turn_api_token)
+        async with ctx.require(CREDENTIALS).open(ctx, {"turn": token}) as client:
+            return client.credential(token)
+
+    _ = await ctx.provide(STREAM_CONFIG, StreamSettings(stream, read_turn_token))
     _ = await ctx.inject((SETTINGS_FORMS, PLUGIN_CONFIG),
                          lambda child: declare_settings(child, StreamConfig, STREAM_FORM), name="settings")
     _ = await ctx.require(TOOLS).declare_group(ctx, description=desc)

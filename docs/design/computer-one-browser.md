@@ -79,15 +79,21 @@ Agent: browser.tabs.new()
                               并把 selkies 切到该模式（同一时刻只服务一种，切换约 15ms）
 WebRTC：面板 ──信令 WS──> Dashboard ──> selkies /api/webrtc/signaling/
           HELLO 由 Core 填入会话令牌；offer 后补一条 <局域网地址> 30000 的 host 候选
-        浏览器 ══UDP 30000（ICE-lite、单端口复用）══> 容器（画面、键鼠数据通道）
+        浏览器 ══UDP 30000（单端口复用）══> 容器（画面、键鼠数据通道）
+远程：  浏览器 ══UDP/TCP══> Cloudflare TURN <══TCP/TLS══ 容器
 ```
 
 - 媒体端口由 Workload `udp_ports` 按原端口号发布到宿主网卡；容器自报的是桥接网段地址，
-  浏览器连不到，所以由 Core 补宿主地址。selkies 用 ICE-lite，不向公网 STUN 收集候选。
+  浏览器连不到，所以由 Core 补宿主地址。
+- selkies 的 ICE 服务器只来自网关写入的文件（`PUT /stream/rtc`，新连接生效），默认为空：
+  不用它自带的公网 STUN 列表，容器的 UDP 出口可能经代理，STUN 收不到回包时每次建连空等 5 秒。
+- 远程：设置里填 Cloudflare TURN Key ID 和 API Token（存为凭据引用）。Core 按需申请 24 小时凭据，
+  过半有效期前复用；浏览器拿全部地址，流服务只拿 TCP/TLS 中继，同样避开 UDP 出口问题。
+  在家时局域网候选优先级更高，仍走直连。
 - WebRTC 的键鼠走数据通道，不经 Dashboard 代理，只读改由 selkies 令牌保证：每条画面连接一个
   会话令牌，最新且可操作（已接管或 Agent 空闲）的连接持有键鼠（`mk_control`），否则由占位令牌持有，
   selkies 丢弃其余连接的输入。WebSocket 连接的令牌始终持有键鼠，仍由代理过滤。
-- 首帧前 4 秒连不上（不在局域网、UDP 被拦）就回退 WebSocket，10 分钟内直接用 WebSocket。
+- 首帧前 4 秒（有中继时 10 秒）连不上就回退 WebSocket，10 分钟内直接用 WebSocket。
 - 链路调档（`_gz` 回声测往返、`_arg_fps`/`_crf` 降档）在 WebRTC 下走数据通道，与画面同一路径。
 - 已知限制：WebRTC 下收回键鼠权限时 selkies 只在连接断开时释放已按下的键（WebSocket 下代理会补 `kr`）。
   人正按着键的瞬间 Agent 开始操作，这个键会保持按下，直到人再次获得权限或连接断开；场景很窄，暂不处理。

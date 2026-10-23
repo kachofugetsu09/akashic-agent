@@ -5,23 +5,34 @@ from __future__ import annotations
 import asyncio
 import ipaddress
 import json
+import logging
 import secrets
+import time
+from collections.abc import Awaitable, Callable
 from typing import Literal, cast
 
 import httpx
 from pydantic import BaseModel, ConfigDict, field_validator
 
-from agent.plugin_composition import ServiceKey
+from agent.plugin_composition import CredentialRef, ServiceKey
 from plugins.plugin_settings.contract import SettingsField, SettingsForm
+
+logger = logging.getLogger(__name__)
 
 # WebRTC 媒体端口；镜像 start.sh 与 Workload 的 udp_ports 用同一个号。
 MEDIA_PORT = 30000
 StreamMode = Literal["webrtc", "websockets"]
+IceServer = dict[str, object]
+# Cloudflare Realtime TURN：按 key 申请短期凭据，过半有效期再换。
+TURN_API = "https://rtc.live.cloudflare.com/v1/turn/keys/{}/credentials/generate"
+TURN_TTL = 86400
 
 
 class StreamConfig(BaseModel):
     model_config = ConfigDict(extra="forbid")
     lan_address: str | None = None
+    turn_key_id: str | None = None
+    turn_api_token: CredentialRef | None = None
 
     @field_validator("lan_address")
     @classmethod
@@ -31,17 +42,75 @@ class StreamConfig(BaseModel):
         return str(ipaddress.ip_address(value.strip()))
 
 
-STREAM_CONFIG = ServiceKey[StreamConfig]("computer.stream.v1")
 STREAM_FORM = SettingsForm(
     title="浏览器画面",
-    description="画面默认经网页连接传输；能直连时改走 WebRTC，帧率更高、远程不易卡。",
+    description="画面默认经网页连接传输；能直连或配置了中继时改走 WebRTC，帧率更高、远程不易卡。",
     fields=(
         SettingsField(
             "lan_address", "宿主局域网地址",
             hint=f"例如 192.168.0.107。填写后，同一局域网的浏览器经 UDP {MEDIA_PORT} 直连画面；留空只用网页连接。",
         ),
+        SettingsField("turn_key_id", "Cloudflare TURN Key ID",
+                      hint="在 Cloudflare 后台 Realtime → TURN 创建；填写后不在局域网时画面经 Cloudflare 中继。"),
+        SettingsField("turn_api_token", "Cloudflare TURN API Token", kind="secret"),
     ),
 )
+
+
+class StreamSettings:
+    """设置里的直连地址与远程中继；中继凭据按需向 Cloudflare 申请，不常驻 API Token。"""
+
+    def __init__(self, config: StreamConfig, read_token: Callable[[], Awaitable[str]]) -> None:
+        self.config = config
+        self._read_token = read_token
+        self._ice: tuple[list[IceServer], float] | None = None
+        self._lock = asyncio.Lock()
+
+    @property
+    def remote(self) -> bool:
+        return self.config.turn_key_id is not None and self.config.turn_api_token is not None
+
+    @property
+    def webrtc(self) -> bool:
+        return self.config.lan_address is not None or self.remote
+
+    # 申请失败只记日志并返回空表：有局域网地址仍可直连，否则面板回退网页连接。
+    async def ice_servers(self) -> list[IceServer]:
+        if not self.remote:
+            return []
+        async with self._lock:
+            if self._ice is None or time.monotonic() > self._ice[1]:
+                try:
+                    self._ice = (await self._generate(), time.monotonic() + TURN_TTL / 2)
+                except httpx.HTTPError as error:
+                    logger.warning("Cloudflare TURN credentials unavailable: %s", error)
+                    return []
+            return self._ice[0]
+
+    async def _generate(self) -> list[IceServer]:
+        token = await self._read_token()
+        async with httpx.AsyncClient(timeout=10.0) as client:
+            result = await client.post(TURN_API.format(self.config.turn_key_id), json={"ttl": TURN_TTL},
+                                       headers={"Authorization": "Bearer " + token})
+            servers = cast(dict[str, object], result.raise_for_status().json()).get("iceServers")
+        # 接口可能给单个对象，也可能给列表。
+        listed = cast(list[object], servers) if isinstance(servers, list) else [servers]
+        return [cast(IceServer, server) for server in listed if isinstance(server, dict)]
+
+
+STREAM_CONFIG = ServiceKey[StreamSettings]("computer.stream.v1")
+
+
+def relay_only(servers: list[IceServer]) -> list[IceServer]:
+    """流服务只用 TCP/TLS 中继：容器的 UDP 出口可能经代理，STUN 和 UDP 中继会让每次建连空等超时。"""
+    kept: list[IceServer] = []
+    for server in servers:
+        urls = server.get("urls")
+        listed = [urls] if isinstance(urls, str) else cast(list[object], urls) if isinstance(urls, list) else []
+        tcp = [url for url in listed if isinstance(url, str) and (url.startswith("turns:") or url.endswith("transport=tcp"))]
+        if tcp:
+            kept.append({**server, "urls": tcp})
+    return kept
 
 
 class StreamAccess:
@@ -89,6 +158,12 @@ class StreamAccess:
             self.switches += 1
             result = await client.post(self._stream + "/api/switch", json={"mode": mode},
                                        headers=await self._master(client))
+            _ = result.raise_for_status()
+
+    # 写入流服务的 ICE 配置文件；新连接即生效，内容不变时流服务不会重建什么。
+    async def relay(self, servers: list[IceServer]) -> None:
+        async with httpx.AsyncClient(timeout=10.0) as client:
+            result = await client.put(self._gateway + "/stream/rtc", json={"iceServers": servers})
             _ = result.raise_for_status()
 
     async def _sync(self) -> None:
