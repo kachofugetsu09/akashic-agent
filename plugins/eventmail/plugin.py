@@ -9,6 +9,7 @@ from datetime import datetime
 from typing import TypeVar, cast
 
 from agent.plugin_composition import Context, EmitEventKey, ServiceKey
+from agent.plugin_composition.host import HOST_INFO
 from plugins.eventmail.contract import (BoundContentSource, ContentSourceServices, BoundAlertSource, AlertSourceServices,
     BoundContextSource, ContextSourceServices, EVENTMAIL_CONTENT_SOURCE, EVENTMAIL_ALERT_SOURCE, EVENTMAIL_CONTEXT_SOURCE)
 from plugins.eventmail.contract import EVENTMAIL_DELIVERY_V2 as EVENTMAIL_DELIVERY, EVENTMAIL_WAKE_V2 as EVENTMAIL_WAKE, ContentWakeServicesV2 as ContentWakeServices
@@ -22,7 +23,7 @@ name = "eventmail"
 version = "4.1.0"
 desc = "Immutable Content, Alert, and Context mailbox"
 author = "Akashic Core"
-inject = ()
+inject = (HOST_INFO,)
 workspace_roots = ()
 workspace_files = ()
 
@@ -406,12 +407,16 @@ async def apply(ctx: Context) -> None:
 
     store = EventMailStore(ctx.data_root / "eventmail.sqlite3")
     await run_file_io(store.initialize)
-    # 完整性检查在就绪后后台跑；损坏时记为任务失败的 Incident。
+    # 完整性检查等宿主就绪后在后台跑，不和开机挂载争磁盘；损坏时记为任务失败的 Incident。
     # 停止标记的 Effect 后登记、先清理，让卸载不必等全库扫描结束。
+    host = ctx.require(HOST_INFO)
     integrity_stop = threading.Event()
-    _ = await ctx.spawn(
-        run_file_io(lambda: store.check_integrity(integrity_stop)), name="eventmail.integrity",
-    )
+
+    async def check_integrity() -> None:
+        await host.settled()
+        await run_file_io(lambda: store.check_integrity(integrity_stop))
+
+    _ = await ctx.spawn(check_integrity(), name="eventmail.integrity")
     _ = await ctx.effect(lambda: integrity_stop.set, label="eventmail.integrity.stop")
     io = _StoreIO()
     _ = await ctx.provide(
