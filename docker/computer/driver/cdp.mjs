@@ -6,6 +6,13 @@ import { connect } from "node:net";
 const NAVIGATE_CEILING_MS = 120_000;
 const HOST_PROBE_MS = 2_000;
 const HOST_NAMES = new Set(["host.docker.internal", "gateway.docker.internal"]);
+// 把页面行为交给 Agent 处理的拦截，以及关掉它的命令；关掉后 Chromium 恢复原生行为、放行已暂停的响应。
+const INTERCEPTIONS = new Map([
+  ["Fetch.enable", ["Fetch.disable", {}]],
+  ["Fetch.disable", ["Fetch.disable", {}]],
+  ["Page.setInterceptFileChooserDialog", ["Page.setInterceptFileChooserDialog", { enabled: false }]],
+  ["Input.setInterceptDrags", ["Input.setInterceptDrags", { enabled: false }]],
+]);
 
 /** 宿主别名与私网地址先试连：被丢包的端口会让 Chromium 挂到 CDP 超时，这里提前给出可操作的原因。 */
 async function probeLocalTarget(url) {
@@ -239,23 +246,25 @@ export class BrowserBackend extends EventEmitter {
     });
     return connection;
   }
-  // Agent 开的 Fetch 拦截按标签和子 session 记下；暂停期间新开的拦截立即关掉，恢复时按原参数重开。
+  // Agent 开的拦截按标签、子 session 和种类记下；暂停期间新开的拦截立即关掉，恢复时按原参数重开。
   async recordInterception(target, method, params, connection) {
-    const key = JSON.stringify([target.tabId, target.sessionId ?? ""]);
-    if (method === "Fetch.disable") return void this.interceptions.delete(key);
-    this.interceptions.set(key, { connection, sessionId: target.sessionId, params });
-    if (!this.intercepting) await connection.send("Fetch.disable", {}, target.sessionId);
+    const off = INTERCEPTIONS.get(method);
+    const key = JSON.stringify([target.tabId, target.sessionId ?? "", off[0]]);
+    if (method === "Fetch.disable" || (method !== "Fetch.enable" && !params.enabled))
+      return void this.interceptions.delete(key);
+    this.interceptions.set(key, { connection, sessionId: target.sessionId, on: [method, params], off });
+    if (!this.intercepting) await connection.send(...off, target.sessionId);
   }
-  // 关掉拦截会放行全部已暂停的响应；关不掉就断开连接，Chromium 同样会放行。
+  // 关掉 Fetch 会放行全部已暂停的响应；关不掉就断开连接，Chromium 同样会放行并恢复原生行为。
   async setInterception(on) {
     if (this.intercepting === on) return;
     this.intercepting = on;
-    await Promise.all([...this.interceptions.values()].map(async ({ connection, sessionId, params }) => {
+    await Promise.all([...this.interceptions.values()].map(async (record) => {
       try {
-        await connection.send(on ? "Fetch.enable" : "Fetch.disable", on ? params : {}, sessionId, 2000);
+        await record.connection.send(...(on ? record.on : record.off), record.sessionId, 2000);
       } catch (error) {
         console.error("Computer request interception switch failed:", error.message);
-        connection.close();
+        record.connection.close();
       }
     }));
   }
@@ -313,7 +322,7 @@ export class BrowserBackend extends EventEmitter {
       target.sessionId,
       params.timeoutMs ?? (method === "Page.navigate" ? NAVIGATE_CEILING_MS : undefined),
     );
-    if (method === "Fetch.enable" || method === "Fetch.disable")
+    if (INTERCEPTIONS.has(method))
       await this.recordInterception(target, method, commandParams, connection);
     if (
       method === "Input.dispatchMouseEvent" &&
