@@ -41,6 +41,19 @@ def verify_external_service_contract(
     )
 
 
+def require_unit_install(
+    *, checkout: Path, run: Run, unit_root: Path = _SYSTEM_UNIT_ROOT, runtime_env: Path | None = None,
+) -> None:
+    """停机前确认能写入变化的系统单元；sudo 要密码时停机后才失败会让生产停在 inactive。"""
+
+    if unit_root != _SYSTEM_UNIT_ROOT or os.geteuid() == 0:
+        return
+    changed, _ = _unit_changes(checkout=checkout, unit_root=unit_root, runtime_env=runtime_env)
+    if changed and run(["sudo", "-n", "true"], check=False, capture_output=True, text=True).returncode != 0:
+        names = ", ".join(name for name, _, _ in changed)
+        raise RuntimeError(f"目标版本更新了 systemd 单元 {names}，需要用 root 或免密 sudo 部署；生产未停机")
+
+
 def install_units(
     *,
     checkout: Path,
@@ -51,28 +64,7 @@ def install_units(
 ) -> bool:
     """安装发生变化的单元；备份由部署者选择。"""
 
-    source_root = checkout / "docker" / "host-runtime" / "systemd"
-    service_user, service_group, service_home = resolve_service_account(
-        installed_unit=(unit_root / _UNITS[0]) if unit_root.joinpath(_UNITS[0]).exists() else None,
-        runtime_env=runtime_env,
-        environ=os.environ,
-        fallback_uid=os.getuid(),
-        fallback_gid=os.getgid(),
-    )
-    if not service_home.is_absolute():
-        raise RuntimeError("service user home 必须为绝对路径")
-    changed: list[tuple[str, bytes, Path]] = []
-    rendered_units: dict[str, bytes] = {}
-    for name in _UNITS:
-        source = source_root / name
-        target = unit_root / name
-        if not source.is_file():
-            raise RuntimeError(f"release 缺少 systemd unit: {source}")
-        rendered = _render_unit(source, service_user, service_group, service_home)
-        _require_preserved_environment_file(target, rendered)
-        rendered_units[name] = rendered
-        if not target.exists() or target.read_bytes() != rendered:
-            changed.append((name, rendered, target))
+    changed, rendered_units = _unit_changes(checkout=checkout, unit_root=unit_root, runtime_env=runtime_env)
     # 2. 预检必须在写任何单元之前完成：环境文件缺失是启动期故障，不是安装期发现。
     verify_rendered_units(rendered_units)
     if not changed:
@@ -102,6 +94,35 @@ def install_units(
         run(["sudo", "systemctl", "daemon-reload"], check=True)
         run(["sudo", "systemctl", "enable", *_UNITS], check=True)
     return True
+
+
+# 按服务账号渲染发行版单元，返回与已安装内容不同的部分。
+def _unit_changes(
+    *, checkout: Path, unit_root: Path, runtime_env: Path | None,
+) -> tuple[list[tuple[str, bytes, Path]], dict[str, bytes]]:
+    source_root = checkout / "docker" / "host-runtime" / "systemd"
+    service_user, service_group, service_home = resolve_service_account(
+        installed_unit=(unit_root / _UNITS[0]) if unit_root.joinpath(_UNITS[0]).exists() else None,
+        runtime_env=runtime_env,
+        environ=os.environ,
+        fallback_uid=os.getuid(),
+        fallback_gid=os.getgid(),
+    )
+    if not service_home.is_absolute():
+        raise RuntimeError("service user home 必须为绝对路径")
+    changed: list[tuple[str, bytes, Path]] = []
+    rendered_units: dict[str, bytes] = {}
+    for name in _UNITS:
+        source = source_root / name
+        target = unit_root / name
+        if not source.is_file():
+            raise RuntimeError(f"release 缺少 systemd unit: {source}")
+        rendered = _render_unit(source, service_user, service_group, service_home)
+        _require_preserved_environment_file(target, rendered)
+        rendered_units[name] = rendered
+        if not target.exists() or target.read_bytes() != rendered:
+            changed.append((name, rendered, target))
+    return changed, rendered_units
 
 
 def resolve_service_account(
