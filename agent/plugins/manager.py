@@ -10,6 +10,7 @@ import os
 import secrets
 import stat
 import sys
+import time
 from collections.abc import AsyncGenerator, Awaitable, Callable, Mapping
 from contextvars import Context as TaskContext
 from pathlib import Path
@@ -17,7 +18,7 @@ from typing import Literal, TypeVar, cast
 from uuid import uuid4
 
 from core.common.file_io import run_file_io
-from utils.timing import measure
+from utils.timing import measure, report
 
 from agent.plugins.execution import (
     CodeOwner,
@@ -776,11 +777,16 @@ class PluginManager:
                 for generation in generations:
                     if not (generation.data_dir / CONFIG_INPUT).exists() and generation.config_projection:
                         save_config(generation.data_dir, generation.config_projection)
+                    # 逐插件导入耗时；cpu 远小于 seconds 时是在等 I/O 或事件循环。
+                    started, cpu = time.monotonic(), time.thread_time()
                     try:
                         await self._load_live_generation(generation)
                     except Exception:
                         await self._retain_pre_fiber_failure(generation)
                         continue
+                    finally:
+                        report("plugin.import", time.monotonic() - started, plugin=generation.plugin_id,
+                               cpu=round(time.thread_time() - cpu, 6))
                     current = self._active_generations.get(generation.plugin_id)
                     if current is not None and current is not generation:
                         raise RuntimeError(f"live generation owner 已存在: {generation.plugin_id}")
