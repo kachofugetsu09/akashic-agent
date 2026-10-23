@@ -15,6 +15,8 @@ Run = Callable[..., subprocess.CompletedProcess[str]]
 _UNITS = ("akashic-host-bridge.service", "akashic-core.service")
 _EXTERNAL_UNIT = "akashic-home-services.service"
 _SYSTEM_UNIT_ROOT = Path("/etc/systemd/system")
+# sudoers 只免密放行 /tmp/akashic-units-*/ 下的单元；部署者常把 TMPDIR 改到别处，暂存目录要固定。
+_UNIT_STAGING_ROOT = Path("/tmp")
 
 
 def verify_external_service_contract(
@@ -49,9 +51,19 @@ def require_unit_install(
     if unit_root != _SYSTEM_UNIT_ROOT or os.geteuid() == 0:
         return
     changed, _ = _unit_changes(checkout=checkout, unit_root=unit_root, runtime_env=runtime_env)
-    if changed and run(["sudo", "-n", "true"], check=False, capture_output=True, text=True).returncode != 0:
-        names = ", ".join(name for name, _, _ in changed)
-        raise RuntimeError(f"目标版本更新了 systemd 单元 {names}，需要用 root 或免密 sudo 部署；生产未停机")
+    denied: list[str] = []
+    with tempfile.TemporaryDirectory(prefix="akashic-units-", dir=_UNIT_STAGING_ROOT) as temporary_root:
+        for name, _, target in changed:
+            # 1. 把已安装内容原样装回：命令形状与正式安装一致，验证 sudoers 放行而不改变单元。
+            staged = Path(temporary_root) / name
+            command = ["sudo", "-n", "true"]
+            if target.exists():
+                shutil.copy2(target, staged)
+                command = ["sudo", "-n", "install", "-m", "0644", str(staged), str(target)]
+            if run(command, check=False, capture_output=True, text=True).returncode != 0:
+                denied.append(name)
+    if denied:
+        raise RuntimeError(f"目标版本更新了 systemd 单元 {', '.join(denied)}，当前用户不能免密写入；请用 root 部署，生产未停机")
 
 
 def install_units(
@@ -77,7 +89,7 @@ def install_units(
         timestamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S%fZ")
         backup = backup_root / f"systemd-{timestamp}"
         backup.mkdir(parents=True, exist_ok=False)
-    with tempfile.TemporaryDirectory(prefix="akashic-units-") as temporary_root:
+    with tempfile.TemporaryDirectory(prefix="akashic-units-", dir=_UNIT_STAGING_ROOT) as temporary_root:
         for name, rendered, target in changed:
             if target.exists() and backup is not None:
                 shutil.copy2(target, backup / target.name)
