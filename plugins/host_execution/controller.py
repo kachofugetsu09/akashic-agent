@@ -648,7 +648,7 @@ class WorkloadControllerServer:
             "Image": request.image,
             "User": f"{self._workload_uid}:{self._workload_gid}",
             "Labels": labels,
-            "ExposedPorts": {f"{number}/tcp": {} for _, number in request.ports},
+            "ExposedPorts": _exposed_ports(request),
             "HostConfig": {
                 "Mounts": mounts,
                 "Memory": memory * 1024 * 1024,
@@ -862,6 +862,10 @@ class WorkloadControllerServer:
         for name, number in request.loopback_ports:
             if name not in port_names or not 1024 <= number <= 65535:
                 raise ValueError("Workload loopback port 无效")
+        if len(set(request.udp_ports)) != len(request.udp_ports) or any(
+            not 1024 <= number <= 65535 for number in request.udp_ports
+        ):
+            raise ValueError("Workload udp port 无效")
         if len({name for name, _, _ in request.data}) != len(request.data):
             raise ValueError("Workload data name 重复")
         if len({target for _, target, _ in request.data}) != len(request.data):
@@ -926,7 +930,7 @@ class WorkloadControllerServer:
             "Image": request.image,
             "Cmd": list(request.command),
             "User": f"{self._workload_uid}:{self._workload_gid}",
-            "ExposedPorts": {f"{number}/tcp": {} for _, number in request.ports},
+            "ExposedPorts": _exposed_ports(request),
         }
         expected_host: dict[str, object] = {
             "Memory": memory * 1024 * 1024,
@@ -1039,6 +1043,7 @@ def _start_request(raw: dict[str, object]) -> WorkloadStartRequest:
         "limits",
         "loopback_ports",
         "user_namespaces",
+        "udp_ports",
     }
     if set(raw) != expected:
         raise ValueError(f"Workload start schema 不匹配: {sorted(set(raw) ^ expected)}")
@@ -1060,6 +1065,7 @@ def _start_request(raw: dict[str, object]) -> WorkloadStartRequest:
         limits=_limits(raw.get("limits")),
         loopback_ports=_ports(raw.get("loopback_ports")),
         user_namespaces=_required_bool(raw, "user_namespaces"),
+        udp_ports=_udp_ports(raw.get("udp_ports")),
     )
     if _required_text(raw, "spec_digest") != request.spec_digest:
         raise ValueError("Workload spec digest 与请求内容不一致")
@@ -1090,16 +1096,25 @@ def _userns_seccomp_option() -> str:
     return "seccomp=" + json.dumps(profile, separators=(",", ":"))
 
 
+def _exposed_ports(request: WorkloadStartRequest) -> dict[str, dict[str, str]]:
+    tcp: dict[str, dict[str, str]] = {f"{number}/tcp": {} for _, number in request.ports}
+    return tcp | {f"{number}/udp": {} for number in request.udp_ports}
+
+
 def _port_bindings(request: WorkloadStartRequest) -> dict[str, list[dict[str, str]]]:
-    """Publish declared formal ports only on the host loopback interface."""
+    """Publish formal TCP ports on loopback; UDP media ports keep their number on every host interface."""
 
     if request.mode != "formal":
         return {}
     host_ports = dict(request.loopback_ports)
-    return {
+    bindings = {
         f"{number}/tcp": [{"HostIp": "127.0.0.1", "HostPort": str(host_ports[name])}]
         for name, number in request.ports
         if name in host_ports
+    }
+    return bindings | {
+        f"{number}/udp": [{"HostIp": "", "HostPort": str(number)}]
+        for number in request.udp_ports
     }
 
 
@@ -1189,6 +1204,14 @@ def _data(raw: object) -> tuple[tuple[str, str, bool], ...]:
             raise ValueError("Workload data entry 无效")
         result.append((item[0], item[1], item[2]))
     return tuple(result)
+
+
+def _udp_ports(raw: object) -> tuple[int, ...]:
+    if not isinstance(raw, list) or any(
+        not isinstance(item, int) or isinstance(item, bool) for item in raw
+    ):
+        raise ValueError("Workload udp ports 无效")
+    return tuple(raw)
 
 
 def _limits(raw: object) -> tuple[int, float, int]:

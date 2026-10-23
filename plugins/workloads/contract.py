@@ -48,6 +48,8 @@ class Workload:
     health: WorkloadHealth
     limits: WorkloadLimits
     user_namespaces: bool = False
+    # 按原端口号发布到宿主所有网卡的 UDP 端口，供 WebRTC 等实时媒体直连；不生成访问地址。
+    udp_ports: tuple[int, ...] = ()
 
 
 class WorkloadHandle(Protocol):
