@@ -489,6 +489,7 @@ def _start_request(
         limits=limits,
         loopback_ports=loopback_ports,
         user_namespaces=descriptor.user_namespaces,
+        udp_ports=descriptor.udp_ports,
     )
 
 

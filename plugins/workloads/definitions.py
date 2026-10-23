@@ -25,6 +25,7 @@ class WorkloadDescriptor:
     health: WorkloadHealth
     limits: WorkloadLimits
     user_namespaces: bool
+    udp_ports: tuple[int, ...] = ()
 
 
 @dataclass(frozen=True, slots=True)
@@ -49,6 +50,7 @@ def _normalize_workload(value: Workload) -> Workload:
     data = _data(value.data)
     health = _health(value.health, ports)
     limits = _limits(value.limits)
+    udp_ports = _udp_ports(value.udp_ports)
     if not isinstance(value.user_namespaces, bool):
         raise TypeError("Workload user_namespaces 必须是 bool")
     return Workload(
@@ -60,6 +62,7 @@ def _normalize_workload(value: Workload) -> Workload:
         health=health,
         limits=limits,
         user_namespaces=value.user_namespaces,
+        udp_ports=udp_ports,
     )
 
 
@@ -74,7 +77,17 @@ def _descriptor(owner: str, value: Workload) -> WorkloadDescriptor:
         health=value.health,
         limits=value.limits,
         user_namespaces=value.user_namespaces,
+        udp_ports=value.udp_ports,
     )
+
+
+def _udp_ports(value: tuple[int, ...]) -> tuple[int, ...]:
+    if not isinstance(value, tuple) or any(
+        not isinstance(item, int) or isinstance(item, bool) or not 1024 <= item <= 65535
+        for item in value
+    ) or len(set(value)) != len(value):
+        raise ValueError(f"Workload udp_ports 无效: {value!r}")
+    return value
 
 
 def _ports(value: tuple[WorkloadPort, ...]) -> tuple[WorkloadPort, ...]:
