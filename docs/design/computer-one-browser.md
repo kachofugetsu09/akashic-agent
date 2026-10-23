@@ -67,6 +67,9 @@ Agent: browser.tabs.new()
 - 人工接管、暂停 Agent 的规则沿用 0092。人工键鼠经 selkies 送到屏幕最前的窗口；
   网关旧的 `/input`（driver 基线用）把键鼠转为 CDP 输入，发到 `Screen.front` 对应的标签。
 - 接管期间切到另一个匿名浏览器的标签，接管改为持有那个实例，不被闲置回收。
+- reference service 用 Fetch 暂停文档响应（下载判定），还会拦截文件选择框；只有进行中的调用能处理。所以拦截只在
+  Agent 持有浏览器时生效：有进行中的调用且无人接管。其余时候 driver 关掉拦截，已暂停的响应随之放行，
+  调用之间动态插入的 iframe、页面跳转和接管期间的点击不会挂起；下一次调用开始时按原参数重开。
 - 页面自己弹出的窗口（`window.open`、OAuth）成为 `Screen.front`。
 
 ### 3.1 传输：WebRTC 优先，WebSocket 回退
