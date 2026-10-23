@@ -29,6 +29,7 @@ class ManagedProcessHandle:
         self._drained = asyncio.Event()
         self._drained.set()
         self._starting: asyncio.Task[None] | None = None
+        self._health = health
         self._host = ManagedProcessGenerationHost(
             grant,
             on_health=lambda generation_id, process_name, healthy, reason: health.recover() if healthy else health.degrade(reason),
@@ -38,10 +39,18 @@ class ManagedProcessHandle:
         if _starts_in_background(self._definition, self._grant):
             # 失败原因由 host 记为 Incident，并在 borrow 时交给借用方。
             self._starting = asyncio.create_task(
-                self._start_generation(), name="managed-process-start:" + self._definition.name)
+                self._start_in_background(), name="managed-process-start:" + self._definition.name)
             self._starting.add_done_callback(lambda task: task.cancelled() or task.exception())
             return
         await self._start_generation()
+
+    async def _start_in_background(self):
+        try:
+            await self._start_generation()
+        except Exception as error:
+            # host 收尾写的是 stopped；改成失败原因，状态页能与正常停止区分。
+            self._health.degrade(f"start failed: {type(error).__name__}: {error}")
+            raise
 
     async def _start_generation(self):
         async with self._lock:
@@ -65,9 +74,15 @@ class ManagedProcessHandle:
     @asynccontextmanager
     async def borrow(self, ctx):
         self.check(ctx)
-        if self._starting is not None:
-            # 共享的后台启动不随单个借用方取消。
-            await asyncio.shield(self._starting)
+        starting = self._starting
+        # 共享的后台启动不随单个借用方取消；owner 撤销 activation 后借用方立即退出，
+        # 卸载不必等启动超时。
+        while starting is not None and not starting.done():
+            _ = await asyncio.wait((starting,), timeout=0.1)
+            self.check(ctx)
+        failure = None if starting is None or starting.cancelled() else starting.exception()
+        if failure is not None:
+            raise failure
         port = self.port(ctx)
         self._borrowers += 1
         self._drained.clear()
