@@ -81,6 +81,7 @@ COPY Dockerfile.distribution /opt/akashic/distribution/Dockerfile.distribution
 COPY distribution-entrypoint.sh /opt/akashic/distribution/distribution-entrypoint.sh
 COPY distribution-entrypoint.sh /opt/akashic/distribution-entrypoint.sh
 
+# 运行期禁止写字节码且镜像只读：构建时预编译核心源码，每次启动不再重新编译。
 RUN test -n "${AKASHIC_SOURCE_COMMIT}" \
     && test -n "${AKASHIC_SOURCE_TREE}" \
     && test -n "${AKASHIC_CORE_SHA256}" \
@@ -89,6 +90,7 @@ RUN test -n "${AKASHIC_SOURCE_COMMIT}" \
     && tar -xf /opt/akashic/distribution/core.tar -C /opt/akashic/source \
     && test ! -e /opt/akashic/source/plugins \
     && test -f /opt/akashic/source/config.example.toml \
+    && /opt/venv/bin/python -m compileall -q -j 0 /opt/akashic/source \
     && /opt/venv/bin/python -c "from pathlib import Path; assert Path('/opt/akashic/distribution/requirements.lock').read_bytes() == Path('/opt/akashic/source/docker/host-runtime/requirements.lock').read_bytes(), 'Build lock differs from Core lock'" \
     && /opt/venv/bin/python -c "import akashic_sdk; assert akashic_sdk.__file__.startswith('/opt/akashic/source/sdk/python/src/')"
 
