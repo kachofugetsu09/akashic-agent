@@ -3,7 +3,7 @@ import { createRoot } from "react-dom/client";
 import type { WebHostContextV1 } from "@akashic/web-ui-v1";
 import { Configuration, request, Field, Check, ModelField, type EmbedProps, type FormProps } from "../../shared/src/configuration";
 
-interface DeclaredField { name: string; label: string; kind: "text" | "lines" | "number" | "toggle" | "model"; hint: string; }
+interface DeclaredField { name: string; label: string; kind: "text" | "lines" | "number" | "toggle" | "model" | "secret"; hint: string; }
 interface DeclaredForm { id: string; title: string; description: string; fields: DeclaredField[]; }
 
 const ENDPOINT = "/api/dashboard/plugin_settings";
@@ -38,6 +38,8 @@ function renderField(field: DeclaredField, props: FormProps) {
     case "toggle": return <Check key={field.name} label={field.label} name={field.name} value={values[field.name]} change={change} hint={hint} fallback={fallback} />;
     case "number": return <Field key={field.name} label={field.label} name={field.name} type="number" inputMode="numeric" value={values[field.name]} change={change} hint={hint} fallback={fallback} />;
     case "lines": return <Lines key={field.name} field={field} {...props} />;
+    case "secret": return <Field key={field.name} label={field.label} name={field.name} type="password" value={values[field.name]} change={change}
+      hint={status.has_token ? "已保存凭据；留空保持不变" : hint} />;
     default: return <Field key={field.name} label={field.label} name={field.name} value={values[field.name]} change={change} hint={hint} fallback={fallback} />;
   }
 }

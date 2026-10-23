@@ -14,8 +14,9 @@ from agent.plugin_composition.model import ServiceKey
 from plugins.models.contract import ModelUse, model_options
 from plugins.ui.contract import Configuration, ModelSettings
 
-# text 单行文本、lines 每行一项的列表、number 数字、toggle 开关、model 插件自己的模型选择。
-FieldKind = Literal["text", "lines", "number", "toggle", "model"]
+# text 单行文本、lines 每行一项的列表、number 数字、toggle 开关、model 插件自己的模型选择、
+# secret 凭据（存成 CredentialRef，读回只说有没有，不回显原文）。
+FieldKind = Literal["text", "lines", "number", "toggle", "model", "secret"]
 _KEY = re.compile(r"^[a-z][a-z0-9_]{0,63}$")
 
 
@@ -48,6 +49,8 @@ class SettingsForm:
         names = [field.name for field in self.fields]
         if not names or len(set(names)) != len(names):
             raise ValueError("设置表单至少一个字段，且字段名不能重复")
+        if sum(field.kind == "secret" for field in self.fields) > 1:
+            raise ValueError("设置表单最多一个 secret 字段")
 
 
 @dataclass(frozen=True, slots=True)
@@ -81,6 +84,7 @@ SETTINGS_FORMS = ServiceKey[SettingsForms]("plugin_settings.forms.v1")
 # 字段的 use 只决定下拉里列哪些选项；配置也可能从别处写入，插件的配置模型要自己用 use.check 校验该字段。
 async def declare_settings(ctx: Context, config: type[BaseModel], form: SettingsForm) -> Effect:
     uses = {field.name: field.use for field in form.fields if field.use is not None}
-    settings = ModelSettings(ctx, config, tuple(field.name for field in form.fields),
-                             status=model_options(ctx, uses) if uses else None)
+    secret = next((field.name for field in form.fields if field.kind == "secret"), None)
+    settings = ModelSettings(ctx, config, tuple(field.name for field in form.fields if field.name != secret),
+                             secret=secret, status=model_options(ctx, uses) if uses else None)
     return await ctx.require(SETTINGS_FORMS).register(ctx, form, settings)
