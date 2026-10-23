@@ -46,6 +46,7 @@ class InotifyTreeWatcher:
     - 文件目标：监听其父目录，但只有目标文件名的事件才计为变化
       （数据目录可能有高频运行时写入，不能整目录计入）。
     - 暂不存在的根：退化为监听其父目录（不递归），等待其出现。
+    - 浅目录（如内容寻址的 artifact 容器）：只监听自身条目增删，不逐层下钻。
 
     回调在创建 watcher 的事件循环上执行；队列溢出同样只表现为一次回调。
     """
@@ -55,9 +56,11 @@ class InotifyTreeWatcher:
         on_change: Callable[[], None],
         *,
         exclude: Callable[[str], bool],
+        shallow: Callable[[str], bool] = lambda _name: False,
     ) -> None:
         self._on_change = on_change
         self._exclude = exclude
+        self._shallow = shallow
         self._libc: ctypes.CDLL | None = None
         self._fd: int | None = None
         # wd -> 绝对路径；三种目标各一张表区分事件语义。
@@ -105,10 +108,15 @@ class InotifyTreeWatcher:
         """重建全部监听；目标未变时不重建，重建成本远低于一次全树指纹。"""
         trees = tuple(trees)
         files = tuple(files)
-        if trees == self._trees and files == self._files:
-            # 上次缺失的根现已出现时必须重建，把父目录扁平监听升级为递归树。
-            if not any(os.path.isdir(root) for root in self._missing_trees):
+        # 上次缺失的根现已出现时必须重建，把父目录扁平监听升级为递归树。
+        if trees == self._trees and not any(os.path.isdir(root) for root in self._missing_trees):
+            if files == self._files:
                 return
+            # 只换文件目标（开机扫描后补齐配置文件）时不重走整棵树。
+            self._files = files
+            if self._fd is not None:
+                self._rebuild_files()
+            return
         self._trees = trees
         self._files = files
         if self._fd is not None:
@@ -144,6 +152,19 @@ class InotifyTreeWatcher:
                 # 根尚未出现：监听父目录等待创建，不做递归。
                 self._missing_trees.add(root)
                 self._add_flat(os.path.dirname(root) or os.sep)
+        self._add_files()
+
+    # 只重建文件目标的父目录监听，树与扁平监听保持不变。
+    def _rebuild_files(self) -> None:
+        assert self._fd is not None and self._libc is not None
+        for wd, (directory, _names) in self._file_dirs.items():
+            self._libc.inotify_rm_watch(self._fd, wd)
+            self._covered.discard(directory)
+        self._file_dirs = {}
+        self._add_files()
+
+    # 按父目录合并文件目标；已被树覆盖的父目录不重复监听。
+    def _add_files(self) -> None:
         file_targets: dict[str, set[str]] = {}
         for target in self._files:
             parent = os.path.dirname(target) or os.sep
@@ -195,6 +216,9 @@ class InotifyTreeWatcher:
             except OSError:
                 continue
             if real in self._covered:
+                continue
+            if self._shallow(os.path.basename(current)):
+                self._add_flat(real)
                 continue
             wd = self._add_watch(real, only_dir=True)
             if wd is None:
