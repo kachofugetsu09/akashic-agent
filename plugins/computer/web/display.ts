@@ -6,6 +6,8 @@ interface StreamWindow extends Window {
   computerInputHandlers?: InputHandlers & { touch(event: Event): void };
   fps?: number;
   selkiesTransport?: StreamTransport;
+  selkiesWebRTC?: WebRTCClient;
+  selkiesInputGranted?: boolean;
   webrtcInput?: {
     readonly element: HTMLElement;
     attach_context(): void;
@@ -21,6 +23,21 @@ interface StreamTransport {
   addEventListener(type: "close" | "message", listener: (event: { reason?: string; data?: unknown }) => void): void;
   removeEventListener(type: "message", listener: (event: { data?: unknown }) => void): void;
 }
+
+// 固定版本 WebRTC 客户端里面板要读的部分；信令连接是它的内部字段，版本固定后不会变。
+interface WebRTCClient {
+  readonly peerConnection: RTCPeerConnection | null;
+  readonly _send_channel: RTCDataChannel | null;
+  readonly signaling: { readonly _ws_conn: WebSocket | null };
+}
+
+type StreamMode = "webrtc" | "websockets";
+interface StreamSession { mode: StreamMode; rtcConfig: RTCConfiguration }
+
+// WebRTC 在首帧前连不通（不在家、UDP 被拦）时改用 WebSocket，10 分钟内不再尝试。
+const FALLBACK_KEY = "akashic.computer.webrtc-failed";
+const FALLBACK_MS = 10 * 60_000;
+const WEBRTC_DEADLINE_MS = 4_000;
 
 interface InputHandlers {
   keydown(event: KeyboardEvent): void;
@@ -42,6 +59,12 @@ export class ComputerDisplay extends EventTarget {
   // 接管时始终可输入；没接管时由面板按 Agent 是否空闲开关，不需要重连。
   private inputEnabled: boolean;
   private transportWatched = false;
+  private mode: StreamMode = "websockets";
+  private startedAt = 0;
+  // WebRTC 的键鼠直达流服务，Core 切换令牌后要等流服务把授权发到客户端；WebSocket 由 Core 转发过滤，总是放行。
+  private granted = true;
+  private signaling: WebSocket | null = null;
+  private touchedAt = 0;
   private clipboardId = 0;
   private cursor: AgentCursor | null = null;
   private governor: LinkGovernor | null = null;
@@ -68,10 +91,10 @@ export class ComputerDisplay extends EventTarget {
     this.frame.addEventListener("load", () => this.watch());
     // 获取脚本、iframe 启动和首帧共用一个期限，避免卡在 load 事件之前。
     this.startupTimer = window.setTimeout(() => {
-      const transport = this.stream?.selkiesTransport;
-      const reason = !transport
+      const stream = this.stream;
+      const reason = !stream?.selkiesTransport && !stream?.selkiesWebRTC
         ? "显示客户端启动超时，请刷新页面或检查浏览器是否阻止了脚本"
-        : transport.readyState !== WebSocket.OPEN
+        : !this.linkOpen()
           ? "远程桌面连接超时，请检查网络后重试"
           : "远程桌面首帧超时，请重新连接";
       this.fail(reason);
@@ -109,11 +132,23 @@ export class ComputerDisplay extends EventTarget {
     }
     if (!response.ok) throw new Error(`Computer 显示客户端不可用（${response.status}）`);
     const source = await response.text();
+    const session = await this.session();
     if (this.closed) return;
-    const socketUrl = new URL(this.ctx.http.webSocketUrl("/api/dashboard/computer/stream"));
-    if (this.control) socketUrl.searchParams.set("control", this.control);
-    if (this.control && this.target) socketUrl.searchParams.set("target", this.target);
-    const socket = socketUrl.href;
+    this.mode = session.mode;
+    this.granted = session.mode !== "webrtc";
+    this.applyInput();
+    this.startedAt = performance.now();
+    const endpoint = (path: string) => {
+      const url = new URL(this.ctx.http.webSocketUrl(path));
+      if (this.control) url.searchParams.set("control", this.control);
+      if (this.control && this.target) url.searchParams.set("target", this.target);
+      return JSON.stringify(url.href);
+    };
+    const transport = session.mode === "webrtc"
+      ? `window.__SELKIES_SIGNALING_URL__ = ${endpoint("/api/dashboard/computer/signaling")};
+      window.__SELKIES_RTC_CONFIG__ = ${JSON.stringify(session.rtcConfig)};
+      window.__SELKIES_RECONNECT__ = () => window.parent.postMessage({ type: "computerStreamLost" }, window.origin);`
+      : `window.__SELKIES_WEBSOCKET_URL__ = ${endpoint("/api/dashboard/computer/stream")};`;
     // srcdoc 的 location.origin 是 "null"；客户端消息使用真实的窗口 origin。
     const moduleUrl = this.blob(source.replaceAll("window.location.origin", "window.origin"), "text/javascript");
     const settingsUrl = `${location.origin}/api/dashboard/computer/stream`;
@@ -121,8 +156,8 @@ export class ComputerDisplay extends EventTarget {
     const html = `<!doctype html><html lang="zh-CN"><head><meta charset="utf-8">
       <meta name="viewport" content="width=device-width, initial-scale=1">
       <title>Computer</title></head><body><div id="app"></div><script>
-      window.__SELKIES_STREAMING_MODE__ = "websockets";
-      window.__SELKIES_WEBSOCKET_URL__ = ${JSON.stringify(socket)};
+      window.__SELKIES_STREAMING_MODE__ = ${JSON.stringify(session.mode)};
+      ${transport}
       window.__SELKIES_STORAGE_URL__ = ${JSON.stringify(settingsUrl)};
       for (const name of ["keydown", "keyup", "paste"]) {
         window.addEventListener(name, event => {
@@ -138,6 +173,30 @@ export class ComputerDisplay extends EventTarget {
     this.frame.srcdoc = html;
     window.addEventListener("message", this.onMessage);
     this.host.replaceChildren(this.frame);
+  }
+
+  // Core 按设置选 WebRTC 或 WebSocket；最近 WebRTC 连不通就直接要 WebSocket。
+  private async session(): Promise<StreamSession> {
+    let failedAt = 0;
+    try { failedAt = Number(localStorage.getItem(FALLBACK_KEY) ?? 0); } catch { /* 存储不可用时照常尝试 */ }
+    const prefer = Date.now() - failedAt < FALLBACK_MS ? "?prefer=websockets" : "";
+    const response = await this.ctx.http.request(`/api/dashboard/computer/stream-session${prefer}`, {
+      method: "POST", signal: this.abort.signal });
+    if (!response.ok) throw new Error(`Computer 画面传输不可用（${response.status}）`);
+    return await response.json() as StreamSession;
+  }
+
+  // WebRTC 首帧前断开：记下失败并断开，面板一秒后重连时改用 WebSocket。
+  private fallback() {
+    try { localStorage.setItem(FALLBACK_KEY, String(Date.now())); } catch { /* 下次仍会先试 WebRTC */ }
+    this.disconnect();
+  }
+
+  private linkOpen(): boolean {
+    const stream = this.stream;
+    if (this.mode === "websockets") return stream?.selkiesTransport?.readyState === WebSocket.OPEN;
+    const rtc = stream?.selkiesWebRTC;
+    return rtc?.peerConnection?.connectionState === "connected" && rtc._send_channel?.readyState === "open";
   }
 
   private blob(source: string, type: string): string {
@@ -161,14 +220,22 @@ export class ComputerDisplay extends EventTarget {
       if (message.error) request.reject(new Error(message.error));
       else request.resolve();
     }
+    if (message.type === "computerStreamLost") {
+      if (this.connected) this.disconnect();
+      else this.fallback();
+    }
     if (message.type === "clipboardContentUpdate" && typeof message.text === "string") {
       this.dispatchEvent(new CustomEvent("clipboard", { detail: { text: message.text } }));
     }
   };
 
   // 人工输入时立即收起 Agent 光标。
+  // WebRTC 的键鼠不经 Core，人直接操作时由面板续期，浏览器不会在使用中途休眠。
   private readonly touch = (event: Event) => {
     if (event.isTrusted) this.cursor?.hide();
+    if (this.mode !== "webrtc" || !this.inputEnabled || this.control || performance.now() - this.touchedAt < 30_000) return;
+    this.touchedAt = performance.now();
+    void this.ctx.http.request("/api/dashboard/computer/touch", { method: "POST" }).catch(() => undefined);
   };
 
   private viewport(): DOMRect | null {
@@ -187,29 +254,9 @@ export class ComputerDisplay extends EventTarget {
     if (this.closed || this.timer) return;
     this.timer = window.setInterval(() => {
       const stream = this.stream;
-      const transport = stream?.selkiesTransport;
       // 1. 接管转移与普通断线采用不同重连语义。
-      if (transport && !this.transportWatched) {
-        this.transportWatched = true;
-        transport.addEventListener("message", (event) => {
-          // 固定版本用 KILL 文本通知接管，Core relay 不转发关闭原因。
-          if (!this.closed && event.data === "KILL a new primary client connected connection killed") {
-            this.dispatchEvent(new Event("superseded"));
-            this.disconnect();
-          }
-        });
-        transport.addEventListener("close", (event) => {
-          if (this.closed) return;
-          if (/superseded/i.test(event.reason ?? "")) {
-            this.dispatchEvent(new Event("superseded"));
-            this.disconnect();
-          } else if (!this.connected) {
-            this.fail("远程桌面在显示首帧前断开，请重新连接");
-          } else {
-            this.disconnect();
-          }
-        });
-      }
+      if (this.mode === "websockets") this.watchSocket(stream?.selkiesTransport);
+      else if (this.watchWebRTC(stream?.selkiesWebRTC)) return;
       const input = stream?.webrtcInput;
       const document = this.frame.contentDocument;
       if (input && document && !this.inputReady) {
@@ -226,18 +273,72 @@ export class ComputerDisplay extends EventTarget {
       const hasFrame = (video && video.videoWidth > 0 && video.readyState >= 2
         && getComputedStyle(video).display !== "none")
         || (canvas && getComputedStyle(canvas).display !== "none" && (stream?.fps ?? 0) > 0);
-      if (!this.connected && transport?.readyState === WebSocket.OPEN && input && hasFrame) {
+      if (!this.connected && this.linkOpen() && input && hasFrame) {
         this.connected = true;
         window.clearTimeout(this.startupTimer);
         this.cursor = new AgentCursor(this.host, this.events, () => this.viewport());
-        this.governor = new LinkGovernor(transport, this.frame);
+        this.governor = new LinkGovernor(linkOf(stream!), this.frame);
         this.dispatchEvent(new Event("connect"));
       }
-      if (transport?.readyState === WebSocket.CLOSED) {
-        if (this.connected) this.disconnect();
-        else this.fail("远程桌面在显示首帧前断开，请重新连接");
-      }
     }, 100);
+  }
+
+  private watchSocket(transport: StreamTransport | undefined) {
+    if (transport && !this.transportWatched) {
+      this.transportWatched = true;
+      transport.addEventListener("message", (event) => {
+        // 固定版本用 KILL 文本通知接管，Core relay 不转发关闭原因。
+        if (!this.closed && event.data === "KILL a new primary client connected connection killed") {
+          this.dispatchEvent(new Event("superseded"));
+          this.disconnect();
+        }
+      });
+      transport.addEventListener("close", (event) => {
+        if (this.closed) return;
+        if (/superseded/i.test(event.reason ?? "")) {
+          this.dispatchEvent(new Event("superseded"));
+          this.disconnect();
+        } else if (!this.connected) {
+          this.fail("远程桌面在显示首帧前断开，请重新连接");
+        } else {
+          this.disconnect();
+        }
+      });
+    }
+    if (transport?.readyState === WebSocket.CLOSED) {
+      if (this.connected) this.disconnect();
+      else this.fail("远程桌面在显示首帧前断开，请重新连接");
+    }
+  }
+
+  // 返回 true 表示这条连接已经结束。
+  private watchWebRTC(rtc: WebRTCClient | undefined): boolean {
+    const granted = this.stream?.selkiesInputGranted === true;
+    if (granted !== this.granted) {
+      this.granted = granted;
+      this.applyInput();
+    }
+    // 被别的窗口顶替时信令以 4001 关闭，客户端停在原地，不会自己重连。
+    const socket = rtc?.signaling._ws_conn ?? null;
+    if (socket && socket !== this.signaling) {
+      this.signaling = socket;
+      socket.addEventListener("close", (event) => {
+        if (this.closed || event.code !== 4001) return;
+        this.dispatchEvent(new Event("superseded"));
+        this.disconnect();
+      });
+    }
+    const state = rtc?.peerConnection?.connectionState;
+    if (this.connected && (state === "failed" || state === "closed")) {
+      this.disconnect();
+      return true;
+    }
+    // 期限按首帧算：ICE 连上但画面一直不来，同样回退。
+    if (!this.connected && performance.now() - this.startedAt > WEBRTC_DEADLINE_MS) {
+      this.fallback();
+      return true;
+    }
+    return false;
   }
 
   focus(options?: FocusOptions) {
@@ -254,12 +355,17 @@ export class ComputerDisplay extends EventTarget {
   setInput(enabled: boolean) {
     if (enabled === this.inputEnabled) return;
     this.inputEnabled = enabled;
-    this.frame.tabIndex = enabled ? 0 : -1;
-    this.frame.style.pointerEvents = enabled ? "auto" : "none";
+    this.applyInput();
+  }
+
+  private applyInput() {
+    const on = this.inputEnabled && this.granted;
+    this.frame.tabIndex = on ? 0 : -1;
+    this.frame.style.pointerEvents = on ? "auto" : "none";
   }
 
   sendKey(keysym: number, code: string, down: boolean) {
-    if (this.inputEnabled) this.stream?.webrtcInput?._sendKeyEvent(keysym, code, down);
+    if (this.inputEnabled && this.granted) this.stream?.webrtcInput?._sendKeyEvent(keysym, code, down);
   }
 
   // 从流客户端正在显示的 video 或 canvas 取当前帧；两者都在同源 srcdoc 里，可以直接绘制。
@@ -321,6 +427,8 @@ export class ComputerDisplay extends EventTarget {
     this.governor?.stop();
     this.blur();
     this.stream?.selkiesTransport?.close();
+    this.signaling?.close();
+    this.stream?.selkiesWebRTC?.peerConnection?.close();
     this.frame.remove();
     for (const url of this.urls) URL.revokeObjectURL(url);
     this.dispatchEvent(new Event("disconnect"));
@@ -339,8 +447,41 @@ const CALM_MS = 40;
 const STEP_UP_AFTER_MS = 8000;
 const STEP_DOWN_GAP_MS = 1000;
 
+// 回声与调档所走的通道：WebSocket 本身，或 WebRTC 与画面同一条 UDP 路径上的数据通道。
+interface LinkChannel {
+  open(): boolean;
+  send(text: string): void;
+  listen(listener: (data: unknown) => void): () => void;
+}
+
+function linkOf(stream: StreamWindow): LinkChannel {
+  const channel = stream.selkiesWebRTC?._send_channel;
+  if (channel) {
+    return {
+      open: () => channel.readyState === "open",
+      send: text => channel.send(text),
+      listen: (listener) => {
+        const handler = (event: MessageEvent) => listener(event.data);
+        channel.addEventListener("message", handler);
+        return () => channel.removeEventListener("message", handler);
+      },
+    };
+  }
+  const transport = stream.selkiesTransport!;
+  return {
+    open: () => transport.readyState === WebSocket.OPEN,
+    send: text => transport.send(text),
+    listen: (listener) => {
+      const handler = (event: { data?: unknown }) => listener(event.data);
+      transport.addEventListener("message", handler);
+      return () => transport.removeEventListener("message", handler);
+    },
+  };
+}
+
 class LinkGovernor {
   private readonly timer: number;
+  private readonly unlisten: () => void;
   private readonly samples: number[] = [];
   private level = 0;
   private sentAt = 0;
@@ -348,20 +489,20 @@ class LinkGovernor {
   private changedAt = 0;
 
   // 当前档位和最近一次往返写在画面 iframe 的 data-link-* 上，排查远程卡顿时可以直接看。
-  constructor(private readonly transport: StreamTransport, private readonly report: HTMLElement) {
-    transport.addEventListener("message", this.onMessage);
+  constructor(private readonly link: LinkChannel, private readonly report: HTMLElement) {
+    this.unlisten = link.listen(this.onMessage);
     this.timer = window.setInterval(this.probe, PROBE_MS);
     this.apply(0, performance.now());
   }
 
   stop() {
     window.clearInterval(this.timer);
-    this.transport.removeEventListener("message", this.onMessage);
+    this.unlisten();
   }
 
   // 上一次回声还没回来就不再发；等得太久本身就是拥塞的证据。
   private readonly probe = () => {
-    if (this.transport.readyState !== WebSocket.OPEN) return;
+    if (!this.link.open()) return;
     const now = performance.now();
     if (this.sentAt) {
       const waited = now - this.sentAt - this.floor();
@@ -369,11 +510,11 @@ class LinkGovernor {
       return;
     }
     this.sentAt = now;
-    this.transport.send("_gz,1");
+    this.link.send("_gz,1");
   };
 
-  private readonly onMessage = (event: { data?: unknown }) => {
-    if (event.data !== "_gz,1" || !this.sentAt) return;
+  private readonly onMessage = (data: unknown) => {
+    if (data !== "_gz,1" || !this.sentAt) return;
     const now = performance.now();
     const rtt = now - this.sentAt;
     this.sentAt = 0;
@@ -404,7 +545,7 @@ class LinkGovernor {
     this.report.dataset.linkLevel = String(level);
     this.changedAt = now;
     this.calmSince = now;
-    this.transport.send(`_arg_fps,${LEVELS[level].fps}`);
-    this.transport.send(`_crf,${LEVELS[level].crf}`);
+    this.link.send(`_arg_fps,${LEVELS[level].fps}`);
+    this.link.send(`_crf,${LEVELS[level].crf}`);
   }
 }

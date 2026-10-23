@@ -48,6 +48,8 @@ try {
     "-e", "OPENCLI_AUTH_REFRESH_SITES=",
     "-p", `127.0.0.1:${await freePort()}:8080`, "-p", `127.0.0.1:${await freePort()}:6081`,
     "-p", `127.0.0.1:${await freePort()}:19826`, "-v", `${data}:/data`,
+    // 设了 COMPUTER_E2E_LAN（本机局域网地址）时画面走 WebRTC，fixture 也读这个变量。
+    ...(process.env.COMPUTER_E2E_LAN ? ["-p", `${process.env.COMPUTER_E2E_LAN}:30000:30000/udp`] : []),
     ...sourceMounts, image, "/opt/computer/start.sh");
   started = true;
   const ports = JSON.parse(docker("inspect", container, "--format", "{{json .NetworkSettings.Ports}}"));
@@ -196,7 +198,9 @@ try {
   });
   const videoReady = page => page.waitForFunction(() => {
     const frame = document.querySelector(".computer-stream");
-    return frame?.contentWindow?.fps > 0 && frame.contentWindow.selkiesTransport.readyState === 1;
+    const rtc = frame?.contentWindow?.selkiesWebRTC;
+    return frame?.contentWindow?.fps > 0 && (rtc ? rtc._send_channel?.readyState === "open"
+      : frame.contentWindow.selkiesTransport.readyState === 1);
   });
   await open(second); await connected(second); await videoReady(second);
   await open(first); await connected(first); await videoReady(first);
@@ -241,11 +245,13 @@ try {
     await until(async () => (await (await fetch(gateway + "/targets")).json()).targets.find(t => t.front)?.id,
       value => value === id, "selected page is visible");
   };
-  await first.evaluate(() => { window.e2eStream = document.querySelector(".computer-stream").contentWindow.selkiesTransport; });
+  // 画面连接：WebRTC 的数据通道或 WebSocket；两者都能直接发原始输入消息。
+  const link = () => { const w = document.querySelector(".computer-stream").contentWindow; return w.selkiesWebRTC?._send_channel ?? w.selkiesTransport; };
+  await first.evaluate(`window.e2eLink = ${link}; window.e2eStream = e2eLink();`);
   await select(first, "a");
   await select(first, "b");
   await select(first, "a");
-  assert.equal(await first.evaluate(() => window.e2eStream === document.querySelector(".computer-stream").contentWindow.selkiesTransport), true);
+  assert.equal(await first.evaluate(() => window.e2eStream === window.e2eLink()), true);
   const shot = await fetch(gateway + "/screenshot?quiet=1");
   assert.equal(shot.status, 200); assert.equal(shot.headers.get("content-type"), "image/png");
   await shot.arrayBuffer();
@@ -261,8 +267,8 @@ try {
   await action("await pageA.clipboard.writeText('BEFORE_READ_ONLY');");
   const clipboardBefore = textResult(await action("nodeRepl.write(await pageA.clipboard.readText());"));
   await first.evaluate(async () => {
-    const socket = document.querySelector(".computer-stream").contentWindow.selkiesTransport;
-    // Bypass the UI's disabled input handlers and challenge the actual proxy.
+    const socket = window.e2eLink();
+    // Bypass the UI's disabled input handlers and challenge the actual proxy (WebRTC: the stream's own token gate).
     socket.send("kd,120"); socket.send("ku,120"); socket.send("cw," + btoa("READ_ONLY"));
     socket.send(new Uint8Array([1, 2, 3]));
     await new Promise(resolve => {
@@ -403,6 +409,8 @@ try {
       nodeRepl.write(JSON.stringify(await direct.playwright.evaluate(() => {const r=document.querySelector('#hit').getBoundingClientRect(); return {x:r.x+r.width/2,y:r.y+r.height/2,width:innerWidth,height:innerHeight};})));`)));
     await action("", 60000, {endTurn: true});
     await page.waitForFunction(() => document.querySelector(".computer-status")?.hidden === true);
+    // WebRTC 下流服务的键鼠授权随后才到，画面那时才接收指针。
+    await page.waitForFunction(() => document.querySelector(".computer-stream")?.style.pointerEvents === "auto");
     const bounds = await page.locator(".computer-stream").boundingBox();
     await page.mouse.click(bounds.x + point.x * bounds.width / point.width, bounds.y + point.y * bounds.height / point.height);
     assert.match(textResult(await action(`nodeRepl.write(await direct.playwright.domSnapshot());`)), /CLICKED/);
@@ -417,6 +425,21 @@ try {
     await page.context().close();
   }
   pass("desktop and 320px touch users navigate, browse history, click and close from a blank tab");
+  // WebRTC 窗口被回退到 WebSocket 的窗口顶掉：同样提示另一个窗口正在看，不自动抢回。
+  if (process.env.COMPUTER_E2E_LAN) {
+    const transport = page => page.locator(".computer-stream").evaluate(f => f.contentWindow.selkiesWebRTC ? "webrtc" : "websockets");
+    const rtcPage = await createPage(); await open(rtcPage); await connected(rtcPage); await videoReady(rtcPage);
+    assert.equal(await transport(rtcPage), "webrtc");
+    const wsPage = await createPage();
+    await wsPage.evaluate(() => localStorage.setItem("akashic.computer.webrtc-failed", String(Date.now())));
+    await open(wsPage); await connected(wsPage); await videoReady(wsPage);
+    assert.equal(await transport(wsPage), "websockets");
+    await rtcPage.getByText(/另一个窗口正在看这个浏览器/).waitFor();
+    await wsPage.waitForTimeout(3000);
+    await videoReady(wsPage); assert.equal(await transport(wsPage), "websockets");
+    await wsPage.context().close(); await rtcPage.context().close();
+    pass("a WebSocket viewer supersedes a WebRTC viewer, which does not take the picture back");
+  }
   await action("var saved = await browser.tabs.new(); await saved.goto('http://127.0.0.1:8989/remember');");
   const beforeRestart = textResult(await action("nodeRepl.write(await saved.playwright.domSnapshot());"));
   assert.match(beforeRestart, /PROFILE/); assert.match(beforeRestart, /review=PROFILE/);
