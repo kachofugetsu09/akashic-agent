@@ -124,7 +124,7 @@ class McpServers:
         for ref in definition.workload_env:
             ref.workload.url(ctx, ref.port)
         for ref in definition.endpoint_env:
-            ref.process.port(ctx)
+            ref.process.check(ctx)
         grant = self._ctx.require(EXECUTION).bind(ctx)
         health = await ctx.health("mcp:" + definition.name)
         entry = Registration(ctx, ctx.fiber.activation_token, definition, health, grant)

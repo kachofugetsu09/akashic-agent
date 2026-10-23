@@ -67,6 +67,8 @@ def _normalize_definition(
         or not 0 < float(timeout) <= 300
     ):
         raise ValueError(f"managed process startup timeout 无效: {timeout}")
+    if not isinstance(definition.background_ready, bool):
+        raise TypeError("managed process background_ready 必须是 bool")
     return ManagedProcessDefinition(
         name=definition.name,
         command=command,
@@ -77,6 +79,7 @@ def _normalize_definition(
         formal_port=formal_port,
         readiness_path=readiness_path,
         startup_timeout_seconds=float(timeout),
+        background_ready=definition.background_ready,
     )
 
 
