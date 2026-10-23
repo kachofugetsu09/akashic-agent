@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import threading
 from collections.abc import AsyncIterator, Callable, Mapping, Sequence
 from contextlib import asynccontextmanager
 from copy import deepcopy
@@ -405,6 +406,13 @@ async def apply(ctx: Context) -> None:
 
     store = EventMailStore(ctx.data_root / "eventmail.sqlite3")
     await run_file_io(store.initialize)
+    # 完整性检查在就绪后后台跑；损坏时记为任务失败的 Incident。
+    # 停止标记的 Effect 后登记、先清理，让卸载不必等全库扫描结束。
+    integrity_stop = threading.Event()
+    _ = await ctx.spawn(
+        run_file_io(lambda: store.check_integrity(integrity_stop)), name="eventmail.integrity",
+    )
+    _ = await ctx.effect(lambda: integrity_stop.set, label="eventmail.integrity.stop")
     io = _StoreIO()
     _ = await ctx.provide(
         EVENTMAIL_CONTENT_SOURCE,
