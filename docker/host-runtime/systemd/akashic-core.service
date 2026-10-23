@@ -14,7 +14,8 @@ User=huashen
 Group=huashen
 SupplementaryGroups=docker
 EnvironmentFile=%h/.config/akashic-container/runtime.env
-ExecStartPre=/usr/bin/env ${AKASHIC_BRIDGE_PYTHON} ${AKASHIC_RUNTIME_CHECKOUT}/scripts/verify_host_runtime_deployment.py --release-manifest ${AKASHIC_RELEASE_MANIFEST} --image ${AKASHIC_IMAGE} --runtime-checkout ${AKASHIC_RUNTIME_CHECKOUT} --mise ${AKASHIC_MISE} --bridge-python ${AKASHIC_BRIDGE_PYTHON} --expected-toolchain-digest ${AKASHIC_HOST_TOOLCHAIN_DIGEST}
+# 宿主工具链由 Requires/PartOf 的 Host Bridge 启动前核对；这里只核对镜像身份。
+ExecStartPre=/usr/bin/env ${AKASHIC_BRIDGE_PYTHON} ${AKASHIC_RUNTIME_CHECKOUT}/scripts/verify_host_runtime_deployment.py --image-only --release-manifest ${AKASHIC_RELEASE_MANIFEST} --image ${AKASHIC_IMAGE}
 ExecStart=/usr/bin/docker compose --project-name akashic-core --file ${AKASHIC_RUNTIME_CHECKOUT}/docker/host-runtime/compose.experiment.yaml --file ${AKASHIC_RUNTIME_CHECKOUT}/docker/host-runtime/compose.external-services.yaml up --no-color --abort-on-container-exit --exit-code-from akashic-core akashic-core workload-controller
 ExecStop=/usr/bin/docker compose --project-name akashic-core --file ${AKASHIC_RUNTIME_CHECKOUT}/docker/host-runtime/compose.experiment.yaml --file ${AKASHIC_RUNTIME_CHECKOUT}/docker/host-runtime/compose.external-services.yaml stop --timeout 60 akashic-core workload-controller
 # Compose 收尾也属于正常退出；不要在容器已停止后立即向它发送第二次信号。

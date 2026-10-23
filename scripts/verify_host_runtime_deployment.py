@@ -93,19 +93,26 @@ def main() -> None:
     parser = argparse.ArgumentParser(description="Verify an Akashic release image")
     parser.add_argument("--release-manifest", type=Path, required=True)
     parser.add_argument("--image")
-    parser.add_argument("--host-only", action="store_true")
-    parser.add_argument("--runtime-checkout", type=Path, required=True)
-    parser.add_argument("--mise", type=Path, required=True)
-    parser.add_argument("--bridge-python", type=Path, required=True)
-    parser.add_argument("--expected-toolchain-digest", required=True)
+    mode = parser.add_mutually_exclusive_group()
+    mode.add_argument("--host-only", action="store_true")
+    # Core 单元 Requires/PartOf Host Bridge，Bridge 启动前已核对同一份宿主工具链。
+    mode.add_argument("--image-only", action="store_true")
+    parser.add_argument("--runtime-checkout", type=Path)
+    parser.add_argument("--mise", type=Path)
+    parser.add_argument("--bridge-python", type=Path)
+    parser.add_argument("--expected-toolchain-digest")
     args = parser.parse_args()
-    identity = verify_host_toolchain_deployment(
-        args.release_manifest,
-        args.runtime_checkout,
-        args.mise,
-        args.bridge_python,
-        args.expected_toolchain_digest,
-    )
+    identity: dict[str, object] | None = None
+    if not args.image_only:
+        if None in (args.runtime_checkout, args.mise, args.bridge_python, args.expected_toolchain_digest):
+            parser.error("host toolchain arguments are required unless --image-only is set")
+        identity = verify_host_toolchain_deployment(
+            args.release_manifest,
+            args.runtime_checkout,
+            args.mise,
+            args.bridge_python,
+            args.expected_toolchain_digest,
+        )
     image: str | None = None
     if not args.host_only:
         if args.image is None:
