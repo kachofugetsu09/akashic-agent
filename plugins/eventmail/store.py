@@ -4,6 +4,7 @@ import hashlib
 import json
 import secrets
 import sqlite3
+import threading
 from collections.abc import Iterable, Mapping, Sequence
 from contextlib import contextmanager
 from datetime import UTC, datetime
@@ -495,11 +496,23 @@ class EventMailStore:
         self.path = path
 
     def initialize(self) -> None:
-        """Create or validate the exact schema and SQLite file integrity."""
+        """Create or validate the exact schema."""
 
         with self._transaction(write=True) as connection:
             self._validate_schema(connection)
-            result = connection.execute("PRAGMA integrity_check").fetchone()
+
+    def check_integrity(self, stop: threading.Event) -> None:
+        """Verify SQLite file integrity without holding the write lock."""
+
+        # 全库扫描随邮件量增长，只在只读事务里做，不挡开机与写入；停机时可中断。
+        with self._transaction(write=False) as connection:
+            connection.set_progress_handler(stop.is_set, 10_000)
+            try:
+                result = connection.execute("PRAGMA integrity_check").fetchone()
+            except sqlite3.OperationalError:
+                if stop.is_set():
+                    return
+                raise
             if result is None or result[0] != "ok":
                 detail = "missing result" if result is None else str(result[0])
                 raise RuntimeError(f"Content SQLite integrity check failed: {detail}")
