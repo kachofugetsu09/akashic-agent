@@ -58,8 +58,8 @@ export class ComputerDisplay extends EventTarget {
   private connected = false;
   private closed = false;
   private inputReady = false;
-  // 接管时始终可输入；没接管时由面板按 Agent 是否空闲开关，不需要重连。
-  private inputEnabled: boolean;
+  // 由面板按 Agent 是否正在执行一步开关，不需要重连。
+  private inputEnabled = false;
   private transportWatched = false;
   private mode: StreamMode = "websockets";
   private startedAt = 0;
@@ -82,14 +82,11 @@ export class ComputerDisplay extends EventTarget {
     private readonly ctx: WebHostContextV1,
     private readonly handlers: InputHandlers,
     private readonly events: ComputerEvents,
-    private readonly control = "",
-    private readonly target = "",
   ) {
     super();
     this.frame.className = "computer-stream";
     this.frame.title = "浏览器画面";
-    this.inputEnabled = !this.control;
-    this.setInput(Boolean(this.control));
+    this.applyInput();
     this.frame.allow = "clipboard-read; clipboard-write; fullscreen";
     this.frame.addEventListener("load", () => this.watch());
     // 获取脚本、iframe 启动和首帧共用一个期限，避免卡在 load 事件之前。
@@ -143,10 +140,7 @@ export class ComputerDisplay extends EventTarget {
     this.startedAt = performance.now();
     this.deadline = session.rtcConfig.iceServers?.length ? RELAY_DEADLINE_MS : WEBRTC_DEADLINE_MS;
     const endpoint = (path: string) => {
-      const url = new URL(this.ctx.http.webSocketUrl(path));
-      if (this.control) url.searchParams.set("control", this.control);
-      if (this.control && this.target) url.searchParams.set("target", this.target);
-      return JSON.stringify(url.href);
+      return JSON.stringify(new URL(this.ctx.http.webSocketUrl(path)).href);
     };
     const transport = session.mode === "webrtc"
       ? `window.__SELKIES_SIGNALING_URL__ = ${endpoint("/api/dashboard/computer/signaling")};
@@ -233,13 +227,15 @@ export class ComputerDisplay extends EventTarget {
     }
   };
 
-  // 人工输入时立即收起 Agent 光标。
-  // WebRTC 的键鼠不经 Core，人直接操作时由面板续期，浏览器不会在使用中途休眠。
+  // 人点击时收起 Agent 光标；移动鼠标不收，光标留在 Agent 最后的落点。
+  // WebRTC 的键鼠不经 Core：人点击、滚动或按键时由面板续期并持有租约，Agent 的下一步会等人停手。
   private readonly touch = (event: Event) => {
-    if (event.isTrusted) this.cursor?.hide();
-    if (this.mode !== "webrtc" || !this.inputEnabled || this.control || performance.now() - this.touchedAt < 30_000) return;
+    if (!event.isTrusted || event.type === "keyup") return;
+    if (event.type === "pointerdown") this.cursor?.hide();
+    if (this.mode !== "webrtc" || !this.inputEnabled || performance.now() - this.touchedAt < 1000) return;
     this.touchedAt = performance.now();
-    void this.ctx.http.request("/api/dashboard/computer/touch", { method: "POST" }).catch(() => undefined);
+    void this.ctx.http.request("/api/dashboard/computer/touch", { method: "POST",
+      headers: { "content-type": "application/json" }, body: JSON.stringify({ input: true }) }).catch(() => undefined);
   };
 
   private viewport(): DOMRect | null {
@@ -266,7 +262,7 @@ export class ComputerDisplay extends EventTarget {
       if (input && document && !this.inputReady) {
         this.inputReady = true;
         stream!.computerInputHandlers = { ...this.handlers, touch: this.touch };
-        for (const name of ["pointerdown", "pointermove", "pointerup", "wheel"]) {
+        for (const name of ["pointerdown", "wheel"]) {
           document.addEventListener(name, this.touch, true);
         }
         stream?.addEventListener("blur", this.handlers.blur);
@@ -352,7 +348,6 @@ export class ComputerDisplay extends EventTarget {
   }
 
   blur() {
-    this.cursor?.hide();
     this.stream?.webrtcInput?.detach_context();
   }
 
@@ -392,7 +387,7 @@ export class ComputerDisplay extends EventTarget {
 
   /** 回执到达后才允许发送粘贴按键，断线或超时明确失败。 */
   clipboardPasteFrom(text: string): Promise<void> {
-    if (!this.inputEnabled) return Promise.reject(new Error("Agent 正在使用浏览器，先接管再粘贴"));
+    if (!this.inputEnabled) return Promise.reject(new Error("Agent 正在执行一步，稍后再粘贴"));
     if (!this.connected || this.closed) return Promise.reject(new Error("Computer 尚未连接"));
     const requestId = ++this.clipboardId;
     return new Promise((resolve, reject) => {

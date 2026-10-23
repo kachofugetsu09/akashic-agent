@@ -30,6 +30,9 @@
     "requestAttention": [
       "noticeId"
     ],
+    "reveal": [
+      "key"
+    ],
     "onIntent": [
       "intent"
     ],

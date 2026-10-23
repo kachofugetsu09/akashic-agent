@@ -191,10 +191,10 @@ export class PanelSurface {
     this.addressInput.focus();
   }
 
-  // Agent 正在用浏览器时导航也要先接管：按钮置灰，悬停说明原因。
+  // 浏览器没醒时导航不可用：按钮置灰，悬停说明原因。
   renderNav(enabled: boolean) {
     this.navEnabled = enabled;
-    const reason = enabled ? "" : "Agent 正在使用浏览器，先接管";
+    const reason = enabled ? "" : "浏览器还没准备好";
     for (const node of [this.back, this.forward, this.reload, this.newTab, this.addressInput]) {
       node.disabled = !enabled;
       if (node !== this.addressInput) node.title = reason || node.getAttribute("aria-label") || "";
@@ -203,7 +203,7 @@ export class PanelSurface {
     for (const close of this.tabs.querySelectorAll<HTMLButtonElement>(".computer-tab-close")) close.disabled = !enabled;
   }
 
-  // 画面被挡住时有人点它：闪一下状态胶囊，告诉他要先接管（参考 Cursor 的锁定反馈）。
+  // Agent 正在执行一步时有人点画面：闪一下状态胶囊，告诉他这一下没有生效（参考 Cursor 的锁定反馈）。
   nudge() {
     for (const node of [this.status, this.frame]) node.classList.add("computer-nudge");
     window.clearTimeout(this.nudgeTimer);

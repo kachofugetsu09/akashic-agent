@@ -11,16 +11,13 @@ interface Point {
 interface CursorState {
   readonly revision: number;
   readonly point: Point | null;
-  readonly ttlMs: number;
   readonly error: string;
 }
 
 /** 在只读传输边界检查坐标；展示不能反向发送输入。 */
 function checkState(raw: unknown): CursorState {
   const value = raw as Partial<CursorState> | null;
-  if (!value || !Number.isInteger(value.revision) || value.revision! < 0
-    || typeof value.ttlMs !== "number" || !Number.isFinite(value.ttlMs)
-    || value.ttlMs < 0 || value.ttlMs > 5000 || typeof value.error !== "string") {
+  if (!value || !Number.isInteger(value.revision) || value.revision! < 0 || typeof value.error !== "string") {
     throw new Error("Computer 操作位置回执无效");
   }
   if (value.point !== null) {
@@ -39,7 +36,7 @@ const NAME_MS = 2000;
 const LEAVE_MS = 200;
 const CLICK_TARGET_PX = 24;
 
-/** 光标只拥有临时画面、订阅和动画；人工输入或断线立即清除。运动数学在 cursor-motion。 */
+/** 光标只拥有画面、订阅和动画；停在 Agent 最后的落点，人点击或断线时清除。运动数学在 cursor-motion。 */
 export class AgentCursor {
   private readonly layer = document.createElement("div");
   private readonly pointer = document.createElement("div");
@@ -56,7 +53,6 @@ export class AgentCursor {
   private motionStart = 0;
   private clickAt: { at: number; x: number; y: number } | null = null;
   private revision = -1;
-  private expiry = 0;
   private leaving = 0;
   private quiet = 0;
   private frame = 0;
@@ -93,11 +89,9 @@ export class AgentCursor {
       this.revision = state.revision;
       this.notice.textContent = state.error;
       this.notice.hidden = !state.error;
-      if (!state.point || state.ttlMs === 0) { this.hide(); return; }
+      if (!state.point) { this.hide(); return; }
       this.point = state.point;
       this.place(true);
-      window.clearTimeout(this.expiry);
-      this.expiry = window.setTimeout(() => this.hide(), state.ttlMs);
     } catch (error) {
       this.unavailable(String(error));
     }
@@ -218,7 +212,6 @@ export class AgentCursor {
     this.point = null;
     this.motion = null;
     this.clickAt = null;
-    window.clearTimeout(this.expiry);
     window.cancelAnimationFrame(this.frame);
     this.frame = 0;
     this.glow.style.opacity = "0";

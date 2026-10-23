@@ -3,7 +3,7 @@ import type { WebHostContextV1, WebUiDisposer } from "@akashic/web-ui-v1";
 import { ComputerDisplay } from "./display";
 import { ClipboardPopover } from "./clipboard";
 import { ComputerEvents, type ComputerState } from "./computer-events";
-import { canInputDirectly, present, type ActionId, type ControlState, type LinkState, type PanelFacts, type RuntimeState } from "./panel-state";
+import { canInputDirectly, present, type ActionId, type LinkState, type PanelFacts, type RuntimeState } from "./panel-state";
 import { PanelSurface, type NavAction, type Target, type ToolId } from "./panel-view";
 import { keysymForKey } from "./remote-input.js";
 import "./style.css";
@@ -27,13 +27,11 @@ function renderComputer(ctx: WebHostContextV1, host: HTMLElement, rawView: unkno
     || typeof view.requestAttention !== "function") throw new Error("Computer 缺少 conversation.tools.v2 view");
   const surface = new PanelSurface(id => void perform(id), id => {
     for (const turn of turns) manualTurns.add(turn);
+    follow = "";
     void select(id);
   }, id => void tool(id), (action, value) => void navigate(action, value));
   const screen = surface.screen;
-  const clipboard = new ClipboardPopover(surface.clipboardToggle, {
-    paste: text => paste(text),
-    takeControl: () => void perform("take"),
-  });
+  const clipboard = new ClipboardPopover(surface.clipboardToggle, { paste: text => paste(text) });
   surface.stage.append(clipboard.element);
   host.replaceChildren(surface.root);
 
@@ -47,6 +45,8 @@ function renderComputer(ctx: WebHostContextV1, host: HTMLElement, rawView: unkno
   let receivedTargets = false;
   // 正在切换的标签；请求结束前状态流里的旧 front 不覆盖它。
   let showing = "";
+  // Agent 新开、还没切过去的标签：面板收起或还没连上时先记下，连上后再切（自动展开时就是这种情况）。
+  let follow = "";
   let runtime: RuntimeState = "loading";
   let runtimeError = "";
   let wakeError = "";
@@ -57,10 +57,9 @@ function renderComputer(ctx: WebHostContextV1, host: HTMLElement, rawView: unkno
   let statusError = "";
   let link: LinkState = "idle";
   let linkError = "";
-  let control = "";
-  let busy = false;
   let agentActive = false;
-  // 当前键鼠是否送到浏览器：接管后始终可以；没接管时 Agent 空闲就可以直接操作。
+  let agentBusy = false;
+  // 当前键鼠是否送到浏览器：只有 Agent 正在执行一步时不送。
   let inputOn = false;
   let active = view.active;
   let disposed = false;
@@ -73,24 +72,21 @@ function renderComputer(ctx: WebHostContextV1, host: HTMLElement, rawView: unkno
 
   function facts(): PanelFacts {
     const target = targets.find(item => item.id === selected);
-    const controlState: ControlState = control ? (link === "connected" ? "mine" : "taking") : busy ? "other" : "none";
-    return { runtime, runtimeError: runtimeError || wakeError, link, linkError, control: controlState, agentActive,
-      agentTurn: turns.length > 0, anonymous: target?.anonymous ?? false, wakeRequested, restartRequested, statusError };
+    return { runtime, runtimeError: runtimeError || wakeError, link, linkError, agentActive, agentBusy,
+      anonymous: target?.anonymous ?? false, wakeRequested, restartRequested, statusError };
   }
 
   function update() {
     if (disposed) return;
     const current = facts();
     surface.render(present(current));
-    const direct = canInputDirectly(current);
-    const next = (Boolean(control) && link === "connected") || direct;
+    const next = canInputDirectly(current);
     // 输入权限收回前先松开按住的键，避免远端留下按下状态。
     if (inputOn && !next) releaseKeys();
     inputOn = next;
     display?.setInput(inputOn);
-    surface.renderNav(runtime === "ready" && (current.control === "mine" || (current.control === "none"
-      && !current.agentActive && !current.agentTurn)));
-    clipboard.setCanPaste(inputOn);
+    // 地址栏和标签操作在网关排队到 Agent 这一步之后，不随单步闪烁。
+    surface.renderNav(runtime === "ready");
   }
 
   function releaseKeys() {
@@ -103,7 +99,6 @@ function renderComputer(ctx: WebHostContextV1, host: HTMLElement, rawView: unkno
     releaseKeys();
     display?.disconnect();
     display = null;
-    control = "";
   }
 
   function inputKey(event: KeyboardEvent) {
@@ -136,7 +131,7 @@ function renderComputer(ctx: WebHostContextV1, host: HTMLElement, rawView: unkno
   }
 
   async function paste(value: string) {
-    if (!inputOn || !display) throw new Error("Agent 正在使用浏览器，先接管再粘贴");
+    if (!inputOn || !display) throw new Error("Agent 正在执行一步，稍后再粘贴");
     await display.clipboardPasteFrom(value);
     display.sendKey(0xffe3, "ControlLeft", true);
     display.sendKey(0x76, "KeyV", true);
@@ -144,21 +139,21 @@ function renderComputer(ctx: WebHostContextV1, host: HTMLElement, rawView: unkno
     display.sendKey(0xffe3, "ControlLeft", false);
   }
 
-  function connect(token = "") {
+  function connect() {
     if (!active || runtime !== "ready" || disposed || SETTLED_LINKS.includes(link)) return;
     disconnect();
-    control = token;
     link = "connecting";
     const current = ++attempt;
     const next = new ComputerDisplay(screen, ctx, { keydown: inputKey, keyup: inputKey,
       blur: releaseKeys, paste: event => {
         event.preventDefault();
         void paste(event.clipboardData?.getData("text/plain") ?? "").catch(error => clipboard.report(String(error)));
-      } }, events, token, selected);
+      } }, events);
     display = next;
     next.addEventListener("connect", () => {
       if (attempt !== current) return;
       link = "connected";
+      followAgent();
       update();
     });
     next.addEventListener("clipboard", event => clipboard.receive((event as CustomEvent<{ text: string }>).detail.text));
@@ -183,7 +178,6 @@ function renderComputer(ctx: WebHostContextV1, host: HTMLElement, rawView: unkno
     next.addEventListener("disconnect", () => {
       if (attempt !== current) return;
       display = null;
-      control = "";
       if (!SETTLED_LINKS.includes(link)) link = "lost";
       update();
       // 画面断开不会带来新的状态事件，自己隔一秒重连。
@@ -193,15 +187,14 @@ function renderComputer(ctx: WebHostContextV1, host: HTMLElement, rawView: unkno
     update();
   }
 
-  // 地址栏、前进后退、新开和关闭标签：Agent 在用时后端返回 409，提示先接管。
+  // 地址栏、前进后退、新开和关闭标签：网关等 Agent 做完当前这一步再执行。
   async function navigate(action: NavAction, value = "") {
     const path = action === "open" ? "open" : action === "close" ? "close" : "navigate";
     const body = action === "open" ? {} : action === "close" ? { target: value }
       : { target: selected, action, ...(action === "go" ? { url: addressToUrl(value) } : {}) };
     try {
       const response = await ctx.http.request(`/api/dashboard/computer/${path}`, {
-        method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ ...body, ...(control ? { control } : {}) }) });
-      if (response.status === 409) throw new Error("浏览器正在被使用，请在此窗口接管后再操作");
+        method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(body) });
       if (!response.ok) {
         const detail = await response.json().then((data: { detail?: unknown }) => data.detail, () => undefined);
         throw new Error(typeof detail === "string" && detail ? detail : `操作失败（${response.status}）`);
@@ -239,11 +232,8 @@ function renderComputer(ctx: WebHostContextV1, host: HTMLElement, rawView: unkno
   }
 
   async function perform(id: ActionId) {
-    // 1. 控制权：接管、交还和取消都以新的连接身份重连，旧连接的输入立即失效。
-    if (id === "take" || id === "release" || id === "cancel") {
-      if (id === "take" && SETTLED_LINKS.includes(link)) link = "idle";
-      connect(id === "take" ? crypto.randomUUID() : "");
-    } else if (id === "reconnect") {
+    // 1. 重连：被别的窗口顶掉或连接失败后，由人明确点重新连接。
+    if (id === "reconnect") {
       link = "idle";
       connect();
     } else if (id === "reload") location.reload();
@@ -280,11 +270,14 @@ function renderComputer(ctx: WebHostContextV1, host: HTMLElement, rawView: unkno
     runtimeError = state.browser.error;
     if (wakeOnState) { wakeOnState = false; wakeIfSleeping(); }
     agentActive = state.active;
+    agentBusy = state.busy;
     turns = state.turns;
-    busy = state.control;
     if ((lastNotice !== null && lastNotice !== state.noticeId) || (lastNotice === null && state.active))
       view.requestAttention(`computer:${state.noticeId}`);
     lastNotice = state.noticeId;
+    // Agent 在当前会话里用浏览器：桌面端展开面板，每轮最多一次，你关掉后这一轮不再弹出。
+    const mine = state.active ? state.turns.find(turn => (JSON.parse(turn) as unknown[])[0] === view.session) : undefined;
+    if (mine) view.reveal(`computer:${mine}`);
     const front = showing || (state.targets.find(target => target.front)?.id ?? selected);
     const opened = state.targets.filter(target => target.agent && !known.has(target.id)).at(-1);
     const first = !receivedTargets;
@@ -295,13 +288,20 @@ function renderComputer(ctx: WebHostContextV1, host: HTMLElement, rawView: unkno
       selected = front;
       surface.renderTargets(targets, selected);
     }
-    if (active && link === "connected" && !busy && opened?.turn && !manualTurns.has(opened.turn)
-      && !first && opened.id !== front) void select(opened.id);
+    if (opened?.turn && !manualTurns.has(opened.turn) && !first) follow = opened.id;
+    followAgent();
     if (runtime !== "ready") {
       if (display) disconnect();
       if (link !== "stale") link = "idle";
     } else if (active && !display) connect();
     update();
+  }
+
+  function followAgent() {
+    if (!follow || !active || link !== "connected") return;
+    const id = follow;
+    follow = "";
+    if (id !== selected && targets.some(target => target.id === id)) void select(id);
   }
 
   events.addEventListener("state", event => apply((event as CustomEvent<ComputerState>).detail));
@@ -316,7 +316,7 @@ function renderComputer(ctx: WebHostContextV1, host: HTMLElement, rawView: unkno
     update();
   });
 
-  // 头部工具：都只读当前画面或地址，不改变控制权与连接。
+  // 头部工具：都只读当前画面或地址，不改变连接。
   async function tool(id: ToolId) {
     const url = targets.find(item => item.id === selected)?.url ?? "";
     try {
@@ -343,7 +343,7 @@ function renderComputer(ctx: WebHostContextV1, host: HTMLElement, rawView: unkno
 
   screen.addEventListener("keydown", inputKey, true);
   screen.addEventListener("keyup", inputKey, true);
-  // 画面被挡住时点它不会有任何效果：闪一下状态胶囊，说明 Agent 在用、要先接管。
+  // Agent 正在执行一步时点画面不会有效果：闪一下状态胶囊，说明它马上做完。
   screen.addEventListener("pointerdown", () => { if (!inputOn && link === "connected") surface.nudge(); });
   // 0084：人工打开面板唤醒一次。注册时的首次回调只报告现状，不算打开；
   // 之后保持打开不会再次唤醒，休眠后由用户点"唤醒浏览器"。

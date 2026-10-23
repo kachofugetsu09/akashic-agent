@@ -167,7 +167,7 @@ workspace_files = ()
 
 _IMAGE = (
     "ghcr.io/kachofugetsu09/akashic-computer@"
-    "sha256:21f92ee1201cdb45623948d58df91fbce1e247b009515f82d797614e53b16598"
+    "sha256:00de15b1e0d9fd580fced89942bb8df4857067e1c001b949c8db93b3df0d01ce"
 )
 
 
@@ -325,6 +325,9 @@ async def apply(ctx: Context) -> None:
             "Use var for reusable bindings, browser.tabs.list() and browser.tabs.new(); read API documentation before actions. "
             "Idle anonymous instances release after 10 minutes. Call nodeRepl.write(value) or "
             "nodeRepl.emitImage(bytes) for output. Read the computer skill first. "
+            "For login, captcha or verification codes, keep the tab with markHandoff(), ask the user in chat to do it "
+            "in the Browser panel and end the Turn; "
+            "do not guess credentials or keep retrying selectors. "
             "The browser runs in its own container: localhost there is the container, not the Akashic host. "
             "A service on the host is reachable at the container network's gateway (usually http://172.26.0.1:<port>) "
             "only if it listens on that gateway address and the host firewall admits the port (see the computer skill). "
@@ -334,6 +337,12 @@ async def apply(ctx: Context) -> None:
         parameters={
             "type": "object",
             "properties": {
+                # 聊天里工具行的摘要用它，不用展开代码也知道这一步在做什么。
+                "description": {
+                    "type": "string",
+                    "maxLength": 60,
+                    "description": "Always set: what this step does, a few words in the user's language, e.g. 打开收件箱.",
+                },
                 "code": {"type": "string", "maxLength": 131072},
                 "timeout_ms": {"type": "integer", "minimum": 1, "maximum": 110000},
                 "reset": {

@@ -1,11 +1,12 @@
 // 浏览器面板唯一的状态来源：(重)连前用一次 HTTP 读取识别页面过期和接口错误，之后只收推送。
-// 状态与光标共用一条只读流；命令（唤醒、接管、交还）仍走各自的入口。
+// 状态与光标共用一条只读流；命令（唤醒、重启、导航）仍走各自的入口。
 import type { WebHostContextV1 } from "@akashic/web-ui-v1";
 import type { Target } from "./panel-view";
 
 export interface ComputerState {
   readonly noticeId: number;
   readonly active: boolean;
+  readonly busy: boolean;
   readonly turns: readonly string[];
   readonly browser: { readonly state: string; readonly error: string };
   readonly targets: Target[];
@@ -17,7 +18,7 @@ const RETRY_MS = 1000;
 
 // 格式不对就整体拒绝，不渲染半截状态。
 function checkState(value: Partial<ComputerState>): ComputerState {
-  if (!Number.isInteger(value.noticeId) || typeof value.active !== "boolean"
+  if (!Number.isInteger(value.noticeId) || typeof value.active !== "boolean" || typeof value.busy !== "boolean"
     || !Array.isArray(value.turns) || value.turns.some(turn => typeof turn !== "string")
     || !RUNTIME_STATES.includes(value.browser?.state ?? "") || typeof value.browser?.error !== "string"
     || !Array.isArray(value.targets) || typeof value.control !== "boolean"
@@ -34,7 +35,7 @@ function message(error: unknown): string {
 
 /** 事件：state（完整快照）、cursor（光标原始回执）、error（读取失败，自动重试）、stale（页面过期，停止）。 */
 export class ComputerEvents extends EventTarget {
-  private latestCursor: { value: object; expiresAt: number } | null = null;
+  private latestCursor: object | null = null;
   private socket: WebSocket | null = null;
   private timer = 0;
   private closed = false;
@@ -44,11 +45,9 @@ export class ComputerEvents extends EventTarget {
     void this.open();
   }
 
-  /** 最近一次光标回执，ttlMs 换算成剩余寿命；新建的光标层从这里补齐当前位置，不会让过期光标复活。 */
+  /** 最近一次光标回执；新建的光标层从这里补齐 Agent 最后的落点。 */
   get cursor(): unknown {
-    if (!this.latestCursor) return null;
-    const ttlMs = Math.max(0, this.latestCursor.expiresAt - Date.now());
-    return { ...this.latestCursor.value, ttlMs };
+    return this.latestCursor;
   }
 
   close() {
@@ -76,8 +75,8 @@ export class ComputerEvents extends EventTarget {
     this.socket = socket;
     socket.addEventListener("message", event => {
       try {
-        const value = JSON.parse(String(event.data)) as Partial<ComputerState> & { type?: string; ttlMs?: unknown };
-        if (value?.type === "cursor") { this.remember(value); this.emit("cursor", value); }
+        const value = JSON.parse(String(event.data)) as Partial<ComputerState> & { type?: string };
+        if (value?.type === "cursor") { this.latestCursor = value; this.emit("cursor", value); }
         else if (value?.type === "state") this.emit("state", checkState(value));
         else throw new Error("Computer 状态回执无效");
       } catch (error) {
@@ -91,11 +90,6 @@ export class ComputerEvents extends EventTarget {
       this.socket = null;
       this.retry("状态连接中断");
     });
-  }
-
-  private remember(value: { ttlMs?: unknown }) {
-    const ttlMs = typeof value.ttlMs === "number" && Number.isFinite(value.ttlMs) ? value.ttlMs : 0;
-    this.latestCursor = { value, expiresAt: Date.now() + ttlMs };
   }
 
   private retry(reason: string) {
