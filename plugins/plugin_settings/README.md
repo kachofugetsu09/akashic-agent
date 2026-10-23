@@ -21,8 +21,10 @@ await ctx.inject((SETTINGS_FORMS, PLUGIN_CONFIG, MODEL_CATALOG),
                  lambda child: declare_settings(child, Config, FORM), name="settings")
 ```
 
-Field kinds are `text`, `lines` (one item per line), `number`, `toggle` and
-`model` (the plugin's own model choice, see ADR 0129). Values are read from and
+Field kinds are `text`, `lines` (one item per line), `number`, `toggle`,
+`model` (the plugin's own model choice, see ADR 0129) and `secret` (at most one
+per form; the config field is a `CredentialRef | None`, the form never echoes it
+and an empty value keeps the saved credential). Values are read from and
 saved to the plugin's own config through `ModelSettings`: an empty value removes
 the override and the config model's default applies. Saving takes effect through
 the normal plugin config generation change.
