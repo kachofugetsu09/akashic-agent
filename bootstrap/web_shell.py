@@ -22,7 +22,7 @@ from websockets.asyncio.client import ClientConnection
 from fastapi import FastAPI, Request, WebSocket
 from fastapi.responses import HTMLResponse, JSONResponse, Response, StreamingResponse
 from starlette.requests import ClientDisconnect
-from starlette.types import Receive, Scope, Send
+from starlette.types import Message, Receive, Scope, Send
 from starlette.websockets import WebSocketDisconnect, WebSocketState
 
 from agent.plugin_composition.endpoints import GUARD_PROTOCOL, Endpoint, load_endpoint_plan_requirements
@@ -146,17 +146,51 @@ class _ProxyStreamingResponse(StreamingResponse):
         status_code: int,
         headers: Mapping[str, str],
         close: Callable[[], Awaitable[None]],
+        stopping: asyncio.Event | None = None,
     ) -> None:
         super().__init__(content, status_code=status_code, headers=headers)
         self._close = close
+        self._stopping = stopping
 
     async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
         try:
-            await super().__call__(scope, receive, send)
+            if self._stopping is None:
+                await super().__call__(scope, receive, send)
+            else:
+                await self._relay_until_stopping(self._stopping, scope, receive, send)
         except ClientDisconnect:
             pass
         finally:
             await self._close()
+
+    # 事件流没有自然结尾；停机时在块边界正常收尾，浏览器按自身重连策略连到新进程。
+    async def _relay_until_stopping(self, stopping: asyncio.Event, scope: Scope,
+                                    receive: Receive, send: Send) -> None:
+        started = False
+
+        async def tracked(message: Message) -> None:
+            nonlocal started
+            started = started or message["type"] == "http.response.start"
+            await send(message)
+
+        relay = asyncio.ensure_future(super().__call__(scope, receive, tracked))
+        stop = asyncio.ensure_future(stopping.wait())
+        try:
+            _ = await asyncio.wait({relay, stop}, return_when=asyncio.FIRST_COMPLETED)
+            if relay.done():
+                return relay.result()
+            _ = relay.cancel()
+            with suppress(asyncio.CancelledError):
+                await relay
+            if started:
+                with suppress(OSError, ClientDisconnect):
+                    await send({"type": "http.response.body", "body": b"", "more_body": False})
+        finally:
+            for task in (relay, stop):
+                if not task.done():
+                    _ = task.cancel()
+                    with suppress(asyncio.CancelledError):
+                        await task
 
 
 _WEB_CONTENT_SECURITY_POLICY = "; ".join((
@@ -182,10 +216,11 @@ _WEB_CONTENT_SECURITY_POLICY = "; ".join((
 class WebShellServer(uvicorn.Server):
     """在线程和进程入口之间发布确定的监听启动结果。"""
 
-    def __init__(self, config: uvicorn.Config) -> None:
+    def __init__(self, config: uvicorn.Config, streams_stopping: asyncio.Event | None = None) -> None:
         self._exit_loop: asyncio.AbstractEventLoop | None = None
         self._exit_event: asyncio.Event | None = None
         self._exit_requested = False
+        self._streams_stopping = streams_stopping or asyncio.Event()
         super().__init__(config)
         self.startup_event = threading.Event()
 
@@ -194,6 +229,11 @@ class WebShellServer(uvicorn.Server):
             await super().startup(sockets=sockets)
         finally:
             self.startup_event.set()
+
+    # 浏览器常驻的事件流不会自己结束；先收尾它们，优雅期只用来等普通请求。
+    async def shutdown(self, sockets: list[socket.socket] | None = None) -> None:
+        self._streams_stopping.set()
+        await super().shutdown(sockets=sockets)
 
     @property
     def should_exit(self) -> bool:
@@ -269,9 +309,11 @@ async def _guard_verdict(clients: _HttpClients, guard: Endpoint, headers: Mappin
                              if name.lower() in _GUARD_RESPONSE_HEADERS})
 
 
-def create_web_shell_app(workspace: Path, *, wait_for_ready: bool = False) -> FastAPI:
+def create_web_shell_app(workspace: Path, *, wait_for_ready: bool = False,
+                         streams_stopping: asyncio.Event | None = None) -> FastAPI:
     """按 provider 发布的路由前缀转发；runtime 缺席时由外壳响应。"""
     plan = workspace / "runtime/endpoints.json"
+    stopping = streams_stopping or asyncio.Event()
     clients = _HttpClients()
     ingress = _IngressGuard(workspace, wait_for_ready=wait_for_ready)
 
@@ -318,7 +360,7 @@ def create_web_shell_app(workspace: Path, *, wait_for_ready: bool = False) -> Fa
             return target
         if target is None:
             return _runtime_unavailable(html="text/html" in request.headers.get("accept", ""))
-        response = await _proxy_http(request, clients, target, raw)
+        response = await _proxy_http(request, clients, target, raw, stopping)
         response.headers.setdefault("Content-Security-Policy", _WEB_CONTENT_SECURITY_POLICY)
         response.headers.setdefault("X-Content-Type-Options", "nosniff")
         return response
@@ -441,8 +483,9 @@ def create_web_shell_server(
     port: int = 2236,
     wait_for_ready: bool = False,
 ) -> WebShellServer:
+    streams_stopping = asyncio.Event()
     config = uvicorn.Config(
-        create_web_shell_app(workspace, wait_for_ready=wait_for_ready),
+        create_web_shell_app(workspace, wait_for_ready=wait_for_ready, streams_stopping=streams_stopping),
         host=host,
         port=port,
         log_level="warning",
@@ -451,7 +494,7 @@ def create_web_shell_server(
         # 浏览器常驻的长连接每次停机都会等满优雅期，普通请求两秒内早已结束。
         timeout_graceful_shutdown=2,
     )
-    return WebShellServer(config)
+    return WebShellServer(config, streams_stopping)
 
 
 async def _proxy_http(
@@ -459,6 +502,7 @@ async def _proxy_http(
     clients: _HttpClients,
     endpoint: Endpoint,
     target_path: str,
+    streams_stopping: asyncio.Event,
 ) -> Response:
     """Relay one HTTP request to a workspace-owned Unix socket."""
 
@@ -501,8 +545,10 @@ async def _proxy_http(
         lifetime.push_async_callback(upstream.aclose)
         response_headers = {name: value for name, value in upstream.headers.items()
                             if name.lower() in _RESPONSE_HEADERS_ALLOWED}
+        event_stream = upstream.headers.get("content-type", "").startswith("text/event-stream")
         return _ProxyStreamingResponse(upstream.aiter_raw(), status_code=upstream.status_code,
-                                       headers=response_headers, close=lifetime.pop_all().aclose)
+                                       headers=response_headers, close=lifetime.pop_all().aclose,
+                                       stopping=streams_stopping if event_stream else None)
 
 
 async def _proxy_websocket(
