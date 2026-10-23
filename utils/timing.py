@@ -24,3 +24,9 @@ def measure(stage: str, **fields: object) -> Iterator[dict[str, object]]:
         print(json.dumps({**record, **result, "status": status,
                           "seconds": round((time.monotonic_ns() - started) / 1e9, 6)}),
               file=sys.stderr, flush=True)
+
+
+# 不包在 with 里的耗时（例如进程收尾的各段）按同一格式补记一条完成记录。
+def report(stage: str, seconds: float, **fields: object) -> None:
+    print(json.dumps({"event": "release.timing", "stage": stage, **fields, "status": "complete",
+                      "seconds": round(seconds, 6)}), file=sys.stderr, flush=True)
