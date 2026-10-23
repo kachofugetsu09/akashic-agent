@@ -77,8 +77,16 @@ while [ ! -S /tmp/.X11-unix/X99 ]; do
 done
 
 # 有人看才编码：60fps、恒定质量，静止时补一帧高质量画面让文字清晰；光标由观看端本地绘制。
+# 默认 WebSocket；Dashboard 按连接切到 WebRTC（媒体走 UDP 30000，Workload 按原端口号发布到宿主）。
+# ICE 服务器只来自网关写入的文件，默认为空：只用本机候选，宿主地址由 Dashboard 补进候选；
+# 不用 selkies 自带的公网 STUN 列表，容器里连不上时每次建连要等 5 秒超时。
+# 接口都要令牌，主令牌由网关生成；输入权限由 Dashboard 按 Agent 是否在用切换。
+mkdir -p -m 700 "$(dirname "$COMPUTER_RTC_FILE")"
+[ -f "$COMPUTER_RTC_FILE" ] || (umask 077 && echo '{"iceServers": []}' > "$COMPUTER_RTC_FILE")
 /opt/computer/stream-venv/bin/python -m selkies \
   --addr 0.0.0.0 --port 6081 --mode websockets \
+  --master-token "$COMPUTER_STREAM_TOKEN" \
+  --webrtc-udp-mux-port 30000 --rtc-config-json "$COMPUTER_RTC_FILE" \
   --web-root /opt/computer/stream-web \
   --encoder h264enc --gpu-id=-1 \
   --framerate 60,15-60 --rate-control-mode crf --video-crf 25,18-35 \
