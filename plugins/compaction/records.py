@@ -245,7 +245,10 @@ class SummaryRef(BaseModel):
 
 
 class SummaryLookup:
-    """归档提供的窄读取口；不能发布摘要、推进 head 或启动模型。"""
+    """归档提供的窄读取口；不能发布摘要、推进 head 或启动模型。
+
+    read 必须像 SummaryRecords.read 一样只返回已核对完整父链的记录。
+    """
 
     def __init__(
         self, read: Callable[[str], StoredSummary | None],
@@ -258,15 +261,19 @@ class SummaryLookup:
         """读取当前已发布摘要；状态面板不取得发布或模型调用权限。"""
         return self._head(session_id)
 
-    def resolve(self, metadata: Mapping[str, object], *, session_id: str) -> StoredSummary:
-        """只解析 binding 固定的原始记录，并核对完整父链。"""
+    def reference(self, metadata: Mapping[str, object], *, session_id: str) -> str:
+        """只核对 binding 归属并给出原始记录身份，不读取记录或父链。"""
         reference = SummaryRef.model_validate(dict(metadata))
         if reference.session_id != session_id:
             raise ValueError("摘要 binding 不属于当前 Session")
-        record = self._read(reference.record_ref)
+        return reference.record_ref
+
+    def resolve(self, metadata: Mapping[str, object], *, session_id: str) -> StoredSummary:
+        """只解析 binding 固定的原始记录；读取口已核对完整父链，这里不再逐代重读。"""
+        record = self._read(self.reference(metadata, session_id=session_id))
         if record is None or record.session_id != session_id:
             raise ValueError("摘要 binding 没有对应 Session 的原始记录")
-        return _check_lineage(record, self._read, session_id)
+        return record
 
 
 class SummaryRecords:
