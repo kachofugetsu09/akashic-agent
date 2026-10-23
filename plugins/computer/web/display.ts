@@ -37,7 +37,9 @@ interface StreamSession { mode: StreamMode; rtcConfig: RTCConfiguration }
 // WebRTC 在首帧前连不通（不在家、UDP 被拦）时改用 WebSocket，10 分钟内不再尝试。
 const FALLBACK_KEY = "akashic.computer.webrtc-failed";
 const FALLBACK_MS = 10 * 60_000;
+// 局域网直连百毫秒内就通；经中继要先向 TURN 申请地址，多给些时间。
 const WEBRTC_DEADLINE_MS = 4_000;
+const RELAY_DEADLINE_MS = 10_000;
 
 interface InputHandlers {
   keydown(event: KeyboardEvent): void;
@@ -61,6 +63,7 @@ export class ComputerDisplay extends EventTarget {
   private transportWatched = false;
   private mode: StreamMode = "websockets";
   private startedAt = 0;
+  private deadline = WEBRTC_DEADLINE_MS;
   // WebRTC 的键鼠直达流服务，Core 切换令牌后要等流服务把授权发到客户端；WebSocket 由 Core 转发过滤，总是放行。
   private granted = true;
   private signaling: WebSocket | null = null;
@@ -138,6 +141,7 @@ export class ComputerDisplay extends EventTarget {
     this.granted = session.mode !== "webrtc";
     this.applyInput();
     this.startedAt = performance.now();
+    this.deadline = session.rtcConfig.iceServers?.length ? RELAY_DEADLINE_MS : WEBRTC_DEADLINE_MS;
     const endpoint = (path: string) => {
       const url = new URL(this.ctx.http.webSocketUrl(path));
       if (this.control) url.searchParams.set("control", this.control);
@@ -334,7 +338,7 @@ export class ComputerDisplay extends EventTarget {
       return true;
     }
     // 期限按首帧算：ICE 连上但画面一直不来，同样回退。
-    if (!this.connected && performance.now() - this.startedAt > WEBRTC_DEADLINE_MS) {
+    if (!this.connected && performance.now() - this.startedAt > this.deadline) {
       this.fallback();
       return true;
     }

@@ -16,7 +16,7 @@ from websockets.typing import Subprotocol
 
 from agent.plugin_composition import DashboardContext
 
-from .stream import STREAM_CONFIG, StreamAccess, StreamMode, lan_candidate, signaling_hello
+from .stream import STREAM_CONFIG, IceServer, StreamAccess, StreamMode, lan_candidate, relay_only, signaling_hello
 
 inject = (STREAM_CONFIG,)
 
@@ -179,14 +179,21 @@ def register(app: FastAPI, context: DashboardContext) -> httpx.Client:
 
     @app.post("/api/dashboard/computer/stream-session")
     async def stream_session(prefer: str = "") -> dict[str, object]:
-        """选定这次连接的传输：配置了直连地址就用 WebRTC；面板回退时改用 WebSocket。"""
-        config = context.require(STREAM_CONFIG)
-        mode: StreamMode = "webrtc" if config.lan_address and prefer != "websockets" else "websockets"
+        """选定这次连接的传输：能直连或有中继就用 WebRTC；面板回退时改用 WebSocket。"""
+        settings = context.require(STREAM_CONFIG)
+        servers: list[IceServer] = []
+        if settings.webrtc and prefer != "websockets":
+            servers = await settings.ice_servers()
+        # 中继凭据没拿到又没有局域网地址，WebRTC 注定连不上，直接用网页连接。
+        webrtc = bool(servers) or (settings.config.lan_address is not None and prefer != "websockets")
+        mode: StreamMode = "webrtc" if webrtc else "websockets"
         try:
+            if webrtc:
+                await access.relay(relay_only(servers))
             await access.use(mode)
         except httpx.HTTPError as error:
             raise HTTPException(status_code=502, detail=str(error)) from error
-        return {"mode": mode, "rtcConfig": {"iceServers": []}}
+        return {"mode": mode, "rtcConfig": {"iceServers": servers}}
 
     @app.post("/api/dashboard/computer/touch")
     def touch_view() -> Response:
@@ -239,7 +246,7 @@ def register(app: FastAPI, context: DashboardContext) -> httpx.Client:
         if view.mode == "websockets":
             tasks = {_display_up(view, upstream), _display_down(view, upstream)}
         else:
-            lan = context.require(STREAM_CONFIG).lan_address
+            lan = context.require(STREAM_CONFIG).config.lan_address
             tasks = {_signal_up(view, upstream), _signal_down(view, upstream, lan)}
         if view.control_id:
             tasks.add(view.renew_control())
@@ -250,7 +257,7 @@ def register(app: FastAPI, context: DashboardContext) -> httpx.Client:
         running = {asyncio.create_task(task) for task in tasks}
         done, pending = await asyncio.wait(running, return_when=asyncio.FIRST_COMPLETED)
         for task in pending:
-            task.cancel()
+            _ = task.cancel()
         for task in pending:
             with suppress(asyncio.CancelledError):
                 await task
