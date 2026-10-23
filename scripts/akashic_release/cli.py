@@ -22,6 +22,7 @@ from scripts.akashic_release.prepare import (
 from scripts.akashic_release.source import commit_subject, resolve_target
 from scripts.akashic_release.source import verify_bootstrap_checkout
 from scripts.akashic_release.systemd import verify_external_service_contract
+from scripts.akashic_release.warm import StateCacheWarmer
 
 _DEFAULT_ORIGIN = "https://github.com/kachofugetsu09/akashic-agent.git"
 _DEFAULT_ROOT = Path("/srv/data/services/akashic")
@@ -68,6 +69,9 @@ def install(args: argparse.Namespace, *, self_deploy: dict[str, object] | None =
         paths.create_layout()
         verify_host_prerequisites(mise=args.mise, run=_run)
         verify_external_service_contract(run=_run, unit_root=args.unit_root)
+        # 页缓存跨进程保留：只准备产物的一轮也预热，自部署 worker 停机前即可命中。
+        warmer = StateCacheWarmer(paths.state / "workspace")
+        warmer.start()
         manifest = prepare_generation(
             paths=paths,
             bootstrap_checkout=checkout,
@@ -79,7 +83,9 @@ def install(args: argparse.Namespace, *, self_deploy: dict[str, object] | None =
             installed_unit=args.unit_root / "akashic-host-bridge.service",
         )
         status = "prepared"
-        if not args.no_activate:
+        if args.no_activate:
+            warmer.wait()
+        else:
             status = activate_release(
                 paths=paths,
                 manifest_path=paths.release(commit),
@@ -90,7 +96,7 @@ def install(args: argparse.Namespace, *, self_deploy: dict[str, object] | None =
                 inputs=args.inputs,
                 backup=args.backup,
                 unit_root=args.unit_root, cli_path=args.cli_path,
-                self_deploy=self_deploy,
+                self_deploy=self_deploy, warmer=warmer,
             )
     return {
         "status": status,
