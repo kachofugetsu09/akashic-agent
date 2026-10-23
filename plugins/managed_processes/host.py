@@ -524,6 +524,9 @@ class ManagedProcessGenerationHost:
         )
         try:
             await self._wait_ready(generation, entry, port)
+        except asyncio.CancelledError:
+            # 卸载打断启动不是就绪失败。
+            raise
         except BaseException as error:
             await self._emit_incident(
                 generation.generation_id,
