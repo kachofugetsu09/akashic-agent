@@ -448,7 +448,8 @@ def create_web_shell_server(
         log_level="warning",
         access_log=False,
         # 流式代理没有读取期限；停止时不能让旧浏览器请求无限阻止 Core 关闭。
-        timeout_graceful_shutdown=10,
+        # 浏览器常驻的长连接每次停机都会等满优雅期，普通请求两秒内早已结束。
+        timeout_graceful_shutdown=2,
     )
     return WebShellServer(config)
 
