@@ -13,7 +13,7 @@ from typing import Callable, Mapping
 from scripts.akashic_release.doctor import read_environment, release_health_timeout, verify_release
 from scripts.akashic_release.manifest import activation_receipt, atomic_write, read_json, write_json
 from scripts.akashic_release.model import ReleasePaths
-from scripts.akashic_release.systemd import install_units, install_operator_entrypoint
+from scripts.akashic_release.systemd import install_units, install_operator_entrypoint, require_unit_install
 from scripts.akashic_release.systemd import start_bridge, start_core, stop_runtime
 from scripts.akashic_release.warm import StateCacheWarmer
 from utils.timing import measure
@@ -393,6 +393,7 @@ def activate_release(
         digest = hashlib.sha256(fixed_plan.read_bytes()).hexdigest()
         _publish(paths=paths, candidate=candidate, plan=fixed_plan, inputs=inputs,
                  digest=digest, backup_dir=None, preflight=True, run=run)
+    require_unit_install(checkout=paths.source(target), run=run, unit_root=unit_root, runtime_env=environment_file)
     backup_dir = paths.backups / attempt_path.stem if backup else None
     attempt = activation_receipt(status="pending", target_commit=target, previous_commit=previous)
     attempt.update(phase="waiting_for_turn" if self_deploy is not None else "stopping", imageId=manifest["imageId"],
@@ -478,6 +479,7 @@ def resume_release(
         raise RuntimeError("active 已被后续部署更新；禁止恢复过期尝试")
     if current.get("AKASHIC_RUNTIME_COMMIT") not in {attempt["previousCommit"], target}:
         raise RuntimeError("已有后续部署；禁止恢复过期尝试")
+    require_unit_install(checkout=paths.source(target), run=run, unit_root=unit_root, runtime_env=environment_file)
     # 2. 完成同一个启动边界，失败仍保留原发布结果。
     try:
         stop_runtime(run=run)
