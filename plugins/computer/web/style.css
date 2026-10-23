@@ -6,8 +6,6 @@
   --computer-busy: light-dark(rgb(27 54 93), rgb(150 180 226));
   --computer-warn: light-dark(rgb(116 94 0), rgb(220 196 96));
   --computer-error: light-dark(rgb(150 48 40), rgb(232 140 128));
-  --computer-control: light-dark(rgb(176 92 36), rgb(232 150 96));
-  --computer-on-control: light-dark(rgb(255 255 255), rgb(30 18 10));
   --computer-anonymous: light-dark(rgb(107 106 100), rgb(176 174 167));
   --computer-on-anonymous: light-dark(rgb(255 255 255), rgb(20 20 19));
   --computer-agent: light-dark(rgb(37 99 205), rgb(98 150 236));
@@ -334,7 +332,6 @@
 
 .computer-status[data-tone="ok"] .computer-status-dot { background: var(--computer-ok); }
 .computer-status[data-tone="busy"] .computer-status-dot { background: var(--computer-busy); }
-.computer-status[data-tone="you"] .computer-status-dot { background: var(--computer-control); }
 .computer-status[data-tone="warn"] .computer-status-dot { background: var(--computer-warn); }
 .computer-status[data-tone="error"] .computer-status-dot { background: var(--computer-error); }
 
@@ -377,12 +374,6 @@
   border-color: transparent;
   color: var(--ak-paper-canvas);
   background: var(--ak-ink-primary);
-}
-
-.computer-action[data-emphasis="control"] {
-  border-color: transparent;
-  color: var(--computer-on-control);
-  background: var(--computer-control);
 }
 
 .computer-action:active:not(:disabled) {
@@ -473,10 +464,6 @@
 
 .computer-frame[data-frame="anonymous"]::before {
   box-shadow: inset 0 0 0 3px color-mix(in srgb, var(--computer-anonymous) 70%, transparent);
-}
-
-.computer-frame[data-frame="control"]::before {
-  box-shadow: inset 0 0 0 3px var(--computer-control);
 }
 
 /* Agent 正在操作：内侧一层静态蓝色微光，不闪烁 */

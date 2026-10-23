@@ -6,6 +6,7 @@
 
 | ID | 状态 | 主题 | 关联条款 |
 |---|---|---|---|
+| [0132](0132-computer-human-input-wins.md) | proposed / implemented for review | Computer 不再接管：谁在动谁用 | PLG-017、WEBUI-008 |
 | [0131](0131-context-composition.md) | proposed / implemented for review | 上下文构成按装配来源记账 | WEBUI-008 |
 | [0130](0130-declarative-plugin-settings.md) | proposed / implemented for review | 插件声明设置字段，宿主统一渲染 | PLG-014 |
 | [0129](0129-plugins-choose-their-models.md) | proposed / implemented for review | 模型只留全局默认，插件在自己的设置里选模型 | RUN-010 |
@@ -23,7 +24,7 @@
 | [0105](0105-ledger-owns-business-storage.md) | proposed / implemented for review | Ledger 插件拥有业务持久化与入站交接 | PLG、STA、SES、MIG |
 | [0092](0092-model-generation-recovers-until-output.md) | accepted | 模型生成恢复（2026-10-17 起默认最多重试 10 次），工具效果按原回执处理 | OBJ-005、ERR-001、RUN-012 |
 | [0091](0091-skill-sources-are-layered-providers.md) | proposed | Skill 来源是分层 Provider，本地目录不必打包成插件 | PLG-009、PLG-014、PLG-016、CTX-004 |
-| [0092](0092-computer-viewing-and-control.md) | proposed；多观看者部分由 0123 替代 | Computer 多目标观看与人工接管分开 | PLG-017、WEBUI-008 |
+| [0092](0092-computer-viewing-and-control.md) | proposed；多观看者部分由 0123 替代，接管由 0132 替代 | Computer 多目标观看与人工接管分开 | PLG-017、WEBUI-008 |
 | [0088](0088-computer-streams-h264-over-dashboard-websocket.md) | proposed | Computer 经现有 Dashboard WebSocket 传输 H.264 | PLG-017、RUN-016、WEBUI-008 |
 | [0086](0086-session-soft-delete-and-akasha-replay.md) | accepted | 会话软删除：逻辑失效可恢复，Akasha 学习与重放继续参与 | SES-003、SES-005、STA-003、MEM-009、WEBUI-009 |
 | [0087](0087-session-title-override.md) | proposed | 会话标题覆盖：显式管理状态，空值回到推导标题 | SES-003、WEBUI-009 |

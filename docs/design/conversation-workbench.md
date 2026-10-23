@@ -48,7 +48,7 @@ interface WorkbenchTab {
 interface WorkbenchTabView {
   readonly active: boolean; onActiveChange(listener: (active: boolean) => void): Disposer;
   readonly session: string | null; onSessionChange(listener: (session: string | null) => void): Disposer;
-  requestAttention(noticeId: string): void;
+  requestAttention(noticeId: string): void; reveal(key: string): void;
   onIntent(listener: (intent: WorkbenchIntent) => IntentStatus | Promise<IntentStatus>): Disposer;
   quote(request: QuoteRequest): QuoteStatus;
 }
@@ -90,7 +90,7 @@ type QuoteStatus = "inserted" | "stale" | "rejected";
 
 ### 2.3 Agent 活动
 
-Agent 活动只经 `requestAttention` 亮徽标；宿主不因活动展开工具区（0092）。
+Agent 活动经 `requestAttention` 亮徽标。`reveal(key)` 是唯一的自动展开：桌面端工具区收起时展开到该标签，同一 key 只一次，窄屏只亮徽标（0132，参考 Memoh issue #1071：手机上自动打开会把人从聊天拽走）。
 
 ### 2.4 标签条、新标签页、分屏与快捷键（2026-10 增补）
 

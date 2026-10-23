@@ -60,6 +60,11 @@ export interface ConversationTabView {
   onSessionChange(listener: (session: string | null) => void): WebUiDisposer;
   /** 新的、未处理的 noticeId 只亮徽标，不打开工具区；重放同一 ID 无效。 */
   requestAttention(noticeId: string): void;
+  /**
+   * Agent 开始用本标签时调用（0132）：桌面端工具区收起就展开并激活本标签，不抢焦点；窄屏或工具区已展开时只亮徽标。
+   * 同一 key（如一轮的 ID）只生效一次，用户关掉后同一 key 不再弹出。
+   */
+  reveal(key: string): void;
   /** 宿主先展开并激活本标签再投递；10 秒内没有结果按 failed 回执。 */
   onIntent(listener: (intent: ConversationIntent) => ConversationIntentStatus | Promise<ConversationIntentStatus>): WebUiDisposer;
   /** 只在标签自己的点击或键盘处理函数里调用；会话已切走返回 stale，不自动发送。 */

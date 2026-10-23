@@ -65,7 +65,12 @@ const computer = new ComputerLifecycle({
     driver = owner;
     owner.on("cursor", (state) => { if (driver === owner) publishCursor(state); });
     owner.on("control", () => { if (driver === owner) scheduleState(); });
-    owner.on("activity", () => { if (driver === owner) scheduleState(); });
+    owner.on("activity", () => {
+      if (driver !== owner) return;
+      // 一次调用里连续的几步之间只隔几毫秒：最后一步做完再等 BUSY_TAIL_MS 才放开，人的输入权限不来回闪。
+      if (!owner.agentJobs.size) { busyUntil = Date.now() + BUSY_TAIL_MS; setTimeout(scheduleState, BUSY_TAIL_MS + 10); }
+      scheduleState();
+    });
     owner.on("targets", () => { if (driver === owner) scheduleState(); });
     driverReady = owner.start();
     await driverReady;
@@ -96,12 +101,13 @@ const legacyCall = new AsyncLocalStorage();
 // 订阅者 → 它最近收到的状态快照；按订阅者去重，新订阅者也能补到最新状态。
 const eventClients = new Map();
 let cursor = { revision: 0, point: null, error: "" };
+const BUSY_TAIL_MS = 300;
+let busyUntil = 0;
 let stateTimer = null;
 let stateDirty = false;
 
 function cursorEvent() {
-  const ttlMs = cursor.point ? Math.max(0, cursor.point.expiresAt - Date.now()) : 0;
-  return `data: ${JSON.stringify({ type: "cursor", ...cursor, ttlMs })}\n\n`;
+  return `data: ${JSON.stringify({ type: "cursor", ...cursor })}\n\n`;
 }
 
 /** 慢消费者直接断开，不能让操作等待显示或积压事件。 */
@@ -111,10 +117,9 @@ function broadcast(event) {
   }
 }
 
-/** 坐标只驻留内存。 */
+/** 坐标只驻留内存；最后的落点一直保留，直到 Agent 下一次操作。 */
 function publishCursor({ point, error = "" }) {
-  cursor = { revision: cursor.revision + 1,
-    point: point ? { ...point, expiresAt: Date.now() + 5000 } : null, error };
+  cursor = { revision: cursor.revision + 1, point: point ?? null, error };
   broadcast(cursorEvent());
 }
 
@@ -125,6 +130,8 @@ async function stateEvent() {
     type: "state",
     noticeId: activity.noticeId,
     active: activity.active || Boolean(driver?.agentJobs.size),
+    // Agent 正在执行单个浏览器操作；只有这时才挡住人的键鼠。
+    busy: Boolean(driver?.agentJobs.size) || Date.now() < busyUntil,
     turns: [...new Set([...computer.turns, ...[...(driver?.actives.values() ?? [])]
       .map(call => JSON.stringify([call.context.session_id, call.context.turn_id]))])],
     browser: { state: computer.state, error: computer.error },
@@ -161,20 +168,47 @@ async function publishState() {
 }
 
 class InputError extends Error {}
-// The Agent is using the browser; a viewer must take control before acting.
-class BusyError extends InputError {}
 
-// 人工直接操作：接管就绪时记进接管的操作，交还前会等它做完；没人接管、Agent 也没有回合和操作时直接执行。
-async function humanAction(id, task) {
-  const owner = driver, control = owner.control;
-  if (control ? !control.ready || control.id !== id
-    : id || activeOperations.size || computer.turns.size || owner.actives.size || owner.agentJobs.size)
-    throw new BusyError("The browser is in use; take control in this window first");
-  // Register before awaiting: Agent work and takeover must wait for admitted navigation.
-  const jobs = control ? control.jobs : owner.humanJobs;
+// 人在画面上操作就持有短租约：Agent 做完当前这一步后停下，人停手 LEASE_MS 后自动交还。
+// 画面同一时刻只给一个窗口，租约不区分窗口。
+const LEASE_ID = "viewer";
+const LEASE_MS = 5000;
+let leaseTimer;
+let leasing = null;
+
+async function holdLease() {
+  if (!driver || computer.state !== "ready") throw new InputError("Computer is not awake");
+  const owner = driver;
+  // 1. 正在交还时等它结束再重新拿；正在拿时共用同一次。
+  while (owner.control?.release) await owner.control.release.catch(() => undefined);
+  if (!owner.control) {
+    leasing ??= (async () => {
+      const releaseWorkload = await computer.acquire();
+      try {
+        const front = (await owner.targets()).find(target => target.front)?.id ?? "";
+        await owner.takeControl(LEASE_ID, front);
+        owner.control.releaseWorkload = releaseWorkload;
+      } catch (error) { releaseWorkload(); throw error; }
+    })().finally(() => { leasing = null; });
+  }
+  if (leasing) await leasing;
+  if (owner.control?.id !== LEASE_ID || !owner.control.ready) throw new Error("Computer viewer lease has ended");
+  // 2. 每次人工输入都从头计时。
+  clearTimeout(leaseTimer);
+  leaseTimer = setTimeout(() => owner.releaseControl(LEASE_ID).catch(error => {
+    owner.closed = true;
+    owner.rejectAll(error);
+    console.error("Computer viewer lease release failed:", error.message);
+  }), LEASE_MS);
+  return owner.control;
+}
+
+// 地址栏、标签条等人工操作同样持有租约；交还前等它做完。
+async function humanAction(task) {
+  const control = await holdLease();
   const job = computer.use(task);
-  jobs.add(job);
-  try { return await job; } finally { jobs.delete(job); }
+  control.jobs.add(job);
+  try { return await job; } finally { control.jobs.delete(job); }
 }
 
 // 地址栏只打开网页和空白页，不执行 javascript: 等会在页面里运行代码的地址。
@@ -726,65 +760,30 @@ const server = createServer(async (request, response) => {
     } else if (request.method === "POST" && ["/view/navigate", "/view/open", "/view/close"].includes(url.pathname)) {
       const payload = await body(request);
       if (!driver || computer.state !== "ready") throw new InputError("Computer is not awake");
-      const id = payload.control === undefined ? "" : requiredString(payload.control, "control", 128);
       if (url.pathname === "/view/open") {
         const address = payload.url === undefined ? "about:blank" : pageUrl(payload.url);
-        json(response, 200, { target: await humanAction(id, () => driver.openPage(address)) });
+        json(response, 200, { target: await humanAction(() => driver.openPage(address)) });
         return;
       }
       const target = requiredString(payload.target, "target", 128);
-      if (url.pathname === "/view/close") await humanAction(id, () => driver.closePage(target));
+      if (url.pathname === "/view/close") await humanAction(() => driver.closePage(target));
       else if (!["go", "back", "forward", "reload"].includes(payload.action))
         throw new InputError("action must be go, back, forward or reload");
       else {
         const address = payload.action === "go" ? pageUrl(payload.url) : "";
-        await humanAction(id, () => driver.navigate(target, payload.action, address));
+        await humanAction(() => driver.navigate(target, payload.action, address));
       }
       json(response, 200, { done: true });
     } else if (request.method === "POST" && url.pathname === "/view/touch") {
-      // 观看者直接操作页面不经过网关；面板代理转发输入时续期，人在用时不休眠。
+      // 观看者直接操作页面不经过网关：续期防止休眠；input 表示人刚按下键鼠，持有租约让 Agent 停下。
+      const payload = await body(request);
       if (computer.state === "ready") computer.touch();
+      // 拿不到租约（浏览器正在休眠或重启）不影响人的输入，也不能断开画面。
+      if (payload.input === true && computer.state === "ready")
+        await holdLease().catch(error => console.error("Computer viewer lease:", error.message));
       json(response, 200, { touched: computer.state === "ready" });
     } else if (request.method === "GET" && url.pathname === "/activity") {
       json(response, 200, { ...activity, browser: computer.status(), control: driver?.control ? { active: true } : { active: false } });
-    } else if (request.method === "POST" && url.pathname.startsWith("/control/")) {
-      const payload = await body(request);
-      requiredString(payload.id, "id", 128);
-      if (url.pathname === "/control/take") {
-        if (!driver || computer.state !== "ready") throw new InputError("Computer is not awake");
-        const target = payload.target ?? "";
-        if (driver.control) throw new InputError("Another viewer controls this Computer");
-        if (target) await driver.show(target);
-        const controller = new AbortController();
-        const disconnected = () => {
-          if (!response.writableFinished) controller.abort(new Error("Control caller disconnected"));
-        };
-        response.once("close", disconnected);
-        if (response.destroyed) disconnected();
-        const releaseWorkload = await computer.acquire();
-        try {
-          await driver.takeControl(payload.id, target, controller.signal);
-          if (driver.control?.id !== payload.id) throw new Error("Control connection has ended");
-          driver.control.releaseWorkload = releaseWorkload;
-        } catch (error) { releaseWorkload(); throw error; }
-        finally { response.removeListener("close", disconnected); }
-      } else if (url.pathname === "/control/release") {
-        if (driver) await driver.releaseControl(payload.id);
-      } else if (url.pathname !== "/control/renew") {
-        throw new InputError("Unknown control operation");
-      }
-      if (url.pathname !== "/control/release") {
-        if (driver?.control?.id !== payload.id || !driver.control.ready)
-          throw new InputError("Control connection has ended");
-        clearTimeout(controlTimer);
-        const owner = driver;
-        controlTimer = setTimeout(() => owner.releaseControl(payload.id).catch(error => {
-          owner.closed = true;
-          owner.rejectAll(error);
-          console.error("Computer control release failed:", error.message);
-        }), 30000);
-      }
-      json(response, 200, { controlled: url.pathname !== "/control/release" });
     } else if (request.method === "POST" && url.pathname === "/restart") {
       await computer.restart();
       json(response, 200, computer.status());
@@ -822,8 +821,7 @@ const server = createServer(async (request, response) => {
     if (driver?.closed && computer.state === "ready") {
       computer.fail(error);
     }
-    const status = error instanceof BusyError ? 409
-      : error instanceof InputError || error instanceof SyntaxError ? 400 : 500;
+    const status = error instanceof InputError || error instanceof SyntaxError ? 400 : 500;
     json(response, status, {
       error: error instanceof Error ? error.message : String(error),
     });
@@ -839,7 +837,6 @@ const server = createServer(async (request, response) => {
 const openCliServer = createServer(proxyOpenCli).listen(19826, "0.0.0.0");
 let stopping = false;
 let refreshTimer;
-let controlTimer;
 /** 一次刷新持有完整占用；失败回执与下一次计划均保留在控制服务。 */
 async function refreshIdentity() {
   try {

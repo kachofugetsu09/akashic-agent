@@ -471,6 +471,7 @@ function createTabLifecycle(tools, isActive, currentSession, hooks) {
       get session() { return sessionOf(record); },
       onSessionChange: (listener) => subscribe("session", record.key, listener, { value: sessionOf(record) }),
       requestAttention: (noticeId) => hooks.attention(record, noticeId),
+      reveal: (key) => hooks.reveal(record, key),
       onIntent: (listener) => subscribe("intent", record.key, listener, null),
       quote: (request) => hooks.quote(request),
       instance: record.instance,
@@ -597,6 +598,7 @@ function mountTools(root, chat, tools, entries) {
     held: false,
   };
   const handled = new Set();
+  const revealed = new Set();
   const shortcuts = new Map(entries.filter((entry) => entry.shortcut).map((entry) => [entry.shortcut, entry]));
   const allTabs = () => state.groups.flatMap((group) => group.tabs);
   const groupOf = (record) => state.groups.find((group) => group.tabs.includes(record)) ?? null;
@@ -604,13 +606,23 @@ function mountTools(root, chat, tools, entries) {
   const activeOf = (group) => group.tabs.find((record) => record.key === group.activeKey) ?? null;
   const activeRecord = () => activeOf(focusedGroup());
   const isActive = (key) => state.open && state.groups.some((group) => group.activeKey === key);
-  // 活动只提示；打开、关闭与切换由用户决定，包括移动端。
+  // 活动只提示；关闭与切换由用户决定。例外是 reveal（0132）：桌面端工具区收起时展开到该标签，
+  // 同一 key 只一次，用户关掉后这一轮不再弹出；窄屏和工具区已展开时只亮徽标。
   const lifecycle = createTabLifecycle(tools, isActive, () => state.session, {
     attention(record, noticeId) {
       if (typeof noticeId !== "string" || !noticeId || handled.has(noticeId)) return;
       handled.add(noticeId);
       if (!isActive(record.key)) record.attention = true;
       update();
+    },
+    reveal(record, key) {
+      if (typeof key !== "string" || !key || revealed.has(key)) return;
+      revealed.add(key);
+      if (state.open || narrow.matches || state.chatOverlay) {
+        if (!isActive(record.key)) record.attention = true;
+        update();
+      } else if (record.entry && !record.instance) openTool(record.entry);
+      else activate(record.key);
     },
     quote: (request) => forwardQuote(request),
     title(record, title) {

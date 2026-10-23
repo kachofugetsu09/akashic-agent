@@ -86,24 +86,15 @@ try {
   await until(async () => docker("exec", container, "node", "-e",
     "fetch('http://127.0.0.1:8989/main').then(r=>console.log(r.status)).catch(()=>console.log('starting'))"),
     value => value === "200", "Remote HTTP page startup");
-  // Navigation uses the same control owner, and reports real browser failures.
+  // 人工导航不用接管，直接持有短租约；真实浏览器的失败原样报告。
   const human = (await post("/view/open", {})).target;
-  const owner = randomUUID();
-  await post("/control/take", {id: owner, target: human});
-  for (const [path, body] of [["navigate", {target: human, action: "go", url: "http://127.0.0.1:8989/main"}],
-    ["open", {}], ["close", {target: human}]]) {
-    const response = await fetch(origin + `/api/dashboard/computer/${path}`, {method: "POST",
-      headers: {"content-type": "application/json"}, body: JSON.stringify(body)});
-    assert.equal(response.status, 409, path); await response.body.cancel();
-  }
-  await post("/view/navigate", {control: owner, target: human, action: "go", url: "http://127.0.0.1:8989/main"});
-  await post("/control/release", {id: owner});
+  await post("/view/navigate", {target: human, action: "go", url: "http://127.0.0.1:8989/main"});
   for (const [url, expected] of [["http://", 400], ["javascript:alert(1)", 400], ["http://127.0.0.1:1/", 502]]) {
     const response = await fetch(origin + "/api/dashboard/computer/navigate", {method: "POST",
       headers: {"content-type": "application/json"}, body: JSON.stringify({target: human, action: "go", url})});
     assert.equal(response.status, expected, url); await response.body.cancel();
   }
-  pass("navigation checks control ownership and reports invalid URLs and failed loads");
+  pass("navigation needs no takeover and reports invalid URLs and failed loads");
   const humanNavigation = post("/view/navigate", {target: human, action: "go", url: "http://127.0.0.1:8989/held?human"});
   await until(async () => JSON.parse(docker("exec", container, "node", "-e",
     "fetch('http://127.0.0.1:8989/status').then(r=>r.text()).then(console.log)")), v => v.held === 1, "human navigation admitted");
@@ -166,14 +157,11 @@ try {
   const navigating = action("await main.goto('http://127.0.0.1:8989/slow');");
   await until(async () => JSON.parse(docker("exec", container, "node", "-e",
     "fetch('http://127.0.0.1:8989/status').then(r=>r.text()).then(console.log)")), v => v.slowPending > 0, "navigation was admitted");
-  const abandoned = new AbortController(), abandonedId = randomUUID();
-  const taking = fetch(gateway + "/control/take", {method:"POST", headers:{"Content-Type":"application/json"},
-    body:JSON.stringify({id:abandonedId}), signal:abandoned.signal}).catch(error => { assert.equal(error.name, "AbortError"); });
-  await until(async () => (await (await fetch(gateway + "/targets")).json()).control, Boolean, "pending takeover");
-  abandoned.abort(); await taking;
-  await until(async () => (await (await fetch(gateway + "/targets")).json()).control, v => !v, "abandoned takeover releases owner");
-  await navigating;
-  pass("disconnecting a pending takeover releases owner without repeating admitted navigation");
+  const touched = post("/view/touch", {input: true});
+  await until(async () => (await (await fetch(gateway + "/targets")).json()).control, Boolean, "pending human lease");
+  await navigating; await touched;
+  await until(async () => (await (await fetch(gateway + "/targets")).json()).control, v => !v, "human lease expires by itself");
+  pass("a human input lease waits for the Agent's admitted step and expires by itself");
 
   // 2. 画面同一时刻只给一个窗口：后打开的接走画面，先打开的提示另一个窗口正在看。
   browser = await chromium.launch({ executablePath, headless: true, args: ["--no-sandbox"] });
@@ -190,12 +178,14 @@ try {
     if (!await page.locator(".computer-view").isVisible())
       await page.getByRole("button", { name: /^浏览器/ }).click();
   };
-  // 连上且没人接管：Agent 空闲时不显示胶囊，Agent 回合进行中显示“Agent 正在使用浏览器”。
+  // 连上后：Agent 不在用时不显示胶囊，在用时胶囊轻声说明。
   const connected = page => page.waitForFunction(() => {
     const status = document.querySelector(".computer-status");
     return document.querySelector(".computer-connection-state")?.hidden && status
-      && (status.hidden || status.textContent.startsWith("Agent 正在使用浏览器"));
+      && (status.hidden || status.textContent.startsWith("Agent 正在"));
   });
+  // 键鼠真正送到浏览器：Agent 不在执行一步，WebRTC 的授权也已到达。
+  const inputReady = page => page.waitForFunction(() => document.querySelector(".computer-stream")?.style.pointerEvents === "auto");
   const videoReady = page => page.waitForFunction(() => {
     const frame = document.querySelector(".computer-stream");
     const rtc = frame?.contentWindow?.selkiesWebRTC;
@@ -210,15 +200,12 @@ try {
   await first.screenshot({ path: join(artifacts, "browser-viewer.png") });
   const screen = first.locator(".computer-screen");
   const rect = await screen.boundingBox();
-  await first.mouse.click(rect.x + rect.width / 2, rect.y + rect.height / 2);
+  await first.mouse.move(rect.x + rect.width / 3, rect.y + rect.height / 3);
   assert.equal((await (await fetch(gateway + "/targets")).json()).control, false);
-  pass("viewing pointer input does not claim control");
-  await first.getByRole("button", { name: "接管", exact: true }).click();
-  await first.waitForFunction(() => document.querySelector(".computer-status").textContent.startsWith("你正在操作"));
-  await videoReady(first);
-  await second.getByText(/另一个窗口正在看这个浏览器/).waitFor();
-  const conflicting = await fetch(gateway + "/control/take", {method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({id:randomUUID()})});
-  assert.equal(conflicting.status,400); assert.match((await conflicting.json()).error,/Another viewer/);
+  pass("moving the pointer over the picture does not pause the Agent");
+  await inputReady(first);
+  await first.mouse.click(rect.x + rect.width / 2, rect.y + rect.height / 2);
+  await until(async () => (await (await fetch(gateway + "/targets")).json()).control, Boolean, "click takes a human lease");
   let openCliFinished = false;
   const pendingOpenCli = fetch(openCli+"/health",{headers:{"x-opencli":"1"}}).then(response=>{
     openCliFinished=true; void response.body?.cancel(); return response.status;
@@ -230,13 +217,13 @@ try {
   await first.waitForTimeout(1400);
   assert.equal(resumed, false);
   assert.equal(openCliFinished, false);
-  await first.getByRole("button", { name: "交还给 Agent" }).click();
+  // 人停手 5 秒后租约自己结束，Agent 和 OpenCLI 接着做，不用交还。
   assert.match(textResult(await paused), /RESUMED/);
   assert.ok((await pendingOpenCli) < 500);
-  pass("explicit takeover pauses Agent clock and OpenCLI, refuses another controller, and release resumes them");
+  pass("human input pauses Agent clock and OpenCLI, and they resume by themselves after the lease");
   await connected(first); await videoReady(first);
 
-  // 3. 标签展示真实匿名页面；Agent 回合进行中挡住输入，接管、键盘、关闭和释放均经生产路由。
+  // 3. 标签展示真实匿名页面；Agent 执行一步时挡住输入，键盘、关闭均经生产路由。
   const options = (page, path) => page.locator(".computer-tab")
     .evaluateAll((nodes, suffix) => nodes.filter(node => node.textContent === suffix).map(node => node.dataset.id), `/${path}`);
   const select = async (page, path) => {
@@ -266,6 +253,11 @@ try {
   await action("await pageA.playwright.getByRole('textbox').click();");
   await action("await pageA.clipboard.writeText('BEFORE_READ_ONLY');");
   const clipboardBefore = textResult(await action("nodeRepl.write(await pageA.clipboard.readText());"));
+  // Agent 正在执行一步（个人标签的导航被测试页按住）：这时人的原始输入一律丢弃。
+  const step = action("await main.goto('http://127.0.0.1:8989/held?busy');");
+  await until(async () => JSON.parse(docker("exec", container, "node", "-e",
+    "fetch('http://127.0.0.1:8989/status').then(r=>r.text()).then(console.log)")), v => v.held === 1, "Agent step admitted");
+  await first.waitForFunction(() => document.querySelector(".computer-status").textContent.startsWith("Agent 正在操作"));
   await first.evaluate(async () => {
     const socket = window.e2eLink();
     // Bypass the UI's disabled input handlers and challenge the actual proxy (WebRTC: the stream's own token gate).
@@ -276,12 +268,12 @@ try {
       socket.addEventListener("message", ack); socket.send("_gz,1");
     });
   });
+  docker("exec", container, "node", "-e", "fetch('http://127.0.0.1:8989/release').then(r=>r.text()).then(console.log)");
+  await step;
   assert.equal(textResult(await action("nodeRepl.write(await pageA.playwright.getByRole('textbox').evaluate(el => el.value));")).trim(), "");
   assert.equal(textResult(await action("nodeRepl.write(await pageA.clipboard.readText());")), clipboardBefore);
-  pass("while the Agent's turn is open the proxy drops raw keyboard, clipboard and binary messages");
-  await first.getByRole("button", { name: "接管", exact: true }).click();
-  await first.waitForFunction(() => document.querySelector(".computer-status").textContent.startsWith("你正在操作"));
-  await videoReady(first);
+  pass("while the Agent executes a step the proxy drops raw keyboard, clipboard and binary messages");
+  await videoReady(first); await inputReady(first);
   await first.screenshot({path: join(artifacts, "before-human-input.png")});
   const bounds = await first.locator(".computer-stream").boundingBox();
   const point = ({x, y}) => ({ x: bounds.x + x * bounds.width / geometry.width,
@@ -301,7 +293,6 @@ try {
   await first.getByRole("button", { name: "粘贴到浏览器" }).click();
   await first.getByText("已粘贴", { exact: true }).waitFor();
   await first.getByRole("button", {name: "关闭剪贴板", exact: true}).click();
-  await first.getByRole("button", { name: "交还给 Agent" }).click();
   const changed = textResult(await action(`console.log(await pageA.playwright.evaluate(() => ({
     input: document.querySelector('#x').value, button: document.querySelector('#hit').textContent })));`));
   assert.match(changed, /Human Clipboard/); assert.match(changed, /CLICKED/);
@@ -363,13 +354,6 @@ try {
   assert.equal(await mobile.locator(".conversation-tools").isVisible(), false);
   pass("320px mobile activity and later activity preserve closed panel and chat input");
 
-  // 未接管时剪贴板浮层直接给出接管入口。
-  await first.getByRole("button", { name: "剪贴板", exact: true }).click();
-  await first.getByRole("dialog", { name: "剪贴板" }).getByRole("button", { name: "接管操作", exact: true }).click();
-  await first.waitForFunction(() => document.querySelector(".computer-status").textContent.startsWith("你正在操作"));
-  await first.getByRole("button", { name: "收起工具区", exact: true }).click();
-  await until(async () => (await (await fetch(gateway + "/targets")).json()).control, value => !value, "closing panel releases control");
-  pass("closing the panel releases its operation connection");
   await action("", 60000, { endTurn: true });
   const ended = await (await fetch(gateway + "/targets")).json();
   assert.ok(ended.targets.length > 0 && ended.targets.every(target => !target.anonymous));

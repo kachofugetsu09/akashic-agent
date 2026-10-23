@@ -95,8 +95,15 @@ never write a byte array as JSON. Methods such as `tab.ax.write()` already emit 
 5. New tabs belong to this Turn and close at its end unless marked deliverable or handoff. Preserve
    useful output with `await tab.markDeliverable()`. Never close a human tab without explicitly claiming it.
 6. The driver releases remaining input when the call ends. A cancelled action may already have changed the page; observe before retrying.
-7. Do not launch Chromium yourself, alter profile files, or bypass the Workload owner. Use the Computer
-   panel for human login and takeover. File chooser paths refer to the container, not the Akashic host.
+7. Do not launch Chromium yourself, alter profile files, or bypass the Workload owner. File chooser paths
+   refer to the container, not the Akashic host.
+8. Login, captcha, two-factor codes, payment confirmation: do not guess credentials or retry selectors.
+   Keep the page with `await tab.markHandoff()`, say in chat, e.g. "请在右侧浏览器里完成登录，好了告诉我",
+   then end the Turn. The user operates the same browser directly in the panel; continue on that tab
+   when they reply.
+9. The user can click and type in the panel at any time. While they do, your next browser action waits
+   until they stop; if they keep going, the call fails saying the user is operating the browser. Then
+   ask in chat whether they are done instead of retrying.
 
 ```js
 await tab.playwright.getByRole("textbox", {name: "Name"}).fill("花月");
@@ -135,7 +142,7 @@ keep them when cleanup was confirmed. Another Turn cannot use them. Each instanc
 `browserId`: `await agent.browsers.get(testBrowser.browserId)` returns that same browser; use
 `await agent.browsers.list()` to find live instances before creating another. Reuse the browser and tab
 across tool calls instead of restarting the E2E for every step. An instance idle for 10 minutes is
-released; running operations and explicit human takeover prevent idle release. Watching does not.
+released; running operations and recent human input prevent idle release. Watching does not.
 A closed or expired ID fails explicitly and never selects the main browser.
 Closing a Context discards its cookies and storage. A browser restart closes all anonymous Contexts;
 acquire fresh bindings. Saved screenshots keep their normal owner.
