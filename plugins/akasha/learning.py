@@ -13,6 +13,7 @@ from plugins.ledger.contract import ContentPart, Input, Message, Output, ToolCal
 from ._boundaries import PostCommitReader, TOOLS, TurnProjection
 from .domain.model import Turn, TurnFeedback
 from .infrastructure.consumption import Applied, Consumption, message_nodes
+from .infrastructure.lexical import Terms, terms as lexical_terms
 from .projection import (
     Sample, SessionCursor, dialogue_turn, project_session, restore_sample,
 )
@@ -131,13 +132,14 @@ class Learning:
     def make_turn(
         self, sample: Sample, config: LearningConfig, embeddings: MessageEmbeddings,
         *, previous: Sequence[Turn], state: Consumption, bindings: Bindings,
+        terms: Callable[[str], Terms] = lexical_terms,
     ) -> Turn | None:
         return dialogue_turn(
             sample, node_id=len(previous),
             previous=datetime.fromisoformat(previous[-1].committed_at) if previous else None,
             text=self.text, embeddings=embeddings.bind(self.text),
             embedding_model=config.embedding_model, dimension=config.dimension,
-            feedback=self.feedback(sample, previous, state, bindings),
+            feedback=self.feedback(sample, previous, state, bindings), terms=terms,
         )
 
     def load_sample(self, catalog: MessageCatalog, config: LearningConfig, entry: Applied) -> Sample:
@@ -154,10 +156,11 @@ class Learning:
     def restore(
         self, sample: Sample, embeddings: MessageEmbeddings,
         config: LearningConfig, *, previous: Sequence[Turn],
-        state: Consumption, bindings: Bindings,
+        state: Consumption, bindings: Bindings, terms: Callable[[str], Terms] = lexical_terms,
     ) -> Turn:
         """用已验证的样本还原材料，不写图或重放学习事件。"""
-        turn = self.make_turn(sample, config, embeddings, previous=previous, state=state, bindings=bindings)
+        turn = self.make_turn(sample, config, embeddings, previous=previous, state=state,
+                              bindings=bindings, terms=terms)
         if turn is None:
             raise ValueError("原学习规则不再接纳已经学习的样本")
         return turn

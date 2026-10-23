@@ -110,7 +110,8 @@ class EmbeddingRecords:
             raise ValueError(f"消息向量与固定文本或维度不匹配: {message_id}")
         vector = tuple(_deserialize_f32(row["embedding"], expected_dim=dimension,
                                         message_id=message_id, model=model))
-        if not all(math.isfinite(value) for value in vector):
+        # float32 之和放进 float64 不会溢出，NaN/inf 必然传到和里：一次判断等价于逐项判断。
+        if not math.isfinite(sum(vector)):
             raise ValueError(f"消息向量含非有限值: {message_id}")
         return vector
 

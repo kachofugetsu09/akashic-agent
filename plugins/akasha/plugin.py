@@ -539,7 +539,7 @@ async def run(ctx: Context, interest: Interest) -> None:
                     ensure_graph_directory(memory_path, key), catalog=ctx.require(MESSAGE_CATALOG),
                     embeddings=ctx.require(MESSAGE_EMBEDDINGS), bindings=ctx.require(BINDINGS),
                     config=settings.memory_config(), cutover=key == DEFAULT_GRAPH,
-                    restore_embeddings=restore_embeddings,
+                    restore_embeddings=restore_embeddings, term_cache=ctx.data_root / "terms-cache.db",
                 )
             except (EmbeddingSpaceMismatchError, MemoryRebuildRequiredError) as error:
                 set_graph_error(key, str(error))
