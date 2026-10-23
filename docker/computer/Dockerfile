@@ -49,6 +49,7 @@ RUN apt-get update \
 
 COPY --from=stream-build /build/addons/selkies-web-core/dist /opt/computer/stream-web
 COPY --from=stream-build /build/addons/selkies-web-core/selkies-ws-core.js /opt/computer/stream-web/source/selkies-ws-core.js
+COPY --from=stream-build /build/addons/selkies-web-core/selkies-wr-core.js /opt/computer/stream-web/source/selkies-wr-core.js
 COPY --from=stream-build /build/addons/selkies-web-core/lib/util.js /opt/computer/stream-web/source/util.js
 COPY --from=stream-build /build/LICENSE /opt/computer/stream-web/source/LICENSE
 COPY --chown=1000:1000 docker/computer/package.json docker/computer/package-lock.json /opt/computer/

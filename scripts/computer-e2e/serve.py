@@ -9,6 +9,7 @@ import uvicorn
 
 from agent.plugin_composition import DashboardContext
 from plugins.computer.dashboard import register
+from plugins.computer.stream import STREAM_CONFIG, StreamConfig
 
 ROOT = Path(__file__).resolve().parents[2]
 TEMP = Path(os.environ["COMPUTER_E2E_ARTIFACTS"])
@@ -21,12 +22,15 @@ async def lifespan(app: FastAPI):
 
 
 app = FastAPI(lifespan=lifespan)
+# 设了 COMPUTER_E2E_LAN 时画面走 WebRTC，容器需把 UDP 30000 发布到该地址。
+stream_config = StreamConfig(lan_address=os.environ.get("COMPUTER_E2E_LAN") or None)
 client = register(app, DashboardContext(
     plugin_id="computer", plugin_dir=ROOT / "plugins/computer", data_root=TEMP,
     validation=False, _workload_urls={
         ("computer", "gateway"): os.environ["COMPUTER_E2E_GATEWAY"],
         ("computer", "stream"): os.environ["COMPUTER_E2E_STREAM"],
     },
+    _resolve=lambda key: {STREAM_CONFIG: stream_config}[key],
 ))
 
 

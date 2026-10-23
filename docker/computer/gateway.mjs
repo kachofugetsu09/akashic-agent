@@ -3,12 +3,18 @@ import { setTimeout as sleep } from "node:timers/promises";
 import { ComputerDriver } from "./driver/runtime.mjs";
 import { ComputerLifecycle, duration } from "./lifecycle.mjs";
 import { execFile } from "node:child_process";
+import { randomBytes } from "node:crypto";
 import { createServer, request as httpRequest } from "node:http";
 import { mkdir, readFile, rename, writeFile } from "node:fs/promises";
 import { connect as tcpConnect } from "node:net";
+import { dirname } from "node:path";
 import { promisify } from "node:util";
 
 const exec = promisify(execFile);
+// 流服务的主令牌只在容器里生成；Dashboard 经网关取得后签发观看令牌、切换输入权限和传输方式。
+process.env.COMPUTER_STREAM_TOKEN ||= randomBytes(24).toString("base64url");
+// WebRTC 的 ICE 服务器（远程用的 TURN）由 Dashboard 写入，流服务监视这个文件、新连接即生效。
+process.env.COMPUTER_RTC_FILE ||= "/tmp/computer-stream/rtc.json";
 let driver;
 let driverReady;
 const driverCalls = new Map();
@@ -784,6 +790,21 @@ const server = createServer(async (request, response) => {
       json(response, 200, computer.status());
     } else if (request.method === "POST" && url.pathname === "/wake") {
       json(response, 200, computer.status());
+    } else if (request.method === "GET" && url.pathname === "/stream/token") {
+      json(response, 200, { token: process.env.COMPUTER_STREAM_TOKEN });
+    } else if (request.method === "PUT" && url.pathname === "/stream/rtc") {
+      const { iceServers } = await body(request);
+      if (!Array.isArray(iceServers) || !iceServers.every(item => item && typeof item === "object" && item.urls)) {
+        throw new InputError("iceServers must be a list of servers with urls");
+      }
+      // 流服务只信任属主自己、不可被他人写的文件；整文件换名，监视方不会读到半截。
+      const target = process.env.COMPUTER_RTC_FILE;
+      await mkdir(dirname(target), { recursive: true, mode: 0o700 });
+      // 每次写自己的临时文件，并发请求不会互相换走对方写到一半的内容。
+      const next = `${target}.${randomBytes(6).toString("hex")}`;
+      await writeFile(next, JSON.stringify({ iceServers }), { mode: 0o600 });
+      await rename(next, target);
+      json(response, 200, { ok: true });
     } else if (request.method === "GET" && url.pathname === "/screenshot") {
       await screenshot(response, url.searchParams.get("quiet") === "1");
     } else if (request.method === "POST" && url.pathname === "/input") {
