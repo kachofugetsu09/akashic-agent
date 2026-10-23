@@ -786,8 +786,7 @@ class PluginManager:
             self._building_roots[root] = runnable
             await self._provide_composition_services(root, runnable)
             check_host_dependencies(root, runnable)
-            for generation in runnable:
-                await self._mount_generation_composition(root, generation)
+            await self._mount_generations(root, runnable)
             # Receipt readiness is diagnostic; each Fiber owns its local failure state.
             for generation in runnable:
                 generation.state = "active"
@@ -2209,6 +2208,22 @@ class PluginManager:
             host_ready=self._host_ready,
         )
 
+
+    # 同一 Root 的插件并发挂载：各 Fiber 按依赖就绪自行激活，慢插件不再挡住无关插件。
+    async def _mount_generations(
+        self,
+        root: CompositionRoot,
+        generations: tuple[PluginGeneration, ...],
+    ) -> None:
+        # 1. 根 Fiber 的子节点在各任务首个挂起点前按选择顺序登记，卸载顺序不变。
+        results = await asyncio.gather(
+            *(self._mount_generation_composition(root, generation) for generation in generations),
+            return_exceptions=True,
+        )
+        # 2. 与逐个挂载相同：任一内核错误让整个 Root 失败，由调用方统一回收。
+        for result in results:
+            if isinstance(result, BaseException):
+                raise result
 
     async def _mount_generation_composition(
         self,
