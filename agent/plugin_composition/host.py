@@ -1,6 +1,7 @@
 """唯一宿主只读事实；Channel 不从宿主取得控制或清理能力。"""
 from __future__ import annotations
 
+import asyncio
 from dataclasses import dataclass
 from collections.abc import Callable
 
@@ -14,6 +15,11 @@ class HostInfo:
     boot_id: str
     validation: bool
     ready: Callable[[], bool] = lambda: True
+
+    # 开机追赶等宿主就绪后再开始：激活链独占 CPU 与文件名额，就绪前的按需访问照常进行。
+    async def settled(self, poll_seconds: float = 0.2) -> None:
+        while not self.ready():
+            await asyncio.sleep(poll_seconds)
 
     def __post_init__(self) -> None:
         if not isinstance(self.boot_id, str) or not self.boot_id or self.boot_id.strip() != self.boot_id:
