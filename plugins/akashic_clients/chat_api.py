@@ -560,7 +560,7 @@ def create_chat_app(
             raise HTTPException(status_code=400, detail=str(exc)) from exc
 
     @app.get("/api/chat/artifacts/{artifact_id}")
-    async def read_artifact(artifact_id: str) -> Response:
+    async def read_artifact(artifact_id: str, request: Request) -> Response:
         try:
             data, media_type, filename = await channel.read_artifact(artifact_id)
         except (RuntimeError, ValueError) as error:
@@ -578,8 +578,13 @@ def create_chat_app(
         # Any attachment can be opened as a document, including XHTML and XML.
         headers["Content-Security-Policy"] = "sandbox allow-scripts"
         headers["X-Content-Type-Options"] = "nosniff"
-        # 附件按 ID 只插入不覆盖（ledger artifact_store），同一 ID 内容永不变：切换会话与预览直接用浏览器缓存。
-        headers["Cache-Control"] = "private, max-age=31536000, immutable"
+        # 附件按 ID 只插入不覆盖（ledger artifact_store），同一 ID 内容永不变，ID 即强校验值。
+        # 每次仍经入口鉴权再回 304：退出登录后浏览器缓存里的附件不能绕过登录直接读出。
+        etag = f'"{artifact_id}"'
+        headers["Cache-Control"] = "private, no-cache"
+        headers["ETag"] = etag
+        if etag in (item.strip() for item in request.headers.get("if-none-match", "").split(",")):
+            return Response(status_code=304, headers={"Cache-Control": headers["Cache-Control"], "ETag": etag})
         return Response(
             content=data,
             media_type=media_type or "application/octet-stream",
