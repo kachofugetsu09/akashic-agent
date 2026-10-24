@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { SessionStatus } from "./session-status-mark";
-import { ChatRequestError, fetchChatJson } from "./web-chat-data";
+import { ChatRequestError, fetchChatJson, type SessionsRefresh } from "./web-chat-data";
 
 const SEEN_KEY = "akashic.chat.seen-head.v1";
 
@@ -111,7 +111,7 @@ function useMarkRead(reads: Record<string, number> | null, activeSessionId: stri
 /** 一个连接的摘要快照与增量；未读水位独立于回复开始、结束是否被观察到。 */
 export function useSessionActivity(
   heads: readonly SessionHead[], activeSessionId: string, shownHead: number | null,
-  readingChat: boolean, reloadSessions: () => Promise<void>,
+  readingChat: boolean, reloadSessions: (scope: SessionsRefresh) => Promise<void>,
 ) {
   const [data, setData] = useState({ heads: {} as Record<string, number>, running: new Set<string>(), available: false,
     reads: {} as Record<string, number>, readAvailable: null as boolean | null });
@@ -147,12 +147,12 @@ export function useSessionActivity(
       setData(current.current);
     }
     const known = new Set(latest.current.heads.map((head) => head.key));
-    const settled = [...previous.running].some((key) => !running.has(key));
-    const refreshHeads = Object.keys(frame.heads).some((key) => !known.has(key)
+    const settled = [...previous.running].filter((key) => !running.has(key));
+    const refreshHeads = Object.keys(frame.heads).filter((key) => !known.has(key)
       || (key !== latest.current.activeSessionId && !running.has(key)));
-    if (frame.snapshot || frame.removed.length || settled || refreshHeads) {
-      void latest.current.reloadSessions();
-    }
+    // 快照与移除可能涉及任意会话，读全量；回复结束和新 head 只刷新这些会话。
+    if (frame.snapshot || frame.removed.length) void latest.current.reloadSessions("full");
+    else if (settled.length || refreshHeads.length) void latest.current.reloadSessions([...new Set([...settled, ...refreshHeads])]);
   }, []);
   const disconnect = useCallback(() => {
     if (!current.current.available && current.current.running.size === 0) return;

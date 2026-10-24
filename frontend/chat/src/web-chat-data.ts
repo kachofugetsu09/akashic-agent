@@ -127,6 +127,25 @@ export function sessionPage(payload: unknown): { items: SessionRow[]; nextCursor
   return { items: items as unknown as SessionRow[], nextCursor: next as { updated_at: string; session_id: string } | null };
 }
 
+/** 目录刷新范围：全量，或已知发生变化的会话 key（追加、回复结束、新 head）。 */
+export type SessionsRefresh = "full" | readonly string[];
+
+/**
+ * 第一页合并进现有目录。只有触发刷新的会话全部落在第一页、且第一页最旧一行仍是旧值时才合并；
+ * 排序时间不是变更版本（时钟回拨、同时间并列都可能让变化行留在页外），否则返回 null 交给全量读取。
+ */
+export function mergeRecentSessions(
+  current: readonly SessionRow[], page: { items: SessionRow[]; nextCursor: unknown }, changed: readonly string[],
+): SessionRow[] | null {
+  if (!page.nextCursor) return page.items;
+  const listed = new Set(page.items.map((session) => session.key));
+  if (changed.some((key) => !listed.has(key))) return null;
+  const boundary = page.items.at(-1);
+  const previous = boundary && current.find((session) => session.key === boundary.key);
+  if (!boundary || !previous || previous.updated_at !== boundary.updated_at) return null;
+  return [...page.items, ...current.filter((session) => !listed.has(session.key))];
+}
+
 /** 历史页只接受 Message v2；分页上界与行顺序都来自服务端日志。 */
 export function chatHistoryPage(payload: unknown, endpoint: string): ChatHistoryPage {
   const body = recordValue(payload);
