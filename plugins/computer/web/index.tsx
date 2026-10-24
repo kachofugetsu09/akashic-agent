@@ -11,10 +11,11 @@ import "./style.css";
 // 这三种连接结果需要用户明确处理，轮询不自动重连。
 const SETTLED_LINKS: readonly LinkState[] = ["failed", "stale"];
 
-// 地址栏输入：带协议的地址原样打开；像域名、localhost 或 IP 的补上协议；其余当作搜索词。
+// 地址栏输入：带协议的地址原样打开；绝对路径当本地文件；像域名、localhost 或 IP 的补上协议；其余当作搜索词。
 function addressToUrl(text: string): string {
   const value = text.trim();
-  if (/^(https?:\/\/|about:blank$)/i.test(value)) return value;
+  if (/^(https?:\/\/|file:\/\/|about:blank$)/i.test(value)) return value;
+  if (value.startsWith("/")) return `file://${value}`;
   if (/^(localhost|\d{1,3}(\.\d{1,3}){3}|\[[0-9a-f:]+\])(:\d+)?([/?#].*)?$/i.test(value)) return `http://${value}`;
   if (!/\s/.test(value) && /^[^/?#]+\.[a-z]{2,}(:\d+)?([/?#].*)?$/i.test(value)) return `https://${value}`;
   return `https://www.google.com/search?q=${encodeURIComponent(value)}`;

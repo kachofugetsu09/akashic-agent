@@ -211,7 +211,7 @@ async function humanAction(task) {
   try { return await job; } finally { control.jobs.delete(job); }
 }
 
-// 地址栏只打开网页和空白页，不执行 javascript: 等会在页面里运行代码的地址。
+// 地址栏打开网页、本地文件和空白页，不执行 javascript: 等会在页面里运行代码的地址。
 function pageUrl(value) {
   const text = requiredString(value, "url", 8192);
   let url;
@@ -220,8 +220,8 @@ function pageUrl(value) {
     if (error instanceof TypeError) throw new InputError("Invalid page URL");
     throw error;
   }
-  if (!["http:", "https:"].includes(url.protocol) && url.href !== "about:blank")
-    throw new InputError("Only http, https and about:blank pages can be opened");
+  if (!["http:", "https:", "file:"].includes(url.protocol) && url.href !== "about:blank")
+    throw new InputError("Only http, https, file and about:blank pages can be opened");
   return url.href;
 }
 
