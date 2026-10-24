@@ -147,6 +147,20 @@ function useRovingTabStop(sidebarRef: RefObject<HTMLElement | null>) {
   }, [sidebarRef]);
 }
 
+// 大目录分批挂载最近会话：首批立即渲染，其余逐个宏任务补齐，启动不再一次同步挂载上千行（#1563）。
+// 搜索靠 hidden 收窄、要求全部行已挂载，所以一开始搜索就补齐。
+const FIRST_SESSION_ROWS = 120;
+const SESSION_ROW_BATCH = 200;
+function useProgressiveRows(total: number, complete: boolean): number {
+  const [mounted, setMounted] = useState(FIRST_SESSION_ROWS);
+  useEffect(() => {
+    if (complete || mounted >= total) return;
+    const timer = window.setTimeout(() => setMounted((count) => count + SESSION_ROW_BATCH), 30);
+    return () => window.clearTimeout(timer);
+  }, [mounted, total, complete]);
+  return complete ? total : Math.min(mounted, total);
+}
+
 // 焦点在行上时 ↑↓ 逐行、Home/End 到首末行，从第一行再按 ↑ 回到搜索框。
 function moveSessionFocus(event: React.KeyboardEvent<HTMLElement>) {
   if (!["ArrowDown", "ArrowUp", "Home", "End"].includes(event.key)) return;
@@ -500,6 +514,9 @@ export const DesktopSidebar = memo(function DesktopSidebar({
     () => sortedSessions.filter((session) => !pinnedSessions.has(session.id) && !groupOf(session))
       .map((session) => sessionViews.get(session.id) ?? session),
     [sortedSessions, pinnedSessions, groupOf, sessionViews]);
+  const mountedRecent = useProgressiveRows(recentSessions.length, searching);
+  const mountedRecentSessions = useMemo(() => mountedRecent < recentSessions.length
+    ? recentSessions.slice(0, mountedRecent) : recentSessions, [recentSessions, mountedRecent]);
   // 搜索时行不卸载，"匹配的会话"语义落在可见数上。
   const visibleRecentCount = useMemo(() => hiddenIds
     ? recentSessions.reduce((count, session) => count + (hiddenIds.has(session.id) ? 0 : 1), 0)
@@ -720,7 +737,7 @@ export const DesktopSidebar = memo(function DesktopSidebar({
         sessionHeadingAction={searching ? undefined : <SessionSortMenu sort={sessionSort} onSort={setSessionSort} />}
         destinations={[]}
         actions={[]}
-        sessions={recentSessions}
+        sessions={mountedRecentSessions}
         hiddenSessions={hiddenIds}
         sessionGroup={sessionSort === "activity" || sessionSort === "created" ? sessionDayGroupOf : undefined}
         sessionDrag={sessionDrag}
