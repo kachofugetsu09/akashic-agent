@@ -111,7 +111,7 @@ function useMarkRead(reads: Record<string, number> | null, activeSessionId: stri
 /** 一个连接的摘要快照与增量；未读水位独立于回复开始、结束是否被观察到。 */
 export function useSessionActivity(
   heads: readonly SessionHead[], activeSessionId: string, shownHead: number | null,
-  readingChat: boolean, reloadSessions: () => Promise<void>,
+  readingChat: boolean, reloadSessions: (scope: "full" | "recent") => Promise<void>,
 ) {
   const [data, setData] = useState({ heads: {} as Record<string, number>, running: new Set<string>(), available: false,
     reads: {} as Record<string, number>, readAvailable: null as boolean | null });
@@ -150,9 +150,9 @@ export function useSessionActivity(
     const settled = [...previous.running].some((key) => !running.has(key));
     const refreshHeads = Object.keys(frame.heads).some((key) => !known.has(key)
       || (key !== latest.current.activeSessionId && !running.has(key)));
-    if (frame.snapshot || frame.removed.length || settled || refreshHeads) {
-      void latest.current.reloadSessions();
-    }
+    // 快照与移除可能涉及任意会话，读全量；回复结束和新 head 只会改变最近更新的会话。
+    if (frame.snapshot || frame.removed.length) void latest.current.reloadSessions("full");
+    else if (settled || refreshHeads) void latest.current.reloadSessions("recent");
   }, []);
   const disconnect = useCallback(() => {
     if (!current.current.available && current.current.running.size === 0) return;

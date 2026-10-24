@@ -127,6 +127,18 @@ export function sessionPage(payload: unknown): { items: SessionRow[]; nextCursor
   return { items: items as unknown as SessionRow[], nextCursor: next as { updated_at: string; session_id: string } | null };
 }
 
+/** 第一页合并进现有目录；第一页最旧一行仍是旧值时，变化都落在这一页内，否则返回 null 交给全量读取。 */
+export function mergeRecentSessions(
+  current: readonly SessionRow[], page: { items: SessionRow[]; nextCursor: unknown },
+): SessionRow[] | null {
+  if (!page.nextCursor) return page.items;
+  const boundary = page.items.at(-1);
+  const previous = boundary && current.find((session) => session.key === boundary.key);
+  if (!boundary || !previous || previous.updated_at !== boundary.updated_at) return null;
+  const fresh = new Set(page.items.map((session) => session.key));
+  return [...page.items, ...current.filter((session) => !fresh.has(session.key))];
+}
+
 /** 历史页只接受 Message v2；分页上界与行顺序都来自服务端日志。 */
 export function chatHistoryPage(payload: unknown, endpoint: string): ChatHistoryPage {
   const body = recordValue(payload);
