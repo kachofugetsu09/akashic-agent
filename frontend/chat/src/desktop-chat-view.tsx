@@ -203,7 +203,7 @@ export function DesktopChatView({ controller }: DesktopChatViewProps) {
             )}
             {status === "submitted" && !replyActivities.some((activity) => activity.active) ? <ThinkingPlaceholder /> : null}
           </ConversationContent>
-          <DesktopAutoScroll messages={messages} status={status} streamStore={streamStore}
+          <DesktopAutoScroll sessionId={activeSessionId} messages={messages} status={status} streamStore={streamStore}
             timelineMessages={timelineMessages} replyActivities={replyActivities} />
           <NarrowReadingChrome />
           <ComposerPageKeys />
