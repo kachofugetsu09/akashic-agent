@@ -113,8 +113,15 @@ class InstallPlugin:
             raise RuntimeError("已有插件更新请求只能查询")
         _ = await store.transact_async(lambda tx: tx.save(identity, request.model_dump(mode="json"), expected_version=None))
         install = request.install
-        status = await updates.install(ctx, identity, source=install.source,
-            marketplace=install.marketplace, ref=install.ref, sparse=tuple(install.sparse))
+        try:
+            status = await updates.install(ctx, identity, source=install.source,
+                marketplace=install.marketplace, ref=install.ref, sparse=tuple(install.sparse))
+        except Exception as error:
+            # 来源、ref、清单写错是模型能改正的输入错误：交回原因让它继续，不让整轮回复中止。
+            failed = updates.read(ctx, identity)
+            if failed is not None:
+                return receipt(failed)
+            return Result("error", (ContentPart("text", f"插件安装失败: {error}"),))
         return receipt(status)
 
     async def query(self, key: str) -> Result | None:
