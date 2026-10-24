@@ -551,7 +551,7 @@ async def _proxy_http(
         except httpx.HTTPError:
             return _runtime_unavailable(html="text/html" in request.headers.get("accept", ""))
         lifetime.push_async_callback(upstream.aclose)
-        if _relays_json(upstream):
+        if _relays_json(request, upstream):
             return await _json_response(request, upstream.status_code, upstream.headers, await upstream.aread())
         response_headers = {name: value for name, value in upstream.headers.items()
                             if name.lower() in _RESPONSE_HEADERS_ALLOWED}
@@ -561,45 +561,62 @@ async def _proxy_http(
                                        stopping=streams_stopping if event_stream else None)
 
 
-# 只接手长度已知且不大的 JSON；没有长度（流式生成）或超过上限的正文照旧边收边转。
-def _relays_json(upstream: httpx.Response) -> bool:
+# 只接手长度已知且不大的 JSON；没有长度（流式生成）或超过上限的正文照旧边收边转，HEAD 没有正文也照旧。
+def _relays_json(request: Request, upstream: httpx.Response) -> bool:
     length = upstream.headers.get("content-length", "")
-    return upstream.headers.get("content-type", "").startswith("application/json") \
+    return request.method != "HEAD" and upstream.headers.get("content-type", "").startswith("application/json") \
         and "content-encoding" not in upstream.headers \
         and length.isdigit() and int(length) <= _JSON_RELAY_MAX_BYTES
 
 
 # 插件应用各自只回裸 JSON：模型目录、会话消息页、插件查询动辄上百 KB，远程访问时传输占大头。
 # 1. GET 成功响应带内容指纹，浏览器下次自动条件请求，没变就回 304、不传正文；
-# 2. 正文按浏览器接受度 gzip 压缩。
+# 2. 正文按浏览器接受度 gzip 压缩；各分支一致地把 Accept-Encoding 并入上游 Vary。
 async def _json_response(request: Request, status: int, upstream_headers: httpx.Headers, body: bytes) -> Response:
     headers = {name: value for name, value in upstream_headers.items()
-               if name.lower() in _RESPONSE_HEADERS_ALLOWED and name.lower() != "content-length"}
+               if name.lower() in _RESPONSE_HEADERS_ALLOWED and name.lower() not in ("content-length", "vary")}
+    headers["vary"] = _vary_with_encoding(upstream_headers.get("vary", ""))
     if request.method == "GET" and status == 200 and "etag" not in upstream_headers:
         etag = f'W/"{hashlib.sha256(body).hexdigest()[:24]}"'
         headers["etag"] = etag
-        if etag in (item.strip() for item in request.headers.get("if-none-match", "").split(",")):
+        if _etag_matches(request.headers.get("if-none-match", ""), etag):
             return Response(status_code=304, headers={name: value for name, value in headers.items()
                                                       if name.lower() in ("etag", "cache-control", "vary")})
     if len(body) >= _JSON_GZIP_MIN_BYTES and _accepts_gzip(request.headers.get("accept-encoding", "")):
         body = (await asyncio.to_thread(gzip.compress, body, _JSON_GZIP_LEVEL) if len(body) > _JSON_GZIP_THREAD_BYTES
                 else gzip.compress(body, _JSON_GZIP_LEVEL))
         headers["content-encoding"] = "gzip"
-        headers["vary"] = "Accept-Encoding"
     return Response(content=body, status_code=status, headers=headers)
 
 
+def _vary_with_encoding(upstream: str) -> str:
+    names = [item.strip() for item in upstream.split(",") if item.strip()]
+    if "*" in names or any(name.lower() == "accept-encoding" for name in names):
+        return ", ".join(names)
+    return ", ".join([*names, "Accept-Encoding"])
+
+
+# If-None-Match 按弱比较：去掉 W/ 前缀后比较，* 匹配任何现存表示。
+def _etag_matches(header: str, etag: str) -> bool:
+    tags = [item.strip() for item in header.split(",") if item.strip()]
+    return "*" in tags or etag.removeprefix("W/") in (tag.removeprefix("W/") for tag in tags)
+
+
+# gzip 的显式权重优先，没写 gzip 时才看通配符 *。
 def _accepts_gzip(value: str) -> bool:
+    weights: dict[str, float] = {}
     for item in value.split(","):
         coding, _, params = item.partition(";")
-        if coding.strip().lower() not in ("gzip", "*"):
-            continue
-        weight = params.strip().removeprefix("q=").strip() if params.strip().startswith("q=") else "1"
-        try:
-            return float(weight) > 0
-        except ValueError:
-            return False
-    return False
+        weight = 1.0
+        for param in params.split(";"):
+            key, _, raw = param.strip().partition("=")
+            if key.lower() == "q":
+                try:
+                    weight = float(raw)
+                except ValueError:
+                    weight = 0.0
+        weights[coding.strip().lower()] = weight
+    return weights.get("gzip", weights.get("*", 0.0)) > 0
 
 
 async def _proxy_websocket(
