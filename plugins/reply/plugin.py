@@ -25,6 +25,7 @@ from plugins.ledger.contract import (
     OwnerTransaction,
 )
 from plugins.models.contract import StreamCallback
+from agent.plugin_composition.host import HOST_INFO
 from agent.plugin_composition.tasks import RESTART_GATE, Task
 from plugins.ledger.contract import Message
 from plugins.reply_program.contract import (
@@ -71,6 +72,7 @@ inject = (
     ALL_TOOLS,
     RESTART_GATE,
     REPLY_EXECUTE,
+    HOST_INFO,
 )
 
 
@@ -259,13 +261,14 @@ async def apply(ctx: Context) -> None:
             name="reply-prepare",
         )
 
+    # 开机时等宿主就绪再追赶待回复来源：后加载插件的工具此前还没注册，菜单会缺工具。
+    async def follow_settled() -> None:
+        await ctx.require(HOST_INFO).settled()
+        await follow(ctx, ctx.require(MESSAGE_CATALOG), ctx.require(SOURCES), program, ctx.require(RESTART_GATE))
+
     async def start(_event: object) -> None:
         nonlocal watcher
-        catalog = ctx.require(MESSAGE_CATALOG)
-        watcher = await ctx.spawn(
-            follow(ctx, catalog, ctx.require(SOURCES), program, ctx.require(RESTART_GATE)),
-            name="reply",
-        )
+        watcher = await ctx.spawn(follow_settled(), name="reply")
 
     async def stop(_event: object) -> None:
         try:
