@@ -49,6 +49,8 @@ interface Selection { runtimeId: string; effort: string; dirty: boolean }
 // 工具位随草稿重新挂载；新对话发出第一条后换成会话身份，沿用刚才的目录与选择，避免胶囊闪空。
 // 产品里同一页面只有一个输入框工具位，carried 由下一个挂载取走；多工具位并存时需按草稿与会话身份交接。
 const lastState = new Map<string, ChatModelState>();
+// 最近一次完整目录：各会话的工具位共用，查询带上它的指纹，目录没变就不重传。
+let lastCatalog: ChatModelState | null = null;
 let carried: { state: ChatModelState; selection: Selection } | null = null;
 
 const savedSelection = (state: ChatModelState): Selection =>
@@ -91,7 +93,9 @@ function useCapsuleState(context: PluginUiContext<"composer.toolbar">, composer:
     const request = ++latest.current;
     const edit = edits.current;
     try {
-      const next = chatModelState(await context.query("chat.models"));
+      const cachedCatalog = lastCatalog;
+      const next = chatModelState(await context.query("chat.models", cachedCatalog?.catalog ? { catalog: cachedCatalog.catalog } : {}), cachedCatalog);
+      lastCatalog = next;
       if (request !== latest.current) return;
       const known = current.current.state;
       const stale = edits.current !== edit;

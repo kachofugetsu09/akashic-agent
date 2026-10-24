@@ -4,7 +4,7 @@ import { createPortal } from "react-dom";
 import type { SidebarPanelControls, SidebarPanelStatus } from "@akashic/chat-ui-v1";
 
 import { chatPortalRoot } from "./chat-layout";
-import { SidebarPanelMount, sidebarPanelSources, usePluginUiCatalogVersion, type SidebarPanelSource } from "./plugin-ui-runtime";
+import { onPageShown, SidebarPanelMount, sidebarPanelSources, usePluginUiCatalogVersion, type SidebarPanelSource } from "./plugin-ui-runtime";
 import { reportShellOverlay } from "./shell-rail-actions";
 import "./sidebar-panels.css";
 
@@ -105,7 +105,6 @@ export function SidebarPanelHost({ sessionId, refreshToken }: { sessionId?: stri
   }, [sources, sessionId, refreshToken, open]);
   useEffect(() => () => { statusAbort?.abort(); }, []);
   useEffect(() => {
-    const onShown = () => { if (document.visibilityState === "visible") refreshStatuses(sources, sessionId); };
     const onKey = (event: KeyboardEvent) => {
       if (!event.altKey || event.ctrlKey || event.metaKey || event.code !== "KeyU" || !sources.length) return;
       event.preventDefault();
@@ -115,12 +114,10 @@ export function SidebarPanelHost({ sessionId, refreshToken }: { sessionId?: stri
       if (launcher) launcher.click();
       else toggleSidebarPanels(null, true);
     };
-    window.addEventListener("focus", onShown);
-    document.addEventListener("visibilitychange", onShown);
+    const stopShown = onPageShown(() => refreshStatuses(sources, sessionId));
     document.addEventListener("keydown", onKey);
     return () => {
-      window.removeEventListener("focus", onShown);
-      document.removeEventListener("visibilitychange", onShown);
+      stopShown();
       document.removeEventListener("keydown", onKey);
     };
   }, [sources, sessionId]);

@@ -1,6 +1,9 @@
 """Chat-surface queries owned by the models plugin."""
 from __future__ import annotations
 
+import hashlib
+import json
+
 from collections.abc import Awaitable, Callable, Mapping
 from dataclasses import asdict, dataclass
 from datetime import datetime
@@ -67,9 +70,10 @@ class ChatUiQueries:
                 raise PluginUiRpcInvalidRequest("构成明细查询需要会话与 call_id")
             return await self.usage.composition(target, call_id)
         if method == "chat.models":
-            if payload:
-                raise PluginUiRpcInvalidRequest("模型列表查询不接受参数")
-            return await self.chat_models(session_id)
+            known = payload.get("catalog")
+            if set(payload) - {"catalog"} or not (known is None or isinstance(known, str) and len(known) <= 128):
+                raise PluginUiRpcInvalidRequest("模型列表查询只接受已有目录指纹 catalog")
+            return await self.chat_models(session_id, cast(str | None, known))
         if method == "call.latest":
             if payload or not session_id:
                 raise PluginUiRpcInvalidRequest("最近调用查询需要会话且不接受参数")
@@ -85,7 +89,8 @@ class ChatUiQueries:
         raise PluginUiRpcInvalidRequest(f"未知查询: {method}")
 
     # 当前目录与会话已保存的选择；选择指向的模型暂不可用时照常返回，由界面说明原因。
-    async def chat_models(self, session_id: str | None) -> dict[str, object]:
+    # 调用方带来的目录指纹与当前一致时省掉目录本身（几百个模型约 130KB），只回会话选择。
+    async def chat_models(self, session_id: str | None, known: str | None = None) -> dict[str, object]:
         saved = ChatModelSelection()
         if session_id:
             saved = read_saved(await run_file_io(lambda: self._metadata(session_id)))
@@ -97,14 +102,20 @@ class ChatUiQueries:
         snapshot = await self.catalog()
         stored_icons = await self.icons()
         icons = {item.connection_id: stored_icons.get(item.connection_id) for item in snapshot.connections}
-        return {
+        # 图标单独保存、不推进目录 revision，指纹把两者都算进去。
+        digest = hashlib.sha256(json.dumps(icons, sort_keys=True).encode()).hexdigest()[:16]
+        catalog = f"{snapshot.revision}:{digest}"
+        body: dict[str, object] = {
             "generationId": snapshot.revision,
+            "catalog": catalog,
             "defaultRuntime": str(snapshot.role_bindings.get("default", "")),
             "sessionOverride": saved.model_id or "",
             "sessionSelection": {"modelRef": saved.model_id or "", "reasoningEffort": saved.reasoning_effort or ""},
-            "runtimes": project_chat_runtimes(snapshot, icons),
-            "unavailableRuntimes": project_unavailable_chat_runtimes(snapshot),
         }
+        if known == catalog:
+            return body
+        return {**body, "runtimes": project_chat_runtimes(snapshot, icons),
+                "unavailableRuntimes": project_unavailable_chat_runtimes(snapshot)}
 
     # 会话最近一次执行里最后一条带模型事实的回复对应的调用统计；本次没有、尾部找不到或记录已清理时为空。
     def _latest_call(self, session_id: str) -> dict[str, object] | None:
