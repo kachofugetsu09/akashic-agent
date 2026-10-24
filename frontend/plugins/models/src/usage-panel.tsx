@@ -56,9 +56,19 @@ function since(hours: Insights["hours"], start: Date): Totals {
   return total;
 }
 
+// 最近读到的结果按查询记住：再开面板、切标签先画上次的数，后台照常重读；只留最近几条。
+const recent = new Map<string, unknown>();
+const RECENT_LIMIT = 24;
+function remember(key: string, value: unknown): void {
+  recent.delete(key);
+  recent.set(key, value);
+  if (recent.size > RECENT_LIMIT) recent.delete(recent.keys().next().value as string);
+}
+
 function useQuery<T>(query: Query, method: string, payload: Record<string, unknown>, token: string): { data: T | null; error: string } {
-  const [state, setState] = useState<{ data: T | null; error: string; key: string }>({ data: null, error: "", key: "" });
   const key = `${method}:${JSON.stringify(payload)}:${token}`;
+  const [state, setState] = useState<{ data: T | null; error: string; key: string }>(() =>
+    recent.has(key) ? { data: recent.get(key) as T, error: "", key } : { data: null, error: "", key: "" });
   useEffect(() => {
     let live = true;
     let timer = 0;
@@ -70,12 +80,14 @@ function useQuery<T>(query: Query, method: string, payload: Record<string, unkno
         timer = window.setTimeout(() => { if (live) void load(attempt + 1); }, Math.min(2000, 400 * (attempt + 1)));
         return;
       }
+      remember(key, result);
       setState({ data: result as T, error: "", key });
     }).catch((error: unknown) => { if (live) setState({ data: null, error: error instanceof Error ? error.message : "用量读取失败", key }); });
     void load(0);
     return () => { live = false; window.clearTimeout(timer); };
   }, [key]);
-  return state.key === key ? state : { data: state.data, error: "" };
+  if (state.key === key) return state;
+  return { data: recent.has(key) ? recent.get(key) as T : state.data, error: "" };
 }
 
 function Bars({ items, label, turns = false }: { items: { hit: number; miss: number; title?: string; hot?: boolean }[]; label: string; turns?: boolean }) {
