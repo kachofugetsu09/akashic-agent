@@ -10,7 +10,7 @@ from plugins.ui.contract import hidden_part, part_display_key
 from plugins.ledger.contract import ARTIFACT_READ
 from plugins.ledger.contract import BINDINGS
 from plugins.channels.contract import CHANNEL_STEER, ChannelInboundMessage, InputPartRejected, read_input_parts
-from plugins.commands.contract import COMMANDS
+from plugins.commands.contract import COMMANDS, CommandDefinition, CommandInvocation, CommandResult
 from plugins.ledger.contract import (
     MESSAGE_CATALOG,
     MESSAGE_WRITERS,
@@ -103,11 +103,28 @@ async def apply(ctx: Context) -> None:
             raise ValueError("没有可重试的输入")
         return latest.message_id
 
+    # 用户显式放弃：沿用来源自己的控制提交顺序与撤权语义，不另造一条写入路径。
+    async def abandon(session_id: str, message_id: str) -> Message:
+        session = open(session_id)
+        reader = ctx.require(MESSAGE_CATALOG).reader(session_id)
+        with reader.read_snapshot():
+            head = reader.head(source="conversation")
+        if head < 0:
+            raise MessageConflict("当前来源没有可放弃的消息")
+        return await session.control(
+            message_id, Control("abandon", head, USER_ABANDON_REASON),
+            expected_head=head, handle=None,
+        )
+
     async def accept(session_id: str, message_id: str, message: ChannelInboundMessage) -> Message:
         log_timing("input.received", session_id=session_id, request_id=message_id)
         command = message.content.strip().split(maxsplit=1)
         if command and command[0].split("@", 1)[0].lower() == "/stop":
             return await open(session_id).pause(message_id)
+        # 人工放弃是本来源唯一能让「未完成区段」作废的自助入口：它补齐 StepLimit 停下后的
+        # 收尾动作，并让 follow_abandon 结算没有回执的调用。就绪状态与 /stop 一致——当场生效。
+        if command and command[0].split("@", 1)[0].lower() == ABANDON_COMMAND:
+            return await abandon(session_id, message_id)
         retry = message.metadata.get("retry_of_client_message_id")
         if retry is not None:
             if not isinstance(retry, str) or not retry:
@@ -165,6 +182,19 @@ async def apply(ctx: Context) -> None:
         return await open(session_id).complete(program)
 
     _ = await ctx.provide(CHECK_ORIGIN, check_origin)
+    # 放弃是来源自己的动作，就绪即生效：真正的执行在 accept 内联处理。
+    # 命令目录只让它在输入框里可被发现；走到 handler 说明它被用在了不经
+    # conversation 接纳的来源上，如实说明而不是假装执行成功。
+    async def abandon_command(invocation: CommandInvocation) -> CommandResult:
+        return CommandResult(
+            "error",
+            f"{ABANDON_COMMAND} 只作用于对话来源的未完成工作；当前调用来自 {invocation.channel}。",
+        )
+    await ctx.require(COMMANDS).register(ctx, CommandDefinition(
+        name="abandon",
+        description="放弃本会话未完成的工作，并结算没有回执的工具调用",
+        handler=abandon_command,
+    ))
     # 自己写入的内部材料不进聊天正文；宿主不维护按插件列举的隐藏名单。
     for kind in ("channel.origin", "command.result"):
         _ = await ctx.provide(part_display_key(kind), hidden_part)
@@ -184,6 +214,10 @@ async def apply(ctx: Context) -> None:
 
 # 与前端 message-timeline.ts 的 RETRY_LATEST_INPUT 一致。
 RETRY_LATEST_INPUT = "latest"
+
+# 人工放弃命令与它写入原因的固定前缀；界面对照 plugins/react 的 STEP_LIMIT_ABANDON 区分自动与人工。
+ABANDON_COMMAND = "/abandon"
+USER_ABANDON_REASON = "用户放弃本轮未完成工作"
 
 # 渠道来源只记录回传地址，不进入模型正文。
 def origin_part(message: ChannelInboundMessage) -> ContentPart:
