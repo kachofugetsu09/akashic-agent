@@ -16,7 +16,7 @@ from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_valida
 from plugins.host_execution.contract import PROCESSES
 from agent.plugin_composition import CompositionError, Context
 from plugins.host_execution.contract import (
-    DEFAULT_HARD_TIMEOUT_S, DEFAULT_INITIAL_YIELD_TIME_MS, DEFAULT_MAX_OUTPUT_TOKENS, MAX_HARD_TIMEOUT_S, ExecutionCleanupReport, ExecutionResult, ExecutionState, UnknownExecutionError, clamp_initial_yield_time, clamp_write_stdin_yield_time
+    DEFAULT_HARD_TIMEOUT_S, DEFAULT_INITIAL_YIELD_TIME_MS, DEFAULT_MAX_OUTPUT_TOKENS, ExecutionCleanupReport, ExecutionResult, ExecutionState, UnknownExecutionError, clamp_initial_yield_time, clamp_write_stdin_yield_time
 )
 from .shell_backend import format_execution_result
 from plugins.ledger.contract import (
@@ -30,7 +30,6 @@ from ._tool_boundary import TOOLS, CallSource, ToolRef, ToolResultValue
 from plugins.context.contract import MATERIALS_V4
 from plugins.jobs.contract import JOB_NOTICES, JobOutcome, JobWatch
 from .shell_backend import _log_shell_execution, _shell_env
-from .shell_security import validate_command
 from plugins.working_directory.contract import WORKING_DIRECTORY
 
 
@@ -42,10 +41,8 @@ class ShellSettings(BaseModel):
     owner_key: str | None = None
     owner_boundary: Literal["abandon"] = "abandon"
     working_dir: str | None = None
-    restricted_dir: str | None = None
-    allow_network: bool = True
 
-    @field_validator("working_dir", "restricted_dir")
+    @field_validator("working_dir")
     @classmethod
     def absolute_path(cls, value: str | None) -> str | None:
         if value is not None and not Path(value).is_absolute():
@@ -60,10 +57,10 @@ class ShellSettings(BaseModel):
         return value
 
 
-# 插件设置：模型不指定 timeout、max_output_tokens 时用的默认值。
+# 插件设置：模型不指定 timeout、max_output_tokens 时用的默认值；timeout 默认只给前台命令。
 class Config(BaseModel):
     model_config = ConfigDict(extra="forbid")
-    timeout: int = Field(default=DEFAULT_HARD_TIMEOUT_S, ge=1, le=MAX_HARD_TIMEOUT_S)
+    timeout: int = Field(default=DEFAULT_HARD_TIMEOUT_S, ge=1)
     max_output_tokens: int = Field(default=DEFAULT_MAX_OUTPUT_TOKENS, ge=100, le=200_000)
 
 
@@ -77,7 +74,10 @@ class Command(BaseModel):
     tty: bool = Field(default=False, description="需要交互输入时启用 PTY。")
     yield_time_ms: int = DEFAULT_INITIAL_YIELD_TIME_MS
     max_output_tokens: int = Field(default=DEFAULT_MAX_OUTPUT_TOKENS, ge=0)
-    timeout: int = Field(default=DEFAULT_HARD_TIMEOUT_S, ge=1, le=MAX_HARD_TIMEOUT_S)
+    timeout: int = Field(
+        default=0, ge=0,
+        description="硬截止秒数，到时终止整个进程组；0 不设截止。前台命令默认见 default，后台运行默认不设截止。",
+    )
     run_in_background: bool = Field(
         default=False,
         description=(
@@ -138,6 +138,15 @@ class PreparedStop(Stop):
     background_owner_key: str | None = None
 
 
+
+# 已保存的工具配置是旧版 model_dump，带着已删除的网络开关与受限目录；读取时丢掉，其余字段照常严格校验。
+_REMOVED_SETTINGS = frozenset({"allow_network", "restricted_dir"})
+
+
+def _shell_settings(state: Mapping[str, object]) -> ShellSettings:
+    return ShellSettings.model_validate(
+        json_value({key: value for key, value in state.items() if key not in _REMOVED_SETTINGS}))
+
 def _owner_key(settings: ShellSettings, session_id: str, source: str, abandon_id: str | None = None) -> str:
     key = settings.owner_key or json.dumps((session_id, source), ensure_ascii=False, separators=(",", ":"))
     return key if abandon_id is None else json.dumps((key, "abandon", abandon_id), ensure_ascii=False, separators=(",", ":"))
@@ -163,14 +172,14 @@ class ShellOwners:
 
     async def release_tool(self, state: Mapping[str, object], session_id: str, source: str) -> ExecutionCleanupReport:
         """由原插件解释原工具配置；调用方不重复保存或推断作业 owner。"""
-        settings = ShellSettings.model_validate(json_value(state))
+        settings = _shell_settings(state)
         return await self.release(_owner_key(settings, session_id, source))
 
     # tools 收尾入口：按原工具配置与放弃边界固定的进程 owner 终止；老归档没有边界标记时按原 owner。
     async def release_call(self, state: Mapping[str, object], session_id: str, source: str,
                            boundary: str | None) -> tuple[str, ...]:
         if "owner_boundary" in state:
-            settings = ShellSettings.model_validate(json_value(state))
+            settings = _shell_settings(state)
             state = {**state, "owner_key": _owner_key(settings, session_id, source, boundary)}
         report = await self.release_tool(state, session_id, source)
         return tuple(str(failure) for failure in report.failures)
@@ -196,6 +205,9 @@ class ShellTool:
         raw = json_value(arguments)
         if isinstance(raw, dict) and self._name != "task_stop":
             fallback = self._defaults.model_dump(include={"max_output_tokens"} if self._name == "write_stdin" else None)
+            # 后台进程（dev server、长任务）随会话活着，由 task_stop 或会话收尾结束，不套前台的默认截止。
+            if raw.get("run_in_background") is True:
+                fallback.pop("timeout", None)
             raw = {**fallback, **raw}
         try:
             if self._name != "shell":
@@ -244,13 +256,6 @@ class ShellTool:
         except ValueError as error:
             return str(error)
         directory = None if cwd is None else Path(cwd).expanduser().absolute()
-        denied = validate_command(
-            text, allow_network=self._settings.allow_network,
-            restricted_dir=None if self._settings.restricted_dir is None else Path(self._settings.restricted_dir),
-            cwd=directory,
-        )
-        if denied:
-            return denied
         background = None
         if command.run_in_background:
             if background_owner is None or background_source is None or source is None:
@@ -276,7 +281,7 @@ class ShellTool:
 
     # 显式 cwd 与工具配置优先；否则用会话当前工作目录。没有工作目录插件时不做会话目录解析。
     async def _resolve_cwd(self, command: Command, source: CallSource | None) -> str | None:
-        cwd = command.cwd or self._settings.working_dir or self._settings.restricted_dir
+        cwd = command.cwd or self._settings.working_dir
         with self._ctx.borrow(WORKING_DIRECTORY) as directories:
             if directories is None:
                 return cwd
@@ -450,11 +455,11 @@ async def _register(
     config: Config,
 ) -> ToolRef:
     def capture(configuration: Mapping[str, object]) -> Mapping[str, object]:
-        return ShellSettings.model_validate(json_value(configuration)).model_dump()
+        return _shell_settings(configuration).model_dump()
 
     @asynccontextmanager
     async def open_tool(state: Mapping[str, object]) -> AsyncGenerator[ShellTool]:
-        yield ShellTool(ctx, name, ShellSettings.model_validate(json_value(state)), config)
+        yield ShellTool(ctx, name, _shell_settings(state), config)
 
     # 工具说明里的默认值跟随设置，模型看到的就是实际生效的默认值。
     parameters = schema.model_json_schema()

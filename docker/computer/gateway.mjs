@@ -5,8 +5,9 @@ import { ComputerLifecycle, duration } from "./lifecycle.mjs";
 import { execFile } from "node:child_process";
 import { randomBytes } from "node:crypto";
 import { createServer, request as httpRequest } from "node:http";
+import { existsSync } from "node:fs";
 import { mkdir, readFile, rename, writeFile } from "node:fs/promises";
-import { connect as tcpConnect } from "node:net";
+import { connect as tcpConnect, createServer as createTcpServer } from "node:net";
 import { dirname } from "node:path";
 import { promisify } from "node:util";
 
@@ -211,7 +212,7 @@ async function humanAction(task) {
   try { return await job; } finally { control.jobs.delete(job); }
 }
 
-// 地址栏只打开网页和空白页，不执行 javascript: 等会在页面里运行代码的地址。
+// 地址栏打开网页、本地文件和空白页，不执行 javascript: 等会在页面里运行代码的地址。
 function pageUrl(value) {
   const text = requiredString(value, "url", 8192);
   let url;
@@ -220,8 +221,8 @@ function pageUrl(value) {
     if (error instanceof TypeError) throw new InputError("Invalid page URL");
     throw error;
   }
-  if (!["http:", "https:"].includes(url.protocol) && url.href !== "about:blank")
-    throw new InputError("Only http, https and about:blank pages can be opened");
+  if (!["http:", "https:", "file:"].includes(url.protocol) && url.href !== "about:blank")
+    throw new InputError("Only http, https, file and about:blank pages can be opened");
   return url.href;
 }
 
@@ -835,6 +836,17 @@ const server = createServer(async (request, response) => {
 }).listen(8080, "0.0.0.0");
 
 const openCliServer = createServer(proxyOpenCli).listen(19826, "0.0.0.0");
+// 宿主出口：Controller 挂入 Host Bridge 的 SOCKS5 socket 时转成容器本机端口给 Chromium（它不能直接用 unix socket 代理）。
+const HOST_EGRESS = "/run/akashic/host-egress";
+if (existsSync(HOST_EGRESS)) {
+  createTcpServer((client) => {
+    const upstream = tcpConnect({ path: `${HOST_EGRESS}/socks.sock` });
+    const drop = () => { client.destroy(); upstream.destroy(); };
+    client.on("error", drop);
+    upstream.on("error", drop);
+    client.pipe(upstream).pipe(client);
+  }).listen(1080, "127.0.0.1");
+}
 let stopping = false;
 let refreshTimer;
 /** 一次刷新持有完整占用；失败回执与下一次计划均保留在控制服务。 */

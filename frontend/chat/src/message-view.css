@@ -279,15 +279,18 @@
 }
 
 /* Markstream owns Markdown structure; the product only maps it to chat tokens. */
+/* markstream 自带 content-visibility:auto 与 800×600 的占位尺寸：新挂载的渲染器第一帧按 600px 排版，
+   下一帧才换成真实高度。回答落定、换成历史行时整段先变成 600px 再弹回，贴底跟随会跟着跳一下。
+   跳过渲染交给外层的 history-isolated，这里一律按真实内容排版。 */
 .message-response-markstream > .markstream-react {
   color: inherit;
   font: inherit;
+  contain-intrinsic-size: auto;
+  content-visibility: visible;
 }
 
 .message-response-markstream.is-streaming > .markstream-react {
   contain: layout;
-  contain-intrinsic-size: auto;
-  content-visibility: visible;
 }
 
 /* 复制含公式的选区时，克隆挂在页外取 innerText（reading-math.tsx）：渲染外壳的 content-visibility:auto 在页外会跳过渲染、读不到字，这里统一改回可见。 */

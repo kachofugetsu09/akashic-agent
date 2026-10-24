@@ -271,7 +271,7 @@ def main() -> int:
     parser.add_argument("--no-browser", action="store_true")
     parser.add_argument("--distribution", type=Path, help="Use the distribution shipped in the container")
     parser.add_argument("--host", default="127.0.0.1",
-                        help="监听地址；开发实例给 computer 容器看时用 workloads 网关地址（需防火墙放行，见 develop-akashic skill）")
+                        help="监听地址；computer 浏览器经宿主出口访问 localhost，开发实例不需要改它")
     args = parser.parse_args()
     if not 1 <= args.port <= 65535:
         parser.error("--port 必须在 1 到 65535 之间")

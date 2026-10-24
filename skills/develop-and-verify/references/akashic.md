@@ -8,10 +8,10 @@
 
 ```sh
 cd "$DEV/src"
-python3 scripts/start.py --state "$DEV/state" --port 441xx --host $GW --no-browser
+python3 scripts/start.py --state "$DEV/state" --port <端口> --no-browser
 ```
 
-- 用 managed_processes / jobs 托管它。日志出现 `WebUI 已就绪` 才算起好；首次要构建界面，几分钟正常。
+- 用 shell 的后台运行托管它。日志出现 `WebUI 已就绪` 才算起好；首次要构建界面，几分钟正常。
 - `--state` 必须是本任务的新目录，不要指向 `~/.akashic` 或生产数据目录。同一个 `--state` 已在运行会直接报错。
 - 构建产物在 `$DEV/src/.akashic-start/<commit>/`：其中 `env/bin/python` 和 `core/main.py` 是这个实例自己的解释器和入口，下面的命令都用它们（记作 `$PY`、`$MAIN`）。
 
@@ -20,8 +20,8 @@ python3 scripts/start.py --state "$DEV/state" --port 441xx --host $GW --no-brows
 新实例没有模型。接上本 skill 的假模型：
 
 ```sh
-python3 <skill>/scripts/mock_model.py --port 44099 --steps 6      # 用 run_in_background / managed_processes 托管，不要加 &
-python3 <skill>/scripts/use_mock_model.py --state "$DEV/state" --url http://$GW:441xx
+python3 <skill>/scripts/mock_model.py --port 44099 --steps 6      # 用 run_in_background 托管，不要加 &
+python3 <skill>/scripts/use_mock_model.py --state "$DEV/state" --url http://localhost:<端口>
 ```
 
 自己调 dashboard 接口时注意：`/api/dashboard/<插件>/...` 要带 bootstrap 给出的模块身份请求头
@@ -33,7 +33,7 @@ python3 <skill>/scripts/use_mock_model.py --state "$DEV/state" --url http://$GW:
 不需要初始密码：
 
 ```sh
-AKASHIC_PLUGIN_HOME="$DEV/state/plugin-home" $PY $MAIN web-login --url http://$GW:441xx \
+AKASHIC_PLUGIN_HOME="$DEV/state/plugin-home" $PY $MAIN web-login --url http://localhost:<端口> \
   --config "$DEV/state/config.toml" --workspace "$DEV/state/workspace"
 ```
 

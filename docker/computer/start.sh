@@ -103,10 +103,18 @@ stream_pid=$!
 matchbox-window-manager -use_titlebar no -use_cursor no &
 wm_pid=$!
 
+# 宿主出口：Controller 挂入 Host Bridge 的 socket 时，浏览器的连接都经宿主发起，localhost 就是宿主本机；
+# 只有容器里的 OpenCLI 守护进程（19825）留在本机直连。网关把 socket 转成 127.0.0.1:1080。
+proxy_args=""
+if [ -d /run/akashic/host-egress ]; then
+  proxy_args="--proxy-server=socks5://127.0.0.1:1080 --proxy-bypass-list=<-loopback>;127.0.0.1:19825;localhost:19825"
+fi
+
 # kiosk 不画标签条和地址栏，那些由观看面板本地绘制。
 # 每个 Agent 标签是独立窗口，被挡住的窗口和后台标签也照常渲染、计时。
 # 关掉最后一个窗口时浏览器不退出，由 driver 补开空白页；OpenCLI 扩展调试时不弹提示条占画面。
-chromium \
+# shellcheck disable=SC2086
+chromium $proxy_args \
   --user-data-dir=/data/profile \
   --password-store=basic \
   --load-extension=/opt/opencli-extension \

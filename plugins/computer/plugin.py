@@ -167,7 +167,7 @@ workspace_files = ()
 
 _IMAGE = (
     "ghcr.io/kachofugetsu09/akashic-computer@"
-    "sha256:00de15b1e0d9fd580fced89942bb8df4857067e1c001b949c8db93b3df0d01ce"
+    "sha256:0e2f38617cf933c947528b5bc13d07fe5c22616f71a5ad82e608a721c7a30cba"
 )
 
 
@@ -328,9 +328,8 @@ async def apply(ctx: Context) -> None:
             "For login, captcha or verification codes, keep the tab with markHandoff(), ask the user in chat to do it "
             "in the Browser panel and end the Turn; "
             "do not guess credentials or keep retrying selectors. "
-            "The browser runs in its own container: localhost there is the container, not the Akashic host. "
-            "A service on the host is reachable at the container network's gateway (usually http://172.26.0.1:<port>) "
-            "only if it listens on that gateway address and the host firewall admits the port (see the computer skill). "
+            "The browser is a browser on the host: localhost is the machine your shell commands run on, "
+            "so a dev server started from the shell opens at http://localhost:<port>. "
             f"To show a local static page, write it under {pages} (create it if needed) and open "
             "file:///data/pages/<relative path>."
         ),
@@ -391,6 +390,7 @@ async def _register_workload(ctx: Context):
             limits=WorkloadLimits(0, 0.0, 0),
             user_namespaces=True,
             udp_ports=(MEDIA_PORT,),
+            host_egress=True,
         ),
     )
 

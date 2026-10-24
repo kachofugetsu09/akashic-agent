@@ -50,6 +50,8 @@ class Workload:
     user_namespaces: bool = False
     # 按原端口号发布到宿主所有网卡的 UDP 端口，供 WebRTC 等实时媒体直连；不生成访问地址。
     udp_ports: tuple[int, ...] = ()
+    # 经宿主访问网络：Controller 挂入 Host Bridge 的 SOCKS5 socket，容器内连接由宿主发起，localhost 即宿主。
+    host_egress: bool = False
 
 
 class WorkloadHandle(Protocol):

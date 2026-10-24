@@ -10,19 +10,21 @@ import { chatLayout, subscribeChatLayout } from "./chat-layout";
 import type { ReplyActivity, TimelineMessage } from "./message-timeline";
 
 export function DesktopAutoScroll({
+  sessionId,
   messages,
   status,
   streamStore,
   timelineMessages,
   replyActivities,
 }: {
+  sessionId: string;
   messages: ChatMessage[];
   status: ChatStatus;
   streamStore: StreamProjectionStore<ChatMessage>;
   timelineMessages: TimelineMessage[];
   replyActivities: ReplyActivity[];
 }) {
-  const { escapedFromLock, isAtBottom, scrollRef, scrollToBottom, stopScroll } = useStickToBottomContext();
+  const { contentRef, escapedFromLock, isAtBottom, scrollRef, scrollToBottom, stopScroll } = useStickToBottomContext();
   const lastMessageCountRef = useRef(messages.length);
   const anchoredAnswerRef = useRef("");
   const baselineLastMessage = messages.at(-1);
@@ -58,6 +60,9 @@ export function DesktopAutoScroll({
     lastMessageCountRef.current = messages.length;
 
     if (hasNewUserMessage) {
+      const scroller = scrollRef.current;
+      const content = contentRef.current;
+      if (scroller && content) holdTurnRoom(scroller, content);
       void scrollToBottom({ animation: "smooth", ignoreEscapes: true });
       return;
     }
@@ -65,7 +70,30 @@ export function DesktopAutoScroll({
     if (isAtBottom && !escapedFromLock) {
       void scrollToBottom({ animation: "instant", ignoreEscapes: false });
     }
-  }, [escapedFromLock, isAtBottom, lastMessageRole, messages.length, scrollKey, status, scrollToBottom]);
+  }, [contentRef, escapedFromLock, isAtBottom, lastMessageRole, messages.length, scrollKey, scrollRef, status, scrollToBottom]);
+
+  // 必要 effect：换到别的会话时撤掉上一轮的留白；新会话发出首条消息才拿到 ID，那不算换会话。
+  const roomSessionRef = useRef(sessionId);
+  useLayoutEffect(() => {
+    const previous = roomSessionRef.current;
+    roomSessionRef.current = sessionId;
+    if (previous && previous !== sessionId && contentRef.current) contentRef.current.style.minHeight = "";
+  }, [contentRef, sessionId]);
+
+  // 必要 effect：阅读列宽度变了，提问跟着重新折行，按新位置重算留白
+  useEffect(() => {
+    const scroller = scrollRef.current;
+    const content = contentRef.current;
+    if (!scroller || !content) return;
+    let width = scroller.clientWidth;
+    const observer = new ResizeObserver(() => {
+      if (scroller.clientWidth === width) return;
+      width = scroller.clientWidth;
+      if (content.style.minHeight) holdTurnRoom(scroller, content);
+    });
+    observer.observe(scroller);
+    return () => observer.disconnect();
+  }, [contentRef, scrollRef]);
 
   const generating = isGeneratingChatStatus(status);
   const followingRef = useRef(false);
@@ -133,7 +161,8 @@ function anchorableAnswer(scroller: HTMLElement, anchored: string) {
   const answer = currentAnswer(scroller);
   if (!answer || answer.key === anchored) return null;
   const offset = offsetToReadingTop(scroller, answer.element);
-  return offset <= 0 ? { key: answer.key, offset } : null;
+  // 留白把提问停在顶缘时偏移是 0 到 1px 的小数，也算到达；否则要等写满后多跟一行再退回来。
+  return offset <= 1 ? { key: answer.key, offset: Math.min(0, offset) } : null;
 }
 
 // 每一轮提问的锚点；"最新一轮"按钮与提问目录共用。
@@ -141,6 +170,21 @@ const TURN_START = ".web-message-anchor.timeline-input, .web-message-anchor.user
 
 function latestTurnStart(scroller: HTMLElement): HTMLElement | undefined {
   return Array.from(scroller.querySelectorAll<HTMLElement>(TURN_START)).at(-1);
+}
+
+// 新一轮提问先给回答留出一屏（参考 Claude Desktop 的 turn room）：内容区的最小高度刚好让提问停在阅读区顶缘。
+// 回答在留白里长出，滚动高度不变，贴底跟随无事可做，屏幕不再随每一行上跳；写满后内容照常增高。
+// 留白保留到下一轮提问或换会话：回答落定时撤掉会让滚动区变矮、整屏往下掉。
+function holdTurnRoom(scroller: HTMLElement, content: HTMLElement): void {
+  const start = latestTurnStart(scroller);
+  if (!start) {
+    content.style.minHeight = "";
+    return;
+  }
+  // use-stick-to-bottom 停在离真正底部 1px 的位置，多留 1px 让提问正好落在顶缘。
+  const room = start.getBoundingClientRect().top - content.getBoundingClientRect().top
+    - readingTopInset(scroller) + scroller.clientHeight + 1;
+  content.style.minHeight = `${Math.ceil(room)}px`;
 }
 
 /** 离开底部后的返回入口：生成中提示还在写；翻回历史时先回到最新一轮开头，再到底部。 */

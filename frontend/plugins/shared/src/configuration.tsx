@@ -1,6 +1,6 @@
-import { useEffect, useRef, useState, type ReactNode } from "react";
+import { useEffect, useRef, useState, useSyncExternalStore, type ReactNode } from "react";
 import { createRoot } from "react-dom/client";
-import type { WebHostContextV1, WebUiDisposer } from "@akashic/web-ui-v1";
+import type { WebHostContextV1, WebResource, WebUiDisposer } from "@akashic/web-ui-v1";
 import "./configuration.css";
 
 export interface Status {
@@ -121,13 +121,15 @@ export function ModelField({label, name, value, change, status, hint}: {
 }
 
 export function registerForm(ctx: WebHostContextV1, definition: FormDefinition): WebUiDisposer {
+  // 卡片摘要与表单共用模块内的一份配置：重开插件配置、点进卡片先画已有值，后台再核对（ADR 0127）。
+  const stored = ctx.data.resource<Status>(`config.${definition.id}`, signal => request<Status>(ctx, configPath(definition), {signal}));
   return ctx.ui.inject("shell.settings-plugins.v1", mount => mount.register({
     id: `${definition.id.replaceAll("_", "-")}-settings`, label: definition.title, route: `${definition.id}-settings`, family: definition.family, familyLabel: definition.familyLabel,
     description: definition.description,
     render(host, _view, props) {
       const root = createRoot(host);
       const embed = (props ?? {}) as EmbedProps;
-      root.render(embed.mode === "summary" ? <Summary ctx={ctx} definition={definition} /> : <Configuration ctx={ctx} definition={definition} embed={embed} />);
+      root.render(embed.mode === "summary" ? <Summary stored={stored} /> : <Configuration ctx={ctx} definition={definition} embed={embed} stored={stored} />);
       return () => root.unmount();
     },
   }));
@@ -141,24 +143,26 @@ export function statusLabel(status: Status): {text: string; tone: "on" | "off" |
 }
 
 // 插件列表卡片上的一行状态：只读当前配置，点进卡片才进入完整表单。
-function Summary({ctx, definition}: {ctx: WebHostContextV1; definition: FormDefinition}) {
-  const [label, setLabel] = useState<ReturnType<typeof statusLabel> | null>(null);
+function Summary({stored}: {stored: WebResource<Status>}) {
+  const status = useSyncExternalStore(stored.subscribe, () => stored.current);
+  const failed = useSyncExternalStore(stored.subscribe, () => stored.error !== undefined);
   useEffect(() => {
-    let alive = true;
-    const load = () => { void request<Status>(ctx, configPath(definition))
-      .then(next => { if (alive) setLabel(statusLabel(next)); })
-      .catch(() => { if (alive) setLabel({text: "状态读取失败", tone: "attention"}); }); };
+    // 并入在途读取；内容没变时资源不通知，回到窗口的核对不重绘。
+    const load = () => { void stored.refresh().catch(() => undefined); };
     load();
     window.addEventListener("focus", load);
-    return () => { alive = false; window.removeEventListener("focus", load); };
-  }, [ctx, definition.id]);
+    return () => window.removeEventListener("focus", load);
+  }, [stored]);
+  const label = failed ? {text: "状态读取失败", tone: "attention" as const} : status ? statusLabel(status) : null;
   return <span className={`config-status is-${label?.tone ?? "off"}`}>{label?.text ?? "…"}</span>;
 }
 
-export function Configuration({ctx, definition, embed}: {ctx: WebHostContextV1; definition: FormDefinition; embed: EmbedProps}) {
-  const [status, setStatus] = useState<Status | null>(null);
-  const [enabled, setEnabled] = useState<boolean | null>(null);
-  const [values, setValues] = useState<Record<string, unknown>>({});
+export function Configuration({ctx, definition, embed, stored}: {ctx: WebHostContextV1; definition: FormDefinition; embed: EmbedProps; stored?: WebResource<Status>}) {
+  // 有模块内的上次配置就先画出来，打开时的读取再核对；预选开启的嵌入仍等读取结果决定开关。
+  const seeded = embed.intent === "enable" ? undefined : stored?.current;
+  const [status, setStatus] = useState<Status | null>(seeded ?? null);
+  const [enabled, setEnabled] = useState<boolean | null>(seeded?.enabled ?? null);
+  const [values, setValues] = useState<Record<string, unknown>>(seeded?.values ?? {});
   const [dirty, setDirty] = useState(false);
   // 嵌入方预选“开启”产生的草稿只让保存可点，不算用户改动，不触发离开守卫。
   const [preset, setPreset] = useState(false);
@@ -210,6 +214,8 @@ export function Configuration({ctx, definition, embed}: {ctx: WebHostContextV1; 
           try {
             const sequence = ++loads.current;
             const next = await read<Status>(path, {signal: controller.signal});
+            // 只让最新一次读取写回共享配置：晚到的旧读取不能盖掉新值。
+            if (sequence === loads.current) stored?.set(next);
             if (current() && sequence === loads.current) {
               refreshed = true;
               if (verifyRequired.current === id) verifyRequired.current = null;
@@ -240,6 +246,8 @@ export function Configuration({ctx, definition, embed}: {ctx: WebHostContextV1; 
           try {
             const sequence = ++loads.current;
             const next = await read<Status>(path, {signal: controller.signal});
+            // 只让最新一次读取写回共享配置：晚到的旧读取不能盖掉新值。
+            if (sequence === loads.current) stored?.set(next);
             if (current() && sequence === loads.current) {
               refreshed = true;
               if (verifyRequired.current === id) verifyRequired.current = null;
@@ -274,6 +282,7 @@ export function Configuration({ctx, definition, embed}: {ctx: WebHostContextV1; 
     const sequence = ++loads.current;
     try {
       const next = await read<Status>(path);
+      if (sequence === loads.current) stored?.set(next);
       if (!alive.current || sequence !== loads.current || (preserveDraft && editing.current)) return;
       const preset = embed.intent === "enable" && next.enabled !== true && next.can_enable !== false;
       setStatus(next); setEnabled(preset ? true : next.enabled); setValues(next.values); markDirty(preset); setPreset(preset); setError("");

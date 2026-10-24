@@ -552,15 +552,29 @@ type InlineSlotName = PluginUiMountSlotName;
 
 // 页面重新可见的三种来源合成一个信号：标签切回、窗口获得焦点、宿主重新显示聊天（经 ChatHandle.shown）。
 export function notifyShown(): void {
+  windowLeft = false;
   for (const listener of [...shownListeners]) {
     try { listener(); }
     catch (error) { console.error("[plugin-ui] shown callback failed", error); }
   }
 }
 
+// 切回标签时 visibilitychange 与 focus 几乎同时到达：按“离开→回来”一个周期只算一次，订阅者不重复读取。
+// 在后台标签里打开、从没获得过焦点的页面，第一次切过来也算回来。
+let windowLeft = typeof document !== "undefined" && (document.visibilityState !== "visible" || !document.hasFocus());
+const windowReturned = () => { if (windowLeft) notifyShown(); };
+const windowDeparted = () => { windowLeft = true; };
+
 if (typeof window !== "undefined") {
-  window.addEventListener("focus", notifyShown);
-  document.addEventListener("visibilitychange", () => { if (document.visibilityState === "visible") notifyShown(); });
+  window.addEventListener("focus", windowReturned);
+  window.addEventListener("blur", windowDeparted);
+  document.addEventListener("visibilitychange", () => { if (document.visibilityState === "visible") windowReturned(); else windowDeparted(); });
+}
+
+// 宿主组件订阅同一个合并后的"重新可见"信号。
+export function onPageShown(listener: () => void): () => void {
+  shownListeners.add(listener);
+  return () => { shownListeners.delete(listener); };
 }
 
 // 一次挂载登记的"重新可见"回调；挂载卸载时一并撤销，卸载后不再回调。

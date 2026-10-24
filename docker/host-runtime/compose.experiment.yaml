@@ -139,6 +139,8 @@ services:
       - "${AKASHIC_GID:-1000}"
       - --owner-container
       - "${AKASHIC_CONTAINER_NAME:?AKASHIC_CONTAINER_NAME is required}"
+      - --host-egress-dir
+      - "${AKASHIC_WORKLOAD_RUNTIME_DIR:-${AKASHIC_EXPERIMENT_ROOT}/workload-runtime}/host-egress"
     volumes:
       - type: bind
         source: /var/run/docker.sock

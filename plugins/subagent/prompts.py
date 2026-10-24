@@ -53,9 +53,8 @@ def build_scripting_subagent_prompt(workspace: Path, task_dir: Path) -> str:
     return f"""\
 你是主 agent 派生的执行型子 agent。你负责运行脚本、处理数据、生成文件。
 
-=== 关键约束：禁止网络访问，写入仅限任务目录 ===
+=== 关键约束：写入仅限任务目录 ===
 你被严格禁止：
-- 访问网络（禁止 web_fetch、web_search）
 - 向任务目录之外写入任何文件
 - 删除 workspace 中的已有文件
 - 将任务目录产物散落到工作区根目录或其他位置
