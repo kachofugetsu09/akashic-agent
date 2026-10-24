@@ -428,7 +428,8 @@ class MessageLog:
         self._closed = False
         self._notify_pending: set[type[Body]] | None = set()
         self._notify_owed: set[type[Body]] | None = set()
-        # 目录纪元：本实例每次管理提交（改名、删除、新会话等）递增；带实例 token，重启后不会与旧值相等。
+        # 目录纪元：本实例每次管理提交（ensure_session、软删/恢复、标题）递增；带实例 token，重启后不会与旧值相等。
+        # 追加消息时顺带建出的会话行不算管理提交、不递增，它由消息活动水位通知；纪元不变不代表目录行集合不变。
         self._metadata_instance = secrets.token_hex(8)
         self._metadata_epoch = 0
         # 写入方维护的已提交 heads：提交成功后合并，follower 不再各自扫描全部会话。

@@ -522,6 +522,7 @@ export function useDesktopChatController() {
   const sessionsRefreshScopeRef = useRef<"full" | Set<string>>(new Set());
   // 首连基线通知（#1556）：订阅时服务端先推一帧当时的目录纪元。等在飞的初始全量读完，
   // 纪元与它查询前读到的相同就说明其间没有管理提交，不再重拉一遍；重连仍无条件全量对账。
+  // 已知限制：纪元只记本实例的管理提交；初始读取到首连订阅之间（几十毫秒）其他进程的改动要等下一次全量。
   const sessionsRefreshEpochsRef = useRef(new Set<string>());
   // 活动快照（每次连上的第一帧）同样留到读取时比对：初始全量读完后水位一致就不再重拉。
   const sessionsRefreshSnapshotRef = useRef<Readonly<Record<string, number>> | null>(null);
