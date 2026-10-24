@@ -550,24 +550,24 @@ export function receivePluginUiResult(response: PluginUiResult) {
 
 type InlineSlotName = PluginUiMountSlotName;
 
-// 切回标签时 visibilitychange 与 focus 几乎同时到达：一秒内只算一次，订阅者不重复读取。
-const SHOWN_COALESCE_MS = 1000;
-let lastShown = -Infinity;
-
 // 页面重新可见的三种来源合成一个信号：标签切回、窗口获得焦点、宿主重新显示聊天（经 ChatHandle.shown）。
 export function notifyShown(): void {
-  const now = performance.now();
-  if (now - lastShown < SHOWN_COALESCE_MS) return;
-  lastShown = now;
+  windowLeft = false;
   for (const listener of [...shownListeners]) {
     try { listener(); }
     catch (error) { console.error("[plugin-ui] shown callback failed", error); }
   }
 }
 
+// 切回标签时 visibilitychange 与 focus 几乎同时到达：按“离开→回来”一个周期只算一次，订阅者不重复读取。
+let windowLeft = false;
+const windowReturned = () => { if (windowLeft) notifyShown(); };
+const windowDeparted = () => { windowLeft = true; };
+
 if (typeof window !== "undefined") {
-  window.addEventListener("focus", notifyShown);
-  document.addEventListener("visibilitychange", () => { if (document.visibilityState === "visible") notifyShown(); });
+  window.addEventListener("focus", windowReturned);
+  window.addEventListener("blur", windowDeparted);
+  document.addEventListener("visibilitychange", () => { if (document.visibilityState === "visible") windowReturned(); else windowDeparted(); });
 }
 
 // 宿主组件订阅同一个合并后的"重新可见"信号。
