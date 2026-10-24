@@ -146,6 +146,7 @@
 
 .model-picker__option {
   display: flex;
+  width: 100%;
   align-items: flex-start;
   gap: 8px;
   border: 0;
@@ -153,6 +154,8 @@
   padding: 6px 8px;
   color: inherit;
   background: transparent;
+  font: inherit;
+  text-align: start;
   cursor: pointer;
   outline: none;
   user-select: none;

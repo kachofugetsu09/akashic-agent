@@ -90,7 +90,7 @@ const MessageBody = memo(function MessageBody({
         </Suspense>
       );
     }
-    return <StaticMessageResponse onError={onError}>{content}</StaticMessageResponse>;
+    return <StaticMessageResponse streaming={streaming} onError={onError}>{content}</StaticMessageResponse>;
   }
   return (
     <Suspense fallback={<p className="plain-message-response">{content}</p>}>

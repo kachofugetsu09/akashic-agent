@@ -91,8 +91,8 @@
   },
   "browser": {
     "status": "measured",
-    "sourceCommit": "5049e603f9af124abeb4d7fc9613a48dab41fab3",
-    "chromiumVersion": "153.0.8010.52",
+    "sourceCommit": "10981eacc9c39b2ef0c0f1fe0eeababaaa8a6e8b",
+    "chromiumVersion": "153.0.8010.12",
     "sampling": {
       "runs": 5,
       "aggregate": "median",
@@ -101,52 +101,52 @@
     "reference": {
       "desktopStartup": {
         "durationMs": {
-          "median": 278.89999985694885,
-          "p75": 299.7999999523163
+          "median": 242.70000004768372,
+          "p75": 250.79999995231628
         },
         "firstContentfulPaintMs": {
-          "median": 220,
-          "p75": 248
+          "median": 196,
+          "p75": 196
         },
         "largestContentfulPaintMs": {
-          "median": 248,
-          "p75": 260
+          "median": 196,
+          "p75": 196
         },
         "resourceCount": {
-          "median": 12,
+          "median": 11,
           "p75": 12
         },
         "resourceTransferBytes": {
-          "median": 3076540,
-          "p75": 3076540
+          "median": 1788730,
+          "p75": 3111270
         },
         "resourceDecodedBytes": {
-          "median": 3072940,
-          "p75": 3072940
+          "median": 1785430,
+          "p75": 3107670
         },
         "longTaskCount": {
           "median": 1,
           "p75": 1
         },
         "longTaskTotalMs": {
-          "median": 112,
-          "p75": 144
+          "median": 95,
+          "p75": 97
         },
         "longTaskMaxMs": {
-          "median": 112,
-          "p75": 119
+          "median": 95,
+          "p75": 97
         },
         "frameGapP75Ms": {
-          "median": 33.29999999999998,
-          "p75": 33.300000000000004
+          "median": 16.700000000000017,
+          "p75": 33.3
         },
         "frameGapMaxMs": {
-          "median": 116.69999999999999,
-          "p75": 133.39999999999998
+          "median": 100,
+          "p75": 100
         },
         "layoutShift": {
           "median": 0.000033799491222993827,
-          "p75": 0.000034287923177083334
+          "p75": 0.000033799491222993827
         },
         "domRows": {
           "median": 2,
@@ -157,38 +157,38 @@
           "p75": 130
         },
         "jsHeapBytes": {
-          "median": 6741017,
-          "p75": 6786909
+          "median": 7019117,
+          "p75": 7055043
         },
         "warmDurationMs": {
-          "median": 97.79999995231628,
-          "p75": 99.09999990463257
+          "median": 83.29999995231628,
+          "p75": 86.70000004768372
         },
         "warmFirstContentfulPaintMs": {
-          "median": 68,
-          "p75": 72
+          "median": 60,
+          "p75": 64
         },
         "warmLargestContentfulPaintMs": {
-          "median": 68,
-          "p75": 72
+          "median": 60,
+          "p75": 64
         },
         "warmLongTaskTotalMs": {
           "median": 0,
           "p75": 0
         },
         "warmResourceTransferBytes": {
-          "median": 395728,
-          "p75": 395728
+          "median": 396027,
+          "p75": 396027
         }
       },
       "desktopHistory": {
         "durationMs": {
-          "median": 436.7000000476837,
-          "p75": 437.7999999523163
+          "median": 325.5,
+          "p75": 332.09999990463257
         },
         "firstContentfulPaintMs": {
-          "median": 220,
-          "p75": 240
+          "median": 192,
+          "p75": 220
         },
         "largestContentfulPaintMs": {
           "median": 0,
@@ -199,32 +199,32 @@
           "p75": 36
         },
         "resourceTransferBytes": {
-          "median": 4888364,
-          "p75": 4888364
+          "median": 4925213,
+          "p75": 4925213
         },
         "resourceDecodedBytes": {
-          "median": 5515106,
-          "p75": 5515106
+          "median": 5551955,
+          "p75": 5551955
         },
         "longTaskCount": {
-          "median": 2,
+          "median": 1,
           "p75": 2
         },
         "longTaskTotalMs": {
-          "median": 160,
-          "p75": 163
+          "median": 82,
+          "p75": 126
         },
         "longTaskMaxMs": {
-          "median": 95,
-          "p75": 98
+          "median": 79,
+          "p75": 82
         },
         "frameGapP75Ms": {
           "median": 16.700000000000045,
-          "p75": 16.800000000000182
+          "p75": 16.700000000000045
         },
         "frameGapMaxMs": {
-          "median": 83.30000000000018,
-          "p75": 83.40000000000009
+          "median": 66.69999999999993,
+          "p75": 83.30000000000007
         },
         "layoutShift": {
           "median": 0,
@@ -235,20 +235,20 @@
           "p75": 100
         },
         "domElements": {
-          "median": 3556,
-          "p75": 3556
+          "median": 3336,
+          "p75": 3336
         },
         "jsHeapBytes": {
-          "median": 18140230,
-          "p75": 18153444
+          "median": 19860984,
+          "p75": 19869744
         },
         "settledLongTaskMaxMs": {
-          "median": 95,
-          "p75": 98
+          "median": 79,
+          "p75": 82
         },
         "settledFrameGapMaxMs": {
-          "median": 83.30000000000018,
-          "p75": 83.40000000000009
+          "median": 66.69999999999993,
+          "p75": 83.30000000000007
         },
         "settledLayoutShift": {
           "median": 0,
@@ -269,12 +269,12 @@
       },
       "desktopSessionSwitch": {
         "durationMs": {
-          "median": 180.69999980926514,
-          "p75": 181.09999990463257
+          "median": 152.89999985694885,
+          "p75": 153
         },
         "firstContentfulPaintMs": {
-          "median": 216,
-          "p75": 228
+          "median": 188,
+          "p75": 188
         },
         "largestContentfulPaintMs": {
           "median": 0,
@@ -285,32 +285,32 @@
           "p75": 28
         },
         "resourceTransferBytes": {
-          "median": 4380509,
-          "p75": 4380509
+          "median": 4417358,
+          "p75": 4417358
         },
         "resourceDecodedBytes": {
-          "median": 4372109,
-          "p75": 4372109
+          "median": 4408958,
+          "p75": 4408958
         },
         "longTaskCount": {
-          "median": 1,
-          "p75": 1
+          "median": 0,
+          "p75": 0
         },
         "longTaskTotalMs": {
-          "median": 57,
-          "p75": 61
+          "median": 0,
+          "p75": 0
         },
         "longTaskMaxMs": {
-          "median": 57,
-          "p75": 61
+          "median": 0,
+          "p75": 0
         },
         "frameGapP75Ms": {
           "median": 16.700000000000045,
-          "p75": 16.700000000000045
+          "p75": 16.799999999999955
         },
         "frameGapMaxMs": {
-          "median": 50,
-          "p75": 50
+          "median": 33.39999999999998,
+          "p75": 33.40000000000009
         },
         "layoutShift": {
           "median": 0,
@@ -325,20 +325,20 @@
           "p75": 1636
         },
         "jsHeapBytes": {
-          "median": 12528943,
-          "p75": 12529360
+          "median": 13105073,
+          "p75": 13197392
         },
         "sessionClickMs": {
-          "median": 156.60000014305115,
-          "p75": 173.5
+          "median": 124.79999995231628,
+          "p75": 147.39999985694885
         },
         "messageContentWaitMs": {
-          "median": 11.5,
-          "p75": 13.899999856948853
+          "median": 28.09999990463257,
+          "p75": 28.299999952316284
         },
         "messageResourceMs": {
-          "median": 860.8999998569489,
-          "p75": 877.5999999046326
+          "median": 811.5,
+          "p75": 812.6000001430511
         },
         "messageRequests": {
           "median": 1,
@@ -371,12 +371,12 @@
           "p75": 153
         },
         "durationMs": {
-          "median": 132.39999985694885,
-          "p75": 136.90000009536743
+          "median": 99.29999995231628,
+          "p75": 102.79999995231628
         },
         "firstContentfulPaintMs": {
-          "median": 212,
-          "p75": 232
+          "median": 184,
+          "p75": 204
         },
         "largestContentfulPaintMs": {
           "median": 0,
@@ -387,32 +387,32 @@
           "p75": 19
         },
         "resourceTransferBytes": {
-          "median": 4113550,
-          "p75": 4113550
+          "median": 4150399,
+          "p75": 4150399
         },
         "resourceDecodedBytes": {
-          "median": 4107850,
-          "p75": 4107850
+          "median": 4144699,
+          "p75": 4144699
         },
         "longTaskCount": {
           "median": 1,
           "p75": 1
         },
         "longTaskTotalMs": {
-          "median": 70,
-          "p75": 77
+          "median": 55,
+          "p75": 56
         },
         "longTaskMaxMs": {
-          "median": 70,
-          "p75": 77
+          "median": 55,
+          "p75": 56
         },
         "frameGapP75Ms": {
           "median": 16.700000000000045,
           "p75": 16.700000000000045
         },
         "frameGapMaxMs": {
-          "median": 50,
-          "p75": 66.60000000000002
+          "median": 33.299999999999955,
+          "p75": 33.30000000000007
         },
         "layoutShift": {
           "median": 0,
@@ -427,8 +427,8 @@
           "p75": 959
         },
         "jsHeapBytes": {
-          "median": 11066576,
-          "p75": 11069340
+          "median": 12365041,
+          "p75": 12818523
         },
         "openOptions": {
           "median": 49,
@@ -449,12 +449,12 @@
       },
       "desktopComposer": {
         "durationMs": {
-          "median": 539.6000001430511,
-          "p75": 540.7999999523163
+          "median": 375.90000009536743,
+          "p75": 390.2000000476837
         },
         "firstContentfulPaintMs": {
-          "median": 212,
-          "p75": 240
+          "median": 200,
+          "p75": 212
         },
         "largestContentfulPaintMs": {
           "median": 0,
@@ -465,12 +465,12 @@
           "p75": 29
         },
         "resourceTransferBytes": {
-          "median": 4380835,
-          "p75": 4380835
+          "median": 4417684,
+          "p75": 4417684
         },
         "resourceDecodedBytes": {
-          "median": 4372135,
-          "p75": 4372135
+          "median": 4408984,
+          "p75": 4408984
         },
         "longTaskCount": {
           "median": 0,
@@ -489,12 +489,12 @@
           "p75": 16.700000000000045
         },
         "frameGapMaxMs": {
-          "median": 33.30000000000018,
-          "p75": 33.40000000000009
+          "median": 16.800000000000182,
+          "p75": 16.800000000000182
         },
         "layoutShift": {
-          "median": 0.0037326388888888886,
-          "p75": 0.0037326388888888886
+          "median": 0,
+          "p75": 0
         },
         "domRows": {
           "median": 50,
@@ -505,8 +505,8 @@
           "p75": 1636
         },
         "jsHeapBytes": {
-          "median": 14825673,
-          "p75": 15078010
+          "median": 13927061,
+          "p75": 13970468
         },
         "typedCharacters": {
           "median": 240,
@@ -585,40 +585,40 @@
       },
       "desktopStream600": {
         "durationMs": {
-          "median": 1384.5,
-          "p75": 1385.5999999046326
+          "median": 1351.7000000476837,
+          "p75": 1362.5999999046326
         },
         "firstContentfulPaintMs": {
-          "median": 236,
-          "p75": 240
+          "median": 188,
+          "p75": 192
         },
         "largestContentfulPaintMs": {
           "median": 0,
           "p75": 0
         },
         "resourceCount": {
-          "median": 45,
-          "p75": 45
+          "median": 44,
+          "p75": 44
         },
         "resourceTransferBytes": {
-          "median": 5490842,
-          "p75": 5490842
+          "median": 5559642,
+          "p75": 5559642
         },
         "resourceDecodedBytes": {
-          "median": 6114884,
-          "p75": 6114884
+          "median": 6183984,
+          "p75": 6183984
         },
         "longTaskCount": {
           "median": 1,
-          "p75": 2
+          "p75": 1
         },
         "longTaskTotalMs": {
-          "median": 74,
-          "p75": 132
+          "median": 66,
+          "p75": 66
         },
         "longTaskMaxMs": {
-          "median": 74,
-          "p75": 74
+          "median": 66,
+          "p75": 66
         },
         "frameGapP75Ms": {
           "median": 16.700000000000045,
@@ -629,8 +629,8 @@
           "p75": 66.70000000000005
         },
         "layoutShift": {
-          "median": 0.0000040393518518518515,
-          "p75": 0.0000040393518518518515
+          "median": 0,
+          "p75": 0
         },
         "domRows": {
           "median": 101,
@@ -641,20 +641,20 @@
           "p75": 3594
         },
         "jsHeapBytes": {
-          "median": 27784832,
-          "p75": 36242951
+          "median": 30321687,
+          "p75": 32175775
         },
         "streamFirstTextMs": {
-          "median": 182,
-          "p75": 183.89999985694885
+          "median": 158.5,
+          "p75": 166.80000019073486
         },
         "streamFirstDraftMs": {
-          "median": 194,
-          "p75": 199.29999995231628
+          "median": 159.39999985694885,
+          "p75": 168.5
         },
         "streamCommitTailMs": {
-          "median": 1191.5999999046326,
-          "p75": 1198.3999998569489
+          "median": 1195.1000001430511,
+          "p75": 1203.2000000476837
         },
         "streamDraftVisible": {
           "median": 1,
@@ -675,48 +675,48 @@
       },
       "desktopMarkdownStream": {
         "durationMs": {
-          "median": 1550.7000000476837,
-          "p75": 1576.6999998092651
+          "median": 1400.7999999523163,
+          "p75": 1405.3000001907349
         },
         "firstContentfulPaintMs": {
-          "median": 216,
-          "p75": 220
+          "median": 184,
+          "p75": 200
         },
         "largestContentfulPaintMs": {
           "median": 0,
           "p75": 0
         },
         "resourceCount": {
-          "median": 46,
-          "p75": 46
+          "median": 45,
+          "p75": 45
         },
         "resourceTransferBytes": {
-          "median": 5837786,
-          "p75": 5837786
+          "median": 5559944,
+          "p75": 5559944
         },
         "resourceDecodedBytes": {
-          "median": 6461528,
-          "p75": 6461528
+          "median": 6183986,
+          "p75": 6183986
         },
         "longTaskCount": {
           "median": 2,
           "p75": 2
         },
         "longTaskTotalMs": {
-          "median": 174,
-          "p75": 178
+          "median": 116,
+          "p75": 126
         },
         "longTaskMaxMs": {
-          "median": 108,
-          "p75": 109
+          "median": 64,
+          "p75": 70
         },
         "frameGapP75Ms": {
           "median": 16.700000000000045,
           "p75": 16.700000000000045
         },
         "frameGapMaxMs": {
-          "median": 100,
-          "p75": 116.60000000000036
+          "median": 83.29999999999995,
+          "p75": 100
         },
         "layoutShift": {
           "median": 0.0000040393518518518515,
@@ -727,24 +727,24 @@
           "p75": 101
         },
         "domElements": {
-          "median": 4204,
-          "p75": 4204
+          "median": 4195,
+          "p75": 4195
         },
         "jsHeapBytes": {
-          "median": 29558986,
-          "p75": 31083372
+          "median": 39065633,
+          "p75": 39248300
         },
         "streamFirstTextMs": {
-          "median": 200.20000004768372,
-          "p75": 208.79999995231628
+          "median": 179,
+          "p75": 189.40000009536743
         },
         "streamFirstDraftMs": {
-          "median": 252,
-          "p75": 261.60000014305115
+          "median": 196.90000009536743,
+          "p75": 198.40000009536743
         },
         "streamCommitTailMs": {
-          "median": 1301.4000000953674,
-          "p75": 1348.4000000953674
+          "median": 1227.7000000476837,
+          "p75": 1232.2000000476837
         },
         "streamDraftVisible": {
           "median": 1,
@@ -765,48 +765,48 @@
       },
       "desktopCodeStream": {
         "durationMs": {
-          "median": 1574.8000001907349,
-          "p75": 1575.2000000476837
+          "median": 1475.5999999046326,
+          "p75": 1479.3999998569489
         },
         "firstContentfulPaintMs": {
-          "median": 220,
-          "p75": 220
+          "median": 184,
+          "p75": 192
         },
         "largestContentfulPaintMs": {
           "median": 0,
           "p75": 0
         },
         "resourceCount": {
-          "median": 47,
-          "p75": 47
+          "median": 46,
+          "p75": 46
         },
         "resourceTransferBytes": {
-          "median": 5491760,
-          "p75": 5491760
+          "median": 5560257,
+          "p75": 5560257
         },
         "resourceDecodedBytes": {
-          "median": 6115202,
-          "p75": 6115202
+          "median": 6183999,
+          "p75": 6183999
         },
         "longTaskCount": {
           "median": 2,
-          "p75": 3
+          "p75": 2
         },
         "longTaskTotalMs": {
-          "median": 232,
-          "p75": 289
+          "median": 176,
+          "p75": 178
         },
         "longTaskMaxMs": {
-          "median": 169,
-          "p75": 178
+          "median": 118,
+          "p75": 120
         },
         "frameGapP75Ms": {
           "median": 16.700000000000045,
           "p75": 16.700000000000045
         },
         "frameGapMaxMs": {
-          "median": 166.69999999999982,
-          "p75": 166.69999999999982
+          "median": 116.69999999999982,
+          "p75": 116.69999999999982
         },
         "layoutShift": {
           "median": 0.0000040393518518518515,
@@ -817,28 +817,118 @@
           "p75": 101
         },
         "domElements": {
-          "median": 5104,
-          "p75": 5104
+          "median": 5107,
+          "p75": 5107
         },
         "jsHeapBytes": {
-          "median": 32025223,
-          "p75": 32076849
+          "median": 29019807,
+          "p75": 30101449
         },
         "streamHighlightedMs": {
-          "median": 1566.8999998569489,
-          "p75": 1567.8000001907349
+          "median": 1467.4000000953674,
+          "p75": 1473.3999998569489
         },
         "streamFirstTextMs": {
-          "median": 213.30000019073486,
-          "p75": 226
+          "median": 200.70000004768372,
+          "p75": 202.09999990463257
         },
         "streamFirstDraftMs": {
-          "median": 227,
-          "p75": 233.39999985694885
+          "median": 202.90000009536743,
+          "p75": 207.20000004768372
         },
         "streamCommitTailMs": {
-          "median": 1360.7000000476837,
-          "p75": 1365.2000000476837
+          "median": 1286.8999998569489,
+          "p75": 1287.7999999523163
+        },
+        "streamDraftVisible": {
+          "median": 1,
+          "p75": 1
+        },
+        "streamPreservedScrollEscape": {
+          "median": 1,
+          "p75": 1
+        },
+        "scrollReturnAvailable": {
+          "median": 1,
+          "p75": 1
+        },
+        "scrollReturnAdvanced": {
+          "median": 1,
+          "p75": 1
+        }
+      },
+      "desktopLongAnswerStream": {
+        "durationMs": {
+          "median": 2966.7000000476837,
+          "p75": 2978.600000143051
+        },
+        "firstContentfulPaintMs": {
+          "median": 188,
+          "p75": 200
+        },
+        "largestContentfulPaintMs": {
+          "median": 0,
+          "p75": 0
+        },
+        "resourceCount": {
+          "median": 46,
+          "p75": 46
+        },
+        "resourceTransferBytes": {
+          "median": 5560257,
+          "p75": 5560257
+        },
+        "resourceDecodedBytes": {
+          "median": 6183999,
+          "p75": 6183999
+        },
+        "longTaskCount": {
+          "median": 2,
+          "p75": 2
+        },
+        "longTaskTotalMs": {
+          "median": 131,
+          "p75": 133
+        },
+        "longTaskMaxMs": {
+          "median": 81,
+          "p75": 83
+        },
+        "frameGapP75Ms": {
+          "median": 16.700000000000045,
+          "p75": 16.700000000000273
+        },
+        "frameGapMaxMs": {
+          "median": 100,
+          "p75": 100
+        },
+        "layoutShift": {
+          "median": 0.0000040393518518518515,
+          "p75": 0.0000040393518518518515
+        },
+        "domRows": {
+          "median": 101,
+          "p75": 101
+        },
+        "domElements": {
+          "median": 3906,
+          "p75": 3906
+        },
+        "jsHeapBytes": {
+          "median": 31648464,
+          "p75": 31723300
+        },
+        "streamFirstTextMs": {
+          "median": 133.10000014305115,
+          "p75": 137.09999990463257
+        },
+        "streamFirstDraftMs": {
+          "median": 146,
+          "p75": 152.59999990463257
+        },
+        "streamCommitTailMs": {
+          "median": 2832.100000143051,
+          "p75": 2832.600000143051
         },
         "streamDraftVisible": {
           "median": 1,
@@ -859,12 +949,12 @@
       },
       "shellSettings": {
         "durationMs": {
-          "median": 129.10000014305115,
-          "p75": 136.60000014305115
+          "median": 98.29999995231628,
+          "p75": 99.59999990463257
         },
         "firstContentfulPaintMs": {
-          "median": 52,
-          "p75": 56
+          "median": 48,
+          "p75": 52
         },
         "largestContentfulPaintMs": {
           "median": 0,
@@ -875,12 +965,12 @@
           "p75": 36
         },
         "resourceTransferBytes": {
-          "median": 4808506,
-          "p75": 4808506
+          "median": 4847138,
+          "p75": 4847138
         },
         "resourceDecodedBytes": {
-          "median": 4803129,
-          "p75": 4803129
+          "median": 4841761,
+          "p75": 4841761
         },
         "longTaskCount": {
           "median": 0,
@@ -895,12 +985,12 @@
           "p75": 0
         },
         "frameGapP75Ms": {
-          "median": 16.700000000000045,
-          "p75": 16.700000000000045
+          "median": 16.69999999999999,
+          "p75": 16.69999999999999
         },
         "frameGapMaxMs": {
-          "median": 33.30000000000001,
-          "p75": 33.30000000000001
+          "median": 16.700000000000045,
+          "p75": 16.80000000000001
         },
         "layoutShift": {
           "median": 0.00033654320987654325,
@@ -915,20 +1005,20 @@
           "p75": 1113
         },
         "jsHeapBytes": {
-          "median": 13185556,
-          "p75": 13189060
+          "median": 13357691,
+          "p75": 13367108
         },
         "shellReadyMs": {
-          "median": 318,
-          "p75": 320.7000000476837
+          "median": 253.69999980926514,
+          "p75": 265.39999985694885
         },
         "modelCatalogAfterOpen": {
           "median": 2,
           "p75": 2
         },
         "settingsSectionSwitchMs": {
-          "median": 286.2999999523163,
-          "p75": 288.40000009536743
+          "median": 281,
+          "p75": 282.5
         },
         "modelCatalogAfterSection": {
           "median": 2,
@@ -939,8 +1029,8 @@
           "p75": 3
         },
         "settingsReturnMs": {
-          "median": 358.7999999523163,
-          "p75": 359.2000000476837
+          "median": 347.39999985694885,
+          "p75": 348.10000014305115
         },
         "modelCatalogRequests": {
           "median": 3,
@@ -954,65 +1044,65 @@
     },
     "budgets": {
       "desktopStartup": {
-        "durationMs": 345,
-        "firstContentfulPaintMs": 286,
-        "largestContentfulPaintMs": 299,
+        "durationMs": 289,
+        "firstContentfulPaintMs": 226,
+        "largestContentfulPaintMs": 226,
         "resourceCount": 14,
-        "resourceTransferBytes": 3538021,
-        "resourceDecodedBytes": 3533881,
+        "resourceTransferBytes": 3577961,
+        "resourceDecodedBytes": 3573821,
         "longTaskCount": 2,
-        "longTaskTotalMs": 166,
-        "longTaskMaxMs": 137,
+        "longTaskTotalMs": 112,
+        "longTaskMaxMs": 112,
         "frameGapP75Ms": 39,
         "layoutShift": 1,
         "domRows": 4,
         "domElements": 150,
-        "jsHeapBytes": 7804946,
-        "warmDurationMs": 114,
-        "warmFirstContentfulPaintMs": 83,
-        "warmLargestContentfulPaintMs": 83,
+        "jsHeapBytes": 9171556,
+        "warmDurationMs": 100,
+        "warmFirstContentfulPaintMs": 74,
+        "warmLargestContentfulPaintMs": 74,
         "warmLongTaskTotalMs": 0,
-        "warmResourceTransferBytes": 455088
+        "warmResourceTransferBytes": 455432
       },
       "desktopHistory": {
-        "durationMs": 504,
-        "firstContentfulPaintMs": 276,
+        "durationMs": 382,
+        "firstContentfulPaintMs": 253,
         "largestContentfulPaintMs": 0,
         "resourceCount": 42,
-        "resourceTransferBytes": 5621619,
-        "resourceDecodedBytes": 6342372,
+        "resourceTransferBytes": 5663995,
+        "resourceDecodedBytes": 6384749,
         "longTaskCount": 3,
-        "longTaskTotalMs": 188,
-        "longTaskMaxMs": 113,
+        "longTaskTotalMs": 145,
+        "longTaskMaxMs": 95,
         "frameGapP75Ms": 20,
-        "layoutShift": 0,
+        "layoutShift": 0.01,
         "domRows": 102,
-        "domElements": 4090,
-        "jsHeapBytes": 20876461,
-        "settledLongTaskMaxMs": 113,
+        "domElements": 3837,
+        "jsHeapBytes": 25830668,
+        "settledLongTaskMaxMs": 95,
         "settledLayoutShift": 0,
         "settledDomElements": 4736,
         "enhancedRows": 115,
         "codeCopyButtons": 12
       },
       "desktopSessionSwitch": {
-        "durationMs": 209,
-        "firstContentfulPaintMs": 263,
+        "durationMs": 176,
+        "firstContentfulPaintMs": 217,
         "largestContentfulPaintMs": 0,
         "resourceCount": 33,
-        "resourceTransferBytes": 5037586,
-        "resourceDecodedBytes": 5027926,
-        "longTaskCount": 2,
-        "longTaskTotalMs": 71,
-        "longTaskMaxMs": 71,
+        "resourceTransferBytes": 5079962,
+        "resourceDecodedBytes": 5070302,
+        "longTaskCount": 1,
+        "longTaskTotalMs": 60,
+        "longTaskMaxMs": 60,
         "frameGapP75Ms": 20,
-        "layoutShift": 0,
+        "layoutShift": 0.01,
         "domRows": 52,
         "domElements": 1882,
-        "jsHeapBytes": 14408764,
-        "sessionClickMs": 200,
-        "messageContentWaitMs": 16,
-        "messageResourceMs": 1010,
+        "jsHeapBytes": 17156610,
+        "sessionClickMs": 170,
+        "messageContentWaitMs": 33,
+        "messageResourceMs": 935,
         "messageRequests": 2,
         "modelRequests": 2,
         "repeatMessageRequests": 0,
@@ -1022,40 +1112,40 @@
       "desktopModelPicker": {
         "closedOptions": 0,
         "closedDomElements": 176,
-        "durationMs": 158,
-        "firstContentfulPaintMs": 267,
+        "durationMs": 119,
+        "firstContentfulPaintMs": 235,
         "largestContentfulPaintMs": 0,
         "resourceCount": 22,
-        "resourceTransferBytes": 4730583,
-        "resourceDecodedBytes": 4724028,
+        "resourceTransferBytes": 4772959,
+        "resourceDecodedBytes": 4766404,
         "longTaskCount": 2,
-        "longTaskTotalMs": 89,
-        "longTaskMaxMs": 89,
+        "longTaskTotalMs": 65,
+        "longTaskMaxMs": 65,
         "frameGapP75Ms": 20,
-        "layoutShift": 0,
+        "layoutShift": 0.01,
         "domRows": 51,
         "domElements": 1103,
-        "jsHeapBytes": 12729741,
+        "jsHeapBytes": 16664080,
         "openOptions": 57,
         "keyboardEnd": 2,
         "keyboardHome": 2,
         "focusRestored": 2
       },
       "desktopComposer": {
-        "durationMs": 622,
-        "firstContentfulPaintMs": 276,
+        "durationMs": 449,
+        "firstContentfulPaintMs": 244,
         "largestContentfulPaintMs": 0,
         "resourceCount": 34,
-        "resourceTransferBytes": 5037961,
-        "resourceDecodedBytes": 5027956,
+        "resourceTransferBytes": 5080337,
+        "resourceDecodedBytes": 5070332,
         "longTaskCount": 1,
         "longTaskTotalMs": 60,
         "longTaskMaxMs": 60,
         "frameGapP75Ms": 20,
-        "layoutShift": 1,
+        "layoutShift": 0.01,
         "domRows": 52,
         "domElements": 1882,
-        "jsHeapBytes": 17339712,
+        "jsHeapBytes": 18161609,
         "typedCharacters": 276,
         "randomUUIDUnavailable": 2,
         "messageRowsAfterTyping": 58,
@@ -1081,82 +1171,105 @@
         "knownDebt": 0
       },
       "desktopStream600": {
-        "durationMs": 1594,
-        "firstContentfulPaintMs": 276,
+        "durationMs": 1567,
+        "firstContentfulPaintMs": 221,
         "largestContentfulPaintMs": 0,
-        "resourceCount": 52,
-        "resourceTransferBytes": 6314469,
-        "resourceDecodedBytes": 7032117,
-        "longTaskCount": 3,
-        "longTaskTotalMs": 152,
-        "longTaskMaxMs": 86,
+        "resourceCount": 51,
+        "resourceTransferBytes": 6393589,
+        "resourceDecodedBytes": 7111582,
+        "longTaskCount": 2,
+        "longTaskTotalMs": 76,
+        "longTaskMaxMs": 76,
         "frameGapP75Ms": 20,
-        "layoutShift": 1,
+        "layoutShift": 0.01,
         "domRows": 103,
         "domElements": 4134,
-        "jsHeapBytes": 41679394,
-        "streamFirstTextMs": 212,
-        "streamFirstDraftMs": 230,
-        "streamCommitTailMs": 1379,
+        "jsHeapBytes": 41828508,
+        "streamFirstTextMs": 192,
+        "streamFirstDraftMs": 194,
+        "streamCommitTailMs": 1384,
         "streamDraftVisible": 2,
         "streamPreservedScrollEscape": 2,
         "scrollReturnAvailable": 2,
         "scrollReturnAdvanced": 2
       },
       "desktopMarkdownStream": {
-        "durationMs": 1814,
-        "firstContentfulPaintMs": 253,
+        "durationMs": 1617,
+        "firstContentfulPaintMs": 230,
         "largestContentfulPaintMs": 0,
-        "resourceCount": 53,
-        "resourceTransferBytes": 6713454,
-        "resourceDecodedBytes": 7430758,
+        "resourceCount": 52,
+        "resourceTransferBytes": 6393936,
+        "resourceDecodedBytes": 7111584,
         "longTaskCount": 3,
-        "longTaskTotalMs": 205,
-        "longTaskMaxMs": 126,
+        "longTaskTotalMs": 145,
+        "longTaskMaxMs": 81,
         "frameGapP75Ms": 20,
         "layoutShift": 1,
         "domRows": 103,
-        "domElements": 4835,
-        "jsHeapBytes": 35745878,
-        "streamFirstTextMs": 241,
-        "streamFirstDraftMs": 301,
-        "streamCommitTailMs": 1551,
+        "domElements": 4825,
+        "jsHeapBytes": 51022790,
+        "streamFirstTextMs": 218,
+        "streamFirstDraftMs": 229,
+        "streamCommitTailMs": 1418,
         "streamDraftVisible": 2,
         "streamPreservedScrollEscape": 2,
         "scrollReturnAvailable": 2,
         "scrollReturnAdvanced": 2
       },
       "desktopCodeStream": {
-        "durationMs": 1812,
-        "firstContentfulPaintMs": 253,
+        "durationMs": 1702,
+        "firstContentfulPaintMs": 221,
         "largestContentfulPaintMs": 0,
-        "resourceCount": 55,
-        "resourceTransferBytes": 6315524,
-        "resourceDecodedBytes": 7032483,
-        "longTaskCount": 4,
-        "longTaskTotalMs": 333,
-        "longTaskMaxMs": 205,
+        "resourceCount": 53,
+        "resourceTransferBytes": 6394296,
+        "resourceDecodedBytes": 7111599,
+        "longTaskCount": 3,
+        "longTaskTotalMs": 205,
+        "longTaskMaxMs": 138,
         "frameGapP75Ms": 20,
         "layoutShift": 1,
         "domRows": 103,
-        "domElements": 5870,
-        "jsHeapBytes": 36888377,
-        "streamHighlightedMs": 1803,
-        "streamFirstTextMs": 260,
-        "streamFirstDraftMs": 269,
-        "streamCommitTailMs": 1570,
+        "domElements": 5874,
+        "jsHeapBytes": 39131884,
+        "streamHighlightedMs": 1695,
+        "streamFirstTextMs": 233,
+        "streamFirstDraftMs": 239,
+        "streamCommitTailMs": 1481,
+        "streamDraftVisible": 2,
+        "streamPreservedScrollEscape": 2,
+        "scrollReturnAvailable": 2,
+        "scrollReturnAdvanced": 2
+      },
+      "desktopLongAnswerStream": {
+        "durationMs": 3426,
+        "firstContentfulPaintMs": 230,
+        "largestContentfulPaintMs": 0,
+        "resourceCount": 53,
+        "resourceTransferBytes": 6394296,
+        "resourceDecodedBytes": 7111599,
+        "longTaskCount": 3,
+        "longTaskTotalMs": 153,
+        "longTaskMaxMs": 96,
+        "frameGapP75Ms": 20,
+        "layoutShift": 1,
+        "domRows": 103,
+        "domElements": 4492,
+        "jsHeapBytes": 41240290,
+        "streamFirstTextMs": 158,
+        "streamFirstDraftMs": 176,
+        "streamCommitTailMs": 3258,
         "streamDraftVisible": 2,
         "streamPreservedScrollEscape": 2,
         "scrollReturnAvailable": 2,
         "scrollReturnAdvanced": 2
       },
       "shellSettings": {
-        "durationMs": 158,
-        "firstContentfulPaintMs": 65,
+        "durationMs": 115,
+        "firstContentfulPaintMs": 60,
         "largestContentfulPaintMs": 0,
         "resourceCount": 42,
-        "resourceTransferBytes": 5529782,
-        "resourceDecodedBytes": 5523599,
+        "resourceTransferBytes": 5574209,
+        "resourceDecodedBytes": 5568026,
         "longTaskCount": 1,
         "longTaskTotalMs": 60,
         "longTaskMaxMs": 60,
@@ -1164,13 +1277,13 @@
         "layoutShift": 1,
         "domRows": 50,
         "domElements": 1280,
-        "jsHeapBytes": 15167419,
-        "shellReadyMs": 369,
+        "jsHeapBytes": 17377241,
+        "shellReadyMs": 306,
         "modelCatalogAfterOpen": 3,
-        "settingsSectionSwitchMs": 332,
+        "settingsSectionSwitchMs": 325,
         "modelCatalogAfterSection": 3,
         "modelCatalogAfterBack": 4,
-        "settingsReturnMs": 414,
+        "settingsReturnMs": 401,
         "modelCatalogRequests": 4,
         "hostErrors": 0
       }

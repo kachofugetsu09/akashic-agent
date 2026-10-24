@@ -147,7 +147,9 @@ function moveRowFocus(event: React.KeyboardEvent<HTMLElement>) {
   const options = [...event.currentTarget.querySelectorAll<HTMLElement>("[data-nav]")];
   if (!options.length) return;
   const active = document.activeElement as HTMLElement | null;
-  const owningRow = active?.closest?.("[data-nav]") as HTMLElement | null;
+  // 收藏星和模型按钮是同一行的兄弟元素：从星星出发也按它所在的行算。
+  const owningRow = (active?.closest?.(".model-picker__row")?.querySelector("[data-nav]")
+    ?? active?.closest?.("[data-nav]")) as HTMLElement | null;
   const current = owningRow ? options.indexOf(owningRow) : -1;
   // 焦点还在搜索框或来源栏时，下键进第一行、上键进最后一行。
   const next = event.key === "Home" ? 0 : event.key === "End" ? options.length - 1
@@ -169,7 +171,7 @@ interface ModelRowProps {
 
 function ModelRow({ runtime, selected, favorite, showSource, onChoose, onToggleFavorite }: ModelRowProps) {
   return (
-    <div className="model-picker__row" role="group" aria-label={runtime.model}>
+    <div className="model-picker__row">
       <button
         type="button"
         className={`model-picker__option ${selected ? "is-selected" : ""}`}
@@ -178,12 +180,7 @@ function ModelRow({ runtime, selected, favorite, showSource, onChoose, onToggleF
         data-nav
         onClick={onChoose}
         onKeyDown={(event) => {
-          if (event.key === "Enter" || event.key === " ") {
-            event.preventDefault();
-            onChoose();
-            return;
-          }
-          // ArrowRight 进入行内次级动作（收藏星），ArrowLeft 从星星回到行。
+          // Enter/Space 交给按钮原生 click；ArrowRight 进入行内次级动作（收藏星），ArrowLeft 从星星回到行。
           if (event.key === "ArrowRight") {
             event.preventDefault();
             event.currentTarget.parentElement?.querySelector<HTMLElement>(".model-picker__star")?.focus();
@@ -203,7 +200,7 @@ function ModelRow({ runtime, selected, favorite, showSource, onChoose, onToggleF
         type="button"
         tabIndex={-1}
         className={`model-picker__star ${favorite ? "is-favorite" : ""}`}
-        aria-label={favorite ? "取消收藏" : "收藏"}
+        aria-label={`${favorite ? "取消收藏" : "收藏"} ${runtime.model}`}
         aria-pressed={favorite}
         onClick={onToggleFavorite}
         onKeyDown={(event) => {
@@ -310,7 +307,7 @@ export function ModelPickerBody({ runtimes, selectedId, follow, onChoose }: Mode
     // 触屏上聚焦搜索框会立刻弹出软键盘盖住半个列表；改为聚焦当前选中行，需要搜索时再点。
     const focusTimer = window.setTimeout(() => {
       if (window.matchMedia("(pointer: coarse)").matches) {
-        rootRef.current?.querySelector<HTMLElement>(".model-picker__option[aria-selected='true']")?.focus({ preventScroll: true });
+        rootRef.current?.querySelector<HTMLElement>(".model-picker__option[aria-pressed='true']")?.focus({ preventScroll: true });
       } else searchRef.current?.focus({ preventScroll: true });
     }, 0);
     return () => window.clearTimeout(focusTimer);
@@ -349,12 +346,6 @@ export function ModelPickerBody({ runtimes, selectedId, follow, onChoose }: Mode
             tabIndex={-1}
             data-nav
             onClick={() => onChoose("")}
-            onKeyDown={(event) => {
-              if (event.key === "Enter" || event.key === " ") {
-                event.preventDefault();
-                onChoose("");
-              }
-            }}
           >
             <Check size={14} className="model-picker__check" aria-hidden="true" />
             <span className="model-picker__copy">

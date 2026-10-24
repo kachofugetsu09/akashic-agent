@@ -3,6 +3,33 @@ import { micromark } from "micromark";
 import { kaomojiLiteralExtension } from "./kaomoji-markdown";
 import { isConceptLabel, isNumericColumn, isPlainTextLanguage, stripConceptSeparator } from "./markdown-reading";
 
+const referenceDefinition = /^\s{0,3}\[[^\]]+\]:/m;
+const listItemStart = /^\s{0,3}(?:[-+*]|\d+[.)])\s/;
+
+// 流式时把正文切成互不影响的顶层段落：写完的段落不再重新解析，只有最后一段随新字重画。
+export function splitStreamingMarkdown(markdown: string): string[] {
+  // 1. 引用式链接和脚注定义会改变前文的渲染，出现时整篇一起渲染。
+  if (referenceDefinition.test(markdown)) return [markdown];
+  const blocks: string[] = [];
+  for (const chunk of markdown.split(/\n{2,}/)) {
+    const previous = blocks.at(-1);
+    // 2. 缩进续行和松散列表的下一项跟前一段放在一起，否则列表会断开、编号从头开始。
+    const continues = previous !== undefined && (/^\s/.test(chunk)
+      || (listItemStart.test(chunk) && previous.split("\n").some((line) => listItemStart.test(line))));
+    if (continues) blocks[blocks.length - 1] = `${previous}\n\n${chunk}`;
+    else blocks.push(chunk);
+  }
+  return blocks;
+}
+
+// 流式最后一段里还没闭合的行内代码和加粗先补上，避免先露出星号、闭合时整段跳变；刚打出的开头标记先不显示。
+export function closeStreamingInline(markdown: string): string {
+  let text = markdown;
+  if ((text.match(/`/g)?.length ?? 0) % 2) text = text.endsWith("`") ? text.slice(0, -1) : `${text}\``;
+  if ((text.replace(/`[^`\n]*`/g, "").match(/\*\*/g)?.length ?? 0) % 2) text = text.endsWith("**") ? text.slice(0, -2) : `${text}**`;
+  return text;
+}
+
 /** Render settled GFM while keeping raw HTML and unsafe protocols inert. */
 export function renderStaticMarkdown(markdown: string) {
   const html = micromark(markdown, {

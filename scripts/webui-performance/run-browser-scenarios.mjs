@@ -21,6 +21,12 @@ const updateBaseline = process.argv.includes("--update-baseline");
 const runCount = integerArgument("--runs", 5);
 const onlyScenario = process.argv.includes("--only") ? process.argv[process.argv.indexOf("--only") + 1] : "";
 const desktopStreamIntervalMs = numberArgument("--desktop-stream-interval-ms", 2.5, 0);
+// 流式场景按倍数降低 CPU，模拟普通笔记本；1 表示不降速。
+const cpuThrottle = numberArgument("--cpu-throttle", 1, 1);
+// 真实回答的一节：标题、加粗、行内代码、链接、列表和引用，多节累积成约 6–7k 字的长回答。
+const longAnswerSection = "## 这一步做了什么\n\n先说结论：这一步主要影响**启动速度**和`缓存命中率`，细节见[说明](https://example.com/doc)。检查点\n\n"
+  + "- 第一项：读取配置并校验字段\n- 第二项：按**优先级**排序任务\n- 第三项：写回 `state.json`\n\n> 注意：不要在生产环境直接执行。\n\n";
+
 const buildRoot = mkdtempSync(resolve(tmpdir(), "akashic-webui-browser-"));
 const results = [];
 let browser;
@@ -64,6 +70,7 @@ try {
           desktopStream600: await measure("desktopStream600", () => measureDesktopStream(browser, desktopServer.origin, desktopStreamIntervalMs)),
           desktopMarkdownStream: await measure("desktopMarkdownStream", () => measureDesktopStream(browser, desktopServer.origin, desktopStreamIntervalMs, "**片** ")),
           desktopCodeStream: await measure("desktopCodeStream", () => measureDesktopStream(browser, desktopServer.origin, 20, "```ts\nconst x = 1;\n```\n", 60)),
+          desktopLongAnswerStream: await measure("desktopLongAnswerStream", () => measureDesktopStream(browser, desktopServer.origin, 120, longAnswerSection, 24, "检查点")),
           shellSettings: await measure("shellSettings", () => measureShellSettings(browser, desktopServer.origin)),
         },
       });
@@ -80,7 +87,7 @@ try {
       capturedAt: new Date().toISOString(),
       chromiumVersion: await browser.version(),
       runCount,
-      fixture: { desktopStreamIntervalMs },
+      fixture: { desktopStreamIntervalMs, cpuThrottle },
       aggregate,
       runs: measuredResults,
     };
@@ -500,10 +507,10 @@ async function readStreamText(page, selector) {
   }, selector);
 }
 
-async function measureDesktopStream(browserInstance, origin, intervalMs, delta = "片", count = 600) {
+async function measureDesktopStream(browserInstance, origin, intervalMs, delta = "片", count = 600, unit = "") {
   const textDelta = delta.replaceAll("**", "");
   const code = delta.startsWith("```");
-  const contentUnit = code ? "const x = 1;" : textDelta.trim();
+  const contentUnit = unit || (code ? "const x = 1;" : textDelta.trim());
   const markdown = delta.includes("**") || code;
   const context = await browserInstance.newContext({ viewport: { width: 1440, height: 1000 } });
   const page = await context.newPage();
@@ -520,6 +527,7 @@ async function measureDesktopStream(browserInstance, origin, intervalMs, delta =
   await page.goto(`${origin}/chat?akashic_perf=1`, { waitUntil: "networkidle" });
   await page.getByText("性能基线会话", { exact: true }).click();
   await page.locator(".web-message-anchor").last().waitFor();
+  if (cpuThrottle > 1) await (await context.newCDPSession(page)).send("Emulation.setCPUThrottlingRate", { rate: cpuThrottle });
   const scrollStateBefore = await page.locator('.conversation-scroll').evaluate((element) => {
     element.dispatchEvent(new WheelEvent("wheel", { deltaY: -240, bubbles: true }));
     element.scrollTop = 0;
@@ -545,7 +553,7 @@ async function measureDesktopStream(browserInstance, origin, intervalMs, delta =
     const content = (root?.textContent ?? "") + [...(root?.querySelectorAll("diffs-container") ?? [])]
       .map((element) => element.shadowRoot?.textContent ?? "").join("");
     return content.split(text).length - 1 >= expected;
-  }, { text: contentUnit, expected: code ? 1 : 20 }, { timeout: 20_000 });
+  }, { text: contentUnit, expected: code || unit ? 1 : 20 }, { timeout: 20_000 });
   firstTextAt = await page.evaluate(() => performance.now());
   if (markdown && !code) await page.locator(".reply-activity strong").first().waitFor();
   firstDraftAt = await page.evaluate(() => performance.now());

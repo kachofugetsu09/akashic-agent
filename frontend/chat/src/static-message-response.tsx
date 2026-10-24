@@ -1,31 +1,49 @@
 import { memo, useCallback, useEffect, useMemo, useRef } from "react";
 import { copyReadingCode, jumpToFootnote, watchOverflowEdges } from "./markdown-reading";
 import { FILE_INTENT, openFileInWorkbench, useWorkbenchAccepts, workspaceFileRef } from "./shell-workbench";
-import { renderStaticMarkdown } from "./static-markdown";
+import { closeStreamingInline, renderStaticMarkdown, splitStreamingMarkdown } from "./static-markdown";
+
+// 流式正文的一段：文字没变就不重新解析，也不替换已有 DOM。
+// 首段和末段用属性标出，样式不在中间层用 :first-child（见 message-view.css 的 #1586 说明）。
+const StaticBlock = memo(function StaticBlock({ markdown, edge }: { markdown: string; edge: string | undefined }) {
+  const html = useMemo(() => renderStaticMarkdown(markdown), [markdown]);
+  return <div className="static-block" data-edge={edge} dangerouslySetInnerHTML={{ __html: html }} />;
+});
 
 export const StaticMessageResponse = memo(function StaticMessageResponse({
   children,
+  streaming = false,
   onError,
 }: {
   children: string;
+  streaming?: boolean;
   onError?: (error: unknown) => void;
 }) {
-  const html = useMemo(() => renderStaticMarkdown(children), [children]);
+  const blocks = useMemo(() => {
+    if (!streaming) return null;
+    const parts = splitStreamingMarkdown(children);
+    parts[parts.length - 1] = closeStreamingInline(parts[parts.length - 1]);
+    return parts;
+  }, [children, streaming]);
+  const html = useMemo(() => blocks ? "" : renderStaticMarkdown(children), [blocks, children]);
   const ref = useRef<HTMLDivElement>(null);
   // 必要 effect：静态 HTML 里的宽表同样要标出哪边还有列；内容换了就重新接上。
   useEffect(() => {
     const tables = ref.current ? [...ref.current.querySelectorAll<HTMLElement>(".reading-table")] : [];
     const stops = tables.map(watchOverflowEdges);
     return () => stops.forEach((stop) => stop());
-  }, [html]);
+  }, [html, blocks]);
   const acceptsFiles = useWorkbenchAccepts(FILE_INTENT);
   // 必要 effect：行内代码里的文件路径包成按钮（与流式路径的 ReadingInlineCode 一致）；工作台不接受文件意图时拆回去。
+  // 只处理还没包过的代码：流式时每帧都会跑，已包好的段落不再拆了重包。
   useEffect(() => {
     const root = ref.current;
     if (!root) return;
-    for (const link of root.querySelectorAll<HTMLButtonElement>("button.reading-file-link")) link.replaceWith(...link.childNodes);
-    if (!acceptsFiles) return;
-    for (const code of root.querySelectorAll<HTMLElement>(":not(pre) > code")) {
+    if (!acceptsFiles) {
+      for (const link of root.querySelectorAll<HTMLButtonElement>("button.reading-file-link")) link.replaceWith(...link.childNodes);
+      return;
+    }
+    for (const code of root.querySelectorAll<HTMLElement>(":not(pre, button.reading-file-link) > code")) {
       // 已经在链接里的代码不再包按钮：<a> 里不能嵌交互控件，点击也会同时打开链接。
       const file = code.closest("a") ? null : workspaceFileRef(code.textContent ?? "");
       if (!file) continue;
@@ -36,7 +54,7 @@ export const StaticMessageResponse = memo(function StaticMessageResponse({
       code.replaceWith(button);
       button.append(code);
     }
-  }, [html, acceptsFiles]);
+  }, [html, blocks, acceptsFiles]);
   const openFile = useCallback((event: React.MouseEvent<HTMLDivElement>) => {
     const link = event.target instanceof Element ? event.target.closest<HTMLElement>("[data-file-path]") : null;
     if (link?.dataset.filePath) void openFileInWorkbench({ path: link.dataset.filePath, line: link.dataset.fileLine ? Number(link.dataset.fileLine) : null });
@@ -76,7 +94,9 @@ export const StaticMessageResponse = memo(function StaticMessageResponse({
       className="static-message-response markdown-reading"
       onClick={(event) => { copyCode(event); openFile(event); }}
       onClickCapture={jumpToFootnote}
-      dangerouslySetInnerHTML={{ __html: html }}
+      {...(blocks ? { children: blocks.map((block, index) => <StaticBlock key={index} markdown={block}
+        edge={[index === 0 && "first", index === blocks.length - 1 && "last"].filter(Boolean).join(" ") || undefined} />) }
+        : { dangerouslySetInnerHTML: { __html: html } })}
     />
   );
 });
