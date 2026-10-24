@@ -102,9 +102,10 @@ class ChatUiQueries:
         snapshot = await self.catalog()
         stored_icons = await self.icons()
         icons = {item.connection_id: stored_icons.get(item.connection_id) for item in snapshot.connections}
-        # 图标单独保存、不推进目录 revision，指纹把两者都算进去。
-        digest = hashlib.sha256(json.dumps(icons, sort_keys=True).encode()).hexdigest()[:16]
-        catalog = f"{snapshot.revision}:{digest}"
+        # 指纹取自投影本身：图标单独保存、可用性随驱动在场与否变化，都不推进目录 revision。
+        runtimes = project_chat_runtimes(snapshot, icons)
+        unavailable = project_unavailable_chat_runtimes(snapshot)
+        catalog = hashlib.sha256(json.dumps([runtimes, unavailable], sort_keys=True).encode()).hexdigest()[:24]
         body: dict[str, object] = {
             "generationId": snapshot.revision,
             "catalog": catalog,
@@ -114,8 +115,7 @@ class ChatUiQueries:
         }
         if known == catalog:
             return body
-        return {**body, "runtimes": project_chat_runtimes(snapshot, icons),
-                "unavailableRuntimes": project_unavailable_chat_runtimes(snapshot)}
+        return {**body, "runtimes": runtimes, "unavailableRuntimes": unavailable}
 
     # 会话最近一次执行里最后一条带模型事实的回复对应的调用统计；本次没有、尾部找不到或记录已清理时为空。
     def _latest_call(self, session_id: str) -> dict[str, object] | None:
