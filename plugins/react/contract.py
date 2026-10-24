@@ -43,6 +43,7 @@ class OrderedReact(Protocol):
         check_start: StartCheck,
         max_parallel_calls: int = 1,
         before_step: Callable[[], Awaitable[None]] | None = None,
+        aborted: Callable[[str], Awaitable[Message]] | None = None,
     ) -> Message: ...
 
 

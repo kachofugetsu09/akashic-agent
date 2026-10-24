@@ -73,7 +73,7 @@ export function DesktopChatView({ controller }: DesktopChatViewProps) {
     historyHasMore, historyLoading, historyLoadingOlder, loadOlderMessages, sessionRequested,
     activeSessionDeleted, deletedNotice, deleteSession, restoreSession, dismissDeletedNotice, renameSession,
     activateSession, prefetchSessionTail, startNewChat, handleReplyMessage, handleCopiedMessage,
-    reportError, cancelReply, sendMessage, retryTurn, stopTurn, retry,
+    reportError, cancelReply, sendMessage, retryTurn, abandonTurn, stopTurn, retry,
     navigationGroups,
   } = controller;
   // 改的是这条未发送草稿的归属，而不是换一份草稿：切过去后把原文接到目标位置已有草稿之后。
@@ -187,7 +187,7 @@ export function DesktopChatView({ controller }: DesktopChatViewProps) {
                 />
                 <DesktopTimelineMessages messages={pagedTimeline} activities={replyActivities} replySynced={replyAvailable !== null} refresh={controller.timelineRefresh} status={status}
                   messageElementsRef={messageElementsRef} copiedMessageId={copiedMessageId}
-                  onReply={replyTo} onEditInput={editInput} onRetry={retryTurn} onCopied={handleCopiedMessage} onError={reportError} />
+                  onReply={replyTo} onEditInput={editInput} onRetry={retryTurn} onAbandon={abandonTurn} onCopied={handleCopiedMessage} onError={reportError} />
                 <DesktopConversationMessages
                   messages={messages} status={status}
                   carryDayKey={timelineMessages.length

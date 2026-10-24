@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 from collections.abc import Awaitable, Callable, Mapping, Sequence
 from typing import Any, Literal, cast
 from contextlib import AbstractAsyncContextManager, AbstractContextManager
@@ -7,6 +8,7 @@ from contextlib import AbstractAsyncContextManager, AbstractContextManager
 from core.common.diagnostic_log import log_timing
 from core.common.file_io import run_file_io
 from functools import partial
+from uuid import uuid4
 from agent.plugin_composition import Context
 from plugins.ledger.contract import ArtifactRead
 from plugins.ledger.contract import MessageReader, MessageWriters, OwnerState, OwnerTransaction
@@ -143,6 +145,24 @@ async def run_reply(
             content={**view.checks, "model.facts": model_checks.check_facts, "model.tool_rejection": model_checks.check_tool_rejection, "context.summary": context.check_summary, "context.notice": context.check_notice}, check_call=menu.check_call,
         )(reader.session_id)
         task.on_close(output.expire)
+        # 引擎放弃未完成区段是来源的终止控制，不是模型输出：正文与检查器都归来源侧。
+        # 只在仍持有本来源提交权时允许写入，否则新输入已经取代了这一轮。
+        controls = writers.bind(
+            ctx, author="app", source=source, body_types=(Control,), content={},
+        )(reader.session_id)
+        task.on_close(controls.expire)
+
+        async def aborted(reason: str) -> Message:
+            if not task.active:
+                raise asyncio.CancelledError
+            check()
+            head = reader.head(source=source)
+            # 放弃已关闭本段：不取消当前任务——这一轮是正常收尾，返回消息让来源自己让位。
+            return await controls.append_async(
+                uuid4().hex, Control("abandon", head, reason),
+                expected_source_head=head,
+            )
+
         artifacts: Mapping[str, tuple[Mapping[str, Any], ...]] = {}
         def render(part: ContentPart):
             return model_content.render(part, artifacts=artifacts, read_message=reader.get)
@@ -213,9 +233,11 @@ async def run_reply(
                 state=owner_state.open_scoped(ctx, "generation"),
                 check_start=check,
                 before_step=before_step,
+                aborted=aborted,
             )
         finally:
             output.expire()
+            controls.expire()
 
 
 def own_messages(messages: Sequence[Message], source: str) -> tuple[Message, ...]:
