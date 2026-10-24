@@ -560,7 +560,8 @@ export function notifyShown(): void {
 }
 
 // 切回标签时 visibilitychange 与 focus 几乎同时到达：按“离开→回来”一个周期只算一次，订阅者不重复读取。
-let windowLeft = false;
+// 在后台标签里打开、从没获得过焦点的页面，第一次切过来也算回来。
+let windowLeft = typeof document !== "undefined" && (document.visibilityState !== "visible" || !document.hasFocus());
 const windowReturned = () => { if (windowLeft) notifyShown(); };
 const windowDeparted = () => { windowLeft = true; };
 
