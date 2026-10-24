@@ -214,7 +214,8 @@ export function Configuration({ctx, definition, embed, stored}: {ctx: WebHostCon
           try {
             const sequence = ++loads.current;
             const next = await read<Status>(path, {signal: controller.signal});
-            stored?.set(next);
+            // 只让最新一次读取写回共享配置：晚到的旧读取不能盖掉新值。
+            if (sequence === loads.current) stored?.set(next);
             if (current() && sequence === loads.current) {
               refreshed = true;
               if (verifyRequired.current === id) verifyRequired.current = null;
@@ -245,7 +246,8 @@ export function Configuration({ctx, definition, embed, stored}: {ctx: WebHostCon
           try {
             const sequence = ++loads.current;
             const next = await read<Status>(path, {signal: controller.signal});
-            stored?.set(next);
+            // 只让最新一次读取写回共享配置：晚到的旧读取不能盖掉新值。
+            if (sequence === loads.current) stored?.set(next);
             if (current() && sequence === loads.current) {
               refreshed = true;
               if (verifyRequired.current === id) verifyRequired.current = null;
@@ -280,7 +282,7 @@ export function Configuration({ctx, definition, embed, stored}: {ctx: WebHostCon
     const sequence = ++loads.current;
     try {
       const next = await read<Status>(path);
-      stored?.set(next);
+      if (sequence === loads.current) stored?.set(next);
       if (!alive.current || sequence !== loads.current || (preserveDraft && editing.current)) return;
       const preset = embed.intent === "enable" && next.enabled !== true && next.can_enable !== false;
       setStatus(next); setEnabled(preset ? true : next.enabled); setValues(next.values); markDirty(preset); setPreset(preset); setError("");
