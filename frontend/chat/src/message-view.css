@@ -613,9 +613,12 @@
    侧栏任何增删（如搜索进出卸载分组区）都触发整树样式重算（#1586）。首个槽位改用 markstream 固有的
    data-node-index="0" 标识（两条渲染路径都带，同文件脚注规则已依赖 data-node-type）。 */
 :is(.agent-content, .process-markdown, .user-bubble) .markdown-reading .markdown-renderer > .node-slot[data-node-index="0"] > .node-content > :first-child,
-:is(.agent-content, .process-markdown, .user-bubble) .static-message-response > :first-child {
+:is(.agent-content, .process-markdown, .user-bubble) .static-message-response > :first-child,
+:is(.agent-content, .process-markdown, .user-bubble) .static-message-response > .static-block[data-edge~="first"] > :first-child {
   margin-block-start: 0;
 }
+/* 流式静态正文按段包一层，包裹层不占盒子，段与段之间的边距照常折叠。 */
+.static-block { display: contents; }
 /* 首块是代码、Mermaid、公式或数学兜底时，真实边距在框上（多为 !important）：框可能是首块本身（流式数学兜底），也可能在包裹层里面，
    两种都清；列表、引用、表格里嵌着的不算首块。 */
 :is(.agent-content, .process-markdown, .user-bubble) .markdown-reading .markdown-renderer > .node-slot:first-child > .node-content > :first-child:is(.code-block-container, pre[data-markstream-pre="1"], .mermaid-block, .reading-math-display),
@@ -630,6 +633,7 @@
 
 /* 气泡有自己的内边距：末块（代码块的 my-4、段落的段后距）的下边距只会在气泡底部多出一截空白。 */
 .user-bubble :is(.markdown-reading .markdown-renderer > .node-slot:last-child > .node-content, .static-message-response) > :last-child,
+.user-bubble .static-message-response > .static-block[data-edge~="last"] > :last-child,
 .user-bubble .markdown-reading .markdown-renderer > .node-slot:last-child > .node-content > :last-child
   :is(.code-block-container, pre[data-markstream-pre="1"], .reading-math-display):not(:is(li, blockquote, td) *) {
   margin-block-end: 0 !important;

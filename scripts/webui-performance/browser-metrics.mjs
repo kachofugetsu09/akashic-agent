@@ -16,11 +16,22 @@ export function aggregateBrowserRuns(runs) {
   }));
 }
 
+const diagnosticOnlyMetrics = new Set(["frameGapMaxMs", "settledFrameGapMaxMs"]);
+// 基线为零的指标给一次测量噪声的余量；布局偏移是小数，向上取整会把零预算卡死在 0。
+const zeroBudgets = { longTaskCount: 1, longTaskTotalMs: 60, longTaskMaxMs: 60, layoutShift: 0.01 };
+// 堆大小随 GC 时机波动，比时延指标多留余量。
+const noisyMetricFactors = { jsHeapBytes: 1.3 };
+
 export function createBrowserBudgets(aggregate) {
   return Object.fromEntries(Object.entries(aggregate).map(([scenario, metrics]) => [scenario, Object.fromEntries(
-    Object.entries(metrics).map(([metric, values]) => [metric, metric === "virtualRows" || metric === "domRows"
-      ? Math.ceil(values.p75 + 2)
-      : Math.ceil(values.p75 * 1.15)]),
+    Object.entries(metrics).flatMap(([metric, values]) => {
+      // 最大帧间隔是离群诊断，不作为有限样本的回归门禁。
+      if (diagnosticOnlyMetrics.has(metric)) return [];
+      if (values.p75 === 0 && metric in zeroBudgets) return [[metric, zeroBudgets[metric]]];
+      return [[metric, metric === "virtualRows" || metric === "domRows"
+        ? Math.ceil(values.p75 + 2)
+        : Math.ceil(values.p75 * (noisyMetricFactors[metric] ?? 1.15))]];
+    }),
   )]));
 }
 
@@ -29,6 +40,7 @@ export function compareBrowserMetrics(aggregate, budgets) {
   for (const [scenario, scenarioBudgets] of Object.entries(budgets)) {
     if (!aggregate[scenario]) throw new Error(`缺少浏览器性能场景: ${scenario}`);
     for (const [metric, maximum] of Object.entries(scenarioBudgets)) {
+      if (diagnosticOnlyMetrics.has(metric)) continue;
       const values = aggregate[scenario][metric];
       if (!values) throw new Error(`缺少浏览器性能指标: ${scenario}.${metric}`);
       checks.push({

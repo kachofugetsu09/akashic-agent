@@ -123,10 +123,10 @@ try {
     // 6. 场景选择穿过共享 React 选择器并落库，清除指定后跟随默认。
     const agent = page.locator(".settings-binding").filter({hasText: "智能体主模型"});
     await agent.getByRole("button").click();
-    await page.getByRole("option").filter({hasText: "local-codex-standard"}).click();
+    await page.locator(".model-picker__option").filter({hasText: "local-codex-standard"}).click();
     await page.waitForFunction(async () => Boolean((await fetch("/api/dashboard/models/catalog").then(r => r.json())).roleBindings.agent));
     await agent.getByRole("button").click();
-    await page.getByRole("option").filter({hasText: "跟随全局默认模型"}).click();
+    await page.locator(".model-picker__option").filter({hasText: "跟随全局默认模型"}).click();
     await page.waitForFunction(async () => !(await fetch("/api/dashboard/models/catalog").then(r => r.json())).roleBindings.agent);
     checks.push("场景模型指定与跟随默认均已通过真实目录读回确认");
     await page.setViewportSize({width: 390, height: 844});

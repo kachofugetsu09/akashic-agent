@@ -78,19 +78,19 @@ const MessageBody = memo(function MessageBody({
   deferRichContent: boolean;
   onError?: (error: unknown) => void;
 }) {
-  if (!streaming && !messageNeedsMarkdown(content)) {
+  if (!messageNeedsMarkdown(content)) {
     return <p className="plain-message-response">{content}</p>;
   }
-  if (!streaming && deferRichContent) {
+  if (deferRichContent) {
     const features = detectMessageRenderingFeatures(content);
     if (features.math || features.code) {
       return (
         <Suspense fallback={<p className="plain-message-response">{content}</p>}>
-          <LazyMessageResponse isAnimating={false}>{content}</LazyMessageResponse>
+          <LazyMessageResponse isAnimating={streaming} paced={paced}>{content}</LazyMessageResponse>
         </Suspense>
       );
     }
-    return <StaticMessageResponse onError={onError}>{content}</StaticMessageResponse>;
+    return <StaticMessageResponse streaming={streaming} onError={onError}>{content}</StaticMessageResponse>;
   }
   return (
     <Suspense fallback={<p className="plain-message-response">{content}</p>}>

@@ -23,11 +23,11 @@ const modelsAssets = Object.fromEntries([["module", "plugin_ui.js", "text/javasc
 const pluginUiCatalog = {
   catalog_revision: "1".repeat(64),
   items: [{ id: "models", revision: "fixture", module_sha256: modelsAssets.module.sha256,
-    stylesheet_sha256: modelsAssets.stylesheet.sha256, slots: ["turn.after_answer", "composer.toolbar", "composer.status"], navigation: null }],
+    stylesheet_sha256: modelsAssets.stylesheet.sha256, slots: ["turn.after_answer", "composer.toolbar", "composer.status", "sidebar.panels"], navigation: null }],
 };
 
 /** Serve the production desktop bundle with deterministic HTTP and real WebSocket fixtures. */
-export async function startDesktopFixtureServer(root, { port = 0, historyCount = 100, replayTurn = null } = {}) {
+export async function startDesktopFixtureServer(root, { port = 0, historyCount = 100, replayTurn = null, dashboardRoot = null, chatAppRoot = null, webUi = null } = {}) {
   const messageCount = boundedInteger(historyCount, 100, 1, 10_000);
   const sockets = new Set();
   const receivedFrames = [];
@@ -36,12 +36,22 @@ export async function startDesktopFixtureServer(root, { port = 0, historyCount =
   const websocketServer = new WebSocketServer({ noServer: true });
   websocketServer.on("connection", (socket) => {
     sockets.add(socket);
-    socket.on("message", (data) => receivedFrames.push(JSON.parse(String(data))));
+    socket.on("message", (data) => {
+      const frame = JSON.parse(String(data));
+      receivedFrames.push(frame);
+      if (frame.type === "message.send" && typeof frame.request_id === "string") {
+        socket.send(JSON.stringify({ type: "message.accepted", request_id: frame.request_id, session_id: frame.session_id }));
+      }
+    });
     socket.once("close", () => sockets.delete(socket));
   });
 
   const server = createServer(async (request, response) => {
     const url = new URL(request.url, "http://127.0.0.1");
+    if (url.pathname === "/favicon.ico") {
+      response.writeHead(204).end();
+      return;
+    }
     if (request.method === "POST" && url.pathname === "/__fixture/reset") {
       receivedFrames.length = 0;
       receivedRequests.length = 0;
@@ -174,12 +184,23 @@ export async function startDesktopFixtureServer(root, { port = 0, historyCount =
       response.writeHead(200, { "content-type": asset.type, "cache-control": "no-store" });
       return response.end(asset.body);
     }
+    if (webUi && url.pathname === "/api/chat/web-ui/bootstrap") return sendJson(response, webUi.bootstrap);
+    if (webUi && url.pathname === "/api/chat/web-ui/state") return sendJson(response, webUi.state);
     const api = fixtureApiResponse(url, messageCount);
     if (api !== undefined) return sendJson(response, api);
-    let requested = url.pathname === "/" || url.pathname === "/settings" ? "index.html" : url.pathname.replace(/^\//u, "");
-    requested = requested.replace(/^assets\//u, "");
-    const file = resolve(root, requested);
-    if (!file.startsWith(`${root}${sep}`) || !existsSync(file) || !statSync(file).isFile()) {
+    let assetRoot = root;
+    let requested = ["/", "/chat", "/chat/", "/settings"].includes(url.pathname) ? "index.html" : url.pathname.replace(/^\//u, "");
+    if (dashboardRoot && (url.pathname === "/" || url.pathname === "/settings")) assetRoot = dashboardRoot;
+    if (dashboardRoot && url.pathname.startsWith("/dashboard/assets/")) {
+      assetRoot = dashboardRoot;
+      requested = url.pathname.slice("/dashboard/assets/".length);
+    } else requested = requested.replace(/^assets\//u, "");
+    if (chatAppRoot && url.pathname.startsWith("/assets/chat-app")) {
+      assetRoot = chatAppRoot;
+      requested = url.pathname.slice("/assets/".length);
+    }
+    const file = resolve(assetRoot, requested);
+    if (!file.startsWith(`${assetRoot}${sep}`) || !existsSync(file) || !statSync(file).isFile()) {
       response.writeHead(404).end("not found");
       return;
     }
@@ -276,6 +297,7 @@ function fixtureApiResponse(url, messageCount) {
   if (pathname === "/api/shell/state") return { status: "ready", configured: true, chatReady: true };
   if (pathname === "/api/chat/sessions") return desktopSessions(messageCount);
   if (pathname === "/api/chat/navigation/pins") return { pins: [], sessions: [] };
+  if (pathname === "/api/dashboard/models/catalog") return desktopModelCatalog();
   if (pathname === "/api/chat/plugin-ui/catalog") return pluginUiCatalog;
   if (pathname === "/api/runtime/host-bridge") return { state: "healthy" };
   return undefined;

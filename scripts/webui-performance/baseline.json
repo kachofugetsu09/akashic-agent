@@ -90,13 +90,1203 @@
     }
   },
   "browser": {
-    "status": "unmeasured",
+    "status": "measured",
+    "sourceCommit": "10981eacc9c39b2ef0c0f1fe0eeababaaa8a6e8b",
+    "chromiumVersion": "153.0.8010.12",
     "sampling": {
       "runs": 5,
       "aggregate": "median",
       "tail": "p75"
     },
-    "reference": null,
-    "budgets": null
+    "reference": {
+      "desktopStartup": {
+        "durationMs": {
+          "median": 242.70000004768372,
+          "p75": 250.79999995231628
+        },
+        "firstContentfulPaintMs": {
+          "median": 196,
+          "p75": 196
+        },
+        "largestContentfulPaintMs": {
+          "median": 196,
+          "p75": 196
+        },
+        "resourceCount": {
+          "median": 11,
+          "p75": 12
+        },
+        "resourceTransferBytes": {
+          "median": 1788730,
+          "p75": 3111270
+        },
+        "resourceDecodedBytes": {
+          "median": 1785430,
+          "p75": 3107670
+        },
+        "longTaskCount": {
+          "median": 1,
+          "p75": 1
+        },
+        "longTaskTotalMs": {
+          "median": 95,
+          "p75": 97
+        },
+        "longTaskMaxMs": {
+          "median": 95,
+          "p75": 97
+        },
+        "frameGapP75Ms": {
+          "median": 16.700000000000017,
+          "p75": 33.3
+        },
+        "frameGapMaxMs": {
+          "median": 100,
+          "p75": 100
+        },
+        "layoutShift": {
+          "median": 0.000033799491222993827,
+          "p75": 0.000033799491222993827
+        },
+        "domRows": {
+          "median": 2,
+          "p75": 2
+        },
+        "domElements": {
+          "median": 130,
+          "p75": 130
+        },
+        "jsHeapBytes": {
+          "median": 7019117,
+          "p75": 7055043
+        },
+        "warmDurationMs": {
+          "median": 83.29999995231628,
+          "p75": 86.70000004768372
+        },
+        "warmFirstContentfulPaintMs": {
+          "median": 60,
+          "p75": 64
+        },
+        "warmLargestContentfulPaintMs": {
+          "median": 60,
+          "p75": 64
+        },
+        "warmLongTaskTotalMs": {
+          "median": 0,
+          "p75": 0
+        },
+        "warmResourceTransferBytes": {
+          "median": 396027,
+          "p75": 396027
+        }
+      },
+      "desktopHistory": {
+        "durationMs": {
+          "median": 325.5,
+          "p75": 332.09999990463257
+        },
+        "firstContentfulPaintMs": {
+          "median": 192,
+          "p75": 220
+        },
+        "largestContentfulPaintMs": {
+          "median": 0,
+          "p75": 0
+        },
+        "resourceCount": {
+          "median": 36,
+          "p75": 36
+        },
+        "resourceTransferBytes": {
+          "median": 4925213,
+          "p75": 4925213
+        },
+        "resourceDecodedBytes": {
+          "median": 5551955,
+          "p75": 5551955
+        },
+        "longTaskCount": {
+          "median": 1,
+          "p75": 2
+        },
+        "longTaskTotalMs": {
+          "median": 82,
+          "p75": 126
+        },
+        "longTaskMaxMs": {
+          "median": 79,
+          "p75": 82
+        },
+        "frameGapP75Ms": {
+          "median": 16.700000000000045,
+          "p75": 16.700000000000045
+        },
+        "frameGapMaxMs": {
+          "median": 66.69999999999993,
+          "p75": 83.30000000000007
+        },
+        "layoutShift": {
+          "median": 0,
+          "p75": 0
+        },
+        "domRows": {
+          "median": 100,
+          "p75": 100
+        },
+        "domElements": {
+          "median": 3336,
+          "p75": 3336
+        },
+        "jsHeapBytes": {
+          "median": 19860984,
+          "p75": 19869744
+        },
+        "settledLongTaskMaxMs": {
+          "median": 79,
+          "p75": 82
+        },
+        "settledFrameGapMaxMs": {
+          "median": 66.69999999999993,
+          "p75": 83.30000000000007
+        },
+        "settledLayoutShift": {
+          "median": 0,
+          "p75": 0
+        },
+        "settledDomElements": {
+          "median": 4118,
+          "p75": 4118
+        },
+        "enhancedRows": {
+          "median": 100,
+          "p75": 100
+        },
+        "codeCopyButtons": {
+          "median": 10,
+          "p75": 10
+        }
+      },
+      "desktopSessionSwitch": {
+        "durationMs": {
+          "median": 152.89999985694885,
+          "p75": 153
+        },
+        "firstContentfulPaintMs": {
+          "median": 188,
+          "p75": 188
+        },
+        "largestContentfulPaintMs": {
+          "median": 0,
+          "p75": 0
+        },
+        "resourceCount": {
+          "median": 28,
+          "p75": 28
+        },
+        "resourceTransferBytes": {
+          "median": 4417358,
+          "p75": 4417358
+        },
+        "resourceDecodedBytes": {
+          "median": 4408958,
+          "p75": 4408958
+        },
+        "longTaskCount": {
+          "median": 0,
+          "p75": 0
+        },
+        "longTaskTotalMs": {
+          "median": 0,
+          "p75": 0
+        },
+        "longTaskMaxMs": {
+          "median": 0,
+          "p75": 0
+        },
+        "frameGapP75Ms": {
+          "median": 16.700000000000045,
+          "p75": 16.799999999999955
+        },
+        "frameGapMaxMs": {
+          "median": 33.39999999999998,
+          "p75": 33.40000000000009
+        },
+        "layoutShift": {
+          "median": 0,
+          "p75": 0
+        },
+        "domRows": {
+          "median": 50,
+          "p75": 50
+        },
+        "domElements": {
+          "median": 1636,
+          "p75": 1636
+        },
+        "jsHeapBytes": {
+          "median": 13105073,
+          "p75": 13197392
+        },
+        "sessionClickMs": {
+          "median": 124.79999995231628,
+          "p75": 147.39999985694885
+        },
+        "messageContentWaitMs": {
+          "median": 28.09999990463257,
+          "p75": 28.299999952316284
+        },
+        "messageResourceMs": {
+          "median": 811.5,
+          "p75": 812.6000001430511
+        },
+        "messageRequests": {
+          "median": 1,
+          "p75": 1
+        },
+        "modelRequests": {
+          "median": 1,
+          "p75": 1
+        },
+        "repeatMessageRequests": {
+          "median": 0,
+          "p75": 0
+        },
+        "repeatModelRequests": {
+          "median": 0,
+          "p75": 0
+        },
+        "sessionRows": {
+          "median": 2,
+          "p75": 2
+        }
+      },
+      "desktopModelPicker": {
+        "closedOptions": {
+          "median": 0,
+          "p75": 0
+        },
+        "closedDomElements": {
+          "median": 153,
+          "p75": 153
+        },
+        "durationMs": {
+          "median": 99.29999995231628,
+          "p75": 102.79999995231628
+        },
+        "firstContentfulPaintMs": {
+          "median": 184,
+          "p75": 204
+        },
+        "largestContentfulPaintMs": {
+          "median": 0,
+          "p75": 0
+        },
+        "resourceCount": {
+          "median": 19,
+          "p75": 19
+        },
+        "resourceTransferBytes": {
+          "median": 4150399,
+          "p75": 4150399
+        },
+        "resourceDecodedBytes": {
+          "median": 4144699,
+          "p75": 4144699
+        },
+        "longTaskCount": {
+          "median": 1,
+          "p75": 1
+        },
+        "longTaskTotalMs": {
+          "median": 55,
+          "p75": 56
+        },
+        "longTaskMaxMs": {
+          "median": 55,
+          "p75": 56
+        },
+        "frameGapP75Ms": {
+          "median": 16.700000000000045,
+          "p75": 16.700000000000045
+        },
+        "frameGapMaxMs": {
+          "median": 33.299999999999955,
+          "p75": 33.30000000000007
+        },
+        "layoutShift": {
+          "median": 0,
+          "p75": 0
+        },
+        "domRows": {
+          "median": 49,
+          "p75": 49
+        },
+        "domElements": {
+          "median": 959,
+          "p75": 959
+        },
+        "jsHeapBytes": {
+          "median": 12365041,
+          "p75": 12818523
+        },
+        "openOptions": {
+          "median": 49,
+          "p75": 49
+        },
+        "keyboardEnd": {
+          "median": 1,
+          "p75": 1
+        },
+        "keyboardHome": {
+          "median": 1,
+          "p75": 1
+        },
+        "focusRestored": {
+          "median": 1,
+          "p75": 1
+        }
+      },
+      "desktopComposer": {
+        "durationMs": {
+          "median": 375.90000009536743,
+          "p75": 390.2000000476837
+        },
+        "firstContentfulPaintMs": {
+          "median": 200,
+          "p75": 212
+        },
+        "largestContentfulPaintMs": {
+          "median": 0,
+          "p75": 0
+        },
+        "resourceCount": {
+          "median": 29,
+          "p75": 29
+        },
+        "resourceTransferBytes": {
+          "median": 4417684,
+          "p75": 4417684
+        },
+        "resourceDecodedBytes": {
+          "median": 4408984,
+          "p75": 4408984
+        },
+        "longTaskCount": {
+          "median": 0,
+          "p75": 0
+        },
+        "longTaskTotalMs": {
+          "median": 0,
+          "p75": 0
+        },
+        "longTaskMaxMs": {
+          "median": 0,
+          "p75": 0
+        },
+        "frameGapP75Ms": {
+          "median": 16.700000000000045,
+          "p75": 16.700000000000045
+        },
+        "frameGapMaxMs": {
+          "median": 16.800000000000182,
+          "p75": 16.800000000000182
+        },
+        "layoutShift": {
+          "median": 0,
+          "p75": 0
+        },
+        "domRows": {
+          "median": 50,
+          "p75": 50
+        },
+        "domElements": {
+          "median": 1636,
+          "p75": 1636
+        },
+        "jsHeapBytes": {
+          "median": 13927061,
+          "p75": 13970468
+        },
+        "typedCharacters": {
+          "median": 240,
+          "p75": 240
+        },
+        "randomUUIDUnavailable": {
+          "median": 1,
+          "p75": 1
+        },
+        "messageRowsAfterTyping": {
+          "median": 50,
+          "p75": 50
+        },
+        "optimisticMessageVisible": {
+          "median": 1,
+          "p75": 1
+        },
+        "sendFrames": {
+          "median": 1,
+          "p75": 1
+        },
+        "stopFrames": {
+          "median": 1,
+          "p75": 1
+        },
+        "uploadRequests": {
+          "median": 1,
+          "p75": 1
+        },
+        "sentMedia": {
+          "median": 1,
+          "p75": 1
+        }
+      },
+      "desktopPendingSendStop": {
+        "inputRestored": {
+          "median": 1,
+          "p75": 1
+        },
+        "optimisticRows": {
+          "median": 0,
+          "p75": 0
+        }
+      },
+      "desktopResponsive": {
+        "navigationFocusRestored": {
+          "median": 1,
+          "p75": 1
+        },
+        "chatOverflowPx": {
+          "median": 0,
+          "p75": 0
+        },
+        "composerVisible": {
+          "median": 1,
+          "p75": 1
+        },
+        "modelPickerOverflowPx": {
+          "median": 0,
+          "p75": 0
+        }
+      },
+      "desktopAccessibility": {
+        "scannedSurfaces": {
+          "median": 2,
+          "p75": 2
+        },
+        "violations": {
+          "median": 0,
+          "p75": 0
+        },
+        "knownDebt": {
+          "median": 0,
+          "p75": 0
+        }
+      },
+      "desktopStream600": {
+        "durationMs": {
+          "median": 1351.7000000476837,
+          "p75": 1362.5999999046326
+        },
+        "firstContentfulPaintMs": {
+          "median": 188,
+          "p75": 192
+        },
+        "largestContentfulPaintMs": {
+          "median": 0,
+          "p75": 0
+        },
+        "resourceCount": {
+          "median": 44,
+          "p75": 44
+        },
+        "resourceTransferBytes": {
+          "median": 5559642,
+          "p75": 5559642
+        },
+        "resourceDecodedBytes": {
+          "median": 6183984,
+          "p75": 6183984
+        },
+        "longTaskCount": {
+          "median": 1,
+          "p75": 1
+        },
+        "longTaskTotalMs": {
+          "median": 66,
+          "p75": 66
+        },
+        "longTaskMaxMs": {
+          "median": 66,
+          "p75": 66
+        },
+        "frameGapP75Ms": {
+          "median": 16.700000000000045,
+          "p75": 16.700000000000045
+        },
+        "frameGapMaxMs": {
+          "median": 66.70000000000005,
+          "p75": 66.70000000000005
+        },
+        "layoutShift": {
+          "median": 0,
+          "p75": 0
+        },
+        "domRows": {
+          "median": 101,
+          "p75": 101
+        },
+        "domElements": {
+          "median": 3594,
+          "p75": 3594
+        },
+        "jsHeapBytes": {
+          "median": 30321687,
+          "p75": 32175775
+        },
+        "streamFirstTextMs": {
+          "median": 158.5,
+          "p75": 166.80000019073486
+        },
+        "streamFirstDraftMs": {
+          "median": 159.39999985694885,
+          "p75": 168.5
+        },
+        "streamCommitTailMs": {
+          "median": 1195.1000001430511,
+          "p75": 1203.2000000476837
+        },
+        "streamDraftVisible": {
+          "median": 1,
+          "p75": 1
+        },
+        "streamPreservedScrollEscape": {
+          "median": 1,
+          "p75": 1
+        },
+        "scrollReturnAvailable": {
+          "median": 1,
+          "p75": 1
+        },
+        "scrollReturnAdvanced": {
+          "median": 1,
+          "p75": 1
+        }
+      },
+      "desktopMarkdownStream": {
+        "durationMs": {
+          "median": 1400.7999999523163,
+          "p75": 1405.3000001907349
+        },
+        "firstContentfulPaintMs": {
+          "median": 184,
+          "p75": 200
+        },
+        "largestContentfulPaintMs": {
+          "median": 0,
+          "p75": 0
+        },
+        "resourceCount": {
+          "median": 45,
+          "p75": 45
+        },
+        "resourceTransferBytes": {
+          "median": 5559944,
+          "p75": 5559944
+        },
+        "resourceDecodedBytes": {
+          "median": 6183986,
+          "p75": 6183986
+        },
+        "longTaskCount": {
+          "median": 2,
+          "p75": 2
+        },
+        "longTaskTotalMs": {
+          "median": 116,
+          "p75": 126
+        },
+        "longTaskMaxMs": {
+          "median": 64,
+          "p75": 70
+        },
+        "frameGapP75Ms": {
+          "median": 16.700000000000045,
+          "p75": 16.700000000000045
+        },
+        "frameGapMaxMs": {
+          "median": 83.29999999999995,
+          "p75": 100
+        },
+        "layoutShift": {
+          "median": 0.0000040393518518518515,
+          "p75": 0.0000040393518518518515
+        },
+        "domRows": {
+          "median": 101,
+          "p75": 101
+        },
+        "domElements": {
+          "median": 4195,
+          "p75": 4195
+        },
+        "jsHeapBytes": {
+          "median": 39065633,
+          "p75": 39248300
+        },
+        "streamFirstTextMs": {
+          "median": 179,
+          "p75": 189.40000009536743
+        },
+        "streamFirstDraftMs": {
+          "median": 196.90000009536743,
+          "p75": 198.40000009536743
+        },
+        "streamCommitTailMs": {
+          "median": 1227.7000000476837,
+          "p75": 1232.2000000476837
+        },
+        "streamDraftVisible": {
+          "median": 1,
+          "p75": 1
+        },
+        "streamPreservedScrollEscape": {
+          "median": 1,
+          "p75": 1
+        },
+        "scrollReturnAvailable": {
+          "median": 1,
+          "p75": 1
+        },
+        "scrollReturnAdvanced": {
+          "median": 1,
+          "p75": 1
+        }
+      },
+      "desktopCodeStream": {
+        "durationMs": {
+          "median": 1475.5999999046326,
+          "p75": 1479.3999998569489
+        },
+        "firstContentfulPaintMs": {
+          "median": 184,
+          "p75": 192
+        },
+        "largestContentfulPaintMs": {
+          "median": 0,
+          "p75": 0
+        },
+        "resourceCount": {
+          "median": 46,
+          "p75": 46
+        },
+        "resourceTransferBytes": {
+          "median": 5560257,
+          "p75": 5560257
+        },
+        "resourceDecodedBytes": {
+          "median": 6183999,
+          "p75": 6183999
+        },
+        "longTaskCount": {
+          "median": 2,
+          "p75": 2
+        },
+        "longTaskTotalMs": {
+          "median": 176,
+          "p75": 178
+        },
+        "longTaskMaxMs": {
+          "median": 118,
+          "p75": 120
+        },
+        "frameGapP75Ms": {
+          "median": 16.700000000000045,
+          "p75": 16.700000000000045
+        },
+        "frameGapMaxMs": {
+          "median": 116.69999999999982,
+          "p75": 116.69999999999982
+        },
+        "layoutShift": {
+          "median": 0.0000040393518518518515,
+          "p75": 0.0000040393518518518515
+        },
+        "domRows": {
+          "median": 101,
+          "p75": 101
+        },
+        "domElements": {
+          "median": 5107,
+          "p75": 5107
+        },
+        "jsHeapBytes": {
+          "median": 29019807,
+          "p75": 30101449
+        },
+        "streamHighlightedMs": {
+          "median": 1467.4000000953674,
+          "p75": 1473.3999998569489
+        },
+        "streamFirstTextMs": {
+          "median": 200.70000004768372,
+          "p75": 202.09999990463257
+        },
+        "streamFirstDraftMs": {
+          "median": 202.90000009536743,
+          "p75": 207.20000004768372
+        },
+        "streamCommitTailMs": {
+          "median": 1286.8999998569489,
+          "p75": 1287.7999999523163
+        },
+        "streamDraftVisible": {
+          "median": 1,
+          "p75": 1
+        },
+        "streamPreservedScrollEscape": {
+          "median": 1,
+          "p75": 1
+        },
+        "scrollReturnAvailable": {
+          "median": 1,
+          "p75": 1
+        },
+        "scrollReturnAdvanced": {
+          "median": 1,
+          "p75": 1
+        }
+      },
+      "desktopLongAnswerStream": {
+        "durationMs": {
+          "median": 2966.7000000476837,
+          "p75": 2978.600000143051
+        },
+        "firstContentfulPaintMs": {
+          "median": 188,
+          "p75": 200
+        },
+        "largestContentfulPaintMs": {
+          "median": 0,
+          "p75": 0
+        },
+        "resourceCount": {
+          "median": 46,
+          "p75": 46
+        },
+        "resourceTransferBytes": {
+          "median": 5560257,
+          "p75": 5560257
+        },
+        "resourceDecodedBytes": {
+          "median": 6183999,
+          "p75": 6183999
+        },
+        "longTaskCount": {
+          "median": 2,
+          "p75": 2
+        },
+        "longTaskTotalMs": {
+          "median": 131,
+          "p75": 133
+        },
+        "longTaskMaxMs": {
+          "median": 81,
+          "p75": 83
+        },
+        "frameGapP75Ms": {
+          "median": 16.700000000000045,
+          "p75": 16.700000000000273
+        },
+        "frameGapMaxMs": {
+          "median": 100,
+          "p75": 100
+        },
+        "layoutShift": {
+          "median": 0.0000040393518518518515,
+          "p75": 0.0000040393518518518515
+        },
+        "domRows": {
+          "median": 101,
+          "p75": 101
+        },
+        "domElements": {
+          "median": 3906,
+          "p75": 3906
+        },
+        "jsHeapBytes": {
+          "median": 31648464,
+          "p75": 31723300
+        },
+        "streamFirstTextMs": {
+          "median": 133.10000014305115,
+          "p75": 137.09999990463257
+        },
+        "streamFirstDraftMs": {
+          "median": 146,
+          "p75": 152.59999990463257
+        },
+        "streamCommitTailMs": {
+          "median": 2832.100000143051,
+          "p75": 2832.600000143051
+        },
+        "streamDraftVisible": {
+          "median": 1,
+          "p75": 1
+        },
+        "streamPreservedScrollEscape": {
+          "median": 1,
+          "p75": 1
+        },
+        "scrollReturnAvailable": {
+          "median": 1,
+          "p75": 1
+        },
+        "scrollReturnAdvanced": {
+          "median": 1,
+          "p75": 1
+        }
+      },
+      "shellSettings": {
+        "durationMs": {
+          "median": 98.29999995231628,
+          "p75": 99.59999990463257
+        },
+        "firstContentfulPaintMs": {
+          "median": 48,
+          "p75": 52
+        },
+        "largestContentfulPaintMs": {
+          "median": 0,
+          "p75": 0
+        },
+        "resourceCount": {
+          "median": 36,
+          "p75": 36
+        },
+        "resourceTransferBytes": {
+          "median": 4847138,
+          "p75": 4847138
+        },
+        "resourceDecodedBytes": {
+          "median": 4841761,
+          "p75": 4841761
+        },
+        "longTaskCount": {
+          "median": 0,
+          "p75": 0
+        },
+        "longTaskTotalMs": {
+          "median": 0,
+          "p75": 0
+        },
+        "longTaskMaxMs": {
+          "median": 0,
+          "p75": 0
+        },
+        "frameGapP75Ms": {
+          "median": 16.69999999999999,
+          "p75": 16.69999999999999
+        },
+        "frameGapMaxMs": {
+          "median": 16.700000000000045,
+          "p75": 16.80000000000001
+        },
+        "layoutShift": {
+          "median": 0.00033654320987654325,
+          "p75": 0.00033654320987654325
+        },
+        "domRows": {
+          "median": 48,
+          "p75": 48
+        },
+        "domElements": {
+          "median": 1113,
+          "p75": 1113
+        },
+        "jsHeapBytes": {
+          "median": 13357691,
+          "p75": 13367108
+        },
+        "shellReadyMs": {
+          "median": 253.69999980926514,
+          "p75": 265.39999985694885
+        },
+        "modelCatalogAfterOpen": {
+          "median": 2,
+          "p75": 2
+        },
+        "settingsSectionSwitchMs": {
+          "median": 281,
+          "p75": 282.5
+        },
+        "modelCatalogAfterSection": {
+          "median": 2,
+          "p75": 2
+        },
+        "modelCatalogAfterBack": {
+          "median": 3,
+          "p75": 3
+        },
+        "settingsReturnMs": {
+          "median": 347.39999985694885,
+          "p75": 348.10000014305115
+        },
+        "modelCatalogRequests": {
+          "median": 3,
+          "p75": 3
+        },
+        "hostErrors": {
+          "median": 0,
+          "p75": 0
+        }
+      }
+    },
+    "budgets": {
+      "desktopStartup": {
+        "durationMs": 289,
+        "firstContentfulPaintMs": 226,
+        "largestContentfulPaintMs": 226,
+        "resourceCount": 14,
+        "resourceTransferBytes": 3577961,
+        "resourceDecodedBytes": 3573821,
+        "longTaskCount": 2,
+        "longTaskTotalMs": 112,
+        "longTaskMaxMs": 112,
+        "frameGapP75Ms": 39,
+        "layoutShift": 1,
+        "domRows": 4,
+        "domElements": 150,
+        "jsHeapBytes": 9171556,
+        "warmDurationMs": 100,
+        "warmFirstContentfulPaintMs": 74,
+        "warmLargestContentfulPaintMs": 74,
+        "warmLongTaskTotalMs": 0,
+        "warmResourceTransferBytes": 455432
+      },
+      "desktopHistory": {
+        "durationMs": 382,
+        "firstContentfulPaintMs": 253,
+        "largestContentfulPaintMs": 0,
+        "resourceCount": 42,
+        "resourceTransferBytes": 5663995,
+        "resourceDecodedBytes": 6384749,
+        "longTaskCount": 3,
+        "longTaskTotalMs": 145,
+        "longTaskMaxMs": 95,
+        "frameGapP75Ms": 20,
+        "layoutShift": 0.01,
+        "domRows": 102,
+        "domElements": 3837,
+        "jsHeapBytes": 25830668,
+        "settledLongTaskMaxMs": 95,
+        "settledLayoutShift": 0,
+        "settledDomElements": 4736,
+        "enhancedRows": 115,
+        "codeCopyButtons": 12
+      },
+      "desktopSessionSwitch": {
+        "durationMs": 176,
+        "firstContentfulPaintMs": 217,
+        "largestContentfulPaintMs": 0,
+        "resourceCount": 33,
+        "resourceTransferBytes": 5079962,
+        "resourceDecodedBytes": 5070302,
+        "longTaskCount": 1,
+        "longTaskTotalMs": 60,
+        "longTaskMaxMs": 60,
+        "frameGapP75Ms": 20,
+        "layoutShift": 0.01,
+        "domRows": 52,
+        "domElements": 1882,
+        "jsHeapBytes": 17156610,
+        "sessionClickMs": 170,
+        "messageContentWaitMs": 33,
+        "messageResourceMs": 935,
+        "messageRequests": 2,
+        "modelRequests": 2,
+        "repeatMessageRequests": 0,
+        "repeatModelRequests": 0,
+        "sessionRows": 3
+      },
+      "desktopModelPicker": {
+        "closedOptions": 0,
+        "closedDomElements": 176,
+        "durationMs": 119,
+        "firstContentfulPaintMs": 235,
+        "largestContentfulPaintMs": 0,
+        "resourceCount": 22,
+        "resourceTransferBytes": 4772959,
+        "resourceDecodedBytes": 4766404,
+        "longTaskCount": 2,
+        "longTaskTotalMs": 65,
+        "longTaskMaxMs": 65,
+        "frameGapP75Ms": 20,
+        "layoutShift": 0.01,
+        "domRows": 51,
+        "domElements": 1103,
+        "jsHeapBytes": 16664080,
+        "openOptions": 57,
+        "keyboardEnd": 2,
+        "keyboardHome": 2,
+        "focusRestored": 2
+      },
+      "desktopComposer": {
+        "durationMs": 449,
+        "firstContentfulPaintMs": 244,
+        "largestContentfulPaintMs": 0,
+        "resourceCount": 34,
+        "resourceTransferBytes": 5080337,
+        "resourceDecodedBytes": 5070332,
+        "longTaskCount": 1,
+        "longTaskTotalMs": 60,
+        "longTaskMaxMs": 60,
+        "frameGapP75Ms": 20,
+        "layoutShift": 0.01,
+        "domRows": 52,
+        "domElements": 1882,
+        "jsHeapBytes": 18161609,
+        "typedCharacters": 276,
+        "randomUUIDUnavailable": 2,
+        "messageRowsAfterTyping": 58,
+        "optimisticMessageVisible": 2,
+        "sendFrames": 2,
+        "stopFrames": 2,
+        "uploadRequests": 2,
+        "sentMedia": 2
+      },
+      "desktopPendingSendStop": {
+        "inputRestored": 2,
+        "optimisticRows": 0
+      },
+      "desktopResponsive": {
+        "navigationFocusRestored": 2,
+        "chatOverflowPx": 0,
+        "composerVisible": 2,
+        "modelPickerOverflowPx": 0
+      },
+      "desktopAccessibility": {
+        "scannedSurfaces": 3,
+        "violations": 0,
+        "knownDebt": 0
+      },
+      "desktopStream600": {
+        "durationMs": 1567,
+        "firstContentfulPaintMs": 221,
+        "largestContentfulPaintMs": 0,
+        "resourceCount": 51,
+        "resourceTransferBytes": 6393589,
+        "resourceDecodedBytes": 7111582,
+        "longTaskCount": 2,
+        "longTaskTotalMs": 76,
+        "longTaskMaxMs": 76,
+        "frameGapP75Ms": 20,
+        "layoutShift": 0.01,
+        "domRows": 103,
+        "domElements": 4134,
+        "jsHeapBytes": 41828508,
+        "streamFirstTextMs": 192,
+        "streamFirstDraftMs": 194,
+        "streamCommitTailMs": 1384,
+        "streamDraftVisible": 2,
+        "streamPreservedScrollEscape": 2,
+        "scrollReturnAvailable": 2,
+        "scrollReturnAdvanced": 2
+      },
+      "desktopMarkdownStream": {
+        "durationMs": 1617,
+        "firstContentfulPaintMs": 230,
+        "largestContentfulPaintMs": 0,
+        "resourceCount": 52,
+        "resourceTransferBytes": 6393936,
+        "resourceDecodedBytes": 7111584,
+        "longTaskCount": 3,
+        "longTaskTotalMs": 145,
+        "longTaskMaxMs": 81,
+        "frameGapP75Ms": 20,
+        "layoutShift": 1,
+        "domRows": 103,
+        "domElements": 4825,
+        "jsHeapBytes": 51022790,
+        "streamFirstTextMs": 218,
+        "streamFirstDraftMs": 229,
+        "streamCommitTailMs": 1418,
+        "streamDraftVisible": 2,
+        "streamPreservedScrollEscape": 2,
+        "scrollReturnAvailable": 2,
+        "scrollReturnAdvanced": 2
+      },
+      "desktopCodeStream": {
+        "durationMs": 1702,
+        "firstContentfulPaintMs": 221,
+        "largestContentfulPaintMs": 0,
+        "resourceCount": 53,
+        "resourceTransferBytes": 6394296,
+        "resourceDecodedBytes": 7111599,
+        "longTaskCount": 3,
+        "longTaskTotalMs": 205,
+        "longTaskMaxMs": 138,
+        "frameGapP75Ms": 20,
+        "layoutShift": 1,
+        "domRows": 103,
+        "domElements": 5874,
+        "jsHeapBytes": 39131884,
+        "streamHighlightedMs": 1695,
+        "streamFirstTextMs": 233,
+        "streamFirstDraftMs": 239,
+        "streamCommitTailMs": 1481,
+        "streamDraftVisible": 2,
+        "streamPreservedScrollEscape": 2,
+        "scrollReturnAvailable": 2,
+        "scrollReturnAdvanced": 2
+      },
+      "desktopLongAnswerStream": {
+        "durationMs": 3426,
+        "firstContentfulPaintMs": 230,
+        "largestContentfulPaintMs": 0,
+        "resourceCount": 53,
+        "resourceTransferBytes": 6394296,
+        "resourceDecodedBytes": 7111599,
+        "longTaskCount": 3,
+        "longTaskTotalMs": 153,
+        "longTaskMaxMs": 96,
+        "frameGapP75Ms": 20,
+        "layoutShift": 1,
+        "domRows": 103,
+        "domElements": 4492,
+        "jsHeapBytes": 41240290,
+        "streamFirstTextMs": 158,
+        "streamFirstDraftMs": 176,
+        "streamCommitTailMs": 3258,
+        "streamDraftVisible": 2,
+        "streamPreservedScrollEscape": 2,
+        "scrollReturnAvailable": 2,
+        "scrollReturnAdvanced": 2
+      },
+      "shellSettings": {
+        "durationMs": 115,
+        "firstContentfulPaintMs": 60,
+        "largestContentfulPaintMs": 0,
+        "resourceCount": 42,
+        "resourceTransferBytes": 5574209,
+        "resourceDecodedBytes": 5568026,
+        "longTaskCount": 1,
+        "longTaskTotalMs": 60,
+        "longTaskMaxMs": 60,
+        "frameGapP75Ms": 20,
+        "layoutShift": 1,
+        "domRows": 50,
+        "domElements": 1280,
+        "jsHeapBytes": 17377241,
+        "shellReadyMs": 306,
+        "modelCatalogAfterOpen": 3,
+        "settingsSectionSwitchMs": 325,
+        "modelCatalogAfterSection": 3,
+        "modelCatalogAfterBack": 4,
+        "settingsReturnMs": 401,
+        "modelCatalogRequests": 4,
+        "hostErrors": 0
+      }
+    }
   }
 }
