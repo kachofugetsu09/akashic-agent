@@ -76,14 +76,13 @@ class Spawn:
             return '当前 profile 缺少已安装工具'
         bindings = self.ctx.require(BINDINGS)
         fixed: dict[str, str] = {}
-        # 2. 目录、网络设置与实际工具实现都在 prepared 时固定，恢复不重选配置。
+        # 2. 目录设置与实际工具实现都在 prepared 时固定，恢复不重选配置。
         for name in names:
             configuration: Mapping[str, object] | None = None
             if name in {"write_file", "edit_file"}:
                 configuration = {"allowed_dir": str(task_dir)}
             elif name in {"shell", "write_stdin", "task_stop"}:
-                configuration = {"owner_key": "subagent:" + job_id, "working_dir": str(task_dir),
-                                 "allow_network": args.profile == "general"}
+                configuration = {"owner_key": "subagent:" + job_id, "working_dir": str(task_dir)}
             if configuration is None:
                 fixed[name] = self.targets[name]
             else:

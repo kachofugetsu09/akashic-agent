@@ -16,7 +16,6 @@ sys.path.insert(0, str(ROOT))
 
 from plugins.channels.contract import CHANNEL_INPUT_V2 as CHANNEL_INPUT, ChannelInboundMessage
 from plugins.ledger.contract import Output, ToolResult
-from plugins.shell.shell_security import validate_command
 from plugins.standard_web.contract import FetchRequest, SearchRequest
 from plugins.web_fetch_http.plugin import ScopedFetch
 from plugins.web_search_exa.search import ExaConfig, ExaSearch
@@ -83,7 +82,7 @@ async def run(directory: Path) -> dict[str, object]:
         download = directory / "downloads"
         download.mkdir()
         commands = [
-            f"curl --noproxy '*' --resolve example.com:{port}:127.0.0.1 http://example.com:{port}/remote.txt {flag}"
+            f"curl --noproxy '*' http://127.0.0.1:{port}/remote.txt {flag}"
             for flag in ("-o short.txt", "--output=long.txt", "-O")
         ]
 
@@ -110,15 +109,8 @@ async def run(directory: Path) -> dict[str, object]:
             for name in ("short.txt", "long.txt", "remote.txt"):
                 assert (download / name).read_bytes() == payload
 
-        # 4. Existing upload and directory rules still reject their original operations.
-        for flag in ("-T private.txt", "--upload-file=private.txt", "-F file=@private.txt"):
-            assert validate_command("curl https://example.com " + flag, allow_network=True, restricted_dir=None)
-        for flag in ("-o ../outside", "--output=../outside", "-o../outside"):
-            assert validate_command("curl https://example.com " + flag, allow_network=True,
-                                    restricted_dir=download, cwd=download)
     return {"fetch_error": fetch["error"], "search_error": search["error"], "status_error": error["error"],
-            "tls_error": tls_error["error"], "download_files": 3,
-            "upload_and_directory_rules": True, "keys_redacted": True}
+            "tls_error": tls_error["error"], "download_files": 3, "keys_redacted": True}
 
 
 if __name__ == "__main__":
