@@ -47,7 +47,7 @@ from plugins.host_execution.contract import (
     ExecutionResult, TerminalBackend, UnknownExecutionError, UnknownTerminalError
 )
 from ..process_runtime import ShellProcessManager
-from .egress import serve_egress
+from .egress import HostEgress
 from .path_info import PathInfoOperation
 from .filesystem import (
     EditFileOperation,
@@ -204,6 +204,7 @@ class HostBridgeService:
         toolchain_digest: str,
         runtime_checkout: Path,
         bridge_python: Path,
+        egress: HostEgress | None = None,
     ) -> None:
         if not token:
             raise ValueError("Host Bridge token 不能为空")
@@ -215,6 +216,7 @@ class HostBridgeService:
             raise ValueError("Host Bridge toolchain digest 必须是 SHA256")
         self._token = token
         self._lease_timeout_s = lease_timeout_s
+        self._egress = egress
         artifact_root.mkdir(parents=True, exist_ok=True)
         self._artifact_root = artifact_root
         self._release_commit = release_commit
@@ -385,8 +387,15 @@ class HostBridgeService:
                 "raw-bytes",
                 "skill-requirements",
                 "terminals",
+                *self._egress_capability(),
             ],
         )
+
+    # RPC 健康不代表出网入口可用：配置了出口时单独报告它当前是否在监听。
+    def _egress_capability(self) -> tuple[str, ...]:
+        if self._egress is None:
+            return ()
+        return ("host-egress",) if self._egress.ready else ("host-egress-unavailable",)
 
     @_rpc
     async def OpenManager(self, request: pb.ContextRequest) -> pb.HeartbeatReply:
@@ -751,6 +760,7 @@ async def serve(
         socket_path.unlink()
 
     # 2. 启动 RPC 与 lease watchdog，再发布仅 owner 可访问的 socket。
+    egress = None if egress_dir is None else HostEgress(egress_dir)
     service = HostBridgeService(
         token,
         lease_timeout_s,
@@ -759,6 +769,7 @@ async def serve(
         toolchain_digest=toolchain_digest,
         runtime_checkout=runtime_checkout,
         bridge_python=bridge_python,
+        egress=egress,
     )
     server = transport.Server(service)
     await server.start(socket_path)
@@ -772,13 +783,9 @@ async def serve(
         outcome="ready",
     )
     watchdog = asyncio.create_task(service.reap_expired(), name="host-bridge-reaper")
-    # 宿主出口起不来（如 socket 路径超长）只影响 Workload 上网，不拖垮 Shell。
-    egress = None
-    if egress_dir is not None:
-        try:
-            egress = await serve_egress(egress_dir)
-        except (OSError, RuntimeError) as error:
-            log_event(logger, logging.WARNING, "host_egress.failed", message=str(error), outcome="failed")
+    # 宿主出口起不来（如 socket 路径超长）只影响 Workload 上网，不拖垮 Shell；它自己记录原因并持续恢复。
+    if egress is not None:
+        await egress.start()
     stopping = asyncio.Event()
     loop = asyncio.get_running_loop()
     for signum in (signal.SIGINT, signal.SIGTERM):
@@ -791,7 +798,7 @@ async def serve(
         await service.shutdown()
         await server.stop()
         if egress is not None:
-            egress.close()
+            await egress.close()
         socket_path.unlink(missing_ok=True)
         log_event(logger, logging.INFO, "host_bridge.stopped", outcome="completed")
 
