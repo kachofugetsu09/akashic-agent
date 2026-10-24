@@ -124,8 +124,9 @@ async def test_idle_session_is_woken_and_reply_is_delivered(tmp_path):
 def _abandoning_wake_sources(sources: Path) -> None:
     """唤醒回合撞步数上限：reply program 返回 Control("abandon")，没有正文可回传。
 
-    轮次预算 2：首轮两次请求（工具调用 + 收尾）正常完成；唤醒轮两次都只产生工具调用，
-    回执齐全，于是第三步的门槛命中「没有未回执调用」分支，引擎自己放弃本段。
+    轮次预算由 application(max_steps=2) 走正式配置项给出：首轮两次请求（工具调用 +
+    收尾）正常完成；唤醒轮两次都只产生工具调用，回执齐全，于是第三步的门槛命中
+    「没有未回执调用」分支，引擎自己放弃本段。
     """
     _job_sources(sources)
     provider = sources / "test_provider/plugin.py"
@@ -138,17 +139,13 @@ def _abandoning_wake_sources(sources: Path) -> None:
         'ToolCall("provider-call", "start_job" if len(calls) == 1 else "write_evidence", {})',
     )
     provider.write_text(text)
-    reply = sources / "reply/plugin.py"
-    reply_text = reply.read_text().replace(
-        "max_steps: int = Field(default=40,", "max_steps: int = Field(default=2,")
-    assert "default=2," in reply_text
-    reply.write_text(reply_text)
 
 
 @pytest.mark.asyncio
 async def test_wake_that_ends_in_control_does_not_deliver_empty_message(tmp_path):
     """引擎放弃的唤醒回合没有正文：不投递空消息，结算留给下一次用户输入。"""
-    async with application(tmp_path, replying=True, extra_sources=_abandoning_wake_sources) as (log, host):
+    async with application(tmp_path, replying=True, max_steps=2,
+                           extra_sources=_abandoning_wake_sources) as (log, host):
         calls, gate = await _send(host)
         await _rows_until(log, lambda rows: _finished(rows, 1))
         # 1. 回合结束后才结算，触发唤醒；唤醒轮跑满两次请求后由引擎放弃。
