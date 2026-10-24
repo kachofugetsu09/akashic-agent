@@ -282,6 +282,8 @@ export function useDesktopChatController() {
   const sessionsRequestRef = useRef<AbortController | null>(null);
   // 最近一次成功全量目录读取在查询前的目录纪元；只有读完才记，失败的读取不能证明覆盖了基线通知。
   const catalogEpochRef = useRef<string | null>(null);
+  // 只有本页创建的第一条连接的第一帧目录基线能跳过；它没收到基线就断开，之后的连接一律全量对账。
+  const firstCatalogSocketRef = useRef<WebSocket | null>(null);
   const firstCatalogFrameRef = useRef(true);
   const messagesRequestRef = useRef<AbortController | null>(null);
   const olderMessagesRequestRef = useRef<AbortController | null>(null);
@@ -588,6 +590,7 @@ export function useDesktopChatController() {
     const protocol = window.location.protocol === "https:" ? "wss" : "ws";
     const url = `${protocol}://${window.location.host}/ws?watch_sessions=true`;
     const first = new WebSocket(url);
+    firstCatalogSocketRef.current ??= first;
     socketRef.current = first;
     const controller = new AbortController();
     connectionTaskRef.current = controller;
@@ -664,7 +667,8 @@ export function useDesktopChatController() {
                   }
                   const other = parseChatFrame(value);
                   if (other.type === "sessions.changed") {
-                    const baseline = firstCatalogFrameRef.current ? other.catalog_epoch : undefined;
+                    const baseline = current === firstCatalogSocketRef.current && firstCatalogFrameRef.current
+                      ? other.catalog_epoch : undefined;
                     firstCatalogFrameRef.current = false;
                     if (baseline) sessionsRefreshEpochsRef.current.add(baseline);
                     scheduleSessionsRefresh(baseline ? [] : "full");
