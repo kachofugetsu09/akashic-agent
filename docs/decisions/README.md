@@ -6,6 +6,7 @@
 
 | ID | 状态 | 主题 | 关联条款 |
 |---|---|---|---|
+| [0133](0133-agent-runs-as-the-host-user.md) | proposed / implemented for review | Agent 的执行与网络等同宿主用户本人 | SEC、PLG |
 | [0132](0132-computer-human-input-wins.md) | proposed / implemented for review | Computer 不再接管：谁在动谁用 | PLG-017、WEBUI-008 |
 | [0131](0131-context-composition.md) | proposed / implemented for review | 上下文构成按装配来源记账 | WEBUI-008 |
 | [0130](0130-declarative-plugin-settings.md) | proposed / implemented for review | 插件声明设置字段，宿主统一渲染 | PLG-014 |

@@ -157,7 +157,7 @@ async def apply(ctx: Context) -> None:
         ctx,
         name="spawn",
         description=(
-            "把有界、多步且可独立完成的任务交给子任务。research 只读；scripting 可在任务目录写文件、执行禁网命令；"
+            "把有界、多步且可独立完成的任务交给子任务。research 只读；scripting 可在任务目录写文件、执行命令；"
             "general 可调研与执行。默认同步返回结果；长任务可用 run_in_background，完成后回传原会话。"
             "任务需要用户交互或只是简单操作时直接处理。task 必须包含目标、约束、上下文和预期结果。"
         ),
