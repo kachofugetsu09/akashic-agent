@@ -544,8 +544,8 @@ class WebChatChannel:
         async with self._open_message_catalog() as messages:
             changes = messages.follow_metadata()
         async with aclosing(changes):
-            async for _ in changes:
-                await websocket.send_json({"type": "sessions.changed", "version": 2})
+            async for epoch in changes:
+                await websocket.send_json({"type": "sessions.changed", "version": 2, "catalog_epoch": epoch})
     async def _send_session_activity(self, websocket: WebSocket) -> None:
         """只发送变化的摘要；连接断开后由连接 scope 取消并排空。"""
         assert self._session_activity is not None

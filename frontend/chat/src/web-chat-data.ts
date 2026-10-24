@@ -103,7 +103,9 @@ export async function fetchChatJson<T>(url: string, options: RequestInit = {}): 
   return payload as T;
 }
 
-export function sessionPage(payload: unknown): { items: SessionRow[]; nextCursor: { updated_at: string; session_id: string } | null } {
+export function sessionPage(payload: unknown): {
+  items: SessionRow[]; nextCursor: { updated_at: string; session_id: string } | null; catalogEpoch: string | null;
+} {
   const items = responseItems(payload, "/api/chat/sessions");
   if (items.some((item) => (
     typeof item.key !== "string"
@@ -124,11 +126,25 @@ export function sessionPage(payload: unknown): { items: SessionRow[]; nextCursor
     || !Number.isFinite(Date.parse(next.updated_at)) || typeof next.session_id !== "string" || !next.session_id)) {
     throw new Error("/api/chat/sessions 返回了无效目录游标");
   }
-  return { items: items as unknown as SessionRow[], nextCursor: next as { updated_at: string; session_id: string } | null };
+  const epoch = recordValue(payload)?.catalog_epoch;
+  return { items: items as unknown as SessionRow[], nextCursor: next as { updated_at: string; session_id: string } | null,
+    catalogEpoch: typeof epoch === "string" ? epoch : null };
 }
 
 /** 目录刷新范围：全量，或已知发生变化的会话 key（追加、回复结束、新 head）。 */
 export type SessionsRefresh = "full" | readonly string[];
+/** 刷新触发：另可携带一份活动快照，到真正读取时再与当时的目录比对。 */
+export type SessionsRefreshTrigger = SessionsRefresh | { readonly heads: Readonly<Record<string, number>> };
+
+/** 活动快照与目录同前缀、同可见性：目录有而快照没有说明有移除（全量）；其余返回水位前进或目录未知的会话。 */
+export function snapshotChanges(current: readonly SessionRow[], heads: Readonly<Record<string, number>>): SessionsRefresh {
+  const known = new Map(current.map((session) => [session.key, session.head_seq]));
+  if (current.some((session) => heads[session.key] === undefined)) return "full";
+  return Object.keys(heads).filter((key) => {
+    const head = known.get(key);
+    return head === undefined || head < heads[key];
+  });
+}
 
 /**
  * 第一页合并进现有目录。只有触发刷新的会话全部落在第一页、且第一页最旧一行仍是旧值时才合并；

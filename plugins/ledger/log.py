@@ -8,6 +8,7 @@ import json
 import inspect
 import logging
 import re
+import secrets
 import sqlite3
 import threading
 from collections.abc import AsyncGenerator, Callable, Generator, Iterable, Iterator, Mapping, Sequence
@@ -427,6 +428,9 @@ class MessageLog:
         self._closed = False
         self._notify_pending: set[type[Body]] | None = set()
         self._notify_owed: set[type[Body]] | None = set()
+        # 目录纪元：本实例每次管理提交（改名、删除、新会话等）递增；带实例 token，重启后不会与旧值相等。
+        self._metadata_instance = secrets.token_hex(8)
+        self._metadata_epoch = 0
         # 写入方维护的已提交 heads：提交成功后合并，follower 不再各自扫描全部会话。
         self._heads: dict[str, int] | None = None
         self._heads_epoch = 0
@@ -717,6 +721,10 @@ class MessageLog:
                         result.close()
                     raise TypeError("存储事务回调必须同步，不能跨 await")
             self._merge_heads()
+            # 提交成立后、通知之前递增：先读纪元再查询的读者，纪元相同就一定看到了这次提交。
+            if self._notify_pending is None:
+                with self._listener_lock:
+                    self._metadata_epoch += 1
             # owner 账本或 embedding 的单独提交不会改变消息订阅结果。
             if self._notify_pending is None or self._notify_pending:
                 if getattr(self._defer_notify, "active", False):
@@ -1120,10 +1128,17 @@ class MessageCatalog:
             rows = self._log._connection.execute("SELECT key, attributes FROM sessions ORDER BY key").fetchall()
         return MappingProxyType({row["key"]: decode_attributes(row["attributes"]) for row in rows})
 
-    async def follow_metadata(self) -> AsyncGenerator[None, None]:
+    @property
+    def metadata_epoch(self) -> str:
+        """本实例的目录纪元；在目录查询之前读取，与 follow_metadata 产出的值相等说明其间没有本实例管理提交。"""
+        log = self._log
+        with log._listener_lock:
+            return f"{log._metadata_instance}:{log._metadata_epoch}"
+
+    async def follow_metadata(self) -> AsyncGenerator[str, None]:
         """订阅目录元数据失效；先登记再通知首次重读，后续仅响应本实例管理提交。
 
-        通知可以合并，消费者必须重读当前目录；不携带事实副本或写入权限。
+        通知可以合并，消费者必须重读当前目录；不携带事实副本或写入权限。每次产出当时的目录纪元。
         普通消息追加不唤醒，关闭日志结束订阅。进程外改动在重新订阅时读取。
         """
         event = asyncio.Event()
@@ -1134,7 +1149,7 @@ class MessageCatalog:
         try:
             while not self._log._closed:
                 event.clear()
-                yield None
+                yield self.metadata_epoch
                 await event.wait()
         finally:
             with self._log._listener_lock:
