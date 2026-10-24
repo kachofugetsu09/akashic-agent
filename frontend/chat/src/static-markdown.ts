@@ -3,20 +3,24 @@ import { micromark } from "micromark";
 import { kaomojiLiteralExtension } from "./kaomoji-markdown";
 import { isConceptLabel, isNumericColumn, isPlainTextLanguage, stripConceptSeparator } from "./markdown-reading";
 
-const referenceDefinition = /^\s{0,3}\[[^\]]+\]:/m;
-const listItemStart = /^\s{0,3}(?:[-+*]|\d+[.)])\s/;
+// 引用式链接、脚注定义（含引用块里的）和 HTML 块会跨空行影响前后文，出现时整篇一起渲染。
+const crossBlockSyntax = /^[ \t>]*\[[^\]]+\]:|^\s{0,3}<[a-zA-Z!/?]/m;
+const listItemStart = /^\s{0,3}(?:[-+*]|\d+[.)])(?:\s|$)/;
+const thematicBreak = /^\s{0,3}(?:(?:\*\s*){3,}|(?:-\s*){3,}|(?:_\s*){3,})$/;
 
 // 流式时把正文切成互不影响的顶层段落：写完的段落不再重新解析，只有最后一段随新字重画。
 export function splitStreamingMarkdown(markdown: string): string[] {
-  // 1. 引用式链接和脚注定义会改变前文的渲染，出现时整篇一起渲染。
-  if (referenceDefinition.test(markdown)) return [markdown];
+  if (crossBlockSyntax.test(markdown)) return [markdown];
+  // 1. 按空行切开，保留原来的分隔，合并时不改动缩进代码里的空行。
+  const parts = markdown.split(/(\n{2,})/);
   const blocks: string[] = [];
-  for (const chunk of markdown.split(/\n{2,}/)) {
+  for (let index = 0; index < parts.length; index += 2) {
+    const chunk = parts[index];
     const previous = blocks.at(-1);
     // 2. 缩进续行和松散列表的下一项跟前一段放在一起，否则列表会断开、编号从头开始。
     const continues = previous !== undefined && (/^\s/.test(chunk)
       || (listItemStart.test(chunk) && previous.split("\n").some((line) => listItemStart.test(line))));
-    if (continues) blocks[blocks.length - 1] = `${previous}\n\n${chunk}`;
+    if (continues) blocks[blocks.length - 1] = previous + parts[index - 1] + chunk;
     else blocks.push(chunk);
   }
   return blocks;
@@ -25,8 +29,13 @@ export function splitStreamingMarkdown(markdown: string): string[] {
 // 流式最后一段里还没闭合的行内代码和加粗先补上，避免先露出星号、闭合时整段跳变；刚打出的开头标记先不显示。
 export function closeStreamingInline(markdown: string): string {
   let text = markdown;
-  if ((text.match(/`/g)?.length ?? 0) % 2) text = text.endsWith("`") ? text.slice(0, -1) : `${text}\``;
-  if ((text.replace(/`[^`\n]*`/g, "").match(/\*\*/g)?.length ?? 0) % 2) text = text.endsWith("**") ? text.slice(0, -2) : `${text}**`;
+  // 1. 行内代码按反引号串长度配对，``a`b`` 这样的已闭合代码不受影响。
+  let open = "";
+  for (const run of text.match(/`+/g) ?? []) open = !open ? run : run === open ? "" : open;
+  if (open) text = text.endsWith(open) ? text.slice(0, -open.length) : text + open;
+  // 2. 加粗只看代码之外、非分隔线的行；单独一行的 *** 是分隔线，不当作未闭合的加粗。
+  const prose = text.split("\n").filter((line) => !thematicBreak.test(line)).join("\n").replace(/(`+)[^`]*?\1/g, "");
+  if ((prose.match(/\*\*/g)?.length ?? 0) % 2) text = text.endsWith("**") ? text.slice(0, -2) : `${text}**`;
   return text;
 }
 
