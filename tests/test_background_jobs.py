@@ -14,7 +14,7 @@ from agent.plugin_composition import ServiceKey
 from plugins.channels.contract import CHANNEL_INPUT_V2 as CHANNEL_INPUT, ChannelInboundMessage
 from plugins.jobs.board import JobBoard
 from plugins.jobs.contract import JOB_NOTICES, JobOutcome, JobWatch
-from plugins.ledger.contract import Input, Output, ToolResult
+from plugins.ledger.contract import Control, Input, Output, ToolResult
 from tests.test_default_reply import application, live_root
 
 _FIXTURE = '''
@@ -119,6 +119,56 @@ async def test_idle_session_is_woken_and_reply_is_delivered(tmp_path):
         woken = rows[-1]
         assert woken.source == "job:fake-1"
         await asyncio.wait_for(_delivered(tmp_path, woken.message_id), 5)
+
+
+def _abandoning_wake_sources(sources: Path) -> None:
+    """唤醒回合撞步数上限：reply program 返回 Control("abandon")，没有正文可回传。
+
+    轮次预算由 application(max_steps=2) 走正式配置项给出：首轮两次请求（工具调用 +
+    收尾）正常完成；唤醒轮两次都只产生工具调用，回执齐全，于是第三步的门槛命中
+    「没有未回执调用」分支，引擎自己放弃本段。
+    """
+    _job_sources(sources)
+    provider = sources / "test_provider/plugin.py"
+    text = provider.read_text()
+    # 首轮正常起任务；唤醒轮（第 3、4 次请求）只调 write_evidence，回执齐全但从不收尾，
+    # 于是撞上「没有未回执调用」的门槛，由引擎自己放弃本段。
+    text = text.replace("if len(calls) == 1:", "if len(calls) in (1, 3, 4):")
+    text = text.replace(
+        'ToolCall("provider-call", "start_job", {})',
+        'ToolCall("provider-call", "start_job" if len(calls) == 1 else "write_evidence", {})',
+    )
+    provider.write_text(text)
+
+
+@pytest.mark.asyncio
+async def test_wake_that_ends_in_control_does_not_deliver_empty_message(tmp_path):
+    """引擎放弃的唤醒回合没有正文：不投递空消息，结算留给下一次用户输入。"""
+    async with application(tmp_path, replying=True, max_steps=2,
+                           extra_sources=_abandoning_wake_sources) as (log, host):
+        calls, gate = await _send(host)
+        await _rows_until(log, lambda rows: _finished(rows, 1))
+        # 1. 回合结束后才结算，触发唤醒；唤醒轮跑满两次请求后由引擎放弃。
+        gate.set()
+
+        def abandoned(rows):
+            return any(isinstance(row.body, Control) and row.body.action == "abandon" for row in rows)
+
+        rows = await _rows_until(log, abandoned)
+        control = next(row for row in rows if isinstance(row.body, Control) and row.body.action == "abandon")
+        assert control.source == "job:fake-1"
+        assert control.body.reason is not None and control.body.reason.startswith("步数上限放弃")
+        # 2. 控制消息不是答复：渠道不能收到它（否则只会回 rejected 空消息）。
+        await asyncio.sleep(0.5)
+        for sent in (tmp_path / "workspace").rglob("sent.jsonl"):
+            assert control.message_id not in sent.read_text(), sent.read_text()
+        # 3. 通知没有被悄悄丢掉：下一次用户输入仍能拿到这条结算。
+        async with live_root(host) as root:
+            await root.context.require(CHANNEL_INPUT)("test:room", "u2", ChannelInboundMessage(
+                "test", "user", "room", "next message", datetime(2026, 10, 11, tzinfo=UTC), {},
+            ))
+        await _rows_until(log, lambda rows: _finished(rows, 2))
+        assert "后台任务 fake-1" in str(calls[-1].messages)
 
 
 async def _delivered(tmp_path: Path, message_id: str) -> None:

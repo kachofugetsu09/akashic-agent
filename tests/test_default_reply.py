@@ -20,13 +20,18 @@ async def live_root(host: PluginManager):
 
 @asynccontextmanager
 async def application(tmp_path, *, replying, missing_tool=False, discovery=False, compaction=False,
-                      output_tokens=4096, keep_recent_tokens=128, summary_padding=0, provider_effect_data=False,
-                      updates=False, validation_passed=True, extra_sources=None, shell=False):
+                      output_tokens=4096, max_steps=None, keep_recent_tokens=128, summary_padding=0,
+                      provider_effect_data=False, updates=False, validation_passed=True, extra_sources=None,
+                      shell=False):
     sources = tmp_path / "plugins"
     workspace = tmp_path / "workspace"
     initialize_plugin_workspace(workspace)
     # 夹具模型只有 10K 上下文；预算由配置固定，不依赖产品默认值。
-    save_config(workspace / "plugin-data/reply-builtin", {"max_output_tokens": output_tokens})
+    reply_config: dict[str, object] = {"max_output_tokens": output_tokens}
+    if max_steps is not None:
+        # 轮次上限走正式配置项，不改写 reply 插件源码：改源码会让格式调整变成夹具失败。
+        reply_config["max_steps"] = max_steps
+    save_config(workspace / "plugin-data/reply-builtin", reply_config)
     for name in (
         "ledger",
         "commands",

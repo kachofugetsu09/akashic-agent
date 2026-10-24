@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import re
 from pathlib import Path
 
 import pytest
@@ -12,6 +13,7 @@ from plugins.models.contract import (
 from plugins.ledger.contract import ContentPart, Control, Input, MessageConflict
 from plugins.react.plugin import (
     STEP_LIMIT_ABANDON,
+    STEP_LIMIT_FAILURE,
     StepLimit,
     step_limit_abandon_reason,
     step_limit_failure_reason,
@@ -122,6 +124,8 @@ async def test_step_limit_with_open_call_reports_unknown_effect(tmp_path: Path) 
         limit = failure.value.args[0]
         assert isinstance(limit, StepLimit)
         assert str(limit) == step_limit_failure_reason(1, 1)
+        # 界面按这个前缀认出「重试不会生效、只有放弃能解开」，所以它必须是稳定的事实。
+        assert str(limit).startswith(STEP_LIMIT_FAILURE)
         # 引擎没有替用户作废：没有任何 abandon，计数也不会被清掉。
         assert not [body for body in controls(log) if body.action == "abandon"]
 
@@ -150,3 +154,25 @@ async def test_user_abandon_refuses_already_closed_prefix(tmp_path: Path) -> Non
             )
         # 被拒绝的放弃不写入任何事实。
         assert not [body for body in controls(log) if body.action == "abandon"]
+
+
+# 前端按字符串前缀认出「重试不会生效、只有放弃能解开」。这个契约跨了语言边界，
+# Python 侧测试只能证明自己以常量开头，所以这里直接读前端的常量定义核对。
+_TIMELINE_SOURCE = Path(__file__).parents[1] / "frontend/chat/src/message-timeline.ts"
+_CONVERSATION_SOURCE = Path(__file__).parents[1] / "frontend/chat/src/desktop-conversation.tsx"
+
+
+def _typescript_string_constant(path: Path, name: str) -> str:
+    source = path.read_text(encoding="utf-8")
+    matched = re.search(rf'^(?:export )?const {name} = "([^"]*)";$', source, re.MULTILINE)
+    assert matched is not None, f"{path.name} 没有定义常量 {name}"
+    return matched.group(1)
+
+
+def test_step_limit_reason_prefix_matches_frontend_constant() -> None:
+    """改文案必须同时改前端；否则界面会悄悄退回一个不会生效的「重试」。"""
+    assert _typescript_string_constant(_TIMELINE_SOURCE, "STEP_LIMIT_FAILURE_REASON") == STEP_LIMIT_FAILURE
+    assert step_limit_failure_reason(1, 1).startswith(STEP_LIMIT_FAILURE)
+    # 引擎放弃那条前缀同样被前端用来区分人工与自动放弃。
+    assert _typescript_string_constant(_CONVERSATION_SOURCE, "ENGINE_ABANDON_REASON") == STEP_LIMIT_ABANDON
+    assert step_limit_abandon_reason(1).startswith(STEP_LIMIT_ABANDON)
