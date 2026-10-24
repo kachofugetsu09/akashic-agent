@@ -138,28 +138,50 @@ export function receivePluginUiCatalog(next: PluginUiCatalog): Promise<void> {
   return activation;
 }
 
+// 初始加载、核对与 409 恢复共用读取代次：比已发布读取更早开始的响应不能再发布（旧目录回退）。
+let catalogReadGeneration = 0;
+let catalogPublishedGeneration = 0;
+
 /** 通过桌面适配器加载同一份内容寻址插件界面。 */
 export async function loadWebPluginCatalog(signal?: AbortSignal): Promise<void> {
+  const generation = ++catalogReadGeneration;
   const response = await takeStartupResponse("/api/chat/plugin-ui/catalog", signal) ?? await fetch("/api/chat/plugin-ui/catalog", { signal });
   if (!response.ok) throw await webPluginError(response);
   const catalog = parseWebPluginCatalog(await response.json());
   // 预热响应的正文读取不受 signal 约束：失去 owner 的旧目录不能再发布。
   signal?.throwIfAborted();
+  if (generation < catalogPublishedGeneration) return;
+  catalogPublishedGeneration = generation;
   await receivePluginUiCatalog(catalog);
 }
 
 // 页面重新可见、回复结束时核对一次目录：别处安装或换代的插件不刷新页面也能渲染（#1568）。
-// 读取有最短间隔且同一时刻只有一次；409 恢复正在读取时让给它。
+// 读取有最短间隔且同一时刻只有一次；触发不丢弃，在途读取或间隔结束后尾随补读一次。
 let catalogRecheck: Promise<void> | null = null;
+let catalogRecheckPending = false;
+let catalogRecheckTimer: number | null = null;
 let catalogCheckedAt = 0;
 const CATALOG_RECHECK_INTERVAL_MS = 3_000;
 export function recheckWebPluginCatalog(): void {
-  if (catalogRecheck || staleCatalogRead || Date.now() - catalogCheckedAt < CATALOG_RECHECK_INTERVAL_MS) return;
+  catalogRecheckPending = true;
+  drainCatalogRecheck();
+}
+
+// 1. 有读取在飞（含 409 恢复）时等它结束再判断；它开始于本次触发之前，不能算覆盖。
+// 2. 距上次核对不足间隔时排一个尾随 timer；只有真正发起的读取才清掉待处理标志。
+function drainCatalogRecheck(): void {
+  if (!catalogRecheckPending || catalogRecheck || staleCatalogRead || catalogRecheckTimer !== null) return;
+  const wait = catalogCheckedAt + CATALOG_RECHECK_INTERVAL_MS - Date.now();
+  if (wait > 0) {
+    catalogRecheckTimer = window.setTimeout(() => { catalogRecheckTimer = null; drainCatalogRecheck(); }, wait);
+    return;
+  }
+  catalogRecheckPending = false;
   catalogCheckedAt = Date.now();
   const read = loadWebPluginCatalog(AbortSignal.timeout(10_000));
   catalogRecheck = read;
   read.catch((error: unknown) => console.warn("[plugin-ui] catalog recheck failed", error))
-    .finally(() => { if (catalogRecheck === read) catalogRecheck = null; });
+    .finally(() => { if (catalogRecheck === read) catalogRecheck = null; drainCatalogRecheck(); });
 }
 
 function parseWebPluginCatalog(value: unknown): PluginUiCatalog {
@@ -1018,7 +1040,10 @@ async function refreshStaleCatalog(): Promise<void> {
   catch (error) {
     throw new WebPluginError(409, `插件界面更新失败：${error instanceof Error ? error.message : String(error)}。请刷新页面。`, "plugin_ui_stale_revision");
   }
-  finally { if (staleCatalogRead === read) staleCatalogRead = null; }
+  finally {
+    if (staleCatalogRead === read) staleCatalogRead = null;
+    drainCatalogRecheck();
+  }
 }
 
 async function webPluginError(response: Response): Promise<WebPluginError> {
