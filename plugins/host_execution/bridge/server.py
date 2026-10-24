@@ -865,9 +865,10 @@ async def main(arguments: tuple[str, ...], *, workspace: Path, config_path: Path
     parser.add_argument("--runtime-checkout", type=Path, required=True)
     parser.add_argument("--bridge-python", type=Path, required=True)
     # 宿主出口目录：默认放在 runtime.env 给的 Workload 运行目录下，Controller 从同一处挂进 Workload。
-    runtime_dir = os.environ.get("AKASHIC_WORKLOAD_RUNTIME_DIR")
+    # 变量为空或不是绝对路径时不开出口，避免把 socket 建到当前目录下。
+    runtime_dir = Path(os.environ.get("AKASHIC_WORKLOAD_RUNTIME_DIR", ""))
     parser.add_argument("--egress-dir", type=Path,
-                        default=None if runtime_dir is None else Path(runtime_dir) / "host-egress")
+                        default=runtime_dir / "host-egress" if runtime_dir.is_absolute() else None)
     args = parser.parse_args(arguments)
     token = args.token_file.read_text(encoding="utf-8").strip()
     await serve(
