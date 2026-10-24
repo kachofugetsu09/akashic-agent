@@ -24,6 +24,7 @@ Shell 经 Host Bridge 在宿主上以用户身份执行（0032），能读写用
 - 后台运行（`run_in_background`）默认不设硬截止：dev server、长任务一直活到 `task_stop`、会话收尾或宿主停止。前台命令仍默认 4 小时，显式 `timeout` 不再有上限；协议里 `hard_timeout_s = 0` 表示不设截止。
 - Computer 地址栏可以打开 `file://`；输入以 `/` 开头的绝对路径时按本地文件打开。`javascript:` 等仍不接受。
 - Computer 浏览器等同宿主上的一个浏览器：Workload 可以声明 `host_egress`，Controller 把 Host Bridge 的 SOCKS5 unix socket（`<Workload 运行目录>/host-egress/socks.sock`）所在目录挂进容器；computer 的网关把它转成容器本机端口，Chromium 以 `<-loopback>` 让 localhost 也走它。连接由宿主上的 Bridge 发起，`localhost`、内网和域名解析都和宿主一致。容器里只有 OpenCLI 守护进程留在本机直连。
+- 出口 socket 由 Bridge 里的唯一 owner 看守：每 2 秒按 inode 核对监听路径，路径丢失就在原目录重新绑定（已建立的连接不受影响，Bridge、Core、Workload 都不重启）；路径被普通文件、其他用户或仍在监听的 socket 占用时不删除不覆盖，报告不可用并等它空出。Probe/Inspect 的能力里用 `host-egress` / `host-egress-unavailable` 单独报告出口状态，RPC 健康不代表出网入口可用。
 - 不改用 Docker 的宿主网络：那会占用宿主端口、和用户已有的服务冲突，core 访问 computer 和画面直连还要靠宿主防火墙放行。unix socket 不占端口、不经防火墙，换一台机器、换一套防火墙都不用额外配置。开发服务不再需要监听网关地址，也不再需要防火墙为容器网段开放行段。
 
 ## 代价
