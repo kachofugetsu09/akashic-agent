@@ -47,6 +47,7 @@ from plugins.host_execution.contract import (
     ExecutionResult, TerminalBackend, UnknownExecutionError, UnknownTerminalError
 )
 from ..process_runtime import ShellProcessManager
+from .egress import serve_egress
 from .path_info import PathInfoOperation
 from .filesystem import (
     EditFileOperation,
@@ -738,6 +739,7 @@ async def serve(
     toolchain_digest: str,
     runtime_checkout: Path,
     bridge_python: Path,
+    egress_dir: Path | None = None,
 ) -> None:
     """Serve one private UDS and clean every leased process on shutdown."""
 
@@ -770,6 +772,13 @@ async def serve(
         outcome="ready",
     )
     watchdog = asyncio.create_task(service.reap_expired(), name="host-bridge-reaper")
+    # 宿主出口起不来（如 socket 路径超长）只影响 Workload 上网，不拖垮 Shell。
+    egress = None
+    if egress_dir is not None:
+        try:
+            egress = await serve_egress(egress_dir)
+        except (OSError, RuntimeError) as error:
+            log_event(logger, logging.WARNING, "host_egress.failed", message=str(error), outcome="failed")
     stopping = asyncio.Event()
     loop = asyncio.get_running_loop()
     for signum in (signal.SIGINT, signal.SIGTERM):
@@ -781,6 +790,8 @@ async def serve(
         await asyncio.gather(watchdog, return_exceptions=True)
         await service.shutdown()
         await server.stop()
+        if egress is not None:
+            egress.close()
         socket_path.unlink(missing_ok=True)
         log_event(logger, logging.INFO, "host_bridge.stopped", outcome="completed")
 
@@ -853,6 +864,10 @@ async def main(arguments: tuple[str, ...], *, workspace: Path, config_path: Path
     parser.add_argument("--toolchain-digest", required=True)
     parser.add_argument("--runtime-checkout", type=Path, required=True)
     parser.add_argument("--bridge-python", type=Path, required=True)
+    # 宿主出口目录：默认放在 runtime.env 给的 Workload 运行目录下，Controller 从同一处挂进 Workload。
+    runtime_dir = os.environ.get("AKASHIC_WORKLOAD_RUNTIME_DIR")
+    parser.add_argument("--egress-dir", type=Path,
+                        default=None if runtime_dir is None else Path(runtime_dir) / "host-egress")
     args = parser.parse_args(arguments)
     token = args.token_file.read_text(encoding="utf-8").strip()
     await serve(
@@ -864,6 +879,7 @@ async def main(arguments: tuple[str, ...], *, workspace: Path, config_path: Path
         args.toolchain_digest,
         args.runtime_checkout.resolve(),
         args.bridge_python.absolute(),
+        None if args.egress_dir is None else args.egress_dir.resolve(),
     )
     return 0
 

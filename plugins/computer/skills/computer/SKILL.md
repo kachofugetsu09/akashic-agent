@@ -157,8 +157,18 @@ await testBrowser.close();
 
 ## Local pages and host servers
 
-The browser runs in its own container. `localhost` there is that container, not the machine where
-your shell commands run.
+The browser is a browser on the host: its connections leave from the host, so `localhost` is the
+machine where your shell commands run, and LAN and internet addresses resolve as they do there.
+
+**A server on the host** (a dev instance of Akashic, a dev server) opens at the address it listens on,
+usually `http://localhost:<port>`. Keep it running with the shell tool's `run_in_background`; a trailing
+`&` ends with the command. Check it with `curl -sI http://localhost:<port>/` in the shell first.
+
+```js
+var tab = await browser.tabs.new();
+await tab.goto("http://localhost:5173/");
+await tab.ax.write();
+```
 
 **Static pages.** Write the page (with its relative assets) into the shared pages directory named in
 the `computer` tool description, then open it with a `file://` URL:
@@ -172,22 +182,7 @@ await tab.ax.write();
 Create the directory first if it does not exist. Use a subdirectory per page and remove it when it is
 no longer needed.
 
-**A server on the host** (a dev instance of Akashic, a dev server) is reachable at the gateway of the
-container network, normally `http://172.26.0.1:<port>`, when all of these hold:
-
-- it listens on that gateway address (`docker network inspect akashic-workloads` shows it), not only on
-  `127.0.0.1`; for Akashic: `scripts/start.py --host <gateway> --port <port> --state <own dir>`;
-- the port is one the host firewall admits for containers; on the reference deployment that is
-  44100-44199;
-- it stays running: start it as a managed process, not a shell background job that ends with the command.
-
-```js
-var tab = await browser.tabs.new();
-await tab.goto("http://172.26.0.1:44101/");
-await tab.ax.write();
-```
-
-If `goto` times out, the port is not admitted: ask the user to allow it instead of retrying. If it
+`ERR_CONNECTION_REFUSED` means nothing listens there (the server stopped?). If it
 reports `ERR_BLOCKED_BY_CLIENT`, the connection worked but the response is not a page: top-level
 navigation renders only HTML, PDF, images and video and treats anything else as a blocked download.
 Read JSON or text endpoints with `fetch()` from a page of the same origin, or with `curl` in the shell.

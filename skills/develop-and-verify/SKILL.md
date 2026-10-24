@@ -9,7 +9,7 @@ description: 改任何带界面或服务的项目（网页、前端、后端、A
 只跑 typecheck / build、手写一段 DOM 拼成截图、假后端吐一份手编 JSON，都只能当辅助，不能当验收。
 
 ```text
-隔离工作区 → 起服务($GW:441xx，托管进程) → 假掉外部依赖 → computer 打开 http://$GW:441xx
+隔离工作区 → 起服务(localhost:<端口>，后台运行) → 假掉外部依赖 → computer 打开 http://localhost:<端口>
       ↑                                                                        ↓
       └─────────────── 改代码 → 重启服务 ←──────────── 真实操作、截图、对照
 ```
@@ -35,32 +35,24 @@ cd "$DEV/src" && npm ci        # 或该项目自己的依赖安装；不要把 n
 
 ## 2. 起服务，让 computer 看得到
 
-computer 的浏览器在 `akashic-workloads` 网络的容器里：它眼中的 `localhost` 是容器自己。
-宿主对它来说是这个网络的网关（参考部署是 `172.26.0.1`；不是 `host.docker.internal`，那个指向默认 bridge）：
-
-```sh
-GW=$(docker network inspect akashic-workloads --format '{{(index .IPAM.Config 0).Gateway}}')
-```
-
-能连上要同时满足：
+computer 的浏览器经宿主出口上网：它打开的 `localhost` 就是宿主本机，和你在宿主 shell 里 `curl` 的是同一个地址。
+服务照常监听 `127.0.0.1`，不要绑 `0.0.0.0`，没必要把开发服务开到所有网卡。
 
 | 条件 | 做法 |
 |---|---|
-| 监听网关地址 | dev server 用 `--host $GW`；只绑 `127.0.0.1` 的服务容器永远连不上。绑 `$GW` 只有容器网络够得着；不要图省事绑 `0.0.0.0`，那会把服务开到所有网卡，安全全靠宿主防火墙 |
-| 端口在放行段 | 宿主防火墙要放行容器网段访问这段端口（参考部署：44100–44199）。没放行时 `goto` 会超时：停下来请用户加规则，不要自己绕 |
-| 进程一直活着 | 用 shell 工具的后台运行（`run_in_background`）或 managed_processes 托管；命令末尾的 `&` 会在命令结束时被回收 |
+| 端口没被占 | 选一个空闲端口，`ss -ltn` 看一眼 |
+| 进程一直活着 | 用 shell 工具的后台运行（`run_in_background`），它不设截止，活到 `task_stop` 或会话结束；命令末尾的 `&` 会在命令结束时被回收 |
 
-先用宿主 shell 确认 `curl -sI http://$GW:<端口>/` 有响应，再去 computer 里开。
+先用宿主 shell 确认 `curl -sI http://localhost:<端口>/` 有响应，再去 computer 里开 `http://localhost:<端口>/`。
 
 在 computer 里的现象怎么读：
 
-- **超时**：端口不在放行段，或服务只绑了 127.0.0.1。
 - **`ERR_CONNECTION_REFUSED`**：服务没在跑（被回收了？）。
 - **`ERR_BLOCKED_BY_CLIENT`**：网络是通的，但响应不是页面。浏览器顶层只渲染 HTML/PDF/图片/视频，别的 Content-Type 当下载拦掉。看 JSON 接口用 shell 的 curl，或在同源页面里 `fetch()`。
 
 ## 3. 假掉外部依赖
 
-真实上游（LLM、第三方 API、支付）不要在验收里调：花钱、不确定、可能有副作用。写一个确定性的假服务，监听 `127.0.0.1`（服务端在宿主上访问它，不需要 441xx），回复里带上能证明链路的信息（模型名、收到的话、第几步）。
+真实上游（LLM、第三方 API、支付）不要在验收里调：花钱、不确定、可能有副作用。写一个确定性的假服务，监听 `127.0.0.1`，回复里带上能证明链路的信息（模型名、收到的话、第几步）。
 
 LLM 类依赖直接用 `scripts/mock_model.py`（只依赖标准库，OpenAI 兼容）：
 
@@ -77,7 +69,7 @@ python3 <本 skill 目录>/scripts/mock_model.py --port 44099 --steps 6 --tool s
 1. 加载 computer（`load_tools {"plugin":"computer"}`），读一遍它的 API 文档再操作。
 2. 按用户会走的路径操作：登录 → 触发功能（发消息、点按钮、填表单）→ 等它真的完成 → 看结果。
 3. 宽屏和手机宽度各看一次；有主题的亮/暗各看一次。
-4. **改前 / 改后对照**：在 `origin/main` 上用另一个 441xx 端口起一份，同一步骤截图对比。
+4. **改前 / 改后对照**：在 `origin/main` 上用另一个端口起一份，同一步骤截图对比。
 5. 截图保存后给用户看，或推到截图分支在 PR 里引用。
 
 同时跑和改动相关的检查（单测、类型检查、lint），只汇报真实跑过的结果。

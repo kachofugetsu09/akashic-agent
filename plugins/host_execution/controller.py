@@ -37,6 +37,8 @@ _ID = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:@-]{0,511}$")
 _API_VERSION = "v1.47"
 _OWNER_LABEL = "com.akashic.workload"
 _HOST_GATEWAY = "host.docker.internal:host-gateway"
+# 声明了 host_egress 的 Workload 在这里看到 Host Bridge 的 SOCKS5 socket（socks.sock）。
+HOST_EGRESS_TARGET = "/run/akashic/host-egress"
 _USERNS_SECCOMP_PATH = Path(__file__).with_name("userns-seccomp.json")
 _T = TypeVar("_T")
 logger = logging.getLogger(__name__)
@@ -131,8 +133,10 @@ class WorkloadControllerServer:
         owner_container: str | None = None,
         owner_grace_seconds: float = 10.0,
         owner_poll_seconds: float = 2.0,
+        host_egress_dir: Path | None = None,
     ) -> None:
         self._workspace = workspace.resolve(strict=True)
+        self._host_egress_dir = host_egress_dir
         self._socket_path = socket_path
         self._engine = DockerEngine(docker_socket)
         self._state_path = state_path
@@ -555,10 +559,13 @@ class WorkloadControllerServer:
         if detail is not None:
             labels = _labels(detail)
             self._check_lease_labels(lease, labels)
+            # 宿主出口目录由所有声明它的 Workload 共用，不算这个容器独占的 mount。
+            shared = None if self._host_egress_dir is None else str(self._host_egress_dir)
             sources = tuple(
                 str(item.get("Source"))
                 for item in cast(list[dict[str, object]], detail.get("Mounts", []))
                 if item.get("Type") == "bind" and isinstance(item.get("Source"), str)
+                and item.get("Source") != shared
             )
             self._stopped[stop_key] = {
                 "lease": asdict(lease),
@@ -819,6 +826,10 @@ class WorkloadControllerServer:
                 gid=self._workload_gid,
             )
             result.append((str(source), target, writable))
+        # 宿主出口：挂整个目录而不是 socket 文件，Bridge 重启重建 socket 后容器里仍看得到新的。
+        if request.host_egress and self._host_egress_dir is not None:
+            self._host_egress_dir.mkdir(parents=True, exist_ok=True)
+            result.append((str(self._host_egress_dir), HOST_EGRESS_TARGET, False))
         return tuple(result)
 
     def _check_request(self, request: WorkloadStartRequest) -> None:
@@ -841,6 +852,8 @@ class WorkloadControllerServer:
             raise ValueError("Workload command 不能为空")
         if not isinstance(request.user_namespaces, bool):
             raise ValueError("Workload user_namespaces 无效")
+        if not isinstance(request.host_egress, bool):
+            raise ValueError("Workload host_egress 无效")
         if not request.ports or len({name for name, _ in request.ports}) != len(
             request.ports
         ):
@@ -1044,6 +1057,7 @@ def _start_request(raw: dict[str, object]) -> WorkloadStartRequest:
         "loopback_ports",
         "user_namespaces",
         "udp_ports",
+        "host_egress",
     }
     if set(raw) != expected:
         raise ValueError(f"Workload start schema 不匹配: {sorted(set(raw) ^ expected)}")
@@ -1066,6 +1080,7 @@ def _start_request(raw: dict[str, object]) -> WorkloadStartRequest:
         loopback_ports=_ports(raw.get("loopback_ports")),
         user_namespaces=_required_bool(raw, "user_namespaces"),
         udp_ports=_udp_ports(raw.get("udp_ports")),
+        host_egress=_required_bool(raw, "host_egress"),
     )
     if _required_text(raw, "spec_digest") != request.spec_digest:
         raise ValueError("Workload spec digest 与请求内容不一致")
@@ -1453,6 +1468,7 @@ async def main(arguments: tuple[str, ...], *, workspace: Path, config_path: Path
     parser.add_argument("--owner-container")
     parser.add_argument("--owner-grace-seconds", type=float, default=10.0)
     parser.add_argument("--owner-poll-seconds", type=float, default=2.0)
+    parser.add_argument("--host-egress-dir", type=Path)
     args = parser.parse_args(arguments)
     server = WorkloadControllerServer(
         workspace=args.workspace,
@@ -1468,6 +1484,7 @@ async def main(arguments: tuple[str, ...], *, workspace: Path, config_path: Path
         owner_container=args.owner_container,
         owner_grace_seconds=args.owner_grace_seconds,
         owner_poll_seconds=args.owner_poll_seconds,
+        host_egress_dir=args.host_egress_dir,
     )
     await _serve_until_signal(server)
     return 0

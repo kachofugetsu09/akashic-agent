@@ -56,6 +56,7 @@ class WorkloadStartRequest:
     loopback_ports: tuple[tuple[str, int], ...] = ()
     user_namespaces: bool = False
     udp_ports: tuple[int, ...] = ()
+    host_egress: bool = False
 
     @property
     def spec_digest(self) -> str:
@@ -70,6 +71,8 @@ class WorkloadStartRequest:
         # 没有 UDP 端口的规格保持原摘要，升级后已有容器仍可直接接管。
         if self.udp_ports:
             value["udp_ports"] = list(self.udp_ports)
+        if self.host_egress:
+            value["host_egress"] = True
         return hashlib.sha256(json.dumps(value, sort_keys=True, separators=(",", ":")).encode()).hexdigest()
 
     def to_dict(self) -> dict[str, object]:
