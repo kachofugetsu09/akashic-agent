@@ -456,7 +456,7 @@ async def _try_end(
     reader = catalog.reader(cast(str, value["session_id"]))
     through_seq = reader.head()
     turns = await run_file_io(lambda: projection.project(
-        reader.snapshot(through_seq=through_seq), cast(str, value["source"])))
+        tuple(reader.committed_snapshot(through_seq=through_seq)), cast(str, value["source"])))
     if not any(
         turn.status in {"complete", "quiet", "abandoned"}
         and cast(str, value["turn_input_id"]) in turn.message_ids

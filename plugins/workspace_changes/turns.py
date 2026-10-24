@@ -112,7 +112,9 @@ class TurnWindows:
             catalog = self._ctx.require(MESSAGE_CATALOG)
             projection = self._ctx.require(TURN_PROJECTION)
             reader = catalog.reader(session)
-            turns, messages = await run_file_io(lambda: _project(projection, reader.snapshot(through_seq=head), source, -1))
+            # 回复正持有同一会话的已提交读面，复用它只补读尾部。
+            turns, messages = await run_file_io(lambda: _project(
+                projection, tuple(reader.committed_snapshot(through_seq=head)), source, -1))
             turn = turns[-1] if turns and turns[-1].status == "open" else None
             turn_id = None if turn is None else _first_input(turn, messages)
             if turn is None or turn_id is None or any(
