@@ -8,7 +8,6 @@ import {
   SunMoon,
   X,
 } from "lucide-react";
-import { flushSync } from "react-dom";
 import { memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type RefObject } from "react";
 import {
   DropdownMenu, DropdownMenuContent, DropdownMenuRadioGroup,
@@ -160,13 +159,13 @@ function useProgressiveRows(total: number, searching: boolean): { count: number;
     const timer = window.setTimeout(() => setMounted((count) => count + SESSION_ROW_BATCH), 30);
     return () => window.clearTimeout(timer);
   }, [mounted, total]);
-  const completeNow = useCallback(() => flushSync(() => setMounted(Number.POSITIVE_INFINITY)), []);
+  const completeNow = useCallback(() => setMounted(Number.POSITIVE_INFINITY), []);
   return { count: searching ? total : Math.min(mounted, total), completeNow };
 }
 
 // 焦点在行上时 ↑↓ 逐行、Home/End 到首末行，从第一行再按 ↑ 回到搜索框。
-// End 要到真正的末行：分批挂载未完成时先同步补齐再聚焦。
-function moveSessionFocus(event: React.KeyboardEvent<HTMLElement>, completeRows: () => void) {
+// End 要到真正的末行：分批挂载未完成时交给 completeRows 补齐并在提交后聚焦（返回 true）。
+function moveSessionFocus(event: React.KeyboardEvent<HTMLElement>, completeRows: () => boolean) {
   if (!["ArrowDown", "ArrowUp", "Home", "End"].includes(event.key)) return;
   const target = event.target;
   if (!(target instanceof HTMLButtonElement) || !target.matches(NAVIGATION_ROW)) return;
@@ -176,8 +175,7 @@ function moveSessionFocus(event: React.KeyboardEvent<HTMLElement>, completeRows:
   event.preventDefault();
   if (event.key === "Home") rows[0]?.focus();
   else if (event.key === "End") {
-    completeRows();
-    sessionRows(sidebar).at(-1)?.focus();
+    if (!completeRows()) rows.at(-1)?.focus();
   }
   else if (event.key === "ArrowDown") rows[Math.min(index + 1, rows.length - 1)]?.focus();
   else if (index > 0) rows[index - 1].focus();
@@ -522,6 +520,18 @@ export const DesktopSidebar = memo(function DesktopSidebar({
       .map((session) => sessionViews.get(session.id) ?? session),
     [sortedSessions, pinnedSessions, groupOf, sessionViews]);
   const { count: mountedRecent, completeNow: completeRecentRows } = useProgressiveRows(recentSessions.length, searching);
+  const focusEndRef = useRef(false);
+  const completeRowsForEnd = useCallback(() => {
+    if (mountedRecent >= recentSessions.length) return false;
+    focusEndRef.current = true;
+    completeRecentRows();
+    return true;
+  }, [mountedRecent, recentSessions.length, completeRecentRows]);
+  useLayoutEffect(() => {
+    if (!focusEndRef.current || mountedRecent < recentSessions.length) return;
+    focusEndRef.current = false;
+    sessionRows(sidebarRef.current).at(-1)?.focus();
+  }, [mountedRecent, recentSessions.length]);
   const mountedRecentSessions = useMemo(() => mountedRecent < recentSessions.length
     ? recentSessions.slice(0, mountedRecent) : recentSessions, [recentSessions, mountedRecent]);
   // 搜索时行不卸载，"匹配的会话"语义落在可见数上。
@@ -674,7 +684,7 @@ export const DesktopSidebar = memo(function DesktopSidebar({
         </label>
       </div>
 
-      <div className="chat-sidebar__navigation" data-searching={searching || undefined} onKeyDown={(event) => moveSessionFocus(event, completeRecentRows)}>
+      <div className="chat-sidebar__navigation" data-searching={searching || undefined} onKeyDown={(event) => moveSessionFocus(event, completeRowsForEnd)}>
       {searching && !hasMatches ? <p className="navigation-search-empty" role="status">没有匹配的会话或分组</p> : null}
       {navigationPins.error ? <div className="navigation-pins-error" role="alert">
         <span>{navigationPins.error}</span>
