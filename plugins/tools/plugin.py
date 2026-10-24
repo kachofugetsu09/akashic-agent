@@ -13,6 +13,7 @@ from agent.plugin_composition import (
     RUNTIME_STOPPING,
     Context,
     Effect,
+    FiberState,
 )
 from plugins.ledger.contract import BINDINGS, Bindings
 from plugins.ledger.contract import (
@@ -119,6 +120,15 @@ class _Registration:
     authorization: _Authorization | None = None
     parallel: bool = False
     release: ToolRelease | None = None
+
+
+def _owners_active(registration: _Registration) -> bool:
+    contributors = (
+        registration.context,
+        *(() if registration.preparation is None else (registration.preparation.context,)),
+        *(() if registration.authorization is None else (registration.authorization.context,)),
+    )
+    return all(contributor.fiber.state == FiberState.ACTIVE for contributor in contributors)
 
 
 @dataclass(frozen=True, slots=True)
@@ -371,9 +381,11 @@ class ToolCatalog:
             _ = self._registration(ref)
         return ToolView(tuple(refs))
 
+    # 只列出贡献者都已激活的工具：插件 apply 中途就注册工具，加载或重载期间绑定它会让整轮回复失败。
     def _all_view(self) -> ToolView:
         return ToolView(tuple(self._tools[name].ref for name in sorted(self._tools)
-                              if self._tools[name].ref.description["public"]))
+                              if self._tools[name].ref.description["public"]
+                              and _owners_active(self._tools[name])))
 
     def group_always_on(self, ref: ToolRef) -> bool:
         registration = self._registration(ref)
