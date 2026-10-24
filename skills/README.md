@@ -19,7 +19,7 @@
   - 文件：`skills/verify-akashic-plugin/SKILL.md`
 
 - `develop-and-verify`
-  - 改带界面或服务的项目（含 Akashic 自身）时，在宿主上隔离地起真实服务、假掉外部依赖、用 computer 浏览器（`http://172.26.0.1:441xx`）真实操作截图，验完再提 PR；附 OpenAI 兼容假模型脚本与 Akashic 开发实例参考。
+  - 改带界面或服务的项目（含 Akashic 自身）时，在宿主上隔离地起真实服务、假掉外部依赖、用 computer 浏览器（`http://localhost:<端口>`）真实操作截图，验完再提 PR；附 OpenAI 兼容假模型脚本与 Akashic 开发实例参考。
   - 文件：`skills/develop-and-verify/SKILL.md`
 
 - `codex-delegate`

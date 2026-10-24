@@ -26,6 +26,7 @@ class WorkloadDescriptor:
     limits: WorkloadLimits
     user_namespaces: bool
     udp_ports: tuple[int, ...] = ()
+    host_egress: bool = False
 
 
 @dataclass(frozen=True, slots=True)
@@ -53,6 +54,8 @@ def _normalize_workload(value: Workload) -> Workload:
     udp_ports = _udp_ports(value.udp_ports)
     if not isinstance(value.user_namespaces, bool):
         raise TypeError("Workload user_namespaces 必须是 bool")
+    if not isinstance(value.host_egress, bool):
+        raise TypeError("Workload host_egress 必须是 bool")
     return Workload(
         name=name,
         image=value.image,
@@ -63,6 +66,7 @@ def _normalize_workload(value: Workload) -> Workload:
         limits=limits,
         user_namespaces=value.user_namespaces,
         udp_ports=udp_ports,
+        host_egress=value.host_egress,
     )
 
 
@@ -78,6 +82,7 @@ def _descriptor(owner: str, value: Workload) -> WorkloadDescriptor:
         limits=value.limits,
         user_namespaces=value.user_namespaces,
         udp_ports=value.udp_ports,
+        host_egress=value.host_egress,
     )
 
 
