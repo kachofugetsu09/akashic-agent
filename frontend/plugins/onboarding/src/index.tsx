@@ -103,7 +103,10 @@ function initialChoice(catalog: Catalog, statuses: Statuses): Set<string> {
 function useCatalog(data: WebResource<Snapshot>) {
   const snapshot = useSyncExternalStore(data.subscribe, () => data.current);
   const failure = useSyncExternalStore(data.subscribe, () => data.error);
-  const [chosen, setChosen] = useState<Set<string> | null>(() => snapshot ? initialChoice(snapshot.catalog, snapshot.statuses) : null);
+  const [chosen, setChosenState] = useState<Set<string> | null>(() => snapshot ? initialChoice(snapshot.catalog, snapshot.statuses) : null);
+  // 用户动过勾选之前，默认勾选跟着最新核对结果走：缓存里的旧状态不能定死默认值。
+  const touched = useRef(false);
+  const setChosen = useCallback((update: (current: Set<string> | null) => Set<string>) => { touched.current = true; setChosenState(update); }, []);
   // 保存后要看到写入后的状态：开新读取，不并入写入前就在途的那次。
   const refresh = useCallback(async () => { await data.refresh({fresh: true}).catch(() => undefined); }, [data]);
   useEffect(() => {
@@ -112,8 +115,9 @@ function useCatalog(data: WebResource<Snapshot>) {
     window.addEventListener("focus", load);
     return () => window.removeEventListener("focus", load);
   }, [data]);
-  useEffect(() => { if (snapshot) setChosen(current => current ?? initialChoice(snapshot.catalog, snapshot.statuses)); }, [snapshot]);
-  const error = failure && !snapshot ? `读取引导失败：${failure.message}` : "";
+  useEffect(() => { if (snapshot && !touched.current) setChosenState(initialChoice(snapshot.catalog, snapshot.statuses)); }, [snapshot]);
+  // 有上次的内容也照常报核对失败：界面上的状态可能已经过时。
+  const error = failure ? `读取引导失败：${failure.message}` : "";
   return {catalog: snapshot?.catalog ?? null, statuses: snapshot?.statuses ?? {}, chosen, setChosen, error, refresh};
 }
 
