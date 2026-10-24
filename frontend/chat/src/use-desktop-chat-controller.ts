@@ -17,7 +17,7 @@ import {
   errorMessage,
   fetchChatJson,
   isAbortError,
-  mergeRecentSessions, sessionPage,
+  mergeRecentSessions, sessionPage, type SessionsRefresh,
   renameChatSession,
   setChatSessionDeleted,
   uploadFiles,
@@ -369,15 +369,15 @@ export function useDesktopChatController() {
 
   // 追加与活动帧只可能改变最近更新的会话：只读第一页并合并；第一页之外也有变化时退回全量。
   // 元数据变更（改名、删除）、快照与显式操作仍走全量。
-  const loadSessions = useCallback(async (scope: "full" | "recent" = "full") => {
+  const loadSessions = useCallback(async (scope: SessionsRefresh = "full") => {
     sessionsRequestRef.current?.abort();
     const controller = new AbortController();
     sessionsRequestRef.current = controller;
     try {
-      if (scope === "recent" && sessionsRef.current.length) {
+      if (scope !== "full" && sessionsRef.current.length) {
         const page = sessionPage(await fetchChatJson<unknown>("/api/chat/sessions?page_size=200", { signal: controller.signal }));
         if (controller.signal.aborted) return;
-        const merged = mergeRecentSessions(sessionsRef.current, page);
+        const merged = mergeRecentSessions(sessionsRef.current, page, scope);
         if (merged) {
           page.items.forEach((session) => {
             if (session.scope && Object.keys(session.scope).length) sessionScopesRef.current.set(session.key, session.scope);
@@ -504,14 +504,16 @@ export function useDesktopChatController() {
 
   useEffect(() => () => streamStore.clear(), [streamStore]);
 
-  const loadSessionsSafely = useCallback((scope: "full" | "recent" = "full") => loadSessions(scope).catch((error: unknown) => reportError(error)), [loadSessions, reportError]);
+  const loadSessionsSafely = useCallback((scope: SessionsRefresh = "full") => loadSessions(scope).catch((error: unknown) => reportError(error)), [loadSessions, reportError]);
   // 实时帧驱动的目录刷新很密（启动基线帧、流式追加、活动状态都触发）：合并成尾随一次执行，
   // 避免每个帧中止重发一次全量目录读。显式数据操作（改名/删除）仍立即刷新，不走这里。
   const sessionsRefreshTimerRef = useRef<number | null>(null);
-  // 同一窗口内合并的触发里只要有一次需要全量，这一轮就读全量。
-  const sessionsRefreshScopeRef = useRef<"full" | "recent">("recent");
-  const scheduleSessionsRefresh = useCallback((scope: "full" | "recent" = "full"): Promise<void> => {
+  // 同一窗口内合并的触发里只要有一次需要全量，这一轮就读全量；否则累积变化的会话 key。
+  const sessionsRefreshScopeRef = useRef<"full" | Set<string>>(new Set());
+  const scheduleSessionsRefresh = useCallback((scope: SessionsRefresh = "full"): Promise<void> => {
+    const pendingScope = sessionsRefreshScopeRef.current;
     if (scope === "full") sessionsRefreshScopeRef.current = "full";
+    else if (pendingScope !== "full") scope.forEach((key) => pendingScope.add(key));
     if (sessionsRefreshTimerRef.current !== null) return Promise.resolve();
     return new Promise((resolve) => {
       const fire = () => {
@@ -524,8 +526,8 @@ export function useDesktopChatController() {
           return;
         }
         const pending = sessionsRefreshScopeRef.current;
-        sessionsRefreshScopeRef.current = "recent";
-        resolve(loadSessionsSafely(pending));
+        sessionsRefreshScopeRef.current = new Set();
+        resolve(loadSessionsSafely(pending === "full" ? "full" : [...pending]));
       };
       sessionsRefreshTimerRef.current = window.setTimeout(fire, 300);
     });
@@ -627,7 +629,7 @@ export function useDesktopChatController() {
                       for (const id of saved) ackWaitersRef.current.get(id)?.();
                       setMessages((currentMessages) => currentMessages.filter((item) => !saved.has(item.id)));
                       if (statusLiveRef.current !== "uploading") setStatusLive(replyChatStatus(replyActivitiesRef.current, messagesRef.current.length + Number(sendRequestRef.current !== null), timelineRef.current, replyAvailableRef.current));
-                      scheduleSessionsRefresh("recent");
+                      scheduleSessionsRefresh([frame.session_id]);
                     } else if (frame.type === "reply.status") {
                       replyActivitiesRef.current = frame.items;
                       setReplyActivities(frame.items);
