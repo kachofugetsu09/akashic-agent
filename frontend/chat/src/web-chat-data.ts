@@ -103,7 +103,9 @@ export async function fetchChatJson<T>(url: string, options: RequestInit = {}): 
   return payload as T;
 }
 
-export function sessionPage(payload: unknown): { items: SessionRow[]; nextCursor: { updated_at: string; session_id: string } | null } {
+export function sessionPage(payload: unknown): {
+  items: SessionRow[]; nextCursor: { updated_at: string; session_id: string } | null; catalogEpoch: string | null;
+} {
   const items = responseItems(payload, "/api/chat/sessions");
   if (items.some((item) => (
     typeof item.key !== "string"
@@ -124,7 +126,9 @@ export function sessionPage(payload: unknown): { items: SessionRow[]; nextCursor
     || !Number.isFinite(Date.parse(next.updated_at)) || typeof next.session_id !== "string" || !next.session_id)) {
     throw new Error("/api/chat/sessions 返回了无效目录游标");
   }
-  return { items: items as unknown as SessionRow[], nextCursor: next as { updated_at: string; session_id: string } | null };
+  const epoch = recordValue(payload)?.catalog_epoch;
+  return { items: items as unknown as SessionRow[], nextCursor: next as { updated_at: string; session_id: string } | null,
+    catalogEpoch: typeof epoch === "string" ? epoch : null };
 }
 
 /** 目录刷新范围：全量，或已知发生变化的会话 key（追加、回复结束、新 head）。 */

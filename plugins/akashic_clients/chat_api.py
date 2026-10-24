@@ -294,12 +294,15 @@ def create_chat_app(
             raise HTTPException(status_code=422, detail="目录 cursor 需要时间与会话 ID")
         after = None if after_time is None or after_key is None else (after_time, after_key)
         async with open_message_catalog() as catalog:
+            # 纪元在查询前读取：客户端据此判断首连基线通知是否已被这次读取覆盖。
+            epoch = catalog.metadata_epoch
             try:
                 page = await catalog.sessions_async(
                     prefix=f"{channel.name}:", visibility="listed", after=after, limit=page_size)
             except InvalidPage as error:
                 raise HTTPException(status_code=422, detail=str(error)) from error
         return {"items": [session_row(cast(Any, entry)) for entry in page.items], "total": page.total,
+                "catalog_epoch": epoch,
                 "next_cursor": None if page.next_cursor is None else {
                     "updated_at": page.next_cursor[0], "session_id": page.next_cursor[1]}}
 

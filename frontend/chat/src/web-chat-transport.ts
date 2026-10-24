@@ -1,5 +1,5 @@
 export type ChatFrame =
-  | { type: "sessions.changed"; version: 2 }
+  | { type: "sessions.changed"; version: 2; catalog_epoch?: string }
   | { type: "session.created"; request_id: string; session_id: string }
   | { type: "turn.started"; session_id: string; turn_id: string; control_turn_id: string; client_message_id: string; content: string }
   | { type: "react.thinking.delta"; session_id: string; turn_id: string; delta: string }
@@ -43,6 +43,7 @@ export function parseChatFrame(value: unknown): ChatFrame {
   switch (frame.type) {
     case "sessions.changed":
       if (frame.version !== 2) throw new Error("会话目录通知版本无效");
+      if (frame.catalog_epoch !== undefined && typeof frame.catalog_epoch !== "string") throw new Error("会话目录纪元无效");
       break;
     case "session.created":
       requireStrings(frame, ["request_id", "session_id"]);

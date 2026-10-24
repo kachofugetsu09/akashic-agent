@@ -280,6 +280,9 @@ export function useDesktopChatController() {
   const statusRef = useRef<ChatStatus>("idle");
   const statusLiveRef = useRef<ChatStatus>("idle");
   const sessionsRequestRef = useRef<AbortController | null>(null);
+  // 最近一次成功全量目录读取在查询前的目录纪元；只有读完才记，失败的读取不能证明覆盖了基线通知。
+  const catalogEpochRef = useRef<string | null>(null);
+  const firstCatalogFrameRef = useRef(true);
   const messagesRequestRef = useRef<AbortController | null>(null);
   const olderMessagesRequestRef = useRef<AbortController | null>(null);
   const sendRequestRef = useRef<AbortController | null>(null);
@@ -390,9 +393,11 @@ export function useDesktopChatController() {
       const cursors = new Set<string>();
       let published = false;
       let query = "page_size=200";
+      let epoch: string | null | undefined;
       while (true) {
         const page = sessionPage(await fetchChatJson<unknown>(`/api/chat/sessions?${query}`, { signal: controller.signal }));
         if (controller.signal.aborted) return;
+        epoch ??= page.catalogEpoch;
         page.items.forEach((session) => { if (!items.has(session.key)) items.set(session.key, session); });
         if (!published && items.size > 0) {
           // 首页先行渲染:大目录的其余页还在游标链上串行到达(每页一次 RTT),
@@ -417,6 +422,7 @@ export function useDesktopChatController() {
         if (session.scope && Object.keys(session.scope).length) sessionScopesRef.current.set(session.key, session.scope);
       });
       setSessions([...items.values()]);
+      catalogEpochRef.current = epoch ?? null;
     } finally {
       if (sessionsRequestRef.current === controller) sessionsRequestRef.current = null;
     }
@@ -510,6 +516,9 @@ export function useDesktopChatController() {
   const sessionsRefreshTimerRef = useRef<number | null>(null);
   // 同一窗口内合并的触发里只要有一次需要全量，这一轮就读全量；否则累积变化的会话 key。
   const sessionsRefreshScopeRef = useRef<"full" | Set<string>>(new Set());
+  // 首连基线通知（#1556）：订阅时服务端先推一帧当时的目录纪元。等在飞的初始全量读完，
+  // 纪元与它查询前读到的相同就说明其间没有管理提交，不再重拉一遍；重连仍无条件全量对账。
+  const sessionsRefreshEpochsRef = useRef(new Set<string>());
   const scheduleSessionsRefresh = useCallback((scope: SessionsRefresh = "full"): Promise<void> => {
     const pendingScope = sessionsRefreshScopeRef.current;
     if (scope === "full") sessionsRefreshScopeRef.current = "full";
@@ -526,8 +535,11 @@ export function useDesktopChatController() {
           return;
         }
         const pending = sessionsRefreshScopeRef.current;
+        const covered = [...sessionsRefreshEpochsRef.current].every((epoch) => epoch === catalogEpochRef.current);
         sessionsRefreshScopeRef.current = new Set();
-        resolve(loadSessionsSafely(pending === "full" ? "full" : [...pending]));
+        sessionsRefreshEpochsRef.current = new Set();
+        if (pending !== "full" && !pending.size && covered) { resolve(); return; }
+        resolve(loadSessionsSafely(pending === "full" || !covered ? "full" : [...pending]));
       };
       sessionsRefreshTimerRef.current = window.setTimeout(fire, 300);
     });
@@ -643,7 +655,10 @@ export function useDesktopChatController() {
                   }
                   const other = parseChatFrame(value);
                   if (other.type === "sessions.changed") {
-                    scheduleSessionsRefresh();
+                    const baseline = firstCatalogFrameRef.current ? other.catalog_epoch : undefined;
+                    firstCatalogFrameRef.current = false;
+                    if (baseline) sessionsRefreshEpochsRef.current.add(baseline);
+                    scheduleSessionsRefresh(baseline ? [] : "full");
                     void reloadPinsRef.current();
                   } else if (other.type === "message.accepted") {
                     ackWaitersRef.current.get(other.request_id)?.();
