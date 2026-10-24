@@ -815,7 +815,13 @@ function MessageAttachmentFigure({ attachment, origin, sessionId, messageId, fal
   const content = useRef<HTMLDivElement>(null);
   useLayoutEffect(() => {
     const outer = box.current!, inner = content.current!;
-    const measure = () => { outer.style.height = `${inner.getBoundingClientRect().height}px`; };
+    // 内容到达撑开时直接到位，只有插件退出降级变矮才过渡：切回会话时附件异步长高，
+    // 若也动画，整页会在 300ms 里每帧跟着追滚动。
+    const measure = () => {
+      const next = inner.getBoundingClientRect().height;
+      outer.style.transition = next >= outer.getBoundingClientRect().height ? "none" : "";
+      outer.style.height = `${next}px`;
+    };
     measure();
     const observer = new ResizeObserver(measure);
     observer.observe(inner);
