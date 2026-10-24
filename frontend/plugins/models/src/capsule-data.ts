@@ -35,6 +35,8 @@ export function compatibleEffort(runtime: ChatModelRuntime | undefined, current:
 
 export interface ChatModelState {
   generationId: number;
+  /** 目录指纹：下次查询带上，目录没变时服务端只回会话选择。 */
+  catalog: string;
   defaultRuntime: string;
   sessionOverride: string;
   sessionSelection: { modelRef: string; reasoningEffort: string };
@@ -47,14 +49,21 @@ const record = (value: unknown): Record<string, unknown> | null =>
 const strings = (value: unknown): value is string[] => Array.isArray(value) && value.every((item) => typeof item === "string");
 
 // chat.models 查询结果的数据边界：字段不对就整体拒收，不让半份目录进入选择器。
-export function chatModelState(payload: unknown): ChatModelState {
+// 省掉目录的回复只在指纹与 known 一致时接受，目录沿用 known。
+export function chatModelState(payload: unknown, known?: ChatModelState | null): ChatModelState {
   const body = record(payload);
   const selection = record(body?.sessionSelection);
   if (!body || !Number.isInteger(body.generationId) || typeof body.defaultRuntime !== "string"
     || typeof body.sessionOverride !== "string" || !selection || typeof selection.modelRef !== "string"
-    || typeof selection.reasoningEffort !== "string" || !Array.isArray(body.runtimes) || !Array.isArray(body.unavailableRuntimes)) {
+    || typeof selection.reasoningEffort !== "string") {
     throw new Error("模型列表格式无效");
   }
+  const catalog = typeof body.catalog === "string" ? body.catalog : "";
+  if (!("runtimes" in body) && known && catalog && catalog === known.catalog) {
+    return { ...known, generationId: Number(body.generationId), defaultRuntime: body.defaultRuntime, sessionOverride: body.sessionOverride,
+      sessionSelection: { modelRef: selection.modelRef, reasoningEffort: selection.reasoningEffort } };
+  }
+  if (!Array.isArray(body.runtimes) || !Array.isArray(body.unavailableRuntimes)) throw new Error("模型列表格式无效");
   const runtimes = body.runtimes.map((value): ChatModelRuntime => {
     const item = record(value);
     if (!item || typeof item.id !== "string" || typeof item.provider !== "string" || typeof item.model !== "string"
@@ -74,7 +83,7 @@ export function chatModelState(payload: unknown): ChatModelState {
       || (item.availability !== "disabled" && item.availability !== "driver_unavailable")) throw new Error("不可用模型条目格式无效");
     return { id: item.id, model: item.model, sourceName: item.sourceName, availability: item.availability };
   });
-  return { generationId: Number(body.generationId), defaultRuntime: body.defaultRuntime, sessionOverride: body.sessionOverride,
+  return { generationId: Number(body.generationId), catalog, defaultRuntime: body.defaultRuntime, sessionOverride: body.sessionOverride,
     sessionSelection: { modelRef: selection.modelRef, reasoningEffort: selection.reasoningEffort }, runtimes, unavailableRuntimes };
 }
 
