@@ -105,6 +105,19 @@ export const DesktopComposer = memo(function DesktopComposer({
       () => textarea ? textarea.scrollHeight > textarea.clientHeight : false,
     ));
   }, []);
+  // 输入框变窄（打开侧边面板、模型名变长、窗口缩小）时，已有草稿的单行可能放不下，按新宽度重判一次。
+  useEffect(() => {
+    const textarea = textareaRef.current;
+    if (!textarea) return;
+    let width = textarea.clientWidth;
+    const observer = new ResizeObserver(() => {
+      if (textarea.clientWidth === width) return;
+      width = textarea.clientWidth;
+      syncExpanded(textarea, textarea.value);
+    });
+    observer.observe(textarea);
+    return () => observer.disconnect();
+  }, [syncExpanded]);
   useImperativeHandle(ref, () => ({
     takeDraft: () => {
       const text = drafts.current.get(draftKey) ?? "";

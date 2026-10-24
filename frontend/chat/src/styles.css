@@ -2077,6 +2077,15 @@ form.composer:focus-within [data-slot="input-group"] {
   padding-inline: 0;
   line-height: var(--composer-control-size);
   field-sizing: fixed;
+  /* 单行态放不下时会转成展开态，过渡的一帧里也不露原生滚动箭头。 */
+  overflow: hidden;
+}
+
+/* 占位文字只占一行：窄时省略，不折行顶出滚动条。 */
+.composer.is-compact textarea::placeholder {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .composer.is-expanded textarea,
@@ -2732,7 +2741,10 @@ form.composer:focus-within [data-slot="input-group"] {
     font-size: 1rem;
     line-height: 24px;
     field-sizing: content;
+    overflow-y: auto;
   }
+
+  .chat-main .composer.is-compact textarea::placeholder { white-space: normal; }
 
   .chat-main .composer.is-compact .composer__bar,
   .chat-main .composer.is-expanded .composer__bar {
