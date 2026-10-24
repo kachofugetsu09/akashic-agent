@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import asyncio
+import gzip
+import hashlib
 import json
 import logging
 import stat
@@ -72,6 +74,12 @@ _RESPONSE_HEADERS_ALLOWED = {
     "set-cookie",
     "x-akashic-web-stale",
 }
+
+# JSON 正文由代理统一协商：超过 1KB 且浏览器接受 gzip 才压缩；超过 64KB 的压缩放到线程里，不占事件循环。
+_JSON_GZIP_MIN_BYTES = 1024
+_JSON_GZIP_THREAD_BYTES = 64 * 1024
+_JSON_GZIP_LEVEL = 5
+_JSON_RELAY_MAX_BYTES = 8 * 1024 * 1024
 
 logger = logging.getLogger(__name__)
 
@@ -543,12 +551,55 @@ async def _proxy_http(
         except httpx.HTTPError:
             return _runtime_unavailable(html="text/html" in request.headers.get("accept", ""))
         lifetime.push_async_callback(upstream.aclose)
+        if _relays_json(upstream):
+            return await _json_response(request, upstream.status_code, upstream.headers, await upstream.aread())
         response_headers = {name: value for name, value in upstream.headers.items()
                             if name.lower() in _RESPONSE_HEADERS_ALLOWED}
         event_stream = upstream.headers.get("content-type", "").startswith("text/event-stream")
         return _ProxyStreamingResponse(upstream.aiter_raw(), status_code=upstream.status_code,
                                        headers=response_headers, close=lifetime.pop_all().aclose,
                                        stopping=streams_stopping if event_stream else None)
+
+
+# 只接手长度已知且不大的 JSON；没有长度（流式生成）或超过上限的正文照旧边收边转。
+def _relays_json(upstream: httpx.Response) -> bool:
+    length = upstream.headers.get("content-length", "")
+    return upstream.headers.get("content-type", "").startswith("application/json") \
+        and "content-encoding" not in upstream.headers \
+        and length.isdigit() and int(length) <= _JSON_RELAY_MAX_BYTES
+
+
+# 插件应用各自只回裸 JSON：模型目录、会话消息页、插件查询动辄上百 KB，远程访问时传输占大头。
+# 1. GET 成功响应带内容指纹，浏览器下次自动条件请求，没变就回 304、不传正文；
+# 2. 正文按浏览器接受度 gzip 压缩。
+async def _json_response(request: Request, status: int, upstream_headers: httpx.Headers, body: bytes) -> Response:
+    headers = {name: value for name, value in upstream_headers.items()
+               if name.lower() in _RESPONSE_HEADERS_ALLOWED and name.lower() != "content-length"}
+    if request.method == "GET" and status == 200 and "etag" not in upstream_headers:
+        etag = f'W/"{hashlib.sha256(body).hexdigest()[:24]}"'
+        headers["etag"] = etag
+        if etag in (item.strip() for item in request.headers.get("if-none-match", "").split(",")):
+            return Response(status_code=304, headers={name: value for name, value in headers.items()
+                                                      if name.lower() in ("etag", "cache-control", "vary")})
+    if len(body) >= _JSON_GZIP_MIN_BYTES and _accepts_gzip(request.headers.get("accept-encoding", "")):
+        body = (await asyncio.to_thread(gzip.compress, body, _JSON_GZIP_LEVEL) if len(body) > _JSON_GZIP_THREAD_BYTES
+                else gzip.compress(body, _JSON_GZIP_LEVEL))
+        headers["content-encoding"] = "gzip"
+        headers["vary"] = "Accept-Encoding"
+    return Response(content=body, status_code=status, headers=headers)
+
+
+def _accepts_gzip(value: str) -> bool:
+    for item in value.split(","):
+        coding, _, params = item.partition(";")
+        if coding.strip().lower() not in ("gzip", "*"):
+            continue
+        weight = params.strip().removeprefix("q=").strip() if params.strip().startswith("q=") else "1"
+        try:
+            return float(weight) > 0
+        except ValueError:
+            return False
+    return False
 
 
 async def _proxy_websocket(
