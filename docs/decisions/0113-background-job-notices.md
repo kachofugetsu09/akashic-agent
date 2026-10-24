@@ -14,7 +14,7 @@ Agent 需要把长任务（例如 `codex exec`、`claude -p`）派发出去，�
    在结算时返回 `JobOutcome`，返回 `None` 表示结果已被模型收走或任务被显式停止。
    注册表与生产方种类无关，Shell 后台命令是第一个生产方。
 2. **Shell 增加 `run_in_background`。** 后台命令进入 `(会话来源, "background")` 分区，
-   回合结束和放弃时的工具收尾（shell 的 `release`）只回收回合分区，后台进程由 `task_stop`、硬超时或宿主停止回收。
+   回合结束和放弃时的工具收尾（shell 的 `release`）只回收回合分区，后台进程由 `task_stop`、显式硬超时或宿主停止回收（0133 起后台默认不设硬超时）。
    `write_stdin` / `task_stop` 先查回合分区，再查后台分区。唤醒回复仍记为 `job:<id>`，
    但后台分区通过 `jobs.notices.v1.origin_source(session_id, source)` 取得登记时的原来源。
    查询只匹配本会话当前领取的唤醒；其他来源、其他会话和普通回合分区不变。

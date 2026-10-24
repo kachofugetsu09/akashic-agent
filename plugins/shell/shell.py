@@ -16,7 +16,7 @@ from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_valida
 from plugins.host_execution.contract import PROCESSES
 from agent.plugin_composition import CompositionError, Context
 from plugins.host_execution.contract import (
-    DEFAULT_HARD_TIMEOUT_S, DEFAULT_INITIAL_YIELD_TIME_MS, DEFAULT_MAX_OUTPUT_TOKENS, MAX_HARD_TIMEOUT_S, ExecutionCleanupReport, ExecutionResult, ExecutionState, UnknownExecutionError, clamp_initial_yield_time, clamp_write_stdin_yield_time
+    DEFAULT_HARD_TIMEOUT_S, DEFAULT_INITIAL_YIELD_TIME_MS, DEFAULT_MAX_OUTPUT_TOKENS, ExecutionCleanupReport, ExecutionResult, ExecutionState, UnknownExecutionError, clamp_initial_yield_time, clamp_write_stdin_yield_time
 )
 from .shell_backend import format_execution_result
 from plugins.ledger.contract import (
@@ -57,10 +57,10 @@ class ShellSettings(BaseModel):
         return value
 
 
-# 插件设置：模型不指定 timeout、max_output_tokens 时用的默认值。
+# 插件设置：模型不指定 timeout、max_output_tokens 时用的默认值；timeout 默认只给前台命令。
 class Config(BaseModel):
     model_config = ConfigDict(extra="forbid")
-    timeout: int = Field(default=DEFAULT_HARD_TIMEOUT_S, ge=1, le=MAX_HARD_TIMEOUT_S)
+    timeout: int = Field(default=DEFAULT_HARD_TIMEOUT_S, ge=1)
     max_output_tokens: int = Field(default=DEFAULT_MAX_OUTPUT_TOKENS, ge=100, le=200_000)
 
 
@@ -74,7 +74,10 @@ class Command(BaseModel):
     tty: bool = Field(default=False, description="需要交互输入时启用 PTY。")
     yield_time_ms: int = DEFAULT_INITIAL_YIELD_TIME_MS
     max_output_tokens: int = Field(default=DEFAULT_MAX_OUTPUT_TOKENS, ge=0)
-    timeout: int = Field(default=DEFAULT_HARD_TIMEOUT_S, ge=1, le=MAX_HARD_TIMEOUT_S)
+    timeout: int = Field(
+        default=0, ge=0,
+        description="硬截止秒数，到时终止整个进程组；0 不设截止。前台命令默认见 default，后台运行默认不设截止。",
+    )
     run_in_background: bool = Field(
         default=False,
         description=(
@@ -202,6 +205,9 @@ class ShellTool:
         raw = json_value(arguments)
         if isinstance(raw, dict) and self._name != "task_stop":
             fallback = self._defaults.model_dump(include={"max_output_tokens"} if self._name == "write_stdin" else None)
+            # 后台进程（dev server、长任务）随会话活着，由 task_stop 或会话收尾结束，不套前台的默认截止。
+            if raw.get("run_in_background") is True:
+                fallback.pop("timeout", None)
             raw = {**fallback, **raw}
         try:
             if self._name != "shell":
