@@ -17,7 +17,7 @@ import {
   errorMessage,
   fetchChatJson,
   isAbortError,
-  mergeRecentSessions, sessionPage, type SessionsRefresh,
+  mergeRecentSessions, sessionPage, snapshotChanges, type SessionsRefresh, type SessionsRefreshTrigger,
   renameChatSession,
   setChatSessionDeleted,
   uploadFiles,
@@ -385,6 +385,7 @@ export function useDesktopChatController() {
           page.items.forEach((session) => {
             if (session.scope && Object.keys(session.scope).length) sessionScopesRef.current.set(session.key, session.scope);
           });
+          sessionsRef.current = merged;
           setSessions(merged);
           return;
         }
@@ -421,7 +422,8 @@ export function useDesktopChatController() {
       items.forEach((session) => {
         if (session.scope && Object.keys(session.scope).length) sessionScopesRef.current.set(session.key, session.scope);
       });
-      setSessions([...items.values()]);
+      sessionsRef.current = [...items.values()];
+      setSessions(sessionsRef.current);
       catalogEpochRef.current = epoch ?? null;
     } finally {
       if (sessionsRequestRef.current === controller) sessionsRequestRef.current = null;
@@ -519,9 +521,12 @@ export function useDesktopChatController() {
   // 首连基线通知（#1556）：订阅时服务端先推一帧当时的目录纪元。等在飞的初始全量读完，
   // 纪元与它查询前读到的相同就说明其间没有管理提交，不再重拉一遍；重连仍无条件全量对账。
   const sessionsRefreshEpochsRef = useRef(new Set<string>());
-  const scheduleSessionsRefresh = useCallback((scope: SessionsRefresh = "full"): Promise<void> => {
+  // 活动快照（每次连上的第一帧）同样留到读取时比对：初始全量读完后水位一致就不再重拉。
+  const sessionsRefreshSnapshotRef = useRef<Readonly<Record<string, number>> | null>(null);
+  const scheduleSessionsRefresh = useCallback((scope: SessionsRefreshTrigger = "full"): Promise<void> => {
     const pendingScope = sessionsRefreshScopeRef.current;
     if (scope === "full") sessionsRefreshScopeRef.current = "full";
+    else if ("heads" in scope) sessionsRefreshSnapshotRef.current = scope.heads;
     else if (pendingScope !== "full") scope.forEach((key) => pendingScope.add(key));
     if (sessionsRefreshTimerRef.current !== null) return Promise.resolve();
     return new Promise((resolve) => {
@@ -536,10 +541,14 @@ export function useDesktopChatController() {
         }
         const pending = sessionsRefreshScopeRef.current;
         const covered = [...sessionsRefreshEpochsRef.current].every((epoch) => epoch === catalogEpochRef.current);
+        const snapshot = sessionsRefreshSnapshotRef.current;
+        const fromSnapshot = snapshot ? snapshotChanges(sessionsRef.current, snapshot) : [];
         sessionsRefreshScopeRef.current = new Set();
         sessionsRefreshEpochsRef.current = new Set();
-        if (pending !== "full" && !pending.size && covered) { resolve(); return; }
-        resolve(loadSessionsSafely(pending === "full" || !covered ? "full" : [...pending]));
+        sessionsRefreshSnapshotRef.current = null;
+        if (pending === "full" || !covered || fromSnapshot === "full") { resolve(loadSessionsSafely("full")); return; }
+        const keys = [...new Set([...pending, ...fromSnapshot])];
+        resolve(keys.length ? loadSessionsSafely(keys) : Promise.resolve());
       };
       sessionsRefreshTimerRef.current = window.setTimeout(fire, 300);
     });
