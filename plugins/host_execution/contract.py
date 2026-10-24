@@ -177,10 +177,8 @@ DEFAULT_INITIAL_YIELD_TIME_MS = 10_000
 DEFAULT_MAX_OUTPUT_TOKENS = 10_000
 
 
+# 前台命令的默认硬截止；hard_timeout_s 为 0 表示不设截止。
 DEFAULT_HARD_TIMEOUT_S = 4 * 3600
-
-
-MAX_HARD_TIMEOUT_S = 4 * 3600
 
 
 class UnknownExecutionError(RuntimeError):

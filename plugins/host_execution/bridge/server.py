@@ -411,7 +411,7 @@ class HostBridgeService:
             raise ValueError("Host Bridge argv 必须非空")
         require_names(request.argv, "argv")
         require_nonnegative(request.max_output_tokens, "max_output_tokens")
-        require_positive(request.hard_timeout_s, "hard_timeout_s")
+        require_nonnegative(request.hard_timeout_s, "hard_timeout_s")
         # 2. 进程与输出消费仍由原 manager 拥有。
         async with self._manager_operation(request.context) as manager:
             result = await manager.exec_command(

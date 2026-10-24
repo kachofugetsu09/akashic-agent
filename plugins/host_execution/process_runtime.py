@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from plugins.host_execution.contract import (
-    DEFAULT_HARD_TIMEOUT_S, DEFAULT_INITIAL_YIELD_TIME_MS, DEFAULT_MAX_OUTPUT_TOKENS, ExecutionCleanupFailure, ExecutionCleanupReport, ExecutionResult, ExecutionState, MAX_HARD_TIMEOUT_S, MAX_WRITE_STDIN_YIELD_TIME_MS, MAX_YIELD_TIME_MS, MIN_EMPTY_YIELD_TIME_MS, MIN_YIELD_TIME_MS, ShellKind, ShellProcessManagerProtocol, UnknownExecutionError, clamp_initial_yield_time, clamp_write_stdin_yield_time
+    DEFAULT_HARD_TIMEOUT_S, DEFAULT_INITIAL_YIELD_TIME_MS, DEFAULT_MAX_OUTPUT_TOKENS, ExecutionCleanupFailure, ExecutionCleanupReport, ExecutionResult, ExecutionState, MAX_WRITE_STDIN_YIELD_TIME_MS, MAX_YIELD_TIME_MS, MIN_EMPTY_YIELD_TIME_MS, MIN_YIELD_TIME_MS, ShellKind, ShellProcessManagerProtocol, UnknownExecutionError, clamp_initial_yield_time, clamp_write_stdin_yield_time
 )
 
 import asyncio
@@ -270,10 +270,11 @@ class ShellProcessManager:
                     self._pump_execution(execution),
                     name=f"shell-pump:{execution_id}",
                 )
-                execution.hard_timeout_task = asyncio.create_task(
-                    self._enforce_hard_timeout(execution, hard_timeout_s),
-                    name=f"shell-timeout:{execution_id}",
-                )
+                if hard_timeout_s > 0:
+                    execution.hard_timeout_task = asyncio.create_task(
+                        self._enforce_hard_timeout(execution, hard_timeout_s),
+                        name=f"shell-timeout:{execution_id}",
+                    )
                 return execution
 
             start_task = asyncio.create_task(start_execution(), name=f"shell-start:{execution_id}")
