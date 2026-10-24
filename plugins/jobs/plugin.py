@@ -17,7 +17,7 @@ from plugins.context.contract import MATERIALS_V4 as MATERIALS
 from plugins.conversation.contract import CONVERSATION_COMPLETE_V2 as CONVERSATION_COMPLETE
 from plugins.delivery.contract import DELIVERY_GUARDED_START as DELIVERY
 from plugins.delivery.contract import DELIVERY_SENDERS
-from plugins.ledger.contract import BINDINGS, MESSAGE_CATALOG, Input, Message, MessageReader, json_value
+from plugins.ledger.contract import BINDINGS, MESSAGE_CATALOG, Control, Input, Message, MessageReader, json_value
 from plugins.reply.contract import REPLY_PROGRAM_V3 as REPLY_PROGRAM
 from plugins.sources.contract import SourceGuard
 from plugins.ui.contract import UI_SLOTS, Configuration, ModelSettings, PluginUiDefinition, PluginUiRpcInvalidRequest, mount_settings
@@ -177,6 +177,15 @@ class Jobs:
 
         message = await ctx.require(CONVERSATION_COMPLETE)(job.session_id, report)
         if message.source != source:
+            return
+        # 唤醒回合可能以控制消息收尾：引擎撞步数上限放弃本段时，reply program 返回的就是
+        # Control("abandon")；用户 /stop 打断时是 Control("pause")。控制没有正文，不是可
+        # 回传的答复，照原样投递只会让渠道收到一条空消息并回 rejected。这次唤醒没把结果
+        # 告诉用户，所以把结算还给下一次用户输入，而不是悄悄丢掉。
+        if isinstance(message.body, Control):
+            logger.info("后台任务唤醒没有可回传的正文 message=%s action=%s",
+                        message.message_id, message.body.action)
+            board.release_wake(notice)
             return
         board.finish_wake(notice)
         await self._deliver(message)

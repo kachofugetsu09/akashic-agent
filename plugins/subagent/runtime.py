@@ -302,6 +302,12 @@ class Subagents:
 
         # 2. 原发送成功或失败都关闭通知；失败回执保留，不重复回传。
         assert request.sink is not None
+        # 回传回合可能以控制消息收尾（引擎撞步数上限放弃本段时 reply program 返回的就是
+        # Control("abandon")）：控制没有正文，不是可发送的结果。投递它只会让渠道收到一条
+        # 空消息并回 rejected，把「这一轮没有产出」误报成发送失败；调用方照常结算这条通知。
+        if isinstance(message.body, Control):
+            await self._trace(request, "delivery_skipped_control")
+            return True
         delivery = ctx.require(DELIVERY).open(ctx)
         selected = await delivery.prepare_async(parent, message, (request.sink,))
         try:

@@ -485,6 +485,8 @@ export interface TimelineFailureRetries {
   superseded: Set<string>;
   /** 来源停在失败上：失败 id → 可以重跑的原用户输入 id。 */
   retryable: Map<string, string>;
+  /** 来源停在这类失败上且只有放弃能解开：失败 id。 */
+  abandonable: Set<string>;
 }
 
 // input 为 undefined 表示这一段的输入在已加载页之前（长回合只读了末尾一页）。
@@ -492,6 +494,17 @@ type FailureRun = { input: TimelineMessage | null | undefined; failures: Timelin
 
 // 输入不在已加载页时，重试引用来源的最新输入；服务端解析，重试本来也只允许最新输入。
 export const RETRY_LATEST_INPUT = "latest";
+
+// 与 plugins/react/plugin.py 的 STEP_LIMIT_FAILURE 一致：撞步数上限时本段还有未回执调用。
+// 这种失败重试不会生效——计数与未回执调用都还在，下一次仍在发请求之前撞同一条门槛。
+// 界面据此不提供「重试」，改提供「放弃本轮未完成的工作」。
+export const STEP_LIMIT_FAILURE_REASON = "步数上限失败";
+
+export function isStepLimitFailure(message: TimelineMessage): boolean {
+  const body = message.body;
+  return body.kind === "control" && body.action === "failure"
+    && (body.reason ?? "").startsWith(STEP_LIMIT_FAILURE_REASON);
+}
 
 // 同一条输入反复失败时只留最后一次，答出来后连这一次也收起；来源末尾停在失败上时，它指向可以重跑的原输入。
 export function timelineFailureRetries(messages: TimelineMessage[]): TimelineFailureRetries {
@@ -523,13 +536,20 @@ export function timelineFailureRetries(messages: TimelineMessage[]): TimelineFai
     }
   }
   // 5. 只有来源最后一条仍是失败时才可重试；正在恢复或已有新输入都不再提供。
+  // 撞步数上限的失败不在此列：计数不会自愈，重试在发请求之前就撞同一条门槛；
+  // 它的唯一出口是放弃，所以单独标成 abandonable，且同样只认来源末尾那一条。
   const retryable = new Map<string, string>();
+  const abandonable = new Set<string>();
   for (const run of runs.values()) {
     if (run.tail.body.kind !== "control" || run.tail.body.action !== "failure") continue;
+    if (isStepLimitFailure(run.tail)) {
+      abandonable.add(run.tail.id);
+      continue;
+    }
     if (run.input) retryable.set(run.tail.id, run.input.id);
     else if (run.input === undefined && run.tail.source === "conversation") retryable.set(run.tail.id, RETRY_LATEST_INPUT);
   }
-  return { earlier, superseded, retryable };
+  return { earlier, superseded, retryable, abandonable };
 }
 
 /** 从已提交消息识别图文回复；不依赖插件是否启用，也不改写消息顺序。 */

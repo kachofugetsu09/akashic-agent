@@ -12,6 +12,7 @@ from plugins.models.contract import (
 from plugins.ledger.contract import ContentPart, Control, Input, MessageConflict
 from plugins.react.plugin import (
     STEP_LIMIT_ABANDON,
+    STEP_LIMIT_FAILURE,
     StepLimit,
     step_limit_abandon_reason,
     step_limit_failure_reason,
@@ -122,6 +123,8 @@ async def test_step_limit_with_open_call_reports_unknown_effect(tmp_path: Path) 
         limit = failure.value.args[0]
         assert isinstance(limit, StepLimit)
         assert str(limit) == step_limit_failure_reason(1, 1)
+        # 界面按这个前缀认出「重试不会生效、只有放弃能解开」，所以它必须是稳定的事实。
+        assert str(limit).startswith(STEP_LIMIT_FAILURE)
         # 引擎没有替用户作废：没有任何 abandon，计数也不会被清掉。
         assert not [body for body in controls(log) if body.action == "abandon"]
 

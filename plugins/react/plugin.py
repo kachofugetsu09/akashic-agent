@@ -85,6 +85,9 @@ class StepLimit(ModelError):
 
 # 引擎放弃未完成区段的持久原因前缀；来源与界面按它区分人工与自动放弃。
 STEP_LIMIT_ABANDON = "步数上限放弃"
+# 撞线但本段还有未回执调用时的失败前缀：来源只记 failure，界面按它提供放弃出口。
+# 这类失败重试不会生效——计数与未回执调用都还在，下一次仍在请求之前撞同一条门槛。
+STEP_LIMIT_FAILURE = "步数上限失败"
 
 
 def step_limit_abandon_reason(max_steps: int) -> str:
@@ -96,10 +99,10 @@ def step_limit_abandon_reason(max_steps: int) -> str:
 
 def step_limit_failure_reason(max_steps: int, unfinished: int) -> str:
     return (
-        f"本轮连续 {max_steps} 次模型请求都没有收尾，已经停下。"
+        f"{STEP_LIMIT_FAILURE}：本轮连续 {max_steps} 次模型请求都没有收尾，已经停下。"
         f"其中 {unfinished} 个工具调用没有拿到回执，状态未知（可能已部分执行），"
-        "所以没有自动作废。请先检查当前状态，再决定是否重试；"
-        "确实要丢掉这一轮，请发送 /abandon。"
+        "所以没有自动作废。请先检查当前状态；重试不会生效，计数不会自愈。"
+        "确实要丢掉这一轮，请点「放弃本轮未完成的工作」或发送 /abandon。"
     )
 
 

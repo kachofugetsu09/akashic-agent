@@ -420,7 +420,7 @@ export const DesktopTimelineMessages = React.memo(function DesktopTimelineMessag
         : message.body.kind === "control" && message.body.action === "failure" ? <FailureRetry
           inputId={failures.retryable.get(message.id)} earlier={failures.earlier.get(message.id)}
           disabled={status !== "idle"} onRetry={onRetry} /> : undefined} />
-    {isEngineAbandon(message) ? <TimelineAbandon disabled={status !== "idle"} onAbandon={onAbandon} /> : null}
+    {isEngineAbandon(message) || failures.abandonable.has(message.id) ? <TimelineAbandon disabled={status !== "idle"} onAbandon={onAbandon} /> : null}
     {/* 轮次未结束的输出还会接着长，时间与复制等落定后挂在末条上，和实时视图一致。 */}
     {!groups.hiddenBodies.has(message.id) && !groups.moved.has(message.id) && !groups.joined.has(message.id) && !groups.unsettled.has(message.id) ? <div className={`shared-message-meta timeline-meta ${message.body.kind === "input" ? "user" : "assistant"}`}>
       <time dateTime={message.timestamp}>{formatMessageTime(message.timestamp)}</time>
