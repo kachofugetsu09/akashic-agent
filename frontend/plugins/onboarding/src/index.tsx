@@ -1,7 +1,7 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore } from "react";
 import { createRoot } from "react-dom/client";
 import { createPortal } from "react-dom";
-import type { WebHostContextV1, WebUiDisposer } from "@akashic/web-ui-v1";
+import type { WebHostContextV1, WebResource, WebUiDisposer } from "@akashic/web-ui-v1";
 import type { RenderSettingsRoute, ShellSettingsRenderProps } from "@akashic/shell-ui-v1";
 import { Confirm, request, type EmbedProps, type Status } from "../../shared/src/configuration";
 import { akashicBrandIcon } from "../../shell_ui/src/brand";
@@ -19,6 +19,7 @@ interface Group { key: string; title: string; required: boolean; pitch: string; 
 interface Catalog { steps: Step[]; groups: Group[]; }
 interface StepStatus extends Partial<Status> { fault?: string; }
 type Statuses = Record<string, StepStatus>;
+type Snapshot = {catalog: Catalog; statuses: Statuses};
 type Phase = { kind: "welcome" } | { kind: "group"; key: string } | { kind: "abilities" } | { kind: "done" };
 
 function ready(status?: StepStatus): boolean {
@@ -34,12 +35,12 @@ function markSeen(): void {
   try { window.localStorage.setItem(SEEN_KEY, "1"); } catch { /* 存储不可用时下次仍会弹出，不影响使用 */ }
 }
 
-async function readCatalog(ctx: WebHostContextV1): Promise<{catalog: Catalog; statuses: Statuses}> {
-  const catalog = await request<Catalog>(ctx, "/api/dashboard/onboarding/catalog");
+async function readCatalog(ctx: WebHostContextV1, signal: AbortSignal): Promise<Snapshot> {
+  const catalog = await request<Catalog>(ctx, "/api/dashboard/onboarding/catalog", {signal});
   const entries = await Promise.all(catalog.steps.map(async step => {
     // The entry proxy rejects encoded slashes; keep path separators literal.
     const keyPath = step.id.split("/").map(encodeURIComponent).join("/");
-    try { return [step.id, await request<StepStatus>(ctx, `/api/dashboard/onboarding/status/${keyPath}`)] as const; }
+    try { return [step.id, await request<StepStatus>(ctx, `/api/dashboard/onboarding/status/${keyPath}`, {signal})] as const; }
     catch (reason) { return [step.id, {fault: reason instanceof Error ? reason.message : String(reason)}] as const; }
   }));
   return {catalog, statuses: Object.fromEntries(entries)};
@@ -49,16 +50,18 @@ async function readCatalog(ctx: WebHostContextV1): Promise<{catalog: Catalog; st
 const firstRun = { pending: false };
 
 // 首次打开且必需能力未就绪时，经 hash 深链接让 Shell 打开本分节；不抢已有的深链接。
-async function openOnFirstRun(ctx: WebHostContextV1): Promise<void> {
+async function openOnFirstRun(data: WebResource<Snapshot>): Promise<void> {
   if (readSeen() || window.location.hash) return;
-  const {catalog, statuses} = await readCatalog(ctx);
+  const {catalog, statuses} = await data.refresh();
   const required = new Set(catalog.groups.filter(group => group.required).map(group => group.key));
   const missing = catalog.steps.some(step => required.has(step.group) && !ready(statuses[step.id]) && !statuses[step.id]?.fault);
   if (missing && !window.location.hash) { firstRun.pending = true; window.location.hash = "onboarding"; }
 }
 
 export function activate(ctx: WebHostContextV1): WebUiDisposer {
-  void openOnFirstRun(ctx).catch(() => { /* 首跑探测失败只是不自动弹出，入口仍在设置里 */ });
+  // 目录与各步状态随模块保留（ADR 0127）：再次打开新手引导先画上次的状态，后台再核对。
+  const data = ctx.data.resource<Snapshot>("catalog", signal => readCatalog(ctx, signal));
+  void openOnFirstRun(data).catch(() => { /* 首跑探测失败只是不自动弹出，入口仍在设置里 */ });
   return ctx.ui.inject("shell.settings.v1", mount => mount.register({
     id: "onboarding", label: "新手引导", route: "onboarding", iconSvg: onboardingIcon, order: 90,
     render(host, _view, props) {
@@ -70,7 +73,7 @@ export function activate(ctx: WebHostContextV1): WebUiDisposer {
       const root = createRoot(host);
       const auto = firstRun.pending;
       firstRun.pending = false;
-      root.render(<OnboardingSection ctx={ctx} renderRoute={renderRoute} close={close} surfaceHost={surfaceHost} auto={auto} />);
+      root.render(<OnboardingSection data={data} renderRoute={renderRoute} close={close} surfaceHost={surfaceHost} auto={auto} />);
       return () => { root.unmount(); releaseStyle(); surfaceHost.remove(); };
     },
   }));
@@ -97,37 +100,29 @@ function initialChoice(catalog: Catalog, statuses: Statuses): Set<string> {
 }
 
 // 读取目录与各步状态；打开、保存后与窗口回到前台时重读，不轮询。
-function useCatalog(ctx: WebHostContextV1) {
-  const [catalog, setCatalog] = useState<Catalog | null>(null);
-  const [statuses, setStatuses] = useState<Statuses>({});
-  const [chosen, setChosen] = useState<Set<string> | null>(null);
-  const [error, setError] = useState("");
-  const alive = useRef(true);
-  const refresh = useCallback(async () => {
-    try {
-      const next = await readCatalog(ctx);
-      if (!alive.current) return;
-      setCatalog(next.catalog); setStatuses(next.statuses); setError("");
-      setChosen(current => current ?? initialChoice(next.catalog, next.statuses));
-    } catch (reason) {
-      if (alive.current) setError(`读取引导失败：${reason instanceof Error ? reason.message : String(reason)}`);
-    }
-  }, [ctx]);
+function useCatalog(data: WebResource<Snapshot>) {
+  const snapshot = useSyncExternalStore(data.subscribe, () => data.current);
+  const failure = useSyncExternalStore(data.subscribe, () => data.error);
+  const [chosen, setChosen] = useState<Set<string> | null>(() => snapshot ? initialChoice(snapshot.catalog, snapshot.statuses) : null);
+  // 保存后要看到写入后的状态：开新读取，不并入写入前就在途的那次。
+  const refresh = useCallback(async () => { await data.refresh({fresh: true}).catch(() => undefined); }, [data]);
   useEffect(() => {
-    alive.current = true; void refresh();
-    const onFocus = () => { void refresh(); };
-    window.addEventListener("focus", onFocus);
-    return () => { alive.current = false; window.removeEventListener("focus", onFocus); };
-  }, [refresh]);
-  return {catalog, statuses, chosen, setChosen, error, refresh};
+    const load = () => { void data.refresh().catch(() => undefined); };
+    load();
+    window.addEventListener("focus", load);
+    return () => window.removeEventListener("focus", load);
+  }, [data]);
+  useEffect(() => { if (snapshot) setChosen(current => current ?? initialChoice(snapshot.catalog, snapshot.statuses)); }, [snapshot]);
+  const error = failure && !snapshot ? `读取引导失败：${failure.message}` : "";
+  return {catalog: snapshot?.catalog ?? null, statuses: snapshot?.statuses ?? {}, chosen, setChosen, error, refresh};
 }
 
 // 设置里的“新手引导”分节：平时是能力概览，可从这里重走整屏流程；首跑自动进入流程。
-function OnboardingSection({ctx, renderRoute, close, surfaceHost, auto}: {
-  ctx: WebHostContextV1; renderRoute?: RenderSettingsRoute; close?: () => void; surfaceHost: HTMLElement; auto: boolean;
+function OnboardingSection({data, renderRoute, close, surfaceHost, auto}: {
+  data: WebResource<Snapshot>; renderRoute?: RenderSettingsRoute; close?: () => void; surfaceHost: HTMLElement; auto: boolean;
 }) {
   const [running, setRunning] = useState(auto);
-  const {catalog, statuses, refresh} = useCatalog(ctx);
+  const {catalog, statuses, refresh} = useCatalog(data);
   // 1. 首跑流程结束连同设置一起关闭，回到对话；2. 从设置里重走的流程结束后回到概览。
   const exit = useCallback(() => { markSeen(); if (auto) close?.(); else { setRunning(false); void refresh(); } }, [auto, close, refresh]);
   return <>
@@ -147,14 +142,14 @@ function OnboardingSection({ctx, renderRoute, close, surfaceHost, auto}: {
         })}
       </ul>}
     </div>
-    {running && <Onboarding ctx={ctx} renderRoute={renderRoute} exit={exit} surfaceHost={surfaceHost} />}
+    {running && <Onboarding data={data} renderRoute={renderRoute} exit={exit} surfaceHost={surfaceHost} />}
   </>;
 }
 
-function Onboarding({ctx, renderRoute, exit, surfaceHost}: {
-  ctx: WebHostContextV1; renderRoute?: RenderSettingsRoute; exit: () => void; surfaceHost: HTMLElement;
+function Onboarding({data, renderRoute, exit, surfaceHost}: {
+  data: WebResource<Snapshot>; renderRoute?: RenderSettingsRoute; exit: () => void; surfaceHost: HTMLElement;
 }) {
-  const {catalog, statuses, chosen, setChosen, error, refresh} = useCatalog(ctx);
+  const {catalog, statuses, chosen, setChosen, error, refresh} = useCatalog(data);
   const [planned, setPlanned] = useState<Set<string> | null>(null);
   const [index, setIndex] = useState(0);
   const [dirty, setDirty] = useState<Record<string, boolean>>({});
