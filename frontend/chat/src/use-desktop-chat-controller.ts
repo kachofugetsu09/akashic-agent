@@ -3,7 +3,7 @@ import { useCallback, useEffect, useMemo, useRef, useState, type SetStateAction 
 import { createUuid, createUuidV7 } from "./browser-uuid.ts";
 import type { ChatMessage } from "./chat-message";
 import type { ComposerFile } from "./desktop-composer";
-import { invalidatePluginUiSession, loadWebPluginCatalog, receivePluginUiEvent, resetPluginUiEvents, usePluginUiCatalogVersion } from "./plugin-ui-runtime";
+import { invalidatePluginUiSession, loadWebPluginCatalog, onPageShown, receivePluginUiEvent, recheckWebPluginCatalog, resetPluginUiEvents, usePluginUiCatalogVersion } from "./plugin-ui-runtime";
 import { groupKey, useNavigationGroupSections, type GroupRef, type NavigationGroupsState } from "./navigation-groups";
 import { useNavigationPins } from "./use-navigation-pins";
 import { readSessionActivityFrame, useSessionActivity, type SessionHead } from "./use-session-activity";
@@ -608,7 +608,10 @@ export function useDesktopChatController() {
                       if (statusLiveRef.current !== "uploading") setStatusLive(replyChatStatus(replyActivitiesRef.current, messagesRef.current.length + Number(sendRequestRef.current !== null), timelineRef.current, replyAvailableRef.current));
                       scheduleSessionsRefresh();
                     } else if (frame.type === "reply.status") {
+                      // 这一轮可能装了带界面的插件：回复结束时核对目录，附件随后换成插件卡片。
+                      const settled = replyActivitiesRef.current.length > 0 && frame.items.length === 0;
                       replyActivitiesRef.current = frame.items;
+                      if (settled) recheckWebPluginCatalog();
                       setReplyActivities(frame.items);
                       setReplyAvailable(frame.available);
                       if (statusLiveRef.current !== "uploading") setStatusLive(replyChatStatus(frame.items, messagesRef.current.length + Number(sendRequestRef.current !== null), timelineRef.current, frame.available));
@@ -822,7 +825,8 @@ export function useDesktopChatController() {
     void loadWebPluginCatalog(controller.signal).catch((error: unknown) => {
       if (!isAbortError(error)) reportError(error);
     });
-    return () => controller.abort();
+    const unsubscribe = onPageShown(recheckWebPluginCatalog);
+    return () => { controller.abort(); unsubscribe(); };
   }, [chatReady, reportError]);
 
   const groupSections = useNavigationGroupSections(chatReady, pluginCatalog.version, reportError);

@@ -111,6 +111,8 @@ function emitChange() {
 
 export function receivePluginUiCatalog(next: PluginUiCatalog): Promise<void> {
   const revisionChanged = next.catalogRevision !== catalog.catalogRevision;
+  // 核对读到同一份目录：不清缓存、不打断在途查询，也不让订阅目录版本的消息行重渲染。
+  if (!revisionChanged && !next.updating && !catalog.updating && next.error === catalog.error) return activation;
   if (revisionChanged) immutableResults.clear();
   catalog = next;
   if (next.updating || revisionChanged) rejectAllPending("插件界面正在更新");
@@ -144,6 +146,20 @@ export async function loadWebPluginCatalog(signal?: AbortSignal): Promise<void> 
   // 预热响应的正文读取不受 signal 约束：失去 owner 的旧目录不能再发布。
   signal?.throwIfAborted();
   await receivePluginUiCatalog(catalog);
+}
+
+// 页面重新可见、回复结束时核对一次目录：别处安装或换代的插件不刷新页面也能渲染（#1568）。
+// 读取有最短间隔且同一时刻只有一次；409 恢复正在读取时让给它。
+let catalogRecheck: Promise<void> | null = null;
+let catalogCheckedAt = 0;
+const CATALOG_RECHECK_INTERVAL_MS = 3_000;
+export function recheckWebPluginCatalog(): void {
+  if (catalogRecheck || staleCatalogRead || Date.now() - catalogCheckedAt < CATALOG_RECHECK_INTERVAL_MS) return;
+  catalogCheckedAt = Date.now();
+  const read = loadWebPluginCatalog(AbortSignal.timeout(10_000));
+  catalogRecheck = read;
+  read.catch((error: unknown) => console.warn("[plugin-ui] catalog recheck failed", error))
+    .finally(() => { if (catalogRecheck === read) catalogRecheck = null; });
 }
 
 function parseWebPluginCatalog(value: unknown): PluginUiCatalog {
