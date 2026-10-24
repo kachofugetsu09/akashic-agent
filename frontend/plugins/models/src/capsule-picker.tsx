@@ -169,55 +169,48 @@ interface ModelRowProps {
 
 function ModelRow({ runtime, selected, favorite, showSource, onChoose, onToggleFavorite }: ModelRowProps) {
   return (
-    <div
-      className={`model-picker__option ${selected ? "is-selected" : ""}`}
-      role="option"
-      aria-selected={selected}
-      tabIndex={-1}
-      data-nav
-      onClick={onChoose}
-      onKeyDown={(event) => {
-        if (event.key === "Enter" || event.key === " ") {
-          event.preventDefault();
-          onChoose();
-          return;
-        }
-        // ArrowRight 进入行内次级动作（收藏星），ArrowLeft 从星星回到行。
-        if (event.key === "ArrowRight") {
-          event.preventDefault();
-          event.currentTarget.querySelector<HTMLElement>(".model-picker__star")?.focus();
-        }
-      }}
-    >
-      <Check size={14} className="model-picker__check" aria-hidden="true" />
-      <span className="model-picker__copy">
-        <strong>{runtime.model}</strong>
-        <span className="model-picker__meta">
-          <CapabilityMarks runtime={runtime} />
-          {showSource ? <em>{runtime.sourceName}</em> : null}
+    <div className="model-picker__row" role="group" aria-label={runtime.model}>
+      <button
+        type="button"
+        className={`model-picker__option ${selected ? "is-selected" : ""}`}
+        aria-pressed={selected}
+        tabIndex={-1}
+        data-nav
+        onClick={onChoose}
+        onKeyDown={(event) => {
+          if (event.key === "Enter" || event.key === " ") {
+            event.preventDefault();
+            onChoose();
+            return;
+          }
+          // ArrowRight 进入行内次级动作（收藏星），ArrowLeft 从星星回到行。
+          if (event.key === "ArrowRight") {
+            event.preventDefault();
+            event.currentTarget.parentElement?.querySelector<HTMLElement>(".model-picker__star")?.focus();
+          }
+        }}
+      >
+        <Check size={14} className="model-picker__check" aria-hidden="true" />
+        <span className="model-picker__copy">
+          <strong>{runtime.model}</strong>
+          <span className="model-picker__meta">
+            <CapabilityMarks runtime={runtime} />
+            {showSource ? <em>{runtime.sourceName}</em> : null}
+          </span>
         </span>
-      </span>
+      </button>
       <button
         type="button"
         tabIndex={-1}
         className={`model-picker__star ${favorite ? "is-favorite" : ""}`}
         aria-label={favorite ? "取消收藏" : "收藏"}
         aria-pressed={favorite}
-        onClick={(event) => {
-          event.stopPropagation();
-          onToggleFavorite();
-        }}
+        onClick={onToggleFavorite}
         onKeyDown={(event) => {
-          // Enter/Space 的键盘激活交给按钮原生 click；阻止冒泡，
-          // 否则外层行的 onKeyDown 会把同一次按键当成“选择该模型”。
-          if (event.key === "Enter" || event.key === " ") {
-            event.stopPropagation();
-            return;
-          }
           if (event.key !== "ArrowLeft") return;
           event.preventDefault();
           event.stopPropagation();
-          (event.currentTarget.closest("[data-nav]") as HTMLElement | null)?.focus();
+          (event.currentTarget.parentElement?.querySelector("[data-nav]") as HTMLElement | null)?.focus();
         }}
       >
         <Star size={13} aria-hidden="true" />
@@ -347,12 +340,12 @@ export function ModelPickerBody({ runtimes, selectedId, follow, onChoose }: Mode
         />
       </div>
       {sources.length > 1 ? <PickerRail sources={sources} scope={scope} onScope={setScope} /> : null}
-      <div className="model-picker__list" role="listbox" aria-label="可选模型">
+      <div className="model-picker__list" role="group" aria-label="可选模型" tabIndex={0}>
         {showFollow && follow ? (
-          <div
+          <button
+            type="button"
             className={`model-picker__option model-picker__follow ${!selectedId ? "is-selected" : ""}`}
-            role="option"
-            aria-selected={!selectedId}
+            aria-pressed={!selectedId}
             tabIndex={-1}
             data-nav
             onClick={() => onChoose("")}
@@ -368,7 +361,7 @@ export function ModelPickerBody({ runtimes, selectedId, follow, onChoose }: Mode
               <strong>{follow.label}</strong>
               <span className="model-picker__meta"><em>{follow.detail}</em></span>
             </span>
-          </div>
+          </button>
         ) : null}
         {favorites.length ? (
           <div className="model-picker__group" role="group" aria-labelledby={`${groupId}-fav`}>

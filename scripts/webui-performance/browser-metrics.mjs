@@ -16,11 +16,19 @@ export function aggregateBrowserRuns(runs) {
   }));
 }
 
+const diagnosticOnlyMetrics = new Set(["frameGapMaxMs", "settledFrameGapMaxMs"]);
+const zeroLongTaskBudgets = { longTaskCount: 1, longTaskTotalMs: 60, longTaskMaxMs: 60 };
+
 export function createBrowserBudgets(aggregate) {
   return Object.fromEntries(Object.entries(aggregate).map(([scenario, metrics]) => [scenario, Object.fromEntries(
-    Object.entries(metrics).map(([metric, values]) => [metric, metric === "virtualRows" || metric === "domRows"
-      ? Math.ceil(values.p75 + 2)
-      : Math.ceil(values.p75 * 1.15)]),
+    Object.entries(metrics).flatMap(([metric, values]) => {
+      // 最大帧间隔是离群诊断，不作为有限样本的回归门禁。
+      if (diagnosticOnlyMetrics.has(metric)) return [];
+      if (values.p75 === 0 && metric in zeroLongTaskBudgets) return [[metric, zeroLongTaskBudgets[metric]]];
+      return [[metric, metric === "virtualRows" || metric === "domRows"
+        ? Math.ceil(values.p75 + 2)
+        : Math.ceil(values.p75 * 1.15)]];
+    }),
   )]));
 }
 
@@ -29,6 +37,7 @@ export function compareBrowserMetrics(aggregate, budgets) {
   for (const [scenario, scenarioBudgets] of Object.entries(budgets)) {
     if (!aggregate[scenario]) throw new Error(`缺少浏览器性能场景: ${scenario}`);
     for (const [metric, maximum] of Object.entries(scenarioBudgets)) {
+      if (diagnosticOnlyMetrics.has(metric)) continue;
       const values = aggregate[scenario][metric];
       if (!values) throw new Error(`缺少浏览器性能指标: ${scenario}.${metric}`);
       checks.push({
