@@ -86,7 +86,7 @@ from functools import partial
 from types import SimpleNamespace
 from pathlib import Path
 from agent.plugin_composition import ServiceKey
-from plugins.models.contract import CHAT_MODELS
+from plugins.models.contract import CHAT_MODELS, MODEL_CATALOG
 from plugins.models.contract import LLMResponse, ToolCall
 from plugins.models.contract import (
     BoundModelDescriptor,
@@ -115,6 +115,7 @@ async def apply(ctx):
     await ctx.effect(lambda: store.close, label="model-store")
     settings = ModelsState(store, context=ctx)
     await ctx.provide(MODEL_SETTINGS, settings.settings)
+    await ctx.provide(MODEL_CATALOG, settings.catalog)
     class Driver:
         max_tool_schemas = None
         def estimate_context_tokens(self, messages, tools):
@@ -132,12 +133,14 @@ async def apply(ctx):
         capability_sources=CapabilitySources(), capability_digest="fixture",
     )
     model = _BoundChat(descriptor, Driver(), store)
+    async def use(use, choice):
+        return model
     class Models:
         @asynccontextmanager
         async def execution(self, *, model_id=None, reasoning_effort=None):
             # 与正式 models 一致：执行期间调用方切换为提供者自己的 Context。
             async with ctx.runtime_scope():
-                yield SimpleNamespace(chat=lambda: model)
+                yield SimpleNamespace(chat=lambda: model, use=use)
     class Target:
         idempotent = False
         async def prepare(self, args, source=None):

@@ -568,13 +568,16 @@ class ContextModel(Protocol):
         messages: Sequence[Message],
         *,
         after_seq: int,
+        covered_message_ids: frozenset[str] = frozenset(),
         summary_reference: str | None = None,
         fresh: bool = False,
         current_reminder: str | None = None,
         current_reminder_input_id: str | None = None,
         current_context: str | None = None,
     ) -> ModelRequest:
-        """接收完整事实；after_seq 是摘要覆盖末尾，-1 表示没有覆盖。
+        """接收完整事实；after_seq 是首次窗口起点之前的 seq，-1 表示不裁切前缀。
+
+        covered_message_ids 是摘要精确覆盖；未列出的旧消息仍保留。
 
         实现方接受任意 Sequence，包括存储签发的 MessageSnapshot；不得修改输入。
 

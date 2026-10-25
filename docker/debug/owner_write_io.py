@@ -19,7 +19,7 @@ from plugins.ledger.contract import OWNER_STATE, OwnerState
 from plugins.compaction.records import SummaryRecord, SummaryRecords
 from plugins.computer.control import endpoint_name
 from plugins.computer.plugin import ComputerControl, _fail_group
-from plugins.context.api import summary_range
+from plugins.context.api import summary_indexes
 from plugins.ledger.log import MessageConflict, MessageLog, OwnerTransaction
 from plugins.ledger.contract import Input
 
@@ -80,7 +80,7 @@ async def check(directory: Path, phase: str, cancel: bool):
         async def execute():
             async with ctx.runtime_scope():
                 if phase == "summary":
-                    result = summaries.publish(summary, log.reader("s"), parent=None, summary_range=summary_range)
+                    result = summaries.publish(summary, log.reader("s"), parent=None, summary_indexes=summary_indexes)
                 elif phase == "failed":
                     result = _fail_group(ctx, [("computer-use:old", saved)], "invalid persisted identity")
                 else:
@@ -112,12 +112,12 @@ async def check(directory: Path, phase: str, cancel: bool):
         assert log.reader("s").snapshot() == original
         if phase == "summary":
             assert summaries.head("s") == summary
-            replay = summaries.publish(summary, log.reader("s"), parent=None, summary_range=summary_range)
+            replay = summaries.publish(summary, log.reader("s"), parent=None, summary_indexes=summary_indexes)
             if inspect.isawaitable(replay):
                 await replay
             competing = summary.model_copy(update={"reference": "competing"})
             try:
-                result = summaries.publish(competing, log.reader("s"), parent=None, summary_range=summary_range)
+                result = summaries.publish(competing, log.reader("s"), parent=None, summary_indexes=summary_indexes)
                 if inspect.isawaitable(result):
                     await result
             except MessageConflict:

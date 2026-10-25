@@ -153,7 +153,8 @@ class MaterialView:
                 if previous is not None:
                     if summary.reference == previous.reference and summary != previous:
                         raise ValueError("同一持久摘要引用的内容不能改变")
-                    if summary.source_message_ids[:len(previous.source_message_ids)] != previous.source_message_ids:
+                    previous_ids = set(previous.source_message_ids)
+                    if tuple(identity for identity in summary.source_message_ids if identity in previous_ids) != previous.source_message_ids:
                         raise ValueError("缩减不能撤回已覆盖的摘要来源")
                     if (summary.source_message_ids, summary.content) == (previous.source_message_ids, previous.content):
                         return None

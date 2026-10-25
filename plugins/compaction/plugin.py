@@ -42,7 +42,7 @@ logger = logging.getLogger(__name__)
 api_version = 3
 name = "compaction"
 version = "4.1.0"
-desc = "按不可变消息前缀发布摘要，并为已使用的摘要保留原始读取口"
+desc = "按不可变消息身份发布摘要，并为已使用的摘要保留原始读取口"
 inject = (PLUGIN_CONFIG, MATERIALS_V4, CONTEXT, OWNER_STATE, BINDINGS, MESSAGE_CATALOG, CHAT_MODELS, MODEL_CATALOG, TURN_PROJECTION)
 
 
@@ -187,7 +187,7 @@ async def apply(ctx: Context) -> None:
                       model: BoundChatModel, projection: ContextModel, *, source: str, force: bool,
                       on_status: ReductionStatus | None = None,
                       summary_limit: int | None = None) -> MaterialData | None:
-        """按已结算工具批次选旧前缀，再原子发布一份真实摘要。"""
+        """按已结算工具批次选未覆盖消息，再原子发布一份真实摘要。"""
         # 1. 容量与近期保留均按当前已固定的业务模型判断。
         reminder = context.reminder_content(materials)
         reminder_input_id = (
@@ -214,17 +214,13 @@ async def apply(ctx: Context) -> None:
         if (None if parent is None else material(parent)) != current_summary:
             raise ValueError("本次已取得摘要与当前 Session head 不一致")
         turns = ctx.require(TURN_PROJECTION)
-        if parent is None:
-            # 摘要模型仍只取一个近期窗口；退出请求的更早资料写入 omitted 分区。
-            origin = start = 0
-        else:
-            covered = context.summary_range(snapshot, parent.source_message_ids)
-            origin, start = covered.start, covered.stop
-        # 摘要候选只取 summary_limit 之前的前缀；容量估算与原文尾部仍用完整请求视图。
-        groups = closed_groups(
-            snapshot if summary_limit is None else snapshot[:summary_limit],
-            turns, settled_prefixes=context.settled_prefixes, after=start,
-        )
+        parent_ids = frozenset() if parent is None else frozenset(parent.source_message_ids)
+        if parent is not None:
+            _ = context.summary_indexes(snapshot, parent.source_message_ids)
+        # 未覆盖的旧空洞可能刚变为可见；与新尾部一起候选，不按上代末尾跳过它们。
+        pending = tuple(message for message in (snapshot if summary_limit is None else snapshot[:summary_limit])
+                        if message.message_id not in parent_ids)
+        groups = closed_groups(pending, turns, settled_prefixes=context.settled_prefixes)
         # 没有新的已结算批次时，0 表示只重写父摘要本身。
         sizes = range(len(groups), 0, -1) if groups else range(0 if parent is not None else -1, -1, -1)
         selected: int | None = None
@@ -234,19 +230,19 @@ async def apply(ctx: Context) -> None:
         planned_tokens: dict[int, int] = {}
         # 原文保留量来自实际 Model 投影，包含尚未闭合的尾部与当前输入。
         for size in sizes:
-            after_seq = groups[size - 1][-1].seq if size else snapshot[start - 1].seq
+            added = tuple(message for group in groups[:size] for message in group)
+            covered = parent_ids | frozenset(message.message_id for message in added)
             tail = projection.render(
                 snapshot,
-                after_seq=after_seq,
+                after_seq=-1, covered_message_ids=covered,
                 fresh=True,
                 current_reminder=reminder if reminder_input_id is not None else None,
                 current_reminder_input_id=reminder_input_id,
             )
             # 先用占位摘要核对完整输入；真实摘要生成后还会再次核对硬容量。
-            count = start + sum(len(group) for group in groups[:size])
             planned = {**materials, "summary": {
                 "reference": "compaction-plan", "content": "待生成摘要",
-                "source_message_ids": tuple(message.message_id for message in snapshot[origin:count]),
+                "source_message_ids": tuple(message.message_id for message in snapshot if message.message_id in covered),
             }}
             candidate, error = context.build_attempt(
                 snapshot, materials=planned, model=projection, tools=request.tools,
@@ -280,8 +276,8 @@ async def apply(ctx: Context) -> None:
         # 2. 摘要必须放进剩余空间：模型生成 → 模型缩写 → 按比例截断各节正文，取第一个放得下的。
         reserve = output_reserve(request.max_output_tokens, window)
         room = window - reserve - planned_tokens[selected]
-        count = start + sum(len(group) for group in groups[:selected])
-        added = snapshot[start:count]
+        added = tuple(message for group in groups[:selected] for message in group)
+        covered = parent_ids | frozenset(message.message_id for message in added)
 
         def measure(text: str, calls: tuple[str, ...],
                     summarized: tuple[tuple[Message, ...], ...]) -> tuple[SummaryRecord, MaterialData, int]:
@@ -291,7 +287,7 @@ async def apply(ctx: Context) -> None:
                 reference=uuid4().hex, session_id=snapshot[0].session_id,
                 generation=1 if parent is None else parent.generation + 1,
                 parent=None if parent is None else parent.reference,
-                source_message_ids=tuple(message.message_id for message in snapshot[origin:count]),
+                source_message_ids=tuple(message.message_id for message in snapshot if message.message_id in covered),
                 summary_message_ids=summary_ids,
                 omitted_message_ids=tuple(message.message_id for message in added if message.message_id not in kept),
                 content=text, model_call_ids=calls, trigger="context_overflow" if force else "soft_limit",
@@ -348,7 +344,7 @@ async def apply(ctx: Context) -> None:
         # 3. binding 可以先固定，但读者只有在摘要事务成功后才取得此引用。
         reader = ctx.require(MESSAGE_CATALOG).reader(record.session_id)
         _ = await state.publish(
-            record, reader, parent=parent, summary_range=context.summary_range,
+            record, reader, parent=parent, summary_indexes=context.summary_indexes,
         )
         return summary
 
