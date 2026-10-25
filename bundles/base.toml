@@ -131,6 +131,9 @@ plugin = "react@release"
 [rows."conversation"]
 plugin = "conversation@release"
 
+[rows."session_reference"]
+plugin = "session_reference@release"
+
 [rows."reply_program"]
 plugin = "reply_program@release"
 
