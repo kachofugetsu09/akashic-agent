@@ -1,6 +1,6 @@
 import { MessagesSquare, X } from "lucide-react";
 import { useEffect, useState, type RefObject } from "react";
-import { addReference, MAX_REFERENCES, readSessionDrag, removeReference, useComposerReferences } from "./composer-references";
+import { addReference, MAX_REFERENCES, readSessionDrag, removeReference, useComposerReferences, type AddReferenceResult } from "./composer-references";
 
 /**
  * 输入卡里的会话引用条。
@@ -10,19 +10,22 @@ import { addReference, MAX_REFERENCES, readSessionDrag, removeReference, useComp
  */
 export function ComposerReferences({ draftKey }: { draftKey: string }) {
   const references = useComposerReferences(draftKey);
-  const [overflow, setOverflow] = useState(false);
+  const [notice, setNotice] = useState("");
   useEffect(() => {
-    if (!overflow) return;
-    const timer = window.setTimeout(() => setOverflow(false), 2600);
+    if (!notice) return;
+    const timer = window.setTimeout(() => setNotice(""), 2600);
     return () => window.clearTimeout(timer);
-  }, [overflow]);
-  // 超出上限的拖入由 addReference 返回 false 表示；这里用一个事件把提示引出来。
+  }, [notice]);
+  // 拖入被拒的两种原因给不同提示：重复与超限是两件事。
   useEffect(() => {
-    const onRejected = () => setOverflow(true);
+    const onRejected = (event: Event) => {
+      const detail = (event as CustomEvent<AddReferenceResult>).detail;
+      setNotice(detail === "duplicate" ? "这个会话已经引用过了" : `一次最多引用 ${MAX_REFERENCES} 个会话`);
+    };
     window.addEventListener("akashic:reference-rejected", onRejected);
     return () => window.removeEventListener("akashic:reference-rejected", onRejected);
   }, []);
-  if (references.length === 0 && !overflow) return null;
+  if (references.length === 0 && !notice) return null;
   return (
     <>
       {references.length > 0 ? (
@@ -39,9 +42,7 @@ export function ComposerReferences({ draftKey }: { draftKey: string }) {
           ))}
         </div>
       ) : null}
-      {overflow ? <p className="composer-reference__notice" role="status">
-        一次最多引用 {MAX_REFERENCES} 个会话
-      </p> : null}
+      {notice ? <p className="composer-reference__notice" role="status">{notice}</p> : null}
     </>
   );
 }
@@ -77,20 +78,23 @@ export function useReferenceDrop(target: RefObject<HTMLElement | null>, draftKey
       const reference = readSessionDrag(event.dataTransfer);
       if (!reference) return;
       event.preventDefault();
-      if (!addReference(draftKey, reference)) {
-        window.dispatchEvent(new Event("akashic:reference-rejected"));
+      const outcome = addReference(draftKey, reference);
+      if (outcome !== "added") {
+        window.dispatchEvent(new CustomEvent<AddReferenceResult>("akashic:reference-rejected", { detail: outcome }));
       }
     };
     const onEnd = () => setActive(false);
     element.addEventListener("dragover", onOver);
     element.addEventListener("dragleave", onLeave);
     element.addEventListener("drop", onDrop);
-    element.addEventListener("dragend", onEnd);
+    // dragend 由被拖的那一行（侧栏）发出，不会冒泡到输入卡：挂 window 才收得到。
+    // 按 Esc 取消、在输入卡外松手都靠它把高亮复位。
+    window.addEventListener("dragend", onEnd);
     return () => {
       element.removeEventListener("dragover", onOver);
       element.removeEventListener("dragleave", onLeave);
       element.removeEventListener("drop", onDrop);
-      element.removeEventListener("dragend", onEnd);
+      window.removeEventListener("dragend", onEnd);
     };
   }, [target, draftKey, enabled]);
   return active;

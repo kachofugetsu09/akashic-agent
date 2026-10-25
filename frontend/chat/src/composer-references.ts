@@ -11,14 +11,9 @@ export const SESSION_DRAG_TYPE = "application/x-akashic-session";
 /** 一次最多引用几个会话；与后端 session_reference.MAX_REFERENCES 一致。 */
 export const MAX_REFERENCES = 4;
 
-interface State {
-  references: readonly ComposerReference[];
-}
-
 // 引用属于「这个编辑位置」，所以按 draftKey 分开存：新会话与各会话的草稿互不串。
 let byDraft: ReadonlyMap<string, readonly ComposerReference[]> = new Map();
 const listeners = new Set<() => void>();
-const sentListeners = new Map<string, Set<() => void>>();
 
 function emit() {
   listeners.forEach((listener) => listener());
@@ -32,13 +27,16 @@ function write(draftKey: string, next: readonly ComposerReference[]) {
   emit();
 }
 
-/** 加入一条引用；同一会话重复拖入只保留一条，超过上限直接忽略。 */
-export function addReference(draftKey: string, reference: ComposerReference): boolean {
+/** 加入一条引用：同一会话重复拖入只保留一条，超过上限直接忽略。 */
+export type AddReferenceResult = "added" | "duplicate" | "limit";
+
+export function addReference(draftKey: string, reference: ComposerReference): AddReferenceResult {
   const current = byDraft.get(draftKey) ?? [];
-  if (current.some((item) => item.sessionId === reference.sessionId)) return false;
-  if (current.length >= MAX_REFERENCES) return false;
+  // 重复和超限要给不同提示：用户把同一个会话拖了两次，说「最多 4 个」会让人困惑。
+  if (current.some((item) => item.sessionId === reference.sessionId)) return "duplicate";
+  if (current.length >= MAX_REFERENCES) return "limit";
   write(draftKey, [...current, reference]);
-  return true;
+  return "added";
 }
 
 export function removeReference(draftKey: string, sessionId: string) {
@@ -55,20 +53,9 @@ export function composerReferences(draftKey: string): readonly ComposerReference
   return byDraft.get(draftKey) ?? [];
 }
 
-/** 服务端确认收到后清空并通知；与 composer-contributions 的 onSent 同义。 */
+/** 服务端确认收到后清空。 */
 export function notifyReferencesSent(draftKey: string) {
   clearReferences(draftKey);
-  for (const callback of sentListeners.get(draftKey) ?? []) {
-    try { callback(); }
-    catch (error) { console.error("[chat-ui] reference onSent failed", error); }
-  }
-}
-
-export function onReferencesSent(draftKey: string, callback: () => void): () => void {
-  const set = sentListeners.get(draftKey) ?? new Set();
-  sentListeners.set(draftKey, set);
-  set.add(callback);
-  return () => { set.delete(callback); };
 }
 
 /** 解析拖拽载荷；不是我们的类型就返回 null，让别的放置区处理。 */
@@ -107,5 +94,3 @@ export function referenceParts(draftKey: string): { kind: string; value: unknown
     value: { sessions: references.map((item) => ({ session_id: item.sessionId, title: item.title })) },
   }];
 }
-
-export type { State };
