@@ -70,13 +70,14 @@ class _Capture:
                 "cpu_window_ms": self.cpu_window_ms, "threads": [row.value() for row in self.threads[:MAX_THREADS]],
                 "threads_omitted": max(0, len(self.threads) - MAX_THREADS)}
 
-    # depth > 1 时只取项目代码帧（跳过标准库与 site-packages），日志行直接指向调用方。
+    # depth > 1 时优先取插件代码帧（<install>/ 下），标准库在 prod 只剩基名，混进来会挤掉调用方。
     def top(self, *, loop: bool, depth: int = 1) -> str | None:
         for row in self.threads:
             if not (row.loop if loop else row.hot) or not row.frames:
                 continue
-            frames = row.frames if depth == 1 else [frame for frame in row.frames if "/lib/python" not in frame]
-            return " < ".join(frames[:depth]) or None
+            frames = row.frames if depth == 1 else \
+                [frame for frame in row.frames if frame.startswith("<install>/")] or row.frames
+            return " < ".join(frames[:depth])
         return None
 
 
@@ -113,20 +114,29 @@ def _rss_mb() -> int | None:
     return resident * os.sysconf("SC_PAGE_SIZE") // (1024 * 1024)
 
 
-# 由内向外保留最多 MAX_FRAMES 层「文件:行 in 函数」；只读代码对象与行号。
-def _frames(frame: FrameType | None, locators: dict[str, str]) -> tuple[list[str], int]:
-    rows: list[str] = []
+# 快照后立刻由内向外取最多 MAX_FRAMES 层原始位置，只读代码对象与行号。
+# 被采样线程仍在运行：生成器一旦挂起，其帧的 f_back 变成 None，遍历必须赶在 GIL 切走之前。
+def _raw_frames(frame: FrameType | None) -> tuple[list[tuple[str, int, str]], int]:
+    rows: list[tuple[str, int, str]] = []
     depth = 0
     while frame is not None:
         if len(rows) < MAX_FRAMES:
             code = frame.f_code
-            locator = locators.get(code.co_filename)
-            if locator is None:
-                locator = locators[code.co_filename] = _export_locator(code.co_filename)
-            rows.append(f"{locator}:{frame.f_lineno or 0} in {code.co_qualname}")
+            rows.append((code.co_filename, frame.f_lineno or 0, code.co_qualname))
         depth += 1
         frame = frame.f_back
     return rows, depth - len(rows)
+
+
+# 格式化为「文件:行 in 函数」；路径脱敏较慢，放在遍历之后。
+def _frames(raw: list[tuple[str, int, str]], locators: dict[str, str]) -> list[str]:
+    rows: list[str] = []
+    for filename, line, name in raw:
+        locator = locators.get(filename)
+        if locator is None:
+            locator = locators[filename] = _export_locator(filename)
+        rows.append(f"{locator}:{line} in {name}")
+    return rows
 
 
 class StallWatch:
@@ -256,23 +266,21 @@ class StallWatch:
     # 抓所有 Python 线程的栈：循环线程在前，其余按停顿窗口内 CPU 时间排序。
     def _capture(self, stall: _Stall, now: float, delay: float) -> None:
         frames = sys._current_frames()  # pyright: ignore[reportPrivateUsage]
+        raw = {ident: _raw_frames(frame) for ident, frame in frames.items() if ident != self._watch_ident}
+        del frames
         threads = _python_threads()
         cpu = self._read_cpu(now)
         locators: dict[str, str] = {}
         rows: list[_ThreadStack] = []
-        for ident, frame in frames.items():
-            if ident == self._watch_ident:
-                continue
+        for ident, (stack, omitted) in raw.items():
             thread = threads.get(ident)
             native = thread.native_id if thread is not None else None
             used = None
             if native is not None and native in cpu.seconds:
                 # 基线之后才启动的线程，全部 CPU 时间都落在本窗口内。
                 used = round((cpu.seconds[native] - stall.cpu.seconds.get(native, 0.0)) * 1000, 1)
-            stack, omitted = _frames(frame, locators)
             rows.append(_ThreadStack(thread.name if thread is not None else "unregistered", native,
-                                     ident == self._loop_ident, used, stack, omitted))
-        del frames
+                                     ident == self._loop_ident, used, _frames(stack, locators), omitted))
         rows.sort(key=lambda row: (not row.loop, -(row.cpu_ms or 0.0)))
         window = round((now - stall.cpu.at) * 1000, 1)
         elapsed = round((now - stall.due) * 1000, 1)
