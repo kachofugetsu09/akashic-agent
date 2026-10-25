@@ -44,13 +44,25 @@ class ManagedProcessHandle:
             return
         await self._start_generation()
 
+    # 后台启动失败后以新 generation 退避重试：宿主开机时 CPU 争用可让就绪超过时限，
+    # 借用方只启动一次，不重试就会让整个来源停摆到下次重启。
     async def _start_in_background(self):
-        try:
-            await self._start_generation()
-        except Exception as error:
-            # host 收尾写的是 stopped；改成失败原因，状态页能与正常停止区分。
-            self._health.degrade(f"start failed: {type(error).__name__}: {error}")
-            raise
+        for attempt, delay in enumerate((*_RETRY_DELAYS_S, None), start=1):
+            try:
+                await self._start_generation()
+                return
+            except Exception as error:
+                # host 收尾写的是 stopped；改成失败原因，状态页能与正常停止区分。
+                self._health.degrade(f"start failed ({attempt}): {type(error).__name__}: {error}")
+                # 失败 generation 未清理干净时不换 id：关闭仍要能停掉并暴露残留的旧进程。
+                cleaned = self._host.get(self._id) is None and self._host.tombstone(self._id) is None
+                if delay is None or self._closing or self._closed or not cleaned:
+                    raise
+            await asyncio.sleep(delay)
+            async with self._lock:
+                if self._closing or self._closed:
+                    raise RuntimeError("进程 owner 已关闭")
+                self._id = "process-" + secrets.token_hex(16)
 
     async def _start_generation(self):
         async with self._lock:
@@ -136,6 +148,10 @@ class ManagedProcesses:
         await ctx.effect(setup, label="process:" + definition.name)
         await owner.start()
         return owner
+
+
+# 后台启动失败后的重试间隔；耗尽后把最后一次失败交给借用方。
+_RETRY_DELAYS_S = (10.0, 30.0, 60.0)
 
 
 def _starts_in_background(definition: ManagedProcessDefinition, grant) -> bool:
