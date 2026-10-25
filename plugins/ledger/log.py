@@ -1012,6 +1012,19 @@ class MessageCatalog:
                 read.heads[key] = heads
             return heads
 
+    def prefix_revision(self) -> int | None:
+        """已提交消息前缀的改写计数：只追加时不变，UPDATE/DELETE/改写式插入后递增。
+
+        跨重启保存的投影续读点据此判断前缀未被改写；库缺少该标记时返回 None，调用方不能复用。
+        """
+        log = self._log
+        if not log._has_prefix_revision:
+            return None
+        with log._read(snapshot=False) as connection:
+            return int(connection.execute(
+                "SELECT revision FROM message_prefix_revision WHERE singleton=1"
+            ).fetchone()[0])
+
     async def open_input_sources_async(self) -> frozenset[tuple[str, str]]:
         """最后一条 Input 晚于最后一条完结 Output 的（会话，来源）；待回复集合的超集。
 

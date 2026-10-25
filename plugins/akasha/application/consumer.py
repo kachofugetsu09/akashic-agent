@@ -3,12 +3,16 @@ from __future__ import annotations
 
 from dataclasses import replace
 import asyncio
+import os
+import time
 from collections.abc import Awaitable, Callable, Mapping, Sequence
 from datetime import datetime
 from itertools import groupby
 from functools import partial
 from pathlib import Path
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Literal
+
+from pydantic import BaseModel, ConfigDict
 
 from plugins.ledger.contract import Bindings
 from plugins.ledger.contract import EmbeddingRecords, MessageCatalog, MessageEmbeddings, Message, Input
@@ -23,19 +27,36 @@ from ..domain.model import (
 )
 from ..infrastructure.consumption import Applied, Consumption, Skipped
 from ..infrastructure.lease import WriterLease
-from ..infrastructure.lexical import TermCache, terms as lexical_terms
+from ..infrastructure.lexical import TermCache, Terms, terms as lexical_terms
 from ..infrastructure.persistence import load_consumption, load_memory_state, write_memory_database
 from .cycle import MemoryCycle
 
 if TYPE_CHECKING:
     from ..projection import Sample, SessionCursor
-    from ..learning import LearningConfig
+    from ..learning import Learning, LearningConfig
 
 
 type RestoreEmbeddings = Callable[["LearningConfig", list[str]], Awaitable[list[list[float]]]]
 
 # 在线连续学习最多攒这么多条再发布一次；未发布的尾部崩溃后由日志按原序重学。
 PUBLISH_EVERY = 16
+# 启动还原每块最多解码这么多条已学样本；整图一次解码会让大工具输出同时驻留。
+LOAD_CHUNK = 256
+# 落盘续读点最多这么久写一次；落后的续读点只多投影一段，已学和已跳过的闭段仍被过滤。
+CURSOR_SAVE_SECONDS = 60.0
+
+
+class _SavedCursors(BaseModel):
+    """随已发布快照保存的投影续读点；只在同一绑定、同一前缀 revision、同一消费进度前缀下复用。"""
+
+    model_config = ConfigDict(extra="forbid", frozen=True, strict=True)
+
+    version: Literal[1] = 1
+    learning_binding: str
+    prefix_revision: int
+    applied: tuple[int, str | None]
+    skipped: tuple[int, str | None]
+    cursors: dict[str, tuple[int, dict[str, int]]]
 
 
 class MessageConsumer:
@@ -57,8 +78,12 @@ class MessageConsumer:
         self._error: BaseException | None = None
         self._closed = False
         self._embedding_model: str | None = None
-        # 投影续读点只在一批成功消费后前进；换学习绑定或新实例都从头投影。
-        self._cursors: tuple[str, dict[str, SessionCursor]] = ("", {})
+        # 投影续读点只在一批成功消费后前进；换学习绑定或前缀被改写时从头投影。
+        # 新实例从落盘续读点恢复，重启不再整段解码全部历史。
+        self._cursors: tuple[str, int | None, dict[str, SessionCursor]] = ("", None, {})
+        self._cursor_path = path.with_name(path.name + ".cursors.json")
+        self._cursor_file_read = False
+        self._cursors_saved_at: float | None = None
         self._lease = WriterLease(path)
         try:
             # 1. 恢复只能装载已发布图；缺图不能触发历史重学。
@@ -146,45 +171,13 @@ class MessageConsumer:
                 await run_memory_job(lambda: _check_embedding_space(
                     rule.embedding_model, rule.dimension, space, turns,
                 ))
-                samples = await run_memory_job(lambda: tuple(
-                    learning.load_sample(catalog, rule, entry) for entry in entries
-                ))
-                records = embeddings.bind(learning.text)
-                verified: dict[str, tuple[float, ...]] = {}
-                def missing_vectors() -> list[Message]:
-                    messages = {message.message_id: message for sample in samples
-                                for message in sample.messages
-                                if isinstance(message.body, Input) or message == sample.ending}
-                    missing: list[Message] = []
-                    for message in messages.values():
-                        if not learning.text(message).strip():
-                            continue
-                        vector = records.read(message, model=rule.embedding_model, dimension=rule.dimension)
-                        if vector is None:
-                            missing.append(message)
-                        else:
-                            verified[message.message_id] = vector
-                    return missing
-                missing = await run_memory_job(missing_vectors)
-                if missing:
-                    if restore_embeddings is None:
-                        raise MemoryRebuildRequiredError("派生向量缺失；当前只读调用没有模型补算权限")
-                    vectors = await restore_embeddings(rule, [learning.text(message) for message in missing])
-                    if len(vectors) != len(missing) or any(len(vector) != rule.dimension for vector in vectors):
-                        raise ValueError("补算向量数量或维度不匹配原学习空间")
-                    def save_vectors() -> None:
-                        for message, vector in zip(missing, vectors, strict=True):
-                            records.save(message, model=rule.embedding_model, embedding=vector)
-                    await run_memory_job(save_vectors)
-                def restore_entries() -> None:
-                    """按原前缀逐条恢复；后一条只能读取已完成的 previous。"""
-                    for sample in samples:
-                        turns.append(learning.restore(
-                            sample, _VerifiedVectors(embeddings, verified), rule,
-                            previous=turns, state=state, bindings=bindings, terms=terms,
-                        ))
-
-                await run_memory_job(restore_entries)
+                # 分块还原：同一时刻只解码一块样本的原消息，Turn 只留文本与向量。
+                for offset in range(0, len(entries), LOAD_CHUNK):
+                    await _restore_chunk(
+                        entries[offset:offset + LOAD_CHUNK], turns, catalog=catalog,
+                        embeddings=embeddings, bindings=bindings, learning=learning, rule=rule,
+                        state=state, terms=terms, restore_embeddings=restore_embeddings,
+                    )
                 space = rule.embedding_model
         if cache is not None:
             cache.release()
@@ -269,10 +262,11 @@ class MessageConsumer:
             records = embeddings.bind(learning.text)
             count = 0
             # 投影只读续读点之后的尾部；与图发布共用排空后才取消的后台执行方式。
-            known, cursors = self._cursors
+            # revision 先于投影读取并随续读点保存：投影期间的前缀改写会让下次检查失配。
+            revision = await run_memory_job(catalog.prefix_revision)
+            cursors = await run_memory_job(partial(self._resume_cursors, learning_binding, revision))
             samples, advanced = await run_memory_job(partial(
-                learning.samples_since, catalog, rule, heads=heads,
-                cursors=cursors if known == learning_binding else {}, keep=fresh,
+                learning.samples_since, catalog, rule, heads=heads, cursors=cursors, keep=fresh,
             ))
             for sample in samples:
                 inputs = [message for message in sample.messages if isinstance(message.body, Input)]
@@ -318,8 +312,55 @@ class MessageConsumer:
             # 3. 本批学完统一发布一次；批内攒满 PUBLISH_EVERY 已在途中发布。
             await run_memory_job(self.flush)
             # 4. 整批处理并发布后才前进续读点；失败或取消时下次仍从旧续读点重读。
-            self._cursors = (learning_binding, advanced)
+            self._cursors = (learning_binding, revision, advanced)
+            await run_memory_job(self._save_cursors)
             return count
+
+    # 内存续读点优先；新实例读一次落盘续读点。绑定、revision 或消费进度对不上都从头投影。
+    def _resume_cursors(self, binding: str, revision: int | None) -> Mapping[str, SessionCursor]:
+        from ..projection import SessionCursor
+
+        known, known_revision, cursors = self._cursors
+        if revision is None:
+            return {}
+        if known:
+            return cursors if known == binding and known_revision == revision else {}
+        if self._cursor_file_read:
+            return {}
+        self._cursor_file_read = True
+        try:
+            saved = _SavedCursors.model_validate_json(self._cursor_path.read_bytes())
+        except (OSError, ValueError):
+            # 缺失、损坏或旧格式都只是没有续读点；ValidationError 是 ValueError 子类。
+            return {}
+        if (saved.learning_binding != binding or saved.prefix_revision != revision
+                or not _progress_prefix(saved, self._published)):
+            return {}
+        return {session: SessionCursor(head, boundaries)
+                for session, (head, boundaries) in saved.cursors.items()}
+
+    # 只保存已发布进度对应的续读点；重建候选不落盘，节流写入后原子替换。
+    def _save_cursors(self) -> None:
+        binding, revision, cursors = self._cursors
+        if not binding or revision is None or self._closed or self._deferred_publish:
+            return
+        # 续读点越过的闭段必须都已发布；否则崩溃后已发布进度回退，越过的样本永不重学。
+        if self.state != self._published:
+            return
+        now = time.monotonic()
+        if self._cursors_saved_at is not None and now - self._cursors_saved_at < CURSOR_SAVE_SECONDS:
+            return
+        published = self._published
+        saved = _SavedCursors(
+            learning_binding=binding, prefix_revision=revision,
+            applied=(len(published.applied), published.applied[-1].ending[1] if published.applied else None),
+            skipped=(len(published.skipped), published.skipped[-1].ending[1] if published.skipped else None),
+            cursors={session: (cursor.head, dict(cursor.boundaries)) for session, cursor in cursors.items()},
+        )
+        temporary = self._cursor_path.with_name(self._cursor_path.name + ".tmp")
+        _ = temporary.write_text(saved.model_dump_json(), encoding="utf-8")
+        os.replace(temporary, self._cursor_path)
+        self._cursors_saved_at = now
 
     def publish_snapshot(self) -> str:
         """按当前内存状态发布一次完整快照；延迟发布的重建用它收口。"""
@@ -408,6 +449,66 @@ class MessageConsumer:
         if cycle.feature_pool is None:
             cycle.feature_pool = BurstAwareFeaturePool(cycle.turns, appendable=True)
         return True
+
+
+# 按原前缀还原一块已学样本：核对出处、补算缺失向量，再逐条接到 turns 之后。
+async def _restore_chunk(
+    entries: Sequence[Applied], turns: list[Turn], *, catalog: MessageCatalog,
+    embeddings: MessageEmbeddings, bindings: Bindings, learning: Learning, rule: LearningConfig,
+    state: Consumption, terms: Callable[[str], Terms], restore_embeddings: RestoreEmbeddings | None,
+) -> None:
+    # 1. 按原算法验证出处；分块不改变还原顺序，后一条只能读取已完成的 previous。
+    samples = await run_memory_job(lambda: tuple(
+        learning.load_sample(catalog, rule, entry) for entry in entries
+    ))
+    records = embeddings.bind(learning.text)
+    verified: dict[str, tuple[float, ...]] = {}
+    def missing_vectors() -> list[Message]:
+        messages = {message.message_id: message for sample in samples
+                    for message in sample.messages
+                    if isinstance(message.body, Input) or message == sample.ending}
+        missing: list[Message] = []
+        for message in messages.values():
+            if not learning.text(message).strip():
+                continue
+            vector = records.read(message, model=rule.embedding_model, dimension=rule.dimension)
+            if vector is None:
+                missing.append(message)
+            else:
+                verified[message.message_id] = vector
+        return missing
+    # 2. 缺失向量由明确的模型端口补算；不调用学习 commit。
+    missing = await run_memory_job(missing_vectors)
+    if missing:
+        if restore_embeddings is None:
+            raise MemoryRebuildRequiredError("派生向量缺失；当前只读调用没有模型补算权限")
+        vectors = await restore_embeddings(rule, [learning.text(message) for message in missing])
+        if len(vectors) != len(missing) or any(len(vector) != rule.dimension for vector in vectors):
+            raise ValueError("补算向量数量或维度不匹配原学习空间")
+        def save_vectors() -> None:
+            for message, vector in zip(missing, vectors, strict=True):
+                records.save(message, model=rule.embedding_model, embedding=vector)
+        await run_memory_job(save_vectors)
+    # 3. 用已验证的样本还原材料。
+    def restore_entries() -> None:
+        for sample in samples:
+            turns.append(learning.restore(
+                sample, _VerifiedVectors(embeddings, verified), rule,
+                previous=turns, state=state, bindings=bindings, terms=terms,
+            ))
+    await run_memory_job(restore_entries)
+
+
+# 保存时的已发布进度必须仍是当前进度的前缀：消费只追加，换了图或重建后的不同历史不复用。
+def _progress_prefix(saved: _SavedCursors, state: Consumption) -> bool:
+    applied_count, applied_last = saved.applied
+    skipped_count, skipped_last = saved.skipped
+    if applied_count > len(state.applied) or skipped_count > len(state.skipped):
+        return False
+    if (applied_last is None) != (applied_count == 0) or (skipped_last is None) != (skipped_count == 0):
+        return False
+    return ((applied_count == 0 or state.applied[applied_count - 1].ending[1] == applied_last)
+            and (skipped_count == 0 or state.skipped[skipped_count - 1].ending[1] == skipped_last))
 
 
 def _check_embedding_space(model: str, dimension: int, previous_model: str | None, turns: list[Turn]) -> None:
