@@ -894,12 +894,14 @@ def _history_sources(rows: Sequence[Mapping[str, Any]], live: set[int],
         for call in row.get("tool_calls") or ():
             names[str(call.get("id"))] = str(call.get("function", {}).get("name") or "")
     groups: dict[tuple[ContextCategory, str], list[Mapping[str, Any]]] = {}
+    # 按身份判断历史提醒；逐行线性比对会让长会话每次请求做行数×提醒数次比较。
+    replayed_ids = {id(item) for item in replayed}
     for index, row in enumerate(rows):
         if index in live:
             continue
         role = row.get("role")
         key: tuple[ContextCategory, str] = (
-            ("injected", "历史提醒") if any(row is item for item in replayed)
+            ("injected", "历史提醒") if id(row) in replayed_ids
             else ("tool_results", names.get(str(row.get("tool_call_id")), "")) if role == "tool"
             else ("assistant", "") if role == "assistant" else ("user", ""))
         groups.setdefault(key, []).append(row)

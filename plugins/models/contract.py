@@ -10,7 +10,7 @@ import ssl
 
 import httpx
 from plugins.ledger.contract import detect_supported_image_mime
-from core.common.frozen_json import freeze_json
+from core.common.frozen_json import freeze_json, frozen_memo
 from dataclasses import (
     asdict,
     field,
@@ -1017,6 +1017,11 @@ LOW_DETAIL_IMAGE_TOKENS = 1024
 
 def message_size(message: Mapping[str, Any]) -> tuple[int, int]:
     """统计一条消息的字符与图片成本；调用方按各自字符比取整，保持容量边界。"""
+    # 渲染视图跨轮复用冻结行；长会话每次请求都要测量全部历史行，只算一次。
+    return frozen_memo(message, "models.message_size", lambda: _measure_message(message))
+
+
+def _measure_message(message: Mapping[str, Any]) -> tuple[int, int]:
     text_chars = image_tokens = 0
     content: object = message.get("content")
     if isinstance(content, Sequence) and not isinstance(content, (str, bytes)):
