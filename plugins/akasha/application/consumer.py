@@ -3,12 +3,13 @@ from __future__ import annotations
 
 from dataclasses import replace
 import asyncio
+import hashlib
 import os
 import time
 from collections.abc import Awaitable, Callable, Mapping, Sequence
 from datetime import datetime
 from itertools import groupby
-from functools import partial
+from functools import cache, partial
 from pathlib import Path
 from typing import TYPE_CHECKING, Literal
 
@@ -44,13 +45,29 @@ PUBLISH_EVERY = 16
 LOAD_CHUNK = 256
 # 落盘续读点最多这么久写一次；落后的续读点只多投影一段，已学和已跳过的闭段仍被过滤。
 CURSOR_SAVE_SECONDS = 60.0
+# 决定"哪些消息组成样本、哪些样本被准入"的代码所在的包；任一源码变了，落盘续读点作废。
+_PROJECTION_PACKAGES = ("akasha", "turn_projection", "ledger")
+
+
+# 投影与准入实现的源码指纹：规则相同但实现变了时，旧续读点可能越过新实现会接纳的闭段。
+@cache
+def _projection_code() -> str:
+    plugins = Path(__file__).resolve().parents[2]
+    digest = hashlib.sha256()
+    for package in _PROJECTION_PACKAGES:
+        for path in sorted((plugins / package).rglob("*.py")):
+            if "__pycache__" in path.parts:
+                continue
+            digest.update(path.relative_to(plugins).as_posix().encode())
+            digest.update(path.read_bytes())
+    return digest.hexdigest()
 
 
 class _SavedCursors(BaseModel):
     """随已发布快照保存的投影续读点；只在同一学习规则、同一前缀 revision、同一消费进度前缀下复用。
 
-    learning binding 的身份含插件 generation，每次部署都会变；投影只取决于规则本身，
-    所以落盘续读点按规则匹配，内存续读点仍按 binding。
+    learning binding 的身份含插件 generation，每次部署都会变；投影只取决于规则与投影实现，
+    所以落盘续读点按规则加投影代码指纹匹配，内存续读点仍按 binding。
     """
 
     model_config = ConfigDict(extra="forbid", frozen=True, strict=True)
@@ -269,7 +286,7 @@ class MessageConsumer:
             # 投影只读续读点之后的尾部；与图发布共用排空后才取消的后台执行方式。
             # revision 先于投影读取并随续读点保存：投影期间的前缀改写会让下次检查失配。
             revision = await run_memory_job(catalog.prefix_revision)
-            rule_key = rule.model_dump_json()
+            rule_key = f"{rule.model_dump_json()}|{await run_memory_job(_projection_code)}"
             cursors = await run_memory_job(partial(self._resume_cursors, learning_binding, rule_key, revision))
             samples, advanced = await run_memory_job(partial(
                 learning.samples_since, catalog, rule, heads=heads, cursors=cursors, keep=fresh,
