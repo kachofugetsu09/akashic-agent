@@ -2960,6 +2960,335 @@ form.composer:focus-within [data-slot="input-group"] {
 }
 
 
+/* ===== 会话内搜索 =====
+   入口在标题行右侧，与「新会话」同一排：侧栏那个搜索框找的是「哪个会话」，
+   这里找的是「这段话在哪」。浮层挂进聊天根节点（chatPortalRoot），遮罩只压主区，
+   侧栏仍然可见可点——本来也只在当前会话里找东西。 */
+
+.conversation-heading__search {
+  display: inline-grid;
+  width: 36px;
+  height: 36px;
+  flex: 0 0 auto;
+  place-items: center;
+  border: 0;
+  border-radius: 8px;
+  padding: 0;
+  color: var(--chat-ink);
+  background: transparent;
+  cursor: pointer;
+  /* 排在「新会话」之前，两者之间不留额外间距，沿用标题行的 2px gap。 */
+  margin-inline-start: auto;
+}
+
+/* 「新会话」自带 margin-inline-start: auto；搜索钮先占了这个位置，
+   它后面那个就不再需要把整排推到右侧。 */
+.conversation-heading__search + .conversation-heading__new { margin-inline-start: 0; }
+
+.conversation-heading__search svg { flex: 0 0 auto; color: var(--chat-muted); }
+.conversation-heading__search:focus-visible { outline: 2px solid var(--md-sys-color-primary); outline-offset: 2px; }
+
+@media (hover: hover) {
+  .conversation-heading__search:hover { background: color-mix(in oklab, var(--md-sys-color-on-surface) 6%, transparent); }
+  .conversation-heading__search:hover svg { color: var(--chat-ink); }
+}
+
+.conversation-heading__search:active { background: color-mix(in oklab, var(--md-sys-color-on-surface) 8%, transparent); }
+
+.session-search {
+  position: absolute;
+  inset: 0;
+  z-index: 40;
+  display: flex;
+  align-items: flex-start;
+  justify-content: center;
+  padding: 11vh 20px 20px;
+  background: var(--ak-scrim-overlay);
+  opacity: 0;
+  animation: session-search-in var(--ak-sys-duration-short) var(--ak-sys-motion-standard) forwards;
+}
+
+@keyframes session-search-in { to { opacity: 1; } }
+
+.session-search__panel {
+  display: flex;
+  flex-direction: column;
+  width: 100%;
+  max-width: 560px;
+  max-height: min(520px, 72%);
+  overflow: hidden;
+  border: 1px solid var(--ak-rule-default);
+  border-radius: var(--md-sys-shape-corner-medium);
+  /* 与菜单、选择器同一层纸（sheet）。raised 是比正文更深的一级，
+     铺在纸底上会像一块灰砖，读起来不像浮在内容之上。 */
+  background: var(--ak-paper-sheet);
+  box-shadow: var(--ak-elevation-overlay);
+}
+
+.session-search__field {
+  display: flex;
+  flex: none;
+  align-items: center;
+  gap: 9px;
+  padding: 12px 14px;
+  border-block-end: 1px solid var(--ak-rule-default);
+  color: var(--ak-ink-muted);
+}
+
+.session-search__field input {
+  flex: 1;
+  min-inline-size: 0;
+  border: 0;
+  background: none;
+  outline: none;
+  color: var(--ak-ink-primary);
+  font: inherit;
+  font-size: 0.9375rem;
+}
+
+.session-search__field input::placeholder { color: var(--ak-ink-muted); }
+
+/* 触屏没有 Esc，换成可点的取消；宽屏用 Esc，不占位置。 */
+.session-search__cancel {
+  display: none;
+  flex: none;
+  border: 0;
+  border-radius: 8px;
+  padding: 6px 8px;
+  background: none;
+  color: var(--ak-color-action-primary);
+  font: inherit;
+  font-size: 0.875rem;
+  cursor: pointer;
+}
+
+.session-search__bar {
+  display: flex;
+  flex: none;
+  align-items: center;
+  gap: 8px;
+  padding: 7px 14px;
+  border-block-end: 1px solid var(--ak-rule-default);
+  color: var(--ak-ink-muted);
+  font-size: 0.71875rem;
+}
+
+.session-search__count b { color: var(--ak-ink-primary); font-weight: 600; }
+
+.session-search__scopes { display: flex; gap: 2px; margin-inline-start: auto; }
+
+.session-search__scopes button {
+  border: 1px solid transparent;
+  border-radius: var(--md-sys-shape-corner-full);
+  padding: 2px 8px;
+  background: none;
+  color: var(--ak-ink-muted);
+  font: inherit;
+  font-size: 0.6875rem;
+  cursor: pointer;
+}
+
+.session-search__scopes button[aria-pressed="true"] {
+  background: var(--ak-color-action-container);
+  color: var(--ak-color-on-action-container);
+  font-weight: 500;
+}
+
+.session-search__list {
+  flex: 1;
+  min-block-size: 0;
+  overflow-y: auto;
+  padding: 5px 6px 8px;
+  overscroll-behavior: contain;
+}
+
+.session-search__group-head {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin: 0;
+  padding: 8px 8px 3px;
+  color: var(--ak-ink-muted);
+  font-size: 0.625rem;
+  letter-spacing: 0.04em;
+}
+
+.session-search__group-count {
+  border: 1px solid var(--ak-rule-default);
+  border-radius: 4px;
+  padding: 0 4px;
+  font-family: var(--ak-type-technical);
+  font-size: 0.59375rem;
+}
+
+.session-search__hit {
+  display: block;
+  inline-size: 100%;
+  margin-block-end: 1px;
+  border: 0;
+  border-inline-start: 2px solid transparent;
+  border-radius: 8px;
+  padding: 7px 10px 8px;
+  background: none;
+  color: inherit;
+  font: inherit;
+  text-align: start;
+  cursor: pointer;
+}
+
+.session-search__hit:hover { background: var(--ak-paper-quiet); }
+
+.session-search__hit[data-active] {
+  border-inline-start-color: var(--ak-color-action-primary);
+  background: var(--ak-color-action-container);
+}
+
+.session-search__kind {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  margin-block-end: 2px;
+  color: var(--ak-ink-muted);
+  font-size: 0.59375rem;
+  letter-spacing: 0.04em;
+}
+
+.session-search__kind i { inline-size: 5px; block-size: 5px; border-radius: 50%; background: var(--ak-ink-muted); }
+.session-search__kind--input i,
+.session-search__kind--text i { background: var(--ak-color-action-primary); }
+.session-search__kind--thinking i { background: var(--ak-color-status-trace); }
+.session-search__kind--tool i { background: var(--ak-color-status-success); }
+
+.session-search__snippet {
+  display: -webkit-box;
+  overflow: hidden;
+  color: var(--ak-ink-secondary);
+  font-size: 0.78125rem;
+  line-height: 1.55;
+  overflow-wrap: anywhere;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
+}
+
+.session-search__hit[data-active] .session-search__snippet { color: var(--ak-ink-primary); }
+
+/* 列表里的命中靠字重，不铺色块：铺了以后每行都在抢注意力。 */
+.session-search__snippet mark { background: transparent; color: var(--ak-ink-primary); font-weight: 600; }
+
+.session-search__more { display: block; margin-block-start: 2px; color: var(--ak-ink-muted); font-size: 0.59375rem; }
+
+.session-search__empty {
+  margin: 0;
+  padding: 32px 20px 38px;
+  color: var(--ak-ink-muted);
+  font-size: 0.78125rem;
+  line-height: 1.75;
+  text-align: center;
+}
+
+.session-search__empty b { color: var(--ak-ink-secondary); font-weight: 600; }
+
+.session-search__foot {
+  display: flex;
+  flex: none;
+  align-items: center;
+  gap: 12px;
+  padding: 8px 14px;
+  border-block-start: 1px solid var(--ak-rule-default);
+  color: var(--ak-ink-muted);
+  font-size: 0.65625rem;
+}
+
+.session-search__foot kbd {
+  border: 1px solid var(--ak-rule-default);
+  border-radius: 4px;
+  padding: 0 4px;
+  font-family: var(--ak-type-technical);
+  font-size: 0.59375rem;
+}
+
+.session-search__hint { margin-inline-start: auto; }
+
+/* 落点：只闪一下，不留元素。 */
+.session-search-landed { position: relative; }
+
+.session-search-landed::before {
+  content: "";
+  position: absolute;
+  inset: -6px -9px;
+  border-radius: 9px;
+  background: var(--ak-color-status-warning-container);
+  pointer-events: none;
+  animation: session-search-land var(--ak-sys-duration-medium) var(--ak-sys-motion-standard) forwards;
+}
+
+@keyframes session-search-land {
+  0% { opacity: 0; }
+  16% { opacity: 0.5; }
+  56% { opacity: 0.18; }
+  100% { opacity: 0; }
+}
+
+/* 窄屏（≤820px）：侧栏整个消失、标题行按钮 44px，搜索面板改成底部抽屉，
+   与模型选择、导航抽屉同一套语汇。 */
+:where([data-chat-width~="820"], [data-chat-short]) {
+  .conversation-heading__search { width: 44px; height: 44px; }
+
+  .session-search {
+    align-items: flex-end;
+    padding: 0;
+  }
+
+  .session-search__panel {
+    max-inline-size: none;
+    max-block-size: 70dvh;
+    border-inline: 0;
+    border-block-end: 0;
+    border-start-start-radius: var(--md-sys-shape-corner-large);
+    border-start-end-radius: var(--md-sys-shape-corner-large);
+    padding-block-end: env(safe-area-inset-bottom, 0px);
+  }
+
+  .session-search__field { padding: 12px 14px 13px; }
+  /* 16px 以下 iOS 会在聚焦时放大整页。 */
+  .session-search__field input { font-size: 1.0625rem; }
+  .session-search__cancel { display: block; }
+
+  .session-search__bar { flex-wrap: wrap; gap: 6px; padding: 2px 12px 10px; border-block-end: 0; }
+
+  .session-search__scopes {
+    order: 2;
+    inline-size: 100%;
+    gap: 6px;
+    margin-inline-start: 0;
+    margin-block-start: 4px;
+  }
+
+  .session-search__scopes button {
+    flex: 1;
+    block-size: 36px;
+    border-color: var(--ak-rule-default);
+    border-radius: 9px;
+    background: var(--ak-paper-quiet);
+    font-size: 0.8125rem;
+  }
+
+  .session-search__hit { min-block-size: 56px; padding: 11px 12px 12px; }
+  /* 手机上点了就直接跳，不存在「选中」这一步，不给选中底色。 */
+  .session-search__hit[data-active] { border-inline-start-color: transparent; background: none; }
+  .session-search__hit:active { background: var(--ak-paper-quiet); }
+  .session-search__snippet { font-size: 0.84375rem; -webkit-line-clamp: 3; }
+
+  .session-search__foot { padding: 10px 14px 14px; font-size: 0.71875rem; }
+  /* 手机上不存在 ↑↓ 与 Enter。 */
+  .session-search__keys { display: none; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .session-search { animation: none; opacity: 1; }
+  .session-search-landed::before { animation: none; opacity: 0; }
+}
+
 /* 强制颜色（Windows 高对比度）下背景色统一换成系统底色：只靠底色表达的东西会整片消失。
    标记类图形（品牌、会话状态、轮次刻度）保留形状，用文本色画；当前行、用户气泡改用系统色的描边；
    输入卡外框本身是边框，内层输入组那圈多出来的描边去掉，聚焦改由外框的高亮描边表达。 */

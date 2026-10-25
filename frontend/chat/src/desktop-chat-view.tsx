@@ -13,6 +13,7 @@ import { ComposerStatsLine } from "./composer-stats-line";
 import { ThinkingPlaceholder } from "./thinking-placeholder";
 import { DesktopComposer, type ComposerApi } from "./desktop-composer";
 import { onWorkbenchQuote } from "./shell-workbench";
+import { keyForChat } from "./chat-host";
 import { DesktopConversationMessages, DesktopTimelineMessages, messageDayKey, withoutLeadingOrphanResults } from "./desktop-conversation";
 import { MediaGalleryViewer, ReplyActivityView } from "./message-view";
 import { MessageSquarePlus } from "lucide-react";
@@ -28,6 +29,9 @@ import { MarqueeText } from "./marquee-text";
 import { CopyNotice, useCopyLastCode } from "./copy-last-code";
 import { isGeneratingChatStatus } from "./web-chat-status";
 import { SteerCards } from "./steer-cards";
+import { SessionSearch } from "./session-search-view";
+import { jumpToHit } from "./session-search-jump";
+import { Search } from "lucide-react";
 
 interface DesktopChatViewProps {
   controller: DesktopChatController;
@@ -120,6 +124,25 @@ export function DesktopChatView({ controller }: DesktopChatViewProps) {
   useDocumentTitle(activeSessionId || activeGroup ? headingTitle : "", isGeneratingChatStatus(status));
   const composerWrapRef = useRef<HTMLDivElement>(null);
   useComposerClearance(composerWrapRef);
+  // 会话内搜索：Ctrl/⌘+F 打开。Ctrl+K 是侧栏的会话搜索，作用域不同，不共用。
+  const [searchOpen, setSearchOpen] = useState(false);
+  const closeSearch = useCallback(() => setSearchOpen(false), []);
+  const jump = useCallback((hit: Parameters<typeof jumpToHit>[0]) => {
+    // 先撤浮层再跳：遮罩压在主区上，带着它去点折叠行会点在遮罩上。
+    // 跳不动（消息不在已载入范围）就把浮层留回来，别让人以为已经跳到了。
+    setSearchOpen(false);
+    void jumpToHit(hit).then((found) => { if (!found) setSearchOpen(true); });
+  }, []);
+  useEffect(() => {
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (!(event.metaKey || event.ctrlKey) || event.shiftKey || event.altKey || event.isComposing) return;
+      if (event.key.toLowerCase() !== "f" || !keyForChat(event)) return;
+      event.preventDefault();
+      setSearchOpen(true);
+    };
+    document.addEventListener("keydown", onKeyDown);
+    return () => document.removeEventListener("keydown", onKeyDown);
+  }, []);
   const committed = new Set(timelineMessages.map((message) => message.id));
   const hasMessages = messages.length + timelineMessages.length + replyActivities.length > 0;
   // 读取已有会话期间就按会话版式摆放：输入区停在底部，消息到达时不从屏幕中央跳下来。
@@ -163,6 +186,13 @@ export function DesktopChatView({ controller }: DesktopChatViewProps) {
           {/* 插件在标题行右侧的标记；新的工具结果到达时通知插件重新读取会话状态。 */}
           {activeSessionId ? <PluginUiSlot key={`header:${activeSessionId}`} name="header.end" sessionId={activeSessionId}
             refreshToken={liveToolToken} quiet /> : null}
+          {/* 会话内搜索的入口：侧栏那个搜索框找的是「哪个会话」，这里找的是「这段话在哪」。
+              放在标题行、与新会话同一排，两处作用域才分得清。 */}
+          {conversationLayout ? <button type="button" className="conversation-heading__search"
+            aria-label="在这个会话里搜索" data-tip="在这个会话里搜索" aria-keyshortcuts="Control+F Meta+F"
+            onClick={() => setSearchOpen(true)}>
+            <Search size={20} strokeWidth={1.75} aria-hidden="true" />
+          </button> : null}
           {/* 窄屏没有常驻侧栏：新会话留在拇指可达的标题行，不必先打开抽屉；继承当前会话所在的分组。 */}
           {conversationLayout ? <button type="button" className="conversation-heading__new"
             aria-label={activeGroup ? `在 ${activeGroup.label} 中新建会话` : "新会话"} data-tip="新会话"
@@ -256,6 +286,7 @@ export function DesktopChatView({ controller }: DesktopChatViewProps) {
             {controller.errorRetry ? <MaterialButton variant="danger" onClick={retry}>重试</MaterialButton> : null}
           </div> : null}
         </div>
+        <SessionSearch messages={timelineMessages} open={searchOpen} onClose={closeSearch} onJump={jump} />
       </section>
       </div>
     </main>
