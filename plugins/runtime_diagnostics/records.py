@@ -28,7 +28,7 @@ class Records(logging.Handler):
         self.stream_id = uuid4().hex
         self._guard = threading.Lock()
         self._seq = 0
-        # 停顿记录带线程栈，体积远大于样本，只保留最近 8 次。
+        # 停顿与内存突增记录带线程栈，体积远大于样本，只保留最近 8 次。
         self._lanes: dict[str, deque[Record]] = {"samples": deque(maxlen=720), "events": deque(maxlen=2048),
                                                  "stalls": deque(maxlen=8)}
         self._evicted = dict.fromkeys(self._lanes, 0)
@@ -36,7 +36,7 @@ class Records(logging.Handler):
 
     def append(self, kind: str, values: dict[str, object], *, timestamp: float | None = None) -> None:
         """锁内登记顺序；溢出只淘汰本插件的临时诊断记录。"""
-        lane = {"sample": "samples", "stall": "stalls"}.get(kind, "events")
+        lane = {"sample": "samples", "stall": "stalls", "growth": "stalls"}.get(kind, "events")
         with self._guard:
             target = self._lanes[lane]
             if len(target) == target.maxlen:
@@ -86,5 +86,5 @@ class Records(logging.Handler):
 
 def _row(row: Record) -> dict[str, object]:
     # 停顿记录含嵌套线程栈，复制后消费者修改不会影响保留副本。
-    values = copy.deepcopy(row["values"]) if row["kind"] == "stall" else row["values"]
+    values = copy.deepcopy(row["values"]) if row["kind"] in ("stall", "growth") else row["values"]
     return {"seq": row["seq"], "timestamp": row["timestamp"], "kind": row["kind"], **values}

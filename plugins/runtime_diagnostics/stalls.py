@@ -1,4 +1,4 @@
-"""事件循环停顿现场：独立看门狗线程在停顿期间抓取线程栈，只保留代码位置，不读取变量或对象值。"""
+"""事件循环停顿与内存突增现场：独立看门狗线程抓取线程栈，只保留代码位置，不读取变量或对象值。"""
 from __future__ import annotations
 
 import asyncio
@@ -29,6 +29,11 @@ FOLLOW_UP_SECONDS = (6.0, 18.0)
 CPU_BASELINE_SECONDS = 4.0
 MAX_THREADS = 48
 MAX_FRAMES = 20
+# RSS 在一秒内涨过这么多时抓一次线程栈：正常回合分配远低于此，整段解码历史这类临时大分配会越过它。
+GROWTH_MB = 256
+GROWTH_SECONDS = 1.0
+# 突增日志带循环线程与最热线程由内向外的这么多层，不读记录也能定位调用方。
+GROWTH_LOG_FRAMES = 8
 _CLOCK_TICKS = os.sysconf("SC_CLK_TCK") if hasattr(os, "sysconf") else 100
 
 
@@ -65,9 +70,14 @@ class _Capture:
                 "cpu_window_ms": self.cpu_window_ms, "threads": [row.value() for row in self.threads[:MAX_THREADS]],
                 "threads_omitted": max(0, len(self.threads) - MAX_THREADS)}
 
-    def top(self, *, loop: bool) -> str | None:
-        return next((row.frames[0] for row in self.threads
-                     if (row.loop if loop else row.hot) and row.frames), None)
+    # depth > 1 时只取项目代码帧（跳过标准库与 site-packages），日志行直接指向调用方。
+    def top(self, *, loop: bool, depth: int = 1) -> str | None:
+        for row in self.threads:
+            if not (row.loop if loop else row.hot) or not row.frames:
+                continue
+            frames = row.frames if depth == 1 else [frame for frame in row.frames if "/lib/python" not in frame]
+            return " < ".join(frames[:depth]) or None
+        return None
 
 
 @dataclass
@@ -92,6 +102,15 @@ def _thread_cpu(native_ids: Iterable[int]) -> dict[int, float]:
 
 def _python_threads() -> dict[int, threading.Thread]:
     return {thread.ident: thread for thread in threading.enumerate() if thread.ident is not None}
+
+
+# 当前进程常驻内存（MB）；没有 /proc 时返回 None，突增检查随之停用。
+def _rss_mb() -> int | None:
+    try:
+        resident = int(Path("/proc/self/statm").read_text().split()[1])
+    except (OSError, IndexError, ValueError):
+        return None
+    return resident * os.sysconf("SC_PAGE_SIZE") // (1024 * 1024)
 
 
 # 由内向外保留最多 MAX_FRAMES 层「文件:行 in 函数」；只读代码对象与行号。
@@ -124,6 +143,7 @@ class StallWatch:
         self._cpu = _Cpu(time.monotonic(), {})
         self._open: _Stall | None = None
         self._reported_due = 0.0
+        self._rss = (time.monotonic(), _rss_mb())
 
     async def run(self) -> None:
         """本任务拥有看门狗线程；线程确实退出后任务才结束。"""
@@ -203,8 +223,31 @@ class StallWatch:
             self._capture(stall, now, delay)
             self._close(stall, beat, lag)
             return
+        self._check_growth(now, delay)
         if now - self._cpu.at >= CPU_BASELINE_SECONDS:
             self._cpu = self._read_cpu(now)
+
+    # 健康时每秒读一次 RSS；突增时抓栈，循环线程与占用 CPU 的线程就是分配现场。
+    def _check_growth(self, now: float, delay: float) -> None:
+        at, previous = self._rss
+        if previous is None or now - at < GROWTH_SECONDS:
+            return
+        current = _rss_mb()
+        self._rss = (now, current)
+        # 停顿期间不采样；跨过停顿的间隔只重建基线，不把累计增长当作一秒突增。
+        if current is None or now - at > 2 * GROWTH_SECONDS or current - previous < GROWTH_MB:
+            return
+        sample = _Stall(due=at, started_at=time.time() - (now - at), cpu=self._cpu)
+        self._capture(sample, now, delay)
+        self._cpu = sample.cpu
+        capture = sample.captures[0]
+        self._records.append("growth", {"started_at": sample.started_at, "rss_mb": current,
+                                        "delta_mb": current - previous, "threshold_mb": GROWTH_MB,
+                                        "captures": [capture.value()]})
+        self._logger.warning("内存 %.1f 秒内增长 %d MB（RSS %d MB）；循环线程位于 %s，占用 CPU 的线程位于 %s",
+                             now - at, current - previous, current,
+                             capture.top(loop=True, depth=GROWTH_LOG_FRAMES) or "未知",
+                             capture.top(loop=False, depth=GROWTH_LOG_FRAMES) or "无")
 
     def _read_cpu(self, now: float) -> _Cpu:
         threads = _python_threads().values()
