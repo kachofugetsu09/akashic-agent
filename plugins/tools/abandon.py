@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import asyncio
-from collections.abc import Callable, Hashable, Mapping
+from collections.abc import Callable, Hashable, Iterable, Mapping
 from contextlib import AbstractAsyncContextManager
 from dataclasses import replace
 from typing import cast
@@ -11,6 +11,20 @@ from .api import Denied, MessageReply, Result, durable_call_key
 from .execution import _fingerprint, finish
 from plugins.ledger.contract import MessageCatalog, MessageReader, OwnerStore, OwnerTransaction
 from plugins.ledger.contract import CallRef, ContentPart, Control, Message, Output, ToolCall, ToolResult
+
+
+# 结果只可能在调用消息之后；流式扫描命中即停，不为每个被放弃的调用解码整段会话。
+def _existing_result(reader: MessageReader, call_ref: CallRef) -> ToolResult | None:
+    call = reader.get(call_ref.message_id)
+
+    def first(rows: Iterable[Message]) -> ToolResult | None:
+        for message in rows:
+            body = message.body
+            if isinstance(body, ToolResult) and body.call_ref == call_ref:
+                return body
+        return None
+
+    return reader.scan(first, after_seq=-1 if call is None else call.seq)
 
 
 class LegacyReplyIdentityUnavailable(ValueError):
@@ -29,12 +43,11 @@ async def abandon_call(
     async def settle(slot: TaskSlot) -> Result:
         record = state.read(key)
         if record is None:
-            for message in reply.reader.snapshot():
-                body = message.body
-                if isinstance(body, ToolResult) and body.call_ref == reply.call_ref:
-                    if slot.current is not None:
-                        slot.current.cancel()
-                    return Result(body.outcome, body.parts)
+            existing = _existing_result(reply.reader, reply.call_ref)
+            if existing is not None:
+                if slot.current is not None:
+                    slot.current.cancel()
+                return Result(existing.outcome, existing.parts)
         if record is not None and "reply_id" in record.value:
             identity = record.value["reply_id"]
             if not isinstance(identity, str):
@@ -83,14 +96,27 @@ async def abandon_call(
 
 
 # 区间内任一来源出现 abandon Control；按来源走 kind 索引，只解码 Control。
-def _has_abandon(reader: MessageReader, after_seq: int, through_seq: int) -> bool:
-    return any(
-        reader.scan_controls(
-            lambda rows: any(body.action == "abandon" for _, body in rows),
+# 只解码 abandon 控制及其所需窗口：被放弃的调用只来自同来源、through_seq 前最后一次结束输出之后，
+# 不必为一条历史控制解码整段会话（启动时 seen 为空，大会话会被整段解码两次）。
+def _abandon_targets(
+    reader: MessageReader, after_seq: int, through_seq: int,
+) -> list[tuple[Message, tuple[CallRef, ...]]]:
+    targets: list[tuple[Message, tuple[CallRef, ...]]] = []
+    for source in reader.source_names():
+        seqs = reader.scan_controls(
+            lambda rows: [seq for seq, body in rows if body.action == "abandon"],
             source=source, after_seq=after_seq, through_seq=through_seq,
         )
-        for source in reader.source_names()
-    )
+        for seq in seqs:
+            control = reader.read(after_seq=seq - 1, through_seq=seq, limit=1)[0]
+            bound = cast(Control, control.body).through_seq
+            finished = reader.latest_finished_output_seq(source, after_seq=-1, through_seq=bound)
+            window = reader.scan(
+                tuple, after_seq=-1 if finished is None else finished, through_seq=bound, source=source,
+            )
+            targets.append((control, abandoned_calls(window, control)))
+    targets.sort(key=lambda target: target[0].seq)
+    return targets
 
 
 async def follow_abandon(
@@ -144,16 +170,10 @@ async def follow_abandon(
                     continue
                 ok = True
                 try:
-                    # 启动时 seen 为空，窗口是整段历史；先走 Control 索引判断，没有 abandon 就不解码正文。
-                    changed = (
-                        await asyncio.to_thread(reader.snapshot, after_seq=previous, through_seq=head)
-                        if await asyncio.to_thread(_has_abandon, reader, previous, head) else ()
-                    )
-                    controls = [message for message in changed
-                                if isinstance(message.body, Control) and message.body.action == "abandon"]
-                    messages = await asyncio.to_thread(reader.snapshot, through_seq=head) if controls else ()
-                    for control in controls:
-                        for ref in abandoned_calls(messages, control):
+                    # 启动时 seen 为空，窗口是整段历史；走 Control 索引找 abandon，只解码各自的尾部窗口。
+                    targets = await asyncio.to_thread(_abandon_targets, reader, previous, head)
+                    for control, refs in targets:
+                        for ref in refs:
                             try:
                                 async with reply(reader, control.source, ref) as target:
                                     try:
