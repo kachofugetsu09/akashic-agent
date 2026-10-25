@@ -15,7 +15,7 @@ import { ComposerReply } from "./message-actions";
 import { isGeneratingChatStatus, type ChatStatus } from "./web-chat-status";
 import { useComposerSuggest } from "./composer-suggest";
 import { ComposerReferences, useReferenceDrop } from "./composer-references-ui";
-import { composerReferences, notifyReferencesSent, useComposerReferences } from "./composer-references";
+import { adoptReferences, composerReferences, notifyReferencesSent, referenceParts, useComposerReferences } from "./composer-references";
 import { setComposerBusy, type ComposerInputPart } from "./composer-contributions";
 import { PluginUiSlot } from "./plugin-ui-runtime";
 import { CHAT_LAYERS, chatLayerOpen, inChat, keyForChat } from "./chat-host";
@@ -182,17 +182,17 @@ export const DesktopComposer = memo(function DesktopComposer({
     setInput("");
     setExpanded(false);
     // 会话引用随这条消息一起提交：引用是坐标，正文由模型用 read_session 去读。
-    const parts = composerReferences(draftKey).length > 0
-      ? [{ kind: "session.reference", value: { sessions: composerReferences(draftKey).map((item) => ({ session_id: item.sessionId, title: item.title })) } }]
-      : [];
+    const sentReferences = composerReferences(draftKey);
+    const parts = referenceParts(sentReferences);
     try {
       if (steerable && !files.length && await onSteer(text)) return undefined;
       const sessionId = await onSend(text, files, parts);
       // 引用属于这条已发出的消息；失败时保留，用户还能改一改再发。
-      if (parts.length > 0) notifyReferencesSent(draftKey);
+      if (parts.length > 0) notifyReferencesSent(draftKey, sentReferences);
       // 首次接纳只是给同一编辑位置确定会话身份，后写的草稿随它保留。
       if (sessionId && draftKey.startsWith("new:")) {
         const next = drafts.current.get(draftKey) || "";
+        adoptReferences(draftKey, sessionId);
         setDraft(sessionId, next);
         setDraft(draftKey, "");
         return sessionId;

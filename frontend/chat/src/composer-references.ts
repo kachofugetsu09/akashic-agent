@@ -48,14 +48,33 @@ export function clearReferences(draftKey: string) {
   write(draftKey, []);
 }
 
+/** 新会话首条被接纳后，把发送期间续写的引用从临时草稿键迁到真实会话。 */
+export function adoptReferences(from: string, to: string) {
+  if (from === to) return;
+  const moving = byDraft.get(from) ?? [];
+  if (moving.length === 0) return;
+  const kept = byDraft.get(to) ?? [];
+  const next = [...kept];
+  for (const item of moving) {
+    if (next.length >= MAX_REFERENCES) break;
+    if (!next.some((current) => current.sessionId === item.sessionId)) next.push(item);
+  }
+  const copy = new Map(byDraft);
+  copy.delete(from);
+  if (next.length > 0) copy.set(to, next);
+  byDraft = copy;
+  emit();
+}
+
 /** 取当前草稿的引用（非 React 上下文，用于发送时组装 parts）。 */
 export function composerReferences(draftKey: string): readonly ComposerReference[] {
   return byDraft.get(draftKey) ?? [];
 }
 
-/** 服务端确认收到后清空。 */
-export function notifyReferencesSent(draftKey: string) {
-  clearReferences(draftKey);
+/** 服务端确认收到后只移除本次发送的快照；等待期间新加的引用属于下一条草稿。 */
+export function notifyReferencesSent(draftKey: string, sent: readonly ComposerReference[]) {
+  const current = byDraft.get(draftKey) ?? [];
+  write(draftKey, current.filter((item) => !sent.includes(item)));
 }
 
 /** 解析拖拽载荷；不是我们的类型就返回 null，让别的放置区处理。 */
@@ -86,8 +105,7 @@ export function useComposerReferences(draftKey: string): readonly ComposerRefere
 }
 
 /** 组装要随消息提交的输入片段；没有引用时不产生任何 part。 */
-export function referenceParts(draftKey: string): { kind: string; value: unknown }[] {
-  const references = composerReferences(draftKey);
+export function referenceParts(references: readonly ComposerReference[]): { kind: string; value: unknown }[] {
   if (references.length === 0) return [];
   return [{
     kind: "session.reference",
