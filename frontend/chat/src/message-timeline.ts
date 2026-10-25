@@ -9,8 +9,11 @@ export interface TimelineAttachment {
   sha256: string;
 }
 
+export type TimelineSessionReference = { session_id: string; title: string };
+
 export type TimelinePart =
   | { kind: "text" | "artifact_ref" | "reply_ref"; value: string }
+  | { kind: "session.reference"; value: { sessions: TimelineSessionReference[] } }
   | { kind: "tool_call"; binding_id: string; name: string; owner?: string; arguments: Record<string, unknown> }
   | { kind: "context.notice"; value: { text: string } }
   | { kind: "history.provenance" | "history.transcript" | "history.record" | "history.turn_input"; archive: unknown }
@@ -251,6 +254,14 @@ function validPart(value: unknown): boolean {
   switch (part.kind) {
     case "text": return typeof part.value === "string";
     case "artifact_ref": case "reply_ref": return nonempty(part.value);
+    case "session.reference": {
+      const value = object(part.value);
+      const sessions = value?.sessions;
+      return Array.isArray(sessions) && sessions.length > 0 && sessions.every((item) => {
+        const row = object(item);
+        return row !== null && nonempty(row.session_id) && typeof row.title === "string";
+      });
+    }
     case "tool_call": return nonempty(part.binding_id) && nonempty(part.name) && object(part.arguments) !== null
       && (part.owner === undefined || nonempty(part.owner));
     case "context.notice": return nonempty(object(part.value)?.text);

@@ -14,7 +14,9 @@ import { ComposerActionButton } from "./composer-action";
 import { ComposerReply } from "./message-actions";
 import { isGeneratingChatStatus, type ChatStatus } from "./web-chat-status";
 import { useComposerSuggest } from "./composer-suggest";
-import { setComposerBusy } from "./composer-contributions";
+import { ComposerReferences, useReferenceDrop } from "./composer-references-ui";
+import { composerReferences, notifyReferencesSent, useComposerReferences } from "./composer-references";
+import { setComposerBusy, type ComposerInputPart } from "./composer-contributions";
 import { PluginUiSlot } from "./plugin-ui-runtime";
 import { CHAT_LAYERS, chatLayerOpen, inChat, keyForChat } from "./chat-host";
 import { chatPortalRoot } from "./chat-layout";
@@ -59,7 +61,7 @@ export const DesktopComposer = memo(function DesktopComposer({
   stopPending: boolean;
   replyTarget: TimelineReply | null;
   onCancelReply: () => void;
-  onSend: (text: string, files: ComposerFile[]) => Promise<string | undefined>;
+  onSend: (text: string, files: ComposerFile[], parts?: readonly ComposerInputPart[]) => Promise<string | undefined>;
   /** 生成中发出的纯文字：不打断本轮，下一步交给模型。 */
   /** 返回 false 表示服务端此刻不接纳插话（回合已结束或是后台回调），改走普通发送。 */
   onSteer: (text: string) => Promise<boolean>;
@@ -91,6 +93,8 @@ export const DesktopComposer = memo(function DesktopComposer({
   }, []);
   const setInput = useCallback((text: string) => setDraft(draftKey, text), [draftKey, setDraft]);
   const textareaRef = useRef<HTMLTextAreaElement | null>(null);
+  // 输入卡根节点：会话引用拖到这里就算投放。挂在整个卡片上比只挂输入框更好点中。
+  const cardRef = useRef<HTMLFormElement | null>(null);
   useEffect(() => {
     if (autoFocus && chatReady) textareaRef.current?.focus();
   }, [autoFocus, chatReady, draftKey]);
@@ -168,16 +172,24 @@ export const DesktopComposer = memo(function DesktopComposer({
   const generating = isGeneratingChatStatus(status);
   // 布局阶段先写入，工具位插件在随后的失效回调里读到的就是新状态。
   useLayoutEffect(() => { setComposerBusy(generating); }, [generating]);
-  // 生成中只有纯文字能插进本轮；附件与引用要等本轮结束。
-  const steerable = generating && !hasAttachments && !replyTarget;
+  // 生成中只有纯文字能插进本轮；附件、回复引用与会话引用都要等本轮结束。
+  const references = useComposerReferences(draftKey);
+  const referenceDragActive = useReferenceDrop(cardRef, draftKey, chatReady);
+  const steerable = generating && !hasAttachments && !replyTarget && references.length === 0;
   const submit = useCallback(async (text: string, files: ComposerFile[]) => {
     if (!canSend) throw new Error(sendProblem || "聊天服务暂不可用，请稍后重试。");
     const wasExpanded = expanded;
     setInput("");
     setExpanded(false);
+    // 会话引用随这条消息一起提交：引用是坐标，正文由模型用 read_session 去读。
+    const parts = composerReferences(draftKey).length > 0
+      ? [{ kind: "session.reference", value: { sessions: composerReferences(draftKey).map((item) => ({ session_id: item.sessionId, title: item.title })) } }]
+      : [];
     try {
       if (steerable && !files.length && await onSteer(text)) return undefined;
-      const sessionId = await onSend(text, files);
+      const sessionId = await onSend(text, files, parts);
+      // 引用属于这条已发出的消息；失败时保留，用户还能改一改再发。
+      if (parts.length > 0) notifyReferencesSent(draftKey);
       // 首次接纳只是给同一编辑位置确定会话身份，后写的草稿随它保留。
       if (sessionId && draftKey.startsWith("new:")) {
         const next = drafts.current.get(draftKey) || "";
@@ -262,7 +274,7 @@ export const DesktopComposer = memo(function DesktopComposer({
     setNotice(null);
     submit(text, []).catch((error: unknown) => setNotice({ text: error instanceof Error ? error.message : "插话没有送达", ms: 3200 }));
   };
-  const shellExpanded = expanded || hasAttachments || Boolean(replyTarget);
+  const shellExpanded = expanded || hasAttachments || Boolean(replyTarget) || references.length > 0;
   // 窄屏阅读时输入卡只保留一行。用户点进卡片才展开（程序 autofocus 不算）；
   // 焦点离开整张卡（含它弹出的模型菜单）才收回。
   const [engaged, setEngaged] = useState(false);
@@ -278,7 +290,8 @@ export const DesktopComposer = memo(function DesktopComposer({
     {draftStorageError ? <p role="status">浏览器无法保存本页草稿。刷新前请复制已输入的文字。</p> : null}
     {mention.menu ? <div className="composer-suggest-anchor">{mention.menu}</div> : null}
     <PromptInput
-      className={`composer ${shellExpanded ? "is-expanded" : "is-compact"} ${input.trim() || replyTarget ? "has-text" : "empty"}${resting ? " is-resting" : ""}${fileDragActive ? " is-drop-target" : ""}`}
+      ref={cardRef}
+      className={`composer ${shellExpanded ? "is-expanded" : "is-compact"} ${input.trim() || replyTarget ? "has-text" : "empty"}${resting ? " is-resting" : ""}${fileDragActive ? " is-drop-target" : ""}${referenceDragActive ? " is-reference-target" : ""}`}
       multiple
       attachmentKey={draftKey}
       maxFileSize={MAX_ATTACHMENT_MB * 1024 * 1024}
@@ -307,6 +320,7 @@ export const DesktopComposer = memo(function DesktopComposer({
       onBlur={onComposerBlur}
     >
       <WindowFileDrop enabled={chatReady} onActiveChange={setFileDragActive} />
+      <ComposerReferences draftKey={draftKey} />
       {replyTarget ? <ComposerReply author={replyTarget.author} preview={replyTarget.preview} onCancel={onCancelReply} /> : null}
       {notice ? <p className="composer-queue-refused" role="status" title={notice.title}>{notice.text}</p> : null}
       {fileDragActive ? <ComposerDropScrim /> : null}

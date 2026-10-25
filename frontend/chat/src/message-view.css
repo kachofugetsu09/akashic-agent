@@ -2399,3 +2399,86 @@ button.tool-step-summary:active {
 .selection-quote.is-below { translate: -50% 0; }
 .selection-quote:focus-visible { outline: 2px solid var(--ak-rule-focus); outline-offset: 2px; }
 @keyframes selection-quote-in { from { opacity: 0; } }
+
+/* 会话引用条：一行 chip，与回复引用同一套间距语言，但可以并排多个。 */
+.composer-references {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  padding: 6px 10px 0;
+}
+
+.composer-reference {
+  display: inline-flex;
+  max-width: 100%;
+  min-width: 0;
+  align-items: center;
+  gap: 6px;
+  padding: 3px 4px 3px 8px;
+  border-radius: 8px;
+  color: var(--ak-color-on-action-container);
+  background: color-mix(in oklab, var(--ak-color-action-container) 42%, var(--md-sys-color-surface-container-high));
+  font-size: var(--md-sys-typescale-label-medium-size);
+}
+
+.composer-reference > svg {
+  flex: none;
+  color: var(--ak-color-action-primary);
+}
+
+.composer-reference__title {
+  overflow: hidden;
+  min-width: 0;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.composer-reference > button {
+  display: inline-flex;
+  width: 22px;
+  height: 22px;
+  flex: none;
+  align-items: center;
+  justify-content: center;
+  border: 0;
+  border-radius: 6px;
+  color: inherit;
+  background: transparent;
+  cursor: pointer;
+}
+
+.composer-reference > button:hover {
+  background: color-mix(in oklab, currentColor 12%, transparent);
+}
+
+.composer-reference__notice {
+  padding: 4px 12px 0;
+  color: var(--md-sys-color-on-surface-variant);
+  font-size: var(--md-sys-typescale-body-small-size);
+}
+
+/* 拖会话进来时整张卡片描边；文件拖放用的是另一层遮罩，两者互不覆盖。 */
+.composer.is-reference-target {
+  outline: 2px solid var(--ak-color-action-primary);
+  outline-offset: 2px;
+}
+
+/* 消息气泡里的会话引用行：只说明「这条消息引用了谁」，不展开正文。 */
+.message-session-reference {
+  display: inline-flex;
+  max-width: 100%;
+  align-items: center;
+  gap: 6px;
+  margin: 2px 0;
+  padding: 3px 10px;
+  border-radius: 8px;
+  color: var(--md-sys-color-on-surface-variant);
+  background: var(--md-sys-color-surface-container-high);
+  font-size: var(--md-sys-typescale-label-medium-size);
+}
+
+.message-session-reference > span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}

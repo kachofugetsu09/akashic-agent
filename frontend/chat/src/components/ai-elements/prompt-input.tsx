@@ -23,6 +23,7 @@ import type {
   HTMLAttributes,
   KeyboardEventHandler,
   ReactNode,
+  Ref,
 } from "react";
 import {
   Children,
@@ -83,6 +84,8 @@ export type PromptInputProps = Omit<
     message: PromptInputMessage,
     event: FormEvent<HTMLFormElement>
   ) => void | Promise<void | string | undefined>;
+  /** 表单根节点；宿主用它挂会话引用的拖放接收区。 */
+  ref?: Ref<HTMLFormElement>;
 };
 
 /** 管理当前表单的附件，发送成功后才释放对应的 Blob URL。 */
@@ -95,6 +98,7 @@ export const PromptInput = ({
   onRejectFiles,
   onSubmit,
   children,
+  ref,
   ...props
 }: PromptInputProps) => {
   // 1. 当前表单拥有附件；提交中只隐藏本次发送持有的文件。
@@ -303,7 +307,11 @@ export const PromptInput = ({
       <form
         className={cn("w-full", className)}
         onSubmit={handleSubmit}
-        ref={formRef}
+        ref={(node) => {
+          formRef.current = node;
+          if (typeof ref === "function") ref(node);
+          else if (ref) ref.current = node;
+        }}
         {...props}
       >
         <InputGroup className="overflow-hidden">{children}</InputGroup>

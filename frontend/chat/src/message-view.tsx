@@ -20,7 +20,7 @@ import {
   DialogContent,
   DialogTitle,
 } from "@/components/ui/dialog";
-import { Brain, Check, ChevronDown, ChevronLeft, ChevronRight, Copy, Download, ExternalLink, Gauge, Wrench, X, ZoomIn, ZoomOut } from "lucide-react";
+import { Brain, Check, ChevronDown, ChevronLeft, ChevronRight, Copy, Download, ExternalLink, Gauge, MessagesSquare, Wrench, X, ZoomIn, ZoomOut } from "lucide-react";
 import { useStickToBottomContext } from "use-stick-to-bottom";
 import { MarqueeText } from "./marquee-text";
 import {
@@ -872,6 +872,13 @@ function TimelinePartView({ part, toolResult = false, userInput = false, attachm
       return <MessageReplyReference author={source?.author ?? "原消息"}
         preview={source ? timelineReply(source).preview : ""} unavailable={!source} canLoad={canLoadReferences}
         onNavigate={() => onNavigate(part.value)} />;
+    }
+    case "session.reference": {
+      const sessions = part.value.sessions;
+      return <div className="message-session-reference" aria-label="引用了会话">
+        <MessagesSquare size={15} aria-hidden="true" />
+        <span>引用 {sessions.length} 个会话：{sessions.map((item) => item.title || item.session_id).join("、")}</span>
+      </div>;
     }
     case "tool_call": return <details className="timeline-details timeline-tool-call">
       <summary>工具调用 · {part.name}</summary>
