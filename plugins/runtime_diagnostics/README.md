@@ -40,6 +40,11 @@
 | `threads[]` | `name`、`native_id`、`loop`（事件循环所在线程，排在最前）、`cpu_ms`（窗口内 CPU 毫秒，Linux 以外为空）、`hot`（占满停顿期一半以上 CPU 的那个线程） |
 | `threads[].frames` | 由内向外最多 20 层 `文件:行 in 函数`，`frames_omitted` 为截掉的外层数；每次最多 48 个线程，`threads_omitted` 为其余数量 |
 
+同一看门狗线程在健康时每秒读一次 RSS（`/proc/self/statm`）。一秒内增长达到 256MB 时立即抓一次栈，
+写入 `kind=growth` 记录（`rss_mb`、`delta_mb`、`threshold_mb`、`captures`，与停顿共用最近 8 条），
+并输出一行 WARNING，带循环线程与占用 CPU 线程由内向外最多 8 层项目代码位置。用于定位整段解码历史
+这类运行期临时大分配；同期并发操作只帮助定位，不代表独占内存。
+
 循环线程 `cpu_ms` 接近 0 表示它在等待系统调用或锁；`hot` 线程与循环线程不同则说明是
 另一个线程占着 GIL。看门狗线程不出现在结果里。停顿未结束前进程退出则不留记录。
 
