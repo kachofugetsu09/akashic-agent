@@ -13,7 +13,7 @@ from plugins.ui.contract import hidden_part, part_display_key
 from plugins.ledger.contract import MessageSnapshot
 from plugins.models.contract import ContextModel, ModelRequest, RequestSource
 from plugins.ledger.contract import (
-    Message,
+    CallRef, Control, Message, Output, ToolCall, ToolResult,
 )
 from plugins.context.contract import (
     output_reserve,
@@ -31,7 +31,7 @@ from .api import (
     check_notice,
     decode_material,
     settled_prefixes,
-    summary_range,
+    summary_indexes,
 )
 from .materials import ContextMaterials
 
@@ -62,8 +62,8 @@ class Config(BaseModel):
         return value
 
 
-def _summary_cutoff(snapshot: Sequence[Message], summary: Summary | None) -> int:
-    """摘要代替已选择窗口的旧区间，窗口外更早历史不进入请求。"""
+def _summary_ids(snapshot: Sequence[Message], summary: Summary | None) -> frozenset[str]:
+    """摘要只代替声明覆盖的消息；空洞保持原文，并校验工具配对不被切开。"""
     # 1. 在快照输入边界拒绝混合 Session、重排与重复身份。
     if snapshot and type(snapshot) is not MessageSnapshot:
         session = snapshot[0].session_id
@@ -74,13 +74,26 @@ def _summary_cutoff(snapshot: Sequence[Message], summary: Summary | None) -> int
         if len({item.message_id for item in snapshot}) != len(snapshot):
             raise ValueError("Context 快照消息身份重复")
     if summary is None:
-        return -1
-    covered = summary_range(snapshot, summary.source_message_ids)
-    # 2. 不让摘要切开 provider 必须成对恢复的工具请求与结果。
-    ends = settled_prefixes(snapshot[:covered.stop])
-    if covered.stop not in ends or covered.start and covered.start not in ends:
+        return frozenset()
+    _ = summary_indexes(snapshot, summary.source_message_ids)
+    covered = frozenset(summary.source_message_ids)
+    # 2. 覆盖与原文两边都必须保留完整工具配对；明确 abandon 的迟到结果沿原规则处理。
+    pending: dict[CallRef, Message] = {}
+    for message in snapshot:
+        body = message.body
+        if isinstance(body, Output):
+            pending.update((CallRef(message.message_id, pos), message) for pos, part in enumerate(body.parts)
+                           if isinstance(part, ToolCall))
+        elif isinstance(body, ToolResult):
+            caller = pending.pop(body.call_ref, None)
+            if caller is not None and ((caller.message_id in covered) != (message.message_id in covered)):
+                raise ValueError("摘要不能切开工具调用与结果")
+        elif isinstance(body, Control) and body.action == "abandon":
+            pending = {ref: call for ref, call in pending.items()
+                       if call.source != message.source or call.seq > body.through_seq}
+    if any(call.message_id in covered for call in pending.values()):
         raise ValueError("摘要不能覆盖尚未结算的工具调用")
-    return snapshot[covered.stop - 1].seq
+    return covered
 
 
 # 上下文构成的逐来源拆分：System Prompt 按贡献材料、本轮材料按提醒块、工具定义按工具；历史行由投影拆好。
@@ -101,7 +114,7 @@ def _sources(materials: Materials, summary: tuple[Mapping[str, Any], ...],
 class ContextBuilder:
     check_summary = staticmethod(check_summary)
     check_notice = staticmethod(check_notice)
-    summary_range = staticmethod(summary_range)
+    summary_indexes = staticmethod(summary_indexes)
     settled_prefixes = staticmethod(settled_prefixes)
 
     @staticmethod
@@ -141,7 +154,7 @@ class ContextBuilder:
         # 存储已证明 Session、身份和顺序；普通调用输入仍在本边界固定并校验。
         if type(snapshot) is not MessageSnapshot:
             snapshot = tuple(snapshot)
-        cutoff = _summary_cutoff(snapshot, decoded_materials.summary)
+        covered = _summary_ids(snapshot, decoded_materials.summary)
         reminder = self._reminder_content(decoded_materials)
         if reminder is None:
             current_reminder_input_id = None
@@ -169,7 +182,7 @@ class ContextBuilder:
             )
         else:
             rendered = model.render(
-                snapshot, after_seq=cutoff,
+                snapshot, after_seq=-1, covered_message_ids=covered,
                 summary_reference=None if decoded_materials.summary is None else decoded_materials.summary.reference,
                 current_reminder=replay_reminder,
                 current_reminder_input_id=current_reminder_input_id,

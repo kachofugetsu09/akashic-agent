@@ -34,10 +34,10 @@ class StoredSummary(Protocol):
 
 
 class PartitionedSummary(StoredSummary, Protocol):
-    """compaction v2 的结构化分区；不依赖 compaction 的 class identity。"""
+    """compaction v2/v3 的结构化分区；不依赖 compaction 的 class identity。"""
 
     @property
-    def version(self) -> Literal[2]: ...
+    def version(self) -> Literal[2, 3]: ...
 
     @property
     def summary_message_ids(self) -> tuple[str, ...]: ...

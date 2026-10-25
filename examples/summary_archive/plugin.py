@@ -1,4 +1,4 @@
-"""独立 JSON 摘要归档示例；只读首代 v2 记录，不取得账本或模型权限。"""
+"""独立 JSON 摘要归档示例；只读首代 v2/v3 记录，不取得账本或模型权限。"""
 from __future__ import annotations
 
 from collections.abc import Mapping
@@ -18,7 +18,7 @@ inject = ()
 
 class Summary(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True, strict=True)
-    version: Literal[2]
+    version: Literal[2, 3]
     reference: str = Field(min_length=1)
     session_id: str = Field(min_length=1)
     generation: Literal[1]
@@ -55,10 +55,16 @@ class Archive:
     def head(self, session_id: str) -> Summary | None:
         return self._sessions.get(session_id)
 
-    def resolve(self, metadata: Mapping[str, object], *, session_id: str) -> Summary:
+    def reference(self, metadata: Mapping[str, object], *, session_id: str) -> str:
         reference = Reference.model_validate(dict(metadata))
+        if reference.session_id != session_id:
+            raise ValueError("摘要 binding 不属于当前 Session")
+        return reference.record_ref
+
+    def resolve(self, metadata: Mapping[str, object], *, session_id: str) -> Summary:
+        reference = self.reference(metadata, session_id=session_id)
         row = self.head(session_id)
-        if row is None or reference.session_id != session_id or reference.record_ref != row.reference:
+        if row is None or reference != row.reference:
             raise ValueError("摘要 binding 没有对应 Session 记录")
         return row
 

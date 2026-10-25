@@ -179,7 +179,7 @@ async def run(folder: Path, case: str, *, second_provider: bool = False) -> dict
                     head, lookup, log.reader("test:room"), store, ("conversation",),
                     root.context.require(TURN_PROJECTION), compaction=root.context.require(COMPACTION_READER),
                     post_commit_effect=root.context.require(CONTENT).legacy_post_commit_effect,
-                    summary_range=root.context.require(CONTEXT).summary_range,
+                    summary_indexes=root.context.require(CONTEXT).summary_indexes,
                 )
                 return {"case": case, "http_requests": len(requests), "summaries": len(records), "result": "passed"}
             with sqlite3.connect(folder / "workspace/sessions.db") as connection:
@@ -248,7 +248,7 @@ async def run(folder: Path, case: str, *, second_provider: bool = False) -> dict
                             record, lookup, log.reader("test:room"), store, ("conversation",),
                             root.context.require(TURN_PROJECTION), compaction=root.context.require(COMPACTION_READER),
                             post_commit_effect=root.context.require(CONTENT).legacy_post_commit_effect,
-                            summary_range=root.context.require(CONTEXT).summary_range,
+                            summary_indexes=root.context.require(CONTEXT).summary_indexes,
                         )
                         return record, {message.message_id for group in groups or () for message in group}
                     record, learned = await learning()

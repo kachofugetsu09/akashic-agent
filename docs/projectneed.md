@@ -392,10 +392,13 @@ Turn；持久 Turn 不拆分。当前工作 Input 逐字保留，未闭合工具
 但不作为 provider 输入、replay 或摘要资料。tool batch 完成后下一次请求重新检查容量。
 理由见 [0095](decisions/0095-context-compaction-uses-settled-batches.md)。
 
-首次 compact 从日志起点记录累计覆盖，以安全批次选近期原文。每代仍只把上一摘要和
-一个可容纳的连续近期窗口送入摘要模型；更早退出请求的资料写入 omitted 分区，不冒充
-真实摘要输入。当前工作不可跳过，SessionDB 原消息完整保留。已有 generation 后只
-处理上次覆盖末尾到当前的增量；真实模型输入与省略资料沿 0068 的分区合同保存。
+Compaction 按消息身份累计覆盖本轮可见的已结算批次，不要求覆盖整个日志连续前缀。
+其他来源未完成而隐藏的消息不进入摘要，也不阻挡它之后的已结算批次；后来变为可见时，
+未覆盖的旧消息恢复原文并保留后续摘要与学习资格。每代仍只把上一摘要和未覆盖候选中
+一个可容纳的近期窗口送入摘要模型；更早退出请求的候选写入 omitted 分区，不冒充
+真实摘要输入。隐藏消息不属于 omitted。当前工作不可跳过，SessionDB 原消息完整保留。
+已有 generation 后处理所有尚未覆盖的可见消息；理由与旧记录兼容见
+[0134](decisions/0134-compaction-covers-message-identities.md)。
 
 持久 checkpoint 写入 `session_compactions`，保存 summary、parent lineage、source_ref、
 retained tail、usage、失效字段和模型容量；`sessions.last_consolidated` 只表示当前

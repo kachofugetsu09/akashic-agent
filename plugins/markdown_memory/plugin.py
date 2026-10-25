@@ -527,7 +527,7 @@ async def _unapplied_groups(
     store: MarkdownProfileStore, sources: tuple[str, ...], projection: TurnProjection,
     *, compaction: CompactionReader,
     post_commit_effect: Callable[[Message], str | None],
-    summary_range: Callable[[tuple[Message, ...], tuple[str, ...]], range],
+    summary_indexes: Callable[[tuple[Message, ...], tuple[str, ...]], tuple[int, ...]],
 ) -> tuple[tuple[Message, ...], ...] | None:
     """只取未应用 generation 真正送入摘要模型的完整组原文。"""
     applied_reference: str | None = None
@@ -555,7 +555,7 @@ async def _unapplied_groups(
             {"record_ref": current.parent, "session_id": record.session_id},
             session_id=reader.session_id,
         )
-        if current.version == 2:
+        if current.version in (2, 3):
             batches.append(cast(PartitionedSummary, current).summary_message_ids)
         else:
             parent_size = 0 if parent is None else len(parent.source_message_ids)
@@ -569,10 +569,10 @@ async def _unapplied_groups(
 
     # 归档 lookup 依赖当前 task 的 lease；只把独立 reader 的解码移出事件循环。
     snapshot = await run_file_io(reader.snapshot)
-    covered = summary_range(snapshot, record.source_message_ids)
+    covered = summary_indexes(snapshot, record.source_message_ids)
     applied_ids = set() if applied_reference is None else set(current.source_message_ids)
     # 历史 suppress 是整个工作单元的资格，不能只删用户行后继续学习其回答。
-    by_id = {message.message_id: message for message in snapshot[:covered.stop]}
+    by_id = {snapshot[index].message_id: snapshot[index] for index in covered}
     excluded: set[str] = set()
     deferred: set[str] = set()
     for source in sources:
@@ -594,7 +594,7 @@ async def _unapplied_groups(
         parent = None if current.parent is None else lookup.resolve(
             {"record_ref": current.parent, "session_id": record.session_id}, session_id=reader.session_id,
         )
-        older = (cast(PartitionedSummary, current).summary_message_ids if current.version == 2 else
+        older = (cast(PartitionedSummary, current).summary_message_ids if current.version in (2, 3) else
                  current.source_message_ids[0 if parent is None else len(parent.source_message_ids):])
         selected_ids.update(deferred.intersection(older))
         deferred.difference_update(older)
@@ -602,10 +602,10 @@ async def _unapplied_groups(
             break
         current = parent
     cuts = (
-        covered.start,
-        *(index for index in compaction.window_starts(snapshot[:covered.stop], projection)
-          if index > covered.start),
-        covered.stop,
+        covered[0],
+        *(index for index in compaction.window_starts(snapshot[:covered[-1] + 1], projection)
+          if index > covered[0]),
+        covered[-1] + 1,
     )
     groups = tuple(snapshot[left:right] for left, right in zip(cuts, cuts[1:]))
     selected = tuple(tuple(message for message in group
@@ -613,7 +613,7 @@ async def _unapplied_groups(
                            and message.message_id not in excluded)
                      for group in groups)
     # 批次切点来自完整前缀；学习资格与迟到结果沿原 source/放弃边界过滤。
-    return compaction.summary_groups(selected, snapshot[:covered.stop])
+    return compaction.summary_groups(selected, snapshot[:covered[-1] + 1])
 
 
 async def project(
@@ -665,7 +665,7 @@ async def project(
         groups = await _unapplied_groups(
             record, summaries, reader, store, sources, projection,
             compaction=compaction, post_commit_effect=post_commit_effect,
-            summary_range=context.summary_range,
+            summary_indexes=context.summary_indexes,
         )
         if not groups:
             return

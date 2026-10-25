@@ -186,10 +186,10 @@ async def run_reply(
                 result = {key: value for key, value in result.items() if key != "summary"}
             if render_content is None:
                 summary = cast(SummaryData | None, result.get("summary"))
-                start = 0 if summary is None else context.summary_range(messages, cast(tuple[str, ...], summary["source_message_ids"])).stop
+                covered = set() if summary is None else set(cast(tuple[str, ...], summary["source_message_ids"]))
                 refs = reader.attachments_for(tuple(
-                    message.message_id for index, message in enumerate(messages)
-                    if index >= start or message.message_id in keep_input_ids
+                    message.message_id for message in messages
+                    if message.message_id not in covered or message.message_id in keep_input_ids
                 ))
                 if refs:
                     artifacts = await model_content.load_artifacts(
@@ -210,13 +210,11 @@ async def run_reply(
             model: BoundChatModel, projection: ContextModel, *, source: str, force: bool,
             on_status: ReductionStatus | None = None, summary_limit: int | None = None,
         ) -> SummaryData | None:
-            # 摘要按请求视图估算，当前输入等尾部原文保留；其他来源有未完成轮次时只摘要它之前的前缀，
-            # 该前缀在真实日志和请求视图里相同，摘要范围两边都连续。
+            # 未完成的其他来源仍不进入摘要；覆盖按真实消息身份记录，不再阻挡后续已结算批次。
             hidden = hidden_indexes(snapshot, source)
-            if hidden:
-                first = min(hidden)
-                summary_limit = first if summary_limit is None else min(summary_limit, first)
-                snapshot = tuple(visible_messages(snapshot, source))
+            if summary_limit is not None:
+                summary_limit -= sum(index < summary_limit for index in hidden)
+            snapshot = tuple(message for index, message in enumerate(snapshot) if index not in hidden)
             result = await material_view.reduce(snapshot, prepared, request, model, projection,
                                                 source=source, force=force, on_status=on_status,
                                                 summary_limit=summary_limit)
@@ -276,7 +274,7 @@ class RequestHistory:
         self._own = own
         self.check_summary = context.check_summary
         self.check_notice = context.check_notice
-        self.summary_range = context.summary_range
+        self.summary_indexes = context.summary_indexes
         self.settled_prefixes = context.settled_prefixes
         self.reminder_content = context.reminder_content
 

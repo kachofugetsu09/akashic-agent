@@ -6,6 +6,7 @@
 
 | ID | 状态 | 主题 | 关联条款 |
 |---|---|---|---|
+| [0134](0134-compaction-covers-message-identities.md) | accepted / implemented for review | 摘要按消息身份覆盖，开放来源不阻挡后续批次 | CTX-007、MEM-011、SES-005 |
 | [0133](0133-agent-runs-as-the-host-user.md) | proposed / implemented for review | Agent 的执行与网络等同宿主用户本人 | SEC、PLG |
 | [0132](0132-computer-human-input-wins.md) | proposed / implemented for review | Computer 不再接管：谁在动谁用 | PLG-017、WEBUI-008 |
 | [0131](0131-context-composition.md) | proposed / implemented for review | 上下文构成按装配来源记账 | WEBUI-008 |
