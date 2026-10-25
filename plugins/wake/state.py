@@ -77,6 +77,9 @@ class WakeState:
 
     def __init__(self, path: Path) -> None:
         self.path = path
+        # 每个读写入口都会先调 initialize；结构与 integrity_check 只在首次成功时做一次，
+        # 否则 10MB 的库每次读都要整库扫描（约 70ms），一轮职责检查要扫十来遍。
+        self._initialized = False
 
     def read_only(self) -> WakeStateReader:
         """Return the narrow row reader used by non-owning observers."""
@@ -85,6 +88,8 @@ class WakeState:
     def initialize(self) -> None:
         """Create and validate the singleton admission ledger."""
 
+        if self._initialized:
+            return
         self.path.parent.mkdir(parents=True, exist_ok=True)
         with closing(sqlite3.connect(self.path)) as connection, connection:
             connection.execute("PRAGMA journal_mode = WAL")
@@ -114,6 +119,7 @@ class WakeState:
             )
             if connection.execute("PRAGMA integrity_check").fetchone()[0] != "ok":
                 raise RuntimeError("Wake state SQLite integrity check failed")
+        self._initialized = True
 
     @staticmethod
     def _validate_tables(
