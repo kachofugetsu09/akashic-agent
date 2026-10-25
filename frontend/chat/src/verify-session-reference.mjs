@@ -120,7 +120,9 @@ try {
     const form = document.getElementById('drop');
     form.dispatchEvent(new DragEvent('dragover', { bubbles: true, cancelable: true, dataTransfer: dt }));
   });
-  assert.ok(await page.locator('form#drop.is-reference-target').count() === 1, 'dragover 应点亮投放态');
+  // dragover 之后 React 状态更新是异步的，直接断言会偶发失败；等它真的点亮。
+  await page.waitForFunction(() => document.getElementById('drop')?.classList.contains('is-reference-target'));
+  results.push('dragover 点亮投放态: ok');
   // 在被拖元素上派发 dragend：只有 window 上的监听能收到
   await page.evaluate(() => {
     const row = document.createElement('div');

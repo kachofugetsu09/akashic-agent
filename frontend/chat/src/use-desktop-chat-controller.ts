@@ -954,6 +954,18 @@ export function useDesktopChatController() {
         mediaType: file.mediaType || "application/octet-stream", url: file.url || "", sizeBytes: file.sizeBytes,
       })),
       blocks: [], createdAt: new Date().toISOString(), canonical: false, delivery: "sending",
+      // 只发引用时没有正文也没有附件；把引用摘要带上，本地先显示「引用 N 个会话」，
+      // 否则等待服务端确认期间会是一个空气泡（重试时尤其久）。
+      references: (extraParts ?? [])
+        .filter((part) => part.kind === "session.reference")
+        .flatMap((part) => {
+          const sessions = (part.value as { sessions?: { session_id?: unknown; title?: unknown }[] } | null)?.sessions;
+          return Array.isArray(sessions)
+            ? sessions.flatMap((row) => typeof row?.session_id === "string" && row.session_id
+              ? [{ sessionId: row.session_id, title: typeof row.title === "string" ? row.title : "" }]
+              : [])
+            : [];
+        }),
     }]);
     try {
       const sessionId = await ensureSession();

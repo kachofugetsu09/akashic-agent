@@ -232,9 +232,17 @@ export function ChatMessageView({
       : null;
   if (message.role === "user") {
     // 附件在气泡上方、气泡外（Desktop 同款）：气泡只包文字，只发附件时不留一个空气泡。
+    // 会话引用同理：只发引用时也要有一行说明，否则等待服务端确认期间是空气泡。
+    const references = message.references?.length
+      ? <div className="message-session-reference" aria-label="引用了会话">
+          <MessagesSquare size={15} aria-hidden="true" />
+          <span>引用 {message.references.length} 个会话：{message.references.map((item) => item.title || item.sessionId).join("、")}</span>
+        </div>
+      : null;
     return (
       <Message from="user" className="message-row user-row">
         {attachments}
+        {references}
         {leadingContent || message.content ? <MessageContent className="user-bubble">
           {leadingContent}
           {message.content ? (

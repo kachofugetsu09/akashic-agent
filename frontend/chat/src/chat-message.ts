@@ -46,6 +46,8 @@ export interface ChatMessage {
   /** 本地发送中的消息：sending 等待服务端确认，retrying 正在换连接重发；确认后移除。 */
   delivery?: "sending" | "retrying";
   controlTurnId?: string;
+  /** 本地乐观消息带着的会话引用摘要；服务端时间线回来后以 part 为准。 */
+  references?: readonly { sessionId: string; title: string }[];
   reply?: {
     messageId: string;
     role: ChatRole;
