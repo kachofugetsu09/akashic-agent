@@ -351,7 +351,8 @@ export const DesktopComposer = memo(function DesktopComposer({
         </PromptInputTools>
         <PromptInputTools className="composer__trail">
           <ComposerAttachmentButton />
-          <ComposerSubmit input={input} status={status} stopPending={stopPending} steerable={steerable} onStop={onStop} disabled={!canSend} />
+          <ComposerSubmit input={input} status={status} stopPending={stopPending} steerable={steerable}
+            hasReferences={references.length > 0} onStop={onStop} disabled={!canSend} />
         </PromptInputTools>
       </PromptInputFooter>
     </PromptInput>
@@ -568,8 +569,9 @@ function WindowFileDrop({ enabled, onActiveChange }: { enabled: boolean; onActiv
 }
 
 // 生成中输入框有文字时按钮是插话，空着才是停止（Esc 始终停止）。
-function ComposerSubmit({ input, status, stopPending, steerable, onStop, disabled }: {
-  input: string; status: ChatStatus; stopPending: boolean; steerable: boolean; onStop: () => void; disabled: boolean;
+function ComposerSubmit({ input, status, stopPending, steerable, hasReferences, onStop, disabled }: {
+  input: string; status: ChatStatus; stopPending: boolean; steerable: boolean; hasReferences: boolean;
+  onStop: () => void; disabled: boolean;
 }) {
   const attachments = usePromptInputAttachments();
   const generating = isGeneratingChatStatus(status);
@@ -589,6 +591,6 @@ function ComposerSubmit({ input, status, stopPending, steerable, onStop, disable
       event.preventDefault();
       if (!stopping) onStop();
     } : undefined}
-    disabled={!stopMode && (stopPending || disabled || (!input.trim() && attachments.files.length === 0))}
+    disabled={!stopMode && (stopPending || disabled || (!input.trim() && attachments.files.length === 0 && !hasReferences))}
   />;
 }

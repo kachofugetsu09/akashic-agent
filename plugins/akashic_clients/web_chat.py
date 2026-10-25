@@ -1104,8 +1104,15 @@ class WebChatChannel:
         except ValueError as error:
             await self._send_error(websocket, request_id, str(error))
             return session_key
-        if not text.strip() and not media and retry_of is None:
-            await self._send_error(websocket, request_id, "text 和 media 不能同时为空")
+        parts: tuple[tuple[str, object], ...] = ()
+        if "parts" in payload:
+            try:
+                parts = read_input_parts(payload["parts"])
+            except InputPartRejected as error:
+                await self._send_error(websocket, request_id, str(error))
+                return session_key
+        if not text.strip() and not media and not parts and retry_of is None:
+            await self._send_error(websocket, request_id, "text、media 和 parts 不能同时为空")
             return session_key
         reply_to_message_id = payload.get("reply_to_message_id")
         metadata: dict[str, object] = {"client_request_id": request_id}
@@ -1126,14 +1133,8 @@ class WebChatChannel:
         elif media:
             await self._send_error(websocket, request_id, "Web artifact store 尚未绑定")
             return session_key
-        if "parts" in payload:
-            try:
-                parts = read_input_parts(payload["parts"])
-            except InputPartRejected as error:
-                await self._send_error(websocket, request_id, str(error))
-                return session_key
-            if parts:
-                metadata["input_parts"] = [{"kind": kind, "value": value} for kind, value in parts]
+        if parts:
+            metadata["input_parts"] = [{"kind": kind, "value": value} for kind, value in parts]
         if reply_to_message_id is not None:
             if not isinstance(reply_to_message_id, str) or not reply_to_message_id.strip():
                 await self._send_error(

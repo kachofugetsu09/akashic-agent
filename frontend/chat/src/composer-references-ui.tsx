@@ -1,5 +1,5 @@
 import { MessagesSquare, X } from "lucide-react";
-import { useEffect, useRef, useState, type RefObject } from "react";
+import { useEffect, useState, type RefObject } from "react";
 import { addReference, MAX_REFERENCES, readSessionDrag, removeReference, useComposerReferences } from "./composer-references";
 
 /**
@@ -54,8 +54,6 @@ export function ComposerReferences({ draftKey }: { draftKey: string }) {
  */
 export function useReferenceDrop(target: RefObject<HTMLElement | null>, draftKey: string, enabled: boolean) {
   const [active, setActive] = useState(false);
-  const draftRef = useRef(draftKey);
-  draftRef.current = draftKey;
   useEffect(() => {
     if (!enabled) { setActive(false); return; }
     const element = target.current;
@@ -79,7 +77,7 @@ export function useReferenceDrop(target: RefObject<HTMLElement | null>, draftKey
       const reference = readSessionDrag(event.dataTransfer);
       if (!reference) return;
       event.preventDefault();
-      if (!addReference(draftRef.current, reference)) {
+      if (!addReference(draftKey, reference)) {
         window.dispatchEvent(new Event("akashic:reference-rejected"));
       }
     };
@@ -94,6 +92,6 @@ export function useReferenceDrop(target: RefObject<HTMLElement | null>, draftKey
       element.removeEventListener("drop", onDrop);
       element.removeEventListener("dragend", onEnd);
     };
-  }, [target, enabled]);
+  }, [target, draftKey, enabled]);
   return active;
 }
