@@ -131,7 +131,7 @@ class DeliveryRecords:
         row = self._state.read(self._cursor_key(session_id))
         through = -1 if row is None else Cursor.model_validate(dict(row.value)).through_seq
         self._cursor_cache[session_id] = through
-        self._durable_cursor[session_id] = through
+        self._note_durable(session_id, through)
         return through
 
     def read(self, message_id: str, sink: str) -> tuple[OwnerRecord, Delivery]:
@@ -254,7 +254,7 @@ class DeliveryRecords:
         selections = self._state.transact(commit)
         if committed_through:
             self._cursor_cache[reader.session_id] = committed_through[-1]
-            self._durable_cursor[reader.session_id] = committed_through[-1]
+            self._note_durable(reader.session_id, committed_through[-1])
         return selections
 
     # 只有 complete Output 可能被选路；其余消息在不拥有选路权时无需持久化消费事实。
@@ -291,7 +291,11 @@ class DeliveryRecords:
             _ = tx.save(key, {"through_seq": through}, expected_version=None if persisted is None else persisted.version)
             return through
 
-        self._durable_cursor[session_id] = self._state.transact(commit)
+        self._note_durable(session_id, self._state.transact(commit))
+
+    # 耐久值只增不减：多个文件 I/O 线程在事务外交错更新时，旧值不能覆盖新值。
+    def _note_durable(self, session_id: str, through: int) -> None:
+        self._durable_cursor[session_id] = max(through, self._durable_cursor.get(session_id, -1))
 
     def _prepare(self, tx: OwnerTransaction, message: Message, sinks: tuple[Sink, ...], *, passive: bool = False) -> Selection:
         """同一消息的首次选路不可变；重复策略计算只采用原集合。"""
