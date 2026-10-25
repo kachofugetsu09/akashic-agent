@@ -47,12 +47,16 @@ CURSOR_SAVE_SECONDS = 60.0
 
 
 class _SavedCursors(BaseModel):
-    """随已发布快照保存的投影续读点；只在同一绑定、同一前缀 revision、同一消费进度前缀下复用。"""
+    """随已发布快照保存的投影续读点；只在同一学习规则、同一前缀 revision、同一消费进度前缀下复用。
+
+    learning binding 的身份含插件 generation，每次部署都会变；投影只取决于规则本身，
+    所以落盘续读点按规则匹配，内存续读点仍按 binding。
+    """
 
     model_config = ConfigDict(extra="forbid", frozen=True, strict=True)
 
-    version: Literal[1] = 1
-    learning_binding: str
+    version: Literal[2] = 2
+    learning_rule: str
     prefix_revision: int
     applied: tuple[int, str | None]
     skipped: tuple[int, str | None]
@@ -83,6 +87,7 @@ class MessageConsumer:
         self._cursors: tuple[str, int | None, dict[str, SessionCursor]] = ("", None, {})
         self._cursor_path = path.with_name(path.name + ".cursors.json")
         self._cursor_file_read = False
+        self._cursor_rule = ""
         self._cursors_saved_at: float | None = None
         self._lease = WriterLease(path)
         try:
@@ -264,7 +269,8 @@ class MessageConsumer:
             # 投影只读续读点之后的尾部；与图发布共用排空后才取消的后台执行方式。
             # revision 先于投影读取并随续读点保存：投影期间的前缀改写会让下次检查失配。
             revision = await run_memory_job(catalog.prefix_revision)
-            cursors = await run_memory_job(partial(self._resume_cursors, learning_binding, revision))
+            rule_key = rule.model_dump_json()
+            cursors = await run_memory_job(partial(self._resume_cursors, learning_binding, rule_key, revision))
             samples, advanced = await run_memory_job(partial(
                 learning.samples_since, catalog, rule, heads=heads, cursors=cursors, keep=fresh,
             ))
@@ -313,11 +319,12 @@ class MessageConsumer:
             await run_memory_job(self.flush)
             # 4. 整批处理并发布后才前进续读点；失败或取消时下次仍从旧续读点重读。
             self._cursors = (learning_binding, revision, advanced)
+            self._cursor_rule = rule_key
             await run_memory_job(self._save_cursors)
             return count
 
-    # 内存续读点优先；新实例读一次落盘续读点。绑定、revision 或消费进度对不上都从头投影。
-    def _resume_cursors(self, binding: str, revision: int | None) -> Mapping[str, SessionCursor]:
+    # 内存续读点按 binding 优先；新实例读一次落盘续读点，按规则匹配。规则、revision 或消费进度对不上都从头投影。
+    def _resume_cursors(self, binding: str, rule_key: str, revision: int | None) -> Mapping[str, SessionCursor]:
         from ..projection import SessionCursor
 
         known, known_revision, cursors = self._cursors
@@ -333,7 +340,7 @@ class MessageConsumer:
         except (OSError, ValueError):
             # 缺失、损坏或旧格式都只是没有续读点；ValidationError 是 ValueError 子类。
             return {}
-        if (saved.learning_binding != binding or saved.prefix_revision != revision
+        if (saved.learning_rule != rule_key or saved.prefix_revision != revision
                 or not _progress_prefix(saved, self._published)):
             return {}
         return {session: SessionCursor(head, boundaries)
@@ -342,7 +349,7 @@ class MessageConsumer:
     # 只保存已发布进度对应的续读点；重建候选不落盘，节流写入后原子替换。
     def _save_cursors(self) -> None:
         binding, revision, cursors = self._cursors
-        if not binding or revision is None or self._closed or self._deferred_publish:
+        if not binding or not self._cursor_rule or revision is None or self._closed or self._deferred_publish:
             return
         # 续读点越过的闭段必须都已发布；否则崩溃后已发布进度回退，越过的样本永不重学。
         if self.state != self._published:
@@ -352,7 +359,7 @@ class MessageConsumer:
             return
         published = self._published
         saved = _SavedCursors(
-            learning_binding=binding, prefix_revision=revision,
+            learning_rule=self._cursor_rule, prefix_revision=revision,
             applied=(len(published.applied), published.applied[-1].ending[1] if published.applied else None),
             skipped=(len(published.skipped), published.skipped[-1].ending[1] if published.skipped else None),
             cursors={session: (cursor.head, dict(cursor.boundaries)) for session, cursor in cursors.items()},
