@@ -2,14 +2,16 @@
 from __future__ import annotations
 
 import math
-from collections.abc import Mapping
+from collections.abc import Callable, Mapping
 from typing import Never, cast
 
 
 class _FrozenJson(dict[str, object]):
     """深冻结的 JSON 使用原生字典读取与编码，只禁止修改操作。"""
 
-    __slots__ = ()
+    # 内容不可变，纯派生值（如编码长度）可挂在对象上复用，见 frozen_memo。
+    __slots__ = ("_memo",)
+    _memo: dict[str, object]
 
     def __new__(cls, value: Mapping[str, object]) -> _FrozenJson:
         result = dict.__new__(cls)
@@ -31,6 +33,16 @@ class _FrozenJson(dict[str, object]):
     popitem = _immutable
     setdefault = _immutable
     update = _immutable
+
+    # 同一 key 的纯计算只做一次，结果随对象一起释放。
+    def derived[T](self, key: str, compute: Callable[[], T]) -> T:
+        memo = cast(dict[str, object] | None, getattr(self, "_memo", None))
+        if memo is None:
+            memo = {}
+            self._memo = memo
+        if key not in memo:
+            memo[key] = compute()
+        return cast(T, memo[key])
 
 
 class _FrozenJsonArray(tuple[object, ...]):
@@ -112,6 +124,13 @@ def freeze_json(value: object) -> object:
     if isinstance(value, (_FrozenJson, _FrozenJsonArray)):
         return value
     return _freeze(value, set())
+
+
+# 冻结对象按 key 记住纯派生值，跨轮复用的冻结行只计算一次；未冻结的值每次重新计算。
+def frozen_memo[T](value: object, key: str, compute: Callable[[], T]) -> T:
+    if type(value) is not _FrozenJson:
+        return compute()
+    return cast(_FrozenJson, value).derived(key, compute)
 
 
 def json_value(value: object) -> object:
