@@ -30,7 +30,7 @@ def _load_malloc_trim() -> Callable[[int], int] | None:
     return cast(Callable[[int], int], trim)
 
 
-# 首次在启动追平之后执行，之后按固定间隔；trim 持有 malloc 锁，直接在事件循环里跑，慢时记日志。
+# 首次在启动追平之后执行，之后按固定间隔；trim 可能等待 arena 锁，放到工作线程（ctypes 调用释放 GIL），慢时记日志。
 async def trim_free_heap_forever(interval_s: float = TRIM_INTERVAL_S) -> None:
     trim = _load_malloc_trim()
     if trim is None:
@@ -40,7 +40,7 @@ async def trim_free_heap_forever(interval_s: float = TRIM_INTERVAL_S) -> None:
         await asyncio.sleep(delay)
         delay = interval_s
         started = time.perf_counter()
-        _ = trim(0)
+        _ = await asyncio.to_thread(trim, 0)
         elapsed_ms = (time.perf_counter() - started) * 1000
         if elapsed_ms >= _SLOW_TRIM_MS:
             logger.info("heap.trim elapsed_ms=%.1f", elapsed_ms)
