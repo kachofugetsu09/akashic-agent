@@ -72,6 +72,8 @@ _OPEN_PREFIX = "open:"
 _OPEN_STOP = "open;"
 _OPEN_INDEX = "open-index"
 _TERMINAL = frozenset({"delivered", "rejected", "failed"})
+# 不可选路消息只推进进程内游标；领先耐久值满这么多条才写回，重启重读量因此有界。
+_UNROUTABLE_PERSIST_GAP = 100
 
 
 def _open_key(message_id: str, sink: str) -> str:
@@ -98,6 +100,10 @@ class DeliveryRecords:
         # cursor 只由本 owner 的消费事务单调推进；缓存只可能滞后，滞后由消费路径的
         # 已消费分支兼容（读回既有选择，不重复发送）。
         self._cursor_cache: dict[str, int] = {}
+        # 已知的耐久 cursor；本进程首次越过不可选路消息的会话也写回一次，
+        # 否则从不选路的会话每次启动都要从头重读全部历史。
+        self._durable_cursor: dict[str, int] = {}
+        self._unroutable_seen: set[str] = set()
 
     def selection(self, message_id: str) -> Selection | None:
         row = self._state.read("selection:" + message_id)
@@ -125,6 +131,7 @@ class DeliveryRecords:
         row = self._state.read(self._cursor_key(session_id))
         through = -1 if row is None else Cursor.model_validate(dict(row.value)).through_seq
         self._cursor_cache[session_id] = through
+        self._note_durable(session_id, through)
         return through
 
     def read(self, message_id: str, sink: str) -> tuple[OwnerRecord, Delivery]:
@@ -206,7 +213,7 @@ class DeliveryRecords:
     def _consume_batch(self, reader: MessageReader,
                        items: tuple[tuple[Message, tuple[Sink, ...] | None], ...],
                        *, passive: bool = False) -> tuple[Selection | None, ...]:
-        # 1. 不可能选路的消息只推进进程内游标；下一次持久提交一并写入。
+        # 1. 不可能选路的消息只推进游标，按 _advance_unroutable 的条件写回，不进本批事务。
         if self._advance_unroutable(reader, items):
             return (None,) * len(items)
         for message, sinks in items:
@@ -247,6 +254,7 @@ class DeliveryRecords:
         selections = self._state.transact(commit)
         if committed_through:
             self._cursor_cache[reader.session_id] = committed_through[-1]
+            self._note_durable(reader.session_id, committed_through[-1])
         return selections
 
     # 只有 complete Output 可能被选路；其余消息在不拥有选路权时无需持久化消费事实。
@@ -261,8 +269,33 @@ class DeliveryRecords:
         following = reader.read(after_seq=through, limit=1)
         if not following or following[0].message_id != items[0][0].message_id:
             raise MessageConflict("发送消费不能跳过消息")
-        self._cursor_cache[reader.session_id] = items[-1][0].seq
+        session_id = reader.session_id
+        through = items[-1][0].seq
+        self._cursor_cache[session_id] = through
+        if (session_id not in self._unroutable_seen
+                or through - self._durable_cursor.get(session_id, -1) >= _UNROUTABLE_PERSIST_GAP):
+            self._unroutable_seen.add(session_id)
+            self._persist_cursor(session_id, through)
         return True
+
+    # 只写回已越过的不可选路前缀；与消费事务一样按耐久值单调推进。
+    def _persist_cursor(self, session_id: str, through: int) -> None:
+        key = self._cursor_key(session_id)
+
+        def commit(tx: OwnerTransaction) -> int:
+            persisted = tx.read(key)
+            persisted_through = (-1 if persisted is None else
+                                 Cursor.model_validate(dict(persisted.value)).through_seq)
+            if through <= persisted_through:
+                return persisted_through
+            _ = tx.save(key, {"through_seq": through}, expected_version=None if persisted is None else persisted.version)
+            return through
+
+        self._note_durable(session_id, self._state.transact(commit))
+
+    # 耐久值只增不减：多个文件 I/O 线程在事务外交错更新时，旧值不能覆盖新值。
+    def _note_durable(self, session_id: str, through: int) -> None:
+        self._durable_cursor[session_id] = max(through, self._durable_cursor.get(session_id, -1))
 
     def _prepare(self, tx: OwnerTransaction, message: Message, sinks: tuple[Sink, ...], *, passive: bool = False) -> Selection:
         """同一消息的首次选路不可变；重复策略计算只采用原集合。"""
