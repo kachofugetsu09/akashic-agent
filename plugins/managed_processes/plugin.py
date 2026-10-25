@@ -54,7 +54,9 @@ class ManagedProcessHandle:
             except Exception as error:
                 # host 收尾写的是 stopped；改成失败原因，状态页能与正常停止区分。
                 self._health.degrade(f"start failed ({attempt}): {type(error).__name__}: {error}")
-                if delay is None or self._closing or self._closed:
+                # 失败 generation 未清理干净时不换 id：关闭仍要能停掉并暴露残留的旧进程。
+                cleaned = self._host.get(self._id) is None and self._host.tombstone(self._id) is None
+                if delay is None or self._closing or self._closed or not cleaned:
                     raise
             await asyncio.sleep(delay)
             async with self._lock:
