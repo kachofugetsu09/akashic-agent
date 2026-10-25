@@ -96,6 +96,10 @@ class SemanticInterest:
             for sample in (*cache.pending, *samples):
                 if sample.ending.session_id not in heads:
                     continue
+                # cutoff 之后的样本不读向量，留到 cutoff 推进后再算，与原算法同样不受其向量影响。
+                if sample.key[0] > through:
+                    pending.append(_compact(sample))
+                    continue
                 prototype = self._prototype(sample, rule, records)
                 if not isinstance(prototype, str):
                     fresh.append((sample.key, prototype))
@@ -154,7 +158,7 @@ def _complete(sample: Sample) -> bool:
     return isinstance(ending.body, Output) and ending.body.finish == "complete"
 
 
-# 等待向量的样本只留计算原型要读的输入与回复，不持有工具输出等成员正文。
+# 等待向量或晚于 cutoff 的样本只留计算原型要读的输入与回复，不持有工具输出等成员正文。
 def _compact(sample: Sample) -> Sample:
     kept = tuple(message for message in sample.messages
                  if isinstance(message.body, Input) or message == sample.ending)
