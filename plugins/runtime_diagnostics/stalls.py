@@ -234,7 +234,8 @@ class StallWatch:
             return
         current = _rss_mb()
         self._rss = (now, current)
-        if current is None or current - previous < GROWTH_MB:
+        # 停顿期间不采样；跨过停顿的间隔只重建基线，不把累计增长当作一秒突增。
+        if current is None or now - at > 2 * GROWTH_SECONDS or current - previous < GROWTH_MB:
             return
         sample = _Stall(due=at, started_at=time.time() - (now - at), cpu=self._cpu)
         self._capture(sample, now, delay)
