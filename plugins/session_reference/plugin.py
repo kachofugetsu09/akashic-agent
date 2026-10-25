@@ -156,6 +156,7 @@ class ReadSession:
         before_seq: int | None = requested.before_seq
         scanned = 0
         exhausted = False
+        over_budget = False
         while len(rows) < requested.limit and not exhausted:
             page = await reader.read_tail_async(before_seq=before_seq, limit=READ_PAGE)
             if not page.messages:
@@ -168,8 +169,8 @@ class ReadSession:
                     continue
                 clipped = _clip(text)
                 if used + len(clipped) > MAX_PAGE_CHARS:
-                    # 总字符预算用完：停在当前正文条数，游标指向已收的最旧一条。
-                    exhausted = True
+                    # 总字符预算用完：停在当前正文条数，游标指向已收的最旧一条；更早消息仍在。
+                    over_budget = True
                     break
                 used += len(clipped)
                 rows.append({
@@ -178,7 +179,7 @@ class ReadSession:
                 })
                 if len(rows) >= requested.limit:
                     break
-            if truncated := (used >= MAX_PAGE_CHARS or len(rows) >= requested.limit):
+            if over_budget or len(rows) >= requested.limit:
                 break
             # 继续往前扫：游标指向这一页最早一条；没有更早的就结束了。
             if not page.has_more:
