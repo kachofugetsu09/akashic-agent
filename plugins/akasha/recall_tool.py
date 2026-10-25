@@ -19,7 +19,9 @@ from plugins.ledger.contract import json_value
 from ._boundaries import CallSource, Result, TOOLS
 
 from .application.consumer import run_memory_job
+from .application.cycle import MemoryCycle
 from .application.snapshot import read_memory
+from .infrastructure.consumption import Consumption
 from .domain.model import MemoryConfig
 from .learning import AKASHA_LEARNING, Learning, LearningConfig
 from .scopes import MemoryDisabled
@@ -98,6 +100,12 @@ def tool_references(
     return tuple(references.values())
 
 
+# 运行中的图按调用 Session 路由并持串行锁交出只读视图；图未运行时给 None，调用方退回已发布副本。
+type LiveGraph = Callable[
+    [str | None, tuple[str, int]], AbstractAsyncContextManager[tuple[MemoryCycle, Consumption] | None]
+]
+
+
 class RecallTool:
     """查询记录是幂等与恢复 owner；工具 receipt 不要求再次调用 embedding。"""
 
@@ -108,7 +116,7 @@ class RecallTool:
         catalog: MessageCatalog, embeddings: MessageEmbeddings, bindings: Bindings,
         select_learning: Callable[[], tuple[str, str]], records: RecallRecords,
         open_embedding: Callable[[str], AbstractAsyncContextManager[BoundEmbeddingModel]],
-        max_chars: int = 12000,
+        live: LiveGraph | None = None, max_chars: int = 12000,
     ):
         if max_chars <= 0:
             raise ValueError("召回文本预算必须为正")
@@ -120,6 +128,7 @@ class RecallTool:
         self._select_learning = select_learning
         self._records = records
         self._open_embedding = open_embedding
+        self._live = live
         self._max_chars = max_chars
 
     async def prepare(
@@ -151,39 +160,13 @@ class RecallTool:
         request = PreparedRecall.model_validate_json(json.dumps(json_value(arguments)))
         identity = "tool:" + key
         source = request.source or ProgramSource(key=key, query=request.query)
-        # 1. 打开工具实际固定的学习规则；读副本也校验图的 embedding 空间。
+        # 1. 打开工具实际固定的学习规则；读图前先嵌入查询，运行中的图不持锁等待模型。
         async with self._bindings.open(request.learning_binding, AKASHA_LEARNING) as (learning, metadata):
             rule = LearningConfig.model_validate(dict(metadata))
-            async def restore_embeddings(original: LearningConfig, texts: list[str]) -> list[list[float]]:
-                async with self._open_embedding(request.embedding_binding) as model:
-                    if (model.descriptor.identity, model.descriptor.dimensions) != (original.embedding_model, original.dimension):
-                        raise ValueError("补算向量不属于原学习模型空间")
-                    return [list(vector) for vector in (await model.embed(texts)).vectors]
-            # 调用所在 Session 决定读取哪张图；显式程序没有 Session 时读 default 图。
-            async with read_memory(
-                self._memory(None if request.source is None else request.source.session_id), catalog=self._catalog,
-                embeddings=self._embeddings, bindings=self._bindings, config=self._config,
-                embedding_space=(rule.embedding_model, rule.dimension),
-                restore_embeddings=restore_embeddings,
-            ) as (cycle, state):
-                async with self._open_embedding(request.embedding_binding) as model:
-                    if model.descriptor.identity != rule.embedding_model:
-                        raise ValueError("实际 embedding 模型不匹配已准备的学习 binding")
-                    values = (await model.embed([request.query])).vectors
-                if len(values) != 1 or len(values[0]) != rule.dimension:
-                    raise ValueError("召回 embedding 数量或维度不匹配")
-                dense = np.asarray(values[0], dtype=np.float32)
-                if not np.isfinite(dense).all():
-                    raise ValueError("召回 embedding 必须是有限向量")
-                norm = float(np.linalg.norm(dense))
-                if not np.isfinite(norm) or norm <= 0.0:
-                    raise ValueError("召回 embedding 必须具有有限正模长")
-                dense = dense / norm
-                stamp = datetime.now(UTC)
-                recall = await run_memory_job(lambda: query_memory(
-                    cycle, state, learning_binding=request.learning_binding, text=request.query,
-                    dense=dense, stamp=stamp, source=source, limit=request.limit,
-                ))
+            session_id = None if request.source is None else request.source.session_id
+            path = self._memory(session_id)
+            dense = await self._embed_query(request, rule)
+            recall = await self._search(request, rule, dense, source, session_id=session_id, path=path)
             # 2. 材料和呈现出处固定后一次发布；失败不能暴露成功 Result。
             material = await run_memory_job(lambda: render_materials(
                 identity, recall, learning, self._catalog, max_chars=request.max_chars,
@@ -194,6 +177,48 @@ class RecallTool:
             })
             _ = await run_memory_job(lambda: self._records.save(identity, recall))
             return self._result(identity, recall, tuple(ContentPart("text", part["text"]) for part in cast(tuple[Mapping[str, str], ...], material["reminders"])))
+
+    # 查询向量与学习图同一空间，并归一化为有限单位向量。
+    async def _embed_query(self, request: PreparedRecall, rule: LearningConfig) -> np.ndarray:
+        async with self._open_embedding(request.embedding_binding) as model:
+            if model.descriptor.identity != rule.embedding_model:
+                raise ValueError("实际 embedding 模型不匹配已准备的学习 binding")
+            values = (await model.embed([request.query])).vectors
+        if len(values) != 1 or len(values[0]) != rule.dimension:
+            raise ValueError("召回 embedding 数量或维度不匹配")
+        dense = np.asarray(values[0], dtype=np.float32)
+        if not np.isfinite(dense).all():
+            raise ValueError("召回 embedding 必须是有限向量")
+        norm = float(np.linalg.norm(dense))
+        if not np.isfinite(norm) or norm <= 0.0:
+            raise ValueError("召回 embedding 必须具有有限正模长")
+        return dense / norm
+
+    # 调用所在 Session 已决定读取哪张图；运行中的图直接检索，未运行时才从已发布副本完整恢复。
+    async def _search(
+        self, request: PreparedRecall, rule: LearningConfig, dense: np.ndarray,
+        source: ToolSource | ProgramSource, *, session_id: str | None, path: Path,
+    ) -> Recall:
+        space = (rule.embedding_model, rule.dimension)
+        def query(cycle: MemoryCycle, state: Consumption) -> Recall:
+            return query_memory(
+                cycle, state, learning_binding=request.learning_binding, text=request.query,
+                dense=dense, stamp=datetime.now(UTC), source=source, limit=request.limit,
+            )
+        if self._live is not None:
+            async with self._live(session_id, space) as view:
+                if view is not None:
+                    return await run_memory_job(lambda: query(*view))
+        async def restore_embeddings(original: LearningConfig, texts: list[str]) -> list[list[float]]:
+            async with self._open_embedding(request.embedding_binding) as model:
+                if (model.descriptor.identity, model.descriptor.dimensions) != (original.embedding_model, original.dimension):
+                    raise ValueError("补算向量不属于原学习模型空间")
+                return [list(vector) for vector in (await model.embed(texts)).vectors]
+        async with read_memory(
+            path, catalog=self._catalog, embeddings=self._embeddings, bindings=self._bindings,
+            config=self._config, embedding_space=space, restore_embeddings=restore_embeddings,
+        ) as (cycle, state):
+            return await run_memory_job(lambda: query(cycle, state))
 
     async def query(self, key: str) -> Result | None:
         """工具外部结果恢复只读实际查询记录；不读当前图或重跑模型。"""

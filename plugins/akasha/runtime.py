@@ -3,7 +3,8 @@ from __future__ import annotations
 
 import asyncio
 import logging
-from collections.abc import Awaitable, Callable, Mapping
+from collections.abc import AsyncGenerator, Awaitable, Callable, Mapping
+from contextlib import asynccontextmanager
 from datetime import UTC, datetime
 from typing import cast
 
@@ -100,6 +101,14 @@ class MessageMemory:
                 embeddings=self._embeddings, bindings=self._bindings, embed_batch=self._embed_batch,
                 member=self._member,
             )
+
+    # 显式召回与 Context 查询共用串行锁和空间核对；视图只在 with 内有效，查询不推进学习图。
+    @asynccontextmanager
+    async def view(self, space: tuple[str, int]) -> AsyncGenerator[tuple[MemoryCycle, Consumption]]:
+        async with self._lock:
+            self._check_open()
+            await run_memory_job(lambda: self._consumer.check_embedding_space(*space, self._bindings))
+            yield self._consumer.cycle, self._consumer.state
 
     async def prepare(self, snapshot: tuple[Message, ...], source: str) -> MaterialData:
         """Context 查询与学习、关闭共用串行锁；查询本身不推进学习图。"""

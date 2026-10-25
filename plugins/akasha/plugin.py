@@ -63,7 +63,8 @@ from .application.rebuild import manifest_json, rebuild_from_catalog
 from .application.snapshot import read_memory
 from .config import AkashaConfig, resolve_memory_path
 from .domain.model import EmbeddingSpaceMismatchError, MemoryRebuildRequiredError
-from .infrastructure.consumption import load_message_nodes
+from .application.cycle import MemoryCycle
+from .infrastructure.consumption import Consumption, load_message_nodes
 from .inspector import RecallInspector
 from .interest import SEMANTIC_INTEREST, Embed, SemanticInterest
 from .learning import AKASHA_LEARNING, Learning, LearningConfig
@@ -485,6 +486,24 @@ async def run(ctx: Context, interest: Interest) -> None:
             return RecallBinding(embedding_binding=None, unavailable=str(error)).model_dump()
         return RecallBinding(embedding_binding=identity, unavailable=None).model_dump()
 
+    # 显式召回优先查询运行中的图：副本完整恢复要重新解码全部已学原消息（prod 约 25s CPU、+1GB）。
+    @asynccontextmanager
+    async def live_graph(
+        session_id: str | None, space: tuple[str, int],
+    ) -> AsyncGenerator[tuple[MemoryCycle, Consumption] | None]:
+        key = DEFAULT_GRAPH if session_id is None else policies.route(session_id).read
+        # 重建期间不排队等待活图，照旧读已发布副本。
+        if not running or not graphs_ready.is_set() or key is None or key not in memories:
+            yield None
+            return
+        async with graph_access(key):
+            memory = memories.get(key)
+            if memory is None:
+                yield None
+                return
+            async with memory.view(space) as view:
+                yield view
+
     @asynccontextmanager
     async def open_recall(captured: Mapping[str, object]) -> AsyncGenerator[RecallTool]:
         selected = RecallBinding.model_validate(dict(captured))
@@ -502,7 +521,8 @@ async def run(ctx: Context, interest: Interest) -> None:
             memory=read_path, config=settings.memory_config(),
             catalog=ctx.require(MESSAGE_CATALOG), embeddings=ctx.require(MESSAGE_EMBEDDINGS),
             bindings=bindings, select_learning=select, records=records(),
-            open_embedding=partial(SavedEmbedding.open, bindings), max_chars=settings.inject_max_chars,
+            open_embedding=partial(SavedEmbedding.open, bindings), live=live_graph,
+            max_chars=settings.inject_max_chars,
         )
 
     await catalog.register(
