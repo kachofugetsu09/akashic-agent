@@ -20,7 +20,7 @@ import {
   DialogContent,
   DialogTitle,
 } from "@/components/ui/dialog";
-import { Brain, Check, ChevronDown, ChevronLeft, ChevronRight, Copy, Download, ExternalLink, Gauge, Wrench, X, ZoomIn, ZoomOut } from "lucide-react";
+import { Brain, Check, ChevronDown, ChevronLeft, ChevronRight, Copy, Download, ExternalLink, Gauge, MessagesSquare, Wrench, X, ZoomIn, ZoomOut } from "lucide-react";
 import { useStickToBottomContext } from "use-stick-to-bottom";
 import { MarqueeText } from "./marquee-text";
 import {
@@ -232,9 +232,17 @@ export function ChatMessageView({
       : null;
   if (message.role === "user") {
     // 附件在气泡上方、气泡外（Desktop 同款）：气泡只包文字，只发附件时不留一个空气泡。
+    // 会话引用同理：只发引用时也要有一行说明，否则等待服务端确认期间是空气泡。
+    const references = message.references?.length
+      ? <div className="message-session-reference" aria-label="引用了会话">
+          <MessagesSquare size={15} aria-hidden="true" />
+          <span>引用 {message.references.length} 个会话：{message.references.map((item) => item.title || item.sessionId).join("、")}</span>
+        </div>
+      : null;
     return (
       <Message from="user" className="message-row user-row">
         {attachments}
+        {references}
         {leadingContent || message.content ? <MessageContent className="user-bubble">
           {leadingContent}
           {message.content ? (
@@ -872,6 +880,13 @@ function TimelinePartView({ part, toolResult = false, userInput = false, attachm
       return <MessageReplyReference author={source?.author ?? "原消息"}
         preview={source ? timelineReply(source).preview : ""} unavailable={!source} canLoad={canLoadReferences}
         onNavigate={() => onNavigate(part.value)} />;
+    }
+    case "session.reference": {
+      const sessions = part.value.sessions;
+      return <div className="message-session-reference" aria-label="引用了会话">
+        <MessagesSquare size={15} aria-hidden="true" />
+        <span>引用 {sessions.length} 个会话：{sessions.map((item) => item.title || item.session_id).join("、")}</span>
+      </div>;
     }
     case "tool_call": return <details className="timeline-details timeline-tool-call">
       <summary>工具调用 · {part.name}</summary>

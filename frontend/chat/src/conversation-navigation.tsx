@@ -4,6 +4,7 @@ import "./conversation-navigation.css";
 import { SessionStatusMark, type SessionStatus } from "./session-status-mark";
 import { MarqueeText } from "./marquee-text";
 import { NavigationRowMenu, type NavigationRowAction } from "./navigation-row-menu";
+import { SESSION_DRAG_TYPE } from "./composer-references";
 
 export interface ConversationDestination {
   id: string;
@@ -359,14 +360,20 @@ export const ConversationSessionRow = memo(function ConversationSessionRow({ ses
       data-row-primary=""
       disabled={session.unavailable}
       title={session.preview ? `${session.title} · ${session.preview}` : session.title}
-      draggable={drag !== undefined}
-      onDragStart={drag === undefined ? undefined : (event) => {
-        if (dragHandlers?.start(session.id) === false) {
-          event.preventDefault();
-          return;
+      draggable={!session.unavailable}
+      onDragStart={(event) => {
+        // 一次拖拽可以有两个消费者：侧栏内部排序（text/plain）与输入框引用（自定义 MIME）。
+        // 两个都写上，谁接住就用谁——落在行上是排序，落在输入卡上是引用。
+        event.dataTransfer.setData(SESSION_DRAG_TYPE,
+          JSON.stringify({ sessionId: session.id, title: session.title }));
+        event.dataTransfer.effectAllowed = drag === undefined ? "copy" : "copyMove";
+        if (drag !== undefined) {
+          if (dragHandlers?.start(session.id) === false) {
+            event.preventDefault();
+            return;
+          }
+          event.dataTransfer.setData("text/plain", session.id);
         }
-        event.dataTransfer.setData("text/plain", session.id);
-        event.dataTransfer.effectAllowed = "move";
       }}
       onDragEnd={drag === undefined ? undefined : () => dragHandlers?.end()}
       onDragOver={drag === undefined ? undefined : (event) => {

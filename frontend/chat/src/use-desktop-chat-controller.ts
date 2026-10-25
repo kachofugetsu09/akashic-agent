@@ -33,7 +33,7 @@ import { parseChatFrame, sendWhenOpen } from "./web-chat-transport";
 import type { DesktopSidebarSession } from "./desktop-sidebar";
 import { useSteers, type SteerResult } from "./use-steers";
 import { webTurnTrace } from "./web-turn-trace";
-import { composerContributions, notifyComposerSent, useComposerContributions } from "./composer-contributions";
+import { composerContributions, notifyComposerSent, useComposerContributions, type ComposerInputPart } from "./composer-contributions";
 
 /** 回访会话时先展示的尾页快照；只做展示缓存，事实仍以服务端分页与实时帧为准。 */
 interface SessionTail {
@@ -932,9 +932,9 @@ export function useDesktopChatController() {
     }
   }, [closeConnection, connect, waitForAccepted]);
 
-  const sendMessage = useCallback(async (text: string, files: ComposerFile[]) => {
+  const sendMessage = useCallback(async (text: string, files: ComposerFile[], extraParts?: readonly ComposerInputPart[]) => {
     const cleanText = text.trim();
-    if (!cleanText && files.length === 0) return;
+    if (!cleanText && files.length === 0 && !extraParts?.length) return;
     if (!canSend) throw new Error(sendProblem || "聊天服务暂不可用，请稍后重试。");
     if (sendRequestRef.current) throw new Error("消息正在发送，请稍等。");
     setError("");
@@ -954,6 +954,18 @@ export function useDesktopChatController() {
         mediaType: file.mediaType || "application/octet-stream", url: file.url || "", sizeBytes: file.sizeBytes,
       })),
       blocks: [], createdAt: new Date().toISOString(), canonical: false, delivery: "sending",
+      // 只发引用时没有正文也没有附件；把引用摘要带上，本地先显示「引用 N 个会话」，
+      // 否则等待服务端确认期间会是一个空气泡（重试时尤其久）。
+      references: (extraParts ?? [])
+        .filter((part) => part.kind === "session.reference")
+        .flatMap((part) => {
+          const sessions = (part.value as { sessions?: { session_id?: unknown; title?: unknown }[] } | null)?.sessions;
+          return Array.isArray(sessions)
+            ? sessions.flatMap((row) => typeof row?.session_id === "string" && row.session_id
+              ? [{ sessionId: row.session_id, title: typeof row.title === "string" ? row.title : "" }]
+              : [])
+            : [];
+        }),
     }]);
     try {
       const sessionId = await ensureSession();
@@ -979,7 +991,8 @@ export function useDesktopChatController() {
       const scope = sessionScopesRef.current.get(sessionId);
       if (scope) payload.session_dimensions = scope;
       const { parts } = composerContributions();
-      if (parts.length) payload.parts = parts;
+      const allParts = [...parts, ...(extraParts ?? [])];
+      if (allParts.length) payload.parts = allParts;
       const markDelivery = (delivery: ChatMessage["delivery"]) => setMessages((current) => current.map((item) => item.id === clientMessageId ? { ...item, delivery } : item));
       await deliverMessage(clientMessageId, payload, controller.signal, () => markDelivery("retrying"));
       controller.signal.throwIfAborted();
