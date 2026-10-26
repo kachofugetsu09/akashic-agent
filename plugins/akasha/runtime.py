@@ -165,6 +165,9 @@ async def prepare_materials(
                 and inputs[-1].seq <= item.source.through_seq <= snapshot[-1].seq), None)
             if previous is not None:
                 identity, recall = previous
+            else:
+                # 扫描只覆盖稳定身份区间外；首次 read 之后并发准备刚以稳定身份保存的记录再读一次。
+                recall = await run_memory_job(lambda: records.read(identity))
         if recall is not None:
             # 已保存查询用它当时的固定 binding 重渲染；正文仍只从原 Message 读取。
             async with bindings.open(recall.learning_binding, AKASHA_LEARNING) as (original, _):
