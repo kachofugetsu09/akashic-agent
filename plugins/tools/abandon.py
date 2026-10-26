@@ -7,6 +7,7 @@ from dataclasses import replace
 from typing import cast
 
 from agent.plugin_composition.tasks import TaskAdmission, TaskSlot
+from core.common.file_io import run_file_io
 from .api import Denied, MessageReply, Result, durable_call_key
 from .execution import _fingerprint, finish
 from plugins.ledger.contract import MessageCatalog, MessageReader, OwnerStore, OwnerTransaction
@@ -36,14 +37,16 @@ async def abandon_call(
 ) -> Result:
     """Tools 先提交终态再协作取消；真实效果与清理仍由原 Task 持有。"""
     state.check_access(reply.reader, reply.writer)
-    if not reply.abandoned():
+    # 放弃判定会扫调用之后的整段前缀，与下方回执读取一样放进 worker。
+    if not await run_file_io(reply.abandoned):
         raise ValueError("工具没有已接纳的放弃控制")
     key = durable_call_key(reply.call_ref)
 
     async def settle(slot: TaskSlot) -> Result:
-        record = state.read(key)
+        # 回执与已有结果的读取放进 worker：启动扫描时机械盘冷读曾让事件循环停顿 2.2s。
+        record = await run_file_io(lambda: state.read(key))
         if record is None:
-            existing = _existing_result(reply.reader, reply.call_ref)
+            existing = await run_file_io(lambda: _existing_result(reply.reader, reply.call_ref))
             if existing is not None:
                 if slot.current is not None:
                     slot.current.cancel()
@@ -59,7 +62,7 @@ async def abandon_call(
                 result = record.value.get("result")
                 if isinstance(result, Mapping) and isinstance(result.get("message_id"), str):
                     target = replace(reply, message_id=cast(str, result["message_id"]))
-        call = target.request()
+        call = await run_file_io(target.request)
         fingerprint = _fingerprint(call.binding_id, call.arguments, target)
         if record is not None:
             if record.value["request"] != fingerprint:
@@ -71,7 +74,8 @@ async def abandon_call(
             if record.value["phase"] == "done":
                 if slot.current is not None:
                     slot.current.cancel()
-                return target.read(record.value["result"])
+                done = record.value["result"]
+                return await run_file_io(lambda: target.read(done))
             if record.value["phase"] not in {"requested", "prepared", "started"}:
                 raise ValueError("工具回执阶段无效")
         # 无阶段回执不能证明未执行；重启后内存 Task 已丢失，仍须保留效果不确定性。
