@@ -35,7 +35,11 @@ def recent_context(catalog: MessageCatalog, history: DeliveryHistory, *, target:
 # 从结尾倒序翻页，凑满 20 条带正文的对话即停；长会话不再整段解码。
 def _recent_conversation(reader: MessageReader, now: datetime) -> list[dict[str, object]]:
     passive: list[dict[str, object]] = []
-    page = reader.read_tail(limit=50)
+    try:
+        page = reader.read_tail(limit=50)
+    except KeyError:
+        # 目标会话尚未创建时与原整段读取一致：没有近期对话。
+        return passive
     while True:
         for message in reversed(page.messages):
             if (message.recorded_at > now
