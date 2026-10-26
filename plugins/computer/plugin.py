@@ -400,7 +400,7 @@ async def _start_follower(ctx: Context) -> None:
     catalog = ctx.require(MESSAGE_CATALOG)
     projection = ctx.require(TURN_PROJECTION)
     state: OwnerStore | None = None
-    # 每组上次核对时所在会话的 head；Turn 只会因新消息闭合，head 未前进时不必重新投影。
+    # 源 Turn 未闭合时所在会话的 head；Turn 只会因新消息闭合，head 未前进时不必重新投影。
     checked: dict[tuple[str, str, str, str], int] = {}
 
     async def once() -> None:
@@ -432,9 +432,12 @@ async def _start_follower(ctx: Context) -> None:
                 continue
             # follow 唤醒时没有 scope；每组效果取得当前选定的运行时。
             async with ctx.runtime_scope():
-                await _try_end(ctx, catalog, projection, records, through_seq=head)
-            # 核对成功后才记下；失败的组下次唤醒照常重试。
-            checked[group] = head
+                closed = await _try_end(ctx, catalog, projection, records, through_seq=head)
+            # 只缓存"源 Turn 仍未闭合"；已闭合后的收尾失败或组内新增记录下次唤醒照常处理。
+            if closed:
+                _ = checked.pop(group, None)
+            else:
+                checked[group] = head
 
     async with ctx.runtime_scope():
         await once()
@@ -450,8 +453,8 @@ async def _try_end(
     records: list[tuple[str, OwnerRecord]],
     *,
     through_seq: int,
-) -> None:
-    """只在源 Turn 已闭合后结束同一 Computer group。"""
+) -> bool:
+    """只在源 Turn 已闭合后结束同一 Computer group；返回源 Turn 是否已闭合。"""
     key, record = records[0]
     value = record.value
     expected = {"v", "phase", "control_binding", "session_id", "source", "turn_input_id"}
@@ -467,7 +470,7 @@ async def _try_end(
         # 字段无效的记录永远无法完成收尾：终态标记，避免每次唤醒都撞同一组。
         await _fail_group(ctx, records, "Computer owner record 字段无效")
         ctx.report_incident("computer-end-turn", f"{key}: Computer owner record 字段无效")
-        return
+        return True
     reader = catalog.reader(cast(str, value["session_id"]))
     turns = await run_file_io(lambda: projection.project(
         tuple(reader.committed_snapshot(through_seq=through_seq)), cast(str, value["source"])))
@@ -476,7 +479,7 @@ async def _try_end(
         and cast(str, value["turn_input_id"]) in turn.message_ids
         for turn in turns
     ):
-        return
+        return False
     identity = ComputerCall(
         cast(str, value["session_id"]), cast(str, value["source"]), cast(str, value["turn_input_id"])
     )
@@ -495,11 +498,11 @@ async def _try_end(
         # 不可变 binding 缺失或结构不匹配是终态；标记 failed 后不再重试。
         await _fail_group(ctx, records, f"computer control binding 不可用: {error}")
         ctx.report_incident("computer-end-turn", f"{key}: {error}")
-        return
+        return True
     except Exception as error:
         # scope/效果失败可能自愈：保留 started，下次唤醒或重启重试。
         ctx.report_incident("computer-end-turn", f"{key}: {error}")
-        return
+        return True
     state = ctx.require(OWNER_STATE).open(ctx)
     def commit(tx) -> None:
         for item_key, item_record in records:
@@ -517,6 +520,7 @@ async def _try_end(
             )
 
     await state.transact_async(commit)
+    return True
 
 
 async def _fail_group(
