@@ -263,6 +263,8 @@ class BurstAwareFeaturePool(FeaturePool):
         appendable: bool = False,
     ) -> None:
         super().__init__(turns, appendable=appendable)
+        if appendable:
+            self._bind_dense_rows(0)
         dependence = _causal_context_dependence(turns)
         self.context_dependence = _reserve_values(
             dependence,
@@ -360,6 +362,7 @@ class BurstAwareFeaturePool(FeaturePool):
             capacity,
         )
         self._capacity = capacity
+        self._bind_dense_rows(0)
 
     def _write_dense_row(self, node_id: int, turn: Turn) -> None:
         vectors = [
@@ -391,6 +394,13 @@ class BurstAwareFeaturePool(FeaturePool):
                     raise ValueError("dense vectors must share one dimension")
                 matrix[node_id] = vector
                 mask[node_id] = True
+        _bind_turn_rows(turn, self.user_dense[node_id], self.assistant_dense[node_id])
+
+    # 常驻可追加池以矩阵为向量唯一存储：Turn 改指矩阵行视图，原独立数组随即释放。
+    # 矩阵行只在追加时写一次，视图与原数组逐位相同；扩容后重绑，旧矩阵随之释放。
+    def _bind_dense_rows(self, start: int) -> None:
+        for node_id in range(start, len(self.turns)):
+            _bind_turn_rows(self.turns[node_id], self.user_dense[node_id], self.assistant_dense[node_id])
 
     def infer_burst_seed(
         self,
@@ -595,6 +605,14 @@ def _build_postings(
             posting[0].append(node_id)
             posting[1].append(float(tf))
     return term_order, postings
+
+
+def _bind_turn_rows(turn: Turn, user: np.ndarray, assistant: np.ndarray) -> None:
+    # Turn 冻结只约束语义值；换成数值相同的共享视图不改变任何读者看到的向量。
+    if turn.user_dense is not None:
+        object.__setattr__(turn, "user_dense", user)
+    if turn.assistant_dense is not None:
+        object.__setattr__(turn, "assistant_dense", assistant)
 
 
 def _next_capacity(size: int) -> int:
