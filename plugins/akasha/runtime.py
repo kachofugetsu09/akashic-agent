@@ -158,7 +158,7 @@ async def prepare_materials(
         recall = await run_memory_job(lambda: records.read(identity))
         if recall is None:
             # 升级前的随机身份仍是实际查询证据；复用同一用户输入后的首次记录。
-            saved = await run_memory_job(records.list)
+            saved = await run_memory_job(records.outside_context)
             previous = next(((key, item) for key, item in reversed(saved)
                 if isinstance(item.source, ContextSource)
                 and item.source.session_id == session_id and item.source.source == source
