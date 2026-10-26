@@ -2,7 +2,7 @@
 from __future__ import annotations
 
 import asyncio
-from collections import deque
+from collections import defaultdict, deque
 from collections.abc import Iterable
 from dataclasses import dataclass, field
 import logging
@@ -29,6 +29,9 @@ FOLLOW_UP_SECONDS = (6.0, 18.0)
 CPU_BASELINE_SECONDS = 4.0
 MAX_THREADS = 48
 MAX_FRAMES = 20
+# 运维发起的 CPU 采样：每 20ms 抓一次栈并读各线程 /proc CPU；30 个线程时约占 5% 单核。
+CPU_SAMPLE_SECONDS = 0.02
+CPU_TOP_STACKS = 40
 # RSS 在一秒内涨过这么多时抓一次线程栈：正常回合分配远低于此，整段解码历史这类临时大分配会越过它。
 GROWTH_MB = 256
 GROWTH_SECONDS = 1.0
@@ -137,6 +140,48 @@ def _frames(raw: list[tuple[str, int, str]], locators: dict[str, str]) -> list[s
             locator = locators[filename] = _export_locator(filename)
         rows.append(f"{locator}:{line} in {name}")
     return rows
+
+
+# 最内层帧是这些空闲等待时不算命中：线程只是停在等待里，没有在执行。
+_IDLE_FRAMES = frozenset({"EpollSelector.select", "PollSelector.select", "SelectSelector.select",
+                          "KqueueSelector.select", "Condition.wait", "Event.wait", "Thread.join", "_worker"})
+
+
+# 线程总量取两次采样间 /proc CPU 增量；栈按非空闲命中计数。采样线程拿到 GIL 时，
+# 正在执行 Python 的线程恰好停在执行位置，事件循环上的短回调也能被按比例抓到。
+def sample_cpu(stop: threading.Event) -> dict[str, object]:
+    me = threading.get_ident()
+    hits: defaultdict[tuple[str, ...], int] = defaultdict(int)
+    by_thread: defaultdict[str, float] = defaultdict(float)
+    first: dict[int, float] = {}
+    last: dict[int, float] = {}
+    names: dict[int, str] = {}
+    locators: dict[str, str] = {}
+    samples = 0
+    started = time.monotonic()
+    while not stop.wait(CPU_SAMPLE_SECONDS):
+        frames = sys._current_frames()  # pyright: ignore[reportPrivateUsage]
+        raw = {ident: _raw_frames(frame)[0] for ident, frame in frames.items() if ident != me}
+        del frames
+        samples += 1
+        for stack in raw.values():
+            if stack and stack[0][2] not in _IDLE_FRAMES:
+                hits[tuple(_frames(stack, locators))] += 1
+        for thread in _python_threads().values():
+            if thread.native_id is not None and thread.ident != me:
+                names[thread.native_id] = thread.name
+        for native, seconds in _thread_cpu(names).items():
+            _ = first.setdefault(native, seconds)
+            last[native] = seconds
+    for native, seconds in last.items():
+        by_thread[names[native]] += seconds - first[native]
+    step = CPU_SAMPLE_SECONDS * 1000
+    return {"cpu_samples": samples, "cpu_window_seconds": round(time.monotonic() - started, 1),
+            "cpu_sample_ms": step,
+            "cpu_threads": [{"name": name, "cpu_ms": round(seconds * 1000)}
+                            for name, seconds in sorted(by_thread.items(), key=lambda row: -row[1])[:20] if seconds > 0],
+            "cpu_stacks": [{"hits": count, "estimated_ms": round(count * step), "frames": list(frames)}
+                           for frames, count in sorted(hits.items(), key=lambda row: -row[1])[:CPU_TOP_STACKS]]}
 
 
 class StallWatch:
