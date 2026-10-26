@@ -7,6 +7,7 @@ from dataclasses import replace
 from typing import cast
 
 from agent.plugin_composition.tasks import TaskAdmission, TaskSlot
+from core.common.file_io import run_file_io
 from .api import Denied, MessageReply, Result, durable_call_key
 from .execution import _fingerprint, finish
 from plugins.ledger.contract import MessageCatalog, MessageReader, OwnerStore, OwnerTransaction
@@ -41,9 +42,10 @@ async def abandon_call(
     key = durable_call_key(reply.call_ref)
 
     async def settle(slot: TaskSlot) -> Result:
-        record = state.read(key)
+        # 回执与已有结果的读取放进 worker：启动扫描时机械盘冷读曾让事件循环停顿 2.2s。
+        record = await run_file_io(lambda: state.read(key))
         if record is None:
-            existing = _existing_result(reply.reader, reply.call_ref)
+            existing = await run_file_io(lambda: _existing_result(reply.reader, reply.call_ref))
             if existing is not None:
                 if slot.current is not None:
                     slot.current.cancel()
