@@ -77,6 +77,21 @@ class _CpuRun:
     def cancel(self) -> None:
         self._stop.set()
 
+    def alive(self) -> bool:
+        return self._thread.is_alive()
+
+    # 在循环上轮询等线程退出，不占 worker；被取消也等到线程结束再抛出。
+    async def drain(self) -> None:
+        self._stop.set()
+        cancelled = False
+        while self._thread.is_alive():
+            try:
+                await asyncio.sleep(0.01)
+            except asyncio.CancelledError:
+                cancelled = True
+        if cancelled:
+            raise asyncio.CancelledError
+
     def finish(self) -> dict[str, object]:
         self._stop.set()
         self._thread.join()
@@ -105,6 +120,8 @@ class Profiles:
         async with self._lock:
             if self._closed:
                 raise ProfileBusy("诊断服务正在关闭")
+            if self._cpu is not None and not self._cpu.alive():
+                self._cpu = None
             if self._cpu is not None:
                 raise ProfileBusy("已有 CPU 采样正在运行")
             if kind == "cpu":
@@ -164,8 +181,9 @@ class Profiles:
             self._timer = None
             return self.status()
 
-    # 等采样线程退出再汇总；取消也先等线程结束，失败明确显示 failed。
+    # 先发停止信号再等汇总：等待被取消时线程仍会自行退出；线程退出前保留 owner。
     async def _finish_cpu(self, run: _CpuRun) -> None:
+        run.cancel()
         try:
             summary = await run_file_io(run.finish)
             self._result = {**self._result, **summary, "state": "complete", "ended_at": time.time()}
@@ -175,7 +193,8 @@ class Profiles:
         except RuntimeError as error:
             self._result = {**self._result, "state": "failed", "error": str(error), "ended_at": time.time()}
         finally:
-            self._cpu = None
+            if not run.alive():
+                self._cpu = None
             self._timer = None
 
     def _summarize(self) -> dict[str, object]:
@@ -209,7 +228,7 @@ class Profiles:
                 tracemalloc.stop()
                 self._owned = False
             if self._cpu is not None:
-                self._cpu.cancel()
+                await self._cpu.drain()
                 self._cpu = None
             self._result = {"state": "closed"}
 
