@@ -14,13 +14,13 @@ async def test_interest_scoring_yields_and_drains_its_history_reader(tmp_path, m
     async with memory_fixture(tmp_path) as (_, _, learning, _, log, embeddings, _, _):
         append_pair(log, embeddings, learning, 0)
         gate = WorkerGate()
-        original = learning.samples_since
+        original = learning.iter_samples_since
 
-        def samples_since(*args, **kwargs):
+        def iter_samples_since(*args, **kwargs):
             gate.stop()
             return original(*args, **kwargs)
 
-        monkeypatch.setattr(learning, "samples_since", samples_since)
+        monkeypatch.setattr(learning, "iter_samples_since", iter_samples_since)
 
         async def embed(texts):
             return [[1.0, 0.0, 0.0] for _ in texts]

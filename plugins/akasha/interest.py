@@ -3,6 +3,7 @@ from __future__ import annotations
 from collections.abc import Awaitable, Callable, Mapping, Sequence
 from dataclasses import dataclass
 from datetime import datetime
+import heapq
 import threading
 from typing import Literal
 
@@ -86,49 +87,57 @@ class SemanticInterest:
             cache = self._cache
             if cache is None or revision is None or cache.rule != identity or cache.revision != revision:
                 cache = _Prototypes(identity, -1 if revision is None else revision, {}, [], [])
-            # 2. 学习准入继续由 Akasha 独占，内部和未完成工作没有样本；只投影续读点之后的闭段。
-            samples, cursors = self._learning.samples_since(
-                self._catalog, rule, heads=heads, cursors=cache.cursors, keep=_complete,
-            )
+            # 2. 删除的 Session 不再提供证据；有界堆只留最新 _KEEP 个原型，溢出即记为截断。
+            kept = _Newest(_KEEP, [item for item in cache.items if item[0][1] in heads])
             records = self._embeddings.bind(self._learning.text)
             pending: list[Sample] = []
-            fresh: list[tuple[CausalKey, np.ndarray]] = []
-            for sample in (*cache.pending, *samples):
+            cursors: dict[str, SessionCursor] = {}
+
+            def admit(sample: Sample) -> None:
                 if sample.ending.session_id not in heads:
-                    continue
+                    return
                 # cutoff 之后的样本不读向量，留到 cutoff 推进后再算，与原算法同样不受其向量影响。
                 if sample.key[0] > through:
                     pending.append(_compact(sample))
-                    continue
+                    return
                 prototype = self._prototype(sample, rule, records)
                 if not isinstance(prototype, str):
-                    fresh.append((sample.key, prototype))
+                    kept.push(sample.key, prototype)
                 elif prototype == "missing":
                     pending.append(_compact(sample))
-            # 3. 删除的 Session 不再提供证据；缓存只留最新原型，截断后 cutoff 不足时整段重算。
-            items = sorted((item for item in (*cache.items, *fresh) if item[0][1] in heads), key=lambda item: item[0])
-            truncated = cache.truncated or len(items) > _KEEP
-            cache.items, cache.pending, cache.cursors, cache.truncated = items[-_KEEP:], pending, cursors, truncated
+            for sample in cache.pending:
+                admit(sample)
+            # 3. 学习准入继续由 Akasha 独占；逐 Session 投影续读点之后的闭段并当场归约，冷启动不再整段常驻全部历史。
+            for session, samples, cursor in self._learning.iter_samples_since(
+                self._catalog, rule, heads=heads, cursors=cache.cursors, keep=_complete,
+            ):
+                cursors[session] = cursor
+                for sample in samples:
+                    admit(sample)
+            cache.items, cache.pending, cache.cursors = kept.sorted(), pending, cursors
+            cache.truncated = cache.truncated or kept.dropped
             if revision is not None:
                 self._cache = cache
             selected = [vector for key, vector in cache.items if key[0] <= through]
-            if len(selected) < PROTOTYPES and truncated:
+            if len(selected) < PROTOTYPES and cache.truncated:
                 self._cache = None
                 return self._full(rule, through, heads)
             return selected[-PROTOTYPES:]
 
-    # 缓存被截断而 cutoff 早于保留窗口时，按原算法整段重算一次，不写缓存。
+    # 缓存被截断而 cutoff 早于保留窗口时，按原算法整段重算一次，不写缓存；同样逐 Session 归约。
     def _full(self, rule: LearningConfig, through: datetime, heads: Mapping[str, int]) -> list[np.ndarray]:
         records = self._embeddings.bind(self._learning.text)
-        samples = self._learning.samples(self._catalog, rule, heads=heads)
-        prototypes: list[np.ndarray] = []
-        for sample in samples:
-            if sample.key[0] > through or not _complete(sample):
-                continue
-            prototype = self._prototype(sample, rule, records)
-            if not isinstance(prototype, str):
-                prototypes.append(prototype)
-        return prototypes[-PROTOTYPES:]
+        kept = _Newest(PROTOTYPES, [])
+        for _, samples, _ in self._learning.iter_samples_since(
+            self._catalog, rule, heads=heads, cursors={}, keep=_complete,
+        ):
+            for sample in samples:
+                if sample.key[0] > through:
+                    continue
+                prototype = self._prototype(sample, rule, records)
+                if not isinstance(prototype, str):
+                    kept.push(sample.key, prototype)
+        return [vector for _, vector in kept.sorted()]
 
     # 0.9 输入加 0.1 回复的归一化原型；"skip" 表示样本永远不提供证据，"missing" 表示固定向量尚未写入。
     def _prototype(
@@ -150,6 +159,29 @@ class SemanticInterest:
         combined = 0.9 * user + 0.1 * np.asarray(vectors[-1], dtype=np.float32)
         norm = float(np.linalg.norm(combined))
         return combined / norm if norm > 0 else "skip"
+
+
+# 按因果键只留最新 limit 个原型的最小堆；键含 Session 与 seq，互不相等，向量不参与比较。
+class _Newest:
+    def __init__(self, limit: int, items: list[tuple[CausalKey, np.ndarray]]) -> None:
+        self._limit = limit
+        self._heap = items
+        heapq.heapify(self._heap)
+        self.dropped = False
+        while len(self._heap) > limit:
+            _ = heapq.heappop(self._heap)
+            self.dropped = True
+
+    def push(self, key: CausalKey, vector: np.ndarray) -> None:
+        if len(self._heap) < self._limit:
+            heapq.heappush(self._heap, (key, vector))
+            return
+        self.dropped = True
+        if key > self._heap[0][0]:
+            _ = heapq.heapreplace(self._heap, (key, vector))
+
+    def sorted(self) -> list[tuple[CausalKey, np.ndarray]]:
+        return sorted(self._heap, key=lambda item: item[0])
 
 
 # 只有完整回复的闭段可能成为原型；其余样本不让正文常驻。
