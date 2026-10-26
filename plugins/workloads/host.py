@@ -2,7 +2,9 @@ from __future__ import annotations
 
 import asyncio
 from agent.plugin_composition.effect import _join_cleanup
+from functools import cache
 import inspect
+import ssl
 from collections.abc import AsyncIterator, Awaitable, Callable, Mapping
 from contextlib import asynccontextmanager
 from dataclasses import dataclass, field
@@ -557,9 +559,15 @@ async def _http_health(url: str, timeout_seconds: float) -> tuple[bool, str]:
         await asyncio.sleep(min(0.2, remaining))
 
 
+# 进程内共用一个默认 TLS 上下文：每次新建客户端都重读 CA 证书包，约 14ms CPU，健康检查每 5 秒一次。
+@cache
+def _tls_context() -> ssl.SSLContext:
+    return ssl.create_default_context()
+
+
 def _health_status(url: str, timeout_seconds: float) -> int:
     # 客户端只由本次请求持有；取消等待后，线程仍能关闭自己的连接。
-    with httpx.Client() as client:
+    with httpx.Client(verify=_tls_context()) as client:
         return client.get(url, timeout=timeout_seconds).status_code
 
 
