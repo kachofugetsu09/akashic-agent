@@ -409,7 +409,7 @@ async def apply(ctx: Context) -> None:
     await run_file_io(store.initialize)
     # 完整性检查等宿主就绪后在后台跑，不和开机挂载争磁盘；损坏时记为任务失败的 Incident。
     # 按上次通过的时间每天一次：重启不重扫，长时间运行也会到期复查。
-    # 停止标记的 Effect 后登记、先清理，让卸载不必等全库扫描结束。
+    # 卸载先取消并等待任务、后执行 Effect，所以任务被取消时自己先置停止标记，不必等全库扫描结束。
     host = ctx.require(HOST_INFO)
     integrity_stop = threading.Event()
 
@@ -418,7 +418,13 @@ async def apply(ctx: Context) -> None:
         while True:
             delay = await run_file_io(store.integrity_due_in)
             if delay <= 0:
-                await run_file_io(lambda: store.check_integrity(integrity_stop))
+                scan = asyncio.ensure_future(run_file_io(lambda: store.check_integrity(integrity_stop)))
+                try:
+                    await asyncio.shield(scan)
+                except asyncio.CancelledError:
+                    integrity_stop.set()
+                    _ = await asyncio.gather(scan, return_exceptions=True)
+                    raise
                 if integrity_stop.is_set():
                     return
                 # 标记写失败时也等满一个间隔，不连续重扫。
