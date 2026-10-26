@@ -5,7 +5,7 @@ from plugins.models.contract import ModelError
 import asyncio
 import json
 import logging
-from collections.abc import AsyncGenerator, Callable, Mapping
+from collections.abc import AsyncGenerator, Callable, Iterable, Mapping
 from contextlib import AsyncExitStack, asynccontextmanager
 from datetime import UTC, datetime
 from functools import partial
@@ -248,9 +248,8 @@ async def run(ctx: Context, interest: Interest) -> None:
     def member(key: str) -> Callable[[str], bool]:
         return lambda session_id: policies.route(session_id).write == key
 
-    def write_graphs() -> tuple[str, ...]:
+    def write_graphs(heads: Iterable[str]) -> tuple[str, ...]:
         """default 图总在；独立图只在有成员 Session 后才建立。"""
-        heads = ctx.require(MESSAGE_CATALOG).snapshot_heads()
         routed = {policies.route(session_id).write for session_id in heads}
         return (DEFAULT_GRAPH, *sorted(key for key in routed if key is not None and key != DEFAULT_GRAPH))
 
@@ -618,7 +617,7 @@ async def run(ctx: Context, interest: Interest) -> None:
                     await close_memory()
                     memory_rule = None
                     reports: list[str] = []
-                    for key in write_graphs():
+                    for key in write_graphs(await ctx.require(MESSAGE_CATALOG).snapshot_heads_async()):
                         path = ensure_graph_directory(memory_path, key)
                         backup_root = rebuild_backup_root if key == DEFAULT_GRAPH else (
                             rebuild_backup_root / "graphs" / path.parent.name
@@ -708,10 +707,11 @@ async def run(ctx: Context, interest: Interest) -> None:
                         health.degrade(str(error))
 
         async with asyncio.TaskGroup() as group:
-            async for _heads in ctx.require(MESSAGE_CATALOG).follow():
+            # follow 产出的就是全目录已提交水位，路由直接用它，不在循环上同步重查。
+            async for heads in ctx.require(MESSAGE_CATALOG).follow():
                 async with ctx.runtime_scope():
                     await run_pending_rebuild()
-                    for key in write_graphs():
+                    for key in write_graphs(heads):
                         changed = pending.get(key)
                         if changed is None:
                             changed = pending[key] = asyncio.Event()

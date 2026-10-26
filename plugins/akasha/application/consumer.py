@@ -273,7 +273,7 @@ class MessageConsumer:
                 self.check_embedding_space, rule.embedding_model, rule.dimension, bindings,
             ))
             heads = {
-                session: head for session, head in catalog.snapshot_heads().items()
+                session: head for session, head in (await catalog.snapshot_heads_async()).items()
                 if member is None or member(session)
             }
             cutover = dict(self.state.cutover_heads)
