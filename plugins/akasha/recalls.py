@@ -74,6 +74,21 @@ class RecallRecordsRead:
         return tuple(sorted(records, key=lambda item: (item[1].timestamp, item[0]), reverse=True))
 
 
+    # 稳定 context: 身份由 read 直接命中，同一输入的旧记录只可能在该区间外；
+    # 跳过占绝大多数的稳定记录，不再逐条解码全部召回。排序与 list 相同。
+    def outside_context(self) -> tuple[tuple[str, Recall], ...]:
+        records: list[tuple[str, Recall]] = []
+        for start, stop in (("recall:", "recall:context:"), ("recall:context;", "recall;")):
+            while True:
+                page = self._state.scan(start=start, stop=stop, limit=1000)
+                records.extend((key.removeprefix("recall:"), Recall.model_validate_json(
+                    json.dumps(json_value(record.value)))) for key, record in page)
+                if len(page) < 1000:
+                    break
+                stop = page[-1][0]
+        return tuple(sorted(records, key=lambda item: (item[1].timestamp, item[0]), reverse=True))
+
+
 class RecallRecords(RecallRecordsRead):
     """Akasha's append-only record owner; writes stay inside the plugin."""
 
