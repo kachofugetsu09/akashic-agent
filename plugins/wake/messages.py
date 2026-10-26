@@ -20,10 +20,24 @@ from .tools import SCHEMAS, Screen, Share, Alert, Skip
 def recent_context(catalog: MessageCatalog, history: DeliveryHistory, *, target: str | None,
                    now: datetime) -> str:
     """冻结目标最近对话与跨会话真实送达通知，正文作为低信任历史材料。"""
+    passive = [] if target is None else _recent_conversation(catalog.reader(target), now)
+    delivered = history.recent(since=now - timedelta(days=7), until=now, limit=30,
+                              excluded_sources=frozenset({"conversation"}), visibility="listed")
+    proactive = [{"message_id": item.message.message_id, "session_id": item.message.session_id,
+                  "confirmed_at": item.confirmed_at.isoformat(), "text": "\n".join(
+                      cast(str, part.value) for part in item.message.body.parts
+                      if isinstance(part, ContentPart) and part.kind == "text")}
+                 for item in reversed(delivered) if isinstance(item.message.body, Output)]
+    return json.dumps({"recent_conversation": list(reversed(_preview(passive, 3000))),
+                       "delivered_messages": list(reversed(_preview(list(reversed(proactive)), 3000)))}, ensure_ascii=False)
+
+
+# 从结尾倒序翻页，凑满 20 条带正文的对话即停；长会话不再整段解码。
+def _recent_conversation(reader: MessageReader, now: datetime) -> list[dict[str, object]]:
     passive: list[dict[str, object]] = []
-    if target is not None:
-        messages = catalog.reader(target).snapshot()
-        for message in reversed(messages):
+    page = reader.read_tail(limit=50)
+    while True:
+        for message in reversed(page.messages):
             if (message.recorded_at > now
                     or message.source not in {"conversation", "legacy-unattributed"}
                     or not isinstance(message.body, (Input, Output))):
@@ -34,16 +48,10 @@ def recent_context(catalog: MessageCatalog, history: DeliveryHistory, *, target:
                 passive.append({"message_id": message.message_id, "role": "user" if isinstance(message.body, Input) else "assistant",
                                 "time": message.recorded_at.isoformat(), "text": text})
             if len(passive) == 20:
-                break
-    delivered = history.recent(since=now - timedelta(days=7), until=now, limit=30,
-                              excluded_sources=frozenset({"conversation"}), visibility="listed")
-    proactive = [{"message_id": item.message.message_id, "session_id": item.message.session_id,
-                  "confirmed_at": item.confirmed_at.isoformat(), "text": "\n".join(
-                      cast(str, part.value) for part in item.message.body.parts
-                      if isinstance(part, ContentPart) and part.kind == "text")}
-                 for item in reversed(delivered) if isinstance(item.message.body, Output)]
-    return json.dumps({"recent_conversation": list(reversed(_preview(passive, 3000))),
-                       "delivered_messages": list(reversed(_preview(list(reversed(proactive)), 3000)))}, ensure_ascii=False)
+                return passive
+        if not page.has_more:
+            return passive
+        page = reader.read_tail(before_seq=page.messages[0].seq, through_seq=page.through_seq, limit=50)
 
 
 def _preview(rows: Sequence[Mapping[str, object]], budget: int) -> list[dict[str, object]]:
