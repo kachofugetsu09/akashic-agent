@@ -68,7 +68,8 @@ class ReadMarks:
         with self._open_store() as store:
             return store.snapshot(scan)
 
-    # 只前进不后退；返回提交后的水位。写库在 worker 内，唤醒订阅者回到事件循环。
+    # 只前进不后退；返回提交后的水位。作用域在事件循环上借用，只有事务进 worker；
+    # 请求取消时仍等事务落定，已提交的前进照常唤醒订阅者后再传播取消。
     async def mark(self, session_id: str, seq: int) -> int:
         key = _PREFIX + session_id
 
@@ -80,10 +81,15 @@ class ReadMarks:
             _ = transaction.save(key, {"seq": seq}, expected_version=None if current is None else current.version)
             return seq, True
 
-        def commit() -> tuple[int, bool]:
-            with self._open_store() as store:
-                return store.transact(save)
-        value, changed = await run_file_io(commit)
+        with self._open_store() as store:
+            commit = asyncio.ensure_future(run_file_io(lambda: store.transact(save)))
+            try:
+                value, changed = await asyncio.shield(commit)
+            except asyncio.CancelledError:
+                outcome = (await asyncio.gather(commit, return_exceptions=True))[0]
+                if isinstance(outcome, tuple) and outcome[1]:
+                    self._notify()
+                raise
         if changed:
             self._notify()
         return value
