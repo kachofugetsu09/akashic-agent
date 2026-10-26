@@ -423,7 +423,10 @@ async def apply(ctx: Context) -> None:
                     await asyncio.shield(scan)
                 except asyncio.CancelledError:
                     integrity_stop.set()
-                    _ = await asyncio.gather(scan, return_exceptions=True)
+                    # 收尾期间扫描恰好报出损坏或 I/O 错误时，以真实错误结束，让它照常记为 Incident。
+                    outcome = (await asyncio.gather(scan, return_exceptions=True))[0]
+                    if isinstance(outcome, Exception):
+                        raise outcome
                     raise
                 if integrity_stop.is_set():
                     return
