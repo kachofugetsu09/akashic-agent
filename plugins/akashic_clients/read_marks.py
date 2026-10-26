@@ -5,6 +5,7 @@ import asyncio
 from collections.abc import AsyncGenerator, Callable, Mapping
 from contextlib import AbstractContextManager
 
+from core.common.file_io import run_file_io
 from plugins.ledger.contract import OwnerRecord, OwnerStore, OwnerTransaction
 
 # 每个会话一条记录；基线记录不落在 "read:" 区间内，扫描时天然排除。
@@ -67,8 +68,9 @@ class ReadMarks:
         with self._open_store() as store:
             return store.snapshot(scan)
 
-    # 只前进不后退；返回提交后的水位。
-    def mark(self, session_id: str, seq: int) -> int:
+    # 只前进不后退；返回提交后的水位。作用域在事件循环上借用，只有事务进 worker；
+    # 请求取消（含重复取消）时已提交的前进照常唤醒订阅者后再传播取消。
+    async def mark(self, session_id: str, seq: int) -> int:
         key = _PREFIX + session_id
 
         def save(transaction: OwnerTransaction) -> tuple[int, bool]:
@@ -78,8 +80,22 @@ class ReadMarks:
                 return previous, False
             _ = transaction.save(key, {"seq": seq}, expected_version=None if current is None else current.version)
             return seq, True
+
+        committed: list[tuple[int, bool]] = []
+
+        def commit(store: OwnerStore) -> tuple[int, bool]:
+            result = store.transact(save)
+            committed.append(result)
+            return result
+
+        # run_file_io 取消时先排空 worker，收据只可能在取消前落入 committed。
         with self._open_store() as store:
-            value, changed = store.transact(save)
+            try:
+                value, changed = await run_file_io(lambda: commit(store))
+            except asyncio.CancelledError:
+                if committed and committed[0][1]:
+                    self._notify()
+                raise
         if changed:
             self._notify()
         return value

@@ -372,7 +372,7 @@ def create_chat_app(
                 raise HTTPException(status_code=404, detail="会话不存在") from error
             if deleted:
                 raise HTTPException(status_code=404, detail="会话不存在")
-        seq = marks.mark(payload.session_id, min(payload.seq, head))
+        seq = await marks.mark(payload.session_id, min(payload.seq, head))
         return {"session_id": payload.session_id, "seq": seq}
 
     async def read_pins() -> dict[str, object]:

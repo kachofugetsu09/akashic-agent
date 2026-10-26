@@ -35,7 +35,8 @@ def _ask(log: MessageLog, session: str, message_id: str) -> None:
 
 # ---- 存储：基线一次、只前进、分页读全 ----
 
-def test_baseline_is_taken_once_and_marks_only_advance(tmp_path) -> None:
+@pytest.mark.asyncio
+async def test_baseline_is_taken_once_and_marks_only_advance(tmp_path) -> None:
     log = MessageLog(tmp_path / "sessions.db")
     try:
         marks = _marks(log)
@@ -44,9 +45,9 @@ def test_baseline_is_taken_once_and_marks_only_advance(tmp_path) -> None:
         # 第二次基线不覆盖已有水位，也不给之后的新会话补记录。
         marks.ensure_baseline({"akashic:a": 9, "akashic:c": 5})
         assert marks.has_baseline() and marks.read_all() == {"akashic:a": 3, "akashic:b": 0}
-        assert marks.mark("akashic:a", 5) == 5
-        assert marks.mark("akashic:a", 2) == 5
-        assert marks.mark("akashic:c", -1) == -1
+        assert await marks.mark("akashic:a", 5) == 5
+        assert await marks.mark("akashic:a", 2) == 5
+        assert await marks.mark("akashic:c", -1) == -1
         assert _marks(log).read_all() == {"akashic:a": 5, "akashic:b": 0, "akashic:c": -1}
     finally:
         log.close()
@@ -71,11 +72,11 @@ async def test_follow_wakes_only_on_committed_changes(tmp_path) -> None:
         frames = marks.follow()
         assert await asyncio.wait_for(anext(frames), 1) == {}
         pending = asyncio.ensure_future(anext(frames))
-        _ = marks.mark("akashic:a", 0)
+        _ = await marks.mark("akashic:a", 0)
         assert await asyncio.wait_for(pending, 1) == {"akashic:a": 0}
         # 没有前进的标记不唤醒订阅者。
         pending = asyncio.ensure_future(anext(frames))
-        _ = marks.mark("akashic:a", 0)
+        _ = await marks.mark("akashic:a", 0)
         await asyncio.sleep(0.05)
         assert not pending.done()
         _ = pending.cancel()
@@ -149,12 +150,12 @@ async def test_notifications_skip_read_messages_and_push_read_events(tmp_path) -
         marks = _marks(log)
         _say(log, "akashic:a", "a0", "read elsewhere")
         _say(log, "akashic:b", "b0", "still unread")
-        _ = marks.mark("akashic:a", 0)
+        _ = await marks.mark("akashic:a", 0)
         stream = notification_events(_feed(log), {}, reads=marks.read_all, read_events=True, poll_interval=0.01)
         ready, message = await _events(stream, 2)
         assert ready == ("ready", {"cursor": {}, "read": {"akashic:a": 0}})
         assert message[0] == "message" and message[1]["message_id"] == "b0"
-        _ = marks.mark("akashic:b", 0)
+        _ = await marks.mark("akashic:b", 0)
         assert await _events(stream, 1) == [("read", {"session_id": "akashic:b", "seq": 0})]
         await stream.aclose()
     finally:
@@ -171,7 +172,7 @@ async def test_old_clients_never_receive_read_events(tmp_path) -> None:
         ready, message = await _events(stream, 2)
         assert ready == ("ready", {"cursor": {}}) and message[1]["message_id"] == "a0"
         # 已读变化之后的下一条提醒之前，旧客户端不会收到任何 read 事件。
-        _ = marks.mark("akashic:a", 0)
+        _ = await marks.mark("akashic:a", 0)
         await asyncio.sleep(0.05)
         _say(log, "akashic:a", "a1")
         assert [name for name, _data in await _events(stream, 1)] == ["message"]
