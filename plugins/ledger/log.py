@@ -1249,7 +1249,7 @@ class MessageReader:
         # 1. 显式事务保留原读面，包括调用者尚未提交的写入。
         if log._reads.current is not None:
             return self._transaction_snapshot(through_seq)
-        with log._view_lock, log._read() as connection:
+        with log._read() as connection:
             if connection is log._writer_connection:
                 return self._transaction_snapshot(through_seq)
             # 2. 两项事实来自同一 RO 事务，外部追加和前缀改写都可见。
@@ -1258,18 +1258,27 @@ class MessageReader:
             ).fetchone()[0]
             head = self.head()
             upper = head if through_seq is None else min(head, through_seq)
-            prefix = log._message_views.get(self._session_id)
-            if prefix is None or revision is None or prefix.revision != revision:
-                prefix = _MessagePrefix(self._session_id, revision)
-            previous = prefix.seqs[-1] if prefix.seqs else -1
-            if upper > previous:
-                # 填充段由前缀自身持有并共享，不回填解码缓存（长会话冷恢复的主路径）。
-                tail = MessageReader.scan(self, tuple, after_seq=previous, through_seq=upper, _cache=False)
-                prefix.messages.extend(tail)
-                prefix.seqs.extend(message.seq for message in tail)
-            # 3. 只有真实提交后的读取进入共享读面，不依赖 observer 唤醒。
-            log._message_views[self._session_id] = prefix
-            return MessageSnapshot(prefix, bisect_right(prefix.seqs, upper), upper)
+            # 3. 锁内只取前缀与尾部位置；长会话冷扫描在锁外进行，提交方合并 head 不被它挡住。
+            with log._view_lock:
+                shared = log._message_views.get(self._session_id)
+                prefix = shared
+                if prefix is None or revision is None or prefix.revision != revision:
+                    prefix = _MessagePrefix(self._session_id, revision)
+                previous = prefix.seqs[-1] if prefix.seqs else -1
+            # 填充段由前缀自身持有并共享，不回填解码缓存（长会话冷恢复的主路径）。
+            tail = MessageReader.scan(
+                self, tuple, after_seq=previous, through_seq=upper, _cache=False,
+            ) if upper > previous else ()
+            with log._view_lock:
+                # 4. 扫描期间其他读取或提交可能已接上一段连续尾部，只补仍缺的部分。
+                end = prefix.seqs[-1] if prefix.seqs else -1
+                missing = [message for message in tail if message.seq > end]
+                prefix.messages.extend(missing)
+                prefix.seqs.extend(message.seq for message in missing)
+                # 5. 只有真实提交后的读取进入共享读面；期间被别的读取换掉时不以旧快照覆盖。
+                if log._message_views.get(self._session_id) is shared:
+                    log._message_views[self._session_id] = prefix
+                return MessageSnapshot(prefix, bisect_right(prefix.seqs, upper), upper)
 
     def _transaction_snapshot(self, through_seq: int | None) -> MessageSnapshot:
         """事务内快照独占前缀，不能为之后的已提交读取签发复用证明。"""

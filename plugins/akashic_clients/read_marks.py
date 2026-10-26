@@ -5,6 +5,7 @@ import asyncio
 from collections.abc import AsyncGenerator, Callable, Mapping
 from contextlib import AbstractContextManager
 
+from core.common.file_io import run_file_io
 from plugins.ledger.contract import OwnerRecord, OwnerStore, OwnerTransaction
 
 # 每个会话一条记录；基线记录不落在 "read:" 区间内，扫描时天然排除。
@@ -67,8 +68,8 @@ class ReadMarks:
         with self._open_store() as store:
             return store.snapshot(scan)
 
-    # 只前进不后退；返回提交后的水位。
-    def mark(self, session_id: str, seq: int) -> int:
+    # 只前进不后退；返回提交后的水位。写库在 worker 内，唤醒订阅者回到事件循环。
+    async def mark(self, session_id: str, seq: int) -> int:
         key = _PREFIX + session_id
 
         def save(transaction: OwnerTransaction) -> tuple[int, bool]:
@@ -78,8 +79,11 @@ class ReadMarks:
                 return previous, False
             _ = transaction.save(key, {"seq": seq}, expected_version=None if current is None else current.version)
             return seq, True
-        with self._open_store() as store:
-            value, changed = store.transact(save)
+
+        def commit() -> tuple[int, bool]:
+            with self._open_store() as store:
+                return store.transact(save)
+        value, changed = await run_file_io(commit)
         if changed:
             self._notify()
         return value
