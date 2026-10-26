@@ -559,10 +559,11 @@ async def _http_health(url: str, timeout_seconds: float) -> tuple[bool, str]:
         await asyncio.sleep(min(0.2, remaining))
 
 
-# 进程内共用一个默认 TLS 上下文：每次新建客户端都重读 CA 证书包，约 14ms CPU，健康检查每 5 秒一次。
+# 进程内共用一个与 httpx 默认 verify=True 相同的 TLS 上下文：每次新建客户端都重读 CA 证书包，
+# 约 14ms CPU，而健康检查每 5 秒一次。
 @cache
 def _tls_context() -> ssl.SSLContext:
-    return ssl.create_default_context()
+    return httpx.create_ssl_context()
 
 
 def _health_status(url: str, timeout_seconds: float) -> int:
