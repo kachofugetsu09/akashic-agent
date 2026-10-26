@@ -121,7 +121,9 @@ class Profiles:
             if self._closed:
                 raise ProfileBusy("诊断服务正在关闭")
             if self._cpu is not None and not self._cpu.alive():
+                # 上一轮线程已退出但未汇总：连同它的定时器一起释放，不让旧定时器停掉新一轮。
                 self._cpu = None
+                await self._cancel_timer()
             if self._cpu is not None:
                 raise ProfileBusy("已有 CPU 采样正在运行")
             if kind == "cpu":
@@ -152,13 +154,7 @@ class Profiles:
         async with self._lock:
             if not self._owned and self._cpu is None:
                 return self.status()
-            timer = self._timer
-            if timer is not None and timer is not asyncio.current_task():
-                timer.cancel()
-                try:
-                    await timer
-                except asyncio.CancelledError:
-                    pass
+            await self._cancel_timer()
             self._result = {**self._result, "state": "finishing"}
             if self._cpu is not None:
                 await self._finish_cpu(self._cpu)
@@ -180,6 +176,17 @@ class Profiles:
                     self._result = {**self._result, "state": "failed", "error": "剖析汇总未完成"}
             self._timer = None
             return self.status()
+
+    # 取消并等待本轮定时器；定时器自己调用 stop 时不等待自身。
+    async def _cancel_timer(self) -> None:
+        timer = self._timer
+        self._timer = None
+        if timer is not None and timer is not asyncio.current_task():
+            timer.cancel()
+            try:
+                await timer
+            except asyncio.CancelledError:
+                pass
 
     # 先发停止信号再等汇总：等待被取消时线程仍会自行退出；线程退出前保留 owner。
     async def _finish_cpu(self, run: _CpuRun) -> None:
