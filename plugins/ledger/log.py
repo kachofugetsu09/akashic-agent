@@ -414,6 +414,7 @@ class MessageLog:
         self._listener_lock = threading.Lock()
         self._decode_lock = threading.RLock()
         self._view_lock = threading.Lock()
+        self._saved_bindings: dict[str, str] = {}
         self._fill_lock = threading.Lock()
         self._message_views: WeakValueDictionary[str, _MessagePrefix] = WeakValueDictionary()
         self._decoded: WeakValueDictionary[tuple[object, ...], Message] = WeakValueDictionary()
@@ -902,6 +903,12 @@ class MessageLog:
             sort_keys=True,
             allow_nan=False,
         )
+        # 绑定只增不改：本进程确认过的身份直接核对 payload，每轮建工具菜单不再取写锁开事务。
+        saved = self._saved_bindings.get(binding_id)
+        if saved is not None:
+            if saved != payload:
+                raise MessageConflict("资源身份已用于另一份 descriptor")
+            return
         with self._lock, self._connection:
             _ = self._connection.execute("BEGIN IMMEDIATE")
             row = self._connection.execute(
@@ -911,10 +918,11 @@ class MessageLog:
             if row is not None:
                 if row[0] != payload:
                     raise MessageConflict("资源身份已用于另一份 descriptor")
-                return
-            _ = self._connection.execute(
-                "INSERT INTO bindings VALUES (?, ?)", (binding_id, payload)
-            )
+            else:
+                _ = self._connection.execute(
+                    "INSERT INTO bindings VALUES (?, ?)", (binding_id, payload)
+                )
+        self._saved_bindings[binding_id] = payload
 
     def read_binding(self, binding_id: str) -> Mapping[str, object]:
         """读取不可变绑定；缺失引用不能用当前实现补齐。
