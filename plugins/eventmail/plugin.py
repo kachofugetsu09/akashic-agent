@@ -16,7 +16,7 @@ from plugins.eventmail.contract import EVENTMAIL_DELIVERY_V2 as EVENTMAIL_DELIVE
 
 from core.common.file_io import run_file_io
 
-from .store import EventMailStore
+from .store import INTEGRITY_INTERVAL_SECONDS, EventMailStore
 
 api_version = 3
 name = "eventmail"
@@ -408,13 +408,31 @@ async def apply(ctx: Context) -> None:
     store = EventMailStore(ctx.data_root / "eventmail.sqlite3")
     await run_file_io(store.initialize)
     # 完整性检查等宿主就绪后在后台跑，不和开机挂载争磁盘；损坏时记为任务失败的 Incident。
-    # 停止标记的 Effect 后登记、先清理，让卸载不必等全库扫描结束。
+    # 按上次通过的时间每天一次：重启不重扫，长时间运行也会到期复查。
+    # 卸载先取消并等待任务、后执行 Effect，所以任务被取消时自己先置停止标记，不必等全库扫描结束。
     host = ctx.require(HOST_INFO)
     integrity_stop = threading.Event()
 
     async def check_integrity() -> None:
         await host.settled()
-        await run_file_io(lambda: store.check_integrity(integrity_stop))
+        while True:
+            delay = await run_file_io(store.integrity_due_in)
+            if delay <= 0:
+                scan = asyncio.ensure_future(run_file_io(lambda: store.check_integrity(integrity_stop)))
+                try:
+                    await asyncio.shield(scan)
+                except asyncio.CancelledError:
+                    integrity_stop.set()
+                    # 收尾期间扫描恰好报出损坏或 I/O 错误时，以真实错误结束，让它照常记为 Incident。
+                    outcome = (await asyncio.gather(scan, return_exceptions=True))[0]
+                    if isinstance(outcome, Exception):
+                        raise outcome
+                    raise
+                if integrity_stop.is_set():
+                    return
+                # 标记写失败时也等满一个间隔，不连续重扫。
+                delay = INTEGRITY_INTERVAL_SECONDS
+            await asyncio.sleep(delay)
 
     _ = await ctx.spawn(check_integrity(), name="eventmail.integrity")
     _ = await ctx.effect(lambda: integrity_stop.set, label="eventmail.integrity.stop")

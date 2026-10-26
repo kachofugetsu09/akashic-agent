@@ -5,6 +5,7 @@ import json
 import secrets
 import sqlite3
 import threading
+import time
 from collections.abc import Iterable, Mapping, Sequence
 from contextlib import contextmanager
 from datetime import UTC, datetime
@@ -12,6 +13,8 @@ from pathlib import Path
 from typing import Generator, Literal, NotRequired, TypedDict, cast
 
 _SCHEMA_VERSION = 3
+# 全库完整性检查的间隔：HDD 上 378MB 的库一次要 80 秒，按天检查，不随每次重启重扫。
+INTEGRITY_INTERVAL_SECONDS = 24 * 3600
 _IMMEDIATE_NOT_BEFORE = "1970-01-01T00:00:00+00:00"
 _ColumnIdentity = tuple[int, str, str, int, str | None, int]
 _IndexIdentity = tuple[str, int, str, int, tuple[str, ...]]
@@ -494,12 +497,22 @@ class EventMailStore:
 
     def __init__(self, path: Path) -> None:
         self.path = path
+        self._integrity_mark = path.with_name(path.name + ".integrity-ok")
 
     def initialize(self) -> None:
         """Create or validate the exact schema."""
 
         with self._transaction(write=True) as connection:
             self._validate_schema(connection)
+
+    def integrity_due_in(self) -> float:
+        """Seconds until the next full check; no or future-dated success mark means due now."""
+
+        try:
+            elapsed = time.time() - self._integrity_mark.stat().st_mtime
+        except OSError:
+            return 0.0
+        return 0.0 if elapsed < 0 else max(0.0, INTEGRITY_INTERVAL_SECONDS - elapsed)
 
     def check_integrity(self, stop: threading.Event) -> None:
         """Verify SQLite file integrity without holding the write lock."""
@@ -516,6 +529,11 @@ class EventMailStore:
             if result is None or result[0] != "ok":
                 detail = "missing result" if result is None else str(result[0])
                 raise RuntimeError(f"Content SQLite integrity check failed: {detail}")
+        # 只有通过才记下时间；标记写不进去只是下次照常检查。
+        try:
+            self._integrity_mark.touch()
+        except OSError:
+            pass
 
     def submit(
         self,
