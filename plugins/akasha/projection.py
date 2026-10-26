@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from collections.abc import Callable, Mapping, Sequence
+from collections.abc import Callable, Iterator, Mapping, Sequence
 from dataclasses import dataclass
 from datetime import UTC, datetime
 import hashlib
@@ -58,17 +58,20 @@ class SessionCursor:
     boundaries: Mapping[str, int]
 
 
-def project_session(
+# 单次投影读取的 seq 窗口；开放段跨过整个窗口时翻倍，保证前进。
+_WINDOW = 1024
+
+
+def iter_session(
     catalog: MessageCatalog, projection: TurnProjection, session_id: str, head: int, *,
     include: Callable[[str, str], bool], cursor: SessionCursor | None = None,
-) -> tuple[list[Sample], SessionCursor]:
-    """只读取每个学习来源上次闭段之后的尾部；返回新闭段和前进后的续读点。"""
+) -> Iterator[tuple[list[Sample], SessionCursor]]:
+    """按 seq 窗口分块产出新闭段；只有最后一次产出的续读点覆盖到 head，中途的不可保存。"""
     # 1. 倒退的 head 不可信，退回从头投影。
     if cursor is not None and cursor.head > head:
         cursor = None
     reader = catalog.reader(session_id)
     boundaries = {} if cursor is None else dict(cursor.boundaries)
-    samples: list[Sample] = []
     for source in sorted(reader.source_names()):
         if not include(session_id, source):
             continue
@@ -76,14 +79,25 @@ def project_session(
         if cursor is not None and reader.head(source=source) <= cursor.head:
             continue
         after = boundaries.get(source, -1)
-        messages = reader.scan(tuple, after_seq=after, through_seq=head, source=source)
-        turns = projection.project(messages, source, after_seq=after)
-        samples.extend(closed_samples(messages, turns))
-        # 3. 任一闭段（含 abandoned）的结束点都是投影合同允许的续读起点。
-        boundaries[source] = next(
-            (turn.through_seq for turn in reversed(turns) if turn.status != "open"), after,
-        )
-    return samples, SessionCursor(head, boundaries)
+        window = _WINDOW
+        while True:
+            # 3. 闭段之后的投影不依赖更早消息，窗口从上一块最后一个闭段续读，开放尾部留给下一块重读。
+            upper = min(head, after + window)
+            messages = reader.scan(tuple, after_seq=after, through_seq=upper, source=source)
+            turns = projection.project(messages, source, after_seq=after)
+            # 4. 任一闭段（含 abandoned）的结束点都是投影合同允许的续读起点。
+            closed = next((turn.through_seq for turn in reversed(turns) if turn.status != "open"), after)
+            chunk = closed_samples(messages, turns)
+            del messages, turns
+            if upper >= head:
+                boundaries[source] = closed
+                yield chunk, SessionCursor(head, dict(boundaries))
+                break
+            window = window * 2 if closed == after else _WINDOW
+            after = boundaries[source] = closed
+            if chunk:
+                yield chunk, SessionCursor(head, dict(boundaries))
+    yield [], SessionCursor(head, boundaries)
 
 
 def closed_samples(messages: Sequence[Message], turns: Sequence[ProjectedTurn]) -> list[Sample]:
