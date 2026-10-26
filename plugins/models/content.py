@@ -163,7 +163,6 @@ async def load_artifacts(
 _ENCODED_LIMIT = 2 * MAX_IMAGE_DATA_URI_TOTAL_BYTES
 _encoded: OrderedDict[str, str] = OrderedDict()
 _encoded_bytes = 0
-_encoding: dict[str, asyncio.Task[tuple[str, str]]] = {}
 
 
 async def _encoded_image(reader: ArtifactRead, ref: AttachmentRef) -> str:
@@ -174,17 +173,13 @@ async def _encoded_image(reader: ArtifactRead, ref: AttachmentRef) -> str:
         if cached is not None:
             _encoded.move_to_end(ref.sha256)
             return cached
-        pending = _encoding.get(ref.sha256)
-        if pending is None or pending.get_loop() is not asyncio.get_running_loop():
-            raw = await lease.read_bytes(max_bytes=MAX_IMAGE_FILE_BYTES)
-            # 2. 同一图片的并发请求共享一次转图；任务独立于单个调用者的取消。
-            pending = asyncio.ensure_future(asyncio.to_thread(_encode_and_digest, raw))
-            _encoding[ref.sha256] = pending
-            pending.add_done_callback(lambda task, key=ref.sha256: _settle(key, task))
-            del raw
+        raw = await lease.read_bytes(max_bytes=MAX_IMAGE_FILE_BYTES)
     finally:
         await lease.aclose()
-    uri, _ = await asyncio.shield(pending)
+    # 2. 并发首次使用同一图片时各自转图，结果相同；不共享在途任务，取消语义与原来一致。
+    uri, digest = await asyncio.to_thread(_encode_and_digest, raw)
+    del raw
+    _remember(ref.sha256, uri, digest)
     return uri
 
 
@@ -193,12 +188,8 @@ def _encode_and_digest(raw: bytes) -> tuple[str, str]:
 
 
 # 3. 只缓存实际字节摘要与引用一致的结果；按总字节淘汰最久未用的条目。
-def _settle(key: str, task: asyncio.Task[tuple[str, str]]) -> None:
+def _remember(key: str, uri: str, digest: str) -> None:
     global _encoded_bytes
-    _ = _encoding.pop(key, None)
-    if task.cancelled() or task.exception() is not None:
-        return
-    uri, digest = task.result()
     if digest != key or len(uri) > _ENCODED_LIMIT or key in _encoded:
         return
     _encoded[key] = uri
