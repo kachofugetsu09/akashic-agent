@@ -8,7 +8,7 @@ from . import dashboard
 from .profiling import PROFILES, Profiles
 from .records import Records
 from .runtime import Monitor
-from .stalls import StallWatch
+from .stalls import StallWatch, sample_cpu
 
 api_version = 3
 name = "runtime_diagnostics"
@@ -20,7 +20,7 @@ async def apply(ctx: Context) -> None:
     """先登记资源关闭责任，再发布只读接口与独立剖析控制。"""
     records = Records(ctx.runtime.plugin_id)
     monitor = Monitor(records)
-    profiles = Profiles()
+    profiles = Profiles(sample_cpu=sample_cpu)
     await ctx.effect(monitor.start, label="diagnostics.records")
     await ctx.effect(lambda: profiles.close, label="diagnostics.profiles")
     await ctx.provide(DIAGNOSTICS, records)

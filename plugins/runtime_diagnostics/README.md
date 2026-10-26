@@ -93,13 +93,21 @@ HTTP 复用现有 UI 后端监听器，以无前端模块的 Dashboard 注册。
 - `GET /api/dashboard/runtime-diagnostics?after=0`：上述记录和独立的 `profile` 状态。
 - `GET /api/dashboard/runtime-diagnostics/export`：下载完整保留窗口和最近一轮剖析的 JSON。
 - `POST /api/dashboard/runtime-diagnostics/profile`，正文 `{"seconds":30}`：手动开始
-  10～120 秒的 Python 分配追踪。重复开启或已存在其他 tracer 返回 409，非法输入返回 422。
+  10～120 秒的 Python 分配追踪；`{"seconds":30,"kind":"cpu"}` 改为 CPU 采样。同一时间只有一轮，
+  重复开启或已存在其他 tracer 返回 409，非法输入返回 422。
 - `POST /api/dashboard/runtime-diagnostics/profile/stop`：提前结束并汇总。未运行时只返回状态。
 
 追踪默认关闭。开启后记录新分配的 5 层 Python 调用栈，结束时保留仍存活分配的前
 30 组位置、大小、数量，以及追踪内存当前值、峰值和 tracer 自身内存。不是对象持有者
 分析，不包含启动追踪前的分配，也不保证覆盖原生扩展。记录的是期间峰值数值，
 最终调用栈对应结束快照，不能把二者混称为峰值的分配栈。
+
+CPU 采样由独立线程每 20ms 抓一次全部 Python 线程的栈（与停顿现场相同的脱敏规则），同时读各线程
+`/proc` CPU 时间；30 个线程时约占 5% 单核，只在运维发起时运行。结果的 `cpu_threads` 是窗口内各线程
+实际用掉的 CPU（`/proc` 增量，Linux 以外为空）；`cpu_stacks` 是最内层帧不在空闲等待
+（`select`、`Event.wait`、线程池空闲等）时的命中次数，`estimated_ms` = 命中 × 采样间隔。采样线程
+拿到 GIL 时，正在执行 Python 的线程停在执行位置，所以事件循环上的短回调也按比例出现；持有 GIL 的
+长 C 调用会让采样线程一起等待，命中偏少。最多保留 40 组栈。
 
 剖析开始和结束时各读一次 glibc `mallinfo2()`，放在 `profile.allocator_start` 与
 `profile.allocator_end`（结束值只在 `complete` 时有），区分「真在用」与「已释放未归还」：

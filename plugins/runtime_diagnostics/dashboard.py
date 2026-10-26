@@ -4,6 +4,7 @@ from __future__ import annotations
 from fastapi import Depends, FastAPI, HTTPException, Query, Request
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel, ConfigDict, Field
+from typing import Literal
 
 from agent.plugin_composition.requests import RequestContext
 from plugins.runtime_diagnostics.contract import DIAGNOSTICS
@@ -15,6 +16,7 @@ inject = (DIAGNOSTICS, PROFILES)
 class ProfileRequest(BaseModel):
     model_config = ConfigDict(extra="forbid", strict=True)
     seconds: int = Field(default=30, ge=10, le=120)
+    kind: Literal["memory", "cpu"] = "memory"
 
 
 def reject_browser_request(request: Request) -> None:
@@ -44,7 +46,7 @@ def register(app: FastAPI, context: RequestContext) -> None:
     @app.post("/api/dashboard/runtime-diagnostics/profile", dependencies=browser_guard)
     async def start(request: ProfileRequest) -> dict[str, object]:
         try:
-            return await context.require(PROFILES).start(request.seconds)
+            return await context.require(PROFILES).start(request.seconds, request.kind)
         except ProfileBusy as error:
             raise HTTPException(409, str(error)) from error
 
