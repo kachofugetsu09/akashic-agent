@@ -400,6 +400,8 @@ async def _start_follower(ctx: Context) -> None:
     catalog = ctx.require(MESSAGE_CATALOG)
     projection = ctx.require(TURN_PROJECTION)
     state: OwnerStore | None = None
+    # 每组上次核对时所在会话的 head；Turn 只会因新消息闭合，head 未前进时不必重新投影。
+    checked: dict[tuple[str, str, str, str], int] = {}
 
     async def once() -> None:
         nonlocal state
@@ -418,10 +420,21 @@ async def _start_follower(ctx: Context) -> None:
                 cast(str, value.get("turn_input_id")),
             )
             groups.setdefault(group, []).append((key, record))
-        for records in groups.values():
+        for group in tuple(checked):
+            if group not in groups:
+                del checked[group]
+        for group, records in groups.items():
+            # 字段无效的组由 _try_end 先行判失败，不能先拿它的 session_id 建 reader。
+            session_id = group[1]
+            head = (await run_file_io(catalog.reader(session_id).head)
+                    if isinstance(session_id, str) and session_id else -1)
+            if checked.get(group) == head:
+                continue
             # follow 唤醒时没有 scope；每组效果取得当前选定的运行时。
             async with ctx.runtime_scope():
-                await _try_end(ctx, catalog, projection, records)
+                await _try_end(ctx, catalog, projection, records, through_seq=head)
+            # 核对成功后才记下；失败的组下次唤醒照常重试。
+            checked[group] = head
 
     async with ctx.runtime_scope():
         await once()
@@ -435,6 +448,8 @@ async def _try_end(
     catalog: MessageCatalog,
     projection: TurnProjection,
     records: list[tuple[str, OwnerRecord]],
+    *,
+    through_seq: int,
 ) -> None:
     """只在源 Turn 已闭合后结束同一 Computer group。"""
     key, record = records[0]
@@ -454,7 +469,6 @@ async def _try_end(
         ctx.report_incident("computer-end-turn", f"{key}: Computer owner record 字段无效")
         return
     reader = catalog.reader(cast(str, value["session_id"]))
-    through_seq = reader.head()
     turns = await run_file_io(lambda: projection.project(
         tuple(reader.committed_snapshot(through_seq=through_seq)), cast(str, value["source"])))
     if not any(
