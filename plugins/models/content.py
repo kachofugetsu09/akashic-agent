@@ -2,9 +2,10 @@ from __future__ import annotations
 
 import asyncio
 import codecs
+import hashlib
 import json
 import posixpath
-from collections import Counter
+from collections import Counter, OrderedDict
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import asdict
 from typing import Any, cast
@@ -132,13 +133,7 @@ async def load_artifacts(
                         and raw_bytes + raw_cost <= MAX_IMAGE_TOTAL_BYTES)
                 if fits:
                     # 2. 字节完整性由 Artifact owner 核验，关闭租约后在 worker 转图。
-                    lease = await reader.acquire(ref)
-                    try:
-                        raw = await lease.read_bytes(max_bytes=MAX_IMAGE_FILE_BYTES)
-                    finally:
-                        await lease.aclose()
-                    candidate = await asyncio.to_thread(encode_image_bytes, raw)
-                    del raw
+                    candidate = await _encoded_image(reader, ref)
                     encoded_cost = len(candidate) * counts[ref.artifact_id]
                     fits = encoded_bytes + encoded_cost <= MAX_IMAGE_DATA_URI_TOTAL_BYTES
                     if fits:
@@ -161,6 +156,47 @@ async def load_artifacts(
             blocks.append(text_block)
         content[ref.artifact_id] = tuple(blocks)
     return cast(Mapping[str, tuple[Mapping[str, Any], ...]], freeze_json(content))
+
+
+# 不可变图片按内容摘要复用请求图：每次模型调用都会重新投影历史图片，工具循环里同一张图
+# 原本每步重编码一次（PNG optimize 单张可达秒级）。上限为单次请求图片预算的两倍。
+_ENCODED_LIMIT = 2 * MAX_IMAGE_DATA_URI_TOTAL_BYTES
+_encoded: OrderedDict[str, str] = OrderedDict()
+_encoded_bytes = 0
+
+
+async def _encoded_image(reader: ArtifactRead, ref: AttachmentRef) -> str:
+    # 1. 命中也照常取得并关闭租约：附件存在与读取授权仍由 owner 判定，只省去读字节与转图。
+    lease = await reader.acquire(ref)
+    try:
+        cached = _encoded.get(ref.sha256)
+        if cached is not None:
+            _encoded.move_to_end(ref.sha256)
+            return cached
+        raw = await lease.read_bytes(max_bytes=MAX_IMAGE_FILE_BYTES)
+    finally:
+        await lease.aclose()
+    # 2. 并发首次使用同一图片时各自转图，结果相同；不共享在途任务，取消语义与原来一致。
+    uri, digest = await asyncio.to_thread(_encode_and_digest, raw)
+    del raw
+    _remember(ref.sha256, uri, digest)
+    return uri
+
+
+def _encode_and_digest(raw: bytes) -> tuple[str, str]:
+    return encode_image_bytes(raw), hashlib.sha256(raw).hexdigest()
+
+
+# 3. 只缓存实际字节摘要与引用一致的结果；按总字节淘汰最久未用的条目。
+def _remember(key: str, uri: str, digest: str) -> None:
+    global _encoded_bytes
+    if digest != key or len(uri) > _ENCODED_LIMIT or key in _encoded:
+        return
+    _encoded[key] = uri
+    _encoded_bytes += len(uri)
+    while _encoded_bytes > _ENCODED_LIMIT:
+        _, evicted = _encoded.popitem(last=False)
+        _encoded_bytes -= len(evicted)
 
 
 def render_content(
