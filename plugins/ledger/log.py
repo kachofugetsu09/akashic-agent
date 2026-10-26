@@ -11,6 +11,7 @@ import re
 import secrets
 import sqlite3
 import threading
+from collections import OrderedDict
 from collections.abc import AsyncGenerator, Callable, Generator, Iterable, Iterator, Mapping, Sequence
 from bisect import bisect_right
 from contextlib import closing, contextmanager
@@ -66,6 +67,8 @@ _DECODE_STRONG_BODY = 8192
 # 附件引用备忘：长会话一次材料准备就引用全部历史 id，容量小于历史时
 # FIFO 必抖穿且每轮重查；值多为共享空元组，32768 条约占几 MB。
 _ATTACHMENT_MEMO_SIZE = 32768
+# 已确认绑定的进程内核对：每个 payload 约 0.2–1KB，256 条覆盖每轮工具菜单与近期摘要。
+_SAVED_BINDINGS_LIMIT = 256
 MESSAGE_BODY_KIND_INDEX_SCHEMA = """CREATE INDEX IF NOT EXISTS message_source_kind_seq
     ON messages (session_key, source, json_extract(body, '$.kind'), seq,
                  json_extract(body, '$.finish'));"""
@@ -414,6 +417,8 @@ class MessageLog:
         self._listener_lock = threading.Lock()
         self._decode_lock = threading.RLock()
         self._view_lock = threading.Lock()
+        self._saved_bindings: OrderedDict[str, str] = OrderedDict()
+        self._saved_bindings_lock = threading.Lock()
         self._fill_lock = threading.Lock()
         self._message_views: WeakValueDictionary[str, _MessagePrefix] = WeakValueDictionary()
         self._decoded: WeakValueDictionary[tuple[object, ...], Message] = WeakValueDictionary()
@@ -902,6 +907,15 @@ class MessageLog:
             sort_keys=True,
             allow_nan=False,
         )
+        # 绑定只增不改：本进程近期确认过的身份直接核对 payload，每轮建工具菜单不再取写锁开事务。
+        with self._saved_bindings_lock:
+            saved = self._saved_bindings.get(binding_id)
+            if saved is not None:
+                self._saved_bindings.move_to_end(binding_id)
+        if saved is not None:
+            if saved != payload:
+                raise MessageConflict("资源身份已用于另一份 descriptor")
+            return
         with self._lock, self._connection:
             _ = self._connection.execute("BEGIN IMMEDIATE")
             row = self._connection.execute(
@@ -911,10 +925,16 @@ class MessageLog:
             if row is not None:
                 if row[0] != payload:
                     raise MessageConflict("资源身份已用于另一份 descriptor")
-                return
-            _ = self._connection.execute(
-                "INSERT INTO bindings VALUES (?, ?)", (binding_id, payload)
-            )
+            else:
+                _ = self._connection.execute(
+                    "INSERT INTO bindings VALUES (?, ?)", (binding_id, payload)
+                )
+        # 摘要等身份会持续出现，按最近使用淘汰；淘汰后的身份仍走上面的事务核对。
+        with self._saved_bindings_lock:
+            self._saved_bindings[binding_id] = payload
+            self._saved_bindings.move_to_end(binding_id)
+            while len(self._saved_bindings) > _SAVED_BINDINGS_LIMIT:
+                _ = self._saved_bindings.popitem(last=False)
 
     def read_binding(self, binding_id: str) -> Mapping[str, object]:
         """读取不可变绑定；缺失引用不能用当前实现补齐。
