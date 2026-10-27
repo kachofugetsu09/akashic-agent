@@ -946,3 +946,4 @@ dialog.settings-scrim::backdrop { background: transparent; }
 .settings-key-link { color: var(--ak-color-action-primary); font-weight: 500; text-decoration: none; }
 .settings-key-link:hover { text-decoration: underline; }
 .settings-dialog-footer:has(> [data-manual]) { justify-content: space-between; }
+.settings-dialog-footer > [data-manual] { min-height: 2.25rem; padding-inline: 0.25rem; font-size: var(--models-type-caption); }
