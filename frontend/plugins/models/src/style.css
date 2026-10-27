@@ -667,7 +667,7 @@ dialog.settings-scrim::backdrop { background: transparent; }
 .settings-dialog--inline .settings-dialog-body > .settings-account { margin-block-end: 0.75rem; }
 
 /* 账号框：账号、套餐与读取时间一行，下面每个窗口一条进度。 */
-.settings-account-box { border: 1px solid var(--ak-rule-subtle); border-radius: var(--models-radius-panel); padding: 0.625rem 0.875rem; background: var(--ak-paper-sheet); }
+.settings-account-box { padding: 0; }
 .settings-account-top { display: flex; flex-wrap: wrap; align-items: center; gap: 0.25rem 0.625rem; }
 .settings-account-top strong { min-width: 0; overflow-wrap: anywhere; font-size: var(--models-type-body); font-weight: 600; }
 .settings-account-top small { color: var(--ak-ink-secondary); font-size: var(--models-type-caption); }
@@ -696,7 +696,7 @@ dialog.settings-scrim::backdrop { background: transparent; }
 .settings-chip:focus-visible { outline: 2px solid var(--md-sys-color-primary); outline-offset: 1px; }
 
 /* 参数表：模型、上下文、最大输出、看图、验证各一列。 */
-.settings-param-table { display: grid; grid-template-columns: minmax(8rem, 1fr) 6.5rem 6.5rem 3rem auto; align-items: center; gap: 0.375rem 0.625rem; border: 1px solid var(--ak-rule-subtle); border-radius: var(--models-radius-panel); padding: 0.625rem 0.875rem; }
+.settings-param-table { display: grid; grid-template-columns: minmax(8rem, 1fr) 6.5rem 6.5rem 3rem auto; align-items: center; gap: 0.375rem 0.625rem; padding-block: 0.25rem; }
 .settings-param-table[hidden] { display: none; }
 .settings-param-head, .settings-param-row { display: contents; }
 .settings-param-head > span { color: var(--ak-ink-secondary); font-size: var(--models-type-caption); font-weight: 600; }

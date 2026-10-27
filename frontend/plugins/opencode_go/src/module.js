@@ -18,16 +18,15 @@ export function activate(ctx) {
     render(host, _view, rawProps) {
       const props = requireProps(rawProps);
       const existing = props.state.connection;
-      host.innerHTML = `<header class="settings-dialog-header"><div class="settings-dialog-heading"><h2 class="settings-dialog-title">${existing ? `编辑 ${escapeHtml(existing.name)}` : "连接 OpenCode Go"}</h2><p class="settings-dialog-description">使用本机已登录的 OpenCode 凭据或独立 API Key，连接后探测可用模型。</p></div>
+      host.innerHTML = `<header class="settings-dialog-header"><div class="settings-dialog-heading"><h2 class="settings-dialog-title">${existing ? `编辑 ${escapeHtml(existing.name)}` : "连接 OpenCode Go"}</h2><p class="settings-dialog-description">使用本机已登录的 OpenCode 凭据或独立 API Key，连接后在详情里勾选要启用的模型。</p></div>
         <button type="button" class="settings-icon-button" aria-label="关闭" data-close>${CLOSE_ICON}</button></header>
         <form class="settings-dialog-form"><div class="settings-dialog-body"><div class="settings-form-grid">
           <label class="is-wide"><span>连接名称</span><input name="name" aria-label="连接名称" required autocomplete="organization"></label>
           <label class="is-wide"><span>Base URL</span><input name="endpoint" aria-label="Base URL" ${existing ? "" : "required"} type="url" placeholder="${existing ? existing.endpointHost ? `当前 ${existing.endpointHost.replace(/[^a-z0-9.:-]/giu, "")}，填写新地址才会更换` : "留空则保持原地址" : "https://opencode.ai/zen/go/v1"}"></label>
           <label class="settings-secret is-wide"><span>API Key</span><input name="apiKey" aria-label="API Key" type="password" autocomplete="off" placeholder="${existing ? "留空保留现有密钥" : "可留空，直接使用本机登录态"}"><button type="button" data-show-key aria-label="显示 API Key">${EYE_ICON}</button></label>
         </div>
-        <section class="settings-model-discovery settings-model-discovery--automatic"><header><div><h3>选择模型</h3><p>探测到的模型仅作为候选，保存后即可用于日常对话与任务。</p></div></header></section>
         <p class="settings-inline-error" data-error role="alert" hidden></p></div>
-        <footer class="settings-dialog-footer"><span class="settings-dialog-footer-note">${SHIELD_ICON}凭据保存后不会在页面中明文回显</span><span class="settings-dialog-actions">${existing ? '<button type="button" class="settings-secondary-button" data-resync>刷新模型能力</button>' : ""}<button type="submit" class="settings-primary-button">${existing ? "保存连接并选择模型" : "连接并选择模型"}</button></span></footer></form>`;
+        <footer class="settings-dialog-footer"><span class="settings-dialog-footer-note">${SHIELD_ICON}凭据保存后不会在页面中明文回显</span><span class="settings-dialog-actions">${existing ? '<button type="button" class="settings-secondary-button" data-resync>刷新模型能力</button>' : ""}<button type="submit" class="settings-primary-button">${existing ? "保存" : "连接"}</button></span></footer></form>`;
       const form = host.querySelector("form");
       const changed = () => props.dirty(true);
       form.addEventListener("input", changed);
@@ -77,7 +76,7 @@ export function activate(ctx) {
         submit(form, props.actions.startAuth(input)
           .then((started) => props.actions.finishAuth(started.attemptId))
           .then(() => props.actions.selectModels())
-          .then((selected) => props.changed(selected ? "OpenCode Go 已连接，模型选择已保存" : "OpenCode Go 已连接，模型选择未改动")));
+          .then((selected) => props.changed(selected ? "OpenCode Go 已连接，模型改动已保存" : "OpenCode Go 已连接")));
       });
       queueMicrotask(() => form.elements.name.focus());
       return () => host.replaceChildren();

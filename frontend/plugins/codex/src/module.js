@@ -17,15 +17,14 @@ export function activate(ctx) {
       const props = requireProps(rawProps);
       const existing = props.state.connection;
       const title = existing ? `编辑 ${escapeHtml(existing.name)}` : "连接 Codex";
-      host.innerHTML = `<header class="settings-dialog-header"><div class="settings-dialog-heading"><h2 class="settings-dialog-title">${title}</h2><p class="settings-dialog-description">授权 ChatGPT 订阅账号，登录完成后自动探测并选择要启用的模型。</p></div>
+      host.innerHTML = `<header class="settings-dialog-header"><div class="settings-dialog-heading"><h2 class="settings-dialog-title">${title}</h2><p class="settings-dialog-description">授权 ChatGPT 订阅账号；登录完成后在详情里勾选要启用的模型。</p></div>
         <button type="button" class="settings-icon-button" aria-label="关闭" data-close>${CLOSE_ICON}</button></header>
         <form class="settings-dialog-form"><div class="settings-dialog-body"><div class="settings-form-grid">
           <label class="is-wide"><span>连接名称</span><input name="name" aria-label="连接名称" disabled value="Codex"></label>
           <div class="settings-login-card is-wide" data-login-card>${SHIELD_ICON(20)}<span><strong>${existing ? "Codex 已授权连接" : "使用 ChatGPT 订阅授权登录"}</strong><small>授权凭据保存在本地运行环境中，不会在页面中明文回显。</small></span><button type="button" data-start>${existing ? "重新授权" : "前往授权"}</button></div>
         </div><div class="settings-device-login" data-challenge role="status" aria-live="polite" hidden></div>
-        <section class="settings-model-discovery settings-model-discovery--automatic"><header><div><h3>可用模型列表</h3><p>勾选需要开启的模型；后续可随时重新探测与增减。</p></div></header></section>
         <p class="settings-inline-error" data-error role="alert" hidden></p></div>
-        <footer class="settings-dialog-footer"><span></span><button type="submit" class="settings-primary-button">探测并选择模型</button></footer></form>`;
+        <footer class="settings-dialog-footer" ${existing ? "" : "hidden"}><span></span><button type="submit" class="settings-primary-button">保存</button></footer></form>`;
       let timer = 0;
       let ticker = 0;
       let attemptId = "";
@@ -104,10 +103,10 @@ export function activate(ctx) {
         try {
           selected = await props.actions.selectModels();
         } catch (reason) {
-          report(new Error(`Codex 已登录，但模型选择未完成：${reason instanceof Error ? reason.message : String(reason)} 可以点“探测并选择模型”重试。`));
+          report(new Error(`Codex 已登录，但模型改动未保存：${reason instanceof Error ? reason.message : String(reason)} 可调整后再点保存。`));
           return;
         }
-        props.changed(selected ? "Codex 登录完成，模型选择已保存" : "Codex 登录完成，模型选择未改动");
+        props.changed(selected ? "Codex 登录完成，模型改动已保存" : "Codex 已登录");
       };
       const tick = () => {
         const left = Math.max(0, deadline - Date.now());
@@ -158,11 +157,11 @@ export function activate(ctx) {
         submit.replaceChildren(htmlNode(SPINNER_ICON), "保存中");
         error.hidden = true;
         props.actions.selectModels()
-          .then((selected) => props.changed(selected ? "模型选择已保存" : "模型选择未改动"))
+          .then((selected) => props.changed(selected ? "模型改动已保存" : "没有需要保存的修改"))
           .catch(report)
           .finally(() => {
             submit.disabled = false;
-            submit.textContent = "探测并选择模型";
+            submit.textContent = "保存";
           });
       });
       queueMicrotask(() => start.focus());

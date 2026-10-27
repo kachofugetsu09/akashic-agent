@@ -117,6 +117,8 @@ function registerModels(ctx, mount, catalogResource) {
       let quotaAt = 0;
       // 编辑器就地展开在连接卡片（编辑）或添加面板（新建）内，同一时刻只开一个。
       let activeEditor = null;
+      // 新建成功后要展开的连接；目录读到它之前先记着。
+      let openAfterCreate = "";
       const closeActiveEditor = (force = false) => {
         const editor = activeEditor;
         if (!editor) return true;
@@ -232,7 +234,17 @@ function registerModels(ctx, mount, catalogResource) {
         else if (!addPanel.hidden) listBar.hidden = connections.hidden = true;
         renderConnections(chatConnections);
         renderBindings(chatModels);
-        loadQuotas();
+        loadQuotas().catch(() => {});
+        openCreated();
+      }
+
+      // 仿 magpie：连接建好即打开它的详情，账号额度、模型勾选与参数都在那里完成。
+      function openCreated() {
+        if (!openAfterCreate || activeEditor) return;
+        const created = catalog.connections.find((connection) => connection.id === openAfterCreate);
+        if (!created) return;
+        openAfterCreate = "";
+        openExisting(created);
       }
 
       // 添加是页面的另一种状态：打开时连接列表让位给服务商目录，关闭后回到列表。
@@ -465,10 +477,10 @@ function registerModels(ctx, mount, catalogResource) {
       // 读取额度：连接集合变化或超过一分钟才重读；服务端另有缓存与最短间隔。
       function loadQuotas(fresh = false) {
         const ids = catalog.connections.filter((item) => item.availability === "available").map((item) => item.id).sort().join(",");
-        if (!ids || (!fresh && ids === quotaKey && Date.now() - quotaAt < 60_000)) return;
+        if (!ids || (!fresh && ids === quotaKey && Date.now() - quotaAt < 60_000)) return Promise.resolve();
         quotaKey = ids;
         quotaAt = Date.now();
-        request(`/api/dashboard/models/quotas${fresh ? "?fresh=true" : ""}`).then((body) => {
+        return request(`/api/dashboard/models/quotas${fresh ? "?fresh=true" : ""}`).then((body) => {
           if (closed) return;
           quotas = new Map(body.quotas.map((item) => [item.connectionId, item]));
           for (const card of connections.children) {
@@ -477,7 +489,7 @@ function registerModels(ctx, mount, catalogResource) {
             if (connection && head) fillProviderHead(head, providerEntries.find((item) => item.id === connection.driverId), connection);
           }
           activeEditor?.refresh?.();
-        }).catch(() => { quotaAt = 0; });
+        }).catch((reason) => { quotaAt = 0; throw reason; });
       }
 
       // 开关直接生效；停用承担默认模型的连接前先确认，失败时回到实际状态。
@@ -1046,6 +1058,7 @@ function registerModels(ctx, mount, catalogResource) {
             chips.append(chip);
           }
           if (!all.size) chips.textContent = loading ? "正在读取服务目录…" : "目录里没有模型；可以手动添加模型 ID。";
+          else if (!loading && !savedModels().length && !status.textContent) status.textContent = "这个连接还没有启用的模型：勾选要用的，再点保存。";
           count.textContent = `${picked.size} / ${all.size}`;
           reportDirty();
         }
@@ -1104,14 +1117,28 @@ function registerModels(ctx, mount, catalogResource) {
         // 移除在用模型前要说明后果；保存按钮在开始写入前调用。
         function removalWarning() {
           const used = usedByMap();
-          const names = savedModels().filter((model) => !picked.has(key(model.kind, model.model)) && used.get(model.id))
-            .map((model) => `${model.model}（${used.get(model.id)}）`);
-          return names.length ? `将移除正在使用的 ${names.join("、")}，对应场景会改用其他可用模型。继续保存？` : "";
+          const leaving = savedModels().filter((model) => !picked.has(key(model.kind, model.model)) && used.get(model.id));
+          if (!leaving.length) return "";
+          const names = leaving.map((model) => `${model.model}（${used.get(model.id)}）`).join("、");
+          // 后端只给对话角色挑替补；向量默认会被清空，需要用户重新指定。
+          const leavingIds = new Set(leaving.map((model) => model.id));
+          const spare = catalog.models.some((model) => model.kind === "chat" && model.availability === "available" && !leavingIds.has(model.id)
+            && (model.connectionId !== connection.id || picked.has(key(model.kind, model.model))));
+          const effects = [];
+          if (leaving.some((model) => model.kind === "chat")) effects.push(spare ? "对话场景会改用剩下的可用模型" : "之后没有可用的对话模型，需要重新添加");
+          if (leaving.some((model) => model.id === catalog.defaultEmbeddingModelId)) effects.push("默认向量模型会被清空，需要重新选择");
+          return `将移除正在使用的 ${names}：${effects.join("；")}。继续保存？`;
         }
 
-        // 2. 先验证并新增勾选的模型，再移除取消勾选的，最后写参数；失败的逐条汇总。
+        // 2. 先验证并新增勾选的模型，全部成功才移除取消勾选的，最后写参数；保存期间锁住编辑。
         async function commit(operations) {
           const patches = parsedDrafts();
+          section.inert = true;
+          try { return await write(operations, patches); }
+          finally { section.inert = false; refresh(); }
+        }
+
+        async function write(operations, patches) {
           const saved = savedModels();
           const savedKeys = new Set(saved.map((model) => key(model.kind, model.model)));
           const adding = [...picked].filter((item) => !savedKeys.has(item));
@@ -1128,15 +1155,14 @@ function registerModels(ctx, mount, catalogResource) {
               ? {kind: "chat", model: candidate.model, capabilities: {}, capability_sources: {}, driver_config: {}}
               : candidateModelInput(candidate)));
           }
+          status.textContent = "";
+          // 新增有失败时不删旧模型，免得替换不成反而清空可用配置；勾选保持原样可直接重试。
+          if (failures.length) throw new Error(`新增未完成，已勾掉的模型先保留；${failures.join("；")}`);
           for (const model of removing) await attempt(model.model, () => operations.removeModel(model.id));
           for (const [modelId, patch] of patches) {
             const name = catalog.models.find((model) => model.id === modelId)?.model ?? modelId;
-            await attempt(name, () => operations.updateModel(modelId, patch));
+            await attempt(name, async () => { await operations.updateModel(modelId, patch); drafts.delete(modelId); });
           }
-          drafts.clear();
-          picked = new Set(savedModels().map((model) => key(model.kind, model.model)));
-          status.textContent = "";
-          refresh();
           if (failures.length) throw new Error(`部分完成；${failures.join("；")}`);
           return adding.length + removing.length + patches.length > 0;
         }
@@ -1242,7 +1268,13 @@ function registerModels(ctx, mount, catalogResource) {
         }
         slot.querySelector("[data-quota-note]").textContent = [reading.note, reading.error && `最近一次读取失败：${reading.error}`].filter(Boolean).join("；");
         const refresh = slot.querySelector("[data-quota-refresh]");
-        refresh.addEventListener("click", () => { refresh.disabled = true; loadQuotas(true); });
+        // 成功时账号区整体重绘；失败要留在原处说明原因，并让按钮可以再点。
+        refresh.addEventListener("click", () => {
+          refresh.disabled = true;
+          loadQuotas(true).catch((reason) => {
+            slot.querySelector("[data-quota-note]").textContent = `刷新失败：${reason instanceof Error ? reason.message : String(reason)}`;
+          }).finally(() => { refresh.disabled = false; });
+        });
       }
 
       function restoreFocus(trigger) {
@@ -1349,43 +1381,11 @@ function registerModels(ctx, mount, catalogResource) {
             }
           },
           async selectModels() {
-            // 详情里已有暂存的勾选：插件的「保存并选择模型」即提交它，不再弹候选面板。
+            // 详情里已有暂存的勾选：插件的「保存并选择模型」即提交它。
             if (modelManager) return modelManager.commit(operations);
-            const revision = catalog.revision;
-            const discovered = await operations.discoverSaved();
-            if (auth.closed) return false;
-            const candidates = discovered.filter((item) => item.kind === null || item.kind === "chat");
-            if (!candidates.length) throw new Error("目录没有可选择的对话模型。");
-            const saved = catalog.models.filter((model) => model.connectionId === connectionId && model.kind === "chat");
-            const picked = await candidateSheet({
-              title: `选择模型 · ${connection?.name ?? entry.label}`,
-              hint: "只保存勾选的模型；取消勾选会移除配置，聊天引用自动跟随默认模型。",
-              confirmLabel: "保存选择", candidates,
-              checked: new Set(saved.map((model) => model.model)),
-              present: new Set(saved.map((model) => model.model)),
-              locked: new Set(),
-            });
-            if (picked === null || auth.closed) return false;
-            if (catalog.revision !== revision) throw new Error("设置已变化，请重新探测并选择模型。");
-            const chosen = new Set(picked.map((candidate) => candidate.model));
-            const listed = new Set(candidates.map((candidate) => candidate.model));
-            // 先添加再移除，让默认回退可以选择本次新采纳的模型。
-            const failures = [];
-            for (const candidate of picked) {
-              if (!saved.some((model) => model.model === candidate.model)) {
-                try { await operations.addModel(candidateModelInput(candidate)); }
-                catch (reason) { failures.push(`${candidate.model}：${reason instanceof Error ? reason.message : String(reason)}`); }
-              }
-              if (auth.closed) throw new Error("窗口已关闭；已提交的选择以实际结果为准。");
-            }
-            // 本次目录未覆盖的手工配置不在取消选择范围内。
-            for (const model of saved.filter((item) => listed.has(item.model) && !chosen.has(item.model))) {
-              try { await operations.removeModel(model.id); }
-              catch (reason) { failures.push(`${model.model}：${reason instanceof Error ? reason.message : String(reason)}`); }
-              if (auth.closed) throw new Error("窗口已关闭；已提交的选择以实际结果为准。");
-            }
-            if (failures.length) throw new Error(`部分完成；${failures.join("；")}`);
-            return true;
+            // 新建流程不在这里挑模型：创建成功后宿主展开新连接的详情，在模型标签里勾选。
+            if (!created) throw new Error("请先完成连接");
+            return false;
           },
           async addModel(input) {
             if (!connection && !created) throw new Error("请先保存连接");
@@ -1550,8 +1550,12 @@ function registerModels(ctx, mount, catalogResource) {
         const finish = (message) => {
           showNotice(message);
           closeActiveEditor(true);
-          // 新建成功回到连接列表；取消新建则留在目录里继续挑。
-          if (session.kind === "create") setAddPanel(false);
+          // 新建成功回到连接列表并展开新连接；取消新建则留在目录里继续挑。
+          if (session.kind !== "create") return;
+          setAddPanel(false);
+          if (!created) return;
+          openAfterCreate = connectionId;
+          openCreated();
         };
         try {
           disposeEntry = connectionTypes.render(entry.id, dialogHost, {
