@@ -1813,9 +1813,9 @@ class ModelsState:
         self.quotas.forget(readable)
         if connection_id is not None:
             readable = [item for item in readable if item == connection_id]
-        return await self.quotas.read(readable, fresh=fresh)
+        return tuple(item for item in await self.quotas.read(readable, fresh=fresh) if item.shown)
 
-    async def read_quota(self, connection_id: str) -> QuotaReading:
+    async def read_quota(self, connection_id: str) -> QuotaReading | None:
         connection = self._snapshot_required().connections.get(connection_id)
         if connection is None or not connection.enabled:
             raise ModelUnavailableError("连接不存在或已停用。").exception()

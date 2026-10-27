@@ -18,7 +18,7 @@ _READ_TIMEOUT_SECONDS = 20.0
 
 _LOG = logging.getLogger(__name__)
 
-ReadQuota = Callable[[str], Awaitable[QuotaReading]]
+ReadQuota = Callable[[str], Awaitable[QuotaReading | None]]
 
 
 @dataclass(frozen=True, slots=True)
@@ -29,6 +29,11 @@ class ConnectionQuota:
     read_at: str = ""
     # 本次读取失败的原因；有旧读数时界面照常显示旧值并标出时间。
     error: str = ""
+
+    # 驱动答「没有额度」且没出错时，这个连接不出现在额度列表里。
+    @property
+    def shown(self) -> bool:
+        return self.reading is not None or bool(self.error)
 
     def payload(self) -> dict[str, object]:
         reading = self.reading
