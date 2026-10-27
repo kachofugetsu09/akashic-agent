@@ -9,6 +9,7 @@ from typing import Any, cast
 from uuid import uuid4
 
 from core.common.diagnostic_log import log_timing
+from core.common.file_io import run_file_io
 from agent.plugin_composition import Context, RuntimeScope
 from agent.plugin_composition.tasks import interrupt_requested
 from plugins.ledger.contract import (
@@ -418,6 +419,7 @@ async def _complete(
     mark = partial(log_timing, session_id=snapshot[-1].session_id if snapshot else "",
                    source=source, operation_id=operation_id)
     # 1. 本地容量与软水位先交给同一摘要 owner，其他材料不重新获取。
+    # 组装要折叠全史并核对调用账，冷读可达数秒，放进 worker 不占事件循环。
     def build(mats: Materials) -> tuple[ModelRequest, str | None]:
         mark("context.build.begin")
         result = context.build_attempt(snapshot, materials=mats, model=projection,
@@ -445,14 +447,14 @@ async def _complete(
             mark("context.reduce.end")
         return ({**mats, "notices": tuple(notices)} if notices else mats), summary
 
-    request, rejection = build(prepared)
+    request, rejection = await run_file_io(lambda: build(prepared))
     if rejection is not None and reduce is None:
         raise ContextLengthError(rejection).exception()
     if reduce is not None:
         prepared, summary = await reduce_request(prepared, request, force=rejection is not None)
         if summary is not None and summary != prepared.get("summary"):
             prepared = {**prepared, "summary": summary}
-            request, rejection = build(prepared)
+            request, rejection = await run_file_io(lambda: build(prepared))
         if rejection is not None:
             raise ContextLengthError(rejection).exception()
     # 2. 每份新组装的请求拥有新身份；本次调用内的网络重试仍由 Models 复用该 key。
@@ -491,7 +493,7 @@ async def _complete(
             if summary is None or summary == prepared.get("summary"):
                 raise
             prepared = {**prepared, "summary": summary}
-            request, rejection = build(prepared)
+            request, rejection = await run_file_io(lambda: build(prepared))
             if rejection is not None:
                 raise ContextLengthError(rejection).exception()
             message_id, request_key, callback = begin()
