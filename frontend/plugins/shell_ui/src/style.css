@@ -80,7 +80,7 @@
     inset: 0;
     z-index: 1001;
     margin: auto;
-    width: min(820px, calc(100vw - 48px));
+    width: min(960px, calc(100vw - 48px));
     height: min(760px, calc(100dvh - 48px));
     max-width: none;
     max-height: none;

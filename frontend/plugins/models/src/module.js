@@ -112,6 +112,9 @@ function registerModels(ctx, mount, catalogResource) {
       const toastRegion = page.querySelector("[data-toast-region]");
       let catalog = null;
       let query = "";
+      let quotas = new Map();
+      let quotaKey = "";
+      let quotaAt = 0;
       // 编辑器就地展开在连接卡片（编辑）或添加面板（新建）内，同一时刻只开一个。
       let activeEditor = null;
       const closeActiveEditor = (force = false) => {
@@ -229,6 +232,7 @@ function registerModels(ctx, mount, catalogResource) {
         else if (!addPanel.hidden) listBar.hidden = connections.hidden = true;
         renderConnections(chatConnections);
         renderBindings(chatModels);
+        loadQuotas();
       }
 
       // 添加是页面的另一种状态：打开时连接列表让位给服务商目录，关闭后回到列表。
@@ -370,6 +374,9 @@ function registerModels(ctx, mount, catalogResource) {
         const card = document.createElement("li");
         card.className = "settings-provider-card";
         card.dataset.connectionId = connection.id;
+        // 行内两个独立控件：展开按钮铺满整行，启用开关浮在其上；箭头只是装饰。
+        const row = document.createElement("div");
+        row.className = "settings-provider-row";
         const head = document.createElement("button");
         head.type = "button";
         head.className = "settings-provider-head";
@@ -377,12 +384,23 @@ function registerModels(ctx, mount, catalogResource) {
         const copy = document.createElement("span");
         copy.className = "settings-card-copy";
         copy.innerHTML = "<strong data-name></strong><small data-detail></small>";
+        const quota = document.createElement("span");
+        quota.className = "settings-provider-quota";
+        quota.dataset.quota = "";
         const status = document.createElement("span");
         status.className = "settings-provider-status";
         status.dataset.status = "";
         status.innerHTML = "<i aria-hidden=\"true\"></i><span></span>";
-        head.append(connectionMark(entry), copy, status);
-        head.insertAdjacentHTML("beforeend", CHEVRON_ICON);
+        head.append(connectionMark(entry), copy, quota, status);
+        const toggle = document.createElement("label");
+        toggle.className = "settings-provider-switch";
+        toggle.innerHTML = "<input type=\"checkbox\" role=\"switch\">";
+        const enabled = toggle.querySelector("input");
+        enabled.checked = connection.availability !== "disabled";
+        enabled.setAttribute("aria-label", `启用 ${connection.name}`);
+        enabled.addEventListener("change", () => report(setConnectionEnabled(connection, enabled)));
+        row.append(head, toggle);
+        row.insertAdjacentHTML("beforeend", CHEVRON_ICON);
         fillProviderHead(head, entry, connection);
         if (!entry || connection.availability === "disabled") {
           head.disabled = true;
@@ -393,26 +411,100 @@ function registerModels(ctx, mount, catalogResource) {
         const editorRegion = document.createElement("div");
         editorRegion.className = "settings-provider-editor";
         editorRegion.hidden = true;
-        card.append(head, editorRegion);
+        card.append(row, editorRegion);
         return card;
       }
 
       function fillProviderHead(head, entry, connection) {
         const models = catalog.models.filter((model) => model.connectionId === connection.id);
         const openCount = models.filter((model) => model.availability !== "disabled").length;
+        const reading = connection.availability === "available" ? quotas.get(connection.id) : undefined;
         head.querySelector("[data-name]").textContent = connection.name;
-        // 副标题说明连的是哪里、有几个模型；地址只给主机名，没有时退回连接类型名。
-        const where = connection.endpointHost || entry?.label || connection.driverId;
+        // 副标题说明连的是哪个账号或地址、有几个模型；订阅连接先写套餐。
+        const where = reading?.account || connection.endpointHost || entry?.label || connection.driverId;
+        const who = [reading?.plan, where].filter(Boolean).join(" · ");
         const paused = models.length - openCount;
         head.querySelector("[data-detail]").textContent = connection.availability === "disabled" || !paused
-          ? `${where} · ${models.length} 个模型`
-          : `${where} · ${models.length} 个模型，${paused} 个已停用`;
-        // 正常是常态，不占位；只有停用或驱动异常才标出。
+          ? `${who} · ${models.length} 个模型`
+          : `${who} · ${models.length} 个模型，${paused} 个已停用`;
+        fillQuota(head.querySelector("[data-quota]"), reading);
+        // 正常是常态，不占位；停用由开关表达，只有驱动异常才标出。
         const status = head.querySelector("[data-status]");
-        status.hidden = connection.availability === "available";
+        status.hidden = connection.availability !== "driver_unavailable";
         status.classList.toggle("is-unavailable", connection.availability !== "available");
         const AVAILABILITY_LABELS = { available: "正常可用", disabled: "已停用", driver_unavailable: "驱动异常" };
         status.querySelector("span").textContent = AVAILABILITY_LABELS[connection.availability] ?? connection.availability;
+      }
+
+      // 行尾额度：最多两条最短窗口的已用比例，或余额；读不到时不占位，原因留在提示里。
+      function fillQuota(slot, reading) {
+        slot.replaceChildren();
+        slot.removeAttribute("title");
+        if (!reading) return;
+        if (reading.error) slot.title = `额度读取失败：${reading.error}`;
+        if (reading.windows.length) {
+          for (const window of reading.windows.slice(0, 2)) {
+            const used = Math.max(0, Math.min(100, Math.round(window.usedPercent)));
+            const label = document.createElement("span");
+            label.textContent = `${window.label} ${used}%`;
+            const bar = document.createElement("span");
+            bar.className = "settings-quota-bar";
+            bar.innerHTML = "<i></i>";
+            bar.firstElementChild.style.inlineSize = `${used}%`;
+            bar.classList.toggle("is-high", used >= 80);
+            slot.append(label, bar);
+          }
+        } else if (reading.balance) {
+          slot.textContent = `余额 ${reading.balance}`;
+        } else if (reading.error) {
+          slot.textContent = "额度未读到";
+        }
+        slot.classList.toggle("is-stale", !!reading.error);
+      }
+
+      // 读取额度：连接集合变化或超过一分钟才重读；服务端另有缓存与最短间隔。
+      function loadQuotas(fresh = false) {
+        const ids = catalog.connections.filter((item) => item.availability === "available").map((item) => item.id).sort().join(",");
+        if (!ids || (!fresh && ids === quotaKey && Date.now() - quotaAt < 60_000)) return;
+        quotaKey = ids;
+        quotaAt = Date.now();
+        request(`/api/dashboard/models/quotas${fresh ? "?fresh=true" : ""}`).then((body) => {
+          if (closed) return;
+          quotas = new Map(body.quotas.map((item) => [item.connectionId, item]));
+          for (const card of connections.children) {
+            const connection = catalog.connections.find((item) => item.id === card.dataset.connectionId);
+            const head = card.querySelector(".settings-provider-head");
+            if (connection && head) fillProviderHead(head, providerEntries.find((item) => item.id === connection.driverId), connection);
+          }
+        }).catch(() => { quotaAt = 0; });
+      }
+
+      // 开关直接生效；停用承担默认模型的连接前先确认，失败时回到实际状态。
+      async function setConnectionEnabled(connection, input) {
+        const enable = input.checked;
+        const roles = Object.values(catalog.roleBindings ?? {});
+        const hostsDefault = catalog.models.some((model) => model.connectionId === connection.id
+          && (roles.includes(model.id) || model.id === catalog.defaultEmbeddingModelId));
+        if (!enable && hostsDefault
+            && !window.confirm(`默认模型在 ${connection.name} 上，停用后用到它的对话会失败，需另选默认模型。仍然停用？`)) {
+          input.checked = true;
+          return;
+        }
+        if (activeEditor?.connectionId === connection.id && !closeActiveEditor()) {
+          input.checked = !enable;
+          return;
+        }
+        input.disabled = true;
+        try {
+          await command({type: enable ? "enable_connection" : "disable_connection",
+            expected_revision: catalog.revision, connection_id: connection.id});
+          showNotice(enable ? `${connection.name} 已启用。` : `${connection.name} 已停用，模型配置与历史保留。`);
+        } catch (error) {
+          input.checked = !enable;
+          throw error;
+        } finally {
+          input.disabled = false;
+        }
       }
 
       function toggleProviderEditor(entry, card, head, connection) {

@@ -47,6 +47,13 @@ class DisableConnection:
     connection_id: str
 
 
+# 重新启用停用的连接；凭据与模型配置原样保留，失效时由下次调用或额度读取暴露。
+@dataclass(frozen=True, slots=True)
+class EnableConnection:
+    expected_revision: int
+    connection_id: str
+
+
 @dataclass(frozen=True, slots=True)
 class AddModel:
     expected_revision: int
@@ -131,6 +138,7 @@ ModelChange: TypeAlias = (
     AddConnection
     | UpdateConnection
     | DisableConnection
+    | EnableConnection
     | AddModel
     | VerifyModel
     | UpdateModel
@@ -182,6 +190,7 @@ __all__ = [
     "CancelConnectionAuth",
     "CreateConnectionWithModel",
     "DisableConnection",
+    "EnableConnection",
     "FinishConnectionAuth",
     "MODEL_SETTINGS",
     "ModelChange",

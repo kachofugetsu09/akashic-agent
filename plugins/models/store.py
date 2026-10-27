@@ -35,6 +35,7 @@ from .settings import (
     AddModel,
     CreateConnectionWithModel,
     DisableConnection,
+    EnableConnection,
     SetDefaultModel,
     RemoveModel,
     UpdateConnection,
@@ -778,6 +779,25 @@ class ModelsStore:
         return self._domain_write(
             command.expected_revision, "disable-connection", write
         )
+
+    def enable_connection(self, command: EnableConnection) -> int:
+        connection_id = _required(command.connection_id, "connection_id")
+
+        def write(connection: sqlite3.Connection) -> None:
+            cursor = connection.execute(
+                """
+                UPDATE model_connections
+                SET enabled = 1, updated_at = CURRENT_TIMESTAMP
+                WHERE id = ? AND enabled = 0
+                """,
+                (connection_id,),
+            )
+            if cursor.rowcount != 1:
+                raise ValueError(
+                    f"connection does not exist or is already enabled: {connection_id}"
+                )
+
+        return self._domain_write(command.expected_revision, "enable-connection", write)
 
     def add_model(self, command: AddModel) -> int:
         """Add one chat or embedding model using the existing normalized tables."""

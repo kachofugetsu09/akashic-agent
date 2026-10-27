@@ -99,6 +99,7 @@ from .settings import (
     CancelConnectionAuth,
     CreateConnectionWithModel,
     DisableConnection,
+    EnableConnection,
     FinishConnectionAuth,
     ModelChange,
     SetDefaultModel,
@@ -1643,6 +1644,8 @@ class ModelsState:
             revision = self.store.update_connection(command)
         elif isinstance(command, DisableConnection):
             revision = self.store.disable_connection(command)
+        elif isinstance(command, EnableConnection):
+            revision = self.store.enable_connection(command)
         elif isinstance(command, AddModel):
             await self._check_model(command)
             revision = self.store.add_model(command)
