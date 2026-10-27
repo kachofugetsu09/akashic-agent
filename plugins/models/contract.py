@@ -230,6 +230,8 @@ ModelKind: TypeAlias = Literal["chat", "embedding"]
 
 
 ModelAvailability: TypeAlias = Literal["available", "disabled", "driver_unavailable"]
+# 连接用哪些模型：all = 服务商目录里的对话模型全部启用（含以后新上的），picked = 只用勾选的。
+CatalogMode: TypeAlias = Literal["picked", "all"]
 
 
 @dataclass(frozen=True, slots=True)
@@ -339,6 +341,7 @@ class ConnectionDescriptor:
     availability: ModelAvailability
     # 只含主机名，供设置页说明连的是哪里；完整地址与凭据不进目录。
     endpoint_host: str = ""
+    catalog_mode: CatalogMode = "picked"
 
 
 @dataclass(frozen=True, slots=True)

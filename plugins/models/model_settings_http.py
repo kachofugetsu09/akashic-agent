@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from collections.abc import Awaitable, Callable, Mapping
-from dataclasses import asdict
+from dataclasses import asdict, replace
 from typing import Annotated, Any, Literal, Protocol
 
 from fastapi import APIRouter, HTTPException, Request
@@ -56,6 +56,7 @@ from .settings import (
     RemoveModel,
     SettingsReceipt,
     StartConnectionAuth,
+    SetCatalogMode,
     SyncModels,
     UpdateConnection,
     UpdateModel,
@@ -162,6 +163,15 @@ class EmbeddingProbePayload(_Payload):
 
 class AddConnectionPayload(ConnectionInput):
     type: Literal["add_connection"]
+    catalog_mode: Literal["picked", "all"] = "picked"
+    adopt_models: list[str] = Field(default_factory=list, max_length=500)
+
+
+class SetCatalogModePayload(_Payload):
+    type: Literal["set_catalog_mode"]
+    expected_revision: int = Field(ge=0)
+    connection_id: str = Field(min_length=1, max_length=128)
+    mode: Literal["picked", "all"]
 
 
 class UpdateConnectionPayload(_Payload):
@@ -317,6 +327,7 @@ CommandPayload = Annotated[
     | UpdateModelPayload
     | SetDefaultPayload
     | SyncModelsPayload
+    | SetCatalogModePayload
     | StartAuthPayload
     | FinishAuthPayload
     | CancelAuthPayload
@@ -559,7 +570,13 @@ def rpc_methods(control: ModelControl) -> dict[str, RpcMethod]:
 
 def _command(payload: CommandPayload) -> ModelChange:
     if isinstance(payload, AddConnectionPayload):
-        return _add_connection(payload)
+        return replace(
+            _add_connection(payload),
+            catalog_mode=payload.catalog_mode,
+            adopt_models=tuple(payload.adopt_models),
+        )
+    if isinstance(payload, SetCatalogModePayload):
+        return SetCatalogMode(payload.expected_revision, payload.connection_id, payload.mode)
     if isinstance(payload, UpdateConnectionPayload):
         return UpdateConnection(
             expected_revision=payload.expected_revision,
@@ -698,6 +715,7 @@ def _catalog_payload(snapshot: ModelCatalogSnapshot) -> dict[str, object]:
                 "authIdentity": item.auth_identity,
                 "availability": item.availability,
                 "endpointHost": item.endpoint_host,
+                "catalogMode": item.catalog_mode,
             }
             for item in snapshot.connections
         ],

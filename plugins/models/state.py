@@ -104,6 +104,7 @@ from .settings import (
     ModelChange,
     SetDefaultModel,
     RemoveModel,
+    SetCatalogMode,
     SettingsReceipt,
     StartConnectionAuth,
     SyncModels,
@@ -119,6 +120,7 @@ from .store import (
     StoredModel,
     StoredSnapshot,
     _request_digest,
+    adoptable_chat_model,
 )
 
 logger = logging.getLogger(__name__)
@@ -1178,6 +1180,7 @@ class ModelsState:
                 auth_identity=item.auth_identity,
                 availability=self._availability(item),
                 endpoint_host=urlsplit(item.endpoint).hostname or "",
+                catalog_mode=item.catalog_mode,
             )
             for item in snapshot.connections.values()
         )
@@ -1634,7 +1637,7 @@ class ModelsState:
     async def _apply_change(self, command: ModelChange) -> SettingsReceipt:
         if isinstance(command, AddConnection):
             await self._probe_new_connection(command)
-            revision = self.store.add_connection(command)
+            revision = self.store.add_connection(command, await self._initial_models(command))
         elif isinstance(command, CreateConnectionWithModel):
             self._check_initial_model_identity(command)
             await self._check_new_connection_model(command)
@@ -1700,6 +1703,11 @@ class ModelsState:
             revision = self.store.set_default(command)
         elif isinstance(command, SyncModels):
             revision = await self._sync_models(command)
+        elif isinstance(command, SetCatalogMode):
+            adopted = await self._discover_saved(command.connection_id) if command.mode == "all" else ()
+            revision = self.store.set_catalog_mode(
+                command.expected_revision, command.connection_id, command.mode, adopted,
+            )
         elif isinstance(command, StartConnectionAuth):
             return await self._start_auth(command)
         elif isinstance(command, FinishConnectionAuth):
@@ -1713,10 +1721,19 @@ class ModelsState:
     async def _sync_models(self, command: SyncModels) -> int:
         """Discover outside SQLite, then publish one catalog revision with CAS."""
 
+        discovered = await self._discover_saved(command.connection_id)
+        return self.store.sync_models(
+            command.expected_revision,
+            command.connection_id,
+            discovered,
+        )
+
+    # 用保存的凭据读取并补全目录；不写库。
+    async def _discover_saved(self, connection_id: str) -> tuple[DiscoveredModel, ...]:
         snapshot = self._snapshot_required()
-        connection = snapshot.connections.get(command.connection_id)
+        connection = snapshot.connections.get(connection_id)
         if connection is None or not connection.enabled:
-            raise ModelUnavailableError(f"模型连接不可用: {command.connection_id}").exception()
+            raise ModelUnavailableError(f"模型连接不可用: {connection_id}").exception()
         registration = self._registration_required(connection.driver_id)
         definition = registration.definition
         if definition.discover is None:
@@ -1737,11 +1754,7 @@ class ModelsState:
                     connection.driver_id,
                 ),
             )
-        return self.store.sync_models(
-            command.expected_revision,
-            connection.connection_id,
-            discovered,
-        )
+        return discovered
 
     async def probe_embedding_model(
         self, model: str, expected_revision: int, *,
@@ -1867,6 +1880,26 @@ class ModelsState:
                 ),
             )
         return discovered
+
+    # 新连接要带上的模型：all 收目录里全部对话模型，picked 只收用户在目录里勾的。
+    async def _initial_models(self, command: AddConnection) -> tuple[DiscoveredModel, ...]:
+        # 1. 没要求模型时不读目录，保持原来的只建连接。
+        if command.catalog_mode == "picked" and not command.adopt_models:
+            return ()
+        discovered = await self._discover_new_connection(command)
+        # 2. 与写入时同一条规则过滤，过滤后为空就不建连接。
+        chat = tuple(item for item in discovered if adoptable_chat_model(item))
+        if command.catalog_mode == "all":
+            if not chat:
+                raise ModelUnavailableError("服务商的模型列表里没有可用的对话模型。").exception()
+            return chat
+        # 3. 勾选的必须都是目录里的对话模型；目录外的型号走手动添加。
+        wanted = set(command.adopt_models)
+        picked = tuple(item for item in chat if item.model in wanted)
+        missing = wanted - {item.model for item in picked}
+        if missing:
+            raise ModelUnavailableError(f"服务商目录里没有这些对话模型：{', '.join(sorted(missing))}").exception()
+        return picked
 
     async def _probe_new_connection(self, command: AddConnection) -> None:
         connection = StoredConnection(
