@@ -144,6 +144,7 @@ class _CapabilityCatalog(Protocol):
         discovered: tuple[DiscoveredModel, ...],
         *,
         provider_id: str,
+        endpoint: str = "",
     ) -> tuple[DiscoveredModel, ...]: ...
 
 
@@ -1753,6 +1754,7 @@ class ModelsState:
                     connection.driver_config,
                     connection.driver_id,
                 ),
+                endpoint=connection.endpoint,
             )
         return discovered
 
@@ -1811,7 +1813,8 @@ class ModelsState:
                 self.store.credential_handle(connection_id, connection.auth_identity))
         if self.capability_catalog is not None:
             models = await self.capability_catalog.enrich(models,
-                provider_id=_capability_provider_id(connection.driver_config, connection.driver_id))
+                provider_id=_capability_provider_id(connection.driver_config, connection.driver_id),
+                endpoint=connection.endpoint)
         if self._snapshot_required().revision != expected_revision:
             raise RevisionConflictError("配置已改变，请重新读取目录。").exception()
         return models
@@ -1878,6 +1881,7 @@ class ModelsState:
                     connection.driver_config,
                     connection.driver_id,
                 ),
+                endpoint=connection.endpoint,
             )
         return discovered
 

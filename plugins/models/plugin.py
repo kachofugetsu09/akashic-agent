@@ -22,7 +22,7 @@ from plugins.channels.contract import InputPartRejected
 from .composition import CompositionLog
 from .content import MODEL_CONTENT, ContentOwner
 from .views import CONTENT_VIEWS, ContentViews
-from .litellm_catalog import LiteLlmCapabilityCatalog
+from .modelsdev_catalog import ModelsDevCapabilityCatalog
 from .model_settings_http import BoundModelControl, rpc_methods
 from .projection import (
     MODEL_CALLS,
@@ -67,8 +67,8 @@ async def apply(ctx: Context) -> None:
     state = ModelsState(
         store,
         context=ctx,
-        capability_catalog=LiteLlmCapabilityCatalog(
-            ctx.data_root / "litellm-capabilities.json",
+        capability_catalog=ModelsDevCapabilityCatalog(
+            ctx.data_root / "modelsdev-capabilities.json",
             writable=True,
         ),
     )
