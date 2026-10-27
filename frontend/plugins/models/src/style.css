@@ -665,28 +665,8 @@ dialog.settings-scrim::backdrop { background: transparent; }
 .settings-chip-toolbar .settings-model-filter { flex: 1 1 10rem; margin: 0; }
 .settings-chip-toolbar .settings-text-button { min-height: 2.25rem; padding-inline: 0.5rem; font-size: var(--models-type-caption); }
 .settings-chip-toolbar .settings-text-button[aria-expanded="true"] { color: var(--ak-ink-primary); background: var(--ak-paper-quiet); }
-.settings-chips { display: flex; flex-wrap: wrap; gap: 0.375rem; color: var(--ak-ink-secondary); font-size: var(--models-type-body); }
-.settings-chip { display: inline-flex; max-width: 100%; min-height: 2.25rem; align-items: baseline; gap: 0.375rem; border: 1px solid var(--ak-rule-default); border-radius: var(--models-radius-field); padding: 0.375rem 0.625rem; color: var(--ak-ink-secondary); background: transparent; font: inherit; text-align: start; cursor: pointer; }
-.settings-chip[hidden] { display: none; }
-.settings-chip.is-new { border-style: dashed; }
-.settings-chip span { overflow-wrap: anywhere; font-family: var(--ak-type-technical); font-size: var(--models-type-body); }
-.settings-chip small { color: var(--ak-ink-secondary); font-size: var(--models-type-caption); font-variant-numeric: tabular-nums; }
-.settings-chip em { color: var(--ak-color-action-primary); font-size: var(--models-type-caption); font-style: normal; font-weight: 600; }
-.settings-chip:hover { border-color: var(--ak-rule-strong); }
-.settings-chip[aria-pressed="true"] { border-style: solid; border-color: var(--ak-color-action-primary); color: var(--ak-ink-primary); background: var(--ak-color-action-soft); }
-.settings-chip:focus-visible { outline: 2px solid var(--md-sys-color-primary); outline-offset: 1px; }
 
 /* 参数表：模型、上下文、最大输出、看图、验证各一列。 */
-.settings-param-table { display: grid; grid-template-columns: minmax(8rem, 1fr) 6.5rem 6.5rem 3rem auto; align-items: center; gap: 0.375rem 0.625rem; padding-block: 0.25rem; }
-.settings-param-table[hidden] { display: none; }
-.settings-param-head, .settings-param-row { display: contents; }
-.settings-param-head > span { color: var(--ak-ink-secondary); font-size: var(--models-type-caption); font-weight: 600; }
-.settings-param-row strong { min-width: 0; overflow-wrap: anywhere; font-family: var(--ak-type-technical); font-size: var(--models-type-body); font-weight: 500; }
-.settings-param-row input:not([type="checkbox"]) { width: 100%; min-height: 2.25rem; border: 1px solid var(--ak-rule-default); border-radius: var(--models-radius-field); padding-inline: 0.5rem; color: var(--ak-ink-primary); background: var(--ak-paper-editing); font: inherit; font-size: var(--models-type-body); font-variant-numeric: tabular-nums; }
-.settings-param-row input[aria-invalid="true"] { border-color: var(--md-sys-color-error); }
-.settings-param-row input[type="checkbox"] { width: 1.1rem; height: 1.1rem; margin: 0; justify-self: center; accent-color: var(--ak-color-action-primary); cursor: pointer; }
-.settings-param-row .settings-text-button { min-height: 2.25rem; padding-inline: 0.5rem; font-size: var(--models-type-caption); }
-.settings-param-table > .settings-model-hint { grid-column: 1 / -1; margin: 0.25rem 0 0; }
 .settings-model-manage .settings-model-hint:empty { display: none; }
 
 /* 编辑态底栏归宿主：插件自己的标题与底栏隐藏，取消与保存靠右。 */
@@ -696,8 +676,6 @@ dialog.settings-scrim::backdrop { background: transparent; }
 @media (max-width: 640px) {
   .settings-detail-row { grid-template-columns: minmax(0, 1fr); gap: 0.25rem; }
   .settings-detail-key { padding: 0; text-align: start; }
-  .settings-param-table { grid-template-columns: minmax(0, 1fr) 5rem 5rem 2.5rem; }
-  .settings-param-row .settings-text-button, .settings-param-head > span:last-child { display: none; }
 }
 .settings-model-manual { display: flex; align-items: center; gap: 0.5rem; margin-block: 0.375rem 0.75rem; }
 .settings-model-manual input { flex: 1; min-width: 0; min-height: 2.75rem; border: 1px solid var(--ak-rule-default); border-radius: var(--models-radius-field); padding-inline: 0.75rem; color: var(--ak-ink-primary); background: var(--ak-paper-editing); font: inherit; font-size: var(--models-type-body); }
@@ -947,3 +925,35 @@ dialog.settings-scrim::backdrop { background: transparent; }
 .settings-key-link:hover { text-decoration: underline; }
 .settings-dialog-footer:has(> [data-manual]) { justify-content: space-between; }
 .settings-dialog-footer > [data-manual] { min-height: 2.25rem; padding-inline: 0.25rem; font-size: var(--models-type-caption); }
+
+/* 模型表：勾选、型号、上下文、识图、更多；表头勾选是「全部」，展开行放其余参数。 */
+.settings-model-table { display: grid; grid-template-columns: 2rem minmax(0, 1fr) 4.5rem 5.5rem 2.25rem; align-items: center; column-gap: 0.75rem; overflow: hidden; border: 1px solid var(--ak-rule-subtle); border-radius: var(--models-radius-panel); }
+.settings-model-row { display: contents; }
+.settings-model-row > :not(.settings-model-extra) { min-height: 2.5rem; display: flex; align-items: center; border-block-start: 1px solid var(--ak-rule-subtle); font-size: var(--models-type-body); font-variant-numeric: tabular-nums; }
+.settings-model-row > :first-child { padding-inline-start: 0.75rem; }
+.settings-model-row input[type="checkbox"]:not([role]) { width: 1rem; height: 1rem; margin: 0; accent-color: var(--ak-color-action-primary); cursor: pointer; }
+.settings-model-row.is-head > * { min-height: 2.25rem; border-block-start: 0; color: var(--ak-ink-secondary); background: var(--ak-paper-quiet); font-size: var(--models-type-caption); font-weight: 600; }
+.settings-model-row.is-head small { margin-inline-start: 0.5rem; font-weight: 400; }
+.settings-model-name { gap: 0.5rem; min-width: 0; }
+.settings-model-name strong { overflow: hidden; font-family: var(--ak-type-technical); font-weight: 500; text-overflow: ellipsis; white-space: nowrap; }
+.settings-model-name em { flex: none; color: var(--ak-color-action-primary); font-size: var(--models-type-caption); font-style: normal; font-weight: 600; }
+.settings-model-vision { gap: 0.375rem; color: var(--ak-ink-secondary); }
+.settings-vision-switch { display: inline-flex; align-items: center; gap: 0.375rem; cursor: pointer; }
+.settings-vision-switch input { appearance: none; position: relative; width: 1.875rem; height: 1.125rem; margin: 0; border-radius: 999px; background: var(--ak-rule-strong); cursor: pointer; transition: background-color var(--ak-sys-duration-short) var(--ak-sys-motion-standard); }
+.settings-vision-switch input::after { content: ""; position: absolute; inset: 2px auto auto 2px; width: 0.875rem; height: 0.875rem; border-radius: 50%; background: var(--ak-paper-editing); transition: translate var(--ak-sys-duration-short) var(--ak-sys-motion-standard); }
+.settings-vision-switch input:checked { background: var(--ak-color-action-primary); }
+.settings-vision-switch input:checked::after { translate: 0.75rem 0; }
+.settings-vision-switch input:focus-visible { outline: 2px solid var(--md-sys-color-primary); outline-offset: 2px; }
+.settings-vision-switch small { color: var(--ak-ink-secondary); font-size: var(--models-type-caption); }
+.settings-model-more { justify-content: center; min-height: 2rem; padding: 0; color: var(--ak-ink-secondary); letter-spacing: 0.08em; }
+.settings-model-more[aria-expanded="true"] { color: var(--ak-ink-primary); }
+.settings-model-extra { grid-column: 1 / -1; display: flex; flex-wrap: wrap; align-items: end; gap: 0.5rem 1rem; padding: 0.625rem 0.75rem 0.75rem 2.75rem; background: var(--ak-paper-quiet); font-size: var(--models-type-caption); }
+.settings-model-extra label { display: grid; gap: 0.25rem; color: var(--ak-ink-secondary); }
+.settings-model-extra input { width: 7rem; min-height: 2rem; border: 1px solid var(--ak-rule-default); border-radius: var(--models-radius-field); padding-inline: 0.5rem; color: var(--ak-ink-primary); background: var(--ak-paper-editing); font: inherit; font-size: var(--models-type-body); font-variant-numeric: tabular-nums; }
+.settings-model-extra input[aria-invalid="true"] { border-color: var(--md-sys-color-error); }
+.settings-model-extra .settings-text-button { min-height: 2rem; font-size: var(--models-type-caption); }
+.settings-model-extra small { flex-basis: 100%; color: var(--ak-ink-secondary); }
+@media (max-width: 640px) {
+  .settings-model-table { grid-template-columns: 2rem minmax(0, 1fr) 5.5rem 2.25rem; }
+  .settings-model-row > :nth-child(3) { display: none; }
+}
