@@ -1,6 +1,8 @@
 """Expose the exact models generation to its ordinary Web module."""
 
-from fastapi import FastAPI
+from datetime import datetime
+
+from fastapi import FastAPI, HTTPException
 
 from agent.plugin_composition import DashboardContext
 from plugins.models.contract import (
@@ -26,6 +28,13 @@ def register(app: FastAPI, context: DashboardContext) -> None:
     )
     app.router.routes.extend(router.routes)
 
-    @app.get("/api/dashboard/models/cache-usage")
-    async def cache_usage() -> dict[str, object]:
-        return await context.require(MODEL_CACHE_USAGE).overview()
+    # 设置·用量：since 是界面所选范围的本地零点；会话排行在侧栏面板，这里只取一行。
+    @app.get("/api/dashboard/models/usage")
+    async def usage(since: str) -> dict[str, object]:
+        try:
+            moment = datetime.fromisoformat(since)
+        except ValueError as error:
+            raise HTTPException(status_code=422, detail="since 须为 ISO 时刻") from error
+        if moment.tzinfo is None:
+            raise HTTPException(status_code=422, detail="since 须带时区")
+        return await context.require(MODEL_CACHE_USAGE).insights(since, 1, "input")

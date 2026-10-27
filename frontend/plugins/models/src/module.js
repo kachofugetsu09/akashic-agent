@@ -1,4 +1,4 @@
-import { cacheUsageResource, cacheUsageSection } from "./cache-usage.js";
+import { usageSection } from "./usage-page.js";
 import { mountModelPicker } from "./picker-mount";
 
 const SEARCH_ICON = `<svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="lucide lucide-search" aria-hidden="true"><circle cx="11" cy="11" r="8"></circle><path d="m21 21-4.3-4.3"></path></svg>`;
@@ -38,9 +38,8 @@ export function activate(ctx) {
   // 目录归模块所有：宿主空闲时预热，设置页挂载先画上次的目录，再在后台核对。
   const catalog = ctx.data.resource("catalog", async (signal) =>
     readJsonResponse(await ctx.http.request("/api/dashboard/models/catalog", {signal})), {warm: true});
-  const usage = cacheUsageResource(ctx);
   return ctx.ui.inject("shell.settings.v1", (mount) => {
-    const releaseUsage = mount.register(cacheUsageSection(usage));
+    const releaseUsage = mount.register(usageSection(ctx, catalog));
     const releaseModels = registerModels(ctx, mount, catalog);
     return () => { releaseModels(); releaseUsage(); };
   });
