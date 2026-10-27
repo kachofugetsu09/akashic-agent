@@ -11,7 +11,7 @@ const SPINNER_ICON = `<svg xmlns="http://www.w3.org/2000/svg" width="16" height=
 
 // 聊天只保留全局默认；压缩、看图、标题等各自在插件设置里选模型，留空跟随这里。
 const ROLE_LABELS = [
-  ["default", "全局默认模型", "对话默认使用它；各插件未单独指定时也跟随它"],
+  ["default", "对话", "对话默认用它"],
 ];
 
 export async function readJsonResponse(response) {
@@ -63,29 +63,29 @@ function registerModels(ctx, mount, catalogResource) {
       page.className = `settings-page ${props.embedded ? "settings-page--embedded" : ""}`;
       page.innerHTML = `<div class="settings-shell">
         <header class="settings-header">
-          <div><h1 data-title>模型连接</h1><p data-description>管理各模型服务商连接与密钥；未探测到的能力不会被默认开启。</p></div>
+          <div><h1 data-title>模型</h1><p data-description hidden></p></div>
           <div class="settings-header-actions"></div>
         </header>
         <p class="settings-inline-error" data-error role="alert" hidden></p>
         <div class="settings-section-bar" data-list-bar>
-          <h2 class="settings-section-label">服务商连接</h2>
-          <label class="settings-find" data-search>${SEARCH_ICON}<span class="sr-only">查找连接或模型</span><input placeholder="查找连接或模型"></label>
+          <h2 class="settings-section-label">服务商</h2>
+          <label class="settings-find" data-search>${SEARCH_ICON}<span class="sr-only">查找服务商或模型</span><input placeholder="查找服务商或模型"></label>
+          <button type="button" class="settings-primary-button settings-add-button" data-add-toggle aria-expanded="false" disabled>添加服务商</button>
         </div>
         <ul class="settings-provider-list" data-connections></ul>
         <div class="settings-add-provider">
-          <button type="button" class="settings-add-button" data-add-toggle aria-expanded="false" disabled>+ 添加服务商</button>
           <section class="settings-add-panel" data-add-panel hidden>
             <div class="settings-section-bar">
               <h2 class="settings-section-label" data-add-title>添加服务商</h2>
               <label class="settings-find">${SEARCH_ICON}<span class="sr-only">查找服务商</span><input data-template-search placeholder="查找服务商…"></label>
-              <button type="button" class="settings-text-button" data-add-close>关闭</button>
+              <button type="button" class="settings-secondary-button" data-add-close>返回</button>
             </div>
             <div class="settings-add-list" data-add-list></div>
             <div class="settings-provider-editor" data-add-editor hidden></div>
           </section>
         </div>
         <section class="settings-section settings-roles" data-roles>
-          <div class="settings-section-bar"><h2 class="settings-section-label">默认模型</h2><span class="settings-section-hint">压缩、看图、子任务等在各自的插件设置里可另选模型，未指定时跟随这里</span></div>
+          <div class="settings-section-bar"><h2 class="settings-section-label">默认</h2><span class="settings-section-hint">插件没单独指定时用这里</span></div>
           <div class="settings-role-grid" data-bindings></div>
         </section>
       </div>
@@ -220,10 +220,7 @@ function registerModels(ctx, mount, catalogResource) {
         const chatConnections = catalog.connections;
         const hasConnections = chatConnections.length > 0;
 
-        title.textContent = "模型服务";
-        description.textContent = hasConnections
-          ? "已配置的服务商连接如下；点击展开卡片可管理可用模型。"
-          : "请先添加模型连接，支持 ChatGPT 订阅、DeepSeek、Gemini 及兼容 API。";
+        title.textContent = "模型";
         roles.hidden = false;
         addToggle.disabled = false;
         // 首次配置没有连接时直接进入添加目录且不能关闭；编辑器打开期间不抢面板状态。
@@ -315,14 +312,21 @@ function registerModels(ctx, mount, catalogResource) {
         title.textContent = template.label;
         if (template.detail) button.title = template.detail;
         button.append(title);
+        if (template.tag) {
+          const tag = document.createElement("small");
+          tag.className = "settings-template-tag";
+          tag.textContent = template.tag;
+          button.append(tag);
+        }
         // 只有一种模板的接入方式（Codex、OpenCode Go）一个账号一条连接：已连接时标出，再点打开它而不是新建。
         const existing = (template.owner.templates?.length ?? 0) < 2 && catalog
           ? catalog.connections.find((connection) => connection.driverId === template.owner.id)
           : null;
         if (existing) {
-          const mark = document.createElement("i");
+          button.querySelector(".settings-template-tag")?.remove();
+          const mark = document.createElement("small");
           mark.className = "settings-template-added";
-          mark.title = "已连接";
+          mark.textContent = "已添加";
           button.append(mark);
           button.setAttribute("aria-label", `${template.label}，已连接，打开 ${existing.name}`);
           button.addEventListener("click", () => openExisting(existing));
@@ -402,7 +406,7 @@ function registerModels(ctx, mount, catalogResource) {
         status.className = "settings-provider-status";
         status.dataset.status = "";
         status.innerHTML = "<i aria-hidden=\"true\"></i><span></span>";
-        head.append(connectionMark(entry), copy, quota, status);
+        head.append(connectionMark(entry, connection), copy, quota, status);
         const toggle = document.createElement("label");
         toggle.className = "settings-provider-switch";
         toggle.innerHTML = "<input type=\"checkbox\" role=\"switch\">";
@@ -432,12 +436,12 @@ function registerModels(ctx, mount, catalogResource) {
         const reading = connection.availability === "available" ? quotas.get(connection.id) : undefined;
         head.querySelector("[data-name]").textContent = connection.name;
         // 副标题说明连的是哪个账号或地址、有几个模型；订阅连接先写套餐。
-        const where = reading?.account || connection.endpointHost || entry?.label || connection.driverId;
-        const who = [reading?.plan, where].filter(Boolean).join(" · ");
+        const who = reading?.account || connection.endpointHost || entry?.label || connection.driverId;
         const paused = models.length - openCount;
+        const count = connection.catalogMode === "all" ? `全部 ${models.length} 个模型` : `${models.length} 个模型`;
         head.querySelector("[data-detail]").textContent = connection.availability === "disabled" || !paused
-          ? `${who} · ${models.length} 个模型`
-          : `${who} · ${models.length} 个模型，${paused} 个已停用`;
+          ? `${who} · ${count}`
+          : `${who} · ${count}，${paused} 个已停用`;
         fillQuota(head.querySelector("[data-quota]"), reading);
         // 正常是常态，不占位；停用由开关表达，只有驱动异常才标出。
         const status = head.querySelector("[data-status]");
@@ -452,19 +456,33 @@ function registerModels(ctx, mount, catalogResource) {
         slot.replaceChildren();
         slot.removeAttribute("title");
         if (!reading) return;
-        if (reading.error) slot.title = `额度读取失败：${reading.error}`;
-        if (reading.windows.length) {
-          for (const span of reading.windows.slice(0, 2)) {
-            const used = Math.max(0, Math.min(100, Math.round(span.usedPercent)));
-            const label = document.createElement("span");
-            label.textContent = `${span.label} ${used}%`;
-            const bar = document.createElement("span");
-            bar.className = "settings-quota-bar";
-            bar.innerHTML = "<i></i>";
-            bar.firstElementChild.style.inlineSize = `${used}%`;
-            bar.classList.toggle("is-high", used >= 80);
-            slot.append(label, bar);
-          }
+        const percent = (span) => Math.max(0, Math.min(100, Math.round(span.usedPercent)));
+        const top = reading.windows.reduce((most, span) => (most && percent(most) >= percent(span) ? most : span), null);
+        const high = !!top && percent(top) >= 80;
+        if (reading.plan) {
+          const plan = document.createElement("span");
+          plan.className = "settings-quota-plan";
+          plan.classList.toggle("is-high", high);
+          plan.textContent = reading.plan;
+          slot.append(plan);
+        }
+        slot.title = [...reading.windows.map((span) => `${span.label} 已用 ${percent(span)}%`), reading.error ? `额度读取失败：${reading.error}` : ""].filter(Boolean).join("\n");
+        if (top) {
+          const used = percent(top);
+          const label = document.createElement("span");
+          label.className = "settings-quota-window";
+          label.classList.toggle("is-high", high);
+          label.textContent = top.label;
+          const bar = document.createElement("span");
+          bar.className = "settings-quota-bar";
+          bar.innerHTML = "<i></i>";
+          bar.firstElementChild.style.inlineSize = `${used}%`;
+          bar.classList.toggle("is-high", high);
+          const value = document.createElement("span");
+          value.className = "settings-quota-window";
+          value.classList.toggle("is-high", high);
+          value.textContent = `${used}%`;
+          slot.append(label, bar, value);
         } else if (reading.balance) {
           slot.textContent = `余额 ${reading.balance}`;
         } else if (reading.error) {
@@ -547,9 +565,12 @@ function registerModels(ctx, mount, catalogResource) {
           const bound = catalog.roleBindings[role] ?? "";
           const availableModels = chatModels
             .filter((model) => model.availability === "available" || model.id === bound);
+          const current = chatModels.find((model) => model.id === bound);
+          // 默认模型看不了图时直接说去哪里补，不让用户等到发图失败才发现。
+          const blind = current && !current.capabilities.inputModalities.includes("image");
           bindings.appendChild(bindingRow({
             label,
-            detail,
+            detail: blind ? "它不能看图；要发图，请在「插件 · 看图」选一个能看图的模型" : detail,
             models: availableModels,
             value: bound,
             change(modelId) {
@@ -561,8 +582,8 @@ function registerModels(ctx, mount, catalogResource) {
         const embeddingModels = catalog.models.filter((model) =>
           model.kind === "embedding" && (model.availability === "available" || model.id === embeddingBound));
         bindings.appendChild(bindingRow({
-          label: "知识库嵌入向量模型",
-          detail: "用于情景记忆检索与文本向量化",
+          label: "知识库向量",
+          detail: "记忆检索与文本向量化用它",
           models: embeddingModels,
           value: embeddingBound,
           change(modelId) {
@@ -788,7 +809,8 @@ function registerModels(ctx, mount, catalogResource) {
             const connection = catalog.connections.find((item) => item.id === model.connectionId);
             const entry = providerEntries.find((candidate) => candidate.id === connection?.driverId);
             const caps = model.capabilities ?? {};
-            const icon = typeof entry?.connectionIcon === "string" && entry.connectionIcon.startsWith("data:image/svg+xml,") ? entry.connectionIcon : "";
+            const brand = connectionIcon(entry, connection);
+            const icon = typeof brand === "string" && brand.startsWith("data:image/svg+xml,") ? brand : "";
             return {
               id: model.id, provider: connection?.driverId ?? "", model: model.model,
               sourceId: model.connectionId, sourceName: connection?.name ?? "其他", icon,
@@ -1672,11 +1694,11 @@ function requireProviderEntry(entry) {
   return entry;
 }
 
-// 接入方式分组；模板或连接类型用 group 声明，未声明的归入厂商 API。
+// 按付费方式分组；模板或连接类型用 group 声明，未声明的归入按量付费。
 const TEMPLATE_GROUPS = [
-  ["subscription", "订阅与本机登录", "登录即可，无需密钥"],
-  ["provider", "厂商 API", "填入官方密钥"],
-  ["custom", "自定义", "任意 OpenAI 或 Gemini 兼容地址"],
+  ["subscription", "订阅", "按月付费，能看到额度"],
+  ["provider", "按量付费", "用 API 密钥，按 token 计费"],
+  ["custom", "自定义", "任何 OpenAI 或 Gemini 兼容的地址"],
 ];
 
 function templateGroup(template) {
@@ -1699,8 +1721,19 @@ function editTemplate(entry) {
   return templates.find((template) => template.id === entry.editTemplateId) ?? templates[0];
 }
 
-function connectionMark(entry) {
-  return providerMark({icon: entry?.connectionIcon});
+function connectionMark(entry, connection) {
+  return providerMark({icon: connectionIcon(entry, connection)});
+}
+
+// 同一驱动接多家服务（兼容 API）时，按连接地址的主机找到对应模板的品牌图标。
+function connectionIcon(entry, connection) {
+  const host = connection?.endpointHost;
+  const template = host ? entry?.templates?.find((item) => item.icon && endpointHost(item.defaults?.endpoint) === host) : null;
+  return template?.icon ?? entry?.connectionIcon;
+}
+
+function endpointHost(endpoint) {
+  try { return new URL(endpoint).hostname; } catch { return ""; }
 }
 
 // 有插件声明的品牌图标就用它；没有时用中性的服务器图标，不拿首字母充当标识。
