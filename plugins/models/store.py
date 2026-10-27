@@ -20,6 +20,7 @@ from urllib.parse import quote
 
 from plugins.models.contract import (
     CapabilitySources,
+    CatalogMode,
     DiscoveredModel,
     ModelCapabilities,
     ModelKind,
@@ -67,6 +68,7 @@ class StoredConnection:
     auth_identity: str
     driver_config: Mapping[str, Any]
     enabled: bool
+    catalog_mode: CatalogMode = "picked"
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "driver_config", _freeze_json(self.driver_config))
@@ -364,9 +366,10 @@ class ModelsStore:
             if "driver_config_json" in connection_columns
             else "'{}'"
         )
+        mode_column = "catalog_mode" if "catalog_mode" in connection_columns else "'picked'"
         connection_rows = connection.execute(
             "SELECT id, name, provider, catalog_provider_id, base_url, auth_id, "
-            f"{config_column}, enabled FROM model_connections ORDER BY created_at, id"
+            f"{config_column}, enabled, {mode_column} FROM model_connections ORDER BY created_at, id"
         ).fetchall()
         chat_rows = connection.execute(
             _SELECT_CHAT_MODELS.format(
@@ -670,13 +673,43 @@ class ModelsStore:
             ),
         )
 
-    def add_connection(self, command: AddConnection) -> int:
+    def add_connection(
+        self,
+        command: AddConnection,
+        adopted: tuple[DiscoveredModel, ...] = (),
+    ) -> int:
         """Add one connection and credential as one revision."""
 
         def write(connection: sqlite3.Connection) -> None:
             _insert_connection(connection, command)
+            _ = _adopt_chat_models(connection, command.connection_id, adopted)
 
         return self._domain_write(command.expected_revision, "add-connection", write)
+
+    # 切换模型范围；切到 all 时把目录里还没有的对话模型一并补上。
+    def set_catalog_mode(
+        self,
+        expected_revision: int,
+        connection_id: str,
+        mode: CatalogMode,
+        adopted: tuple[DiscoveredModel, ...] = (),
+    ) -> int:
+        target = _required(connection_id, "connection_id")
+        if mode not in ("picked", "all"):
+            raise ValueError(f"unsupported catalog mode: {mode}")
+
+        def write(connection: sqlite3.Connection) -> None:
+            cursor = connection.execute(
+                "UPDATE model_connections SET catalog_mode = ?, updated_at = CURRENT_TIMESTAMP "
+                "WHERE id = ? AND enabled = 1",
+                (mode, target),
+            )
+            if cursor.rowcount != 1:
+                raise ValueError(f"connection does not exist or is disabled: {target}")
+            if mode == "all":
+                _ = _adopt_chat_models(connection, target, adopted)
+
+        return self._domain_write(expected_revision, "set-catalog-mode", write)
 
     def create_connection_with_model(
         self,
@@ -1000,7 +1033,7 @@ class ModelsStore:
         connection_id: str,
         discovered: tuple[DiscoveredModel, ...],
     ) -> int:
-        """只刷新用户已选择模型的目录证据，不自动采纳新型号。"""
+        """刷新已选模型的目录证据；只有 all 模式的连接会采纳新型号。"""
 
         target_connection = _required(connection_id, "connection_id")
         catalog = tuple(discovered)
@@ -1030,13 +1063,14 @@ class ModelsStore:
 
         def write(connection: sqlite3.Connection) -> bool:
             active = connection.execute(
-                "SELECT enabled FROM model_connections WHERE id = ?",
+                "SELECT enabled, catalog_mode FROM model_connections WHERE id = ?",
                 (target_connection,),
             ).fetchone()
             if active is None or not bool(active[0]):
                 raise ValueError(
                     f"connection does not exist or is disabled: {target_connection}"
                 )
+            follow = str(active[1]) == "all"
             current = self.read_snapshot()
             if current is None:
                 raise RuntimeError("model registry disappeared during catalog sync")
@@ -1075,7 +1109,8 @@ class ModelsStore:
                 items,
                 legacy_keys=legacy_keys,
             ):
-                return False
+                # 已选模型没变时，all 模式仍可能有新上的型号要收。
+                return follow and _adopt_chat_models(connection, target_connection, catalog) > 0
             desired = {(item.kind, item.model) for item in items}
             for key, (model_id, discovery_owned, _) in existing.items():
                 if discovery_owned and key not in desired:
@@ -1119,6 +1154,8 @@ class ModelsStore:
                         command, model_id, target_connection, item.model, source="discovery",
                     ),
                 )
+            if follow:
+                _ = _adopt_chat_models(connection, target_connection, catalog)
             return True
 
         return self._domain_write(expected_revision, "sync-models", write)
@@ -1479,6 +1516,11 @@ def _missing_schema_additions(connection: sqlite3.Connection) -> tuple[str, ...]
         statements.append(
             "ALTER TABLE embedding_models ADD COLUMN capabilities_json TEXT"
         )
+    if "catalog_mode" not in _columns(connection, "model_connections"):
+        statements.append(
+            "ALTER TABLE model_connections ADD COLUMN "
+            "catalog_mode TEXT NOT NULL DEFAULT 'picked'"
+        )
     if "host_epoch" not in _columns(connection, "model_registry_meta"):
         statements.append(
             "ALTER TABLE model_registry_meta ADD COLUMN host_epoch INTEGER NOT NULL DEFAULT 0"
@@ -1524,6 +1566,7 @@ def _connection_from_row(row: sqlite3.Row) -> StoredConnection:
         auth_identity=str(row[5]),
         driver_config=MappingProxyType(config),
         enabled=bool(row[7]),
+        catalog_mode="all" if str(row[8]) == "all" else "picked",
     )
 
 
@@ -1614,12 +1657,14 @@ def _insert_connection(
     config = _json_object(command.driver_config, "driver_config")
     catalog_provider_id = _catalog_provider_id(command.driver_config)
     auth_kind, auth_payload = encode_credential(command.credential)
+    if command.catalog_mode not in ("picked", "all"):
+        raise ValueError(f"unsupported catalog mode: {command.catalog_mode}")
     connection.execute(
         """
         INSERT INTO model_connections(
             id, name, provider, catalog_provider_id, auth_id, base_url,
-            auth_kind, auth_payload, driver_config_json
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+            auth_kind, auth_payload, driver_config_json, catalog_mode
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         """,
         (
             connection_id,
@@ -1631,6 +1676,7 @@ def _insert_connection(
             auth_kind,
             auth_payload,
             config,
+            command.catalog_mode,
         ),
     )
 
@@ -1690,6 +1736,37 @@ def _insert_model(connection: sqlite3.Connection, command: AddModel) -> None:
             _model_payload(command, source=source),
         ),
     )
+
+
+# 把目录里还没有的对话模型写成目录所有的行；未声明用途的型号按对话收，名字带 embed 的跳过。
+def _adopt_chat_models(
+    connection: sqlite3.Connection,
+    connection_id: str,
+    catalog: tuple[DiscoveredModel, ...],
+) -> int:
+    existing = _existing_model_ids(connection, connection_id)
+    adopted = 0
+    for item in catalog:
+        if item.kind == "embedding" or (item.kind is None and "embed" in item.model.lower()):
+            continue
+        if ("chat", item.model) in existing:
+            continue
+        command = AddModel(
+            expected_revision=0,
+            model_id=f"{connection_id}__{uuid.uuid4().hex[:12]}",
+            connection_id=connection_id,
+            kind="chat",
+            model=item.model,
+            capabilities=item.capabilities,
+            capability_sources=item.capability_sources,
+            default_reasoning_effort=item.default_reasoning_effort,
+            driver_config=item.driver_config,
+            discovery_owned=True,
+        )
+        _insert_model(connection, command)
+        existing[("chat", item.model)] = (command.model_id, True, False)
+        adopted += 1
+    return adopted
 
 
 def _chat_model_values(
@@ -2186,7 +2263,8 @@ CREATE TABLE model_connections (
     enabled INTEGER NOT NULL DEFAULT 1 CHECK (enabled IN (0, 1)),
     created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
     updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
-    driver_config_json TEXT NOT NULL DEFAULT '{}'
+    driver_config_json TEXT NOT NULL DEFAULT '{}',
+    catalog_mode TEXT NOT NULL DEFAULT 'picked' CHECK (catalog_mode IN ('picked', 'all'))
 );
 
 CREATE TABLE model_definitions (

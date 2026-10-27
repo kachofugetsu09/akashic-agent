@@ -10,6 +10,7 @@ from typing import Any, Protocol, TypeAlias
 from agent.plugin_composition.model import ServiceKey
 from plugins.models.contract import (
     CapabilitySources,
+    CatalogMode,
     DiscoveredModel,
     ModelCapabilities,
     ModelKind,
@@ -28,6 +29,9 @@ class AddConnection:
     auth_identity: str
     credential: Mapping[str, str]
     driver_config: Mapping[str, Any] = field(default_factory=dict)
+    # all：建连接时读取目录，对话模型全部启用；picked 配 adopt_models 只启用这几个。
+    catalog_mode: CatalogMode = "picked"
+    adopt_models: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True, slots=True)
@@ -108,6 +112,14 @@ class SyncModels:
     connection_id: str
 
 
+# 切换连接的模型范围；切到 all 时读取目录，把还没有的对话模型补上。
+@dataclass(frozen=True, slots=True)
+class SetCatalogMode:
+    expected_revision: int
+    connection_id: str
+    mode: CatalogMode
+
+
 @dataclass(frozen=True, slots=True)
 class StartConnectionAuth:
     driver_id: str
@@ -145,6 +157,7 @@ ModelChange: TypeAlias = (
     | RemoveModel
     | SetDefaultModel
     | SyncModels
+    | SetCatalogMode
     | StartConnectionAuth
     | FinishConnectionAuth
     | CancelConnectionAuth
