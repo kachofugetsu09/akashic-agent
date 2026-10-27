@@ -61,6 +61,8 @@ from plugins.models.contract import (
     ModelAvailability,
     ModelCatalogSnapshot,
     ModelDescriptor,
+    DriverQuota,
+    QuotaReading,
 )
 from plugins.models.contract import (
     EMBEDDINGS,
@@ -109,6 +111,7 @@ from .settings import (
     VerifyModel,
 )
 from .composition import measure
+from .quota import ConnectionQuota, QuotaCache
 from .store import (
     ModelsStore,
     StoredConnection,
@@ -973,6 +976,9 @@ class _SettingsView:
     async def apply(self, command: ModelChange) -> SettingsReceipt:
         return await self._state.apply_change(command)
 
+    async def quotas(self, *, fresh: bool, connection_id: str | None = None) -> tuple[ConnectionQuota, ...]:
+        return await self._state.read_quotas(fresh=fresh, connection_id=connection_id)
+
 
 class _MemoryCredential:
     def __init__(
@@ -1016,6 +1022,7 @@ class ModelsState:
         self.embeddings = _EmbeddingsView(self)
         self.catalog = _CatalogView(self)
         self.settings = _SettingsView(self)
+        self.quotas = QuotaCache(self.read_quota)
         self._auth_attempts: dict[str, _AuthAttempt] = {}
         # Root 实例身份进入每次真实 attempt 的 owner_id，进程重启后不再继承。
         self._root_instance = secrets.token_hex(8)
@@ -1792,6 +1799,36 @@ class ModelsState:
         if self._snapshot_required().revision != expected_revision:
             raise RevisionConflictError("配置已改变，请重新读取目录。").exception()
         return models
+
+    # 只读启用中、驱动声明了额度读取的连接；停用或删除的连接一并清出缓存。
+    async def read_quotas(self, *, fresh: bool, connection_id: str | None) -> tuple[ConnectionQuota, ...]:
+        snapshot = self._snapshot_required()
+        readable = [
+            connection.connection_id for connection in snapshot.connections.values()
+            if connection.enabled and self._quota_reader(connection.driver_id) is not None
+        ]
+        self.quotas.forget(readable)
+        if connection_id is not None:
+            readable = [item for item in readable if item == connection_id]
+        return await self.quotas.read(readable, fresh=fresh)
+
+    async def read_quota(self, connection_id: str) -> QuotaReading:
+        connection = self._snapshot_required().connections.get(connection_id)
+        if connection is None or not connection.enabled:
+            raise ModelUnavailableError("连接不存在或已停用。").exception()
+        registration = self._registration_required(connection.driver_id)
+        read = registration.definition.read_quota
+        if read is None:
+            raise ModelUnavailableError("该连接不提供额度。").exception()
+        async with registration.context.runtime_scope():
+            return await read(_driver_connection_descriptor(connection),
+                self.store.credential_handle(connection_id, connection.auth_identity))
+
+    def _quota_reader(self, driver_id: str) -> DriverQuota | None:
+        record = self._registrations.get(driver_id)
+        if record is None or record.context.fiber.state is not FiberState.ACTIVE:
+            return None
+        return record.definition.read_quota
 
     async def _discover_new_connection(
         self,

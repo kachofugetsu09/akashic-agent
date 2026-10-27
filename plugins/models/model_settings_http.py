@@ -60,6 +60,7 @@ from .settings import (
     UpdateModel,
     VerifyModel,
 )
+from .quota import ConnectionQuota
 from .selection import MODEL_SELECTION
 
 # 模型失败值由标准异常承载；未知程序错误由映射入口原样抛出。
@@ -84,6 +85,8 @@ class ModelControl(Protocol):
     async def apply(self, command: ModelChange) -> SettingsReceipt: ...
 
     async def read_saved(self, metadata: Mapping[str, object]) -> ChatModelSelection: ...
+
+    async def quotas(self, *, fresh: bool, connection_id: str | None = None) -> tuple[ConnectionQuota, ...]: ...
 
 
 class _ServiceResolver(Protocol):
@@ -121,6 +124,9 @@ class BoundModelControl:
 
     async def read_saved(self, metadata: Mapping[str, object]) -> ChatModelSelection:
         return self._resolver.require(MODEL_SELECTION).read_saved(metadata)
+
+    async def quotas(self, *, fresh: bool, connection_id: str | None = None) -> tuple[ConnectionQuota, ...]:
+        return await self._resolver.require(MODEL_SETTINGS).quotas(fresh=fresh, connection_id=connection_id)
 
 
 class _Payload(BaseModel):
@@ -321,6 +327,11 @@ class EmptyParams(_Payload):
     """Parameters for an RPC that takes no business input."""
 
 
+class QuotasParams(_Payload):
+    fresh: bool = False
+    connection_id: str | None = Field(default=None, min_length=1, max_length=128)
+
+
 class CommandParams(RootModel[CommandPayload]):
     """Keep the command wire body unchanged while using RpcMethod."""
 
@@ -392,6 +403,11 @@ async def _catalog_body(control: ModelControl) -> dict[str, object]:
     return _catalog_payload(await control.catalog())
 
 
+async def _quotas_body(control: ModelControl, params: QuotasParams) -> dict[str, object]:
+    quotas = await control.quotas(fresh=params.fresh, connection_id=params.connection_id)
+    return {"quotas": [quota.payload() for quota in quotas]}
+
+
 async def _discover_body(
     control: ModelControl,
     payload: ConnectionInput,
@@ -435,6 +451,14 @@ def create_model_settings_router(
     async def catalog() -> dict[str, object]:
         try:
             return await _catalog_body(control)
+        except RuntimeError as error:
+            raise _http_error(error, operation="catalog") from error
+
+    # 额度只读：fresh=1 是用户点了刷新，仍受服务端最短间隔约束。
+    @router.get("/quotas")
+    async def quotas(fresh: bool = False, connection_id: str | None = None) -> dict[str, object]:
+        try:
+            return await _quotas_body(control, QuotasParams(fresh=fresh, connection_id=connection_id))
         except RuntimeError as error:
             raise _http_error(error, operation="catalog") from error
 
@@ -500,6 +524,10 @@ def rpc_methods(control: ModelControl) -> dict[str, RpcMethod]:
         ),
         "models/catalog": _rpc_method(
             EmptyParams, lambda params: _catalog_body(control),
+            errors=(RuntimeError,), operation="catalog",
+        ),
+        "models/quotas": _rpc_method(
+            QuotasParams, lambda params: _quotas_body(control, params),
             errors=(RuntimeError,), operation="catalog",
         ),
         "models/discover": _rpc_method(

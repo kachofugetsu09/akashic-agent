@@ -809,6 +809,50 @@ DriverAuthHandler: TypeAlias = Callable[
 
 
 @dataclass(frozen=True, slots=True)
+class QuotaWindow:
+    """订阅的一个用量窗口；used_percent 是服务商给出的已用比例（0–100）。"""
+
+    label: str
+    used_percent: float
+    # ISO-8601（UTC）；服务商没给或窗口未开始计时为 None。
+    resets_at: str | None = None
+    window_seconds: int | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class QuotaReading:
+    """一次额度读取的事实；不含凭据。没有的项留空，界面不显示。"""
+
+    plan: str = ""
+    account: str = ""
+    windows: tuple[QuotaWindow, ...] = ()
+    # 已带币种的余额文本，例如 "¥23.40"；服务商只给比例时为空。
+    balance: str = ""
+    note: str = ""
+
+
+DriverQuota: TypeAlias = Callable[
+    [DriverConnectionDescriptor, CredentialHandle],
+    Awaitable[QuotaReading],
+]
+
+
+# 窗口按时长命名，各驱动共用同一套叫法。
+def quota_window_label(seconds: int | None) -> str:
+    if not seconds or seconds <= 0:
+        return "额度"
+    if seconds % 604800 == 0:
+        weeks = seconds // 604800
+        return "每周" if weeks == 1 else f"{weeks} 周"
+    if seconds % 86400 == 0:
+        days = seconds // 86400
+        return "每天" if days == 1 else "每月" if days in (30, 31) else f"{days} 天"
+    if seconds % 3600 == 0:
+        return f"{seconds // 3600} 小时"
+    return f"{max(1, seconds // 60)} 分钟"
+
+
+@dataclass(frozen=True, slots=True)
 class ModelDriverDefinition:
     driver_id: str
     contract_version: str
@@ -821,6 +865,8 @@ class ModelDriverDefinition:
     cancel_auth: DriverAuthHandler | None = None
     # 连接的品牌图标（SVG 文本，≤16 KiB）；聊天里的模型选择按连接分组时显示。
     icon: Callable[[DriverConnectionDescriptor], str | None] | None = None
+    # 订阅窗口或余额；没有公开接口的服务不提供，设置页就不显示额度。
+    read_quota: DriverQuota | None = None
 
 
 class ModelDrivers(Protocol):
