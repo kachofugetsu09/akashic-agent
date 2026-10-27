@@ -1341,6 +1341,15 @@ function registerModels(ctx, mount, catalogResource) {
             body: JSON.stringify({type: "cancel_auth", attempt_id: attemptId}),
           },
         ));
+        // 订阅登录建好的新连接默认跟随服务商目录；目录读不到时保持空，用户可在详情里重新读取。
+        const followCatalog = async () => {
+          try {
+            const receipt = await command({type: "set_catalog_mode", expected_revision: catalog.revision, connection_id: connectionId, mode: "all"});
+            await setDefaultIfMissing(receipt.revision);
+          } catch (reason) {
+            showNotice(`已登录，但没能读取模型目录：${reason instanceof Error ? reason.message : String(reason)}`);
+          }
+        };
         const setDefaultIfMissing = async (revision, preferredModelId = "") => {
           if (auth.closed || catalog.roleBindings.default) return;
           const modelId = preferredModelId || catalog.models.find(
@@ -1437,6 +1446,26 @@ function registerModels(ctx, mount, catalogResource) {
             created = true;
             if (input.model.kind === "chat") await setDefaultIfMissing(receipt.revision, modelId);
           },
+          // 只填密钥的新建：Models 读目录并把对话模型一起收进来，失败就什么都不写。
+          async createConnection(input) {
+            if (connection || created) throw new Error("已有连接不能重复创建");
+            const receipt = await command({
+              type: "add_connection",
+              expected_revision: catalog.revision,
+              connection_id: connectionId,
+              name: input.name,
+              driver_id: entry.id,
+              endpoint: input.endpoint,
+              auth_identity: `api:${connectionId}`,
+              credential: input.credential,
+              driver_config: input.driverConfig,
+              catalog_mode: input.catalogMode ?? "all",
+              adopt_models: input.adoptModels ?? [],
+            });
+            created = true;
+            const hinted = catalog.models.find((model) => model.connectionId === connectionId && model.model === input.modelHint);
+            await setDefaultIfMissing(receipt.revision, hinted?.id ?? "");
+          },
           async update(input) {
             if (!connection) throw new Error("新连接不能执行更新");
             await command({
@@ -1466,7 +1495,10 @@ function registerModels(ctx, mount, catalogResource) {
             const receipt = await command({type: "finish_auth", expected_revision: catalog.revision, attempt_id: attemptId});
             if (receipt.status !== "pending") {
               auth.complete(attemptId);
-              if (receipt.status === "committed") created = true;
+              if (receipt.status === "committed" && !connection && !created) {
+                created = true;
+                await followCatalog();
+              }
             }
             return receipt;
           },
