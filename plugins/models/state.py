@@ -120,6 +120,7 @@ from .store import (
     StoredModel,
     StoredSnapshot,
     _request_digest,
+    adoptable_chat_model,
 )
 
 logger = logging.getLogger(__name__)
@@ -1886,16 +1887,18 @@ class ModelsState:
         if command.catalog_mode == "picked" and not command.adopt_models:
             return ()
         discovered = await self._discover_new_connection(command)
+        # 2. 与写入时同一条规则过滤，过滤后为空就不建连接。
+        chat = tuple(item for item in discovered if adoptable_chat_model(item))
         if command.catalog_mode == "all":
-            if not any(item.kind != "embedding" for item in discovered):
-                raise ModelUnavailableError("服务商的模型列表是空的，没有可用的对话模型。").exception()
-            return discovered
-        # 2. 勾选的必须都在目录里；目录外的型号走手动添加。
+            if not chat:
+                raise ModelUnavailableError("服务商的模型列表里没有可用的对话模型。").exception()
+            return chat
+        # 3. 勾选的必须都是目录里的对话模型；目录外的型号走手动添加。
         wanted = set(command.adopt_models)
-        picked = tuple(item for item in discovered if item.model in wanted and item.kind != "embedding")
+        picked = tuple(item for item in chat if item.model in wanted)
         missing = wanted - {item.model for item in picked}
         if missing:
-            raise ModelUnavailableError(f"服务商目录里没有：{', '.join(sorted(missing))}").exception()
+            raise ModelUnavailableError(f"服务商目录里没有这些对话模型：{', '.join(sorted(missing))}").exception()
         return picked
 
     async def _probe_new_connection(self, command: AddConnection) -> None:

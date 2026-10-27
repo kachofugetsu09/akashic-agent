@@ -707,7 +707,7 @@ class ModelsStore:
             if cursor.rowcount != 1:
                 raise ValueError(f"connection does not exist or is disabled: {target}")
             if mode == "all":
-                _ = _adopt_chat_models(connection, target, adopted)
+                _ = _adopt_chat_models(connection, target, adopted, revive=True)
 
         return self._domain_write(expected_revision, "set-catalog-mode", write)
 
@@ -1739,17 +1739,31 @@ def _insert_model(connection: sqlite3.Connection, command: AddModel) -> None:
 
 
 # 把目录里还没有的对话模型写成目录所有的行；未声明用途的型号按对话收，名字带 embed 的跳过。
+# 目录里能当对话模型收的型号：没声明用途的按对话算，名字含 embed 的除外。
+def adoptable_chat_model(item: DiscoveredModel) -> bool:
+    return item.kind == "chat" or (item.kind is None and "embed" not in item.model.lower())
+
+
+# 收进目录里还没有的对话模型；revive 时把目录里重新出现、曾被停用的目录模型一并恢复。
 def _adopt_chat_models(
     connection: sqlite3.Connection,
     connection_id: str,
     catalog: tuple[DiscoveredModel, ...],
+    *,
+    revive: bool = False,
 ) -> int:
     existing = _existing_model_ids(connection, connection_id)
     adopted = 0
     for item in catalog:
-        if item.kind == "embedding" or (item.kind is None and "embed" in item.model.lower()):
+        if not adoptable_chat_model(item):
             continue
-        if ("chat", item.model) in existing:
+        stored = existing.get(("chat", item.model))
+        if stored is not None:
+            if revive and stored[1]:
+                adopted += connection.execute(
+                    "UPDATE model_definitions SET enabled = 1, updated_at = CURRENT_TIMESTAMP "
+                    "WHERE id = ? AND enabled = 0", (stored[0],),
+                ).rowcount
             continue
         command = AddModel(
             expected_revision=0,
