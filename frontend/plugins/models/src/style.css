@@ -644,7 +644,6 @@ dialog.settings-scrim::backdrop { background: transparent; }
 /* Local shared geometry/type owners for the workspace and picker surfaces. */
 .settings-page {
   --models-hit-target: 44px;
-  --models-detail-inset: calc(var(--models-hit-target) + 0.4rem);
   --models-type-title: 1rem;
   --models-type-body: 0.875rem;
   --models-type-caption: 0.75rem;
@@ -658,28 +657,70 @@ dialog.settings-scrim::backdrop { background: transparent; }
   --models-shadow-sheet: 0 0.75rem 1.75rem rgb(var(--ak-color-shadow-rgb) / 0.24), 0 0.25rem 0.625rem rgb(var(--ak-color-shadow-rgb) / 0.16);
 }
 
-/* 连接工作区里的模型管理面：逐模型开放/停用、验证、探测差异采纳。 */
-.settings-model-manage { margin-block-start: 1.5rem; border-block-start: 1px solid var(--ak-rule-subtle); padding-block-start: 1.25rem; }
-.settings-model-manage-head { display: flex; align-items: center; justify-content: space-between; gap: 1rem; margin-block-end: 0.5rem; }
-.settings-model-manage-head h3 { margin: 0; color: var(--ak-ink-secondary); font-size: var(--models-type-caption); font-weight: 600; letter-spacing: 0.04em; line-height: 1.3; }
-.settings-model-manage-head p { margin: 0.2rem 0 0; color: var(--ak-ink-secondary); font-size: var(--models-type-body); font-variant-numeric: tabular-nums; }
-.settings-model-manage-actions { display: flex; flex-wrap: wrap; justify-content: end; gap: 0.375rem; }
-.settings-model-manage-actions .settings-secondary-button,
-.settings-model-manage-actions .settings-text-button { min-height: var(--models-hit-target); padding-inline: 0.8rem; }
+/* 连接详情：左列小标题、右列内容；模型是可勾选的标签，参数在表格里逐模型填写。 */
+.settings-model-manage { display: grid; gap: 1rem; margin-block-start: 1rem; border-block-start: 1px solid var(--ak-rule-subtle); padding-block-start: 1rem; }
+.settings-detail-row { display: grid; grid-template-columns: 6rem minmax(0, 1fr); align-items: start; gap: 1rem; }
+.settings-detail-row[hidden] { display: none; }
+.settings-detail-key { padding-block-start: 0.5rem; color: var(--ak-ink-secondary); font-size: var(--models-type-body); font-weight: 500; text-align: end; }
+.settings-detail-key small { display: block; font-size: var(--models-type-caption); font-variant-numeric: tabular-nums; }
+.settings-detail-value { display: grid; min-width: 0; gap: 0.5rem; }
+.settings-dialog--inline .settings-dialog-body > .settings-account { margin-block-end: 0.75rem; }
+
+/* 账号框：账号、套餐与读取时间一行，下面每个窗口一条进度。 */
+.settings-account-box { padding: 0; }
+.settings-account-top { display: flex; flex-wrap: wrap; align-items: center; gap: 0.25rem 0.625rem; }
+.settings-account-top strong { min-width: 0; overflow-wrap: anywhere; font-size: var(--models-type-body); font-weight: 600; }
+.settings-account-top small { color: var(--ak-ink-secondary); font-size: var(--models-type-caption); }
+.settings-account-top .settings-text-button { min-height: 2rem; margin-inline-start: auto; padding-inline: 0.5rem; font-size: var(--models-type-caption); }
+.settings-account-plan { border: 1px solid var(--ak-rule-default); border-radius: var(--models-radius-badge); padding: 0 0.5rem; color: var(--ak-ink-secondary); font-size: var(--models-type-caption); line-height: 1.5; }
+.settings-account-meters { display: grid; gap: 0.375rem; }
+.settings-account-meters:empty { display: none; }
+.settings-account-meter { display: grid; grid-template-columns: 4rem minmax(4rem, 1fr) auto; align-items: center; gap: 0.75rem; color: var(--ak-ink-secondary); font-size: var(--models-type-caption); font-variant-numeric: tabular-nums; }
+.settings-account-meter .settings-quota-bar { height: 0.3125rem; }
+.settings-account .settings-model-hint:empty { display: none; }
+
+/* 模型标签：按下为已选；新候选用虚线框，在用场景用强调色小字。 */
+.settings-chip-toolbar { display: flex; flex-wrap: wrap; align-items: center; gap: 0.25rem; }
+.settings-chip-toolbar .settings-model-filter { flex: 1 1 10rem; margin: 0; }
+.settings-chip-toolbar .settings-text-button { min-height: 2.25rem; padding-inline: 0.5rem; font-size: var(--models-type-caption); }
+.settings-chip-toolbar .settings-text-button[aria-expanded="true"] { color: var(--ak-ink-primary); background: var(--ak-paper-quiet); }
+.settings-chips { display: flex; flex-wrap: wrap; gap: 0.375rem; color: var(--ak-ink-secondary); font-size: var(--models-type-body); }
+.settings-chip { display: inline-flex; max-width: 100%; min-height: 2.25rem; align-items: baseline; gap: 0.375rem; border: 1px solid var(--ak-rule-default); border-radius: var(--models-radius-field); padding: 0.375rem 0.625rem; color: var(--ak-ink-secondary); background: transparent; font: inherit; text-align: start; cursor: pointer; }
+.settings-chip[hidden] { display: none; }
+.settings-chip.is-new { border-style: dashed; }
+.settings-chip span { overflow-wrap: anywhere; font-family: var(--ak-type-technical); font-size: var(--models-type-body); }
+.settings-chip small { color: var(--ak-ink-secondary); font-size: var(--models-type-caption); font-variant-numeric: tabular-nums; }
+.settings-chip em { color: var(--ak-color-action-primary); font-size: var(--models-type-caption); font-style: normal; font-weight: 600; }
+.settings-chip:hover { border-color: var(--ak-rule-strong); }
+.settings-chip[aria-pressed="true"] { border-style: solid; border-color: var(--ak-color-action-primary); color: var(--ak-ink-primary); background: var(--ak-color-action-soft); }
+.settings-chip:focus-visible { outline: 2px solid var(--md-sys-color-primary); outline-offset: 1px; }
+
+/* 参数表：模型、上下文、最大输出、看图、验证各一列。 */
+.settings-param-table { display: grid; grid-template-columns: minmax(8rem, 1fr) 6.5rem 6.5rem 3rem auto; align-items: center; gap: 0.375rem 0.625rem; padding-block: 0.25rem; }
+.settings-param-table[hidden] { display: none; }
+.settings-param-head, .settings-param-row { display: contents; }
+.settings-param-head > span { color: var(--ak-ink-secondary); font-size: var(--models-type-caption); font-weight: 600; }
+.settings-param-row strong { min-width: 0; overflow-wrap: anywhere; font-family: var(--ak-type-technical); font-size: var(--models-type-body); font-weight: 500; }
+.settings-param-row input:not([type="checkbox"]) { width: 100%; min-height: 2.25rem; border: 1px solid var(--ak-rule-default); border-radius: var(--models-radius-field); padding-inline: 0.5rem; color: var(--ak-ink-primary); background: var(--ak-paper-editing); font: inherit; font-size: var(--models-type-body); font-variant-numeric: tabular-nums; }
+.settings-param-row input[aria-invalid="true"] { border-color: var(--md-sys-color-error); }
+.settings-param-row input[type="checkbox"] { width: 1.1rem; height: 1.1rem; margin: 0; justify-self: center; accent-color: var(--ak-color-action-primary); cursor: pointer; }
+.settings-param-row .settings-text-button { min-height: 2.25rem; padding-inline: 0.5rem; font-size: var(--models-type-caption); }
+.settings-param-table > .settings-model-hint { grid-column: 1 / -1; margin: 0.25rem 0 0; }
+.settings-model-manage .settings-model-hint:empty { display: none; }
+
+/* 编辑态底栏归宿主：插件自己的标题与底栏隐藏，取消与保存靠右。 */
+.settings-dialog--inline.is-edit > .settings-dialog-header,
+.settings-dialog--inline.is-edit .settings-dialog-footer { display: none; }
+.settings-detail-footer { display: flex; justify-content: end; gap: 0.5rem; border-block-start: 1px solid var(--ak-rule-subtle); padding: 0.75rem 1rem; }
+@media (max-width: 640px) {
+  .settings-detail-row { grid-template-columns: minmax(0, 1fr); gap: 0.25rem; }
+  .settings-detail-key { padding: 0; text-align: start; }
+  .settings-param-table { grid-template-columns: minmax(0, 1fr) 5rem 5rem 2.5rem; }
+  .settings-param-row .settings-text-button, .settings-param-head > span:last-child { display: none; }
+}
 .settings-model-manual { display: flex; align-items: center; gap: 0.5rem; margin-block: 0.375rem 0.75rem; }
 .settings-model-manual input { flex: 1; min-width: 0; min-height: 2.75rem; border: 1px solid var(--ak-rule-default); border-radius: var(--models-radius-field); padding-inline: 0.75rem; color: var(--ak-ink-primary); background: var(--ak-paper-editing); font: inherit; font-size: var(--models-type-body); }
 .settings-model-manual .settings-primary-button { min-height: 2.75rem; }
-.settings-model-rows { display: grid; gap: 2px; margin-block-start: 0.25rem; }
-.settings-model-row { display: flex; min-height: 2.5rem; align-items: center; gap: 0.625rem; border-radius: var(--models-radius-row); padding: 0.3rem 0.4rem; }
-.settings-model-row:hover { background: var(--ak-paper-quiet); }
-.settings-model-row.is-disabled .settings-model-main { opacity: 0.55; }
-.settings-model-main { display: flex; min-width: 0; flex: 1; flex-wrap: wrap; align-items: center; gap: 0.25rem 0.625rem; padding-inline-start: 0.375rem; }
-.settings-model-flags { color: var(--ak-ink-secondary); font-size: var(--models-type-caption); font-variant-numeric: tabular-nums; }
-.settings-model-use { flex: none; color: var(--ak-color-action-primary); font-size: var(--models-type-caption); font-weight: 600; }
-.settings-model-remove { width: var(--models-hit-target); min-height: var(--models-hit-target); flex: none; color: var(--ak-ink-secondary); }
-.settings-model-remove:hover { color: var(--md-sys-color-error); }
-.settings-model-manage-head h3 span { color: var(--ak-ink-secondary); font-weight: 500; font-variant-numeric: tabular-nums; }
-.settings-model-manage-head p:empty { display: none; }
 .settings-model-filter { display: flex; align-items: center; gap: 0.5rem; margin-block: 0.25rem 0.5rem; border: 1px solid var(--ak-rule-default); border-radius: var(--models-radius-field); padding-inline: 0.75rem; color: var(--ak-ink-secondary); }
 .settings-model-filter input { min-height: 2.25rem; flex: 1; border: 0; color: var(--ak-ink-primary); background: transparent; font: inherit; font-size: var(--models-type-body); outline: none; }
 .settings-model-filter:focus-within { border-color: var(--ak-rule-focus); }
@@ -689,27 +730,7 @@ dialog.settings-scrim::backdrop { background: transparent; }
 .settings-provider-card .settings-credential-note,
 .settings-provider-card .settings-dialog-footer-note { display: none; }
 .settings-provider-editor:has(.settings-model-manage) .settings-model-discovery--automatic { display: none; }
-.settings-model-main strong { overflow-wrap: anywhere; white-space: normal; font-family: var(--ak-type-technical); font-size: var(--models-type-body); font-weight: 500; letter-spacing: -0.01em; }
-.settings-model-row .settings-text-button { min-height: var(--models-hit-target); font-size: var(--models-type-caption); }
-.settings-model-manage > .settings-text-button { margin-block-start: 0.5rem; }
 
-/* 模型参数展开区：行内 chevron + 跟随的字段组。 */
-.settings-model-entry { display: grid; min-width: 0; }
-.settings-model-expand { flex: none; width: var(--models-hit-target); min-height: var(--models-hit-target); color: var(--ak-ink-secondary); }
-.settings-model-expand > svg { width: 1.1rem; height: 1.1rem; }
-.settings-model-expand.is-open > svg { transform: rotate(90deg); }
-.settings-model-detail { margin: 0.125rem 0.5rem 0.5rem var(--models-detail-inset); border: 1px solid var(--ak-rule-subtle); border-radius: var(--models-radius-row); padding: 0.75rem 0.875rem; }
-.settings-model-detail .settings-form-grid { gap: 0.625rem 0.75rem; }
-.settings-model-detail label { position: relative; display: grid; gap: 0.3rem; }
-.settings-model-detail label > span { color: var(--ak-ink-secondary); font-size: var(--models-type-caption); font-weight: 650; }
-.settings-model-detail input:not([type="checkbox"]) { width: 100%; min-height: var(--models-hit-target); border: 1px solid var(--ak-rule-default); border-radius: var(--models-radius-field); padding-inline: 0.625rem; color: var(--ak-ink-primary); background: var(--ak-paper-editing); font: inherit; font-size: var(--models-type-title); font-variant-numeric: tabular-nums; }
-.settings-model-detail input:not([type="checkbox"]):focus-visible { outline: 2px solid var(--ak-color-action-primary); outline-offset: 1px; }
-.settings-model-detail .settings-model-image { display: flex; flex-direction: row; align-items: center; gap: 0.5rem; min-height: var(--models-hit-target); }
-.settings-model-image input[type="checkbox"] { width: 1.15rem; height: 1.15rem; min-height: 0; padding: 0; flex: none; margin: 0; accent-color: var(--ak-color-action-primary); cursor: pointer; }
-.settings-model-detail .settings-model-image > span { color: var(--ak-ink-primary); font-size: var(--models-type-body); font-weight: 500; }
-.settings-model-detail-actions { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 0.75rem; margin-block-start: 0.625rem; }
-.settings-model-detail-actions [role="status"] { min-width: 0; overflow-wrap: anywhere; color: var(--ak-ink-secondary); font-size: var(--models-type-caption); }
-.settings-model-detail-actions .settings-secondary-button { flex: none; margin-inline-start: auto; min-height: var(--models-hit-target); padding-inline: 0.9rem; }
 .settings-model-hint { color: var(--ak-ink-secondary); font-size: var(--models-type-caption); line-height: 1.5; margin-block: 0.625rem 0; }
 
 /* 统一浮层：候选勾选（复选）与模型挑选（单选）。 */
@@ -780,13 +801,9 @@ dialog.settings-scrim::backdrop { background: transparent; }
 
 @media (max-width: 50rem) {
   .settings-binding { grid-template-columns: minmax(0, 1fr); }
-  .settings-model-manage-head { align-items: start; flex-direction: column; }
-  .settings-model-manage-actions { justify-content: start; }
 }
 
 @media (max-width: 30rem) {
-  .settings-page { --models-detail-inset: 0.4rem; }
-  .settings-model-row { gap: 0.25rem; }
   .settings-sheet { border-inline: 0; border-block-end: 0; border-radius: var(--models-radius-edge) var(--models-radius-edge) 0 0; align-self: end; }
 }
 
@@ -872,14 +889,12 @@ dialog.settings-scrim::backdrop { background: transparent; }
 .settings-dialog--inline .settings-dialog-footer { gap: 0.75rem; border-block-start: 1px solid var(--ak-rule-subtle); padding: 0.625rem 1rem; }
 .settings-dialog--inline .settings-dialog-footer .settings-primary-button,
 .settings-dialog--inline .settings-dialog-footer .settings-secondary-button { min-height: 2.25rem; padding-inline: 0.875rem; }
-.settings-dialog--inline .settings-dialog-footer > [data-disable-conn] { margin-inline-end: auto; color: var(--ak-ink-secondary); }
 .settings-dialog--inline .settings-dialog-body > .settings-form-grid { grid-template-columns: minmax(0, 1fr); gap: 0.5rem; }
 .settings-dialog--inline .settings-dialog-body > .settings-form-grid > label { grid-template-columns: 6rem minmax(0, 1fr); align-items: center; gap: 1rem; }
 .settings-dialog--inline .settings-dialog-body > .settings-form-grid > label > span { color: var(--ak-ink-secondary); font-weight: 500; text-align: end; }
 .settings-dialog--inline .settings-dialog-body > .settings-form-grid input,
 .settings-dialog--inline .settings-dialog-body > .settings-form-grid select { min-height: 2.25rem; }
 .settings-dialog--inline .settings-dialog-body > .settings-form-grid > .settings-secret > button { inset: 50% 0.125rem auto auto; width: 2rem; height: 2rem; translate: 0 -50%; }
-.settings-dialog--inline .settings-model-manage { margin-block-start: 1rem; padding-block-start: 0.75rem; }
 @media (max-width: 640px) {
   .settings-dialog--inline .settings-dialog-body > .settings-form-grid > label { grid-template-columns: minmax(0, 1fr); gap: 0.3rem; }
   .settings-dialog--inline .settings-dialog-body > .settings-form-grid > label > span { text-align: start; }
@@ -897,12 +912,6 @@ dialog.settings-scrim::backdrop { background: transparent; }
 .settings-section-bar > .settings-text-button { min-height: 2rem; padding-inline: 0.5rem; font-size: var(--models-type-caption); }
 .settings-template-empty { display: flex; flex-wrap: wrap; align-items: center; gap: 0.25rem; margin: 0.5rem 0.125rem; color: var(--ak-ink-secondary); font-size: var(--models-type-body); }
 .settings-template-empty .settings-text-button { min-height: 2rem; padding-inline: 0.25rem; }
-/* 折叠入口：一行灰字加小箭头，展开后箭头朝上。 */
-.settings-disclosure { display: flex; min-height: 2.25rem; align-items: center; gap: 0.3rem; margin-inline: auto; border: 0; padding-inline: 0.5rem; color: var(--ak-ink-secondary); background: transparent; font: inherit; font-size: var(--models-type-caption); cursor: pointer; }
-.settings-disclosure:hover { color: var(--ak-ink-primary); }
-.settings-disclosure::after { width: 0.35rem; height: 0.35rem; border-block-end: 1.5px solid currentColor; border-inline-end: 1.5px solid currentColor; rotate: 45deg; translate: 0 -0.1rem; content: ""; }
-.settings-disclosure[aria-expanded="true"]::after { rotate: -135deg; translate: 0 0.1rem; }
-.settings-model-manage-actions .settings-text-button { font-size: var(--models-type-caption); }
 @media (max-width: 640px) {
   .settings-section-bar { flex-wrap: wrap; }
   .settings-find { width: 100%; order: 3; }
@@ -928,4 +937,7 @@ dialog.settings-scrim::backdrop { background: transparent; }
 .settings-find input:focus,
 .settings-find input:focus-visible,
 .settings-model-filter input:focus-visible { outline: none; box-shadow: none; }
-.settings-dialog--inline .settings-dialog-footer > [data-disable-conn] { min-height: 2.25rem; padding-inline: 0; font-size: var(--models-type-caption); }
+.settings-dialog--inline .settings-dialog-body > .settings-form-grid > .settings-login-card { margin-inline-start: 7rem; }
+@media (max-width: 640px) {
+  .settings-dialog--inline .settings-dialog-body > .settings-form-grid > .settings-login-card { margin-inline-start: 0; }
+}
