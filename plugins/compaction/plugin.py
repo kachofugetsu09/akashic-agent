@@ -118,13 +118,23 @@ async def apply(ctx: Context) -> None:
         return SummaryRecords(ctx.require(OWNER_STATE).open(ctx))
 
     # 状态查询在线程执行；启动时取得窄读取口，不在线程中重新申请 owner 写权限。
-    read_record: Callable[[str], StoredSummary | None] | None = None
+    read_state: SummaryRecords | None = None
     read_current: Callable[[str], StoredSummary | None] | None = None
 
+    # 摘要记录不可变：核对过完整父链的记录按引用复用，父链核对遇到已核对祖先即停；有界，满了整体丢弃。
+    verified: dict[str, StoredSummary] = {}
+
     def read(reference: str) -> StoredSummary | None:
-        if read_record is None:
+        if read_state is None:
             raise RuntimeError("摘要状态读取口尚未启动")
-        return read_record(reference)
+        record = verified.get(reference)
+        if record is None:
+            record = read_state.read(reference, known=verified.get)
+            if record is not None:
+                if len(verified) >= 64:
+                    verified.clear()
+                verified[reference] = record
+        return record
 
     def head(session_id: str) -> StoredSummary | None:
         if read_current is None:
@@ -143,14 +153,14 @@ async def apply(ctx: Context) -> None:
         return head[1]
 
     async def start(_event: object) -> None:
-        nonlocal read_current, read_record
+        nonlocal read_current, read_state
         state = records()
-        read_record = state.read
+        read_state = state
         read_current = partial(current_head, state)
 
     async def stop(_event: object) -> None:
-        nonlocal read_current, read_record
-        read_record = None
+        nonlocal read_current, read_state
+        read_state = None
         read_current = None
 
     _ = await ctx.on(RUNTIME_STARTED, start)

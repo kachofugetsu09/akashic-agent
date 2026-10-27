@@ -195,17 +195,18 @@ async def run_reply(
             if render_content is None:
                 summary = cast(SummaryData | None, result.get("summary"))
                 covered = set() if summary is None else set(cast(tuple[str, ...], summary["source_message_ids"]))
-                refs = reader.attachments_for(tuple(
+                # 附件关系逐条查库，留在 worker 内，不占事件循环。
+                identities = tuple(
                     message.message_id for message in messages
                     if message.message_id not in covered or message.message_id in keep_input_ids
-                ))
+                )
+                refs = await run_file_io(lambda: reader.attachments_for(identities))
                 if refs:
+                    current = await run_file_io(lambda: reader.attachments_for(keep_input_ids))
                     artifacts = await model_content.load_artifacts(
                         artifact_reader, refs,
                         accepts_images="image" in model.descriptor.capabilities.input_modalities,
-                        current_artifact_ids=frozenset(
-                            ref.artifact_id for ref in reader.attachments_for(keep_input_ids)
-                        ),
+                        current_artifact_ids=frozenset(ref.artifact_id for ref in current),
                     )
             check()
             mark("materials.end")

@@ -506,6 +506,9 @@ class MessageLog:
             self._has_title = "title" in {
                 row["name"] for row in self._connection.execute("PRAGMA table_info(sessions)")
             }
+            self._has_source_index = self._connection.execute(
+                "SELECT 1 FROM sqlite_master WHERE type='index' AND name='message_source_seq'"
+            ).fetchone() is not None
         except BaseException:
             self._connection.close()
             raise
@@ -1489,7 +1492,10 @@ class MessageReader:
         """读取固定序号范围，不创建 Session，也不持有修改或发送能力。"""
         if limit < 1 or after_seq < -1:
             raise ValueError("读取需要正 limit 和不小于 -1 的 after_seq")
-        sql = "SELECT * FROM messages WHERE session_key=? AND seq>?"
+        # 按来源读取必须走 (session, source, seq)：规划器默认选 (session, seq)，会把整段会话行读一遍再过滤。
+        sql = ("SELECT * FROM messages INDEXED BY message_source_seq WHERE session_key=? AND seq>?"
+               if source is not None and self._log._has_source_index else
+               "SELECT * FROM messages WHERE session_key=? AND seq>?")
         values: list[object] = [self._session_id, after_seq]
         if through_seq is not None:
             sql += " AND seq<=?"

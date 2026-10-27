@@ -10,6 +10,7 @@ from plugins.models.contract import ModelCatalogSnapshot
 from plugins.models.contract import MODEL_CATALOG
 from .api import WAKE_MODEL
 from plugins.ledger.contract import MESSAGE_CATALOG
+from core.common.file_io import run_file_io
 from agent.plugin_composition.plugin_config import PLUGIN_CONFIG
 from agent.plugin_composition.runtime_catalog import RUNTIME_CATALOG
 from plugins.ui.contract import Configuration
@@ -35,7 +36,16 @@ class Settings:
     def targets(self) -> list[dict[str, str]]:
         if self.senders is None:
             return []
+        return self._session_targets({item["name"] for item in self.senders() if item["available"]})
+
+    # 设置页读取：发送渠道在事件循环上取，会话首条消息的解码放进 worker。
+    async def read_targets(self) -> list[dict[str, str]]:
+        if self.senders is None:
+            return []
         senders = {item["name"] for item in self.senders() if item["available"]}
+        return await run_file_io(lambda: self._session_targets(senders))
+
+    def _session_targets(self, senders: set[str]) -> list[dict[str, str]]:
         targets: list[dict[str, str]] = []
         for session in self.ctx.require(MESSAGE_CATALOG).sessions(visibility="listed", limit=200).items:
             message = session.first_message
@@ -53,6 +63,8 @@ class Settings:
 
     async def read(self) -> dict[str, object]:
         async with self.ctx.runtime_scope():
+            # 判断与返回共用一次读取。
+            targets = await self.read_targets()
             config = self.model.model_validate(self.ctx.config).model_dump()
             graph = self.ctx.require(RUNTIME_CATALOG)(self.ctx)
             own = next(item for item in cast(list[dict[str, Any]], graph["plugins"]) if item["id"] == self.ctx.runtime.plugin_id)
@@ -75,7 +87,7 @@ class Settings:
                 blocked = self.interest_decision is not None and self.interest_decision() is not True
             elif model is None or selected_model is None or model.model(selected_model).availability != 'available':
                 reason = "请先选择默认聊天模型"
-            elif not self.targets():
+            elif not targets:
                 reason = "还没有可用发送目标，请先开启发送渠道并建立对话"
             can_enable = not reason
             if selected_missing:
@@ -90,7 +102,7 @@ class Settings:
                            **({"model": config["model"]} if "model" in self.ctx.config else {})},
                 "defaults": {"model": self.model.model_validate({}).model_dump(mode="json")["model"]},
                 "model_options": {} if model is None else {"model": WAKE_MODEL.options(model)},
-                "targets": self.targets()}
+                "targets": targets}
 
     async def save(self, request_id: str, expected_input: str, values: dict[str, object]) -> dict[str, object]:
         """只接受用户决定与本插件字段，启用前重新核对前置。"""
