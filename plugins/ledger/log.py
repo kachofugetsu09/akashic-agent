@@ -69,6 +69,9 @@ _DECODE_STRONG_BODY = 8192
 _ATTACHMENT_MEMO_SIZE = 32768
 # 已确认绑定的进程内核对：每个 payload 约 0.2–1KB，256 条覆盖每轮工具菜单与近期摘要。
 _SAVED_BINDINGS_LIMIT = 256
+# 共享读面的短暂保留：同一轮先后到达的全史读者（改动记录、回复选择）共用一次解码；
+# 只留最近一个会话，到期即释放，峰值不变，常驻只在活跃的几秒内增加。
+_VIEW_GRACE_SECONDS = 10.0
 MESSAGE_BODY_KIND_INDEX_SCHEMA = """CREATE INDEX IF NOT EXISTS message_source_kind_seq
     ON messages (session_key, source, json_extract(body, '$.kind'), seq,
                  json_extract(body, '$.finish'));"""
@@ -421,6 +424,7 @@ class MessageLog:
         self._saved_bindings_lock = threading.Lock()
         self._fill_lock = threading.Lock()
         self._message_views: WeakValueDictionary[str, _MessagePrefix] = WeakValueDictionary()
+        self._retained_view: tuple[_MessagePrefix, threading.Timer] | None = None
         self._decoded: WeakValueDictionary[tuple[object, ...], Message] = WeakValueDictionary()
         self._decoded_strong: dict[tuple[object, ...], Message] = {}
         self._decoded_owners: dict[tuple[object, ...], OwnerRecord] = {}
@@ -955,6 +959,25 @@ class MessageLog:
             value = cached[binding_id] = _json_object(row[0], f"binding {binding_id}")
         return value
 
+    # 调用者持有 _view_lock；每次发布或复用都重新计时，换会话时旧前缀交还弱引用。
+    # close 先置 _closed 再进 _view_lock 清理，此处检查后不会在关闭后留下定时器。
+    def _retain_view(self, prefix: _MessagePrefix) -> None:
+        if self._closed:
+            return
+        previous = self._retained_view
+        if previous is not None:
+            previous[1].cancel()
+        timer = threading.Timer(_VIEW_GRACE_SECONDS, self._release_view)
+        timer.daemon = True
+        self._retained_view = (prefix, timer)
+        timer.start()
+
+    # 已开始的回调无法 cancel；只清自己登记的那份，续期后的新登记不受影响。
+    def _release_view(self) -> None:
+        with self._view_lock:
+            if self._retained_view is not None and self._retained_view[1] is threading.current_thread():
+                self._retained_view = None
+
     def close(self) -> None:
         """释放数据库并唤醒所有追赶者，让它们正常退出。"""
         with self._writer_lock:
@@ -963,6 +986,10 @@ class MessageLog:
                     return
                 self._closed = True
                 idle_reads, self._idle_reads = self._idle_reads, []
+            with self._view_lock:
+                retained, self._retained_view = self._retained_view, None
+            if retained is not None:
+                retained[1].cancel()
             for read in idle_reads:
                 read.connection.close()
             self._writer_connection.close()
@@ -1297,6 +1324,7 @@ class MessageReader:
                 prefix.seqs.extend(message.seq for message in missing)
                 # 5. 只有真实提交后的读取进入共享读面，不依赖 observer 唤醒。
                 log._message_views[self._session_id] = prefix
+                log._retain_view(prefix)
                 return MessageSnapshot(prefix, bisect_right(prefix.seqs, upper), upper)
 
     def _transaction_snapshot(self, through_seq: int | None) -> MessageSnapshot:
