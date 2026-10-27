@@ -1014,15 +1014,12 @@ function registerModels(ctx, mount, catalogResource) {
           <div class="settings-detail-row"><span class="settings-detail-key">模型 <small data-manage-count></small></span><div class="settings-detail-value">
             <div class="settings-chip-toolbar">
               <label class="settings-model-filter">${SEARCH_ICON}<input aria-label="筛选模型" placeholder="筛选模型"></label>
-              <button type="button" class="settings-text-button" data-all>全选</button>
-              <button type="button" class="settings-text-button" data-none>全不选</button>
               <button type="button" class="settings-text-button" data-manual-toggle>添加模型 ID</button>
               <button type="button" class="settings-icon-button" data-reload aria-label="重新读取服务目录" title="重新读取服务目录">${REFRESH_ICON}</button>
-              <button type="button" class="settings-text-button" data-params aria-expanded="false">参数</button>
             </div>
             <div class="settings-model-manual" data-manual hidden><input aria-label="模型 ID" maxlength="256" placeholder="型号，例如 gpt-5"><button type="button" class="settings-secondary-button" data-manual-add>加入</button></div>
-            <div class="settings-chips" data-chips></div>
-            <div class="settings-param-table" data-param-table hidden></div>
+            <div class="settings-model-table" data-rows></div>
+            <p class="settings-model-hint">识图打开后，图片直接发给这个模型；「未知」是目录没写，按不能识图处理，确认能看再打开。</p>
             <p class="settings-model-hint" data-manage-status role="status"></p>
             <p class="settings-inline-error" data-manage-error role="alert" hidden></p>
           </div></div>`;
@@ -1030,9 +1027,7 @@ function registerModels(ctx, mount, catalogResource) {
         const account = $("[data-account]");
         const count = $("[data-manage-count]");
         const filterInput = $(".settings-model-filter input");
-        const chips = $("[data-chips]");
-        const table = $("[data-param-table]");
-        const params = $("[data-params]");
+        const rows = $("[data-rows]");
         const status = $("[data-manage-status]");
         const error = $("[data-manage-error]");
         const manual = $("[data-manual]");
@@ -1044,78 +1039,141 @@ function registerModels(ctx, mount, catalogResource) {
         const candidates = new Map();
         let picked = new Set(savedModels().map((model) => key(model.kind, model.model)));
         const drafts = new Map();
+        const expanded = new Set();
+        // mode 是暂存的模型范围：all 跟随服务商目录（以后新上的也收），picked 只用勾选的。
+        const savedMode = () => catalog.connections.find((item) => item.id === connection.id)?.catalogMode ?? "picked";
+        let mode = savedMode();
         let loading = true;
 
         const isDirty = () => {
           const saved = new Set(savedModels().map((model) => key(model.kind, model.model)));
-          return saved.size !== picked.size || [...picked].some((item) => !saved.has(item)) || drafts.size > 0;
+          return saved.size !== picked.size || [...picked].some((item) => !saved.has(item)) || drafts.size > 0 || mode !== savedMode();
         };
         const reportDirty = () => dirty(isDirty() || !!manualInput.value);
         for (const type of ["input", "change"]) section.addEventListener(type, (event) => { event.stopPropagation(); reportDirty(); });
 
-        // 一个标签对应一个可选模型：已保存的带在用标记，新勾选的保存时才验证。
-        function renderChips() {
+        // 一行一个可选模型：勾选决定用不用，已保存的对话模型可直接切识图，「···」展开其余参数。
+        function renderRows() {
           const used = usedByMap();
           const saved = new Map(savedModels().map((model) => [key(model.kind, model.model), model]));
           const all = new Map([...candidates, ...saved]);
           const needle = filterInput.value.trim().toLowerCase();
-          chips.replaceChildren();
+          rows.replaceChildren(tableHead(all));
           for (const [id, item] of [...all].sort(([left], [right]) => left.localeCompare(right))) {
+            if (needle && !item.model.toLowerCase().includes(needle)) continue;
+            rows.append(modelRow(id, item, saved.get(id), used));
             const model = saved.get(id);
-            const chip = document.createElement("button");
-            chip.type = "button";
-            chip.className = "settings-chip";
-            chip.dataset.key = id;
-            chip.hidden = !!needle && !item.model.toLowerCase().includes(needle);
-            chip.setAttribute("aria-pressed", String(picked.has(id)));
-            const name = document.createElement("span");
-            name.textContent = item.model;
-            const facts = document.createElement("small");
-            facts.textContent = [item.kind === "embedding" ? "向量" : "", ...capabilityBadges(item.capabilities)].filter(Boolean).join(" · ");
-            chip.append(name, facts);
-            const use = model ? used.get(model.id) : "";
-            if (use) chip.append(Object.assign(document.createElement("em"), {textContent: use}));
-            if (!model) chip.classList.add("is-new");
-            chips.append(chip);
+            if (model && expanded.has(model.id)) rows.append(extraRow(model));
           }
-          if (!all.size) chips.textContent = loading ? "正在读取服务目录…" : "目录里没有模型；可以手动添加模型 ID。";
+          if (!all.size) rows.append(Object.assign(document.createElement("p"), {className: "settings-model-hint", textContent: loading ? "正在读取服务目录…" : "目录里没有模型；可以手动添加模型 ID。"}));
           else if (!loading && !savedModels().length && !status.textContent) status.textContent = "这个连接还没有启用的模型：勾选要用的，再点保存。";
-          count.textContent = `${picked.size} / ${all.size}`;
           reportDirty();
         }
 
-        // 参数表只列已保存的对话模型；改动暂存到 drafts，保存时逐个 update_model。
-        function renderTable() {
-          const rows = savedModels().filter((model) => model.kind === "chat");
-          table.innerHTML = `<div class="settings-param-head"><span>模型</span><span>上下文</span><span>最大输出</span><span>看图</span><span></span></div>`;
-          for (const model of rows) {
-            const caps = model.capabilities ?? {};
-            const draft = drafts.get(model.id);
-            const row = document.createElement("div");
-            row.className = "settings-param-row";
-            row.innerHTML = `<strong></strong><input data-field="context" aria-label="上下文" placeholder="未知" autocomplete="off">
-              <input data-field="output" aria-label="最大输出" placeholder="未知" autocomplete="off">
-              <input type="checkbox" data-field="image" aria-label="可看图"><button type="button" class="settings-text-button" data-verify>验证</button>`;
-            row.querySelector("strong").textContent = model.model;
-            const [context, output, image] = row.querySelectorAll("[data-field]");
-            const base = [formatTokenCount(caps.contextWindow), formatTokenCount(caps.maxOutputTokens), (caps.inputModalities ?? []).includes("image")];
-            [context.value, output.value, image.checked] = draft ?? base;
-            for (const input of [context, output, image]) input.addEventListener(input === image ? "change" : "input", () => {
-              const next = [context.value, output.value, image.checked];
-              if (next.every((value, index) => value === base[index])) drafts.delete(model.id);
-              else drafts.set(model.id, next);
-              input.removeAttribute("aria-invalid");
-            });
-            const verify = row.querySelector("[data-verify]");
-            verify.addEventListener("click", () => {
-              verify.disabled = true;
-              actions.verifyModel(model.id).then(() => { status.textContent = `${model.model} 验证通过`; })
-                .catch(showError).finally(() => { verify.disabled = false; });
-            });
-            table.append(row);
+        // 表头勾选是「全部」：勾上跟随目录，取消清空；部分勾选时显示半选。
+        function tableHead(all) {
+          const head = document.createElement("div");
+          head.className = "settings-model-row is-head";
+          head.innerHTML = `<span><input type="checkbox" aria-label="全部模型，以后新上的也收进来"></span><span>全部 <small></small></span><span>上下文</span><span>识图</span><span></span>`;
+          const box = head.querySelector("input");
+          box.checked = mode === "all";
+          box.indeterminate = mode !== "all" && picked.size > 0;
+          head.querySelector("small").textContent = mode === "all" ? `${all.size} 个，以后新上的也会收进来` : `已选 ${picked.size} / ${all.size}`;
+          box.addEventListener("change", () => {
+            mode = box.checked ? "all" : "picked";
+            picked = box.checked ? new Set(all.keys()) : new Set();
+            renderRows();
+          });
+          return head;
+        }
+
+        function modelRow(id, item, model, used) {
+          const row = document.createElement("div");
+          row.className = "settings-model-row";
+          row.innerHTML = `<span><input type="checkbox"></span><span class="settings-model-name"><strong></strong><em></em></span><span></span><span class="settings-model-vision"></span><span></span>`;
+          const [cell, name, context, vision, more] = row.children;
+          const pick = cell.firstElementChild;
+          pick.checked = picked.has(id);
+          pick.setAttribute("aria-label", `使用 ${item.model}`);
+          // 在「全部」下取消一个就转成仅所选，Models 不维护排除名单。
+          pick.addEventListener("change", () => {
+            if (pick.checked) picked.add(id); else { picked.delete(id); mode = "picked"; }
+            renderRows();
+          });
+          name.querySelector("strong").textContent = item.model;
+          name.querySelector("em").textContent = (model ? used.get(model.id) : "新") || "";
+          const caps = model?.capabilities ?? item.capabilities ?? {};
+          context.textContent = shortTokens(caps.contextWindow);
+          if (model?.kind === "chat") {
+            vision.append(visionSwitch(model));
+            const button = document.createElement("button");
+            button.type = "button";
+            button.className = "settings-text-button settings-model-more";
+            button.textContent = "···";
+            button.setAttribute("aria-label", `${model.model} 的更多参数`);
+            button.setAttribute("aria-expanded", String(expanded.has(model.id)));
+            button.addEventListener("click", () => { if (!expanded.delete(model.id)) expanded.add(model.id); renderRows(); });
+            more.append(button);
+          } else {
+            const sees = (caps.inputModalities ?? []).includes("image");
+            vision.textContent = item.kind === "embedding" ? "向量" : sees ? "能" : "未知";
           }
-          if (!rows.length) table.insertAdjacentHTML("beforeend", `<p class="settings-model-hint">保存后的对话模型才能设置参数。</p>`);
-          table.insertAdjacentHTML("beforeend", `<p class="settings-model-hint">留空表示未知；K = 1,000，M = 1,000,000。勾选「看图」后，图片会直接发给这个模型。</p>`);
+          return row;
+        }
+
+        // 识图开关改的是草稿；用户改过的标「手动」，目录没写的标「未知」。
+        function visionSwitch(model) {
+          const base = draftBase(model);
+          const label = document.createElement("label");
+          label.className = "settings-vision-switch";
+          label.innerHTML = `<input type="checkbox" role="switch"><small></small>`;
+          const input = label.querySelector("input");
+          input.checked = (drafts.get(model.id) ?? base)[2];
+          input.setAttribute("aria-label", `${model.model} 识图`);
+          const source = model.capabilitySources?.inputModalities;
+          label.querySelector("small").textContent = source === "user" ? "手动" : source === "unknown" ? "未知" : "";
+          input.addEventListener("change", () => setDraft(model, 2, input.checked));
+          return label;
+        }
+
+        function extraRow(model) {
+          const row = document.createElement("div");
+          row.className = "settings-model-extra";
+          row.innerHTML = `<label><span>上下文</span><input data-field="context" placeholder="未知" autocomplete="off"></label>
+            <label><span>最大输出</span><input data-field="output" placeholder="未知" autocomplete="off"></label>
+            <button type="button" class="settings-text-button" data-verify>发一条消息验证</button>
+            <small>留空表示未知；K = 1,000，M = 1,000,000。</small>`;
+          const [context, output] = row.querySelectorAll("input");
+          [context.value, output.value] = drafts.get(model.id) ?? draftBase(model);
+          context.addEventListener("input", () => { context.removeAttribute("aria-invalid"); setDraft(model, 0, context.value); });
+          output.addEventListener("input", () => { output.removeAttribute("aria-invalid"); setDraft(model, 1, output.value); });
+          const verify = row.querySelector("[data-verify]");
+          verify.addEventListener("click", () => {
+            verify.disabled = true;
+            actions.verifyModel(model.id).then(() => { status.textContent = `${model.model} 验证通过`; })
+              .catch(showError).finally(() => { verify.disabled = false; });
+          });
+          return row;
+        }
+
+        // 表里只读的上下文写成整 K / M，编辑框才用精确值。
+        function shortTokens(value) {
+          if (!value) return "—";
+          return value >= 1_000_000 ? `${+(value / 1_000_000).toFixed(1)}M` : value >= 1000 ? `${Math.round(value / 1000)}K` : String(value);
+        }
+
+        function draftBase(model) {
+          const caps = model.capabilities ?? {};
+          return [formatTokenCount(caps.contextWindow), formatTokenCount(caps.maxOutputTokens), (caps.inputModalities ?? []).includes("image")];
+        }
+
+        function setDraft(model, index, value) {
+          const base = draftBase(model);
+          const next = [...(drafts.get(model.id) ?? base)];
+          next[index] = value;
+          if (next.every((item, at) => item === base[at])) drafts.delete(model.id);
+          else drafts.set(model.id, next);
+          reportDirty();
         }
 
         // 1. 先校验全部参数草稿，任何一格不合法都不开始写入。
@@ -1125,9 +1183,8 @@ function registerModels(ctx, mount, catalogResource) {
             const contextWindow = parseTokenCount(context);
             const maxOutputTokens = parseTokenCount(output);
             if (contextWindow === false || maxOutputTokens === false) {
-              params.setAttribute("aria-expanded", "true");
-              table.hidden = false;
-              renderTable();
+              expanded.add(modelId);
+              renderRows();
               throw new Error("参数请输入正整数或带 K/M 后缀的数值；留空表示未知。");
             }
             patches.push([modelId, {context_window: contextWindow, max_output_tokens: maxOutputTokens, image_input: image}]);
@@ -1155,20 +1212,29 @@ function registerModels(ctx, mount, catalogResource) {
         async function commit(operations) {
           const patches = parsedDrafts();
           section.inert = true;
-          try { return await write(operations, patches); }
-          finally { section.inert = false; refresh(); }
+          try {
+            const changed = await write(operations, patches);
+            picked = new Set(savedModels().map((model) => key(model.kind, model.model)));
+            mode = savedMode();
+            return changed;
+          } finally { section.inert = false; refresh(); }
         }
 
         async function write(operations, patches) {
-          const saved = savedModels();
-          const savedKeys = new Set(saved.map((model) => key(model.kind, model.model)));
-          const adding = [...picked].filter((item) => !savedKeys.has(item));
-          const removing = saved.filter((model) => !picked.has(key(model.kind, model.model)));
           const failures = [];
           const attempt = async (label, work) => {
             try { await work(); } catch (reason) { failures.push(`${label}：${reason instanceof Error ? reason.message : String(reason)}`); }
             if (dialogClosed()) throw new Error("窗口已关闭；已提交的修改以实际结果为准。");
           };
+          // 切到「全部」由 Models 读目录一次收齐；切回「仅所选」只改标记，随后按勾选增删。
+          const modeChanged = mode !== savedMode();
+          if (modeChanged) await attempt("模型范围", () => operations.setCatalogMode(mode));
+          if (failures.length) throw new Error(failures.join("；"));
+          // 「全部」以服务端这次收进来的为准，不拿打开时的旧预览去删；只补手填或目录外的型号。
+          const saved = savedModels();
+          const savedKeys = new Set(saved.map((model) => key(model.kind, model.model)));
+          const adding = [...picked].filter((item) => !savedKeys.has(item));
+          const removing = mode === "all" ? [] : saved.filter((model) => !picked.has(key(model.kind, model.model)));
           for (const [index, item] of adding.entries()) {
             const candidate = candidates.get(item);
             status.textContent = `正在验证 ${candidate.model}（${index + 1}/${adding.length}）…`;
@@ -1185,39 +1251,17 @@ function registerModels(ctx, mount, catalogResource) {
             await attempt(name, async () => { await operations.updateModel(modelId, patch); drafts.delete(modelId); });
           }
           if (failures.length) throw new Error(`部分完成；${failures.join("；")}`);
-          return adding.length + removing.length + patches.length > 0;
+          return modeChanged || adding.length + removing.length + patches.length > 0;
         }
 
         function refresh() {
           if (dialogClosed()) return;
           renderAccount(account, connection);
-          renderChips();
-          if (!table.hidden && !table.contains(document.activeElement)) renderTable();
+          // 正在输入参数时不重绘，免得丢焦点。
+          if (!rows.contains(document.activeElement) || document.activeElement?.type === "checkbox") renderRows();
         }
 
-        chips.addEventListener("click", (event) => {
-          const chip = event.target instanceof Element ? event.target.closest(".settings-chip") : null;
-          if (!chip) return;
-          if (picked.has(chip.dataset.key)) picked.delete(chip.dataset.key);
-          else picked.add(chip.dataset.key);
-          chip.setAttribute("aria-pressed", String(picked.has(chip.dataset.key)));
-          count.textContent = `${picked.size} / ${chips.querySelectorAll(".settings-chip").length}`;
-          reportDirty();
-        });
-        const pickVisible = (on) => {
-          for (const chip of chips.querySelectorAll(".settings-chip:not([hidden])")) {
-            if (on) picked.add(chip.dataset.key); else picked.delete(chip.dataset.key);
-          }
-          renderChips();
-        };
-        $("[data-all]").addEventListener("click", () => pickVisible(true));
-        $("[data-none]").addEventListener("click", () => pickVisible(false));
-        filterInput.addEventListener("input", renderChips);
-        params.addEventListener("click", () => {
-          table.hidden = !table.hidden;
-          params.setAttribute("aria-expanded", String(!table.hidden));
-          if (!table.hidden) renderTable();
-        });
+        filterInput.addEventListener("input", renderRows);
         $("[data-manual-toggle]").addEventListener("click", () => {
           manual.hidden = !manual.hidden;
           if (!manual.hidden) manualInput.focus();
@@ -1229,9 +1273,10 @@ function registerModels(ctx, mount, catalogResource) {
             candidates.set(name, {model: name, kind: "chat", capabilities: {}, manual: true});
           }
           picked.add(name);
+          mode = "picked";
           manualInput.value = "";
           manual.hidden = true;
-          renderChips();
+          renderRows();
         };
         $("[data-manual-add]").addEventListener("click", addManual);
         manualInput.addEventListener("keydown", (event) => { if (event.key === "Enter") { event.preventDefault(); addManual(); } });
@@ -1242,7 +1287,7 @@ function registerModels(ctx, mount, catalogResource) {
           loading = true;
           error.hidden = true;
           status.textContent = "正在读取服务目录…";
-          renderChips();
+          renderRows();
           return readCatalog().then((found) => {
             if (dialogClosed()) return;
             for (const item of found) if (item.kind === null || item.kind === "chat") candidates.set(key("chat", item.model), item);
@@ -1396,6 +1441,11 @@ function registerModels(ctx, mount, catalogResource) {
           async verifyModel(modelId) {
             if ((!connection && !created) || !catalog.models.some((model) => model.id === modelId && model.connectionId === connectionId)) throw new Error("请选择此连接的现有模型");
             await request("/api/dashboard/models/command", {method:"POST", headers:{"Content-Type":"application/json"}, body:JSON.stringify({type:"verify_model", expected_revision:catalog.revision, model_id:modelId})});
+          },
+          async setCatalogMode(mode) {
+            if (!connection && !created) throw new Error("请先保存连接");
+            const receipt = await command({type: "set_catalog_mode", expected_revision: catalog.revision, connection_id: connectionId, mode});
+            if (mode === "all") await setDefaultIfMissing(receipt.revision);
           },
           async removeModel(modelId) {
             if ((!connection && !created) || !catalog.models.some((model) => model.id === modelId && model.connectionId === connectionId)) throw new Error("请选择此连接的现有模型");
