@@ -833,9 +833,10 @@ class QuotaReading:
     note: str = ""
 
 
+# 返回 None 表示这个连接没有额度可读：同一驱动接多家服务时，只有部分服务有套餐。
 DriverQuota: TypeAlias = Callable[
     [DriverConnectionDescriptor, CredentialHandle],
-    Awaitable[QuotaReading],
+    Awaitable[QuotaReading | None],
 ]
 
 

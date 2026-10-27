@@ -55,6 +55,8 @@ from plugins.models.contract import (
 )
 from plugins.models.contract import ModelDriverDefinition, message_size
 
+from .plan_quota import read_plan_quota
+
 _THINK_RE = re.compile(r"<think>(.*?)</think>", re.DOTALL)
 
 
@@ -341,13 +343,16 @@ def definition() -> ModelDriverDefinition:
         probe=_probe,
         probe_embedding=_probe_embedding,
         icon=_icon,
+        read_quota=read_plan_quota,
     )
 
 
 # 同一驱动接多家服务：按目录身份、地址、名称认出已知品牌，认不出就不显示图标。
 def _icon(descriptor: DriverConnectionDescriptor) -> str | None:
     identity = " ".join((str(descriptor.config.get("catalog_provider_id") or ""), descriptor.endpoint, descriptor.name)).lower()
-    brand = next((name for name in ("deepseek", "openrouter") if name in identity), None)
+    host = (urlsplit(descriptor.endpoint).hostname or "").lower()
+    brand = "zhipu" if host.endswith("bigmodel.cn") else "zai" if host == "z.ai" or host.endswith(".z.ai") else next(
+        (name for name in ("deepseek", "openrouter") if name in identity), None)
     return None if brand is None else (Path(__file__).parent / "icons" / f"{brand}.svg").read_text(encoding="utf-8")
 
 
