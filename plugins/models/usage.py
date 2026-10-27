@@ -27,7 +27,6 @@ _PROACTIVE_SOURCES = frozenset({"wake", "drift"})
 # 概览构成只读最近这么多次调用：解析量有上限，30 天按目前的量约是最近一周。
 _SPREAD_CALLS = 3000
 _RECENT_TURNS = 50
-_RECENT_PASSIVE_TURNS = 10
 _PREVIEW_CHARS = 90
 _SCAN_SECONDS = 2.0
 _STATUS_SECONDS = 0.5
@@ -207,12 +206,6 @@ class CacheUsage:
         self._dirty_sources: set[tuple[str, str]] = set()
         self._removed: set[str] = set()
 
-    async def overview(self) -> dict[str, object]:
-        with self._ctx.borrow(MESSAGE_CATALOG) as catalog, self._ctx.borrow(TURN_PROJECTION) as projection:
-            if catalog is None or projection is None:
-                raise RuntimeError("消息账本或 Turn 投影不可用")
-            return await run_file_io(lambda: self._overview(catalog, projection))
-
     async def message_output_tokens(self, session_id: str, message_id: str) -> int | None:
         with self._ctx.borrow(MESSAGE_CATALOG) as catalog, self._ctx.borrow(TURN_PROJECTION) as projection:
             if catalog is None or projection is None:
@@ -246,31 +239,6 @@ class CacheUsage:
             if catalog is None or projection is None:
                 raise RuntimeError("消息账本或 Turn 投影不可用")
             return await run_file_io(lambda: self._session(catalog, projection, session_id))
-
-    # 汇总所有 Session；被动近期命中只取最近 10 个被动 Turn。
-    def _overview(self, catalog: MessageCatalog, projection: TurnProjection) -> dict[str, object]:
-        """按需推进扫描，所有当前 Session 完成后才返回完整统计。"""
-        with self._lock:
-            progress = self._advance(catalog, projection)
-            if progress is not None:
-                return progress
-            states = tuple((source in _PROACTIVE_SOURCES, state) for (_, source), state in self._sources.items())
-            passive, proactive = _Totals(), _Totals()
-            for is_proactive, state in states:
-                (proactive if is_proactive else passive).merge(state.totals)
-            recent = _latest((state.recent for _, state in states), _RECENT_TURNS)
-            recent_passive = _Totals()
-            for turn in _latest((state.recent for is_proactive, state in states if not is_proactive),
-                                _RECENT_PASSIVE_TURNS):
-                recent_passive.add(turn)
-        return {
-            "complete": True,
-            "recent_passive": recent_passive.body(), "passive": passive.body(), "proactive": proactive.body(),
-            "total": passive.turns + proactive.turns,
-            "turns": [{"session_id": turn.session_id, "proactive": turn.proactive, "recorded_at": turn.recorded_at,
-                       "preview": turn.preview, "prompt_tokens": turn.prompt_tokens, "hit_tokens": turn.hit_tokens}
-                      for turn in recent],
-        }
 
     # 1. 小时桶全量给出，界面按范围切；2. 来源与模型只合并 since 之后的桶；3. 会话按 since 之后的输入排行。
     def _insights(self, catalog: MessageCatalog, projection: TurnProjection, since: str | None,

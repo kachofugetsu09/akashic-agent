@@ -693,10 +693,12 @@ MODEL_CALL_STATS = ServiceKey[Callable[[str], ModelCallStats]]("models.call-stat
 
 
 class CacheUsageRead(Protocol):
-    """按需计算的 KV Cache 用量；数据来自调用账与消息 Turn，不另存投影。"""
+    """按需计算的 Token 与 KV Cache 用量；数据来自调用账与消息 Turn，不另存投影。"""
 
-    async def overview(self) -> dict[str, object]:
-        """按需推进扫描；complete=false 只返回进度，完成后才返回完整统计。"""
+    async def insights(
+        self, since: str | None, limit: int, order: Literal["input", "context", "recent"],
+    ) -> dict[str, object]:
+        """按需推进扫描；complete=false 只返回进度，完成后给小时桶、来源、模型与会话排行。"""
         ...
 
     async def message_output_tokens(self, session_id: str, message_id: str) -> int | None: ...
