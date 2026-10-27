@@ -1,1 +1,1 @@
-export { activate, createDiscoveryOwner } from "./module.js";
+export { activate } from "./module.js";

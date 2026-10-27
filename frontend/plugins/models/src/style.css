@@ -939,3 +939,10 @@ dialog.settings-scrim::backdrop { background: transparent; }
 @media (max-width: 640px) {
   .settings-dialog--inline .settings-dialog-body > .settings-form-grid > .settings-login-card { margin-inline-start: 0; }
 }
+
+/* 只填密钥的新建：密钥下方一行「去拿密钥」与服务地址。 */
+.settings-key-row { display: flex; flex-wrap: wrap; align-items: baseline; justify-content: space-between; gap: 0.25rem 1rem; margin: -0.25rem 0 0; color: var(--ak-ink-secondary); font-size: var(--models-type-caption); }
+.settings-key-row > span { font-family: var(--ak-type-technical); }
+.settings-key-link { color: var(--ak-color-action-primary); font-weight: 500; text-decoration: none; }
+.settings-key-link:hover { text-decoration: underline; }
+.settings-dialog-footer:has(> [data-manual]) { justify-content: space-between; }

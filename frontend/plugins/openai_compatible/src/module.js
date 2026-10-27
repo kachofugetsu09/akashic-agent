@@ -7,6 +7,8 @@ const EYE_ICON = `<svg xmlns="http://www.w3.org/2000/svg" width="16" height="16"
 const EYE_OFF_ICON = `<svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m2 2 20 20"></path><path d="M6.71 6.71C4.7 8.1 3.24 10.06 2.06 11.65a1 1 0 0 0 0 .7c2.34 5.64 8.94 8.32 14.24 5.36"></path><path d="M10.73 5.08A10.66 10.66 0 0 1 21.94 11.65a1 1 0 0 1 0 .7 10.83 10.83 0 0 1-2.06 3.1"></path><path d="M14.12 14.12A3 3 0 0 1 9.88 9.88"></path></svg>`;
 const SHIELD_ICON = `<svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M20 13c0 5-3.5 7.5-7.66 8.95a1 1 0 0 1-.67-.01C7.5 20.5 4 18 4 13V6a1 1 0 0 1 1-1c2 0 4.5-1.2 6.24-2.72a1.17 1.17 0 0 1 1.52 0C14.51 3.81 17 5 19 5a1 1 0 0 1 1 1z"></path><path d="m9 12 2 2 4-4"></path></svg>`;
 const SPINNER_ICON = `<svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="is-spinning" aria-hidden="true"><path d="M21 12a9 9 0 1 1-6.219-8.56"></path></svg>`;
+const ZHIPU_KEYS = "https://open.bigmodel.cn/usercenter/proj-mgmt/apikeys";
+const ZAI_KEYS = "https://z.ai/manage-apikey/apikey-list";
 
 export function activate(ctx) {
   return ctx.ui.inject("models.connection-types.v1", (mount) => mount.register({
@@ -31,6 +33,7 @@ export function activate(ctx) {
           thinkingFormat: "deepseek",
           modelHint: "deepseek-chat",
         },
+        keysUrl: "https://platform.deepseek.com/api_keys",
       },
       // GLM Coding Plan 是包月订阅，和 Codex、OpenCode Go 放在一起；它走独立的 /coding 地址。
       {
@@ -48,6 +51,7 @@ export function activate(ctx) {
           thinkingFormat: "deepseek",
           modelHint: "glm-5.1",
         },
+        keysUrl: ZHIPU_KEYS,
       },
       {
         id: "zai",
@@ -64,6 +68,7 @@ export function activate(ctx) {
           thinkingFormat: "deepseek",
           modelHint: "glm-5.1",
         },
+        keysUrl: ZAI_KEYS,
       },
       {
         id: "zhipu-api",
@@ -72,6 +77,7 @@ export function activate(ctx) {
         icon: ZHIPU_ICON,
         order: 31,
         defaults: {name: "智谱 GLM", endpoint: "https://open.bigmodel.cn/api/paas/v4", provider: "zai", thinkingFormat: "deepseek", modelHint: "glm-5.1"},
+        keysUrl: ZHIPU_KEYS,
       },
       {
         id: "zai-api",
@@ -80,6 +86,7 @@ export function activate(ctx) {
         icon: ZAI_ICON,
         order: 32,
         defaults: {name: "Z.ai", endpoint: "https://api.z.ai/api/paas/v4", provider: "zai", thinkingFormat: "deepseek", modelHint: "glm-5.1"},
+        keysUrl: ZAI_KEYS,
       },
       {
         id: "custom-api",
@@ -93,93 +100,124 @@ export function activate(ctx) {
     render(host, _view, rawProps) {
       const props = requireProps(rawProps);
       const existing = props.state.connection;
-      const defaults = props.state.template?.defaults ?? {};
-      const provider = defaults.provider ?? "openai";
-      // 预设（DeepSeek、智谱等）的标题与占位文字取自模板；自定义 API 用通用文案。
-      const preset = !existing && props.state.template && props.state.template.id !== "custom-api" ? props.state.template : null;
-      const title = existing ? `编辑 ${existing.name}` : preset ? `连接 ${preset.label}` : "添加 OpenAI 兼容服务";
-      const description = existing
-        ? "更新服务地址或密钥时会向已启用模型发送测试验证；若验证失败将保留原配置。仅修改名称时不调用模型。"
-        : "输入接口地址与密钥，读取模型目录后保存连接。";
-      host.innerHTML = `<header class="settings-dialog-header"><div class="settings-dialog-heading"><h2 class="settings-dialog-title">${escapeHtml(title)}</h2><p class="settings-dialog-description">${description}</p></div>
+      if (!existing) return renderCreate(host, props);
+      host.innerHTML = `<header class="settings-dialog-header"><div class="settings-dialog-heading"><h2 class="settings-dialog-title">${escapeHtml(`编辑 ${existing.name}`)}</h2><p class="settings-dialog-description">更新服务地址或密钥时会向已启用模型发送测试验证；若验证失败将保留原配置。仅修改名称时不调用模型。</p></div>
         <button type="button" class="settings-icon-button" aria-label="关闭" data-close>${CLOSE_ICON}</button></header>
         <form class="settings-dialog-form"><div class="settings-dialog-body"><div class="settings-form-grid">
-          <label class="is-wide"><span>连接名称</span><input name="name" aria-label="连接名称" required autocomplete="organization" placeholder="${preset ? `例如：${escapeHtml(defaults.name ?? preset.label)}` : "例如：公司网关"}"></label>
-          <label class="is-wide"><span>Base URL</span><input name="endpoint" aria-label="Base URL" ${existing ? "" : "required"} type="url" placeholder="${existing?.endpointHost ? `当前 ${existing.endpointHost.replace(/[^a-z0-9.:-]/giu, "")}，填写新地址才会更换` : "https://api.example.com/v1"}"></label>
-          <label class="settings-secret is-wide"><span>API Key</span><input name="apiKey" aria-label="API Key" type="password" ${existing ? "" : "required"} autocomplete="off" placeholder="${existing ? "留空保留现有密钥" : "sk-…"}"><button type="button" data-show-key aria-label="显示 API Key">${EYE_ICON}</button></label>
+          <label class="is-wide"><span>连接名称</span><input name="name" aria-label="连接名称" required autocomplete="organization"></label>
+          <label class="is-wide"><span>Base URL</span><input name="endpoint" aria-label="Base URL" type="url" placeholder="${existing.endpointHost ? `当前 ${existing.endpointHost.replace(/[^a-z0-9.:-]/giu, "")}，填写新地址才会更换` : "https://api.example.com/v1"}"></label>
+          ${keyField("留空保留现有密钥", false)}
         </div>
-        ${existing ? "" : `<details class="settings-advanced"><summary>高级设置</summary><p>Provider ID 用于辅助识别模型功能；思考参数格式通常保持默认即可。</p><div class="settings-form-grid"><label class="is-wide"><span>Provider ID</span><input name="provider" aria-label="Provider ID" required placeholder="例如：openai"></label><label class="is-wide"><span>思考参数格式</span><select name="thinkingFormat" aria-label="思考参数格式"><option value="none">标准兼容格式（默认）</option><option value="deepseek">DeepSeek / GLM 格式</option></select></label></div></details>`}
         <p class="settings-credential-note">${SHIELD_ICON}<span>API Key 保存后不会在页面中明文回显</span></p>
-        ${existing ? "" : `<section class="settings-model-discovery"><header><div><h3>可用模型</h3><p>读取服务的模型目录，先用其中一个验证连接；其余模型建好后在详情里勾选。</p></div></header>
-          <div class="settings-discovery-empty" data-discovery-empty>
-            <button type="button" class="settings-primary-button" data-discover>自动探测模型</button>
-            <button type="button" class="settings-text-button" data-manual>手动输入模型名</button>
-          </div>
-          <p class="settings-discovery-status" data-picked role="status" hidden></p>
-          <div class="settings-discovery-manual" data-discovery-manual hidden><label><span>模型名称</span><input name="manualModel" aria-label="模型名称" placeholder="例如：${escapeHtml(defaults.modelHint ?? "gpt-4o")}"></label><p>手动添加的模型将先作为通用对话模型，保存后可随时重新探测能力。</p><label class="settings-manual-confirm"><input type="checkbox" name="manualConfirm"><span>我确认将此模型用于对话，并在保存前发送测试请求。</span></label></div>
-          <p class="settings-discovery-status" data-status role="status" aria-live="polite" hidden></p>
-        </section>`}
         <p class="settings-inline-error" data-error role="alert" hidden></p></div>
-        <footer class="settings-dialog-footer" data-footer ${existing ? "" : "hidden"}><span class="settings-dialog-footer-note" data-footer-note>${SHIELD_ICON}保存前会向所选模型发送一条短消息，验证对话用途</span><div class="settings-dialog-actions">${existing ? "" : '<button type="button" class="settings-secondary-button" data-rescan>重新探测</button>'}<button type="submit" class="settings-primary-button">保存连接</button></div></footer></form>`;
-      const form = host.querySelector("form");
-      const changed = () => props.dirty(true);
-      form.addEventListener("input", changed);
-      form.addEventListener("change", changed);
-      form.elements.name.value = existing?.name ?? defaults.name ?? "";
-      form.elements.endpoint.value = defaults.endpoint ?? "";
-      if (form.elements.provider) form.elements.provider.value = provider;
-      if (form.elements.thinkingFormat) form.elements.thinkingFormat.value = defaults.thinkingFormat ?? "none";
-      const showKey = host.querySelector("[data-show-key]");
-      showKey.addEventListener("click", () => {
-        const visible = form.elements.apiKey.type === "text";
-        form.elements.apiKey.type = visible ? "password" : "text";
-        showKey.setAttribute("aria-label", visible ? "显示 API Key" : "隐藏 API Key");
-        showKey.innerHTML = visible ? EYE_ICON : EYE_OFF_ICON;
-      });
-      host.querySelector("[data-close]").addEventListener("click", props.close);
-      const stopDiscovery = existing ? () => {} : setupDiscovery(host, form, props);
-      const pickedModels = () => host._pickedModels?.() ?? [];
+        <footer class="settings-dialog-footer"><span class="settings-dialog-footer-note">${SHIELD_ICON}保存前会向所选模型发送一条短消息，验证对话用途</span><div class="settings-dialog-actions"><button type="submit" class="settings-primary-button">保存连接</button></div></footer></form>`;
+      const form = bindForm(host, props);
+      form.elements.name.value = existing.name;
       form.addEventListener("submit", (event) => {
         event.preventDefault();
         const data = new FormData(form);
-        if (existing) {
-          const endpoint = String(data.get("endpoint"));
-          const apiKey = String(data.get("apiKey"));
-          submit(form, props.actions.update({
-            name: String(data.get("name")),
-            endpoint: endpoint || null,
-            credential: apiKey ? {driver: "api_key", access_token: apiKey} : null,
-            driverConfig: null,
-          }).then(() => props.changed("OpenAI Compatible 连接已更新")));
-          return;
-        }
-        if (!form.reportValidity()) return;
-        const manualVisible = !host.querySelector("[data-discovery-manual]").hidden;
-        const selected = manualVisible
-          ? [{kind: "chat", model: form.elements.manualModel.value.trim()}]
-          : pickedModels();
-        if (!selected.length || !selected[0].model) {
-          const error = host.querySelector("[data-error]");
-          error.textContent = "请先探测模型目录，或手动填写型号。";
-          error.hidden = false;
-          return;
-        }
-        // 连接带一个已验证模型建好后，宿主会展开它的详情，其余模型在那里勾选。
-        submit(form, props.actions.createManual({
+        const endpoint = String(data.get("endpoint"));
+        const apiKey = String(data.get("apiKey"));
+        submit(form, props.actions.update({
           name: String(data.get("name")),
-          endpoint: String(data.get("endpoint")),
-          credential: {driver: "api_key", access_token: String(data.get("apiKey"))},
-          driverConfig: {format_version: 1, catalog_provider_id: String(data.get("provider")), thinking_format: String(data.get("thinkingFormat")), allow_unverified_manual: true},
-          model: modelInput(selected[0], manualVisible),
-        }).then(() => props.changed(`${String(data.get("name")).trim() || "连接"} 已保存`)));
+          endpoint: endpoint || null,
+          credential: apiKey ? {driver: "api_key", access_token: apiKey} : null,
+          driverConfig: null,
+        }).then(() => props.changed("OpenAI Compatible 连接已更新")), "保存连接");
       });
-      queueMicrotask(() => form.elements.name.focus());
-      return () => {
-        stopDiscovery();
-        host.replaceChildren();
-      };
+      return () => host.replaceChildren();
     },
   }));
+}
+
+// 新建：预设只要密钥，地址与名称来自模板、收在「高级」里；自定义 API 填名称、地址、密钥。
+// 「添加」读取服务的模型目录并全部收进来；服务没有目录时改填一个型号，保存前实际验证。
+function renderCreate(host, props) {
+  const template = props.state.template;
+  const defaults = template?.defaults ?? {};
+  const preset = template && template.id !== "custom-api" ? template : null;
+  const label = preset ? [preset.tag, preset.label].filter(Boolean).join(" ") : "自定义 API";
+  const keys = preset?.keysUrl ? `<a class="settings-key-link" href="${escapeHtml(preset.keysUrl)}" target="_blank" rel="noreferrer">去 ${escapeHtml(preset.tag ?? preset.label)} 拿密钥 ↗</a>` : "";
+  const nameField = `<label class="is-wide"><span>名称</span><input name="name" aria-label="名称" required autocomplete="organization" placeholder="例如：公司网关"></label>`;
+  const endpointField = `<label class="is-wide"><span>地址</span><input name="endpoint" aria-label="地址" required type="url" placeholder="https://api.example.com/v1"></label>`;
+  host.innerHTML = `<header class="settings-dialog-header"><div class="settings-dialog-heading"><h2 class="settings-dialog-title">${escapeHtml(`添加 ${label}`)}</h2><p class="settings-dialog-description">${preset ? "填入密钥，添加后这个服务的模型全部可用。" : "填入兼容 OpenAI 的地址与密钥，添加后读到的模型全部可用。"}</p></div>
+    <button type="button" class="settings-icon-button" aria-label="关闭" data-close>${CLOSE_ICON}</button></header>
+    <form class="settings-dialog-form"><div class="settings-dialog-body"><div class="settings-form-grid">
+      ${preset ? "" : nameField + endpointField}
+      ${keyField("sk-…", true)}
+      ${keys ? `<p class="is-wide settings-key-row">${keys}${preset ? `<span>${escapeHtml(hostOf(defaults.endpoint))}</span>` : ""}</p>` : ""}
+    </div>
+    <details class="settings-advanced"><summary>高级</summary><div class="settings-form-grid">
+      ${preset ? nameField + endpointField : ""}
+      <label class="is-wide"><span>Provider ID</span><input name="provider" aria-label="Provider ID" required placeholder="例如：openai"></label>
+      <label class="is-wide"><span>思考参数格式</span><select name="thinkingFormat" aria-label="思考参数格式"><option value="none">标准兼容格式（默认）</option><option value="deepseek">DeepSeek / GLM 格式</option></select></label>
+    </div></details>
+    <div class="settings-discovery-manual" data-manual-box hidden><label><span>型号</span><input name="manualModel" aria-label="型号" placeholder="例如：${escapeHtml(defaults.modelHint ?? "gpt-4o")}"></label><p>服务没有模型目录时，填一个型号；添加前会向它发一条短消息验证。</p></div>
+    <p class="settings-inline-error" data-error role="alert" hidden></p></div>
+    <footer class="settings-dialog-footer"><button type="button" class="settings-text-button" data-manual>读不到模型？手动填型号</button><div class="settings-dialog-actions"><button type="submit" class="settings-primary-button">添加</button></div></footer></form>`;
+  const form = bindForm(host, props);
+  form.elements.name.value = defaults.name ?? "";
+  form.elements.endpoint.value = defaults.endpoint ?? "";
+  form.elements.provider.value = defaults.provider ?? "openai";
+  form.elements.thinkingFormat.value = defaults.thinkingFormat ?? "none";
+  const manualBox = host.querySelector("[data-manual-box]");
+  const manualToggle = host.querySelector("[data-manual]");
+  manualToggle.addEventListener("click", () => {
+    manualBox.hidden = false;
+    manualToggle.hidden = true;
+    form.elements.manualModel.required = true;
+    form.elements.manualModel.focus();
+  });
+  form.addEventListener("submit", (event) => {
+    event.preventDefault();
+    // 1. 名称和地址在「高级」里也必须有效；无效时展开让用户看到。
+    if (!form.checkValidity()) {
+      form.querySelector("details").open = true;
+      form.reportValidity();
+      return;
+    }
+    const data = new FormData(form);
+    const name = String(data.get("name")).trim();
+    const connection = {
+      name,
+      endpoint: String(data.get("endpoint")),
+      credential: {driver: "api_key", access_token: String(data.get("apiKey"))},
+      driverConfig: {format_version: 1, catalog_provider_id: String(data.get("provider")), thinking_format: String(data.get("thinkingFormat")), allow_unverified_manual: true},
+    };
+    // 2. 手填型号走旧的单模型验证；否则读目录、全部收进来。
+    const manual = manualBox.hidden ? "" : String(data.get("manualModel")).trim();
+    const work = manual
+      ? props.actions.createManual({...connection, model: modelInput({model: manual}, true)})
+      : props.actions.createConnection({...connection, catalogMode: "all", modelHint: defaults.modelHint ?? ""});
+    submit(form, work.then(() => props.changed(`${name || "连接"} 已添加`)), "添加");
+  });
+  queueMicrotask(() => form.elements.apiKey.focus());
+  return () => host.replaceChildren();
+}
+
+function keyField(placeholder, required) {
+  return `<label class="settings-secret is-wide"><span>API Key</span><input name="apiKey" aria-label="API Key" type="password" ${required ? "required" : ""} autocomplete="off" placeholder="${placeholder}"><button type="button" data-show-key aria-label="显示 API Key">${EYE_ICON}</button></label>`;
+}
+
+// 表单的共同接线：脏标记、显示密钥、关闭。
+function bindForm(host, props) {
+  const form = host.querySelector("form");
+  const changed = () => props.dirty(true);
+  form.addEventListener("input", changed);
+  form.addEventListener("change", changed);
+  const showKey = host.querySelector("[data-show-key]");
+  showKey.addEventListener("click", () => {
+    const visible = form.elements.apiKey.type === "text";
+    form.elements.apiKey.type = visible ? "password" : "text";
+    showKey.setAttribute("aria-label", visible ? "显示 API Key" : "隐藏 API Key");
+    showKey.innerHTML = visible ? EYE_ICON : EYE_OFF_ICON;
+  });
+  host.querySelector("[data-close]").addEventListener("click", props.close);
+  return form;
+}
+
+function hostOf(endpoint) {
+  try { return new URL(endpoint).hostname; } catch { return ""; }
 }
 
 function svgData(svg) {
@@ -191,7 +229,7 @@ function requireProps(value) {
     || typeof value.actions.discover !== "function" || typeof value.actions.createManual !== "function"
     || typeof value.actions.update !== "function" || typeof value.actions.sync !== "function"
     || typeof value.actions.discoverSaved !== "function" || typeof value.actions.addModel !== "function"
-    || typeof value.actions.verifyModel !== "function"
+    || typeof value.actions.verifyModel !== "function" || typeof value.actions.createConnection !== "function"
     || typeof value.dirty !== "function" || typeof value.close !== "function" || typeof value.changed !== "function" || !value.state) {
     throw new Error("models.connection-types.v1 props 无效");
   }
@@ -200,142 +238,6 @@ function requireProps(value) {
     throw new Error("models.connection-types.v1 connection 无效");
   }
   return value;
-}
-
-// 新建连接的探测：拿表单当前值读目录 → 宿主勾选层 → 保存时批量验证采纳。
-function setupDiscovery(host, form, props) {
-  const manual = host.querySelector("[data-discovery-manual]");
-  const pickedLine = host.querySelector("[data-picked]");
-  const status = host.querySelector("[data-status]");
-  const footer = host.querySelector("[data-footer]");
-  const footerNote = host.querySelector("[data-footer-note]");
-  const manualInput = form.elements.manualModel;
-  const manualConfirm = form.elements.manualConfirm;
-  const discoverButton = host.querySelector("[data-discover]");
-  const rescanButton = host.querySelector("[data-rescan]");
-  const owner = createDiscoveryOwner();
-  let picked = [];
-  let detectedConnection = "";
-
-  const showPicked = () => {
-    if (!picked.length) {
-      pickedLine.hidden = true;
-      return;
-    }
-    pickedLine.hidden = false;
-    pickedLine.textContent = `先用 ${picked[0].model} 验证连接；保存后在详情里勾选其他模型、设置参数。`;
-  };
-  const showManual = () => {
-    owner.invalidate();
-    picked = [];
-    showPicked();
-    manual.hidden = false;
-    footer.hidden = false;
-    manualInput.required = true;
-    manualConfirm.required = true;
-    footerNote.lastChild.textContent = "目录未读取；保存时仍会实际验证对话用途";
-    status.hidden = true;
-    manualInput.focus();
-  };
-  const detect = async (button) => {
-    manualInput.required = false;
-    manualConfirm.required = false;
-    if (!form.reportValidity()) return;
-    const data = new FormData(form);
-    const fingerprint = connectionFingerprint(form);
-    const attempt = owner.start(fingerprint);
-    clearInlineError(host);
-    status.hidden = false;
-    status.textContent = "正在读取服务的模型目录…";
-    try {
-      const discovered = await runButton(button, "探测中", props.actions.discover({
-        name: String(data.get("name")),
-        endpoint: String(data.get("endpoint")),
-        credential: {driver: "api_key", access_token: String(data.get("apiKey"))},
-        driverConfig: {format_version: 1, catalog_provider_id: String(data.get("provider")), thinking_format: String(data.get("thinkingFormat")), allow_unverified_manual: true},
-      }, attempt.signal), host.querySelector("[data-error]"), false);
-      if (!attempt.isCurrent(connectionFingerprint(form))) return;
-      const candidates = discovered.filter((model) => ["chat", null].includes(model.kind));
-      if (candidates.length === 0) throw new Error("服务返回了模型目录，但没有可选择的模型");
-      // 仿 magpie：建连接只验证一个模型，其余在建好后自动展开的详情里勾选。
-      const hint = props.state.template?.defaults?.modelHint;
-      picked = [candidates.find((model) => model.model === hint) ?? candidates[0]];
-      detectedConnection = fingerprint;
-      showPicked();
-      manual.hidden = true;
-      footer.hidden = false;
-      footerNote.lastChild.textContent = "保存前会向这个模型发送一条短消息，验证连接可用";
-      status.textContent = `读到 ${candidates.length} 个模型。`;
-    } catch (reason) {
-      if (!attempt.isCurrent(connectionFingerprint(form))) return;
-      status.textContent = reason?.code === "forbidden_contract"
-        ? "服务刚刚更新。请刷新页面后重新探测；连接信息尚未保存。"
-        : "未能读取模型目录。请检查 Base URL 和 API Key，或改用手动填写。";
-      const error = host.querySelector("[data-error]");
-      error.textContent = reason instanceof Error ? reason.message : String(reason);
-      error.hidden = false;
-    }
-  };
-
-  discoverButton.addEventListener("click", () => detect(discoverButton));
-  rescanButton.addEventListener("click", () => detect(rescanButton));
-  host.querySelector("[data-manual]").addEventListener("click", showManual);
-  for (const field of [form.elements.endpoint, form.elements.apiKey, form.elements.provider, form.elements.thinkingFormat]) {
-    field.addEventListener("input", () => {
-      const current = connectionFingerprint(form);
-      if (detectedConnection === current) return;
-      owner.invalidate();
-      picked = [];
-      showPicked();
-      status.hidden = false;
-      status.textContent = "连接信息已更改，请重新探测。";
-      footer.hidden = manual.hidden;
-    });
-  }
-  host._pickedModels = () => picked;
-  return () => owner.close();
-}
-
-export function createDiscoveryOwner() {
-  let generation = 0;
-  let controller = null;
-  let closed = false;
-
-  const invalidate = () => {
-    generation += 1;
-    controller?.abort();
-    controller = null;
-  };
-  return Object.freeze({
-    start(fingerprint) {
-      if (closed) throw new Error("模型检测面板已关闭");
-      invalidate();
-      controller = new AbortController();
-      const currentGeneration = generation;
-      const signal = controller.signal;
-      return Object.freeze({
-        signal,
-        isCurrent(currentFingerprint) {
-          return !closed && !signal.aborted && generation === currentGeneration
-            && currentFingerprint === fingerprint;
-        },
-      });
-    },
-    invalidate,
-    close() {
-      closed = true;
-      invalidate();
-    },
-  });
-}
-
-function connectionFingerprint(form) {
-  return JSON.stringify([
-    form.elements.endpoint.value,
-    form.elements.apiKey.value,
-    form.elements.provider.value,
-    form.elements.thinkingFormat.value,
-  ]);
 }
 
 function modelInput(model, manual = false) {
@@ -370,33 +272,7 @@ function modelInput(model, manual = false) {
   };
 }
 
-function clearInlineError(host) {
-  const error = host.querySelector("[data-error]");
-  error.hidden = true;
-  error.textContent = "";
-}
-
-async function runButton(button, busyText, work, error, reportError = true) {
-  const label = button.textContent;
-  button.disabled = true;
-  button.replaceChildren(htmlNode(SPINNER_ICON), busyText);
-  error.hidden = true;
-  error.textContent = "";
-  try {
-    return await work;
-  } catch (reason) {
-    if (reportError) {
-      error.textContent = reason instanceof Error ? reason.message : String(reason);
-      error.hidden = false;
-    }
-    throw reason;
-  } finally {
-    button.disabled = false;
-    button.textContent = label;
-  }
-}
-
-function submit(form, work) {
+function submit(form, work, label) {
   const button = form.querySelector("[type=submit]");
   const error = form.querySelector("[data-error]");
   button.disabled = true;
@@ -408,7 +284,7 @@ function submit(form, work) {
     error.hidden = false;
   }).finally(() => {
     button.disabled = false;
-    button.textContent = "保存连接";
+    button.textContent = label;
   });
 }
 
