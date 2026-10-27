@@ -48,6 +48,7 @@ from .settings import (
     CancelConnectionAuth,
     CreateConnectionWithModel,
     DisableConnection,
+    EnableConnection,
     FinishConnectionAuth,
     ModelChange,
     MODEL_SETTINGS,
@@ -180,6 +181,12 @@ class DisableConnectionPayload(_Payload):
     connection_id: str = Field(min_length=1, max_length=128)
 
 
+class EnableConnectionPayload(_Payload):
+    type: Literal["enable_connection"]
+    expected_revision: int = Field(ge=0)
+    connection_id: str = Field(min_length=1, max_length=128)
+
+
 class CapabilitiesPayload(_Payload):
     context_window: int | None = Field(default=None, gt=0)
     max_output_tokens: int | None = Field(default=None, gt=0)
@@ -303,6 +310,7 @@ CommandPayload = Annotated[
     AddConnectionPayload
     | UpdateConnectionPayload
     | DisableConnectionPayload
+    | EnableConnectionPayload
     | AddModelPayload
     | VerifyModelPayload
     | RemoveModelPayload
@@ -564,6 +572,8 @@ def _command(payload: CommandPayload) -> ModelChange:
         )
     if isinstance(payload, DisableConnectionPayload):
         return DisableConnection(payload.expected_revision, payload.connection_id)
+    if isinstance(payload, EnableConnectionPayload):
+        return EnableConnection(payload.expected_revision, payload.connection_id)
     if isinstance(payload, AddModelPayload):
         return _add_model(payload)
     if isinstance(payload, VerifyModelPayload):

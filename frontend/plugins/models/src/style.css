@@ -176,6 +176,19 @@
 
 .settings-provider-card + .settings-provider-card { border-block-start: 1px solid var(--ak-rule-subtle); }
 
+/* 一行两个控件：展开按钮用 ::before 铺满整行，开关叠在上方；箭头不接收点击。 */
+.settings-provider-row {
+  position: relative;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto auto;
+  align-items: center;
+  gap: 0.75rem;
+  padding-inline-end: 0.875rem;
+  transition: background-color var(--ak-sys-duration-short) var(--ak-sys-motion-standard);
+}
+.settings-provider-row:has(> .settings-provider-head:hover:not(:disabled)) {
+  background: color-mix(in srgb, var(--md-sys-color-on-surface) 5%, transparent);
+}
 .settings-provider-head {
   display: grid;
   width: 100%;
@@ -185,29 +198,78 @@
   gap: 0.75rem;
   border: 0;
   border-radius: 0;
-  padding: 0.5rem 0.875rem 0.5rem 1rem;
+  padding: 0.5rem 0 0.5rem 1rem;
   color: inherit;
   text-align: start;
   background: transparent;
   font: inherit;
   cursor: pointer;
-  transition-property: background-color, scale;
-  transition-duration: var(--ak-sys-duration-short);
-  transition-timing-function: var(--ak-sys-motion-standard);
 }
-.settings-provider-head:hover:not(:disabled) {
-  background: color-mix(in srgb, var(--md-sys-color-on-surface) 5%, transparent);
-}
+.settings-provider-head::before { content: ""; position: absolute; inset: 0; }
 .settings-provider-head:disabled { cursor: default; }
-.settings-provider-head:focus-visible {
+.settings-provider-head:focus-visible { outline: none; }
+.settings-provider-head:focus-visible::before {
   outline: 2px solid var(--md-sys-color-primary);
   outline-offset: -2px;
 }
-.settings-provider-head > .lucide-chevron-right {
+.settings-provider-row > .lucide-chevron-right {
   color: var(--md-sys-color-on-surface-variant);
+  pointer-events: none;
   transition: rotate var(--ak-sys-duration-short) var(--ak-sys-motion-standard);
 }
-.settings-provider-head[aria-expanded="true"] > .lucide-chevron-right { rotate: 90deg; }
+.settings-provider-row:has(> .settings-provider-head:disabled) > .lucide-chevron-right { opacity: 0.35; }
+.settings-provider-row:has(> .settings-provider-head[aria-expanded="true"]) > .lucide-chevron-right { rotate: 90deg; }
+
+.settings-provider-switch { position: relative; z-index: 1; display: flex; }
+.settings-provider-switch input {
+  appearance: none;
+  position: relative;
+  width: 2.125rem;
+  height: 1.25rem;
+  margin: 0;
+  border-radius: 999px;
+  background: var(--ak-rule-strong);
+  cursor: pointer;
+  transition: background-color var(--ak-sys-duration-short) var(--ak-sys-motion-standard);
+}
+.settings-provider-switch input::after {
+  content: "";
+  position: absolute;
+  inset: 2px auto auto 2px;
+  width: 1rem;
+  height: 1rem;
+  border-radius: 50%;
+  background: var(--ak-paper-sheet);
+  transition: translate var(--ak-sys-duration-short) var(--ak-sys-motion-standard);
+}
+.settings-provider-switch input:checked { background: var(--ak-color-action-primary); }
+.settings-provider-switch input:checked::after { translate: 0.875rem 0; }
+.settings-provider-switch input:disabled { opacity: 0.5; cursor: progress; }
+.settings-provider-switch input:focus-visible { outline: 2px solid var(--md-sys-color-primary); outline-offset: 2px; }
+
+/* 行尾额度：窗口名与比例右对齐，后接细条；超过八成换警示色。 */
+.settings-provider-quota {
+  display: grid;
+  grid-template-columns: auto 4rem;
+  align-items: center;
+  gap: 0.125rem 0.5rem;
+  color: var(--ak-ink-secondary);
+  font-size: var(--models-type-caption);
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+.settings-provider-quota:empty { display: none; }
+.settings-provider-quota > span:not(.settings-quota-bar) { text-align: end; }
+.settings-provider-quota:not(:has(.settings-quota-bar)) { display: block; }
+.settings-provider-quota.is-stale { color: var(--md-sys-color-on-surface-variant); }
+.settings-quota-bar {
+  height: 0.1875rem;
+  overflow: hidden;
+  border-radius: 999px;
+  background: var(--ak-rule-subtle);
+}
+.settings-quota-bar > i { display: block; height: 100%; border-radius: inherit; background: var(--ak-ink-secondary); }
+.settings-quota-bar.is-high > i { background: var(--ak-sys-color-warning); }
 
 .settings-provider-status {
   display: inline-flex;
