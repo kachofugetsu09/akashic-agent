@@ -2,6 +2,7 @@
 
 用法：python fixture_model.py <port> <log>
 - /v1/chat/completions：流式或非流式，回复固定文本 "模拟回复：TTFT"；
+  摘要请求按 compaction 固定标题回复，压缩能真实发布，稳态测量不会每轮重试摘要；
 - /v1/embeddings：按文本哈希返回确定性单位向量，维度取请求的 dimensions（默认 1024）。
 日志每行一个 JSON：{"arrived": epoch 秒, "marker": "TTFT-<毫秒>"|null, "messages": n, "bytes": n}。
 """
@@ -16,6 +17,10 @@ import time
 from aiohttp import web
 
 _MARKER = re.compile(r"TTFT-(\d+)")
+_SUMMARY_HEADINGS = (
+    "## Goal", "## Constraints & Preferences", "## Progress", "### Done",
+    "### In Progress", "### Blocked", "## Key Decisions", "## Next Steps", "## Critical Context",
+)
 
 
 def _log(path: str, record: dict[str, object]) -> None:
@@ -39,6 +44,9 @@ async def chat(request: web.Request) -> web.StreamResponse:
     })
     usage = {"prompt_tokens": 1, "completion_tokens": 1, "total_tokens": 2}
     message = {"role": "assistant", "content": "模拟回复：TTFT"}
+    # 摘要请求按固定标题合同回复，压缩能真实发布，稳态不会每轮重试。
+    if "更新当前长任务的上下文压缩摘要" in raw.decode("utf-8", "replace"):
+        message["content"] = "\n\n".join(f"{heading}\n- 模拟摘要" for heading in _SUMMARY_HEADINGS)
     if not body.get("stream"):
         return web.json_response({
             "id": "fixture", "object": "chat.completion", "usage": usage,

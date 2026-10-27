@@ -567,28 +567,34 @@ async def _unapplied_groups(
         current = parent
     selected_ids = {identity for batch in reversed(batches) for identity in batch}
 
-    # 归档 lookup 依赖当前 task 的 lease；只把独立 reader 的解码移出事件循环。
-    snapshot = await run_file_io(reader.snapshot)
-    covered = summary_indexes(snapshot, record.source_message_ids)
+    # 归档 lookup 依赖当前 task 的 lease，留在事件循环；全史解码、覆盖定位与 Turn 投影
+    # 只用独立 reader 和纯函数，整段放进 worker，长会话不占事件循环。
     applied_ids = set() if applied_reference is None else set(current.source_message_ids)
-    # 历史 suppress 是整个工作单元的资格，不能只删用户行后继续学习其回答。
-    by_id = {snapshot[index].message_id: snapshot[index] for index in covered}
-    excluded: set[str] = set()
-    deferred: set[str] = set()
-    for source in sources:
-        for turn in projection.project(snapshot, source):
-            ids = (*turn.message_ids, *(identity for _, identity in turn.observations))
-            if turn.ending_message_id is not None:
-                ids += (turn.ending_message_id,)
-            # 请求可以摘要半个 Turn；学习须等完整闭合且全部进入累计覆盖范围。
-            if turn.status == "open" or any(identity not in by_id for identity in ids):
-                excluded.update(ids)
-                continue
-            if applied_ids.intersection(ids) and any(identity not in applied_ids for identity in ids):
-                deferred.update(applied_ids.intersection(ids))
-            effects = tuple(post_commit_effect(by_id[identity]) for identity in ids)
-            if "suppress" in effects:
-                excluded.update(ids)
+
+    def classify() -> tuple[tuple[Message, ...], tuple[int, ...], set[str], set[str]]:
+        snapshot = reader.snapshot()
+        covered = summary_indexes(snapshot, record.source_message_ids)
+        # 历史 suppress 是整个工作单元的资格，不能只删用户行后继续学习其回答。
+        by_id = {snapshot[index].message_id: snapshot[index] for index in covered}
+        excluded: set[str] = set()
+        deferred: set[str] = set()
+        for source in sources:
+            for turn in projection.project(snapshot, source):
+                ids = (*turn.message_ids, *(identity for _, identity in turn.observations))
+                if turn.ending_message_id is not None:
+                    ids += (turn.ending_message_id,)
+                # 请求可以摘要半个 Turn；学习须等完整闭合且全部进入累计覆盖范围。
+                if turn.status == "open" or any(identity not in by_id for identity in ids):
+                    excluded.update(ids)
+                    continue
+                if applied_ids.intersection(ids) and any(identity not in applied_ids for identity in ids):
+                    deferred.update(applied_ids.intersection(ids))
+                effects = tuple(post_commit_effect(by_id[identity]) for identity in ids)
+                if "suppress" in effects:
+                    excluded.update(ids)
+        return snapshot, covered, excluded, deferred
+
+    snapshot, covered, excluded, deferred = await run_file_io(classify)
     # 已应用 generation 可能只学习了前面的完整 Turn；其半个尾部仍须追溯真实输入。
     while deferred and applied_reference is not None:
         parent = None if current.parent is None else lookup.resolve(
@@ -601,19 +607,22 @@ async def _unapplied_groups(
         if parent is None:
             break
         current = parent
-    cuts = (
-        covered[0],
-        *(index for index in compaction.window_starts(snapshot[:covered[-1] + 1], projection)
-          if index > covered[0]),
-        covered[-1] + 1,
-    )
-    groups = tuple(snapshot[left:right] for left, right in zip(cuts, cuts[1:]))
-    selected = tuple(tuple(message for message in group
-                           if message.source in sources and message.message_id in selected_ids
-                           and message.message_id not in excluded)
-                     for group in groups)
-    # 批次切点来自完整前缀；学习资格与迟到结果沿原 source/放弃边界过滤。
-    return compaction.summary_groups(selected, snapshot[:covered[-1] + 1])
+    def group() -> tuple[tuple[Message, ...], ...]:
+        cuts = (
+            covered[0],
+            *(index for index in compaction.window_starts(snapshot[:covered[-1] + 1], projection)
+              if index > covered[0]),
+            covered[-1] + 1,
+        )
+        groups = tuple(snapshot[left:right] for left, right in zip(cuts, cuts[1:]))
+        selected = tuple(tuple(message for message in group
+                               if message.source in sources and message.message_id in selected_ids
+                               and message.message_id not in excluded)
+                         for group in groups)
+        # 批次切点来自完整前缀；学习资格与迟到结果沿原 source/放弃边界过滤。
+        return compaction.summary_groups(selected, snapshot[:covered[-1] + 1])
+
+    return await run_file_io(group)
 
 
 async def project(

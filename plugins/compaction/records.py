@@ -198,14 +198,19 @@ def _check_lineage(
     record: StoredSummary,
     read: Callable[[str], StoredSummary | None],
     session_id: str,
+    known: Callable[[str], StoredSummary | None] | None = None,
 ) -> StoredSummary:
-    """核对完整父链，以及每代分区记录对新增覆盖的精确分区。"""
+    """核对完整父链，以及每代分区记录对新增覆盖的精确分区。
+
+    记录不可变：known 给出的父代已核对过它自己往上的父链，这里仍核对当前一代与它的父子边，只是不再往上走。
+    """
     current = record
     while True:
+        trusted = None if current.parent is None or known is None else known(current.parent)
         if current.parent is None:
             parent = None
         else:
-            parent = read(current.parent)
+            parent = trusted if trusted is not None else read(current.parent)
             if parent is None or parent.session_id != session_id:
                 raise ValueError("摘要父链缺失或跨 Session")
             generation_matches = (
@@ -230,7 +235,7 @@ def _check_lineage(
                     or tuple(item for item in added if item in summarized) != current.summary_message_ids
                     or tuple(item for item in added if item in omitted) != current.omitted_message_ids):
                 raise ValueError("摘要本代覆盖没有被模型输入与省略消息完整分区")
-        if parent is None:
+        if parent is None or trusted is not None:
             return record
         current = parent
 
@@ -308,18 +313,22 @@ class SummaryRecords:
             raise ValueError("摘要记录的身份或不可变版本损坏")
         return record
 
-    def read(self, reference: str) -> StoredSummary | None:
+    def read(
+        self, reference: str, *, known: Callable[[str], StoredSummary | None] | None = None,
+    ) -> StoredSummary | None:
         record = self._read_record(reference)
         if record is None:
             return None
-        return _check_lineage(record, self._read_record, record.session_id)
+        return _check_lineage(record, self._read_record, record.session_id, known)
 
-    def head(self, session_id: str) -> StoredSummary | None:
+    def head(
+        self, session_id: str, *, known: Callable[[str], StoredSummary | None] | None = None,
+    ) -> StoredSummary | None:
         row = self._state.read("head:" + session_id)
         if row is None:
             return None
         head = _Head.model_validate_json(json.dumps(json_value(row.value)))
-        record = self.read(head.reference)
+        record = self.read(head.reference, known=known)
         if record is None or record.session_id != session_id:
             raise ValueError("摘要 head 没有对应 Session 的已发布记录")
         return record
@@ -329,14 +338,15 @@ class SummaryRecords:
     ) -> tuple[int, StoredSummary] | None:
         """读取 head 行版本；known 版本一致时复用已核对记录，跳过完整父链核对。
 
-        摘要记录只增且不可变，head 行版本随发布单调递增，版本一致即内容一致。
+        摘要记录只增且不可变，head 行版本随发布单调递增，版本一致即内容一致；
+        新 head 只核对到 known 为止，新增的几代逐代核对。
         """
         row = self._state.read("head:" + session_id)
         if row is None:
             return None
         if known is not None and known[0] == row.version:
             return known
-        record = self.head(session_id)
+        record = self.head(session_id, known=None if known is None else {known[1].reference: known[1]}.get)
         assert record is not None
         return (row.version, record)
 
