@@ -1,0 +1,12 @@
+{"label": "pr-1732", "state": "cold", "gap_ms": 20000, "ttft_ms": 3693, "cpu_s": 3.9, "read_mb": 424.2}
+{"label": "pr-1732", "state": "warm", "gap_ms": 20000, "ttft_ms": 1678, "cpu_s": 3.16, "read_mb": 0.1}
+{"label": "pr-1732", "state": "warm", "gap_ms": 20000, "ttft_ms": 2232, "cpu_s": 3.82, "read_mb": 0.5}
+{"label": "main-0ac01d9a", "state": "cold", "gap_ms": 20000, "ttft_ms": 4984, "cpu_s": 4.94, "read_mb": 415}
+{"label": "main-0ac01d9a", "state": "warm", "gap_ms": 20000, "ttft_ms": 2852, "cpu_s": 4.16, "read_mb": 0.2}
+{"label": "main-0ac01d9a", "state": "warm", "gap_ms": 20000, "ttft_ms": 2776, "cpu_s": 4.17, "read_mb": 0.1}
+{"label": "pr-1732", "state": "cold", "gap_ms": 20000, "ttft_ms": 3650, "cpu_s": 3.87, "read_mb": 415.1}
+{"label": "pr-1732", "state": "warm", "gap_ms": 20000, "ttft_ms": 2035, "cpu_s": 3.38, "read_mb": 0.2}
+{"label": "pr-1732", "state": "warm", "gap_ms": 20000, "ttft_ms": 2170, "cpu_s": 3.55, "read_mb": 0.1}
+{"label": "main-0ac01d9a", "state": "cold", "gap_ms": 20000, "ttft_ms": 4735, "cpu_s": 4.9, "read_mb": 415}
+{"label": "main-0ac01d9a", "state": "warm", "gap_ms": 20000, "ttft_ms": 3236, "cpu_s": 4.69, "read_mb": 0.2}
+{"label": "main-0ac01d9a", "state": "warm", "gap_ms": 20000, "ttft_ms": 3100, "cpu_s": 4.59, "read_mb": 0.3}
