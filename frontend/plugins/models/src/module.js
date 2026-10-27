@@ -1103,7 +1103,7 @@ function registerModels(ctx, mount, catalogResource) {
           name.querySelector("strong").textContent = item.model;
           name.querySelector("em").textContent = (model ? used.get(model.id) : "新") || "";
           const caps = model?.capabilities ?? item.capabilities ?? {};
-          context.textContent = formatTokenCount(caps.contextWindow) || "—";
+          context.textContent = shortTokens(caps.contextWindow);
           if (model?.kind === "chat") {
             vision.append(visionSwitch(model));
             const button = document.createElement("button");
@@ -1154,6 +1154,12 @@ function registerModels(ctx, mount, catalogResource) {
               .catch(showError).finally(() => { verify.disabled = false; });
           });
           return row;
+        }
+
+        // 表里只读的上下文写成整 K / M，编辑框才用精确值。
+        function shortTokens(value) {
+          if (!value) return "—";
+          return value >= 1_000_000 ? `${+(value / 1_000_000).toFixed(1)}M` : value >= 1000 ? `${Math.round(value / 1000)}K` : String(value);
         }
 
         function draftBase(model) {
