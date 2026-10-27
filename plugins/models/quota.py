@@ -59,13 +59,17 @@ class QuotaCache:
         self._read = read
         self._entries: dict[str, _Entry] = {}
         self._pending: dict[str, asyncio.Task[ConnectionQuota]] = {}
+        # 遗忘一个连接就换代；在途读取完成时代号不符，结果不写回缓存。
+        self._generations: dict[str, int] = {}
 
     async def read(self, connection_ids: Sequence[str], *, fresh: bool) -> tuple[ConnectionQuota, ...]:
         return tuple(await asyncio.gather(*(self._one(item, fresh) for item in connection_ids)))
 
     def forget(self, keep: Sequence[str]) -> None:
-        for connection_id in set(self._entries) - set(keep):
-            del self._entries[connection_id]
+        for connection_id in (set(self._entries) | set(self._pending)) - set(keep):
+            _ = self._entries.pop(connection_id, None)
+            _ = self._pending.pop(connection_id, None)
+            self._generations[connection_id] = self._generations.get(connection_id, 0) + 1
 
     # 同一连接的并发请求合并成一次读取；调用方取消不打断正在进行的读取。
     async def _one(self, connection_id: str, fresh: bool) -> ConnectionQuota:
@@ -76,12 +80,16 @@ class QuotaCache:
             return entry.value
         task = self._pending.get(connection_id)
         if task is None:
-            task = asyncio.create_task(self._refresh(connection_id))
+            task = asyncio.create_task(self._refresh(connection_id, self._generations.get(connection_id, 0)))
             self._pending[connection_id] = task
-            task.add_done_callback(lambda _: self._pending.pop(connection_id, None))
+            task.add_done_callback(lambda done: self._settle(connection_id, done))
         return await asyncio.shield(task)
 
-    async def _refresh(self, connection_id: str) -> ConnectionQuota:
+    def _settle(self, connection_id: str, done: asyncio.Task[ConnectionQuota]) -> None:
+        if self._pending.get(connection_id) is done:
+            del self._pending[connection_id]
+
+    async def _refresh(self, connection_id: str, generation: int) -> ConnectionQuota:
         previous = self._entries.get(connection_id)
         try:
             async with asyncio.timeout(_READ_TIMEOUT_SECONDS):
@@ -99,6 +107,7 @@ class QuotaCache:
                 previous.value.read_at if previous else "",
                 message,
             )
-        self._entries[connection_id] = _Entry(time.monotonic(), value)
+        if self._generations.get(connection_id, 0) == generation:
+            self._entries[connection_id] = _Entry(time.monotonic(), value)
         return value
 
