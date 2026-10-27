@@ -15,6 +15,8 @@ from plugins.models.contract import (
     ModelKind,
 )
 
+from .quota import ConnectionQuota
+
 
 @dataclass(frozen=True, slots=True)
 class AddConnection:
@@ -166,6 +168,8 @@ class ModelSettings(Protocol):
     async def discover(self, connection: AddConnection) -> tuple[DiscoveredModel, ...]: ...
 
     async def apply(self, command: ModelChange) -> SettingsReceipt: ...
+
+    async def quotas(self, *, fresh: bool, connection_id: str | None = None) -> tuple[ConnectionQuota, ...]: ...
 
 
 MODEL_SETTINGS = ServiceKey[ModelSettings]("models.settings.v1")

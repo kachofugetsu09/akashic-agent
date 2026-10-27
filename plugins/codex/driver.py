@@ -29,6 +29,7 @@ from plugins.models.contract import ModelDriverDefinition
 from .auth import finish_auth, start_auth
 from .catalog import discover as discover_catalog
 from .catalog import probe as probe_catalog
+from .quota import read_quota
 from .responses import CodexResponses
 
 
@@ -52,6 +53,7 @@ def definition(read_version: Callable[[], Awaitable[str]]) -> ModelDriverDefinit
         start_auth=start_auth,
         finish_auth=finish_auth,
         icon=lambda _descriptor: (Path(__file__).parent / "icon.svg").read_text(encoding="utf-8"),
+        read_quota=read_quota,
     )
 
 

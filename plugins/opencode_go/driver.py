@@ -15,6 +15,7 @@ from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Any, cast
 from urllib.parse import urlsplit, urlunsplit
+from uuid import uuid4
 
 from core.net.http import HttpClient, StreamProgress, finish_response, retry_after_time
 
@@ -35,6 +36,9 @@ from plugins.models.contract import (
     DriverConnectionDescriptor,
     EmbeddingSpaceDescriptor,
     ModelCapabilities,
+    QuotaReading,
+    QuotaWindow,
+    quota_window_label,
 )
 from plugins.models.contract import (
     AuthenticationError,
@@ -157,6 +161,7 @@ def definition() -> ModelDriverDefinition:
         start_auth=_start_auth,
         finish_auth=_finish_auth,
         icon=lambda _descriptor: (Path(__file__).parent / "icon.svg").read_text(encoding="utf-8"),
+        read_quota=_read_quota,
     )
 
 
@@ -311,6 +316,54 @@ async def _probe(
         raise mapped from error
     _raise_status(response, secret=token)
     _ = _json_object(response)
+
+
+# Go 订阅的三个窗口；0% 的窗口尚未开始计时，服务商给的重置时间没有意义。
+_QUOTA_WINDOWS = (("rolling", 5 * 3600), ("weekly", 7 * 86400), ("monthly", 30 * 86400))
+
+
+async def _read_quota(
+    descriptor: DriverConnectionDescriptor,
+    credential: CredentialHandle,
+) -> QuotaReading:
+    connection = _connection_config(descriptor)
+    _check_credential_scope(descriptor, credential)
+    token = _credential_token(await credential.read())
+    # 1. 用量接口挂在网关的 /zen/go/v1 下，与连接填的推理地址无关，只沿用主机。
+    parts = urlsplit(connection.base_url)
+    session = uuid4().hex
+    try:
+        async with _client(connection, token) as client:
+            response = await client.get(
+                urlunsplit((parts.scheme, parts.netloc, "/zen/go/v1/usage", "", "")),
+                headers={"Accept": "application/json", "x-opencode-session": session,
+                         "x-opencode-session-id": session},
+            )
+    except asyncio.CancelledError:
+        raise
+    except Exception as error:
+        mapped = _map_error(error)
+        if mapped is error and not ModelError.matches(error):
+            raise
+        raise mapped from error
+    # 2. 403 是这把 key 不属于订阅者本人或所在工作区。
+    if response.status_code == 403:
+        raise AuthenticationError("这把 key 没有 OpenCode Go 订阅：请用订阅者本人在该工作区创建的 key。").exception()
+    _raise_status(response, secret=token)
+    usage = _json_object(response).get("usage")
+    windows: list[QuotaWindow] = []
+    for key, seconds in _QUOTA_WINDOWS:
+        item = cast(Mapping[str, Any], usage).get(key) if isinstance(usage, Mapping) else None
+        raw = cast(Mapping[str, Any], item) if isinstance(item, Mapping) else {}
+        percent = raw.get("percent")
+        if not isinstance(percent, (int, float)) or isinstance(percent, bool):
+            continue
+        resets = raw.get("resetsAt")
+        windows.append(QuotaWindow(quota_window_label(seconds), float(percent),
+                                   resets if isinstance(resets, str) and percent > 0 else None, seconds))
+    if not windows:
+        raise TransportError("OpenCode Go 用量响应里没有 rolling、weekly 或 monthly 窗口").exception()
+    return QuotaReading(plan="Go", windows=tuple(windows))
 
 
 async def _discover(
