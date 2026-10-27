@@ -960,18 +960,22 @@ class MessageLog:
         return value
 
     # 调用者持有 _view_lock；每次发布或复用都重新计时，换会话时旧前缀交还弱引用。
+    # close 先置 _closed 再进 _view_lock 清理，此处检查后不会在关闭后留下定时器。
     def _retain_view(self, prefix: _MessagePrefix) -> None:
+        if self._closed:
+            return
         previous = self._retained_view
         if previous is not None:
             previous[1].cancel()
-        timer = threading.Timer(_VIEW_GRACE_SECONDS, self._release_view, args=(prefix,))
+        timer = threading.Timer(_VIEW_GRACE_SECONDS, self._release_view)
         timer.daemon = True
         self._retained_view = (prefix, timer)
         timer.start()
 
-    def _release_view(self, prefix: _MessagePrefix) -> None:
+    # 已开始的回调无法 cancel；只清自己登记的那份，续期后的新登记不受影响。
+    def _release_view(self) -> None:
         with self._view_lock:
-            if self._retained_view is not None and self._retained_view[0] is prefix:
+            if self._retained_view is not None and self._retained_view[1] is threading.current_thread():
                 self._retained_view = None
 
     def close(self) -> None:
