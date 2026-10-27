@@ -872,7 +872,7 @@ dialog.settings-scrim::backdrop { background: transparent; }
 .usage-metrics { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); overflow: hidden; border: 1px solid var(--ak-rule-subtle); border-radius: var(--models-radius-panel); background: var(--ak-paper-sheet); }
 .usage-metrics > div { display: grid; gap: 0.125rem; padding: 0.75rem 0.875rem; }
 .usage-metrics > div + div { border-inline-start: 1px solid var(--ak-rule-subtle); }
-.usage-metrics b { font-size: 1.25rem; font-weight: 600; font-variant-numeric: tabular-nums; }
+.usage-metrics b { font-size: var(--md-sys-typescale-title-large-size); font-weight: 600; font-variant-numeric: tabular-nums; }
 .usage-metrics span { color: var(--ak-ink-secondary); font-size: var(--models-type-caption); }
 .usage-chart { display: flex; height: 7.5rem; align-items: end; gap: 3px; margin-block-start: 1rem; }
 .usage-chart > span { display: flex; min-width: 0; height: 100%; flex: 1; flex-direction: column-reverse; border-radius: 2px 2px 0 0; overflow: hidden; }

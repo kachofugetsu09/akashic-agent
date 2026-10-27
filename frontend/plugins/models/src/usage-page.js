@@ -27,18 +27,28 @@ function saveMode(mode) {
   try { window.localStorage.setItem(MODE_KEY, mode); } catch { /* 私密窗口等不可写时只在本页生效 */ }
 }
 
-// 今天按小时、多天按天切桶；每桶记命中与未命中输入，未来的小时不画。
+// 桶边界按本地日历生成：多天逐日 setDate，今天逐小时直到明天零点，夏令时那天自然是 23 或 25 桶。
+function bucketStarts(days) {
+  const start = rangeStart(days);
+  const end = new Date(start);
+  end.setDate(end.getDate() + days);
+  const starts = [];
+  if (days === 1) for (let at = start.getTime(); at < end.getTime(); at += 3600e3) starts.push(at);
+  else for (const day = new Date(start); day < end; day.setDate(day.getDate() + 1)) starts.push(day.getTime());
+  return {starts, end: end.getTime()};
+}
+
+// 每桶记命中与未命中输入；UTC 小时记录归到它所在的本地桶。
 function buckets(hours, days) {
-  const start = rangeStart(days).getTime();
-  const span = days === 1 ? 3600e3 : 86400e3;
-  const count = days === 1 ? 24 : days;
-  const items = Array.from({length: count}, (_, index) => ({hit: 0, miss: 0, output: 0, at: start + index * span}));
+  const {starts, end} = bucketStarts(days);
+  const items = starts.map((at) => ({hit: 0, miss: 0, output: 0, at}));
   for (const [key, , prompt, hit, output] of hours) {
-    const index = Math.floor((hourDate(key).getTime() - start) / span);
-    if (index < 0 || index >= count) continue;
-    items[index].hit += hit;
-    items[index].miss += prompt - hit;
-    items[index].output += output;
+    const time = hourDate(key).getTime();
+    if (time < starts[0] || time >= end) continue;
+    const item = items[starts.findLastIndex((at) => at <= time)];
+    item.hit += hit;
+    item.miss += prompt - hit;
+    item.output += output;
   }
   return items;
 }
@@ -132,6 +142,85 @@ function chart(items, days) {
   return wrap;
 }
 
+// 订阅额度区：读取失败也留在页面上说明原因，刷新按钮始终可以再点。
+function quotaPanel(ctx, page, catalogResource, isClosed) {
+  const section = page.querySelector("[data-quota-section]");
+  const grid = page.querySelector("[data-quotas]");
+  const note = page.querySelector("[data-quota-error]");
+  const refresh = page.querySelector("[data-quota-refresh]");
+  let mode = readMode();
+  let quotas = [];
+  const draw = () => {
+    const names = new Map((catalogResource.current?.connections ?? []).map((item) => [item.id, item.name]));
+    section.hidden = !quotas.length && !note.textContent;
+    grid.replaceChildren(...quotas.map((quota) => quotaCard(quota, names.get(quota.connectionId) ?? quota.connectionId, mode)));
+    for (const button of page.querySelectorAll("[data-mode]")) button.setAttribute("aria-pressed", String(button.dataset.mode === mode));
+  };
+  const load = (fresh) => {
+    refresh.disabled = true;
+    return ctx.http.request(`/api/dashboard/models/quotas${fresh ? "?fresh=true" : ""}`)
+      .then((response) => response.ok ? response.json() : Promise.reject(new Error(`额度读取失败（${response.status}）`)))
+      .then((body) => { quotas = body.quotas; note.textContent = ""; })
+      .catch((error) => { note.textContent = `${quotas.length ? "未能刷新，显示的是上次结果：" : ""}${error.message}`; })
+      .finally(() => { if (isClosed()) return; refresh.disabled = false; draw(); });
+  };
+  const setMode = (next) => { mode = next; saveMode(mode); draw(); };
+  return {load, setMode};
+}
+
+// Token 与缓存区：每次切换范围换一个代号，迟到的旧回包与它安排的重试都作废。
+function usagePanel(ctx, page, isClosed) {
+  const status = page.querySelector(".usage-status");
+  const content = page.querySelector("[data-usage]");
+  let days = 1;
+  let usage = null;
+  let timer = 0;
+  let generation = 0;
+  const draw = () => {
+    for (const button of page.querySelectorAll("[data-days]")) button.setAttribute("aria-pressed", String(Number(button.dataset.days) === days));
+    if (!usage) return;
+    const total = totalsSince(usage.hours, usage.days);
+    const metrics = document.createElement("div");
+    metrics.className = "usage-metrics";
+    for (const [value, label] of [[short(total.prompt_tokens), "输入 Token"], [ratio(total), "缓存命中"],
+      [short(total.output_tokens), "输出 Token"], [NUMBER.format(total.calls), "模型调用"]]) {
+      metrics.insertAdjacentHTML("beforeend", `<div><b>${value}</b><span>${label}</span></div>`);
+    }
+    content.replaceChildren(metrics, chart(buckets(usage.hours, usage.days), usage.days),
+      breakdown("按模型", usage.models, (item) => item.model),
+      breakdown("按来源", usage.sources, (item) => SOURCE_LABEL[item.source] ?? item.source));
+  };
+  // 冷启动时扫描逐次推进：未完成先显示进度，挂载期间退避着接着读。
+  const load = (ticket, attempt = 0) => {
+    const since = encodeURIComponent(rangeStart(days).toISOString());
+    const asked = days;
+    ctx.http.request(`/api/dashboard/models/usage?since=${since}`)
+      .then((response) => response.ok ? response.json() : Promise.reject(new Error(`用量读取失败（${response.status}）`)))
+      .then((body) => {
+        if (isClosed() || ticket !== generation) return;
+        if (body.complete === false) {
+          status.textContent = `正在统计 ${NUMBER.format(body.scanned_sessions)} / ${NUMBER.format(body.total_sessions)} 个会话…`;
+          timer = window.setTimeout(() => load(ticket, attempt + 1), Math.min(2000, 400 * (attempt + 1)));
+          return;
+        }
+        status.textContent = "";
+        usage = {...body, days: asked};
+        draw();
+      })
+      .catch((error) => {
+        if (!isClosed() && ticket === generation) status.textContent = `${usage ? "未能更新，显示的是上次结果：" : ""}${error.message}`;
+      });
+  };
+  const select = (next) => {
+    days = next;
+    window.clearTimeout(timer);
+    status.textContent = "正在读取用量…";
+    draw();
+    load(++generation);
+  };
+  return {select, stop: () => { generation += 1; window.clearTimeout(timer); }};
+}
+
 // 设置「用量」：订阅额度在上，Token、缓存命中与调用按所选范围汇总在下。
 export function usageSection(ctx, catalogResource) {
   return {
@@ -145,6 +234,7 @@ export function usageSection(ctx, catalogResource) {
           <div class="settings-section-bar"><h2 class="settings-section-label">订阅额度</h2>
             <div class="usage-toggle" role="group" aria-label="额度显示"><button type="button" data-mode="used">已用</button><button type="button" data-mode="left">剩余</button></div>
             <button type="button" class="settings-text-button" data-quota-refresh>刷新</button></div>
+          <p class="usage-status" data-quota-error role="status"></p>
           <div class="usage-quota-grid" data-quotas></div>
         </section>
         <section class="settings-section">
@@ -155,76 +245,22 @@ export function usageSection(ctx, catalogResource) {
         </section>
       </div>`;
       host.replaceChildren(page);
-      const quotaSection = page.querySelector("[data-quota-section]");
-      const quotaGrid = page.querySelector("[data-quotas]");
-      const status = page.querySelector(".usage-status");
-      const content = page.querySelector("[data-usage]");
-      let mode = readMode();
-      let days = 1;
-      let quotas = [];
-      let usage = null;
-      let timer = 0;
       let closed = false;
-
-      const drawQuotas = () => {
-        const names = new Map((catalogResource.current?.connections ?? []).map((item) => [item.id, item.name]));
-        quotaSection.hidden = !quotas.length;
-        quotaGrid.replaceChildren(...quotas.map((quota) => quotaCard(quota, names.get(quota.connectionId) ?? quota.connectionId, mode)));
-        for (const button of page.querySelectorAll("[data-mode]")) button.setAttribute("aria-pressed", String(button.dataset.mode === mode));
-      };
-      const loadQuotas = (fresh) => ctx.http.request(`/api/dashboard/models/quotas${fresh ? "?fresh=true" : ""}`)
-        .then((response) => response.ok ? response.json() : Promise.reject(new Error(`额度读取失败（${response.status}）`)))
-        .then((body) => { if (!closed) { quotas = body.quotas; drawQuotas(); } })
-        .catch(() => undefined);
-
-      const drawUsage = () => {
-        for (const button of page.querySelectorAll("[data-days]")) button.setAttribute("aria-pressed", String(Number(button.dataset.days) === days));
-        if (!usage) return;
-        const total = totalsSince(usage.hours, days);
-        const metrics = document.createElement("div");
-        metrics.className = "usage-metrics";
-        for (const [value, label] of [[short(total.prompt_tokens), "输入 Token"], [ratio(total), "缓存命中"],
-          [short(total.output_tokens), "输出 Token"], [NUMBER.format(total.calls), "模型调用"]]) {
-          metrics.insertAdjacentHTML("beforeend", `<div><b>${value}</b><span>${label}</span></div>`);
-        }
-        content.replaceChildren(metrics, chart(buckets(usage.hours, days), days),
-          breakdown("按模型", usage.models, (item) => item.model),
-          breakdown("按来源", usage.sources, (item) => SOURCE_LABEL[item.source] ?? item.source));
-      };
-      // 冷启动时扫描逐次推进：未完成先显示进度，挂载期间退避着接着读。
-      const loadUsage = (attempt = 0) => {
-        window.clearTimeout(timer);
-        const since = encodeURIComponent(rangeStart(days).toISOString());
-        ctx.http.request(`/api/dashboard/models/usage?since=${since}`)
-          .then((response) => response.ok ? response.json() : Promise.reject(new Error(`用量读取失败（${response.status}）`)))
-          .then((body) => {
-            if (closed) return;
-            if (body.complete === false) {
-              status.textContent = `正在统计 ${NUMBER.format(body.scanned_sessions)} / ${NUMBER.format(body.total_sessions)} 个会话…`;
-              timer = window.setTimeout(() => loadUsage(attempt + 1), Math.min(2000, 400 * (attempt + 1)));
-              return;
-            }
-            status.textContent = "";
-            usage = body;
-            drawUsage();
-          })
-          .catch((error) => { if (!closed) status.textContent = `${usage ? "未能更新，显示的是上次结果：" : ""}${error.message}`; });
-      };
-
+      const isClosed = () => closed;
+      const quota = quotaPanel(ctx, page, catalogResource, isClosed);
+      const usage = usagePanel(ctx, page, isClosed);
       page.addEventListener("click", (event) => {
         const button = event.target instanceof Element ? event.target.closest("button") : null;
         if (!button) return;
-        if (button.dataset.mode) { mode = button.dataset.mode; saveMode(mode); drawQuotas(); }
-        else if (button.dataset.days) { days = Number(button.dataset.days); drawUsage(); loadUsage(); }
-        else if (button.hasAttribute("data-quota-refresh")) void loadQuotas(true);
+        if (button.dataset.mode) quota.setMode(button.dataset.mode);
+        else if (button.dataset.days) usage.select(Number(button.dataset.days));
+        else if (button.hasAttribute("data-quota-refresh")) void quota.load(true);
       });
-      status.textContent = "正在读取用量…";
-      drawUsage();
-      void loadQuotas(false);
-      loadUsage();
+      void quota.load(false);
+      usage.select(1);
       return () => {
         closed = true;
-        window.clearTimeout(timer);
+        usage.stop();
         host.replaceChildren();
       };
     },
