@@ -43,7 +43,7 @@
    计费无关；按字符计时三张手机截图即可把估算推过窗口。Codex、Claude Code、Pi、DSH
    都按固定或按尺寸计价，不按编码长度。
 
-8. `context_window` 是输入上限（与 `litellm_capabilities` 的口径一致）。硬容量为
+8. `context_window` 是输入上限（与 `modelsdev_capabilities` 的口径一致）。硬容量为
    `context_window - output_reserve`，余量取 `min(max_output_tokens 或 16384, 16384, 窗口/4)`，
    同 Pi 的 `reserveTokens` 且小窗口按比例留。不再整段扣除模型最大输出：272K 窗口扣 128K
    后硬容量只剩 144K，低于 74% 软水位。会发送输出上限的驱动由 Context 把本次上限收紧到

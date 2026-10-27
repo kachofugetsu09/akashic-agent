@@ -1,6 +1,6 @@
 # 0054 · 模型同步刷新公共能力目录
 
-- 状态：accepted / implemented
+- 状态：accepted / implemented（2026-10-28 目录源由 LiteLLM 改为 models.dev，见文末）
 - 日期：2026-09-01
 - 关联条款：RUN-011、ONB-001、WSP-001
 - 关联设计：[模型运行时注册表与首次配置](../design/runtime-model-registry-and-onboarding.md)
@@ -61,3 +61,22 @@ Provider 和公共能力目录各自只拥有一个变化轴：前者回答账�
 ## 2026-10-01 勘误：目录与用户选择分离
 
 维护者确认：目录发现只返回候选，注册库行只代表用户选择。首次连接/认证后由用户勾选，后续同步只刷新已选模型，不自动采纳新型号。删除的配置不会因目录刷新重新出现；目录暂时缺失只使已选模型不可用。能力来源和手工覆盖规则继续有效。删除与默认回退见[模型选择设计](../design/model-user-disable.md)。此前验收记录属于当时自动采纳语义，不作为此次选择流程的验收证据。
+
+## 2026-10-28 更新：目录源改为 models.dev
+
+LiteLLM 的 `model_prices_and_context_window.json` 对国产模型多数不写 `supports_vision`（glm-5.1、
+deepseek-v4、mimo 均为未知，minimax-m3 还与官方相反），推理档位只有布尔值，只能猜 low/medium/high；
+也没有按服务商区分的条目，智谱按量与 Coding Plan、OpenCode Go 这类入口只能靠模糊匹配模型名。
+
+改为读 models.dev 的 `https://models.dev/api.json`：
+
+- 匹配：连接 Base URL 落在某服务商 `api` 之下取最长者 → `catalog_provider_id`（codex→openai、gemini→google
+  等别名）→ 裸模型 ID 在所有服务商里逐字段取多数，未声明的不参与投票。
+- 字段：`modalities.input` 含 image 即可识图（有该字段即视为已知）；`limit.context` / `limit.output`；
+  `reasoning_options` 里 `type=effort` 的 values 作为推理档位，只有开关的模型不再生成档位；`tool_call`。
+- 远端目录先裁剪成只含上述字段的同构子集再校验和缓存（`modelsdev-capabilities.json`，schema 2）；
+  随包兜底是同样裁剪后的 gzip 快照，不再依赖 LiteLLM wheel。`litellm` 与 `genai-prices` 从运行依赖移除。
+- 刷新时机、降级顺序、Provider 字段优先与不增删模型的约束不变。
+
+刷新随包快照：下载 `api.json` 后用 `modelsdev_capabilities.prune_catalog` 裁剪，按 `sort_keys`、紧凑分隔符
+序列化并 `gzip`（mtime=0）写回 `plugins/models/modelsdev_snapshot.json.gz`。

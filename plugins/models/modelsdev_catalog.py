@@ -2,8 +2,8 @@ from __future__ import annotations
 
 import asyncio
 import fcntl
+import gzip
 import hashlib
-import importlib.metadata
 import json
 import logging
 import os
@@ -12,30 +12,29 @@ import zlib
 from dataclasses import replace
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Mapping
+from typing import Any, Mapping, cast
 
 import httpx
 
-from .litellm_capabilities import load_catalog_registries, resolve_catalog_capabilities
+from .modelsdev_capabilities import Providers, prune_catalog, resolve_catalog_capabilities
 from plugins.models.contract import DiscoveredModel
 
 logger = logging.getLogger(__name__)
 
-_REMOTE_URL = (
-    "https://raw.githubusercontent.com/BerriAI/litellm/main/"
-    "model_prices_and_context_window.json"
-)
-_CACHE_SCHEMA_VERSION = 1
-_MAX_BODY_BYTES = 8 * 1024 * 1024
-_MAX_ENTRIES = 20_000
+_REMOTE_URL = "https://models.dev/api.json"
+# 随包快照：models.dev 原始目录经 prune_catalog 裁剪后 gzip，离线或首次同步失败时兜底。
+_SNAPSHOT_PATH = Path(__file__).with_name("modelsdev_snapshot.json.gz")
+_CACHE_SCHEMA_VERSION = 2
+_MAX_BODY_BYTES = 32 * 1024 * 1024
+_MAX_ENTRIES = 5_000
 
 
 class CatalogError(ValueError):
     """A public capability catalog failed validation."""
 
 
-class LiteLlmCapabilityCatalog:
-    """Refresh LiteLLM capability facts during an explicit model sync."""
+class ModelsDevCapabilityCatalog:
+    """Refresh models.dev capability facts during an explicit model sync."""
 
     def __init__(
         self,
@@ -43,13 +42,13 @@ class LiteLlmCapabilityCatalog:
         *,
         writable: bool,
         transport: httpx.AsyncBaseTransport | None = None,
-        bundled_models: Mapping[str, Mapping[str, Any]] | None = None,
+        bundled_providers: Providers | None = None,
         minimum_entries: int | None = None,
     ) -> None:
         self._cache_path = cache_path
         self._writable = writable
         self._transport = transport
-        self._bundled_models = bundled_models
+        self._bundled_providers = bundled_providers
         self._minimum_entries = minimum_entries
         self._lock = asyncio.Lock()
 
@@ -58,16 +57,18 @@ class LiteLlmCapabilityCatalog:
         discovered: tuple[DiscoveredModel, ...],
         *,
         provider_id: str,
+        endpoint: str = "",
     ) -> tuple[DiscoveredModel, ...]:
-        """Fill unknown image-input facts without changing provider inventory."""
+        """Fill unknown capability facts without changing provider inventory."""
 
         async with self._lock:
-            models, source = await self._load_for_sync()
-        # 首次查询的依赖加载不占用事件循环，其他会话不因此停顿。
-        await asyncio.to_thread(load_catalog_registries)
-        return tuple(
-            _enrich_model(item, provider_id=provider_id, models=models, source=source)
-            for item in discovered
+            providers, source = await self._load_for_sync()
+        # 跨服务商的多数口径要扫全目录，放到线程里，其他会话不因此停顿。
+        return await asyncio.to_thread(
+            lambda: tuple(
+                _enrich_model(item, provider_id=provider_id, endpoint=endpoint, providers=providers, source=source)
+                for item in discovered
+            )
         )
 
     async def _load_for_sync(self) -> tuple[dict[str, dict[str, Any]], str]:
@@ -76,7 +77,7 @@ class LiteLlmCapabilityCatalog:
         try:
             lock_fd = await _acquire_file_lock(self._cache_path)
         except OSError as exc:
-            logger.warning("LiteLLM 能力目录锁不可用，跳过缓存写入: %s", exc)
+            logger.warning("models.dev 能力目录锁不可用，跳过缓存写入: %s", exc)
             writable = self._writable
             self._writable = False
             try:
@@ -91,13 +92,13 @@ class LiteLlmCapabilityCatalog:
     async def _load_for_sync_unlocked(
         self,
     ) -> tuple[dict[str, dict[str, Any]], str]:
-        bundled = self._load_bundled()
+        bundled, bundled_digest = await asyncio.to_thread(self._load_bundled)
         minimum_entries = (
             self._minimum_entries
             if self._minimum_entries is not None
             else max(1, len(bundled) * 3 // 4)
         )
-        cached = self._load_cache(minimum_entries=minimum_entries)
+        cached = await asyncio.to_thread(self._load_cache, minimum_entries=minimum_entries)
         etag = cached[2] if cached is not None else ""
         try:
             remote = await self._fetch_remote(
@@ -105,23 +106,23 @@ class LiteLlmCapabilityCatalog:
                 minimum_entries=minimum_entries,
             )
         except (httpx.HTTPError, CatalogError, UnicodeDecodeError) as exc:
-            logger.warning("LiteLLM 能力目录刷新失败，使用本地快照: %s", exc)
+            logger.warning("models.dev 能力目录刷新失败，使用本地快照: %s", exc)
         else:
             if remote is None:
                 if cached is not None:
                     return cached[0], _source("remote", cached[1])
             else:
-                models, digest, response_etag = remote
+                providers, digest, response_etag = remote
                 if self._writable:
                     try:
-                        self._save_cache(models, digest=digest, etag=response_etag)
+                        await asyncio.to_thread(self._save_cache, providers, digest=digest, etag=response_etag)
                     except OSError as exc:
-                        logger.warning("LiteLLM 能力目录缓存写入失败: %s", exc)
-                return models, _source("remote", digest)
+                        logger.warning("models.dev 能力目录缓存写入失败: %s", exc)
+                return providers, _source("remote", digest)
 
         if cached is not None:
             return cached[0], _source("remote", cached[1])
-        return bundled, f"litellm-wheel@{importlib.metadata.version('litellm')}"
+        return bundled, _source("snapshot", bundled_digest)
 
     async def _fetch_remote(
         self,
@@ -146,30 +147,14 @@ class LiteLlmCapabilityCatalog:
                     return None
                 response.raise_for_status()
                 body = await _read_limited_body(response)
-        try:
-            raw = json.loads(body.decode("utf-8"))
-            models = _validate_models(raw, minimum_entries=minimum_entries)
-            digest = hashlib.sha256(_models_bytes(models)).hexdigest()
-        except (json.JSONDecodeError, RecursionError) as exc:
-            raise CatalogError("响应不是有效 JSON") from exc
-        return models, digest, response.headers.get("etag", "")
+        providers = await asyncio.to_thread(_parse_remote, body, minimum_entries)
+        digest = hashlib.sha256(_providers_bytes(providers)).hexdigest()
+        return providers, digest, response.headers.get("etag", "")
 
-    def _load_bundled(self) -> dict[str, dict[str, Any]]:
-        if self._bundled_models is not None:
-            return _validate_models(self._bundled_models, minimum_entries=1)
-        distribution = importlib.metadata.distribution("litellm")
-        path = Path(
-            str(
-                distribution.locate_file(
-                    "litellm/model_prices_and_context_window_backup.json"
-                )
-            )
-        )
-        try:
-            raw = json.loads(path.read_text(encoding="utf-8"))
-        except (json.JSONDecodeError, RecursionError) as exc:
-            raise CatalogError("随包 LiteLLM 目录损坏") from exc
-        return _validate_models(raw, minimum_entries=1)
+    def _load_bundled(self) -> tuple[dict[str, dict[str, Any]], str]:
+        raw = self._bundled_providers if self._bundled_providers is not None else _read_snapshot()
+        providers = _validate_providers(raw, minimum_entries=1)
+        return providers, hashlib.sha256(_providers_bytes(providers)).hexdigest()
 
     def _load_cache(
         self,
@@ -178,19 +163,19 @@ class LiteLlmCapabilityCatalog:
     ) -> tuple[dict[str, dict[str, Any]], str, str] | None:
         try:
             raw = json.loads(self._cache_path.read_text(encoding="utf-8"))
-            if not isinstance(raw, dict) or raw.get("schema_version") != 1:
+            if not isinstance(raw, dict) or raw.get("schema_version") != _CACHE_SCHEMA_VERSION:
                 raise CatalogError("缓存 schema 不受支持")
-            models = _validate_models(
-                raw.get("models"),
+            providers = _validate_providers(
+                raw.get("providers"),
                 minimum_entries=minimum_entries,
             )
-            digest = hashlib.sha256(_models_bytes(models)).hexdigest()
+            digest = hashlib.sha256(_providers_bytes(providers)).hexdigest()
             if raw.get("sha256") != digest:
                 raise CatalogError("缓存摘要不匹配")
             etag = raw.get("etag")
             if not isinstance(etag, str):
                 raise CatalogError("缓存 ETag 无效")
-            return models, digest, etag
+            return providers, digest, etag
         except FileNotFoundError:
             return None
         except (
@@ -200,12 +185,12 @@ class LiteLlmCapabilityCatalog:
             RecursionError,
             CatalogError,
         ) as exc:
-            logger.warning("忽略不可用的 LiteLLM 能力目录缓存: %s", exc)
+            logger.warning("忽略不可用的 models.dev 能力目录缓存: %s", exc)
             return None
 
     def _save_cache(
         self,
-        models: Mapping[str, Mapping[str, Any]],
+        providers: Providers,
         *,
         digest: str,
         etag: str,
@@ -219,7 +204,7 @@ class LiteLlmCapabilityCatalog:
                 "fetched_at": datetime.now(timezone.utc).isoformat(),
                 "etag": etag,
                 "sha256": digest,
-                "models": models,
+                "providers": providers,
             },
             ensure_ascii=False,
             separators=(",", ":"),
@@ -266,7 +251,7 @@ async def _read_limited_body(response: httpx.Response) -> bytes:
         except ValueError as error:
             raise CatalogError("响应 Content-Length 无效") from error
         if content_length < 0 or content_length > _MAX_BODY_BYTES:
-            raise CatalogError("压缩响应超过 8 MiB")
+            raise CatalogError("压缩响应超过 32 MiB")
 
     body = bytearray()
     raw_bytes = 0
@@ -282,22 +267,22 @@ async def _read_limited_body(response: httpx.Response) -> bytes:
         async for chunk in raw_chunks():
             raw_bytes += len(chunk)
             if raw_bytes > _MAX_BODY_BYTES:
-                raise CatalogError("压缩响应超过 8 MiB")
+                raise CatalogError("压缩响应超过 32 MiB")
             if decoder is None:
                 decoded = chunk
             else:
                 remaining = _MAX_BODY_BYTES - len(body)
                 decoded = decoder.decompress(chunk, remaining + 1)
                 if decoder.unconsumed_tail:
-                    raise CatalogError("解压响应超过 8 MiB")
+                    raise CatalogError("解压响应超过 32 MiB")
             if len(body) + len(decoded) > _MAX_BODY_BYTES:
-                raise CatalogError("解压响应超过 8 MiB")
+                raise CatalogError("解压响应超过 32 MiB")
             body.extend(decoded)
         if decoder is not None:
             remaining = _MAX_BODY_BYTES - len(body)
             decoded = decoder.flush(remaining + 1)
             if len(body) + len(decoded) > _MAX_BODY_BYTES:
-                raise CatalogError("解压响应超过 8 MiB")
+                raise CatalogError("解压响应超过 32 MiB")
             body.extend(decoded)
             if not decoder.eof or decoder.unused_data:
                 raise CatalogError("gzip 响应无效")
@@ -330,20 +315,41 @@ def _release_file_lock(lock_fd: int) -> None:
         os.close(lock_fd)
 
 
-def _validate_models(
+def _parse_remote(body: bytes, minimum_entries: int) -> dict[str, dict[str, Any]]:
+    try:
+        raw = json.loads(body.decode("utf-8"))
+    except (json.JSONDecodeError, RecursionError) as exc:
+        raise CatalogError("响应不是有效 JSON") from exc
+    if not isinstance(raw, Mapping):
+        raise CatalogError("目录根节点必须是对象")
+    return _validate_providers(prune_catalog(cast(Mapping[str, Any], raw)), minimum_entries=minimum_entries)
+
+
+def _read_snapshot() -> object:
+    try:
+        return json.loads(gzip.decompress(_SNAPSHOT_PATH.read_bytes()).decode("utf-8"))
+    except (OSError, EOFError, UnicodeDecodeError, json.JSONDecodeError, RecursionError) as exc:
+        raise CatalogError("随包 models.dev 快照损坏") from exc
+
+
+def _validate_providers(
     raw: object,
     *,
     minimum_entries: int,
 ) -> dict[str, dict[str, Any]]:
     if not isinstance(raw, Mapping):
         raise CatalogError("目录根节点必须是对象")
-    if not minimum_entries <= len(raw) <= _MAX_ENTRIES:
-        raise CatalogError(f"目录条目数异常: {len(raw)}")
+    entries = cast(Mapping[object, object], raw)
+    if not minimum_entries <= len(entries) <= _MAX_ENTRIES:
+        raise CatalogError(f"目录服务商数异常: {len(entries)}")
     result: dict[str, dict[str, Any]] = {}
-    for key, value in raw.items():
+    for key, value in entries.items():
         if not isinstance(key, str) or not key or not isinstance(value, Mapping):
-            raise CatalogError("目录包含无效条目")
-        result[key] = dict(value)
+            raise CatalogError("目录包含无效服务商")
+        item = dict(cast(Mapping[str, Any], value))
+        if not isinstance(item.get("models"), Mapping):
+            raise CatalogError(f"服务商 {key} 缺少模型表")
+        result[key] = item
     return result
 
 
@@ -351,13 +357,15 @@ def _enrich_model(
     model: DiscoveredModel,
     *,
     provider_id: str,
-    models: Mapping[str, Mapping[str, Any]],
+    endpoint: str,
+    providers: Providers,
     source: str,
 ) -> DiscoveredModel:
     resolved = resolve_catalog_capabilities(
         provider_id,
         model.model,
-        models=models,
+        providers=providers,
+        base_url=endpoint,
     )
     if resolved is None:
         return model
@@ -393,9 +401,9 @@ def _enrich_model(
     return replace(model, capabilities=capabilities, capability_sources=sources)
 
 
-def _models_bytes(models: Mapping[str, Mapping[str, Any]]) -> bytes:
+def _providers_bytes(providers: Providers) -> bytes:
     return json.dumps(
-        models,
+        providers,
         ensure_ascii=False,
         separators=(",", ":"),
         sort_keys=True,
@@ -403,4 +411,4 @@ def _models_bytes(models: Mapping[str, Mapping[str, Any]]) -> bytes:
 
 
 def _source(kind: str, digest: str) -> str:
-    return f"litellm-{kind}@sha256:{digest[:16]}"
+    return f"models.dev-{kind}@sha256:{digest[:16]}"
