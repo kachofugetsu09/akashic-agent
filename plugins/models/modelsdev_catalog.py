@@ -9,7 +9,7 @@ import logging
 import os
 import tempfile
 import zlib
-from dataclasses import replace
+from dataclasses import dataclass, replace
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Mapping, cast
@@ -93,17 +93,18 @@ class ModelsDevCapabilityCatalog:
         self,
     ) -> tuple[dict[str, dict[str, Any]], str]:
         bundled, bundled_digest = await asyncio.to_thread(self._load_bundled)
-        minimum_entries = (
-            self._minimum_entries
+        # 远端与缓存都不能比随包快照缩得太多：服务商数和模型数各不低于四分之三。
+        floor = (
+            _Floor(self._minimum_entries, 1)
             if self._minimum_entries is not None
-            else max(1, len(bundled) * 3 // 4)
+            else _Floor(max(1, len(bundled) * 3 // 4), max(1, _model_count(bundled) * 3 // 4))
         )
-        cached = await asyncio.to_thread(self._load_cache, minimum_entries=minimum_entries)
+        cached = await asyncio.to_thread(self._load_cache, floor=floor)
         etag = cached[2] if cached is not None else ""
         try:
             remote = await self._fetch_remote(
                 etag=etag,
-                minimum_entries=minimum_entries,
+                floor=floor,
             )
         except (httpx.HTTPError, CatalogError, UnicodeDecodeError) as exc:
             logger.warning("models.dev 能力目录刷新失败，使用本地快照: %s", exc)
@@ -128,7 +129,7 @@ class ModelsDevCapabilityCatalog:
         self,
         *,
         etag: str,
-        minimum_entries: int,
+        floor: _Floor,
     ) -> tuple[dict[str, dict[str, Any]], str, str] | None:
         headers = {
             "Accept": "application/json",
@@ -147,19 +148,19 @@ class ModelsDevCapabilityCatalog:
                     return None
                 response.raise_for_status()
                 body = await _read_limited_body(response)
-        providers = await asyncio.to_thread(_parse_remote, body, minimum_entries)
+        providers = await asyncio.to_thread(_parse_remote, body, floor)
         digest = hashlib.sha256(_providers_bytes(providers)).hexdigest()
         return providers, digest, response.headers.get("etag", "")
 
     def _load_bundled(self) -> tuple[dict[str, dict[str, Any]], str]:
         raw = self._bundled_providers if self._bundled_providers is not None else _read_snapshot()
-        providers = _validate_providers(raw, minimum_entries=1)
+        providers = _validate_providers(raw, floor=_Floor(1, 1))
         return providers, hashlib.sha256(_providers_bytes(providers)).hexdigest()
 
     def _load_cache(
         self,
         *,
-        minimum_entries: int,
+        floor: _Floor,
     ) -> tuple[dict[str, dict[str, Any]], str, str] | None:
         try:
             raw = json.loads(self._cache_path.read_text(encoding="utf-8"))
@@ -167,7 +168,7 @@ class ModelsDevCapabilityCatalog:
                 raise CatalogError("缓存 schema 不受支持")
             providers = _validate_providers(
                 raw.get("providers"),
-                minimum_entries=minimum_entries,
+                floor=floor,
             )
             digest = hashlib.sha256(_providers_bytes(providers)).hexdigest()
             if raw.get("sha256") != digest:
@@ -315,14 +316,28 @@ def _release_file_lock(lock_fd: int) -> None:
         os.close(lock_fd)
 
 
-def _parse_remote(body: bytes, minimum_entries: int) -> dict[str, dict[str, Any]]:
+@dataclass(frozen=True, slots=True)
+class _Floor:
+    providers: int
+    models: int
+
+
+def _parse_remote(body: bytes, floor: _Floor) -> dict[str, dict[str, Any]]:
     try:
         raw = json.loads(body.decode("utf-8"))
     except (json.JSONDecodeError, RecursionError) as exc:
         raise CatalogError("响应不是有效 JSON") from exc
     if not isinstance(raw, Mapping):
         raise CatalogError("目录根节点必须是对象")
-    return _validate_providers(prune_catalog(cast(Mapping[str, Any], raw)), minimum_entries=minimum_entries)
+    # 裁剪会把缺失或类型错误的模型表变成空表，所以先在原始响应上检查结构。
+    for key, value in cast(Mapping[str, Any], raw).items():
+        if not isinstance(value, Mapping) or not isinstance(cast(Mapping[str, Any], value).get("models"), Mapping):
+            raise CatalogError(f"服务商 {key} 缺少模型表")
+    return _validate_providers(prune_catalog(cast(Mapping[str, Any], raw)), floor=floor)
+
+
+def _model_count(providers: Mapping[str, Mapping[str, Any]]) -> int:
+    return sum(len(cast(Mapping[str, Any], item.get("models") or {})) for item in providers.values())
 
 
 def _read_snapshot() -> object:
@@ -335,12 +350,12 @@ def _read_snapshot() -> object:
 def _validate_providers(
     raw: object,
     *,
-    minimum_entries: int,
+    floor: _Floor,
 ) -> dict[str, dict[str, Any]]:
     if not isinstance(raw, Mapping):
         raise CatalogError("目录根节点必须是对象")
     entries = cast(Mapping[object, object], raw)
-    if not minimum_entries <= len(entries) <= _MAX_ENTRIES:
+    if not floor.providers <= len(entries) <= _MAX_ENTRIES:
         raise CatalogError(f"目录服务商数异常: {len(entries)}")
     result: dict[str, dict[str, Any]] = {}
     for key, value in entries.items():
@@ -350,6 +365,8 @@ def _validate_providers(
         if not isinstance(item.get("models"), Mapping):
             raise CatalogError(f"服务商 {key} 缺少模型表")
         result[key] = item
+    if _model_count(result) < floor.models:
+        raise CatalogError(f"目录模型数异常: {_model_count(result)}")
     return result
 
 
