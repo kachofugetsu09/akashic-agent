@@ -1230,10 +1230,11 @@ function registerModels(ctx, mount, catalogResource) {
           const modeChanged = mode !== savedMode();
           if (modeChanged) await attempt("模型范围", () => operations.setCatalogMode(mode));
           if (failures.length) throw new Error(failures.join("；"));
+          // 「全部」以服务端这次收进来的为准，不拿打开时的旧预览去删；只补手填或目录外的型号。
           const saved = savedModels();
           const savedKeys = new Set(saved.map((model) => key(model.kind, model.model)));
           const adding = [...picked].filter((item) => !savedKeys.has(item));
-          const removing = saved.filter((model) => !picked.has(key(model.kind, model.model)));
+          const removing = mode === "all" ? [] : saved.filter((model) => !picked.has(key(model.kind, model.model)));
           for (const [index, item] of adding.entries()) {
             const candidate = candidates.get(item);
             status.textContent = `正在验证 ${candidate.model}（${index + 1}/${adding.length}）…`;
@@ -1443,7 +1444,8 @@ function registerModels(ctx, mount, catalogResource) {
           },
           async setCatalogMode(mode) {
             if (!connection && !created) throw new Error("请先保存连接");
-            await command({type: "set_catalog_mode", expected_revision: catalog.revision, connection_id: connectionId, mode});
+            const receipt = await command({type: "set_catalog_mode", expected_revision: catalog.revision, connection_id: connectionId, mode});
+            if (mode === "all") await setDefaultIfMissing(receipt.revision);
           },
           async removeModel(modelId) {
             if ((!connection && !created) || !catalog.models.some((model) => model.id === modelId && model.connectionId === connectionId)) throw new Error("请选择此连接的现有模型");
