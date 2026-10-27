@@ -406,7 +406,7 @@ function registerModels(ctx, mount, catalogResource) {
         status.className = "settings-provider-status";
         status.dataset.status = "";
         status.innerHTML = "<i aria-hidden=\"true\"></i><span></span>";
-        head.append(connectionMark(entry), copy, quota, status);
+        head.append(connectionMark(entry, connection), copy, quota, status);
         const toggle = document.createElement("label");
         toggle.className = "settings-provider-switch";
         toggle.innerHTML = "<input type=\"checkbox\" role=\"switch\">";
@@ -570,7 +570,7 @@ function registerModels(ctx, mount, catalogResource) {
           const blind = current && !current.capabilities.inputModalities.includes("image");
           bindings.appendChild(bindingRow({
             label,
-            detail: blind ? `${detail}；它不能看图，发图需要在「插件 · 看图」里选一个能看图的模型` : detail,
+            detail: blind ? "它不能看图；要发图，请在「插件 · 看图」选一个能看图的模型" : detail,
             models: availableModels,
             value: bound,
             change(modelId) {
@@ -809,7 +809,8 @@ function registerModels(ctx, mount, catalogResource) {
             const connection = catalog.connections.find((item) => item.id === model.connectionId);
             const entry = providerEntries.find((candidate) => candidate.id === connection?.driverId);
             const caps = model.capabilities ?? {};
-            const icon = typeof entry?.connectionIcon === "string" && entry.connectionIcon.startsWith("data:image/svg+xml,") ? entry.connectionIcon : "";
+            const brand = connectionIcon(entry, connection);
+            const icon = typeof brand === "string" && brand.startsWith("data:image/svg+xml,") ? brand : "";
             return {
               id: model.id, provider: connection?.driverId ?? "", model: model.model,
               sourceId: model.connectionId, sourceName: connection?.name ?? "其他", icon,
@@ -1720,8 +1721,19 @@ function editTemplate(entry) {
   return templates.find((template) => template.id === entry.editTemplateId) ?? templates[0];
 }
 
-function connectionMark(entry) {
-  return providerMark({icon: entry?.connectionIcon});
+function connectionMark(entry, connection) {
+  return providerMark({icon: connectionIcon(entry, connection)});
+}
+
+// 同一驱动接多家服务（兼容 API）时，按连接地址的主机找到对应模板的品牌图标。
+function connectionIcon(entry, connection) {
+  const host = connection?.endpointHost;
+  const template = host ? entry?.templates?.find((item) => item.icon && endpointHost(item.defaults?.endpoint) === host) : null;
+  return template?.icon ?? entry?.connectionIcon;
+}
+
+function endpointHost(endpoint) {
+  try { return new URL(endpoint).hostname; } catch { return ""; }
 }
 
 // 有插件声明的品牌图标就用它；没有时用中性的服务器图标，不拿首字母充当标识。
