@@ -91,6 +91,8 @@
     color: var(--ak-ink-primary);
     box-shadow: var(--ak-elevation-overlay);
     overflow: hidden;
+    /* 设置是界面，不是模型输出：用界面字体，不继承正文的阅读衬线（design.md 字体分工）。 */
+    font-family: var(--ak-type-ui);
   }
 
   .shell-settings-dialog[open] {
