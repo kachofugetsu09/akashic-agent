@@ -11,6 +11,7 @@ from plugins.models.contract import (
     CONTENT_VIEWS as CONTENT_VIEWS,
     ContentTransform,
     PrepareContent,
+    ReadMessage,
     RenderedContent,
 )
 
@@ -73,10 +74,10 @@ class ContentViews:
             active = True
 
             def prepare(messages: tuple[Message, ...], source: str, tools: frozenset[str],
-                        seen: frozenset[tuple[str, int]]) -> ContentTransform:
+                        seen: frozenset[tuple[str, int]], read_message: ReadMessage) -> ContentTransform:
                 if not active:
                     raise RuntimeError("内容投影视图已关闭")
-                transforms = tuple(make(messages, source, tools, seen) for _, make, _ in sources)
+                transforms = tuple(make(messages, source, tools, seen, read_message) for _, make, _ in sources)
 
                 def render(message: Message, index: int) -> RenderedContent | None:
                     if not active:

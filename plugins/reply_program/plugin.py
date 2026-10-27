@@ -70,6 +70,7 @@ async def apply(ctx: Context) -> None:
         """新合同只把用途选择交给当前材料 provider。"""
         return await execute(ctx, task, reader, source,
                              check_admission=check_admission,
-                             materials=materials.bind(exclude_kinds=exclude_material_kinds), **options)
+                             materials=materials.bind(exclude_kinds=exclude_material_kinds),
+                             history_start=materials.history_start, **options)
 
     _ = await ctx.provide(REPLY_EXECUTE_V4, ctx.entrypoint(selected))

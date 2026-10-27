@@ -12,9 +12,9 @@ from agent.plugin_composition.model import FiberState
 from plugins.models.contract import ContextModel, ModelRequest
 from plugins.models.contract import BoundChatModel
 from agent.plugin_composition.tasks import child_task_context
-from plugins.ledger.contract import Message
+from plugins.ledger.contract import HistoryWindow, Message
 from plugins.context.contract import (
-    MaterialData, MaterialKind, Prepare, ReductionStatus, SummaryData, SummaryReducer,
+    HistoryStart, MaterialData, MaterialKind, Prepare, ReductionStatus, SummaryData, SummaryReducer,
 )
 
 from .api import (
@@ -36,6 +36,7 @@ class _Source:
     summary: bool
     context: Context
     reduce: SummaryReducer | None
+    history_start: HistoryStart | None = None
 
     @property
     def plugin_id(self) -> str:
@@ -187,6 +188,7 @@ class ContextMaterials:
         self, ctx: Context, *, name: str, prepare: Prepare,
         kind: MaterialKind, priority: int = 0, prompt: bool = False,
         reduce: SummaryReducer | None = None,
+        history_start: HistoryStart | None = None,
     ) -> Effect:
         """Register an independent owner; priority orders output, not execution.
 
@@ -218,14 +220,30 @@ class ContextMaterials:
                 raise PermissionError("只有获授的摘要材料 owner 能注册缩减")
             if not callable(reduce):
                 raise TypeError("摘要缩减必须可调用")
+        if history_start is not None:
+            if not summary:
+                raise PermissionError("只有获授的摘要材料 owner 能声明历史起点")
+            if not callable(history_start):
+                raise TypeError("历史起点必须可调用")
 
         def setup():
             if name in self._sources:
                 raise ValueError(f"材料 owner 重复: {name}")
-            self._sources[name] = _Source(prepare, priority, kind, prompt, summary, ctx, reduce)
+            self._sources[name] = _Source(prepare, priority, kind, prompt, summary, ctx, reduce, history_start)
             return lambda: self._sources.pop(name)
 
         return await ctx.effect(setup, label=f"materials:{name}")
+
+    async def history_start(self, session_id: str) -> HistoryWindow | None:
+        """摘要 owner 证明已连续覆盖的前缀；没有获授 owner 或它不声明时返回 None，调用方读完整历史。"""
+        if self._summary_source is None:
+            return None
+        source = self._sources.get(self._summary_source[0])
+        if (source is None or source.history_start is None or not source.summary
+                or source.context.fiber.state is not FiberState.ACTIVE):
+            return None
+        async with self._ctx.runtime_scope(), source.context.runtime_scope():
+            return await source.history_start(session_id)
 
     def binding_contributors(self) -> tuple[Context, ...]:
         """材料目录的实际注册者随同服务归档；来源仍在 bind 时选择排除项。"""

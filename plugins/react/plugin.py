@@ -13,6 +13,7 @@ from core.common.file_io import run_file_io
 from agent.plugin_composition import Context, RuntimeScope
 from agent.plugin_composition.tasks import interrupt_requested
 from plugins.ledger.contract import (
+    HistoryWindow,
     MessageConflict,
     MessageReader,
     MessageSnapshot,
@@ -524,8 +525,13 @@ async def react(
     check_start: StartCheck | None = None,
     before_step: Callable[[], Awaitable[None]] | None = None,
     aborted: Callable[[str], Awaitable[Message]] | None = None,
+    window: HistoryWindow | None = None,
 ) -> Message:
-    """先结算已提交调用，再读日志推理并逐条提交；没有 Turn、Attempt 或历史副本。"""
+    """先结算已提交调用，再读日志推理并逐条提交；没有 Turn、Attempt 或历史副本。
+
+    给出 window 时只读摘要覆盖之后的窗口；窗口失效（前缀版本变化、迟到回执）时账本改给完整历史，
+    组装按快照自身的起点理解。
+    """
     if type(max_steps) is not int or max_steps < 0:
         raise ValueError("模型请求上限必须是非负整数")
     if type(max_parallel_calls) is not int or max_parallel_calls < 1:
@@ -538,7 +544,7 @@ async def react(
         mark = partial(log_timing, session_id=reader.session_id, source=writer.source, operation_id=operation_id)
         mark("react.begin")
         # 1. 放弃区保持串行结算；未闭段里连续的 parallel 调用才重叠。
-        initial = await reader.committed_snapshot_async()
+        initial = await reader.committed_window_async(window)
         head_before = initial.through_seq
         history.update(initial)
         pending, abandoned = history.open_calls()
@@ -547,7 +553,7 @@ async def react(
             await tools.settle_abandoned(call)
         if abandoned:
             # 放弃结算已追加事实，重新读取；普通路径复用同一次扫描的待执行调用。
-            history.update(await reader.committed_snapshot_async())
+            history.update(await reader.committed_window_async(window))
             pending, _ = history.open_calls()
         await _settle_pending(
             reader, tools, pending, max_parallel_calls, capture_scope,
@@ -557,7 +563,7 @@ async def react(
         if before_step is not None:
             await before_step()
         if pending or abandoned or reader.head() != head_before:
-            snapshot = await reader.committed_snapshot_async()
+            snapshot = await reader.committed_window_async(window)
         else:
             # 无结算写入且 head 未动：进入结算前的固定前缀仍然有效。
             snapshot = initial

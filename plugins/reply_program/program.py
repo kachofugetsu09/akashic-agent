@@ -18,9 +18,9 @@ from plugins.models.contract import (
     ChatModels,
 )
 from agent.plugin_composition.tasks import Task
-from plugins.context.contract import MaterialView, ReductionStatus
-from plugins.models.contract import PrepareContent
-from plugins.ledger.contract import ContentPart, Control, Input, Message, Output
+from plugins.context.contract import MaterialView, ReductionStatus, summary_due
+from plugins.models.contract import ContentTransform, PrepareContent, ReadMessage
+from plugins.ledger.contract import ContentPart, Control, HistoryWindow, Input, Message, MessageSnapshot, Output
 
 from plugins.sources.contract import (
     SourceGuard,
@@ -49,6 +49,7 @@ async def run_reply(
     react: Callable[..., Awaitable[Message]],
     materials: AbstractAsyncContextManager[MaterialView],
     turn_projection: TurnProjection,
+    history_start: Callable[[str], Awaitable[HistoryWindow | None]] | None = None,
     render_content: ContentRenderer | None = None,
     prepare_content: PrepareContent | None = None,
     dynamic_content_kinds: frozenset[str] | None = frozenset(),
@@ -71,8 +72,6 @@ async def run_reply(
     """普通组合拥有本次程序资源，Source 不必同步签发模型或内容 writer。"""
     mark = partial(log_timing, session_id=reader.session_id, source=source)
     mark("reply.begin")
-    # 请求只看可见历史：其他来源未完成的轮次不进入请求；own 时只看本来源，不带会话摘要也不压缩整个会话。
-    context = RequestHistory(context, source, own=history == "own")
     if tool_names is not None:
         if tool_view is not None or fixed_bindings is None:
             raise ValueError("旧工具名称只可核对原固定 binding")
@@ -109,7 +108,13 @@ async def run_reply(
     # Turn 投影与 react 共用同一份已提交前缀：history_view 持有共享读面直到
     # react 自己的快照接手，历史只解码一次。投影与成员提取是不受调用方约束的
     # 全量扫描，必须留在可排空 worker 内，避免长历史时占住事件循环。
-    history_view = await reader.committed_snapshot_async(through_seq=through_seq)
+    # 摘要已连续覆盖的前缀不进入请求，只读其后的窗口；own 不带会话摘要，仍读完整历史。
+    window: HistoryWindow | None = None
+    if history != "own" and history_start is not None:
+        covered = await history_start(reader.session_id)
+        if covered is not None:
+            window = await run_file_io(lambda: _clamp_window(reader, source, covered, through_seq))
+    history_view = await reader.committed_window_async(window, through_seq=through_seq)
     opened = await run_file_io(lambda: read_open(history_view))
     chosen = selection.read(opened)
     if chosen is None:
@@ -117,7 +122,9 @@ async def run_reply(
     from_seq = min((message.seq for message in opened), default=source_head + 1)
     keep_input_ids = tuple(item.message_id for item in opened if isinstance(item.body, Input))
     del opened
-    mark("reply.selection.end")
+    mark("reply.selection.end", counts={"messages": len(history_view)})
+    # 请求只看可见历史：其他来源未完成的轮次不进入请求；own 时只看本来源，不带会话摘要也不压缩整个会话。
+    context = RequestHistory(context, source, own=history == "own")
     async with (
         cleanup(reader, source, from_seq, task=task, drain=tools.drain_calls),
         content.bind() as view,
@@ -170,7 +177,8 @@ async def run_reply(
             model, source=source, render_content=render if render_content is None else render_content,
             tool_name=menu.name, read_call=read_call, check_summary=context.check_summary, keep_input_ids=keep_input_ids,
             dynamic_content_kinds=dynamic_content_kinds,
-            **({"prepare_content": prepare_content, "tool_names": menu.names} if prepare_content is not None else {}),
+            **({"prepare_content": partial(_bind_read, prepare_content, reader.get), "tool_names": menu.names}
+               if prepare_content is not None else {}),
         )
 
         # 2. 内容协议提示与解码来自同一 view；Context 仍只接收已取得的材料。
@@ -210,6 +218,12 @@ async def run_reply(
             model: BoundChatModel, projection: ContextModel, *, source: str, force: bool,
             on_status: ReductionStatus | None = None, summary_limit: int | None = None,
         ) -> SummaryData | None:
+            # 压缩要在完整历史上选择覆盖范围；窗口只在确实会压缩时换成同一上界的完整读面。
+            if window is not None and summary_due(projection.estimate(request), projection.context_window, force=force):
+                full = tuple(await reader.committed_snapshot_async(through_seq=snapshot[-1].seq))
+                if summary_limit is not None:
+                    summary_limit += len(full) - len(snapshot)
+                snapshot = full
             # 未完成的其他来源仍不进入摘要；覆盖按真实消息身份记录，不再阻挡后续已结算批次。
             hidden = hidden_indexes(snapshot, source)
             if summary_limit is not None:
@@ -232,10 +246,34 @@ async def run_reply(
                 check_start=check,
                 before_step=before_step,
                 aborted=aborted,
+                window=window,
             )
         finally:
             output.expire()
             controls.expire()
+
+
+# 摘要覆盖的前缀之外，窗口还要容下本来源进行中的一轮和最近一条输入（恢复、reminder 与召回都从这里读）。
+# 窗口内本来源的 abandon 可能放弃窗口前仍缺回执的调用，结算要看完整历史，这时不用窗口。
+def _clamp_window(reader: MessageReader, source: str, covered: HistoryWindow, through_seq: int) -> HistoryWindow | None:
+    finished = reader.latest_finished_output_seq(source, after_seq=-1, through_seq=through_seq)
+    latest_input = reader.latest_input_seq(source, through_seq=through_seq)
+    after = min(covered.after_seq, -1 if finished is None else finished,
+                through_seq if latest_input is None else latest_input - 1)
+    if after < 0:
+        return None
+    abandoned = reader.scan_controls(
+        lambda rows: any(control.action == "abandon" for _, control in rows),
+        source=source, after_seq=after, through_seq=through_seq,
+    )
+    return None if abandoned else HistoryWindow(after, covered.revision)
+
+
+def _bind_read(
+    prepare: PrepareContent, read_message: ReadMessage, messages: tuple[Message, ...], source: str,
+    tools: frozenset[str], seen: frozenset[tuple[str, int]],
+) -> ContentTransform:
+    return prepare(messages, source, tools, seen, read_message)
 
 
 def own_messages(messages: Sequence[Message], source: str) -> tuple[Message, ...]:
@@ -281,8 +319,13 @@ class RequestHistory:
     def _view(self, snapshot: Sequence[Message]) -> Sequence[Message]:
         return own_messages(snapshot, self._source) if self._own else visible_messages(snapshot, self._source)
 
+    # 窗口起点取自快照本身：账本在窗口失效时改给完整历史，组装随之按完整历史理解。
     def build(self, snapshot: Sequence[Message], **options: Any) -> ModelRequest:
-        return self._context.build(self._view(snapshot), **options)
+        return self._context.build(self._view(snapshot), history_after=_after(snapshot), **options)
 
     def build_attempt(self, snapshot: Sequence[Message], **options: Any) -> tuple[ModelRequest, str | None]:
-        return self._context.build_attempt(self._view(snapshot), **options)
+        return self._context.build_attempt(self._view(snapshot), history_after=_after(snapshot), **options)
+
+
+def _after(snapshot: Sequence[Message]) -> int:
+    return snapshot.after_seq if isinstance(snapshot, MessageSnapshot) else -1

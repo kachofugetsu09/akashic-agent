@@ -27,6 +27,7 @@ from core.common.file_io import run_file_io
 from plugins.ledger.contract import (
     MessageReader as Reader, MessageWriter as Writer, OwnerStore as Store,
     OwnerTransaction as Transaction, PreparedAppend as Append,
+    HistoryWindow,
     InvalidPage,
     MessageConflict,
     MessagePage,
@@ -72,6 +73,12 @@ _SAVED_BINDINGS_LIMIT = 256
 # 共享读面的短暂保留：同一轮先后到达的全史读者（改动记录、回复选择）共用一次解码；
 # 只留最近一个会话，到期即释放，峰值不变，常驻只在活跃的几秒内增加。
 _VIEW_GRACE_SECONDS = 10.0
+# 回复窗口受上下文容量约束（摘要之后通常几百条）：不超过这个条数的读面跨轮保留，
+# 下一轮只补新尾部，闲置后也不必回盘重读；只留最近一个会话，约十几 MB。
+_VIEW_KEEP_MESSAGES = 2048
+_VIEW_KEEP_SECONDS = 1800.0
+# 摘要边界前移后，起点之前超过这么多条的旧部分不再随读面常驻：复制窗口段到新前缀，不重新解码。
+_VIEW_REBASE_MESSAGES = 512
 MESSAGE_BODY_KIND_INDEX_SCHEMA = """CREATE INDEX IF NOT EXISTS message_source_kind_seq
     ON messages (session_key, source, json_extract(body, '$.kind'), seq,
                  json_extract(body, '$.finish'));"""
@@ -777,7 +784,7 @@ class MessageLog:
                 prefix = self._message_views.get(message.session_id)
                 if prefix is None:
                     continue
-                expected = prefix.seqs[-1] + 1 if prefix.seqs else 0
+                expected = (prefix.seqs[-1] if prefix.seqs else prefix.after) + 1
                 if message.seq == expected:
                     prefix.messages.append(message)
                     prefix.seqs.append(message.seq)
@@ -967,7 +974,8 @@ class MessageLog:
         previous = self._retained_view
         if previous is not None:
             previous[1].cancel()
-        timer = threading.Timer(_VIEW_GRACE_SECONDS, self._release_view)
+        grace = _VIEW_KEEP_SECONDS if len(prefix.messages) <= _VIEW_KEEP_MESSAGES else _VIEW_GRACE_SECONDS
+        timer = threading.Timer(grace, self._release_view)
         timer.daemon = True
         self._retained_view = (prefix, timer)
         timer.start()
@@ -1269,11 +1277,15 @@ class MessageCatalog:
 
 
 class _MessagePrefix:
-    """一个日志实例内可追加的已提交前缀；旧快照用固定长度隔离后续追加。"""
+    """一个日志实例内可追加的已提交前缀；旧快照用固定长度隔离后续追加。
 
-    def __init__(self, session_id: str, revision: int | None):
+    after 是前缀起点：只含 seq > after 的消息，完整前缀为 -1。
+    """
+
+    def __init__(self, session_id: str, revision: int | None, after: int = -1):
         self.session_id = session_id
         self.revision = revision
+        self.after = after
         self.messages: list[Message] = []
         self.seqs: list[int] = []
 
@@ -1287,20 +1299,23 @@ class MessageReader:
         """创建本次程序的只读视图，旧前缀复用解码结果，后续读取追赶新增消息。"""
         return _IncrementalMessageReader(self._log, self._session_id)
 
-    def committed_snapshot(self, *, through_seq: int | None = None) -> MessageSnapshot:
+    def committed_snapshot(self, *, through_seq: int | None = None, after_seq: int = -1) -> MessageSnapshot:
         """从同一 SQL 快照核对上界与前缀版本，只加载新尾部。
 
+        after_seq 给出窗口起点，只读取并返回 seq > after_seq 的消息；起点不晚于它的共享前缀可直接复用。
         已有读写事务使用自己的真实 SQL 视图，不发布或复用共享前缀。
         旧快照保持固定内容；最后一个消费者释放后，日志不保留该会话正文。
         """
+        if after_seq < -1:
+            raise ValueError("窗口起点不能小于 -1")
         log = self._log
         # 1. 显式事务保留原读面，包括调用者尚未提交的写入。
         if log._reads.current is not None:
-            return self._transaction_snapshot(through_seq)
+            return self._transaction_snapshot(through_seq, after_seq)
         # 冷读之间仍串行，后到者复用先到者填好的前缀；提交方只争 _view_lock 的短临界区。
         with log._fill_lock, log._read() as connection:
             if connection is log._writer_connection:
-                return self._transaction_snapshot(through_seq)
+                return self._transaction_snapshot(through_seq, after_seq)
             # 2. 两项事实来自同一 RO 事务，外部追加和前缀改写都可见。
             revision = None if not log._has_prefix_revision else connection.execute(
                 "SELECT revision FROM message_prefix_revision WHERE singleton=1"
@@ -1309,9 +1324,16 @@ class MessageReader:
             upper = head if through_seq is None else min(head, through_seq)
             with log._view_lock:
                 prefix = log._message_views.get(self._session_id)
-                if prefix is None or revision is None or prefix.revision != revision:
-                    prefix = _MessagePrefix(self._session_id, revision)
-                previous = prefix.seqs[-1] if prefix.seqs else -1
+                if (prefix is None or revision is None or prefix.revision != revision
+                        or prefix.after > after_seq):
+                    prefix = _MessagePrefix(self._session_id, revision, after_seq)
+                elif (start := bisect_right(prefix.seqs, after_seq)) > _VIEW_REBASE_MESSAGES:
+                    # 旧快照仍持有原前缀；新前缀只引用窗口段的已解码消息。
+                    rebased = _MessagePrefix(self._session_id, revision, after_seq)
+                    rebased.messages.extend(prefix.messages[start:])
+                    rebased.seqs.extend(prefix.seqs[start:])
+                    prefix = rebased
+                previous = prefix.seqs[-1] if prefix.seqs else prefix.after
             # 3. 长会话冷扫描不持 _view_lock；填充段由前缀自身持有，不回填解码缓存。
             tail = MessageReader.scan(
                 self, tuple, after_seq=previous, through_seq=upper, _cache=False,
@@ -1325,23 +1347,42 @@ class MessageReader:
                 # 5. 只有真实提交后的读取进入共享读面，不依赖 observer 唤醒。
                 log._message_views[self._session_id] = prefix
                 log._retain_view(prefix)
-                return MessageSnapshot(prefix, bisect_right(prefix.seqs, upper), upper)
+                # 起点晚于上界（窗口倒置）时是空窗口，与冷读同一区间一致。
+                end = bisect_right(prefix.seqs, upper)
+                return MessageSnapshot(prefix, end, upper, after_seq, min(end, bisect_right(prefix.seqs, after_seq)))
 
-    def _transaction_snapshot(self, through_seq: int | None) -> MessageSnapshot:
+    def _transaction_snapshot(self, through_seq: int | None, after_seq: int = -1) -> MessageSnapshot:
         """事务内快照独占前缀，不能为之后的已提交读取签发复用证明。"""
-        messages = MessageReader.scan(self, tuple, through_seq=through_seq)
-        prefix = _MessagePrefix(self._session_id, None)
+        messages = MessageReader.scan(self, tuple, after_seq=after_seq, through_seq=through_seq)
+        prefix = _MessagePrefix(self._session_id, None, after_seq)
         prefix.messages.extend(messages)
         prefix.seqs.extend(message.seq for message in messages)
-        return MessageSnapshot(prefix, len(messages), messages[-1].seq if messages else -1)
+        return MessageSnapshot(prefix, len(messages), messages[-1].seq if messages else -1, after_seq)
 
-    async def committed_snapshot_async(self, *, through_seq: int | None = None) -> MessageSnapshot:
+    def committed_window(self, window: HistoryWindow | None, *, through_seq: int | None = None) -> MessageSnapshot:
+        """窗口只在签发它的前缀版本上成立，且窗口内回执的调用都须在窗口内；否则读完整历史。"""
+        if window is None or window.after_seq < 0 or window.revision is None:
+            return self.committed_snapshot(through_seq=through_seq)
+        snapshot = self.committed_snapshot(through_seq=through_seq, after_seq=window.after_seq)
+        if snapshot.prefix_revision == window.revision and not _late_results(snapshot):
+            return snapshot
+        return self.committed_snapshot(through_seq=through_seq)
+
+    async def committed_window_async(
+        self, window: HistoryWindow | None, *, through_seq: int | None = None,
+    ) -> MessageSnapshot:
+        self._check_async_snapshot()
+        return await run_file_io(lambda: self.committed_window(window, through_seq=through_seq))
+
+    async def committed_snapshot_async(
+        self, *, through_seq: int | None = None, after_seq: int = -1,
+    ) -> MessageSnapshot:
         """在线程内签发一次固定读面；取消先排空实际读取。"""
         self._check_async_snapshot()
         # 热前缀只证明「本地 head 距前缀尾部不超过若干条」，不验证数据库 revision；外部
         # 改写旧行后仍会在新 revision 上重读整段历史。签发一律留在可排空 worker 内，
         # 否则失效重读会把历史级扫描放回事件循环。
-        return await run_file_io(lambda: self.committed_snapshot(through_seq=through_seq))
+        return await run_file_io(lambda: self.committed_snapshot(through_seq=through_seq, after_seq=after_seq))
 
     def _check_async_snapshot(self) -> None:
         """异步读取不得离开调用线程自己的未提交事务。"""
@@ -1479,6 +1520,39 @@ class MessageReader:
                 (self._session_id, source, through_seq),
             ).fetchone()
             return None if row is None else self._log._decode(row)
+
+    def covered_window(self, message_ids: Sequence[str]) -> HistoryWindow:
+        """按 seq 顺序给出的身份从会话开头连续覆盖到的最后一条 seq（首条就不属于时为 -1），
+        与账本前缀版本取自同一读事务；不解码正文。"""
+        log = self._log
+        with log._read() as connection:
+            revision = None if not log._has_prefix_revision else connection.execute(
+                "SELECT revision FROM message_prefix_revision WHERE singleton=1"
+            ).fetchone()[0]
+            return HistoryWindow(self._covered_through(connection, message_ids), revision)
+
+    def _covered_through(self, connection: sqlite3.Connection, message_ids: Sequence[str]) -> int:
+        if not message_ids:
+            return -1
+        # 1. 常见无空洞：身份都在本会话、且末位之前恰好就是这些消息，集合相等即连续覆盖；只走索引。
+        count, last = connection.execute(
+            "SELECT COUNT(*), MAX(seq) FROM messages WHERE session_key=? "
+            "AND id IN (SELECT value FROM json_each(?))", (self._session_id, json.dumps(list(message_ids))),
+        ).fetchone()
+        if count == len(message_ids) and connection.execute(
+            "SELECT COUNT(*) FROM messages WHERE session_key=? AND seq<=?", (self._session_id, last),
+        ).fetchone()[0] == count:
+            return last
+        # 2. 有空洞或身份被改写时按 seq 找到第一条未覆盖消息。
+        covered = frozenset(message_ids)
+        through = -1
+        for identity, seq in connection.execute(
+            "SELECT id, seq FROM messages WHERE session_key=? ORDER BY seq", (self._session_id,),
+        ):
+            if identity not in covered:
+                break
+            through = seq
+        return through
 
     def latest_input_seq(self, source: str, *, through_seq: int) -> int | None:
         """Read the last Input position without loading its content or metadata."""
@@ -2524,6 +2598,13 @@ def _timestamp(raw: str, label: str) -> datetime:
     except (ValueError, TypeError) as error:
         raise ValueError(f"{label} 时间无效: {raw!r}") from error
     return value
+
+
+# 回执的调用落在窗口之前（被放弃调用的迟到回执）：投影要看到调用与放弃，窗口不自洽。
+def _late_results(messages: Sequence[Message]) -> bool:
+    calls = {message.message_id for message in messages if isinstance(message.body, Output)}
+    return any(isinstance(message.body, ToolResult) and message.body.call_ref.message_id not in calls
+               for message in messages)
 
 
 def _session_entry(row: sqlite3.Row) -> SessionEntry:
