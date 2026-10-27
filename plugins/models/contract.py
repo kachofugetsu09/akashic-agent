@@ -541,7 +541,13 @@ class RenderedContent:
 ContentTransform = Callable[[Message, int], RenderedContent | None]
 
 
-PrepareContent = Callable[[tuple[Message, ...], str, frozenset[str], frozenset[tuple[str, int]]], ContentTransform]
+ReadMessage = Callable[[str], Message | None]
+# 贡献者签名：read_message 取当前快照之外的同会话消息（窗口读面省略了摘要覆盖的前缀）。
+PrepareContent = Callable[
+    [tuple[Message, ...], str, frozenset[str], frozenset[tuple[str, int]], ReadMessage], ContentTransform,
+]
+# 投影收到的版本：调用方已绑定本会话的读取口。
+BoundPrepareContent = Callable[[tuple[Message, ...], str, frozenset[str], frozenset[tuple[str, int]]], ContentTransform]
 
 
 class ContentViews(Protocol):
@@ -650,7 +656,7 @@ class ModelProjections(Protocol):
         read_call: CallReader,
         check_summary: Callable[[ContentPart], ContentReferences],
         keep_input_ids: tuple[str, ...] = (),
-        prepare_content: PrepareContent | None = None,
+        prepare_content: BoundPrepareContent | None = None,
         tool_names: frozenset[str] = frozenset(),
         dynamic_content_kinds: frozenset[str] | None = frozenset(),
     ) -> MessageProjection: ...

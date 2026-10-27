@@ -7,7 +7,7 @@ from contextlib import AbstractContextManager
 from typing import Protocol
 
 from agent.plugin_composition import RuntimeScope, ServiceKey
-from plugins.ledger.contract import MessageReader, MessageWriter, OwnerStore
+from plugins.ledger.contract import HistoryWindow, MessageReader, MessageWriter, OwnerStore
 from plugins.models.contract import StreamCallback
 from plugins.models.contract import BoundChatModel
 from plugins.ledger.contract import Message
@@ -44,6 +44,7 @@ class OrderedReact(Protocol):
         max_parallel_calls: int = 1,
         before_step: Callable[[], Awaitable[None]] | None = None,
         aborted: Callable[[str], Awaitable[Message]] | None = None,
+        window: HistoryWindow | None = None,
     ) -> Message: ...
 
 

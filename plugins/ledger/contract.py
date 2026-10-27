@@ -631,8 +631,11 @@ class MessageSnapshot(Sequence[Message]):
     """固定消息读面；只提供消息和前缀关系，不持有数据库或写入能力。"""
 
     _prefix: _MessagePrefix
-    _count: int
+    _end: int
     through_seq: int
+    # 窗口读面：共享前缀中 seq > after_seq 的部分从 _start 开始；完整读面为 -1 与 0。
+    after_seq: int = -1
+    _start: int = 0
 
     @property
     def session_id(self) -> str:
@@ -643,14 +646,15 @@ class MessageSnapshot(Sequence[Message]):
         return self._prefix.revision
 
     def extends(self, previous: MessageSnapshot) -> bool:
-        """相同存储读面只追加；截短或前缀变化不能复用旧投影。"""
-        return self._prefix is previous._prefix and self._count >= previous._count
+        """相同存储读面与窗口起点只追加；截短、换窗口或前缀变化不能复用旧投影。"""
+        return (self._prefix is previous._prefix and self._start == previous._start
+                and self._end >= previous._end)
 
     def __len__(self) -> int:
-        return self._count
+        return self._end - self._start
 
     def __iter__(self) -> Iterator[Message]:
-        return islice(self._prefix.messages, self._count)
+        return islice(self._prefix.messages, self._start, self._end)
 
     @overload
     def __getitem__(self, index: int) -> Message: ...
@@ -659,12 +663,13 @@ class MessageSnapshot(Sequence[Message]):
     def __getitem__(self, index: slice) -> tuple[Message, ...]: ...
 
     def __getitem__(self, index: int | slice) -> Message | tuple[Message, ...]:
+        messages = self._prefix.messages
         if isinstance(index, slice):
-            return tuple(self._prefix.messages[i] for i in range(*index.indices(self._count)))
-        position = index + self._count if index < 0 else index
-        if not 0 <= position < self._count:
+            return tuple(messages[self._start + i] for i in range(*index.indices(len(self))))
+        position = index + len(self) if index < 0 else index
+        if not 0 <= position < len(self):
             raise IndexError(index)
-        return self._prefix.messages[position]
+        return messages[self._start + position]
 
 
 @dataclass(frozen=True, slots=True, weakref_slot=True)
@@ -720,13 +725,31 @@ class MessageCatalog(Protocol):
     ) -> AsyncGenerator[Mapping[str, int]]: ...
 
 
+@dataclass(frozen=True, slots=True)
+class HistoryWindow:
+    """摘要连续覆盖前缀之后的读取起点；只在签发它的账本前缀版本上成立。"""
+
+    after_seq: int
+    revision: int | None
+
+
 @runtime_checkable
 class MessageReader(Protocol):
     def incremental(self) -> MessageReader: ...
 
-    def committed_snapshot(self, *, through_seq: int | None = None) -> MessageSnapshot: ...
+    def committed_snapshot(self, *, through_seq: int | None = None, after_seq: int = -1) -> MessageSnapshot: ...
 
-    async def committed_snapshot_async(self, *, through_seq: int | None = None) -> MessageSnapshot: ...
+    async def committed_snapshot_async(
+        self, *, through_seq: int | None = None, after_seq: int = -1,
+    ) -> MessageSnapshot: ...
+
+    def committed_window(self, window: HistoryWindow | None, *, through_seq: int | None = None) -> MessageSnapshot: ...
+
+    async def committed_window_async(
+        self, window: HistoryWindow | None, *, through_seq: int | None = None,
+    ) -> MessageSnapshot: ...
+
+    def covered_window(self, message_ids: Sequence[str]) -> HistoryWindow: ...
 
     async def read_async(self, consume: Callable[[MessageReader], _T]) -> _T: ...
 

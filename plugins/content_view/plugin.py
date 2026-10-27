@@ -10,7 +10,7 @@ from pydantic import BaseModel, ConfigDict, Field, ValidationError
 from agent.plugin_composition import Context
 from plugins.ledger.contract import ContentPart, ContentReferences, Message, ToolResult, json_value
 from plugins.content.contract import CONTENT
-from plugins.models.contract import CONTENT_VIEWS, ContentTransform, RenderedContent
+from plugins.models.contract import CONTENT_VIEWS, ContentTransform, ReadMessage, RenderedContent
 from plugins.tools.contract import TOOLS, CallSource, ProviderBoundTool, Result
 from plugins.ui.contract import ToolResultDisplayProvider
 from agent.plugin_composition import ServiceKey
@@ -132,7 +132,7 @@ class ReadContent:
 
 
 def prepare_view(messages: tuple[Message, ...], source: str, tools: frozenset[str],
-                 seen: frozenset[tuple[str, int]]) -> ContentTransform:
+                 seen: frozenset[tuple[str, int]], read_message: ReadMessage) -> ContentTransform:
     """只展开回读引用；工具文本始终由基础投影完整展示。"""
     by_id = {message.message_id: message for message in messages}
 
@@ -142,6 +142,11 @@ def prepare_view(messages: tuple[Message, ...], source: str, tools: frozenset[st
         part = message.body.parts[index]
         if part.kind == READ_KIND:
             ref = ReadReference.model_validate(json_value(part.value))
+            # 窗口读面不含摘要覆盖的前缀；回读目标在窗口之外时按身份单独读取。
+            if ref.message_id not in by_id:
+                target = read_message(ref.message_id)
+                if target is not None:
+                    by_id[ref.message_id] = target
             text = read_text(by_id, ref)
             return RenderedContent(({"type": "text", "text": text},), complete=True)
         return None

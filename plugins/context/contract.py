@@ -9,7 +9,7 @@ from typing import Any, Literal, Protocol
 from agent.plugin_composition import Context, Effect, ServiceKey
 from plugins.models.contract import ModelRequest
 from plugins.models.contract import BoundChatModel
-from plugins.ledger.contract import ContentPart, ContentReferences, Message
+from plugins.ledger.contract import ContentPart, ContentReferences, HistoryWindow, Message
 from plugins.models.contract import ContextModel
 
 MaterialKind = Literal["context", "recall", "profile"]
@@ -18,6 +18,8 @@ SummaryData = Mapping[str, object]
 ReductionStatus = Callable[[str, bool], Awaitable[None]]
 # 回调第二个参数声明诊断是否随本次 Output 保留；False 只更新临时进度。
 Prepare = Callable[[tuple[Message, ...], str], Awaitable[MaterialData]]
+# 摘要 owner 证明已连续覆盖的前缀（绑定账本前缀版本）；请求历史可只读其后的窗口，没有可证明的覆盖时为 None。
+HistoryStart = Callable[[str], Awaitable[HistoryWindow | None]]
 
 
 class SummaryReducer(Protocol):
@@ -59,6 +61,7 @@ class ContextBuilder(Protocol):
         max_output_tokens: int,
         window_start: str | None = None,
         current_reminder_input_id: str | None = None,
+        history_after: int = -1,
     ) -> ModelRequest: ...
     def build_attempt(
         self,
@@ -70,6 +73,7 @@ class ContextBuilder(Protocol):
         max_output_tokens: int,
         window_start: str | None = None,
         current_reminder_input_id: str | None = None,
+        history_after: int = -1,
     ) -> tuple[ModelRequest, str | None]: ...
 
 
@@ -110,10 +114,12 @@ class ContextMaterialsV4(Protocol):
         priority: int = 0,
         prompt: bool = False,
         reduce: SummaryReducer | None = None,
+        history_start: HistoryStart | None = None,
     ) -> Effect: ...
     def bind(
         self, *, exclude_kinds: frozenset[MaterialKind] = frozenset()
     ) -> AbstractAsyncContextManager[MaterialView]: ...
+    async def history_start(self, session_id: str) -> HistoryWindow | None: ...
 
 
 # 参考 Pi 的 reserveTokens：context_window 是输入上限，容量判断只为本次回复留有限余量，
@@ -123,6 +129,14 @@ OUTPUT_RESERVE_TOKENS = 16_384
 
 def output_reserve(max_output_tokens: int, context_window: int) -> int:
     return min(max_output_tokens or OUTPUT_RESERVE_TOKENS, OUTPUT_RESERVE_TOKENS, context_window // 4)
+
+
+# 请求估算达到窗口的这一比例（或 provider 已拒绝）时摘要 owner 才会压缩；低于它的缩减是空操作。
+SUMMARY_SOFT_LIMIT = 0.74
+
+
+def summary_due(estimated: int, context_window: int | None, *, force: bool) -> bool:
+    return context_window is not None and (force or estimated >= int(context_window * SUMMARY_SOFT_LIMIT))
 
 
 CONTEXT = ServiceKey[ContextBuilder]("context.v2")

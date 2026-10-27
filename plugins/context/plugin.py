@@ -62,8 +62,12 @@ class Config(BaseModel):
         return value
 
 
-def _summary_ids(snapshot: Sequence[Message], summary: Summary | None) -> frozenset[str]:
-    """摘要只代替声明覆盖的消息；空洞保持原文，并校验工具配对不被切开。"""
+def _summary_ids(snapshot: Sequence[Message], summary: Summary | None, history_after: int = -1) -> frozenset[str]:
+    """摘要只代替声明覆盖的消息；空洞保持原文，并校验工具配对不被切开。
+
+    history_after >= 0 时快照是窗口读面：seq 不超过它的消息已省略，由摘要 owner 证明全部被覆盖；
+    窗口内的覆盖与原文判定和完整读面相同。
+    """
     # 1. 在快照输入边界拒绝混合 Session、重排与重复身份。
     if snapshot and type(snapshot) is not MessageSnapshot:
         session = snapshot[0].session_id
@@ -74,9 +78,18 @@ def _summary_ids(snapshot: Sequence[Message], summary: Summary | None) -> frozen
         if len({item.message_id for item in snapshot}) != len(snapshot):
             raise ValueError("Context 快照消息身份重复")
     if summary is None:
+        if history_after >= 0:
+            raise ValueError("窗口读面需要覆盖省略前缀的摘要")
         return frozenset()
-    _ = summary_indexes(snapshot, summary.source_message_ids)
     covered = frozenset(summary.source_message_ids)
+    if history_after < 0:
+        _ = summary_indexes(snapshot, summary.source_message_ids)
+    else:
+        # 窗口内仍可能有被覆盖的消息（空洞之后或更新一代摘要）；它们保持摘要声明的顺序。
+        present = tuple(message.message_id for message in snapshot if message.message_id in covered)
+        visible = frozenset(present)
+        if tuple(identity for identity in summary.source_message_ids if identity in visible) != present:
+            raise ValueError("摘要来源必须按实际消息顺序排列且不能重复")
     # 2. 覆盖与原文两边都必须保留完整工具配对；明确 abandon 的迟到结果沿原规则处理。
     pending: dict[CallRef, Message] = {}
     for message in snapshot:
@@ -145,6 +158,7 @@ class ContextBuilder:
         max_output_tokens: int,
         window_start: str | None = None,
         current_reminder_input_id: str | None = None,
+        history_after: int = -1,
     ) -> ModelRequest:
         """纯函数式组装；容量不足明确报错，由调用程序取得更小视图。"""
         if type(max_output_tokens) is not int or max_output_tokens < 0:
@@ -154,7 +168,7 @@ class ContextBuilder:
         # 存储已证明 Session、身份和顺序；普通调用输入仍在本边界固定并校验。
         if type(snapshot) is not MessageSnapshot:
             snapshot = tuple(snapshot)
-        covered = _summary_ids(snapshot, decoded_materials.summary)
+        covered = _summary_ids(snapshot, decoded_materials.summary, history_after)
         reminder = self._reminder_content(decoded_materials)
         if reminder is None:
             current_reminder_input_id = None
@@ -250,13 +264,14 @@ class ContextBuilder:
         max_output_tokens: int,
         window_start: str | None = None,
         current_reminder_input_id: str | None = None,
+        history_after: int = -1,
     ) -> tuple[ModelRequest, str | None]:
         """返回请求及容量拒绝说明；异常类型留在 Context owner 内。"""
         try:
             return self.build(
                 snapshot, materials=materials, model=model, tools=tools,
                 max_output_tokens=max_output_tokens, window_start=window_start,
-                current_reminder_input_id=current_reminder_input_id,
+                current_reminder_input_id=current_reminder_input_id, history_after=history_after,
             ), None
         except ContextOverflow as overflow:
             return overflow.request, str(overflow)

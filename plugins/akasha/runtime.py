@@ -137,13 +137,14 @@ async def prepare_materials(
     """在已核对空间的图上查询真实输入前缀，发布出处后交付材料。"""
     if not snapshot:
         return {}
-    # 1. 使用调用者已经固定的真实前缀，后来输入不会进入本次 cue。
-    # 调用者持有的已提交读面仍在时复用同一批对象，逐条比较走身份快路径，不再每步重解码全史。
+    # 1. 使用调用者已经固定的真实区间，后来输入不会进入本次 cue。
+    # 调用者可能只给摘要之后的窗口；按同一起点重读，复用共享读面，逐条比较走身份快路径。
     session_id = snapshot[0].session_id
     actual = await run_memory_job(lambda: tuple(
-        catalog.reader(session_id).committed_snapshot(through_seq=snapshot[-1].seq)))
+        catalog.reader(session_id).committed_snapshot(
+            through_seq=snapshot[-1].seq, after_seq=snapshot[0].seq - 1)))
     if actual != snapshot:
-        raise ValueError("召回材料需要完整且真实的 Message 前缀")
+        raise ValueError("召回材料需要连续且真实的 Message 区间")
     projected = await run_memory_job(lambda: learning.projection.project(snapshot, source))
     if not projected or projected[-1].status != "open":
         return {}

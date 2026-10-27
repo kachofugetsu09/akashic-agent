@@ -112,9 +112,14 @@ class TurnWindows:
             catalog = self._ctx.require(MESSAGE_CATALOG)
             projection = self._ctx.require(TURN_PROJECTION)
             reader = catalog.reader(session)
-            # 回复正持有同一会话的已提交读面，复用它只补读尾部。
-            turns, messages = await run_file_io(lambda: _project(
-                projection, tuple(reader.committed_snapshot(through_seq=head)), source, -1))
+
+            # 进行中的一轮在本来源最后一次结束之后：从这个闭合边界投影（索引查询定位），只读这一轮的几条消息。
+            def project() -> tuple[tuple[Turn, ...], dict[str, Message]]:
+                boundary = reader.latest_finished_output_seq(source, after_seq=-1, through_seq=head)
+                after = -1 if boundary is None else boundary
+                return _project(projection, reader.snapshot(after_seq=after, through_seq=head), source, after)
+
+            turns, messages = await run_file_io(project)
             turn = turns[-1] if turns and turns[-1].status == "open" else None
             turn_id = None if turn is None else _first_input(turn, messages)
             if turn is None or turn_id is None or any(

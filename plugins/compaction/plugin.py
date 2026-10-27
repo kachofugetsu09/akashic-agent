@@ -24,10 +24,10 @@ from plugins.models.contract import (
     RateLimitError,
     TransportError,
 )
-from plugins.context.contract import CONTEXT, MATERIALS_V4, OUTPUT_RESERVE_TOKENS, MaterialData, ReductionStatus, output_reserve
+from plugins.context.contract import CONTEXT, MATERIALS_V4, OUTPUT_RESERVE_TOKENS, MaterialData, ReductionStatus, SUMMARY_SOFT_LIMIT, output_reserve, summary_due
 from plugins.ledger.contract import BINDINGS
 from plugins.ledger.contract import MESSAGE_CATALOG, OWNER_STATE
-from plugins.ledger.contract import Input, Message
+from plugins.ledger.contract import HistoryWindow, Input, Message
 
 from .records import StoredSummary, SummaryLookup, SummaryRecord, SummaryRecords
 from .message_summary import SummaryError, clip_summary, closed_groups, recoverable, source_text, summarize, summary_groups, window_starts
@@ -183,6 +183,25 @@ async def apply(ctx: Context) -> None:
             return {}
         return {"summary": material(record)}
 
+    # 同一代摘要在同一账本前缀版本下的连续覆盖不变；版本前进（前缀被改写）后重新核对。
+    windows: dict[str, HistoryWindow] = {}
+
+    async def history_start(session_id: str) -> HistoryWindow | None:
+        state = records()
+        catalog = ctx.require(MESSAGE_CATALOG)
+        record = await run_file_io(lambda: current_head(state, session_id))
+        if record is None:
+            return None
+        window = windows.get(record.reference)
+        if window is None or window.revision is None or window.revision != await run_file_io(catalog.prefix_revision):
+            reader = catalog.reader(session_id)
+            covered = record.source_message_ids
+            window = await run_file_io(lambda: reader.covered_window(covered))
+            if len(windows) >= 64:
+                windows.clear()
+            windows[record.reference] = window
+        return window
+
     async def compact(snapshot: tuple[Message, ...], materials: MaterialData, request: ModelRequest,
                       model: BoundChatModel, projection: ContextModel, *, source: str, force: bool,
                       on_status: ReductionStatus | None = None,
@@ -204,7 +223,7 @@ async def apply(ctx: Context) -> None:
         )
         window = projection.context_window
         before = projection.estimate(request)
-        if window is None or not snapshot or (not force and before < int(window * 0.74)):
+        if window is None or not snapshot or not summary_due(before, window, force=force):
             return None
         state = records()
         parent = await run_file_io(lambda: state.head(snapshot[0].session_id))
@@ -254,7 +273,7 @@ async def apply(ctx: Context) -> None:
             planned_tokens[size] = projection.estimate(candidate)
             if deepest is None:
                 deepest, deepest_tokens = size, projection.estimate(tail)
-            if planned_tokens[size] > int(window * 0.74):
+            if planned_tokens[size] > int(window * SUMMARY_SOFT_LIMIT):
                 continue
             if fallback is None:
                 fallback, retained_tokens = size, projection.estimate(tail)
@@ -355,7 +374,7 @@ async def apply(ctx: Context) -> None:
         """软水位失败可继续；硬容量或 provider 明确拒绝必须保留失败原因。"""
         window = projection.context_window
         before = projection.estimate(request)
-        if window is None or not snapshot or (not force and before < int(window * 0.74)):
+        if window is None or not snapshot or not summary_due(before, window, force=force):
             return None
         budget = (f"模型 {model.descriptor.model_id}；窗口 {window:,}；输入估算 {before:,}；"
                   f"输出预留 {output_reserve(request.max_output_tokens, window):,}；原文目标 {config.keep_recent_tokens:,} tokens")
@@ -381,4 +400,5 @@ async def apply(ctx: Context) -> None:
                 await on_status(detail + "原请求仍满足硬容量，本次继续生成。", True)
             return None
 
-    _ = await ctx.require(MATERIALS_V4).register(ctx, kind="context", name="compaction", prepare=prepare, reduce=reduce, priority=500)
+    _ = await ctx.require(MATERIALS_V4).register(ctx, kind="context", name="compaction", prepare=prepare, reduce=reduce,
+                                                 history_start=history_start, priority=500)

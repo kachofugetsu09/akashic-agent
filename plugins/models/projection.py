@@ -32,7 +32,7 @@ from plugins.ledger.contract import (
 )
 from plugins.models.contract import (
     ContentTransform,
-    PrepareContent,
+    BoundPrepareContent,
     RenderedContent,
     MODEL_CALLS as MODEL_CALLS,
     MODEL_CHECKS as MODEL_MESSAGE_CHECKS,  # noqa: F401 - 显式再导出给本插件消费者。
@@ -214,7 +214,7 @@ class MessageProjection:
         read_call: CallReader,
         check_summary: ContentCheck,
         keep_input_ids: tuple[str, ...] = (),
-        prepare_content: PrepareContent | None = None,
+        prepare_content: BoundPrepareContent | None = None,
         tool_names: frozenset[str] = frozenset(),
         dynamic_content_kinds: frozenset[str] | None = frozenset(),
     ):
