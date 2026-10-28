@@ -100,6 +100,18 @@ class DynamicMemoryGraph:
             int,
             tuple[tuple[tuple[int, float, int], ...], float],
         ] = {}
+        # 读出侧 basin 结构缓存：按 hub 创建事件记录，学习改过成员权重的 hub 记为脏；None 表示全部重算。
+        self.basin_cache: dict[int, object] = {}
+        self._dirty_basins: set[int] | None = None
+
+    def take_dirty_basins(self) -> set[int] | None:
+        dirty = self._dirty_basins
+        self._dirty_basins = set()
+        return dirty
+
+    def _touch_basin(self, hub_node: int) -> None:
+        if self._dirty_basins is not None:
+            self._dirty_basins.add(hub_node - self.turn_count)
 
     def grow_turn_capacity(self, turn_count: int) -> None:
         """Grow turn slots and remap engram nodes without changing relations."""
@@ -361,9 +373,9 @@ class DynamicMemoryGraph:
 
         # 1. Resolve only the episode created by the addressed turn itself.
         own_hubs = {
-            hub.created_event: hub
-            for hub in self.hubs
-            if hub.created_event in node_ids
+            node_id: self.hub_members[self.turn_count + node_id]
+            for node_id in node_ids
+            if self.turn_count + node_id in self.hub_members
         }
         gain = boost ** self.config.learning_rate
         credit = math.log(gain)
@@ -378,7 +390,7 @@ class DynamicMemoryGraph:
                 continue
             target_edges = tuple(
                 edge
-                for edge in own_hub.member_edge_ids
+                for edge in own_hub
                 if self.source[edge] == node_id
             )
             if len(target_edges) != 1:
@@ -390,6 +402,7 @@ class DynamicMemoryGraph:
                 1.0,
                 self.weight[edge_id] * gain,
             )
+            self._touch_basin(self.target[edge_id])
             self.last_updated[edge_id] = self.current_event
             self._support_edge(edge_id, credit, credit)
             affected_hubs.add(self.target[edge_id])
@@ -589,6 +602,7 @@ class DynamicMemoryGraph:
         affected_members: set[int] = set()
         for hub_node in exposed:
             edges = self.hub_members[hub_node]
+            self._touch_basin(hub_node)
             hub_activity = math.fsum(
                 self.effective_weight(edge_id)
                 * activity[self.source[edge_id]]
@@ -753,6 +767,7 @@ class DynamicMemoryGraph:
                 )
             )
         self.hub_members[hub_node] = member_edges
+        self._touch_basin(hub_node)
         for node_id, _ in values:
             self._normalize_membership_source(node_id)
         innovation = math.fsum(self.weight[edge_id] for edge_id in member_edges)
@@ -860,6 +875,7 @@ class DynamicMemoryGraph:
             return 0.0
         scale = budget / total
         inhibited = 0.0
+        self._touch_basin(hub_node)
         for edge_id in edges:
             old = self.weight[edge_id]
             self.weight[edge_id] = old * scale
@@ -885,6 +901,7 @@ class DynamicMemoryGraph:
             old = self.weight[edge_id]
             self.weight[edge_id] = old * scale
             inhibited += old - self.weight[edge_id]
+            self._touch_basin(self.target[edge_id])
         return inhibited
 
     def _normalize_temporal_source(self, source: int, kind: int) -> float:

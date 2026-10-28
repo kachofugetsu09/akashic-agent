@@ -248,7 +248,7 @@ def _read_contextual_route(
     config: MemoryConfig,
     visible_nodes: tuple[int, ...],
     burst_continued: bool,
-    basin_structures: tuple[_BasinStructure, ...],
+    basin_structures: _BasinIndex,
 ) -> PatternCompletion:
     """Settle the existing current-cue plus active-context route."""
 
@@ -289,7 +289,7 @@ def _read_independent_route(
     historical_surprise: np.ndarray,
     config: MemoryConfig,
     visible_nodes: tuple[int, ...],
-    basin_structures: tuple[_BasinStructure, ...],
+    basin_structures: _BasinIndex,
 ) -> PatternCompletion:
     """Settle a query-only graph-address route without active context."""
 
@@ -343,12 +343,11 @@ def _read_route(
     config: MemoryConfig,
     visible_nodes: tuple[int, ...],
     burst_continued: bool,
-    basin_structures: tuple[_BasinStructure, ...],
+    basin_structures: _BasinIndex,
 ) -> PatternCompletion:
     """Settle one independently normalized basin-routing hypothesis."""
 
     # 1. Select live engram heads from this route's evidence.
-    basins = _score_active_basins(basin_structures, basin_scores)
     temperature = _surprise_temperature(
         surprise,
         historical_surprise,
@@ -358,7 +357,8 @@ def _read_route(
     heads = _accessibility_supported_heads(
         graph,
         _pooled_heads(
-            basins,
+            basin_structures,
+            basin_scores,
             fields,
             continuation,
             temperature,
@@ -822,91 +822,144 @@ def _reuse_evidence_fields(
 def _active_basin_structures(
     graph: DynamicMemoryGraph,
     event: int,
-) -> tuple[_BasinStructure, ...]:
-    """Snapshot raw engram structure before route-specific scoring."""
+) -> _BasinIndex:
+    """Refresh the resident cue-independent engram index before scoring."""
 
-    structures: list[_BasinStructure] = []
-    for hub in graph.hubs:
-        members: list[int] = []
-        weights: list[float] = []
-        for edge_id in hub.member_edge_ids:
-            node_id = graph.source[edge_id]
-            weight = graph.weight[edge_id]
-            if node_id < event and weight > 0.0:
-                members.append(node_id)
-                weights.append(weight)
-        if len(members) < 2:
-            continue
-        member_array = np.asarray(members, dtype=np.int32)
-        total = math.fsum(weights)
-        normalized = np.asarray(weights) / total
-        structures.append(
-            _BasinStructure(
-                hub.created_event,
-                tuple(members),
-                tuple(weights),
-                member_array,
-                normalized,
-                -math.expm1(-total),
-            )
-        )
-    return tuple(structures)
+    # 1. 已提交 hub 的成员都早于查询事件；只重算学习改过成员权重的 hub。
+    index = graph.basin_cache.get(0)
+    dirty = graph.take_dirty_basins()
+    if not isinstance(index, _BasinIndex) or dirty is None:
+        index = _BasinIndex()
+        graph.basin_cache[0] = index
+        dirty = {hub.created_event for hub in graph.hubs}
+    for created in sorted(dirty):
+        if created >= event:
+            raise ValueError("basin snapshot cannot include future engrams")
+        index.update(created, _basin_structure(graph, created))
+    return index
 
-def _score_active_basins(
-    structures: tuple[_BasinStructure, ...],
-    scores: np.ndarray,
-) -> tuple[Basin, ...]:
-    """Score one immutable basin snapshot with route-specific evidence."""
 
-    # 1. 同长度的 basin 成批做相同的逐行规约，保留每行的求和顺序。
-    groups: dict[int, list[int]] = {}
-    for index, structure in enumerate(structures):
-        groups.setdefault(len(structure.members), []).append(index)
-    pooled_scores = np.empty(len(structures), dtype=np.float64)
-    for indices in groups.values():
-        members = np.asarray([structures[index].members for index in indices], dtype=np.int32)
-        weights = np.asarray([structures[index].normalized for index in indices])
-        values = scores[members]
-        peaks = np.max(values, axis=1)
-        mass = np.sum(weights * np.exp(values - peaks[:, None]), axis=1)
-        for row, index in enumerate(indices):
-            # math.log 与原标量实现相同，避免更换库函数造成浮点分歧。
-            pooled_scores[index] = (
-                float(peaks[row]) + math.log(float(mass[row]))
-            ) * structures[index].conductance
-
-    # 2. 按原始事件顺序返回，不让分组改变 tie-break 或联想顺序。
-    return tuple(
-        Basin(structure.hub_id, float(pooled_scores[index]), structure.members, structure.weights)
-        for index, structure in enumerate(structures)
+def _basin_structure(graph: DynamicMemoryGraph, created: int) -> _BasinStructure | None:
+    members: list[int] = []
+    weights: list[float] = []
+    for edge_id in graph.hub_members[graph.turn_count + created]:
+        weight = graph.weight[edge_id]
+        if weight > 0.0:
+            members.append(graph.source[edge_id])
+            weights.append(weight)
+    if len(members) < 2:
+        return None
+    total = math.fsum(weights)
+    return _BasinStructure(
+        created,
+        tuple(members),
+        tuple(weights),
+        np.asarray(members, dtype=np.int32),
+        np.asarray(weights) / total,
+        -math.expm1(-total),
     )
 
 
+class _BasinGroup:
+    """Hold same-width engrams as contiguous rows so one gather scores them all."""
+
+    def __init__(self, width: int) -> None:
+        self.size = 0
+        self.members = np.zeros((8, width), dtype=np.int32)
+        self.weights = np.zeros((8, width), dtype=np.float64)
+        self.conductance = np.zeros(8, dtype=np.float64)
+        self.events = np.zeros(8, dtype=np.int64)
+        self.alive = np.zeros(8, dtype=bool)
+
+    def append(self) -> int:
+        if self.size == len(self.alive):
+            grow = len(self.alive) * 2
+            self.members = np.resize(self.members, (grow, self.members.shape[1]))
+            self.weights = np.resize(self.weights, (grow, self.weights.shape[1]))
+            self.conductance = np.resize(self.conductance, grow)
+            self.events = np.resize(self.events, grow)
+            alive = np.zeros(grow, dtype=bool)
+            alive[: self.size] = self.alive[: self.size]
+            self.alive = alive
+        self.size += 1
+        return self.size - 1
+
+
+class _BasinIndex:
+    """Resident engram rows keyed by creation event; learning rewrites only touched rows."""
+
+    def __init__(self) -> None:
+        self.structures: dict[int, _BasinStructure] = {}
+        self.groups: dict[int, _BasinGroup] = {}
+        self.location: dict[int, tuple[int, int]] = {}
+
+    def update(self, created: int, structure: _BasinStructure | None) -> None:
+        # 1. 先让旧行失效；宽度不变时原位复用同一行。
+        old = self.location.pop(created, None)
+        _ = self.structures.pop(created, None)
+        if old is not None:
+            self.groups[old[0]].alive[old[1]] = False
+        if structure is None:
+            return
+        width = len(structure.members)
+        group = self.groups.setdefault(width, _BasinGroup(width))
+        row = old[1] if old is not None and old[0] == width else group.append()
+        group.members[row] = structure.member_array
+        group.weights[row] = structure.normalized
+        group.conductance[row] = structure.conductance
+        group.events[row] = created
+        group.alive[row] = True
+        self.location[created] = (width, row)
+        self.structures[created] = structure
+
+    # 按 hub 创建事件升序返回 (事件, 汇聚分)，与原逐 hub 顺序一致。
+    def score(self, scores: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
+        events: list[np.ndarray] = []
+        pooled: list[np.ndarray] = []
+        for group in self.groups.values():
+            rows = np.flatnonzero(group.alive[: group.size])
+            if rows.size == 0:
+                continue
+            values = scores[group.members[rows]]
+            peaks = np.max(values, axis=1)
+            mass = np.sum(group.weights[rows] * np.exp(values - peaks[:, None]), axis=1)
+            # math.log 与原标量实现相同，避免更换库函数造成浮点分歧。
+            logs = np.fromiter(map(math.log, mass.tolist()), dtype=np.float64, count=rows.size)
+            events.append(group.events[rows])
+            pooled.append((peaks + logs) * group.conductance[rows])
+        if not events:
+            return np.empty(0, dtype=np.int64), np.empty(0, dtype=np.float64)
+        all_events = np.concatenate(events)
+        order = np.argsort(all_events, kind="stable")
+        return all_events[order], np.concatenate(pooled)[order]
+
+    def basin(self, created: int, score: float) -> Basin:
+        structure = self.structures[created]
+        return Basin(created, score, structure.members, structure.weights)
+
 
 def _pooled_heads(
-    basins: tuple[Basin, ...],
+    index: _BasinIndex,
+    basin_scores: np.ndarray,
     fields: dict[str, np.ndarray],
     continuation: float,
     temperature: float,
 ) -> list[tuple[str, float, tuple[tuple[int, float], ...]]]:
     """Select event basins after pooling every evidence channel."""
 
-    positive = tuple(basin for basin in basins if basin.score > 0.0)
-    if not positive:
+    events, pooled = index.score(basin_scores)
+    positive = np.flatnonzero(pooled > 0.0)
+    if positive.size == 0:
         return []
-    scores = np.asarray([basin.score for basin in positive])
+    scores = pooled[positive]
     selection = _temperature_sparsemax(
         scores / float(np.max(scores)),
         temperature,
     )
-    selected = [
-        (
-            positive[index],
-            mass,
-            _head_seed(positive[index], fields, continuation),
-        )
-        for index, mass in selection
-    ]
+    selected = []
+    for row, mass in selection:
+        basin = index.basin(int(events[positive[row]]), float(scores[row]))
+        selected.append((basin, mass, _head_seed(basin, fields, continuation)))
     return _merge_overlapping_heads(selected)
 
 
@@ -918,13 +971,9 @@ def _accessibility_supported_heads(
 
     if len(heads) < 2:
         return heads
-    hubs_by_event = {
-        hub.created_event: hub.node_id
-        for hub in graph.hubs
-    }
     accessibility = np.asarray(
         [
-            _head_accessibility(graph, head_id, hubs_by_event)
+            _head_accessibility(graph, head_id)
             for head_id, _, _ in heads
         ],
         dtype=np.float64,
@@ -948,18 +997,11 @@ def _head_accessibility(
     head_id: str,
     hubs_by_event: dict[int, int] | None = None,
 ) -> float:
-    resolved = (
-        {
-            hub.created_event: hub.node_id
-            for hub in graph.hubs
-        }
-        if hubs_by_event is None
-        else hubs_by_event
-    )
+    del hubs_by_event
     edge_ids = tuple(
         edge_id
         for event_id in (int(value) for value in head_id.split("+"))
-        for edge_id in graph.hub_members[resolved[event_id]]
+        for edge_id in graph.hub_members[graph.turn_count + event_id]
     )
     raw = math.fsum(graph.weight[edge_id] for edge_id in edge_ids)
     effective = math.fsum(

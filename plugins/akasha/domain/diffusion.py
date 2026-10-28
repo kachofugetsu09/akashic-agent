@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import math
+from heapq import heappop, heappush
 from typing import Protocol
 
 import numpy as np
@@ -127,76 +128,85 @@ def residual_push(
         empty = np.zeros(graph.max_nodes, dtype=np.float64)
         return DiffusionResult(empty, np.empty(0, dtype=np.int32), 0, 0.0, None, None)
 
-    # 1. Initialize one indexed residual entry per seed coordinate.
-    residual = np.zeros(graph.max_nodes, dtype=np.float64)
-    reserve = np.zeros(graph.max_nodes, dtype=np.float64)
-    heap = IndexedMaxHeap(graph.max_nodes, residual)
+    # 1. 残差只存正值节点；出堆次序由 (残差降序, 节点升序) 唯一确定，惰性堆与原索引堆逐次相同。
+    residual: dict[int, float] = {}
+    reserve: dict[int, float] = {}
+    queue: list[tuple[float, int]] = []
     for node_id, value in seed:
         residual[node_id] = value
-        heap.update(node_id)
+        heappush(queue, (-value, node_id))
     residual_total = math.fsum(value for _, value in seed)
-    parent_node = (
-        np.full(graph.max_nodes, -1, dtype=np.int32) if capture_paths else None
-    )
-    parent_edge = (
-        np.full(graph.max_nodes, -1, dtype=np.int32) if capture_paths else None
-    )
-    parent_mass = (
-        np.zeros(graph.max_nodes, dtype=np.float64) if capture_paths else None
-    )
+    parent_node: dict[int, int] = {}
+    parent_edge: dict[int, int] = {}
+    parent_mass: dict[int, float] = {}
 
-    # 2. Repeatedly settle the largest residual coordinate.
+    # 2. 反复结算当前最大残差；过期堆项在出堆时丢弃。
+    # 局部绑定与转移缓存只省解释器开销；每个浮点运算的操作数与结合次序保持原样。
     pushes = 0
-    update_heap = heap.update
+    keep = 1.0 - restart
+    lookup = residual.get
+    local: dict[int, tuple[tuple[tuple[int, float, int], ...], float]] = {}
     while True:
         if residual_total <= tolerance:
-            residual_total = math.fsum(
-                float(residual[node]) for node in heap.stable_nodes()
-            )
+            residual_total = math.fsum(residual[node] for node in sorted(residual))
             if residual_total <= tolerance:
                 break
-        if not heap.nodes:
+        if not residual:
             raise ArithmeticError("positive residual mass has no heap entry")
-        node = heap.pop()
-        value = float(residual[node])
-        residual[node] = 0.0
+        while True:
+            negative, node = heappop(queue)
+            if lookup(node) == -negative:
+                break
+        value = residual.pop(node)
         residual_total -= value
-        reserve[node] += restart * value
-        propagated = (1.0 - restart) * value
-        transitions, unspread = graph.transitions(node, event)
+        reserve[node] = reserve.get(node, 0.0) + restart * value
+        propagated = keep * value
+        cached = local.get(node)
+        if cached is None:
+            cached = graph.transitions(node, event)
+            local[node] = cached
+        transitions, unspread = cached
         for target, probability, edge_id in transitions:
             addition = propagated * probability
             if addition != 0.0:
-                residual[target] += addition
-                update_heap(target)
+                updated = lookup(target, 0.0) + addition
+                residual[target] = updated
+                heappush(queue, (-updated, target))
                 residual_total += addition
-                if (
-                    parent_node is not None
-                    and parent_edge is not None
-                    and parent_mass is not None
-                    and addition > parent_mass[target]
-                ):
+                if capture_paths and addition > parent_mass.get(target, 0.0):
                     parent_mass[target] = addition
                     parent_node[target] = node
                     parent_edge[target] = edge_id
+        leak = propagated * unspread
         for target, probability in seed:
-            addition = propagated * unspread * probability
+            addition = leak * probability
             if addition != 0.0:
-                residual[target] += addition
-                update_heap(target)
+                updated = lookup(target, 0.0) + addition
+                residual[target] = updated
+                heappush(queue, (-updated, target))
                 residual_total += addition
         pushes += 1
         if pushes % 4096 == 0:
-            residual_total = math.fsum(
-                float(residual[item]) for item in heap.stable_nodes()
-            )
+            residual_total = math.fsum(residual[item] for item in sorted(residual))
 
-    active = np.flatnonzero(reserve > 0.0).astype(np.int32, copy=False)
+    # 3. 稀疏结果散回定长数组，读者看到的 reserve 与路径数组不变。
+    dense_reserve = np.zeros(graph.max_nodes, dtype=np.float64)
+    if reserve:
+        nodes = np.fromiter(reserve, dtype=np.int64, count=len(reserve))
+        dense_reserve[nodes] = np.fromiter(reserve.values(), dtype=np.float64, count=len(reserve))
+    active = np.flatnonzero(dense_reserve > 0.0).astype(np.int32, copy=False)
+    paths_node = paths_edge = None
+    if capture_paths:
+        paths_node = np.full(graph.max_nodes, -1, dtype=np.int32)
+        paths_edge = np.full(graph.max_nodes, -1, dtype=np.int32)
+        for target, source in parent_node.items():
+            paths_node[target] = source
+            paths_edge[target] = parent_edge[target]
     return DiffusionResult(
-        reserve=reserve,
+        reserve=dense_reserve,
         active_nodes=active,
         pushes=pushes,
         residual_l1=residual_total,
-        parent_node=parent_node,
-        parent_edge=parent_edge,
+        parent_node=paths_node,
+        parent_edge=paths_edge,
     )

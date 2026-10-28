@@ -28,6 +28,9 @@ from ..domain.model import (
 )
 
 
+TURN_CAPACITY_BLOCK = 256
+
+
 @dataclass(frozen=True)
 class RetrievalTicket:
     """Carry one versioned retrieval into the matching atomic write."""
@@ -155,7 +158,7 @@ class MemoryCycle:
         # 3. Advance topology and causal clocks inside a reversible read frame.
         previous_turn_capacity = self.graph.turn_count
         published_state = self.graph.capture_retrieval_state()
-        with self.graph.temporary_turn_capacity(max(event + 1, previous_turn_capacity)):
+        with self.graph.temporary_turn_capacity(max(_reserved_capacity(event + 1), previous_turn_capacity)):
             try:
                 self.graph.prepare_retrieval(
                     event,
@@ -418,6 +421,11 @@ class MemoryCycle:
             visible,
             capture_channels,
         )
+
+
+# 容量按块预留：hub 编号随容量平移，逐条 +1 会让每轮重映射全部边；按块只在跨块时平移。
+def _reserved_capacity(count: int) -> int:
+    return -(-count // TURN_CAPACITY_BLOCK) * TURN_CAPACITY_BLOCK
 
 
 def _feedback_state(turns: list[Turn]) -> set[int]:
