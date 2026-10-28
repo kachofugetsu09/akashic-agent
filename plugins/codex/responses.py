@@ -430,40 +430,81 @@ def _responses_input(
 ) -> tuple[list[dict[str, Any]], str]:
     result = [dict(item) for item in continuation_items]
     instructions = system_prompt
+    images: list[dict[str, Any]] = []
+    pending: set[str] = set()
     for message in messages:
         role = message.get("role")
         if role == "system":
             instructions = f"{instructions}\n\n{message.get('content', '')}".strip()
             continue
+        # 1. Responses 只接受 user 行带图：assistant/tool 的图片先拆出，正文照常转换。
+        content, moved = _split_images(message)
+        images.extend(moved)
         if role == "tool":
-            result.append(
-                {
-                    "type": "function_call_output",
-                    "call_id": str(message.get("tool_call_id") or ""),
-                    "output": str(message.get("content") or ""),
-                }
-            )
-            continue
-        calls = message.get("tool_calls")
-        if role == "assistant" and isinstance(calls, (list, tuple)):
-            for call in calls:
-                if not isinstance(call, Mapping):
-                    raise _unsent(InvalidRequestError("assistant tool call must be an object").exception())
-                function = call.get("function")
-                if not isinstance(function, Mapping):
-                    raise _unsent(InvalidRequestError("assistant tool call misses function").exception())
-                result.append(
-                    {
-                        "type": "function_call",
-                        "call_id": str(call.get("id") or ""),
-                        "name": str(function.get("name") or ""),
-                        "arguments": str(function.get("arguments") or "{}"),
-                    }
-                )
-        content = message.get("content")
-        if content not in (None, ""):
-            result.append({"role": role, "content": _responses_content(role, content)})
+            call_id = str(message.get("tool_call_id") or "")
+            pending.discard(call_id)
+            result.append({"type": "function_call_output", "call_id": call_id, "output": _tool_output(content)})
+        else:
+            calls = message.get("tool_calls")
+            if role == "assistant" and isinstance(calls, (list, tuple)):
+                if images and pending:
+                    raise _unsent(InvalidRequestError("图片所在工具请求尚未完成配对").exception())
+                items = _function_calls(calls)
+                pending = {item["call_id"] for item in items}
+                result.extend(items)
+            if content not in (None, ""):
+                result.append({"role": role, "content": _responses_content(role, content)})
+        # 2. 本组工具调用全部配对后，图片作为一条 user 行补在后面，不打断调用与结果的配对。
+        if images and not pending:
+            result.append({"role": "user", "content": images})
+            images = []
+    if images:
+        raise _unsent(InvalidRequestError("图片所在工具请求缺少结果，不能重排为有效历史").exception())
     return result, instructions
+
+
+def _function_calls(calls: Sequence[object]) -> list[dict[str, Any]]:
+    items: list[dict[str, Any]] = []
+    for call in calls:
+        if not isinstance(call, Mapping):
+            raise _unsent(InvalidRequestError("assistant tool call must be an object").exception())
+        function = call.get("function")
+        if not isinstance(function, Mapping):
+            raise _unsent(InvalidRequestError("assistant tool call misses function").exception())
+        items.append(
+            {
+                "type": "function_call",
+                "call_id": str(call.get("id") or ""),
+                "name": str(function.get("name") or ""),
+                "arguments": str(function.get("arguments") or "{}"),
+            }
+        )
+    return items
+
+
+# assistant/tool 行的图片拆成带来源标签的 user 图片块；行内只留文字，全是图时留一句指引。
+def _split_images(message: Mapping[str, Any]) -> tuple[object, list[dict[str, Any]]]:
+    role = message.get("role")
+    content = message.get("content")
+    if role not in {"assistant", "tool"} or not isinstance(content, (list, tuple)):
+        return content, []
+    pictures = [block for block in content if isinstance(block, Mapping) and block.get("type") == "image_url"]
+    if not pictures:
+        return content, []
+    label = f"工具结果 {message.get('tool_call_id')} 的图片" if role == "tool" else "Agent 输出消息中的图片"
+    rest = [block for block in content if not (isinstance(block, Mapping) and block.get("type") == "image_url")]
+    moved = cast(list[dict[str, Any]], _responses_content("user", [{"type": "text", "text": label}, *pictures]))
+    return rest or [{"type": "text", "text": "图片见本组消息后的图像内容。"}], moved
+
+
+# 工具结果只能是文本：文字块按序拼接，图片已由 _split_images 挪走。
+def _tool_output(content: object) -> str:
+    if isinstance(content, (list, tuple)):
+        return "\n".join(
+            str(block.get("text") or "") for block in content
+            if isinstance(block, Mapping) and block.get("type") in {"text", "input_text", "output_text"}
+        )
+    return str(content or "")
 
 
 def _responses_content(role: object, content: object) -> object:
