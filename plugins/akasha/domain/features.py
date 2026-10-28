@@ -6,11 +6,24 @@ import bisect
 import math
 from array import array
 from collections import defaultdict
-from dataclasses import dataclass
+from collections.abc import Callable
+from dataclasses import dataclass, field
 
 import numpy as np
+from threadpoolctl import threadpool_limits
 
 from .model import ContextState, SeedEvidence, Turn
+
+# BLAS 的规约次序随线程数变化：同一份日志在不同核数的机器上会学出不同的图。
+# 进程内固定单线程，在线学习、查询与任何机器上的重建才是同一个函数（ADR 0138）。
+# 不用临时限制再恢复：查询与多张图的学习在不同线程并发，恢复会改掉别人正在用的线程数。
+_ = threadpool_limits(limits=1, user_api="blas")
+
+
+@dataclass
+class _ScoreMemo:
+    end: int = -1
+    entries: dict[tuple[object, ...], tuple[np.ndarray, np.ndarray]] = field(default_factory=dict)
 
 
 class FeaturePool:
@@ -27,6 +40,8 @@ class FeaturePool:
         self.turns = list(turns)
         self._query_turn: Turn | None = None
         self._appendable = appendable
+        # 查询视图浅拷贝 __dict__，共享同一个记忆表。
+        self._score_memo = _ScoreMemo()
         self._size = len(turns)
         self._capacity = _next_capacity(self._size) if appendable else self._size
         dimension = _dense_dimension(turns)
@@ -113,6 +128,36 @@ class FeaturePool:
         return math.sqrt(
             math.fsum(value * value for value in residuals) / len(residuals)
         )
+
+    # 历史矩阵与倒排只追加，(end, cue) 的分数及其尾部惊奇度是纯函数。
+    # 同一状态版本上的查询与随后的学习检索常是同一条用户输入，直接共用；返回只读数组。
+    def dense_surprisal(self, cue: np.ndarray | None, end: int) -> tuple[np.ndarray, np.ndarray]:
+        key = ("dense", None if cue is None else (cue.dtype.str, cue.shape, cue.tobytes()))
+        return self._remember(key, end, lambda: self.dense_scores(cue, end))
+
+    def bm25_surprisal(self, query_terms: dict[str, float], end: int) -> tuple[np.ndarray, np.ndarray]:
+        key = ("bm25", tuple(sorted(query_terms.items())))
+        return self._remember(key, end, lambda: self.bm25_scores(query_terms, end))
+
+    def _remember(
+        self,
+        key: tuple[object, ...],
+        end: int,
+        score: Callable[[], np.ndarray],
+    ) -> tuple[np.ndarray, np.ndarray]:
+        memo = self._score_memo
+        if memo.end != end:
+            memo.end = end
+            memo.entries.clear()
+        found = memo.entries.get(key)
+        if found is None:
+            scores = score()
+            surprisal = _tail_surprisal(scores)
+            scores.flags.writeable = False
+            surprisal.flags.writeable = False
+            found = (scores, surprisal)
+            memo.entries[key] = found
+        return found
 
     def dense_scores(self, cue: np.ndarray | None, end: int) -> np.ndarray:
         if cue is None or end == 0:
@@ -414,18 +459,15 @@ class BurstAwareFeaturePool(FeaturePool):
         # 1. Score the current cue and the complete visible burst separately.
         query = self._turn_at(index)
         query_terms = _normalize_pairs(query.user_terms)
-        query_dense = self.dense_scores(query.user_dense, index)
-        query_bm25 = self.bm25_scores(query_terms, index)
-        context_dense = self.dense_scores(candidate_context.dense, index)
-        context_bm25 = self.bm25_scores(
-            dict(candidate_context.terms),
-            index,
-        )
+        query_dense, query_dense_field = self.dense_surprisal(query.user_dense, index)
+        query_bm25, query_bm25_field = self.bm25_surprisal(query_terms, index)
+        context_dense_field = self.dense_surprisal(candidate_context.dense, index)[1]
+        context_bm25_field = self.bm25_surprisal(dict(candidate_context.terms), index)[1]
         fields = {
-            "query_dense": _tail_surprisal(query_dense),
-            "query_bm25": _tail_surprisal(query_bm25),
-            "context_dense": _tail_surprisal(context_dense),
-            "context_bm25": _tail_surprisal(context_bm25),
+            "query_dense": query_dense_field,
+            "query_bm25": query_bm25_field,
+            "context_dense": context_dense_field,
+            "context_bm25": context_bm25_field,
         }
 
         # 2. Rescue underspecified cues only when temporal evidence agrees.
@@ -627,7 +669,8 @@ def _dense_product(matrix: np.ndarray, cue: np.ndarray) -> np.ndarray:
     result = np.empty(len(matrix), dtype=np.result_type(matrix, cue))
     start = 0
     while start < len(matrix):
-        stop = min(start + 256, len(matrix))
+        # 64 行的 float64 临时块留在 L2 内；逐行规约与原 256 行分块逐位相同（多种形状实测）。
+        stop = min(start + 64, len(matrix))
         # 合并很短的尾块，避免 BLAS 对单行走不同的 dot 规约路径。
         if len(matrix) - stop < 8:
             stop = len(matrix)

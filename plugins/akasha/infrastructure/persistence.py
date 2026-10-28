@@ -429,6 +429,8 @@ def _write_metadata(
     values = {
         **metadata,
         "config_json": canonical_json(asdict(config)),
+        # dense 打分在固定单线程 BLAS 下得出（ADR 0138）；重放迁移据此判定图是否已重放。
+        "dense_threads": "1",
         "engine": "single_state_empirical_recurrence_survival_v9_feedback",
         "graph_turn_capacity": str(graph.turn_count),
         "hub_count": str(len(graph.hubs)),
