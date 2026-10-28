@@ -4,6 +4,7 @@ import type { ComponentType, ReactNode } from "react";
 export type PluginUiSlotName =
   | "turn.before_reasoning"
   | "turn.after_answer"
+  | "message.actions"
   | "drawer.panel"
   | "tool.result"
   | "message.attachment"
@@ -66,6 +67,11 @@ export interface PluginUiSlotFacts {
   "turn.before_reasoning": { sessionId: string; messageId: string; block: { source: string } };
   /** 完整回答之后。 */
   "turn.after_answer": { sessionId: string; messageId: string };
+  /**
+   * 完整回答悬停工具栏里的操作，排在宿主按钮前；宿主给其中的 button 套用工具栏按钮样式。
+   * 浮层请挂到 document.body，避免继承工具栏样式或被消息裁切。
+   */
+  "message.actions": { sessionId: string; messageId: string };
   /** 本插件注册的工具的一次结果；只交给工具 owner。 */
   "tool.result": { block: ToolResultFacts };
   /** 消息里的一个附件；插件按文件名、媒体类型在 accepts 里认领。 */

@@ -430,7 +430,9 @@ export const DesktopTimelineMessages = React.memo(function DesktopTimelineMessag
         onReply={() => onReply(timelineReply(message))}
         onEdit={message.body.kind === "input" && message.author === "user" && timelineText(message)
           ? () => onEditInput(timelineText(message)) : undefined}
-        onCopy={() => { void copyText(timelineText(message)).then(() => onCopied(message.id)).catch(onError); }} />
+        onCopy={() => { void copyText(timelineText(message)).then(() => onCopied(message.id)).catch(onError); }}
+        extra={message.body.kind === "output" && message.body.finish === "complete" ? <PluginUiSlot
+          name="message.actions" sessionId={message.session_id} messageId={message.id} quiet /> : null} />
     </div> : null}
     {message.body.kind === "input" && message.author === "user" ? <div className="message-row agent-row">
       <div className="agent-content"><PluginUiSlot name="turn.before_reasoning"
