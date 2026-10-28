@@ -7,7 +7,7 @@ from dataclasses import dataclass
 
 import numpy as np
 
-from .diffusion import residual_push
+from .diffusion import TransitionCache, residual_push
 from .features import (
     FeaturePool,
     _sparsemax,
@@ -88,17 +88,14 @@ class TemporalGraphView:
     def __init__(self, graph: DynamicMemoryGraph) -> None:
         self.graph = graph
         self.max_nodes = graph.max_nodes
-        self._transition_cache: dict[
-            int,
-            tuple[tuple[tuple[int, float, int], ...], float],
-        ] = {}
+        self.transition_cache = TransitionCache()
 
     def transitions(
         self,
         node_id: int,
         event: int,
     ) -> tuple[tuple[tuple[int, float, int], ...], float]:
-        cached = self._transition_cache.get(node_id)
+        cached = self.transition_cache.get(node_id)
         if cached is not None:
             return cached
         weighted: list[tuple[int, float, int]] = []
@@ -120,7 +117,7 @@ class TemporalGraphView:
         total = math.fsum(weight for _, weight, _ in weighted)
         if total == 0.0:
             result = ((), 1.0)
-            self._transition_cache[node_id] = result
+            self.transition_cache[node_id] = result
             return result
         spread = -math.expm1(-total)
         result = (
@@ -130,7 +127,7 @@ class TemporalGraphView:
             ),
             1.0 - spread,
         )
-        self._transition_cache[node_id] = result
+        self.transition_cache[node_id] = result
         return result
 
 
