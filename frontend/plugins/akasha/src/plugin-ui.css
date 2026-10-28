@@ -134,7 +134,7 @@
 
 .akasha-recall-said p { display: grid; grid-template-columns: 1.6em minmax(0, 1fr); margin: 0; overflow-wrap: anywhere; }
 .akasha-recall-said i { color: var(--ak-ink-muted); font-size: 0.75rem; font-style: normal; }
-.akasha-recall-said[hidden], .akasha-recall-panel ol[hidden] { display: none; }
+.akasha-plugin-ui-query-status[hidden], .akasha-recall-said[hidden], .akasha-recall-panel ol[hidden] { display: none; }
 
 .akasha-recall-more { padding: 4px 8px; color: var(--ak-ink-muted); font-size: 0.75rem; }
 .akasha-recall-more::after { content: "›"; display: inline-block; margin-inline-start: 4px; transition: rotate 150ms; }
