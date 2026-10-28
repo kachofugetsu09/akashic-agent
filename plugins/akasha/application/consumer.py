@@ -443,11 +443,11 @@ class MessageConsumer:
         """重复通知不强化；提交失败后停止本实例，避免猜测外部发布是否成功。"""
         # 1. 同一 ending 的重复消费必须有完全相同的固定出处。
         cycle = self.cycle
-        for applied in self.state.applied:
-            if applied.ending[1] == entry.ending[1]:
-                if applied != entry:
-                    raise ValueError("重复学习通知的出处不一致")
-                return False
+        applied = self.state.applied_at(entry.ending[1])
+        if applied is not None:
+            if applied != entry:
+                raise ValueError("重复学习通知的出处不一致")
+            return False
         state = self.state.append(entry)
         now = datetime.fromisoformat(turn.committed_at)
         if now.utcoffset() is None:
@@ -464,7 +464,8 @@ class MessageConsumer:
                 if (now, entry.session_id, entry.ending) <= (last, last_entry.session_id, last_entry.ending):
                     raise ValueError("新学习材料违反已发布的全局顺序")
         turn = replace(turn, node_id=cycle.state_version, inter_gap_seconds=gap)
-        state.check_turns([*cycle.turns, turn])
+        # cycle.turns 已与 self.state 逐项对应（构造或上一次 apply 已核对），只核对新节点。
+        state.check_next([*cycle.turns, turn])
 
         # 2. MemoryCycle 唯一学习一次；图与消费出处在一个完整文件中一起发布。
         try:

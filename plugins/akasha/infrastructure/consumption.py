@@ -2,10 +2,11 @@
 from __future__ import annotations
 
 from typing import Annotated, Literal, Self
+import json
 from collections.abc import Sequence
 from pathlib import Path
 
-from pydantic import BaseModel, ConfigDict, Field, model_validator
+from pydantic import BaseModel, ConfigDict, Field, PrivateAttr, model_validator
 
 from ..domain.model import Turn
 
@@ -62,6 +63,12 @@ class Consumption(BaseModel):
     cutover_heads: tuple[tuple[Text, Head], ...]
     applied: tuple[Applied, ...] = ()
     skipped: tuple[Skipped, ...] = ()
+    # 结束消息 → 已学下标（跳过记为 -1）；构造时整段校验后建立，追加只校验新条目。
+    _endings: dict[str, int] = PrivateAttr(default_factory=dict)
+    # 每条出处的规范 JSON 片段；整段文本由片段拼接，追加时只序列化新条目。
+    _applied_json: list[str] | None = PrivateAttr(default=None)
+    _skipped_json: list[str] | None = PrivateAttr(default=None)
+    _text: str | None = PrivateAttr(default=None)
 
     @model_validator(mode="after")
     def check_order(self) -> Self:
@@ -71,40 +78,107 @@ class Consumption(BaseModel):
             raise ValueError("切换 heads 包含重复 Session")
         if tuple(sorted(self.cutover_heads)) != self.cutover_heads:
             raise ValueError("切换 heads 必须按 Session 排序")
-        seen: set[str] = set()
-        for entry in self.applied:
+        seen: dict[str, int] = {}
+        for index, entry in enumerate(self.applied):
             if entry.ending[1] in seen:
                 raise ValueError("同一结束消息不能重复学习")
             if entry.ending[0] <= heads.get(entry.session_id, -1):
                 raise ValueError("新消费不能重新学习切换前的结束消息")
-            seen.add(entry.ending[1])
+            seen[entry.ending[1]] = index
         for item in self.skipped:
             if item.ending[1] in seen:
                 raise ValueError("同一结束消息不能既学习又跳过")
             if item.ending[0] <= heads.get(item.session_id, -1):
                 raise ValueError("跳过记事不能指向切换前的结束消息")
-            seen.add(item.ending[1])
+            seen[item.ending[1]] = -1
+        self._endings = seen
         return self
 
     def append(self, entry: Applied) -> Consumption:
-        return Consumption(
-            cutover_heads=self.cutover_heads,
-            applied=(*self.applied, entry),
-            skipped=self.skipped,
-        )
+        # 前缀已在构造时整段校验；归纳地只校验新条目，与整段 check_order 的结论相同。
+        self._check_new(entry.ending, entry.session_id, "同一结束消息不能重复学习", "新消费不能重新学习切换前的结束消息")
+        return self._extend((*self.applied, entry), self.skipped, entry.ending[1], len(self.applied))
 
     def mark_skipped(self, entry: Skipped) -> Consumption:
         """记录一次明确跳过；图与节点身份不因跳过改变。"""
 
-        return Consumption(
-            cutover_heads=self.cutover_heads,
-            applied=self.applied,
-            skipped=(*self.skipped, entry),
+        self._check_new(entry.ending, entry.session_id, "同一结束消息不能既学习又跳过", "跳过记事不能指向切换前的结束消息")
+        return self._extend(self.applied, (*self.skipped, entry), entry.ending[1], -1)
+
+    # 私有缓存（索引、JSON 片段）不属于消费事实；相等只比较公开字段。
+    def __eq__(self, other: object) -> bool:
+        if not isinstance(other, Consumption):
+            return NotImplemented
+        return (self.version, self.cutover_heads, self.applied, self.skipped) == (
+            other.version, other.cutover_heads, other.applied, other.skipped)
+
+    __hash__ = None  # type: ignore[assignment]
+
+    def canonical_text(self) -> str:
+        """与 canonical_json(self.model_dump(mode="json")) 逐字节相同：键序 applied、cutover_heads、skipped、version。"""
+        if self._text is None:
+            if self._applied_json is None:
+                self._applied_json = [_canonical(entry.model_dump(mode="json")) for entry in self.applied]
+            if self._skipped_json is None:
+                self._skipped_json = [_canonical(entry.model_dump(mode="json")) for entry in self.skipped]
+            heads = _canonical([list(item) for item in self.cutover_heads])
+            self._text = (
+                '{"applied":[' + ",".join(self._applied_json) + '],"cutover_heads":' + heads
+                + ',"skipped":[' + ",".join(self._skipped_json) + '],"version":' + str(self.version) + "}"
+            )
+        return self._text
+
+    def check_suffix(self, turns: list[Turn], start: int) -> None:
+        """前 start 个节点已在上次发布时逐项核对，只核对之后的新节点。"""
+        self.check_count(len(turns))
+        for node_id in range(start, len(turns)):
+            turn, entry = turns[node_id], self.applied[node_id]
+            if turn.node_id != node_id:
+                raise ValueError("学习节点必须连续且有序")
+            if (turn.session_key != entry.session_id
+                or turn.assistant_message_id != entry.ending[1]
+                or (turn.user_seq, turn.user_message_id) not in entry.members):
+                raise ValueError("学习节点与消费出处不一致")
+
+    def applied_at(self, message_id: str) -> Applied | None:
+        index = self._endings.get(message_id, -1)
+        return None if index < 0 else self.applied[index]
+
+    def _check_new(self, ending: Ref, session_id: str, duplicate: str, cutover: str) -> None:
+        if ending[1] in self._endings:
+            raise ValueError(duplicate)
+        if ending[0] <= dict(self.cutover_heads).get(session_id, -1):
+            raise ValueError(cutover)
+
+    def _extend(self, applied: tuple[Applied, ...], skipped: tuple[Skipped, ...], ending: str, index: int) -> Consumption:
+        extended = Consumption.model_construct(
+            version=self.version, cutover_heads=self.cutover_heads, applied=applied, skipped=skipped,
         )
+        extended._endings = {**self._endings, ending: index}
+        if index >= 0 and self._applied_json is not None:
+            extended._applied_json = [*self._applied_json, _canonical(applied[-1].model_dump(mode="json"))]
+            extended._skipped_json = self._skipped_json
+        elif index < 0 and self._skipped_json is not None:
+            extended._skipped_json = [*self._skipped_json, _canonical(skipped[-1].model_dump(mode="json"))]
+            extended._applied_json = self._applied_json
+        return extended
 
     def check_count(self, count: int) -> None:
         if len(self.applied) != count:
             raise ValueError("消费进度与学习图节点数不一致")
+
+    def check_next(self, turns: list[Turn]) -> None:
+        """前缀已逐项对应时，只核对新追加的最后一个节点。"""
+        self.check_count(len(turns))
+        if not turns:
+            return
+        turn, entry = turns[-1], self.applied[-1]
+        if turn.node_id != len(turns) - 1:
+            raise ValueError("学习节点必须连续且有序")
+        if (turn.session_key != entry.session_id
+            or turn.assistant_message_id != entry.ending[1]
+            or (turn.user_seq, turn.user_message_id) not in entry.members):
+            raise ValueError("学习节点与消费出处不一致")
 
     def check_turns(self, turns: list[Turn]) -> None:
         """验证每个节点都逐项对应同一份已学出处。"""
@@ -117,6 +191,10 @@ class Consumption(BaseModel):
                 or turn.assistant_message_id != entry.ending[1]
                 or (turn.user_seq, turn.user_message_id) not in entry.members):
                 raise ValueError("学习节点与消费出处不一致")
+
+
+def _canonical(value: object) -> str:
+    return json.dumps(value, ensure_ascii=False, sort_keys=True, separators=(",", ":"), allow_nan=False)
 
 
 def message_nodes(applied: Sequence[Applied]) -> dict[str, int]:

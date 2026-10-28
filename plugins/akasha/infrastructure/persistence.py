@@ -7,6 +7,7 @@ import json
 import os
 import sqlite3
 import tempfile
+from collections.abc import Iterable
 from functools import cache
 from dataclasses import asdict
 from pathlib import Path
@@ -67,14 +68,27 @@ def write_memory_database(
     if "consumer_state_json" in metadata:
         raise ValueError("消费状态必须通过 consumption 提交")
     if consumption is not None:
-        consumption.check_turns(turns)
+        if previous_consumption is None:
+            consumption.check_turns(turns)
+        else:
+            consumption.check_suffix(turns, len(previous_consumption.applied))
         metadata = {
             **metadata,
-            "consumer_state_json": canonical_json(consumption.model_dump(mode="json")),
+            "consumer_state_json": consumption.canonical_text(),
         }
     elif output_path.exists() and load_consumption(output_path) is not None:
         raise ValueError("不能用旧 writer 覆盖已切换的消费状态")
     output_path.parent.mkdir(parents=True, exist_ok=True)
+    if previous_consumption is not None and consumption is not None and not captures:
+        if _publish_in_place(
+            output_path, turns=turns, graph=graph, events=events, evidence=evidence,
+            context=context, burst_members=burst_members, config=config, metadata=metadata,
+            recalls=recalls, consumption=consumption, previous=previous_consumption,
+        ):
+            graph.mark_published()
+            return ""
+        if _schema_version(output_path) != _SCHEMA_VERSION:
+            previous_consumption = None
     # 1. 本次写入只拥有自己的临时文件；失败不删除其他进程的恢复材料。
     descriptor, name = tempfile.mkstemp(
         prefix=output_path.name + ".", suffix=".tmp", dir=output_path.parent,
@@ -116,7 +130,91 @@ def write_memory_database(
         os.fsync(directory)
     finally:
         os.close(directory)
+    graph.mark_published()
     return sha256_file(output_path)
+
+
+def _schema_version(path: Path) -> int:
+    connection = sqlite3.connect(f"file:{path}?mode=ro", uri=True)
+    try:
+        return int(connection.execute("PRAGMA user_version").fetchone()[0])
+    finally:
+        connection.close()
+
+
+# 原地增量发布：同一 SQLite 事务写入本批新增行与变化行，提交即 (S(k), consumption[:k]) 一起前进。
+# 失败回滚保留上一检查点；外键在写入时逐行强制，前缀已在更早的发布中校验。
+def _publish_in_place(
+    output_path: Path,
+    *,
+    turns: list[Turn],
+    graph: DynamicMemoryGraph,
+    events: list[PlasticityResult],
+    evidence: list[SeedEvidence],
+    context: ContextState,
+    burst_members: dict[str, list[int]],
+    config: MemoryConfig,
+    metadata: dict[str, str],
+    recalls: list[RecallCapture] | tuple[RecallCapture, ...],
+    consumption: Consumption,
+    previous: Consumption,
+) -> bool:
+    published = graph.published
+    if published is None or published.turn_count != graph.turn_count or not output_path.exists():
+        return False
+    connection = sqlite3.connect(output_path, isolation_level=None)
+    try:
+        connection.execute("PRAGMA foreign_keys = ON")
+        connection.execute("PRAGMA synchronous = FULL")
+        connection.execute("BEGIN IMMEDIATE")
+        # 1. 文件必须正是上次发布的检查点：同 schema、同消费前缀、同配置、同容量与规模。
+        stored = dict(connection.execute("SELECT key, value FROM metadata"))
+        version = int(connection.execute("PRAGMA user_version").fetchone()[0])
+        start = len(previous.applied)
+        if (version != _SCHEMA_VERSION
+            or stored.get("consumer_state_json") != previous.canonical_text()
+            or stored.get("config_json") != canonical_json(asdict(config))
+            or stored.get("graph_turn_capacity") != str(published.turn_count)
+            or stored.get("relation_count") != str(published.edge_count)
+            or stored.get("hub_count") != str(published.hub_count)
+            or stored.get("turn_count") != str(start)
+            or consumption.cutover_heads != previous.cutover_heads
+            or consumption.applied[:start] != previous.applied
+            or consumption.skipped[:len(previous.skipped)] != previous.skipped):
+            connection.execute("ROLLBACK")
+            return False
+
+        # 2. 追加本批经历；改写变化的边、时钟、外部 seed 与小型当前态。
+        connection.execute("DELETE FROM metadata")
+        _write_metadata(connection, metadata, turns, graph, config)
+        _write_turns(connection, turns[start:])
+        _write_feedback_events(connection, turns[start:])
+        _write_hubs(connection, graph.hubs[published.hub_count:])
+        _write_edges(connection, graph, graph.changed_edges(), replace=True)
+        _write_edges(connection, graph, range(published.edge_count, len(graph.source)))
+        _write_clock(connection, graph)
+        connection.executemany(
+            "INSERT OR REPLACE INTO external_seed_state VALUES (?, ?)",
+            sorted(
+                (node, seconds)
+                for node, seconds in graph.last_external_seed_seconds.items()
+                if published.external.get(node) != seconds
+            ),
+        )
+        _write_events(connection, events[start:], evidence[start:], start=start)
+        _write_recalls(connection, [item for item in recalls if item.query_node_id >= start])
+        connection.execute("DELETE FROM context_state")
+        connection.execute("DELETE FROM burst_context_members")
+        _write_context(connection, context)
+        _write_burst_members(connection, burst_members)
+        connection.execute("COMMIT")
+        return True
+    except BaseException:
+        if connection.in_transaction:
+            connection.execute("ROLLBACK")
+        raise
+    finally:
+        connection.close()
 
 
 def _copy_previous_database(
@@ -134,7 +232,7 @@ def _copy_previous_database(
     try:
         source.execute("BEGIN")
         metadata = dict(source.execute("SELECT key, value FROM metadata"))
-        if Consumption.model_validate_json(metadata["consumer_state_json"]) != previous:
+        if metadata["consumer_state_json"] != previous.canonical_text():
             raise ValueError("连续发布的已发布消费状态发生变化")
         start = len(previous.applied)
         if (current.cutover_heads != previous.cutover_heads
@@ -207,6 +305,8 @@ def load_memory_state(
             len(turns),
             config,
         )
+        if int(connection.execute("PRAGMA user_version").fetchone()[0]) == _SCHEMA_VERSION:
+            graph.mark_published()
         events = _load_events(connection)
         evidence = _load_evidence(connection, len(events))
         context = _load_context(connection, turns)
@@ -463,6 +563,16 @@ def _write_graph(
     connection: sqlite3.Connection,
     graph: DynamicMemoryGraph,
 ) -> None:
+    _write_hubs(connection, graph.hubs)
+    _write_edges(connection, graph, range(len(graph.source)))
+    _write_clock(connection, graph)
+    connection.executemany(
+        "INSERT INTO external_seed_state VALUES (?, ?)",
+        sorted(graph.last_external_seed_seconds.items()),
+    )
+
+
+def _write_hubs(connection: sqlite3.Connection, hubs: list[HubRecord]) -> None:
     connection.executemany(
         "INSERT INTO hub_nodes VALUES (?, ?, ?, ?, ?, ?)",
         [
@@ -474,18 +584,26 @@ def _write_graph(
                 hub.innovation_mass,
                 len(hub.member_edge_ids),
             )
-            for hub in graph.hubs
+            for hub in hubs
         ],
     )
+
+
+def _write_edges(
+    connection: sqlite3.Connection,
+    graph: DynamicMemoryGraph,
+    edge_ids: Iterable[int],
+    *,
+    replace: bool = False,
+) -> None:
     membership_rows = []
     temporal_rows = []
-    for edge_id in range(len(graph.source)):
+    for edge_id in edge_ids:
         common = (
             edge_id,
             graph.source[edge_id],
             graph.target[edge_id],
             graph.weight[edge_id],
-            graph.effective_weight(edge_id),
             graph.last_updated[edge_id],
             graph.created_event[edge_id],
             graph.observed_credit[edge_id],
@@ -507,17 +625,21 @@ def _write_graph(
                     *common[1:],
                 )
             )
+    verb = "INSERT OR REPLACE" if replace else "INSERT"
     connection.executemany(
-        "INSERT INTO hub_memberships VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+        f"{verb} INTO hub_memberships VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
         membership_rows,
     )
     connection.executemany(
-        "INSERT INTO temporal_edges VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+        f"{verb} INTO temporal_edges VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
         temporal_rows,
     )
+
+
+def _write_clock(connection: sqlite3.Connection, graph: DynamicMemoryGraph) -> None:
     connection.execute(
         """
-        INSERT INTO plasticity_clock
+        INSERT OR REPLACE INTO plasticity_clock
         VALUES (1, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         """,
         (
@@ -541,10 +663,6 @@ def _write_graph(
             graph.recurrence_log_m2,
             graph.recurrence_weight,
         ),
-    )
-    connection.executemany(
-        "INSERT INTO external_seed_state VALUES (?, ?)",
-        sorted(graph.last_external_seed_seconds.items()),
     )
 
 
@@ -1180,6 +1298,10 @@ def _load_context(
     )
 
 
+# 3：去掉 effective_weight。它由 weight、最近支持时间与时钟导出，每轮都随时间变化，
+# 存下来会让「何时发布」改变已发布的行，在线按批发布就无法与一次性重建逐行相同。
+_SCHEMA_VERSION = 3
+
 _LOGICAL_STATE_TABLES = (
     "turn_nodes",
     "feedback_events",
@@ -1199,7 +1321,7 @@ _LOGICAL_STATE_TABLES = (
 
 _SCHEMA = """
 PRAGMA application_id = 1095452754;
-PRAGMA user_version = 2;
+PRAGMA user_version = 3;
 
 CREATE TABLE metadata (
     key TEXT PRIMARY KEY,
@@ -1240,7 +1362,6 @@ CREATE TABLE hub_memberships (
     turn_node_id INTEGER NOT NULL REFERENCES turn_nodes(node_id),
     hub_node_id INTEGER NOT NULL REFERENCES hub_nodes(node_id),
     weight REAL NOT NULL CHECK(weight >= 0.0),
-    effective_weight REAL NOT NULL CHECK(effective_weight >= 0.0),
     last_updated_event INTEGER NOT NULL,
     created_event INTEGER NOT NULL,
     observed_credit REAL NOT NULL,
@@ -1262,7 +1383,6 @@ CREATE TABLE temporal_edges (
     source_node_id INTEGER NOT NULL REFERENCES turn_nodes(node_id),
     target_node_id INTEGER NOT NULL REFERENCES turn_nodes(node_id),
     weight REAL NOT NULL CHECK(weight >= 0.0),
-    effective_weight REAL NOT NULL CHECK(effective_weight >= 0.0),
     last_updated_event INTEGER NOT NULL,
     created_event INTEGER NOT NULL,
     observed_credit REAL NOT NULL,

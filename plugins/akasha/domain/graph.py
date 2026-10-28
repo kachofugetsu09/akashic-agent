@@ -15,6 +15,23 @@ from .model import DiffusionResult, MemoryConfig, PlasticityResult, SeedEvidence
 MEMBERSHIP = 0
 TEMPORAL_FORWARD = 1
 TEMPORAL_BACKWARD = 2
+# 持久化的逐边列；发布时与上次发布的副本逐位比对，只重写变化的边。
+EDGE_COLUMNS = (
+    "source", "target", "weight", "last_updated", "created_event", "observed_credit",
+    "recurrent_credit", "support_credit", "independent_credit", "last_support_seconds",
+    "resource", "plasticity_threshold", "last_stimulated_seconds",
+)
+
+
+@dataclass(frozen=True)
+class PublishedGraph:
+    """Remember what the durable snapshot already holds so the next publish writes only the difference."""
+
+    turn_count: int
+    edge_count: int
+    hub_count: int
+    columns: dict[str, np.ndarray]
+    external: dict[int, float]
 
 
 @dataclass(frozen=True)
@@ -103,6 +120,31 @@ class DynamicMemoryGraph:
         # 读出侧 basin 结构缓存：按 hub 创建事件记录，学习改过成员权重的 hub 记为脏；None 表示全部重算。
         self.basin_cache: dict[int, object] = {}
         self._dirty_basins: set[int] | None = None
+        self.published: PublishedGraph | None = None
+
+    def mark_published(self) -> None:
+        """Record the state just made durable; only called after the snapshot commit succeeded."""
+
+        self.published = PublishedGraph(
+            turn_count=self.turn_count,
+            edge_count=len(self.source),
+            hub_count=len(self.hubs),
+            columns={name: _column(getattr(self, name)).copy() for name in EDGE_COLUMNS},
+            external=dict(self.last_external_seed_seconds),
+        )
+
+    def changed_edges(self) -> list[int]:
+        """Return published edges whose persisted columns differ bit-for-bit from the last publish."""
+
+        published = self.published
+        if published is None:
+            raise RuntimeError("graph has no published snapshot")
+        count = published.edge_count
+        changed = np.zeros(count, dtype=bool)
+        for name in EDGE_COLUMNS:
+            current = _column(getattr(self, name))[:count]
+            changed |= current.view(np.uint64) != published.columns[name].view(np.uint64)
+        return [int(edge) for edge in np.flatnonzero(changed)]
 
     def take_dirty_basins(self) -> set[int] | None:
         dirty = self._dirty_basins
@@ -1174,6 +1216,11 @@ class DynamicMemoryGraph:
         return threshold + (1.0 - threshold) * -math.expm1(
             -(activity * activity)
         )
+
+
+def _column(values: array) -> np.ndarray:
+    dtype = np.float64 if values.typecode == "d" else np.int64
+    return np.frombuffer(values, dtype=dtype) if len(values) else np.empty(0, dtype=dtype)
 
 
 def _entmax15(logits: np.ndarray) -> tuple[tuple[int, float], ...]:
