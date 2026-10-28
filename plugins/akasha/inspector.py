@@ -196,8 +196,10 @@ class RecallInspector:
 
         ordered = sorted(records.items(), key=lambda item: (item[1].timestamp, item[0]))
         items: list[dict[str, object]] = []
+        # 本轮成员让同一轮的其他展示（例如回答的工具栏）认领这份召回，不必再查一次。
         payload = {"items": items, "pending": pending, "legacy_pending": False,
-                   "input_message_id": target.identity, "next_offset": len(ordered)}
+                   "input_message_id": target.identity, "message_ids": sorted(members),
+                   "next_offset": len(ordered)}
         size = len(json.dumps(payload, ensure_ascii=False, separators=(",", ":")).encode()) + 4
         for identity, recall in ordered[offset:]:
             detail = self._detail(identity, recall)
@@ -240,7 +242,8 @@ class RecallInspector:
                 text = "\n".join(cast(str, part.value) for part in message.body.parts
                                  if isinstance(part, ContentPart) and part.kind == "text")
                 messages.append({"message_id": message_id, "preview": text[:240],
-                                 "truncated": len(text) > 240,
+                                 "truncated": len(text) > 240, "author": message.author,
+                                 "recorded_at": message.recorded_at.isoformat(),
                                  "presented": message_id in recall.presented_message_ids})
             hits.append({"score": hit.score, "lane": hit.lane, "sources": list(hit.sources), "messages": messages})
         return self._ui_result({**self._summary(identity, recall), "hits": hits, "pushes": recall.pushes,

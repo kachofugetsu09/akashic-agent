@@ -125,6 +125,7 @@ class PluginUiAsset:
 PluginUiSlot = Literal[
     "turn.before_reasoning",
     "turn.after_answer",
+    "message.actions",
     "drawer.panel",
     "tool.result",
     "message.attachment",
@@ -143,6 +144,7 @@ PLUGIN_UI_SLOTS = frozenset(
     {
         "turn.before_reasoning",
         "turn.after_answer",
+        "message.actions",
         "drawer.panel",
         "tool.result",
         "message.attachment",

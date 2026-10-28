@@ -2012,6 +2012,12 @@ button.tool-step-summary:active {
 }
 @keyframes shared-delivery-reveal { from { opacity: 0; translate: 0 2px; filter: blur(3px); } }
 
+/* 插件操作与宿主按钮排在同一行：插槽与挂载点不占位，按钮直接参与工具栏布局。 */
+.plugin-ui-slot[data-slot="message.actions"],
+.plugin-ui-slot[data-slot="message.actions"] > .plugin-ui-host {
+  display: contents;
+}
+
 /* 热区与视觉尺寸的唯一 owner；窄屏断点只改这两个变量（触控目标 ≥44px，视觉仍 24px）。 */
 .shared-message-actions {
   --shared-action-hit: 40px;
