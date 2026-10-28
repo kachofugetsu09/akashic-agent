@@ -137,7 +137,7 @@
 .akasha-recall-said[hidden], .akasha-recall-panel ol[hidden] { display: none; }
 
 .akasha-recall-more { padding: 4px 8px; color: var(--ak-ink-muted); font-size: 0.75rem; }
-.akasha-recall-more::after { content: " ›"; display: inline-block; transition: rotate 150ms; }
+.akasha-recall-more::after { content: "›"; display: inline-block; margin-inline-start: 4px; transition: rotate 150ms; }
 .akasha-recall-more[aria-expanded="true"]::after { rotate: 90deg; }
 .akasha-recall-more:hover { color: var(--ak-ink-primary); }
 

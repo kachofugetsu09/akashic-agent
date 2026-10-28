@@ -38,19 +38,29 @@ function shortDate(value) {
   return date.getFullYear() === new Date().getFullYear() ? day : `${date.getFullYear()}年${day}`;
 }
 
-/** 一轮可能有多次真实查询命中同一段对话；按消息成员去重，给模型看过的排前面。 */
+const leadMessage = (hit) => hit.messages.find((message) => message.author === "user") ?? hit.messages[0];
+
+/** 多次查询、相邻窗口会命中同一段对话；按开头那条消息合并成一段，给模型看过的排前面。 */
 function recallView(result) {
-  const hits = [...new Map(result.items.flatMap((item) => item.hits)
-    .map((hit) => [JSON.stringify(hit.messages.map((message) => message.message_id)), hit])).values()];
+  const merged = new Map();
+  for (const hit of result.items.flatMap((item) => item.hits)) {
+    const key = leadMessage(hit)?.message_id ?? JSON.stringify(hit.messages.map((message) => message.message_id));
+    const known = merged.get(key);
+    if (!known) { merged.set(key, { ...hit, messages: [...hit.messages] }); continue; }
+    const ids = new Set(known.messages.map((message) => message.message_id));
+    known.messages.push(...hit.messages.filter((message) => !ids.has(message.message_id)));
+  }
+  const hits = [...merged.values()];
   const shown = hits.filter((hit) => hit.messages.some((message) => message.presented));
   return { shown, rest: hits.filter((hit) => !shown.includes(hit)), count: hits.length };
 }
 
 function hitRow(hit) {
-  const first = hit.messages.find((message) => message.author === "user") ?? hit.messages[0];
+  const first = leadMessage(hit);
   const title = (first?.preview || "（非文本消息）").split("\n").find((line) => line.trim()) ?? "";
-  const lines = hit.messages.map((message) => `<p><i>${message.author === "user" ? "你" : "我"}</i><span>${
-    escapeHtml(message.preview || "（非文本消息）")}${message.truncated ? "…" : ""}</span></p>`).join("");
+  // 工具调用等没有正文的步骤不列出。
+  const lines = hit.messages.filter((message) => message.preview).map((message) => `<p><i>${message.author === "user" ? "你" : "我"}</i><span>${
+    escapeHtml(message.preview)}${message.truncated ? "…" : ""}</span></p>`).join("");
   return `<li><button type="button" class="akasha-recall-row" aria-expanded="false">
     <time>${first?.recorded_at ? escapeHtml(shortDate(first.recorded_at)) : ""}</time><span>${escapeHtml(title)}</span>
     ${hit.lane === "completion" ? "<small>联想</small>" : ""}</button><div class="akasha-recall-said" hidden>${lines}</div></li>`;
