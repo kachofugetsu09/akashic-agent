@@ -217,6 +217,8 @@ class MemoryCycle:
         self,
         turn: Turn,
         ticket: RetrievalTicket | None,
+        *,
+        record_recall: bool = False,
     ) -> CycleCommit:
         """Commit one turn and its retrieval-induced plasticity atomically."""
 
@@ -231,8 +233,10 @@ class MemoryCycle:
             else turn
         )
         if recomputed:
+            # 学习只读 evidence 与 diffusion；模式补全只供 Inspector 记录，默认不算。
             selected = self.retrieve(
                 causal_turn,
+                include_completion=record_recall,
             )
         else:
             if ticket is None:

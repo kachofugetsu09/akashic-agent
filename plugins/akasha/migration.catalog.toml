@@ -1,6 +1,6 @@
 schema_version = 2
 bundle_id = "akasha"
-version = "1.3.0"
+version = "1.4.0"
 migration_root = "akasha_migrations"
 package_name = "akasha_migrations"
 
@@ -26,4 +26,10 @@ transactional = false
 id = "20260918_04_retire_removed_config_keys"
 path = "20260918_04_retire_removed_config_keys.py"
 depends = ["20260918_03_register_replay_without_memory_config"]
+transactional = false
+
+[[migrations]]
+id = "20261029_01_replay_with_single_thread_dense"
+path = "20261029_01_replay_with_single_thread_dense.py"
+depends = ["20260918_04_retire_removed_config_keys"]
 transactional = false

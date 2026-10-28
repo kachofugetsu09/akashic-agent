@@ -2587,7 +2587,9 @@ telegramify-markdown==1.2.0 \
 threadpoolctl==3.6.0 \
     --hash=sha256:43a0b8fd5a2928500110039e43a5eed8480b918967083ea48dc3ab9f13c4a7fb \
     --hash=sha256:8ab8b4aa3491d812b623328249fab5302a68d2d71745c8a4c719a2fcaba9f44e
-    # via scikit-learn
+    # via
+    #   -r docker/host-runtime/../../requirements.txt
+    #   scikit-learn
 toml==0.10.2 \
     --hash=sha256:806143ae5bfb6a3c6e736a764057db0e6a0e05e338b5630894a5f779cabb4f9b \
     --hash=sha256:b3bda1d108d5dd99f4a20d24d9c348e91c4db7ab1b749200bded2f839ccbe68f

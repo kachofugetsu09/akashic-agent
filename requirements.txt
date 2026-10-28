@@ -24,6 +24,7 @@ networkx>=3.4.0
 numba>=0.68.1
 numpy>=2.4.0
 sqlite-vec>=0.1.6
+threadpoolctl>=3.6.0
 openai>=2.0.0
 Pillow>=11.0.0
 playwright==1.59.0
