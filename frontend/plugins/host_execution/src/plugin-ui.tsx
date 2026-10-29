@@ -14,8 +14,12 @@ function HostBridgeNotice({ context }: { context: PluginUiContext<"chat.notice">
     let timer: ReturnType<typeof setTimeout>;
     // 连续失败从第一次失败请求发出时起算；任何一次确认到状态都清零。
     let failingSince: number | null = null;
+    let inflight = false;
     async function refresh() {
+      // 页面隐藏时不轮询；回到可见时立刻核对一次再恢复计时。
+      if (document.visibilityState === "hidden") return;
       const startedAt = Date.now();
+      inflight = true;
       try {
         const next = noticeFor(await context.query("bridge.state", {}, { cache: "none" }));
         if (active) setNotice(next);
@@ -25,11 +29,21 @@ function HostBridgeNotice({ context }: { context: PluginUiContext<"chat.notice">
         failingSince ??= startedAt;
         // 宽限期内保留上一次确认到的提示，避免共享事件循环偶发停顿造成闪烁。
         if (Date.now() - failingSince >= UNCONFIRMED_GRACE_MS) setNotice(UNCONFIRMED_NOTICE);
+      } finally {
+        inflight = false;
       }
       if (active) timer = setTimeout(refresh, POLL_INTERVAL_MS);
     }
+    function onVisibility() {
+      // 在途的那次结束后会自己排下一次，这里只补停掉的计时链。
+      if (document.visibilityState === "hidden" || !active || inflight) return;
+      clearTimeout(timer);
+      failingSince = null;
+      void refresh();
+    }
+    document.addEventListener("visibilitychange", onVisibility);
     void refresh();
-    return () => { active = false; clearTimeout(timer); };
+    return () => { active = false; clearTimeout(timer); document.removeEventListener("visibilitychange", onVisibility); };
   }, [context]);
   return notice ? <Notice>{notice}</Notice> : null;
 }
