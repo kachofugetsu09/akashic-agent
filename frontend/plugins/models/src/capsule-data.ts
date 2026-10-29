@@ -64,6 +64,11 @@ export function chatModelState(payload: unknown, known?: ChatModelState | null):
       sessionSelection: { modelRef: selection.modelRef, reasoningEffort: selection.reasoningEffort } };
   }
   if (!Array.isArray(body.runtimes) || !Array.isArray(body.unavailableRuntimes)) throw new Error("模型列表格式无效");
+  const icons = record(body.sourceIcons) ?? {};
+  const iconOf = (sourceId: string) => {
+    const icon = icons[sourceId];
+    return typeof icon === "string" && icon.startsWith("data:image/svg+xml,") ? icon : "";
+  };
   const runtimes = body.runtimes.map((value): ChatModelRuntime => {
     const item = record(value);
     if (!item || typeof item.id !== "string" || typeof item.provider !== "string" || typeof item.model !== "string"
@@ -71,7 +76,7 @@ export function chatModelState(payload: unknown, known?: ChatModelState | null):
       || !strings(item.supportedReasoningEfforts) || !strings(item.roles)) throw new Error("模型条目格式无效");
     return {
       id: item.id, provider: item.provider, model: item.model, sourceId: item.sourceId, sourceName: item.sourceName,
-      icon: typeof item.icon === "string" && item.icon.startsWith("data:image/svg+xml,") ? item.icon : "",
+      icon: iconOf(item.sourceId),
       reasoningEffort: item.reasoningEffort, supportedReasoningEfforts: item.supportedReasoningEfforts, roles: item.roles,
       contextWindow: typeof item.contextWindow === "number" && Number.isFinite(item.contextWindow) ? item.contextWindow : 0,
       inputModalities: strings(item.inputModalities) ? item.inputModalities : [],
