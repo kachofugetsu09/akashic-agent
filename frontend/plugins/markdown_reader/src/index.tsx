@@ -169,8 +169,12 @@ class Reader {
       this.jump(href.slice(1));
       return;
     }
-    if (/^[a-z][a-z0-9+.-]*:/i.test(href) || !/\.(md|markdown|mdown)(?:#.*)?$/i.test(href)) return;
+    if (/^(https?|mailto):/i.test(href)) return;
     event.preventDefault();
+    if (/^[a-z][a-z0-9+.-]*:/i.test(href) || !/\.(md|markdown|mdown)(?:#.*)?$/i.test(href)) {
+      this.note.textContent = "阅读器只打开 Markdown 链接和网页链接。";
+      return;
+    }
     const [raw, fragment] = href.split("#");
     let relative: string;
     try {
@@ -213,9 +217,9 @@ class Reader {
   }
 
   // 1. 只采用最新一次浏览的结果；2. 工作目录换了就整体重置；3. 大纲模式下只更新状态不重画。
-  private async files(path = "", after = ""): Promise<void> {
+  private async files(path = "", after = "", background = false): Promise<void> {
     const generation = this.generation;
-    const navigation = ++this.navigation;
+    const navigation = background ? this.navigation : ++this.navigation;
     try {
       const result = await this.get("files", { path, after });
       if (this.disposed || generation !== this.generation || navigation !== this.navigation) return;
@@ -257,7 +261,7 @@ class Reader {
         this.list.append(parent);
       }
     }
-    this.listed = after ? "" : key;
+    if (!after) this.listed = key;
     for (const item of result.items || []) {
       const directory = item.name.endsWith("/");
       const entry = button(item.name, () => {
@@ -291,7 +295,7 @@ class Reader {
       if (this.disposed || generation !== this.generation) return;
       const changed = result.text !== this.text || result.path !== this.path;
       this.path = result.path;
-      this.input.value = result.path;
+      if (!refresh) this.input.value = result.path;
       this.name.textContent = basename(result.path);
       this.name.title = result.path;
       this.text = result.text ?? "";
@@ -333,11 +337,12 @@ class Reader {
   private decorate(): void {
     const slugs = new Map<string, number>();
     this.article.querySelectorAll("h1,h2,h3,h4,h5,h6").forEach((heading) => {
+      if (heading.id) return;
       const slug = (heading.textContent || "section").toLowerCase()
         .replace(/[^\p{L}\p{N}\s_-]/gu, "").replace(/\s+/g, "-");
       const count = slugs.get(slug) || 0;
       slugs.set(slug, count + 1);
-      heading.id = count ? `${slug}-${count}` : slug;
+      heading.id = `md-${count ? `${slug}-${count}` : slug}`;
     });
     this.article.querySelectorAll("a").forEach((link) => {
       if (/^https?:/i.test(link.getAttribute("href") || "")) {
@@ -363,7 +368,8 @@ class Reader {
     } catch {
       return;
     }
-    const heading = [...this.article.querySelectorAll<HTMLElement>("[id]")].find((node) => node.id === id);
+    const nodes = [...this.article.querySelectorAll<HTMLElement>("[id]")];
+    const heading = nodes.find((node) => node.id === `md-${id}`) ?? nodes.find((node) => node.id === id);
     heading?.scrollIntoView({ block: "start" });
   }
 
@@ -397,7 +403,7 @@ class Reader {
     if (!this.active || this.disposed) return;
     this.timer = setTimeout(async () => {
       if (!document.hidden) {
-        await this.files(this.directory);
+        await this.files(this.directory, "", true);
         if (this.path) await this.open(this.path, true);
       }
       this.schedule();
