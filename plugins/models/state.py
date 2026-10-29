@@ -133,6 +133,7 @@ _RUN_ADMISSION = threading.Lock()
 _AUTH_ATTEMPT_TTL_SECONDS = 15 * 60
 _SETTINGS_MAX_MODEL_PROBES = 16
 _SETTINGS_MODEL_PROBE_SECONDS = 60
+_SETTINGS_MODEL_PROBE_CONCURRENCY = 4
 _DEFAULT_ROLE = "default"
 # 主模型的调用出处名；插件经 use() 取的模型记为各自的 use_id。
 _MAIN_ROLE = "chat"
@@ -1964,13 +1965,23 @@ class ModelsState:
             if not models:
                 return
             # 2. 所有候选调用成功才允许原事务更新；失败不改写旧凭证或用途。
+            # 各模型的验证互不依赖，限量并发：总耗时约等于最慢的一个，而不是逐个相加。
             definition, driver = await self._open_driver(connection, opened, credential=credential)
+            gate = asyncio.Semaphore(_SETTINGS_MODEL_PROBE_CONCURRENCY)
+
+            async def check(model: StoredModel) -> None:
+                async with gate:
+                    await self._check_bound_model(snapshot, connection, model, definition, driver, credential)
+
             try:
-                async with asyncio.timeout(_SETTINGS_MODEL_PROBE_SECONDS):
+                async with asyncio.timeout(_SETTINGS_MODEL_PROBE_SECONDS), asyncio.TaskGroup() as group:
                     for model in models:
-                        await self._check_bound_model(snapshot, connection, model, definition, driver, credential)
+                        _ = group.create_task(check(model))
             except TimeoutError as error:
                 raise ModelTimeoutError("模型验证超过一分钟；连接未更新，请稍后重试。").exception() from error
+            except BaseExceptionGroup as failures:
+                # 3. 报第一个失败的模型，其余验证已被取消；错误形状与逐个验证时相同。
+                raise failures.exceptions[0] from None
 
     async def _probe_connection(
         self,
