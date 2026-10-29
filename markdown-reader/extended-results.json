@@ -1,0 +1,14 @@
+{
+  "longBytes": 273200,
+  "headings": 1800,
+  "loadMs": 424,
+  "passed": [
+    "refresh preserves scroll",
+    "external disk update preserves scroll",
+    "outline actual scroll",
+    "hidden zero network for 5.6 seconds",
+    "reactivation requests resume",
+    "session switch clears old content"
+  ],
+  "scope": "latest plugin artifact + real backend + minimal view adapter"
+}

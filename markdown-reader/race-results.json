@@ -1,0 +1,10 @@
+{
+  "passed": [
+    "slow A then fast B retains B",
+    "session switch rejects in-flight response",
+    "relative Markdown CJK fragment actually scrolls",
+    "error then valid open recovers"
+  ],
+  "delayMs": 900,
+  "pageErrors": []
+}
