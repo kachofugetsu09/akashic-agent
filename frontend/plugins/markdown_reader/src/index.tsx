@@ -21,7 +21,8 @@ class Reader {
   private active: boolean;
   private path = "";
   private directory = "";
-  private workdir: string | undefined;
+  private workdir: string | null | undefined;
+  private navMode: "files" | "outline" = "files";
   private text: string | null = null;
   private source = false;
   private generation = 0;
@@ -39,7 +40,7 @@ class Reader {
     this.bar.append(this.input, open);
     this.bar.onsubmit = (event) => { event.preventDefault(); void this.open(this.input.value.trim()); };
     const tools = el("div"); tools.className = "md-tools";
-    const files = button("文件", () => { this.nav.hidden = !this.nav.hidden; if (!this.nav.hidden) void this.files(this.directory); });
+    const files = button("文件", () => { this.navMode = "files"; this.nav.hidden = !this.nav.hidden; if (!this.nav.hidden) void this.files(this.directory); });
     const outline = button("目录", () => this.outline());
     const source = button("源码", () => { this.source = !this.source; source.textContent = this.source ? "阅读" : "源码"; source.setAttribute("aria-pressed", String(this.source)); this.render(); });
     tools.append(files, outline, source, button("刷新", () => { void this.files(this.directory); if (this.path) void this.open(this.path, true); }));
@@ -74,7 +75,8 @@ class Reader {
       const result = await this.get("files", { path, after });
       if (this.disposed || generation !== this.generation || navigation !== this.navigation) return;
       if (this.workdir !== undefined && result.root !== this.workdir) { this.reset(); void this.files(); return; }
-      this.workdir = result.root; this.directory = result.path;
+      this.workdir = result.root ?? null; this.directory = result.path;
+      if (this.navMode === "outline" && this.path) return;
       if (!after) this.nav.replaceChildren();
       if (!after && result.parent && result.path !== result.root) this.nav.append(button("上一级", () => void this.files(result.parent)));
       for (const item of result.items || []) {
@@ -104,7 +106,12 @@ class Reader {
     if (this.text === null) return;
     if (this.source) { const pre = el("pre", this.text); pre.className = "md-source"; this.article.replaceChildren(pre); return; }
     // micromark escapes raw HTML and rejects dangerous protocols by default. Never enable dangerous HTML.
-    this.article.innerHTML = micromark(this.text, { extensions: [gfm()], htmlExtensions: [gfmHtml()] });
+    const template = document.createElement("template");
+    template.innerHTML = micromark(this.text, { extensions: [gfm()], htmlExtensions: [gfmHtml()] });
+    template.content.querySelectorAll("img").forEach((image) => {
+      const label = el("span", `[图片：${image.alt || "未命名"}；暂不加载]`); label.className = "md-image-note"; image.replaceWith(label);
+    });
+    this.article.replaceChildren(template.content);
     const slugs = new Map<string, number>();
     this.article.querySelectorAll("h1,h2,h3,h4,h5,h6").forEach((heading) => {
       const slug = (heading.textContent || "section").toLowerCase().replace(/[^\p{L}\p{N}\s_-]/gu, "").replace(/\s+/g, "-");
@@ -112,12 +119,12 @@ class Reader {
       heading.id = count ? `${slug}-${count}` : slug;
     });
     this.article.querySelectorAll("a").forEach((link) => { if (/^https?:/i.test(link.getAttribute("href") || "")) { link.target = "_blank"; link.rel = "noopener noreferrer"; } });
-    // Do not turn Markdown into arbitrary host-file reads or passive external tracking requests.
-    this.article.querySelectorAll("img").forEach((image) => { const label = el("span", `[图片：${image.alt || "未命名"}；暂不加载]`); label.className = "md-image-note"; image.replaceWith(label); });
+    // Images were removed in the inert template, before any network requests can start.
     this.article.querySelectorAll("table").forEach((table) => { const wrapper = el("div"); wrapper.className = "md-table"; wrapper.tabIndex = 0; table.replaceWith(wrapper); wrapper.append(table); });
     this.article.querySelectorAll("input").forEach((input) => { input.disabled = true; });
   }
   private outline() {
+    this.navMode = "outline";
     this.nav.replaceChildren(); this.nav.hidden = false;
     if (this.source) { this.nav.append(el("p", "切回阅读模式查看目录。")); return; }
     this.article.querySelectorAll<HTMLElement>("h1,h2,h3,h4,h5,h6").forEach((heading) => {
