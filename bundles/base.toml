@@ -113,6 +113,9 @@ plugin = "terminal@release"
 [rows."workspace_changes"]
 plugin = "workspace_changes@release"
 
+[rows."markdown_reader"]
+plugin = "markdown_reader@release"
+
 [rows."runtime_inspection"]
 plugin = "runtime_inspection@release"
 
