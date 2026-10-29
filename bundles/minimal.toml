@@ -247,3 +247,7 @@ disabled = true
 [rows."workspace_changes"]
 plugin = "workspace_changes@release"
 disabled = true
+
+[rows."markdown_reader"]
+plugin = "markdown_reader@release"
+disabled = true
