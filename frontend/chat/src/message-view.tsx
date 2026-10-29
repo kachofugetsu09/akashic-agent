@@ -34,6 +34,7 @@ import {
   useEffect,
   useLayoutEffect,
   useRef,
+  useCallback,
   useMemo,
   useState,
 } from "react";
@@ -48,6 +49,7 @@ import { timelineReply, timelineToolOutput, historyTranscript, isTimelinePartVis
 import { MessageReplyReference } from "./message-actions";
 import { StaticMessageResponse } from "./static-message-response";
 import { Disclosure, formatToolDuration, ToolResultContent, useStickyDisclosure } from "./tool-result-view";
+import { FindRegionCount, useFindRegion } from "./thread-find";
 
 const LazyMessageResponse = lazy(() =>
   import("@/components/ai-elements/message-response").then(({ MessageResponse }) => ({ default: MessageResponse })),
@@ -432,17 +434,19 @@ function groupProcessSteps<T>(
 
 /** 收起的工具组：一行 caret + 计数，语序跟 Claude 的 "Show N earlier steps" 一致；
     展开后逐行恢复原行和详情，再收起时同一行回到原处。 */
-function CollapsedToolGroup({ count, durationMs, children }: {
+function CollapsedToolGroup({ count, durationMs, findText, children }: {
   count: number;
   durationMs?: number;
+  findText: () => string;
   children: ReactNode;
 }) {
-  const { open, instant, rowRef, toggle } = useStickyDisclosure();
+  const { open, instant, rowRef, toggle, setOpen } = useStickyDisclosure();
   // 成员要先进 DOM 才有 0fr 的起始高度可过渡：等到点击那一帧再挂载，首帧就已经是 1fr，
   // 高度是直接跳上去的。悬停或聚焦时就先挂进来（此时还是 0fr、inert），点下去就有得动。
   // 触屏没有悬停，首次点开仍是直接到位——按 3.16，点击引起的布局变化本就在 click 之后提交。
   const [mounted, setMounted] = useState(false);
   const prefetch = () => setMounted(true);
+  const matches = useFindRegion(rowRef, open, findText, (next) => { setMounted(true); setOpen(next); });
   return (
     <div className={`tool-group${open ? " is-open" : ""}`}>
       <div ref={rowRef} className={`tool-step-sticky${open ? " is-open" : ""}`}>
@@ -460,7 +464,7 @@ function CollapsedToolGroup({ count, durationMs, children }: {
               <ChevronDown className={`tool-group-caret ${open ? "open" : ""}`} size={13} aria-hidden="true" />
               <span>{count} 个更早步骤</span>
             </span>
-            <span className="tool-step-description" />
+            <span className="tool-step-description"><FindRegionCount count={matches} /></span>
             <span className="tool-step-state">
               {durationMs !== undefined ? formatToolDuration(durationMs) : ""}
             </span>
@@ -506,7 +510,8 @@ function TimelineProcess({ flow, draftThinking = "", draftThinkingActive = false
       {grouped.map((item) => "members" in item ? (
         <Fragment key={`toolgroup-${item.members[0].key}`}>
           {item.members.some((member) => member.key === slotKey) ? beforeReasoning?.(item.members[0].origin) : null}
-          <CollapsedToolGroup count={item.members.length} durationMs={item.durationMs}>
+          <CollapsedToolGroup count={item.members.length} durationMs={item.durationMs}
+            findText={() => item.members.map(flowItemFindText).join("\n")}>
             {item.members.map((member) => <FlowItemView key={member.key} item={member} onCopyToolDetail={onCopyToolDetail} partView={partView} />)}
           </CollapsedToolGroup>
         </Fragment>
@@ -573,10 +578,12 @@ function TurnProcessSummary({ items, durationMs, children }: {
   durationMs?: number;
   children: ReactNode;
 }) {
-  const { open, instant, rowRef, toggle } = useStickyDisclosure();
+  const { open, instant, rowRef, toggle, setOpen } = useStickyDisclosure();
   // 同 CollapsedToolGroup：先挂进来才有 0fr 起始高度，否则首次展开是直接跳高。
   const [mounted, setMounted] = useState(false);
   const prefetch = () => setMounted(true);
+  const findText = useCallback(() => items.map(flowItemFindText).join("\n"), [items]);
+  const matches = useFindRegion(rowRef, open, findText, (next) => { setMounted(true); setOpen(next); });
   const thinking = items.filter((item) => item.kind === "thinking").length;
   const tools = items.filter((item) => item.kind === "tool");
   const failed = tools.filter((item) => item.kind === "tool" && item.block.status === "output-error").length;
@@ -594,7 +601,7 @@ function TurnProcessSummary({ items, durationMs, children }: {
               <Icon className="tool-step-icon" size={13} aria-hidden="true" />
               <span>{label}</span>
             </span>
-            <span className="tool-step-description">{failed ? <em className="turn-process-failed">{failed} 个失败</em> : null}</span>
+            <span className="tool-step-description">{failed ? <em className="turn-process-failed">{failed} 个失败</em> : null}<FindRegionCount count={matches} /></span>
             <span className="tool-step-state">
               {durationMs !== undefined ? formatTurnDuration(durationMs) : ""}
               <CollapseHint open={open} lead={durationMs !== undefined} />
@@ -1188,7 +1195,8 @@ const ProcessTrace = memo(function ProcessTrace({
     <div className="process-trace">
       {startContent}
       {grouped.map((entry) => "members" in entry ? (
-        <CollapsedToolGroup key={`toolgroup-${entry.members[0].index}`} count={entry.members.length} durationMs={entry.durationMs}>
+        <CollapsedToolGroup key={`toolgroup-${entry.members[0].index}`} count={entry.members.length} durationMs={entry.durationMs}
+          findText={() => entry.members.map((member) => agentBlockFindText(member.block)).join("\n")}>
           {entry.members.map((member) => (
             <Fragment key={member.index}>
               {beforeBlock?.(member.block, member.index)}
@@ -1222,7 +1230,7 @@ const ThinkingRow = memo(function ThinkingRow({
     // 流式时只在标题行滚动最新一句，不自动展开：展开会与标题行重复同一句，结束时行重挂载又会瞬间收起。
     // Render ordinary Markdown right away; math and code still need the rich renderer.
     <Reasoning className="thinking-row" isStreaming={streaming} defaultOpen={false} duration={duration}>
-      <div className="process-trigger-sticky"><ThinkingRowTrigger content={streaming ? content : ""} /></div>
+      <ThinkingRowTrigger content={streaming ? content : ""} findText={content} />
       <CollapsibleContent className="process-content">
         <div className="process-text process-markdown">
           {needsRichContent ? <Suspense fallback={<span className="process-markdown-fallback">{content}</span>}>
@@ -1234,8 +1242,11 @@ const ThinkingRow = memo(function ThinkingRow({
   );
 });
 
-function ThinkingRowTrigger({ content }: { content: string }) {
-  const { isOpen, isStreaming, duration } = useReasoning();
+function ThinkingRowTrigger({ content, findText }: { content: string; findText: string }) {
+  const { isOpen, isStreaming, duration, setIsOpen } = useReasoning();
+  const rowRef = useRef<HTMLDivElement>(null);
+  const text = useCallback(() => findText, [findText]);
+  const matches = useFindRegion(rowRef, isOpen, text, setIsOpen);
   // 收起长内容后视口可能跳离原位；结束后把行滚回最近可见位置。
   const handleClick = (event: ReactMouseEvent<HTMLButtonElement>) => {
     if (!isOpen) return;
@@ -1245,14 +1256,17 @@ function ThinkingRowTrigger({ content }: { content: string }) {
     }));
   };
   return (
-    <ReasoningTrigger className={`process-trigger ${isStreaming ? "is-streaming" : ""}`} onClick={handleClick}>
-      <Brain className="process-trigger-icon" size={13} aria-hidden="true" />
-      <span className="process-trigger-label">
-        {isStreaming ? "正在思考" : duration ? `已思考 ${duration}s` : "已思考"}
-      </span>
-      {content ? <ThinkingTail content={content} /> : null}
-      <ChevronDown className={`process-chevron ${isOpen ? "open" : ""}`} size={13} aria-hidden="true" />
-    </ReasoningTrigger>
+    <div ref={rowRef} className="process-trigger-sticky">
+      <ReasoningTrigger className={`process-trigger ${isStreaming ? "is-streaming" : ""}`} onClick={handleClick}>
+        <Brain className="process-trigger-icon" size={13} aria-hidden="true" />
+        <span className="process-trigger-label">
+          {isStreaming ? "正在思考" : duration ? `已思考 ${duration}s` : "已思考"}
+        </span>
+        {content ? <ThinkingTail content={content} /> : null}
+        <FindRegionCount count={matches} />
+        <ChevronDown className={`process-chevron ${isOpen ? "open" : ""}`} size={13} aria-hidden="true" />
+      </ReasoningTrigger>
+    </div>
   );
 }
 
@@ -1295,7 +1309,9 @@ const ToolStep = memo(function ToolStep({
   const resultValue = block.output === undefined ? block.errorText : block.output;
   const hasResult = toolHasValue(resultValue) || Boolean(block.attachments?.length);
   const hasDetails = toolHasParameters(block.input) || hasResult;
-  const { open, instant, rowRef, toggle } = useStickyDisclosure(block.status === "output-error");
+  const { open, instant, rowRef, toggle, setOpen } = useStickyDisclosure(block.status === "output-error");
+  const findText = useCallback(() => toolDetailFindText(block), [block]);
+  const matches = useFindRegion(rowRef, open, findText, setOpen);
   const parameters = useMemo(
     () => open ? toolParameters(block.input) : [],
     [block.input, open],
@@ -1349,6 +1365,7 @@ const ToolStep = memo(function ToolStep({
                 stateLabel={stateLabel}
                 expandable
                 open={open}
+                matches={matches}
               />
             </button>
           </div>
@@ -1441,12 +1458,14 @@ function ToolStepSummary({
   stateLabel,
   expandable,
   open,
+  matches = 0,
 }: {
   block: ToolBlock;
   description: ToolDescription;
   stateLabel: string;
   expandable: boolean;
   open: boolean;
+  matches?: number;
 }) {
   return (
     <span className="tool-step-heading">
@@ -1455,7 +1474,7 @@ function ToolStepSummary({
         <span>{block.name}</span>
       </span>
       <ToolDescriptionText description={description} />
-      <span className="tool-step-state">{stateLabel}<CollapseHint open={open} lead={Boolean(stateLabel)} /></span>
+      <span className="tool-step-state"><FindRegionCount count={matches} />{stateLabel}<CollapseHint open={open} lead={Boolean(stateLabel)} /></span>
       {expandable ? <ChevronDown className={`tool-step-chevron ${open ? "open" : ""}`} size={13} /> : null}
     </span>
   );
@@ -1488,6 +1507,23 @@ function toolDescription(input: unknown): ToolDescription {
   if (text("url")) return { kind: "text", text: text("url").replace(/^https?:\/\//u, "") };
   if (text("query")) return { kind: "text", text: text("query") };
   return { kind: "text", text: text("command").split("\n")[0] ?? "" };
+}
+
+// 收起时查找要计数的文字：展开后会看到的参数与结果；整组收起时再加上每一步的摘要行。
+function toolDetailFindText(block: ToolBlock): string {
+  const parameters = toolParameters(block.input).map(([name, value]) => `${name} ${value}`);
+  return [...parameters, toolDataText(block.output === undefined ? block.errorText : block.output)].join("\n");
+}
+
+function agentBlockFindText(block: AgentBlock): string {
+  return block.kind === "tool"
+    ? `${block.name} ${toolDescription(block.input).text}\n${toolDetailFindText(block)}` : block.content;
+}
+
+function flowItemFindText(item: FlowItem): string {
+  return item.kind === "thinking" ? item.content
+    : item.kind === "tool" ? agentBlockFindText(item.block)
+    : item.kind === "narration" || item.kind === "notice" ? item.text : "";
 }
 
 function toolParameters(input: unknown): [string, string][] {

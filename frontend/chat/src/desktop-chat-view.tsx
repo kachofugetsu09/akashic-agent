@@ -15,7 +15,8 @@ import { DesktopComposer, type ComposerApi } from "./desktop-composer";
 import { onWorkbenchQuote } from "./shell-workbench";
 import { DesktopConversationMessages, DesktopTimelineMessages, messageDayKey, withoutLeadingOrphanResults } from "./desktop-conversation";
 import { MediaGalleryViewer, ReplyActivityView } from "./message-view";
-import { MessageSquarePlus } from "lucide-react";
+import { MessageSquarePlus, Search } from "lucide-react";
+import { ThreadFind, useThreadFind } from "./thread-find";
 import { CompactNavigation } from "./compact-navigation";
 import { NewChatScope } from "./new-chat-scope";
 import { DesktopSidebar } from "./desktop-sidebar";
@@ -120,6 +121,7 @@ export function DesktopChatView({ controller }: DesktopChatViewProps) {
   useDocumentTitle(activeSessionId || activeGroup ? headingTitle : "", isGeneratingChatStatus(status));
   const composerWrapRef = useRef<HTMLDivElement>(null);
   useComposerClearance(composerWrapRef);
+  const find = useThreadFind();
   const committed = new Set(timelineMessages.map((message) => message.id));
   const hasMessages = messages.length + timelineMessages.length + replyActivities.length > 0;
   // 读取已有会话期间就按会话版式摆放：输入区停在底部，消息到达时不从屏幕中央跳下来。
@@ -163,6 +165,11 @@ export function DesktopChatView({ controller }: DesktopChatViewProps) {
           {/* 插件在标题行右侧的标记；新的工具结果到达时通知插件重新读取会话状态。 */}
           {activeSessionId ? <PluginUiSlot key={`header:${activeSessionId}`} name="header.end" sessionId={activeSessionId}
             refreshToken={liveToolToken} quiet /> : null}
+          {/* 查找的触屏入口：手机没有 Ctrl/⌘F；桌面也能点，快捷键写在提示里。 */}
+          {hasMessages ? <button type="button" className="conversation-heading__find" aria-label="在对话中查找"
+            data-tip="在对话中查找 (Ctrl/⌘F)" aria-keyshortcuts="Control+F Meta+F" onClick={find.openFind}>
+            <Search size={20} strokeWidth={1.75} aria-hidden="true" />
+          </button> : null}
           {/* 窄屏没有常驻侧栏：新会话留在拇指可达的标题行，不必先打开抽屉；继承当前会话所在的分组。 */}
           {conversationLayout ? <button type="button" className="conversation-heading__new"
             aria-label={activeGroup ? `在 ${activeGroup.label} 中新建会话` : "新会话"} data-tip="新会话"
@@ -205,6 +212,7 @@ export function DesktopChatView({ controller }: DesktopChatViewProps) {
           </ConversationContent>
           <DesktopAutoScroll sessionId={activeSessionId} messages={messages} status={status} streamStore={streamStore}
             timelineMessages={timelineMessages} replyActivities={replyActivities} />
+          {hasMessages ? <ThreadFind {...find} /> : null}
           <NarrowReadingChrome />
           <ComposerPageKeys />
           <ReadingReturnButton generating={isGeneratingChatStatus(status)} />

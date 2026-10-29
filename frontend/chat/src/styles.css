@@ -253,7 +253,8 @@ input {
 }
 
 .chat-sidebar__new,
-.conversation-heading__new {
+.conversation-heading__new,
+.conversation-heading__find {
   display: inline-grid;
   width: 36px;
   height: 36px;
@@ -273,42 +274,52 @@ input {
   margin-inline-start: auto;
 }
 
+.conversation-heading__find { margin-inline-start: auto; }
+.conversation-heading__find + .conversation-heading__new { margin-inline-start: 0; }
+
 .chat-sidebar__new svg,
-.conversation-heading__new svg {
+.conversation-heading__new svg,
+.conversation-heading__find svg {
   flex: 0 0 auto;
   color: var(--chat-muted);
 }
 
 .chat-sidebar__new:focus-visible,
-.conversation-heading__new:focus-visible {
+.conversation-heading__new:focus-visible,
+.conversation-heading__find:focus-visible {
   background: color-mix(in oklab, var(--md-sys-color-on-surface) 6%, transparent);
 }
 @media (hover: hover) {
   .chat-sidebar__new:hover,
-  .conversation-heading__new:hover {
+  .conversation-heading__new:hover,
+  .conversation-heading__find:hover {
     background: color-mix(in oklab, var(--md-sys-color-on-surface) 6%, transparent);
   }
 }
 
 .chat-sidebar__new:focus-visible svg,
-.conversation-heading__new:focus-visible svg {
+.conversation-heading__new:focus-visible svg,
+.conversation-heading__find:focus-visible svg {
   color: var(--chat-ink);
 }
 @media (hover: hover) {
   .chat-sidebar__new:hover svg,
-  .conversation-heading__new:hover svg {
+  .conversation-heading__new:hover svg,
+  .conversation-heading__find:hover svg {
     color: var(--chat-ink);
   }
 }
 
 .chat-sidebar__new:focus-visible,
-.conversation-heading__new:focus-visible {
+.conversation-heading__new:focus-visible,
+.conversation-heading__find:focus-visible {
   outline: 2px solid var(--md-sys-color-primary);
   outline-offset: 2px;
 }
 
 .chat-sidebar__new:active,
-.conversation-heading__new:active {
+.conversation-heading__new:active,
+.conversation-heading__find:active {
   background: color-mix(in oklab, var(--md-sys-color-on-surface) 8%, transparent);
 }
 
@@ -764,7 +775,10 @@ input {
   .chat-sidebar__search,
   .chat-sidebar__action { min-height: 44px; }
   .chat-sidebar__new,
-  .conversation-heading__new { width: 44px; height: 44px; }
+  .conversation-heading__new,
+  .conversation-heading__find { width: 44px; height: 44px; }
+  .thread-find__close button { width: 40px; height: 40px; }
+  .thread-find__meta button { width: 40px; height: 32px; }
 }
 
 .navigation-row-menu__item--danger { color: var(--ak-color-status-error); }
@@ -2985,3 +2999,56 @@ form.composer:focus-within [data-slot="input-group"] {
   .composer textarea:focus-visible { outline: none; }
   .composer:focus-within { outline: 2px solid Highlight; outline-offset: 2px; }
 }
+
+/* 会话内查找：窗口右上角的卡片，不加遮罩；第二行在有输入时滑出。窄屏铺满宽度，软键盘在下方不会挡住它。 */
+.thread-find {
+  position: fixed;
+  z-index: 55;
+  inset-block-start: max(8px, env(safe-area-inset-top, 0px));
+  inset-inline-end: 16px;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  width: 340px;
+  max-width: 70vw;
+  overflow: hidden;
+  border: 0.5px solid var(--ak-rule-default);
+  border-radius: 20px;
+  background: var(--ak-paper-sheet);
+  box-shadow: 0 8px 16px -4px color-mix(in oklab, var(--ak-ink-primary) 12%, transparent);
+  color: var(--chat-ink);
+}
+.thread-find__row { display: flex; align-items: center; gap: 8px; height: 44px; padding-inline-start: 14px; }
+.thread-find__glass { flex: none; color: var(--chat-ink); }
+.thread-find__spin { flex: none; width: 14px; height: 14px; margin-inline: 1px; border: 1.5px solid var(--ak-rule-default); border-block-start-color: var(--chat-ink); border-radius: 50%; animation: thread-find-spin 0.7s linear infinite; }
+@keyframes thread-find-spin { to { transform: rotate(360deg); } }
+.thread-find input { flex: 1; min-width: 0; padding: 0; border: 0; outline: 0; background: transparent; color: var(--chat-ink); font: inherit; font-size: 0.9375rem; }
+.thread-find input::placeholder { color: var(--chat-faint); }
+.thread-find__close { display: flex; align-items: center; height: 44px; padding-inline-end: 10px; }
+.thread-find__sep { width: 1px; height: 16px; margin-inline: 6px; background: var(--ak-rule-default); }
+.thread-find button { display: grid; place-items: center; width: 28px; height: 28px; padding: 0; border: 0; border-radius: 8px; background: transparent; color: var(--chat-muted); cursor: pointer; }
+.thread-find button:disabled { opacity: 0.35; cursor: default; }
+.thread-find button:focus-visible { outline: 2px solid var(--md-sys-color-primary); outline-offset: -2px; }
+@media (hover: hover) { .thread-find button:not(:disabled):hover { color: var(--chat-ink); background: color-mix(in oklab, var(--md-sys-color-on-surface) 6%, transparent); } }
+.thread-find__meta {
+  grid-column: 1 / 3;
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  max-height: 0;
+  padding-inline: 10px 16px;
+  border-block-start: 0 solid var(--chat-line);
+  opacity: 0;
+  translate: 0 -8px;
+  pointer-events: none;
+  color: var(--chat-muted);
+  font-size: var(--chat-type-control);
+  line-height: 24px;
+  transition: max-height 0.2s ease-out, opacity 0.2s ease-out, padding 0.2s ease-out, translate 0.2s ease-out, border-width 0.2s ease-out;
+}
+.thread-find[data-has-query="true"] .thread-find__meta { max-height: 48px; padding-block: 6px; border-block-start-width: 1px; opacity: 1; translate: 0 0; pointer-events: auto; }
+.thread-find__count { margin-inline-start: auto; font-variant-numeric: tabular-nums; white-space: nowrap; }
+.find-region-count { margin-inline-start: 6px; color: var(--chat-muted); white-space: nowrap; }
+:where([data-chat-width~="820"]) .thread-find { inset-inline: max(8px, env(safe-area-inset-left, 0px)) max(8px, env(safe-area-inset-right, 0px)); width: auto; max-width: none; }
+::highlight(thread-find) { background-color: light-dark(oklch(0.9 0.12 95 / 0.7), oklch(0.62 0.12 85 / 0.45)); color: inherit; }
+::highlight(thread-find-active) { background-color: light-dark(oklch(0.78 0.16 62), oklch(0.75 0.16 62)); color: oklch(0.2 0 0); }
+@media (prefers-reduced-motion: reduce) { .thread-find__meta { transition: none; } .thread-find__spin { animation-duration: 2s; } }
