@@ -90,6 +90,7 @@ class ChatUiQueries:
 
     # 当前目录与会话已保存的选择；选择指向的模型暂不可用时照常返回，由界面说明原因。
     # 调用方带来的目录指纹与当前一致时省掉目录本身（几百个模型约 130KB），只回会话选择。
+    # 图标按连接只发一份：逐模型内嵌时，一个十几个模型的连接就把几 KB 的 SVG 重复十几次，回包会撞上 UI 查询上限。
     async def chat_models(self, session_id: str | None, known: str | None = None) -> dict[str, object]:
         saved = ChatModelSelection()
         if session_id:
@@ -101,11 +102,15 @@ class ChatUiQueries:
                     raise
         snapshot = await self.catalog()
         stored_icons = await self.icons()
-        icons = {item.connection_id: stored_icons.get(item.connection_id) for item in snapshot.connections}
+        runtimes = project_chat_runtimes(snapshot)
+        # 不可用模型只用来说明当前要用的那个为什么用不了：只发角色或本会话选择引用的；一个可用的都没有时全发，界面据此提示恢复连接。
+        referenced = {*(str(model_id) for model_id in snapshot.role_bindings.values()), saved.model_id or ""} if runtimes else None
+        unavailable = project_unavailable_chat_runtimes(snapshot, referenced)
+        used = {str(item["sourceId"]) for item in runtimes}
+        icons = {connection_id: "data:image/svg+xml," + quote(icon)
+                 for connection_id, icon in stored_icons.items() if icon is not None and connection_id in used}
         # 指纹取自投影本身：图标单独保存、可用性随驱动在场与否变化，都不推进目录 revision。
-        runtimes = project_chat_runtimes(snapshot, icons)
-        unavailable = project_unavailable_chat_runtimes(snapshot)
-        catalog = hashlib.sha256(json.dumps([runtimes, unavailable], sort_keys=True).encode()).hexdigest()[:24]
+        catalog = hashlib.sha256(json.dumps([runtimes, unavailable, icons], sort_keys=True).encode()).hexdigest()[:24]
         body: dict[str, object] = {
             "generationId": snapshot.revision,
             "catalog": catalog,
@@ -115,7 +120,7 @@ class ChatUiQueries:
         }
         if known == catalog:
             return body
-        return {**body, "runtimes": runtimes, "unavailableRuntimes": unavailable}
+        return {**body, "runtimes": runtimes, "unavailableRuntimes": unavailable, "sourceIcons": icons}
 
     # 会话最近一次执行里最后一条带模型事实的回复对应的调用统计；本次没有、尾部找不到或记录已清理时为空。
     def _latest_call(self, session_id: str) -> dict[str, object] | None:
@@ -164,19 +169,20 @@ def _model_call_id(message: Message) -> str | None:
     return None
 
 
-# 连接停用或驱动缺席的模型只读展示，不把本地可用误称远端认证成功。
-def project_unavailable_chat_runtimes(snapshot: ModelCatalogSnapshot) -> list[dict[str, str]]:
+# 连接停用或驱动缺席的模型只读展示，不把本地可用误称远端认证成功；给了 referenced 时只取其中的模型。
+def project_unavailable_chat_runtimes(snapshot: ModelCatalogSnapshot, referenced: set[str] | None) -> list[dict[str, str]]:
     connections = {item.connection_id: item for item in snapshot.connections}
     return [
         {"id": model.model_id, "model": model.model, "sourceName": connections[model.connection_id].name,
          "availability": model.availability}
         for model in snapshot.models
         if model.kind == "chat" and model.availability != "available"
+        and (referenced is None or model.model_id in referenced)
     ]
 
 
-# 可用对话模型投影为聊天界面的条目；图标由连接的驱动声明。
-def project_chat_runtimes(snapshot: ModelCatalogSnapshot, icons: Mapping[str, str | None]) -> list[dict[str, object]]:
+# 可用对话模型投影为聊天界面的条目；图标由连接的驱动声明，按 sourceId 另行下发。
+def project_chat_runtimes(snapshot: ModelCatalogSnapshot) -> list[dict[str, object]]:
     roles_by_model: dict[str, list[str]] = {}
     for role, model_id in snapshot.role_bindings.items():
         roles_by_model.setdefault(model_id, []).append(role)
@@ -187,7 +193,6 @@ def project_chat_runtimes(snapshot: ModelCatalogSnapshot, icons: Mapping[str, st
             continue
         connection = connections[model.connection_id]
         capabilities, sources = model.capabilities, model.capability_sources
-        icon = icons.get(connection.connection_id)
         result.append({
             "id": model.model_id,
             "provider": connection.driver_id,
@@ -196,7 +201,6 @@ def project_chat_runtimes(snapshot: ModelCatalogSnapshot, icons: Mapping[str, st
             "supportedReasoningEfforts": list(capabilities.supported_reasoning_efforts),
             "sourceId": connection.connection_id,
             "sourceName": connection.name,
-            "icon": "" if icon is None else "data:image/svg+xml," + quote(icon),
             "contextWindow": capabilities.context_window or 0,
             "maxOutputTokens": capabilities.max_output_tokens or 0,
             "inputModalities": list(capabilities.input_modalities),
