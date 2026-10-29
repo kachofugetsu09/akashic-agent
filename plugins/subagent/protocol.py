@@ -48,10 +48,10 @@ class JsonLines:
         return value
 
 
+# Close the actual process even when the consumer is cancelled.
 @asynccontextmanager
 async def open_json_lines(ctx: Context, owner: str, argv: tuple[str, ...], cwd: str,
                           env: dict[str, str]):
-    """Close the actual process even when the consumer is cancelled."""
     streams = ctx.require(PROCESS_STREAMS)
     identity = await streams.open(ctx, owner, argv=argv, cwd=cwd, env=env)
     wire = JsonLines(ctx, owner, identity)

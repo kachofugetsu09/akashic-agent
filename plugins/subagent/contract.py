@@ -44,14 +44,12 @@ class AgentTask:
     cwd: str
 
 
+# One installed external harness instance, not a host-model provider. The provider owns
+# protocol, authentication and native tools; cancellation must finish child teardown
+# before run returns or raises. Resume, parent tool grants and inherited model settings
+# are deliberately not promised. Children get only a minimal host env plus explicit env.
 @dataclass(frozen=True, slots=True)
 class AgentRunner:
-    """One installed external harness instance, not a host-model provider.
-
-    The provider owns protocol, authentication and native tools. Cancellation
-    must finish child teardown before run returns or raises. Resume, parent
-    tool grants and inherited model settings are deliberately not promised.
-    """
     name: str
     description: str
     progress: bool

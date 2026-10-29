@@ -114,7 +114,7 @@ async def apply(ctx: Context) -> None:
                          lambda: import_module(".dashboard", __package__))
     watcher: asyncio.Task[None] | None = None
     jobs = Subagents(ctx, max_active=config.max_active, result_chars=config.result_chars)
-    runners = Runners(ctx)
+    runners = Runners(ctx, max_active=config.max_active, result_chars=config.result_chars)
     await runners.recover()
     await ctx.provide(AGENT_RUNNERS, runners)
     from plugins.ui.contract import UI_SLOTS
