@@ -103,7 +103,9 @@ class ChatUiQueries:
         snapshot = await self.catalog()
         stored_icons = await self.icons()
         runtimes = project_chat_runtimes(snapshot)
-        unavailable = project_unavailable_chat_runtimes(snapshot)
+        # 不可用模型只用来说明当前要用的那个为什么用不了：只发角色或本会话选择引用的；一个可用的都没有时全发，界面据此提示恢复连接。
+        referenced = {*(str(model_id) for model_id in snapshot.role_bindings.values()), saved.model_id or ""} if runtimes else None
+        unavailable = project_unavailable_chat_runtimes(snapshot, referenced)
         used = {str(item["sourceId"]) for item in runtimes}
         icons = {connection_id: "data:image/svg+xml," + quote(icon)
                  for connection_id, icon in stored_icons.items() if icon is not None and connection_id in used}
@@ -167,14 +169,15 @@ def _model_call_id(message: Message) -> str | None:
     return None
 
 
-# 连接停用或驱动缺席的模型只读展示，不把本地可用误称远端认证成功。
-def project_unavailable_chat_runtimes(snapshot: ModelCatalogSnapshot) -> list[dict[str, str]]:
+# 连接停用或驱动缺席的模型只读展示，不把本地可用误称远端认证成功；给了 referenced 时只取其中的模型。
+def project_unavailable_chat_runtimes(snapshot: ModelCatalogSnapshot, referenced: set[str] | None) -> list[dict[str, str]]:
     connections = {item.connection_id: item for item in snapshot.connections}
     return [
         {"id": model.model_id, "model": model.model, "sourceName": connections[model.connection_id].name,
          "availability": model.availability}
         for model in snapshot.models
         if model.kind == "chat" and model.availability != "available"
+        and (referenced is None or model.model_id in referenced)
     ]
 
 
