@@ -254,7 +254,7 @@
 .md-reader article code {
   padding: 1px 4px;
   border-radius: 4px;
-  background: var(--ak-paper-quiet);
+  background: var(--ak-paper-sheet);
   font-family: var(--ak-type-technical);
   font-size: 0.86em;
 }
@@ -264,7 +264,7 @@
   overflow: auto;
   padding: 14px 16px;
   border-radius: 8px;
-  background: var(--ak-paper-quiet);
+  background: var(--ak-paper-sheet);
   line-height: 1.6;
   white-space: pre;
   overflow-wrap: normal;
