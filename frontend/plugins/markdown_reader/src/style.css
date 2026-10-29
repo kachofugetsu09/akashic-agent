@@ -5,7 +5,7 @@
   height: 100%;
   min-width: 0;
   container-type: inline-size;
-  background: var(--ak-paper-sheet);
+  background: var(--ak-paper-canvas);
   color: var(--ak-ink-primary);
   font-family: var(--ak-type-ui);
   font-size: 13px;

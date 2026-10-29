@@ -313,6 +313,10 @@ class Reader {
       this.name.title = result.path;
       this.text = result.text ?? "";
       this.note.textContent = this.text ? "" : "这是一个空文档。";
+      if (!refresh && this.navMode === "files") {
+        this.nav.hidden = true;
+        this.syncTools();
+      }
       if (changed) {
         const position = refresh ? this.article.scrollTop : 0;
         this.render();
