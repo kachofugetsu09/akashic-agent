@@ -352,7 +352,7 @@ def _icon(descriptor: DriverConnectionDescriptor) -> str | None:
     identity = " ".join((str(descriptor.config.get("catalog_provider_id") or ""), descriptor.endpoint, descriptor.name)).lower()
     host = (urlsplit(descriptor.endpoint).hostname or "").lower()
     brand = "zhipu" if host.endswith("bigmodel.cn") else "zai" if host == "z.ai" or host.endswith(".z.ai") else next(
-        (name for name in ("deepseek", "openrouter") if name in identity), None)
+        (name for name in ("commandcode", "deepseek", "openrouter") if name in identity or name in host), None)
     return None if brand is None else (Path(__file__).parent / "icons" / f"{brand}.svg").read_text(encoding="utf-8")
 
 
@@ -492,6 +492,12 @@ async def _discover(
         if model in seen_models:
             raise TransportError(f"models response contains duplicate id: {model}").exception()
         seen_models.add(model)
+        # 服务商标明了接口却不含 chat/completions 的模型（如 Command Code 的 Claude 只走 /messages）这个驱动调不了。
+        endpoints = raw.get("supported_endpoints")
+        if isinstance(endpoints, list) and endpoints and not any(
+            str(item).rstrip("/").endswith("/chat/completions") for item in cast(list[object], endpoints)
+        ):
+            continue
         result.append(
             DiscoveredModel(
                 kind=None,
