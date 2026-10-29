@@ -1,0 +1,15 @@
+.agent-runs{position:relative;font:inherit;color:var(--text-primary)}
+.agent-runs button{font:inherit;color:inherit;cursor:pointer;background:transparent;border:1px solid var(--border-subtle);border-radius:6px;padding:6px 9px}
+.agent-runs button:focus-visible,.agent-runs summary:focus-visible{outline:2px solid currentColor;outline-offset:2px}
+.agent-runs__toggle{display:flex;align-items:center;gap:6px;font-size:12px!important;white-space:nowrap}
+.agent-runs__panel{position:absolute;z-index:50;right:0;top:calc(100% + 8px);width:min(440px,calc(100vw - 32px));max-height:70dvh;overflow:auto;background:var(--surface-primary,var(--background,#faf9f6));border:1px solid var(--border-subtle);border-radius:8px;padding:12px;box-shadow:0 8px 24px #0002}
+.agent-runs__panel header{display:flex;align-items:center;justify-content:space-between;margin-bottom:8px}
+.agent-runs details{border-top:1px solid var(--border-subtle);padding:10px 0}
+.agent-runs summary{cursor:pointer;overflow-wrap:anywhere}
+.agent-runs summary small{display:block;margin:4px 0 0 16px;opacity:.65}
+.agent-runs__body{font-size:13px;line-height:1.6;overflow-wrap:anywhere}
+.agent-runs__notice{opacity:.65;font-size:12px}
+.agent-runs ol{padding-left:20px}
+.agent-runs pre{font:inherit;white-space:pre-wrap;overflow-wrap:anywhere}
+.agent-runs button:disabled{opacity:.5;cursor:wait}
+@media(max-width:820px){.agent-runs__panel{position:fixed;top:64px;right:16px;left:16px;width:auto}}

@@ -5,12 +5,12 @@ import json
 from functools import partial
 from datetime import UTC, datetime
 import logging
-from collections.abc import Awaitable, Callable, Mapping
+from collections.abc import Callable, Mapping
 from typing import Literal, cast
 
 from core.common.file_io import run_file_io
 
-from agent.plugin_composition import CompositionError, Context, ServiceKey
+from agent.plugin_composition import CompositionError, Context
 from plugins.ledger.contract import BINDINGS
 from plugins.ledger.contract import MESSAGE_CATALOG, MESSAGE_WRITERS, OWNER_STATE, SESSION_ADMISSION
 from agent.plugin_composition.tasks import TASKS, Task, TaskSlot
@@ -28,9 +28,9 @@ from plugins.sources.contract import (
 from .request import Request, check_request
 from plugins.models.contract import MODEL_SELECTION
 
+from .contract import SUBAGENT_PROGRAM
+
 logger = logging.getLogger(__name__)
-# 私有程序 binding：tools.py 固定身份，恢复路径经 Bindings.open 读取，不提供外部 SDK。
-SUBAGENT_PROGRAM = ServiceKey[Callable[[Task, MessageReader, Request], Awaitable[Message]]]("subagent.program.v1")
 DEFAULT_MAX_ACTIVE = 3
 DEFAULT_RESULT_CHARS = 100_000
 
