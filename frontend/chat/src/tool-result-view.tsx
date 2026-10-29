@@ -53,6 +53,7 @@ export interface StickyDisclosure {
   instant: boolean;
   rowRef: RefObject<HTMLDivElement | null>;
   toggle: () => void;
+  setOpen: (open: boolean) => void;
 }
 
 // 展开项的标题行吸顶，读到哪里都能收起；吸顶时的收起瞬间完成并把行放回吸顶位置，再淡入下方内容。
@@ -83,7 +84,7 @@ export function useStickyDisclosure(initial = false): StickyDisclosure {
     }
     return () => window.cancelAnimationFrame(frame);
   }, [open]);
-  return { open, instant, rowRef, toggle };
+  return { open, instant, rowRef, toggle, setOpen };
 }
 
 // 展开区：grid 行 0fr → 1fr 过渡高度，内层淡入；内层只用 overflow: clip，嵌套行的 sticky 仍对滚动容器生效。
