@@ -432,3 +432,50 @@ class TerminalReply(_message.Message):
     list: TerminalList
     unknown_terminal_id: int
     def __init__(self, info: _Optional[_Union[TerminalInfo, _Mapping]] = ..., done: bool = ..., output: _Optional[_Union[TerminalOutput, _Mapping]] = ..., list: _Optional[_Union[TerminalList, _Mapping]] = ..., unknown_terminal_id: _Optional[int] = ...) -> None: ...
+
+class RawProcessRequest(_message.Message):
+    __slots__ = ("context", "owner_session_key", "operation", "identity", "argv", "cwd", "env", "data", "stream", "offset")
+    class EnvEntry(_message.Message):
+        __slots__ = ("key", "value")
+        KEY_FIELD_NUMBER: _ClassVar[int]
+        VALUE_FIELD_NUMBER: _ClassVar[int]
+        key: str
+        value: str
+        def __init__(self, key: _Optional[str] = ..., value: _Optional[str] = ...) -> None: ...
+    CONTEXT_FIELD_NUMBER: _ClassVar[int]
+    OWNER_SESSION_KEY_FIELD_NUMBER: _ClassVar[int]
+    OPERATION_FIELD_NUMBER: _ClassVar[int]
+    IDENTITY_FIELD_NUMBER: _ClassVar[int]
+    ARGV_FIELD_NUMBER: _ClassVar[int]
+    CWD_FIELD_NUMBER: _ClassVar[int]
+    ENV_FIELD_NUMBER: _ClassVar[int]
+    DATA_FIELD_NUMBER: _ClassVar[int]
+    STREAM_FIELD_NUMBER: _ClassVar[int]
+    OFFSET_FIELD_NUMBER: _ClassVar[int]
+    context: RequestContext
+    owner_session_key: str
+    operation: str
+    identity: str
+    argv: _containers.RepeatedScalarFieldContainer[str]
+    cwd: str
+    env: _containers.ScalarMap[str, str]
+    data: bytes
+    stream: str
+    offset: int
+    def __init__(self, context: _Optional[_Union[RequestContext, _Mapping]] = ..., owner_session_key: _Optional[str] = ..., operation: _Optional[str] = ..., identity: _Optional[str] = ..., argv: _Optional[_Iterable[str]] = ..., cwd: _Optional[str] = ..., env: _Optional[_Mapping[str, str]] = ..., data: _Optional[bytes] = ..., stream: _Optional[str] = ..., offset: _Optional[int] = ...) -> None: ...
+
+class RawProcessReply(_message.Message):
+    __slots__ = ("identity", "data", "next_offset", "eof", "exit_code", "closed")
+    IDENTITY_FIELD_NUMBER: _ClassVar[int]
+    DATA_FIELD_NUMBER: _ClassVar[int]
+    NEXT_OFFSET_FIELD_NUMBER: _ClassVar[int]
+    EOF_FIELD_NUMBER: _ClassVar[int]
+    EXIT_CODE_FIELD_NUMBER: _ClassVar[int]
+    CLOSED_FIELD_NUMBER: _ClassVar[int]
+    identity: str
+    data: bytes
+    next_offset: int
+    eof: bool
+    exit_code: int
+    closed: bool
+    def __init__(self, identity: _Optional[str] = ..., data: _Optional[bytes] = ..., next_offset: _Optional[int] = ..., eof: bool = ..., exit_code: _Optional[int] = ..., closed: bool = ...) -> None: ...

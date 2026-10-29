@@ -22,6 +22,7 @@ from typing import TYPE_CHECKING, Any, BinaryIO, Protocol
 from agent.plugin_composition.execution import process_group_exists
 
 from .fork_server import ForkServerLost, ShellForkPool
+from .raw_processes import RawProcesses
 
 if TYPE_CHECKING:
     from .terminals import PtyTerminals
@@ -195,6 +196,7 @@ class ShellProcessManager:
         self._rng = random.SystemRandom()
         self._forks = ShellForkPool()
         self._terminals: PtyTerminals | None = None
+        self.raw = RawProcesses()
 
     @property
     def terminals(self) -> PtyTerminals:
@@ -392,6 +394,7 @@ class ShellProcessManager:
                 ]
             report = await self._terminate_many(executions)
             try:
+                await self.raw.close_owner(owner_session_key)
                 if self._terminals is not None:
                     await self._terminals.close_owner(owner_session_key)
             finally:
@@ -416,6 +419,7 @@ class ShellProcessManager:
                         executions = list(self._executions.values())
                     report = await self._terminate_many(executions)
                     try:
+                        await self.raw.shutdown()
                         if self._terminals is not None:
                             await self._terminals.shutdown()
                     finally:

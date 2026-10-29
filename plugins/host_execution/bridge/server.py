@@ -85,6 +85,7 @@ class _ManagerLease:
 
     async def shutdown(self) -> ExecutionCleanupReport:
         """准入关闭后先挂断终端，解除阻塞写入，再排空并回收 manager。"""
+        await self.manager.raw.shutdown()
         await self.manager.terminals.shutdown()
         await self.operations_drained.wait()
         return await self.manager.shutdown()
@@ -545,6 +546,28 @@ class HostBridgeService:
                 return pb.TerminalReply(
                     unknown_terminal_id=target.terminal_id if target is not None else request.close
                 )
+
+    @_rpc
+    async def RawProcess(self, request: pb.RawProcessRequest) -> pb.RawProcessReply:
+        require_text(request.owner_session_key, "owner_session_key")
+        async with self._manager_operation(request.context) as manager:
+            raw, owner = manager.raw, request.owner_session_key
+            if request.operation == "open":
+                identity = await raw.open(owner=owner, argv=tuple(request.argv),
+                                          cwd=request.cwd, env=dict(request.env))
+                return pb.RawProcessReply(identity=identity)
+            require_text(request.identity, "identity")
+            if request.operation == "read":
+                value = await raw.read(owner=owner, identity=request.identity,
+                                       stream=request.stream, offset=request.offset)
+                return pb.RawProcessReply(data=value.data, next_offset=value.next_offset,
+                                          eof=value.eof, exit_code=value.exit_code)
+            if request.operation == "write":
+                await raw.write(owner=owner, identity=request.identity, data=request.data)
+                return pb.RawProcessReply()
+            if request.operation == "close":
+                return pb.RawProcessReply(closed=await raw.close(owner=owner, identity=request.identity))
+            raise ValueError("unknown raw process operation")
 
     @_rpc
     async def FileTool(self, request: pb.FileRequest) -> pb.FileReply:

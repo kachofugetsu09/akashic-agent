@@ -10,10 +10,10 @@ from agent.plugin_composition.execution import EXECUTION
 from agent.plugin_composition.host import HOST_INFO
 from core.common.file_io import run_file_io
 from infra.persistence.json_store import load_json, atomic_save_json
-from plugins.host_execution.contract import HOST_STATUS, WORKLOAD_CONTROLLER, PROCESSES, FILES, TERMINALS
+from plugins.host_execution.contract import HOST_STATUS, WORKLOAD_CONTROLLER, PROCESSES, FILES, TERMINALS, PROCESS_STREAMS
 from .bridge.factory import HostBridgeRpcError, build_file_bridge
 from plugins.ui.contract import UI, UI_SLOTS, PluginUiDefinition, PluginUiRpcInvalidRequest
-from .processes import PluginProcesses, PluginTerminals
+from .processes import PluginProcesses, PluginTerminals, PluginProcessStreams
 from .files import Files
 from .bridge.boot import claim_host_bridge_boot
 from .monitor import HostBridgeStatus, _monitor
@@ -38,6 +38,7 @@ async def apply(ctx: Context) -> None:
     processes = PluginProcesses(formal=not ctx.require(HOST_INFO).validation)
     await ctx.effect(lambda: processes.close, label="host.processes")
     await ctx.provide(PROCESSES, processes)
+    await ctx.provide(PROCESS_STREAMS, PluginProcessStreams(processes))
     await ctx.provide(TERMINALS, PluginTerminals(processes))
     await start_monitor(ctx)
     socket = os.environ.get("AKASHIC_WORKLOAD_SOCKET", "").strip()

@@ -30,7 +30,7 @@ from .protocol import (
     require_positive,
     require_text,
 )
-from plugins.host_execution.contract import FileResult, TerminalInfo, TerminalOutput, UnknownTerminalError
+from plugins.host_execution.contract import FileResult, TerminalInfo, TerminalOutput, UnknownTerminalError, RawProcessOutput
 from plugins.host_execution.contract import (
     ExecutionCleanupReport, ExecutionResult, ExecutionState
 )
@@ -147,6 +147,34 @@ class HostBridgeTerminals:
         return [decode_terminal_info(item) for item in reply.list.terminals]
 
 
+class HostBridgeRawProcesses:
+    """Protocol pipes share the authenticated manager lease, not shell buffers."""
+
+    def __init__(self, manager: HostBridgeShellProcessManager) -> None:
+        self._manager = manager
+
+    async def _call(self, owner: str, operation: str, **values: Any) -> pb.RawProcessReply:
+        request = pb.RawProcessRequest(context=self._manager._request_context(),
+                                       owner_session_key=owner, operation=operation, **values)
+        return await self._manager._call(request, method="RawProcess")
+
+    async def open(self, *, owner: str, argv: tuple[str, ...], cwd: str, env: dict[str, str]) -> str:
+        reply = await self._call(owner, "open", argv=argv, cwd=cwd, env=env)
+        require_text(reply.identity, "identity")
+        return reply.identity
+
+    async def read(self, *, owner: str, identity: str, stream: str, offset: int) -> RawProcessOutput:
+        reply = await self._call(owner, "read", identity=identity, stream=stream, offset=offset)
+        return RawProcessOutput(reply.data, reply.next_offset, reply.eof,
+                                reply.exit_code if reply.HasField("exit_code") else None)
+
+    async def write(self, *, owner: str, identity: str, data: bytes) -> None:
+        await self._call(owner, "write", identity=identity, data=data)
+
+    async def close(self, *, owner: str, identity: str) -> bool:
+        return (await self._call(owner, "close", identity=identity)).closed
+
+
 class HostBridgeShellProcessManager:
     """在 Protobuf UDS 上保留 ShellProcessManager 的可观察语义。"""
 
@@ -173,6 +201,7 @@ class HostBridgeShellProcessManager:
         self._unconfirmed_owners: dict[str, str] = {}
         self._closed = False
         self.terminals = HostBridgeTerminals(self)
+        self.raw = HostBridgeRawProcesses(self)
 
     def _request_context(self) -> pb.RequestContext:
         correlation = current_diagnostic_context()
