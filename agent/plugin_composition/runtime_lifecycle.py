@@ -1,6 +1,8 @@
 from __future__ import annotations
 
+import asyncio
 from dataclasses import dataclass
+from typing import TypeVar
 
 from agent.plugin_composition.events import EmitEventKey, SerialEventKey
 
@@ -32,3 +34,22 @@ class RuntimeStopping:
 RUNTIME_STARTING = SerialEventKey[RuntimeStarting, object]("runtime.starting")
 RUNTIME_STARTED = SerialEventKey[RuntimeStarted, object]("runtime.started")
 RUNTIME_STOPPING = SerialEventKey[RuntimeStopping, object]("runtime.stopping")
+
+_T = TypeVar("_T")
+
+
+# 停止时收尾 ctx.spawn 出来的任务：spawn 早已把任务自己结束时的失败上报给就绪状态，
+# 停止只取消仍在运行的任务；早先的业务失败不能再被当成停止失败，否则关停清理记为失败，下次开机要人工结算。
+async def stop_spawned(task: asyncio.Task[_T] | None) -> None:
+    if task is None:
+        return
+    cancel_requested = task.cancel() if not task.done() else False
+    try:
+        await task
+    except asyncio.CancelledError:
+        current = asyncio.current_task()
+        if current is not None and current.cancelling():
+            raise
+    except Exception:
+        if cancel_requested:
+            raise

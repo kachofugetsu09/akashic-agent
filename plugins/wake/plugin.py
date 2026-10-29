@@ -7,6 +7,7 @@ from functools import partial
 from importlib import import_module
 
 from agent.plugin_composition import (
+    stop_spawned,
     RUNTIME_STARTED,
     RUNTIME_STOPPING,
     Context,
@@ -78,20 +79,6 @@ function_inject = (
 WAKE_DASHBOARD = ServiceKey[Callable[[], DashboardView | None]]("wake.dashboard.v1")
 
 
-async def _stop_watcher(watcher: asyncio.Task[None]) -> None:
-    """Drain a watcher without replaying a completed business failure as stop failure."""
-
-    cancel_requested = watcher.cancel() if not watcher.done() else False
-    try:
-        await watcher
-    except asyncio.CancelledError:
-        if asyncio.current_task().cancelling():
-            raise
-    except Exception:
-        if cancel_requested:
-            raise
-
-
 async def start_function(ctx: Context) -> None:
     """归档注册原程序和私有决定工具；消息与领域状态仅在正式来源执行时打开。"""
 
@@ -146,8 +133,7 @@ async def start_function(ctx: Context) -> None:
 
     async def stop(_event: object) -> None:
         nonlocal runtime
-        if watcher is not None:
-            await _stop_watcher(watcher)
+        await stop_spawned(watcher)
         runtime = None
 
     def changed(_event: object) -> None:

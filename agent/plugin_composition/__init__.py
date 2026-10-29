@@ -48,6 +48,7 @@ from agent.plugin_composition.runtime_lifecycle import (
     RuntimeStarting,
     RuntimeStarted,
     RuntimeStopping,
+    stop_spawned,
 )
 
 
@@ -93,6 +94,7 @@ __all__ = [
     "RuntimeStarting",
     "RuntimeStarted",
     "RuntimeStopping",
+    "stop_spawned",
     "RuntimeScope",
     "SerialEventKey",
     "SyncTask",
