@@ -25,7 +25,7 @@ class PathInfoOperation:
         after: str | None = None, limit: int = 100, max_bytes: int = 32768,
     ) -> str:
         """Validate the request once and run all disk work in a bounded worker."""
-        if action not in {"resolve", "inspect", "browse", "read_text", "agents_chain"}:
+        if action not in {"resolve", "inspect", "browse", "read_text", "agents_chain", "markdown_list", "markdown_read"}:
             raise ValueError("Unknown path operation")
         if not isinstance(path, str) or not path or "\x00" in path:
             raise ValueError("Path must be nonempty text")
@@ -73,6 +73,12 @@ class PathInfoOperation:
                 result["items"] = [{"name": name, "path": str(target / name)} for name in names[:limit]]
                 result["after"] = names[limit - 1] if len(names) > limit else None
                 result["parent"] = str(target.parent)
+            if action == "markdown_list":
+                if kind != "directory":
+                    raise NotADirectoryError(str(target))
+                result.update(_markdown_list(target, after, limit))
+            if action == "markdown_read":
+                return json.dumps(_markdown_read(target, path, result), ensure_ascii=False)
             # 3. Never read a device or FIFO; over-limit files have no partial text.
             if action == "read_text":
                 if kind != "file":
@@ -96,6 +102,48 @@ class PathInfoOperation:
         except OSError as error:
             result = {"path": path, "status": "io_error", "error": str(error)}
         return json.dumps(result, ensure_ascii=False)
+
+
+MARKDOWN_SUFFIXES = frozenset({".md", ".markdown", ".mdown"})
+MARKDOWN_SKIPPED = frozenset({".git", "node_modules", ".venv", "__pycache__"})
+MARKDOWN_MAX_BYTES = 1024 * 1024
+
+
+# 只列一层：子目录与 Markdown 文件按名字分页，跳过符号链接与依赖目录，不递归。
+def _markdown_list(target: Path, after: str | None, limit: int) -> dict[str, object]:
+    with os.scandir(target) as entries:
+        rows = heapq.nsmallest(limit + 1, (
+            (entry.name, entry.is_dir(follow_symlinks=False)) for entry in entries
+            if (after is None or entry.name > after)
+            and entry.name not in MARKDOWN_SKIPPED
+            and not entry.is_symlink()
+            and (entry.is_dir(follow_symlinks=False) or Path(entry.name).suffix.lower() in MARKDOWN_SUFFIXES)
+        ))
+    return {
+        "items": [{"name": name + ("/" if directory else ""), "path": str(target / name)}
+                  for name, directory in rows[:limit]],
+        "after": rows[limit - 1][0] if len(rows) > limit else None,
+        "parent": str(target.parent),
+    }
+
+
+# 1. 后缀与类型按解析后的路径判定；2. 打开时不跟随链接并核对 inode，校验后被换掉的文件一律拒绝；
+# 3. 拒绝时只回显调用方给的路径，不暴露链接目标；4. 超过上限不返回部分正文。
+def _markdown_read(target: Path, requested: str, result: dict[str, object]) -> dict[str, object]:
+    if target.suffix.lower() not in MARKDOWN_SUFFIXES:
+        return {"path": requested, "status": "invalid_text"}
+    checked = target.stat()
+    if not stat.S_ISREG(checked.st_mode):
+        return {"path": requested, "status": "not_file"}
+    descriptor = os.open(target, os.O_RDONLY | os.O_NONBLOCK | os.O_NOFOLLOW)
+    with os.fdopen(descriptor, "rb") as stream:
+        opened = os.fstat(stream.fileno())
+        if not stat.S_ISREG(opened.st_mode) or (opened.st_dev, opened.st_ino) != (checked.st_dev, checked.st_ino):
+            return {"path": requested, "status": "not_file"}
+        raw = stream.read(MARKDOWN_MAX_BYTES + 1)
+    if len(raw) > MARKDOWN_MAX_BYTES:
+        return {**result, "status": "too_large"}
+    return {**result, "text": raw.decode("utf-8-sig"), "bytes": len(raw)}
 
 
 def _probe_marker(path: Path) -> tuple[str, str | None]:
