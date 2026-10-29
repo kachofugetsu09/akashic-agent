@@ -242,8 +242,17 @@ class Reader {
     } catch (error) {
       if (generation === this.generation && navigation === this.navigation) {
         this.note.textContent = String((error as Error).message);
+        if (!this.path) this.showOpener();
       }
     }
+  }
+
+  // 没有可列的目录时仍给出路径输入，绝对路径是唯一入口。
+  private showOpener(): void {
+    if (this.navMode === "outline") return;
+    if (this.nav.firstChild !== this.form) this.nav.replaceChildren(this.form, this.list);
+    this.nav.hidden = false;
+    this.syncTools();
   }
 
   // 输入框常驻面板顶部，轮询只重画下面的列表；结果没变时不动 DOM，保留焦点与悬停。
