@@ -23,7 +23,7 @@ class HostBridgeRpcError(RuntimeError):
         self.code = code
         uncertainty = (
             "；操作可能已生效，不得自动重发"
-            if method in {"Exec", "WriteStdin", "FileTool"}
+            if method in {"Exec", "WriteStdin", "FileTool", "RawProcess"}
             else ""
         )
         super().__init__(f"Host Bridge {method} 失败: {code.name}: {detail}{uncertainty}")

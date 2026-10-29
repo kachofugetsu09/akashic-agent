@@ -10,7 +10,8 @@ from .bridge.factory import build_shell_process_manager, build_requirements_chec
 from .shell_runtime import resolve_shell
 from plugins.host_execution.contract import ResolvedShell, RequirementsChecker
 from plugins.host_execution.contract import (
-    PROCESSES, TERMINALS, Processes, Terminals, TerminalInfo, TerminalOutput,
+    PROCESSES, TERMINALS, PROCESS_STREAMS, ProcessStreams, RawProcessOutput, Processes, Terminals,
+    TerminalInfo, TerminalOutput,
 )
 from plugins.host_execution.contract import (
     ExecutionCleanupReport, ExecutionResult, ExecutionState, ShellProcessManagerProtocol
@@ -44,7 +45,8 @@ class PluginProcesses:
     @contextmanager
     def _operation(
         self, ctx: Context, key: str,
-        service: tuple[ServiceKey[Processes] | ServiceKey[Terminals], object] | None = None,
+        service: tuple[ServiceKey[Processes] | ServiceKey[Terminals] | ServiceKey[ProcessStreams], object]
+        | None = None,
         *, terminal_write: bool = False,
     ) -> Generator[str]:
         """同步接纳实际调用，关闭时先排空，防止已接纳 spawn 晚于 shutdown。"""
@@ -175,3 +177,28 @@ class PluginTerminals:
     async def list(self, ctx: Context, owner_key: str) -> list[TerminalInfo]:
         with self._operation(ctx, owner_key) as owner:
             return await self._processes._backend().terminals.list_terminals(owner)
+
+
+# The public face authenticates the caller before addressing raw pipes.
+class PluginProcessStreams:
+    def __init__(self, processes: PluginProcesses) -> None:
+        self._processes = processes
+
+    async def open(self, ctx: Context, owner_key: str, *, argv: tuple[str, ...],
+                   cwd: str, env: dict[str, str]) -> str:
+        with self._processes._operation(ctx, owner_key, (PROCESS_STREAMS, self)) as owner:
+            return await self._processes._backend().raw.open(owner=owner, argv=argv, cwd=cwd, env=env)
+
+    async def read(self, ctx: Context, owner_key: str, *, identity: str,
+                   stream: str, offset: int) -> RawProcessOutput:
+        with self._processes._operation(ctx, owner_key, (PROCESS_STREAMS, self)) as owner:
+            return await self._processes._backend().raw.read(
+                owner=owner, identity=identity, stream=stream, offset=offset)
+
+    async def write(self, ctx: Context, owner_key: str, *, identity: str, data: bytes) -> None:
+        with self._processes._operation(ctx, owner_key, (PROCESS_STREAMS, self)) as owner:
+            await self._processes._backend().raw.write(owner=owner, identity=identity, data=data)
+
+    async def close(self, ctx: Context, owner_key: str, *, identity: str) -> bool:
+        with self._processes._operation(ctx, owner_key, (PROCESS_STREAMS, self)) as owner:
+            return await self._processes._backend().raw.close(owner=owner, identity=identity)

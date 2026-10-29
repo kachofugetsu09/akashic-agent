@@ -19,6 +19,7 @@ service HostBridge {
   rpc SkillRequirements(SkillRequirementsRequest) returns (SkillRequirementsReply);
   rpc ExecutionStates(OwnerRequest) returns (ExecutionStatesReply);
   rpc Terminal(TerminalRequest) returns (TerminalReply);
+  rpc RawProcess(RawProcessRequest) returns (RawProcessReply);
 }
 
 message RequestContext {
@@ -237,4 +238,27 @@ message TerminalReply {
     TerminalList list = 4;
     int64 unknown_terminal_id = 5;
   }
+}
+
+// Binary pipes: offsets acknowledge only the preceding read chunk. Writes are
+// never retried after an uncertain transport failure.
+message RawProcessRequest {
+  RequestContext context = 1;
+  string owner_session_key = 2;
+  string operation = 3;
+  string identity = 4;
+  repeated string argv = 5;
+  string cwd = 6;
+  map<string, string> env = 7;
+  bytes data = 8;
+  string stream = 9;
+  uint64 offset = 10;
+}
+message RawProcessReply {
+  string identity = 1;
+  bytes data = 2;
+  uint64 next_offset = 3;
+  bool eof = 4;
+  optional sint32 exit_code = 5;
+  bool closed = 6;
 }

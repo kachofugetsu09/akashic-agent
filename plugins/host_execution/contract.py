@@ -121,6 +121,9 @@ HOST_STATUS = ServiceKey[HostStatus]("host.status.v1")
 class ShellProcessManagerProtocol(Protocol):
     """Host-backed or local process owner used by a shell provider."""
 
+    @property
+    def raw(self) -> RawProcessBackend: ...
+
     async def exec_command(
         self,
         *,
@@ -289,6 +292,35 @@ def clamp_write_stdin_yield_time(
     if has_input:
         return min(value, MAX_YIELD_TIME_MS)
     return min(max(value, MIN_EMPTY_YIELD_TIME_MS), max_empty_ms)
+
+
+@dataclass(frozen=True, slots=True)
+class RawProcessOutput:
+    data: bytes
+    next_offset: int
+    eof: bool
+    exit_code: int | None
+
+
+class RawProcessBackend(Protocol):
+    async def open(self, *, owner: str, argv: tuple[str, ...], cwd: str, env: dict[str, str]) -> str: ...
+    async def read(self, *, owner: str, identity: str, stream: str, offset: int) -> RawProcessOutput: ...
+    async def write(self, *, owner: str, identity: str, data: bytes) -> None: ...
+    async def close(self, *, owner: str, identity: str) -> bool: ...
+
+
+# Binary protocol pipes owned by the calling plugin and manager lease. Children get a
+# minimal host env (PATH, HOME, locale...) plus the explicit env; nothing else is inherited.
+class ProcessStreams(Protocol):
+    async def open(self, ctx: Context, owner_key: str, *, argv: tuple[str, ...], cwd: str,
+                   env: dict[str, str]) -> str: ...
+    async def read(self, ctx: Context, owner_key: str, *, identity: str, stream: str,
+                   offset: int) -> RawProcessOutput: ...
+    async def write(self, ctx: Context, owner_key: str, *, identity: str, data: bytes) -> None: ...
+    async def close(self, ctx: Context, owner_key: str, *, identity: str) -> bool: ...
+
+
+PROCESS_STREAMS = ServiceKey[ProcessStreams]("host.process_streams.v1")
 
 
 class Processes(Protocol):

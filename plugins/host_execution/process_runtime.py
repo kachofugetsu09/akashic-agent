@@ -14,14 +14,16 @@ import subprocess
 import tempfile
 import time
 from collections import deque
+from collections.abc import AsyncIterator
 from contextlib import AsyncExitStack, asynccontextmanager
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, BinaryIO, Protocol
 
 from agent.plugin_composition.execution import process_group_exists
 
 from .fork_server import ForkServerLost, ShellForkPool
+from .raw_processes import RawProcesses
 
 if TYPE_CHECKING:
     from .terminals import PtyTerminals
@@ -195,6 +197,7 @@ class ShellProcessManager:
         self._rng = random.SystemRandom()
         self._forks = ShellForkPool()
         self._terminals: PtyTerminals | None = None
+        self.raw = RawProcesses(self._raw_admission)
 
     @property
     def terminals(self) -> PtyTerminals:
@@ -219,6 +222,13 @@ class ShellProcessManager:
             yield
         finally:
             lock.release()
+
+    # Raw pipes share the owner lock and quarantine with shell executions.
+    @asynccontextmanager
+    async def _raw_admission(self, owner: str) -> AsyncIterator[None]:
+        async with self._owner_access(owner):
+            await self._ensure_owner_admitted(owner)
+            yield
 
     async def exec_command(
         self,
@@ -391,6 +401,7 @@ class ShellProcessManager:
                     if execution.owner_session_key == owner_session_key
                 ]
             report = await self._terminate_many(executions)
+            report = await self._close_raw_owner(owner_session_key, report)
             try:
                 if self._terminals is not None:
                     await self._terminals.close_owner(owner_session_key)
@@ -415,16 +426,38 @@ class ShellProcessManager:
                     async with self._spawn_lock, self._lock:
                         executions = list(self._executions.values())
                     report = await self._terminate_many(executions)
-                    try:
-                        if self._terminals is not None:
-                            await self._terminals.shutdown()
-                    finally:
-                        # 终端关闭失败不跳过 fork server 的收尾；未确认的执行保留 server 以便后续 wait。
-                        if not report.failures:
-                            await self._forks.close()
+                    errors: list[Exception] = []
+                    # raw 与终端各自独立收尾，一个失败不跳过另一个和 fork server。
+                    for stage in (self.raw.shutdown, self._shutdown_terminals):
+                        try:
+                            await stage()
+                        except Exception as error:
+                            errors.append(error)
+                    # 未确认的执行保留 fork server 以便后续 wait。
+                    if not report.failures:
+                        await self._forks.close()
+                    if errors:
+                        raise ExceptionGroup("host process cleanup failed", errors)
                     return report
             finally:
                 self._owners_ready.set()
+
+    async def _shutdown_terminals(self) -> None:
+        if self._terminals is not None:
+            await self._terminals.shutdown()
+
+    # raw 清理未确认时并入报告，让 owner 与 shell 执行一样进入隔离。
+    async def _close_raw_owner(
+        self, owner_session_key: str, report: ExecutionCleanupReport
+    ) -> ExecutionCleanupReport:
+        try:
+            await self.raw.close_owner(owner_session_key)
+        except Exception as error:
+            failure = ExecutionCleanupFailure(
+                execution_id=-1, error_type=type(error).__name__, message=str(error)
+            )
+            return replace(report, failures=(*report.failures, failure))
+        return report
 
     async def active_execution_ids(self) -> list[int]:
         async with self._lock:
