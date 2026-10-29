@@ -138,9 +138,13 @@ class Reader {
   private toggleFiles(): void {
     const opening = this.nav.hidden || this.navMode !== "files";
     this.navMode = "files";
-    this.nav.hidden = !opening;
-    this.syncTools();
-    if (opening) void this.files(this.directory);
+    if (!opening) {
+      this.nav.hidden = true;
+      this.syncTools();
+      return;
+    }
+    this.showOpener();
+    void this.files(this.directory);
   }
 
   private toggleOutline(): void {
