@@ -25,7 +25,7 @@ class PathInfoOperation:
         after: str | None = None, limit: int = 100, max_bytes: int = 32768,
     ) -> str:
         """Validate the request once and run all disk work in a bounded worker."""
-        if action not in {"resolve", "inspect", "browse", "read_text", "agents_chain"}:
+        if action not in {"resolve", "inspect", "browse", "read_text", "agents_chain", "markdown_list", "markdown_read"}:
             raise ValueError("Unknown path operation")
         if not isinstance(path, str) or not path or "\x00" in path:
             raise ValueError("Path must be nonempty text")
@@ -73,6 +73,37 @@ class PathInfoOperation:
                 result["items"] = [{"name": name, "path": str(target / name)} for name in names[:limit]]
                 result["after"] = names[limit - 1] if len(names) > limit else None
                 result["parent"] = str(target.parent)
+            if action == "markdown_list":
+                if kind != "directory":
+                    raise NotADirectoryError(str(target))
+                # One directory at a time, bounded pages; no recursive traversal or symlink following.
+                with os.scandir(target) as entries:
+                    names = heapq.nsmallest(limit + 1, (
+                        entry.name for entry in entries
+                        if (after is None or entry.name > after)
+                        and entry.name not in {".git", "node_modules", ".venv", "__pycache__"}
+                        and not entry.is_symlink()
+                        and (entry.is_dir(follow_symlinks=False)
+                             or Path(entry.name).suffix.lower() in {".md", ".markdown", ".mdown"})
+                    ))
+                result["items"] = [{"name": name + ("/" if (target / name).is_dir() else ""),
+                                    "path": str(target / name)} for name in names[:limit]]
+                result["after"] = names[limit - 1] if len(names) > limit else None
+                result["parent"] = str(target.parent)
+            if action == "markdown_read":
+                if target.suffix.lower() not in {".md", ".markdown", ".mdown"}:
+                    return json.dumps({**result, "status": "invalid_text"}, ensure_ascii=False)
+                if kind != "file":
+                    return json.dumps({**result, "status": "not_file"}, ensure_ascii=False)
+                # Nonblocking open + descriptor check closes the stat/open FIFO replacement race.
+                descriptor = os.open(target, os.O_RDONLY | os.O_NONBLOCK)
+                with os.fdopen(descriptor, "rb") as stream:
+                    if not stat.S_ISREG(os.fstat(stream.fileno()).st_mode):
+                        return json.dumps({**result, "status": "not_file"}, ensure_ascii=False)
+                    raw = stream.read(1024 * 1024 + 1)
+                if len(raw) > 1024 * 1024:
+                    return json.dumps({**result, "status": "too_large"}, ensure_ascii=False)
+                result.update(text=raw.decode("utf-8-sig"), bytes=len(raw))
             # 3. Never read a device or FIFO; over-limit files have no partial text.
             if action == "read_text":
                 if kind != "file":
