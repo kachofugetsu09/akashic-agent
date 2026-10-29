@@ -1,1 +1,344 @@
-.md-reader{height:100%;min-width:0;display:flex;flex-direction:column;background:var(--ak-paper-sheet,#fff);color:var(--ak-ink-primary,#37352f);font:13px/1.5 var(--ak-type-body,system-ui);container-type:inline-size}.md-reader *{box-sizing:border-box}.md-reader form{display:flex;gap:6px;padding:10px;border-bottom:1px solid var(--ak-rule-subtle,#e9e9e7)}.md-reader input{min-width:0;flex:1;padding:7px 9px;border:1px solid var(--ak-rule-default,#d3d3d0);border-radius:5px;background:transparent;color:inherit;font:inherit}.md-reader button{border:0;border-radius:4px;padding:6px 9px;background:transparent;color:inherit;font:inherit;cursor:pointer;text-align:left}.md-reader button:hover{background:var(--ak-paper-hover,#efefed)}.md-reader :focus-visible{outline:2px solid var(--ak-ink-secondary,#73736e);outline-offset:2px}.md-tools{display:flex;gap:2px;padding:4px 10px}.md-path{padding:2px 18px 8px;font-size:11px;color:var(--ak-ink-secondary,#666);overflow-wrap:anywhere;max-height:70px;overflow:auto}.md-note{margin:0;padding:0 18px;font-size:12px;color:var(--ak-ink-secondary,#666)}.md-note:empty{display:none}.md-reader nav{flex:none;max-height:38%;overflow:auto;margin:4px 12px;padding:6px;border:1px solid var(--ak-rule-subtle,#e9e9e7);border-radius:5px}.md-reader nav[hidden]{display:none}.md-reader nav button{display:block;width:100%;overflow-wrap:anywhere}.md-reader article{flex:1;min-height:0;overflow:auto;overscroll-behavior:contain;padding:22px clamp(18px,5cqw,52px) 80px;font-size:15px;line-height:1.75;overflow-wrap:anywhere;scrollbar-gutter:stable}.md-reader article>*{max-width:740px;margin-inline:auto}.md-reader article h1{font-size:30px;line-height:1.25;font-weight:700;letter-spacing:-.025em;margin-block:0 24px}.md-reader article h2{font-size:22px;line-height:1.35;margin-block:32px 12px}.md-reader article h3{font-size:18px;margin-block:24px 8px}.md-reader article p{margin-block:12px}.md-reader article ul,.md-reader article ol{padding-inline-start:24px}.md-reader article li{padding-inline-start:3px;margin-block:4px}.md-reader article blockquote{border-inline-start:3px solid var(--ak-rule-default,#ccc);padding-inline-start:16px;color:var(--ak-ink-secondary,#666)}.md-reader article a{color:inherit;text-decoration:underline;text-underline-offset:3px}.md-reader article code{font: .88em/1.6 var(--ak-type-technical,monospace);background:var(--ak-paper-hover,#f1f1ef);padding:2px 4px;border-radius:3px}.md-reader article pre{max-width:100%;overflow:auto;padding:16px;background:var(--ak-paper-hover,#f6f6f4);border-radius:5px;line-height:1.6;white-space:pre;overflow-wrap:normal}.md-reader article pre code{padding:0;background:none}.md-reader .md-source{font:13px/1.7 var(--ak-type-technical,monospace);white-space:pre-wrap;overflow-wrap:anywhere}.md-table{overflow:auto;max-width:100%!important}.md-reader table{border-collapse:collapse;font-size:13px;min-width:100%}.md-reader th,.md-reader td{padding:8px 12px;border:1px solid var(--ak-rule-default,#ddd);text-align:left;white-space:nowrap}.md-reader th{background:var(--ak-paper-hover,#f5f5f3);font-weight:600}.md-reader article input{width:14px;height:14px;margin-inline-end:6px}.md-reader hr{border:0;border-top:1px solid var(--ak-rule-subtle,#e9e9e7);margin-block:24px}.md-image-note{font-size:12px;color:var(--ak-ink-secondary,#666)}@container(max-width:360px){.md-reader article{font-size:14px;padding:18px 16px 50px}.md-reader article h1{font-size:25px}.md-reader form{padding:8px}.md-reader button{padding:6px}}
+/* 文档标签：顶栏一行（文档名 + 视图开关），文件/目录面板按需展开，正文是阅读字体的单列纸面。 */
+.md-reader {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  min-width: 0;
+  container-type: inline-size;
+  background: var(--ak-paper-sheet);
+  color: var(--ak-ink-primary);
+  font-family: var(--ak-type-ui);
+  font-size: 13px;
+  line-height: 1.5;
+}
+
+.md-reader *,
+.md-reader *::before,
+.md-reader *::after {
+  box-sizing: border-box;
+}
+
+.md-reader button {
+  padding: 4px 8px;
+  border: 0;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--ak-ink-secondary);
+  font: inherit;
+  text-align: start;
+  cursor: pointer;
+}
+
+.md-reader button:hover {
+  background: var(--ak-paper-raised);
+  color: var(--ak-ink-primary);
+}
+
+.md-reader button[aria-pressed="true"] {
+  background: var(--ak-paper-quiet);
+  color: var(--ak-ink-primary);
+}
+
+.md-reader :focus-visible {
+  outline: 2px solid var(--ak-rule-focus);
+  outline-offset: 2px;
+}
+
+/* 顶栏：文档名占满剩余宽度并截断，开关固定在右侧。 */
+.md-bar {
+  display: flex;
+  flex: none;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 10px;
+  border-bottom: 1px solid var(--ak-rule-subtle);
+}
+
+.md-name {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  padding-inline-start: 4px;
+  color: var(--ak-ink-primary);
+  font-weight: 600;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.md-name:empty::before {
+  content: "文档";
+  color: var(--ak-ink-secondary);
+  font-weight: 400;
+}
+
+.md-tools {
+  display: flex;
+  flex: none;
+  gap: 2px;
+}
+
+/* 文件/目录面板：与改动标签的文件栏同一层级，展开时压在正文上方。 */
+.md-nav {
+  display: flex;
+  flex: none;
+  flex-direction: column;
+  max-height: 45%;
+  overflow: auto;
+  padding: 6px;
+  border-bottom: 1px solid var(--ak-rule-subtle);
+  background: var(--ak-paper-quiet);
+}
+
+.md-nav[hidden] {
+  display: none;
+}
+
+.md-nav button {
+  display: block;
+  width: 100%;
+  overflow: hidden;
+  color: var(--ak-ink-primary);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.md-nav button[data-kind="directory"],
+.md-nav button[data-kind="parent"],
+.md-nav button[data-more] {
+  color: var(--ak-ink-secondary);
+}
+
+.md-nav p {
+  margin: 4px 8px;
+  color: var(--ak-ink-secondary);
+}
+
+.md-open {
+  display: flex;
+  gap: 6px;
+  margin-block-end: 6px;
+}
+
+.md-open input {
+  flex: 1;
+  min-width: 0;
+  padding: 5px 8px;
+  border: 1px solid var(--ak-rule-default);
+  border-radius: 8px;
+  background: var(--ak-paper-sheet);
+  color: var(--ak-ink-primary);
+  font: inherit;
+}
+
+.md-open button {
+  flex: none;
+  width: auto;
+}
+
+.md-directory {
+  overflow: hidden;
+  padding: 4px 8px 2px;
+  color: var(--ak-ink-muted);
+  font-family: var(--ak-type-technical);
+  font-size: 11px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.md-note {
+  flex: none;
+  margin: 0;
+  padding: 6px 14px;
+  color: var(--ak-ink-secondary);
+  font-size: 12px;
+}
+
+.md-note:empty {
+  display: none;
+}
+
+/* 正文：阅读字体、单列最多 740px；细规则线只回答结构，不做装饰。 */
+.md-reader article {
+  flex: 1;
+  min-height: 0;
+  overflow: auto;
+  overscroll-behavior: contain;
+  padding: 20px clamp(16px, 5cqw, 48px) 72px;
+  font-family: var(--ak-type-reading);
+  font-size: 15px;
+  line-height: 1.75;
+  overflow-wrap: anywhere;
+}
+
+.md-reader article > * {
+  max-width: 740px;
+  margin-inline: auto;
+}
+
+.md-reader article h1,
+.md-reader article h2,
+.md-reader article h3,
+.md-reader article h4 {
+  color: var(--ak-ink-primary);
+  font-weight: 600;
+  line-height: 1.35;
+  scroll-margin-top: 12px;
+}
+
+.md-reader article h1 {
+  margin-block: 0 20px;
+  font-size: 1.6em;
+}
+
+.md-reader article h2 {
+  margin-block: 32px 10px;
+  font-size: 1.3em;
+}
+
+.md-reader article h3 {
+  margin-block: 24px 8px;
+  font-size: 1.1em;
+}
+
+.md-reader article h4 {
+  margin-block: 20px 6px;
+  font-size: 1em;
+}
+
+.md-reader article p {
+  margin-block: 10px;
+}
+
+.md-reader article ul,
+.md-reader article ol {
+  padding-inline-start: 24px;
+}
+
+.md-reader article li {
+  margin-block: 4px;
+  padding-inline-start: 2px;
+}
+
+/* GFM 任务项：复选框代替项目符号，左缘与普通列表文字对齐。 */
+.md-reader article li:has(> input[type="checkbox"]) {
+  margin-inline-start: -20px;
+  list-style: none;
+}
+
+.md-reader article input[type="checkbox"] {
+  width: 14px;
+  height: 14px;
+  margin: 0 6px 0 0;
+  vertical-align: -2px;
+  accent-color: var(--ak-ink-secondary);
+}
+
+.md-reader article blockquote {
+  margin-block: 12px;
+  padding-inline-start: 14px;
+  border-inline-start: 3px solid var(--ak-rule-default);
+  color: var(--ak-ink-secondary);
+}
+
+.md-reader article a {
+  color: inherit;
+  text-decoration: underline;
+  text-decoration-color: var(--ak-rule-strong);
+  text-underline-offset: 3px;
+}
+
+.md-reader article a:hover {
+  text-decoration-color: currentColor;
+}
+
+.md-reader article code {
+  padding: 1px 4px;
+  border-radius: 4px;
+  background: var(--ak-paper-quiet);
+  font-family: var(--ak-type-technical);
+  font-size: 0.86em;
+}
+
+.md-reader article pre {
+  max-width: 100%;
+  overflow: auto;
+  padding: 14px 16px;
+  border-radius: 8px;
+  background: var(--ak-paper-quiet);
+  line-height: 1.6;
+  white-space: pre;
+  overflow-wrap: normal;
+}
+
+.md-reader article pre code {
+  padding: 0;
+  background: none;
+}
+
+.md-reader article hr {
+  margin-block: 24px;
+  border: 0;
+  border-top: 1px solid var(--ak-rule-subtle);
+}
+
+/* 表格只留横线；宽表在自己的滚动框里横滚，不撑破正文。 */
+.md-reader .md-table {
+  max-width: 100%;
+  margin-block: 16px;
+  overflow-x: auto;
+}
+
+.md-reader table {
+  min-width: 100%;
+  border-collapse: collapse;
+  font-family: var(--ak-type-ui);
+  font-size: 13px;
+  line-height: 1.5;
+}
+
+.md-reader th,
+.md-reader td {
+  padding: 8px 12px 8px 0;
+  border-bottom: 1px solid var(--ak-rule-subtle);
+  text-align: start;
+  vertical-align: top;
+}
+
+.md-reader th {
+  border-bottom-color: var(--ak-rule-default);
+  color: var(--ak-ink-secondary);
+  font-weight: 600;
+  white-space: nowrap;
+}
+
+.md-reader .md-source {
+  margin: 0;
+  font-family: var(--ak-type-technical);
+  font-size: 13px;
+  line-height: 1.7;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+.md-image-note {
+  color: var(--ak-ink-muted);
+  font-family: var(--ak-type-ui);
+  font-size: 12px;
+}
+
+@container (max-width: 360px) {
+  .md-reader article {
+    padding: 16px 16px 48px;
+    font-size: 14px;
+  }
+
+  .md-bar {
+    padding-inline: 8px;
+  }
+}
+
+@media (pointer: coarse) {
+  .md-reader button {
+    min-height: 40px;
+  }
+}
