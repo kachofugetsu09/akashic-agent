@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+from collections import OrderedDict
 from collections.abc import Callable, Iterable, Iterator
 from dataclasses import dataclass
 from datetime import datetime
@@ -28,6 +29,10 @@ class _MessageRef:
     result: CallRef | None
 
 
+# 每轮的召回徽标挂载即查询；只留一个会话时，来回切换会反复整段投影大会话。
+_CACHED_SOURCES = 8
+
+
 @dataclass(frozen=True, slots=True)
 class _SourceTurns:
     key: tuple[str, str, int]
@@ -44,7 +49,7 @@ class RecallInspector:
         self._read = read
         self._legacy_page = legacy_page
         self._catalog = catalog
-        self._turns: _SourceTurns | None = None
+        self._turns: OrderedDict[tuple[str, str], _SourceTurns] = OrderedDict()
         self._lock = Lock()
         self._legacy_before: str | None = "g"
         self._legacy: dict[tuple[str, str], list[tuple[datetime, str, int]]] = {}
@@ -55,12 +60,14 @@ class RecallInspector:
         with self._lock:
             head = reader.head(source=source)
             key = (session_id, source, head)
-            cached = self._turns
+            cached = self._turns.get(key[:2])
+            if cached is not None:
+                self._turns.move_to_end(key[:2])
             if cached is not None and cached.key == key:
                 return cached
             closed: tuple[Turn, ...] = ()
             prefix: tuple[_MessageRef, ...] = ()
-            if cached is not None and cached.key[:2] == key[:2] and cached.key[2] < head:
+            if cached is not None and cached.key[2] < head:
                 closed = tuple(turn for turn in cached.turns if turn.status != "open")
                 if closed:
                     prefix = tuple(item for item in cached.messages if item.seq <= closed[-1].through_seq)
@@ -80,8 +87,12 @@ class RecallInspector:
                         yield message
                 turns = projection.project(observed(), source, after_seq=boundary)
                 return _SourceTurns(key, closed + turns, prefix + tuple(refs))
-            self._turns = reader.scan(project, after_seq=boundary, through_seq=head, source=source)
-            return self._turns
+            turns = reader.scan(project, after_seq=boundary, through_seq=head, source=source)
+            self._turns[key[:2]] = turns
+            self._turns.move_to_end(key[:2])
+            while len(self._turns) > _CACHED_SOURCES:
+                _ = self._turns.popitem(last=False)
+            return turns
 
     def _legacy_automatic(self, session_id: str, source: str, after: int, through: int) -> tuple[str | None, bool]:
         """Advance at most 64 retired rows per RPC, retaining references only.
