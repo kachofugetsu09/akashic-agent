@@ -51,10 +51,12 @@ class Reader {
     this.article.addEventListener("click", (event) => {
       const link = (event.target as Element).closest("a"); if (!link) return;
       const href = link.getAttribute("href") || "";
-      if (href.startsWith("#")) { event.preventDefault(); document.getElementById(href.slice(1))?.scrollIntoView({ block: "start" }); }
+      if (href.startsWith("#")) { event.preventDefault(); this.jump(href.slice(1)); }
       else if (!/^[a-z][a-z0-9+.-]*:/i.test(href) && /\.(md|markdown|mdown)(?:#.*)?$/i.test(href)) {
-        event.preventDefault(); const [relative] = href.split("#");
-        void this.open(relative.startsWith("/") ? relative : this.path.slice(0, this.path.lastIndexOf("/") + 1) + decodeURIComponent(relative));
+        event.preventDefault(); const [raw, fragment] = href.split("#");
+        let relative: string;
+        try { relative = decodeURIComponent(raw); } catch { this.note.textContent = "链接路径编码无效。"; return; }
+        void this.open(relative.startsWith("/") ? relative : this.path.slice(0, this.path.lastIndexOf("/") + 1) + relative, false, fragment);
       }
     });
     this.stops = [view.onSessionChange((session) => { this.session = session; this.reset(); void this.files(); }), view.onActiveChange((active) => { this.active = active; clearTimeout(this.timer); if (active) { void this.files(this.directory); this.schedule(); } })];
@@ -88,7 +90,7 @@ class Reader {
       if (!this.path) { this.nav.hidden = false; this.note.textContent = result.items?.length ? "选择文档，或输入绝对路径。" : "此目录没有 Markdown 文档，可进入子目录或输入绝对路径。"; }
     } catch (error) { if (generation === this.generation && navigation === this.navigation) this.note.textContent = String((error as Error).message); }
   }
-  private async open(path: string, refresh = false) {
+  private async open(path: string, refresh = false, fragment?: string) {
     if (!path || (refresh && this.loading)) return;
     const generation = ++this.generation; this.loading = true;
     if (!refresh) this.note.textContent = "正在读取…";
@@ -99,6 +101,8 @@ class Reader {
       this.path = result.path; this.input.value = result.path; this.title.textContent = result.path; this.title.title = result.path;
       this.text = result.text ?? ""; this.note.textContent = this.text ? "" : "这是一个空文档。";
       if (changed) { const position = refresh ? this.article.scrollTop : 0; this.render(); this.article.scrollTop = position; }
+      if (fragment) this.jump(fragment);
+      if (changed && this.navMode === "outline" && !this.nav.hidden) this.outline();
     } catch (error) { if (generation === this.generation) this.note.textContent = (refresh ? "更新失败，保留当前内容。" : "") + (error as Error).message; }
     finally { if (generation === this.generation) this.loading = false; }
   }
@@ -122,6 +126,12 @@ class Reader {
     // Images were removed in the inert template, before any network requests can start.
     this.article.querySelectorAll("table").forEach((table) => { const wrapper = el("div"); wrapper.className = "md-table"; wrapper.tabIndex = 0; table.replaceWith(wrapper); wrapper.append(table); });
     this.article.querySelectorAll("input").forEach((input) => { input.disabled = true; });
+  }
+  private jump(fragment: string) {
+    let id: string;
+    try { id = decodeURIComponent(fragment); } catch { return; }
+    const heading = [...this.article.querySelectorAll<HTMLElement>("[id]")].find((node) => node.id === id);
+    heading?.scrollIntoView({ block: "start" });
   }
   private outline() {
     this.navMode = "outline";
