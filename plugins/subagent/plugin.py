@@ -51,7 +51,10 @@ from .inputs import (
 )
 from .prompts import build_spawn_subagent_prompt
 from .request import PROFILE_TOOLS, Request, SpawnInput
-from .runtime import DEFAULT_MAX_ACTIVE, DEFAULT_RESULT_CHARS, SUBAGENT_PROGRAM, Subagents
+from .contract import SUBAGENT_PROGRAM, AGENT_RUNNERS
+from .runners import Runners
+from plugins.jobs.contract import JOB_NOTICES
+from .runtime import DEFAULT_MAX_ACTIVE, DEFAULT_RESULT_CHARS, Subagents
 from .tools import Manage, ManageInput, Spawn
 
 api_version = 3
@@ -77,7 +80,7 @@ inject = (
     DELIVERY,
     DELIVERY_SENDERS,
     REPLY_PROGRAM,
-    REPLY_EXECUTE, SOURCE_CHECK,
+    REPLY_EXECUTE, SOURCE_CHECK, JOB_NOTICES,
 )
 workspace_roots = ("subagent-runs",)
 workspace_files = ("memory/SELF.md", "memory/spawn_trace.jsonl")
@@ -111,6 +114,12 @@ async def apply(ctx: Context) -> None:
                          lambda: import_module(".dashboard", __package__))
     watcher: asyncio.Task[None] | None = None
     jobs = Subagents(ctx, max_active=config.max_active, result_chars=config.result_chars)
+    runners = Runners(ctx, max_active=config.max_active, result_chars=config.result_chars)
+    await runners.recover()
+    await ctx.provide(AGENT_RUNNERS, runners)
+    from plugins.ui.contract import UI_SLOTS
+    from .runner_ui import register_ui
+    await ctx.inject((UI_SLOTS,), lambda child: register_ui(child, runners), name="runner-ui")
     catalog = ctx.require(TOOLS)
     _ = await catalog.declare_group(ctx, description=desc)
 

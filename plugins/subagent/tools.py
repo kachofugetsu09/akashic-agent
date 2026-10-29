@@ -16,7 +16,8 @@ from plugins.ledger.contract import json_value
 from plugins.models.contract import ChatModelSelection
 
 from .request import PROFILE_TOOLS, Request, SpawnInput, SinkInput
-from .runtime import SUBAGENT_PROGRAM, SubagentBusy, Subagents, completion
+from .contract import SUBAGENT_PROGRAM
+from .runtime import SubagentBusy, Subagents, completion
 
 
 class Prepared(BaseModel):
