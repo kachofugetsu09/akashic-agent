@@ -15,7 +15,7 @@ import sys
 import tempfile
 import time
 from contextlib import asynccontextmanager
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from functools import partial, wraps
 from pathlib import Path
 from typing import Any, AsyncGenerator, Awaitable, Callable, cast
@@ -41,7 +41,7 @@ from .protocol import (
     require_names,
 )
 from plugins.host_execution.contract import (
-    ExecutionCleanupReport
+    ExecutionCleanupFailure, ExecutionCleanupReport
 )
 from plugins.host_execution.contract import (
     ExecutionResult, TerminalBackend, UnknownExecutionError, UnknownTerminalError
@@ -84,11 +84,23 @@ class _ManagerLease:
         self.operations_drained.set()
 
     async def shutdown(self) -> ExecutionCleanupReport:
-        """准入关闭后先挂断终端，解除阻塞写入，再排空并回收 manager。"""
-        await self.manager.raw.shutdown()
-        await self.manager.terminals.shutdown()
+        """准入关闭后先挂断 raw 与终端，解除阻塞写入，再排空并回收 manager。"""
+        # 1. 每个阶段独立执行；前一阶段失败不能跳过排空和 manager 回收。
+        errors: list[Exception] = []
+        for stage in (self.manager.raw.shutdown, self.manager.terminals.shutdown):
+            try:
+                await stage()
+            except Exception as error:
+                errors.append(error)
         await self.operations_drained.wait()
-        return await self.manager.shutdown()
+        try:
+            report = await self.manager.shutdown()
+        except Exception as error:
+            errors.append(error)
+            report = ExecutionCleanupReport((), (), ())
+        # 2. 未确认的 raw/终端清理并入报告，沿用执行失败的保留与重试路径。
+        failures = tuple(ExecutionCleanupFailure(-1, type(error).__name__, str(error)) for error in errors)
+        return replace(report, failures=(*report.failures, *failures))
 
 
 class _ManagerUnavailable(Exception):

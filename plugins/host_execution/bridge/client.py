@@ -30,7 +30,9 @@ from .protocol import (
     require_positive,
     require_text,
 )
-from plugins.host_execution.contract import FileResult, TerminalInfo, TerminalOutput, UnknownTerminalError, RawProcessOutput
+from plugins.host_execution.contract import (
+    FileResult, RawProcessOutput, TerminalInfo, TerminalOutput, UnknownTerminalError,
+)
 from plugins.host_execution.contract import (
     ExecutionCleanupReport, ExecutionResult, ExecutionState
 )
@@ -147,9 +149,8 @@ class HostBridgeTerminals:
         return [decode_terminal_info(item) for item in reply.list.terminals]
 
 
+# Protocol pipes share the authenticated manager lease, not shell buffers.
 class HostBridgeRawProcesses:
-    """Protocol pipes share the authenticated manager lease, not shell buffers."""
-
     def __init__(self, manager: HostBridgeShellProcessManager) -> None:
         self._manager = manager
 

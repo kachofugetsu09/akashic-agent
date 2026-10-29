@@ -10,7 +10,9 @@ from agent.plugin_composition.execution import EXECUTION
 from agent.plugin_composition.host import HOST_INFO
 from core.common.file_io import run_file_io
 from infra.persistence.json_store import load_json, atomic_save_json
-from plugins.host_execution.contract import HOST_STATUS, WORKLOAD_CONTROLLER, PROCESSES, FILES, TERMINALS, PROCESS_STREAMS
+from plugins.host_execution.contract import (
+    HOST_STATUS, WORKLOAD_CONTROLLER, PROCESSES, FILES, TERMINALS, PROCESS_STREAMS,
+)
 from .bridge.factory import HostBridgeRpcError, build_file_bridge
 from plugins.ui.contract import UI, UI_SLOTS, PluginUiDefinition, PluginUiRpcInvalidRequest
 from .processes import PluginProcesses, PluginTerminals, PluginProcessStreams

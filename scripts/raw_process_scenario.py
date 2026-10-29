@@ -36,7 +36,7 @@ async def run(output: Path) -> dict[str, object]:
         # Deliberately exceed the shell's historical 1 MiB buffer. Nothing may
         # be dropped, merged with stderr, or corrupted by text decoding.
         code = "import os,sys; os.write(2,b'ERR\\x00'); os.write(1,b'HEAD\\x00'); data=sys.stdin.buffer.read(6); sys.stdout.buffer.write(data+b'x'*1500000); sys.stdout.buffer.flush()"
-        opened = await call("open", argv=[sys.executable, "-c", code], cwd=str(output), env=dict(os.environ))
+        opened = await call("open", argv=[sys.executable, "-c", code], cwd=str(output), env={})
         identity = opened.identity
         await call("write", identity=identity, data=b"hello\x00")
         cursor, chunks = 0, []
@@ -62,7 +62,7 @@ async def run(output: Path) -> dict[str, object]:
         await call("close", identity=identity)
         # Stop a process with unread, full pipes and a sleeping descendant.
         code = "import os,subprocess,sys,time; p=subprocess.Popen([sys.executable,'-c','import time; time.sleep(90)']); print(str(os.getpid())+','+str(p.pid),flush=True); sys.stdout.buffer.write(b'z'*2000000); sys.stdout.buffer.flush(); time.sleep(90)"
-        identity = (await call("open", argv=[sys.executable, "-c", code], cwd=str(output), env=dict(os.environ))).identity
+        identity = (await call("open", argv=[sys.executable, "-c", code], cwd=str(output), env={})).identity
         first = await call("read", identity=identity, stream="stdout", offset=0)
         pids = [int(x) for x in first.data.split(b"\n", 1)[0].split(b",")]
         async with asyncio.timeout(10):
