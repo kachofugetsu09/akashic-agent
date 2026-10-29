@@ -15,8 +15,11 @@ from plugins.subagent.contract import AGENT_RUNNERS, AgentRunner, AgentTask, Age
 api_version = 3
 name = "subagent_claude_code"
 version = "1.0.0"
-desc = "委托 Claude Code；只开放 Read、Glob、Grep，不开放 shell、写入或 MCP 工具"
+desc = "委托 Claude Code；只开放工作目录内的 Read、Glob、Grep，不开放 shell、写入或 MCP 工具"
 inject = (AGENT_RUNNERS, PROCESS_STREAMS, TOOLS, JOB_NOTICES)
+
+
+SETTINGS = '{"disableAllHooks":true,"permissions":{"blockReadsOutsideWorkingDirectories":true}}'
 
 
 class Config(BaseModel):
@@ -49,7 +52,8 @@ async def execute(wire: AgentWire, task: AgentTask,
             raise ValueError("unexpected Claude Code interactive request")
         if kind == "result":
             text = frame.get("result")
-            if frame.get("subtype") != "success" or frame.get("is_error") is True or not isinstance(text, str) or not text.strip():
+            if (frame.get("subtype") != "success" or frame.get("is_error") is True
+                    or not isinstance(text, str) or not text.strip()):
                 return AgentResult("failed", "Claude Code 未返回有效完成答案。")
             return AgentResult("completed", text)
         if kind == "system":
@@ -78,11 +82,13 @@ async def apply(ctx: Context) -> None:
     service = ctx.require(AGENT_RUNNERS)
 
     async def run(task: AgentTask, emit: Callable[[AgentActivity], Awaitable[None]]) -> AgentResult:
+        # dontAsk runs reads inside the working directory and denies everything that would
+        # prompt; no allow rule is given, so reads elsewhere are refused rather than granted.
         argv = (config.executable, "--print", "--verbose", "--input-format", "stream-json",
                 "--output-format", "stream-json", "--permission-mode", "dontAsk",
-                "--tools", "Read,Glob,Grep", "--allowedTools", "Read,Glob,Grep",
+                "--tools", "Read,Glob,Grep",
                 "--strict-mcp-config", "--mcp-config", '{"mcpServers":{}}',
-                "--setting-sources", "", "--settings", '{"disableAllHooks":true}',
+                "--setting-sources", "", "--settings", SETTINGS,
                 "--no-session-persistence")
         if config.model:
             argv += ("--model", config.model)

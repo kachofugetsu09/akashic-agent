@@ -23,6 +23,11 @@ if mode == "codex":
     assert thread["params"]["sandbox"] == "read-only"
     assert thread["params"]["approvalPolicy"] == "never"
     send({"id": thread["id"], "result": {"thread": {"id": "thread"}}})
+    servers = receive()
+    assert servers["method"] == "mcpServerStatus/list"
+    send({"id": servers["id"], "result": {"data": [{"name": "leak"}] if case == "mcp" else []}})
+    if case == "mcp":
+        sys.exit(0)
     turn = receive()
     send({"id": turn["id"], "result": {"turn": {"id": "turn"}}})
     if case == "hang":
@@ -35,6 +40,11 @@ if mode == "codex":
     if case == "approval":
         send({"id": 999, "method": "item/commandExecution/requestApproval", "params": {}})
         assert receive()["result"]["decision"] == "decline"
+    if case == "unsupported":
+        send({"id": 998, "method": "item/unknown/request", "params": {}})
+        assert receive()["error"]["code"] == -32601
+        send({"method": "item/completed", "params": {"threadId": "thread", "turnId": "turn",
+              "item": {"type": "agentMessage", "phase": "future_phase", "text": "progress"}}})
     for identity, text in [("other", "MUST-NOT-LEAK"), ("thread", "已完成：中文碎包")]:
         send({"method": "item/completed", "params": {"threadId": identity, "turnId": "turn",
               "item": {"type": "agentMessage", "phase": "final_answer", "text": text}}})

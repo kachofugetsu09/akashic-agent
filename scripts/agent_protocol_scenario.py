@@ -36,7 +36,8 @@ async def run(output: Path, count: int):
     try:
         for n in range(count):
             mode = rng.choice(["codex", "claude"])
-            case = rng.choice(["success", "failed", "hang", "eof", "malformed", "approval"] if mode == "codex"
+            case = rng.choice(["success", "failed", "hang", "eof", "malformed", "approval", "unsupported", "mcp"]
+                              if mode == "codex"
                               else ["success", "failed", "hang", "eof", "malformed", "cross-session"])
             events = []
             async def emit(event): events.append(event.text)
@@ -48,11 +49,11 @@ async def run(output: Path, count: int):
                                 str(output), {**os.environ, "PEER_MODE": mode, "PEER_CASE": case}) as wire:
                             task = AgentTask(str(n), "read only", str(output))
                             result = await (codex(wire, task, Config(), emit) if mode == "codex" else claude(wire, task, emit))
-                            assert case in {"success", "approval", "failed"}, (mode, case, result)
+                            assert case in {"success", "approval", "failed", "unsupported"}, (mode, case, result)
                             assert result.status == ("failed" if case == "failed" else "completed")
                             assert "MUST-NOT-LEAK" not in result.text
-            except (TimeoutError, EOFError, ValueError):
-                assert case in {"hang", "eof", "malformed", "cross-session"}, (mode, case)
+            except (TimeoutError, EOFError, ValueError, RuntimeError) as error:
+                assert case in {"hang", "eof", "malformed", "cross-session", "mcp"}, (mode, case, error)
             assert not backend.raw._runs, "child not released"
             results.append({"mode": mode, "case": case, "passed": True})
     finally:

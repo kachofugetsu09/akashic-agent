@@ -5,6 +5,7 @@ import os
 from pathlib import Path
 import shutil
 import sys
+from typing import cast
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 from tests.test_default_reply import application
@@ -38,7 +39,7 @@ async def main(path):
         root=host.live_root
         assert root is not None
         runners=root.context.require(AGENT_RUNNERS)
-        names={row["name"] for row in runners.catalog()}
+        names={str(row["name"]) for row in runners.catalog()}
         assert names == {"codex", "claude_code"}, names
         await root.context.require(CHANNEL_INPUT_V2)("akashic:runner-scenario", "input", ChannelInboundMessage(
             "test", "user", "room", "delegate read-only", datetime.now(UTC), {}))
@@ -50,7 +51,17 @@ async def main(path):
                     assert rows[0]["status"] == "completed", rows
                     break
                 await asyncio.sleep(.05)
-        print(json.dumps({"actual_application_loaded": True, "runners": sorted(names), "delegation": rows}), flush=True)
+        # The notice carries settlement facts only; the receipt is read through the result tool.
+        from plugins.jobs.contract import JOB_NOTICES
+        from plugins.subagent.runners import ReadResult, Runners
+        async with runners.ctx.runtime_scope():
+            receipt = await ReadResult(cast(Runners, runners), "codex").invoke("scenario", {
+                "id": rows[0]["id"], "session_id": "akashic:runner-scenario"})
+        assert "已完成：中文碎包" in str(receipt.parts[0].value), receipt
+        jobs = await anext(root.context.require(JOB_NOTICES).follow_jobs("akashic:runner-scenario"))
+        assert jobs and all("中文碎包" not in job.detail for job in jobs), jobs
+        print(json.dumps({"actual_application_loaded": True, "runners": sorted(names), "delegation": rows,
+                          "notice_details": [job.detail for job in jobs], "receipt_tool": True}), flush=True)
         if os.environ.get("SCENARIO_PORT"):
             from bootstrap.web_shell import create_web_shell_server
             await create_web_shell_server(path / "workspace", port=int(os.environ["SCENARIO_PORT"])).serve()
