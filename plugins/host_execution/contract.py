@@ -121,7 +121,8 @@ HOST_STATUS = ServiceKey[HostStatus]("host.status.v1")
 class ShellProcessManagerProtocol(Protocol):
     """Host-backed or local process owner used by a shell provider."""
 
-    raw: RawProcessBackend
+    @property
+    def raw(self) -> RawProcessBackend: ...
 
     async def exec_command(
         self,

@@ -20,9 +20,13 @@ MAX_OWNER_RUNS = 8
 MAX_STDIN_FRAME = 1024 * 1024
 STDIN_HIGH_WATER = 1024 * 1024
 EXITED_TTL_SECONDS = 300.0
-# Children see this host baseline plus the caller's explicit env; Core and bridge
-# secrets (API keys, AKASHIC_*) never cross implicitly.
-BASE_ENV = frozenset({"PATH", "HOME", "USER", "LOGNAME", "SHELL", "LANG", "LANGUAGE", "TERM", "TMPDIR", "TZ"})
+# Children see this host baseline (identity, locale, network routing) plus the caller's
+# explicit env; Core and bridge secrets (API keys, AKASHIC_*) never cross implicitly.
+BASE_ENV = frozenset({
+    "PATH", "HOME", "USER", "LOGNAME", "SHELL", "LANG", "LANGUAGE", "TERM", "TMPDIR", "TZ",
+    "HTTP_PROXY", "HTTPS_PROXY", "ALL_PROXY", "NO_PROXY", "http_proxy", "https_proxy", "all_proxy", "no_proxy",
+    "SSL_CERT_FILE", "SSL_CERT_DIR",
+})
 
 
 def child_env(env: dict[str, str]) -> dict[str, str]:
