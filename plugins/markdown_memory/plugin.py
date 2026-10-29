@@ -16,6 +16,7 @@ from collections.abc import Callable, Mapping
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 from agent.plugin_composition import (
+    stop_spawned,
     RUNTIME_STARTED,
     RUNTIME_STOPPING,
     Context,
@@ -770,7 +771,7 @@ async def apply(ctx: Context) -> None:
         return reminders
 
     async def follow(catalog: MessageCatalog) -> None:
-        """模型暂时失败时保留原游标，关闭订阅后延时重读，其他会话继续处理。"""
+        """模型失败时保留原游标，关闭订阅后延时重读，其他会话继续处理。"""
         # 游标从持久检查点恢复：开机只追赶检查点之后的尾部，不重放整段历史。
         checkpoints = store
         assert checkpoints is not None
@@ -778,6 +779,8 @@ async def apply(ctx: Context) -> None:
         cursor: dict[str, int] = await run_file_io(lambda: checkpoints.read_cursors(fingerprint))
         while True:
             retry = False
+            # 密钥失效等不可重试的模型失败也只是暂停学习：换好密钥后不用重启就能接上。
+            delay = 30
             advanced: dict[str, int] = {}
             # 1. 每次重新订阅都先读完整 heads，不依赖失败后恰好出现新消息。
             # 投影按游标读取；只在 Output 或 Control 可能结束 turn 时唤醒。
@@ -808,9 +811,9 @@ async def apply(ctx: Context) -> None:
                                         compaction=compaction, evaluated=evaluated)
                                     except (RuntimeError, TimeoutError) as error:
                                         failure = ModelError.read(error)
-                                        if not isinstance(error, ConcurrentChange) and (
-                                                failure is None or not failure.retryable):
+                                        if not isinstance(error, ConcurrentChange) and failure is None:
                                             raise
+                                        delay = 30 if failure is None or failure.retryable else 300
                                         logger.warning(
                                             "Markdown 模型或文件暂时不可用，将重试原消息: session=%s message=%s error=%s",
                                             session, message.message_id, type(error).__name__, exc_info=True,
@@ -833,15 +836,16 @@ async def apply(ctx: Context) -> None:
                             await consolidate(store, ctx.require(CHAT_MODELS), lock_path, config)
                     except (RuntimeError, TimeoutError) as error:
                         failure = ModelError.read(error)
-                        if not isinstance(error, ConcurrentChange) and (failure is None or not failure.retryable):
+                        if not isinstance(error, ConcurrentChange) and failure is None:
                             raise
+                        delay = 30 if failure is None or failure.retryable else 300
                         logger.warning("Markdown 整理暂时失败，保留草稿稍后重试: %s", error)
                         retry = True
                         break
             if not retry:
                 return
             # 2. 释放当前 lease 和订阅再等待，取消正常传播，成功写入仍由原 receipt 去重。
-            await asyncio.sleep(30)
+            await asyncio.sleep(delay)
 
     async def start(_event: object) -> None:
         nonlocal store, watcher
@@ -853,12 +857,7 @@ async def apply(ctx: Context) -> None:
         watcher = await ctx.spawn(follow(ctx.require(MESSAGE_CATALOG)), name="markdown-memory")
 
     async def stop(_event: object) -> None:
-        if watcher is not None:
-            _ = watcher.cancel()
-            try:
-                await watcher
-            except asyncio.CancelledError:
-                pass
+        await stop_spawned(watcher)
 
     _ = await ctx.require(MATERIALS_V4).register(ctx, kind="profile", name="markdown_memory", prepare=prepare, prompt=True, priority=200)
     _ = await ctx.on(RUNTIME_STARTED, start)

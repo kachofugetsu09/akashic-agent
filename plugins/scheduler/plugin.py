@@ -9,6 +9,7 @@ from typing import Literal, cast
 from pydantic import BaseModel, ConfigDict, Field
 
 from agent.plugin_composition import (
+    stop_spawned,
     RUNTIME_STARTED,
     RUNTIME_STOPPING,
     Context,
@@ -177,12 +178,7 @@ async def apply(ctx: Context) -> None:
         watcher = await ctx.spawn(runtime.follow(), name="scheduler")
 
     async def stop(_event: object) -> None:
-        if watcher is not None:
-            _ = watcher.cancel()
-            try:
-                await watcher
-            except asyncio.CancelledError:
-                pass
+        await stop_spawned(watcher)
 
     _ = await ctx.on(RUNTIME_STARTED, start)
     _ = await ctx.on(RUNTIME_STOPPING, stop)
