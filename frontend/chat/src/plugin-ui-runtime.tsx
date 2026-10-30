@@ -81,7 +81,8 @@ let staleCatalogRead: Promise<void> | null = null;
 let staleRecoveryAttempted = false;
 const quarantinedRevisions = new Map<string, Error>();
 const MODULE_ATTEMPTS = 4;
-const MODULE_PATIENCE_MS = 8_000;
+// 弱网冷启动实测（单向 400ms、1Mbit）十来个几 KB 的模块要排队 4–22 秒才到；补发太早只会多占连接。
+const MODULE_PATIENCE_MS = 20_000;
 const SLOT_NAMES = new Set<PluginUiSlotName>([
   "turn.before_reasoning",
   "turn.after_answer",
@@ -283,9 +284,10 @@ function requireSlots(
 async function activateCatalog(next: PluginUiCatalog): Promise<boolean> {
   const current = () => catalog.catalogRevision === next.catalogRevision && !catalog.updating;
   const listed = new Set(next.plugins.map((plugin) => plugin.id));
-  retirePlugins([...definitions.keys()].filter((id) => !listed.has(id)));
+  retirePlugins([...new Set([...definitions.keys(), ...styleNodes.keys()])].filter((id) => !listed.has(id)));
   const results = await Promise.allSettled(next.plugins.map(async (plugin) => {
     if (definitions.get(plugin.id)?.revision === plugin.revision) return;
+    if (!definitions.has(plugin.id)) attachStylesheet(plugin);
     const module = await importPluginModule(plugin, current);
     let definition: PluginUiDefinition;
     try { definition = parseDefinition(module.default, plugin); }
@@ -305,17 +307,24 @@ function installPlugin(plugin: PluginUiCatalogItem, definition: PluginUiDefiniti
   const previous = definitions.get(plugin.id);
   if (previous && previous.revision !== plugin.revision) retirePushes(new Set([JSON.stringify([plugin.id, previous.revision])]));
   definitions.set(plugin.id, { revision: plugin.revision, definition });
-  styleNodes.get(plugin.id)?.remove();
-  styleNodes.delete(plugin.id);
-  if (plugin.stylesheetUrl) {
-    const node = document.createElement("link");
-    node.rel = "stylesheet";
-    node.href = plugin.stylesheetUrl;
-    node.dataset.pluginUi = plugin.id;
-    document.head.appendChild(node);
-    styleNodes.set(plugin.id, node);
-  }
+  attachStylesheet(plugin);
   emitChange();
+}
+
+// 样式表与模块并行下载：首次加载时就挂上（样式只作用于插件自己的类名，提前生效无害），不再等模块到了再串行取一趟。
+// 已挂的是同一份就保留；换代时换成新的。
+function attachStylesheet(plugin: PluginUiCatalogItem) {
+  const current = styleNodes.get(plugin.id);
+  if (current && current.getAttribute("href") === (plugin.stylesheetUrl ?? null)) return;
+  current?.remove();
+  styleNodes.delete(plugin.id);
+  if (!plugin.stylesheetUrl) return;
+  const node = document.createElement("link");
+  node.rel = "stylesheet";
+  node.href = plugin.stylesheetUrl;
+  node.dataset.pluginUi = plugin.id;
+  document.head.appendChild(node);
+  styleNodes.set(plugin.id, node);
 }
 
 function retirePlugins(ids: readonly string[]) {
