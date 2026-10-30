@@ -1234,8 +1234,9 @@ export function useDesktopChatController() {
     if (cachedFresh) followSession(socketRef.current ?? connectRef.current?.() ?? null, sessionId, cached.throughSeq);
   }, [closeConnection, loadMessages, reportError, reportHistoryError, setFollowAfter, setMessages, setTimelineMessages, setReplyAvailable, setStatusLive, surface, sessions, navigationPins.sessions]);
 
+  // 有本机快照的直达会话不等 chatReady：先按快照显示，尾页读取已由 prefetchSessionTail 发出。
   useEffect(() => {
-    if (!chatReady || !requestedSessionId) return;
+    if (!requestedSessionId || (!chatReady && !tailCacheRef.current.has(requestedSessionId))) return;
     setRequestedSessionId("");
     activateSession(requestedSessionId);
   }, [activateSession, chatReady, requestedSessionId]);

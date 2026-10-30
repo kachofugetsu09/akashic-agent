@@ -119,7 +119,7 @@ const SESSIONS_SNAPSHOT_ROWS = 200;
 
 export function readSessionsSnapshot(): SessionRow[] {
   try {
-    return sessionPage({ items: JSON.parse(localStorage.getItem(SESSIONS_SNAPSHOT_KEY) ?? "[]") }).items;
+    return sessionPage({ items: JSON.parse(localStorage.getItem(SESSIONS_SNAPSHOT_KEY) ?? "[]"), next_cursor: null }).items;
   } catch { return []; }
 }
 
