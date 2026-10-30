@@ -106,11 +106,12 @@ async def verify_dashboard(root: Path) -> None:
     async with httpx.AsyncClient(
         transport=httpx.ASGITransport(app=app), base_url="http://cache-scenario.local"
     ) as client:
-        # 带内容哈希的产物永久缓存;稳定 URL(sdk、入口 HTML)不设显式头部,
-        # 保持既有启发式缓存行为(强制校验会让模块图每个稳定分块等一次 304)。
+        # 带内容哈希的产物、导入映射里带内容版本的 sdk 永久缓存;稳定 URL(不带版本的 sdk、入口 HTML)
+        # 不设显式头部(强制校验会让模块图每个稳定分块等一次 304)。
         for path, cache in (
             ("/dashboard/assets/index-12345678.js", "public, max-age=31536000, immutable"),
             ("/assets/index-12345678.js", "public, max-age=31536000, immutable"),
+            ("/dashboard/assets/sdk/react.js?v=0221f7da0681", "public, max-age=31536000, immutable"),
         ):
             response = await client.get(path)
             assert response.status_code == 200, (path, response.status_code)
