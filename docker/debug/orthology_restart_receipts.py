@@ -29,7 +29,7 @@ async def check(workspace: Path) -> None:
         asyncio.get_running_loop().call_soon(event.set)
         await event.wait()
     try:
-        for mode in ("frame", "provider", "missing", "disconnect", "wrong-ending", "cancel"):
+        for mode in ("frame", "provider", "missing", "disconnect", "drained-disconnect", "wrong-ending", "cancel"):
             source = "programmatic" if mode == "missing" else "another-source"
             session = "scenario:" + mode
             writer = log.writer(session, source=source, author="scenario", body_types=(Input, Output),
@@ -63,6 +63,12 @@ async def check(workspace: Path) -> None:
                 written = asyncio.get_running_loop().create_future()
                 assert frames.track_page(mode, {"items": [{"id": expected, "session_id": session,
                     "body": {"kind": "output", "finish": "complete", "parts": []}}]}, written)
+                if mode == "drained-disconnect":
+                    # exec 收到最终回复即退出断线；之后才开始等 claim 也不能推翻送达。
+                    written.set_result(None)
+                    await barrier()
+                    frames.fail_connection(mode, ConnectionError("client left after final output"))
+                    assert frames.active_input_ids(session) == ()
             pending = asyncio.create_task(watcher._wait_for_request(request, reader, TurnProjection(), delivery))
             await barrier()
             if mode == "missing":
@@ -71,7 +77,7 @@ async def check(workspace: Path) -> None:
                     raise AssertionError("无 route/claim 仍允许重启")
                 except (RestartRejectedError, ConnectionError):
                     pass
-            else:
+            elif mode != "drained-disconnect":
                 assert not pending.done() and not commits and not gate.accepting
                 if mode == "provider":
                     await entered.wait()
@@ -84,12 +90,13 @@ async def check(workspace: Path) -> None:
                     written.set_result(None)
                 else:
                     written.set_result(None)
+            if mode != "missing":
                 result = (await asyncio.gather(pending, return_exceptions=True))[0]
-                if mode in {"frame", "provider"}:
+                if mode in {"frame", "provider", "drained-disconnect"}:
                     assert result is None and commits == [mode]
                 else:
                     assert isinstance(result, (ConnectionError, RestartRejectedError, asyncio.CancelledError)), result
-            if mode not in {"frame", "provider"}:
+            if mode not in {"frame", "provider", "drained-disconnect"}:
                 assert not commits and gate.accepting
             assert frames.claim_for(session, request.call_ref) is None
             assert [row.message_id for row in reader.snapshot()] == [input_id, call_id, ending_id]
@@ -104,4 +111,4 @@ async def check(workspace: Path) -> None:
 if __name__ == "__main__":
     with TemporaryDirectory(prefix="akashic-restart-") as directory:
         asyncio.run(check(Path(directory)))
-    print("PASS: renamed source frame/provider, missing receipt, disconnect, wrong ending, cancel; no process restart")
+    print("PASS: renamed source frame/provider, missing receipt, disconnect, drained disconnect, wrong ending, cancel; no process restart")

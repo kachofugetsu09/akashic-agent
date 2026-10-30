@@ -381,8 +381,9 @@ Gateway 提交一次匹配证据、以 75 退出且 Guardian 证明旧 boot 已�
 `RestartGate.prepare` 关闭新 Root 接纳，再等待所属 Turn complete；programmatic 来源随后等待
 `FrameBook` 的同连接完整 frame drain，普通来源等待 `FinalOutputDelivery` 的实际送达。两条分支
 都由 `RestartGate.commit` 等待 permit 排空并向 supervisor 私有 lifecycle pipe 提交 opaque request ID；
-commit 成功后 programmatic claim 才由 watcher consume。连接断线时 FrameBook 移除 active route、保留
-原始 `ConnectionError` 到 claim consume/abort，不能被另一连接接管。
+commit 成功后 programmatic claim 才由 watcher consume。连接断线时 FrameBook 移除 active route；最终
+Output 尚未 drain 时保留原始 `ConnectionError` 到 claim consume/abort，已 drain 的 route 只移出索引、
+不再记录错误；claim 不能被另一连接接管。
 
 本机若仍由忽略版本控制的 `start.sh` 启动，应让它调用正式默认入口：
 
