@@ -51,6 +51,7 @@ export function errorMessage(error: unknown): string {
   if (error instanceof TypeError && error.message === "Failed to fetch") {
     return "无法连接 Akashic。请确认服务仍在运行，然后重试。";
   }
+  if (error instanceof DOMException && error.name === "TimeoutError") return "网络太慢，读取超时，请重试。";
   return error instanceof Error ? error.message : String(error);
 }
 
@@ -59,32 +60,40 @@ export class ChatRequestError extends Error {
   constructor(readonly status: number, message: string) { super(message); }
 }
 
-// 预热响应只在页面打开后这段时间内复用：首跑引导期间聊天迟迟未就绪，期间的变化会让早先的读取过时。
-const STARTUP_READ_MAX_AGE_MS = 10_000;
+// 预热响应到达后只在这段时间内复用：首跑引导期间聊天迟迟未就绪，期间的变化会让早先的读取过时。
+// 按到达时刻而不是页面打开时刻计：弱网下聊天挂载与就绪本身就要十几到二十秒，过早判过时会丢掉已到的响应，
+// 再排在大文件后面重读一遍。会话目录随连接对账、插件目录有换代恢复，就绪状态不会倒退，放宽到 30 秒无碍。
+const STARTUP_READ_MAX_AGE_MS = 30_000;
 
 // index.html 内联脚本按 URL 预热的启动读取，一次性取用；失败、过时或没有预热时返回 null，由调用方正常请求。
 // 预热请求不认识调用方的 signal：等待期间中止直接以 AbortError 结束，不退回成一次新请求；
 // 读完正文后调用方还要再核一次 signal（见 fetchChatJson、loadWebPluginCatalog）。
 export async function takeStartupResponse(url: string, signal?: AbortSignal | null): Promise<Response | null> {
-  const reads = (window as { __akashicStartupReads?: Map<string, Promise<Response | null>> }).__akashicStartupReads;
+  const reads = (window as { __akashicStartupReads?: Map<string, Promise<{ response: Response; at: number } | null>> }).__akashicStartupReads;
   const prefetched = reads?.get(url);
   reads?.delete(url);
-  if (!prefetched || performance.now() > STARTUP_READ_MAX_AGE_MS) return null;
+  if (!prefetched) return null;
   signal?.throwIfAborted();
-  const response = await new Promise<Response | null>((resolve, reject) => {
+  const read = await new Promise<{ response: Response; at: number } | null>((resolve, reject) => {
     const abort = () => reject(signal?.reason);
     signal?.addEventListener("abort", abort, { once: true });
     void prefetched.then(resolve).finally(() => signal?.removeEventListener("abort", abort));
   });
-  // 1. 新鲜度按响应真正到达的时刻判断，不只看取用时刻。
-  return response?.ok && performance.now() <= STARTUP_READ_MAX_AGE_MS ? response : null;
+  return read?.response.ok && performance.now() - read.at <= STARTUP_READ_MAX_AGE_MS ? read.response : null;
 }
 
+// 读取的期限：半开连接上的请求永远等不到结果，被复用的在途读取会让“重试”和重连也一起卡住。
+// 超时以 TimeoutError 失败（不是 AbortError），调用方照常报错、重试。
+const READ_DEADLINE_MS = 30_000;
+
 export async function fetchChatJson<T>(url: string, options: RequestInit = {}): Promise<T> {
-  const response = await takeStartupResponse(url, options.signal) ?? await fetch(url, options);
+  const read = !options.method || options.method === "GET";
+  const signal = read ? AbortSignal.any([options.signal ?? new AbortController().signal, AbortSignal.timeout(READ_DEADLINE_MS)])
+    : options.signal;
+  const response = await takeStartupResponse(url, signal) ?? await fetch(url, { ...options, signal });
   const text = await response.text();
   // 预热响应的正文读取不受 signal 约束：读完再核一次，中止后的结果不交给调用方。
-  options.signal?.throwIfAborted();
+  signal?.throwIfAborted();
   let payload: unknown = null;
   if (text) {
     try {
@@ -101,6 +110,56 @@ export async function fetchChatJson<T>(url: string, options: RequestInit = {}): 
   }
   if (payload === null) throw new Error("服务器返回空响应");
   return payload as T;
+}
+
+// 上次读到的会话目录首段记在本机：打开页面先显示，不等目录往返；网络目录到达后整体替换。
+// 首条消息只留够推导标题的长度，单份控制在几十 KB。
+const SESSIONS_SNAPSHOT_KEY = "akashic.chat.sessions.v1";
+const SESSIONS_SNAPSHOT_ROWS = 200;
+
+export function readSessionsSnapshot(): SessionRow[] {
+  try {
+    return sessionPage({ items: JSON.parse(localStorage.getItem(SESSIONS_SNAPSHOT_KEY) ?? "[]"), next_cursor: null }).items;
+  } catch { return []; }
+}
+
+export function writeSessionsSnapshot(rows: readonly SessionRow[]): void {
+  const trimmed = rows.slice(0, SESSIONS_SNAPSHOT_ROWS).map((row) => row.first_message_content && row.first_message_content.length > 160
+    ? { ...row, first_message_content: row.first_message_content.slice(0, 160) } : row);
+  try { localStorage.setItem(SESSIONS_SNAPSHOT_KEY, JSON.stringify(trimmed)); }
+  catch { /* 存储不可用时下次照常等网络 */ }
+}
+
+// 当前会话最近读到的尾页原文记在本机，只留一份：重新打开页面先显示它，同时照常读最新尾页。
+const TAIL_SNAPSHOT_KEY = "akashic.chat.session-tail.v1";
+const TAIL_SNAPSHOT_MAX_CHARS = 512 * 1024;
+
+export function readTailSnapshot(): { sessionId: string; payload: unknown } | null {
+  try {
+    const value: unknown = JSON.parse(localStorage.getItem(TAIL_SNAPSHOT_KEY) ?? "null");
+    const record = recordValue(value);
+    return record && typeof record.sessionId === "string" ? { sessionId: record.sessionId, payload: record.payload } : null;
+  } catch { return null; }
+}
+
+export function writeTailSnapshot(sessionId: string, payload: unknown): void {
+  try {
+    const text = JSON.stringify({ sessionId, payload });
+    if (text.length <= TAIL_SNAPSHOT_MAX_CHARS) localStorage.setItem(TAIL_SNAPSHOT_KEY, text);
+    else localStorage.removeItem(TAIL_SNAPSHOT_KEY);
+  } catch { /* 存储不可用时下次照常等网络 */ }
+}
+
+// 实时追加的消息行与历史页同一格式：接到快照尾部，重新打开时连刚才这一轮一起显示；只留最近 50 条，游标随之前移。
+export function appendTailSnapshot(sessionId: string, rows: readonly unknown[], throughSeq: number): void {
+  const snapshot = readTailSnapshot();
+  const body = recordValue(snapshot?.payload);
+  if (!snapshot || snapshot.sessionId !== sessionId || !body || !Array.isArray(body.items)) return;
+  const seq = (row: unknown) => Number(recordValue(row)?.seq);
+  const merged = [...body.items, ...rows.filter((row) => seq(row) > Number(body.through_seq))];
+  const items = merged.slice(-50);
+  const hasMore = body.has_more === true || items.length < merged.length;
+  writeTailSnapshot(sessionId, { ...body, items, through_seq: throughSeq, has_more: hasMore, before_seq: hasMore ? seq(items[0]) : null });
 }
 
 export function sessionPage(payload: unknown): {

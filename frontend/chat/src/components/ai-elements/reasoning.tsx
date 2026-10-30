@@ -8,7 +8,7 @@ import {
 } from "@/components/ui/collapsible";
 import { cn } from "@/lib/utils";
 import { BrainIcon, ChevronDownIcon } from "lucide-react";
-import type { ComponentProps, ReactNode } from "react";
+import type { ComponentProps, ComponentType, ReactNode } from "react";
 import {
   createContext,
   lazy,
@@ -21,9 +21,11 @@ import {
   useRef,
   useState,
 } from "react";
+import { richRendererFallback } from "@/static-message-response";
+import type { MessageResponseProps } from "./message-response";
 
-const LazyMessageResponse = lazy(() =>
-  import("./message-response").then(({ MessageResponse }) => ({ default: MessageResponse })),
+const LazyMessageResponse = lazy<ComponentType<MessageResponseProps>>(() =>
+  import("./message-response").then(({ MessageResponse }) => ({ default: MessageResponse }), richRendererFallback),
 );
 
 interface ReasoningContextValue {

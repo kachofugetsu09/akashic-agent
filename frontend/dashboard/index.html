@@ -16,8 +16,10 @@
     // 聊天启动读取同样预热：就绪状态、插件目录、会话目录首页按 URL 登记，聊天挂载后
     // 由 takeStartupResponse（frontend/chat/src/web-chat-data.ts）按同一 URL 一次性取用；
     // 失败、过时或未被取用的响应都回退到正常请求，语义不变。
+    // 记下响应到达时刻：取用方按到达后过了多久判断新鲜度，弱网下聊天挂载晚也不白丢已到的响应。
     window.__akashicStartupReads = new Map(["/api/shell/state", "/api/chat/plugin-ui/catalog", "/api/chat/sessions?page_size=200"]
-      .map((url) => [url, fetch(url, {headers: {Accept: "application/json"}}).catch(() => null)]));
+      .map((url) => [url, fetch(url, {headers: {Accept: "application/json"}})
+        .then((response) => ({response, at: performance.now()}), () => null)]));
   </script>
   <script type="importmap">
   {

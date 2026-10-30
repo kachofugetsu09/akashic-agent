@@ -863,9 +863,13 @@ function rememberCatalogDigests(bootstrap: WebUiBootstrap): void {
   }
 }
 
-/** 内联字节路径启动后,空闲时把内容寻址 URL 写入 HTTP 缓存,下一次暖启动才能命中。 */
+// 首屏读取（会话、目录、历史、插件资源）都在挂载后几秒内发出；补缓存再等一会儿，不在弱网上和它们抢连接与带宽。
+const MODULE_WARM_DELAY_MS = 20_000;
+
+/** 内联字节路径启动后,首屏读取过后空闲时把内容寻址 URL 写入 HTTP 缓存,下一次暖启动才能命中。 */
 function warmModuleCache(modules: WebModulePayload[]): void {
-  const idle = window.requestIdleCallback ?? ((callback: () => void) => window.setTimeout(callback, 2000));
+  const idle = (callback: () => void) => window.setTimeout(() => window.requestIdleCallback
+    ? window.requestIdleCallback(callback) : callback(), MODULE_WARM_DELAY_MS);
   idle(() => {
     const connection = (navigator as { connection?: { saveData?: boolean } }).connection;
     if (connection?.saveData) return;

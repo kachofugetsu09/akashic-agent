@@ -17,7 +17,9 @@ import {
   errorMessage,
   fetchChatJson,
   isAbortError,
-  mergeRecentSessions, sessionPage, snapshotChanges, type SessionsRefresh, type SessionsRefreshTrigger,
+  appendTailSnapshot, mergeRecentSessions, readSessionsSnapshot, readTailSnapshot, sessionPage, snapshotChanges, writeSessionsSnapshot,
+  writeTailSnapshot,
+  type SessionsRefresh, type SessionsRefreshTrigger,
   renameChatSession,
   setChatSessionDeleted,
   uploadFiles,
@@ -46,6 +48,18 @@ interface SessionTail {
 }
 
 const SESSION_TAIL_CACHE_LIMIT = 8;
+
+// 本机快照放进尾页缓存但不算新鲜：激活会话时先显示，再照常读最新尾页替换。
+function seedTailCache(): Map<string, SessionTail> {
+  const snapshot = readTailSnapshot();
+  if (!snapshot) return new Map();
+  try {
+    const page = chatHistoryPage(snapshot.payload, "本机会话快照");
+    if (page.items.some((row) => row.session_id !== snapshot.sessionId)) return new Map();
+    return new Map([[snapshot.sessionId, { items: page.items, throughSeq: page.throughSeq, beforeSeq: page.beforeSeq,
+      hasMore: page.hasMore, deleted: page.deleted, fetchedAt: 0 }]]);
+  } catch { return new Map(); }
+}
 const RECONNECT_MAX_DELAY_MS = 30_000;
 // 软删后的恢复入口：窗口关闭后 UI 不再提供恢复路径（无回收站视图）。
 const DELETED_NOTICE_MS = 10_000;
@@ -178,9 +192,14 @@ export function useDesktopChatController() {
   const [surface, setSurface] = useState<"chat" | "runtime">(
     () => new URLSearchParams(window.location.search).get("surface") === "runtime" ? "runtime" : "chat",
   );
-  const [sessions, setSessions] = useState<SessionRow[]>([]);
+  // 本机快照只是占位：第一次读完整目录前不按它增量合并，也不回写。
+  const [sessions, setSessions] = useState<SessionRow[]>(readSessionsSnapshot);
   const sessionsRef = useRef(sessions);
-  useEffect(() => { sessionsRef.current = sessions; }, [sessions]);
+  const sessionsProvisionalRef = useRef(true);
+  useEffect(() => {
+    sessionsRef.current = sessions;
+    if (!sessionsProvisionalRef.current) writeSessionsSnapshot(sessions);
+  }, [sessions]);
   const [newChatGroup, setNewChatGroup] = useState<GroupRef | null>(null);
   // Session 宽键在首条消息接纳时固定；之后每次发送重复声明只是幂等核对。
   const sessionScopesRef = useRef(new Map<string, Record<string, string>>());
@@ -292,7 +311,8 @@ export function useDesktopChatController() {
   const ackWaitersRef = useRef(new Map<string, (error?: Error) => void>());
   const steerResultRef = useRef<(requestId: string, result: SteerResult) => void>(() => undefined);
   const probeRef = useRef<(() => void) | null>(null);
-  const tailCacheRef = useRef(new Map<string, SessionTail>());
+  const [seededTails] = useState(seedTailCache);
+  const tailCacheRef = useRef(seededTails);
   const tailRequestsRef = useRef(new Map<string, { controller: AbortController; promise: Promise<SessionTail> }>());
   const chatReady = shellState?.chatReady === true;
   const navigationPins = useNavigationPins(chatReady);
@@ -353,6 +373,7 @@ export function useDesktopChatController() {
         if (page.items.some((row) => row.session_id !== sessionId)) throw new Error("历史页属于其他会话");
         const tail = { items: page.items, throughSeq: page.throughSeq,
           beforeSeq: page.beforeSeq, hasMore: page.hasMore, deleted: page.deleted, fetchedAt: Date.now() };
+        if (activeSessionRef.current === sessionId) writeTailSnapshot(sessionId, payload);
         if (!controller.signal.aborted && tailCacheRef.current.get(sessionId) === previous) {
           cacheSessionTail(sessionId, tail);
         }
@@ -379,7 +400,7 @@ export function useDesktopChatController() {
     const controller = new AbortController();
     sessionsRequestRef.current = controller;
     try {
-      if (scope !== "full" && sessionsRef.current.length) {
+      if (scope !== "full" && sessionsRef.current.length && !sessionsProvisionalRef.current) {
         const page = sessionPage(await fetchChatJson<unknown>("/api/chat/sessions?page_size=200", { signal: controller.signal }));
         if (controller.signal.aborted) return;
         const merged = mergeRecentSessions(sessionsRef.current, page, scope);
@@ -410,7 +431,7 @@ export function useDesktopChatController() {
           const first = [...items.values()];
           const publish = () => {
             if (sessionsRequestRef.current !== controller) return;
-            setSessions((current) => current.length ? current : first);
+            setSessions((current) => current.length && !sessionsProvisionalRef.current ? current : first);
           };
           if (typeof window.requestIdleCallback === "function") window.requestIdleCallback(publish, { timeout: 1500 });
           else window.setTimeout(publish, 0);
@@ -425,6 +446,7 @@ export function useDesktopChatController() {
         if (session.scope && Object.keys(session.scope).length) sessionScopesRef.current.set(session.key, session.scope);
       });
       sessionsRef.current = [...items.values()];
+      sessionsProvisionalRef.current = false;
       setSessions(sessionsRef.current);
       catalogEpochRef.current = epoch ?? null;
     } finally {
@@ -649,6 +671,7 @@ export function useDesktopChatController() {
                       setTimelineMessages(merged);
                       const cached = tailCacheRef.current.get(frame.session_id);
                       if (cached) cacheSessionTail(frame.session_id, { ...cached, items: merged, throughSeq: frame.next_after_seq, fetchedAt: Date.now() });
+                      appendTailSnapshot(frame.session_id, (value as { items: unknown[] }).items, frame.next_after_seq);
                       setFollowAfter(frame.next_after_seq);
                       const saved = new Set(frame.items.map((item) => item.id));
                       for (const id of saved) ackWaitersRef.current.get(id)?.();
@@ -1210,8 +1233,9 @@ export function useDesktopChatController() {
     if (cachedFresh) followSession(socketRef.current ?? connectRef.current?.() ?? null, sessionId, cached.throughSeq);
   }, [closeConnection, loadMessages, reportError, reportHistoryError, setFollowAfter, setMessages, setTimelineMessages, setReplyAvailable, setStatusLive, surface, sessions, navigationPins.sessions]);
 
+  // 有本机快照的直达会话不等 chatReady：先按快照显示，尾页读取已由 prefetchSessionTail 发出。
   useEffect(() => {
-    if (!chatReady || !requestedSessionId) return;
+    if (!requestedSessionId || (!chatReady && !tailCacheRef.current.has(requestedSessionId))) return;
     setRequestedSessionId("");
     activateSession(requestedSessionId);
   }, [activateSession, chatReady, requestedSessionId]);
