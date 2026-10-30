@@ -24,6 +24,7 @@ async def verify(root: Path) -> None:
     assets.mkdir(parents=True)
     (assets / "chat-app.js").write_text("export {};", encoding="utf-8")
     (assets / "chat-app-mount.js").write_text("export {};", encoding="utf-8")
+    (assets / "chat-app.build").write_text("0123456789abcdef", encoding="ascii")
     (assets / "index-12345678.js").write_text("export {};", encoding="utf-8")
     (assets / "theme.json").write_text("{}", encoding="utf-8")
     large_body = "/* compression scenario */" + "x" * 10000
@@ -43,6 +44,10 @@ async def verify(root: Path) -> None:
         for path, cache in (
             ("/assets/chat-app.js", "no-cache"),
             ("/assets/chat-app-mount.js", "no-cache"),
+            # 外壳带当前构建版本引用稳定入口时永久缓存；版本对不上仍按 ETag 校验。
+            ("/assets/chat-app.js?v=0123456789abcdef", "public, max-age=31536000, immutable"),
+            ("/assets/chat-app-mount.js?v=0123456789abcdef", "public, max-age=31536000, immutable"),
+            ("/assets/chat-app.js?v=fedcba9876543210", "no-cache"),
             ("/assets/index-12345678.js", "public, max-age=31536000, immutable"),
             ("/assets/theme.json", "no-store"),
         ):

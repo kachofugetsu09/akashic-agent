@@ -12,11 +12,13 @@ _HASHED_ASSET = re.compile(r"/assets/[^/]*-[\w-]{8}\.[\w]+$")
 _STABLE_ENTRY = re.compile(r"^/assets/chat-app(?:-mount)?\.(?:js|css)$")
 
 
-def _cache_control_for(path: str) -> str:
+# 外壳页面引用稳定入口时带 ?v=<构建版本>（frontend/chat/vite.config.ts 写入）；版本与当前构建一致时内容就是这一版，
+# 可以永久缓存，热启动不再逐个等 304。版本不一致（页面比服务端旧或新）仍按 ETag 校验，免得把别的版本存成这一版。
+def _cache_control_for(path: str, version: str | None = None, build: str | None = None) -> str:
     if _HASHED_ASSET.search(path):
         return "public, max-age=31536000, immutable"
     if _STABLE_ENTRY.match(path):
-        return "no-cache"
+        return "public, max-age=31536000, immutable" if version and version == build else "no-cache"
     return "no-store"
 
 
@@ -37,7 +39,10 @@ def register_chat_assets(app: FastAPI, static_dir: Path) -> None:
         response = await call_next(request)
         if request.url.path not in {"/chat", "/chat/", "/settings", "/settings/"} and not request.url.path.startswith("/assets/"):
             return response
-        cache_control = _cache_control_for(request.url.path)
+        path = request.url.path
+        version = request.query_params.get("v")
+        build = await current_chat_build(static_dir) if version and _STABLE_ENTRY.match(path) else None
+        cache_control = _cache_control_for(path, version, build)
         response.headers["Cache-Control"] = cache_control
         if cache_control == "no-store":
             response.headers["Pragma"] = "no-cache"

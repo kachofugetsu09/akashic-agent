@@ -51,6 +51,15 @@ function chatHandle(frame: HTMLElement): ChatHandle {
   };
 }
 
+// 页面首字节晚于这个时长就按慢链路处理；浏览器对本机与局域网地址不估网速（navigator.connection 恒为 4g）。
+const SLOW_LINK_TTFB_MS = 400;
+const SLOW_LINK_WARM_DELAY_MS = 30_000;
+
+function slowLink(): boolean {
+  const navigation = performance.getEntriesByType("navigation")[0] as PerformanceNavigationTiming | undefined;
+  return !!navigation && navigation.responseStart - navigation.requestStart > SLOW_LINK_TTFB_MS;
+}
+
 export function mountChat(host: HTMLElement, link: ChatHostLink): MountedChat {
   // 1. 样式、版本与公开运行时先就位，聊天插件模块随后才会加载。
   ensureStylesheet();
@@ -91,14 +100,23 @@ export function mountChat(host: HTMLElement, link: ChatHostLink): MountedChat {
   // 在启动关键路径上抢带宽与主线程（3s 档实测 limited warm ready +72ms）。
   // 不支持 rIC 的环境用同一时长的 setTimeout 兜底；调度与取消按同一套 API 配对，
   // 不拿 clearTimeout 去清 idle id（两套 id 命名空间，误清会伤到别的定时器）。
+  // 慢链路（页面首字节晚于 SLOW_LINK_TTFB_MS）上挂载时插件模块与首屏读取还在排队，这份 300KB 分块会占掉连接与带宽，
+  // 先等 SLOW_LINK_WARM_DELAY_MS 再进空闲预热；当前会话真要渲染富文本时照常按需加载。
   const WARMUP_TIMEOUT_MS = 5000;
   const useIdle = typeof window.requestIdleCallback === "function" && typeof window.cancelIdleCallback === "function";
-  const idle = useIdle
-    ? window.requestIdleCallback(warmMessageRenderer, { timeout: WARMUP_TIMEOUT_MS })
-    : window.setTimeout(warmMessageRenderer, WARMUP_TIMEOUT_MS);
+  let idle = 0;
+  const scheduleWarmup = () => {
+    idle = useIdle
+      ? window.requestIdleCallback(warmMessageRenderer, { timeout: WARMUP_TIMEOUT_MS })
+      : window.setTimeout(warmMessageRenderer, WARMUP_TIMEOUT_MS);
+  };
+  let delay = 0;
+  if (slowLink()) delay = window.setTimeout(scheduleWarmup, SLOW_LINK_WARM_DELAY_MS);
+  else scheduleWarmup();
   const cancelWarmup = () => {
-    if (useIdle) window.cancelIdleCallback(idle as number);
-    else window.clearTimeout(idle as number);
+    window.clearTimeout(delay);
+    if (useIdle) window.cancelIdleCallback(idle);
+    else window.clearTimeout(idle);
   };
   return {
     ...handle,
