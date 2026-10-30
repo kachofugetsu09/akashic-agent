@@ -77,6 +77,7 @@ type QuoteStatus = "inserted" | "stale" | "rejected";
 6. 意图名带版本（`.v1`）。payload 的结构由该意图的领域 owner 在自己的 README 与 `contract.py` 里定义，例如
    `workspace.changes.open.v1` 由 workspace_changes 定义 `{path}`（2026-10 起，原为 `{turn_id, path?}`）。接收标签校验领域引用和读取权限。
    通用的 `workspace.file.open.v1 {path, line?}` 表示“打开工作目录里的这个文件”，由聊天端对回复里像文件路径的行内代码发出，见 2.4。
+   本地 Markdown（`.md`/`.markdown`/`.mdown`，大小写不敏感）改发 `workspace.document.open.v1 {path, line?}`，由 markdown_reader 接收（2026-10 起）；path 可在工作目录内外，`line` 只用于识别文件，不定位行。
    聊天插槽上下文增加 `workbench: { accepts(name): boolean; open(name, payload): Promise<status> }`，由聊天端转发。
 
 ### 2.2 引用回输入框
@@ -123,6 +124,7 @@ interface ConversationTabView {
   对话 iframe 同源，宿主直接在它的 window 上监听；有对话框或菜单打开、或按键已被 preventDefault 时不接。
   对话页的快捷键面板（Ctrl+/）多出“工作台”一组，由宿主经 `akashic.chat-tools` 下发。
 - **回复里的文件路径**：相对路径加常见扩展名（可带 `:行号`）的行内代码显示为可点；工作台里没有工具接受 `workspace.file.open.v1` 时保持原样。
+- **回复里的 Markdown 引用**：行内代码和 Markdown 链接里的本地 `.md` 路径（绝对路径、`~/`、`../`、带空格或中文均可；带 glob 元字符或多个文件名的不算；网址不拦截，修饰键点击保留浏览器行为）发 `workspace.document.open.v1`，在文档阅读器里打开。没有工具接受该意图时保持原样，**有意不回退给“改动”**：文档不一定有 Git 改动，回退会打开空 diff。
 
 ## 3. 终端（standard_tools 自有）
 

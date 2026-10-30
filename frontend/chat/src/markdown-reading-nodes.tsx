@@ -7,7 +7,7 @@ import { copyReadingCode, isConceptLabel, isNumericColumn, isPlainTextLanguage, 
 import { renderStaticMarkdown } from "./static-markdown";
 import { loadKatex } from "./reading-math";
 import { DiffLines } from "./tool-result-view";
-import { FILE_INTENT, openFileInWorkbench, useWorkbenchAccepts, workspaceFileRef } from "./shell-workbench";
+import { FILE_INTENT, DOCUMENT_INTENT, fileIntent, markdownLinkRef, workbenchAccepts, openFileInWorkbench, useWorkbenchAccepts, workspaceFileRef } from "./shell-workbench";
 
 export const CODE_BLOCK_PROPS = {
   showLineNumbers: false,
@@ -93,9 +93,10 @@ const InsideLink = createContext(false);
 /** 行内代码是文件路径、且工作台有工具接受文件意图时，点一下在工作台里打开（“改动”会定位到该文件）。静态路径见 StaticMessageResponse。 */
 export function ReadingInlineCode(props: NodeComponentProps<{ type: "inline_code"; code: string }>) {
   const accepts = useWorkbenchAccepts(FILE_INTENT);
+  const acceptsDocuments = useWorkbenchAccepts(DOCUMENT_INTENT);
   const insideLink = useContext(InsideLink);
-  const file = accepts && !insideLink ? workspaceFileRef(props.node.code) : null;
-  if (!file) return <InlineCodeNode {...props} />;
+  const file = !insideLink ? workspaceFileRef(props.node.code) : null;
+  if (!file || !(fileIntent(file) === DOCUMENT_INTENT ? acceptsDocuments : accepts)) return <InlineCodeNode {...props} />;
   return <button type="button" className="reading-file-link" title={`在工作台里打开 ${file.path}`} onClick={() => void openFileInWorkbench(file)}>
     <InlineCodeNode {...props} />
   </button>;
@@ -114,7 +115,14 @@ export function ReadingLink(props: NodeComponentProps<LinkData>) {
     else link.setAttribute("aria-label", link.getAttribute("href") ?? "链接");
   });
   // 自定义预览挂在 body，越过聊天样式作用域后无法隐藏；使用链接原生 title，不另建浮层。
-  return <InsideLink.Provider value={true}><span ref={ref}><LinkRenderer {...props} showTooltip={false} /></span></InsideLink.Provider>;
+  return <InsideLink.Provider value={true}><span ref={ref} onClickCapture={(event) => {
+    if (event.button !== 0 || event.metaKey || event.ctrlKey || event.shiftKey || event.altKey) return;
+    const link = event.target instanceof Element ? event.target.closest("a") : null;
+    const file = link ? markdownLinkRef(link.getAttribute("href") ?? "") : null;
+    if (!file || !workbenchAccepts(DOCUMENT_INTENT)) return;
+    event.preventDefault(); event.stopPropagation();
+    void openFileInWorkbench(file);
+  }}><LinkRenderer {...props} showTooltip={false} /></span></InsideLink.Provider>;
 }
 
 /** 脚注引用写成真正的链接（markstream 的是带点击的 span，键盘按不到），显示与静态路径同样的上标数字；跳转见 jumpToFootnote。 */
