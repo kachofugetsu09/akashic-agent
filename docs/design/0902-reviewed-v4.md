@@ -957,7 +957,7 @@ programmatic admission 的学习资格只在 Session 创建时确定：MC01 显�
           programmatic claim.consume
 ```
 
-连接失败时，FrameBook 移除 active route，把原始 `ConnectionError` 留给 live claim；watcher 随后通过 `abort` 清理 claim 索引。断线不能把另一连接的 Output 或 restart claim 接管。
+连接失败时，FrameBook 移除 active route；只有最终 Output 尚未 drain 时才把原始 `ConnectionError` 留给 live claim，watcher 随后通过 `abort` 清理 claim 索引。已 drain 的 route 只移出索引，之后的任何错误都不推翻送达凭据：`exec --final-only` 收到最终回复即断开，若此时记错，宿主自部署会在停机前被拒绝。断线不能把另一连接的 Output 或 restart claim 接管。
 
 
 ### 18.1 第 04 层可观察边界
