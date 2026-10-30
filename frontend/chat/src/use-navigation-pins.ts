@@ -17,6 +17,8 @@ interface NavigationPinsSnapshot {
 const ENDPOINT = "/api/chat/navigation/pins";
 // 展开的分组按 groupKey（维度:取值）记住。
 const EXPANDED_KEY = "akashic.chat.expanded-groups";
+// 上次读到的置顶原文记在本机：打开页面先按它分区，置顶的分组不会先在分组区里出现再挪走；读到新结果再替换。
+const SNAPSHOT_KEY = "akashic.chat.navigation-pins.v1";
 
 function snapshot(payload: unknown): NavigationPinsSnapshot {
   if (!payload || typeof payload !== "object" || Array.isArray(payload)) throw new Error("置顶列表无效");
@@ -31,6 +33,20 @@ function snapshot(payload: unknown): NavigationPinsSnapshot {
   return { pins, sessions: sessionPage({ items: row.sessions, next_cursor: null }).items };
 }
 
+function readPinsSnapshot(): NavigationPinsSnapshot {
+  try {
+    const raw = localStorage.getItem(SNAPSHOT_KEY);
+    return raw ? snapshot(JSON.parse(raw)) : { pins: [], sessions: [] };
+  } catch {
+    return { pins: [], sessions: [] };
+  }
+}
+
+function writePinsSnapshot(payload: unknown): void {
+  try { localStorage.setItem(SNAPSHOT_KEY, JSON.stringify(payload)); }
+  catch { /* 禁用存储时下次打开等网络结果再分区。 */ }
+}
+
 function readExpandedGroups(): ReadonlySet<string> {
   try {
     const value: unknown = JSON.parse(localStorage.getItem(EXPANDED_KEY) ?? "[]");
@@ -42,13 +58,14 @@ function readExpandedGroups(): ReadonlySet<string> {
 
 /** 置顶事实来自 workspace；展开仅是本浏览器的呈现偏好，与对象所在分区无关。 */
 export function useNavigationPins(enabled: boolean) {
-  const [data, setData] = useState<NavigationPinsSnapshot>({ pins: [], sessions: [] });
+  const [data, setData] = useState<NavigationPinsSnapshot>(readPinsSnapshot);
   const [ready, setReady] = useState(false);
   const [pending, setPending] = useState(false);
   const [error, setError] = useState("");
   const pendingRef = useRef(false);
   const versionRef = useRef(0);
   const deferredReloadRef = useRef<(() => Promise<void>) | null>(null);
+  const readingRef = useRef(false);
   const [expandedGroups, setExpandedGroups] = useState(readExpandedGroups);
 
   const reload = useCallback(async function refresh(): Promise<void> {
@@ -58,20 +75,26 @@ export function useNavigationPins(enabled: boolean) {
       return;
     }
     const version = ++versionRef.current;
+    readingRef.current = true;
     try {
-      const next = snapshot(await fetchChatJson<unknown>(ENDPOINT));
+      const payload = await fetchChatJson<unknown>(ENDPOINT);
+      const next = snapshot(payload);
       if (version !== versionRef.current) return;
       setData(next);
       setReady(true);
       setError("");
+      writePinsSnapshot(payload);
     } catch (reason) {
       if (version === versionRef.current) setError(errorMessage(reason));
+    } finally {
+      if (version === versionRef.current) readingRef.current = false;
     }
   }, [enabled]);
 
   useEffect(() => {
     void reload();
-    const refresh = () => { void reload(); };
+    // 窗口取得焦点时核对一次；启动读取还在途就不再叠一份。
+    const refresh = () => { if (!readingRef.current) void reload(); };
     window.addEventListener("focus", refresh);
     return () => {
       window.removeEventListener("focus", refresh);
@@ -106,11 +129,13 @@ export function useNavigationPins(enabled: boolean) {
     setError("");
     const version = ++versionRef.current;
     try {
-      const next = snapshot(await fetchChatJson<unknown>(ENDPOINT, {
+      const payload = await fetchChatJson<unknown>(ENDPOINT, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ ...pin, pinned }),
-      }));
+      });
+      const next = snapshot(payload);
+      writePinsSnapshot(payload);
       if (version === versionRef.current) setData(next);
     } catch (reason) {
       if (version === versionRef.current) setError(`${errorMessage(reason)}；可刷新置顶列表确认结果`);

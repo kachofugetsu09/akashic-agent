@@ -3,7 +3,7 @@ import { useCallback, useEffect, useMemo, useRef, useState, type SetStateAction 
 import { createUuid, createUuidV7 } from "./browser-uuid.ts";
 import type { ChatMessage } from "./chat-message";
 import type { ComposerFile } from "./desktop-composer";
-import { invalidatePluginUiSession, loadWebPluginCatalog, onPageShown, receivePluginUiEvent, recheckWebPluginCatalog, resetPluginUiEvents, usePluginUiCatalogVersion } from "./plugin-ui-runtime";
+import { invalidatePluginUiSession, loadWebPluginCatalogPatiently, onPageShown, receivePluginUiEvent, recheckWebPluginCatalog, resetPluginUiEvents, usePluginUiCatalogVersion } from "./plugin-ui-runtime";
 import { groupKey, useNavigationGroupSections, type GroupRef, type NavigationGroupsState } from "./navigation-groups";
 import { useNavigationPins } from "./use-navigation-pins";
 import { readSessionActivityFrame, useSessionActivity, type SessionHead } from "./use-session-activity";
@@ -673,7 +673,8 @@ export function useDesktopChatController() {
                     firstCatalogFrameRef.current = false;
                     if (baseline) sessionsRefreshEpochsRef.current.add(baseline);
                     scheduleSessionsRefresh(baseline ? [] : "full");
-                    void reloadPinsRef.current();
+                    // 首个连接的第一帧只是对账基线，置顶列表启动时已在读；之后的变化与重连才重读。
+                    if (!baseline) void reloadPinsRef.current();
                   } else if (other.type === "message.accepted") {
                     ackWaitersRef.current.get(other.request_id)?.();
                   } else if (other.type === "message.steer.result") {
@@ -871,15 +872,13 @@ export function useDesktopChatController() {
       window.clearTimeout(sessionsRefreshTimerRef.current ?? undefined);
   }, []);
 
+  // 插件目录只属于界面注册表，不依赖聊天就绪：挂载就加载，侧栏分组的本机快照不必再等 /api/shell/state 这一趟。
   useEffect(() => {
-    if (!chatReady) return;
     const controller = new AbortController();
-    void loadWebPluginCatalog(controller.signal).catch((error: unknown) => {
-      if (!isAbortError(error)) reportError(error);
-    });
+    void loadWebPluginCatalogPatiently(controller.signal, reportError);
     const unsubscribe = onPageShown(recheckWebPluginCatalog);
     return () => { controller.abort(); unsubscribe(); };
-  }, [chatReady, reportError]);
+  }, [reportError]);
 
   const groupSections = useNavigationGroupSections(chatReady, pluginCatalog.version, reportError);
 
