@@ -401,7 +401,9 @@ def activate_release(
         digest = hashlib.sha256(fixed_plan.read_bytes()).hexdigest()
         preflight = _publish(paths=paths, candidate=candidate, plan=fixed_plan, inputs=inputs,
                              digest=digest, backup_dir=None, preflight=True, run=run)
-    rollback = _rollback_point(current=current, selected=selected, preflight=preflight)
+    rollback = _rollback_point(current=current, selected=selected, preflight=preflight,
+                               snapshot=selection_path.read_text(encoding="utf-8")
+                               if selection_path.exists() else None)
     require_unit_install(checkout=paths.source(target), run=run, unit_root=unit_root, runtime_env=environment_file)
     backup_dir = paths.backups / attempt_path.stem if backup else None
     attempt = activation_receipt(status="pending", target_commit=target, previous_commit=previous)
@@ -465,13 +467,24 @@ def activate_release(
 # 只有原版本存在、且本次没有待执行迁移时才记录回退点；迁移可能让数据前移，原代码不一定能读。
 def _rollback_point(
     *, current: Mapping[str, str], selected: Mapping[str, object] | None,
-    preflight: Mapping[str, object] | None,
+    preflight: Mapping[str, object] | None, snapshot: str | None,
 ) -> dict[str, object] | None:
-    if not current.get("AKASHIC_RUNTIME_COMMIT") or selected is None or preflight is None:
+    if (not current.get("AKASHIC_RUNTIME_COMMIT") or selected is None or preflight is None
+            or snapshot is None):
         return None
     if preflight.get("migration_ids"):
         return None
-    return {"rootRef": selected["root_ref"], "components": selected["components"]}
+    return {"rootRef": selected["root_ref"], "selection": snapshot}
+
+
+# 选择里的输入记录不能凭 ref 重建，回退写回停机前原文；只在本次发布确实改过时 CAS 改回。
+def _restore_selection(path: Path, point: Mapping[str, object], published: object) -> None:
+    current = json.loads(path.read_text(encoding="utf-8")).get("root_ref")
+    if current == point["rootRef"]:
+        return
+    if published is None or current != published:
+        raise RuntimeError(f"selection 已被其他写入者改变: {current}")
+    atomic_write(path, str(point["selection"]))
 
 
 # 部署失败后回到原版本，让自部署失败的 Agent 仍能继续工作；回退本身失败才保留停机现场。
@@ -494,33 +507,14 @@ def _recover_previous(
                        f"{attempt_path}; 原因: {error}") from error
 
 
-# 原选择只在本次发布确实改过时 CAS 改回；其他写入者改过就拒绝，交给人工核对。
-_RESTORE_SELECTION = """
-import json, sys
-from pathlib import Path
-from agent.plugins.selection import PluginSelection
-selection = PluginSelection(Path(sys.argv[1]))
-previous, published, components = sys.argv[2], sys.argv[3], tuple(json.loads(sys.argv[4]))
-current = selection.read()
-if current not in (previous, published):
-    raise SystemExit(f"selection 已被其他写入者改变: {current}")
-print(current if current == previous else selection.commit(components, expected_ref=current))
-"""
-
-
 def _roll_back(
     *, paths: ReleasePaths, environment_file: Path, previous: Mapping[str, str],
     point: Mapping[str, object], publication: object, run: Run, unit_root: Path, cli_path: Path,
 ) -> None:
-    # 1. 候选可能已部分启动；先停下，再用原镜像把选择改回原组合。
+    # 1. 候选可能已部分启动；先停下，再把选择文件改回停机前的原文。
     stop_runtime(run=run)
     published = publication.get("new_root_ref") if isinstance(publication, dict) else None
-    run(["docker", "run", "--rm", "--network", "none", "--read-only",
-         "--mount", f"type=bind,src={paths.state},dst={paths.state}",
-         "--workdir", "/opt/akashic/source", "--entrypoint", "/opt/venv/bin/python",
-         previous["AKASHIC_IMAGE"], "-B", "-c", _RESTORE_SELECTION, previous["AKASHIC_WORKSPACE"],
-         str(point["rootRef"]), str(published or ""), json.dumps(point["components"])],
-        check=True, capture_output=True, text=True)
+    _restore_selection(paths.state / "workspace/runtime/plugin-stable.json", point, published)
     # 2. 恢复原单元、CLI 与 runtime.env，再按原版本启动并核对健康。
     checkout = paths.source(previous["AKASHIC_RUNTIME_COMMIT"])
     install_units(checkout=checkout, backup_root=None, run=run, unit_root=unit_root, runtime_env=environment_file)
