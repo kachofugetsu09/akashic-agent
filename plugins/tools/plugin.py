@@ -511,7 +511,9 @@ class ToolCatalog:
         name = description["name"]
         if not isinstance(name, str):
             raise ValueError("工具 binding 缺少工具名")
-        registration = self._tools[name]
+        registration = self._tools.get(name)
+        if registration is None:
+            raise ValueError(f"工具已撤下，binding 无法打开: {name}")
         preparation = registration.preparation
         if not _matches_saved_description(registration.ref.description, description) or metadata["prepare"] != (
             None if preparation is None else preparation.name
@@ -544,9 +546,11 @@ class ToolCatalog:
         if not isinstance(description, Mapping) or not isinstance(description.get("name"), str):
             raise ValueError("工具 binding 描述无效")
         registration = self._tools.get(cast(str, description["name"]))
-        authorization = None if registration is None else registration.authorization
-        if authorization is None:
+        if registration is None or registration.authorization is None:
             return None
+        if not _matches_saved_description(registration.ref.description, description):
+            raise ValueError("归档工具描述与 binding 不一致")
+        authorization = registration.authorization
         async with self._ctx.runtime_scope():
             async with authorization.context.runtime_scope():
                 return await authorization.authorize(arguments)

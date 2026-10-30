@@ -51,8 +51,8 @@ async def _mount_local_tools(root, tmp_path, events):
     return fiber, contexts[0], catalogs[0], plugin_tasks, admissions[0]
 
 @pytest.mark.asyncio
-async def test_prepare_and_authorize_follow_exact_registration_identity(tmp_path):
-    """同名新工具不能继承旧注册的参数转换；限制不写进 binding。"""
+async def test_prepare_pins_registration_and_authorize_reads_current(tmp_path):
+    """同名新工具不能继承旧注册的参数转换；限制执行时读当前注册，撤下后旧 binding 照常打开。"""
     root = CompositionRoot("exact-tool-contributions")
     refs = {}
     contexts = {}
@@ -67,8 +67,7 @@ async def test_prepare_and_authorize_follow_exact_registration_identity(tmp_path
 
     @asynccontextmanager
     async def open_target(_state):
-        raise AssertionError("identity test does not open targets")
-        yield
+        yield SimpleNamespace(idempotent=False)
 
     async def target(ctx, label):
         contexts[label] = ctx
@@ -88,17 +87,20 @@ async def test_prepare_and_authorize_follow_exact_registration_identity(tmp_path
             async def prepare(arguments):
                 return {**arguments, "prepared_by": "first"}
 
-            async def authorize(arguments):
-                _ = arguments
-
             await catalog.register_prepare(
                 ctx, tool=refs["first"], name="first-prepare", prepare=prepare
             )
+
+        async def restrict(ctx):
+            async def authorize(arguments):
+                return "denied" if arguments.get("command") == "danger" else None
+
             await catalog.register_authorize(
                 ctx, tool=refs["first"], name="first-authorize", authorize=authorize
             )
 
         _ = await root.mount(contribute, name="policy", runtime=runtime("policy"))
+        restriction = await root.mount(restrict, name="restriction", runtime=runtime("restriction"))
 
         class CapturingBindings:
             def __init__(self):
@@ -111,7 +113,14 @@ async def test_prepare_and_authorize_follow_exact_registration_identity(tmp_path
         captured = CapturingBindings()
         await catalog.bind(refs["first"], cast(Bindings, captured))
         assert captured.metadata["prepare"] == "first-prepare"
-        assert captured.metadata is not None and "authorize" not in captured.metadata
+        bound = captured.metadata
+        assert bound is not None and "authorize" not in bound
+        assert await catalog.authorize(bound, {"command": "danger"}) == "denied"
+        assert await catalog.authorize(bound, {"command": "safe"}) is None
+        await restriction.dispose()
+        assert await catalog.authorize(bound, {"command": "danger"}) is None
+        async with catalog.open(bound) as opened:
+            assert opened.idempotent is False
 
         stale = refs["first"]
         await first.dispose()
