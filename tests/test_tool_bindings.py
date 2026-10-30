@@ -111,7 +111,7 @@ async def test_prepare_and_authorize_follow_exact_registration_identity(tmp_path
         captured = CapturingBindings()
         await catalog.bind(refs["first"], cast(Bindings, captured))
         assert captured.metadata["prepare"] == "first-prepare"
-        assert "authorize" not in captured.metadata
+        assert captured.metadata is not None and "authorize" not in captured.metadata
 
         stale = refs["first"]
         await first.dispose()
