@@ -111,6 +111,7 @@ disabled = true
 
 [rows."plugin_settings"]
 plugin = "plugin_settings@release"
+disabled = true
 
 [rows."skills"]
 plugin = "skills@release"
@@ -146,6 +147,10 @@ disabled = true
 
 [rows."conversation"]
 plugin = "conversation@release"
+disabled = true
+
+[rows."session_reference"]
+plugin = "session_reference@release"
 disabled = true
 
 [rows."reply_program"]
