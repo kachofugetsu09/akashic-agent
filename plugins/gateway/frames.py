@@ -393,7 +393,7 @@ class FrameBook:
         if self._routes.get(key) is route:
             self._routes.pop(key)
         self._stages = {stage for stage in self._stages if stage._route is not route}
-        # 已 drain 的 route 之后任何错误都不再记录（断线、close、顶替、abort）；--final-only 收到结果即断开。
+        # 已 drain 的 route 之后任何错误都不再记录（断线、close、顶替、abort）；exec 收到结果即退出断线。
         if route.drained:
             return
         # claim 仍由 watcher 消费原始错误；直到 consume/abort 才移除索引。

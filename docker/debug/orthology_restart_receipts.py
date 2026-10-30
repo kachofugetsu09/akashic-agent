@@ -64,10 +64,11 @@ async def check(workspace: Path) -> None:
                 assert frames.track_page(mode, {"items": [{"id": expected, "session_id": session,
                     "body": {"kind": "output", "finish": "complete", "parts": []}}]}, written)
                 if mode == "drained-disconnect":
-                    # exec --final-only 收到最终回复即断开；之后才开始等 claim 也不能推翻送达。
+                    # exec 收到最终回复即退出断线；之后才开始等 claim 也不能推翻送达。
                     written.set_result(None)
                     await barrier()
                     frames.fail_connection(mode, ConnectionError("client left after final output"))
+                    assert frames.active_input_ids(session) == ()
             pending = asyncio.create_task(watcher._wait_for_request(request, reader, TurnProjection(), delivery))
             await barrier()
             if mode == "missing":
