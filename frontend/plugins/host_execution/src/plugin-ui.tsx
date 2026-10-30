@@ -14,8 +14,14 @@ function HostBridgeNotice({ context }: { context: PluginUiContext<"chat.notice">
     let timer: ReturnType<typeof setTimeout>;
     // 连续失败从第一次失败请求发出时起算；任何一次确认到状态都清零。
     let failingSince: number | null = null;
+    let inflight = false;
+    // 计时链因隐藏而停下的时刻；隐藏超过宽限期，回来时失败重新起算。
+    let pausedAt: number | null = null;
     async function refresh() {
+      // 页面隐藏时不轮询；回到可见时立刻核对一次再恢复计时。
+      if (document.visibilityState === "hidden") { pausedAt ??= Date.now(); return; }
       const startedAt = Date.now();
+      inflight = true;
       try {
         const next = noticeFor(await context.query("bridge.state", {}, { cache: "none" }));
         if (active) setNotice(next);
@@ -25,11 +31,22 @@ function HostBridgeNotice({ context }: { context: PluginUiContext<"chat.notice">
         failingSince ??= startedAt;
         // 宽限期内保留上一次确认到的提示，避免共享事件循环偶发停顿造成闪烁。
         if (Date.now() - failingSince >= UNCONFIRMED_GRACE_MS) setNotice(UNCONFIRMED_NOTICE);
+      } finally {
+        inflight = false;
       }
       if (active) timer = setTimeout(refresh, POLL_INTERVAL_MS);
     }
+    function onShown() {
+      // 只补停掉的计时链；在途或仍在计时的链会自己排下一次。
+      if (!active || inflight || pausedAt === null || document.visibilityState === "hidden") return;
+      if (Date.now() - pausedAt >= UNCONFIRMED_GRACE_MS) failingSince = null;
+      pausedAt = null;
+      clearTimeout(timer);
+      void refresh();
+    }
+    const stopShown = context.onShown(onShown);
     void refresh();
-    return () => { active = false; clearTimeout(timer); };
+    return () => { active = false; clearTimeout(timer); stopShown(); };
   }, [context]);
   return notice ? <Notice>{notice}</Notice> : null;
 }
