@@ -98,11 +98,16 @@ def install(args: argparse.Namespace, *, self_deploy: dict[str, object] | None =
                 unit_root=args.unit_root, cli_path=args.cli_path,
                 self_deploy=self_deploy, warmer=warmer,
             )
+    # 降级的外置插件进入 install 结果，自部署 worker 的 status 也能看到。
+    runtime_check = (read_json(paths.activation / "active.json").get("runtimeCheck")
+                     if status == "activated" else None)
     return {
         "status": status,
         "commit": commit,
         "imageId": manifest["imageId"],
         "backupRequested": args.backup,
+        "degradedExternal": (runtime_check.get("degraded_external", {})
+                             if isinstance(runtime_check, dict) else {}),
     }
 
 

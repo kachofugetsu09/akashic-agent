@@ -53,6 +53,7 @@ def _verify_selected_runtime(
         raise RuntimeError("live runtime 未报告 plugin owner 状态")
     active_refs: list[str] = []
     degraded: dict[str, str] = {}
+    ready = 0
     for item in plugins:
         if not isinstance(item, dict):
             raise RuntimeError("live runtime plugin 状态无效")
@@ -68,14 +69,16 @@ def _verify_selected_runtime(
                 raise RuntimeError(f"selected plugin 尚未 ACTIVE: {item.get('plugin_id')}")
             degraded[str(item.get("plugin_id"))] = str(item.get("load_error") or item.get("state"))
             print(f"外置插件未就绪，Core 照常启动: {item.get('plugin_id')}", file=sys.stderr, flush=True)
+            ready -= 1
         if isinstance(selected, str):
             active_refs.append(selected)
+            ready += 1
     if len(active_refs) != len(components) or set(active_refs) != set(components):
         raise RuntimeError("live runtime 未加载完整 selection components")
     if ordered_components is not None and tuple(components) != ordered_components:
         raise RuntimeError("live runtime 完整 ordered selection 与发布输入不一致")
     return {"selection_ref": root_ref,
-            "active_selected": len(active_refs) - len(degraded),
+            "active_selected": ready,
             "degraded_external": degraded,
             "optional_health": "unverified"}
 
@@ -478,11 +481,12 @@ def _rollback_point(
 
 
 # 选择里的输入记录不能凭 ref 重建，回退写回停机前原文；只在本次发布确实改过时 CAS 改回。
-def _restore_selection(path: Path, point: Mapping[str, object], published: object) -> None:
+# 发布在返回前崩溃时回执还没有新 Root；停机期间只有本次发布能写选择，此时接受任意新 Root。
+def _restore_selection(path: Path, point: Mapping[str, object], published: object, publishing: bool) -> None:
     current = json.loads(path.read_text(encoding="utf-8")).get("root_ref")
     if current == point["rootRef"]:
         return
-    if published is None or current != published:
+    if not (current == published or (published is None and publishing)):
         raise RuntimeError(f"selection 已被其他写入者改变: {current}")
     atomic_write(path, str(point["selection"]))
 
@@ -495,7 +499,8 @@ def _recover_previous(
 ) -> None:
     try:
         _roll_back(paths=paths, environment_file=environment_file, previous=previous, point=point,
-                   publication=attempt.get("publication"), run=run, unit_root=unit_root, cli_path=cli_path)
+                   publication=attempt.get("publication"), publishing=attempt.get("phase") == "publishing",
+                   run=run, unit_root=unit_root, cli_path=cli_path)
     except BaseException as rollback_error:
         attempt["rollbackError"] = str(rollback_error)
         write_json(attempt_path, attempt)
@@ -509,12 +514,13 @@ def _recover_previous(
 
 def _roll_back(
     *, paths: ReleasePaths, environment_file: Path, previous: Mapping[str, str],
-    point: Mapping[str, object], publication: object, run: Run, unit_root: Path, cli_path: Path,
+    point: Mapping[str, object], publication: object, publishing: bool,
+    run: Run, unit_root: Path, cli_path: Path,
 ) -> None:
     # 1. 候选可能已部分启动；先停下，再把选择文件改回停机前的原文。
     stop_runtime(run=run)
     published = publication.get("new_root_ref") if isinstance(publication, dict) else None
-    _restore_selection(paths.state / "workspace/runtime/plugin-stable.json", point, published)
+    _restore_selection(paths.state / "workspace/runtime/plugin-stable.json", point, published, publishing)
     # 2. 恢复原单元、CLI 与 runtime.env，再按原版本启动并核对健康。
     checkout = paths.source(previous["AKASHIC_RUNTIME_COMMIT"])
     install_units(checkout=checkout, backup_root=None, run=run, unit_root=unit_root, runtime_env=environment_file)

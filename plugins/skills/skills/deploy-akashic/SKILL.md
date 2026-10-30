@@ -55,7 +55,7 @@ akashic-release status <requestId>
 journalctl --user -u akashic-deploy-<requestId>.service --no-pager -n 80
 ```
 
-状态为失败且说明「已回到原版本」时，服务仍是原版本、可以继续工作：如实转告原因，修好后重新提交即可。说明「保留现场」或「回退失败」时服务已停，需要部署者处理。部署结果里列出的 `degraded_external` 是没起来的外置插件，Core 照常运行，可用 `plugin_install` 重装。
+状态为失败且说明「已回到原版本」时，服务仍是原版本、可以继续工作：如实转告原因，修好后重新提交即可。说明「保留现场」或「回退失败」时服务已停，需要部署者处理。`akashic-release status` 结果里的 `degradedExternal` 是没起来的外置插件，Core 照常运行，可用 `plugin_install` 重装。其中有 shell_safety 这类守卫插件时，它的限制此时不生效：先重装，重装好之前不做删除类操作。
 如果无法启动用户 systemd service，或宿主发布权限未配置，交给部署者修复。
 不使用 sleep、nohup、后台 shell、kill、docker restart 或直接 systemctl stop 来更新自己。
 宿主等待超时、发送失败或旧 boot 被替换时会拒绝更新；既有消息保留。

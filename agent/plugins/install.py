@@ -18,7 +18,6 @@ from agent.plugins.distribution_sources import distribution_plugin_sources, read
 from agent.plugins.files import sync_directory
 
 from agent.plugins.artifacts import (
-    ArtifactPointer,
     ArtifactPointers,
     read_pointers,
     relative_artifact_pointer,
@@ -326,12 +325,6 @@ def _activate_plugin_version(
         and previous_pointers.stable != previous_pointers.latest
     ):
         raise RuntimeError(f"插件有未决历史指针对，须先恢复: {plugin_name}@{marketplace}")
-    stable = (
-        previous_pointers.stable
-        if previous_pointers is not None
-        else ArtifactPointer(None)
-    )
-
     artifacts_root = plugin_base / ".artifacts"
     _ensure_directory(artifacts_root)
     artifact_id = f"{plugin_version}-{source_revision[:16]}"
