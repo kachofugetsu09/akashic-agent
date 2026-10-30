@@ -49,9 +49,9 @@
   "dependencies": {
     "@ai-sdk/react": "^4.0.16",
     "@material/web": "^2.5.0",
-    "@pierre/diffs": "1.4.2",
     "@noble/hashes": "2.4.0",
     "@novnc/novnc": "1.7.0",
+    "@pierre/diffs": "1.4.2",
     "@radix-ui/react-collapsible": "^1.1.15",
     "@radix-ui/react-dialog": "^1.1.18",
     "@radix-ui/react-dropdown-menu": "^2.1.19",
@@ -75,6 +75,7 @@
     "clsx": "^2.1.1",
     "cmdk": "^1.1.1",
     "core-js": "3.49.0",
+    "highlight.js": "11.11.1",
     "katex": "0.16.47",
     "lucide-react": "^1.23.0",
     "markstream-react": "2.0.6",

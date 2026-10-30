@@ -1,6 +1,7 @@
 import type { ConversationIntent, ConversationIntentStatus, ConversationTabView } from "@akashic/conversation-tools-v2";
 import type { WebHostContextV1, WebUiDisposer } from "@akashic/web-ui-v1";
 import "./style.css";
+import { DiffSyntax } from "./syntax";
 
 const API = "/api/dashboard/workspace_changes";
 const POLL_MS = 3000;
@@ -111,6 +112,7 @@ class ChangesTab {
   private generation = 0;
   private viewVersion = 0;
   private patchRequest = 0;
+  private readonly syntax = new DiffSyntax();
   private timer = 0;
   private freshTimer = 0;
 
@@ -193,6 +195,7 @@ class ChangesTab {
   }
 
   dispose(): void {
+    this.syntax.cancel();
     this.generation += 1;
     this.viewVersion += 1;
     this.patchRequest += 1;
@@ -308,6 +311,7 @@ class ChangesTab {
   }
 
   private select(path: string, focus: boolean): void {
+    if (this.selected !== path) this.syntax.cancel();
     this.selected = path;
     this.renderList();
     void this.renderPatch();
@@ -352,9 +356,11 @@ class ChangesTab {
       this.pane.dataset.path = file.path;
       this.shownText = body.patch ?? "";
       const rows = element("div", "changes-diff");
-      rows.append(...parsePatch(body.patch ?? "").map((row) => this.rowNode(session, file.path, row)));
+      const parsed = parsePatch(body.patch ?? "");
+      rows.append(...parsed.map((row) => this.rowNode(session, file.path, row)));
       const tail = body.truncated ? [element("p", "changes-empty", "diff 过长，只显示前 256 KiB。")] : [];
       this.pane.replaceChildren(head, rows, ...tail);
+      this.syntax.highlight(file.path, parsed, rows);
       this.revealLine();
     } catch (error) {
       if (request !== this.patchRequest) return;
@@ -440,6 +446,7 @@ class ChangesTab {
   }
 
   private message(text: string, failed = false): void {
+    this.syntax.cancel();
     this.patchRequest += 1;
     this.result = null;
     this.total.textContent = "";

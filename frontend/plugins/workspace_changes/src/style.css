@@ -174,6 +174,16 @@
   .changes-row { transition: none; }
 }
 
+/* Token colors never change diff backgrounds, metrics, or the +/- prefix. */
+.changes-code { --syntax-keyword: #a626a4; --syntax-string: #306b31; --syntax-number: #986018; --syntax-comment: #687078; --syntax-title: #175aa3; }
+.dark .changes-code { --syntax-keyword: #dca1e8; --syntax-string: #a5d6a7; --syntax-number: #e7ba7a; --syntax-comment: #a0a8b0; --syntax-title: #90c7f7; }
+.changes-token { color: var(--ak-ink-primary); }
+.changes-token:is(.hljs-keyword, .hljs-selector-tag, .hljs-literal, .hljs-meta) { color: var(--syntax-keyword); }
+.changes-token:is(.hljs-string, .hljs-regexp, .hljs-attr) { color: var(--syntax-string); }
+.changes-token:is(.hljs-number, .hljs-symbol) { color: var(--syntax-number); }
+.changes-token:is(.hljs-comment, .hljs-quote) { color: var(--syntax-comment); }
+.changes-token:is(.hljs-title, .hljs-built_in, .hljs-type, .hljs-name) { color: var(--syntax-title); }
+
 /* diff 可以横向滚动；评论框贴住左边、宽度固定，按钮不跟着滚出去 */
 .changes-comment {
   position: sticky;
