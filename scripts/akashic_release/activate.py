@@ -528,8 +528,20 @@ def _roll_back(
     atomic_write(environment_file, render_environment(previous))
     with measure("release.rollback"):
         start_bridge(run=run)
-        start_core(run=run)
+        _start_core_after_limit(run=run)
         verify_release(environment_file)
+
+
+# 候选启动即退出会让单元进入 start-limit-hit，部署用户又不能 reset-failed；在限流窗口内重试原版本启动。
+def _start_core_after_limit(*, run: Run, attempts: int = 18) -> None:
+    for index in range(attempts):
+        try:
+            start_core(run=run)
+            return
+        except subprocess.CalledProcessError:
+            if index == attempts - 1:
+                raise
+            time.sleep(10)
 
 
 def resume_release(

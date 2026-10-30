@@ -64,6 +64,9 @@ def wait_for_core_health(container_name: str, timeout_sec: float) -> None:
             return
         if status == "unhealthy" or status == "missing":
             raise RuntimeError(f"Core healthcheck 未通过: {status}")
+        # 启动即退出会让单元进入 failed（如 start-limit-hit）；不再等就绪超时，交给发布器回退。
+        if subprocess.run(["systemctl", "is-failed", "--quiet", _CORE], check=False).returncode == 0:
+            raise RuntimeError(f"Core 单元已失败，不再等待 healthy: {status}")
         if time.monotonic() >= deadline:
             raise TimeoutError(f"等待 Core healthy 超时: {status}")
         # healthcheck 开机期间每秒探测一次；部署器按半个间隔读取，翻转后最多再等 0.5s。
