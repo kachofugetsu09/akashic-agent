@@ -98,6 +98,7 @@ interface GroupLoad {
 
 // 目录或重读请求变化时读取各分区；插件逐个激活不打断已在读的分区。
 // 每个分区读完即显示，失败只报一次错、保留它上次的分组，并退避重读直到成功。
+// 本机快照随插件激活就先画，不等聊天就绪；读取等 enabled（聊天就绪）再发。
 export function useNavigationGroupSections(enabled: boolean, catalogVersion: number, reportError: (error: unknown) => void) {
   const [sources, setSources] = useState<NavigationGroupSource[]>([]);
   const [loaded, setLoaded] = useState<ReadonlyMap<string, readonly NavigationGroup[]>>(new Map());
@@ -106,10 +107,10 @@ export function useNavigationGroupSections(enabled: boolean, catalogVersion: num
   const report = useRef(reportError);
   useEffect(() => { report.current = reportError; }, [reportError]);
   useEffect(() => {
-    const next = enabled ? navigationGroupSources() : [];
+    const next = navigationGroupSources();
     setSources((current) => current.length === next.length
       && current.every((source, index) => source.key === next[index].key) ? current : next);
-  }, [enabled, catalogVersion]);
+  }, [catalogVersion]);
   useEffect(() => {
     const keys = new Set(sources.map((source) => source.key));
     const snapshot = readSnapshot();
@@ -140,13 +141,13 @@ export function useNavigationGroupSections(enabled: boolean, catalogVersion: num
         })
         .finally(() => window.clearTimeout(timer));
     };
-    for (const source of sources) {
+    for (const source of enabled ? sources : []) {
       const existing = loads.current.get(source.key);
       if (existing?.revision === revision) continue;
       if (existing) stopLoad(existing);
       start(source, 0);
     }
-  }, [sources, revision]);
+  }, [sources, revision, enabled]);
   useEffect(() => () => { loads.current.forEach(stopLoad); loads.current.clear(); }, []);
   const sections = useMemo(() => sources.flatMap((source) => {
     const groups = loaded.get(source.key);
@@ -158,8 +159,8 @@ export function useNavigationGroupSections(enabled: boolean, catalogVersion: num
     const timer = window.setTimeout(() => setPatienceOver(true), READY_PATIENCE_MS);
     return () => window.clearTimeout(timer);
   }, []);
-  const ready = useMemo(() => patienceOver || (enabled && !navigationGroupsPending()
-    && sources.every((source) => loaded.has(source.key))), [patienceOver, enabled, sources, loaded, catalogVersion]); // eslint-disable-line react-hooks/exhaustive-deps
+  const ready = useMemo(() => patienceOver || (!navigationGroupsPending()
+    && sources.every((source) => loaded.has(source.key))), [patienceOver, sources, loaded, catalogVersion]); // eslint-disable-line react-hooks/exhaustive-deps
   const reload = useCallback(() => setRevision((value) => value + 1), []);
   return { sections, revision, ready, reload };
 }
