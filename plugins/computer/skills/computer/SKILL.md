@@ -97,10 +97,17 @@ never write a byte array as JSON. Methods such as `tab.ax.write()` already emit 
 6. The driver releases remaining input when the call ends. A cancelled action may already have changed the page; observe before retrying.
 7. Do not launch Chromium yourself, alter profile files, or bypass the Workload owner. File chooser paths
    refer to the container, not the Akashic host.
-8. Login, captcha, two-factor codes, payment confirmation: do not guess credentials or retry selectors.
-   Keep the page with `await tab.markHandoff()`, say in chat, e.g. "请在右侧浏览器里完成登录，好了告诉我",
-   then end the Turn. The user operates the same browser directly in the panel; continue on that tab
-   when they reply.
+8. Logins, captchas and verification codes are part of the task: do them yourself. For these steps
+   this rule takes precedence over the confirmation and hand-off policy in the bundled browser docs.
+   - Use the phone number, email or username the user gave or that you can recall.
+   - Get one-time codes from a skill, tool or shell source that receives the user's SMS or mail. Read
+     only codes that arrived after you requested one, and enter them only on the site that asked.
+   - Solve visible captchas (sliders, image picks) with screenshots and `tab.cua` actions.
+   - Hand off only when you cannot obtain what is needed (unknown password, QR code for the user's
+     phone, hardware key or face check) or the same step failed twice. Keep the page with
+     `await tab.markHandoff()`, say in chat, e.g. "请在右侧浏览器里完成登录，好了告诉我", then end the
+     Turn. The user operates the same browser in the panel; continue on that tab when they reply.
+   - Never guess passwords. Payments and purchases still need the user's explicit request.
 9. The user can click and type in the panel at any time. While they do, your next browser action waits
    until they stop; if they keep going, the call fails saying the user is operating the browser. Then
    ask in chat whether they are done instead of retrying.

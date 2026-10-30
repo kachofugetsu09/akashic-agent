@@ -35,7 +35,7 @@ shell({"command":"opencli bilibili history -f json --window background --site-se
 shell({"command":"opencli github whoami -f json --window background --site-session persistent --keep-tab true","description":"读取 GitHub 身份"})
 ```
 
-The Computer plugin refreshes known login sessions every 12 hours and retries a failed refresh after 15 minutes. If a site has logged out, ask the user to log in once through the visible Computer panel.
+The Computer plugin refreshes known login sessions every 12 hours and retries a failed refresh after 15 minutes. If a site has logged out, log in again with `computer` (see its login rule); ask the user only when that is not possible.
 
 ## Choosing the right capability
 
