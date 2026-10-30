@@ -22,7 +22,6 @@ from agent.plugins.artifacts import (
     ArtifactPointers,
     read_pointers,
     relative_artifact_pointer,
-    resolve_pointer,
     write_pointers,
 )
 from agent.plugins.manifest import (
@@ -57,7 +56,6 @@ class _CacheActivation:
     previous_pointers: ArtifactPointers | None
     created_artifact: bool
     created_data_dir: bool
-    superseded_artifact: Path | None
     journal: ReloadJournal
 
     def rollback(self) -> None:
@@ -73,12 +71,6 @@ class _CacheActivation:
         # 3. 安装未提交时不留下本事务新建的正式 plugin-data 空目录。
         if self.created_data_dir:
             _remove_created_data_dir(self.result.data_path)
-
-    def finalize(self) -> None:
-        """提交完成后删除离线刷新所替代的旧 artifact。"""
-
-        if self.superseded_artifact is not None:
-            _remove_path(self.superseded_artifact)
 
 
 def set_installed_plugin_enabled(
@@ -237,7 +229,6 @@ def install_git_plugin(
             activation.rollback()
             raise
         journal.commit_update(update_id)
-        activation.finalize()
     return activation.result
 
 
@@ -345,11 +336,6 @@ def _activate_plugin_version(
     _ensure_directory(artifacts_root)
     artifact_id = f"{plugin_version}-{source_revision[:16]}"
     base_target_root = artifacts_root / artifact_id
-    superseded_artifact = (
-        resolve_pointer(plugin_base, stable)
-        if refresh_existing_artifact and stable.path is not None
-        else None
-    )
     target_root = (
         artifacts_root / f"{artifact_id}-restaged-{uuid4().hex[:16]}"
         if refresh_existing_artifact and base_target_root.exists()
@@ -453,7 +439,6 @@ def _activate_plugin_version(
         previous_pointers=previous_pointers,
         created_artifact=created_artifact,
         created_data_dir=created_data_dir,
-        superseded_artifact=superseded_artifact,
         journal=journal,
     )
 

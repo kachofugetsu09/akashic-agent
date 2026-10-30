@@ -52,6 +52,7 @@ def _verify_selected_runtime(
         or len(set(components)) != len(components)):
         raise RuntimeError("live runtime 未报告 plugin owner 状态")
     active_refs: list[str] = []
+    degraded: dict[str, str] = {}
     for item in plugins:
         if not isinstance(item, dict):
             raise RuntimeError("live runtime plugin 状态无效")
@@ -62,7 +63,11 @@ def _verify_selected_runtime(
             item.get("input_ref") != selected or item.get("state") != "active"
             or item.get("fiber_state") != "active"
         ):
-            raise RuntimeError(f"selected plugin 尚未 ACTIVE: {item.get('plugin_id')}")
+            # 外置插件坏掉只降级它自己；Core 与内置插件仍须全部就绪，否则 Agent 无法自救。
+            if item.get("selected_distribution_source") is not None:
+                raise RuntimeError(f"selected plugin 尚未 ACTIVE: {item.get('plugin_id')}")
+            degraded[str(item.get("plugin_id"))] = str(item.get("load_error") or item.get("state"))
+            print(f"外置插件未就绪，Core 照常启动: {item.get('plugin_id')}", file=sys.stderr, flush=True)
         if isinstance(selected, str):
             active_refs.append(selected)
     if len(active_refs) != len(components) or set(active_refs) != set(components):
@@ -70,7 +75,8 @@ def _verify_selected_runtime(
     if ordered_components is not None and tuple(components) != ordered_components:
         raise RuntimeError("live runtime 完整 ordered selection 与发布输入不一致")
     return {"selection_ref": root_ref,
-            "active_selected": len(active_refs),
+            "active_selected": len(active_refs) - len(degraded),
+            "degraded_external": degraded,
             "optional_health": "unverified"}
 
 
@@ -366,8 +372,10 @@ def activate_release(
     _verify_state_ready(paths)
     candidate = release_environment(paths=paths, manifest=manifest, current=current, mise=mise)
     selection_path = paths.state / "workspace/runtime/plugin-stable.json"
-    root_ref = (_read_selection(paths=paths, candidate=candidate, run=run)["root_ref"]
+    selected = (_read_selection(paths=paths, candidate=candidate, run=run)
                 if selection_path.exists() or previous is not None else None)
+    root_ref = None if selected is None else selected["root_ref"]
+    preflight: dict[str, object] | None = None
     attempt_path = paths.activation / f"deploy-{secrets.token_hex(12)}.json"
     fixed_plan = attempt_path.with_suffix(".plan.json")
     if root_ref is None:
@@ -391,8 +399,9 @@ def activate_release(
         if not inputs.is_dir():
             raise ValueError("--inputs 必须是目录")
         digest = hashlib.sha256(fixed_plan.read_bytes()).hexdigest()
-        _publish(paths=paths, candidate=candidate, plan=fixed_plan, inputs=inputs,
-                 digest=digest, backup_dir=None, preflight=True, run=run)
+        preflight = _publish(paths=paths, candidate=candidate, plan=fixed_plan, inputs=inputs,
+                             digest=digest, backup_dir=None, preflight=True, run=run)
+    rollback = _rollback_point(current=current, selected=selected, preflight=preflight)
     require_unit_install(checkout=paths.source(target), run=run, unit_root=unit_root, runtime_env=environment_file)
     backup_dir = paths.backups / attempt_path.stem if backup else None
     attempt = activation_receipt(status="pending", target_commit=target, previous_commit=previous)
@@ -400,6 +409,7 @@ def activate_release(
                    attemptPath=str(attempt_path), publication=None,
                    backupDir=None if backup_dir is None else str(backup_dir),
                    planPath=None if root_ref is None else str(fixed_plan),
+                   rollback="eligible" if rollback is not None else "not_eligible",
                    previousActivationSha256=(hashlib.sha256((paths.activation / "active.json").read_bytes()).hexdigest()
                                              if (paths.activation / "active.json").exists() else None))
     write_json(attempt_path, attempt)
@@ -444,8 +454,82 @@ def activate_release(
                           attempt_path=attempt_path, attempt=attempt, run=run, unit_root=unit_root, cli_path=cli_path)
     except BaseException as error:
         _record_failure(paths=paths, attempt_path=attempt_path, attempt=attempt, error=error, run=run)
-        raise RuntimeError(f"部署未完成，保留现场: {attempt_path}; 原因: {error}") from error
+        if rollback is None:
+            raise RuntimeError(f"部署未完成，保留现场: {attempt_path}; 原因: {error}") from error
+        _recover_previous(paths=paths, environment_file=environment_file, previous=current, point=rollback,
+                          attempt_path=attempt_path, attempt=attempt, error=error, run=run,
+                          unit_root=unit_root, cli_path=cli_path)
     return "activated"
+
+
+# 只有原版本存在、且本次没有待执行迁移时才记录回退点；迁移可能让数据前移，原代码不一定能读。
+def _rollback_point(
+    *, current: Mapping[str, str], selected: Mapping[str, object] | None,
+    preflight: Mapping[str, object] | None,
+) -> dict[str, object] | None:
+    if not current.get("AKASHIC_RUNTIME_COMMIT") or selected is None or preflight is None:
+        return None
+    if preflight.get("migration_ids"):
+        return None
+    return {"rootRef": selected["root_ref"], "components": selected["components"]}
+
+
+# 部署失败后回到原版本，让自部署失败的 Agent 仍能继续工作；回退本身失败才保留停机现场。
+def _recover_previous(
+    *, paths: ReleasePaths, environment_file: Path, previous: Mapping[str, str],
+    point: Mapping[str, object], attempt_path: Path, attempt: dict[str, object],
+    error: BaseException, run: Run, unit_root: Path, cli_path: Path,
+) -> None:
+    try:
+        _roll_back(paths=paths, environment_file=environment_file, previous=previous, point=point,
+                   publication=attempt.get("publication"), run=run, unit_root=unit_root, cli_path=cli_path)
+    except BaseException as rollback_error:
+        attempt["rollbackError"] = str(rollback_error)
+        write_json(attempt_path, attempt)
+        raise RuntimeError(f"部署未完成且回退失败，保留现场: {attempt_path}; "
+                           f"原因: {error}; 回退: {rollback_error}") from error
+    attempt.update(status="rolled_back", phase="rolled_back")
+    write_json(attempt_path, attempt)
+    raise RuntimeError(f"部署未完成，已回到原版本 {previous['AKASHIC_RUNTIME_COMMIT']}: "
+                       f"{attempt_path}; 原因: {error}") from error
+
+
+# 原选择只在本次发布确实改过时 CAS 改回；其他写入者改过就拒绝，交给人工核对。
+_RESTORE_SELECTION = """
+import json, sys
+from pathlib import Path
+from agent.plugins.selection import PluginSelection
+selection = PluginSelection(Path(sys.argv[1]))
+previous, published, components = sys.argv[2], sys.argv[3], tuple(json.loads(sys.argv[4]))
+current = selection.read()
+if current not in (previous, published):
+    raise SystemExit(f"selection 已被其他写入者改变: {current}")
+print(current if current == previous else selection.commit(components, expected_ref=current))
+"""
+
+
+def _roll_back(
+    *, paths: ReleasePaths, environment_file: Path, previous: Mapping[str, str],
+    point: Mapping[str, object], publication: object, run: Run, unit_root: Path, cli_path: Path,
+) -> None:
+    # 1. 候选可能已部分启动；先停下，再用原镜像把选择改回原组合。
+    stop_runtime(run=run)
+    published = publication.get("new_root_ref") if isinstance(publication, dict) else None
+    run(["docker", "run", "--rm", "--network", "none", "--read-only",
+         "--mount", f"type=bind,src={paths.state},dst={paths.state}",
+         "--workdir", "/opt/akashic/source", "--entrypoint", "/opt/venv/bin/python",
+         previous["AKASHIC_IMAGE"], "-B", "-c", _RESTORE_SELECTION, previous["AKASHIC_WORKSPACE"],
+         str(point["rootRef"]), str(published or ""), json.dumps(point["components"])],
+        check=True, capture_output=True, text=True)
+    # 2. 恢复原单元、CLI 与 runtime.env，再按原版本启动并核对健康。
+    checkout = paths.source(previous["AKASHIC_RUNTIME_COMMIT"])
+    install_units(checkout=checkout, backup_root=None, run=run, unit_root=unit_root, runtime_env=environment_file)
+    install_operator_entrypoint(checkout=checkout, backup_root=None, target=cli_path)
+    atomic_write(environment_file, render_environment(previous))
+    with measure("release.rollback"):
+        start_bridge(run=run)
+        start_core(run=run)
+        verify_release(environment_file)
 
 
 def resume_release(

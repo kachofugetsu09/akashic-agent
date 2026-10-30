@@ -6,6 +6,7 @@
 
 | ID | 状态 | 主题 | 关联条款 |
 |---|---|---|---|
+| [0139](0139-deploy-falls-back-instead-of-staying-down.md) | accepted / implemented for review | 部署失败回到原版本，外置插件坏掉不拖垮 Core | RUN-004、MIG-001、PLG-013 |
 | [0138](0138-akasha-dense-is-single-threaded.md) | accepted / implemented for review | Akasha 的 dense 打分固定单线程 BLAS，学习检索不算模式补全 | MEM-009、MEM-013、ERR-001 |
 | [0137](0137-akasha-publishes-in-place-increments.md) | accepted / implemented for review | Akasha 检查点原地增量发布，随时钟变化的派生列不入库 | MEM-009、MEM-013、ERR-001 |
 | [0134](0134-compaction-covers-message-identities.md) | accepted / implemented for review | 摘要按消息身份覆盖，开放来源不阻挡后续批次 | CTX-007、MEM-011、SES-005 |
