@@ -393,6 +393,9 @@ class FrameBook:
         if self._routes.get(key) is route:
             self._routes.pop(key)
         self._stages = {stage for stage in self._stages if stage._route is not route}
+        # 最终 Output 已真实写出时，之后断开不推翻送达；--final-only 收到结果即断开。
+        if route.drained:
+            return
         # claim 仍由 watcher 消费原始错误；直到 consume/abort 才移除索引。
         route.error = error
         for waiter in route.waiters:
