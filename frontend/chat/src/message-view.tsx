@@ -28,6 +28,7 @@ import {
   lazy,
   memo,
   Suspense,
+  type ComponentType,
   type MouseEvent as ReactMouseEvent,
   type PointerEvent as ReactPointerEvent,
   type ReactNode,
@@ -47,12 +48,13 @@ import type {
 import type { ModelAttempt, ReplyActivity, TimelineAttachment, TimelineMessage, TimelinePart } from "./message-timeline";
 import { timelineReply, timelineToolOutput, historyTranscript, isTimelinePartVisible, needsBeforeReasoningFallback } from "./message-timeline";
 import { MessageReplyReference } from "./message-actions";
-import { StaticMessageResponse } from "./static-message-response";
+import { StaticMessageResponse, richRendererFallback } from "./static-message-response";
+import type { MessageResponseProps } from "@/components/ai-elements/message-response";
 import { Disclosure, formatToolDuration, ToolResultContent, useStickyDisclosure } from "./tool-result-view";
 import { FindRegionCount, useFindRegion } from "./thread-find";
 
-const LazyMessageResponse = lazy(() =>
-  import("@/components/ai-elements/message-response").then(({ MessageResponse }) => ({ default: MessageResponse })),
+const LazyMessageResponse = lazy<ComponentType<MessageResponseProps>>(() =>
+  import("@/components/ai-elements/message-response").then(({ MessageResponse }) => ({ default: MessageResponse }), richRendererFallback),
 );
 
 // 富文本渲染器是懒加载分块(950KB / 307KB gzip):首个含代码或数学的消息出现时才取,

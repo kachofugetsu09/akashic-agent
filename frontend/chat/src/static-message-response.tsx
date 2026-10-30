@@ -1,4 +1,5 @@
-import { memo, useCallback, useEffect, useMemo, useRef } from "react";
+import { memo, useCallback, useEffect, useMemo, useRef, type ComponentType } from "react";
+import type { MessageResponseProps } from "@/components/ai-elements/message-response";
 import { copyReadingCode, jumpToFootnote, watchOverflowEdges } from "./markdown-reading";
 import { FILE_INTENT, DOCUMENT_INTENT, fileIntent, markdownLinkRef, workbenchAccepts, openFileInWorkbench, useWorkbenchAccepts, workspaceFileRef } from "./shell-workbench";
 import { closeStreamingInline, renderStaticMarkdown, splitStreamingMarkdown } from "./static-markdown";
@@ -109,3 +110,10 @@ export const StaticMessageResponse = memo(function StaticMessageResponse({
     />
   );
 });
+
+// 富文本渲染分块下载失败（弱网、发版后旧分块不在）时的替身：浏览器记住失败的模块地址，同页再导入不会重新请求；
+// 退回静态 Markdown 至少让整段对话照常可读，而不是整条时间线落进错误边界。
+export function richRendererFallback(error: unknown): { default: ComponentType<MessageResponseProps> } {
+  console.warn("Message renderer failed to load; falling back to static Markdown.", error);
+  return { default: ({ children, isAnimating }) => <StaticMessageResponse streaming={isAnimating}>{children}</StaticMessageResponse> };
+}

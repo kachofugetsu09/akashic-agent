@@ -67,9 +67,17 @@ function stampChatBuild(): Plugin {
       return { code: code.replaceAll(BUILD_PLACEHOLDER, build)
         .replaceAll("./chat-app-mount.js", `./chat-app-mount.js?v=${build}`), map: null };
     },
-    generateBundle() {
-      if (stamped !== 1) throw new Error(`构建版本占位应只出现在一个分块里，实际 ${stamped} 个`);
-      this.emitFile({ type: "asset", fileName: "chat-app.build", source: build });
+    generateBundle: {
+      // Vite 在自己的 generateBundle 里才写出懒分块的预加载依赖表（__vite__mapDeps），renderChunk 改不到；
+      // 表里不带版本的挂载模块会被另按一个 URL 预加载，慢链路上白下一遍 178KB。
+      order: "post",
+      handler(_options, bundle) {
+        if (stamped !== 1) throw new Error(`构建版本占位应只出现在一个分块里，实际 ${stamped} 个`);
+        for (const chunk of Object.values(bundle)) {
+          if (chunk.type === "chunk") chunk.code = chunk.code.replaceAll("\"chat-app-mount.js\"", `"chat-app-mount.js?v=${build}"`);
+        }
+        this.emitFile({ type: "asset", fileName: "chat-app.build", source: build });
+      },
     },
     writeBundle() {
       // 发布构建先生成外壳，再生成聊天；只在聊天产物完成后写入它的版本。
