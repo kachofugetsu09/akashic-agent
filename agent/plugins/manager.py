@@ -1729,6 +1729,9 @@ class PluginManager:
                     "selection_ref": cast(str, expected_ref),
                     "publication_state": "active",
                 }
+            # 换代时旧代仍在服务就先导入新代；导入失败不提交选择，也不退役旧代。
+            if previous is not None and generation.instance is None:
+                await self._load_live_generation(generation)
             operation = self._check_operation_commit()
             if previous is None and self._selection_contains(expected_ref, replacement_ref):
                 # 恢复已选实例不产生新的输入选择或重复发布记录。
