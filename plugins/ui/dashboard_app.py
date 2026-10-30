@@ -16,6 +16,8 @@ _DASHBOARD_ACCESS_PREFIXES = ("/api/dashboard", "/assets")
 # 与聊天制品同一缓存合同(plugins/akashic_clients/static.py):Vite 产物文件名内嵌
 # 内容哈希,命中后永久缓存;稳定 URL(sdk、入口 HTML)不设显式头部,保持既有行为。
 _HASHED_ASSET = re.compile(r"/assets/[^/]*-[\w-]{8}\.[\w]+$")
+# 导入映射给 SDK 垫片带上内容版本（frontend/dashboard/vite.config.ts）；带版本的地址内容不变。
+_SDK_SHIM = re.compile(r"^/dashboard/assets/sdk/[\w-]+\.js$")
 
 
 def _is_dashboard_access_record(record: logging.LogRecord) -> bool:
@@ -63,10 +65,12 @@ def create_dashboard_app(static_dir: Path) -> FastAPI:
     async def static_cache_contract(request: Request, call_next):
         # 只给带内容哈希的产物补永久缓存(与聊天制品同一合同):没有显式头部时浏览器
         # 启发式缓存在构建稍旧后就失效,暖启动会把约 1MB 的入口、运行时与字体整份重取。
-        # 稳定 URL(sdk、入口 HTML)保持既有启发式行为:实测改为 no-cache 后,模块图
-        # 每个稳定分块都要等一次 304 才执行,慢链路下暖启动反而慢约 20%。
+        # 稳定 URL(入口 HTML、不带版本的 sdk)保持既有行为:实测改为 no-cache 后,模块图
+        # 每个稳定分块都要等一次 304 才执行,慢链路下暖启动反而慢约 20%。它们没有 Last-Modified,
+        # 浏览器也做不了启发式缓存,照样每次 304;所以导入映射里的 sdk 带内容版本,按版本永久缓存。
         response = await call_next(request)
-        if _HASHED_ASSET.search(request.url.path):
+        path = request.url.path
+        if _HASHED_ASSET.search(path) or (_SDK_SHIM.match(path) and request.query_params.get("v")):
             response.headers["Cache-Control"] = "public, max-age=31536000, immutable"
         return response
 
