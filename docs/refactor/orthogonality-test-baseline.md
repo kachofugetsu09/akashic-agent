@@ -69,7 +69,7 @@
 | 26 | `tests/test_commands_provider.py::test_core_only_manager_does_not_supply_commands` | C：Core 不隐式提供业务能力 | 没装插件时 `COMMANDS` 就是 `None`，Core 不偷偷兜底。 |
 | 27 | `tests/test_commands_provider.py::test_binding_keeps_selected_provider_handler_and_dependency_closure` | 名字无特权 | 把 commands 插件改名为 `human_actions` 后，它仍是 `COMMANDS` 的合法提供者。能力按服务合同绑定，不按包名。 |
 | 28 | `tests/test_plugin_rpc.py::test_plugin_method_cannot_replace_host_management` | 非特权插件的另一面：插件也不能获得特权 | 插件不能注册 `plugin/install` 这类宿主管理方法来冒充控制面。 |
-| 29 | `tests/test_tool_bindings.py::test_prepare_and_authorize_follow_exact_registration_identity` | PLG-018 工具按引用而非名字 | 同名的新工具不能继承旧注册的参数转换或限制。授权跟随注册身份，不跟随名字。 |
+| 29 | `tests/test_tool_bindings.py::test_prepare_pins_registration_and_authorize_reads_current` | PLG-018 工具按引用而非名字 | 同名的新工具不能继承旧注册的参数转换。限制不进 binding，执行时读该工具当前注册：激活时拒绝，撤下后放行且旧 binding 照常打开。 |
 
 ### 2.3 Message、Turn 与 Session：来源正交、Turn 终态、只追加事实、外部发送回执（C2–C5）
 
@@ -90,7 +90,7 @@
 | 43 | `tests/test_akasha_graphs.py::test_unavailable_graph_does_not_stop_other_graphs` | O：故障局部化；MEM-013 独立图消费进度 | 真实安装 Akasha 与 MessageLog，default 或独立图缺少消费出处时，另一图仍完成学习与召回，原图错误保持可见。既有插件生命周期测试没有覆盖同一记忆插件内的独立图。 |
 | 44 | `tests/test_parallel_tool_calls.py`（2 个节点） | C4/SES-002：重叠执行不得改变同一来源事实的提交顺序 | 0079 引入受控重叠后，"ToolResult 按模型顺序落盘"成为新的失败面，同一不变量只留两条最直接路径：`test_parallel_calls_overlap_but_results_commit_in_model_order`（正常提交按模型顺序落盘）与 `test_parallel_failure_does_not_commit_later_results_first`（前驱失败时后继不得抢先落盘）；旧串行实现没有 `parallel` 注册与提交门，这些用例在其上直接失败。分组、容量与取消竞态属于 §1 不保留的实现细节。 |
 | 45 | `tests/test_tool_bindings.py::test_parallel_flag_stays_out_of_binding_description` | PLG-018 工具按引用而非名字；0079 | `parallel` 是目录注册事实，不进入 binding 描述与归档比较；Catalog 不从效果标签判断其资格。 |
-| 46 | `tests/test_tool_bindings.py::test_prepare_and_authorize_follow_exact_registration_identity` | PLG-018 归档工具描述仍固定选择 | 仅 v2 已退役的 `risk`/`search_hint` 可在恢复比较中移除；其他描述变化、同名新注册和失效引用都不能借恢复改选工具。 |
+| 46 | `tests/test_tool_bindings.py::test_prepare_pins_registration_and_authorize_reads_current` | PLG-018 归档工具描述仍固定选择 | 仅 v2 已退役的 `risk`/`search_hint` 可在恢复比较中移除；其他描述变化、同名新注册和失效引用都不能借恢复改选工具。 |
 | 47 | `tests/test_tool_bindings.py::test_load_tools_returns_only_the_requested_frozen_group` | PLG-018 按准确插件 ID 的完整组加载 | loader 只返回该次获授 view 中准确 ID 的全部 schema；近似或未获授 ID 明确失败且不泄漏另一组。 |
 | 48 | `tests/test_default_reply.py::test_default_reply_loads_one_complete_granted_plugin_group` | PLG-018 已安装回复的目录、加载与执行边界 | 真实 PluginManager 只在 system 显示插件 ID/用途/数量，`load_tools` 返回完整组后经固定 `tool_call` 调用真实 binding；无 loaded 状态。 |
 
