@@ -323,6 +323,7 @@ class ChangesTab {
     const result = this.result;
     const file = result?.files?.find((item) => item.path === this.selected);
     if (!result || !file) {
+      this.syntax.cancel();
       this.patchRequest += 1;
       this.shownPatch = "";
       this.shownText = null;

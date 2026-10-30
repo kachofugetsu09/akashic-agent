@@ -78,6 +78,18 @@ try {
   await page.waitForFunction(() => document.querySelectorAll('.changes-token').length > 3);
   await page.setViewportSize({width:390,height:844});
   await page.screenshot({path:resolve(evidence,'narrow.png')});
+  const ramp = [];
+  for (const count of [50, 250, 750, 1400, 1600]) {
+    await select('unknown.xyz');
+    await page.evaluate(count => { patches['sample.ts'] = '@@ -0,0 +1,'+count+' @@\n' + Array.from({length:count},(_,i)=>'+const value'+i+' = "hello";').join('\n'); }, count);
+    const start = performance.now();
+    await select('sample.ts');
+    const plainMs = performance.now() - start;
+    if (count < 1500) await page.waitForFunction(count => document.querySelectorAll('.changes-row[data-kind=add] .changes-code:has(.changes-token)').length === count, count);
+    else assert.equal(await page.locator('.changes-token').count(),0);
+    ramp.push({count,plainMs,totalMs:performance.now()-start});
+  }
+  await writeFile(resolve(evidence,'ramp.json'), JSON.stringify(ramp,null,2));
   // Seeded monkey: real clicks, filtering, key navigation, resize, comments, teardown and theme changes.
   let seed = 20261030;
   const random = n => { seed = (Math.imul(seed,1664525)+1013904223)>>>0; return seed%n; };
