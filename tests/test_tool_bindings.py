@@ -52,7 +52,7 @@ async def _mount_local_tools(root, tmp_path, events):
 
 @pytest.mark.asyncio
 async def test_prepare_and_authorize_follow_exact_registration_identity(tmp_path):
-    """同名新工具不能继承旧注册的参数转换或限制。"""
+    """同名新工具不能继承旧注册的参数转换；限制不写进 binding。"""
     root = CompositionRoot("exact-tool-contributions")
     refs = {}
     contexts = {}
@@ -111,7 +111,7 @@ async def test_prepare_and_authorize_follow_exact_registration_identity(tmp_path
         captured = CapturingBindings()
         await catalog.bind(refs["first"], cast(Bindings, captured))
         assert captured.metadata["prepare"] == "first-prepare"
-        assert captured.metadata["authorize"] == "first-authorize"
+        assert "authorize" not in captured.metadata
 
         stale = refs["first"]
         await first.dispose()
@@ -139,10 +139,12 @@ async def test_prepare_and_authorize_follow_exact_registration_identity(tmp_path
                 "search_hint": "legacy display only",
             },
             "prepare": None,
+            "authorize": "retired-authorize",
             "state": {},
         }
         async with catalog.open(legacy) as opened:
             assert opened.idempotent is False
+        assert await catalog.authorize(legacy, {}) is None
         await catalog.bind_saved(legacy, cast(Bindings, captured), configuration={})
         assert captured.metadata == {
             "tool": resumable.description,
