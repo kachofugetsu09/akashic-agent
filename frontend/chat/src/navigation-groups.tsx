@@ -5,7 +5,7 @@ import { Dialog, DialogContent, DialogFooter, DialogHeader, DialogTitle } from "
 import { NavigationRowMenu, type NavigationRowAction } from "./navigation-row-menu";
 import { SessionStatusMark, summarizeStatus, type SessionStatus } from "./session-status-mark";
 import { MarqueeText } from "./marquee-text";
-import { NavigationGroupMount, PluginUiSlot, navigationGroupSources, usePluginUiCatalogVersion, type NavigationGroupSource } from "./plugin-ui-runtime";
+import { NavigationGroupMount, PluginUiSlot, navigationGroupSources, navigationGroupsPending, usePluginUiCatalogVersion, type NavigationGroupSource } from "./plugin-ui-runtime";
 import { createScopeFields } from "./scope-fields";
 
 /** 会话所在的分组：会话维度名与它的一个取值。 */
@@ -47,6 +47,8 @@ export interface NavigationGroupsState {
   sections: readonly GroupSection[];
   /** 每次重读递增；插件的提示区据此重新读取自己的状态。 */
   revision: number;
+  /** 分组已定（各数据源都有了分组，或已等满期限）；之前侧栏不平铺带归属的会话。 */
+  ready: boolean;
   active: (GroupRef & { label: string }) | null;
   reload: () => void;
   startChat: (ref: GroupRef) => void;
@@ -64,47 +66,107 @@ function checkGroups(value: unknown): NavigationGroup[] {
 
 // 单个分区的读取期限；插件永不返回时只影响它自己的分区。
 const LOAD_TIMEOUT_MS = 20_000;
+// 等分组定下来的上限：读不到分组时，带归属的会话照常平铺，不一直藏着。
+const READY_PATIENCE_MS = 5_000;
+// 上次读到的分组按插件记在本机：数据源一就绪就先显示，不等一次往返；读到新结果再替换。
+const SNAPSHOT_KEY = "akashic.chat.navigation-groups.v1";
 
 const abortion = (signal: AbortSignal) => new Promise<never>((_, reject) => {
   signal.addEventListener("abort", () => reject(signal.reason instanceof Error ? signal.reason : new Error("读取已取消")), { once: true });
 });
 
-// 目录或重读请求变化时按目录顺序读取各分区；每个分区读完即显示，失败只报错并保留它上次的分组。
+function readSnapshot(): Record<string, NavigationGroup[]> {
+  try {
+    const value: unknown = JSON.parse(localStorage.getItem(SNAPSHOT_KEY) ?? "{}");
+    if (!value || typeof value !== "object" || Array.isArray(value)) return {};
+    return Object.fromEntries(Object.entries(value).flatMap(([id, groups]) => {
+      try { return [[id, checkGroups(groups)]]; } catch { return []; }
+    }));
+  } catch { return {}; }
+}
+
+function writeSnapshot(pluginId: string, groups: readonly NavigationGroup[]) {
+  try { localStorage.setItem(SNAPSHOT_KEY, JSON.stringify({ ...readSnapshot(), [pluginId]: groups })); }
+  catch { /* 存储不可用时下次照常等网络 */ }
+}
+
+interface GroupLoad {
+  revision: number;
+  controller: AbortController;
+  timer?: number;
+}
+
+// 目录或重读请求变化时读取各分区；插件逐个激活不打断已在读的分区。
+// 每个分区读完即显示，失败只报一次错、保留它上次的分组，并退避重读直到成功。
 export function useNavigationGroupSections(enabled: boolean, catalogVersion: number, reportError: (error: unknown) => void) {
   const [sources, setSources] = useState<NavigationGroupSource[]>([]);
   const [loaded, setLoaded] = useState<ReadonlyMap<string, readonly NavigationGroup[]>>(new Map());
   const [revision, setRevision] = useState(0);
+  const loads = useRef(new Map<string, GroupLoad>());
+  const report = useRef(reportError);
+  useEffect(() => { report.current = reportError; }, [reportError]);
   useEffect(() => {
     const next = enabled ? navigationGroupSources() : [];
-    const keys = new Set(next.map((source) => source.key));
-    setSources(next);
-    setLoaded((current) => new Map([...current].filter(([key]) => keys.has(key))));
-    const controller = new AbortController();
-    const publish = (key: string, groups: readonly NavigationGroup[] | null) => {
-      if (!controller.signal.aborted) setLoaded((current) => new Map(current).set(key, groups ?? current.get(key) ?? []));
-    };
-    for (const source of next) {
+    setSources((current) => current.length === next.length
+      && current.every((source, index) => source.key === next[index].key) ? current : next);
+  }, [enabled, catalogVersion]);
+  useEffect(() => {
+    const keys = new Set(sources.map((source) => source.key));
+    const snapshot = readSnapshot();
+    setLoaded((current) => new Map([
+      ...sources.flatMap((source) => snapshot[source.pluginId] ? [[source.key, snapshot[source.pluginId]] as const] : []),
+      ...[...current].filter(([key]) => keys.has(key)),
+    ]));
+    for (const [key, load] of loads.current) {
+      if (keys.has(key)) continue;
+      stopLoad(load);
+      loads.current.delete(key);
+    }
+    const start = (source: NavigationGroupSource, failures: number) => {
       const own = new AbortController();
-      const stop = () => own.abort();
-      controller.signal.addEventListener("abort", stop, { once: true });
+      const load: GroupLoad = { revision, controller: own };
+      loads.current.set(source.key, load);
       const timer = window.setTimeout(() => own.abort(new Error("读取超时")), LOAD_TIMEOUT_MS);
       void Promise.race([source.provider.load(source.context(own.signal)), abortion(own.signal)])
-        .then((groups) => publish(source.key, checkGroups(groups)))
-        .catch((error: unknown) => {
-          if (controller.signal.aborted) return;
-          reportError(new Error(`${source.provider.label}读取失败：${error instanceof Error ? error.message : String(error)}`));
-          publish(source.key, null);
+        .then((value) => {
+          const groups = checkGroups(value);
+          setLoaded((current) => new Map(current).set(source.key, groups));
+          writeSnapshot(source.pluginId, groups);
         })
-        .finally(() => { window.clearTimeout(timer); controller.signal.removeEventListener("abort", stop); });
+        .catch((error: unknown) => {
+          if (loads.current.get(source.key) !== load || (own.signal.aborted && own.signal.reason?.message !== "读取超时")) return;
+          if (failures === 0) report.current(new Error(`${source.provider.label}读取失败：${error instanceof Error ? error.message : String(error)}`));
+          load.timer = window.setTimeout(() => start(source, failures + 1), Math.min(30_000, 2_000 * 2 ** failures));
+        })
+        .finally(() => window.clearTimeout(timer));
+    };
+    for (const source of sources) {
+      const existing = loads.current.get(source.key);
+      if (existing?.revision === revision) continue;
+      if (existing) stopLoad(existing);
+      start(source, 0);
     }
-    return () => controller.abort();
-  }, [enabled, catalogVersion, revision, reportError]);
+  }, [sources, revision]);
+  useEffect(() => () => { loads.current.forEach(stopLoad); loads.current.clear(); }, []);
   const sections = useMemo(() => sources.flatMap((source) => {
     const groups = loaded.get(source.key);
     return groups ? [{ source, groups }] : [];
   }), [sources, loaded]);
+  // 分组未定时侧栏先不平铺带归属的会话，否则分组一到整列跳动；最多等 READY_PATIENCE_MS。
+  const [patienceOver, setPatienceOver] = useState(false);
+  useEffect(() => {
+    const timer = window.setTimeout(() => setPatienceOver(true), READY_PATIENCE_MS);
+    return () => window.clearTimeout(timer);
+  }, []);
+  const ready = useMemo(() => patienceOver || (enabled && !navigationGroupsPending()
+    && sources.every((source) => loaded.has(source.key))), [patienceOver, enabled, sources, loaded, catalogVersion]); // eslint-disable-line react-hooks/exhaustive-deps
   const reload = useCallback(() => setRevision((value) => value + 1), []);
-  return { sections, revision, reload };
+  return { sections, revision, ready, reload };
+}
+
+function stopLoad(load: GroupLoad) {
+  window.clearTimeout(load.timer);
+  load.controller.abort();
 }
 
 /** 一个分区：标题与新建入口、插件提示、分组行；分组行与会话、展开、置顶都由宿主负责。 */

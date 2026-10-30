@@ -3,7 +3,7 @@ import { useCallback, useEffect, useMemo, useRef, useState, type SetStateAction 
 import { createUuid, createUuidV7 } from "./browser-uuid.ts";
 import type { ChatMessage } from "./chat-message";
 import type { ComposerFile } from "./desktop-composer";
-import { invalidatePluginUiSession, loadWebPluginCatalog, onPageShown, receivePluginUiEvent, recheckWebPluginCatalog, resetPluginUiEvents, usePluginUiCatalogVersion } from "./plugin-ui-runtime";
+import { invalidatePluginUiSession, loadWebPluginCatalogPatiently, onPageShown, receivePluginUiEvent, recheckWebPluginCatalog, resetPluginUiEvents, usePluginUiCatalogVersion } from "./plugin-ui-runtime";
 import { groupKey, useNavigationGroupSections, type GroupRef, type NavigationGroupsState } from "./navigation-groups";
 import { useNavigationPins } from "./use-navigation-pins";
 import { readSessionActivityFrame, useSessionActivity, type SessionHead } from "./use-session-activity";
@@ -874,9 +874,7 @@ export function useDesktopChatController() {
   useEffect(() => {
     if (!chatReady) return;
     const controller = new AbortController();
-    void loadWebPluginCatalog(controller.signal).catch((error: unknown) => {
-      if (!isAbortError(error)) reportError(error);
-    });
+    void loadWebPluginCatalogPatiently(controller.signal, reportError);
     const unsubscribe = onPageShown(recheckWebPluginCatalog);
     return () => { controller.abort(); unsubscribe(); };
   }, [chatReady, reportError]);

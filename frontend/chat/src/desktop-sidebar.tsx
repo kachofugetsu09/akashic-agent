@@ -516,9 +516,10 @@ export const DesktopSidebar = memo(function DesktopSidebar({
     return views;
   }, [allSessions, surface]);
   const recentSessions = useMemo(
-    () => sortedSessions.filter((session) => !pinnedSessions.has(session.id) && !groupOf(session))
+    () => sortedSessions.filter((session) => !pinnedSessions.has(session.id) && !groupOf(session)
+      && (groups?.ready !== false || !Object.values(session.scope ?? {}).some(Boolean)))
       .map((session) => sessionViews.get(session.id) ?? session),
-    [sortedSessions, pinnedSessions, groupOf, sessionViews]);
+    [sortedSessions, pinnedSessions, groupOf, sessionViews, groups?.ready]);
   const { count: mountedRecent, completeNow: completeRecentRows } = useProgressiveRows(recentSessions.length, searching);
   const focusEndRef = useRef(false);
   const completeRowsForEnd = useCallback(() => {

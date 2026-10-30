@@ -80,7 +80,8 @@ let activation: Promise<void> = Promise.resolve();
 let staleCatalogRead: Promise<void> | null = null;
 let staleRecoveryAttempted = false;
 const quarantinedRevisions = new Map<string, Error>();
-const MODULE_LOAD_TIMEOUT_MS = 5_000;
+const MODULE_ATTEMPTS = 4;
+const MODULE_PATIENCE_MS = 8_000;
 const SLOT_NAMES = new Set<PluginUiSlotName>([
   "turn.before_reasoning",
   "turn.after_answer",
@@ -128,7 +129,7 @@ export function receivePluginUiCatalog(next: PluginUiCatalog): Promise<void> {
       if (await activateCatalog(next)) activeRevision = next.catalogRevision;
     } catch (error) {
       const normalized = error instanceof Error ? error : new Error("插件界面加载失败");
-      quarantinedRevisions.set(next.catalogRevision, normalized);
+      if (normalized instanceof PluginDefinitionError) quarantinedRevisions.set(next.catalogRevision, normalized);
       if (catalog.catalogRevision === next.catalogRevision) {
         catalog = { ...catalog, error: normalized.message };
         emitChange();
@@ -154,6 +155,25 @@ export async function loadWebPluginCatalog(signal?: AbortSignal): Promise<void> 
   if (generation < catalogPublishedGeneration) return;
   catalogPublishedGeneration = generation;
   await receivePluginUiCatalog(catalog);
+}
+
+// 首次读取目录：网络失败或模块没加载全就退避重读，直到成功或页面撤下；只报告第一次失败。
+// 定义无效的目录已被隔离，重读也只会再拒绝一次，不再重试。
+export async function loadWebPluginCatalogPatiently(signal: AbortSignal, report: (error: unknown) => void): Promise<void> {
+  for (let attempt = 0; !signal.aborted; attempt += 1) {
+    try {
+      await loadWebPluginCatalog(AbortSignal.any([signal, AbortSignal.timeout(20_000)]));
+      return;
+    } catch (error) {
+      if (signal.aborted) return;
+      if (attempt === 0) report(error);
+      if (error instanceof PluginDefinitionError) return;
+      await new Promise((resolve) => {
+        const timer = window.setTimeout(resolve, Math.min(30_000, 1_000 * 2 ** attempt));
+        signal.addEventListener("abort", () => { window.clearTimeout(timer); resolve(null); }, { once: true });
+      });
+    }
+  }
 }
 
 // 页面重新可见、回复结束时核对一次目录：别处安装或换代的插件不刷新页面也能渲染（#1568）。
@@ -258,54 +278,91 @@ function requireSlots(
   });
 }
 
+// 各插件模块各自加载、到一个发布一个：慢的不拖住已到的，一个失败也不连坐整版目录。
+// 只有定义无效（确定性错误）才隔离这一版目录；网络失败留给下一次读取目录时补齐。
 async function activateCatalog(next: PluginUiCatalog): Promise<boolean> {
-  const loaded = await Promise.all(next.plugins.map(async (plugin) => {
-    const module = await withDeadline(
-      import(/* @vite-ignore */ plugin.moduleUrl) as Promise<{ default?: unknown }>,
-      MODULE_LOAD_TIMEOUT_MS,
-      `插件界面加载超时: ${plugin.id}`,
-    );
-    return [plugin, parseDefinition(module.default, plugin)] as const;
+  const current = () => catalog.catalogRevision === next.catalogRevision && !catalog.updating;
+  const listed = new Set(next.plugins.map((plugin) => plugin.id));
+  retirePlugins([...definitions.keys()].filter((id) => !listed.has(id)));
+  const results = await Promise.allSettled(next.plugins.map(async (plugin) => {
+    if (definitions.get(plugin.id)?.revision === plugin.revision) return;
+    const module = await importPluginModule(plugin, current);
+    let definition: PluginUiDefinition;
+    try { definition = parseDefinition(module.default, plugin); }
+    catch (error) { throw new PluginDefinitionError(error instanceof Error ? error.message : String(error)); }
+    if (current()) installPlugin(plugin, definition);
   }));
-  if (catalog.catalogRevision !== next.catalogRevision || catalog.updating) return false;
-
-  const nextDefinitions = new Map<string, {
-    revision: string;
-    definition: PluginUiDefinition;
-  }>();
-  const nextStyles = new Map<string, HTMLLinkElement>();
-  for (const [plugin, definition] of loaded) {
-    nextDefinitions.set(plugin.id, { revision: plugin.revision, definition });
-    if (plugin.stylesheetUrl) {
-      const node = document.createElement("link");
-      node.rel = "stylesheet";
-      node.href = plugin.stylesheetUrl;
-      node.dataset.pluginUi = plugin.id;
-      nextStyles.set(plugin.id, node);
-    }
-  }
-  styleNodes.forEach((node) => node.remove());
-  const retired = new Set([...definitions].filter(([id, { revision }]) => nextDefinitions.get(id)?.revision !== revision)
-    .map(([id, { revision }]) => JSON.stringify([id, revision])));
-  definitions.clear();
-  nextDefinitions.forEach((definition, id) => definitions.set(id, definition));
-  retirePushes(retired);
-  styleNodes.clear();
-  nextStyles.forEach((node, id) => {
-    document.head.appendChild(node);
-    styleNodes.set(id, node);
-  });
-  emitChange();
+  if (!current()) return false;
+  const failed = results.find((result): result is PromiseRejectedResult => result.status === "rejected");
+  if (failed) throw failed.reason;
   return true;
 }
 
-function withDeadline<T>(promise: Promise<T>, timeoutMs: number, message: string): Promise<T> {
+class PluginDefinitionError extends Error {}
+
+// 同一插件换代时先退役旧代的推送与样式，再挂新代；其余插件不受影响。
+function installPlugin(plugin: PluginUiCatalogItem, definition: PluginUiDefinition) {
+  const previous = definitions.get(plugin.id);
+  if (previous && previous.revision !== plugin.revision) retirePushes(new Set([JSON.stringify([plugin.id, previous.revision])]));
+  definitions.set(plugin.id, { revision: plugin.revision, definition });
+  styleNodes.get(plugin.id)?.remove();
+  styleNodes.delete(plugin.id);
+  if (plugin.stylesheetUrl) {
+    const node = document.createElement("link");
+    node.rel = "stylesheet";
+    node.href = plugin.stylesheetUrl;
+    node.dataset.pluginUi = plugin.id;
+    document.head.appendChild(node);
+    styleNodes.set(plugin.id, node);
+  }
+  emitChange();
+}
+
+function retirePlugins(ids: readonly string[]) {
+  if (!ids.length) return;
+  retirePushes(new Set(ids.map((id) => JSON.stringify([id, definitions.get(id)?.revision]))));
+  for (const id of ids) {
+    definitions.delete(id);
+    styleNodes.get(id)?.remove();
+    styleNodes.delete(id);
+  }
+  emitChange();
+}
+
+// 浏览器模块表记住失败的 URL，重试必须换地址；慢请求不判死，等满期限仍未回来就并行补发下一次，先到为准。
+// 全部尝试都失败或最后一次也超期才算失败。
+function importPluginModule(plugin: PluginUiCatalogItem, current: () => boolean): Promise<{ default?: unknown }> {
   return new Promise((resolve, reject) => {
-    const timeout = window.setTimeout(() => reject(new Error(message)), timeoutMs);
-    promise.then(
-      (value) => { window.clearTimeout(timeout); resolve(value); },
-      (error: unknown) => { window.clearTimeout(timeout); reject(error); },
-    );
+    let started = 0;
+    let failed = 0;
+    let done = false;
+    let timer: number | undefined;
+    const finish = (settle: () => void) => {
+      if (done) return;
+      done = true;
+      window.clearTimeout(timer);
+      settle();
+    };
+    const start = () => {
+      window.clearTimeout(timer);
+      if (done) return;
+      if (!current()) { finish(() => reject(new Error("插件目录已更新"))); return; }
+      const url = started === 0 ? plugin.moduleUrl : `${plugin.moduleUrl}&attempt=${started}`;
+      started += 1;
+      timer = window.setTimeout(() => started < MODULE_ATTEMPTS ? start()
+        : finish(() => reject(new Error(`插件界面加载超时: ${plugin.id}`))), MODULE_PATIENCE_MS * started);
+      (import(/* @vite-ignore */ url) as Promise<{ default?: unknown }>).then(
+        (module) => finish(() => resolve(module)),
+        (error: unknown) => {
+          failed += 1;
+          if (done || failed < started) return;
+          if (started >= MODULE_ATTEMPTS) { finish(() => reject(error)); return; }
+          window.clearTimeout(timer);
+          timer = window.setTimeout(start, 1_000 * 2 ** (failed - 1));
+        },
+      );
+    };
+    start();
   });
 }
 
@@ -433,6 +490,12 @@ function groupSource(plugin: PluginUiCatalogItem, provider: NavigationGroupsProv
         pluginId: plugin.id, pluginRevision: plugin.revision, method, payload, slot: "navigation.groups", signal,
       }),
     }) };
+}
+
+/** 目录未定或声明了侧栏分组的插件还没激活：分组数据源还会再出现。 */
+export function navigationGroupsPending(): boolean {
+  return catalog.updating || catalog.plugins.some((plugin) => plugin.slots.includes("navigation.groups")
+    && definitions.get(plugin.id)?.revision !== plugin.revision);
 }
 
 /** 在宿主外框里挂分组数据源的表单或提示：表单配表单控制，提示配导航能力，类型上不能混用。 */
@@ -670,7 +733,7 @@ function useRegistryVersion(): number {
 
 // 目录或模块尚未就绪时，已挂载的展示保持原样。
 function slotWaiting(name: InlineSlotName): boolean {
-  return catalog.updating || !!catalog.error || catalog.plugins.some(plugin =>
+  return catalog.updating || catalog.plugins.some(plugin =>
     plugin.slots.includes(name) && definitions.get(plugin.id)?.revision !== plugin.revision);
 }
 
@@ -896,7 +959,7 @@ function queryPlugin({ pluginId, pluginRevision, ownerId, slot, sessionId, messa
 }): Promise<Record<string, unknown>> {
   // 1. 已读卡片可暂留；旧上下文不能发送请求或读取新版本缓存。
   const current = catalog.plugins.find(plugin => plugin.id === pluginId);
-  if (catalog.updating || catalog.error || current?.revision !== pluginRevision) {
+  if (catalog.updating || current?.revision !== pluginRevision || definitions.get(pluginId)?.revision !== pluginRevision) {
     return Promise.reject(new WebPluginError(409, "插件界面正在更新或暂不可用，请刷新页面。", "plugin_ui_stale_revision"));
   }
   // 参数只在插件调用边界校验；缓存沿用原有插件、消息与版本身份。
