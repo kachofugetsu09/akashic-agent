@@ -23,6 +23,61 @@ function memoryOf(result: Record<string, unknown>): Memory {
   throw new Error("记忆策略无效");
 }
 
+// 同一范围的策略本页只读一次：分组区重绘、新建对话区重复挂载都复用这一份；上次读到的记在本机，挂载时先画。
+// 策略只经本模块的 scope.policy.set 改动，改后直接更新这里。
+const POLICY_KEY = "akashic.akasha.scope-policy.v1";
+const policies = new Map<string, Promise<Memory>>();
+
+function storedPolicies(): Record<string, Memory> {
+  try {
+    const value: unknown = JSON.parse(localStorage.getItem(POLICY_KEY) ?? "{}");
+    return value && typeof value === "object" && !Array.isArray(value) ? value as Record<string, Memory> : {};
+  } catch {
+    return {};
+  }
+}
+
+function rememberPolicy(key: string, memory: Memory) {
+  policies.set(key, Promise.resolve(memory));
+  try { localStorage.setItem(POLICY_KEY, JSON.stringify({ ...storedPolicies(), [key]: memory })); }
+  catch { /* 禁用存储时下次打开等读取结果再画。 */ }
+}
+
+// 同一时刻挂载的徽标合成一次批量读取：侧栏有几个分组就省几个请求，弱网 HTTP/1.1 下不占满 6 条连接。
+type PolicyWaiter = { scope: { dimension: string; value: string }; resolve: (memory: Memory) => void; reject: (error: unknown) => void };
+let queued: PolicyWaiter[] = [];
+let queuedContext: PluginUiContext<"scope.badge"> | null = null;
+
+function flushPolicies() {
+  const waiters = queued;
+  const context = queuedContext;
+  queued = [];
+  queuedContext = null;
+  if (!context) return;
+  context.query("scope.policy.list", { scopes: waiters.map((waiter) => waiter.scope) }).then((result) => {
+    const rows = Array.isArray(result.policies) ? result.policies as unknown[] : [];
+    waiters.forEach((waiter, index) => {
+      const row = rows[index];
+      try { waiter.resolve(memoryOf(row && typeof row === "object" ? row as Record<string, unknown> : {})); }
+      catch (error) { waiter.reject(error); }
+    });
+  }, (error: unknown) => waiters.forEach((waiter) => waiter.reject(error)));
+}
+
+function readPolicy(context: PluginUiContext<"scope.badge">, key: string): Promise<Memory> {
+  const cached = policies.get(key);
+  if (cached) return cached;
+  const { dimension, value } = context.scope;
+  const pending = new Promise<Memory>((resolve, reject) => {
+    queued.push({ scope: { dimension, value }, resolve, reject });
+    queuedContext = context;
+    if (queued.length === 1) window.setTimeout(flushPolicies, 0);
+  });
+  policies.set(key, pending);
+  pending.then((memory) => rememberPolicy(key, memory), () => { if (policies.get(key) === pending) policies.delete(key); });
+  return pending;
+}
+
 // 新建表单里的记忆范围：创建前由宿主调用提交，策略在第一个会话出现前固定。
 function MemoryField({ context, fields }: { context: PluginUiContext<"scope.fields">; fields: ScopeFieldControls }) {
   const [memory, setMemory] = useState<Memory>("global");
@@ -36,6 +91,7 @@ function MemoryField({ context, fields }: { context: PluginUiContext<"scope.fiel
       const wanted = chosen.current;
       const result = await context.query("scope.policy.set", { dimension, value, ...policyOf(wanted) });
       if (memoryOf(result) !== wanted) throw new Error("记忆策略与创建请求不一致");
+      rememberPolicy(`${dimension}:${value}`, wanted);
     });
     return () => { stopBusy(); stopCommit(); };
   }, [context, fields]);
@@ -63,9 +119,20 @@ export function mountMemoryBadge(host: HTMLElement, context: PluginUiContext<"sc
     if (choice) badge.title = `${choice.label}：${choice.description}`;
     host.replaceChildren(badge);
   };
-  context.query("scope.policy.get", { dimension, value }).then((result) => {
-    const memory = memoryOf(result);
-    if (active && memory !== "global") show(CHOICES.find((choice) => choice.value === memory)?.label ?? "", memory);
-  }).catch(() => { if (active) show("当前策略未能读取"); });
+  const key = `${dimension}:${value}`;
+  const paint = (memory: Memory) => {
+    if (!active) return;
+    if (memory === "global") host.replaceChildren();
+    else show(CHOICES.find((choice) => choice.value === memory)?.label ?? "", memory);
+  };
+  const stored = storedPolicies()[key];
+  if (stored && CHOICES.some((choice) => choice.value === stored)) paint(stored);
+  // 共享的读取随先挂的那处卸载而中止时，用自己的上下文再读一次。
+  const load = (): void => void readPolicy(context, key).then(paint, (error: unknown) => {
+    if (!active) return;
+    if (error instanceof DOMException && error.name === "AbortError") load();
+    else show("当前策略未能读取");
+  });
+  load();
   return () => { active = false; };
 }

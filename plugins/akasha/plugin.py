@@ -288,10 +288,25 @@ async def run(ctx: Context, interest: Interest) -> None:
         except ValueError as error:
             raise PluginUiRpcInvalidRequest(f"记忆策略范围无效: {error}") from error
 
+    def query_policies(payload: dict[str, object]) -> dict[str, object]:
+        """侧栏同一时刻挂载的分组徽标合成一次读取；逐条与 scope.policy.get 相同。"""
+        scopes = payload.get("scopes")
+        items = cast(list[object], scopes) if isinstance(scopes, list) else []
+        if set(payload) != {"scopes"} or not 0 < len(items) <= 200:
+            raise PluginUiRpcInvalidRequest("记忆策略批量查询参数无效")
+        rows: list[dict[str, object]] = []
+        for scope in items:
+            if not isinstance(scope, dict):
+                raise PluginUiRpcInvalidRequest("记忆策略批量查询参数无效")
+            rows.append(query_policy("scope.policy.get", cast(dict[str, object], scope)))
+        return {"policies": rows}
+
     def query(method: str, payload: dict[str, object], *, session_id: str | None,
               turn_id: str | None) -> dict[str, object]:
         if method in ("scope.policy.get", "scope.policy.set"):
             return query_policy(method, payload)
+        if method == "scope.policy.list":
+            return query_policies(payload)
         inspector = get_inspector()
         if method == "recall.turn":
             offset = payload.get("offset", 0)

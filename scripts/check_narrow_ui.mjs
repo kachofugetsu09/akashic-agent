@@ -69,10 +69,10 @@ function readQuery(query) {
     return Object.keys(payload).length === 0;
   if (plugin === "workspace_changes" && query.method === "turn.message")
     return Object.keys(payload).join() === "message_id";
-  // plugins/akasha/plugin.py 的策略读取与召回记录投影。
+  // plugins/akasha/plugin.py 的策略读取（单条与批量）与召回记录投影。
   if (plugin === "akasha")
     return (
-      query.method === "scope.policy.get" || query.method === "recall.turn"
+      query.method === "scope.policy.get" || query.method === "scope.policy.list" || query.method === "recall.turn"
     );
   // 外部插件源码的只读 Message/Compaction 与 plugins/models/chat_ui.py 的只读查询（用量尾注、模型胶囊目录与调用统计）。
   return (

@@ -104,7 +104,7 @@ export class WebDataRegistry {
     };
   }
 
-  // 空闲时依次预热；每项之间让出主线程，不和首屏渲染抢时间。
+  // 空闲时依次预热；每项之间让出主线程，不和首屏渲染抢时间。慢链路上推迟开始，不占首屏读取排队的连接。
   warmWhenIdle(): void {
     const pending = [...this.resources].filter((item) => item.warm && !item.settled);
     const next = (): void => {
@@ -112,8 +112,19 @@ export class WebDataRegistry {
       if (!resource) return;
       resource.refresh().catch(() => undefined).finally(() => idle(next));
     };
-    idle(next);
+    if (slowLink()) window.setTimeout(() => idle(next), SLOW_LINK_WARM_DELAY_MS);
+    else idle(next);
   }
+}
+
+// 页面首字节晚于这个时长就按慢链路处理。浏览器对本机与局域网地址不估网速（navigator.connection 恒为 4g），只能自己量。
+const SLOW_LINK_TTFB_MS = 400;
+// 慢链路上 HTTP/1.1 每个源只有 6 条连接，首屏读取、插件模块要排队；预热推迟到这之后。
+const SLOW_LINK_WARM_DELAY_MS = 30_000;
+
+function slowLink(): boolean {
+  const navigation = performance.getEntriesByType("navigation")[0] as PerformanceNavigationTiming | undefined;
+  return !!navigation && navigation.responseStart - navigation.requestStart > SLOW_LINK_TTFB_MS;
 }
 
 function idle(callback: () => void): void {
