@@ -6,7 +6,7 @@ import { build } from 'esbuild';
 import { chromium } from 'playwright-core';
 const repo=process.cwd();
 const root=await mkdtemp(resolve(repo,'node_modules/.cache-md-routing-'));
-const evidence=resolve(process.env.EVIDENCE_DIR||'../evidence');await mkdir(evidence,{recursive:true});
+const evidence=resolve(process.env.EVIDENCE_DIR||'.pytest_artifacts/markdown-routing');await mkdir(evidence,{recursive:true});
 const source=JSON.stringify;
 await writeFile(root+'/entry.tsx',`
 import React from 'react';import{createRoot}from'react-dom/client';

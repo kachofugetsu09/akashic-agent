@@ -15,8 +15,9 @@ let accepted: ReadonlySet<string> = new Set();
 const listeners = new Set<() => void>();
 let quoteHandler: ((quote: WorkbenchQuote) => void) | null = null;
 let currentSession = "";
-/** 打开会话工作目录里的一个文件：{ path, line? }，path 相对工作目录；由声明接受它的工具决定怎么打开（如“改动”定位到该文件）。 */
+/** 打开会话工作目录里的一个非 Markdown 文件：{ path, line? }，path 相对工作目录；由声明接受它的工具决定怎么打开（如“改动”定位到该文件）。 */
 export const FILE_INTENT = "workspace.file.open.v1";
+/** 打开一份本地 Markdown：{ path, line? }，path 可相对工作目录，也可是绝对路径、~/ 或 ../；line 只用于识别，不定位。 */
 export const DOCUMENT_INTENT = "workspace.document.open.v1";
 
 export function fileIntent(file: WorkspaceFileRef): string {
@@ -25,7 +26,9 @@ export function fileIntent(file: WorkspaceFileRef): string {
 
 /** Local Markdown references may live outside the working directory; URLs are not local files. */
 export function markdownFileRef(value: string): WorkspaceFileRef | null {
-  if (!value || value.length > 4096 || /[\x00-\x1f]/.test(value) || /^[a-z][a-z0-9+.-]*:/i.test(value) || value.startsWith("//")) return null;
+  if (!value || value.length > 4096 || /[\x00-\x1f*?<>|]/.test(value) || /^[a-z][a-z0-9+.-]*:/i.test(value) || value.startsWith("//")) return null;
+  // 允许空格和中文路径，但 `a.md b.md` 这类多个文件名不是一份文档。
+  if ((value.match(/\.(?:md|markdown|mdown)(?![\w])/gi) ?? []).length !== 1) return null;
   const match = /^(.*\.(?:md|markdown|mdown))(?::(\d+))?(?::\d+)?$/i.exec(value);
   return match ? { path: match[1].replace(/^\.\//, ""), line: match[2] ? Number(match[2]) : null } : null;
 }
@@ -65,15 +68,16 @@ export function setWorkbenchSession(sessionId: string): void {
 
 // 像工作目录里文件的行内代码：带常见扩展名（或 Makefile 这类固定文件名）的相对路径，可带 :行号 或 :行:列；
 // 网址、绝对路径、带 .. 的、带空格的、order.currency 这类属性访问、Node.js 这类框架名都不算。
+// Markdown 先经 markdownFileRef 判定，绝对路径、~/、../ 与带空格的文档路径在那里放行。
 const FILE_PATH = /^(?:\.\/)?(?:(?!\.\.\/)[\w@.-]+\/)*(?:[\w@-][\w@.-]*\.(?:py|pyi|ts|tsx|js|jsx|mjs|cjs|json|md|mdx|toml|ya?ml|css|scss|html|vue|svelte|rs|go|java|kt|swift|c|h|cc|cpp|hpp|cs|rb|php|lua|dart|scala|proto|sh|sql|txt|ini|cfg|xml|lock)|Makefile|Dockerfile|LICENSE)(?::\d+){0,2}$/;
 const FRAMEWORK_NAME = /^[A-Z][a-z]+\.js$/;
 
 export interface WorkspaceFileRef { path: string; line: number | null }
 
-/** 行内代码若像工作目录里的文件，返回去掉 ./ 的相对路径与可选行号；否则 null。 */
+/** 行内代码若像本地 Markdown 或工作目录里的文件，返回去掉 ./ 的路径与可选行号；否则 null。 */
 export function workspaceFileRef(code: string): WorkspaceFileRef | null {
-  const document = markdownFileRef(code);
-  if (document) return document;
+  const markdown = markdownFileRef(code);
+  if (markdown) return markdown;
   if (code.length > 300 || !FILE_PATH.test(code) || FRAMEWORK_NAME.test(code)) return null;
   const [, path, line] = /^(?:\.\/)?(.+?)(?::(\d+))?(?::\d+)?$/.exec(code)!;
   return { path, line: line ? Number(line) : null };

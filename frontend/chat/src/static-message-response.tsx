@@ -59,10 +59,10 @@ export const StaticMessageResponse = memo(function StaticMessageResponse({
   const openFile = useCallback((event: React.MouseEvent<HTMLDivElement>) => {
     if (event.button !== 0 || event.metaKey || event.ctrlKey || event.shiftKey || event.altKey) return;
     const anchor = event.target instanceof Element ? event.target.closest("a") : null;
-    const document = anchor ? markdownLinkRef(anchor.getAttribute("href") ?? "") : null;
-    if (document && workbenchAccepts(DOCUMENT_INTENT)) {
+    const markdown = anchor ? markdownLinkRef(anchor.getAttribute("href") ?? "") : null;
+    if (markdown && workbenchAccepts(DOCUMENT_INTENT)) {
       event.preventDefault();
-      void openFileInWorkbench(document);
+      void openFileInWorkbench(markdown);
       return;
     }
     const link = event.target instanceof Element ? event.target.closest<HTMLElement>("[data-file-path]") : null;
