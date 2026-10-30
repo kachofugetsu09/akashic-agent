@@ -161,19 +161,24 @@ export async function loadWebPluginCatalog(signal?: AbortSignal): Promise<void> 
 // 首次读取目录：网络失败或模块没加载全就退避重读，直到成功或页面撤下；只报告第一次失败。
 // 定义无效的目录已被隔离，重读也只会再拒绝一次，不再重试。
 export async function loadWebPluginCatalogPatiently(signal: AbortSignal, report: (error: unknown) => void): Promise<void> {
-  for (let attempt = 0; !signal.aborted; attempt += 1) {
-    try {
-      await loadWebPluginCatalog(AbortSignal.any([signal, AbortSignal.timeout(20_000)]));
-      return;
-    } catch (error) {
-      if (signal.aborted) return;
-      if (attempt === 0) report(error);
-      if (error instanceof PluginDefinitionError) return;
-      await new Promise((resolve) => {
-        const timer = window.setTimeout(resolve, Math.min(30_000, 1_000 * 2 ** attempt));
-        signal.addEventListener("abort", () => { window.clearTimeout(timer); resolve(null); }, { once: true });
-      });
+  initialCatalogLoads += 1;
+  try {
+    for (let attempt = 0; !signal.aborted; attempt += 1) {
+      try {
+        await loadWebPluginCatalog(AbortSignal.any([signal, AbortSignal.timeout(20_000)]));
+        return;
+      } catch (error) {
+        if (signal.aborted) return;
+        if (attempt === 0) report(error);
+        if (error instanceof PluginDefinitionError) return;
+        await new Promise((resolve) => {
+          const timer = window.setTimeout(resolve, Math.min(30_000, 1_000 * 2 ** attempt));
+          signal.addEventListener("abort", () => { window.clearTimeout(timer); resolve(null); }, { once: true });
+        });
+      }
     }
+  } finally {
+    initialCatalogLoads -= 1;
   }
 }
 
@@ -183,8 +188,11 @@ let catalogRecheck: Promise<void> | null = null;
 let catalogRecheckPending = false;
 let catalogRecheckTimer: number | null = null;
 let catalogCheckedAt = 0;
+// 启动加载还在进行时，页面第一次拿到焦点之类的核对不再另读一份目录：启动这次读到的就是最新的。
+let initialCatalogLoads = 0;
 const CATALOG_RECHECK_INTERVAL_MS = 3_000;
 export function recheckWebPluginCatalog(): void {
+  if (initialCatalogLoads > 0) return;
   catalogRecheckPending = true;
   drainCatalogRecheck();
 }
