@@ -17,6 +17,23 @@ let quoteHandler: ((quote: WorkbenchQuote) => void) | null = null;
 let currentSession = "";
 /** 打开会话工作目录里的一个文件：{ path, line? }，path 相对工作目录；由声明接受它的工具决定怎么打开（如“改动”定位到该文件）。 */
 export const FILE_INTENT = "workspace.file.open.v1";
+export const DOCUMENT_INTENT = "workspace.document.open.v1";
+
+export function fileIntent(file: WorkspaceFileRef): string {
+  return /\.(md|markdown|mdown)$/i.test(file.path) ? DOCUMENT_INTENT : FILE_INTENT;
+}
+
+/** Local Markdown references may live outside the working directory; URLs are not local files. */
+export function markdownFileRef(value: string): WorkspaceFileRef | null {
+  if (!value || value.length > 4096 || /[\x00-\x1f]/.test(value) || /^[a-z][a-z0-9+.-]*:/i.test(value) || value.startsWith("//")) return null;
+  const match = /^(.*\.(?:md|markdown|mdown))(?::(\d+))?(?::\d+)?$/i.exec(value);
+  return match ? { path: match[1].replace(/^\.\//, ""), line: match[2] ? Number(match[2]) : null } : null;
+}
+
+export function markdownLinkRef(href: string): WorkspaceFileRef | null {
+  if (/^[a-z][a-z0-9+.-]*:/i.test(href) || href.startsWith("//")) return null;
+  try { return markdownFileRef(decodeURIComponent(href.split("#")[0])); } catch { return null; }
+}
 
 /** 宿主下发的可接受意图名集合；只用来决定是否显示“在侧栏打开”。 */
 export function setWorkbenchIntents(value: unknown): void {
@@ -55,6 +72,8 @@ export interface WorkspaceFileRef { path: string; line: number | null }
 
 /** 行内代码若像工作目录里的文件，返回去掉 ./ 的相对路径与可选行号；否则 null。 */
 export function workspaceFileRef(code: string): WorkspaceFileRef | null {
+  const document = markdownFileRef(code);
+  if (document) return document;
   if (code.length > 300 || !FILE_PATH.test(code) || FRAMEWORK_NAME.test(code)) return null;
   const [, path, line] = /^(?:\.\/)?(.+?)(?::(\d+))?(?::\d+)?$/.exec(code)!;
   return { path, line: line ? Number(line) : null };
@@ -62,7 +81,7 @@ export function workspaceFileRef(code: string): WorkspaceFileRef | null {
 
 /** 只在用户点击时调用，同 openInWorkbench。 */
 export function openFileInWorkbench(file: WorkspaceFileRef): Promise<WorkbenchIntentStatus> {
-  return openInWorkbench(FILE_INTENT, currentSession, file.line === null ? { path: file.path } : file);
+  return openInWorkbench(fileIntent(file), currentSession, file.line === null ? { path: file.path } : file);
 }
 
 export interface HostShortcut {

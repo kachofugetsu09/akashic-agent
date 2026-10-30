@@ -89,6 +89,15 @@ class Reader {
         this.reset();
         void this.files();
       }),
+      view.onIntent(async (intent) => {
+        if (intent.name !== "workspace.document.open.v1") return "invalid";
+        const payload = intent.payload as { path?: unknown } | null;
+        if (!payload || typeof payload.path !== "string" || !payload.path || payload.path.length > 4096
+          || /[\x00-\x1f]/.test(payload.path) || !/\.(md|markdown|mdown)$/i.test(payload.path)
+          || /^[a-z][a-z0-9+.-]*:/i.test(payload.path) || payload.path.startsWith("//")) return "invalid";
+        await this.open(payload.path);
+        return "handled";
+      }),
       view.onActiveChange((active) => {
         this.active = active;
         clearTimeout(this.timer);
@@ -439,6 +448,7 @@ class Reader {
 export function activate(ctx: WebHostContextV1): WebUiDisposer {
   return ctx.ui.inject("conversation.tools.v2", (mount) => mount.register({
     id: "markdown-reader",
+    accepts: ["workspace.document.open.v1"],
     label: "文档",
     order: 35,
     hint: "阅读 Markdown，支持绝对路径",
