@@ -124,7 +124,7 @@ class BrowserCatalogSession implements WebHostSession {
   }
 
   async activateModules(
-    cached: ReadonlyMap<string, string>,
+    cached: Map<string, string>,
   ): Promise<void> {
     const ordered = activationOrder(this.bootstrap.modules);
     // 描述符完整性校验先行、import 并行预取：下载与编译在浏览器后台线程重叠，
@@ -881,14 +881,31 @@ function warmModuleCache(modules: WebModulePayload[]): void {
   });
 }
 
-function importModule(
+/** 按实际 HTTP 缓存选择导入路径，缺失时校验并执行当前目录的内联字节。 */
+async function importModule(
   module: WebModulePayload,
-  cached: ReadonlyMap<string, string>,
+  cached: Map<string, string>,
 ): Promise<WebModuleExports> {
   const url = moduleUrl(module.pluginId, module.moduleSha256);
   if (cached.get(module.pluginId) === module.moduleSha256 && !importedModuleUrls.has(url)) {
-    // The current catalog has approved this module. Reuse code cache across pages,
-    // but never reuse module-level state between catalog sessions in this document.
+    // 1. 本机摘要只说明执行过，不证明 HTTP 缓存仍在；提前刷新、缓存逐出和省流量都会缺缓存。
+    // 只查缓存，不为启动响应里已经携带的模块再等一次网络下载；未命中撤回提示，让空闲预热补缓存。
+    let response: Response;
+    try {
+      response = await fetch(url, { cache: "only-if-cached", mode: "same-origin" });
+    } catch (error) {
+      // Chromium 的缓存未命中返回 TypeError，而不是规范中的 504 响应。
+      if (!(error instanceof TypeError)) throw error;
+      cached.delete(module.pluginId);
+      return importModuleFromBytes(module);
+    }
+    await response.body?.cancel();
+    if (!response.ok) {
+      cached.delete(module.pluginId);
+      return importModuleFromBytes(module);
+    }
+    // 2. 当前目录已批准该模块；跨页面复用编译缓存，同一页面换目录仍创建新模块实例。
+    if (importedModuleUrls.has(url)) return importModuleFromBytes(module);
     importedModuleUrls.add(url);
     return (import(/* @vite-ignore */ url) as Promise<WebModuleExports>)
       .catch(() => importModuleFromBytes(module));
