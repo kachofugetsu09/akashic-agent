@@ -126,21 +126,28 @@ function OnboardingSection({data, renderRoute, close, surfaceHost, auto}: {
   data: WebResource<Snapshot>; renderRoute?: RenderSettingsRoute; close?: () => void; surfaceHost: HTMLElement; auto: boolean;
 }) {
   const [running, setRunning] = useState(auto);
-  const {catalog, statuses, refresh} = useCatalog(data);
+  const {catalog, statuses, error, refresh} = useCatalog(data);
+  const failedSteps = catalog?.steps.filter(step => statuses[step.id]?.fault) ?? [];
   // 1. 首跑流程结束连同设置一起关闭，回到对话；2. 从设置里重走的流程结束后回到概览。
   const exit = useCallback(() => { markSeen(); if (auto) close?.(); else { setRunning(false); void refresh(); } }, [auto, close, refresh]);
   return <>
     <div className="onboarding-overview">
       <p className="onboarding-overview-intro">首次使用时的引导。这里能看到每项能力的状态，也可以重新走一遍。</p>
       <button type="button" className="onboarding-primary" onClick={() => setRunning(true)}>重新走一遍引导</button>
+      {(error || failedSteps.length > 0) && <div className="config-error" role="alert">
+        {error ? <p>{error}</p> : failedSteps.map(step => <p key={step.id}>{step.title}：{statuses[step.id]?.fault}</p>)}
+        <button type="button" className="onboarding-text-button" onClick={() => void refresh()}>重试</button>
+      </div>}
+      {!catalog && !error && <p role="status">正在检查已安装的功能…</p>}
       {catalog && <ul className="onboarding-overview-list">
         {catalog.groups.map(group => {
           const on = groupReady(catalog, statuses, group.key);
           const step = catalog.steps.find(item => item.group === group.key);
+          const failed = failedSteps.some(item => item.group === group.key);
           return <li key={group.key}>
             <a href={step ? `#${step.route}` : undefined}>
               <span><strong>{group.pitch || group.title}</strong><small>{group.title}</small></span>
-              <em className={on ? "is-on" : group.required ? "is-missing" : ""}>{on ? "已开启" : group.required ? "未连接" : "未开启"}</em>
+              <em className={failed ? "is-missing" : on ? "is-on" : group.required ? "is-missing" : ""}>{failed ? "读取失败" : on ? "已开启" : group.required ? "未连接" : "未开启"}</em>
             </a>
           </li>;
         })}
