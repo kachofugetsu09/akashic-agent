@@ -22,7 +22,17 @@ def message_digest(workspace: Path) -> str:
     return hashlib.sha256(json.dumps(rows, ensure_ascii=False).encode()).hexdigest()
 
 
-async def run(state: Path, port: int, switch_messages: int = 0, sessions: int = 0, chat_ready_delay_ms: int = 0) -> None:
+def model_digest(workspace: Path) -> str:
+    """核对夹具模型库的完整行，避免草稿选择被意外提交后仍报只读验收成功。"""
+    with sqlite3.connect(workspace / "model-registry.sqlite3") as db:
+        tables = [row[0] for row in db.execute(
+            "SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%' ORDER BY name")]
+        rows = {name: db.execute(f'SELECT * FROM "{name}" ORDER BY rowid').fetchall() for name in tables}
+    return hashlib.sha256(json.dumps(rows, sort_keys=True).encode()).hexdigest()
+
+
+async def run(state: Path, port: int, switch_messages: int = 0, sessions: int = 0,
+              chat_ready_delay_ms: int = 0, picker_models: int = 0) -> None:
     """创建固定数据后启动正式应用和 Web Shell，退出时核对历史。"""
     # 1. 只接受新目录；所有配置、插件状态和消息都属于本次测试。
     state.mkdir(parents=True, exist_ok=False)
@@ -111,17 +121,22 @@ async def run(state: Path, port: int, switch_messages: int = 0, sessions: int = 
                                f"catalog-{index:05d}", Input((part,)))
     finally:
         log.close()
+    if picker_models:
+        seed_picker_models(workspace, picker_models)
     before = message_digest(workspace)
 
     # 2. 不接模型或外部账号；真实 HTTP、插件目录、历史 API 和 WebSocket 仍完整运行。
     app = AppRuntime(Config.load(config, workspace=workspace), workspace)
     loop = asyncio.get_running_loop()
+    models_before = None
     try:
         await app.start()
         app.plugin_watcher.stop()
         await app.plugin_watcher_task
         # 自动扫描停止后仍允许显式 SIGHUP，供独立的真实换代验收使用。
         app.plugin_watcher = None
+        if picker_models:
+            models_before = model_digest(workspace)
         print(json.dumps({"origin": f"http://127.0.0.1:{port}", "messagesSha256": before}), flush=True)
         asgi = create_web_shell_app(workspace)
         if chat_ready_delay_ms:
@@ -139,9 +154,51 @@ async def run(state: Path, port: int, switch_messages: int = 0, sessions: int = 
             for sig in (signal.SIGINT, signal.SIGTERM):
                 loop.remove_signal_handler(sig)
             after = message_digest(workspace)
-            (state / "integrity.json").write_text(json.dumps({"before": before, "after": after}))
+            integrity = {"before": before, "after": after}
+            if models_before is not None:
+                integrity.update(modelsBefore=models_before, modelsAfter=model_digest(workspace))
+            (state / "integrity.json").write_text(json.dumps(integrity))
             if before != after:
                 raise RuntimeError("启动基准改变了消息历史")
+            if models_before is not None and integrity["modelsAfter"] != models_before:
+                raise RuntimeError("选择器基准改变了模型账本")
+
+
+def seed_picker_models(workspace: Path, count: int) -> None:
+    """为新夹具写入固定模型目录；只验收选择器，不探测或调用模型。"""
+    from plugins.models.contract import CapabilitySources, ModelCapabilities
+    from plugins.models.settings import AddConnection, AddModel, SetDefaultModel
+    from plugins.models.store import ModelsStore
+
+    store = ModelsStore(workspace / "model-registry.sqlite3", workspace / "runtime/model-backups")
+    store.initialize()
+    try:
+        # 1. 只增加新夹具数据；连接指向未使用的本地端口，不带真实凭据。
+        snapshot = store.read_snapshot()
+        assert snapshot is not None and not snapshot.connections and not snapshot.models
+        revision = snapshot.revision
+        for group in range(5):
+            revision = store.add_connection(AddConnection(
+                expected_revision=revision, connection_id=f"picker-{group}", name=f"模型来源 {group + 1}",
+                driver_id="openai-compatible", endpoint="http://127.0.0.1:9/v1",
+                auth_identity=f"picker-{group}", credential={"api_key": "unused-isolated-fixture"}))
+        # 2. 保存多来源、不同能力的完整目录，供真实 chat.models 和插件渲染器读取。
+        for index in range(count):
+            revision = store.add_model(AddModel(
+                expected_revision=revision, model_id=f"picker-model-{index:04d}",
+                connection_id=f"picker-{index % 5}", kind="chat", model=f"picker/model-{index:04d}",
+                capabilities=ModelCapabilities(
+                    context_window=128000 if index % 3 else 1000000, max_output_tokens=8192,
+                    input_modalities=("text", "image") if index % 2 else ("text",),
+                    supports_tool_calls=True, supports_parallel_tool_calls=True,
+                    supported_reasoning_efforts=("low", "medium", "high")),
+                capability_sources=CapabilitySources(
+                    context_window="user", max_output_tokens="user", input_modalities="user",
+                    tool_calls="user", parallel_tool_calls="user", reasoning_efforts="user"),
+                default_reasoning_effort="medium"))
+        store.set_default(SetDefaultModel(revision, "default", "picker-model-0000"))
+    finally:
+        store.close()
 
 
 class _ChatReadyDelay:
@@ -187,6 +244,11 @@ if __name__ == "__main__":
                         help="额外灌入的目录会话数(每会话 1 条消息,默认不灌)")
     parser.add_argument("--chat-ready-delay-ms", type=int, default=0,
                         help="模拟冷启动就绪窗口:该毫秒数内 /api/shell/state 回报 chatReady=false(默认 0)")
+    parser.add_argument("--picker-models", type=int, default=0,
+                        help="为模型选择器写入固定目录；只测 UI，不调用模型（默认 0）")
     args = parser.parse_args()
+    if args.picker_models < 0:
+        parser.error("--picker-models 不能为负数")
     args_ready_delay = args.chat_ready_delay_ms
-    asyncio.run(run(args.state.resolve(), args.port, args.switch_session_messages, args.sessions, args_ready_delay))
+    asyncio.run(run(args.state.resolve(), args.port, args.switch_session_messages, args.sessions,
+                    args_ready_delay, args.picker_models))

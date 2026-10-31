@@ -440,7 +440,8 @@ export function ModelCapsulePicker({
         <span className="model-picker__name">{selectionLabel}</span>
         <ChevronDown size={11} aria-hidden="true" />
       </button>
-      {open ? (
+      {/* 先确定位置再挂列表，避免首次测量触发整份列表布局，随后写入定位又重算一次。 */}
+      {open && panelStyle ? (
         <div className="model-picker__panel" role="dialog" aria-label="选择模型" style={panelStyle}>
           <ModelPickerBody runtimes={runtimes} selectedId={selectedRuntimeId} onChoose={choose}
             follow={{ label: "跟随默认模型", detail: `${defaultModel.model} · ${defaultModel.sourceName}` }} />
@@ -485,7 +486,7 @@ export function ModelEffortAction({ runtime, effort, explicit, disabled, onChang
         <Sparkles size={14} aria-hidden="true" />
         {visibleEffort ? <span className="model-effort__tag">{EFFORT_LABELS[visibleEffort] || visibleEffort}</span> : null}
       </button>
-      {open ? (
+      {open && panelStyle ? (
         <div
           className="model-effort__panel"
           role="dialog"
