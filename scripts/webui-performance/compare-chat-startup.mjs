@@ -1,9 +1,10 @@
 /** 交错切换真实聊天制品，按相邻冷/热样本比较，降低宿主负载漂移的影响。 */
 import assert from "node:assert/strict";
 import { spawnSync, execFileSync } from "node:child_process";
+import { createHash } from "node:crypto";
 import { cpSync, existsSync, mkdirSync, readFileSync, readdirSync, realpathSync, utimesSync, writeFileSync } from "node:fs";
 import { loadavg } from "node:os";
-import { basename, dirname, resolve, sep } from "node:path";
+import { basename, dirname, relative, resolve, sep } from "node:path";
 import { parseArgs } from "node:util";
 
 const { values } = parseArgs({ options: {
@@ -183,7 +184,7 @@ const recovery = resolve(output, "starting-chat");
 cpSync(target, recovery, { recursive: true });
 const report = { plannedSamples: runs * profiles.length * 4, complete: false, builds, target,
   affinity: process.platform === "linux" ? readFileSync("/proc/self/status", "utf8").match(/^Cpus_allowed_list:.*$/mu)?.[0] : null,
-  pairs: [], summary: {} };
+  pairs: [], summary: {}, servedBuilds: {} };
 const save = () => writeFileSync(resolve(output, "report.json"), JSON.stringify(report, null, 2));
 const reports = new Map(), artifacts = {}, rows = [];
 let frozen;
@@ -191,16 +192,42 @@ let frozen;
 function copyBuild(source) {
   // 每次替换资产前重新核对归属：等待、采样与上一轮之间监听关系都可能变化。
   assertListenerOwned(`替换前 ${source}`);
-  // 基准会统一 mtime；同大小的版本号和脚本仍可能内容不同，必须按内容判断是否替换。
+  // 制品可能同大小、同 mtime 而内容不同，复制必须按内容判断是否替换。
   execFileSync("rsync", ["-a", "--checksum", "--delete", `${source}/`, `${target}/`]);
   function normalize(directory) {
     for (const entry of readdirSync(directory, { withFileTypes: true })) {
       const path = resolve(directory, entry.name);
       if (entry.isDirectory()) normalize(path);
-      else utimesSync(path, 1767225600, 1767225600);
+      else {
+        // gzip 缓存按路径、mtime、大小识别文件；不同内容不能再共用同一个固定时间。
+        // 保持足够旧的时间，避免刚构建资产的启发式重验证干扰浏览器冷/热比较。
+        const digest = createHash("sha256").update(readFileSync(path)).digest("hex");
+        const timestamp = 1767225600 + Number.parseInt(digest.slice(0, 10), 16) / 1_000_000;
+        utimesSync(path, timestamp, timestamp);
+      }
     }
   }
   normalize(target);
+}
+
+/** 核对 HTTP 解压后的实际字节，不能只证明磁盘副本或版本号正确。 */
+async function verifyServedBuild(source) {
+  const files = [];
+  async function visit(directory) {
+    for (const entry of readdirSync(directory, { withFileTypes: true }).sort((a, b) => a.name.localeCompare(b.name))) {
+      const path = resolve(directory, entry.name);
+      if (entry.isDirectory()) { await visit(path); continue; }
+      const name = relative(source, path).split(sep).join("/");
+      const url = new URL(`/assets/${name.split("/").map(encodeURIComponent).join("/")}`, origin);
+      const response = await fetch(url, { headers: { "Accept-Encoding": "gzip" }, redirect: "error", signal: AbortSignal.timeout(30_000) });
+      assert.equal(response.status, 200, `资产未送达：${name}`);
+      const body = Buffer.from(await response.arrayBuffer());
+      assert.ok(body.equals(readFileSync(path)), `HTTP 资产与冻结构建不符：${name}`);
+      files.push([name, createHash("sha256").update(body).digest("hex")]);
+    }
+  }
+  await visit(source);
+  return { files: files.length, sha256: createHash("sha256").update(JSON.stringify(files)).digest("hex") };
 }
 
 try {
@@ -213,6 +240,10 @@ try {
       report.pairs.push(pair);
       for (const kind of order) {
         copyBuild(builds[kind]);
+        const served = await verifyServedBuild(builds[kind]);
+        if (!report.servedBuilds[kind]) report.servedBuilds[kind] = served;
+        else assert.deepEqual(served, report.servedBuilds[kind], "HTTP 制品在采样期间变化");
+        save();
         const directory = resolve(output, `${run}-${profile}-${kind}`);
         const beforeLoad = loadavg();
         const child = spawnSync(process.execPath, ["scripts/webui-performance/measure-startup.mjs",
@@ -263,5 +294,12 @@ try {
   if (rows.some(row => !row.success)) process.exitCode = 1;
 } finally {
   // 不覆盖正式目录；恢复同样按内容比较，避免同大小、同 mtime 的候选残留。
-  execFileSync("rsync", ["-a", "--checksum", "--delete", `${recovery}/`, `${target}/`]);
+  try {
+    execFileSync("rsync", ["-a", "--checksum", "--delete", `${recovery}/`, `${target}/`]);
+    report.restoredBuild = await verifyServedBuild(recovery);
+  } catch (error) {
+    report.complete = false;
+    report.restoreError = String(error);
+    throw error;
+  } finally { save(); }
 }
