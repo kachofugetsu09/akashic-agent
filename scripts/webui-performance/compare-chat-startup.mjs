@@ -191,7 +191,8 @@ let frozen;
 function copyBuild(source) {
   // 每次替换资产前重新核对归属：等待、采样与上一轮之间监听关系都可能变化。
   assertListenerOwned(`替换前 ${source}`);
-  execFileSync("rsync", ["-a", "--delete", `${source}/`, `${target}/`]);
+  // 基准会统一 mtime；同大小的版本号和脚本仍可能内容不同，必须按内容判断是否替换。
+  execFileSync("rsync", ["-a", "--checksum", "--delete", `${source}/`, `${target}/`]);
   function normalize(directory) {
     for (const entry of readdirSync(directory, { withFileTypes: true })) {
       const path = resolve(directory, entry.name);
@@ -261,6 +262,6 @@ try {
   console.log(JSON.stringify(report.summary, null, 2));
   if (rows.some(row => !row.success)) process.exitCode = 1;
 } finally {
-  // 不覆盖正式目录；仅恢复本次隔离服务进入实验前的构建。
-  execFileSync("rsync", ["-a", "--delete", `${recovery}/`, `${target}/`]);
+  // 不覆盖正式目录；恢复同样按内容比较，避免同大小、同 mtime 的候选残留。
+  execFileSync("rsync", ["-a", "--checksum", "--delete", `${recovery}/`, `${target}/`]);
 }
