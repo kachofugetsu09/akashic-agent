@@ -22,7 +22,8 @@ def message_digest(workspace: Path) -> str:
     return hashlib.sha256(json.dumps(rows, ensure_ascii=False).encode()).hexdigest()
 
 
-async def run(state: Path, port: int, switch_messages: int = 0, sessions: int = 0, chat_ready_delay_ms: int = 0) -> None:
+async def run(state: Path, port: int, switch_messages: int = 0, sessions: int = 0, chat_ready_delay_ms: int = 0,
+              message_interactions: bool = False) -> None:
     """创建固定数据后启动正式应用和 Web Shell，退出时核对历史。"""
     # 1. 只接受新目录；所有配置、插件状态和消息都属于本次测试。
     state.mkdir(parents=True, exist_ok=False)
@@ -109,6 +110,25 @@ async def run(state: Path, port: int, switch_messages: int = 0, sessions: int = 
                 log.writer(key, author="user", source="benchmark",
                            body_types=(type(Input((part,))),), content={"text": check_text}).append(
                                f"catalog-{index:05d}", Input((part,)))
+        if message_interactions:
+            # 独立原文在启动前固定；浏览器必须核对复制和回填全文，不能只看成功图标。
+            long_input = "消息交互基准：全文不能丢失。\n" + "\n".join(
+                f"第 {index:03d} 行：这是一段完整的长消息，用于检查展开收起与编辑回填。"
+                for index in range(80)
+            )
+            long_output = "## 消息操作验收\n\n" + "\n\n".join(
+                f"第 {index:03d} 段：保留 **格式** 与 `inline_{index}`，用于引用和复制核对。"
+                for index in range(30)
+            )
+            for message_id, author, body in (
+                ("interaction-long-input", "user", Input((ContentPart("text", long_input),))),
+                ("interaction-long-output", "assistant", Output((ContentPart("text", long_output),), "complete")),
+            ):
+                log.writer("akashic:switch-benchmark", author=author, source="benchmark",
+                           body_types=(type(body),), content={"text": check_text}).append(message_id, body)
+            (state / "message-oracle.json").write_text(json.dumps({
+                "interaction-long-input": long_input, "interaction-long-output": long_output,
+            }, ensure_ascii=False))
     finally:
         log.close()
     before = message_digest(workspace)
@@ -185,8 +205,13 @@ if __name__ == "__main__":
                         help="额外灌入 akashic:switch-benchmark 长会话的消息数(默认不灌)")
     parser.add_argument("--sessions", type=int, default=0,
                         help="额外灌入的目录会话数(每会话 1 条消息,默认不灌)")
+    parser.add_argument("--message-interactions", action="store_true",
+                        help="在切换会话末尾追加固定长消息，用于折叠、引用、编辑和复制基准")
     parser.add_argument("--chat-ready-delay-ms", type=int, default=0,
                         help="模拟冷启动就绪窗口:该毫秒数内 /api/shell/state 回报 chatReady=false(默认 0)")
     args = parser.parse_args()
+    if args.message_interactions and args.switch_session_messages <= 0:
+        parser.error("--message-interactions 需要正数 --switch-session-messages")
     args_ready_delay = args.chat_ready_delay_ms
-    asyncio.run(run(args.state.resolve(), args.port, args.switch_session_messages, args.sessions, args_ready_delay))
+    asyncio.run(run(args.state.resolve(), args.port, args.switch_session_messages, args.sessions,
+                    args_ready_delay, args.message_interactions))
