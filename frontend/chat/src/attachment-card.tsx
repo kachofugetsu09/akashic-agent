@@ -213,7 +213,7 @@ export interface TextFacts {
   preview: string;
 }
 
-// 只读开头 2MB：再大的日志也只为数行数与预览，不把整份读进内存；超出部分不计行数。
+// 只解码开头 2MB：请求仍接收完整 Blob；超出上限不计行数。
 const TEXT_READ_LIMIT = 2 * 1024 * 1024;
 const factsCache = new Map<string, Promise<TextFacts | null>>();
 
@@ -231,10 +231,14 @@ async function readText(url: string, limit = TEXT_READ_LIMIT): Promise<{ text: s
   return { text: await blob.slice(0, limit).text(), complete: blob.size <= limit };
 }
 
-function loadFacts(url: string): Promise<TextFacts | null> {
+function loadFacts(url: string, blob?: Blob): Promise<TextFacts | null> {
   let pending = factsCache.get(url);
   if (!pending) {
-    pending = readText(url).then(({ text, complete }) => complete ? { lines: countLines(text), preview: text.slice(0, 300) } : null,
+    // 预览已经读取过附件，统计复用同一响应，避免再等一次网络请求。
+    const content = blob
+      ? blob.slice(0, TEXT_READ_LIMIT).text().then((text) => ({ text, complete: blob.size <= TEXT_READ_LIMIT }))
+      : readText(url);
+    pending = content.then(({ text, complete }) => complete ? { lines: countLines(text), preview: text.slice(0, 300) } : null,
       () => null);
     factsCache.set(url, pending);
   }
@@ -285,7 +289,7 @@ async function readPreview(target: PreviewTarget): Promise<PreviewText> {
   if (!bytesCut && from > prefix.length && lines.at(-1) === "") lines.pop();
   const truncated = bytesCut || lines.length > PREVIEW_LINE_LIMIT;
   const delimiter = /\.csv$/iu.test(target.name) ? "," : /\.tsv$/iu.test(target.name) ? "\t" : "";
-  const totalLines = (await loadFacts(target.url))?.lines;
+  const totalLines = (await loadFacts(target.url, blob))?.lines;
   return { lines: lines.slice(0, PREVIEW_LINE_LIMIT), truncated, size: blob.size, full: bytesCut ? undefined : prefix, totalLines,
     table: delimiter ? readTable(prefix, delimiter, !bytesCut) : undefined };
 }
