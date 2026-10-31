@@ -93,6 +93,8 @@ class SiteTab {
   // 每个会话各记发布过的网页（按路径）与当前那一个；回到会话或刷新后接着显示。
   setSession(session: string | null, force = false): void {
     if (session === this.session && !force) return;
+    // 空会话也要使旧读取失效，避免它完成后改写新会话的视图或记录。
+    this.ticket += 1;
     this.session = session;
     this.state = session ? load(() => window.sessionStorage, STATE_KEY + session, { sites: [], current: null }) : { sites: [], current: null };
     const entry = this.state.sites.find((site) => site.path === this.state.current);
