@@ -99,7 +99,16 @@ export function NavigationRowMenu({ title, actions = [], className, children, on
       {actions.length ? (armed ? <DropdownMenu open={open} onOpenChange={setMenuOpen} modal={false}>
         <DropdownMenuTrigger asChild>{trigger}</DropdownMenuTrigger>
         <DropdownMenuContent className="navigation-row-menu" align="end" sideOffset={4} collisionPadding={12}
-          aria-label={`${title} 的操作`} onCloseAutoFocus={(event) => {
+          aria-label={`${title} 的操作`}
+          onPointerDownOutside={(event) => {
+            // 关闭动画期间原按钮仍能重新打开；同次点击不能再被旧菜单当作外部点击关闭。
+            const pointer = event.detail.originalEvent;
+            if (pointer.button === 0 && !pointer.ctrlKey
+              && rowRef.current?.querySelector(".navigation-menu-trigger")?.contains(event.target as Node)) {
+              event.preventDefault();
+            }
+          }}
+          onCloseAutoFocus={(event) => {
             event.preventDefault();
             held.current = false;
             // 菜单动作可能把行换成输入框（重命名）：焦点交给它，而不是"…"按钮——输入框一失焦就会按原标题提交并退出编辑。
