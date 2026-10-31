@@ -335,6 +335,7 @@ export interface DesktopSidebarProps {
   onRenameSession?: (sessionId: string, title: string) => Promise<void>;
   /** 最近一次删除的撤销窗口；null 时不在导航区展示提示行。 */
   deletedNotice?: { key: string; title: string } | null;
+  restorePending?: boolean;
   onRestoreSession?: (sessionId: string) => void;
   onDismissDeletedNotice?: () => void;
   /** 宽屏侧栏的宽度控制；抽屉（compact）不带此 prop，因此不渲染拖拽柄。 */
@@ -365,6 +366,7 @@ export const DesktopSidebar = memo(function DesktopSidebar({
   onDeleteSession,
   onRenameSession,
   deletedNotice,
+  restorePending = false,
   onRestoreSession,
   onDismissDeletedNotice,
   onOpenPanels,
@@ -693,7 +695,9 @@ export const DesktopSidebar = memo(function DesktopSidebar({
       </div> : null}
       {deletedNotice ? <div className="session-delete-notice" role="status">
         <span title={deletedNotice.title}>已删除「{deletedNotice.title}」</span>
-        <button type="button" onClick={() => onRestoreSession?.(deletedNotice.key)}>撤销</button>
+        <button type="button" disabled={restorePending} onClick={() => onRestoreSession?.(deletedNotice.key)}>
+          {restorePending ? "正在恢复…" : "撤销"}
+        </button>
         <button type="button" className="session-delete-notice__dismiss" aria-label="关闭提示" onClick={onDismissDeletedNotice}>
           <X size={14} aria-hidden="true" />
         </button>

@@ -244,6 +244,7 @@ export function useDesktopChatController() {
   const [historyHasMore, setHistoryHasMore] = useState(false);
   const [activeSessionDeleted, setActiveSessionDeleted] = useState(false);
   const [deletedNotice, setDeletedNotice] = useState<{ key: string; title: string } | null>(null);
+  const [restoringSessionIds, setRestoringSessionIds] = useState<ReadonlySet<string>>(() => new Set());
   const deletedNoticeTimerRef = useRef(0);
   const [historyLoadingOlder, setHistoryLoadingOlder] = useState(false);
   const [historyLoading, setHistoryLoading] = useState(false);
@@ -1259,11 +1260,19 @@ export function useDesktopChatController() {
   }, [loadSessionsSafely, navigationPins, reportError, startNewChat]);
 
   const restoreSession = useCallback(async (sessionId: string) => {
+    if (restoringSessionIds.has(sessionId)) return;
+    setRestoringSessionIds((current) => new Set([...current, sessionId]));
     try {
       await setChatSessionDeleted(sessionId, false);
     } catch (error) {
       reportError(error);
       return;
+    } finally {
+      setRestoringSessionIds((current) => {
+        const remaining = new Set(current);
+        remaining.delete(sessionId);
+        return remaining;
+      });
     }
     setDeletedNotice((notice) => {
       if (notice?.key === sessionId) window.clearTimeout(deletedNoticeTimerRef.current);
@@ -1272,7 +1281,7 @@ export function useDesktopChatController() {
     void loadSessionsSafely();
     void navigationPins.reload();
     if (activeSessionRef.current === sessionId) setActiveSessionDeleted(false);
-  }, [loadSessionsSafely, navigationPins, reportError]);
+  }, [loadSessionsSafely, navigationPins, reportError, restoringSessionIds]);
 
   const dismissDeletedNotice = useCallback(() => {
     window.clearTimeout(deletedNoticeTimerRef.current);
@@ -1360,7 +1369,7 @@ export function useDesktopChatController() {
     canSend, sendProblem, draftKey: activeSessionId || `new:${newChatGroup ? groupKey(newChatGroup) : ""}`,
     historyHasMore, historyLoading, historyLoadingOlder, loadOlderMessages, sessionRequested: requestedSessionId !== "",
     historyFailure: activeSessionId !== "" && historyFailure?.sessionId === activeSessionId ? historyFailure.reason : null, retryHistory,
-    activeSessionDeleted, deletedNotice, deleteSession, restoreSession, dismissDeletedNotice, renameSession,
+    activeSessionDeleted, deletedNotice, restoringSessionIds, deleteSession, restoreSession, dismissDeletedNotice, renameSession,
     // 自动重连是会自己恢复的临时状态，单独给视图一个安静的状态行；重连失败等才走错误行。
     reconnecting: !error && connectionError === RECONNECTING_NOTICE,
     connectionLost: connectionError !== "", pageOutdated,
