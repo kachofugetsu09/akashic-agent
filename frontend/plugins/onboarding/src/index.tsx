@@ -198,11 +198,14 @@ function Onboarding({data, renderRoute, exit, surfaceHost}: {
     </Surface>, surfaceHost);
 }
 
-// 换步时正文从可见态出发做一次短位移；样式表不能声明 @keyframes，动效走 Web Animations。
+// 换步沿用展开时长；样式表不能声明 @keyframes，短位移动效走 Web Animations。
 function enterStep(element: HTMLDivElement | null): void {
   if (!element || window.matchMedia("(prefers-reduced-motion: reduce)").matches) return;
+  const time = getComputedStyle(element).getPropertyValue("--ak-sys-duration-expand").trim();
+  // CSS 构建会把 200ms 压成 .2s；Web Animations 的数字时长只接受毫秒。
+  const duration = Number.parseFloat(time) * (time.endsWith("ms") ? 1 : 1000);
   element.animate([{opacity: 0.001, transform: "translateY(8px)"}, {opacity: 1, transform: "none"}],
-    {duration: 360, easing: "cubic-bezier(0.05, 0.7, 0.1, 1)"});
+    {duration, easing: "cubic-bezier(0.05, 0.7, 0.1, 1)"});
 }
 
 // 整屏图层：原生模态对话框，压在设置工作区之上；Esc 等同“稍后再说”。
