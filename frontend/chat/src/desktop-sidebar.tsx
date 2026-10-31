@@ -8,7 +8,7 @@ import {
   SunMoon,
   X,
 } from "lucide-react";
-import { memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type RefObject } from "react";
+import { memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type RefObject, type ReactNode } from "react";
 import {
   DropdownMenu, DropdownMenuContent, DropdownMenuRadioGroup,
   DropdownMenuRadioItem, DropdownMenuTrigger,
@@ -336,6 +336,8 @@ export interface DesktopSidebarProps {
   /** 最近一次删除的撤销窗口；null 时不在导航区展示提示行。 */
   deletedNotice?: { key: string; title: string } | null;
   restorePending?: boolean;
+  /** 抽屉遮住聊天区时，在导航内显示同一请求错误。 */
+  errorNotice?: ReactNode;
   onRestoreSession?: (sessionId: string) => void;
   onDismissDeletedNotice?: () => void;
   /** 宽屏侧栏的宽度控制；抽屉（compact）不带此 prop，因此不渲染拖拽柄。 */
@@ -367,6 +369,7 @@ export const DesktopSidebar = memo(function DesktopSidebar({
   onRenameSession,
   deletedNotice,
   restorePending = false,
+  errorNotice,
   onRestoreSession,
   onDismissDeletedNotice,
   onOpenPanels,
@@ -686,6 +689,7 @@ export const DesktopSidebar = memo(function DesktopSidebar({
           </button> : null}
         </label>
       </div>
+      {errorNotice ? <div className="chat-sidebar__error">{errorNotice}</div> : null}
 
       <div className="chat-sidebar__navigation" data-searching={searching || undefined} onKeyDown={(event) => moveSessionFocus(event, completeRowsForEnd)}>
       {searching && !hasMatches ? <p className="navigation-search-empty" role="status">没有匹配的会话或分组</p> : null}

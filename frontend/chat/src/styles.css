@@ -2218,6 +2218,26 @@ form.composer:focus-within [data-slot="input-group"] {
   line-height: 1.4;
 }
 
+.chat-sidebar__error {
+  position: sticky;
+  top: 0;
+  z-index: 2;
+  flex-shrink: 0;
+  background: var(--ak-paper-canvas);
+  max-height: 25dvh;
+  overflow: auto;
+}
+.chat-sidebar__error .error-line {
+  margin: 10px calc(var(--chat-rail-inline) + 10px);
+}
+.chat-sidebar__error .error-line > span {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+.chat-sidebar__error .ak-material-button {
+  flex-shrink: 0;
+}
+
 .error-line .ak-material-button {
   --md-filled-tonal-button-container-color: var(--md-sys-color-error-container);
   --md-filled-tonal-button-label-text-color: var(--md-sys-color-on-error-container);
@@ -2320,6 +2340,8 @@ form.composer:focus-within [data-slot="input-group"] {
   }
 
   .compact-navigation-dialog .chat-sidebar {
+    /* clip 保留裁切，但不截断错误行对抽屉滚动区的吸顶。 */
+    overflow: clip;
     display: flex;
     width: 100%;
     height: 100%;
