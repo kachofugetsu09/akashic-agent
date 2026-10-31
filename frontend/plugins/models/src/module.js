@@ -38,8 +38,9 @@ export function activate(ctx) {
   // 目录归模块所有：宿主空闲时预热，设置页挂载先画上次的目录，再在后台核对。
   const catalog = ctx.data.resource("catalog", async (signal) =>
     readJsonResponse(await ctx.http.request("/api/dashboard/models/catalog", {signal})), {warm: true});
+  const usage = usageSection(ctx, catalog);
   return ctx.ui.inject("shell.settings.v1", (mount) => {
-    const releaseUsage = mount.register(usageSection(ctx, catalog));
+    const releaseUsage = mount.register(usage);
     const releaseModels = registerModels(ctx, mount, catalog);
     return () => { releaseModels(); releaseUsage(); };
   });

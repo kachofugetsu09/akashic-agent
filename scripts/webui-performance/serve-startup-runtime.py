@@ -22,7 +22,46 @@ def message_digest(workspace: Path) -> str:
     return hashlib.sha256(json.dumps(rows, ensure_ascii=False).encode()).hexdigest()
 
 
-async def run(state: Path, port: int, switch_messages: int = 0, sessions: int = 0, chat_ready_delay_ms: int = 0) -> None:
+def seed_usage(workspace: Path, count: int) -> None:
+    """在新 fixture 中写入明确标为 benchmark 的用量记录，不调用外部模型。"""
+    from plugins.content.plugin import check_text
+    from plugins.ledger.contract import ContentPart, Input, Output, SessionAttributes
+    from plugins.ledger.log import MessageLog
+    from plugins.models.contract import BoundModelDescriptor, CapabilitySources, ModelCapabilities, ModelUsage
+    from plugins.models.projection import check_facts
+    from plugins.models.store import ModelsStore
+
+    # 1. 通过各自的写入 owner 建立固定模型记录与闭合 Turn，供真实 HTTP 读取。
+    store = ModelsStore(workspace / "model-registry.sqlite3", workspace / "runtime/model-backups")
+    store.initialize()
+    log = MessageLog(workspace / "sessions.db")
+    try:
+        key = "akashic:usage-benchmark"
+        log.ensure_session(key, SessionAttributes(learning="excluded"))
+        for index in range(count):
+            descriptor = BoundModelDescriptor(
+                binding_id="benchmark", plugin_snapshot_id="benchmark", model_revision=1,
+                model_id=f"benchmark-{index % 12}", connection_id="benchmark", driver_id="benchmark",
+                driver_contract_version="1", auth_identity="benchmark", model=f"benchmark-{index % 12}",
+                role="default", reasoning_effort=None, capabilities=ModelCapabilities(context_window=32768),
+                capability_sources=CapabilitySources(), capability_digest="benchmark",
+            )
+            call_id = store.resume_call(descriptor, f"benchmark-{index}", request_key=None, owner_id=None, max_attempts=1)
+            store.finish_call(call_id, usage=ModelUsage(input_tokens=1000 + index * 10, cached_input_tokens=300,
+                              output_tokens=50, coverage="exact", covered_request_count=1), failure=None)
+            log.writer(key, author="user", source="benchmark", body_types=(Input,), content={"text": check_text}).append(
+                f"usage-input-{index}", Input((ContentPart("text", f"固定用量样本 {index}"),)))
+            facts = ContentPart("model.facts", {"call_record_id": call_id, "tool_ids": {}, "thinking": None, "continuation": None})
+            log.writer(key, author="assistant", source="benchmark", body_types=(Output,),
+                       content={"text": check_text, "model.facts": check_facts}).append(
+                f"usage-output-{index}", Output((ContentPart("text", "固定用量结果"), facts), "complete"))
+    finally:
+        log.close()
+        store.close()
+
+
+async def run(state: Path, port: int, switch_messages: int = 0, sessions: int = 0, chat_ready_delay_ms: int = 0,
+              usage_records: int = 0) -> None:
     """创建固定数据后启动正式应用和 Web Shell，退出时核对历史。"""
     # 1. 只接受新目录；所有配置、插件状态和消息都属于本次测试。
     state.mkdir(parents=True, exist_ok=False)
@@ -111,6 +150,8 @@ async def run(state: Path, port: int, switch_messages: int = 0, sessions: int = 
                                f"catalog-{index:05d}", Input((part,)))
     finally:
         log.close()
+    if usage_records:
+        seed_usage(workspace, usage_records)
     before = message_digest(workspace)
 
     # 2. 不接模型或外部账号；真实 HTTP、插件目录、历史 API 和 WebSocket 仍完整运行。
@@ -187,6 +228,9 @@ if __name__ == "__main__":
                         help="额外灌入的目录会话数(每会话 1 条消息,默认不灌)")
     parser.add_argument("--chat-ready-delay-ms", type=int, default=0,
                         help="模拟冷启动就绪窗口:该毫秒数内 /api/shell/state 回报 chatReady=false(默认 0)")
+    parser.add_argument("--usage-records", type=int, default=0,
+                        help="灌入固定用量样本，不连接外部模型(默认 0)")
     args = parser.parse_args()
     args_ready_delay = args.chat_ready_delay_ms
-    asyncio.run(run(args.state.resolve(), args.port, args.switch_session_messages, args.sessions, args_ready_delay))
+    asyncio.run(run(args.state.resolve(), args.port, args.switch_session_messages, args.sessions, args_ready_delay,
+                    args.usage_records))
