@@ -475,11 +475,16 @@ function renderChanges(ctx: WebHostContextV1, host: HTMLElement, rawView: unknow
     throw new Error("改动标签缺少 conversation.tools.v2 view");
   const tab = new ChangesTab(ctx, view, view.session);
   host.replaceChildren(tab.root);
+  let subscribing = true;
   const stops = [
     view.onSessionChange((session) => tab.setSession(session)),
-    view.onActiveChange((active) => tab.setActive(active)),
+    view.onActiveChange((active) => {
+      // 初始会话通知已发起读取；这里只处理订阅完成后的可见性变化。
+      if (!subscribing) tab.setActive(active);
+    }),
     view.onIntent((intent) => intent.name === OPEN_INTENT || intent.name === FILE_INTENT ? tab.open(intent) : "invalid"),
   ];
+  subscribing = false;
   return () => {
     for (const stop of stops) stop();
     tab.dispose();
