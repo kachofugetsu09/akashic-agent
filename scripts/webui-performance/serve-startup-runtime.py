@@ -126,7 +126,7 @@ async def apply(ctx: Context) -> None:
 async def run(state: Path, port: int, switch_messages: int = 0, sessions: int = 0,
               chat_ready_delay_ms: int = 0, picker_models: int = 0,
               declared_settings: bool = False, reading_markdown: Path | None = None,
-              usage_records: int = 0) -> None:
+              usage_records: int = 0, message_interactions: bool = False) -> None:
     """创建固定数据后启动正式应用和 Web Shell，退出时核对历史。"""
     # 1. 只接受新目录；所有配置、插件状态和消息都属于本次测试。
     state.mkdir(parents=True, exist_ok=False)
@@ -358,8 +358,13 @@ if __name__ == "__main__":
                         help="在独立阅读会话中保存一份 Markdown 样本，用于真实渲染验收")
     parser.add_argument("--usage-records", type=int, default=0,
                         help="灌入固定用量样本，不连接外部模型(默认 0)")
+    parser.add_argument("--message-interactions", action="store_true",
+                        help="给长会话追加消息操作目标（需要 --switch-session-messages）")
     args = parser.parse_args()
+    if args.message_interactions and args.switch_session_messages <= 0:
+        parser.error("--message-interactions 需要正数 --switch-session-messages")
     args_ready_delay = args.chat_ready_delay_ms
     asyncio.run(run(args.state.resolve(), args.port, args.switch_session_messages, args.sessions,
                     args_ready_delay, args.picker_models, args.declared_settings,
-                    args.reading_markdown, args.usage_records))
+                    args.reading_markdown, args.usage_records,
+                    args.message_interactions))
