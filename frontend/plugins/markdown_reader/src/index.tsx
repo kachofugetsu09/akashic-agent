@@ -345,7 +345,16 @@ class Reader {
   private render(): void {
     if (this.text === null) return;
     if (this.source) {
-      this.article.replaceChildren(el("pre", this.text, "md-source"));
+      const source = el("pre", "", "md-source");
+      // 保留原始换行并分开段落，减少无障碍序列化成本；连续空行只产生一个节点。
+      let start = 0;
+      for (const separator of this.text.matchAll(/(?:\r?\n){2,}/g)) {
+        const end = separator.index + separator[0].length;
+        source.append(document.createTextNode(this.text.slice(start, end)));
+        start = end;
+      }
+      if (start < this.text.length) source.append(document.createTextNode(this.text.slice(start)));
+      this.article.replaceChildren(source);
       return;
     }
     // micromark escapes raw HTML and rejects dangerous protocols by default. Never enable dangerous HTML.
