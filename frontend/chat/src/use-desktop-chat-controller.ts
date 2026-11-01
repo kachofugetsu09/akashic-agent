@@ -667,7 +667,15 @@ export function useDesktopChatController() {
                     if (frame.type === "session.following") {
                       setTimelineRefresh((revision) => revision + 1);
                     } else if (frame.type === "messages.appended") {
-                      if (frame.after_seq !== followAfterRef.current) throw new Error("实时消息游标不连续，请重新连接");
+                      // 历史重载、切换会话和重连都会让同一条会话的旧帧晚到：落后游标的帧已经读过了，
+                      // 直接丢弃；领先说明中间漏了消息，按当前游标重新订阅补齐，不把用户丢进报错。
+                      const cursor = followAfterRef.current;
+                      if (cursor === null || frame.after_seq < cursor) return;
+                      if (frame.after_seq > cursor) {
+                        console.warn("[chat-ui] follow cursor gap", { after: frame.after_seq, cursor });
+                        followSession(current, frame.session_id, cursor);
+                        return;
+                      }
                       const merged = mergeTimelineMessages(timelineRef.current, frame.items);
                       setTimelineMessages(merged);
                       const cached = tailCacheRef.current.get(frame.session_id);
