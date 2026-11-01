@@ -231,6 +231,7 @@ export const ConversationSessionRow = memo(function ConversationSessionRow({ ses
   const [renaming, setRenaming] = useState(false);
   const [renameValue, setRenameValue] = useState("");
   const [renameBusy, setRenameBusy] = useState(false);
+  const [deleteBusy, setDeleteBusy] = useState(false);
   const armTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const renameInputRef = useRef<HTMLInputElement>(null);
   const renameCancelledRef = useRef(false);
@@ -270,6 +271,8 @@ export const ConversationSessionRow = memo(function ConversationSessionRow({ ses
     try {
       await onRename(session, title);
       setRenaming(false);
+    } catch {
+      // controller 已显示错误；保留输入内容，允许重试或放弃。
     } finally {
       renameInFlightRef.current = false;
       setRenameBusy(false);
@@ -291,11 +294,15 @@ export const ConversationSessionRow = memo(function ConversationSessionRow({ ses
     }, 3000);
   };
   const fire = async () => {
-    if (!onDelete) return;
+    if (!onDelete || deleteBusy) return;
     disarm();
+    setDeleteBusy(true);
     try {
       await onDelete(session);
+    } catch {
+      // controller 已显示错误；原会话行继续保留。
     } finally {
+      setDeleteBusy(false);
       setArmed(false);
     }
   };
@@ -309,6 +316,7 @@ export const ConversationSessionRow = memo(function ConversationSessionRow({ ses
   // 第二次选择才执行；菜单关闭或 3 秒未确认自动还原。行上不再有独立的删除方块。
   const deleteAction: NavigationRowAction[] = onDelete ? [{
     label: armed ? "确认删除" : "删除",
+    disabled: deleteBusy,
     danger: true,
     icon: <Trash2 size={18} aria-hidden="true" />,
     onSelect: (event) => {
@@ -349,6 +357,7 @@ export const ConversationSessionRow = memo(function ConversationSessionRow({ ses
           }}
           onBlur={() => void commitRename()}
         />
+        {renameBusy ? <span className="session-write-status" role="status">正在保存…</span> : null}
       </span>
       <small>{session.preview}</small>
     </span>
@@ -395,6 +404,7 @@ export const ConversationSessionRow = memo(function ConversationSessionRow({ ses
       <span className="conversation-session__copy">
         <span className="conversation-session__title">
           <strong><MarqueeText>{session.title}</MarqueeText></strong>
+          {deleteBusy ? <span className="session-write-status" role="status">正在删除…</span> : null}
         </span>
         <small><MarqueeText still>{session.preview}</MarqueeText></small>
       </span>

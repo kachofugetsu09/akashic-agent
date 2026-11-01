@@ -861,6 +861,14 @@ input {
 
 .session-restore-button:focus-visible { outline: 2px solid var(--ak-rule-focus); outline-offset: 2px; }
 
+/* 提交反馈与原内容并列，等真实回执后再改变成功状态。 */
+.session-write-status {
+  flex: 0 0 auto;
+  color: var(--ak-ink-secondary);
+  font-size: var(--chat-type-caption);
+  white-space: nowrap;
+}
+
 .pinned-navigation {
   display: grid;
   gap: 2px;

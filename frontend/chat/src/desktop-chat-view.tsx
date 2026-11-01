@@ -72,7 +72,7 @@ export function DesktopChatView({ controller }: DesktopChatViewProps) {
     replyTarget, error, steers, steerMessage, withdrawSteer, reclaimSteers,
     canSend, sendProblem, draftKey,
     historyHasMore, historyLoading, historyLoadingOlder, loadOlderMessages, sessionRequested,
-    activeSessionDeleted, deletedNotice, deleteSession, restoreSession, dismissDeletedNotice, renameSession,
+    activeSessionDeleted, deletedNotice, restoringSessionIds, deleteSession, restoreSession, dismissDeletedNotice, renameSession,
     activateSession, prefetchSessionTail, startNewChat, handleReplyMessage, handleCopiedMessage,
     reportError, cancelReply, sendMessage, retryTurn, abandonTurn, stopTurn, retry,
     navigationGroups,
@@ -141,6 +141,7 @@ export function DesktopChatView({ controller }: DesktopChatViewProps) {
             onPrefetchSession={prefetchSessionTail}
             onCycleTheme={cycleTheme} onNewChat={startNewChat} rail={rail}
             onDeleteSession={deleteSession} deletedNotice={deletedNotice}
+            restorePending={deletedNotice !== null && restoringSessionIds.has(deletedNotice.key)}
             onRestoreSession={(key) => { void restoreSession(key); }} onDismissDeletedNotice={dismissDeletedNotice}
             onRenameSession={renameSession}
           />
@@ -156,6 +157,7 @@ export function DesktopChatView({ controller }: DesktopChatViewProps) {
             onPrefetchSession={prefetchSessionTail}
             onCycleTheme={cycleTheme} onNewChat={startNewChat}
             onDeleteSession={deleteSession} deletedNotice={deletedNotice}
+            restorePending={deletedNotice !== null && restoringSessionIds.has(deletedNotice.key)}
             onRestoreSession={(key) => { void restoreSession(key); }} onDismissDeletedNotice={dismissDeletedNotice}
             onRenameSession={renameSession}
           />
@@ -228,7 +230,10 @@ export function DesktopChatView({ controller }: DesktopChatViewProps) {
           {status === "uploading" ? <p className="reply-unavailable" role="status">正在上传附件…</p> : null}
           {activeSessionDeleted ? <p className="reply-unavailable" role="status">
             此会话已删除，内容只读保留。
-            <button type="button" className="session-restore-button" onClick={() => { void restoreSession(activeSessionId); }}>恢复会话</button>
+            <button type="button" className="session-restore-button" disabled={restoringSessionIds.has(activeSessionId)}
+              onClick={() => { void restoreSession(activeSessionId); }}>
+              {restoringSessionIds.has(activeSessionId) ? "正在恢复…" : "恢复会话"}
+            </button>
           </p> : null}
           {/* 输入框工具位的插件说明为什么现在不能发；处理入口在插件自己的工具里。 */}
           {chatReady && sendProblem ? <p className="chat-send-notice" id="chat-send-reason" role="status">{sendProblem}</p> : null}
@@ -459,6 +464,7 @@ function SessionHeadingTitle({ heading, value, onRename }: {
   onRename?: (title: string) => Promise<void>;
 }) {
   const [editing, setEditing] = useState(false);
+  const [busy, setBusy] = useState(false);
   const [draft, setDraft] = useState("");
   const inputRef = useRef<HTMLInputElement>(null);
   const cancelledRef = useRef(false);
@@ -482,6 +488,7 @@ function SessionHeadingTitle({ heading, value, onRename }: {
       return;
     }
     inFlightRef.current = true;
+    setBusy(true);
     try {
       await onRename(title);
       setEditing(false);
@@ -489,15 +496,17 @@ function SessionHeadingTitle({ heading, value, onRename }: {
       // 错误已由 controller 上报；编辑态保留，用户可再试或按 Esc 放弃。
     } finally {
       inFlightRef.current = false;
+      setBusy(false);
     }
   };
   if (!editing) return <h1 title={heading} onDoubleClick={start}><MarqueeText>{heading}</MarqueeText></h1>;
-  return <input
+  return <><input
     ref={inputRef}
     className="conversation-heading-input"
     value={draft}
     maxLength={200}
     aria-label="重命名会话"
+    readOnly={busy}
     onChange={(event) => setDraft(event.target.value)}
     onKeyDown={(event) => {
       // 输入法组合中的回车、Esc 属于输入法，不提交也不放弃编辑。
@@ -512,7 +521,7 @@ function SessionHeadingTitle({ heading, value, onRename }: {
       }
     }}
     onBlur={() => void commit()}
-  />;
+  />{busy ? <span className="session-write-status" role="status">正在保存…</span> : null}</>;
 }
 
 // 标题行插件只在会话里出现新的工具结果时重新读取；切到会话后随历史加载出现的结果算基线，不触发重读。
