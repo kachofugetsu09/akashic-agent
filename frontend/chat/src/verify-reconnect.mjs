@@ -116,6 +116,15 @@ async function waitForFrame(check) {
     frameWaiters.add(waiter);
   });
 }
+/** 轮询 Node 侧状态；页面时钟被接管，不能用 waitForTimeout 等帧。 */
+async function waitFor(check, message) {
+  const deadline = Date.now() + 10_000;
+  while (Date.now() < deadline) {
+    if (check()) return;
+    await new Promise(done => setTimeout(done, 50));
+  }
+  throw new Error(message);
+}
 async function closeAndAdvance(page) {
   assert.equal(sockets.size, 1, '出现多个活连接');
   const before = await page.evaluate(() => window.connectionEvents.filter(e => e.kind === 'close').length);
@@ -192,6 +201,38 @@ try {
       assert.deepEqual(control.errors, []);
       report.checks.push({ case: 'reconnect follows and sends stop', session_id: stop.session_id });
     } finally { await savePage(control.page, 'control'); await control.context.close(); }
+    // 5. 历史重载期间旧帧晚到：游标领先要按当前游标重订阅补齐，落后则丢弃，都不能打断会话。
+    const cursor = await openPage();
+    try {
+      await cursor.page.locator('.conversation-session').filter({ hasText: '重连后的停止验证' }).click();
+      await waitForFrame(frame => frame.type === 'session.follow' && frame.session_id === session
+        && frame.after_seq === 0 && frame.fixture_owner === connectionCount);
+      assert.equal(sockets.size, 1);
+      const follows = () => received.filter(frame => frame.type === 'session.follow'
+        && frame.session_id === session && frame.fixture_owner === connectionCount);
+      const before = follows().length;
+      const send = frame => [...sockets][0].send(JSON.stringify(frame));
+      // 领先游标的帧：旧实现会抛「实时消息游标不连续，请重新连接」。
+      send({ type: 'messages.appended', version: 2, session_id: session, after_seq: 5, through_seq: 6,
+        next_after_seq: 6, has_more: false, items: [{ ...input, id: 'gap-6', seq: 6 }] });
+      await waitFor(() => follows().length === before + 1, '领先游标未触发重新订阅');
+      assert.equal(follows().at(-1).after_seq, 0, '重新订阅应沿用本地游标');
+      assert.ok(!(await cursor.page.evaluate(() => document.body.innerText)).includes('游标不连续'));
+      // 重订阅之后服务端从本地游标重放，消息必须落进时间线。
+      send({ type: 'messages.appended', version: 2, session_id: session, after_seq: 0, through_seq: 1,
+        next_after_seq: 1, has_more: false, items: [{ ...input, id: 'resync-1', seq: 1,
+          body: { kind: 'input', parts: [{ kind: 'text', value: '游标补齐后的消息' }] } }] });
+      await cursor.page.waitForFunction(() => document.body.innerText.includes('游标补齐后的消息'));
+      // 落后游标的帧直接丢弃：同一页重发不能把游标拨回去，也不能重复渲染。
+      send({ type: 'messages.appended', version: 2, session_id: session, after_seq: 0, through_seq: 1,
+        next_after_seq: 1, has_more: false, items: [{ ...input, id: 'stale-1', seq: 1,
+          body: { kind: 'input', parts: [{ kind: 'text', value: '不应再次出现的旧帧' }] } }] });
+      await cursor.page.waitForTimeout(300);
+      const text = await cursor.page.evaluate(() => document.body.innerText);
+      assert.ok(!text.includes('不应再次出现的旧帧'), '落后游标的帧被重复应用');
+      assert.deepEqual(cursor.errors, []);
+      report.checks.push({ case: 'stale and ahead cursor frames recover', follows: follows().length });
+    } finally { await savePage(cursor.page, 'cursor'); await cursor.context.close(); }
   }
   assert.equal(received.filter(frame => frame.type === 'message.send').length, baseline ? 0 : 1);
   writeFileSync(root + '/report.json', JSON.stringify(report, null, 2));
