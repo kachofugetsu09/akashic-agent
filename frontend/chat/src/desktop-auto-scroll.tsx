@@ -72,13 +72,16 @@ export function DesktopAutoScroll({
     }
   }, [contentRef, escapedFromLock, isAtBottom, lastMessageRole, messages.length, scrollKey, scrollRef, status, scrollToBottom]);
 
-  // 必要 effect：换到别的会话时撤掉上一轮的留白；新会话发出首条消息才拿到 ID，那不算换会话。
+  // 必要 effect：换会话或提问已全部移除时撤掉留白；首条消息获配 ID 不算换会话。
   const roomSessionRef = useRef(sessionId);
   useLayoutEffect(() => {
     const previous = roomSessionRef.current;
     roomSessionRef.current = sessionId;
-    if (previous && previous !== sessionId && contentRef.current) contentRef.current.style.minHeight = "";
-  }, [contentRef, sessionId]);
+    const content = contentRef.current;
+    if (content?.style.minHeight && ((previous && previous !== sessionId) || !latestTurnStart(content))) {
+      content.style.minHeight = "";
+    }
+  }, [contentRef, sessionId, messages.length, timelineMessages.length, replyActivities.length]);
 
   // 必要 effect：阅读列宽度变了，提问跟着重新折行，按新位置重算留白
   useEffect(() => {

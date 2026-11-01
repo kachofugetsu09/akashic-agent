@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState, useSyncExternalStore } from "react";
 import { createRoot } from "react-dom/client";
 import type { WebHostContextV1, WebResource } from "@akashic/web-ui-v1";
-import { Configuration, request, Field, Check, ModelField, type EmbedProps, type FormProps } from "../../shared/src/configuration";
+import { Configuration, request, Field, Check, ModelField, type EmbedProps, type FormProps, type Status } from "../../shared/src/configuration";
 
 interface DeclaredField { name: string; label: string; kind: "text" | "lines" | "number" | "toggle" | "model" | "secret"; hint: string; }
 interface DeclaredForm { id: string; title: string; description: string; fields: DeclaredField[]; }
@@ -45,7 +45,7 @@ function renderField(field: DeclaredField, props: FormProps) {
 }
 
 // 宿主只接受激活时同步登记：登记一张固定卡片，打开时再读各插件声明的表单，每张表单各自保存。
-function DeclaredForms({ctx, embed, declared}: {ctx: WebHostContextV1; embed: EmbedProps; declared: WebResource<DeclaredForm[]>}) {
+function DeclaredForms({ctx, embed, declared, configs}: {ctx: WebHostContextV1; embed: EmbedProps; declared: WebResource<DeclaredForm[]>; configs: ReadonlyMap<string, WebResource<Status>>}) {
   const forms = useSyncExternalStore(declared.subscribe, () => declared.current ?? null);
   const failure = useSyncExternalStore(declared.subscribe, () => declared.error);
   const error = forms ? "" : failure ? failure.message || "读取插件设置失败" : "";
@@ -56,7 +56,7 @@ function DeclaredForms({ctx, embed, declared}: {ctx: WebHostContextV1; embed: Em
   if (embed.mode === "summary") return <span>{forms.map(form => form.title).join("、")}</span>;
   return <>{forms.map(form => <section key={form.id} className="declared-form">
     <h2>{form.title}</h2><p>{form.description}</p>
-    <Configuration ctx={ctx} embed={{...embed, embedded: true, dirty: value => {
+    <Configuration ctx={ctx} stored={configs.get(form.id)!} embed={{...embed, embedded: true, dirty: value => {
       if (value) dirty.current.add(form.id); else dirty.current.delete(form.id);
       embed.dirty?.(dirty.current.size > 0);
     }}} definition={{id: form.id, title: form.title, description: form.description, switchable: false,
@@ -66,13 +66,22 @@ function DeclaredForms({ctx, embed, declared}: {ctx: WebHostContextV1; embed: Em
 
 export function activate(ctx: WebHostContextV1) {
   // 声明的表单清单随模块保留：插件配置列表重开时卡片摘要直接出现，不再闪“正在读取…”。
-  const declared = ctx.data.resource<DeclaredForm[]>("forms", signal => request<{forms: DeclaredForm[]}>(ctx, `${ENDPOINT}/forms`, {signal}).then(body => body.forms));
+  const configs = new Map<string, WebResource<Status>>();
+  const declared = ctx.data.resource<DeclaredForm[]>("forms", async signal => {
+    const {forms} = await request<{forms: DeclaredForm[]}>(ctx, `${ENDPOINT}/forms`, {signal});
+    // 配置与模块同寿命；重开表单复用已读取的值，草稿仍由每次挂载的 Configuration 拥有。
+    for (const form of forms) {
+      if (!configs.has(form.id)) configs.set(form.id, ctx.data.resource<Status>(`config.${form.id}`,
+        signal => request<Status>(ctx, `${ENDPOINT}/${encodeURIComponent(form.id)}/config`, {signal})));
+    }
+    return forms;
+  });
   return ctx.ui.inject("shell.settings-plugins.v1", mount => mount.register({
     id: "plugin-settings", label: "插件设置", route: "plugin-settings",
     description: "没有自带界面的插件在这里调整设置，比如 GitHub Watch。",
     render(host, _view, props) {
       const root = createRoot(host);
-      root.render(<DeclaredForms ctx={ctx} embed={(props ?? {}) as EmbedProps} declared={declared} />);
+      root.render(<DeclaredForms ctx={ctx} embed={(props ?? {}) as EmbedProps} declared={declared} configs={configs} />);
       return () => root.unmount();
     },
   }));
