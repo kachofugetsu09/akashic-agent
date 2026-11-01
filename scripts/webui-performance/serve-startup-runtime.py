@@ -88,7 +88,7 @@ async def apply(ctx: Context) -> None:
 
 
 async def run(state: Path, port: int, switch_messages: int = 0, sessions: int = 0,
-              chat_ready_delay_ms: int = 0, usage_records: int = 0,
+              chat_ready_delay_ms: int = 0, reading_markdown: Path | None = None,
               declared_settings: bool = False) -> None:
     """创建固定数据后启动正式应用和 Web Shell，退出时核对历史。"""
     # 1. 只接受新目录；所有配置、插件状态和消息都属于本次测试。
@@ -172,6 +172,12 @@ async def run(state: Path, port: int, switch_messages: int = 0, sessions: int = 
                 log.writer("akashic:switch-benchmark", author="user" if index % 2 == 0 else "assistant",
                            source="benchmark", body_types=(type(body),), content={"text": check_text}).append(
                                f"switch-{index:04d}", body)
+        if reading_markdown is not None:
+            # 阅读边界样本经过真实账本和历史 API，不用浏览器替换成功响应。
+            log.ensure_session("akashic:reading-benchmark", SessionAttributes(learning="excluded"))
+            body = Output((ContentPart("text", reading_markdown.read_text(encoding="utf-8")),), "complete")
+            log.writer("akashic:reading-benchmark", author="assistant", source="benchmark",
+                       body_types=(Output,), content={"text": check_text}).append("reading-sample", body)
         if sessions:
             # 目录规模基准：大量单条会话，让会话列表的分页拉取与侧栏渲染计入测量。
             for index in range(sessions):
@@ -261,12 +267,8 @@ if __name__ == "__main__":
                         help="额外灌入的目录会话数(每会话 1 条消息,默认不灌)")
     parser.add_argument("--chat-ready-delay-ms", type=int, default=0,
                         help="模拟冷启动就绪窗口:该毫秒数内 /api/shell/state 回报 chatReady=false(默认 0)")
+    parser.add_argument("--reading-markdown", type=Path,
+                        help="在独立阅读会话中保存一份 Markdown 样本，用于真实渲染验收")
+    parser.add_argument("--declared-settings", action="store_true", help="加入声明式设置的隔离配置 owner")
     parser.add_argument("--usage-records", type=int, default=0,
                         help="灌入固定用量样本，不连接外部模型(默认 0)")
-    parser.add_argument("--declared-settings", action="store_true", help="加入声明式设置的隔离配置 owner")
-    args = parser.parse_args()
-    args_ready_delay = args.chat_ready_delay_ms
-    asyncio.run(run(args.state.resolve(), args.port, args.switch_session_messages, args.sessions,
-                    args_ready_delay,
-                    args.usage_records,
-                    args.declared_settings))
