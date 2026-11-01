@@ -271,7 +271,8 @@ export const PromptInput = ({
       const text = (formData.get("message") as string) || "";
 
       // 提交中的附件由本次发送持有；编辑器仍可接收下一份草稿。
-      const submitted = files.map(({ id, ...file }) => ({ id, file }));
+      // 保留附件对象身份：失败重试可以复用同一附件已经收到的上传回执。
+      const submitted = files;
       const submittedKey = attachmentKey;
       submittedRef.current = submitted.map((item) => item.id);
       setSubmittedFileIds(submittedRef.current);
@@ -279,7 +280,7 @@ export const PromptInput = ({
 
       try {
         // 原 Blob URL 直接交给上传 owner，成功后才释放，不做 Base64 往返转换。
-        const owner = await onSubmit({ files: submitted.map((item) => item.file), text }, event);
+        const owner = await onSubmit({ files: submitted, text }, event);
         for (const item of submitted) remove(item.id);
         if (typeof owner === "string" && owner !== submittedKey) adopt(submittedKey, owner);
       } catch {

@@ -126,21 +126,28 @@ function OnboardingSection({data, renderRoute, close, surfaceHost, auto}: {
   data: WebResource<Snapshot>; renderRoute?: RenderSettingsRoute; close?: () => void; surfaceHost: HTMLElement; auto: boolean;
 }) {
   const [running, setRunning] = useState(auto);
-  const {catalog, statuses, refresh} = useCatalog(data);
+  const {catalog, statuses, error, refresh} = useCatalog(data);
+  const failedSteps = catalog?.steps.filter(step => statuses[step.id]?.fault) ?? [];
   // 1. 首跑流程结束连同设置一起关闭，回到对话；2. 从设置里重走的流程结束后回到概览。
   const exit = useCallback(() => { markSeen(); if (auto) close?.(); else { setRunning(false); void refresh(); } }, [auto, close, refresh]);
   return <>
     <div className="onboarding-overview">
       <p className="onboarding-overview-intro">首次使用时的引导。这里能看到每项能力的状态，也可以重新走一遍。</p>
       <button type="button" className="onboarding-primary" onClick={() => setRunning(true)}>重新走一遍引导</button>
+      {(error || failedSteps.length > 0) && <div className="config-error" role="alert">
+        {error ? <p>{error}</p> : failedSteps.map(step => <p key={step.id}>{step.title}：{statuses[step.id]?.fault}</p>)}
+        <button type="button" className="onboarding-text-button" onClick={() => void refresh()}>重试</button>
+      </div>}
+      {!catalog && !error && <p role="status">正在检查已安装的功能…</p>}
       {catalog && <ul className="onboarding-overview-list">
         {catalog.groups.map(group => {
           const on = groupReady(catalog, statuses, group.key);
           const step = catalog.steps.find(item => item.group === group.key);
+          const failed = failedSteps.some(item => item.group === group.key);
           return <li key={group.key}>
             <a href={step ? `#${step.route}` : undefined}>
               <span><strong>{group.pitch || group.title}</strong><small>{group.title}</small></span>
-              <em className={on ? "is-on" : group.required ? "is-missing" : ""}>{on ? "已开启" : group.required ? "未连接" : "未开启"}</em>
+              <em className={failed ? "is-missing" : on ? "is-on" : group.required ? "is-missing" : ""}>{failed ? "读取失败" : on ? "已开启" : group.required ? "未连接" : "未开启"}</em>
             </a>
           </li>;
         })}
@@ -198,11 +205,14 @@ function Onboarding({data, renderRoute, exit, surfaceHost}: {
     </Surface>, surfaceHost);
 }
 
-// 换步时正文从可见态出发做一次短位移；样式表不能声明 @keyframes，动效走 Web Animations。
+// 换步沿用展开时长；样式表不能声明 @keyframes，短位移动效走 Web Animations。
 function enterStep(element: HTMLDivElement | null): void {
   if (!element || window.matchMedia("(prefers-reduced-motion: reduce)").matches) return;
+  const time = getComputedStyle(element).getPropertyValue("--ak-sys-duration-expand").trim();
+  // CSS 构建会把 200ms 压成 .2s；Web Animations 的数字时长只接受毫秒。
+  const duration = Number.parseFloat(time) * (time.endsWith("ms") ? 1 : 1000);
   element.animate([{opacity: 0.001, transform: "translateY(8px)"}, {opacity: 1, transform: "none"}],
-    {duration: 360, easing: "cubic-bezier(0.05, 0.7, 0.1, 1)"});
+    {duration, easing: "cubic-bezier(0.05, 0.7, 0.1, 1)"});
 }
 
 // 整屏图层：原生模态对话框，压在设置工作区之上；Esc 等同“稍后再说”。
