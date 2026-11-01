@@ -58,9 +58,75 @@ async def apply(ctx: Context) -> None:
         (target / "plugin.py").write_text(source.replace("LABEL", label))
 
 
+def seed_usage(workspace: Path, count: int) -> None:
+    """在新 fixture 中写入明确标为 benchmark 的用量记录，不调用外部模型。"""
+    from plugins.content.plugin import check_text
+    from plugins.ledger.contract import ContentPart, Input, Output, SessionAttributes
+    from plugins.ledger.log import MessageLog
+    from plugins.models.contract import BoundModelDescriptor, CapabilitySources, ModelCapabilities, ModelUsage
+    from plugins.models.projection import check_facts
+    from plugins.models.store import ModelsStore
+
+    # 1. 通过各自的写入 owner 建立固定模型记录与闭合 Turn，供真实 HTTP 读取。
+    store = ModelsStore(workspace / "model-registry.sqlite3", workspace / "runtime/model-backups")
+    store.initialize()
+    log = MessageLog(workspace / "sessions.db")
+    try:
+        key = "akashic:usage-benchmark"
+        log.ensure_session(key, SessionAttributes(learning="excluded"))
+        for index in range(count):
+            descriptor = BoundModelDescriptor(
+                binding_id="benchmark", plugin_snapshot_id="benchmark", model_revision=1,
+                model_id=f"benchmark-{index % 12}", connection_id="benchmark", driver_id="benchmark",
+                driver_contract_version="1", auth_identity="benchmark", model=f"benchmark-{index % 12}",
+                role="default", reasoning_effort=None, capabilities=ModelCapabilities(context_window=32768),
+                capability_sources=CapabilitySources(), capability_digest="benchmark",
+            )
+            call_id = store.resume_call(descriptor, f"benchmark-{index}", request_key=None, owner_id=None, max_attempts=1)
+            store.finish_call(call_id, usage=ModelUsage(input_tokens=1000 + index * 10, cached_input_tokens=300,
+                              output_tokens=50, coverage="exact", covered_request_count=1), failure=None)
+            log.writer(key, author="user", source="benchmark", body_types=(Input,), content={"text": check_text}).append(
+                f"usage-input-{index}", Input((ContentPart("text", f"固定用量样本 {index}"),)))
+            facts = ContentPart("model.facts", {"call_record_id": call_id, "tool_ids": {}, "thinking": None, "continuation": None})
+            log.writer(key, author="assistant", source="benchmark", body_types=(Output,),
+                       content={"text": check_text, "model.facts": check_facts}).append(
+                f"usage-output-{index}", Output((ContentPart("text", "固定用量结果"), facts), "complete"))
+    finally:
+        log.close()
+        store.close()
+
+
+def add_declared_settings(plugins: Path) -> None:
+    """给隔离实例加入两个真实配置 owner，使用正式声明、读取与提交协议。"""
+    source = """from pydantic import BaseModel, ConfigDict
+from agent.plugin_composition import Context
+from agent.plugin_composition.plugin_config import PLUGIN_CONFIG
+from plugins.plugin_settings.contract import SETTINGS_FORMS, SettingsField, SettingsForm, declare_settings
+api_version = 3
+name = "settings_probe_LABEL"
+version = "1.0.0"
+inject = (SETTINGS_FORMS, PLUGIN_CONFIG)
+class Config(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    note: str = "initial-LABEL"
+    items: list[str] = ["one", "two"]
+    count: int = 7
+    flag: bool = True
+FORM = SettingsForm(title="Settings LABEL", description="Isolated real configuration owner", fields=(SettingsField("note", "Note"), SettingsField("items", "Items", kind="lines"), SettingsField("count", "Count", kind="number"), SettingsField("flag", "Flag", kind="toggle")))
+async def apply(ctx: Context) -> None:
+    await declare_settings(ctx, Config, FORM)
+"""
+    for label in ("a", "b"):
+        target = plugins / f"settings_probe_{label}"
+        target.mkdir()
+        (target / "__init__.py").write_text("")
+        (target / "plugin.py").write_text(source.replace("LABEL", label))
+
+
 async def run(state: Path, port: int, switch_messages: int = 0, sessions: int = 0,
               chat_ready_delay_ms: int = 0, picker_models: int = 0,
-              declared_settings: bool = False) -> None:
+              declared_settings: bool = False, reading_markdown: Path | None = None,
+              usage_records: int = 0) -> None:
     """创建固定数据后启动正式应用和 Web Shell，退出时核对历史。"""
     # 1. 只接受新目录；所有配置、插件状态和消息都属于本次测试。
     state.mkdir(parents=True, exist_ok=False)
@@ -162,6 +228,8 @@ async def run(state: Path, port: int, switch_messages: int = 0, sessions: int = 
         log.close()
     if picker_models:
         seed_picker_models(workspace, picker_models)
+    if usage_records:
+        seed_usage(workspace, usage_records)
     before = message_digest(workspace)
 
     # 2. 不接模型或外部账号；真实 HTTP、插件目录、历史 API 和 WebSocket 仍完整运行。
@@ -290,3 +358,8 @@ if __name__ == "__main__":
                         help="在独立阅读会话中保存一份 Markdown 样本，用于真实渲染验收")
     parser.add_argument("--usage-records", type=int, default=0,
                         help="灌入固定用量样本，不连接外部模型(默认 0)")
+    args = parser.parse_args()
+    args_ready_delay = args.chat_ready_delay_ms
+    asyncio.run(run(args.state.resolve(), args.port, args.switch_session_messages, args.sessions,
+                    args_ready_delay, args.picker_models, args.declared_settings,
+                    args.reading_markdown, args.usage_records))
