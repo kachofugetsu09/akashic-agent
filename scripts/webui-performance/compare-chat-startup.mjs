@@ -192,7 +192,7 @@ let frozen;
 function copyBuild(source) {
   // 每次替换资产前重新核对归属：等待、采样与上一轮之间监听关系都可能变化。
   assertListenerOwned(`替换前 ${source}`);
-  // 制品可能同大小、同 mtime 而内容不同，复制必须按内容判断是否替换。
+  // 基准会统一 mtime；同大小的版本号和脚本仍可能内容不同，必须按内容判断是否替换。
   execFileSync("rsync", ["-a", "--checksum", "--delete", `${source}/`, `${target}/`]);
   function normalize(directory) {
     for (const entry of readdirSync(directory, { withFileTypes: true })) {

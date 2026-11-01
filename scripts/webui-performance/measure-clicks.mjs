@@ -53,6 +53,7 @@ function parseArgs(argv) {
     i += 1;
   }
   if (!args.origin || !args.storage) throw new Error("需要 --origin 与 --storage");
+  if (!Number.isSafeInteger(args.runs) || args.runs < 1) throw new Error("runs 必须为正整数");
   return args;
 }
 
@@ -115,13 +116,22 @@ async function clickAndWatch({ source, quietMs, maxMs, loadingText }) {
   } else {
     window.__press(target);
   }
-  while (performance.now() - t0 < maxMs && (performance.now() - t0 < quietMs || performance.now() - t0 - state.last < quietMs)) {
+  // 网络未结束时，DOM 静默不能说明交互结束；继续观察晚到的数据。
+  let settled = false;
+  while (performance.now() - t0 < maxMs) {
+    const network = await window.__clickNetworkState();
+    if (network.pending === 0 && network.quietMs >= quietMs
+      && performance.now() - t0 - state.last >= quietMs) {
+      settled = true;
+      break;
+    }
     await new Promise((resolve) => setTimeout(resolve, 50));
   }
   observer.disconnect();
   longTasks.disconnect();
   return {
-    doneMs: Math.round(state.last),
+    observationComplete: settled,
+    doneMs: settled ? Math.round(state.last) : null,
     firstChangeMs: state.first === null ? null : Math.round(state.first),
     mutations: state.mutations,
     loadingMs: state.loadingAt === null ? null : Math.round(state.loadingUntil - state.loadingAt) || 1,
@@ -131,39 +141,69 @@ async function clickAndWatch({ source, quietMs, maxMs, loadingText }) {
 
 // 4. CDP 网络记录：插件查询按 plugin.method 归类，静态资源单独计数
 function recordNetwork(cdp) {
-  const requests = new Map();
+  // 1. 单调序号划分采样边界，不用上一次请求的时间冒充本次点击时间。
+  const requests = [];
+  const active = new Map();
   const frames = [];
-  cdp.on("Network.requestWillBeSent", ({ requestId, request, timestamp }) => {
+  let sequence = 0;
+  cdp.on("Network.requestWillBeSent", ({ requestId, request, timestamp, redirectResponse }) => {
+    if (redirectResponse) {
+      const previous = active.get(requestId);
+      if (previous) Object.assign(previous, { end: timestamp, status: redirectResponse.status, endedAt: performance.now() });
+    }
     let key = new URL(request.url).pathname;
     if (key.endsWith("/plugin-ui/query") && request.postData) {
       const body = JSON.parse(request.postData);
       key = `query:${body.plugin_id}.${body.method}`;
     }
-    requests.set(requestId, { key, start: timestamp, asset: ASSET.test(request.url) || request.url.startsWith("data:") });
+    const entry = { sequence: ++sequence, key, start: timestamp, startedAt: performance.now(),
+      asset: ASSET.test(request.url) || request.url.startsWith("data:") };
+    requests.push(entry);
+    active.set(requestId, entry);
+  });
+  cdp.on("Network.responseReceived", ({ requestId, response }) => {
+    const entry = active.get(requestId);
+    if (entry) entry.status = response.status;
   });
   cdp.on("Network.loadingFinished", ({ requestId, timestamp, encodedDataLength }) => {
-    const entry = requests.get(requestId);
-    if (entry) Object.assign(entry, { end: timestamp, bytes: encodedDataLength });
+    const entry = active.get(requestId);
+    if (entry) Object.assign(entry, { end: timestamp, bytes: encodedDataLength, endedAt: performance.now() });
+    active.delete(requestId);
   });
-  cdp.on("Network.webSocketFrameSent", ({ timestamp, response }) => {
-    frames.push({ t: timestamp, type: (response.payloadData.match(/"(?:type|op)"\s*:\s*"([^"]+)"/) || [])[1] || "frame" });
+  cdp.on("Network.loadingFailed", ({ requestId, timestamp, errorText }) => {
+    const entry = active.get(requestId);
+    if (entry) Object.assign(entry, { end: timestamp, error: errorText, endedAt: performance.now() });
+    active.delete(requestId);
   });
+  cdp.on("Network.webSocketFrameSent", ({ response }) => {
+    frames.push({ sequence: ++sequence, type: (response.payloadData.match(/"(?:type|op)"\s*:\s*"([^"]+)"/) || [])[1] || "frame" });
+  });
+  const picked = (mark) => requests.filter(entry => entry.sequence > mark.sequence);
   return {
-    mark() {
-      let latest = 0;
-      for (const entry of requests.values()) latest = Math.max(latest, entry.start, entry.end ?? 0);
-      for (const frame of frames) latest = Math.max(latest, frame.t);
-      return latest + 1e-6;
+    mark: () => ({ sequence, at: performance.now() }),
+    state(mark) {
+      const entries = picked(mark);
+      const last = Math.max(mark.at, ...entries.map(entry => entry.endedAt ?? entry.startedAt));
+      return { pending: entries.filter(entry => entry.end === undefined).length, quietMs: performance.now() - last };
     },
     since(mark) {
-      const picked = [...requests.values()].filter((entry) => entry.start >= mark);
-      const data = picked.filter((entry) => !entry.asset);
+      // 2. 保留未完成、HTTP 错误和传输错误；静态资源同样参与是否结束的判断。
+      const entries = picked(mark);
+      const data = entries.filter(entry => !entry.asset);
       return {
         requests: data.length,
         kb: Math.round(data.reduce((sum, entry) => sum + (entry.bytes ?? 0), 0) / 1024),
-        assets: picked.length - data.length,
-        keys: data.map((entry) => entry.key),
-        wsOut: frames.filter((frame) => frame.t >= mark).map((frame) => frame.type),
+        assets: entries.length - data.length,
+        keys: data.map(entry => entry.key),
+        pending: entries.filter(entry => entry.end === undefined).length,
+        failures: entries.filter(entry => entry.error || entry.status >= 400).length,
+        networkMs: Math.round(Math.max(0, ...entries.map(entry => (entry.endedAt ?? performance.now()) - mark.at))),
+        waterfall: entries.map(entry => ({ key: entry.key, asset: entry.asset,
+          startMs: Math.round(entry.startedAt - mark.at),
+          endMs: entry.endedAt === undefined ? null : Math.round(entry.endedAt - mark.at),
+          durationMs: entry.end === undefined ? null : Math.round((entry.end - entry.start) * 1000),
+          status: entry.status ?? null, error: entry.error ?? null, bytes: entry.bytes ?? null })),
+        wsOut: frames.filter(frame => frame.sequence > mark.sequence).map(frame => frame.type),
       };
     },
   };
@@ -192,10 +232,12 @@ async function step(page, action) {
 
 async function measure(page, network, act) {
   const mark = network.mark();
+  network.currentMark = mark;
   const result = await page.evaluate(clickAndWatch, { source: act, quietMs: 800, maxMs: 15000, loadingText: LOADING_TEXT });
   if (result.missing) throw new Error(`找不到 ${act}`);
-  await page.waitForTimeout(200);
-  return { ...result, ...network.since(mark) };
+  const traffic = network.since(mark);
+  return { ...result, ...traffic,
+    success: result.observationComplete && traffic.pending === 0 && traffic.failures === 0 };
 }
 
 const toAction = (item) => (item === "Escape" ? item : { source: item.source, optional: item.optional === true });
@@ -207,9 +249,13 @@ async function runScenario(page, network, origin, scenario) {
   for (const item of scenario.setup ?? []) await step(page, toAction(item));
   const act = scenario.act === "focus" ? "focus" : scenario.act.source;
   const first = await measure(page, network, act);
-  for (const item of scenario.back) await step(page, toAction(item));
-  const again = await measure(page, network, act);
-  return { first, again };
+  try {
+    for (const item of scenario.back) await step(page, toAction(item));
+    const again = await measure(page, network, act);
+    return { first, again };
+  } catch (error) {
+    return { first, error: String(error) };
+  }
 }
 
 function median(values) {
@@ -219,11 +265,15 @@ function median(values) {
 
 function summarize(runs) {
   const pick = (phase) => {
-    const list = runs.map((run) => run[phase]);
+    const list = runs.filter(run => !run.error).map(run => run[phase]);
+    if (!list.length) return null;
     const keys = {};
     for (const key of list.at(-1).keys) keys[key] = (keys[key] ?? 0) + 1;
     return {
-      doneMs: median(list.map((r) => r.doneMs)),
+      observedRuns: list.length,
+      successfulRuns: list.filter(r => r.success).length,
+      doneMs: median(list.filter(r => r.success).map(r => r.doneMs)),
+      networkMs: median(list.filter(r => r.success).map(r => r.networkMs)),
       firstChangeMs: median(list.map((r) => r.firstChangeMs)),
       requests: median(list.map((r) => r.requests)),
       kb: median(list.map((r) => r.kb)),
@@ -239,6 +289,9 @@ function summarize(runs) {
 
 async function main() {
   const args = parseArgs(process.argv.slice(2));
+  const selected = scenarios(new RegExp(args.big), new RegExp(args.mid))
+    .filter(scenario => !args.only || args.only.test(scenario.id));
+  if (!selected.length) throw new Error("没有匹配的交互场景");
   const browser = await chromium.launch({ executablePath: process.env.AKASHIC_PERF_CHROMIUM || undefined });
   const context = await browser.newContext({ viewport: { width: 1440, height: 900 }, storageState: args.storage });
   await context.addInitScript(installFinder, CLICKABLE);
@@ -246,21 +299,25 @@ async function main() {
   const cdp = await context.newCDPSession(page);
   await cdp.send("Network.enable");
   const network = recordNetwork(cdp);
-  const report = { origin: args.origin, at: new Date().toISOString(), runs: args.runs, scenarios: {} };
-  for (const scenario of scenarios(new RegExp(args.big), new RegExp(args.mid))) {
-    if (args.only && !args.only.test(scenario.id)) continue;
+  await page.exposeFunction("__clickNetworkState", () => network.state(network.currentMark));
+  const report = { schemaVersion: 2, metric: "DOM and network observation, not content readiness", origin: args.origin, at: new Date().toISOString(), runs: args.runs, scenarios: {} };
+  for (const scenario of selected) {
     const runs = [];
     for (let i = 0; i < args.runs; i += 1) {
       try {
         runs.push(await runScenario(page, network, args.origin, scenario));
       } catch (error) {
+        runs.push({ error: String(error) });
         console.error(`${scenario.id} 第 ${i + 1} 轮失败：${error.message}`);
       }
     }
-    if (!runs.length) continue;
     const summary = summarize(runs);
-    report.scenarios[scenario.id] = { label: scenario.label, ...summary, raw: runs };
+    const failedRuns = runs.filter(run => run.error || !run.first.success || !run.again.success).length;
+    report.scenarios[scenario.id] = { label: scenario.label, plannedRuns: args.runs, failedRuns, ...summary, raw: runs };
+    if (failedRuns) process.exitCode = 1;
+    if (args.out) writeFileSync(args.out, `${JSON.stringify(report, null, 2)}\n`);
     const f = summary.first, a = summary.again;
+    if (!f || !a) { console.log(`${scenario.id}: 全部 ${args.runs} 轮失败`); continue; }
     console.log(`${scenario.id.padEnd(22)} 首开 ${String(f.doneMs).padStart(5)}ms 请求 ${f.requests}(${f.kb}KB) 读取态 ${f.loadingRuns}/${runs.length} | 重开 ${String(a.doneMs).padStart(5)}ms 请求 ${a.requests}(${a.kb}KB) 读取态 ${a.loadingRuns}/${runs.length}`);
   }
   if (args.out) writeFileSync(args.out, `${JSON.stringify(report, null, 2)}\n`);

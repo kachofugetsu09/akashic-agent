@@ -279,29 +279,62 @@ export async function renameChatSession(sessionKey: string, title: string): Prom
   return typeof body.title === "string" ? body.title : null;
 }
 
+// 附件对象由草稿持有；移除或发送后可回收，不把回执留在持久缓存里。
+const uploadedFiles = new WeakMap<ComposerFile, UploadedFile>();
+
+/** 最多并行上传三个附件；失败停止新上传，回执按原附件顺序返回。 */
 export async function uploadFiles(files: ComposerFile[], signal: AbortSignal): Promise<UploadedFile[]> {
-  const result: UploadedFile[] = [];
-  for (const file of files) {
-    const label = file.filename || "未命名";
-    if (!file.url) throw new Error(`附件 ${label} 缺少内容 URL`);
-    let sourceResponse: Response;
-    try {
-      sourceResponse = await fetch(file.url, { signal });
-    } catch (error) {
-      if (isAbortError(error) || !(error instanceof TypeError)) throw error;
-      throw new Error(`无法读取附件 ${label}，请移除后重新选择`, { cause: error });
+  // 1. 本次失败只中止本批在途读取，不撤销已经落盘的附件。
+  const batch = new AbortController();
+  const activeSignal = AbortSignal.any([signal, batch.signal]);
+  const result = new Array<UploadedFile>(files.length);
+  let next = 0;
+  let failure: { error: unknown } | undefined;
+  const uploadNext = async () => {
+    while (next < files.length && !activeSignal.aborted) {
+      const index = next++;
+      try {
+        result[index] = await uploadFile(files[index], activeSignal);
+      } catch (error) {
+        if (!failure) {
+          failure = { error };
+          batch.abort();
+        }
+        return;
+      }
     }
-    if (!sourceResponse.ok) throw new Error(`读取附件失败: ${sourceResponse.status}`);
-    const blob = await sourceResponse.blob();
-    const filename = file.filename || "upload.bin";
-    const payload = await fetchChatJson<unknown>(`/api/chat/uploads?filename=${encodeURIComponent(filename)}`, {
-      method: "POST",
-      body: blob,
-      signal,
-    });
-    result.push(uploadedFileResponse(payload));
-  }
+  };
+  // 2. 等已开始的上传结束，才让输入框恢复重试；旧请求不能与重试混在一起。
+  await Promise.all(Array.from({ length: Math.min(3, files.length) }, uploadNext));
+  if (failure) throw failure.error;
+  signal.throwIfAborted();
   return result;
+}
+
+/** 只有收到并校验成功回执后，才记住这份草稿附件的服务端身份。 */
+async function uploadFile(file: ComposerFile, signal: AbortSignal): Promise<UploadedFile> {
+  const cached = uploadedFiles.get(file);
+  if (cached) return cached;
+  const label = file.filename || "未命名";
+  if (!file.url) throw new Error(`附件 ${label} 缺少内容 URL`);
+  let sourceResponse: Response;
+  try {
+    sourceResponse = await fetch(file.url, { signal });
+  } catch (error) {
+    if (isAbortError(error) || !(error instanceof TypeError)) throw error;
+    throw new Error(`无法读取附件 ${label}，请移除后重新选择`, { cause: error });
+  }
+  if (!sourceResponse.ok) throw new Error(`读取附件失败: ${sourceResponse.status}`);
+  const blob = await sourceResponse.blob();
+  const filename = file.filename || "upload.bin";
+  const payload = await fetchChatJson<unknown>(`/api/chat/uploads?filename=${encodeURIComponent(filename)}`, {
+    method: "POST",
+    body: blob,
+    signal,
+  });
+  const uploaded = uploadedFileResponse(payload);
+  uploadedFiles.set(file, uploaded);
+  return uploaded;
 }
 
 function responseItems(payload: unknown, endpoint: string): Record<string, unknown>[] {

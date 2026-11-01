@@ -22,7 +22,34 @@ def message_digest(workspace: Path) -> str:
     return hashlib.sha256(json.dumps(rows, ensure_ascii=False).encode()).hexdigest()
 
 
-async def run(state: Path, port: int, switch_messages: int = 0, sessions: int = 0, chat_ready_delay_ms: int = 0) -> None:
+def add_declared_settings(plugins: Path) -> None:
+    """给隔离实例加入两个真实配置 owner，使用正式声明、读取与提交协议。"""
+    source = """from pydantic import BaseModel, ConfigDict
+from agent.plugin_composition import Context
+from agent.plugin_composition.plugin_config import PLUGIN_CONFIG
+from plugins.plugin_settings.contract import SETTINGS_FORMS, SettingsField, SettingsForm, declare_settings
+api_version = 3
+name = "settings_probe_LABEL"
+version = "1.0.0"
+inject = (SETTINGS_FORMS, PLUGIN_CONFIG)
+class Config(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    note: str = "initial-LABEL"
+    items: list[str] = ["one", "two"]
+    count: int = 7
+    flag: bool = True
+FORM = SettingsForm(title="Settings LABEL", description="Isolated real configuration owner", fields=(SettingsField("note", "Note"), SettingsField("items", "Items", kind="lines"), SettingsField("count", "Count", kind="number"), SettingsField("flag", "Flag", kind="toggle")))
+async def apply(ctx: Context) -> None:
+    await declare_settings(ctx, Config, FORM)
+"""
+    for label in ("a", "b"):
+        target = plugins / f"settings_probe_{label}"
+        target.mkdir()
+        (target / "__init__.py").write_text("")
+        (target / "plugin.py").write_text(source.replace("LABEL", label))
+
+
+async def run(state: Path, port: int, switch_messages: int = 0, sessions: int = 0, chat_ready_delay_ms: int = 0, declared_settings: bool = False) -> None:
     """创建固定数据后启动正式应用和 Web Shell，退出时核对历史。"""
     # 1. 只接受新目录；所有配置、插件状态和消息都属于本次测试。
     state.mkdir(parents=True, exist_ok=False)
@@ -39,6 +66,8 @@ async def run(state: Path, port: int, switch_messages: int = 0, sessions: int = 
         for asset in (destination / name).rglob("*"):
             if asset.is_file():
                 os.utime(asset, (1767225600, 1767225600))
+    if declared_settings:
+        add_declared_settings(plugins)
     for key in tuple(os.environ):
         if key.startswith("AKASHIC_"):
             del os.environ[key]
@@ -75,6 +104,9 @@ async def run(state: Path, port: int, switch_messages: int = 0, sessions: int = 
     set_plugin_choice(workspace, "computer", enabled=False)
     # web-auth 的入口门禁与登录页不属于启动性能输入；卸载后恢复无门状态。
     set_plugin_choice(workspace, "web-auth", enabled=False)
+    if declared_settings:
+        for label in ("a", "b"):
+            set_plugin_choice(workspace, f"settings_probe_{label}", enabled=True)
     log = MessageLog(workspace / "sessions.db")
     try:
         log.ensure_session("akashic:startup-benchmark", SessionAttributes(learning="excluded"))
@@ -187,6 +219,7 @@ if __name__ == "__main__":
                         help="额外灌入的目录会话数(每会话 1 条消息,默认不灌)")
     parser.add_argument("--chat-ready-delay-ms", type=int, default=0,
                         help="模拟冷启动就绪窗口:该毫秒数内 /api/shell/state 回报 chatReady=false(默认 0)")
+    parser.add_argument("--declared-settings", action="store_true", help="加入声明式设置的隔离配置 owner")
     args = parser.parse_args()
     args_ready_delay = args.chat_ready_delay_ms
-    asyncio.run(run(args.state.resolve(), args.port, args.switch_session_messages, args.sessions, args_ready_delay))
+    asyncio.run(run(args.state.resolve(), args.port, args.switch_session_messages, args.sessions, args_ready_delay, args.declared_settings))
