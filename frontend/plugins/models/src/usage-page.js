@@ -143,14 +143,17 @@ function chart(items, days) {
 }
 
 // 订阅额度区：读取失败也留在页面上说明原因，刷新按钮始终可以再点。
-function quotaPanel(ctx, page, catalogResource, isClosed) {
+function quotaPanel(page, catalogResource, isClosed, quotaResource, refreshQuotas) {
   const section = page.querySelector("[data-quota-section]");
   const grid = page.querySelector("[data-quotas]");
   const note = page.querySelector("[data-quota-error]");
   const refresh = page.querySelector("[data-quota-refresh]");
   let mode = readMode();
-  let quotas = [];
   const draw = () => {
+    if (isClosed()) return;
+    const quotas = quotaResource.current?.quotas ?? [];
+    const error = quotaResource.error;
+    note.textContent = error ? `${quotas.length ? "未能刷新，显示的是上次结果：" : ""}${error.message}` : "";
     const names = new Map((catalogResource.current?.connections ?? []).map((item) => [item.id, item.name]));
     section.hidden = !quotas.length && !note.textContent;
     grid.replaceChildren(...quotas.map((quota) => quotaCard(quota, names.get(quota.connectionId) ?? quota.connectionId, mode)));
@@ -158,13 +161,12 @@ function quotaPanel(ctx, page, catalogResource, isClosed) {
   };
   const load = (fresh) => {
     refresh.disabled = true;
-    return ctx.http.request(`/api/dashboard/models/quotas${fresh ? "?fresh=true" : ""}`)
-      .then((response) => response.ok ? response.json() : Promise.reject(new Error(`额度读取失败（${response.status}）`)))
-      .then((body) => { quotas = body.quotas; note.textContent = ""; })
-      .catch((error) => { note.textContent = `${quotas.length ? "未能刷新，显示的是上次结果：" : ""}${error.message}`; })
-      .finally(() => { if (isClosed()) return; refresh.disabled = false; draw(); });
+    // 成功和失败都从同一资源绘制；失败保留旧额度并显示 resource.error。
+    return refreshQuotas(fresh).then(draw, draw)
+      .finally(() => { if (!isClosed()) refresh.disabled = false; });
   };
   const setMode = (next) => { mode = next; saveMode(mode); draw(); };
+  draw();
   return {load, setMode};
 }
 
@@ -239,6 +241,15 @@ export function usageSection(ctx, catalogResource) {
     });
     return [days, resource];
   }));
+  // refresh 同步调用 loader：先固定本次 HTTP 模式，代次与迟到回包仍由资源拥有。
+  let quotaFresh = false;
+  const quotas = ctx.data.resource("quotas", (signal) =>
+    ctx.http.request(`/api/dashboard/models/quotas${quotaFresh ? "?fresh=true" : ""}`, {signal})
+      .then((response) => response.ok ? response.json() : Promise.reject(new Error(`额度读取失败（${response.status}）`))));
+  const refreshQuotas = (fresh) => {
+    quotaFresh = fresh;
+    return quotas.refresh({fresh});
+  };
   return {
     id: "models.usage", label: "用量", iconSvg: ICON, route: "usage", order: 31,
     render(host, _view, props = {}) {
@@ -263,7 +274,7 @@ export function usageSection(ctx, catalogResource) {
       host.replaceChildren(page);
       let closed = false;
       const isClosed = () => closed;
-      const quota = quotaPanel(ctx, page, catalogResource, isClosed);
+      const quota = quotaPanel(page, catalogResource, isClosed, quotas, refreshQuotas);
       const usage = usagePanel(page, isClosed, ranges);
       page.addEventListener("click", (event) => {
         const button = event.target instanceof Element ? event.target.closest("button") : null;
