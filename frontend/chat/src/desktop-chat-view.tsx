@@ -130,6 +130,9 @@ export function DesktopChatView({ controller }: DesktopChatViewProps) {
   const sessionOpening = historyLoading || (sessionRequested && (shellStatus === null || shellStatus === "ready"));
   const historyFailed = controller.historyFailure !== null && !hasMessages;
   const conversationLayout = hasMessages || sessionOpening || historyFailed;
+  const errorNotice = error ? <div className="error-line" role="alert"><span>{error}</span>
+    {controller.errorRetry ? <MaterialButton variant="danger" onClick={retry}>重试</MaterialButton> : null}
+  </div> : null;
 
   return (
     <main className="chat-shell">
@@ -151,6 +154,7 @@ export function DesktopChatView({ controller }: DesktopChatViewProps) {
         <section className={`chat-main${conversationLayout ? "" : " is-empty"}`}>
         <header className={`conversation-heading${!activeSessionId && !activeGroup ? " is-blank" : ""}`}>
           <CompactNavigation
+            errorNotice={errorNotice}
             surface={surface} sessions={sidebarSessions}
             activeSessionId={activeSessionId} pendingSessionId={pendingSessionId} chatReady={chatReady}
             themeLabel={theme.label} groups={navigationGroups} navigationPins={controller.navigationPins} onSelectSession={activateSession}
@@ -265,9 +269,7 @@ export function DesktopChatView({ controller }: DesktopChatViewProps) {
             <span>聊天页面已更新，刷新后才能完整显示新的回复。</span>
             <MaterialButton variant="danger" onClick={() => window.location.reload()}>刷新页面</MaterialButton>
           </div> : null}
-          {error ? <div className="error-line" role="alert"><span>{error}</span>
-            {controller.errorRetry ? <MaterialButton variant="danger" onClick={retry}>重试</MaterialButton> : null}
-          </div> : null}
+          {errorNotice}
         </div>
       </section>
       </div>
