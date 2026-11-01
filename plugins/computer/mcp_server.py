@@ -26,6 +26,41 @@ _SCREENSHOT_EXTENSIONS = {
 _MAX_SCREENSHOT_FILES = 32
 
 
+def plain_text(text: str) -> str:
+    """把孤立代理项换成 U+FFFD。
+
+    驱动把网页文本按 UTF-16 长度切分时可能切断一个 emoji，留下半个代理项；
+    这样的字符串在 UTF-8 编码时会直接抛错，让整次工具调用失败。显示层只要可读即可，
+    所以这里把它降级成替换字符，而不是让调用失败。
+    """
+
+    if not any("\ud800" <= character <= "\udfff" for character in text):
+        return text
+    return "".join(
+        "\ufffd" if "\ud800" <= character <= "\udfff" else character for character in text
+    )
+
+
+def plain_value(value: Any) -> Any:
+    """递归清理一个 JSON 载荷里的孤立代理项，保留原有结构。"""
+
+    if isinstance(value, str):
+        return plain_text(value)
+    if isinstance(value, dict):
+        return {key: plain_value(item) for key, item in value.items()}
+    if isinstance(value, (list, tuple)):
+        return [plain_value(item) for item in value]
+    return value
+
+
+def json_line(payload: object) -> bytes:
+    """序列化一行 JSON-RPC 或控制回执，保证 UTF-8 编码不会因代理项失败。"""
+
+    return (
+        json.dumps(plain_value(payload), ensure_ascii=False).encode("utf-8") + b"\n"
+    )
+
+
 def save_screenshot(raw: bytes, media_type: str) -> str:
     """Save one screenshot inside this plugin's data root and return its path."""
 
@@ -125,6 +160,8 @@ def driver_content(value: dict[str, Any]) -> dict[str, object]:
             content.append({"type": "text", "text": f"Screenshot: {path}"})
             # 同一调用可能超过 32 张；附件导入使用原字节，不依赖可能被缓存淘汰的路径。
             content.append(item)
+        elif isinstance(item.get("text"), str):
+            content.append({**item, "text": plain_text(item["text"])})
         else:
             content.append(item)
     return {"content": content, "call_id": value["call_id"]}
@@ -196,7 +233,7 @@ async def control_connection(
                 result = {"cancelled": True, "released": True, "effects": "may_remain"}
             else:
                 result = driver_content(await task)
-        writer.write(json.dumps(result, ensure_ascii=False).encode() + b"\n")
+        writer.write(json_line(result))
         await writer.drain()
     except (
         ValueError,
@@ -207,10 +244,16 @@ async def control_connection(
         httpx.HTTPError,
     ) as error:
         if not writer.is_closing():
-            writer.write(json.dumps({
-                "error": str(error),
-                "kind": "driver_error" if isinstance(error, DriverResponseError) else "control_error",
-            }).encode() + b"\n")
+            writer.write(
+                json_line(
+                    {
+                        "error": str(error),
+                        "kind": "driver_error"
+                        if isinstance(error, DriverResponseError)
+                        else "control_error",
+                    }
+                )
+            )
             try:
                 await writer.drain()
             except (ConnectionError, BrokenPipeError):
@@ -282,10 +325,8 @@ async def serve() -> None:
                     "error": {"code": -32603, "message": str(error)},
                 }
             if response is not None:
-                print(
-                    json.dumps(response, ensure_ascii=False, separators=(",", ":")),
-                    flush=True,
-                )
+                sys.stdout.write(json_line(response).decode("utf-8"))
+                sys.stdout.flush()
     finally:
         transport.close()
         if control is not None:
