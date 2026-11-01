@@ -83,6 +83,7 @@ class Reader {
     this.active = view.active;
     this.build();
     this.article.addEventListener("click", (event) => this.follow(event));
+    let subscribing = true;
     this.stops = [
       view.onSessionChange((session) => {
         this.session = session;
@@ -101,13 +102,14 @@ class Reader {
       view.onActiveChange((active) => {
         this.active = active;
         clearTimeout(this.timer);
-        if (active) {
+        // 初始会话通知已发起目录读取；后续每次显示仍重新校验。
+        if (active && !subscribing) {
           void this.files(this.directory);
           this.schedule();
         }
       }),
     ];
-    void this.files();
+    subscribing = false;
     this.schedule();
   }
 
