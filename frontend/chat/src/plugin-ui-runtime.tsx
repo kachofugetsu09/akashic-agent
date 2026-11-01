@@ -453,9 +453,10 @@ export interface SidebarPanelSource {
   context(signal: AbortSignal, sessionId: string | undefined): Pick<PluginUiHostContext, "query">;
 }
 
+let panelSources: SidebarPanelSource[] = [];
+
 export function sidebarPanelSources(): SidebarPanelSource[] {
-  if (catalog.updating) return [];
-  return catalog.plugins.flatMap((plugin) => {
+  const next = catalog.updating ? [] : catalog.plugins.flatMap((plugin) => {
     const loaded = definitions.get(plugin.id);
     const provider = loaded?.revision === plugin.revision ? loaded.definition.slots["sidebar.panels"] : undefined;
     return provider ? [{ key: `${plugin.id}:${plugin.revision}`, pluginId: plugin.id, pluginRevision: plugin.revision, provider,
@@ -465,6 +466,12 @@ export function sidebarPanelSources(): SidebarPanelSource[] {
         }),
       }) }] : [];
   });
+  // 无关插件激活也会通知目录；面板没变时不能因此取消并重启状态读取。
+  if (next.length !== panelSources.length || next.some((source, index) =>
+    source.key !== panelSources[index].key || source.provider !== panelSources[index].provider)) {
+    panelSources = next;
+  }
+  return panelSources;
 }
 
 /** 在宿主外框里挂侧栏面板；size 变化经 refreshToken 通知插件，不重新挂载。 */
