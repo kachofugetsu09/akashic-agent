@@ -143,14 +143,17 @@ function chart(items, days) {
 }
 
 // 订阅额度区：读取失败也留在页面上说明原因，刷新按钮始终可以再点。
-function quotaPanel(ctx, page, catalogResource, isClosed) {
+function quotaPanel(page, catalogResource, isClosed, quotaResource, refreshQuotas) {
   const section = page.querySelector("[data-quota-section]");
   const grid = page.querySelector("[data-quotas]");
   const note = page.querySelector("[data-quota-error]");
   const refresh = page.querySelector("[data-quota-refresh]");
   let mode = readMode();
-  let quotas = [];
   const draw = () => {
+    if (isClosed()) return;
+    const quotas = quotaResource.current?.quotas ?? [];
+    const error = quotaResource.error;
+    note.textContent = error ? `${quotas.length ? "未能刷新，显示的是上次结果：" : ""}${error.message}` : "";
     const names = new Map((catalogResource.current?.connections ?? []).map((item) => [item.id, item.name]));
     section.hidden = !quotas.length && !note.textContent;
     grid.replaceChildren(...quotas.map((quota) => quotaCard(quota, names.get(quota.connectionId) ?? quota.connectionId, mode)));
@@ -158,19 +161,18 @@ function quotaPanel(ctx, page, catalogResource, isClosed) {
   };
   const load = (fresh) => {
     refresh.disabled = true;
-    return ctx.http.request(`/api/dashboard/models/quotas${fresh ? "?fresh=true" : ""}`)
-      .then((response) => response.ok ? response.json() : Promise.reject(new Error(`额度读取失败（${response.status}）`)))
-      .then((body) => { quotas = body.quotas; note.textContent = ""; })
-      .catch((error) => { note.textContent = `${quotas.length ? "未能刷新，显示的是上次结果：" : ""}${error.message}`; })
-      .finally(() => { if (isClosed()) return; refresh.disabled = false; draw(); });
+    // 成功和失败都从同一资源绘制；失败保留旧额度并显示 resource.error。
+    return refreshQuotas(fresh).then(draw, draw)
+      .finally(() => { if (!isClosed()) refresh.disabled = false; });
   };
   const setMode = (next) => { mode = next; saveMode(mode); draw(); };
+  draw();
   return {load, setMode};
 }
 
 // Token 与缓存区：每次切换范围换一个代号，迟到的旧回包与它安排的重试都作废。
-function usagePanel(ctx, page, isClosed) {
-  const status = page.querySelector(".usage-status");
+function usagePanel(page, isClosed, ranges) {
+  const status = page.querySelector("[data-usage-status]");
   const content = page.querySelector("[data-usage]");
   let days = 1;
   let usage = null;
@@ -178,7 +180,7 @@ function usagePanel(ctx, page, isClosed) {
   let generation = 0;
   const draw = () => {
     for (const button of page.querySelectorAll("[data-days]")) button.setAttribute("aria-pressed", String(Number(button.dataset.days) === days));
-    if (!usage) return;
+    if (!usage) { content.replaceChildren(); return; }
     const total = totalsSince(usage.hours, usage.days);
     const metrics = document.createElement("div");
     metrics.className = "usage-metrics";
@@ -192,20 +194,20 @@ function usagePanel(ctx, page, isClosed) {
   };
   // 冷启动时扫描逐次推进：未完成先显示进度，挂载期间退避着接着读。
   const load = (ticket, attempt = 0) => {
-    const since = encodeURIComponent(rangeStart(days).toISOString());
     const asked = days;
-    ctx.http.request(`/api/dashboard/models/usage?since=${since}`)
-      .then((response) => response.ok ? response.json() : Promise.reject(new Error(`用量读取失败（${response.status}）`)))
-      .then((body) => {
+    ranges.get(asked).refresh()
+      .then((snapshot) => {
         if (isClosed() || ticket !== generation) return;
-        if (body.complete === false) {
-          status.textContent = `正在统计 ${NUMBER.format(body.scanned_sessions)} / ${NUMBER.format(body.total_sessions)} 个会话…`;
+        // 跨过本地零点的在途读取不能作为新一天的结果。
+        if (snapshot.since !== rangeStart(asked).toISOString()) { load(ticket); return; }
+        // 资源对相同结果复用对象；后台核对没变化时不再重建整张图表。
+        if (usage !== snapshot.usage) { usage = snapshot.usage; draw(); }
+        if (snapshot.progress) {
+          status.textContent = `正在统计 ${NUMBER.format(snapshot.progress.scanned_sessions)} / ${NUMBER.format(snapshot.progress.total_sessions)} 个会话…`;
           timer = window.setTimeout(() => load(ticket, attempt + 1), Math.min(2000, 400 * (attempt + 1)));
           return;
         }
         status.textContent = "";
-        usage = {...body, days: asked};
-        draw();
       })
       .catch((error) => {
         if (!isClosed() && ticket === generation) status.textContent = `${usage ? "未能更新，显示的是上次结果：" : ""}${error.message}`;
@@ -214,7 +216,9 @@ function usagePanel(ctx, page, isClosed) {
   const select = (next) => {
     days = next;
     window.clearTimeout(timer);
-    status.textContent = "正在读取用量…";
+    const snapshot = ranges.get(days).current;
+    usage = snapshot?.since === rangeStart(days).toISOString() ? snapshot.usage : null;
+    status.textContent = usage ? "" : "正在读取用量…";
     draw();
     load(++generation);
   };
@@ -223,6 +227,29 @@ function usagePanel(ctx, page, isClosed) {
 
 // 设置「用量」：订阅额度在上，Token、缓存命中与调用按所选范围汇总在下。
 export function usageSection(ctx, catalogResource) {
+  // 三个范围各有一个模块资源；日期改变后不复用旧日历范围的值。
+  const ranges = new Map(RANGES.map(([days]) => {
+    const resource = ctx.data.resource(`usage.${days}`, async (signal) => {
+      const since = rangeStart(days).toISOString();
+      const response = await ctx.http.request(`/api/dashboard/models/usage?since=${encodeURIComponent(since)}`, {signal});
+      if (!response.ok) throw new Error(`用量读取失败（${response.status}）`);
+      const body = await response.json();
+      // 服务端扫描尚未完成时，保留同一范围上次完整结果；只在页面可见时继续扫描。
+      return {since, usage: body.complete === false
+        ? (resource.current?.since === since ? resource.current.usage : null) : {...body, days},
+      progress: body.complete === false ? body : null};
+    });
+    return [days, resource];
+  }));
+  // refresh 同步调用 loader：先固定本次 HTTP 模式，代次与迟到回包仍由资源拥有。
+  let quotaFresh = false;
+  const quotas = ctx.data.resource("quotas", (signal) =>
+    ctx.http.request(`/api/dashboard/models/quotas${quotaFresh ? "?fresh=true" : ""}`, {signal})
+      .then((response) => response.ok ? response.json() : Promise.reject(new Error(`额度读取失败（${response.status}）`))));
+  const refreshQuotas = (fresh) => {
+    quotaFresh = fresh;
+    return quotas.refresh({fresh});
+  };
   return {
     id: "models.usage", label: "用量", iconSvg: ICON, route: "usage", order: 31,
     render(host, _view, props = {}) {
@@ -240,15 +267,15 @@ export function usageSection(ctx, catalogResource) {
         <section class="settings-section">
           <div class="settings-section-bar"><h2 class="settings-section-label">Token 与缓存</h2>
             <div class="usage-toggle" role="group" aria-label="时间范围">${RANGES.map(([days, label]) => `<button type="button" data-days="${days}">${label}</button>`).join("")}</div></div>
-          <p class="usage-status" role="status"></p>
+          <p class="usage-status" data-usage-status role="status"></p>
           <div data-usage></div>
         </section>
       </div>`;
       host.replaceChildren(page);
       let closed = false;
       const isClosed = () => closed;
-      const quota = quotaPanel(ctx, page, catalogResource, isClosed);
-      const usage = usagePanel(ctx, page, isClosed);
+      const quota = quotaPanel(page, catalogResource, isClosed, quotas, refreshQuotas);
+      const usage = usagePanel(page, isClosed, ranges);
       page.addEventListener("click", (event) => {
         const button = event.target instanceof Element ? event.target.closest("button") : null;
         if (!button) return;

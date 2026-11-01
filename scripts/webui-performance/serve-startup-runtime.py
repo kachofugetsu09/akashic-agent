@@ -22,6 +22,15 @@ def message_digest(workspace: Path) -> str:
     return hashlib.sha256(json.dumps(rows, ensure_ascii=False).encode()).hexdigest()
 
 
+def model_digest(workspace: Path) -> str:
+    """核对夹具模型库的完整行，避免草稿选择被意外提交后仍报只读验收成功。"""
+    with sqlite3.connect(workspace / "model-registry.sqlite3") as db:
+        tables = [row[0] for row in db.execute(
+            "SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%' ORDER BY name")]
+        rows = {name: db.execute(f'SELECT * FROM "{name}" ORDER BY rowid').fetchall() for name in tables}
+    return hashlib.sha256(json.dumps(rows, sort_keys=True).encode()).hexdigest()
+
+
 def add_declared_settings(plugins: Path) -> None:
     """给隔离实例加入两个真实配置 owner，使用正式声明、读取与提交协议。"""
     source = """from pydantic import BaseModel, ConfigDict
@@ -48,9 +57,76 @@ async def apply(ctx: Context) -> None:
         (target / "__init__.py").write_text("")
         (target / "plugin.py").write_text(source.replace("LABEL", label))
 
+
+def seed_usage(workspace: Path, count: int) -> None:
+    """在新 fixture 中写入明确标为 benchmark 的用量记录，不调用外部模型。"""
+    from plugins.content.plugin import check_text
+    from plugins.ledger.contract import ContentPart, Input, Output, SessionAttributes
+    from plugins.ledger.log import MessageLog
+    from plugins.models.contract import BoundModelDescriptor, CapabilitySources, ModelCapabilities, ModelUsage
+    from plugins.models.projection import check_facts
+    from plugins.models.store import ModelsStore
+
+    # 1. 通过各自的写入 owner 建立固定模型记录与闭合 Turn，供真实 HTTP 读取。
+    store = ModelsStore(workspace / "model-registry.sqlite3", workspace / "runtime/model-backups")
+    store.initialize()
+    log = MessageLog(workspace / "sessions.db")
+    try:
+        key = "akashic:usage-benchmark"
+        log.ensure_session(key, SessionAttributes(learning="excluded"))
+        for index in range(count):
+            descriptor = BoundModelDescriptor(
+                binding_id="benchmark", plugin_snapshot_id="benchmark", model_revision=1,
+                model_id=f"benchmark-{index % 12}", connection_id="benchmark", driver_id="benchmark",
+                driver_contract_version="1", auth_identity="benchmark", model=f"benchmark-{index % 12}",
+                role="default", reasoning_effort=None, capabilities=ModelCapabilities(context_window=32768),
+                capability_sources=CapabilitySources(), capability_digest="benchmark",
+            )
+            call_id = store.resume_call(descriptor, f"benchmark-{index}", request_key=None, owner_id=None, max_attempts=1)
+            store.finish_call(call_id, usage=ModelUsage(input_tokens=1000 + index * 10, cached_input_tokens=300,
+                              output_tokens=50, coverage="exact", covered_request_count=1), failure=None)
+            log.writer(key, author="user", source="benchmark", body_types=(Input,), content={"text": check_text}).append(
+                f"usage-input-{index}", Input((ContentPart("text", f"固定用量样本 {index}"),)))
+            facts = ContentPart("model.facts", {"call_record_id": call_id, "tool_ids": {}, "thinking": None, "continuation": None})
+            log.writer(key, author="assistant", source="benchmark", body_types=(Output,),
+                       content={"text": check_text, "model.facts": check_facts}).append(
+                f"usage-output-{index}", Output((ContentPart("text", "固定用量结果"), facts), "complete"))
+    finally:
+        log.close()
+        store.close()
+
+
+def add_declared_settings(plugins: Path) -> None:
+    """给隔离实例加入两个真实配置 owner，使用正式声明、读取与提交协议。"""
+    source = """from pydantic import BaseModel, ConfigDict
+from agent.plugin_composition import Context
+from agent.plugin_composition.plugin_config import PLUGIN_CONFIG
+from plugins.plugin_settings.contract import SETTINGS_FORMS, SettingsField, SettingsForm, declare_settings
+api_version = 3
+name = "settings_probe_LABEL"
+version = "1.0.0"
+inject = (SETTINGS_FORMS, PLUGIN_CONFIG)
+class Config(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    note: str = "initial-LABEL"
+    items: list[str] = ["one", "two"]
+    count: int = 7
+    flag: bool = True
+FORM = SettingsForm(title="Settings LABEL", description="Isolated real configuration owner", fields=(SettingsField("note", "Note"), SettingsField("items", "Items", kind="lines"), SettingsField("count", "Count", kind="number"), SettingsField("flag", "Flag", kind="toggle")))
+async def apply(ctx: Context) -> None:
+    await declare_settings(ctx, Config, FORM)
+"""
+    for label in ("a", "b"):
+        target = plugins / f"settings_probe_{label}"
+        target.mkdir()
+        (target / "__init__.py").write_text("")
+        (target / "plugin.py").write_text(source.replace("LABEL", label))
+
+
 async def run(state: Path, port: int, switch_messages: int = 0, sessions: int = 0,
-              chat_ready_delay_ms: int = 0, message_interactions: bool = False,
-              declared_settings: bool = False) -> None:
+              chat_ready_delay_ms: int = 0, picker_models: int = 0,
+              declared_settings: bool = False, reading_markdown: Path | None = None,
+              usage_records: int = 0, message_interactions: bool = False) -> None:
     """创建固定数据后启动正式应用和 Web Shell，退出时核对历史。"""
     # 1. 只接受新目录；所有配置、插件状态和消息都属于本次测试。
     state.mkdir(parents=True, exist_ok=False)
@@ -133,6 +209,12 @@ async def run(state: Path, port: int, switch_messages: int = 0, sessions: int = 
                 log.writer("akashic:switch-benchmark", author="user" if index % 2 == 0 else "assistant",
                            source="benchmark", body_types=(type(body),), content={"text": check_text}).append(
                                f"switch-{index:04d}", body)
+        if reading_markdown is not None:
+            # 阅读边界样本经过真实账本和历史 API，不用浏览器替换成功响应。
+            log.ensure_session("akashic:reading-benchmark", SessionAttributes(learning="excluded"))
+            body = Output((ContentPart("text", reading_markdown.read_text(encoding="utf-8")),), "complete")
+            log.writer("akashic:reading-benchmark", author="assistant", source="benchmark",
+                       body_types=(Output,), content={"text": check_text}).append("reading-sample", body)
         if sessions:
             # 目录规模基准：大量单条会话，让会话列表的分页拉取与侧栏渲染计入测量。
             for index in range(sessions):
@@ -142,38 +224,26 @@ async def run(state: Path, port: int, switch_messages: int = 0, sessions: int = 
                 log.writer(key, author="user", source="benchmark",
                            body_types=(type(Input((part,))),), content={"text": check_text}).append(
                                f"catalog-{index:05d}", Input((part,)))
-        if message_interactions:
-            # 独立原文在启动前固定；浏览器必须核对复制和回填全文，不能只看成功图标。
-            long_input = "消息交互基准：全文不能丢失。\n" + "\n".join(
-                f"第 {index:03d} 行：这是一段完整的长消息，用于检查展开收起与编辑回填。"
-                for index in range(80)
-            )
-            long_output = "## 消息操作验收\n\n" + "\n\n".join(
-                f"第 {index:03d} 段：保留 **格式** 与 `inline_{index}`，用于引用和复制核对。"
-                for index in range(30)
-            )
-            for message_id, author, body in (
-                ("interaction-long-input", "user", Input((ContentPart("text", long_input),))),
-                ("interaction-long-output", "assistant", Output((ContentPart("text", long_output),), "complete")),
-            ):
-                log.writer("akashic:switch-benchmark", author=author, source="benchmark",
-                           body_types=(type(body),), content={"text": check_text}).append(message_id, body)
-            (state / "message-oracle.json").write_text(json.dumps({
-                "interaction-long-input": long_input, "interaction-long-output": long_output,
-            }, ensure_ascii=False))
     finally:
         log.close()
+    if picker_models:
+        seed_picker_models(workspace, picker_models)
+    if usage_records:
+        seed_usage(workspace, usage_records)
     before = message_digest(workspace)
 
     # 2. 不接模型或外部账号；真实 HTTP、插件目录、历史 API 和 WebSocket 仍完整运行。
     app = AppRuntime(Config.load(config, workspace=workspace), workspace)
     loop = asyncio.get_running_loop()
+    models_before = None
     try:
         await app.start()
         app.plugin_watcher.stop()
         await app.plugin_watcher_task
         # 自动扫描停止后仍允许显式 SIGHUP，供独立的真实换代验收使用。
         app.plugin_watcher = None
+        if picker_models:
+            models_before = model_digest(workspace)
         print(json.dumps({"origin": f"http://127.0.0.1:{port}", "messagesSha256": before}), flush=True)
         asgi = create_web_shell_app(workspace)
         if chat_ready_delay_ms:
@@ -191,9 +261,51 @@ async def run(state: Path, port: int, switch_messages: int = 0, sessions: int = 
             for sig in (signal.SIGINT, signal.SIGTERM):
                 loop.remove_signal_handler(sig)
             after = message_digest(workspace)
-            (state / "integrity.json").write_text(json.dumps({"before": before, "after": after}))
+            integrity = {"before": before, "after": after}
+            if models_before is not None:
+                integrity.update(modelsBefore=models_before, modelsAfter=model_digest(workspace))
+            (state / "integrity.json").write_text(json.dumps(integrity))
             if before != after:
                 raise RuntimeError("启动基准改变了消息历史")
+            if models_before is not None and integrity["modelsAfter"] != models_before:
+                raise RuntimeError("选择器基准改变了模型账本")
+
+
+def seed_picker_models(workspace: Path, count: int) -> None:
+    """为新夹具写入固定模型目录；只验收选择器，不探测或调用模型。"""
+    from plugins.models.contract import CapabilitySources, ModelCapabilities
+    from plugins.models.settings import AddConnection, AddModel, SetDefaultModel
+    from plugins.models.store import ModelsStore
+
+    store = ModelsStore(workspace / "model-registry.sqlite3", workspace / "runtime/model-backups")
+    store.initialize()
+    try:
+        # 1. 只增加新夹具数据；连接指向未使用的本地端口，不带真实凭据。
+        snapshot = store.read_snapshot()
+        assert snapshot is not None and not snapshot.connections and not snapshot.models
+        revision = snapshot.revision
+        for group in range(5):
+            revision = store.add_connection(AddConnection(
+                expected_revision=revision, connection_id=f"picker-{group}", name=f"模型来源 {group + 1}",
+                driver_id="openai-compatible", endpoint="http://127.0.0.1:9/v1",
+                auth_identity=f"picker-{group}", credential={"api_key": "unused-isolated-fixture"}))
+        # 2. 保存多来源、不同能力的完整目录，供真实 chat.models 和插件渲染器读取。
+        for index in range(count):
+            revision = store.add_model(AddModel(
+                expected_revision=revision, model_id=f"picker-model-{index:04d}",
+                connection_id=f"picker-{index % 5}", kind="chat", model=f"picker/model-{index:04d}",
+                capabilities=ModelCapabilities(
+                    context_window=128000 if index % 3 else 1000000, max_output_tokens=8192,
+                    input_modalities=("text", "image") if index % 2 else ("text",),
+                    supports_tool_calls=True, supports_parallel_tool_calls=True,
+                    supported_reasoning_efforts=("low", "medium", "high")),
+                capability_sources=CapabilitySources(
+                    context_window="user", max_output_tokens="user", input_modalities="user",
+                    tool_calls="user", parallel_tool_calls="user", reasoning_efforts="user"),
+                default_reasoning_effort="medium"))
+        store.set_default(SetDefaultModel(revision, "default", "picker-model-0000"))
+    finally:
+        store.close()
 
 
 class _ChatReadyDelay:
@@ -237,16 +349,22 @@ if __name__ == "__main__":
                         help="额外灌入 akashic:switch-benchmark 长会话的消息数(默认不灌)")
     parser.add_argument("--sessions", type=int, default=0,
                         help="额外灌入的目录会话数(每会话 1 条消息,默认不灌)")
-    parser.add_argument("--message-interactions", action="store_true",
-                        help="在切换会话末尾追加固定长消息，用于折叠、引用、编辑和复制基准")
     parser.add_argument("--chat-ready-delay-ms", type=int, default=0,
                         help="模拟冷启动就绪窗口:该毫秒数内 /api/shell/state 回报 chatReady=false(默认 0)")
+    parser.add_argument("--picker-models", type=int, default=0,
+                        help="为模型选择器写入固定目录；只测 UI，不调用模型（默认 0）")
     parser.add_argument("--declared-settings", action="store_true", help="加入声明式设置的隔离配置 owner")
+    parser.add_argument("--reading-markdown", type=Path,
+                        help="在独立阅读会话中保存一份 Markdown 样本，用于真实渲染验收")
+    parser.add_argument("--usage-records", type=int, default=0,
+                        help="灌入固定用量样本，不连接外部模型(默认 0)")
+    parser.add_argument("--message-interactions", action="store_true",
+                        help="给长会话追加消息操作目标（需要 --switch-session-messages）")
     args = parser.parse_args()
     if args.message_interactions and args.switch_session_messages <= 0:
         parser.error("--message-interactions 需要正数 --switch-session-messages")
     args_ready_delay = args.chat_ready_delay_ms
     asyncio.run(run(args.state.resolve(), args.port, args.switch_session_messages, args.sessions,
-                    args_ready_delay,
-                    args.message_interactions,
-                    args.declared_settings))
+                    args_ready_delay, args.picker_models, args.declared_settings,
+                    args.reading_markdown, args.usage_records,
+                    args.message_interactions))
