@@ -54,6 +54,7 @@ _RUNTIME_WIRING = (
     ("docker/host-runtime/distribution-entrypoint.sh", "distribution-entrypoint.sh"),
 )
 _GENERATED_PLUGIN_UI_FILES = (
+    "plugin_ui.js",
     "web_module.js",
     "web_module.css",
     "message_ui.js",
