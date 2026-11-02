@@ -22,8 +22,14 @@ async def main(path):
         launcher.chmod(0o700)
         save_config(path / "workspace/plugin-data/subagent_codex-builtin", {"executable": str(launcher)})
         provider = sources / "test_provider/plugin.py"
-        text = provider.read_text().replace('if len(calls) == 1:', 'if len(calls) == 1:\n                return LLMResponse(None, [ToolCall("load", "load_tools", {"plugin": "subagent_codex"})])\n            if len(calls) == 2:')
-        text = text.replace('ToolCall("provider-call", "write_evidence", {})', 'ToolCall("provider-call", "tool_call", {"name": "delegate_codex", "arguments": {"task": "read only", "cwd": ' + repr(str(path)) + '}})')
+        text = provider.read_text().replace(
+            'ToolCall("provider-call", "write_evidence", {})',
+            'ToolCall("provider-call", "delegate_codex", {"task": "read only", "cwd": ' + repr(str(path)) + '})',
+        )
+        text = text.replace(
+            'if len(calls) == 1:',
+            'if len(calls) == 1:\n                names = {tool["function"]["name"] for tool in request.tools}\n                assert {"delegate_codex", "delegate_codex_result", "delegate_claude_code", "delegate_claude_code_result"} <= names, names',
+        )
         provider.write_text(text)
         delivery_sources(sources)
         for name in ("jobs", "subagent", "host_execution", "assets", "subagent_codex", "subagent_claude_code",
