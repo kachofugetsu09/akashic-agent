@@ -123,6 +123,16 @@ async def run(distribution: Path, base: Path, mode: str) -> None:
                 chat_id="bundle-goal", sender="scenario", message_id="goal-status",
             )
             assert result is not None and result.result.text == "当前没有目标", result
+        if mode == "base":
+            from plugins.ui.contract import PLUGIN_UI
+            provider = manager.live_root.context.require(PLUGIN_UI)
+            ui_catalog = await provider.catalog()
+            command_ui = next(row for row in ui_catalog["items"] if row["id"] == "commands@release")
+            result = await provider.query(
+                command_ui["id"], command_ui["revision"], "commands.list", {},
+                session_id=None, turn_id=None,
+            )
+            assert any(row["name"] == "goal" and row["input_hint"] for row in result["items"]), result
         if mode == "minimal":
             assert not expected
             assert not json.loads((workspace / "runtime/endpoints.json").read_text())["endpoints"]
