@@ -181,7 +181,6 @@ export function useComposerSuggest({ value, scope, textareaRef, setValue }: {
     const position = trigger.start + inserted.length + (rest.startsWith(" ") ? 1 : 0);
     pending.current = { value: next, position };
     setValue(next);
-    setCaret(position);
   }, [textareaRef, trigger, value, setValue]);
   // 光标在这次草稿提交后同步归位；放到下一帧会和紧接着的键入抢位置。
   useLayoutEffect(() => {
@@ -191,6 +190,7 @@ export function useComposerSuggest({ value, scope, textareaRef, setValue }: {
     pending.current = null;
     textarea.focus();
     textarea.setSelectionRange(target.position, target.position);
+    setCaret(target.position);
   }, [value, textareaRef]);
 
   // 菜单打开时接管方向键、回车、Tab 与 Esc；返回 true 表示事件已处理。

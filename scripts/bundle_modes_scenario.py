@@ -132,6 +132,7 @@ async def run(distribution: Path, base: Path, mode: str) -> None:
                 command_ui["id"], command_ui["revision"], "commands.list", {},
                 session_id=None, turn_id=None,
             )
+            (base / "commands-sample.json").write_text(json.dumps(result))
             assert any(row["name"] == "goal" and row["input_hint"] for row in result["items"]), result
         if mode == "minimal":
             assert not expected
