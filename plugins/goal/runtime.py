@@ -35,6 +35,7 @@ class _Fold:
     continuation: Message
     terminal: Message | None
     preempted: Message | None
+    trailing: Message | None
     activity: bool
     call_ids: tuple[str, ...]
     reason: str | None
@@ -88,12 +89,20 @@ def fold_round(goal: Goal, messages: tuple[Message, ...]) -> _Fold | None:
     call_ids: list[str] = []
     terminal: Message | None = None
     preempted: Message | None = None
+    trailing: Message | None = None
     reason: str | None = None
     pause_after = False
     for message in messages:
         if message.seq <= continuation.seq or message.source != "conversation":
             continue
         body = message.body
+        if terminal is not None:
+            # 终态之后还有消息，说明这一轮在结算前已经被下一轮/用户回合覆盖。
+            # 只结算到终态，不在同一事务里再追加一条续跑。
+            if isinstance(body, (Input, Output, Control)):
+                trailing = message
+                break
+            continue
         if isinstance(body, Input):
             if message.author != "goal":
                 preempted = message
@@ -109,19 +118,22 @@ def fold_round(goal: Goal, messages: tuple[Message, ...]) -> _Fold | None:
                 activity = True
             if body.finish != "continue":
                 terminal = message
-                break
             continue
         if isinstance(body, Control):
             if body.action == "resume":
                 continue
             terminal = message
             reason = body.reason
+            # 文档约定：模型失败计入空转，即使同一轮前面有过正文或成功工具。
+            if body.action == "failure":
+                activity = False
             pause_after = body.action in {"pause", "abandon"}
-            break
+            continue
     return _Fold(
         continuation=continuation,
         terminal=terminal,
         preempted=preempted,
+        trailing=trailing,
         activity=activity,
         call_ids=tuple(dict.fromkeys(call_ids)),
         reason=reason,
@@ -203,9 +215,9 @@ class GoalRuntime:
             wake_on=(Output, Control), poll_interval=self._poll_interval,
         ):
             try:
-                sessions = await self._store.active_sessions()
+                sessions = await self._store.runtime_sessions()
             except Exception:
-                logger.exception("读取 active 目标失败")
+                logger.exception("读取待处理目标失败")
                 continue
             for session_id in sessions:
                 self._enqueue(session_id)
@@ -235,7 +247,7 @@ class GoalRuntime:
     async def advance(self, session_id: str) -> None:
         for _attempt in range(_MAX_RETRIES):
             goal = await self._store.get(session_id)
-            if goal is None or not goal.active:
+            if goal is None:
                 return
             reader = self._catalog.reader(session_id)
             with reader.read_snapshot():
@@ -248,6 +260,8 @@ class GoalRuntime:
                 )
             folded = fold_round(goal, messages)
             if folded is None:
+                if not goal.active:
+                    return
                 last = messages[-1] if messages else self._last_message(
                     reader, goal.settled_through_seq, head,
                 )
@@ -294,15 +308,28 @@ class GoalRuntime:
                 )
             else:
                 assert folded.terminal is not None
+                append = not folded.pause_after
+                pause_after = folded.pause_after
+                reason = folded.reason
+                if folded.trailing is not None:
+                    # 终态后已经有下一轮或用户消息；只结算当前轮，不再追加。
+                    append = False
+                    trailing_body = folded.trailing.body
+                    if (
+                        isinstance(trailing_body, Control)
+                        and trailing_body.action in {"pause", "abandon"}
+                    ):
+                        pause_after = True
+                        reason = trailing_body.reason or reason
                 settlement = RoundSettlement(
                     activity=folded.activity,
                     tokens=tokens,
                     coverage=coverage,
                     settled_through_seq=folded.terminal.seq,
                     last_settled_message_id=folded.terminal.message_id,
-                    reason=folded.reason,
-                    append=not folded.pause_after,
-                    pause_after=folded.pause_after,
+                    reason=reason,
+                    append=append,
+                    pause_after=pause_after,
                 )
             if (
                 goal.token_budget is not None
@@ -326,7 +353,7 @@ class GoalRuntime:
                 current, next_index=current.continuations + 1,
             )
             try:
-                _ = await self._store.settle(
+                updated = await self._store.settle(
                     session_id,
                     expected_goal_id=goal.goal_id,
                     expected_version=await self._version(session_id),
@@ -334,9 +361,14 @@ class GoalRuntime:
                     settlement=settlement,
                     next_message_id=next_id,
                     next_text=next_text,
+                    allow_inactive=not goal.active,
                 )
             except MessageConflict:
                 continue
+            # 终态/抢占之后仍有未处理的消息：同一目标自己再排一次，
+            # 不等用户下一条消息来唤醒。
+            if updated.active and head > settlement.settled_through_seq:
+                self._enqueue(session_id)
             return
         logger.warning("目标续跑连续冲突，重新排队 session=%s", session_id)
         self._enqueue(session_id)

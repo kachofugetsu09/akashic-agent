@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import asyncio
+from contextlib import suppress
 from typing import Any, Literal, cast
 
 import pytest
@@ -156,6 +158,150 @@ async def test_advance_settles_activity_and_appends_next(tmp_path):
         assert next_input is not None
         text = next(str(part.value) for part in next_input.body.parts if part.kind == "text")
         assert "13" in text
+    finally:
+        harness.log.close()
+
+
+@pytest.mark.asyncio
+async def test_terminal_output_before_user_input_does_not_append_continuation(tmp_path):
+    harness = goal_harness(tmp_path)
+    try:
+        _append_output(harness.log, "setup")
+        await _create_goal(harness, settled_through_seq=0)
+        runtime = GoalRuntime(harness.store, cast(Any, _RuntimeCatalog(harness.log)), _stats)
+        await runtime.advance("s")
+        terminal = _append_output(harness.log, "goal-final", text="done", call_id="c1")
+        user_input(harness.log, "s", "user-1", "wait, change direction")
+        await runtime.advance("s")
+        goal = await harness.store.get("s")
+        assert goal is not None
+        assert goal.status is GoalStatus.ACTIVE
+        assert goal.continuations == 1
+        assert goal.tokens_used == 13
+        assert goal.settled_through_seq == terminal.seq
+        assert harness.log.reader("s").get("goal-continuation:g:2") is None
+
+        # 用户轮次结束后才恢复目标。
+        _append_output(harness.log, "user-final", "answered")
+        await runtime.advance("s")
+        assert harness.log.reader("s").get("goal-continuation:g:2") is not None
+    finally:
+        harness.log.close()
+
+
+@pytest.mark.asyncio
+async def test_terminal_output_before_pause_control_pauses_goal(tmp_path):
+    harness = goal_harness(tmp_path)
+    try:
+        _append_output(harness.log, "setup")
+        await _create_goal(harness, settled_through_seq=0)
+        runtime = GoalRuntime(harness.store, cast(Any, _RuntimeCatalog(harness.log)), _stats)
+        await runtime.advance("s")
+        _append_output(harness.log, "goal-final", text="done", call_id="c1")
+        head = await harness.store.conversation_head("s")
+        _append_control(harness.log, "pause-after-final", "pause", reason="用户停止", through_seq=head)
+        await runtime.advance("s")
+        goal = await harness.store.get("s")
+        assert goal is not None
+        assert goal.status is GoalStatus.PAUSED
+        assert goal.continuations == 1
+        assert harness.log.reader("s").get("goal-continuation:g:2") is None
+    finally:
+        harness.log.close()
+
+
+@pytest.mark.asyncio
+async def test_preemption_with_user_final_output_resumes_without_new_message(tmp_path):
+    harness = goal_harness(tmp_path)
+    try:
+        _append_output(harness.log, "setup")
+        await _create_goal(harness, settled_through_seq=0)
+        runtime = GoalRuntime(harness.store, cast(Any, _RuntimeCatalog(harness.log)), _stats)
+        await runtime.advance("s")
+        user_input(harness.log, "s", "user-1", "let me add something")
+        _append_output(harness.log, "user-final", "answered")
+        await runtime.advance("s")
+        # 抢占结算后仍有用户终态输出：runtime 自己再排一次，不等新消息。
+        await runtime.advance("s")
+        assert harness.log.reader("s").get("goal-continuation:g:2") is not None
+    finally:
+        harness.log.close()
+
+
+@pytest.mark.asyncio
+async def test_completion_during_round_records_final_usage(tmp_path):
+    harness = goal_harness(tmp_path)
+    try:
+        _append_output(harness.log, "setup")
+        await _create_goal(harness, settled_through_seq=0)
+        runtime = GoalRuntime(harness.store, cast(Any, _RuntimeCatalog(harness.log)), _stats)
+        await runtime.advance("s")
+        terminal = _append_output(harness.log, "goal-final", text="done", call_id="c1")
+        from dataclasses import replace
+        await harness.store.apply(
+            "s", "op-complete", "update", "1" * 64,
+            lambda current: (
+                replace(current, status=GoalStatus.COMPLETE)
+                if current is not None else current,
+                "complete",
+            ),
+        )
+        await runtime.advance("s")
+        goal = await harness.store.get("s")
+        assert goal is not None
+        assert goal.status is GoalStatus.COMPLETE
+        assert goal.tokens_used == 13
+        assert goal.settled_through_seq == terminal.seq
+        assert harness.log.reader("s").get("goal-continuation:g:2") is None
+    finally:
+        harness.log.close()
+
+
+@pytest.mark.asyncio
+async def test_follow_queues_inactive_goal_with_pending_continuation(tmp_path):
+    harness = goal_harness(tmp_path)
+    try:
+        _append_output(harness.log, "setup")
+        await _create_goal(harness, settled_through_seq=0)
+        runtime = GoalRuntime(harness.store, cast(Any, _RuntimeCatalog(harness.log)), _stats)
+        await runtime.advance("s")
+        from dataclasses import replace
+        await harness.store.apply(
+            "s", "op-complete", "update", "1" * 64,
+            lambda current: (
+                replace(current, status=GoalStatus.COMPLETE)
+                if current is not None else current,
+                "complete",
+            ),
+        )
+        task = asyncio.create_task(runtime.follow())
+        try:
+            session = await asyncio.wait_for(runtime._queue.get(), 1)
+            assert session == "s"
+        finally:
+            task.cancel()
+            with suppress(asyncio.CancelledError):
+                await task
+    finally:
+        harness.log.close()
+
+
+@pytest.mark.asyncio
+async def test_failure_with_prior_activity_counts_as_empty(tmp_path):
+    harness = goal_harness(tmp_path)
+    try:
+        _append_output(harness.log, "setup")
+        await _create_goal(harness, settled_through_seq=0)
+        runtime = GoalRuntime(harness.store, cast(Any, _RuntimeCatalog(harness.log)), _stats)
+        await runtime.advance("s")
+        _append_output(harness.log, "progress", text="working", finish="continue")
+        head = await harness.store.conversation_head("s")
+        _append_control(harness.log, "failure-1", "failure", reason="model failed", through_seq=head)
+        await runtime.advance("s")
+        goal = await harness.store.get("s")
+        assert goal is not None
+        assert goal.consecutive_empty == 1
+        assert goal.status is GoalStatus.ACTIVE
     finally:
         harness.log.close()
 
