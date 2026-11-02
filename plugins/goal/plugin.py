@@ -5,7 +5,12 @@ from __future__ import annotations
 from collections.abc import AsyncGenerator, Mapping
 from contextlib import asynccontextmanager
 
-from agent.plugin_composition import Context
+from agent.plugin_composition import (
+    RUNTIME_STARTED,
+    RUNTIME_STOPPING,
+    Context,
+    stop_spawned,
+)
 from plugins.commands.contract import COMMANDS, CommandDefinition
 from plugins.content.contract import CONTENT
 from plugins.ledger.contract import (
@@ -13,10 +18,12 @@ from plugins.ledger.contract import (
     MESSAGE_WRITERS,
     OWNER_STATE,
 )
+from plugins.models.contract import MODEL_CALL_STATS
 from plugins.tools.contract import TOOLS, ProviderBoundTool
 
 from .command import GoalCommand
 from .contract import GOAL_STATUS
+from .runtime import GoalRuntime
 from .store import GoalStore
 from .tools import (
     CREATE_GOAL_TOOL,
@@ -37,6 +44,7 @@ inject = (
     CONTENT,
     MESSAGE_CATALOG,
     MESSAGE_WRITERS,
+    MODEL_CALL_STATS,
     OWNER_STATE,
     TOOLS,
 )
@@ -146,3 +154,23 @@ async def apply(ctx: Context) -> None:
         recover=command,
         input_hint="[<objective> | pause | resume | clear | budget <n> | budget clear]",
     ))
+
+    follower = None
+    worker = None
+
+    async def start(_event: object) -> None:
+        nonlocal follower, worker
+        runtime = GoalRuntime(
+            store, ctx.require(MESSAGE_CATALOG), ctx.require(MODEL_CALL_STATS),
+        )
+        follower = await ctx.spawn(runtime.follow(), name="goal-follow")
+        worker = await ctx.spawn(runtime.run(), name="goal-runtime")
+
+    async def stop(_event: object) -> None:
+        try:
+            await stop_spawned(worker)
+        finally:
+            await stop_spawned(follower)
+
+    _ = await ctx.on(RUNTIME_STARTED, start)
+    _ = await ctx.on(RUNTIME_STOPPING, stop)
