@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import random
+from typing import Any, cast
 
 import pytest
 
@@ -77,7 +78,7 @@ async def test_monkey_goal_invariants(tmp_path, seed):
                 return None, ""
 
         goal, _ = await create()
-        runtime = GoalRuntime(harness.store, _Catalog(log), _missing_usage)
+        runtime = GoalRuntime(harness.store, cast(Any, _Catalog(log)), _missing_usage)
         previous_goal_id = goal.goal_id if goal is not None else None
         previous_continuations = goal.continuations if goal is not None else 0
         previous_tokens = goal.tokens_used if goal is not None else 0
@@ -150,7 +151,7 @@ async def test_monkey_goal_invariants(tmp_path, seed):
                 except Exception:
                     pass
             if rng.random() < 0.1:
-                runtime = GoalRuntime(harness.store, _Catalog(log), _missing_usage)
+                runtime = GoalRuntime(harness.store, cast(Any, _Catalog(log)), _missing_usage)
 
             current = await harness.store.get("s")
             if current is None:
