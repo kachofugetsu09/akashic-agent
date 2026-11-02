@@ -114,6 +114,15 @@ async def run(distribution: Path, base: Path, mode: str) -> None:
         assert set(manager._active_generations) == expected
         assert manager.live_root is not None
         assert all(item.state is not FiberState.FAILED for item in manager.live_root.fibers())
+        if mode != "minimal":
+            from plugins.commands.contract import COMMANDS
+            catalog = manager.live_root.context.require(COMMANDS).freeze()
+            assert any(row.name == "goal" for row in catalog.descriptors)
+            result = await catalog.execute(
+                "/goal", session_key="programmatic:bundle-goal", channel="programmatic",
+                chat_id="bundle-goal", sender="scenario", message_id="goal-status",
+            )
+            assert result is not None and result.result.text == "当前没有目标", result
         if mode == "minimal":
             assert not expected
             assert not json.loads((workspace / "runtime/endpoints.json").read_text())["endpoints"]

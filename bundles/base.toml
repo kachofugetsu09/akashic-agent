@@ -28,6 +28,9 @@ plugin = "managed_processes@release"
 [rows."mcp"]
 plugin = "mcp@release"
 
+[rows."goal"]
+plugin = "goal@release"
+
 [rows."commands"]
 plugin = "commands@release"
 
