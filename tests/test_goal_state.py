@@ -153,6 +153,36 @@ def test_resume_and_mark_continuation_reject_exhausted_cap():
         mark_continuation(exhausted, "goal-continuation:g:101")
 
 
+def test_budget_recovery_at_continuation_cap_pauses_instead_of_active():
+    from dataclasses import replace
+    exhausted = replace(
+        _goal(), status=GoalStatus.BUDGET_LIMITED, continuations=100,
+        token_budget=10, tokens_used=10,
+    )
+    recovered = set_token_budget(exhausted, 100)
+    assert recovered.status is GoalStatus.PAUSED
+    assert "上限" in (recovered.last_reason or "")
+
+
+def test_inactive_goal_can_record_final_round_usage():
+    goal = _goal()
+    goal = apply_model_update(goal, "complete")
+    settled = settle_round(
+        goal, activity=True, tokens=13, coverage="exact",
+        settled_through_seq=4, last_settled_message_id="m",
+        allow_inactive=True,
+    )
+    assert settled.status is GoalStatus.COMPLETE
+    assert settled.tokens_used == 13
+    assert settled.settled_through_seq == 4
+    assert settled.last_reason == "目标已完成"
+    with pytest.raises(ValueError):
+        settle_round(
+            goal, activity=True, tokens=1, coverage="exact",
+            settled_through_seq=4, last_settled_message_id="m",
+        )
+
+
 def test_status_text_contains_objective_and_remaining():
     goal = _goal(token_budget=100)
     goal = settle_round(

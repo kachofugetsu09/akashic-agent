@@ -2,9 +2,11 @@
 
 from __future__ import annotations
 
+from typing import cast
+
 import pytest
 
-from plugins.goal.state import GoalStatus, new_goal
+from plugins.goal.state import Goal, GoalStatus, new_goal
 from plugins.goal.store import RoundSettlement, digest, goal_key
 from plugins.ledger.contract import (
     ContentReferences,
@@ -151,6 +153,36 @@ async def test_operation_receipts_are_bounded(tmp_path, monkeypatch):
             if key.startswith("goalop:")
         ]
         assert len(keys) <= 3
+    finally:
+        harness.log.close()
+
+
+@pytest.mark.asyncio
+async def test_runtime_sessions_includes_inactive_with_pending_continuation(tmp_path):
+    from dataclasses import replace
+    harness = goal_harness(tmp_path)
+    try:
+        await _create(harness.store)
+        assert await harness.store.runtime_sessions() == frozenset({"s"})
+
+        await harness.store.apply(
+            "s", "op-complete", "update", digest({"status": "complete"}),
+            lambda current: (
+                replace(
+                    cast(Goal, current), status=GoalStatus.COMPLETE,
+                    continuation_id="goal-continuation:g:1",
+                ),
+                "complete",
+            ),
+        )
+        assert await harness.store.active_sessions() == frozenset()
+        assert await harness.store.runtime_sessions() == frozenset({"s"})
+
+        await harness.store.apply(
+            "s", "op-settled", "update", digest({"settled": True}),
+            lambda current: (replace(cast(Goal, current), continuation_id=None), "settled"),
+        )
+        assert await harness.store.runtime_sessions() == frozenset()
     finally:
         harness.log.close()
 

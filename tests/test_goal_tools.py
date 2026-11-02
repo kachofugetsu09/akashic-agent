@@ -44,8 +44,10 @@ async def test_create_get_update_and_replace_after_complete(tmp_path):
         assert blocked.outcome == "error"
         assert "尚未完成" in str(blocked.parts[0].value)
 
-        updated = await update.invoke("call-3", {"session_id": "s", "status": "complete"})
-        assert updated.outcome == "success"
+        updated = await update.prepare({"status": "complete"}, source)
+        assert isinstance(updated, dict)
+        result = await update.invoke("call-3", updated)
+        assert result.outcome == "success"
         assert (await harness.store.get("s")).status is GoalStatus.COMPLETE
 
         replacement = await create.prepare({"objective": "new goal"}, source)
@@ -65,16 +67,48 @@ async def test_update_rejects_missing_goal_and_invalid_transition(tmp_path):
     harness = goal_harness(tmp_path)
     try:
         update = UpdateGoal(harness.store)
-        missing = await update.invoke("call-1", {"session_id": "s", "status": "complete"})
-        assert missing.outcome == "error"
-        assert "没有目标" in str(missing.parts[0].value)
+        missing = await update.prepare({"status": "complete"}, _source())
+        assert isinstance(missing, str)
+        assert "没有目标" in missing
 
         create = CreateGoal(harness.store)
         prepared = await create.prepare({"objective": "ship"}, _source())
         await create.invoke("call-2", prepared)  # type: ignore[arg-type]
-        await update.invoke("call-3", {"session_id": "s", "status": "complete"})
-        again = await update.invoke("call-4", {"session_id": "s", "status": "blocked"})
-        assert again.outcome == "error"
+        completed = await update.prepare({"status": "complete"}, _source())
+        assert isinstance(completed, dict)
+        await update.invoke("call-3", completed)
+        again = await update.prepare({"status": "blocked"}, _source())
+        assert isinstance(again, dict)
+        rejected = await update.invoke("call-4", again)
+        assert rejected.outcome == "error"
+    finally:
+        harness.log.close()
+
+
+@pytest.mark.asyncio
+async def test_update_prepared_snapshot_rejects_replacement_goal(tmp_path):
+    harness = goal_harness(tmp_path)
+    try:
+        create = CreateGoal(harness.store)
+        update = UpdateGoal(harness.store)
+        source = _source()
+        prepared_create = await create.prepare({"objective": "first"}, source)
+        await create.invoke("call-1", prepared_create)  # type: ignore[arg-type]
+        prepared_update = await update.prepare({"status": "complete"}, source)
+        assert isinstance(prepared_update, dict)
+
+        # 模拟目标在 prepare 与 invoke 之间被清除并替换。
+        await harness.store.apply(
+            "s", "op-clear", "clear", "2" * 64,
+            lambda current: (None, "cleared"),
+        )
+        replacement = await create.prepare({"objective": "second"}, source)
+        await create.invoke("call-2", replacement)  # type: ignore[arg-type]
+
+        stale = await update.invoke("call-3", prepared_update)
+        assert stale.outcome == "error"
+        assert "变化" in str(stale.parts[0].value)
+        assert (await harness.store.get("s")).objective == "second"
     finally:
         harness.log.close()
 

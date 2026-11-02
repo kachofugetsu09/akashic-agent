@@ -156,10 +156,15 @@ def settle_round(
     last_settled_message_id: str | None,
     reason: str | None = None,
     preempted: bool = False,
+    allow_inactive: bool = False,
     now: datetime | None = None,
 ) -> Goal:
-    """结算一个已结束的目标轮次；状态推进与计数只在这里发生。"""
-    if not goal.active:
+    """结算一个已结束的目标轮次；状态推进与计数只在这里发生。
+
+    ``allow_inactive`` 只用于目标在轮次进行中被模型标记为 complete/blocked/paused
+    后的收尾：仍记录该轮 token 与 coverage，但不改终态，也不触发续跑。
+    """
+    if not goal.active and not allow_inactive:
         raise ValueError(f"目标状态 {goal.status} 不接受轮次结算")
     if type(tokens) is not int or tokens < 0:
         raise ValueError("token 增量必须是非负整数")
@@ -170,6 +175,16 @@ def settle_round(
     empty = goal.consecutive_empty if preempted else (
         0 if activity else goal.consecutive_empty + 1
     )
+    if not goal.active:
+        # 终态目标只补记最后一轮用量；completed/blocked/paused 的原因保持不变。
+        return _touch(
+            goal, stamp,
+            tokens_used=goal.tokens_used + tokens,
+            settled_through_seq=settled_through_seq,
+            last_settled_message_id=last_settled_message_id,
+            continuation_id=None,
+            usage_coverage=worst_coverage(goal.usage_coverage, coverage),
+        )
     updated = _touch(
         goal, stamp,
         tokens_used=goal.tokens_used + tokens,
@@ -253,6 +268,12 @@ def set_token_budget(
             last_reason="目标 token 预算已耗尽",
         )
     if goal.status is GoalStatus.BUDGET_LIMITED:
+        if goal.continuations >= DEFAULT_MAX_CONTINUATIONS:
+            return _touch(
+                updated, stamp,
+                status=GoalStatus.PAUSED,
+                last_reason="达到自动续跑上限",
+            )
         return _touch(
             updated, stamp,
             status=GoalStatus.ACTIVE,

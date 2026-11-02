@@ -23,7 +23,7 @@ from .state import (
     normalize_token_budget,
     now_utc,
 )
-from .store import GoalStore, digest
+from .store import GoalStale, GoalStore, digest
 
 GET_GOAL_TOOL = "get_goal"
 CREATE_GOAL_TOOL = "create_goal"
@@ -176,11 +176,24 @@ class UpdateGoal:
             session_id = _session(source)
         except (ValidationError, ValueError) as error:
             return str(error)
-        return {"session_id": session_id, "status": request.status}
+        snapshot = await self._store.get_with_version(session_id)
+        if snapshot is None:
+            return "当前会话没有目标"
+        goal, version = snapshot
+        return {
+            "session_id": session_id,
+            "status": request.status,
+            "goal_id": goal.goal_id,
+            "version": version,
+        }
 
     async def invoke(self, key: str, arguments: Mapping[str, object]) -> Result:
         session_id = cast(str, arguments["session_id"])
         status = cast(Literal["complete", "blocked", "paused"], arguments["status"])
+        goal_id = arguments.get("goal_id")
+        version = arguments.get("version")
+        if not isinstance(goal_id, str) or not isinstance(version, int):
+            return Result("error", (ContentPart("text", "目标操作缺少 prepare 快照"),))
 
         def action(current: Goal | None) -> tuple[Goal | None, str]:
             if current is None:
@@ -191,7 +204,10 @@ class UpdateGoal:
         try:
             goal, response = await self._store.apply(
                 session_id, key, "update", digest({"status": status}), action,
+                expected_goal=(goal_id, version),
             )
+        except GoalStale as error:
+            return Result("error", (ContentPart("text", str(error)),))
         except GoalConflict as error:
             return Result("error", (ContentPart("text", str(error)),))
         except ValueError as error:

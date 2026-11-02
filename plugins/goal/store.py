@@ -75,6 +75,10 @@ class RoundSettlement:
     preempted: bool = False
 
 
+class GoalStale(ValueError):
+    """prepare 时捕获的目标快照已被替换或清除。"""
+
+
 def digest(value: object) -> str:
     payload = json.dumps(value, sort_keys=True, ensure_ascii=False,
                          separators=(",", ":"), allow_nan=False).encode()
@@ -280,6 +284,13 @@ class GoalStore:
         record = await run_file_io(lambda: store.read(goal_key(session_id)))
         return None if record is None else decode_goal(session_id, record.value)
 
+    async def get_with_version(self, session_id: str) -> tuple[Goal, int] | None:
+        store = self._open()
+        record = await run_file_io(lambda: store.read(goal_key(session_id)))
+        if record is None:
+            return None
+        return decode_goal(session_id, record.value), record.version
+
     async def version(self, session_id: str) -> int:
         store = self._open()
         record = await run_file_io(lambda: store.read(goal_key(session_id)))
@@ -297,6 +308,20 @@ class GoalStore:
             session_id = key[len(GOAL_PREFIX):]
             goal = decode_goal(session_id, record.value)
             if goal.active:
+                sessions.add(session_id)
+        return frozenset(sessions)
+
+    async def runtime_sessions(self) -> frozenset[str]:
+        """返回需要 runtime 处理的 Session：active，或还有未结算的目标轮次。"""
+        store = self._open()
+        records = await run_file_io(store.list)
+        sessions: set[str] = set()
+        for key, record in records:
+            if not key.startswith(GOAL_PREFIX):
+                continue
+            session_id = key[len(GOAL_PREFIX):]
+            goal = decode_goal(session_id, record.value)
+            if goal.active or goal.continuation_id is not None:
                 sessions.add(session_id)
         return frozenset(sessions)
 
@@ -322,6 +347,7 @@ class GoalStore:
         action: Callable[[Goal | None], tuple[Goal | None, str]],
         *,
         expected_head: int | None = None,
+        expected_goal: tuple[str, int] | None = None,
     ) -> tuple[Goal | None, str]:
         store, reader, _writer = self._access(session_id)
         key = operation_key(kind, session_id, operation_id)
@@ -341,6 +367,11 @@ class GoalStore:
                 raise MessageConflict("目标操作前对话来源已有新消息")
             current = transaction.read(goal_key(session_id))
             current_goal = None if current is None else decode_goal(session_id, current.value)
+            if expected_goal is not None:
+                if current is None or current_goal is None:
+                    raise GoalStale("目标已不存在；请重新读取目标")
+                if (current_goal.goal_id, current.version) != expected_goal:
+                    raise GoalStale("目标已变化；请重新读取目标")
             goal, response = action(current_goal)
             if goal is None:
                 if current is not None:
@@ -393,6 +424,7 @@ class GoalStore:
         settlement: RoundSettlement,
         next_message_id: str | Callable[[Goal], str] | None,
         next_text: str | Callable[[Goal], str] | None,
+        allow_inactive: bool = False,
     ) -> Goal:
         store, reader, writer = self._access(session_id)
 
@@ -403,7 +435,7 @@ class GoalStore:
             goal = decode_goal(session_id, current.value)
             if goal.goal_id != expected_goal_id:
                 raise MessageConflict("目标已被替换")
-            if not goal.active:
+            if not goal.active and not allow_inactive:
                 raise MessageConflict("目标不是 active")
             if transaction.source_changed(reader, "conversation", expected_head):
                 raise MessageConflict("对话来源在结算前已有新消息")
@@ -416,6 +448,7 @@ class GoalStore:
                 last_settled_message_id=settlement.last_settled_message_id,
                 reason=settlement.reason,
                 preempted=settlement.preempted,
+                allow_inactive=allow_inactive,
             )
             if settlement.pause_after and updated.active:
                 from .state import pause
