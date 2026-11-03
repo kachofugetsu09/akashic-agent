@@ -252,6 +252,6 @@ async def register_ui(ctx: Context, jobs: Jobs) -> None:
                 yield {"jobs": [job.to_wire() for job in snapshot]}
 
     _ = await ctx.require(UI_SLOTS).register_plugin_ui(
-        ctx, PluginUiDefinition(module="plugin_ui.js", stylesheet="plugin_ui.css", slots=("header.end",)),
+        ctx, PluginUiDefinition(module="plugin_ui.js", stylesheet="plugin_ui.css", slots=("header.meta",)),
         query=query, follow=follow,
     )

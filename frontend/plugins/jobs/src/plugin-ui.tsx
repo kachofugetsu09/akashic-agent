@@ -1,6 +1,7 @@
-import { useEffect, useId, useMemo, useRef, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { ChevronDown, Square } from "lucide-react";
 import { render, type PluginUiContext, type PluginUiDefinition } from "@akashic/chat-ui-v1";
+import { ICONS, useValue, valueStore, type ValueStore } from "../../shared/src/meta-store";
 import "./plugin-ui.css";
 
 export type JobStatus = "running" | "stopping" | "completed" | "failed" | "timeout" | "killed";
@@ -100,8 +101,7 @@ function JobRow({ job, now, onStop }: { job: JobView; now: number; onStop: (jobI
 }
 
 // 面板分"进行中 / 已结束"两组：有任务运行时已结束组默认折叠；清空只隐藏本页已有的结束行，之后新结束的任务照常出现。
-function JobPanel({ id, live, settled, now, settledOpen, onToggleSettled, onClear, onStop }: {
-  id: string;
+function JobPanel({ live, settled, now, settledOpen, onToggleSettled, onClear, onStop }: {
   onStop: (jobId: string) => Promise<boolean>;
   live: readonly JobView[];
   settled: readonly JobView[];
@@ -110,7 +110,7 @@ function JobPanel({ id, live, settled, now, settledOpen, onToggleSettled, onClea
   onToggleSettled: () => void;
   onClear: () => void;
 }) {
-  return <div id={id} className="job-list__panel" role="group" aria-label="后台任务" data-escape-layer="">
+  return <div className="job-list__panel" role="group" aria-label="后台任务">
     {live.length ? <>
       <p className="job-list__section" aria-hidden="true">进行中</p>
       <ul>{live.map((job) => <JobRow key={job.id} job={job} now={now} onStop={onStop} />)}</ul>
@@ -127,91 +127,76 @@ function JobPanel({ id, live, settled, now, settledOpen, onToggleSettled, onClea
   </div>;
 }
 
-// 标题行右侧的安静标记：有任务运行时显示呼吸点和数量，只剩已结束任务时退为淡色计数。
-function JobListAction({ jobs, onStop }: { jobs: readonly JobView[]; onStop: (jobId: string) => Promise<boolean> }) {
-  const [open, setOpen] = useState(false);
+interface JobsView { jobs: readonly JobView[]; cleared: ReadonlySet<string> }
+
+// 会话信息面板里的任务列表：有任务运行时已结束组默认折叠，时钟只在有运行中任务时走动。
+// 清空记在插件这一侧（随会话存续），关掉面板再打开仍然隐藏。
+function JobsDetail({ store, onStop, onClear }: {
+  store: ValueStore<JobsView>;
+  onStop: (jobId: string) => Promise<boolean>;
+  onClear: (jobIds: readonly string[]) => void;
+}) {
+  const { jobs, cleared } = useValue(store);
   const [now, setNow] = useState(() => Date.now());
   const [settledOpen, setSettledOpen] = useState<boolean | undefined>(undefined);
-  const [cleared, setCleared] = useState<ReadonlySet<string>>(() => new Set());
-  const rootRef = useRef<HTMLDivElement>(null);
-  const triggerRef = useRef<HTMLButtonElement>(null);
-  const panelId = useId();
   const rows = useMemo(() => ordered(jobs), [jobs]);
   const live = useMemo(() => rows.filter(isLive), [rows]);
   const settled = useMemo(() => rows.filter((job) => !isLive(job) && !cleared.has(job.id)), [rows, cleared]);
-  // 1. 点击面板外或按 Esc 收起，Esc 把焦点还给触发按钮。
   useEffect(() => {
-    if (!open) return;
-    const onPointer = (event: PointerEvent) => {
-      if (!rootRef.current?.contains(event.target as Node)) setOpen(false);
-    };
-    const onKey = (event: KeyboardEvent) => {
-      if (event.key !== "Escape" || event.defaultPrevented) return;
-      setOpen(false);
-      // 焦点已经离开面板（例如在工作台里）时不抢回。
-      const active = document.activeElement;
-      if (active === document.body || rootRef.current?.contains(active)) triggerRef.current?.focus();
-    };
-    document.addEventListener("pointerdown", onPointer);
-    document.addEventListener("keydown", onKey);
-    return () => {
-      document.removeEventListener("pointerdown", onPointer);
-      document.removeEventListener("keydown", onKey);
-    };
-  }, [open]);
-  // 2. 时钟只在面板展开且有运行中任务时走动，收起后不再触发重渲染。
-  useEffect(() => {
-    if (!open || live.length === 0) return;
+    if (live.length === 0) return;
     setNow(Date.now());
     const timer = window.setInterval(() => setNow(Date.now()), 1000);
     return () => window.clearInterval(timer);
-  }, [open, live.length]);
-  // 3. 没有可见任务时不占位置，并在渲染期收起面板，免得下一个任务出现时面板自己弹开。
-  const visible = live.length + settled.length;
-  if (visible === 0) {
-    if (open) setOpen(false);
-    return null;
-  }
-  // 4. 没有运行中任务时，圆点沿用最近结束任务的状态：失败、超时、停止在收起时也能被看见。
-  const latest = live.length ? "running" : settled[0].status;
-  const summary = live.length ? `${live.length} 个任务运行中` : `${visible} 个后台任务`;
-  const outcome = latest === "running" || latest === "completed" ? "" : `，最近一个${STATUS_LABEL[latest]}`;
-  return <div className="job-list" ref={rootRef}>
-    <button ref={triggerRef} type="button" className="job-list__trigger" data-live={live.length > 0 || undefined}
-      aria-expanded={open} aria-controls={open ? panelId : undefined} aria-label={`后台任务：${summary}${outcome}`}
-      onClick={() => { setNow(Date.now()); setOpen((value) => !value); }}>
-      <span className="job-list__dot" data-status={latest} aria-hidden="true" />
-      <span className="job-list__summary">{summary}</span>
-      <span className="job-list__count" aria-hidden="true">{live.length || visible}</span>
-    </button>
-    {open ? <JobPanel id={panelId} live={live} settled={settled} now={now} onStop={onStop}
-      settledOpen={settledOpen ?? live.length === 0}
-      onToggleSettled={() => setSettledOpen(!(settledOpen ?? live.length === 0))}
-      onClear={() => {
-        setCleared((current) => new Set([...current, ...settled.map((job) => job.id)]));
-        if (live.length) triggerRef.current?.focus();
-      }} /> : null}
-  </div>;
+  }, [live.length]);
+  if (live.length + settled.length === 0) return <p className="job-list__empty">没有后台任务。</p>;
+  return <JobPanel live={live} settled={settled} now={now} onStop={onStop}
+    settledOpen={settledOpen ?? live.length === 0}
+    onToggleSettled={() => setSettledOpen(!(settledOpen ?? live.length === 0))}
+    onClear={() => onClear(settled.map((job) => job.id))} />;
+}
+
+// 说明行上的一项：有任务在跑时是进行中；最近一个结束的失败或超时时需要注意；只剩已结束任务时只在面板里。
+function jobsItem(jobs: readonly JobView[], detail: (host: HTMLElement) => () => void) {
+  const rows = ordered(jobs);
+  const live = rows.filter(isLive).length;
+  const latest = rows.find((job) => !isLive(job));
+  const failed = !live && latest && (latest.status === "failed" || latest.status === "timeout");
+  return {
+    id: "jobs", scope: "session" as const, label: "后台任务", iconSvg: ICONS.terminal, detail,
+    tone: live ? "live" as const : failed ? "alert" as const : "info" as const,
+    text: live ? `${live} 个后台任务在跑` : failed ? `后台任务${STATUS_LABEL[latest.status]}` : undefined,
+    value: live ? `${live} 个运行中` : failed ? latest.label : `${rows.length} 个已结束`,
+  };
 }
 
 const NO_JOBS: readonly JobView[] = [];
 
 // 会话任务镜像来自本插件后端的 follow 推送；null（断线、插件换代）即旧镜像失效，按空列表处理。
-function SessionJobs({ context }: { context: PluginUiContext }) {
-  const [jobs, setJobs] = useState<readonly JobView[]>(NO_JOBS);
-  useEffect(() => context.subscribe((value) => {
-    const rows = value?.jobs;
-    setJobs(Array.isArray(rows) && rows.every(isJob) ? rows : NO_JOBS);
-  }), [context]);
-  // 停止只回答是否受理；行状态由推送的快照收敛（停止中 → 已停止）。
-  const stop = async (jobId: string) => {
-    try { return (await context.query("job.stop", { job_id: jobId }, { cache: "none" })).accepted === true; }
-    catch { return false; }
-  };
-  return <JobListAction jobs={jobs} onStop={stop} />;
+// 不渲染界面：只往标题下的说明行登记一项，列表在宿主的会话信息面板里展开。
+function SessionJobs({ context }: { context: PluginUiContext<"header.meta"> }) {
+  const store = useMemo(() => valueStore<JobsView>({ jobs: NO_JOBS, cleared: new Set() }), []);
+  useEffect(() => {
+    // 停止只回答是否受理；行状态由推送的快照收敛（停止中 → 已停止）。
+    const stop = async (jobId: string) => {
+      try { return (await context.query("job.stop", { job_id: jobId }, { cache: "none" })).accepted === true; }
+      catch { return false; }
+    };
+    const update = (next: JobsView) => {
+      store.set(next);
+      const visible = next.jobs.filter((job) => isLive(job) || !next.cleared.has(job.id));
+      const detail = (host: HTMLElement) => render(host, <JobsDetail store={store} onStop={stop}
+        onClear={(ids) => update({ ...store.get(), cleared: new Set([...store.get().cleared, ...ids]) })} />);
+      context.meta.publish(visible.length ? [jobsItem(visible, detail)] : []);
+    };
+    return context.subscribe((value) => {
+      const rows = value?.jobs;
+      update({ ...store.get(), jobs: Array.isArray(rows) && rows.every(isJob) ? rows : NO_JOBS });
+    });
+  }, [context, store]);
+  return null;
 }
 
 const definition: PluginUiDefinition = {
-  slots: { "header.end": { mount: (host, context) => render(host, <SessionJobs context={context} />) } },
+  slots: { "header.meta": { mount: (host, context) => render(host, <SessionJobs context={context} />) } },
 };
 export default definition;
