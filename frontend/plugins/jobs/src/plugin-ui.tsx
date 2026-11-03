@@ -127,12 +127,18 @@ function JobPanel({ live, settled, now, settledOpen, onToggleSettled, onClear, o
   </div>;
 }
 
+interface JobsView { jobs: readonly JobView[]; cleared: ReadonlySet<string> }
+
 // 会话信息面板里的任务列表：有任务运行时已结束组默认折叠，时钟只在有运行中任务时走动。
-function JobsDetail({ store, onStop }: { store: ValueStore<readonly JobView[]>; onStop: (jobId: string) => Promise<boolean> }) {
-  const jobs = useValue(store);
+// 清空记在插件这一侧（随会话存续），关掉面板再打开仍然隐藏。
+function JobsDetail({ store, onStop, onClear }: {
+  store: ValueStore<JobsView>;
+  onStop: (jobId: string) => Promise<boolean>;
+  onClear: (jobIds: readonly string[]) => void;
+}) {
+  const { jobs, cleared } = useValue(store);
   const [now, setNow] = useState(() => Date.now());
   const [settledOpen, setSettledOpen] = useState<boolean | undefined>(undefined);
-  const [cleared, setCleared] = useState<ReadonlySet<string>>(() => new Set());
   const rows = useMemo(() => ordered(jobs), [jobs]);
   const live = useMemo(() => rows.filter(isLive), [rows]);
   const settled = useMemo(() => rows.filter((job) => !isLive(job) && !cleared.has(job.id)), [rows, cleared]);
@@ -146,7 +152,7 @@ function JobsDetail({ store, onStop }: { store: ValueStore<readonly JobView[]>; 
   return <JobPanel live={live} settled={settled} now={now} onStop={onStop}
     settledOpen={settledOpen ?? live.length === 0}
     onToggleSettled={() => setSettledOpen(!(settledOpen ?? live.length === 0))}
-    onClear={() => setCleared((current) => new Set([...current, ...settled.map((job) => job.id)]))} />;
+    onClear={() => onClear(settled.map((job) => job.id))} />;
 }
 
 // 说明行上的一项：有任务在跑时是进行中；最近一个结束的失败或超时时需要注意；只剩已结束任务时只在面板里。
@@ -168,18 +174,25 @@ const NO_JOBS: readonly JobView[] = [];
 // 会话任务镜像来自本插件后端的 follow 推送；null（断线、插件换代）即旧镜像失效，按空列表处理。
 // 不渲染界面：只往标题下的说明行登记一项，列表在宿主的会话信息面板里展开。
 function SessionJobs({ context }: { context: PluginUiContext<"header.meta"> }) {
-  const store = useMemo(() => valueStore<readonly JobView[]>(NO_JOBS), []);
-  useEffect(() => context.subscribe((value) => {
-    const rows = value?.jobs;
-    const jobs = Array.isArray(rows) && rows.every(isJob) ? rows : NO_JOBS;
-    store.set(jobs);
-    context.meta.publish(jobs.length ? [jobsItem(jobs, (host) => render(host, <JobsDetail store={store} onStop={stop} />))] : []);
-  }), [context, store]);
-  // 停止只回答是否受理；行状态由推送的快照收敛（停止中 → 已停止）。
-  const stop = async (jobId: string) => {
-    try { return (await context.query("job.stop", { job_id: jobId }, { cache: "none" })).accepted === true; }
-    catch { return false; }
-  };
+  const store = useMemo(() => valueStore<JobsView>({ jobs: NO_JOBS, cleared: new Set() }), []);
+  useEffect(() => {
+    // 停止只回答是否受理；行状态由推送的快照收敛（停止中 → 已停止）。
+    const stop = async (jobId: string) => {
+      try { return (await context.query("job.stop", { job_id: jobId }, { cache: "none" })).accepted === true; }
+      catch { return false; }
+    };
+    const update = (next: JobsView) => {
+      store.set(next);
+      const visible = next.jobs.filter((job) => isLive(job) || !next.cleared.has(job.id));
+      const detail = (host: HTMLElement) => render(host, <JobsDetail store={store} onStop={stop}
+        onClear={(ids) => update({ ...store.get(), cleared: new Set([...store.get().cleared, ...ids]) })} />);
+      context.meta.publish(visible.length ? [jobsItem(visible, detail)] : []);
+    };
+    return context.subscribe((value) => {
+      const rows = value?.jobs;
+      update({ ...store.get(), jobs: Array.isArray(rows) && rows.every(isJob) ? rows : NO_JOBS });
+    });
+  }, [context, store]);
   return null;
 }
 
