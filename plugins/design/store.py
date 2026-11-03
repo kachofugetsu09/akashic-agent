@@ -85,7 +85,7 @@ class DesignStore:
 
     def _read(self, session: str, document: str) -> tuple[DesignDocument, bytes]:
         current = _known(self._load(session), document)
-        data = (self._folder(session) / f"{document}.fig").read_bytes() if current.revision else b""
+        data = self._content(session, current).read_bytes() if current.revision else b""
         return current, data
 
     def _write(self, session: str, document: str, data: bytes, base: int) -> DesignDocument:
@@ -94,10 +94,21 @@ class DesignStore:
         if current.revision != base:
             raise RevisionConflict(current.revision)
         saved = replace(current, revision=current.revision + 1, updated_at=_now(), size=len(data))
-        _atomic_write(self._folder(session) / f"{document}.fig", data)
+        target = self._content(session, saved)
+        _atomic_write(target, data)
         index[document] = saved
-        self._save(session, index)
+        try:
+            self._save(session, index)
+        except BaseException:
+            target.unlink(missing_ok=True)
+            raise
+        if current.revision:
+            self._content(session, current).unlink(missing_ok=True)
         return saved
+
+    # 每个修订一个内容文件：索引写入失败时旧索引仍指向旧内容，不会出现“旧修订号 + 新内容”让旧 base 通过校验。
+    def _content(self, session: str, item: DesignDocument) -> Path:
+        return self._folder(session) / f"{item.id}.{item.revision}.fig"
 
     # 会话 ID 不直接当目录名：取摘要，任何字符都落在同一层目录里。
     def _folder(self, session: str) -> Path:
