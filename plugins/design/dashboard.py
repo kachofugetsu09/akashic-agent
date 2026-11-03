@@ -1,21 +1,48 @@
-"""设计标签的浏览器入口：按会话列出、新建、读写设计文档。"""
+"""设计标签的浏览器入口：按会话列出、新建、读写设计文档，并交付按需加载的编辑器资产。"""
 from __future__ import annotations
 
+import os
 import re
 from dataclasses import asdict
+from pathlib import Path
 
 from fastapi import Body, FastAPI, HTTPException, Query, Request, Response
+from starlette.types import Scope
 
 from agent.plugin_composition import DashboardContext
+from plugins.ui.contract import CompressedStaticFiles
 
 from .store import DESIGN_STORE, MAX_DOCUMENT_BYTES, DesignDocument, DesignStore, DesignStoreError, RevisionConflict
 
 inject = (DESIGN_STORE,)
+ASSETS = "/design/assets/"
 _SESSION = Query(min_length=1, max_length=512)
 _DOCUMENT = re.compile(r"[0-9a-f]{16}")
+# 编辑器页面比宿主默认策略多放行 CanvasKit 的 WASM 编译；不放行内联脚本与 eval。
+EDITOR = "editor.html"
+EDITOR_POLICY = (
+    "default-src 'self'; script-src 'self' 'wasm-unsafe-eval'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; "
+    "font-src 'self' data: blob:; connect-src 'self' data: blob:; "
+    "frame-src 'self'; worker-src 'self' blob:; object-src 'none'; base-uri 'none'; form-action 'none'; frame-ancestors 'self'"
+)
+
+
+# 构建产物按内容哈希命名，可以长期缓存；入口页 editor.html 每次都要回源，换版本时才能拿到新的文件名。
+class _EditorAssets(CompressedStaticFiles):
+    def file_response(self, full_path: os.PathLike[str] | str, stat_result: os.stat_result,
+                      scope: Scope, status_code: int = 200) -> Response:
+        response = super().file_response(full_path, stat_result, scope, status_code)
+        hashed = not str(full_path).endswith(".html")
+        response.headers["Cache-Control"] = "public, max-age=31536000, immutable" if hashed else "no-cache"
+        if Path(full_path).name == EDITOR:
+            response.headers["Content-Security-Policy"] = EDITOR_POLICY
+        return response
 
 
 def register(app: FastAPI, context: DashboardContext) -> None:
+    assets = _EditorAssets(directory=context.plugin_dir / "static", check_dir=False)
+    for name in asset_names(context.plugin_dir):
+        _asset_route(app, assets, name)
     _catalog_routes(app, context)
     _content_routes(app, context)
 
@@ -70,6 +97,19 @@ def _content_routes(app: FastAPI, context: DashboardContext) -> None:
         except DesignStoreError as error:
             raise HTTPException(404, str(error)) from error
         return _view(saved)
+
+
+# iframe 页面不带 Web 模块身份，只能走宿主放行的导航路径：每个构建产物各登记一条无参数的 GET 路由。
+def asset_names(plugin_dir: Path) -> tuple[str, ...]:
+    folder = plugin_dir / "static"
+    return tuple(sorted(path.name for path in folder.iterdir() if path.is_file())) if folder.is_dir() else ()
+
+
+def _asset_route(app: FastAPI, assets: _EditorAssets, name: str) -> None:
+    async def asset(request: Request) -> Response:
+        return await assets.get_response(name, request.scope)
+
+    app.add_api_route(f"{ASSETS}{name}", asset, methods=["GET"], include_in_schema=False)
 
 
 def _checked(document: str) -> str:
