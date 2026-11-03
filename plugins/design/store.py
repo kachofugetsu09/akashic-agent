@@ -4,6 +4,7 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import json
+import logging
 import os
 import secrets
 from dataclasses import asdict, dataclass, replace
@@ -11,6 +12,8 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 from agent.plugin_composition import ServiceKey
+
+logger = logging.getLogger(__name__)
 
 MAX_DOCUMENT_BYTES = 64 * 1024 * 1024
 MAX_DOCUMENTS = 50
@@ -102,8 +105,12 @@ class DesignStore:
         except BaseException:
             target.unlink(missing_ok=True)
             raise
+        # 新修订已经提交：旧内容文件删不掉只留下垃圾，不影响这次保存的结果
         if current.revision:
-            self._content(session, current).unlink(missing_ok=True)
+            try:
+                self._content(session, current).unlink(missing_ok=True)
+            except OSError as error:
+                logger.warning("design: 旧修订文件删除失败 %s: %s", self._content(session, current).name, error)
         return saved
 
     # 每个修订一个内容文件：索引写入失败时旧索引仍指向旧内容，不会出现“旧修订号 + 新内容”让旧 base 通过校验。
