@@ -50,8 +50,8 @@ export function HeaderActions({ onFind, newChat }: { onFind?: () => void; newCha
   const compact = useSyncExternalStore(subscribeChatLayout, () => chatLayout().compact);
   const host = useHeaderActions();
   const [open, setOpen] = useState(false);
-  // 菜单项打开的查找条、工作台要拿焦点：选中后关菜单时不把焦点还给「⋯」。
-  const selected = useRef(false);
+  // 菜单项打开的查找条、工作台要拿焦点：菜单的焦点约束解除（关菜单）之后才执行，也不再把焦点还给「⋯」。
+  const pending = useRef<(() => void) | null>(null);
   const actions: HeadingAction[] = [
     ...onFind ? [{ id: "find", label: "在对话中查找", hint: "在对话中查找 (Ctrl/⌘F)", keys: "Control+F Meta+F",
       icon: <Search size={20} strokeWidth={1.75} aria-hidden="true" />, run: onFind }] : [],
@@ -73,11 +73,14 @@ export function HeaderActions({ onFind, newChat }: { onFind?: () => void; newCha
         </button>
       </DropdownMenuTrigger>
       <DropdownMenuContent align="end" className="conversation-heading__menu" onCloseAutoFocus={(event) => {
-        if (selected.current) event.preventDefault();
-        selected.current = false;
+        const run = pending.current;
+        pending.current = null;
+        if (!run) return;
+        event.preventDefault();
+        run();
       }}>
         {actions.map((action) => <DropdownMenuItem key={action.id} data-header-action={action.id}
-          data-attention={action.attention || undefined} onSelect={() => { selected.current = true; action.run(); }}>
+          data-attention={action.attention || undefined} onSelect={() => { pending.current = action.run; }}>
           {action.icon}<span>{action.label}</span>
         </DropdownMenuItem>)}
       </DropdownMenuContent>
