@@ -69,5 +69,6 @@
 .conversation-heading__stack > h1 { color: var(--chat-ink); font-weight: 600; }
 .header-meta-panel__close { position: absolute; inset-block-start: 6px; inset-inline-end: 6px; display: inline-grid; inline-size: 44px; block-size: 44px;
   place-items: center; border: 0; border-radius: 8px; background: transparent; color: var(--chat-muted); cursor: pointer; }
+.header-meta-panel:focus, .header-meta-panel__scope:focus { outline: none; }
 .header-meta-panel__close:focus-visible { outline: 2px solid var(--ak-rule-focus); outline-offset: -2px; }
 .header-meta-panel[data-sheet] > section:first-of-type .header-meta-panel__scope { padding-inline-end: 52px; }

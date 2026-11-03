@@ -252,7 +252,13 @@ function usePanelPlace(anchor: React.RefObject<HTMLDivElement | null>, compact: 
   return place;
 }
 
-const FOCUSABLE = "button:not([disabled]), [href], input, textarea, select, [tabindex]:not([tabindex='-1'])";
+const FOCUSABLE = "button, [href], input, textarea, select, [tabindex]";
+
+// 能用 Tab 到达的控件：去掉禁用的、tabindex 为负的和不可见的。
+function tabbable(root: HTMLElement): HTMLElement[] {
+  return [...root.querySelectorAll<HTMLElement>(FOCUSABLE)]
+    .filter((item) => !item.matches(":disabled") && item.tabIndex >= 0 && item.getClientRects().length > 0);
+}
 
 // 焦点：打开时进到面板里点中的一行，关闭时回到打开它的按钮（已消失就回说明行第一项）；
 // 面板里有焦点的一项被撤回时，焦点留在面板里。
@@ -262,7 +268,13 @@ function usePanelFocus(ref: React.RefObject<HTMLDivElement | null>, anchor: Reac
     const panel = ref.current;
     const line = anchor.current;
     if (!panel) return;
-    const enter = () => (panel.querySelector<HTMLElement>("[data-focus='true']") ?? panel.querySelector<HTMLElement>(FOCUSABLE))?.focus({ preventScroll: true });
+    // 依次试点中的一项、第一个可 Tab 的控件，都不成（例如最后一项刚被撤回）就聚焦面板本身。
+    const enter = () => {
+      for (const target of [panel.querySelector<HTMLElement>("[data-focus='true']"), tabbable(panel)[0], panel]) {
+        target?.focus({ preventScroll: true });
+        if (target && document.activeElement === target) return;
+      }
+    };
     enter();
     const observer = new MutationObserver(() => { if (document.activeElement === document.body) enter(); });
     observer.observe(panel, { childList: true, subtree: true });
@@ -277,7 +289,7 @@ function usePanelFocus(ref: React.RefObject<HTMLDivElement | null>, anchor: Reac
 // 紧凑外壳的抽屉是模态：Tab 在抽屉里循环，不落到遮罩后面。
 function trapTab(event: React.KeyboardEvent<HTMLDivElement>) {
   if (event.key !== "Tab") return;
-  const items = [...event.currentTarget.querySelectorAll<HTMLElement>(FOCUSABLE)].filter((item) => item.getClientRects().length);
+  const items = tabbable(event.currentTarget);
   if (!items.length) return;
   const [first, last] = [items[0], items[items.length - 1]];
   if (event.shiftKey && document.activeElement === first) { event.preventDefault(); last.focus(); }
@@ -324,13 +336,14 @@ function SessionInfoPanel({ anchor, compact, roots, project, focus, onFocus, onC
     const nodes = roots.filter((root) => root.item.scope === name).sort(name === "project" ? byWeight : byUrgency);
     if (!nodes.length && !title) return null;
     return <section aria-label={label}>
-      <h2 className="header-meta-panel__scope" data-focus={name === "project" && focus === "project"}>{label}{title ? <b>{title}</b> : null}</h2>
+      <h2 className="header-meta-panel__scope" data-focus={name === "project" && focus === "project"}
+        tabIndex={name === "project" && focus === "project" ? -1 : undefined}>{label}{title ? <b>{title}</b> : null}</h2>
       {nodes.map((node) => row(node, 0))}
     </section>;
   };
   return <>
     {compact ? <div className="header-meta-scrim" onClick={onClose} /> : null}
-    <div ref={ref} className="header-meta-panel" data-sheet={compact || undefined} style={place} role="dialog" aria-modal={compact}
+    <div ref={ref} className="header-meta-panel" data-sheet={compact || undefined} style={place} role="dialog" aria-modal={compact} tabIndex={-1}
       aria-label="会话信息" data-escape-layer="" onKeyDown={compact ? trapTab : undefined}>
       {compact ? <button type="button" className="header-meta-panel__close" aria-label="关闭会话信息" onClick={onClose}>
         <X size={18} strokeWidth={1.75} aria-hidden="true" /></button> : null}
