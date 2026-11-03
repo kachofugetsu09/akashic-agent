@@ -39,6 +39,7 @@
 .header-meta-panel__scope { display: flex; align-items: baseline; gap: 6px; margin: 0; padding: 10px 10px 4px; color: var(--chat-faint);
   font-size: var(--chat-type-caption, 0.75rem); font-weight: 600; }
 .header-meta-panel__scope b { color: var(--chat-muted); font-weight: 600; }
+.header-meta-panel__empty { margin: 0; padding: 2px 10px 6px; color: var(--chat-faint); font-size: var(--chat-type-caption, 0.75rem); }
 .header-meta-panel__scope[data-focus="true"] b { color: var(--chat-ink); }
 .header-meta-node__row { display: grid; inline-size: 100%; min-block-size: 32px; grid-template-columns: 16px minmax(0, 1fr) auto 6px;
   align-items: center; gap: 8px; padding-block: 0; padding-inline: calc(10px + var(--depth, 0) * 18px) 10px; border: 0;

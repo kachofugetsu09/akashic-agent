@@ -257,6 +257,7 @@ function SessionInfoPanel({ anchor, compact, roots, project, focus, onFocus, onC
     {compact ? <div className="header-meta-scrim" onClick={onClose} /> : null}
     <div ref={ref} className="header-meta-panel" data-sheet={compact || undefined} style={place} role="group" aria-label="会话信息" data-escape-layer="">
       {scope("project", "项目", project)}{scope("session", "本会话")}{scope("account", "账号")}
+      {roots.length ? null : <p className="header-meta-panel__empty">工作目录、代理任务、后台任务等状态出现后会列在这里。</p>}
     </div>
   </>;
 }
