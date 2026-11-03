@@ -1016,6 +1016,12 @@ input {
 /* 会话行的标题前有状态槽位，“新对话”的文字与它对齐。 */
 .group-session--new > span { padding-inline-start: 3px; }
 
+/* 项目内会话超过上限时收进“展开更多”：弱化成辅助行，箭头随展开翻转。 */
+.group-session--more { color: var(--chat-muted); }
+.group-session--more > svg { width: 18px; flex: 0 0 18px; transition: transform 120ms ease-out; }
+.group-session--more[aria-expanded="true"] > svg { transform: rotate(180deg); }
+.group-session--more > span { padding-inline-start: 3px; }
+
 /* 分组内置顶：行尾一枚小图钉，悬停或聚焦时让位给行菜单。
    键盘聚焦直接用 :focus-visible（原生键盘语义，只重算焦点行）：祖先模态类翻转会
    全树重算（2002 行实测约 1.1s），:has(:focus-visible) 则每次按键重算全部行。 */
