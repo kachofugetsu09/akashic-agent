@@ -534,6 +534,7 @@ class MessageProjection:
         blocks: list[Mapping[str, Any]] = []
         calls: list[dict[str, Any]] = []
         observations: list[Mapping[str, Any]] = []
+        attached: list[Mapping[str, Any]] = []
         if reminder is not None:
             msg_rows.append({"role": "user", "content": reminder})
         for index, part in enumerate(body.parts):
@@ -551,6 +552,10 @@ class MessageProjection:
                     observations.append({"role": "tool", "tool_call_id": identity, "content": [
                         {"type": "text", "text": "调用未执行：" + rejected["error"]},
                     ]})
+                elif part.kind == "artifact_ref" and isinstance(body, Output):
+                    # 回复里的附件由内容协议解出，不是模型写的字；标签留在 assistant 正文里，
+                    # 模型下一轮会照抄成一段假附件 JSON，所以移到随后的 user 行。
+                    attached.extend(render(message, index, msg_refs))
                 elif part.kind != "model.facts":
                     blocks.extend(render(message, index, msg_refs))
                 continue
@@ -643,6 +648,11 @@ class MessageProjection:
                 row["reasoning_content"] = model_facts["thinking"]
             msg_rows.append(row)
             msg_rows.extend(observations)
+        if attached:
+            msg_rows.append({"role": "user", "content": [
+                {"type": "text", "text": "宿主随上面这条 Agent 回复发出的附件（由回复里的内容标记生成，不是回复文字，不要在回复里写出）："},
+                *attached,
+            ]})
 
         # 3. 行在此冻结；动态 kind、外部引用与实际转换命中均保留逐轮重算。
         dynamic_kinds = self._dynamic_content_kinds
