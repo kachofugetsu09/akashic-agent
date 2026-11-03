@@ -1,22 +1,12 @@
-/* 后台任务标记与目录标记同属标题行右侧的安静入口：平时淡墨，展开或有任务运行时才提亮。 */
-.job-list { position: relative; flex: 0 0 auto; padding-inline-start: 4px; font-size: var(--chat-type-caption, 0.75rem); }
-/* 同一插槽里排在目录标记之后。 */
-.plugin-ui-slot[data-slot="header.end"] > .plugin-ui-host:is([data-plugin="jobs"], [data-plugin^="jobs@"]) { order: 1; }
-
-.job-list__trigger { display: inline-flex; min-height: 32px; align-items: center; gap: 6px; padding-inline: 8px; border: 0; border-radius: 8px; background: transparent; color: var(--chat-faint); font: inherit; cursor: pointer; transition: color var(--ak-sys-duration-short) var(--ak-sys-motion-standard); }
-.job-list__trigger[data-live] { color: var(--chat-muted); }
-.job-list__trigger:hover,
-.job-list__trigger[aria-expanded="true"] { color: var(--chat-ink); }
-.job-list__trigger:focus-visible { outline: 2px solid var(--ak-rule-focus); outline-offset: 2px; }
-.job-list__count { display: none; font-variant-numeric: tabular-nums; }
-
+/* 会话信息面板里的后台任务列表：宿主给外框，这里只排列表本身。 */
 .job-list__dot { width: 6px; height: 6px; flex: 0 0 auto; border-radius: 50%; background: currentColor; opacity: 0.5; }
 .job-list__dot[data-status="running"] { background: var(--ak-color-status-success); opacity: 1; }
 .job-list__dot[data-status="failed"],
 .job-list__dot[data-status="timeout"] { background: var(--ak-color-status-error); opacity: 1; }
 .job-list__dot[data-status="killed"] { background: var(--ak-color-status-warning); opacity: 1; }
 
-.job-list__panel { position: absolute; z-index: 20; inset-block-start: calc(100% + 4px); inset-inline-end: 0; inline-size: min(24rem, calc(100vw - 32px)); max-block-size: min(26rem, calc(100dvh - 8rem)); overflow: auto; padding: 6px; border: 1px solid var(--chat-line); border-radius: 12px; background: var(--ak-paper-canvas); box-shadow: 0 8px 24px color-mix(in oklab, var(--ak-ink-primary) 12%, transparent); color: var(--chat-muted); }
+.job-list__panel { display: grid; gap: 2px; margin-inline-start: -10px; color: var(--chat-muted); }
+.job-list__empty { margin: 0; }
 .job-list__panel ul { display: grid; gap: 2px; margin: 0; padding: 0; list-style: none; }
 
 /* 分组标题：进行中只是标签；已结束可折叠，右侧是清空。 */
@@ -49,7 +39,7 @@
 }
 
 @media (prefers-reduced-motion: no-preference) {
-  .job-list__trigger .job-list__dot[data-status="running"] { animation: job-list-breathe 2.4s ease-in-out infinite; }
+  .job-list__row .job-list__dot[data-status="running"] { animation: job-list-breathe 2.4s ease-in-out infinite; }
 }
 
 @keyframes job-list-breathe {
@@ -57,18 +47,9 @@
   50% { opacity: 0.35; }
 }
 
-/* 窄屏标题行只留圆点和数字，触控热区放大到 44px。宽度断点按聊天根节点（ADR 0126），属性由 chat-layout 写入。 */
-:where([data-chat-width~="820"], [data-chat-touch]) .job-list__trigger { min-width: 44px; min-height: 44px; justify-content: center; }
-
+/* 触屏上折叠与清空的热区放大。宽度断点按聊天根节点（ADR 0126），属性由 chat-layout 写入。 */
 :where([data-chat-width~="820"], [data-chat-touch]) .job-list__fold,
 :where([data-chat-width~="820"], [data-chat-touch]) .job-list__clear { min-height: 40px; }
-
-/* 窄屏标记不在行尾，面板改为贴视口两侧展开，避免向左溢出。 */
-:where([data-chat-width~="820"], [data-chat-short]) .job-list__summary { display: none; }
-
-:where([data-chat-width~="820"], [data-chat-short]) .job-list__count { display: inline; }
-
-:where([data-chat-width~="820"], [data-chat-short]) .job-list__panel { position: fixed; inset-block-start: calc(52px + env(safe-area-inset-top, 0px)); inset-inline: 12px; inline-size: auto; }
 
 /* 停止按钮：平时是安静的方块，武装后展开成带字的确认胶囊，免得只靠颜色区分。 */
 .job-list__stop { display: inline-flex; grid-row: 1 / span 2; grid-column: 4; align-self: center; min-width: 28px; min-height: 28px; align-items: center; justify-content: center; gap: 4px; margin-left: 4px; padding: 0 6px; border: 1px solid transparent; border-radius: 999px; background: transparent; color: var(--chat-faint); font: inherit; font-size: var(--chat-type-caption, 0.75rem); cursor: pointer; }

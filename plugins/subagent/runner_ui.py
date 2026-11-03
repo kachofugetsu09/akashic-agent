@@ -36,5 +36,5 @@ async def register_ui(ctx: Context, runners: Runners) -> None:
             await asyncio.sleep(0.5)
 
     await ctx.require(UI_SLOTS).register_plugin_ui(ctx,
-        PluginUiDefinition(module="runner_ui.js", stylesheet="runner_ui.css", slots=("header.end",)),
+        PluginUiDefinition(module="runner_ui.js", stylesheet="runner_ui.css", slots=("header.meta",)),
         query=query, follow=follow)

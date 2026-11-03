@@ -1,6 +1,7 @@
-import { Folder } from "lucide-react";
-import { useEffect, useState } from "react";
-import { HeaderMarker, HeaderMarkerActions, copyText, render, type PluginUiContext, type PluginUiDefinition } from "@akashic/chat-ui-v1";
+import { useEffect, useMemo, useState } from "react";
+import { copyText, render, type PluginUiContext, type PluginUiDefinition } from "@akashic/chat-ui-v1";
+import { ICONS, useValue, valueStore, type ValueStore } from "../../shared/src/meta-store";
+import "./plugin-ui.css";
 
 interface CurrentDirectory {
   path: string | null;
@@ -30,8 +31,11 @@ function currentDirectory(row: Record<string, unknown>): CurrentDirectory {
     agents: { status: rules.status, sources: rules.sources as string[], error: "error" in rules ? rules.error as string : undefined } };
 }
 
+interface DirectoryView { current: CurrentDirectory; path: string; error: string; refresh(): void }
+
 // 只读会话状态；工具回执（宿主失效通知）、重新聚焦及可见轮询都重新检查执行主机。
-function SessionDirectory({ context }: { context: PluginUiContext }) {
+// 不渲染界面：目录登记为说明行「在哪」路径的一段，详细内容在宿主的会话信息面板里展开。
+function SessionDirectory({ context }: { context: PluginUiContext<"header.meta"> }) {
   const [current, setCurrent] = useState<CurrentDirectory | null>(null);
   const [error, setError] = useState("");
   const [retry, setRetry] = useState(0);
@@ -61,44 +65,52 @@ function SessionDirectory({ context }: { context: PluginUiContext }) {
       window.clearInterval(timer);
     };
   }, [context, retry]);
-  // 目录未设置属于常态，不占位置；已设置或出现异常才显示标记。
-  if (!current?.path) return null;
-  return <DirectoryPanel current={current} path={current.path} error={error} onRefresh={() => setRetry((value) => value + 1)} />;
+  const store = useMemo<ValueStore<DirectoryView | null>>(() => valueStore(null), []);
+  const path = current?.path ?? null;
+  useEffect(() => {
+    // 目录未设置属于常态，不占位置；已设置或出现异常才登记。
+    if (!current || !path) { store.set(null); context.meta.publish([]); return; }
+    store.set({ current, path, error, refresh: () => setRetry((value) => value + 1) });
+    const abnormal = !["available", "unset"].includes(current.status);
+    context.meta.publish([{
+      id: "directory", scope: "project", path: true, weight: 10, iconSvg: ICONS.folder,
+      tone: abnormal ? "alert" : "info", label: "工作目录",
+      text: abnormal ? statusLabel(current.status) : directoryName(path), value: directoryName(path),
+      detail: (host) => render(host, <DirectoryDetail store={store} />),
+    }]);
+  }, [context, current, error, path, store]);
+  return null;
 }
 
-function DirectoryPanel({ current, path, error, onRefresh }: {
-  current: CurrentDirectory;
-  path: string;
-  error: string;
-  onRefresh: () => void;
-}) {
+function DirectoryDetail({ store }: { store: ValueStore<DirectoryView | null> }) {
+  const view = useValue(store);
   const [copied, setCopied] = useState(false);
+  if (!view) return null;
+  const { current, path, error } = view;
   const abnormal = !["available", "unset"].includes(current.status);
-  const label = abnormal ? statusLabel(current.status) : directoryName(path);
   const copy = () => {
     void copyText(path).then(() => {
       setCopied(true);
       window.setTimeout(() => setCopied(false), 1500);
     });
   };
-  return <HeaderMarker icon={<Folder size={14} aria-hidden="true" />} label={label} alert={abnormal}
-    ariaLabel={`工作目录：${path}${abnormal ? `，${label}` : ""}`} panelLabel="工作目录">
+  return <div className="directory-detail">
     <code>{path}</code>
-    <p>{abnormal ? `${statusLabel(current.status)}${current.error ? `：${current.error}` : ""}` : "此对话独立使用这个目录，不影响项目默认目录。"}</p>
+    <p data-tone={abnormal ? "error" : undefined}>{abnormal ? `${statusLabel(current.status)}${current.error ? `：${current.error}` : ""}` : "此对话独立使用这个目录，不影响项目默认目录。"}</p>
     {current.agents.status === "ready" && current.agents.sources.length ? <p>
       仓库规则：{current.agents.sources.map((source) => directoryName(source)).join("、")}
     </p> : current.agents.status !== "ready" ? <p role="status">仓库规则不可用：{current.agents.error}</p> : null}
     {error ? <p data-tone="error" role="status">{error}</p> : null}
-    <HeaderMarkerActions>
+    <div className="directory-detail__actions">
       <button type="button" onClick={copy}>{copied ? "已复制" : "复制路径"}</button>
-      <button type="button" onClick={onRefresh}>刷新</button>
-    </HeaderMarkerActions>
-  </HeaderMarker>;
+      <button type="button" onClick={view.refresh}>刷新</button>
+    </div>
+  </div>;
 }
 
 const definition: PluginUiDefinition = {
   slots: {
-    "header.end": { mount: (host, context) => render(host, <SessionDirectory context={context} />) },
+    "header.meta": { mount: (host, context) => render(host, <SessionDirectory context={context} />) },
   },
 };
 export default definition;
