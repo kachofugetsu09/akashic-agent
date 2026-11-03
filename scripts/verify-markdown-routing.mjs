@@ -19,7 +19,7 @@ window.calls=[];window.reads=[];
 const ctx={http:{request:async value=>{const u=new URL(value,location.href);reads.push(u.pathname+u.search);return {ok:true,json:async()=>u.pathname.endsWith('/files')?{status:'available',path:'/repo',root:'/repo',items:[]}:{status:'available',path:u.searchParams.get('path'),text:'# Opened document\\n'+u.searchParams.get('path')}}}},ui:{inject:(_,fn)=>fn({register:entry=>window.entry=entry})}};
 activate(ctx);
 entry.render(document.querySelector('#reader'),null,{session:'s',active:false,onSessionChange:()=>()=>{},onActiveChange:()=>()=>{},onIntent:fn=>{window.intent=fn;return()=>{}}});
-connectHost({requestIntent:async(name,session,payload)=>{calls.push({name,session,payload});return name===DOCUMENT_INTENT?await intent({name,payload}):'handled'},reportSession(){},reportOverlay(){},activateRailAction(){}});
+connectHost({requestIntent:async(name,session,payload)=>{calls.push({name,session,payload});return name===DOCUMENT_INTENT?await intent({name,payload}):'handled'},reportSession(){},reportOverlay(){},activateRailAction(){},activateHeaderAction(){}});
 setWorkbenchSession('s');setWorkbenchIntents([FILE_INTENT,DOCUMENT_INTENT]);window.setCaps=setWorkbenchIntents;
 const markdown='\`docs/guide.md\` \`/outside/中文 note.MD\` \`../outside/guide.md:12\` \`src/main.ts:4\` [linked](../outside/guide.md) [encoded](/outside/a%20b.md) [web](https://example.com/README.md)';
 const root=createRoot(document.querySelector('#root'));

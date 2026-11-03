@@ -5,6 +5,7 @@ import { TooltipProvider } from "@/components/ui/tooltip";
 import { connectHost, setKeyScope, type ChatHandle, type ChatHostLink } from "./chat-host";
 import { observeChatLayout } from "./chat-layout";
 import { exposeChatRuntime } from "./chat-ui-runtime";
+import { setHeaderActions } from "./header-actions";
 import { DesktopChatApp } from "./desktop-chat-app";
 import { warmMessageRenderer } from "./message-view";
 import { notifyShown } from "./plugin-ui-runtime";
@@ -35,14 +36,12 @@ function ensureStylesheet(): void {
   document.head.append(link);
 }
 
-// 宿主到聊天的句柄：外壳与工具区的状态只经这里进入聊天；frame 上的属性给样式读。
-function chatHandle(frame: HTMLElement): ChatHandle {
+// 宿主到聊天的句柄：外壳与工具区的状态只经这里进入聊天。
+function chatHandle(): ChatHandle {
   return {
     setRailActions: setShellRailActions,
-    setTools(present, shortcuts) {
-      frame.dataset.shellTools = present ? "true" : "false";
-      setHostShortcuts(shortcuts);
-    },
+    setHeaderActions,
+    setShortcuts: setHostShortcuts,
     setWorkbenchIntents,
     quote(quote) {
       if (typeof quote === "object" && quote !== null) receiveWorkbenchQuote(quote as Record<string, unknown>);
@@ -74,10 +73,11 @@ export function mountChat(host: HTMLElement, link: ChatHostLink): MountedChat {
   const stopLayout = observeChatLayout(frame);
   const stopKeys = setKeyScope(frame);
   // 3. 宿主投影（底栏动作、工作台意图与快捷键）是模块级状态，上一次挂载可能留下：每次挂载从空开始，卸载时撤回。
-  const handle = chatHandle(frame);
+  const handle = chatHandle();
   const clearProjection = () => {
     handle.setRailActions([]);
-    handle.setTools(false, []);
+    handle.setHeaderActions([]);
+    handle.setShortcuts([]);
     handle.setWorkbenchIntents([]);
   };
   clearProjection();

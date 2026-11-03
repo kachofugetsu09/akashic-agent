@@ -7,9 +7,10 @@ const MIN_CHAT_WIDTH = 420;
 
 // 聊天由 Host SDK 挂进同一文档（ADR 0126）。聊天发来的事件经 hooks 转给工作台，没有工作台时取默认值。
 function connectChat(chatHost, railActions) {
-  const hooks = { session() {}, overlay() {}, intent: async () => "unhandled" };
+  const hooks = { session() {}, overlay() {}, headerAction() {}, intent: async () => "unhandled" };
   const handle = mountChat(chatHost, {
     activateRailAction: (id) => railActions.find((entry) => entry.id === id)?.onActivate(),
+    activateHeaderAction: (id) => hooks.headerAction(id),
     reportSession: (sessionId) => hooks.session(sessionId),
     reportOverlay: (open) => hooks.overlay(open),
     requestIntent: (name, session, payload) => hooks.intent(name, session, payload),
@@ -18,8 +19,11 @@ function connectChat(chatHost, railActions) {
   return {
     handle,
     hooks,
-    // 收起工具区后焦点回到输入框；聊天还没渲染出输入框时交给默认目标。
+    // 收起工具区后焦点回到输入框；聊天还没渲染出输入框时不移动焦点。
     focusTarget: () => chatHost.querySelector("textarea") ?? undefined,
+    // 点按钮收起时回到标题行的工作台按钮；紧凑外壳里它收在「⋯」菜单中，回到菜单按钮。
+    actionTarget: () => chatHost.querySelector("button[data-header-action='workbench'], .conversation-heading__more")
+      ?? chatHost.querySelector("textarea") ?? undefined,
   };
 }
 
@@ -91,15 +95,9 @@ function saveWidth(value) {
   }
 }
 
-function toolIcon() {
-  const icon = document.createElementNS("http://www.w3.org/2000/svg", "svg");
-  icon.setAttribute("viewBox", "0 0 24 24");
-  icon.setAttribute("aria-hidden", "true");
-  icon.innerHTML = '<rect x="3" y="3" width="18" height="18" rx="2"/><path d="M15 3v18"/>';
-  return icon;
-}
+const TOOL_ICON = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="3" width="18" height="18" rx="2"/><path d="M15 3v18"/></svg>';
 
-// 告知聊天右上角有工具区开关，标题带据此让出开关所占的位置；快捷键列给聊天的快捷键面板。
+// 工作台的快捷键列给聊天的快捷键面板。
 function toolShortcuts(entries) {
   return [
     { label: "打开或收起工作台", keys: shortcutKeys(HOST_SHORTCUTS.toggle) },
@@ -266,11 +264,7 @@ function buildChrome() {
   end.append(split, maximize, close);
   groups[0].bar.append(end);
   panel.append(groups[0].root, divider, groups[1].root);
-  const toggle = element("button", "conversation-tools-toggle");
-  toggle.type = "button";
-  toggle.setAttribute("aria-controls", panel.id);
-  toggle.append(toolIcon(), document.createElement("span"));
-  return { panel, splitter, groups, divider, split, maximize, close, toggle };
+  return { panel, splitter, groups, divider, split, maximize, close };
 }
 
 // 一组标签：标签条（标签与“+”）与内容区；标签记录的面板挂在它所在那组的内容区里。
@@ -658,7 +652,6 @@ function mountTools(root, chat, tools, entries) {
     root.classList.toggle("tools-maximized", state.open && state.maximized);
     chrome.panel.hidden = !state.open;
     chrome.splitter.hidden = !state.open;
-    chrome.toggle.hidden = state.open || state.chatOverlay;
     const maximizeLabel = state.maximized ? "还原" : "铺满";
     chrome.maximize.title = maximizeLabel;
     chrome.maximize.setAttribute("aria-label", maximizeLabel);
@@ -758,11 +751,8 @@ function mountTools(root, chat, tools, entries) {
     const pending = [...new Set([...records.singles(), ...allTabs()])].find((record) => record.attention || record.indicator?.busy);
     const keys = shortcutKeys(HOST_SHORTCUTS.toggle).join("+");
     const label = pending ? `打开工作台（${keys}）· ${pending.label ?? pending.entry.label}有新活动` : `打开工作台（${keys}）`;
-    chrome.toggle.classList.toggle("has-attention", Boolean(pending));
-    chrome.toggle.title = label;
-    chrome.toggle.setAttribute("aria-label", label);
-    chrome.toggle.setAttribute("aria-expanded", String(state.open));
-    chrome.toggle.querySelector("span").textContent = "工作台";
+    // 开关画在聊天标题行（ADR 0126 的聊天接口）：随标题行一起收起，不再浮在正文上；打开后由面板自己的收起按钮接手。
+    chat.handle.setHeaderActions(state.open ? [] : [{ id: "workbench", label: "工作台", hint: label, iconSvg: TOOL_ICON, attention: Boolean(pending) }]);
   }
 
   function remember() {
@@ -856,13 +846,13 @@ function mountTools(root, chat, tools, entries) {
     if (state.open) activeRecord()?.button.focus();
   }
 
-  function closePanel(focusTarget = chrome.toggle) {
+  function closePanel(focusTarget = chat.actionTarget()) {
     state.held = false;
     state.open = false;
     state.maximized = false;
     update();
     remember();
-    focusTarget.focus();
+    focusTarget?.focus();
   }
 
   // 5. 分屏：当前标签移到下方一组（上方只有它一个时，下方开一个新标签页）；已分屏时把下方一组并回上方。
@@ -1101,14 +1091,16 @@ function mountTools(root, chat, tools, entries) {
     state.maximized = !state.maximized;
     update();
   });
-  chrome.toggle.addEventListener("click", () => openPanel(true));
   root.classList.add("has-tools");
-  root.append(chrome.splitter, chrome.panel, chrome.toggle);
+  root.append(chrome.splitter, chrome.panel);
   root.addEventListener("keydown", onKeydown);
   window.addEventListener("keydown", onShortcut);
   window.addEventListener("resize", sizing.fit);
-  Object.assign(chat.hooks, { session: applySession, overlay: followChatOverlay, intent: routeIntent });
-  chat.handle.setTools(true, toolShortcuts(entries));
+  Object.assign(chat.hooks, {
+    session: applySession, overlay: followChatOverlay, intent: routeIntent,
+    headerAction: (id) => { if (id === "workbench") openPanel(true); },
+  });
+  chat.handle.setShortcuts(toolShortcuts(entries));
   chat.handle.setWorkbenchIntents(intentNames(entries));
   for (const record of records.singles()) if (record.entry.background) lifecycle.mount(record);
   return {
@@ -1118,6 +1110,7 @@ function mountTools(root, chat, tools, entries) {
     },
     dispose() {
       disposed = true;
+      chat.handle.setHeaderActions([]);
       root.removeEventListener("keydown", onKeydown);
       window.removeEventListener("keydown", onShortcut);
       window.removeEventListener("resize", sizing.fit);

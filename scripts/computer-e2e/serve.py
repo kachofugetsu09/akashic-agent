@@ -85,7 +85,7 @@ def chat_app():
         "export function mountChat(host) {"
         " host.innerHTML = '<textarea aria-label=\"对话输入\">继续当前任务</textarea>';"
         " const nothing = () => {};"
-        " return { setRailActions: nothing, setTools: nothing, setWorkbenchIntents: nothing, quote: nothing,"
+        " return { setRailActions: nothing, setHeaderActions: nothing, setShortcuts: nothing, setWorkbenchIntents: nothing, quote: nothing,"
         " shown: nothing, dispose: () => host.replaceChildren() }; }",
         media_type="text/javascript",
     )
