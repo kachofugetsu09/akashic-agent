@@ -8,7 +8,7 @@ import { composerControls } from "./composer-contributions";
 import type { ScopeFields } from "./scope-fields";
 import { openInWorkbench, subscribeWorkbenchIntents, workbenchAccepts } from "./shell-workbench";
 
-import type { ComposerControls, ComposerSuggestProvider, NavigationControls, NavigationForm, NavigationFormControls, NavigationGroupsProvider, NavigationNotice, PluginUiDefinition, PluginUiHostContext, PluginUiMountSlotName, PluginUiQueryOptions, PluginUiSlotFacts, PluginUiSlotName, ScopeFieldControls, SidebarPanelControls, SidebarPanelProvider } from "@akashic/chat-ui-v1";
+import type { ComposerControls, ComposerSuggestProvider, HeaderMetaControls, NavigationControls, NavigationForm, NavigationFormControls, NavigationGroupsProvider, NavigationNotice, PluginUiDefinition, PluginUiHostContext, PluginUiMountSlotName, PluginUiQueryOptions, PluginUiSlotFacts, PluginUiSlotName, ScopeFieldControls, SidebarPanelControls, SidebarPanelProvider } from "@akashic/chat-ui-v1";
 
 // 插槽合同由 @akashic/chat-ui-v1 发布，宿主与插件共用同一份类型。
 export type { ComposerSuggestProvider, ComposerSuggestion, PluginUiContext, PluginUiDefinition, PluginUiQueryOptions, PluginUiRenderer, PluginUiSlotName } from "@akashic/chat-ui-v1";
@@ -92,6 +92,7 @@ const SLOT_NAMES = new Set<PluginUiSlotName>([
   "message.attachment",
   "chat.notice",
   "header.end",
+  "header.meta",
   "composer.toolbar",
   "composer.status",
   "composer.suggest",
@@ -489,6 +490,37 @@ export function SidebarPanelMount({ source, sessionId, panel, size }: {
     context={{ slot: "sidebar.panels", sessionId }} />;
 }
 
+/** 已加载的说明行数据源，按目录顺序；宿主不按插件名挑选。 */
+export interface HeaderMetaSource {
+  /** 插件身份加版本；目录更新后变化。 */
+  key: string;
+  pluginId: string;
+  pluginRevision: string;
+  renderer: HostRenderer;
+}
+
+export function headerMetaSources(): HeaderMetaSource[] {
+  if (catalog.updating) return [];
+  return catalog.plugins.flatMap((plugin) => {
+    const loaded = definitions.get(plugin.id);
+    const renderer = loaded?.revision === plugin.revision ? loaded.definition.slots["header.meta"] as HostRenderer | undefined : undefined;
+    return renderer ? [{ key: `${plugin.id}:${plugin.revision}`, pluginId: plugin.id, pluginRevision: plugin.revision, renderer }] : [];
+  });
+}
+
+/** 挂一个说明行数据源：插件只经 meta 登记说明项，挂载元素不显示。 */
+export function HeaderMetaSourceMount({ source, sessionId, meta, refreshToken }: {
+  source: HeaderMetaSource;
+  sessionId: string;
+  /** 身份变化即重新挂载，调用方需保持稳定。 */
+  meta: HeaderMetaControls;
+  refreshToken?: string | number;
+}) {
+  const extra = React.useMemo(() => ({ meta }), [meta]);
+  return <MountedPlugin pluginId={source.pluginId} pluginRevision={source.pluginRevision} renderer={source.renderer}
+    extra={extra} refreshToken={refreshToken} context={{ slot: "header.meta", sessionId }} />;
+}
+
 /** 已加载的侧栏分组数据源，按目录顺序；宿主不按插件名挑选。 */
 export interface NavigationGroupSource {
   /** 插件身份加版本；目录更新后变化。 */
@@ -730,6 +762,7 @@ type HostMountContext = PluginUiHostContext & {
   form?: NavigationFormControls;
   navigation?: NavigationControls;
   panel?: SidebarPanelControls;
+  meta?: HeaderMetaControls;
 };
 type HostMountFacts = Pick<HostMountContext, "slot" | "sessionId" | "messageId" | "block" | "scope">;
 
@@ -872,7 +905,7 @@ function MountedPlugin({
   prefetch?: boolean;
   fields?: ScopeFields;
   /** 宿主外框给这次挂载的额外能力（分组表单与提示）；身份变化即重新挂载。 */
-  extra?: Pick<HostMountContext, "form" | "navigation" | "panel">;
+  extra?: Pick<HostMountContext, "form" | "navigation" | "panel" | "meta">;
   context: HostMountFacts;
   refreshToken?: string | number;
 }) {

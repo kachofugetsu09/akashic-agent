@@ -10,6 +10,7 @@ export type PluginUiSlotName =
   | "message.attachment"
   | "chat.notice"
   | "header.end"
+  | "header.meta"
   | "composer.toolbar"
   | "composer.status"
   | "composer.suggest"
@@ -79,6 +80,8 @@ export interface PluginUiSlotFacts {
   /** 输入框上方的通知；还没有会话时 sessionId 为空。 */
   "chat.notice": { sessionId?: string };
   "header.end": { sessionId: string };
+  /** 标题下的说明行：插件不渲染界面，只经 meta.publish 登记说明项，摆放与收起都由宿主负责。 */
+  "header.meta": { sessionId: string; meta: HeaderMetaControls };
   /** 输入框工具位；新会话还没有 sessionId。 */
   "composer.toolbar": { sessionId?: string; composer: ComposerControls };
   "composer.status": { sessionId: string };
@@ -206,6 +209,43 @@ export interface SidebarPanelProvider {
   /** 切换会话、一轮回答结束、页面重新可见与面板关闭后重读；没有短值时返回 null。 */
   status?(context: Pick<PluginUiHostContext, "query"> & { sessionId?: string }): Promise<SidebarPanelStatus | null>;
   mount(host: HTMLElement, context: PluginUiSidebarPanelContext): void | (() => void);
+}
+
+/**
+ * 顶栏说明行的一项。宿主按 scope 与 parent 建树、子项状态冒泡到父项，空间不够时沿树收起：
+ * 先缩短「在哪」的路径，再把本会话的顶层项收进 +N，需要注意的最后才合并；会话信息面板列出整棵树。
+ */
+export interface HeaderMetaItem {
+  /** 本插件内唯一。 */
+  id: string;
+  /** project 是「在哪」（目录、分支），session 是本会话在做的事，account 是账号级状态。 */
+  scope: "project" | "session" | "account";
+  /** 挂在哪一项下面：本插件的 id，或另一插件的 `插件名/id`；找不到时挂回所在范围的根。 */
+  parent?: string;
+  /** alert 需要注意，live 进行中，info 常态；父项显示子树里最紧急的一档。 */
+  tone: "alert" | "live" | "info";
+  /** 面板里这一行的名称。 */
+  label: string;
+  /** 说明行里的短文字；不给时只出现在会话信息面板里。 */
+  text?: string;
+  /** 面板行右侧的值。 */
+  value?: string;
+  /** 16px 线性图标的 SVG 源码，描边用 currentColor。 */
+  iconSvg?: string;
+  /** project 范围里属于位置路径的一段（项目 › 目录 › 分支）。 */
+  path?: boolean;
+  /** 同一档里的先后，越大越靠前，默认 0。 */
+  weight?: number;
+  /** 在面板里展开这一项时挂载的详细内容；返回清理函数。 */
+  detail?(host: HTMLElement): void | (() => void);
+}
+
+/** 说明行的宿主能力：挂载卸载或切换会话时宿主自动撤回本插件的说明项。 */
+export interface HeaderMetaControls {
+  /** 替换本插件当前的全部说明项；传 [] 撤回。 */
+  publish(items: readonly HeaderMetaItem[]): void;
+  /** 收起会话信息面板，例如详细内容里的操作已经完成。 */
+  closePanel(): void;
 }
 
 /** 新建表单里的附加设置：表单确定了新取值、在它被创建之前，宿主依次调用各插件登记的提交。 */

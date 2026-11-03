@@ -24,6 +24,7 @@ import { SidebarPanelHost } from "./sidebar-panels";
 import { useSidebarRail } from "./use-sidebar-rail";
 import type { DesktopChatController } from "./use-desktop-chat-controller";
 import { PluginUiSlot } from "./plugin-ui-runtime";
+import { HeaderMeta } from "./header-meta";
 import { SelectionQuote } from "./selection-quote";
 import { MarqueeText } from "./marquee-text";
 import { CopyNotice, useCopyLastCode } from "./copy-last-code";
@@ -162,8 +163,12 @@ export function DesktopChatView({ controller }: DesktopChatViewProps) {
             onRenameSession={renameSession}
           />
           {/* 同一父节点下的兄弟 key 必须互不相同；共用会话 ID 会让 React 留下旧标题节点。 */}
-          <SessionHeadingTitle key={`title:${activeSessionId}`} heading={headingTitle} value={activeTitle}
-            onRename={activeSessionId && !activeSessionDeleted ? (title) => renameSession(activeSessionId, title) : undefined} />
+          {/* 有会话时标题独占一行，所在分组与插件的说明项排在下面的说明行里。 */}
+          {activeSessionId ? <div className="conversation-heading__stack">
+            <SessionHeadingTitle key={`title:${activeSessionId}`} heading={activeTitle} value={activeTitle}
+              onRename={!activeSessionDeleted ? (title) => renameSession(activeSessionId, title) : undefined} />
+            <HeaderMeta key={`meta:${activeSessionId}`} sessionId={activeSessionId} project={activeGroup?.label} refreshToken={liveToolToken} />
+          </div> : <SessionHeadingTitle key="title:" heading={headingTitle} value={activeTitle} />}
           {/* 插件在标题行右侧的标记；新的工具结果到达时通知插件重新读取会话状态。 */}
           {activeSessionId ? <PluginUiSlot key={`header:${activeSessionId}`} name="header.end" sessionId={activeSessionId}
             refreshToken={liveToolToken} quiet /> : null}
