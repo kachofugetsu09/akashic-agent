@@ -81,7 +81,7 @@ function buildTree(published: ReadonlyMap<string, readonly HeaderMetaItem[]>): M
 }
 
 // 由最丰富到最省的排法：先缩短路径，再把顶层项收进 +N；需要注意的不收，最后一档才合并。
-function lineLevels(roots: MetaNode[], compact: boolean): LineLevel[] {
+function lineLevels(roots: MetaNode[], compact: boolean, project: boolean): LineLevel[] {
   const path: MetaNode[] = [];
   for (let node = roots.find((root) => root.item.scope === "project" && root.item.path); node; node = node.kids.find((kid) => kid.item.path)) {
     path.push(node);
@@ -89,6 +89,10 @@ function lineLevels(roots: MetaNode[], compact: boolean): LineLevel[] {
   const activity = roots.filter((root) => root.item.scope === "session" && (root.item.text || root.subtree !== "info")).sort(byUrgency);
   const account = roots.filter((root) => root.item.scope === "account" && root.subtree === "alert");
   const pinned = activity.filter((root) => root.subtree === "alert");
+  // 只剩面板里的项（例如都已结束的代理任务）又没有项目名时，留一个 +N 作入口，否则面板打不开。
+  if (!project && !path.length && !activity.length && !account.length) {
+    return roots.length ? [{ path: [], roots: [], hidden: roots.length, account: [] }] : [];
+  }
   const levels: LineLevel[] = [];
   const depths = compact ? [0] : [...new Set([path.length, Math.min(1, path.length), 0])];
   for (const depth of depths) {
@@ -144,11 +148,11 @@ export function HeaderMeta({ sessionId, project, refreshToken }: {
     });
   }, [controls]);
   const roots = useMemo(() => buildTree(published), [published]);
-  const levels = useMemo(() => lineLevels(roots, compact), [roots, compact]);
+  const levels = useMemo(() => lineLevels(roots, compact, !!project), [roots, compact, project]);
   return <>
     <div className="header-meta__sources" hidden>{sources.map((source) => <HeaderMetaSourceMount key={source.key} source={source}
       sessionId={sessionId} meta={controls.get(source.pluginId)!} refreshToken={refreshToken} />)}</div>
-    {project || levels.some((level) => level.path.length || level.roots.length || level.account.length || level.aggregate)
+    {project || levels.length
       ? <MetaLine lineRef={lineRef} project={project} levels={levels} onOpen={setOpen} open={open !== null} /> : null}
     {open !== null ? createPortal(<SessionInfoPanel anchor={lineRef} compact={compact} roots={roots} project={project} focus={open}
       onFocus={setOpen} onClose={() => setOpen(null)} />, chatPortalRoot()) : null}
