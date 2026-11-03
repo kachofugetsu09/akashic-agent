@@ -45,9 +45,12 @@ export class Documents {
     ];
   }
 
-  // 替换画布期间冻结用户输入：先让正在编辑的输入框提交（settle），再挡住画布、面板、文字编辑与快捷键，免得修改落进已经离开的文档。
+  // 替换画布期间冻结用户输入：先让正在编辑的输入框和进行中的拖动提交（settle），再挡住画布、面板、文字编辑与快捷键，免得修改落进已经离开的文档。
   async hold<T>(task: () => Promise<T>, settle = true): Promise<T> {
-    if (settle) (document.activeElement as HTMLElement | null)?.blur();
+    if (settle) {
+      (document.activeElement as HTMLElement | null)?.blur();
+      window.dispatchEvent(new MouseEvent("mouseup"));
+    }
     this.state.busy++;
     try {
       return await task();

@@ -91,9 +91,10 @@ const CanvasInput = defineComponent({
   },
   setup(props) {
     const canvas = useCanvasContext();
+    const enabled = () => props.documents.state.busy === 0;
     const input = useCanvasInput(canvas.canvasRef, props.editor, canvas.hitTestSectionTitle,
-      canvas.hitTestComponentLabel, canvas.hitTestFrameTitle);
-    useTextEdit(canvas.canvasRef, props.editor, { isEnabled: () => props.documents.state.busy === 0 });
+      canvas.hitTestComponentLabel, canvas.hitTestFrameTitle, undefined, undefined, enabled);
+    useTextEdit(canvas.canvasRef, props.editor, { isEnabled: enabled });
     watchEffect(() => {
       const element = canvas.canvasRef.value;
       if (element) element.style.cursor = toolCursor(props.editor.state.activeTool, input.cursorOverride.value);
