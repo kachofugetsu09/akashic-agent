@@ -182,6 +182,7 @@ function boot(documents: Documents, editor: Editor): void {
     else if (data.type === "active" && !data.active) void documents.flush();
     else if (data.type === "theme") theme(data.dark);
     else if (data.type === "changed") void documents.changed(data.document, data.revision);
+    else if (data.type === "resync") void documents.resync();
     else if (data.type === "response") {
       pending.get(data.id)?.(data);
       pending.delete(data.id);

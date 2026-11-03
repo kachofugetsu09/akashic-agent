@@ -20,7 +20,7 @@ async function relay(ctx: WebHostContextV1, request: RelayedRequest): Promise<De
   }
 }
 
-type LiveMessage = { type: "changed"; document: string; revision: number };
+type LiveMessage = { type: "changed"; document: string; revision: number } | { type: "resync" };
 
 // 为当前会话保持一条到后端的实时连接：别处保存的新修订号从这里进来；断开后自动重连。
 class LiveLink {
@@ -58,8 +58,13 @@ class LiveLink {
       return;
     }
     this.socket = socket;
-    socket.addEventListener("open", () => this.send({ type: "visible", visible: this.visible() }));
+    socket.addEventListener("open", () => {
+      this.send({ type: "visible", visible: this.visible() });
+      this.receive({ type: "resync" });
+    });
+    // 换会话后旧连接可能还有在路上的消息：只收当前这条连接的
     socket.addEventListener("message", (event) => {
+      if (this.socket !== socket) return;
       try { this.receive(JSON.parse(String(event.data)) as LiveMessage); } catch { /* 忽略坏消息，连接保持 */ }
     });
     socket.addEventListener("close", () => {

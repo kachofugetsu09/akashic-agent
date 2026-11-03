@@ -34,6 +34,8 @@ export class Documents {
   private adopting = 0;
   private timer = 0;
   private saving: Promise<void> | null = null;
+  // 保存期间收到的最新修订通知：保存结束后再判断要不要跟进
+  private behind: { id: string; revision: number } | null = null;
   private ticket = 0;
   private readonly stops: (() => void)[];
 
@@ -132,16 +134,26 @@ export class Documents {
   }
 
   async refresh(): Promise<void> {
+    const session = this.state.session;
     const list = await this.json<{ documents: DocumentMeta[] }>(`${API}?${this.query()}`);
-    if (list) this.state.list = list.documents;
+    if (list && this.state.session === session) this.state.list = list.documents;
+  }
+
+  // 实时连接（重新）连上后对一次账：断线期间别处保存的修订不会再广播。
+  async resync(): Promise<void> {
+    await this.refresh();
+    const current = this.state.current;
+    const latest = current && this.state.list.find((item) => item.id === current.id);
+    if (current && latest && latest.revision > current.revision) await this.changed(current.id, latest.revision);
   }
 
   // 同一会话的另一块画布保存了文档：没有未保存修改就换成新版本，有修改时让下一次保存报冲突，由用户决定。
   async changed(id: string, revision: number): Promise<void> {
     if (!this.state.list.some((item) => item.id === id)) return await this.refresh();
     const current = this.state.current;
-    if (current?.id !== id || revision <= current.revision || this.saving || this.version !== this.savedVersion) return;
-    await this.hold(() => this.load(id), false);
+    if (current?.id !== id || revision <= current.revision) return;
+    if (this.saving) this.behind = { id, revision: Math.max(revision, this.behind?.id === id ? this.behind.revision : 0) };
+    else if (this.version === this.savedVersion) await this.hold(() => this.load(id), false);
   }
 
   async flush(): Promise<void> {
@@ -205,7 +217,12 @@ export class Documents {
   }
 
   private save(): Promise<void> {
-    this.saving ??= this.write().finally(() => { this.saving = null; });
+    this.saving ??= this.write().finally(() => {
+      this.saving = null;
+      const behind = this.behind;
+      this.behind = null;
+      if (behind) void this.changed(behind.id, behind.revision);
+    });
     return this.saving;
   }
 
