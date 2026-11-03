@@ -9,6 +9,7 @@ import interMedium from "@open-pencil/core/assets/Inter-Medium.ttf";
 import interRegular from "@open-pencil/core/assets/Inter-Regular.ttf";
 import interSemiBold from "@open-pencil/core/assets/Inter-SemiBold.ttf";
 import notoNaskhArabic from "@open-pencil/core/assets/NotoNaskhArabic-Regular.ttf";
+import { AgentBridge } from "./agent";
 import { DESIGN_CHANNEL, type DesignFromFrame, type DesignToFrame, type RelayedResponse } from "./contract";
 import { Documents, type DocumentHost } from "./documents";
 import { iconSvg, type IconName } from "./icons";
@@ -48,6 +49,7 @@ function IconButton(props: { label: string; icon: IconName; pressed?: boolean; d
 const DocumentBar = defineComponent({
   props: {
     documents: { type: Object as PropType<Documents>, required: true },
+    agent: { type: Object as PropType<AgentBridge>, required: true },
   },
   setup(props) {
     const commands = useEditorCommands();
@@ -64,8 +66,9 @@ const DocumentBar = defineComponent({
         ? h("button", { type: "button", class: "design-status is-alert", disabled: busy, onClick: () => void props.documents.reload() },
             `${SAVE_LABELS.conflict} · 重新加载`)
         : current && h("span", { class: `design-status is-${state.save}`, role: "status" }, SAVE_LABELS[state.save]);
+      const agent = props.agent.state.running > 0 && h("span", { class: "design-status is-agent", role: "status" }, "Agent 正在编辑…");
       return h("header", { class: "design-bar" }, [
-        picker, status,
+        picker, status, agent,
         h("span", { class: "design-bar-gap" }),
         IconButton({ label: "图层", icon: "layers", pressed: panels.layers, disabled: !current, onClick: () => { panels.layers = !panels.layers; } }),
         IconButton({ label: "属性", icon: "properties", pressed: panels.properties, disabled: !current,
@@ -115,6 +118,7 @@ const Shell = defineComponent({
   props: {
     editor: { type: Object as PropType<Editor>, required: true },
     documents: { type: Object as PropType<Documents>, required: true },
+    agent: { type: Object as PropType<AgentBridge>, required: true },
   },
   setup(props) {
     const commands = useEditorCommands();
@@ -125,7 +129,7 @@ const Shell = defineComponent({
       const { state } = props.documents;
       const empty = !state.current && !state.loading;
       return h("div", { class: "design-editor" }, [
-        h(DocumentBar, { documents: props.documents }),
+        h(DocumentBar, { documents: props.documents, agent: props.agent }),
         state.error && h("p", { class: "design-error", role: "alert" }, state.error),
         h("div", { class: "design-body", inert: state.busy > 0 }, [
           !empty && panels.layers && h(LayersPanel),
@@ -166,7 +170,7 @@ async function relayed(path: string, init: RequestInit = {}): Promise<Response> 
   return new Response(reply.status === 204 ? null : reply.body, { status: reply.status, headers: reply.headers });
 }
 
-function boot(documents: Documents, editor: Editor): void {
+function boot(documents: Documents, editor: Editor, agent: AgentBridge): void {
   const theme = (dark: boolean) => {
     document.documentElement.dataset.theme = dark ? "dark" : "light";
     editor.requestRender();
@@ -181,6 +185,7 @@ function boot(documents: Documents, editor: Editor): void {
     } else if (data.type === "session") void documents.setSession(data.session);
     else if (data.type === "active" && !data.active) void documents.flush();
     else if (data.type === "theme") theme(data.dark);
+    else if (data.type === "call") void agent.run(data).then((reply) => report({ type: "result", ...reply }));
     else if (data.type === "changed") void documents.changed(data.document, data.revision);
     else if (data.type === "resync") void documents.resync();
     else if (data.type === "response") {
@@ -211,8 +216,9 @@ const host: DocumentHost = {
   setIndicator: (indicator) => report({ type: "indicator", indicator }),
 };
 const documents = new Documents(editor, host);
+const agent = new AgentBridge(editor, documents);
 const root = document.getElementById("design-root");
 if (!root) throw new Error("设计编辑器页面缺少挂载点");
 // 编辑器挂在应用级：外壳自己的 setup 里也能用 open-pencil 的组合式函数。
-createApp(Shell, { editor, documents }).provide(EDITOR_KEY, editor).mount(root);
-boot(documents, editor);
+createApp(Shell, { editor, documents, agent }).provide(EDITOR_KEY, editor).mount(root);
+boot(documents, editor, agent);

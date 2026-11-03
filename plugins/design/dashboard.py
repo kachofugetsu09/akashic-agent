@@ -28,6 +28,14 @@ EDITOR_POLICY = (
 )
 
 
+# Agent 写的 JSX 在这一页里求值：不透明源沙箱，只放行内联脚本与 eval，不能连网、取同源资源或被别的站点嵌入。
+SANDBOX = "jsx.html"
+SANDBOX_POLICY = (
+    "sandbox allow-scripts; default-src 'none'; script-src 'unsafe-inline' 'unsafe-eval'; connect-src 'none'; "
+    "img-src 'none'; frame-src 'none'; object-src 'none'; base-uri 'none'; form-action 'none'; frame-ancestors 'self'"
+)
+
+
 # 构建产物按内容哈希命名，可以长期缓存；入口页 editor.html 每次都要回源，换版本时才能拿到新的文件名。
 class _EditorAssets(CompressedStaticFiles):
     def file_response(self, full_path: os.PathLike[str] | str, stat_result: os.stat_result,
@@ -35,8 +43,11 @@ class _EditorAssets(CompressedStaticFiles):
         response = super().file_response(full_path, stat_result, scope, status_code)
         hashed = not str(full_path).endswith(".html")
         response.headers["Cache-Control"] = "public, max-age=31536000, immutable" if hashed else "no-cache"
-        if Path(full_path).name == EDITOR:
-            response.headers["Content-Security-Policy"] = EDITOR_POLICY
+        policy = {EDITOR: EDITOR_POLICY, SANDBOX: SANDBOX_POLICY}.get(Path(full_path).name)
+        if policy:
+            response.headers["Content-Security-Policy"] = policy
+        if policy and policy is not EDITOR_POLICY:
+            response.headers["Referrer-Policy"] = "no-referrer"
         return response
 
 
