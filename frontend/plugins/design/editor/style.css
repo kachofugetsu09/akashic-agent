@@ -1,4 +1,4 @@
-/* 设计编辑器外壳：画布占满整页，绘制工具浮在画布底部；颜色全部取 akashic 主题变量。 */
+/* 设计编辑器外壳：文档条在上，画布占满其余空间，绘制工具浮在画布底部；颜色全部取 akashic 主题变量。 */
 *,
 *::before,
 *::after { box-sizing: border-box; }
@@ -27,6 +27,64 @@ body {
   background: var(--ak-paper-sheet);
 }
 
+/* 窄屏放不下时动作按钮换到第二行，不被裁掉；文档名至少留几个字再省略。 */
+.design-bar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 4px;
+  min-height: 40px;
+  padding-block: 4px;
+  padding-inline: 12px 6px;
+  border-bottom: 1px solid var(--ak-rule-subtle);
+}
+
+.design-bar-gap { flex: 1; }
+
+.design-doc-name,
+.design-doc-select {
+  flex: 0 1 auto;
+  min-width: 5em;
+  overflow: hidden;
+  font-size: 13px;
+  font-weight: 600;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.design-doc-select {
+  max-width: 24ch;
+  padding: 4px 6px;
+  border: 1px solid var(--ak-rule-default);
+  border-radius: 6px;
+  color: inherit;
+  background: var(--ak-paper-canvas);
+}
+
+.design-status {
+  flex: none;
+  padding-inline-start: 8px;
+  color: var(--ak-ink-muted);
+  font-size: 12px;
+  white-space: nowrap;
+}
+
+.design-status.is-error { color: var(--ak-color-status-error); }
+.design-status.is-agent { color: var(--ak-ink-secondary); }
+
+.design-status.is-alert {
+  border: 0;
+  border-radius: 6px;
+  padding: 4px 8px;
+  color: var(--ak-color-status-warning);
+  background: transparent;
+  font: inherit;
+  font-size: 12px;
+  cursor: pointer;
+}
+
+.design-status.is-alert:hover { background: var(--ak-paper-raised); }
+
 .design-icon {
   display: grid;
   flex: none;
@@ -54,9 +112,19 @@ body {
 .design-icon:disabled { opacity: 0.4; cursor: default; }
 .design-icon[aria-pressed="true"] { color: var(--ak-paper-sheet); background: var(--ak-ink-primary); }
 
-.design-icon:focus-visible {
+.design-icon:focus-visible,
+.design-primary:focus-visible,
+.design-status.is-alert:focus-visible {
   outline: 2px solid var(--ak-rule-focus);
   outline-offset: 1px;
+}
+
+.design-error {
+  margin: 0;
+  padding: 6px 12px;
+  color: var(--ak-color-status-error);
+  font-size: 12px;
+  border-bottom: 1px solid var(--ak-rule-subtle);
 }
 
 .design-body {
@@ -95,5 +163,37 @@ body {
   background: var(--ak-paper-sheet);
   box-shadow: 0 4px 16px rgb(0 0 0 / 12%);
   transform: translateX(-50%);
+}
+
+.design-empty {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 12px;
+  padding: 24px;
+  text-align: center;
+  background: var(--ak-paper-sheet);
+}
+
+.design-empty p {
+  max-width: 34ch;
+  margin: 0;
+  color: var(--ak-ink-secondary);
+  font-size: 13px;
+  line-height: 1.6;
+}
+
+.design-primary {
+  padding: 8px 16px;
+  border: 0;
+  border-radius: 8px;
+  color: var(--ak-paper-sheet);
+  background: var(--ak-ink-primary);
+  font: inherit;
+  font-size: 13px;
+  cursor: pointer;
 }
 
