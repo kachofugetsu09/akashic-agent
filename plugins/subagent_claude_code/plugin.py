@@ -3,7 +3,7 @@ from __future__ import annotations
 
 import asyncio
 from collections.abc import Awaitable, Callable
-from typing import cast
+from typing import Literal, cast
 from pydantic import BaseModel, ConfigDict, Field
 
 from agent.plugin_composition import Context
@@ -22,10 +22,20 @@ inject = (AGENT_RUNNERS, PROCESS_STREAMS, TOOLS, JOB_NOTICES)
 SETTINGS = '{"disableAllHooks":true,"permissions":{"blockReadsOutsideWorkingDirectories":true}}'
 
 
+ClaudePermissionMode = Literal[
+    "dontAsk",
+    "acceptEdits",
+    "auto",
+    "plan",
+    "bypassPermissions",
+]
+
+
 class Config(BaseModel):
     model_config = ConfigDict(extra="forbid")
     executable: str = "claude"
     model: str | None = None
+    permission_mode: ClaudePermissionMode = "dontAsk"
     env: dict[str, str] = Field(default_factory=dict)
     timeout_seconds: float = Field(default=1800, gt=0, le=86400)
 
@@ -82,18 +92,25 @@ async def apply(ctx: Context) -> None:
     service = ctx.require(AGENT_RUNNERS)
 
     async def run(task: AgentTask, emit: Callable[[AgentActivity], Awaitable[None]]) -> AgentResult:
-        # dontAsk runs reads inside the working directory and denies everything that would
-        # prompt; no allow rule is given, so reads elsewhere are refused rather than granted.
+        # 参考 DSH：按 permission_mode 驱动 Claude Code 原生无交互模式；只禁用阻塞人类交互的工具。
+        disallowed = "AskUserQuestion,ExitPlanMode" if config.permission_mode == "plan" else "AskUserQuestion"
         argv = (config.executable, "--print", "--verbose", "--input-format", "stream-json",
-                "--output-format", "stream-json", "--permission-mode", "dontAsk",
-                "--tools", "Read,Glob,Grep",
+                "--output-format", "stream-json", "--permission-mode", config.permission_mode,
+                "--disallowedTools", disallowed,
                 "--strict-mcp-config", "--mcp-config", '{"mcpServers":{}}',
                 "--setting-sources", "", "--settings", SETTINGS,
                 "--no-session-persistence")
+        if config.permission_mode == "bypassPermissions":
+            argv += ("--dangerously-skip-permissions",)
         if config.model:
             argv += ("--model", config.model)
         async with asyncio.timeout(config.timeout_seconds):
             async with service.connect(ctx, task.id, argv, task.cwd, config.env) as wire:
                 return await execute(wire, task, emit)
 
-    await service.register(ctx, AgentRunner("claude_code", desc, True, "read-only", run))
+    policy: Literal["read-only", "isolated-write", "full-access"] = (
+        "read-only" if config.permission_mode in {"dontAsk", "plan"}
+        else "isolated-write" if config.permission_mode in {"acceptEdits", "auto"}
+        else "full-access"
+    )
+    await service.register(ctx, AgentRunner("claude_code", desc, True, policy, run))

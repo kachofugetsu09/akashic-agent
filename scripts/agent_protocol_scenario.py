@@ -15,7 +15,7 @@ from plugins.host_execution.processes import PluginProcesses, PluginProcessStrea
 from plugins.host_execution.process_runtime import ShellProcessManager
 from plugins.subagent.protocol import open_json_lines
 from plugins.subagent.contract import AgentTask
-from plugins.subagent_codex.plugin import execute as codex, Config
+from plugins.subagent_codex.plugin import CodexPermissionMode, execute as codex, Config
 from plugins.subagent_claude_code.plugin import execute as claude
 
 async def run(output: Path, count: int):
@@ -39,6 +39,8 @@ async def run(output: Path, count: int):
             case = rng.choice(["success", "failed", "hang", "eof", "malformed", "approval", "unsupported", "mcp"]
                               if mode == "codex"
                               else ["success", "failed", "hang", "eof", "malformed", "cross-session"])
+            codex_modes: tuple[CodexPermissionMode, ...] = ("never", "approve-for-me", "dangerously-bypass-approvals-and-sandbox")
+            codex_perm: CodexPermissionMode = rng.choice(codex_modes)
             events = []
             async def emit(event): events.append(event.text)
             ctx = contexts[0]
@@ -46,9 +48,9 @@ async def run(output: Path, count: int):
                 async with ctx.runtime_scope():
                     async with asyncio.timeout(.3 if case == "hang" else 5):
                         async with open_json_lines(ctx, str(n), (sys.executable, str(ROOT / "scripts/agent_protocol_peer.py")),
-                                str(output), {**os.environ, "PEER_MODE": mode, "PEER_CASE": case}) as wire:
+                                str(output), {**os.environ, "PEER_MODE": mode, "PEER_CASE": case, "PEER_CODEX_PERMISSION": codex_perm}) as wire:
                             task = AgentTask(str(n), "read only", str(output))
-                            result = await (codex(wire, task, Config(), emit) if mode == "codex" else claude(wire, task, emit))
+                            result = await (codex(wire, task, Config(permission_mode=codex_perm), emit) if mode == "codex" else claude(wire, task, emit))
                             assert case in {"success", "approval", "failed", "unsupported"}, (mode, case, result)
                             assert result.status == ("failed" if case == "failed" else "completed")
                             assert "MUST-NOT-LEAK" not in result.text

@@ -7,7 +7,6 @@ import re
 import time
 from collections.abc import Awaitable, Callable, Mapping
 from contextlib import asynccontextmanager
-from pathlib import Path
 from typing import cast
 
 from pydantic import BaseModel, ConfigDict, Field
@@ -18,6 +17,7 @@ from plugins.jobs.contract import JOB_NOTICES, JobOutcome, JobWatch
 from plugins.ledger.contract import OWNER_STATE, OwnerTransaction, json_value, ContentPart
 from plugins.tools.contract import TOOLS, CallSource, Result
 from .contract import AgentActivity, AgentRunner, AgentTask
+from .tools import resolve_cwd
 
 ACTIVITY_KEPT = 200
 ACTIVITY_TEXT_CHARS = 2000
@@ -30,7 +30,7 @@ class DelegateInput(BaseModel):
     model_config = ConfigDict(extra="forbid", strict=True)
     task: str = Field(min_length=1, max_length=100_000)
     label: str = Field(default="外部任务", min_length=1, max_length=120)
-    cwd: str = Field(min_length=1, description="明确的绝对工作目录；权限由 runner 的原生策略决定")
+    cwd: str | None = Field(default=None, description="可选的工作目录（相对路径以当前会话目录解析，省略时继承当前会话工作目录）")
 
 
 class ResultInput(BaseModel):
@@ -167,9 +167,14 @@ class Delegate:
         args = DelegateInput.model_validate(json_value(arguments))
         if source is None or not source.messages:
             return "delegation requires a committed parent call"
-        if not args.task.strip() or not Path(args.cwd).is_absolute():
-            return "task must be nonblank and cwd absolute"
-        return {**args.model_dump(), "session_id": source.messages[-1].session_id,
+        if not args.task.strip():
+            return "task must be nonblank"
+        session_id = source.messages[-1].session_id
+        try:
+            resolved_cwd = await resolve_cwd(self.ctx, session_id, args.cwd, fallback=self.ctx.runtime.workspace)
+        except ValueError as error:
+            return str(error)
+        return {**args.model_dump(), "cwd": resolved_cwd, "session_id": session_id,
                 "source": source.messages[-1].source, "selection": self.selection}
 
     async def query(self, key: str):

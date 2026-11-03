@@ -20,8 +20,17 @@ if mode == "codex":
     send({"id": init["id"], "result": {}})
     assert receive()["method"] == "initialized"
     thread = receive()
-    assert thread["params"]["sandbox"] == "read-only"
-    assert thread["params"]["approvalPolicy"] == "never"
+    expected_permission = os.environ.get("PEER_CODEX_PERMISSION", "never")
+    if expected_permission == "approve-for-me":
+        assert thread["params"]["sandbox"] == "workspace-write"
+        assert thread["params"]["approvalPolicy"] == "on-request"
+        assert thread["params"]["approvalsReviewer"] == "auto_review"
+    elif expected_permission == "dangerously-bypass-approvals-and-sandbox":
+        assert thread["params"]["sandbox"] == "danger-full-access"
+        assert thread["params"]["approvalPolicy"] == "never"
+    else:
+        assert thread["params"]["sandbox"] == "read-only"
+        assert thread["params"]["approvalPolicy"] == "never"
     send({"id": thread["id"], "result": {"thread": {"id": "thread"}}})
     servers = receive()
     assert servers["method"] == "mcpServerStatus/list"
