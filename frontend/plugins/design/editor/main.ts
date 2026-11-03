@@ -1,4 +1,4 @@
-import { createApp, defineComponent, h, onBeforeUnmount, reactive, watchEffect, type PropType } from "vue";
+import { createApp, defineComponent, h, onBeforeUnmount, onMounted, reactive, watchEffect, type PropType } from "vue";
 import { createDefaultEditorState, createEditor, fontManager, getCanvasKit, type Editor, type Tool } from "@open-pencil/core";
 import { SceneGraph } from "@open-pencil/scene-graph";
 import { CanvasRoot, CanvasSurface, EDITOR_KEY, toolCursor, useCanvasContext, useCanvasInput, useEditorCommands, useTextEdit } from "@open-pencil/vue";
@@ -12,6 +12,7 @@ import notoNaskhArabic from "@open-pencil/core/assets/NotoNaskhArabic-Regular.tt
 import { DESIGN_CHANNEL, type DesignFromFrame, type DesignToFrame, type RelayedResponse } from "./contract";
 import { Documents, type DocumentHost } from "./documents";
 import { iconSvg, type IconName } from "./icons";
+import { bindKeyboard } from "./keyboard";
 import { LayersPanel, PropertiesPanel } from "./panels";
 import "./style.css";
 
@@ -116,6 +117,10 @@ const Shell = defineComponent({
     documents: { type: Object as PropType<Documents>, required: true },
   },
   setup(props) {
+    const commands = useEditorCommands();
+    let unbind = () => {};
+    onMounted(() => { unbind = bindKeyboard(window, props.editor, commands.runCommand); });
+    onBeforeUnmount(() => unbind());
     return () => {
       const { state } = props.documents;
       const empty = !state.current && !state.loading;
