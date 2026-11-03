@@ -846,13 +846,15 @@ function mountTools(root, chat, tools, entries) {
     if (state.open) activeRecord()?.button.focus();
   }
 
-  function closePanel(focusTarget = chat.actionTarget()) {
+  // 没给焦点目标时回到标题行的工作台按钮：它随本次 update 才重新画出来，等聊天渲染完再聚焦。
+  function closePanel(focusTarget) {
     state.held = false;
     state.open = false;
     state.maximized = false;
     update();
     remember();
-    focusTarget?.focus();
+    if (focusTarget) focusTarget.focus();
+    else requestAnimationFrame(() => chat.actionTarget()?.focus());
   }
 
   // 5. 分屏：当前标签移到下方一组（上方只有它一个时，下方开一个新标签页）；已分屏时把下方一组并回上方。
