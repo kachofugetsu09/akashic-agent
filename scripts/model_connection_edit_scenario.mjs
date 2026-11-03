@@ -60,6 +60,11 @@ try {
 
   await page.goto(base);
   await page.getByRole('button',{name:/Magpie fixture/}).click();
+  // 展开连接详情时，Base URL 必须自动填充已保存的完整地址，而不是清空
+  const endpointInput = page.getByRole('textbox',{name:'Base URL',exact:true});
+  assert.equal(await endpointInput.inputValue(), `${base}/upstream/v1`, 'saved Base URL is pre-populated on edit');
+  assert.equal(await endpointInput.getAttribute('autocomplete'), 'url', 'Base URL input uses autocomplete="url"');
+  await page.screenshot({path:join(output, 'editor-prefilled.png'),fullPage:true});
   await page.getByRole('textbox',{name:'API Key',exact:true}).fill('fixture-key-replacement');
   await page.getByRole('button',{name:'保存',exact:true}).click();
   await page.getByRole('alert').filter({hasText:'old-removed'}).waitFor();
@@ -75,10 +80,34 @@ try {
   const after=await catalog();
   assert.equal(after.revision,before.revision+1,'one atomic revision');
   assert.deepEqual(after.models.map(x=>x.model),['still-valid']);
+  // 重新打开编辑：Base URL 仍然自动回填，且仅修改连接名称（保持预填 Base URL 不变）保存时不触发模型调用
   await page.getByRole('button',{name:/Magpie fixture/}).click();
+  assert.equal(await endpointInput.inputValue(), `${base}/upstream/v1`, 'reopened editor still pre-populates saved Base URL');
   assert.equal(await page.getByRole('checkbox',{name:'使用 old-removed',exact:true}).count(),0);
   assert.equal(await page.getByRole('checkbox',{name:'使用 still-valid',exact:true}).isChecked(),true);
-  console.log('PASS: invalid removal rejected; failed validation preserves catalog; retry commits once; reopen confirms selection');
+  const callsBeforeRename = (await get('/completion_calls')).count;
+  await page.getByRole('textbox',{name:'连接名称',exact:true}).fill('Magpie 内网');
+  await page.getByRole('button',{name:'保存',exact:true}).click();
+  await page.locator('[data-save]').waitFor({state:'hidden'});
+  const callsAfterRename = (await get('/completion_calls')).count;
+  assert.equal(callsAfterRename, callsBeforeRename, 'renaming without changing pre-populated Base URL must not probe models');
+  const receipts = await get('/receipts');
+  assert.equal(receipts.at(-1).endpoint, null, 'unchanged pre-populated Base URL sends endpoint: null');
+  const renamed = await catalog();
+  const magpieConn = renamed.connections.find(c => c.id === 'magpie');
+  assert.equal(magpieConn.name, 'Magpie 内网');
+  assert.equal(magpieConn.endpoint, `${base}/upstream/v1`);
+
+  // 4. Gemini 原生连接与 OpenCode Go 展开编辑时同样自动填充上次保存的 Base URL
+  await page.getByRole('button',{name:/Gemini 网关/}).click();
+  assert.equal(await endpointInput.inputValue(), `${base}/upstream/gemini/v1beta`, 'Gemini saved Base URL is pre-populated on edit');
+  await page.getByRole('button',{name:'取消',exact:true}).click();
+
+  await page.getByRole('button',{name:/OpenCode Go/}).click();
+  assert.equal(await endpointInput.inputValue(), `${base}/upstream/opencode/v1`, 'OpenCode Go saved Base URL is pre-populated on edit');
+  await page.getByRole('button',{name:'取消',exact:true}).click();
+
+  console.log('PASS: Base URL pre-populated across OpenAI-compatible/Gemini/OpenCode; invalid removal rejected; failed validation preserves catalog; retry commits once; rename with pre-populated URL skips model probe');
   await page.screenshot({path:join(output, 'after.png'),fullPage:true});
   assert.deepEqual(errors, []);
 } finally {

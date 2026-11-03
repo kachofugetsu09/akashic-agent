@@ -716,6 +716,7 @@ def _catalog_payload(snapshot: ModelCatalogSnapshot) -> dict[str, object]:
                 "driverId": item.driver_id,
                 "authIdentity": item.auth_identity,
                 "availability": item.availability,
+                "endpoint": item.endpoint,
                 "endpointHost": item.endpoint_host,
                 "catalogMode": item.catalog_mode,
             }

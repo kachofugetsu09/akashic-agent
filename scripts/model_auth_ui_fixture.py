@@ -32,6 +32,7 @@ from plugins.models.state import ModelsState
 from plugins.models.store import ModelsStore
 from plugins.opencode_go.driver import definition as opencode_definition
 from plugins.openai_compatible.driver import definition as openai_definition
+from plugins.gemini.driver import definition as gemini_definition
 from plugins.models.settings import AddConnection, AddModel
 from plugins.models.contract import ModelCapabilities, CapabilitySources
 
@@ -54,7 +55,8 @@ const providers = [];
 const providerContext = {ui:{inject:(_, mount)=>mount({register(entry){providers.push(entry);return ()=>{};}})}};
 codex(providerContext);opencode(providerContext);
 import {activate as openai} from '/frontend/plugins/openai_compatible/src/module.js';
-openai(providerContext);
+import {activate as gemini} from '/frontend/plugins/gemini/src/module.js';
+openai(providerContext);gemini(providerContext);
 models({data:{resource:(key, load, options)=>registry.create(key, load, options).resource},ui:{inject:(_, mount)=>mount({register(entry){
   if (entry.id !== 'models') return ()=>{};
   return entry.render(document.querySelector('#host'), {child:()=>({
@@ -71,6 +73,7 @@ def create_app(port: int, frontend: Path, *, connection_edit: bool = False) -> F
     codex_auth.CODEX_AUTH_BASE = base + "/upstream"
     codex_auth.CODEX_API_BASE = base + "/upstream/codex"
     receipts: list[dict[str, object]] = []
+    completion_calls = 0
 
     @asynccontextmanager
     async def lifespan(app: FastAPI):
@@ -94,6 +97,8 @@ def create_app(port: int, frontend: Path, *, connection_edit: bool = False) -> F
                     rev = store.add_connection(AddConnection(0, "magpie", "Magpie fixture", "openai-compatible", base + "/upstream/v1", "api:magpie", {"driver":"api_key", "access_token":"fixture-key"}, {"format_version":1}))
                     for model in ("old-removed", "still-valid"):
                         rev = store.add_model(AddModel(rev, model, "magpie", "chat", model, ModelCapabilities(), CapabilitySources(), driver_config={"format_version":1}))
+                    rev = store.add_connection(AddConnection(rev, "gemini-gw", "Gemini 网关", "gemini", base + "/upstream/gemini/v1beta", "api:gemini-gw", {"driver":"api_key", "access_token":"gemini-key"}, {"format_version":1}))
+                    rev = store.add_connection(AddConnection(rev, "opencode-gw", "OpenCode Go", "opencode-go", base + "/upstream/opencode/v1", "opencode-go", {"driver":"api_key", "access_token":"opencode-key"}, {"format_version":1}))
                 state = ModelsState(store, context=ctx)
                 await ctx.effect(lambda: store.close, label="models-store")
                 await ctx.provide(MODEL_DRIVERS, state.drivers)
@@ -107,6 +112,7 @@ def create_app(port: int, frontend: Path, *, connection_edit: bool = False) -> F
                 await ctx.require(MODEL_DRIVERS).register(ctx, codex_definition(read_version))
                 await ctx.require(MODEL_DRIVERS).register(ctx, opencode_definition())
                 await ctx.require(MODEL_DRIVERS).register(ctx, openai_definition())
+                await ctx.require(MODEL_DRIVERS).register(ctx, gemini_definition())
 
             await root.mount(models, name="models")
             await root.mount(drivers, name="auth-drivers", inject=(MODEL_DRIVERS,))
@@ -129,7 +135,7 @@ def create_app(port: int, frontend: Path, *, connection_edit: bool = False) -> F
             response = await call_next(request)
             receipts.append({
                 "type": body["type"], "connection_id": body.get("connection_id"),
-                "driver_id": body.get("driver_id"),
+                "driver_id": body.get("driver_id"), "endpoint": body.get("endpoint"),
                 "input_keys": sorted(body.get("input", {})), "status": response.status_code,
             })
             return response
@@ -141,6 +147,8 @@ def create_app(port: int, frontend: Path, *, connection_edit: bool = False) -> F
 
     @app.post("/upstream/v1/chat/completions")
     async def completion(request: Request):
+        nonlocal completion_calls
+        completion_calls += 1
         body = await request.json()
         if request.headers.get("authorization") == "Bearer invalid-key":
             return JSONResponse({"error":{"message":"invalid fixture key"}}, status_code=401)
@@ -155,6 +163,10 @@ def create_app(port: int, frontend: Path, *, connection_edit: bool = False) -> F
     @app.get("/receipts")
     async def read_receipts():
         return receipts
+
+    @app.get("/completion_calls")
+    async def read_completion_calls():
+        return {"count": completion_calls}
 
     @app.post("/upstream/api/accounts/deviceauth/usercode")
     async def device_code(request: Request):

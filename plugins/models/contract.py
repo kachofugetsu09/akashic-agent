@@ -339,9 +339,10 @@ class ConnectionDescriptor:
     driver_id: str
     auth_identity: str
     availability: ModelAvailability
-    # 只含主机名，供设置页说明连的是哪里；完整地址与凭据不进目录。
+    # 主机名供连接列表展示，endpoint 供编辑表单回显上次保存的 Base URL；凭据不进目录。
     endpoint_host: str = ""
     catalog_mode: CatalogMode = "picked"
+    endpoint: str = ""
 
 
 @dataclass(frozen=True, slots=True)

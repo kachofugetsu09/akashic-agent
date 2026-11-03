@@ -124,7 +124,7 @@ export function activate(ctx) {
         <button type="button" class="settings-icon-button" aria-label="关闭" data-close>${CLOSE_ICON}</button></header>
         <form class="settings-dialog-form"><div class="settings-dialog-body"><div class="settings-form-grid">
           <label class="is-wide"><span>连接名称</span><input name="name" aria-label="连接名称" required autocomplete="organization"></label>
-          <label class="is-wide"><span>Base URL</span><input name="endpoint" aria-label="Base URL" type="url" placeholder="${existing.endpointHost ? `当前 ${existing.endpointHost.replace(/[^a-z0-9.:-]/giu, "")}，填写新地址才会更换` : "https://api.example.com/v1"}"></label>
+          <label class="is-wide"><span>Base URL</span><input name="endpoint" aria-label="Base URL" type="url" autocomplete="url" placeholder="${existing.endpointHost ? `当前 ${existing.endpointHost.replace(/[^a-z0-9.:-]/giu, "")}，填写新地址才会更换` : "https://api.example.com/v1"}"></label>
           ${keyField("留空保留现有密钥", false)}
         </div>
         <p class="settings-credential-note">${SHIELD_ICON}<span>API Key 保存后不会在页面中明文回显</span></p>
@@ -132,14 +132,15 @@ export function activate(ctx) {
         <footer class="settings-dialog-footer"><span class="settings-dialog-footer-note">${SHIELD_ICON}保存前会向所选模型发送一条短消息，验证对话用途</span><div class="settings-dialog-actions"><button type="submit" class="settings-primary-button">保存连接</button></div></footer></form>`;
       const form = bindForm(host, props);
       form.elements.name.value = existing.name;
+      form.elements.endpoint.value = existing.endpoint ?? "";
       form.addEventListener("submit", (event) => {
         event.preventDefault();
         const data = new FormData(form);
-        const endpoint = String(data.get("endpoint"));
+        const endpoint = String(data.get("endpoint")).trim();
         const apiKey = String(data.get("apiKey"));
         submit(form, props.actions.update({
           name: String(data.get("name")),
-          endpoint: endpoint || null,
+          endpoint: endpoint && endpoint !== (existing.endpoint ?? "") ? endpoint : null,
           credential: apiKey ? {driver: "api_key", access_token: apiKey} : null,
           driverConfig: null,
         }).then(() => props.changed("OpenAI Compatible 连接已更新")), "保存连接");
@@ -158,7 +159,7 @@ function renderCreate(host, props) {
   const label = preset ? [preset.tag, preset.label].filter(Boolean).join(" ") : "自定义 API";
   const keys = preset?.keysUrl ? `<a class="settings-key-link" href="${escapeHtml(preset.keysUrl)}" target="_blank" rel="noreferrer">去 ${escapeHtml(preset.tag ?? preset.label)} 拿密钥 ↗</a>` : "";
   const nameField = `<label class="is-wide"><span>名称</span><input name="name" aria-label="名称" required autocomplete="organization" placeholder="例如：公司网关"></label>`;
-  const endpointField = `<label class="is-wide"><span>地址</span><input name="endpoint" aria-label="地址" required type="url" placeholder="https://api.example.com/v1"></label>`;
+  const endpointField = `<label class="is-wide"><span>地址</span><input name="endpoint" aria-label="地址" required type="url" autocomplete="url" placeholder="https://api.example.com/v1"></label>`;
   host.innerHTML = `<header class="settings-dialog-header"><div class="settings-dialog-heading"><h2 class="settings-dialog-title">${escapeHtml(`添加 ${label}`)}</h2><p class="settings-dialog-description">${preset ? "填入密钥，添加后这个服务的模型全部可用。" : "填入兼容 OpenAI 的地址与密钥，添加后读到的模型全部可用。"}</p></div>
     <button type="button" class="settings-icon-button" aria-label="关闭" data-close>${CLOSE_ICON}</button></header>
     <form class="settings-dialog-form"><div class="settings-dialog-body"><div class="settings-form-grid">

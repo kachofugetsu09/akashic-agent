@@ -1183,6 +1183,7 @@ class ModelsState:
                 availability=self._availability(item),
                 endpoint_host=urlsplit(item.endpoint).hostname or "",
                 catalog_mode=item.catalog_mode,
+                endpoint=item.endpoint,
             )
             for item in snapshot.connections.values()
         )
