@@ -5,6 +5,7 @@ import asyncio
 import hashlib
 import os
 import re
+import secrets
 from dataclasses import asdict
 from pathlib import Path
 from urllib.parse import urlsplit
@@ -159,28 +160,39 @@ async def _font(cache: Path, url: str) -> Response:
                     headers={"Cache-Control": "public, max-age=604800" if status == 200 else "no-store"})
 
 
-# 边收边数：超过上限立即断开，不先把整个响应收进内存。
+# 连接或读取中断（超时、重置）重试一次；其余错误与第二次失败都返回 502，带上异常类型便于排查。
 async def _fetch_font(url: str) -> tuple[int, str, bytes]:
+    for attempt in range(2):
+        try:
+            return await _download_font(url)
+        except httpx.TransportError as error:
+            if attempt:
+                raise HTTPException(502, f"字体服务不可用：{type(error).__name__} {error}".rstrip()) from error
+        except httpx.HTTPError as error:
+            raise HTTPException(502, f"字体服务不可用：{type(error).__name__} {error}".rstrip()) from error
+    raise AssertionError("unreachable")
+
+
+# 边收边数：超过上限立即断开，不先把整个响应收进内存。
+async def _download_font(url: str) -> tuple[int, str, bytes]:
     chunks: list[bytes] = []
     size = 0
-    try:
-        async with httpx.AsyncClient(timeout=30.0, follow_redirects=False) as client, client.stream("GET", url) as remote:
-            async for chunk in remote.aiter_bytes():
-                size += len(chunk)
-                if size > MAX_FONT_BYTES:
-                    raise HTTPException(502, "字体文件过大")
-                chunks.append(chunk)
-            return remote.status_code, remote.headers.get("content-type", "application/octet-stream"), b"".join(chunks)
-    except httpx.HTTPError as error:
-        raise HTTPException(502, f"字体服务不可用：{error}") from error
+    async with httpx.AsyncClient(timeout=30.0, follow_redirects=False) as client, client.stream("GET", url) as remote:
+        async for chunk in remote.aiter_bytes():
+            size += len(chunk)
+            if size > MAX_FONT_BYTES:
+                raise HTTPException(502, "字体文件过大")
+            chunks.append(chunk)
+        return remote.status_code, remote.headers.get("content-type", "application/octet-stream"), b"".join(chunks)
 
 
+# 同一 URL 的并发请求各用一个临时文件；类型先落盘，读取以内容文件存在为准时两者都已齐全。
 def _store_font(cache: Path, key: str, data: bytes, media: str) -> None:
     cache.mkdir(parents=True, exist_ok=True)
-    temporary = cache / f".{key}.{os.getpid()}"
-    _ = temporary.write_bytes(data)
-    os.replace(temporary, cache / key)
-    _ = (cache / f"{key}.type").write_text(media)
+    for path, content in ((cache / f"{key}.type", media.encode()), (cache / key, data)):
+        temporary = cache / f".{path.name}.{secrets.token_hex(4)}"
+        _ = temporary.write_bytes(content)
+        os.replace(temporary, path)
 
 
 def _checked(document: str) -> str:
