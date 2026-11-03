@@ -254,7 +254,7 @@ input {
 
 .chat-sidebar__new,
 .conversation-heading__new,
-.conversation-heading__find {
+.conversation-heading__action {
   display: inline-grid;
   width: 36px;
   height: 36px;
@@ -274,52 +274,78 @@ input {
   margin-inline-start: auto;
 }
 
-.conversation-heading__find { margin-inline-start: auto; }
-.conversation-heading__find + .conversation-heading__new { margin-inline-start: 0; }
+/* 动作区靠行尾：第一个动作推到右侧，其余紧挨；宿主图标（工作台）与 Lucide 图标同尺寸，有新活动时右上角一个点。 */
+.conversation-heading__stack + .conversation-heading__action,
+.conversation-heading > h1 + .conversation-heading__action { margin-inline-start: auto; }
+.conversation-heading__action + .conversation-heading__new { margin-inline-start: 0; }
+.conversation-heading__action { position: relative; }
+.conversation-heading__icon { display: inline-grid; place-items: center; }
+.conversation-heading__icon svg,
+.conversation-heading__menu .conversation-heading__icon svg { width: 20px; height: 20px; }
+.conversation-heading__action[data-attention]::after {
+  position: absolute;
+  inset-block-start: 7px;
+  inset-inline-end: 7px;
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--ak-color-status-warning);
+  content: "";
+}
+.conversation-heading__menu [data-attention] > span::after {
+  display: inline-block;
+  width: 6px;
+  height: 6px;
+  margin-inline-start: 6px;
+  border-radius: 50%;
+  background: var(--ak-color-status-warning);
+  vertical-align: middle;
+  content: "";
+}
 
 .chat-sidebar__new svg,
 .conversation-heading__new svg,
-.conversation-heading__find svg {
+.conversation-heading__action svg {
   flex: 0 0 auto;
   color: var(--chat-muted);
 }
 
 .chat-sidebar__new:focus-visible,
 .conversation-heading__new:focus-visible,
-.conversation-heading__find:focus-visible {
+.conversation-heading__action:focus-visible {
   background: color-mix(in oklab, var(--md-sys-color-on-surface) 6%, transparent);
 }
 @media (hover: hover) {
   .chat-sidebar__new:hover,
   .conversation-heading__new:hover,
-  .conversation-heading__find:hover {
+  .conversation-heading__action:hover {
     background: color-mix(in oklab, var(--md-sys-color-on-surface) 6%, transparent);
   }
 }
 
 .chat-sidebar__new:focus-visible svg,
 .conversation-heading__new:focus-visible svg,
-.conversation-heading__find:focus-visible svg {
+.conversation-heading__action:focus-visible svg {
   color: var(--chat-ink);
 }
 @media (hover: hover) {
   .chat-sidebar__new:hover svg,
   .conversation-heading__new:hover svg,
-  .conversation-heading__find:hover svg {
+  .conversation-heading__action:hover svg {
     color: var(--chat-ink);
   }
 }
 
 .chat-sidebar__new:focus-visible,
 .conversation-heading__new:focus-visible,
-.conversation-heading__find:focus-visible {
+.conversation-heading__action:focus-visible {
   outline: 2px solid var(--md-sys-color-primary);
   outline-offset: 2px;
 }
 
 .chat-sidebar__new:active,
 .conversation-heading__new:active,
-.conversation-heading__find:active {
+.conversation-heading__action:active {
   background: color-mix(in oklab, var(--md-sys-color-on-surface) 8%, transparent);
 }
 
@@ -776,7 +802,7 @@ input {
   .chat-sidebar__action { min-height: 44px; }
   .chat-sidebar__new,
   .conversation-heading__new,
-  .conversation-heading__find { width: 44px; height: 44px; }
+  .conversation-heading__action { width: 44px; height: 44px; }
   .thread-find__close button { width: 40px; height: 40px; }
   .thread-find__meta button { width: 40px; height: 32px; }
 }
@@ -1387,11 +1413,6 @@ input {
   font-size: 0.9375rem;
   font-weight: 500;
   line-height: 1.5;
-}
-
-[data-shell-tools="true"] .conversation-heading {
-  /* 外层对话插件的工具入口位于同一条标题带；没有工具时不预留。 */
-  padding-inline-end: 10rem;
 }
 
 /* 标题行内重命名：沿用 h1 排版，发丝底线标示编辑态。 */
@@ -2345,13 +2366,6 @@ form.composer:focus-within [data-slot="input-group"] {
     max-width: 88%;
   }
 
-}
-
-/* 手机宽度下工具区开关只剩 44px 图标，标题带只需让出图标与右侧边距。 */
-:where([data-chat-width~="32rem"]) {
-  &[data-shell-tools="true"] .conversation-heading {
-    padding-inline-end: 4.5rem;
-  }
 }
 
 /* —— 图标换挡：两枚图形叠在同一个格子，切到哪一枚另一枚就缩小、模糊着让位 ——

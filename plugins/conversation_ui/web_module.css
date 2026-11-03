@@ -207,8 +207,7 @@
 
 .conversation-tools-tab,
 .conversation-tools-button,
-.conversation-tools-launch-tool,
-.conversation-tools-toggle {
+.conversation-tools-launch-tool {
   border: 0;
   color: var(--ak-ink-secondary);
   background: transparent;
@@ -316,7 +315,6 @@
 }
 
 .conversation-tools-button svg,
-.conversation-tools-toggle svg,
 .conversation-tools-launch-tool > svg {
   width: 16px;
   height: 16px;
@@ -380,35 +378,6 @@
   cursor: default;
 }
 
-/* 工作台开关：与标题栏图标按钮同一形态，名称在提示里；有活动时右上角一个点。
-   聊天同文档挂载：开关在聊天的普通层级（标题栏、目录轨，≤6）之上，在聊天弹层（≥50）之下。 */
-.conversation-tools-toggle {
-  position: absolute;
-  z-index: 10;
-  inset-block-start: 10px;
-  inset-inline-end: 12px;
-  display: inline-grid;
-  width: 34px;
-  height: 34px;
-  place-items: center;
-  padding: 0;
-  border-radius: 7px;
-}
-
-.conversation-tools-toggle span {
-  position: absolute;
-  width: 1px;
-  height: 1px;
-  overflow: hidden;
-  clip-path: inset(50%);
-  white-space: nowrap;
-}
-
-.conversation-tools-toggle svg {
-  width: 18px;
-  height: 18px;
-}
-
 .conversation-tools-content {
   min-height: 0;
 }
@@ -422,7 +391,6 @@
 .conversation-tools-group[hidden],
 .conversation-tools-divider[hidden],
 .conversation-tools-splitter[hidden],
-.conversation-tools-toggle[hidden],
 .conversation-tool-panel[hidden] {
   display: none;
 }
@@ -430,8 +398,7 @@
 @media (hover: hover) {
   .conversation-tools-tab-item:not(.is-active):hover,
   .conversation-tools-button:hover,
-  .conversation-tools-launch-tool:not([aria-disabled="true"]):hover,
-  .conversation-tools-toggle:hover {
+  .conversation-tools-launch-tool:not([aria-disabled="true"]):hover {
     color: var(--ak-ink-primary);
     background: color-mix(in oklch, var(--ak-ink-primary) 6%, transparent);
   }
@@ -439,30 +406,9 @@
 
 .conversation-tools-tab:focus-visible,
 .conversation-tools-button:focus-visible,
-.conversation-tools-launch-tool:focus-visible,
-.conversation-tools-toggle:focus-visible {
+.conversation-tools-launch-tool:focus-visible {
   outline: 2px solid var(--ak-rule-focus);
   outline-offset: -2px;
-}
-
-.conversation-tools-toggle[aria-expanded="true"] {
-  color: var(--ak-ink-primary);
-}
-
-.conversation-tools-toggle.has-attention::after {
-  position: absolute;
-  inset-block-start: 6px;
-  inset-inline-end: 6px;
-  width: 6px;
-  height: 6px;
-  border-radius: 50%;
-  background: var(--ak-color-status-warning);
-  content: "";
-}
-
-/* 聊天窄宽（ADR 0126 的根属性）时模型抽屉等弹层留在输入区的层级里，压不过开关；弹层打开时收起开关。 */
-.conversation-page:has(.akashic-chat:is([data-chat-width~="820"], [data-chat-short]) [role="dialog"]) .conversation-tools-toggle {
-  visibility: hidden;
 }
 
 /* 聊天的模态对话框打开时（宽屏打开后再缩窄或铺满），聊天先不隐藏，对话框才看得见、关得掉。
@@ -505,7 +451,6 @@
     min-width: 112px;
   }
 
-  .conversation-tools-toggle,
   .conversation-tools-button {
     width: 44px;
     height: 44px;

@@ -6,6 +6,7 @@ initializeTheme();
 startCrossPortThemeSync();
 mountChat(document.getElementById("chat")!, {
   activateRailAction() {},
+  activateHeaderAction() {},
   reportSession() {},
   reportOverlay() {},
   requestIntent: async () => "unhandled",

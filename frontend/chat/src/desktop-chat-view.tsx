@@ -15,7 +15,7 @@ import { DesktopComposer, type ComposerApi } from "./desktop-composer";
 import { onWorkbenchQuote } from "./shell-workbench";
 import { DesktopConversationMessages, DesktopTimelineMessages, messageDayKey, withoutLeadingOrphanResults } from "./desktop-conversation";
 import { MediaGalleryViewer, ReplyActivityView } from "./message-view";
-import { MessageSquarePlus, Search } from "lucide-react";
+import { MessageSquarePlus } from "lucide-react";
 import { ThreadFind, useThreadFind } from "./thread-find";
 import { CompactNavigation } from "./compact-navigation";
 import { NewChatScope } from "./new-chat-scope";
@@ -24,6 +24,7 @@ import { SidebarPanelHost } from "./sidebar-panels";
 import { useSidebarRail } from "./use-sidebar-rail";
 import type { DesktopChatController } from "./use-desktop-chat-controller";
 import { PluginUiSlot } from "./plugin-ui-runtime";
+import { HeaderActions } from "./header-actions";
 import { HeaderMeta } from "./header-meta";
 import { SelectionQuote } from "./selection-quote";
 import { MarqueeText } from "./marquee-text";
@@ -172,17 +173,14 @@ export function DesktopChatView({ controller }: DesktopChatViewProps) {
           {/* 插件在标题行右侧的标记；新的工具结果到达时通知插件重新读取会话状态。 */}
           {activeSessionId ? <PluginUiSlot key={`header:${activeSessionId}`} name="header.end" sessionId={activeSessionId}
             refreshToken={liveToolToken} quiet /> : null}
-          {/* 查找的触屏入口：手机没有 Ctrl/⌘F；桌面也能点，快捷键写在提示里。 */}
-          {hasMessages ? <button type="button" className="conversation-heading__find" aria-label="在对话中查找"
-            data-tip="在对话中查找 (Ctrl/⌘F)" aria-keyshortcuts="Control+F Meta+F" onClick={find.openFind}>
-            <Search size={20} strokeWidth={1.75} aria-hidden="true" />
-          </button> : null}
+          {/* 查找与宿主动作（工作台）在宽屏逐个出现，紧凑外壳收进「⋯」；查找是手机上唯一的入口（没有 Ctrl/⌘F）。 */}
           {/* 窄屏没有常驻侧栏：新会话留在拇指可达的标题行，不必先打开抽屉；继承当前会话所在的分组。 */}
-          {conversationLayout ? <button type="button" className="conversation-heading__new"
-            aria-label={activeGroup ? `在 ${activeGroup.label} 中新建会话` : "新会话"} data-tip="新会话"
-            onClick={() => activeGroup ? navigationGroups.startChat(activeGroup) : startNewChat()}>
-            <MessageSquarePlus size={20} strokeWidth={1.75} aria-hidden="true" />
-          </button> : null}
+          <HeaderActions onFind={hasMessages ? find.openFind : undefined} newChat={conversationLayout
+            ? <button type="button" className="conversation-heading__new"
+              aria-label={activeGroup ? `在 ${activeGroup.label} 中新建会话` : "新会话"} data-tip="新会话"
+              onClick={() => activeGroup ? navigationGroups.startChat(activeGroup) : startNewChat()}>
+              <MessageSquarePlus size={20} strokeWidth={1.75} aria-hidden="true" />
+            </button> : null} />
         </header>
         <Conversation className="conversation" resize="instant">
           <ConversationContent className={conversationLayout ? "conversation-content" : "conversation-content empty"}>
