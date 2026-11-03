@@ -186,10 +186,13 @@ const designWorkerUrls = {
   },
 };
 // Agent 写的 JSX 是可执行代码：renderJSX 改为交给不透明源沙箱求值（editor/jsx.ts），编辑器页面里的 new Function 一律拒绝。
+// 依赖换了文件布局时 onLoad 根本不会被调用：构建结束后再核对补丁恰好打上一次。
+let designJSXPatched = 0;
 const designJSXEval = {
   name: "design-jsx-sandbox",
   setup(build) {
     build.onLoad({ filter: /@open-pencil[\\/]design-jsx[\\/]dist[\\/]chunks[\\/]fields\.js$/ }, async (args) => {
+      designJSXPatched += 1;
       const source = await readFile(args.path, "utf8");
       const patched = source
         .replace("const element = createElement(buildComponent(jsxString, helperWarnings), null);\n\tconst tree = resolveToTree(element);",
@@ -211,6 +214,7 @@ await writeFile(resolve(designAssets, "jsx.html"),
   `<!doctype html><meta charset="utf-8"><title>JSX</title><script type="module">${designSandboxScript}</script>\n`);
 const designBuild = await bundle({ ...designOptions, plugins: [designWorkerUrls, designJSXEval],
   entryPoints: { editor: resolve(repoRoot, "frontend/plugins/design/editor/main.ts") } });
+if (designJSXPatched !== 1) throw new Error(`design-jsx-sandbox 补丁命中 ${designJSXPatched} 次，应为 1 次`);
 const designOutputs = Object.entries(designBuild.metafile.outputs);
 const designEntry = designOutputs.find(([, output]) => output.entryPoint?.endsWith("editor/main.ts"));
 if (!designEntry) throw new Error("设计编辑器没有产出入口");

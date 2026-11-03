@@ -29,7 +29,7 @@ class LiveLink {
   private timer = 0;
   private session: string | null = null;
 
-  constructor(private readonly ctx: WebHostContextV1, private readonly receive: (message: LiveMessage) => void,
+  constructor(private readonly ctx: WebHostContextV1, private readonly receive: (message: LiveMessage, session: string) => void,
     private readonly visible: () => boolean) {}
 
   open(session: string | null): void {
@@ -62,12 +62,12 @@ class LiveLink {
     socket.addEventListener("open", () => {
       if (this.socket !== socket) return;
       this.send({ type: "visible", visible: this.visible() });
-      this.receive({ type: "resync" });
+      this.receive({ type: "resync" }, session);
     });
     // 换会话后旧连接可能还有在路上的消息：只收当前这条连接的
     socket.addEventListener("message", (event) => {
       if (this.socket !== socket) return;
-      try { this.receive(JSON.parse(String(event.data)) as LiveMessage); } catch { /* 忽略坏消息，连接保持 */ }
+      try { this.receive(JSON.parse(String(event.data)) as LiveMessage, session); } catch { /* 忽略坏消息，连接保持 */ }
     });
     socket.addEventListener("close", () => {
       if (this.socket !== socket) return;
@@ -90,7 +90,7 @@ class DesignTab {
   constructor(private readonly ctx: WebHostContextV1, private readonly host: HTMLElement, private readonly view: ConversationTabView) {
     this.root.className = "design-tab";
     host.replaceChildren(this.root);
-    this.live = new LiveLink(ctx, (message) => this.onLive(message), () => view.active);
+    this.live = new LiveLink(ctx, (message, session) => this.onLive(message, session), () => view.active);
     window.addEventListener("message", this.onFrame);
     this.start();
     this.live.open(view.session);
@@ -132,11 +132,11 @@ class DesignTab {
   }
 
   // Agent 调用时桌面端顺带展开标签（每轮一次）
-  private onLive(message: LiveMessage): void {
+  private onLive(message: LiveMessage, session: string): void {
     if (message.type !== "call") return this.post(message);
     this.view.reveal(`design:${message.turn}`);
     this.start(true);
-    this.post({ type: "call", id: message.id, tool: message.tool, arguments: message.arguments });
+    this.post({ type: "call", id: message.id, session, tool: message.tool, arguments: message.arguments });
   }
 
   private readonly onFrame = (event: MessageEvent<DesignFromFrame & { channel?: string }>): void => {

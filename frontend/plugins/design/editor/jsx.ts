@@ -23,7 +23,11 @@ function sandbox(): Promise<HTMLIFrameElement> {
     element.sandbox.add("allow-scripts");
     element.src = SANDBOX;
     element.hidden = true;
-    const timer = window.setTimeout(() => { reset(); reject(new Error("JSX 沙箱没有启动")); }, TIMEOUT_MS);
+    const timer = window.setTimeout(() => {
+      window.removeEventListener("message", onReady);
+      reset();
+      reject(new Error("JSX 沙箱没有启动"));
+    }, TIMEOUT_MS);
     const onReady = (event: MessageEvent<{ ready?: boolean }>) => {
       if (event.source !== element.contentWindow || event.data?.ready !== true) return;
       window.removeEventListener("message", onReady);

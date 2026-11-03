@@ -20,7 +20,7 @@ export type DesignToFrame =
   | { type: "changed"; document: string; revision: number }
   | { type: "resync" };
 
-export interface AgentCall { id: string; tool: string; arguments: Record<string, unknown> }
+export interface AgentCall { id: string; session: string; tool: string; arguments: Record<string, unknown> }
 export type AgentReply = { id: string; ok: true; result: unknown } | { id: string; ok: false; error: string };
 
 export interface DesignIndicator { busy?: boolean; detail?: string }
