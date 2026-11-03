@@ -25,6 +25,8 @@ export class Documents {
   readonly state = reactive({
     session: null as string | null, list: [] as DocumentMeta[], current: null as DocumentMeta | null,
     loading: false, save: "saved" as SaveState, error: "",
+    // 大于 0 时画布正在被替换（或 Agent 正在改）：外壳据此冻结用户输入
+    busy: 0,
   });
   private version = 0;
   private savedVersion = 0;
@@ -43,7 +45,26 @@ export class Documents {
     ];
   }
 
-  async setSession(session: string | null): Promise<void> {
+  // 替换画布期间冻结用户输入：先让正在编辑的输入框提交（settle），再挡住画布、面板、文字编辑与快捷键，免得修改落进已经离开的文档。
+  async hold<T>(task: () => Promise<T>, settle = true): Promise<T> {
+    if (settle) (document.activeElement as HTMLElement | null)?.blur();
+    this.state.busy++;
+    try {
+      return await task();
+    } finally {
+      this.state.busy--;
+    }
+  }
+
+  setSession(session: string | null): Promise<void> {
+    return this.hold(() => this.switchTo(session));
+  }
+
+  open(id: string): Promise<void> {
+    return this.hold(() => this.load(id));
+  }
+
+  private async switchTo(session: string | null): Promise<void> {
     const left = await this.leave();
     const ticket = ++this.ticket;
     Object.assign(this.state, { session, list: [], current: null, error: left.note, save: "saved" });
@@ -52,13 +73,15 @@ export class Documents {
     const list = await this.json<{ documents: DocumentMeta[] }>(`${API}?${this.query()}`);
     if (ticket !== this.ticket || !list) return;
     this.state.list = list.documents;
-    if (list.documents[0]) await this.open(list.documents[0].id);
+    if (list.documents[0]) await this.load(list.documents[0].id);
   }
 
-  async open(id: string): Promise<void> {
+  // 读取期间画布又有修改（版本变了）就不替换，留在原文档，修改照常保存。
+  private async load(id: string): Promise<void> {
     const left = await this.leave();
     if (left.lost) return void (this.state.error = left.note);
     const ticket = ++this.ticket;
+    const version = this.version;
     this.state.loading = true;
     try {
       const response = await this.options.request(`${API}/${id}?${this.query()}`);
@@ -67,6 +90,7 @@ export class Documents {
       const graph = data.byteLength ? await parseFigFile(data) : new SceneGraph();
       const meta = this.state.list.find((item) => item.id === id) ?? null;
       if (ticket !== this.ticket) return;
+      if (this.version !== version) return void (this.state.error = "读取期间画布又有修改，先留在当前文档。");
       const etag = /^"(\d+)"$/.exec(response.headers.get("ETag") ?? "");
       if (meta && etag) meta.revision = Number(etag[1]);
       Object.assign(this.state, { current: meta, save: "saved", error: left.note });
@@ -80,21 +104,27 @@ export class Documents {
   }
 
   // 冲突时用户点“重新加载”：明确放弃这块画布上没存下的修改，换成存储里的最新版本。
-  async reload(): Promise<void> {
-    const current = this.state.current;
-    if (!current) return;
-    this.savedVersion = this.version;
-    await this.open(current.id);
+  reload(): Promise<void> {
+    return this.hold(async () => {
+      const current = this.state.current;
+      if (!current) return;
+      this.savedVersion = this.version;
+      await this.load(current.id);
+    });
   }
 
-  async create(name = ""): Promise<DocumentMeta | null> {
+  create(name = ""): Promise<DocumentMeta | null> {
+    return this.hold(() => this.make(name));
+  }
+
+  private async make(name: string): Promise<DocumentMeta | null> {
     const session = this.state.session;
     const created = await this.json<DocumentMeta>(`${API}?${this.query()}`, {
       method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ name }),
     });
     if (!created || this.state.session !== session) return null;
     this.state.list = [created, ...this.state.list];
-    await this.open(created.id);
+    await this.load(created.id);
     return this.state.current?.id === created.id ? created : null;
   }
 
@@ -122,6 +152,7 @@ export class Documents {
       });
       if (!response.ok) throw new Error(`保存副本失败（${response.status}）`);
       this.state.list = [await response.json() as DocumentMeta, ...this.state.list];
+      if (this.version !== version) return { lost: true, note: `“${current.name}”另存副本期间又有修改，先留在原文档。` };
       this.savedVersion = version;
       return { lost: false, note: `“${current.name}”的修改没能存回原文档，已另存为“${copy.name}”。` };
     } catch {

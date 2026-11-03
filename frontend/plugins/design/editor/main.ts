@@ -49,23 +49,24 @@ const DocumentBar = defineComponent({
     const commands = useEditorCommands();
     return () => {
       const { state } = props.documents;
+      const busy = state.busy > 0;
       const current = state.current;
       const picker = state.list.length > 1 && current
-        ? h("select", { class: "design-doc-select", "aria-label": "设计文档", value: current.id,
+        ? h("select", { class: "design-doc-select", "aria-label": "设计文档", value: current.id, disabled: busy,
             onChange: (event: Event) => void props.documents.open((event.target as HTMLSelectElement).value) },
           state.list.map((item) => h("option", { value: item.id }, item.name)))
         : h("strong", { class: "design-doc-name" }, current?.name ?? "设计");
       const status = state.save === "conflict"
-        ? h("button", { type: "button", class: "design-status is-alert", onClick: () => void props.documents.reload() },
+        ? h("button", { type: "button", class: "design-status is-alert", disabled: busy, onClick: () => void props.documents.reload() },
             `${SAVE_LABELS.conflict} · 重新加载`)
         : current && h("span", { class: `design-status is-${state.save}`, role: "status" }, SAVE_LABELS[state.save]);
       return h("header", { class: "design-bar" }, [
         picker, status,
         h("span", { class: "design-bar-gap" }),
-        IconButton({ label: "撤销", icon: "undo", disabled: !current, onClick: () => commands.runCommand("edit.undo") }),
-        IconButton({ label: "重做", icon: "redo", disabled: !current, onClick: () => commands.runCommand("edit.redo") }),
+        IconButton({ label: "撤销", icon: "undo", disabled: !current || busy, onClick: () => commands.runCommand("edit.undo") }),
+        IconButton({ label: "重做", icon: "redo", disabled: !current || busy, onClick: () => commands.runCommand("edit.redo") }),
         IconButton({ label: "缩放到全部内容", icon: "fit", disabled: !current, onClick: () => commands.runCommand("view.zoomFit") }),
-        IconButton({ label: "新建设计", icon: "plus", disabled: !state.session, onClick: () => void props.documents.create() }),
+        IconButton({ label: "新建设计", icon: "plus", disabled: !state.session || busy, onClick: () => void props.documents.create() }),
       ]);
     };
   },
@@ -84,12 +85,15 @@ const ToolDock = defineComponent({
 
 // CanvasRoot 只负责绘制：指针、文字编辑与光标要像 open-pencil 应用的 EditorCanvas 一样另外接上。
 const CanvasInput = defineComponent({
-  props: { editor: { type: Object as PropType<Editor>, required: true } },
+  props: {
+    editor: { type: Object as PropType<Editor>, required: true },
+    documents: { type: Object as PropType<Documents>, required: true },
+  },
   setup(props) {
     const canvas = useCanvasContext();
     const input = useCanvasInput(canvas.canvasRef, props.editor, canvas.hitTestSectionTitle,
       canvas.hitTestComponentLabel, canvas.hitTestFrameTitle);
-    useTextEdit(canvas.canvasRef, props.editor);
+    useTextEdit(canvas.canvasRef, props.editor, { isEnabled: () => props.documents.state.busy === 0 });
     watchEffect(() => {
       const element = canvas.canvasRef.value;
       if (element) element.style.cursor = toolCursor(props.editor.state.activeTool, input.cursorOverride.value);
@@ -111,9 +115,9 @@ const Shell = defineComponent({
       return h("div", { class: "design-editor" }, [
         h(DocumentBar, { documents: props.documents }),
         state.error && h("p", { class: "design-error", role: "alert" }, state.error),
-        h("div", { class: "design-body" }, [
+        h("div", { class: "design-body", inert: state.busy > 0 }, [
           h("div", { class: "design-stage" }, [
-            h(CanvasRoot, null, () => [h(CanvasSurface, { class: "design-canvas" }), h(CanvasInput, { editor: props.editor })]),
+            h(CanvasRoot, null, () => [h(CanvasSurface, { class: "design-canvas" }), h(CanvasInput, { editor: props.editor, documents: props.documents })]),
             !empty && h(ToolDock, { editor: props.editor }),
             empty && h("div", { class: "design-empty" }, [
               h("p", state.session ? "这个会话还没有设计文档。Agent 做设计时会在这里新建，你也可以自己开一份。" : "发出第一条消息后，这个会话就可以有自己的设计文档。"),
