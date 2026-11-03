@@ -183,6 +183,7 @@ class UpdateConnectionPayload(_Payload):
     auth_identity: str = Field(min_length=1, max_length=128)
     credential: dict[str, str] | None = None
     driver_config: dict[str, JsonValue] | None = None
+    remove_model_ids: list[str] = Field(default_factory=list)
 
 
 class DisableConnectionPayload(_Payload):
@@ -586,6 +587,7 @@ def _command(payload: CommandPayload) -> ModelChange:
             auth_identity=payload.auth_identity,
             credential=payload.credential,
             driver_config=payload.driver_config,
+            remove_model_ids=tuple(payload.remove_model_ids),
         )
     if isinstance(payload, DisableConnectionPayload):
         return DisableConnection(payload.expected_revision, payload.connection_id)

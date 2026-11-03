@@ -31,6 +31,9 @@ from plugins.models.settings import MODEL_SETTINGS
 from plugins.models.state import ModelsState
 from plugins.models.store import ModelsStore
 from plugins.opencode_go.driver import definition as opencode_definition
+from plugins.openai_compatible.driver import definition as openai_definition
+from plugins.models.settings import AddConnection, AddModel
+from plugins.models.contract import ModelCapabilities, CapabilitySources
 
 PAGE = """<!doctype html><meta charset="utf-8"><title>模型登录验收</title>
 <link rel="stylesheet" href="/frontend/theme/src/material-tokens.css">
@@ -50,6 +53,8 @@ import {activate as opencode} from '/frontend/plugins/opencode_go/src/module.js'
 const providers = [];
 const providerContext = {ui:{inject:(_, mount)=>mount({register(entry){providers.push(entry);return ()=>{};}})}};
 codex(providerContext);opencode(providerContext);
+import {activate as openai} from '/frontend/plugins/openai_compatible/src/module.js';
+openai(providerContext);
 models({data:{resource:(key, load, options)=>registry.create(key, load, options).resource},ui:{inject:(_, mount)=>mount({register(entry){
   if (entry.id !== 'models') return ()=>{};
   return entry.render(document.querySelector('#host'), {child:()=>({
@@ -60,7 +65,7 @@ models({data:{resource:(key, load, options)=>registry.create(key, load, options)
 </script>"""
 
 
-def create_app(port: int, frontend: Path) -> FastAPI:
+def create_app(port: int, frontend: Path, *, connection_edit: bool = False) -> FastAPI:
     """挂载真实认证实现；只把外部服务替换为本机 HTTP 协议端点。"""
     base = f"http://127.0.0.1:{port}"
     codex_auth.CODEX_AUTH_BASE = base + "/upstream"
@@ -85,6 +90,10 @@ def create_app(port: int, frontend: Path) -> FastAPI:
             async def models(ctx):
                 store = ModelsStore(Path(directory) / "models.sqlite3", Path(directory) / "backups")
                 store.initialize()
+                if connection_edit:
+                    rev = store.add_connection(AddConnection(0, "magpie", "Magpie fixture", "openai-compatible", base + "/upstream/v1", "api:magpie", {"driver":"api_key", "access_token":"fixture-key"}, {"format_version":1}))
+                    for model in ("old-removed", "still-valid"):
+                        rev = store.add_model(AddModel(rev, model, "magpie", "chat", model, ModelCapabilities(), CapabilitySources(), driver_config={"format_version":1}))
                 state = ModelsState(store, context=ctx)
                 await ctx.effect(lambda: store.close, label="models-store")
                 await ctx.provide(MODEL_DRIVERS, state.drivers)
@@ -97,6 +106,7 @@ def create_app(port: int, frontend: Path) -> FastAPI:
 
                 await ctx.require(MODEL_DRIVERS).register(ctx, codex_definition(read_version))
                 await ctx.require(MODEL_DRIVERS).register(ctx, opencode_definition())
+                await ctx.require(MODEL_DRIVERS).register(ctx, openai_definition())
 
             await root.mount(models, name="models")
             await root.mount(drivers, name="auth-drivers", inject=(MODEL_DRIVERS,))
@@ -124,6 +134,19 @@ def create_app(port: int, frontend: Path) -> FastAPI:
             })
             return response
         return await call_next(request)
+
+    @app.get("/upstream/v1/models")
+    async def models_list():
+        return {"object":"list", "data":[{"id":"still-valid", "object":"model"}]}
+
+    @app.post("/upstream/v1/chat/completions")
+    async def completion(request: Request):
+        body = await request.json()
+        if request.headers.get("authorization") == "Bearer invalid-key":
+            return JSONResponse({"error":{"message":"invalid fixture key"}}, status_code=401)
+        if body["model"] == "old-removed":
+            return JSONResponse({"error":{"message":"magpie knows no model old-removed"}}, status_code=404)
+        return {"id":"fixture", "object":"chat.completion", "model":body["model"], "choices":[{"index":0,"message":{"role":"assistant","content":"OK"},"finish_reason":"stop"}], "usage":{"prompt_tokens":1,"completion_tokens":1,"total_tokens":2}}
 
     @app.get("/")
     async def page():
@@ -183,5 +206,6 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--port", type=int, required=True)
     parser.add_argument("--frontend", type=Path, default=ROOT / "frontend")
+    parser.add_argument("--connection-edit", action="store_true")
     args = parser.parse_args()
-    uvicorn.run(create_app(args.port, args.frontend), host="127.0.0.1", port=args.port)
+    uvicorn.run(create_app(args.port, args.frontend, connection_edit=args.connection_edit), host="127.0.0.1", port=args.port)

@@ -728,7 +728,7 @@ class ModelsStore:
             write,
         )
 
-    def update_connection(self, command: UpdateConnection) -> int:
+    def update_connection(self, command: UpdateConnection, *, fallback_model_id: str | None = None) -> int:
         """Update the mutable fields of one existing connection."""
 
         connection_id = _required(command.connection_id, "connection_id")
@@ -788,6 +788,12 @@ class ModelsStore:
                 values,
             )
 
+            # 连接校验通过后，凭据和明确取消的模型在同一事务提交。
+            if command.remove_model_ids:
+                connection.execute("UPDATE model_connections SET catalog_mode = 'picked' WHERE id = ?", (connection_id,))
+            for model_id in command.remove_model_ids:
+                _remove_model(connection, model_id, fallback_model_id)
+
         return self._domain_write(command.expected_revision, "update-connection", write)
 
     def disable_connection(self, command: DisableConnection) -> int:
@@ -844,39 +850,10 @@ class ModelsStore:
     def remove_model(self, command: RemoveModel, *, fallback_model_id: str | None) -> int:
         """删除用户选中的配置，并在同一事务中清除引用和替换默认聊天模型。"""
         model_id = _required(command.model_id, "model_id")
-
-        def write(connection: sqlite3.Connection) -> bool:
-            # 1. 只减少模型配置；连接、调用账本和会话消息不在此写入范围。
-            row = connection.execute(
-                "SELECT 'chat' FROM model_definitions WHERE id = ? "
-                "UNION ALL SELECT 'embedding' FROM embedding_models WHERE id = ?",
-                (model_id, model_id),
-            ).fetchone()
-            if row is None:
-                return False
-            if row[0] == "embedding":
-                connection.execute(
-                    "UPDATE model_registry_meta SET default_embedding_model_id = NULL "
-                    "WHERE default_embedding_model_id = ?", (model_id,),
-                )
-                connection.execute("DELETE FROM embedding_models WHERE id = ?", (model_id,))
-                return True
-
-            # 2. 取消角色特选后自然跟随 default；默认被移除才选定替代者。
-            was_default = connection.execute(
-                "SELECT 1 FROM model_role_bindings WHERE role = 'default' AND model_id = ?",
-                (model_id,),
-            ).fetchone() is not None
-            connection.execute("DELETE FROM model_role_bindings WHERE model_id = ?", (model_id,))
-            connection.execute("DELETE FROM model_definitions WHERE id = ?", (model_id,))
-            if was_default and fallback_model_id is not None:
-                connection.execute(
-                    "INSERT INTO model_role_bindings(role, model_id, reasoning_effort) "
-                    "VALUES ('default', ?, '')", (fallback_model_id,),
-                )
-            return True
-
-        return self._domain_write(command.expected_revision, "remove-model", write)
+        return self._domain_write(
+            command.expected_revision, "remove-model",
+            lambda connection: _remove_model(connection, model_id, fallback_model_id),
+        )
 
     def update_model(self, command: UpdateModel) -> int:
         """在同一 revision CAS 中设置用户能力；空容量表示未知，其余输入模态保留。"""
@@ -2325,6 +2302,39 @@ CREATE TABLE model_role_bindings (
     updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
 );
 """
+
+
+def _remove_model(connection: sqlite3.Connection, model_id: str, fallback_model_id: str | None) -> bool:
+    """在调用者的事务内移除模型配置，并按原规则更新默认选择。"""
+    # 1. 只减少模型配置；连接、调用账本和会话消息不在此写入范围。
+    row = connection.execute(
+        "SELECT 'chat' FROM model_definitions WHERE id = ? "
+        "UNION ALL SELECT 'embedding' FROM embedding_models WHERE id = ?",
+        (model_id, model_id),
+    ).fetchone()
+    if row is None:
+        return False
+    if row[0] == "embedding":
+        connection.execute(
+            "UPDATE model_registry_meta SET default_embedding_model_id = NULL "
+            "WHERE default_embedding_model_id = ?", (model_id,),
+        )
+        connection.execute("DELETE FROM embedding_models WHERE id = ?", (model_id,))
+        return True
+
+    # 2. 取消角色特选后自然跟随 default；默认被移除才选定替代者。
+    was_default = connection.execute(
+        "SELECT 1 FROM model_role_bindings WHERE role = 'default' AND model_id = ?",
+        (model_id,),
+    ).fetchone() is not None
+    connection.execute("DELETE FROM model_role_bindings WHERE model_id = ?", (model_id,))
+    connection.execute("DELETE FROM model_definitions WHERE id = ?", (model_id,))
+    if was_default and fallback_model_id is not None:
+        connection.execute(
+            "INSERT INTO model_role_bindings(role, model_id, reasoning_effort) "
+            "VALUES ('default', ?, '')", (fallback_model_id,),
+        )
+    return True
 
 
 __all__ = [
