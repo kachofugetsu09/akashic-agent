@@ -59,6 +59,7 @@ class LiveLink {
     }
     this.socket = socket;
     socket.addEventListener("open", () => {
+      if (this.socket !== socket) return;
       this.send({ type: "visible", visible: this.visible() });
       this.receive({ type: "resync" });
     });
