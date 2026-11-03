@@ -14,7 +14,9 @@ export type DesignToFrame =
   | ({ type: "response" } & RelayedResponse)
   | { type: "session"; session: string | null }
   | { type: "active"; active: boolean }
-  | { type: "theme"; dark: boolean };
+  | { type: "theme"; dark: boolean }
+  // 同一会话别处保存后的新修订号（经标签模块从实时连接转来）
+  | { type: "changed"; document: string; revision: number };
 
 export interface DesignIndicator { busy?: boolean; detail?: string }
 

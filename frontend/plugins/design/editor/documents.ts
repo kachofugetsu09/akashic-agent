@@ -131,6 +131,19 @@ export class Documents {
     return this.state.current?.id === created.id ? created : null;
   }
 
+  async refresh(): Promise<void> {
+    const list = await this.json<{ documents: DocumentMeta[] }>(`${API}?${this.query()}`);
+    if (list) this.state.list = list.documents;
+  }
+
+  // 同一会话的另一块画布保存了文档：没有未保存修改就换成新版本，有修改时让下一次保存报冲突，由用户决定。
+  async changed(id: string, revision: number): Promise<void> {
+    if (!this.state.list.some((item) => item.id === id)) return await this.refresh();
+    const current = this.state.current;
+    if (current?.id !== id || revision <= current.revision || this.saving || this.version !== this.savedVersion) return;
+    await this.hold(() => this.load(id), false);
+  }
+
   async flush(): Promise<void> {
     window.clearTimeout(this.timer);
     this.timer = 0;
