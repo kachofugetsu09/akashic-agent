@@ -16,18 +16,25 @@ _DOCUMENT = re.compile(r"[0-9a-f]{16}")
 
 
 def register(app: FastAPI, context: DashboardContext) -> None:
-    # 能力只在路由的租约内解析：插件换代后旧路由拿不到新一代的存储。
-    def store() -> DesignStore:
-        return context.require(DESIGN_STORE)
+    _catalog_routes(app, context)
+    _content_routes(app, context)
 
+
+# 能力只在路由的租约内解析：插件换代后旧路由拿不到新一代的存储。
+def _store(context: DashboardContext) -> DesignStore:
+    return context.require(DESIGN_STORE)
+
+
+# 当前会话的文档列表、新建与改名
+def _catalog_routes(app: FastAPI, context: DashboardContext) -> None:
     @app.get("/api/dashboard/design/documents")
     async def documents(session: str = _SESSION) -> dict[str, object]:
-        return {"documents": [_view(item) for item in await store().list(session)]}
+        return {"documents": [_view(item) for item in await _store(context).list(session)]}
 
     @app.post("/api/dashboard/design/documents")
     async def create(session: str = _SESSION, name: str = Body("", embed=True, max_length=200)) -> dict[str, object]:
         try:
-            return _view(await store().create(session, name))
+            return _view(await _store(context).create(session, name))
         except DesignStoreError as error:
             raise HTTPException(409, str(error)) from error
 
@@ -35,14 +42,17 @@ def register(app: FastAPI, context: DashboardContext) -> None:
     async def rename(document: str, session: str = _SESSION,
                      name: str = Body(embed=True, max_length=200)) -> dict[str, object]:
         try:
-            return _view(await store().rename(session, _checked(document), name))
+            return _view(await _store(context).rename(session, _checked(document), name))
         except DesignStoreError as error:
             raise HTTPException(404, str(error)) from error
 
+
+# 文档内容的读写：读取时修订号随 ETag 返回，写入要带上自己基于的修订号
+def _content_routes(app: FastAPI, context: DashboardContext) -> None:
     @app.get("/api/dashboard/design/documents/{document}")
     async def read(document: str, session: str = _SESSION) -> Response:
         try:
-            meta, data = await store().read(session, _checked(document))
+            meta, data = await _store(context).read(session, _checked(document))
         except DesignStoreError as error:
             raise HTTPException(404, str(error)) from error
         # 修订号放在 ETag 里：宿主代理只转发白名单里的响应头。
@@ -54,7 +64,7 @@ def register(app: FastAPI, context: DashboardContext) -> None:
                     base: int = Query(ge=0)) -> dict[str, object]:
         data = await _body(request)
         try:
-            saved = await store().write(session, _checked(document), data, base=base)
+            saved = await _store(context).write(session, _checked(document), data, base=base)
         except RevisionConflict as error:
             raise HTTPException(409, {"message": str(error), "revision": error.current}) from error
         except DesignStoreError as error:
