@@ -43,6 +43,7 @@ class UpdateConnection:
     endpoint: str | None = None
     credential: Mapping[str, str] | None = None
     driver_config: Mapping[str, Any] | None = None
+    remove_model_ids: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True, slots=True)

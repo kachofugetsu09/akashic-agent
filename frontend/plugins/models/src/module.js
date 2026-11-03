@@ -1181,6 +1181,8 @@ function registerModels(ctx, mount, catalogResource) {
         function parsedDrafts() {
           const patches = [];
           for (const [modelId, [context, output, image]] of drafts) {
+            const model = savedModels().find((item) => item.id === modelId);
+            if (!model || !picked.has(key(model.kind, model.model))) continue;
             const contextWindow = parseTokenCount(context);
             const maxOutputTokens = parseTokenCount(output);
             if (contextWindow === false || maxOutputTokens === false) {
@@ -1304,7 +1306,12 @@ function registerModels(ctx, mount, catalogResource) {
         };
         $("[data-reload]").addEventListener("click", () => { void discover(); });
         void discover();
-        return {element: section, refresh, isDirty, removalWarning, commit, showError};
+        return {element: section, refresh, isDirty, removalWarning, commit, showError,
+          connectionRemovals() {
+            parsedDrafts();
+            return mode === "all" ? [] : savedModels().filter((model) => !picked.has(key(model.kind, model.model))).map((model) => model.id);
+          },
+        };
       }
 
       // 账号区：套餐、账号与各窗口的已用比例和重置时间；只有驱动提供额度的连接才显示。
@@ -1528,6 +1535,7 @@ function registerModels(ctx, mount, catalogResource) {
               auth_identity: connection.authIdentity,
               credential: input.credential,
               driver_config: input.driverConfig,
+              remove_model_ids: modelManager?.connectionRemovals() ?? [],
             });
           },
           async startAuth(input) {
@@ -1617,6 +1625,7 @@ function registerModels(ctx, mount, catalogResource) {
         let disposed = false;
         const syncFooter = () => {
           if (!footer) return;
+          dialogHost.inert = busy;
           footer.querySelector("[data-save]").disabled = busy;
           footer.querySelector("[data-save]").textContent = busy ? "正在保存…" : "保存";
         };

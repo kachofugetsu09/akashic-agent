@@ -1646,7 +1646,13 @@ class ModelsState:
             revision = self.store.create_connection_with_model(command)
         elif isinstance(command, UpdateConnection):
             await self._probe_updated_connection(command)
-            revision = self.store.update_connection(command)
+            snapshot = self._snapshot_required()
+            candidates = sorted(
+                model.model_id for model in snapshot.models.values()
+                if model.model_id not in command.remove_model_ids and model.kind == "chat"
+                and model.enabled and self._availability(snapshot.connections[model.connection_id]) == "available"
+            )
+            revision = self.store.update_connection(command, fallback_model_id=next(iter(candidates), None))
         elif isinstance(command, DisableConnection):
             revision = self.store.disable_connection(command)
         elif isinstance(command, EnableConnection):
@@ -1930,6 +1936,11 @@ class ModelsState:
             raise ModelUnavailableError(f"模型连接不存在: {command.connection_id}").exception()
         if not existing.enabled:
             raise ModelUnavailableError("连接已停用；请新建连接，历史配置保留。").exception()
+        # 取消的型号只属于本连接；验证和提交使用同一份明确的移除清单。
+        for model_id in command.remove_model_ids:
+            model = snapshot.models.get(model_id)
+            if model is None or model.connection_id != command.connection_id:
+                raise ValueError(f"待移除模型不属于此连接: {model_id}")
         connection = replace(
             existing,
             name=command.name,
@@ -1956,7 +1967,8 @@ class ModelsState:
                    or connection.auth_identity != existing.auth_identity
                    or connection.driver_config != existing.driver_config)
         models = tuple(model for model in snapshot.models.values()
-                       if changed and model.connection_id == connection.connection_id and model.enabled)
+                       if changed and model.connection_id == connection.connection_id and model.enabled
+                       and model.model_id not in command.remove_model_ids)
         if len(models) > _SETTINGS_MAX_MODEL_PROBES:
             raise ValueError(f"连接有 {len(models)} 个已启用模型，超出一次验证上限 {_SETTINGS_MAX_MODEL_PROBES}。请新建连接选择需要的型号，再显式停用旧连接。")
         selected = self._select_driver_records((connection,))
