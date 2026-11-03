@@ -174,8 +174,9 @@ async def apply(ctx: Context) -> None:
         ctx,
         name="spawn",
         description=(
-            "把有界、多步且可独立完成的任务交给子任务。research 只读；scripting 可在任务目录写文件、执行命令；"
-            "general 可调研与执行。默认同步返回结果；长任务可用 run_in_background，完成后回传原会话。"
+            "把有界、多步且可独立完成的任务交给子任务。默认 general（可调研、读写文件、执行命令）；"
+            "research 只读；scripting 读写与命令执行。子任务默认继承父会话工作目录（可通过 cwd 指定初始目录）。"
+            "默认同步返回结果；长任务可用 run_in_background，完成后回传原会话。"
             "可通过 model 与 connection 为本次子任务单独指定模型及所属连接渠道（不确定有哪些连接和模型时，先用 spawn_manage(action=\"models\") 查询）；留空时按子任务设置解析。"
             "任务需要用户交互或只是简单操作时直接处理。task 必须包含目标、约束、上下文和预期结果。"
         ),
@@ -210,7 +211,9 @@ async def apply(ctx: Context) -> None:
                          max_output_tokens=config.max_output_tokens,
                          max_steps=config.max_steps,
                          exclude_material_kinds=frozenset({'recall'}),
-                         prompt_hints=(build_spawn_subagent_prompt(task_dir.parent.parent, task_dir, request.profile),),
+                         prompt_hints=(build_spawn_subagent_prompt(
+                             task_dir.parent.parent, task_dir, request.profile, cwd=request.cwd,
+                         ),),
                      )
 
     _ = await ctx.provide(SUBAGENT_PROGRAM, program)

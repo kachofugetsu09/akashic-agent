@@ -34,7 +34,7 @@ from plugins.models.contract import MODEL_SELECTION, ChatModelSelection
 from plugins.models.selection import SelectionOwner
 from plugins.content.plugin import Content
 from plugins.conversation.plugin import check_origin
-from plugins.subagent.inputs import CONTENT, CHECK_ORIGIN
+from plugins.subagent.inputs import CONTENT, CHECK_ORIGIN, TOOL_BIND_SAVED
 from plugins.subagent.request import PROFILE_TOOLS, Request
 from plugins.subagent.runtime import SUBAGENT_PROGRAM, Subagents
 from plugins.subagent.tools import Prepared, Spawn
@@ -60,7 +60,8 @@ class Fixture:
             for key, value in [(MESSAGE_CATALOG, self.log.catalog()), (MESSAGE_WRITERS, MessageWriters(self.log)),
                                (OWNER_STATE, OwnerState(self.log)), (SESSION_ADMISSION, SessionAdmission(self.log)),
                                (TASKS, self.tasks), (BINDINGS, self.bindings), (CHECK_ORIGIN, check_origin),
-                               (MODEL_SELECTION, SelectionOwner())]:
+                               (MODEL_SELECTION, SelectionOwner()),
+                               (TOOL_BIND_SAVED, lambda _bindings, target_id, *, configuration=None: asyncio.sleep(0, result=target_id))]:
                 await ctx.provide(key, value)
             await ctx.provide(CONTENT, Content(ctx))
 
@@ -70,7 +71,7 @@ class Fixture:
 
         await self.root.mount(core, name='core')
         await self.root.mount(jobs, name='subagent', inject=(MESSAGE_CATALOG, MESSAGE_WRITERS, OWNER_STATE,
-                              SESSION_ADMISSION, TASKS, BINDINGS, CONTENT, CHECK_ORIGIN, MODEL_SELECTION),
+                              SESSION_ADMISSION, TASKS, BINDINGS, CONTENT, CHECK_ORIGIN, MODEL_SELECTION, TOOL_BIND_SAVED),
                               runtime=PluginRuntime('subagent', 'fixture', args.source / 'plugins/subagent',
                                                     self.directory / 'plugin-data', self.directory, {},
                                                     workspace_roots=('subagent-runs',),
@@ -394,10 +395,11 @@ async def run(directory: Path):
             parsed_models = json.loads(models_result.parts[0].value)
             assert parsed_models['connections'][0]['connection'] == 'Magpie 内网'
             bad_prepared = await fixture.spawn.prepare(
-                {'task': 'check model', 'model': 'deepseek-chat'}, source)
+                {'task': 'check model', 'profile': 'research', 'model': 'deepseek-chat'}, source)
             assert isinstance(bad_prepared, str) and '多个连接渠道' in bad_prepared
             good_prepared = await fixture.spawn.prepare(
-                {'task': 'check model', 'model': 'deepseek-chat', 'connection': 'Magpie 内网', 'reasoning_effort': 'high'},
+                {'task': 'check model', 'profile': 'research', 'cwd': str(path),
+                 'model': 'deepseek-chat', 'connection': 'Magpie 内网', 'reasoning_effort': 'high'},
                 source,
             )
             assert isinstance(good_prepared, dict)

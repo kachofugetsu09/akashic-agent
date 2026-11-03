@@ -28,7 +28,8 @@ class SpawnInput(BaseModel):
     model_config = ConfigDict(extra="forbid", strict=True)
     task: str = Field(min_length=1, description="独立任务的目标、约束、上下文和预期结果")
     label: str | None = None
-    profile: Literal["research", "scripting", "general"] = "research"
+    profile: Literal["research", "scripting", "general"] = "general"
+    cwd: str | None = Field(default=None, description="可选：子任务的初始工作目录（相对路径以父会话当前目录解析，省略时继承父会话工作目录）")
     run_in_background: bool = False
     retry_count: int = Field(default=0, ge=0)
     model: str | None = Field(default=None, description="可选：指定子任务使用的模型（型号名或 model_id）；留空按子任务设置解析")
@@ -55,6 +56,8 @@ class Request(BaseModel):
     # 为空时子任务用默认模型；旧请求没有这两个字段，恢复时同样回到默认。
     model_id: str | None = Field(default=None, min_length=1)
     reasoning_effort: str | None = Field(default=None, min_length=1)
+    # 委派时冻结的子任务初始工作目录；旧请求没有该字段时回退到子任务目录。
+    cwd: str | None = Field(default=None, min_length=1)
 
     @property
     def session_id(self) -> str:
@@ -67,7 +70,7 @@ class Request(BaseModel):
 
 def check_request(part: ContentPart, *, check_origin: Callable[[ContentPart], ContentReferences]) -> ContentReferences:
     request = Request.model_validate(json_value(part.value))
-    if set(request.tools) != set(PROFILE_TOOLS[request.profile]):
+    if not request.tools or not set(request.tools) <= set(PROFILE_TOOLS[request.profile]):
         raise ValueError("子任务工具选择与 profile 不一致")
     if request.origin is not None:
         _ = check_origin(ContentPart("channel.origin", request.origin))

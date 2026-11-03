@@ -28,6 +28,7 @@ from plugins.sources.contract import (
 from .request import Request, check_request
 from plugins.models.contract import MODEL_SELECTION
 
+from plugins.working_directory.contract import WORKING_DIRECTORY
 from .contract import SUBAGENT_PROGRAM
 
 logger = logging.getLogger(__name__)
@@ -80,6 +81,18 @@ class Subagents:
             await run_file_io(check_capacity)
             _ = await ctx.require(SESSION_ADMISSION).ensure_async(ctx, request.session_id,
                 SessionAttributes(visibility="internal", learning="excluded"))
+            if request.cwd is not None:
+                # 2. 子会话的工作目录决定相对路径落在哪：父会话没设目录时 cwd 是还没建的任务目录，先建出来再写。
+                task_dir = ctx.workspace_root("subagent-runs") / request.job_id
+                if request.cwd == str(task_dir.expanduser().resolve()):
+                    await run_file_io(lambda: task_dir.mkdir(parents=True, exist_ok=True))
+                with ctx.borrow(WORKING_DIRECTORY) as directories:
+                    if directories is not None and directories.snapshot(request.session_id).path != request.cwd:
+                        try:
+                            prepared_switch = await directories.prepare_switch(request.session_id, request.cwd)
+                            _ = await directories.switch("subagent-init:" + request.job_id, prepared_switch)
+                        except Exception:
+                            logger.warning("子任务初始工作目录写入失败 job=%s cwd=%s", request.job_id, request.cwd, exc_info=True)
             writer = ctx.require(MESSAGE_WRITERS).bind(ctx, author="subagent", source="subagent",
                 body_types=(Input,), content={"text": ctx.require(CONTENT).check_text,
                     "model.selection": ctx.require(MODEL_SELECTION).check,
