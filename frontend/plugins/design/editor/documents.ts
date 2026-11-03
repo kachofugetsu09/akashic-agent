@@ -44,9 +44,9 @@ export class Documents {
   }
 
   async setSession(session: string | null): Promise<void> {
-    await this.flush();
+    const left = await this.leave();
     const ticket = ++this.ticket;
-    Object.assign(this.state, { session, list: [], current: null, error: "", save: "saved" });
+    Object.assign(this.state, { session, list: [], current: null, error: left.note, save: "saved" });
     this.show(new SceneGraph());
     if (!session) return;
     const list = await this.json<{ documents: DocumentMeta[] }>(`${API}?${this.query()}`);
@@ -56,7 +56,8 @@ export class Documents {
   }
 
   async open(id: string): Promise<void> {
-    await this.flush();
+    const left = await this.leave();
+    if (left.lost) return void (this.state.error = left.note);
     const ticket = ++this.ticket;
     this.state.loading = true;
     try {
@@ -68,7 +69,7 @@ export class Documents {
       if (ticket !== this.ticket) return;
       const etag = /^"(\d+)"$/.exec(response.headers.get("ETag") ?? "");
       if (meta && etag) meta.revision = Number(etag[1]);
-      Object.assign(this.state, { current: meta, save: "saved", error: "" });
+      Object.assign(this.state, { current: meta, save: "saved", error: left.note });
       this.show(graph);
       this.savedVersion = this.version;
     } catch (error) {
@@ -78,11 +79,20 @@ export class Documents {
     }
   }
 
+  // 冲突时用户点“重新加载”：明确放弃这块画布上没存下的修改，换成存储里的最新版本。
+  async reload(): Promise<void> {
+    const current = this.state.current;
+    if (!current) return;
+    this.savedVersion = this.version;
+    await this.open(current.id);
+  }
+
   async create(name = ""): Promise<DocumentMeta | null> {
+    const session = this.state.session;
     const created = await this.json<DocumentMeta>(`${API}?${this.query()}`, {
       method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ name }),
     });
-    if (!created) return null;
+    if (!created || this.state.session !== session) return null;
     this.state.list = [created, ...this.state.list];
     await this.open(created.id);
     return this.state.current?.id === created.id ? created : null;
@@ -93,6 +103,30 @@ export class Documents {
     this.timer = 0;
     if (this.saving) await this.saving;
     if (this.version !== this.savedVersion && this.state.save === "dirty") await this.save();
+  }
+
+  // 离开当前文档前先写回；冲突或保存失败时另存成一份新文档，普通切换不会悄悄丢掉修改。
+  private async leave(): Promise<{ lost: boolean; note: string }> {
+    await this.flush();
+    const current = this.state.current;
+    if (!current || this.version === this.savedVersion) return { lost: false, note: "" };
+    const version = this.version;
+    try {
+      const copy = await this.json<DocumentMeta>(`${API}?${this.query()}`, {
+        method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ name: `${current.name}（未保存的修改）` }),
+      });
+      if (!copy) throw new Error("没能新建副本");
+      const bytes = await exportFigFile(this.editor.graph);
+      const response = await this.options.request(`${API}/${copy.id}?${this.query()}&base=0`, {
+        method: "PUT", headers: { "Content-Type": "application/octet-stream" }, body: new Uint8Array(bytes),
+      });
+      if (!response.ok) throw new Error(`保存副本失败（${response.status}）`);
+      this.state.list = [await response.json() as DocumentMeta, ...this.state.list];
+      this.savedVersion = version;
+      return { lost: false, note: `“${current.name}”的修改没能存回原文档，已另存为“${copy.name}”。` };
+    } catch {
+      return { lost: true, note: `“${current.name}”的修改没能保存，也没能另存副本。` };
+    }
   }
 
   dispose(): void {

@@ -56,7 +56,7 @@ const DocumentBar = defineComponent({
           state.list.map((item) => h("option", { value: item.id }, item.name)))
         : h("strong", { class: "design-doc-name" }, current?.name ?? "设计");
       const status = state.save === "conflict"
-        ? h("button", { type: "button", class: "design-status is-alert", onClick: () => current && void props.documents.open(current.id) },
+        ? h("button", { type: "button", class: "design-status is-alert", onClick: () => void props.documents.reload() },
             `${SAVE_LABELS.conflict} · 重新加载`)
         : current && h("span", { class: `design-status is-${state.save}`, role: "status" }, SAVE_LABELS[state.save]);
       return h("header", { class: "design-bar" }, [
