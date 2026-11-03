@@ -233,14 +233,6 @@ disabled = true
 plugin = "ledger_invariants@release"
 disabled = true
 
-[rows."sites"]
-plugin = "sites@release"
-disabled = true
-
-[rows."sites_tab"]
-plugin = "sites_tab@release"
-disabled = true
-
 [rows."design"]
 plugin = "design@release"
 disabled = true

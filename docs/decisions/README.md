@@ -6,6 +6,7 @@
 
 | ID | 状态 | 主题 | 关联条款 |
 |---|---|---|---|
+| [0140](0140-design-workbench-replaces-sites.md) | accepted / implemented for review | 设计工作台：Agent 和用户在同一块 open-pencil 画布上做设计，取代“网站” | WEBUI-008 |
 | [0139](0139-deploy-falls-back-instead-of-staying-down.md) | accepted / implemented for review | 部署失败回到原版本，外置插件坏掉不拖垮 Core | RUN-004、MIG-001、PLG-013 |
 | [0138](0138-akasha-dense-is-single-threaded.md) | accepted / implemented for review | Akasha 的 dense 打分固定单线程 BLAS，学习检索不算模式补全 | MEM-009、MEM-013、ERR-001 |
 | [0137](0137-akasha-publishes-in-place-increments.md) | accepted / implemented for review | Akasha 检查点原地增量发布，随时钟变化的派生列不入库 | MEM-009、MEM-013、ERR-001 |

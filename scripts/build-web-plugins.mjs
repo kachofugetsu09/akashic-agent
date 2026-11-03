@@ -118,13 +118,6 @@ await chatSlotModule("frontend/plugins/projects/src/plugin-ui.tsx", "projects/pl
 // Akasha 的每轮检索卡片与项目记忆设置共用一个模块。
 await chatSlotModule("frontend/plugins/akasha/src/plugin-ui.js", "akasha/message_ui.js");
 
-// 网站卡片经消息附件插槽挂载，与“网站”标签的 Web 模块分开打包。
-await bundle({
-  entryPoints: [resolve(repoRoot, "frontend/plugins/sites/src/message-ui.ts")],
-  bundle: true, format: "esm", target: "es2022", minify: true,
-  outfile: resolve(pluginsRoot, "sites/message_ui.js"),
-});
-
 // 可视化使用同一份 frame 模板完成服务端预检与浏览器展示；图表工具包内联进模板，不另开脚本入口。
 const visualCharts = await bundle({
   entryPoints: [resolve(repoRoot, "frontend/plugins/visuals/src/charts.ts")],
@@ -212,6 +205,8 @@ const designSandbox = await bundle({ ...designOptions, write: false, metafile: f
 const designSandboxScript = designSandbox.outputFiles.find((file) => file.path.endsWith(".js")).text.replaceAll("</script", "<\\/script");
 await writeFile(resolve(designAssets, "jsx.html"),
   `<!doctype html><meta charset="utf-8"><title>JSX</title><script type="module">${designSandboxScript}</script>\n`);
+// 网页预览的运行页：原样拷贝，dashboard 按文件名给它网页沙箱的 CSP。
+await writeFile(resolve(designAssets, "preview.html"), await readFile(resolve(repoRoot, "frontend/plugins/design/editor/preview.html"), "utf8"));
 const designBuild = await bundle({ ...designOptions, plugins: [designWorkerUrls, designJSXEval],
   entryPoints: { editor: resolve(repoRoot, "frontend/plugins/design/editor/main.ts") } });
 if (designJSXPatched !== 1) throw new Error(`design-jsx-sandbox 补丁命中 ${designJSXPatched} 次，应为 1 次`);

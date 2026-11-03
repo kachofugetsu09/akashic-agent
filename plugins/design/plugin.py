@@ -1,7 +1,9 @@
 """设计工作台：基于 open-pencil 的设计画布，文档按会话存放；编辑器资产只在打开标签时加载。"""
 from agent.plugin_composition import Context
-from plugins.tools.contract import TOOLS
 from plugins.ui.contract import UI
+
+from plugins.tools.contract import TOOLS
+from plugins.working_directory.contract import WORKING_DIRECTORY
 
 from . import dashboard
 from .live import DESIGN_LIVE, DesignLive
@@ -12,7 +14,7 @@ api_version = 3
 name = "design"
 version = "1.0.0"
 desc = "工作台里的设计画布（open-pencil）：用户和 Agent 在同一份设计文档上编辑"
-inject = (TOOLS,)
+inject = (TOOLS, WORKING_DIRECTORY)
 
 
 async def apply(ctx: Context) -> None:

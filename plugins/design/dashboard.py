@@ -32,8 +32,16 @@ EDITOR_POLICY = (
     "font-src 'self' data: blob:; connect-src 'self' data: blob:; "
     "frame-src 'self'; worker-src 'self' blob:; object-src 'none'; base-uri 'none'; form-action 'none'; frame-ancestors 'self'"
 )
-
-
+# Agent 做的网页在这一页里运行：不透明源沙箱，拿不到 akashic 的 Cookie、存储与父窗口；
+# 快照里的本地资源都已内联成 data URI，外部 https 资源（CDN、字体、接口）放行。
+PREVIEW = "preview.html"
+PREVIEW_POLICY = (
+    "sandbox allow-scripts allow-forms allow-modals allow-popups; default-src 'none'; "
+    "script-src 'unsafe-inline' 'unsafe-eval' https: data: blob:; style-src 'unsafe-inline' https: data:; "
+    "img-src https: data: blob:; font-src https: data:; media-src https: data: blob:; "
+    "connect-src https:; worker-src blob: data:; frame-src https:; object-src 'none'; "
+    "base-uri 'none'; form-action 'none'; frame-ancestors 'self'"
+)
 # 中日韩等回退字体来自 Google Fonts：它的字体目录不带 CORS，浏览器取不到，由这里代取并按 URL 缓存在数据目录。
 FONT_HOSTS = frozenset({"fonts.google.com", "fonts.googleapis.com", "fonts.gstatic.com"})
 MAX_FONT_BYTES = 32 * 1024 * 1024
@@ -52,7 +60,7 @@ class _EditorAssets(CompressedStaticFiles):
         response = super().file_response(full_path, stat_result, scope, status_code)
         hashed = not str(full_path).endswith(".html")
         response.headers["Cache-Control"] = "public, max-age=31536000, immutable" if hashed else "no-cache"
-        policy = {EDITOR: EDITOR_POLICY, SANDBOX: SANDBOX_POLICY}.get(Path(full_path).name)
+        policy = {EDITOR: EDITOR_POLICY, SANDBOX: SANDBOX_POLICY, PREVIEW: PREVIEW_POLICY}.get(Path(full_path).name)
         if policy:
             response.headers["Content-Security-Policy"] = policy
         if policy and policy is not EDITOR_POLICY:
@@ -115,6 +123,14 @@ def _content_routes(app: FastAPI, context: DashboardContext) -> None:
         # 修订号放在 ETag 里：宿主代理只转发白名单里的响应头。
         return Response(data, media_type="application/octet-stream", headers={
             "Cache-Control": "no-store", "ETag": f'"{meta.revision}"'})
+
+    @app.get("/api/dashboard/design/documents/{document}/preview")
+    async def preview(document: str, session: str = _SESSION) -> Response:
+        try:
+            page = await _store(context).preview(session, _checked(document))
+        except (DesignStoreError, OSError) as error:
+            raise HTTPException(404, str(error)) from error
+        return Response(page, media_type="text/plain; charset=utf-8", headers={"Cache-Control": "no-store"})
 
     @app.put("/api/dashboard/design/documents/{document}")
     async def write(document: str, request: Request, session: str = _SESSION,
