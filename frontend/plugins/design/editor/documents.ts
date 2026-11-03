@@ -1,7 +1,27 @@
 import { reactive } from "vue";
-import { exportFigFile, parseFigFile, type Editor } from "@open-pencil/core";
+import { exportFigFile, fontManager, parseFigFile, type Editor } from "@open-pencil/core";
 import { SceneGraph } from "@open-pencil/scene-graph";
 import type { DesignIndicator } from "./contract";
+
+// 文字用到的字体（含中日韩回退）按需取回后重新排版、重绘：画框标签显示的是图层名，名字里的字一并取回；
+// 回退字体是按用到的字取的子集，换来新的子集后已经排好的文字也要重排，不然缺字的地方一直是空的。
+export async function loadDocumentFonts(editor: Editor): Promise<void> {
+  const graph = editor.graph;
+  const nodes = [...graph.nodes.values()];
+  await ensureFallback(nodes.map((node) => `${node.name}${node.type === "TEXT" ? node.text : ""}`).join(""));
+  await editor.loadFontsForNodes(graph.getPages().flatMap((page) => page.childIds));
+  if (graph !== editor.graph) return;
+  for (const node of nodes) if (node.type === "TEXT") node.textPicture = null;
+  for (const page of graph.getPages()) editor.runLayoutForNode(page.id);
+  editor.renderer?.invalidateAllPictures();
+  editor.requestRender();
+}
+
+// 回退字体要在逐个节点加载字体之前按全部文字一次取齐：逐节点取时每段文字各得一份同名子集，后到的会盖掉先到的字形。
+export async function ensureFallback(text: string): Promise<void> {
+  const characters = [...new Set(text)].join("");
+  if (/[^\u0000-\u024f]/u.test(characters)) await fontManager.ensureFallbackPack(["cjk"], characters);
+}
 
 // 编辑器对外只需要这三件事：同源请求、改标签标题、在标签上亮“正在保存”。
 export interface DocumentHost {
@@ -232,6 +252,7 @@ export class Documents {
     } finally {
       this.adopting--;
     }
+    void loadDocumentFonts(this.editor);
     this.options.setTitle(this.state.current ? `设计 · ${this.state.current.name}` : null);
   }
 

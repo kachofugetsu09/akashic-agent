@@ -1,10 +1,15 @@
 """设计标签的浏览器入口：按会话列出、新建、读写设计文档，并交付按需加载的编辑器资产。"""
 from __future__ import annotations
 
+import asyncio
+import hashlib
 import os
 import re
 from dataclasses import asdict
 from pathlib import Path
+from urllib.parse import urlsplit
+
+import httpx
 
 from fastapi import Body, FastAPI, HTTPException, Query, Request, Response, WebSocket
 from starlette.types import Scope
@@ -28,6 +33,9 @@ EDITOR_POLICY = (
 )
 
 
+# 中日韩等回退字体来自 Google Fonts：它的字体目录不带 CORS，浏览器取不到，由这里代取并按 URL 缓存在数据目录。
+FONT_HOSTS = frozenset({"fonts.google.com", "fonts.googleapis.com", "fonts.gstatic.com"})
+MAX_FONT_BYTES = 32 * 1024 * 1024
 # Agent 写的 JSX 在这一页里求值：不透明源沙箱，只放行内联脚本与 eval，不能连网、取同源资源或被别的站点嵌入。
 SANDBOX = "jsx.html"
 SANDBOX_POLICY = (
@@ -57,6 +65,10 @@ def register(app: FastAPI, context: DashboardContext) -> None:
         _asset_route(app, assets, name)
     _catalog_routes(app, context)
     _content_routes(app, context)
+
+    @app.get("/api/dashboard/design/fonts")
+    async def font(url: str = Query(min_length=8, max_length=2048)) -> Response:
+        return await _font(context.data_root / "fonts", url)
 
     # 标签模块为当前会话保持一条连接：别处保存的新修订号与 Agent 的设计工具调用都经它送达画布。
     @app.websocket("/api/dashboard/design/live")
@@ -128,6 +140,47 @@ def _asset_route(app: FastAPI, assets: _EditorAssets, name: str) -> None:
         return await assets.get_response(name, request.scope)
 
     app.add_api_route(f"{ASSETS}{name}", asset, methods=["GET"], include_in_schema=False)
+
+
+# 只代取 Google Fonts 三个域名的 https 地址；成功的响应整份落盘，之后同一 URL 直接读文件。
+async def _font(cache: Path, url: str) -> Response:
+    parts = urlsplit(url)
+    if parts.scheme != "https" or parts.hostname not in FONT_HOSTS or parts.port is not None:
+        raise HTTPException(400, "只能代取 Google Fonts 的地址")
+    key = hashlib.sha256(url.encode()).hexdigest()
+    body, kind = cache / key, cache / f"{key}.type"
+    if body.is_file() and kind.is_file():
+        data, media = await asyncio.to_thread(lambda: (body.read_bytes(), kind.read_text()))
+        return Response(data, media_type=media, headers={"Cache-Control": "public, max-age=604800"})
+    status, media, data = await _fetch_font(url)
+    if status == 200:
+        await asyncio.to_thread(_store_font, cache, key, data, media)
+    return Response(data, status_code=status, media_type=media,
+                    headers={"Cache-Control": "public, max-age=604800" if status == 200 else "no-store"})
+
+
+# 边收边数：超过上限立即断开，不先把整个响应收进内存。
+async def _fetch_font(url: str) -> tuple[int, str, bytes]:
+    chunks: list[bytes] = []
+    size = 0
+    try:
+        async with httpx.AsyncClient(timeout=30.0, follow_redirects=False) as client, client.stream("GET", url) as remote:
+            async for chunk in remote.aiter_bytes():
+                size += len(chunk)
+                if size > MAX_FONT_BYTES:
+                    raise HTTPException(502, "字体文件过大")
+                chunks.append(chunk)
+            return remote.status_code, remote.headers.get("content-type", "application/octet-stream"), b"".join(chunks)
+    except httpx.HTTPError as error:
+        raise HTTPException(502, f"字体服务不可用：{error}") from error
+
+
+def _store_font(cache: Path, key: str, data: bytes, media: str) -> None:
+    cache.mkdir(parents=True, exist_ok=True)
+    temporary = cache / f".{key}.{os.getpid()}"
+    _ = temporary.write_bytes(data)
+    os.replace(temporary, cache / key)
+    _ = (cache / f"{key}.type").write_text(media)
 
 
 def _checked(document: str) -> str:

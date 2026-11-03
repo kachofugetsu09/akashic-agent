@@ -10,7 +10,7 @@ import interRegular from "@open-pencil/core/assets/Inter-Regular.ttf";
 import interSemiBold from "@open-pencil/core/assets/Inter-SemiBold.ttf";
 import notoNaskhArabic from "@open-pencil/core/assets/NotoNaskhArabic-Regular.ttf";
 import { AgentBridge } from "./agent";
-import { DESIGN_CHANNEL, type DesignFromFrame, type DesignToFrame, type RelayedResponse } from "./contract";
+import { DESIGN_API, DESIGN_CHANNEL, type DesignFromFrame, type DesignToFrame, type RelayedResponse } from "./contract";
 import { Documents, type DocumentHost } from "./documents";
 import { iconSvg, type IconName } from "./icons";
 import { bindKeyboard } from "./keyboard";
@@ -36,6 +36,9 @@ const panels = reactive({ layers: window.innerWidth >= 720, properties: window.i
 const SAVE_LABELS = { saved: "已保存", dirty: "有修改", saving: "正在保存…", conflict: "文档已在别处更新", error: "保存失败" } as const;
 
 fontManager.setBundledFontLocator((file) => FONTS[file.replace(/^\//u, "")] ?? file);
+// 内置字体只有 Inter：中日韩文字与 Inter 以外的字体从 Google Fonts 取（只开这一家），经本插件的后端代取并缓存。
+fontManager.setOnlineFontProviders({ google: true, fontsource: false, bunny: false, fontshare: false });
+fontManager.setWebFontFetch((url) => relayed(`${DESIGN_API}fonts?${new URLSearchParams({ url })}`));
 
 function IconButton(props: { label: string; icon: IconName; pressed?: boolean; disabled?: boolean; onClick: () => void }) {
   return h("button", {

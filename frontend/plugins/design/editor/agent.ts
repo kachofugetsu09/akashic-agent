@@ -3,7 +3,7 @@ import { CORE_TOOLS, FigmaAPI, type Editor, type ToolDef } from "@open-pencil/co
 import { executeAtomicTool } from "@open-pencil/core/editor";
 import { isAtomicTool, parseToolArgs } from "@open-pencil/core/tools";
 import type { AgentCall, AgentReply } from "./contract";
-import type { Documents } from "./documents";
+import { ensureFallback, loadDocumentFonts, type Documents } from "./documents";
 
 const TOOLS = new Map<string, ToolDef>(CORE_TOOLS.map((tool) => [tool.name, tool]));
 const LABEL = "Agent";
@@ -56,21 +56,23 @@ export class AgentBridge {
       throw new Error(this.documents.state.error || "没能新建设计文档");
     const figma = figmaFor(this.editor);
     if (!def.mutates) return await def.execute(figma, args);
+    await ensureFallback(JSON.stringify(call.arguments));
     const result = isAtomicTool(def)
       ? executeAtomicTool(this.editor, figma, def, args, { label: LABEL })
       : await this.recorded(def, figma, args);
     if (result && typeof result === "object" && "error" in result) throw new Error(String(result.error));
     this.documents.touch();
+    void loadDocumentFonts(this.editor);
     return result;
   }
 
-  // 异步工具（render 等）改动范围不固定：按页面整页快照记成一步撤销。
+  // 异步工具（render 等）改动范围不固定：按页面整页快照记成一步撤销，字体加载完再排版。
   private async recorded(def: ToolDef, figma: FigmaAPI, args: Record<string, unknown>): Promise<unknown> {
     const editor = this.editor;
     const pageId = editor.state.currentPageId;
     return await this.exclusive(async () => {
       const before = editor.snapshotPage(pageId);
-      const result = await editor.runMutationWithLayout(() => def.execute(figma, args), pageId);
+      const result = await editor.runMutationWithLayout(() => def.execute(figma, args), pageId, () => loadDocumentFonts(editor));
       const after = editor.snapshotPage(pageId);
       editor.pushUndoStep({
         label: `${LABEL}: ${def.name}`,
