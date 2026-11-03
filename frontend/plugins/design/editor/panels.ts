@@ -1,4 +1,4 @@
-import { defineComponent, h, ref, type PropType, type VNode } from "vue";
+import { defineComponent, h, ref, type PropType, type Ref, type VNode } from "vue";
 import type { Editor } from "@open-pencil/core";
 import type { Color, Fill, SceneNode } from "@open-pencil/scene-graph";
 import { LayerTreeItem, LayerTreeRoot, PageListRoot, type LayerRow } from "@open-pencil/vue";
@@ -10,39 +10,47 @@ const TYPE_LABELS: Record<string, string> = {
 };
 const ROUNDED = new Set(["FRAME", "RECTANGLE", "COMPONENT", "INSTANCE"]);
 
+type LayerSlot = {
+  node: { id: string; name: string; visible: boolean; type: string }; isSelected: boolean; padLeft: string;
+  actions: { select: (additive: boolean) => void; toggleExpand: () => void; toggleVisibility: () => void; rename: (name: string) => void };
+};
+
+// 图层名：双击后换成输入框，回车或失焦提交，Esc 放弃。
+function layerName(renaming: Ref<string | null>, slot: LayerSlot): VNode {
+  const { node, actions } = slot;
+  if (renaming.value !== node.id) return h("span", { class: "design-layer-name", title: TYPE_LABELS[node.type] ?? node.type }, node.name);
+  return h("input", { class: "design-rename", value: node.name, "aria-label": "图层名称",
+    onVnodeMounted: (vnode: VNode) => { const input = vnode.el as HTMLInputElement | null; input?.focus(); input?.select(); },
+    onKeydown: (event: KeyboardEvent) => {
+      if (event.key === "Enter") (event.target as HTMLInputElement).blur();
+      if (event.key === "Escape") renaming.value = null;
+    },
+    onBlur: (event: FocusEvent) => {
+      if (renaming.value === node.id) actions.rename((event.target as HTMLInputElement).value.trim() || node.name);
+      renaming.value = null;
+    } });
+}
+
+function layerRow(renaming: Ref<string | null>, slot: LayerSlot, hasChildren: boolean): VNode {
+  const { node, actions } = slot;
+  return h("div", {
+    class: ["design-layer", slot.isSelected && "is-selected", !node.visible && "is-hidden"],
+    style: { paddingInlineStart: `calc(${slot.padLeft} + 8px)` },
+    onClick: (event: MouseEvent) => actions.select(event.shiftKey || event.metaKey || event.ctrlKey),
+    onDblclick: () => { renaming.value = node.id; },
+  }, [
+    h("button", { type: "button", class: "design-layer-toggle", "aria-label": "展开或收起", tabindex: -1,
+      style: { visibility: hasChildren ? "visible" : "hidden" }, onClick: (event: MouseEvent) => { event.stopPropagation(); actions.toggleExpand(); } }, "▸"),
+    layerName(renaming, slot),
+    h("button", { type: "button", class: "design-layer-eye", "aria-label": node.visible ? "隐藏图层" : "显示图层",
+      innerHTML: iconSvg("eye"), onClick: (event: MouseEvent) => { event.stopPropagation(); actions.toggleVisibility(); } }),
+  ]);
+}
+
 // 图层面板：页面在上、图层树在下，用 open-pencil 的无样式原件，只补我们自己的行样式。
 export const LayersPanel = defineComponent({
   setup() {
     const renaming = ref<string | null>(null);
-    const row = (slot: { node: { id: string; name: string; visible: boolean; type: string }; isSelected: boolean; padLeft: string;
-      actions: { select: (additive: boolean) => void; toggleExpand: () => void; toggleVisibility: () => void; rename: (name: string) => void } },
-    hasChildren: boolean): VNode => {
-      const { node, actions } = slot;
-      const label = renaming.value === node.id
-        ? h("input", { class: "design-rename", value: node.name, "aria-label": "图层名称",
-            onVnodeMounted: (vnode: VNode) => { const input = vnode.el as HTMLInputElement | null; input?.focus(); input?.select(); },
-            onKeydown: (event: KeyboardEvent) => {
-              if (event.key === "Enter") (event.target as HTMLInputElement).blur();
-              if (event.key === "Escape") renaming.value = null;
-            },
-            onBlur: (event: FocusEvent) => {
-              if (renaming.value === node.id) actions.rename((event.target as HTMLInputElement).value.trim() || node.name);
-              renaming.value = null;
-            } })
-        : h("span", { class: "design-layer-name", title: TYPE_LABELS[node.type] ?? node.type }, node.name);
-      return h("div", {
-        class: ["design-layer", slot.isSelected && "is-selected", !node.visible && "is-hidden"],
-        style: { paddingInlineStart: `calc(${slot.padLeft} + 8px)` },
-        onClick: (event: MouseEvent) => actions.select(event.shiftKey || event.metaKey || event.ctrlKey),
-        onDblclick: () => { renaming.value = node.id; },
-      }, [
-        h("button", { type: "button", class: "design-layer-toggle", "aria-label": "展开或收起", tabindex: -1,
-          style: { visibility: hasChildren ? "visible" : "hidden" }, onClick: (event: MouseEvent) => { event.stopPropagation(); actions.toggleExpand(); } }, "▸"),
-        label,
-        h("button", { type: "button", class: "design-layer-eye", "aria-label": node.visible ? "隐藏图层" : "显示图层",
-          innerHTML: iconSvg("eye"), onClick: (event: MouseEvent) => { event.stopPropagation(); actions.toggleVisibility(); } }),
-      ]);
-    };
     return () => h("aside", { class: "design-panel design-panel-start", "aria-label": "图层" }, [
       h(PageListRoot, null, {
         default: ({ pages, currentPageId, actions }: { pages: SceneNode[]; currentPageId: string; actions: { add: () => void; switch: (id: string) => void } }) =>
@@ -59,7 +67,7 @@ export const LayersPanel = defineComponent({
             h("header", { class: "design-section-head" }, [h("h2", "图层")]),
             visibleRows.length ? null : h("p", { class: "design-muted" }, "画布上还没有图层"),
             ...visibleRows.map((item) => h(LayerTreeItem, { key: item.node.id, node: item.node, level: item.level, hasChildren: item.hasChildren },
-              { default: (slot: Parameters<typeof row>[0]) => row(slot, item.hasChildren) })),
+              { default: (slot: LayerSlot) => layerRow(renaming, slot, item.hasChildren) })),
           ]),
       }),
     ]);
