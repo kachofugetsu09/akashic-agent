@@ -31,6 +31,9 @@ class SpawnInput(BaseModel):
     profile: Literal["research", "scripting", "general"] = "research"
     run_in_background: bool = False
     retry_count: int = Field(default=0, ge=0)
+    model: str | None = Field(default=None, description="可选：指定子任务使用的模型（型号名或 model_id）；留空按子任务设置解析")
+    connection: str | None = Field(default=None, description="可选：指定模型所属的连接渠道（连接名称或 connection_id）")
+    reasoning_effort: str | None = Field(default=None, description="可选：配合指定模型的思考强度（如 low、medium、high）")
 
 
 class Request(BaseModel):

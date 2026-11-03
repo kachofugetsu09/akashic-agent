@@ -55,7 +55,7 @@ from .contract import SUBAGENT_PROGRAM, AGENT_RUNNERS
 from .runners import Runners
 from plugins.jobs.contract import JOB_NOTICES
 from .runtime import DEFAULT_MAX_ACTIVE, DEFAULT_RESULT_CHARS, Subagents
-from .tools import Manage, ManageInput, Spawn
+from .tools import Manage, ManageInput, Spawn, select_model
 
 api_version = 3
 name = "subagent"
@@ -123,8 +123,16 @@ async def apply(ctx: Context) -> None:
     catalog = ctx.require(TOOLS)
     _ = await catalog.declare_group(ctx, description=desc)
 
-    # 子任务的「跟随对话」= 父回合用的选择：父调用前缀里最后一次 model.selection，否则父会话保存的选择。
-    async def child_model(messages: tuple[Message, ...]) -> ChatModelSelection:
+    # 子任务模型：调用参数显式指定 model/connection 时直接核对目录并固定；否则按设置（跟随对话取父调用选择）解析。
+    async def child_model(messages: tuple[Message, ...], args: SpawnInput) -> ChatModelSelection | str:
+        if any(value is not None and value.strip() != "" for value in (args.model, args.connection, args.reasoning_effort)):
+            snapshot = ctx.require(MODEL_CATALOG).snapshot()
+            return select_model(
+                snapshot,
+                model=args.model,
+                connection=args.connection,
+                reasoning_effort=args.reasoning_effort,
+            )
         selection = ctx.require(MODEL_SELECTION)
         session = selection.read(messages)
         if session is None:
@@ -160,7 +168,7 @@ async def apply(ctx: Context) -> None:
 
     @asynccontextmanager
     async def open_manage(_state: Mapping[str, object]) -> AsyncGenerator[Manage]:
-        yield Manage(jobs)
+        yield Manage(jobs, catalog=ctx.require(MODEL_CATALOG).snapshot)
 
     _ = await catalog.register(
         ctx,
@@ -168,6 +176,7 @@ async def apply(ctx: Context) -> None:
         description=(
             "把有界、多步且可独立完成的任务交给子任务。research 只读；scripting 可在任务目录写文件、执行命令；"
             "general 可调研与执行。默认同步返回结果；长任务可用 run_in_background，完成后回传原会话。"
+            "可通过 model 与 connection 为本次子任务单独指定模型及所属连接渠道（不确定有哪些连接和模型时，先用 spawn_manage(action=\"models\") 查询）；留空时按子任务设置解析。"
             "任务需要用户交互或只是简单操作时直接处理。task 必须包含目标、约束、上下文和预期结果。"
         ),
         parameters=SpawnInput.model_json_schema(),
@@ -178,7 +187,7 @@ async def apply(ctx: Context) -> None:
     _ = await catalog.register(
         ctx,
         name="spawn_manage",
-        description="列出或取消已接纳的子任务",
+        description="列出或取消已接纳的子任务，或查询子任务当前可用的连接渠道与模型列表（action=\"models\"）",
         parameters=ManageInput.model_json_schema(),
         open=open_manage,
         idempotent=True,
