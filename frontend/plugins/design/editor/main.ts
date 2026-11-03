@@ -119,7 +119,7 @@ const Shell = defineComponent({
   setup(props) {
     const commands = useEditorCommands();
     let unbind = () => {};
-    onMounted(() => { unbind = bindKeyboard(window, props.editor, commands.runCommand); });
+    onMounted(() => { unbind = bindKeyboard(window, props.editor, commands.runCommand, () => props.documents.state.busy > 0); });
     onBeforeUnmount(() => unbind());
     return () => {
       const { state } = props.documents;

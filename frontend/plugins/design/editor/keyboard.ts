@@ -20,10 +20,10 @@ function editing(target: EventTarget | null): boolean {
 }
 
 // 编辑器在自己的 iframe 里，快捷键挂在 iframe 的 window 上：焦点在画布、面板或页面上都生效，碰不到聊天输入框。
-export function bindKeyboard(root: Window, editor: Editor, run: (id: EditorCommandId) => void): () => void {
+export function bindKeyboard(root: Window, editor: Editor, run: (id: EditorCommandId) => void, blocked: () => boolean): () => void {
   const commands = Object.entries(EDITOR_COMMAND_METADATA) as [EditorCommandId, { keybinding?: string | string[] }][];
   const onKey = (event: KeyboardEvent) => {
-    if (event.repeat && !event.code.startsWith("Arrow") || editing(event.target)) return;
+    if (blocked() || (event.repeat && !event.code.startsWith("Arrow")) || editing(event.target)) return;
     // 1. 编辑器命令（撤销、编组、复制……）
     for (const [id, meta] of commands) {
       const keys = meta.keybinding === undefined ? [] : [meta.keybinding].flat();
