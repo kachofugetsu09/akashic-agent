@@ -241,6 +241,10 @@ disabled = true
 plugin = "sites_tab@release"
 disabled = true
 
+[rows."design"]
+plugin = "design@release"
+disabled = true
+
 [rows."terminal"]
 plugin = "terminal@release"
 disabled = true
