@@ -1,4 +1,4 @@
-import { ChevronRight, FolderPlus, Plus, SlidersHorizontal } from "lucide-react";
+import { ChevronDown, ChevronRight, FolderPlus, Plus, SlidersHorizontal } from "lucide-react";
 import { Fragment, useCallback, useEffect, useMemo, useRef, useState, type FormEvent, type ReactNode } from "react";
 import type { NavigationControls, NavigationForm, NavigationFormControls, NavigationGroup } from "@akashic/chat-ui-v1";
 import { Dialog, DialogContent, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog";
@@ -41,6 +41,9 @@ export interface GroupSessionItem {
 
 /** 由侧栏提供的分组内会话行（带行菜单）；label 是分区名，例如“项目”。 */
 export type GroupSessionRenderer = (item: GroupSessionItem, label: string) => ReactNode;
+
+/** 分组展开后默认列出的会话条数：超出的收进“展开更多”，与 Codex 桌面端侧栏同一口径。 */
+const GROUP_SESSION_LIMIT = 5;
 
 /** 侧栏分组的宿主状态与动作；分组数据全部来自插件的 navigation.groups。 */
 export interface NavigationGroupsState {
@@ -274,6 +277,18 @@ export function GroupNavigationRow({
 }) {
   // 折叠时分组行汇总会话状态，展开后状态回到各自的会话前。
   const collapsedStatus = open ? undefined : summarizeStatus(items.map((item) => item.status));
+  // 项目内默认只铺前几条：一个项目攒下几十支会话时，全铺会把侧栏占满。
+  // 搜索不做截断——匹配到的行都该在结果里；离开搜索后回到折叠态。
+  const [allShown, setAllShown] = useState(false);
+  const truncated = !searching && items.length > GROUP_SESSION_LIMIT;
+  const visibleItems = useMemo(() => {
+    if (!truncated || allShown) return items;
+    const head = items.slice(0, GROUP_SESSION_LIMIT);
+    // 当前会话落在截断外时顶掉最后一条：列表守住上限，又不至于让人找不到正开着的那支。
+    const activeItem = items.find((item) => item.active);
+    return activeItem && !head.includes(activeItem)
+      ? [...head.slice(0, GROUP_SESSION_LIMIT - 1), activeItem] : head;
+  }, [items, truncated, allShown]);
   return <div className={`navigation-group ${active ? "active" : ""}`} data-group-key={groupKey(groupRef)}>
     <NavigationRowMenu title={group.label} className="navigation-group__row" actions={[
       { label: "新建对话", icon: <Plus size={18} aria-hidden="true" />, onSelect: onNewChat },
@@ -309,7 +324,7 @@ export function GroupNavigationRow({
         <span>新对话</span>
       </button>}
       {searching && !items.some((item) => !item.hidden) ? <small className="navigation-group__hint">没有匹配的对话</small> : null}
-      {items.map((session) => renderSession ? <Fragment key={session.id}>{renderSession(session)}</Fragment> : <button key={session.id} type="button"
+      {visibleItems.map((session) => renderSession ? <Fragment key={session.id}>{renderSession(session)}</Fragment> : <button key={session.id} type="button"
         className={`group-session ${session.active ? "active" : ""}`}
         hidden={session.hidden || undefined}
         aria-current={session.active ? "true" : undefined}
@@ -321,6 +336,12 @@ export function GroupNavigationRow({
         <SessionStatusMark status={session.status} />
         <span className="group-session__title"><MarqueeText>{session.title}</MarqueeText></span>
       </button>)}
+      {/* 截断行跟在最后一条会话后面；展开后原地换成“收起”，位置不动。 */}
+      {truncated ? <button type="button" className="group-session group-session--more" aria-expanded={allShown}
+        onClick={() => setAllShown((value) => !value)}>
+        <ChevronDown size={14} aria-hidden="true" />
+        <span>{allShown ? "收起" : `展开更多（${items.length - GROUP_SESSION_LIMIT}）`}</span>
+      </button> : null}
     </nav> : null}
   </div>;
 }
