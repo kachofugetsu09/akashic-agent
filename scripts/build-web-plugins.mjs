@@ -106,6 +106,7 @@ const chatSlotModule = (source, outfile) => bundle({
 await chatSlotModule("frontend/plugins/host_execution/src/plugin-ui.tsx", "host_execution/plugin_ui.js");
 await chatSlotModule("frontend/plugins/working_directory/src/plugin-ui.tsx", "working_directory/plugin_ui.js");
 await chatSlotModule("frontend/plugins/skills/src/plugin-ui.tsx", "skills/plugin_ui.js");
+await chatSlotModule("frontend/plugins/commands/src/plugin-ui.tsx", "commands/plugin_ui.js");
 await chatSlotModule("frontend/plugins/jobs/src/plugin-ui.tsx", "jobs/plugin_ui.js");
 await chatSlotModule("frontend/plugins/subagent/src/runner-ui.tsx", "subagent/runner_ui.js");
 // 命令执行结果的命令块，只渲染本插件注册的工具结果。

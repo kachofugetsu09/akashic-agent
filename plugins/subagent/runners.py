@@ -119,7 +119,7 @@ class Runners:
             yield reader
 
         tools = ctx.require(TOOLS)
-        await tools.declare_group(ctx, description=runner.description)
+        await tools.declare_group(ctx, always_on=True, description=runner.description)
         await tools.register(ctx, name="delegate_" + runner.name,
             description=runner.description + "。独立一次性任务，后台返回；不继承父工具权限，不支持续聊。",
             parameters=DelegateInput.model_json_schema(), open=open_tool,

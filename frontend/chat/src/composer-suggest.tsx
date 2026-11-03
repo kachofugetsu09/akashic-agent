@@ -154,8 +154,10 @@ export function useComposerSuggest({ value, scope, textareaRef, setValue }: {
   const setActive = useCallback((index: number) => setHighlight({ query, key: items[index]?.key ?? "" }), [query, items]);
   const closed = dismissed !== null && dismissed.scope === scope && value[dismissed.start] === dismissed.sigil
     && trigger?.start === dismissed.start && trigger.sigil === dismissed.sigil;
-  // 光标停在一个完整提及之后（刚插入或退格回来）不再弹出，退格改为整段选中。
-  const complete = trigger !== null && all.some((item) => item.prefix === trigger.sigil && item.token === trigger.query);
+  // 完整提及关闭菜单；命令来源可保留用法提示，选中后的空格仍会结束触发。
+  const matches = trigger === null ? [] : all.filter((item) => item.prefix === trigger.sigil && item.token === trigger.query);
+  const complete = matches.length > 0 && matches.every((item) =>
+    !sources.find((source) => source.key === item.source)?.provider.keepOpenOnMatch);
   const open = trigger !== null && !closed && !complete;
   const triggerStart = trigger?.start;
   const triggerSigil = trigger?.sigil;
@@ -179,7 +181,6 @@ export function useComposerSuggest({ value, scope, textareaRef, setValue }: {
     const position = trigger.start + inserted.length + (rest.startsWith(" ") ? 1 : 0);
     pending.current = { value: next, position };
     setValue(next);
-    setCaret(position);
   }, [textareaRef, trigger, value, setValue]);
   // 光标在这次草稿提交后同步归位；放到下一帧会和紧接着的键入抢位置。
   useLayoutEffect(() => {
@@ -189,6 +190,7 @@ export function useComposerSuggest({ value, scope, textareaRef, setValue }: {
     pending.current = null;
     textarea.focus();
     textarea.setSelectionRange(target.position, target.position);
+    setCaret(target.position);
   }, [value, textareaRef]);
 
   // 菜单打开时接管方向键、回车、Tab 与 Esc；返回 true 表示事件已处理。

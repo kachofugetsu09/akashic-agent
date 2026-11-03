@@ -288,6 +288,8 @@ export interface ComposerSuggestProvider {
   sigils: readonly ("/" | "@")[];
   /** 写入草稿、识别提及用的前缀；与插件后端识别的写法一致。 */
   prefix: "/" | "@";
+  /** 完整名称输入后仍展示用法提示；省略时按完整提及关闭菜单。 */
+  keepOpenOnMatch?: boolean;
   /** 没有任何条目时的说明。 */
   empty: string;
   /** 每次打开菜单重新读取；只经 query 访问本插件。 */

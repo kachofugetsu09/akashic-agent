@@ -37,6 +37,10 @@ disabled = true
 plugin = "mcp@release"
 disabled = true
 
+[rows."goal"]
+plugin = "goal@release"
+disabled = true
+
 [rows."commands"]
 plugin = "commands@release"
 disabled = true

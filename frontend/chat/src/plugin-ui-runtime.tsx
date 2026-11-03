@@ -422,6 +422,7 @@ function isSuggestProvider(value: unknown): value is ComposerSuggestProvider {
   if (!value || typeof value !== "object") return false;
   const provider = value as Partial<Record<keyof ComposerSuggestProvider, unknown>>;
   return typeof provider.label === "string" && typeof provider.empty === "string" && typeof provider.load === "function"
+    && (provider.keepOpenOnMatch === undefined || typeof provider.keepOpenOnMatch === "boolean")
     && (provider.prefix === "/" || provider.prefix === "@") && Array.isArray(provider.sigils)
     && provider.sigils.every((sigil) => sigil === "/" || sigil === "@");
 }
