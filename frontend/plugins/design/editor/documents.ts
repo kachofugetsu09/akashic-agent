@@ -37,6 +37,8 @@ export class Documents {
   // 保存期间收到的最新修订通知：保存结束后再判断要不要跟进
   private behind: { id: string; revision: number } | null = null;
   private ticket = 0;
+  // 列表请求的代次：A→B→A 或同会话乱序时，只有最后一次请求的响应生效
+  private listing = 0;
   private readonly stops: (() => void)[];
 
   constructor(private readonly editor: Editor, private readonly options: DocumentHost) {
@@ -72,6 +74,7 @@ export class Documents {
   private async switchTo(session: string | null): Promise<void> {
     const left = await this.leave();
     const ticket = ++this.ticket;
+    this.listing++;
     Object.assign(this.state, { session, list: [], current: null, error: left.note, save: "saved" });
     this.show(new SceneGraph());
     if (!session) return;
@@ -134,9 +137,9 @@ export class Documents {
   }
 
   async refresh(): Promise<void> {
-    const session = this.state.session;
+    const listing = ++this.listing;
     const list = await this.json<{ documents: DocumentMeta[] }>(`${API}?${this.query()}`);
-    if (list && this.state.session === session) this.state.list = list.documents;
+    if (list && listing === this.listing) this.state.list = list.documents;
   }
 
   // 实时连接（重新）连上后对一次账：断线期间别处保存的修订不会再广播。
