@@ -1,5 +1,4 @@
 """图片理解：主模型不能直接看图时，经插件自己选的看图模型读取图片并返回文本。"""
-from importlib import import_module
 
 from agent.plugin_composition import Context
 from agent.plugin_composition.model import ServiceKey
@@ -22,7 +21,6 @@ SETTINGS = ServiceKey[Configuration]("vision.settings.v1")
 
 async def apply(ctx: Context) -> None:
     await mount_settings(ctx, SETTINGS, ModelSettings(ctx, Config, ("model",),
-                         status=model_options(ctx, {"model": VISION_MODEL})),
-                         lambda: import_module(".dashboard", __package__))
+                         status=model_options(ctx, {"model": VISION_MODEL})))
     _ = await ctx.require(TOOLS).declare_group(ctx, always_on=True, description=desc)
     await register_vision(ctx, Config.model_validate(ctx.config))

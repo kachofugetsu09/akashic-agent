@@ -2,6 +2,17 @@
 
 本文档记录 `refactor/code-clean` 系列重构的决策依据、能力变化、性能数据和测试调整。每个被接受的提交都必须补充一条记录；没有测量或调用链证据的“优化”不得合并。
 
+## 2026-11-04 模型驱动与设置契约收敛：对齐 DSH 收敛 4 个模型驱动插件公共协议与 14 个重复 dashboard.py
+
+- 基线：`48706fa2`（`refactor/shield-cancellation-primitive` 头），分支 `refactor/model-driver-and-settings-contracts`。
+- 重构对象（49 个文件，删除 14 个 8 行样板 `dashboard.py` 文件，消除 `openai_compatible` / `opencode_go` / `codex` / `gemini` 后端与前端的 3～4 次复制粘贴）：
+  - 在 `plugins/models/contract.py`（模型能力的唯一 Owner 公共契约）中收敛 `register_connection_type_ui`、`check_credential_scope`、`check_bound_model`、`credential_bearer_token`、`normalize_http_base_url`、`positive_float_config`、`optional_non_negative_int`、`required_non_empty_string`、`response_json_object`、`mark_unsent_error`、`StreamReadError`、`StreamCallbackError`、`raise_http_status`、`http_status_error`、`map_driver_error`、`is_driver_retryable`、`merge_stream_tool_deltas`、`build_stream_tool_calls`、`parse_tool_arguments`、`parse_openai_usage`；
+  - `plugins/openai_compatible/driver.py`、`plugins/opencode_go/driver.py`、`plugins/codex/{driver,responses,plugin}.py`、`plugins/gemini/plugin.py` 统一消费 `plugins.models.contract`，仅在插件内保留各自特有的协议差异（如 `opencode_go` 的模型家族 reasoning profile 与本地登录态导入、`openai_compatible` 的 `<think>` 标签流式切分与 Embeddings）；
+  - 在 `frontend/plugins/shared/src/connection-form.js` 收敛 4 个连接类型前端模块（`openai_compatible`、`gemini`、`opencode_go`、`codex`）重复的 `htmlNode`、`escapeHtml`、`requireConnectionProps`、`toDiscoveredModelInput`，并重新构建 4 个插件的独立 `web_module.js`；
+  - 在 `plugins/ui/{contract,dashboard,plugin}.py` 中让 `mount_settings` 与 `UI.register(configuration_key=...)` 原生绑定 `/api/dashboard/<plugin>/config`，直接删除 `akasha`、`compaction`、`markdown_memory`、`reply`、`session_title`、`shell`、`standard_web`、`subagent`、`telegram_channel`、`telegram_sender`、`vision`、`web_fetch_http`、`web_search_exa`、`web_search_searxng` 共 14 个一模一样的 8 行 `dashboard.py` 样板文件。
+- 依据（三次原则 + ADR 0102 + DSH `@deepseek-ai/dsh-llm` / `@deepseek-ai/dsh-settings`）：跨 3 个以上插件重复的协议映射与声明式配置路由下沉至对应领域 Owner 的 `contract.py`，不跨插件直接 import 实现。
+- Gate：`pyright` 全仓与 26 个改动模块均为 `0 errors`；`python3 scripts/plugin_boundary.py check --base origin/main` 通过（R1=0/0 R2=0/0 R3=0/0）；`python3 scripts/check_model_retry.py` 38 个场景与 `subagent_delegation_workflow_scenario.py` 全量通过；关联 pytest 10 passed；`git diff --check` 干净。
+
 ## 2026-11-04 异步不可中断收尾原语收敛：提炼 shield_until_done 与 drain_uninterruptible
 
 - 基线：`91d19f2c`（`refactor/unify-tool-result-boundaries` 头），分支 `refactor/shield-cancellation-primitive`。

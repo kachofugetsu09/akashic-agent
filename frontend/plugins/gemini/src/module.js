@@ -1,4 +1,6 @@
 const CLOSE_ICON = `<svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M18 6 6 18"></path><path d="m6 6 12 12"></path></svg>`;
+import { htmlNode, toDiscoveredModelInput as modelInput } from "../../shared/src/connection-form.js";
+
 const EYE_ICON = `<svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M2.062 12.348a1 1 0 0 1 0-.696 10.75 10.75 0 0 1 19.876 0 1 1 0 0 1 0 .696 10.75 10.75 0 0 1-19.876 0"></path><circle cx="12" cy="12" r="3"></circle></svg>`;
 const EYE_OFF_ICON = `<svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m2 2 20 20"></path><path d="M6.71 6.71C4.7 8.1 3.24 10.06 2.06 11.65a1 1 0 0 0 0 .7c2.34 5.64 8.94 8.32 14.24 5.36"></path><path d="M10.73 5.08A10.66 10.66 0 0 1 21.94 11.65a1 1 0 0 1 0 .7 10.83 10.83 0 0 1-2.06 3.1"></path><path d="M14.12 14.12A3 3 0 0 1 9.88 9.88"></path></svg>`;
 const SHIELD_ICON = `<svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M20 13c0 5-3.5 7.5-7.66 8.95a1 1 0 0 1-.67-.01C7.5 20.5 4 18 4 13V6a1 1 0 0 1 1-1c2 0 4.5-1.2 6.24-2.72a1.17 1.17 0 0 1 1.52 0C14.51 3.81 17 5 19 5a1 1 0 0 1 1 1z"></path><path d="m9 12 2 2 4-4"></path></svg>`;
@@ -252,38 +254,6 @@ function connectionFingerprint(form) {
   ]);
 }
 
-function modelInput(model, manual = false) {
-  const capabilities = model.capabilities ?? {};
-  const sources = model.capabilitySources ?? {};
-  return {
-    kind: "chat",
-    discovery_owned: !manual,
-    model: model.model,
-    capabilities: {
-      context_window: capabilities.contextWindow ?? null,
-      max_output_tokens: capabilities.maxOutputTokens ?? null,
-      input_modalities: capabilities.inputModalities ?? ["text"],
-      supports_tool_calls: capabilities.supportsToolCalls ?? null,
-      supports_parallel_tool_calls: capabilities.supportsParallelToolCalls ?? null,
-      supported_reasoning_efforts: capabilities.supportedReasoningEfforts ?? [],
-      embedding_dimensions: capabilities.embeddingDimensions ?? null,
-      embedding_normalization: capabilities.embeddingNormalization ?? null,
-    },
-    capability_sources: {
-      context_window: sources.contextWindow ?? "unknown",
-      max_output_tokens: sources.maxOutputTokens ?? "unknown",
-      input_modalities: sources.inputModalities ?? "unknown",
-      tool_calls: sources.toolCalls ?? "unknown",
-      parallel_tool_calls: sources.parallelToolCalls ?? "unknown",
-      reasoning_efforts: sources.reasoningEfforts ?? "unknown",
-      embedding_dimensions: sources.embeddingDimensions ?? "unknown",
-      embedding_normalization: sources.embeddingNormalization ?? "unknown",
-    },
-    default_reasoning_effort: model.defaultReasoningEffort ?? null,
-    driver_config: model.driverConfig ?? {format_version: 1},
-  };
-}
-
 function clearInlineError(host) {
   const error = host.querySelector("[data-error]");
   error.hidden = true;
@@ -324,10 +294,4 @@ function submit(form, work) {
     button.disabled = false;
     button.textContent = "保存连接";
   });
-}
-
-function htmlNode(markup) {
-  const template = document.createElement("template");
-  template.innerHTML = markup;
-  return template.content.firstElementChild;
 }

@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-from importlib import import_module
 from functools import partial
 
 import asyncio
@@ -110,8 +109,7 @@ async def apply(ctx: Context) -> None:
     """工具提交请求，正式订阅者启动工作；归档只提供原程序和工具入口。"""
     config = Config.model_validate(ctx.config)
     await mount_settings(ctx, SETTINGS, ModelSettings(ctx, Config, SETTING_FIELDS,
-                                                       status=model_options(ctx, {"model": SUBAGENT_MODEL})),
-                         lambda: import_module(".dashboard", __package__))
+                                                       status=model_options(ctx, {"model": SUBAGENT_MODEL})))
     watcher: asyncio.Task[None] | None = None
     jobs = Subagents(ctx, max_active=config.max_active, result_chars=config.result_chars)
     runners = Runners(ctx, max_active=config.max_active, result_chars=config.result_chars)

@@ -1,7 +1,6 @@
 """首条用户输入生成短标题；后台生成，空标题条件写入。"""
 from __future__ import annotations
 
-from importlib import import_module
 import asyncio
 import logging
 
@@ -70,8 +69,7 @@ async def apply(ctx: Context) -> None:
     """同步通知只筛选首条输入，Fiber 拥有并排空全部后台生成。"""
     config = Config.model_validate(ctx.config)
     await mount_settings(ctx, SETTINGS, ModelSettings(ctx, Config, SETTING_FIELDS,
-                         status=model_options(ctx, {"model": TITLE_MODEL})),
-                         lambda: import_module(".dashboard", __package__))
+                         status=model_options(ctx, {"model": TITLE_MODEL})))
     admin = ctx.require(SESSION_ADMIN)
     models = ctx.require(CHAT_MODELS)
     queue: asyncio.Queue[tuple[MessageReader, str]] = asyncio.Queue()

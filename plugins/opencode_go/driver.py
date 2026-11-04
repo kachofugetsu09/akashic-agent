@@ -52,7 +52,32 @@ from plugins.models.contract import (
     RateLimitError,
     TransportError,
 )
-from plugins.models.contract import ModelDriverDefinition, estimate_tokens
+from plugins.models.contract import (
+    ModelDriverDefinition,
+    StreamCallbackError as _CallbackError,
+    StreamReadError as _StreamReadError,
+    build_stream_tool_calls as _tool_calls,
+    check_bound_model as _check_bound_model,
+    check_credential_scope as _check_credential_scope,
+    credential_bearer_token as _credential_token,
+    describe_transport_error,
+    estimate_tokens,
+    http_status_error as _status_error,
+    is_driver_retryable as _retryable,
+    map_driver_error as _map_error,
+    mark_unsent_error as _unsent,
+    merge_stream_tool_deltas as _merge_tool_deltas,
+    normalize_http_base_url as _normalize_base_url,
+    optional_non_negative_int as _optional_int,
+    parse_openai_usage as _usage,
+    parse_tool_arguments as _tool_arguments,
+    positive_float_config as _positive_float,
+    raise_http_status as _raise_status,
+    redact_secret_text as _redact_secret,
+    required_non_empty_string as _required_string,
+    response_error_message as _response_error_message,
+    response_json_object as _json_object,
+)
 
 
 _DRIVER_ID = "opencode-go"
@@ -62,20 +87,8 @@ _MAX_TOOL_SCHEMAS = 16
 _MESSAGES_PREFIXES = ("minimax-", "qwen")
 _OPENCODE_DATA_DIR = Path.home() / ".local" / "share" / "opencode"
 _OPENCODE_EXECUTABLE = "opencode"
-_SAFETY_CODES = (
-    "content_filter",
-    "content_policy_violation",
-    "data_inspection_failed",
-)
-_CONTEXT_CODES = (
-    "context_length_exceeded",
-    "maximum context length",
-    "context window exceeds limit",
-    "range of input length",
-    "reduce the length",
-    "string too long",
-    "too many tokens",
-)
+
+
 @dataclass(frozen=True, slots=True)
 class _ConnectionConfig:
     base_url: str
@@ -811,19 +824,6 @@ async def _stream_chat(
     raise TransportError("stream failed without result").exception() from last_error
 
 
-class _StreamReadError(RuntimeError):
-    def __init__(self, error: Exception, *, response_delta_seen: bool) -> None:
-        super().__init__(str(error))
-        self.error = error
-        self.response_delta_seen = response_delta_seen
-
-
-class _CallbackError(RuntimeError):
-    def __init__(self, error: Exception) -> None:
-        super().__init__(str(error))
-        self.error = error
-
-
 async def _consume_stream(
     response: httpx.Response,
     on_delta: Callable[[dict[str, str]], Awaitable[None]],
@@ -993,274 +993,6 @@ def _parse_chat_response(payload: Mapping[str, Any]) -> LLMResponse:
     )
 
 
-
-def _merge_tool_deltas(
-    calls: dict[int, dict[str, str]], raw_calls: list[Any]
-) -> bool:
-    """合并合法工具片段，并报告是否增加了调用内容。"""
-    advanced = False
-    for raw in raw_calls:
-        if not isinstance(raw, Mapping):
-            raise TransportError("stream tool call delta must be an object").exception()
-        index = raw.get("index")
-        if not isinstance(index, int) or isinstance(index, bool) or index < 0:
-            raise TransportError("stream tool call index must be non-negative").exception()
-        slot = calls.setdefault(index, {"id": "", "name": "", "arguments": ""})
-        raw_id = raw.get("id")
-        if isinstance(raw_id, str):
-            slot["id"] += raw_id
-            advanced = advanced or bool(raw_id)
-        function = raw.get("function")
-        if isinstance(function, Mapping):
-            name = function.get("name")
-            arguments = function.get("arguments")
-            if isinstance(name, str):
-                slot["name"] += name
-                advanced = advanced or bool(name)
-            if isinstance(arguments, str):
-                slot["arguments"] += arguments
-                advanced = advanced or bool(arguments)
-
-    return advanced
-
-
-def _tool_calls(calls: Mapping[int, Mapping[str, str]]) -> list[ToolCall]:
-    result: list[ToolCall] = []
-    for index in sorted(calls):
-        raw = calls[index]
-        result.append(
-            ToolCall(
-                id=_required_string(raw.get("id"), "tool call id"),
-                name=_required_string(raw.get("name"), "tool call name"),
-                arguments=_tool_arguments(raw.get("arguments") or "{}"),
-            )
-        )
-    return result
-
-
-def _tool_arguments(value: object) -> Mapping[str, Any]:
-    if not isinstance(value, str):
-        raise TransportError("tool call arguments must be a JSON string").exception()
-    try:
-        parsed = json.loads(value)
-    except json.JSONDecodeError as error:
-        raise TransportError("tool call arguments are invalid JSON").exception() from error
-    if not isinstance(parsed, dict):
-        raise TransportError("tool call arguments must decode to an object").exception()
-    return cast(dict[str, Any], parsed)
-
-
-def _usage(raw: Mapping[str, Any]) -> ModelUsage:
-    input_tokens = _optional_int(raw.get("prompt_tokens"))
-    output_tokens = _optional_int(raw.get("completion_tokens"))
-    prompt_details = raw.get("prompt_tokens_details")
-    completion_details = raw.get("completion_tokens_details")
-    cached = (
-        _optional_int(prompt_details.get("cached_tokens"))
-        if isinstance(prompt_details, Mapping)
-        else None
-    )
-    cache_hit = _optional_int(raw.get("prompt_cache_hit_tokens"))
-    cache_miss = _optional_int(raw.get("prompt_cache_miss_tokens"))
-    if cache_hit is not None or cache_miss is not None:
-        if input_tokens is None:
-            input_tokens = (cache_hit or 0) + (cache_miss or 0)
-        if cached is None:
-            cached = cache_hit or 0
-    if cached is None:
-        # Kimi 使用顶层命中字段；不覆盖既有字段中的明确零值。
-        cached = _optional_int(raw.get("cached_tokens"))
-    cache_write = (
-        _optional_int(prompt_details.get("cache_write_tokens"))
-        if isinstance(prompt_details, Mapping)
-        else None
-    )
-    reasoning = (
-        _optional_int(completion_details.get("reasoning_tokens"))
-        if isinstance(completion_details, Mapping)
-        else None
-    )
-    covered = int(input_tokens is not None and output_tokens is not None)
-    coverage = (
-        'exact'
-        if covered
-        else (
-            'partial'
-            if input_tokens is not None or output_tokens is not None
-            else 'unavailable'
-        )
-    )
-    return ModelUsage(
-        input_tokens=input_tokens,
-        cache_write_input_tokens=cache_write,
-        cached_input_tokens=cached,
-        output_tokens=output_tokens,
-        reasoning_output_tokens=reasoning,
-        covered_request_count=covered,
-        coverage=coverage,
-    )
-
-
-def _unsent(error: Exception) -> Exception:
-    """发送前本地校验失败：请求可证明未到达 provider，标记为允许重试的证据。"""
-    error = ModelError.change(error, send_evidence="unsent")
-    return error
-
-
-def _raise_status(response: httpx.Response, *, secret: str) -> None:
-    error = _status_error(response, secret=secret)
-    if error is None:
-        return
-    # 4xx 是对本请求的明确拒绝应答——正面证据。5xx 只说明服务端/网关
-    # 未能给出结论，不能证明后端未接收或未处理：不授证据，fail-closed。
-    if response.status_code < 500:
-        error = ModelError.change(error, send_evidence="rejected")
-    raise error
-
-
-def _status_error(response: httpx.Response, *, secret: str) -> Exception | None:
-    if response.status_code < 400:
-        return None
-    message = _response_error_message(response, secret=secret)
-    lowered = message.lower()
-    if response.status_code in {401, 403}:
-        return AuthenticationError(f"模型授权失败（HTTP {response.status_code}），请检查凭据和权限。服务返回：{message}").exception()
-    if response.status_code >= 500:
-        # status-first：5xx 只说明服务端/网关未给出结论，正文诊断文案
-        # （context_length 等）不得把错误提升为可证明的容量拒绝。
-        return TransportError(f"模型服务暂不可用（HTTP {response.status_code}）。服务返回：{message}").exception()
-    if any(code in lowered for code in _CONTEXT_CODES):
-        return ContextLengthError(f"模型上下文超过限制（HTTP {response.status_code}）。服务返回：{message}").exception()
-    if any(code in lowered for code in _SAFETY_CODES):
-        return ContentSafetyError(f"模型安全策略拒绝请求（HTTP {response.status_code}）。服务返回：{message}").exception()
-    if response.status_code == 402 or (
-        response.status_code == 429
-        and any(value in lowered for value in ("quota", "usage limit", "credit"))
-    ):
-        return QuotaError(f"模型账号额度不足（HTTP {response.status_code}）。服务返回：{message}").exception()
-    if response.status_code == 429:
-        error = RateLimitError(f"模型服务限流（HTTP 429）。服务返回：{message}").exception()
-        # Retry-After 必须随错误传给 Models，由独占重试预算决定何时再付。
-        error = ModelError.change(error, retry_at=retry_after_time(response.headers.get("retry-after")))
-        return error
-    if 400 <= response.status_code < 500:
-        return InvalidRequestError(
-            f"模型服务拒绝请求（HTTP {response.status_code}）。服务返回：{message}"
-        ).exception()
-    error = TransportError(f"provider returned HTTP {response.status_code}: {message}").exception()
-    return error
-
-
-def _response_error_message(response: httpx.Response, *, secret: str = "") -> str:
-    try:
-        payload = response.json()
-    except (json.JSONDecodeError, UnicodeDecodeError):
-        return _redact_secret(response.text, secret)[:500] or f"HTTP {response.status_code}"
-    if isinstance(payload, Mapping):
-        raw = payload.get("error", payload.get("detail", payload))
-        if isinstance(raw, Mapping):
-            message, code = raw.get("message"), raw.get("code")
-            details = [value for value in (code, message) if isinstance(value, str) and value]
-            if details:
-                return _redact_secret(": ".join(dict.fromkeys(details)), secret)[:500]
-        if isinstance(raw, str) and raw:
-            return _redact_secret(raw, secret)[:500]
-    return f"HTTP {response.status_code}"
-
-
-def _redact_secret(message: str, secret: str) -> str:
-    if secret:
-        return message.replace(secret, "[REDACTED]")
-    return message
-
-
-def _map_error(error: Exception) -> Exception:
-    if ModelError.matches(error, AuthenticationError, ContentSafetyError, ContextLengthError, InvalidRequestError, ModelTimeoutError, QuotaError, RateLimitError, TransportError):
-        return error
-    if isinstance(error, (httpx.ConnectError, httpx.ConnectTimeout)):
-        # 连接建立失败可证明请求未发出：这是允许重试的正面证据。
-        mapped = TransportError(describe_transport_error(error)).exception()
-        mapped = ModelError.change(mapped, send_evidence="unsent")
-        mapped = ModelError.change(mapped, retry_safe=True)
-        return mapped
-    if isinstance(error, (httpx.TimeoutException, TimeoutError)):
-        return ModelTimeoutError(describe_transport_error(error)).exception()
-    if isinstance(error, httpx.TransportError):
-        # 请求发出后的读/写失败不携带任何安全证据。
-        return TransportError(describe_transport_error(error)).exception()
-    if isinstance(error, _StreamReadError):
-        # 已进入 HTTP 200 流：无论是否观察到 delta，远端效果都不可证。
-        mapped = _map_error(error.error)
-        if ModelError.matches(mapped):
-            mapped = ModelError.change(mapped, response_delta_seen=error.response_delta_seen, send_evidence=None)
-        else:
-            setattr(mapped, "response_delta_seen", error.response_delta_seen)
-        return mapped
-    return error
-
-
-def _retryable(error: Exception) -> bool:
-    value = ModelError.read(error)
-    return value is not None and value.send_evidence in ("rejected", "unsent") and (
-        isinstance(value, (ModelTimeoutError, RateLimitError)) or value.retry_safe
-    )
-
-
-def _json_object(response: httpx.Response) -> dict[str, Any]:
-    try:
-        payload = response.json()
-    except (json.JSONDecodeError, UnicodeDecodeError) as error:
-        raise TransportError("provider response is not valid JSON").exception() from error
-    if not isinstance(payload, dict):
-        raise TransportError("provider response must be a JSON object").exception()
-    return cast(dict[str, Any], payload)
-
-
-def _credential_token(payload: Mapping[str, str]) -> str:
-    token = payload.get("access_token") or payload.get("api_key") or payload.get("token")
-    if not token or not token.strip():
-        raise AuthenticationError("credential does not contain an API token").exception()
-    return token.strip()
-
-
-def _check_credential_scope(
-    descriptor: DriverConnectionDescriptor,
-    credential: CredentialHandle,
-) -> None:
-    if credential.connection_id != descriptor.connection_id:
-        raise AuthenticationError("credential connection scope does not match").exception()
-    if credential.auth_identity != descriptor.auth_identity:
-        raise AuthenticationError("credential auth identity does not match").exception()
-
-
-def _check_bound_model(
-    descriptor: DriverConnectionDescriptor,
-    connection_id: str,
-    driver_id: str,
-) -> None:
-    if connection_id != descriptor.connection_id or driver_id != descriptor.driver_id:
-        raise ValueError("bound model does not belong to this driver connection")
-
-
-def _normalize_base_url(value: str) -> str:
-    text = value.strip()
-    parsed = urlsplit(text)
-    if parsed.scheme not in {"http", "https"} or not parsed.netloc:
-        raise ValueError("endpoint must be an absolute HTTP(S) URL")
-    if parsed.username or parsed.password:
-        raise ValueError("endpoint must not contain credentials")
-    if parsed.query:
-        raise ValueError("endpoint must not contain a query")
-    if parsed.fragment:
-        raise ValueError("endpoint must not contain a fragment")
-    path = parsed.path.rstrip("/")
-    for suffix in ("/chat/completions", "/completions", "/embeddings", "/models"):
-        if path.endswith(suffix):
-            path = path[: -len(suffix)].rstrip("/")
-            break
-    return urlunsplit((parsed.scheme, parsed.netloc, path, "", ""))
-
-
 def _normalize_messages(
     messages: Sequence[Mapping[str, Any]],
 ) -> list[dict[str, Any]]:
@@ -1320,29 +1052,6 @@ def _thaw(value: Any) -> Any:
     if isinstance(value, Sequence) and not isinstance(value, (str, bytes, bytearray)):
         return [_thaw(item) for item in value]
     return value
-
-
-def _required_string(value: object, name: str) -> str:
-    if not isinstance(value, str) or not value:
-        raise TransportError(f"{name} must be a non-empty string").exception()
-    return value
-
-
-def _optional_int(value: object) -> int | None:
-    if value is None:
-        return None
-    if not isinstance(value, int) or isinstance(value, bool) or value < 0:
-        raise TransportError("usage token counts must be non-negative integers").exception()
-    return value
-
-
-def _positive_float(value: object, name: str) -> float:
-    if not isinstance(value, (int, float)) or isinstance(value, bool):
-        raise ValueError(f"{name} must be a positive number")
-    result = float(value)
-    if not math.isfinite(result) or result <= 0:
-        raise ValueError(f"{name} must be a positive finite number")
-    return result
 
 
 __all__ = ["definition"]

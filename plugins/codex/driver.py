@@ -24,7 +24,11 @@ from plugins.models.contract import (
     AuthenticationError,
     ModelUnavailableError,
 )
-from plugins.models.contract import ModelDriverDefinition
+from plugins.models.contract import (
+    ModelDriverDefinition,
+    check_credential_scope,
+    positive_float_config as _positive_float,
+)
 
 from .auth import finish_auth, start_auth
 from .catalog import discover as discover_catalog
@@ -64,10 +68,7 @@ async def _open(
     read_version: Callable[[], Awaitable[str]],
 ) -> DriverConnection:
     config = _connection_config(descriptor)
-    if credential.connection_id != descriptor.connection_id:
-        raise AuthenticationError("credential connection scope does not match").exception()
-    if credential.auth_identity != descriptor.auth_identity:
-        raise AuthenticationError("credential auth identity does not match").exception()
+    check_credential_scope(descriptor, credential)
 
     client_version = await read_version()
 
@@ -181,8 +182,3 @@ def _model_config(raw: Mapping[str, Any]) -> Mapping[str, Any]:
         raise ValueError("max_tool_schemas must be positive or null")
     return dict(raw)
 
-
-def _positive_float(value: object, name: str) -> float:
-    if isinstance(value, bool) or not isinstance(value, (int, float)) or not math.isfinite(value) or value <= 0:
-        raise ValueError(f"{name} must be positive")
-    return float(value)

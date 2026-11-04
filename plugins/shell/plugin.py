@@ -1,4 +1,3 @@
-from importlib import import_module
 
 from agent.plugin_composition import Context, ServiceKey
 from agent.plugin_composition.plugin_config import PLUGIN_CONFIG
@@ -22,8 +21,7 @@ async def apply(ctx: Context) -> None:
     _ = await ctx.require(TOOLS).declare_group(ctx, always_on=True, description=desc)
     config = Config.model_validate(ctx.config)
     _ = await register_shell(ctx, config)
-    await mount_settings(ctx, SETTINGS, ModelSettings(ctx, Config, ("timeout", "max_output_tokens")),
-                         lambda: import_module(".dashboard", __package__))
+    await mount_settings(ctx, SETTINGS, ModelSettings(ctx, Config, ("timeout", "max_output_tokens")))
 
     # 命令块是本插件工具结果的展示；宿主只把本插件注册的工具结果交给它，没有界面服务时不影响命令执行。
     async def plugin_ui(child: Context) -> None:

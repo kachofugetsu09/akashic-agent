@@ -35,7 +35,10 @@ from plugins.models.contract import (
     ModelTimeoutError,
     QuotaError,
     RateLimitError,
+    StreamCallbackError as _CallbackError,
     TransportError,
+    mark_unsent_error as _unsent,
+    optional_non_negative_int as _optional_int,
 )
 
 from .auth import headers
@@ -219,12 +222,6 @@ class CodexResponses:
         messages: Sequence[Mapping[str, Any]],
     ) -> int:
         return max(1, estimate_tokens(messages, chars_per_token=4))
-
-
-class _CallbackError(RuntimeError):
-    def __init__(self, error: Exception) -> None:
-        super().__init__(str(error))
-        self.error = error
 
 
 async def _consume_stream(
@@ -669,20 +666,6 @@ def _parse_usage(raw: object) -> ModelUsage | None:
         coverage=coverage,
     )
 
-
-def _optional_int(value: object) -> int | None:
-    if value is None:
-        return None
-    if isinstance(value, bool) or not isinstance(value, int) or value < 0:
-        raise TransportError("Codex usage token count is invalid").exception()
-    return value
-
-
-
-def _unsent(error: Exception) -> Exception:
-    """发送前本地校验失败：请求可证明未到达 provider，标记为允许重试的证据。"""
-    error = ModelError.change(error, send_evidence="unsent")
-    return error
 
 def _raise_status(response: httpx.Response, secret: str) -> None:
     error = _status_error(response, secret)

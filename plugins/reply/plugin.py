@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-from importlib import import_module
 import asyncio
 import logging
 from time import monotonic
@@ -144,8 +143,7 @@ async def _prepare_pending(
 async def apply(ctx: Context) -> None:
     """自动回复是普通可移除插件；正式启动后才读日志和接纳任务。"""
     config = Config.model_validate(ctx.config)
-    await mount_settings(ctx, SETTINGS, ModelSettings(ctx, Config, SETTING_FIELDS),
-                         lambda: import_module(".dashboard", __package__))
+    await mount_settings(ctx, SETTINGS, ModelSettings(ctx, Config, SETTING_FIELDS))
     watcher: asyncio.Task[None] | None = None
     scan: asyncio.Task[None] | None = None
     pending: dict[tuple[str, str], AbstractContextManager[None]] = {}
