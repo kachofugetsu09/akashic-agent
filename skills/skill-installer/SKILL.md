@@ -22,10 +22,11 @@ Akashic 的 `skills` 插件按四层来源热扫描技能，**普通技能不需
 
 ## 2. 确定工作区技能目录
 
-优先使用环境变量 `$AKASHIC_WORKSPACE/skills`；若当前 Shell 未注入该变量，从提示词的「工作区 → 根目录」或运行进程参数 `--workspace` 取得工作区路径（例如 `/srv/data/services/akashic/state/workspace/skills`）：
+优先使用环境变量 `$AKASHIC_WORKSPACE/skills`；若当前 Shell 未注入该变量，从提示词的「工作区 → 根目录」或运行进程参数 `--workspace` 取得准确路径并设置变量。无法确定时先询问，不猜测其他实例的目录：
 
 ```sh
-SKILL_ROOT="${AKASHIC_WORKSPACE:-/srv/data/services/akashic/state/workspace}/skills"
+: "${AKASHIC_WORKSPACE:?请先确认当前工作区并设置 AKASHIC_WORKSPACE}"
+SKILL_ROOT="$AKASHIC_WORKSPACE/skills"
 mkdir -p "$SKILL_ROOT"
 ```
 
@@ -46,13 +47,14 @@ mkdir -p "$SKILL_ROOT"
    - 找到目标 `<skill-dir>/SKILL.md`，确认 frontmatter 至少包含 `name` 和 `description`。
    - 若外部 `SKILL.md` 带有 `metadata` 字段，注意 Akashic 解析规则：当 `metadata` 为字符串时必须能被 `json.loads` 解析为 JSON 对象（或直接写成 YAML 映射对象）；若原文件使用了非 JSON 的自由文本 `metadata`，安装后需用 `edit_file` 修正或移除该字段，否则解析会报错。
    - 检查 `metadata.akashic.requires`（或 `metadata.requires`）中的 `bins` / `env` 在本机是否满足。
-3. **复制到 `$SKILL_ROOT/<skill-name>` 并清理临时目录**：
+3. **先准备完整副本，再替换目标目录**。核对 `<skill-name>` 是单个目录名，且目标在当前 `SKILL_ROOT` 内。先在同一文件系统、扫描目录外复制；复制失败时旧技能保持原样：
    ```sh
-   rm -rf "$SKILL_ROOT/<skill-name>"
-   cp -R "$TMP_DIR/repo/skills/<skill-name>" "$SKILL_ROOT/<skill-name>"
-   rm -rf "$TMP_DIR/.git" "$SKILL_ROOT/<skill-name>/.git" "$TMP_DIR"
+   RECOVERY_DIR="$(mktemp -d "$AKASHIC_WORKSPACE/.skill-install.XXXXXX")"
+   cp -R "$TMP_DIR/repo/skills/<skill-name>" "$RECOVERY_DIR/new" &&
+     test -s "$RECOVERY_DIR/new/SKILL.md"
    ```
-   > 注意：若本机启用了 `shell_restore`（`rm` 被改写为 `mv`），优先把临时目录建在 `~/.cache/akashic-dev/skill-install/` 并按目录清理，避免把无关工作目录移入回收站。
+   仅在上述命令成功后继续。检查新副本内的 `.git`、链接与资源路径；不要把仓库元数据或指向临时目录的链接带入安装目录。目标已存在时，将整个旧目录移到 `$RECOVERY_DIR/previous`，保留用户改动和资源；再把 `$RECOVERY_DIR/new` 移到 `$SKILL_ROOT/<skill-name>`。发布失败就把 `previous` 移回原处。备份不能放在 `skills/` 内，否则会被当成第二个技能扫描。
+4. **调用 `load_skill` 验证后再清理本次临时 clone**。验证失败时保留失败副本并恢复 `previous`，重新加载确认旧技能可用。向用户报告恢复点；不自动删除旧技能副本。启用 `shell_restore` 时按其实际移动行为核对清理结果，只处理本次创建的临时目录。
 
 ## 4. 立即验证（必做）
 
@@ -68,5 +70,5 @@ mkdir -p "$SKILL_ROOT"
 
 ## 5. 更新与卸载
 
-- **更新**：重新拉取上游最新仓库，覆盖 `$SKILL_ROOT/<skill-name>/` 后再次调用 `load_skill(skill="<skill-name>")` 核对新正文。
-- **卸载**：删除 `$SKILL_ROOT/<skill-name>/` 目录即可；若该名称在 `builtin` 或 `plugin` 层存在同名技能，删除工作区覆盖后会回退到低层版本。
+- **更新**：按上述准备、替换和恢复流程操作，保留原目录中的用户改动供核对，再调用 `load_skill(skill="<skill-name>")` 核对新正文。
+- **卸载**：用户明确要求卸载后，将准确的目标目录移到 `skills/` 外的恢复点并核对扫描结果；若 `builtin` 或 `plugin` 层存在同名技能，会回退到低层版本。永久删除恢复点需要单独确认。
