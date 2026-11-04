@@ -6,15 +6,16 @@ import re
 from dataclasses import asdict
 from pathlib import Path
 
-from fastapi import Body, FastAPI, HTTPException, Query, Request, Response
+from fastapi import Body, FastAPI, HTTPException, Query, Request, Response, WebSocket
 from starlette.types import Scope
 
 from agent.plugin_composition import DashboardContext
 from plugins.ui.contract import CompressedStaticFiles
 
+from .live import DESIGN_LIVE
 from .store import DESIGN_STORE, MAX_DOCUMENT_BYTES, DesignDocument, DesignStore, DesignStoreError, RevisionConflict
 
-inject = (DESIGN_STORE,)
+inject = (DESIGN_STORE, DESIGN_LIVE)
 ASSETS = "/design/assets/"
 _SESSION = Query(min_length=1, max_length=512)
 _DOCUMENT = re.compile(r"[0-9a-f]{16}")
@@ -45,6 +46,11 @@ def register(app: FastAPI, context: DashboardContext) -> None:
         _asset_route(app, assets, name)
     _catalog_routes(app, context)
     _content_routes(app, context)
+
+    # 标签模块为当前会话保持一条连接：别处保存的新修订号与 Agent 的设计工具调用都经它送达画布。
+    @app.websocket("/api/dashboard/design/live")
+    async def live(socket: WebSocket, session: str = _SESSION) -> None:
+        await context.require(DESIGN_LIVE).serve(socket, session)
 
 
 # 能力只在路由的租约内解析：插件换代后旧路由拿不到新一代的存储。
@@ -96,6 +102,7 @@ def _content_routes(app: FastAPI, context: DashboardContext) -> None:
             raise HTTPException(409, {"message": str(error), "revision": error.current}) from error
         except DesignStoreError as error:
             raise HTTPException(404, str(error)) from error
+        await context.require(DESIGN_LIVE).changed(session, saved.id, saved.revision)
         return _view(saved)
 
 

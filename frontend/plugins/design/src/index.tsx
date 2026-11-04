@@ -4,6 +4,7 @@ import { DESIGN_API, DESIGN_CHANNEL, type DesignFromFrame, type DesignToFrame, t
 import "./style.css";
 
 const FRAME = "/design/assets/editor.html";
+const RETRY_MS = 3000;
 
 // 代发编辑器的文档请求：只放行本插件的 API，响应体整块转移回 iframe。
 async function relay(ctx: WebHostContextV1, request: RelayedRequest): Promise<DesignToFrame> {
@@ -19,10 +20,67 @@ async function relay(ctx: WebHostContextV1, request: RelayedRequest): Promise<De
   }
 }
 
+type LiveMessage = { type: "changed"; document: string; revision: number } | { type: "resync" };
+
+// 为当前会话保持一条到后端的实时连接：别处保存的新修订号从这里进来；断开后自动重连。
+class LiveLink {
+  private socket: WebSocket | null = null;
+  private timer = 0;
+  private session: string | null = null;
+
+  constructor(private readonly ctx: WebHostContextV1, private readonly receive: (message: LiveMessage) => void,
+    private readonly visible: () => boolean) {}
+
+  open(session: string | null): void {
+    this.close();
+    this.session = session;
+    if (session) this.connect();
+  }
+
+  send(message: { type: "visible"; visible: boolean }): void {
+    if (this.socket?.readyState === WebSocket.OPEN) this.socket.send(JSON.stringify(message));
+  }
+
+  close(): void {
+    window.clearTimeout(this.timer);
+    const socket = this.socket;
+    this.socket = null;
+    socket?.close();
+  }
+
+  private connect(): void {
+    const session = this.session;
+    if (!session) return;
+    let socket: WebSocket;
+    try {
+      socket = new WebSocket(this.ctx.http.webSocketUrl(`${DESIGN_API}live?${new URLSearchParams({ session })}`));
+    } catch {
+      return;
+    }
+    this.socket = socket;
+    socket.addEventListener("open", () => {
+      if (this.socket !== socket) return;
+      this.send({ type: "visible", visible: this.visible() });
+      this.receive({ type: "resync" });
+    });
+    // 换会话后旧连接可能还有在路上的消息：只收当前这条连接的
+    socket.addEventListener("message", (event) => {
+      if (this.socket !== socket) return;
+      try { this.receive(JSON.parse(String(event.data)) as LiveMessage); } catch { /* 忽略坏消息，连接保持 */ }
+    });
+    socket.addEventListener("close", () => {
+      if (this.socket !== socket) return;
+      this.socket = null;
+      this.timer = window.setTimeout(() => this.connect(), RETRY_MS);
+    });
+  }
+}
+
 // 编辑器（open-pencil、CanvasKit WASM、字体）是单独构建的大包，跑在同源 iframe 里：
 // 宿主不允许 Web 模块动态加载代码，标签模块只负责第一次可见时建 iframe，转交会话、可见性与主题，并代发文档请求。
 class DesignTab {
   private readonly root = document.createElement("div");
+  private readonly live: LiveLink;
   private readonly stops: (() => void)[];
   private frame: HTMLIFrameElement | null = null;
   private ready = false;
@@ -30,17 +88,24 @@ class DesignTab {
   constructor(private readonly ctx: WebHostContextV1, private readonly host: HTMLElement, private readonly view: ConversationTabView) {
     this.root.className = "design-tab";
     host.replaceChildren(this.root);
+    this.live = new LiveLink(ctx, (message) => this.post(message), () => view.active);
     window.addEventListener("message", this.onFrame);
     this.start();
+    this.live.open(view.session);
     this.stops = [
-      view.onActiveChange((active) => { this.start(); this.post({ type: "active", active }); }),
-      view.onSessionChange((session) => this.post({ type: "session", session })),
+      view.onActiveChange((active) => {
+        this.start();
+        this.post({ type: "active", active });
+        this.live.send({ type: "visible", visible: active });
+      }),
+      view.onSessionChange((session) => { this.post({ type: "session", session }); this.live.open(session); }),
       subscribeTheme(() => this.post({ type: "theme", dark: dark() })),
     ];
   }
 
   dispose(): void {
     for (const stop of this.stops) stop();
+    this.live.close();
     window.removeEventListener("message", this.onFrame);
     this.host.replaceChildren();
   }

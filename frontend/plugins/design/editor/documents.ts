@@ -34,7 +34,12 @@ export class Documents {
   private adopting = 0;
   private timer = 0;
   private saving: Promise<void> | null = null;
+  // 保存期间收到的最新修订通知：保存结束后再判断要不要跟进
+  private behind: { id: string; revision: number } | null = null;
   private ticket = 0;
+  // 列表请求的代次：A→B→A 或同会话乱序时，只有最后一次请求的响应生效
+  private listing = 0;
+  private queue: Promise<unknown> = Promise.resolve();
   private readonly stops: (() => void)[];
 
   constructor(private readonly editor: Editor, private readonly options: DocumentHost) {
@@ -59,24 +64,32 @@ export class Documents {
     }
   }
 
+  // 会话切换、用户的文档操作、自动跟进与重连对账排在同一条队列里：前一件做完才轮到下一件，对账不会撞上还没加载完的文档。
+  serial<T>(task: () => Promise<T>): Promise<T> {
+    const next = this.queue.then(task);
+    this.queue = next.catch(() => undefined);
+    return next;
+  }
+
   setSession(session: string | null): Promise<void> {
-    return this.hold(() => this.switchTo(session));
+    return this.serial(() => this.hold(() => this.switchTo(session)));
   }
 
   open(id: string): Promise<void> {
-    return this.hold(() => this.load(id));
+    return this.serial(() => this.hold(() => this.load(id)));
   }
 
   private async switchTo(session: string | null): Promise<void> {
     const left = await this.leave();
     const ticket = ++this.ticket;
+    const listing = ++this.listing;
     Object.assign(this.state, { session, list: [], current: null, error: left.note, save: "saved" });
     this.show(new SceneGraph());
     if (!session) return;
     const list = await this.json<{ documents: DocumentMeta[] }>(`${API}?${this.query()}`);
     if (ticket !== this.ticket || !list) return;
-    this.state.list = list.documents;
-    if (list.documents[0]) await this.load(list.documents[0].id);
+    if (listing === this.listing) this.state.list = list.documents;
+    if (this.state.list[0]) await this.load(this.state.list[0].id);
   }
 
   // 读取期间画布又有修改（版本变了）就不替换，留在原文档，修改照常保存。
@@ -108,16 +121,16 @@ export class Documents {
 
   // 冲突时用户点“重新加载”：明确放弃这块画布上没存下的修改，换成存储里的最新版本。
   reload(): Promise<void> {
-    return this.hold(async () => {
+    return this.serial(() => this.hold(async () => {
       const current = this.state.current;
       if (!current) return;
       this.savedVersion = this.version;
       await this.load(current.id);
-    });
+    }));
   }
 
   create(name = ""): Promise<DocumentMeta | null> {
-    return this.hold(() => this.make(name));
+    return this.serial(() => this.hold(() => this.make(name)));
   }
 
   private async make(name: string): Promise<DocumentMeta | null> {
@@ -129,6 +142,37 @@ export class Documents {
     this.state.list = [created, ...this.state.list];
     await this.load(created.id);
     return this.state.current?.id === created.id ? created : null;
+  }
+
+  async refresh(): Promise<void> {
+    const listing = ++this.listing;
+    const list = await this.json<{ documents: DocumentMeta[] }>(`${API}?${this.query()}`);
+    if (list && listing === this.listing) this.state.list = list.documents;
+  }
+
+  // 实时连接（重新）连上后对一次账：断线期间别处保存的修订不会再广播。
+  resync(): Promise<void> {
+    return this.serial(() => this.reconcile());
+  }
+
+  private async reconcile(): Promise<void> {
+    await this.refresh();
+    const current = this.state.current;
+    const latest = current && this.state.list.find((item) => item.id === current.id);
+    if (current && latest && latest.revision > current.revision) await this.follow(current.id, latest.revision);
+  }
+
+  // 同一会话的另一块画布保存了文档：没有未保存修改就换成新版本，有修改时让下一次保存报冲突，由用户决定。
+  changed(id: string, revision: number): Promise<void> {
+    return this.serial(() => this.follow(id, revision));
+  }
+
+  private async follow(id: string, revision: number): Promise<void> {
+    if (!this.state.list.some((item) => item.id === id)) return await this.refresh();
+    const current = this.state.current;
+    if (current?.id !== id || revision <= current.revision) return;
+    if (this.saving) this.behind = { id, revision: Math.max(revision, this.behind?.id === id ? this.behind.revision : 0) };
+    else if (this.version === this.savedVersion) await this.hold(() => this.load(id), false);
   }
 
   async flush(): Promise<void> {
@@ -192,7 +236,12 @@ export class Documents {
   }
 
   private save(): Promise<void> {
-    this.saving ??= this.write().finally(() => { this.saving = null; });
+    this.saving ??= this.write().finally(() => {
+      this.saving = null;
+      const behind = this.behind;
+      this.behind = null;
+      if (behind) void this.changed(behind.id, behind.revision);
+    });
     return this.saving;
   }
 
