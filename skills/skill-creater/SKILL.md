@@ -8,16 +8,17 @@ description: 创建或改写 akashic-bot 技能（SKILL.md）。当用户要求�
 ## 技能目录结构
 
 ```
-$AKASHIC_WORKSPACE/skills/{skill-name}/   ← 工作区技能（优先级最高）
+$AKASHIC_WORKSPACE/skills/{skill-name}/   ← 工作区技能（优先级最高，无需写插件直接热生效）
   SKILL.md                                ← 必须
   scripts/                                ← 可选，放辅助脚本
   references/                             ← 可选，放参考文档
 
 ~/.akashic/skills/{skill-name}/           ← 用户级技能
+<Core 根>/skills/{skill-name}/            ← 内置技能
 随插件发布的技能                           ← 见 develop-akashic-plugin
 ```
 
-用 `write_file` 或 `edit_file` 直接创建/修改文件，无需任何脚手架脚本。
+用 `write_file` 或 `edit_file` 直接创建/修改文件，无需任何脚手架脚本。若要从 GitHub 仓库或本地目录安装现成技能，请加载 `skill-installer`。
 
 ## SKILL.md 格式
 

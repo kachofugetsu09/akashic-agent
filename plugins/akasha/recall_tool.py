@@ -6,7 +6,7 @@ from contextlib import AbstractAsyncContextManager
 from datetime import UTC, datetime
 import json
 from pathlib import Path
-from typing import cast
+from typing import Annotated, cast
 
 import numpy as np
 from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_validator
@@ -229,6 +229,7 @@ class RecallTool:
         async with self._bindings.open(recall.learning_binding, AKASHA_LEARNING) as (learning, _metadata):
             material = await run_memory_job(lambda: render_materials(
                 identity, recall, learning, self._catalog, max_chars=recall.max_chars,
+                presented=recall.presented_message_ids,
             ))
         if tuple(dict.fromkeys(ref["ref"] for ref in cast(tuple[Mapping[str, str], ...], material["references"]))) != recall.presented_message_ids:
             raise ValueError("原查询呈现的材料发生变化，不能用当前结果冒充恢复")
@@ -244,3 +245,89 @@ class RecallTool:
             ContentPart("text", metadata), *parts,
             ContentPart("akasha.recall", {"retrieval_ref": identity}),
         ))
+
+
+# 读原文的单次总预算；召回预览里的 ref 多数只需读一两条。
+FETCH_MAX_CHARS = 30000
+
+
+class FetchArguments(BaseModel):
+    model_config = ConfigDict(extra="forbid", strict=True)
+    message_ids: list[Annotated[str, Field(min_length=1)]] = Field(min_length=1, max_length=20)
+
+
+class PreparedFetch(FetchArguments):
+    session_id: str | None
+
+
+class FetchedMessages(BaseModel):
+    model_config = ConfigDict(extra="forbid", frozen=True, strict=True)
+    message_ids: tuple[str, ...]
+
+
+def check_fetch(part: ContentPart) -> ContentReferences:
+    _ = FetchedMessages.model_validate_json(json.dumps(json_value(part.value)))
+    return ContentReferences()
+
+
+class FetchTool:
+    """按 ref 读召回消息原文；只认调用会话可读的记忆图学过的消息和本会话自己的消息。"""
+
+    idempotent = True
+
+    def __init__(
+        self, *, memory: Callable[[str | None], Path], catalog: MessageCatalog,
+        learning: Learning, owners: Callable[[Path], Mapping[str, str]],
+    ):
+        self._memory = memory
+        self._catalog = catalog
+        self._learning = learning
+        self._owners = owners
+
+    async def prepare(
+        self, arguments: Mapping[str, object], source: CallSource | None = None,
+    ) -> Mapping[str, object] | str:
+        try:
+            request = FetchArguments.model_validate(json_value(arguments))
+        except ValidationError as error:
+            return str(error)
+        session_id = None if source is None else source.messages[0].session_id
+        try:
+            _ = self._memory(session_id)
+        except MemoryDisabled as error:
+            return str(error)
+        return PreparedFetch(message_ids=list(dict.fromkeys(request.message_ids)),
+                             session_id=session_id).model_dump(mode="json")
+
+    async def invoke(self, key: str, arguments: Mapping[str, object]) -> Result:
+        request = PreparedFetch.model_validate_json(json.dumps(json_value(arguments)))
+        path = self._memory(request.session_id)
+        return await run_memory_job(lambda: self._read(request, self._owners(path)))
+
+    # 1. 学习图里查到所属会话才读；2. 本会话自己的消息直接读；3. 超出总预算的部分截断并提示。
+    def _read(self, request: PreparedFetch, owners: Mapping[str, str]) -> Result:
+        rows: list[str] = []
+        fetched: list[str] = []
+        budget = FETCH_MAX_CHARS
+        for message_id in request.message_ids:
+            owner = owners.get(message_id, request.session_id)
+            message = None if owner is None else self._catalog.reader(owner).get(message_id)
+            if message is None:
+                rows.append(f"### ref={message_id}\n不存在，或不在当前会话的记忆范围内。")
+                continue
+            text = self._learning.text(message)
+            if budget <= 0:
+                rows.append(f"### ref={message_id}\n本次读取已达 {FETCH_MAX_CHARS} 字上限，请分开读取。")
+                continue
+            shown = text[:budget] + ("\n（已截断，超出本次读取上限）" if len(text) > budget else "")
+            budget -= len(text)
+            stamp = message.recorded_at.astimezone().strftime("%Y-%m-%d %H:%M")
+            rows.append(f"### ref={message_id}\n{stamp} · {message.author}\n\n{shown}")
+            fetched.append(message_id)
+        return Result("success", (
+            ContentPart("text", "\n\n".join(rows)),
+            ContentPart("akasha.fetch", FetchedMessages(message_ids=tuple(fetched)).model_dump(mode="json")),
+        ))
+
+    async def query(self, key: str) -> Result | None:
+        return None

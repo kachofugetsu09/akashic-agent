@@ -213,3 +213,13 @@ def load_message_nodes(memory: Path) -> dict[str, int]:
     if state is None:
         raise ValueError("记忆反馈缺少已发布的学习消费状态")
     return message_nodes(state.applied)
+
+
+def load_message_sessions(memory: Path) -> dict[str, str]:
+    """fetch_messages 按已发布出处找消息所属会话；未学习或已跳过的消息不在其中。"""
+    from .persistence import load_consumption
+
+    state = load_consumption(memory)
+    if state is None:
+        return {}
+    return {identity: entry.session_id for entry in state.applied for _, identity in entry.members}
