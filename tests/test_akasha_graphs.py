@@ -183,11 +183,12 @@ async def test_unavailable_graph_does_not_stop_other_graphs(tmp_path: Path, brok
         assert [entry.ending[1] for entry in state.applied] == ["healthy-output"]
         assert broken_key in str(failed) and "重建" in str(failed)
         # 3. 健康图正常召回自己的已学问答，不能清除故障图的错误。
+        # 当前窗口里已有的消息不再注入，所以只给最新输入，相当于前面的问答已被压缩出窗口。
         log.writer("healthy", author="user", source="conversation", body_types=(Input,),
                    content={"text": check_text}).append(
             "healthy-next", Input((ContentPart("text", "what was that fact?"),)))
         async with root.context.open_service(MATERIALS) as service, service.bind() as materials:
-            recalled = await materials.prepare(log.reader("healthy").snapshot(), "conversation")
+            recalled = await materials.prepare(log.reader("healthy").snapshot()[-1:], "conversation")
         assert broken_path.read_bytes() == original_graph
         assert "healthy-output" in str(recalled)
         assert any(broken_key in (item.reason or "") and "重建" in (item.reason or "")
