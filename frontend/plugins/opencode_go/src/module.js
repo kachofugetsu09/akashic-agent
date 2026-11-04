@@ -22,7 +22,7 @@ export function activate(ctx) {
         <button type="button" class="settings-icon-button" aria-label="关闭" data-close>${CLOSE_ICON}</button></header>
         <form class="settings-dialog-form"><div class="settings-dialog-body"><div class="settings-form-grid">
           <label class="is-wide"><span>连接名称</span><input name="name" aria-label="连接名称" required autocomplete="organization"></label>
-          <label class="is-wide"><span>Base URL</span><input name="endpoint" aria-label="Base URL" ${existing ? "" : "required"} type="url" placeholder="${existing ? existing.endpointHost ? `当前 ${existing.endpointHost.replace(/[^a-z0-9.:-]/giu, "")}，填写新地址才会更换` : "留空则保持原地址" : "https://opencode.ai/zen/go/v1"}"></label>
+          <label class="is-wide"><span>Base URL</span><input name="endpoint" aria-label="Base URL" ${existing ? "" : "required"} type="url" autocomplete="url" placeholder="${existing ? existing.endpointHost ? `当前 ${existing.endpointHost.replace(/[^a-z0-9.:-]/giu, "")}，填写新地址才会更换` : "留空则保持原地址" : "https://opencode.ai/zen/go/v1"}"></label>
           <label class="settings-secret is-wide"><span>API Key</span><input name="apiKey" aria-label="API Key" type="password" autocomplete="off" placeholder="${existing ? "留空保留现有密钥" : "可留空，直接使用本机登录态"}"><button type="button" data-show-key aria-label="显示 API Key">${EYE_ICON}</button></label>
         </div>
         <p class="settings-inline-error" data-error role="alert" hidden></p></div>
@@ -32,7 +32,7 @@ export function activate(ctx) {
       form.addEventListener("input", changed);
       form.addEventListener("change", changed);
       form.elements.name.value = existing?.name ?? "OpenCode Go";
-      form.elements.endpoint.value = existing ? "" : "https://opencode.ai/zen/go/v1";
+      form.elements.endpoint.value = existing ? (existing.endpoint ?? "") : "https://opencode.ai/zen/go/v1";
       const showKey = host.querySelector("[data-show-key]");
       showKey.addEventListener("click", () => {
         const visible = form.elements.apiKey.type === "text";
@@ -51,7 +51,7 @@ export function activate(ctx) {
         const input = {
           name: String(data.get("name")),
         };
-        const endpoint = String(data.get("endpoint"));
+        const endpoint = String(data.get("endpoint")).trim();
         const apiKey = String(data.get("apiKey"));
         if (apiKey) {
           input.api_key = apiKey;
@@ -60,7 +60,7 @@ export function activate(ctx) {
         if (existing) {
           submit(form, props.actions.update({
             name: input.name,
-            endpoint: endpoint || null,
+            endpoint: endpoint && endpoint !== (existing.endpoint ?? "") ? endpoint : null,
             credential: apiKey ? {driver: "api_key", access_token: apiKey} : null,
             driverConfig: null,
           }).then(async () => {

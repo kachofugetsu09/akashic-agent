@@ -27,7 +27,7 @@ export function activate(ctx) {
         </div><button type="button" class="settings-icon-button" data-close aria-label="关闭">${CLOSE_ICON}</button></header>
         <form class="settings-dialog-form"><div class="settings-dialog-body"><div class="settings-form-grid">
           <label class="is-wide"><span>连接名称</span><input name="name" aria-label="连接名称" required autocomplete="organization"></label>
-          <label class="is-wide"><span>Base URL</span><input name="endpoint" aria-label="Base URL" type="url" ${existing ? "" : "required"} placeholder="${existing?.endpointHost ? `当前 ${existing.endpointHost.replace(/[^a-z0-9.:-]/giu, "")}，填写新地址才会更换` : "https://generativelanguage.googleapis.com/v1beta"}"></label>
+          <label class="is-wide"><span>Base URL</span><input name="endpoint" aria-label="Base URL" type="url" autocomplete="url" ${existing ? "" : "required"} placeholder="${existing?.endpointHost ? `当前 ${existing.endpointHost.replace(/[^a-z0-9.:-]/giu, "")}，填写新地址才会更换` : "https://generativelanguage.googleapis.com/v1beta"}"></label>
           <label class="settings-secret is-wide"><span>API Key</span><input name="apiKey" aria-label="API Key" type="password" ${existing ? "" : "required"} autocomplete="off" placeholder="${existing ? "留空保留现有密钥" : "AIzaSy…"}"><button type="button" data-show-key aria-label="显示 API Key">${EYE_ICON}</button></label>
         </div><p>支持官方地址或自定义代理网关（以 /v1 或 /v1beta 结尾）。</p>
         <p class="settings-credential-note">${SHIELD_ICON}<span>API Key 保存后不会在页面中明文回显</span></p>
@@ -41,7 +41,7 @@ export function activate(ctx) {
         <footer class="settings-dialog-footer" data-footer ${existing ? "" : "hidden"}><span class="settings-dialog-footer-note" data-footer-note>${SHIELD_ICON}保存前会向所选模型发送一条测试消息以验证可用性</span><div class="settings-dialog-actions">${existing ? "" : '<button type="button" class="settings-secondary-button" data-rescan>重新探测</button>'}<button type="submit" class="settings-primary-button">保存连接</button></div></footer></form>`;
       const form = host.querySelector("form");
       form.elements.name.value = existing?.name ?? defaults.name ?? "Gemini";
-      form.elements.endpoint.value = existing ? "" : defaults.endpoint ?? "";
+      form.elements.endpoint.value = existing ? (existing.endpoint ?? "") : (defaults.endpoint ?? "");
       form.addEventListener("input", () => props.dirty(true));
       form.addEventListener("change", () => props.dirty(true));
       host.querySelector("[data-close]").addEventListener("click", props.close);
@@ -59,8 +59,9 @@ export function activate(ctx) {
         const data = new FormData(form);
         if (existing) {
           const apiKey = String(data.get("apiKey"));
+          const endpoint = String(data.get("endpoint")).trim();
           submit(form, props.actions.update({name: String(data.get("name")).trim(),
-            endpoint: String(data.get("endpoint")).trim() || null,
+            endpoint: endpoint && endpoint !== (existing.endpoint ?? "") ? endpoint : null,
             credential: apiKey ? {driver: "api_key", access_token: apiKey} : null,
             driverConfig: null}).then(() => { if (!closed) props.changed("Gemini 原生连接已更新"); }));
           return;

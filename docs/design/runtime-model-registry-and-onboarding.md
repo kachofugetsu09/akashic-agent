@@ -204,7 +204,7 @@ Memoh 的可复用部分是 owner 模型，不是整页复制：一套登录或 
 
 设置 API 需要从当前“按 Provider 类型派生固定 runtime ID”升级成具名 runtime 的 create/update 操作。每项至少持有稳定 `runtime_id`、用户可读 `source_name`、transport/provider、credential 引用、Base URL、model name、默认 reasoning effort 与能力快照。列表和 Chat 都以 `model name：source name` 显示，身份和提交仍使用稳定 runtime ID，不能用显示文字做主键。
 
-API Key 是 write-only：读取状态只返回掩码和凭据状态，空值保存表示保留原 secret；替换 key 必须显式输入新值。Codex 和 OpenCode 使用同一来源实例外壳，但表单切换成登录动作，不伪装成 API Key 字段。新增来源成功后显示非阻塞 Toast；表单使用 Portal 到 `document.body` 的模态层，支持 Escape、焦点圈定和焦点恢复。遮罩只表达模态边界，不用模糊或装饰性渐变制造层级。
+API Key 是 write-only：读取状态只返回掩码和凭据状态，空值保存表示保留原 secret；替换 key 必须显式输入新值。编辑已有连接时，连接名称与已保存的 Base URL 会自动回填到表单，仅修改名称或保持原地址不变时不会重复触发不必要的新地址覆盖。Codex 使用同一来源实例外壳，但表单切换成登录动作，不伪装成 API Key 字段。新增来源成功后显示非阻塞 Toast；编辑器在卡片或添加面板内就地展开，支持关闭守卫与焦点恢复。
 
 ### 7.3 五个等权交互候选
 

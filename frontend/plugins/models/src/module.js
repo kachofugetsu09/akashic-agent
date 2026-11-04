@@ -611,8 +611,8 @@ function registerModels(ctx, mount, catalogResource) {
           <div class="settings-dialog-body"><div class="settings-form-grid">
           <label class="is-wide"><span>所属服务连接</span><select name="connection" aria-label="所属服务连接" required></select></label>
           <div class="is-wide settings-form-grid" data-new-connection>
-            <label class="is-wide"><span>连接名称</span><input name="name" aria-label="向量连接名称" value="向量服务" maxlength="128"></label>
-            <label class="is-wide"><span>Base URL</span><input name="endpoint" aria-label="向量 Base URL" type="url" placeholder="https://api.example.com/v1"></label>
+            <label class="is-wide"><span>连接名称</span><input name="name" aria-label="向量连接名称" value="向量服务" maxlength="128" autocomplete="organization"></label>
+            <label class="is-wide"><span>Base URL</span><input name="endpoint" aria-label="向量 Base URL" type="url" autocomplete="url" placeholder="https://api.example.com/v1"></label>
             <label class="is-wide"><span>API Key</span><input name="key" aria-label="向量 API Key" type="password" autocomplete="off"></label>
           </div>
           <button type="button" class="settings-secondary-button is-wide" data-directory>探测模型列表</button>
