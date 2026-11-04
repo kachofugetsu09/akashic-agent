@@ -38,7 +38,7 @@ const scenarios = (big, mid) => [
   { id: "composer.project", label: "新会话·打开项目下拉", setup: [/^新会话$/], act: /^项目：/, back: ["Escape"] },
   { id: "workbench.open", label: "打开工作台", setup: [big, opt(/^收起工具区$/)], act: /^打开工作台/, back: [/^收起工具区$/] },
   { id: "workbench.changes", label: "工作台·改动", setup: [big, opt(/^打开工作台/), opt(/^新标签页$/)], act: /^改动/, back: [/^新标签页$/] },
-  { id: "workbench.sites", label: "工作台·网站", setup: [big, opt(/^打开工作台/), opt(/^新标签页$/)], act: /^网站/, back: [/^新标签页$/] },
+  { id: "workbench.design", label: "工作台·设计", setup: [big, opt(/^打开工作台/), opt(/^新标签页$/)], act: /^设计/, back: [/^新标签页$/] },
 ];
 
 function parseArgs(argv) {

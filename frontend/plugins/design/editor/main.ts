@@ -15,6 +15,7 @@ import { Documents, type DocumentHost } from "./documents";
 import { iconSvg, type IconName } from "./icons";
 import { bindKeyboard } from "./keyboard";
 import { LayersPanel, PropertiesPanel } from "./panels";
+import { PreviewFrame } from "./preview";
 import "./style.css";
 
 const FONTS: Record<string, string> = {
@@ -70,8 +71,17 @@ const DocumentBar = defineComponent({
             `${SAVE_LABELS.conflict} · 重新加载`)
         : current && h("span", { class: `design-status is-${state.save}`, role: "status" }, SAVE_LABELS[state.save]);
       const agent = props.agent.state.running > 0 && h("span", { class: "design-status is-agent", role: "status" }, "Agent 正在编辑…");
+      const views = current?.source && h("div", { class: "design-views", role: "group", "aria-label": "视图" },
+        (["canvas", "preview"] as const).map((view) => h("button", {
+          type: "button", class: "design-view", "aria-pressed": String(state.view === view),
+          onClick: () => { state.view = view; },
+        }, view === "canvas" ? "画布" : "预览")));
+      const importing = state.view === "preview" && state.page && h("button", {
+        type: "button", class: "design-import", disabled: props.agent.state.running > 0 || state.busy > 0,
+        onClick: () => void props.agent.importPreview().catch((error: unknown) => { state.error = String(error); }),
+      }, "导入为图层");
       return h("header", { class: "design-bar" }, [
-        picker, status, agent,
+        picker, views, importing, status, agent,
         h("span", { class: "design-bar-gap" }),
         IconButton({ label: "图层", icon: "layers", pressed: panels.layers, disabled: !current, onClick: () => { panels.layers = !panels.layers; } }),
         IconButton({ label: "属性", icon: "properties", pressed: panels.properties, disabled: !current,
@@ -138,7 +148,8 @@ const Shell = defineComponent({
           !empty && panels.layers && h(LayersPanel),
           h("div", { class: "design-stage" }, [
             h(CanvasRoot, null, () => [h(CanvasSurface, { class: "design-canvas" }), h(CanvasInput, { editor: props.editor, documents: props.documents })]),
-            !empty && h(ToolDock, { editor: props.editor }),
+            !empty && state.view === "canvas" && h(ToolDock, { editor: props.editor }),
+            !empty && state.view === "preview" && state.page && h(PreviewFrame, { html: state.page }),
             empty && h("div", { class: "design-empty" }, [
               h("p", state.session ? "这个会话还没有设计文档。Agent 做设计时会在这里新建，你也可以自己开一份。" : "发出第一条消息后，这个会话就可以有自己的设计文档。"),
               state.session && h("button", { type: "button", class: "design-primary", onClick: () => void props.documents.create() }, "新建设计"),

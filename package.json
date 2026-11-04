@@ -53,6 +53,7 @@
     "@novnc/novnc": "1.7.0",
     "@open-pencil/core": "0.16.0",
     "@open-pencil/design-jsx": "0.16.0",
+    "@open-pencil/dom-css": "0.16.0",
     "@open-pencil/scene-graph": "0.16.0",
     "@open-pencil/vue": "0.16.0",
     "@pierre/diffs": "1.4.2",

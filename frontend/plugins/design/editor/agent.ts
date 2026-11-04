@@ -4,6 +4,7 @@ import { executeAtomicTool } from "@open-pencil/core/editor";
 import { isAtomicTool, parseToolArgs } from "@open-pencil/core/tools";
 import type { AgentCall, AgentReply } from "./contract";
 import { ensureFallback, loadDocumentFonts, type Documents } from "./documents";
+import { importHTML } from "./preview";
 
 const TOOLS = new Map<string, ToolDef>(CORE_TOOLS.map((tool) => [tool.name, tool]));
 const LABEL = "Agent";
@@ -28,6 +29,17 @@ export class AgentBridge {
 
   constructor(private readonly editor: Editor, private readonly documents: Documents) {}
 
+  // 用户点“导入为图层”与 Agent 的调用走同一条队列，不会和正在执行的编辑交错；轮到时会话或文档已经换了就不导入。
+  importPreview(): Promise<number> {
+    const { session, current } = this.documents.state;
+    return this.documents.serial(() => {
+      const now = this.documents.state;
+      if (now.session !== session || now.current?.id !== current?.id)
+        return Promise.reject(new Error("文档已经换了，这次导入没有执行"));
+      return this.importCurrent();
+    });
+  }
+
   run(call: AgentCall): Promise<AgentReply> {
     return this.documents.serial(() => this.execute(call));
   }
@@ -38,7 +50,8 @@ export class AgentBridge {
       return { id: call.id, ok: false, error: "用户已切换到别的会话，这次设计调用没有执行" };
     this.state.running += 1;
     try {
-      const result = call.tool === "document" ? await this.document(call.arguments) : await this.tool(call);
+      const result = call.tool === "document" ? await this.document(call.arguments)
+        : call.tool === "preview" ? await this.preview(call.arguments) : await this.tool(call);
       return { id: call.id, ok: true, result: plain(result) };
     } catch (error) {
       return { id: call.id, ok: false, error: error instanceof Error ? error.message : String(error) };
@@ -89,6 +102,32 @@ export class AgentBridge {
   // 整页快照的前后之间不能混进用户的修改，否则撤销 Agent 这一步会连用户的一起撤掉：执行期间冻结画布、面板、文字编辑与快捷键。
   private exclusive<T>(task: () => Promise<T>): Promise<T> {
     return this.documents.hold(task);
+  }
+
+  // design_show_html 发布后：打开那份文档、切到预览；要求导入时把网页转成图层
+  private async preview(args: Record<string, unknown>): Promise<string> {
+    const id = String(args.document ?? "");
+    await this.documents.refresh();
+    await this.documents.openNow(id);
+    const current = this.documents.state.current;
+    if (current?.id !== id) throw new Error(this.documents.state.error || "没能打开这份设计文档");
+    if (args.import_layers !== true) {
+      this.documents.state.view = "preview";
+      return "已在用户的“设计”标签里打开网页预览。";
+    }
+    const count = await this.importCurrent();
+    return `已打开，并把网页导入成 ${count} 个设计图层（整页是一个顶层框架）；用户可以在“预览”里看原网页。`;
+  }
+
+  private importCurrent(): Promise<number> {
+    const { current, page } = this.documents.state;
+    if (!current || !page) return Promise.reject(new Error("这份文档没有网页预览"));
+    return this.exclusive(async () => {
+      const count = await importHTML(this.editor, page, current.name);
+      this.documents.state.view = "canvas";
+      this.documents.touch();
+      return count;
+    });
   }
 
   private async document(args: Record<string, unknown>): Promise<unknown> {

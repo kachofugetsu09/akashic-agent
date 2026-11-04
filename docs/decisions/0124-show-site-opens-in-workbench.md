@@ -1,6 +1,6 @@
 # 0124 · show_site：Agent 做的网页在用户自己的浏览器里打开
 
-- 状态：proposed / implemented for review
+- 状态：superseded by [0140](0140-design-workbench-replaces-sites.md)（2026-11-04 起删除 show_site、网站卡片与“网站”标签）
 - 日期：2026-10-18
 - 关联：0117（可视化附件）、0121（工作台标签）、0123（电脑只剩一个浏览器）、WEBUI-008
 - 修订：0121 第 2 条“只有用户的点击可以打开工具区”增加一个例外，见下文

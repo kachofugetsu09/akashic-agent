@@ -373,3 +373,68 @@ body {
   font-size: 12px;
   line-height: 1.5;
 }
+
+/* 画布与网页预览的切换：预览盖在画布上，画布保持挂载（尺寸与渲染状态不丢）。 */
+.design-views {
+  display: flex;
+  flex: none;
+  gap: 2px;
+  margin-inline-start: 8px;
+  padding: 2px;
+  border-radius: 8px;
+  background: var(--ak-paper-raised);
+}
+
+.design-view {
+  padding: 3px 10px;
+  border: 0;
+  border-radius: 6px;
+  color: var(--ak-ink-secondary);
+  background: transparent;
+  font: inherit;
+  font-size: 12px;
+  cursor: pointer;
+}
+
+.design-view[aria-pressed="true"] {
+  color: var(--ak-ink-primary);
+  background: var(--ak-paper-sheet);
+  box-shadow: 0 1px 2px rgb(0 0 0 / 10%);
+}
+
+.design-view:focus-visible {
+  outline: 2px solid var(--ak-rule-focus);
+  outline-offset: 1px;
+}
+
+.design-import {
+  flex: none;
+  margin-inline-start: 8px;
+  padding: 3px 10px;
+  border: 1px solid var(--ak-rule-default);
+  border-radius: 6px;
+  color: var(--ak-ink-primary);
+  background: var(--ak-paper-sheet);
+  font: inherit;
+  font-size: 12px;
+  cursor: pointer;
+}
+
+.design-import:disabled {
+  cursor: default;
+  opacity: 0.5;
+}
+
+.design-preview {
+  position: absolute;
+  inset: 0;
+  z-index: 3;
+  background: #fff;
+}
+
+.design-preview-frame {
+  display: block;
+  width: 100%;
+  height: 100%;
+  border: 0;
+}

@@ -37,6 +37,8 @@ class DesignDocument:
     revision: int
     updated_at: str
     size: int
+    # Agent 用 design_show_html 发来的网页：workspace 里的入口路径；空表示这份文档没有网页预览。
+    source: str = ""
 
 
 # 修订号单调递增：浏览器保存带上自己基于的修订，不一致就拒绝，避免覆盖 Agent 或另一个标签页刚写的内容。
@@ -70,6 +72,30 @@ class DesignStore:
             raise DesignStoreError(f"设计文档超过 {MAX_DOCUMENT_BYTES // 1024 // 1024} MB")
         async with self._index:
             return await asyncio.to_thread(self._write, session, document, data, base)
+
+    # 同一个入口文件再发一次就更新原来那份文档的预览，不另开新文档。
+    async def publish(self, session: str, source: str, name: str, page: str) -> tuple[DesignDocument, bool]:
+        async with self._index:
+            return await asyncio.to_thread(self._publish, session, source, name, page)
+
+    async def preview(self, session: str, document: str) -> str:
+        current = _known(await asyncio.to_thread(self._load, session), document)
+        if not current.source:
+            raise DesignStoreError(f"这份设计文档没有网页预览：{document}")
+        return await asyncio.to_thread((self._folder(session) / f"{document}.html").read_text, encoding="utf-8")
+
+    def _publish(self, session: str, source: str, name: str, page: str) -> tuple[DesignDocument, bool]:
+        index = self._load(session)
+        current = next((item for item in index.values() if item.source == source), None)
+        created = current is None
+        if current is None:
+            current = self._create(session, name)
+            index = self._load(session)
+        saved = replace(current, name=_name(name), source=source, updated_at=_now())
+        _atomic_write(self._folder(session) / f"{saved.id}.html", page.encode("utf-8"))
+        index[saved.id] = saved
+        self._save(session, index)
+        return saved, created
 
     def _create(self, session: str, name: str) -> DesignDocument:
         index = self._load(session)

@@ -30,7 +30,7 @@ export interface DocumentHost {
   setIndicator(indicator: DesignIndicator | null): void;
 }
 
-export interface DocumentMeta { id: string; name: string; revision: number; updated_at: string; size: number }
+export interface DocumentMeta { id: string; name: string; revision: number; updated_at: string; size: number; source: string }
 export type SaveState = "saved" | "dirty" | "saving" | "conflict" | "error";
 
 const API = "/api/dashboard/design/documents";
@@ -47,6 +47,8 @@ export class Documents {
     loading: false, save: "saved" as SaveState, error: "",
     // 大于 0 时画布正在被替换（或 Agent 正在改）：外壳据此冻结用户输入
     busy: 0,
+    // 由网页发布来的文档带一份预览：view 在画布与预览之间切换，page 是预览的 HTML
+    view: "canvas" as "canvas" | "preview", page: "",
   });
   private version = 0;
   private savedVersion = 0;
@@ -109,7 +111,7 @@ export class Documents {
     const left = await this.leave();
     const ticket = ++this.ticket;
     const listing = ++this.listing;
-    Object.assign(this.state, { session, list: [], current: null, error: left.note, save: "saved" });
+    Object.assign(this.state, { session, list: [], current: null, error: left.note, save: "saved", view: "canvas", page: "" });
     this.show(new SceneGraph());
     if (!session) return;
     const list = await this.json<{ documents: DocumentMeta[] }>(`${API}?${this.query()}`);
@@ -131,11 +133,15 @@ export class Documents {
       const data = await response.arrayBuffer();
       const graph = data.byteLength ? await parseFigFile(data) : new SceneGraph();
       const meta = this.state.list.find((item) => item.id === id) ?? null;
+      const page = meta?.source ? await this.preview(id) : "";
       if (ticket !== this.ticket) return;
       if (this.version !== version) return void (this.state.error = "读取期间画布又有修改，先留在当前文档。");
       const etag = /^"(\d+)"$/.exec(response.headers.get("ETag") ?? "");
       if (meta && etag) meta.revision = Number(etag[1]);
-      Object.assign(this.state, { current: meta, save: "saved", error: left.note });
+      // 只有网页、还没有图层的文档直接看预览；重新加载同一份时保持原来的视图
+      const empty = !graph.getPages().some((item) => item.childIds.length);
+      const view = page && (empty || (this.state.current?.id === id && this.state.view === "preview")) ? "preview" : "canvas";
+      Object.assign(this.state, { current: meta, save: "saved", error: left.note, page, view });
       this.show(graph);
       this.savedVersion = this.version;
     } catch (error) {
@@ -190,6 +196,12 @@ export class Documents {
     const current = this.state.current;
     const latest = current && this.state.list.find((item) => item.id === current.id);
     if (current && latest && latest.revision > current.revision) await this.follow(current.id, latest.revision);
+  }
+
+  async preview(id: string): Promise<string> {
+    const response = await this.options.request(`${API}/${id}/preview?${this.query()}`);
+    if (!response.ok) throw new Error(`读取网页预览失败（${response.status}）`);
+    return await response.text();
   }
 
   // 同一会话的另一块画布保存了文档：没有未保存修改就换成新版本，有修改时让下一次保存报冲突，由用户决定。
