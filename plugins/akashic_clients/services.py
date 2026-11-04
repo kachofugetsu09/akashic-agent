@@ -76,17 +76,6 @@ class SteerPort(Protocol):
     async def withdraw(self, session_id: str, message_id: str) -> bool: ...
 
 
-class AttachmentStorePort(Protocol):
-    """客户端临时上传与 旧上传分片共享的文件 owner。"""
-
-    root: Path
-    def create_path(self, prefix: str, suffix: str) -> Path: ...
-    def create_persistent_path(self, prefix: str, suffix: str) -> Path: ...
-    def create_staging_path(self, *, prefix: str = ".upload-", suffix: str = ".part") -> Path: ...
-    def publish_staging(self, staging: Path, *, prefix: str, suffix: str) -> Path: ...
-    def write_bytes(self, data: bytes, *, prefix: str, suffix: str) -> Path: ...
-
-
 class ArtifactReadLeasePort(Protocol):
     ref: AttachmentRef
     async def read_bytes(self, *, max_bytes: int) -> bytes: ...
@@ -153,7 +142,7 @@ ActiveSessionsFollowPort = Callable[[], AsyncGenerator[frozenset[str] | None, No
 
 
 __all__ = [
-    "ArtifactReadLeasePort", "ArtifactStorePort", "AttachmentStorePort",
+    "ArtifactReadLeasePort", "ArtifactStorePort",
     "InvalidPage", "MessageCatalogPort", "MessageConflict", "MessageDisplayReader",
     "MessagePagePort", "MessageReaderPort", "SessionAdminPort",
     "SessionEntryPort", "SessionPagePort", "Message",

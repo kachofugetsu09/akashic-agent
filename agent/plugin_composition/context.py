@@ -1751,18 +1751,6 @@ class CompositionRoot:
             listeners=listeners,
         )
 
-    def topology_identity(self) -> str:
-        return self.topology_view().identity
-
-    def active_plugin_ids(self) -> frozenset[str]:
-        """返回此 Root 实际挂载的顶层插件身份，不解释业务启用状态。"""
-
-        return frozenset(
-            runtime.plugin_id
-            for fiber in self.root_fiber.children
-            if (runtime := fiber.runtime) is not None
-        )
-
     def fibers(self, *, plugin_id: str | None = None, generation_id: str | None = None) -> tuple[Fiber, ...]:
         """查询实际登记的 Fiber，可限定准确插件和 generation。"""
         return tuple(

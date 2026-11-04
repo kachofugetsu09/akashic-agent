@@ -493,16 +493,6 @@ class McpGenerationHost:
             stderr=tuple(entry.client._recent_stderr)[-_MAX_LOG_LINES:],
         )
 
-    def route_for(self, generation_id: str, server_name: str) -> McpRoute:
-        """Create a route bound to the exact current generation entry."""
-
-        generation = self._require_generation(generation_id)
-        entry = generation.entries.get(server_name)
-        if entry is None:
-            raise KeyError(f"unknown MCP server: {generation_id}:{server_name}")
-        self._resolve_route(generation_id, generation.token, entry)
-        return McpRoute(self, generation_id, generation.token, entry)
-
     def assert_healthy(self, generation_id: str, token: object | None = None) -> None:
         """Reject promotion while any client is recovering, failed or disconnected."""
 

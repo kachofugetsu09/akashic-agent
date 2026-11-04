@@ -216,22 +216,6 @@ class _SettingsRestartBridge:
     def fileno(self) -> int:
         return self._read_fd
 
-    def request_and_wait(self) -> None:
-        with self._condition:
-            self._next_generation += 1
-            generation = self._next_generation
-            self._requested_generation = generation
-            self.request_event.set()
-            os.write(self._write_fd, b"\0")
-            completed = self._condition.wait_for(
-                lambda: generation in self._completed,
-                timeout=self.timeout_s,
-            )
-            if not completed:
-                raise RuntimeError("Gateway 模型配置重载等待超时")
-            if not self._completed.pop(generation):
-                raise RuntimeError("Gateway 拒绝候选模型配置")
-
     def take_request(self) -> int:
         with self._condition:
             if not self.request_event.is_set():

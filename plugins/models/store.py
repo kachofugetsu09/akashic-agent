@@ -496,19 +496,6 @@ class ModelsStore:
             )
         return call_id
 
-    def record_first_token(self, call_id: str, elapsed_ms: float) -> None:
-        """首个文本或思考片段到达时只写一次；重连不重新计时。"""
-        if not self.writable:
-            raise RuntimeError("只读 Model store 不能记录耗时")
-        with self._connect() as connection, connection:
-            cursor = connection.execute(
-                "UPDATE model_calls SET first_token_ms=? "
-                "WHERE id=? AND state='started' AND first_token_ms IS NULL",
-                (elapsed_ms, call_id),
-            )
-            if cursor.rowcount != 1:
-                raise RuntimeError("Model 调用不存在、已经结算或已有首字耗时")
-
     def finish_call(
         self, call_id: str, *, usage: ModelUsage | None, failure: str | None,
         duration_ms: float | None = None, response: LLMResponse | None = None,

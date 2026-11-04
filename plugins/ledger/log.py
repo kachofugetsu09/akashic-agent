@@ -793,16 +793,6 @@ class MessageLog:
                     prefix.seqs.append(message.seq)
         self._pending_messages = []
 
-    # 前缀已在内存且距最新提交只差少量消息时，同步读取的 SQL 只核对 revision 与 head。
-    def warm_prefix(self, session_id: str, *, max_tail: int = 8) -> bool:
-        with self._listener_lock:
-            heads = self._heads
-            head = None if heads is None else heads.get(session_id)
-        prefix = self._message_views.get(session_id)
-        if head is None or prefix is None or not prefix.seqs:
-            return False
-        return head - prefix.seqs[-1] <= max_tail
-
     def committed_heads(self, load: Callable[[], Mapping[str, int]]) -> Mapping[str, int]:
         """返回进程内已提交 heads；缓存缺失时用 load 查询，期间无新提交才采用结果。"""
         with self._listener_lock:

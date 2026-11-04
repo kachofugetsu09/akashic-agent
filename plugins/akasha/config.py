@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import tomllib
 from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
 
@@ -47,21 +46,6 @@ class AkashaConfig:
         )
         config.validate()
         return config
-
-
-def load_akasha_config(path: Path) -> AkashaConfig:
-    """Read one strict TOML config or return documented defaults."""
-
-    if not path.exists():
-        return AkashaConfig()
-    payload = tomllib.loads(path.read_text(encoding="utf-8"))
-    allowed = set(AkashaConfig.__dataclass_fields__)
-    unknown = sorted(set(payload) - allowed)
-    if unknown:
-        raise ValueError(f"unknown Akasha V2 config fields: {unknown}")
-    config = AkashaConfig(**payload)
-    config.validate()
-    return config
 
 
 def resolve_memory_path(
