@@ -64,11 +64,11 @@ from .application.snapshot import read_memory
 from .config import AkashaConfig, resolve_memory_path
 from .domain.model import EmbeddingSpaceMismatchError, MemoryRebuildRequiredError
 from .application.cycle import MemoryCycle
-from .infrastructure.consumption import Consumption, load_message_nodes
+from .infrastructure.consumption import Consumption, load_message_nodes, load_message_sessions
 from .inspector import RecallInspector
 from .interest import SEMANTIC_INTEREST, Embed, SemanticInterest
 from .learning import AKASHA_LEARNING, Learning, LearningConfig
-from .recall_tool import RecallArguments, RecallTool, check_recall
+from .recall_tool import FetchArguments, FetchTool, RecallArguments, RecallTool, check_fetch, check_recall
 from .recalls import RecallRecords, RecallRecordsRead
 from .contract import AKASHA_RECORDS_VIEW
 from .runtime import MessageMemory, prepare_materials
@@ -181,10 +181,10 @@ async def run(ctx: Context, interest: Interest) -> None:
     _ = await ctx.provide(AKASHA_LEARNING, learning)
     _ = await content.register(ctx, {
         "name": "akasha",
-        "content": {"akasha.feedback": check_feedback, "akasha.recall": check_recall},
+        "content": {"akasha.feedback": check_feedback, "akasha.recall": check_recall, "akasha.fetch": check_fetch},
     })
     # 自己写入的内部材料不进聊天正文；宿主不维护按插件列举的隐藏名单。
-    for kind in ("akasha.feedback", "akasha.recall"):
+    for kind in ("akasha.feedback", "akasha.recall", "akasha.fetch"):
         _ = await ctx.provide(part_display_key(kind), hidden_part)
     # 同一 Root 只允许一个 embedding 记忆系统；一个 Akasha 实例管理全部图。
     _ = await ctx.provide(EMBEDDING_MEMORY_PLUGIN, object())
@@ -542,10 +542,25 @@ async def run(ctx: Context, interest: Interest) -> None:
     await catalog.register(
         ctx,
         name="recall_memory",
-        description="从记忆图召回历史对话，返回原始 Message 引用",
+        description="从记忆图召回历史对话，返回每条消息的时间、召回通道、开头预览和 ref；原文用 fetch_messages 读取",
         parameters=RecallArguments.model_json_schema(),
         open=open_recall,
         capture=capture_recall,
+        idempotent=True,
+        parallel=True,
+    )
+
+    @asynccontextmanager
+    async def open_fetch(_captured: object) -> AsyncGenerator[FetchTool]:
+        yield FetchTool(memory=read_path, catalog=ctx.require(MESSAGE_CATALOG),
+                        learning=learning, owners=load_message_sessions)
+
+    await catalog.register(
+        ctx,
+        name="fetch_messages",
+        description="按 Akasha 召回给出的 ref 读取消息原文（含时间与作者），一次最多 20 条",
+        parameters=FetchArguments.model_json_schema(),
+        open=open_fetch,
         idempotent=True,
         parallel=True,
     )

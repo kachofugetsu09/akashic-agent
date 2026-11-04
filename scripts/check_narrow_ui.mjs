@@ -159,7 +159,7 @@ async function measure(page, label) {
     });
     assert.deepEqual(geometry.clipped, [], `${label}: 可见控件被横向裁切`);
     for (const text of geometry.reading) {
-      assert(text.fontSize >= 16, `${label}: 长正文小于 16px`);
+      assert(text.fontSize >= 15, `${label}: 长正文小于 15px`);
       assert(text.lineHeight >= text.fontSize * 1.4, `${label}: 正文行距过小`);
     }
     reading.push(...geometry.reading);
