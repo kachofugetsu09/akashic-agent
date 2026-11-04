@@ -2,6 +2,7 @@ import { reactive } from "vue";
 import { exportFigFile, fontManager, parseFigFile, type Editor } from "@open-pencil/core";
 import { SceneGraph } from "@open-pencil/scene-graph";
 import type { DesignIndicator, DesignView } from "./contract";
+import { rebase } from "./merge";
 
 // 文字用到的字体（含中日韩回退）按需取回后重新排版、重绘：画框标签显示的是图层名，名字里的字一并取回；
 // 回退字体是按用到的字取的子集，换来新的子集后已经排好的文字也要重排，不然缺字的地方一直是空的。
@@ -56,6 +57,8 @@ export class Documents {
   private adopting = 0;
   private timer = 0;
   private saving: Promise<void> | null = null;
+  // 画布所基于的修订的原始字节：别处保存了新修订时，以它为共同基线做合并
+  private base: ArrayBuffer | null = null;
   // 保存期间收到的最新修订通知：保存结束后再判断要不要跟进
   private behind: { id: string; revision: number } | null = null;
   private ticket = 0;
@@ -118,6 +121,7 @@ export class Documents {
     const ticket = ++this.ticket;
     const listing = ++this.listing;
     Object.assign(this.state, { session, list: [], current: null, error: left.note, save: "saved", view: "canvas", page: "" });
+    this.base = null;
     this.show(new SceneGraph());
     if (!session) return;
     const list = await this.json<{ documents: DocumentMeta[] }>(`${API}?${this.query()}`);
@@ -148,6 +152,7 @@ export class Documents {
       const empty = !graph.getPages().some((item) => item.childIds.length);
       const view = page && (empty || (this.state.current?.id === id && this.state.view === "preview")) ? "preview" : "canvas";
       Object.assign(this.state, { current: meta, save: "saved", error: left.note, page, view });
+      this.base = data.byteLength ? data.slice(0) : null;
       this.show(graph);
       this.savedVersion = this.version;
     } catch (error) {
@@ -206,7 +211,7 @@ export class Documents {
     return await response.text();
   }
 
-  // 同一会话的另一块画布保存了文档：没有未保存修改就换成新版本，有修改时让下一次保存报冲突，由用户决定。
+  // 别处（Agent 或另一块画布）保存了文档：把新修订合进当前画布，本地没存下的修改保留并接着保存。
   changed(id: string, revision: number): Promise<void> {
     return this.serial(() => this.follow(id, revision));
   }
@@ -216,7 +221,47 @@ export class Documents {
     const current = this.state.current;
     if (current?.id !== id || revision <= current.revision) return;
     if (this.saving) this.behind = { id, revision: Math.max(revision, this.behind?.id === id ? this.behind.revision : 0) };
-    else if (this.version === this.savedVersion) await this.hold(() => this.load(id), false);
+    else if (!this.base && this.version === this.savedVersion) await this.hold(() => this.load(id), false);
+    else await this.merge(current);
+  }
+
+  // 乐观并发：取回最新修订，以画布所基于的修订为基线，把对方的改动原地合进画布（视口、选择与本地修改都不动）；
+  // 合并失败才退回冲突提示，由用户选择重新加载。
+  private async merge(current: DocumentMeta): Promise<void> {
+    try {
+      const response = await this.options.request(`${API}/${current.id}?${this.query()}`);
+      if (!response.ok) throw new Error(`读取设计文档失败（${response.status}）`);
+      const data = await response.arrayBuffer();
+      const revision = Number(/^"(\d+)"$/.exec(response.headers.get("ETag") ?? "")?.[1] ?? 0);
+      if (this.state.current !== current || revision <= current.revision) return;
+      const theirs = data.byteLength ? await parseFigFile(data.slice(0)) : new SceneGraph();
+      const base = this.base ? await parseFigFile(this.base.slice(0)) : new SceneGraph();
+      if (this.state.current !== current || revision <= current.revision) return;
+      const editor = this.editor;
+      const empty = !editor.graph.getPages().some((page) => page.childIds.length);
+      // 合进来的改动在本地记成一步撤销（按页快照）：看着 Agent 改的用户撤销一步就回到合并之前
+      const before = editor.graph.getPages().map((page) => editor.snapshotPage(page.id));
+      this.adopting++;
+      try {
+        const merged = rebase(editor.graph, base, theirs);
+        const after = editor.graph.getPages().map((page) => editor.snapshotPage(page.id));
+        if (merged.added + merged.updated + merged.moved + merged.removed + merged.tables) editor.pushUndoStep({ label: "合并别处的修改",
+          inverse: () => before.forEach((page) => editor.restorePageFromSnapshot(page)),
+          forward: () => after.forEach((page) => editor.restorePageFromSnapshot(page)) });
+      } finally {
+        this.adopting--;
+      }
+      this.base = data.slice(0);
+      current.revision = revision;
+      if (this.state.save === "conflict") this.state.save = "dirty";
+      if (empty) this.editor.zoomToFit();
+      this.editor.requestRender();
+      void loadDocumentFonts(this.editor);
+      if (this.version !== this.savedVersion) this.touch();
+    } catch (error) {
+      this.state.save = "conflict";
+      this.state.error = `没能合并别处的修改：${error instanceof Error ? error.message : String(error)}`;
+    }
   }
 
   async flush(): Promise<void> {
@@ -297,16 +342,23 @@ export class Documents {
     this.dirtySince = 0;
     this.state.save = "saving";
     this.options.setIndicator({ busy: true, detail: "正在保存" });
+    // 基线修订在导出之前定下：导出期间合并进来的新修订不能借给这份旧内容，服务端会按旧基线拒绝，合并后重存
+    const base = current.revision;
     try {
       const bytes = await exportFigFile(this.editor.graph);
-      const response = await this.options.request(`${API}/${current.id}?${this.query()}&base=${current.revision}`, {
+      const response = await this.options.request(`${API}/${current.id}?${this.query()}&base=${base}`, {
         method: "PUT", headers: { "Content-Type": "application/octet-stream" }, body: new Uint8Array(bytes),
       });
+      // 别处先存了：保存结束后取回最新修订合并，再带着新修订号重存
       if (response.status === 409) {
-        this.state.save = "conflict";
+        this.state.save = "dirty";
+        // 导出期间已经合并到更新的修订：按新基线重存；否则保存结束后取回最新修订，合并后重存
+        if (current.revision > base) this.touch();
+        else this.behind = { id: current.id, revision: base + 1 };
         return;
       }
       if (!response.ok) throw new Error(`保存失败（${response.status}）`);
+      this.base = new Uint8Array(bytes).slice().buffer;
       Object.assign(current, await response.json() as DocumentMeta);
       this.savedVersion = version;
       this.state.save = this.version === version ? "saved" : "dirty";

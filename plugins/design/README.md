@@ -3,6 +3,7 @@
 工作台里的「设计」标签：基于 [open-pencil](https://github.com/open-pencil/open-pencil)（MIT）的设计画布，用户和 Agent 在同一份文档上编辑。决策见 ADR 0140。
 
 - 文档按会话存放在本插件数据目录，格式是 `.fig`；修订号单调递增，写回时带上自己基于的修订，不一致就拒绝，不静默覆盖。
+  画布被拒或收到新修订时按图层 GUID 把对方的改动合进来再保存（`editor/merge.ts`）。
 - 编辑器（Vue、`@open-pencil/core`/`vue`、CanvasKit WASM、字体）由 `npm run build:web-plugins` 打进不入库的 `static/`（发布构建随插件制品打包），
   按内容哈希命名、长期缓存；标签在同源 iframe 里第一次可见时才加载 `editor.html`。
 - Agent 工具：`design_document` 与 open-pencil 的核心工具（`design_render`、`design_update_node`……，按需加载的一组），

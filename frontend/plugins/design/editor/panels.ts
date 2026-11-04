@@ -84,6 +84,28 @@ function parseHex(value: string, alpha: number): Color {
   return { r: channel(1), g: channel(3), b: channel(5), a: alpha };
 }
 
+// 数字输入框：聚焦时保留正在输入的草稿，合并进来的新修订触发重绘也不会冲掉它；回车或失焦时提交。
+const NumberField = defineComponent({
+  props: {
+    label: { type: String, required: true }, value: { type: Number, required: true },
+    min: { type: Number, default: undefined }, max: { type: Number, default: undefined }, step: { type: Number, default: 1 },
+  },
+  emits: { commit: (value: number) => Number.isFinite(value) },
+  setup(props, { emit }) {
+    const draft = ref<string | null>(null);
+    return () => h("label", { class: "design-field" }, [h("span", props.label), h("input", {
+      type: "number", value: draft.value ?? String(props.value), min: props.min, max: props.max, step: props.step,
+      onInput: (event: Event) => { draft.value = (event.target as HTMLInputElement).value; },
+      onChange: (event: Event) => {
+        const value = Number((event.target as HTMLInputElement).value);
+        draft.value = null;
+        if (Number.isFinite(value)) emit("commit", value);
+      },
+      onBlur: () => { draft.value = null; },
+    })]);
+  },
+});
+
 // 属性面板：单选时编辑位置、尺寸、圆角、不透明度、填充与文字大小；每次提交都是一步可撤销的修改。
 export const PropertiesPanel = defineComponent({
   props: { editor: { type: Object as PropType<Editor>, required: true } },
@@ -92,13 +114,8 @@ export const PropertiesPanel = defineComponent({
       props.editor.updateNodeWithUndo(node.id, changes, label);
     const number = (node: SceneNode, key: "x" | "y" | "width" | "height" | "rotation" | "cornerRadius" | "fontSize", label: string,
       options: { min?: number; step?: number } = {}) =>
-      h("label", { class: "design-field" }, [h("span", label), h("input", {
-        type: "number", value: Math.round(Number(node[key] ?? 0) * 100) / 100, min: options.min, step: options.step ?? 1,
-        onChange: (event: Event) => {
-          const value = Number((event.target as HTMLInputElement).value);
-          if (Number.isFinite(value)) commit(node, { [key]: value }, label);
-        },
-      })]);
+      h(NumberField, { label, value: Math.round(Number(node[key] ?? 0) * 100) / 100, min: options.min, step: options.step ?? 1,
+        onCommit: (value: number) => commit(node, { [key]: value }, label) });
     const fill = (node: SceneNode) => {
       const index = node.fills.findIndex((item: Fill) => item.type === "SOLID");
       const current = node.fills[index];
@@ -122,10 +139,8 @@ export const PropertiesPanel = defineComponent({
               number(node, "width", "宽", { min: 0 }), number(node, "height", "高", { min: 0 }),
               number(node, "rotation", "旋转"), ROUNDED.has(node.type) ? number(node, "cornerRadius", "圆角", { min: 0 }) : null,
               node.type === "TEXT" ? number(node, "fontSize", "字号", { min: 1 }) : null,
-              h("label", { class: "design-field" }, [h("span", "不透明"), h("input", {
-                type: "number", min: 0, max: 100, value: Math.round(node.opacity * 100),
-                onChange: (event: Event) => commit(node, { opacity: Math.min(1, Math.max(0, Number((event.target as HTMLInputElement).value) / 100)) }, "不透明度"),
-              })])]),
+              h(NumberField, { label: "不透明", min: 0, max: 100, value: Math.round(node.opacity * 100),
+                onCommit: (value: number) => commit(node, { opacity: Math.min(1, Math.max(0, value / 100)) }, "不透明度") })]),
             fill(node),
           ];
       return h("aside", { class: "design-panel design-panel-end", "aria-label": "属性" },
