@@ -1342,10 +1342,10 @@ input {
 
 .chat-main {
   --chat-concept-columns: minmax(5.6rem, 0.38fr) minmax(0, 1fr);
-  --chat-response-leading: 1.5;
+  --chat-response-leading: 1.55;
   --chat-user-leading: calc(20 / 15);
-  --chat-paragraph-gap: 0.75em;
-  --chat-list-gap: 0.25em;
+  --chat-paragraph-gap: 0.85em;
+  --chat-list-gap: 0.45em;
   position: relative;
   display: flex;
   min-width: 0;
@@ -2689,10 +2689,13 @@ form.composer:focus-within [data-slot="input-group"] {
 :where([data-chat-width~="820"], [data-chat-short]) {
   .chat-sidebar__search input { font-size: 1rem; }
   .chat-main {
-    --chat-type-body: 1rem;
-    --chat-response-leading: 1.65;
+    --chat-reading-font: var(--ak-type-ui);
+    --chat-type-body: 0.9375rem;
+    --chat-response-leading: 1.6;
+    --chat-paragraph-gap: 0.9333em;
     --chat-user-leading: 1.5;
-    --chat-list-gap: 0.375em;
+    --chat-list-gap: 0.8em;
+    --chat-list-indent: 1.1333em;
     --composer-compact-h: 56px;
   }
   .chat-main .composer { --composer-control-size: 44px; }
