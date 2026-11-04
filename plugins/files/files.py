@@ -25,7 +25,7 @@ from .filesystem import (
 from plugins.ledger.contract import ContentPart
 from plugins.ledger.contract import json_value
 
-from ._tool_boundary import CallSource, TOOLS, ToolRef, ToolResultValue
+from plugins.tools.contract import CallSource, TOOLS, ToolRef, Result
 from plugins.working_directory.contract import WORKING_DIRECTORY
 
 FileBackend = ReadFileTool | ListDirTool | WriteFileTool | EditFileTool
@@ -95,7 +95,7 @@ class FileTool:
         return {**prepared, "path": target, "_allowed_dir": allowed,
                 **({"required_dir": required_dir} if isinstance(self._backend, WriteFileTool) and required_dir is not None else {})}
 
-    async def invoke(self, key: str, arguments: Mapping[str, object]) -> ToolResultValue:
+    async def invoke(self, key: str, arguments: Mapping[str, object]) -> Result:
         """读取真实结果，保留明确错误和可由 Model 投影的图片附件。"""
         # 1. 不在文件工具内根据当前主模型丢弃图片，也不按提示文字猜成功。
         raw = cast(dict[str, Any], json_value(arguments))
@@ -109,10 +109,10 @@ class FileTool:
             if backend is not self._backend:
                 await backend.aclose()
         if isinstance(value, str):
-            return ToolResultValue("success", (ContentPart("text", value),))
+            return Result("success", (ContentPart("text", value),))
         if isinstance(value, FileError):
-            return ToolResultValue("error", (ContentPart("text", value.text),))
-        return ToolResultValue("success", (ContentPart("text", value.text), await self._import_image(value)))
+            return Result("error", (ContentPart("text", value.text),))
+        return Result("success", (ContentPart("text", value.text), await self._import_image(value)))
 
     async def _import_image(self, image: FileImage) -> ContentPart:
         """将后端已校验的图片保存为权威附件，临时文件随 scope 释放。"""
@@ -124,7 +124,7 @@ class FileTool:
             ref = await self._ctx.require(ARTIFACT_IMPORT).import_source(str(path), AttachmentKind.IMAGE)
         return ContentPart("artifact_ref", ref.artifact_id)
 
-    async def query(self, key: str) -> ToolResultValue | None:
+    async def query(self, key: str) -> Result | None:
         return None
 
 

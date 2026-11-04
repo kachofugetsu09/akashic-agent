@@ -13,14 +13,14 @@ from plugins.ledger.contract import ContentPart, json_value
 from core.common.frozen_json import freeze_json
 from plugins.tools.contract import TOOL_LOADING_PRESENTATION as TOOL_LOADING_PRESENTATION
 
-from ._tool_boundary import (
+from plugins.tools.contract import (
     TOOLS,
     BoundTool,
     CallSource,
     ToolCatalog,
     ToolPresentation,
     ToolRef,
-    ToolResultValue,
+    Result,
     ToolView,
 )
 
@@ -121,18 +121,18 @@ class LoadTools:
         except ValidationError as error:
             return str(error)
 
-    async def invoke(self, key: str, arguments: Mapping[str, object]) -> ToolResultValue:
+    async def invoke(self, key: str, arguments: Mapping[str, object]) -> Result:
         plugin = LoadToolsInput.model_validate(json_value(arguments)).plugin
         group = self._groups.get(plugin)
         if group is None:
-            return ToolResultValue(
+            return Result(
                 "error",
                 (ContentPart("text", json.dumps({
                     "plugin": plugin,
                     "error": "插件不属于当前获授工具目录。请使用 system 中的准确插件 ID。",
                 }, ensure_ascii=False)),),
             )
-        return ToolResultValue(
+        return Result(
             "success",
             (ContentPart("text", json.dumps({
                 "plugin": plugin,
@@ -141,7 +141,7 @@ class LoadTools:
             }, ensure_ascii=False)),),
         )
 
-    async def query(self, key: str) -> ToolResultValue | None:
+    async def query(self, key: str) -> Result | None:
         return None
 
 

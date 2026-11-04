@@ -26,7 +26,7 @@ from plugins.ledger.contract import (
     json_value,
 )
 
-from ._tool_boundary import TOOLS, CallSource, ToolRef, ToolResultValue
+from plugins.tools.contract import TOOLS, CallSource, ToolRef, Result
 from plugins.context.contract import MATERIALS_V4
 from plugins.jobs.contract import JOB_NOTICES, JobOutcome, JobWatch
 from .shell_backend import _log_shell_execution, _shell_env
@@ -294,7 +294,7 @@ class ShellTool:
             _ = await directories.check_directory(cwd)
             return cwd
 
-    async def invoke(self, key: str, arguments: Mapping[str, object]) -> ToolResultValue:
+    async def invoke(self, key: str, arguments: Mapping[str, object]) -> Result:
         """执行与续接只访问同一个物理进程 owner，失败不伪装为成功。"""
         raw = json_value(arguments)
         if self._name == "task_stop":
@@ -304,17 +304,17 @@ class ShellTool:
         return await self._execute(key, PreparedCommand.model_validate(raw))
 
     # 回合分区找不到时再查后台分区；唤醒只继承本会话原来源的后台分区。
-    async def _stop(self, stop: PreparedStop) -> ToolResultValue:
+    async def _stop(self, stop: PreparedStop) -> Result:
         processes = self._ctx.require(PROCESSES)
         stopped = await processes.terminate_execution(self._ctx, stop.owner_key, stop.execution_id)
         if not stopped and stop.background_owner_key is not None:
             stopped = await processes.terminate_execution(self._ctx, stop.background_owner_key, stop.execution_id)
-        return ToolResultValue("success" if stopped else "error", (ContentPart("text", json.dumps({
+        return Result("success" if stopped else "error", (ContentPart("text", json.dumps({
             "execution_id": stop.execution_id, **({"process_status": "stopped"} if stopped else {}),
             "status": "stopped" if stopped else "not_found",
         })),))
 
-    async def _continue(self, stdin: PreparedStdin) -> ToolResultValue:
+    async def _continue(self, stdin: PreparedStdin) -> Result:
         processes = self._ctx.require(PROCESSES)
         assert stdin.yield_time_ms is not None
         error: UnknownExecutionError | None = None
@@ -329,9 +329,9 @@ class ShellTool:
             except UnknownExecutionError as caught:
                 error = caught
         assert error is not None
-        return ToolResultValue("error", (ContentPart("text", str(error)),))
+        return Result("error", (ContentPart("text", str(error)),))
 
-    async def _execute(self, key: str, command: PreparedCommand) -> ToolResultValue:
+    async def _execute(self, key: str, command: PreparedCommand) -> Result:
         processes = self._ctx.require(PROCESSES)
         log = partial(
             _log_shell_execution, operation_id=key, description=command.description,
@@ -360,7 +360,7 @@ class ShellTool:
             "可以继续处理其他事情，需要时用 write_stdin 读取输出、task_stop 终止。"
             if watched else "jobs 插件已停用，后台完成将不会通知；需要时用 write_stdin 读取输出。"
         )
-        return ToolResultValue(value.outcome, (*value.parts, ContentPart("text", notice)))
+        return Result(value.outcome, (*value.parts, ContentPart("text", notice)))
 
     # 运行中的后台命令交给 jobs 等待结算；插件缺席时命令照常运行，只是没有完成通知。
     def _watch(self, command: PreparedCommand, target: BackgroundTarget, execution_id: int, started_at_ms: int) -> bool:
@@ -377,13 +377,13 @@ class ShellTool:
             ))
         return True
 
-    async def query(self, key: str) -> ToolResultValue | None:
+    async def query(self, key: str) -> Result | None:
         return None
 
 
-def _result(result: ExecutionResult, command: str | None) -> ToolResultValue:
+def _result(result: ExecutionResult, command: str | None) -> Result:
     outcome = "success" if result.execution_id is not None or result.exit_code == 0 else "error"
-    return ToolResultValue(outcome, (ContentPart("text", format_execution_result(result, command=command)),))
+    return Result(outcome, (ContentPart("text", format_execution_result(result, command=command)),))
 
 
 def _outcome(state: ExecutionState) -> JobOutcome:

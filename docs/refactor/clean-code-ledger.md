@@ -2,6 +2,15 @@
 
 本文档记录 `refactor/code-clean` 系列重构的决策依据、能力变化、性能数据和测试调整。每个被接受的提交都必须补充一条记录；没有测量或调用链证据的“优化”不得合并。
 
+## 2026-11-04 工具契约收敛：消除 14 个插件重复定义的 ToolResultValue/Result 与 7 个 _tool_boundary.py
+
+- 基线：`71bdf42b`（`refactor/reclaim-code-entropy` 头），分支 `refactor/unify-tool-result-boundaries`。
+- 重构对象（28 个文件，净删减 257 行，删除 7 个文件）：
+  - 删除 `plugins/{files,shell,skills,standard_web,tool_search,vision,working_directory}/_tool_boundary.py` 共 7 个一字不差的过渡跳板文件；
+  - 将上述 7 个插件及 `akasha/_boundaries.py`、`wake/_boundary.py`、`message_push/boundary.py`、`computer/inputs.py`、`plugin_update/inputs.py`、`scheduler/inputs.py`、`subagent/inputs.py` 中各自重复定义的 14 份 `ToolResultValue` / `ToolResult` / `Result` / `ToolOutcome` / `BoundTool` 统一收敛到 `plugins.tools.contract` 的公开契约 `Result`、`Outcome`、`BoundTool`。
+- 依据（三次原则 + ADR 0102 + DSH `@deepseek-ai/dsh-tools`）：`plugins/tools/contract.py` 作为工具能力的唯一 Owner 已公开 `Outcome`、`Result`、`BoundTool`，遵循 R3（插件仅依赖兄弟插件的 `contract.py`），不再在 14 个消费方插件中各自维护一套镜像结构定义。
+- Gate：`pyright` 全仓与 21 个修改模块均为 `0 errors`；`python3 scripts/plugin_boundary.py check --base origin/main` 通过（R1=0/0 R2=0/0 R3=0/0）；工具链关联 pytest 30 passed；`git diff --check` 干净。
+
 ## 2026-11-04 熵清理：按 reclaim-code-entropy 回收跨插件与 Core 的无消费者残留面及 Web 旧附件死链路
 
 - 基线：`bed19054`（`main` 头），分支 `refactor/reclaim-code-entropy`。只改独立 worktree，未操作正式 workspace、服务、数据库、安装 cache 或 Git refs。

@@ -4,7 +4,7 @@ from agent.plugin_composition import Context, ServiceKey
 from agent.plugin_composition.plugin_config import PLUGIN_CONFIG
 from plugins.ui.contract import Configuration, ModelSettings, mount_settings
 
-from ._tool_boundary import TOOLS
+from plugins.tools.contract import TOOLS
 from .contract import WEB_PROVIDERS
 from .web import Providers, WebConfig, register_web
 

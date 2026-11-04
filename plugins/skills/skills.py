@@ -17,7 +17,7 @@ from plugins.assets.contract import INSTALLED_ASSETS, InstalledAsset
 from plugins.ledger.contract import ContentPart, Input, Message, json_value
 
 from plugins.context.contract import MATERIALS_V4
-from ._tool_boundary import TOOLS, CallSource, ToolRef, ToolResultValue
+from plugins.tools.contract import TOOLS, CallSource, ToolRef, Result
 from .contract import SKILL_INSPECTION
 from .skill_catalog import (
     SkillCatalog,
@@ -55,7 +55,7 @@ class SkillTool:
     async def prepare(self, arguments: Mapping[str, object], source: CallSource | None = None) -> Mapping[str, object]:
         return SkillQuery.model_validate(json_value(arguments)).model_dump()
 
-    async def invoke(self, key: str, arguments: Mapping[str, object]) -> ToolResultValue:
+    async def invoke(self, key: str, arguments: Mapping[str, object]) -> Result:
         """使用时读取当前 Skill；已完成的调用结果仍由工具回执保存。"""
         name = cast(str, arguments["skill"])
         catalog = await self._read_catalog()
@@ -66,19 +66,19 @@ class SkillTool:
                 for item in catalog.sources
             )
             suffix = f"；本地来源：{probed}" if probed else ""
-            return ToolResultValue("error", (ContentPart("text", f"技能不存在或已移除：{name}{suffix}"),))
+            return Result("error", (ContentPart("text", f"技能不存在或已移除：{name}{suffix}"),))
         if not record.available:
-            return ToolResultValue("error", (ContentPart("text", f"技能不可用：{name}；缺少依赖：{record.missing}"),))
+            return Result("error", (ContentPart("text", f"技能不可用：{name}；缺少依赖：{record.missing}"),))
         body = skill_body(record.content)
         if not body.strip():
-            return ToolResultValue("error", (ContentPart("text", f"技能正文为空：{name}"),))
-        return ToolResultValue("success", (ContentPart("text", json.dumps({
+            return Result("error", (ContentPart("text", f"技能正文为空：{name}"),))
+        return Result("success", (ContentPart("text", json.dumps({
             "skill": name, "source": record.source, "source_id": record.source_id,
             "base_directory": str(record.root_dir), "instructions": body,
             "path_rule": "相对路径以 base_directory 为根。资源使用时读取；文件变化后需重新加载技能。",
         }, ensure_ascii=False)),))
 
-    async def query(self, key: str) -> ToolResultValue | None:
+    async def query(self, key: str) -> Result | None:
         return None
 
 

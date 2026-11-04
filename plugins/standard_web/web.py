@@ -15,7 +15,7 @@ from plugins.tools.contract import (
 from plugins.ledger.contract import ContentPart
 from plugins.ledger.contract import json_value
 
-from ._tool_boundary import CallSource, TOOLS, ToolRef, ToolResultValue
+from plugins.tools.contract import CallSource, TOOLS, ToolRef, Result
 from .contract import (
     WEB_PROVIDERS, FetchFormat, FetchRequest, SearchRequest, WebFetchProvider, WebSearchProvider,
 )
@@ -157,16 +157,16 @@ class WebTool:
             return "; ".join(errors)
         return raw
 
-    async def invoke(self, key: str, arguments: Mapping[str, object]) -> ToolResultValue:
+    async def invoke(self, key: str, arguments: Mapping[str, object]) -> Result:
         value = await self._run(cast(dict[str, Any], json_value(arguments)))
         if not isinstance(value, dict):
             raise TypeError("Web 提供方结果必须是 JSON 对象")
         if "error" in value and not isinstance(value["error"], str):
             raise TypeError("Web 提供方 error 必须是字符串")
         text = json.dumps(json_value(value), ensure_ascii=False)
-        return ToolResultValue("error" if "error" in value else "success", (ContentPart("text", text),))
+        return Result("error" if "error" in value else "success", (ContentPart("text", text),))
 
-    async def query(self, key: str) -> ToolResultValue | None:
+    async def query(self, key: str) -> Result | None:
         return None
 
 
