@@ -185,11 +185,49 @@ const designWorkerUrls = {
     }));
   },
 };
-const designBuild = await bundle({ ...designOptions, plugins: [designWorkerUrls],
+// Agent 写的 JSX 是可执行代码：renderJSX 改为交给不透明源沙箱求值（editor/jsx.ts），编辑器页面里的 new Function 一律拒绝。
+// 依赖换了文件布局时 onLoad 根本不会被调用：构建结束后再核对补丁恰好打上一次。
+let designJSXPatched = 0;
+const designJSXEval = {
+  name: "design-jsx-sandbox",
+  setup(build) {
+    build.onLoad({ filter: /@open-pencil[\\/]design-jsx[\\/]dist[\\/]chunks[\\/]fields\.js$/ }, async (args) => {
+      designJSXPatched += 1;
+      const source = await readFile(args.path, "utf8");
+      const patched = source
+        .replace("const element = createElement(buildComponent(jsxString, helperWarnings), null);\n\tconst tree = resolveToTree(element);",
+          "const tree = await __akashicEvaluateJSX(jsxString, helperWarnings);")
+        .replace('new Function("React", "__helpers", code)(mini_react_exports, designJSXHelpers(warnings))',
+          '(() => { throw new Error("设计 JSX 只在沙箱里求值"); })()');
+      if (patched.split("__akashicEvaluateJSX").length !== 2 || patched.includes("new Function"))
+        throw new Error("open-pencil 的 JSX 求值代码变了，需要更新 design-jsx-sandbox 补丁");
+      const client = JSON.stringify(resolve(repoRoot, "frontend/plugins/design/editor/jsx.ts"));
+      return { loader: "js", contents: `import { evaluateJSX as __akashicEvaluateJSX } from ${client};\n${patched}` };
+    });
+  },
+};
+// 沙箱页自带脚本（内联），由 dashboard 按文件名给它单独的 CSP：只放行 eval，不连网、不取同源。
+const designSandbox = await bundle({ ...designOptions, write: false, metafile: false,
+  entryPoints: [resolve(repoRoot, "frontend/plugins/design/editor/jsx-sandbox.ts")] });
+const designSandboxScript = designSandbox.outputFiles.find((file) => file.path.endsWith(".js")).text.replaceAll("</script", "<\\/script");
+await writeFile(resolve(designAssets, "jsx.html"),
+  `<!doctype html><meta charset="utf-8"><title>JSX</title><script type="module">${designSandboxScript}</script>\n`);
+const designBuild = await bundle({ ...designOptions, plugins: [designWorkerUrls, designJSXEval],
   entryPoints: { editor: resolve(repoRoot, "frontend/plugins/design/editor/main.ts") } });
+if (designJSXPatched !== 1) throw new Error(`design-jsx-sandbox 补丁命中 ${designJSXPatched} 次，应为 1 次`);
 const designOutputs = Object.entries(designBuild.metafile.outputs);
 const designEntry = designOutputs.find(([, output]) => output.entryPoint?.endsWith("editor/main.ts"));
 if (!designEntry) throw new Error("设计编辑器没有产出入口");
+// Agent 的设计工具表：名字、描述、参数 schema 取自 open-pencil 的核心工具，与画布里执行的是同一份定义。
+// 去掉要联网取图库的 stock_photo，以及在用户页面里执行任意代码的 eval。
+const { CORE_TOOLS } = await import("@open-pencil/core");
+const { toJsonSchema } = await import("@valibot/to-json-schema");
+// render 的描述后面接上 open-pencil 自己的 JSX 写法参考，与它内置 AI 拿到的说明一致。
+const { JSX_REFERENCE } = await import("@open-pencil/design-jsx");
+const DESIGN_EXCLUDED = new Set(["stock_photo", "eval"]);
+await writeFile(resolve(designAssets, "tools.json"), JSON.stringify(CORE_TOOLS.filter((tool) => !DESIGN_EXCLUDED.has(tool.name))
+  .map((tool) => ({ name: tool.name, description: tool.name === "render" ? `${tool.description}\n\n${JSX_REFERENCE}` : tool.description,
+    parameters: toJsonSchema(tool.input, { errorMode: "ignore" }) }))));
 // iframe 拿不到外壳页面的主题变量：与可视化预览一样内联主题 CSS 与品牌变量，按 data-theme 切换明暗。
 const designTheme = themeModule.themeCss() + await readFile(resolve(repoRoot, "frontend/theme/src/brand-tokens.css"), "utf8");
 const designStyles = designOutputs.filter(([path]) => path.endsWith(".css")).map(([path]) => designName(path));

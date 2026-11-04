@@ -64,7 +64,8 @@ export class Documents {
     }
   }
 
-  // 会话切换、用户的文档操作、自动跟进与重连对账排在同一条队列里：前一件做完才轮到下一件，对账不会撞上还没加载完的文档。
+  // 会话切换、用户的文档操作、自动跟进、重连对账与 Agent 调用排在同一条队列里：前一件做完才轮到下一件，对账不会撞上还没加载完的文档，
+  // 切走之后才轮到的旧会话调用在核对归属时被拒绝。
   serial<T>(task: () => Promise<T>): Promise<T> {
     const next = this.queue.then(task);
     this.queue = next.catch(() => undefined);
@@ -76,7 +77,12 @@ export class Documents {
   }
 
   open(id: string): Promise<void> {
-    return this.serial(() => this.hold(() => this.load(id)));
+    return this.serial(() => this.openNow(id));
+  }
+
+  // 已经在队列里（Agent 调用）时直接执行，不再排队，免得自己等自己。
+  openNow(id: string): Promise<void> {
+    return this.hold(() => this.load(id));
   }
 
   private async switchTo(session: string | null): Promise<void> {
@@ -130,7 +136,11 @@ export class Documents {
   }
 
   create(name = ""): Promise<DocumentMeta | null> {
-    return this.serial(() => this.hold(() => this.make(name)));
+    return this.serial(() => this.createNow(name));
+  }
+
+  createNow(name = ""): Promise<DocumentMeta | null> {
+    return this.hold(() => this.make(name));
   }
 
   private async make(name: string): Promise<DocumentMeta | null> {
