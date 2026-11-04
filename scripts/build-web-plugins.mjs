@@ -208,11 +208,16 @@ await writeFile(resolve(designAssets, "jsx.html"),
 // 网页预览的运行页：原样拷贝，dashboard 按文件名给它网页沙箱的 CSP。
 await writeFile(resolve(designAssets, "preview.html"), await readFile(resolve(repoRoot, "frontend/plugins/design/editor/preview.html"), "utf8"));
 const designBuild = await bundle({ ...designOptions, plugins: [designWorkerUrls, designJSXEval],
-  entryPoints: { editor: resolve(repoRoot, "frontend/plugins/design/editor/main.ts") } });
+  entryPoints: { editor: resolve(repoRoot, "frontend/plugins/design/editor/main.ts"),
+    worker: resolve(repoRoot, "frontend/plugins/design/editor/headless.ts") } });
 if (designJSXPatched !== 1) throw new Error(`design-jsx-sandbox 补丁命中 ${designJSXPatched} 次，应为 1 次`);
 const designOutputs = Object.entries(designBuild.metafile.outputs);
 const designEntry = designOutputs.find(([, output]) => output.entryPoint?.endsWith("editor/main.ts"));
-if (!designEntry) throw new Error("设计编辑器没有产出入口");
+const designWorkerEntry = designOutputs.find(([, output]) => output.entryPoint?.endsWith("editor/headless.ts"));
+if (!designEntry || !designWorkerEntry) throw new Error("设计编辑器没有产出入口");
+// 服务端无头画布的入口页：后端在无头浏览器里打开它执行 Agent 的设计工具，不经过 dashboard 路由。
+await writeFile(resolve(designAssets, "worker.html"),
+  `<!doctype html><meta charset="utf-8"><title>设计</title><script type="module" src="/design/assets/${designName(designWorkerEntry[0])}"></script>\n`);
 // Agent 的设计工具表：名字、描述、参数 schema 取自 open-pencil 的核心工具，与画布里执行的是同一份定义。
 // 去掉要联网取图库的 stock_photo，以及在用户页面里执行任意代码的 eval。
 const { CORE_TOOLS } = await import("@open-pencil/core");

@@ -27,6 +27,8 @@ _SESSION = Query(min_length=1, max_length=512)
 _DOCUMENT = re.compile(r"[0-9a-f]{16}")
 # 编辑器页面比宿主默认策略多放行 CanvasKit 的 WASM 编译；不放行内联脚本与 eval。
 EDITOR = "editor.html"
+# 服务端无头画布的入口页：后端在无头浏览器里直接读文件打开，这里登记的路由只是随产物一起列出，策略与编辑器相同。
+WORKER = "worker.html"
 EDITOR_POLICY = (
     "default-src 'self'; script-src 'self' 'wasm-unsafe-eval'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; "
     "font-src 'self' data: blob:; connect-src 'self' data: blob:; "
@@ -60,7 +62,7 @@ class _EditorAssets(CompressedStaticFiles):
         response = super().file_response(full_path, stat_result, scope, status_code)
         hashed = not str(full_path).endswith(".html")
         response.headers["Cache-Control"] = "public, max-age=31536000, immutable" if hashed else "no-cache"
-        policy = {EDITOR: EDITOR_POLICY, SANDBOX: SANDBOX_POLICY, PREVIEW: PREVIEW_POLICY}.get(Path(full_path).name)
+        policy = {EDITOR: EDITOR_POLICY, WORKER: EDITOR_POLICY, SANDBOX: SANDBOX_POLICY, PREVIEW: PREVIEW_POLICY}.get(Path(full_path).name)
         if policy:
             response.headers["Content-Security-Policy"] = policy
         if policy and policy is not EDITOR_POLICY:

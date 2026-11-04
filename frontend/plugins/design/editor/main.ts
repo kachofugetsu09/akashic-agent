@@ -1,27 +1,18 @@
 import { createApp, defineComponent, h, onBeforeUnmount, onMounted, reactive, watchEffect, type PropType } from "vue";
-import { createDefaultEditorState, createEditor, fontManager, getCanvasKit, type Editor, type Tool } from "@open-pencil/core";
+import { createDefaultEditorState, createEditor, getCanvasKit, type Editor, type Tool } from "@open-pencil/core";
 import { SceneGraph } from "@open-pencil/scene-graph";
 import { CanvasRoot, CanvasSurface, EDITOR_KEY, toolCursor, useCanvasContext, useCanvasInput, useEditorCommands, useTextEdit } from "@open-pencil/vue";
 import canvasKitWasm from "canvaskit-wasm/bin/canvaskit.wasm";
-import interBold from "@open-pencil/core/assets/Inter-Bold.ttf";
-import interExtraBold from "@open-pencil/core/assets/Inter-ExtraBold.ttf";
-import interMedium from "@open-pencil/core/assets/Inter-Medium.ttf";
-import interRegular from "@open-pencil/core/assets/Inter-Regular.ttf";
-import interSemiBold from "@open-pencil/core/assets/Inter-SemiBold.ttf";
-import notoNaskhArabic from "@open-pencil/core/assets/NotoNaskhArabic-Regular.ttf";
 import { AgentBridge } from "./agent";
-import { DESIGN_API, DESIGN_CHANNEL, type DesignFromFrame, type DesignToFrame, type RelayedResponse } from "./contract";
+import { DESIGN_CHANNEL, type DesignFromFrame, type DesignToFrame, type RelayedResponse } from "./contract";
 import { Documents, type DocumentHost } from "./documents";
+import { configureFonts } from "./fonts";
 import { iconSvg, type IconName } from "./icons";
 import { bindKeyboard } from "./keyboard";
 import { LayersPanel, PropertiesPanel } from "./panels";
 import { PreviewFrame } from "./preview";
 import "./style.css";
 
-const FONTS: Record<string, string> = {
-  "Inter-Bold.ttf": interBold, "Inter-ExtraBold.ttf": interExtraBold, "Inter-Medium.ttf": interMedium,
-  "Inter-Regular.ttf": interRegular, "Inter-SemiBold.ttf": interSemiBold, "NotoNaskhArabic-Regular.ttf": notoNaskhArabic,
-};
 const TOOLS: { tool: Tool; label: string; icon: IconName; key: string }[] = [
   { tool: "SELECT", label: "移动", icon: "select", key: "V" },
   { tool: "FRAME", label: "画框", icon: "frame", key: "F" },
@@ -36,10 +27,7 @@ const TOOLS: { tool: Tool; label: string; icon: IconName; key: string }[] = [
 const panels = reactive({ layers: window.innerWidth >= 720, properties: window.innerWidth >= 960 });
 const SAVE_LABELS = { saved: "已保存", dirty: "有修改", saving: "正在保存…", conflict: "文档已在别处更新", error: "保存失败" } as const;
 
-fontManager.setBundledFontLocator((file) => FONTS[file.replace(/^\//u, "")] ?? file);
-// 内置字体只有 Inter：中日韩文字与 Inter 以外的字体从 Google Fonts 取（只开这一家），经本插件的后端代取并缓存。
-fontManager.setOnlineFontProviders({ google: true, fontsource: false, bunny: false, fontshare: false });
-fontManager.setWebFontFetch((url) => relayed(`${DESIGN_API}fonts?${new URLSearchParams({ url })}`));
+configureFonts(relayed);
 
 function IconButton(props: { label: string; icon: IconName; pressed?: boolean; disabled?: boolean; onClick: () => void }) {
   return h("button", {
