@@ -9,7 +9,9 @@ from uuid import uuid4
 from pydantic import BaseModel, ConfigDict, Field, ValidationError
 
 from agent.plugin_composition import Context
+from pathlib import Path
 from plugins.ledger.contract import BINDINGS
+from plugins.working_directory.contract import WORKING_DIRECTORY
 from .inputs import CallSource, Result, TOOL_BIND_SAVED
 from plugins.ledger.contract import ContentPart, Input, Message
 from plugins.ledger.contract import json_value
@@ -158,6 +160,22 @@ def select_model(
     return ChatModelSelection(chosen.model_id, effort)
 
 
+# 子任务与外部 Runner 共用的初始目录：显式 cwd 按父会话目录解析，省略时继承父会话目录，都没有时用 fallback。
+async def resolve_cwd(ctx: Context, session_id: str, requested: str | None, *, fallback: Path) -> str:
+    raw = (requested or "").strip()
+    with ctx.borrow(WORKING_DIRECTORY) as directories:
+        parent = None if directories is None else directories.snapshot(session_id).path
+        if directories is not None and raw:
+            target, _ = await directories.resolve_target(session_id, raw, legacy_base=parent or str(ctx.runtime.workspace))
+            return await directories.check_directory(target)
+    if not raw:
+        return parent or str(fallback.expanduser().resolve())
+    candidate = (Path(parent) if parent is not None else ctx.runtime.workspace) / Path(raw).expanduser()
+    if not candidate.resolve().is_dir():
+        raise ValueError(f"工作目录不存在或不是目录: {candidate.resolve()}")
+    return str(candidate.resolve())
+
+
 class Spawn:
     """固定请求与工具权限；相同效果 key 只接纳一次，不复制最终正文。"""
 
@@ -198,18 +216,24 @@ class Spawn:
             sink = SinkInput(name=origin["channel"], binding_id=self.senders[origin["channel"]], address=origin["chat_id"])
         job_id = uuid4().hex
         task_dir = self.ctx.workspace_root("subagent-runs") / job_id
-        names = PROFILE_TOOLS[args.profile]
-        if set(names) - self.targets.keys():
+        parent_session_id = source.messages[-1].session_id
+        try:
+            cwd = await resolve_cwd(self.ctx, parent_session_id, args.cwd, fallback=task_dir)
+        except ValueError as error:
+            return str(error)
+        names = tuple(name for name in PROFILE_TOOLS[args.profile] if name in self.targets)
+        if not names:
             return '当前 profile 缺少已安装工具'
         bindings = self.ctx.require(BINDINGS)
         fixed: dict[str, str] = {}
         # 2. 目录设置与实际工具实现都在 prepared 时固定，恢复不重选配置。
+        # 参考 DSH：子任务继承父工作目录（或显式 cwd）并在目标目录直接读写执行，不再把 read/write 锁死在 subagent-runs。
         for name in names:
             configuration: Mapping[str, object] | None = None
-            if name in {"write_file", "edit_file"}:
-                configuration = {"allowed_dir": str(task_dir)}
+            if name in {"read_file", "list_dir", "write_file", "edit_file"}:
+                configuration = {"allowed_dir": None}
             elif name in {"shell", "write_stdin", "task_stop"}:
-                configuration = {"owner_key": "subagent:" + job_id, "working_dir": str(task_dir)}
+                configuration = {"owner_key": "subagent:" + job_id, "working_dir": cwd}
             if configuration is None:
                 fixed[name] = self.targets[name]
             else:
@@ -224,10 +248,10 @@ class Spawn:
             return model
         request = Request(job_id=job_id, label=(args.label or args.task[:30]).strip(), profile=args.profile,
             background=args.run_in_background, retry_count=args.retry_count,
-            parent_session_id=source.messages[-1].session_id, parent_message_id=source.call_ref.message_id,
+            parent_session_id=parent_session_id, parent_message_id=source.call_ref.message_id,
             parent_part_index=source.call_ref.part_index,
             origin=origin, sink=sink, program_binding=bindings.bind(SUBAGENT_PROGRAM, {}), tools=fixed,
-            model_id=model.model_id, reasoning_effort=model.reasoning_effort)
+            model_id=model.model_id, reasoning_effort=model.reasoning_effort, cwd=cwd)
         return Prepared(task=args.task, request=request).model_dump()
 
     async def invoke(self, key: str, arguments: Mapping[str, object]) -> Result:

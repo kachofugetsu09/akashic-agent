@@ -20,7 +20,7 @@ Shell 经 Host Bridge 在宿主上以用户身份执行（0032），能读写用
 
 - 删除 Shell 的命令文本检查（`plugins/shell/shell_security.py`）：没有禁用命令，不限制网络目标与上传参数。
 - 删除 Shell 设置里的 `allow_network` 与 `restricted_dir`；子任务不再按 profile 关网。已保存的旧工具配置读取时丢掉这两个键。
-- 子任务 `scripting` 的约束只剩"写入仅限任务目录"。
+- 子任务 `spawn` 参考 DSH 进程内子代理简化权限与目录边界：默认 profile 改为 `general`，继承父会话当前工作目录（或接受显式 `cwd`），并解除 `read_file`/`list_dir` 锁死在 `workspace` 与 `write_file`/`edit_file` 锁死在 `subagent-runs/<job_id>` 的限制，使子任务能在父会话或指定仓库目录直接读写与执行命令。
 - 后台运行（`run_in_background`）默认不设硬截止：dev server、长任务一直活到 `task_stop`、会话收尾或宿主停止。前台命令仍默认 4 小时，显式 `timeout` 不再有上限；协议里 `hard_timeout_s = 0` 表示不设截止。
 - Computer 地址栏可以打开 `file://`；输入以 `/` 开头的绝对路径时按本地文件打开。`javascript:` 等仍不接受。
 - Computer 浏览器等同宿主上的一个浏览器：Workload 可以声明 `host_egress`，Controller 把 Host Bridge 的 SOCKS5 unix socket（`<Workload 运行目录>/host-egress/socks.sock`）所在目录挂进容器；computer 的网关把它转成容器本机端口，Chromium 以 `<-loopback>` 让 localhost 也走它。连接由宿主上的 Bridge 发起，`localhost`、内网和域名解析都和宿主一致。容器里只有 OpenCLI 守护进程留在本机直连。
