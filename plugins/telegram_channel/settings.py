@@ -1,7 +1,6 @@
 """telegram_channel 的设置、校验与用户选择归本插件。"""
 from __future__ import annotations
 
-from importlib import import_module
 from typing import Any, cast
 from pydantic import BaseModel
 from agent.plugin_composition import Context, ServiceKey, CREDENTIALS, CredentialRef
@@ -97,7 +96,7 @@ async def mount(ctx: Context, model: type[BaseModel], function: FiberHandle) -> 
     async def contribute(child: Context):
         await child.require(ONBOARDING).register(child, Step("configure", "Telegram 接入", "channels", "telegram_channel-settings", settings.read, (function.fiber_id,)))
     async def ui(child: Context):
-        await child.require(UI).register(child, web="web_module.js", dashboard=lambda: import_module(".dashboard", __package__), requires=("shell.settings-plugins.v1",),
+        await child.require(UI).register(child, web="web_module.js", configuration_key=SETTINGS, requires=("shell.settings-plugins.v1",),
                                          contract_digests={"shell.settings-plugins.v1": "1823b19c778297893495ca9193d688e24c99d079effbaf5ecf0d1148ae0a1aa2"})
     await ctx.inject((ONBOARDING,), contribute, name="onboarding")
     await ctx.inject((UI, SETTINGS), ui, name="settings-ui")

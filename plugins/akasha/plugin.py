@@ -9,7 +9,6 @@ from collections.abc import AsyncGenerator, Callable, Iterable, Mapping
 from contextlib import AsyncExitStack, asynccontextmanager
 from datetime import UTC, datetime
 from functools import partial
-from importlib import import_module
 from pathlib import Path
 from time import monotonic
 from typing import Literal, Self, cast
@@ -23,6 +22,7 @@ from plugins.akasha.contract import EMBEDDING_MEMORY_PLUGIN
 from plugins.models.contract import EMBEDDINGS
 from plugins.ui.contract import (
     UI_SLOTS,
+    Configuration,
     hidden_part,
     part_display_key,
     PluginUiDefinition,
@@ -131,10 +131,10 @@ class RecallBinding(BaseModel):
         return self
 
 
-async def _register_ui(ctx: Context) -> None:
+async def _register_ui(ctx: Context, settings_key: ServiceKey[Configuration]) -> None:
     await ctx.require(UI).register(
         ctx, web="web_module.js",
-        dashboard=lambda: import_module(".dashboard", __package__),
+        configuration_key=settings_key,
         requires=("shell.settings-plugins.v1",),
         provides=(),
         contract_digests={
@@ -803,4 +803,4 @@ async def apply(ctx: Context) -> None:
         await run(child, interest)
     function = await ctx.inject(function_inject, worker, name="function")
     await mount(ctx, Config, function)
-    await ctx.inject((UI, SETTINGS), _register_ui, name="ui")
+    await ctx.inject((UI, SETTINGS), lambda child: _register_ui(child, SETTINGS), name="ui")

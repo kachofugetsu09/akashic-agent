@@ -1,7 +1,6 @@
 """web_search_exa 的端点、凭据与搜索选项设置归本插件；启用与否由插件行决定。"""
 from __future__ import annotations
 
-from importlib import import_module
 from typing import Any, cast
 
 from agent.plugin_composition import Context, ServiceKey
@@ -25,4 +24,4 @@ async def mount(ctx: Context, function: FiberHandle) -> None:
         return {"ready": function.state.value == "active", "reason": reason}
 
     settings = ModelSettings(ctx, ExaConfig, FIELDS, secret="api_key", status=status)
-    await mount_settings(ctx, SETTINGS, settings, lambda: import_module(".dashboard", __package__))
+    await mount_settings(ctx, SETTINGS, settings)

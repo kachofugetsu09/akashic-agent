@@ -45,16 +45,20 @@ class DashboardResources:
     def __init__(
         self,
         ctx: Context,
-        loader: Callable[[], ModuleType],
+        loader: Callable[[], ModuleType] | None,
         *,
         has_web: bool,
         registry: object,
         navigation_paths: tuple[str, ...] = (),
+        configuration_key: ServiceKey[ Any ] | None = None,
+        configuration_prefix: str | None = None,
     ) -> None:
         self.ctx = ctx
         self.loader = loader
         self.has_web = has_web
         self.navigation_paths = navigation_paths
+        self.configuration_key = configuration_key
+        self.configuration_prefix = configuration_prefix
         self._registry = registry
         self.closeables: list[Closeable] = []
         self._started = False
@@ -83,35 +87,53 @@ class DashboardResources:
         workspace_roots = runtime.workspace_roots
         workspace_files = runtime.workspace_files
         app = FastAPI(docs_url=None, redoc_url=None, openapi_url=None)
-        try:
-            with plugin_entrypoint(
-                plugin_id=runtime.plugin_id,
-                generation_id=runtime.generation_id,
-                fiber=runtime.plugin_id,
-                operation="dashboard.module_load",
-            ):
-                module = self.loader()
-        except Exception as error:
-            raise DashboardImportError(str(error)) from error
-        source_path = getattr(module, "__file__", None)
-        if not isinstance(module, ModuleType) or not isinstance(source_path, str):
-            raise RuntimeError("Dashboard loader 必须返回实际 Python 模块")
-        module_path = Path(source_path).resolve(strict=True)
-        if (not module_path.is_relative_to(runtime.plugin_dir.resolve(strict=True))
-                or module_path.suffix != ".py" or not module_path.is_file()):
-            raise RuntimeError("Dashboard 模块不属于贡献方代码制品")
-        # 2. 模块 ABI 和权限只在 provider 边界解释。
-        register = getattr(module, "register", None)
-        if not callable(register):
-            raise RuntimeError(f"dashboard module 缺少 register: {module_path}")
-        enabled = getattr(module, "plugin_enabled", None)
-        if enabled is not None and not callable(enabled):
-            raise RuntimeError("v3 dashboard plugin_enabled 必须是可调用对象")
-        dependencies = getattr(module, "inject", ())
-        if (not isinstance(dependencies, tuple)
-                or any(not isinstance(key, ServiceKey) for key in dependencies)
-                or len(set(dependencies)) != len(dependencies)):
-            raise ValueError("Dashboard inject 必须是不重复的 ServiceKey tuple")
+        if self.loader is None:
+            assert self.configuration_key is not None
+            config_key = self.configuration_key
+            prefix = self.configuration_prefix or f"/api/dashboard/{runtime.plugin_dir.name}/config"
+            dependencies: tuple[ServiceKey[Any], ...] = (UI, config_key)
+            module_dir = runtime.plugin_dir.resolve(strict=True)
+            module_name = f"plugins.{runtime.plugin_dir.name}.settings_dashboard"
+            enabled: Any = None
+
+            def _default_register(target_app: FastAPI, target_ctx: DashboardContext) -> object:
+                target_ctx.require(UI).register_configuration(target_app, target_ctx, config_key, prefix)
+                return None
+
+            register: Callable[[FastAPI, DashboardContext], object] = _default_register
+        else:
+            try:
+                with plugin_entrypoint(
+                    plugin_id=runtime.plugin_id,
+                    generation_id=runtime.generation_id,
+                    fiber=runtime.plugin_id,
+                    operation="dashboard.module_load",
+                ):
+                    module = self.loader()
+            except Exception as error:
+                raise DashboardImportError(str(error)) from error
+            source_path = getattr(module, "__file__", None)
+            if not isinstance(module, ModuleType) or not isinstance(source_path, str):
+                raise RuntimeError("Dashboard loader 必须返回实际 Python 模块")
+            module_path = Path(source_path).resolve(strict=True)
+            if (not module_path.is_relative_to(runtime.plugin_dir.resolve(strict=True))
+                    or module_path.suffix != ".py" or not module_path.is_file()):
+                raise RuntimeError("Dashboard 模块不属于贡献方代码制品")
+            module_dir = module_path.parent
+            module_name = module.__name__
+            # 2. 模块 ABI 和权限只在 provider 边界解释。
+            raw_register = getattr(module, "register", None)
+            if not callable(raw_register):
+                raise RuntimeError(f"dashboard module 缺少 register: {module_path}")
+            register = cast(Callable[[FastAPI, DashboardContext], object], raw_register)
+            enabled = getattr(module, "plugin_enabled", None)
+            if enabled is not None and not callable(enabled):
+                raise RuntimeError("v3 dashboard plugin_enabled 必须是可调用对象")
+            dependencies = getattr(module, "inject", ())
+            if (not isinstance(dependencies, tuple)
+                    or any(not isinstance(key, ServiceKey) for key in dependencies)
+                    or len(set(dependencies)) != len(dependencies)):
+                raise ValueError("Dashboard inject 必须是不重复的 ServiceKey tuple")
 
         def resolve(key: ServiceKey[Any]) -> object:
             """只在路由实际租约内解析声明能力，旧 Dashboard 不能借新 generation。"""
@@ -125,7 +147,7 @@ class DashboardResources:
 
         dashboard_context = DashboardContext(
             plugin_id=runtime.plugin_id,
-            plugin_dir=module_path.parent,
+            plugin_dir=module_dir,
             data_root=data_root,
             validation=validation,
             _resolve=resolve,
@@ -183,7 +205,7 @@ class DashboardResources:
             context=ctx,
             runtime_workspace=workspace,
             runtime_data_root=data_root,
-            module_name=module.__name__,
+            module_name=module_name,
             generation_id=runtime.generation_id,
             has_web=self.has_web,
             navigation_paths=navigation_paths,

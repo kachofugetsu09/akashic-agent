@@ -1,5 +1,4 @@
 """SearXNG owns its endpoint; standard_web owns the tool and provider selection."""
-from importlib import import_module
 
 from agent.plugin_composition import Context, ServiceKey
 from agent.plugin_composition.plugin_config import PLUGIN_CONFIG
@@ -37,5 +36,4 @@ async def apply(ctx: Context) -> None:
             return {"ready": False, "reason": "搜索提供方未就绪，请检查 standard_web（Web 工具）及插件运行状态"}
         return {"ready": True, "reason": ""}
 
-    await mount_settings(ctx, SETTINGS, ModelSettings(ctx, SearxngConfig, FIELDS, status=status),
-                         lambda: import_module(".dashboard", __package__))
+    await mount_settings(ctx, SETTINGS, ModelSettings(ctx, SearxngConfig, FIELDS, status=status))

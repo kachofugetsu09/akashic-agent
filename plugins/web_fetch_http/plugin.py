@@ -1,5 +1,4 @@
 """HTTP 读取提供方：直接抓取网页正文；工具形状归 standard_web，上限、请求头与代理归本插件设置。"""
-from importlib import import_module
 
 import httpx
 
@@ -37,4 +36,4 @@ class ScopedFetch:
 async def apply(ctx: Context) -> None:
     config = FetchConfig.model_validate(ctx.config)
     _ = await ctx.require(WEB_PROVIDERS).register_fetch(ctx, ScopedFetch(config), label="直接 HTTP")
-    await mount_settings(ctx, SETTINGS, ModelSettings(ctx, FetchConfig, FIELDS), lambda: import_module(".dashboard", __package__))
+    await mount_settings(ctx, SETTINGS, ModelSettings(ctx, FetchConfig, FIELDS))

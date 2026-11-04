@@ -5,7 +5,6 @@ import asyncio
 import fcntl
 import json
 import logging
-from importlib import import_module
 from datetime import UTC, datetime
 from contextlib import aclosing, asynccontextmanager
 from pathlib import Path
@@ -704,8 +703,7 @@ async def apply(ctx: Context) -> None:
     """启动后才创建文件与跟随日志；归档 apply 不写入正式记忆。"""
     config = Config.model_validate(ctx.config)
     await mount_settings(ctx, SETTINGS, ModelSettings(ctx, Config, SETTING_FIELDS,
-                                                         status=model_options(ctx, {"model": MEMORY_MODEL})),
-                         lambda: import_module(".dashboard", __package__))
+                                                         status=model_options(ctx, {"model": MEMORY_MODEL})))
     context = ctx.require(CONTEXT)
     store: MarkdownProfileStore | None = None
     watcher: asyncio.Task[None] | None = None

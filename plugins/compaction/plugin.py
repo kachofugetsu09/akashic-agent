@@ -2,7 +2,6 @@
 from __future__ import annotations
 
 from functools import partial
-from importlib import import_module
 from collections.abc import Awaitable, Callable, Mapping, Sequence
 import logging
 from uuid import uuid4
@@ -110,8 +109,7 @@ async def apply(ctx: Context) -> None:
     """注册只读材料和归档解析；apply 不打开 writer 或调用模型。"""
     config = Config.model_validate(ctx.config)
     await mount_settings(ctx, SETTINGS, ModelSettings(ctx, Config, SETTING_FIELDS,
-                                                       status=model_options(ctx, {"model": SUMMARY_MODEL})),
-                         lambda: import_module(".dashboard", __package__))
+                                                       status=model_options(ctx, {"model": SUMMARY_MODEL})))
     context = ctx.require(CONTEXT)
 
     def records() -> SummaryRecords:

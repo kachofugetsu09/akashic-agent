@@ -1,4 +1,6 @@
 const OPENCODE_ICON = `data:image/svg+xml,${encodeURIComponent(`<svg fill="currentColor" fill-rule="evenodd" height="1em" style="flex:none;line-height:1" viewBox="0 0 24 24" width="1em" xmlns="http://www.w3.org/2000/svg"><title>opencode</title><path d="M16 6H8v12h8V6zm4 16H4V2h16v20z"></path></svg>`)}`;
+import { escapeHtml, htmlNode, requireConnectionProps } from "../../shared/src/connection-form.js";
+
 const CLOSE_ICON = `<svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M18 6 6 18"></path><path d="m6 6 12 12"></path></svg>`;
 const EYE_ICON = `<svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M2.062 12.348a1 1 0 0 1 0-.696 10.75 10.75 0 0 1 19.876 0 1 1 0 0 1 0 .696 10.75 10.75 0 0 1-19.876 0"></path><circle cx="12" cy="12" r="3"></circle></svg>`;
 const EYE_OFF_ICON = `<svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m2 2 20 20"></path><path d="M6.71 6.71C4.7 8.1 3.24 10.06 2.06 11.65a1 1 0 0 0 0 .7c2.34 5.64 8.94 8.32 14.24 5.36"></path><path d="M10.73 5.08A10.66 10.66 0 0 1 21.94 11.65a1 1 0 0 1 0 .7 10.83 10.83 0 0 1-2.06 3.1"></path><path d="M14.12 14.12A3 3 0 0 1 9.88 9.88"></path></svg>`;
@@ -85,17 +87,7 @@ export function activate(ctx) {
 }
 
 function requireProps(value) {
-  if (!value || typeof value !== "object" || typeof value.actions !== "object"
-    || typeof value.actions.update !== "function" || typeof value.actions.startAuth !== "function"
-    || typeof value.actions.finishAuth !== "function" || typeof value.actions.sync !== "function" || typeof value.actions.selectModels !== "function"
-    || typeof value.dirty !== "function" || typeof value.close !== "function" || typeof value.changed !== "function" || !value.state) {
-    throw new Error("models.connection-types.v1 props 无效");
-  }
-  if (value.state.connection !== null && value.state.connection !== undefined
-    && (typeof value.state.connection !== "object" || typeof value.state.connection.id !== "string")) {
-    throw new Error("models.connection-types.v1 connection 无效");
-  }
-  return value;
+  return requireConnectionProps(value, ["update", "startAuth", "finishAuth", "sync", "selectModels"]);
 }
 
 function submit(form, work, button = form.querySelector("[type=submit]")) {
@@ -113,16 +105,4 @@ function submit(form, work, button = form.querySelector("[type=submit]")) {
     for (const actionButton of actionButtons) actionButton.disabled = false;
     button.textContent = idleLabel;
   });
-}
-
-function htmlNode(markup) {
-  const template = document.createElement("template");
-  template.innerHTML = markup;
-  return template.content.firstElementChild;
-}
-
-function escapeHtml(value) {
-  const node = document.createElement("span");
-  node.textContent = value;
-  return node.innerHTML;
 }

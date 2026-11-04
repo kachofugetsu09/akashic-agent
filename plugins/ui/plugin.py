@@ -113,6 +113,8 @@ class Ui:
         requires: tuple[str, ...] = (), provides: tuple[str, ...] = (),
         contract_digests: Mapping[str, str] | None = None,
         navigation_paths: tuple[str, ...] = (),
+        configuration_key: ServiceKey[Configuration] | None = None,
+        configuration_prefix: str | None = None,
     ) -> Effect:
         """从实际贡献 Context 固定身份和代码路径，再取得注册 Effect。"""
         # 1. provider 只接受同一 Root 的贡献方，不接受自报 owner 或 generation。
@@ -121,7 +123,7 @@ class Ui:
         owner = ctx.runtime.plugin_id
         if owner in self._entries:
             raise ValueError(f"UI owner 重复注册: {owner}")
-        if web is None and dashboard is None:
+        if web is None and dashboard is None and configuration_key is None:
             raise ValueError("UI 注册必须包含 Web 或 Dashboard")
         if navigation_paths and dashboard is None:
             raise ValueError("Navigation paths require a Dashboard")
@@ -155,8 +157,9 @@ class Ui:
             loader_path = Path(dashboard.__code__.co_filename).resolve(strict=True)
             if not loader_path.is_relative_to(root):
                 raise ValueError("Dashboard loader 不属于贡献方代码制品")
-        resources = None if dashboard is None else DashboardResources(
+        resources = None if (dashboard is None and configuration_key is None) else DashboardResources(
             ctx, dashboard, has_web=module is not None, registry=self, navigation_paths=navigation_paths,
+            configuration_key=configuration_key, configuration_prefix=configuration_prefix,
         )
         registration = Registration(ctx, module, resources, registration_uuid)
 

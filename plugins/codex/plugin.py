@@ -7,8 +7,7 @@ import re
 
 from agent.plugin_composition import Context
 from plugins.host_execution.contract import PROCESSES
-from plugins.models.contract import MODEL_DRIVERS
-from plugins.ui.contract import UI
+from plugins.models.contract import MODEL_DRIVERS, register_connection_type_ui
 
 from .driver import definition
 
@@ -20,17 +19,6 @@ author = "Akashic Core"
 inject = (MODEL_DRIVERS, PROCESSES)
 workspace_roots = ()
 workspace_files = ()
-
-
-async def _register_ui(ctx: Context) -> None:
-    await ctx.require(UI).register(
-        ctx, web="web_module.js",
-        requires=("models.connection-types.v1",),
-        provides=(),
-        contract_digests={
-            "models.connection-types.v1": "8c304d85090a65a4a66cd777a5c2a88e6908de147964dc91e7f84336979ea561",
-        },
-    )
 
 
 async def apply(ctx: Context) -> None:
@@ -50,7 +38,7 @@ async def apply(ctx: Context) -> None:
 
     # 2. 目录与 Responses 从同一读取入口取得版本，不保存到连接配置。
     _ = await ctx.require(MODEL_DRIVERS).register(ctx, definition(read_version))
-    _ = await ctx.inject((UI,), _register_ui, name="ui")
+    await register_connection_type_ui(ctx)
 
 
 async def _load_version(ctx: Context) -> str:

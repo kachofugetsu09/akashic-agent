@@ -1,4 +1,3 @@
-from importlib import import_module
 
 from agent.plugin_composition import Context, ServiceKey
 from agent.plugin_composition.plugin_config import PLUGIN_CONFIG
@@ -33,4 +32,4 @@ async def apply(ctx: Context) -> None:
                 "choices": {"search_provider": providers.choices("search"), "fetch_provider": providers.choices("fetch")}}
 
     settings = ModelSettings(ctx, WebConfig, FIELDS, status=status)
-    await mount_settings(ctx, SETTINGS, settings, lambda: import_module(".dashboard", __package__))
+    await mount_settings(ctx, SETTINGS, settings)

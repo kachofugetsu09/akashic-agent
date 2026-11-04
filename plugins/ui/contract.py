@@ -87,6 +87,8 @@ class UiRegistry(Protocol):
         requires: tuple[str, ...] = (), provides: tuple[str, ...] = (),
         contract_digests: Mapping[str, str] | None = None,
         navigation_paths: tuple[str, ...] = (),
+        configuration_key: ServiceKey[Configuration] | None = None,
+        configuration_prefix: str | None = None,
     ) -> Effect: ...
 
     def register_configuration(
@@ -693,12 +695,26 @@ def check(model: type[BaseModel], config: Mapping[str, object]) -> None:
         raise ValueError("；".join(reasons)) from None
 
 
-# 提供设置服务并登记设置页；dashboard 加载函数须写在插件自己的代码里，模块把同一 key 挂到 /api/dashboard/<插件>/config。
-async def mount_settings(ctx: Context, key: ServiceKey[Configuration], settings: Configuration,
-                         dashboard: Callable[[], ModuleType]) -> None:
+# 提供设置服务并登记设置页；省略 dashboard 时直接由 UI 宿主绑定 /api/dashboard/<插件>/config，无需插件单独写 8 行 dashboard.py。
+async def mount_settings(
+    ctx: Context,
+    key: ServiceKey[Configuration],
+    settings: Configuration,
+    dashboard: Callable[[], ModuleType] | None = None,
+    *,
+    prefix: str | None = None,
+) -> None:
     await ctx.provide(key, settings)
 
     async def ui(child: Context) -> None:
-        await child.require(UI).register(child, web="web_module.js", dashboard=dashboard,
-                                         requires=("shell.settings-plugins.v1",), contract_digests=SETTINGS_SLOT)
+        await child.require(UI).register(
+            child,
+            web="web_module.js",
+            dashboard=dashboard,
+            requires=("shell.settings-plugins.v1",),
+            contract_digests=SETTINGS_SLOT,
+            configuration_key=key if dashboard is None else None,
+            configuration_prefix=prefix,
+        )
+
     await ctx.inject((UI, key), ui, name="settings-ui")
