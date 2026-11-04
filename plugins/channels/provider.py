@@ -104,8 +104,12 @@ class _InboundEnvelope:
         """原 lease 完成释放后才发布关闭状态，保留调用方取消。"""
         if self.closed:
             return
-        await shield_until_done(asyncio.create_task(self.lease.aclose()))
-        self.closed = True
+
+        async def release() -> None:
+            await self.lease.aclose()
+            self.closed = True
+
+        await shield_until_done(asyncio.create_task(release()))
 
 
 @dataclass
