@@ -73,40 +73,45 @@
   /* 阅读列宽度由宿主的 --chat-column 拥有；缺省值供未定义它的宿主。 */
   width: min(100%, var(--chat-column, 52rem));
   color: var(--ak-ink-primary);
-  /* 模型输出的自然语言：这一层显式取回阅读衬线，外壳默认是界面字体。 */
-  font-family: var(--ak-type-reading);
-  font-size: max(1rem, var(--chat-type-body, 1rem));
-  line-height: var(--chat-response-leading, 1.5);
+  /* 模型输出的自然语言：宽屏默认取阅读衬线，窄屏由 --chat-reading-font 切回界面无衬线以平衡高密度代码混排。 */
+  font-family: var(--chat-reading-font, var(--ak-type-reading));
+  font-size: var(--chat-type-body, 0.9375rem);
+  line-height: var(--chat-response-leading, 1.55);
   overflow-wrap: break-word;
   user-select: text;
 }
 
 .agent-content :where(h1, h2, h3, h4) {
-  margin-block: 1.35em 0.58em;
+  margin-block: 1.4em 0.45em;
   color: var(--ak-ink-primary);
   font-weight: 650;
-  line-height: 1.4;
+  line-height: 1.36;
   text-wrap: balance;
 }
 
-.agent-content h1 { font-size: 1.375em; }
-.agent-content h2 { font-size: 1.175em; }
-.agent-content h3 { font-size: 1.025em; }
-.agent-content h4 { font-size: 1em; }
+.agent-content h1 { font-size: 1.4em; }
+.agent-content h2 { font-size: 1.22em; }
+.agent-content h3 { font-size: 1.1333em; }
+.agent-content h4 { font-size: 1.04em; }
+
+.agent-content :where(p, li) :where(strong, b) {
+  font-weight: 540;
+  color: var(--ak-ink-primary);
+}
 
 .agent-content p {
-  margin-block: 0 var(--chat-paragraph-gap, 0.75em);
+  margin-block: 0 var(--chat-paragraph-gap, 0.85em);
   line-height: inherit;
 }
 
 .agent-content :where(ul, ol) + p,
 .agent-content .markstream-react [data-node-type="list"] + [data-node-type="paragraph"] p {
-  margin-block-start: 1.5em;
+  margin-block-start: 1.35em;
 }
 
 .agent-content .markdown-reading :is(ul, ol) {
-  margin-block: 0 var(--chat-paragraph-gap, 0.75em);
-  padding-inline-start: 1.5em;
+  margin-block: 0 var(--chat-paragraph-gap, 0.85em);
+  padding-inline-start: var(--chat-list-indent, 1.35em);
 }
 
 .agent-content ul {
@@ -119,16 +124,16 @@
 
 .agent-content :where(ul, ol) :where(ul, ol) {
   margin-block: 0.35em 0;
-  padding-inline-start: 1.25em;
+  padding-inline-start: 1.2em;
 }
 
 .agent-content .markdown-reading li {
   margin-block: 0;
-  padding-inline-start: 0.2em;
+  padding-inline-start: 0.125em;
 }
 
 .agent-content .markdown-reading li + li {
-  margin-block-start: var(--chat-list-gap, 0.25em);
+  margin-block-start: var(--chat-list-gap, 0.45em);
 }
 
 .agent-content li::marker {
@@ -216,25 +221,30 @@
 .agent-content :not(pre) > code,
 .static-message-response :not(pre) > code,
 .process-markdown :not(pre) > code {
-  border-radius: 0.3125rem;
-  padding: 0.125rem 0.375rem;
+  border: 1px solid color-mix(in oklab, var(--ak-ink-primary) 9%, transparent);
+  border-radius: 0.25rem;
+  padding: 0.0625rem 0.25rem;
   color: var(--md-sys-color-on-surface);
-  background: color-mix(in oklab, var(--md-sys-color-on-surface) 6%, transparent);
+  background: color-mix(in oklab, var(--md-sys-color-on-surface) 3.5%, transparent);
   font-family: var(--ak-type-technical, ui-monospace, SFMono-Regular, Menlo, Consolas, monospace);
-  font-size: 0.875em;
-  font-weight: 480;
+  font-size: 0.85em;
+  font-weight: 460;
+  overflow-wrap: break-word;
 }
 
 /* Markstream 的行内代码自带 (0,2,0) 工具类且在懒加载后插入：用三级作用域显式压过，
-   底色只取墨色的 6% 透明叠加，深浅主题都不出现冷蓝底；字体回到技术字体。 */
+   底色取墨色的 3.5% 透明叠加配 9% 细描边，深浅主题都不出现冷蓝底或厚重膏药块；字体回到技术字体。 */
 .agent-content .markstream-react .inline-code,
 .process-markdown .markstream-react .inline-code {
-  border-radius: 0.3125rem;
-  padding: 0.125rem 0.375rem;
+  border: 1px solid color-mix(in oklab, var(--ak-ink-primary) 9%, transparent);
+  border-radius: 0.25rem;
+  padding: 0.0625rem 0.25rem;
   color: inherit;
-  background: color-mix(in oklab, var(--ak-ink-primary) 6%, transparent);
+  background: color-mix(in oklab, var(--ak-ink-primary) 3.5%, transparent);
   font-family: var(--ak-type-technical);
-  font-size: 0.875em;
+  font-size: 0.85em;
+  font-weight: 460;
+  overflow-wrap: break-word;
 }
 
 /* 长标识符折行时每一段都自带内边距与圆角，不在断开处被硬切成半块底色。 */
@@ -645,9 +655,14 @@
 }
 
 :is(.agent-content, .process-markdown, .user-bubble) .markdown-reading .reading-topic:not(li p) {
-  margin-block: 1rem 0.45rem;
+  margin-block: 1.4em 0.45em;
   color: var(--ak-ink-primary);
-  font-size: 1.025em;
+  font-size: 1.1333em;
+  line-height: 1.36;
+}
+
+:is(.agent-content, .process-markdown, .user-bubble) .markdown-reading .reading-topic:not(li p) > strong {
+  font-weight: 650;
 }
 
 :is(.agent-content, .process-markdown, .user-bubble) .markdown-reading .reading-concepts {

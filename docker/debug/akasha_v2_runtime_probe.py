@@ -446,11 +446,8 @@ def _context_rows(requests: list[object]) -> list[dict[str, object]]:
                 continue
             if not content.startswith("<system-reminder>\n"):
                 continue
-            for match in re.finditer(
-                r"### 消息 ([^\n]+)\n来源：[^\n]+\n\n(.*?)(?=\n\n### 消息 |\n</system-reminder>|$)",
-                content, re.DOTALL,
-            ):
-                rows.append({"message_id": unescape(match.group(1)), "text": unescape(match.group(2))})
+            for match in re.finditer(r"^- \[[^\]\n]+\] (.*)（ref=([^）\n]+)）$", content, re.MULTILINE):
+                rows.append({"message_id": unescape(match.group(2)), "text": unescape(match.group(1))})
     return rows
 
 
@@ -587,7 +584,9 @@ def _inside_scenario(report_dir: Path) -> int:
             exact_content = all(
                 message_id in context_by_id
                 and message_id in first_message_texts
-                and context_by_id[message_id].get("text") == first_message_texts[message_id]
+                # 召回只注入开头预览：预览必须是原文去空白后的前缀。
+                and " ".join(first_message_texts[message_id].split()).startswith(
+                    str(context_by_id[message_id].get("text")).removesuffix("…"))
                 for message_id in expected_ids
             )
             context_records.append(

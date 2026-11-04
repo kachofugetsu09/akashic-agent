@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
 from collections.abc import AsyncGenerator, Awaitable, Callable, Mapping
 from contextlib import asynccontextmanager
@@ -11,7 +12,7 @@ from typing import cast
 from core.common.file_io import shield_until_done
 from plugins.ledger.contract import Bindings
 from plugins.ledger.contract import MessageCatalog, MessageEmbeddings
-from plugins.ledger.contract import Input, Message
+from plugins.ledger.contract import Input, Message, ToolResult, json_value
 
 from .application.consumer import MessageConsumer, run_memory_job
 from .learning import AKASHA_LEARNING, Learning, LearningConfig
@@ -20,7 +21,7 @@ from .infrastructure.consumption import Consumption
 from .projection import input_features
 from .contract import ContextSource
 from .recalls import RecallRecords, context_identity, query_memory, render_materials
-from .recall_tool import tool_references
+from .recall_tool import FetchedMessages, RecallReference, tool_references
 
 MaterialData = Mapping[str, object]
 logger = logging.getLogger(__name__)
@@ -165,6 +166,7 @@ async def prepare_materials(
             async with bindings.open(recall.learning_binding, AKASHA_LEARNING) as (original, _):
                 material = await run_memory_job(lambda: render_materials(
                     identity, recall, original, catalog, max_chars=recall.max_chars,
+                    presented=recall.presented_message_ids,
                 ))
         else:
             material = await query_inputs(
@@ -216,8 +218,9 @@ async def query_inputs(
         cycle, state, learning_binding=learning_binding,
         text=text, dense=dense, stamp=stamp, source=origin, limit=limit,
     ))
+    seen = await run_memory_job(lambda: window_seen(snapshot, records))
     material = await run_memory_job(lambda: render_materials(
-        identity, recall, learning, catalog, max_chars=max_chars,
+        identity, recall, learning, catalog, max_chars=max_chars, exclude=seen,
     ))
     recall = recall.model_copy(update={
         "max_chars": max_chars,
@@ -229,3 +232,25 @@ async def query_inputs(
     })
     _ = await run_memory_job(lambda: records.save(identity, recall))
     return material
+
+
+# 当前未压缩窗口里已经出现过的消息：窗口本身、窗口内各轮召回呈现过的、fetch_messages 读过原文的。
+# 只在首次查询时求值并随记录保存，重渲染按记录里的呈现集合，同一输入的结果不会变。
+def window_seen(snapshot: tuple[Message, ...], records: RecallRecords) -> frozenset[str]:
+    seen = {message.message_id for message in snapshot}
+    for message in snapshot:
+        body = message.body
+        if isinstance(body, Input) and message.author == "user":
+            recall = records.read(context_identity(message.session_id, message.source, message.message_id))
+            if recall is not None:
+                seen.update(recall.presented_message_ids)
+        elif isinstance(body, ToolResult) and body.outcome == "success":
+            for part in body.parts:
+                if part.kind == "akasha.recall":
+                    marker = RecallReference.model_validate_json(json.dumps(json_value(part.value)))
+                    recall = records.read(marker.retrieval_ref)
+                    if recall is not None:
+                        seen.update(recall.presented_message_ids)
+                elif part.kind == "akasha.fetch":
+                    seen.update(FetchedMessages.model_validate_json(json.dumps(json_value(part.value))).message_ids)
+    return frozenset(seen)

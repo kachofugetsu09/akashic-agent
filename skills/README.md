@@ -30,6 +30,10 @@
   - 创建或改写技能 `SKILL.md`，用于新增技能与结构迁移。
   - 文件：`skills/skill-creater/SKILL.md`
 
+- `skill-installer`
+  - 从 GitHub 仓库、子树链接或本地目录安装、更新、卸载技能到工作区或用户目录，无需编写插件即可热生效。
+  - 文件：`skills/skill-installer/SKILL.md`
+
 - `plugin-system`
   - 说明安装、更新时机、局部换代、卸载排空和结果核对；由内置 `plugin_update` 插件注册，与外部 Skill 使用同一资产链。
   - 文件：[`plugins/plugin_update/skills/plugin-system/SKILL.md`](../plugins/plugin_update/skills/plugin-system/SKILL.md)
