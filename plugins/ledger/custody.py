@@ -6,6 +6,7 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import Protocol, TypeVar, cast
 
+from core.common.file_io import shield_until_done
 from plugins.ledger.contract import json_value
 from plugins.channels.contract import (
     AttachmentKind,
@@ -788,13 +789,4 @@ class InboundCustody:
 async def _await_cleanup_after_cancellation(task: asyncio.Task[_T]) -> _T:
     """Finish terminal cleanup before restoring caller cancellation."""
 
-    cancelled = False
-    while not task.done():
-        try:
-            await asyncio.shield(task)
-        except asyncio.CancelledError:
-            cancelled = True
-    result = task.result()
-    if cancelled:
-        raise asyncio.CancelledError
-    return result
+    return await shield_until_done(task)

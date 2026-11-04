@@ -17,6 +17,7 @@ from typing import Any, Literal, Protocol, cast
 from urllib.error import HTTPError, URLError
 from urllib.request import HTTPRedirectHandler, ProxyHandler, Request, build_opener
 
+from core.common.file_io import shield_until_done
 from plugins.managed_processes.contract import ManagedProcessDefinition
 from agent.plugin_composition.execution import ChildProcess, ProcessSpawner
 
@@ -1001,22 +1002,7 @@ class ManagedProcessGenerationHost:
 async def _await_task_after_cancellation(task: asyncio.Task[Any]) -> Any:
     """Await a critical task to completion and restore caller cancellation."""
 
-    cancelled = False
-    while not task.done():
-        try:
-            await asyncio.shield(task)
-        except asyncio.CancelledError:
-            if task.done():
-                break
-            cancelled = True
-            continue
-    try:
-        result = task.result()
-    except asyncio.CancelledError:
-        result = None
-    if cancelled:
-        raise asyncio.CancelledError
-    return result
+    return await shield_until_done(task, ignore_task_cancel=True)
 
 
 def _task_error(task: asyncio.Task[Any], fallback: BaseException) -> BaseException:

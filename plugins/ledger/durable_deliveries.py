@@ -6,6 +6,7 @@ from dataclasses import dataclass, field
 from types import MappingProxyType
 from typing import Literal, cast
 
+from core.common.file_io import shield_until_done
 from plugins.channels.contract import ChannelDeliveryReceipt, DeliveryStatus
 from .durable_delivery_store import DurableDeliveryStore
 
@@ -385,14 +386,4 @@ async def _complete_critical(
 ) -> DurableDeliveryView:
     """Finish durable forward progress before restoring caller cancellation."""
 
-    task = asyncio.ensure_future(awaitable)
-    cancelled = False
-    while not task.done():
-        try:
-            _ = await asyncio.shield(task)
-        except asyncio.CancelledError:
-            cancelled = True
-    result = task.result()
-    if cancelled:
-        raise asyncio.CancelledError
-    return result
+    return await shield_until_done(asyncio.ensure_future(awaitable))

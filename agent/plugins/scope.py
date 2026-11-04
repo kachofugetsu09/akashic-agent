@@ -6,6 +6,7 @@ import logging
 from collections.abc import Awaitable, Callable
 from contextlib import nullcontext
 from dataclasses import dataclass
+from core.common.file_io import shield_until_done
 from agent.plugin_composition.diagnostics import plugin_entrypoint
 Cleanup = Callable[[], Awaitable[None] | None]
 
@@ -61,16 +62,7 @@ class PluginScope:
                 self._close(), name=f"plugin_scope_cleanup:{self.plugin_id}"
             )
         task = self._close_task
-        cancelled = False
-        while not task.done():
-            try:
-                await asyncio.shield(task)
-            except asyncio.CancelledError:
-                cancelled = True
-        failures = task.result()
-        if cancelled:
-            raise asyncio.CancelledError
-        return list(failures)
+        return list(await shield_until_done(task))
 
     async def _close(self) -> list[CleanupFailure]:
         """逆序释放资源，失败处停止以保留其依赖。"""

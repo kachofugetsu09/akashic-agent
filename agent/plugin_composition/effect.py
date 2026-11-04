@@ -5,6 +5,7 @@ import inspect
 from collections.abc import Callable
 from contextlib import AbstractContextManager, nullcontext
 
+from core.common.file_io import shield_until_done
 from agent.plugin_composition.diagnostics import plugin_entrypoint
 from agent.plugin_composition.model import CompositionError
 
@@ -126,12 +127,4 @@ async def _join_cleanup(task: asyncio.Task[object]) -> None:
         raise CompositionError(
             "REENTRANT_CLEANUP_WAIT", "cleanup 不能等待自身关闭完成",
         )
-    cancelled = False
-    while not task.done():
-        try:
-            await asyncio.shield(task)
-        except asyncio.CancelledError:
-            cancelled = True
-    task.result()
-    if cancelled:
-        raise asyncio.CancelledError
+    _ = await shield_until_done(task)

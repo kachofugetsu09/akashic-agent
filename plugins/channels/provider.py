@@ -12,6 +12,7 @@ from contextlib import asynccontextmanager, contextmanager
 from dataclasses import dataclass, field
 from typing import Any, ContextManager, Literal, TypeVar, cast
 
+from core.common.file_io import drain_uninterruptible, shield_until_done
 from plugins.ledger.contract import (
     CHANNEL_ATTACHMENT_IMPORT,
     CHANNEL_ATTACHMENT_READ,
@@ -103,17 +104,8 @@ class _InboundEnvelope:
         """原 lease 完成释放后才发布关闭状态，保留调用方取消。"""
         if self.closed:
             return
-        task = asyncio.create_task(self.lease.aclose())
-        cancelled = False
-        while not task.done():
-            try:
-                await asyncio.shield(task)
-            except asyncio.CancelledError:
-                cancelled = True
-        task.result()
+        await shield_until_done(asyncio.create_task(self.lease.aclose()))
         self.closed = True
-        if cancelled:
-            raise asyncio.CancelledError
 
 
 @dataclass
@@ -2215,17 +2207,7 @@ def _text(value: object, name: str) -> str:
 async def _await_task_after_cancellation(task: asyncio.Task[Any]) -> Any:
     """Finish critical cleanup before restoring caller cancellation."""
 
-    cancelled = False
-    while not task.done():
-        try:
-            await asyncio.shield(task)
-        except asyncio.CancelledError:
-            cancelled = True
-            continue
-    result = task.result()
-    if cancelled:
-        raise asyncio.CancelledError
-    return result
+    return await shield_until_done(task)
 
 
 async def _await_reservation_after_cancellation(
@@ -2245,12 +2227,7 @@ async def _await_reservation_after_cancellation(
 async def _settle_cleanup_task(task: asyncio.Task[Any]) -> Any:
     """Settle one acceptance rollback task before preserving the original failure."""
 
-    while not task.done():
-        try:
-            await asyncio.shield(task)
-        except asyncio.CancelledError:
-            continue
-    return task.result()
+    return await drain_uninterruptible(task)
 
 
 def _task_succeeded(task: asyncio.Task[Any]) -> bool:

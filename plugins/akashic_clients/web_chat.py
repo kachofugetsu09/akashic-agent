@@ -41,6 +41,7 @@ from plugins.channels.contract import (
     TurnStreamEventKind,
     DeliveryStatus as PresentationDeliveryStatus,
 )
+from core.common.file_io import drain_uninterruptible
 from fastapi import WebSocket
 from starlette.websockets import WebSocketDisconnect, WebSocketState
 
@@ -1330,12 +1331,7 @@ def _normalize_web_request_id(value: object) -> str:
 async def _settle_cleanup_task(task: asyncio.Task[Any]) -> Any:
     """完成 message.send 精确清理后再恢复原始失败。"""
 
-    while not task.done():
-        try:
-            await asyncio.shield(task)
-        except asyncio.CancelledError:
-            continue
-    return task.result()
+    return await drain_uninterruptible(task)
 
 
 __all__ = [

@@ -13,6 +13,7 @@ from pathlib import Path
 from types import MappingProxyType
 from typing import Any, Literal, Protocol, cast
 
+from core.common.file_io import shield_until_done
 from .client import McpClient, McpToolExecutionError
 from agent.plugin_composition.execution import ProcessSpawner
 from plugins.mcp.contract import McpToolView, McpCallResult, McpLogView
@@ -1037,24 +1038,7 @@ async def _emit_callback(
 async def _await_task_after_cancellation(task: asyncio.Task[Any]) -> Any:
     """Finish a cleanup task before restoring caller cancellation."""
 
-    cancelled = False
-    while not task.done():
-        try:
-            await asyncio.shield(task)
-        except asyncio.CancelledError:
-            if task.done():
-                break
-            cancelled = True
-            continue
-    try:
-        result = task.result()
-    except asyncio.CancelledError:
-        # A cleanup child is commonly cancelled intentionally (for example a
-        # watcher).  Its cancellation is not a cleanup failure.
-        result = None
-    if cancelled:
-        raise asyncio.CancelledError
-    return result
+    return await shield_until_done(task, ignore_task_cancel=True)
 
 
 def _task_error(task: asyncio.Task[Any], fallback: BaseException) -> BaseException:

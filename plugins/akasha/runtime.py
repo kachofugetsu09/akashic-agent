@@ -8,6 +8,7 @@ from contextlib import asynccontextmanager
 from datetime import UTC, datetime
 from typing import cast
 
+from core.common.file_io import shield_until_done
 from plugins.ledger.contract import Bindings
 from plugins.ledger.contract import MessageCatalog, MessageEmbeddings
 from plugins.ledger.contract import Input, Message
@@ -81,16 +82,7 @@ class MessageMemory:
                     logger.exception("Akasha 关闭时发布学习尾部失败，下次启动将从日志重学")
                 finally:
                     self._consumer.close()
-        job = asyncio.create_task(drain())
-        cancelled = False
-        while not job.done():
-            try:
-                await asyncio.shield(job)
-            except asyncio.CancelledError:
-                cancelled = True
-        job.result()
-        if cancelled:
-            raise asyncio.CancelledError
+        await shield_until_done(asyncio.create_task(drain()))
 
     async def consume(self) -> int:
         """按固定 binding 追赶已接纳日志，不与查询或关闭并发修改图。"""
