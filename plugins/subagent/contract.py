@@ -53,7 +53,7 @@ class AgentRunner:
     name: str
     description: str
     progress: bool
-    policy: Literal["read-only", "isolated-write"]
+    policy: Literal["read-only", "isolated-write", "full-access"]
     run: Callable[[AgentTask, Callable[[AgentActivity], Awaitable[None]]], Awaitable[AgentResult]]
 
 

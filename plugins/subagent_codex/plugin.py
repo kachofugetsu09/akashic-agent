@@ -3,7 +3,7 @@ from __future__ import annotations
 
 import asyncio
 from collections.abc import Awaitable, Callable
-from typing import cast
+from typing import Literal, cast
 from pydantic import BaseModel, ConfigDict, Field
 
 from agent.plugin_composition import Context
@@ -38,10 +38,31 @@ LOCKED_CONFIG = ("-c", "mcp_servers={}", "-c", 'web_search="disabled"',
                  "--disable", "apps", "--disable", "plugins", "--disable", "hooks")
 
 
+CodexPermissionMode = Literal[
+    "never",
+    "approve-for-me",
+    "dangerously-bypass-approvals-and-sandbox",
+]
+
+THREAD_PERMISSION_PARAMS: dict[CodexPermissionMode, dict[str, object]] = {
+    "never": {"approvalPolicy": "never", "sandbox": "read-only"},
+    "approve-for-me": {
+        "approvalPolicy": "on-request",
+        "approvalsReviewer": "auto_review",
+        "sandbox": "workspace-write",
+    },
+    "dangerously-bypass-approvals-and-sandbox": {
+        "approvalPolicy": "never",
+        "sandbox": "danger-full-access",
+    },
+}
+
+
 class Config(BaseModel):
     model_config = ConfigDict(extra="forbid")
     executable: str = "codex"
     model: str | None = None
+    permission_mode: CodexPermissionMode = "never"
     env: dict[str, str] = Field(default_factory=dict)
     timeout_seconds: float = Field(default=1800, gt=0, le=86400)
 
@@ -101,8 +122,11 @@ async def open_thread(session: Session, task: AgentTask, config: Config) -> str:
     await session.request("initialize", {"clientInfo": {"name": "akashic", "version": "1.0.0"},
                                          "capabilities": {"experimentalApi": True}})
     await session.wire.send({"method": "initialized", "params": {}})
-    params: dict[str, object] = {"cwd": task.cwd, "ephemeral": True,
-                                  "approvalPolicy": "never", "sandbox": "read-only"}
+    params: dict[str, object] = {
+        "cwd": task.cwd,
+        "ephemeral": True,
+        **THREAD_PERMISSION_PARAMS[config.permission_mode],
+    }
     if config.model:
         params["model"] = config.model
     thread = obj((await session.request("thread/start", params)).get("thread"))
@@ -111,7 +135,7 @@ async def open_thread(session: Session, task: AgentTask, config: Config) -> str:
         raise ValueError("Codex thread identity missing")
     servers = await session.request("mcpServerStatus/list", {"threadId": thread_id, "detail": "toolsAndAuthOnly"})
     if servers.get("data") != []:
-        raise RuntimeError("Codex MCP servers present; refusing to run outside the read-only sandbox")
+        raise RuntimeError("Codex MCP servers present; refusing to run outside the isolated sandbox")
     return thread_id
 
 
@@ -124,7 +148,7 @@ async def execute(wire: AgentWire, task: AgentTask, config: Config,
     turn_id = turn.get("id")
     if not isinstance(turn_id, str) or not turn_id:
         raise ValueError("Codex turn identity missing")
-    await emit(AgentActivity("status", "Codex 正在执行（原生只读沙箱）"))
+    await emit(AgentActivity("status", f"Codex 正在执行（permission_mode={config.permission_mode}）"))
     return await follow_turn(session, thread_id, turn_id, emit)
 
 
@@ -179,4 +203,9 @@ async def apply(ctx: Context) -> None:
             async with service.connect(ctx, task.id, argv(config), task.cwd, config.env) as wire:
                 return await execute(wire, task, config, emit)
 
-    await service.register(ctx, AgentRunner("codex", desc, True, "read-only", run))
+    policy: Literal["read-only", "isolated-write", "full-access"] = (
+        "read-only" if config.permission_mode == "never"
+        else "isolated-write" if config.permission_mode == "approve-for-me"
+        else "full-access"
+    )
+    await service.register(ctx, AgentRunner("codex", desc, True, policy, run))

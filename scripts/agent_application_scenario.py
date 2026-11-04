@@ -24,7 +24,7 @@ async def main(path):
         provider = sources / "test_provider/plugin.py"
         text = provider.read_text().replace(
             'ToolCall("provider-call", "write_evidence", {})',
-            'ToolCall("provider-call", "delegate_codex", {"task": "read only", "cwd": ' + repr(str(path)) + '})',
+            'ToolCall("provider-call", "delegate_codex", {"task": "read only"})',
         )
         text = text.replace(
             'if len(calls) == 1:',
