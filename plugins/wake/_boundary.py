@@ -6,13 +6,9 @@ owner；Delivery、Tools、Content 和兴趣服务的实现与内部模型不进
 
 from __future__ import annotations
 
-from dataclasses import dataclass
-from typing import Literal, TypedDict
+from typing import TypedDict
 
-from agent.plugin_composition import EmitEventKey, ServiceKey
-from plugins.ledger.contract import (
-    ContentPart,
-)
+from agent.plugin_composition import ServiceKey
 from plugins.content.contract import (
     CONTENT as CONTENT,
 )
@@ -28,6 +24,8 @@ from plugins.tools.contract import (
     TOOLS as TOOLS,
     CallSource as CallSource,
     ToolCatalog as ToolCatalog,
+    Outcome as ToolOutcome,
+    Result as ToolResultValue,
     ToolRef as ToolRef,
     ToolView as ToolView,
 )
@@ -39,17 +37,6 @@ class SinkValue(TypedDict):
     name: str
     binding_id: str
     address: str
-
-
-ToolOutcome = Literal["success", "denied", "error", "interrupted"]
-
-
-@dataclass(frozen=True, slots=True)
-class ToolResultValue:
-    """Wake 工具返回的结构值；tools owner 在执行边界归一化它。"""
-
-    outcome: ToolOutcome
-    parts: tuple[ContentPart, ...]
 
 
 WAKE_TOOLS_VIEW = ServiceKey[ToolView]("wake.tools.v1")

@@ -8,7 +8,7 @@ from plugins.host_execution.contract import FILES
 from plugins.models.contract import CHAT_MODELS, MODEL_CATALOG, model_options
 from plugins.ui.contract import Configuration, ModelSettings, mount_settings
 
-from ._tool_boundary import TOOLS
+from plugins.tools.contract import TOOLS
 from .vision import VISION_MODEL, Config, register_vision
 
 api_version = 3

@@ -2,7 +2,7 @@ from agent.plugin_composition import Context
 from plugins.host_execution.contract import FILES
 from plugins.ledger.contract import ARTIFACT_IMPORT
 
-from ._tool_boundary import TOOLS
+from plugins.tools.contract import TOOLS
 from .files import register_file
 from .filesystem import EditFileTool, ListDirTool, ReadFileTool, WriteFileTool
 

@@ -5,7 +5,7 @@ from plugins.context.contract import MATERIALS_V4
 from plugins.host_execution.contract import PROCESSES
 from plugins.ui.contract import UI_SLOTS, PluginUiDefinition, PluginUiRpcInvalidRequest
 
-from ._tool_boundary import TOOLS
+from plugins.tools.contract import TOOLS
 from .skills import register_skills
 
 api_version = 3

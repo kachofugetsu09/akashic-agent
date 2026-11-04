@@ -15,7 +15,7 @@ from plugins.models.contract import CHAT_MODELS, ModelChoice, ModelError, ModelR
 
 from plugins.working_directory.contract import WORKING_DIRECTORY
 
-from ._tool_boundary import TOOLS, CallSource, ToolResultValue
+from plugins.tools.contract import TOOLS, CallSource, Result
 
 
 # 看图模型必须接收 image；跟随当前对话没有意义（对话模型能看图就不会调用这个工具）。
@@ -59,7 +59,7 @@ class VisionTool:
         except (ValidationError, ValueError) as error:
             return str(error)
 
-    async def invoke(self, key: str, arguments: Mapping[str, object]) -> ToolResultValue:
+    async def invoke(self, key: str, arguments: Mapping[str, object]) -> Result:
         """用正式文件接口读取图片，再把视觉回复作为文本交回主模型。"""
         values = VisionInput.model_validate(json_value(arguments))
         # 1. 图片格式、大小和路径权限继续由 Files owner 检查。
@@ -69,9 +69,9 @@ class VisionTool:
         finally:
             await operation.aclose()
         if isinstance(image, FileError):
-            return ToolResultValue("error", (ContentPart("text", image.text),))
+            return Result("error", (ContentPart("text", image.text),))
         if not isinstance(image, FileImage):
-            return ToolResultValue("error", (ContentPart("text", "该文件不是图片，请使用 read_file 查看文本。"),))
+            return Result("error", (ContentPart("text", "该文件不是图片，请使用 read_file 查看文本。"),))
         uri = f"data:{image.mime_type};base64,{base64.b64encode(image.data).decode()}"
         # 2. 在 Models 冻结的目录里取看图模型；指定的不可用时回到默认，默认也不能看图就明确失败。
         try:
@@ -89,12 +89,12 @@ class VisionTool:
             failure = ModelError.read(error)
             if failure is None:
                 raise
-            return ToolResultValue("error", (ContentPart("text", f"视觉模型调用失败：{failure}"),))
+            return Result("error", (ContentPart("text", f"视觉模型调用失败：{failure}"),))
         if not response.content:
-            return ToolResultValue("error", (ContentPart("text", "视觉模型没有返回可用正文。"),))
-        return ToolResultValue("success", (ContentPart("text", response.content),))
+            return Result("error", (ContentPart("text", "视觉模型没有返回可用正文。"),))
+        return Result("success", (ContentPart("text", response.content),))
 
-    async def query(self, key: str) -> ToolResultValue | None:
+    async def query(self, key: str) -> Result | None:
         return None
 
 

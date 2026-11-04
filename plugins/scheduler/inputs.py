@@ -1,10 +1,6 @@
 """调度来源消费的内容、工具与投递能力。"""
 from __future__ import annotations
 
-from dataclasses import dataclass
-from typing import Literal
-
-from plugins.ledger.contract import ContentPart
 from plugins.content.contract import (
     CONTENT as CONTENT,
 )
@@ -26,15 +22,10 @@ from plugins.conversation.contract import (
 from plugins.tools.contract import (
     ALL_TOOLS as ALL_TOOLS,
     CallSource as CallSource,
+    Result as Result,
     TOOL_LOADING_PRESENTATION as TOOL_LOADING_PRESENTATION,
     TOOLS as TOOLS,
     ToolCatalog as ToolCatalog,
     ToolRef as ToolRef,
     ToolView as ToolView,
 )
-
-
-@dataclass(frozen=True)
-class Result:
-    outcome: Literal["success", "denied", "error", "interrupted"]
-    parts: tuple[ContentPart, ...]

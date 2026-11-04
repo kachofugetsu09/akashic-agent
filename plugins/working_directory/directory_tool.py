@@ -13,7 +13,7 @@ from agent.plugin_composition import Context
 from plugins.ledger.contract import MessageConflict
 from plugins.ledger.contract import ContentPart, json_value
 
-from ._tool_boundary import TOOLS, CallSource, ToolResultValue
+from plugins.tools.contract import TOOLS, CallSource, Result
 from .working_directory import WorkingDirectories
 from .agents import read_agents
 
@@ -52,22 +52,22 @@ class DirectoryTool:
         except (ValidationError, ValueError) as error:
             return str(error)
 
-    async def invoke(self, key: str, arguments: Mapping[str, object]) -> ToolResultValue:
+    async def invoke(self, key: str, arguments: Mapping[str, object]) -> Result:
         prepared = PreparedDirectory.model_validate(json_value(arguments))
         try:
             result = await self._directories.switch(key, prepared.model_dump())
         except (ValueError, MessageConflict) as error:
-            return ToolResultValue("error", (ContentPart("text", str(error)),))
+            return Result("error", (ContentPart("text", str(error)),))
         return await self._result(result)
 
-    async def query(self, key: str) -> ToolResultValue | None:
+    async def query(self, key: str) -> Result | None:
         result = self._directories.receipt(key)
         return None if result is None else await self._result(result)
 
-    async def _result(self, result: Mapping[str, object]) -> ToolResultValue:
+    async def _result(self, result: Mapping[str, object]) -> Result:
         rules = await read_agents(self._directories.files, str(result["path"]))
         value = {**result, "agents": {key: item for key, item in rules.items() if key != "files"}}
-        return ToolResultValue("success", (ContentPart("text", json.dumps(value, ensure_ascii=False)),))
+        return Result("success", (ContentPart("text", json.dumps(value, ensure_ascii=False)),))
 
 
 async def register_directory(ctx: Context, directories: WorkingDirectories) -> None:

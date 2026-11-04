@@ -5,7 +5,7 @@ from plugins.ledger.contract import OWNER_STATE, SESSION_ADMISSION
 from plugins.working_directory.contract import WORKING_DIRECTORY
 
 from plugins.context.contract import MATERIALS_V4
-from ._tool_boundary import TOOLS
+from plugins.tools.contract import TOOLS
 from .working_directory import WorkingDirectories
 from .directory_tool import register_directory
 from .agents import read_agents, directory_material

@@ -2,10 +2,8 @@
 from __future__ import annotations
 
 from collections.abc import Callable
-from dataclasses import dataclass
-from typing import Literal
 
-from plugins.ledger.contract import ContentPart, Message
+from plugins.ledger.contract import Message
 from plugins.content.contract import (
     CONTENT as CONTENT,
     Content as ContentCapability,  # noqa: F401 - 显式再导出给本插件消费者。
@@ -14,6 +12,8 @@ from plugins.tools.contract import (
     TOOLS as TOOLS,
     CallSource as CallSource,
     ToolCatalog as ToolCatalog,
+    Outcome as Outcome,
+    Result as Result,
     ToolRef as ToolRef,
     ToolView as ToolView,
 )
@@ -22,24 +22,5 @@ from plugins.turn_projection.contract import (
     Turn as Turn,
     TurnProjection as TurnProjection,
 )
-
-Outcome = Literal["success", "denied", "error", "interrupted"]
-
-
-@dataclass(frozen=True, slots=True)
-class Result:
-    """工具 provider 可消费的结构结果。"""
-
-    outcome: Outcome
-    parts: tuple[ContentPart, ...]
-
-    def __post_init__(self) -> None:
-        if self.outcome not in {"success", "denied", "error", "interrupted"}:
-            raise ValueError("工具结果状态无效")
-        parts = tuple(self.parts)
-        if any(not isinstance(part, ContentPart) for part in parts):
-            raise TypeError("工具结果必须是内容块")
-        object.__setattr__(self, "parts", parts)
-
 
 PostCommitReader = Callable[[Message], str | None]

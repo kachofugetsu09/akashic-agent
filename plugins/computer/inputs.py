@@ -1,6 +1,8 @@
+"""Computer 只读取工具调用前缀和 Turn 身份。"""
 from plugins.tools.contract import (
     TOOLS as TOOLS,
     CallSource as CallSource,
+    Result as Result,
     ToolCatalog as ToolCatalog,
 )
 from plugins.turn_projection.contract import (
@@ -8,15 +10,3 @@ from plugins.turn_projection.contract import (
     Turn as Turn,
     TurnProjection as TurnProjection,
 )
-
-"""Computer 只读取工具调用前缀和 Turn 身份。"""
-from dataclasses import dataclass
-from typing import Literal
-
-from plugins.ledger.contract import ContentPart
-
-
-@dataclass(frozen=True)
-class Result:
-    outcome: Literal["success", "error"]
-    parts: tuple[ContentPart, ...]
