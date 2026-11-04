@@ -7,6 +7,7 @@ from contextlib import contextmanager, nullcontext
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Generic, TypeVar, cast
 
+from core.common.file_io import drain_uninterruptible
 from agent.plugin_composition.diagnostics import (
     PluginOperation,
     plugin_entrypoint,
@@ -608,25 +609,13 @@ async def _cancel_observer_tasks(
             _ = task.cancel()
     if not tasks:
         return
-    drain = asyncio.gather(*tasks, return_exceptions=True)
-    while not drain.done():
-        try:
-            _ = await asyncio.shield(drain)
-        except asyncio.CancelledError:
-            continue
-    _ = drain.result()
+    _ = await drain_uninterruptible(asyncio.gather(*tasks, return_exceptions=True))
 
 
 async def _drain_tasks(tasks: list[asyncio.Task[None]]) -> None:
     """Drain cancelled listeners despite repeated caller cancellation."""
 
-    drain = asyncio.gather(*tasks, return_exceptions=True)
-    while not drain.done():
-        try:
-            _ = await asyncio.shield(drain)
-        except asyncio.CancelledError:
-            continue
-    _ = drain.result()
+    _ = await drain_uninterruptible(asyncio.gather(*tasks, return_exceptions=True))
 
 
 def _is_async_callable(callback: EventListener) -> bool:

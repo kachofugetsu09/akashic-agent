@@ -6,7 +6,7 @@ import asyncio
 from contextvars import copy_context
 from collections.abc import Callable
 from dataclasses import dataclass, field
-from typing import TypeVar
+from typing import TypeVar, cast
 
 T = TypeVar("T")
 
@@ -56,3 +56,36 @@ async def run_file_io(fn: Callable[[], T]) -> T:
             del _FILE_IO_SLOTS[loop]
 
 
+async def shield_until_done(
+    work: asyncio.Future[T] | asyncio.Task[T],
+    *,
+    ignore_task_cancel: bool = False,
+) -> T:
+    """屏蔽外层重复取消直到任务物理完成，随后恢复调用方的 CancelledError。"""
+    cancelled = False
+    # 子任务取消由 result() 处理；等待期间抛出的取消只属于调用方。
+    settled = asyncio.gather(work, return_exceptions=True)
+    while not work.done():
+        try:
+            await asyncio.shield(settled)
+        except asyncio.CancelledError:
+            cancelled = True
+    try:
+        result = work.result()
+    except asyncio.CancelledError:
+        if not ignore_task_cancel:
+            raise
+        result = cast(T, None)
+    if cancelled:
+        raise asyncio.CancelledError
+    return result
+
+
+async def drain_uninterruptible(work: asyncio.Future[T] | asyncio.Task[T]) -> T:
+    """在异常回滚或监听器排空路径中等待任务完成，忽略外层重复注入的取消。"""
+    while not work.done():
+        try:
+            await asyncio.shield(work)
+        except asyncio.CancelledError:
+            continue
+    return work.result()

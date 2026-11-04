@@ -13,6 +13,7 @@ from typing import Any, Literal, Protocol
 
 import httpx
 
+from core.common.file_io import shield_until_done
 from .definitions import (
     WorkloadBinding,
     WorkloadDescriptor,
@@ -575,18 +576,7 @@ def _health_status(url: str, timeout_seconds: float) -> int:
 async def _await_task_after_cancellation(task: asyncio.Task[Any]) -> Any:
     """Finish cleanup before restoring caller cancellation."""
 
-    cancelled = False
-    while not task.done():
-        try:
-            await asyncio.shield(task)
-        except asyncio.CancelledError:
-            if task.done():
-                break
-            cancelled = True
-    result = task.result()
-    if cancelled:
-        raise asyncio.CancelledError
-    return result
+    return await shield_until_done(task)
 
 
 def _error_text(error: BaseException) -> str:

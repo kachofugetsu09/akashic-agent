@@ -15,6 +15,7 @@ from typing import TYPE_CHECKING, Literal
 
 from pydantic import BaseModel, ConfigDict
 
+from core.common.file_io import shield_until_done
 from plugins.ledger.contract import Bindings
 from plugins.ledger.contract import EmbeddingRecords, MessageCatalog, MessageEmbeddings, Message, Input
 
@@ -578,14 +579,4 @@ class _VerifiedRecords:
 
 async def run_memory_job[T](work: Callable[[], T]) -> T:
     """CPU 与文件发布移出事件循环；取消后先排空线程，再允许关闭图 writer。"""
-    job = asyncio.create_task(asyncio.to_thread(work))
-    cancelled = False
-    while not job.done():
-        try:
-            _ = await asyncio.shield(job)
-        except asyncio.CancelledError:
-            cancelled = True
-    result = job.result()
-    if cancelled:
-        raise asyncio.CancelledError
-    return result
+    return await shield_until_done(asyncio.create_task(asyncio.to_thread(work)))

@@ -7,6 +7,7 @@ from concurrent.futures import Future, ThreadPoolExecutor
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any, Generic, TypeVar, cast
 
+from core.common.file_io import drain_uninterruptible
 from agent.plugin_composition.model import CompositionError, ServiceKey
 
 if TYPE_CHECKING:
@@ -137,9 +138,4 @@ async def _finish_join(
 ) -> list[object | BaseException]:
     """Join worker futures despite repeated caller cancellation."""
 
-    while not task.done():
-        try:
-            _ = await asyncio.shield(task)
-        except asyncio.CancelledError:
-            continue
-    return task.result()
+    return await drain_uninterruptible(task)

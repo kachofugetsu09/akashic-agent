@@ -10,6 +10,7 @@ import ssl
 
 import httpx
 from plugins.ledger.contract import detect_supported_image_mime
+from core.common.file_io import shield_until_done
 from core.common.frozen_json import freeze_json, frozen_memo
 from dataclasses import (
     asdict,
@@ -515,17 +516,8 @@ class DriverConnection:
         """等待资源关闭完成，再向调用方传回取消。"""
         if self.close is not None:
             # 1. 独立任务保护关闭过程，避免重复取消截断底层资源释放。
-            task = asyncio.ensure_future(self.close())
-            cancelled = False
-            while not task.done():
-                try:
-                    await asyncio.shield(task)
-                except asyncio.CancelledError:
-                    cancelled = True
             # 2. 关闭失败必须可见；关闭成功后恢复调用方的取消。
-            task.result()
-            if cancelled:
-                raise asyncio.CancelledError
+            _ = await shield_until_done(asyncio.ensure_future(self.close()))
 
 
 ContentRenderer = Callable[[ContentPart], Sequence[Mapping[str, Any]]]

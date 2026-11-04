@@ -24,6 +24,7 @@ from collections.abc import Coroutine, Mapping
 from typing import Any, TypeVar, cast
 from urllib.parse import quote, urlencode, urlsplit
 
+from core.common.file_io import shield_until_done
 from plugins.host_execution.contract import (
     WorkloadLease,
     WorkloadMode,
@@ -1344,19 +1345,7 @@ def _request_lease(
 async def _finish_effect(effect: Coroutine[Any, Any, _T]) -> _T:
     """Finish one Docker effect before restoring caller cancellation."""
 
-    task = asyncio.create_task(effect)
-    cancelled = False
-    while not task.done():
-        try:
-            await asyncio.shield(task)
-        except asyncio.CancelledError:
-            if task.done():
-                break
-            cancelled = True
-    result = task.result()
-    if cancelled:
-        raise asyncio.CancelledError
-    return result
+    return await shield_until_done(asyncio.create_task(effect))
 
 
 def _labels(detail: dict[str, object]) -> dict[str, str]:

@@ -2,6 +2,15 @@
 
 本文档记录 `refactor/code-clean` 系列重构的决策依据、能力变化、性能数据和测试调整。每个被接受的提交都必须补充一条记录；没有测量或调用链证据的“优化”不得合并。
 
+## 2026-11-04 异步不可中断收尾原语收敛：提炼 shield_until_done 与 drain_uninterruptible
+
+- 基线：`91d19f2c`（`refactor/unify-tool-result-boundaries` 头），分支 `refactor/shield-cancellation-primitive`。
+- 重构对象（16 个文件）：
+  - 在已列入 `PLUGIN_ALLOWED_MODULES` 的中立基础库 `core/common/file_io.py` 中提炼 `shield_until_done(work, *, ignore_task_cancel=False)` 与 `drain_uninterruptible(work)` 两个标准异步取消保护原语；
+  - 统一替换 `agent/plugin_composition/{effect,events,executor}.py`、`agent/plugins/scope.py`、`plugins/akasha/{application/consumer,runtime}.py`、`plugins/akashic_clients/web_chat.py`、`plugins/channels/provider.py`、`plugins/host_execution/controller.py`、`plugins/ledger/{custody,durable_deliveries}.py`、`plugins/managed_processes/host.py`、`plugins/mcp/host.py`、`plugins/models/contract.py`、`plugins/workloads/host.py` 共 17 处重复手写的 `while not task.done(): await asyncio.shield(task)` 循环。
+- 依据（三次原则 + R2 中立底座）：该模式在全仓跨 15 个模块重复出现 17+ 次，且属于领域无关的 asyncio 取消排空机制。下沉至 `core.common.file_io` 后，所有插件与 Core 使用同一实现。等待期间的调用方取消与子任务取消分开处理，避免清理完成同拍发生的调用方取消被吞掉；入站 envelope 的关闭标记随 lease 物理释放完成更新。
+- Gate：`pyright` 全仓与 16 个改动模块均为 `0 errors`；`python3 scripts/plugin_boundary.py check --base origin/main` 通过（R1=0/0 R2=0/0 R3=0/0）；生命周期与排空回归 pytest 27 passed；`git diff --check` 干净。
+
 ## 2026-11-04 工具契约收敛：消除 14 个插件重复定义的 ToolResultValue/Result 与 7 个 _tool_boundary.py
 
 - 基线：`71bdf42b`（`refactor/reclaim-code-entropy` 头），分支 `refactor/unify-tool-result-boundaries`。
