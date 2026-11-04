@@ -1,4 +1,4 @@
-import { createApp, defineComponent, h, onBeforeUnmount, reactive, watchEffect, type PropType } from "vue";
+import { createApp, defineComponent, h, onBeforeUnmount, onMounted, reactive, watchEffect, type PropType } from "vue";
 import { createDefaultEditorState, createEditor, fontManager, getCanvasKit, type Editor, type Tool } from "@open-pencil/core";
 import { SceneGraph } from "@open-pencil/scene-graph";
 import { CanvasRoot, CanvasSurface, EDITOR_KEY, toolCursor, useCanvasContext, useCanvasInput, useEditorCommands, useTextEdit } from "@open-pencil/vue";
@@ -12,6 +12,8 @@ import notoNaskhArabic from "@open-pencil/core/assets/NotoNaskhArabic-Regular.tt
 import { DESIGN_CHANNEL, type DesignFromFrame, type DesignToFrame, type RelayedResponse } from "./contract";
 import { Documents, type DocumentHost } from "./documents";
 import { iconSvg, type IconName } from "./icons";
+import { bindKeyboard } from "./keyboard";
+import { LayersPanel, PropertiesPanel } from "./panels";
 import "./style.css";
 
 const FONTS: Record<string, string> = {
@@ -28,6 +30,8 @@ const TOOLS: { tool: Tool; label: string; icon: IconName; key: string }[] = [
   { tool: "PEN", label: "钢笔", icon: "pen", key: "P" },
   { tool: "HAND", label: "抓手", icon: "hand", key: "H" },
 ];
+// 面板默认按 iframe 宽度决定：工作台够宽时两侧都开，窄时只留画布，用文档条上的按钮展开。
+const panels = reactive({ layers: window.innerWidth >= 720, properties: window.innerWidth >= 960 });
 const SAVE_LABELS = { saved: "已保存", dirty: "有修改", saving: "正在保存…", conflict: "文档已在别处更新", error: "保存失败" } as const;
 
 fontManager.setBundledFontLocator((file) => FONTS[file.replace(/^\//u, "")] ?? file);
@@ -63,6 +67,9 @@ const DocumentBar = defineComponent({
       return h("header", { class: "design-bar" }, [
         picker, status,
         h("span", { class: "design-bar-gap" }),
+        IconButton({ label: "图层", icon: "layers", pressed: panels.layers, disabled: !current, onClick: () => { panels.layers = !panels.layers; } }),
+        IconButton({ label: "属性", icon: "properties", pressed: panels.properties, disabled: !current,
+          onClick: () => { panels.properties = !panels.properties; } }),
         IconButton({ label: "撤销", icon: "undo", disabled: !current || busy, onClick: () => commands.runCommand("edit.undo") }),
         IconButton({ label: "重做", icon: "redo", disabled: !current || busy, onClick: () => commands.runCommand("edit.redo") }),
         IconButton({ label: "缩放到全部内容", icon: "fit", disabled: !current, onClick: () => commands.runCommand("view.zoomFit") }),
@@ -110,6 +117,10 @@ const Shell = defineComponent({
     documents: { type: Object as PropType<Documents>, required: true },
   },
   setup(props) {
+    const commands = useEditorCommands();
+    let unbind = () => {};
+    onMounted(() => { unbind = bindKeyboard(window, props.editor, commands.runCommand, () => props.documents.state.busy > 0); });
+    onBeforeUnmount(() => unbind());
     return () => {
       const { state } = props.documents;
       const empty = !state.current && !state.loading;
@@ -117,6 +128,7 @@ const Shell = defineComponent({
         h(DocumentBar, { documents: props.documents }),
         state.error && h("p", { class: "design-error", role: "alert" }, state.error),
         h("div", { class: "design-body", inert: state.busy > 0 }, [
+          !empty && panels.layers && h(LayersPanel),
           h("div", { class: "design-stage" }, [
             h(CanvasRoot, null, () => [h(CanvasSurface, { class: "design-canvas" }), h(CanvasInput, { editor: props.editor, documents: props.documents })]),
             !empty && h(ToolDock, { editor: props.editor }),
@@ -125,6 +137,7 @@ const Shell = defineComponent({
               state.session && h("button", { type: "button", class: "design-primary", onClick: () => void props.documents.create() }, "新建设计"),
             ]),
           ]),
+          !empty && panels.properties && h(PropertiesPanel, { editor: props.editor }),
         ]),
       ]);
     };
