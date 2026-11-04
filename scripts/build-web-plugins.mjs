@@ -1,4 +1,4 @@
-import { access, readdir, copyFile, readFile, writeFile } from "node:fs/promises";
+import { access, readdir, copyFile, readFile, rm, writeFile } from "node:fs/promises";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -151,3 +151,58 @@ const themeBuild = await bundle({ entryPoints: [resolve(repoRoot, "frontend/them
   bundle: true, format: "esm", platform: "node", write: false });
 const themeModule = await import(`data:text/javascript;base64,${Buffer.from(themeBuild.outputFiles[0].contents).toString("base64")}`);
 await writeFile(resolve(pluginsRoot, "visuals/preview-theme.css"), themeModule.themeCss());
+
+// 设计编辑器（Vue + open-pencil + CanvasKit WASM + 字体）单独打包成一个入口，按内容哈希命名放进不入库的 static/（发布时随插件制品一起打包），
+// 标签模块第一次打开时建 iframe 加载 editor.html；Node 内置模块只在 open-pencil 的无头分支里用到，留作外部。
+const designAssets = resolve(pluginsRoot, "design/static");
+await rm(designAssets, { recursive: true, force: true });
+const designOptions = {
+  bundle: true, format: "esm", target: "es2022", minify: true, metafile: true,
+  outdir: designAssets, entryNames: "[name]-[hash]", assetNames: "[name]-[hash]",
+  publicPath: "/design/assets/", legalComments: "none",
+  define: { "process.env.NODE_ENV": JSON.stringify("production"), __VUE_OPTIONS_API__: "true",
+    __VUE_PROD_DEVTOOLS__: "false", __VUE_PROD_HYDRATION_MISMATCH_DETAILS__: "false" },
+  external: ["node:*", "fs", "path", "module", "url", "worker_threads"],
+  loader: { ".wasm": "file", ".ttf": "file", ".woff2": "file" },
+};
+const designName = (path) => path.slice(path.lastIndexOf("/") + 1);
+// open-pencil 按 Vite 的 new URL("./x.ts", import.meta.url) 写法起 Worker：先单独打包两个 Worker，再把编辑器里的地址换成产物地址。
+const openPencilCore = resolve(repoRoot, "node_modules/@open-pencil/core/dist");
+const designWorkerBuild = await bundle({ ...designOptions, entryPoints: {
+  "export-worker": resolve(openPencilCore, "io/formats/fig/export-worker.js"),
+  "fig-worker": resolve(openPencilCore, "kiwi/fig/session/worker.js"),
+} });
+const designWorkers = Object.fromEntries(Object.entries(designWorkerBuild.metafile.outputs)
+  .filter(([, output]) => output.entryPoint)
+  .map(([path, output]) => [output.entryPoint.endsWith("export-worker.js") ? "export-worker" : "worker", `/design/assets/${designName(path)}`]));
+const designWorkerUrls = {
+  name: "design-worker-urls",
+  setup(build) {
+    build.onLoad({ filter: /@open-pencil[\\/]core[\\/]dist[\\/](io[\\/]formats[\\/]fig[\\/]export|kiwi[\\/]fig[\\/]session[\\/]client)\.js$/ }, async (args) => ({
+      loader: "js",
+      contents: (await readFile(args.path, "utf8")).replace(/new URL\("\.\/(export-worker|worker)\.ts", import\.meta\.url\)/gu,
+        (_, name) => `new URL(${JSON.stringify(designWorkers[name])}, import.meta.url)`),
+    }));
+  },
+};
+const designBuild = await bundle({ ...designOptions, plugins: [designWorkerUrls],
+  entryPoints: { editor: resolve(repoRoot, "frontend/plugins/design/editor/main.ts") } });
+const designOutputs = Object.entries(designBuild.metafile.outputs);
+const designEntry = designOutputs.find(([, output]) => output.entryPoint?.endsWith("editor/main.ts"));
+if (!designEntry) throw new Error("设计编辑器没有产出入口");
+// iframe 拿不到外壳页面的主题变量：与可视化预览一样内联主题 CSS 与品牌变量，按 data-theme 切换明暗。
+const designTheme = themeModule.themeCss() + await readFile(resolve(repoRoot, "frontend/theme/src/brand-tokens.css"), "utf8");
+const designStyles = designOutputs.filter(([path]) => path.endsWith(".css")).map(([path]) => designName(path));
+await writeFile(resolve(designAssets, "editor.html"), `<!doctype html>
+<html lang="zh-CN" data-theme="light">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>设计</title>
+<style>${designTheme}</style>
+${designStyles.map((name) => `<link rel="stylesheet" href="/design/assets/${name}">`).join("\n")}
+<script type="module" src="/design/assets/${designName(designEntry[0])}"></script>
+</head>
+<body><div id="design-root"></div></body>
+</html>
+`);
