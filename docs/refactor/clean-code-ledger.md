@@ -19,7 +19,7 @@
 - 重构对象（16 个文件）：
   - 在已列入 `PLUGIN_ALLOWED_MODULES` 的中立基础库 `core/common/file_io.py` 中提炼 `shield_until_done(work, *, ignore_task_cancel=False)` 与 `drain_uninterruptible(work)` 两个标准异步取消保护原语；
   - 统一替换 `agent/plugin_composition/{effect,events,executor}.py`、`agent/plugins/scope.py`、`plugins/akasha/{application/consumer,runtime}.py`、`plugins/akashic_clients/web_chat.py`、`plugins/channels/provider.py`、`plugins/host_execution/controller.py`、`plugins/ledger/{custody,durable_deliveries}.py`、`plugins/managed_processes/host.py`、`plugins/mcp/host.py`、`plugins/models/contract.py`、`plugins/workloads/host.py` 共 17 处重复手写的 `while not task.done(): await asyncio.shield(task)` 循环。
-- 依据（三次原则 + R2 中立底座）：该模式在全仓跨 15 个模块重复出现 17+ 次，且属于 100% 领域无关的 asyncio 取消排空机制。下沉至 `core.common.file_io` 后，所有插件与 Core 均使用同一经过验证的实现（含 `if work.done(): break` 竞态保护）。
+- 依据（三次原则 + R2 中立底座）：该模式在全仓跨 15 个模块重复出现 17+ 次，且属于领域无关的 asyncio 取消排空机制。下沉至 `core.common.file_io` 后，所有插件与 Core 使用同一实现。等待期间的调用方取消与子任务取消分开处理，避免清理完成同拍发生的调用方取消被吞掉；入站 envelope 的关闭标记随 lease 物理释放完成更新。
 - Gate：`pyright` 全仓与 16 个改动模块均为 `0 errors`；`python3 scripts/plugin_boundary.py check --base origin/main` 通过（R1=0/0 R2=0/0 R3=0/0）；生命周期与排空回归 pytest 27 passed；`git diff --check` 干净。
 
 ## 2026-11-04 工具契约收敛：消除 14 个插件重复定义的 ToolResultValue/Result 与 7 个 _tool_boundary.py
@@ -34,7 +34,7 @@
 ## 2026-11-04 熵清理：按 reclaim-code-entropy 回收跨插件与 Core 的无消费者残留面及 Web 旧附件死链路
 
 - 基线：`bed19054`（`main` 头），分支 `refactor/reclaim-code-entropy`。只改独立 worktree，未操作正式 workspace、服务、数据库、安装 cache 或 Git refs。
-- 删除对象（20 个生产文件净删减 480+ 行）：
+- 删除对象（19 个生产文件）：
   - `plugins/akashic_clients/` 旧上传死链路：`plugins/akashic_clients/attachments.py` 整文件、`services.py` `AttachmentStorePort`、`web_chat.py` 的 `_attachments` / `bind_attachment_store` / `_upload_result` / `upload_roots` / `has_media` / `_media_paths` 与非 artifact 上传 fallback、`chat_api.py` 的 `/api/chat/media` 路由与 `_can_read_media`、`channel.py` 的 `_upload_store`（Web 上传与读取早已全面走 Core `ARTIFACT_IMPORT` / `ARTIFACT_READ` 与 `/api/chat/artifacts/{artifact_id}`，旧路径裸读链路已无任何真实消费者）；
   - `plugins/akasha/domain/diffusion.py` `IndexedMaxHeap`（#347 将 `residual_push` 切换为 `heapq` 惰性堆 + C 扩展后遗留的 88 行旧索引堆实现，全仓零消费者）；
   - `plugins/akasha/config.py` `load_akasha_config` 及随之闲置的 `tomllib` import（Akasha 配置已统一走 `PLUGIN_CONFIG.load(ctx, Settings)` + `Settings.settings()`，独立 TOML 文件加载器已无任何消费者）；
@@ -46,8 +46,7 @@
   - `plugins/mcp/host.py` `McpGenerationHost.route_for`、`plugins/mcp/definitions.py` `McpServerBinding.is_live`、`plugins/mcp/client.py` `McpClient.wait_fatal_failure` 及 `_fatal_event`（MCP 路由已收敛至 `McpServerHandle.route()`，存活与故障统一走 `is_owned()` 与 `_fatal_failure` 同步健康门）；
   - `plugins/ledger/log.py` `MessageLog.warm_prefix`、`plugins/ledger/attachment_import.py` `ChannelOutboundAttachmentImporter.import_media`、`plugins/ledger/base.py` `MessageDeduper`（及闲置 `deque` import）；
   - `plugins/goal/state.py` `pause_for_usage_uncertainty` 与 `completed_text`（#1812 已由 `settle_round` 内联处理用量不确定暂停与终态文案，这两个顶层函数零调用）；
-  - `plugins/content/contract.py` `SpanData`（及闲置 `TypedDict` import）。
-- 可达性证据：全部候选在 `main`（`bed19054`）与 `akashic-fleet` 外部插件仓库逐一 `git grep -w` 核验零命中；无动态 `getattr`、字符串路由或 `__all__` 外部导出依赖。同时按 `reclaim-code-entropy` 规则主动保留了有设计契约或诊断职责的候选项（`ExecutorService.parallel_sync`、`EventMailStore.rebuild_mail_projections`、`ChannelAttachmentArtifactStore.validate_filesystem_integrity` / `incomplete_attachment_imports`、`PluginDurableDeliveries`）。
+- 可达性证据：保留项外的候选在 `main`（`bed19054`）与 `akashic-fleet` 外部插件仓库逐一核验，并检查 hua-home 当前选择的外置插件源码；未发现动态 `getattr`、字符串路由或 `__all__` 消费者。部署前检查发现实际安装的 `meme@github` 仍导入 `SpanData`，因此保留该公共类型与 `TypedDict` import。同时保留有设计契约或诊断职责的候选项（`ExecutorService.parallel_sync`、`EventMailStore.rebuild_mail_projections`、`ChannelAttachmentArtifactStore.validate_filesystem_integrity` / `incomplete_attachment_imports`、`PluginDurableDeliveries`）。
 - 能力不变：语义、公开协议、持久化 schema、迁移与运行时生命周期均不变。
 - Gate：`pyright` 全仓与改动文件均为 `0 errors`；`python3 scripts/plugin_boundary.py check --base origin/main` 通过；`python3 scripts/check_yoyo_migrations.py --base origin/main` 通过；`python3 scripts/chat_artifact_read_scenario.py` 通过；关联 pytest 51 passed；`git diff --check` 干净。
 

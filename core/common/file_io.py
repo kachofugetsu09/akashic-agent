@@ -63,12 +63,12 @@ async def shield_until_done(
 ) -> T:
     """屏蔽外层重复取消直到任务物理完成，随后恢复调用方的 CancelledError。"""
     cancelled = False
+    # 子任务取消由 result() 处理；等待期间抛出的取消只属于调用方。
+    settled = asyncio.gather(work, return_exceptions=True)
     while not work.done():
         try:
-            await asyncio.shield(work)
+            await asyncio.shield(settled)
         except asyncio.CancelledError:
-            if work.done():
-                break
             cancelled = True
     try:
         result = work.result()

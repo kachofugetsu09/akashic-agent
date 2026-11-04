@@ -6,7 +6,7 @@ import re
 from dataclasses import dataclass
 from collections.abc import Callable, Iterator, Mapping, Sequence
 from contextlib import AbstractAsyncContextManager
-from typing import Protocol
+from typing import Protocol, TypedDict
 
 from agent.plugin_composition import Context, Effect, ServiceKey
 from plugins.ledger.contract import Bindings
@@ -83,3 +83,9 @@ class TextSource:
             for match in pattern.finditer(self.text)
             if self.allows(match.start(), match.end())
         )
+
+
+class SpanData(TypedDict):
+    start: int
+    end: int
+    parts: tuple[ContentPart, ...]
