@@ -1,4 +1,4 @@
-"""Agent 的设计工具：open-pencil 的核心工具按原 schema 暴露，调用经实时通道交给用户打开的画布执行。"""
+"""Agent 的设计工具：open-pencil 的核心工具按原 schema 暴露，在服务端的无头画布上执行，用户不必开着网页。"""
 from __future__ import annotations
 
 import asyncio
@@ -16,18 +16,20 @@ from plugins.ledger.contract import ContentPart, Input, json_value
 from plugins.tools.contract import TOOLS, CallSource, Result
 from plugins.working_directory.contract import WORKING_DIRECTORY, WorkingDirectories
 
-from .live import DESIGN_LIVE, CanvasUnavailable, DesignLive
+from .headless import HeadlessPages, HeadlessUnavailable
+from .live import DESIGN_LIVE
 from .snapshot import MAX_BYTES, SnapshotError, build
-from .store import DESIGN_STORE, DesignStore, DesignStoreError
+from .store import DESIGN_STORE, DesignDocument, DesignStore, DesignStoreError
+from .worker import DesignWorker, DesignWorkerError
 
 MANIFEST = "static/tools.json"
 MAX_RESULT = 48 * 1024
 GROUP = (
-    "设计画布（open-pencil）：在用户工作台的“设计”标签里画界面、海报、原型和图示，改动实时出现在用户打开的画布上，"
-    "用户可以接着改、可以撤销。先用 design_document 打开或新建文档，再用 design_render 以 JSX 画出结构，"
-    "用 design_get_jsx / design_describe 检查结果。给用户看 workspace 里做好的网页（原型、showcase）用 design_show_html。"
+    "设计画布（open-pencil）：画界面、海报、原型和图示，文档保存在这个会话里，用户在工作台的“设计”标签里看和改。"
+    "工具在服务端执行，用户不在线也能做；每次修改直接保存，用户开着画布时会跟进。"
+    "先用 design_document 打开或新建文档，再用 design_render 以 JSX 画出结构，用 design_get_jsx / design_describe 检查结果。"
+    "给用户看 workspace 里做好的网页（原型、showcase）用 design_show_html。"
 )
-UNAVAILABLE = "。设计画布只能在网页端用：请用户在网页里打开这个会话（工作台的“设计”标签会自动加载），然后再试。"
 
 
 HTML_DESCRIPTION = (
@@ -73,11 +75,11 @@ def manifest(plugin_dir: Path) -> tuple[ToolSpec, ...]:
 class DesignTool:
     idempotent = False
 
-    def __init__(self, live: DesignLive, tool: str) -> None:
-        self._live = live
+    def __init__(self, worker: DesignWorker, tool: str) -> None:
+        self._worker = worker
         self._tool = tool
 
-    # 调用属于哪个会话、哪一轮在提交时记下：画布按会话路由，同一轮只自动展开一次设计标签。
+    # 调用属于哪个会话、哪一轮在提交时记下：文档按会话存放，同一轮只自动展开一次设计标签。
     async def prepare(self, arguments: Mapping[str, object], source: CallSource | None = None) -> Mapping[str, object] | str:
         if source is None:
             return "设计工具只能由对话里的调用触发"
@@ -93,9 +95,14 @@ class DesignTool:
         values = cast(dict[str, object], json_value(arguments))
         identity = cast(dict[str, str], values.pop("_design"))
         try:
-            reply = await self._live.call(identity["session"], identity["turn"], self._tool, values)
-        except CanvasUnavailable as error:
-            return Result("error", (ContentPart("text", f"{error}{UNAVAILABLE}"),))
+            if self._tool == "document":
+                request = DocumentAction.model_validate(values)
+                reply: dict[str, object] = {"ok": True, "result": await self._worker.document(
+                    identity["session"], identity["turn"], request.action, request.name, request.document)}
+            else:
+                reply = await self._worker.call(identity["session"], identity["turn"], self._tool, values)
+        except (DesignWorkerError, HeadlessUnavailable, DesignStoreError) as error:
+            return Result("error", (ContentPart("text", str(error)),))
         if reply.get("ok") is not True:
             return Result("error", (ContentPart("text", str(reply.get("error") or "设计工具执行失败")),))
         text = json.dumps(reply.get("result"), ensure_ascii=False)
@@ -108,8 +115,8 @@ class DesignTool:
 
 
 class HtmlTool(DesignTool):
-    def __init__(self, live: DesignLive, store: DesignStore, workspace: Path, directories: WorkingDirectories) -> None:
-        super().__init__(live, "preview")
+    def __init__(self, worker: DesignWorker, store: DesignStore, workspace: Path, directories: WorkingDirectories) -> None:
+        super().__init__(worker, "preview")
         self._store = store
         self._workspace = workspace.resolve()
         self._directories = directories
@@ -127,7 +134,7 @@ class HtmlTool(DesignTool):
             return str(error)
         return values
 
-    # 1. 快照写成会话里的一份设计文档；2. 画布打开它并切到预览（需要时导入图层）；画布不在也不算失败
+    # 1. 快照写成会话里的一份设计文档；2. 需要时在无头画布里导入图层；3. 开着的画布切到这份文档
     async def invoke(self, key: str, arguments: Mapping[str, object]) -> Result:
         values = cast(dict[str, object], json_value(arguments))
         identity = cast(dict[str, str], values["_design"])
@@ -140,17 +147,23 @@ class HtmlTool(DesignTool):
         except (SnapshotError, DesignStoreError, OSError) as error:
             return Result("error", (ContentPart("text", str(error)),))
         lines = [f"已{'发布' if created else '更新'}“{document.name}”（{document.source}，{len(snapshot.html.encode()) / 1024:.0f} KB，文档 {document.id}）。"]
-        try:
-            reply = await self._live.call(identity["session"], identity["turn"], "preview",
-                                          {"document": document.id, "import_layers": request.import_layers})
-            lines.append(str(reply.get("result") or reply.get("error") or ""))
-        except CanvasUnavailable:
-            lines.append("用户现在没有打开网页端；下次打开这个会话的“设计”标签就能看到。")
+        lines.append(await self._show(identity, document, request.import_layers))
         if snapshot.inlined:
             lines.append("已内联：" + "、".join(dict.fromkeys(snapshot.inlined)))
         if snapshot.missing:
             lines.append("没找到、保留原引用：" + "、".join(dict.fromkeys(snapshot.missing)))
         return Result("success", (ContentPart("text", "\n".join(line for line in lines if line)),))
+
+    # 导入失败不影响已经发布的预览，原因随结果交给 Agent
+    async def _show(self, identity: dict[str, str], document: DesignDocument, import_layers: bool) -> str:
+        if not import_layers:
+            await self._worker.preview(identity["session"], identity["turn"], document.id)
+            return "用户的“设计”标签里可以看网页预览；开着画布的话已经切过去。"
+        try:
+            count = await self._worker.import_html(identity["session"], identity["turn"], document)
+        except (DesignWorkerError, HeadlessUnavailable, DesignStoreError) as error:
+            return f"网页导入成图层没有完成：{error}"
+        return f"已把网页导入成 {count} 个设计图层（整页是一个顶层框架）；用户可以在“预览”里看原网页。"
 
     # 入口必须是 workspace 里真实存在的 HTML 文件；先跟随符号链接再判断，链接指到外面同样拒绝。
     def _entry(self, raw: str, base: Path) -> Path:
@@ -165,14 +178,17 @@ class HtmlTool(DesignTool):
 
 
 async def register_tools(ctx: Context) -> None:
-    live = ctx.require(DESIGN_LIVE)
+    store = ctx.require(DESIGN_STORE)
+    worker = DesignWorker(store, ctx.require(DESIGN_LIVE), HeadlessPages(), ctx.runtime.plugin_dir, ctx.runtime.data_dir)
+    _ = await ctx.effect(lambda: worker.aclose, label="design-worker")
     catalog = ctx.require(TOOLS)
     _ = await catalog.declare_group(ctx, description=GROUP)
     specs = (ToolSpec("document", "Open, create or list the design documents of this conversation. "
-                      "Every other design tool works on the document open on the canvas; when none is open, the first call creates one.",
+                      "Every other design tool works on the document you last opened or created here (by default the most recently edited one; "
+                      "the first call creates one when the conversation has none).",
                       DocumentAction.model_json_schema()), *manifest(ctx.runtime.plugin_dir))
     for spec in specs:
-        tool = DesignTool(live, spec.name)
+        tool = DesignTool(worker, spec.name)
 
         @asynccontextmanager
         async def open_tool(_state: Mapping[str, object], tool: DesignTool = tool) -> AsyncIterator[DesignTool]:
@@ -180,7 +196,7 @@ async def register_tools(ctx: Context) -> None:
 
         _ = await catalog.register(ctx, name=f"design_{spec.name}", description=spec.description,
                                    parameters=spec.parameters, open=open_tool)
-    html = HtmlTool(live, ctx.require(DESIGN_STORE), ctx.runtime.workspace, ctx.require(WORKING_DIRECTORY))
+    html = HtmlTool(worker, store, ctx.runtime.workspace, ctx.require(WORKING_DIRECTORY))
 
     @asynccontextmanager
     async def open_html(_state: Mapping[str, object]) -> AsyncIterator[HtmlTool]:

@@ -79,9 +79,9 @@ def register(app: FastAPI, context: DashboardContext) -> None:
 
     @app.get("/api/dashboard/design/fonts")
     async def font(url: str = Query(min_length=8, max_length=2048)) -> Response:
-        return await _font(context.data_root / "fonts", url)
+        return await fetch_font(context.data_root / "fonts", url)
 
-    # 标签模块为当前会话保持一条连接：别处保存的新修订号与 Agent 的设计工具调用都经它送达画布。
+    # 标签模块为当前会话保持一条连接：别处保存的新修订号与 Agent 正在改的文档经它送达画布。
     @app.websocket("/api/dashboard/design/live")
     async def live(socket: WebSocket, session: str = _SESSION) -> None:
         await context.require(DESIGN_LIVE).serve(socket, session)
@@ -162,7 +162,7 @@ def _asset_route(app: FastAPI, assets: _EditorAssets, name: str) -> None:
 
 
 # 只代取 Google Fonts 三个域名的 https 地址；成功的响应整份落盘，之后同一 URL 直接读文件。
-async def _font(cache: Path, url: str) -> Response:
+async def fetch_font(cache: Path, url: str) -> Response:
     parts = urlsplit(url)
     if parts.scheme != "https" or parts.hostname not in FONT_HOSTS or parts.port is not None:
         raise HTTPException(400, "只能代取 Google Fonts 的地址")

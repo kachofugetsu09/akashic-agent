@@ -2,7 +2,7 @@ import { defineComponent, h, onBeforeUnmount, onMounted, ref, watch } from "vue"
 import type { Editor } from "@open-pencil/core";
 import { buildOpenPencilClipboardHTML } from "@open-pencil/core/clipboard";
 import { browserHTMLToSceneGraph } from "@open-pencil/dom-css/browser";
-import { ensureFallback, loadDocumentFonts } from "./documents";
+import { ensureFallback, loadDocumentFonts, type Documents } from "./documents";
 
 // 网页在自带 CSP sandbox 的不透明源页面里运行（preview.html），拿不到 akashic 的 Cookie、存储与本编辑器。
 const FRAME = "/design/assets/preview.html";
@@ -80,4 +80,21 @@ export async function importHTML(editor: Editor, page: string, name: string): Pr
 
 function countNodes(graph: { getNode(id: string): { childIds: string[] } | undefined }, ids: string[]): number {
   return ids.reduce((total, id) => total + 1 + countNodes(graph, graph.getNode(id)?.childIds ?? []), 0);
+}
+
+// 用户点“导入为图层”：排进文档队列，轮到时会话或文档已经换了就不导入；导入期间冻结画布输入。
+export function importPreview(editor: Editor, documents: Documents): Promise<number> {
+  const { session, current } = documents.state;
+  return documents.serial(() => {
+    const now = documents.state;
+    const page = now.page;
+    if (!current || !page || now.session !== session || now.current?.id !== current.id)
+      return Promise.reject(new Error("文档已经换了，这次导入没有执行"));
+    return documents.hold(async () => {
+      const count = await importHTML(editor, page, current.name);
+      now.view = "canvas";
+      documents.touch();
+      return count;
+    });
+  });
 }

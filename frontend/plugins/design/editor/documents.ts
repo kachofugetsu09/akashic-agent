@@ -1,7 +1,7 @@
 import { reactive } from "vue";
 import { exportFigFile, fontManager, parseFigFile, type Editor } from "@open-pencil/core";
 import { SceneGraph } from "@open-pencil/scene-graph";
-import type { DesignIndicator } from "./contract";
+import type { DesignIndicator, DesignView } from "./contract";
 
 // 文字用到的字体（含中日韩回退）按需取回后重新排版、重绘：画框标签显示的是图层名，名字里的字一并取回；
 // 回退字体是按用到的字取的子集，换来新的子集后已经排好的文字也要重排，不然缺字的地方一直是空的。
@@ -45,7 +45,7 @@ export class Documents {
   readonly state = reactive({
     session: null as string | null, list: [] as DocumentMeta[], current: null as DocumentMeta | null,
     loading: false, save: "saved" as SaveState, error: "",
-    // 大于 0 时画布正在被替换（或 Agent 正在改）：外壳据此冻结用户输入
+    // 大于 0 时画布正在被替换（或正在导入网页）：外壳据此冻结用户输入
     busy: 0,
     // 由网页发布来的文档带一份预览：view 在画布与预览之间切换，page 是预览的 HTML
     view: "canvas" as "canvas" | "preview", page: "",
@@ -86,8 +86,7 @@ export class Documents {
     }
   }
 
-  // 会话切换、用户的文档操作、自动跟进、重连对账与 Agent 调用排在同一条队列里：前一件做完才轮到下一件，对账不会撞上还没加载完的文档，
-  // 切走之后才轮到的旧会话调用在核对归属时被拒绝。
+  // 会话切换、用户的文档操作、自动跟进与重连对账排在同一条队列里：前一件做完才轮到下一件，对账不会撞上还没加载完的文档。
   serial<T>(task: () => Promise<T>): Promise<T> {
     const next = this.queue.then(task);
     this.queue = next.catch(() => undefined);
@@ -99,12 +98,19 @@ export class Documents {
   }
 
   open(id: string): Promise<void> {
-    return this.serial(() => this.openNow(id));
+    return this.serial(() => this.hold(() => this.load(id)));
   }
 
-  // 已经在队列里（Agent 调用）时直接执行，不再排队，免得自己等自己。
-  openNow(id: string): Promise<void> {
-    return this.hold(() => this.load(id));
+  // Agent 开始改某份文档：画布没有未保存的修改就切过去；有修改时留在原地，只刷新列表。
+  focus(id: string, view: DesignView): Promise<void> {
+    return this.serial(async () => {
+      if (!this.state.list.some((item) => item.id === id)) await this.refresh();
+      if (this.state.current?.id !== id) {
+        if (this.saving || this.version !== this.savedVersion) return;
+        await this.hold(() => this.load(id));
+      }
+      if (this.state.current?.id === id && (view === "canvas" || this.state.page)) this.state.view = view;
+    });
   }
 
   private async switchTo(session: string | null): Promise<void> {
@@ -162,11 +168,7 @@ export class Documents {
   }
 
   create(name = ""): Promise<DocumentMeta | null> {
-    return this.serial(() => this.createNow(name));
-  }
-
-  createNow(name = ""): Promise<DocumentMeta | null> {
-    return this.hold(() => this.make(name));
+    return this.serial(() => this.hold(() => this.make(name)));
   }
 
   private async make(name: string): Promise<DocumentMeta | null> {

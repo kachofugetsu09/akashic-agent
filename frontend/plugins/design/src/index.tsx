@@ -1,6 +1,6 @@
 import type { ConversationTabView } from "@akashic/conversation-tools-v2";
 import { currentTheme, subscribeTheme, type WebHostContextV1, type WebUiDisposer } from "@akashic/web-ui-v1";
-import { DESIGN_API, DESIGN_CHANNEL, type AgentReply, type DesignFromFrame, type DesignToFrame, type RelayedRequest } from "../editor/contract";
+import { DESIGN_API, DESIGN_CHANNEL, type DesignFromFrame, type DesignToFrame, type DesignView, type RelayedRequest } from "../editor/contract";
 import "./style.css";
 
 const FRAME = "/design/assets/editor.html";
@@ -20,26 +20,21 @@ async function relay(ctx: WebHostContextV1, request: RelayedRequest): Promise<De
   }
 }
 
-type LiveMessage = { type: "call"; id: string; turn: string; tool: string; arguments: Record<string, unknown> }
+type LiveMessage = { type: "agent"; turn: string; document: string; view: DesignView }
   | { type: "changed"; document: string; revision: number } | { type: "resync" };
 
-// 为当前会话保持一条到后端的实时连接：Agent 的设计工具调用从这里进来，交给画布执行后把回执送回去；断开后自动重连。
+// 为当前会话保持一条到后端的实时连接：Agent 正在改的文档与别处保存的新修订从这里进来；断开后自动重连。
 class LiveLink {
   private socket: WebSocket | null = null;
   private timer = 0;
   private session: string | null = null;
 
-  constructor(private readonly ctx: WebHostContextV1, private readonly receive: (message: LiveMessage, session: string) => void,
-    private readonly visible: () => boolean) {}
+  constructor(private readonly ctx: WebHostContextV1, private readonly receive: (message: LiveMessage) => void) {}
 
   open(session: string | null): void {
     this.close();
     this.session = session;
     if (session) this.connect();
-  }
-
-  send(message: { type: "visible"; visible: boolean } | ({ type: "result" } & AgentReply)): void {
-    if (this.socket?.readyState === WebSocket.OPEN) this.socket.send(JSON.stringify(message));
   }
 
   close(): void {
@@ -61,13 +56,12 @@ class LiveLink {
     this.socket = socket;
     socket.addEventListener("open", () => {
       if (this.socket !== socket) return;
-      this.send({ type: "visible", visible: this.visible() });
-      this.receive({ type: "resync" }, session);
+      this.receive({ type: "resync" });
     });
     // 换会话后旧连接可能还有在路上的消息：只收当前这条连接的
     socket.addEventListener("message", (event) => {
       if (this.socket !== socket) return;
-      try { this.receive(JSON.parse(String(event.data)) as LiveMessage, session); } catch { /* 忽略坏消息，连接保持 */ }
+      try { this.receive(JSON.parse(String(event.data)) as LiveMessage); } catch { /* 忽略坏消息，连接保持 */ }
     });
     socket.addEventListener("close", () => {
       if (this.socket !== socket) return;
@@ -90,7 +84,7 @@ class DesignTab {
   constructor(private readonly ctx: WebHostContextV1, private readonly host: HTMLElement, private readonly view: ConversationTabView) {
     this.root.className = "design-tab";
     host.replaceChildren(this.root);
-    this.live = new LiveLink(ctx, (message, session) => this.onLive(message, session), () => view.active);
+    this.live = new LiveLink(ctx, (message) => this.onLive(message));
     window.addEventListener("message", this.onFrame);
     this.start();
     this.live.open(view.session);
@@ -98,7 +92,6 @@ class DesignTab {
       view.onActiveChange((active) => {
         this.start();
         this.post({ type: "active", active });
-        this.live.send({ type: "visible", visible: active });
       }),
       view.onSessionChange((session) => { this.queued = []; this.post({ type: "session", session }); this.live.open(session); }),
       subscribeTheme(() => this.post({ type: "theme", dark: dark() })),
@@ -112,9 +105,9 @@ class DesignTab {
     this.host.replaceChildren();
   }
 
-  // 平时第一次可见才建 iframe；Agent 来调用时即使标签没开也建好
-  private start(force = false): void {
-    if (this.frame || (!this.view.active && !force)) return;
+  // 第一次可见才建 iframe：Agent 在服务端改文档，用户不看时不必加载编辑器
+  private start(): void {
+    if (this.frame || !this.view.active) return;
     this.frame = document.createElement("iframe");
     this.frame.className = "design-tab-frame";
     this.frame.title = "设计编辑器";
@@ -122,21 +115,20 @@ class DesignTab {
     this.root.replaceChildren(this.frame);
   }
 
-  // iframe 就绪前只留下 Agent 调用与文档变化，就绪后按顺序补投
+  // iframe 就绪前只留下 Agent 的文档切换与文档变化，就绪后按顺序补投
   private post(message: DesignToFrame, transfer: Transferable[] = []): void {
     if (!this.ready) {
-      if (message.type === "call" || message.type === "changed") this.queued.push(message);
+      if (this.frame && (message.type === "agent" || message.type === "changed")) this.queued.push(message);
       return;
     }
     this.frame?.contentWindow?.postMessage({ channel: DESIGN_CHANNEL, ...message }, location.origin, transfer);
   }
 
-  // Agent 调用时桌面端顺带展开标签（每轮一次）
-  private onLive(message: LiveMessage, session: string): void {
-    if (message.type !== "call") return this.post(message);
+  // Agent 开始改文档时桌面端顺带展开标签（每轮一次），画布切到那份文档
+  private onLive(message: LiveMessage): void {
+    if (message.type !== "agent") return this.post(message);
     this.view.reveal(`design:${message.turn}`);
-    this.start(true);
-    this.post({ type: "call", id: message.id, session, tool: message.tool, arguments: message.arguments });
+    this.post({ type: "agent", document: message.document, view: message.view });
   }
 
   private readonly onFrame = (event: MessageEvent<DesignFromFrame & { channel?: string }>): void => {
@@ -152,7 +144,6 @@ class DesignTab {
     } else if (data.type === "title") this.view.setTitle(data.title);
     else if (data.type === "indicator") this.view.setIndicator(data.indicator);
     else if (data.type === "request") void relay(this.ctx, data).then((reply) => this.post(reply, "body" in reply ? [reply.body] : []));
-    else if (data.type === "result") this.live.send(data);
   };
 }
 

@@ -70,8 +70,6 @@ body {
 }
 
 .design-status.is-error { color: var(--ak-color-status-error); }
-.design-status.is-agent { color: var(--ak-ink-secondary); }
-
 .design-status.is-alert {
   border: 0;
   border-radius: 6px;
