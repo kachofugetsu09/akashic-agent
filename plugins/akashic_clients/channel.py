@@ -41,7 +41,6 @@ from .capabilities import (
 from .config import AkashicClientsConfig
 from .navigation import NavigationPreferences
 from .read_marks import ReadMarks
-from .attachments import AttachmentStore
 from .web_chat import WebChatChannel
 from .chat_api import build_chat_server
 from .services import (
@@ -250,7 +249,6 @@ class _GenerationAkashicAdapter:
         )
         self._artifact_store: _ChannelArtifactStore | None = None
         self._web = WebChatChannel("akashic")
-        self._upload_store: AttachmentStore | None = None
         self._web_adapter = self._web.build_v3_adapter(context)
         self._runtime_ports: ChannelRuntimePorts | None = None
         self._servers: list[tuple[uvicorn.Server, asyncio.Task[None]]] = []
@@ -283,7 +281,6 @@ class _GenerationAkashicAdapter:
         self._artifact_store = _ChannelArtifactStore(self._context)
         if self._context.data_root is None:
             raise RuntimeError("akashic clients 缺少 plugin data root")
-        self._upload_store = AttachmentStore(self._context.data_root / "uploads")
         self._web.bind_message_scope(
             self._message_scope,
             reply_status=self._reply_status,
@@ -460,7 +457,6 @@ class _GenerationAkashicAdapter:
             message_display=self._message_display,
             plugin_ui_scope=self._plugin_ui_scope,
             web_ui_provider=self._web_ui_provider,
-            attachment_store=self._upload_store,
             artifact_store=artifact_store,
             reply_status=self._reply_status,
             follow_active_sessions=self._follow_active_sessions,

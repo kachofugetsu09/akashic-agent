@@ -30,21 +30,6 @@ class ChannelOutboundAttachmentImporter:
         ))
         return refs[0]
 
-    async def import_media(
-        self,
-        media: tuple[str, ...],
-    ) -> tuple[AttachmentRef, ...]:
-        return await import_channel_attachments(
-            self._store,
-            tuple(
-                ChannelAttachment(
-                    kind=AttachmentKind.IMAGE,
-                    source=source,
-                )
-                for source in media
-            ),
-        )
-
 
 async def import_channel_attachments(
     store: ChannelAttachmentArtifactStore,

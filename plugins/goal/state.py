@@ -282,17 +282,6 @@ def set_token_budget(
     return updated
 
 
-def pause_for_usage_uncertainty(goal: Goal, *, now: datetime | None = None) -> Goal:
-    """有限预算下无法确认用量时保守暂停，不继续花钱。"""
-    if not goal.active:
-        return goal
-    return _touch(
-        goal, now or now_utc(),
-        status=GoalStatus.PAUSED,
-        last_reason="目标用量无法确认，已暂停",
-    )
-
-
 def status_text(goal: Goal) -> str:
     lines = [
         f"目标：{goal.objective}",
@@ -307,7 +296,3 @@ def status_text(goal: Goal) -> str:
     if goal.last_reason:
         lines.append(f"最近原因：{goal.last_reason}")
     return "\n".join(lines)
-
-
-def completed_text(goal: Goal) -> str:
-    return f"目标 {goal.status.value}：{goal.objective}"

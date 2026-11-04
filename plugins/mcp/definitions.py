@@ -60,11 +60,6 @@ class McpServerBinding:
             and self.owner_fiber.activation_token is self.activation_token
         )
 
-    def is_live(self) -> bool:
-        """Return whether the declaration is owned and currently healthy."""
-
-        return self.is_owned() and self.health.healthy
-
 
 def _normalize_definition(
     plugin_dir: Path,

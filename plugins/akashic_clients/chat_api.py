@@ -23,7 +23,6 @@ from .navigation import NavigationPreferences, PinUpdate, session_pin_row
 from .notifications import NotificationFeed, NotificationRequest, notification_events
 from .read_marks import ReadMarks
 from .session_activity import follow_session_activity
-from .services import AttachmentStorePort as AttachmentStore
 from .services import (
     ActiveSessionsFollowPort,
     InvalidPage,
@@ -112,7 +111,6 @@ def create_chat_app(
     follow_active_sessions: ActiveSessionsFollowPort | None = None,
     message_scope: Callable[[], Any] | None = None,
     session_admin_scope: Callable[[], Any] | None = None,
-    attachment_store: AttachmentStore | None = None,
     artifact_store: ChannelAttachmentArtifactStore | None = None,
 ) -> FastAPI:
     if messages is not None and message_scope is not None:
@@ -123,8 +121,6 @@ def create_chat_app(
         channel.bind_message_readers(messages, reply_status)
     if message_display is not None:
         channel.bind_message_display(message_display)
-    if attachment_store is not None:
-        channel.bind_attachment_store(attachment_store)
     if artifact_store is not None:
         channel.bind_artifact_store(artifact_store)
 
@@ -594,15 +590,6 @@ def create_chat_app(
             headers=headers,
         )
 
-    @app.get("/api/chat/media")
-    def read_media(path: str = Query(...)) -> FileResponse:
-        requested = Path(path).expanduser().resolve()
-        if not _can_read_media(channel, requested):
-            raise HTTPException(status_code=404, detail="文件不存在")
-        if not requested.is_file():
-            raise HTTPException(status_code=404, detail="文件不存在")
-        return FileResponse(requested)
-
     return app
 
 
@@ -622,7 +609,6 @@ def build_chat_server(
     follow_active_sessions: ActiveSessionsFollowPort | None = None,
     message_scope: Callable[[], Any] | None = None,
     session_admin_scope: Callable[[], Any] | None = None,
-    attachment_store: AttachmentStore | None = None,
     artifact_store: ChannelAttachmentArtifactStore | None = None,
     uds: str,
 ) -> uvicorn.Server:
@@ -642,7 +628,6 @@ def build_chat_server(
             follow_active_sessions=follow_active_sessions,
             message_scope=message_scope,
             session_admin_scope=session_admin_scope,
-            attachment_store=attachment_store,
             artifact_store=artifact_store,
         ),
         uds=uds,
@@ -727,19 +712,3 @@ def _plugin_ui_http_error(error: Exception) -> HTTPException:
     if isinstance(error, PluginUiRpcInvalidRequest):
         return HTTPException(status_code=400, detail=str(error))
     return HTTPException(status_code=502, detail=str(error))
-
-
-def _is_relative_to(path: Path, root: Path) -> bool:
-    try:
-        _ = path.relative_to(root)
-        return True
-    except ValueError:
-        return False
-
-
-def _can_read_media(channel: WebChatChannel, path: Path) -> bool:
-    if any(_is_relative_to(path, root.resolve()) for root in channel.upload_roots()):
-        return True
-    if channel.has_media(path):
-        return True
-    return False

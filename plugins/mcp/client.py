@@ -91,7 +91,6 @@ class McpClient:
         self._expected_tool_contract: str | None = None
         self._recovery_task: asyncio.Task[None] | None = None
         self._fatal_failure: RuntimeError | None = None
-        self._fatal_event = asyncio.Event()
         self._stopping = False
         self._recovering = False
         self._failure_count = 0
@@ -684,16 +683,9 @@ class McpClient:
         if self._stopping:
             raise RuntimeError(f"MCP server {self.name!r} 已停止")
 
-    async def wait_fatal_failure(self) -> RuntimeError:
-        """等待 logical client 的恢复预算耗尽。"""
-        _ = await self._fatal_event.wait()
-        assert self._fatal_failure is not None
-        return self._fatal_failure
-
     def _set_fatal(self, failure: RuntimeError) -> None:
         if self._fatal_failure is None:
             self._fatal_failure = failure
-            _ = self._fatal_event.set()
 
     @staticmethod
     def _tool_contract(tool_infos: list[McpToolInfo]) -> str:

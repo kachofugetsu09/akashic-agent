@@ -1,13 +1,12 @@
 from __future__ import annotations
 
 import asyncio
-import hashlib
 import json
 import math
 import re
 from collections.abc import Awaitable, Callable, Coroutine, Mapping, Sequence
 from dataclasses import dataclass, field
-from datetime import date, datetime, time
+from datetime import datetime
 from contextlib import AbstractAsyncContextManager
 from pathlib import Path
 from enum import StrEnum
@@ -27,52 +26,6 @@ from agent.plugin_composition.model import ServiceKey
 
 
 _NAME = re.compile(r"^[a-z][a-z0-9_-]{0,63}$")
-
-
-def channel_config_revision(projection: Mapping[str, object]) -> str:
-    """Hash a redacted config projection without exposing credential bytes."""
-
-    payload = _canonical_channel_config_value(projection)
-    encoded = json.dumps(
-        payload,
-        ensure_ascii=False,
-        separators=(",", ":"),
-        sort_keys=True,
-    ).encode("utf-8")
-    return hashlib.sha256(encoded).hexdigest()
-
-
-def _canonical_channel_config_value(value: object) -> object:
-    """Convert TOML values and CredentialRef into deterministic JSON."""
-
-    if isinstance(value, CredentialRef):
-        return {"$credential_ref": list(value.path)}
-    if isinstance(value, Mapping):
-        result: dict[str, object] = {}
-        for key in sorted(value):
-            if not isinstance(key, str):
-                raise TypeError("channel config projection key 必须是字符串")
-            result[key] = _canonical_channel_config_value(value[key])
-        return result
-    if isinstance(value, (list, tuple)):
-        return [_canonical_channel_config_value(item) for item in value]
-    if value is None or isinstance(value, (bool, int, str)):
-        return value
-    if isinstance(value, float):
-        if math.isnan(value):
-            return {"$float": "nan"}
-        if math.isinf(value):
-            return {"$float": "inf" if value > 0 else "-inf"}
-        return {"$float": value.hex()}
-    if isinstance(value, (datetime, date, time)):
-        return {
-            "$toml_type": type(value).__name__,
-            "value": value.isoformat(),
-        }
-    raise TypeError(
-        "channel config projection 包含不受支持的值: "
-        f"{type(value).__name__}"
-    )
 
 
 class ChannelCapability(StrEnum):
@@ -857,16 +810,6 @@ class ChannelAdapter(Protocol):
     async def deliver(self, request: ProviderDeliveryRequest) -> ProviderDeliveryReceipt: ...
 
     async def stop(self) -> StopReceipt: ...
-
-
-class ChannelRuntimeAdapter(ChannelAdapter, Protocol):
-    """Optional lifecycle seam for provider callbacks owned by a formal binding."""
-
-    def attach_runtime(self, ports: ChannelRuntimePorts) -> None: ...
-
-    def open_admission(self) -> None: ...
-
-    def close_admission(self) -> None: ...
 
 
 @dataclass(frozen=True, slots=True)

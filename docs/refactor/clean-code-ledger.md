@@ -2,6 +2,25 @@
 
 本文档记录 `refactor/code-clean` 系列重构的决策依据、能力变化、性能数据和测试调整。每个被接受的提交都必须补充一条记录；没有测量或调用链证据的“优化”不得合并。
 
+## 2026-11-04 熵清理：按 reclaim-code-entropy 回收跨插件与 Core 的无消费者残留面及 Web 旧附件死链路
+
+- 基线：`bed19054`（`main` 头），分支 `refactor/reclaim-code-entropy`。只改独立 worktree，未操作正式 workspace、服务、数据库、安装 cache 或 Git refs。
+- 删除对象（19 个生产文件）：
+  - `plugins/akashic_clients/` 旧上传死链路：`plugins/akashic_clients/attachments.py` 整文件、`services.py` `AttachmentStorePort`、`web_chat.py` 的 `_attachments` / `bind_attachment_store` / `_upload_result` / `upload_roots` / `has_media` / `_media_paths` 与非 artifact 上传 fallback、`chat_api.py` 的 `/api/chat/media` 路由与 `_can_read_media`、`channel.py` 的 `_upload_store`（Web 上传与读取早已全面走 Core `ARTIFACT_IMPORT` / `ARTIFACT_READ` 与 `/api/chat/artifacts/{artifact_id}`，旧路径裸读链路已无任何真实消费者）；
+  - `plugins/akasha/domain/diffusion.py` `IndexedMaxHeap`（#347 将 `residual_push` 切换为 `heapq` 惰性堆 + C 扩展后遗留的 88 行旧索引堆实现，全仓零消费者）；
+  - `plugins/akasha/config.py` `load_akasha_config` 及随之闲置的 `tomllib` import（Akasha 配置已统一走 `PLUGIN_CONFIG.load(ctx, Settings)` + `Settings.settings()`，独立 TOML 文件加载器已无任何消费者）；
+  - `plugins/channels/contract.py` `channel_config_revision`、`_canonical_channel_config_value`、`ChannelRuntimeAdapter` 及闲置的 `hashlib`、`date`、`time` import（Channel 配置指纹现由 `agent/plugins/config_updates.py` 统一计算，生命周期方法已在 `WebNativeChannelAdapter` 等各自实现内闭环）；
+  - `plugins/turn_projection/contract.py` `set_post_commit_effect`、`suppresses_post_commit` 及闲置的 `MutableMapping` import（Turn 后置效果现作为 `Message` 元数据随 `append` 一次性封入，只读 `post_commit_effect()` 为唯一消费者入口）；
+  - `plugins/models/store.py` `ModelsStore.record_first_token`（首字耗时现由 `plugins/models/state.py` 在流式生成中内存计时并在 `finish_call(..., first_token_ms=...)` 一次性写入 SQLite，不再在流式首 token 触发单独的 SQLite 写事务）；
+  - `agent/supervisor.py` `_SettingsRestartBridge.request_and_wait`（模型与插件配置热更新已迁移至单图运行时 `PLUGIN_CONFIG` CAS，Supervisor 设置重启桥的请求发起端已无调用方）；
+  - `agent/plugin_composition/context.py` `CompositionRoot.topology_identity` 与 `CompositionRoot.active_plugin_ids`（调用方统一通过 `topology_view()` 与 `fibers()` 读取）；
+  - `plugins/mcp/host.py` `McpGenerationHost.route_for`、`plugins/mcp/definitions.py` `McpServerBinding.is_live`、`plugins/mcp/client.py` `McpClient.wait_fatal_failure` 及 `_fatal_event`（MCP 路由已收敛至 `McpServerHandle.route()`，存活与故障统一走 `is_owned()` 与 `_fatal_failure` 同步健康门）；
+  - `plugins/ledger/log.py` `MessageLog.warm_prefix`、`plugins/ledger/attachment_import.py` `ChannelOutboundAttachmentImporter.import_media`、`plugins/ledger/base.py` `MessageDeduper`（及闲置 `deque` import）；
+  - `plugins/goal/state.py` `pause_for_usage_uncertainty` 与 `completed_text`（#1812 已由 `settle_round` 内联处理用量不确定暂停与终态文案，这两个顶层函数零调用）；
+- 可达性证据：保留项外的候选在 `main`（`bed19054`）与 `akashic-fleet` 外部插件仓库逐一核验，并检查 hua-home 当前选择的外置插件源码；未发现动态 `getattr`、字符串路由或 `__all__` 消费者。部署前检查发现实际安装的 `meme@github` 仍导入 `SpanData`，因此保留该公共类型与 `TypedDict` import。同时保留有设计契约或诊断职责的候选项（`ExecutorService.parallel_sync`、`EventMailStore.rebuild_mail_projections`、`ChannelAttachmentArtifactStore.validate_filesystem_integrity` / `incomplete_attachment_imports`、`PluginDurableDeliveries`）。
+- 能力不变：语义、公开协议、持久化 schema、迁移与运行时生命周期均不变。
+- Gate：`pyright` 全仓与改动文件均为 `0 errors`；`python3 scripts/plugin_boundary.py check --base origin/main` 通过；`python3 scripts/check_yoyo_migrations.py --base origin/main` 通过；`python3 scripts/chat_artifact_read_scenario.py` 通过；关联 pytest 51 passed；`git diff --check` 干净。
+
 ## 2026-10-05 熵清理第 4 层：删除 bus/session/scripts 的旧迁移残片
 
 - 基线：`a19f0e23`（`refactor/entropy-pr3-plugin-dead-helpers` 头），分支 `refactor/entropy-pr4-bus-session-legacy`，stacked 清理系列第 4 层，base = 第 3 层 PR 分支。生产 source set 580 文件 / Python 98,229 SLOC；候选 580 文件 / 98,098 SLOC（-0 文件、-131 SLOC；`scripts/` 不在计量口径内，`scripts/build_fts_idf.py` 101 行另计）。恢复点为本 PR 单提交 revert；只改独立 worktree，未操作正式 workspace、服务、数据库、安装 cache 或 Git refs。

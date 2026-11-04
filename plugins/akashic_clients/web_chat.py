@@ -44,7 +44,6 @@ from plugins.channels.contract import (
 from fastapi import WebSocket
 from starlette.websockets import WebSocketDisconnect, WebSocketState
 
-from .services import AttachmentStorePort as AttachmentStore
 from .services import ArtifactStorePort as ChannelAttachmentArtifactStore
 from plugins.ui.contract import MessageDisplayReader, PluginUiEmit, follow_messages
 from .services import (
@@ -205,11 +204,9 @@ class WebChatChannel:
 
     def __init__(self, channel_name: str = "akashic") -> None:
         self.name = channel_name
-        self._attachments: AttachmentStore | None = None
         self._artifact_store: ChannelAttachmentArtifactStore | None = None
         self._connections: dict[str, set[WebSocket]] = {}
         self._pending_terminal: dict[str, dict[str, Any]] = {}
-        self._media_paths: set[str] = set()
         self._connection_lock = asyncio.Lock()
         self._events_bound = False
         self._v3_adapters: dict[str, WebNativeChannelAdapter] = {}
@@ -305,12 +302,6 @@ class WebChatChannel:
         Core event type from becoming a hidden client dependency.
         """
         return None
-
-    def bind_attachment_store(self, store: AttachmentStore) -> None:
-        """在 channel 启动前为独立 Chat API 绑定显式附件目录。"""
-
-        if self._attachments is None:
-            self._attachments = store
 
     def bind_artifact_store(self, store: ChannelAttachmentArtifactStore) -> None:
         """绑定 Core-owned artifact store，供 Web upload/read API 使用。"""
@@ -583,74 +574,34 @@ class WebChatChannel:
     ) -> dict[str, object]:
         if max_bytes <= 0:
             raise ValueError("max_bytes must be positive")
-        suffix = Path(filename).suffix
-        if not suffix:
-            guessed = mimetypes.guess_extension(mimetypes.guess_type(filename)[0] or "")
-            suffix = guessed or ".bin"
-        if self._artifact_store is not None:
-            data = bytearray()
-            total = 0
-            async for chunk in chunks:
-                if not isinstance(chunk, bytes):
-                    raise TypeError("上传 chunk 必须是 bytes")
-                total += len(chunk)
-                if total > max_bytes:
-                    raise UploadTooLargeError(
-                        f"上传内容超过 {max_bytes // (1024 * 1024)}MB 限制"
-                    )
-                data.extend(chunk)
-            if total == 0:
-                raise ValueError("上传内容不能为空")
-            media_type = mimetypes.guess_type(filename)[0]
-            kind = (
-                V3AttachmentKind.IMAGE
-                if media_type is not None and media_type.startswith("image/")
-                else V3AttachmentKind.FILE
-            )
-            ref = await self._artifact_store.import_bytes(
-                bytes(data),
-                kind=kind,
-                filename=filename,
-                media_type=media_type,
-            )
-            return self._artifact_result(ref)
-
-        store = self._require_attachment_store()
-        staging = store.create_staging_path(prefix=".web_", suffix=".part")
+        if self._artifact_store is None:
+            raise RuntimeError("Web artifact store 尚未绑定")
+        data = bytearray()
         total = 0
-        try:
-            fd = os.open(staging, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
-            with os.fdopen(fd, "wb") as handle:
-                async for chunk in chunks:
-                    if not isinstance(chunk, bytes):
-                        raise TypeError("上传 chunk 必须是 bytes")
-                    total += len(chunk)
-                    if total > max_bytes:
-                        raise UploadTooLargeError(f"上传内容超过 {max_bytes // (1024 * 1024)}MB 限制")
-                    handle.write(chunk)
-                if total == 0:
-                    raise ValueError("上传内容不能为空")
-                handle.flush()
-                os.fsync(handle.fileno())
-            path = store.publish_staging(staging, prefix="web_", suffix=suffix)
-        except BaseException as exc:
-            try:
-                staging.unlink(missing_ok=True)
-            except OSError as cleanup_error:
-                raise BaseExceptionGroup(
-                    "Web 上传 staging 清理失败",
-                    [exc, cleanup_error],
-                ) from exc
-            raise
-        return self._upload_result(filename, path)
-
-    @staticmethod
-    def _upload_result(filename: str, path: Path) -> dict[str, Any]:
-        return {
-            "filename": filename,
-            "upload_path": str(path),
-            "upload_url": f"/api/chat/media?path={str(path)}",
-        }
+        async for chunk in chunks:
+            if not isinstance(chunk, bytes):
+                raise TypeError("上传 chunk 必须是 bytes")
+            total += len(chunk)
+            if total > max_bytes:
+                raise UploadTooLargeError(
+                    f"上传内容超过 {max_bytes // (1024 * 1024)}MB 限制"
+                )
+            data.extend(chunk)
+        if total == 0:
+            raise ValueError("上传内容不能为空")
+        media_type = mimetypes.guess_type(filename)[0]
+        kind = (
+            V3AttachmentKind.IMAGE
+            if media_type is not None and media_type.startswith("image/")
+            else V3AttachmentKind.FILE
+        )
+        ref = await self._artifact_store.import_bytes(
+            bytes(data),
+            kind=kind,
+            filename=filename,
+            media_type=media_type,
+        )
+        return self._artifact_result(ref)
 
     @staticmethod
     def _artifact_result(ref: AttachmentRef) -> dict[str, Any]:
@@ -696,27 +647,6 @@ class WebChatChannel:
         finally:
             await lease.aclose()
         return data, ref.media_type, ref.filename
-
-    def upload_roots(self) -> list[Path]:
-        return [self._require_attachment_store().root]
-
-    def _require_attachment_store(self) -> AttachmentStore:
-        if self._attachments is None:
-            raise RuntimeError("WebChatChannel 尚未绑定附件目录")
-        return self._attachments
-
-    def remember_media(self, paths: list[str]) -> None:
-        for path in paths:
-            text = str(path or "").strip()
-            if not text or text.startswith(("http://", "https://")):
-                continue
-            try:
-                self._media_paths.add(str(Path(text).expanduser().resolve()))
-            except OSError:
-                continue
-
-    def has_media(self, path: Path) -> bool:
-        return str(path.resolve()) in self._media_paths
 
     async def deliver_v3(
         self,
