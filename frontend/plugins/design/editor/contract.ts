@@ -15,13 +15,12 @@ export type DesignToFrame =
   | { type: "session"; session: string | null }
   | { type: "active"; active: boolean }
   | { type: "theme"; dark: boolean }
-  // Agent 的设计工具调用（经标签模块从实时连接转来）、别处保存后的新修订号，以及连接重新建立后的对账
-  | ({ type: "call" } & AgentCall)
+  // 经标签模块从实时连接转来：Agent 正在改的文档、别处保存后的新修订号，以及连接重新建立后的对账
+  | { type: "agent"; document: string; view: DesignView }
   | { type: "changed"; document: string; revision: number }
   | { type: "resync" };
 
-export interface AgentCall { id: string; session: string; tool: string; arguments: Record<string, unknown> }
-export type AgentReply = { id: string; ok: true; result: unknown } | { id: string; ok: false; error: string };
+export type DesignView = "canvas" | "preview";
 
 export interface DesignIndicator { busy?: boolean; detail?: string }
 
@@ -29,5 +28,4 @@ export type DesignFromFrame =
   | { type: "ready" }
   | ({ type: "request" } & RelayedRequest)
   | { type: "title"; title: string | null }
-  | { type: "indicator"; indicator: DesignIndicator | null }
-  | ({ type: "result" } & AgentReply);
+  | { type: "indicator"; indicator: DesignIndicator | null };

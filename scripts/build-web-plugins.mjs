@@ -219,12 +219,12 @@ if (!designEntry || !designWorkerEntry) throw new Error("设计编辑器没有�
 await writeFile(resolve(designAssets, "worker.html"),
   `<!doctype html><meta charset="utf-8"><title>设计</title><script type="module" src="/design/assets/${designName(designWorkerEntry[0])}"></script>\n`);
 // Agent 的设计工具表：名字、描述、参数 schema 取自 open-pencil 的核心工具，与画布里执行的是同一份定义。
-// 去掉要联网取图库的 stock_photo，以及在用户页面里执行任意代码的 eval。
+// 去掉要联网取图库的 stock_photo、执行任意代码的 eval，以及只对用户画布有意义的选择与视口工具（Agent 在服务端的无头画布上执行）。
 const { CORE_TOOLS } = await import("@open-pencil/core");
 const { toJsonSchema } = await import("@valibot/to-json-schema");
 // render 的描述后面接上 open-pencil 自己的 JSX 写法参考，与它内置 AI 拿到的说明一致。
 const { JSX_REFERENCE } = await import("@open-pencil/design-jsx");
-const DESIGN_EXCLUDED = new Set(["stock_photo", "eval"]);
+const DESIGN_EXCLUDED = new Set(["stock_photo", "eval", "get_selection", "viewport_zoom_to_fit"]);
 await writeFile(resolve(designAssets, "tools.json"), JSON.stringify(CORE_TOOLS.filter((tool) => !DESIGN_EXCLUDED.has(tool.name))
   .map((tool) => ({ name: tool.name, description: tool.name === "render" ? `${tool.description}\n\n${JSX_REFERENCE}` : tool.description,
     parameters: toJsonSchema(tool.input, { errorMode: "ignore" }) }))));
