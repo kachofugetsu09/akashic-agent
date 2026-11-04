@@ -30,6 +30,8 @@ from plugins.ledger.contract import (
 )
 from agent.plugin_composition.tasks import TASKS, PluginTasks, TaskServiceClosed
 from plugins.ledger.contract import ContentPart, Control, Input, Output
+from plugins.models.contract import MODEL_SELECTION, ChatModelSelection
+from plugins.models.selection import SelectionOwner
 from plugins.content.plugin import Content
 from plugins.conversation.plugin import check_origin
 from plugins.subagent.inputs import CONTENT, CHECK_ORIGIN
@@ -57,7 +59,8 @@ class Fixture:
         async def core(ctx):
             for key, value in [(MESSAGE_CATALOG, self.log.catalog()), (MESSAGE_WRITERS, MessageWriters(self.log)),
                                (OWNER_STATE, OwnerState(self.log)), (SESSION_ADMISSION, SessionAdmission(self.log)),
-                               (TASKS, self.tasks), (BINDINGS, self.bindings), (CHECK_ORIGIN, check_origin)]:
+                               (TASKS, self.tasks), (BINDINGS, self.bindings), (CHECK_ORIGIN, check_origin),
+                               (MODEL_SELECTION, SelectionOwner())]:
                 await ctx.provide(key, value)
             await ctx.provide(CONTENT, Content(ctx))
 
@@ -67,7 +70,7 @@ class Fixture:
 
         await self.root.mount(core, name='core')
         await self.root.mount(jobs, name='subagent', inject=(MESSAGE_CATALOG, MESSAGE_WRITERS, OWNER_STATE,
-                              SESSION_ADMISSION, TASKS, BINDINGS, CONTENT, CHECK_ORIGIN),
+                              SESSION_ADMISSION, TASKS, BINDINGS, CONTENT, CHECK_ORIGIN, MODEL_SELECTION),
                               runtime=PluginRuntime('subagent', 'fixture', args.source / 'plugins/subagent',
                                                     self.directory / 'plugin-data', self.directory, {},
                                                     workspace_roots=('subagent-runs',),
@@ -81,7 +84,8 @@ class Fixture:
                                retry_count=0, parent_session_id='parent', parent_message_id='parent-message',
                                parent_part_index=0, origin=None, sink=None, program_binding=identity,
                                tools={name: identity for name in PROFILE_TOOLS['research']})
-        self.spawn = Spawn(self.ctx, {}, {}, Subagents(self.ctx))
+        self.spawn = Spawn(self.ctx, {}, {}, Subagents(self.ctx),
+                           model=lambda _messages, _args: asyncio.sleep(0, result=ChatModelSelection()))
         return self
 
     async def program(self, task, reader, request):
@@ -162,9 +166,12 @@ class Fixture:
                 return {'service_closed': True}
 
     async def facts(self):
+        return await self.facts_for('effect')
+
+    async def facts_for(self, key: str):
         """从原消息和 owner 指针读结果，不用 Task.done 代替验收。"""
         async with self.ctx.runtime_scope():
-            found = self.spawn.jobs.read('effect')
+            found = self.spawn.jobs.read(key)
             assert found is not None
             record, _, reader = found
             messages = reader.snapshot()
@@ -298,6 +305,110 @@ async def run(directory: Path):
         assert await fixture.invoke() == {'result': 'error'} and fixture.calls == 1
         checks.append({'case': 'process crash after effect/reopen', 'external_writes': 1,
                        'tool_receipt': 'done/error', 'parent_result': 'error'})
+    finally:
+        await fixture.close()
+    # 6. spawn 按次指定模型与连接渠道（及思考强度）：单模型连接、同名模型跨连接消歧、大小写兼容与非法参数拒绝。
+    from plugins.models.contract import (
+        CapabilitySources, ConnectionDescriptor, ModelCapabilities, ModelCatalogSnapshot, ModelDescriptor,
+    )
+    from plugins.subagent.request import SpawnInput
+    from plugins.subagent.tools import Manage, list_available_models, select_model
+
+    catalog_snapshot = ModelCatalogSnapshot(
+        revision=3,
+        connections=(
+            ConnectionDescriptor("conn-magpie", "Magpie 内网", "openai-compatible", "api:magpie", "available", "192.168.0.107:8000", "all"),
+            ConnectionDescriptor("conn-official", "DeepSeek 官方", "openai-compatible", "api:ds", "available", "api.deepseek.com", "picked"),
+            ConnectionDescriptor("conn-disabled", "已停用渠道", "openai-compatible", "api:off", "disabled", "off.local", "all"),
+        ),
+        models=(
+            ModelDescriptor("conn-magpie__ds", "conn-magpie", "chat", "deepseek-chat", None,
+                            ModelCapabilities(supported_reasoning_efforts=("low", "high")), CapabilitySources(), "available"),
+            ModelDescriptor("conn-magpie__qwen", "conn-magpie", "chat", "qwen3-coder", "medium",
+                            ModelCapabilities(supported_reasoning_efforts=("low", "medium", "high")), CapabilitySources(), "available"),
+            ModelDescriptor("conn-official__ds", "conn-official", "chat", "deepseek-chat", None,
+                            ModelCapabilities(), CapabilitySources(), "available"),
+            ModelDescriptor("conn-disabled__ds", "conn-disabled", "chat", "only-disabled", None,
+                            ModelCapabilities(), CapabilitySources(), "disabled"),
+        ),
+        role_bindings={"default": "conn-magpie__ds"},
+        default_embedding_model_id=None,
+    )
+    # 留空时返回空选择（交由设置路径处理）
+    assert select_model(catalog_snapshot) == ChatModelSelection()
+    # 唯一型号名直接命中，并带上模型的默认思考强度
+    assert select_model(catalog_snapshot, model="qwen3-coder") == ChatModelSelection("conn-magpie__qwen", "medium")
+    # 显式指定思考强度覆盖模型默认
+    assert select_model(catalog_snapshot, model="qwen3-coder", reasoning_effort="high") == ChatModelSelection("conn-magpie__qwen", "high")
+    # 同名模型未指定连接渠道时明确要求消歧
+    ambiguous = select_model(catalog_snapshot, model="deepseek-chat")
+    assert isinstance(ambiguous, str) and "多个连接渠道" in ambiguous
+    # 同时指定连接名称或 connection_id 精确命中对应渠道的同名模型
+    assert select_model(catalog_snapshot, model="deepseek-chat", connection="Magpie 内网") == ChatModelSelection("conn-magpie__ds", None)
+    assert select_model(catalog_snapshot, model="deepseek-chat", connection="conn-official") == ChatModelSelection("conn-official__ds", None)
+    # 只传单模型连接渠道时自动选中该渠道唯一可用模型
+    assert select_model(catalog_snapshot, connection="DeepSeek 官方") == ChatModelSelection("conn-official__ds", None)
+    # 只传多模型连接渠道但该渠道包含全局默认模型时，自动选用默认模型
+    assert select_model(catalog_snapshot, connection="Magpie 内网") == ChatModelSelection("conn-magpie__ds", None)
+    # 停用渠道、未知模型、不支持的思考强度、单独传思考强度均返回可读错误
+    assert isinstance(select_model(catalog_snapshot, connection="已停用渠道"), str)
+    assert isinstance(select_model(catalog_snapshot, model="non-existent"), str)
+    assert isinstance(select_model(catalog_snapshot, model="qwen3-coder", reasoning_effort="xhigh"), str)
+    assert isinstance(select_model(catalog_snapshot, reasoning_effort="high"), str)
+    # Agent 经 spawn_manage(action="models") 查询可用连接渠道与模型目录
+    discovered = list_available_models(catalog_snapshot)
+    assert discovered["default_model"] == {
+        "model": "deepseek-chat", "model_id": "conn-magpie__ds",
+        "connection": "Magpie 内网", "connection_id": "conn-magpie",
+    }
+    assert [c["connection"] for c in discovered["connections"]] == ["Magpie 内网", "DeepSeek 官方"]
+    filtered = list_available_models(catalog_snapshot, connection="Magpie 内网")
+    assert len(filtered["connections"]) == 1 and len(filtered["connections"][0]["models"]) == 2
+
+    # 通过 Spawn.prepare 真实写入 Request 并经 Subagents.accept 落库 model.selection ContentPart
+    path = directory / 'model-selection'
+    path.mkdir()
+    fixture = await Fixture(path, 'success').open()
+    try:
+        from plugins.tools.contract import CallRef, CallSource
+        parent_input = fixture.log.writer('parent', author='user', source='chat', body_types=(Input,),
+                                          content={'text': lambda _: __import__('plugins.ledger.contract', fromlist=['ContentReferences']).ContentReferences()}).append(
+            'parent-in', Input((ContentPart('text', 'run child'),)))
+        fixture.spawn.targets = {name: fixture.request.program_binding for name in PROFILE_TOOLS['research']}
+        fixture.spawn.model = lambda _messages, spawn_args: asyncio.sleep(
+            0,
+            result=select_model(
+                catalog_snapshot,
+                model=spawn_args.model,
+                connection=spawn_args.connection,
+                reasoning_effort=spawn_args.reasoning_effort,
+            ),
+        )
+        source = CallSource(messages=(parent_input,), call_ref=CallRef('parent-out', 0))
+        manage = Manage(fixture.spawn.jobs, catalog=lambda: catalog_snapshot)
+        async with fixture.ctx.runtime_scope():
+            models_prepared = await manage.prepare({'action': 'models', 'connection': 'Magpie 内网'}, source)
+            assert isinstance(models_prepared, dict)
+            models_result = await manage.invoke('models-query', models_prepared)
+            assert models_result.outcome == 'success'
+            parsed_models = json.loads(models_result.parts[0].value)
+            assert parsed_models['connections'][0]['connection'] == 'Magpie 内网'
+            bad_prepared = await fixture.spawn.prepare(
+                {'task': 'check model', 'model': 'deepseek-chat'}, source)
+            assert isinstance(bad_prepared, str) and '多个连接渠道' in bad_prepared
+            good_prepared = await fixture.spawn.prepare(
+                {'task': 'check model', 'model': 'deepseek-chat', 'connection': 'Magpie 内网', 'reasoning_effort': 'high'},
+                source,
+            )
+            assert isinstance(good_prepared, dict)
+            result = await fixture.spawn.invoke('model-effect', good_prepared)
+            assert result.outcome == 'success'
+        settled, outcome, messages = await fixture.facts_for('model-effect')
+        assert settled and outcome[0] == 'completed'
+        selection_parts = [p for p in messages[0].body.parts if p.kind == 'model.selection']
+        assert len(selection_parts) == 1
+        assert dict(selection_parts[0].value) == {'model_id': 'conn-magpie__ds', 'reasoning_effort': 'high'}
+        checks.append({'case': 'spawn explicit model and connection selection', 'model_id': 'conn-magpie__ds', 'reasoning_effort': 'high'})
     finally:
         await fixture.close()
     return checks
