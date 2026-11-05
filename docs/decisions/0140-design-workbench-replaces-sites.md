@@ -4,6 +4,8 @@
 - 日期：2026-11-04
 - 关联：0121（工作台标签）、0124（show_site，本记录取代）、0117（可视化附件）
 - 修订：0124 整体退役：`show_site`、对话里的网站卡片、`/sites/frame.html` 与“网站”标签删除，已有的 `akashic.site.v1` 附件只剩普通文件下载
+- 修订：图标放行。open-pencil 按 Iconify 的公开 API 取图标；编辑器页的 CSP 与无头画布的请求过滤
+  共用 `https://api.iconify.design` 一个来源，其余协议、端口与域名仍按原策略拒绝；JSX 求值沙箱仍不能连网
 
 ## 背景
 

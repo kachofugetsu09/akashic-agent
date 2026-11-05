@@ -25,13 +25,15 @@ inject = (DESIGN_STORE, DESIGN_LIVE)
 ASSETS = "/design/assets/"
 _SESSION = Query(min_length=1, max_length=512)
 _DOCUMENT = re.compile(r"[0-9a-f]{16}")
-# 编辑器页面比宿主默认策略多放行 CanvasKit 的 WASM 编译；不放行内联脚本与 eval。
+# 编辑器页面比宿主默认策略多放行 CanvasKit 的 WASM 编译与 Iconify 的图标接口；不放行内联脚本与 eval。
 EDITOR = "editor.html"
 # 服务端无头画布的入口页：后端在无头浏览器里直接读文件打开，这里登记的路由只是随产物一起列出，策略与编辑器相同。
 WORKER = "worker.html"
+# 编辑器 CSP 与无头画布共用图标 API 的完整来源，协议和端口也属于放行边界。
+ICON_ORIGIN = "https://api.iconify.design"
 EDITOR_POLICY = (
     "default-src 'self'; script-src 'self' 'wasm-unsafe-eval'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; "
-    "font-src 'self' data: blob:; connect-src 'self' data: blob:; "
+    f"font-src 'self' data: blob:; connect-src 'self' data: blob: {ICON_ORIGIN}; "
     "frame-src 'self'; worker-src 'self' blob:; object-src 'none'; base-uri 'none'; form-action 'none'; frame-ancestors 'self'"
 )
 # Agent 做的网页在这一页里运行：不透明源沙箱，拿不到 akashic 的 Cookie、存储与父窗口；
