@@ -46,14 +46,14 @@
 .usage-list, .usage-pane { display: grid; align-content: start; gap: 2px; min-width: 0; }
 .usage-item {
   display: grid; grid-template-columns: minmax(0, 1fr) auto; column-gap: 12px; row-gap: 1px;
-  min-height: 34px; align-items: center; padding: 6px 8px; border: 0; border-radius: 8px;
+  min-height: 34px; align-items: center; padding: 6px 8px; border: 0; border-radius: var(--ak-radius-sm);
   background: transparent; color: var(--chat-ink); font: inherit; text-align: start;
 }
 button.usage-item { cursor: pointer; }
 .usage-item .t { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .usage-item .n { color: var(--chat-muted); font-family: var(--ak-type-technical); font-size: var(--chat-type-caption); text-align: end; }
 .usage-item .s { overflow: hidden; color: var(--chat-faint); font-size: var(--chat-type-caption); text-overflow: ellipsis; white-space: nowrap; }
-.usage-item em { margin-inline-start: 6px; padding: 0 4px; border-radius: 4px; background: var(--chat-chip); color: var(--chat-muted); font-size: var(--chat-type-micro); font-style: normal; }
+.usage-item em { margin-inline-start: 6px; padding: 0 4px; border-radius: var(--ak-radius-xs); background: var(--chat-chip); color: var(--chat-muted); font-size: var(--chat-type-micro); font-style: normal; }
 .usage-item[aria-current] { background: var(--chat-chip); }
 /* 没有副行的条目是「名称 · 输入 · 命中」三列；有副行的两列两行。 */
 .usage-item:not(:has(.s)) { grid-template-columns: minmax(0, 1fr) auto 3rem; }
@@ -64,7 +64,7 @@ button.usage-item { cursor: pointer; }
 .usage-tabs button[aria-selected="true"], .usage-seg button[aria-pressed="true"] { background: var(--chat-chip); color: var(--chat-ink); }
 
 .usage-filter {
-  min-height: 32px; margin-block-end: 6px; padding-inline: 10px; border: 1px solid var(--chat-line); border-radius: 8px;
+  min-height: 32px; margin-block-end: 6px; padding-inline: 10px; border: 1px solid var(--chat-line); border-radius: var(--ak-radius-sm);
   background: transparent; color: var(--chat-ink); font: inherit;
 }
 .usage-title { font-weight: 600; overflow-wrap: anywhere; }
@@ -103,7 +103,7 @@ button.usage-item { cursor: pointer; }
 .usage-bars i { background: var(--usage-miss); opacity: 1; }
 .usage-bars i.soft, .usage-legend i.soft { background: var(--usage-hit); opacity: 1; }
 
-.usage-stack { display: flex; height: 8px; gap: 2px; overflow: hidden; border-radius: 4px; background: var(--chat-chip); }
+.usage-stack { display: flex; height: 8px; gap: 2px; overflow: hidden; border-radius: var(--ak-radius-xs); background: var(--chat-chip); }
 .usage-stack > span { min-width: 2px; background: var(--cat); }
 .usage-stack > span.free { background: transparent; }
 .usage-legend-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(11rem, 1fr)); gap: 4px 12px; font-size: var(--chat-type-caption); }

@@ -49,7 +49,7 @@ PR #500 已经统一桌面 Chat、Dashboard 的暖纸颜色和霞鹜文楷，但
 | 输入边界与柔和 focus | `--ak-rule-default` / `--ak-rule-focus-soft` | Desktop 与 Mobile composer |
 | 阅读字与技术字 | `--ak-type-reading` / `--ak-type-technical` | Chat、Mobile、Dashboard |
 
-`12px` 用户气泡圆角、composer 高度、移动端 safe area、抽屉宽度和动画时长仍留在组件 CSS。它们即使数值相同，也不代表换品牌时必须一起变化。原稿中的 `annotation`、纸张几何和辅助字号没有真实消费者，已从公共合同移除；trace 继续由 status token 拥有。
+composer 高度、移动端 safe area、抽屉宽度和动画时长仍留在组件 CSS。它们即使数值相同，也不代表换品牌时必须一起变化。圆角原本也留在组件里，后来各处收敛出同一套隐含刻度却没有 owner，已由 [0143](../decisions/0143-radius-joins-the-brand-contract.md) 收进形状轴 `--ak-radius-*`。原稿中的 `annotation`、纸张几何和辅助字号没有真实消费者，已从公共合同移除；trace 继续由 status token 拥有。
 
 ## 4. Mobile 复用边界
 

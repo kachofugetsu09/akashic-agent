@@ -41,7 +41,7 @@
   flex: 0 0 auto;
   place-items: center;
   border: 0;
-  border-radius: 8px;
+  border-radius: var(--ak-radius-sm);
   color: var(--ak-ink-secondary);
   background: transparent;
   font: inherit;
@@ -150,7 +150,7 @@
   align-items: flex-start;
   gap: 8px;
   border: 0;
-  border-radius: 8px;
+  border-radius: var(--ak-radius-sm);
   padding: 6px 8px;
   color: inherit;
   background: transparent;
@@ -236,7 +236,7 @@
   flex: 0 0 auto;
   margin-block-start: 1px;
   border: 0;
-  border-radius: 4px;
+  border-radius: var(--ak-radius-xs);
   padding: 2px;
   color: var(--md-sys-color-on-surface-variant);
   background: transparent;
