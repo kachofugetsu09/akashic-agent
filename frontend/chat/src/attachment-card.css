@@ -8,7 +8,7 @@
   flex: none;
   width: 216px;
   height: var(--attachment-height);
-  border-radius: 12px;
+  border-radius: var(--ak-radius-md);
   transition: opacity 200ms var(--ak-sys-motion-emphasized), scale 200ms var(--ak-sys-motion-emphasized), translate 200ms var(--ak-sys-motion-emphasized);
 }
 .ak-attachment.is-media { width: var(--attachment-height); }
@@ -56,7 +56,7 @@
 video.ak-attachment__image { opacity: 1; }
 .ak-attachment__play {
   position: absolute; inset: auto auto 6px 6px; display: grid; width: 20px; height: 20px; place-items: center;
-  border-radius: 999px; color: #fff; background: rgb(0 0 0 / 0.55);
+  border-radius: var(--ak-radius-full); color: #fff; background: rgb(0 0 0 / 0.55);
 }
 
 .ak-attachment__tile {
@@ -66,7 +66,8 @@ video.ak-attachment__image { opacity: 1; }
   height: 48px;
   place-items: center;
   overflow: hidden;
-  border-radius: 8px;
+  /* 与卡片同心：md − 间距 8。 */
+  border-radius: calc(var(--ak-radius-md) - 8px);
   color: color-mix(in oklab, var(--attachment-tone) 62%, var(--ak-ink-primary));
   background: color-mix(in oklab, var(--attachment-tone) 12%, var(--ak-paper-editing));
   box-shadow: inset 0 0 0 1px color-mix(in oklab, var(--attachment-tone) 18%, transparent);
@@ -121,7 +122,7 @@ video.ak-attachment__image { opacity: 1; }
   height: 20px;
   place-items: center;
   border: 0;
-  border-radius: 999px;
+  border-radius: var(--ak-radius-full);
   padding: 0;
   color: var(--ak-ink-secondary);
   background: var(--ak-paper-raised);
@@ -151,7 +152,7 @@ video.ak-attachment__image { opacity: 1; }
   height: 24px;
   place-items: center;
   border: 0;
-  border-radius: 8px;
+  border-radius: var(--ak-radius-sm);
   color: var(--ak-ink-secondary);
   background: transparent;
   cursor: pointer;
@@ -249,7 +250,7 @@ video.ak-attachment__image { opacity: 1; }
   place-content: center;
   justify-items: center;
   gap: 14px;
-  border-radius: 12px;
+  border-radius: var(--ak-radius-md);
   color: var(--ak-rule-focus);
   box-shadow: inset 0 0 0 2px var(--ak-rule-focus), inset 0 0 24px 0 color-mix(in oklab, var(--ak-rule-focus) 20%, transparent);
   font-size: 1rem;
@@ -300,7 +301,7 @@ video.ak-attachment__image { opacity: 1; }
   flex: none;
   place-items: center;
   border: 0;
-  border-radius: 8px;
+  border-radius: var(--ak-radius-sm);
   color: var(--ak-ink-secondary);
   background: transparent;
 }
@@ -318,7 +319,7 @@ video.ak-attachment__image { opacity: 1; }
   list-style: none;
 }
 .attachment-preview__columns li {
-  border-radius: 8px;
+  border-radius: var(--ak-radius-sm);
   padding: 2px 8px;
   color: var(--ak-ink-primary);
   background: var(--ak-paper-quiet);
@@ -333,7 +334,7 @@ video.ak-attachment__image { opacity: 1; }
   margin: 14px 18px 18px;
   overflow: auto;
   overscroll-behavior: contain;
-  border-radius: 8px;
+  border-radius: var(--ak-radius-sm);
   background: var(--ak-paper-quiet);
   box-shadow: inset 0 0 0 1px var(--ak-rule-subtle);
 }

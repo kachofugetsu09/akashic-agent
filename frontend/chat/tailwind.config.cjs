@@ -44,9 +44,11 @@ module.exports = {
         },
       },
       borderRadius: {
-        lg: "var(--radius)",
-        md: "calc(var(--radius) - 2px)",
-        sm: "calc(var(--radius) - 4px)",
+        // shadcn 原语接到品牌圆角刻度：md 控件、lg 浮层、xl 对话框；sm 菜单项与 12 圆角、6 内边距的菜单同心。
+        xl: "var(--ak-radius-lg)",
+        lg: "var(--ak-radius-md)",
+        md: "var(--ak-radius-sm)",
+        sm: "calc(var(--ak-radius-sm) - 2px)",
       },
     },
   },

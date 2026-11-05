@@ -28,6 +28,14 @@
   /* 柔光环向纸面混色而不是向固定深色混色，暗色主题下不再偏黑。 */
   --ak-rule-focus-soft: color-mix(in oklab, var(--ak-rule-focus) 55%, var(--ak-paper-canvas));
 
+  /* Shape: five radius steps chosen by element size and role; nested shapes
+     derive from their container (inner = outer - gap), see design.md §2.1. */
+  --ak-radius-xs: 4px;
+  --ak-radius-sm: 8px;
+  --ak-radius-md: 12px;
+  --ak-radius-lg: 16px;
+  --ak-radius-full: 999px;
+
   /* Surfaces: one scrim and one overlay elevation for every dialog. */
   --ak-scrim-overlay: color-mix(in srgb, var(--ak-color-shadow) 28%, transparent);
   --ak-elevation-overlay: 0 12px 32px color-mix(in oklab, var(--ak-color-shadow) 14%, transparent);

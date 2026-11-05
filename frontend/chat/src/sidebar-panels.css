@@ -56,7 +56,7 @@
   flex-direction: column;
   overflow: hidden;
   border: 1px solid var(--chat-line);
-  border-radius: 12px;
+  border-radius: var(--ak-radius-md);
   background: var(--ak-paper-canvas);
   box-shadow: 0 8px 24px color-mix(in oklab, var(--ak-ink-primary) 12%, transparent);
   color: var(--chat-ink);
@@ -76,7 +76,7 @@
   max-height: none;
   height: min(60dvh, 34rem);
   border-width: 1px 0 0;
-  border-radius: 16px 16px 0 0;
+  border-radius: var(--ak-radius-lg) var(--ak-radius-lg) 0 0;
   padding-block-end: env(safe-area-inset-bottom, 0px);
   animation-name: sidebar-panels-sheet;
 }
@@ -126,7 +126,7 @@
   flex: 0 0 auto;
   place-items: center;
   border: 0;
-  border-radius: 8px;
+  border-radius: var(--ak-radius-sm);
   padding: 0;
   background: transparent;
   color: var(--chat-muted);
@@ -145,7 +145,7 @@
   margin-block-end: 4px;
   padding-inline: 10px;
   border: 1px solid var(--chat-line);
-  border-radius: 8px;
+  border-radius: var(--ak-radius-sm);
   background: transparent;
   color: var(--chat-ink);
   font: inherit;
@@ -159,7 +159,7 @@
   gap: 10px;
   padding-inline: 10px;
   border: 0;
-  border-radius: 8px;
+  border-radius: var(--ak-radius-sm);
   background: transparent;
   color: var(--chat-ink);
   font: inherit;

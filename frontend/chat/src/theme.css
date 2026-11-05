@@ -9,7 +9,6 @@
   letter-spacing: normal;
   -webkit-font-smoothing: antialiased;
   -moz-osx-font-smoothing: grayscale;
-  --radius: 0.75rem;
 }
 
 code, kbd, pre, .mono, .font-mono {

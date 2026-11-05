@@ -52,12 +52,13 @@
   --md-sys-typescale-label-medium-weight: 500;
 
   --md-sys-shape-corner-none: 0;
-  --md-sys-shape-corner-extra-small: 0.25rem;
-  --md-sys-shape-corner-small: 0.5rem;
-  --md-sys-shape-corner-medium: 0.75rem;
-  --md-sys-shape-corner-large: 1rem;
-  --md-sys-shape-corner-extra-large: 1.75rem;
-  --md-sys-shape-corner-full: 9999px;
+  /* 迁移别名：圆角刻度归 brand-tokens.css 的 --ak-radius-*，这里只转接给尚未迁移的消费者。 */
+  --md-sys-shape-corner-extra-small: var(--ak-radius-xs);
+  --md-sys-shape-corner-small: var(--ak-radius-sm);
+  --md-sys-shape-corner-medium: var(--ak-radius-md);
+  --md-sys-shape-corner-large: var(--ak-radius-lg);
+  --md-sys-shape-corner-extra-large: var(--ak-radius-lg);
+  --md-sys-shape-corner-full: var(--ak-radius-full);
 
   --ak-sys-motion-standard: cubic-bezier(0.2, 0, 0, 1);
   --ak-sys-motion-emphasized: cubic-bezier(0.05, 0.7, 0.1, 1);
@@ -72,11 +73,12 @@
   accent-color: var(--md-sys-color-primary);
 }
 
+/* 按钮与设置页、侧栏的控件同为 sm；胶囊只留给浮动、临时出现的元素。 */
 .ak-material-button {
-  --md-filled-button-container-shape: var(--md-sys-shape-corner-full);
-  --md-filled-tonal-button-container-shape: var(--md-sys-shape-corner-full);
-  --md-outlined-button-container-shape: var(--md-sys-shape-corner-full);
-  --md-text-button-container-shape: var(--md-sys-shape-corner-full);
+  --md-filled-button-container-shape: var(--ak-radius-sm);
+  --md-filled-tonal-button-container-shape: var(--ak-radius-sm);
+  --md-outlined-button-container-shape: var(--ak-radius-sm);
+  --md-text-button-container-shape: var(--ak-radius-sm);
   max-inline-size: 100%;
   font-family: var(--md-ref-typeface-plain);
 }
