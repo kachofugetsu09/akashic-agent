@@ -609,7 +609,7 @@ dialog.settings-scrim::backdrop { background: transparent; }
 @media (max-width: 30rem) {
   .settings-card-meta small { display: none; }
   .settings-scrim { padding: 0; }
-  .settings-dialog { border-inline: 0; border-block-end: 0; border-radius: var(--md-sys-shape-corner-large) var(--md-sys-shape-corner-large) 0 0; align-self: end; }
+  .settings-dialog { border-inline: 0; border-block-end: 0; border-radius: var(--ak-radius-lg) var(--ak-radius-lg) 0 0; align-self: end; }
   .settings-toast-region { inset: auto 0.75rem 0.75rem; }
   .settings-toast { min-width: 0; width: 100%; }
 }

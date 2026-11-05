@@ -6,8 +6,6 @@
 @tailwind base;
 
 :root {
-  --radius: var(--md-sys-shape-corner-medium);
-  --radius-lg: var(--md-sys-shape-corner-large);
   --ease-out: var(--ak-sys-motion-standard);
   --t-fast: var(--ak-sys-duration-short);
   --sans: var(--ak-type-reading);

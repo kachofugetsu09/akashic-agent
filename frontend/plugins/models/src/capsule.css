@@ -236,7 +236,7 @@
   width: auto !important;
   max-height: min(70dvh, 32rem) !important;
   border-width: 1px 0 0;
-  border-radius: 16px 16px 0 0;
+  border-radius: var(--ak-radius-lg) var(--ak-radius-lg) 0 0;
   padding-block-end: env(safe-area-inset-bottom, 0px);
   box-shadow: 0 -8px 24px color-mix(in srgb, var(--ak-ink-primary) 10%, transparent);
   animation: picker-sheet-in 180ms cubic-bezier(0.2, 0, 0, 1);

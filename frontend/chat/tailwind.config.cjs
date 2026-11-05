@@ -44,7 +44,8 @@ module.exports = {
         },
       },
       borderRadius: {
-        // shadcn 原语接到品牌圆角刻度：md 控件、lg 浮层、xl 对话框；sm 菜单项与 12 圆角、6 内边距的菜单同心。
+        // shadcn 原语接到品牌圆角刻度：md 控件与提示（8）、lg 菜单与浮层（12）、xl 对话框（16）。
+        // 菜单项用 md：12 − 4 内边距 − 1 边框 = 7，取最近一级 8。sm（6）只给 8 圆角控件里内缩 2px 的小件（input-group 的 kbd、xs 按钮）。
         xl: "var(--ak-radius-lg)",
         lg: "var(--ak-radius-md)",
         md: "var(--ak-radius-sm)",

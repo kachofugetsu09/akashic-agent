@@ -57,6 +57,7 @@
   --md-sys-shape-corner-small: var(--ak-radius-sm);
   --md-sys-shape-corner-medium: var(--ak-radius-md);
   --md-sys-shape-corner-large: var(--ak-radius-lg);
+  /* Material 的 28 在刻度里没有对应一级，收到 lg（16）；写它的新代码拿到的是 16。 */
   --md-sys-shape-corner-extra-large: var(--ak-radius-lg);
   --md-sys-shape-corner-full: var(--ak-radius-full);
 
