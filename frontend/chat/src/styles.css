@@ -1304,8 +1304,8 @@ input {
 }
 
 .composer .composer-reply {
-  margin: -8px -8px 8px -9px;
-  border-radius: calc(var(--composer-expanded-radius) - 5px) calc(var(--composer-expanded-radius) - 5px) var(--ak-radius-sm) var(--ak-radius-sm);
+  margin: -6px calc(4px - var(--composer-control-inset)) 8px -9px;
+  border-radius: calc(var(--composer-radius) - 5px) calc(var(--composer-radius) - 5px) var(--ak-radius-sm) var(--ak-radius-sm);
 }
 
 .icon-button,
@@ -1368,10 +1368,12 @@ input {
   --chat-bubble-max: 34rem;
   /* 输入卡边框外缘到输入文字的距离：1px 边框 + 15px padding。 */
   --composer-text-inset: 16px;
-  --composer-compact-h: 44px;
-  --composer-compact-radius: calc(var(--composer-compact-h) / 2);
-  --composer-expanded-radius: var(--ak-radius-lg);
-  --composer-control-size: 32px;
+  --composer-compact-h: 48px;
+  /* 输入卡只有一种形状：单行时是胶囊，长高后保持同一个圆角（参考 ChatGPT、Gemini），
+     不在聚焦或换行时从胶囊变成方卡。按钮离卡片外缘相同距离，与卡片同心。 */
+  --composer-radius: calc(var(--composer-compact-h) / 2);
+  --composer-control-size: 36px;
+  --composer-control-inset: calc((var(--composer-compact-h) - 2px - var(--composer-control-size)) / 2);
   --composer-dock-gap: 4px;
   /* 统计行浮在输入卡下方的底距里、不占流（见 .composer-stats-line），消息区不再为它预留高度。 */
   --composer-stats-line: 0px;
@@ -1989,9 +1991,9 @@ input {
   min-height: 0;
   overflow: hidden;
   border: 1px solid var(--ak-rule-default);
-  border-radius: var(--composer-compact-radius);
+  border-radius: var(--composer-radius);
   /* 左侧 15px + 1px 边框 = --composer-text-inset，输入文字落在阅读竖线上。 */
-  padding: 4px 4px 4px 15px;
+  padding: var(--composer-control-inset) var(--composer-control-inset) var(--composer-control-inset) 15px;
   background: var(--chat-lift, var(--ak-paper-editing));
   box-shadow: none;
   /* Focus only changes border-color — never padding/radius/height. */
@@ -2004,17 +2006,17 @@ input {
   height: var(--composer-compact-h);
   min-height: var(--composer-compact-h);
   max-height: var(--composer-compact-h);
-  border-radius: var(--composer-compact-radius);
-  padding: 4px 4px 4px 15px;
+  border-radius: var(--composer-radius);
+  padding: var(--composer-control-inset) var(--composer-control-inset) var(--composer-control-inset) 15px;
 }
 
 .composer.is-expanded {
   height: auto;
   min-height: var(--composer-compact-h);
   max-height: none;
-  /* 稳定的编辑表面，文字与操作分行；13px + 1px 边框 + textarea 2px 同样落到 text-inset。 */
-  border-radius: var(--composer-expanded-radius);
-  padding: 12px 12px 12px 13px;
+  /* 文字与操作分行；13px + 1px 边框 + textarea 2px 同样落到 text-inset。按钮行离外缘与单行时相同。 */
+  border-radius: var(--composer-radius);
+  padding: 10px var(--composer-control-inset) var(--composer-control-inset) 13px;
 }
 
 .composer:focus-within {
@@ -2159,6 +2161,12 @@ form.composer:focus-within [data-slot="input-group"] {
   max-height: var(--composer-text-max);
   line-height: 1.5;
   padding-block: 2px;
+  padding-inline-end: 8px;
+}
+
+/* 展开后模型与附件、发送仍在右侧，与单行时同一位置，不跳到左边。 */
+.composer.is-expanded .composer__bar {
+  justify-content: flex-end;
 }
 
 .composer textarea::placeholder {
@@ -2698,10 +2706,11 @@ form.composer:focus-within [data-slot="input-group"] {
 }
 :where([data-chat-width~="820"], [data-chat-short]) {
   .chat-sidebar__search input { font-size: 1rem; }
+  /* 按钮尺寸与卡片高度写在同一层，--composer-control-inset 才按 44 推导（手机 3、平板 5）。 */
   .chat-main {
     --composer-compact-h: 56px;
+    --composer-control-size: 44px;
   }
-  .chat-main .composer { --composer-control-size: 44px; }
   .chat-main .composer textarea { font-size: 1rem; }
   /* 窄屏：输入卡左右缘即阅读边界，卡内文字有自己的 inset。
      本条必须位于上方 .chat-main .composer-wrap 宽屏规则之后，同特异性靠顺序生效。 */
@@ -2711,16 +2720,16 @@ form.composer:focus-within [data-slot="input-group"] {
   }
 }
 
-/* 手机宽度上的输入卡。几何来自 DeepSeek 输入卡（22px 圆角、文字在上、工具行在下、
-   左右 16px、底 8px）和 Beautiful UI 宽输入条（加号在左、模型与发送在右）。
-   触控目标放到 44px；布局跟随 CSS 视口宽度，不依赖设备型号或像素密度。 */
+/* 手机宽度上的输入卡：一行 52px 胶囊（附件在左、模型与发送在右，参考 ChatGPT、Gemini），
+   聚焦不改尺寸；文字放不下一行才长高，文字在上、工具行在下，圆角保持 26 不变。
+   触控目标 44px；布局跟随 CSS 视口宽度，不依赖设备型号或像素密度。 */
 :where([data-chat-width~="36rem"]) {
   .chat-main {
     --chat-dock-inset: 16px;
     --chat-concept-columns: minmax(0, 1fr);
     --composer-dock-end: max(8px, env(safe-area-inset-bottom, 0px));
-    /* 顶 10 + 文字 44 + 间距 12 + 工具 44 + 底 6 + 边框 2 */
-    --composer-compact-h: 7.375rem;
+    /* 边框 1 + 3 + 按钮 44 + 3 + 边框 1 */
+    --composer-compact-h: 52px;
   }
 
   /* 2px + (44 - 20) / 2 + Menu 线条起笔 ≈ 16px：汉堡横线与正文、输入卡左缘同一条线。 */
@@ -2749,57 +2758,68 @@ form.composer:focus-within [data-slot="input-group"] {
   .chat-main :is(.tool-step-sticky, .process-trigger-sticky) { transition: top var(--ak-sys-duration-short) var(--ak-sys-motion-standard); }
   .chat-main:not(.is-empty) .conversation-content { padding-block-start: calc(1.5rem + 53px); }
 
-  .chat-main .composer.is-compact,
-  .chat-main .composer.is-expanded {
-    height: auto;
-    min-height: 0;
-    max-height: none;
-    border-radius: var(--composer-expanded-radius);
-    padding: 10px 0 6px;
+  .chat-main .composer.is-compact {
+    padding: var(--composer-control-inset);
   }
 
-  .chat-main .composer.is-compact [data-slot="input-group"],
+  .chat-main .composer.is-compact [data-slot="input-group"] {
+    gap: 0;
+  }
+
+  .chat-main .composer.is-expanded {
+    padding: 10px var(--composer-control-inset) var(--composer-control-inset);
+  }
+
   .chat-main .composer.is-expanded [data-slot="input-group"] {
     display: flex;
     flex-direction: column;
     align-items: stretch;
-    gap: 12px;
+    gap: 6px;
   }
 
-  .chat-main .composer.is-compact [data-slot="input-group"] > :not([data-slot="input-group-addon"]),
   .chat-main .composer.is-expanded [data-slot="input-group"] > :not([data-slot="input-group-addon"]) {
     width: 100%;
     min-width: 0;
   }
 
-  /* 窄屏输入卡没有横向内边距：轻提示与正文同一左缘。 */
-  .chat-main .composer .composer-queue-refused { padding-inline: 16px 12px; }
+  /* 轻提示与正文同一左缘（边框 1 + 3 + 13 = 17）。 */
+  .chat-main .composer .composer-queue-refused { padding-inline: 13px 9px; }
 
-  /* 窄屏输入卡没有横向内边距，宽屏那套 -10px 外扩会让引用条左贴边框、右侧留缝；改为四周等距内嵌，圆角跟卡片同心，抵掉一半纵向 gap。 */
+  /* 引用条四周等距内嵌，圆角跟卡片同心，抵掉一半纵向 gap。 */
   .chat-main .composer:is(.is-compact, .is-expanded) [data-slot="input-group"] > .composer-reply {
     width: auto;
-    margin: -6px 4px -4px;
-    border-radius: calc(var(--composer-expanded-radius) - 5px) calc(var(--composer-expanded-radius) - 5px) var(--ak-radius-sm) var(--ak-radius-sm);
+    margin: -6px calc(4px - var(--composer-control-inset)) 0;
+    border-radius: calc(var(--composer-radius) - 5px) calc(var(--composer-radius) - 5px) var(--ak-radius-sm) var(--ak-radius-sm);
   }
 
   .chat-main .composer.is-compact textarea,
-  .chat-main .composer.is-compact .composer__textarea,
+  .chat-main .composer.is-compact .composer__textarea {
+    padding-inline: 4px;
+  }
+
   .chat-main .composer.is-expanded textarea,
   .chat-main .composer.is-expanded .composer__textarea {
     width: 100%;
     height: auto;
     min-height: 44px !important;
     max-height: 9rem;
-    padding: 4px 12px 0 16px;
+    padding: 4px 9px 0 13px;
     font-size: 1rem;
     line-height: 24px;
     field-sizing: content;
     overflow-y: auto;
   }
 
-  .chat-main .composer.is-compact textarea::placeholder { white-space: normal; }
+  /* 单行：工具行拆进同一行，回形针排在文字前，模型与发送在后。 */
+  .chat-main .composer.is-compact .composer__bar {
+    display: contents !important;
+  }
 
-  .chat-main .composer.is-compact .composer__bar,
+  .chat-main .composer.is-compact .composer-tool { order: -1; }
+  .chat-main .composer.is-compact .composer__lead { order: 1; }
+  .chat-main .composer.is-compact .composer-action-button { order: 2; }
+
+  /* 回形针中心离外缘 1 + 3 + 22，与输入文字左缘（17）大致同一竖线。 */
   .chat-main .composer.is-expanded .composer__bar {
     display: grid !important;
     width: 100%;
@@ -2807,8 +2827,7 @@ form.composer:focus-within [data-slot="input-group"] {
     grid-template-columns: 44px minmax(0, 1fr) 44px;
     align-items: center;
     column-gap: 8px;
-    /* 左 2px：1 + 2 + (44 - 16) / 2 = 17px，回形针与输入文字左缘对齐。 */
-    padding: 2px 8px 0 2px;
+    padding: 0;
   }
 
   .chat-main .composer.is-compact .composer__lead,
@@ -2829,7 +2848,7 @@ form.composer:focus-within [data-slot="input-group"] {
   .chat-main .composer.is-expanded .composer-tool {
     grid-column: 1;
     grid-row: 1;
-    border-radius: var(--ak-radius-sm);
+    border-radius: var(--ak-radius-full);
     color: var(--chat-muted);
     background: transparent;
   }
@@ -2838,8 +2857,10 @@ form.composer:focus-within [data-slot="input-group"] {
   .chat-main .composer.is-expanded .composer-action-button {
     grid-column: 3;
     grid-row: 1;
-    /* 与卡片外圆角同心：发送键离卡片外缘约 8px。 */
-    border-radius: calc(var(--composer-expanded-radius) - 8px);
+    /* 44px 热区里只画 36px 的圆，与胶囊同心（26 − 4 − 4 = 18），不至于比正文重一截。 */
+    border: 4px solid transparent;
+    border-radius: var(--ak-radius-full);
+    background-clip: padding-box;
   }
 
   .chat-main .composer.is-compact .composer-action-button:disabled,
@@ -2847,6 +2868,8 @@ form.composer:focus-within [data-slot="input-group"] {
     color: var(--chat-muted);
     /* 空草稿的发送钮只是一块淡墨底，不再描一圈边框与输入卡外框抢轮廓。 */
     background: color-mix(in oklab, var(--ak-ink-primary) 5%, transparent);
+    /* background 简写会把裁切重置回 border-box；空草稿也只画 36 的圆。 */
+    background-clip: padding-box;
     box-shadow: none;
     opacity: 1;
   }
@@ -2880,44 +2903,7 @@ form.composer:focus-within [data-slot="input-group"] {
   }
 
 
-  /* 阅读态输入卡：一行 52px，只留输入与发送；获得焦点或有草稿时恢复工具行。 */
-  .chat-main:has(.composer.is-resting) { --composer-compact-h: 52px; }
-
-  .chat-main .composer.is-resting {
-    padding-block: 3px;
-    border-radius: var(--ak-radius-full);
-  }
-
-  .chat-main .composer.is-resting [data-slot="input-group"] {
-    flex-direction: row;
-    align-items: center;
-    gap: 0;
-  }
-
-  /* 与上方 is-compact 文本框规则同特异性才能生效：文字行居中于 44px，与发送钮同一中线。 */
-  .chat-main .composer.is-resting textarea,
-  .chat-main .composer.is-resting .composer__textarea {
-    max-height: 44px;
-    padding-block: 10px;
-  }
-
-  .chat-main .composer.is-resting .composer__bar {
-    width: auto;
-    grid-template-columns: 44px;
-    padding: 0 3px 0 0;
-  }
-
-  .chat-main .composer.is-resting .composer__lead,
-  .chat-main .composer.is-resting .composer-tool {
-    display: none;
-  }
-
-  .chat-main .composer.is-resting .composer-action-button {
-    grid-column: 1;
-    border-radius: 50%;
-  }
-
-  /* 阅读态空草稿的发送钮不可用：点击穿透到卡片，等同点进输入框。 */
+  /* 阅读态（没点进、没有草稿）不再改变布局，只剩这一个用途：空草稿的发送钮不可用，点击穿透到卡片，等同点进输入框。 */
   .chat-main .composer.is-resting .composer-action-button:disabled {
     pointer-events: none;
   }
