@@ -2706,10 +2706,11 @@ form.composer:focus-within [data-slot="input-group"] {
 }
 :where([data-chat-width~="820"], [data-chat-short]) {
   .chat-sidebar__search input { font-size: 1rem; }
+  /* 按钮尺寸与卡片高度写在同一层，--composer-control-inset 才按 44 推导（手机 3、平板 5）。 */
   .chat-main {
     --composer-compact-h: 56px;
+    --composer-control-size: 44px;
   }
-  .chat-main .composer { --composer-control-size: 44px; }
   .chat-main .composer textarea { font-size: 1rem; }
   /* 窄屏：输入卡左右缘即阅读边界，卡内文字有自己的 inset。
      本条必须位于上方 .chat-main .composer-wrap 宽屏规则之后，同特异性靠顺序生效。 */
@@ -2867,6 +2868,8 @@ form.composer:focus-within [data-slot="input-group"] {
     color: var(--chat-muted);
     /* 空草稿的发送钮只是一块淡墨底，不再描一圈边框与输入卡外框抢轮廓。 */
     background: color-mix(in oklab, var(--ak-ink-primary) 5%, transparent);
+    /* background 简写会把裁切重置回 border-box；空草稿也只画 36 的圆。 */
+    background-clip: padding-box;
     box-shadow: none;
     opacity: 1;
   }
@@ -2900,7 +2903,7 @@ form.composer:focus-within [data-slot="input-group"] {
   }
 
 
-  /* 阅读态空草稿的发送钮不可用：点击穿透到卡片，等同点进输入框。 */
+  /* 阅读态（没点进、没有草稿）不再改变布局，只剩这一个用途：空草稿的发送钮不可用，点击穿透到卡片，等同点进输入框。 */
   .chat-main .composer.is-resting .composer-action-button:disabled {
     pointer-events: none;
   }
