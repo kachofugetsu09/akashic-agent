@@ -1,4 +1,4 @@
-"""在无头 Chromium 里托管一份静态网页产物：资源从本地目录取，指定前缀的请求交给 Python 处理，其余网络一律拒绝；闲置的页面自动关闭。
+"""在无头 Chromium 里托管一份静态网页产物：资源从本地目录取，指定前缀交给 Python，只放行指定外部来源；闲置的页面自动关闭。
 
 设计插件用它在服务端跑编辑器（不依赖用户开着网页）；浏览器用部署里已有的 Playwright Chromium。接口里没有设计专属的概念，
 别的插件也要在服务端跑自己的前端代码时，把它提成公共能力（新增 Core 公开模块要过插件边界评审）。
@@ -46,8 +46,8 @@ class PageSpec:
     ready: str
     handlers: Mapping[str, Handler] = field(default_factory=lambda: {})
     headers: Mapping[str, Mapping[str, str]] = field(default_factory=lambda: {})
-    # 允许页面直连的外部域名（图标来自 Iconify）；不在这里的一律拒绝。
-    external: frozenset[str] = frozenset()
+    # 允许页面直连的完整来源（协议、域名与可选端口）；默认不连外网。
+    external_origins: frozenset[str] = frozenset()
     ready_timeout: float = 60.0
 
 
@@ -127,8 +127,10 @@ class HeadlessPages:
     async def _serve(self, route: Route, origin: str, spec: PageSpec) -> None:
         url = route.request.url
         if not url.startswith(f"{origin}/"):
-            # 页面只能取自己托管的东西；spec 里点名的域名（图标接口）放行，其余一律拒绝。
-            return await route.continue_() if urlsplit(url).hostname in spec.external else await route.abort()
+            target = urlsplit(url)
+            if f"{target.scheme}://{target.netloc}" in spec.external_origins:
+                return await route.continue_()
+            return await route.abort()
         path = url[len(origin):]
         name = urlsplit(path).path
         try:

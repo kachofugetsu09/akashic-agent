@@ -150,7 +150,7 @@ class DesignWorker:
                         handlers={"/api/dashboard/design/fonts": self._font},
                         headers={dashboard.SANDBOX: {"Content-Security-Policy": dashboard.SANDBOX_POLICY},
                                  ENTRY: {"Content-Security-Policy": dashboard.EDITOR_POLICY}},
-                        external=frozenset({dashboard.ICON_HOST}))
+                        external_origins=frozenset({dashboard.ICON_ORIGIN}))
         key = "design-" + hashlib.sha256(session.encode("utf-8")).hexdigest()[:24]
         page = await self._pages.page(key, spec)
         self._pages.touch(key)

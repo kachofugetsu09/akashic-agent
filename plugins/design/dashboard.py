@@ -29,13 +29,13 @@ _DOCUMENT = re.compile(r"[0-9a-f]{16}")
 EDITOR = "editor.html"
 # 服务端无头画布的入口页：后端在无头浏览器里直接读文件打开，这里登记的路由只是随产物一起列出，策略与编辑器相同。
 WORKER = "worker.html"
+# 编辑器 CSP 与无头画布共用图标 API 的完整来源，协议和端口也属于放行边界。
+ICON_ORIGIN = "https://api.iconify.design"
 EDITOR_POLICY = (
     "default-src 'self'; script-src 'self' 'wasm-unsafe-eval'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; "
-    "font-src 'self' data: blob:; connect-src 'self' data: blob: https://api.iconify.design; "
+    f"font-src 'self' data: blob:; connect-src 'self' data: blob: {ICON_ORIGIN}; "
     "frame-src 'self'; worker-src 'self' blob:; object-src 'none'; base-uri 'none'; form-action 'none'; frame-ancestors 'self'"
 )
-# 图标是唯一要联网的设计素材，open-pencil 按 Iconify 的公开 API 取；无头画布只放行这一个域名，其余仍然拒绝。
-ICON_HOST = "api.iconify.design"
 # Agent 做的网页在这一页里运行：不透明源沙箱，拿不到 akashic 的 Cookie、存储与父窗口；
 # 快照里的本地资源都已内联成 data URI，外部 https 资源（CDN、字体、接口）放行。
 PREVIEW = "preview.html"
