@@ -39,6 +39,18 @@ export function closeStreamingInline(markdown: string): string {
   return text;
 }
 
+// 单行预览（回复条、引用条）：按 Markdown 渲染后只取文字，标题井号、强调星号、链接网址都不露出来。
+export function markdownPlainText(markdown: string): string {
+  const template = document.createElement("template");
+  template.innerHTML = micromark(markdown, { extensions: [gfm()], htmlExtensions: [gfmHtml()] });
+  const root = template.content;
+  root.querySelector("section[data-footnotes]")?.remove();
+  for (const image of root.querySelectorAll("img")) image.replaceWith(image.alt ? `[${image.alt}]` : "[图片]");
+  // 块与块之间补空格，标题和下一段不会粘成一个词。
+  for (const block of root.querySelectorAll("p, li, h1, h2, h3, h4, h5, h6, pre, blockquote, th, td")) block.append(" ");
+  return (root.textContent ?? "").replace(/\s+/gu, " ").trim();
+}
+
 /** Render settled GFM while keeping raw HTML and unsafe protocols inert. */
 export function renderStaticMarkdown(markdown: string) {
   const html = micromark(markdown, {

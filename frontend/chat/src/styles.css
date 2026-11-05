@@ -1297,9 +1297,15 @@ input {
   font-size: 0.8125rem;
 }
 
+/* 引用条四周等距内嵌 4px（输入卡内边距 12 / 12 / 13 减去外扩），上角与卡片同心：卡圆角 − 边框 1 − 间距 4。
+   输入区默认裁掉溢出，引用条在时放开，否则外扩部分连同圆角一起被裁成直角方块。 */
+.composer [data-slot="input-group"]:has(> .composer-reply) {
+  overflow: visible !important;
+}
+
 .composer .composer-reply {
-  margin: -8px -10px 8px;
-  border-radius: var(--md-sys-shape-corner-extra-large) var(--md-sys-shape-corner-extra-large) var(--md-sys-shape-corner-medium) var(--md-sys-shape-corner-medium);
+  margin: -8px -8px 8px -9px;
+  border-radius: calc(var(--composer-expanded-radius) - 5px) calc(var(--composer-expanded-radius) - 5px) 8px 8px;
 }
 
 .icon-button,

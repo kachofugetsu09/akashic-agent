@@ -1,4 +1,5 @@
 import { toolDataText } from "./message-rendering-policy";
+import { markdownPlainText } from "./static-markdown";
 
 export interface TimelineAttachment {
   artifact_id: string;
@@ -238,8 +239,10 @@ function toolResultValues(message: TimelineMessage): unknown[] {
 }
 
 export function timelineReply(message: TimelineMessage): TimelineReply {
+  // 模型回复是 Markdown，预览取渲染后的文字；用户输入按原文显示。
+  const text = message.body.kind === "output" ? markdownPlainText(timelineText(message)) : timelineText(message);
   return { id: message.id, author: message.author === "legacy-attribution-unknown" ? "原消息" : message.author,
-    preview: timelineText(message).replace(/\s+/gu, " ").trim().slice(0, 512)
+    preview: text.replace(/\s+/gu, " ").trim().slice(0, 512)
       || (message.attachments.length ? "[附件]" : "[无文字消息]") };
 }
 
