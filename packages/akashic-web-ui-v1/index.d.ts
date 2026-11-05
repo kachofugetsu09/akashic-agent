@@ -3,24 +3,44 @@ import type { ComponentType, MouseEvent, ReactNode } from "react";
 export type WebUiDisposer = () => void;
 export type WebMountCardinality = "single" | "list";
 
+/** 明暗偏好：固定亮、固定暗，或随系统外观切换。 */
+export type ThemeMode = "light" | "dark" | "system";
+
 export interface ThemeDefinition {
   readonly id: string;
   readonly label: string;
+  readonly family: string;
   readonly status: "stable" | "experimental";
   readonly colorScheme: "light" | "dark";
+  readonly material: Readonly<Record<string, string>>;
+}
+
+/** 一套配色：同一组色相关系下的一个亮色主题和一个暗色主题。 */
+export interface ThemeFamily {
+  readonly id: string;
+  readonly label: string;
+  readonly light: ThemeDefinition;
+  readonly dark: ThemeDefinition;
 }
 
 export interface ThemeSelection {
   readonly requestedThemeId: string;
   readonly effectiveThemeId: string;
+  readonly family: string;
+  readonly mode: ThemeMode;
   readonly unavailable: boolean;
 }
 
 export function currentTheme(): ThemeDefinition;
 export function subscribeTheme(listener: () => void): WebUiDisposer;
 export function themes(): readonly ThemeDefinition[];
+/** 在当前配色里切换亮与暗。 */
 export function cycleTheme(): ThemeSelection;
+export function themeFamilies(): readonly ThemeFamily[];
+export function themeSelection(): ThemeSelection;
+export function setThemePreference(familyId: string, mode: ThemeMode): ThemeSelection;
 export function useTheme(): ThemeDefinition;
+export function useThemeSelection(): ThemeSelection;
 
 export interface MaterialButtonProps {
   children: ReactNode;

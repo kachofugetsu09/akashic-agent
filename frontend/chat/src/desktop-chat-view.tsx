@@ -1,7 +1,6 @@
 import { type TimelineMessage, type TimelineReply, timelineReplyGroups, timelineText, timelineToolResults, timelineInputStarts, timelineSourceKey, timelineSourceRefreshTokens } from "./message-timeline";
 import React, { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { useStickToBottomContext } from "use-stick-to-bottom";
-import { cycleTheme, useTheme } from "../../theme/src/theme-runtime";
 import { MaterialButton } from "../../theme/src/material-react";
 import {
   Conversation,
@@ -49,8 +48,6 @@ function lastUserInput(messages: readonly TimelineMessage[]): string {
 }
 
 export function DesktopChatView({ controller }: DesktopChatViewProps) {
-  const theme = useTheme();
-
   const composerApi = useRef<ComposerApi | null>(null);
   const shellRef = useRef<HTMLDivElement | null>(null);
   const rail = useSidebarRail(shellRef);
@@ -139,9 +136,9 @@ export function DesktopChatView({ controller }: DesktopChatViewProps) {
         <DesktopSidebar
             surface={surface} sessions={sidebarSessions}
             activeSessionId={activeSessionId} pendingSessionId={pendingSessionId} chatReady={chatReady}
-            themeLabel={theme.label} groups={navigationGroups} navigationPins={controller.navigationPins} onSelectSession={activateSession}
+            groups={navigationGroups} navigationPins={controller.navigationPins} onSelectSession={activateSession}
             onPrefetchSession={prefetchSessionTail}
-            onCycleTheme={cycleTheme} onNewChat={startNewChat} rail={rail}
+            onNewChat={startNewChat} rail={rail}
             onDeleteSession={deleteSession} deletedNotice={deletedNotice}
             restorePending={deletedNotice !== null && restoringSessionIds.has(deletedNotice.key)}
             onRestoreSession={(key) => { void restoreSession(key); }} onDismissDeletedNotice={dismissDeletedNotice}
@@ -155,9 +152,9 @@ export function DesktopChatView({ controller }: DesktopChatViewProps) {
           <CompactNavigation
             surface={surface} sessions={sidebarSessions}
             activeSessionId={activeSessionId} pendingSessionId={pendingSessionId} chatReady={chatReady}
-            themeLabel={theme.label} groups={navigationGroups} navigationPins={controller.navigationPins} onSelectSession={activateSession}
+            groups={navigationGroups} navigationPins={controller.navigationPins} onSelectSession={activateSession}
             onPrefetchSession={prefetchSessionTail}
-            onCycleTheme={cycleTheme} onNewChat={startNewChat}
+            onNewChat={startNewChat}
             onDeleteSession={deleteSession} deletedNotice={deletedNotice}
             restorePending={deletedNotice !== null && restoringSessionIds.has(deletedNotice.key)}
             onRestoreSession={(key) => { void restoreSession(key); }} onDismissDeletedNotice={dismissDeletedNotice}

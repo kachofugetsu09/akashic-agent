@@ -8,6 +8,7 @@ const catalogPath = resolve(here, "..", "theme", "src", "theme-catalog.json");
 
 interface SplashTheme {
   id: string;
+  family: string;
   colorScheme: "light" | "dark";
   background: string;
   ink: string;
@@ -23,12 +24,13 @@ function loadSplashThemes(): { defaultThemeId: string; themes: SplashTheme[] } {
     defaultThemeId?: unknown;
     themes?: unknown;
   };
-  if (catalog.version !== 2 || typeof catalog.defaultThemeId !== "string" || !Array.isArray(catalog.themes)) {
+  if (catalog.version !== 3 || typeof catalog.defaultThemeId !== "string" || !Array.isArray(catalog.themes)) {
     throw new Error("splash 注入: theme catalog 结构无效");
   }
   const themes = catalog.themes.map((raw, index) => {
     const theme = raw as {
       id?: unknown;
+      family?: unknown;
       colorScheme?: unknown;
       material?: { background?: unknown; onSurfaceVariant?: unknown };
     };
@@ -44,7 +46,8 @@ function loadSplashThemes(): { defaultThemeId: string; themes: SplashTheme[] } {
       || typeof ink !== "string" || !HEX_COLOR_PATTERN.test(ink)) {
       throw new Error(`splash 注入: themes[${index}] 缺少 background/onSurfaceVariant`);
     }
-    return { id: theme.id, colorScheme: theme.colorScheme, background, ink };
+    if (typeof theme.family !== "string") throw new Error(`splash 注入: themes[${index}].family 无效`);
+    return { id: theme.id, family: theme.family, colorScheme: theme.colorScheme, background, ink };
   });
   if (!themes.some((theme) => theme.id === catalog.defaultThemeId)) {
     throw new Error("splash 注入: 默认主题不在目录中");
@@ -52,11 +55,21 @@ function loadSplashThemes(): { defaultThemeId: string; themes: SplashTheme[] } {
   return { defaultThemeId: catalog.defaultThemeId, themes };
 }
 
+// 跟随系统的偏好按配色查 [亮, 暗] 两个主题 id。
+function splashFamilies(themes: SplashTheme[]): Record<string, [string, string]> {
+  const families: Record<string, [string, string]> = {};
+  for (const theme of themes) {
+    const pair = families[theme.family] ??= ["", ""];
+    pair[theme.colorScheme === "dark" ? 1 : 0] = theme.id;
+  }
+  return families;
+}
+
 /**
  * 外壳首帧注入：主题变量由运行时 JS（theme-runtime installThemeCss）安装，JS 就绪前
  * 任何 var(--ak-*) 都无效，#root 空白意味着冷启动首帧要等整个模块图求值。这里在构建期把
  * 目录里的 canvas/secondary 两色内联进 HTML，并内联一段阻塞脚本按 cookie 预解析主题
- * （镜像 theme-runtime 的 readCookieTheme + resolveSelection，含 warm-paper 迁移），
+ * （镜像 theme-runtime 的 readCookieTheme + resolveSelection，含 warm-paper 迁移与 system-<配色>），
  * 让 index.html 里的 .akashic-entry-splash 在 HTML 到达时即以正确主题着色——
  * 深色用户也顺带不再先看到一帧浏览器默认白底。观感镜像
  * frontend/chat/src/styles.css 的 .webui-entry-loading（改一边时两边都要看）。
@@ -79,7 +92,8 @@ export function injectEntrySplash(): Plugin {
       const script = `(function(){var d=document.documentElement,` +
         `known=${JSON.stringify(themes.map((t) => t.id))},` +
         `dark=${JSON.stringify(themes.filter((t) => t.colorScheme === "dark").map((t) => t.id))},` +
-        `fallback=${JSON.stringify(defaultThemeId)};` +
+        `fallback=${JSON.stringify(defaultThemeId)},` +
+        `families=${JSON.stringify(splashFamilies(themes))};` +
         `var apply=function(id){d.dataset.theme=id;var isDark=dark.indexOf(id)>=0;` +
         `d.classList.toggle("dark",isDark);d.style.colorScheme=isDark?"dark":"light";` +
         `var meta=document.querySelector('meta[name="color-scheme"]');` +
@@ -89,6 +103,8 @@ export function injectEntrySplash(): Plugin {
         `var id=entry?decodeURIComponent(entry.slice(14)):"";` +
         `if(!/^[a-z0-9][a-z0-9-]{0,63}$/.test(id))id="";` +
         `if(id==="warm-paper")id="light";` +
+        `var pair=id.indexOf("system-")===0&&families[id.slice(7)];` +
+        `if(pair)id=pair[matchMedia("(prefers-color-scheme: dark)").matches?1:0];` +
         `apply(known.indexOf(id)>=0?id:fallback)}catch(e){apply(fallback)}})();`;
       // 追加到 head 末尾而不是 prepend:charset 必须留在文档前 1024 字节内,
       // 内联脚本是同步经典脚本,head 内任何位置都在首帧绘制前执行。

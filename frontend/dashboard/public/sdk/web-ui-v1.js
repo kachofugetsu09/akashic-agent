@@ -4,9 +4,13 @@ const W = window.__akashicRuntime.WebUi;
 export const {
   currentTheme,
   cycleTheme,
+  setThemePreference,
   subscribeTheme,
+  themeFamilies,
   themes,
+  themeSelection,
   useTheme,
+  useThemeSelection,
   MaterialButton,
   MaterialFilterChip,
   MaterialIconButton,

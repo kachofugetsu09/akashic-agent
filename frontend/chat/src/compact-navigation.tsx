@@ -111,7 +111,6 @@ export function CompactNavigation(props: DesktopSidebarProps) {
             },
           } : undefined}
           onSelectSession={(sessionId) => closeThen(() => props.onSelectSession(sessionId))}
-          onCycleTheme={() => closeThen(props.onCycleTheme)}
           onNewChat={() => closeThen(props.onNewChat)}
           onOpenPanels={afterClose}
           onRailAction={afterClose}
