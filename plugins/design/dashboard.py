@@ -25,15 +25,17 @@ inject = (DESIGN_STORE, DESIGN_LIVE)
 ASSETS = "/design/assets/"
 _SESSION = Query(min_length=1, max_length=512)
 _DOCUMENT = re.compile(r"[0-9a-f]{16}")
-# 编辑器页面比宿主默认策略多放行 CanvasKit 的 WASM 编译；不放行内联脚本与 eval。
+# 编辑器页面比宿主默认策略多放行 CanvasKit 的 WASM 编译与 Iconify 的图标接口；不放行内联脚本与 eval。
 EDITOR = "editor.html"
 # 服务端无头画布的入口页：后端在无头浏览器里直接读文件打开，这里登记的路由只是随产物一起列出，策略与编辑器相同。
 WORKER = "worker.html"
 EDITOR_POLICY = (
     "default-src 'self'; script-src 'self' 'wasm-unsafe-eval'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; "
-    "font-src 'self' data: blob:; connect-src 'self' data: blob:; "
+    "font-src 'self' data: blob:; connect-src 'self' data: blob: https://api.iconify.design; "
     "frame-src 'self'; worker-src 'self' blob:; object-src 'none'; base-uri 'none'; form-action 'none'; frame-ancestors 'self'"
 )
+# 图标是唯一要联网的设计素材，open-pencil 按 Iconify 的公开 API 取；无头画布只放行这一个域名，其余仍然拒绝。
+ICON_HOST = "api.iconify.design"
 # Agent 做的网页在这一页里运行：不透明源沙箱，拿不到 akashic 的 Cookie、存储与父窗口；
 # 快照里的本地资源都已内联成 data URI，外部 https 资源（CDN、字体、接口）放行。
 PREVIEW = "preview.html"

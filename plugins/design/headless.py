@@ -46,6 +46,8 @@ class PageSpec:
     ready: str
     handlers: Mapping[str, Handler] = field(default_factory=lambda: {})
     headers: Mapping[str, Mapping[str, str]] = field(default_factory=lambda: {})
+    # 允许页面直连的外部域名（图标来自 Iconify）；不在这里的一律拒绝。
+    external: frozenset[str] = frozenset()
     ready_timeout: float = 60.0
 
 
@@ -125,7 +127,8 @@ class HeadlessPages:
     async def _serve(self, route: Route, origin: str, spec: PageSpec) -> None:
         url = route.request.url
         if not url.startswith(f"{origin}/"):
-            return await route.abort()
+            # 页面只能取自己托管的东西；spec 里点名的域名（图标接口）放行，其余一律拒绝。
+            return await route.continue_() if urlsplit(url).hostname in spec.external else await route.abort()
         path = url[len(origin):]
         name = urlsplit(path).path
         try:

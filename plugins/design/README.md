@@ -12,6 +12,8 @@
   `design_show_html` 把 workspace 里的网页发成一份带预览的设计文档。
 - `static/jsx.html` 是 Agent JSX 的求值沙箱，`static/preview.html` 运行网页预览，两者都由 dashboard 按文件名加上独立的 CSP sandbox。
 - 中日韩回退字体经 `/api/dashboard/design/fonts` 从 Google Fonts 代取，缓存在数据目录的 `fonts/`。
+- 图标是唯一要联网的设计素材，open-pencil 按 Iconify 的公开 API 取：编辑器页的 CSP 与无头画布的请求过滤都只多放行
+  `api.iconify.design` 一个域名，其余照旧（无头画布不再完全断网，但只有这一个出口）。
 - open-pencil 自带的 AI 对话、云同步、协作房间、图库、统计上报与更新检查都不接入。
 
 依赖：`ui`（`conversation.tools.v2` 工作台标签）、`tools`、`working_directory`。
