@@ -73,7 +73,7 @@
   /* 阅读列宽度由宿主的 --chat-column 拥有；缺省值供未定义它的宿主。 */
   width: min(100%, var(--chat-column, 52rem));
   color: var(--ak-ink-primary);
-  /* 模型输出的自然语言：宽屏默认取阅读衬线，窄屏由 --chat-reading-font 切回界面无衬线以平衡高密度代码混排。 */
+  /* 正文与展开的思考共用宿主的阅读字体，宽窄屏保持一致。 */
   font-family: var(--chat-reading-font, var(--ak-type-reading));
   font-size: var(--chat-type-body, 0.9375rem);
   line-height: var(--chat-response-leading, 1.55);
@@ -1344,7 +1344,7 @@
   max-width: 72ch;
   color: color-mix(in oklab, var(--ak-color-text-primary) 46%, transparent);
   /* 思考正文是模型写的自然语言，展开后要读：归阅读字体。 */
-  font-family: var(--ak-type-reading);
+  font-family: var(--chat-reading-font, var(--ak-type-reading));
   font-size: 0.75rem;
   line-height: 1.55;
   overflow-wrap: break-word;
@@ -1360,7 +1360,7 @@
 .process-markdown {
   min-width: 0;
   /* 展开的思考可能是 Markdown：与正文同一阅读字体。 */
-  font-family: var(--ak-type-reading);
+  font-family: var(--chat-reading-font, var(--ak-type-reading));
   overflow-wrap: break-word;
   white-space: normal;
 }

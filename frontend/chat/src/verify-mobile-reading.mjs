@@ -1,4 +1,4 @@
-/** 移动端阅读排版与字号阶梯验收：验证 390px/320px 窄屏与 1280px 宽屏下的三阶字号（13:15:17px）、亲密性间距、字体切换与零横向溢出。 */
+/** 聊天阅读排版验收：验证 390px/320px 窄屏与 1280px 宽屏共用字阶、字体、间距，且无横向溢出。 */
 import { createServer } from "node:http";
 import { readFileSync, existsSync, writeFileSync, mkdirSync, mkdtempSync } from "node:fs";
 import { resolve, extname, dirname } from "node:path";
@@ -58,7 +58,7 @@ const items = [
     source: "akashic",
     attachments: [],
     metadata: {},
-    body: { kind: "output", finish: "complete", parts: [{ kind: "text", value: SAMPLE_MD }] },
+    body: { kind: "output", finish: "complete", parts: [{ kind: "reasoning", display: "thinking", text: "先核对 **字体** 与间距。\n\n宽窄屏共用一套排版。" }, { kind: "text", value: SAMPLE_MD }] },
   },
 ];
 
@@ -108,6 +108,47 @@ const browser = await chromium.launch({
 
 const results = {};
 
+/** 读取真实消息组件的排版，比较视口间可观察的差异。 */
+function readingMetrics() {
+  const topic = document.querySelector(".agent-content .reading-topic");
+  const content = topic.closest(".agent-content");
+  const topicStrong = document.querySelector(".agent-content .reading-topic > strong");
+  const code = document.querySelector(".agent-content code");
+  const ul = document.querySelector(".agent-content .markdown-reading ul");
+  const items = [...document.querySelectorAll(".agent-content .markdown-reading ul > li")];
+  const bodyStrong = document.querySelector(".agent-content ul > li strong");
+
+  const csContent = getComputedStyle(content);
+  const csTopic = getComputedStyle(topic);
+  const csTopicStrong = getComputedStyle(topicStrong);
+  const csCode = getComputedStyle(code);
+  const csUl = getComputedStyle(ul);
+  const csSecondLi = getComputedStyle(items[1]);
+  const csBodyStrong = getComputedStyle(bodyStrong);
+
+  const bodyFontSize = parseFloat(csContent.fontSize);
+  const bodyLineHeight = parseFloat(csContent.lineHeight);
+  const lineLeadingGap = bodyLineHeight - bodyFontSize;
+
+  return {
+    fontFamily: csContent.fontFamily,
+    bodyFontSize,
+    bodyLineHeight,
+    paragraphGap: getComputedStyle(content.querySelector("p")).marginBlockEnd,
+    lineLeadingGap,
+    topicFontSize: parseFloat(csTopic.fontSize),
+    topicLineHeight: parseFloat(csTopic.lineHeight),
+    topicMarginTop: parseFloat(csTopic.marginBlockStart),
+    topicMarginBottom: parseFloat(csTopic.marginBlockEnd),
+    topicWeight: Number(csTopicStrong.fontWeight),
+    bodyStrongWeight: Number(csBodyStrong.fontWeight),
+    codeFontSize: parseFloat(csCode.fontSize),
+    codePaddingInline: parseFloat(csCode.paddingInlineStart),
+    ulPaddingInlineStart: parseFloat(csUl.paddingInlineStart),
+    listItemGap: parseFloat(csSecondLi.marginBlockStart),
+  };
+}
+
 try {
   // 1. 390px 手机视口：验证 13 : 15 : 17px 三阶尺、亲密性间距（列表项间距 > 行内空隙）与界面无衬线字体
   const mobileCtx = await browser.newContext({ viewport: { width: 390, height: 844 }, deviceScaleFactor: 2 });
@@ -118,51 +159,12 @@ try {
   await mobilePage.locator(".agent-content .markdown-reading").waitFor();
   await mobilePage.evaluate(() => document.fonts.ready);
 
-  const mobileMetrics = await mobilePage.evaluate(() => {
-    const content = document.querySelector(".agent-content");
-    const topic = document.querySelector(".agent-content .reading-topic");
-    const topicStrong = document.querySelector(".agent-content .reading-topic > strong");
-    const code = document.querySelector(".agent-content code");
-    const ul = document.querySelector(".agent-content .markdown-reading ul");
-    const items = [...document.querySelectorAll(".agent-content .markdown-reading ul > li")];
-    const bodyStrong = document.querySelector(".agent-content ul > li strong");
-
-    const csContent = getComputedStyle(content);
-    const csTopic = getComputedStyle(topic);
-    const csTopicStrong = getComputedStyle(topicStrong);
-    const csCode = getComputedStyle(code);
-    const csUl = getComputedStyle(ul);
-    const csSecondLi = getComputedStyle(items[1]);
-    const csBodyStrong = getComputedStyle(bodyStrong);
-
-    const bodyFontSize = parseFloat(csContent.fontSize);
-    const bodyLineHeight = parseFloat(csContent.lineHeight);
-    const lineLeadingGap = bodyLineHeight - bodyFontSize;
-
-    return {
-      scrollWidth: document.documentElement.scrollWidth,
-      innerWidth: window.innerWidth,
-      fontFamily: csContent.fontFamily,
-      bodyFontSize,
-      bodyLineHeight,
-      lineLeadingGap,
-      topicFontSize: parseFloat(csTopic.fontSize),
-      topicLineHeight: parseFloat(csTopic.lineHeight),
-      topicMarginTop: parseFloat(csTopic.marginBlockStart),
-      topicMarginBottom: parseFloat(csTopic.marginBlockEnd),
-      topicWeight: Number(csTopicStrong.fontWeight),
-      bodyStrongWeight: Number(csBodyStrong.fontWeight),
-      codeFontSize: parseFloat(csCode.fontSize),
-      codePaddingInline: parseFloat(csCode.paddingInlineStart),
-      ulPaddingInlineStart: parseFloat(csUl.paddingInlineStart),
-      listItemGap: parseFloat(csSecondLi.marginBlockStart),
-    };
-  });
+  const mobileMetrics = await mobilePage.evaluate(readingMetrics);
 
   results.mobile390 = mobileMetrics;
   assert.equal(errors.length, 0, "页面报错：" + JSON.stringify(errors));
-  assert.ok(mobileMetrics.scrollWidth <= mobileMetrics.innerWidth, "390px 发生横向溢出：" + JSON.stringify(mobileMetrics));
-  assert.ok(!mobileMetrics.fontFamily.includes("Source Serif 4"), "窄屏正文应切换为界面无衬线字体，实际：" + mobileMetrics.fontFamily);
+  assert.ok(await mobilePage.evaluate(() => document.documentElement.scrollWidth <= innerWidth), "390px 发生横向溢出");
+  assert.ok(!mobileMetrics.fontFamily.includes("Source Serif 4"), "聊天正文应使用界面无衬线字体，实际：" + mobileMetrics.fontFamily);
   assert.equal(mobileMetrics.bodyFontSize, 15, "窄屏正文字号应为 15px (0.9375rem)，实际：" + mobileMetrics.bodyFontSize);
   assert.equal(mobileMetrics.bodyLineHeight, 24, "窄屏正文行高应为 24px (1.6)，实际：" + mobileMetrics.bodyLineHeight);
   assert.ok(Math.abs(mobileMetrics.topicFontSize - 17) < 0.2, "小标题字号应约为 17px (1.1333em)，实际：" + mobileMetrics.topicFontSize);
@@ -186,6 +188,10 @@ try {
   assert.ok(mobileMetrics.ulPaddingInlineStart <= 18, "窄屏列表缩进应 <= 18px 以释放行宽，实际：" + mobileMetrics.ulPaddingInlineStart);
 
   await mobilePage.screenshot({ path: root + "/mobile-390-settled.png", animations: "disabled" });
+  await mobilePage.locator(".thinking-row .process-trigger").click();
+  const thinkingFont = await mobilePage.locator(".process-text").evaluate((node) => getComputedStyle(node).fontFamily);
+  assert.equal(thinkingFont, mobileMetrics.fontFamily, "展开的思考应沿用聊天字体");
+  results.thinkingFont = thinkingFont;
   await mobileCtx.close();
 
   // 2. 320px 极窄视口：确认长标识符换行不产生横向滚动条
@@ -202,15 +208,19 @@ try {
   await narrowPage.screenshot({ path: root + "/mobile-320-settled.png", animations: "disabled" });
   await narrowCtx.close();
 
-  // 3. 1280px 宽屏：验证宽屏保留阅读衬线栈
+  // 3. 1280px 宽屏：同一内容的排版与手机完全一致，只有列宽和控件布局响应视口。
   const desktopCtx = await browser.newContext({ viewport: { width: 1280, height: 840 } });
   const desktopPage = await desktopCtx.newPage();
   await desktopPage.goto(origin + "/?session=" + encodeURIComponent(sessionKey));
   await desktopPage.locator(".agent-content .markdown-reading").waitFor();
-  const desktopFont = await desktopPage.evaluate(() => getComputedStyle(document.querySelector(".agent-content")).fontFamily);
-  results.desktop1280 = { fontFamily: desktopFont };
-  assert.ok(desktopFont.includes("Source Serif 4"), "宽屏应保留阅读衬线字体，实际：" + desktopFont);
+  await desktopPage.evaluate(() => document.fonts.ready);
+  const desktopMetrics = await desktopPage.evaluate(readingMetrics);
+  results.desktop1280 = desktopMetrics;
+  assert.deepEqual(desktopMetrics, mobileMetrics, "宽窄屏的字体、字阶或间距不同");
+  assert.ok(await desktopPage.evaluate(() => document.documentElement.scrollWidth <= innerWidth), "1280px 发生横向溢出");
   await desktopPage.screenshot({ path: root + "/desktop-1280-settled.png", animations: "disabled" });
+  await desktopPage.locator(".thinking-row .process-trigger").click();
+  assert.equal(await desktopPage.locator(".process-text").evaluate((node) => getComputedStyle(node).fontFamily), thinkingFont, "宽窄屏思考字体不同");
   await desktopCtx.close();
 
   writeFileSync(root + "/results.json", JSON.stringify(results, null, 2));
