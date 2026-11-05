@@ -2049,6 +2049,7 @@ input {
   display: grid;
   grid-template-columns: minmax(0, 1fr);
   align-items: end;
+  /* 带回复条时由 :has(> .composer-reply) 那条放开裁切（见回复条规则），这里加更具体的选择器会让回复条退回直角。 */
   overflow: hidden !important;
   border: 0;
   border-radius: 0;

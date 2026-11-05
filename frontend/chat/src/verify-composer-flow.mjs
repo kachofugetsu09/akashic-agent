@@ -162,6 +162,8 @@ try {
   await reply.getByRole('button', { name: '引用此消息' }).click();
   await page.waitForFunction(() => document.activeElement === document.querySelector('.composer textarea'));
   assert.equal(await page.locator('.composer-reply strong').innerText(), '回复 Akashic');
+  // 预览是渲染后的文字，不露 Markdown 标记。
+  assert.doesNotMatch(await page.locator('.composer-reply').innerText(), /\*\*|^#+ |\]\(/mu);
   await page.getByRole('button', { name: '取消引用' }).click();
   await page.locator('.composer textarea').fill('');
   report.checks.push({ case: 'reply focuses composer with readable author' });
