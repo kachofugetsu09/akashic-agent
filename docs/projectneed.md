@@ -560,7 +560,7 @@ session compaction ledger 的派生 checkpoint，不替代上述记忆状态；�
 
 Akasha 按固定版本的 Turn 投影取得全部 Input 与唯一完成 Output，且为每个参与的非空 user/assistant Message 使用已持久化的固定 embedding，建立一个学习样本。多条 Input 按固定版本的规范化文本连接和向量聚合规则处理；Control、未完成工具和失败开放段只按 Akasha 明确的来源规则处理，不从相邻角色推断归属。在线提交和离线 builder 必须共用相同 Message IDs、规范化文本、向量和 digest 规则。旧数据只能走名称明确的 legacy 兼容路径。
 
-自动召回只由主体 Input 触发：人（`author=user`）或外部程序（`author=program`），判定统一读 `plugins/ledger/contract.py` 的出处一节（见 ADR 0145）；同一输入首次准备后保存并复用实际 Recall，工具续步、system reminder、重试和重启不得重复检索。新的真实用户输入只以该条输入构造召回 cue，不混入同 Turn 的旧输入；聊天卡片按对应输入展示其自动与主动查询。主动调用 `recall_memory` 独立触发检索，并按原调用身份复用结果；后台 Input 不触发自动召回。查询记录只追加，不因复用而改写或删除历史记录。
+自动召回只由用户 Input（`author=user`，经任一渠道进入）触发，判定统一读 `plugins/ledger/contract.py` 的出处一节（见 ADR 0145）；同一输入首次准备后保存并复用实际 Recall，工具续步、system reminder、重试和重启不得重复检索。新的真实用户输入只以该条输入构造召回 cue，不混入同 Turn 的旧输入；聊天卡片按对应输入展示其自动与主动查询。主动调用 `recall_memory` 独立触发检索，并按原调用身份复用结果；后台 Input 不触发自动召回。查询记录只追加，不因复用而改写或删除历史记录。
 
 ### MEM-011 历史投影按完整 Turn 和 token tail 保留
 
@@ -574,7 +574,7 @@ CTX-007 的安全工具批次切分，20,000 token 是近期原文目标。每�
 
 ### MEM-012 Markdown 新用户事实必须有用户原文证据
 
-Markdown 新草稿逐条引用本次可学习的真实 Message ID。用户事实、偏好、明确要求及关系判断，必须包含 author=user 的 Input 引用（`is_human_input`，外部程序的 `author=program` 不算用户原话）；助手转述、工具、后台结果或摘要不能成为唯一依据。
+Markdown 新草稿逐条引用本次可学习的真实 Message ID。用户事实、偏好、明确要求及关系判断，必须包含 author=user 的 Input 引用（`is_user_input`）；助手转述、工具、后台结果或摘要不能成为唯一依据。
 来源与 Session 学习资格由消息和学习 owner 决定，模型不能自行声明。压缩仍保留跨来源工作进展；Markdown 从摘要覆盖的原始消息读取事实，不把摘要正文作为用户原话。
 既有草稿与 before-image 恢复协议保留；本规则不授权删除、改写或补造旧条目和历史引用。引用资格检查证明来源存在且合格，不证明模型推断的语义必然正确。
 

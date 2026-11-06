@@ -1048,8 +1048,7 @@ def detect_supported_image_mime(head: bytes) -> str | None:
 class Actor(StrEnum):
     """写出一条消息的主体种类；插件不再各自比较作者字符串。"""
 
-    HUMAN = "human"
-    PROGRAM = "program"
+    USER = "user"
     MODEL = "model"
     TOOL = "tool"
     HOST = "host"
@@ -1057,20 +1056,18 @@ class Actor(StrEnum):
 
 
 # 保留作者只表达主体种类；其余作者是写入插件自选的稳定名字，表示该插件自动产生的消息。
+# user 是经任一渠道（Web、Telegram、QQ、程序调用……）从外部进入的输入；渠道背后是谁由会话属性约束，不再细分。
 RESERVED_AUTHORS: Mapping[str, Actor] = {
-    "user": Actor.HUMAN,
-    "program": Actor.PROGRAM,
+    "user": Actor.USER,
     "assistant": Actor.MODEL,
     "tool": Actor.TOOL,
     "app": Actor.HOST,
 }
-# 公开来源接纳的主体：人或外部程序代表自己发言，其 Input 开启一个对话 Turn。
-PRINCIPALS = frozenset({Actor.HUMAN, Actor.PROGRAM})
 LEGACY_SOURCE = "legacy-unattributed"
 LEGACY_AUTHOR = "legacy-attribution-unknown"
-# 对话 lane：经公开来源进入的人或程序对话，以及无法再细分的迁移历史；学习与对话上下文默认只读它们。
+# 对话 lane：经渠道进入的对话，以及无法再细分的迁移历史；学习与对话上下文默认只读它们。
 DIALOGUE_SOURCES: tuple[str, ...] = ("conversation", "programmatic", LEGACY_SOURCE)
-_LEGACY_ROLES: Mapping[str, Actor] = {"user": Actor.HUMAN, "assistant": Actor.MODEL}
+_LEGACY_ROLES: Mapping[str, Actor] = {"user": Actor.USER, "assistant": Actor.MODEL}
 
 
 @dataclass(frozen=True, slots=True)
@@ -1092,13 +1089,9 @@ def origin(message: Message) -> Origin:
     return Origin(Actor.AUTOMATION, author)
 
 
-def is_human_input(message: Message) -> bool:
-    return isinstance(message.body, Input) and origin(message).actor is Actor.HUMAN
-
-
-# 人或外部程序的 Input：召回、对话学习与回合起点只认它，自动输入不冒充主体发言。
-def is_principal_input(message: Message) -> bool:
-    return isinstance(message.body, Input) and origin(message).actor in PRINCIPALS
+# 用户输入：召回、用户事实证据与回合起点只认它，插件自动产生的输入不冒充用户发言。
+def is_user_input(message: Message) -> bool:
+    return isinstance(message.body, Input) and origin(message).actor is Actor.USER
 
 
 # 迁移消息只认一份已知格式的出处；格式不符说明迁移数据损坏，不能猜成某种主体。
@@ -1109,7 +1102,7 @@ def _legacy_actor(message: Message) -> Actor:
     parts = [part for part in body.parts
              if isinstance(part, ContentPart) and part.kind == "history.provenance"]
     if not parts:
-        # 1. 没有原始角色时只按消息用途派生；无出处的 Input 不能被当作人的发言。
+        # 1. 没有原始角色时只按消息用途派生；无出处的 Input 不能被当作用户发言。
         return Actor.MODEL if isinstance(body, Output) else Actor.TOOL if isinstance(body, ToolResult) else Actor.AUTOMATION
     if len(parts) != 1 or not isinstance(parts[0].value, Mapping):
         raise ValueError("历史消息必须只有一个 provenance 对象")

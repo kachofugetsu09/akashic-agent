@@ -13,7 +13,7 @@ from core.common.file_io import shield_until_done
 from plugins.ledger.contract import Bindings
 from plugins.ledger.contract import MessageCatalog, MessageEmbeddings
 from plugins.ledger.contract import Message, ToolResult, json_value
-from plugins.ledger.contract import is_principal_input
+from plugins.ledger.contract import is_user_input
 
 from .application.consumer import MessageConsumer, run_memory_job
 from .learning import AKASHA_LEARNING, Learning, LearningConfig
@@ -144,7 +144,7 @@ async def prepare_materials(
         return {}
     members = set(projected[-1].message_ids)
     inputs = tuple(message for message in snapshot
-                   if message.message_id in members and is_principal_input(message))[-1:]
+                   if message.message_id in members and is_user_input(message))[-1:]
     material: MaterialData = {}
     if any(learning.text(message).strip() for message in inputs):
         # 同一真实输入使用稳定身份；工具续步、Reminder 和重启只读原记录。
@@ -240,7 +240,7 @@ def window_seen(snapshot: tuple[Message, ...], records: RecallRecords) -> frozen
     seen = {message.message_id for message in snapshot}
     for message in snapshot:
         body = message.body
-        if is_principal_input(message):
+        if is_user_input(message):
             recall = records.read(context_identity(message.session_id, message.source, message.message_id))
             if recall is not None:
                 seen.update(recall.presented_message_ids)
