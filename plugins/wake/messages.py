@@ -102,8 +102,16 @@ HINTS: dict[Stage, str] = {
 }
 
 
-def finished(reader: MessageReader, request: Request, stage: Stage) -> Message | None:
+# 升级前的 Content 分 screen / investigate 两段；恢复其已提交的决定时从原调查阶段读取，存储行不改写。
+def _phase_start(reader: MessageReader, request: Request, stage: Stage) -> Message | None:
     start = reader.get(request.phase_id(stage))
+    if start is None and stage == "content":
+        return reader.get(request.input_id + ":investigate")
+    return start
+
+
+def finished(reader: MessageReader, request: Request, stage: Stage) -> Message | None:
+    start = _phase_start(reader, request, stage)
     if start is None:
         return None
     for message in reader.snapshot():
@@ -122,7 +130,7 @@ def decision(reader: MessageReader, request: Request, stage: Stage,
              names: tuple[str, ...]) -> Screen | Share | Alert | Skip | None:
     """只认原固定工具的成功回执；没有或重复的业务决定由 Wake 明确延期。"""
     ending = finished(reader, request, stage)
-    start = reader.get(request.phase_id(stage))
+    start = _phase_start(reader, request, stage)
     if ending is None or start is None or not isinstance(ending.body, Output):
         return None
     values = successful_decisions(reader.snapshot(through_seq=ending.seq), request, names, after_seq=start.seq)
