@@ -13,7 +13,7 @@ from core.common.file_io import shield_until_done
 from plugins.ledger.contract import Bindings
 from plugins.ledger.contract import MessageCatalog, MessageEmbeddings
 from plugins.ledger.contract import Message, ToolResult, json_value
-from plugins.ledger.provenance import is_principal_input
+from plugins.ledger.contract import is_principal_input
 
 from .application.consumer import MessageConsumer, run_memory_job
 from .learning import AKASHA_LEARNING, Learning, LearningConfig

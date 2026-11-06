@@ -39,7 +39,7 @@ from plugins.models.contract import (
 from core.common.file_io import run_file_io
 from plugins.ledger.contract import MessageCatalog
 from plugins.ledger.contract import ContentPart, Control, Input, Message, Output, ToolResult
-from plugins.ledger.provenance import is_human_input, is_principal_input
+from plugins.ledger.contract import is_human_input, is_principal_input
 from plugins.compaction.contract import (
     COMPACTION_READER, COMPACTION_SUMMARIES, CompactionReader,
     PartitionedSummary, StoredSummary, SummaryLookup,

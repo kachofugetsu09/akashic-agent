@@ -13,7 +13,7 @@ from typing import cast
 from plugins.ui.contract import PluginUiRpcInvalidRequest
 from plugins.ledger.contract import MessageCatalog
 from plugins.ledger.contract import CallRef, ContentPart, Input, Message, Output, ToolCall, ToolResult, json_value
-from plugins.ledger.provenance import is_principal_input
+from plugins.ledger.contract import is_principal_input
 from plugins.tools.contract import durable_call_key
 from ._boundaries import Turn, TurnProjection
 from .contract import ContextSource, Recall, ToolSource

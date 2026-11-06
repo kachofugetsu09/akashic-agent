@@ -43,7 +43,7 @@ Wake 还保留了自己的外层分阶段驱动：每阶段固定工具、阶段
 
 ### 2. 读取方只调用一处判定
 
-`plugins/ledger/provenance.py` 是唯一解释：
+`plugins/ledger/contract.py` 末尾的出处一节是唯一解释（跨插件只能导入 contract，见 R3）：
 
 - `origin(message) -> Origin(actor, producer)`；
 - `is_human_input`：只认人的 Input，用于“用户原话”证据（Markdown 记忆的用户事实）、界面气泡、编辑与重试；
