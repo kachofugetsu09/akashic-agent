@@ -92,6 +92,9 @@ plugin = "design@release"
 [rows."working_directory"]
 plugin = "working_directory@release"
 
+[rows."privacy_mask"]
+plugin = "privacy_mask@release"
+
 [rows."vision"]
 plugin = "vision@release"
 

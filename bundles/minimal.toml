@@ -109,6 +109,10 @@ disabled = true
 plugin = "working_directory@release"
 disabled = true
 
+[rows."privacy_mask"]
+plugin = "privacy_mask@release"
+disabled = true
+
 [rows."vision"]
 plugin = "vision@release"
 disabled = true
