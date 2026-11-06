@@ -111,8 +111,7 @@ input {
   transition: box-shadow var(--ak-sys-duration-short) var(--ak-sys-motion-standard);
 }
 
-.chat-shell,
-.chat-sidebar {
+:where(.chat-shell, .chat-sidebar) {
   /* Product aliases let shared message CSS follow one brand contract. */
   --chat-ink: var(--ak-ink-primary);
   --chat-muted: var(--ak-ink-secondary);
@@ -123,11 +122,16 @@ input {
   --chat-group-gap: 14px;
   --chat-rail-inline: 10px;
   --chat-rail-width: clamp(16.5rem, 22vw, 19.5rem);
-  --chat-type-control: 0.84375rem;
+  --chat-type-control: 0.875rem;
   --chat-type-caption: 0.75rem;
   --chat-type-body: 0.9375rem;
-  --chat-type-section: 0.75rem;
+  --chat-type-section: 0.8125rem;
   --chat-type-micro: 0.6875rem;
+}
+
+.chat-sidebar {
+  --chat-type-control: 0.84375rem;
+  --chat-type-section: 0.75rem;
 }
 
 .chat-shell {
@@ -530,7 +534,8 @@ input {
   margin-inline: 0;
   border: 1px solid var(--chat-line);
   border-radius: var(--ak-radius-sm);
-  padding-inline: 10px;
+  /* 左侧 1px 边框 + 9px 内边距 = 10px，使图标布局起点落回 20px 主轴线（光学补偿另加 0.5px）。 */
+  padding-inline: 9px 10px;
   color: var(--chat-muted);
   background: transparent;
 }
@@ -949,8 +954,8 @@ input {
   padding-inline: var(--chat-rail-inline);
 }
 
-/* 与列表标题、分组标签同一左缘（22px），占在列表原本的位置。 */
-.navigation-search-empty { margin: 18px 22px 0; color: var(--chat-muted); font-size: 0.8125rem; }
+/* 与列表标题、分组标签同一左缘（rail-inline + 10px），占在列表原本的位置。 */
+.navigation-search-empty { margin: 18px calc(var(--chat-rail-inline) + 10px) 0; color: var(--chat-muted); font-size: 0.8125rem; }
 .navigation-pins-error { display: grid; gap: 5px; padding: 8px 16px; font-size: 0.75rem; color: var(--ak-color-status-error); }
 .navigation-pins-error button { justify-self: start; border: 0; background: transparent; color: var(--chat-ink); text-decoration: underline; cursor: pointer; }
 
@@ -1051,31 +1056,6 @@ input {
 
 .navigation-group { min-width: 0; }
 
-.navigation-group__toggle {
-  display: grid;
-  width: 28px;
-  min-height: 30px;
-  flex: 0 0 auto;
-  place-items: center;
-  border: 0;
-  border-radius: var(--ak-radius-sm);
-  color: var(--chat-muted);
-  background: transparent;
-  cursor: pointer;
-  transition:
-    background-color var(--ak-sys-duration-short) var(--ak-sys-motion-standard),
-    color var(--ak-sys-duration-short) var(--ak-sys-motion-standard);
-}
-
-.navigation-group__toggle:focus-visible {
-  background: var(--chat-chip);
-}
-@media (hover: hover) {
-  .navigation-group__toggle:hover {
-    background: var(--chat-chip);
-  }
-}
-
 .navigation-group__open {
   width: auto;
   min-height: 30px;
@@ -1083,17 +1063,29 @@ input {
   padding-inline: 10px;
 }
 
-.navigation-group__open[aria-disabled="true"],
-.navigation-group__toggle:disabled { cursor: default; }
+.navigation-group__open[aria-disabled="true"] { cursor: default; }
 
 .navigation-group__open svg { flex: 0 0 auto; }
 .navigation-group.active > .navigation-group__row { background: var(--chat-chip); border-radius: var(--ak-radius-sm); }
 
-/* 桌面端项目行尾同格浮现“+”与“⋯”：平时显示折叠箭头，悬停或键盘聚焦时箭头让位、新建与菜单按钮 120ms 淡入。 */
+/* 桌面端项目行尾同格浮现“+”与“⋯”：
+   标题右内边距恒定预留 64px、折叠箭头固定在行尾 10px，悬停时箭头原地 120ms 淡出（零位移）、标题宽度不收缩。 */
 @media (hover: hover) and (pointer: fine) {
+  .navigation-group__open {
+    padding-inline-end: 64px;
+  }
+
+  .navigation-group__chevron {
+    position: absolute;
+    inset-inline-end: 10px;
+    top: 50%;
+    translate: 0 -50%;
+    pointer-events: none;
+  }
+
   .navigation-group__new-chat {
     position: absolute;
-    inset-inline-end: 30px;
+    inset-inline-end: 34px;
     top: 50%;
     translate: 0 -50%;
     width: 26px;
@@ -1116,11 +1108,6 @@ input {
   .navigation-group__row:is(:hover, [data-menu-open]) .navigation-group__chevron,
   .navigation-group__row > .navigation-group__open:focus-visible .navigation-group__chevron {
     opacity: 0;
-  }
-
-  .navigation-group__row:is(:hover, [data-menu-open]) > .navigation-group__open,
-  .navigation-group__row > .navigation-group__open:focus-visible {
-    padding-inline-end: 64px;
   }
 }
 
@@ -1154,7 +1141,7 @@ input {
     opacity var(--ak-sys-duration-snap, 120ms) var(--ak-sys-motion-standard);
 }
 
-:is(.navigation-group__open, .navigation-group__toggle)[aria-expanded="true"] .navigation-group__chevron {
+.navigation-group__open[aria-expanded="true"] .navigation-group__chevron {
   rotate: 90deg;
   transition-duration: var(--ak-sys-duration-expand, 200ms), var(--ak-sys-duration-snap, 120ms);
 }
@@ -1221,6 +1208,13 @@ input {
   }
 }
 
+/* 搜索驱动的分组开合瞬时完成，不触发高度与透明度动画。 */
+.navigation-group__disclosure.is-instant,
+.navigation-group__disclosure.is-instant > .navigation-group__disclosure-inner,
+.chat-sidebar__navigation[data-searching] .navigation-group__chevron {
+  transition: none !important;
+}
+
 .navigation-group__sessions {
   display: grid;
   min-width: 0;
@@ -1257,13 +1251,31 @@ input {
 }
 
 :where([data-chat-width~="820"], [data-chat-touch]) {
-  /* 触屏没有悬停：项目行的新建对话常驻，一次点按就在项目里开新会话。 */
-  .navigation-group__new-chat { width: 44px; height: 44px; }
-  .navigation-group { --group-toggle-width: 44px; }
-  .navigation-group__toggle { width: 44px; }
+  /* 触屏没有悬停：项目行的新建对话常驻在流内右侧，折叠箭头回到流内，一次点按就在项目里开新会话。 */
+  .navigation-group__new-chat {
+    position: static;
+    inset-inline-end: auto;
+    top: auto;
+    translate: none;
+    width: 44px;
+    height: 44px;
+    opacity: 1;
+    pointer-events: auto;
+  }
+  .navigation-group__open { padding-inline: 10px 6px; }
+  .navigation-group__chevron {
+    position: static;
+    inset-inline-end: auto;
+    top: auto;
+    translate: none;
+    opacity: 1;
+  }
+  .navigation-group__row:is(:hover, [data-menu-open]) .navigation-group__chevron,
+  .navigation-group__row > .navigation-group__open:focus-visible .navigation-group__chevron {
+    opacity: 1;
+  }
   .navigation-group__row,
   .navigation-group__open,
-  .navigation-group__toggle,
   .group-session,
   .navigation-group__sessions .conversation-session,
   .navigation-section__icon { min-height: 44px; }
@@ -1321,7 +1333,6 @@ input {
   .navigation-menu-trigger,
   .navigation-section__icon,
   .navigation-group__open,
-  .navigation-group__toggle,
   .group-session,
   .new-chat-scope {
     transition-duration: 0ms !important;
@@ -2545,6 +2556,8 @@ form.composer:focus-within [data-slot="input-group"] {
     width: 100%;
     height: 100%;
     border: 0;
+    --chat-rail-inline: 12px;
+    --chat-group-gap: 16px;
   }
 
   .chat-main {

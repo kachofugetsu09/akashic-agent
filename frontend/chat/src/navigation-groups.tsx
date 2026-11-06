@@ -277,14 +277,24 @@ export function GroupNavigationRow({
 }) {
   // 折叠时分组行汇总会话状态，展开后状态回到各自的会话前。
   const collapsedStatus = open ? undefined : summarizeStatus(items.map((item) => item.status));
-  // 展开 200ms（@starting-style 0fr → 1fr），收起保留挂载跑完 120ms（1fr → 0fr）再卸载，
-  // 平时折叠态不占 DOM，2000 行大目录启动零额外节点。
+  // 只有用户显式点按开合（非初始挂载、非搜索驱动）才播 200ms 展开 / 120ms 收起动画；
+  // 初始就是展开态、搜索打开或从无结果搜索恢复挂载时都带 is-instant 瞬时完成。
   const [wasOpen, setWasOpen] = useState(open);
+  const [wasSearching, setWasSearching] = useState(searching);
   const [closing, setClosing] = useState(false);
-  if (open !== wasOpen) {
+  const [instant, setInstant] = useState(open || searching);
+  if (open !== wasOpen || searching !== wasSearching) {
+    const searchChanged = searching !== wasSearching;
     setWasOpen(open);
-    if (!open) setClosing(true);
-    else if (closing) setClosing(false);
+    setWasSearching(searching);
+    if (searching || searchChanged) {
+      if (closing) setClosing(false);
+      if (!instant) setInstant(true);
+    } else {
+      if (instant) setInstant(false);
+      if (!open) setClosing(true);
+      else if (closing) setClosing(false);
+    }
   }
   useEffect(() => {
     if (!closing) return;
@@ -331,7 +341,7 @@ export function GroupNavigationRow({
       </button>
     </NavigationRowMenu>
     {open || closing ? <div
-      className={`navigation-group__disclosure${open ? " open" : ""}`}
+      className={`navigation-group__disclosure${open ? " open" : ""}${instant ? " is-instant" : ""}`}
       aria-hidden={!open}
       inert={!open ? true : undefined}
       onTransitionEnd={(event) => {
