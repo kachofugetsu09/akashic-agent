@@ -95,16 +95,28 @@ async def apply(ctx: Context) -> None:
                         max_output_tokens=64,
                         disable_reasoning=True,
                     ))
-                    title = " ".join(response.content.strip().strip('"\'`“”‘’').split())
-            except (RuntimeError, TimeoutError) as error:
-                if not (ModelError.matches(error) or isinstance(error, TimeoutError)):
-                    raise
-                logger.warning("会话 %s 标题生成失败，使用首句: %s", reader.session_id, error)
+                    raw_content = response.content or ""
+                    cleaned = raw_content.strip().strip('"\'`“”‘’').strip()
+                    for prefix in ("标题：", "标题:", "Title:", "title:"):
+                        if cleaned.startswith(prefix):
+                            cleaned = cleaned[len(prefix):].strip()
+                    title = " ".join(cleaned.split())
+            except asyncio.CancelledError:
+                raise
+            except Exception as error:
+                if not (ModelError.matches(error) or isinstance(error, (RuntimeError, TimeoutError))):
+                    logger.warning("会话 %s 标题生成异常，使用首句: %s", reader.session_id, error)
+                else:
+                    logger.warning("会话 %s 标题生成失败，使用首句: %s", reader.session_id, error)
             title = " ".join((title or text).split())[:config.max_title_chars].rstrip()
             # 3. 不锁住生成过程；存储内一次条件更新保护已经提交的手动改名。
             await admin.set_title_if_unset(reader.session_id, title)
+        except asyncio.CancelledError:
+            raise
+        except Exception as error:
+            logger.exception("会话 %s 自动标题任务执行异常: %s", reader.session_id, error)
         finally:
-            pending.remove(reader.session_id)
+            pending.discard(reader.session_id)
 
     async def run() -> None:
         """结构化管理并行小任务，卸载时取消并等待所有子任务完成。"""
