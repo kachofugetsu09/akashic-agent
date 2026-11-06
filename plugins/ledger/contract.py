@@ -971,6 +971,10 @@ class ArtifactRead(Protocol):
     async def acquire(self, ref: AttachmentRef) -> AttachmentReadLease: ...
 
 
+class AttachmentImportError(ValueError):
+    """附件来源无法读取；调用者可修正输入，权威存储故障不属于此类。"""
+
+
 class ArtifactImport(Protocol):
     """导入来源并取得不可变引用，不授予消息写入或删除权。"""
 

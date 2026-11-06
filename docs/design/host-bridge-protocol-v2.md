@@ -59,6 +59,13 @@ Bridge service 拥有 boot admission 和 manager lease；ShellProcessManager 拥
 | write | 必需 path、content，允许空内容 |
 | edit | 必需 path、old_text、new_text；optional replace_all，省略为false |
 | list | 必需 path；optional limit 为 1～500，省略为 500；optional after 为上一页的完整文件名 |
+| read_chunk | 必需 path、offset≥0；version 可省略，后续块携带首块版本，来源变化返回文件错误 |
+
+`message_push` 的本地附件通过宿主文件能力读取；Core 不尝试同名容器路径。
+原始文件只接受普通文件，总量不超过 50 MiB，每次读取不超过 1 MiB。
+`FileReply.chunk` 包含 bytes、原文件名、总字节数与来源版本；空文件允许空 bytes。
+Core 仅在完整复制且版本一致后交给 Ledger 发布，临时副本随调用释放。
+缺失、不可读、超限与来源变化返回工具错误，不提交目标消息；存储与内部故障继续传播。
 
 文件字符串允许空值，继续由原文件工具解释；missing 与显式空值不同。无法匹配 oneof 或缺少
 必需字段时拒绝调用。原工具“文件不存在”“匹配多处”等业务错误仍是 OK RPC 的文本结果。

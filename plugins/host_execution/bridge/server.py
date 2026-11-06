@@ -50,6 +50,7 @@ from ..process_runtime import ShellProcessManager
 from .egress import HostEgress
 from .path_info import PathInfoOperation
 from .filesystem import (
+    FileByteAccess,
     EditFileOperation,
     ListDirOperation,
     ReadFileOperation,
@@ -589,6 +590,15 @@ class HostBridgeService:
         )
         # 1. 每支 oneof 只拥有对应工具的公开参数。
         match request.WhichOneof("operation"):
+            case "read_chunk":
+                chunk = request.read_chunk
+                require_fields(chunk, "path", "offset")
+                require_nonnegative(chunk.offset, "offset")
+                async with self._manager_operation(request.context):
+                    result = await FileByteAccess(enable_bridge=False).read(
+                        chunk.path, offset=chunk.offset,
+                        version=chunk.version if chunk.HasField("version") else None,
+                    )
             case "path_info":
                 info = request.path_info
                 async with self._manager_operation(request.context):

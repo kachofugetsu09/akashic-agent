@@ -11,7 +11,8 @@ from plugins.channels.contract import (
 from .events import ChannelAttachment
 from .attachments import ChannelAttachmentArtifactStore
 from .base import AttachmentStore
-from .remote_media import snapshot_remote_media
+from .remote_media import RemoteMediaError, snapshot_remote_media
+from .contract import AttachmentImportError
 
 
 _MAX_IMPORT_BYTES = 50 * 1024 * 1024
@@ -25,9 +26,12 @@ class ChannelOutboundAttachmentImporter:
 
     async def import_source(self, source: str, kind: AttachmentKind) -> AttachmentRef:
         """将已授权路径或公网 URL 固定为一个已发布附件引用。"""
-        refs = await import_channel_attachments(self._store, (
-            ChannelAttachment(kind=kind, source=source),
-        ))
+        try:
+            refs = await import_channel_attachments(self._store, (
+                ChannelAttachment(kind=kind, source=source),
+            ))
+        except RemoteMediaError as error:
+            raise AttachmentImportError(str(error)) from error
         return refs[0]
 
 

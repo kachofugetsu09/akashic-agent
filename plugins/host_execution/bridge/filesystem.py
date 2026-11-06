@@ -22,7 +22,7 @@ from core.common.file_io import run_file_io as _run_file_io
 
 from plugins.ledger.contract import detect_supported_image_mime
 from plugins.models.contract import encode_image_bytes, validate_image_attachment_budget
-from plugins.host_execution.contract import FileError, FileImage, FileResult
+from plugins.host_execution.contract import FileError, FileImage, FileResult, FileChunk, FILE_CHUNK_BYTES, FILE_IMPORT_BYTES
 from infra.persistence.json_store import atomic_write_text
 
 if TYPE_CHECKING:
@@ -262,6 +262,54 @@ class _FileOperation:
             if report.failures:
                 raise RuntimeError(f"文件 Bridge 清理未确认: {report.failures}")
             self._bridge = None
+
+
+class FileByteAccess(_FileOperation):
+    """有界读取宿主原始字节；跨块或块内来源变化都拒绝继续导入。"""
+
+    async def read(self, path: str, *, offset: int = 0, version: str | None = None) -> FileChunk | FileError:
+        bridge = self._get_bridge()
+        if bridge is not None:
+            return await bridge.read_file_chunk(path, offset=offset, version=version)
+        return await _run_file_io(lambda: self._read(path, offset, version))
+
+    def _read(self, path: str, offset: int, version: str | None) -> FileChunk | FileError:
+        """单次打开普通文件，核对身份并读取不超过一块的数据。"""
+        if isinstance(offset, bool) or not isinstance(offset, int) or offset < 0:
+            raise ValueError("文件字节偏移必须是非负整数")
+        if "\0" in path:
+            return FileError("附件路径不能包含空字符")
+        try:
+            # 1. 非阻塞打开避免 FIFO 卡住；只接纳普通文件。
+            source = _resolve_read_path(path)
+            fd = os.open(source, os.O_RDONLY | os.O_NONBLOCK | os.O_CLOEXEC)
+            try:
+                before = os.fstat(fd)
+                if not stat.S_ISREG(before.st_mode):
+                    return FileError(f"附件不是普通文件：{path}")
+                if before.st_size > FILE_IMPORT_BYTES:
+                    return FileError(f"附件超过 50 MiB 导入上限：{path}")
+                current = self._version(before)
+                if version is not None and current != version:
+                    return FileError(f"附件读取期间发生变化，请重新准备：{path}")
+                if offset > before.st_size:
+                    raise ValueError("附件读取偏移超过文件大小")
+                # 2. 前后指纹相同才交付字节，下一块继续使用同一指纹。
+                os.lseek(fd, offset, os.SEEK_SET)
+                data = os.read(fd, min(FILE_CHUNK_BYTES, before.st_size - offset))
+                if self._version(os.fstat(fd)) != current:
+                    return FileError(f"附件读取期间发生变化，请重新准备：{path}")
+                return FileChunk(data, source.name, before.st_size, current)
+            finally:
+                os.close(fd)
+        except OSError as error:
+            return FileError(f"附件读取失败：{path}：{error}")
+
+    @staticmethod
+    def _version(value: os.stat_result) -> str:
+        return ":".join(str(item) for item in (
+            value.st_dev, value.st_ino, value.st_size, value.st_mtime_ns, value.st_ctime_ns,
+        ))
 
 
 class ReadFileOperation(_FileOperation):

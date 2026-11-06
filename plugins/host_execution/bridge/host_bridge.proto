@@ -121,6 +121,7 @@ message FileRequest {
     EditFile edit = 5;
     ListDir list = 6;
     PathInfo path_info = 7;
+    ReadFileChunk read_chunk = 8;
   }
 }
 message ReadFile {
@@ -157,7 +158,19 @@ message FileReply {
     string text = 1;
     FileImage image = 2;
     FileError error = 3;
+    FileChunk chunk = 4;
   }
+}
+message ReadFileChunk {
+  optional string path = 1;
+  optional int64 offset = 2;
+  optional string version = 3;
+}
+message FileChunk {
+  optional bytes data = 1;
+  string filename = 2;
+  optional int64 size = 3;
+  string version = 4;
 }
 message FileError {
   optional string text = 1;

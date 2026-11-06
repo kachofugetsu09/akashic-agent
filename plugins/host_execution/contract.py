@@ -462,6 +462,22 @@ class FileImage:
 FileResult = str | FileError | FileImage
 
 
+FILE_CHUNK_BYTES = 1024 * 1024
+FILE_IMPORT_BYTES = 50 * 1024 * 1024
+
+
+@dataclass(frozen=True, slots=True)
+class FileChunk:
+    data: bytes
+    filename: str
+    size: int
+    version: str
+
+
+class FileByteReader(Protocol):
+    async def read(self, path: str, *, offset: int = 0, version: str | None = None) -> FileChunk | FileError: ...
+
+
 class FileOperation(Protocol):
     async def execute(self, **arguments: Any) -> FileResult: ...
     async def aclose(self) -> None: ...
@@ -477,6 +493,7 @@ class PathReader(Protocol):
 class Files(Protocol):
     def open(self, name: str, allowed_dir: Path | None = None) -> FileOperation: ...
     def paths(self) -> AbstractAsyncContextManager[PathReader]: ...
+    def bytes(self) -> AbstractAsyncContextManager[FileByteReader]: ...
 
 
 FILES = ServiceKey[Files]("host.files.v1")

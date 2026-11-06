@@ -5,7 +5,7 @@ from collections.abc import Iterable
 from google.protobuf.message import Message
 
 from . import host_bridge_pb2 as pb
-from plugins.host_execution.contract import FileError, FileImage, FileResult, TerminalInfo, TerminalOutput
+from plugins.host_execution.contract import FileError, FileImage, FileResult, FileChunk, FILE_CHUNK_BYTES, FILE_IMPORT_BYTES, TerminalInfo, TerminalOutput
 from plugins.host_execution.contract import (
     ExecutionCleanupFailure, ExecutionCleanupReport, ExecutionResult, ExecutionState, UnknownExecutionError
 )
@@ -158,12 +158,16 @@ def decode_execution_states(reply: pb.ExecutionStatesReply) -> list[ExecutionSta
     return states
 
 
-def encode_file_result(result: FileResult) -> pb.FileReply:
+def encode_file_result(result: FileResult | FileChunk) -> pb.FileReply:
     """协议直接携带物理结果；模型内容块由工具消费方构造。"""
     if isinstance(result, str):
         return pb.FileReply(text=result)
     if isinstance(result, FileError):
         return pb.FileReply(error=pb.FileError(text=result.text, is_error=True))
+    if isinstance(result, FileChunk):
+        return pb.FileReply(chunk=pb.FileChunk(
+            data=result.data, filename=result.filename, size=result.size, version=result.version,
+        ))
     return pb.FileReply(image=pb.FileImage(
         text=result.text, mime_type=result.mime_type, data=result.data, detail="high",
     ))
@@ -191,6 +195,23 @@ def decode_file_result(reply: pb.FileReply) -> FileResult:
     ):
         raise ValueError("Host Bridge 文件图片响应不符合合同")
     return FileImage(image.text, image.mime_type, image.data)
+
+
+def decode_file_chunk(reply: pb.FileReply) -> FileChunk | FileError:
+    """只接纳原始文件块或明确读取失败，不把文本结果当作文件字节。"""
+    if reply.WhichOneof("result") == "error":
+        error = decode_file_result(reply)
+        assert isinstance(error, FileError)
+        return error
+    if reply.WhichOneof("result") != "chunk":
+        raise ValueError("Host Bridge 文件响应缺少字节块")
+    chunk = reply.chunk
+    require_fields(chunk, "data", "size")
+    if not chunk.filename or "/" in chunk.filename or chunk.filename in {".", ".."} or not chunk.version:
+        raise ValueError("Host Bridge 文件块缺少有效名称或版本")
+    if not 0 <= chunk.size <= FILE_IMPORT_BYTES or len(chunk.data) > min(FILE_CHUNK_BYTES, chunk.size):
+        raise ValueError("Host Bridge 文件块超出读取上限")
+    return FileChunk(chunk.data, chunk.filename, chunk.size, chunk.version)
 
 
 def encode_terminal_info(info: TerminalInfo) -> pb.TerminalInfo:
