@@ -15,7 +15,7 @@ from typing import Literal, Self, cast
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
-from agent.plugin_composition import RUNTIME_STARTED, RUNTIME_STOPPING, Context, ServiceKey, stop_spawned
+from agent.plugin_composition import RUNTIME_STARTED, RUNTIME_STOPPING, CompositionError, Context, ServiceKey, stop_spawned
 from agent.plugin_composition.host import HOST_INFO
 from core.common.diagnostic_log import log_event
 from plugins.akasha.contract import EMBEDDING_MEMORY_PLUGIN
@@ -795,7 +795,13 @@ class Interest:
             return "Akasha 已关闭" if self.enabled is False else "请先决定是否开启 Akasha"
         if self.readiness is None:
             return "Akasha 前置能力不可用"
-        return self.readiness()
+        # 启动装载（含一次性重放）期间入口尚未接纳调用：报告未就绪，由调用方稍后重试，不让异常打断它的循环。
+        try:
+            return self.readiness()
+        except CompositionError as error:
+            if error.code != "OWNER_UNAVAILABLE":
+                raise
+            return "Akasha 正在启动"
 
     async def score(self, texts: Sequence[str], *, cutoff: str) -> tuple[float, ...]:
         reason = self.status()

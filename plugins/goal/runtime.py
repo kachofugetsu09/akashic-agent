@@ -396,6 +396,9 @@ class GoalRuntime:
     def _last_message(
         self, reader: MessageReader, cursor: int, head: int,
     ) -> Message | None:
+        # 空会话里建立的目标还没有已结算消息（cursor=-1）。
+        if cursor < 0:
+            return None
         messages = reader.read(
             after_seq=cursor - 1, through_seq=head, source="conversation", limit=1,
         )
