@@ -1,13 +1,12 @@
 from __future__ import annotations
 
 import asyncio
-from collections.abc import AsyncGenerator, Awaitable, Callable
+from collections.abc import AsyncGenerator, Awaitable, Callable, Mapping
 from dataclasses import dataclass
 
 from agent.plugin_composition import Context, Effect
 from plugins.channels.contract import CHANNEL_INPUT_V2 as CHANNEL_INPUT, ChannelInboundMessage
-from plugins.ledger.contract import MessageReader
-from plugins.ledger.contract import Message
+from plugins.ledger.contract import MESSAGE_WRITERS, ContentPart, ContentReferences, Message, MessageReader, MessageWriter, UserInputs
 from plugins.sources.contract import (
     SOURCE_CHECK_V2 as SOURCE_CHECK,
     SOURCE_INTERRUPT_V2 as SOURCE_INTERRUPT,
@@ -21,7 +20,7 @@ api_version = 3
 name = "sources"
 version = "1.0.0"
 desc = "按来源注册接纳与控制，供渠道和默认回复组合使用"
-inject = ()
+inject = (MESSAGE_WRITERS,)
 
 Accept = Callable[[str, str, ChannelInboundMessage], Awaitable[Message]]
 Changed = Callable[[MessageReader, str], None]
@@ -39,8 +38,9 @@ class _Registration:
 class Sources:
     """每个来源和输入渠道只绑定一个 owner；不拥有 Message 或活动 Task。"""
 
-    def __init__(self, context: Context):
+    def __init__(self, context: Context, user_inputs: UserInputs):
         self._context = context
+        self._user_inputs = user_inputs
         self._items: dict[str, _Registration] = {}
         self._changes: set[asyncio.Event] = set()
 
@@ -119,6 +119,17 @@ class Sources:
         """来源自己解释是否待回复；注册表不猜来源的完成规则。"""
         return await self._items[source].source.needs_reply(reader)
 
+    def user_inputs(
+        self, ctx: Context, *, name: str,
+        content: Mapping[str, Callable[[ContentPart], ContentReferences]],
+        part_metadata: bool = False,
+    ) -> Callable[..., MessageWriter]:
+        """只有登记该来源的插件能取得它的用户输入写入器；登记撤销后不能再绑定。"""
+        registration = self._items.get(name)
+        if registration is None or registration.source.context is not ctx:
+            raise PermissionError("用户输入只属于已登记的来源: " + name)
+        return self._user_inputs.bind(ctx, source=name, content=content, part_metadata=part_metadata)
+
     def entries(self) -> tuple[Source, ...]:
         return tuple(
             registration.source
@@ -180,7 +191,7 @@ class Sources:
 
 
 async def apply(ctx: Context) -> None:
-    sources = Sources(ctx)
+    sources = Sources(ctx, await ctx.require(MESSAGE_WRITERS).claim_user_inputs(ctx))
     _ = await ctx.provide(SOURCE_CHECK, check_source)
     _ = await ctx.provide(SOURCE_SESSION, _SourceSession)
     _ = await ctx.provide(SOURCES, sources)

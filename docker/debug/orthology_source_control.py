@@ -9,7 +9,8 @@ from tempfile import TemporaryDirectory
 from agent.plugin_composition import CompositionRoot, CredentialRef, ServiceKey
 from plugins.channels.contract import CHANNEL_INPUT_V2 as CHANNEL_INPUT, CHANNELS, ChannelInboundMessage, RawInbound
 from agent.plugin_composition.credentials import CREDENTIALS
-from plugins.ledger.contract import MESSAGE_CATALOG
+from plugins.ledger.contract import MESSAGE_CATALOG, MESSAGE_WRITERS
+from plugins.ledger.services import MessageWriters
 from agent.plugin_composition.model import FiberState, PluginRuntime
 from agent.plugin_composition.tasks import Tasks
 from plugins.sources.contract import (
@@ -74,10 +75,11 @@ async def check(workspace: Path) -> None:
         await root.context.provide(CHANNELS, CaptureChannel())
         await root.context.provide(CREDENTIALS, RejectCredentials())
         await root.context.provide(MESSAGE_CATALOG, MessageCatalog(log))
+        await root.context.provide(MESSAGE_WRITERS, MessageWriters(log))
         runtime = PluginRuntime("telegram", "generation", workspace, workspace / "telegram", workspace,
                                 {"enabled": True, "token": CredentialRef(("scenario", "unused"))})
         async def legacy_routes(ctx):
-            router = sources.Sources(ctx)
+            router = sources.Sources(ctx, None)
             await ctx.provide(LEGACY_SOURCES, router)
             await ctx.provide(LEGACY_CHANNEL_INPUT, router.accept)
         legacy = await root.mount(legacy_routes, name="legacy-routes")
@@ -85,7 +87,7 @@ async def check(workspace: Path) -> None:
         assert waiting.state is FiberState.PENDING and not definitions
         await waiting.dispose()
         await legacy.dispose()
-        await root.mount(sources.apply, name="routes")
+        await root.mount(sources.apply, name="routes", inject=sources.inject)
         assert root.context.get(SOURCES_V3) is None
         assert root.context.get(SOURCE_SESSION) is None
         assert root.context.get(SOURCE_SESSION_V2) is None

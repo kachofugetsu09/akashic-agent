@@ -14,7 +14,7 @@ from .log import (
     SessionAttributes as SessionAttributes,
     WriterExpired as WriterExpired,
 )
-from plugins.ledger.contract import Body, CallRef, ContentPart, ContentReferences, Control, Input, Output, ToolCall, ToolResult
+from plugins.ledger.contract import Actor, Body, CallRef, ContentPart, ContentReferences, Control, Input, Output, ToolCall, ToolResult
 
 
 from plugins.ledger.contract import (
@@ -60,6 +60,23 @@ class MessageWriters:
         self._log = log
         self._metadata: dict[str, tuple[Context, Callable[[Body], Mapping[str, object | None]]]] = {}
         self._part_metadata: dict[str, _PartMetadataGrant] = {}
+        self._user_inputs: _UserInputs | None = None
+
+    async def claim_user_inputs(self, ctx: Context) -> _UserInputs:
+        """用户输入只有一个授权持有者；谁的输入算用户原话由持有者的登记规则决定。"""
+        if ctx.require(MESSAGE_WRITERS) is not self:
+            raise PermissionError("用户输入授权不属于当前 MessageWriters")
+        grant = _UserInputs(self)
+        def setup():
+            if self._user_inputs is not None:
+                raise ValueError("用户输入授权已有持有者")
+            self._user_inputs = grant
+            def release() -> None:
+                if self._user_inputs is grant:
+                    self._user_inputs = None
+            return release
+        _ = await ctx.effect(setup, label="ledger.user-inputs")
+        return grant
 
     async def register_metadata(
         self, ctx: Context, *, keys: frozenset[str],
@@ -97,6 +114,26 @@ class MessageWriters:
         part_metadata: bool = False,
     ) -> Callable[..., MessageWriter]:
         """固定身份、类型和检查器；打开时只选择 Session 和可选 exact call。"""
+        if author == Actor.USER:
+            raise PermissionError("用户输入只由来源注册表代为绑定；注册来源即声明其输入是用户输入")
+        return self._bind(ctx, author=author, source=source, body_types=body_types, content=content,
+                          check_call=check_call, update_metadata=update_metadata,
+                          check_metadata=check_metadata, part_metadata=part_metadata)
+
+    # 授权检查之后的实际绑定；用户输入授权也经此处，身份与元数据规则与其他作者一致。
+    def _bind(
+        self,
+        ctx: Context,
+        *,
+        author: str,
+        source: str,
+        body_types: tuple[type[Input] | type[Output] | type[ToolResult] | type[Control], ...],
+        content: Mapping[str, Callable[[ContentPart], ContentReferences]],
+        check_call: Callable[[ToolCall], None] | None = None,
+        update_metadata: Callable[[Body], Mapping[str, object | None]] | None = None,
+        check_metadata: Callable[[Mapping[str, object]], None] | None = None,
+        part_metadata: bool = False,
+    ) -> Callable[..., MessageWriter]:
         log = self._log
         owner = ctx.require_runtime_identity(MESSAGE_WRITERS, self).plugin_id
         grants = {
@@ -318,3 +355,22 @@ class SessionAdmission:
         except ValueError:
             return False
         return True
+
+
+class _UserInputs:
+    """领取后的用户输入授权；释放后不能再绑定新的写入器。"""
+
+    def __init__(self, writers: MessageWriters) -> None:
+        self._writers = writers
+
+    def bind(
+        self, ctx: Context, *, source: str,
+        content: Mapping[str, Callable[[ContentPart], ContentReferences]],
+        part_metadata: bool = False,
+    ) -> Callable[..., MessageWriter]:
+        if self._writers._user_inputs is not self:  # pyright: ignore[reportPrivateUsage]
+            raise WriterExpired("用户输入授权已释放")
+        return self._writers._bind(  # pyright: ignore[reportPrivateUsage]
+            ctx, author=Actor.USER.value, source=source, body_types=(Input,),
+            content=content, part_metadata=part_metadata,
+        )
