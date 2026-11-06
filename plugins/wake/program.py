@@ -22,20 +22,22 @@ from plugins.reply_program.contract import (
 )
 
 from .messages import HINTS, render
-from .request import STAGE_TOOLS, Request, WakeFailure, read_phase
+from .request import TERMINAL_TOOLS, Request, Stage, WakeFailure, read_phase
+
+
+# 每类职责最多运行的模型步数：技能读取、初筛、调查与提交决定共用一轮中心循环。
+MAX_STEPS: dict[Stage, int] = {"content": 26, "drift": 40, "alert": 3}
 
 
 async def run(ctx: Context, task: Task, reader: MessageReader, request: Request) -> Message:
-    """按归档程序和原工具运行一个真实阶段，已知失败也保存为普通 Control。"""
+    """按归档工具运行一轮中心循环，已知失败也保存为普通 Control。"""
     request = Request.model_validate(request.model_dump())
     _, phase = read_phase(reader.snapshot(), request)
-    names = (tuple(name for name in request.tools if name != "screen_content")
-             if phase.stage == "investigate" else STAGE_TOOLS[phase.stage])
-    fixed = {name: request.tools[name] for name in names}
+    fixed = dict(request.tools)
 
     async def authorize(binding: str, arguments: Mapping[str, object]) -> Mapping[str, object] | str:
         if binding not in fixed.values():
-            return 'Wake 原阶段未授予该工具'
+            return 'Wake 原请求未授予该工具'
         return {"source": "wake", "session_id": request.session_id}
 
     try:
@@ -52,25 +54,12 @@ async def run(ctx: Context, task: Task, reader: MessageReader, request: Request)
             authorize=authorize,
             tool_view=None,
             fixed_bindings=fixed,
-            # 推理也占用输出预算，阶段不另设会截断工具决定的小上限。
+            # 推理也占用输出预算，不另设会截断工具决定的小上限。
             max_output_tokens=0,
-            max_steps=(
-                3
-                if phase.stage == "screen"
-                else 1
-                if phase.stage == "alert"
-                else 20
-                if phase.stage == "investigate"
-                else 40
-            ),
-            terminal_tools=frozenset(
-                name for name in names if name in STAGE_TOOLS[phase.stage]
-            ),
-            exclude_material_kinds=(
-                frozenset({"recall", "profile"})
-                if phase.stage in {"investigate", "alert"}
-                else frozenset()
-            ),
+            max_steps=MAX_STEPS[phase.stage],
+            terminal_tools=frozenset(fixed) & TERMINAL_TOOLS,
+            # 告警只写通知，不需要记忆材料；其余职责初筛要结合已注入的记忆。
+            exclude_material_kinds=frozenset({"recall", "profile"}) if phase.stage == "alert" else frozenset(),
             prompt_hints=(HINTS[phase.stage],),
         )
     except (RuntimeError, TimeoutError) as error:

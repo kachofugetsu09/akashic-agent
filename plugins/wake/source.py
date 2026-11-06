@@ -229,32 +229,20 @@ class Source:
             run_id=request.flow_id, decision=action, detail=detail, completed_at=completed_at))
 
     async def _content(self, task: Task, request: Request, reader: MessageReader) -> str:
-        """固定池快照先初筛，领取原批次后调查；成功送达后才结算所选条目。"""
+        """先领取原批次，再用一轮中心循环初筛、调查并决定；成功送达后才结算所选条目。"""
         domain = self.ctx.require(EVENTMAIL_WAKE)
         proposal = propose_content(request.items, now=request.now)
         if proposal is None:
             raise ValueError("Wake 原 Content 快照没有到期候选")
         all_candidates = _content_candidates(proposal)
-        allowed = {_candidate_id(_mapping(item.get("ref"), "Content ref")) for item in all_candidates}
-        screen: Screen | None = None
-        if proposal.decision == "select":
-            _ = await self._phase(task, request, reader, "screen", {"candidates": screened_candidates(request)})
-            value = decision(reader, request, "screen")
-            if isinstance(value, Screen) and all(item.candidate_id in allowed for item in value.items):
-                screen = value
-        screening = () if screen is None else tuple(item.model_dump() for item in screen.items)
-        await run_file_io(lambda: self.state.record_screen(
-            run_id=request.flow_id, owner="content", candidates_seen=len(all_candidates),
-            screening=screening, started_at=request.now))
+        refs = tuple(_mapping(item.get("ref"), "Content ref") for item in all_candidates)
 
-        # 1. 即使初筛失败也领取这份原批次，再按原业务规则延期，避免反复初筛同一池。
-        wanted = allowed if screen is None else {item.candidate_id for item in screen.items}
-        refs = tuple(_mapping(item.get("ref"), "Content ref") for item in all_candidates
-                     if _candidate_id(_mapping(item.get("ref"), "Content ref")) in wanted)
+        # 1. 先领取整份原批次：模型只在已领取的批次内选择，送达时未选成员自然释放。
         selected = await domain.selection(request.accepted)
         if selected is None:
             claimed = await domain.select_batch(refs, request.snapshot_seq, request.accepted, request.now)
             if claimed.get("selected") is not True:
+                await self._record_screen(request, len(all_candidates), None)
                 await self._record(request, "defer", "原 Content 批次已经变化，领取被拒绝")
                 await self._settled(request, reader)
                 return "admission_rejected"
@@ -263,38 +251,43 @@ class Source:
                 raise ValueError("Content 领取成功却缺少领域回执")
         await run_file_io(lambda: self.state.commit_content_admission(request.items))
         token = _string(selected.get("selection_token"), "Content selection_token")
-        status = _string(selected.get("status"), "Content status")
-        if status == "selected":
-            if proposal.decision == "decline":
-                await self._record(request, "skip", "来源明确要求等待内容变化")
-                await self._change_content(token, "await_change")
-            elif screen is None:
-                await self._record(request, "defer", "初筛没有提交有效候选")
-                action = "invalidated" if retryable(finished(reader, request, "screen")) is False else "defer"
-                await self._change_content(token, action)
+        if _string(selected.get("status"), "Content status") != "selected":
+            return await self._finish_domain(task, request, reader, "content")
+        if proposal.decision == "decline":
+            await self._record_screen(request, len(all_candidates), None)
+            await self._record(request, "skip", "来源明确要求等待内容变化")
+            await self._change_content(token, "await_change")
+            return await self._finish_domain(task, request, reader, "content")
+
+        # 2. 一轮中心循环按技能初筛、调查并提交唯一决定；Wake 只读取已成功的工具回执。
+        _ = await self._phase(task, request, reader, "content", {"candidates": screened_candidates(request)})
+        screen = decision(reader, request, "content", ("screen_content",))
+        await self._record_screen(request, len(all_candidates), screen if isinstance(screen, Screen) else None)
+        value = decision(reader, request, "content", ("share_content", "skip_content"))
+        if isinstance(value, Share):
+            try:
+                chosen = _selected_content_refs(selected, value.items)
+            except ValueError:
+                await self._record(request, "defer", "分享引用了原批次之外的候选")
+                await self._change_content(token, "defer")
             else:
-                _ = await self._phase(
-                    task, request, reader, "investigate",
-                    {"candidates": screened_candidates(request, screen)},
-                )
-                value = decision(reader, request, "investigate")
-                if isinstance(value, Share):
-                    try:
-                        chosen = _selected_content_refs(selected, value.items)
-                    except ValueError:
-                        await self._record(request, "defer", "调查分享引用了原批次之外的候选")
-                        await self._change_content(token, "defer")
-                    else:
-                        await self._record(request, "share", value.message)
-                        await self._change_content(token, "ready_for_delivery", refs=chosen)
-                elif isinstance(value, Skip):
-                    await self._record(request, "skip", value.reason)
-                    await self._change_content(token, "release")
-                else:
-                    await self._record(request, "defer", "调查没有提交唯一有效决定")
-                    action = "invalidated" if retryable(finished(reader, request, "investigate")) is False else "defer"
-                    await self._change_content(token, action)
-        return await self._finish_domain(task, request, reader, "investigate")
+                await self._record(request, "share", value.message)
+                await self._change_content(token, "ready_for_delivery", refs=chosen)
+        elif isinstance(value, Skip):
+            await self._record(request, "skip", value.reason)
+            await self._change_content(token, "release")
+        else:
+            await self._record(request, "defer", "没有提交唯一有效决定")
+            action = "invalidated" if retryable(finished(reader, request, "content")) is False else "defer"
+            await self._change_content(token, action)
+        return await self._finish_domain(task, request, reader, "content")
+
+    # 面板记录实际初筛；没有进入模型或初筛无效时只记录候选数。
+    async def _record_screen(self, request: Request, seen: int, screen: Screen | None) -> None:
+        screening = () if screen is None else tuple(item.model_dump() for item in screen.items)
+        await run_file_io(lambda: self.state.record_screen(
+            run_id=request.flow_id, owner="content", candidates_seen=seen,
+            screening=screening, started_at=request.now))
 
     async def _change_content(self, token: str, action: str, *, refs: Sequence[Mapping[str, object]] | None = None) -> None:
         result = await self.ctx.require(EVENTMAIL_WAKE).transition(token, action,
@@ -335,7 +328,7 @@ class Source:
             _ = await self._phase(
                 task, request, reader, "drift", {"duty": dict(proposal.payload)}
             )
-            value = decision(reader, request, "drift")
+            value = decision(reader, request, "drift", ("share_content", "skip_content"))
             if isinstance(value, Share) and not value.items:
                 action = "ready_for_delivery"
                 await self._record(request, "share", value.message)
@@ -365,7 +358,7 @@ class Source:
         if selected.get("status") not in {"ready_for_delivery", "delivered", "settled"}:
             await self._settled(request, reader)
             return "failed" if selected.get("status") == "failed" else "deferred" if selected.get("status") == "deferred" else "model_skip"
-        value = decision(reader, request, stage)
+        value = decision(reader, request, stage, ("share_content",))
         if not isinstance(value, Share):
             raise ValueError("待送达领域状态缺少实际 share ToolResult")
         text = value.message
@@ -435,7 +428,7 @@ class Source:
         _ = await self._phase(
             task, request, reader, "alert", {"alert": dict(selected)}
         )
-        value = decision(reader, request, "alert")
+        value = decision(reader, request, "alert", ("share_alert",))
         if not isinstance(value, Alert):
             action = "skip" if retryable(finished(reader, request, "alert")) is False else "defer"
             await self._record(request, action, "告警没有提交唯一有效 share_alert")
