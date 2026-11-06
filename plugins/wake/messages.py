@@ -9,6 +9,7 @@ from zoneinfo import ZoneInfo
 from plugins.ledger.contract import MessageCatalog, MessageReader
 from plugins.ledger.contract import ContentPart, Control, Input, Message, Output, ToolCall, ToolResult
 from plugins.ledger.contract import json_value
+from plugins.ledger.contract import DIALOGUE_SOURCES, Actor, origin
 
 from .content import _candidate_payloads, _string
 from ._boundary import DeliveryHistory
@@ -33,6 +34,9 @@ def recent_context(catalog: MessageCatalog, history: DeliveryHistory, *, target:
 
 
 # 从结尾倒序翻页，凑满 20 条带正文的对话即停；长会话不再整段解码。
+_ROLES = {Actor.USER: "user", Actor.MODEL: "assistant"}
+
+
 def _recent_conversation(reader: MessageReader, now: datetime) -> list[dict[str, object]]:
     passive: list[dict[str, object]] = []
     try:
@@ -42,14 +46,15 @@ def _recent_conversation(reader: MessageReader, now: datetime) -> list[dict[str,
         return passive
     while True:
         for message in reversed(page.messages):
-            if (message.recorded_at > now
-                    or message.source not in {"conversation", "legacy-unattributed"}
+            # 近期对话只含人或外部程序的原话与模型回复；自动输入不冒充用户。
+            role = _ROLES.get(origin(message).actor)
+            if (message.recorded_at > now or message.source not in DIALOGUE_SOURCES or role is None
                     or not isinstance(message.body, (Input, Output))):
                 continue
             text = "\n".join(cast(str, part.value) for part in message.body.parts
                              if isinstance(part, ContentPart) and part.kind == "text")
             if text:
-                passive.append({"message_id": message.message_id, "role": "user" if isinstance(message.body, Input) else "assistant",
+                passive.append({"message_id": message.message_id, "role": role,
                                 "time": message.recorded_at.isoformat(), "text": text})
             if len(passive) == 20:
                 return passive
