@@ -4,6 +4,7 @@
 - 日期：2026-11-06
 - 关联条款：WEBUI-001～WEBUI-007
 - 细化：0043 的纸面品牌 token；颜色仍然只在 `theme-catalog.json` 里声明。
+- 部分 superseded by：[0144](0144-paper-uses-the-corrected-palette.md) 用校正版替换原纸感；下文保留原决定及理由。
 
 ## 背景
 

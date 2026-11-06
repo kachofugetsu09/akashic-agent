@@ -1,5 +1,6 @@
 import { useSyncExternalStore } from "react";
 import catalogJson from "./theme-catalog.json";
+import { migrateThemePreference } from "./theme-preference";
 
 export type ThemeStatus = "stable" | "experimental";
 export type ThemeColorScheme = "light" | "dark";
@@ -257,22 +258,22 @@ function systemPrefersDark(): boolean {
 }
 
 function resolveSelection(requestedThemeId: string): ThemeSelection {
+  const normalized = migrateThemePreference(requestedThemeId);
   // 1. 跟随系统：按当前系统外观取该配色的亮或暗主题
-  const followed = requestedThemeId.startsWith(SYSTEM_PREFIX)
-    ? FAMILY_BY_ID.get(requestedThemeId.slice(SYSTEM_PREFIX.length)) : undefined;
+  const followed = normalized.startsWith(SYSTEM_PREFIX)
+    ? FAMILY_BY_ID.get(normalized.slice(SYSTEM_PREFIX.length)) : undefined;
   if (followed) {
     const theme = systemPrefersDark() ? followed.dark : followed.light;
     return { requestedThemeId, effectiveThemeId: theme.id, family: followed.id, mode: "system", unavailable: false };
   }
-  // 2. 固定主题；warm-paper removed, migrate legacy cookie/prefs onto paper light.
-  const normalized = requestedThemeId === "warm-paper" ? "light" : requestedThemeId;
+  // 2. 固定主题；已退役的身份沿用当前纸感，未知身份仍标记不可用。
   const theme = THEME_BY_ID.get(normalized) ?? DEFAULT_THEME;
   return {
     requestedThemeId,
     effectiveThemeId: theme.id,
     family: theme.family,
     mode: theme.colorScheme,
-    unavailable: theme.id !== requestedThemeId && requestedThemeId !== "warm-paper",
+    unavailable: theme.id !== normalized,
   };
 }
 
