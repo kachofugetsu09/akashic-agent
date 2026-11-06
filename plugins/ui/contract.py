@@ -34,6 +34,7 @@ from agent.plugin_composition.plugin_config import PLUGIN_CONFIG
 
 from plugins.ledger.contract import MessagePage, MessageReader, SessionEntry
 from plugins.ledger.contract import ContentPart, Control, Input, Message, Output, ToolCall, ToolResult, json_value
+from plugins.ledger.contract import origin
 from plugins.tools.contract import ToolDisplay
 
 DashboardRoute = APIRoute | WebSocketRoute
@@ -438,6 +439,7 @@ def _message_row(
         "seq": message.seq,
         "timestamp": message.recorded_at.isoformat(),
         "author": message.author,
+        "actor": origin(message).actor.value,
         "source": message.source,
         "metadata": json_value(message.metadata),
         "attachments": [asdict(ref) for ref in page.attachments[message.message_id]],

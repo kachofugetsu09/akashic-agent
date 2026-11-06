@@ -36,10 +36,20 @@ export interface TimelineMessage {
   seq: number;
   timestamp: string;
   author: string;
+  /** 服务端按 ADR 0145 派生的出处；页面只读它，不比较作者字符串。 */
+  actor: TimelineActor;
   source: string;
   attachments: TimelineAttachment[];
   body: TimelineBody;
   metadata: Record<string, unknown>;
+}
+
+export type TimelineActor = "user" | "model" | "tool" | "host" | "automation";
+const ACTORS: readonly string[] = ["user", "model", "tool", "host", "automation"];
+
+/** 经渠道进入的用户输入：气泡、编辑、重跑、引导与回合起点只认它；插件自动产生的输入不打断回合。 */
+export function userInput(message: TimelineMessage): boolean {
+  return message.body.kind === "input" && message.actor === "user";
 }
 
 export interface TimelineReply {
@@ -149,7 +159,7 @@ export function readTimelineMessage(value: unknown): TimelineMessage {
   const row = object(value);
   if (!row || !nonempty(row.id) || !nonempty(row.session_id) || !integer(row.seq)
     || !nonempty(row.timestamp) || !Number.isFinite(Date.parse(row.timestamp))
-    || !nonempty(row.author) || !nonempty(row.source)
+    || !nonempty(row.author) || !ACTORS.includes(String(row.actor)) || !nonempty(row.source)
     || !Array.isArray(row.attachments) || !row.attachments.every(validAttachment)) {
     throw new Error("历史消息身份或附件无效");
   }
@@ -241,7 +251,7 @@ function toolResultValues(message: TimelineMessage): unknown[] {
 export function timelineReply(message: TimelineMessage): TimelineReply {
   // 模型回复是 Markdown，预览取渲染后的文字；用户输入按原文显示。
   const text = message.body.kind === "output" ? markdownPlainText(timelineText(message)) : timelineText(message);
-  return { id: message.id, author: message.author === "legacy-attribution-unknown" ? "原消息" : message.author,
+  return { id: message.id, author: message.actor === "user" ? "user" : message.actor === "model" ? "assistant" : message.author,
     preview: text.replace(/\s+/gu, " ").trim().slice(0, 512)
       || (message.attachments.length ? "[附件]" : "[无文字消息]") };
 }
@@ -398,7 +408,7 @@ export function timelineInputStarts(messages: TimelineMessage[]): Map<string, nu
   const starts = new Map<string, number>();
   for (const message of messages) {
     const key = timelineSourceKey(message);
-    if (message.body.kind === "input" && message.author === "user" && !starts.has(key)) starts.set(key, message.seq);
+    if (userInput(message) && !starts.has(key)) starts.set(key, message.seq);
   }
   return starts;
 }
@@ -447,7 +457,7 @@ export function timelineReplyGroups(messages: TimelineMessage[], activities: Rep
         if (members.length > 1) completed.set(message.id, members);
         pending.delete(key);
       }
-    } else if ((body.kind === "input" && message.author === "user")
+    } else if (userInput(message)
       || (body.kind === "control" && body.action !== "resume")
       || timelineDeliversAttachment(message)) {
       const throughSeq = body.kind === "control" ? body.through_seq : message.seq - 1;
@@ -542,7 +552,7 @@ export function timelineFailureRetries(messages: TimelineMessage[]): TimelineFai
     runs.set(key, run);
     run.tail = message;
     // 1. 新输入或放弃开始新的一段；自动输入不能由用户重跑。
-    if (body.kind === "input") Object.assign(run, { input: message.author === "user" ? message : null, failures: [], stuck: false });
+    if (body.kind === "input") Object.assign(run, { input: userInput(message) ? message : null, failures: [], stuck: false });
     else if (body.kind === "control" && body.action === "abandon") Object.assign(run, { failures: [], stuck: false });
     // 2. 重试最终答出来了：回答替换掉这一轮的失败。
     else if (body.kind === "output" && body.finish !== "continue") {
@@ -624,7 +634,7 @@ export function timelineVisibleMessages(messages: TimelineMessage[], groups = ti
     if (superseded.has(message.id)) return false;
     if (groups.moved.has(message.id) && !message.attachments.length) return false;
     if (!isTimelineMessageVisible(message) && !groups.completed.has(message.id)
-      && !(message.body.kind === "input" && message.author === "user")) return false;
+      && !userInput(message)) return false;
     if (groups.hiddenBodies.has(message.id) && !message.attachments.length && message.body.kind === "output"
       && !message.body.parts.some((part) => part.kind !== "text" && isTimelinePartVisible(part))) return false;
     if (message.body.kind !== "tool_result" || timelineDeliversAttachment(message)) return true;

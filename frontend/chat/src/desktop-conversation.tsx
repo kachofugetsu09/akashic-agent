@@ -1,7 +1,7 @@
 import { focusMessagePart } from "./message-actions";
 import { copyText } from "./copy-text";
 import { timelineVisibleMessages, timelineFailureRetries, timelineToolResults, timelineReplyGroups, timelineAnchorIndexes, timelineInputStarts, timelineSourceKey, timelineSourceRefreshTokens, needsBeforeReasoningFallback, type ReplyActivity } from "./message-timeline";
-import { timelineReply, timelineText, type TimelineMessage, type TimelineReply } from "./message-timeline";
+import { userInput, timelineReply, timelineText, type TimelineMessage, type TimelineReply } from "./message-timeline";
 import React, { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, useSyncExternalStore } from "react";
 import { useStickToBottomContext } from "use-stick-to-bottom";
 
@@ -379,7 +379,7 @@ export const DesktopTimelineMessages = React.memo(function DesktopTimelineMessag
     const inputs = new Map<string, string>();
     for (const message of messages) {
       const key = timelineSourceKey(message);
-      if (message.body.kind === "input" && message.author === "user") inputs.set(key, message.timestamp);
+      if (userInput(message)) inputs.set(key, message.timestamp);
       else if (message.body.kind === "output" && inputs.has(key)) starts.set(message.id, inputs.get(key)!);
     }
     return starts;
@@ -428,13 +428,13 @@ export const DesktopTimelineMessages = React.memo(function DesktopTimelineMessag
         canReply={status === "idle" && (message.body.kind === "input" || message.body.kind === "output")}
         canCopy={Boolean(timelineText(message))} copied={copiedMessageId === message.id}
         onReply={() => onReply(timelineReply(message))}
-        onEdit={message.body.kind === "input" && message.author === "user" && timelineText(message)
+        onEdit={userInput(message) && timelineText(message)
           ? () => onEditInput(timelineText(message)) : undefined}
         onCopy={() => { void copyText(timelineText(message)).then(() => onCopied(message.id)).catch(onError); }}
         extra={message.body.kind === "output" && message.body.finish === "complete" ? <PluginUiSlot
           name="message.actions" sessionId={message.session_id} messageId={message.id} quiet /> : null} />
     </div> : null}
-    {message.body.kind === "input" && message.author === "user" ? <div className="message-row agent-row">
+    {userInput(message) ? <div className="message-row agent-row">
       <div className="agent-content"><PluginUiSlot name="turn.before_reasoning"
         sessionId={message.session_id} messageId={message.id} block={{ source: message.source }}
         refreshToken={refreshTokens.get(timelineSourceKey(message))} /></div>
