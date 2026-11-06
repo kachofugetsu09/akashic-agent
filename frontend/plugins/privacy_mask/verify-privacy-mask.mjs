@@ -7,6 +7,7 @@
  */
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
+import { createHash } from "node:crypto";
 import { mkdtempSync, mkdirSync, writeFileSync, symlinkSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { resolve, dirname } from "node:path";
@@ -24,7 +25,7 @@ symlinkSync(resolve(repo, "node_modules"), work + "/node_modules", "dir");
 
 writeFileSync(
   work + "/index.html",
-  '<!doctype html><html><head><meta charset="utf-8"></head><body><div id="root"></div><script type="module" src="./fixture.tsx"></script></body></html>',
+  '<!doctype html><html><head><meta charset="utf-8"><script type="importmap">{"imports":{}}</script></head><body><div id="root"></div><script type="module" src="./fixture.tsx"></script></body></html>',
 );
 
 writeFileSync(
@@ -37,6 +38,7 @@ import { DesktopSidebar } from ${JSON.stringify(resolve(repo, "frontend/chat/src
 import { MarqueeText } from ${JSON.stringify(resolve(repo, "frontend/chat/src/marquee-text.tsx"))};
 import { exposeChatRuntime } from ${JSON.stringify(resolve(repo, "frontend/chat/src/chat-ui-runtime.tsx"))};
 import { connectHost } from ${JSON.stringify(resolve(repo, "frontend/chat/src/chat-host.ts"))};
+import { startWebHost } from ${JSON.stringify(resolve(repo, "frontend/dashboard/src/webHost.ts"))};
 import { setShellRailActions } from ${JSON.stringify(resolve(repo, "frontend/chat/src/shell-rail-actions.ts"))};
 import { TooltipProvider } from ${JSON.stringify(resolve(repo, "frontend/chat/src/components/ui/tooltip.tsx"))};
 import { initializeTheme, setTheme } from ${JSON.stringify(resolve(repo, "frontend/theme/src/theme-runtime.ts"))};
@@ -71,28 +73,6 @@ function App() {
   const headerSlotRef = useRef<HTMLDivElement | null>(null);
 
   useEffect(() => {
-    const railEntries: any[] = [];
-    const disposeWeb = activatePrivacyWeb({
-      ui: {
-        inject(_mount: string, fn: any) {
-          return fn({
-            register(entry: any) {
-              railEntries.push(entry);
-              setShellRailActions(railEntries.map(({ id, order, label, iconSvg }) => ({ id, order, label, iconSvg })));
-              return () => {};
-            },
-          });
-        },
-      },
-      http: {} as any,
-      data: {} as any,
-    });
-    const disconnectHost = connectHost({
-      activateRailAction: (id: string) => railEntries.find((e) => e.id === id)?.onActivate(),
-      reportSession: () => {},
-      reportOverlay: () => {},
-      requestIntent: async () => "unhandled",
-    });
     let unmountSlot: (() => void) | void;
     if (headerSlotRef.current && privacySlotDefinition.slots["header.end"]) {
       unmountSlot = privacySlotDefinition.slots["header.end"].mount(headerSlotRef.current, {
@@ -108,15 +88,8 @@ function App() {
       });
     }
     (window as any).__setHeadingTitle = (next: string) => setHeadingTitle(next);
-    (window as any).__disposePrivacyPlugin = () => {
-      if (typeof unmountSlot === "function") unmountSlot();
-      disposeWeb();
-      disconnectHost();
-    };
     return () => {
       if (typeof unmountSlot === "function") unmountSlot();
-      disposeWeb();
-      disconnectHost();
     };
   }, []);
 
@@ -273,7 +246,36 @@ function App() {
   );
 }
 
-createRoot(document.getElementById("root")!).render(<App />);
+// 夹具只提供页面；插件的注册、校验与卸载全部经过真实宿主。
+(window as any).__activatePrivacyWeb = activatePrivacyWeb;
+(window as any).__activateFixtureShell = (ctx: any) => ctx.ui.inject("web.root.v1", (mount: any) =>
+  mount.register({
+    id: "fixture-shell",
+    children: [{ id: "shell.rail-actions.v1", cardinality: "list" }],
+    render(host: HTMLElement, view: any) {
+      exposeChatRuntime();
+      const railEntries = view.child("shell.rail-actions.v1").entries;
+      setShellRailActions(railEntries.map(({ id, order, label, iconSvg }: any) => ({ id, order, label, iconSvg })));
+      const disconnectHost = connectHost({
+        activateRailAction: (id: string) => railEntries.find((entry: any) => entry.id === id)?.onActivate(),
+        reportSession: () => {},
+        reportOverlay: () => {},
+        requestIntent: async () => "unhandled",
+      });
+      const root = createRoot(host);
+      root.render(<App />);
+      return () => {
+        root.unmount();
+        disconnectHost();
+        setShellRailActions([]);
+      };
+    },
+  }),
+);
+startWebHost(document.getElementById("root")!).then((session) => {
+  (window as any).__disposePrivacyPlugin = () => session.close();
+  (window as any).__webHostReady = true;
+});
 `,
 );
 
@@ -302,6 +304,23 @@ await build({
 });
 
 const server = await startDesktopFixtureServer(work + "/dist");
+const digest = (value) => createHash("sha256").update(value).digest("hex");
+const modules = [
+  { pluginId: "fixture-shell", activate: "__activateFixtureShell", requires: ["web.root.v1"], provides: ["shell.rail-actions.v1"] },
+  { pluginId: "privacy_mask@release", activate: "__activatePrivacyWeb", requires: ["shell.rail-actions.v1"], provides: [] },
+].map(({ pluginId, activate, requires, provides }) => {
+  const module = `export const activate = window.${activate};`;
+  const contractDigests = {};
+  return {
+    pluginId, generationId: "fixture-generation", module,
+    moduleSha256: digest(module), moduleBytes: Buffer.byteLength(module),
+    stylesheet: "", stylesheetSha256: null, stylesheetBytes: 0,
+    requires, provides, contractDigests,
+    contractSha256: digest(JSON.stringify({ contractDigests, provides, requires })),
+  };
+});
+const state = { snapshotId: "privacy-fixture", catalogId: digest(JSON.stringify(modules)), updating: false };
+const bootstrap = { schemaVersion: 1, snapshotId: state.snapshotId, catalogId: state.catalogId, modules };
 const browser = await chromium.launch({
   executablePath: process.env.CHROMIUM_PATH ?? "/usr/bin/chromium",
   headless: true,
@@ -310,9 +329,13 @@ const browser = await chromium.launch({
 try {
   const page = await browser.newPage({ viewport: { width: 1280, height: 800 }, deviceScaleFactor: 2 });
   const errors = [];
-  page.on("pageerror", (err) => errors.push(err.message));
+  page.on("pageerror", (err) => { errors.push(err.message); console.error(err); });
+  await page.route("**/api/chat/web-ui/bootstrap", (route) => route.fulfill({ json: bootstrap }));
+  await page.route("**/api/chat/web-ui/state", (route) => route.fulfill({ json: state }));
 
   await page.goto(server.origin, { waitUntil: "networkidle" });
+  await page.waitForFunction(() => window.__webHostReady === true);
+  assert.deepEqual(await page.locator(".web-host-entry-error").allTextContents(), [], "插件必须通过真实宿主加载");
   await page.waitForSelector(".privacy-mask-marker .header-marker__trigger");
   await page.waitForTimeout(150);
 
