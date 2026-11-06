@@ -1,0 +1,91 @@
+/* 侧栏顶部目的地：品牌行变成一行联系人。位置、圆角与选中底色沿用会话行，只多一行最近一句。 */
+.chat-sidebar__brand-row--destination { padding-inline-start: 0; }
+.destination-row { flex: 1; }
+
+.destination-row__open {
+  display: flex;
+  width: 100%;
+  min-width: 0;
+  min-height: 48px;
+  align-items: center;
+  gap: 10px;
+  border: 0;
+  border-radius: var(--ak-radius-sm);
+  padding: 6px 10px;
+  color: var(--chat-ink);
+  background: transparent;
+  font: inherit;
+  text-align: start;
+  cursor: pointer;
+}
+
+.destination-row__open[data-active] {
+  background: color-mix(in oklab, var(--ak-ink-primary) 7.5%, transparent);
+}
+.destination-row__open:focus-visible { outline: 2px solid var(--ak-rule-focus); outline-offset: -2px; }
+.navigation-menu-row[data-menu-open] > .destination-row__open:not([data-active]) {
+  background: color-mix(in oklab, var(--ak-ink-primary) 5%, transparent);
+}
+
+.destination-row__avatar {
+  display: grid;
+  width: 32px;
+  height: 32px;
+  flex: none;
+  place-items: center;
+  border-radius: var(--ak-radius-full);
+  background: var(--ak-paper-sheet);
+}
+
+.destination-row__copy { display: grid; min-width: 0; flex: 1; grid-template-columns: minmax(0, 1fr); }
+
+.destination-row__name { display: flex; min-width: 0; align-items: baseline; gap: 8px; }
+
+.destination-row__name strong {
+  min-width: 0;
+  flex: 0 1 auto;
+  overflow: hidden;
+  font-size: 0.9375rem;
+  font-weight: 650;
+  letter-spacing: 0.01em;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+
+.destination-row__name time,
+.destination-row__name .session-status-slot { margin-inline-start: auto; flex: none; align-self: center; }
+
+.destination-row__name time {
+  color: var(--chat-faint);
+  font-size: 0.75rem;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+
+.destination-row__preview {
+  overflow: hidden;
+  color: var(--chat-muted);
+  font-size: 0.8125rem;
+  line-height: 1.35;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+
+.destination-row__open[data-unread] .destination-row__preview { color: var(--chat-ink); }
+
+@media (hover: hover) and (pointer: fine) {
+  .navigation-menu-row:hover > .destination-row__open:not([data-active]) {
+    background: color-mix(in oklab, var(--ak-ink-primary) 5%, transparent);
+  }
+  /* 悬停时时间让位给 ⋯，与会话行同一规则。 */
+  .navigation-menu-row:hover > .destination-row__open time,
+  .navigation-menu-row[data-menu-open] > .destination-row__open time { visibility: hidden; }
+}
+
+.chat-sidebar__search-row { display: flex; min-width: 0; align-items: flex-start; gap: 2px; }
+.chat-sidebar__search-row > .chat-sidebar__search { min-width: 0; flex: 1 1 auto; }
+.chat-sidebar__search-row > .chat-sidebar__brand-actions { min-height: 36px; }
+
+.destination-notice:empty { display: none; }
+
+.group-dialog.destination-dialog { max-height: min(640px, calc(100dvh - 48px)); gap: 18px; overflow: auto; }

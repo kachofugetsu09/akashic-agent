@@ -4,6 +4,7 @@ import {
   Pin,
   PinOff,
   ArrowUpDown,
+  ArrowUpToLine,
   Keyboard,
   X,
 } from "lucide-react";
@@ -33,6 +34,8 @@ import { SidebarPanelLauncher } from "./sidebar-panels";
 import { ThemeMenu } from "./theme-menu";
 import { cycleTheme } from "../../theme/src/theme-runtime";
 import { chatLayerOpen, keyForChat } from "./chat-host";
+import { DestinationFormDialog, DestinationNotice, IdentityDestinationRow, type IdentityDestinationState } from "./navigation-destinations";
+import type { DestinationControls, DestinationForm } from "@akashic/chat-ui-v1";
 
 export interface DesktopSidebarSession extends Omit<ConversationSession, "active" | "state"> {
   active: boolean;
@@ -338,6 +341,10 @@ export interface DesktopSidebarProps {
   chatReady: boolean;
   groups?: DesktopSidebarGroups;
   navigationPins: NavigationPinsState;
+  /** 插件给的侧栏顶部目的地；有目的地时品牌行变成它的联系人行。 */
+  destination?: IdentityDestinationState;
+  /** 手机抽屉里打开目的地对话框：抽屉先关再弹；常驻侧栏不带此 prop，就地打开。 */
+  onOpenDestinationForm?: (form: DestinationForm) => void;
   onSelectSession: (sessionId: string) => void;
   onPrefetchSession?: (sessionId: string) => void;
   onNewChat: () => void;
@@ -369,7 +376,9 @@ export const DesktopSidebar = memo(function DesktopSidebar({
   activeSessionId,
   pendingSessionId,
   groups,
-  navigationPins,
+  navigationPins: pinsState,
+  destination,
+  onOpenDestinationForm,
   onSelectSession,
   onPrefetchSession,
   onNewChat,
@@ -384,6 +393,17 @@ export const DesktopSidebar = memo(function DesktopSidebar({
   rail,
 }: DesktopSidebarProps) {
   const [query, setQuery] = useState("");
+  // 目的地指向的会话只在顶上出现：不进置顶、分组与最近会话。
+  const destinationId = destination?.value?.sessionId;
+  const navigationPins = useMemo(() => destinationId ? { ...pinsState,
+    pins: pinsState.pins.filter((pin) => pin.kind !== "session" || pin.id !== destinationId) } : pinsState, [pinsState, destinationId]);
+  const [destinationForm, setDestinationForm] = useState<DestinationForm | null>(null);
+  const openDestinationForm = onOpenDestinationForm ?? setDestinationForm;
+  const destinationReload = destination?.reload;
+  const destinationOpen = destination?.open;
+  const destinationControls = useMemo((): DestinationControls | null => destinationReload && destinationOpen
+    ? { reload: destinationReload, open: destinationOpen, openForm: openDestinationForm } : null,
+  [destinationReload, destinationOpen, openDestinationForm]);
   const sidebarRef = useRef<HTMLElement>(null);
   const searchRef = useRef<HTMLInputElement>(null);
   const [shortcutsOpen, setShortcutsOpen] = useState(false);
@@ -426,8 +446,10 @@ export const DesktopSidebar = memo(function DesktopSidebar({
     }]));
     // 目录里的新鲜 metadata 优先；置顶解析补齐不在最近分页内的会话。
     for (const session of sessions) rows.set(session.id, session);
+    if (destinationId) rows.delete(destinationId);
     return [...rows.values()];
-  }, [navigationPins.sessions, sessions, activeSessionId]);
+  }, [navigationPins.sessions, sessions, activeSessionId, destinationId]);
+  const destinationRow = destinationId ? sessions.find((session) => session.id === destinationId) : undefined;
   // 搜索收窄不卸载行：不匹配的行保留挂载、以 hidden 隐藏。大目录下逐键收窄会成批
   // 卸载上千行，React commitDeletion 的单行成本远高于属性翻转（2002 行实测 5.6s → 0.5s）。
   const sessionMatches = useCallback((session: DesktopSidebarSession) =>
@@ -599,13 +621,20 @@ export const DesktopSidebar = memo(function DesktopSidebar({
     disabled: !pinsReady || pinsPending,
     onSelect: () => { void setPinned(pin, !pinned); },
   }], [pinsReady, pinsPending, setPinned]);
+  // 目的地插件给普通会话行的菜单项（例如“放到侧栏顶部”）；完成后重读目的地。
+  const destinationSource = destination?.source;
+  const destinationActions = useCallback((session: { id: string; title: string }): NavigationRowAction[] =>
+    destinationSource?.provider.sessionActions?.({ id: session.id, title: session.title }).map((action) => ({
+      label: action.label, icon: <ArrowUpToLine size={18} aria-hidden="true" />,
+      onSelect: () => { void action.run(destinationSource.context(new AbortController().signal)).finally(destinationReload); },
+    })) ?? [], [destinationSource, destinationReload]);
   // 分组内的会话行：与最近会话同一套行菜单，置顶只在所在分组内生效。
   const groupSessionRow: GroupSessionRenderer = (item, label) => <ConversationSessionRow
     session={{ id: item.id, title: item.title, preview: "", active: item.active, status: item.status, pinned: item.pinned }}
     hidden={item.hidden}
     pendingSessionId={pendingSessionId} onActivate={onSelectSession} onPrefetch={onPrefetchSession}
     actions={[{ ...pinAction({ kind: "session", id: item.id }, Boolean(item.pinned))[0],
-      label: item.pinned ? `取消${label}内置顶` : `在${label}内置顶` }]}
+      label: item.pinned ? `取消${label}内置顶` : `在${label}内置顶` }, ...destinationActions(item)]}
     onDelete={onDeleteSession ? (session) => onDeleteSession(session.id, session.title) : undefined}
     onRename={onRenameSession ? (session, title) => onRenameSession(session.id, title) : undefined} />;
   // 日分组标签一次投影成 Map：时间戳解析与"今天/昨天"判定只在目录或排序键变化时算一遍，
@@ -635,25 +664,35 @@ export const DesktopSidebar = memo(function DesktopSidebar({
   const sessionPinActions = useCallback((session: ConversationSession): NavigationRowAction[] => {
     const row = sessionByIdRef.current.get(session.id);
     // 分组已不在的会话也落在这里，同样可以置顶（后端已接受带分组的会话）。
-    return row ? pinAction({ kind: "session", id: row.id }, false) : [];
-  }, [pinAction]);
+    return row ? [...pinAction({ kind: "session", id: row.id }, false), ...destinationActions(session)] : [];
+  }, [pinAction, destinationActions]);
   const railActions = useShellRailActions();
+  // 有目的地时品牌行让给联系人行，功能与新会话挪到搜索框右边。
+  const brandActions = <span className="chat-sidebar__brand-actions">
+    <SidebarPanelLauncher sheet={!!onOpenPanels} onOpenSheet={onOpenPanels} />
+    <button type="button" className="chat-sidebar__new" aria-label="新会话" title={`新会话（${SHORTCUT_MOD}+Shift+O）`} onClick={newChat}>
+      <MessageSquarePlus size={18} strokeWidth={1.75} aria-hidden="true" />
+    </button>
+  </span>;
 
   return (
     <aside ref={sidebarRef} className="chat-sidebar chat-sidebar--entry">
       <div className="chat-sidebar__toolbar">
-        <div className="chat-sidebar__brand-row">
+        {destination?.value ? <div className="chat-sidebar__brand-row chat-sidebar__brand-row--destination">
+          <IdentityDestinationRow destination={destination.value} mark={brandMask} status={destinationRow?.status}
+            updatedAt={destinationRow?.updatedAt} active={Boolean(destinationId) && activeSessionId === destinationId}
+            actions={(destination.source?.provider.actions ?? []).map(({ label, form }) => ({
+              label, icon: <ArrowUpToLine size={18} aria-hidden="true" />, onSelect: () => openDestinationForm(form) }))}
+            onOpen={() => destinationId ? onSelectSession(destinationId) : destination.open()} />
+        </div> : <div className="chat-sidebar__brand-row">
           <span className="chat-sidebar__brand">
             <span className="chat-sidebar__mark" style={brandMask} aria-hidden="true" />
             <strong>Akashic</strong>
           </span>
-          <span className="chat-sidebar__brand-actions">
-            <SidebarPanelLauncher sheet={!!onOpenPanels} onOpenSheet={onOpenPanels} />
-            <button type="button" className="chat-sidebar__new" aria-label="新会话" title={`新会话（${SHORTCUT_MOD}+Shift+O）`} onClick={newChat}>
-              <MessageSquarePlus size={18} strokeWidth={1.75} aria-hidden="true" />
-            </button>
-          </span>
-        </div>
+          {brandActions}
+        </div>}
+        {destination && destinationControls ? <DestinationNotice state={destination} controls={destinationControls} /> : null}
+        <div className="chat-sidebar__search-row">
         <label className="chat-sidebar__search">
           <Search size={14} aria-hidden="true" />
           <input
@@ -695,6 +734,8 @@ export const DesktopSidebar = memo(function DesktopSidebar({
             <X size={14} aria-hidden="true" />
           </button> : null}
         </label>
+        {destination?.value ? brandActions : null}
+        </div>
       </div>
 
       <div className="chat-sidebar__navigation" data-searching={searching || undefined} onKeyDown={(event) => moveSessionFocus(event, completeRowsForEnd)}>
@@ -737,7 +778,7 @@ export const DesktopSidebar = memo(function DesktopSidebar({
               key={`session:${pin.id}`} session={sessionViews.get(session.id) ?? session} pendingSessionId={pendingSessionId}
               hidden={Boolean(needle) && !`${session.title} ${session.preview}`.toLowerCase().includes(needle) || undefined}
               onActivate={onSelectSession} onPrefetch={onPrefetchSession}
-              actions={pinAction(pin, true)}
+              actions={[...pinAction(pin, true), ...destinationActions(session)]}
               onDelete={onDeleteSession ? deleteHandler : undefined}
               onRename={onRenameSession ? renameHandler : undefined}
             />;
@@ -805,6 +846,8 @@ export const DesktopSidebar = memo(function DesktopSidebar({
       </div>
       <ShortcutsDialog open={shortcutsOpen} onOpenChange={setShortcutsOpen} returnFocus={returnShortcutsFocus} />
       {rail ? <SidebarRailResizer rail={rail} sidebarRef={sidebarRef} /> : null}
+      {destinationForm && destination?.source && destinationControls ? <DestinationFormDialog source={destination.source}
+        form={destinationForm} controls={destinationControls} onClose={() => { setDestinationForm(null); destination.reload(); }} /> : null}
       {formRequest && groups ? <GroupFormDialog request={formRequest} groups={groups} onClose={() => setFormRequest(null)}
         onCloseFocus={() => groupFormFocus(sidebarRef.current, formRequest)} /> : null}
     </aside>

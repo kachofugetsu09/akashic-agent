@@ -17,10 +17,12 @@ export type PluginUiSlotName =
   | "scope.fields"
   | "scope.badge"
   | "navigation.groups"
+  | "navigation.destinations"
   | "sidebar.panels";
 
-/** 宿主挂载插件元素的插槽；composer.suggest、navigation.groups 与 sidebar.panels 是数据源，由宿主外框挂载。 */
-export type PluginUiMountSlotName = Exclude<PluginUiSlotName, "composer.suggest" | "navigation.groups" | "sidebar.panels">;
+/** 宿主挂载插件元素的插槽；composer.suggest、navigation.groups、navigation.destinations 与 sidebar.panels 是数据源，由宿主外框挂载。 */
+export type PluginUiMountSlotName = Exclude<PluginUiSlotName,
+  "composer.suggest" | "navigation.groups" | "navigation.destinations" | "sidebar.panels">;
 
 export type WorkbenchIntentStatus = "handled" | "unhandled" | "invalid" | "failed";
 
@@ -173,6 +175,68 @@ export interface NavigationGroupsProvider {
   actions?(group: NavigationGroup): readonly { label: string; form: NavigationForm }[];
   /** 分区顶部的提示，例如未确认的新建请求；没有内容时插件不渲染任何东西。 */
   notice?: NavigationNotice;
+}
+
+/** 侧栏目的地：一个固定指向某段对话的入口，例如侧栏顶部的“Akashic”。 */
+export interface NavigationDestination {
+  /** 指向的会话；省略时点它开始新对话，首条消息建出的会话经 adopt 交回插件。 */
+  sessionId?: string;
+  label: string;
+  /** 最近一句，由插件读出并写好（例如“你：…”）；没有时显示 hint。 */
+  preview?: string;
+  /** 还没有对话时的一句提示。 */
+  hint?: string;
+}
+
+/** 目的地插槽的宿主能力。 */
+export interface DestinationControls {
+  /** 重读本插件的目的地。 */
+  reload(): void;
+  /** 打开这段会话；省略时开始新对话，首条消息后经 adopt 交回插件。 */
+  open(sessionId?: string): void;
+  /** 打开本插件的一个对话框；宿主给外框、标题与关闭按钮，关闭后重读目的地。 */
+  openForm(form: DestinationForm): void;
+}
+
+/** 目的地提示（没有目的地时品牌行下的一块）里的挂载。 */
+export interface PluginUiDestinationContext extends PluginUiHostContext {
+  slot: "navigation.destinations";
+  destination: DestinationControls;
+}
+
+/** 目的地对话框里的挂载；close() 关闭对话框并重读目的地。 */
+export interface PluginUiDestinationFormContext extends PluginUiDestinationContext {
+  close(): void;
+}
+
+export interface DestinationForm {
+  title: string;
+  mount(host: HTMLElement, context: PluginUiDestinationFormContext): void | (() => void);
+}
+
+/** 会话行菜单里由目的地插件提供的一项，例如“放到侧栏顶部”；完成后宿主重读目的地。 */
+export interface DestinationSessionAction {
+  label: string;
+  run(context: Pick<PluginUiHostContext, "query">): Promise<void>;
+}
+
+/**
+ * 侧栏目的地的数据源。placement 为 identity 时宿主把品牌行渲染成这段对话的联系人行：
+ * 名字、最近一句、时间与运行/未读标记；被指向的会话不再在其它分区重复，搜索不收窄它。
+ * 只认目录里第一个 identity 数据源；行、菜单、对话框、键盘都由宿主负责，插件只给数据、提示与表单。
+ */
+export interface NavigationDestinationsProvider {
+  placement: "identity";
+  /** 目录变化、提交表单、指向的会话有新消息时重读；null 表示还没有目的地。 */
+  load(context: Pick<PluginUiHostContext, "query">): Promise<NavigationDestination | null>;
+  /** 从目的地开始的新对话发出首条消息时，宿主把新会话 ID 交回插件。 */
+  adopt?(context: Pick<PluginUiHostContext, "query">, sessionId: string): Promise<void>;
+  /** 没有目的地时品牌行下面的提示，例如第一次的引导；不想显示时插件不渲染任何东西。 */
+  notice?: { mount(host: HTMLElement, context: PluginUiDestinationContext): void | (() => void) };
+  /** 联系人行菜单里的动作，每项打开一个对话框。 */
+  actions?: readonly { label: string; form: DestinationForm }[];
+  /** 普通会话行菜单里的动作。 */
+  sessionActions?(session: { id: string; title: string }): readonly DestinationSessionAction[];
 }
 
 /** 侧栏面板菜单行的短值；alert 时宿主在启动器（手机上还有导航按钮）挂一个提醒点。 */
@@ -341,6 +405,7 @@ export interface PluginUiDefinition {
   slots: { [S in PluginUiMountSlotName]?: PluginUiRenderer<S> } & {
     "composer.suggest"?: ComposerSuggestProvider;
     "navigation.groups"?: NavigationGroupsProvider;
+    "navigation.destinations"?: NavigationDestinationsProvider;
     "sidebar.panels"?: SidebarPanelProvider;
   };
 }

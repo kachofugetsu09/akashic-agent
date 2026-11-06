@@ -3,6 +3,8 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { Dialog, DialogContent, DialogTitle } from "./components/ui/dialog";
 import { DesktopSidebar, type DesktopSidebarProps } from "./desktop-sidebar";
 import { GroupFormDialog, type GroupFormRequest } from "./navigation-groups";
+import { DestinationFormDialog } from "./navigation-destinations";
+import type { DestinationForm } from "@akashic/chat-ui-v1";
 import { reportShellOverlay } from "./shell-rail-actions";
 import { chatLayerOpen, keyForChat } from "./chat-host";
 import { chatLayout, subscribeChatLayout } from "./chat-layout";
@@ -16,6 +18,7 @@ const shown = (element: HTMLElement | null): element is HTMLElement => element !
 export function CompactNavigation(props: DesktopSidebarProps) {
   const [open, setOpen] = useState(false);
   const [formRequest, setFormRequest] = useState<GroupFormRequest | null>(null);
+  const [destinationForm, setDestinationForm] = useState<DestinationForm | null>(null);
   const triggerRef = useRef<HTMLButtonElement>(null);
   // 分组对话框不叠在抽屉上：先关抽屉，关完再打开。
   const formAfterClose = useRef<GroupFormRequest | null>(null);
@@ -110,6 +113,8 @@ export function CompactNavigation(props: DesktopSidebarProps) {
               setOpen(false);
             },
           } : undefined}
+          destination={props.destination ? { ...props.destination, open: (sessionId) => closeThen(() => props.destination?.open(sessionId)) } : undefined}
+          onOpenDestinationForm={(form) => afterClose(() => setDestinationForm(form))}
           onSelectSession={(sessionId) => closeThen(() => props.onSelectSession(sessionId))}
           onNewChat={() => closeThen(props.onNewChat)}
           onOpenPanels={afterClose}
@@ -117,6 +122,9 @@ export function CompactNavigation(props: DesktopSidebarProps) {
         />
       </DialogContent>
     </Dialog>
+    {destinationForm && props.destination?.source ? <DestinationFormDialog source={props.destination.source} form={destinationForm}
+      controls={{ reload: props.destination.reload, open: props.destination.open, openForm: setDestinationForm }}
+      onClose={() => { setDestinationForm(null); props.destination?.reload(); }} /> : null}
     {formRequest && navigationGroups ? <GroupFormDialog request={formRequest} groups={navigationGroups}
       onClose={() => setFormRequest(null)} onCloseFocus={() => triggerRef.current?.focus()} /> : null}
   </>;
