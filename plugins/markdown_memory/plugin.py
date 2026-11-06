@@ -39,7 +39,7 @@ from plugins.models.contract import (
 from core.common.file_io import run_file_io
 from plugins.ledger.contract import MessageCatalog
 from plugins.ledger.contract import ContentPart, Control, Input, Message, Output, ToolResult
-from plugins.ledger.contract import is_user_input
+from plugins.ledger.contract import DIALOGUE_SOURCES, is_user_input
 from plugins.compaction.contract import (
     COMPACTION_READER, COMPACTION_SUMMARIES, CompactionReader,
     PartitionedSummary, StoredSummary, SummaryLookup,
@@ -91,7 +91,7 @@ MEMORY_MODEL = ModelUse("markdown_memory", "长期记忆")
 
 class Config(BaseModel):
     model_config = ConfigDict(extra="forbid")
-    sources: tuple[str, ...] = Field(default=("conversation", "programmatic", "legacy-unattributed"), min_length=1)
+    sources: tuple[str, ...] = Field(default=DIALOGUE_SOURCES, min_length=1)
     memory_budget: int = Field(default=3000, ge=1)
     self_budgets: dict[str, int] = Field(default_factory=lambda: dict(zip(SELF_HEADINGS[1:], (800, 600, 300))))
     surface_limit: int = Field(default=3, ge=0)

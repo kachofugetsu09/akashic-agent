@@ -47,6 +47,7 @@ from plugins.models.contract import (
 )
 from plugins.ui.contract import UI
 from plugins.ledger.contract import Message
+from plugins.ledger.contract import DIALOGUE_SOURCES
 from plugins.context.contract import (
     MATERIALS_V4 as MATERIALS,
 )
@@ -99,9 +100,7 @@ class Config(BaseModel):
 
     model_config = ConfigDict(extra="forbid")
     enabled: bool | None = True
-    sources: tuple[str, ...] = Field(
-        default=("conversation", "programmatic", "legacy-unattributed"), min_length=1,
-    )
+    sources: tuple[str, ...] = Field(default=DIALOGUE_SOURCES, min_length=1)
     db_path: str = AkashaConfig.db_path
     inject_max_chars: int = AkashaConfig.inject_max_chars
     context_recall_limit: int = AkashaConfig.context_recall_limit
