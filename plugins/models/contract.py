@@ -706,6 +706,17 @@ class CacheUsageRead(Protocol):
 MODEL_CACHE_USAGE = ServiceKey[CacheUsageRead]("models.cache-usage.v1")
 
 
+class UsageSources(Protocol):
+    """来源插件自己声明用量口径；Core 与用量面板不点名任何插件。"""
+
+    async def declare_proactive(self, ctx: Context, source: str) -> Effect:
+        """声明该 lane 的回合是主动联系：不计入被动回答的输出尾注，面板单列。插件卸载时声明随之撤销。"""
+        ...
+
+
+USAGE_SOURCES = ServiceKey[UsageSources]("models.usage-sources.v1")
+
+
 class BoundChatModel(Protocol):
     @property
     def descriptor(self) -> BoundModelDescriptor: ...

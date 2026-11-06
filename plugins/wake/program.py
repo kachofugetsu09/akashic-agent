@@ -26,7 +26,7 @@ from .request import TERMINAL_TOOLS, Request, Stage, WakeFailure, read_phase
 
 
 # 每类职责最多运行的模型步数：技能读取、初筛、调查与提交决定共用一轮中心循环。
-MAX_STEPS: dict[Stage, int] = {"content": 26, "drift": 40, "alert": 3}
+MAX_STEPS: dict[Stage, int] = {"content": 26, "alert": 3}
 
 
 async def run(ctx: Context, task: Task, reader: MessageReader, request: Request) -> Message:

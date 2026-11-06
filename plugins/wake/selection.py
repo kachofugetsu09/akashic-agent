@@ -52,24 +52,6 @@ def propose_content(
     )
 
 
-def propose_drift(proposals: Sequence[Mapping[str, object]]) -> DutyProposal | None:
-    """Choose the first durable due Drift proposal."""
-
-    selected = next((item for item in proposals if item.get("due") is True), None)
-    if selected is None:
-        return None
-    payload = selected.get("payload")
-    ref = selected.get("ref")
-    if not isinstance(payload, Mapping) or not isinstance(ref, Mapping):
-        raise ValueError("Wake Drift snapshot 缺少 payload/ref")
-    decision = "decline" if payload.get("wake_action") == "decline" else "select"
-    return DutyProposal(
-        ref=cast(Mapping[str, object], ref),
-        payload=cast(Mapping[str, object], payload),
-        decision=decision,
-    )
-
-
 def _content_event(item: Mapping[str, object]) -> dict[str, object]:
     payload = item.get("payload")
     ref = item.get("ref")

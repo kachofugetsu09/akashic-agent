@@ -183,9 +183,6 @@ plugin = "telegram_sender@release"
 [rows."akasha"]
 plugin = "akasha@release"
 
-[rows."drift"]
-plugin = "drift@release"
-
 [rows."wake"]
 plugin = "wake@release"
 

@@ -24,7 +24,7 @@ from plugins.ledger.contract import (
 from agent.plugin_composition.tasks import TASKS
 from plugins.timer.contract import TIMERS
 from plugins.ui.contract import UI
-from plugins.models.contract import MODEL_CONTENT, MODEL_SELECTION
+from plugins.models.contract import MODEL_CONTENT, MODEL_SELECTION, USAGE_SOURCES
 from plugins.models.contract import CHAT_MODELS, MODEL_CATALOG
 
 from ._boundary import (
@@ -38,8 +38,6 @@ from ._boundary import (
     ToolRef,
 )
 from .api import (
-    DRIFT_DELIVERY,
-    DRIFT_WAKE,
     EVENTMAIL_CHANGED,
     EVENTMAIL_DELIVERY,
     EVENTMAIL_WAKE,
@@ -55,7 +53,7 @@ name = "wake"
 version = "4.0.0"
 desc = "主动联系：按 proactive-wake 技能在中心循环里初筛、调查与告警，真实送达后确认原职责"
 function_inject = (
-    MODEL_SELECTION, MODEL_CONTENT, MODEL_CATALOG, CHAT_MODELS,
+    MODEL_SELECTION, MODEL_CONTENT, MODEL_CATALOG, CHAT_MODELS, USAGE_SOURCES,
     REPLY_EXECUTE, SOURCE_CHECK,
     BINDINGS,
     TASKS,
@@ -69,8 +67,6 @@ function_inject = (
     DELIVERY_SENDERS,
     EVENTMAIL_WAKE,
     EVENTMAIL_DELIVERY,
-    DRIFT_WAKE,
-    DRIFT_DELIVERY,
     TIMERS,
     SEMANTIC_INTEREST,
     DELIVERY_READ,
@@ -85,6 +81,8 @@ async def start_function(ctx: Context) -> None:
     """归档注册原程序和私有决定工具；消息与领域状态仅在正式来源执行时打开。"""
 
     config = Config.model_validate(ctx.config)
+    # 用量面板按插件声明区分主动回合；停用后历史 Wake 回合仍按主动统计。
+    _ = await ctx.require(USAGE_SOURCES).declare_proactive(ctx, "wake")
     if config.enabled is not True or config.delivery is None:
         return
     _ = await ctx.require(CONTENT).register(
@@ -104,7 +102,7 @@ async def start_function(ctx: Context) -> None:
     refs: list[ToolRef] = []
     descriptions = {
         "screen_content": "初筛本轮 Content 候选并写兴趣理由与调查问题",
-        "share_content": "提交本轮分享正文与采用的 Content 候选 ID；Drift 使用空 items",
+        "share_content": "提交本轮分享正文与采用的 Content 候选 ID",
         "skip_content": "明确跳过本轮职责并说明原因",
         "share_alert": "提交原告警的用户通知正文",
     }

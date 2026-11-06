@@ -24,12 +24,11 @@ from ._boundary import (  # noqa: F401 - 显式再导出给本插件消费者。
 )
 from .api import DeliveryTarget
 
-Owner = Literal["content", "drift", "alert"]
+Owner = Literal["content", "alert"]
 # 一次 Wake 只运行一轮中心循环；阶段顺序写在 proactive-wake 技能里，工具只校验前置事实。
 Stage = Owner
 TOOLS: dict[Owner, tuple[str, ...]] = {
     "content": ("screen_content", "share_content", "skip_content"),
-    "drift": ("share_content", "skip_content"),
     "alert": ("share_alert",),
 }
 TERMINAL_TOOLS = frozenset({"share_content", "skip_content", "share_alert"})
@@ -50,6 +49,7 @@ class Request(BaseModel):
     tools: dict[str, str]
     snapshot_seq: int = Field(ge=0)
     items: tuple[dict[str, object], ...] = ()
+    # 已移除的漫游职责留下的历史字段：旧请求按原样序列化了空元组，保留才能读回；新请求恒为空。
     proposals: tuple[dict[str, object], ...] = ()
     alert_ref: dict[str, str] | None = None
     model_id: str | None = Field(default=None, min_length=1)
@@ -92,7 +92,7 @@ class Request(BaseModel):
 
     @property
     def accepted(self) -> dict[str, str]:
-        # EventMail/Drift 既有边界字段叫 turn_id；新来源明确引用自己的原 Input。
+        # EventMail 既有边界字段叫 turn_id；新来源明确引用自己的原 Input。
         return {"session_id": self.session_id, "turn_id": self.input_id}
 
     def phase_id(self, stage: Stage) -> str:

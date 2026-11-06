@@ -38,7 +38,6 @@ FAILED 一律失败。恢复在停机后通过 bundle 发布入口进行，不�
 | conversation@release | 45 | 0 | 通过 |
 | delivery@release | 42 | 0 | 通过 |
 | delivery_policy@release | 48 | 0 | 通过 |
-| drift@release | 47 | 0 | 通过 |
 | eventmail@release | 47 | 0 | 通过 |
 | gateway@release | 46 | 0 | 通过 |
 | gemini@release | 48 | 0 | 通过 |

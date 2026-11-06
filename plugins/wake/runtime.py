@@ -36,7 +36,7 @@ from ._boundary import (
     ToolView,
 )
 from .admission import Admission, Duties
-from .api import DRIFT_WAKE, EVENTMAIL_WAKE, WAKE_MODEL, Config, DeliveryTarget
+from .api import EVENTMAIL_WAKE, WAKE_MODEL, Config, DeliveryTarget
 from .legacy_rules import read_archived_rules
 from .messages import recent_context
 from .request import SKILL_TOOL, TOOLS as WAKE_TOOLS, WAKE_PROGRAM, Request
@@ -148,7 +148,7 @@ class Runtime:
         self.state = WakeState(ctx.data_root / "wake.sqlite3")
         # apply/follow 拥有异步初始化；构造函数不在共享 loop 执行 SQL。
         self.source = Source(ctx, self.state, now=now)
-        self.duties = Duties(ctx.require(EVENTMAIL_WAKE), ctx.require(DRIFT_WAKE), self.state, ctx.require(SEMANTIC_INTEREST))
+        self.duties = Duties(ctx.require(EVENTMAIL_WAKE), self.state, ctx.require(SEMANTIC_INTEREST))
         self.changed = asyncio.Event()
 
     @staticmethod
@@ -205,7 +205,6 @@ class Runtime:
             },
             snapshot_seq=admission.pool.snapshot_seq,
             items=tuple(dict(item) for item in admission.pool.items),
-            proposals=tuple(dict(item) for item in admission.proposals),
             alert_ref=None if alert is None else cast(dict[str, str], dict(alert)),
             model_id=model.model_id, reasoning_effort=model.reasoning_effort,
             rules=read_archived_rules(ctx.data_root) or "",

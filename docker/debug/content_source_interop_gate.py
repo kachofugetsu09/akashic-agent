@@ -746,7 +746,7 @@ def _run_cross_repo_suite(
 
 def _parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
-        description="验证 Content/Wake/Drift 与真实来源插件的 exact-revision 互操作"
+        description="验证 Content/Wake 与真实来源插件的 exact-revision 互操作"
     )
     _ = parser.add_argument("--lock", type=Path, default=DEFAULT_LOCK)
     _ = parser.add_argument("--report", type=Path, default=DEFAULT_REPORT)

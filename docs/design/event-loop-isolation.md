@@ -145,7 +145,7 @@ EventMail 快照与写入仍是同步 API；Drift 的 Wake 消费路径使用下
 持有未提交写事务时验证已提交快照可读，提交后新快照可见，并检查数据库完整性。
 旧代码在读取时报告 database is locked；无需靠 sleep 调度。
 
-## Drift 的 Wake 存储调用（#879）
+## Drift 的 Wake 存储调用（#879，已随 [0146](../decisions/0146-drift-is-retired.md) 移除）
 
 Wake 使用 `drift.wake.v2` 和 `drift.delivery.v2` 等待快照、领取、状态流转和送达结算。
 Drift provider 把完整同步操作交给已有四名额 `run_file_io`；连接、事务与关闭在同一
@@ -550,7 +550,7 @@ changed 事件仍在原 loop 发出，已提交后取消不丢通知，同身份
 
 `owner_write_io.py` 的真实 SQLite/本地 socket 场景覆盖摘要 CAS、Computer 回执、
 取消排空和原消息完整性；同一提交屏障下旧基线约 1 秒，改后小于 1 毫秒。
-`drift_proposal_io.py` 验证真实 Root 的提案提交、请求快照、取消、重放与 loop 通知。
+`drift_proposal_io.py`（已随 0146 删除）验证真实 Root 的提案提交、请求快照、取消、重放与 loop 通知。
 这些是隔离组件证据，不是生产 P99。外置 Observe、status_commands、proactive_feedback、
 github-watch 与四个 EventMail 来源的源码修复已经交付；正式安装链、选择新 Root 和
 生产完整进程恢复仍未验，#879 在该层验收前保持开放。Akasha 已在线程中的 Recall/Scope
