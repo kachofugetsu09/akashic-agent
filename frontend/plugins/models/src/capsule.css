@@ -16,7 +16,7 @@
   align-items: center;
   gap: 5px;
   border: 0;
-  border-radius: 8px;
+  border-radius: var(--ak-radius-sm);
   padding: 0 8px;
   color: var(--md-sys-color-on-surface-variant);
   background: transparent;
@@ -81,7 +81,7 @@
   max-height: min(23.75rem, calc(100vh - 1.5rem));
   overflow: hidden;
   border: 1px solid var(--md-sys-color-outline-variant);
-  border-radius: 12px;
+  border-radius: var(--ak-radius-md);
   background: var(--md-sys-color-surface-container-high);
   scrollbar-color: var(--ak-rule-strong) transparent;
   scrollbar-width: thin;
@@ -104,7 +104,7 @@
   align-items: center;
   gap: 5px;
   border: 0;
-  border-radius: 8px;
+  border-radius: var(--ak-radius-sm);
   padding: 0 8px;
   color: var(--ak-ink-secondary);
   background: transparent;
@@ -153,7 +153,7 @@
   max-height: min(20rem, calc(100vh - 1.5rem));
   overflow: hidden;
   border: 1px solid var(--ak-rule-default);
-  border-radius: 12px;
+  border-radius: var(--ak-radius-md);
   background: var(--ak-paper-raised);
 }
 
@@ -236,7 +236,7 @@
   width: auto !important;
   max-height: min(70dvh, 32rem) !important;
   border-width: 1px 0 0;
-  border-radius: 16px 16px 0 0;
+  border-radius: var(--ak-radius-lg) var(--ak-radius-lg) 0 0;
   padding-block-end: env(safe-area-inset-bottom, 0px);
   box-shadow: 0 -8px 24px color-mix(in srgb, var(--ak-ink-primary) 10%, transparent);
   animation: picker-sheet-in 180ms cubic-bezier(0.2, 0, 0, 1);
@@ -299,4 +299,4 @@
 }
 
 .models-capsule-settings:focus-visible,
-.models-capsule-retry:focus-visible { outline: 2px solid currentColor; outline-offset: 2px; border-radius: 4px; }
+.models-capsule-retry:focus-visible { outline: 2px solid currentColor; outline-offset: 2px; border-radius: var(--ak-radius-xs); }

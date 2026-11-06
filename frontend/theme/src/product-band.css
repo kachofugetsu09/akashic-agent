@@ -91,7 +91,7 @@
   align-items: center;
   gap: 0.4rem;
   border: 0;
-  border-radius: 8px;
+  border-radius: var(--ak-radius-sm);
   padding-block: 0;
   padding-inline: 12px;
   color: var(--ak-ink-secondary);
@@ -182,7 +182,7 @@
   align-items: center;
   gap: 0.4rem;
   border: 0;
-  border-radius: 8px;
+  border-radius: var(--ak-radius-sm);
   padding-block: 0;
   padding-inline: 12px;
   color: var(--ak-ink-secondary);

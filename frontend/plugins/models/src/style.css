@@ -76,7 +76,7 @@
   justify-content: center;
   gap: 0.5rem;
   border: 0;
-  border-radius: var(--md-sys-shape-corner-small, 8px);
+  border-radius: var(--ak-radius-sm);
   padding: 0 1.125rem;
   font-size: var(--md-sys-typescale-label-large-size);
   font-weight: var(--md-sys-typescale-label-large-weight);
@@ -92,7 +92,7 @@
 .settings-primary-button:hover { background: color-mix(in srgb, var(--md-sys-color-primary) 92%, var(--md-sys-color-on-primary) 8%); }
 .settings-secondary-button { border: 1px solid var(--md-sys-color-outline); color: var(--md-sys-color-primary); background: transparent; }
 .settings-secondary-button:hover { background: color-mix(in srgb, var(--md-sys-color-primary) 8%, transparent); }
-.settings-icon-button { width: 2.75rem; border-radius: var(--md-sys-shape-corner-full); padding: 0; color: var(--md-sys-color-on-surface-variant); background: transparent; }
+.settings-icon-button { width: 2.75rem; border-radius: var(--ak-radius-full); padding: 0; color: var(--md-sys-color-on-surface-variant); background: transparent; }
 .settings-icon-button:hover { color: var(--md-sys-color-on-surface); background: color-mix(in srgb, var(--md-sys-color-on-surface) 8%, transparent); }
 .settings-primary-button:active,
 .settings-secondary-button:active,
@@ -135,7 +135,7 @@
   align-items: center;
   gap: 0.625rem;
   border: 0;
-  border-radius: var(--models-radius-row);
+  border-radius: var(--ak-radius-sm);
   padding: 0.25rem 0.625rem;
   color: inherit;
   text-align: start;
@@ -172,7 +172,7 @@
   overflow: hidden;
   list-style: none;
   border: 1px solid var(--ak-rule-subtle);
-  border-radius: var(--md-sys-shape-corner-large);
+  border-radius: var(--ak-radius-lg);
   background: var(--ak-paper-sheet);
 }
 .settings-provider-list:empty { display: none; }
@@ -230,7 +230,7 @@
   width: 2.125rem;
   height: 1.25rem;
   margin: 0;
-  border-radius: 999px;
+  border-radius: var(--ak-radius-full);
   background: var(--ak-rule-strong);
   cursor: pointer;
   transition: background-color var(--ak-sys-duration-short) var(--ak-sys-motion-standard);
@@ -270,7 +270,7 @@
 .settings-quota-bar {
   height: 0.1875rem;
   overflow: hidden;
-  border-radius: 999px;
+  border-radius: var(--ak-radius-full);
   background: var(--ak-rule-subtle);
 }
 .settings-quota-bar > i { display: block; height: 100%; border-radius: inherit; background: var(--ak-ink-secondary); }
@@ -299,7 +299,7 @@
 /* 添加面板不再是一张卡：组标题和格子直接排在页面上，正在新建时才给编辑器一个表面。 */
 .settings-add-panel { margin-block-end: 2rem; }
 /* 新建表单展开在所选格子那一组下方，只有它有表面。 */
-.settings-template-group > .settings-provider-editor { margin: 0.375rem 0 0.5rem; border: 1px solid var(--ak-rule-subtle); border-radius: var(--md-sys-shape-corner-large); background: var(--ak-paper-sheet); }
+.settings-template-group > .settings-provider-editor { margin: 0.375rem 0 0.5rem; border: 1px solid var(--ak-rule-subtle); border-radius: var(--ak-radius-lg); background: var(--ak-paper-sheet); }
 .settings-template-tile[aria-expanded="true"] { background: color-mix(in srgb, var(--ak-color-action-primary) 9%, transparent); }
 .settings-add-panel .settings-provider-editor { border-block-start: 0; }
 .settings-add-list { display: grid; }
@@ -312,7 +312,7 @@
   display: grid;
   overflow: hidden;
   border: 1px solid var(--ak-rule-subtle);
-  border-radius: var(--md-sys-shape-corner-large);
+  border-radius: var(--ak-radius-lg);
   background: var(--ak-paper-sheet);
 }
 .settings-binding {
@@ -338,7 +338,7 @@
   justify-content: space-between;
   gap: 0.5rem;
   border: 1px solid var(--ak-rule-default);
-  border-radius: var(--models-radius-field);
+  border-radius: var(--ak-radius-sm);
   padding-inline: 0.75rem 0.5rem;
   color: var(--ak-ink-primary);
   background: var(--ak-paper-editing);
@@ -356,7 +356,7 @@
   width: 100%;
   min-height: 2.75rem;
   border: 1px solid var(--md-sys-color-outline);
-  border-radius: var(--md-sys-shape-corner-extra-small);
+  border-radius: var(--ak-radius-xs);
   padding-inline: 0.75rem;
   color: var(--md-sys-color-on-surface);
   background: var(--md-sys-color-surface);
@@ -395,7 +395,7 @@ dialog.settings-scrim::backdrop { background: transparent; }
   overflow: hidden;
   overscroll-behavior: contain;
   border: 1px solid var(--ak-rule-default);
-  border-radius: 12px;
+  border-radius: var(--ak-radius-md);
   padding: 0;
   color: var(--md-sys-color-on-surface);
   background: var(--md-sys-color-surface-container-high);
@@ -473,13 +473,13 @@ dialog.settings-scrim::backdrop { background: transparent; }
   align-items: center;
   gap: 0.75rem;
   border: 1px solid var(--md-sys-color-outline-variant);
-  border-radius: var(--md-sys-shape-corner-medium);
+  border-radius: var(--ak-radius-md);
   padding: 0.625rem 0.875rem;
   background: transparent;
 }
 .settings-login-card > span { display: grid; }
 .settings-login-card small { margin-block-start: 0.2rem; color: var(--md-sys-color-on-surface-variant); font-size: var(--md-sys-typescale-body-medium-size); }
-.settings-login-card button { min-height: 2.5rem; margin-inline-start: auto; border: 0; border-radius: var(--md-sys-shape-corner-full); padding: 0 0.875rem; color: var(--md-sys-color-primary); background: transparent; font-size: var(--md-sys-typescale-label-large-size); font-weight: var(--md-sys-typescale-label-large-weight); cursor: pointer; }
+.settings-login-card button { min-height: 2.5rem; margin-inline-start: auto; border: 0; border-radius: var(--ak-radius-full); padding: 0 0.875rem; color: var(--md-sys-color-primary); background: transparent; font-size: var(--md-sys-typescale-label-large-size); font-weight: var(--md-sys-typescale-label-large-weight); cursor: pointer; }
 .settings-login-card button:hover { background: color-mix(in srgb, var(--md-sys-color-primary) 10%, transparent); }
 
 /* 登录状态卡：顶行是状态图标、现状与下一步；等待授权时下面是验证码、登录链接与剩余时间。 */
@@ -494,11 +494,11 @@ dialog.settings-scrim::backdrop { background: transparent; }
 .settings-device-head small { color: var(--ak-ink-secondary); font-size: var(--models-type-caption); line-height: 1.5; overflow-wrap: anywhere; }
 .settings-device-head > button,
 .settings-device-link > a,
-.settings-device-login [data-copy] { display: inline-flex; flex: none; min-height: 2.25rem; align-items: center; gap: 0.375rem; border: 0; border-radius: var(--models-radius-field); padding: 0 0.75rem; color: var(--ak-color-action-primary); background: transparent; font: inherit; font-size: var(--models-type-caption); font-weight: 600; text-decoration: none; cursor: pointer; }
+.settings-device-login [data-copy] { display: inline-flex; flex: none; min-height: 2.25rem; align-items: center; gap: 0.375rem; border: 0; border-radius: var(--ak-radius-sm); padding: 0 0.75rem; color: var(--ak-color-action-primary); background: transparent; font: inherit; font-size: var(--models-type-caption); font-weight: 600; text-decoration: none; cursor: pointer; }
 .settings-device-head > button:hover,
 .settings-device-link > a:hover,
 .settings-device-login [data-copy]:hover { background: color-mix(in srgb, var(--ak-color-action-primary) 10%, transparent); }
-.settings-device-code { display: flex; align-items: center; justify-content: space-between; gap: 0.75rem; border-radius: var(--models-radius-field); padding: 0.625rem 0.5rem 0.625rem 1rem; background: var(--ak-paper-sheet); }
+.settings-device-code { display: flex; align-items: center; justify-content: space-between; gap: 0.75rem; border-radius: var(--ak-radius-sm); padding: 0.625rem 0.5rem 0.625rem 1rem; background: var(--ak-paper-sheet); }
 .settings-device-code strong { font-family: var(--ak-type-technical); font-size: 1.5rem; font-weight: 600; letter-spacing: 0.16em; font-variant-numeric: tabular-nums; user-select: all; white-space: nowrap; }
 .settings-device-link { display: flex; align-items: center; gap: 0.5rem; min-width: 0; }
 .settings-device-link > a { border: 1px solid var(--ak-rule-default); }
@@ -519,7 +519,7 @@ dialog.settings-scrim::backdrop { background: transparent; }
 .settings-text-button {
   min-height: 2.75rem;
   border: 0;
-  border-radius: var(--md-sys-shape-corner-small);
+  border-radius: var(--ak-radius-sm);
   padding-inline: 0.5rem;
   color: var(--md-sys-color-primary);
   background: transparent;
@@ -539,7 +539,7 @@ dialog.settings-scrim::backdrop { background: transparent; }
   width: 100%;
   min-height: 2.75rem;
   border: 1px solid var(--md-sys-color-outline);
-  border-radius: var(--md-sys-shape-corner-extra-small);
+  border-radius: var(--ak-radius-xs);
   padding-inline: 0.75rem;
   color: var(--md-sys-color-on-surface);
   background: var(--md-sys-color-surface);
@@ -568,12 +568,12 @@ dialog.settings-scrim::backdrop { background: transparent; }
   background: transparent;
 }
 .settings-discovery-status { margin-block: 0.75rem 0; }
-.settings-inline-error { margin: 0.8rem 0 0 !important; border-radius: var(--md-sys-shape-corner-small, 8px); padding: 0.7rem 0.875rem; color: var(--md-sys-color-on-error-container); background: var(--md-sys-color-error-container); font-size: var(--md-sys-typescale-body-medium-size) !important; }
+.settings-inline-error { margin: 0.8rem 0 0 !important; border-radius: var(--ak-radius-sm); padding: 0.7rem 0.875rem; color: var(--md-sys-color-on-error-container); background: var(--md-sys-color-error-container); font-size: var(--md-sys-typescale-body-medium-size) !important; }
 .settings-dialog-footer { min-height: 4.5rem; margin: 0; border-block-start: 1px solid var(--md-sys-color-outline-variant); padding: 0.75rem 1.5rem calc(0.75rem + env(safe-area-inset-bottom)); background: var(--md-sys-color-surface-container-high); }
 .settings-dialog-footer-note { display: inline-flex; align-items: center; gap: 0.4rem; color: var(--md-sys-color-on-surface-variant); font-size: var(--md-sys-typescale-body-medium-size); }
 
 .settings-toast-region { position: fixed; z-index: 100; inset: auto 1.25rem 1.25rem auto; }
-.settings-toast { display: flex; min-width: min(22rem, calc(100vw - 2.5rem)); align-items: center; gap: 0.7rem; border-radius: var(--md-sys-shape-corner-small); padding: 0.75rem 0.875rem; color: var(--ak-sys-color-on-success-container); background: var(--ak-sys-color-success-container); box-shadow: 0 0.8rem 2.4rem color-mix(in oklab, var(--ak-ink-primary) 14%, transparent); }
+.settings-toast { display: flex; min-width: min(22rem, calc(100vw - 2.5rem)); align-items: center; gap: 0.7rem; border-radius: var(--ak-radius-sm); padding: 0.75rem 0.875rem; color: var(--ak-sys-color-on-success-container); background: var(--ak-sys-color-success-container); box-shadow: 0 0.8rem 2.4rem color-mix(in oklab, var(--ak-ink-primary) 14%, transparent); }
 .settings-toast > span { display: grid; flex: 1; }
 .settings-toast strong { font-size: var(--md-sys-typescale-body-medium-size); }
 .settings-toast button { display: grid; width: 2rem; height: 2rem; place-items: center; border: 0; border-radius: 50%; color: inherit; background: transparent; cursor: pointer; }
@@ -587,7 +587,7 @@ dialog.settings-scrim::backdrop { background: transparent; }
   .settings-role-grid { grid-template-columns: minmax(0, 1fr); }
   .settings-role-grid label { grid-template-columns: 1fr; }
   .settings-scrim { padding: 0.75rem; }
-  .settings-dialog { max-height: 100%; border-radius: var(--md-sys-shape-corner-large); }
+  .settings-dialog { max-height: 100%; border-radius: var(--ak-radius-lg); }
   .settings-dialog-header { padding: 1.1rem 1.1rem 0.9rem; }
   .settings-dialog-body { padding: 0.25rem 1.1rem 1.2rem; }
   .settings-form-grid { grid-template-columns: 1fr; }
@@ -609,7 +609,7 @@ dialog.settings-scrim::backdrop { background: transparent; }
 @media (max-width: 30rem) {
   .settings-card-meta small { display: none; }
   .settings-scrim { padding: 0; }
-  .settings-dialog { border-inline: 0; border-block-end: 0; border-radius: var(--md-sys-shape-corner-large) var(--md-sys-shape-corner-large) 0 0; align-self: end; }
+  .settings-dialog { border-inline: 0; border-block-end: 0; border-radius: var(--ak-radius-lg) var(--ak-radius-lg) 0 0; align-self: end; }
   .settings-toast-region { inset: auto 0.75rem 0.75rem; }
   .settings-toast { min-width: 0; width: 100%; }
 }
@@ -629,12 +629,6 @@ dialog.settings-scrim::backdrop { background: transparent; }
   --models-type-body: 0.875rem;
   --models-type-caption: 0.75rem;
   --models-weight-control: 500;
-  --models-radius-field: 0.5rem;
-  --models-radius-row: 0.5rem;
-  --models-radius-panel: 0.75rem;
-  --models-radius-edge: 1rem;
-  --models-radius-sheet: 1rem;
-  --models-radius-badge: 9999px;
   --models-shadow-sheet: 0 0.75rem 1.75rem rgb(var(--ak-color-shadow-rgb) / 0.24), 0 0.25rem 0.625rem rgb(var(--ak-color-shadow-rgb) / 0.16);
 }
 
@@ -653,7 +647,7 @@ dialog.settings-scrim::backdrop { background: transparent; }
 .settings-account-top strong { min-width: 0; overflow-wrap: anywhere; font-size: var(--models-type-body); font-weight: 600; }
 .settings-account-top small { color: var(--ak-ink-secondary); font-size: var(--models-type-caption); }
 .settings-account-top .settings-text-button { min-height: 2rem; margin-inline-start: auto; padding-inline: 0.5rem; font-size: var(--models-type-caption); }
-.settings-account-plan { border: 1px solid var(--ak-rule-default); border-radius: var(--models-radius-badge); padding: 0 0.5rem; color: var(--ak-ink-secondary); font-size: var(--models-type-caption); line-height: 1.5; }
+.settings-account-plan { border: 1px solid var(--ak-rule-default); border-radius: var(--ak-radius-full); padding: 0 0.5rem; color: var(--ak-ink-secondary); font-size: var(--models-type-caption); line-height: 1.5; }
 .settings-account-meters { display: grid; gap: 0.375rem; }
 .settings-account-meters:empty { display: none; }
 .settings-account-meter { display: grid; grid-template-columns: 4rem minmax(4rem, 1fr) auto; align-items: center; gap: 0.75rem; color: var(--ak-ink-secondary); font-size: var(--models-type-caption); font-variant-numeric: tabular-nums; }
@@ -678,9 +672,9 @@ dialog.settings-scrim::backdrop { background: transparent; }
   .settings-detail-key { padding: 0; text-align: start; }
 }
 .settings-model-manual { display: flex; align-items: center; gap: 0.5rem; margin-block: 0.375rem 0.75rem; }
-.settings-model-manual input { flex: 1; min-width: 0; min-height: 2.75rem; border: 1px solid var(--ak-rule-default); border-radius: var(--models-radius-field); padding-inline: 0.75rem; color: var(--ak-ink-primary); background: var(--ak-paper-editing); font: inherit; font-size: var(--models-type-body); }
+.settings-model-manual input { flex: 1; min-width: 0; min-height: 2.75rem; border: 1px solid var(--ak-rule-default); border-radius: var(--ak-radius-sm); padding-inline: 0.75rem; color: var(--ak-ink-primary); background: var(--ak-paper-editing); font: inherit; font-size: var(--models-type-body); }
 .settings-model-manual .settings-primary-button { min-height: 2.75rem; }
-.settings-model-filter { display: flex; align-items: center; gap: 0.5rem; margin-block: 0.25rem 0.5rem; border: 1px solid var(--ak-rule-default); border-radius: var(--models-radius-field); padding-inline: 0.75rem; color: var(--ak-ink-secondary); }
+.settings-model-filter { display: flex; align-items: center; gap: 0.5rem; margin-block: 0.25rem 0.5rem; border: 1px solid var(--ak-rule-default); border-radius: var(--ak-radius-sm); padding-inline: 0.75rem; color: var(--ak-ink-secondary); }
 .settings-model-filter input { min-height: 2.25rem; flex: 1; border: 0; color: var(--ak-ink-primary); background: transparent; font: inherit; font-size: var(--models-type-body); outline: none; }
 .settings-model-filter:focus-within { border-color: var(--ak-rule-focus); }
 /* 编辑已有连接时，卡片头已写明连接名；宿主的模型管理取代插件表单里的模型候选段。 */
@@ -702,7 +696,7 @@ dialog.settings-scrim::backdrop { background: transparent; }
   overflow: hidden;
   overscroll-behavior: contain;
   border: 1px solid var(--ak-rule-default);
-  border-radius: var(--models-radius-sheet);
+  border-radius: var(--ak-radius-lg);
   color: var(--ak-ink-primary);
   background: var(--ak-paper-raised);
   box-shadow: var(--models-shadow-sheet);
@@ -714,7 +708,7 @@ dialog.settings-scrim::backdrop { background: transparent; }
 .settings-sheet-tools .settings-text-button { min-height: var(--models-hit-target); font-size: var(--models-type-caption); }
 .settings-sheet-list { flex: 1; min-height: 0; overflow: auto; padding: 0.25rem 0.75rem 0.75rem; overscroll-behavior: contain; }
 .settings-sheet-group { margin: 0.55rem 0.5rem 0.15rem; color: var(--ak-ink-secondary); font-size: var(--models-type-caption); font-weight: 650; }
-.settings-sheet-row { display: flex; width: 100%; min-height: var(--models-hit-target); align-items: center; gap: 0.625rem; border: 0; border-radius: var(--models-radius-row); padding: 0.5rem 0.5rem; color: inherit; background: transparent; font: inherit; text-align: start; cursor: pointer; }
+.settings-sheet-row { display: flex; width: 100%; min-height: var(--models-hit-target); align-items: center; gap: 0.625rem; border: 0; border-radius: var(--ak-radius-sm); padding: 0.5rem 0.5rem; color: inherit; background: transparent; font: inherit; text-align: start; cursor: pointer; }
 .settings-sheet-row:hover { background: var(--ak-paper-quiet); }
 .settings-sheet-row input[type="checkbox"] { width: 1.15rem; height: 1.15rem; flex: none; margin: 0; accent-color: var(--ak-color-action-primary); cursor: pointer; }
 .settings-sheet-row input[type="checkbox"]:disabled { cursor: default; }
@@ -763,7 +757,7 @@ dialog.settings-scrim::backdrop { background: transparent; }
 }
 
 @media (max-width: 30rem) {
-  .settings-sheet { border-inline: 0; border-block-end: 0; border-radius: var(--models-radius-edge) var(--models-radius-edge) 0 0; align-self: end; }
+  .settings-sheet { border-inline: 0; border-block-end: 0; border-radius: var(--ak-radius-lg) var(--ak-radius-lg) 0 0; align-self: end; }
 }
 
 .settings-page--embedded { min-height: 0; padding: 0; background: transparent; }
@@ -775,7 +769,7 @@ dialog.settings-scrim::backdrop { background: transparent; }
 .embedding-form h2,.embedding-form p { margin: 0; }
 .embedding-form label { display: grid; min-width: 0; gap: 8px; }
 .embedding-form input,.embedding-form select { min-width: 0; width: 100%; }
-.embedding-form input,.embedding-form select,.embedding-form button { font: inherit; min-height: 44px; padding: 10px 12px; border: 1px solid var(--md-sys-color-outline); border-radius: 8px; background: var(--md-sys-color-surface); color: inherit; }
+.embedding-form input,.embedding-form select,.embedding-form button { font: inherit; min-height: 44px; padding: 10px 12px; border: 1px solid var(--md-sys-color-outline); border-radius: var(--ak-radius-sm); background: var(--md-sys-color-surface); color: inherit; }
 .embedding-form footer { display: flex; flex-wrap: wrap; gap: 12px; justify-content: flex-end; }
 
 /* 短屏和大字下让标题随表单一起滚动，避免把正文压到可视区之外。 */
@@ -809,11 +803,11 @@ dialog.settings-scrim::backdrop { background: transparent; }
 .models-usage .settings-section { margin-block-start: 1.5rem; }
 .models-usage.settings-page--embedded .settings-section:first-of-type { margin-block-start: 0; }
 .models-usage .settings-section-bar .settings-text-button { min-height: 2rem; padding-inline: 0.5rem; font-size: var(--models-type-caption); }
-.usage-toggle { display: inline-flex; margin-inline-start: auto; border: 1px solid var(--ak-rule-default); border-radius: var(--models-radius-field); padding: 2px; }
-.usage-toggle button { min-height: 1.75rem; border: 0; border-radius: calc(var(--models-radius-field) - 2px); padding-inline: 0.625rem; color: var(--ak-ink-secondary); background: transparent; font: inherit; font-size: var(--models-type-caption); cursor: pointer; }
+.usage-toggle { display: inline-flex; margin-inline-start: auto; border: 1px solid var(--ak-rule-default); border-radius: var(--ak-radius-sm); padding: 2px; }
+.usage-toggle button { min-height: 1.75rem; border: 0; border-radius: calc(var(--ak-radius-sm) - 2px); padding-inline: 0.625rem; color: var(--ak-ink-secondary); background: transparent; font: inherit; font-size: var(--models-type-caption); cursor: pointer; }
 .usage-toggle button[aria-pressed="true"] { color: var(--ak-ink-primary); background: var(--ak-paper-quiet); font-weight: 600; }
 .usage-quota-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(17rem, 1fr)); gap: 0.625rem; }
-.usage-quota-card { display: grid; gap: 0.5rem; border: 1px solid var(--ak-rule-subtle); border-radius: var(--models-radius-panel); padding: 0.75rem 0.875rem; background: var(--ak-paper-sheet); }
+.usage-quota-card { display: grid; gap: 0.5rem; border: 1px solid var(--ak-rule-subtle); border-radius: var(--ak-radius-md); padding: 0.75rem 0.875rem; background: var(--ak-paper-sheet); }
 .usage-quota-card header { display: flex; flex-wrap: wrap; align-items: baseline; gap: 0.25rem 0.5rem; }
 .usage-quota-card header strong { font-size: var(--models-type-body); font-weight: 600; }
 .usage-quota-card header small, .usage-quota-note, .usage-quota-window small { color: var(--ak-ink-secondary); font-size: var(--models-type-caption); }
@@ -828,7 +822,7 @@ dialog.settings-scrim::backdrop { background: transparent; }
 .usage-quota-note { margin: 0; }
 .usage-status { margin: 0 0 0.5rem; color: var(--ak-ink-secondary); font-size: var(--models-type-caption); }
 .usage-status:empty { display: none; }
-.usage-metrics { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); overflow: hidden; border: 1px solid var(--ak-rule-subtle); border-radius: var(--models-radius-panel); background: var(--ak-paper-sheet); }
+.usage-metrics { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); overflow: hidden; border: 1px solid var(--ak-rule-subtle); border-radius: var(--ak-radius-md); background: var(--ak-paper-sheet); }
 .usage-metrics > div { display: grid; gap: 0.125rem; padding: 0.75rem 0.875rem; }
 .usage-metrics > div + div { border-inline-start: 1px solid var(--ak-rule-subtle); }
 .usage-metrics b { font-size: var(--md-sys-typescale-title-large-size); font-weight: 600; font-variant-numeric: tabular-nums; }
@@ -840,14 +834,14 @@ dialog.settings-scrim::backdrop { background: transparent; }
 .usage-chart i.is-hit { background: color-mix(in srgb, var(--ak-ink-secondary) 35%, transparent); }
 .usage-axis { display: flex; justify-content: space-between; margin-block-start: 0.25rem; color: var(--ak-ink-secondary); font-size: var(--models-type-caption); }
 .usage-breakdown { margin-block-start: 1.25rem; }
-.usage-table { display: grid; grid-template-columns: minmax(8rem, 1.6fr) minmax(7rem, 1.4fr) repeat(3, minmax(3.5rem, 0.6fr)); border: 1px solid var(--ak-rule-subtle); border-radius: var(--models-radius-panel); background: var(--ak-paper-sheet); font-size: var(--models-type-body); font-variant-numeric: tabular-nums; }
+.usage-table { display: grid; grid-template-columns: minmax(8rem, 1.6fr) minmax(7rem, 1.4fr) repeat(3, minmax(3.5rem, 0.6fr)); border: 1px solid var(--ak-rule-subtle); border-radius: var(--ak-radius-md); background: var(--ak-paper-sheet); font-size: var(--models-type-body); font-variant-numeric: tabular-nums; }
 .usage-table > [role="row"] { display: contents; }
 .usage-table [role="cell"], .usage-table [role="columnheader"] { min-width: 0; padding: 0.5rem 0.75rem; overflow-wrap: anywhere; border-block-start: 1px solid var(--ak-rule-subtle); }
 .usage-table [role="columnheader"] { border: 0; color: var(--ak-ink-secondary); font-size: var(--models-type-caption); font-weight: 600; }
 .usage-table [role="cell"]:first-child { font-family: var(--ak-type-technical); }
 .usage-table [role="cell"]:nth-child(2) { display: flex; align-items: center; gap: 0.5rem; }
 .usage-table [role="cell"]:nth-child(2) b { min-width: 3.5rem; font-weight: 500; }
-.usage-share { display: block; height: 0.25rem; flex: 1; overflow: hidden; border-radius: 999px; background: var(--ak-rule-subtle); }
+.usage-share { display: block; height: 0.25rem; flex: 1; overflow: hidden; border-radius: var(--ak-radius-full); background: var(--ak-rule-subtle); }
 .usage-share > i { display: block; height: 100%; background: var(--ak-ink-secondary); }
 .usage-empty { grid-column: 1 / -1; margin: 0; padding: 0.75rem; color: var(--ak-ink-secondary); font-size: var(--models-type-caption); }
 @media (max-width: 640px) {
@@ -881,7 +875,7 @@ dialog.settings-scrim::backdrop { background: transparent; }
 .settings-section-bar { display: flex; min-height: 2.25rem; align-items: center; gap: 0.75rem; margin-block-end: 0.5rem; padding-inline: 0.125rem; }
 .settings-section-label { margin: 0; color: var(--ak-ink-secondary); font-size: var(--models-type-caption); font-weight: 600; letter-spacing: 0.04em; }
 .settings-section-hint { color: var(--ak-ink-tertiary, var(--ak-ink-secondary)); font-size: var(--models-type-caption); }
-.settings-find { display: flex; width: min(15rem, 50%); min-height: 2rem; align-items: center; gap: 0.4rem; margin-inline-start: auto; border: 1px solid var(--ak-rule-default); border-radius: var(--models-radius-field); padding-inline: 0.625rem; color: var(--ak-ink-secondary); background: var(--ak-paper-editing); }
+.settings-find { display: flex; width: min(15rem, 50%); min-height: 2rem; align-items: center; gap: 0.4rem; margin-inline-start: auto; border: 1px solid var(--ak-rule-default); border-radius: var(--ak-radius-sm); padding-inline: 0.625rem; color: var(--ak-ink-secondary); background: var(--ak-paper-editing); }
 .settings-find:focus-within { border-color: var(--ak-rule-focus); }
 .settings-find > svg { flex: none; width: 0.875rem; height: 0.875rem; }
 .settings-find input { width: 100%; min-width: 0; border: 0; outline: 0; color: var(--ak-ink-primary); background: transparent; font: inherit; font-size: var(--models-type-caption); }
@@ -927,7 +921,7 @@ dialog.settings-scrim::backdrop { background: transparent; }
 .settings-dialog-footer > [data-manual] { min-height: 2.25rem; padding-inline: 0.25rem; font-size: var(--models-type-caption); }
 
 /* 模型表：勾选、型号、上下文、识图、更多；表头勾选是「全部」，展开行放其余参数。 */
-.settings-model-table { display: grid; grid-template-columns: 2rem minmax(0, 1fr) 4.5rem 5.5rem 2.25rem; align-items: center; overflow: hidden; border: 1px solid var(--ak-rule-subtle); border-radius: var(--models-radius-panel); }
+.settings-model-table { display: grid; grid-template-columns: 2rem minmax(0, 1fr) 4.5rem 5.5rem 2.25rem; align-items: center; overflow: hidden; border: 1px solid var(--ak-rule-subtle); border-radius: var(--ak-radius-md); }
 .settings-model-row { display: contents; }
 .settings-model-row > * { min-height: 2.5rem; display: flex; align-items: center; padding-inline: 0.375rem; border-block-start: 1px solid var(--ak-rule-subtle); font-size: var(--models-type-body); font-variant-numeric: tabular-nums; }
 .settings-model-row > :first-child { padding-inline-start: 0.75rem; }
@@ -939,7 +933,7 @@ dialog.settings-scrim::backdrop { background: transparent; }
 .settings-model-name em { flex: none; color: var(--ak-color-action-primary); font-size: var(--models-type-caption); font-style: normal; font-weight: 600; }
 .settings-model-vision { gap: 0.375rem; color: var(--ak-ink-secondary); }
 .settings-vision-switch { display: inline-flex; align-items: center; gap: 0.375rem; cursor: pointer; }
-.settings-vision-switch input { appearance: none; position: relative; width: 1.875rem; height: 1.125rem; margin: 0; border-radius: 999px; background: var(--ak-rule-strong); cursor: pointer; transition: background-color var(--ak-sys-duration-short) var(--ak-sys-motion-standard); }
+.settings-vision-switch input { appearance: none; position: relative; width: 1.875rem; height: 1.125rem; margin: 0; border-radius: var(--ak-radius-full); background: var(--ak-rule-strong); cursor: pointer; transition: background-color var(--ak-sys-duration-short) var(--ak-sys-motion-standard); }
 .settings-vision-switch input::after { content: ""; position: absolute; inset: 2px auto auto 2px; width: 0.875rem; height: 0.875rem; border-radius: 50%; background: var(--ak-paper-editing); transition: translate var(--ak-sys-duration-short) var(--ak-sys-motion-standard); }
 .settings-vision-switch input:checked { background: var(--ak-color-action-primary); }
 .settings-vision-switch input:checked::after { translate: 0.75rem 0; }
@@ -949,7 +943,7 @@ dialog.settings-scrim::backdrop { background: transparent; }
 .settings-model-more[aria-expanded="true"] { color: var(--ak-ink-primary); }
 .settings-model-extra { grid-column: 1 / -1; border-block-start: 1px solid var(--ak-rule-subtle); display: flex; flex-wrap: wrap; align-items: end; gap: 0.5rem 1rem; padding: 0.625rem 0.75rem 0.75rem 2.75rem; background: var(--ak-paper-quiet); font-size: var(--models-type-caption); }
 .settings-model-extra label { display: grid; gap: 0.25rem; color: var(--ak-ink-secondary); }
-.settings-model-extra input { width: 7rem; min-height: 2rem; border: 1px solid var(--ak-rule-default); border-radius: var(--models-radius-field); padding-inline: 0.5rem; color: var(--ak-ink-primary); background: var(--ak-paper-editing); font: inherit; font-size: var(--models-type-body); font-variant-numeric: tabular-nums; }
+.settings-model-extra input { width: 7rem; min-height: 2rem; border: 1px solid var(--ak-rule-default); border-radius: var(--ak-radius-sm); padding-inline: 0.5rem; color: var(--ak-ink-primary); background: var(--ak-paper-editing); font: inherit; font-size: var(--models-type-body); font-variant-numeric: tabular-nums; }
 .settings-model-extra input[aria-invalid="true"] { border-color: var(--md-sys-color-error); }
 .settings-model-extra .settings-text-button { min-height: 2rem; font-size: var(--models-type-caption); }
 .settings-model-extra small { flex-basis: 100%; color: var(--ak-ink-secondary); }

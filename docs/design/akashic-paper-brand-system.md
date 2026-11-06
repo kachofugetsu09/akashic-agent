@@ -49,7 +49,7 @@ PR #500 已经统一桌面 Chat、Dashboard 的暖纸颜色和霞鹜文楷，但
 | 输入边界与柔和 focus | `--ak-rule-default` / `--ak-rule-focus-soft` | Desktop 与 Mobile composer |
 | 阅读字与技术字 | `--ak-type-reading` / `--ak-type-technical` | Chat、Mobile、Dashboard |
 
-`12px` 用户气泡圆角、composer 高度、移动端 safe area、抽屉宽度和动画时长仍留在组件 CSS。它们即使数值相同，也不代表换品牌时必须一起变化。原稿中的 `annotation`、纸张几何和辅助字号没有真实消费者，已从公共合同移除；trace 继续由 status token 拥有。
+composer 高度、移动端 safe area、抽屉宽度和动画时长仍留在组件 CSS。它们即使数值相同，也不代表换品牌时必须一起变化。圆角原本也留在组件里，后来各处收敛出同一套隐含刻度却没有 owner，已由 [0143](../decisions/0143-radius-joins-the-brand-contract.md) 收进形状轴 `--ak-radius-*`。原稿中的 `annotation`、纸张几何和辅助字号没有真实消费者，已从公共合同移除；trace 继续由 status token 拥有。
 
 ## 4. Mobile 复用边界
 
@@ -70,7 +70,7 @@ PR #500 已经统一桌面 Chat、Dashboard 的暖纸颜色和霞鹜文楷，但
 
 ## 5. 字体
 
-- 阅读正文使用仓库随附的 `Source Serif 4`（英文）与 `Noto Serif SC`（中文），窄屏聊天正文切回系统无衬线以平衡高密度代码混排；正文不低于 15 px，三行以上正文行高不低于 1.4。
+- 聊天正文与展开的思考在宽窄屏统一使用系统无衬线，页面级标题等其他阅读场景保留仓库随附的 `Source Serif 4`（英文）与 `Noto Serif SC`（中文）；正文不低于 15 px，三行以上正文行高不低于 1.4。
 - 代码、时间、运行身份和短技术标签使用 `JetBrains Mono`。
 - 界面文字使用系统 sans 栈（`--ak-type-ui`），不随包分发 web font；界面默认用它，阅读衬线由正文容器显式声明。
 - 三种角色各管一件事：阅读字体只给模型输出的自然语言，界面字体给控件与状态，技术字体给字面量；不为单一组件增加第四种品牌字体。

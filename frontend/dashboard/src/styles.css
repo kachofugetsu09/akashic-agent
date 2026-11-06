@@ -6,8 +6,6 @@
 @tailwind base;
 
 :root {
-  --radius: var(--md-sys-shape-corner-medium);
-  --radius-lg: var(--md-sys-shape-corner-large);
   --ease-out: var(--ak-sys-motion-standard);
   --t-fast: var(--ak-sys-duration-short);
   --sans: var(--ak-type-reading);
@@ -90,7 +88,7 @@ body {
   inset: 12px 12px auto auto;
   padding: 10px 14px;
   border: 1px solid var(--ak-rule-default);
-  border-radius: 12px;
+  border-radius: var(--ak-radius-md);
   color: var(--ak-ink-primary);
   background: var(--ak-paper-raised);
 }

@@ -9,7 +9,7 @@
 
 .user-bubble {
   max-width: min(88%, var(--chat-bubble-max, 34rem));
-  border-radius: 12px;
+  border-radius: var(--ak-radius-md);
   padding: 8px 12px;
   color: var(--chat-ink, var(--ak-ink-primary));
   background: var(--chat-chip, var(--ak-paper-sheet));
@@ -73,7 +73,7 @@
   /* 阅读列宽度由宿主的 --chat-column 拥有；缺省值供未定义它的宿主。 */
   width: min(100%, var(--chat-column, 52rem));
   color: var(--ak-ink-primary);
-  /* 模型输出的自然语言：宽屏默认取阅读衬线，窄屏由 --chat-reading-font 切回界面无衬线以平衡高密度代码混排。 */
+  /* 正文与展开的思考共用宿主的阅读字体，宽窄屏保持一致。 */
   font-family: var(--chat-reading-font, var(--ak-type-reading));
   font-size: var(--chat-type-body, 0.9375rem);
   line-height: var(--chat-response-leading, 1.55);
@@ -208,7 +208,7 @@
   max-height: 20rem;
   height: auto;
   margin-block: 0.35rem;
-  border-radius: var(--md-sys-shape-corner-medium);
+  border-radius: var(--ak-radius-md);
   object-fit: contain;
   outline: none;
 }
@@ -222,7 +222,7 @@
 .static-message-response :not(pre) > code,
 .process-markdown :not(pre) > code {
   border: 1px solid color-mix(in oklab, var(--ak-ink-primary) 9%, transparent);
-  border-radius: 0.25rem;
+  border-radius: var(--ak-radius-xs);
   padding: 0.0625rem 0.25rem;
   color: var(--md-sys-color-on-surface);
   background: color-mix(in oklab, var(--md-sys-color-on-surface) 3.5%, transparent);
@@ -237,7 +237,7 @@
 .agent-content .markstream-react .inline-code,
 .process-markdown .markstream-react .inline-code {
   border: 1px solid color-mix(in oklab, var(--ak-ink-primary) 9%, transparent);
-  border-radius: 0.25rem;
+  border-radius: var(--ak-radius-xs);
   padding: 0.0625rem 0.25rem;
   color: inherit;
   background: color-mix(in oklab, var(--ak-ink-primary) 3.5%, transparent);
@@ -378,7 +378,7 @@
   margin-block: 1rem !important;
   overflow-x: auto;
   border: 1px solid var(--ak-rule-subtle) !important;
-  border-radius: 0 !important;
+  border-radius: var(--ak-radius-sm) !important;
   padding: 48px 16px 12px !important;
   color: var(--ak-ink-primary) !important;
   background: var(--ak-paper-quiet) !important;
@@ -454,7 +454,9 @@
 :where(.agent-content, .process-markdown, .user-bubble) .code-block-container {
   margin-block: 1rem !important;
   border: 1px solid var(--ak-rule-subtle) !important;
-  border-radius: 0 !important;
+  /* 与气泡、附件卡同属一套刻度；块头与代码区由容器裁出圆角。 */
+  border-radius: var(--ak-radius-sm) !important;
+  overflow: clip;
   box-shadow: none !important;
   background: var(--ak-paper-quiet) !important;
 }
@@ -1344,7 +1346,7 @@
   max-width: 72ch;
   color: color-mix(in oklab, var(--ak-color-text-primary) 46%, transparent);
   /* 思考正文是模型写的自然语言，展开后要读：归阅读字体。 */
-  font-family: var(--ak-type-reading);
+  font-family: var(--chat-reading-font, var(--ak-type-reading));
   font-size: 0.75rem;
   line-height: 1.55;
   overflow-wrap: break-word;
@@ -1360,7 +1362,7 @@
 .process-markdown {
   min-width: 0;
   /* 展开的思考可能是 Markdown：与正文同一阅读字体。 */
-  font-family: var(--ak-type-reading);
+  font-family: var(--chat-reading-font, var(--ak-type-reading));
   overflow-wrap: break-word;
   white-space: normal;
 }
@@ -1417,7 +1419,7 @@
   min-width: 0;
   min-height: 24px;
   border: 0;
-  border-radius: 4px;
+  border-radius: var(--ak-radius-sm);
   padding: 2px 0;
   color: inherit;
   background: transparent;
@@ -1622,7 +1624,7 @@ button.tool-step-summary:active {
   gap: 6px;
   margin-inline-end: -8px;
   border: 0;
-  border-radius: var(--md-sys-shape-corner-full);
+  border-radius: var(--ak-radius-full);
   padding: 0 10px;
   color: var(--md-sys-color-on-surface-variant);
   background: transparent;
@@ -1722,7 +1724,7 @@ button.tool-step-summary:active {
   width: fit-content;
   min-height: 32px;
   border: 0;
-  border-radius: 8px;
+  border-radius: var(--ak-radius-sm);
   padding: 0 8px;
   margin-inline-start: -8px;
   color: var(--ak-color-action-primary);
@@ -1797,7 +1799,7 @@ button.tool-step-summary:active {
   height: 40px;
   flex: 0 0 40px;
   place-items: center;
-  border-radius: 12px;
+  border-radius: var(--ak-radius-md);
   color: inherit;
   opacity: 0.82;
 }
@@ -1818,7 +1820,7 @@ button.tool-step-summary:active {
   display: block;
   max-width: 100%;
   max-height: 100%;
-  border-radius: 12px;
+  border-radius: var(--ak-radius-md);
   object-fit: contain;
 }
 
@@ -1849,7 +1851,7 @@ button.tool-step-summary:active {
   height: 100%;
   grid-template: minmax(0, 1fr) / minmax(0, 1fr);
   overflow: hidden;
-  border-radius: 12px;
+  border-radius: var(--ak-radius-md);
 }
 .media-preview__frame > .media-preview__media { margin: auto; }
 /* 横滑交给页面脚本切换上一个/下一个；原始像素画框本身是滚动容器，
@@ -1922,7 +1924,7 @@ button.tool-step-summary:active {
   height: 40px;
   place-items: center;
   border: 0;
-  border-radius: var(--md-sys-shape-corner-full);
+  border-radius: var(--ak-radius-full);
   padding: 0;
   color: var(--md-sys-color-on-surface-variant);
   background: transparent;
@@ -1936,7 +1938,8 @@ button.tool-step-summary:active {
   height: var(--shared-action-hit);
   place-items: center;
   border: var(--shared-action-inset) solid transparent;
-  border-radius: calc(var(--shared-action-inset) + 5px);
+  /* 透明边撑热区，看得见的 24px 方块取 xs。 */
+  border-radius: calc(var(--shared-action-inset) + var(--ak-radius-xs));
   padding: 0;
   box-sizing: border-box;
   color: var(--ak-ink-secondary);
@@ -2176,7 +2179,7 @@ button.tool-step-summary:active {
 .timeline-failure-actions button:hover,
 .timeline-failure-actions button:focus-visible { text-decoration-color: currentColor; }
 .timeline-failure-actions button:focus-visible,
-.timeline-failure-history summary:focus-visible { outline: 2px solid var(--ak-rule-focus); outline-offset: 3px; border-radius: 4px; }
+.timeline-failure-history summary:focus-visible { outline: 2px solid var(--ak-rule-focus); outline-offset: 3px; border-radius: var(--ak-radius-xs); }
 .timeline-failure-actions button:disabled { color: var(--ak-ink-muted); text-decoration-line: none; cursor: default; }
 .timeline-failure-history { color: var(--ak-ink-muted); font-size: 0.8125rem; }
 .timeline-failure-history summary { min-height: 2.25rem; display: inline-flex; align-items: center; cursor: pointer; list-style: none; }
@@ -2208,7 +2211,7 @@ button.tool-step-summary:active {
   border: 0; padding: 4px 2px; color: var(--ak-ink-primary); background: none; font: inherit;
   text-decoration: underline; text-underline-offset: 2px; cursor: pointer;
 }
-.connection-status button:focus-visible { outline: 2px solid var(--ak-rule-focus); outline-offset: 2px; border-radius: 4px; }
+.connection-status button:focus-visible { outline: 2px solid var(--ak-rule-focus); outline-offset: 2px; border-radius: var(--ak-radius-xs); }
 @keyframes connection-breathe { 50% { opacity: 0.35; } }
 @media (prefers-reduced-motion: reduce) { .connection-status > i { animation: none; } }
 .timeline-result-heading strong { font-size: 0.875rem; }
@@ -2290,7 +2293,7 @@ button.tool-step-summary:active {
   gap: 12px;
   padding: 10px 12px;
   border: 1px solid var(--ak-rule-subtle);
-  border-radius: 12px;
+  border-radius: var(--ak-radius-md);
   background: var(--ak-paper-quiet);
   font-size: 0.8125rem;
   line-height: 1.5;
@@ -2320,7 +2323,7 @@ button.tool-step-summary:active {
   min-height: 32px;
   padding: 0 12px;
   border: 1px solid var(--ak-rule-default);
-  border-radius: 8px;
+  border-radius: var(--ak-radius-sm);
   background: var(--ak-paper-canvas);
   color: var(--ak-ink-primary);
   font: inherit;
@@ -2348,7 +2351,7 @@ button.tool-step-summary:active {
 .attempt-status > details { flex: 1; min-width: 0; }
 .attempt-status summary { cursor: pointer; list-style: none; overflow-wrap: anywhere; }
 .attempt-status summary::-webkit-details-marker { display: none; }
-.attempt-status summary:focus-visible { outline: 2px solid var(--ak-rule-focus); outline-offset: 2px; border-radius: 4px; }
+.attempt-status summary:focus-visible { outline: 2px solid var(--ak-rule-focus); outline-offset: 2px; border-radius: var(--ak-radius-xs); }
 
 .attempt-status code {
   display: block;
@@ -2367,7 +2370,7 @@ button.tool-step-summary:active {
   margin-top: -3px;
   padding: 0 6px;
   border: 0;
-  border-radius: 4px;
+  border-radius: var(--ak-radius-xs);
   background: none;
   color: var(--ak-ink-primary);
   font: inherit;
@@ -2414,7 +2417,7 @@ button.tool-step-summary:active {
   gap: 4px;
   padding: 0 10px;
   border: 0;
-  border-radius: 999px;
+  border-radius: var(--ak-radius-full);
   color: var(--ak-color-bg-canvas);
   background: var(--ak-ink-primary);
   box-shadow: 0 2px 8px color-mix(in oklab, var(--ak-ink-primary) 18%, transparent);
@@ -2442,7 +2445,7 @@ button.tool-step-summary:active {
   align-items: center;
   gap: 6px;
   padding: 3px 4px 3px 8px;
-  border-radius: 8px;
+  border-radius: var(--ak-radius-sm);
   color: var(--ak-color-on-action-container);
   background: color-mix(in oklab, var(--ak-color-action-container) 42%, var(--md-sys-color-surface-container-high));
   font-size: var(--md-sys-typescale-label-medium-size);
@@ -2468,7 +2471,8 @@ button.tool-step-summary:active {
   align-items: center;
   justify-content: center;
   border: 0;
-  border-radius: 6px;
+  /* 与引用条（sm）同心，间距 2。 */
+  border-radius: calc(var(--ak-radius-sm) - 2px);
   color: inherit;
   background: transparent;
   cursor: pointer;
@@ -2498,7 +2502,8 @@ button.tool-step-summary:active {
   gap: 6px;
   margin: 2px 0;
   padding: 3px 10px;
-  border-radius: 8px;
+  /* 气泡 md 里间距 10：同心值 2 太尖，取下限 xs。 */
+  border-radius: var(--ak-radius-xs);
   color: var(--md-sys-color-on-surface-variant);
   background: var(--md-sys-color-surface-container-high);
   font-size: var(--md-sys-typescale-label-medium-size);

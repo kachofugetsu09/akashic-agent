@@ -6,6 +6,7 @@
 
 | ID | 状态 | 主题 | 关联条款 |
 |---|---|---|---|
+| [0143](0143-radius-joins-the-brand-contract.md) | accepted / implemented for review | 圆角进入品牌合同：五级刻度与同心规则 | WEBUI-007 |
 | [0142](0142-theme-families-and-palette-rules.md) | accepted / implemented for review | 主题按「配色 × 明暗」选择，内置配色遵守同一组感知规则 | WEBUI-001～WEBUI-007 |
 | [0141](0141-akasha-recall-injects-an-index.md) | accepted / implemented for review | Akasha 自动召回只注入索引，原文用 fetch_messages 按需读取 | MEM-009、MEM-013 |
 | [0140](0140-design-workbench-replaces-sites.md) | accepted / implemented for review | 设计工作台：Agent 和用户在同一块 open-pencil 画布上做设计，取代“网站” | WEBUI-008 |
