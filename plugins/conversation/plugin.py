@@ -78,8 +78,8 @@ async def apply(ctx: Context) -> None:
             return references
 
         writers = ctx.require(MESSAGE_WRITERS)
-        inputs = writers.bind(
-            ctx, author="user", source="conversation", body_types=(Input,),
+        inputs = ctx.require(SOURCES).user_inputs(
+            ctx, name="conversation",
             content={"text": ctx.require(CONTENT).check_text, "artifact_ref": ctx.require(CONTENT).check_artifact, "channel.origin": check_origin,
                      "reply_ref": check_reply_target, **(extra or {})},
             part_metadata=True,

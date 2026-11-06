@@ -1,13 +1,13 @@
 """来源提交后的同步通知；监听者返回前必须取得所需活动占位。"""
 
-from collections.abc import AsyncGenerator, Awaitable, Callable, Sequence
+from collections.abc import AsyncGenerator, Awaitable, Callable, Mapping, Sequence
 from dataclasses import dataclass
 from typing import Protocol
 
 from agent.plugin_composition import Context, Effect, ServiceKey
 from plugins.channels.contract import ChannelInboundMessage
 from agent.plugin_composition.events import EmitEventKey
-from plugins.ledger.contract import MessageReader, MessageWriter, OwnerTransaction
+from plugins.ledger.contract import ContentPart, ContentReferences, MessageReader, MessageWriter, OwnerTransaction
 from agent.plugin_composition.tasks import RestartGate, Task, TaskAdmission
 from plugins.ledger.contract import (
     Control,
@@ -102,6 +102,12 @@ class SourcesV5(Protocol):
         channels: tuple[str, ...] | None = (),
     ) -> Effect: ...
     async def needs_reply(self, reader: MessageReader, source: str) -> bool: ...
+    # 注册即声明：已登记来源的输入就是用户输入。注册表代登记者绑定 author=user 的 Input 写入器，来源不自选作者。
+    def user_inputs(
+        self, ctx: Context, *, name: str,
+        content: Mapping[str, Callable[[ContentPart], ContentReferences]],
+        part_metadata: bool = False,
+    ) -> Callable[..., MessageWriter]: ...
     def entries(self) -> tuple[AsyncSource, ...]: ...
     def changes(self) -> AsyncGenerator[tuple[AsyncSource, ...], None]: ...
     async def accept(self, session_id: str, message_id: str, message: ChannelInboundMessage) -> Message: ...

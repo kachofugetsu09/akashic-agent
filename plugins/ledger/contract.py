@@ -464,7 +464,20 @@ class AppendChecks(Protocol):
         ...
 
 
+class UserInputs(Protocol):
+    """用户输入写入授权：唯一持有者（来源注册表）代已登记的来源绑定 author=user 的 Input 写入器。"""
+
+    def bind(
+        self, ctx: Context, *, source: str,
+        content: Mapping[str, Callable[[ContentPart], ContentReferences]],
+        part_metadata: bool = False,
+    ) -> Callable[..., MessageWriter]: ...
+
+
 class MessageWriters(Protocol):
+    # author=user 不经 bind 开放；唯一持有者领取授权后代来源绑定，持有者卸载时授权随之释放。
+    async def claim_user_inputs(self, ctx: Context) -> UserInputs: ...
+
     async def register_metadata(
         self, ctx: Context, *, keys: frozenset[str],
         update: Callable[[Body], Mapping[str, object | None]],
