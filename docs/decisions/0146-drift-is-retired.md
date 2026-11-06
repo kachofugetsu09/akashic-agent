@@ -28,6 +28,11 @@ Wake 从未以 drift 职责运行过，消息账本里也没有 drift 写入的�
 - `scripts/proactive_island` 是旧布局数据的离线交接工具，读取旧 `workspace/drift/drift.db` 只读，不依赖插件，保留。
 - 升级后第一次打开用量面板会全量重算一次（检查点版本 2 → 3）。
 
+### 已知限制
+
+- Wake 请求的 `owner` 不再接受 `drift`。升级瞬间若有尚未结算的 drift Wake 流程，恢复时读不出原请求，Wake 启动恢复会失败。
+  生产只读核对：账本里没有任何 drift Wake 会话，Wake 从未以 drift 职责运行；为零样本保留兼容分支不值得。
+
 ## 验收
 
 隔离实例以选择了 `drift@release` 的旧版本数据升级到新版本：启动、插件页与 Wake 正常，drift 数据目录未被删除；

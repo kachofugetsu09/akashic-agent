@@ -211,7 +211,9 @@ class CacheUsage:
         self._dirty_sources: set[tuple[str, str]] = set()
         self._removed: set[str] = set()
         self._declared: dict[tuple[str, str], str] = {}
+        # 声明集合在事件循环上原子替换；扫描线程在锁内采用为 _applied，内存结果与检查点都按 _applied 计算。
         self._proactive: frozenset[str] = frozenset()
+        self._applied: frozenset[str] = frozenset()
 
     async def declare_proactive(self, ctx: Context, source: str) -> Effect:
         if ctx.root_instance_token is not self._ctx.root_instance_token:
@@ -232,15 +234,9 @@ class CacheUsage:
 
         return await ctx.effect(setup, label=f"usage-proactive:{source}")
 
-    # 声明变化后丢弃内存结果；下次读取时检查点按新集合校验，不符即从头重算。
+    # 只替换声明集合，不在事件循环上等扫描锁；下次扫描在锁内发现集合变化再丢弃内存结果。
     def _reload(self) -> None:
-        with self._lock:
-            self._proactive = frozenset(self._declared.values())
-            self._restored = False
-            self._heads, self._sources = {}, {}
-            self._dirty_heads.clear()
-            self._dirty_sources.clear()
-            self._removed.clear()
+        self._proactive = frozenset(self._declared.values())
 
     async def message_output_tokens(self, session_id: str, message_id: str) -> int | None:
         with self._ctx.borrow(MESSAGE_CATALOG) as catalog, self._ctx.borrow(TURN_PROJECTION) as projection:
@@ -506,7 +502,7 @@ class CacheUsage:
             call_ids = [facts[identity].call_id for turn in turns for identity in turn.message_ids]
             usages = self._store.read_call_usages([identity for identity in call_ids if identity is not None])
             for turn in turns:
-                _record(state, session_id, source in self._proactive, turn, facts, usages)
+                _record(state, session_id, source in self._applied, turn, facts, usages)
             if turns or state.reset:
                 self._dirty_sources.add((session_id, source))
             if stopped:
@@ -524,12 +520,16 @@ class CacheUsage:
             del self._sources[key]
             self._dirty_sources.discard(key)
 
-    # 首次访问时从检查点恢复；之后只在内存推进。
+    # 首次访问或声明集合变化时从检查点恢复（集合不符即从头重算）；之后只在内存推进。调用方持有 _lock。
     def _restore(self) -> None:
-        if self._restored:
+        proactive = self._proactive
+        if self._restored and proactive == self._applied:
             return
-        self._restored = True
-        self._heads, self._sources = self._checkpoint.load(self._proactive)
+        self._restored, self._applied = True, proactive
+        self._dirty_heads.clear()
+        self._dirty_sources.clear()
+        self._removed.clear()
+        self._heads, self._sources = self._checkpoint.load(proactive)
 
     # 写入本轮变化；失败只记日志，内存结果仍然有效，下次再写。
     def _flush(self) -> None:
@@ -539,7 +539,7 @@ class CacheUsage:
         try:
             self._checkpoint.save(
                 {key: self._heads[key] for key in self._dirty_heads if key in self._heads}, sources, self._removed,
-                self._proactive,
+                self._applied,
             )
         except (sqlite3.Error, OSError):
             logger.exception("cache usage checkpoint write failed")
