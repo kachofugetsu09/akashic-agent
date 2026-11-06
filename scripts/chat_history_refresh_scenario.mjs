@@ -72,7 +72,7 @@ try {
   let controller;
   function Harness() { controller = useDesktopChatController(); return null; }
   const settle = async (action = () => {}) => act(async () => { action(); await new Promise((resolve) => setTimeout(resolve, 10)); });
-  const row = (session, seq) => ({ id: `${session}:${seq}`, seq, author: "user", actor: "human", source: "akashic", timestamp: "2026-09-30T00:00:00Z", session_id: session, attachments: [], body: { kind: "input", parts: [{ kind: "text", value: `message ${seq}` }] } });
+  const row = (session, seq) => ({ id: `${session}:${seq}`, seq, author: "user", actor: "user", source: "akashic", timestamp: "2026-09-30T00:00:00Z", session_id: session, attachments: [], body: { kind: "input", parts: [{ kind: "text", value: `message ${seq}` }] } });
   const page = (session, seqs, before = null, through = seqs.at(-1) ?? -1) => ({ version: 2, items: seqs.map((seq) => row(session, seq)), through_seq: through, before_seq: before, has_more: before !== null });
   const seqs = () => controller.timelineMessages.map((item) => item.seq);
   const append = (session, after, next) => sockets.at(-1).onmessage({ data: JSON.stringify({ type: "messages.appended", version: 2, session_id: session, after_seq: after, through_seq: next, next_after_seq: next, has_more: false, items: [row(session, next)] }) });

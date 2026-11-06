@@ -26,7 +26,7 @@ assert.equal(build.status, 0, '前端构建失败：' + root + '/build.log');
 // 1. 夹具：一条已完成的问答，回合从 message.send 开始，由脚本按固定节奏推预览。
 const sessionId = 'akashic:tps';
 const items = [{
-  id: 'm0', seq: 0, author: 'user', actor: 'human', source: 'akashic', timestamp: new Date(Date.UTC(2026, 9, 19, 8, 0, 0)).toISOString(),
+  id: 'm0', seq: 0, author: 'user', actor: 'user', source: 'akashic', timestamp: new Date(Date.UTC(2026, 9, 19, 8, 0, 0)).toISOString(),
   session_id: sessionId, attachments: [], metadata: {}, body: { kind: 'input', parts: [{ kind: 'text', value: '算一下速度' }] },
 }, {
   id: 'm1', seq: 1, author: 'assistant', actor: 'model', source: 'akashic', timestamp: new Date(Date.UTC(2026, 9, 19, 8, 0, 1)).toISOString(),

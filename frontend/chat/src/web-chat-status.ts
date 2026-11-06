@@ -1,4 +1,4 @@
-import { principalInput, type ReplyActivity, type TimelineMessage } from "./message-timeline";
+import { userInput, type ReplyActivity, type TimelineMessage } from "./message-timeline";
 
 export type ChatStatus = "idle" | "uploading" | "submitted" | "streaming" | "error";
 
@@ -18,7 +18,7 @@ export function replyChatStatus(
   const inputs = new Map<string, { seq: number; boundary: number; paused: number }>();
   for (const message of messages) {
     const body = message.body;
-    if (principalInput(message)) {
+    if (userInput(message)) {
       inputs.set(message.source, { seq: message.seq, boundary: -1, paused: -1 });
       continue;
     }

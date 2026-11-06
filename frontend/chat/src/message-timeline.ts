@@ -44,17 +44,12 @@ export interface TimelineMessage {
   metadata: Record<string, unknown>;
 }
 
-export type TimelineActor = "human" | "program" | "model" | "tool" | "host" | "automation";
-const ACTORS: readonly string[] = ["human", "program", "model", "tool", "host", "automation"];
+export type TimelineActor = "user" | "model" | "tool" | "host" | "automation";
+const ACTORS: readonly string[] = ["user", "model", "tool", "host", "automation"];
 
-/** 人写的输入：气泡、编辑、重跑与引导只认它。 */
-export function humanInput(message: TimelineMessage): boolean {
-  return message.body.kind === "input" && message.actor === "human";
-}
-
-/** 人或外部程序的输入开启一个回合；插件自动产生的输入不打断回合。 */
-export function principalInput(message: TimelineMessage): boolean {
-  return message.body.kind === "input" && (message.actor === "human" || message.actor === "program");
+/** 经渠道进入的用户输入：气泡、编辑、重跑、引导与回合起点只认它；插件自动产生的输入不打断回合。 */
+export function userInput(message: TimelineMessage): boolean {
+  return message.body.kind === "input" && message.actor === "user";
 }
 
 export interface TimelineReply {
@@ -256,7 +251,7 @@ function toolResultValues(message: TimelineMessage): unknown[] {
 export function timelineReply(message: TimelineMessage): TimelineReply {
   // 模型回复是 Markdown，预览取渲染后的文字；用户输入按原文显示。
   const text = message.body.kind === "output" ? markdownPlainText(timelineText(message)) : timelineText(message);
-  return { id: message.id, author: message.actor === "human" ? "user" : message.actor === "model" ? "assistant" : message.author,
+  return { id: message.id, author: message.actor === "user" ? "user" : message.actor === "model" ? "assistant" : message.author,
     preview: text.replace(/\s+/gu, " ").trim().slice(0, 512)
       || (message.attachments.length ? "[附件]" : "[无文字消息]") };
 }
@@ -413,7 +408,7 @@ export function timelineInputStarts(messages: TimelineMessage[]): Map<string, nu
   const starts = new Map<string, number>();
   for (const message of messages) {
     const key = timelineSourceKey(message);
-    if (principalInput(message) && !starts.has(key)) starts.set(key, message.seq);
+    if (userInput(message) && !starts.has(key)) starts.set(key, message.seq);
   }
   return starts;
 }
@@ -462,7 +457,7 @@ export function timelineReplyGroups(messages: TimelineMessage[], activities: Rep
         if (members.length > 1) completed.set(message.id, members);
         pending.delete(key);
       }
-    } else if (principalInput(message)
+    } else if (userInput(message)
       || (body.kind === "control" && body.action !== "resume")
       || timelineDeliversAttachment(message)) {
       const throughSeq = body.kind === "control" ? body.through_seq : message.seq - 1;
@@ -557,7 +552,7 @@ export function timelineFailureRetries(messages: TimelineMessage[]): TimelineFai
     runs.set(key, run);
     run.tail = message;
     // 1. 新输入或放弃开始新的一段；自动输入不能由用户重跑。
-    if (body.kind === "input") Object.assign(run, { input: humanInput(message) ? message : null, failures: [], stuck: false });
+    if (body.kind === "input") Object.assign(run, { input: userInput(message) ? message : null, failures: [], stuck: false });
     else if (body.kind === "control" && body.action === "abandon") Object.assign(run, { failures: [], stuck: false });
     // 2. 重试最终答出来了：回答替换掉这一轮的失败。
     else if (body.kind === "output" && body.finish !== "continue") {
@@ -639,7 +634,7 @@ export function timelineVisibleMessages(messages: TimelineMessage[], groups = ti
     if (superseded.has(message.id)) return false;
     if (groups.moved.has(message.id) && !message.attachments.length) return false;
     if (!isTimelineMessageVisible(message) && !groups.completed.has(message.id)
-      && !humanInput(message)) return false;
+      && !userInput(message)) return false;
     if (groups.hiddenBodies.has(message.id) && !message.attachments.length && message.body.kind === "output"
       && !message.body.parts.some((part) => part.kind !== "text" && isTimelinePartVisible(part))) return false;
     if (message.body.kind !== "tool_result" || timelineDeliversAttachment(message)) return true;

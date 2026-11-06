@@ -35,7 +35,7 @@ export function desktopMessages(count = 100, { profile = "rich", sessionId = SES
         session_id: sessionId,
         timestamp: new Date(BASE_TIME + index * 1_000).toISOString(),
         author: input ? "user" : "assistant",
-        actor: input ? "human" : "model",
+        actor: input ? "user" : "model",
         source: "akashic",
         attachments: [],
         metadata: {},

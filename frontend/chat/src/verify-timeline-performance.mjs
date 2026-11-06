@@ -20,7 +20,7 @@ const count = 200;
 const chunks = 120;
 const timestamp = '2026-09-26T00:00:00Z';
 const row = (seq, body, source = 'akashic') => ({ id: `message-${seq}`, seq, session_id: session,
-  timestamp, author: body.kind === 'input' ? 'user' : 'assistant', actor: body.kind === 'input' ? 'human' : 'model', source, attachments: [], metadata: {}, body });
+  timestamp, author: body.kind === 'input' ? 'user' : 'assistant', actor: body.kind === 'input' ? 'user' : 'model', source, attachments: [], metadata: {}, body });
 const textBody = (kind, text) => ({ kind, parts: [{ kind: 'text', value: text }], ...(kind === 'output' ? { finish: 'complete' } : {}) });
 const history = Array.from({ length: count }, (_, seq) => row(seq,
   textBody(seq % 2 ? 'output' : 'input', `历史消息 ${seq}\n\n这段**已经完成的文字**不应随下一条回复反复渲染。\n\n- 项目一\n- 项目二`)));

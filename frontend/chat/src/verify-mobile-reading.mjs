@@ -44,7 +44,7 @@ const items = [
     session_id: sessionKey,
     timestamp: "2026-11-04T12:44:00.000Z",
     author: "user",
-    actor: "human",
+    actor: "user",
     source: "akashic",
     attachments: [],
     metadata: {},
