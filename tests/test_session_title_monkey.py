@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import asyncio
 from contextlib import asynccontextmanager
+from collections.abc import Callable
 from pathlib import Path
 import random
 from tempfile import TemporaryDirectory
@@ -54,7 +55,7 @@ class MonkeyModels:
 
     def __init__(self) -> None:
         self.calls: list[ModelRequest] = []
-        self.behavior: Any = "自动短标题"
+        self.behavior: str | None | BaseException | Callable[[ModelRequest], str | None | BaseException] = "自动短标题"
         self.delay: float = 0.0
 
     @asynccontextmanager
@@ -220,7 +221,7 @@ async def test_monkey_stress_concurrency() -> None:
         session_count = 30
         readers = []
 
-        def random_behavior(req: ModelRequest) -> Any:
+        def random_behavior(req: ModelRequest) -> str | None | BaseException:
             choice = rng.randint(0, 5)
             if choice == 0:
                 return None
