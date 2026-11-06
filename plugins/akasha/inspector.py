@@ -13,6 +13,7 @@ from typing import cast
 from plugins.ui.contract import PluginUiRpcInvalidRequest
 from plugins.ledger.contract import MessageCatalog
 from plugins.ledger.contract import CallRef, ContentPart, Input, Message, Output, ToolCall, ToolResult, json_value
+from plugins.ledger.provenance import is_principal_input
 from plugins.tools.contract import durable_call_key
 from ._boundaries import Turn, TurnProjection
 from .contract import ContextSource, Recall, ToolSource
@@ -80,7 +81,7 @@ class RecallInspector:
                         body = message.body
                         refs.append(_MessageRef(
                             message.message_id, message.seq,
-                            isinstance(body, Input) and message.author == "user",
+                            is_principal_input(message),
                             tuple(CallRef(message.message_id, index) for index, part in enumerate(body.parts)
                                   if isinstance(part, ToolCall)) if isinstance(body, Output) else (),
                             body.call_ref if isinstance(body, ToolResult) else None,

@@ -40,7 +40,6 @@ from .api import (
     TextSource,
     check_artifact,
     decode_reference,
-    is_user_input,
     legacy_post_commit_effect,
 )
 
@@ -261,7 +260,6 @@ def _definition(value: ContentSchema | Mapping[str, object]) -> ContentSchema:
 class Content:
     check_text = staticmethod(check_text)
     check_artifact = staticmethod(check_artifact)
-    is_user_input = staticmethod(is_user_input)
     legacy_post_commit_effect = staticmethod(legacy_post_commit_effect)
 
     def __init__(self, ctx: Context):
