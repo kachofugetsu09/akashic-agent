@@ -3,6 +3,7 @@ from contextlib import asynccontextmanager
 from typing import cast
 
 from agent.plugin_composition import Context
+from plugins.host_execution.contract import FILES
 from plugins.ledger.contract import ARTIFACT_IMPORT
 from plugins.ledger.contract import BINDINGS
 from plugins.ledger.contract import MESSAGE_CATALOG, MESSAGE_WRITERS
@@ -31,6 +32,7 @@ inject = (
     BINDINGS,
     MESSAGE_WRITERS,
     ARTIFACT_IMPORT,
+    FILES,
     MESSAGE_CATALOG,
     CONTENT,
     RESTART_GATE,

@@ -33,7 +33,7 @@ async def test_push_completes_while_target_turn_is_active_and_appends_one_output
     """A caller push finishes while a real source Task holds its original prompt."""
     source = tmp_path / "plugins"
     sources(source)
-    for name in ("ledger", "content", "tools", "message_push"):
+    for name in ("ledger", "content", "tools", "host_execution", "message_push"):
         shutil.copytree(Path(__file__).parents[1] / "plugins" / name, source / name,
                         ignore=shutil.ignore_patterns("__pycache__"))
     workspace = tmp_path / "workspace"
@@ -97,6 +97,12 @@ async def test_push_completes_while_target_turn_is_active_and_appends_one_output
 
         execution = ToolExecution(log.owner("plugin:tools"), caller_tasks,
                                   open_bound_tool, authorize, task_key="effects")
+        failed = await execution.execute("missing-attachment", binding, {
+            "target_channel": "test", "target_chat_id": "room",
+            "message": "must not send", "file": str(tmp_path / "missing/file.png"),
+        })
+        assert failed.outcome == "error" and "消息尚未发送" in str(failed.parts)
+        assert reader.snapshot() == (accepted,)
         # 2. The caller's tool and Delivery finish before the target is released.
         async with sender.fiber.context.runtime_scope():
             activity = sender.fiber.context.require(ServiceKey("fixture.delivery"))().activity("test", "room")

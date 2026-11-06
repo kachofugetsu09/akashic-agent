@@ -23,6 +23,7 @@ from .protocol import (
     decode_execution,
     decode_execution_states,
     decode_file_result,
+    decode_file_chunk,
     decode_terminal_info,
     decode_terminal_output,
     require_fields,
@@ -31,7 +32,7 @@ from .protocol import (
     require_text,
 )
 from plugins.host_execution.contract import (
-    FileResult, RawProcessOutput, TerminalInfo, TerminalOutput, UnknownTerminalError,
+    FileResult, FileChunk, FileError, RawProcessOutput, TerminalInfo, TerminalOutput, UnknownTerminalError,
 )
 from plugins.host_execution.contract import (
     ExecutionCleanupReport, ExecutionResult, ExecutionState
@@ -443,6 +444,16 @@ class HostBridgeShellProcessManager:
         return decode_file_result(
             await self._call(request, method="FileTool")
         )
+
+    async def read_file_chunk(self, path: str, *, offset: int, version: str | None) -> FileChunk | FileError:
+        """按同一来源版本请求有界字节，保留明确的文件错误。"""
+        if isinstance(offset, bool):
+            raise ValueError("文件字节偏移不能是布尔值")
+        reply = await self._call(pb.FileRequest(
+            context=self._request_context(),
+            read_chunk=pb.ReadFileChunk(path=path, offset=offset, version=version),
+        ), method="FileTool")
+        return decode_file_chunk(reply)
 
     async def _call(
         self,
