@@ -16,8 +16,10 @@ from agent.plugin_composition import (
     CompositionRoot,
     PluginRuntime,
 )
-from plugins.models.contract import CHAT_MODELS
-from plugins.ledger.contract import SESSION_ADMIN, SessionAdmin
+from agent.plugin_composition.plugin_config import PLUGIN_CONFIG, PluginConfig
+from plugins.models.contract import CHAT_MODELS, MODEL_CATALOG, ModelCatalogSnapshot
+from plugins.ledger.contract import SESSION_ADMIN
+from plugins.ledger.services import SessionAdmin
 from plugins.models.contract import LLMResponse
 from plugins.models.contract import TransportError
 from plugins.ledger.contract import ContentPart, ContentReferences, Input
@@ -28,6 +30,14 @@ from plugins.sources.contract import (
 from plugins.session_title import plugin
 from agent.plugins.bundles import load_bundle
 from plugins.ledger.log import MessageLog, SessionAttributes
+
+
+class LocalCatalog:
+    def snapshot(self):
+        return ModelCatalogSnapshot(revision=0, connections=(), models=(), role_bindings={}, default_embedding_model_id=None)
+
+    def validate_chat_selection(self, selection):
+        return selection
 
 
 class LocalModels:
@@ -99,6 +109,8 @@ async def run(path):
     async def provide(ctx):
         await ctx.provide(SESSION_ADMIN, admin)
         await ctx.provide(CHAT_MODELS, models)
+        await ctx.provide(PLUGIN_CONFIG, PluginConfig(None))
+        await ctx.provide(MODEL_CATALOG, LocalCatalog())
 
     await root.mount(provide, name="services")
     fiber = await root.mount(plugin.apply, name="session_title", inject=plugin.inject,
@@ -165,6 +177,14 @@ async def run(path):
         empty = append("empty", "空响应使用这句")
         await drain()
         assert empty.title == "空响应使用这句"
+        models.reply = None
+        none = append("none", "没有文本时使用首句")
+        await drain()
+        assert none.title == "没有文本时使用首句" and fiber.error is None
+        models.reply = '标题："后续正常标题"'
+        later = append("after-none", "验证下一次仍能自动取名")
+        await drain()
+        assert later.title == "后续正常标题" and fiber.error is None
         blank = append("blank", "   ")
         await drain()
         assert blank.title is None

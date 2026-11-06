@@ -95,7 +95,13 @@ async def apply(ctx: Context) -> None:
                         max_output_tokens=64,
                         disable_reasoning=True,
                     ))
-                    title = " ".join(response.content.strip().strip('"\'`“”‘’').split())
+                    raw_content = response.content or ""
+                    cleaned = raw_content.strip().strip('"\'`“”‘’').strip()
+                    for prefix in ("标题：", "标题:", "Title:", "title:"):
+                        if cleaned.startswith(prefix):
+                            cleaned = cleaned[len(prefix):].strip().strip('"\'`“”‘’').strip()
+                            break
+                    title = " ".join(cleaned.split())
             except (RuntimeError, TimeoutError) as error:
                 if not (ModelError.matches(error) or isinstance(error, TimeoutError)):
                     raise
