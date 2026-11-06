@@ -2,6 +2,7 @@ import { readFileSync } from "node:fs";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import type { Plugin } from "vite";
+import { migrateThemePreference } from "../theme/src/theme-preference";
 
 const here = dirname(fileURLToPath(import.meta.url));
 const catalogPath = resolve(here, "..", "theme", "src", "theme-catalog.json");
@@ -69,7 +70,7 @@ function splashFamilies(themes: SplashTheme[]): Record<string, [string, string]>
  * 外壳首帧注入：主题变量由运行时 JS（theme-runtime installThemeCss）安装，JS 就绪前
  * 任何 var(--ak-*) 都无效，#root 空白意味着冷启动首帧要等整个模块图求值。这里在构建期把
  * 目录里的 canvas/secondary 两色内联进 HTML，并内联一段阻塞脚本按 cookie 预解析主题
- * （镜像 theme-runtime 的 readCookieTheme + resolveSelection，含 warm-paper 迁移与 system-<配色>），
+ * （镜像 theme-runtime 的偏好解析，共用退役身份迁移，支持 system-<配色>），
  * 让 index.html 里的 .akashic-entry-splash 在 HTML 到达时即以正确主题着色——
  * 深色用户也顺带不再先看到一帧浏览器默认白底。观感镜像
  * frontend/chat/src/styles.css 的 .webui-entry-loading（改一边时两边都要看）。
@@ -102,7 +103,7 @@ export function injectEntrySplash(): Plugin {
         `.find(function(p){return p.indexOf("akashic_theme=")===0});` +
         `var id=entry?decodeURIComponent(entry.slice(14)):"";` +
         `if(!/^[a-z0-9][a-z0-9-]{0,63}$/.test(id))id="";` +
-        `if(id==="warm-paper")id="light";` +
+        `id=(${migrateThemePreference.toString()})(id);` +
         `var pair=id.indexOf("system-")===0&&families[id.slice(7)];` +
         `if(pair)id=pair[matchMedia("(prefers-color-scheme: dark)").matches?1:0];` +
         `apply(known.indexOf(id)>=0?id:fallback)}catch(e){apply(fallback)}})();`;

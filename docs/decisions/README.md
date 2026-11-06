@@ -6,6 +6,7 @@
 
 | ID | 状态 | 主题 | 关联条款 |
 |---|---|---|---|
+| [0144](0144-paper-uses-the-corrected-palette.md) | accepted | 纸感使用校正后的配色，合并原纸感与校正版选项 | WEBUI-001～WEBUI-007 |
 | [0143](0143-radius-joins-the-brand-contract.md) | accepted / implemented for review | 圆角进入品牌合同：五级刻度与同心规则 | WEBUI-007 |
 | [0142](0142-theme-families-and-palette-rules.md) | accepted / implemented for review | 主题按「配色 × 明暗」选择，内置配色遵守同一组感知规则 | WEBUI-001～WEBUI-007 |
 | [0141](0141-akasha-recall-injects-an-index.md) | accepted / implemented for review | Akasha 自动召回只注入索引，原文用 fetch_messages 按需读取 | MEM-009、MEM-013 |
