@@ -127,11 +127,11 @@ fleet 报告固定来源和 v3-only 静态合同；真实 MCP handshake/readines
 由保留的行为回归和每周 restart soak 负责。已删除的 composition Gate 只是按固定插件排列
 重复内部 snapshot，不再作为独立证据。
 
-## Content / Wake / Drift 真实插件互操作 Gate
+## Content / Wake 真实插件互操作 Gate
 
 `content_source_interop_gate.py` 不复制 Calendar、Fitbit、Feed、Steam 或 Emotion
 实现。它先把调用方提供的 canonical checkout 与 exact lock 对账，再运行 Core 已有的
-Content/Wake/Drift/Session 组合 fixture，最后在每个插件自己的目录运行其原样 fixture。
+Content/Wake/Session 组合 fixture，最后在每个插件自己的目录运行其原样 fixture。
 因此修改一个插件的业务模型只需要更新该插件与 exact revision，不会给 Core 增加来源分支。
 Content coexistence probe 在隔离 workspace 中启动 Content、MessageLog 和插件所需的内建
 provider，再用 `Manager.install` 从已核对的 checkout 安装插件；它检查同一个
@@ -177,139 +177,6 @@ BACKGROUND_JOBS 的 dispatch、ledger 和失败不重放由 GitHub Watch 自己�
 下一个普通 Timer tick 拉取一次；普通 scoring 仅把 embedding provider 换成确定性测试边界。
 报告写入
 `docker/debug/reports/content-source-interop/gate.json`，不读取或写入正式 workspace。
-
-## Content / Wake H5 组合证据
-
-`content_wake_h5_e2e.py` 不实现插件或 runtime 行为。它只在一个显式的一次性 root 中，按顺序
-调用正式 `plugin-install-trusted-batch`、Content source interoperability Gate 和 manifest
-列出的既有 pytest fixture，并把各 owner 报告的路径、SHA-256 与状态组合为
-`reports/h5-index.json`：
-
-```bash
-python docker/debug/content_wake_h5_e2e.py \
-  --run-root /absolute/new/h5-run \
-  --protected-workspace /absolute/empty/protected-fixture \
-  --seed-protected-fixture
-```
-
-`run-root` 必须尚不存在；runner 在其中创建 `workspace/`、`plugin-home/`、`reports/` 和
-`home/`。插件 root 只取 trusted batch 回执中的 `installedPath`，revision 只取
-`content-source-interop.lock.json`。显式 `--seed-protected-fixture` 只接受空的隔离目录，并写入
-带一行数据的 `sessions.db`、旧 proactive/wake/drift DB 与历史 Markdown/JSON；不复制正式数据。
-不使用 seed 时，调用者也必须提供至少包含非空 Session、旧 proactive DB 和 archive 的 fixture，
-空 protected target 会在安装前失败。runner 复用 Wake provider 对 protected workspace 数据的快照，对账 path、inode、hash、
-size、SQLite integrity/quick_check/row counts，前后不相等时本次组合失败。owner pytest 由
-Core dev Python 运行，实际插件 service 只通过 `AKASHIC_PLUGIN_FIXTURE_PYTHON` 使用回执中的
-artifact runtime；一次性 root 内固定版本的 pytest layer 仅验证 artifact 隔离，不进入 owner
-fixture，Core site-packages 不会暴露给插件 service 解释器。
-这里的快照只用于证明受保护的 workspace 数据未改变，不代表或控制插件 runtime Root。
-真实 DeepSeek 命令只作为 `PENDING` 项进入 index；没有单独授权时 runner 不调用外部 provider。
-生成的证据留在一次性 root，不提交进 Git。
-
-## Wake v3 真 provider E2E
-
-`wake_v3_provider_e2e.py` 只把临时目录当作测试 data root，并通过正式
-`PluginManager → CompositionRoot → ConversationRuntime → execute_control_turn → AgentLoop.react`
-安装链运行 Content、Drift、Wake、普通 Content source fixture 和普通 recording Channel。
-它不调用 `init_workspace`，也不把 production workspace 复制进沙盒。
-
-```text
-fixture source ── Timer ──▶ eventmail.content_source.v1 submit
-                                  │
-                                  ▼
-                         Wake scoped Turn ──▶ AgentLoop.react
-                                  │
-                                  ▼
- recording Channel ◀── durable delivery ◀── provider response
-          │                       │
-          └── receipt ──▶ Session projection ──▶ Content settle ──▶ source ACK
-```
-
-真实 selected case 固定使用 `deepseek-v4-flash`。runner 从外置副本加载普通 `models` 和
-`openai-compatible` 插件，经 live Root 的 `models/command` RPC（实际 `RpcMethod` 与
-Models provider `Context`）写连接、模型和默认 role，再由同一 Root 的 `CHAT_MODELS`
-exact owner scope 执行；Core 不读取 provider 配置。credential 只从进程环境读取，
-不写入临时 TOML 或报告。运行前先完成确定性的 settlement crash/restart、
-ACK retry、quiet 和 empty-poll 检查，之后才允许一次真实 logical provider request：
-
-```bash
-PR_G_DEEPSEEK_API_KEY='...' \
-python docker/debug/wake_v3_provider_e2e.py \
-  --protected-workspace /absolute/formal/workspace \
-  --report /tmp/wake-v3-provider-e2e.json
-```
-
-可选自定义 provider 地址使用 `PR_G_DEEPSEEK_BASE_URL`。报告不会包含 prompt、response
-正文、secret 或 endpoint；只保留计数、状态和 identity digest。缺少 secret、provider
-非 2xx、identity 不一致或未 settled 都会返回非零。
-protected workspace 检查包括 `sessions.db` 与旧 proactive island 目标文件的 hash/size、
-SQLite integrity/row counts 和旧 island archive hash/size；整个检查只读。
-
-正式 runtime 可能在 E2E 期间自行推进旧 island。runner 因此先连续读取两份 baseline，
-随后分别报告 isolated 产品链与 formal deployment evidence：若 formal target 在窗口内变化，
-结果标为 `formal_concurrent_change`，只列 changed path/type/count，不把外部并发写误判成
-E2E 写入，也不宣称 formal unchanged。严格 digest 只在 baseline 稳定且 after 完全相等时
-设置 `deployment_gate_verified=true`。失败报告只增加固定 `failure_stage/failure_code`，仍不
-包含异常正文、prompt、response、credential 或 endpoint。即使 provider 或 selected 链失败，
-runner 也会在临时 data root 删除前读取 logical/HTTP/provider terminal/Control Turn/
-delivery/Channel/Session/Content/ACK 计数和 identity digest，再执行 formal-after 快照。
-Control Turn 只报告 status、retryable 分类和 error type digest，不保留 error message。
-非流式 provider 的 HTTP attempt 复用既有
-`nonstream.start` 与结构化 retry 记录计数，handler 不保存 warning 中的 endpoint 或正文。
-loopback 200/400/503 fixture 分别冻结 completed+settled、nonretryable+invalidated 与
-retryable+deferred 三条边界，不访问外部 provider。
-
-确定性模型 sidecar 的控制协议：
-
-- `PUT /control/script`：装载一个脚本对象或脚本数组。`mode` 支持 `complete`、
-  `stream`、`error`、`timeout`、`truncate`；可提供 `content`、`deltas`、`tool_calls`、`usage`、
-  `status` 和 `body`。
-- `PUT /control/barriers/{name}`：创建 barrier。将 `"barrier":"{name}"` 放入脚本后，
-  对应模型请求到达 provider sidecar 时会精确阻塞。
-- `GET /control/barriers/{name}/wait?timeout=30`：服务端长等待请求到达，不靠 controller
-  固定 sleep 猜竞态。
-- `POST /control/barriers/{name}/release`：释放已到达的模型请求。
-- `GET /control/requests`：读取完整 payload、关联 header、脚本和请求状态证据。
-
-示例脚本：
-
-```json
-{
-  "mode": "stream",
-  "barrier": "turn-entered-provider",
-  "deltas": ["hello ", "world"],
-  "usage": {"prompt_tokens": 7, "completion_tokens": 2, "total_tokens": 9}
-}
-```
-
-这个目录用于临时调试真实入口，例如 Telegram 图片、多模态链路、独立 bot 配置。调试容器基于 Arch Linux，沙盒不会挂载宿主机 `HOME`，也不会挂载正式 `~/.akashic/workspace`。
-
-```
-host
-  |
-  +-- akashic-agent
-      |
-      +-- docker/debug
-          |
-          +-- Dockerfile
-          +-- docker-compose.yml
-          +-- entrypoint.sh
-          +-- profiles
-              |
-              +-- default
-                  |
-                  +-- config.toml
-                  +-- workspace
-                  +-- home
-                  +-- akashic.sock
-
-container
-  |
-  +-- /app                 -> 当前代码
-  +-- /sandbox/config.toml -> 调试 bot 配置
-  +-- /sandbox/workspace   -> 调试 workspace
-  +-- /sandbox/home        -> 容器 HOME
-```
 
 ## 安全边界
 

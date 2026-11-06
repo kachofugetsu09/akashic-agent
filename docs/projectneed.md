@@ -779,7 +779,7 @@ Scope 唯一持有资源关闭责任，provider 实现实际关闭。消费者�
 
 ### PLG-009 Skill 和 MCP 通过插件安装发布
 
-普通 Skill 按 workspace、用户目录、插件来源的顺序选择，使用时热读取；来源分层不授予额外权限。Drift skill 和 MCP server 由已安装插件代码通过对应 provider 注册。插件底座不解释 `akashic.plugin.toml`，不保留静态资产导出与 `apply` 并行的注册路径。安装只准备代码与运行环境；资源请求只定义一次，由拥有该资源的 provider 验证和执行。Core 固定制品与组合，不解释 Skill 格式、MCP 命令或 Workload 端点关联。Skill 不复制资源目录或永久保存历史文件树；相对资源使用实际目录。历史 skill 目录、归档、软链接和 ownership journal 保留，不自动减少；未完成外部效果仍由原 owner 负责。
+普通 Skill 按 workspace、用户目录、插件来源的顺序选择，使用时热读取；来源分层不授予额外权限。MCP server 由已安装插件代码通过对应 provider 注册。插件底座不解释 `akashic.plugin.toml`，不保留静态资产导出与 `apply` 并行的注册路径。安装只准备代码与运行环境；资源请求只定义一次，由拥有该资源的 provider 验证和执行。Core 固定制品与组合，不解释 Skill 格式、MCP 命令或 Workload 端点关联。Skill 不复制资源目录或永久保存历史文件树；相对资源使用实际目录。历史 skill 目录、归档、软链接和 ownership journal 保留，不自动减少；未完成外部效果仍由原 owner 负责。
 
 ### PLG-010 卸载插件默认保留 plugin-data
 
@@ -982,9 +982,9 @@ add、cancel 和 reschedule 先构造 candidate，持久化成功后才替换内
 
 sensor、session、context 和 store 故障不得伪装成“无事件”。decision、dedupe、presence 和成功状态只在真实送达后提交；合法 skip 带 reason，内部错误可观察。
 
-### PRO-002 主动、Wake 和 Drift 状态必须连续恢复
+### PRO-002 主动与 Wake 状态必须连续恢复
 
-`proactive.db`、`wake_proactive.db` 和 `drift/drift.db` 中影响 delivery dedupe、cooldown、pending ack、reservoir consumption、hazard timer、cursor、journal 和下一轮选择的内容属于运行连续性。启用对应功能时，备份和恢复必须保留这些状态；日志表与连续性表可以制定不同 retention，但不得把整库按诊断日志清空。
+`proactive.db` 与 `wake_proactive.db` 中影响 delivery dedupe、cooldown、pending ack、reservoir consumption、hazard timer、cursor、journal 和下一轮选择的内容属于运行连续性。启用对应功能时，备份和恢复必须保留这些状态；日志表与连续性表可以制定不同 retention，但不得把整库按诊断日志清空。
 
 ### PRO-003 Wake 用主动历史保持连续性而不预设重复惩罚
 

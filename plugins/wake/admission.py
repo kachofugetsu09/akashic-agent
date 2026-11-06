@@ -8,9 +8,9 @@ from typing import Literal
 
 from core.common.file_io import run_file_io
 
-from .api import ContentWakeServices, DriftWakeServices
+from .api import ContentWakeServices
 from ._boundary import SemanticInterest
-from .content import (_content_text, _datetime, _integer, _mapping, _pool_detail,
+from .content import (_content_text, _integer, _mapping, _pool_detail,
                       _preprocess_interest, _semantic_score, _sequence, _string)
 from .pool import build_initial_score
 from .state import ContentScore, WakeState
@@ -33,18 +33,16 @@ class Pool:
 
 @dataclass(frozen=True, slots=True)
 class Admission:
-    owner: Literal["alert", "content", "drift"] | None
+    owner: Literal["alert", "content"] | None
     detail: str
     pool: Pool
-    proposals: tuple[Mapping[str, object], ...] = ()
 
 
 class Duties:
     """维护 Content 原有评分与到期规则，只提出一份本轮固定的业务选择。"""
 
-    def __init__(self, content: ContentWakeServices, drift: DriftWakeServices,
-                 state: WakeState, interest: SemanticInterest):
-        self.content, self.drift, self.state, self.interest = content, drift, state, interest
+    def __init__(self, content: ContentWakeServices, state: WakeState, interest: SemanticInterest):
+        self.content, self.state, self.interest = content, state, interest
         self._maintenance = asyncio.Lock()
 
     async def deadline(self, now: datetime) -> datetime | None:
@@ -52,9 +50,6 @@ class Duties:
         items = _sequence(content.get("items"), "Content items")
         unseen = await run_file_io(lambda: self.state.unseen_deadline(items))
         values = [unseen, await self.content.alert_deadline(now)]
-        drift = (await self.drift.snapshot(now)).get("next_due")
-        if drift is not None:
-            values.append(_datetime(drift))
         return min((value for value in values if value is not None), default=None)
 
     async def check(self, now: datetime) -> Admission:
@@ -79,9 +74,6 @@ class Duties:
             detail = _pool_detail(pool.detail, count, result)
             if result.should_wake:
                 return Admission("content", detail, pool)
-        proposals = _sequence((await self.drift.snapshot(now)).get("proposals"), "Drift proposals")
-        if any(item.get("due") is True for item in proposals):
-            return Admission("drift", detail + "；Drift 已到期", pool, tuple(proposals))
         return Admission(None, detail + "；没有到期职责或新 Content 不足", pool)
 
     async def maintain(self, now: datetime) -> Pool:

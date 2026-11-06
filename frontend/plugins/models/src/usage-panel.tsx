@@ -25,7 +25,7 @@ type Tab = "overview" | "sessions" | "context";
 type Query = PluginUiSidebarPanelContext["query"];
 
 const HOT = 0.8;
-const SOURCE_LABEL: Record<string, string> = { conversation: "对话", programmatic: "程序调用", wake: "主动消息", drift: "漫游", subagent: "子智能体" };
+const SOURCE_LABEL: Record<string, string> = { conversation: "对话", programmatic: "程序调用", wake: "主动消息", subagent: "子智能体" };
 const SESSION_ROWS = 100;
 const RANGES = [[1, "今天"], [7, "7 天"], [30, "30 天"]] as const;
 const ICON = '<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"><path d="M2.5 13.5h11M4.5 11V7.5M8 11V3.5M11.5 11V6"/></svg>';

@@ -92,7 +92,6 @@ def render(part: ContentPart, *, fallback: Callable[[ContentPart], tuple[Mapping
 # 完整做法写在 proactive-wake 技能里；提示只保留必须的工具顺序，并让中心循环按普通技能读取它。
 _ORDER: dict[Stage, str] = {
     "content": "顺序：screen_content 初筛 1..8 条 → 用调查工具核实 → 只调用一次 share_content（items 为初筛选中的 1..5 个 candidate_id）或 skip_content",
-    "drift": "只调用一次 share_content（items 填空数组）或 skip_content；普通回答不会发送",
     "alert": "只调用一次 share_alert，写简洁可行动的用户消息",
 }
 HINTS: dict[Stage, str] = {

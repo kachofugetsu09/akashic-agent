@@ -43,6 +43,7 @@ _RUN_TABLE_SQL = """
         completed_at TEXT
     )
 """
+# 已落盘的表结构逐字校验；owner 约束里的 'drift' 是已移除漫游职责的历史值，新代码不再写入。
 _ATTEMPT_TABLE_SQL = """
     CREATE TABLE wake_attempts(
         attempt_id TEXT PRIMARY KEY,
@@ -412,7 +413,7 @@ class WakeState:
         """Append one Dashboard run row after the screening result exists."""
 
         identity = _identity_part(run_id, "run_id")
-        if owner not in {"alert", "content", "drift"}:
+        if owner not in {"alert", "content"}:
             raise ValueError("Wake run owner 无效")
         if candidates_seen < 0 or candidates_seen < len(screening):
             raise ValueError("Wake run candidate counts 无效")
@@ -525,7 +526,7 @@ class WakeState:
             "failed",
         }:
             raise ValueError("Wake attempt outcome 无效")
-        if owner is not None and owner not in {"alert", "content", "drift"}:
+        if owner is not None and owner not in {"alert", "content"}:
             raise ValueError("Wake attempt owner 无效")
         instant = _aware(completed_at).isoformat()
         self.initialize()

@@ -75,7 +75,6 @@ ToolGrant 和 TurnExecutionScope 也已退役；工具调用由 `CallSource`、`
 | 回复 / 执行 | `reply.execute.v4`、`reply.program.v3`、`react.ordered-start.v2`、`tools.program.v2` |
 | 上下文材料 | `context.materials.v4`；注册必填 `kind`，仅按 `exclude_kinds` 选择 |
 | Delivery | `delivery.guarded-start.v1`；持久准备可等待，`start_guard` 保护首次持久开始 |
-| Drift | `drift.proposals.v2`、`drift.wake.v2`、`drift.delivery.v2`，全部可等待 |
 
 ```text
 ┌────────────────────┐    ┌────────────────────┐    ┌──────────────────┐

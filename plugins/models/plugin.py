@@ -11,7 +11,7 @@ from plugins.models.contract import (
     MODEL_CATALOG,
     MODEL_DRIVERS,
 )
-from plugins.models.contract import MODEL_CACHE_USAGE, MODEL_CALL_STATS
+from plugins.models.contract import MODEL_CACHE_USAGE, MODEL_CALL_STATS, USAGE_SOURCES
 from plugins.gateway.contract import RpcMethod
 from plugins.ui.contract import UI, UI_SLOTS, PluginUiDefinition, hidden_part, part_display_key
 from plugins.conversation.contract import input_part_key
@@ -81,6 +81,7 @@ async def apply(ctx: Context) -> None:
     _ = await ctx.provide(MODEL_CALL_STATS, store.read_call_stats)
     usage = CacheUsage(ctx, store, ctx.data_root / "cache-usage.sqlite3")
     _ = await ctx.provide(MODEL_CACHE_USAGE, usage)
+    _ = await ctx.provide(USAGE_SOURCES, usage)
     _ = await ctx.provide(MODEL_DISPLAY, display_facts)
     # 自己写入的内部材料不进聊天正文；宿主不维护按插件列举的隐藏名单。
     for kind in ("model.selection", "tool.selection"):

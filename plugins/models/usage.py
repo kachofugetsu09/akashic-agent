@@ -15,7 +15,7 @@ from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any, Literal, cast
 
-from agent.plugin_composition import Context
+from agent.plugin_composition import Context, Effect
 from core.common.file_io import run_file_io
 from plugins.ledger.contract import MESSAGE_CATALOG, ContentPart, Input, Message, MessageCatalog, Output
 from plugins.turn_projection.contract import TURN_PROJECTION, Turn, TurnProjection
@@ -23,7 +23,6 @@ from plugins.turn_projection.contract import TURN_PROJECTION, Turn, TurnProjecti
 from .composition import Parts, bounded, totals
 from .store import CallUsage, ModelsStore
 
-_PROACTIVE_SOURCES = frozenset({"wake", "drift"})
 # 概览构成只读最近这么多次调用：解析量有上限，30 天按目前的量约是最近一周。
 _SPREAD_CALLS = 3000
 _RECENT_TURNS = 50
@@ -36,8 +35,9 @@ INSIGHT_SESSIONS = 100
 _TITLE_CHARS = 80
 # input 按范围内输入排行；context 按最近一轮上下文占比排行，未知窗口排最后。
 InsightOrder = Literal["input", "context", "recent"]
-# 检查点里存的是按当前计数规则算好的结果：改了计数规则（什么算计入、主动来源集合、预览、分桶）必须加一，旧结果随之丢弃重算。
-_CHECKPOINT_SCHEMA = 2
+# 检查点里存的是按当前计数规则算好的结果：改了计数规则（什么算计入、预览、分桶）必须加一，旧结果随之丢弃重算。
+# 主动来源集合由插件声明，随检查点一起保存；声明变化时同样丢弃重算。
+_CHECKPOINT_SCHEMA = 3
 
 logger = logging.getLogger(__name__)
 
@@ -128,8 +128,8 @@ class _Checkpoint:
     def __init__(self, path: Path) -> None:
         self._path = path
 
-    # 版本不符或文件损坏时丢弃整份检查点，由下一次扫描重建。
-    def load(self) -> tuple[dict[str, int], dict[tuple[str, str], _SourceState]]:
+    # 版本或主动来源声明不符、文件损坏时丢弃整份检查点，由下一次扫描重建。
+    def load(self, proactive: frozenset[str]) -> tuple[dict[str, int], dict[tuple[str, str], _SourceState]]:
         if not self._path.exists():
             return {}, {}
         try:
@@ -137,6 +137,9 @@ class _Checkpoint:
                 version = connection.execute("PRAGMA user_version").fetchone()[0]
                 if version != _CHECKPOINT_SCHEMA:
                     raise sqlite3.DatabaseError(f"checkpoint schema {version}")
+                saved = connection.execute("SELECT value FROM meta WHERE key = 'proactive'").fetchone()
+                if saved is None or frozenset(json.loads(saved[0])) != proactive:
+                    raise ValueError("主动来源声明已变化")
                 heads = dict(connection.execute("SELECT session_id, head FROM heads"))
                 sources: dict[tuple[str, str], _SourceState] = {}
                 for session_id, source, after, totals, recent, buckets in connection.execute(
@@ -161,7 +164,7 @@ class _Checkpoint:
     # 1. 被移除的 Session 整体删除；2. 变化的来源整行替换，重置过的先删旧输出，输出只追加未写入的；
     # 3. head 最后写，保证不越过已写入的累计量。
     def save(self, heads: Mapping[str, int], sources: Mapping[tuple[str, str], _SourceState],
-             removed: Iterable[str]) -> None:
+             removed: Iterable[str], proactive: frozenset[str]) -> None:
         self._path.parent.mkdir(parents=True, exist_ok=True)
         with closing(sqlite3.connect(self._path)) as connection, connection:
             _ = connection.executescript(f"""
@@ -171,8 +174,10 @@ class _Checkpoint:
                     PRIMARY KEY (session_id, source));
                 CREATE TABLE IF NOT EXISTS outputs (session_id TEXT, source TEXT, message_id TEXT,
                     tokens INTEGER NOT NULL, PRIMARY KEY (session_id, message_id));
+                CREATE TABLE IF NOT EXISTS meta (key TEXT PRIMARY KEY, value TEXT NOT NULL);
                 PRAGMA user_version = {_CHECKPOINT_SCHEMA};
             """)
+            _ = connection.execute("INSERT OR REPLACE INTO meta VALUES ('proactive', ?)", (json.dumps(sorted(proactive)),))
             for session_id in removed:
                 for table in ("heads", "sources", "outputs"):
                     _ = connection.execute(f"DELETE FROM {table} WHERE session_id = ?", (session_id,))
@@ -205,6 +210,37 @@ class CacheUsage:
         self._dirty_heads: set[str] = set()
         self._dirty_sources: set[tuple[str, str]] = set()
         self._removed: set[str] = set()
+        self._declared: dict[tuple[str, str], str] = {}
+        self._proactive: frozenset[str] = frozenset()
+
+    async def declare_proactive(self, ctx: Context, source: str) -> Effect:
+        if ctx.root_instance_token is not self._ctx.root_instance_token:
+            raise ValueError("用量口径不能跨 Root 声明")
+        if not isinstance(source, str) or not source:
+            raise ValueError("主动来源需要非空 lane 名")
+        key = (ctx.runtime.plugin_id, source)
+
+        def setup():
+            if key in self._declared:
+                raise ValueError(f"主动来源重复声明: {key}")
+            self._declared[key] = source
+            self._reload()
+            def release() -> None:
+                _ = self._declared.pop(key, None)
+                self._reload()
+            return release
+
+        return await ctx.effect(setup, label=f"usage-proactive:{source}")
+
+    # 声明变化后丢弃内存结果；下次读取时检查点按新集合校验，不符即从头重算。
+    def _reload(self) -> None:
+        with self._lock:
+            self._proactive = frozenset(self._declared.values())
+            self._restored = False
+            self._heads, self._sources = {}, {}
+            self._dirty_heads.clear()
+            self._dirty_sources.clear()
+            self._removed.clear()
 
     async def message_output_tokens(self, session_id: str, message_id: str) -> int | None:
         with self._ctx.borrow(MESSAGE_CATALOG) as catalog, self._ctx.borrow(TURN_PROJECTION) as projection:
@@ -421,7 +457,7 @@ class CacheUsage:
         if reader.deleted:
             return None
         message = reader.get(message_id)
-        if message is None or message.source in _PROACTIVE_SOURCES:
+        if message is None or message.source in self._proactive:
             return None
         with self._lock:
             self._restore()
@@ -470,7 +506,7 @@ class CacheUsage:
             call_ids = [facts[identity].call_id for turn in turns for identity in turn.message_ids]
             usages = self._store.read_call_usages([identity for identity in call_ids if identity is not None])
             for turn in turns:
-                _record(state, session_id, source, turn, facts, usages)
+                _record(state, session_id, source in self._proactive, turn, facts, usages)
             if turns or state.reset:
                 self._dirty_sources.add((session_id, source))
             if stopped:
@@ -493,7 +529,7 @@ class CacheUsage:
         if self._restored:
             return
         self._restored = True
-        self._heads, self._sources = self._checkpoint.load()
+        self._heads, self._sources = self._checkpoint.load(self._proactive)
 
     # 写入本轮变化；失败只记日志，内存结果仍然有效，下次再写。
     def _flush(self) -> None:
@@ -503,6 +539,7 @@ class CacheUsage:
         try:
             self._checkpoint.save(
                 {key: self._heads[key] for key in self._dirty_heads if key in self._heads}, sources, self._removed,
+                self._proactive,
             )
         except (sqlite3.Error, OSError):
             logger.exception("cache usage checkpoint write failed")
@@ -519,7 +556,7 @@ class CacheUsage:
 # 2. 最终回答的输出 token 供尾注查询；命中与输入只累计被追踪的 Turn。
 # 3. 小时桶与模型桶跟累计量同一口径；上下文占用取最后一次调用的输入。
 def _record(
-    state: _SourceState, session_id: str, source: str, turn: Turn,
+    state: _SourceState, session_id: str, proactive: bool, turn: Turn,
     facts: Mapping[str, _Fact], usages: Mapping[str, CallUsage],
 ) -> None:
     state.after_seq = turn.through_seq
@@ -531,7 +568,7 @@ def _record(
     if not calls or len(exact) != len(calls):
         return
     prompt, hit, output = (_sum(exact, name) for name in ("input_tokens", "cached_input_tokens", "output_tokens"))
-    if output is not None and outputs and source not in _PROACTIVE_SOURCES:
+    if output is not None and outputs and not proactive:
         state.outputs[outputs[-1][0]] = state.unsaved[outputs[-1][0]] = output
     if prompt is None:
         return
@@ -542,7 +579,7 @@ def _record(
     summaries = [fact.summary for _, fact in members if fact.summary]
     compacted = bool(summaries) and summaries[-1] != state.summary
     usage = TurnUsage(
-        session_id, source in _PROACTIVE_SOURCES, final.recorded_at, preview, prompt, hit or 0, output or 0,
+        session_id, proactive, final.recorded_at, preview, prompt, hit or 0, output or 0,
         len(calls), context if type(context) is int else 0, last.context_window, last.model, compacted,
         next((fact.call_id for _, fact in reversed(outputs) if fact.call_id), ""),
     )

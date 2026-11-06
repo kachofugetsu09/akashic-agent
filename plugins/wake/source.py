@@ -38,7 +38,7 @@ from plugins.delivery.contract import (
     StartGuard,
 )
 
-from .api import DRIFT_DELIVERY, DRIFT_WAKE, EVENTMAIL_DELIVERY, EVENTMAIL_WAKE
+from .api import EVENTMAIL_DELIVERY, EVENTMAIL_WAKE
 from .content import (
     _candidate_id,
     _content_candidates,
@@ -59,7 +59,7 @@ from .request import (
     read_request,
     retryable,
 )
-from .selection import propose_content, propose_drift
+from .selection import propose_content
 from .state import WakeState
 from .tools import Alert, Screen, Share, Skip
 
@@ -96,7 +96,7 @@ class Source:
                      if key.startswith("flow:") and not Pointer.model_validate(dict(row.value)).settled)
 
     async def accept(self, request: Request) -> None:
-        """原选择与恢复指针同事务提交，先于任何 EventMail/Drift 领取。"""
+        """原选择与恢复指针同事务提交，先于任何 EventMail 领取。"""
         ctx = self.ctx
         _ = await ctx.require(SESSION_ADMISSION).ensure_async(ctx, request.session_id,
             SessionAttributes(visibility="internal", learning="excluded"))
@@ -131,8 +131,6 @@ class Source:
         try:
             if request.owner == "content":
                 return await self._content(task, request, reader)
-            if request.owner == "drift":
-                return await self._drift(task, request, reader)
             return await self._alert(task, request, reader)
         except Exception:
             # 原发送已失败便关闭来源领取；程序异常仍由 Task 报告。
@@ -153,17 +151,11 @@ class Source:
             if not changed and await domain.alert_status(ref["source_id"], ref["event_id"], mail_id=ref["mail_id"]) == "selected":
                 raise RuntimeError("Alert 发送失败后没有关闭原领取")
         else:
-            selected = (await self.ctx.require(EVENTMAIL_DELIVERY).lookup(request.accepted)
-                        if request.owner == "content"
-                        else await self.ctx.require(DRIFT_DELIVERY).lookup(request.accepted))
+            selected = await self.ctx.require(EVENTMAIL_DELIVERY).lookup(request.accepted)
             if selected is None:
                 raise ValueError("Wake 发送失败缺少原领域领取")
             if selected.get("status") == "ready_for_delivery":
-                token = _string(selected.get("selection_token"), "selection_token")
-                if request.owner == "content":
-                    await self._change_content(token, "failed")
-                elif (await self.ctx.require(DRIFT_WAKE).transition(token, "failed")).get("changed") is not True:
-                    raise RuntimeError("Drift 发送失败后没有关闭原领取")
+                await self._change_content(_string(selected.get("selection_token"), "selection_token"), "failed")
         await self._settled(request, reader)
 
     async def _phase(self, task: Task, request: Request, reader: MessageReader,
@@ -295,64 +287,10 @@ class Source:
         if result.get("changed") is not True:
             raise RuntimeError("原 Content 领取没有提交预期变化")
 
-    async def _drift(self, task: Task, request: Request, reader: MessageReader) -> str:
-        domain = self.ctx.require(DRIFT_WAKE)
-        proposal = propose_drift(request.proposals)
-        if proposal is None:
-            raise ValueError("Wake 原 Drift 快照没有到期候选")
-        screening = ({"payload": dict(proposal.payload)},)
-        await run_file_io(lambda: self.state.record_screen(
-            run_id=request.flow_id, owner="drift", candidates_seen=1,
-            screening=screening, started_at=request.now))
-        receipt = await self.ctx.require(DRIFT_DELIVERY).lookup(request.accepted)
-        if receipt is not None and receipt.get("status") != "selected":
-            return await self._finish_domain(task, request, reader, "drift")
-        selected = await domain.selection(request.accepted)
-        if selected is None:
-            claim = await domain.select(proposal.ref, request.accepted, request.now)
-            if claim.get("selected") is not True:
-                # 原 state_version 已消耗时不能再领取；已有决定保留其真实原因。
-                previous = await run_file_io(lambda: self.state.get_run(request.flow_id))
-                assert previous is not None
-                if previous["decision"] is None:
-                    await self._record(request, "defer", "原 Drift 职责领取被拒绝")
-                await self._settled(request, reader)
-                return "admission_rejected"
-            selected = await domain.selection(request.accepted)
-            if selected is None:
-                raise ValueError("Drift 领取成功却缺少领域回执")
-        if proposal.decision == "decline":
-            action = "defer" if selected.get("next_due") is not None else "await_change"
-            await self._record(request, "skip", "来源明确拒绝本轮 Drift")
-        else:
-            _ = await self._phase(
-                task, request, reader, "drift", {"duty": dict(proposal.payload)}
-            )
-            value = decision(reader, request, "drift", ("share_content", "skip_content"))
-            if isinstance(value, Share) and not value.items:
-                action = "ready_for_delivery"
-                await self._record(request, "share", value.message)
-            elif isinstance(value, Skip):
-                action = "await_change"
-                await self._record(request, "skip", value.reason)
-            else:
-                action = ("invalidated" if retryable(finished(reader, request, "drift")) is False else
-                          "defer" if selected.get("next_due") is not None else "await_change")
-                await self._record(request, "defer", "Drift 没有提交唯一有效决定")
-        result = await domain.transition(_string(selected.get("selection_token"), "Drift token"), action)
-        if result.get("changed") is not True:
-            raise RuntimeError("原 Drift 领取没有提交预期变化")
-        if action != "ready_for_delivery":
-            await self._settled(request, reader)
-            return "deferred" if action == "defer" else "model_skip"
-        return await self._finish_domain(task, request, reader, "drift")
-
     async def _finish_domain(
         self, task: Task, request: Request, reader: MessageReader, stage: Stage,
     ) -> str:
-        selected = (await self.ctx.require(EVENTMAIL_DELIVERY).lookup(request.accepted)
-                    if request.owner == "content"
-                    else await self.ctx.require(DRIFT_DELIVERY).lookup(request.accepted))
+        selected = await self.ctx.require(EVENTMAIL_DELIVERY).lookup(request.accepted)
         if selected is None:
             raise ValueError("Wake 完成缺少原领域领取")
         if selected.get("status") not in {"ready_for_delivery", "delivered", "settled"}:
@@ -361,18 +299,14 @@ class Source:
         value = decision(reader, request, stage, ("share_content",))
         if not isinstance(value, Share):
             raise ValueError("待送达领域状态缺少实际 share ToolResult")
-        text = value.message
-        if request.owner == "content":
-            payloads = {_candidate_id(_mapping(item["ref"], "Content ref")): _mapping(item["payload"], "Content payload")
-                        for item in request.items}
-            text = _message_with_source_links(text, {"source_refs": [payloads[name] for name in value.items]})
+        payloads = {_candidate_id(_mapping(item["ref"], "Content ref")): _mapping(item["payload"], "Content payload")
+                    for item in request.items}
+        text = _message_with_source_links(value.message, {"source_refs": [payloads[name] for name in value.items]})
         if not await self._notify(task, request, text):
             await self._fail_notification(request, reader)
             return "failed"
         token = _string(selected.get("selection_token"), "selection_token")
-        result = (await self.ctx.require(EVENTMAIL_DELIVERY).settle(token, request.notification_id)
-                  if request.owner == "content"
-                  else await self.ctx.require(DRIFT_DELIVERY).settle(token, request.notification_id))
+        result = await self.ctx.require(EVENTMAIL_DELIVERY).settle(token, request.notification_id)
         if result.get("settled") is not True:
             raise RuntimeError("Wake 真实送达后的领域确认未提交")
         await self._settled(request, reader)

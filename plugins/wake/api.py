@@ -7,7 +7,6 @@ from pydantic import BaseModel, ConfigDict, field_validator
 from agent.plugin_composition import EmitEventKey
 from plugins.models.contract import ModelChoice, ModelUse
 from plugins.eventmail.contract import EVENTMAIL_DELIVERY_V2 as EVENTMAIL_DELIVERY, EVENTMAIL_WAKE_V2 as EVENTMAIL_WAKE, ContentWakeServicesV2 as ContentWakeServices, EventMailDeliveryServicesV2 as DeliveryServices
-from plugins.drift.contract import DRIFT_DELIVERY_V2 as DRIFT_DELIVERY, DRIFT_WAKE_V2 as DRIFT_WAKE, DriftWakeServicesV2 as DriftWakeServices
 
 
 class DeliveryTarget(BaseModel):

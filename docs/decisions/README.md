@@ -6,6 +6,7 @@
 
 | ID | 状态 | 主题 | 关联条款 |
 |---|---|---|---|
+| [0146](0146-drift-is-retired.md) | accepted / implemented for review | 移除漫游（Drift）；主动消息口径由来源插件自己声明 | PRO-002、PLG-006、TST-001 |
 | [0145](0145-message-provenance-is-decided-once.md) | accepted / implemented for review | 消息出处只在写入器绑定时判定一次，读取方共用一处解释；自动来源共用中心循环 | RUN-001～RUN-003、PLG-003、MEM-009、TST-001 |
 | [0144](0144-paper-uses-the-corrected-palette.md) | accepted | 纸感使用校正后的配色，合并原纸感与校正版选项 | WEBUI-001～WEBUI-007 |
 | [0143](0143-radius-joins-the-brand-contract.md) | accepted / implemented for review | 圆角进入品牌合同：五级刻度与同心规则 | WEBUI-007 |

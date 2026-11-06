@@ -9,7 +9,6 @@ from agent.plugin_composition import CompositionRoot
 from plugins.eventmail.plugin import _StoreIO, _WakeServices
 from plugins.eventmail.store import EventMailStore
 from plugins.wake.admission import Duties
-from plugins.wake.api import DriftWakeServices
 from plugins.wake._boundary import SemanticInterest
 from plugins.wake.state import WakeState
 
@@ -30,11 +29,7 @@ async def test_due_alert_bypasses_running_content_score(tmp_path):
             await release.wait()
             return tuple(0.5 for _ in texts)
 
-    class Drift:
-        async def snapshot(self, now):
-            return {"proposals": ()}
-
-    duties = Duties(_WakeServices(mail, _StoreIO()), cast(DriftWakeServices, Drift()), state, cast(SemanticInterest, Interest()))
+    duties = Duties(_WakeServices(mail, _StoreIO()), state, cast(SemanticInterest, Interest()))
 
     async def maintain():
         async with root.context.runtime_scope():
