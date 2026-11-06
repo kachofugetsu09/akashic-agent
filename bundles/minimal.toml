@@ -59,6 +59,9 @@ disabled = true
 
 [rows."projects"]
 plugin = "projects@release"
+
+[rows."main_session"]
+plugin = "main_session@release"
 disabled = true
 
 [rows."models"]
