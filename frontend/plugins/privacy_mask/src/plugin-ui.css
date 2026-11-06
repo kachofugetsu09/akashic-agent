@@ -152,9 +152,13 @@
 html[data-privacy-titles="true"] :is(
   .conversation-session__title,
   .navigation-group__name,
-  .group-session,
+  .group-session__title,
+  .group-session:not(.group-session--more):not(:has(.group-session__title)),
+  .conversation-heading h1,
   .conversation-heading__title-text,
   .header-meta__project,
+  .header-meta-panel__scope b,
+  .composer-reference__title,
   [data-privacy-redact]
 ) {
   position: relative;
@@ -166,9 +170,13 @@ html[data-privacy-titles="true"] :is(
 html[data-privacy-titles="true"] :is(
   .conversation-session__title,
   .navigation-group__name,
-  .group-session,
+  .group-session__title,
+  .group-session:not(.group-session--more):not(:has(.group-session__title)),
+  .conversation-heading h1,
   .conversation-heading__title-text,
   .header-meta__project,
+  .header-meta-panel__scope b,
+  .composer-reference__title,
   [data-privacy-redact]
 ) * {
   color: transparent !important;
@@ -179,9 +187,13 @@ html[data-privacy-titles="true"] :is(
 html[data-privacy-titles="true"] :is(
   .conversation-session__title,
   .navigation-group__name,
-  .group-session,
+  .group-session__title,
+  .group-session:not(.group-session--more):not(:has(.group-session__title)),
+  .conversation-heading h1,
   .conversation-heading__title-text,
   .header-meta__project,
+  .header-meta-panel__scope b,
+  .composer-reference__title,
   [data-privacy-redact]
 )::after {
   content: "";
@@ -197,30 +209,41 @@ html[data-privacy-titles="true"] :is(
   pointer-events: none;
 }
 
-html[data-privacy-titles="true"] .header-meta__project::after {
+html[data-privacy-titles="true"] :is(.header-meta__project, .header-meta-panel__scope b, .composer-reference__title)::after {
   width: 100%;
   max-width: 100%;
 }
 
-html[data-privacy-titles="true"] .group-session::after {
+html[data-privacy-titles="true"] .group-session:not(.group-session--more):not(:has(.group-session__title))::after {
   inset-inline-start: 10px;
   max-width: calc(100% - 20px);
 }
 
-html[data-privacy-titles="true"] .conversation-heading__title-text::after {
+html[data-privacy-titles="true"] :is(.conversation-heading h1, .conversation-heading__title-text)::after {
   width: 8.5rem;
   max-width: 75%;
 }
 
-html[data-privacy-titles="true"] :is(.conversation-session-item, .navigation-group, .navigation-group__sessions > li):nth-child(4n + 1) :is(.conversation-session__title, .navigation-group__name, .group-session)::after {
+html[data-privacy-titles="true"] .conversation-heading-input {
+  filter: blur(5px) !important;
+  user-select: none !important;
+}
+
+html[data-privacy-titles="true"] .navigation-group:nth-child(4n + 1) > .navigation-group__row .navigation-group__name::after,
+html[data-privacy-titles="true"] :is(.conversation-session-item, .conversation-session-row, .navigation-group__sessions > .group-session):nth-child(4n + 1) :is(.conversation-session__title, .group-session__title)::after,
+html[data-privacy-titles="true"] .navigation-group__sessions > .group-session:not(:has(.group-session__title)):nth-child(4n + 1)::after {
   width: 48%;
 }
 
-html[data-privacy-titles="true"] :is(.conversation-session-item, .navigation-group, .navigation-group__sessions > li):nth-child(4n + 2) :is(.conversation-session__title, .navigation-group__name, .group-session)::after {
+html[data-privacy-titles="true"] .navigation-group:nth-child(4n + 2) > .navigation-group__row .navigation-group__name::after,
+html[data-privacy-titles="true"] :is(.conversation-session-item, .conversation-session-row, .navigation-group__sessions > .group-session):nth-child(4n + 2) :is(.conversation-session__title, .group-session__title)::after,
+html[data-privacy-titles="true"] .navigation-group__sessions > .group-session:not(:has(.group-session__title)):nth-child(4n + 2)::after {
   width: 74%;
 }
 
-html[data-privacy-titles="true"] :is(.conversation-session-item, .navigation-group, .navigation-group__sessions > li):nth-child(4n + 3) :is(.conversation-session__title, .navigation-group__name, .group-session)::after {
+html[data-privacy-titles="true"] .navigation-group:nth-child(4n + 3) > .navigation-group__row .navigation-group__name::after,
+html[data-privacy-titles="true"] :is(.conversation-session-item, .conversation-session-row, .navigation-group__sessions > .group-session):nth-child(4n + 3) :is(.conversation-session__title, .group-session__title)::after,
+html[data-privacy-titles="true"] .navigation-group__sessions > .group-session:not(:has(.group-session__title)):nth-child(4n + 3)::after {
   width: 56%;
 }
 
@@ -231,11 +254,17 @@ html[data-privacy-content="true"] :is(
   .message-bubble > *,
   .automatic-input > *,
   .user-row > :not(.user-bubble),
+  .timeline-message.timeline-input > :not(.user-bubble),
   .timeline-failure,
   .timeline-control-note,
   .composer-wrap textarea,
   .composer-wrap [contenteditable="true"],
+  .composer-reply > div,
+  .composer-tray [data-attachment-id],
+  .steer-card p,
   .header-meta__path > button,
+  .header-meta-node__label,
+  .header-meta-node__value,
   .header-meta-node__detail,
   .plugin-ui-slot[data-slot="header.end"] .header-marker:not([data-privacy-ui]) .header-marker__trigger > span,
   .plugin-ui-slot[data-slot="header.end"] .header-marker:not([data-privacy-ui]) .header-marker__panel > code,

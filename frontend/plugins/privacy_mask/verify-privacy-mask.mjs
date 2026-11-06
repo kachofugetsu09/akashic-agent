@@ -1,9 +1,9 @@
 /**
  * 截屏隐私打码插件（privacy_mask@release）真实浏览器端到端验收：
- * 1. 正交挂载与一键开关：同时验证 shell.rail-actions.v1 底栏按钮、header.end 顶栏标记与 Alt+M 全局快捷键；
- * 2. 维度一（导航与会话标题骨架条）：侧栏会话标题、项目分组名、项目子会话、顶栏标题与项目副标题化为 48%/74%/56%/62% 错落圆角骨架条，行几何尺寸零偏移，title/data-tip 悬停提示同步剥离并可无损恢复；
- * 3. 维度二（全部内容模糊打码）：用户消息气泡内容、助手回复正文、代码块、工具执行步骤与结果、输入框草稿及工作目录路径整体施加 filter: blur(6px) 高斯模糊（保留外层气泡与卡片轮廓），支持与「导航与会话标题」正交独立开关；
- * 4. 生命周期隔离：插件卸载（release）后彻底清除全部 data-privacy-* 属性与全局单例，零残留。
+ * 1. 正交挂载与快捷键：同时验证 shell.rail-actions.v1 底栏按钮、header.end 顶栏标记、非输入区 Alt+M 与全局 Ctrl/⌘+Shift+M（输入区内 Alt+M 不误吞字符输入）；
+ * 2. 维度一（导航与会话标题骨架条）：侧栏会话标题、项目分组名、项目子会话（各自独立 48%/74%/56%/62% 错落宽度）、真实顶栏 <h1 title><MarqueeText>、项目副标题与输入框引用会话名化为圆角骨架条；动态更新的 title/data-tip 与移出文档的节点均可无损恢复最新值；
+ * 3. 维度二（全部内容模糊打码）：用户消息气泡内容、时间线气泡外附件、助手回复正文、代码块、工具执行步骤、输入框草稿/回复预览/附件托盘、顶栏目录路径与会话信息浮层值整体施加 filter: blur(6px) 高斯模糊；
+ * 4. 生命周期隔离：插件卸载（release）后彻底清除全部 data-privacy-* 属性与已跟踪节点的提示备份，零残留。
  */
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
@@ -32,8 +32,9 @@ writeFileSync(
   `
 import { useCallback, useEffect, useRef, useState } from "react";
 import { createRoot } from "react-dom/client";
-import { Search, MessageSquarePlus, Terminal, Folder } from "lucide-react";
+import { Search, MessageSquarePlus, Terminal, Folder, Reply, X } from "lucide-react";
 import { DesktopSidebar } from ${JSON.stringify(resolve(repo, "frontend/chat/src/desktop-sidebar.tsx"))};
+import { MarqueeText } from ${JSON.stringify(resolve(repo, "frontend/chat/src/marquee-text.tsx"))};
 import { exposeChatRuntime } from ${JSON.stringify(resolve(repo, "frontend/chat/src/chat-ui-runtime.tsx"))};
 import { connectHost } from ${JSON.stringify(resolve(repo, "frontend/chat/src/chat-host.ts"))};
 import { setShellRailActions } from ${JSON.stringify(resolve(repo, "frontend/chat/src/shell-rail-actions.ts"))};
@@ -66,6 +67,7 @@ const projectGroups = [
 
 function App() {
   const [expanded, setExpanded] = useState<Set<string>>(() => new Set(["project:no-recall"]));
+  const [headingTitle, setHeadingTitle] = useState("开发机 Alma 与 Magpie 截屏打码调研");
   const headerSlotRef = useRef<HTMLDivElement | null>(null);
 
   useEffect(() => {
@@ -105,6 +107,7 @@ function App() {
         workbench: { accepts: () => false, open: async () => "unhandled" },
       });
     }
+    (window as any).__setHeadingTitle = (next: string) => setHeadingTitle(next);
     (window as any).__disposePrivacyPlugin = () => {
       if (typeof unmountSlot === "function") unmountSlot();
       disposeWeb();
@@ -185,11 +188,8 @@ function App() {
             <section className="chat-main" style={{ display: "flex", flexDirection: "column", flex: 1, minWidth: 0 }}>
               <header className="conversation-heading">
                 <div className="conversation-heading__stack">
-                  <h1 className="conversation-heading__title">
-                    <span className="conversation-heading__title-text" title="开发机 Alma 与 Magpie 截屏打码调研">
-                      开发机 Alma 与 Magpie 截屏打码调研
-                    </span>
-                  </h1>
+                  {/* 真实 SessionHeadingTitle DOM 结构：<h1 title={heading}><MarqueeText>{heading}</MarqueeText></h1> */}
+                  <h1 id="real-heading-h1" title={headingTitle}><MarqueeText>{headingTitle}</MarqueeText></h1>
                   <div className="header-meta" aria-label="会话信息">
                     <div className="header-meta__group">
                       <button type="button" className="header-meta__project">akashic-no-recall</button>
@@ -214,13 +214,19 @@ function App() {
               </header>
 
               <div className="conversation-content" style={{ flex: 1, overflow: "auto", padding: "24px 36px", display: "flex", flexDirection: "column", gap: "18px" }}>
-                <article className="user-message user-bubble" id="msg-user-1" style={{ alignSelf: "flex-end", maxWidth: "42rem", padding: "12px 16px", borderRadius: "12px", background: "var(--chat-chip)" }}>
-                  <div className="chat-markdown" id="user-content-inner">
-                    <p>
-                      我的开发机上有 Alma 的源码，在 /mnt/data/source-code 文件夹下，帮我看一下它那个一键模糊内容来做截屏的设计，我们是插件化的系统需要保证高度正交化。
-                    </p>
+                {/* 真实 TimelineMessageView 结构：timeline-input 行内包含气泡外的附件与 .user-bubble */}
+                <div className="message-row timeline-message timeline-input" style={{ display: "flex", flexDirection: "column", alignItems: "flex-end", gap: "8px" }}>
+                  <div className="sent-attachments" id="timeline-input-attachment" style={{ padding: "4px 10px", borderRadius: "8px", background: "var(--ak-paper-sheet)", fontSize: "12px" }}>
+                    <span>alma-window-capture-spec.pdf</span>
                   </div>
-                </article>
+                  <div className="user-bubble" id="msg-user-1" style={{ maxWidth: "42rem", padding: "12px 16px", borderRadius: "12px", background: "var(--chat-chip)" }}>
+                    <div className="chat-markdown" id="user-content-inner">
+                      <p>
+                        我的开发机上有 Alma 的源码，在 /mnt/data/source-code 文件夹下，帮我看一下它那个一键模糊内容来做截屏的设计，我们是插件化的系统需要保证高度正交化。
+                      </p>
+                    </div>
+                  </div>
+                </div>
 
                 <article className="message-bubble agent-content" id="msg-assistant-1" style={{ maxWidth: "46rem", display: "flex", flexDirection: "column", gap: "10px" }}>
                   <div className="tool-step" id="tool-step-1" style={{ display: "inline-flex", alignItems: "center", gap: "8px", padding: "6px 10px", borderRadius: "8px", background: "var(--ak-paper-sheet)", color: "var(--ak-ink-secondary)", fontSize: "13px", width: "fit-content" }}>
@@ -236,6 +242,28 @@ function App() {
                     </pre>
                   </div>
                 </article>
+              </div>
+
+              {/* 真实输入区结构（含引用会话标题、回复预览、附件托盘与 textarea） */}
+              <div className="composer-wrap" style={{ padding: "0 36px 20px" }}>
+                <div className="composer" style={{ padding: "10px 14px", borderRadius: "14px", background: "var(--ak-paper-sheet)", border: "1px solid var(--ak-rule-subtle)", display: "flex", flexDirection: "column", gap: "8px" }}>
+                  <div className="composer-references" style={{ display: "flex", gap: "6px", fontSize: "12px" }}>
+                    <span className="composer-reference">
+                      <span className="composer-reference__title" id="composer-ref-title" title="私人历史会话引用">私人历史会话引用</span>
+                    </span>
+                  </div>
+                  <div className="composer-reply" style={{ display: "flex", alignItems: "center", justifyContent: "space-between", fontSize: "12px", color: "var(--ak-ink-secondary)" }}>
+                    <Reply size={14} />
+                    <div id="composer-reply-preview">被引用回复中的内部敏感正文预览</div>
+                    <button type="button" id="composer-reply-cancel" aria-label="取消引用"><X size={14} /></button>
+                  </div>
+                  <div className="composer-tray" role="list">
+                    <div role="listitem" data-attachment-id="att-1" id="composer-tray-item" style={{ fontSize: "12px" }}>
+                      secret-credentials.json
+                    </div>
+                  </div>
+                  <textarea id="composer-textarea" className="composer__textarea" defaultValue="正在编写的草稿内容…" style={{ width: "100%", border: 0, background: "transparent", resize: "none", outline: "none", fontSize: "13.5px" }} />
+                </div>
               </div>
             </section>
           </div>
@@ -300,7 +328,7 @@ try {
     };
   });
 
-  // 1. 点击侧栏底栏「截屏打码」按钮（shell.rail-actions.v1）一键开启全量打码（标题骨架条 + 全部内容模糊）
+  // 1. 点击侧栏底栏「截屏打码」按钮一键开启全量打码
   const railBtn = page.locator(".chat-sidebar__footer .chat-sidebar__action", { hasText: "截屏打码" });
   assert.equal(await railBtn.count(), 1, "侧栏底栏应挂载 shell.rail-actions.v1 的截屏打码按钮");
   await railBtn.click();
@@ -314,11 +342,24 @@ try {
     const firstSession = document.querySelector(".conversation-session").getBoundingClientRect();
     const firstGroup = document.querySelector(".navigation-group__open").getBoundingClientRect();
 
+    // 验证项目内子会话骨架条具有错落宽度，不被父 .navigation-group 统一覆盖
+    const childAfterWidths = [...document.querySelectorAll(".navigation-group__sessions .conversation-session__title")].map(
+      (el) => Math.round(parseFloat(getComputedStyle(el, "::after").width)),
+    );
+
+    const headingH1 = document.getElementById("real-heading-h1");
+    const headingH1Color = getComputedStyle(headingH1).color;
+    const headingH1AfterWidth = parseFloat(getComputedStyle(headingH1, "::after").width);
+    const composerRefColor = getComputedStyle(document.getElementById("composer-ref-title")).color;
+
     const userContentFilter = getComputedStyle(document.getElementById("user-content-inner")).filter;
+    const timelineInputAttachmentFilter = getComputedStyle(document.getElementById("timeline-input-attachment")).filter;
     const assistantContentFilter = getComputedStyle(document.getElementById("assistant-content-inner")).filter;
     const toolStepFilter = getComputedStyle(document.getElementById("tool-step-1")).filter;
     const pathMetaFilter = getComputedStyle(document.querySelector(".header-meta__path > button")).filter;
-    const headingTitle = document.querySelector(".conversation-heading__title-text");
+    const composerReplyFilter = getComputedStyle(document.getElementById("composer-reply-preview")).filter;
+    const composerTrayFilter = getComputedStyle(document.getElementById("composer-tray-item")).filter;
+    const composerTextareaFilter = getComputedStyle(document.getElementById("composer-textarea")).filter;
 
     return {
       maskAttr: html.getAttribute("data-privacy-mask"),
@@ -326,14 +367,21 @@ try {
       contentAttr: html.getAttribute("data-privacy-content"),
       titleColor: titleStyle.color,
       afterWidth: parseFloat(titleAfter.width),
+      childAfterWidths,
+      headingH1Color,
+      headingH1AfterWidth,
+      composerRefColor,
       sessionRect: { width: firstSession.width, height: firstSession.height },
       groupRect: { width: firstGroup.width, height: firstGroup.height },
       userContentFilter,
+      timelineInputAttachmentFilter,
       assistantContentFilter,
       toolStepFilter,
       pathMetaFilter,
-      headingHasTitleAttr: headingTitle.hasAttribute("title"),
-      headingSavedRawTitle: headingTitle.getAttribute("data-privacy-raw-title"),
+      composerReplyFilter,
+      composerTrayFilter,
+      composerTextareaFilter,
+      headingHasTitleAttr: headingH1.hasAttribute("title"),
     };
   });
 
@@ -342,16 +390,52 @@ try {
   assert.equal(afterEnable.contentAttr, "true");
   assert.equal(afterEnable.titleColor, "rgba(0, 0, 0, 0)", "侧栏标题文字应透明并由 ::after 骨架条替代");
   assert(afterEnable.afterWidth > 30, `侧栏标题骨架条宽度应大于 30px，实测 ${afterEnable.afterWidth}`);
+  assert(new Set(afterEnable.childAfterWidths).size >= 2, `同组子会话骨架条应呈错落宽度，实测 ${JSON.stringify(afterEnable.childAfterWidths)}`);
+  assert.equal(afterEnable.headingH1Color, "rgba(0, 0, 0, 0)", "真实顶栏 <h1 title> 应被骨架条打码");
+  assert(afterEnable.headingH1AfterWidth > 60, `顶栏 h1 骨架条宽度应大于 60px，实测 ${afterEnable.headingH1AfterWidth}`);
+  assert.equal(afterEnable.composerRefColor, "rgba(0, 0, 0, 0)", "输入框引用的会话名应被骨架条打码");
   assert.deepEqual(afterEnable.sessionRect, beforeBaseline.sessionRect, "开启打码前后侧栏会话行尺寸必须零变化");
   assert.deepEqual(afterEnable.groupRect, beforeBaseline.groupRect, "开启打码前后项目行尺寸必须零变化");
   assert.match(afterEnable.userContentFilter, /blur\(6px\)/, "用户气泡内部内容应整体高斯模糊");
+  assert.match(afterEnable.timelineInputAttachmentFilter, /blur\(6px\)/, "时间线气泡外附件应被高斯模糊");
   assert.match(afterEnable.assistantContentFilter, /blur\(6px\)/, "助手回复与代码块应整体高斯模糊");
   assert.match(afterEnable.toolStepFilter, /blur\(6px\)/, "工具执行步骤应整体高斯模糊");
   assert.match(afterEnable.pathMetaFilter, /blur\(6px\)/, "顶栏目录路径应高斯模糊");
+  assert.match(afterEnable.composerReplyFilter, /blur\(6px\)/, "输入框回复预览应被高斯模糊");
+  assert.match(afterEnable.composerTrayFilter, /blur\(6px\)/, "输入框附件托盘项应被高斯模糊");
+  assert.match(afterEnable.composerTextareaFilter, /blur\(6px\)/, "输入框草稿正文应被高斯模糊");
   assert.equal(afterEnable.headingHasTitleAttr, false, "打码期间应剥离会泄漏标题的原生 title 提示");
-  assert.equal(afterEnable.headingSavedRawTitle, "开发机 Alma 与 Magpie 截屏打码调研");
 
-  // 2. 点开顶栏「已打码」标记，验证只有两个正交开关（「导航与会话标题」「全部内容模糊」）并截图
+  // 2. 验证打码期间宿主动态更新 title 属性 + 节点移出文档的无损恢复
+  const dynamicTooltipCheck = await page.evaluate(async () => {
+    const tempBtn = document.createElement("button");
+    tempBtn.className = "conversation-session";
+    tempBtn.setAttribute("title", "临时会话原名");
+    document.body.appendChild(tempBtn);
+    window.__setHeadingTitle("动态重命名后的新标题");
+    await new Promise((r) => requestAnimationFrame(() => requestAnimationFrame(r)));
+    const h1 = document.getElementById("real-heading-h1");
+    const strippedWhileMasked = !h1.hasAttribute("title") && !tempBtn.hasAttribute("title");
+    // 在打码状态下将 tempBtn 移出 document
+    tempBtn.remove();
+    await new Promise((r) => requestAnimationFrame(() => requestAnimationFrame(r)));
+    return {
+      strippedWhileMasked,
+      detachedRestoredImmediately: tempBtn.getAttribute("title"),
+      savedNewHeadingTitle: h1.getAttribute("data-privacy-raw-title"),
+    };
+  });
+  assert.equal(dynamicTooltipCheck.strippedWhileMasked, true, "打码期间动态更新的 title 应被自动剥离");
+  assert.equal(dynamicTooltipCheck.detachedRestoredImmediately, "临时会话原名", "移出 document 的节点应立即恢复原 title 属性");
+  assert.equal(dynamicTooltipCheck.savedNewHeadingTitle, "动态重命名后的新标题", "打码期间更新的 title 应记录最新值而非旧值");
+
+  // 3. 验证输入框聚焦时按 Alt+M 不会误触发切换（保护 macOS Option+M 字符输入），而 Ctrl+Shift+M 正常切换
+  await page.locator("#composer-textarea").focus();
+  await page.keyboard.press("Alt+KeyM");
+  await page.waitForTimeout(80);
+  assert.equal(await page.evaluate(() => document.documentElement.getAttribute("data-privacy-mask")), "true", "焦点在输入框内时 Alt+M 不得误触发切换");
+
+  // 4. 点开顶栏「已打码」标记，查看双维度控制面板并截图
   const headerTrigger = page.locator(".privacy-mask-marker .header-marker__trigger");
   await headerTrigger.click();
   await page.waitForSelector(".privacy-mask-panel");
@@ -361,7 +445,7 @@ try {
   assert.deepEqual(switches, ["导航与会话标题", "全部内容模糊"], "面板应严格只包含「导航与会话标题」与「全部内容模糊」两个正交开关");
   await page.screenshot({ path: resolve(root, "02-full-masked-popover.png") });
 
-  // 3. 测试正交独立开关：关闭「全部内容模糊」、仅保留「导航与会话标题」（晒对话内容但隐藏侧栏项目与历史会话）
+  // 5. 测试正交独立开关：关闭「全部内容模糊」、仅保留「导航与会话标题」
   const contentSwitch = page.locator(".privacy-mask-scope", { hasText: "全部内容模糊" });
   await contentSwitch.click();
   await page.waitForTimeout(200);
@@ -387,7 +471,7 @@ try {
   await page.evaluate(() => window.__setTheme("light"));
   await page.waitForTimeout(120);
 
-  // 4. 验证 Alt+M 快捷键一键恢复正常显示
+  // 6. 验证非编辑区 Alt+M 快捷键一键恢复正常显示，并还原最新动态更新的 title
   await page.keyboard.press("Escape");
   await page.waitForTimeout(60);
   await page.keyboard.press("Alt+KeyM");
@@ -395,21 +479,21 @@ try {
 
   const afterDisable = await page.evaluate(() => {
     const html = document.documentElement;
-    const headingTitle = document.querySelector(".conversation-heading__title-text");
+    const headingH1 = document.getElementById("real-heading-h1");
     const titleEl = document.querySelector(".conversation-session__title");
     return {
       maskAttr: html.getAttribute("data-privacy-mask"),
-      restoredTitleAttr: headingTitle.getAttribute("title"),
+      restoredTitleAttr: headingH1.getAttribute("title"),
       titleColor: getComputedStyle(titleEl).color,
       userContentFilter: getComputedStyle(document.getElementById("user-content-inner")).filter,
     };
   });
   assert.equal(afterDisable.maskAttr, null);
-  assert.equal(afterDisable.restoredTitleAttr, "开发机 Alma 与 Magpie 截屏打码调研");
+  assert.equal(afterDisable.restoredTitleAttr, "动态重命名后的新标题", "关闭打码后应恢复打码期间更新的最新 title");
   assert.notEqual(afterDisable.titleColor, "rgba(0, 0, 0, 0)");
   assert.equal(afterDisable.userContentFilter, "none");
 
-  // 5. 录制完整交互动效 GIF（默认态 → 一键开启全量打码 → 展开面板切换仅侧栏打码 → 再开启全量打码 → Alt+M 恢复）
+  // 7. 录制完整交互动效 GIF
   const framesDir = resolve(root, "gif-frames");
   mkdirSync(framesDir, { recursive: true });
   let frameIndex = 0;
@@ -445,7 +529,7 @@ try {
     gifPath,
   ]);
 
-  // 6. 验证插件卸载（release）后的完全正交零残留
+  // 8. 验证插件卸载（release）后的完全正交零残留
   await page.keyboard.press("Alt+KeyM");
   await page.waitForTimeout(100);
   const afterDispose = await page.evaluate(() => {
@@ -455,12 +539,14 @@ try {
       maskAttr: html.getAttribute("data-privacy-mask"),
       titlesAttr: html.getAttribute("data-privacy-titles"),
       contentAttr: html.getAttribute("data-privacy-content"),
+      rawTitleRemaining: document.querySelectorAll("[data-privacy-raw-title], [data-privacy-raw-tip]").length,
       globalRef: typeof window.__akashicPrivacyMask,
     };
   });
   assert.equal(afterDispose.maskAttr, null);
   assert.equal(afterDispose.titlesAttr, null);
   assert.equal(afterDispose.contentAttr, null);
+  assert.equal(afterDispose.rawTitleRemaining, 0, "卸载后不得残留任何 data-privacy-raw-* 属性");
   assert.equal(afterDispose.globalRef, "undefined", "插件卸载后必须彻底释放全局单例与全部 DOM 属性");
   assert.deepEqual(errors, [], `页面运行期不得出现未捕获异常: ${errors.join("; ")}`);
 
@@ -468,6 +554,7 @@ try {
     ok: true,
     evidenceDir: root,
     switches,
+    childAfterWidths: afterEnable.childAfterWidths,
     geometryPreserved: true,
     gifPath,
   };

@@ -25,9 +25,13 @@ const TITLE_REDACT_TARGETS = [
   ".conversation-session__title",
   ".navigation-group__open",
   ".navigation-group__name",
-  ".group-session",
+  ".group-session:not(.group-session--more)",
+  ".group-session__title",
+  ".conversation-heading h1",
   ".conversation-heading__title-text",
   ".header-meta__project",
+  ".header-meta-panel__scope b",
+  ".composer-reference__title",
   "[data-privacy-redact]",
 ].join(", ");
 
@@ -36,6 +40,12 @@ const CONTENT_BLUR_TARGETS = [
   ".conversation-content [data-tip]",
   ".header-meta__path [title]",
   ".header-meta__path [data-tip]",
+  ".header-meta-panel [title]",
+  ".header-meta-panel [data-tip]",
+  ".composer-tray [title]",
+  ".composer-tray [data-tip]",
+  ".composer-reply [title]",
+  ".composer-reply [data-tip]",
 ].join(", ");
 
 function loadState(): PrivacyMaskState {
@@ -61,6 +71,17 @@ function saveState(state: PrivacyMaskState): void {
   }
 }
 
+function isEditableTarget(target: EventTarget | null): boolean {
+  if (!(target instanceof HTMLElement)) return false;
+  if (target.isContentEditable) return true;
+  return Boolean(target.closest("textarea, input, select, [contenteditable='true']"));
+}
+
+interface SavedTooltip {
+  title?: string;
+  tip?: string;
+}
+
 interface InternalEngine extends PrivacyMaskEngine {
   refs: number;
 }
@@ -79,6 +100,8 @@ export function acquirePrivacyMaskEngine(): PrivacyMaskEngine {
 
   let state: PrivacyMaskState = loadState();
   const listeners = new Set<() => void>();
+  // 记录所有被剥离了 title / data-tip 的节点（即使节点随后移出 document 仍可精确无损恢复）。
+  const trackedTooltips = new Map<HTMLElement, SavedTooltip>();
   let scanFrame = 0;
   let applyingAttributes = false;
 
@@ -86,43 +109,74 @@ export function acquirePrivacyMaskEngine(): PrivacyMaskEngine {
     for (const listener of listeners) listener();
   };
 
-  const restoreTooltips = () => {
-    for (const el of document.querySelectorAll<HTMLElement>("[data-privacy-raw-title]")) {
-      const raw = el.getAttribute("data-privacy-raw-title");
-      if (raw !== null) el.setAttribute("title", raw);
-      el.removeAttribute("data-privacy-raw-title");
+  const restoreTrackedElement = (el: HTMLElement, saved: SavedTooltip) => {
+    if (saved.title !== undefined && !el.hasAttribute("title")) {
+      el.setAttribute("title", saved.title);
     }
-    for (const el of document.querySelectorAll<HTMLElement>("[data-privacy-raw-tip]")) {
-      const raw = el.getAttribute("data-privacy-raw-tip");
-      if (raw !== null) el.setAttribute("data-tip", raw);
-      el.removeAttribute("data-privacy-raw-tip");
+    if (saved.tip !== undefined && !el.hasAttribute("data-tip")) {
+      el.setAttribute("data-tip", saved.tip);
     }
+    el.removeAttribute("data-privacy-raw-title");
+    el.removeAttribute("data-privacy-raw-tip");
   };
 
-  const stripElementTooltips = (selector: string) => {
-    for (const el of document.querySelectorAll<HTMLElement>(selector)) {
-      if (el.closest("[data-privacy-ui]")) continue;
-      const title = el.getAttribute("title");
-      if (title) {
-        el.setAttribute("data-privacy-raw-title", title);
-        el.removeAttribute("title");
-      }
-      const tip = el.getAttribute("data-tip");
-      if (tip) {
-        el.setAttribute("data-privacy-raw-tip", tip);
-        el.removeAttribute("data-tip");
-      }
+  const restoreAllTooltips = () => {
+    for (const [el, saved] of trackedTooltips.entries()) {
+      restoreTrackedElement(el, saved);
     }
+    trackedTooltips.clear();
   };
 
   const syncTooltips = () => {
     scanFrame = 0;
     applyingAttributes = true;
     try {
-      restoreTooltips();
-      if (!state.enabled) return;
-      if (state.redactTitles) stripElementTooltips(TITLE_REDACT_TARGETS);
-      if (state.blurContent) stripElementTooltips(CONTENT_BLUR_TARGETS);
+      if (!state.enabled) {
+        restoreAllTooltips();
+        return;
+      }
+
+      const activeElements = new Set<HTMLElement>();
+      const collectTargets = (selector: string) => {
+        for (const el of document.querySelectorAll<HTMLElement>(selector)) {
+          if (el.closest("[data-privacy-ui]")) continue;
+          activeElements.add(el);
+        }
+      };
+
+      if (state.redactTitles) collectTargets(TITLE_REDACT_TARGETS);
+      if (state.blurContent) collectTargets(CONTENT_BLUR_TARGETS);
+
+      // 1. 已移出遮罩范围或已移出 document 的节点立即恢复原值。
+      for (const [el, saved] of trackedTooltips.entries()) {
+        if (!activeElements.has(el)) {
+          restoreTrackedElement(el, saved);
+          trackedTooltips.delete(el);
+        }
+      }
+
+      // 2. 对当前遮罩范围内的节点：若带有宿主新写入或初始的 title / data-tip，更新记录并剥离。
+      for (const el of activeElements) {
+        const existing = trackedTooltips.get(el);
+        const currentTitle = el.getAttribute("title");
+        const currentTip = el.getAttribute("data-tip");
+        if (currentTitle === null && currentTip === null && existing) continue;
+
+        const nextSaved: SavedTooltip = existing ? { ...existing } : {};
+        if (currentTitle !== null) {
+          nextSaved.title = currentTitle;
+          el.setAttribute("data-privacy-raw-title", currentTitle);
+          el.removeAttribute("title");
+        }
+        if (currentTip !== null) {
+          nextSaved.tip = currentTip;
+          el.setAttribute("data-privacy-raw-tip", currentTip);
+          el.removeAttribute("data-tip");
+        }
+        if (nextSaved.title !== undefined || nextSaved.tip !== undefined) {
+          trackedTooltips.set(el, nextSaved);
+        }
+      }
     } finally {
       applyingAttributes = false;
     }
@@ -163,20 +217,26 @@ export function acquirePrivacyMaskEngine(): PrivacyMaskEngine {
     observer.observe(document.body, {
       subtree: true,
       childList: true,
+      attributes: true,
+      attributeFilter: ["title", "data-tip"],
     });
   }
 
   const onKeyDown = (event: KeyboardEvent) => {
     if (event.isComposing || event.defaultPrevented) return;
-    // Alt+M：一键切换截屏隐私打码。
-    if (event.altKey && !event.ctrlKey && !event.metaKey && !event.shiftKey && event.code === "KeyM") {
+    if (event.code !== "KeyM") return;
+    // 1. Ctrl+Shift+M / ⌘+Shift+M：在任何位置（含输入框内）均可一键切换打码。
+    const modShiftM = (event.ctrlKey || event.metaKey) && event.shiftKey && !event.altKey;
+    // 2. Alt+M：仅在非可编辑目标时触发，避免吞掉 macOS 输入框内 Option+M（µ）等字符输入。
+    const altM = event.altKey && !event.ctrlKey && !event.metaKey && !event.shiftKey && !isEditableTarget(event.target);
+    if (modShiftM || altM) {
       event.preventDefault();
       engine.toggle();
     }
   };
 
   const onStorage = (event: StorageEvent) => {
-    if (event.key !== STORAGE_KEY) return;
+    if (event.key !== null && event.key !== STORAGE_KEY) return;
     state = loadState();
     syncDomDataset();
     notify();
@@ -227,7 +287,7 @@ export function acquirePrivacyMaskEngine(): PrivacyMaskEngine {
       observer.disconnect();
       window.removeEventListener("keydown", onKeyDown);
       window.removeEventListener("storage", onStorage);
-      restoreTooltips();
+      restoreAllTooltips();
       const root = document.documentElement;
       root.removeAttribute("data-privacy-mask");
       root.removeAttribute("data-privacy-titles");
