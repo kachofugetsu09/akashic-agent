@@ -119,7 +119,7 @@ async def scenario_context() -> AsyncIterator[dict[str, Any]]:
             return reader
 
         async def drain():
-            await asyncio.sleep(0.05)
+            await asyncio.sleep(0)
             jobs = [task for task in asyncio.all_tasks() if task.get_name().startswith("session-title:")]
             if jobs:
                 await asyncio.gather(*jobs, return_exceptions=True)
@@ -181,6 +181,7 @@ async def test_title_cleaning_various_formats() -> None:
             ("标题：冒号前缀测试", "冒号前缀测试"),
             ("标题: 英文冒号测试", "英文冒号测试"),
             ("Title: English Prefix", "English Prefix"),
+            ('标题："引用内的标题"', "引用内的标题"),
             ("   前后多余空白与换行  \n  ", "前后多余空白与换行"),
         ]
 
@@ -192,34 +193,18 @@ async def test_title_cleaning_various_formats() -> None:
 
 
 @pytest.mark.asyncio
-async def test_unexpected_exceptions_fault_isolation() -> None:
-    """3. 模型抛出任意异常（未预期的 TypeError / ZeroDivisionError 等），故障隔离且 Worker 存活。"""
-    async with scenario_context() as env:
-        append = env["append"]
-        drain = env["drain"]
-        models = env["models"]
-        fiber = env["fiber"]
-
-        # 注入未预期的异常
-        models.behavior = ZeroDivisionError("除以零致命故障")
-        r1 = append("s_err1", "第一句报错文本" * 5)
-        await drain()
-
-        # 应该降级为首句截断（<= 24 字）
-        assert r1.title == ("第一句报错文本" * 5)[:24]
-        assert fiber.error is None
-
-        models.behavior = TypeError("类型不匹配")
-        r2 = append("s_err2", "第二句类型错误")
-        await drain()
-        assert r2.title == "第二句类型错误"
-        assert fiber.error is None
-
-        # 后续正常恢复
-        models.behavior = "系统恢复正常"
-        r3 = append("s_err3", "第三句已恢复")
-        await drain()
-        assert r3.title == "系统恢复正常"
+async def test_unexpected_exceptions_remain_visible() -> None:
+    """内部模型错误必须进入真实后台任务诊断，不能伪装成成功标题。"""
+    for failure in (ZeroDivisionError("模型内部错误"), TypeError("模型类型错误")):
+        async with scenario_context() as env:
+            worker = next(task for task in asyncio.all_tasks()
+                          if task.get_name() == "plugin-task:session-title")
+            env["models"].behavior = failure
+            reader = env["append"]("broken", "不应写成成功标题")
+            with pytest.raises(ExceptionGroup):
+                await asyncio.wait_for(asyncio.shield(worker), 3)
+            assert reader.title is None
+            assert any(item.kind == "task_failure" for item in env["root"].recent_incidents())
 
 
 @pytest.mark.asyncio
@@ -244,7 +229,7 @@ async def test_monkey_stress_concurrency() -> None:
             elif choice == 2:
                 return TransportError("模拟网络断开").exception()
             elif choice == 3:
-                return RuntimeError("模型推理崩了")
+                return TimeoutError("模型请求超时")
             elif choice == 4:
                 return f"标题：Monkey生成_{rng.randint(100, 999)}"
             else:

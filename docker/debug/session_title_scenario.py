@@ -177,6 +177,14 @@ async def run(path):
         empty = append("empty", "空响应使用这句")
         await drain()
         assert empty.title == "空响应使用这句"
+        models.reply = None
+        none = append("none", "没有文本时使用首句")
+        await drain()
+        assert none.title == "没有文本时使用首句" and fiber.error is None
+        models.reply = '标题："后续正常标题"'
+        later = append("after-none", "验证下一次仍能自动取名")
+        await drain()
+        assert later.title == "后续正常标题" and fiber.error is None
         blank = append("blank", "   ")
         await drain()
         assert blank.title is None
