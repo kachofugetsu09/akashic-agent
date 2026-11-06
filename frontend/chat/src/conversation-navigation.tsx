@@ -333,7 +333,6 @@ export const ConversationSessionRow = memo(function ConversationSessionRow({ ses
   const body = renaming ? <div
     className={`conversation-session editing ${session.active ? "active" : ""}`}
     onClick={(event) => event.stopPropagation()}>
-    <SessionStatusMark status={session.status} />
     <span className="conversation-session__copy">
       <span className="conversation-session__title">
         <input
@@ -361,6 +360,7 @@ export const ConversationSessionRow = memo(function ConversationSessionRow({ ses
       </span>
       <small>{session.preview}</small>
     </span>
+    <SessionStatusMark status={session.status} />
   </div> : <button
       className={`conversation-session ${session.active ? "active" : ""} ${session.unavailable ? "unavailable" : ""}`}
       type="button"
@@ -400,7 +400,6 @@ export const ConversationSessionRow = memo(function ConversationSessionRow({ ses
       onPointerEnter={() => { if (!session.unavailable) onPrefetch?.(session.id); }}
       onFocus={() => { if (!session.unavailable) onPrefetch?.(session.id); }}
       onDoubleClick={startRename}>
-      <SessionStatusMark status={session.status} />
       <span className="conversation-session__copy">
         <span className="conversation-session__title">
           <strong><MarqueeText>{session.title}</MarqueeText></strong>
@@ -408,6 +407,7 @@ export const ConversationSessionRow = memo(function ConversationSessionRow({ ses
         </span>
         <small><MarqueeText still>{session.preview}</MarqueeText></small>
       </span>
+      <SessionStatusMark status={session.status} />
       {session.pinned ? <Pin size={13} className="conversation-session__pin" aria-label="已置顶" /> : null}
     </button>;
 

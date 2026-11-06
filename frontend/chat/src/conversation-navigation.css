@@ -51,7 +51,9 @@
   font: inherit;
   text-align: start;
   text-decoration: none;
-  transition: background-color var(--ak-sys-duration-short) var(--ak-sys-motion-standard), scale var(--ak-sys-duration-short) var(--ak-sys-motion-standard);
+  transition:
+    background-color var(--ak-sys-duration-short) var(--ak-sys-motion-standard),
+    color var(--ak-sys-duration-short) var(--ak-sys-motion-standard);
 }
 
 .conversation-destination:hover,
@@ -76,10 +78,6 @@
 .conversation-navigation__action:focus-visible {
   outline: 2px solid var(--ak-color-action-primary);
   outline-offset: -2px;
-}
-
-.conversation-destination:active {
-  scale: 0.96;
 }
 
 .conversation-destination:disabled {
@@ -156,7 +154,7 @@
 }
 
 .conversation-navigation__heading--section {
-  padding: 18px 24px 10px;
+  padding: 14px 24px 6px;
 }
 
 .conversation-session-list {
@@ -165,17 +163,16 @@
   flex: 1;
   grid-auto-rows: min-content;
   align-content: start;
-  gap: 2px;
+  gap: 1px;
   padding: 0 10px 8px;
   overflow-y: auto;
   overscroll-behavior: contain;
 }
 
 .conversation-session {
-  display: grid;
+  display: flex;
   width: 100%;
   min-height: 64px;
-  grid-template-columns: 16px minmax(0, 1fr) auto;
   align-items: center;
   gap: 8px;
   border: 0;
@@ -186,16 +183,14 @@
   background: transparent;
   font: inherit;
   text-align: start;
-  transition: background-color var(--ak-sys-duration-short) var(--ak-sys-motion-standard), scale var(--ak-sys-duration-short) var(--ak-sys-motion-standard);
+  transition:
+    background-color var(--ak-sys-duration-short) var(--ak-sys-motion-standard),
+    color var(--ak-sys-duration-short) var(--ak-sys-motion-standard);
 }
 
 .conversation-session:hover,
 .conversation-session:focus-visible {
   background: color-mix(in oklab, var(--ak-ink-primary) 5%, transparent);
-}
-
-.conversation-session:active {
-  scale: 0.96;
 }
 
 .conversation-session.active {
@@ -225,6 +220,7 @@
 
 .conversation-session__copy {
   display: grid;
+  flex: 1;
   gap: 4px;
 }
 
@@ -309,17 +305,15 @@
   font-weight: 500;
   line-height: 1.35;
   text-align: start;
-  transition: background-color var(--ak-sys-duration-short) var(--ak-sys-motion-standard), scale var(--ak-sys-duration-short) var(--ak-sys-motion-standard);
+  transition:
+    background-color var(--ak-sys-duration-short) var(--ak-sys-motion-standard),
+    color var(--ak-sys-duration-short) var(--ak-sys-motion-standard);
 }
 
 .conversation-navigation__action:hover,
 .conversation-navigation__action:focus-visible {
   color: var(--ak-ink-primary);
   background: var(--ak-paper-sheet);
-}
-
-.conversation-navigation__action:active {
-  scale: 0.96;
 }
 
 .conversation-navigation__action.primary {
