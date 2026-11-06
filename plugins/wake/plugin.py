@@ -13,6 +13,7 @@ from agent.plugin_composition import (
     Context,
     ServiceKey,
 )
+from plugins.assets.contract import INSTALLED_ASSETS
 from plugins.ledger.contract import BINDINGS
 from plugins.ledger.contract import (
     MESSAGE_CATALOG,
@@ -52,7 +53,7 @@ from .tools import SCHEMAS, DecisionTool
 api_version = 3
 name = "wake"
 version = "4.0.0"
-desc = "内部消息完成初筛、调查与告警，真实送达后确认原职责"
+desc = "主动联系：按 proactive-wake 技能在中心循环里初筛、调查与告警，真实送达后确认原职责"
 function_inject = (
     MODEL_SELECTION, MODEL_CONTENT, MODEL_CATALOG, CHAT_MODELS,
     REPLY_EXECUTE, SOURCE_CHECK,
@@ -74,6 +75,7 @@ function_inject = (
     SEMANTIC_INTEREST,
     DELIVERY_READ,
     ALL_TOOLS,
+    INSTALLED_ASSETS,
 )
 
 WAKE_DASHBOARD = ServiceKey[Callable[[], DashboardView | None]]("wake.dashboard.v1")
@@ -95,6 +97,8 @@ async def start_function(ctx: Context) -> None:
             },
         },
     )
+    # 分阶段做法是普通技能，由中心循环经 load_skill 读取，不再是 Wake 私有的阶段驱动。
+    await ctx.require(INSTALLED_ASSETS).register(ctx, "skills", "skills")
     catalog = ctx.require(TOOLS)
     _ = await catalog.declare_group(ctx, description=desc)
     refs: list[ToolRef] = []

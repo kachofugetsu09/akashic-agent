@@ -24,10 +24,10 @@ parser = argparse.ArgumentParser(description=__doc__)
 parser.add_argument("--slow-writes", action="store_true")
 parser.add_argument("--source", type=Path, default=Path(__file__).resolve().parents[2])
 parser.add_argument("--owner", choices=("subagent", "wake"))
-parser.add_argument("--case", choices=("fresh", "recovered", "newer-input", "newer-control", "two-phases"))
+parser.add_argument("--case", choices=("fresh", "recovered", "newer-input", "newer-control"))
 args = parser.parse_args()
-if args.slow_writes and args.case not in {None, "fresh", "two-phases"}:
-    parser.error("--slow-writes 只用于 fresh 或 two-phases；其他模式会同步写入恢复/竞争 fixture")
+if args.slow_writes and args.case not in {None, "fresh"}:
+    parser.error("--slow-writes 只用于 fresh；其他模式会同步写入恢复/竞争 fixture")
 sys.path.insert(0, str(args.source))
 
 from agent.plugin_composition import CompositionRoot, PluginRuntime
@@ -304,12 +304,12 @@ async def check(directory: Path, kind: str, mode: str):
                 source = WakeSource(ctx, WakeState(directory / "wake.db"))
                 await source.accept(request)
                 reader = log.reader(request.session_id)
-                stages = ("screen", "investigate") if mode == "two-phases" else ("screen",)
+                stages = ("content",)
                 if mode == "recovered":
                     from plugins.wake.request import Phase, check_phase
                     log.writer(request.session_id, author="wake", source="wake", body_types=(Input,),
                         content={"wake.phase": check_phase, "text": check_text, "model.selection": SelectionOwner.check}).append(
-                            request.phase_id("screen"), Input((ContentPart("wake.phase", Phase(input_id=request.input_id, stage="screen").model_dump()),
+                            request.phase_id("content"), Input((ContentPart("wake.phase", Phase(input_id=request.input_id, stage="content").model_dump()),
                                 ContentPart("text", "original phase"), ContentPart("model.selection", {"model_id": None, "reasoning_effort": None}))))
                     source = WakeSource(ctx, source.state)
                 async def phases(task):
@@ -322,11 +322,9 @@ async def check(directory: Path, kind: str, mode: str):
                     assert stale, "valid Wake phase was rejected before the model"
             if args.slow_writes:
                 assert delays and max(delays) < 0.2, delays
-            expected = 0 if stale else (2 if mode == "two-phases" else 1)
+            expected = 0 if stale else 1
             assert len(calls) == len(receipts) == expected, (kind, mode, len(calls), len(receipts))
             assert all(boundary >= 0 and boundary <= head for _, boundary, head in inputs), inputs
-            if mode == "two-phases":
-                assert inputs[0][1] < inputs[1][1], inputs
             assert all(log.reader(message.session_id).get(message.message_id) == message for message in originals)
             with sqlite3.connect(directory / "sessions.db") as raw:
                 assert raw.execute("PRAGMA integrity_check").fetchone()[0] == "ok"
@@ -342,7 +340,7 @@ async def check(directory: Path, kind: str, mode: str):
 async def main(directory):
     results = []
     for source in ((args.owner,) if args.owner else ("subagent", "wake")):
-        for mode in ((args.case,) if args.case else ("fresh",) if args.slow_writes else ("fresh", "recovered", "newer-input", "newer-control", *(("two-phases",) if source == "wake" else ()))):
+        for mode in ((args.case,) if args.case else ("fresh",) if args.slow_writes else ("fresh", "recovered", "newer-input", "newer-control")):
             path = directory / (source + "-" + mode)
             path.mkdir()
             results.append(await check(path, source, mode))

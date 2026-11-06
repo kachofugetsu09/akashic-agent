@@ -25,18 +25,15 @@ from ._boundary import (  # noqa: F401 - 显式再导出给本插件消费者。
 from .api import DeliveryTarget
 
 Owner = Literal["content", "drift", "alert"]
-Stage = Literal["screen", "investigate", "drift", "alert"]
+# 一次 Wake 只运行一轮中心循环；阶段顺序写在 proactive-wake 技能里，工具只校验前置事实。
+Stage = Owner
 TOOLS: dict[Owner, tuple[str, ...]] = {
     "content": ("screen_content", "share_content", "skip_content"),
     "drift": ("share_content", "skip_content"),
     "alert": ("share_alert",),
 }
-STAGE_TOOLS: dict[Stage, tuple[str, ...]] = {
-    "screen": ("screen_content",),
-    "investigate": ("share_content", "skip_content"),
-    "drift": ("share_content", "skip_content"),
-    "alert": ("share_alert",),
-}
+TERMINAL_TOOLS = frozenset({"share_content", "skip_content", "share_alert"})
+SKILL_TOOL = "load_skill"
 
 
 class Request(BaseModel):
@@ -63,8 +60,9 @@ class Request(BaseModel):
 
     @model_validator(mode="after")
     def check_choices(self) -> Self:
+        extra = set(self.tools) - set(TOOLS[self.owner])
         if (not set(TOOLS[self.owner]) <= set(self.tools)
-                or (self.owner != "content" and set(self.tools) != set(TOOLS[self.owner]))
+                or (self.owner != "content" and not extra <= {SKILL_TOOL})
                 or any(not name or not value for name, value in self.tools.items())):
             raise ValueError("Wake 原工具集合与职责不一致")
         if (
@@ -168,7 +166,7 @@ def read_phase(messages: Sequence[Message], request: Request) -> tuple[Message, 
             request.input_id, "wake", "wake", request.session_id, request.phase_id(phase.stage)
         ):
             raise ValueError("Wake 阶段身份不一致")
-        if phase.stage not in ({"screen", "investigate"} if request.owner == "content" else {request.owner}):
+        if phase.stage != request.owner:
             raise ValueError("Wake 阶段不属于原职责")
         return message, phase
     raise ValueError("Wake 程序缺少已提交阶段输入")

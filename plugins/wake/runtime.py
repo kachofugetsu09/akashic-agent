@@ -39,7 +39,7 @@ from .admission import Admission, Duties
 from .api import DRIFT_WAKE, EVENTMAIL_WAKE, WAKE_MODEL, Config, DeliveryTarget
 from .legacy_rules import read_archived_rules
 from .messages import recent_context
-from .request import TOOLS as WAKE_TOOLS, WAKE_PROGRAM, Request
+from .request import SKILL_TOOL, TOOLS as WAKE_TOOLS, WAKE_PROGRAM, Request
 from .source import Pointer, Source
 from .state import WakeState, WakeStateReader
 
@@ -181,7 +181,8 @@ class Runtime:
         saved = ctx.require(MODEL_SELECTION).read_saved(metadata if metadata is not None else {})
         model = await ctx.require(CHAT_MODELS).resolve(WAKE_MODEL, self.config.model, saved)
         catalog = ctx.require(TOOLS)
-        allowed = set(self.config.investigation_tools) if owner == "content" else set()
+        # 每类职责都可读取 proactive-wake 技能；Content 另有配置的调查工具。
+        allowed = {SKILL_TOOL, *(self.config.investigation_tools if owner == "content" else ())}
         view: ToolView = catalog.view(
             *ctx.require(WAKE_TOOLS_VIEW).refs,
             *(ref for ref in ctx.require(ALL_TOOLS)().refs if ref.name in allowed),
