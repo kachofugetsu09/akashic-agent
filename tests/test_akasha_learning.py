@@ -89,6 +89,6 @@ def test_recorded_feedback_keeps_prefix_mapping_and_rejects_future_targets() -> 
     bindings = cast(Bindings, RecordedBindings())
     assert learning.feedback(sample, previous, state, bindings) == TurnFeedback((0, 1), (), 3.0)
 
+    # 不在已学前缀里的目标（写入后才学到，或现行规则不再学习）不产生反馈，也不阻断重放。
     future = Sample(request, (current, request), (receipt("future", ("future-input",)),))
-    with pytest.raises(ValueError, match="反馈目标没有对应的已学习消息"):
-        _ = learning.feedback(future, previous, state, bindings)
+    assert learning.feedback(future, previous, state, bindings) == TurnFeedback((), (), 1.0)

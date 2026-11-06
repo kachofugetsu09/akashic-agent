@@ -196,7 +196,8 @@ def resolve_feedback(
             elif identity in targets:
                 node = targets[identity]
             else:
-                raise ValueError("反馈目标没有对应的已学习消息")
+                # 反馈写入时已核对目标是已学节点；规则收窄后重放不再学的旧节点（如自动输入），其反馈随之失效。
+                continue
             (remember if item.action == "remember" else forget).add(node)
     if remember & forget:
         raise ValueError("同一样本不能同时记住和遗忘同一节点")
