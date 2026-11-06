@@ -3,6 +3,7 @@ from __future__ import annotations
 from collections.abc import Callable, Mapping
 from contextlib import ExitStack, AsyncExitStack
 from dataclasses import dataclass
+from typing import Any
 
 from core.common.file_io import run_file_io
 
@@ -370,7 +371,14 @@ class _UserInputs:
     ) -> Callable[..., MessageWriter]:
         if self._writers._user_inputs is not self:  # pyright: ignore[reportPrivateUsage]
             raise WriterExpired("用户输入授权已释放")
-        return self._writers._bind(  # pyright: ignore[reportPrivateUsage]
+        bound = self._writers._bind(  # pyright: ignore[reportPrivateUsage]
             ctx, author=Actor.USER.value, source=source, body_types=(Input,),
             content=content, part_metadata=part_metadata,
         )
+
+        # 授权释放后不再打开新写入器；来源每次操作都重新打开，已打开的写入器只活一次操作。
+        def open(*args: Any, **kwargs: Any) -> MessageWriter:
+            if self._writers._user_inputs is not self:  # pyright: ignore[reportPrivateUsage]
+                raise WriterExpired("用户输入授权已释放")
+            return bound(*args, **kwargs)
+        return open

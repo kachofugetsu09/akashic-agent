@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 from collections.abc import AsyncGenerator, Awaitable, Callable, Mapping
 from dataclasses import dataclass
+from typing import Any
 
 from agent.plugin_composition import Context, Effect
 from plugins.channels.contract import CHANNEL_INPUT_V2 as CHANNEL_INPUT, ChannelInboundMessage
@@ -124,11 +125,17 @@ class Sources:
         content: Mapping[str, Callable[[ContentPart], ContentReferences]],
         part_metadata: bool = False,
     ) -> Callable[..., MessageWriter]:
-        """只有登记该来源的插件能取得它的用户输入写入器；登记撤销后不能再绑定。"""
+        """只有登记该来源的插件能取得它的用户输入写入器；登记撤销后不能再打开新的写入器。"""
         registration = self._items.get(name)
         if registration is None or registration.source.context is not ctx:
             raise PermissionError("用户输入只属于已登记的来源: " + name)
-        return self._user_inputs.bind(ctx, source=name, content=content, part_metadata=part_metadata)
+        bound = self._user_inputs.bind(ctx, source=name, content=content, part_metadata=part_metadata)
+
+        def open(*args: Any, **kwargs: Any) -> MessageWriter:
+            if self._items.get(name) is not registration:
+                raise PermissionError("来源登记已撤销: " + name)
+            return bound(*args, **kwargs)
+        return open
 
     def entries(self) -> tuple[Source, ...]:
         return tuple(
