@@ -15,7 +15,7 @@ from plugins.models.contract import (
     TransportError,
 )
 from plugins.models.contract import BoundChatModel
-from plugins.ledger.contract import CallRef, ContentPart, Control, Message, Output, ToolCall, ToolResult
+from plugins.ledger.contract import CallRef, ContentPart, Control, Message, Output, ToolCall, ToolResult, origin
 from plugins.ledger.contract import body_to_dict
 from plugins.turn_projection.contract import TurnProjection
 
@@ -30,7 +30,7 @@ PROMPT = """更新当前长任务的上下文压缩摘要。
 只记录输入中已经出现的事实，不补充猜测，不把计划写成已完成。
 摘要只替代已结算的旧消息；完整原文和工具结果仍保留。
 对照 [Previous summary] 与 [Source messages]：已在本次消息中完成、解决或改道的事项，必须从 ### In Progress、### Blocked、## Next Steps 移入 ### Done 或移除，不得把已结束的阻塞和旧待办留在活跃章节。
-用户消息是理解目标、要求、偏好和关系的核心证据。只有 author=user 的原话能够建立这些用户事实；其余作者是插件自动产生的输入，不是用户原话。
+用户消息是理解目标、要求、偏好和关系的核心证据。只有 actor=user 的原话能够建立这些用户事实；actor=automation 是插件自动产生的输入，不是用户原话。
 助手消息只记录助手的判断、计划和执行过程；不得用助手转述或猜测补全用户没有表达的上下文。
 区分用户原话、助手判断及工具/后台结果，保留重要来源身份；转述不能升级成用户事实或偏好。
 必须严格使用以下标题，不得增加标题：
@@ -83,7 +83,7 @@ def recoverable(error: BaseException) -> bool:
 
 
 def source_text(messages: Sequence[Message], *, excerpt: int | None = None) -> str:
-    """把精确原文作为低信任资料；不把模型私有 replay 当成待学习正文。"""
+    """把精确原文作为低信任资料；不把模型私有 replay 当成待学习正文。actor 是 Ledger 判定的主体，模型不必再解析作者。"""
     rows: list[dict[str, object]] = []
     for message in messages:
         body = message.body
@@ -96,7 +96,7 @@ def source_text(messages: Sequence[Message], *, excerpt: int | None = None) -> s
             ))
         data = body_to_dict(body)
         rows.append({"message_id": message.message_id, "source": message.source, "author": message.author,
-                     "seq": message.seq, "body": data if excerpt is None else _excerpt(data, excerpt)})
+                     "actor": origin(message).actor.value, "seq": message.seq, "body": data if excerpt is None else _excerpt(data, excerpt)})
     return json.dumps(rows, ensure_ascii=False, separators=(",", ":"))
 
 

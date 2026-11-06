@@ -9,7 +9,7 @@ from pydantic import BaseModel, ConfigDict, Field
 from agent.plugin_composition import ServiceKey
 from plugins.ledger.contract import Bindings
 from plugins.ledger.contract import MessageCatalog, MessageEmbeddings
-from plugins.ledger.contract import ContentPart, Input, Message, Output, ToolCall, ToolResult
+from plugins.ledger.contract import Actor, ContentPart, Input, Message, Output, ToolCall, ToolResult, is_user_input, origin
 from ._boundaries import PostCommitReader, TOOLS, TurnProjection
 from .domain.model import Turn, TurnFeedback
 from .infrastructure.consumption import Applied, Consumption, message_nodes
@@ -45,8 +45,11 @@ class Learning:
         self._post_commit_effect = post_commit_effect
 
     def text(self, message: Message) -> str:
-        """只连接可见正文；控制、工具协议和内部模型事实不成为问答文本。"""
-        if not isinstance(message.body, (Input, Output)):
+        """只连接用户输入与模型回答的可见正文；插件自动写入的输入、控制与工具协议不成为问答文本。"""
+        if isinstance(message.body, Input):
+            if not is_user_input(message):
+                return ""
+        elif not isinstance(message.body, Output) or origin(message).actor is not Actor.MODEL:
             return ""
         return "".join(
             part.value for part in message.body.parts
