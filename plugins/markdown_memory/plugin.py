@@ -463,6 +463,35 @@ def _surfaced_text(docs: list[str], texts: Mapping[str, str], ages: Mapping[str,
     return "\n\n".join(parts)
 
 
+def _surfaced_reminders(text: str) -> tuple[Mapping[str, object], ...]:
+    return (({"name": "markdown_memory", "priority": 200, "text": text},) if text else ())
+
+
+def _committed_input_ids(
+    snapshot: tuple[Message, ...],
+    covered_ids: frozenset[str],
+    current_input_id: str,
+) -> set[str]:
+    """收集本代未进入压缩摘要、且已产生 Output 的历史用户 Input 身份。"""
+    committed_ids: set[str] = set()
+    latest_user_by_source: dict[str, str] = {}
+    for message in snapshot:
+        if isinstance(message.body, Input) and message.author == "user":
+            latest_user_by_source[message.source] = message.message_id
+            continue
+        if not isinstance(message.body, Output) or message.message_id in covered_ids:
+            continue
+        facts = next((cast(Mapping[str, object], raw) for part in message.body.parts
+                      if isinstance(part, ContentPart) and part.kind == "model.facts"
+                      and isinstance(raw := cast(object, part.value), Mapping)), None)
+        input_id = (cast(str, facts["reminder_input_id"])
+                    if facts is not None and isinstance(facts.get("reminder_input_id"), str)
+                    else latest_user_by_source.get(message.source))
+        if input_id is not None and input_id != current_input_id:
+            committed_ids.add(input_id)
+    return committed_ids
+
+
 def _scope_line(workspace: Workspace) -> str:
     folder = workspace.folder()
     if workspace.scope is None:
@@ -713,7 +742,6 @@ async def apply(ctx: Context) -> None:
 
     root = ctx.workspace_root("memory")
     frozen: dict[tuple[str, str], MaterialData] = {}
-    shown: dict[tuple[str, str], set[str]] = {}
     surfaced: dict[str, tuple[Mapping[str, object], ...]] = {}
 
     async def prepare(snapshot: tuple[Message, ...], source: str) -> MaterialData:
@@ -734,39 +762,47 @@ async def apply(ctx: Context) -> None:
             while len(frozen) > 64:
                 del frozen[next(iter(frozen))]
         # 3. 相关主题随当前用户 Input 浮现为可回放 reminder，不改变 system 前缀。
-        reminders = await surface(snapshot, key, scope, current)
+        covered: frozenset[str] = (
+            frozenset(cast(tuple[str, ...], record.source_message_ids))
+            if record is not None else frozenset()
+        )
+        reminders = await surface(snapshot, source, covered, scope, current)
         return {**material, "reminders": reminders} if reminders else material
 
-    async def surface(snapshot: tuple[Message, ...], key: tuple[str, str], scope: str | None,
+    def remember_surfaced(input_id: str, reminders: tuple[Mapping[str, object], ...]) -> tuple[Mapping[str, object], ...]:
+        surfaced[input_id] = reminders
+        while len(surfaced) > 256:
+            del surfaced[next(iter(surfaced))]
+        return reminders
+
+    async def surface(snapshot: tuple[Message, ...], source: str, covered: frozenset[str], scope: str | None,
                       current: MarkdownProfileStore) -> tuple[Mapping[str, object], ...]:
         user = next((item for item in reversed(snapshot)
-                     if isinstance(item.body, Input) and item.author == "user"), None)
+                     if item.source == source and isinstance(item.body, Input) and item.author == "user"), None)
         if user is None or config.surface_limit == 0:
             return ()
-        # 同一 Input 的后续工具步骤复用首次结果；同一压缩代内同一主题只浮现一次。
+        # 同一 Input 的后续工具步骤（含跨重启续跑）复用首次持久结果；本代已提交 Output 的主题不重复浮现。
         if (hit := surfaced.get(user.message_id)) is not None:
             return hit
+        persisted = await run_file_io(lambda: current.read_surfaced(user.message_id))
+        if persisted is not None:
+            return remember_surfaced(user.message_id, _surfaced_reminders(persisted))
+        committed_ids = _committed_input_ids(snapshot, covered, user.message_id)
         assert isinstance(user.body, Input)
         query = " ".join(str(part.value) for part in user.body.parts
                          if isinstance(part, ContentPart) and part.kind == "text")
         async with profile_lock(lock_path, create=False):
-            workspace = await run_file_io(lambda: current.workspace(scope))
-        seen = shown.setdefault(key, set())
+            workspace, seen = await run_file_io(
+                lambda: (current.workspace(scope), current.read_surfaced_docs(committed_ids)),
+            )
         candidates = {doc: text for doc, text in surfaceable(workspace.texts, workspace.folder()).items()
                       if doc not in seen}
         docs = [doc for doc, score in rank(query, candidates) if score >= config.surface_min_score]
         docs = docs[:config.surface_limit]
         ages = await run_file_io(lambda: current.ages_days(docs))
-        seen.update(docs)
-        reminder: Mapping[str, object] = {"name": "markdown_memory", "priority": 200,
-                                          "text": _surfaced_text(docs, workspace.texts, ages, config.surface_chars)}
-        reminders: tuple[Mapping[str, object], ...] = (reminder,) if docs else ()
-        surfaced[user.message_id] = reminders
-        while len(surfaced) > 256:
-            del surfaced[next(iter(surfaced))]
-        while len(shown) > 256:
-            del shown[next(iter(shown))]
-        return reminders
+        text = _surfaced_text(docs, workspace.texts, ages, config.surface_chars) if docs else ""
+        await run_file_io(lambda: current.save_surfaced(user.message_id, docs, text))
+        return remember_surfaced(user.message_id, _surfaced_reminders(text))
 
     async def follow(catalog: MessageCatalog) -> None:
         """模型失败时保留原游标，关闭订阅后延时重读，其他会话继续处理。"""

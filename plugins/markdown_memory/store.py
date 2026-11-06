@@ -239,7 +239,44 @@ class MarkdownProfileStore:
                     seq INTEGER NOT NULL,
                     fingerprint TEXT NOT NULL
                 )""")
+            _ = conn.execute("""CREATE TABLE IF NOT EXISTS surfaced_inputs (
+                    input_id TEXT PRIMARY KEY,
+                    docs TEXT NOT NULL,
+                    text TEXT NOT NULL,
+                    updated_at INTEGER NOT NULL
+                )""")
             conn.commit()
+
+    def read_surfaced(self, input_id: str) -> str | None:
+        with closing(sqlite3.connect(str(self.receipts_path), timeout=30.0)) as conn:
+            row = conn.execute("SELECT text FROM surfaced_inputs WHERE input_id=?", (input_id,)).fetchone()
+        return str(row[0]) if row is not None else None
+
+    def read_surfaced_docs(self, input_ids: set[str]) -> set[str]:
+        if not input_ids:
+            return set()
+        marks = ",".join("?" for _ in input_ids)
+        with closing(sqlite3.connect(str(self.receipts_path), timeout=30.0)) as conn:
+            rows = conn.execute(f"SELECT docs FROM surfaced_inputs WHERE input_id IN ({marks})", tuple(input_ids)).fetchall()
+        docs: set[str] = set()
+        for (raw,) in rows:
+            if isinstance(raw, str):
+                items = cast(Any, json.loads(raw))
+                if isinstance(items, list):
+                    docs.update(str(item) for item in cast(list[object], items) if isinstance(item, str))
+        return docs
+
+    def save_surfaced(self, input_id: str, docs: list[str], text: str) -> None:
+        encoded = json.dumps(docs, ensure_ascii=False, separators=(",", ":"))
+        with closing(sqlite3.connect(str(self.receipts_path), timeout=30.0)) as conn, conn:
+            _ = conn.execute(
+                "INSERT OR IGNORE INTO surfaced_inputs (input_id, docs, text, updated_at) VALUES (?, ?, ?, ?)",
+                (input_id, encoded, text, int(time.time())),
+            )
+            _ = conn.execute(
+                "DELETE FROM surfaced_inputs WHERE input_id NOT IN ("
+                "SELECT input_id FROM surfaced_inputs ORDER BY updated_at DESC, rowid DESC LIMIT 1024)"
+            )
 
     # 跟随检查点只记录已处理完的位置，只可能落后；投影版本或来源配置变化时整体作废。
     def read_cursors(self, fingerprint: str) -> dict[str, int]:
