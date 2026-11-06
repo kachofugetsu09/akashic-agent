@@ -111,7 +111,8 @@ input {
   transition: box-shadow var(--ak-sys-duration-short) var(--ak-sys-motion-standard);
 }
 
-.chat-shell {
+.chat-shell,
+.chat-sidebar {
   /* Product aliases let shared message CSS follow one brand contract. */
   --chat-ink: var(--ak-ink-primary);
   --chat-muted: var(--ak-ink-secondary);
@@ -119,14 +120,17 @@ input {
   --chat-line: var(--ak-rule-subtle);
   --chat-chip: var(--ak-paper-sheet);
   --chat-lift: var(--ak-paper-editing);
-  --chat-group-gap: 16px;
-  --chat-rail-inline: 12px;
-  --chat-rail-width: clamp(17rem, 23vw, 20rem);
-  --chat-type-control: 0.875rem;
+  --chat-group-gap: 14px;
+  --chat-rail-inline: 10px;
+  --chat-rail-width: clamp(16.5rem, 22vw, 19.5rem);
+  --chat-type-control: 0.84375rem;
   --chat-type-caption: 0.75rem;
   --chat-type-body: 0.9375rem;
-  --chat-type-section: 0.8125rem;
+  --chat-type-section: 0.75rem;
   --chat-type-micro: 0.6875rem;
+}
+
+.chat-shell {
   display: grid;
   grid-template-columns: minmax(0, 1fr);
   grid-template-rows: minmax(0, 1fr);
@@ -567,6 +571,10 @@ input {
   color: var(--chat-faint);
 }
 
+.chat-sidebar--entry {
+  background: var(--ak-color-bg-surface-low, color-mix(in oklab, var(--ak-ink-primary) 2.2%, var(--ak-paper-canvas)));
+}
+
 .chat-sidebar--entry .conversation-navigation {
   color: var(--chat-ink);
   background: transparent;
@@ -586,6 +594,9 @@ input {
 /* 侧栏只有一条左竖线：rail-inline + 10px。分组标题、目的地、底部动作都落到它。 */
 .chat-sidebar--entry .conversation-navigation__heading--section {
   padding-inline: calc(var(--chat-rail-inline) + 10px);
+  color: var(--chat-faint);
+  font-size: var(--chat-type-section);
+  font-weight: 500;
 }
 
 /* 带操作钮的分组标题行：标题落左竖线，操作贴右缘。 */
@@ -626,30 +637,36 @@ input {
 }
 
 .chat-sidebar--entry .conversation-session {
-  min-height: 34px;
+  min-height: 30px;
   border-radius: var(--ak-radius-sm);
-  padding-block: 4px;
+  padding-block: 3px;
   padding-inline: 10px;
 }
 
 .chat-sidebar--entry .conversation-session:focus-visible,
 .chat-sidebar--entry .navigation-menu-row[data-menu-open] > .conversation-session:not(.active) {
+  color: var(--chat-ink);
   background: color-mix(in oklab, var(--ak-ink-primary) 5%, transparent);
 }
 @media (hover: hover) {
   .chat-sidebar--entry .conversation-session:hover,
   .chat-sidebar--entry .navigation-menu-row:hover > .conversation-session:not(.active) {
+    color: var(--chat-ink);
     background: color-mix(in oklab, var(--ak-ink-primary) 5%, transparent);
   }
 }
 
 .chat-sidebar--entry .conversation-session.active {
   color: var(--chat-ink);
-  background: color-mix(in oklab, var(--ak-ink-primary) 8%, transparent);
+  background: color-mix(in oklab, var(--ak-ink-primary) 7.5%, transparent);
 }
 
 .chat-sidebar--entry .conversation-session__title strong {
-  font-weight: 500;
+  font-weight: 450;
+}
+
+.chat-sidebar--entry .conversation-session.active .conversation-session__title strong {
+  font-weight: 550;
 }
 
 .chat-sidebar--entry .conversation-session__title time,
@@ -757,8 +774,8 @@ input {
   top: 50%;
   translate: 0 -50%;
   display: grid;
-  width: 40px;
-  height: 40px;
+  width: 30px;
+  height: 30px;
   place-items: center;
   border: 0;
   border-radius: var(--ak-radius-sm);
@@ -768,6 +785,9 @@ input {
   cursor: pointer;
   opacity: 0;
   pointer-events: none;
+  transition:
+    opacity var(--ak-sys-duration-snap, 120ms) var(--ak-sys-motion-standard),
+    color var(--ak-sys-duration-short) var(--ak-sys-motion-standard);
 }
 
 /* ⋯ 用 mask 绘制：与 Lucide ellipsis 同一矢量图形、跟随 currentColor，
@@ -820,7 +840,7 @@ input {
   .navigation-menu-row > .conversation-session:focus-visible + .navigation-menu-trigger,
   .navigation-menu-row > .navigation-group__open:focus-visible ~ .navigation-menu-trigger { opacity: 1; pointer-events: auto; }
   .navigation-menu-row:hover > .conversation-session,
-  .navigation-menu-row > .conversation-session:focus-visible { padding-inline-end: 44px; }
+  .navigation-menu-row > .conversation-session:focus-visible { padding-inline-end: 36px; }
 }
 
 :where([data-chat-width~="820"], [data-chat-touch]) {
@@ -939,21 +959,21 @@ input {
   min-width: 0;
   flex: 0 0 auto;
   align-content: start;
-  gap: 2px;
-  padding-block: 0 4px;
+  gap: 1px;
+  padding-block: 0 6px;
   padding-inline: var(--chat-rail-inline);
 }
 
 .navigation-section__header {
   display: flex;
-  min-height: 32px;
+  min-height: 26px;
   align-items: center;
   justify-content: space-between;
   padding-inline: 10px 4px;
-  color: var(--chat-muted);
+  color: var(--chat-faint);
   font-size: var(--chat-type-section);
   line-height: 1rem;
-  font-weight: 600;
+  font-weight: 500;
 }
 
 .navigation-section__icon {
@@ -967,6 +987,9 @@ input {
   color: var(--chat-muted);
   background: transparent;
   cursor: pointer;
+  transition:
+    background-color var(--ak-sys-duration-short) var(--ak-sys-motion-standard),
+    color var(--ak-sys-duration-short) var(--ak-sys-motion-standard);
 }
 
 .navigation-section__icon:focus-visible {
@@ -986,7 +1009,7 @@ input {
   display: flex;
   width: 100%;
   min-width: 0;
-  min-height: 32px;
+  min-height: 30px;
   align-items: center;
   gap: 8px;
   border: 0;
@@ -995,9 +1018,12 @@ input {
   color: var(--chat-ink);
   background: transparent;
   font: inherit;
-  font-size: 0.875rem;
+  font-size: var(--chat-type-control);
   text-align: start;
   cursor: pointer;
+  transition:
+    background-color var(--ak-sys-duration-short) var(--ak-sys-motion-standard),
+    color var(--ak-sys-duration-short) var(--ak-sys-motion-standard);
 }
 
 .navigation-section__empty {
@@ -1028,7 +1054,7 @@ input {
 .navigation-group__toggle {
   display: grid;
   width: 28px;
-  min-height: 36px;
+  min-height: 30px;
   flex: 0 0 auto;
   place-items: center;
   border: 0;
@@ -1036,6 +1062,9 @@ input {
   color: var(--chat-muted);
   background: transparent;
   cursor: pointer;
+  transition:
+    background-color var(--ak-sys-duration-short) var(--ak-sys-motion-standard),
+    color var(--ak-sys-duration-short) var(--ak-sys-motion-standard);
 }
 
 .navigation-group__toggle:focus-visible {
@@ -1049,9 +1078,9 @@ input {
 
 .navigation-group__open {
   width: auto;
-  min-height: 36px;
+  min-height: 30px;
   flex: 1;
-  padding-inline: 4px;
+  padding-inline: 10px;
 }
 
 .navigation-group__open[aria-disabled="true"],
@@ -1060,15 +1089,40 @@ input {
 .navigation-group__open svg { flex: 0 0 auto; }
 .navigation-group.active > .navigation-group__row { background: var(--chat-chip); border-radius: var(--ak-radius-sm); }
 
-/* 有悬停的指针不在项目行上冒出带框的“+”：展开后第一行就是“新对话”。 */
+/* 桌面端项目行尾同格浮现“+”与“⋯”：平时显示折叠箭头，悬停或键盘聚焦时箭头让位、新建与菜单按钮 120ms 淡入。 */
 @media (hover: hover) and (pointer: fine) {
-  .navigation-group__new-chat { display: none; }
-}
+  .navigation-group__new-chat {
+    position: absolute;
+    inset-inline-end: 30px;
+    top: 50%;
+    translate: 0 -50%;
+    width: 26px;
+    height: 26px;
+    opacity: 0;
+    pointer-events: none;
+    transition:
+      opacity var(--ak-sys-duration-snap, 120ms) var(--ak-sys-motion-standard),
+      background-color var(--ak-sys-duration-short) var(--ak-sys-motion-standard),
+      color var(--ak-sys-duration-short) var(--ak-sys-motion-standard);
+  }
 
-.group-session--new { color: var(--chat-muted); }
-.group-session--new > svg { width: 18px; flex: 0 0 18px; }
-/* 会话行的标题前有状态槽位，“新对话”的文字与它对齐。 */
-.group-session--new > span { padding-inline-start: 3px; }
+  .navigation-group__row:is(:hover, [data-menu-open]) > .navigation-group__new-chat,
+  .navigation-group__row > .navigation-group__open:focus-visible ~ .navigation-group__new-chat,
+  .navigation-group__new-chat:focus-visible {
+    opacity: 1;
+    pointer-events: auto;
+  }
+
+  .navigation-group__row:is(:hover, [data-menu-open]) .navigation-group__chevron,
+  .navigation-group__row > .navigation-group__open:focus-visible .navigation-group__chevron {
+    opacity: 0;
+  }
+
+  .navigation-group__row:is(:hover, [data-menu-open]) > .navigation-group__open,
+  .navigation-group__row > .navigation-group__open:focus-visible {
+    padding-inline-end: 64px;
+  }
+}
 
 /* 项目内会话超过上限时收进“展开更多”：弱化成辅助行，箭头随展开翻转。 */
 .group-session--more { color: var(--chat-muted); }
@@ -1076,22 +1130,33 @@ input {
 .group-session--more[aria-expanded="true"] > svg { transform: rotate(180deg); }
 .group-session--more > span { padding-inline-start: 3px; }
 
-/* 分组内置顶：行尾一枚小图钉，悬停或聚焦时让位给行菜单。
+/* 行尾状态点与置顶图钉：悬停或聚焦时让位给行菜单。
    键盘聚焦直接用 :focus-visible（原生键盘语义，只重算焦点行）：祖先模态类翻转会
    全树重算（2002 行实测约 1.1s），:has(:focus-visible) 则每次按键重算全部行。 */
 .conversation-session__pin { flex: 0 0 auto; color: var(--chat-faint); }
-.navigation-menu-row:is(:hover, [data-menu-open]) .conversation-session__pin,
-.navigation-menu-row > .conversation-session:focus-visible .conversation-session__pin { visibility: hidden; }
-.navigation-group__sessions .conversation-session { min-height: 32px; }
+.navigation-menu-row:is(:hover, [data-menu-open]) :is(.conversation-session__pin, .conversation-session > .session-status-slot),
+.navigation-menu-row > .conversation-session:focus-visible :is(.conversation-session__pin, .session-status-slot) { visibility: hidden; }
+.navigation-group__sessions .conversation-session {
+  min-height: 28px;
+  padding-inline: 8px 10px;
+}
+.chat-sidebar--entry .navigation-group__sessions .conversation-session__title strong,
+.navigation-group__sessions .conversation-session__title strong,
+.group-session {
+  font-size: 0.8125rem;
+}
 
 .navigation-group__chevron {
   flex: 0 0 auto;
-  color: var(--chat-muted);
-  transition: rotate var(--ak-sys-duration-short) var(--ak-sys-motion-standard);
+  color: var(--chat-faint);
+  transition:
+    rotate var(--ak-sys-duration-snap, 120ms) var(--ak-sys-motion-standard),
+    opacity var(--ak-sys-duration-snap, 120ms) var(--ak-sys-motion-standard);
 }
 
-.navigation-group__toggle[aria-expanded="true"] .navigation-group__chevron {
+:is(.navigation-group__open, .navigation-group__toggle)[aria-expanded="true"] .navigation-group__chevron {
   rotate: 90deg;
+  transition-duration: var(--ak-sys-duration-expand, 200ms), var(--ak-sys-duration-snap, 120ms);
 }
 
 .navigation-group__name {
@@ -1120,19 +1185,58 @@ input {
   white-space: nowrap;
 }
 
+/* 项目子树折叠过渡：展开 200ms (--ak-sys-duration-expand) 平滑铺开，收起 120ms (--ak-sys-duration-snap) 迅速让位。 */
+.navigation-group__disclosure {
+  display: grid;
+  grid-template-rows: 0fr;
+  transition: grid-template-rows var(--ak-sys-duration-snap, 120ms) var(--ak-sys-motion-standard);
+}
+
+.navigation-group__disclosure.open {
+  grid-template-rows: 1fr;
+  transition-duration: var(--ak-sys-duration-expand, 200ms);
+  @starting-style {
+    grid-template-rows: 0fr;
+  }
+}
+
+.navigation-group__disclosure-inner {
+  min-width: 0;
+  min-height: 0;
+  overflow: clip;
+  opacity: 0;
+  translate: 0 -4px;
+  transition:
+    opacity var(--ak-sys-duration-snap, 120ms) ease-out,
+    translate var(--ak-sys-duration-snap, 120ms) var(--ak-sys-motion-standard);
+}
+
+.navigation-group__disclosure.open > .navigation-group__disclosure-inner {
+  opacity: 1;
+  translate: 0 0;
+  transition-duration: var(--ak-sys-duration-expand, 200ms), var(--ak-sys-duration-expand, 200ms);
+  @starting-style {
+    opacity: 0;
+    translate: 0 -4px;
+  }
+}
+
 .navigation-group__sessions {
   display: grid;
   min-width: 0;
   gap: 1px;
-  /* 与项目行的展开箭头同宽：状态槽位落在文件夹图标正下方，会话标题与项目名左对齐。 */
-  padding-inline-start: var(--group-toggle-width, 28px);
+  margin-block: 1px 2px;
+  /* 1px 树形细线居中落在上方项目文件夹图标（10px + 18px/2 = 19px）下方，子会话标题与项目名（36px）严格左对齐。 */
+  margin-inline-start: 18px;
+  padding-inline-start: 9px;
+  border-inline-start: 1px solid var(--chat-line);
 }
 
 .navigation-group__icon { display: grid; width: 18px; height: 18px; flex: 0 0 18px; place-items: center; }
 
 .navigation-group__hint {
   padding-block: 4px;
-  padding-inline: 10px;
+  padding-inline: 8px;
   color: var(--chat-faint);
   font-size: 0.75rem;
 }
@@ -1143,12 +1247,13 @@ input {
 }
 
 .group-session {
-  gap: 10px;
-  padding-inline: 4px 10px;
+  min-height: 28px;
+  gap: 8px;
+  padding-inline: 8px 10px;
 }
 
 .group-session.active {
-  background: color-mix(in oklab, var(--ak-ink-primary) 8%, transparent);
+  background: color-mix(in oklab, var(--ak-ink-primary) 7.5%, transparent);
 }
 
 :where([data-chat-width~="820"], [data-chat-touch]) {
@@ -1160,6 +1265,7 @@ input {
   .navigation-group__open,
   .navigation-group__toggle,
   .group-session,
+  .navigation-group__sessions .conversation-session,
   .navigation-section__icon { min-height: 44px; }
   .navigation-section__header > .navigation-section__icon { width: 44px; }
   /* 排序钮放到 44px 后，分组标题行不再叠 18px 上内边距：热区不变，搜索框到"最近会话"文字的空白 62→44px。 */
@@ -1169,21 +1275,58 @@ input {
 /* 新会话空态的分组条：新会话继承当前分组，这里可以换到另一个或不归属；首条消息发出后随空态一起消失。 */
 .new-chat-scope {
   display: inline-flex;
+  width: fit-content;
   max-width: 100%;
-  min-height: 44px;
+  min-height: 32px;
   align-self: flex-start;
+  justify-self: start;
   align-items: center;
-  gap: 8px;
-  border: 0;
-  border-radius: var(--ak-radius-full);
-  padding-inline: 12px 10px;
+  gap: 6px;
+  border: 1px solid var(--ak-rule-subtle);
+  border-radius: var(--ak-radius-sm);
+  padding-inline: 10px 8px;
   color: var(--ak-ink-primary);
-  background: transparent;
+  background: color-mix(in oklab, var(--ak-ink-primary) 3.5%, var(--ak-paper-canvas));
   font: inherit;
-  font-size: 0.875rem;
+  font-size: 0.8125rem;
   cursor: pointer;
+  transition:
+    background-color var(--ak-sys-duration-short) var(--ak-sys-motion-standard),
+    border-color var(--ak-sys-duration-short) var(--ak-sys-motion-standard),
+    color var(--ak-sys-duration-short) var(--ak-sys-motion-standard);
 }
-.new-chat-scope[data-state="open"] { background: var(--ak-paper-sheet); }
+@media (hover: hover) {
+  .new-chat-scope:hover {
+    background: var(--ak-paper-sheet);
+    border-color: var(--ak-rule-default);
+  }
+}
+.new-chat-scope[data-state="open"] {
+  background: var(--ak-paper-sheet);
+  border-color: var(--ak-rule-default);
+}
+:where([data-chat-width~="820"], [data-chat-touch]) {
+  .new-chat-scope {
+    min-height: 44px;
+    padding-inline: 12px 10px;
+    font-size: 0.875rem;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .navigation-group__disclosure,
+  .navigation-group__disclosure-inner,
+  .navigation-group__chevron,
+  .navigation-group__new-chat,
+  .navigation-menu-trigger,
+  .navigation-section__icon,
+  .navigation-group__open,
+  .navigation-group__toggle,
+  .group-session,
+  .new-chat-scope {
+    transition-duration: 0ms !important;
+  }
+}
 .new-chat-scope__dimension { color: var(--chat-muted); }
 .new-chat-scope__option { display: flex; min-width: 0; align-items: center; gap: 8px; }
 .new-chat-scope__option strong { min-width: 0; font-weight: 550; }

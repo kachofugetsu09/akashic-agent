@@ -8,12 +8,13 @@ const STATUS_LABEL: Record<SessionStatus, string> = { running: "正在回复", u
 // 3x3 环去掉中心：每个格子在环上的次序，决定明暗依次传递的方向。
 const SWIRL_RING: readonly (number | null)[] = [0, 1, 2, 7, null, 3, 6, 5, 4];
 
-/** 行首固定宽度的状态槽位；无状态时留白，状态出现或消失都不会让标题位移。 */
+/** 行尾状态标记：空闲不占位，运行中是缓慢起伏的 Swirl，未读是一枚淡墨圆点；悬停时让位给行菜单。 */
 export function SessionStatusMark({ status }: { status?: SessionStatus }) {
+  if (!status) return null;
   return <span className="session-status-slot">
     {status === "running" ? <SessionSwirl /> : null}
     {status === "unread" ? <i className="session-status-dot" aria-hidden="true" /> : null}
-    {status ? <span className="session-status-label">{STATUS_LABEL[status]}</span> : null}
+    <span className="session-status-label">{STATUS_LABEL[status]}</span>
   </span>;
 }
 

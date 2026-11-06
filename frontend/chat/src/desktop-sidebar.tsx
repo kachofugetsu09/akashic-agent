@@ -103,10 +103,14 @@ const SEARCH_HIGHLIGHT = "sidebar-search";
 
 const NAVIGATION_ROW = "button.conversation-session, button.group-session, button.navigation-group__open";
 
+function isUsableNavigationRow(row: HTMLButtonElement): boolean {
+  return !row.disabled && row.offsetParent !== null && !row.closest("[inert], [aria-hidden='true']");
+}
+
 // 侧栏里可见、可用的导航行主按钮，按文档顺序：置顶、插件分组（含组内会话）、最近会话。
 function sessionRows(root: HTMLElement | null): HTMLButtonElement[] {
   return Array.from(root?.querySelector(".chat-sidebar__navigation")?.querySelectorAll<HTMLButtonElement>(NAVIGATION_ROW) ?? [])
-    .filter((row) => row.offsetParent !== null && !row.disabled);
+    .filter(isUsableNavigationRow);
 }
 
 // 会话列表只占一个 Tab 停靠点：键盘上次停过的行；它被搜索过滤或项目折叠卸掉后回退到当前会话，再回退到首个可用行。
@@ -119,8 +123,8 @@ function useRovingTabStop(sidebarRef: RefObject<HTMLElement | null>) {
     let last: HTMLButtonElement | null = null;
     const sync = () => {
       const rows = [...navigation.querySelectorAll<HTMLButtonElement>(NAVIGATION_ROW)];
-      // 搜索隐藏（hidden 属性）的行不可聚焦，不能继续持 tabindex="0"，否则列表掉出 Tab 序列。
-      const usable = rows.filter((row) => !row.disabled && row.offsetParent !== null);
+      // 搜索隐藏（hidden 属性）或正在收起（inert/aria-hidden）的行不可聚焦，不能继续持 tabindex="0"，否则列表掉出 Tab 序列。
+      const usable = rows.filter(isUsableNavigationRow);
       const stop = (last && usable.includes(last) ? last : null)
         ?? usable.find((row) => row.getAttribute("aria-current") === "true") ?? usable[0];
       // 显式写属性：没写 tabindex 的按钮本身就是 0，按属性比较才不会漏掉。
@@ -138,7 +142,12 @@ function useRovingTabStop(sidebarRef: RefObject<HTMLElement | null>) {
       last = event.target;
       sync();
     };
-    observer.observe(navigation, { childList: true, subtree: true, attributes: true, attributeFilter: ["aria-current", "disabled", "hidden"] });
+    observer.observe(navigation, {
+      childList: true,
+      subtree: true,
+      attributes: true,
+      attributeFilter: ["aria-current", "disabled", "hidden", "inert", "aria-hidden"],
+    });
     navigation.addEventListener("focusin", onFocus);
     sync();
     return () => {

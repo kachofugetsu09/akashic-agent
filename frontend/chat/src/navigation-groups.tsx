@@ -277,6 +277,24 @@ export function GroupNavigationRow({
 }) {
   // 折叠时分组行汇总会话状态，展开后状态回到各自的会话前。
   const collapsedStatus = open ? undefined : summarizeStatus(items.map((item) => item.status));
+  // 展开 200ms（@starting-style 0fr → 1fr），收起保留挂载跑完 120ms（1fr → 0fr）再卸载，
+  // 平时折叠态不占 DOM，2000 行大目录启动零额外节点。
+  const [wasOpen, setWasOpen] = useState(open);
+  const [closing, setClosing] = useState(false);
+  if (open !== wasOpen) {
+    setWasOpen(open);
+    if (!open) setClosing(true);
+    else if (closing) setClosing(false);
+  }
+  useEffect(() => {
+    if (!closing) return;
+    if (typeof window !== "undefined" && window.matchMedia("(prefers-reduced-motion: reduce)").matches) {
+      setClosing(false);
+      return;
+    }
+    const timer = window.setTimeout(() => setClosing(false), 140);
+    return () => window.clearTimeout(timer);
+  }, [closing]);
   // 项目内默认只铺前几条：一个项目攒下几十支会话时，全铺会把侧栏占满。
   // 搜索不做截断——匹配到的行都该在结果里；离开搜索后回到折叠态。
   const [allShown, setAllShown] = useState(false);
@@ -294,12 +312,6 @@ export function GroupNavigationRow({
       { label: "新建对话", icon: <Plus size={18} aria-hidden="true" />, onSelect: onNewChat },
       ...(actions ?? []),
     ]}>
-      {/* 与右侧名称按钮做同一件事，键盘只停名称一处。 */}
-      <button type="button" className="navigation-group__toggle" tabIndex={-1}
-        aria-label={`${open ? "收起" : "展开"} ${group.label} 的对话`} aria-expanded={open}
-        onClick={onToggle} disabled={searching}>
-        <ChevronRight size={14} aria-hidden="true" className="navigation-group__chevron" />
-      </button>
       {/* 搜索时只停用折叠，不禁用按钮：它是这一行唯一的键盘入口，行菜单（含"新建对话"）要靠它 Shift+F10 打开。 */}
       <button type="button" className="navigation-group__open" data-row-primary="" onClick={searching ? undefined : onToggle}
         aria-expanded={open} aria-disabled={searching || undefined}
@@ -310,39 +322,45 @@ export function GroupNavigationRow({
         <span className="navigation-group__name"><MarqueeText>{group.label}</MarqueeText></span>
         {/* 其他插件给这个取值的短标签，例如记忆范围；只放文字，没有插件时不占位。 */}
         <PluginUiSlot name="scope.badge" scope={{ dimension: groupRef.dimension, value: groupRef.id }} quiet />
+        <ChevronRight size={14} aria-hidden="true" className="navigation-group__chevron" />
       </button>
-      {/* 触屏没有悬停，项目行常驻这一枚；宽屏改用展开后的“新对话”行。键盘走行菜单（Shift+F10），不多占 Tab 停靠点。 */}
+      {/* 桌面端悬停或聚焦项目行时浮现，触屏常驻：无需先展开文件夹即可一步在该项目新建对话。 */}
       <button type="button" className="navigation-section__icon navigation-group__new-chat" aria-label={`在 ${group.label} 中新建对话`}
         data-tip="新建对话" tabIndex={-1} onClick={onNewChat}>
         <Plus size={14} aria-hidden="true" />
       </button>
     </NavigationRowMenu>
-    {open ? <nav className="navigation-group__sessions" aria-label={`${group.label} 的对话`}>
-      {/* 新对话是列表里的第一行，与会话标题左对齐，不浮在项目行上。 */}
-      {searching ? null : <button type="button" className="group-session group-session--new" onClick={onNewChat}>
-        <Plus size={14} aria-hidden="true" />
-        <span>新对话</span>
-      </button>}
-      {searching && !items.some((item) => !item.hidden) ? <small className="navigation-group__hint">没有匹配的对话</small> : null}
-      {visibleItems.map((session) => renderSession ? <Fragment key={session.id}>{renderSession(session)}</Fragment> : <button key={session.id} type="button"
-        className={`group-session ${session.active ? "active" : ""}`}
-        hidden={session.hidden || undefined}
-        aria-current={session.active ? "true" : undefined}
-        aria-busy={pendingSessionId === session.id || undefined}
-        title={session.title}
-        onClick={() => onSelectSession(session.id)}
-        onPointerEnter={() => onPrefetchSession?.(session.id)}
-        onFocus={() => onPrefetchSession?.(session.id)}>
-        <SessionStatusMark status={session.status} />
-        <span className="group-session__title"><MarqueeText>{session.title}</MarqueeText></span>
-      </button>)}
-      {/* 截断行跟在最后一条会话后面；展开后原地换成“收起”，位置不动。 */}
-      {truncated ? <button type="button" className="group-session group-session--more" aria-expanded={allShown}
-        onClick={() => setAllShown((value) => !value)}>
-        <ChevronDown size={14} aria-hidden="true" />
-        <span>{allShown ? "收起" : `展开更多（${items.length - GROUP_SESSION_LIMIT}）`}</span>
-      </button> : null}
-    </nav> : null}
+    {open || closing ? <div
+      className={`navigation-group__disclosure${open ? " open" : ""}`}
+      aria-hidden={!open}
+      inert={!open ? true : undefined}
+      onTransitionEnd={(event) => {
+        if (event.target === event.currentTarget && !open) setClosing(false);
+      }}>
+      <div className="navigation-group__disclosure-inner">
+        <nav className="navigation-group__sessions" aria-label={`${group.label} 的对话`}>
+          {searching && !items.some((item) => !item.hidden) ? <small className="navigation-group__hint">没有匹配的对话</small> : null}
+          {visibleItems.map((session) => renderSession ? <Fragment key={session.id}>{renderSession(session)}</Fragment> : <button key={session.id} type="button"
+            className={`group-session ${session.active ? "active" : ""}`}
+            hidden={session.hidden || undefined}
+            aria-current={session.active ? "true" : undefined}
+            aria-busy={pendingSessionId === session.id || undefined}
+            title={session.title}
+            onClick={() => onSelectSession(session.id)}
+            onPointerEnter={() => onPrefetchSession?.(session.id)}
+            onFocus={() => onPrefetchSession?.(session.id)}>
+            <span className="group-session__title"><MarqueeText>{session.title}</MarqueeText></span>
+            <SessionStatusMark status={session.status} />
+          </button>)}
+          {/* 截断行跟在最后一条会话后面；展开后原地换成“收起”，位置不动。 */}
+          {truncated ? <button type="button" className="group-session group-session--more" aria-expanded={allShown}
+            onClick={() => setAllShown((value) => !value)}>
+            <ChevronDown size={14} aria-hidden="true" />
+            <span>{allShown ? "收起" : `展开更多（${items.length - GROUP_SESSION_LIMIT}）`}</span>
+          </button> : null}
+        </nav>
+      </div>
+    </div> : null}
   </div>;
 }
 
