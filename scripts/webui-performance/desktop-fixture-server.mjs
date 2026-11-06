@@ -160,7 +160,7 @@ export async function startDesktopFixtureServer(root, { port = 0, historyCount =
           after_seq: lastSeq, through_seq: lastSeq + 1, next_after_seq: lastSeq + 1, has_more: false,
           items: [{
             id: draftId, seq: lastSeq + 1, session_id: sessionId,
-            timestamp: new Date().toISOString(), author: "assistant", source: "akashic",
+            timestamp: new Date().toISOString(), author: "assistant", actor: "model", source: "akashic",
             attachments: [], metadata: {},
             body: { kind: "output", parts: [{ kind: "text", value: delta.repeat(count) }], finish: "complete" },
           }],

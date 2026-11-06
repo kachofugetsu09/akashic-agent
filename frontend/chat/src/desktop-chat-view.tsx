@@ -1,4 +1,4 @@
-import { type TimelineMessage, type TimelineReply, timelineReplyGroups, timelineText, timelineToolResults, timelineInputStarts, timelineSourceKey, timelineSourceRefreshTokens } from "./message-timeline";
+import { humanInput, type TimelineMessage, type TimelineReply, timelineReplyGroups, timelineText, timelineToolResults, timelineInputStarts, timelineSourceKey, timelineSourceRefreshTokens } from "./message-timeline";
 import React, { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { useStickToBottomContext } from "use-stick-to-bottom";
 import { MaterialButton } from "../../theme/src/material-react";
@@ -42,7 +42,7 @@ const STEER_SETTLE_MS = 4000;
 function lastUserInput(messages: readonly TimelineMessage[]): string {
   for (let index = messages.length - 1; index >= 0; index -= 1) {
     const message = messages[index];
-    if (message.body.kind === "input" && message.author === "user") return timelineText(message);
+    if (humanInput(message)) return timelineText(message);
   }
   return "";
 }

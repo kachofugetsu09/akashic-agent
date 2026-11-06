@@ -29,7 +29,7 @@ let showSession = false;
 let resolveStop;
 const stopReceived = new Promise(done => { resolveStop = done; });
 const session = 'akashic:reconnect';
-const input = { id: 'reconnect-input', seq: 0, author: 'user', source: 'akashic',
+const input = { id: 'reconnect-input', seq: 0, author: 'user', actor: 'human', source: 'akashic',
   timestamp: '2026-09-30T00:00:00Z', session_id: session, attachments: [],
   body: { kind: 'input', parts: [{ kind: 'text', value: '重连后的停止验证' }] } };
 const server = createServer((req, res) => {

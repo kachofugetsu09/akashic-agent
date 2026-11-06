@@ -140,7 +140,8 @@ function mount(host: HTMLElement, context: PluginUiContext<"message.attachment">
       if (!abort.signal.aborted) fail(error instanceof Error ? error.message : String(error));
     }
   };
-  if (attachment.origin?.author === "user") {
+  // 随输入带入的网页不是 Agent 生成的，由人确认后再运行。
+  if (attachment.origin?.kind === "input") {
     const run = document.createElement("button");
     run.type = "button";
     run.textContent = `运行网页 ${attachment.filename ?? ""}`.trim();

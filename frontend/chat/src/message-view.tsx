@@ -46,7 +46,7 @@ import type {
   ToolBlock,
 } from "./chat-message";
 import type { ModelAttempt, ReplyActivity, TimelineAttachment, TimelineMessage, TimelinePart } from "./message-timeline";
-import { timelineReply, timelineToolOutput, historyTranscript, isTimelinePartVisible, needsBeforeReasoningFallback } from "./message-timeline";
+import { humanInput, timelineReply, timelineToolOutput, historyTranscript, isTimelinePartVisible, needsBeforeReasoningFallback } from "./message-timeline";
 import { MessageReplyReference } from "./message-actions";
 import { StaticMessageResponse, richRendererFallback } from "./static-message-response";
 import type { MessageResponseProps } from "@/components/ai-elements/message-response";
@@ -708,7 +708,7 @@ export function TimelineMessageView({ message, lookupMessage, toolResults, onNav
   const emptyBubble = input && !leadingContent && !leadingProcess && !afterBody && body.parts.every((part) => !isTimelinePartVisible(part)
     || (!("display" in part) && (part.kind === "artifact_ref" || (part.kind === "text" && !part.value.trim()))));
   // 不是用户写下的输入（定时任务、唤醒、子代理等任何插件发起）靠左显示成一条事件行。
-  const automatic = input && message.author !== "user" && message.author !== "legacy-attribution-unknown";
+  const automatic = input && !humanInput(message);
   return <div className={`message-row timeline-message timeline-${body.kind}${automatic ? " timeline-automatic" : ""}`}>
     {input ? attachmentList : null}
     {emptyBubble ? null : <div className={automatic ? "automatic-input" : input ? "user-bubble" : "agent-content"}>

@@ -461,7 +461,7 @@ try {
 
       const items = histories[session];
       const final = { id: 'body-final', seq: items.length, session_id: session, timestamp: at(40),
-        author: 'assistant', source: 'akashic', attachments: [], metadata: {},
+        author: 'assistant', actor: 'model', source: 'akashic', attachments: [], metadata: {},
         body: { kind: 'output', finish: 'complete', parts: [{ kind: 'text', value: FINAL_TEXT }] } };
       items.push(final);
       const push = (frame) => { log('sent', frame); for (const socket of sockets) socket.send(JSON.stringify(frame)); };
@@ -500,7 +500,7 @@ try {
     const session = 'body-inline-archive';
     const items = bodyHistory(session, true);
     const add = (id, body, attachments = []) => items.push({ id, seq: items.length, session_id: session,
-      timestamp: at(items.length), author: body.kind === 'tool_result' ? 'tool' : 'assistant', source: 'akashic',
+      timestamp: at(items.length), author: body.kind === 'tool_result' ? 'tool' : 'assistant', actor: body.kind === 'tool_result' ? 'tool' : 'model', source: 'akashic',
       metadata: {}, attachments, body });
     add('inline-file-call', { kind: 'output', finish: 'continue', parts: [
       { kind: 'tool_call', binding_id: 'fixture-tool', name: 'write', arguments: { path: 'review.txt' } },
