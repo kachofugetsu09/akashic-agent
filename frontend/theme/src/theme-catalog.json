@@ -1,10 +1,14 @@
 {
-  "version": 2,
+  "version": 3,
   "defaultThemeId": "light",
+  "families": [
+    {"id": "paper", "label": "纸感"}
+  ],
   "themes": [
     {
       "id": "light",
       "label": "纸感",
+      "family": "paper",
       "status": "stable",
       "colorScheme": "light",
       "chart": {"1": "#4c89cc", "2": "#b47825", "3": "#0f6a31", "4": "#763671", "5": "#b05457", "6": "#00898a"},
@@ -29,6 +33,7 @@
     {
       "id": "dark",
       "label": "墨纸",
+      "family": "paper",
       "status": "stable",
       "colorScheme": "dark",
       "chart": {"1": "#6fa2db", "2": "#b98749", "3": "#a1e4ae", "4": "#e1afed", "5": "#f19f91", "6": "#1c989e"},

@@ -33,7 +33,7 @@ function App(){
  const rows = [...projectSessions, ...recentSessions].map(s=>({ ...s, preview:'', active: s.id===selected }));
  return <TooltipProvider><div className="akashic-chat"><div className="chat-shell-body" style={{height:'100vh'}}>
  <DesktopSidebar surface="chat" sessions={rows} activeSessionId={selected}
- pendingSessionId="" chatReady={true} themeLabel="纸感" onSelectSession={setSelected} onNewChat={nothing} onCycleTheme={nothing}
+ pendingSessionId="" chatReady={true} onSelectSession={setSelected} onNewChat={nothing}
  navigationPins={{pins:[],sessions:[],ready:true,pending:false,error:'',reload:resolved,setPinned:resolved,expandedGroups:new Set(['project:project']),toggleGroup:nothing,expandGroup:nothing}}
  groups={{sections:[{source:{key:'projects:r1',pluginId:'projects',pluginRevision:'r1',provider:{dimension:'project',label:'项目',load:async()=>[]},context:()=>({query:resolved})},groups:[{id:'project',label:'项目甲'}]}],revision:0,ready:true,active:{dimension:'project',id:'project',label:'项目甲'},reload:nothing,startChat:nothing}} />
  <output id="selected">{selected}</output></div></div></TooltipProvider>;

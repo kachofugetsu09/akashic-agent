@@ -5,9 +5,13 @@ import * as ReactDOMClient from "react-dom/client";
 import {
   currentTheme,
   cycleTheme,
+  setThemePreference,
   subscribeTheme,
+  themeFamilies,
   themes,
+  themeSelection,
   useTheme,
+  useThemeSelection,
 } from "../../../theme/src/theme-runtime";
 import {
   MaterialButton,
@@ -18,9 +22,13 @@ import {
 const WebUi = {
   currentTheme,
   cycleTheme,
+  setThemePreference,
   subscribeTheme,
+  themeFamilies,
   themes,
+  themeSelection,
   useTheme,
+  useThemeSelection,
   MaterialButton,
   MaterialFilterChip,
   MaterialIconButton,

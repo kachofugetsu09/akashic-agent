@@ -4,9 +4,13 @@ import catalogJson from "./theme-catalog.json";
 export type ThemeStatus = "stable" | "experimental";
 export type ThemeColorScheme = "light" | "dark";
 
+/** 明暗偏好：固定亮、固定暗，或随系统外观切换。 */
+export type ThemeMode = ThemeColorScheme | "system";
+
 export interface ThemeDefinition {
   id: string;
   label: string;
+  family: string;
   status: ThemeStatus;
   colorScheme: ThemeColorScheme;
   material: Record<MaterialColorRole, string>;
@@ -14,9 +18,19 @@ export interface ThemeDefinition {
   chart: Record<ChartColorRole, string>;
 }
 
+/** 一套配色：同一组色相关系下的一个亮色主题和一个暗色主题。 */
+export interface ThemeFamily {
+  id: string;
+  label: string;
+  light: ThemeDefinition;
+  dark: ThemeDefinition;
+}
+
 export interface ThemeSelection {
   requestedThemeId: string;
   effectiveThemeId: string;
+  family: string;
+  mode: ThemeMode;
   unavailable: boolean;
 }
 
@@ -79,13 +93,15 @@ const THEME_ID_PATTERN = /^[a-z0-9][a-z0-9-]{0,63}$/;
 const HEX_COLOR_PATTERN = /^#[0-9a-f]{6}(?:[0-9a-f]{2})?$/i;
 const THEME_EVENT = "akashic-theme-change";
 const THEME_CHANNEL_NAME = "akashic.theme-sync";
+// 跟随系统的偏好写成 system-<配色>，与主题 id 共用 cookie 和同步频道。
+const SYSTEM_PREFIX = "system-";
 
 /** Validate the bundled catalog once and expose immutable theme definitions. */
-function validateCatalog(value: unknown): { defaultThemeId: string; themes: ThemeDefinition[] } {
+function validateCatalog(value: unknown): { defaultThemeId: string; themes: ThemeDefinition[]; families: ThemeFamily[] } {
   // 1. 校验目录结构与主题身份
   if (!value || typeof value !== "object") throw new Error("Theme catalog 不是对象");
-  const catalog = value as { version?: unknown; defaultThemeId?: unknown; themes?: unknown };
-  if (catalog.version !== 2 || typeof catalog.defaultThemeId !== "string" || !Array.isArray(catalog.themes)) {
+  const catalog = value as { version?: unknown; defaultThemeId?: unknown; themes?: unknown; families?: unknown };
+  if (catalog.version !== 3 || typeof catalog.defaultThemeId !== "string" || !Array.isArray(catalog.themes)) {
     throw new Error("Theme catalog 结构无效");
   }
   const themes = catalog.themes.map((raw, index) => {
@@ -96,6 +112,9 @@ function validateCatalog(value: unknown): { defaultThemeId: string; themes: Them
     }
     if (typeof theme.label !== "string" || !theme.label.trim()) {
       throw new Error(`Theme catalog themes[${index}].label 无效`);
+    }
+    if (typeof theme.family !== "string" || !THEME_ID_PATTERN.test(theme.family)) {
+      throw new Error(`Theme catalog themes[${index}].family 无效`);
     }
     if (theme.status !== "stable" && theme.status !== "experimental") {
       throw new Error(`Theme catalog themes[${index}].status 无效`);
@@ -110,6 +129,7 @@ function validateCatalog(value: unknown): { defaultThemeId: string; themes: Them
     return {
       id: theme.id,
       label: theme.label,
+      family: theme.family,
       status: theme.status,
       colorScheme: theme.colorScheme,
       material,
@@ -125,7 +145,31 @@ function validateCatalog(value: unknown): { defaultThemeId: string; themes: Them
   if (!themes.some((theme) => theme.id === catalog.defaultThemeId)) {
     throw new Error("Theme catalog 默认主题不存在");
   }
-  return { defaultThemeId: catalog.defaultThemeId, themes };
+  return { defaultThemeId: catalog.defaultThemeId, themes, families: validateFamilies(catalog.families, themes) };
+}
+
+/** 每套配色恰好有一个亮色和一个暗色主题，选择器才能只按「配色 × 明暗」两个维度切换。 */
+function validateFamilies(value: unknown, themes: ThemeDefinition[]): ThemeFamily[] {
+  if (!Array.isArray(value)) throw new Error("Theme catalog families 无效");
+  const families = value.map((raw, index) => {
+    const family = (raw ?? {}) as { id?: unknown; label?: unknown };
+    if (typeof family.id !== "string" || !THEME_ID_PATTERN.test(family.id)
+      || typeof family.label !== "string" || !family.label.trim()) {
+      throw new Error(`Theme catalog families[${index}] 无效`);
+    }
+    const members = themes.filter((theme) => theme.family === family.id);
+    const light = members.find((theme) => theme.colorScheme === "light");
+    const dark = members.find((theme) => theme.colorScheme === "dark");
+    if (members.length !== 2 || !light || !dark) {
+      throw new Error(`Theme catalog 配色 ${family.id} 需要恰好一个亮色和一个暗色主题`);
+    }
+    return { id: family.id, label: family.label, light, dark };
+  });
+  if (new Set(families.map((family) => family.id)).size !== families.length
+    || themes.some((theme) => !families.some((family) => family.id === theme.family))) {
+    throw new Error("Theme catalog 配色重复或主题引用了不存在的配色");
+  }
+  return families;
 }
 
 function validateColorGroup<Role extends string>(
@@ -148,9 +192,13 @@ function validateColorGroup<Role extends string>(
 
 const CATALOG = validateCatalog(catalogJson);
 const THEME_BY_ID = new Map(CATALOG.themes.map((theme) => [theme.id, theme]));
+const FAMILY_BY_ID = new Map(CATALOG.families.map((family) => [family.id, family]));
+const DEFAULT_THEME = THEME_BY_ID.get(CATALOG.defaultThemeId)!;
 let selection: ThemeSelection = {
-  requestedThemeId: CATALOG.defaultThemeId,
-  effectiveThemeId: CATALOG.defaultThemeId,
+  requestedThemeId: DEFAULT_THEME.id,
+  effectiveThemeId: DEFAULT_THEME.id,
+  family: DEFAULT_THEME.family,
+  mode: DEFAULT_THEME.colorScheme,
   unavailable: false,
 };
 
@@ -204,14 +252,27 @@ function readCookieTheme(): string | null {
   return value;
 }
 
+function systemPrefersDark(): boolean {
+  return typeof window.matchMedia === "function" && window.matchMedia("(prefers-color-scheme: dark)").matches;
+}
+
 function resolveSelection(requestedThemeId: string): ThemeSelection {
-  // warm-paper removed; migrate legacy cookie/prefs onto paper light.
+  // 1. 跟随系统：按当前系统外观取该配色的亮或暗主题
+  const followed = requestedThemeId.startsWith(SYSTEM_PREFIX)
+    ? FAMILY_BY_ID.get(requestedThemeId.slice(SYSTEM_PREFIX.length)) : undefined;
+  if (followed) {
+    const theme = systemPrefersDark() ? followed.dark : followed.light;
+    return { requestedThemeId, effectiveThemeId: theme.id, family: followed.id, mode: "system", unavailable: false };
+  }
+  // 2. 固定主题；warm-paper removed, migrate legacy cookie/prefs onto paper light.
   const normalized = requestedThemeId === "warm-paper" ? "light" : requestedThemeId;
-  const effectiveThemeId = THEME_BY_ID.has(normalized) ? normalized : CATALOG.defaultThemeId;
+  const theme = THEME_BY_ID.get(normalized) ?? DEFAULT_THEME;
   return {
     requestedThemeId,
-    effectiveThemeId,
-    unavailable: effectiveThemeId !== requestedThemeId && requestedThemeId !== "warm-paper",
+    effectiveThemeId: theme.id,
+    family: theme.family,
+    mode: theme.colorScheme,
+    unavailable: theme.id !== requestedThemeId && requestedThemeId !== "warm-paper",
   };
 }
 
@@ -250,23 +311,35 @@ function applySelectionWithCrossfade(next: ThemeSelection): void {
 let themeChannel: BroadcastChannel | null = null;
 
 /** 外层 Shell 与 /chat iframe 是同源不同文档，主题在任一文档切换时经 BroadcastChannel
-    即时同步，不再等 focus 重读 cookie。接收方只 apply 不再广播，id 相同直接忽略，不会成环。 */
+    即时同步，不再等 focus 重读 cookie。接收方只 apply 不再广播，偏好相同直接忽略，不会成环。
+    比较偏好而不是生效主题：「暗」改成「跟随系统」时生效主题可能不变，但选择器要同步。 */
 function joinThemeChannel(): BroadcastChannel | null {
   if (typeof BroadcastChannel === "undefined") return null;
   if (themeChannel) return themeChannel;
   themeChannel = new BroadcastChannel(THEME_CHANNEL_NAME);
   themeChannel.addEventListener("message", (event) => {
     if (typeof event.data !== "string" || !THEME_ID_PATTERN.test(event.data)) return;
-    const next = resolveSelection(event.data);
-    if (next.effectiveThemeId === selection.effectiveThemeId) return;
-    applySelection(next);
+    if (event.data === selection.requestedThemeId) return;
+    applySelection(resolveSelection(event.data));
   });
   return themeChannel;
+}
+
+let systemWatched = false;
+
+/** 跟随系统时，系统外观一变就换到同一配色的另一面；每个文档各自监听，不广播。 */
+function watchSystemScheme(): void {
+  if (systemWatched || typeof window.matchMedia !== "function") return;
+  systemWatched = true;
+  window.matchMedia("(prefers-color-scheme: dark)").addEventListener("change", () => {
+    if (selection.mode === "system") applySelectionWithCrossfade(resolveSelection(selection.requestedThemeId));
+  });
 }
 
 export function initializeTheme(): ThemeSelection {
   installThemeCss();
   joinThemeChannel();
+  watchSystemScheme();
   applySelection(resolveSelection(readCookieTheme() ?? CATALOG.defaultThemeId));
   return selection;
 }
@@ -282,9 +355,16 @@ export function setTheme(requestedThemeId: string, persist = true): ThemeSelecti
   return next;
 }
 
+/** 按「配色 × 明暗」选择；跟随系统存成 system-<配色>。 */
+export function setThemePreference(familyId: string, mode: ThemeMode): ThemeSelection {
+  const family = FAMILY_BY_ID.get(familyId);
+  if (!family) throw new Error(`配色不存在: ${familyId}`);
+  return setTheme(mode === "system" ? SYSTEM_PREFIX + family.id : family[mode].id);
+}
+
+/** 在当前配色里切换亮与暗。 */
 export function cycleTheme(): ThemeSelection {
-  const current = CATALOG.themes.findIndex((theme) => theme.id === selection.effectiveThemeId);
-  return setTheme(CATALOG.themes[(current + 1) % CATALOG.themes.length].id);
+  return setThemePreference(selection.family, currentTheme().colorScheme === "dark" ? "light" : "dark");
 }
 
 export function currentTheme(): ThemeDefinition {
@@ -297,8 +377,16 @@ export function themes(): readonly ThemeDefinition[] {
   return CATALOG.themes;
 }
 
+export function themeFamilies(): readonly ThemeFamily[] {
+  return CATALOG.families;
+}
+
 export function themeSelection(): ThemeSelection {
   return selection;
+}
+
+export function useThemeSelection(): ThemeSelection {
+  return useSyncExternalStore(subscribeTheme, themeSelection, themeSelection);
 }
 
 export function subscribeTheme(listener: () => void): () => void {

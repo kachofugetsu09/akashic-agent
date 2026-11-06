@@ -5,7 +5,6 @@ import {
   PinOff,
   ArrowUpDown,
   Keyboard,
-  SunMoon,
   X,
 } from "lucide-react";
 import { memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type RefObject } from "react";
@@ -31,6 +30,8 @@ import type { NavigationRowAction } from "./navigation-row-menu";
 import { getHostShortcuts } from "./shell-workbench";
 import { PluginUiSlot } from "./plugin-ui-runtime";
 import { SidebarPanelLauncher } from "./sidebar-panels";
+import { ThemeMenu } from "./theme-menu";
+import { cycleTheme } from "../../theme/src/theme-runtime";
 import { chatLayerOpen, keyForChat } from "./chat-host";
 
 export interface DesktopSidebarSession extends Omit<ConversationSession, "active" | "state"> {
@@ -240,6 +241,9 @@ function useSidebarShortcuts(sidebarRef: RefObject<HTMLElement | null>, searchRe
       } else if (key === "/" && !event.shiftKey) {
         event.preventDefault();
         onShortcuts();
+      } else if (key === "l" && event.shiftKey) {
+        event.preventDefault();
+        cycleTheme();
       }
     };
     document.addEventListener("keydown", onKeyDown);
@@ -267,6 +271,7 @@ function ShortcutsDialog({ open, onOpenChange, returnFocus }: { open: boolean; o
       ["在会话列表里上下移动", ["↑", "↓"]],
       ["会话的操作菜单", ["Shift", "F10"]],
       ["看图时切到同一条消息里的上一个、下一个", ["←", "→"]],
+      ["切换亮色与暗色（保持当前配色）", [mod, "Shift", "L"]],
       ["快捷键", [mod, "/"]],
     ] },
   ];
@@ -322,12 +327,10 @@ export interface DesktopSidebarProps {
   activeSessionId: string;
   pendingSessionId: string;
   chatReady: boolean;
-  themeLabel: string;
   groups?: DesktopSidebarGroups;
   navigationPins: NavigationPinsState;
   onSelectSession: (sessionId: string) => void;
   onPrefetchSession?: (sessionId: string) => void;
-  onCycleTheme: () => void;
   onNewChat: () => void;
   /** 会话软删：行内两步确认后调用；Promise 拒绝时行保持原位。 */
   onDeleteSession?: (sessionId: string, title: string) => Promise<void>;
@@ -356,12 +359,10 @@ export const DesktopSidebar = memo(function DesktopSidebar({
   sessions,
   activeSessionId,
   pendingSessionId,
-  themeLabel,
   groups,
   navigationPins,
   onSelectSession,
   onPrefetchSession,
-  onCycleTheme,
   onNewChat,
   onDeleteSession,
   onRenameSession,
@@ -786,13 +787,7 @@ export const DesktopSidebar = memo(function DesktopSidebar({
           </button>
         ))}
         <div className="chat-sidebar__footer-row">
-          <button type="button" className="chat-sidebar__action"
-            onClick={() => onCycleTheme()}
-            title={`切换主题，当前为${themeLabel}`}
-            aria-label={`切换主题，当前为${themeLabel}`}>
-            <SunMoon size={18} aria-hidden="true" />
-            <span>主题 · {themeLabel}</span>
-          </button>
+          <ThemeMenu />
           <button type="button" className="chat-sidebar__shortcuts" aria-label="键盘快捷键" title={`键盘快捷键（${SHORTCUT_MOD}+/）`}
             onClick={openShortcuts}>
             <Keyboard size={16} aria-hidden="true" />
