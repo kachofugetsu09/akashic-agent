@@ -31,15 +31,15 @@ function PrivacyMaskControl({ engine }: { engine: PrivacyMaskEngine }) {
     };
   }, [open]);
 
-  const activeLabel = snapshot.enabled
-    ? snapshot.pickMode
-      ? "点选打码中"
-      : "已打码"
-    : "截屏打码";
+  const activeLabel = snapshot.enabled ? "已打码" : "截屏打码";
 
   const statusText = snapshot.enabled
-    ? `词面 ${snapshot.piiCount} 处${snapshot.pickedCount > 0 ? ` · 点选 ${snapshot.pickedCount} 块` : ""}`
-    : "按 Alt+M 一键模糊隐私内容";
+    ? snapshot.redactTitles && snapshot.blurContent
+      ? "标题与内容均已打码"
+      : snapshot.redactTitles
+        ? "已打码导航与标题"
+        : "已模糊全部对话内容"
+    : "按 Alt+M 一键打码";
 
   return (
     <div className="header-marker privacy-mask-marker" ref={rootRef} data-privacy-ui="true">
@@ -50,7 +50,7 @@ function PrivacyMaskControl({ engine }: { engine: PrivacyMaskEngine }) {
         data-active={snapshot.enabled || undefined}
         aria-expanded={open}
         aria-label={`截屏隐私打码：${snapshot.enabled ? "已开启" : "未开启"}（Alt+M）`}
-        title={`截屏隐私打码（Alt+M）`}
+        title="截屏隐私打码（Alt+M）"
         onClick={() => setOpen((value) => !value)}
       >
         {snapshot.enabled ? <EyeOff size={14} aria-hidden="true" /> : <Eye size={14} aria-hidden="true" />}
@@ -86,7 +86,7 @@ function PrivacyMaskControl({ engine }: { engine: PrivacyMaskEngine }) {
             >
               <span className="privacy-mask-scope__copy">
                 <span className="privacy-mask-scope__label">导航与会话标题</span>
-                <span className="privacy-mask-scope__desc">侧栏项目名、会话标题与顶栏化为骨架条</span>
+                <span className="privacy-mask-scope__desc">侧栏项目名、会话名与顶栏标题化为骨架条</span>
               </span>
               <span className="privacy-mask-switch" aria-hidden="true">
                 <span className="privacy-mask-switch__thumb" />
@@ -96,47 +96,17 @@ function PrivacyMaskControl({ engine }: { engine: PrivacyMaskEngine }) {
             <button
               type="button"
               role="switch"
-              aria-checked={snapshot.enabled && snapshot.blurPii}
+              aria-checked={snapshot.enabled && snapshot.blurContent}
               className="privacy-mask-scope"
               onClick={() =>
                 engine.setScope({
-                  blurPii: !(snapshot.enabled && snapshot.blurPii),
+                  blurContent: !(snapshot.enabled && snapshot.blurContent),
                 })
               }
             >
               <span className="privacy-mask-scope__copy">
-                <span className="privacy-mask-scope__label">
-                  敏感词面模糊
-                  {snapshot.enabled && snapshot.blurPii && snapshot.piiCount > 0 ? (
-                    <span className="privacy-mask-scope__count">{snapshot.piiCount} 处</span>
-                  ) : null}
-                </span>
-                <span className="privacy-mask-scope__desc">邮箱 · 本机路径 · IP · 手机号 · 密钥</span>
-              </span>
-              <span className="privacy-mask-switch" aria-hidden="true">
-                <span className="privacy-mask-switch__thumb" />
-              </span>
-            </button>
-
-            <button
-              type="button"
-              role="switch"
-              aria-checked={snapshot.enabled && snapshot.pickMode}
-              className="privacy-mask-scope"
-              onClick={() =>
-                engine.setScope({
-                  pickMode: !(snapshot.enabled && snapshot.pickMode),
-                })
-              }
-            >
-              <span className="privacy-mask-scope__copy">
-                <span className="privacy-mask-scope__label">
-                  点选区块打码
-                  {snapshot.pickedCount > 0 ? (
-                    <span className="privacy-mask-scope__count">已选 {snapshot.pickedCount} 块</span>
-                  ) : null}
-                </span>
-                <span className="privacy-mask-scope__desc">单击任意段落、代码块或消息气泡单独模糊</span>
+                <span className="privacy-mask-scope__label">全部内容模糊</span>
+                <span className="privacy-mask-scope__desc">消息、代码块与工具过程整体模糊</span>
               </span>
               <span className="privacy-mask-switch" aria-hidden="true">
                 <span className="privacy-mask-switch__thumb" />
@@ -153,15 +123,6 @@ function PrivacyMaskControl({ engine }: { engine: PrivacyMaskEngine }) {
               >
                 {snapshot.enabled ? "恢复正常显示" : "开启截屏打码"}
               </button>
-              {snapshot.pickedCount > 0 ? (
-                <button
-                  type="button"
-                  data-testid="privacy-mask-clear-picked-btn"
-                  onClick={() => engine.clearPicked()}
-                >
-                  清空点选 ({snapshot.pickedCount})
-                </button>
-              ) : null}
             </HeaderMarkerActions>
             <span className="privacy-mask-panel__status">{statusText}</span>
           </div>

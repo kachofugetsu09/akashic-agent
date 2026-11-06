@@ -1,6 +1,6 @@
-/* 截屏隐私打码：三层正交脱敏（侧栏/标题骨架条、CSS Highlight 敏感词面模糊、点选区块模糊）。 */
+/* 截屏隐私打码：双层正交脱敏（1. 导航与会话标题化为错落圆角骨架条；2. 对话与工作台全部内容整体高斯模糊）。 */
 
-/* 1. 维度一：导航与会话标题化为错落圆角骨架条（参考 Alma data-capture-redact，但保留按钮激活底色与几何宽度） */
+/* 1. 维度一：导航与会话标题化为错落圆角骨架条（保留按钮激活底色与几何宽度） */
 html[data-privacy-titles="true"] :is(
   .conversation-session__title,
   .navigation-group__name,
@@ -76,48 +76,47 @@ html[data-privacy-titles="true"] :is(.conversation-session-item, .navigation-gro
   width: 56%;
 }
 
-/* 2. 维度二：敏感词面（邮箱/路径/IP/密钥/手机号）通过 CSS Custom Highlight 原地模糊，零 DOM 突变 */
-::highlight(akashic-privacy-pii) {
-  color: transparent;
-  text-shadow: 0 0 7px color-mix(in srgb, var(--ak-ink-primary, #1b1916) 78%, transparent);
-  background-color: color-mix(in srgb, var(--ak-ink-primary, #1b1916) 8%, transparent);
-}
-
-html[data-privacy-pii="true"] .header-meta__path > button,
-html[data-privacy-pii="true"] .header-meta-node__detail code,
-html[data-privacy-pii="true"] .plugin-ui-slot[data-slot="header.end"] .header-marker:not([data-privacy-ui]) .header-marker__trigger > span,
-html[data-privacy-pii="true"] .plugin-ui-slot[data-slot="header.end"] .header-marker:not([data-privacy-ui]) .header-marker__panel > code {
-  filter: blur(4.5px);
-  user-select: none;
+/* 2. 维度二：全部内容模糊打码（保留用户气泡与卡片外框轮廓，将对话消息、代码块、工具输出、输入草稿与目录路径整体高斯模糊） */
+html[data-privacy-content="true"] :is(
+  .user-bubble > *,
+  .user-message > *,
+  .agent-content > *,
+  .message-bubble > *,
+  .automatic-input > *,
+  .user-row > :not(.user-bubble),
+  .timeline-failure,
+  .timeline-control-note,
+  .composer-wrap textarea,
+  .composer-wrap [contenteditable="true"],
+  .header-meta__path > button,
+  .header-meta-node__detail,
+  .plugin-ui-slot[data-slot="header.end"] .header-marker:not([data-privacy-ui]) .header-marker__trigger > span,
+  .plugin-ui-slot[data-slot="header.end"] .header-marker:not([data-privacy-ui]) .header-marker__panel > code,
+  .md-reader article,
+  .sites-stage
+) {
+  filter: blur(6px) !important;
+  user-select: none !important;
   transition: filter 180ms cubic-bezier(0.22, 1, 0.36, 1);
 }
 
-/* 3. 维度三：点选局部区块打码（悬停虚线框 + 单击高斯模糊） */
-html[data-privacy-pick="true"] [data-privacy-hover="true"] {
-  outline: 1.5px dashed var(--ak-accent-primary, #2e5a88) !important;
-  outline-offset: 3px !important;
-  border-radius: 6px;
-  cursor: pointer !important;
-}
-
-html[data-privacy-mask="true"] [data-privacy-picked="true"] {
-  filter: blur(6px) !important;
-  opacity: 0.68 !important;
-  user-select: none !important;
-  transition:
-    filter 200ms cubic-bezier(0.22, 1, 0.36, 1),
-    opacity 200ms cubic-bezier(0.22, 1, 0.36, 1);
-}
-
-html[data-privacy-pick="true"] [data-privacy-picked="true"]:hover {
-  outline: 1.5px dashed var(--ak-ink-secondary, #4a4640) !important;
-  outline-offset: 3px !important;
-  cursor: pointer !important;
-}
-
 @media (prefers-reduced-motion: reduce) {
-  html[data-privacy-mask="true"] [data-privacy-picked="true"],
-  html[data-privacy-pii="true"] .plugin-ui-slot[data-slot="header.end"] .header-marker:not([data-privacy-ui]) .header-marker__trigger > span {
+  html[data-privacy-content="true"] :is(
+    .user-bubble > *,
+    .user-message > *,
+    .agent-content > *,
+    .message-bubble > *,
+    .automatic-input > *,
+    .user-row > :not(.user-bubble),
+    .timeline-failure,
+    .timeline-control-note,
+    .composer-wrap textarea,
+    .composer-wrap [contenteditable="true"],
+    .header-meta__path > button,
+    .header-meta-node__detail,
+    .md-reader article,
+    .sites-stage
+  ) {
     transition: none !important;
   }
 }

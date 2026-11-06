@@ -1,11 +1,11 @@
-"""截屏隐私打码：侧栏底栏动作与对话顶栏标记共享同一份浏览器端脱敏状态，不触碰会话账本或改写 DOM 文本节点。"""
+"""截屏隐私打码：侧栏底栏动作与对话顶栏标记共享同一份浏览器端脱敏状态（导航与会话标题骨架条 + 对话全部内容模糊）。"""
 from agent.plugin_composition import Context
 from plugins.ui.contract import UI, UI_SLOTS, PluginUiDefinition, PluginUiRpcInvalidRequest
 
 api_version = 3
 name = "privacy_mask"
 version = "1.0.0"
-desc = "截屏隐私打码：一键模糊侧栏会话标题、敏感词面（邮箱、路径、IP、密钥）与点选消息区块"
+desc = "截屏隐私打码：一键将侧栏会话标题化为骨架条，并将对话全部内容高斯模糊"
 author = "Akashic Core"
 inject = (UI,)
 

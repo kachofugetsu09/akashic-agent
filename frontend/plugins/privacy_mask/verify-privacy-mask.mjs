@@ -1,9 +1,9 @@
 /**
  * 截屏隐私打码插件（privacy_mask@release）真实浏览器端到端验收：
  * 1. 正交挂载与一键开关：同时验证 shell.rail-actions.v1 底栏按钮、header.end 顶栏标记与 Alt+M 全局快捷键；
- * 2. 维度一（导航与会话标题骨架条）：侧栏会话标题、项目分组名、项目子会话、顶栏标题与项目副标题化为 48%/74%/56%/62% 错落圆角骨架条，行几何尺寸零偏移，title/data-tip 悬停提示同步脱敏并可无损恢复；
- * 3. 维度二（CSS Custom Highlight 敏感词面模糊）：零 DOM 文本节点拆分/突变（100% 兼容 React 19 协调器），自动识别并高斯模糊邮箱、Unix/Windows 路径、IPv4、手机号与 API Key，且流式新增文本经 MutationObserver 在单帧内自动纳入；
- * 4. 维度三（点选局部区块打码）：开启后悬停段落/代码块/消息气泡浮现虚线候选框，单击即原地高斯模糊（filter: blur(6px)），关闭点选模式后已选区块保持模糊供干净截屏，支持一键清空点选与插件卸载零残留。
+ * 2. 维度一（导航与会话标题骨架条）：侧栏会话标题、项目分组名、项目子会话、顶栏标题与项目副标题化为 48%/74%/56%/62% 错落圆角骨架条，行几何尺寸零偏移，title/data-tip 悬停提示同步剥离并可无损恢复；
+ * 3. 维度二（全部内容模糊打码）：用户消息气泡内容、助手回复正文、代码块、工具执行步骤与结果、输入框草稿及工作目录路径整体施加 filter: blur(6px) 高斯模糊（保留外层气泡与卡片轮廓），支持与「导航与会话标题」正交独立开关；
+ * 4. 生命周期隔离：插件卸载（release）后彻底清除全部 data-privacy-* 属性与全局单例，零残留。
  */
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
@@ -66,7 +66,6 @@ const projectGroups = [
 
 function App() {
   const [expanded, setExpanded] = useState<Set<string>>(() => new Set(["project:no-recall"]));
-  const [streamedExtra, setStreamedExtra] = useState("");
   const headerSlotRef = useRef<HTMLDivElement | null>(null);
 
   useEffect(() => {
@@ -106,7 +105,6 @@ function App() {
         workbench: { accepts: () => false, open: async () => "unhandled" },
       });
     }
-    (window as any).__appendStreamChunk = (text: string) => setStreamedExtra(text);
     (window as any).__disposePrivacyPlugin = () => {
       if (typeof unmountSlot === "function") unmountSlot();
       disposeWeb();
@@ -216,27 +214,26 @@ function App() {
               </header>
 
               <div className="conversation-content" style={{ flex: 1, overflow: "auto", padding: "24px 36px", display: "flex", flexDirection: "column", gap: "18px" }}>
-                <article className="user-message" id="msg-user-1" style={{ alignSelf: "flex-end", maxWidth: "42rem", padding: "12px 16px", borderRadius: "12px", background: "var(--chat-chip)" }}>
-                  <div className="chat-markdown">
-                    <p id="p-user-pii">
-                      请帮我检查开发机 192.168.0.108:22 上 /home/huashen/coding/akashic-agent 的配置，告警发到 2494946888@qq.com 或手机 15311315482，测试网关密钥为 sk-proj-9f8a7b6c5d4e3f2a1b0c。
+                <article className="user-message user-bubble" id="msg-user-1" style={{ alignSelf: "flex-end", maxWidth: "42rem", padding: "12px 16px", borderRadius: "12px", background: "var(--chat-chip)" }}>
+                  <div className="chat-markdown" id="user-content-inner">
+                    <p>
+                      我的开发机上有 Alma 的源码，在 /mnt/data/source-code 文件夹下，帮我看一下它那个一键模糊内容来做截屏的设计，我们是插件化的系统需要保证高度正交化。
                     </p>
                   </div>
                 </article>
 
-                <article className="message-bubble" id="msg-assistant-1" style={{ maxWidth: "46rem", display: "flex", flexDirection: "column", gap: "10px" }}>
+                <article className="message-bubble agent-content" id="msg-assistant-1" style={{ maxWidth: "46rem", display: "flex", flexDirection: "column", gap: "10px" }}>
                   <div className="tool-step" id="tool-step-1" style={{ display: "inline-flex", alignItems: "center", gap: "8px", padding: "6px 10px", borderRadius: "8px", background: "var(--ak-paper-sheet)", color: "var(--ak-ink-secondary)", fontSize: "13px", width: "fit-content" }}>
                     <Terminal size={14} />
                     <span>ssh arch-dev 检查 /mnt/data/source-code/alma-0.4.467 与 /mnt/data/source-code/magpie</span>
                   </div>
-                  <div className="chat-markdown" style={{ display: "flex", flexDirection: "column", gap: "10px", lineHeight: 1.65 }}>
-                    <p id="p-assistant-intro">
-                      我已经对照了 Alma 与 Magpie 的源码实现：Alma 采用语义属性骨架条与候选区块点选打码，而 Magpie 通过 TreeWalker 与 MutationObserver 对页面上的邮箱和账号做实时模糊。
+                  <div className="chat-markdown" id="assistant-content-inner" style={{ display: "flex", flexDirection: "column", gap: "10px", lineHeight: 1.65 }}>
+                    <p>
+                      我已经把正交化的截屏隐私打码插件做好了：提供「导航与会话标题」和「全部内容模糊」两个正交开关，一键把侧栏列表化为错落圆角骨架条，并把对话全部内容整体高斯模糊。
                     </p>
                     <pre id="pre-code-block" style={{ padding: "12px 14px", borderRadius: "8px", background: "var(--ak-paper-sheet)", border: "1px solid var(--ak-rule-subtle)", fontFamily: "var(--ak-type-technical)", fontSize: "12.5px", overflowX: "auto" }}>
-                      <code>{"// 内部网关调试端点与鉴权配置（点选此代码块可整块打码）\\nconst INTERNAL_RPC = \\"https://hooks.internal.example/v1/dispatch\\";\\nconst STAGE_CLUSTER = \\"tokyo-softbank-node-01\\";"}</code>
+                      <code>{"// 双层正交属性驱动，零 DOM 扫描与零跨插件耦合\\nhtml[data-privacy-titles=\\"true\\"] { /* 侧栏与标题骨架条 */ }\\nhtml[data-privacy-content=\\"true\\"] { /* 对话全部内容模糊 */ }"}</code>
                     </pre>
-                    {streamedExtra ? <p id="p-streamed-extra">{streamedExtra}</p> : null}
                   </div>
                 </article>
               </div>
@@ -294,59 +291,47 @@ try {
   // 截图 1：开启打码前的默认态
   await page.screenshot({ path: resolve(root, "01-unmasked.png") });
 
-  // 记录开启前文本节点数量、正文内容与侧栏行尺寸（验证零 DOM 节点突变与零几何偏移）
   const beforeBaseline = await page.evaluate(() => {
-    const p = document.getElementById("p-user-pii");
-    let textNodes = 0;
-    const walker = document.createTreeWalker(p, NodeFilter.SHOW_TEXT);
-    while (walker.nextNode()) textNodes += 1;
     const firstSession = document.querySelector(".conversation-session").getBoundingClientRect();
     const firstGroup = document.querySelector(".navigation-group__open").getBoundingClientRect();
     return {
-      textNodes,
-      text: p.textContent,
       sessionRect: { width: firstSession.width, height: firstSession.height },
       groupRect: { width: firstGroup.width, height: firstGroup.height },
     };
   });
 
-  // 1. 验证侧栏底栏动作（shell.rail-actions.v1）一键开启截屏打码
+  // 1. 点击侧栏底栏「截屏打码」按钮（shell.rail-actions.v1）一键开启全量打码（标题骨架条 + 全部内容模糊）
   const railBtn = page.locator(".chat-sidebar__footer .chat-sidebar__action", { hasText: "截屏打码" });
   assert.equal(await railBtn.count(), 1, "侧栏底栏应挂载 shell.rail-actions.v1 的截屏打码按钮");
   await railBtn.click();
-  await page.waitForTimeout(180);
+  await page.waitForTimeout(200);
 
   const afterEnable = await page.evaluate(() => {
     const html = document.documentElement;
-    const p = document.getElementById("p-user-pii");
-    let textNodes = 0;
-    const walker = document.createTreeWalker(p, NodeFilter.SHOW_TEXT);
-    while (walker.nextNode()) textNodes += 1;
-
     const titleEl = document.querySelector(".conversation-session__title");
     const titleStyle = getComputedStyle(titleEl);
     const titleAfter = getComputedStyle(titleEl, "::after");
     const firstSession = document.querySelector(".conversation-session").getBoundingClientRect();
     const firstGroup = document.querySelector(".navigation-group__open").getBoundingClientRect();
 
-    const highlight = CSS.highlights?.get("akashic-privacy-pii");
-    const pathMetaBtn = document.querySelector(".header-meta__path > button");
-    const pathFilter = getComputedStyle(pathMetaBtn).filter;
+    const userContentFilter = getComputedStyle(document.getElementById("user-content-inner")).filter;
+    const assistantContentFilter = getComputedStyle(document.getElementById("assistant-content-inner")).filter;
+    const toolStepFilter = getComputedStyle(document.getElementById("tool-step-1")).filter;
+    const pathMetaFilter = getComputedStyle(document.querySelector(".header-meta__path > button")).filter;
     const headingTitle = document.querySelector(".conversation-heading__title-text");
 
     return {
       maskAttr: html.getAttribute("data-privacy-mask"),
       titlesAttr: html.getAttribute("data-privacy-titles"),
-      piiAttr: html.getAttribute("data-privacy-pii"),
-      textNodes,
-      text: p.textContent,
+      contentAttr: html.getAttribute("data-privacy-content"),
       titleColor: titleStyle.color,
       afterWidth: parseFloat(titleAfter.width),
-      afterRadius: titleAfter.borderRadius,
       sessionRect: { width: firstSession.width, height: firstSession.height },
       groupRect: { width: firstGroup.width, height: firstGroup.height },
-      highlightSize: highlight ? highlight.size : 0,
-      pathFilter,
+      userContentFilter,
+      assistantContentFilter,
+      toolStepFilter,
+      pathMetaFilter,
       headingHasTitleAttr: headingTitle.hasAttribute("title"),
       headingSavedRawTitle: headingTitle.getAttribute("data-privacy-raw-title"),
     };
@@ -354,103 +339,77 @@ try {
 
   assert.equal(afterEnable.maskAttr, "true");
   assert.equal(afterEnable.titlesAttr, "true");
-  assert.equal(afterEnable.piiAttr, "true");
-  assert.equal(afterEnable.textNodes, beforeBaseline.textNodes, "CSS Highlight 打码不得拆分或增删 React 文本节点");
-  assert.equal(afterEnable.text, beforeBaseline.text, "原始文本内容不得被篡改");
+  assert.equal(afterEnable.contentAttr, "true");
   assert.equal(afterEnable.titleColor, "rgba(0, 0, 0, 0)", "侧栏标题文字应透明并由 ::after 骨架条替代");
   assert(afterEnable.afterWidth > 30, `侧栏标题骨架条宽度应大于 30px，实测 ${afterEnable.afterWidth}`);
   assert.deepEqual(afterEnable.sessionRect, beforeBaseline.sessionRect, "开启打码前后侧栏会话行尺寸必须零变化");
   assert.deepEqual(afterEnable.groupRect, beforeBaseline.groupRect, "开启打码前后项目行尺寸必须零变化");
-  assert(afterEnable.highlightSize >= 6, `应至少识别并模糊 6 处敏感词面（IP/路径/邮箱/手机号/密钥），实测 ${afterEnable.highlightSize}`);
-  assert.match(afterEnable.pathFilter, /blur/, "顶栏工作目录路径应被高斯模糊");
+  assert.match(afterEnable.userContentFilter, /blur\(6px\)/, "用户气泡内部内容应整体高斯模糊");
+  assert.match(afterEnable.assistantContentFilter, /blur\(6px\)/, "助手回复与代码块应整体高斯模糊");
+  assert.match(afterEnable.toolStepFilter, /blur\(6px\)/, "工具执行步骤应整体高斯模糊");
+  assert.match(afterEnable.pathMetaFilter, /blur\(6px\)/, "顶栏目录路径应高斯模糊");
   assert.equal(afterEnable.headingHasTitleAttr, false, "打码期间应剥离会泄漏标题的原生 title 提示");
   assert.equal(afterEnable.headingSavedRawTitle, "开发机 Alma 与 Magpie 截屏打码调研");
 
-  // 2. 验证流式增量输出（MutationObserver 单帧内自动追加敏感词面高亮）
-  await page.evaluate(() => {
-    window.__appendStreamChunk("流式新增：备份位于 /srv/data/services/magpie/gateway-key.txt，通知发往 admin@akashic.dev。");
-  });
-  await page.waitForTimeout(100);
-  const streamedHighlightSize = await page.evaluate(() => CSS.highlights?.get("akashic-privacy-pii")?.size ?? 0);
-  assert.equal(streamedHighlightSize, afterEnable.highlightSize + 2, "流式新增的路径与邮箱应被 MutationObserver 自动纳入模糊");
-
-  // 3. 点开顶栏「已打码」标记，查看三维度控制面板并截图
+  // 2. 点开顶栏「已打码」标记，验证只有两个正交开关（「导航与会话标题」「全部内容模糊」）并截图
   const headerTrigger = page.locator(".privacy-mask-marker .header-marker__trigger");
   await headerTrigger.click();
   await page.waitForSelector(".privacy-mask-panel");
-  await page.waitForTimeout(120);
-  await page.screenshot({ path: resolve(root, "02-masked-popover.png") });
+  await page.waitForTimeout(140);
 
-  // 4. 开启「点选区块打码」，悬停并单击代码块与介绍段落
-  const pickSwitch = page.locator(".privacy-mask-scope", { hasText: "点选区块打码" });
-  await pickSwitch.click();
-  await page.waitForTimeout(100);
+  const switches = await page.locator(".privacy-mask-scope .privacy-mask-scope__label").allInnerTexts();
+  assert.deepEqual(switches, ["导航与会话标题", "全部内容模糊"], "面板应严格只包含「导航与会话标题」与「全部内容模糊」两个正交开关");
+  await page.screenshot({ path: resolve(root, "02-full-masked-popover.png") });
 
-  // 关闭弹出面板以便点选正文代码块
-  await headerTrigger.click();
-  await page.waitForTimeout(80);
+  // 3. 测试正交独立开关：关闭「全部内容模糊」、仅保留「导航与会话标题」（晒对话内容但隐藏侧栏项目与历史会话）
+  const contentSwitch = page.locator(".privacy-mask-scope", { hasText: "全部内容模糊" });
+  await contentSwitch.click();
+  await page.waitForTimeout(200);
 
-  const codeBlock = page.locator("#pre-code-block");
-  await codeBlock.hover();
-  await page.waitForTimeout(80);
-  const hoverState = await codeBlock.evaluate((el) => ({
-    hoverAttr: el.getAttribute("data-privacy-hover"),
-    outlineStyle: getComputedStyle(el).outlineStyle,
+  const titlesOnlyState = await page.evaluate(() => ({
+    titlesAttr: document.documentElement.getAttribute("data-privacy-titles"),
+    contentAttr: document.documentElement.getAttribute("data-privacy-content"),
+    userContentFilter: getComputedStyle(document.getElementById("user-content-inner")).filter,
+    titleColor: getComputedStyle(document.querySelector(".conversation-session__title")).color,
   }));
-  assert.equal(hoverState.hoverAttr, "true", "点选模式下悬停代码块应标记 data-privacy-hover=true");
-  assert.equal(hoverState.outlineStyle, "dashed", "悬停候选块应显示虚线轮廓");
+  assert.equal(titlesOnlyState.titlesAttr, "true");
+  assert.equal(titlesOnlyState.contentAttr, null);
+  assert.equal(titlesOnlyState.userContentFilter, "none", "关闭全部内容模糊后，对话正文应恢复清晰");
+  assert.equal(titlesOnlyState.titleColor, "rgba(0, 0, 0, 0)", "侧栏标题应继续保持骨架条打码");
+  await page.screenshot({ path: resolve(root, "03-titles-only-mode.png") });
 
-  await codeBlock.click();
-  await page.waitForTimeout(220);
-  const pickedState = await codeBlock.evaluate((el) => ({
-    pickedAttr: el.getAttribute("data-privacy-picked"),
-    filter: getComputedStyle(el).filter,
-  }));
-  assert.equal(pickedState.pickedAttr, "true", "单击候选块后应标记 data-privacy-picked=true");
-  assert.match(pickedState.filter, /blur\(6px\)/, "被点选区块应施加 blur(6px) 高斯模糊");
-
-  // 再次打开面板展示「已选 1 块」状态并截图
-  await headerTrigger.click();
-  await page.waitForTimeout(120);
-  await page.screenshot({ path: resolve(root, "03-pick-block-mode.png") });
-
-  // 关闭「点选区块打码」开关（准备干净截屏），验证已选代码块依然保持模糊
-  await pickSwitch.click();
-  await page.waitForTimeout(100);
-  const stillBlurredAfterExitPick = await codeBlock.evaluate((el) => getComputedStyle(el).filter);
-  assert.match(stillBlurredAfterExitPick, /blur\(6px\)/, "退出点选模式后，已选打码区块必须保持模糊以供截屏");
-
-  // 5. 切换至深色模式验证并截图
+  // 重新开启「全部内容模糊」并切换深色模式截图
+  await contentSwitch.click();
+  await page.waitForTimeout(200);
   await page.evaluate(() => window.__setTheme("dark"));
   await page.waitForTimeout(150);
-  await page.screenshot({ path: resolve(root, "04-dark-masked.png") });
+  await page.screenshot({ path: resolve(root, "04-dark-full-masked.png") });
   await page.evaluate(() => window.__setTheme("light"));
   await page.waitForTimeout(120);
 
-  // 6. 验证 Alt+M 快捷键一键关闭打码与恢复，以及再次 Alt+M 开启
-  await page.keyboard.press("Escape"); // 先收起面板
+  // 4. 验证 Alt+M 快捷键一键恢复正常显示
+  await page.keyboard.press("Escape");
   await page.waitForTimeout(60);
   await page.keyboard.press("Alt+KeyM");
-  await page.waitForTimeout(160);
+  await page.waitForTimeout(200);
 
   const afterDisable = await page.evaluate(() => {
     const html = document.documentElement;
-    const highlight = CSS.highlights?.get("akashic-privacy-pii");
     const headingTitle = document.querySelector(".conversation-heading__title-text");
     const titleEl = document.querySelector(".conversation-session__title");
     return {
       maskAttr: html.getAttribute("data-privacy-mask"),
-      highlightSize: highlight ? highlight.size : 0,
       restoredTitleAttr: headingTitle.getAttribute("title"),
       titleColor: getComputedStyle(titleEl).color,
+      userContentFilter: getComputedStyle(document.getElementById("user-content-inner")).filter,
     };
   });
-  assert.equal(afterDisable.maskAttr, null, "Alt+M 关闭后应移除 data-privacy-mask");
-  assert.equal(afterDisable.highlightSize, 0, "关闭后应清空 CSS Highlight");
-  assert.equal(afterDisable.restoredTitleAttr, "开发机 Alma 与 Magpie 截屏打码调研", "关闭后应无损恢复原生 title 属性");
-  assert.notEqual(afterDisable.titleColor, "rgba(0, 0, 0, 0)", "关闭后侧栏标题应恢复正常墨色");
+  assert.equal(afterDisable.maskAttr, null);
+  assert.equal(afterDisable.restoredTitleAttr, "开发机 Alma 与 Magpie 截屏打码调研");
+  assert.notEqual(afterDisable.titleColor, "rgba(0, 0, 0, 0)");
+  assert.equal(afterDisable.userContentFilter, "none");
 
-  // 7. 录制完整交互动效 GIF（默认态 → 一键开启打码 → 展开三维度面板 → 点选代码块打码 → 恢复正常显示）
+  // 5. 录制完整交互动效 GIF（默认态 → 一键开启全量打码 → 展开面板切换仅侧栏打码 → 再开启全量打码 → Alt+M 恢复）
   const framesDir = resolve(root, "gif-frames");
   mkdirSync(framesDir, { recursive: true });
   let frameIndex = 0;
@@ -462,28 +421,15 @@ try {
     }
   };
 
-  // 清空之前的点选，从干净未打码状态开始录制
-  await page.evaluate(() => {
-    for (const el of document.querySelectorAll("[data-privacy-picked]")) el.removeAttribute("data-privacy-picked");
-  });
   await snapFrames(5, 80);
-
-  // 开启打码并展开面板
   await railBtn.click();
-  await snapFrames(4, 60);
+  await snapFrames(5, 70);
   await headerTrigger.click();
   await snapFrames(6, 80);
-
-  // 开启点选模式，关闭面板后悬停并点选代码块
-  await pickSwitch.click();
-  await snapFrames(3, 70);
-  await headerTrigger.click();
-  await codeBlock.hover();
-  await snapFrames(4, 70);
-  await codeBlock.click();
-  await snapFrames(5, 80);
-
-  // 按 Alt+M 一键恢复显示
+  await contentSwitch.click();
+  await snapFrames(6, 80);
+  await contentSwitch.click();
+  await snapFrames(5, 70);
   await page.keyboard.press("Alt+KeyM");
   await snapFrames(5, 80);
 
@@ -499,7 +445,7 @@ try {
     gifPath,
   ]);
 
-  // 8. 验证插件卸载（release）后的完全正交零残留
+  // 6. 验证插件卸载（release）后的完全正交零残留
   await page.keyboard.press("Alt+KeyM");
   await page.waitForTimeout(100);
   const afterDispose = await page.evaluate(() => {
@@ -508,25 +454,20 @@ try {
     return {
       maskAttr: html.getAttribute("data-privacy-mask"),
       titlesAttr: html.getAttribute("data-privacy-titles"),
-      piiAttr: html.getAttribute("data-privacy-pii"),
-      pickAttr: html.getAttribute("data-privacy-pick"),
-      highlightHas: CSS.highlights?.has("akashic-privacy-pii") ?? false,
+      contentAttr: html.getAttribute("data-privacy-content"),
       globalRef: typeof window.__akashicPrivacyMask,
     };
   });
   assert.equal(afterDispose.maskAttr, null);
   assert.equal(afterDispose.titlesAttr, null);
-  assert.equal(afterDispose.piiAttr, null);
-  assert.equal(afterDispose.pickAttr, null);
-  assert.equal(afterDispose.highlightHas, false);
-  assert.equal(afterDispose.globalRef, "undefined", "插件卸载后必须彻底释放全局单例与全部 DOM 痕迹");
+  assert.equal(afterDispose.contentAttr, null);
+  assert.equal(afterDispose.globalRef, "undefined", "插件卸载后必须彻底释放全局单例与全部 DOM 属性");
   assert.deepEqual(errors, [], `页面运行期不得出现未捕获异常: ${errors.join("; ")}`);
 
   const summary = {
     ok: true,
     evidenceDir: root,
-    piiHighlightedCount: streamedHighlightSize,
-    textNodesPreserved: afterEnable.textNodes === beforeBaseline.textNodes,
+    switches,
     geometryPreserved: true,
     gifPath,
   };

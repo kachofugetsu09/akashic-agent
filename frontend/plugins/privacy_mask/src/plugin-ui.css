@@ -1,4 +1,4 @@
-/* 截屏隐私打码聊天插槽样式：复用 .header-marker 响应式外框，提供三层正交脱敏样式与面板开关。 */
+/* 截屏隐私打码聊天插槽样式：复用 .header-marker 响应式外框，提供双层正交脱敏样式与面板开关。 */
 
 .plugin-ui-slot[data-slot="header.end"] > .plugin-ui-host:is([data-plugin="privacy_mask"], [data-plugin^="privacy_mask@"]) {
   order: 2;
@@ -92,13 +92,6 @@
   line-height: 1.35;
 }
 
-.privacy-mask-scope__count {
-  color: var(--ak-accent-primary, #2e5a88);
-  font-size: 0.6875rem;
-  font-weight: 500;
-  font-variant-numeric: tabular-nums;
-}
-
 .privacy-mask-scope__desc {
   color: var(--chat-faint, var(--ak-ink-muted));
   font-size: 0.75rem;
@@ -155,7 +148,7 @@
   min-height: 44px;
 }
 
-/* 三层正交脱敏规则（与 web_module.css 一致，保证独立聊天夹具环境同样生效） */
+/* 双层正交脱敏规则（与 web_module.css 一致，保证独立聊天夹具环境同样生效） */
 html[data-privacy-titles="true"] :is(
   .conversation-session__title,
   .navigation-group__name,
@@ -231,39 +224,25 @@ html[data-privacy-titles="true"] :is(.conversation-session-item, .navigation-gro
   width: 56%;
 }
 
-::highlight(akashic-privacy-pii) {
-  color: transparent;
-  text-shadow: 0 0 7px color-mix(in srgb, var(--ak-ink-primary, #1b1916) 78%, transparent);
-  background-color: color-mix(in srgb, var(--ak-ink-primary, #1b1916) 8%, transparent);
-}
-
-html[data-privacy-pii="true"] .header-meta__path > button,
-html[data-privacy-pii="true"] .header-meta-node__detail code,
-html[data-privacy-pii="true"] .plugin-ui-slot[data-slot="header.end"] .header-marker:not([data-privacy-ui]) .header-marker__trigger > span,
-html[data-privacy-pii="true"] .plugin-ui-slot[data-slot="header.end"] .header-marker:not([data-privacy-ui]) .header-marker__panel > code {
-  filter: blur(4.5px);
-  user-select: none;
-  transition: filter 180ms cubic-bezier(0.22, 1, 0.36, 1);
-}
-
-html[data-privacy-pick="true"] [data-privacy-hover="true"] {
-  outline: 1.5px dashed var(--ak-accent-primary, #2e5a88) !important;
-  outline-offset: 3px !important;
-  border-radius: 6px;
-  cursor: pointer !important;
-}
-
-html[data-privacy-mask="true"] [data-privacy-picked="true"] {
+html[data-privacy-content="true"] :is(
+  .user-bubble > *,
+  .user-message > *,
+  .agent-content > *,
+  .message-bubble > *,
+  .automatic-input > *,
+  .user-row > :not(.user-bubble),
+  .timeline-failure,
+  .timeline-control-note,
+  .composer-wrap textarea,
+  .composer-wrap [contenteditable="true"],
+  .header-meta__path > button,
+  .header-meta-node__detail,
+  .plugin-ui-slot[data-slot="header.end"] .header-marker:not([data-privacy-ui]) .header-marker__trigger > span,
+  .plugin-ui-slot[data-slot="header.end"] .header-marker:not([data-privacy-ui]) .header-marker__panel > code,
+  .md-reader article,
+  .sites-stage
+) {
   filter: blur(6px) !important;
-  opacity: 0.68 !important;
   user-select: none !important;
-  transition:
-    filter 200ms cubic-bezier(0.22, 1, 0.36, 1),
-    opacity 200ms cubic-bezier(0.22, 1, 0.36, 1);
-}
-
-html[data-privacy-pick="true"] [data-privacy-picked="true"]:hover {
-  outline: 1.5px dashed var(--ak-ink-secondary, #4a4640) !important;
-  outline-offset: 3px !important;
-  cursor: pointer !important;
+  transition: filter 180ms cubic-bezier(0.22, 1, 0.36, 1);
 }
