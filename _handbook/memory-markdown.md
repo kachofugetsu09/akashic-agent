@@ -52,7 +52,7 @@ agent 用原生 `read_file` / `write_file` / `edit_file` / `shell rg` 读写记�
 
 每条新的用户 Input 首次准备材料时，用 BM25（ASCII 词 + 中文二元组）对当前项目文件夹与全局主题中**未 pinned** 的文件排序，
 得分不低于 `surface_min_score`（默认 2.0）的前 `surface_limit`（默认 3，0 关闭）个以可回放 reminder 附在本轮，
-标注"N 天前更新"，单文件最多 `surface_chars` 字。同一 Input 的后续工具步骤复用结果；同一压缩代内同一主题只浮现一次。不改变 system 前缀。
+标注"N 天前更新"，单文件最多 `surface_chars` 字。同一 Input 的后续工具步骤复用结果（跨重启则从该 Input 已提交的 Output 恢复）；当前未进入压缩摘要的已提交 Output 中已浮现过的主题不重复浮现，未提交 Output 的中断轮次不占用浮现名额。不改变 system 前缀。
 
 ## 整理
 
