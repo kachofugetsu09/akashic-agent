@@ -300,6 +300,8 @@ input {
   background: var(--ak-color-status-warning);
   content: "";
 }
+/* 「更多操作」只在紧凑外壳出现（宽屏平铺成图标钮），多半是手指点：菜单项与侧栏行菜单同为 44px。 */
+.conversation-heading__menu [role="menuitem"] { min-height: 44px; gap: 12px; padding-inline: 12px; }
 .conversation-heading__menu [data-attention] > span::after {
   display: inline-block;
   width: 6px;
@@ -357,11 +359,11 @@ input {
   background: color-mix(in oklab, var(--md-sys-color-on-surface) 8%, transparent);
 }
 
-/* 底部动作：宿主 Shell 经桥下发的动作行，图标/文字落在同一条左竖线。 */
+/* 底部动作：一行。第一个动作带字占满，其余是图标；低频入口不各占一行。 */
 .chat-sidebar__footer {
   display: flex;
   flex: 0 0 auto;
-  flex-direction: column;
+  align-items: center;
   gap: 2px;
   border-block-start: 1px solid var(--chat-line);
   padding-block: 8px max(8px, env(safe-area-inset-bottom, 0px));
@@ -372,7 +374,8 @@ input {
   display: inline-flex;
   text-decoration: none;
   min-height: 36px;
-  width: 100%;
+  min-width: 0;
+  flex: 1 1 auto;
   align-items: center;
   gap: 10px;
   border: 0;
@@ -421,27 +424,32 @@ input {
   background: color-mix(in oklab, var(--md-sys-color-on-surface) 8%, transparent);
 }
 
-/* 主题行右端的键盘图标：只在有键盘与指针的宽屏出现，触屏不占位。 */
-.chat-sidebar__footer-row { display: flex; align-items: center; gap: 2px; }
-.chat-sidebar__footer-row > .chat-sidebar__action { min-width: 0; flex: 1 1 auto; }
-.chat-sidebar__shortcuts { display: none; }
+.chat-sidebar__icon-action {
+  display: inline-grid;
+  width: 36px;
+  height: 36px;
+  flex: 0 0 auto;
+  place-items: center;
+  border: 0;
+  border-radius: var(--ak-radius-sm);
+  padding: 0;
+  color: var(--chat-muted);
+  background: transparent;
+  cursor: pointer;
+}
+.chat-sidebar__icon-action svg { width: 18px; height: 18px; }
+.chat-sidebar__icon-action .chat-sidebar__action-icon { display: inline-grid; place-items: center; }
+@media (hover: hover) {
+  .chat-sidebar__icon-action:hover { color: var(--chat-ink); background: color-mix(in oklab, var(--ak-ink-primary) 6%, transparent); }
+}
+.chat-sidebar__icon-action:focus-visible { color: var(--chat-ink); outline: 2px solid var(--ak-rule-focus); outline-offset: 2px; }
+.chat-sidebar__icon-action:active { background: color-mix(in oklab, var(--ak-ink-primary) 8%, transparent); }
+.chat-sidebar__icon-action[data-state="open"] { color: var(--chat-ink); background: color-mix(in oklab, var(--ak-ink-primary) 6%, transparent); }
 
+/* 键盘快捷键只在有键盘与指针的宽屏出现，触屏不占位。 */
+.chat-sidebar__shortcuts { display: none; }
 @media (hover: hover) and (pointer: fine) {
-  .chat-sidebar__shortcuts {
-    display: inline-grid;
-    width: 36px;
-    height: 36px;
-    flex: 0 0 auto;
-    place-items: center;
-    border: 0;
-    border-radius: var(--ak-radius-sm);
-    padding: 0;
-    color: var(--chat-faint, var(--chat-muted));
-    background: transparent;
-    cursor: pointer;
-  }
-  .chat-sidebar__shortcuts:hover { color: var(--chat-ink); background: color-mix(in oklab, var(--ak-ink-primary) 6%, transparent); }
-  .chat-sidebar__shortcuts:focus-visible { outline: 2px solid var(--ak-rule-focus); outline-offset: 2px; }
+  .chat-sidebar__shortcuts { display: inline-grid; }
 }
 
 /* 主题菜单：明暗是一排分段按钮，配色是带色票的单选列表；触屏行高放到 44px。 */
@@ -853,6 +861,7 @@ input {
   .chat-sidebar__brand-row,
   .chat-sidebar__search,
   .chat-sidebar__action { min-height: 44px; }
+  .chat-sidebar__icon-action { width: 44px; height: 44px; }
   .chat-sidebar__new,
   .conversation-heading__new,
   .conversation-heading__action { width: 44px; height: 44px; }
@@ -1278,8 +1287,12 @@ input {
   .navigation-group__open,
   .group-session,
   .navigation-group__sessions .conversation-session,
+  .chat-sidebar--entry .conversation-session,
   .navigation-section__icon { min-height: 44px; }
-  .navigation-section__header > .navigation-section__icon { width: 44px; }
+  .navigation-section__header > .navigation-section__icon,
+  .conversation-sort-trigger { width: 44px; }
+  /* 单行会话行增高后，状态点（旋涡/未读）随标题居中，不沿用两行会话的顶端对齐。 */
+  .chat-sidebar--entry .conversation-session .session-status-slot { align-self: center; margin-block-start: 0; }
   /* 排序钮放到 44px 后，分组标题行不再叠 18px 上内边距：热区不变，搜索框到"最近会话"文字的空白 62→44px。 */
   .conversation-navigation__heading--section:has(.conversation-sort-trigger) { padding-block: 4px 0; }
 }

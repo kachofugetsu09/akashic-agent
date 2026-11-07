@@ -112,6 +112,8 @@ function registerModels(ctx, mount, catalogResource) {
       const toastRegion = page.querySelector("[data-toast-region]");
       let catalog = null;
       let query = "";
+      // 停用的连接默认收进列表末尾的一行；用户点开后在本页保持展开。
+      let disabledOpen = false;
       let quotas = new Map();
       let quotaKey = "";
       let quotaAt = 0;
@@ -366,8 +368,13 @@ function registerModels(ctx, mount, catalogResource) {
         for (const child of [...connections.children]) {
           if (child !== editingCard) child.remove();
         }
+        // 停用的排在后面并默认收起；搜索时全部列出，正在编辑的卡片留在原组。
+        const parked = normalizedQuery ? [] : filtered.filter((connection) =>
+          connection.availability === "disabled" && connection.id !== editing?.connectionId);
+        const shown = filtered.filter((connection) => !parked.includes(connection));
+        if (parked.length && disabledOpen) shown.push(...parked);
         let next = connections.firstChild;
-        for (const connection of filtered) {
+        for (const connection of shown) {
           let element;
           if (editing && connection.id === editing.connectionId) {
             fillProviderHead(editing.head, providerEntries.find((candidate) => candidate.id === connection.driverId), connection);
@@ -383,6 +390,24 @@ function registerModels(ctx, mount, catalogResource) {
           }
           connections.insertBefore(element, next);
         }
+        if (parked.length) connections.insertBefore(parkedRow(parked.length), disabledOpen ? connections.children[shown.length - parked.length] ?? null : null);
+      }
+
+      // 停用连接的折叠行：常态（启用）常驻，停用的是低频信息，一行计数即可。
+      function parkedRow(count) {
+        const row = document.createElement("li");
+        row.className = "settings-provider-parked";
+        const button = document.createElement("button");
+        button.type = "button";
+        button.setAttribute("aria-expanded", String(disabledOpen));
+        button.innerHTML = `<span>已停用 ${count} 个</span>${CHEVRON_ICON}`;
+        button.addEventListener("click", () => {
+          disabledOpen = !disabledOpen;
+          renderConnections(catalog.connections);
+          connections.querySelector(".settings-provider-parked button")?.focus();
+        });
+        row.append(button);
+        return row;
       }
 
       function providerCard(connection) {

@@ -166,8 +166,11 @@ function quotaPanel(page, catalogResource, isClosed, quotaResource, refreshQuota
       .finally(() => { if (!isClosed()) refresh.disabled = false; });
   };
   const setMode = (next) => { mode = next; saveMode(mode); draw(); };
+  // 卡片标题取连接名：直接打开「用量」时目录还没预热，自己读一次，读到后重画（否则标题是连接 ID）。
+  const stopNames = catalogResource.subscribe(draw);
+  if (!catalogResource.current) catalogResource.refresh().catch(() => {});
   draw();
-  return {load, setMode};
+  return {load, setMode, stop: stopNames};
 }
 
 // Token 与缓存区：每次切换范围换一个代号，迟到的旧回包与它安排的重试都作废。
@@ -287,6 +290,7 @@ export function usageSection(ctx, catalogResource) {
       usage.select(1);
       return () => {
         closed = true;
+        quota.stop();
         usage.stop();
         host.replaceChildren();
       };
