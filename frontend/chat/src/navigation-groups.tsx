@@ -52,6 +52,8 @@ export interface NavigationGroupsState {
   revision: number;
   /** 分组已定（各数据源都有了分组，或已等满期限）；之前侧栏不平铺带归属的会话。 */
   ready: boolean;
+  /** 各数据源确实都读到了分组（不含等满期限）；之前找不到的置顶分组算「还在读」，不算不可用。 */
+  settled: boolean;
   active: (GroupRef & { label: string }) | null;
   reload: () => void;
   startChat: (ref: GroupRef) => void;
@@ -162,10 +164,11 @@ export function useNavigationGroupSections(enabled: boolean, catalogVersion: num
     const timer = window.setTimeout(() => setPatienceOver(true), READY_PATIENCE_MS);
     return () => window.clearTimeout(timer);
   }, []);
-  const ready = useMemo(() => patienceOver || (!navigationGroupsPending()
-    && sources.every((source) => loaded.has(source.key))), [patienceOver, sources, loaded, catalogVersion]); // eslint-disable-line react-hooks/exhaustive-deps
+  const settled = useMemo(() => !navigationGroupsPending()
+    && sources.every((source) => loaded.has(source.key)), [sources, loaded, catalogVersion]); // eslint-disable-line react-hooks/exhaustive-deps
+  const ready = patienceOver || settled;
   const reload = useCallback(() => setRevision((value) => value + 1), []);
-  return { sections, revision, ready, reload };
+  return { sections, revision, ready, settled, reload };
 }
 
 function stopLoad(load: GroupLoad) {

@@ -784,9 +784,11 @@ export const DesktopSidebar = memo(function DesktopSidebar({
             />;
           }
           const unavailableHidden = Boolean(needle) && !pin.id.toLowerCase().includes(needle);
-          // 分组取值已不存在或其插件不在：有该维度的分区时用它的名称，否则只说暂不可用。
+          // 分组还在读（弱网下可能远超等待期限）时不报不可用；读完仍找不到才是取值已不存在或其插件不在。
+          const reading = pin.kind !== "session" && groups !== undefined && !groups.settled;
+          // 不可用时有该维度的分区就用它的名称，否则只说暂不可用。
           const label = pin.kind === "session" ? "会话" : sections.find((section) => section.source.provider.dimension === pin.kind)?.source.provider.label ?? "";
-          const title = `${label}暂不可用`;
+          const title = reading ? "正在读取…" : `${label}暂不可用`;
           return <ConversationSessionRow key={`${pin.kind}:${pin.id}`}
             session={{ id: pin.id, title, preview: pin.id, active: false, unavailable: true }}
             hidden={unavailableHidden || undefined}
