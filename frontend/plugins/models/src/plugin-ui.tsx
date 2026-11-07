@@ -9,22 +9,19 @@ import { usagePanel } from "./usage-panel";
 
 const number = (value: unknown) => new Intl.NumberFormat("zh-CN").format(Number(value || 0));
 
-// 回答尾注：显示本轮全部模型调用的真实输出 token；没有完整用量时不占位。
-function answerUsage(host: HTMLElement, context: PluginUiContext<"turn.after_answer">) {
+// 回答说明行：时间后面跟本轮全部模型调用的真实输出 token；没有完整用量时不占位。
+function answerUsage(host: HTMLElement, context: PluginUiContext<"message.meta">) {
   let active = true;
-  host.classList.add("models-usage-tail-host");
   context.query("usage.message", { message_id: context.messageId }, { cache: "immutable" }).then((result) => {
     if (!active || typeof result.output_tokens !== "number") return;
-    const row = document.createElement("div");
-    row.className = "models-usage-tail";
-    row.setAttribute("aria-label", "本轮输出 Token");
-    row.innerHTML = `<span>输出 <strong>${number(result.output_tokens)} tokens</strong></span>`;
+    const text = `${number(result.output_tokens)} tokens`;
+    const row = document.createElement("span");
+    row.className = "models-usage-meta";
+    row.title = `本轮输出 ${text}`;
+    row.setAttribute("aria-label", `本轮输出 ${text}`);
+    row.textContent = text;
     host.replaceChildren(row);
-  }).catch((error: unknown) => {
-    if (!active) return;
-    host.classList.add("models-usage-tail-host--error");
-    host.textContent = error instanceof Error ? `Token 统计不可用：${error.message}` : "Token 统计不可用";
-  });
+  }).catch(() => undefined);
   return () => { active = false; };
 }
 
@@ -177,7 +174,7 @@ function ModelCapsule({ context, composer }: { context: PluginUiContext<"compose
 
 const definition: PluginUiDefinition = {
   slots: {
-    "turn.after_answer": { mount: answerUsage },
+    "message.meta": { mount: answerUsage },
     "composer.status": { mount: callSummary },
     "composer.toolbar": {
       mount: (host, context) => render(host, <ModelCapsule context={context} composer={context.composer} />),

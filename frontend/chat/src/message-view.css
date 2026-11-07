@@ -2032,6 +2032,11 @@ button.tool-step-summary:active {
 }
 @keyframes shared-delivery-reveal { from { opacity: 0; translate: 0 2px; filter: blur(3px); } }
 
+/* 插件说明紧跟时间，同字号同墨色；空的时候不占位。 */
+.plugin-ui-slot[data-slot="message.meta"] { display: contents; }
+.plugin-ui-slot[data-slot="message.meta"] > .plugin-ui-host:not(:empty) { display: inline-flex; align-items: center; gap: 4px; }
+.plugin-ui-slot[data-slot="message.meta"] > .plugin-ui-host:not(:empty)::before { content: "·"; }
+
 /* 插件操作与宿主按钮排在同一行；挂载点要有盒子，宿主靠它判断进入视口后才挂载插件。 */
 .plugin-ui-slot[data-slot="message.actions"] {
   display: contents;

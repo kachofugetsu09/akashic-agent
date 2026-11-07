@@ -87,6 +87,7 @@ const SLOT_NAMES = new Set<PluginUiSlotName>([
   "turn.before_reasoning",
   "turn.after_answer",
   "message.actions",
+  "message.meta",
   "drawer.panel",
   "tool.result",
   "message.attachment",
