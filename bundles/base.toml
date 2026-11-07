@@ -49,6 +49,9 @@ plugin = "conversation-ui@release"
 [rows."projects"]
 plugin = "projects@release"
 
+[rows."main_session"]
+plugin = "main_session@release"
+
 [rows."models"]
 plugin = "models@release"
 
