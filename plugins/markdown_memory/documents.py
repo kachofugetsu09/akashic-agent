@@ -249,6 +249,11 @@ class Workspace:
             return
         others = lines[:index] + lines[index + 1:]
         remove = op.op == "retract" or (op.op == "prune" and not op.line) or op.line in others
+        if remove and op.op == "prune" and doc not in USER_SECTIONS and not any(row.startswith("- ") for row in others):
+            if strict:
+                raise InvalidDraft(f"整理不能清空主题文件的全部条目: {doc}")
+            self.conflicts.append(f"#{index} prune {doc}: 仅剩最后一条记录，跳过清空")
+            return
         lines[index:index + 1] = [] if remove else [op.line]
         self.texts[doc] = "\n".join(lines) + "\n"
 
