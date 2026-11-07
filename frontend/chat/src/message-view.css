@@ -606,6 +606,13 @@
 :where(.agent-content) .turn-process.is-open .thinking-row[data-state="open"] {
   --code-sticky-layers: 2;
 }
+/* 思考进了工具组时组头也吸住，多让一层（与上方思考行让位规则同构）。 */
+:where(.agent-content) .tool-group.is-open .tool-group-items .thinking-row[data-state="open"] {
+  --code-sticky-layers: 2;
+}
+:where(.agent-content) .turn-process.is-open .turn-process-items .tool-group.is-open .tool-group-items .thinking-row[data-state="open"] {
+  --code-sticky-layers: 3;
+}
 :where(.agent-content) :is(.turn-process.is-open, .thinking-row[data-state="open"]) .code-block-container > .code-block-header {
   inset-block-start: calc(var(--heading-cover, 0px) + var(--code-sticky-layers) * var(--tool-sticky-h));
 }
