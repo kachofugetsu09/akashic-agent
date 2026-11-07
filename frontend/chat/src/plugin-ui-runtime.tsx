@@ -569,8 +569,9 @@ function groupSource(plugin: PluginUiCatalogItem, provider: NavigationGroupsProv
     }) };
 }
 
-/** 目录未定或声明了侧栏分组的插件还没激活：分组数据源还会再出现。 */
+/** 目录未定或声明了侧栏分组的插件还没激活：分组数据源还会再出现。定义无效被隔离的目录不再重试，不算等待。 */
 export function navigationGroupsPending(): boolean {
+  if (quarantinedRevisions.has(catalog.catalogRevision)) return false;
   return catalog.updating || catalog.plugins.some((plugin) => plugin.slots.includes("navigation.groups")
     && definitions.get(plugin.id)?.revision !== plugin.revision);
 }
