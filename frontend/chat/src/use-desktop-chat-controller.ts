@@ -5,6 +5,8 @@ import type { ChatMessage } from "./chat-message";
 import type { ComposerFile } from "./desktop-composer";
 import { invalidatePluginUiSession, loadWebPluginCatalogPatiently, onPageShown, receivePluginUiEvent, recheckWebPluginCatalog, resetPluginUiEvents, usePluginUiCatalogVersion } from "./plugin-ui-runtime";
 import { groupKey, useNavigationGroupSections, type GroupRef, type NavigationGroupsState } from "./navigation-groups";
+import { useIdentityDestination, type IdentityDestinationState } from "./navigation-destinations";
+import type { DestinationSource } from "./plugin-ui-runtime";
 import { useNavigationPins } from "./use-navigation-pins";
 import { readSessionActivityFrame, useSessionActivity, type SessionHead } from "./use-session-activity";
 import { StreamProjectionStore } from "./stream-projection";
@@ -913,6 +915,9 @@ export function useDesktopChatController() {
   }, [reportError]);
 
   const groupSections = useNavigationGroupSections(chatReady, pluginCatalog.version, reportError);
+  const destinationState = useIdentityDestination(chatReady, pluginCatalog.version, reportError);
+  // 从目的地开始的新对话：首条消息生成会话 ID 时交回该数据源。
+  const adoptRef = useRef<DestinationSource | null>(null);
 
   const ensureSession = useCallback(async () => {
     if (activeSessionRef.current) {
@@ -1029,6 +1034,13 @@ export function useDesktopChatController() {
       controller.signal.throwIfAborted();
       markDelivery(undefined);
       setActiveSessionId(sessionId);
+      // 已接纳输入才交回会话；上传或发送失败时仍保留空位与本次采用意图。
+      const adopter = adoptRef.current;
+      adoptRef.current = null;
+      if (adopter?.provider.adopt) {
+        void adopter.provider.adopt(adopter.context(new AbortController().signal), sessionId)
+          .then(destinationState.reload, reportError);
+      }
       console.debug("[chat-ui] send frame delivered", { sessionId });
       notifyComposerSent();
       for (const [key, value] of replyTargetsRef.current) if (value === reply) replyTargetsRef.current.delete(key);
@@ -1046,7 +1058,7 @@ export function useDesktopChatController() {
     } finally {
       if (sendRequestRef.current === controller) sendRequestRef.current = null;
     }
-  }, [canSend, sendProblem, deliverMessage, ensureSession, replyTarget, reportError, setMessages, setStatusLive]);
+  }, [canSend, sendProblem, deliverMessage, ensureSession, replyTarget, reportError, setMessages, setStatusLive, destinationState.reload]);
 
   // 重跑失败的这一轮：只引用原输入，服务端追加恢复记录，不新增用户消息。
   const retryTurn = useCallback(async (inputId: string) => {
@@ -1142,6 +1154,7 @@ export function useDesktopChatController() {
   }, [stopPending]);
 
   const startNewChat = useCallback(() => {
+    adoptRef.current = null;
     setSurface("chat");
     clearChatRoute();
     // 连接健康时只放下正文跟随：整链重连会把侧栏目录、置顶与插件基线全部重取一遍。
@@ -1195,6 +1208,7 @@ export function useDesktopChatController() {
     const row = sessions.find((session) => session.key === sessionId)
       ?? navigationPins.sessions.find((session) => session.key === sessionId);
     if (row) sessionScopesRef.current.set(sessionId, row.scope ?? {});
+    adoptRef.current = null;
     // 置顶解析可能早于完整目录；打开已有会话不能沿用先前分组草稿的 scope。
     newChatScopeRef.current = null;
     setNewChatGroup(null);
@@ -1356,6 +1370,18 @@ export function useDesktopChatController() {
     })[0] ?? null;
     return { ...groupSections, active, startChat: startGroupChat };
   }, [activeScope, groupSections, startGroupChat]);
+  const openDestination = useCallback((sessionId?: string) => {
+    if (sessionId) { activateSession(sessionId); return; }
+    startNewChat();
+    adoptRef.current = destinationState.source;
+  }, [activateSession, startNewChat, destinationState.source]);
+  // 指向的会话有新消息时重读，最近一句跟着变。
+  const destinationSessionId = destinationState.value?.sessionId;
+  const destinationHead = destinationSessionId ? sessions.find((session) => session.key === destinationSessionId)?.head_seq : undefined;
+  const reloadDestination = destinationState.reload;
+  useEffect(() => { if (destinationHead !== undefined) reloadDestination(); }, [destinationHead, reloadDestination]);
+  const destination = useMemo((): IdentityDestinationState => ({ ...destinationState, open: openDestination }),
+    [destinationState, openDestination]);
   const retryHistory = useCallback(() => {
     if (activeSessionRef.current) void loadMessagesSafely(activeSessionRef.current);
   }, [loadMessagesSafely]);
@@ -1388,7 +1414,7 @@ export function useDesktopChatController() {
     reportError, cancelReply, sendMessage, retryTurn, abandonTurn, stopTurn, retry,
 
     steers: steers.items, steerMessage: steers.steer, withdrawSteer: steers.withdraw, reclaimSteers: steers.reclaim,
-    navigationGroups, navigationPins,
+    navigationGroups, navigationPins, destination,
   };
 }
 

@@ -114,7 +114,10 @@ export function DesktopChatView({ controller }: DesktopChatViewProps) {
     handleReplyMessage(reply);
     composerApi.current?.focus();
   }, [handleReplyMessage]);
-  const activeTitle = sidebarSessions.find((session) => session.active)?.title || "新会话";
+  // 侧栏顶部目的地指向的对话以目的地的名字为标题（例如 Akashic），不再显示自动生成的会话标题。
+  const destinationLabel = activeSessionId && controller.destination.value?.sessionId === activeSessionId
+    ? controller.destination.value.label : undefined;
+  const activeTitle = destinationLabel ?? (sidebarSessions.find((session) => session.active)?.title || "新会话");
   const activeGroup = navigationGroups.active;
   const headingTitle = activeGroup ? `${activeGroup.label} / ${activeTitle}` : activeTitle;
   useDocumentTitle(activeSessionId || activeGroup ? headingTitle : "", isGeneratingChatStatus(status));
@@ -136,7 +139,7 @@ export function DesktopChatView({ controller }: DesktopChatViewProps) {
         <DesktopSidebar
             surface={surface} sessions={sidebarSessions}
             activeSessionId={activeSessionId} pendingSessionId={pendingSessionId} chatReady={chatReady}
-            groups={navigationGroups} navigationPins={controller.navigationPins} onSelectSession={activateSession}
+            groups={navigationGroups} navigationPins={controller.navigationPins} destination={controller.destination} onSelectSession={activateSession}
             onPrefetchSession={prefetchSessionTail}
             onNewChat={startNewChat} rail={rail}
             onDeleteSession={deleteSession} deletedNotice={deletedNotice}
@@ -152,7 +155,7 @@ export function DesktopChatView({ controller }: DesktopChatViewProps) {
           <CompactNavigation
             surface={surface} sessions={sidebarSessions}
             activeSessionId={activeSessionId} pendingSessionId={pendingSessionId} chatReady={chatReady}
-            groups={navigationGroups} navigationPins={controller.navigationPins} onSelectSession={activateSession}
+            groups={navigationGroups} navigationPins={controller.navigationPins} destination={controller.destination} onSelectSession={activateSession}
             onPrefetchSession={prefetchSessionTail}
             onNewChat={startNewChat}
             onDeleteSession={deleteSession} deletedNotice={deletedNotice}
@@ -164,7 +167,7 @@ export function DesktopChatView({ controller }: DesktopChatViewProps) {
           {/* 有会话时标题独占一行，所在分组与插件的说明项排在下面的说明行里。 */}
           {activeSessionId ? <div className="conversation-heading__stack">
             <SessionHeadingTitle key={`title:${activeSessionId}`} heading={activeTitle} value={activeTitle}
-              onRename={!activeSessionDeleted ? (title) => renameSession(activeSessionId, title) : undefined} />
+              onRename={!activeSessionDeleted && !destinationLabel ? (title) => renameSession(activeSessionId, title) : undefined} />
             <HeaderMeta key={`meta:${activeSessionId}`} sessionId={activeSessionId} project={activeGroup?.label} refreshToken={liveToolToken} />
           </div> : <SessionHeadingTitle key="title:" heading={headingTitle} value={activeTitle} />}
           {/* 插件在标题行右侧的标记；新的工具结果到达时通知插件重新读取会话状态。 */}

@@ -8,7 +8,7 @@ import { composerControls } from "./composer-contributions";
 import type { ScopeFields } from "./scope-fields";
 import { openInWorkbench, subscribeWorkbenchIntents, workbenchAccepts } from "./shell-workbench";
 
-import type { ComposerControls, ComposerSuggestProvider, HeaderMetaControls, NavigationControls, NavigationForm, NavigationFormControls, NavigationGroupsProvider, NavigationNotice, PluginUiDefinition, PluginUiHostContext, PluginUiMountSlotName, PluginUiQueryOptions, PluginUiSlotFacts, PluginUiSlotName, ScopeFieldControls, SidebarPanelControls, SidebarPanelProvider } from "@akashic/chat-ui-v1";
+import type { ComposerControls, ComposerSuggestProvider, DestinationControls, DestinationForm, HeaderMetaControls, NavigationControls, NavigationDestinationsProvider, NavigationForm, NavigationFormControls, NavigationGroupsProvider, NavigationNotice, PluginUiDefinition, PluginUiHostContext, PluginUiMountSlotName, PluginUiQueryOptions, PluginUiSlotFacts, PluginUiSlotName, ScopeFieldControls, SidebarPanelControls, SidebarPanelProvider } from "@akashic/chat-ui-v1";
 
 // 插槽合同由 @akashic/chat-ui-v1 发布，宿主与插件共用同一份类型。
 export type { ComposerSuggestProvider, ComposerSuggestion, PluginUiContext, PluginUiDefinition, PluginUiQueryOptions, PluginUiRenderer, PluginUiSlotName } from "@akashic/chat-ui-v1";
@@ -99,6 +99,7 @@ const SLOT_NAMES = new Set<PluginUiSlotName>([
   "scope.fields",
   "scope.badge",
   "navigation.groups",
+  "navigation.destinations",
   "sidebar.panels",
 ]);
 
@@ -399,6 +400,7 @@ function parseDefinition(value: unknown, plugin: PluginUiCatalogItem): PluginUiD
     }
     const valid = name === "composer.suggest" ? isSuggestProvider(renderer)
       : name === "navigation.groups" ? isGroupsProvider(renderer)
+      : name === "navigation.destinations" ? isDestinationsProvider(renderer)
       : name === "sidebar.panels" ? isPanelProvider(renderer) : isRenderer(renderer);
     if (!valid) {
       throw new Error(`插件界面 renderer 无效: ${plugin.id}.${name}`);
@@ -436,6 +438,23 @@ function isGroupsProvider(value: unknown): value is NavigationGroupsProvider {
   return typeof provider.dimension === "string" && typeof provider.label === "string" && typeof provider.load === "function"
     && form(provider.create) && (provider.actions === undefined || typeof provider.actions === "function")
     && (provider.notice === undefined || isRenderer(provider.notice));
+}
+
+function isDestinationsProvider(value: unknown): value is NavigationDestinationsProvider {
+  if (!value || typeof value !== "object") return false;
+  const provider = value as Partial<Record<keyof NavigationDestinationsProvider, unknown>>;
+  const forms = provider.actions === undefined || (Array.isArray(provider.actions) && provider.actions.every((item: unknown) =>
+    typeof item === "object" && item !== null && typeof (item as { label?: unknown }).label === "string"
+    && isDestinationForm((item as { form?: unknown }).form)));
+  return provider.placement === "identity" && typeof provider.load === "function" && forms
+    && (provider.adopt === undefined || typeof provider.adopt === "function")
+    && (provider.sessionActions === undefined || typeof provider.sessionActions === "function")
+    && (provider.notice === undefined || isRenderer(provider.notice));
+}
+
+function isDestinationForm(value: unknown): value is DestinationForm {
+  return typeof value === "object" && value !== null && typeof (value as { title?: unknown }).title === "string"
+    && typeof (value as { mount?: unknown }).mount === "function";
 }
 
 function isPanelProvider(value: unknown): value is SidebarPanelProvider {
@@ -566,6 +585,52 @@ export function NavigationGroupMount({ source, renderer, extra, scope, refreshTo
 )) {
   return <MountedPlugin pluginId={source.pluginId} pluginRevision={source.pluginRevision} renderer={renderer as HostRenderer}
     extra={extra} refreshToken={refreshToken} context={{ slot: "navigation.groups", scope }} />;
+}
+
+/** 目录里第一个 identity 目的地数据源；宿主不按插件名挑选。 */
+export interface DestinationSource {
+  /** 插件身份加版本；目录更新后变化。 */
+  key: string;
+  pluginId: string;
+  pluginRevision: string;
+  provider: NavigationDestinationsProvider;
+  context(signal: AbortSignal): Pick<PluginUiHostContext, "query">;
+}
+
+export function identityDestinationSource(): DestinationSource | null {
+  if (catalog.updating) return null;
+  for (const plugin of catalog.plugins) {
+    const loaded = definitions.get(plugin.id);
+    const provider = loaded?.revision === plugin.revision ? loaded.definition.slots["navigation.destinations"] : undefined;
+    if (provider?.placement !== "identity") continue;
+    return { key: `${plugin.id}:${plugin.revision}`, pluginId: plugin.id, pluginRevision: plugin.revision, provider,
+      context: (signal) => ({
+        query: (method, payload = {}) => queryWebPluginUi({
+          pluginId: plugin.id, pluginRevision: plugin.revision, method, payload, slot: "navigation.destinations", signal,
+        }),
+      }) };
+  }
+  return null;
+}
+
+/** 目录未定或声明了目的地的插件还没激活：品牌行先保持上次的样子。 */
+export function destinationsPending(): boolean {
+  return catalog.updating || catalog.plugins.some((plugin) => plugin.slots.includes("navigation.destinations")
+    && definitions.get(plugin.id)?.revision !== plugin.revision);
+}
+
+/** 在宿主外框里挂目的地的提示或对话框表单。 */
+export function DestinationMount({ source, renderer, destination, close, refreshToken }: {
+  source: DestinationSource;
+  renderer: { mount: DestinationForm["mount"] } | NonNullable<NavigationDestinationsProvider["notice"]>;
+  destination: DestinationControls;
+  /** 对话框才有；提示区不给。 */
+  close?: () => void;
+  refreshToken?: string | number;
+}) {
+  const extra = React.useMemo(() => ({ destination, ...(close ? { close } : {}) }), [destination, close]);
+  return <MountedPlugin pluginId={source.pluginId} pluginRevision={source.pluginRevision} renderer={renderer as HostRenderer}
+    extra={extra} refreshToken={refreshToken} context={{ slot: "navigation.destinations" }} />;
 }
 
 export interface ComposerSuggestSource {
@@ -752,7 +817,7 @@ function shownSubscriptions(isLive: () => boolean): { onShown(callback: () => vo
 
 // 宿主内部组装挂载上下文用的松散形状；各挂载点必须给出的事实由 PluginUiSlot 的属性类型保证。
 type HostMountContext = PluginUiHostContext & {
-  slot: InlineSlotName | "navigation.groups" | "sidebar.panels";
+  slot: InlineSlotName | "navigation.groups" | "navigation.destinations" | "sidebar.panels";
   sessionId?: string;
   messageId?: string;
   block?: unknown;
@@ -763,6 +828,8 @@ type HostMountContext = PluginUiHostContext & {
   navigation?: NavigationControls;
   panel?: SidebarPanelControls;
   meta?: HeaderMetaControls;
+  destination?: DestinationControls;
+  close?: () => void;
 };
 type HostMountFacts = Pick<HostMountContext, "slot" | "sessionId" | "messageId" | "block" | "scope">;
 
@@ -905,7 +972,7 @@ function MountedPlugin({
   prefetch?: boolean;
   fields?: ScopeFields;
   /** 宿主外框给这次挂载的额外能力（分组表单与提示）；身份变化即重新挂载。 */
-  extra?: Pick<HostMountContext, "form" | "navigation" | "panel" | "meta">;
+  extra?: Pick<HostMountContext, "form" | "navigation" | "panel" | "meta" | "destination" | "close">;
   context: HostMountFacts;
   refreshToken?: string | number;
 }) {
