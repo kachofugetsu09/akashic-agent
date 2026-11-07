@@ -35,7 +35,7 @@ Akashic 的设计语言由六条轴组成：纸面、墨色、规则线、字体
 | 阅读列宽 | `.chat-main` 的 `--chat-column` | 消息正文、composer、回到底部按钮 |
 | 阅读列内边距 | `.chat-main` 的 `--chat-dock-inset` | 消息区 padding、窄屏 composer inset、短屏 margin |
 | 用户气泡上限 | `.chat-main` 的 `--chat-bubble-max` | `.user-bubble` |
-| 输入卡文字 inset | `.chat-main` 的 `--composer-text-inset` | 宽屏 composer padding、stats 行；手机单行卡附件钮在文字前，文字位置由 `--composer-control-inset` 与附件钮决定 |
+| 输入卡文字 inset | `.chat-main` 的 `--composer-text-inset` | 宽屏 composer padding、stats 行；手机单行卡附件钮在文字前，文字位置由 `--composer-control-inset` 与附件钮决定；单行里输入框至少占 `min(45%, 9rem)`，模型名过长时模型钮省略 |
 | 侧栏留白 | `--chat-rail-inline` | 侧栏所有行的左竖线 |
 | 浮层遮罩 | `:root` 的 `--ak-scrim-overlay` | 设置弹窗、模型弹窗、窄屏侧栏与模型/思考强度抽屉（`--chat-scrim` 转接） |
 | 浮层阴影 | `:root` 的 `--ak-elevation-overlay` | 设置弹窗、模型弹窗、配置确认弹窗 |
