@@ -17,7 +17,7 @@ SELF_HEADINGS = ("# Akashic 的自我认知", "## 人格与形象", "## 我对�
 # 这些章节记录用户本人或关系判断，只能以用户原话为证据。
 USER_SECTIONS: dict[str, frozenset[str]] = {MEMORY: frozenset(MEMORY_HEADINGS[1:]), SELF: frozenset(SELF_HEADINGS[2:])}
 USER_HEADINGS: dict[str, tuple[str, ...]] = {MEMORY: MEMORY_HEADINGS[1:], SELF: SELF_HEADINGS[1:]}
-MAX_LINE_CHARS = 120
+MAX_LINE_CHARS = 240
 MAX_DESCRIPTION_CHARS = 80
 _FOLDER = re.compile(r"[^\s/\\._][^/\\]{0,39}")
 _TOPIC_FILE = re.compile(r"[a-z0-9][a-z0-9-]{0,63}\.md")
@@ -245,7 +245,10 @@ class Workspace:
                 self.conflicts.append(f"#{index} {op.op} {doc}: 旧条目与新条目都不在")
             return
         index = lines.index(op.old)
-        remove = op.op == "retract" or (op.op == "prune" and not op.line) or op.line in lines
+        if op.line == op.old:
+            return
+        others = lines[:index] + lines[index + 1:]
+        remove = op.op == "retract" or (op.op == "prune" and not op.line) or op.line in others
         lines[index:index + 1] = [] if remove else [op.line]
         self.texts[doc] = "\n".join(lines) + "\n"
 
@@ -276,8 +279,6 @@ class Workspace:
                 raise InvalidDraft(f"demote 只能从 MEMORY.md 下沉到可写主题: {doc} -> {op.target}")
             if target not in self.texts and not op.description:
                 raise InvalidDraft(f"demote 到新主题必须提供 description: {target}")
-            if op.line in self.texts.get(target, "").splitlines():
-                raise InvalidDraft(f"目标主题已存在相同条目: {op.line}")
         lines = self.texts.get(MEMORY, "").splitlines()
         target_lines = self.texts.get(target, "").splitlines()
         if op.old not in lines:
@@ -303,8 +304,6 @@ class Workspace:
                 raise InvalidDraft(f"promote 只能从可写主题上浮到 MEMORY.md: {doc}")
             if op.section not in USER_HEADINGS[MEMORY]:
                 raise InvalidDraft(f"MEMORY.md 的 section 必须是 {list(USER_HEADINGS[MEMORY])} 之一")
-            if op.line in self.texts.get(MEMORY, "").splitlines():
-                raise InvalidDraft(f"重复已有条目: {op.line}")
         lines = self.texts.get(doc, "").splitlines()
         mem_lines = self.texts.get(MEMORY, "").splitlines()
         if op.old not in lines:

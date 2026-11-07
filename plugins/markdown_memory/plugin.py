@@ -374,8 +374,8 @@ MEMORY.md 三个用户章节合计最多 {config.memory_budget} 字；SELF.md �
 - {{"op":"prune","doc":"文件","old":"条目 id","line":"- 压缩后的条目"}}：缩短一条；省略 line 表示舍弃该条，不得用空 line。
 - {{"op":"merge","doc":"文件","olds":["条目 id","另一条目 id"],"line":"- 合并后的条目"}}：合并同一文件的多条。
 - {{"op":"demote","doc":"MEMORY.md","old":"条目 id","target":"topics/<名>.md","line":"- 下沉后的条目","description":"目标主题不存在时的一句话说明（已有主题可省略）"}}：将 MEMORY.md 中的具体细节下沉到主题文件。
-old/olds 只填写下面给出的字符串 id，不抄写原文；每个 id 只能用一次。程序会恢复原文后校验并提交。
-新 line 必须为非空单行 '- ' 文本，且不超过 120 字，建议控制在 80 字内。不改标题、frontmatter、未超额章节或其他文件。
+只对确实需要压缩、合并、下沉或舍弃的条目生成操作；保持原样不动的条目绝不要放进 ops！old/olds 只填写下面给出的字符串 id，不抄写原文；每个 id 只能用一次。程序会恢复原文后校验并提交。
+新 line 必须为非空单行 '- ' 文本，且严格不超过 120 字，建议控制在 80 字内。不改标题、frontmatter、未超额章节或其他文件。
 {topics_block}
 {files_text}
 """
@@ -393,6 +393,8 @@ old/olds 只填写下面给出的字符串 id，不抄写原文；每个 id 只�
             if any((op.doc, old) not in entries for old in olds):
                 raise InvalidDraft(f"剪枝只能引用本次文件的条目 id: {op.doc} {olds}")
             originals = tuple(entries[(op.doc, old)] for old in olds)
+            if op.op == "prune" and op.line == originals[0]:
+                continue
             ops.append(replace(op, olds=originals) if op.op == "merge" else replace(op, old=originals[0]))
         trial = Workspace(dict(workspace.texts), dict(workspace.folders), workspace.scope)
         trial.apply(tuple(ops), strict=True)
@@ -491,8 +493,21 @@ def _consolidation_prompt(
         extra.append("待修复的失效内联链接（指向不存在的主题，请用 prune/merge 改为已有主题名或去掉方括号）：\n"
                      + json.dumps(broken, ensure_ascii=False))
     if entry_dates:
-        extra.append("已知条目记录日期（仅供判断矛盾条目新旧，old/olds 必须逐字复制上方文件中的原始行，不要把日期抄进 old/olds）：\n"
-                     + json.dumps(entry_dates, ensure_ascii=False))
+        compact_dates = {
+            doc: {
+                str(idx): dates[line]
+                for idx, line in enumerate(
+                    (row for row in workspace.texts.get(doc, "").splitlines() if row.startswith("- ")),
+                    start=1,
+                )
+                if line in dates
+            }
+            for doc, dates in entry_dates.items()
+            if dates
+        }
+        if compact_dates:
+            extra.append("各文件第 N 条 '- ' 条目的记录日期（仅供判断矛盾条目新旧）：\n"
+                         + json.dumps(compact_dates, ensure_ascii=False, separators=(",", ":")))
     extra_block = ("\n\n" + "\n\n".join(extra)) if extra else ""
     return f"""你在整理 Akashic 的长期 Markdown 记忆（离线 Dreaming）。只整理已有条目，不新增事实。
 
@@ -503,11 +518,11 @@ def _consolidation_prompt(
 - {{"op":"promote","doc":"topics/<名>.md","old":"- 主题原条目","section":"## 用户偏好","line":"- 上浮到 MEMORY.md 的条目"}}：把主题文件中跨对话普遍适用的核心用户偏好或关键原则上浮到 MEMORY.md（section 只能是 {"、".join(MEMORY_HEADINGS[1:])}，且不能超出配额）。
 
 整理原则：
-- 同一文件中相互矛盾或存在阶段演进的多条条目：只有一方带有更新的日期（参考文件内日期或下方已知条目记录日期），或明确写着是更正、改口、已完成/已统一改为新状态时，才用 merge 将新旧条目一起放进 olds 合并为一条较新的终态（不要只对其中一条用带 line 的 prune，否则会残留重复条目），并保留最终事实已有的确认日期（不把整理当天当作确认日期）；不能凭条目在文件中的先后位置判断哪条正确。
+- 同一文件中相互矛盾或存在阶段演进的多条条目：只有一方带有更新的日期（参考文件内日期或下方各文件条目记录日期），或明确写着是更正、改口、已完成/已统一改为新状态时，才用 merge 将新旧条目一起放进 olds 合并为一条较新的终态（不要只对其中一条用带 line 的 prune，否则会残留重复条目），并保留最终事实已有的确认日期（不把整理当天当作确认日期）；不能凭条目在文件中的先后位置判断哪条正确。
 - 检查跨层归属：若 MEMORY.md 中混有只针对具体脚本、构建工具或单机排障的细碎技术条目，优先用 demote 下沉到对应 topics/ 主题；若 topics/ 中存在跨对话普遍适用的核心用户偏好或用户明确要求记住的全局原则，用 promote 上浮到 MEMORY.md 对应标题下。
 - 关联其他已存在主题时，可用 [[主题文件名]]（不含 .md，如 [[lan-machines]]）建立内联链接，目标主题必须真实存在；若下方列出了待修复的失效内联链接，用 prune 或 merge 将其修正为已有主题名。
 - 不确定是否重复，或无法判断哪条矛盾说法正确时，保留原样不动；不改标题和 frontmatter。
-- old/olds 必须逐字复制对应文件中的现有条目；line 是不超过 120 字的单行 '- ' 文本。
+- old/olds 必须逐字复制对应文件中的现有条目；每个新 line 必须是单行 '- ' 文本，建议控制在 120 字内。
 
 {files}{extra_block}
 """
