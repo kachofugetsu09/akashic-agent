@@ -518,6 +518,23 @@ try {
   assert.notEqual(afterDisable.titleColor, "rgba(0, 0, 0, 0)");
   assert.equal(afterDisable.userContentFilter, "none");
 
+  // 6b. 面板里恢复正常显示后按 Esc：焦点留在顶栏触发按钮，Tab 离开后标记才卸载，键盘焦点不掉回 body
+  await railBtn.click();
+  await page.waitForTimeout(150);
+  await headerTrigger.click();
+  await page.getByRole("button", { name: "恢复正常显示" }).click();
+  await page.waitForTimeout(100);
+  await page.keyboard.press("Escape");
+  await page.waitForTimeout(100);
+  const afterEscape = await page.evaluate(() => ({
+    active: document.activeElement?.getAttribute("aria-label") ?? document.activeElement?.tagName,
+    markers: document.querySelectorAll(".privacy-mask-marker").length,
+  }));
+  assert.match(String(afterEscape.active), /^截屏隐私打码/, `Esc 关闭后焦点应留在触发按钮，实际 ${afterEscape.active}`);
+  await page.keyboard.press("Tab");
+  await page.waitForTimeout(100);
+  assert.equal(await page.locator(".privacy-mask-marker").count(), 0, "焦点离开后未开启的顶栏标记应卸载");
+
   // 7. 录制完整交互动效 GIF
   const framesDir = resolve(root, "gif-frames");
   mkdirSync(framesDir, { recursive: true });

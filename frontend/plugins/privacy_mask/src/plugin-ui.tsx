@@ -7,6 +7,8 @@ import "./plugin-ui.css";
 function PrivacyMaskControl({ engine }: { engine: PrivacyMaskEngine }) {
   const snapshot = useSyncExternalStore(engine.subscribe, engine.getSnapshot, engine.getSnapshot);
   const [open, setOpen] = useState(false);
+  // Esc 把焦点还给触发按钮；未开启时按钮要等焦点离开后再卸载，否则键盘焦点掉回 body。
+  const [lingering, setLingering] = useState(false);
   const rootRef = useRef<HTMLDivElement>(null);
   const triggerRef = useRef<HTMLButtonElement>(null);
 
@@ -17,11 +19,11 @@ function PrivacyMaskControl({ engine }: { engine: PrivacyMaskEngine }) {
     };
     const onKeyDown = (event: KeyboardEvent) => {
       if (event.key !== "Escape" || event.defaultPrevented) return;
-      setOpen(false);
       const active = document.activeElement;
-      if (active === document.body || rootRef.current?.contains(active)) {
-        triggerRef.current?.focus();
-      }
+      const returnFocus = active === document.body || rootRef.current?.contains(active);
+      if (returnFocus) setLingering(true);
+      setOpen(false);
+      if (returnFocus) triggerRef.current?.focus();
     };
     document.addEventListener("pointerdown", onPointerDown);
     document.addEventListener("keydown", onKeyDown);
@@ -33,7 +35,7 @@ function PrivacyMaskControl({ engine }: { engine: PrivacyMaskEngine }) {
 
   const activeLabel = snapshot.enabled ? "已打码" : "截屏打码";
   // 未开启时顶栏不常驻：开关在侧栏底栏与 Alt+M；开启后才显示状态与关闭入口。
-  if (!snapshot.enabled && !open) return null;
+  if (!snapshot.enabled && !open && !lingering) return null;
 
   const statusText = snapshot.enabled
     ? snapshot.redactTitles && snapshot.blurContent
@@ -54,6 +56,7 @@ function PrivacyMaskControl({ engine }: { engine: PrivacyMaskEngine }) {
         aria-label={`截屏隐私打码：${snapshot.enabled ? "已开启" : "未开启"}（Alt+M）`}
         title="截屏隐私打码（Alt+M）"
         onClick={() => setOpen((value) => !value)}
+        onBlur={() => setLingering(false)}
       >
         {snapshot.enabled ? <EyeOff size={14} aria-hidden="true" /> : <Eye size={14} aria-hidden="true" />}
         <span>
