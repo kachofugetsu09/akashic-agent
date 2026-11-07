@@ -1,4 +1,4 @@
-import { Check, X } from "lucide-react";
+import { X } from "lucide-react";
 import { formatDuration, render, ToolData, ToolText, type PluginUiDefinition } from "@akashic/chat-ui-v1";
 import "./plugin-ui.css";
 
@@ -27,22 +27,20 @@ function readShellResult(value: unknown): ShellResult | null {
 }
 
 // 命令块：$ 命令 → 输出（预览看末尾）→ 底栏结果与耗时。
+// 退出码 0 是常态，底栏只留耗时；非零退出码和仍在运行才写字。
 function ShellResultView({ result }: { result: ShellResult }) {
   const failed = result.exitCode !== undefined && result.exitCode !== 0;
+  const state = result.exitCode === undefined ? <span>{result.status ?? "运行中"}</span>
+    : failed ? <span className="shell-result-exit"><X size={13} aria-hidden="true" />退出码 {result.exitCode}</span>
+      : null;
+  const duration = result.wallTimeMs !== undefined ? <span>{formatDuration(result.wallTimeMs)}</span> : null;
   return <>
     <div className="shell-result">
       <div className="shell-result-command"><span aria-hidden="true">$</span><span>{result.command}</span></div>
       {result.output.trim()
         ? <ToolText text={result.output} tail className="tool-result" />
         : <p className="shell-result-empty">无输出</p>}
-      <div className="shell-result-foot">
-        {result.exitCode === undefined ? <span>{result.status ?? "运行中"}</span>
-          : <span className={`shell-result-exit${failed ? " is-failed" : ""}`}>
-            {failed ? <X size={13} aria-hidden="true" /> : <Check size={13} aria-hidden="true" />}
-            {failed ? `退出码 ${result.exitCode}` : "成功"}
-          </span>}
-        {result.wallTimeMs !== undefined ? <span>{formatDuration(result.wallTimeMs)}</span> : null}
-      </div>
+      {state || duration ? <div className="shell-result-foot">{state}{duration}</div> : null}
     </div>
     {Object.keys(result.rest).length ? <details className="shell-result-raw">
       <summary>原始数据</summary>

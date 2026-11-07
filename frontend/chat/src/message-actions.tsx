@@ -108,8 +108,12 @@ export function ComposerReply({
 
 /** 展开合并轨迹后按原消息和 part 定位，不把相同 part index 混为一个节点。 */
 export function focusMessagePart(element: HTMLElement, messageId: string, partIndex?: number): void {
-  const find = () => partIndex === undefined ? element :
-    element.querySelector<HTMLElement>(`[data-process-message-id="${CSS.escape(messageId)}"][data-part-index="${partIndex}"]`)
+  // 整条引用：行本身就是这条消息时定位行；它被并进别的轮次（如落定后收起的中途旁白）时定位过程里的原消息。
+  const find = () => partIndex === undefined
+    ? element.dataset.messageId === messageId ? element
+      : element.querySelector<HTMLElement>(`.flow-narration[data-process-message-id="${CSS.escape(messageId)}"]`)
+        ?? element.querySelector<HTMLElement>(`[data-process-message-id="${CSS.escape(messageId)}"]`)
+    : element.querySelector<HTMLElement>(`[data-process-message-id="${CSS.escape(messageId)}"][data-part-index="${partIndex}"]`)
       ?? (element.dataset.messageId === messageId ? element.querySelector<HTMLElement>(`[data-part-index="${partIndex}"]`) : null);
   const focus = () => {
     const target = find() ?? element;
@@ -118,8 +122,12 @@ export function focusMessagePart(element: HTMLElement, messageId: string, partIn
     target.focus({ preventScroll: true });
     target.scrollIntoView({ block: "center", behavior: "instant" });
   };
-  if (partIndex !== undefined && !find()) {
-    element.querySelector<HTMLButtonElement>('.process-trigger[aria-expanded="false"]')?.click();
+  const found = find();
+  // 目标还收在过程里（未挂载，或挂载着但轮次摘要收起）：先展开轮次摘要（点击同步提交挂载），再展开其中的折叠组。
+  const folded = found?.closest(".turn-process:not(.is-open)");
+  if (!found || folded) {
+    (folded ?? element).querySelector<HTMLButtonElement>('.turn-process-summary[aria-expanded="false"]')?.click();
+    if (!found) element.querySelector<HTMLButtonElement>('.process-trigger[aria-expanded="false"]')?.click();
     requestAnimationFrame(focus);
   } else focus();
 }

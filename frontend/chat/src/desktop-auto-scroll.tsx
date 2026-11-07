@@ -263,6 +263,24 @@ export function ComposerPageKeys() {
   return null;
 }
 
+// 点开或收起折叠行（工具、思考、长提问等）时离开贴底跟随：贴底时内容一变高就被拉回底部，
+// 刚点的那一行从指尖下往上跑，展开的内容还会被吸顶行盖住。离开后由「回到底部」按钮接回。
+export function ToggleKeepsPlace() {
+  const { scrollRef, stopScroll } = useStickToBottomContext();
+
+  // 必要 effect：折叠行散在各条消息与插件里，只能在 document 捕获阶段统一接点击，赶在展开改变高度之前。
+  useEffect(() => {
+    const onClick = (event: MouseEvent) => {
+      const scroller = scrollRef.current;
+      const target = event.target instanceof Element ? event.target.closest("[aria-expanded], summary") : null;
+      if (scroller && target && scroller.contains(target)) stopScroll();
+    };
+    document.addEventListener("click", onClick, true);
+    return () => document.removeEventListener("click", onClick, true);
+  }, [scrollRef, stopScroll]);
+  return null;
+}
+
 /** 窄屏阅读态：向下读时收起浮动标题栏，向上翻或回到顶部时放回。 */
 export function NarrowReadingChrome() {
   const { scrollRef } = useStickToBottomContext();

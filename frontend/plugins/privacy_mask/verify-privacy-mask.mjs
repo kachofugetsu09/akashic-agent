@@ -336,7 +336,9 @@ try {
   await page.goto(server.origin, { waitUntil: "networkidle" });
   await page.waitForFunction(() => window.__webHostReady === true);
   assert.deepEqual(await page.locator(".web-host-entry-error").allTextContents(), [], "插件必须通过真实宿主加载");
-  await page.waitForSelector(".privacy-mask-marker .header-marker__trigger");
+  // 未开启时顶栏不常驻标记，开关只在侧栏底栏（图标）与快捷键。
+  await page.locator(".chat-sidebar__footer").getByRole("button", { name: "截屏打码" }).waitFor();
+  assert.equal(await page.locator(".privacy-mask-marker").count(), 0, "未开启时顶栏不应常驻截屏打码标记");
   await page.waitForTimeout(150);
 
   // 截图 1：开启打码前的默认态
@@ -352,8 +354,8 @@ try {
   });
 
   // 1. 点击侧栏底栏「截屏打码」按钮一键开启全量打码
-  const railBtn = page.locator(".chat-sidebar__footer .chat-sidebar__action", { hasText: "截屏打码" });
-  assert.equal(await railBtn.count(), 1, "侧栏底栏应挂载 shell.rail-actions.v1 的截屏打码按钮");
+  const railBtn = page.locator(".chat-sidebar__footer").getByRole("button", { name: "截屏打码" });
+  assert.equal(await railBtn.count(), 1, "侧栏底栏应挂载 shell.rail-actions.v1 的截屏打码图标按钮");
   await railBtn.click();
   await page.waitForTimeout(200);
 
@@ -515,6 +517,23 @@ try {
   assert.equal(afterDisable.restoredTitleAttr, "动态重命名后的新标题", "关闭打码后应恢复打码期间更新的最新 title");
   assert.notEqual(afterDisable.titleColor, "rgba(0, 0, 0, 0)");
   assert.equal(afterDisable.userContentFilter, "none");
+
+  // 6b. 面板里恢复正常显示后按 Esc：焦点留在顶栏触发按钮，Tab 离开后标记才卸载，键盘焦点不掉回 body
+  await railBtn.click();
+  await page.waitForTimeout(150);
+  await headerTrigger.click();
+  await page.getByRole("button", { name: "恢复正常显示" }).click();
+  await page.waitForTimeout(100);
+  await page.keyboard.press("Escape");
+  await page.waitForTimeout(100);
+  const afterEscape = await page.evaluate(() => ({
+    active: document.activeElement?.getAttribute("aria-label") ?? document.activeElement?.tagName,
+    markers: document.querySelectorAll(".privacy-mask-marker").length,
+  }));
+  assert.match(String(afterEscape.active), /^截屏隐私打码/, `Esc 关闭后焦点应留在触发按钮，实际 ${afterEscape.active}`);
+  await page.keyboard.press("Tab");
+  await page.waitForTimeout(100);
+  assert.equal(await page.locator(".privacy-mask-marker").count(), 0, "焦点离开后未开启的顶栏标记应卸载");
 
   // 7. 录制完整交互动效 GIF
   const framesDir = resolve(root, "gif-frames");

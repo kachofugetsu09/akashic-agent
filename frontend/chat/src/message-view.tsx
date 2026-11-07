@@ -85,11 +85,17 @@ const MessageBody = memo(function MessageBody({
   if (!messageNeedsMarkdown(content)) {
     return <p className="plain-message-response">{content}</p>;
   }
+  const features = detectMessageRenderingFeatures(content);
+  // 打开历史会话时富文本分块可能还在下载：先用主包里的静态渲染排好标题、列表与代码块，不把 ##、``` 原文露给读者。
+  // 含公式的仍放原文（静态渲染不保护公式，$a*b*c$ 会被当成强调改写）；流式也放原文（出字前已预热分块，
+  // 静态的流式分段按空行切，会把围栏里的空行后半段切出代码块）。
+  const fallback = streaming || features.math
+    ? <p className="plain-message-response">{content}</p>
+    : <StaticMessageResponse onError={onError}>{content}</StaticMessageResponse>;
   if (deferRichContent) {
-    const features = detectMessageRenderingFeatures(content);
     if (features.math || features.code) {
       return (
-        <Suspense fallback={<p className="plain-message-response">{content}</p>}>
+        <Suspense fallback={fallback}>
           <LazyMessageResponse isAnimating={streaming} paced={paced}>{content}</LazyMessageResponse>
         </Suspense>
       );
@@ -97,7 +103,7 @@ const MessageBody = memo(function MessageBody({
     return <StaticMessageResponse streaming={streaming} onError={onError}>{content}</StaticMessageResponse>;
   }
   return (
-    <Suspense fallback={<p className="plain-message-response">{content}</p>}>
+    <Suspense fallback={fallback}>
       <LazyMessageResponse isAnimating={streaming} paced={paced}>{content}</LazyMessageResponse>
     </Suspense>
   );
@@ -544,7 +550,19 @@ function SettledTurnFlow({ flow, startedAt, endedAt, beforeReasoning, partView }
   if (running || !worthSummary) {
     return <TimelineProcess flow={flow} beforeReasoning={beforeReasoning} partView={partView} />;
   }
-  // 1. 正文是可见回复，不因后面还有工具调用而并入过程摘要。
+  // 1. 有末条回复时，它之前的过程连同中途旁白收成一行：读者要的是结论，旁白是工作记录。
+  const answerStart = trailingAnswerStart(flow);
+  if (answerStart > 0 && flow.slice(0, answerStart).some((item) => item.kind === "narration")) {
+    const head = flow.slice(0, answerStart);
+    return <>
+      {beforeReasoning?.(process[0].origin)}
+      <TurnProcessSummary items={head} durationMs={turnDurationMs(startedAt, endedAt)}>
+        <TimelineProcess flow={head} groupTools={false} partView={partView} />
+      </TurnProcessSummary>
+      <TimelineProcess flow={flow.slice(answerStart)} partView={partView} />
+    </>;
+  }
+  // 2. 没有末条回复（只剩旁白）时，正文不因后面还有工具调用而并入过程摘要。
   const groups: { body: boolean; items: FlowItem[] }[] = [];
   for (const item of flow) {
     const body = isBody(item);
@@ -553,7 +571,7 @@ function SettledTurnFlow({ flow, startedAt, endedAt, beforeReasoning, partView }
     else groups.push({ body, items: [item] });
   }
   const processGroups = groups.filter((group) => !group.body);
-  // 2. 召回槽位只出现一次；整轮用时不能重复标在每段过程上。
+  // 3. 召回槽位只出现一次；整轮用时不能重复标在每段过程上。
   return <>
     {beforeReasoning?.(process[0].origin)}
     {groups.map((group) => group.body || (group.items.length === 1 && group.items[0].kind !== "tool")
@@ -563,6 +581,13 @@ function SettledTurnFlow({ flow, startedAt, endedAt, beforeReasoning, partView }
           <TimelineProcess flow={group.items} groupTools={false} />
         </TurnProcessSummary>)}
   </>;
+}
+
+// 末条回复（finalId 的正文 part）在流尾连续出现；返回它的起点，没有则返回 -1。
+function trailingAnswerStart(flow: FlowItem[]): number {
+  let start = flow.length;
+  while (start > 0 && flow[start - 1].kind === "part") start -= 1;
+  return start < flow.length ? start : -1;
 }
 
 function turnDurationMs(startedAt: string | undefined, endedAt: string): number | undefined {
