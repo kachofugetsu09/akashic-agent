@@ -35,18 +35,18 @@
 
 ## 4. 度量
 
-脚本：`scripts/ui-density/measure.mjs`（Playwright 打开页面、按步骤操作、每个状态输出一行 JSON；`density-metrics.mjs` 在每个 frame 里采集文字行框、图标与可操作控件，合并到 8px 网格）。
+脚本：`scripts/ui-density/measure.mjs`（Playwright 打开页面、按步骤操作、每个状态输出一行 JSON；`density-metrics.mjs` 在每个 frame 里采集文字行框、图标与可操作控件，合并到 8px 网格）。只采集真正露出的内容：自身或祖先 `opacity:0`、`visibility:hidden`、`display:none` 的元素和被上层元素盖住的元素不计；被父文档遮住的 iframe 整个不采，计入 `occludedFrames`。
 
 | 指标 | 含义 | 来源 |
 |---|---|---|
 | `taskDistance` | 最后一个问题气泡到其后第一段末条回复的距离（px） | 价值/时间密度 |
 | `overallDensity` | 有墨的 8px 格 ÷ 全部格 | Tullis 整体密度 |
 | `localDensity` | 每个有墨格周围 ±10 格（≈5° 视角）的墨迹占比均值 | Tullis 局部密度 |
-| `groups`、`groupMedianCells` | 间隙 ≤16px 视为同组后的连通块个数与中位大小 | Tullis 分组（接近律） |
+| `groups`、`groupMedianCells` | 有墨格向四周膨胀 1 格后的连通块个数与中位大小：相隔约 16px 内并组，≥32px 分开，16–32px 之间受 8px 栅格量化影响 | Tullis 分组（接近律） |
 | `layoutEntropy` | 文字行左缘位置的取值熵（bit） | Tullis/Bonsiepe 布局复杂度 |
 | `actions` | 视口内可操作控件数 | Hick |
-| `touchUnder44`、`touchUnder24` | 短边 <44px 的控件占比、<24px 的个数 | Fitts、WCAG 2.5.8 |
-| `duplicateActions` | 视口内读屏名相同的控件 | Krug：同一件事一条路 |
+| `touchUnder44`、`touchUnder24` | 短边 <44px 的控件占比、<24px 的个数；行内文字链接按 WCAG 2.5.8 行内例外不计。只是几何筛查，WCAG 另有间距例外，<24px 不等于不合格 | Fitts、WCAG 2.5.8 |
+| `sameNameControls` | 视口内读屏名相同的控件（候选） | Krug：同一件事一条路 |
 | `clutterBpp` | 视口截图 JPEG(q75) 每像素比特 | Rosenholtz 杂乱代理 |
 
 用法：同一份内容（隔离实例 + 模拟模型真实发送，或 `serve-desktop-fixture.mjs`）在改前改后各跑一遍，桌面 1440×900 与手机 390×844 都跑。
@@ -58,13 +58,13 @@
 | 规则 | 门槛 | 依据 |
 |---|---|---|
 | 落定轮次的问到答距离 | ≤ 视口高的 25%（桌面 225px、手机 211px） | 结论应在提问后的首屏；改前实测 580px / 620px |
-| 同名重复动作 | 0 | Krug |
-| 手机 <24px 控件 | 0 | WCAG 2.5.8 |
+| 同一目标的重复入口 | 0（`sameNameControls` 逐条人工核对；每条消息各自的「复制」等作用于不同对象的同名控件不算） | Krug |
+| 手机 <24px 控件（行内链接除外） | 0；比 WCAG 2.5.8 的间距例外更严，是本项目的策略 | WCAG 2.5.8 |
 | A/B：分组数、`clutterBpp` | 改后不升；升了必须换来更短的问答距离 | Tullis、Rosenholtz |
 
 参考区间（只作对照，不当门槛）：同一脚本的 JPEG 代理在竞品**首页**截图上，桌面 ChatGPT 0.29–0.31、Gemini 0.30–0.32、Grok 0.20–0.22、Le Chat 0.20、Perplexity 0.40；手机 0.37–0.70。本项目改前的生产首页桌面 0.35。对话页还没有可比的公开参照。
 
-首批改动的实测（6 步排查的一轮，隔离实例）：
+首批改动的实测（6 步排查的一轮，隔离实例；分组列为旧分组规则〔膨胀 2 格〕下的数，重复动作列为同名「思考 1 次，调用 1 个工具」摘要行，属同一类入口）：
 
 | | 问到答 | 分组数 | 分组中位 | bpp | 重复动作 |
 |---|---|---|---|---|---|
@@ -86,5 +86,5 @@
 ## 7. 已知限制
 
 - 指标只看视口里看得见的东西，不看信息是否"找得到"；收得太深（多层点击）不会被度量惩罚，要靠拓扑规则与主观第 2 题兜住。
-- 分组用固定 16px 间隙，对规则线、底色块分组不敏感。
+- 分组只看间距，对规则线、底色块分组不敏感；8px 栅格让 16–32px 之间的间隙并组与否取决于对齐。
 - JPEG 代理受字体平滑、图片内容影响，只在同内容 A/B 时可比。

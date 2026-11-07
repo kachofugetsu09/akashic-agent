@@ -36,14 +36,28 @@ function taskDistance([question, answer]) {
   return after ? Math.round(after.getBoundingClientRect().top - last.getBoundingClientRect().bottom) : null;
 }
 
+// iframe 在父文档里是否露出：3×3 采样点里多数命中它自己才算可见（遮罩、模态盖住时不采它的内容）。
+function frameOnTop(element) {
+  const r = element.getBoundingClientRect();
+  let hits = 0;
+  for (const fx of [0.2, 0.5, 0.8]) for (const fy of [0.2, 0.5, 0.8]) {
+    const x = Math.min(innerWidth - 1, r.left + r.width * fx), y = Math.min(innerHeight - 1, r.top + r.height * fy);
+    if (document.elementFromPoint(x, y) === element) hits += 1;
+  }
+  return hits >= 5;
+}
+
 async function measure(name) {
-  // 1. 每个 frame 各自采集，按 iframe 位置平移、裁到可见区后合并。
+  // 1. 每个 frame 各自采集，按 iframe 位置平移、裁到可见区后合并；被父文档遮住的 iframe 不计入并单独报告。
   const frames = [];
+  let occludedFrames = 0;
   for (const frame of page.frames()) {
     let clip = [0, 0, viewport.width, viewport.height];
     if (frame !== page.mainFrame()) {
-      const box = await (await frame.frameElement().catch(() => null))?.boundingBox();
-      if (!box || box.width < 2) continue;
+      const element = await frame.frameElement().catch(() => null);
+      const box = await element?.boundingBox();
+      if (!element || !box || box.width < 2) continue;
+      if (!await element.evaluate(frameOnTop)) { occludedFrames += 1; continue; }
       clip = [box.x, box.y, Math.min(box.width, viewport.width - box.x), Math.min(box.height, viewport.height - box.y)];
     }
     const data = await frame.evaluate(collectInk, values.primary).catch(() => null);
@@ -54,7 +68,7 @@ async function measure(name) {
   const distances = await Promise.all(page.frames().map((frame) => frame.evaluate(taskDistance, [values.question, values.answer]).catch(() => null)));
   const jpeg = await page.screenshot({ type: "jpeg", quality: 75 });
   if (values.out) writeFileSync(resolve(values.out, `${values.tag}-${values.device}-${name}.jpg`), jpeg);
-  console.log(JSON.stringify({ tag: values.tag, device: values.device, state: name,
+  console.log(JSON.stringify({ tag: values.tag, device: values.device, state: name, occludedFrames,
     taskDistance: distances.find((value) => value !== null) ?? null, ...metrics,
     clutterBpp: +((jpeg.length * 8) / (viewport.width * viewport.height)).toFixed(3) }));
 }
