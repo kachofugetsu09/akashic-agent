@@ -58,8 +58,11 @@
   font-weight: 600;
 }
 
+/* 放不下时省略开头、留下后半段（"…v4.1-flash"）：同一厂商的型号靠后缀区分。
+   外层从右往左排只为把省略号放到左边，<bdi> 里的模型名仍按自身方向显示。 */
 .model-picker__name {
   overflow: hidden;
+  direction: rtl;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
