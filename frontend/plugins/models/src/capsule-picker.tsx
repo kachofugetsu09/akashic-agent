@@ -437,7 +437,7 @@ export function ModelCapsulePicker({
         }}
       >
         {multiSource && visibleModel.icon ? <img className="model-picker__group-icon" src={visibleModel.icon} alt="" aria-hidden="true" /> : null}
-        <span className="model-picker__name">{selectionLabel}</span>
+        <span className="model-picker__name"><bdi>{selectionLabel}</bdi></span>
         <ChevronDown size={11} aria-hidden="true" />
       </button>
       {/* 先确定位置再挂列表，避免首次测量触发整份列表布局，随后写入定位又重算一次。 */}
