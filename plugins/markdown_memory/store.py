@@ -224,26 +224,34 @@ class MarkdownProfileStore:
         if scope is not None and not isinstance(scope, str):
             raise ValueError(f"Markdown draft scope 无效: {source_ref}")
         ops = parse_ops({"ops": draft.get("ops")})
-        if (saved_before := self._read_receipt(source_ref, "markdown_before_v1")) is not None:
-            for doc, text in saved_before.items():
-                if isinstance(text, str):
-                    path = self._path(doc)
-                    if text:
-                        path.parent.mkdir(parents=True, exist_ok=True)
-                        atomic_write_text(path, text, domain="markdown_memory")
-                    elif path.exists():
-                        path.unlink()
+        saved_before = self._read_receipt(source_ref, "markdown_before_v1")
+        if saved_before is not None and any(not isinstance(text, str) for text in saved_before.values()):
+            raise ValueError(f"Markdown 写前副本损坏: {source_ref}")
         for _attempt in range(_APPLY_ATTEMPTS):
             # 1. 读取当前文件并叠加；不持锁的原生工具可能在其间写入，替换前再比对一次。
             workspace = self.workspace(scope)
+            current = dict(workspace.texts)
+            # 中断恢复只在内存重建完整结果，不把写前副本覆盖回磁盘。
+            if saved_before is not None:
+                for doc, text in cast(dict[str, str], saved_before).items():
+                    if text:
+                        workspace.texts[doc] = text
+                    else:
+                        workspace.texts.pop(doc, None)
             before = dict(workspace.texts)
             workspace.apply(ops, strict=False)
             changed = {doc: text for doc, text in workspace.texts.items() if before.get(doc) != text}
-            if any(self.read(doc) != before.get(doc, "") for doc in changed):
+            if saved_before is not None:
+                for doc, text in saved_before.items():
+                    if current.get(doc, "") not in (text, workspace.texts.get(doc, "")):
+                        raise ConcurrentChange(f"Markdown 中断后文件已被修改，保留当前内容与草稿: {source_ref} {doc}")
+            if any(self.read(doc) != current.get(doc, "") for doc in changed):
                 continue
             # 2. 首次 before-image 保留；先更新时间戳与文件，最后记 applied，崩溃重放可完整恢复。
             self._write_first(source_ref, "markdown_before_v1", {doc: before.get(doc, "") for doc in changed})
             for doc, text in changed.items():
+                if current.get(doc) == text:
+                    continue
                 path = self._path(doc)
                 path.parent.mkdir(parents=True, exist_ok=True)
                 atomic_write_text(path, text, domain="markdown_memory")
@@ -398,6 +406,9 @@ class MarkdownProfileStore:
                     prev = [known[(doc, content_digest(old))] for old in op.olds if (doc, content_digest(old)) in known]
                     if prev:
                         stamp = max(prev, key=lambda item: item[0])
+                # 文件与时间戳已提交、applied 尚未落盘时，源条目的索引可能已被替换。
+                if stamp is None and target_doc is not None and op.op in {"prune", "merge", "demote", "promote"}:
+                    stamp = known.get((target_doc, content_digest(op.line)))
                 if target_doc is not None and stamp is not None:
                     inherited[(target_doc, content_digest(op.line))] = stamp
                     known[(target_doc, content_digest(op.line))] = stamp
