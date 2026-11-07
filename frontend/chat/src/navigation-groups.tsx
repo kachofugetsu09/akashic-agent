@@ -52,7 +52,7 @@ export interface NavigationGroupsState {
   revision: number;
   /** 分组已定（各数据源都有了分组，或已等满期限）；之前侧栏不平铺带归属的会话。 */
   ready: boolean;
-  /** 各数据源确实都读到了分组（不含等满期限）；之前找不到的置顶分组算「还在读」，不算不可用。 */
+  /** 各数据源本次都从网络读到了分组（本机快照、等满期限都不算）；之前找不到的置顶分组算「还在读」，不算不可用。 */
   settled: boolean;
   active: (GroupRef & { label: string }) | null;
   reload: () => void;
@@ -107,6 +107,8 @@ interface GroupLoad {
 export function useNavigationGroupSections(enabled: boolean, catalogVersion: number, reportError: (error: unknown) => void) {
   const [sources, setSources] = useState<NavigationGroupSource[]>([]);
   const [loaded, setLoaded] = useState<ReadonlyMap<string, readonly NavigationGroup[]>>(new Map());
+  // 本次挂载里真正从网络读到的分区；本机快照只用来先画，证明不了快照里没有的分组已不存在。
+  const [fetched, setFetched] = useState<ReadonlySet<string>>(new Set());
   const [revision, setRevision] = useState(0);
   const loads = useRef(new Map<string, GroupLoad>());
   const report = useRef(reportError);
@@ -137,6 +139,7 @@ export function useNavigationGroupSections(enabled: boolean, catalogVersion: num
         .then((value) => {
           const groups = checkGroups(value);
           setLoaded((current) => new Map(current).set(source.key, groups));
+          setFetched((current) => current.has(source.key) ? current : new Set(current).add(source.key));
           writeSnapshot(source.pluginId, groups);
         })
         .catch((error: unknown) => {
@@ -164,9 +167,11 @@ export function useNavigationGroupSections(enabled: boolean, catalogVersion: num
     const timer = window.setTimeout(() => setPatienceOver(true), READY_PATIENCE_MS);
     return () => window.clearTimeout(timer);
   }, []);
-  const settled = useMemo(() => !navigationGroupsPending()
+  const shown = useMemo(() => !navigationGroupsPending()
     && sources.every((source) => loaded.has(source.key)), [sources, loaded, catalogVersion]); // eslint-disable-line react-hooks/exhaustive-deps
-  const ready = patienceOver || settled;
+  const settled = useMemo(() => !navigationGroupsPending()
+    && sources.every((source) => fetched.has(source.key)), [sources, fetched, catalogVersion]); // eslint-disable-line react-hooks/exhaustive-deps
+  const ready = patienceOver || shown;
   const reload = useCallback(() => setRevision((value) => value + 1), []);
   return { sections, revision, ready, settled, reload };
 }
