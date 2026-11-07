@@ -300,6 +300,8 @@ input {
   background: var(--ak-color-status-warning);
   content: "";
 }
+/* 「更多操作」只在紧凑外壳出现（宽屏平铺成图标钮），多半是手指点：菜单项与侧栏行菜单同为 44px。 */
+.conversation-heading__menu [role="menuitem"] { min-height: 44px; gap: 12px; padding-inline: 12px; }
 .conversation-heading__menu [data-attention] > span::after {
   display: inline-block;
   width: 6px;
