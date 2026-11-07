@@ -2994,6 +2994,10 @@ form.composer:focus-within [data-slot="input-group"] {
     padding-inline: 4px;
   }
 
+  /* 单行里输入框至少留 45%（最多 9rem）：模型名长时（生产 deepseek-v4.1-flash 连图标 156px）由模型钮省略号让位，
+     不然 360px 屏输入框只剩 76px，占位文字都被截断。宽屏本来够宽，不受影响。 */
+  .chat-main .composer.is-compact .composer__textarea { min-width: min(45%, 9rem); }
+
   .chat-main .composer.is-expanded textarea,
   .chat-main .composer.is-expanded .composer__textarea {
     width: 100%;

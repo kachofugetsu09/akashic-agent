@@ -9,7 +9,7 @@ import {
   AttachmentCard, attachmentCardKind, isTextLike, mediaAttributes, PASTED_TEXT_NAME, readAttachmentText, useAttachmentPreview, useTextFacts,
 } from "./attachment-card";
 import type { TimelineReply } from "./message-timeline";
-import { nextComposerExpanded } from "./composer-layout";
+import { nextComposerExpanded, useComposerCrowded } from "./composer-layout";
 import { ComposerActionButton } from "./composer-action";
 import { ComposerReply } from "./message-actions";
 import { isGeneratingChatStatus, type ChatStatus } from "./web-chat-status";
@@ -274,7 +274,9 @@ export const DesktopComposer = memo(function DesktopComposer({
     setNotice(null);
     submit(text, []).catch((error: unknown) => setNotice({ text: error instanceof Error ? error.message : "插话没有送达", ms: 3200 }));
   };
-  const shellExpanded = expanded || hasAttachments || Boolean(replyTarget) || references.length > 0;
+  const stacked = expanded || hasAttachments || Boolean(replyTarget) || references.length > 0;
+  const crowded = useComposerCrowded(cardRef, !stacked);
+  const shellExpanded = stacked || crowded;
   // 窄屏阅读时输入卡只保留一行。用户点进卡片才展开（程序 autofocus 不算）；
   // 焦点离开整张卡（含它弹出的模型菜单）才收回。
   const [engaged, setEngaged] = useState(false);
