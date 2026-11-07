@@ -9,6 +9,10 @@ disabled = true
 plugin = "ui@release"
 disabled = true
 
+[rows."main_session"]
+plugin = "main_session@release"
+disabled = true
+
 [rows."shell-ui"]
 plugin = "shell-ui@release"
 disabled = true

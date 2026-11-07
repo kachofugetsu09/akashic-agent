@@ -66,12 +66,12 @@ function Picker({ context }: { context: PluginUiDestinationFormContext }) {
     {error ? <p className="main-session-error" role="alert">{error}</p> : null}
     {items === null && !error ? <p className="main-session-muted" role="status">正在读取…</p> : null}
     <div className="main-session-list" role="list">
-      {shown.map((item, index) => <button key={item.id} type="button" role="listitem" disabled={busy || item.current}
+      {shown.map((item, index) => <div key={item.id} role="listitem"><button type="button" disabled={busy || item.current}
         aria-current={item.current || undefined} onClick={() => pick(item.id)}>
         <span>{item.title}</span>
         <small>{item.current ? "现在在侧栏顶部" : item.said ? `${index === 0 && !needle ? "最常聊 · " : ""}近 60 天你说了 ${item.said} 句`
           : `最后活跃 ${item.updated_at.slice(0, 10)}`}</small>
-      </button>)}
+      </button></div>)}
     </div>
     <button type="button" className="main-session-new" disabled={busy} onClick={() => pick(null)}>新建一段对话</button>
   </div>;

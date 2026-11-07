@@ -43,8 +43,8 @@ class Pointer:
     def __init__(self, store: OwnerStore, catalog: MessageCatalog):
         self._store = store
         self._catalog = catalog
-        # 句数只随会话 head 变化；按 (会话, head) 记住，选择面板反复打开不重读历史。
-        self._said: dict[tuple[str, int], int] = {}
+        # 每个候选只保留最新 head 的句数，窗口移动到下一条消息时失效。
+        self._said: dict[str, tuple[int, datetime, int]] = {}
 
     def read(self) -> tuple[PointerState | None, str | None]:
         record = self._store.read(_KEY)
@@ -83,7 +83,7 @@ class Pointer:
                 pass  # 另一个页面同时占了位：按它写下的状态读。
             state, session_id = self.read()
         if state == "pending":
-            return {"label": LABEL, "hint": "还没聊过，点这里打个招呼"}
+            return {"label": LABEL, "hint": "点这里开始一段对话"}
         if state != "set" or session_id is None or not self.usable(session_id):
             return None
         preview = self._preview(session_id)
@@ -106,6 +106,7 @@ class Pointer:
         page = self._catalog.sessions(prefix=_WEB_PREFIX, visibility="listed", limit=200)
         entries = page.items  # 目录已排除软删的会话。
         busiest = sorted(entries, key=lambda entry: -entry.message_count)[:_CANDIDATES]
+        self._said = {entry.session_id: self._said[entry.session_id] for entry in busiest if entry.session_id in self._said}
         said = {entry.session_id: self._said_recently(entry.session_id, entry.head_seq) for entry in busiest}
         counted = sorted((entry for entry in busiest if said[entry.session_id]), key=lambda entry: -said[entry.session_id])
         rest = [entry for entry in entries if not said.get(entry.session_id)]
@@ -117,18 +118,23 @@ class Pointer:
         } for entry in counted + rest]
 
     def _said_recently(self, session_id: str, head: int) -> int:
-        cached = self._said.get((session_id, head))
-        if cached is not None:
-            return cached
+        now = datetime.now(UTC)
+        cached = self._said.get(session_id)
+        if cached is not None and cached[0] == head and now < cached[1]:
+            return cached[2]
         # 1. 从末尾按页往前读，读到 60 天以前就停；只数用户亲口说的输入。
-        reader, cutoff, said, through = self._catalog.reader(session_id), datetime.now(UTC) - _RECENT, 0, head
+        reader, cutoff, said, through = self._catalog.reader(session_id), now - _RECENT, 0, head
+        expires = datetime.max.replace(tzinfo=UTC)
         while through >= 0:
             page = reader.read(after_seq=max(-1, through - 1000), through_seq=through, limit=1000)
-            said += sum(1 for message in page if message.recorded_at >= cutoff and is_user_input(message))
+            for message in page:
+                if message.recorded_at >= cutoff and is_user_input(message):
+                    said += 1
+                    expires = min(expires, message.recorded_at + _RECENT)
             if not page or page[0].recorded_at < cutoff:
                 break
             through = page[0].seq - 1
-        self._said[(session_id, head)] = said
+        self._said[session_id] = (head, expires, said)
         return said
 
 

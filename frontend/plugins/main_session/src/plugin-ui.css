@@ -80,6 +80,7 @@
 .main-session-list { display: grid; max-height: min(24rem, 50dvh); overflow-y: auto; gap: 1px; }
 .main-session-list button {
   display: grid;
+  width: 100%;
   gap: 1px;
   min-width: 0;
   border: 0;
