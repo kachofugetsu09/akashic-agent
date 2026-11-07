@@ -832,6 +832,11 @@ dialog.settings-scrim::backdrop { background: transparent; }
 .models-usage .settings-section-bar .settings-text-button { min-height: 2rem; padding-inline: 0.5rem; font-size: var(--models-type-caption); }
 .usage-toggle { display: inline-flex; margin-inline-start: auto; border: 1px solid var(--ak-rule-default); border-radius: var(--ak-radius-sm); padding: 2px; }
 .usage-toggle button { min-height: 1.75rem; border: 0; border-radius: calc(var(--ak-radius-sm) - 2px); padding-inline: 0.625rem; color: var(--ak-ink-secondary); background: transparent; font: inherit; font-size: var(--models-type-caption); cursor: pointer; }
+/* 触屏：时段与已用/剩余切换、刷新都到 44px（鼠标下保持紧凑）。 */
+@media (pointer: coarse) {
+  .usage-toggle button, .models-usage .settings-section-bar .settings-text-button { min-height: var(--models-hit-target, 44px); }
+  .usage-toggle button { min-width: 44px; }
+}
 .usage-toggle button[aria-pressed="true"] { color: var(--ak-ink-primary); background: var(--ak-paper-quiet); font-weight: 600; }
 .usage-quota-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(17rem, 1fr)); gap: 0.625rem; }
 .usage-quota-card { display: grid; gap: 0.5rem; border: 1px solid var(--ak-rule-subtle); border-radius: var(--ak-radius-md); padding: 0.75rem 0.875rem; background: var(--ak-paper-sheet); }
