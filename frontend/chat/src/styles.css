@@ -1287,8 +1287,12 @@ input {
   .navigation-group__open,
   .group-session,
   .navigation-group__sessions .conversation-session,
+  .chat-sidebar--entry .conversation-session,
   .navigation-section__icon { min-height: 44px; }
-  .navigation-section__header > .navigation-section__icon { width: 44px; }
+  .navigation-section__header > .navigation-section__icon,
+  .conversation-sort-trigger { width: 44px; }
+  /* 单行会话行增高后，状态点（旋涡/未读）随标题居中，不沿用两行会话的顶端对齐。 */
+  .chat-sidebar--entry .conversation-session .session-status-slot { align-self: center; margin-block-start: 0; }
   /* 排序钮放到 44px 后，分组标题行不再叠 18px 上内边距：热区不变，搜索框到"最近会话"文字的空白 62→44px。 */
   .conversation-navigation__heading--section:has(.conversation-sort-trigger) { padding-block: 4px 0; }
 }
